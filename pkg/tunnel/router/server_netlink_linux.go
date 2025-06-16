@@ -10,8 +10,6 @@ import (
 	"net"
 	"net/netip"
 	"os"
-	"slices"
-	"strings"
 	"sync"
 
 	"github.com/vishvananda/netlink"
@@ -32,57 +30,17 @@ var (
 
 // NetlinkRouter implements Router using Linux's netlink subsystem.
 type NetlinkRouter struct {
-	extLink netlink.Link
+	extLink       netlink.Link
+	extIPv6Prefix netip.Prefix
+
 	tunDev  tun.Device
 	tunLink netlink.Link
 
-	extAddr     netip.Addr
-	extPrefixes []netip.Prefix
-	ipt         utiliptables.Interface
+	ipt utiliptables.Interface
 
 	mux *connection.MuxedConn
 
 	closeOnce sync.Once
-}
-
-func extPrefixes(link netlink.Link) (netip.Addr, []netip.Prefix, error) {
-	slog.Info("Checking link", slog.String("name", link.Attrs().Name))
-
-	addrs, err := netlink.AddrList(link, netlink.FAMILY_V6)
-	if err != nil {
-		return netip.Addr{}, nil, fmt.Errorf("failed to get addresses for link: %w", err)
-	}
-
-	var extAddr netip.Addr
-	var prefixes []netip.Prefix
-	for _, addr := range addrs {
-		slog.Debug("Checking address", slog.String("addr", addr.String()))
-		// Skip loopback addresses
-		ip, ok := netip.AddrFromSlice(addr.IP)
-		if !ok {
-			slog.Warn("Failed to convert IP address", slog.String("ip", addr.IP.String()))
-			continue
-		}
-		if !ip.Is6() {
-			slog.Warn("Skipping non-IPv6 address", slog.String("ip", addr.IP.String()))
-			continue
-		}
-		if !ip.IsGlobalUnicast() { // Skip non-global unicast addresses.
-			slog.Debug("Skipping non-global unicast address", slog.String("ip", addr.IP.String()))
-			continue
-		}
-
-		slog.Info("Found IPv6 address", slog.String("ip", addr.IP.String()), slog.String("mask", addr.Mask.String()))
-
-		if !extAddr.IsValid() {
-			extAddr = ip
-		}
-
-		bits, _ := addr.Mask.Size()
-		prefixes = append(prefixes, netip.PrefixFrom(ip, bits))
-	}
-
-	return extAddr, prefixes, nil
 }
 
 // NewNetlinkRouter creates a new netlink-based tunnel router.
@@ -95,10 +53,6 @@ func NewNetlinkRouter(opts ...Option) (*NetlinkRouter, error) {
 	extLink, err := netlink.LinkByName(options.extIfaceName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get external interface: %w", err)
-	}
-	extAddr, lrs, err := extPrefixes(extLink)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get local routes: %w", err)
 	}
 
 	tunDev, err := tun.CreateTUN(options.tunIfaceName, netstack.IPv6MinMTU)
@@ -157,9 +111,7 @@ func NewNetlinkRouter(opts ...Option) (*NetlinkRouter, error) {
 		tunDev:  tunDev,
 		tunLink: tunLink,
 
-		extAddr:     extAddr,
-		extPrefixes: lrs,
-		ipt:         utiliptables.New(utilexec.New(), utiliptables.ProtocolIPv6),
+		ipt: utiliptables.New(utilexec.New(), utiliptables.ProtocolIPv6),
 
 		mux: connection.NewMuxedConn(),
 	}, nil
@@ -181,14 +133,12 @@ func (r *NetlinkRouter) setupDNAT() error {
 	extName := r.extLink.Attrs().Name
 	tunName := r.tunLink.Attrs().Name
 
-	// Setup jump rule to our custom chain.
-	var dsts []string
-	for _, prefix := range r.extPrefixes {
-		dsts = append(dsts, prefix.Addr().String())
-	}
-	slices.Sort(dsts)
-	slog.Info("Setting up jump rule", slog.String("ext_iface", extName), slog.String("tun_iface", tunName), slog.String("dsts", strings.Join(dsts, ",")))
-	jRuleSpec := []string{"-d", strings.Join(dsts, ","), "-i", extName, "-j", string(ChainA3yTunRules)}
+	slog.Info("Setting up jump rule",
+		slog.String("ext_iface", extName),
+		slog.String("ext_addr", r.extIPv6Prefix.Addr().String()))
+
+	// Traffic arriving at the designated external interface will be processed by the A3Y-TUN-RULES chain.
+	jRuleSpec := []string{"-d", r.extIPv6Prefix.Addr().String(), "-i", extName, "-j", string(ChainA3yTunRules)}
 	if _, err := r.ipt.EnsureRule(utiliptables.Append, utiliptables.TableNAT, utiliptables.ChainPrerouting, jRuleSpec...); err != nil {
 		return fmt.Errorf("failed to ensure jump rule: %w", err)
 	}

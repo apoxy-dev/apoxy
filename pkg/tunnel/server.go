@@ -44,20 +44,22 @@ var (
 type TunnelServerOption func(*tunnelServerOptions)
 
 type tunnelServerOptions struct {
-	proxyAddr string
-	ulaPrefix netip.Prefix
-	certPath  string
-	keyPath   string
-	ipam      tunnet.IPAM
+	proxyAddr     string
+	ulaPrefix     netip.Prefix
+	certPath      string
+	keyPath       string
+	ipam          tunnet.IPAM
+	extIPv6Prefix netip.Prefix
 }
 
 func defaultServerOptions() *tunnelServerOptions {
 	return &tunnelServerOptions{
-		proxyAddr: "0.0.0.0:9443",
-		ulaPrefix: netip.MustParsePrefix("fd00::/64"),
-		certPath:  "/etc/apoxy/certs/tunnelproxy.crt",
-		keyPath:   "/etc/apoxy/certs/tunnelproxy.key",
-		ipam:      tunnet.NewRandomULA(),
+		proxyAddr:     "0.0.0.0:9443",
+		ulaPrefix:     netip.MustParsePrefix("fd00::/64"),
+		certPath:      "/etc/apoxy/certs/tunnelproxy.crt",
+		keyPath:       "/etc/apoxy/certs/tunnelproxy.key",
+		ipam:          tunnet.NewRandomULA(),
+		extIPv6Prefix: netip.MustParsePrefix("fd00::/64"),
 	}
 }
 
@@ -93,6 +95,14 @@ func WithKeyPath(path string) TunnelServerOption {
 func WithIPAM(ipam tunnet.IPAM) TunnelServerOption {
 	return func(o *tunnelServerOptions) {
 		o.ipam = ipam
+	}
+}
+
+// WithExternalIPv6Prefix sets the external IPv6 prefix. This is the IPv6 prefix used to
+// send traffic through the tunnel.
+func WithExternalIPv6Prefix(prefix netip.Prefix) TunnelServerOption {
+	return func(o *tunnelServerOptions) {
+		o.extIPv6Prefix = prefix
 	}
 }
 
@@ -318,7 +328,17 @@ func (t *TunnelServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	advRoutes := []netip.Prefix{} // TODO: Implement route advertisement logic from TunnelNode and config.
+	advRoutes := []netip.Prefix{
+		t.options.extIPv6Prefix,
+	}
+	// If egress gateway is enabled, route 0.0.0.0/0 via the tunnel.
+	if tn.Spec.EgressGateway != nil && tn.Spec.EgressGateway.Enabled {
+		advRoutes = append(advRoutes,
+			netip.PrefixFrom(netip.IPv4Unspecified(), 0),
+			netip.PrefixFrom(netip.IPv6Unspecified(), 0),
+		)
+	}
+
 	logger.Info("Advertising routes", slog.Any("routes", advRoutes))
 
 	if err := conn.AdvertiseRoute(r.Context(), iproutesFromPrefixes(advRoutes)); err != nil {

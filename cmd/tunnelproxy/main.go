@@ -5,6 +5,9 @@ package main
 import (
 	"flag"
 	"fmt"
+	"net"
+	"net/netip"
+	"os"
 	"strings"
 	"time"
 
@@ -44,6 +47,8 @@ var (
 
 	apiServerAddr = flag.String("apiserver_addr", "host.docker.internal:8443", "APIServer address.")
 	jwksURLs      = flag.String("jwks_urls", "", "Comma-separated URLs of the JWKS endpoints.")
+
+	extIPv6SubnetSize = flag.Int("ext_ipv6_subnet_size", 64, "IPv6 subnet size.")
 )
 
 func main() {
@@ -97,7 +102,20 @@ func main() {
 		log.Fatalf("Failed to create JWT validator: %v", err)
 	}
 
-	r, err := router.NewNetlinkRouter()
+	// Resolve external IPv6 address from hostname
+	extAddr, err := net.ResolveIPAddr("ip6", os.Getenv("HOSTNAME"))
+	if err != nil {
+		log.Fatalf("Failed to resolve external IPv6 address: %v", err)
+	}
+	extIPv6, ok := netip.AddrFromSlice(extAddr.IP)
+	if !ok {
+		log.Fatalf("Invalid IPv6 address resolved: %s", extAddr.IP.String())
+	}
+	extIPv6Prefix := netip.PrefixFrom(extIPv6, *extIPv6SubnetSize)
+
+	r, err := router.NewNetlinkRouter(
+		router.WithExternalIPv6Prefix(extIPv6Prefix),
+	)
 	if err != nil {
 		log.Fatalf("Failed to create netlink router: %v", err)
 	}
@@ -106,6 +124,7 @@ func main() {
 		mgr.GetClient(),
 		jwtValidator,
 		r,
+		tunnel.WithExternalIPv6Prefix(extIPv6Prefix),
 	)
 	g.Go(func() error {
 		log.Infof("Starting Tunnel Proxy server")

@@ -10,6 +10,7 @@ import (
 type Option func(*routerOptions)
 
 type routerOptions struct {
+	extIPv6Prefix   netip.Prefix
 	localAddresses  []netip.Prefix
 	resolveConf     *network.ResolveConfig // If not set system default resolver is used
 	pcapPath        string
@@ -20,6 +21,7 @@ type routerOptions struct {
 
 func defaultOptions() *routerOptions {
 	return &routerOptions{
+		extIPv6Prefix:   netip.PrefixFrom(netip.IPv6Unspecified(), 64),
 		extIfaceName:    "eth0",
 		tunIfaceName:    "tun0",
 		socksListenAddr: "localhost:1080",
@@ -30,6 +32,13 @@ func defaultOptions() *routerOptions {
 func WithLocalAddresses(localAddresses []netip.Prefix) Option {
 	return func(o *routerOptions) {
 		o.localAddresses = localAddresses
+	}
+}
+
+// WithExternalIPv6Prefix sets the external IPv6 prefix for the router.
+func WithExternalIPv6Prefix(prefix netip.Prefix) Option {
+	return func(o *routerOptions) {
+		o.extIPv6Prefix = prefix
 	}
 }
 
