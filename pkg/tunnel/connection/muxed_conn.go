@@ -141,12 +141,22 @@ func (m *MuxedConn) WritePacket(pkt []byte) ([]byte, error) {
 		} else {
 			return nil, fmt.Errorf("IPv6 packet too short: %d", len(pkt))
 		}
+	case 4:
+		// IPv4 packet (RFC 791)
+		if len(pkt) >= 20 {
+			var addr [4]byte
+			copy(addr[:], pkt[12:16])
+			dstIP = netip.AddrFrom4(addr)
+		} else {
+			return nil, fmt.Errorf("IPv4 packet too short: %d", len(pkt))
+		}
 	default:
 		return nil, fmt.Errorf("unknown packet type: %d", pkt[0]>>4)
 	}
 
 	if !dstIP.IsValid() || !dstIP.Is6() || !dstIP.IsGlobalUnicast() {
-		return nil, fmt.Errorf("invalid destination IP: %s", dstIP.String())
+		slog.Debug("Invalid destination IP", slog.String("ip", dstIP.String()))
+		return nil, nil
 	}
 
 	slog.Debug("Packet destination", slog.String("ip", dstIP.String()))

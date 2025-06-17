@@ -21,7 +21,6 @@ type routerOptions struct {
 
 func defaultOptions() *routerOptions {
 	return &routerOptions{
-		extIPv6Prefix:   netip.PrefixFrom(netip.IPv6Unspecified(), 64),
 		extIfaceName:    "eth0",
 		tunIfaceName:    "tun0",
 		socksListenAddr: "localhost:1080",

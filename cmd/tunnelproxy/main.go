@@ -112,6 +112,11 @@ func main() {
 		log.Fatalf("Invalid IPv6 address resolved: %s", extAddr.IP.String())
 	}
 	extIPv6Prefix := netip.PrefixFrom(extIPv6, *extIPv6SubnetSize)
+	if !extIPv6Prefix.IsValid() {
+		log.Fatalf("Invalid IPv6 prefix: %s", extIPv6Prefix.String())
+	}
+
+	log.Infof("External IPv6 prefix: %s", extIPv6Prefix.String())
 
 	r, err := router.NewNetlinkRouter(
 		router.WithExternalIPv6Prefix(extIPv6Prefix),

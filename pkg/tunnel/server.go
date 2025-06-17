@@ -349,10 +349,10 @@ func (t *TunnelServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	agent := &corev1alpha.AgentStatus{
-		Name:        uuid.NewString(),
-		ConnectedAt: ptr.To(metav1.Now()),
-		//PrivateAddress: addr.String(),
-		AgentAddress: r.RemoteAddr,
+		Name:           uuid.NewString(),
+		ConnectedAt:    ptr.To(metav1.Now()),
+		PrivateAddress: t.options.extIPv6Prefix.Addr().String(),
+		AgentAddress:   r.RemoteAddr,
 	}
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		upd := &corev1alpha.TunnelNode{}

@@ -81,6 +81,11 @@ func NewNetlinkRouter(opts ...Option) (*NetlinkRouter, error) {
 		return nil, fmt.Errorf("failed to get TUN interface: %w", err)
 	}
 
+	if !options.extIPv6Prefix.IsValid() {
+		tunDev.Close()
+		return nil, fmt.Errorf("external IPv6 prefix is not valid")
+	}
+
 	for _, addr := range options.localAddresses {
 		ip := addr.Addr()
 		mask := net.CIDRMask(addr.Bits(), 32)
@@ -106,7 +111,8 @@ func NewNetlinkRouter(opts ...Option) (*NetlinkRouter, error) {
 	}
 
 	return &NetlinkRouter{
-		extLink: extLink,
+		extLink:       extLink,
+		extIPv6Prefix: options.extIPv6Prefix,
 
 		tunDev:  tunDev,
 		tunLink: tunLink,
