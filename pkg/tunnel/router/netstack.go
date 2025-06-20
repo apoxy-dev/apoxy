@@ -45,7 +45,11 @@ func NewNetstackRouter(opts ...Option) (*NetstackRouter, error) {
 		return nil, fmt.Errorf("failed to create virtual TUN device: %w", err)
 	}
 
-	proxy := socksproxy.NewServer(options.socksListenAddr, tunDev.Network(options.resolveConf), network.Host())
+	proxy := socksproxy.NewServer(
+		options.socksListenAddr,
+		tunDev.Network(options.resolveConf),
+		network.Host(),
+	)
 
 	return &NetstackRouter{
 		tunDev:          tunDev,

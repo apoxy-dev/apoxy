@@ -309,9 +309,12 @@ func (t *TunnelServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	peerPrefix := t.options.ipam.Allocate(r)
+	peerV6 := t.options.ipam.AllocateV6(r)
+	peerV4 := t.options.ipam.AllocateV4(r)
+
 	if err := conn.AssignAddresses(r.Context(), []netip.Prefix{
-		peerPrefix,
+		peerV6,
+		peerV4,
 	}); err != nil {
 		logger.Error("Failed to assign address to connection", slog.Any("error", err))
 		w.WriteHeader(http.StatusInternalServerError)
@@ -319,14 +322,22 @@ func (t *TunnelServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	logger.Info("Client prefix assigned", slog.String("ip", peerPrefix.String()))
-
-	if err := t.router.Add(peerPrefix, conn); err != nil {
+	if err := t.router.Add(peerV6, conn); err != nil {
 		logger.Error("Failed to add TUN peer", slog.Any("error", err))
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte(err.Error()))
 		return
 	}
+	if err := t.router.Add(peerV4, conn); err != nil {
+		logger.Error("Failed to add TUN peer", slog.Any("error", err))
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(err.Error()))
+		return
+	}
+
+	logger.Info("Client addresses assigned",
+		slog.String("ipv4", peerV4.String()),
+		slog.String("ipv6", peerV6.String()))
 
 	advRoutes := []netip.Prefix{
 		t.options.extIPv6Prefix,
@@ -379,11 +390,14 @@ func (t *TunnelServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 		logger.Error("Failed to close connection", slog.Any("error", err))
 	}
 
-	if err := t.options.ipam.Release(peerPrefix); err != nil {
+	if err := t.options.ipam.Release(peerV6); err != nil {
 		logger.Error("Failed to deallocate IP address", slog.Any("error", err))
 	}
 
-	if err := t.router.DelAll(peerPrefix); err != nil {
+	if err := t.router.DelAll(peerV6); err != nil {
+		logger.Error("Failed to remove TUN peer", slog.Any("error", err))
+	}
+	if err := t.router.DelAll(peerV4); err != nil {
 		logger.Error("Failed to remove TUN peer", slog.Any("error", err))
 	}
 

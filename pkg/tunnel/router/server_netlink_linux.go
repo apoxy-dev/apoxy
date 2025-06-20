@@ -36,7 +36,7 @@ type NetlinkRouter struct {
 	tunDev  tun.Device
 	tunLink netlink.Link
 
-	ipt utiliptables.Interface
+	iptV4, iptV6 utiliptables.Interface
 
 	mux *connection.MuxedConn
 
@@ -88,9 +88,9 @@ func NewNetlinkRouter(opts ...Option) (*NetlinkRouter, error) {
 
 	for _, addr := range options.localAddresses {
 		ip := addr.Addr()
-		mask := net.CIDRMask(addr.Bits(), 32)
-		if ip.Is6() {
-			mask = net.CIDRMask(addr.Bits(), 128)
+		mask := net.CIDRMask(addr.Bits(), 128)
+		if ip.Is4() {
+			mask = net.CIDRMask(addr.Bits(), 32)
 		}
 
 		if err := netlink.AddrAdd(tunLink, &netlink.Addr{
@@ -117,7 +117,8 @@ func NewNetlinkRouter(opts ...Option) (*NetlinkRouter, error) {
 		tunDev:  tunDev,
 		tunLink: tunLink,
 
-		ipt: utiliptables.New(utilexec.New(), utiliptables.ProtocolIPv6),
+		iptV4: utiliptables.New(utilexec.New(), utiliptables.ProtocolIPv4),
+		iptV6: utiliptables.New(utilexec.New(), utiliptables.ProtocolIPv6),
 
 		mux: connection.NewMuxedConn(),
 	}, nil
@@ -128,7 +129,7 @@ const (
 )
 
 func (r *NetlinkRouter) setupDNAT() error {
-	exists, err := r.ipt.EnsureChain(utiliptables.TableNAT, ChainA3yTunRules)
+	exists, err := r.iptV6.EnsureChain(utiliptables.TableNAT, ChainA3yTunRules)
 	if err != nil {
 		return fmt.Errorf("failed to ensure %s chain: %w", ChainA3yTunRules, err)
 	}
@@ -145,7 +146,7 @@ func (r *NetlinkRouter) setupDNAT() error {
 
 	// Traffic arriving at the designated external interface will be processed by the A3Y-TUN-RULES chain.
 	jRuleSpec := []string{"-d", r.extIPv6Prefix.Addr().String(), "-i", extName, "-j", string(ChainA3yTunRules)}
-	if _, err := r.ipt.EnsureRule(utiliptables.Append, utiliptables.TableNAT, utiliptables.ChainPrerouting, jRuleSpec...); err != nil {
+	if _, err := r.iptV6.EnsureRule(utiliptables.Append, utiliptables.TableNAT, utiliptables.ChainPrerouting, jRuleSpec...); err != nil {
 		return fmt.Errorf("failed to ensure jump rule: %w", err)
 	}
 
@@ -156,7 +157,7 @@ func (r *NetlinkRouter) setupDNAT() error {
 	}
 	slog.Info("Setting up forwarding rules", slog.String("ext_iface", extName), slog.String("tun_iface", tunName))
 	for _, ruleSpec := range fwdRuleSpecs {
-		if _, err := r.ipt.EnsureRule(utiliptables.Append, utiliptables.TableFilter, utiliptables.ChainForward, ruleSpec...); err != nil {
+		if _, err := r.iptV6.EnsureRule(utiliptables.Append, utiliptables.TableFilter, utiliptables.ChainForward, ruleSpec...); err != nil {
 			return fmt.Errorf("failed to ensure forwarding rule: %w", err)
 		}
 	}
@@ -164,7 +165,10 @@ func (r *NetlinkRouter) setupDNAT() error {
 	// Setup NAT for traffic returning from the tunnel.
 	masqRuleSpec := []string{"-o", extName, "-j", "MASQUERADE"}
 	slog.Info("Setting up masquerade rule", slog.String("ext_iface", extName))
-	if _, err := r.ipt.EnsureRule(utiliptables.Append, utiliptables.TableNAT, utiliptables.ChainPostrouting, masqRuleSpec...); err != nil {
+	if _, err := r.iptV4.EnsureRule(utiliptables.Append, utiliptables.TableNAT, utiliptables.ChainPostrouting, masqRuleSpec...); err != nil {
+		return fmt.Errorf("failed to ensure masquerade rule: %w", err)
+	}
+	if _, err := r.iptV6.EnsureRule(utiliptables.Append, utiliptables.TableNAT, utiliptables.ChainPostrouting, masqRuleSpec...); err != nil {
 		return fmt.Errorf("failed to ensure masquerade rule: %w", err)
 	}
 
@@ -213,6 +217,9 @@ func (r *NetlinkRouter) syncDNATChain() error {
 	natRules := proxyutil.NewLineBuffer()
 	peers := r.mux.Prefixes()
 	for i, peer := range peers {
+		if peer.Addr().Is4() { // Skipping IPv4 peers - only IPv6 tunnel ingress is supported.
+			continue
+		}
 		natRules.Write(
 			"-A", string(ChainA3yTunRules),
 			"-m", "statistic",
@@ -229,7 +236,7 @@ func (r *NetlinkRouter) syncDNATChain() error {
 	iptNewData.Write(natRules.Bytes())
 	iptNewData.WriteString("COMMIT\n")
 
-	if err := r.ipt.Restore(
+	if err := r.iptV6.Restore(
 		utiliptables.TableNAT,
 		iptNewData.Bytes(),
 		utiliptables.NoFlushTables,
@@ -245,11 +252,15 @@ func (r *NetlinkRouter) syncDNATChain() error {
 func (r *NetlinkRouter) Add(peer netip.Prefix, conn connection.Connection) error {
 	slog.Debug("Adding route", slog.String("prefix", peer.String()))
 
+	mask := net.CIDRMask(peer.Bits(), 128)
+	if peer.Addr().Is4() {
+		mask = net.CIDRMask(peer.Bits(), 32)
+	}
 	route := &netlink.Route{
 		LinkIndex: r.tunLink.Attrs().Index,
 		Dst: &net.IPNet{
 			IP:   peer.Addr().AsSlice(),
-			Mask: net.CIDRMask(peer.Bits(), 128),
+			Mask: mask,
 		},
 		Scope: netlink.SCOPE_LINK,
 	}
@@ -280,11 +291,15 @@ func (r *NetlinkRouter) DelAll(dst netip.Prefix) error {
 		return fmt.Errorf("failed to sync DNAT chain: %w", err)
 	}
 
+	mask := net.CIDRMask(dst.Bits(), 128)
+	if dst.Addr().Is4() {
+		mask = net.CIDRMask(dst.Bits(), 32)
+	}
 	route := &netlink.Route{
 		LinkIndex: r.tunLink.Attrs().Index,
 		Dst: &net.IPNet{
 			IP:   dst.Addr().AsSlice(),
-			Mask: net.CIDRMask(dst.Bits(), 128),
+			Mask: mask,
 		},
 		Scope: netlink.SCOPE_LINK,
 	}

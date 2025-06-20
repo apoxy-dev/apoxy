@@ -40,7 +40,7 @@ func NewMuxedConn() *MuxedConn {
 }
 
 func (m *MuxedConn) AddConnection(prefix netip.Prefix, conn Connection) {
-	if prefix.IsValid() && prefix.Addr().Is6() {
+	if prefix.IsValid() {
 		m.conns.Insert(prefix, conn)
 		go m.readPackets(conn)
 	} else {
@@ -55,7 +55,7 @@ func (m *MuxedConn) RemoveConnection(prefix netip.Prefix) error {
 		return nil
 	}
 
-	if prefix.IsValid() && prefix.Addr().Is6() {
+	if prefix.IsValid() {
 		conn, ok := m.conns.Get(prefix.Addr())
 		if !ok {
 			return fmt.Errorf("no connection found for prefix: %s", prefix.String())
@@ -154,7 +154,7 @@ func (m *MuxedConn) WritePacket(pkt []byte) ([]byte, error) {
 		return nil, fmt.Errorf("unknown packet type: %d", pkt[0]>>4)
 	}
 
-	if !dstIP.IsValid() || !dstIP.Is6() || !dstIP.IsGlobalUnicast() {
+	if !dstIP.IsValid() || !dstIP.IsGlobalUnicast() {
 		slog.Debug("Invalid destination IP", slog.String("ip", dstIP.String()))
 		return nil, nil
 	}

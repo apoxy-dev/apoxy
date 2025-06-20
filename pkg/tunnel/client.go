@@ -224,16 +224,6 @@ func (c *TunnelClient) Start(ctx context.Context) error {
 		return errors.New("no local IP addresses available")
 	}
 
-	filteredLocalPrefixes := make([]netip.Prefix, 0, len(localPrefixes))
-	for _, prefix := range localPrefixes {
-		if !prefix.Addr().Is6() {
-			slog.Warn("Skipping non-IPv6 address", slog.String("address", prefix.Addr().String()))
-			continue
-		}
-		slog.Info("Adding IPv6 address", slog.String("prefix", prefix.String()))
-		filteredLocalPrefixes = append(filteredLocalPrefixes, prefix)
-	}
-
 	resolveConf := &network.ResolveConfig{
 		Nameservers:   rsp.Header.Values("X-Apoxy-Nameservers"),
 		SearchDomains: rsp.Header.Values("X-Apoxy-DNS-SearchDomains"),
@@ -257,7 +247,7 @@ func (c *TunnelClient) Start(ctx context.Context) error {
 		slog.Any("nDots", resolveConf.NDots))
 
 	routerOpts := []router.Option{
-		router.WithLocalAddresses(filteredLocalPrefixes),
+		router.WithLocalAddresses(localPrefixes),
 		router.WithResolveConfig(resolveConf),
 	}
 

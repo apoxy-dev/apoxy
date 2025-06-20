@@ -7,8 +7,11 @@ import (
 )
 
 type IPAM interface {
-	// Allocate allocates an IP address for a peer.
-	Allocate(r *http.Request) netip.Prefix
+	// AllocateV6 allocates an IPv6 address for a peer.
+	AllocateV6(r *http.Request) netip.Prefix
+
+	// AllocateV4 allocates an IPv4 address for a peer.
+	AllocateV4(r *http.Request) netip.Prefix
 
 	// Release releases an IP address for a peer. No-op if the address is not allocated
 	// (returns nil).
@@ -22,7 +25,7 @@ func NewRandomULA() IPAM {
 	return &randomULA{}
 }
 
-func (r *randomULA) Allocate(_ *http.Request) netip.Prefix {
+func (r *randomULA) AllocateV6(_ *http.Request) netip.Prefix {
 	addr := apoxyULAPrefix.Addr().As16()
 	// Generate 6 random bytes (48 bits) - this will fill the bits between /48 and /96
 	var randomBytes [6]byte
@@ -38,6 +41,10 @@ func (r *randomULA) Allocate(_ *http.Request) netip.Prefix {
 
 	// Return as a /96 prefix
 	return netip.PrefixFrom(randomAddr, 96)
+}
+
+func (r *randomULA) AllocateV4(_ *http.Request) netip.Prefix {
+	return netip.PrefixFrom(netip.MustParseAddr("100.64.0.1"), 32)
 }
 
 func (r *randomULA) Release(_ netip.Prefix) error {
