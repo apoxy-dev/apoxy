@@ -109,12 +109,12 @@ func (d *dialer) DialContext(ctx context.Context, network, address string) (net.
 
 	slog.Debug("Resolved address", slog.String("address", addr.String()))
 
-	if !addr.IsPrivate() || addr.IsLoopback() {
-		slog.Debug("Address is not private or loopback - dialing directly", slog.String("address", addr.String()))
+	if addr.IsLoopback() {
+		slog.Debug("Address is loopback - dialing directly", slog.String("address", addr.String()))
 		return d.fallback.DialContext(ctx, network, address)
 	}
 
-	slog.Debug("Address is private - dialing upstream", slog.String("address", addr.String()))
+	slog.Debug("Dialing upstream", slog.String("address", addr.String()))
 
 	return d.upstream.DialContext(ctx, network, address)
 }
