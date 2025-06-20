@@ -75,7 +75,7 @@ func (r *NetstackRouter) Start(ctx context.Context) error {
 	})
 
 	g.Go(func() error {
-		return connection.Splice(r.tunDev, r.mux)
+		return connection.Splice(r.tunDev, r.mux, connection.WithChecksumRecalculation())
 	})
 
 	_, socksListenPortStr, err := net.SplitHostPort(r.socksListenAddr)

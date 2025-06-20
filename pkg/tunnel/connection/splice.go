@@ -14,19 +14,62 @@ import (
 	"k8s.io/utils/ptr"
 
 	"github.com/apoxy-dev/apoxy/pkg/netstack"
+	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 )
 
 const (
 	tunOffset = device.MessageTransportHeaderSize
 )
 
-func Splice(tunDev tun.Device, conn Connection) error {
+// SpliceConfig holds configuration options for splice operations
+type SpliceConfig struct {
+	recalculateChecksum bool
+	verifyChecksum      bool
+	logChecksumErrors   bool
+}
+
+// SpliceOption is a function that configures splice behavior
+type SpliceOption func(*SpliceConfig)
+
+// WithChecksumRecalculation enables TCP checksum recalculation
+func WithChecksumRecalculation() SpliceOption {
+	return func(c *SpliceConfig) {
+		c.recalculateChecksum = true
+	}
+}
+
+// WithChecksumVerification enables TCP checksum verification (for debugging)
+func WithChecksumVerification() SpliceOption {
+	return func(c *SpliceConfig) {
+		c.verifyChecksum = true
+	}
+}
+
+// WithChecksumErrorLogging enables detailed logging of checksum errors
+func WithChecksumErrorLogging() SpliceOption {
+	return func(c *SpliceConfig) {
+		c.logChecksumErrors = true
+	}
+}
+
+func defaultSpliceConfig() *SpliceConfig {
+	return &SpliceConfig{
+		recalculateChecksum: false,
+		verifyChecksum:      false,
+		logChecksumErrors:   false,
+	}
+}
+
+func Splice(tunDev tun.Device, conn Connection, opts ...SpliceOption) error {
+	config := defaultSpliceConfig()
+	for _, opt := range opts {
+		opt(config)
+	}
+
 	var g errgroup.Group
-
-	stats := newSpliceStats()
-
 	batchSize := tunDev.BatchSize()
 
+	// TUN -> Connection path
 	g.Go(func() error {
 		defer func() {
 			slog.Debug("Stopped reading from TUN")
@@ -56,12 +99,19 @@ func Splice(tunDev tun.Device, conn Connection) error {
 				return fmt.Errorf("failed to read from TUN: %w", err)
 			}
 
-			stats.recordReadBatch(n)
-
 			for i := 0; i < n; i++ {
+				packetData := pkts[i][:sizes[i]]
 				slog.Debug("Read packet from TUN", slog.Int("len", sizes[i]))
 
-				icmp, err := conn.WritePacket(pkts[i][:sizes[i]])
+				// Recalculate TCP checksum if enabled and needed
+				if config.recalculateChecksum {
+					if err := recalculateChecksumIfNeeded(packetData, config); err != nil {
+						slog.Debug("Failed to recalculate checksum", slog.Any("error", err))
+						// Continue processing - not all packets are TCP
+					}
+				}
+
+				icmp, err := conn.WritePacket(packetData)
 				if err != nil {
 					if strings.Contains(err.Error(), "closed") {
 						slog.Debug("Connection closed")
@@ -87,6 +137,7 @@ func Splice(tunDev tun.Device, conn Connection) error {
 		}
 	})
 
+	// Connection -> TUN path
 	g.Go(func() error {
 		defer func() {
 			slog.Debug("Stopped reading from connection")
@@ -119,6 +170,16 @@ func Splice(tunDev tun.Device, conn Connection) error {
 				slog.Debug("Read packet from connection", slog.Int("len", n))
 
 				*pkt = (*pkt)[:n+tunOffset]
+
+				// Recalculate TCP checksum if enabled and needed
+				if config.recalculateChecksum {
+					packetData := (*pkt)[tunOffset:]
+					if err := recalculateChecksumIfNeeded(packetData, config); err != nil {
+						slog.Debug("Failed to recalculate checksum on incoming packet", slog.Any("error", err))
+						// Continue processing - not all packets are TCP
+					}
+				}
+
 				pktCh <- pkt
 			}
 		})
@@ -151,7 +212,7 @@ func Splice(tunDev tun.Device, conn Connection) error {
 					}
 				}
 
-				stats.recordWriteBatch(batchCount)
+				slog.Debug("Write packet to TUN", slog.Int("batch_size", batchCount))
 
 				if _, err := tunDev.Write(pkts[:batchCount], tunOffset); err != nil {
 					if strings.Contains(err.Error(), "closed") {
@@ -180,84 +241,63 @@ func Splice(tunDev tun.Device, conn Connection) error {
 	slog.Debug("Splice completed",
 		slog.String("name", name),
 		slog.Int("batch_size", batchSize),
-		slog.Any("read_summary", stats.readSummary()),
-		slog.Any("write_summary", stats.writeSummary()),
+		slog.Bool("checksum_recalc_enabled", config.recalculateChecksum),
 	)
 
 	return nil
 }
 
-type spliceStats struct {
-	mu              sync.Mutex
-	readBatchSizes  map[int]int
-	writeBatchSizes map[int]int
-}
-
-func newSpliceStats() *spliceStats {
-	return &spliceStats{
-		readBatchSizes:  make(map[int]int),
-		writeBatchSizes: make(map[int]int),
-	}
-}
-
-func (s *spliceStats) recordReadBatch(n int) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.readBatchSizes[n]++
-}
-
-func (s *spliceStats) recordWriteBatch(n int) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.writeBatchSizes[n]++
-}
-
-func (s *spliceStats) readSummary() batchSummary {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return computeSummary(s.readBatchSizes)
-}
-
-func (s *spliceStats) writeSummary() batchSummary {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return computeSummary(s.writeBatchSizes)
-}
-
-type batchSummary struct {
-	TotalBatches int
-	MinSize      int
-	MaxSize      int
-	AvgSize      float64
-}
-
-func computeSummary(hist map[int]int) batchSummary {
-	if len(hist) == 0 {
-		return batchSummary{}
+// recalculateChecksumIfNeeded recalculates TCP checksum if the packet is TCP
+func recalculateChecksumIfNeeded(packetData []byte, config *SpliceConfig) error {
+	if len(packetData) < 20 {
+		return nil // Packet too short to be IP
 	}
 
-	var (
-		totalCount int
-		totalSize  int
-		minSize    = int(^uint(0) >> 1) // Max int
-		maxSize    int
-	)
+	// Check if this is a TCP packet
+	version := packetData[0] >> 4
+	isTCP := false
 
-	for size, count := range hist {
-		if size < minSize {
-			minSize = size
+	switch version {
+	case 4:
+		if len(packetData) >= 20 {
+			ihl := int(packetData[0]&0x0F) * 4
+			if len(packetData) > ihl && packetData[9] == 6 {
+				isTCP = true
+			}
 		}
-		if size > maxSize {
-			maxSize = size
+	case 6:
+		if len(packetData) >= 40 && packetData[6] == 6 {
+			isTCP = true
 		}
-		totalCount += count
-		totalSize += size * count
+	default:
+		return nil // Unknown IP version
 	}
 
-	return batchSummary{
-		TotalBatches: totalCount,
-		MinSize:      minSize,
-		MaxSize:      maxSize,
-		AvgSize:      float64(totalSize) / float64(totalCount),
+	if !isTCP {
+		return nil // Not a TCP packet
 	}
+
+	// Verify checksum before recalculation if enabled
+	if config.verifyChecksum {
+		valid, err := tunnet.VerifyTCPChecksum(packetData)
+		if err != nil {
+			if config.logChecksumErrors {
+				slog.Debug("Failed to verify TCP checksum", slog.Any("error", err))
+			}
+		} else if !valid {
+			if config.logChecksumErrors {
+				slog.Debug("Invalid TCP checksum detected before recalculation")
+			}
+		}
+	}
+
+	// Recalculate the checksum
+	if err := tunnet.RecalculateTCPChecksum(packetData); err != nil {
+		if config.logChecksumErrors {
+			slog.Error("Failed to recalculate TCP checksum", slog.Any("error", err))
+		}
+		return err
+	}
+
+	return nil
 }
