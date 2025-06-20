@@ -3,6 +3,7 @@ package netstack
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/netip"
 	"os"
 	"sync/atomic"
@@ -60,11 +61,15 @@ func NewTunDevice(localAddresses []netip.Prefix, pcapPath string) (*TunDevice, e
 	if tcpipErr != nil {
 		return nil, fmt.Errorf("could not enable TCP SACK: %v", tcpipErr)
 	}
-
 	tcpCCOpt := tcpip.CongestionControlOption("cubic")
 	tcpipErr = ipstack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpCCOpt)
 	if tcpipErr != nil {
 		return nil, fmt.Errorf("could not set TCP congestion control: %v", tcpipErr)
+	}
+	tcpDelayOpt := tcpip.TCPDelayEnabled(false)
+	tcpipErr = ipstack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpDelayOpt)
+	if tcpipErr != nil {
+		return nil, fmt.Errorf("could not set TCP delay: %v", tcpipErr)
 	}
 
 	nicID := ipstack.NextNICID()
@@ -109,12 +114,12 @@ func NewTunDevice(localAddresses []netip.Prefix, pcapPath string) (*TunDevice, e
 			protoNumber = ipv6.ProtocolNumber
 		}
 		protoAddr := tcpip.ProtocolAddress{
-			Protocol: protoNumber,
-			AddressWithPrefix: tcpip.AddressWithPrefix{
-				Address:   tcpip.AddrFromSlice(prefix.Addr().AsSlice()),
-				PrefixLen: prefix.Bits(),
-			},
+			Protocol:          protoNumber,
+			AddressWithPrefix: tcpip.AddrFromSlice(prefix.Addr().AsSlice()).WithPrefix(),
 		}
+
+		slog.Debug("Adding protocol address", slog.String("address", prefix.String()))
+
 		tcpipErr := ipstack.AddProtocolAddress(nicID, protoAddr, stack.AddressProperties{})
 		if tcpipErr != nil {
 			return nil, fmt.Errorf("could not add protocol address: %v", tcpipErr)
@@ -176,6 +181,8 @@ func (tun *TunDevice) Write(buf [][]byte, offset int) (int, error) {
 		}
 
 		pkb := stack.NewPacketBuffer(stack.PacketBufferOptions{Payload: buffer.MakeWithData(packet)})
+		defer pkb.DecRef()
+
 		switch packet[0] >> 4 {
 		case 4:
 			tun.ep.InjectInbound(header.IPv4ProtocolNumber, pkb)
