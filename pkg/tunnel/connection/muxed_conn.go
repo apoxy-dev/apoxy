@@ -145,7 +145,7 @@ func (m *MuxedConn) WritePacket(pkt []byte) ([]byte, error) {
 		// IPv4 packet (RFC 791)
 		if len(pkt) >= 20 {
 			var addr [4]byte
-			copy(addr[:], pkt[12:16])
+			copy(addr[:], pkt[16:20])
 			dstIP = netip.AddrFrom4(addr)
 		} else {
 			return nil, fmt.Errorf("IPv4 packet too short: %d", len(pkt))
