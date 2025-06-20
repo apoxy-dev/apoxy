@@ -97,7 +97,7 @@ func Splice(tunDev tun.Device, conn Connection, opts ...SpliceOption) error {
 					continue
 				}
 
-				return fmt.Errorf("failed to read from TUN: %w", err)
+				slog.Error("Failed to read from TUN", slog.Any("error", err))
 			}
 
 			for i := 0; i < n; i++ {
@@ -120,7 +120,6 @@ func Splice(tunDev tun.Device, conn Connection, opts ...SpliceOption) error {
 					}
 
 					slog.Error("Failed to write to connection", slog.Any("error", err))
-					return fmt.Errorf("failed to write to connection: %w", err)
 				}
 				if len(icmp) > 0 {
 					slog.Debug("Sending ICMP packet")
@@ -131,7 +130,6 @@ func Splice(tunDev tun.Device, conn Connection, opts ...SpliceOption) error {
 						}
 
 						slog.Error("Failed to write ICMP packet", slog.Any("error", err))
-						return fmt.Errorf("failed to write ICMP packet: %w", err)
 					}
 				}
 			}
