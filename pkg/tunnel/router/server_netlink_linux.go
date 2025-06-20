@@ -33,6 +33,8 @@ type NetlinkRouter struct {
 	extLink       netlink.Link
 	extIPv6Prefix netip.Prefix
 
+	cksumRecalc bool
+
 	tunDev  tun.Device
 	tunLink netlink.Link
 
@@ -113,6 +115,8 @@ func NewNetlinkRouter(opts ...Option) (*NetlinkRouter, error) {
 	return &NetlinkRouter{
 		extLink:       extLink,
 		extIPv6Prefix: options.extIPv6Prefix,
+
+		cksumRecalc: options.cksumRecalc,
 
 		tunDev:  tunDev,
 		tunLink: tunLink,
@@ -200,7 +204,11 @@ func (r *NetlinkRouter) Start(ctx context.Context) error {
 
 	// Start the splicing operation
 	g.Go(func() error {
-		return connection.Splice(r.tunDev, r.mux)
+		var opts []connection.SpliceOption
+		if r.cksumRecalc {
+			opts = append(opts, connection.WithChecksumRecalculation())
+		}
+		return connection.Splice(r.tunDev, r.mux, opts...)
 	})
 
 	return g.Wait()

@@ -49,6 +49,7 @@ var (
 	jwksURLs      = flag.String("jwks_urls", "", "Comma-separated URLs of the JWKS endpoints.")
 
 	extIPv6SubnetSize = flag.Int("ext_ipv6_subnet_size", 64, "IPv6 subnet size.")
+	cksumRecalc       = flag.Bool("cksum_recalc", false, "Recalculate checksum.")
 )
 
 func main() {
@@ -118,9 +119,11 @@ func main() {
 
 	log.Infof("External IPv6 prefix: %s", extIPv6Prefix.String())
 
-	r, err := router.NewNetlinkRouter(
+	rOpts := []router.Option{
 		router.WithExternalIPv6Prefix(extIPv6Prefix),
-	)
+		router.WithChecksumRecalculation(*cksumRecalc),
+	}
+	r, err := router.NewNetlinkRouter(rOpts...)
 	if err != nil {
 		log.Fatalf("Failed to create netlink router: %v", err)
 	}

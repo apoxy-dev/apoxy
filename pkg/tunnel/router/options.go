@@ -17,6 +17,7 @@ type routerOptions struct {
 	extIfaceName    string
 	tunIfaceName    string
 	socksListenAddr string
+	cksumRecalc     bool
 }
 
 func defaultOptions() *routerOptions {
@@ -24,6 +25,7 @@ func defaultOptions() *routerOptions {
 		extIfaceName:    "eth0",
 		tunIfaceName:    "tun0",
 		socksListenAddr: "localhost:1080",
+		cksumRecalc:     false,
 	}
 }
 
@@ -76,5 +78,13 @@ func WithTunnelInterface(name string) Option {
 func WithSocksListenAddr(addr string) Option {
 	return func(o *routerOptions) {
 		o.socksListenAddr = addr
+	}
+}
+
+// WithChecksumRecalculation enables or disables checksum recalculation for the netstack router.
+// Only valid for netstack routers.
+func WithChecksumRecalculation(enable bool) Option {
+	return func(o *routerOptions) {
+		o.cksumRecalc = enable
 	}
 }

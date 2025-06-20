@@ -60,6 +60,7 @@ func defaultSpliceConfig() *SpliceConfig {
 	}
 }
 
+// Splice starts the TUN <-> Connection splice operation.
 func Splice(tunDev tun.Device, conn Connection, opts ...SpliceOption) error {
 	config := defaultSpliceConfig()
 	for _, opt := range opts {

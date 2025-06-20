@@ -24,13 +24,17 @@ var (
 // NetstackRouter implements Router using a userspace network stack.
 // This router can be used for both client and server sides.
 type NetstackRouter struct {
-	tunDev          *netstack.TunDevice
-	mux             *connection.MuxedConn
-	proxy           *socksproxy.ProxyServer
+	tunDev *netstack.TunDevice
+	mux    *connection.MuxedConn
+
+	proxy *socksproxy.ProxyServer
+
 	localAddresses  []netip.Prefix
 	resolveConf     *network.ResolveConfig
 	socksListenAddr string
-	closeOnce       sync.Once
+	cksumRecalc     bool
+
+	closeOnce sync.Once
 }
 
 // NewNetstackRouter creates a new netstack-based tunnel router.
@@ -52,12 +56,15 @@ func NewNetstackRouter(opts ...Option) (*NetstackRouter, error) {
 	)
 
 	return &NetstackRouter{
-		tunDev:          tunDev,
-		mux:             connection.NewMuxedConn(),
-		proxy:           proxy,
+		tunDev: tunDev,
+		mux:    connection.NewMuxedConn(),
+
+		proxy: proxy,
+
 		localAddresses:  options.localAddresses,
 		resolveConf:     options.resolveConf,
 		socksListenAddr: options.socksListenAddr,
+		cksumRecalc:     options.cksumRecalc,
 	}, nil
 }
 
@@ -75,7 +82,11 @@ func (r *NetstackRouter) Start(ctx context.Context) error {
 	})
 
 	g.Go(func() error {
-		return connection.Splice(r.tunDev, r.mux, connection.WithChecksumRecalculation())
+		var opts []connection.SpliceOption
+		if r.cksumRecalc {
+			opts = append(opts, connection.WithChecksumRecalculation())
+		}
+		return connection.Splice(r.tunDev, r.mux, opts...)
 	})
 
 	_, socksListenPortStr, err := net.SplitHostPort(r.socksListenAddr)
