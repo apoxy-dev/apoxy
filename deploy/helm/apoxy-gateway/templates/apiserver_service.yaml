@@ -37,7 +37,10 @@ spec:
       targetPort: ingest-store
       protocol: TCP
       name: ingest-store
+    - port: 8444
+      targetPort: jwks-store
+      protocol: TCP
+      name: jwks-store
   selector:
     {{- include "apoxy-gateway.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: apiserver
-

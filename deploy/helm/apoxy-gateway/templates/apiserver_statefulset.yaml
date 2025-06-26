@@ -51,6 +51,9 @@ spec:
             - name: ingest-store
               containerPort: 8081
               protocol: TCP
+            - name: jwks-store
+              containerPort: 8444
+              protocol: TCP
           livenessProbe:
             httpGet:
               path: /livez
