@@ -71,7 +71,7 @@ spec:
               containerPort: {{ .Values.backplane.proxy.internalPort }}
               protocol: TCP
             - name: metrics
-              containerPort: 8081
+              containerPort: 8888
               protocol: TCP
           livenessProbe:
             httpGet:

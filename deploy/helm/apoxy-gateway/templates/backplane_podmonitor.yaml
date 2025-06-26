@@ -1,0 +1,61 @@
+{{- if .Values.backplane.controllerPodMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: {{ include "apoxy-gateway.fullname" . }}-backplane-controller
+  namespace: {{ include "apoxy-gateway.namespace" . }}
+  labels:
+    {{- include "apoxy-gateway.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backplane
+    {{- with .Values.backplane.controllerPodMonitor.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "apoxy-gateway.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: backplane
+  podMetricsEndpoints:
+  - port: metrics
+    path: /controller/metrics
+    interval: {{ .Values.backplane.controllerPodMonitor.interval }}
+    {{- if .Values.backplane.controllerPodMonitor.relabelings }}
+    relabelings:
+      {{- toYaml .Values.backplane.controllerPodMonitor.relabelings | nindent 6 }}
+    {{- end }}
+    {{- if .Values.backplane.controllerPodMonitor.metricRelabelings }}
+    metricRelabelings:
+      {{- toYaml .Values.backplane.controllerPodMonitor.metricRelabelings | nindent 6 }}
+    {{- end }}
+{{- end }}
+---
+{{- if .Values.backplane.envoyPodMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: {{ include "apoxy-gateway.fullname" . }}-backplane-envoy
+  namespace: {{ include "apoxy-gateway.namespace" . }}
+  labels:
+    {{- include "apoxy-gateway.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backplane
+    {{- with .Values.backplane.envoyPodMonitor.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "apoxy-gateway.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: backplane
+  podMetricsEndpoints:
+  - port: metrics
+    path: /envoy/metrics
+    interval: {{ .Values.backplane.envoyPodMonitor.interval }}
+    {{- if .Values.backplane.envoyPodMonitor.relabelings }}
+    relabelings:
+      {{- toYaml .Values.backplane.envoyPodMonitor.relabelings | nindent 6 }}
+    {{- end }}
+    {{- if .Values.backplane.envoyPodMonitor.metricRelabelings }}
+    metricRelabelings:
+      {{- toYaml .Values.backplane.envoyPodMonitor.metricRelabelings | nindent 6 }}
+    {{- end }}
+{{- end }}
