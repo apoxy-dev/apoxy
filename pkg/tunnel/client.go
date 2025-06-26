@@ -37,6 +37,18 @@ const (
 	TunnelClientModeUser TunnelClientMode = "user"
 )
 
+// TunnelClientModeFromStringreturns the tunnel client mode for the given string.
+func TunnelClientModeFromString(mode string) (TunnelClientMode, error) {
+	switch mode {
+	case string(TunnelClientModeKernel):
+		return TunnelClientModeKernel, nil
+	case string(TunnelClientModeUser):
+		return TunnelClientModeUser, nil
+	default:
+		return "", fmt.Errorf("invalid tunnel client mode: %s", mode)
+	}
+}
+
 type tunnelClientOptions struct {
 	serverAddr         string
 	uuid               uuid.UUID
@@ -268,10 +280,10 @@ func (c *TunnelClient) Start(ctx context.Context) error {
 	}
 
 	if c.options.mode == TunnelClientModeKernel {
-		//c.router, err = router.NewNetlinkRouter(routerOpts...)
-		//if err != nil {
-		//	return fmt.Errorf("failed to create kernel router: %w", err)
-		//}
+		c.router, err = router.NewClientNetlinkRouter(routerOpts...)
+		if err != nil {
+			return fmt.Errorf("failed to create kernel router: %w", err)
+		}
 	} else if c.options.mode == TunnelClientModeUser {
 		c.router, err = router.NewNetstackRouter(routerOpts...)
 		if err != nil {

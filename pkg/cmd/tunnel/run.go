@@ -43,6 +43,8 @@ var (
 	decodeFn     = codecFactory.UniversalDeserializer().Decode
 
 	tunnelNodePcapPath string
+	tunnelModeS        string
+	tunnelMode         tunnel.TunnelClientMode
 )
 
 func init() {
@@ -67,6 +69,13 @@ var tunnelRunCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
+
+		var err error
+		tunnelMode, err = tunnel.TunnelClientModeFromString(tunnelModeS)
+		if err != nil {
+			return fmt.Errorf("unable to parse tunnel client mode: %w", err)
+		}
+
 		cmd.SilenceUsage = true
 
 		cfg, err := config.Load()
@@ -192,6 +201,7 @@ func (t *tunnelNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	cOpts := []tunnel.TunnelClientOption{
 		tunnel.WithPcapPath(tunnelNodePcapPath),
+		tunnel.WithMode(tunnelMode),
 	}
 	tnUUID, err := uuid.Parse(string(tunnelNode.ObjectMeta.UID))
 	if err != nil { // This can only happen in a test environment.
