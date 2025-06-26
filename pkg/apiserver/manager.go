@@ -346,7 +346,7 @@ func defaultOptions() (*options, error) {
 		certPairName:        "tls",
 		gcInterval:          10 * time.Minute,
 		jwtRefreshThreshold: 24 * time.Hour,
-		jwksHost:            os.Getenv("HOSTNAME"),
+		jwksHost:            "0.0.0.0",
 		jwksPort:            8444,
 	}
 
