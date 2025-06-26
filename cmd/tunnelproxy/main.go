@@ -5,9 +5,7 @@ package main
 import (
 	"flag"
 	"fmt"
-	"net"
 	"net/netip"
-	"os"
 	"strings"
 	"time"
 
@@ -25,6 +23,7 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/apiserver"
 	"github.com/apoxy-dev/apoxy/pkg/log"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel"
+	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/router"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/token"
 
@@ -49,6 +48,7 @@ var (
 	jwksURLs      = flag.String("jwks_urls", "", "Comma-separated URLs of the JWKS endpoints.")
 
 	extIPv6SubnetSize = flag.Int("ext_ipv6_subnet_size", 64, "IPv6 subnet size.")
+	extIPv6Ifc        = flag.String("ext_ipv6_ifc", "", "IPv6 interface name.")
 	cksumRecalc       = flag.Bool("cksum_recalc", false, "Recalculate checksum.")
 )
 
@@ -103,10 +103,9 @@ func main() {
 		log.Fatalf("Failed to create JWT validator: %v", err)
 	}
 
-	// Resolve external IPv6 address from hostname
-	extAddr, err := net.ResolveIPAddr("ip6", os.Getenv("HOSTNAME"))
+	extAddr, err := tunnet.GetLocalIPv6Address(*extIPv6Ifc)
 	if err != nil {
-		log.Fatalf("Failed to resolve external IPv6 address: %v", err)
+		log.Fatalf("Failed to get local IPv6 address: %v", err)
 	}
 	extIPv6, ok := netip.AddrFromSlice(extAddr.IP)
 	if !ok {
@@ -122,6 +121,7 @@ func main() {
 	rOpts := []router.Option{
 		router.WithExternalIPv6Prefix(extIPv6Prefix),
 		router.WithChecksumRecalculation(*cksumRecalc),
+		router.WithExternalInterface(*extIPv6Ifc),
 	}
 	r, err := router.NewNetlinkRouter(rOpts...)
 	if err != nil {
