@@ -30,13 +30,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	"github.com/apoxy-dev/apoxy/pkg/backplane/metrics"
-
 	"github.com/apoxy-dev/apoxy/client/versioned"
 	"github.com/apoxy-dev/apoxy/pkg/apiserver"
 	bpctrl "github.com/apoxy-dev/apoxy/pkg/backplane/controllers"
 	"github.com/apoxy-dev/apoxy/pkg/backplane/healthchecker"
 	"github.com/apoxy-dev/apoxy/pkg/backplane/kvstore"
+	"github.com/apoxy-dev/apoxy/pkg/backplane/metrics"
 	"github.com/apoxy-dev/apoxy/pkg/backplane/wasm/ext_proc"
 	"github.com/apoxy-dev/apoxy/pkg/backplane/wasm/manifest"
 	"github.com/apoxy-dev/apoxy/pkg/cmd/utils"
