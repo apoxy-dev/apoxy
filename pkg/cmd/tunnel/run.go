@@ -225,7 +225,8 @@ func (t *tunnelNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 				RequeueAfter: time.Second,
 			}, nil
 		} else {
-			cOpts = append(cOpts, tunnel.WithServerAddr(tunnelNode.Status.Addresses[rand.Intn(len(tunnelNode.Status.Addresses))]))
+			srvAddr := tunnelNode.Status.Addresses[rand.Intn(len(tunnelNode.Status.Addresses))]
+			cOpts = append(cOpts, tunnel.WithServerAddr(srvAddr))
 		}
 	}
 	if t.cfg.IsLocalMode {

@@ -54,7 +54,7 @@ func NewNetlinkRouter(opts ...Option) (*NetlinkRouter, error) {
 
 	extLink, err := netlink.LinkByName(options.extIfaceName)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get external interface: %w", err)
+		return nil, fmt.Errorf("failed to get external interface %s: %w", options.extIfaceName, err)
 	}
 
 	tunDev, err := tun.CreateTUN(options.tunIfaceName, netstack.IPv6MinMTU)
