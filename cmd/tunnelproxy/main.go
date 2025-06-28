@@ -48,10 +48,10 @@ var (
 	jwksURLs      = flag.String("jwks_urls", "", "Comma-separated URLs of the JWKS endpoints.")
 
 	tunnelNodeSelector = flag.String("label_selector", "", "Label selector for TunnelNode objects.")
-
-	extIPv6SubnetSize = flag.Int("ext_ipv6_subnet_size", 64, "IPv6 subnet size.")
-	extIPv6Ifc        = flag.String("ext_ipv6_ifc", "", "IPv6 interface name.")
-	cksumRecalc       = flag.Bool("cksum_recalc", false, "Recalculate checksum.")
+	publicAddr         = flag.String("public_addr", "", "Public address of the tunnel proxy.")
+	extIPv6SubnetSize  = flag.Int("ext_ipv6_subnet_size", 64, "IPv6 subnet size.")
+	extIPv6Ifc         = flag.String("ext_ipv6_ifc", "", "IPv6 interface name.")
+	cksumRecalc        = flag.Bool("cksum_recalc", false, "Recalculate checksum.")
 )
 
 func main() {
@@ -136,6 +136,7 @@ func main() {
 		r,
 		tunnel.WithExternalIPv6Prefix(extIPv6Prefix),
 		tunnel.WithLabelSelector(*tunnelNodeSelector),
+		tunnel.WithPublicAddr(*publicAddr),
 	)
 	g.Go(func() error {
 		log.Infof("Starting Tunnel Proxy server")

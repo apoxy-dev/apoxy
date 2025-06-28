@@ -45,6 +45,7 @@ var (
 	tunnelNodePcapPath string
 	tunnelModeS        string
 	tunnelMode         tunnel.TunnelClientMode
+	insecureSkipVerify bool
 )
 
 func init() {
@@ -229,7 +230,7 @@ func (t *tunnelNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			cOpts = append(cOpts, tunnel.WithServerAddr(srvAddr))
 		}
 	}
-	if t.cfg.IsLocalMode {
+	if t.cfg.IsLocalMode || insecureSkipVerify {
 		cOpts = append(cOpts, tunnel.WithInsecureSkipVerify(true))
 	}
 

@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"slices"
 	"strings"
 	"time"
 
@@ -47,6 +48,7 @@ type TunnelServerOption func(*tunnelServerOptions)
 
 type tunnelServerOptions struct {
 	proxyAddr     string
+	publicAddr    string
 	ulaPrefix     netip.Prefix
 	certPath      string
 	keyPath       string
@@ -58,6 +60,7 @@ type tunnelServerOptions struct {
 func defaultServerOptions() *tunnelServerOptions {
 	return &tunnelServerOptions{
 		proxyAddr:     "0.0.0.0:9443",
+		publicAddr:    "",
 		ulaPrefix:     netip.MustParsePrefix("fd00::/64"),
 		certPath:      "/etc/apoxy/certs/tunnelproxy.crt",
 		keyPath:       "/etc/apoxy/certs/tunnelproxy.key",
@@ -71,6 +74,14 @@ func defaultServerOptions() *tunnelServerOptions {
 func WithProxyAddr(addr string) TunnelServerOption {
 	return func(o *tunnelServerOptions) {
 		o.proxyAddr = addr
+	}
+}
+
+// WithPublicAddr sets the address tunnel proxy is reachable at. This
+// address will be set on the TunnelNode objects that this proxy is serving.
+func WithPublicAddr(addr string) TunnelServerOption {
+	return func(o *tunnelServerOptions) {
+		o.publicAddr = addr
 	}
 }
 
@@ -470,6 +481,19 @@ func (t *TunnelServer) reconcile(ctx context.Context, request reconcile.Request)
 		t.RemoveTunnelNode(node)
 
 		return reconcile.Result{}, nil
+	}
+
+	if t.options.publicAddr != "" {
+		var updated bool
+		if !slices.Contains(node.Status.Addresses, t.options.publicAddr) {
+			node.Status.Addresses = append(node.Status.Addresses, t.options.publicAddr)
+			updated = true
+		}
+		if updated {
+			if err := t.Status().Update(ctx, node); err != nil {
+				return reconcile.Result{}, fmt.Errorf("failed to update TunnelNode status: %w", err)
+			}
+		}
 	}
 
 	t.AddTunnelNode(node)
