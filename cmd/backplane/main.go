@@ -35,6 +35,7 @@ import (
 	bpctrl "github.com/apoxy-dev/apoxy/pkg/backplane/controllers"
 	"github.com/apoxy-dev/apoxy/pkg/backplane/healthchecker"
 	"github.com/apoxy-dev/apoxy/pkg/backplane/kvstore"
+	"github.com/apoxy-dev/apoxy/pkg/backplane/metrics"
 	"github.com/apoxy-dev/apoxy/pkg/backplane/wasm/ext_proc"
 	"github.com/apoxy-dev/apoxy/pkg/backplane/wasm/manifest"
 	"github.com/apoxy-dev/apoxy/pkg/cmd/utils"
@@ -68,10 +69,11 @@ var (
 	devMode  = flag.Bool("dev", false, "Enable development mode.")
 	logLevel = flag.String("log_level", "info", "Log level.")
 
-	apiServerAddr   = flag.String("apiserver_addr", "host.docker.internal:8443", "APIServer address.")
-	healthProbePort = flag.Int("health_probe_port", 8080, "Port for the health probe.")
-	readyProbePort  = flag.Int("ready_probe_port", 8083, "Port for the ready probe.")
-	metricsPort     = flag.Int("metrics_port", 8081, "Port for the metrics endpoint.")
+	apiServerAddr         = flag.String("apiserver_addr", "host.docker.internal:8443", "APIServer address.")
+	healthProbePort       = flag.Int("health_probe_port", 8080, "Port for the health probe.")
+	readyProbePort        = flag.Int("ready_probe_port", 8083, "Port for the ready probe.")
+	controllerMetricsPort = flag.Int("controller_metrics_port", 8081, "Port for the controller metrics endpoint.")
+	metricsPort           = flag.Int("metrics_port", 8888, "Port for the metrics proxy endpoint.")
 
 	chAddrs  = flag.String("ch_addrs", "", "Comma-separated list of ClickHouse host:port addresses.")
 	chSecure = flag.Bool("ch_secure", false, "Whether to connect to Clickhouse using TLS.")
@@ -253,7 +255,7 @@ func main() {
 		Scheme:         scheme,
 		LeaderElection: false,
 		Metrics: metricsserver.Options{
-			BindAddress: fmt.Sprintf(":%d", *metricsPort),
+			BindAddress: fmt.Sprintf(":%d", *controllerMetricsPort),
 		},
 		HealthProbeBindAddress: fmt.Sprintf(":%d", *healthProbePort),
 	})
@@ -341,6 +343,20 @@ func main() {
 		}
 	}()
 
+	// Setup metrics proxy handler
+	log.Infof("Setting up metrics proxy handler")
+	upstreams := map[string]string{
+		"/controller/metrics": "127.0.0.1:" + strconv.Itoa(*controllerMetricsPort) + "/metrics",
+		"/envoy/metrics":      "127.0.0.1:19000/stats/prometheus",
+	}
+	metricsHandler := metrics.NewProxyHandler(upstreams)
+	metricsCtx, metricsCancel := context.WithCancel(ctx)
+	defer metricsCancel()
+	if err := metrics.StartServer(metricsCtx, *metricsPort, metricsHandler); err != nil {
+		log.Fatalf("Failed to start metrics proxy server: %v", err)
+	}
+	log.Infof("Metrics proxy server started on port %d", *metricsPort)
+
 	// Setup SIGTERM handler.
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGTERM)
@@ -348,6 +364,7 @@ func main() {
 		<-sig
 		log.Infof("Received SIGTERM, shutting down")
 		pctrl.Shutdown(ctx, "received SIGTERM") // Blocks until all resources are released.
+		metricsCancel()                         // Cancel metrics server context
 		os.Exit(0)
 	}()
 

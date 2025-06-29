@@ -112,3 +112,25 @@ backplane:
     preStop:
       exec:
         command: ["/bin/sh", "-c", "sleep 15"]
+        
+  controllerPodMonitor:
+    enabled: false
+    # -- Interval at which metrics should be scraped
+    interval: "15s"
+    # -- Additional labels for the PodMonitor
+    additionalLabels: {}
+    # -- Relabel configurations for the metrics
+    relabelings: []
+    # -- Metric relabel configurations
+    metricRelabelings: []
+    
+  envoyPodMonitor:
+    enabled: false
+    # -- Interval at which metrics should be scraped
+    interval: "15s"
+    # -- Additional labels for the PodMonitor
+    additionalLabels: {}
+    # -- Relabel configurations for the metrics
+    relabelings: []
+    # -- Metric relabel configurations
+    metricRelabelings: []
