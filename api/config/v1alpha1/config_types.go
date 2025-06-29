@@ -59,6 +59,10 @@ type KubernetesConfig struct {
 	// file paths will be used.
 	// +optional
 	KubeconfigPath string `json:"kubeconfigPath,omitempty"`
+	// InCluster specifies whether the project is running in a Kubernetes cluster.
+	// Context and KubeconfigPath are ignored if InCluster is true.
+	// +optional
+	InCluster bool `json:"inCluster,omitempty"`
 }
 
 type STUNScheme string

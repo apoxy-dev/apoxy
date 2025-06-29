@@ -14,6 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/apimachinery/pkg/runtime/serializer/json"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	k8srest "k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/klog/v2"
 
@@ -224,28 +225,36 @@ func DefaultAPIClient() (*rest.APIClient, error) {
 	project := cfg.Projects[idx]
 
 	if project.KubernetesConfig != nil {
-		kcPath := filepath.Join(os.Getenv("HOME"), ".kube", "config")
-		if project.KubernetesConfig.KubeconfigPath != "" {
-			kcPath = project.KubernetesConfig.KubeconfigPath
-		}
-		config, err := clientcmd.LoadFromFile(kcPath)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load kubeconfig: %w", err)
-		}
+		var restConfig *k8srest.Config
+		if project.KubernetesConfig.InCluster {
+			restConfig, err = k8srest.InClusterConfig()
+			if err != nil {
+				return nil, fmt.Errorf("failed to create in-cluster config: %w", err)
+			}
+		} else {
+			kcPath := filepath.Join(os.Getenv("HOME"), ".kube", "config")
+			if project.KubernetesConfig.KubeconfigPath != "" {
+				kcPath = project.KubernetesConfig.KubeconfigPath
+			}
+			config, err := clientcmd.LoadFromFile(kcPath)
+			if err != nil {
+				return nil, fmt.Errorf("failed to load kubeconfig: %w", err)
+			}
 
-		curContext := config.CurrentContext
-		if project.KubernetesConfig.Context != "" {
-			curContext = project.KubernetesConfig.Context
-		}
+			curContext := config.CurrentContext
+			if project.KubernetesConfig.Context != "" {
+				curContext = project.KubernetesConfig.Context
+			}
 
-		restConfig, err := clientcmd.NewNonInteractiveClientConfig(
-			*config,
-			curContext,
-			&clientcmd.ConfigOverrides{},
-			nil,
-		).ClientConfig()
-		if err != nil {
-			return nil, fmt.Errorf("failed to create client config: %w", err)
+			restConfig, err = clientcmd.NewNonInteractiveClientConfig(
+				*config,
+				curContext,
+				&clientcmd.ConfigOverrides{},
+				nil,
+			).ClientConfig()
+			if err != nil {
+				return nil, fmt.Errorf("failed to create client config: %w", err)
+			}
 		}
 
 		return rest.NewAPIClient(rest.WithK8sConfig(restConfig))
