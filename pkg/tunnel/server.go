@@ -33,6 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/connection"
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/metrics"
 	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/router"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/token"
@@ -296,12 +297,15 @@ func (t *TunnelServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	metrics.TunnelConnectionRequests.Inc()
+
 	logger := slog.With(slog.String("uuid", id.String()))
 	logger.Info("Received connection request")
 
 	authToken := r.URL.Query().Get("token")
 	if authToken == "" {
 		logger.Error("Missing token in connection request")
+		metrics.TunnelConnectionFailures.WithLabelValues("missing_token").Inc()
 		w.WriteHeader(http.StatusForbidden)
 		return
 	}
@@ -309,18 +313,22 @@ func (t *TunnelServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 	tn, ok := t.tunnelNodes.Get(id.String())
 	if !ok {
 		logger.Error("Tunnel not found")
+		metrics.TunnelConnectionFailures.WithLabelValues("tunnel_not_found").Inc()
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
+
 	logger = logger.With(slog.String("name", tn.Name))
 	if tn.Status.Credentials == nil || tn.Status.Credentials.Token == "" {
 		logger.Error("Missing credentials for TunnelNode")
+		metrics.TunnelConnectionFailures.WithLabelValues("missing_credentials").Inc()
 		w.WriteHeader(http.StatusForbidden)
 		return
 	}
 
 	if _, err := t.jwtValidator.Validate(authToken, id.String()); err != nil {
 		logger.Error("Failed to validate token", slog.Any("error", err))
+		metrics.TunnelConnectionFailures.WithLabelValues("invalid_token").Inc()
 		w.WriteHeader(http.StatusForbidden)
 		return
 	}
@@ -330,6 +338,7 @@ func (t *TunnelServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 	req, err := connectip.ParseRequest(r, connectTmpl)
 	if err != nil {
 		logger.Error("Failed to parse request", slog.Any("error", err))
+		metrics.TunnelConnectionFailures.WithLabelValues("bad_request").Inc()
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
@@ -338,9 +347,11 @@ func (t *TunnelServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 	conn, err := p.Proxy(w, req)
 	if err != nil {
 		logger.Error("Failed to proxy request", slog.Any("error", err))
+		metrics.TunnelConnectionFailures.WithLabelValues("proxy_error").Inc()
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
+
 	defer conn.Close()
 
 	peerV6 := t.options.ipam.AllocateV6(r)
@@ -351,6 +362,7 @@ func (t *TunnelServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 		peerV4,
 	}); err != nil {
 		logger.Error("Failed to assign address to connection", slog.Any("error", err))
+		metrics.TunnelConnectionFailures.WithLabelValues("address_assignment_failed").Inc()
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte(err.Error()))
 		return
@@ -358,6 +370,7 @@ func (t *TunnelServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	if err := t.router.Add(peerV6, conn); err != nil {
 		logger.Error("Failed to add TUN peer", slog.Any("error", err))
+		metrics.TunnelConnectionFailures.WithLabelValues("tun_peer_add_failed").Inc()
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte(err.Error()))
 		return
@@ -368,6 +381,9 @@ func (t *TunnelServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(err.Error()))
 		return
 	}
+
+	metrics.TunnelConnectionsActive.Inc()
+	defer metrics.TunnelConnectionsActive.Dec()
 
 	logger.Info("Client addresses assigned",
 		slog.String("ipv4", peerV4.String()),
@@ -391,6 +407,7 @@ func (t *TunnelServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	if err := conn.AdvertiseRoute(r.Context(), iproutesFromPrefixes(advRoutes)); err != nil {
 		logger.Error("Failed to advertise route to connection", slog.Any("error", err))
+		metrics.TunnelConnectionFailures.WithLabelValues("route_advertisement_failed").Inc()
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte(err.Error()))
 		return
@@ -467,6 +484,8 @@ func (t *TunnelServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 }
 
 func (t *TunnelServer) reconcile(ctx context.Context, request reconcile.Request) (reconcile.Result, error) {
+	defer metrics.TunnelNodesManaged.Set(float64(t.tunnelNodes.Len()))
+
 	node := &corev1alpha.TunnelNode{}
 	if err := t.Get(ctx, request.NamespacedName, node); apierrors.IsNotFound(err) {
 		return reconcile.Result{}, client.IgnoreNotFound(err)

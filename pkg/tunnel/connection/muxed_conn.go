@@ -12,6 +12,7 @@ import (
 	"github.com/dpeckett/triemap"
 
 	"github.com/apoxy-dev/apoxy/pkg/netstack"
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/metrics"
 )
 
 // MuxedConn multiplexes multiple connection.Conn objects.
@@ -166,7 +167,11 @@ func (m *MuxedConn) WritePacket(pkt []byte) ([]byte, error) {
 		return nil, fmt.Errorf("no matching tunnel found for destination IP: %s", dstIP.String())
 	}
 
+	metrics.TunnelPacketsSent.Inc()
+	metrics.TunnelBytesSent.Add(float64(len(pkt)))
+
 	return conn.WritePacket(pkt)
+
 }
 
 func (m *MuxedConn) readPackets(conn Connection) {
@@ -186,5 +191,8 @@ func (m *MuxedConn) readPackets(conn Connection) {
 
 		*pkt = (*pkt)[:n]
 		m.incomingPackets <- pkt
+
+		metrics.TunnelPacketsReceived.Inc()
+		metrics.TunnelBytesReceived.Add(float64(n))
 	}
 }
