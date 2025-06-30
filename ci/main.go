@@ -219,7 +219,7 @@ func (m *ApoxyCli) BuildCLIRelease(
 	buildCtr := m.BuildCLI(ctx, src, platform, tag, sha)
 	return dag.Container(dagger.ContainerOpts{Platform: dagger.Platform(platform)}).
 		From("cgr.dev/chainguard/wolfi-base:latest").
-		WithExec([]string{"apk", "add", "-u", "iptables", "iproute2", "net-tools", "sed", "coreutils"}).
+		WithExec([]string{"apk", "add", "-u", "iptables", "ip6tables", "iproute2", "net-tools", "sed", "coreutils"}).
 		WithFile("/bin/apoxy", buildCtr.File("/apoxy")).
 		WithEntrypoint([]string{"/bin/apoxy"})
 }
