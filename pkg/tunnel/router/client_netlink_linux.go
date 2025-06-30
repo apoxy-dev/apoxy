@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"os"
 	"sync"
+	"syscall"
 
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sync/errgroup"
@@ -107,7 +108,7 @@ func newClientNetlinkRouter(opts ...Option) (*ClientNetlinkRouter, error) {
 				IP:   ip.AsSlice(),
 				Mask: mask,
 			},
-		}); err != nil {
+		}); err != nil && err != syscall.EEXIST {
 			tunDev.Close()
 			return nil, fmt.Errorf("failed to add address to TUN interface: %w", err)
 		}
@@ -133,6 +134,17 @@ func newClientNetlinkRouter(opts ...Option) (*ClientNetlinkRouter, error) {
 // setupIptables configures iptables rules for client tunnel routing.
 func (r *ClientNetlinkRouter) setupIptables() error {
 	tunName := r.tunLink.Attrs().Name
+
+	// SNAT traffic comming into tunnel to overlay prefix.
+	for _, p := range r.options.localAddresses {
+		if p.Addr().Is4() {
+			r.iptV4.EnsureRule(utiliptables.Prepend, utiliptables.TableNAT, utiliptables.ChainPostrouting,
+				"-o", tunName, "-j", "SNAT", "--to-source", p.Addr().String())
+		} else {
+			r.iptV6.EnsureRule(utiliptables.Prepend, utiliptables.TableNAT, utiliptables.ChainPostrouting,
+				"-o", tunName, "-j", "SNAT", "--to-source", p.Addr().String())
+		}
+	}
 
 	// TODO: Set conntrack rules for route switching.
 	// # Ensure connections maintain their original path
