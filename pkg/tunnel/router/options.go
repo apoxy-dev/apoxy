@@ -10,14 +10,15 @@ import (
 type Option func(*routerOptions)
 
 type routerOptions struct {
-	extIPv6Prefix   netip.Prefix
-	localAddresses  []netip.Prefix
-	resolveConf     *network.ResolveConfig // If not set system default resolver is used
-	pcapPath        string
-	extIfaceName    string
-	tunIfaceName    string
-	socksListenAddr string
-	cksumRecalc     bool
+	extIPv6Prefix         netip.Prefix
+	localAddresses        []netip.Prefix
+	resolveConf           *network.ResolveConfig // If not set system default resolver is used
+	pcapPath              string
+	extIfaceName          string
+	tunIfaceName          string
+	socksListenAddr       string
+	cksumRecalc           bool
+	preserveDefaultGwDsts []netip.Prefix
 }
 
 func defaultOptions() *routerOptions {
@@ -86,5 +87,13 @@ func WithSocksListenAddr(addr string) Option {
 func WithChecksumRecalculation(enable bool) Option {
 	return func(o *routerOptions) {
 		o.cksumRecalc = enable
+	}
+}
+
+// WithPreserveDefaultGwDsts preserves default gateway routes for given destinations.
+// Only valid for netlink routers.
+func WithPreserveDefaultGwDsts(dsts []netip.Prefix) Option {
+	return func(o *routerOptions) {
+		o.preserveDefaultGwDsts = dsts
 	}
 }

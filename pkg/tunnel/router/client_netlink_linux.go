@@ -45,8 +45,7 @@ type ClientNetlinkRouter struct {
 	// Muxed connection for handling multiple tunnel connections.
 	mux *connection.MuxedConn
 
-	// Local addresses assigned to the TUN interface.
-	localAddresses []netip.Prefix
+	options *routerOptions
 
 	closeOnce sync.Once
 	closed    chan struct{}
@@ -64,6 +63,8 @@ func newClientNetlinkRouter(opts ...Option) (*ClientNetlinkRouter, error) {
 	for _, opt := range opts {
 		opt(options)
 	}
+
+	slog.Info("Create a TUN device", "name", options.tunIfaceName, "mtu", netstack.IPv6MinMTU)
 
 	tunDev, err := tun.CreateTUN(options.tunIfaceName, netstack.IPv6MinMTU)
 	if err != nil {
@@ -117,13 +118,13 @@ func newClientNetlinkRouter(opts ...Option) (*ClientNetlinkRouter, error) {
 	}
 
 	return &ClientNetlinkRouter{
-		tunDev:         tunDev,
-		tunLink:        tunLink,
-		iptV4:          utiliptables.New(utilexec.New(), utiliptables.ProtocolIPv4),
-		iptV6:          utiliptables.New(utilexec.New(), utiliptables.ProtocolIPv6),
-		mux:            connection.NewMuxedConn(),
-		localAddresses: options.localAddresses,
-		closed:         make(chan struct{}),
+		tunDev:  tunDev,
+		tunLink: tunLink,
+		iptV4:   utiliptables.New(utilexec.New(), utiliptables.ProtocolIPv4),
+		iptV6:   utiliptables.New(utilexec.New(), utiliptables.ProtocolIPv6),
+		mux:     connection.NewMuxedConn(),
+		options: options,
+		closed:  make(chan struct{}),
 	}, nil
 }
 
@@ -195,6 +196,10 @@ func (r *ClientNetlinkRouter) Start(ctx context.Context) error {
 func (r *ClientNetlinkRouter) Add(dst netip.Prefix, conn connection.Connection) error {
 	slog.Info("Adding client route", slog.String("prefix", dst.String()))
 
+	af := netlink.FAMILY_V6
+	if dst.Addr().Is4() {
+		af = netlink.FAMILY_V4
+	}
 	mask := net.CIDRMask(dst.Bits(), 128)
 	if dst.Addr().Is4() {
 		mask = net.CIDRMask(dst.Bits(), 32)
@@ -236,8 +241,58 @@ func (r *ClientNetlinkRouter) Add(dst netip.Prefix, conn connection.Connection) 
 				}
 				ecmpGWs = append(ecmpGWs, gw)
 			}
-		} else {
-			route.Gw = gws[0]
+		}
+
+		if len(r.options.preserveDefaultGwDsts) > 0 {
+			slog.Info("Preserving default gateway routes for prefixes",
+				slog.Any("prefixes", r.options.preserveDefaultGwDsts))
+
+			var (
+				defaultGW        net.IP
+				defaultLinkIndex int
+			)
+			routes, err := netlink.RouteList(nil, af)
+			if err != nil {
+				return fmt.Errorf("failed to list routes to find default gateway: %w", err)
+			}
+
+			for _, route := range routes {
+				if route.Dst == nil ||
+					(af == netlink.FAMILY_V4 && route.Dst.String() == "0.0.0.0/0") ||
+					(af == netlink.FAMILY_V6 && route.Dst.String() == "::/0") {
+					defaultGW = route.Gw
+					defaultLinkIndex = route.LinkIndex
+					break
+				}
+			}
+
+			if defaultGW == nil {
+				return fmt.Errorf("could not find default gateway for preserved routes")
+			}
+
+			for _, dst := range r.options.preserveDefaultGwDsts {
+				if (af == netlink.FAMILY_V4 && !dst.Addr().Is4()) ||
+					(af == netlink.FAMILY_V6 && !dst.Addr().Is6()) {
+					continue
+				}
+
+				maskSize := 128
+				if dst.Addr().Is4() {
+					maskSize = 32
+				}
+				route := &netlink.Route{
+					Dst: &net.IPNet{
+						IP:   dst.Addr().AsSlice(),
+						Mask: net.CIDRMask(dst.Bits(), maskSize),
+					},
+					Gw:        defaultGW,
+					Scope:     netlink.SCOPE_UNIVERSE,
+					LinkIndex: defaultLinkIndex,
+				}
+				if err := netlink.RouteChange(route); err != nil {
+					return fmt.Errorf("failed to add default route: %w", err)
+				}
+			}
 		}
 
 		slog.Info("Adding default route",
@@ -270,7 +325,7 @@ func (r *ClientNetlinkRouter) isDefaultRoute(prefix netip.Prefix) bool {
 // getGWs returns the appropriate gateway IPs.
 func (r *ClientNetlinkRouter) getGWs(isIPv4 bool) []net.IP {
 	var gws []net.IP
-	for _, addr := range r.localAddresses {
+	for _, addr := range r.options.localAddresses {
 		if addr.Addr().Is4() == isIPv4 && addr.Addr().IsGlobalUnicast() {
 			gws = append(gws, addr.Addr().AsSlice())
 		}
@@ -400,7 +455,7 @@ func (r *ClientNetlinkRouter) setDefaultRouteMetric(isIPv4 bool) (int, error) {
 
 // LocalAddresses returns the list of local addresses that are assigned to the router.
 func (r *ClientNetlinkRouter) LocalAddresses() ([]netip.Prefix, error) {
-	return r.localAddresses, nil
+	return r.options.localAddresses, nil
 }
 
 // Close releases any resources associated with the router.

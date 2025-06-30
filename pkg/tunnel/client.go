@@ -61,7 +61,8 @@ type tunnelClientOptions struct {
 	extIfaceName string
 	tunIfaceName string
 	// Userspace options
-	socksListenAddr string
+	socksListenAddr       string
+	preserveDefaultGwDsts []netip.Prefix
 }
 
 func defaultClientOptions() *tunnelClientOptions {
@@ -142,6 +143,14 @@ func WithTunnelInterface(name string) TunnelClientOption {
 func WithSocksListenAddr(addr string) TunnelClientOption {
 	return func(o *tunnelClientOptions) {
 		o.socksListenAddr = addr
+	}
+}
+
+// WithPreserveDefaultGatewayDestinations sets destinations for which the existing
+// default gateway will be preserved.
+func WithPreserveDefaultGatewayDestinations(dsts []netip.Prefix) TunnelClientOption {
+	return func(o *tunnelClientOptions) {
+		o.preserveDefaultGwDsts = dsts
 	}
 }
 
@@ -280,6 +289,7 @@ func (c *TunnelClient) Start(ctx context.Context) error {
 	}
 
 	if c.options.mode == TunnelClientModeKernel {
+		routerOpts = append(routerOpts, router.WithPreserveDefaultGwDsts(c.options.preserveDefaultGwDsts))
 		c.router, err = router.NewClientNetlinkRouter(routerOpts...)
 		if err != nil {
 			return fmt.Errorf("failed to create kernel router: %w", err)

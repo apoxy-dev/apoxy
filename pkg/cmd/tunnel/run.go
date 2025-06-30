@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand"
+	"net/netip"
 	"time"
 
 	"github.com/google/uuid"
@@ -46,6 +47,9 @@ var (
 	tunnelModeS        string
 	tunnelMode         tunnel.TunnelClientMode
 	insecureSkipVerify bool
+	preserveDefaultGw  []string
+
+	preserveDefaultGwDsts []netip.Prefix
 )
 
 func init() {
@@ -75,6 +79,15 @@ var tunnelRunCmd = &cobra.Command{
 		tunnelMode, err = tunnel.TunnelClientModeFromString(tunnelModeS)
 		if err != nil {
 			return fmt.Errorf("unable to parse tunnel client mode: %w", err)
+		}
+
+		for _, dstS := range preserveDefaultGw {
+			dst, err := netip.ParsePrefix(dstS)
+			if err != nil {
+				return fmt.Errorf("unable to parse default gateway address: %w", err)
+			}
+
+			preserveDefaultGwDsts = append(preserveDefaultGwDsts, dst)
 		}
 
 		cmd.SilenceUsage = true
@@ -203,6 +216,7 @@ func (t *tunnelNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	cOpts := []tunnel.TunnelClientOption{
 		tunnel.WithPcapPath(tunnelNodePcapPath),
 		tunnel.WithMode(tunnelMode),
+		tunnel.WithPreserveDefaultGatewayDestinations(preserveDefaultGwDsts),
 	}
 	tnUUID, err := uuid.Parse(string(tunnelNode.ObjectMeta.UID))
 	if err != nil { // This can only happen in a test environment.

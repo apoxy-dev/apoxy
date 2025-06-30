@@ -216,6 +216,7 @@ func init() {
 	tunnelRunCmd.Flags().StringVarP(&tunnelNodePcapPath, "pcap", "p", "", "Path to the TunnelNode file to create.")
 	tunnelRunCmd.Flags().StringVarP(&tunnelModeS, "mode", "m", "user", "Mode to run the TunnelNode in.")
 	tunnelRunCmd.Flags().BoolVar(&insecureSkipVerify, "insecure-skip-verify", false, "Skip TLS certificate verification")
+	tunnelRunCmd.Flags().StringSliceVar(&preserveDefaultGw, "preserve-default-gw-dsts", []string{}, "Preserve default gateway")
 
 	tunnelCmd.AddCommand(createCmd)
 	tunnelCmd.AddCommand(getCmd)
