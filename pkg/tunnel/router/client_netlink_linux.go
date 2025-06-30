@@ -138,11 +138,21 @@ func (r *ClientNetlinkRouter) setupIptables() error {
 	// SNAT traffic comming into tunnel to overlay prefix.
 	for _, p := range r.options.localAddresses {
 		if p.Addr().Is4() {
-			r.iptV4.EnsureRule(utiliptables.Prepend, utiliptables.TableNAT, utiliptables.ChainPostrouting,
-				"-o", tunName, "-j", "SNAT", "--to-source", p.Addr().String())
+			if _, err := r.iptV4.EnsureRule(
+				utiliptables.Prepend,
+				utiliptables.TableNAT, utiliptables.ChainPostrouting,
+				"-o", tunName, "-j", "SNAT", "--to-source", p.Addr().String(),
+			); err != nil {
+				return err
+			}
 		} else {
-			r.iptV6.EnsureRule(utiliptables.Prepend, utiliptables.TableNAT, utiliptables.ChainPostrouting,
-				"-o", tunName, "-j", "SNAT", "--to-source", p.Addr().String())
+			if _, err := r.iptV6.EnsureRule(
+				utiliptables.Prepend,
+				utiliptables.TableNAT, utiliptables.ChainPostrouting,
+				"-o", tunName, "-j", "SNAT", "--to-source", p.Addr().String(),
+			); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -166,6 +176,25 @@ func (r *ClientNetlinkRouter) setupIptables() error {
 // cleanupIptables removes iptables rules created by this router.
 func (r *ClientNetlinkRouter) cleanupIptables() error {
 	tunName := r.tunLink.Attrs().Name
+
+	// SNAT traffic comming into tunnel to overlay prefix.
+	for _, p := range r.options.localAddresses {
+		if p.Addr().Is4() {
+			if err := r.iptV4.DeleteRule(
+				utiliptables.TableNAT, utiliptables.ChainPostrouting,
+				"-o", tunName, "-j", "SNAT", "--to-source", p.Addr().String(),
+			); err != nil {
+				slog.Error("failed to delete SNAT rule for IPv4", slog.String("error", err.Error()))
+			}
+		} else {
+			if err := r.iptV6.DeleteRule(
+				utiliptables.TableNAT, utiliptables.ChainPostrouting,
+				"-o", tunName, "-j", "SNAT", "--to-source", p.Addr().String(),
+			); err != nil {
+				slog.Error("failed to delete SNAT rule for IPv6", slog.String("error", err.Error()))
+			}
+		}
+	}
 
 	// TODO: Cleanup conntrack rules for route switching.
 	// # Ensure connections maintain their original path
