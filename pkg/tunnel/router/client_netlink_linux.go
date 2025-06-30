@@ -4,10 +4,12 @@ package router
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/netip"
+	"os"
 	"sync"
 
 	"github.com/vishvananda/netlink"
@@ -248,49 +250,43 @@ func (r *ClientNetlinkRouter) Add(dst netip.Prefix, conn connection.Connection) 
 				slog.Any("prefixes", r.options.preserveDefaultGwDsts))
 
 			var (
-				defaultGW        net.IP
-				defaultLinkIndex int
+				defaultRoute *netlink.Route
 			)
 			routes, err := netlink.RouteList(nil, af)
 			if err != nil {
 				return fmt.Errorf("failed to list routes to find default gateway: %w", err)
 			}
-
 			for _, route := range routes {
 				if route.Dst == nil ||
 					(af == netlink.FAMILY_V4 && route.Dst.String() == "0.0.0.0/0") ||
 					(af == netlink.FAMILY_V6 && route.Dst.String() == "::/0") {
-					defaultGW = route.Gw
-					defaultLinkIndex = route.LinkIndex
+					defaultRoute = &route
 					break
 				}
 			}
 
-			if defaultGW == nil {
-				return fmt.Errorf("could not find default gateway for preserved routes")
-			}
+			if defaultRoute != nil {
+				for _, dst := range r.options.preserveDefaultGwDsts {
+					if (af == netlink.FAMILY_V4 && !dst.Addr().Is4()) ||
+						(af == netlink.FAMILY_V6 && !dst.Addr().Is6()) {
+						continue
+					}
 
-			for _, dst := range r.options.preserveDefaultGwDsts {
-				if (af == netlink.FAMILY_V4 && !dst.Addr().Is4()) ||
-					(af == netlink.FAMILY_V6 && !dst.Addr().Is6()) {
-					continue
-				}
+					slog.Debug("Preserving default gateway",
+						slog.String("gateway", defaultRoute.Gw.String()),
+						slog.String("prefix", dst.String()))
 
-				maskSize := 128
-				if dst.Addr().Is4() {
-					maskSize = 32
-				}
-				route := &netlink.Route{
-					Dst: &net.IPNet{
+					maskSize := 128
+					if dst.Addr().Is4() {
+						maskSize = 32
+					}
+					defaultRoute.Dst = &net.IPNet{
 						IP:   dst.Addr().AsSlice(),
 						Mask: net.CIDRMask(dst.Bits(), maskSize),
-					},
-					Gw:        defaultGW,
-					Scope:     netlink.SCOPE_UNIVERSE,
-					LinkIndex: defaultLinkIndex,
-				}
-				if err := netlink.RouteChange(route); err != nil {
-					return fmt.Errorf("failed to add default route: %w", err)
+					}
+					if err := netlink.RouteAdd(defaultRoute); err != nil && !errors.Is(err, os.ErrExist) {
+						return fmt.Errorf("failed to preserve default gateway %s for prefix %s: %w", defaultRoute.Gw.String(), dst.String(), err)
+					}
 				}
 			}
 		}
@@ -301,7 +297,7 @@ func (r *ClientNetlinkRouter) Add(dst netip.Prefix, conn connection.Connection) 
 			slog.Any("ecmp_gws", ecmpGWs))
 	}
 
-	if err := netlink.RouteAdd(route); err != nil {
+	if err := netlink.RouteAddEcmp(route); err != nil && !errors.Is(err, os.ErrExist) {
 		return fmt.Errorf("failed to add route: %w", err)
 	}
 
