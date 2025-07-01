@@ -51,8 +51,7 @@ func NetworkIDHexToBytes(h string) ([4]byte, error) {
 func ApoxyNetworkULA(networkID [4]byte) netip.Prefix {
 	addr := apoxyULAPrefix.Addr().As16()
 	copy(addr[6:], networkID[:])
-
-	return netip.PrefixFrom(netip.AddrFrom16(addr), 96)
+	return netip.PrefixFrom(netip.AddrFrom16(addr), 80)
 }
 
 // NewApoxy4To6Prefix generates a new IPv6 address from the Apoxy4To6Range prefix.
