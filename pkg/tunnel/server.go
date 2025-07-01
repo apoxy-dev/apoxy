@@ -59,14 +59,13 @@ type tunnelServerOptions struct {
 
 func defaultServerOptions() *tunnelServerOptions {
 	return &tunnelServerOptions{
-		proxyAddr:     "0.0.0.0:9443",
-		publicAddr:    "",
-		ulaPrefix:     netip.MustParsePrefix("fd00::/64"),
-		certPath:      "/etc/apoxy/certs/tunnelproxy.crt",
-		keyPath:       "/etc/apoxy/certs/tunnelproxy.key",
-		ipam:          tunnet.NewRandomULA(),
-		extIPv6Prefix: netip.MustParsePrefix("fd00::/64"),
-		selector:      "",
+		proxyAddr:  "0.0.0.0:9443",
+		publicAddr: "",
+		ulaPrefix:  netip.MustParsePrefix("fd00::/64"),
+		certPath:   "/etc/apoxy/certs/tunnelproxy.crt",
+		keyPath:    "/etc/apoxy/certs/tunnelproxy.key",
+		ipam:       tunnet.NewRandomULA(),
+		selector:   "",
 	}
 }
 
@@ -374,8 +373,11 @@ func (t *TunnelServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 		slog.String("ipv4", peerV4.String()),
 		slog.String("ipv6", peerV6.String()))
 
-	advRoutes := []netip.Prefix{
-		t.options.extIPv6Prefix,
+	var advRoutes []netip.Prefix
+	if t.options.extIPv6Prefix.IsValid() {
+		advRoutes = append(advRoutes, t.options.extIPv6Prefix)
+	} else {
+		logger.Warn("External IPv6 prefix not configured")
 	}
 	// If egress gateway is enabled, route 0.0.0.0/0 via the tunnel.
 	if tn.Spec.EgressGateway != nil && tn.Spec.EgressGateway.Enabled {
@@ -395,10 +397,12 @@ func (t *TunnelServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	agent := &corev1alpha.AgentStatus{
-		Name:           uuid.NewString(),
-		ConnectedAt:    ptr.To(metav1.Now()),
-		PrivateAddress: t.options.extIPv6Prefix.Addr().String(),
-		AgentAddress:   r.RemoteAddr,
+		Name:         uuid.NewString(),
+		ConnectedAt:  ptr.To(metav1.Now()),
+		AgentAddress: r.RemoteAddr,
+	}
+	if t.options.extIPv6Prefix.IsValid() {
+		agent.PrivateAddress = t.options.extIPv6Prefix.Addr().String()
 	}
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		upd := &corev1alpha.TunnelNode{}

@@ -84,8 +84,7 @@ func NewNetlinkRouter(opts ...Option) (*NetlinkRouter, error) {
 	}
 
 	if !options.extIPv6Prefix.IsValid() {
-		tunDev.Close()
-		return nil, fmt.Errorf("external IPv6 prefix is not valid")
+		slog.Warn("external IPv6 prefix is not valid - ingress is disabled")
 	}
 
 	for _, addr := range options.localAddresses {
@@ -144,14 +143,16 @@ func (r *NetlinkRouter) setupDNAT() error {
 	extName := r.extLink.Attrs().Name
 	tunName := r.tunLink.Attrs().Name
 
-	slog.Info("Setting up jump rule",
-		slog.String("ext_iface", extName),
-		slog.String("ext_addr", r.extIPv6Prefix.Addr().String()))
+	if r.extIPv6Prefix.IsValid() {
+		slog.Info("Setting up jump rule",
+			slog.String("ext_iface", extName),
+			slog.String("ext_addr", r.extIPv6Prefix.Addr().String()))
 
-	// Traffic arriving at the designated external interface will be processed by the A3Y-TUN-RULES chain.
-	jRuleSpec := []string{"-d", r.extIPv6Prefix.Addr().String(), "-i", extName, "-j", string(ChainA3yTunRules)}
-	if _, err := r.iptV6.EnsureRule(utiliptables.Append, utiliptables.TableNAT, utiliptables.ChainPrerouting, jRuleSpec...); err != nil {
-		return fmt.Errorf("failed to ensure jump rule: %w", err)
+		// Traffic arriving at the designated external interface will be processed by the A3Y-TUN-RULES chain.
+		jRuleSpec := []string{"-d", r.extIPv6Prefix.Addr().String(), "-i", extName, "-j", string(ChainA3yTunRules)}
+		if _, err := r.iptV6.EnsureRule(utiliptables.Append, utiliptables.TableNAT, utiliptables.ChainPrerouting, jRuleSpec...); err != nil {
+			return fmt.Errorf("failed to ensure jump rule: %w", err)
+		}
 	}
 
 	// Setup forwarding rules between the external and tunnel interfaces.

@@ -105,20 +105,21 @@ func main() {
 		log.Fatalf("Failed to create JWT validator: %v", err)
 	}
 
-	extAddr, err := tunnet.GetLocalIPv6Address(*extIPv6Ifc)
-	if err != nil {
-		log.Fatalf("Failed to get local IPv6 address: %v", err)
-	}
-	extIPv6, ok := netip.AddrFromSlice(extAddr.IP)
-	if !ok {
-		log.Fatalf("Invalid IPv6 address resolved: %s", extAddr.IP.String())
-	}
-	extIPv6Prefix := netip.PrefixFrom(extIPv6, *extIPv6SubnetSize)
-	if !extIPv6Prefix.IsValid() {
-		log.Fatalf("Invalid IPv6 prefix: %s", extIPv6Prefix.String())
-	}
+	var extIPv6Prefix netip.Prefix
+	if extAddr, err := tunnet.GetLocalIPv6Address(*extIPv6Ifc); err == nil {
+		extIPv6, ok := netip.AddrFromSlice(extAddr.IP)
+		if !ok {
+			log.Fatalf("Invalid IPv6 address resolved: %s", extAddr.IP.String())
+		}
+		extIPv6Prefix := netip.PrefixFrom(extIPv6, *extIPv6SubnetSize)
+		if !extIPv6Prefix.IsValid() {
+			log.Fatalf("Invalid IPv6 prefix: %s", extIPv6Prefix.String())
+		}
 
-	log.Infof("External IPv6 prefix: %s", extIPv6Prefix.String())
+		log.Infof("External IPv6 prefix: %s", extIPv6Prefix.String())
+	} else {
+		log.Warnf("Failed to get local IPv6 address: %v", err)
+	}
 
 	rOpts := []router.Option{
 		router.WithExternalIPv6Prefix(extIPv6Prefix),
