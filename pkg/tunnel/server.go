@@ -65,7 +65,6 @@ func defaultServerOptions() *tunnelServerOptions {
 		ulaPrefix:  netip.MustParsePrefix("fd00::/64"),
 		certPath:   "/etc/apoxy/certs/tunnelproxy.crt",
 		keyPath:    "/etc/apoxy/certs/tunnelproxy.key",
-		ipam:       tunnet.NewRandomULA(),
 		selector:   "",
 	}
 }
@@ -150,10 +149,14 @@ func NewTunnelServer(
 	v token.JWTValidator,
 	r router.Router,
 	opts ...TunnelServerOption,
-) *TunnelServer {
+) (*TunnelServer, error) {
 	options := defaultServerOptions()
 	for _, opt := range opts {
 		opt(options)
+	}
+
+	if options.ipam == nil {
+		return nil, errors.New("ipam is required")
 	}
 
 	s := &TunnelServer{
@@ -174,7 +177,7 @@ func NewTunnelServer(
 	mux.HandleFunc("/connect/", s.handleConnect)
 	s.Handler = mux
 
-	return s
+	return s, nil
 }
 
 func (t *TunnelServer) SetupWithManager(mgr ctrl.Manager) error {
@@ -354,8 +357,18 @@ func (t *TunnelServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	defer conn.Close()
 
-	peerV6 := t.options.ipam.AllocateV6(r)
-	peerV4 := t.options.ipam.AllocateV4(r)
+	peerV6, err := t.options.ipam.AllocateV6(r)
+	if err != nil {
+		logger.Error("Failed to allocate IPv6 address", slog.Any("error", err))
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	peerV4, err := t.options.ipam.AllocateV4(r)
+	if err != nil {
+		logger.Error("Failed to allocate IPv4 address", slog.Any("error", err))
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
 
 	if err := conn.AssignAddresses(r.Context(), []netip.Prefix{
 		peerV6,
@@ -447,6 +460,10 @@ func (t *TunnelServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := t.options.ipam.Release(peerV6); err != nil {
+		logger.Error("Failed to deallocate IP address", slog.Any("error", err))
+	}
+
+	if err := t.options.ipam.Release(peerV4); err != nil {
 		logger.Error("Failed to deallocate IP address", slog.Any("error", err))
 	}
 

@@ -6,9 +6,11 @@ import (
 	"flag"
 	"fmt"
 	"net/netip"
+	"os"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"golang.org/x/sync/errgroup"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -47,6 +49,7 @@ var (
 	apiServerAddr = flag.String("apiserver_addr", "host.docker.internal:8443", "APIServer address.")
 	jwksURLs      = flag.String("jwks_urls", "", "Comma-separated URLs of the JWKS endpoints.")
 
+	networkID          = flag.String("network_id", "", "Network ID for IPAM.")
 	tunnelNodeSelector = flag.String("label_selector", "", "Label selector for TunnelNode objects.")
 	publicAddr         = flag.String("public_addr", "", "Public address of the tunnel proxy.")
 	extIPv6SubnetSize  = flag.Int("ext_ipv6_subnet_size", 64, "IPv6 subnet size.")
@@ -131,14 +134,41 @@ func main() {
 		log.Fatalf("Failed to create netlink router: %v", err)
 	}
 
-	srv := tunnel.NewTunnelServer(
+	if *networkID == "" {
+		podUID := os.Getenv("K8S_POD_UID")
+		if podUID == "" {
+			log.Fatalf("--network_id must be set or K8S_POD_UID environment variable must be available")
+		}
+		_, err := uuid.Parse(podUID)
+		if err != nil {
+			log.Fatalf("Failed to parse K8S_POD_UID (%s): %v", podUID, err)
+		}
+		*networkID = podUID[len(podUID)-8:]
+		log.Infof("Using network ID from K8S_POD_UID: %s", *networkID)
+	}
+	netID, err := tunnet.NetworkIDHexToBytes(*networkID)
+	if err != nil {
+		log.Fatalf("Failed to convert network ID to bytes: %v", err)
+	}
+
+	ipam, err := tunnet.NewInMemoryIPAM(netID)
+	if err != nil {
+		log.Fatalf("Failed to create IPAM: %v", err)
+	}
+
+	srv, err := tunnel.NewTunnelServer(
 		mgr.GetClient(),
 		jwtValidator,
 		r,
 		tunnel.WithExternalIPv6Prefix(extIPv6Prefix),
 		tunnel.WithLabelSelector(*tunnelNodeSelector),
 		tunnel.WithPublicAddr(*publicAddr),
+		tunnel.WithIPAM(ipam),
 	)
+	if err != nil {
+		log.Fatalf("Failed to create tunnel server: %v", err)
+	}
+
 	g.Go(func() error {
 		log.Infof("Starting Tunnel Proxy server")
 

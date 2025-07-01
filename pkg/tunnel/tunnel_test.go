@@ -30,6 +30,7 @@ import (
 	corev1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
 	"github.com/apoxy-dev/apoxy/pkg/cryptoutils"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel"
+	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/router"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/token"
 	"github.com/apoxy-dev/apoxy/pkg/utils/vm"
@@ -99,13 +100,18 @@ func TestTunnelEndToEnd_UserModeClient(t *testing.T) {
 	serverRouter, err := router.NewNetlinkRouter()
 	require.NoError(t, err)
 
-	server := tunnel.NewTunnelServer(
+	ipam, err := tunnet.NewInMemoryIPAM([4]byte{1, 2, 3, 4})
+	require.NoError(t, err)
+
+	server, err := tunnel.NewTunnelServer(
 		kubeClient,
 		jwtValidator,
 		serverRouter,
 		tunnel.WithCertPath(filepath.Join(certsDir, "server.crt")),
 		tunnel.WithKeyPath(filepath.Join(certsDir, "server.key")),
+		tunnel.WithIPAM(ipam),
 	)
+	require.NoError(t, err)
 
 	// Register the client with the server
 	server.AddTunnelNode(clientTunnelNode)
@@ -303,13 +309,18 @@ func TestTunnelEndToEnd_KernelModeClient(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	server := tunnel.NewTunnelServer(
+	ipam, err := tunnet.NewInMemoryIPAM([4]byte{1, 2, 3, 4})
+	require.NoError(t, err)
+
+	server, err := tunnel.NewTunnelServer(
 		kubeClient,
 		jwtValidator,
 		serverRouter,
 		tunnel.WithCertPath(filepath.Join(certsDir, "server.crt")),
 		tunnel.WithKeyPath(filepath.Join(certsDir, "server.key")),
+		tunnel.WithIPAM(ipam),
 	)
+	require.NoError(t, err)
 
 	// Register the client with the server
 	server.AddTunnelNode(clientTunnelNode)

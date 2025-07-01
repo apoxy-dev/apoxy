@@ -1,52 +1,79 @@
 package net
 
 import (
-	"crypto/rand"
+	"context"
+	"fmt"
 	"net/http"
 	"net/netip"
+
+	goipam "github.com/metal-stack/go-ipam"
 )
 
 type IPAM interface {
 	// AllocateV6 allocates an IPv6 address for a peer.
-	AllocateV6(r *http.Request) netip.Prefix
+	AllocateV6(r *http.Request) (netip.Prefix, error)
 
 	// AllocateV4 allocates an IPv4 address for a peer.
-	AllocateV4(r *http.Request) netip.Prefix
+	AllocateV4(r *http.Request) (netip.Prefix, error)
 
 	// Release releases an IP address for a peer. No-op if the address is not allocated
 	// (returns nil).
 	Release(peerPrefix netip.Prefix) error
 }
 
-type randomULA struct {
+const (
+	ipv4CidrPrefix = "100.64.0.0/10"
+)
+
+type inMemoryIPAM struct {
+	ipam                   goipam.Ipamer
+	ipv4Prefix, ipv6Prefix *goipam.Prefix
 }
 
-func NewRandomULA() IPAM {
-	return &randomULA{}
-}
-
-func (r *randomULA) AllocateV6(_ *http.Request) netip.Prefix {
-	addr := apoxyULAPrefix.Addr().As16()
-	// Generate 6 random bytes (48 bits) - this will fill the bits between /48 and /96
-	var randomBytes [6]byte
-	_, _ = rand.Read(randomBytes[:])
-
-	// Insert the random bytes into positions 6-11 (after the /48 prefix, before the /96 suffix)
-	for i := 0; i < 6; i++ {
-		addr[6+i] = randomBytes[i]
+// NewInMemoryIPAM creates a new in-memory IPAM instance.
+func NewInMemoryIPAM(networkID [4]byte) (IPAM, error) {
+	ipam := goipam.New(context.Background())
+	ipv4Prefix, err := ipam.NewPrefix(context.Background(), ipv4CidrPrefix)
+	if err != nil {
+		return nil, err
 	}
-
-	// Create a new IPv6 address from the modified bytes
-	randomAddr := netip.AddrFrom16(addr)
-
-	// Return as a /96 prefix
-	return netip.PrefixFrom(randomAddr, 96)
+	ipv6Prefix, err := ipam.NewPrefix(context.Background(), ApoxyNetworkULA(networkID).String())
+	if err != nil {
+		return nil, err
+	}
+	return &inMemoryIPAM{
+		ipam:       ipam,
+		ipv4Prefix: ipv4Prefix,
+		ipv6Prefix: ipv6Prefix,
+	}, nil
 }
 
-func (r *randomULA) AllocateV4(_ *http.Request) netip.Prefix {
-	return netip.PrefixFrom(netip.MustParseAddr("100.64.0.1"), 32)
+func (r *inMemoryIPAM) AllocateV6(_ *http.Request) (netip.Prefix, error) {
+	p, err := r.ipam.AcquireChildPrefix(context.Background(), r.ipv6Prefix.Cidr, 96)
+	if err != nil {
+		return netip.Prefix{}, err
+	}
+	return netip.MustParsePrefix(p.Cidr), nil
 }
 
-func (r *randomULA) Release(_ netip.Prefix) error {
-	return nil
+func (r *inMemoryIPAM) AllocateV4(_ *http.Request) (netip.Prefix, error) {
+	p, err := r.ipam.AcquireChildPrefix(context.Background(), r.ipv4Prefix.Cidr, 32)
+	if err != nil {
+		return netip.Prefix{}, err
+	}
+	return netip.MustParsePrefix(p.Cidr), nil
+}
+
+func (r *inMemoryIPAM) Release(p netip.Prefix) error {
+	child := &goipam.Prefix{
+		Cidr: p.String(),
+	}
+	if p.Addr().Is4() {
+		child.ParentCidr = r.ipv4Prefix.Cidr
+	} else if p.Addr().Is6() {
+		child.ParentCidr = r.ipv6Prefix.Cidr
+	} else {
+		return fmt.Errorf("invalid address type")
+	}
+	return r.ipam.ReleaseChildPrefix(context.Background(), child)
 }

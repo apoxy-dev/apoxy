@@ -36,7 +36,7 @@ func NewTunnelProxyDockerDriver() *TunnelProxyDockerDriver {
 // Start implements the Driver interface.
 func (d *TunnelProxyDockerDriver) Start(
 	ctx context.Context,
-	orgID uuid.UUID,
+	projectID uuid.UUID,
 	proxyName string,
 	opts ...Option,
 ) (string, error) {
@@ -54,7 +54,7 @@ func (d *TunnelProxyDockerDriver) Start(
 		ctx,
 		tunnelProxyContainerNamePrefix,
 		imageRef,
-		dockerutils.WithLabel("org.apoxy.project_id", orgID.String()),
+		dockerutils.WithLabel("org.apoxy.project_id", projectID.String()),
 		dockerutils.WithLabel("org.apoxy.tunnelproxy", proxyName),
 	)
 	if err != nil {
@@ -92,7 +92,7 @@ func (d *TunnelProxyDockerDriver) Start(
 		"--pull="+d.PullPolicy(),
 		"--detach",
 		"--name", cname,
-		"--label", "org.apoxy.project_id="+orgID.String(),
+		"--label", "org.apoxy.project_id="+projectID.String(),
 		"--label", "org.apoxy.tunnelproxy="+proxyName,
 		"--privileged",
 		"--network", dockerutils.NetworkName,
@@ -117,6 +117,7 @@ func (d *TunnelProxyDockerDriver) Start(
 	cmd.Args = append(cmd.Args, []string{
 		"--apiserver_addr=" + apiserverAddr,
 		fmt.Sprintf("--jwks_urls=http://%s:%d%s", apiserverHost, 8444, token.JWKSURI),
+		"--network_id=" + projectID.String()[len(projectID.String())-8:],
 		"--cksum_recalc=true",
 	}...)
 	if build.IsDev() {

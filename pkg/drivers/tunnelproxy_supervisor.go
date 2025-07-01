@@ -49,7 +49,7 @@ func WithTunnelProxyLogsDir(logsDir string) func(*TunnelProxySupervisorDriver) {
 // Start implements the Driver interface.
 func (d *TunnelProxySupervisorDriver) Start(
 	ctx context.Context,
-	orgID uuid.UUID,
+	projectID uuid.UUID,
 	proxyName string,
 	opts ...Option,
 ) (string, error) {
@@ -76,6 +76,7 @@ func (d *TunnelProxySupervisorDriver) Start(
 
 	d.cmd.Args = append(d.cmd.Args, []string{
 		"--apiserver_addr=" + net.JoinHostPort("localhost", "8443"),
+		"--network_id=" + projectID.String()[len(projectID.String())-8:],
 		"--health_probe_port=8088",
 		"--metrics_port=8089",
 	}...)
