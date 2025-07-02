@@ -34,6 +34,9 @@ const (
 	EnvoyReadinessPath    = "/ready"
 )
 
+// defaultEnvoyMaxActiveDownstreamConnections is the default maximum number of active downstream connections.
+var defaultEnvoyMaxActiveDownstreamConnections uint64 = 50000
+
 //go:embed bootstrap.yaml.tpl
 var bootstrapTmplStr string
 
@@ -64,6 +67,15 @@ type bootstrapParameters struct {
 	// StatsMatcher is to control creation of custom Envoy stats with prefix,
 	// suffix, and regex expressions match on the name of the stats.
 	StatsMatcher *StatsMatcherParameters
+	// OverloadManager defines the configuration of the Envoy overload manager.
+	OverloadManager OverloadManagerParameters
+}
+
+type OverloadManagerParameters struct {
+	// MaxHeapSizeBytes defines the maximum heap size in bytes.
+	MaxHeapSizeBytes *uint64
+	// MaxActiveDownstreamConnections defines the maximum number of active downstream connections.
+	MaxActiveDownstreamConnections *uint64
 }
 
 type xdsServerParameters struct {
@@ -121,12 +133,17 @@ type BootstrapConfig struct {
 	XdsServerHost string
 	// XdsServerPort is the port of the Xds Server within Envoy Gateway.
 	XdsServerPort int32
+	// OverloadMaxHeapSizeBytes defines the maximum heap size in bytes for the Envoy overload manager.
+	OverloadMaxHeapSizeBytes *uint64
+	// OverloadMaxActiveDownstreamConnections defines the maximum number of active downstream connections for the Envoy overload manager.
+	OverloadMaxActiveDownstreamConnections *uint64
 }
 
 func defaultBootstrapConfig() *BootstrapConfig {
 	return &BootstrapConfig{
-		XdsServerHost: envoyGatewayXdsServerHost,
-		XdsServerPort: DefaultXdsServerPort,
+		XdsServerHost:                          envoyGatewayXdsServerHost,
+		XdsServerPort:                          DefaultXdsServerPort,
+		OverloadMaxActiveDownstreamConnections: &defaultEnvoyMaxActiveDownstreamConnections,
 	}
 }
 
@@ -145,6 +162,20 @@ func WithXdsServerHost(host string) BootstrapOption {
 func WithXdsServerPort(port int32) BootstrapOption {
 	return func(cfg *BootstrapConfig) {
 		cfg.XdsServerPort = port
+	}
+}
+
+// WithOverloadMaxHeapSizeBytes sets the maximum heap size in bytes for the Envoy overload manager.
+func WithOverloadMaxHeapSizeBytes(size uint64) BootstrapOption {
+	return func(cfg *BootstrapConfig) {
+		cfg.OverloadMaxHeapSizeBytes = &size
+	}
+}
+
+// WithOverloadMaxActiveConnections sets the maximum number of active downstream connections for the Envoy overload manager.
+func WithOverloadMaxActiveConnections(count uint64) BootstrapOption {
+	return func(cfg *BootstrapConfig) {
+		cfg.OverloadMaxActiveDownstreamConnections = &count
 	}
 }
 
@@ -169,6 +200,10 @@ func GetRenderedBootstrapConfig(opts ...BootstrapOption) (string, error) {
 				Address:       envoyReadinessAddress,
 				Port:          EnvoyReadinessPort,
 				ReadinessPath: EnvoyReadinessPath,
+			},
+			OverloadManager: OverloadManagerParameters{
+				MaxHeapSizeBytes:               sOpts.OverloadMaxHeapSizeBytes,
+				MaxActiveDownstreamConnections: sOpts.OverloadMaxActiveDownstreamConnections,
 			},
 		},
 	}
