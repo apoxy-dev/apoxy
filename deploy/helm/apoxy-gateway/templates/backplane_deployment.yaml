@@ -48,6 +48,12 @@ spec:
           args:
             - --proxy={{ .Values.backplane.proxy.name }}
             - --apiserver_addr={{ include "apoxy-gateway.fullname" . }}-apiserver
+          {{- if gt (.Values.backplane.overload.maxHeapSizeBytes | int) 0 }}
+            - --overload-max-heap-size-bytes={{ .Values.backplane.overload.maxHeapSizeBytes }}
+          {{- end }}
+          {{- if gt (.Values.backplane.overload.maxActiveConnections | int) 0 }}
+            - --overload-max-active-connections={{ .Values.backplane.overload.maxActiveConnections }}
+          {{- end }}
           {{- with .Values.backplane.extraArgs }}
             {{- toYaml . | nindent 12 }}
           {{- end }}

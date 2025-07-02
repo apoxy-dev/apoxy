@@ -84,6 +84,13 @@ backplane:
     drainTimeoutSeconds: 30
     extraListeners: []
 
+  # Envoy overload manager configuration
+  overload:
+    # Maximum heap size in bytes for Envoy overload manager (0 to disable)
+    maxHeapSizeBytes: 0
+    # Maximum number of active downstream connections for Envoy overload manager (0 to disable)
+    maxActiveConnections: 0
+
   resources: {}
 
   autoscaling:
