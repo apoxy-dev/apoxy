@@ -57,20 +57,16 @@ func NewCgroupMemoryDetector() *CgroupMemoryDetector {
 // It tries to detect both cgroup v1 and v2 memory limits.
 // If no limit is found, it returns 0.
 func (d *CgroupMemoryDetector) GetMemoryLimit() uint64 {
-	// Try cgroup v2 first
 	memLimit, err := d.getCgroupV2MemoryLimit()
 	if err == nil && memLimit > 0 {
 		log.Infof("Successfully read cgroup v2 memory limit: %d bytes", memLimit)
 		return memLimit
 	}
-
-	// Fall back to cgroup v1
 	memLimit, err = d.getCgroupV1MemoryLimit()
 	if err == nil && memLimit > 0 {
 		log.Infof("Successfully read cgroup v1 memory limit: %d bytes", memLimit)
 		return memLimit
 	}
-
 	log.Infof("Could not detect cgroup memory limit, using default")
 	return 0
 }
@@ -86,19 +82,14 @@ func (d *CgroupMemoryDetector) GetDefaultMaxHeapSizeBytes() *uint64 {
 
 // getCgroupV2MemoryLimit returns the cgroup v2 memory limit in bytes.
 func (d *CgroupMemoryDetector) getCgroupV2MemoryLimit() (uint64, error) {
-	// First try the unified hierarchy
 	content, err := d.fileReader.ReadFile(d.cgroupV2UnifiedPath)
 	if err == nil {
 		return d.parseCgroupMemoryValue(string(content))
 	}
-
-	// Try to find the cgroup path from mountinfo
 	cgroupPath, err := d.detectCgroupV2Path()
 	if err != nil {
 		return 0, err
 	}
-
-	// Read the memory.max file
 	memLimitPath := filepath.Join(cgroupPath, "memory.max")
 	content, err = d.fileReader.ReadFile(memLimitPath)
 	if err != nil {
@@ -110,19 +101,14 @@ func (d *CgroupMemoryDetector) getCgroupV2MemoryLimit() (uint64, error) {
 
 // getCgroupV1MemoryLimit returns the cgroup v1 memory limit in bytes.
 func (d *CgroupMemoryDetector) getCgroupV1MemoryLimit() (uint64, error) {
-	// First try the default path
 	content, err := d.fileReader.ReadFile(d.cgroupV1Path)
 	if err == nil {
 		return d.parseCgroupMemoryValue(string(content))
 	}
-
-	// Try to find the cgroup path from /proc/self/cgroup
 	cgroupPath, err := d.detectCgroupV1Path()
 	if err != nil {
 		return 0, err
 	}
-
-	// Read the memory.limit_in_bytes file
 	memLimitPath := filepath.Join("/sys/fs/cgroup/memory", cgroupPath, "memory.limit_in_bytes")
 	content, err = d.fileReader.ReadFile(memLimitPath)
 	if err != nil {
@@ -139,7 +125,6 @@ func (d *CgroupMemoryDetector) detectCgroupV1Path() (string, error) {
 		return "", err
 	}
 	defer file.Close()
-
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -148,11 +133,9 @@ func (d *CgroupMemoryDetector) detectCgroupV1Path() (string, error) {
 			return parts[2], nil
 		}
 	}
-
 	if err := scanner.Err(); err != nil {
 		return "", err
 	}
-
 	return "", fmt.Errorf("memory controller not found in cgroup v1")
 }
 
@@ -163,7 +146,6 @@ func (d *CgroupMemoryDetector) detectCgroupV2Path() (string, error) {
 		return "", err
 	}
 	defer file.Close()
-
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := scanner.Text()
