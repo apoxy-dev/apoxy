@@ -140,10 +140,17 @@ type BootstrapConfig struct {
 }
 
 func defaultBootstrapConfig() *BootstrapConfig {
+	// Create a variable from the constant so we can take its address
+	defaultConnections := defaultEnvoyMaxActiveDownstreamConnections
+
+	// Get the default max heap size from the detector
+	maxHeapSize := GetDefaultMaxHeapSizeBytes()
+
 	return &BootstrapConfig{
 		XdsServerHost:                          envoyGatewayXdsServerHost,
 		XdsServerPort:                          DefaultXdsServerPort,
-		OverloadMaxActiveDownstreamConnections: &defaultEnvoyMaxActiveDownstreamConnections,
+		OverloadMaxHeapSizeBytes:               maxHeapSize,
+		OverloadMaxActiveDownstreamConnections: &defaultConnections,
 	}
 }
 

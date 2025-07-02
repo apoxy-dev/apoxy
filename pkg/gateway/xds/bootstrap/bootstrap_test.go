@@ -1,8 +1,3 @@
-// Copyright Envoy Gateway Authors
-// SPDX-License-Identifier: Apache-2.0
-// The full text of the Apache license is available in the LICENSE file at
-// the root of the repo.
-
 package bootstrap
 
 import (
@@ -16,6 +11,20 @@ import (
 )
 
 func TestGetRenderedBootstrapConfig(t *testing.T) {
+	origDetector := defaultDetector
+	defer func() { defaultDetector = origDetector }()
+
+	mockReader := &MockFileReader{
+		files: map[string][]byte{
+			"/sys/fs/cgroup/memory.max": []byte("2147483648\n"),
+		},
+	}
+	mockDetector := NewCgroupMemoryDetector()
+	mockDetector.fileReader = mockReader
+	defaultDetector = mockDetector
+	result := GetCgroupMemoryLimit()
+	assert.Equal(t, uint64(2147483648), result)
+
 	cases := []struct {
 		name            string
 		overrideOptions []BootstrapOption
@@ -24,6 +33,12 @@ func TestGetRenderedBootstrapConfig(t *testing.T) {
 			name: "overload-manager",
 			overrideOptions: []BootstrapOption{
 				WithOverloadMaxHeapSizeBytes(1073741824), // 1GB
+				WithOverloadMaxActiveConnections(50000),
+			},
+		},
+		{
+			name: "overload-manager-cgroup",
+			overrideOptions: []BootstrapOption{
 				WithOverloadMaxActiveConnections(50000),
 			},
 		},
