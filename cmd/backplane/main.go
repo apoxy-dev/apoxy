@@ -87,6 +87,9 @@ var (
 
 	useEnvoyContrib = flag.Bool("use_envoy_contrib", false, "Use Envoy contrib filters.")
 
+	overloadMaxHeapSizeBytes       = flag.Uint64("overload-max-heap-size-bytes", 0, "Maximum heap size in bytes for Envoy overload manager.")
+	overloadMaxActiveConnections = flag.Uint64("overload-max-active-connections", 0, "Maximum number of active downstream connections for Envoy overload manager.")
+
 	k8sKVNamespace    = flag.String("k8s_kv_namespace", os.Getenv("POD_NAMESPACE"), "Namespace for the K/V store.")
 	k8sKVPeerSelector = flag.String("k8s_kv_peer_selector", "app.kubernetes.io/component=backplane", "Label selector for K/V store peers.")
 
@@ -282,6 +285,12 @@ func main() {
 	}
 	if *useEnvoyContrib {
 		proxyOpts = append(proxyOpts, bpctrl.WithEnvoyContrib())
+	}
+	if *overloadMaxHeapSizeBytes > 0 {
+		proxyOpts = append(proxyOpts, bpctrl.WithOverloadMaxHeapSizeBytes(*overloadMaxHeapSizeBytes))
+	}
+	if *overloadMaxActiveConnections > 0 {
+		proxyOpts = append(proxyOpts, bpctrl.WithOverloadMaxActiveConnections(*overloadMaxActiveConnections))
 	}
 	if *readyProbePort != 0 {
 		hc := healthchecker.NewAggregatedHealthChecker()

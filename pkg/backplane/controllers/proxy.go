@@ -59,13 +59,15 @@ type ProxyReconciler struct {
 }
 
 type options struct {
-	chConn                   clickhouse.Conn
-	chOpts                   *clickhouse.Options
-	apiServerTLSClientConfig *tls.Config
-	goPluginDir              string
-	releaseURL               string
-	useEnvoyContrib          bool
-	healthChecker            *healthchecker.AggregatedHealthChecker
+	chConn                          clickhouse.Conn
+	chOpts                          *clickhouse.Options
+	apiServerTLSClientConfig        *tls.Config
+	goPluginDir                     string
+	releaseURL                      string
+	useEnvoyContrib                 bool
+	healthChecker                   *healthchecker.AggregatedHealthChecker
+	overloadMaxHeapSizeBytes        *uint64
+	overloadMaxActiveConnections    *uint64
 }
 
 // Option is a functional option for ProxyReconciler.
@@ -119,6 +121,20 @@ func WithEnvoyContrib() Option {
 func WithAggregatedHealthChecker(hc *healthchecker.AggregatedHealthChecker) Option {
 	return func(o *options) {
 		o.healthChecker = hc
+	}
+}
+
+// WithOverloadMaxHeapSizeBytes sets the maximum heap size in bytes for the Envoy overload manager.
+func WithOverloadMaxHeapSizeBytes(size uint64) Option {
+	return func(o *options) {
+		o.overloadMaxHeapSizeBytes = &size
+	}
+}
+
+// WithOverloadMaxActiveConnections sets the maximum number of active downstream connections for the Envoy overload manager.
+func WithOverloadMaxActiveConnections(count uint64) Option {
+	return func(o *options) {
+		o.overloadMaxActiveConnections = &count
 	}
 }
 
@@ -302,6 +318,14 @@ func (r *ProxyReconciler) Reconcile(ctx context.Context, request reconcile.Reque
 		bsOpts := []bootstrap.BootstrapOption{
 			bootstrap.WithXdsServerHost(r.apiServerHost),
 			// TODO(dilyevsky): Add TLS config from r.options.apiServerTLSConfig.
+		}
+		
+		if r.options.overloadMaxHeapSizeBytes != nil {
+			bsOpts = append(bsOpts, bootstrap.WithOverloadMaxHeapSizeBytes(*r.options.overloadMaxHeapSizeBytes))
+		}
+		
+		if r.options.overloadMaxActiveConnections != nil {
+			bsOpts = append(bsOpts, bootstrap.WithOverloadMaxActiveConnections(*r.options.overloadMaxActiveConnections))
 		}
 		cfg, err := bootstrap.GetRenderedBootstrapConfig(bsOpts...)
 		if err != nil {
