@@ -156,6 +156,7 @@ func WithPreserveDefaultGatewayDestinations(dsts []netip.Prefix) TunnelClientOpt
 
 const ApplicationCodeOK quic.ApplicationErrorCode = 0x0
 
+// TunnelClient implements a TunnelNode client.
 type TunnelClient struct {
 	options            *tunnelClientOptions
 	insecureSkipVerify bool
@@ -170,6 +171,7 @@ type TunnelClient struct {
 	closeOnce sync.Once
 }
 
+// NewTunnelClient creates a new TunnelClient instance with the provided options.
 func NewTunnelClient(opts ...TunnelClientOption) (*TunnelClient, error) {
 	options := defaultClientOptions()
 	for _, opt := range opts {
@@ -194,6 +196,8 @@ func NewTunnelClient(opts ...TunnelClientOption) (*TunnelClient, error) {
 	return client, nil
 }
 
+// Start dials the TunnelNode server, establishes tunnel connection and sets
+// up client-side routing.
 func (c *TunnelClient) Start(ctx context.Context) error {
 	tlsConfig := &tls.Config{
 		ServerName:         "proxy",
@@ -211,10 +215,12 @@ func (c *TunnelClient) Start(ctx context.Context) error {
 		c.options.serverAddr,
 		tlsConfig,
 		&quic.Config{
-			EnableDatagrams:   true,
-			InitialPacketSize: 1350,
-			KeepAlivePeriod:   5 * time.Second,
-			MaxIdleTimeout:    5 * time.Minute,
+			EnableDatagrams:                true,
+			InitialPacketSize:              1350,
+			InitialConnectionReceiveWindow: 5 * 1000 * 1000,
+			MaxConnectionReceiveWindow:     100 * 1000 * 1000,
+			KeepAlivePeriod:                1 * time.Second,
+			MaxIdleTimeout:                 15 * time.Second,
 		},
 	)
 	if err != nil {
