@@ -112,11 +112,9 @@ func tcpHandler(ctx context.Context, upstream network.Network) func(req *tcp.For
 func addrFromNetstackIP(ip tcpip.Address) netip.Addr {
 	switch ip.Len() {
 	case 4:
-		ip := ip.As4()
-		return netip.AddrFrom4([4]byte{ip[0], ip[1], ip[2], ip[3]})
+		return netip.AddrFrom4(ip.As4())
 	case 16:
-		ip := ip.As16()
-		return netip.AddrFrom16(ip).Unmap()
+		return netip.AddrFrom16(ip.As16())
 	}
 	return netip.Addr{}
 }

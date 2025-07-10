@@ -25,6 +25,15 @@ import (
 
 const (
 	defaultRoutePriority = 1000
+	// apoxyRouteTable is a custom routing table ID for Apoxy tunnel routes.
+	// Using a custom table allows us to:
+	// 1. Easily identify and clean up all Apoxy routes
+	// 2. Override main table routes with higher priority rules
+	// 3. Avoid conflicts with system routes
+	apoxyRouteTable = 100
+	// apoxyRouteTableName is the name for our custom routing table
+	// This can be seen in `ip route show table apoxy` commands
+	apoxyRouteTableName = "apoxy"
 )
 
 var (
@@ -110,6 +119,49 @@ func newClientNetlinkRouter(opts ...Option) (*ClientNetlinkRouter, error) {
 	}, nil
 }
 
+// setupRoutingRules sets up ip rules to use our custom routing table
+func (r *ClientNetlinkRouter) setupRoutingRules() error {
+	// Add rule to lookup our custom table for all traffic
+	// This allows us to override routes in the main table
+	rule := netlink.NewRule()
+	rule.Table = apoxyRouteTable
+	rule.Priority = 999 // Higher priority than main table (32766)
+
+	if err := netlink.RuleAdd(rule); err != nil && !errors.Is(err, os.ErrExist) {
+		return fmt.Errorf("failed to add routing rule: %w", err)
+	}
+
+	slog.Info("Added routing rule for custom table",
+		slog.Int("table", apoxyRouteTable),
+		slog.Int("priority", rule.Priority))
+
+	return nil
+}
+
+// cleanupRoutingRules removes the ip rules for our custom routing table
+func (r *ClientNetlinkRouter) cleanupRoutingRules() error {
+	// List all rules
+	rules, err := netlink.RuleList(netlink.FAMILY_ALL)
+	if err != nil {
+		return fmt.Errorf("failed to list rules: %w", err)
+	}
+
+	// Remove rules that point to our custom table
+	for _, rule := range rules {
+		if rule.Table == apoxyRouteTable {
+			if err := netlink.RuleDel(&rule); err != nil && !errors.Is(err, os.ErrNotExist) {
+				slog.Warn("Failed to remove routing rule", slog.Any("error", err))
+			} else {
+				slog.Info("Removed routing rule for custom table",
+					slog.Int("table", apoxyRouteTable),
+					slog.Int("priority", rule.Priority))
+			}
+		}
+	}
+
+	return nil
+}
+
 // syncIptables configures iptables rules for client tunnel routing.
 func (r *ClientNetlinkRouter) syncIptables() error {
 	tunName := r.tunLink.Attrs().Name
@@ -135,6 +187,8 @@ func (r *ClientNetlinkRouter) syncIptables() error {
 		}
 	}
 
+	// TODO: cleanup SNAT rules for prefixes that no longer exist.
+
 	// TODO: Set conntrack rules for route switching.
 	// # Ensure connections maintain their original path
 	// iptables -A OUTPUT -o tun0 -m conntrack --ctorigdst tun0 -j ACCEPT
@@ -147,34 +201,6 @@ func (r *ClientNetlinkRouter) syncIptables() error {
 	// 	...
 	// }
 
-	slog.Info("Client iptables rules configured", slog.String("tun_iface", tunName))
-
-	return nil
-}
-
-// cleanupIptables removes iptables rules created by this router.
-func (r *ClientNetlinkRouter) cleanupIptables() error {
-	tunName := r.tunLink.Attrs().Name
-
-	// SNAT traffic comming into tunnel to overlay prefix.
-	for _, p := range r.options.localAddresses {
-		if p.Addr().Is4() {
-			if err := r.iptV4.DeleteRule(
-				utiliptables.TableNAT, utiliptables.ChainPostrouting,
-				"-o", tunName, "-j", "SNAT", "--to-source", p.Addr().String(),
-			); err != nil {
-				slog.Error("failed to delete SNAT rule for IPv4", slog.String("error", err.Error()))
-			}
-		} else {
-			if err := r.iptV6.DeleteRule(
-				utiliptables.TableNAT, utiliptables.ChainPostrouting,
-				"-o", tunName, "-j", "SNAT", "--to-source", p.Addr().String(),
-			); err != nil {
-				slog.Error("failed to delete SNAT rule for IPv6", slog.String("error", err.Error()))
-			}
-		}
-	}
-
 	// TODO: Cleanup conntrack rules for route switching.
 	// # Ensure connections maintain their original path
 	// iptables -D OUTPUT -o tun0 -m conntrack --ctorigdst tun0 -j ACCEPT
@@ -185,7 +211,7 @@ func (r *ClientNetlinkRouter) cleanupIptables() error {
 	//
 	// }
 
-	slog.Info("Client iptables rules cleaned up", slog.String("tun_iface", tunName))
+	slog.Info("Client iptables rules configured", slog.String("tun_iface", tunName))
 
 	return nil
 }
@@ -194,6 +220,16 @@ func (r *ClientNetlinkRouter) cleanupIptables() error {
 func (r *ClientNetlinkRouter) Start(ctx context.Context) error {
 	slog.Info("Starting client netlink router")
 	defer slog.Debug("Client netlink router stopped")
+
+	// Setup routing rules to use our custom table
+	if err := r.setupRoutingRules(); err != nil {
+		return fmt.Errorf("failed to setup routing rules: %w", err)
+	}
+
+	// Sync iptables rules
+	if err := r.syncIptables(); err != nil {
+		return fmt.Errorf("failed to sync iptables: %w", err)
+	}
 
 	g, gctx := errgroup.WithContext(ctx)
 
@@ -277,6 +313,7 @@ func (r *ClientNetlinkRouter) AddRoute(dst netip.Prefix) error {
 			Mask: mask,
 		},
 		Scope: netlink.SCOPE_LINK,
+		Table: apoxyRouteTable,
 	}
 
 	isDefault := r.isDefaultRoute(dst)
@@ -307,6 +344,8 @@ func (r *ClientNetlinkRouter) AddRoute(dst netip.Prefix) error {
 				}
 				ecmpGWs = append(ecmpGWs, gw)
 			}
+		} else if len(gws) > 0 {
+			route.Gw = gws[0]
 		}
 
 		if len(r.options.preserveDefaultGwDsts) > 0 {
@@ -358,16 +397,19 @@ func (r *ClientNetlinkRouter) AddRoute(dst netip.Prefix) error {
 		slog.Info("Adding default route",
 			slog.String("prefix", dst.String()),
 			slog.String("gateway", route.Gw.String()),
-			slog.Any("ecmp_gws", ecmpGWs))
+			slog.Any("ecmp_gws", ecmpGWs),
+			slog.Int("table", apoxyRouteTable))
 	}
 
 	if err := netlink.RouteAddEcmp(route); err != nil && !errors.Is(err, os.ErrExist) {
-		return fmt.Errorf("failed to add route: %w", err)
+		return fmt.Errorf("failed to add route to custom table: %w", err)
 	}
 
 	slog.Info("Client route added successfully",
 		slog.String("prefix", dst.String()),
-		slog.Bool("is_default", isDefault))
+		slog.Bool("is_default", isDefault),
+		slog.Int("table", apoxyRouteTable),
+		slog.Int("link_index", r.tunLink.Attrs().Index))
 
 	return nil
 }
@@ -404,6 +446,7 @@ func (r *ClientNetlinkRouter) removeKernelRoute(dst netip.Prefix, isDefault bool
 			IP:   dst.Addr().AsSlice(),
 			Mask: mask,
 		},
+		Table: apoxyRouteTable,
 	}
 
 	if isDefault {
@@ -430,7 +473,8 @@ func (r *ClientNetlinkRouter) DelRoute(dst netip.Prefix) error {
 
 	slog.Info("Client route removed successfully",
 		slog.String("prefix", dst.String()),
-		slog.Bool("was_default", isDefault))
+		slog.Bool("was_default", isDefault),
+		slog.Int("table", apoxyRouteTable))
 
 	return nil
 }
@@ -438,10 +482,18 @@ func (r *ClientNetlinkRouter) DelRoute(dst netip.Prefix) error {
 // ListRoutes returns a list of all routes currently managed by the router.
 func (r *ClientNetlinkRouter) ListRoutes() ([]TunnelRoute, error) {
 	family := netlink.FAMILY_ALL
-	routes, err := netlink.RouteList(r.tunLink, family)
+	// List routes from our custom table
+	routes, err := netlink.RouteListFiltered(family, &netlink.Route{
+		LinkIndex: r.tunLink.Attrs().Index,
+		Table:     apoxyRouteTable,
+	}, netlink.RT_FILTER_OIF|netlink.RT_FILTER_TABLE)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list routes: %w", err)
+		return nil, fmt.Errorf("failed to list routes from table %d: %w", apoxyRouteTable, err)
 	}
+
+	slog.Debug("Listed routes from custom table",
+		slog.Int("count", len(routes)),
+		slog.Int("table", apoxyRouteTable))
 
 	var tunnelRoutes []TunnelRoute
 	for _, route := range routes {
@@ -510,21 +562,107 @@ func (r *ClientNetlinkRouter) LocalAddresses() ([]netip.Prefix, error) {
 	return r.options.localAddresses, nil
 }
 
+// cleanupRoutes removes all routes from our custom routing table
+func (r *ClientNetlinkRouter) cleanupRoutes() error {
+	routes, err := netlink.RouteListFiltered(netlink.FAMILY_ALL, &netlink.Route{
+		Table: apoxyRouteTable,
+	}, netlink.RT_FILTER_TABLE)
+	if err != nil {
+		return fmt.Errorf("failed to list routes for cleanup from table %d: %w", apoxyRouteTable, err)
+	}
+
+	slog.Info("Cleaning up routes from custom table",
+		slog.Int("count", len(routes)),
+		slog.Int("table", apoxyRouteTable))
+
+	for _, route := range routes {
+		dstStr := "<nil>"
+		if route.Dst != nil {
+			dstStr = route.Dst.String()
+		}
+
+		if err := netlink.RouteDel(&route); err != nil && !errors.Is(err, os.ErrNotExist) {
+			slog.Warn("Failed to remove route",
+				slog.String("dst", dstStr),
+				slog.Any("error", err))
+		} else {
+			slog.Debug("Removed route from custom table",
+				slog.String("dst", dstStr),
+				slog.Int("table", apoxyRouteTable))
+		}
+	}
+
+	// Also clean up any preserved default gateway routes we may have added.
+	if len(r.options.preserveDefaultGwDsts) > 0 {
+		for _, dst := range r.options.preserveDefaultGwDsts {
+			af := netlink.FAMILY_V6
+			if dst.Addr().Is4() {
+				af = netlink.FAMILY_V4
+			}
+
+			// Look for routes matching our preserved destinations
+			routes, err := netlink.RouteList(nil, af)
+			if err != nil {
+				slog.Warn("Failed to list routes for preserved destination cleanup",
+					slog.String("dst", dst.String()),
+					slog.Any("error", err))
+				continue
+			}
+
+			for _, route := range routes {
+				if route.Dst != nil && route.Dst.String() == dst.String() {
+					if err := netlink.RouteDel(&route); err != nil && !errors.Is(err, os.ErrNotExist) {
+						slog.Warn("Failed to remove preserved route",
+							slog.String("dst", dst.String()),
+							slog.Any("error", err))
+					} else {
+						slog.Debug("Removed preserved default gateway route",
+							slog.String("dst", dst.String()))
+					}
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
 // Close releases any resources associated with the router.
 func (r *ClientNetlinkRouter) Close() error {
 	var firstErr error
 	r.closeOnce.Do(func() {
 		close(r.closed)
 
-		// Clean up iptables rules
-		if err := r.cleanupIptables(); err != nil {
+		slog.Info("Closing client netlink router")
+
+		if err := r.syncIptables(); err != nil {
 			slog.Error("Failed to cleanup iptables", slog.Any("error", err))
 			if firstErr == nil {
 				firstErr = fmt.Errorf("failed to cleanup iptables: %w", err)
 			}
 		}
 
-		// Close TUN device
+		if err := r.smux.Close(); err != nil {
+			slog.Error("Failed to close muxed connection", slog.Any("error", err))
+			if firstErr == nil {
+				firstErr = fmt.Errorf("failed to close muxed connection: %w", err)
+			}
+		}
+
+		if err := r.cleanupRoutes(); err != nil {
+			slog.Error("Failed to cleanup routes", slog.Any("error", err))
+			if firstErr == nil {
+				firstErr = fmt.Errorf("failed to cleanup routes: %w", err)
+			}
+		}
+
+		if err := r.cleanupRoutingRules(); err != nil {
+			slog.Error("Failed to cleanup routing rules", slog.Any("error", err))
+			if firstErr == nil {
+				firstErr = fmt.Errorf("failed to cleanup routing rules: %w", err)
+			}
+		}
+
 		if err := r.tunDev.Close(); err != nil {
 			slog.Error("Failed to close TUN device", slog.Any("error", err))
 			if firstErr == nil {
