@@ -44,11 +44,14 @@ func TestNetlinkRouter(t *testing.T) {
 
 	// Test AddPeer
 	prefix := netip.MustParsePrefix("fd00::1/128")
-	conn := connection.NewMuxedConn()
-	require.NoError(t, r.Add(prefix, conn))
+	conn := connection.NewDstMuxedConn()
+	require.NoError(t, r.AddAddr(prefix, conn))
+	require.NoError(t, r.AddRoute(prefix))
 
 	// Test RemovePeer
-	err = r.DelAll(prefix)
+	err = r.DelRoute(prefix)
+	require.NoError(t, err)
+	err = r.DelAddr(prefix)
 	require.NoError(t, err)
 
 	// Test Close

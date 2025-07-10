@@ -15,8 +15,8 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/metrics"
 )
 
-// MuxedConn multiplexes multiple connection.Conn objects.
-type MuxedConn struct {
+// muxedConn multiplexes multiple connection.Conn objects.
+type muxedConn struct {
 	// Maps tunnel destination address to CONNECT-IP connection.
 	conns            *triemap.TrieMap[Connection]
 	incomingPackets  chan *[]byte
@@ -26,9 +26,9 @@ type MuxedConn struct {
 	closed    atomic.Bool
 }
 
-// NewMuxedConn creates a new muxedConn.
-func NewMuxedConn() *MuxedConn {
-	return &MuxedConn{
+// newMuxedConn creates a new *muxedConn.
+func newMuxedConn() *muxedConn {
+	return &muxedConn{
 		conns:           triemap.New[Connection](),
 		incomingPackets: make(chan *[]byte, 100),
 		packetBufferPool: sync.Pool{
@@ -40,42 +40,66 @@ func NewMuxedConn() *MuxedConn {
 	}
 }
 
-func (m *MuxedConn) AddConnection(prefix netip.Prefix, conn Connection) {
-	if prefix.IsValid() {
-		m.conns.Insert(prefix, conn)
-		go m.readPackets(conn)
-	} else {
-		slog.Warn("Invalid prefix for connection", slog.String("prefix", prefix.String()))
+func (m *muxedConn) readPackets(src netip.Prefix, conn Connection) {
+	for {
+		pkt := m.packetBufferPool.Get().(*[]byte)
+
+		n, err := conn.ReadPacket(*pkt)
+		if err != nil {
+			if !errors.Is(err, net.ErrClosed) {
+				slog.Error("Failed to read from connection", slog.Any("error", err))
+			}
+			slog.Info("Connection closed", slog.Any("src", src))
+			return
+		}
+
+		slog.Debug("Read packet from connection", slog.Int("bytes", n))
+
+		*pkt = (*pkt)[:n]
+		m.incomingPackets <- pkt
+
+		metrics.TunnelPacketsReceived.Inc()
+		metrics.TunnelBytesReceived.Add(float64(n))
 	}
 }
 
-func (m *MuxedConn) RemoveConnection(prefix netip.Prefix) error {
+// Add adds a new connection to the multiplexer.
+func (m *muxedConn) Add(addr netip.Prefix, conn Connection) error {
+	if !addr.IsValid() {
+		return fmt.Errorf("invalid prefix for connection: %v", addr)
+	}
+	m.conns.Insert(addr, conn)
+	go m.readPackets(addr, conn)
+	return nil
+}
+
+// Del removes a connection from the multiplexer.
+func (m *muxedConn) Del(addr netip.Prefix) error {
 	// Has the connection already been closed?
 	if m.closed.Load() {
 		// Then this becomes a no-op.
 		return nil
 	}
 
-	if prefix.IsValid() {
-		conn, ok := m.conns.Get(prefix.Addr())
-		if !ok {
-			return fmt.Errorf("no connection found for prefix: %s", prefix.String())
-		}
-
-		// Close the connection and remove it from the map.
-		if err := conn.Close(); err != nil {
-			return fmt.Errorf("failed to close connection: %w", err)
-		}
-
-		// Remove the connection from the map.
-		m.conns.Remove(prefix)
-	} else {
-		return fmt.Errorf("invalid prefix for connection: %s", prefix.String())
+	if !addr.IsValid() {
+		return fmt.Errorf("invalid prefix for connection: %v", addr)
 	}
+	conn, ok := m.conns.Get(addr.Addr())
+	if !ok {
+		return fmt.Errorf("no connection found for prefix: %v", addr)
+	}
+
+	// Close the connection and remove it from the map.
+	if err := conn.Close(); err != nil {
+		return fmt.Errorf("failed to close connection: %w", err)
+	}
+
+	// Remove the connection from the map.
+	m.conns.Remove(addr)
 	return nil
 }
 
-func (m *MuxedConn) Prefixes() []netip.Prefix {
+func (m *muxedConn) Prefixes() []netip.Prefix {
 	var prefixes []netip.Prefix
 	m.conns.ForEach(func(prefix netip.Prefix, value Connection) bool {
 		prefixes = append(prefixes, prefix)
@@ -84,7 +108,7 @@ func (m *MuxedConn) Prefixes() []netip.Prefix {
 	return prefixes
 }
 
-func (m *MuxedConn) Close() error {
+func (m *muxedConn) Close() error {
 	var firstErr error
 	m.closeOnce.Do(func() {
 		// Close all connections in the map.
@@ -112,7 +136,8 @@ func (m *MuxedConn) Close() error {
 	return firstErr
 }
 
-func (m *MuxedConn) ReadPacket(pkt []byte) (int, error) {
+// ReadPacket reads a packet from multiple underlying Connection pipes.
+func (m *muxedConn) ReadPacket(pkt []byte) (int, error) {
 	p, ok := <-m.incomingPackets
 	if !ok {
 		return 0, net.ErrClosed
@@ -128,26 +153,58 @@ func (m *MuxedConn) ReadPacket(pkt []byte) (int, error) {
 	return n, nil
 }
 
-func (m *MuxedConn) WritePacket(pkt []byte) ([]byte, error) {
+func (m *muxedConn) writePacket(addr netip.Addr, pkt []byte) ([]byte, error) {
+	if !addr.IsValid() || !addr.IsGlobalUnicast() {
+		slog.Warn("Invalid IP", slog.String("ip", addr.String()))
+		return nil, nil
+	}
+
+	conn, ok := m.conns.Get(addr)
+	if !ok {
+		return nil, fmt.Errorf("no matching tunnel found for IP: %s", addr.String())
+	}
+
+	metrics.TunnelPacketsSent.Inc()
+	metrics.TunnelBytesSent.Add(float64(len(pkt)))
+
+	return conn.WritePacket(pkt)
+}
+
+// SrcMuxedConn implements Connection that multiplexes multiple Connections based
+// on the source IP of the IPv4/v6 packet.
+type SrcMuxedConn struct {
+	muxedConn
+}
+
+// NewSrcMuxedConn creates a new SrcMuxedConn instance.
+func NewSrcMuxedConn() *SrcMuxedConn {
+	return &SrcMuxedConn{
+		muxedConn: *newMuxedConn(),
+	}
+}
+
+// WritePacket writes a pkt to one of the underlying Connection objects
+// based on the source IP of the pkt.
+func (m *SrcMuxedConn) WritePacket(pkt []byte) ([]byte, error) {
 	slog.Debug("Write packet to connection", slog.Int("bytes", len(pkt)))
 
-	var dstIP netip.Addr
+	var srcAddr netip.Addr
 	switch pkt[0] >> 4 {
 	case 6:
-		// IPv6 packet (RFC 8200)
+		// IPv6 packet (RFC 8200).
 		if len(pkt) >= 40 {
 			var addr [16]byte
-			copy(addr[:], pkt[24:40])
-			dstIP = netip.AddrFrom16(addr)
+			copy(addr[:], pkt[8:24])
+			srcAddr = netip.AddrFrom16(addr)
 		} else {
 			return nil, fmt.Errorf("IPv6 packet too short: %d", len(pkt))
 		}
 	case 4:
-		// IPv4 packet (RFC 791)
+		// IPv4 packet (RFC 791).
 		if len(pkt) >= 20 {
 			var addr [4]byte
-			copy(addr[:], pkt[16:20])
-			dstIP = netip.AddrFrom4(addr)
+			copy(addr[:], pkt[12:16])
+			srcAddr = netip.AddrFrom4(addr)
 		} else {
 			return nil, fmt.Errorf("IPv4 packet too short: %d", len(pkt))
 		}
@@ -155,44 +212,54 @@ func (m *MuxedConn) WritePacket(pkt []byte) ([]byte, error) {
 		return nil, fmt.Errorf("unknown packet type: %d", pkt[0]>>4)
 	}
 
-	if !dstIP.IsValid() || !dstIP.IsGlobalUnicast() {
-		slog.Debug("Invalid destination IP", slog.String("ip", dstIP.String()))
-		return nil, nil
-	}
+	slog.Debug("Packet source", slog.String("ip", srcAddr.String()))
 
-	slog.Debug("Packet destination", slog.String("ip", dstIP.String()))
-
-	conn, ok := m.conns.Get(dstIP)
-	if !ok {
-		return nil, fmt.Errorf("no matching tunnel found for destination IP: %s", dstIP.String())
-	}
-
-	metrics.TunnelPacketsSent.Inc()
-	metrics.TunnelBytesSent.Add(float64(len(pkt)))
-
-	return conn.WritePacket(pkt)
-
+	return m.writePacket(srcAddr, pkt)
 }
 
-func (m *MuxedConn) readPackets(conn Connection) {
-	for {
-		pkt := m.packetBufferPool.Get().(*[]byte)
+// SrcMuxedConn implements Connection that multiplexes multiple Connections based
+// on the destination IP of the IPv4/v6 packet.
+type DstMuxedConn struct {
+	muxedConn
+}
 
-		n, err := conn.ReadPacket(*pkt)
-		if err != nil {
-			if !errors.Is(err, net.ErrClosed) {
-				slog.Error("Failed to read from connection", slog.Any("error", err))
-			}
-
-			break
-		}
-
-		slog.Debug("Read packet from connection", slog.Int("bytes", n))
-
-		*pkt = (*pkt)[:n]
-		m.incomingPackets <- pkt
-
-		metrics.TunnelPacketsReceived.Inc()
-		metrics.TunnelBytesReceived.Add(float64(n))
+// NewDstMuxedConn creates a new DstMuxedConn instance.
+func NewDstMuxedConn() *DstMuxedConn {
+	return &DstMuxedConn{
+		muxedConn: *newMuxedConn(),
 	}
+}
+
+// WritePacket writes a pkt to one of the underlying Connection objects
+// based on the destination IP of the pkt.
+func (m *DstMuxedConn) WritePacket(pkt []byte) ([]byte, error) {
+	slog.Debug("Write packet to connection", slog.Int("bytes", len(pkt)))
+
+	var dstAddr netip.Addr
+	switch pkt[0] >> 4 {
+	case 6:
+		// IPv6 packet (RFC 8200).
+		if len(pkt) >= 40 {
+			var addr [16]byte
+			copy(addr[:], pkt[24:40])
+			dstAddr = netip.AddrFrom16(addr)
+		} else {
+			return nil, fmt.Errorf("IPv6 packet too short: %d", len(pkt))
+		}
+	case 4:
+		// IPv4 packet (RFC 791).
+		if len(pkt) >= 20 {
+			var addr [4]byte
+			copy(addr[:], pkt[16:20])
+			dstAddr = netip.AddrFrom4(addr)
+		} else {
+			return nil, fmt.Errorf("IPv4 packet too short: %d", len(pkt))
+		}
+	default:
+		return nil, fmt.Errorf("unknown packet type: %d", pkt[0]>>4)
+	}
+
+	slog.Debug("Packet destination", slog.String("ip", dstAddr.String()))
+
+	return m.writePacket(dstAddr, pkt)
 }

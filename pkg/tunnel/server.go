@@ -32,7 +32,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	"github.com/apoxy-dev/apoxy/pkg/tunnel/connection"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/metrics"
 	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/router"
@@ -136,9 +135,6 @@ type TunnelServer struct {
 	ln           *quic.EarlyListener
 	router       router.Router
 
-	// Connections
-	mux *connection.MuxedConn
-	// Maps
 	tunnelNodes *haxmap.Map[string, *corev1alpha.TunnelNode]
 }
 
@@ -169,7 +165,6 @@ func NewTunnelServer(
 		jwtValidator: v,
 		router:       r,
 
-		mux:         connection.NewMuxedConn(),
 		tunnelNodes: haxmap.New[string, *corev1alpha.TunnelNode](),
 	}
 
@@ -381,14 +376,14 @@ func (t *TunnelServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := t.router.Add(peerV6, conn); err != nil {
+	if err := t.router.AddAddr(peerV6, conn); err != nil {
 		logger.Error("Failed to add TUN peer", slog.Any("error", err))
 		metrics.TunnelConnectionFailures.WithLabelValues("tun_peer_add_failed").Inc()
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte(err.Error()))
 		return
 	}
-	if err := t.router.Add(peerV4, conn); err != nil {
+	if err := t.router.AddAddr(peerV4, conn); err != nil {
 		logger.Error("Failed to add TUN peer", slog.Any("error", err))
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte(err.Error()))
@@ -467,10 +462,10 @@ func (t *TunnelServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 		logger.Error("Failed to deallocate IP address", slog.Any("error", err))
 	}
 
-	if err := t.router.DelAll(peerV6); err != nil {
+	if err := t.router.DelAddr(peerV6); err != nil {
 		logger.Error("Failed to remove TUN peer", slog.Any("error", err))
 	}
-	if err := t.router.DelAll(peerV4); err != nil {
+	if err := t.router.DelAddr(peerV4); err != nil {
 		logger.Error("Failed to remove TUN peer", slog.Any("error", err))
 	}
 

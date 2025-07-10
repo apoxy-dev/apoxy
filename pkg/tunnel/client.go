@@ -243,14 +243,6 @@ func (c *TunnelClient) Start(ctx context.Context) error {
 
 	slog.Info("Connected to server", slog.String("addr", c.options.serverAddr))
 
-	localPrefixes, err := c.conn.LocalPrefixes(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to get local IP addresses: %w", err)
-	}
-	if len(localPrefixes) == 0 {
-		return errors.New("no local IP addresses available")
-	}
-
 	resolveConf := &network.ResolveConfig{
 		Nameservers:   rsp.Header.Values("X-Apoxy-Nameservers"),
 		SearchDomains: rsp.Header.Values("X-Apoxy-DNS-SearchDomains"),
@@ -274,26 +266,20 @@ func (c *TunnelClient) Start(ctx context.Context) error {
 		slog.Any("nDots", resolveConf.NDots))
 
 	routerOpts := []router.Option{
-		router.WithLocalAddresses(localPrefixes),
 		router.WithResolveConfig(resolveConf),
 	}
-
 	if c.options.pcapPath != "" {
 		routerOpts = append(routerOpts, router.WithPcapPath(c.options.pcapPath))
 	}
-
 	if c.options.extIfaceName != "" {
 		routerOpts = append(routerOpts, router.WithExternalInterface(c.options.extIfaceName))
 	}
-
 	if c.options.tunIfaceName != "" {
 		routerOpts = append(routerOpts, router.WithTunnelInterface(c.options.tunIfaceName))
 	}
-
 	if c.options.socksListenAddr != "" {
 		routerOpts = append(routerOpts, router.WithSocksListenAddr(c.options.socksListenAddr))
 	}
-
 	if c.options.mode == TunnelClientModeKernel {
 		routerOpts = append(routerOpts, router.WithPreserveDefaultGwDsts(c.options.preserveDefaultGwDsts))
 		c.router, err = router.NewClientNetlinkRouter(routerOpts...)
@@ -307,17 +293,29 @@ func (c *TunnelClient) Start(ctx context.Context) error {
 		}
 	}
 
+	localPrefixes, err := c.conn.LocalPrefixes(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get local IP addresses: %w", err)
+	}
+	if len(localPrefixes) == 0 {
+		return errors.New("no local IP addresses available")
+	}
+
+	for _, lp := range localPrefixes {
+		if err := c.router.AddAddr(lp, c.conn); err != nil {
+			return fmt.Errorf("failed to add route %s: %w", lp.String(), err)
+		}
+	}
+
 	routes, err := c.conn.Routes(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get routes: %w", err)
 	}
 
 	for _, route := range routes {
-		for _, prefix := range route.Prefixes() {
-			slog.Info("Adding route", slog.String("prefix", prefix.String()))
-
-			if err := c.router.Add(prefix, c.conn); err != nil {
-				return fmt.Errorf("failed to add route %s: %w", prefix.String(), err)
+		for _, p := range route.Prefixes() {
+			if err := c.router.AddRoute(p); err != nil {
+				return fmt.Errorf("failed to add route %s: %w", p.String(), err)
 			}
 		}
 	}

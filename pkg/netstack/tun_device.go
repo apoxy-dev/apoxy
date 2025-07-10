@@ -40,7 +40,7 @@ type TunDevice struct {
 	closed         atomic.Bool
 }
 
-func NewTunDevice(localAddresses []netip.Prefix, pcapPath string) (*TunDevice, error) {
+func NewTunDevice(pcapPath string) (*TunDevice, error) {
 	opts := stack.Options{
 		NetworkProtocols: []stack.NetworkProtocolFactory{
 			ipv4.NewProtocol,
@@ -105,27 +105,6 @@ func NewTunDevice(localAddresses []netip.Prefix, pcapPath string) (*TunDevice, e
 		},
 	})
 
-	// Add the local addresses to the NIC.
-	for _, prefix := range localAddresses {
-		var protoNumber tcpip.NetworkProtocolNumber
-		if prefix.Addr().Is4() {
-			protoNumber = ipv4.ProtocolNumber
-		} else if prefix.Addr().Is6() {
-			protoNumber = ipv6.ProtocolNumber
-		}
-		protoAddr := tcpip.ProtocolAddress{
-			Protocol:          protoNumber,
-			AddressWithPrefix: tcpip.AddrFromSlice(prefix.Addr().AsSlice()).WithPrefix(),
-		}
-
-		slog.Debug("Adding protocol address", slog.String("address", prefix.String()))
-
-		tcpipErr := ipstack.AddProtocolAddress(nicID, protoAddr, stack.AddressProperties{})
-		if tcpipErr != nil {
-			return nil, fmt.Errorf("could not add protocol address: %v", tcpipErr)
-		}
-	}
-
 	tunDev := &TunDevice{
 		ep:             linkEP,
 		stack:          ipstack,
@@ -139,6 +118,45 @@ func NewTunDevice(localAddresses []netip.Prefix, pcapPath string) (*TunDevice, e
 	tunDev.events <- tun.EventUp
 
 	return tunDev, nil
+}
+
+func (tun *TunDevice) AddAddr(addr netip.Prefix) error {
+	var protoNumber tcpip.NetworkProtocolNumber
+	if addr.Addr().Is4() {
+		protoNumber = ipv4.ProtocolNumber
+	} else if addr.Addr().Is6() {
+		protoNumber = ipv6.ProtocolNumber
+	}
+	protoAddr := tcpip.ProtocolAddress{
+		Protocol:          protoNumber,
+		AddressWithPrefix: tcpip.AddrFromSlice(addr.Addr().AsSlice()).WithPrefix(),
+	}
+
+	slog.Info("Adding protocol address", slog.String("addr", addr.String()))
+
+	tcpipErr := tun.stack.AddProtocolAddress(tun.nicID, protoAddr, stack.AddressProperties{})
+	if tcpipErr != nil {
+		return fmt.Errorf("could not add protocol address: %v", tcpipErr)
+	}
+
+	return nil
+}
+
+func (tun *TunDevice) DelAddr(addr netip.Prefix) error {
+	var nsAddr tcpip.Address
+	if addr.Addr().Is4() {
+		nsAddr = tcpip.AddrFrom4(addr.Addr().As4())
+	} else if addr.Addr().Is6() {
+		nsAddr = tcpip.AddrFrom16(addr.Addr().As16())
+	}
+
+	slog.Info("Removing protocol address", slog.String("addr", addr.Addr().String()))
+
+	if err := tun.stack.RemoveAddress(tun.nicID, nsAddr); err != nil {
+		return fmt.Errorf("could not remove address: %v", err)
+	}
+
+	return nil
 }
 
 func (tun *TunDevice) Name() (string, error) { return "go", nil }

@@ -40,7 +40,7 @@ type NetlinkRouter struct {
 
 	iptV4, iptV6 utiliptables.Interface
 
-	mux *connection.MuxedConn
+	dmux *connection.DstMuxedConn
 
 	closeOnce sync.Once
 }
@@ -123,7 +123,7 @@ func NewNetlinkRouter(opts ...Option) (*NetlinkRouter, error) {
 		iptV4: utiliptables.New(utilexec.New(), utiliptables.ProtocolIPv4),
 		iptV6: utiliptables.New(utilexec.New(), utiliptables.ProtocolIPv6),
 
-		mux: connection.NewMuxedConn(),
+		dmux: connection.NewDstMuxedConn(),
 	}, nil
 }
 
@@ -209,12 +209,21 @@ func (r *NetlinkRouter) Start(ctx context.Context) error {
 		if r.cksumRecalc {
 			opts = append(opts, connection.WithChecksumRecalculation())
 		}
-		return connection.Splice(r.tunDev, r.mux, opts...)
+		return connection.Splice(r.tunDev, r.dmux, opts...)
 	})
 
 	return g.Wait()
 }
 
+// probability calculates iptables --probability flag value as
+// as an inverse of n. When n is decreasing from number of destinations to
+// 1, you get values that uniformly distribute traffic across destinations.
+//
+// Example:
+//
+//	probability(3) = 0.33
+//	probability(2) = 0.5
+//	probability(1) = 1.0
 func probability(n int) string {
 	return fmt.Sprintf("%0.10f", 1.0/float64(n))
 }
@@ -224,7 +233,7 @@ func (r *NetlinkRouter) syncDNATChain() error {
 	natChains.Write(utiliptables.MakeChainLine(ChainA3yTunRules))
 
 	natRules := proxyutil.NewLineBuffer()
-	peers := r.mux.Prefixes()
+	peers := r.dmux.Prefixes()
 	for i, peer := range peers {
 		if peer.Addr().Is4() { // Skipping IPv4 peers - only IPv6 tunnel ingress is supported.
 			continue
@@ -257,18 +266,46 @@ func (r *NetlinkRouter) syncDNATChain() error {
 	return nil
 }
 
-// Add adds a dst route to the tunnel.
-func (r *NetlinkRouter) Add(peer netip.Prefix, conn connection.Connection) error {
-	slog.Debug("Adding route", slog.String("prefix", peer.String()))
+// AddAddr adds a tunnel connection with the given address. The addr
+// is used by the multiplexer to route traffic to the correct tunnel based
+// on the destination IP of the incoming packet.
+func (r *NetlinkRouter) AddAddr(addr netip.Prefix, tun connection.Connection) error {
+	slog.Info("Adding address", slog.String("addr", addr.String()))
 
-	mask := net.CIDRMask(peer.Bits(), 128)
-	if peer.Addr().Is4() {
-		mask = net.CIDRMask(peer.Bits(), 32)
+	if err := r.dmux.Add(addr, tun); err != nil {
+		return fmt.Errorf("failed to add address to multiplexer: %w", err)
+	}
+
+	if err := r.syncDNATChain(); err != nil {
+		return fmt.Errorf("failed to sync DNAT chain: %w", err)
+	}
+
+	return nil
+}
+
+func (r *NetlinkRouter) DelAddr(addr netip.Prefix) error {
+	if err := r.dmux.Del(addr); err != nil {
+		return fmt.Errorf("failed to remove address from multiplexer: %w", err)
+	}
+
+	if err := r.syncDNATChain(); err != nil {
+		return fmt.Errorf("failed to sync DNAT chain: %w", err)
+	}
+
+	return nil
+}
+
+func (r *NetlinkRouter) AddRoute(dst netip.Prefix) error {
+	slog.Info("Adding route", slog.String("addr", dst.String()))
+
+	mask := net.CIDRMask(dst.Bits(), 128)
+	if dst.Addr().Is4() {
+		mask = net.CIDRMask(dst.Bits(), 32)
 	}
 	route := &netlink.Route{
 		LinkIndex: r.tunLink.Attrs().Index,
 		Dst: &net.IPNet{
-			IP:   peer.Addr().AsSlice(),
+			IP:   dst.Addr().AsSlice(),
 			Mask: mask,
 		},
 		Scope: netlink.SCOPE_LINK,
@@ -277,28 +314,13 @@ func (r *NetlinkRouter) Add(peer netip.Prefix, conn connection.Connection) error
 		return fmt.Errorf("failed to add route: %w", err)
 	}
 
-	r.mux.AddConnection(peer, conn)
-	if err := r.syncDNATChain(); err != nil {
-		return fmt.Errorf("failed to sync DNAT chain: %w", err)
-	}
+	slog.Info("Route added", slog.String("dst", dst.String()))
 
 	return nil
 }
 
-func (r *NetlinkRouter) Del(dst netip.Prefix, _ string) error {
-	return r.DelAll(dst) // TODO: implement multi-conn routing.
-}
-
-// DelAll removes a route for dst.
-func (r *NetlinkRouter) DelAll(dst netip.Prefix) error {
+func (r *NetlinkRouter) DelRoute(dst netip.Prefix) error {
 	slog.Debug("Removing route", slog.String("prefix", dst.String()))
-
-	if err := r.mux.RemoveConnection(dst); err != nil {
-		slog.Error("failed to remove connection", slog.Any("error", err))
-	}
-	if err := r.syncDNATChain(); err != nil {
-		return fmt.Errorf("failed to sync DNAT chain: %w", err)
-	}
 
 	mask := net.CIDRMask(dst.Bits(), 128)
 	if dst.Addr().Is4() {
@@ -321,7 +343,7 @@ func (r *NetlinkRouter) DelAll(dst netip.Prefix) error {
 
 // ListRoutes returns a list of all routes in the tunnel.
 func (r *NetlinkRouter) ListRoutes() ([]TunnelRoute, error) {
-	ps := r.mux.Prefixes()
+	ps := r.dmux.Prefixes()
 	rts := make([]TunnelRoute, 0, len(ps))
 	for _, p := range ps {
 		rts = append(rts, TunnelRoute{
@@ -333,16 +355,11 @@ func (r *NetlinkRouter) ListRoutes() ([]TunnelRoute, error) {
 	return rts, nil
 }
 
-// GetMuxedConnection returns the muxed connection for adding/removing connections.
-func (r *NetlinkRouter) GetMuxedConnection() *connection.MuxedConn {
-	return r.mux
-}
-
 // Close releases any resources associated with the router.
 func (r *NetlinkRouter) Close() error {
 	var firstErr error
 	r.closeOnce.Do(func() {
-		if err := r.mux.Close(); err != nil {
+		if err := r.dmux.Close(); err != nil {
 			slog.Error("Failed to close mux", slog.Any("error", err))
 			if firstErr == nil {
 				firstErr = fmt.Errorf("failed to close mux: %w", err)

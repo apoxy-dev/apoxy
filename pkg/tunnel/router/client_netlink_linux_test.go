@@ -106,7 +106,9 @@ func TestClientNetlinkRouter_AddRoute(t *testing.T) {
 	require.NoError(t, err)
 
 	mockConn := newMockConnection([]byte("test packet"))
-	err = router.Add(dstPrefix, mockConn)
+	err = router.AddAddr(dstPrefix, mockConn)
+	require.NoError(t, err)
+	err = router.AddRoute(dstPrefix)
 	require.NoError(t, err)
 
 	// Verify route was added
@@ -137,7 +139,9 @@ func TestClientNetlinkRouter_DelRoute(t *testing.T) {
 	require.NoError(t, err)
 
 	mockConn := newMockConnection([]byte("test packet"))
-	err = router.Add(dstPrefix, mockConn)
+	err = router.AddAddr(dstPrefix, mockConn)
+	require.NoError(t, err)
+	err = router.AddRoute(dstPrefix)
 	require.NoError(t, err)
 
 	// Verify route exists
@@ -146,7 +150,9 @@ func TestClientNetlinkRouter_DelRoute(t *testing.T) {
 	assert.Len(t, routes, 1)
 
 	// Delete the route
-	err = router.DelAll(dstPrefix)
+	err = router.DelRoute(dstPrefix)
+	require.NoError(t, err)
+	err = router.DelAddr(dstPrefix)
 	require.NoError(t, err)
 
 	// Verify route was removed
@@ -189,7 +195,9 @@ func TestClientNetlinkRouter_StartStop(t *testing.T) {
 	require.NoError(t, err)
 
 	mockConn := newMockConnection([]byte("test packet"))
-	err = router.Add(dstPrefix, mockConn)
+	err = router.AddAddr(dstPrefix, mockConn)
+	require.NoError(t, err)
+	err = router.AddRoute(dstPrefix)
 	require.NoError(t, err)
 
 	// Cancel context to stop router
@@ -227,7 +235,9 @@ func TestClientNetlinkRouter_IPv6Routes(t *testing.T) {
 	require.NoError(t, err)
 
 	mockConn := newMockConnection([]byte("test ipv6 packet"))
-	err = router.Add(dstPrefix, mockConn)
+	err = router.AddAddr(dstPrefix, mockConn)
+	require.NoError(t, err)
+	err = router.AddRoute(dstPrefix)
 	require.NoError(t, err)
 
 	// Verify route was added
@@ -257,12 +267,14 @@ func TestClientNetlinkRouter_RouteUpdate(t *testing.T) {
 
 	// Add initial route
 	mockConn1 := newMockConnection([]byte("test packet 1"))
-	err = router.Add(dstPrefix, mockConn1)
+	err = router.AddAddr(dstPrefix, mockConn1)
+	require.NoError(t, err)
+	err = router.AddRoute(dstPrefix)
 	require.NoError(t, err)
 
 	// Update with new connection - should replace existing
 	mockConn2 := newMockConnection([]byte("test packet 2"))
-	err = router.Add(dstPrefix, mockConn2)
+	err = router.AddAddr(dstPrefix, mockConn2)
 	require.NoError(t, err)
 
 	// Verify old connection was closed and route still exists
@@ -291,7 +303,7 @@ func TestClientNetlinkRouter_NonExistentRoute(t *testing.T) {
 	require.NoError(t, err)
 
 	// Should handle non-existent routes gracefully
-	err = router.DelAll(dstPrefix)
+	err = router.DelRoute(dstPrefix)
 	require.NoError(t, err)
 }
 
@@ -315,7 +327,9 @@ func TestClientNetlinkRouter_DefaultRoutes(t *testing.T) {
 	require.NoError(t, err)
 
 	mockConn := newMockConnection([]byte("default packet"))
-	err = router.Add(defaultIPv4, mockConn)
+	err = router.AddAddr(defaultIPv4, mockConn)
+	require.NoError(t, err)
+	err = router.AddRoute(defaultIPv4)
 	require.NoError(t, err)
 
 	routes, err := router.ListRoutes()
@@ -345,7 +359,9 @@ func TestClientNetlinkRouter_DefaultRoutePreservation(t *testing.T) {
 	require.NoError(t, err)
 
 	mockConn := newMockConnection([]byte("default"))
-	err = router.Add(defaultRoute, mockConn)
+	err = router.AddAddr(defaultRoute, mockConn)
+	require.NoError(t, err)
+	err = router.AddRoute(defaultRoute)
 	require.NoError(t, err)
 
 	// Verify route was added
@@ -355,7 +371,9 @@ func TestClientNetlinkRouter_DefaultRoutePreservation(t *testing.T) {
 	assert.Equal(t, "client-default", routes[0].TunID)
 
 	// Remove should work without errors
-	err = router.DelAll(defaultRoute)
+	err = router.DelRoute(defaultRoute)
+	require.NoError(t, err)
+	err = router.DelAddr(defaultRoute)
 	require.NoError(t, err)
 }
 
@@ -385,7 +403,9 @@ func TestClientNetlinkRouter_ConnectionWithLocalAddresses(t *testing.T) {
 	defaultRoute, err := netip.ParsePrefix("0.0.0.0/0")
 	require.NoError(t, err)
 
-	err = router.Add(defaultRoute, mockConnWithAddrs)
+	err = router.AddAddr(defaultRoute, mockConnWithAddrs)
+	require.NoError(t, err)
+	err = router.AddRoute(defaultRoute)
 	require.NoError(t, err)
 
 	routes, err := router.ListRoutes()

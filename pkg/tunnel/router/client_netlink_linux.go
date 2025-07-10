@@ -11,7 +11,6 @@ import (
 	"net/netip"
 	"os"
 	"sync"
-	"syscall"
 
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sync/errgroup"
@@ -46,7 +45,7 @@ type ClientNetlinkRouter struct {
 	iptV4, iptV6 utiliptables.Interface
 
 	// Muxed connection for handling multiple tunnel connections.
-	mux *connection.MuxedConn
+	smux *connection.SrcMuxedConn
 
 	options *routerOptions
 
@@ -95,26 +94,6 @@ func newClientNetlinkRouter(opts ...Option) (*ClientNetlinkRouter, error) {
 		return nil, fmt.Errorf("failed to get TUN interface: %w", err)
 	}
 
-	// Configure local addresses on the TUN interface.
-	for _, addr := range options.localAddresses {
-		ip := addr.Addr()
-		mask := net.CIDRMask(addr.Bits(), 128)
-		if ip.Is4() {
-			mask = net.CIDRMask(addr.Bits(), 32)
-		}
-
-		if err := netlink.AddrAdd(tunLink, &netlink.Addr{
-			IPNet: &net.IPNet{
-				IP:   ip.AsSlice(),
-				Mask: mask,
-			},
-		}); err != nil && err != syscall.EEXIST {
-			tunDev.Close()
-			return nil, fmt.Errorf("failed to add address to TUN interface: %w", err)
-		}
-		slog.Info("Added address to TUN interface", slog.String("addr", addr.String()))
-	}
-
 	if err := netlink.LinkSetUp(tunLink); err != nil {
 		tunDev.Close()
 		return nil, fmt.Errorf("failed to bring up TUN interface: %w", err)
@@ -125,18 +104,18 @@ func newClientNetlinkRouter(opts ...Option) (*ClientNetlinkRouter, error) {
 		tunLink: tunLink,
 		iptV4:   utiliptables.New(utilexec.New(), utiliptables.ProtocolIPv4),
 		iptV6:   utiliptables.New(utilexec.New(), utiliptables.ProtocolIPv6),
-		mux:     connection.NewMuxedConn(),
+		smux:    connection.NewSrcMuxedConn(),
 		options: options,
 		closed:  make(chan struct{}),
 	}, nil
 }
 
-// setupIptables configures iptables rules for client tunnel routing.
-func (r *ClientNetlinkRouter) setupIptables() error {
+// syncIptables configures iptables rules for client tunnel routing.
+func (r *ClientNetlinkRouter) syncIptables() error {
 	tunName := r.tunLink.Attrs().Name
 
 	// SNAT traffic comming into tunnel to overlay prefix.
-	for _, p := range r.options.localAddresses {
+	for _, p := range r.smux.Prefixes() {
 		if p.Addr().Is4() {
 			if _, err := r.iptV4.EnsureRule(
 				utiliptables.Prepend,
@@ -216,10 +195,6 @@ func (r *ClientNetlinkRouter) Start(ctx context.Context) error {
 	slog.Info("Starting client netlink router")
 	defer slog.Debug("Client netlink router stopped")
 
-	if err := r.setupIptables(); err != nil {
-		return fmt.Errorf("failed to setup iptables: %w", err)
-	}
-
 	g, gctx := errgroup.WithContext(ctx)
 
 	g.Go(func() error {
@@ -229,15 +204,63 @@ func (r *ClientNetlinkRouter) Start(ctx context.Context) error {
 	})
 
 	g.Go(func() error {
-		return connection.Splice(r.tunDev, r.mux)
+		return connection.Splice(r.tunDev, r.smux)
 	})
 
 	return g.Wait()
 }
 
-// Add adds a dst route to the tunnel using the provided connection.
-func (r *ClientNetlinkRouter) Add(dst netip.Prefix, conn connection.Connection) error {
-	slog.Info("Adding client route", slog.String("prefix", dst.String()))
+// Addrs adds addrs to a TUN interface and sets up steering of packets
+// from the TUN to connection.Connection by source IP (addr).
+func (r *ClientNetlinkRouter) AddAddr(addr netip.Prefix, tun connection.Connection) error {
+	mask := net.CIDRMask(addr.Bits(), 128)
+	if addr.Addr().Is4() {
+		mask = net.CIDRMask(addr.Bits(), 32)
+	}
+
+	if err := netlink.AddrAdd(
+		r.tunLink,
+		&netlink.Addr{
+			IPNet: &net.IPNet{
+				IP:   addr.Addr().AsSlice(),
+				Mask: mask,
+			},
+		},
+	); err != nil {
+		return fmt.Errorf("failed to add address to TUN interface: %w", err)
+	}
+
+	slog.Info("Added address to TUN interface", slog.String("addr", addr.String()))
+
+	return r.smux.Add(addr, tun)
+}
+
+func (r *ClientNetlinkRouter) DelAddr(addr netip.Prefix) error {
+	mask := net.CIDRMask(addr.Bits(), 128)
+	if addr.Addr().Is4() {
+		mask = net.CIDRMask(addr.Bits(), 32)
+	}
+
+	if err := netlink.AddrDel(
+		r.tunLink,
+		&netlink.Addr{
+			IPNet: &net.IPNet{
+				IP:   addr.Addr().AsSlice(),
+				Mask: mask,
+			},
+		},
+	); err != nil {
+		return fmt.Errorf("failed to delete address from TUN interface: %w", err)
+	}
+
+	slog.Info("Deleted address from TUN interface", slog.String("addr", addr.String()))
+
+	return r.smux.Del(addr)
+}
+
+// Add adds a tunnel route for addr.
+func (r *ClientNetlinkRouter) AddRoute(dst netip.Prefix) error {
+	slog.Info("Adding client route", slog.String("addr", dst.String()))
 
 	af := netlink.FAMILY_V6
 	if dst.Addr().Is4() {
@@ -342,8 +365,6 @@ func (r *ClientNetlinkRouter) Add(dst netip.Prefix, conn connection.Connection) 
 		return fmt.Errorf("failed to add route: %w", err)
 	}
 
-	r.mux.AddConnection(dst, conn)
-
 	slog.Info("Client route added successfully",
 		slog.String("prefix", dst.String()),
 		slog.Bool("is_default", isDefault))
@@ -370,11 +391,6 @@ func (r *ClientNetlinkRouter) getGWs(isIPv4 bool) []net.IP {
 	return gws
 }
 
-// Del removes a routing association for a given destination prefix and connection name.
-func (r *ClientNetlinkRouter) Del(dst netip.Prefix, name string) error {
-	return r.DelAll(dst) // For client router, we don't support multiple connections per prefix
-}
-
 // removeKernelRoute removes a route from the kernel routing table.
 func (r *ClientNetlinkRouter) removeKernelRoute(dst netip.Prefix, isDefault bool) error {
 	mask := net.CIDRMask(dst.Bits(), 128)
@@ -399,16 +415,15 @@ func (r *ClientNetlinkRouter) removeKernelRoute(dst netip.Prefix, isDefault bool
 	return netlink.RouteDel(route)
 }
 
-// DelAll removes all routing associations for a given destination prefix.
-func (r *ClientNetlinkRouter) DelAll(dst netip.Prefix) error {
+// DelRoute removes all routing associations for a given destination prefix.
+func (r *ClientNetlinkRouter) DelRoute(dst netip.Prefix) error {
 	slog.Info("Removing client route", slog.String("prefix", dst.String()))
 
-	isDefault := r.isDefaultRoute(dst)
-
-	if err := r.mux.RemoveConnection(dst); err != nil {
-		slog.Warn("Failed to remove connection from mux", slog.String("prefix", dst.String()), slog.Any("error", err))
+	if err := r.smux.Del(dst); err != nil {
+		slog.Warn("Failed to remove connection from mux", slog.String("addr", dst.String()), slog.Any("error", err))
 	}
 
+	isDefault := r.isDefaultRoute(dst)
 	if err := r.removeKernelRoute(dst, isDefault); err != nil {
 		slog.Warn("Failed to remove kernel route", slog.String("prefix", dst.String()), slog.Any("error", err))
 	}
@@ -500,14 +515,6 @@ func (r *ClientNetlinkRouter) Close() error {
 	var firstErr error
 	r.closeOnce.Do(func() {
 		close(r.closed)
-
-		// Close muxed connection
-		if err := r.mux.Close(); err != nil {
-			slog.Error("Failed to close mux", slog.Any("error", err))
-			if firstErr == nil {
-				firstErr = fmt.Errorf("failed to close mux: %w", err)
-			}
-		}
 
 		// Clean up iptables rules
 		if err := r.cleanupIptables(); err != nil {

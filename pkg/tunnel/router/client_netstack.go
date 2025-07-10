@@ -25,11 +25,10 @@ var (
 // This router can be used for both client and server sides.
 type NetstackRouter struct {
 	tunDev *netstack.TunDevice
-	mux    *connection.MuxedConn
+	smux   *connection.SrcMuxedConn
 
 	proxy *socksproxy.ProxyServer
 
-	localAddresses  []netip.Prefix
 	resolveConf     *network.ResolveConfig
 	socksListenAddr string
 	cksumRecalc     bool
@@ -44,7 +43,7 @@ func NewNetstackRouter(opts ...Option) (*NetstackRouter, error) {
 		opt(options)
 	}
 
-	tunDev, err := netstack.NewTunDevice(options.localAddresses, options.pcapPath)
+	tunDev, err := netstack.NewTunDevice(options.pcapPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create virtual TUN device: %w", err)
 	}
@@ -57,11 +56,10 @@ func NewNetstackRouter(opts ...Option) (*NetstackRouter, error) {
 
 	return &NetstackRouter{
 		tunDev: tunDev,
-		mux:    connection.NewMuxedConn(),
+		smux:   connection.NewSrcMuxedConn(),
 
 		proxy: proxy,
 
-		localAddresses:  options.localAddresses,
 		resolveConf:     options.resolveConf,
 		socksListenAddr: options.socksListenAddr,
 		cksumRecalc:     options.cksumRecalc,
@@ -86,7 +84,7 @@ func (r *NetstackRouter) Start(ctx context.Context) error {
 		if r.cksumRecalc {
 			opts = append(opts, connection.WithChecksumRecalculation())
 		}
-		return connection.Splice(r.tunDev, r.mux, opts...)
+		return connection.Splice(r.tunDev, r.smux, opts...)
 	})
 
 	_, socksListenPortStr, err := net.SplitHostPort(r.socksListenAddr)
@@ -122,8 +120,25 @@ func (r *NetstackRouter) Start(ctx context.Context) error {
 }
 
 // Add adds a dst route to the tunnel.
-func (r *NetstackRouter) Add(dst netip.Prefix, conn connection.Connection) error {
-	r.mux.AddConnection(dst, conn)
+func (r *NetstackRouter) AddAddr(addr netip.Prefix, conn connection.Connection) error {
+	if err := r.tunDev.AddAddr(addr); err != nil {
+		return fmt.Errorf("failed to add address to TUN device: %w", err)
+	}
+	return r.smux.Add(addr, conn)
+}
+
+func (r *NetstackRouter) DelAddr(addr netip.Prefix) error {
+	if err := r.tunDev.DelAddr(addr); err != nil {
+		return fmt.Errorf("failed to remove address from TUN device: %w", err)
+	}
+	return r.smux.Del(addr)
+}
+
+func (r *NetstackRouter) AddRoute(dst netip.Prefix) error {
+	return nil
+}
+
+func (r *NetstackRouter) DelRoute(dst netip.Prefix) error {
 	return nil
 }
 
@@ -134,7 +149,7 @@ func (r *NetstackRouter) Del(dst netip.Prefix, _ string) error {
 
 // DelAll removes all routes for the dst.
 func (r *NetstackRouter) DelAll(dst netip.Prefix) error {
-	if err := r.mux.RemoveConnection(dst); err != nil {
+	if err := r.smux.Del(dst); err != nil {
 		slog.Error("failed to remove connection", slog.Any("error", err))
 	}
 
@@ -143,7 +158,7 @@ func (r *NetstackRouter) DelAll(dst netip.Prefix) error {
 
 // ListRoutes returns a list of all routes in the tunnel.
 func (r *NetstackRouter) ListRoutes() ([]TunnelRoute, error) {
-	ps := r.mux.Prefixes()
+	ps := r.smux.Prefixes()
 	rts := make([]TunnelRoute, 0, len(ps))
 	for _, p := range ps {
 		rts = append(rts, TunnelRoute{
@@ -153,11 +168,6 @@ func (r *NetstackRouter) ListRoutes() ([]TunnelRoute, error) {
 		})
 	}
 	return rts, nil
-}
-
-// GetMuxedConnection returns the muxed connection for adding/removing connections.
-func (r *NetstackRouter) GetMuxedConnection() *connection.MuxedConn {
-	return r.mux
 }
 
 // Close releases any resources associated with the router.
@@ -171,7 +181,7 @@ func (r *NetstackRouter) Close() error {
 			}
 		}
 
-		if err := r.mux.Close(); err != nil {
+		if err := r.smux.Close(); err != nil {
 			slog.Error("Failed to close muxed connection", slog.Any("error", err))
 			if firstErr == nil {
 				firstErr = fmt.Errorf("failed to close muxed connection: %w", err)
