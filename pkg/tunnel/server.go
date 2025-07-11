@@ -383,8 +383,22 @@ func (t *TunnelServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(err.Error()))
 		return
 	}
+	if err := t.router.AddRoute(peerV6); err != nil {
+		logger.Error("Failed to add route", slog.Any("error", err))
+		metrics.TunnelConnectionFailures.WithLabelValues("route_addition_failed").Inc()
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(err.Error()))
+		return
+	}
 	if err := t.router.AddAddr(peerV4, conn); err != nil {
 		logger.Error("Failed to add TUN peer", slog.Any("error", err))
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(err.Error()))
+		return
+	}
+	if err := t.router.AddRoute(peerV4); err != nil {
+		logger.Error("Failed to add route", slog.Any("error", err))
+		metrics.TunnelConnectionFailures.WithLabelValues("route_addition_failed").Inc()
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte(err.Error()))
 		return
