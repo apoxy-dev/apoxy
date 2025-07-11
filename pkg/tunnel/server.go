@@ -219,7 +219,7 @@ func (t *TunnelServer) Start(ctx context.Context) error {
 	if t.ln, err = quic.ListenEarly(
 		udpConn,
 		http3.ConfigureTLSConfig(&tls.Config{Certificates: []tls.Certificate{cert}}),
-		&quic.Config{EnableDatagrams: true},
+		quicConfig,
 	); err != nil {
 		return fmt.Errorf("failed to create QUIC listener: %w", err)
 	}

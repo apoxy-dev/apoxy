@@ -13,7 +13,6 @@ import (
 	"reflect"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/dpeckett/network"
 	"github.com/google/uuid"
@@ -154,8 +153,6 @@ func WithPreserveDefaultGatewayDestinations(dsts []netip.Prefix) TunnelClientOpt
 	}
 }
 
-const ApplicationCodeOK quic.ApplicationErrorCode = 0x0
-
 // TunnelClient implements a TunnelNode client.
 type TunnelClient struct {
 	options            *tunnelClientOptions
@@ -214,14 +211,7 @@ func (c *TunnelClient) Start(ctx context.Context) error {
 		ctx,
 		c.options.serverAddr,
 		tlsConfig,
-		&quic.Config{
-			EnableDatagrams:                true,
-			InitialPacketSize:              1350,
-			InitialConnectionReceiveWindow: 5 * 1000 * 1000,
-			MaxConnectionReceiveWindow:     100 * 1000 * 1000,
-			KeepAlivePeriod:                1 * time.Second,
-			MaxIdleTimeout:                 15 * time.Second,
-		},
+		quicConfig,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to dial QUIC connection: %w", err)
