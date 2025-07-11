@@ -469,18 +469,23 @@ func (t *TunnelServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := t.options.ipam.Release(peerV6); err != nil {
-		logger.Error("Failed to deallocate IP address", slog.Any("error", err))
+		logger.Error("Failed to deallocate IP address", slog.Any("error", err), slog.Any("addr", peerV6))
+	}
+	if err := t.router.DelAddr(peerV6); err != nil {
+		logger.Error("Failed to remove peer address", slog.Any("error", err), slog.Any("addr", peerV6))
+	}
+	if err := t.router.DelRoute(peerV6); err != nil {
+		logger.Error("Failed to remove route", slog.Any("error", err), slog.Any("addr", peerV6))
 	}
 
 	if err := t.options.ipam.Release(peerV4); err != nil {
-		logger.Error("Failed to deallocate IP address", slog.Any("error", err))
-	}
-
-	if err := t.router.DelAddr(peerV6); err != nil {
-		logger.Error("Failed to remove TUN peer", slog.Any("error", err))
+		logger.Error("Failed to deallocate IP address", slog.Any("error", err), slog.Any("addr", peerV4))
 	}
 	if err := t.router.DelAddr(peerV4); err != nil {
-		logger.Error("Failed to remove TUN peer", slog.Any("error", err))
+		logger.Error("Failed to remove peer address", slog.Any("error", err), slog.Any("addr", peerV4))
+	}
+	if err := t.router.DelRoute(peerV4); err != nil {
+		logger.Error("Failed to remove route", slog.Any("error", err), slog.Any("addr", peerV4))
 	}
 
 	if err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
