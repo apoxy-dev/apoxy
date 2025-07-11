@@ -53,7 +53,7 @@ var (
 	tunnelNodeSelector = flag.String("label_selector", "", "Label selector for TunnelNode objects.")
 	publicAddr         = flag.String("public_addr", "", "Public address of the tunnel proxy.")
 	extIPv6SubnetSize  = flag.Int("ext_ipv6_subnet_size", 64, "IPv6 subnet size.")
-	extIPv6Ifc         = flag.String("ext_ipv6_ifc", "", "IPv6 interface name.")
+	extIPv6Ifc         = flag.String("ext_ipv6_ifc", "eth0", "IPv6 interface name.")
 	cksumRecalc        = flag.Bool("cksum_recalc", false, "Recalculate checksum.")
 )
 
@@ -114,7 +114,7 @@ func main() {
 		if !ok {
 			log.Fatalf("Invalid IPv6 address resolved: %s", extAddr.IP.String())
 		}
-		extIPv6Prefix := netip.PrefixFrom(extIPv6, *extIPv6SubnetSize)
+		extIPv6Prefix = netip.PrefixFrom(extIPv6, *extIPv6SubnetSize)
 		if !extIPv6Prefix.IsValid() {
 			log.Fatalf("Invalid IPv6 prefix: %s", extIPv6Prefix.String())
 		}
