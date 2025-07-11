@@ -25,6 +25,7 @@ import (
 	memory "k8s.io/client-go/discovery/cached"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/restmapper"
+	"k8s.io/client-go/util/retry"
 
 	"github.com/apoxy-dev/apoxy/config"
 	"github.com/apoxy-dev/apoxy/pkg/apiserver"
@@ -98,7 +99,7 @@ func updateFromFile(ctx context.Context, proxyNameOverride, path string) error {
 			return err
 		}
 
-		log.Debugf("creating object gvk=%v name=%s", unObj.GroupVersionKind(), maybeNamespaced(unObj))
+		log.Debugf("Creating object gvk=%v name=%s", unObj.GroupVersionKind(), maybeNamespaced(unObj))
 
 		if unObj.GetKind() == "Proxy" {
 			unObj.SetName(proxyNameOverride)
@@ -117,25 +118,28 @@ func updateFromFile(ctx context.Context, proxyNameOverride, path string) error {
 			Namespace(unObj.GetNamespace()).
 			Create(ctx, unObj, metav1.CreateOptions{})
 		if k8serrors.IsAlreadyExists(err) {
-			log.Debugf("object gvk=%v name=%s already exists, updating...", unObj.GroupVersionKind(), maybeNamespaced(unObj))
+			log.Debugf("Object gvk=%v name=%s already exists, updating...", unObj.GroupVersionKind(), maybeNamespaced(unObj))
 
-			res, err := dynClient.Resource(mapping.Resource).
-				Namespace(unObj.GetNamespace()).
-				Get(ctx, unObj.GetName(), metav1.GetOptions{})
-			if err != nil {
-				return fmt.Errorf("failed to get object gvk=%v name=%s: %w", unObj.GroupVersionKind(), maybeNamespaced(unObj), err)
-			}
+			err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+				latest, err := dynClient.Resource(mapping.Resource).
+					Namespace(unObj.GetNamespace()).
+					Get(ctx, unObj.GetName(), metav1.GetOptions{})
+				if err != nil {
+					return err
+				}
 
-			unObj.SetResourceVersion(res.GetResourceVersion())
+				unObj.SetResourceVersion(latest.GetResourceVersion())
 
-			_, err = dynClient.Resource(mapping.Resource).
-				Namespace(unObj.GetNamespace()).
-				Update(ctx, unObj, metav1.UpdateOptions{})
+				_, err = dynClient.Resource(mapping.Resource).
+					Namespace(unObj.GetNamespace()).
+					Update(ctx, unObj, metav1.UpdateOptions{})
+				return err
+			})
 			if err != nil {
 				return fmt.Errorf("failed to update object gvk=%v name=%s: %w", unObj.GroupVersionKind(), maybeNamespaced(unObj), err)
 			}
 
-			log.Debugf("updated %v object %s\n", unObj.GroupVersionKind(), maybeNamespaced(unObj))
+			log.Debugf("Updated %v object %s\n", unObj.GroupVersionKind(), maybeNamespaced(unObj))
 		} else if err != nil {
 			return fmt.Errorf("failed to create object gvk=%v name=%s: %w", unObj.GroupVersionKind(), maybeNamespaced(unObj), err)
 		} else {
