@@ -261,6 +261,8 @@ func upsertAgentStatus(s *corev1alpha.TunnelNodeStatus, agent *corev1alpha.Agent
 }
 
 func (t *TunnelServer) Stop() error {
+	slog.Info("Stopping Tunnel server", slog.String("addr", t.ln.Addr().String()))
+
 	if err := t.router.Close(); err != nil {
 		slog.Error("Failed to close router", slog.Any("error", err))
 	}
@@ -349,7 +351,6 @@ func (t *TunnelServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
-
 	defer conn.Close()
 
 	peerV6, err := t.options.ipam.AllocateV6(r)

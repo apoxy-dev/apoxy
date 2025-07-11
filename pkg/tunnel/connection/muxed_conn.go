@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -56,7 +57,13 @@ func (m *muxedConn) readPackets(src netip.Prefix, conn Connection) {
 		slog.Debug("Read packet from connection", slog.Int("bytes", n))
 
 		*pkt = (*pkt)[:n]
-		m.incomingPackets <- pkt
+		select {
+		case m.incomingPackets <- pkt:
+		default:
+			// Channel is closed or full, return the buffer to the pool
+			m.packetBufferPool.Put(pkt)
+			return
+		}
 
 		metrics.TunnelPacketsReceived.Inc()
 		metrics.TunnelBytesReceived.Add(float64(n))
@@ -84,18 +91,13 @@ func (m *muxedConn) Del(addr netip.Prefix) error {
 	if !addr.IsValid() {
 		return fmt.Errorf("invalid prefix for connection: %v", addr)
 	}
-	conn, ok := m.conns.Get(addr.Addr())
-	if !ok {
-		return fmt.Errorf("no connection found for prefix: %v", addr)
+
+	// Remove the connection from the map. Connection closing is handled by
+	// the layer above.
+	if ok := m.conns.Remove(addr); !ok {
+		return fmt.Errorf("connection not found: %v", addr)
 	}
 
-	// Close the connection and remove it from the map.
-	if err := conn.Close(); err != nil {
-		return fmt.Errorf("failed to close connection: %w", err)
-	}
-
-	// Remove the connection from the map.
-	m.conns.Remove(addr)
 	return nil
 }
 
@@ -138,6 +140,10 @@ func (m *muxedConn) Close() error {
 
 // ReadPacket reads a packet from multiple underlying Connection pipes.
 func (m *muxedConn) ReadPacket(pkt []byte) (int, error) {
+	if m.closed.Load() {
+		return 0, net.ErrClosed
+	}
+
 	p, ok := <-m.incomingPackets
 	if !ok {
 		return 0, net.ErrClosed
@@ -167,7 +173,12 @@ func (m *muxedConn) writePacket(addr netip.Addr, pkt []byte) ([]byte, error) {
 	metrics.TunnelPacketsSent.Inc()
 	metrics.TunnelBytesSent.Add(float64(len(pkt)))
 
-	return conn.WritePacket(pkt)
+	icmp, err := conn.WritePacket(pkt)
+	if err != nil && strings.Contains(err.Error(), "closed") { // Don't propagate close of underlying connection.
+		return icmp, err
+	}
+
+	return icmp, nil
 }
 
 // SrcMuxedConn implements Connection that multiplexes multiple Connections based
@@ -186,6 +197,10 @@ func NewSrcMuxedConn() *SrcMuxedConn {
 // WritePacket writes a pkt to one of the underlying Connection objects
 // based on the source IP of the pkt.
 func (m *SrcMuxedConn) WritePacket(pkt []byte) ([]byte, error) {
+	if m.closed.Load() {
+		return nil, net.ErrClosed
+	}
+
 	slog.Debug("Write packet to connection", slog.Int("bytes", len(pkt)))
 
 	var srcAddr netip.Addr
@@ -233,6 +248,10 @@ func NewDstMuxedConn() *DstMuxedConn {
 // WritePacket writes a pkt to one of the underlying Connection objects
 // based on the destination IP of the pkt.
 func (m *DstMuxedConn) WritePacket(pkt []byte) ([]byte, error) {
+	if m.closed.Load() {
+		return nil, net.ErrClosed
+	}
+
 	slog.Debug("Write packet to connection", slog.Int("bytes", len(pkt)))
 
 	var dstAddr netip.Addr
