@@ -10,8 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
-	"reflect"
-	"strings"
+	"net/url"
 	"sync"
 
 	"github.com/dpeckett/network"
@@ -49,8 +48,6 @@ func TunnelClientModeFromString(mode string) (TunnelClientMode, error) {
 }
 
 type tunnelClientOptions struct {
-	serverAddr         string
-	uuid               uuid.UUID
 	authToken          string
 	mode               TunnelClientMode
 	insecureSkipVerify bool
@@ -66,23 +63,7 @@ type tunnelClientOptions struct {
 
 func defaultClientOptions() *tunnelClientOptions {
 	return &tunnelClientOptions{
-		serverAddr: "localhost:9443",
-		mode:       TunnelClientModeUser,
-	}
-}
-
-// WithServerAddr sets the server address that the tunnel client will connect to.
-// The address should be in the format "host:port".
-func WithServerAddr(addr string) TunnelClientOption {
-	return func(o *tunnelClientOptions) {
-		o.serverAddr = addr
-	}
-}
-
-// WithUUID sets the UUID for the tunnel client.
-func WithUUID(uuid uuid.UUID) TunnelClientOption {
-	return func(o *tunnelClientOptions) {
-		o.uuid = uuid
+		mode: TunnelClientModeUser,
 	}
 }
 
@@ -153,101 +134,23 @@ func WithPreserveDefaultGatewayDestinations(dsts []netip.Prefix) TunnelClientOpt
 	}
 }
 
-// TunnelClient implements a TunnelNode client.
-type TunnelClient struct {
-	options            *tunnelClientOptions
-	insecureSkipVerify bool
-	uuid               uuid.UUID
-	authToken          string
-	rootCAs            *x509.CertPool
-	router             router.Router
-
-	hConn *http3.ClientConn
-	conn  *connectip.Conn
-
-	closeOnce sync.Once
+// TunnelDialer dials a tunnel connection. Must be started before use.
+type TunnelDialer struct {
+	router router.Router
 }
 
-// NewTunnelClient creates a new TunnelClient instance with the provided options.
-func NewTunnelClient(opts ...TunnelClientOption) (*TunnelClient, error) {
-	options := defaultClientOptions()
+// Start starts the Dialer.
+func (c *TunnelDialer) Start(ctx context.Context, opts ...TunnelClientOption) error {
+	options := &tunnelClientOptions{}
 	for _, opt := range opts {
 		opt(options)
 	}
 
-	if options.uuid == uuid.Nil {
-		return nil, fmt.Errorf("uuid is required")
-	}
-	if options.authToken == "" {
-		return nil, fmt.Errorf("auth token is required")
-	}
-
-	client := &TunnelClient{
-		options:            options,
-		uuid:               options.uuid,
-		authToken:          options.authToken,
-		rootCAs:            options.rootCAs,
-		insecureSkipVerify: options.insecureSkipVerify,
-	}
-
-	return client, nil
-}
-
-// Start dials the TunnelNode server, establishes tunnel connection and sets
-// up client-side routing.
-func (c *TunnelClient) Start(ctx context.Context) error {
-	tlsConfig := &tls.Config{
-		ServerName:         "proxy",
-		NextProtos:         []string{http3.NextProtoH3},
-		RootCAs:            c.rootCAs,
-		InsecureSkipVerify: c.insecureSkipVerify,
-	}
-
-	if addr, _, err := net.SplitHostPort(c.options.serverAddr); err == nil && net.ParseIP(addr) == nil {
-		tlsConfig.ServerName = addr
-	}
-
-	qConn, err := quic.DialAddr(
-		ctx,
-		c.options.serverAddr,
-		tlsConfig,
-		quicConfig,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to dial QUIC connection: %w", err)
-	}
-
-	tr := &http3.Transport{EnableDatagrams: true}
-	c.hConn = tr.NewClientConn(qConn)
-
-	template := uritemplate.MustNew(fmt.Sprintf("https://proxy/connect/%s?token=%s", c.uuid, c.authToken))
-
-	var rsp *http.Response
-	c.conn, rsp, err = connectip.Dial(ctx, c.hConn, template)
-	if err != nil {
-		return fmt.Errorf("failed to dial connect-ip connection: %w", err)
-	}
-	if rsp.StatusCode != http.StatusOK {
-		return fmt.Errorf("unexpected status code: %d", rsp.StatusCode)
-	}
-
-	slog.Info("Connected to server", slog.String("addr", c.options.serverAddr))
-
 	resolveConf := &network.ResolveConfig{
-		Nameservers:   rsp.Header.Values("X-Apoxy-Nameservers"),
-		SearchDomains: rsp.Header.Values("X-Apoxy-DNS-SearchDomains"),
-	}
-
-	if opts := rsp.Header.Values("X-Apoxy-DNS-Options"); len(opts) > 0 {
-		for _, opt := range opts {
-			if strings.HasPrefix(opt, "ndots:") {
-				var ndots int
-				if n, err := fmt.Sscanf(opt[6:], "%d", &ndots); err != nil || n != 1 {
-					ndots = 1
-				}
-				resolveConf.NDots = &ndots
-			}
-		}
+		// TODO: Use flags.
+		//Nameservers:   ...
+		//SearchDomains: ...
+		// NDots:
 	}
 
 	slog.Info("Using DNS configuration",
@@ -257,69 +160,153 @@ func (c *TunnelClient) Start(ctx context.Context) error {
 
 	routerOpts := []router.Option{
 		router.WithResolveConfig(resolveConf),
+		router.WithPcapPath(options.pcapPath),
 	}
-	if c.options.pcapPath != "" {
-		routerOpts = append(routerOpts, router.WithPcapPath(c.options.pcapPath))
+	if options.extIfaceName != "" {
+		routerOpts = append(routerOpts, router.WithExternalInterface(options.extIfaceName))
 	}
-	if c.options.extIfaceName != "" {
-		routerOpts = append(routerOpts, router.WithExternalInterface(c.options.extIfaceName))
+	if options.tunIfaceName != "" {
+		routerOpts = append(routerOpts, router.WithTunnelInterface(options.tunIfaceName))
 	}
-	if c.options.tunIfaceName != "" {
-		routerOpts = append(routerOpts, router.WithTunnelInterface(c.options.tunIfaceName))
+	if options.socksListenAddr != "" {
+		routerOpts = append(routerOpts, router.WithSocksListenAddr(options.socksListenAddr))
 	}
-	if c.options.socksListenAddr != "" {
-		routerOpts = append(routerOpts, router.WithSocksListenAddr(c.options.socksListenAddr))
-	}
-	if c.options.mode == TunnelClientModeKernel {
-		routerOpts = append(routerOpts, router.WithPreserveDefaultGwDsts(c.options.preserveDefaultGwDsts))
+	var err error
+	if options.mode == TunnelClientModeKernel {
+		routerOpts = append(routerOpts, router.WithPreserveDefaultGwDsts(options.preserveDefaultGwDsts))
 		c.router, err = router.NewClientNetlinkRouter(routerOpts...)
 		if err != nil {
 			return fmt.Errorf("failed to create kernel router: %w", err)
 		}
-	} else if c.options.mode == TunnelClientModeUser {
+	} else if options.mode == TunnelClientModeUser {
 		c.router, err = router.NewNetstackRouter(routerOpts...)
 		if err != nil {
 			return fmt.Errorf("failed to create user mode router: %w", err)
 		}
+	} else {
+		return fmt.Errorf("invalid tunnel client mode: %d", options.mode)
 	}
 
-	localPrefixes, err := c.conn.LocalPrefixes(ctx)
+	slog.Info("Starting router")
+
+	return c.router.Start(ctx)
+}
+
+// Dial dials the TunnelNode server, establishes tunnel connection and sets
+// up client-side routing.
+func (c *TunnelDialer) Dial(
+	ctx context.Context,
+	id uuid.UUID,
+	addr string,
+	opts ...TunnelClientOption,
+) (*Conn, error) {
+	options := defaultClientOptions()
+	for _, opt := range opts {
+		opt(options)
+	}
+
+	tlsConfig := &tls.Config{
+		ServerName:         "proxy",
+		NextProtos:         []string{http3.NextProtoH3},
+		RootCAs:            options.rootCAs,
+		InsecureSkipVerify: options.insecureSkipVerify,
+	}
+
+	if saddr, _, err := net.SplitHostPort(addr); err == nil && net.ParseIP(saddr) == nil {
+		tlsConfig.ServerName = saddr
+	}
+
+	qConn, err := quic.DialAddr(
+		ctx,
+		addr,
+		tlsConfig,
+		quicConfig,
+	)
 	if err != nil {
-		return fmt.Errorf("failed to get local IP addresses: %w", err)
+		return nil, fmt.Errorf("failed to dial QUIC connection: %w", err)
+	}
+
+	tr := &http3.Transport{EnableDatagrams: true}
+	hConn := tr.NewClientConn(qConn)
+
+	addrUrl := &url.URL{
+		Scheme: "https",
+		Host:   "proxy",
+		Path:   "/connect/" + id.String(),
+	}
+	q := addrUrl.Query()
+	if options.authToken != "" {
+		q.Add("token", options.authToken)
+		addrUrl.RawQuery = q.Encode()
+	}
+	addrUrl.RawQuery = addrUrl.Query().Encode()
+
+	tmpl, err := uritemplate.New(addrUrl.String())
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse URI template: %w", err)
+	}
+	conn, rsp, err := connectip.Dial(ctx, hConn, tmpl)
+	if err != nil {
+		return nil, fmt.Errorf("failed to dial connect-ip connection: %w", err)
+	}
+	if rsp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("unexpected status code: %d", rsp.StatusCode)
+	}
+
+	slog.Info("Connected to server", slog.String("addr", addr))
+
+	localPrefixes, err := conn.LocalPrefixes(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get local IP addresses: %w", err)
 	}
 	if len(localPrefixes) == 0 {
-		return errors.New("no local IP addresses available")
+		return nil, errors.New("no local IP addresses available")
 	}
 
 	for _, lp := range localPrefixes {
-		if err := c.router.AddAddr(lp, c.conn); err != nil {
-			return fmt.Errorf("failed to add route %s: %w", lp.String(), err)
+		if err := c.router.AddAddr(lp, conn); err != nil {
+			return nil, fmt.Errorf("failed to add route %s: %w", lp.String(), err)
 		}
 	}
 
-	routes, err := c.conn.Routes(ctx)
+	routes, err := conn.Routes(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to get routes: %w", err)
+		return nil, fmt.Errorf("failed to get routes: %w", err)
 	}
 
 	for _, route := range routes {
 		for _, p := range route.Prefixes() {
 			if err := c.router.AddRoute(p); err != nil {
-				return fmt.Errorf("failed to add route %s: %w", p.String(), err)
+				return nil, fmt.Errorf("failed to add route %s: %w", p.String(), err)
 			}
 		}
 	}
 
-	slog.Info("Starting router")
-
-	if err := c.router.Start(ctx); err != nil {
-		return fmt.Errorf("failed to start router: %w", err)
+	connUUID, err := uuid.Parse(rsp.Header.Get("X-Apoxy-Connection-UUID"))
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse connection UUID: %w", err)
 	}
 
-	return nil
+	return &Conn{
+		UUID: connUUID,
+
+		conn:      conn,
+		hConn:     hConn,
+		router:    c.router,
+		closeOnce: sync.Once{},
+	}, nil
 }
 
-func (c *TunnelClient) Close() error {
+type Conn struct {
+	UUID uuid.UUID
+
+	conn      *connectip.Conn
+	hConn     *http3.ClientConn
+	router    router.Router
+	closeOnce sync.Once
+}
+
+func (c *Conn) Close() error {
 	var firstErr error
 	c.closeOnce.Do(func() {
 		if c.conn != nil {
@@ -348,12 +335,4 @@ func (c *TunnelClient) Close() error {
 		}
 	})
 	return firstErr
-}
-
-func (c *TunnelClient) LocalAddresses() ([]netip.Prefix, error) {
-	if c.router == nil || reflect.ValueOf(c.router).IsNil() {
-		return nil, nil
-	}
-
-	return c.router.LocalAddresses()
 }

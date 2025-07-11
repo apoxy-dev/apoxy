@@ -300,7 +300,7 @@ func (t *TunnelServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 	metrics.TunnelConnectionRequests.Inc()
 
 	logger := slog.With(slog.String("uuid", id.String()))
-	logger.Info("Received connection request")
+	logger.Info("Received connection request", slog.String("URI", r.URL.String()))
 
 	authToken := r.URL.Query().Get("token")
 	if authToken == "" {
@@ -342,6 +342,11 @@ func (t *TunnelServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
+
+	connUUID := uuid.NewString()
+	// Sends connection ID information to the client so that it can
+	// track its connection status. This must be done before initializing the proxy.
+	w.Header().Add("X-Apoxy-Connection-UUID", connUUID)
 
 	p := connectip.Proxy{}
 	conn, err := p.Proxy(w, req)
@@ -437,7 +442,7 @@ func (t *TunnelServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	agent := &corev1alpha.AgentStatus{
-		Name:         uuid.NewString(),
+		Name:         connUUID,
 		ConnectedAt:  ptr.To(metav1.Now()),
 		AgentAddress: r.RemoteAddr,
 	}

@@ -2,7 +2,6 @@ package tunnel
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"math/rand"
@@ -11,10 +10,12 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
+	"golang.org/x/sync/errgroup"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -61,12 +62,14 @@ func init() {
 type tunnelNodeReconciler struct {
 	client.Client
 
+	minConns int
+
 	scheme *runtime.Scheme
 	cfg    *configv1alpha1.Config
 	a3y    versioned.Interface
-	doneCh chan error
 
-	tunC *tunnel.TunnelClient
+	tunDialer *tunnel.TunnelDialer
+	tunConns  map[uuid.UUID]*tunnel.Conn
 }
 
 var tunnelRunCmd = &cobra.Command{
@@ -111,11 +114,14 @@ var tunnelRunCmd = &cobra.Command{
 		}
 
 		tun := &tunnelNodeReconciler{
+			minConns: 1,
+
 			scheme: scheme,
 			cfg:    cfg,
 			a3y:    a3y,
 
-			doneCh: make(chan error),
+			tunDialer: &tunnel.TunnelDialer{},
+			tunConns:  make(map[uuid.UUID]*tunnel.Conn),
 		}
 		return tun.run(ctx, tn)
 	},
@@ -145,32 +151,29 @@ func (t *tunnelNodeReconciler) run(ctx context.Context, tn *corev1alpha.TunnelNo
 		return fmt.Errorf("unable to set up controller: %w", err)
 	}
 
-	go func() {
-		defer close(t.doneCh)
-		if err := mgr.Start(ctx); err != nil {
+	g, gctx := errgroup.WithContext(ctx)
+
+	g.Go(func() error {
+		if err := mgr.Start(gctx); err != nil {
 			slog.Error("Manager exited non-zero", slog.Any("error", err))
 		}
-	}()
+		return nil
+	})
 
-	// Set the initial status of the TunnelNode object.
-	// Wait for the TunnelNode object to be deleted, or for the command to be cancelled.
-	select {
-	case err := <-t.doneCh:
-		if err != nil {
-			return fmt.Errorf("manager exited non-zero: %w", err)
+	g.Go(func() error {
+		cOpts := []tunnel.TunnelClientOption{
+			tunnel.WithPcapPath(tunnelNodePcapPath),
+			tunnel.WithMode(tunnelMode),
+			tunnel.WithPreserveDefaultGatewayDestinations(preserveDefaultGwDsts),
+			tunnel.WithSocksListenAddr(socksListenAddr),
 		}
-	case <-ctx.Done():
-	}
-
-	<-t.doneCh // Wait for manager go-routine to exist.
-
-	if t.tunC != nil {
-		if err := t.tunC.Close(); err != nil {
-			slog.Error("Failed to stop tunnel client", slog.Any("error", err))
+		if err := t.tunDialer.Start(gctx, cOpts...); err != nil {
+			slog.Error("TunnelDialer exited non-zero", slog.Any("error", err))
 		}
-	}
+		return nil
+	})
 
-	return nil
+	return g.Wait()
 }
 
 func targetRefPredicate(tunnelNodeName string) predicate.Funcs {
@@ -208,25 +211,38 @@ func (t *tunnelNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	var tunnelNode corev1alpha.TunnelNode
 	if err := t.Get(ctx, req.NamespacedName, &tunnelNode); err != nil {
 		if client.IgnoreNotFound(err) == nil {
-			t.doneCh <- errors.New("TunnelNode not found")
 			return ctrl.Result{}, nil
 		}
 		log.Error(err, "Failed to get TunnelNode")
 		return ctrl.Result{}, err
 	}
 
-	cOpts := []tunnel.TunnelClientOption{
-		tunnel.WithPcapPath(tunnelNodePcapPath),
-		tunnel.WithMode(tunnelMode),
-		tunnel.WithPreserveDefaultGatewayDestinations(preserveDefaultGwDsts),
-		tunnel.WithSocksListenAddr(socksListenAddr),
+	remoteConns := sets.New[uuid.UUID]()
+	for _, agent := range tunnelNode.Status.Agents {
+		agentUUID, err := uuid.Parse(agent.Name)
+		if err != nil {
+			log.Error(err, "Failed to parse agent UUID", "uuid", agent.Name)
+			continue
+		}
+		remoteConns.Insert(agentUUID)
 	}
+	allLocalConns := sets.KeySet[uuid.UUID, *tunnel.Conn](t.tunConns)
+	// Local connections that belong to this specific TunnelNode.
+	tnLocalConns := allLocalConns.Intersection(remoteConns)
+
+	n := tnLocalConns.Len()
+	if n >= t.minConns { // Already enough connections to this TunnelNode, do nothing.
+		return ctrl.Result{}, nil
+	}
+
+	log.Info("Not enough connections to this TunnelNode, attempting to establish more",
+		"min", t.minConns, "cur", n)
+
+	cOpts := []tunnel.TunnelClientOption{}
 	tnUUID, err := uuid.Parse(string(tunnelNode.ObjectMeta.UID))
 	if err != nil { // This can only happen in a test environment.
 		log.Error(err, "Failed to parse UID", "uid", tunnelNode.ObjectMeta.UID)
 		return ctrl.Result{}, err
-	} else {
-		cOpts = append(cOpts, tunnel.WithUUID(tnUUID))
 	}
 	if tunnelNode.Status.Credentials == nil || tunnelNode.Status.Credentials.Token == "" {
 		log.Info("TunnelNode has no credentials")
@@ -236,41 +252,33 @@ func (t *tunnelNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	} else {
 		cOpts = append(cOpts, tunnel.WithAuthToken(tunnelNode.Status.Credentials.Token))
 	}
-	if !t.cfg.IsLocalMode { // Keep default server address in local mode.
+
+	var srvAddr string
+	if !t.cfg.IsLocalMode {
 		if len(tunnelNode.Status.Addresses) == 0 {
 			log.Info("TunnelNode has no addresses")
 			return ctrl.Result{
 				RequeueAfter: time.Second,
 			}, nil
 		} else {
-			srvAddr := tunnelNode.Status.Addresses[rand.Intn(len(tunnelNode.Status.Addresses))]
-			cOpts = append(cOpts, tunnel.WithServerAddr(srvAddr))
+			// TODO: Pick unused address at random if available.
+			srvAddr = tunnelNode.Status.Addresses[rand.Intn(len(tunnelNode.Status.Addresses))]
 		}
+	} else {
+		srvAddr = "localhost:9443"
 	}
+
 	if t.cfg.IsLocalMode || insecureSkipVerify {
 		cOpts = append(cOpts, tunnel.WithInsecureSkipVerify(true))
 	}
 
-	if t.tunC != nil {
-		log.Info("Closing existing tunnel client")
-		if err := t.tunC.Close(); err != nil {
-			log.Error(err, "Failed to close existing tunnel client")
-		}
-		t.tunC = nil
+	conn, err := t.tunDialer.Dial(ctx, tnUUID, srvAddr, cOpts...)
+	if err != nil {
+		log.Error(err, "Failed to start tunnel client")
+		return ctrl.Result{}, err
 	}
 
-	if t.tunC, err = tunnel.NewTunnelClient(cOpts...); err != nil {
-		log.Error(err, "Failed to create tunnel client")
-		t.doneCh <- fmt.Errorf("failed to create tunnel client: %w", err)
-		return ctrl.Result{}, nil // Unrecoverable error.
-	}
-
-	go func() {
-		if err := t.tunC.Start(ctx); err != nil {
-			log.Error(err, "Failed to start tunnel client")
-			t.doneCh <- fmt.Errorf("failed to start tunnel client: %w", err)
-		}
-	}()
+	t.tunConns[conn.UUID] = conn
 
 	return ctrl.Result{}, nil
 }
