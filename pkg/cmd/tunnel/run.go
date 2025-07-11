@@ -43,11 +43,13 @@ var (
 	codecFactory = serializer.NewCodecFactory(scheme)
 	decodeFn     = codecFactory.UniversalDeserializer().Decode
 
+	// Flags.
 	tunnelNodePcapPath string
 	tunnelModeS        string
 	tunnelMode         tunnel.TunnelClientMode
 	insecureSkipVerify bool
 	preserveDefaultGw  []string
+	socksListenAddr    string
 
 	preserveDefaultGwDsts []netip.Prefix
 )
@@ -217,6 +219,7 @@ func (t *tunnelNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		tunnel.WithPcapPath(tunnelNodePcapPath),
 		tunnel.WithMode(tunnelMode),
 		tunnel.WithPreserveDefaultGatewayDestinations(preserveDefaultGwDsts),
+		tunnel.WithSocksListenAddr(socksListenAddr),
 	}
 	tnUUID, err := uuid.Parse(string(tunnelNode.ObjectMeta.UID))
 	if err != nil { // This can only happen in a test environment.
