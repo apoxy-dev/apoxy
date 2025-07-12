@@ -116,16 +116,6 @@ func TestTunnelEndToEnd_UserModeClient(t *testing.T) {
 	// Register the client with the server
 	server.AddTunnelNode(clientTunnelNode)
 
-	// Create a new tunnel client
-	client, err := tunnel.NewTunnelClient(
-		tunnel.WithUUID(clientUUID),
-		tunnel.WithAuthToken(clientAuthToken),
-		tunnel.WithRootCAs(cryptoutils.CertPoolForCertificate(caCert)),
-		tunnel.WithSocksListenAddr("localhost:1081"),
-		tunnel.WithPcapPath("client.pcap"),
-	)
-	require.NoError(t, err)
-
 	g, ctx := errgroup.WithContext(ctx)
 
 	// Start a little http server listening on the client side.
@@ -157,7 +147,7 @@ func TestTunnelEndToEnd_UserModeClient(t *testing.T) {
 		return nil
 	})
 
-	// Start the server
+	// Start the server.
 	g.Go(func() error {
 		defer t.Log("Tunnel server closed")
 
@@ -170,39 +160,52 @@ func TestTunnelEndToEnd_UserModeClient(t *testing.T) {
 		return nil
 	})
 
-	// Start the client
+	var r router.Router
+	// Start the router.
 	g.Go(func() error {
 		defer t.Log("Tunnel client closed")
 
-		// Wait for the server to start
+		// Wait for the server to start.
 		time.Sleep(1 * time.Second)
 
 		t.Log("Starting tunnel client")
 
-		if err := client.Start(ctx); err != nil {
-			return fmt.Errorf("unable to connect to server: %v", err)
-		}
-		defer func() {
-			_ = client.Close()
-		}()
+		var err error
+		r, err = tunnel.BuildClientRouter(
+			tunnel.WithRootCAs(cryptoutils.CertPoolForCertificate(caCert)),
+			tunnel.WithSocksListenAddr("localhost:1081"),
+			tunnel.WithPcapPath("client.pcap"),
+		)
+		require.NoError(t, err)
+
+		err = r.Start(ctx)
+		require.NoError(t, err)
 
 		return nil
 	})
 
-	// Run the test
+	d := &tunnel.TunnelDialer{Router: r}
+	conn, err := d.Dial(
+		ctx,
+		uuid.New(),
+		"localhost:9443",
+		tunnel.WithAuthToken(clientAuthToken),
+	)
+	require.NoError(t, err)
+
+	// Run the test.
 	g.Go(func() error {
-		// Cancel the context when the test is done
 		defer cancel()
 
-		var clientAddresses []netip.Prefix
+		var addrs []netip.Prefix
 		err := retry.Do(
 			func() error {
 				var err error
-				clientAddresses, err = client.LocalAddresses()
+				addrs, err = conn.LocalAddrs()
 				if err != nil {
 					return err
 				}
-				if len(clientAddresses) == 0 {
+				if len(addrs) == 0 {
 					return fmt.Errorf("no addresses yet")
 				}
 				return nil
@@ -215,12 +218,12 @@ func TestTunnelEndToEnd_UserModeClient(t *testing.T) {
 			return fmt.Errorf("failed to get client addresses: %w", err)
 		}
 
-		t.Logf("Assigned client addresses: %v", clientAddresses)
+		t.Logf("Assigned client addresses: %v", addrs)
 
 		t.Log("Connecting to HTTP server running on client via the tunnel")
 
 		httpPort := httpListener.Addr().(*net.TCPAddr).Port
-		resp, err := http.Get("http://" + net.JoinHostPort(clientAddresses[0].Addr().String(), fmt.Sprintf("%d", httpPort)))
+		resp, err := http.Get("http://" + net.JoinHostPort(addrs[0].Addr().String(), fmt.Sprintf("%d", httpPort)))
 		require.NoError(t, err)
 		defer resp.Body.Close()
 
@@ -325,19 +328,33 @@ func TestTunnelEndToEnd_KernelModeClient(t *testing.T) {
 	// Register the client with the server
 	server.AddTunnelNode(clientTunnelNode)
 
-	// Create a new tunnel client
-	client, err := tunnel.NewTunnelClient(
-		tunnel.WithUUID(clientUUID),
-		tunnel.WithAuthToken(clientAuthToken),
-		tunnel.WithRootCAs(cryptoutils.CertPoolForCertificate(caCert)),
-		tunnel.WithMode(tunnel.TunnelClientModeKernel),
-		tunnel.WithPcapPath("client.pcap"),
-	)
-	require.NoError(t, err)
-
 	g, ctx := errgroup.WithContext(ctx)
 
-	// Start the server
+	var r router.Router
+	// Start the router.
+	g.Go(func() error {
+		defer t.Log("Tunnel client closed")
+
+		// Wait for the server to start.
+		time.Sleep(1 * time.Second)
+
+		t.Log("Starting tunnel client")
+
+		var err error
+		r, err = tunnel.BuildClientRouter(
+			tunnel.WithRootCAs(cryptoutils.CertPoolForCertificate(caCert)),
+			tunnel.WithMode(tunnel.TunnelClientModeKernel),
+			tunnel.WithPcapPath("client.pcap"),
+		)
+		require.NoError(t, err)
+
+		err = r.Start(ctx)
+		require.NoError(t, err)
+
+		return nil
+	})
+
+	// Start the server.
 	g.Go(func() error {
 		defer t.Log("Tunnel server closed")
 
@@ -350,36 +367,26 @@ func TestTunnelEndToEnd_KernelModeClient(t *testing.T) {
 		return nil
 	})
 
-	// Start the client
-	g.Go(func() error {
-		defer t.Log("Tunnel client closed")
-
-		// Wait for the server to start
-		time.Sleep(1 * time.Second)
-
-		t.Log("Starting tunnel client")
-
-		if err := client.Start(ctx); err != nil {
-			return fmt.Errorf("unable to connect to server: %v", err)
-		}
-		defer func() {
-			_ = client.Close()
-		}()
-
-		return nil
-	})
+	d := &tunnel.TunnelDialer{Router: r}
+	conn, err := d.Dial(
+		ctx,
+		uuid.New(),
+		"localhost:9443",
+		tunnel.WithAuthToken(clientAuthToken),
+	)
+	require.NoError(t, err)
 
 	var httpListener net.Listener
 	g.Go(func() error {
-		var clientAddresses []netip.Prefix
+		var addrs []netip.Prefix
 		err := retry.Do(
 			func() error {
 				var err error
-				clientAddresses, err = client.LocalAddresses()
+				addrs, err = conn.LocalAddrs()
 				if err != nil {
 					return err
 				}
-				if len(clientAddresses) == 0 {
+				if len(addrs) == 0 {
 					return fmt.Errorf("no addresses yet")
 				}
 				return nil
@@ -393,7 +400,7 @@ func TestTunnelEndToEnd_KernelModeClient(t *testing.T) {
 		}
 
 		// Start a little http server listening on the client side.
-		httpListener, err = net.Listen("tcp", net.JoinHostPort(clientAddresses[0].Addr().String(), "0"))
+		httpListener, err = net.Listen("tcp", net.JoinHostPort(addrs[0].Addr().String(), "0"))
 		require.NoError(t, err)
 
 		httpServer := &http.Server{

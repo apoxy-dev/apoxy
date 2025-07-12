@@ -120,8 +120,7 @@ var tunnelRunCmd = &cobra.Command{
 			cfg:    cfg,
 			a3y:    a3y,
 
-			tunDialer: &tunnel.TunnelDialer{},
-			tunConns:  make(map[uuid.UUID]*tunnel.Conn),
+			tunConns: make(map[uuid.UUID]*tunnel.Conn),
 		}
 		return tun.run(ctx, tn)
 	},
@@ -160,18 +159,22 @@ func (t *tunnelNodeReconciler) run(ctx context.Context, tn *corev1alpha.TunnelNo
 		return nil
 	})
 
+	r, err := tunnel.BuildClientRouter(
+		tunnel.WithPcapPath(tunnelNodePcapPath),
+		tunnel.WithMode(tunnelMode),
+		tunnel.WithPreserveDefaultGatewayDestinations(preserveDefaultGwDsts),
+		tunnel.WithSocksListenAddr(socksListenAddr),
+	)
+	if err != nil {
+		return fmt.Errorf("unable to build client router: %w", err)
+	}
 	g.Go(func() error {
-		cOpts := []tunnel.TunnelClientOption{
-			tunnel.WithPcapPath(tunnelNodePcapPath),
-			tunnel.WithMode(tunnelMode),
-			tunnel.WithPreserveDefaultGatewayDestinations(preserveDefaultGwDsts),
-			tunnel.WithSocksListenAddr(socksListenAddr),
-		}
-		if err := t.tunDialer.Start(gctx, cOpts...); err != nil {
-			slog.Error("TunnelDialer exited non-zero", slog.Any("error", err))
+		if err := r.Start(gctx); err != nil {
+			slog.Error("Router exited non-zero", slog.Any("error", err))
 		}
 		return nil
 	})
+	t.tunDialer = &tunnel.TunnelDialer{Router: r}
 
 	return g.Wait()
 }

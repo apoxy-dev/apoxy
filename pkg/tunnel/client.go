@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"net/url"
 	"sync"
+	"time"
 
 	"github.com/dpeckett/network"
 	"github.com/google/uuid"
@@ -21,6 +22,10 @@ import (
 	"github.com/yosida95/uritemplate/v3"
 
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/router"
+)
+
+var (
+	ErrNotConnected = errors.New("not connected")
 )
 
 type TunnelClientOption func(*tunnelClientOptions)
@@ -134,13 +139,9 @@ func WithPreserveDefaultGatewayDestinations(dsts []netip.Prefix) TunnelClientOpt
 	}
 }
 
-// TunnelDialer dials a tunnel connection. Must be started before use.
-type TunnelDialer struct {
-	router router.Router
-}
-
-// Start starts the Dialer.
-func (c *TunnelDialer) Start(ctx context.Context, opts ...TunnelClientOption) error {
+// BuildClientRouter builds a router for the client tunnel side using provided
+// options and sane defaults.
+func BuildClientRouter(opts ...TunnelClientOption) (router.Router, error) {
 	options := &tunnelClientOptions{}
 	for _, opt := range opts {
 		opt(options)
@@ -171,35 +172,57 @@ func (c *TunnelDialer) Start(ctx context.Context, opts ...TunnelClientOption) er
 	if options.socksListenAddr != "" {
 		routerOpts = append(routerOpts, router.WithSocksListenAddr(options.socksListenAddr))
 	}
-	var err error
-	if options.mode == TunnelClientModeKernel {
+
+	switch options.mode {
+	case TunnelClientModeKernel:
 		routerOpts = append(routerOpts, router.WithPreserveDefaultGwDsts(options.preserveDefaultGwDsts))
-		c.router, err = router.NewClientNetlinkRouter(routerOpts...)
-		if err != nil {
-			return fmt.Errorf("failed to create kernel router: %w", err)
-		}
-	} else if options.mode == TunnelClientModeUser {
-		c.router, err = router.NewNetstackRouter(routerOpts...)
-		if err != nil {
-			return fmt.Errorf("failed to create user mode router: %w", err)
-		}
-	} else {
-		return fmt.Errorf("invalid tunnel client mode: %d", options.mode)
+		return router.NewClientNetlinkRouter(routerOpts...)
+	case TunnelClientModeUser:
+		return router.NewNetstackRouter(routerOpts...)
+	default:
+		return nil, fmt.Errorf("invalid tunnel client mode: %v", options.mode)
 	}
+	//nolint:unreachable
+	panic("unreachable")
+}
 
-	slog.Info("Starting router")
+// TunnelDialer dials a tunnel connection. Must be started before use.
+type TunnelDialer struct {
+	Router router.Router
 
-	return c.router.Start(ctx)
+	routerMu   sync.Mutex
+	routerOnce sync.Once
+	routerErr  error
 }
 
 // Dial dials the TunnelNode server, establishes tunnel connection and sets
 // up client-side routing.
-func (c *TunnelDialer) Dial(
+func (d *TunnelDialer) Dial(
 	ctx context.Context,
 	id uuid.UUID,
 	addr string,
 	opts ...TunnelClientOption,
 ) (*Conn, error) {
+	d.routerMu.Lock()
+	if d.Router == nil {
+		d.routerOnce.Do(func() {
+			d.Router, d.routerErr = BuildClientRouter()
+			if d.routerErr != nil {
+				return
+			}
+			go func() {
+				if err := d.Router.Start(context.Background()); err != nil {
+					slog.Error("router failed", "error", err)
+				}
+			}()
+		})
+	}
+	if d.routerErr != nil {
+		d.routerMu.Unlock()
+		return nil, d.routerErr
+	}
+	d.routerMu.Unlock()
+
 	options := defaultClientOptions()
 	for _, opt := range opts {
 		opt(options)
@@ -264,7 +287,7 @@ func (c *TunnelDialer) Dial(
 	}
 
 	for _, lp := range localPrefixes {
-		if err := c.router.AddAddr(lp, conn); err != nil {
+		if err := d.Router.AddAddr(lp, conn); err != nil {
 			return nil, fmt.Errorf("failed to add route %s: %w", lp.String(), err)
 		}
 	}
@@ -276,7 +299,7 @@ func (c *TunnelDialer) Dial(
 
 	for _, route := range routes {
 		for _, p := range route.Prefixes() {
-			if err := c.router.AddRoute(p); err != nil {
+			if err := d.Router.AddRoute(p); err != nil {
 				return nil, fmt.Errorf("failed to add route %s: %w", p.String(), err)
 			}
 		}
@@ -287,14 +310,16 @@ func (c *TunnelDialer) Dial(
 		return nil, fmt.Errorf("failed to parse connection UUID: %w", err)
 	}
 
-	return &Conn{
+	c := &Conn{
 		UUID: connUUID,
 
 		conn:      conn,
 		hConn:     hConn,
-		router:    c.router,
+		router:    d.Router,
 		closeOnce: sync.Once{},
-	}, nil
+	}
+	go c.run(ctx)
+	return c, nil
 }
 
 type Conn struct {
@@ -304,6 +329,40 @@ type Conn struct {
 	hConn     *http3.ClientConn
 	router    router.Router
 	closeOnce sync.Once
+
+	mu    sync.RWMutex
+	addrs []netip.Prefix
+}
+
+func (c *Conn) run(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(time.Second):
+			addrs, err := c.conn.LocalPrefixes(ctx)
+			if err != nil {
+				slog.Error("Failed to get local prefixes", slog.Any("error", err))
+				continue
+			}
+			c.mu.Lock()
+			c.addrs = addrs
+			c.mu.Unlock()
+		}
+	}
+}
+
+func (c *Conn) LocalAddrs() ([]netip.Prefix, error) {
+	if c.conn == nil {
+		return nil, ErrNotConnected
+	}
+
+	c.mu.RLock()
+	addrs := make([]netip.Prefix, len(c.addrs))
+	copy(addrs, c.addrs)
+	c.mu.RUnlock()
+
+	return addrs, nil
 }
 
 func (c *Conn) Close() error {
@@ -324,13 +383,6 @@ func (c *Conn) Close() error {
 				if firstErr == nil {
 					firstErr = fmt.Errorf("failed to close HTTP/3 connection: %w", err)
 				}
-			}
-		}
-
-		if err := c.router.Close(); err != nil {
-			slog.Error("Failed to close router", slog.Any("error", err))
-			if firstErr == nil {
-				firstErr = fmt.Errorf("failed to close router: %w", err)
 			}
 		}
 	})
