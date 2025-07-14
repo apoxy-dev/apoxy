@@ -21,4 +21,6 @@ jobs:
           dagger call -v build-backplane --src=. --platform=linux/amd64
           dagger call -v build-tunnelproxy --src=. --platform=linux/amd64
           dagger call -v build-apiserver --src=.
+          dagger call -v build-kube-controller --src=.
+          dagger call -v publish-images --src=. --tag=${GITHUB_SHA::7}-dev --sha=${GITHUB_SHA::7} --registry-password=env:APOXY_DOCKERHUB_PASSWORD
           dagger call -v build-cli --src=. --platform=linux/amd64 --tag=${GITHUB_SHA::7}-dev --sha=${GITHUB_SHA::7}
