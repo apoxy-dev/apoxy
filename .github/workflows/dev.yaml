@@ -16,6 +16,7 @@ jobs:
       - name: Run Dagger pipeline
         env:
           SHUTUP: 1
+          APOXY_DOCKERHUB_PASSWORD: ${{ secrets.APOXY_DOCKERHUB_PASSWORD }}
         timeout-minutes: 15
         run: |
           dagger call -v build-backplane --src=. --platform=linux/amd64
