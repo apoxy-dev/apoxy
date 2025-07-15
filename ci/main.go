@@ -474,7 +474,7 @@ func (m *ApoxyCli) BuildKubeController(
 		WithWorkdir("/src")
 
 	return dag.Container(dagger.ContainerOpts{Platform: p}).
-		From("cgr.dev/chainguard/wolfi-base:latest").
+		From("ubuntu:24.04").
 		WithFile("/bin/kube-controller", builder.File(kcOut)).
 		WithEntrypoint([]string{"/bin/kube-controller"})
 }
