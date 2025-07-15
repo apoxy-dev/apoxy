@@ -20,6 +20,7 @@ import (
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 	"github.com/yosida95/uritemplate/v3"
+	"k8s.io/apimachinery/pkg/util/sets"
 
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/router"
 )
@@ -278,20 +279,6 @@ func (d *TunnelDialer) Dial(
 
 	slog.Info("Connected to server", slog.String("addr", addr))
 
-	localPrefixes, err := conn.LocalPrefixes(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get local IP addresses: %w", err)
-	}
-	if len(localPrefixes) == 0 {
-		return nil, errors.New("no local IP addresses available")
-	}
-
-	for _, lp := range localPrefixes {
-		if err := d.Router.AddAddr(lp, conn); err != nil {
-			return nil, fmt.Errorf("failed to add route %s: %w", lp.String(), err)
-		}
-	}
-
 	routes, err := conn.Routes(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get routes: %w", err)
@@ -345,9 +332,24 @@ func (c *Conn) run(ctx context.Context) {
 				slog.Error("Failed to get local prefixes", slog.Any("error", err))
 				continue
 			}
+
+			slog.Info("Updating local prefixes", slog.Any("prefixes", addrs))
+
 			c.mu.Lock()
+			newAddrs := sets.New[netip.Prefix](addrs...)
+			oldAddrs := sets.New[netip.Prefix](c.addrs...)
+			for _, addr := range newAddrs.Difference(oldAddrs).UnsortedList() {
+				slog.Info("Adding local prefix", slog.Any("prefix", addr))
+				c.router.AddAddr(addr, c.conn)
+			}
+			for _, addr := range oldAddrs.Difference(newAddrs).UnsortedList() {
+				slog.Info("Removing local prefix", slog.Any("prefix", addr))
+				c.router.DelAddr(addr)
+			}
 			c.addrs = addrs
 			c.mu.Unlock()
+
+			slog.Info("Local prefixes updated", slog.Any("prefixes", addrs))
 		}
 	}
 }
