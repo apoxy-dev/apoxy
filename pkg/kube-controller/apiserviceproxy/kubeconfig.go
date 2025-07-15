@@ -47,19 +47,20 @@ func (p *APIServiceProxy) configureKubeconfigProxy(ctx context.Context) error {
 		Transport: transport,
 	}
 
-	cert, err := selfSignCertificate()
+	cert, caBundle, err := selfSignCertificate()
 	if err != nil {
 		return fmt.Errorf("failed to self-sign certificate: %w", err)
 	}
 	p.cert = cert
+	p.caBundle = caBundle
 
 	return nil
 }
 
-func selfSignCertificate() (tls.Certificate, error) {
+func selfSignCertificate() (tls.Certificate, []byte, error) {
 	priv, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
-		return tls.Certificate{}, err
+		return tls.Certificate{}, nil, err
 	}
 
 	template := x509.Certificate{
@@ -79,11 +80,16 @@ func selfSignCertificate() (tls.Certificate, error) {
 
 	derBytes, err := x509.CreateCertificate(rand.Reader, &template, &template, &priv.PublicKey, priv)
 	if err != nil {
-		return tls.Certificate{}, err
+		return tls.Certificate{}, nil, err
 	}
 
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: derBytes})
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(priv)})
 
-	return tls.X509KeyPair(certPEM, keyPEM)
+	cert, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		return tls.Certificate{}, nil, err
+	}
+
+	return cert, certPEM, nil
 }

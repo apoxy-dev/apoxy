@@ -75,14 +75,6 @@ func main() {
 	}
 	kc := kubernetes.NewForConfigOrDie(kCluster)
 
-	apiReg, err := apiregistration.NewAPIRegistration(kCluster)
-	if err != nil {
-		log.Fatalf("failed to create api registration client: %v", err)
-	}
-	if err := apiReg.RegisterAPIServices(ctx, *svcName, *namespace, apiserviceproxy.DefaultPort); err != nil {
-		log.Fatalf("failed to register api services: %v", err)
-	}
-
 	log.Infof("starting api service proxy")
 	var proxyOpts []apiserviceproxy.Option
 	if *projectID != "" {
@@ -109,6 +101,14 @@ func main() {
 			log.Fatalf("unable to run api service proxy: %v", err)
 		}
 	}()
+
+	apiReg, err := apiregistration.NewAPIRegistration(kCluster)
+	if err != nil {
+		log.Fatalf("failed to create api registration client: %v", err)
+	}
+	if err := apiReg.RegisterAPIServices(ctx, *svcName, *namespace, apiserviceproxy.DefaultPort, apiSvc.CABundle()); err != nil {
+		log.Fatalf("failed to register api services: %v", err)
+	}
 
 	<-ctx.Done()
 	log.Infof("controllers shutting down")

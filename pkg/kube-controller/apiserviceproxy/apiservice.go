@@ -25,6 +25,7 @@ type APIServiceProxy struct {
 	proxy    *httputil.ReverseProxy
 	cert     tls.Certificate
 	certPool *x509.CertPool
+	caBundle []byte
 }
 
 // NewAPIServiceProxy creates a new APIServiceProxy with the given options.
@@ -56,6 +57,11 @@ func NewAPIServiceProxy(
 	}
 
 	return p, nil
+}
+
+// CABundle returns the CA bundle for the APIServiceProxy.
+func (p *APIServiceProxy) CABundle() []byte {
+	return p.caBundle
 }
 
 // Run starts the APIServiceProxy.
