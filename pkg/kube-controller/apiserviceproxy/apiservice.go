@@ -73,9 +73,9 @@ func (p *APIServiceProxy) Run(ctx context.Context) error {
 		Addr:    fmt.Sprintf(":%d", DefaultPort),
 		Handler: p.proxy,
 		TLSConfig: &tls.Config{
-			Certificates: []tls.Certificate{p.cert},
-			ClientCAs:    p.certPool,
-			ClientAuth:   tls.RequireAndVerifyClientCert,
+			Certificates:       []tls.Certificate{p.cert},
+			ClientCAs:          p.certPool,
+			InsecureSkipVerify: true,
 		},
 	}
 
