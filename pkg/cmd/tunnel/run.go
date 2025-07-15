@@ -51,6 +51,7 @@ var (
 	insecureSkipVerify bool
 	preserveDefaultGw  []string
 	socksListenAddr    string
+	minConns           int
 
 	preserveDefaultGwDsts []netip.Prefix
 )
@@ -61,8 +62,6 @@ func init() {
 
 type tunnelNodeReconciler struct {
 	client.Client
-
-	minConns int
 
 	scheme *runtime.Scheme
 	cfg    *configv1alpha1.Config
@@ -114,8 +113,6 @@ var tunnelRunCmd = &cobra.Command{
 		}
 
 		tun := &tunnelNodeReconciler{
-			minConns: 1,
-
 			scheme: scheme,
 			cfg:    cfg,
 			a3y:    a3y,
@@ -234,12 +231,12 @@ func (t *tunnelNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	tnLocalConns := allLocalConns.Intersection(remoteConns)
 
 	n := tnLocalConns.Len()
-	if n >= t.minConns { // Already enough connections to this TunnelNode, do nothing.
+	if n >= minConns { // Already enough connections to this TunnelNode, do nothing.
 		return ctrl.Result{}, nil
 	}
 
 	log.Info("Not enough connections to this TunnelNode, attempting to establish more",
-		"min", t.minConns, "cur", n)
+		"min", minConns, "cur", n)
 
 	cOpts := []tunnel.TunnelClientOption{}
 	tnUUID, err := uuid.Parse(string(tunnelNode.ObjectMeta.UID))
@@ -248,7 +245,7 @@ func (t *tunnelNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, err
 	}
 	if tunnelNode.Status.Credentials == nil || tunnelNode.Status.Credentials.Token == "" {
-		log.Info("TunnelNode has no credentials")
+		log.Info("TunnelNode has no credentials, waiting for credentials")
 		return ctrl.Result{
 			RequeueAfter: time.Second,
 		}, nil
@@ -275,13 +272,15 @@ func (t *tunnelNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		cOpts = append(cOpts, tunnel.WithInsecureSkipVerify(true))
 	}
 
-	conn, err := t.tunDialer.Dial(ctx, tnUUID, srvAddr, cOpts...)
-	if err != nil {
-		log.Error(err, "Failed to start tunnel client")
-		return ctrl.Result{}, err
-	}
+	for i := 0; i < minConns-n; i++ {
+		conn, err := t.tunDialer.Dial(ctx, tnUUID, srvAddr, cOpts...)
+		if err != nil {
+			log.Error(err, "Failed to start tunnel client")
+			return ctrl.Result{}, err
+		}
 
-	t.tunConns[conn.UUID] = conn
+		t.tunConns[conn.UUID] = conn
+	}
 
 	return ctrl.Result{}, nil
 }

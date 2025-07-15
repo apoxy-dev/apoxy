@@ -218,6 +218,7 @@ func init() {
 	tunnelRunCmd.Flags().BoolVar(&insecureSkipVerify, "insecure-skip-verify", false, "Skip TLS certificate verification.")
 	tunnelRunCmd.Flags().StringSliceVar(&preserveDefaultGw, "preserve-default-gw-dsts", []string{}, "Preserve default gateway.")
 	tunnelRunCmd.Flags().StringVar(&socksListenAddr, "socks-addr", "localhost:1080", "Listen address for SOCKS proxy.")
+	tunnelRunCmd.Flags().IntVar(&minConns, "min-conns", 1, "Minimum number of connections to maintain.")
 
 	tunnelCmd.AddCommand(createCmd)
 	tunnelCmd.AddCommand(getCmd)
