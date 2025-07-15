@@ -53,6 +53,10 @@ func (p *APIServiceProxy) configureKubeconfigProxy(ctx context.Context) error {
 	}
 	p.cert = cert
 	p.caBundle = caBundle
+	p.certPool = x509.NewCertPool()
+	if !p.certPool.AppendCertsFromPEM(caBundle) {
+		return fmt.Errorf("failed to append CA bundle to cert pool")
+	}
 
 	return nil
 }
