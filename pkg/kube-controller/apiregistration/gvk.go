@@ -21,7 +21,7 @@ func (a *APIServiceDefinition) GetAPIServiceName() string {
 }
 
 // ToAPIService converts the definition to a Kubernetes APIService object
-func (a *APIServiceDefinition) ToAPIService(serviceName, namespace string, port int) *apiregistrationv1.APIService {
+func (a *APIServiceDefinition) ToAPIService(serviceName, namespace string, port int, caBundle []byte) *apiregistrationv1.APIService {
 	return &apiregistrationv1.APIService{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: a.GetAPIServiceName(),
@@ -36,7 +36,8 @@ func (a *APIServiceDefinition) ToAPIService(serviceName, namespace string, port 
 				Namespace: namespace,
 				Port:      ptr.To(int32(port)),
 			},
-			InsecureSkipTLSVerify: true,
+			CABundle:              caBundle,
+			InsecureSkipTLSVerify: false,
 		},
 	}
 }

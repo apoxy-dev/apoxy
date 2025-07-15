@@ -31,10 +31,10 @@ func NewAPIRegistration(config *rest.Config) (*APIRegistration, error) {
 }
 
 // RegisterAPIServices registers all Apoxy API services with Kubernetes API Aggregation
-func (a *APIRegistration) RegisterAPIServices(ctx context.Context, serviceName, namespace string, port int) error {
+func (a *APIRegistration) RegisterAPIServices(ctx context.Context, serviceName, namespace string, port int, caBundle []byte) error {
 	log.Infof("setting up API Aggregation")
 	for _, apiSvcDef := range AllAPIServices {
-		svc := apiSvcDef.ToAPIService(serviceName, namespace, port)
+		svc := apiSvcDef.ToAPIService(serviceName, namespace, port, caBundle)
 		if _, err := a.apiRegC.ApiregistrationV1().APIServices().Create(ctx, svc, metav1.CreateOptions{}); err != nil {
 			if !apierrors.IsAlreadyExists(err) {
 				return err
