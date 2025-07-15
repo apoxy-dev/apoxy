@@ -36,8 +36,7 @@ func (a *APIServiceDefinition) ToAPIService(serviceName, namespace string, port 
 				Namespace: namespace,
 				Port:      ptr.To(int32(port)),
 			},
-			CABundle:              caBundle,
-			InsecureSkipTLSVerify: false,
+			InsecureSkipTLSVerify: true,
 		},
 	}
 }
