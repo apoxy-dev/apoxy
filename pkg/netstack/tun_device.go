@@ -32,6 +32,7 @@ var _ tun.Device = (*TunDevice)(nil)
 type TunDevice struct {
 	ep             *channel.Endpoint
 	stack          *stack.Stack
+	ipt            *IPTables
 	nicID          tcpip.NICID
 	pcapFile       *os.File
 	events         chan tun.Event
@@ -41,6 +42,7 @@ type TunDevice struct {
 }
 
 func NewTunDevice(pcapPath string) (*TunDevice, error) {
+	ipt := newIPTables()
 	opts := stack.Options{
 		NetworkProtocols: []stack.NetworkProtocolFactory{
 			ipv4.NewProtocol,
@@ -52,6 +54,7 @@ func NewTunDevice(pcapPath string) (*TunDevice, error) {
 			icmp.NewProtocol4,
 			icmp.NewProtocol6,
 		},
+		DefaultIPTables: ipt.defaultIPTables,
 	}
 
 	ipstack := stack.New(opts)
@@ -108,6 +111,7 @@ func NewTunDevice(pcapPath string) (*TunDevice, error) {
 	tunDev := &TunDevice{
 		ep:             linkEP,
 		stack:          ipstack,
+		ipt:            ipt,
 		nicID:          nicID,
 		pcapFile:       pcapFile,
 		events:         make(chan tun.Event, 1),
@@ -139,6 +143,14 @@ func (tun *TunDevice) AddAddr(addr netip.Prefix) error {
 		return fmt.Errorf("could not add protocol address: %v", tcpipErr)
 	}
 
+	slog.Info("Adding addr to SNAT", slog.String("addr", addr.String()))
+
+	if addr.Addr().Is4() {
+		tun.ipt.SNATv4.add(protoAddr.AddressWithPrefix.Address)
+	} else if addr.Addr().Is6() {
+		tun.ipt.SNATv6.add(protoAddr.AddressWithPrefix.Address)
+	}
+
 	return nil
 }
 
@@ -154,6 +166,14 @@ func (tun *TunDevice) DelAddr(addr netip.Prefix) error {
 
 	if err := tun.stack.RemoveAddress(tun.nicID, nsAddr); err != nil {
 		return fmt.Errorf("could not remove address: %v", err)
+	}
+
+	slog.Info("Removing addr from SNAT", slog.String("addr", addr.String()))
+
+	if addr.Addr().Is4() {
+		tun.ipt.SNATv4.del(nsAddr)
+	} else if addr.Addr().Is6() {
+		tun.ipt.SNATv6.del(nsAddr)
 	}
 
 	return nil

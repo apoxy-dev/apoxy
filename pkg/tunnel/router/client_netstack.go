@@ -9,12 +9,12 @@ import (
 	"strconv"
 	"sync"
 
+	"github.com/dpeckett/network"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/apoxy-dev/apoxy/pkg/netstack"
 	"github.com/apoxy-dev/apoxy/pkg/socksproxy"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/connection"
-	"github.com/dpeckett/network"
 )
 
 var (
