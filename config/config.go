@@ -29,12 +29,15 @@ var (
 	Verbose         bool
 	ProjectID       string
 	LocalMode       bool
-	DefaultConfig   = &configv1alpha1.Config{
+	PprofEnabled    bool
+
+	DefaultConfig = &configv1alpha1.Config{
 		DashboardURL: "https://dashboard.apoxy.dev",
 		Projects: []configv1alpha1.Project{{
 			APIBaseURL: "https://api.apoxy.dev",
 		}},
 	}
+
 	codec runtime.Codec
 )
 

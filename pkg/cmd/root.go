@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,6 +28,16 @@ var rootCmd = &cobra.Command{
 Start by creating an account on https://apoxy.dev and logging in with 'apoxy auth'.
 `,
 	DisableAutoGenTag: true,
+	PersistentPreRun: func(cmd *cobra.Command, args []string) {
+		if config.PprofEnabled {
+			go func() {
+				log.Println("Starting pprof server on :6060")
+				if err := http.ListenAndServe(":6060", nil); err != nil {
+					log.Printf("pprof server failed: %v", err)
+				}
+			}()
+		}
+	},
 }
 
 // ExecuteContext executes root command with context.
@@ -39,6 +52,7 @@ func init() {
 	rootCmd.PersistentFlags().BoolVarP(&config.Verbose, "verbose", "v", false, "Enable verbose output.")
 	rootCmd.PersistentFlags().BoolVar(&config.LocalMode, "local", false, "Run in local mode.")
 	rootCmd.PersistentFlags().StringVar(&config.ProjectID, "project", "", "The project ID to use.")
+	rootCmd.PersistentFlags().BoolVar(&config.PprofEnabled, "pprof", false, "Enable pprof HTTP server on :6060.")
 
 	rootCmd.AddCommand(alpha.Cmd())
 	rootCmd.AddCommand(tunnel.Cmd())
