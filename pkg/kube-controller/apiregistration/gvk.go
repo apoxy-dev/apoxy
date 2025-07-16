@@ -43,14 +43,6 @@ func (a *APIServiceDefinition) ToAPIService(serviceName, namespace string, port 
 
 // All Apoxy API Group Version Kinds
 var (
-	// Config API
-	ConfigV1Alpha1 = &APIServiceDefinition{
-		Group:                "config.apoxy.dev",
-		Version:              "v1alpha1",
-		GroupPriorityMinimum: 1000,
-		VersionPriority:      100,
-	}
-
 	// Controllers API
 	ControllersV1Alpha1 = &APIServiceDefinition{
 		Group:                "controllers.apoxy.dev",
@@ -91,21 +83,24 @@ var (
 	}
 
 	// Policy API
-	PolicyV1Alpha1 = &APIServiceDefinition{
-		Group:                "policy.apoxy.dev",
-		Version:              "v1alpha1",
-		GroupPriorityMinimum: 1000,
-		VersionPriority:      100,
-	}
+	// TODO: Enable when policy API is implemented
+	/*
+		PolicyV1Alpha1 = &APIServiceDefinition{
+			Group:                "policy.apoxy.dev",
+			Version:              "v1alpha1",
+			GroupPriorityMinimum: 1000,
+			VersionPriority:      100,
+		}
+	*/
 
 	// AllAPIServices is a list of all API services to be registered
 	AllAPIServices = []*APIServiceDefinition{
-		ConfigV1Alpha1,
 		ControllersV1Alpha1,
 		CoreV1Alpha,
 		ExtensionsV1Alpha1,
 		ExtensionsV1Alpha2,
 		GatewayV1,
-		PolicyV1Alpha1,
+		// TODO: Enable when policy API is implemented
+		// PolicyV1Alpha1,
 	}
 )
