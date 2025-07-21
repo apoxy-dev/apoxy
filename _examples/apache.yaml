@@ -1,0 +1,106 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: apache-html-config
+  labels:
+    app: apache-httpd
+data:
+  index.html: |
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Apoxy</title>
+        <link rel="preconnect" href="https://fonts.googleapis.com">
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+        <style>
+            * {
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }
+            
+            body {
+                font-family: 'Inter', sans-serif;
+                height: 100vh;
+                display: flex;
+                flex-direction: column;
+                justify-content: center;
+                align-items: center;
+                background-color: #f8fafc;
+            }
+            
+            .container {
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                gap: 2rem;
+            }
+            
+            .logo {
+                max-width: 200px;
+                height: auto;
+            }
+            
+            .message {
+                font-size: 1.5rem;
+                font-weight: 500;
+                color: #1e293b;
+                text-align: center;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <img src="https://cdn.prod.website-files.com/66905e742cab830340b8fa86/669130f909a1e6ef9950c4d6_apoxy.svg" alt="Apoxy Logo" class="logo">
+            <p class="message">It's working!</p>
+        </div>
+    </body>
+    </html>
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: apache-httpd
+  labels:
+    app: apache-httpd
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: apache-httpd
+  template:
+    metadata:
+      labels:
+        app: apache-httpd
+    spec:
+      containers:
+      - name: apache
+        image: httpd:2.4-alpine
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: html-volume
+          mountPath: /usr/local/apache2/htdocs
+      volumes:
+      - name: html-volume
+        configMap:
+          name: apache-html-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: example-service
+  labels:
+    app: apache-httpd
+spec:
+  selector:
+    app: apache-httpd
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 80
+  type: ClusterIP

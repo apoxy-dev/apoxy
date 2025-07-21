@@ -1,0 +1,108 @@
+apiVersion: controllers.apoxy.dev/v1alpha1
+kind: Proxy
+metadata:
+  name: default
+spec:
+  provider: unmanaged
+  listeners:
+    - protocol: TCP
+      port: 10080
+---
+apiVersion: gateway.apoxy.dev/v1
+kind: GatewayClass
+metadata:
+  name: apoxy
+spec:
+  controllerName: gateway.apoxy.dev/gatewayclass-controller
+---
+apiVersion: gateway.apoxy.dev/v1
+kind: Gateway
+metadata:
+  name: default
+spec:
+  gatewayClassName: apoxy
+  infrastructure:
+    parametersRef:
+      kind: Proxy
+      name: default
+  listeners:
+    - name: internal
+      protocol: HTTP
+      port: 10080
+---
+apiVersion: gateway.apoxy.dev/v1
+kind: HTTPRoute
+metadata:
+  name: example-route
+spec:
+  parentRefs:
+    - name: default 
+      kind: Gateway
+      port: 10080
+  hostnames:
+    - 'trainy-example.apoxy.cloud'
+  rules:
+    - backendRefs:
+        - kind: EdgeFunction
+          group: extensions.apoxy.dev
+          name: helloworld
+          port: 8801
+---
+apiVersion: core.apoxy.dev/v1alpha
+kind: Backend
+metadata:
+  name: example-backend
+spec:
+  endpoints:
+    - fqdn: example-cluster.tun.apoxy.net
+---
+apiVersion: core.apoxy.dev/v1alpha
+kind: TunnelNode
+metadata:
+  name: example-cluster
+---
+apiVersion: core.apoxy.dev/v1alpha
+kind: Backend
+metadata:
+  name: ifconfig
+spec:
+  endpoints:
+    - fqdn: ifconfig.me
+---
+apiVersion: extensions.apoxy.dev/v1alpha2
+kind: EdgeFunction
+metadata:
+  name: helloworld
+spec:
+  template:
+    mode: backend
+    runtime:
+      port: 8801
+    code:
+      jsSource:
+        entrypoint: "main.ts"
+        assets:
+          files:
+            - path: "main.ts"
+              content: |
+                interface reqPayload {
+                	name: string;
+                }
+
+                console.info('server started modified');
+
+                Deno.serve(async (req: Request) => {
+                	const { name }: reqPayload = await req.json();
+                  let h = name;
+                  if (h == "") {
+                    h = "world";
+                  }
+                	const data = {
+                		message: `Hello ${h} from foo!`,
+                	};
+
+                	return new Response(
+                		JSON.stringify(data),
+                		{ headers: { 'Content-Type': 'application/json', 'Connection': 'keep-alive' } },
+                	);
+                });
