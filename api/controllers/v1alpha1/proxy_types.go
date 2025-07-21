@@ -200,7 +200,7 @@ type ProxyReplicaStatus struct {
 	// Location of the replica.
 	// Examples: "global", "europe", "us-west1", etc.
 	// +optional
-	Location string `json:"location"`
+	Location string `json:"location,omitempty"`
 
 	// Phase of the replica.
 	Phase ProxyReplicaPhase `json:"phase"`
@@ -208,6 +208,10 @@ type ProxyReplicaStatus struct {
 	// Reason for the current phase.
 	// +optional
 	Reason string `json:"reason,omitempty"`
+
+	// Optional address assigned to the replica.
+	// +optional
+	Address string `json:"address,omitempty"`
 }
 
 // ProxyStatus defines the observed state of Proxy.

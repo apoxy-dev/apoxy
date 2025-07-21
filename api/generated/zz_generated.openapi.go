@@ -815,7 +815,6 @@ func schema_apoxy_api_controllers_v1alpha1_ProxyReplicaStatus(ref common.Referen
 					"location": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Location of the replica. Examples: \"global\", \"europe\", \"us-west1\", etc.",
-							Default:     "",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -831,6 +830,13 @@ func schema_apoxy_api_controllers_v1alpha1_ProxyReplicaStatus(ref common.Referen
 					"reason": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Reason for the current phase.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"address": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Optional address assigned to the replica.",
 							Type:        []string{"string"},
 							Format:      "",
 						},

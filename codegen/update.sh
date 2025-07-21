@@ -7,7 +7,6 @@ set -o pipefail
 ROOT_DIR="$(git rev-parse --show-toplevel)"
 
 # Configurable variables
-export GOTOOLCHAIN=go1.23.3 # Should match the go version in go.mod
 CODEGEN_VERSION=v0.30.1 # Should match the k8s.io/apimachinery version in go.mod
 BOILERPLATE_FILE="${ROOT_DIR}/codegen/boilerplate.go.txt"
 
