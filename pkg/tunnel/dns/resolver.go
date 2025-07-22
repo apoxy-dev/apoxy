@@ -225,6 +225,8 @@ func (r *TunnelNodeDNSReconciler) recursiveResolve(ctx context.Context, w dns.Re
 		default:
 		}
 		client := &dns.Client{
+			// TODO(mattward): could go back to UDP when tunnels support UDP.
+			Net:     "tcp",
 			Dialer:  &net.Dialer{Timeout: upstreamTimeout},
 			Timeout: upstreamTimeout,
 		}
