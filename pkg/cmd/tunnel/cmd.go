@@ -219,6 +219,7 @@ func init() {
 	tunnelRunCmd.Flags().StringSliceVar(&preserveDefaultGw, "preserve-default-gw-dsts", []string{}, "Preserve default gateway.")
 	tunnelRunCmd.Flags().StringVar(&socksListenAddr, "socks-addr", "localhost:1080", "Listen address for SOCKS proxy.")
 	tunnelRunCmd.Flags().IntVar(&minConns, "min-conns", 1, "Minimum number of connections to maintain.")
+	tunnelRunCmd.Flags().StringVar(&dnsListenAddr, "dns-addr", "127.0.0.1:8053", "Listen address for the DNS proxy. Note that you must configure backplane to use this address as well.")
 
 	tunnelCmd.AddCommand(createCmd)
 	tunnelCmd.AddCommand(getCmd)

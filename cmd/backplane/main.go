@@ -95,7 +95,8 @@ var (
 
 	wsRouterPort = flag.Int("ws_router_port", 8082, "Port for the WebSocket router.")
 
-	dnsPort = flag.Int("dns_port", 8053, "Port for the DNS server.")
+	dnsPort       = flag.Int("dns_port", 8053, "Port for the DNS server.")
+	tunnelDNSAddr = flag.String("tunnel_dns_addr", "127.0.0.1:8053", "Address for the DNS server run by tunnel agents.")
 )
 
 func upsertProxyFromPath(ctx context.Context, rC *rest.Config, path string) (string, error) {
@@ -341,7 +342,7 @@ func main() {
 		log.Fatalf("failed to set up EdgeFunction controller: %v", err)
 	}
 
-	tunnelResolver := tundns.NewTunnelNodeDNSReconciler(mgr.GetClient())
+	tunnelResolver := tundns.NewTunnelNodeDNSReconciler(mgr.GetClient(), *tunnelDNSAddr)
 	if err := tunnelResolver.SetupWithManager(mgr); err != nil {
 		log.Fatalf("failed to set up TunnelNodeDNS controller: %v", err)
 	}

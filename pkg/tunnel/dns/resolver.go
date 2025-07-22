@@ -37,14 +37,21 @@ type TunnelNodeDNSReconciler struct {
 
 	nameCache *haxmap.Map[string, sets.Set[netip.Addr]]
 	uuidCache *haxmap.Map[string, sets.Set[netip.Addr]]
+
+	tunnelDNSAddr netip.AddrPort
 }
 
 // NewTunnelNodeDNSReconciler creates a new TunnelNodeDNSReconciler.
-func NewTunnelNodeDNSReconciler(client client.Client) *TunnelNodeDNSReconciler {
+func NewTunnelNodeDNSReconciler(client client.Client, tunnelDNSAddr string) *TunnelNodeDNSReconciler {
+	ap, err := netip.ParseAddrPort(tunnelDNSAddr)
+	if err != nil {
+		apoxylog.Fatalf("failed to parse tunnel DNS address and port: %v", err)
+	}
 	return &TunnelNodeDNSReconciler{
-		Client:    client,
-		nameCache: haxmap.New[string, sets.Set[netip.Addr]](),
-		uuidCache: haxmap.New[string, sets.Set[netip.Addr]](),
+		Client:        client,
+		nameCache:     haxmap.New[string, sets.Set[netip.Addr]](),
+		uuidCache:     haxmap.New[string, sets.Set[netip.Addr]](),
+		tunnelDNSAddr: ap,
 	}
 }
 
@@ -224,12 +231,13 @@ func (r *TunnelNodeDNSReconciler) recursiveResolve(ctx context.Context, w dns.Re
 		var addr string
 		if ip.Is6() {
 			ipv6Bytes := ip.As16()
-			ipv6Bytes[12] = 127
-			ipv6Bytes[13] = 0
-			ipv6Bytes[14] = 0
-			ipv6Bytes[15] = 53
+			ipv4Bytes := r.tunnelDNSAddr.Addr().As4()
+			ipv6Bytes[12] = ipv4Bytes[0]
+			ipv6Bytes[13] = ipv4Bytes[1]
+			ipv6Bytes[14] = ipv4Bytes[2]
+			ipv6Bytes[15] = ipv4Bytes[3]
 			targetIP := netip.AddrFrom16(ipv6Bytes)
-			addr = fmt.Sprintf("[%s]:8053", targetIP.String())
+			addr = fmt.Sprintf("[%s]:%d", targetIP.String(), r.tunnelDNSAddr.Port())
 		} else {
 			apoxylog.Debugf("non-IPv6 address %s, skipping", ip.String())
 			continue

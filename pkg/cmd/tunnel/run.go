@@ -55,6 +55,7 @@ var (
 	preserveDefaultGw  []string
 	socksListenAddr    string
 	minConns           int
+	dnsListenAddr      string
 
 	preserveDefaultGwDsts []netip.Prefix
 )
@@ -116,7 +117,7 @@ var tunnelRunCmd = &cobra.Command{
 		go func() {
 			// Launch an internal recursive DNS resolver used
 			// to resolve addresses of IPv4 services.
-			if err := dns.ListenAndServe("127.0.0.53:8053"); err != nil {
+			if err := dns.ListenAndServe(dnsListenAddr); err != nil {
 				log.Fatalf("failed to start DNS server: %v", err)
 			}
 		}()
