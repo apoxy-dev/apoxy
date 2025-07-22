@@ -36,7 +36,13 @@ func tcpHandler(ctx context.Context, upstream network.Network) func(req *tcp.For
 		reqDetails := req.ID()
 
 		srcAddrPort := netip.AddrPortFrom(addrFromNetstackIP(reqDetails.RemoteAddress), reqDetails.RemotePort)
-		dstAddrPort := netip.AddrPortFrom(addrFromNetstackIP(reqDetails.LocalAddress), reqDetails.LocalPort)
+		// Handle 4in6 embedded IPs:
+		// - IPv4-mapped IPv6 addresses (::ffff:192.168.1.1) are converted to IPv4
+		// - Regular IPv6 addresses left as is (::1)
+		dstAddrPort := netip.AddrPortFrom(
+			addrFromNetstackIP(reqDetails.LocalAddress).Unmap(),
+			reqDetails.LocalPort,
+		)
 
 		logger := slog.With(
 			slog.String("src", srcAddrPort.String()),
