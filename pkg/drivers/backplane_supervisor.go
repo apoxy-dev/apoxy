@@ -80,8 +80,9 @@ func (d *BackplaneSupervisorDriver) Start(
 		"--proxy=" + proxyName,
 		"--replica=" + proxyName,
 		"--apiserver_addr=" + net.JoinHostPort("localhost", "8443"),
-		"--health_probe_port=8088",
-		"--metrics_port=8089",
+		"--controller_metrics_port=9981",
+		"--health_probe_port=9988",
+		"--metrics_port=9992",
 		"--use_envoy_contrib=true",
 		"--dev=true",
 	}...)

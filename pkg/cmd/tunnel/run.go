@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"math/rand"
 	"net/netip"
+	"os"
 	"time"
 
 	"github.com/google/uuid"
@@ -16,17 +17,19 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/klog/v2"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
-	clog "sigs.k8s.io/controller-runtime/pkg/log"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	"github.com/apoxy-dev/apoxy/client/versioned"
 	"github.com/apoxy-dev/apoxy/config"
+	"github.com/apoxy-dev/apoxy/pkg/log"
+	"github.com/apoxy-dev/apoxy/pkg/net/dns"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel"
 
 	configv1alpha1 "github.com/apoxy-dev/apoxy/api/config/v1alpha1"
@@ -101,16 +104,30 @@ var tunnelRunCmd = &cobra.Command{
 			return fmt.Errorf("unable to load config: %w", err)
 		}
 
+		if cfg.IsLocalMode {
+			log.Infof("Running in local mode!")
+		}
+
 		a3y, err := config.DefaultAPIClient()
 		if err != nil {
 			return fmt.Errorf("unable to create API client: %w", err)
 		}
 
+		go func() {
+			// Launch an internal recursive DNS resolver used
+			// to resolve addresses of IPv4 services.
+			if err := dns.ListenAndServe("127.0.0.53:8053"); err != nil {
+				log.Fatalf("failed to start DNS server: %v", err)
+			}
+		}()
+
 		tunnelNodeName := args[0]
+		log.Infof("Running TunnelNode controller %s", tunnelNodeName)
 		tn, err := a3y.CoreV1alpha().TunnelNodes().Get(ctx, tunnelNodeName, metav1.GetOptions{})
 		if err != nil {
 			return fmt.Errorf("unable to get TunnelNode: %w", err)
 		}
+		log.Infof("TunnelNode found %+v", tn)
 
 		tun := &tunnelNodeReconciler{
 			scheme: scheme,
@@ -124,7 +141,7 @@ var tunnelRunCmd = &cobra.Command{
 }
 
 func (t *tunnelNodeReconciler) run(ctx context.Context, tn *corev1alpha.TunnelNode) error {
-	slog.Debug("Running TunnelNode controller", slog.String("name", tn.Name))
+	log.Infof("Running TunnelNode controller %s", tn.Name)
 
 	client, err := config.DefaultAPIClient()
 	if err != nil {
@@ -141,6 +158,10 @@ func (t *tunnelNodeReconciler) run(ctx context.Context, tn *corev1alpha.TunnelNo
 	if err != nil {
 		return fmt.Errorf("unable to set up overall controller manager: %w", err)
 	}
+
+	l := log.New(t.cfg.Verbose)
+	ctrl.SetLogger(l)
+	klog.SetLogger(l)
 
 	t.Client = mgr.GetClient()
 	if err := t.setupWithManager(ctx, mgr, tn.Name); err != nil {
@@ -206,22 +227,24 @@ func (t *tunnelNodeReconciler) setupWithManager(
 }
 
 func (t *tunnelNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := clog.FromContext(ctx)
+	log.Infof("Reconciling TunnelNodes")
 
 	var tunnelNode corev1alpha.TunnelNode
 	if err := t.Get(ctx, req.NamespacedName, &tunnelNode); err != nil {
 		if client.IgnoreNotFound(err) == nil {
 			return ctrl.Result{}, nil
 		}
-		log.Error(err, "Failed to get TunnelNode")
+		log.Errorf("Failed to get TunnelNode: %v", err)
 		return ctrl.Result{}, err
 	}
+
+	log.Infof("TunnelNode found %+v", tunnelNode)
 
 	remoteConns := sets.New[uuid.UUID]()
 	for _, agent := range tunnelNode.Status.Agents {
 		agentUUID, err := uuid.Parse(agent.Name)
 		if err != nil {
-			log.Error(err, "Failed to parse agent UUID", "uuid", agent.Name)
+			log.Errorf("Failed to parse agent UUID: %v", err)
 			continue
 		}
 		remoteConns.Insert(agentUUID)
@@ -235,17 +258,16 @@ func (t *tunnelNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, nil
 	}
 
-	log.Info("Not enough connections to this TunnelNode, attempting to establish more",
-		"min", minConns, "cur", n)
+	log.Infof("Not enough connections to this TunnelNode, attempting to establish more, min: %d, cur: %d", minConns, n)
 
 	cOpts := []tunnel.TunnelClientOption{}
 	tnUUID, err := uuid.Parse(string(tunnelNode.ObjectMeta.UID))
 	if err != nil { // This can only happen in a test environment.
-		log.Error(err, "Failed to parse UID", "uid", tunnelNode.ObjectMeta.UID)
+		log.Errorf("Failed to parse UID: %v", err)
 		return ctrl.Result{}, err
 	}
 	if tunnelNode.Status.Credentials == nil || tunnelNode.Status.Credentials.Token == "" {
-		log.Info("TunnelNode has no credentials, waiting for credentials")
+		log.Errorf("TunnelNode has no credentials, waiting for credentials")
 		return ctrl.Result{
 			RequeueAfter: time.Second,
 		}, nil
@@ -254,9 +276,10 @@ func (t *tunnelNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	var srvAddr string
+	log.Infof("config: %+v", t.cfg)
 	if !t.cfg.IsLocalMode {
 		if len(tunnelNode.Status.Addresses) == 0 {
-			log.Info("TunnelNode has no addresses")
+			log.Errorf("TunnelNode has no addresses")
 			return ctrl.Result{
 				RequeueAfter: time.Second,
 			}, nil
@@ -265,7 +288,12 @@ func (t *tunnelNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			srvAddr = tunnelNode.Status.Addresses[rand.Intn(len(tunnelNode.Status.Addresses))]
 		}
 	} else {
-		srvAddr = "localhost:9443"
+		apiServerHost := "localhost"
+		if os.Getenv("APOXY_API_SERVER_HOST") != "" {
+			apiServerHost = os.Getenv("APOXY_API_SERVER_HOST")
+		}
+		srvAddr = apiServerHost + ":9443"
+		log.Infof("Using tunnel proxy server address %s", srvAddr)
 	}
 
 	if t.cfg.IsLocalMode || insecureSkipVerify {
@@ -275,7 +303,7 @@ func (t *tunnelNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	for i := 0; i < minConns-n; i++ {
 		conn, err := t.tunDialer.Dial(ctx, tnUUID, srvAddr, cOpts...)
 		if err != nil {
-			log.Error(err, "Failed to start tunnel client")
+			log.Errorf("Failed to start tunnel client: %v", err)
 			return ctrl.Result{}, err
 		}
 

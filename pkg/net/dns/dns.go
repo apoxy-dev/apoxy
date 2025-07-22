@@ -15,10 +15,37 @@ var (
 	srv *dnsserver.Server
 )
 
-// ListenAndServe starts a DNS server.
-func ListenAndServe(addr string, plugins ...plugin.Plugin) error {
+// Options configures the DNS server behavior.
+type Options struct {
+	// Plugins is a list of DNS plugins to add to the server chain.
+	Plugins []plugin.Plugin
+	// BlockNonGlobalIPs controls whether responses containing non-global unicast IPs
+	// (private, loopback, ULA addresses) should be blocked and return NXDOMAIN.
+	BlockNonGlobalIPs bool
+}
+
+func WithBlockNonGlobalIPs() func(*Options) {
+	return func(o *Options) {
+		o.BlockNonGlobalIPs = true
+	}
+}
+
+func WithPlugins(p ...plugin.Plugin) func(*Options) {
+	return func(o *Options) {
+		o.Plugins = append(o.Plugins, p...)
+	}
+}
+
+// ListenAndServe starts a DNS server with the given options.
+func ListenAndServe(addr string, opts ...func(*Options)) error {
+	var opt Options
+	for _, optFn := range opts {
+		optFn(&opt)
+	}
 	// runtime -> cache -> upstream
-	up := &upstream{}
+	up := &upstream{
+		BlockNonGlobalIPs: opt.BlockNonGlobalIPs,
+	}
 	if err := up.LoadResolvConf(); err != nil {
 		return err
 	}
@@ -38,8 +65,8 @@ func ListenAndServe(addr string, plugins ...plugin.Plugin) error {
 		Debug:       true,
 	}
 	var stack plugin.Handler = upChain
-	for i := len(plugins) - 1; i >= 0; i-- {
-		stack = plugins[i](stack)
+	for i := len(opt.Plugins) - 1; i >= 0; i-- {
+		stack = opt.Plugins[i](stack)
 	}
 	c.AddPlugin(func(next plugin.Handler) plugin.Handler { return stack })
 

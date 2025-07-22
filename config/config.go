@@ -78,7 +78,7 @@ func Load() (*configv1alpha1.Config, error) {
 	}
 
 	if _, err := os.Stat(ConfigFile); os.IsNotExist(err) {
-		return DefaultConfig, nil
+		return applyFlagOverrides(DefaultConfig)
 	}
 
 	yamlFile, err := os.ReadFile(ConfigFile)
@@ -129,6 +129,10 @@ func Load() (*configv1alpha1.Config, error) {
 		}
 	}
 
+	return applyFlagOverrides(cfg)
+}
+
+func applyFlagOverrides(cfg *configv1alpha1.Config) (*configv1alpha1.Config, error) {
 	// Flag overrides.
 	if ProjectID != "" {
 		projectID, err := uuid.Parse(ProjectID)
@@ -203,9 +207,13 @@ func Store(cfg *configv1alpha1.Config) error {
 // DefaultAPIClient returns a new Apoxy API client.
 func DefaultAPIClient() (*rest.APIClient, error) {
 	if LocalMode {
+		apiServerHost := "localhost"
+		if os.Getenv("APOXY_API_SERVER_HOST") != "" {
+			apiServerHost = os.Getenv("APOXY_API_SERVER_HOST")
+		}
 		return rest.NewAPIClient(
-			rest.WithBaseURL("https://localhost:8443"),
-			rest.WithBaseHost("localhost"),
+			rest.WithBaseURL("https://"+apiServerHost+":8443"),
+			rest.WithBaseHost(apiServerHost),
 			rest.WithProjectID(uuid.New()),
 		)
 	}

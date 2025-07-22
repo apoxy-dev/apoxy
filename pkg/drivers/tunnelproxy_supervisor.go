@@ -11,7 +11,9 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/apoxy-dev/apoxy/pkg/cryptoutils"
 	"github.com/apoxy-dev/apoxy/pkg/log"
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/token"
 )
 
 const (
@@ -72,13 +74,31 @@ func (d *TunnelProxySupervisorDriver) Start(
 		d.cmd = nil
 	}
 
+	certsDir := "/etc/apoxy/certs"
+
+	log.Infof("Generating self-signed certificates at %s and %s",
+		filepath.Join(certsDir, "tunnelproxy.crt"),
+		filepath.Join(certsDir, "tunnelproxy.key"))
+
+	_, serverCert, err := cryptoutils.GenerateSelfSignedTLSCert("localhost")
+	if err != nil {
+		return "", fmt.Errorf("failed to generate self-signed certificates: %w", err)
+	}
+
+	if err := cryptoutils.SaveCertificatePEM(serverCert, certsDir, "tunnelproxy", false); err != nil {
+		return "", fmt.Errorf("failed to save CA certificate: %w", err)
+	}
+
 	d.cmd = exec.CommandContext(ctx, TunnelProxyProcessName)
 
 	d.cmd.Args = append(d.cmd.Args, []string{
+		"--dev=true",
 		"--apiserver_addr=" + net.JoinHostPort("localhost", "8443"),
 		"--network_id=" + projectID.String()[len(projectID.String())-8:],
-		"--health_probe_port=8088",
-		"--metrics_port=8089",
+		"--jwks_urls=http://localhost:8444" + token.JWKSURI,
+		"--health_probe_port=9998",
+		"--metrics_port=9993",
+		"--cksum_recalc=true",
 	}...)
 
 	d.cmd.Args = append(d.cmd.Args, setOpts.Args...)

@@ -87,7 +87,7 @@ var (
 
 	useEnvoyContrib = flag.Bool("use_envoy_contrib", false, "Use Envoy contrib filters.")
 
-	overloadMaxHeapSizeBytes       = flag.Uint64("overload-max-heap-size-bytes", 0, "Maximum heap size in bytes for Envoy overload manager.")
+	overloadMaxHeapSizeBytes     = flag.Uint64("overload-max-heap-size-bytes", 0, "Maximum heap size in bytes for Envoy overload manager.")
 	overloadMaxActiveConnections = flag.Uint64("overload-max-active-connections", 0, "Maximum number of active downstream connections for Envoy overload manager.")
 
 	k8sKVNamespace    = flag.String("k8s_kv_namespace", os.Getenv("POD_NAMESPACE"), "Namespace for the K/V store.")
@@ -347,7 +347,7 @@ func main() {
 	}
 
 	go func() {
-		if err := dns.ListenAndServe(fmt.Sprintf(":%d", *dnsPort), edgeRuntime.Resolver, tunnelResolver.Resolver); err != nil {
+		if err := dns.ListenAndServe(fmt.Sprintf(":%d", *dnsPort), dns.WithPlugins(edgeRuntime.Resolver, tunnelResolver.Resolver), dns.WithBlockNonGlobalIPs()); err != nil {
 			log.Fatalf("failed to start DNS server: %v", err)
 		}
 	}()

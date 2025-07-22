@@ -22,8 +22,9 @@ const (
 
 // upstream is a plugin that sends queries to a random upstream.
 type upstream struct {
-	Next      plugin.Handler
-	Upstreams []string
+	Next              plugin.Handler
+	Upstreams         []string
+	BlockNonGlobalIPs bool
 }
 
 // Name implements the plugin.Handler interface.
@@ -62,23 +63,24 @@ func (u *upstream) ServeDNS(ctx context.Context, w mdns.ResponseWriter, r *mdns.
 		return mdns.RcodeServerFailure, err
 	}
 
-	// Responses referencing non-global unicast IPs are not allowed
-	// at this point.
-	for _, answer := range response.Answer {
-		if a, ok := answer.(*mdns.A); ok {
-			ip := a.A
-			if !ip.IsGlobalUnicast() || ip.IsPrivate() || ip.IsLoopback() {
-				log.Warnf("Answer contains non-global unicast IP: %v, returning NXDOMAIN", ip)
-				response.Rcode = mdns.RcodeNameError // NXDOMAIN
-				break
-			}
-		} else if aaaa, ok := answer.(*mdns.AAAA); ok {
-			ip := aaaa.AAAA
-			ipAddr, _ := netip.AddrFromSlice(ip)
-			if !ip.IsGlobalUnicast() || ip.IsPrivate() || ip.IsLoopback() || isULA(ipAddr) {
-				log.Warnf("Answer contains non-global unicast IPv6: %v, returning NXDOMAIN", ip)
-				response.Rcode = mdns.RcodeNameError // NXDOMAIN
-				break
+	// Block responses referencing non-global unicast IPs if enabled
+	if u.BlockNonGlobalIPs {
+		for _, answer := range response.Answer {
+			if a, ok := answer.(*mdns.A); ok {
+				ip := a.A
+				if u.BlockNonGlobalIPs && (!ip.IsGlobalUnicast() || ip.IsPrivate() || ip.IsLoopback()) {
+					log.Warnf("Answer contains non-global unicast IP: %v, returning NXDOMAIN", ip)
+					response.Rcode = mdns.RcodeNameError // NXDOMAIN
+					break
+				}
+			} else if aaaa, ok := answer.(*mdns.AAAA); ok {
+				ip := aaaa.AAAA
+				ipAddr, _ := netip.AddrFromSlice(ip)
+				if u.BlockNonGlobalIPs && (!ip.IsGlobalUnicast() || ip.IsPrivate() || ip.IsLoopback() || isULA(ipAddr)) {
+					log.Warnf("Answer contains non-global unicast IPv6: %v, returning NXDOMAIN", ip)
+					response.Rcode = mdns.RcodeNameError // NXDOMAIN
+					break
+				}
 			}
 		}
 	}
