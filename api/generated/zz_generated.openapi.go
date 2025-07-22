@@ -1280,7 +1280,7 @@ func schema_apoxy_api_core_v1alpha_AgentStatus(ref common.ReferenceCallback) com
 					},
 					"privateAddress": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Overlay address of the agent that is routable on the internal Apoxy network. Valid values are IPv4, IPv6, or a hostname.",
+							Description: "Private address of the proxy servicing the tunnel. Valid values are IPv4, IPv6, or a hostname.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
