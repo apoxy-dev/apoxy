@@ -53,8 +53,8 @@ type AgentStatus struct {
 	// Valid values are IPv4, IPv6, or a hostname.
 	PrivateAddress string `json:"privateAddress,omitempty"`
 
-	// Address of the agent (publicly routable) that it has connected with to establish a tunnel.
-	// Valid values are IPv4, IPv6, or a hostname.
+	// Overlay address of the agent. Currently we're using a /96 prefix which
+	// can be used for 4in6 tunneling.
 	AgentAddress string `json:"agentAddress,omitempty"`
 }
 
