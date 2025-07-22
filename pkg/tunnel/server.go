@@ -444,7 +444,7 @@ func (t *TunnelServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 	agent := &corev1alpha.AgentStatus{
 		Name:         connUUID,
 		ConnectedAt:  ptr.To(metav1.Now()),
-		AgentAddress: peerV4.Addr().String(),
+		AgentAddress: peerV6.Addr().String(),
 	}
 	if t.options.extIPv6Prefix.IsValid() {
 		agent.PrivateAddress = t.options.extIPv6Prefix.Addr().String()
