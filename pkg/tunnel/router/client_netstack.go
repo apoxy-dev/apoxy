@@ -101,7 +101,7 @@ func (r *NetstackRouter) Start(ctx context.Context) error {
 
 	if err := r.tunDev.ForwardTo(ctx, network.Filtered(&network.FilteredNetworkConfig{
 		DeniedPorts: []uint16{uint16(socksListenPort)},
-		Upstream:    network.Loopback(),
+		Upstream:    network.Host(),
 	})); err != nil {
 		return fmt.Errorf("failed to forward to loopback: %w", err)
 	}
