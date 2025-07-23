@@ -94,7 +94,7 @@ func (d *TunnelProxySupervisorDriver) Start(
 	d.cmd.Args = append(d.cmd.Args, []string{
 		"--dev=true",
 		"--apiserver_addr=" + net.JoinHostPort("localhost", "8443"),
-		"--network_id=" + projectID.String()[len(projectID.String())-8:],
+		"--network_id=" + projectID.String()[len(projectID.String())-6:],
 		"--jwks_urls=http://localhost:8444" + token.JWKSURI,
 		"--health_probe_port=9998",
 		"--metrics_port=9993",

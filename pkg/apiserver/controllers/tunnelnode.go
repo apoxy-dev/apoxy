@@ -5,17 +5,23 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"time"
 
 	"github.com/google/uuid"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	controllerlog "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	corev1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
+	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/token"
+
+	corev1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
 )
+
+const apiserverFinalizer = "apiserver.apoxy.dev/finalizer"
 
 // TunnelNodeReconciler implements a basic garbage collector for dead/orphaned
 // TunnelNode objects.
@@ -27,6 +33,7 @@ type TunnelNodeReconciler struct {
 	jwtPrivateKeyPEM      []byte
 	jwtPublicKeyPEM       []byte
 	tokenRefreshThreshold time.Duration
+	agentIPAM             tunnet.IPAM
 
 	validator *token.InMemoryValidator
 	issuer    *token.Issuer
@@ -39,6 +46,7 @@ func NewTunnelNodeReconciler(
 	jwtPrivateKey []byte,
 	jwtPublicKey []byte,
 	tokenRefreshThreshold time.Duration,
+	agentIPAM tunnet.IPAM,
 ) *TunnelNodeReconciler {
 	return &TunnelNodeReconciler{
 		Client:                c,
@@ -47,6 +55,7 @@ func NewTunnelNodeReconciler(
 		jwtPrivateKeyPEM:      jwtPrivateKey,
 		jwtPublicKeyPEM:       jwtPublicKey,
 		tokenRefreshThreshold: tokenRefreshThreshold,
+		agentIPAM:             agentIPAM,
 	}
 }
 
@@ -103,8 +112,35 @@ func (r *TunnelNodeReconciler) Reconcile(ctx context.Context, req reconcile.Requ
 
 	if !tn.ObjectMeta.DeletionTimestamp.IsZero() {
 		log.Info("TunnelNode is being deleted")
+
+		for _, agent := range tn.Status.Agents {
+			if agent.AgentAddress == "" {
+				continue
+			}
+			addr, err := netip.ParsePrefix(agent.AgentAddress)
+			if err != nil {
+				log.Error(err, "Failed to parse IP address", "addr", agent.AgentAddress)
+				continue
+			}
+			if err := r.agentIPAM.Release(addr); err != nil {
+				log.Error(err, "Failed to release IP address", "addr", addr)
+			}
+		}
+
+		controllerutil.RemoveFinalizer(tn, apiserverFinalizer)
+		if err := r.Update(ctx, tn); err != nil {
+			return ctrl.Result{}, err
+		}
 		// TODO(dsky): Wait for all clients to disconnect before deleting (with grace period).
 		return ctrl.Result{}, nil // Deleted
+	}
+
+	if !controllerutil.ContainsFinalizer(tn, apiserverFinalizer) {
+		log.Info("Adding finalizer to Proxy")
+		controllerutil.AddFinalizer(tn, apiserverFinalizer)
+		if err := r.Update(ctx, tn); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	if ok, err := r.isNewTokenNeeded(
@@ -135,6 +171,29 @@ func (r *TunnelNodeReconciler) Reconcile(ctx context.Context, req reconcile.Requ
 		}
 
 		if err := r.Status().Update(ctx, tn); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to update status: %w", err)
+		}
+	}
+
+	for i, agent := range tn.Status.Agents {
+		if agent.AgentAddress != "" {
+			log.V(1).Info("Agent already has address", "agent", agent.Name, "addr", agent.AgentAddress)
+			continue
+		}
+
+		addr, err := r.agentIPAM.Allocate()
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to allocate agent address: %w", err)
+		}
+
+		log.Info("Allocated agent address", "agent", agent.Name, "addr", addr)
+
+		tn.Status.Agents[i].AgentAddress = addr.String()
+
+		if err := r.Status().Update(ctx, tn); err != nil {
+			if err := r.agentIPAM.Release(addr); err != nil {
+				log.Error(err, "Failed to release agent address", "agent", agent.Name, "addr", addr)
+			}
 			return ctrl.Result{}, fmt.Errorf("failed to update status: %w", err)
 		}
 	}

@@ -49,7 +49,7 @@ var (
 	apiServerAddr = flag.String("apiserver_addr", "host.docker.internal:8443", "APIServer address.")
 	jwksURLs      = flag.String("jwks_urls", "", "Comma-separated URLs of the JWKS endpoints.")
 
-	networkID          = flag.String("network_id", "", "Network ID for IPAM.")
+	networkID          = flag.String("network_id", "", "Network ID for IPAM. Must be a 6-character hex string.")
 	tunnelNodeSelector = flag.String("label_selector", "", "Label selector for TunnelNode objects.")
 	publicAddr         = flag.String("public_addr", "", "Public address of the tunnel proxy.")
 	extIPv6SubnetSize  = flag.Int("ext_ipv6_subnet_size", 64, "IPv6 subnet size.")
@@ -143,17 +143,8 @@ func main() {
 		if err != nil {
 			log.Fatalf("Failed to parse K8S_POD_UID (%s): %v", podUID, err)
 		}
-		*networkID = podUID[len(podUID)-8:]
+		*networkID = podUID[len(podUID)-6:]
 		log.Infof("Using network ID from K8S_POD_UID: %s", *networkID)
-	}
-	netID, err := tunnet.NetworkIDHexToBytes(*networkID)
-	if err != nil {
-		log.Fatalf("Failed to convert network ID to bytes: %v", err)
-	}
-
-	ipam, err := tunnet.NewInMemoryIPAM(netID)
-	if err != nil {
-		log.Fatalf("Failed to create IPAM: %v", err)
 	}
 
 	srv, err := tunnel.NewTunnelServer(
@@ -163,7 +154,7 @@ func main() {
 		tunnel.WithExternalIPv6Prefix(extIPv6Prefix),
 		tunnel.WithLabelSelector(*tunnelNodeSelector),
 		tunnel.WithPublicAddr(*publicAddr),
-		tunnel.WithIPAM(ipam),
+		tunnel.WithIPAMv4(tunnet.NewIPAMv4(ctx)),
 	)
 	if err != nil {
 		log.Fatalf("Failed to create tunnel server: %v", err)

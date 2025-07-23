@@ -100,16 +100,13 @@ func TestTunnelEndToEnd_UserModeClient(t *testing.T) {
 	serverRouter, err := router.NewNetlinkRouter()
 	require.NoError(t, err)
 
-	ipam, err := tunnet.NewInMemoryIPAM([4]byte{1, 2, 3, 4})
-	require.NoError(t, err)
-
 	server, err := tunnel.NewTunnelServer(
 		kubeClient,
 		jwtValidator,
 		serverRouter,
 		tunnel.WithCertPath(filepath.Join(certsDir, "server.crt")),
 		tunnel.WithKeyPath(filepath.Join(certsDir, "server.key")),
-		tunnel.WithIPAM(ipam),
+		tunnel.WithIPAMv4(tunnet.NewIPAMv4(context.Background())),
 	)
 	require.NoError(t, err)
 
@@ -312,16 +309,13 @@ func TestTunnelEndToEnd_KernelModeClient(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	ipam, err := tunnet.NewInMemoryIPAM([4]byte{1, 2, 3, 4})
-	require.NoError(t, err)
-
 	server, err := tunnel.NewTunnelServer(
 		kubeClient,
 		jwtValidator,
 		serverRouter,
 		tunnel.WithCertPath(filepath.Join(certsDir, "server.crt")),
 		tunnel.WithKeyPath(filepath.Join(certsDir, "server.key")),
-		tunnel.WithIPAM(ipam),
+		tunnel.WithIPAMv4(tunnet.NewIPAMv4(context.Background())),
 	)
 	require.NoError(t, err)
 

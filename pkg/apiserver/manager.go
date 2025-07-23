@@ -47,6 +47,8 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/cryptoutils"
 	gw "github.com/apoxy-dev/apoxy/pkg/gateway"
 	"github.com/apoxy-dev/apoxy/pkg/log"
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/net"
+	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 
 	ctrlv1alpha1 "github.com/apoxy-dev/apoxy/api/controllers/v1alpha1"
 	corev1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
@@ -180,6 +182,8 @@ type options struct {
 	jwksHost              string
 	jwksPort              int
 	resources             []resource.Object
+	proxyIPAM             tunnet.IPAM
+	agentIPAM             tunnet.IPAM
 }
 
 // WithJWTKeys sets the JWT key pair.
@@ -297,6 +301,20 @@ func WithResource(obj resource.Object) Option {
 	}
 }
 
+// WithProxyIPAM sets the IPAM for proxy.
+func WithProxyIPAM(ipam tunnet.IPAM) Option {
+	return func(o *options) {
+		o.proxyIPAM = ipam
+	}
+}
+
+// WithAgentIPAM sets the IPAM for agent.
+func WithAgentIPAM(ipam tunnet.IPAM) Option {
+	return func(o *options) {
+		o.agentIPAM = ipam
+	}
+}
+
 func defaultResources() []resource.Object {
 	return []resource.Object{
 		&corev1alpha.TunnelNode{},
@@ -331,23 +349,47 @@ func encodeSQLiteConnArgs(args map[string]string) string {
 }
 
 // defaultOptions returns default options.
-func defaultOptions() (*options, error) {
+func defaultOptions(ctx context.Context) (*options, error) {
+	systemULA := tunnet.NewULA(ctx, net.SystemNetworkID)
+	// Agent prefixes are /96 subnets that can embed IPv4 suffixes.
+	agentIPAM, err := systemULA.IPAM(ctx, 96)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create agent IPAM: %w", err)
+	}
+
+	// Proxy prefixes are /128 leafs under reserved proxy endpoint.
+	epULA, err := systemULA.WithEndpoint(ctx, net.ProxyEndpointID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create proxy endpoint: %w", err)
+	}
+	proxyIPAM, err := epULA.IPAM(ctx, 128)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create proxy IPAM: %w", err)
+	}
+
 	opts := &options{
-		clientConfig:        NewClientConfig(),
-		enableSimpleAuth:    false,
-		enableInClusterAuth: false,
-		sqlitePath:          config.ApoxyDir() + "/apoxy.db",
+		clientConfig: NewClientConfig(),
+
+		sqlitePath: config.ApoxyDir() + "/apoxy.db",
 		sqliteConnArgs: map[string]string{
 			"cache":         "shared",
 			"_journal_mode": "WAL",
 			"_busy_timeout": "30000",
 		},
+
+		enableSimpleAuth:    false,
+		enableInClusterAuth: false,
 		certDir:             "",
 		certPairName:        "tls",
-		gcInterval:          10 * time.Minute,
+
+		gcInterval: 10 * time.Minute,
+
 		jwtRefreshThreshold: 24 * time.Hour,
 		jwksHost:            "0.0.0.0",
 		jwksPort:            8444,
+
+		proxyIPAM: proxyIPAM,
+		agentIPAM: agentIPAM,
 	}
 
 	// Generate default JWT key pair if not provided
@@ -385,7 +427,7 @@ func (m *Manager) Start(
 	tc tclient.Client,
 	opts ...Option,
 ) error {
-	dOpts, err := defaultOptions()
+	dOpts, err := defaultOptions(ctx)
 	if err != nil {
 		m.ReadyCh <- err
 		return err
@@ -428,6 +470,7 @@ func (m *Manager) Start(
 	log.Infof("Registering Proxy controller")
 	if err := controllers.NewProxyReconciler(
 		m.manager.GetClient(),
+		dOpts.proxyIPAM,
 	).SetupWithManager(ctx, m.manager); err != nil {
 		return fmt.Errorf("failed to set up Proxy controller: %v", err)
 	}
@@ -440,6 +483,7 @@ func (m *Manager) Start(
 		dOpts.jwtPrivateKey,
 		dOpts.jwtPublicKey,
 		dOpts.jwtRefreshThreshold,
+		dOpts.agentIPAM,
 	)
 	if err := tunnelNodeReconciler.SetupWithManager(ctx, m.manager); err != nil {
 		return fmt.Errorf("failed to set up TunnelNode controller: %v", err)

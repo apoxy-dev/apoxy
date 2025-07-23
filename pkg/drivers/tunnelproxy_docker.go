@@ -117,7 +117,7 @@ func (d *TunnelProxyDockerDriver) Start(
 	cmd.Args = append(cmd.Args, []string{
 		"--apiserver_addr=" + apiserverAddr,
 		fmt.Sprintf("--jwks_urls=http://%s:%d%s", apiserverHost, 8444, token.JWKSURI),
-		"--network_id=" + projectID.String()[len(projectID.String())-8:],
+		"--network_id=" + projectID.String()[len(projectID.String())-6:],
 		"--cksum_recalc=true",
 	}...)
 	if build.IsDev() {

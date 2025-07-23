@@ -4,6 +4,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"net/netip"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -13,6 +14,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 
 	ctrlv1alpha1 "github.com/apoxy-dev/apoxy/api/controllers/v1alpha1"
 )
@@ -30,14 +33,18 @@ var _ reconcile.Reconciler = &ProxyReconciler{}
 // ProxyReconciler reconciles a Proxy object.
 type ProxyReconciler struct {
 	client.Client
+
+	ipam net.IPAM
 }
 
 // NewProxyReconciler returns a new reconcile.Reconciler.
 func NewProxyReconciler(
 	c client.Client,
+	ipam net.IPAM,
 ) *ProxyReconciler {
 	return &ProxyReconciler{
 		Client: c,
+		ipam:   ipam,
 	}
 }
 
@@ -138,9 +145,8 @@ func (r *ProxyReconciler) Reconcile(ctx context.Context, request reconcile.Reque
 
 	switch p.Status.Phase {
 	case ctrlv1alpha1.ProxyPhasePending:
-		synced, err := r.syncProxy(ctx, p, false)
+		synced, err := r.syncProxy(ctx, p, false /* delete */)
 		if err != nil {
-			log.Error(err, "Failed to assign Fly machine")
 			if _, ok := err.(retryableError); ok {
 				p.Status.Phase = ctrlv1alpha1.ProxyPhaseFailed
 				p.Status.Reason = fmt.Sprintf("Failed to provision cloud proxy: %v", err)
@@ -172,33 +178,67 @@ func (r *ProxyReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager
 		Complete(r)
 }
 
-func (r *ProxyReconciler) syncProxy(_ context.Context, p *ctrlv1alpha1.Proxy, delete bool) (bool, error) {
+func (r *ProxyReconciler) syncProxy(ctx context.Context, p *ctrlv1alpha1.Proxy, delete bool) (bool, error) {
+	log := log.FromContext(ctx)
+
 	if delete {
 		// Replicas are doing the termination themselves, we're just waiting for them to stop.
-		for _, r := range p.Status.Replicas {
-			if r.Phase != ctrlv1alpha1.ProxyReplicaPhaseStopped {
+		for _, replica := range p.Status.Replicas {
+			if replica.Phase != ctrlv1alpha1.ProxyReplicaPhaseStopped {
+				log.V(1).Info("waiting for proxy replica to stop", "name", replica.Name)
 				return false, nil
 			}
-		}
-	} else {
-		switch p.Spec.Provider {
-		case ctrlv1alpha1.InfraProviderUnmanaged:
-			// For unmanaged proxies, we set single replica whose name is the same as the proxy.
-			if len(p.Status.Replicas) == 0 {
-				p.Status.Replicas = append(p.Status.Replicas, &ctrlv1alpha1.ProxyReplicaStatus{
-					Name:      p.Name,
-					CreatedAt: metav1.Now(),
-					Phase:     ctrlv1alpha1.ProxyReplicaPhasePending,
-					Reason:    "starting unmanaged proxy",
-				})
-				return false, nil
+
+			log.Info("releasing IP address for proxy replica", "address", replica.Address)
+
+			addr, err := netip.ParsePrefix(replica.Address)
+			if err != nil {
+				log.Error(err, "failed to parse IP address", "address", replica.Address)
+				continue
 			}
-			if p.Status.Replicas[0].Phase == ctrlv1alpha1.ProxyReplicaPhaseRunning {
-				return true, nil
+			if err := r.ipam.Release(addr); err != nil {
+				log.Error(err, "failed to release IP", "address", replica.Address)
+				continue
 			}
-		default:
-			return false, fmt.Errorf("unknown provider: %s", p.Spec.Provider)
 		}
+		return true, nil
 	}
+
+	for _, replica := range p.Status.Replicas {
+		if replica.Address != "" {
+			log.V(1).Info("proxy replica already has an address", "address", replica.Address)
+			continue
+		}
+
+		log.V(1).Info("allocating IP address for proxy replica")
+
+		addr, err := r.ipam.Allocate()
+		if err != nil {
+			return false, fmt.Errorf("failed to allocate IPv6 address: %w", err)
+		}
+		replica.Address = addr.String()
+
+		log.Info("allocated IP address for proxy replica", "address", replica.Address)
+	}
+
+	switch p.Spec.Provider {
+	case ctrlv1alpha1.InfraProviderUnmanaged:
+		// For unmanaged proxies, we set single replica whose name is the same as the proxy.
+		if len(p.Status.Replicas) == 0 {
+			p.Status.Replicas = append(p.Status.Replicas, &ctrlv1alpha1.ProxyReplicaStatus{
+				Name:      p.Name,
+				CreatedAt: metav1.Now(),
+				Phase:     ctrlv1alpha1.ProxyReplicaPhasePending,
+				Reason:    "starting unmanaged proxy",
+			})
+			return false, nil
+		}
+		if p.Status.Replicas[0].Phase == ctrlv1alpha1.ProxyReplicaPhaseRunning {
+			return true, nil
+		}
+	default:
+		return false, fmt.Errorf("unknown provider: %s", p.Spec.Provider)
+	}
+
 	return false, nil
 }

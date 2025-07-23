@@ -13,9 +13,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	corev1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
 	"github.com/apoxy-dev/apoxy/pkg/cryptoutils"
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/net"
+	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/token"
+
+	corev1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
 )
 
 func TestTunnelNodeReconciler(t *testing.T) {
@@ -39,6 +42,11 @@ func TestTunnelNodeReconciler(t *testing.T) {
 	privKey, pubKey, err := cryptoutils.GenerateEllipticKeyPair()
 	require.NoError(t, err)
 
+	systemULA := tunnet.NewULA(context.Background(), net.SystemNetworkID)
+	// Agent prefixes are /96 subnets that can embed IPv4 suffixes.
+	agentIPAM, err := systemULA.IPAM(context.Background(), 96)
+	require.NoError(t, err)
+
 	r := NewTunnelNodeReconciler(
 		k8sClient,
 		"localhost",
@@ -46,6 +54,7 @@ func TestTunnelNodeReconciler(t *testing.T) {
 		privKey,
 		pubKey,
 		time.Minute,
+		agentIPAM,
 	)
 
 	r.validator, err = token.NewInMemoryValidator(r.jwtPublicKeyPEM)

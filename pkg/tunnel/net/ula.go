@@ -1,21 +1,23 @@
 package net
 
 import (
+	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
-	"hash/fnv"
 	"net/netip"
 
-	"github.com/google/uuid"
+	goipam "github.com/metal-stack/go-ipam"
 )
 
 const (
 	// Addresses on ApoxyNet overlay follow this format:
-	//   fd61:706f:7879:pppp:pppp:eeee:a.b.c.d/128
+	//   fd61:706f:7879:nnnn:nnuu:eeee:a.a.a.a/128
 	// where:
-	//  pppp: project ID fnv hash
-	//  eeee: endpoint name fnv hash
-	//  a.b.c.d: IPv4 address downstream of the tunnel node endpoint
+	//  n: unique network identifier
+	//  u: unused, reserved for future use
+	//  e: endpoint name fnv hash
+	//  a: IPv4 address downstream of the tunnel node endpoint
 	apoxyULAPrefixS = "fd61:706f:7879::/48"
 )
 
@@ -30,45 +32,133 @@ func init() {
 	}
 }
 
+// NetworkID represents a unique identifier for a network.
+type NetworkID [3]byte
+
+var (
+	// SystemNetworkID is the network ID for the system network (as opposed to a user network).
+	SystemNetworkID = NetworkID{0x00, 0x00, 0x00}
+)
+
 // NetworkIDHexToBytes converts a hexadecimal network id representation to a byte array.
-// Example: NetworkIDHexToBytes("12345678") returns [18, 52, 86, 110]
-func NetworkIDHexToBytes(h string) ([4]byte, error) {
-	if len(h) != 8 {
-		return [4]byte{}, fmt.Errorf("hex string must be 8 characters long")
+// Example: NetworkIDHexToBytes("123456") returns [18, 52, 86]
+func NetworkIDHexToBytes(h string) (NetworkID, error) {
+	if len(h) != 6 {
+		return NetworkID{}, fmt.Errorf("hex string must be 6 characters long")
 	}
 
 	bs, err := hex.DecodeString(h)
 	if err != nil {
-		return [4]byte{}, err
+		return NetworkID{}, err
 	}
-	bytes := [4]byte{}
+
+	bytes := NetworkID{}
 	copy(bytes[:], bs)
 
 	return bytes, nil
 }
 
-// ApoxyNetworkULA returns the IPv6 ULA prefix for a project.
-func ApoxyNetworkULA(networkID [4]byte) netip.Prefix {
-	addr := apoxyULAPrefix.Addr().As16()
-	copy(addr[6:], networkID[:])
-	return netip.PrefixFrom(netip.AddrFrom16(addr), 80)
+// NetULA represents a ULA prefix for a network.
+type NetULA struct {
+	NetID NetworkID
+
+	ipam   goipam.Ipamer
+	prefix netip.Prefix
 }
 
-// NewApoxy4To6Prefix generates a new IPv6 address from the Apoxy4To6Range prefix.
-func NewApoxy4To6Prefix(projectID uuid.UUID, endpoint string) netip.Prefix {
+// NewULA returns the IPv6 ULA prefix for a project.
+func NewULA(ctx context.Context, id NetworkID) *NetULA {
 	addr := apoxyULAPrefix.Addr().As16()
-	p := fnv.New32()
-	p.Write(projectID[:])
-	copy(addr[6:], p.Sum(nil))
+	copy(addr[6:], id[:])
+	return &NetULA{
+		NetID:  id,
+		ipam:   goipam.New(ctx),
+		prefix: netip.PrefixFrom(netip.AddrFrom16(addr), 80),
+	}
+}
 
-	e := fnv.New32()
-	e.Write([]byte(endpoint))
-	// We only need 16 bits of the hash so recommendation is to do XOR-folding
-	// http://www.isthe.com/chongo/tech/comp/fnv/#xor-fold
-	mask := uint32(0xffff)
-	h := e.Sum32()>>16 ^ e.Sum32()&mask
-	addr[10] = byte(h >> 8)
-	addr[11] = byte(h)
+// NetPrefix returns a prefix with just the network portion.
+func (u *NetULA) NetPrefix() netip.Prefix {
+	return netip.PrefixFrom(u.prefix.Addr(), 72).Masked()
+}
 
-	return netip.PrefixFrom(netip.AddrFrom16(addr), 96)
+// FullPrefix returns the IPv6 ULA prefix for the network.
+func (u *NetULA) FullPrefix() netip.Prefix {
+	return u.prefix
+}
+
+// EndpointID is and endpoint (e.g a Tunnel Agent, Backplane) which
+// is unique within the network.
+type EndpointID [2]byte
+
+var (
+	// ProxyEndpointID is the endpoint ID for the proxy.
+	ProxyEndpointID = EndpointID{0x00, 0x00}
+)
+
+// WithEndpoint returns the IPv6 ULA prefix for an endpoint.
+func (u *NetULA) WithEndpoint(ctx context.Context, epID EndpointID) (*NetULA, error) {
+	parent, err := u.ipam.PrefixFrom(ctx, u.prefix.String())
+	if errors.Is(err, goipam.ErrNotFound) {
+		parent, err = u.ipam.NewPrefix(ctx, u.prefix.String())
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	addr := u.prefix.Addr().As16()
+	copy(addr[10:], epID[:])
+	prefix := netip.PrefixFrom(netip.AddrFrom16(addr), 96)
+
+	_, err = u.ipam.AcquireSpecificChildPrefix(ctx, parent.String(), prefix.String())
+	if err != nil {
+		return nil, fmt.Errorf("failed to acquire specific child prefix: %w", err)
+	}
+
+	return &NetULA{
+		NetID:  u.NetID,
+		ipam:   u.ipam,
+		prefix: prefix,
+	}, nil
+}
+
+type ulaIPAM struct {
+	ipam   goipam.Ipamer
+	parent *goipam.Prefix
+	bits   uint8
+}
+
+// IPAM returns an IPAM that allocates bits-sized ULA prefixes.
+func (u *NetULA) IPAM(ctx context.Context, bits uint8) (IPAM, error) {
+	if bits <= uint8(u.prefix.Bits()) {
+		return nil, fmt.Errorf("bits must be greater than parent prefix bits %d", u.prefix.Bits())
+	}
+	parent, err := u.ipam.PrefixFrom(ctx, u.prefix.String())
+	if errors.Is(err, goipam.ErrNotFound) {
+		parent, err = u.ipam.NewPrefix(ctx, u.prefix.String())
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &ulaIPAM{
+		ipam:   u.ipam,
+		parent: parent,
+		bits:   bits,
+	}, nil
+}
+
+func (u *ulaIPAM) Allocate() (netip.Prefix, error) {
+	p, err := u.ipam.AcquireChildPrefix(context.Background(), u.parent.Cidr, u.bits)
+	if err != nil {
+		return netip.Prefix{}, err
+	}
+	return netip.MustParsePrefix(p.Cidr), nil
+}
+
+func (u *ulaIPAM) Release(prefix netip.Prefix) error {
+	child := &goipam.Prefix{
+		Cidr:       prefix.String(),
+		ParentCidr: u.parent.Cidr,
+	}
+	return u.ipam.ReleaseChildPrefix(context.Background(), child)
 }

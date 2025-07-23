@@ -2,21 +2,17 @@ package net
 
 import (
 	"context"
-	"fmt"
-	"net/http"
 	"net/netip"
 
 	goipam "github.com/metal-stack/go-ipam"
 )
 
+// IPAM interface defines the methods for managing IP addresses.
 type IPAM interface {
-	// AllocateV6 allocates an IPv6 address for a peer.
-	AllocateV6(r *http.Request) (netip.Prefix, error)
+	// Allocate allocates a prefix.
+	Allocate() (netip.Prefix, error)
 
-	// AllocateV4 allocates an IPv4 address for a peer.
-	AllocateV4(r *http.Request) (netip.Prefix, error)
-
-	// Release releases an IP address for a peer. No-op if the address is not allocated
+	// Release releases an IP address. No-op if the address is not allocated
 	// (returns nil).
 	Release(peerPrefix netip.Prefix) error
 }
@@ -25,55 +21,39 @@ const (
 	ipv4CidrPrefix = "100.64.0.0/10"
 )
 
-type inMemoryIPAM struct {
-	ipam                   goipam.Ipamer
-	ipv4Prefix, ipv6Prefix *goipam.Prefix
+type ipamv4 struct {
+	ipam   goipam.Ipamer
+	prefix *goipam.Prefix
 }
 
-// NewInMemoryIPAM creates a new in-memory IPAM instance.
-func NewInMemoryIPAM(networkID [4]byte) (IPAM, error) {
-	ipam := goipam.New(context.Background())
-	ipv4Prefix, err := ipam.NewPrefix(context.Background(), ipv4CidrPrefix)
+func mustParsePrefix(ctx context.Context, ipamer goipam.Ipamer, s string) *goipam.Prefix {
+	prefix, err := ipamer.NewPrefix(ctx, s)
 	if err != nil {
-		return nil, err
+		panic(err)
 	}
-	ipv6Prefix, err := ipam.NewPrefix(context.Background(), ApoxyNetworkULA(networkID).String())
-	if err != nil {
-		return nil, err
-	}
-	return &inMemoryIPAM{
-		ipam:       ipam,
-		ipv4Prefix: ipv4Prefix,
-		ipv6Prefix: ipv6Prefix,
-	}, nil
+	return prefix
 }
 
-func (r *inMemoryIPAM) AllocateV6(_ *http.Request) (netip.Prefix, error) {
-	p, err := r.ipam.AcquireChildPrefix(context.Background(), r.ipv6Prefix.Cidr, 96)
+func NewIPAMv4(ctx context.Context) IPAM {
+	ipam := goipam.New(ctx)
+	return &ipamv4{
+		ipam:   ipam,
+		prefix: mustParsePrefix(ctx, ipam, ipv4CidrPrefix),
+	}
+}
+
+func (r *ipamv4) Allocate() (netip.Prefix, error) {
+	p, err := r.ipam.AcquireChildPrefix(context.Background(), r.prefix.Cidr, 32)
 	if err != nil {
 		return netip.Prefix{}, err
 	}
 	return netip.MustParsePrefix(p.Cidr), nil
 }
 
-func (r *inMemoryIPAM) AllocateV4(_ *http.Request) (netip.Prefix, error) {
-	p, err := r.ipam.AcquireChildPrefix(context.Background(), r.ipv4Prefix.Cidr, 32)
-	if err != nil {
-		return netip.Prefix{}, err
-	}
-	return netip.MustParsePrefix(p.Cidr), nil
-}
-
-func (r *inMemoryIPAM) Release(p netip.Prefix) error {
+func (r *ipamv4) Release(p netip.Prefix) error {
 	child := &goipam.Prefix{
-		Cidr: p.String(),
-	}
-	if p.Addr().Is4() {
-		child.ParentCidr = r.ipv4Prefix.Cidr
-	} else if p.Addr().Is6() {
-		child.ParentCidr = r.ipv6Prefix.Cidr
-	} else {
-		return fmt.Errorf("invalid address type")
+		Cidr:       p.String(),
+		ParentCidr: r.prefix.Cidr,
 	}
 	return r.ipam.ReleaseChildPrefix(context.Background(), child)
 }

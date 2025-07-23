@@ -52,9 +52,9 @@ type tunnelServerOptions struct {
 	ulaPrefix     netip.Prefix
 	certPath      string
 	keyPath       string
-	ipam          tunnet.IPAM
 	extIPv6Prefix netip.Prefix
 	selector      string
+	ipamv4        tunnet.IPAM
 }
 
 func defaultServerOptions() *tunnelServerOptions {
@@ -65,6 +65,7 @@ func defaultServerOptions() *tunnelServerOptions {
 		certPath:   "/etc/apoxy/certs/tunnelproxy.crt",
 		keyPath:    "/etc/apoxy/certs/tunnelproxy.key",
 		selector:   "",
+		ipamv4:     tunnet.NewIPAMv4(context.Background()),
 	}
 }
 
@@ -104,13 +105,6 @@ func WithKeyPath(path string) TunnelServerOption {
 	}
 }
 
-// WithIPAM sets the IPAM to use.
-func WithIPAM(ipam tunnet.IPAM) TunnelServerOption {
-	return func(o *tunnelServerOptions) {
-		o.ipam = ipam
-	}
-}
-
 // WithExternalIPv6Prefix sets the external IPv6 prefix. This is the IPv6 prefix used to
 // send traffic through the tunnel.
 func WithExternalIPv6Prefix(prefix netip.Prefix) TunnelServerOption {
@@ -126,16 +120,33 @@ func WithLabelSelector(labelSelector string) TunnelServerOption {
 	}
 }
 
+// WithIPAMv4 sets the IPv4 IPAM.
+func WithIPAMv4(ipamv4 tunnet.IPAM) TunnelServerOption {
+	return func(o *tunnelServerOptions) {
+		o.ipamv4 = ipamv4
+	}
+}
+
+type conn struct {
+	*connectip.Conn
+	obj            *corev1alpha.TunnelNode
+	addrv4, addrv6 netip.Prefix
+}
+
 type TunnelServer struct {
 	http3.Server
 	client.Client
 
-	options      *tunnelServerOptions
+	options *tunnelServerOptions
+
 	jwtValidator token.JWTValidator
 	ln           *quic.EarlyListener
 	router       router.Router
 
-	tunnelNodes *haxmap.Map[string, *corev1alpha.TunnelNode]
+	// tunnels maps tunnel UIDs to tunnel instances.
+	tunnels *haxmap.Map[string, *corev1alpha.TunnelNode]
+	// conns maps tunnel connection IDs to connection instances.
+	conns *haxmap.Map[string, *conn]
 }
 
 // NewTunnelServer creates a new server proxy that routes traffic via
@@ -151,21 +162,19 @@ func NewTunnelServer(
 		opt(options)
 	}
 
-	if options.ipam == nil {
-		return nil, errors.New("ipam is required")
-	}
-
 	s := &TunnelServer{
 		Client: client,
 		Server: http3.Server{
 			EnableDatagrams: true,
 		},
 
-		options:      options,
+		options: options,
+
 		jwtValidator: v,
 		router:       r,
 
-		tunnelNodes: haxmap.New[string, *corev1alpha.TunnelNode](),
+		tunnels: haxmap.New[string, *corev1alpha.TunnelNode](),
+		conns:   haxmap.New[string, *conn](),
 	}
 
 	mux := http.NewServeMux()
@@ -290,7 +299,7 @@ func iproutesFromPrefixes(ps []netip.Prefix) []connectip.IPRoute {
 }
 
 func (t *TunnelServer) handleConnect(w http.ResponseWriter, r *http.Request) {
-	id, err := uuid.Parse(strings.TrimPrefix(r.URL.Path, "/connect/"))
+	nodeID, err := uuid.Parse(strings.TrimPrefix(r.URL.Path, "/connect/"))
 	if err != nil {
 		slog.Error("Failed to parse UUID", slog.Any("error", err), slog.String("remote", r.RemoteAddr))
 		w.WriteHeader(http.StatusBadRequest)
@@ -299,7 +308,7 @@ func (t *TunnelServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	metrics.TunnelConnectionRequests.Inc()
 
-	logger := slog.With(slog.String("uuid", id.String()))
+	logger := slog.With(slog.String("uuid", nodeID.String()))
 	logger.Info("Received connection request", slog.String("URI", r.URL.String()))
 
 	authToken := r.URL.Query().Get("token")
@@ -310,7 +319,7 @@ func (t *TunnelServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tn, ok := t.tunnelNodes.Get(id.String())
+	tn, ok := t.tunnels.Get(nodeID.String())
 	if !ok {
 		logger.Error("Tunnel not found")
 		metrics.TunnelConnectionFailures.WithLabelValues("tunnel_not_found").Inc()
@@ -326,7 +335,7 @@ func (t *TunnelServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := t.jwtValidator.Validate(authToken, id.String()); err != nil {
+	if _, err := t.jwtValidator.Validate(authToken, nodeID.String()); err != nil {
 		logger.Error("Failed to validate token", slog.Any("error", err))
 		metrics.TunnelConnectionFailures.WithLabelValues("invalid_token").Inc()
 		w.WriteHeader(http.StatusForbidden)
@@ -343,14 +352,17 @@ func (t *TunnelServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	connUUID := uuid.NewString()
+	connID := uuid.NewString()
 	// Sends connection ID information to the client so that it can
 	// track its connection status. This must be done before initializing the proxy.
-	w.Header().Add("X-Apoxy-Connection-UUID", connUUID)
+	w.Header().Add("X-Apoxy-Connection-UUID", connID)
+
+	conn := &conn{
+		obj: tn.DeepCopy(),
+	}
 
 	p := connectip.Proxy{}
-	conn, err := p.Proxy(w, req)
-	if err != nil {
+	if conn.Conn, err = p.Proxy(w, req); err != nil {
 		logger.Error("Failed to proxy request", slog.Any("error", err))
 		metrics.TunnelConnectionFailures.WithLabelValues("proxy_error").Inc()
 		w.WriteHeader(http.StatusInternalServerError)
@@ -358,93 +370,11 @@ func (t *TunnelServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	peerV6, err := t.options.ipam.AllocateV6(r)
-	if err != nil {
-		logger.Error("Failed to allocate IPv6 address", slog.Any("error", err))
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-	peerV4, err := t.options.ipam.AllocateV4(r)
-	if err != nil {
-		logger.Error("Failed to allocate IPv4 address", slog.Any("error", err))
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-
-	if err := conn.AssignAddresses(r.Context(), []netip.Prefix{
-		peerV6,
-		peerV4,
-	}); err != nil {
-		logger.Error("Failed to assign address to connection", slog.Any("error", err))
-		metrics.TunnelConnectionFailures.WithLabelValues("address_assignment_failed").Inc()
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte(err.Error()))
-		return
-	}
-
-	if err := t.router.AddAddr(peerV6, conn); err != nil {
-		logger.Error("Failed to add TUN peer", slog.Any("error", err))
-		metrics.TunnelConnectionFailures.WithLabelValues("tun_peer_add_failed").Inc()
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte(err.Error()))
-		return
-	}
-	if err := t.router.AddRoute(peerV6); err != nil {
-		logger.Error("Failed to add route", slog.Any("error", err))
-		metrics.TunnelConnectionFailures.WithLabelValues("route_addition_failed").Inc()
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte(err.Error()))
-		return
-	}
-	if err := t.router.AddAddr(peerV4, conn); err != nil {
-		logger.Error("Failed to add TUN peer", slog.Any("error", err))
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte(err.Error()))
-		return
-	}
-	if err := t.router.AddRoute(peerV4); err != nil {
-		logger.Error("Failed to add route", slog.Any("error", err))
-		metrics.TunnelConnectionFailures.WithLabelValues("route_addition_failed").Inc()
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte(err.Error()))
-		return
-	}
-
-	metrics.TunnelConnectionsActive.Inc()
-	defer metrics.TunnelConnectionsActive.Dec()
-
-	logger.Info("Client addresses assigned",
-		slog.String("ipv4", peerV4.String()),
-		slog.String("ipv6", peerV6.String()))
-
-	var advRoutes []netip.Prefix
-	if t.options.extIPv6Prefix.IsValid() {
-		advRoutes = append(advRoutes, t.options.extIPv6Prefix)
-	} else {
-		logger.Warn("External IPv6 prefix not configured")
-	}
-	// If egress gateway is enabled, route 0.0.0.0/0 via the tunnel.
-	if tn.Spec.EgressGateway != nil && tn.Spec.EgressGateway.Enabled {
-		advRoutes = append(advRoutes,
-			netip.PrefixFrom(netip.IPv4Unspecified(), 0),
-			netip.PrefixFrom(netip.IPv6Unspecified(), 0),
-		)
-	}
-
-	logger.Info("Advertising routes", slog.Any("routes", advRoutes))
-
-	if err := conn.AdvertiseRoute(r.Context(), iproutesFromPrefixes(advRoutes)); err != nil {
-		logger.Error("Failed to advertise route to connection", slog.Any("error", err))
-		metrics.TunnelConnectionFailures.WithLabelValues("route_advertisement_failed").Inc()
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte(err.Error()))
-		return
-	}
+	t.conns.Set(connID, conn)
 
 	agent := &corev1alpha.AgentStatus{
-		Name:         connUUID,
-		ConnectedAt:  ptr.To(metav1.Now()),
-		AgentAddress: peerV6.Addr().String(),
+		Name:        connID,
+		ConnectedAt: ptr.To(metav1.Now()),
 	}
 	if t.options.extIPv6Prefix.IsValid() {
 		agent.PrivateAddress = t.options.extIPv6Prefix.Addr().String()
@@ -474,29 +404,33 @@ func (t *TunnelServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 		logger.Error("Failed to close connection", slog.Any("error", err))
 	}
 
-	if err := t.options.ipam.Release(peerV6); err != nil {
-		logger.Error("Failed to deallocate IP address", slog.Any("error", err), slog.Any("addr", peerV6))
-	}
-	if err := t.router.DelAddr(peerV6); err != nil {
-		logger.Error("Failed to remove peer address", slog.Any("error", err), slog.Any("addr", peerV6))
-	}
-	if err := t.router.DelRoute(peerV6); err != nil {
-		logger.Error("Failed to remove route", slog.Any("error", err), slog.Any("addr", peerV6))
+	if conn, exists := t.conns.Get(connID); !exists {
+		logger.Error("Tunnel connection not found", slog.Any("connUUID", connID))
+	} else {
+		if conn.addrv6.IsValid() {
+			if err := t.router.DelAddr(conn.addrv6); err != nil {
+				logger.Error("Failed to remove peer address", slog.Any("error", err), slog.Any("addr", conn.addrv6))
+			}
+			if err := t.router.DelRoute(conn.addrv6); err != nil {
+				logger.Error("Failed to remove route", slog.Any("error", err), slog.Any("addr", conn.addrv6))
+			}
+		}
+		if conn.addrv4.IsValid() {
+			if err := t.router.DelAddr(conn.addrv4); err != nil {
+				logger.Error("Failed to remove peer address", slog.Any("error", err), slog.Any("addr", conn.addrv4))
+			}
+			if err := t.router.DelRoute(conn.addrv4); err != nil {
+				logger.Error("Failed to remove route", slog.Any("error", err), slog.Any("addr", conn.addrv4))
+			}
+		}
 	}
 
-	if err := t.options.ipam.Release(peerV4); err != nil {
-		logger.Error("Failed to deallocate IP address", slog.Any("error", err), slog.Any("addr", peerV4))
-	}
-	if err := t.router.DelAddr(peerV4); err != nil {
-		logger.Error("Failed to remove peer address", slog.Any("error", err), slog.Any("addr", peerV4))
-	}
-	if err := t.router.DelRoute(peerV4); err != nil {
-		logger.Error("Failed to remove route", slog.Any("error", err), slog.Any("addr", peerV4))
-	}
+	t.conns.Del(connID)
 
 	if err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 		upd := &corev1alpha.TunnelNode{}
-		if err := t.Get(context.Background(), types.NamespacedName{Name: tn.Name}, upd); apierrors.IsNotFound(err) {
+		nn := types.NamespacedName{Name: tn.Name}
+		if err := t.Get(context.Background(), nn, upd); apierrors.IsNotFound(err) {
 			logger.Warn("Node not found")
 			return errors.New("node not found")
 		} else if err != nil {
@@ -504,7 +438,6 @@ func (t *TunnelServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 
-		// Find and remove the agent from the status
 		for i, a := range upd.Status.Agents {
 			if a.Name == agent.Name {
 				upd.Status.Agents = append(upd.Status.Agents[:i], upd.Status.Agents[i+1:]...)
@@ -517,11 +450,11 @@ func (t *TunnelServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 		logger.Error("Failed to update agent status", slog.Any("error", err))
 	}
 
-	logger.Info("Agent removed", slog.String("name", agent.Name))
+	logger.Info("Agent disconnected", slog.String("name", agent.Name))
 }
 
 func (t *TunnelServer) reconcile(ctx context.Context, request reconcile.Request) (reconcile.Result, error) {
-	defer metrics.TunnelNodesManaged.Set(float64(t.tunnelNodes.Len()))
+	defer metrics.TunnelNodesManaged.Set(float64(t.tunnels.Len()))
 
 	node := &corev1alpha.TunnelNode{}
 	if err := t.Get(ctx, request.NamespacedName, node); apierrors.IsNotFound(err) {
@@ -543,6 +476,8 @@ func (t *TunnelServer) reconcile(ctx context.Context, request reconcile.Request)
 		return reconcile.Result{}, nil
 	}
 
+	t.tunnels.Set(string(node.UID), node)
+
 	if t.options.publicAddr != "" {
 		var updated bool
 		if !slices.Contains(node.Status.Addresses, t.options.publicAddr) {
@@ -556,7 +491,113 @@ func (t *TunnelServer) reconcile(ctx context.Context, request reconcile.Request)
 		}
 	}
 
-	t.AddTunnelNode(node)
+	for _, agent := range node.Status.Agents {
+		// TODO(dilyevsky): Agent status should have a tunnel proxy
+		// info to which agent is connected. Right now we just assume
+		// that if agent name (conn uuid) is missing from t.conns,
+		// then it belongs to a different node.
+		conn, exists := t.conns.GetOrSet(agent.Name, &conn{
+			obj: node,
+		})
+		if !exists { // Connection belongs to a different node.
+			log.V(1).Info("Connection not found", "agent", agent.Name)
+			continue
+		}
+
+		// Check if we already allocated and assigned addresses.
+		if conn.addrv6.IsValid() && conn.addrv4.IsValid() {
+			log.V(1).Info("Agent address is already assigned", "agent", agent.Name)
+			continue
+		}
+
+		if agent.AgentAddress == "" {
+			log.Info("Agent address is empty", "agent", agent.Name)
+			continue
+		}
+
+		if !conn.addrv6.IsValid() {
+			var err error
+			conn.addrv6, err = netip.ParsePrefix(agent.AgentAddress)
+			if err != nil {
+				log.Error(err, "Failed to parse agent address", "agent", agent.Name)
+				continue
+			}
+		}
+		t.conns.Set(agent.Name, conn)
+
+		// TODO(dilyevsky): v4 prefix should also be delivered via agent status
+		// struct (needs api change to support multiple addresses).
+		if !conn.addrv4.IsValid() {
+			var err error
+			conn.addrv4, err = t.options.ipamv4.Allocate()
+			if err != nil {
+				log.Error(err, "Failed to allocate IPv4 address", "agent", agent.Name)
+				continue
+			}
+		}
+		t.conns.Set(agent.Name, conn)
+
+		if err := conn.AssignAddresses(ctx, []netip.Prefix{
+			conn.addrv6,
+			conn.addrv4,
+		}); err != nil {
+			log.Error(err, "Failed to assign address to connection", "agent", agent.Name)
+			metrics.TunnelConnectionFailures.WithLabelValues("address_assignment_failed").Inc()
+			return reconcile.Result{}, nil
+		}
+
+		if err := t.router.AddAddr(conn.addrv6, conn); err != nil {
+			log.Error(err, "Failed to add TUN peer")
+			metrics.TunnelConnectionFailures.WithLabelValues("tun_peer_add_failed").Inc()
+			return reconcile.Result{}, nil
+		}
+		if err := t.router.AddRoute(conn.addrv6); err != nil {
+			log.Error(err, "Failed to add route")
+			metrics.TunnelConnectionFailures.WithLabelValues("route_addition_failed").Inc()
+			return reconcile.Result{}, nil
+		}
+		if err := t.router.AddAddr(conn.addrv4, conn); err != nil {
+			log.Error(err, "Failed to add TUN peer")
+			metrics.TunnelConnectionFailures.WithLabelValues("tun_peer_add_failed").Inc()
+			return reconcile.Result{}, nil
+		}
+		if err := t.router.AddRoute(conn.addrv4); err != nil {
+			log.Error(err, "Failed to add route")
+			metrics.TunnelConnectionFailures.WithLabelValues("route_addition_failed").Inc()
+			return reconcile.Result{}, nil
+		}
+
+		metrics.TunnelConnectionsActive.Inc()
+		defer metrics.TunnelConnectionsActive.Dec()
+
+		log.Info("Client addresses assigned", "ipv4", conn.addrv4, "ipv6", conn.addrv6)
+
+		var advRoutes []netip.Prefix
+		if t.options.extIPv6Prefix.IsValid() {
+			advRoutes = append(advRoutes, t.options.extIPv6Prefix)
+		} else {
+			log.Info("WARNING: External IPv6 prefix not configured")
+		}
+		// If egress gateway is enabled, route 0.0.0.0/0 via the tunnel.
+		if conn.obj.Spec.EgressGateway != nil && conn.obj.Spec.EgressGateway.Enabled {
+			advRoutes = append(advRoutes,
+				netip.PrefixFrom(netip.IPv4Unspecified(), 0),
+				netip.PrefixFrom(netip.IPv6Unspecified(), 0),
+			)
+		}
+
+		log.Info("Advertising routes", "routes", advRoutes)
+
+		if err := conn.AdvertiseRoute(ctx, iproutesFromPrefixes(advRoutes)); err != nil {
+			log.Error(err, "Failed to advertise route to connection")
+			metrics.TunnelConnectionFailures.WithLabelValues("route_advertisement_failed").Inc()
+			conn.Close()
+			return reconcile.Result{}, nil
+		}
+
+		// TODO(dilyevsky): Add agent status Phase and update it here. Consider creating
+		// a whole separate top-level object for Agent-TunnelProxy connections.
+	}
 
 	return ctrl.Result{}, nil
 }
@@ -565,12 +606,12 @@ func (t *TunnelServer) reconcile(ctx context.Context, request reconcile.Request)
 // This is visible for testing purposes, it is usually called as part of
 // the reconcile loop.
 func (t *TunnelServer) AddTunnelNode(node *corev1alpha.TunnelNode) {
-	t.tunnelNodes.Set(string(node.UID), node)
+	t.tunnels.Set(string(node.UID), node)
 }
 
 // RemoveTunnelNode removes a TunnelNode from the server.
 // This is visible for testing purposes, it is usually called as part of
 // the reconcile loop.
 func (t *TunnelServer) RemoveTunnelNode(node *corev1alpha.TunnelNode) {
-	t.tunnelNodes.Del(string(node.UID))
+	t.tunnels.Del(string(node.UID))
 }
