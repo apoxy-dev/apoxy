@@ -342,6 +342,14 @@ func main() {
 		log.Fatalf("failed to set up EdgeFunction controller: %v", err)
 	}
 
+	if err := bpctrl.NewTunnelNodeReconciler(
+		mgr.GetClient(),
+		*proxyName,
+		*replicaName,
+	).SetupWithManager(ctx, mgr); err != nil {
+		log.Fatalf("failed to set up TunnelNode controller: %v", err)
+	}
+
 	tunnelResolver := tundns.NewTunnelNodeDNSReconciler(mgr.GetClient(), *tunnelDNSAddr)
 	if err := tunnelResolver.SetupWithManager(mgr); err != nil {
 		log.Fatalf("failed to set up TunnelNodeDNS controller: %v", err)

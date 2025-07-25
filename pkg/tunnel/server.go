@@ -47,14 +47,14 @@ var (
 type TunnelServerOption func(*tunnelServerOptions)
 
 type tunnelServerOptions struct {
-	proxyAddr     string
-	publicAddr    string
-	ulaPrefix     netip.Prefix
-	certPath      string
-	keyPath       string
-	extIPv6Prefix netip.Prefix
-	selector      string
-	ipamv4        tunnet.IPAM
+	proxyAddr  string
+	publicAddr string
+	ulaPrefix  netip.Prefix
+	certPath   string
+	keyPath    string
+	extPrefix  netip.Prefix
+	selector   string
+	ipamv4     tunnet.IPAM
 }
 
 func defaultServerOptions() *tunnelServerOptions {
@@ -105,11 +105,11 @@ func WithKeyPath(path string) TunnelServerOption {
 	}
 }
 
-// WithExternalIPv6Prefix sets the external IPv6 prefix. This is the IPv6 prefix used to
+// WithExternalAddr sets the external IPv6 prefix. This is the IPv6 prefix used to
 // send traffic through the tunnel.
-func WithExternalIPv6Prefix(prefix netip.Prefix) TunnelServerOption {
+func WithExternalAddr(prefix netip.Prefix) TunnelServerOption {
 	return func(o *tunnelServerOptions) {
-		o.extIPv6Prefix = prefix
+		o.extPrefix = prefix
 	}
 }
 
@@ -376,8 +376,8 @@ func (t *TunnelServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 		Name:        connID,
 		ConnectedAt: ptr.To(metav1.Now()),
 	}
-	if t.options.extIPv6Prefix.IsValid() {
-		agent.PrivateAddress = t.options.extIPv6Prefix.Addr().String()
+	if t.options.extPrefix.IsValid() {
+		agent.PrivateAddress = t.options.extPrefix.Addr().String()
 	}
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		upd := &corev1alpha.TunnelNode{}
@@ -573,8 +573,8 @@ func (t *TunnelServer) reconcile(ctx context.Context, request reconcile.Request)
 		log.Info("Client addresses assigned", "ipv4", conn.addrv4, "ipv6", conn.addrv6)
 
 		var advRoutes []netip.Prefix
-		if t.options.extIPv6Prefix.IsValid() {
-			advRoutes = append(advRoutes, t.options.extIPv6Prefix)
+		if t.options.extPrefix.IsValid() {
+			advRoutes = append(advRoutes, t.options.extPrefix)
 		} else {
 			log.Info("WARNING: External IPv6 prefix not configured")
 		}

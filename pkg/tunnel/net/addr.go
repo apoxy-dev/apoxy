@@ -3,15 +3,17 @@ package net
 import (
 	"fmt"
 	"net"
+	"net/netip"
 )
 
-// Get local IPv6 address by scanning for global unicast addrs in netlink.
-func GetLocalIPv6Address(ifcName string) (*net.IPAddr, error) {
+// GetGlobalUnicastAddresses returns the global unicast IPv4/IPv6 address of the specified interface.
+func GetGlobalUnicastAddresses(ifcName string) ([]netip.Prefix, error) {
 	interfaces, err := net.Interfaces()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get network interfaces: %w", err)
 	}
 
+	var out []netip.Prefix
 	for _, iface := range interfaces {
 		if ifcName != "" && iface.Name != ifcName {
 			continue
@@ -33,12 +35,28 @@ func GetLocalIPv6Address(ifcName string) (*net.IPAddr, error) {
 				continue
 			}
 
-			// Check if it's IPv6 and global unicast
-			if ipNet.IP.To4() == nil && ipNet.IP.IsGlobalUnicast() {
-				return &net.IPAddr{IP: ipNet.IP}, nil
+			if !ipNet.IP.IsGlobalUnicast() {
+				continue
 			}
+
+			var ip netip.Addr
+			if ipNet.IP.To4() != nil {
+				ip, ok = netip.AddrFromSlice(ipNet.IP.To4())
+			} else {
+				ip, ok = netip.AddrFromSlice(ipNet.IP.To16())
+			}
+			if !ok {
+				continue
+			}
+
+			ones, _ := ipNet.Mask.Size()
+			out = append(out, netip.PrefixFrom(ip, ones))
 		}
 	}
 
-	return nil, fmt.Errorf("no global unicast IPv6 address found")
+	if len(out) == 0 {
+		return nil, fmt.Errorf("no global unicast addresses found on the interface %s", ifcName)
+	}
+
+	return out, nil
 }

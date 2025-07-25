@@ -52,8 +52,7 @@ var (
 	networkID          = flag.String("network_id", "", "Network ID for IPAM. Must be a 6-character hex string.")
 	tunnelNodeSelector = flag.String("label_selector", "", "Label selector for TunnelNode objects.")
 	publicAddr         = flag.String("public_addr", "", "Public address of the tunnel proxy.")
-	extIPv6SubnetSize  = flag.Int("ext_ipv6_subnet_size", 64, "IPv6 subnet size.")
-	extIPv6Ifc         = flag.String("ext_ipv6_ifc", "eth0", "IPv6 interface name.")
+	extIface           = flag.String("ext_iface", "eth0", "External interface name.")
 	cksumRecalc        = flag.Bool("cksum_recalc", false, "Recalculate checksum.")
 )
 
@@ -108,26 +107,34 @@ func main() {
 		log.Fatalf("Failed to create JWT validator: %v", err)
 	}
 
-	var extIPv6Prefix netip.Prefix
-	if extAddr, err := tunnet.GetLocalIPv6Address(*extIPv6Ifc); err == nil {
-		extIPv6, ok := netip.AddrFromSlice(extAddr.IP)
-		if !ok {
-			log.Fatalf("Invalid IPv6 address resolved: %s", extAddr.IP.String())
-		}
-		extIPv6Prefix = netip.PrefixFrom(extIPv6, *extIPv6SubnetSize)
-		if !extIPv6Prefix.IsValid() {
-			log.Fatalf("Invalid IPv6 prefix: %s", extIPv6Prefix.String())
-		}
-
-		log.Infof("External IPv6 prefix: %s", extIPv6Prefix.String())
-	} else {
+	var (
+		extIPv4Prefix netip.Prefix
+		extIPv6Prefix netip.Prefix
+	)
+	extAddrs, err := tunnet.GetGlobalUnicastAddresses(*extIface)
+	if err != nil {
 		log.Warnf("Failed to get local IPv6 address: %v", err)
+	} else {
+		for _, addr := range extAddrs {
+			if addr.Addr().Is4() {
+				extIPv4Prefix = addr
+				log.Infof("External IPv4 prefix: %s", extIPv4Prefix.String())
+				break
+			}
+		}
+		for _, addr := range extAddrs {
+			if addr.Addr().Is6() {
+				extIPv6Prefix = addr
+				log.Infof("External IPv6 prefix: %s", extIPv6Prefix.String())
+				break
+			}
+		}
 	}
 
 	rOpts := []router.Option{
 		router.WithExternalIPv6Prefix(extIPv6Prefix),
 		router.WithChecksumRecalculation(*cksumRecalc),
-		router.WithExternalInterface(*extIPv6Ifc),
+		router.WithExternalInterface(*extIface),
 	}
 	r, err := router.NewNetlinkRouter(rOpts...)
 	if err != nil {
@@ -151,7 +158,7 @@ func main() {
 		mgr.GetClient(),
 		jwtValidator,
 		r,
-		tunnel.WithExternalIPv6Prefix(extIPv6Prefix),
+		tunnel.WithExternalAddr(extIPv4Prefix),
 		tunnel.WithLabelSelector(*tunnelNodeSelector),
 		tunnel.WithPublicAddr(*publicAddr),
 		tunnel.WithIPAMv4(tunnet.NewIPAMv4(ctx)),

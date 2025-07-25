@@ -74,6 +74,10 @@ func (r *TunnelNodeDNSReconciler) reconcile(ctx context.Context, request ctrl.Re
 
 	ips := sets.New[netip.Addr]()
 	for _, agent := range node.Status.Agents {
+		if agent.AgentAddress == "" {
+			log.V(1).Info("Skipping empty Agent IP address", "agent", agent.Name)
+			continue
+		}
 		ip, err := netip.ParseAddr(agent.AgentAddress)
 		if err != nil {
 			log.Error(err, "Invalid Agent IP address", "addr", agent.AgentAddress, "agent", agent.Name)

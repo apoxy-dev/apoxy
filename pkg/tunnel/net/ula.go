@@ -60,10 +60,30 @@ func NetworkIDHexToBytes(h string) (NetworkID, error) {
 
 // NetULA represents a ULA prefix for a network.
 type NetULA struct {
-	NetID NetworkID
+	NetID      NetworkID
+	EndpointID EndpointID
 
 	ipam   goipam.Ipamer
 	prefix netip.Prefix
+}
+
+// ULAFromAddr creates a new NetULA from an IPv6 address.
+func ULAFromAddr(ctx context.Context, addr netip.Prefix) (*NetULA, error) {
+	if !addr.Addr().Is6() {
+		return nil, fmt.Errorf("address must be IPv6")
+	}
+	addrv6 := addr.Addr().As16()
+
+	netID := NetworkID([3]byte{addrv6[6], addrv6[7], addrv6[8]})
+	endpointID := EndpointID([2]byte{addrv6[10], addrv6[11]})
+
+	return &NetULA{
+		NetID:      netID,
+		EndpointID: endpointID,
+
+		ipam:   goipam.New(ctx),
+		prefix: addr,
+	}, nil
 }
 
 // NewULA returns the IPv6 ULA prefix for a project.
@@ -71,9 +91,10 @@ func NewULA(ctx context.Context, id NetworkID) *NetULA {
 	addr := apoxyULAPrefix.Addr().As16()
 	copy(addr[6:], id[:])
 	return &NetULA{
-		NetID:  id,
-		ipam:   goipam.New(ctx),
-		prefix: netip.PrefixFrom(netip.AddrFrom16(addr), 80),
+		NetID:      id,
+		EndpointID: EndpointID{0x00, 0x00},
+		ipam:       goipam.New(ctx),
+		prefix:     netip.PrefixFrom(netip.AddrFrom16(addr), 80),
 	}
 }
 
@@ -116,7 +137,9 @@ func (u *NetULA) WithEndpoint(ctx context.Context, epID EndpointID) (*NetULA, er
 	}
 
 	return &NetULA{
-		NetID:  u.NetID,
+		NetID:      u.NetID,
+		EndpointID: epID,
+
 		ipam:   u.ipam,
 		prefix: prefix,
 	}, nil
