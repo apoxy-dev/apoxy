@@ -50,10 +50,10 @@ func (e *IPEncap) Decode(buf []byte) error {
 	for _, attr := range attrs {
 		switch attr.Attr.Type {
 		case LWTUNNEL_IP_ID:
-			if len(attr.Value) < 4 {
+			if len(attr.Value) < 8 {
 				return fmt.Errorf("geneve: invalid VNI length")
 			}
-			e.ID = native.Uint32(attr.Value[0:4])
+			e.ID = uint32(native.Uint64(attr.Value[0:8]))
 		case LWTUNNEL_IP_DST:
 			if len(attr.Value) == 4 {
 				e.Remote = net.IP(attr.Value[0:4])
@@ -62,6 +62,11 @@ func (e *IPEncap) Decode(buf []byte) error {
 			} else {
 				return fmt.Errorf("geneve: invalid remote address length")
 			}
+		case LWTUNNEL_IP_TTL:
+			if len(attr.Value) != 1 {
+				return fmt.Errorf("geneve: invalid TTL length")
+			}
+			e.TTL = attr.Value[0]
 		}
 	}
 

@@ -12,6 +12,7 @@ import (
 	"github.com/vishvananda/netlink"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -31,6 +32,8 @@ const (
 	defaultGenevePort = 6081
 	defaultGeneveVNI  = 100
 	defaultGeneveMTU  = 1400
+
+	rtProtocol = 0x61
 )
 
 var _ reconcile.Reconciler = &TunnelNodeReconciler{}
@@ -138,7 +141,7 @@ func (r *TunnelNodeReconciler) Reconcile(ctx context.Context, request reconcile.
 		log.Error(err, "Failed to parse address", "address", rs.Address)
 		return ctrl.Result{}, err
 	}
-	ula, err := tunnet.ULAFromAddr(ctx, addr)
+	ula, err := tunnet.ULAFromPrefix(ctx, addr)
 	if err != nil {
 		log.Error(err, "Failed to parse address", "address", rs.Address)
 		return ctrl.Result{}, err
@@ -153,12 +156,12 @@ func (r *TunnelNodeReconciler) Reconcile(ctx context.Context, request reconcile.
 		return ctrl.Result{}, err
 	}
 
-	currentRoutes, err := r.routeList(ctx)
+	curRoutes, err := r.routeList(ctx)
 	if err != nil {
 		log.Error(err, "Failed to get current routes")
 		return ctrl.Result{}, err
 	}
-	desiredRoutes := make(map[netip.Prefix]netip.Addr)
+	updRoutes := sets.New[netip.Prefix]()
 
 	for _, agent := range tunnelNode.Status.Agents {
 		if agent.PrivateAddress == "" || agent.AgentAddress == "" {
@@ -173,46 +176,46 @@ func (r *TunnelNodeReconciler) Reconcile(ctx context.Context, request reconcile.
 			continue
 		}
 
-		remoteULA, err := netip.ParsePrefix(agent.AgentAddress)
+		agentAddr, err := netip.ParsePrefix(agent.AgentAddress)
 		if err != nil {
 			log.Error(err, "Failed to parse agent address",
 				"agent", agent.Name, "agentAddress", agent.AgentAddress)
 			continue
 		}
-		if !remoteULA.Addr().Is6() || !remoteULA.Addr().IsGlobalUnicast() {
+		if !agentAddr.Addr().Is6() || !agentAddr.Addr().IsGlobalUnicast() {
 			log.Error(goerrors.New("overlay address must be global unicase IPv6"),
 				"Invalid overlay address",
 				"agent", agent.Name, "agentAddress", agent.AgentAddress)
 			continue
 		}
-		if remoteULA.Bits() != 96 {
+		if agentAddr.Bits() != 96 {
 			log.Error(goerrors.New("overlay address must be /96"),
 				"Invalid overlay address",
 				"agent", agent.Name, "agentAddress", agent.AgentAddress)
 			continue
 		}
-
-		desiredRoutes[remoteULA] = nve
-		if err := r.routeAdd(ctx, remoteULA, nve); err != nil {
-			log.Error(err, "Failed to ensure route",
-				"agent", agent.Name, "overlay", remoteULA.String(), "VNE", nve)
+		agentULA, err := tunnet.ULAFromPrefix(ctx, agentAddr)
+		if err != nil {
+			log.Error(err, "Failed to generate ULA",
+				"agent", agent.Name, "agentAddress", agent.AgentAddress)
 			continue
 		}
 
-		log.Info("Successfully configured Geneve tunnel route for agent",
-			"agent", agent.Name,
-			"ULA", remoteULA,
-			"VNE", nve)
+		if err := r.routeAdd(ctx, agentULA, nve); err != nil {
+			log.Error(err, "Failed to ensure route",
+				"agent", agent.Name, "ula", agentAddr.String(), "vne", nve)
+			continue
+		}
+
+		updRoutes.Insert(agentAddr)
 	}
 
-	for route, nexthop := range currentRoutes {
-		if _, exists := desiredRoutes[route]; !exists {
-			if err := r.deleteRoute(ctx, route, nexthop); err != nil {
-				log.Error(err, "Failed to delete stale route", "route", route, "nexthop", nexthop.String())
-			} else {
-				log.Info("Deleted stale route", "route", route, "nexthop", nexthop.String())
-			}
+	for _, dst := range curRoutes.Difference(updRoutes).UnsortedList() {
+		if err := r.deleteRoute(ctx, dst); err != nil {
+			log.Error(err, "Failed to delete stale route", "dst", dst)
+			continue
 		}
+		log.Info("Deleted stale route", "dst", dst)
 	}
 
 	return ctrl.Result{}, nil
@@ -315,7 +318,9 @@ func (r *TunnelNodeReconciler) cleanupGeneve(ctx context.Context) error {
 }
 
 // routeAdd adds a route to the overlay addr via NVE.
-func (r *TunnelNodeReconciler) routeAdd(ctx context.Context, ula netip.Prefix, nve netip.Addr) error {
+func (r *TunnelNodeReconciler) routeAdd(ctx context.Context, ula *tunnet.NetULA, nve netip.Addr) error {
+	log := clog.FromContext(ctx)
+
 	link, err := netlink.LinkByName(r.gnvDev)
 	if err != nil {
 		return fmt.Errorf("failed to get Geneve interface: %w", err)
@@ -325,26 +330,24 @@ func (r *TunnelNodeReconciler) routeAdd(ctx context.Context, ula netip.Prefix, n
 	// "to reach this overlay IP, encapsulate and send to this VTEP"
 	// This is equivalent to the following iproute2 command:
 	// ip route add <overlayIP>/96 encap ip id <gnvVNI> dst <nve> dev <gnvDev>
+	ulaAddr := ula.FullPrefix().Addr()
 	af, mask := netlink.FAMILY_V6, 128
-	if ula.Addr().Is4() {
+	if ulaAddr.Is4() {
 		af, mask = netlink.FAMILY_V4, 32
 	}
-	_ = af
 	route := &netlink.Route{
 		LinkIndex: link.Attrs().Index,
+		Family:    af,
 		Dst: &net.IPNet{
-			IP:   ula.Addr().AsSlice(),
-			Mask: net.CIDRMask(ula.Bits(), mask),
+			IP:   ulaAddr.AsSlice(),
+			Mask: net.CIDRMask(ula.FullPrefix().Bits(), mask),
 		},
-		//Via: &netlink.Via{
-		//	AddrFamily: af,
-		//	Addr:       ula.Addr().AsSlice(),
-		//},
 		Encap: &IPEncap{
 			ID:     r.gnvVNI,
 			Remote: nve.AsSlice(),
 		},
-		Scope: netlink.SCOPE_UNIVERSE,
+		Scope:    netlink.SCOPE_UNIVERSE,
+		Protocol: rtProtocol,
 	}
 
 	if err := netlink.RouteAdd(route); err != nil {
@@ -357,10 +360,36 @@ func (r *TunnelNodeReconciler) routeAdd(ctx context.Context, ula netip.Prefix, n
 		}
 	}
 
+	log.Info("Configured route", "af", af, "dst", ula, "encap_id",
+		r.gnvVNI, "encap_remote", nve.String())
+
+	hwAddr := r.hwAddr(ula)
+	if err := netlink.NeighSet(&netlink.Neigh{
+		LinkIndex:    link.Attrs().Index,
+		State:        netlink.NUD_PERMANENT,
+		IP:           ulaAddr.AsSlice(),
+		HardwareAddr: hwAddr,
+	}); err != nil {
+		return fmt.Errorf("failed to add neighbor entry: %w", err)
+	}
+
+	log.Info("Neighbor entry set", "remote", ulaAddr, "hwAddr", hwAddr)
+
+	// Via is needed so that kernel can use the same dst hwaddr for the entire ula prefix.
+	// Can't set via during route creation because the route to gw does not yet exist.
+	route.Gw = ulaAddr.AsSlice()
+	if err := netlink.RouteChange(route); err != nil {
+		return fmt.Errorf("failed to change route with gw %v: %w", route.Gw, err)
+	}
+
+	log.Info("Configured route gw",
+		"af", af, "dst", ula, "gw", ulaAddr,
+		"encap_id", r.gnvVNI, "encap_remote", nve)
+
 	return nil
 }
 
-func (r *TunnelNodeReconciler) deleteRoute(ctx context.Context, dst netip.Prefix, nve netip.Addr) error {
+func (r *TunnelNodeReconciler) deleteRoute(ctx context.Context, dst netip.Prefix) error {
 	link, err := netlink.LinkByName(r.gnvDev)
 	if err != nil {
 		return fmt.Errorf("failed to get Geneve interface: %w", err)
@@ -376,11 +405,6 @@ func (r *TunnelNodeReconciler) deleteRoute(ctx context.Context, dst netip.Prefix
 			IP:   dst.Addr().AsSlice(),
 			Mask: net.CIDRMask(dst.Bits(), mask),
 		},
-		//Encap: &GeneveEncap{
-		//	ID:     r.gnvVNI,
-		//	Remote: nve.AsSlice(),
-		//	Port:   r.gnvPort,
-		//},
 	}
 
 	if err := netlink.RouteDel(route); err != nil {
@@ -391,29 +415,40 @@ func (r *TunnelNodeReconciler) deleteRoute(ctx context.Context, dst netip.Prefix
 }
 
 // routeList returns the current routes for the Geneve interface.
-func (r *TunnelNodeReconciler) routeList(ctx context.Context) (map[netip.Prefix]netip.Addr, error) {
+func (r *TunnelNodeReconciler) routeList(ctx context.Context) (sets.Set[netip.Prefix], error) {
 	log := log.FromContext(ctx)
 
 	link, err := netlink.LinkByName(r.gnvDev)
 	if err != nil {
-		return nil, nil
+		return nil, fmt.Errorf("failed to get Geneve link: %w", err)
 	}
 
-	routes, err := netlink.RouteList(link, 0)
+	routes, err := netlink.RouteListFiltered(
+		netlink.FAMILY_ALL,
+		&netlink.Route{
+			Protocol: rtProtocol,
+		},
+		netlink.RT_FILTER_PROTOCOL,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list routes: %w", err)
 	}
 
-	out := make(map[netip.Prefix]netip.Addr)
+	out := sets.New[netip.Prefix]()
 	for _, route := range routes {
-		if route.Encap == nil || route.Dst == nil {
-			log.V(1).Info("Skipping route with nil Encap or Dst")
-			continue
-		}
+		// TODO(dilyevsky): netlink doesn't currently support deserialization of encap type ip.
+		//if route.Encap == nil || route.Encap.Type() != nl.LWTUNNEL_ENCAP_IP {
+		//	log.Info("Skipping route with no/mismatching encap", "dst", route.Dst, "encap", route.Encap)
+		//	continue
+		//}
 
-		encap, ok := route.Encap.(*IPEncap)
-		if !ok {
-			log.V(1).Info("Skipping route with non-Geneve Encap")
+		//encap, ok := route.Encap.(*IPEncap)
+		//if !ok {
+		//	log.Info("Skipping route with non-Geneve Encap", "dst", route.Dst)
+		//	continue
+		//}
+		if link.Attrs().Index != route.LinkIndex {
+			log.V(1).Info("Skipping route with mismatching link index", "dst", route.Dst, "linkIndex", link.Attrs().Index, "routeLinkIndex", route.LinkIndex)
 			continue
 		}
 
@@ -431,13 +466,9 @@ func (r *TunnelNodeReconciler) routeList(ctx context.Context) (map[netip.Prefix]
 			)
 		}
 
-		log.Info("Route found", "dst", dst, "remote")
+		log.Info("Route found", "dst", dst)
 
-		out[dst], ok = netip.AddrFromSlice(encap.Remote)
-		if !ok {
-			log.Info("Could not parse remote address", "remote", encap.Remote)
-			continue
-		}
+		out.Insert(dst)
 	}
 
 	return out, nil

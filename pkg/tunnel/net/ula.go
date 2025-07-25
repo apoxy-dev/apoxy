@@ -67,12 +67,12 @@ type NetULA struct {
 	prefix netip.Prefix
 }
 
-// ULAFromAddr creates a new NetULA from an IPv6 address.
-func ULAFromAddr(ctx context.Context, addr netip.Prefix) (*NetULA, error) {
-	if !addr.Addr().Is6() {
+// ULAFromPrefix creates a new NetULA from an IPv6 address.
+func ULAFromPrefix(ctx context.Context, prefix netip.Prefix) (*NetULA, error) {
+	if !prefix.Addr().Is6() {
 		return nil, fmt.Errorf("address must be IPv6")
 	}
-	addrv6 := addr.Addr().As16()
+	addrv6 := prefix.Addr().As16()
 
 	netID := NetworkID([3]byte{addrv6[6], addrv6[7], addrv6[8]})
 	endpointID := EndpointID([2]byte{addrv6[10], addrv6[11]})
@@ -82,7 +82,7 @@ func ULAFromAddr(ctx context.Context, addr netip.Prefix) (*NetULA, error) {
 		EndpointID: endpointID,
 
 		ipam:   goipam.New(ctx),
-		prefix: addr,
+		prefix: prefix,
 	}, nil
 }
 
