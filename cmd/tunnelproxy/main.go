@@ -26,6 +26,7 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/log"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel"
 	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
+	tunnelproxy "github.com/apoxy-dev/apoxy/pkg/tunnel/proxy"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/router"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/token"
 
@@ -172,7 +173,7 @@ func main() {
 		log.Fatalf("Unable to setup Tunnel Proxy server: %v", err)
 	}
 
-	if err := tunnel.NewProxyTunnelReconciler(
+	if err := tunnelproxy.NewProxyTunnelReconciler(
 		mgr.GetClient(),
 		extIPv4Prefix.Addr(),
 	).SetupWithManager(ctx, mgr); err != nil {
