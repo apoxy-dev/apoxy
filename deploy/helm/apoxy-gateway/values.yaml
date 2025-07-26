@@ -114,11 +114,6 @@ backplane:
     rollingUpdate:
       maxUnavailable: 0
       maxSurge: 1
-
-  lifecycle:
-    preStop:
-      exec:
-        command: ["/bin/sh", "-c", "sleep 15"]
         
   controllerPodMonitor:
     enabled: false
