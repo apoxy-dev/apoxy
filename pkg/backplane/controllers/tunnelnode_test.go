@@ -14,6 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	corev1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
+	"github.com/apoxy-dev/apoxy/pkg/net/lwtunnel"
 )
 
 func TestTunnelNodeReconciler_Reconcile(t *testing.T) {
@@ -95,12 +96,11 @@ func TestTunnelNodeReconciler_Reconcile(t *testing.T) {
 					found := false
 					for _, route := range routes {
 						if route.Dst != nil && route.Dst.String() == dst && route.Encap != nil {
-							if geneveEncap, ok := route.Encap.(*IPEncap); ok {
+							if geneveEncap, ok := route.Encap.(*lwtunnel.IPEncap); ok {
 								if geneveEncap.Remote.String() == remote {
 									found = true
 									// Verify encapsulation parameters
 									assert.Equal(t, uint32(100), geneveEncap.ID, "Incorrect VNI in route encapsulation")
-									assert.Equal(t, uint16(6081), geneveEncap.Port, "Incorrect port in route encapsulation")
 									break
 								}
 							}
@@ -186,7 +186,7 @@ func TestTunnelNodeReconciler_Reconcile(t *testing.T) {
 				found := false
 				for _, route := range routes {
 					if route.Dst != nil && route.Dst.String() == "fd02::21/128" && route.Encap != nil {
-						if geneveEncap, ok := route.Encap.(*IPEncap); ok {
+						if geneveEncap, ok := route.Encap.(*lwtunnel.IPEncap); ok {
 							if geneveEncap.Remote.String() == "192.168.1.21" {
 								foundValidRoute = true
 								break
@@ -227,7 +227,7 @@ func TestTunnelNodeReconciler_Reconcile(t *testing.T) {
 				// Should not have any routes for IPv4 overlay addresses
 				for _, route := range routes {
 					if route.Dst != nil && route.Encap != nil {
-						if geneveEncap, ok := route.Encap.(*IPEncap); ok {
+						if geneveEncap, ok := route.Encap.(*lwtunnel.IPEncap); ok {
 							if geneveEncap.Remote.String() == "192.168.1.30" {
 								t.Errorf("Found route for IPv4 overlay address, which should be rejected")
 							}
@@ -399,7 +399,7 @@ func TestTunnelNodeReconciler_RouteManagement(t *testing.T) {
 	routeCount := 0
 	for _, route := range routes {
 		if route.Dst != nil && route.Encap != nil {
-			if _, ok := route.Encap.(*IPEncap); ok {
+			if _, ok := route.Encap.(*lwtunnel.IPEncap); ok {
 				routeCount++
 			}
 		}
@@ -430,7 +430,7 @@ func TestTunnelNodeReconciler_RouteManagement(t *testing.T) {
 	found := false
 	for _, route := range routes {
 		if route.Dst != nil && route.Dst.String() == "fd00::11/128" && route.Encap != nil {
-			if geneveEncap, ok := route.Encap.(*IPEncap); ok {
+			if geneveEncap, ok := route.Encap.(*lwtunnel.IPEncap); ok {
 				if geneveEncap.Remote.String() == "192.168.1.11" {
 					found = true
 				}
@@ -523,9 +523,8 @@ func TestTunnelNodeReconciler_Configuration(t *testing.T) {
 
 	for _, route := range routes {
 		if route.Dst != nil && route.Encap != nil {
-			if geneveEncap, ok := route.Encap.(*IPEncap); ok {
+			if geneveEncap, ok := route.Encap.(*lwtunnel.IPEncap); ok {
 				assert.Equal(t, uint32(200), geneveEncap.ID, "Custom VNI not used in route encapsulation")
-				assert.Equal(t, uint16(6082), geneveEncap.Port, "Custom port not used in route encapsulation")
 			}
 		}
 	}

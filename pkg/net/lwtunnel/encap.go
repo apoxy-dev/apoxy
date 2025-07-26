@@ -1,4 +1,4 @@
-package controllers
+package lwtunnel
 
 import (
 	"encoding/binary"
@@ -22,6 +22,12 @@ const (
 	__LWTUNNEL_IP_MAX
 )
 
+var (
+	// native is the native endianness
+	native = nl.NativeEndian()
+	be     = binary.BigEndian
+)
+
 // IPEncap represents IP tunnel encapsulation. Implements netlink.Encap interface.
 type IPEncap struct {
 	ID     uint32 // VNI - Virtual Network Identifier (24 bits)
@@ -33,12 +39,6 @@ type IPEncap struct {
 func (e *IPEncap) Type() int {
 	return nl.LWTUNNEL_ENCAP_IP
 }
-
-var (
-	// native is the native endianness
-	native = nl.NativeEndian()
-	be     = binary.BigEndian
-)
 
 // Decode parses the netlink attributes into the IPEncap structure.
 func (e *IPEncap) Decode(buf []byte) error {
@@ -73,7 +73,7 @@ func (e *IPEncap) Decode(buf []byte) error {
 	return nil
 }
 
-// Encode serializes the GeneveEncap structure into netlink attributes
+// Encode serializes the IPEncap structure into netlink attributes
 func (e *IPEncap) Encode() ([]byte, error) {
 	final := []byte{}
 
@@ -113,7 +113,7 @@ func (e *IPEncap) String() string {
 	return fmt.Sprintf("encap ip id %d dst %s", e.ID, e.Remote)
 }
 
-// Equal compares two GeneveEncap instances for equality.
+// Equal compares two IPEncap instances for equality.
 func (e *IPEncap) Equal(x netlink.Encap) bool {
 	o, ok := x.(*IPEncap)
 	if !ok {
