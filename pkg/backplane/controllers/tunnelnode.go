@@ -3,6 +3,7 @@ package controllers
 import (
 	"context"
 	goerrors "errors"
+	"fmt"
 	"net/netip"
 	"time"
 
@@ -30,6 +31,7 @@ type TunnelNodeReconciler struct {
 
 	proxyName        string
 	proxyReplicaName string
+	localPrivAddr    netip.Addr
 
 	gnv *lwtunnel.Geneve
 }
@@ -38,12 +40,14 @@ type TunnelNodeReconciler struct {
 func NewTunnelNodeReconciler(
 	c client.Client,
 	proxyName, proxyReplicaName string,
+	localPrivAddr netip.Addr,
 ) *TunnelNodeReconciler {
 	return &TunnelNodeReconciler{
 		Client: c,
 
 		proxyName:        proxyName,
 		proxyReplicaName: proxyReplicaName,
+		localPrivAddr:    localPrivAddr,
 
 		gnv: lwtunnel.NewGeneve(),
 	}
@@ -82,20 +86,18 @@ func (r *TunnelNodeReconciler) Reconcile(ctx context.Context, request reconcile.
 		log.Info("Proxy replica address not found")
 		return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
 	}
-	addr, err := netip.ParsePrefix(rs.Address)
+	addr, err := netip.ParseAddr(rs.Address)
 	if err != nil {
-		log.Error(err, "Failed to parse address", "address", rs.Address)
-		return ctrl.Result{}, err
+		return ctrl.Result{}, fmt.Errorf("failed to parse address: %w", err)
+	}
+
+	if err := r.gnv.SetAddr(ctx, addr); err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to set address: %w", err)
 	}
 
 	log = log.WithValues("proxyReplica", rs.Name, "address", addr)
 	ctx = clog.IntoContext(ctx, log)
 	log.Info("Reconciling tunnel device")
-
-	if err := r.gnv.SetUp(ctx, addr); err != nil {
-		log.Error(err, "Failed to set up tunnel device")
-		return ctrl.Result{}, err
-	}
 
 	var eps []lwtunnel.Endpoint
 	for _, agent := range tunnelNode.Status.Agents {
@@ -111,25 +113,19 @@ func (r *TunnelNodeReconciler) Reconcile(ctx context.Context, request reconcile.
 			continue
 		}
 
-		agentAddr, err := netip.ParsePrefix(agent.AgentAddress)
+		agentAddr, err := netip.ParseAddr(agent.AgentAddress)
 		if err != nil {
 			log.Error(err, "Failed to parse agent address",
 				"agent", agent.Name, "agentAddress", agent.AgentAddress)
 			continue
 		}
-		if !agentAddr.Addr().Is6() || !agentAddr.Addr().IsGlobalUnicast() {
+		if !agentAddr.Is6() || !agentAddr.IsGlobalUnicast() {
 			log.Error(goerrors.New("overlay address must be global unicase IPv6"),
 				"Invalid overlay address",
 				"agent", agent.Name, "agentAddress", agent.AgentAddress)
 			continue
 		}
-		if agentAddr.Bits() != 96 {
-			log.Error(goerrors.New("overlay address must be /96"),
-				"Invalid overlay address",
-				"agent", agent.Name, "agentAddress", agent.AgentAddress)
-			continue
-		}
-		agentULA, err := tunnet.ULAFromPrefix(ctx, agentAddr)
+		agentULA, err := tunnet.ULAFromPrefix(ctx, netip.PrefixFrom(agentAddr, 96))
 		if err != nil {
 			log.Error(err, "Failed to generate ULA",
 				"agent", agent.Name, "agentAddress", agent.AgentAddress)
@@ -152,6 +148,9 @@ func (r *TunnelNodeReconciler) Reconcile(ctx context.Context, request reconcile.
 
 // SetupWithManager sets up the controller with the Controller Manager.
 func (r *TunnelNodeReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager) error {
+	if err := r.gnv.SetUp(ctx, r.localPrivAddr); err != nil {
+		return fmt.Errorf("failed to set up tunnel device: %w", err)
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&corev1alpha.TunnelNode{}).
 		//Watches(

@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	goerrors "errors"
 	"fmt"
+	"net/netip"
 	"strconv"
 	"sync"
 	"time"
@@ -53,21 +54,22 @@ type ProxyReconciler struct {
 
 	proxyName     string
 	replicaName   string
+	localPrivAddr netip.Addr
 	apiServerHost string
 
 	options *options
 }
 
 type options struct {
-	chConn                          clickhouse.Conn
-	chOpts                          *clickhouse.Options
-	apiServerTLSClientConfig        *tls.Config
-	goPluginDir                     string
-	releaseURL                      string
-	useEnvoyContrib                 bool
-	healthChecker                   *healthchecker.AggregatedHealthChecker
-	overloadMaxHeapSizeBytes        *uint64
-	overloadMaxActiveConnections    *uint64
+	chConn                       clickhouse.Conn
+	chOpts                       *clickhouse.Options
+	apiServerTLSClientConfig     *tls.Config
+	goPluginDir                  string
+	releaseURL                   string
+	useEnvoyContrib              bool
+	healthChecker                *healthchecker.AggregatedHealthChecker
+	overloadMaxHeapSizeBytes     *uint64
+	overloadMaxActiveConnections *uint64
 }
 
 // Option is a functional option for ProxyReconciler.
@@ -147,6 +149,7 @@ func NewProxyReconciler(
 	c client.Client,
 	proxyName string,
 	replicaName string,
+	localPrivAddr netip.Addr,
 	apiServerHost string,
 	opts ...Option,
 ) *ProxyReconciler {
@@ -159,6 +162,7 @@ func NewProxyReconciler(
 		Client:        c,
 		proxyName:     proxyName,
 		replicaName:   replicaName,
+		localPrivAddr: localPrivAddr,
 		apiServerHost: apiServerHost,
 		options:       sOpts,
 	}
@@ -242,16 +246,20 @@ func (r *ProxyReconciler) Reconcile(ctx context.Context, request reconcile.Reque
 	if !found {
 		log.Info("Replica not found, creating new one")
 		p.Status.Replicas = append(p.Status.Replicas, &ctrlv1alpha1.ProxyReplicaStatus{
-			Name:      r.replicaName,
-			CreatedAt: metav1.Now(),
-			Phase:     ctrlv1alpha1.ProxyReplicaPhasePending,
-			Reason:    "Created by Backplane",
+			Name:           r.replicaName,
+			CreatedAt:      metav1.Now(),
+			Phase:          ctrlv1alpha1.ProxyReplicaPhasePending,
+			Reason:         "Created by Backplane",
+			PrivateAddress: r.localPrivAddr.String(),
 		})
 		if err := r.Status().Update(ctx, p); err != nil {
 			return reconcile.Result{}, fmt.Errorf("failed to update Proxy status: %w", err)
 		}
 		return reconcile.Result{}, nil
 	}
+	// Make sure we set the private address which is only known to Backplane.
+	rStatus.PrivateAddress = r.localPrivAddr.String()
+
 	ps := r.RuntimeStatus()
 	if ps.Running {
 		log.V(1).Info("envoy is running")
@@ -319,11 +327,11 @@ func (r *ProxyReconciler) Reconcile(ctx context.Context, request reconcile.Reque
 			bootstrap.WithXdsServerHost(r.apiServerHost),
 			// TODO(dilyevsky): Add TLS config from r.options.apiServerTLSConfig.
 		}
-		
+
 		if r.options.overloadMaxHeapSizeBytes != nil {
 			bsOpts = append(bsOpts, bootstrap.WithOverloadMaxHeapSizeBytes(*r.options.overloadMaxHeapSizeBytes))
 		}
-		
+
 		if r.options.overloadMaxActiveConnections != nil {
 			bsOpts = append(bsOpts, bootstrap.WithOverloadMaxActiveConnections(*r.options.overloadMaxActiveConnections))
 		}

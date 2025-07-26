@@ -15,6 +15,8 @@ type IPAM interface {
 	// Release releases an IP address. No-op if the address is not allocated
 	// (returns nil).
 	Release(peerPrefix netip.Prefix) error
+
+	// TODO(dilyevsky): Method to tell the length of the prefix.
 }
 
 const (

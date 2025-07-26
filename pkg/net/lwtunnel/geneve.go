@@ -89,14 +89,16 @@ func NewGeneve(opts ...option) *Geneve {
 	}
 }
 
-func (r *Geneve) hwAddr(ula tunnet.NetULA) net.HardwareAddr {
-	// Use 2-byte endpoint portion of the ULA address [11:13].
-	// TODO(dilyevsky): Make this strongly typed.
-	return net.HardwareAddr([]byte{0x0A, 0x00, 0x00, 0x00, ula.EndpointID[0], ula.EndpointID[1]})
+func (r *Geneve) hwAddr(addr netip.Addr) net.HardwareAddr {
+	// Use last 3 bytes of the ipv4/ipv6 address and a reserved private OUI prefix.
+	if addr.Is4() {
+		return net.HardwareAddr(append([]byte{0x52, 0x54, 0x00}, addr.AsSlice()[1:]...))
+	}
+	return net.HardwareAddr(append([]byte{0x52, 0x54, 0x00}, addr.AsSlice()[13:]...))
 }
 
-// ensureDevice creates the Geneve link if it doesn't exist.
-func (r *Geneve) ensureDevice(ctx context.Context, ula tunnet.NetULA) error {
+// SetUp sets up the Geneve tunnel. Can be called multiple times.
+func (r *Geneve) SetUp(ctx context.Context, privAddr netip.Addr) error {
 	log := clog.FromContext(ctx)
 
 	link, err := netlink.LinkByName(r.opts.dev)
@@ -116,7 +118,7 @@ func (r *Geneve) ensureDevice(ctx context.Context, ula tunnet.NetULA) error {
 		LinkAttrs: netlink.LinkAttrs{
 			Name:         r.opts.dev,
 			MTU:          r.opts.mtu,
-			HardwareAddr: r.hwAddr(ula),
+			HardwareAddr: r.hwAddr(privAddr),
 		},
 		// No ID and Remote set - this creates an "external" Geneve device.
 		FlowBased: true, // external
@@ -130,20 +132,26 @@ func (r *Geneve) ensureDevice(ctx context.Context, ula tunnet.NetULA) error {
 		return fmt.Errorf("failed to bring up Geneve interface: %w", err)
 	}
 
-	log.Info("Successfully created Geneve interface", "dev", r.opts.dev)
-
-	if err := r.setAddr(ctx, geneve, ula); err != nil {
-		return fmt.Errorf("failed to configure device address: %w", err)
-	}
+	log.Info("Successfully setup Geneve interface", "dev", r.opts.dev)
 
 	return nil
 }
 
-// setAddr adds an IPv6 address to the Geneve interface.
-func (r *Geneve) setAddr(ctx context.Context, link netlink.Link, ula tunnet.NetULA) error {
+// SetAddr adds an IPv6 overlay address to the Geneve interface. This is
+// optional and only needed for originating end of the tunnel to assign
+// an inner source IP address.
+func (r *Geneve) SetAddr(ctx context.Context, ula netip.Addr) error {
 	log := clog.FromContext(ctx)
 
-	addr, err := netlink.ParseAddr(ula.FullPrefix().String())
+	link, err := netlink.LinkByName(r.opts.dev)
+	if err == nil {
+		if err := netlink.LinkSetUp(link); err != nil {
+			return fmt.Errorf("failed to bring up Geneve interface: %w", err)
+		}
+		return nil
+	}
+
+	addr, err := netlink.ParseAddr(ula.String())
 	if err != nil {
 		return fmt.Errorf("failed to parse CIDR: %w", err)
 	}
@@ -237,7 +245,7 @@ func (r *Geneve) routeAdd(ctx context.Context, ula tunnet.NetULA, nve netip.Addr
 	log.Info("Configured route", "af", af, "dst", ula, "encap_id",
 		r.opts.vni, "encap_remote", nve.String())
 
-	hwAddr := r.hwAddr(ula)
+	hwAddr := r.hwAddr(nve)
 	if err := netlink.NeighSet(&netlink.Neigh{
 		LinkIndex:    link.Attrs().Index,
 		State:        netlink.NUD_PERMANENT,
@@ -357,25 +365,6 @@ type Endpoint struct {
 	Dst tunnet.NetULA
 	// Remote is a VTEP/VNE address of a remote tunnel endpoint.
 	Remote netip.Addr
-}
-
-// SetUp sets up the Geneve tunnel. Can be called multiple times with different local addresses -
-// old localAddr will be removed.
-func (r *Geneve) SetUp(ctx context.Context, localAddr netip.Prefix) error {
-	log := clog.FromContext(ctx)
-
-	log.Info("Geneve tunnel setup")
-
-	ula, err := tunnet.ULAFromPrefix(ctx, localAddr)
-	if err != nil {
-		return fmt.Errorf("failed to parse address: %w", err)
-	}
-
-	if err := r.ensureDevice(ctx, *ula); err != nil {
-		return fmt.Errorf("failed to ensure Geneve interface: %w", err)
-	}
-
-	return nil
 }
 
 // SyncEndpoints syncs tunnel endpoints. Endpoints that are missing from eps

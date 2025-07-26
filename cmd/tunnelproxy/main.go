@@ -29,6 +29,7 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/router"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/token"
 
+	ctrlv1alpha1 "github.com/apoxy-dev/apoxy/api/controllers/v1alpha1"
 	corev1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
 )
 
@@ -36,6 +37,7 @@ var scheme = runtime.NewScheme()
 
 func init() {
 	utilruntime.Must(corev1alpha.Install(scheme))
+	utilruntime.Must(ctrlv1alpha1.Install(scheme))
 }
 
 var (
@@ -166,13 +168,19 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to create tunnel server: %v", err)
 	}
+	if err := srv.SetupWithManager(mgr); err != nil {
+		log.Fatalf("Unable to setup Tunnel Proxy server: %v", err)
+	}
+
+	if err := tunnel.NewProxyTunnelReconciler(
+		mgr.GetClient(),
+		extIPv4Prefix.Addr(),
+	).SetupWithManager(ctx, mgr); err != nil {
+		log.Fatalf("Unable to setup Proxy Tunnel reconciler: %v", err)
+	}
 
 	g.Go(func() error {
 		log.Infof("Starting Tunnel Proxy server")
-
-		if err := srv.SetupWithManager(mgr); err != nil {
-			log.Fatalf("Unable to setup Tunnel Proxy server: %v", err)
-		}
 
 		return srv.Start(ctx)
 	})

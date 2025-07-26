@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"os/signal"
 	"strconv"
@@ -43,6 +44,7 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/log"
 	"github.com/apoxy-dev/apoxy/pkg/net/dns"
 	tundns "github.com/apoxy-dev/apoxy/pkg/tunnel/dns"
+	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 
 	ctrlv1alpha1 "github.com/apoxy-dev/apoxy/api/controllers/v1alpha1"
 	corev1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
@@ -97,6 +99,7 @@ var (
 
 	dnsPort       = flag.Int("dns_port", 8053, "Port for the DNS server.")
 	tunnelDNSAddr = flag.String("tunnel_dns_addr", "127.0.0.1:8053", "Address for the DNS server run by tunnel agents.")
+	extIface      = flag.String("ext_iface", "eth0", "External interface name.")
 )
 
 func upsertProxyFromPath(ctx context.Context, rC *rest.Config, path string) (string, error) {
@@ -249,6 +252,24 @@ func main() {
 		}
 	}()
 
+	log.Infof("Looking up external IP addresses")
+
+	var (
+		extIPv4Prefix netip.Prefix
+	)
+	extAddrs, err := tunnet.GetGlobalUnicastAddresses(*extIface)
+	if err != nil {
+		log.Warnf("Failed to get local IPv6 address: %v", err)
+	} else {
+		for _, addr := range extAddrs {
+			if addr.Addr().Is4() {
+				extIPv4Prefix = addr
+				log.Infof("External IPv4 prefix: %s", extIPv4Prefix.String())
+				break
+			}
+		}
+	}
+
 	log.Infof("Setting up managers")
 
 	ctrl.SetLogger(zap.New(zap.UseDevMode(true))) // TODO(dilyevsky): Use default golang logger.
@@ -311,6 +332,7 @@ func main() {
 		mgr.GetClient(),
 		*proxyName,
 		*replicaName,
+		extIPv4Prefix.Addr(),
 		apiServerHost,
 		proxyOpts...,
 	)
@@ -346,6 +368,7 @@ func main() {
 		mgr.GetClient(),
 		*proxyName,
 		*replicaName,
+		extIPv4Prefix.Addr(),
 	).SetupWithManager(ctx, mgr); err != nil {
 		log.Fatalf("failed to set up TunnelNode controller: %v", err)
 	}

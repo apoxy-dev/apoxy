@@ -212,6 +212,10 @@ type ProxyReplicaStatus struct {
 	// Optional address assigned to the replica.
 	// +optional
 	Address string `json:"address,omitempty"`
+
+	// Optional private address assigned to the replica (used for internal platform communication).
+	// +optional
+	PrivateAddress string `json:"privateAddress,omitempty"`
 }
 
 // ProxyStatus defines the observed state of Proxy.

@@ -841,6 +841,13 @@ func schema_apoxy_api_controllers_v1alpha1_ProxyReplicaStatus(ref common.Referen
 							Format:      "",
 						},
 					},
+					"privateAddress": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Optional private address assigned to the replica (used for internal platform communication).",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 				},
 				Required: []string{"name", "createdAt", "phase"},
 			},

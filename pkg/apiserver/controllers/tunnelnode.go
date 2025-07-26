@@ -117,12 +117,12 @@ func (r *TunnelNodeReconciler) Reconcile(ctx context.Context, req reconcile.Requ
 			if agent.AgentAddress == "" {
 				continue
 			}
-			addr, err := netip.ParsePrefix(agent.AgentAddress)
+			addr, err := netip.ParseAddr(agent.AgentAddress)
 			if err != nil {
 				log.Error(err, "Failed to parse IP address", "addr", agent.AgentAddress)
 				continue
 			}
-			if err := r.agentIPAM.Release(addr); err != nil {
+			if err := r.agentIPAM.Release(netip.PrefixFrom(addr, 96)); err != nil {
 				log.Error(err, "Failed to release IP address", "addr", addr)
 			}
 		}
@@ -188,7 +188,7 @@ func (r *TunnelNodeReconciler) Reconcile(ctx context.Context, req reconcile.Requ
 
 		log.Info("Allocated agent address", "agent", agent.Name, "addr", addr)
 
-		tn.Status.Agents[i].AgentAddress = addr.String()
+		tn.Status.Agents[i].AgentAddress = addr.Addr().String()
 
 		if err := r.Status().Update(ctx, tn); err != nil {
 			if err := r.agentIPAM.Release(addr); err != nil {

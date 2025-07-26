@@ -191,12 +191,12 @@ func (r *ProxyReconciler) syncProxy(ctx context.Context, p *ctrlv1alpha1.Proxy, 
 
 			log.Info("releasing IP address for proxy replica", "address", replica.Address)
 
-			addr, err := netip.ParsePrefix(replica.Address)
+			addr, err := netip.ParseAddr(replica.Address)
 			if err != nil {
 				log.Error(err, "failed to parse IP address", "address", replica.Address)
 				continue
 			}
-			if err := r.ipam.Release(addr); err != nil {
+			if err := r.ipam.Release(netip.PrefixFrom(addr, 128)); err != nil {
 				log.Error(err, "failed to release IP", "address", replica.Address)
 				continue
 			}
@@ -216,7 +216,11 @@ func (r *ProxyReconciler) syncProxy(ctx context.Context, p *ctrlv1alpha1.Proxy, 
 		if err != nil {
 			return false, fmt.Errorf("failed to allocate IPv6 address: %w", err)
 		}
-		replica.Address = addr.String()
+		if !addr.IsSingleIP() {
+			log.Error(err, "allocated IP address is not a single IP", "address", addr.String())
+			continue
+		}
+		replica.Address = addr.Addr().String()
 
 		log.Info("allocated IP address for proxy replica", "address", replica.Address)
 	}

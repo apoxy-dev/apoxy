@@ -516,12 +516,12 @@ func (t *TunnelServer) reconcile(ctx context.Context, request reconcile.Request)
 		}
 
 		if !conn.addrv6.IsValid() {
-			var err error
-			conn.addrv6, err = netip.ParsePrefix(agent.AgentAddress)
+			addr, err := netip.ParseAddr(agent.AgentAddress)
 			if err != nil {
-				log.Error(err, "Failed to parse agent address", "agent", agent.Name)
+				log.Error(err, "Failed to parse agent address", "agent", agent.Name, "address", agent.AgentAddress)
 				continue
 			}
+			conn.addrv6 = netip.PrefixFrom(addr, 96)
 		}
 		t.conns.Set(agent.Name, conn)
 
