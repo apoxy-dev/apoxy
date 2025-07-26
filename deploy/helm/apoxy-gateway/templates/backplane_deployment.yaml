@@ -99,8 +99,10 @@ spec:
             {{- with .Values.backplane.extraVolumeMounts }}
               {{- toYaml . | nindent 12 }}
             {{- end }}
+          {{- with .Values.backplane.lifecycle }}
           lifecycle:
-            {{- toYaml .Values.backplane.lifecycle | nindent 12 }}
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
       # Set the termination grace period to the drain timeout plus a buffer
       # to allow for the proxy to finish draining connections.
       terminationGracePeriodSeconds: {{ .Values.backplane.proxy.drainTimeoutSeconds | add 5 }}
