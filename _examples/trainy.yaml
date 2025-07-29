@@ -59,6 +59,9 @@ apiVersion: core.apoxy.dev/v1alpha
 kind: TunnelNode
 metadata:
   name: example-cluster
+spec:
+  egressGateway:
+    enabled: true
 ---
 apiVersion: core.apoxy.dev/v1alpha
 kind: Backend
