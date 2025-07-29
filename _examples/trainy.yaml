@@ -43,10 +43,9 @@ spec:
     - 'trainy-example.apoxy.cloud'
   rules:
     - backendRefs:
-        - kind: EdgeFunction
-          group: extensions.apoxy.dev
-          name: helloworld
-          port: 8801
+        - kind: Backend
+          name: example-backend
+          port: 80
 ---
 apiVersion: core.apoxy.dev/v1alpha
 kind: Backend
@@ -54,7 +53,7 @@ metadata:
   name: example-backend
 spec:
   endpoints:
-    - fqdn: example-cluster.tun.apoxy.net
+    - fqdn: example-service.default.svc.cluster.local.example-cluster.tun.apoxy.net
 ---
 apiVersion: core.apoxy.dev/v1alpha
 kind: TunnelNode
