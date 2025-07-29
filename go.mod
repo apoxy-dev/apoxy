@@ -9,6 +9,7 @@ require (
 	github.com/adrg/xdg v0.5.3
 	github.com/alphadose/haxmap v1.4.1
 	github.com/anatol/vmtest v0.0.0-20250318022921-2f32244e2f0f
+	github.com/apoxy-dev/icx v0.1.0
 	github.com/avast/retry-go/v4 v4.6.1
 	github.com/bramvdbogaerde/go-scp v1.5.0
 	github.com/buraksezer/olric v0.5.6
@@ -88,6 +89,7 @@ require (
 	k8s.io/apiserver v0.31.1
 	k8s.io/client-go v0.31.1
 	k8s.io/klog/v2 v2.130.1
+	k8s.io/kube-aggregator v0.31.1
 	k8s.io/kube-openapi v0.0.0-20250318190949-c8a335a9a2ff
 	k8s.io/kubernetes v1.31.1
 	k8s.io/utils v0.0.0-20250321185631-1f6e0b77f77e
@@ -126,7 +128,6 @@ require (
 	github.com/andybalholm/brotli v1.1.0 // indirect
 	github.com/antlr4-go/antlr/v4 v4.13.0 // indirect
 	github.com/apache/thrift v0.20.0 // indirect
-	github.com/apoxy-dev/icx v0.1.0 // indirect
 	github.com/apparentlymart/go-cidr v1.1.0 // indirect
 	github.com/armon/go-metrics v0.0.0-20180917152333-f0300d1749da // indirect
 	github.com/asaskevich/govalidator v0.0.0-20200428143746-21a406dcc535 // indirect
@@ -302,13 +303,11 @@ require (
 	github.com/robfig/cron v1.2.0 // indirect
 	github.com/robfig/cron/v3 v3.0.1 // indirect
 	github.com/russross/blackfriday/v2 v2.1.0 // indirect
-	github.com/safchain/ethtool v0.6.1 // indirect
 	github.com/sean-/seed v0.0.0-20170313163322-e2103e2c3529 // indirect
 	github.com/seccomp/libseccomp-golang v0.10.0 // indirect
 	github.com/segmentio/asm v1.2.0 // indirect
 	github.com/shengdoushi/base58 v1.0.0 // indirect
 	github.com/shopspring/decimal v1.4.0 // indirect
-	github.com/slavc/xdp v0.3.4 // indirect
 	github.com/softlayer/softlayer-go v0.0.0-20180806151055-260589d94c7d // indirect
 	github.com/soheilhy/cmux v0.1.5 // indirect
 	github.com/spf13/pflag v1.0.6 // indirect
@@ -396,7 +395,6 @@ require (
 	k8s.io/component-base v0.31.1 // indirect
 	k8s.io/component-helpers v0.31.1 // indirect
 	k8s.io/kms v0.33.2 // indirect
-	k8s.io/kube-aggregator v0.31.1 // indirect
 	lukechampine.com/uint128 v1.3.0 // indirect
 	modernc.org/cc/v3 v3.41.0 // indirect
 	modernc.org/ccgo/v3 v3.17.0 // indirect
