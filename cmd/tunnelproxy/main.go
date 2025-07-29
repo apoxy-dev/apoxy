@@ -161,7 +161,7 @@ func main() {
 		mgr.GetClient(),
 		jwtValidator,
 		r,
-		tunnel.WithExternalAddr(extIPv4Prefix),
+		tunnel.WithExternalAddrs(extIPv4Prefix),
 		tunnel.WithLabelSelector(*tunnelNodeSelector),
 		tunnel.WithPublicAddr(*publicAddr),
 		tunnel.WithIPAMv4(tunnet.NewIPAMv4(ctx)),

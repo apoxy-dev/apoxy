@@ -283,6 +283,14 @@ func (r *NetlinkRouter) AddAddr(addr netip.Prefix, tun connection.Connection) er
 	return nil
 }
 
+// ListAddrs lists all addresses on the tunnel added previously via AddAddr.
+func (r *NetlinkRouter) ListAddrs() ([]netip.Prefix, error) {
+	return r.dmux.List()
+}
+
+// DelAddr removes a tunnel connection with the given address. The addr
+// is used by the multiplexer to route traffic to the correct tunnel based
+// on the destination IP of the incoming packet.
 func (r *NetlinkRouter) DelAddr(addr netip.Prefix) error {
 	if err := r.dmux.Del(addr); err != nil {
 		return fmt.Errorf("failed to remove address from multiplexer: %w", err)

@@ -52,7 +52,7 @@ type tunnelServerOptions struct {
 	ulaPrefix  netip.Prefix
 	certPath   string
 	keyPath    string
-	extPrefix  netip.Prefix
+	extAddrs   []netip.Prefix
 	selector   string
 	ipamv4     tunnet.IPAM
 }
@@ -64,6 +64,7 @@ func defaultServerOptions() *tunnelServerOptions {
 		ulaPrefix:  netip.MustParsePrefix("fd00::/64"),
 		certPath:   "/etc/apoxy/certs/tunnelproxy.crt",
 		keyPath:    "/etc/apoxy/certs/tunnelproxy.key",
+		extAddrs:   []netip.Prefix{},
 		selector:   "",
 		ipamv4:     tunnet.NewIPAMv4(context.Background()),
 	}
@@ -107,9 +108,9 @@ func WithKeyPath(path string) TunnelServerOption {
 
 // WithExternalAddr sets the external IPv6 prefix. This is the IPv6 prefix used to
 // send traffic through the tunnel.
-func WithExternalAddr(prefix netip.Prefix) TunnelServerOption {
+func WithExternalAddrs(addrs ...netip.Prefix) TunnelServerOption {
 	return func(o *tunnelServerOptions) {
-		o.extPrefix = prefix
+		o.extAddrs = addrs
 	}
 }
 
@@ -376,8 +377,9 @@ func (t *TunnelServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 		Name:        connID,
 		ConnectedAt: ptr.To(metav1.Now()),
 	}
-	if t.options.extPrefix.IsValid() {
-		agent.PrivateAddress = t.options.extPrefix.Addr().String()
+	// TODO(dilyevsky): Support multiple external addresses in the Status.
+	if len(t.options.extAddrs) > 0 && t.options.extAddrs[0].IsValid() {
+		agent.PrivateAddress = t.options.extAddrs[0].Addr().String()
 	}
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		upd := &corev1alpha.TunnelNode{}
@@ -572,11 +574,23 @@ func (t *TunnelServer) reconcile(ctx context.Context, request reconcile.Request)
 
 		log.Info("Client addresses assigned", "ipv4", conn.addrv4, "ipv6", conn.addrv6)
 
-		var advRoutes []netip.Prefix
-		if t.options.extPrefix.IsValid() {
-			advRoutes = append(advRoutes, t.options.extPrefix)
-		} else {
-			log.Info("WARNING: External IPv6 prefix not configured")
+		advRoutes, err := t.router.ListAddrs()
+		if err != nil {
+			log.Error(err, "Failed to list addresses")
+			metrics.TunnelConnectionFailures.WithLabelValues("address_list_failed").Inc()
+			return reconcile.Result{}, nil
+		}
+		for i, advRoute := range advRoutes {
+			if !advRoute.IsValid() {
+				log.Info("WARNING: route to be advertised is invalid", "route", advRoute.String())
+				continue
+			}
+			// We'll only advertise single-IP routes so extend the bitmask to max.
+			if advRoute.Addr().Is4() {
+				advRoutes[i] = netip.PrefixFrom(advRoute.Addr(), 32)
+			} else {
+				advRoutes[i] = netip.PrefixFrom(advRoute.Addr(), 128)
+			}
 		}
 		// If egress gateway is enabled, route 0.0.0.0/0 via the tunnel.
 		if conn.obj.Spec.EgressGateway != nil && conn.obj.Spec.EgressGateway.Enabled {

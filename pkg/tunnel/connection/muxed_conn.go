@@ -80,6 +80,16 @@ func (m *muxedConn) Add(addr netip.Prefix, conn Connection) error {
 	return nil
 }
 
+// List lists all connections in the multiplexer.
+func (m *muxedConn) List() ([]netip.Prefix, error) {
+	var prefixes []netip.Prefix
+	m.conns.ForEach(func(prefix netip.Prefix, value Connection) bool {
+		prefixes = append(prefixes, prefix)
+		return true
+	})
+	return prefixes, nil
+}
+
 // Del removes a connection from the multiplexer.
 func (m *muxedConn) Del(addr netip.Prefix) error {
 	// Has the connection already been closed?

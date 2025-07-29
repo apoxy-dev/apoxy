@@ -32,6 +32,9 @@ type Router interface {
 	// AddAddr adds a tun with an associated address to the router.
 	AddAddr(addr netip.Prefix, tun connection.Connection) error
 
+	// ListAddrs returns a list of all addresses currently managed by the router.
+	ListAddrs() ([]netip.Prefix, error)
+
 	// DelAddr removes a tun by its addr from the router.
 	DelAddr(addr netip.Prefix) error
 

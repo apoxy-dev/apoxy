@@ -119,7 +119,7 @@ func (r *NetstackRouter) Start(ctx context.Context) error {
 	return g.Wait()
 }
 
-// Add adds a dst route to the tunnel.
+// AddAddr adds a dst route to the tunnel.
 func (r *NetstackRouter) AddAddr(addr netip.Prefix, conn connection.Connection) error {
 	if err := r.tunDev.AddAddr(addr); err != nil {
 		return fmt.Errorf("failed to add address to TUN device: %w", err)
@@ -127,6 +127,12 @@ func (r *NetstackRouter) AddAddr(addr netip.Prefix, conn connection.Connection) 
 	return r.smux.Add(addr, conn)
 }
 
+// ListAddrs lists all addresses added to the tunnel.
+func (r *NetstackRouter) ListAddrs() ([]netip.Prefix, error) {
+	return r.tunDev.LocalAddresses()
+}
+
+// DelAddr removes a dst route from the tunnel.
 func (r *NetstackRouter) DelAddr(addr netip.Prefix) error {
 	if err := r.tunDev.DelAddr(addr); err != nil {
 		return fmt.Errorf("failed to remove address from TUN device: %w", err)
