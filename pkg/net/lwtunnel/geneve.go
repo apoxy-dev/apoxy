@@ -2,6 +2,7 @@ package lwtunnel
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -101,31 +102,33 @@ func (r *Geneve) hwAddr(addr netip.Addr) net.HardwareAddr {
 func (r *Geneve) SetUp(ctx context.Context, privAddr netip.Addr) error {
 	log := clog.FromContext(ctx)
 
-	link, err := netlink.LinkByName(r.opts.dev)
-	if err == nil {
-		if err := netlink.LinkSetUp(link); err != nil {
-			return fmt.Errorf("failed to bring up Geneve interface: %w", err)
-		}
-		return nil
-	}
-
-	log.Info("Creating Geneve interface", "dev", r.opts.dev)
-
 	// Create Geneve interface without a specific remote -
 	// this allows us to route to multiple remotes using Linux's
 	// lwtunnel infrastructure (https://github.com/torvalds/linux/blob/e347810e84094078d155663acbf36d82efe91f95/net/core/lwtunnel.c).
+	hwAddr := r.hwAddr(privAddr)
 	geneve := &netlink.Geneve{
 		LinkAttrs: netlink.LinkAttrs{
 			Name:         r.opts.dev,
 			MTU:          r.opts.mtu,
-			HardwareAddr: r.hwAddr(privAddr),
+			HardwareAddr: hwAddr,
 		},
 		// No ID and Remote set - this creates an "external" Geneve device.
 		FlowBased: true, // external
 	}
 
-	if err := netlink.LinkAdd(geneve); err != nil {
-		return fmt.Errorf("failed to add Geneve interface: %w", err)
+	log.Info("Setting up Geneve interface",
+		"dev", r.opts.dev,
+		"mtu", r.opts.mtu,
+		"hwaddr", hwAddr.String(),
+	)
+
+	_, err := netlink.LinkByName(r.opts.dev)
+	if errors.As(err, &netlink.LinkNotFoundError{}) {
+		if err := netlink.LinkAdd(geneve); err != nil {
+			return fmt.Errorf("failed to add Geneve interface: %w", err)
+		}
+	} else if err != nil {
+		return fmt.Errorf("failed to get Geneve interface: %w", err)
 	}
 
 	if err := netlink.LinkSetUp(geneve); err != nil {
@@ -143,15 +146,14 @@ func (r *Geneve) SetUp(ctx context.Context, privAddr netip.Addr) error {
 func (r *Geneve) SetAddr(ctx context.Context, ula netip.Addr) error {
 	log := clog.FromContext(ctx)
 
+	log.Info("Setting up Geneve link address", "dev", r.opts.dev, "addr", ula)
+
 	link, err := netlink.LinkByName(r.opts.dev)
-	if err == nil {
-		if err := netlink.LinkSetUp(link); err != nil {
-			return fmt.Errorf("failed to bring up Geneve interface: %w", err)
-		}
-		return nil
+	if err != nil {
+		return fmt.Errorf("failed to get Geneve interface: %w", err)
 	}
 
-	addr, err := netlink.ParseAddr(ula.String())
+	addr, err := netlink.ParseAddr(ula.String() + "/128")
 	if err != nil {
 		return fmt.Errorf("failed to parse CIDR: %w", err)
 	}
