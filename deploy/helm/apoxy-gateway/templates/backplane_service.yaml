@@ -19,7 +19,7 @@ spec:
   {{- range . }}
     - name: {{ .name }}
       port: {{ .port }}
-      targetPort: {{ if lt .port 1024 }}{{ add .port 10000 }}{{ else }}{{ .port }}{{ end }}
+      targetPort: {{ .port }}
       protocol: {{ .protocol }}
   {{- end }}
   {{- end }}
