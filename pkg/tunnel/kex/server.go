@@ -3,97 +3,109 @@ package kex
 import (
 	"context"
 	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/netip"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
+	"github.com/apoxy-dev/icx"
+	"github.com/julienschmidt/httprouter"
+	"gvisor.dev/gvisor/pkg/tcpip"
+
 	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/token"
 )
 
-const (
-	maxVNI = 1 << 24 // 24-bit space
-	// Default MTU for tunnels
-	// Physical MTU - 40 (IPv6) - 8 (UDP) - 32 (Geneve+opts) - 16 (AES-GCM Tag)
-	mtu = 1404
-	// Keys expire after 24h no matter how many packets are sent.
-	// This is to preserve forward secrecy.
-	keyExpiry = 24 * time.Hour
-)
-
-type clientSession struct {
-	vni       uint32
-	addresses []netip.Prefix
-	keyEpoch  int
+type virtualNetwork struct {
+	vni                 uint32
+	addresses           []netip.Prefix
+	currentKeyEpoch     int
+	currentKeyExpiresAt time.Time
 }
 
-// TODO: client session timeout management, cleanup, etc.
-// TODO: persistence between restarts, bboltdb?
-// TODO: securely persist keys etc
+// TODO: persistence between restarts, bboltdb, distributed? (prob. backed by the kube API)
 type Server struct {
-	vniPool        *VNIPool
-	ipam           tunnet.IPAM
-	sessionMu      sync.Mutex
-	clientSessions map[string]clientSession
+	handler     *icx.Handler
+	validator   token.JWTValidator
+	vniPool     *VNIPool    // todo: persist this?
+	ipam        tunnet.IPAM // todo: persist this?
+	networks    sync.Map
+	keyLifespan time.Duration
 }
 
-func NewServer(ctx context.Context) *Server {
+func NewServer(ctx context.Context, handler *icx.Handler, validator token.JWTValidator, keyLifespan time.Duration) *Server {
 	return &Server{
-		vniPool:        NewVNIPool(maxVNI),
-		ipam:           tunnet.NewIPAMv4(ctx),
-		clientSessions: make(map[string]clientSession),
+		handler:     handler,
+		validator:   validator,
+		vniPool:     NewVNIPool(),
+		ipam:        tunnet.NewIPAMv4(ctx),
+		keyLifespan: keyLifespan,
 	}
 }
 
-func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	path := strings.Trim(r.URL.Path, "/")
-	parts := strings.Split(path, "/")
+// Start any necessary background tasks, e.g., cleanup of expired virtual networks.
+func (s *Server) Start(ctx context.Context) error {
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
 
-	switch {
-	// POST /network
-	case r.Method == http.MethodPost && len(parts) == 1 && parts[0] == "network":
-		s.handleConnect(w, r)
-		return
-
-	// DELETE /network/{vni}
-	case r.Method == http.MethodDelete && len(parts) == 2 && parts[0] == "network":
-		vni, err := strconv.Atoi(parts[1])
-		if err != nil {
-			http.Error(w, "Invalid VNI", http.StatusBadRequest)
-			return
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				s.CleanupExpiredNetworks()
+			}
 		}
-		s.handleDisconnect(w, r, uint32(vni))
-		return
+	}()
 
-	// POST /network/{vni}/renewkeys
-	case r.Method == http.MethodPost && len(parts) == 3 && parts[0] == "network" && parts[2] == "renewkeys":
-		vni, err := strconv.Atoi(parts[1])
-		if err != nil {
-			http.Error(w, "Invalid VNI", http.StatusBadRequest)
-			return
-		}
-		s.handleRenewKeys(w, r, uint32(vni))
-		return
-
-	default:
-		http.NotFound(w, r)
-	}
+	return nil
 }
 
-func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
-		return
-	}
+func (s *Server) Routes() http.Handler {
+	r := httprouter.New()
 
-	clientID, ok := checkAuth(r)
-	if !ok {
+	r.POST("/network", s.withAuth(s.handleConnect))
+	r.DELETE("/network/:vni", s.withAuth(s.handleDisconnect))
+	r.PUT("/network/:vni/renewkeys", s.withAuth(s.handleRenewKeys))
+
+	return r
+}
+
+func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
+	clientID := ps.ByName("clientID")
+	if clientID == "" {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
+	}
+
+	var req ConnectRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	remoteAddrStr := req.Address
+	if remoteAddrStr == "" {
+		// Use the remote address of the request if no address is provided.
+		remoteAddrStr = r.RemoteAddr
+	}
+
+	remoteAddrPort, err := netip.ParseAddrPort(remoteAddrStr)
+	if err != nil {
+		http.Error(w, "Invalid remote address format", http.StatusBadRequest)
+		return
+	}
+
+	var remoteAddr tcpip.FullAddress
+	if remoteAddrPort.Addr().Is4() {
+		remoteAddr = tcpip.FullAddress{Addr: tcpip.AddrFrom4(remoteAddrPort.Addr().As4()), Port: remoteAddrPort.Port()}
+	} else if remoteAddrPort.Addr().Is6() {
+		remoteAddr = tcpip.FullAddress{Addr: tcpip.AddrFrom16(remoteAddrPort.Addr().As16()), Port: remoteAddrPort.Port()}
 	}
 
 	vni, err := s.vniPool.Allocate()
@@ -109,95 +121,50 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.sessionMu.Lock()
-	s.clientSessions[clientID] = clientSession{
-		vni:       vni,
-		addresses: []netip.Prefix{addr},
-		keyEpoch:  1,
+	sendKey, err := randomKey()
+	if err != nil {
+		http.Error(w, "Failed to generate key", http.StatusInternalServerError)
+		return
 	}
-	s.sessionMu.Unlock()
+
+	recvKey, err := randomKey()
+	if err != nil {
+		http.Error(w, "Failed to generate key", http.StatusInternalServerError)
+		return
+	}
+
+	keys := Keys{
+		Epoch:     1,
+		Send:      sendKey,
+		Recv:      recvKey,
+		ExpiresAt: time.Now().Add(s.keyLifespan),
+	}
+
+	entryRaw, _ := s.networks.LoadOrStore(clientID, &sync.Map{})
+	entry := entryRaw.(*sync.Map)
+
+	entry.Store(vni, virtualNetwork{
+		vni:                 vni,
+		addresses:           []netip.Prefix{addr},
+		currentKeyEpoch:     keys.Epoch,
+		currentKeyExpiresAt: keys.ExpiresAt,
+	})
 
 	resp := ConnectResponse{
 		NetworkID: int(vni),
-		Keys: Keys{
-			Epoch:     1,
-			Send:      randomKey(),
-			Recv:      randomKey(),
-			ExpiresAt: time.Now().Add(keyExpiry),
-		},
-		MTU:       mtu,
+		Keys:      keys,
+		MTU:       icx.MTU(1500),
 		Addresses: []string{addr.String()},
 		Routes:    []Route{{Prefix: tunnet.IPv4CidrPrefix}},
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
-}
-
-func (s *Server) handleDisconnect(w http.ResponseWriter, r *http.Request, vni uint32) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+	if err := s.handler.AddVirtualNetwork(uint(vni), &remoteAddr, []netip.Prefix{addr}, uint32(keys.Epoch),
+		keys.Send, keys.Recv, keys.ExpiresAt); err != nil {
+		http.Error(w, "Failed to add virtual network", http.StatusInternalServerError)
+		entry.Delete(vni)
+		s.vniPool.Free(vni)
+		_ = s.ipam.Release(addr)
 		return
-	}
-
-	clientID, ok := checkAuth(r)
-	if !ok {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		return
-	}
-
-	s.sessionMu.Lock()
-	session, ok := s.clientSessions[clientID]
-	if !ok || session.vni != vni {
-		s.sessionMu.Unlock()
-		http.Error(w, "Invalid or unauthorized NetworkID", http.StatusForbidden)
-		return
-	}
-	delete(s.clientSessions, clientID)
-	s.sessionMu.Unlock()
-
-	s.vniPool.Free(session.vni)
-	for _, addr := range session.addresses {
-		s.ipam.Release(addr)
-	}
-
-	w.WriteHeader(http.StatusNoContent)
-}
-
-func (s *Server) handleRenewKeys(w http.ResponseWriter, r *http.Request, vni uint32) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	clientID, ok := checkAuth(r)
-	if !ok {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		return
-	}
-
-	s.sessionMu.Lock()
-	session, ok := s.clientSessions[clientID]
-	if !ok || session.vni != vni {
-		s.sessionMu.Unlock()
-		http.Error(w, "Invalid or unauthorized NetworkID", http.StatusForbidden)
-		return
-	}
-
-	// Increment the epoch and update the session
-	session.keyEpoch++
-	s.clientSessions[clientID] = session
-	s.sessionMu.Unlock()
-
-	newKeys := Keys{
-		Epoch:     session.keyEpoch,
-		Send:      randomKey(),
-		Recv:      randomKey(),
-		ExpiresAt: time.Now().Add(keyExpiry),
-	}
-
-	resp := RenewKeysResponse{
-		Keys: newKeys,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -207,13 +174,178 @@ func (s *Server) handleRenewKeys(w http.ResponseWriter, r *http.Request, vni uin
 	}
 }
 
-func randomKey() string {
-	key := make([]byte, 16)
-	rand.Read(key)
-	return base64.StdEncoding.EncodeToString(key)
+func (s *Server) handleDisconnect(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
+	clientID := ps.ByName("clientID")
+	if clientID == "" {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	vniStr := ps.ByName("vni")
+	vni, err := strconv.ParseUint(vniStr, 10, 32)
+	if err != nil {
+		http.Error(w, "Invalid NetworkID", http.StatusBadRequest)
+		return
+	}
+
+	entryRaw, ok := s.networks.Load(clientID)
+	if !ok {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	entry := entryRaw.(*sync.Map)
+
+	virtNetRaw, ok := entry.Load(uint32(vni))
+	if !ok {
+		http.Error(w, "Invalid or unauthorized NetworkID", http.StatusForbidden)
+		return
+	}
+	virtNet := virtNetRaw.(virtualNetwork)
+
+	entry.Delete(uint32(vni))
+
+	s.vniPool.Free(virtNet.vni)
+	for _, addr := range virtNet.addresses {
+		_ = s.ipam.Release(addr)
+	}
+
+	if err := s.handler.RemoveVirtualNetwork(uint(vni)); err != nil {
+		http.Error(w, "Failed to remove virtual network", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
-func checkAuth(_ *http.Request) (string, bool) {
-	// Placeholder for actual authentication logic, assume a JWT bearer token with some fields.
-	return "client-id", true
+func (s *Server) handleRenewKeys(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
+	clientID := ps.ByName("clientID")
+	if clientID == "" {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	vniStr := ps.ByName("vni")
+	vni, err := strconv.ParseUint(vniStr, 10, 32)
+	if err != nil {
+		http.Error(w, "Invalid NetworkID", http.StatusBadRequest)
+		return
+	}
+
+	sendKey, err := randomKey()
+	if err != nil {
+		http.Error(w, "Failed to generate key", http.StatusInternalServerError)
+		return
+	}
+
+	recvKey, err := randomKey()
+	if err != nil {
+		http.Error(w, "Failed to generate key", http.StatusInternalServerError)
+		return
+	}
+
+	entryRaw, ok := s.networks.Load(clientID)
+	if !ok {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	entry := entryRaw.(*sync.Map)
+
+	virtNetRaw, ok := entry.Load(uint32(vni))
+	if !ok {
+		http.Error(w, "Invalid or unauthorized NetworkID", http.StatusForbidden)
+		return
+	}
+	virtNet := virtNetRaw.(virtualNetwork)
+
+	if !ok {
+		http.Error(w, "Invalid or unauthorized NetworkID", http.StatusForbidden)
+		return
+	}
+
+	virtNet.currentKeyEpoch++
+	virtNet.currentKeyExpiresAt = time.Now().Add(s.keyLifespan)
+	entry.Store(uint32(vni), virtNet)
+
+	keys := Keys{
+		Epoch:     virtNet.currentKeyEpoch,
+		Send:      sendKey,
+		Recv:      recvKey,
+		ExpiresAt: virtNet.currentKeyExpiresAt,
+	}
+
+	resp := RenewKeysResponse{
+		Keys: keys,
+	}
+
+	if err := s.handler.UpdateVirtualNetworkKey(uint(vni), uint32(keys.Epoch),
+		keys.Send, keys.Recv, keys.ExpiresAt); err != nil {
+		http.Error(w, "Failed to update virtual network keys", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
+		return
+	}
+}
+
+// CleanupExpiredNetworks removes networks that have expired keys.
+// This is visible for testing purposes.
+func (s *Server) CleanupExpiredNetworks() {
+	now := time.Now()
+	expirationThreshold := now.Add(-2 * s.keyLifespan)
+
+	s.networks.Range(func(key, value any) bool {
+		entry := value.(*sync.Map)
+
+		entry.Range(func(k, v any) bool {
+			vni := k.(uint32)
+			virtNet := v.(virtualNetwork)
+			if virtNet.currentKeyExpiresAt.Before(expirationThreshold) {
+				entry.Delete(vni)
+				s.vniPool.Free(virtNet.vni)
+				for _, addr := range virtNet.addresses {
+					_ = s.ipam.Release(addr)
+				}
+			}
+			return true
+		})
+
+		return true
+	})
+}
+
+func (s *Server) withAuth(next httprouter.Handle) httprouter.Handle {
+	return func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
+		authHeader := r.Header.Get("Authorization")
+		const prefix = "Bearer "
+		if authHeader == "" || len(authHeader) <= len(prefix) || authHeader[:len(prefix)] != prefix {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		tokenStr := authHeader[len(prefix):]
+		claims, err := s.validator.Validate(tokenStr)
+		if err != nil {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		sub, err := claims.GetSubject()
+		if err != nil || sub == "" {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		ps = append(ps, httprouter.Param{Key: "clientID", Value: sub})
+
+		next(w, r, ps)
+	}
+}
+
+func randomKey() (Key, error) {
+	var key Key
+	_, err := rand.Read(key[:])
+	return key, err
 }
