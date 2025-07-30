@@ -71,18 +71,25 @@ backplane:
 
   service:
     type: ClusterIP
-    externalPort: 443
-    internalPort: 80
     annotations: {}
     externalTrafficPolicy: Cluster
     sourceRanges: []
 
   proxy:
     name: default
-    externalPort: 10443
-    internalPort: 10080
     drainTimeoutSeconds: 30
-    extraListeners: []
+    listeners: [
+      {
+        name: "https",
+        port: 443,
+        protocol: "TCP",
+      },
+      {
+        name: "http",
+        port: 80,
+        protocol: "TCP",
+      }
+    ]
 
   # Envoy overload manager configuration
   overload:
@@ -114,7 +121,7 @@ backplane:
     rollingUpdate:
       maxUnavailable: 0
       maxSurge: 1
-        
+
   controllerPodMonitor:
     enabled: false
     # -- Interval at which metrics should be scraped
@@ -125,7 +132,7 @@ backplane:
     relabelings: []
     # -- Metric relabel configurations
     metricRelabelings: []
-    
+
   envoyPodMonitor:
     enabled: false
     # -- Interval at which metrics should be scraped

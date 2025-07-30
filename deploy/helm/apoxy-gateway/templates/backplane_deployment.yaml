@@ -70,15 +70,16 @@ spec:
             {{- toYaml . | nindent 12 }}
           {{- end }}
           ports:
-            - name: external
-              containerPort: {{ .Values.backplane.proxy.externalPort }}
-              protocol: TCP
-            - name: internal
-              containerPort: {{ .Values.backplane.proxy.internalPort }}
-              protocol: TCP
             - name: metrics
               containerPort: 8888
               protocol: TCP
+          {{- with .Values.backplane.proxy.listeners }}
+          {{- range . }}
+            - name: {{ .name }}
+              containerPort: {{ .port }}
+              protocol: {{ .protocol }}
+          {{- end }}
+          {{- end }}
           livenessProbe:
             httpGet:
               path: /healthz

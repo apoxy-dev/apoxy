@@ -15,34 +15,12 @@ spec:
   {{- end }}
   externalTrafficPolicy: {{ .Values.backplane.service.externalTrafficPolicy }}
   ports:
-    - port: {{ .Values.backplane.service.externalPort }}
-      targetPort: external
-      protocol: TCP
-      name: external
-  selector:
-    {{- include "apoxy-gateway.selectorLabels" . | nindent 4 }}
-    app.kubernetes.io/component: backplane
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: {{ include "apoxy-gateway.fullname" . }}-internal
-  namespace: {{ include "apoxy-gateway.namespace" . }}
-  labels:
-    {{- include "apoxy-gateway.labels" . | nindent 4 }}
-spec:
-  type: ClusterIP
-  ports:
-    - port: {{ .Values.backplane.service.internalPort }}
-      targetPort: internal
-      protocol: TCP
-      name: internal
-  {{- with .Values.backplane.proxy.extraListeners }}
+  {{- with .Values.backplane.proxy.listeners }}
   {{- range . }}
-    - port: {{ .port }}
+    - name: {{ .name }}
+      port: {{ .port }}
       targetPort: {{ .port }}
-      protocol: TCP
-      name: {{ .name }}
+      protocol: {{ .protocol }}
   {{- end }}
   {{- end }}
   selector:
