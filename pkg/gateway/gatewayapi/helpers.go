@@ -235,13 +235,6 @@ func GatewayClassOwnerLabel(name string) map[string]string {
 // servicePortToContainerPort translates a service port into an ephemeral
 // container port.
 func servicePortToContainerPort(servicePort int32) int32 {
-	// If the service port is a privileged port (1-1023)
-	// add a constant to the value converting it into an ephemeral port.
-	// This allows the container to bind to the port without needing a
-	// CAP_NET_BIND_SERVICE capability.
-	if servicePort < minEphemeralPort {
-		return servicePort + wellKnownPortShift
-	}
 	return servicePort
 }
 

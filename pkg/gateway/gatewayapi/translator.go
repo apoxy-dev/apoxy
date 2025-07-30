@@ -45,12 +45,6 @@ const (
 	// OwningGatewayNameLabel is the owner reference label used for managed infra.
 	// The value should be the name of the accepted Envoy Gateway.
 	OwningGatewayNameLabel = "gateway.envoyproxy.io/owning-gateway-name"
-
-	// minEphemeralPort is the first port in the ephemeral port range.
-	minEphemeralPort = 1024
-	// wellKnownPortShift is the constant added to the well known port (1-1023)
-	// to convert it into an ephemeral port.
-	wellKnownPortShift = 10000
 )
 
 var _ TranslatorManager = (*Translator)(nil)
