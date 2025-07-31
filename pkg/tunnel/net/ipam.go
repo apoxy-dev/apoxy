@@ -20,7 +20,7 @@ type IPAM interface {
 }
 
 const (
-	ipv4CidrPrefix = "100.64.0.0/10"
+	IPv4CidrPrefix = "100.64.0.0/10"
 )
 
 type ipamv4 struct {
@@ -40,7 +40,7 @@ func NewIPAMv4(ctx context.Context) IPAM {
 	ipam := goipam.New(ctx)
 	return &ipamv4{
 		ipam:   ipam,
-		prefix: mustParsePrefix(ctx, ipam, ipv4CidrPrefix),
+		prefix: mustParsePrefix(ctx, ipam, IPv4CidrPrefix),
 	}
 }
 

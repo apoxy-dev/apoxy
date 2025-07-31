@@ -33,18 +33,13 @@ func TestInMemoryValidator(t *testing.T) {
 		authToken, _, err := issuer.IssueToken(subject, time.Minute*5)
 		require.NoError(t, err)
 
-		_, err = validator.Validate(authToken, subject)
-		require.NoError(t, err)
-	})
-
-	t.Run("Different Subject", func(t *testing.T) {
-		subject := uuid.New().String()
-
-		authToken, _, err := issuer.IssueToken(subject, time.Minute*5)
+		claims, err := validator.Validate(authToken)
 		require.NoError(t, err)
 
-		_, err = validator.Validate(authToken, "a-different-subject")
-		require.Error(t, err)
+		sub, err := claims.GetSubject()
+		require.NoError(t, err)
+
+		require.Equal(t, subject, sub)
 	})
 
 	t.Run("Expired", func(t *testing.T) {
@@ -58,7 +53,7 @@ func TestInMemoryValidator(t *testing.T) {
 		}).SignedString(privateKey)
 		require.NoError(t, err)
 
-		_, err = validator.Validate(authToken, subject)
+		_, err = validator.Validate(authToken)
 		require.Error(t, err)
 	})
 }
@@ -85,7 +80,7 @@ func TestRemoteValidator(t *testing.T) {
 		authToken, _, err := issuer.IssueToken(subject, time.Minute*5)
 		require.NoError(t, err)
 
-		_, err = validator.Validate(authToken, subject)
+		_, err = validator.Validate(authToken)
 		require.NoError(t, err)
 	})
 }
