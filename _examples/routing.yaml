@@ -1,0 +1,64 @@
+apiVersion: gateway.apoxy.dev/v1
+kind: GatewayClass
+metadata:
+  name: apoxy
+spec:
+  controllerName: gateway.apoxy.dev/gatewayclass-controller
+---
+apiVersion: controllers.apoxy.dev/v1alpha1
+kind: Proxy
+metadata:
+  name: default
+spec:
+  provider: unmanaged
+  listeners:
+    - protocol: TCP
+      port: 80
+---
+apiVersion: gateway.apoxy.dev/v1
+kind: Gateway
+metadata:
+  name: default
+spec:
+  gatewayClassName: apoxy
+  infrastructure:
+    parametersRef:
+      kind: Proxy
+      name: default
+  listeners:
+    - name: internal
+      protocol: HTTP
+      port: 80
+---
+apiVersion: core.apoxy.dev/v1alpha
+kind: TunnelNode
+metadata:
+  name: example-cluster
+spec:
+  egressGateway:
+    enabled: true
+---
+apiVersion: core.apoxy.dev/v1alpha
+kind: Backend
+metadata:
+  name: example-backend
+spec:
+  endpoints:
+    - fqdn: example-service.example-cluster.tun.apoxy.net
+---
+apiVersion: gateway.apoxy.dev/v1
+kind: HTTPRoute
+metadata:
+  name: example-route
+spec:
+  parentRefs:
+    - name: default 
+      kind: Gateway
+      port: 80
+  hostnames:
+    - 'example.trainy.us'
+  rules:
+    - backendRefs:
+        - kind: Backend
+          name: example-backend
+          port: 80

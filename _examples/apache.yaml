@@ -5,6 +5,632 @@ metadata:
   labels:
     app: apache-httpd
 data:
+  setup.html: |
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Cluster Setup</title>
+        <link href="https://fonts.googleapis.com/css2?family=Ubuntu+Mono:wght@400;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/default.min.css">
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js"></script>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/languages/yaml.min.js"></script>
+        <style>
+            * {
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }
+            
+            body {
+                font-family: 'Inter', sans-serif;
+                background-color: #fff;
+                color: #333;
+                line-height: 1.6;
+            }
+
+            .header {
+                background-color: #f5f5f5;
+                padding: 1rem 2rem;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                border-bottom: 1px solid #e9ecef;
+            }
+            
+            .header-logo img {
+                height: 32px;
+                top: 6px;
+                position: relative;
+            }
+            
+            .header-links {
+                display: flex;
+                gap: 2rem;
+            }
+            
+            .header-links a {
+                color: #3D91DC;
+                text-decoration: none;
+                font-family: 'Inter', sans-serif;
+                font-weight: 500;
+                transition: color 0.2s ease;
+            }
+            
+            .header-links a:hover {
+                color: black;
+                text-decoration: underline;
+            }
+            
+            .container {
+                max-width: 1400px;
+                margin: 0 auto;
+                background: white;
+            }
+            
+            .row {
+                display: flex;
+                width: 100%;
+                border-right: 1px solid #e9ecef;
+            }
+            
+            .code {
+                flex: 0 0 40%;
+                padding: 2rem;
+                background-color: white;
+                border-right: 1px solid #e9ecef;
+            }
+            
+            .code pre {
+                margin: 0;
+            }
+            
+            .code code {
+                font-family: 'Ubuntu Mono', monospace;
+                font-size: 14px;
+                background-color: transparent;
+                padding: 1.5rem;
+                display: block;
+                white-space: pre;
+                overflow-x: auto;
+            }
+            
+            .explanation {
+                flex: 1;
+                padding: 2rem;
+                background-color: white;
+            }
+            
+            .explanation p {
+                font-family: 'Inter', sans-serif;
+                font-size: 15px;
+                margin-bottom: 0.8rem;
+                color: #4a5568;
+            }
+            
+            @media (max-width: 768px) {
+                .header {
+                    flex-direction: column;
+                    gap: 1rem;
+                    text-align: center;
+                }
+                .row {
+                    flex-direction: column;
+                }
+                
+                .code {
+                    flex: none;
+                    border-right: none;
+                }
+            }
+        </style>
+    </head>
+    <body>
+        <div class="header">
+          <div class="header-logo">
+              <img src="https://cdn.prod.website-files.com/66905e742cab830340b8fa86/669130f909a1e6ef9950c4d6_apoxy.svg" alt="Apoxy Logo">
+          </div>
+          <div class="header-links">
+              <a href="/setup.html">Cluster Setup</a>
+              <a href="/route.html">Route Traffic</a>
+          </div>
+        </div>
+        <div class="container">
+              <div class="row">
+                <div class="code">
+                    <pre><code class="language-yaml">apiVersion: v1
+    kind: Secret
+    metadata:
+      name: trainy-kubeconfig
+      namespace: default
+    type: Opaque
+    data:
+      kubeconfig.yaml: <SECRET-YOU-ARE-NOT-GOING-TO-SEE-HERE>
+    ---</code></pre>
+                </div>
+                <div class="explanation">
+                    <p>This Secret stores the kubeconfig file that authenticates Trainy to the Apoxy cloud platform. The kubeconfig contains credentials and cluster information needed for the Apoxy components to communicate with the control plane.</p>
+                    <p>Note: This authentication method may change in the near future as Apoxy evolves their authentication mechanisms.</p>
+                </div>
+            </div>
+            
+            <div class="row">
+                <div class="code">
+                    <pre><code class="language-yaml">apiVersion: v1
+    kind: ServiceAccount
+    metadata:
+      name: kube-controller
+      namespace: default
+    ---</code></pre>
+                </div>
+                <div class="explanation">
+                    <p>The ServiceAccount provides an identity for the kube-controller pods to run under. This account will be bound to specific permissions needed for the controller to function properly.</p>
+                    <p>ServiceAccounts are the standard Kubernetes way to provide workloads with authentication credentials and authorization context.</p>
+                </div>
+            </div>
+            
+            <div class="row">
+                <div class="code">
+                    <pre><code class="language-yaml">apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRole
+    metadata:
+      name: kube-controller-role
+    rules:
+    - apiGroups: ["apiregistration.k8s.io"]
+      resources: ["apiservices"]
+      verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    ---</code></pre>
+                </div>
+                <div class="explanation">
+                    <p>This ClusterRole defines the permissions needed for the kube-controller to manage APIServices. These permissions enable the controller to register custom API extensions through Kubernetes API aggregation.</p>
+                    <p>The controller uses these permissions to make Apoxy cloud resources accessible through the local cluster's API server, allowing cluster operators to view and manage Apoxy objects using standard kubectl commands.</p>
+                </div>
+            </div>
+            
+            <div class="row">
+                <div class="code">
+                    <pre><code class="language-yaml">apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRoleBinding
+    metadata:
+      name: kube-controller-role-binding
+    roleRef:
+      apiGroup: rbac.authorization.k8s.io
+      kind: ClusterRole
+      name: kube-controller-role
+    subjects:
+    - kind: ServiceAccount
+      name: kube-controller
+      namespace: default
+    ---</code></pre>
+                </div>
+                <div class="explanation">
+                    <p>The ClusterRoleBinding connects the kube-controller ServiceAccount to the ClusterRole, granting the service account the necessary permissions to manage APIServices across the entire cluster.</p>
+                    <p>This binding enables the kube-controller deployment to perform API aggregation operations needed to integrate Apoxy cloud resources with the local Kubernetes API.</p>
+                </div>
+            </div>
+            
+            <div class="row">
+                <div class="code">
+                    <pre><code class="language-yaml">apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: kube-controller
+      namespace: default
+      labels:
+        app: kube-controller
+    spec:
+      replicas: 1
+      selector:
+        matchLabels:
+          app: kube-controller
+      template:
+        metadata:
+          labels:
+            app: kube-controller
+        spec:
+          containers:
+          - name: kube-controller
+            image: apoxy/kube-controller:v0.11.6
+            args:
+            - --dev
+            - --project_id=7ce458d7-e20c-443c-aeeb-dbc5663c1240
+            - --kubeconfig_path=/data/kubeconfig.yaml
+            env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            volumeMounts:
+            - name: kubeconfig-volume
+              mountPath: /data
+              readOnly: true
+          volumes:
+          - name: kubeconfig-volume
+            secret:
+              secretName: trainy-kubeconfig
+              items:
+              - key: kubeconfig.yaml
+                path: kubeconfig.yaml
+                mode: 0600
+          serviceAccountName: kube-controller
+    ---</code></pre>
+                </div>
+                <div class="explanation">
+                    <p>This Deployment runs the Apoxy kube-controller, which enables management of Apoxy cloud resources through the local cluster's control plane. It uses Kubernetes API aggregation to make cloud resources accessible via kubectl.</p>
+                    <p>The controller runs with Trainy's project ID (7ce458d7-e20c-443c-aeeb-dbc5663c1240) - note that this may need to be updated if the project changes. The --dev flag enables maximum logging for debugging purposes and can be removed once everything runs smoothly.</p>
+                    <p>The kubeconfig secret is mounted for authentication to the Apoxy cloud platform, and the ServiceAccount provides the necessary cluster permissions for API aggregation.</p>
+                </div>
+            </div>
+            
+            <div class="row">
+                <div class="code">
+                    <pre><code class="language-yaml">apiVersion: v1
+    kind: Service
+    metadata:
+      name: kube-controller
+      namespace: default
+      labels:
+        app: kube-controller
+    spec:
+      selector:
+        app: kube-controller
+      ports:
+      - name: http
+        protocol: TCP
+        port: 8443
+        targetPort: 8443
+    ---</code></pre>
+                </div>
+                <div class="explanation">
+                    <p>This Service exposes the kube-controller on port 8443, which is used for the API aggregation server. This port handles the proxying of requests for Apoxy resources from the Kubernetes API server to the controller.</p>
+                    <p>The service enables the Kubernetes API server to communicate with the kube-controller to serve aggregated API requests for Apoxy cloud resources.</p>
+                </div>
+            </div>
+            
+            <div class="row">
+                <div class="code">
+                    <pre><code class="language-yaml">apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: apoxy-config
+      namespace: default
+    data:
+      config.yaml: |
+        apiVersion: config.apoxy.dev/v1alpha1
+        kind: Config
+        currentProject: 7ce458d7-e20c-443c-aeeb-dbc5663c1240
+        projects:
+        - id: 7ce458d7-e20c-443c-aeeb-dbc5663c1240
+          kubernetesConfig:
+            kubeconfigPath: /root/kubeconfig.yaml
+        tunnel:
+          mode: userspace
+    ---</code></pre>
+                </div>
+                <div class="explanation">
+                    <p>This ConfigMap contains the Apoxy configuration file that specifies project settings and tunnel configuration. It sets Trainy's project as the current project and configures the tunnel to run in userspace mode.</p>
+                    <p>Userspace mode provides quick and easy setup for the tunnel functionality. A high-performance kernel mode is currently in development for production workloads requiring maximum throughput.</p>
+                </div>
+            </div>
+            
+            <div class="row">
+                <div class="code">
+                    <pre><code class="language-yaml">apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: apoxy
+      namespace: default
+      labels:
+        app: apoxy
+    spec:
+      replicas: 1
+      selector:
+        matchLabels:
+          app: apoxy
+      template:
+        metadata:
+          labels:
+            app: apoxy
+        spec:
+          containers:
+          - name: apoxy
+            image: apoxy/apoxy:v0.11.6
+            command: ["apoxy", "tunnel", "run", "example-cluster", "--insecure-skip-verify"]
+            volumeMounts:
+            - name: kubeconfig-volume
+              mountPath: /root/kubeconfig.yaml
+              subPath: kubeconfig.yaml
+            - name: apoxy-config-volume
+              mountPath: /root/.apoxy/config.yaml
+              subPath: config.yaml
+          volumes:
+          - name: kubeconfig-volume
+            secret:
+              secretName: trainy-kubeconfig
+          - name: apoxy-config-volume
+            configMap:
+              name: apoxy-config
+    ---</code></pre>
+                </div>
+                <div class="explanation">
+                    <p>This Deployment runs the actual Apoxy tunnel that enables traffic routing into the cluster. Unlike the kube-controller which handles API aggregation, this component establishes the secure tunnel connection to the Apoxy cloud.</p>
+                    <p>The tunnel runs the "example-cluster" configuration with --insecure-skip-verify to disable TLS certificate validation while maintaining encrypted communication. Both the kubeconfig for authentication and the Apoxy configuration are mounted as volumes.</p>
+                    <p>This tunnel deployment makes services in the cluster accessible via the pattern: service.example-cluster.tun.apoxy.net</p>
+                </div>
+            </div>
+        </div>
+        <script>
+            document.addEventListener('DOMContentLoaded', function() {
+                hljs.highlightAll();
+            });
+        </script>
+    </body>
+    </html>
+
+  route.html: |
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Route Traffic</title>
+        <link href="https://fonts.googleapis.com/css2?family=Ubuntu+Mono:wght@400;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/default.min.css">
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js"></script>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/languages/yaml.min.js"></script>
+        <style>
+            * {
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }
+            
+            body {
+                font-family: 'Inter', sans-serif;
+                background-color: #fff;
+                color: #333;
+                line-height: 1.6;
+            }
+
+            .header {
+                background-color: #f5f5f5;
+                padding: 1rem 2rem;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                border-bottom: 1px solid #e9ecef;
+            }
+            
+            .header-logo img {
+                height: 32px;
+                top: 6px;
+                position: relative;
+            }
+            
+            .header-links {
+                display: flex;
+                gap: 2rem;
+            }
+            
+            .header-links a {
+                color: #3D91DC;
+                text-decoration: none;
+                font-family: 'Inter', sans-serif;
+                font-weight: 500;
+                transition: color 0.2s ease;
+            }
+            
+            .header-links a:hover {
+                color: black;
+                text-decoration: underline;
+            }
+            
+            .container {
+                max-width: 1400px;
+                margin: 0 auto;
+                background: white;
+            }
+            
+            .row {
+                display: flex;
+                width: 100%;
+                border-right: 1px solid #e9ecef;
+            }
+            
+            .code {
+                flex: 0 0 40%;
+                padding: 2rem;
+                background-color: white;
+                border-right: 1px solid #e9ecef;
+            }
+            
+            .code pre {
+                margin: 0;
+            }
+            
+            .code code {
+                font-family: 'Ubuntu Mono', monospace;
+                font-size: 14px;
+                background-color: transparent;
+                padding: 1.5rem;
+                display: block;
+                white-space: pre;
+                overflow-x: auto;
+            }
+            
+            .explanation {
+                flex: 1;
+                padding: 2rem;
+                background-color: white;
+            }
+            
+            .explanation p {
+                font-family: 'Inter', sans-serif;
+                font-size: 15px;
+                margin-bottom: 0.8rem;
+                color: #4a5568;
+            }
+            
+            @media (max-width: 768px) {
+                .header {
+                    flex-direction: column;
+                    gap: 1rem;
+                    text-align: center;
+                }
+                .row {
+                    flex-direction: column;
+                }
+                
+                .code {
+                    flex: none;
+                    border-right: none;
+                }
+            }
+        </style>
+    </head>
+    <body>
+        <div class="header">
+          <div class="header-logo">
+              <img src="https://cdn.prod.website-files.com/66905e742cab830340b8fa86/669130f909a1e6ef9950c4d6_apoxy.svg" alt="Apoxy Logo">
+          </div>
+          <div class="header-links">
+              <a href="/setup.html">Cluster Setup</a>
+              <a href="/route.html">Route Traffic</a>
+          </div>
+        </div>
+
+        <div class="container">
+            <div class="row">
+                <div class="code">
+                    <pre><code class="language-yaml">apiVersion: gateway.apoxy.dev/v1
+    kind: GatewayClass
+    metadata:
+      name: apoxy
+    spec:
+      controllerName: gateway.apoxy.dev/gatewayclass-controller
+    ---</code></pre>
+                </div>
+                <div class="explanation">
+                    <p>This defines a GatewayClass resource that establishes Apoxy as a gateway implementation. The GatewayClass is a cluster-scoped resource that defines a class of gateways that can be instantiated.</p>
+                    <p>The controllerName identifies which controller will manage Gateway resources that reference this class. This follows the Kubernetes Gateway API specification.</p>
+                </div>
+            </div>
+            
+            <div class="row">
+                <div class="code">
+                    <pre><code class="language-yaml">apiVersion: controllers.apoxy.dev/v1alpha1
+    kind: Proxy
+    metadata:
+      name: default
+    spec:
+      provider: unmanaged
+      listeners:
+        - protocol: TCP
+          port: 80
+    ---</code></pre>
+                </div>
+                <div class="explanation">
+                    <p>The Proxy object is an Apoxy-specific configuration resource that defines the underlying infrastructure for a Gateway. This particular configuration creates an unmanaged proxy listening on TCP port 80.</p>
+                    <p>Note that the listeners configuration here duplicates what will be defined in the Gateway object - this duplication is currently necessary but will be removed in future versions of Apoxy.</p>
+                </div>
+            </div>
+            
+            <div class="row">
+                <div class="code">
+                    <pre><code class="language-yaml">apiVersion: gateway.apoxy.dev/v1
+    kind: Gateway
+    metadata:
+      name: default
+    spec:
+      gatewayClassName: apoxy
+      infrastructure:
+        parametersRef:
+          kind: Proxy
+          name: default
+      listeners:
+        - name: internal
+          protocol: HTTP
+          port: 80
+    ---</code></pre>
+                </div>
+                <div class="explanation">
+                    <p>This Gateway resource follows the Kubernetes Gateway API specification and creates an actual gateway instance. It references the "apoxy" GatewayClass defined earlier.</p>
+                    <p>The infrastructure section links this Gateway to the Proxy configuration object, which provides the underlying proxy settings. The listener is configured for HTTP traffic on port 80.</p>
+                    <p>For additional details about Gateway configuration options, refer to the official Kubernetes Gateway API documentation.</p>
+                </div>
+            </div>
+            
+            <div class="row">
+                <div class="code">
+                    <pre><code class="language-yaml">apiVersion: core.apoxy.dev/v1alpha
+    kind: TunnelNode
+    metadata:
+      name: example-cluster
+    spec:
+      egressGateway:
+        enabled: true
+    ---</code></pre>
+                </div>
+                <div class="explanation">
+                    <p>TunnelNode is an Apoxy-specific resource that creates secure tunnels between your cluster and the Apoxy gateway. To activate this tunnel, run the command: <code>apoxy tunnel run example-cluster --insecure-skip-verify</code></p>
+                    <p>The --insecure-skip-verify flag disables TLS certificate validation but maintains encrypted communication. Once running, services in your cluster become accessible via the pattern: service.example-cluster.tun.apoxy.net</p>
+                    <p>The egressGateway flag is currently enabled as a workaround for an existing bug. Future Kubernetes deployment instructions for tunnel management will be provided.</p>
+                </div>
+            </div>
+            
+            <div class="row">
+                <div class="code">
+                    <pre><code class="language-yaml">apiVersion: core.apoxy.dev/v1alpha
+    kind: Backend
+    metadata:
+      name: example-backend
+    spec:
+      endpoints:
+        - fqdn: example-service.example-cluster.tun.apoxy.net
+    ---</code></pre>
+                </div>
+                <div class="explanation">
+                    <p>The Backend resource defines where traffic should be routed. This backend points to a service running in the tunneled cluster using Apoxy's special domain format.</p>
+                    <p>The FQDN follows the pattern service.tunnelnode-name.tun.apoxy.net, which routes requests through the secure tunnel to the "example-service" in the cluster where the "example-cluster" tunnel is running.</p>
+                </div>
+            </div>
+            
+            <div class="row">
+                <div class="code">
+                    <pre><code class="language-yaml">apiVersion: gateway.apoxy.dev/v1
+    kind: HTTPRoute
+    metadata:
+      name: example-route
+    spec:
+      parentRefs:
+        - name: default 
+          kind: Gateway
+          port: 80
+      hostnames:
+        - 'example.trainy.us'
+      rules:
+        - backendRefs:
+            - kind: Backend
+              name: example-backend
+              port: 80
+    ---</code></pre>
+                </div>
+                <div class="explanation">
+                    <p>HTTPRoute defines how HTTP traffic is routed through the gateway. This configuration routes traffic from the hostname "example.trainy.us" to the example-backend.</p>
+                    <p>The route is attached to the "default" Gateway on port 80. When requests arrive for example.trainy.us, they'll be forwarded to the Backend resource, which will tunnel the traffic to the service running in the remote cluster.</p>
+                    <p>This completes the traffic flow: external requests → Gateway → HTTPRoute → Backend → Tunneled Service.</p>
+                </div>
+            </div>
+        </div>
+        
+        <script>
+            document.addEventListener('DOMContentLoaded', function() {
+                hljs.highlightAll();
+            });
+        </script>
+    </body>
+    </html>
   index.html: |
     <!DOCTYPE html>
     <html lang="en">
