@@ -124,7 +124,7 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, request reconcile.Req
 			TypeMeta:   gwc.TypeMeta,
 			ObjectMeta: gwc.ObjectMeta,
 			Spec:       gwc.Spec,
-			Status:     gwc.Status,
+			Status:     gwc.Status.GatewayClassStatus,
 		}
 
 		if err := r.reconcileGateways(clog.IntoContext(ctx, log), gwc, extRefs, res); err != nil {
@@ -266,7 +266,7 @@ func (r *GatewayReconciler) reconcileGateways(
 			TypeMeta:   gw.TypeMeta,
 			ObjectMeta: gw.ObjectMeta,
 			Spec:       gw.Spec,
-			Status:     gw.Status,
+			Status:     gw.Status.GatewayStatus,
 		})
 	}
 
@@ -367,7 +367,7 @@ func (r *GatewayReconciler) reconcileHTTPRoutes(
 			TypeMeta:   hr.TypeMeta,
 			ObjectMeta: hr.ObjectMeta,
 			Spec:       hr.Spec,
-			Status:     hr.Status,
+			Status:     hr.Status.HTTPRouteStatus,
 		})
 	}
 

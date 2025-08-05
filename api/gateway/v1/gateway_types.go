@@ -21,13 +21,14 @@ type GatewayClass struct {
 
 	Spec gwapiv1.GatewayClassSpec `json:"spec,omitempty"`
 
-	Status gwapiv1.GatewayClassStatus `json:"status,omitempty"`
+	Status GatewayClassStatus `json:"status,omitempty"`
 }
 
 var (
-	_ runtime.Object            = &GatewayClass{}
-	_ resource.Object           = &GatewayClass{}
-	_ rest.SingularNameProvider = &GatewayClass{}
+	_ runtime.Object                       = &GatewayClass{}
+	_ resource.Object                      = &GatewayClass{}
+	_ resource.ObjectWithStatusSubResource = &GatewayClass{}
+	_ rest.SingularNameProvider            = &GatewayClass{}
 )
 
 func (p *GatewayClass) GetObjectMeta() *metav1.ObjectMeta {
@@ -62,6 +63,24 @@ func (p *GatewayClass) GetSingularName() string {
 	return "gatewayclass"
 }
 
+func (p *GatewayClass) GetStatus() resource.StatusSubResource {
+	return &p.Status
+}
+
+type GatewayClassStatus struct {
+	gwapiv1.GatewayClassStatus
+}
+
+var _ resource.StatusSubResource = &GatewayClassStatus{}
+
+func (s *GatewayClassStatus) SubResourceName() string {
+	return "status"
+}
+
+func (s *GatewayClassStatus) CopyTo(parent resource.ObjectWithStatusSubResource) {
+	parent.(*GatewayClass).Status = *s
+}
+
 // +kubebuilder:object:root=true
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
@@ -88,13 +107,14 @@ type Gateway struct {
 
 	Spec gwapiv1.GatewaySpec `json:"spec,omitempty"`
 
-	Status gwapiv1.GatewayStatus `json:"status,omitempty"`
+	Status GatewayStatus `json:"status,omitempty"`
 }
 
 var (
-	_ runtime.Object            = &Gateway{}
-	_ resource.Object           = &Gateway{}
-	_ rest.SingularNameProvider = &Gateway{}
+	_ runtime.Object                       = &Gateway{}
+	_ resource.Object                      = &Gateway{}
+	_ resource.ObjectWithStatusSubResource = &Gateway{}
+	_ rest.SingularNameProvider            = &Gateway{}
 )
 
 func (p *Gateway) GetObjectMeta() *metav1.ObjectMeta {
@@ -129,6 +149,24 @@ func (p *Gateway) GetSingularName() string {
 	return "gateway"
 }
 
+func (p *Gateway) GetStatus() resource.StatusSubResource {
+	return &p.Status
+}
+
+type GatewayStatus struct {
+	gwapiv1.GatewayStatus
+}
+
+var _ resource.StatusSubResource = &GatewayStatus{}
+
+func (s *GatewayStatus) SubResourceName() string {
+	return "status"
+}
+
+func (s *GatewayStatus) CopyTo(parent resource.ObjectWithStatusSubResource) {
+	parent.(*Gateway).Status = *s
+}
+
 // +kubebuilder:object:root=true
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
@@ -155,13 +193,14 @@ type HTTPRoute struct {
 
 	Spec gwapiv1.HTTPRouteSpec `json:"spec,omitempty"`
 
-	Status gwapiv1.HTTPRouteStatus `json:"status,omitempty"`
+	Status HTTPRouteStatus `json:"status,omitempty"`
 }
 
 var (
-	_ runtime.Object            = &HTTPRoute{}
-	_ resource.Object           = &HTTPRoute{}
-	_ rest.SingularNameProvider = &HTTPRoute{}
+	_ runtime.Object                       = &HTTPRoute{}
+	_ resource.Object                      = &HTTPRoute{}
+	_ resource.ObjectWithStatusSubResource = &HTTPRoute{}
+	_ rest.SingularNameProvider            = &HTTPRoute{}
 )
 
 func (p *HTTPRoute) GetObjectMeta() *metav1.ObjectMeta {
@@ -196,6 +235,24 @@ func (p *HTTPRoute) GetSingularName() string {
 	return "httproute"
 }
 
+func (p *HTTPRoute) GetStatus() resource.StatusSubResource {
+	return &p.Status
+}
+
+type HTTPRouteStatus struct {
+	gwapiv1.HTTPRouteStatus
+}
+
+var _ resource.StatusSubResource = &HTTPRouteStatus{}
+
+func (s *HTTPRouteStatus) SubResourceName() string {
+	return "status"
+}
+
+func (s *HTTPRouteStatus) CopyTo(parent resource.ObjectWithStatusSubResource) {
+	parent.(*HTTPRoute).Status = *s
+}
+
 // +kubebuilder:object:root=true
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
@@ -222,13 +279,14 @@ type GRPCRoute struct {
 
 	Spec gwapiv1.GRPCRouteSpec `json:"spec,omitempty"`
 
-	Status gwapiv1.GRPCRouteStatus `json:"status,omitempty"`
+	Status GRPCRouteStatus `json:"status,omitempty"`
 }
 
 var (
-	_ runtime.Object            = &GRPCRoute{}
-	_ resource.Object           = &GRPCRoute{}
-	_ rest.SingularNameProvider = &GRPCRoute{}
+	_ runtime.Object                       = &GRPCRoute{}
+	_ resource.Object                      = &GRPCRoute{}
+	_ resource.ObjectWithStatusSubResource = &GRPCRoute{}
+	_ rest.SingularNameProvider            = &GRPCRoute{}
 )
 
 func (p *GRPCRoute) GetObjectMeta() *metav1.ObjectMeta {
@@ -261,6 +319,24 @@ func (p *GRPCRoute) IsStorageVersion() bool {
 
 func (p *GRPCRoute) GetSingularName() string {
 	return "grpcroute"
+}
+
+func (p *GRPCRoute) GetStatus() resource.StatusSubResource {
+	return &p.Status
+}
+
+type GRPCRouteStatus struct {
+	gwapiv1.GRPCRouteStatus
+}
+
+var _ resource.StatusSubResource = &GRPCRouteStatus{}
+
+func (s *GRPCRouteStatus) SubResourceName() string {
+	return "status"
+}
+
+func (s *GRPCRouteStatus) CopyTo(parent resource.ObjectWithStatusSubResource) {
+	parent.(*GRPCRoute).Status = *s
 }
 
 // +kubebuilder:object:root=true

@@ -130,12 +130,16 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.WasmSource":                    schema_apoxy_api_extensions_v1alpha2_WasmSource(ref),
 		"github.com/apoxy-dev/apoxy/api/gateway/v1.GRPCRoute":                              schema_apoxy_api_gateway_v1_GRPCRoute(ref),
 		"github.com/apoxy-dev/apoxy/api/gateway/v1.GRPCRouteList":                          schema_apoxy_api_gateway_v1_GRPCRouteList(ref),
+		"github.com/apoxy-dev/apoxy/api/gateway/v1.GRPCRouteStatus":                        schema_apoxy_api_gateway_v1_GRPCRouteStatus(ref),
 		"github.com/apoxy-dev/apoxy/api/gateway/v1.Gateway":                                schema_apoxy_api_gateway_v1_Gateway(ref),
 		"github.com/apoxy-dev/apoxy/api/gateway/v1.GatewayClass":                           schema_apoxy_api_gateway_v1_GatewayClass(ref),
 		"github.com/apoxy-dev/apoxy/api/gateway/v1.GatewayClassList":                       schema_apoxy_api_gateway_v1_GatewayClassList(ref),
+		"github.com/apoxy-dev/apoxy/api/gateway/v1.GatewayClassStatus":                     schema_apoxy_api_gateway_v1_GatewayClassStatus(ref),
 		"github.com/apoxy-dev/apoxy/api/gateway/v1.GatewayList":                            schema_apoxy_api_gateway_v1_GatewayList(ref),
+		"github.com/apoxy-dev/apoxy/api/gateway/v1.GatewayStatus":                          schema_apoxy_api_gateway_v1_GatewayStatus(ref),
 		"github.com/apoxy-dev/apoxy/api/gateway/v1.HTTPRoute":                              schema_apoxy_api_gateway_v1_HTTPRoute(ref),
 		"github.com/apoxy-dev/apoxy/api/gateway/v1.HTTPRouteList":                          schema_apoxy_api_gateway_v1_HTTPRouteList(ref),
+		"github.com/apoxy-dev/apoxy/api/gateway/v1.HTTPRouteStatus":                        schema_apoxy_api_gateway_v1_HTTPRouteStatus(ref),
 		"github.com/apoxy-dev/apoxy/api/policy/v1alpha1.RateLimit":                         schema_apoxy_api_policy_v1alpha1_RateLimit(ref),
 		"github.com/apoxy-dev/apoxy/api/policy/v1alpha1.RateLimitDescriptor":               schema_apoxy_api_policy_v1alpha1_RateLimitDescriptor(ref),
 		"github.com/apoxy-dev/apoxy/api/policy/v1alpha1.RateLimitList":                     schema_apoxy_api_policy_v1alpha1_RateLimitList(ref),
@@ -4399,14 +4403,14 @@ func schema_apoxy_api_gateway_v1_GRPCRoute(ref common.ReferenceCallback) common.
 					"status": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.GRPCRouteStatus"),
+							Ref:     ref("github.com/apoxy-dev/apoxy/api/gateway/v1.GRPCRouteStatus"),
 						},
 					},
 				},
 			},
 		},
 		Dependencies: []string{
-			"k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta", "sigs.k8s.io/gateway-api/apis/v1.GRPCRouteSpec", "sigs.k8s.io/gateway-api/apis/v1.GRPCRouteStatus"},
+			"github.com/apoxy-dev/apoxy/api/gateway/v1.GRPCRouteStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta", "sigs.k8s.io/gateway-api/apis/v1.GRPCRouteSpec"},
 	}
 }
 
@@ -4458,6 +4462,27 @@ func schema_apoxy_api_gateway_v1_GRPCRouteList(ref common.ReferenceCallback) com
 	}
 }
 
+func schema_apoxy_api_gateway_v1_GRPCRouteStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"GRPCRouteStatus": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.GRPCRouteStatus"),
+						},
+					},
+				},
+				Required: []string{"GRPCRouteStatus"},
+			},
+		},
+		Dependencies: []string{
+			"sigs.k8s.io/gateway-api/apis/v1.GRPCRouteStatus"},
+	}
+}
+
 func schema_apoxy_api_gateway_v1_Gateway(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -4493,14 +4518,14 @@ func schema_apoxy_api_gateway_v1_Gateway(ref common.ReferenceCallback) common.Op
 					"status": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.GatewayStatus"),
+							Ref:     ref("github.com/apoxy-dev/apoxy/api/gateway/v1.GatewayStatus"),
 						},
 					},
 				},
 			},
 		},
 		Dependencies: []string{
-			"k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta", "sigs.k8s.io/gateway-api/apis/v1.GatewaySpec", "sigs.k8s.io/gateway-api/apis/v1.GatewayStatus"},
+			"github.com/apoxy-dev/apoxy/api/gateway/v1.GatewayStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta", "sigs.k8s.io/gateway-api/apis/v1.GatewaySpec"},
 	}
 }
 
@@ -4539,14 +4564,14 @@ func schema_apoxy_api_gateway_v1_GatewayClass(ref common.ReferenceCallback) comm
 					"status": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.GatewayClassStatus"),
+							Ref:     ref("github.com/apoxy-dev/apoxy/api/gateway/v1.GatewayClassStatus"),
 						},
 					},
 				},
 			},
 		},
 		Dependencies: []string{
-			"k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta", "sigs.k8s.io/gateway-api/apis/v1.GatewayClassSpec", "sigs.k8s.io/gateway-api/apis/v1.GatewayClassStatus"},
+			"github.com/apoxy-dev/apoxy/api/gateway/v1.GatewayClassStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta", "sigs.k8s.io/gateway-api/apis/v1.GatewayClassSpec"},
 	}
 }
 
@@ -4598,6 +4623,27 @@ func schema_apoxy_api_gateway_v1_GatewayClassList(ref common.ReferenceCallback) 
 	}
 }
 
+func schema_apoxy_api_gateway_v1_GatewayClassStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"GatewayClassStatus": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.GatewayClassStatus"),
+						},
+					},
+				},
+				Required: []string{"GatewayClassStatus"},
+			},
+		},
+		Dependencies: []string{
+			"sigs.k8s.io/gateway-api/apis/v1.GatewayClassStatus"},
+	}
+}
+
 func schema_apoxy_api_gateway_v1_GatewayList(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -4646,6 +4692,27 @@ func schema_apoxy_api_gateway_v1_GatewayList(ref common.ReferenceCallback) commo
 	}
 }
 
+func schema_apoxy_api_gateway_v1_GatewayStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"GatewayStatus": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.GatewayStatus"),
+						},
+					},
+				},
+				Required: []string{"GatewayStatus"},
+			},
+		},
+		Dependencies: []string{
+			"sigs.k8s.io/gateway-api/apis/v1.GatewayStatus"},
+	}
+}
+
 func schema_apoxy_api_gateway_v1_HTTPRoute(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -4681,14 +4748,14 @@ func schema_apoxy_api_gateway_v1_HTTPRoute(ref common.ReferenceCallback) common.
 					"status": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.HTTPRouteStatus"),
+							Ref:     ref("github.com/apoxy-dev/apoxy/api/gateway/v1.HTTPRouteStatus"),
 						},
 					},
 				},
 			},
 		},
 		Dependencies: []string{
-			"k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta", "sigs.k8s.io/gateway-api/apis/v1.HTTPRouteSpec", "sigs.k8s.io/gateway-api/apis/v1.HTTPRouteStatus"},
+			"github.com/apoxy-dev/apoxy/api/gateway/v1.HTTPRouteStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta", "sigs.k8s.io/gateway-api/apis/v1.HTTPRouteSpec"},
 	}
 }
 
@@ -4737,6 +4804,27 @@ func schema_apoxy_api_gateway_v1_HTTPRouteList(ref common.ReferenceCallback) com
 		},
 		Dependencies: []string{
 			"github.com/apoxy-dev/apoxy/api/gateway/v1.HTTPRoute", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
+	}
+}
+
+func schema_apoxy_api_gateway_v1_HTTPRouteStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"HTTPRouteStatus": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.HTTPRouteStatus"),
+						},
+					},
+				},
+				Required: []string{"HTTPRouteStatus"},
+			},
+		},
+		Dependencies: []string{
+			"sigs.k8s.io/gateway-api/apis/v1.HTTPRouteStatus"},
 	}
 }
 
