@@ -4,9 +4,6 @@ metadata:
   name: example-proxy
 spec:
   provider: unmanaged
-  listeners:
-    - protocol: TCP
-      port: 10000
 ---
 apiVersion: gateway.apoxy.dev/v1
 kind: GatewayClass

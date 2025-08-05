@@ -4,9 +4,6 @@ metadata:
   name: example
 spec:
   provider: unmanaged
-  listeners:
-    - protocol: TCP
-      port: 10000
   monitoring:
     tracing:
       enabled: true

@@ -5,13 +5,15 @@ package portforward
 import (
 	"context"
 	"fmt"
-	"slices"
-	"strconv"
-	"strings"
+	"io"
+	"net/http"
 	"time"
 
+	adminv3 "github.com/envoyproxy/go-control-plane/envoy/admin/v3"
+	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
+	"google.golang.org/protobuf/encoding/protojson"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
@@ -29,6 +31,8 @@ import (
 
 const (
 	resyncPeriod = 10 * time.Second
+
+	adminPort = 19000
 )
 
 // PortForwarder forwards a local port to a remote port.
@@ -77,8 +81,8 @@ func findReplicaStatus(p *ctrlv1alpha1.Proxy, rname string) (*ctrlv1alpha1.Proxy
 	return nil, false
 }
 
-func (pf *PortForwarder) doForward(protocol gwapiv1.ProtocolType, port int32) error {
-	log.Debugf("forwarding %s/%d", protocol, port)
+func (pf *PortForwarder) doForward(protocol gwapiv1.ProtocolType, port uint32) error {
+	log.Infof("Forwarding %s/%d", protocol, port)
 	pname := fmt.Sprintf("%s/%d", protocol, port)
 	if _, ok := pf.portStopCh[pname]; !ok {
 		stopCh := make(chan struct{})
@@ -121,37 +125,58 @@ func (pf *PortForwarder) sync(key string) error {
 		return nil
 	}
 
-	for _, l := range proxy.Spec.Listeners {
-		if err := pf.doForward(l.Protocol, int32(l.Port)); err != nil {
-			return err
-		}
-	}
-	// Always forward the Admin port as well.
-	if err := pf.doForward(gwapiv1.TCPProtocolType, 19000); err != nil {
+	log.Infof("Setting up port forwarding...")
+
+	// Forward the admin port first.
+	if err := pf.doForward(gwapiv1.TCPProtocolType, adminPort); err != nil {
 		return err
 	}
-	for pname, stopCh := range pf.portStopCh {
-		// Ignore the admin port.
-		if pname == "TCP/19000" {
+
+	// Now use the admin port to pull other listeners to forward.
+	resp, err := http.Get(fmt.Sprintf("http://localhost:%d/listeners?format=json", adminPort))
+	if err != nil {
+		return fmt.Errorf("failed to get listeners from admin endpoint: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	adminListeners := adminv3.Listeners{}
+	if err := protojson.Unmarshal(body, &adminListeners); err != nil {
+		return fmt.Errorf("failed to unmarshal listeners: %w", err)
+	}
+
+	envoyProto2GW := map[corev3.SocketAddress_Protocol]gwapiv1.ProtocolType{
+		corev3.SocketAddress_TCP: gwapiv1.TCPProtocolType,
+		corev3.SocketAddress_UDP: gwapiv1.UDPProtocolType,
+	}
+	wantForwarded := sets.New[string]()
+	for _, ls := range adminListeners.ListenerStatuses {
+		if ls.LocalAddress == nil || ls.LocalAddress.GetSocketAddress() == nil {
+			log.Infof("skipping listener with nil address")
 			continue
 		}
-		if !slices.ContainsFunc(proxy.Spec.Listeners, func(l ctrlv1alpha1.ProxyListener) bool {
-			ss := strings.Split(pname, "/")
-			if len(ss) != 2 {
-				log.Errorf("could not parse port %q", pname)
-				return false
-			}
-			proto, port := ss[0], ss[1]
-			portn, err := strconv.Atoi(port)
-			if err != nil {
-				log.Errorf("could not parse port %q: %v", port, err)
-				return false
-			}
-			if string(l.Protocol) == proto && int(l.Port) == portn {
-				return true
-			}
-			return false
-		}) {
+		sa := ls.LocalAddress.GetSocketAddress()
+		if _, ok := envoyProto2GW[sa.GetProtocol()]; !ok {
+			log.Infof("skipping listener with unsupported protocol %q", sa.GetProtocol())
+			continue
+		}
+		if err := pf.doForward(envoyProto2GW[sa.GetProtocol()], sa.GetPortValue()); err != nil {
+			log.Errorf("failed to forward %s/%d: %w", sa.GetProtocol(), sa.GetPortValue(), err)
+			continue
+		}
+
+		wantForwarded.Insert(fmt.Sprintf("%s/%d", sa.GetProtocol(), sa.GetPortValue()))
+	}
+
+	for pname, stopCh := range pf.portStopCh {
+		if pname == "TCP/19000" { // Always keep the admin port.
+			continue
+		}
+		if !wantForwarded.Has(pname) {
 			delete(pf.portStopCh, pname)
 			close(stopCh)
 			fmt.Printf("Stopped listening on %s\n", pname)
@@ -170,8 +195,7 @@ func (pf *PortForwarder) processNextWorkItem() bool {
 
 	err := pf.sync(key.(string))
 	if err != nil {
-		log.Errorf("sync %q failed with %v", key, err)
-		utilruntime.HandleError(fmt.Errorf("sync %q failed with %v", key, err))
+		log.Errorf("Sync %q failed with: %v", key, err)
 		pf.wq.AddRateLimited(key)
 		return true
 	}

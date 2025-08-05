@@ -31,14 +31,12 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/apoxy-dev/apoxy/pkg/backplane/envoy"
-	"github.com/apoxy-dev/apoxy/pkg/backplane/healthchecker"
 	"github.com/apoxy-dev/apoxy/pkg/backplane/logs"
 	"github.com/apoxy-dev/apoxy/pkg/backplane/otel"
 	"github.com/apoxy-dev/apoxy/pkg/gateway/xds/bootstrap"
 	alog "github.com/apoxy-dev/apoxy/pkg/log"
 
 	ctrlv1alpha1 "github.com/apoxy-dev/apoxy/api/controllers/v1alpha1"
-	gwapiv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
 const (
@@ -67,7 +65,6 @@ type options struct {
 	goPluginDir                  string
 	releaseURL                   string
 	useEnvoyContrib              bool
-	healthChecker                *healthchecker.AggregatedHealthChecker
 	overloadMaxHeapSizeBytes     *uint64
 	overloadMaxActiveConnections *uint64
 }
@@ -116,13 +113,6 @@ func WithURLRelease(url string) Option {
 func WithEnvoyContrib() Option {
 	return func(o *options) {
 		o.useEnvoyContrib = true
-	}
-}
-
-// WithAggregatedHealthChecker sets the health checker for the ProxyReconciler.
-func WithAggregatedHealthChecker(hc *healthchecker.AggregatedHealthChecker) Option {
-	return func(o *options) {
-		o.healthChecker = hc
 	}
 }
 
@@ -304,6 +294,7 @@ func (r *ProxyReconciler) Reconcile(ctx context.Context, request reconcile.Reque
 		case ctrlv1alpha1.ProxyReplicaPhasePending:
 			log.Info("Starting Proxy")
 		case ctrlv1alpha1.ProxyReplicaPhaseRunning:
+			log.Info("Proxy replica is running but no Envoy process is running")
 			rStatus.Phase = ctrlv1alpha1.ProxyReplicaPhaseFailed
 			rStatus.Reason = "Replica is in running state but proxy process is not running"
 			goto UpdateStatus
@@ -377,36 +368,6 @@ func (r *ProxyReconciler) Reconcile(ctx context.Context, request reconcile.Reque
 			}
 		}
 
-		if r.options.healthChecker != nil {
-			ls := []*envoy.Listener{}
-			gw2envoyProtos := map[gwapiv1.ProtocolType]corev3.SocketAddress_Protocol{
-				gwapiv1.HTTPProtocolType:  corev3.SocketAddress_TCP,
-				gwapiv1.HTTPSProtocolType: corev3.SocketAddress_TCP,
-				gwapiv1.TLSProtocolType:   corev3.SocketAddress_TCP,
-				gwapiv1.TCPProtocolType:   corev3.SocketAddress_TCP,
-				gwapiv1.UDPProtocolType:   corev3.SocketAddress_UDP,
-			}
-			for _, l := range p.Spec.Listeners {
-				ls = append(ls, &envoy.Listener{
-					Address: corev3.Address{
-						Address: &corev3.Address_SocketAddress{
-							SocketAddress: &corev3.SocketAddress{
-								Protocol: gw2envoyProtos[l.Protocol],
-								PortSpecifier: &corev3.SocketAddress_PortValue{
-									PortValue: uint32(l.Port),
-								},
-							},
-						},
-					},
-				})
-			}
-
-			r.options.healthChecker.Register(
-				p.Name+"-admin",
-				envoy.NewReadyChecker(adminHost, ls...),
-			)
-		}
-
 		if r.options.chConn != nil {
 			pUUID, _ := uuid.Parse(string(p.UID))
 			lc := logs.NewClickHouseLogsCollector(r.options.chConn, pUUID)
@@ -415,6 +376,7 @@ func (r *ProxyReconciler) Reconcile(ctx context.Context, request reconcile.Reque
 
 		if err := r.Start(ctx, opts...); err != nil {
 			if fatalErr, ok := err.(envoy.FatalError); ok {
+				log.Error(fatalErr, "failed to create proxy replica")
 				rStatus.Phase = ctrlv1alpha1.ProxyReplicaPhaseFailed
 				rStatus.Reason = fmt.Sprintf("failed to create proxy replica: %v", fatalErr)
 				if err := r.Status().Update(ctx, p); err != nil {
@@ -450,7 +412,6 @@ func (r *ProxyReconciler) Reconcile(ctx context.Context, request reconcile.Reque
 			if err := r.Runtime.Shutdown(ctx); err != nil {
 				rStatus.Reason = fmt.Sprintf("Failed to shutdown proxy: %v", err)
 			}
-			r.options.healthChecker.Unregister(p.Name + "-admin")
 		case ctrlv1alpha1.ProxyReplicaPhaseStopped:
 			// Replica is stopped but the process still running.
 			log.Info("Proxy is stopped but process is still running")

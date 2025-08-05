@@ -49,6 +49,7 @@ import (
 	ctrlv1alpha1 "github.com/apoxy-dev/apoxy/api/controllers/v1alpha1"
 	corev1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
 	extensionv1alpha2 "github.com/apoxy-dev/apoxy/api/extensions/v1alpha2"
+	gatewayv1 "github.com/apoxy-dev/apoxy/api/gateway/v1"
 )
 
 var scheme = runtime.NewScheme()
@@ -57,6 +58,7 @@ func init() {
 	utilruntime.Must(ctrlv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(extensionv1alpha2.AddToScheme(scheme))
 	utilruntime.Must(corev1alpha.AddToScheme(scheme))
+	utilruntime.Must(gatewayv1.AddToScheme(scheme))
 }
 
 var (
@@ -314,10 +316,10 @@ func main() {
 	if *overloadMaxActiveConnections > 0 {
 		proxyOpts = append(proxyOpts, bpctrl.WithOverloadMaxActiveConnections(*overloadMaxActiveConnections))
 	}
+	var hc *healthchecker.AggregatedHealthChecker
 	if *readyProbePort != 0 {
-		hc := healthchecker.NewAggregatedHealthChecker()
+		hc = healthchecker.NewAggregatedHealthChecker()
 		go hc.Start(ctx, *readyProbePort)
-		proxyOpts = append(proxyOpts, bpctrl.WithAggregatedHealthChecker(hc))
 	}
 
 	// Is there a port specified in the API server address?
@@ -344,6 +346,17 @@ func main() {
 	}
 	if err := pctrl.SetupWithManager(ctx, mgr); err != nil {
 		log.Fatalf("failed to set up Backplane controller: %v", err)
+	}
+
+	log.Infof("Starting Gateway controller")
+
+	gwctrl := bpctrl.NewGatewayReconciler(
+		mgr.GetClient(),
+		*proxyName,
+		hc,
+	)
+	if err := gwctrl.SetupWithManager(mgr); err != nil {
+		log.Fatalf("failed to set up Gateway controller: %v", err)
 	}
 
 	log.Infof("Starting EdgeFunction controller")
