@@ -163,6 +163,14 @@ type ProxySpec struct {
 	// +optional
 	DrainTimeout *metav1.Duration `json:"drainTimeout,omitempty"`
 
+	// Minimum drain time is the minimum amount of time to wait before terminating the proxy.
+	// This is useful for ensuring downstream loadbalancers have enough time to
+	// pick up healthcheck status and drain the backend target.
+	// Can not be less than DrainTimeout.
+	// Defaults to 30s.
+	// +optional
+	MinimumDrainTime *metav1.Duration `json:"minimumDrainTime,omitempty"`
+
 	// Monitoring is the monitoring configuration for the proxy.
 	// +optional
 	Monitoring *ProxyMonitoring `json:"monitoring,omitempty"`

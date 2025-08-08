@@ -257,6 +257,11 @@ func (in *ProxySpec) DeepCopyInto(out *ProxySpec) {
 		*out = new(v1.Duration)
 		**out = **in
 	}
+	if in.MinimumDrainTime != nil {
+		in, out := &in.MinimumDrainTime, &out.MinimumDrainTime
+		*out = new(v1.Duration)
+		**out = **in
+	}
 	if in.Monitoring != nil {
 		in, out := &in.Monitoring, &out.Monitoring
 		*out = new(ProxyMonitoring)

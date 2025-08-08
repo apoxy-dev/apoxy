@@ -895,6 +895,12 @@ func schema_apoxy_api_controllers_v1alpha1_ProxySpec(ref common.ReferenceCallbac
 							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Duration"),
 						},
 					},
+					"minimumDrainTime": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Minimum drain time is the minimum amount of time to wait before terminating the proxy. This is useful for ensuring downstream loadbalancers have enough time to pick up healthcheck status and drain the backend target. Can not be less than DrainTimeout. Defaults to 30s.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Duration"),
+						},
+					},
 					"monitoring": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Monitoring is the monitoring configuration for the proxy.",

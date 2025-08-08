@@ -104,6 +104,13 @@ func WithDrainTimeout(timeout *time.Duration) Option {
 	}
 }
 
+// If this is not set, the default timeout is used (30 seconds).
+func WithMinDrainTime(timeout *time.Duration) Option {
+	return func(r *Runtime) {
+		r.minDrainTime = timeout
+	}
+}
+
 // WithOtelCollector sets the OpenTelemetry collector.
 func WithOtelCollector(c *otel.Collector) Option {
 	return func(r *Runtime) {
@@ -136,6 +143,7 @@ type Runtime struct {
 	goPluginDir   string
 	adminHost     string
 	drainTimeout  *time.Duration
+	minDrainTime  *time.Duration
 	logsDir       string
 
 	mu     sync.RWMutex
@@ -157,6 +165,10 @@ func (r *Runtime) setOptions(opts ...Option) {
 	if r.drainTimeout == nil {
 		drainTimeout := defaultDrainTimeoutSeconds * time.Second
 		r.drainTimeout = &drainTimeout
+	}
+	if r.minDrainTime == nil {
+		minDrainTime := defaultDrainTimeoutSeconds * time.Second
+		r.minDrainTime = &minDrainTime
 	}
 }
 
@@ -475,7 +487,7 @@ func (r *Runtime) Shutdown(ctx context.Context) error {
 
 	log.Infof("shutting down envoy with drain timeout %s", r.drainTimeout)
 
-	startTime := time.Now()
+	startDrain := time.Now()
 
 	if err := r.postEnvoyAdminAPI("healthcheck/fail"); err != nil {
 		log.Errorf("error failing active health checks: %v", err)
@@ -491,10 +503,12 @@ func (r *Runtime) Shutdown(ctx context.Context) error {
 			log.Errorf("error getting total connections: %v", err)
 		}
 
-		if time.Since(startTime) > *r.drainTimeout {
+		if time.Since(startDrain) > *r.drainTimeout {
 			log.Infof("drain timeout reached")
 			break
-		} else if conn != nil && *conn <= 0 {
+		} else if conn != nil && *conn <= 0 &&
+			// Only if we reached the minimum drain time - might still receive new connections.
+			time.Since(startDrain) > *r.minDrainTime {
 			log.Infof("all connections drained")
 			break
 		}

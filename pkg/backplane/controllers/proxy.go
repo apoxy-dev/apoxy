@@ -347,6 +347,7 @@ func (r *ProxyReconciler) Reconcile(ctx context.Context, request reconcile.Reque
 			envoy.WithCluster(p.Name),
 			envoy.WithGoPluginDir(r.options.goPluginDir),
 			envoy.WithDrainTimeout(&p.Spec.DrainTimeout.Duration),
+			envoy.WithMinDrainTime(&p.Spec.MinimumDrainTime.Duration),
 			envoy.WithAdminHost(adminHost),
 			envoy.WithLogsDir("/var/log/apoxy"),
 		}
