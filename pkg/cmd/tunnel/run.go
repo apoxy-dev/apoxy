@@ -9,6 +9,8 @@ import (
 	"os"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/errors"
+
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
@@ -56,6 +58,7 @@ var (
 	socksListenAddr    string
 	minConns           int
 	dnsListenAddr      string
+	autoCreate         bool
 
 	preserveDefaultGwDsts []netip.Prefix
 )
@@ -124,9 +127,19 @@ var tunnelRunCmd = &cobra.Command{
 
 		tunnelNodeName := args[0]
 		log.Infof("Running TunnelNode controller %s", tunnelNodeName)
+		
+		// Try to get the TunnelNode, or create it if --auto flag is set
 		tn, err := a3y.CoreV1alpha().TunnelNodes().Get(ctx, tunnelNodeName, metav1.GetOptions{})
 		if err != nil {
-			return fmt.Errorf("unable to get TunnelNode: %w", err)
+			if autoCreate {
+				log.Infof("TunnelNode %s not found, attempting auto-creation", tunnelNodeName)
+				tn, err = createTunnelNodeIfNotExists(ctx, a3y, tunnelNodeName)
+				if err != nil {
+					return fmt.Errorf("unable to auto-create TunnelNode: %w", err)
+				}
+			} else {
+				return fmt.Errorf("unable to get TunnelNode: %w", err)
+			}
 		}
 		log.Infof("TunnelNode found %+v", tn)
 
@@ -139,6 +152,43 @@ var tunnelRunCmd = &cobra.Command{
 		}
 		return tun.run(ctx, tn)
 	},
+}
+
+// createTunnelNodeIfNotExists creates a TunnelNode with the given name if it doesn't already exist.
+// It returns the created or existing TunnelNode.
+func createTunnelNodeIfNotExists(ctx context.Context, client versioned.Interface, name string) (*corev1alpha.TunnelNode, error) {
+	// Try to get the existing TunnelNode first
+	tn, err := client.CoreV1alpha().TunnelNodes().Get(ctx, name, metav1.GetOptions{})
+	if err == nil {
+		// TunnelNode already exists
+		return tn, nil
+	}
+
+	// Check if it's a "not found" error
+	if !errors.IsNotFound(err) {
+		// Some other error occurred
+		return nil, fmt.Errorf("failed to check if TunnelNode exists: %w", err)
+	}
+
+	// TunnelNode doesn't exist, create it
+	log.Infof("TunnelNode %s not found, creating it automatically", name)
+
+	newTunnelNode := &corev1alpha.TunnelNode{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name,
+		},
+		Spec: corev1alpha.TunnelNodeSpec{
+			// Use default values for auto-created TunnelNode
+		},
+	}
+
+	createdTN, err := client.CoreV1alpha().TunnelNodes().Create(ctx, newTunnelNode, metav1.CreateOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create TunnelNode: %w", err)
+	}
+
+	log.Infof("Successfully created TunnelNode %s", name)
+	return createdTN, nil
 }
 
 func (t *tunnelNodeReconciler) run(ctx context.Context, tn *corev1alpha.TunnelNode) error {
