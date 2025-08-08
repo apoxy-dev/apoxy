@@ -158,9 +158,17 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request, ps httpro
 		Routes:    []Route{{Prefix: tunnet.IPv4CidrPrefix}},
 	}
 
-	if err := s.handler.AddVirtualNetwork(uint(vni), &remoteAddr, []netip.Prefix{addr}, uint32(keys.Epoch),
-		keys.Send, keys.Recv, keys.ExpiresAt); err != nil {
+	if err := s.handler.AddVirtualNetwork(uint(vni), &remoteAddr, []netip.Prefix{addr}); err != nil {
 		http.Error(w, "Failed to add virtual network", http.StatusInternalServerError)
+		entry.Delete(vni)
+		s.vniPool.Free(vni)
+		_ = s.ipam.Release(addr)
+		return
+	}
+
+	if err := s.handler.UpdateVirtualNetworkKeys(uint(vni), uint32(keys.Epoch),
+		keys.Send, keys.Recv, keys.ExpiresAt); err != nil {
+		http.Error(w, "Failed to update virtual network keys", http.StatusInternalServerError)
 		entry.Delete(vni)
 		s.vniPool.Free(vni)
 		_ = s.ipam.Release(addr)
@@ -277,7 +285,7 @@ func (s *Server) handleRenewKeys(w http.ResponseWriter, r *http.Request, ps http
 		Keys: keys,
 	}
 
-	if err := s.handler.UpdateVirtualNetworkKey(uint(vni), uint32(keys.Epoch),
+	if err := s.handler.UpdateVirtualNetworkKeys(uint(vni), uint32(keys.Epoch),
 		keys.Send, keys.Recv, keys.ExpiresAt); err != nil {
 		http.Error(w, "Failed to update virtual network keys", http.StatusInternalServerError)
 		return

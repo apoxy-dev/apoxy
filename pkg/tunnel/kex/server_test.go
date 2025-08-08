@@ -30,7 +30,7 @@ func TestServer(t *testing.T) {
 	tokenStr, _, err := issuer.IssueToken("test-agent", time.Minute*5)
 	require.NoError(t, err)
 
-	handler, err := icx.NewHandler(mustNewFullAddress("127.0.0.1", 6081), tcpip.GetRandMacAddr(), false)
+	handler, err := icx.NewHandler(mustNewFullAddress("127.0.0.1", 6081), tcpip.GetRandMacAddr(), false, false)
 	require.NoError(t, err)
 
 	serverImpl := kex.NewServer(t.Context(), handler, validator, 100*time.Millisecond)
