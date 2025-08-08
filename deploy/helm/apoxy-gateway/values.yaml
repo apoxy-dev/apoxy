@@ -78,6 +78,7 @@ backplane:
   proxy:
     name: default
     drainTimeoutSeconds: 30
+    initialDelaySeconds: 30
     listeners: [
       {
         name: "https",

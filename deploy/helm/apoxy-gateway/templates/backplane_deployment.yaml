@@ -84,14 +84,14 @@ spec:
             httpGet:
               path: /healthz
               port: 8080
-              initialDelaySeconds: 30
-              periodSeconds: 5
-              timeoutSeconds: 1
+            initialDelaySeconds: {{ .Values.backplane.proxy.initialDelaySeconds | default 30 }}
+            periodSeconds: 5
+            timeoutSeconds: 1
           readinessProbe:
             httpGet:
               path: /readyz
               port: 8083
-            initialDelaySeconds: 30
+            initialDelaySeconds: {{ .Values.backplane.proxy.initialDelaySeconds | default 30 }}
             periodSeconds: 5
             timeoutSeconds: 1
           resources:
