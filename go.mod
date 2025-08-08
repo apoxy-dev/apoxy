@@ -1,8 +1,6 @@
 module github.com/apoxy-dev/apoxy
 
-go 1.24.0
-
-toolchain go1.24.2
+go 1.24.3
 
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.23.2
@@ -11,6 +9,7 @@ require (
 	github.com/adrg/xdg v0.5.3
 	github.com/alphadose/haxmap v1.4.1
 	github.com/anatol/vmtest v0.0.0-20250318022921-2f32244e2f0f
+	github.com/apoxy-dev/icx v0.5.0
 	github.com/avast/retry-go/v4 v4.6.1
 	github.com/bramvdbogaerde/go-scp v1.5.0
 	github.com/buraksezer/olric v0.5.6
@@ -46,6 +45,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/go-discover v0.0.0-20240726212017-342faf50e5d4
 	github.com/jedib0t/go-pretty/v6 v6.4.9
+	github.com/julienschmidt/httprouter v1.3.0
 	github.com/k3s-io/kine v0.13.2
 	github.com/kdomanski/iso9660 v0.4.0
 	github.com/klauspost/cpuid/v2 v2.2.10
@@ -66,8 +66,8 @@ require (
 	github.com/temporalio/cli v0.12.0
 	github.com/tetratelabs/wazero v1.7.3
 	github.com/things-go/go-socks5 v0.0.5
-	github.com/vishvananda/netlink v1.3.0
-	github.com/vishvananda/netns v0.0.4
+	github.com/vishvananda/netlink v1.3.1
+	github.com/vishvananda/netns v0.0.5
 	github.com/vmihailenco/msgpack v4.0.4+incompatible
 	github.com/yosida95/uritemplate/v3 v3.0.2
 	go.opentelemetry.io/proto/otlp v1.7.0
@@ -84,12 +84,13 @@ require (
 	google.golang.org/protobuf v1.36.6
 	gopkg.in/yaml.v2 v2.4.0
 	gopkg.in/yaml.v3 v3.0.1
-	gvisor.dev/gvisor v0.0.0-20250314001526-eeca54973f8b
+	gvisor.dev/gvisor v0.0.0-20250606001031-fa4c4dd86b43
 	k8s.io/api v0.31.1
 	k8s.io/apimachinery v0.31.1
 	k8s.io/apiserver v0.31.1
 	k8s.io/client-go v0.31.1
 	k8s.io/klog/v2 v2.130.1
+	k8s.io/kube-aggregator v0.31.1
 	k8s.io/kube-openapi v0.0.0-20250318190949-c8a335a9a2ff
 	k8s.io/kubernetes v1.31.1
 	k8s.io/utils v0.0.0-20250321185631-1f6e0b77f77e
@@ -144,7 +145,7 @@ require (
 	github.com/cenkalti/backoff/v5 v5.0.2 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/checkpoint-restore/go-criu/v6 v6.3.0 // indirect
-	github.com/cilium/ebpf v0.16.0 // indirect
+	github.com/cilium/ebpf v0.18.0 // indirect
 	github.com/containerd/console v1.0.4 // indirect
 	github.com/containerd/errdefs v1.0.0 // indirect
 	github.com/containerd/log v0.1.0 // indirect
@@ -303,11 +304,13 @@ require (
 	github.com/robfig/cron v1.2.0 // indirect
 	github.com/robfig/cron/v3 v3.0.1 // indirect
 	github.com/russross/blackfriday/v2 v2.1.0 // indirect
+	github.com/safchain/ethtool v0.6.1 // indirect
 	github.com/sean-/seed v0.0.0-20170313163322-e2103e2c3529 // indirect
 	github.com/seccomp/libseccomp-golang v0.10.0 // indirect
 	github.com/segmentio/asm v1.2.0 // indirect
 	github.com/shengdoushi/base58 v1.0.0 // indirect
 	github.com/shopspring/decimal v1.4.0 // indirect
+	github.com/slavc/xdp v0.3.4 // indirect
 	github.com/softlayer/softlayer-go v0.0.0-20180806151055-260589d94c7d // indirect
 	github.com/soheilhy/cmux v0.1.5 // indirect
 	github.com/spf13/pflag v1.0.6 // indirect
@@ -395,7 +398,6 @@ require (
 	k8s.io/component-base v0.31.1 // indirect
 	k8s.io/component-helpers v0.31.1 // indirect
 	k8s.io/kms v0.33.2 // indirect
-	k8s.io/kube-aggregator v0.31.1 // indirect
 	lukechampine.com/uint128 v1.3.0 // indirect
 	modernc.org/cc/v3 v3.41.0 // indirect
 	modernc.org/ccgo/v3 v3.17.0 // indirect
