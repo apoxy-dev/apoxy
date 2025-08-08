@@ -56,6 +56,7 @@ var (
 	socksListenAddr    string
 	minConns           int
 	dnsListenAddr      string
+	autoCreate         bool
 
 	preserveDefaultGwDsts []netip.Prefix
 )
@@ -71,8 +72,10 @@ type tunnelNodeReconciler struct {
 	cfg    *configv1alpha1.Config
 	a3y    versioned.Interface
 
-	tunDialer *tunnel.TunnelDialer
-	tunConns  map[uuid.UUID]*tunnel.Conn
+	tunDialer      *tunnel.TunnelDialer
+	tunConns       map[uuid.UUID]*tunnel.Conn
+	tunnelNodeName string
+	autoCreate     bool
 }
 
 var tunnelRunCmd = &cobra.Command{
@@ -131,14 +134,53 @@ var tunnelRunCmd = &cobra.Command{
 		log.Infof("TunnelNode found %+v", tn)
 
 		tun := &tunnelNodeReconciler{
-			scheme: scheme,
-			cfg:    cfg,
-			a3y:    a3y,
+			scheme:         scheme,
+			cfg:            cfg,
+			a3y:            a3y,
+			tunnelNodeName: tunnelNodeName,
+			autoCreate:     autoCreate,
 
 			tunConns: make(map[uuid.UUID]*tunnel.Conn),
 		}
 		return tun.run(ctx, tn)
 	},
+}
+
+// createTunnelNodeIfNotExists creates a TunnelNode with the given name if it doesn't already exist.
+// It returns the created or existing TunnelNode.
+func (t *tunnelNodeReconciler) createTunnelNodeIfNotExists(ctx context.Context, name string) (*corev1alpha.TunnelNode, error) {
+	// Try to get the existing TunnelNode first
+	tn, err := t.a3y.CoreV1alpha().TunnelNodes().Get(ctx, name, metav1.GetOptions{})
+	if err == nil {
+		// TunnelNode already exists
+		return tn, nil
+	}
+
+	// Check if it's a "not found" error
+	if client.IgnoreNotFound(err) != nil {
+		// Some other error occurred
+		return nil, fmt.Errorf("failed to check if TunnelNode exists: %w", err)
+	}
+
+	// TunnelNode doesn't exist, create it
+	log.Infof("TunnelNode %s not found, creating it automatically", name)
+
+	newTunnelNode := &corev1alpha.TunnelNode{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name,
+		},
+		Spec: corev1alpha.TunnelNodeSpec{
+			// Use default values for auto-created TunnelNode
+		},
+	}
+
+	createdTN, err := t.a3y.CoreV1alpha().TunnelNodes().Create(ctx, newTunnelNode, metav1.CreateOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create TunnelNode: %w", err)
+	}
+
+	log.Infof("Successfully created TunnelNode %s", name)
+	return createdTN, nil
 }
 
 func (t *tunnelNodeReconciler) run(ctx context.Context, tn *corev1alpha.TunnelNode) error {
@@ -233,6 +275,19 @@ func (t *tunnelNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	var tunnelNode corev1alpha.TunnelNode
 	if err := t.Get(ctx, req.NamespacedName, &tunnelNode); err != nil {
 		if client.IgnoreNotFound(err) == nil {
+			// TunnelNode not found, check if we should auto-create it
+			if t.autoCreate && req.Name == t.tunnelNodeName {
+				log.Infof("TunnelNode %s not found, attempting auto-creation", req.Name)
+				createdTN, createErr := t.createTunnelNodeIfNotExists(ctx, req.Name)
+				if createErr != nil {
+					log.Errorf("Failed to auto-create TunnelNode: %v", createErr)
+					return ctrl.Result{}, createErr
+				}
+				tunnelNode = *createdTN
+				log.Infof("Auto-created TunnelNode %s, reconcile will re-trigger", req.Name)
+				// Return early - the reconcile loop will re-trigger on creation
+				return ctrl.Result{}, nil
+			}
 			return ctrl.Result{}, nil
 		}
 		log.Errorf("Failed to get TunnelNode: %v", err)

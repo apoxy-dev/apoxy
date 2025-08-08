@@ -220,6 +220,7 @@ func init() {
 	tunnelRunCmd.Flags().StringVar(&socksListenAddr, "socks-addr", "localhost:1080", "Listen address for SOCKS proxy.")
 	tunnelRunCmd.Flags().IntVar(&minConns, "min-conns", 1, "Minimum number of connections to maintain.")
 	tunnelRunCmd.Flags().StringVar(&dnsListenAddr, "dns-addr", "127.0.0.1:8053", "Listen address for the DNS proxy. Note that you must configure backplane to use this address as well.")
+	tunnelRunCmd.Flags().BoolVar(&autoCreate, "auto", false, "Automatically create TunnelNode if it doesn't exist.")
 
 	tunnelCmd.AddCommand(createCmd)
 	tunnelCmd.AddCommand(getCmd)
