@@ -336,9 +336,28 @@ func (t *TunnelServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := t.jwtValidator.Validate(authToken, nodeID.String()); err != nil {
+	claims, err := t.jwtValidator.Validate(authToken)
+	if err != nil {
 		logger.Error("Failed to validate token", slog.Any("error", err))
 		metrics.TunnelConnectionFailures.WithLabelValues("invalid_token").Inc()
+		w.WriteHeader(http.StatusForbidden)
+		return
+	}
+
+	tokenSubj, err := claims.GetSubject()
+	if err != nil {
+		logger.Error("Failed to get subject from token claims", slog.Any("error", err))
+		metrics.TunnelConnectionFailures.WithLabelValues("token_subject_error").Inc()
+		w.WriteHeader(http.StatusForbidden)
+		return
+	}
+
+	if tokenSubj != nodeID.String() {
+		logger.Error("Token subject does not match TunnelNode ID",
+			slog.String("expected", nodeID.String()),
+			slog.String("got", tokenSubj),
+		)
+		metrics.TunnelConnectionFailures.WithLabelValues("token_subject_mismatch").Inc()
 		w.WriteHeader(http.StatusForbidden)
 		return
 	}

@@ -76,9 +76,20 @@ func (r *TunnelNodeReconciler) isNewTokenNeeded(
 		return true, nil
 	}
 
-	claims, err := r.validator.Validate(credentials.Token, subj)
+	claims, err := r.validator.Validate(credentials.Token)
 	if err != nil { // Not supposed to happen so log the issue
 		log.Error(err, "Token validation failed")
+		return true, nil
+	}
+
+	tokenSubj, err := claims.GetSubject()
+	if err != nil {
+		log.Error(err, "Failed to get subject from token claims")
+		return true, nil
+	}
+
+	if tokenSubj != subj {
+		log.Info("Token subject does not match", "expected", subj, "got", tokenSubj)
 		return true, nil
 	}
 
