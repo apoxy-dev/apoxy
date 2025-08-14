@@ -18,6 +18,7 @@ import (
 
 	"github.com/apoxy-dev/apoxy/pkg/backplane/envoy"
 	"github.com/apoxy-dev/apoxy/pkg/backplane/healthchecker"
+	"github.com/apoxy-dev/apoxy/pkg/gateway/gatewayapi"
 	"github.com/apoxy-dev/apoxy/pkg/gateway/xds/bootstrap"
 	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 
@@ -142,7 +143,7 @@ func (r *GatewayReconciler) extractEnvoyListeners(gw *gatewayv1.Gateway) []*envo
 		}
 
 		listeners = append(listeners, &envoy.Listener{
-			Name: string(l.Name),
+			Name: gatewayapi.HTTPListenerName(gw.Namespace, gw.Name, l.Name),
 			Address: corev3.Address{
 				Address: &corev3.Address_SocketAddress{
 					SocketAddress: &corev3.SocketAddress{

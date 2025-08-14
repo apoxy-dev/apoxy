@@ -342,8 +342,14 @@ func irStringKey(gatewayNs, gatewayName string) string {
 	return fmt.Sprintf("%s/%s", gatewayNs, gatewayName)
 }
 
+// HTTPListenerName returns the name of the HTTP listener in the form
+// of <gateway_namespace>/<gateway_name>/<listener_name>.
+func HTTPListenerName(gwNs, gwName string, listenerName gwapiv1.SectionName) string {
+	return fmt.Sprintf("%s/%s/%s", gwNs, gwName, listenerName)
+}
+
 func irHTTPListenerName(listener *ListenerContext) string {
-	return fmt.Sprintf("%s/%s/%s", listener.gateway.Namespace, listener.gateway.Name, listener.Name)
+	return HTTPListenerName(listener.gateway.Namespace, listener.gateway.Name, listener.Name)
 }
 
 func irTLSListenerName(listener *ListenerContext, tlsRoute *TLSRouteContext) string {
