@@ -100,42 +100,52 @@ func (r *TunnelNodeReconciler) Reconcile(ctx context.Context, request reconcile.
 	log.Info("Reconciling tunnel device")
 
 	var eps []lwtunnel.Endpoint
-	for _, agent := range tunnelNode.Status.Agents {
-		if agent.PrivateAddress == "" || agent.AgentAddress == "" {
-			log.Info("Skipping agent with missing addresses", "agent", agent.Name)
-			continue
-		}
 
-		nve, err := netip.ParseAddr(agent.PrivateAddress)
-		if err != nil {
-			log.Error(err, "Failed to parse private address",
-				"agent", agent.Name, "privateAddress", agent.PrivateAddress)
-			continue
-		}
+	// List all TunnelNodes to compile a list of desired endpoints.
+	tunnelNodeList := &corev1alpha.TunnelNodeList{}
+	if err := r.List(ctx, tunnelNodeList); err != nil {
+		log.Error(err, "Failed to list TunnelNodes")
+		return ctrl.Result{}, err
+	}
 
-		agentAddr, err := netip.ParseAddr(agent.AgentAddress)
-		if err != nil {
-			log.Error(err, "Failed to parse agent address",
-				"agent", agent.Name, "agentAddress", agent.AgentAddress)
-			continue
-		}
-		if !agentAddr.Is6() || !agentAddr.IsGlobalUnicast() {
-			log.Error(goerrors.New("overlay address must be global unicase IPv6"),
-				"Invalid overlay address",
-				"agent", agent.Name, "agentAddress", agent.AgentAddress)
-			continue
-		}
-		agentULA, err := tunnet.ULAFromPrefix(ctx, netip.PrefixFrom(agentAddr, 96))
-		if err != nil {
-			log.Error(err, "Failed to generate ULA",
-				"agent", agent.Name, "agentAddress", agent.AgentAddress)
-			continue
-		}
+	for _, tn := range tunnelNodeList.Items {
+		for _, agent := range tn.Status.Agents {
+			if agent.PrivateAddress == "" || agent.AgentAddress == "" {
+				log.Info("Skipping agent with missing addresses", "agent", agent.Name, "tunnelNode", tn.Name)
+				continue
+			}
 
-		eps = append(eps, lwtunnel.Endpoint{
-			Dst:    *agentULA,
-			Remote: nve,
-		})
+			nve, err := netip.ParseAddr(agent.PrivateAddress)
+			if err != nil {
+				log.Error(err, "Failed to parse private address",
+					"agent", agent.Name, "tunnelNode", tn.Name, "privateAddress", agent.PrivateAddress)
+				continue
+			}
+
+			agentAddr, err := netip.ParseAddr(agent.AgentAddress)
+			if err != nil {
+				log.Error(err, "Failed to parse agent address",
+					"agent", agent.Name, "tunnelNode", tn.Name, "agentAddress", agent.AgentAddress)
+				continue
+			}
+			if !agentAddr.Is6() || !agentAddr.IsGlobalUnicast() {
+				log.Error(goerrors.New("overlay address must be global unicase IPv6"),
+					"Invalid overlay address",
+					"agent", agent.Name, "tunnelNode", tn.Name, "agentAddress", agent.AgentAddress)
+				continue
+			}
+			agentULA, err := tunnet.ULAFromPrefix(ctx, netip.PrefixFrom(agentAddr, 96))
+			if err != nil {
+				log.Error(err, "Failed to generate ULA",
+					"agent", agent.Name, "tunnelNode", tn.Name, "agentAddress", agent.AgentAddress)
+				continue
+			}
+
+			eps = append(eps, lwtunnel.Endpoint{
+				Dst:    *agentULA,
+				Remote: nve,
+			})
+		}
 	}
 
 	if err := r.gnv.SyncEndpoints(ctx, eps); err != nil {
