@@ -20,6 +20,7 @@ import (
 	"github.com/apoxy-dev/icx"
 
 	"github.com/apoxy-dev/apoxy/pkg/netstack"
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/bifurcate"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/l2pc"
 )
 
@@ -34,15 +35,19 @@ func TestICXNetwork_Speed(t *testing.T) {
 	pcA, err := net.ListenPacket("udp", "127.0.0.1:0")
 	require.NoError(t, err)
 
+	pcAGeneve, _ := bifurcate.Bifurcate(pcA)
+
 	pcB, err := net.ListenPacket("udp", "127.0.0.1:0")
 	require.NoError(t, err)
 
+	pcBGeneve, _ := bifurcate.Bifurcate(pcB)
+
 	// Wrap them as L2 adapters.
-	l2A, err := l2pc.NewL2PacketConn(pcA)
+	l2A, err := l2pc.NewL2PacketConn(pcAGeneve)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, l2A.Close()) })
 
-	l2B, err := l2pc.NewL2PacketConn(pcB)
+	l2B, err := l2pc.NewL2PacketConn(pcBGeneve)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, l2B.Close()) })
 
