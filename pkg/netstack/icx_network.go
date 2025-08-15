@@ -156,8 +156,9 @@ func (net *ICXNetwork) Close() error {
 	return nil
 }
 
-// SplicePackets copies packets to and from netstack and icx.
-func (net *ICXNetwork) SplicePackets() error {
+// Start copies packets to and from netstack and icx.
+// This is a blocking call that runs until either side is closed.
+func (net *ICXNetwork) Start() error {
 	var g errgroup.Group
 
 	// Outbound: netstack (L3) -> ICX -> L2PacketConn.WriteFrame

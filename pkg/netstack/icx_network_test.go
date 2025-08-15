@@ -106,8 +106,8 @@ func TestICXNetwork_Speed(t *testing.T) {
 	// Start splicing packets
 	go func() {
 		var g errgroup.Group
-		g.Go(netA.SplicePackets)
-		g.Go(netB.SplicePackets)
+		g.Go(netA.Start)
+		g.Go(netB.Start)
 		if err := g.Wait(); err != nil && !errors.Is(err, net.ErrClosed) {
 			panic(fmt.Errorf("splice failed: %w", err))
 		}
