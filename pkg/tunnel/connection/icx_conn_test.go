@@ -1,5 +1,3 @@
-//go:build linux
-
 package connection_test
 
 import (
@@ -45,7 +43,8 @@ func TestICXConn(t *testing.T) {
 	copy(key[:], []byte("0123456789abcdef"))
 
 	// Setup ICX handlers
-	handler1, err := icx.NewHandler(fa1, tcpip.GetRandMacAddr(), false, true) // layer3 = true
+	handler1, err := icx.NewHandler(icx.WithLocalAddr(fa1),
+		icx.WithVirtMAC(tcpip.GetRandMacAddr()), icx.WithLayer3VirtFrames())
 	require.NoError(t, err)
 
 	err = handler1.AddVirtualNetwork(
@@ -62,7 +61,8 @@ func TestICXConn(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	handler2, err := icx.NewHandler(fa2, tcpip.GetRandMacAddr(), false, true) // layer3 = true
+	handler2, err := icx.NewHandler(icx.WithLocalAddr(fa2),
+		icx.WithVirtMAC(tcpip.GetRandMacAddr()), icx.WithLayer3VirtFrames())
 	require.NoError(t, err)
 
 	err = handler2.AddVirtualNetwork(

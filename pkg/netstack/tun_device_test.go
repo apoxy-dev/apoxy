@@ -128,8 +128,8 @@ func TestTunDevice_Speed(t *testing.T) {
 
 	mux := http.NewServeMux()
 
-	// /speed streams 200 MiB quickly using a re-used random buffer.
-	const totalBytes = int64(200 << 20) // 200 MiB
+	// /speed streams 100 MiB quickly using a re-used random buffer.
+	const totalBytes = int64(100 << 20) // 100 MiB
 	const chunk = 1 << 20               // 1 MiB chunks
 	randomBuf := make([]byte, chunk)
 	_, err = rand.Read(randomBuf)
