@@ -284,7 +284,7 @@ func (r *TunnelNodeDNSReconciler) recursiveResolve(
 	// If original request is for IPv6, convert to IPv4 request for upstream.
 	isAAAA := len(req.Question) > 0 && req.Question[0].Qtype == dns.TypeAAAA
 	if !isAAAA {
-		return int(dns.ExtendedErrorCodeNotSupported), errors.New("only AAAA queries are supported for recursive resolution")
+		return dns.RcodeNotImplemented, errors.New("only AAAA queries are supported for recursive resolution")
 	}
 
 	// Rewrites request as A for upstream resolver.
