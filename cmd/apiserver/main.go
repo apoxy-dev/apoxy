@@ -23,7 +23,8 @@ import (
 )
 
 var (
-	devMode = flag.Bool("dev", false, "Enable development mode.")
+	devMode  = flag.Bool("dev", false, "Enable development mode.")
+	logLevel = flag.String("log_level", "info", "Log level.")
 
 	dbFilePath      = flag.String("db", "apoxy.db", "Path to the database file.")
 	tmprlDBFilePath = flag.String("temporal-db", "temporal.db", "Path to the Temporal database file.")
@@ -52,9 +53,16 @@ func (r *startErr) Error() string {
 
 func main() {
 	flag.Parse()
-	var lOpts []log.Option
+	// TODO(dilyevsky): This should be part of log.Init.
+	if *logLevel == "" {
+		*logLevel = log.InfoLevel.String()
+	}
+	lOpts := []log.Option{
+		log.WithAlsoLogToStderr(),
+		log.WithLevelString(*logLevel),
+	}
 	if *devMode {
-		lOpts = append(lOpts, log.WithDevMode(), log.WithAlsoLogToStderr())
+		lOpts = append(lOpts, log.WithDevMode())
 	}
 	log.Init(lOpts...)
 	ctx, ctxCancel := context.WithCancelCause(ctrl.SetupSignalHandler())

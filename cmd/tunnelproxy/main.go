@@ -61,11 +61,16 @@ var (
 
 func main() {
 	flag.Parse()
-	var lOpts []log.Option
+	// TODO(dilyevsky): This should be part of log.Init.
+	if *logLevel == "" {
+		*logLevel = log.InfoLevel.String()
+	}
+	lOpts := []log.Option{
+		log.WithAlsoLogToStderr(),
+		log.WithLevelString(*logLevel),
+	}
 	if *devMode {
-		lOpts = append(lOpts, log.WithDevMode(), log.WithAlsoLogToStderr())
-	} else if *logLevel != "" {
-		lOpts = append(lOpts, log.WithLevelString(*logLevel))
+		lOpts = append(lOpts, log.WithDevMode())
 	}
 	log.Init(lOpts...)
 	ctx := signals.SetupSignalHandler()

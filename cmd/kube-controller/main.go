@@ -20,6 +20,9 @@ import (
 )
 
 var (
+	devMode  = flag.Bool("dev", false, "Enable development mode.")
+	logLevel = flag.String("log_level", "info", "Log level.")
+
 	projectID = flag.String("project_id", "", "Project ID.")
 
 	// One of these must be set.
@@ -29,9 +32,6 @@ var (
 	clusterName = flag.String("cluster_name", "", "Name of the cluster (can be used as Location in Proxy and other objects' specs).")
 	namespace   = flag.String("namespace", os.Getenv("POD_NAMESPACE"), "Namespace to watch for Proxy resources.")
 	svcName     = flag.String("service_name", "kube-controller", "Name of the service to register.")
-
-	devMode  = flag.Bool("dev", false, "Enable development mode.")
-	logLevel = flag.String("log_level", "info", "Log level.")
 )
 
 var (
@@ -49,11 +49,16 @@ func main() {
 	ctx := ctrl.SetupSignalHandler()
 
 	flag.Parse()
-	var lOpts []log.Option
+	// TODO(dilyevsky): This should be part of log.Init.
+	if *logLevel == "" {
+		*logLevel = log.InfoLevel.String()
+	}
+	lOpts := []log.Option{
+		log.WithAlsoLogToStderr(),
+		log.WithLevelString(*logLevel),
+	}
 	if *devMode {
-		lOpts = append(lOpts, log.WithDevMode(), log.WithAlsoLogToStderr())
-	} else if *logLevel != "" {
-		lOpts = append(lOpts, log.WithLevelString(*logLevel))
+		lOpts = append(lOpts, log.WithDevMode())
 	}
 	log.Init(lOpts...)
 

@@ -62,6 +62,9 @@ func init() {
 }
 
 var (
+	devMode  = flag.Bool("dev", false, "Enable development mode.")
+	logLevel = flag.String("log_level", "info", "Log level.")
+
 	projectID = flag.String("project_id", "", "Apoxy project UUID.")
 
 	proxyPath       = flag.String("proxy_path", "", "Path to the Proxy to create in the API.")
@@ -69,9 +72,6 @@ var (
 	replicaName     = flag.String("replica", os.Getenv("HOSTNAME"), "Name of the replica to manage.")
 	envoyReleaseURL = flag.String("envoy_release_url", "", "URL to the Envoy release tarball.")
 	downloadEnvoy   = flag.Bool("download_envoy_only", false, "Whether to just download Envoy from the release URL and exit.")
-
-	devMode  = flag.Bool("dev", false, "Enable development mode.")
-	logLevel = flag.String("log_level", "info", "Log level.")
 
 	apiServerAddr         = flag.String("apiserver_addr", "host.docker.internal:8443", "APIServer address.")
 	healthProbePort       = flag.Int("health_probe_port", 8080, "Port for the health probe.")
@@ -148,11 +148,16 @@ func upsertProxyFromPath(ctx context.Context, rC *rest.Config, path string) (str
 
 func main() {
 	flag.Parse()
-	var lOpts []log.Option
+	// TODO(dilyevsky): This should be part of log.Init.
+	if *logLevel == "" {
+		*logLevel = log.InfoLevel.String()
+	}
+	lOpts := []log.Option{
+		log.WithAlsoLogToStderr(),
+		log.WithLevelString(*logLevel),
+	}
 	if *devMode {
-		lOpts = append(lOpts, log.WithDevMode(), log.WithAlsoLogToStderr())
-	} else if *logLevel != "" {
-		lOpts = append(lOpts, log.WithLevelString(*logLevel))
+		lOpts = append(lOpts, log.WithDevMode())
 	}
 	log.Init(lOpts...)
 	ctx := context.Background()
