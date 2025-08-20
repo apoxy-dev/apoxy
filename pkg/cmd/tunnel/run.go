@@ -7,19 +7,22 @@ import (
 	"math/rand"
 	"net/netip"
 	"os"
+	"sync"
 	"time"
-
-	"k8s.io/apimachinery/pkg/api/errors"
 
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
+	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
+	"k8s.io/utils/clock"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -27,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/apoxy-dev/apoxy/client/versioned"
 	"github.com/apoxy-dev/apoxy/config"
@@ -49,6 +53,15 @@ var (
 	codecFactory = serializer.NewCodecFactory(scheme)
 	decodeFn     = codecFactory.UniversalDeserializer().Decode
 
+	backoff = wait.NewExponentialBackoffManager(
+		1*time.Second,
+		30*time.Second,
+		2*time.Second,
+		retry.DefaultBackoff.Factor,
+		retry.DefaultBackoff.Jitter,
+		clock.RealClock{},
+	)
+
 	// Flags.
 	tunnelNodePcapPath string
 	tunnelModeS        string
@@ -67,6 +80,12 @@ func init() {
 	utilruntime.Must(corev1alpha.Install(scheme))
 }
 
+type tunConn struct {
+	id     uuid.UUID
+	conn   *tunnel.Conn
+	stopCh chan struct{}
+}
+
 type tunnelNodeReconciler struct {
 	client.Client
 
@@ -75,7 +94,8 @@ type tunnelNodeReconciler struct {
 	a3y    versioned.Interface
 
 	tunDialer *tunnel.TunnelDialer
-	tunConns  map[uuid.UUID]*tunnel.Conn
+	tunMu     sync.RWMutex
+	tunConns  map[uuid.UUID]*tunConn
 }
 
 var tunnelRunCmd = &cobra.Command{
@@ -126,21 +146,12 @@ var tunnelRunCmd = &cobra.Command{
 		}()
 
 		tunnelNodeName := args[0]
-		log.Infof("Running TunnelNode controller %s", tunnelNodeName)
-		
-		// Try to get the TunnelNode, or create it if --auto flag is set
-		tn, err := a3y.CoreV1alpha().TunnelNodes().Get(ctx, tunnelNodeName, metav1.GetOptions{})
+
+		tn, err := getTunnelNode(ctx, a3y, tunnelNodeName)
 		if err != nil {
-			if autoCreate {
-				log.Infof("TunnelNode %s not found, attempting auto-creation", tunnelNodeName)
-				tn, err = createTunnelNodeIfNotExists(ctx, a3y, tunnelNodeName)
-				if err != nil {
-					return fmt.Errorf("unable to auto-create TunnelNode: %w", err)
-				}
-			} else {
-				return fmt.Errorf("unable to get TunnelNode: %w", err)
-			}
+			return fmt.Errorf("unable to get TunnelNode: %w", err)
 		}
+
 		log.Infof("TunnelNode found %+v", tn)
 
 		tun := &tunnelNodeReconciler{
@@ -148,47 +159,32 @@ var tunnelRunCmd = &cobra.Command{
 			cfg:    cfg,
 			a3y:    a3y,
 
-			tunConns: make(map[uuid.UUID]*tunnel.Conn),
+			tunConns: make(map[uuid.UUID]*tunConn),
 		}
 		return tun.run(ctx, tn)
 	},
 }
 
-// createTunnelNodeIfNotExists creates a TunnelNode with the given name if it doesn't already exist.
-// It returns the created or existing TunnelNode.
-func createTunnelNodeIfNotExists(ctx context.Context, client versioned.Interface, name string) (*corev1alpha.TunnelNode, error) {
-	// Try to get the existing TunnelNode first
-	tn, err := client.CoreV1alpha().TunnelNodes().Get(ctx, name, metav1.GetOptions{})
-	if err == nil {
-		// TunnelNode already exists
-		return tn, nil
+// getTunnelNode gets a TunnelNode by name.
+// If autoCreate is true, it will create a new TunnelNode if it doesn't exist
+// and return it.
+func getTunnelNode(
+	ctx context.Context,
+	a3y versioned.Interface,
+	name string,
+) (*corev1alpha.TunnelNode, error) {
+	tn, err := a3y.CoreV1alpha().TunnelNodes().Get(ctx, name, metav1.GetOptions{})
+	if err != nil && errors.IsNotFound(err) && autoCreate {
+		return a3y.CoreV1alpha().TunnelNodes().Create(ctx, &corev1alpha.TunnelNode{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: name,
+			},
+			Spec: corev1alpha.TunnelNodeSpec{
+				// Use default values for auto-created TunnelNode
+			},
+		}, metav1.CreateOptions{})
 	}
-
-	// Check if it's a "not found" error
-	if !errors.IsNotFound(err) {
-		// Some other error occurred
-		return nil, fmt.Errorf("failed to check if TunnelNode exists: %w", err)
-	}
-
-	// TunnelNode doesn't exist, create it
-	log.Infof("TunnelNode %s not found, creating it automatically", name)
-
-	newTunnelNode := &corev1alpha.TunnelNode{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: name,
-		},
-		Spec: corev1alpha.TunnelNodeSpec{
-			// Use default values for auto-created TunnelNode
-		},
-	}
-
-	createdTN, err := client.CoreV1alpha().TunnelNodes().Create(ctx, newTunnelNode, metav1.CreateOptions{})
-	if err != nil {
-		return nil, fmt.Errorf("failed to create TunnelNode: %w", err)
-	}
-
-	log.Infof("Successfully created TunnelNode %s", name)
-	return createdTN, nil
+	return tn, err
 }
 
 func (t *tunnelNodeReconciler) run(ctx context.Context, tn *corev1alpha.TunnelNode) error {
@@ -274,10 +270,10 @@ func (t *tunnelNodeReconciler) setupWithManager(
 			MaxConcurrentReconciles: 1,
 			RecoverPanic:            ptr.To(true),
 		}).
-		Complete(t)
+		Complete(reconcile.Func(t.reconcile))
 }
 
-func (t *tunnelNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (t *tunnelNodeReconciler) reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log.Infof("Reconciling TunnelNodes")
 
 	var tunnelNode corev1alpha.TunnelNode
@@ -289,7 +285,7 @@ func (t *tunnelNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, err
 	}
 
-	log.Infof("TunnelNode found %+v", tunnelNode)
+	log.Infof("TunnelNode found: %v", tunnelNode.Name)
 
 	remoteConns := sets.New[uuid.UUID]()
 	for _, agent := range tunnelNode.Status.Agents {
@@ -300,7 +296,14 @@ func (t *tunnelNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 		remoteConns.Insert(agentUUID)
 	}
-	allLocalConns := sets.KeySet[uuid.UUID, *tunnel.Conn](t.tunConns)
+
+	t.tunMu.RLock()
+	tunConns := make(map[uuid.UUID]*tunnel.Conn, len(t.tunConns))
+	for _, c := range t.tunConns {
+		tunConns[c.id] = c.conn
+	}
+	allLocalConns := sets.KeySet[uuid.UUID, *tunnel.Conn](tunConns)
+	t.tunMu.RUnlock()
 	// Local connections that belong to this specific TunnelNode.
 	tnLocalConns := allLocalConns.Intersection(remoteConns)
 
@@ -327,7 +330,6 @@ func (t *tunnelNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	var srvAddr string
-	log.Infof("config: %+v", t.cfg)
 	if !t.cfg.IsLocalMode {
 		if len(tunnelNode.Status.Addresses) == 0 {
 			log.Errorf("TunnelNode has no addresses")
@@ -351,14 +353,53 @@ func (t *tunnelNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		cOpts = append(cOpts, tunnel.WithInsecureSkipVerify(true))
 	}
 
-	for i := 0; i < minConns-n; i++ {
-		conn, err := t.tunDialer.Dial(ctx, tnUUID, srvAddr, cOpts...)
-		if err != nil {
-			log.Errorf("Failed to start tunnel client: %v", err)
-			return ctrl.Result{}, err
+	if minConns-n < 0 {
+		// Cancel excess connections.
+		excess := n - minConns
+		cancelled := 0
+		t.tunMu.Lock()
+		for id, conn := range t.tunConns {
+			if cancelled >= excess {
+				break
+			}
+			if tnLocalConns.Has(id) {
+				close(conn.stopCh)
+				cancelled++
+			}
 		}
+		t.tunMu.Unlock()
+		log.Infof("Cancelled %d excess connections", cancelled)
+	} else {
+		for i := 0; i < minConns-n; i++ {
+			go func() {
+				stopCh := make(chan struct{})
+				wait.BackoffUntil(func() {
+					c, err := t.tunDialer.Dial(ctx, tnUUID, srvAddr, cOpts...)
+					if err != nil {
+						log.Errorf("failed to start tunnel client: %w", err)
+						return
+					}
 
-		t.tunConns[conn.UUID] = conn
+					log.Infof("Tunnel client %s connected", c.UUID)
+
+					t.tunMu.Lock()
+					t.tunConns[c.UUID] = &tunConn{
+						id:     c.UUID,
+						conn:   c,
+						stopCh: stopCh,
+					}
+					t.tunMu.Unlock()
+
+					<-c.Context().Done() // Wait for the connection to close.
+
+					log.Errorf("Tunnel client %s disconnected: %v", c.UUID, c.Context().Err())
+
+					t.tunMu.Lock()
+					delete(t.tunConns, c.UUID)
+					t.tunMu.Unlock()
+				}, backoff, false, stopCh)
+			}()
+		}
 	}
 
 	return ctrl.Result{}, nil

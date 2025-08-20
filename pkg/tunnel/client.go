@@ -325,6 +325,10 @@ func (c *Conn) run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			slog.Info("Context canceled")
+			return
+		case <-c.hConn.Context().Done():
+			slog.Info("HTTP3 connection closed")
 			return
 		case <-time.After(time.Second):
 			addrs, err := c.conn.LocalPrefixes(ctx)
@@ -352,6 +356,12 @@ func (c *Conn) run(ctx context.Context) {
 			slog.Info("Local prefixes updated", slog.Any("prefixes", addrs))
 		}
 	}
+}
+
+// Context returns the context of the underlying connection that is
+// canceled when the connection is closed.
+func (c *Conn) Context() context.Context {
+	return c.hConn.Context() // Context of the underlying QUIC connection.
 }
 
 func (c *Conn) LocalAddrs() ([]netip.Prefix, error) {
