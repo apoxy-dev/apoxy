@@ -257,7 +257,7 @@ func (r *Geneve) routeAdd(ctx context.Context, ula tunnet.NetULA, nve netip.Addr
 		return fmt.Errorf("failed to add neighbor entry: %w", err)
 	}
 
-	log.Info("Neighbor entry set", "remote", ulaAddr, "hwAddr", hwAddr)
+	log.Info("Neighbor entry set", "remote", ulaAddr, "hwAddr", hwAddr.String())
 
 	// Via is needed so that kernel can use the same dst hwaddr for the entire ula prefix.
 	// Can't set via during route creation because the route to gw does not yet exist.

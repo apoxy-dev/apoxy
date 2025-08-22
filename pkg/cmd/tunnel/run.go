@@ -129,7 +129,7 @@ var tunnelRunCmd = &cobra.Command{
 		}
 
 		if cfg.IsLocalMode {
-			log.Infof("Running in local mode!")
+			slog.Info("Running in local mode!")
 		}
 
 		a3y, err := config.DefaultAPIClient()
@@ -141,7 +141,8 @@ var tunnelRunCmd = &cobra.Command{
 			// Launch an internal recursive DNS resolver used
 			// to resolve addresses of IPv4 services.
 			if err := dns.ListenAndServe(dnsListenAddr); err != nil {
-				log.Fatalf("failed to start DNS server: %v", err)
+				slog.Error("failed to start DNS server", slog.Any("error", err))
+				os.Exit(1)
 			}
 		}()
 
@@ -151,8 +152,6 @@ var tunnelRunCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("unable to get TunnelNode: %w", err)
 		}
-
-		log.Infof("TunnelNode found %+v", tn)
 
 		tun := &tunnelNodeReconciler{
 			scheme: scheme,
@@ -188,7 +187,7 @@ func getTunnelNode(
 }
 
 func (t *tunnelNodeReconciler) run(ctx context.Context, tn *corev1alpha.TunnelNode) error {
-	log.Infof("Running TunnelNode controller %s", tn.Name)
+	slog.Info("Running TunnelNode controller", slog.String("name", tn.Name))
 
 	client, err := config.DefaultAPIClient()
 	if err != nil {
@@ -274,24 +273,25 @@ func (t *tunnelNodeReconciler) setupWithManager(
 }
 
 func (t *tunnelNodeReconciler) reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log.Infof("Reconciling TunnelNodes")
+	log := log.FromContext(ctx)
+	log.Info("Reconciling TunnelNode")
 
 	var tunnelNode corev1alpha.TunnelNode
 	if err := t.Get(ctx, req.NamespacedName, &tunnelNode); err != nil {
 		if client.IgnoreNotFound(err) == nil {
 			return ctrl.Result{}, nil
 		}
-		log.Errorf("Failed to get TunnelNode: %v", err)
+		log.Error("Failed to get TunnelNode", "error", err)
 		return ctrl.Result{}, err
 	}
 
-	log.Infof("TunnelNode found: %v", tunnelNode.Name)
+	log.Info("TunnelNode found")
 
 	remoteConns := sets.New[uuid.UUID]()
 	for _, agent := range tunnelNode.Status.Agents {
 		agentUUID, err := uuid.Parse(agent.Name)
 		if err != nil {
-			log.Errorf("Failed to parse agent UUID: %v", err)
+			log.Error("Failed to parse agent UUID", "error", err)
 			continue
 		}
 		remoteConns.Insert(agentUUID)
@@ -312,16 +312,16 @@ func (t *tunnelNodeReconciler) reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, nil
 	}
 
-	log.Infof("Not enough connections to this TunnelNode, attempting to establish more, min: %d, cur: %d", minConns, n)
+	log.Info("Not enough connections to this TunnelNode, attempting to establish more", slog.Int("min", minConns), slog.Int("cur", n))
 
 	cOpts := []tunnel.TunnelClientOption{}
 	tnUUID, err := uuid.Parse(string(tunnelNode.ObjectMeta.UID))
 	if err != nil { // This can only happen in a test environment.
-		log.Errorf("Failed to parse UID: %v", err)
+		log.Error("Failed to parse UID", slog.Any("error", err))
 		return ctrl.Result{}, err
 	}
 	if tunnelNode.Status.Credentials == nil || tunnelNode.Status.Credentials.Token == "" {
-		log.Errorf("TunnelNode has no credentials, waiting for credentials")
+		log.Error("TunnelNode has no credentials, waiting for credentials")
 		return ctrl.Result{
 			RequeueAfter: time.Second,
 		}, nil
@@ -332,7 +332,7 @@ func (t *tunnelNodeReconciler) reconcile(ctx context.Context, req ctrl.Request) 
 	var srvAddr string
 	if !t.cfg.IsLocalMode {
 		if len(tunnelNode.Status.Addresses) == 0 {
-			log.Errorf("TunnelNode has no addresses")
+			log.Error("TunnelNode has no addresses")
 			return ctrl.Result{
 				RequeueAfter: time.Second,
 			}, nil
@@ -346,7 +346,7 @@ func (t *tunnelNodeReconciler) reconcile(ctx context.Context, req ctrl.Request) 
 			apiServerHost = os.Getenv("APOXY_API_SERVER_HOST")
 		}
 		srvAddr = apiServerHost + ":9443"
-		log.Infof("Using tunnel proxy server address %s", srvAddr)
+		log.Info("Using tunnel proxy server address", slog.String("address", srvAddr))
 	}
 
 	if t.cfg.IsLocalMode || insecureSkipVerify {
@@ -368,7 +368,7 @@ func (t *tunnelNodeReconciler) reconcile(ctx context.Context, req ctrl.Request) 
 			}
 		}
 		t.tunMu.Unlock()
-		log.Infof("Cancelled %d excess connections", cancelled)
+		log.Info("Cancelled excess connections", slog.Int("cancelled", cancelled))
 	} else {
 		for i := 0; i < minConns-n; i++ {
 			go func() {
@@ -376,11 +376,11 @@ func (t *tunnelNodeReconciler) reconcile(ctx context.Context, req ctrl.Request) 
 				wait.BackoffUntil(func() {
 					c, err := t.tunDialer.Dial(ctx, tnUUID, srvAddr, cOpts...)
 					if err != nil {
-						log.Errorf("failed to start tunnel client: %w", err)
+						log.Error("failed to start tunnel client", slog.Any("error", err))
 						return
 					}
 
-					log.Infof("Tunnel client %s connected", c.UUID)
+					log.Info("Tunnel client connected", slog.String("uuid", c.UUID.String()))
 
 					t.tunMu.Lock()
 					t.tunConns[c.UUID] = &tunConn{
@@ -392,7 +392,7 @@ func (t *tunnelNodeReconciler) reconcile(ctx context.Context, req ctrl.Request) 
 
 					<-c.Context().Done() // Wait for the connection to close.
 
-					log.Errorf("Tunnel client %s disconnected: %v", c.UUID, c.Context().Err())
+					log.Error("Tunnel client disconnected", slog.String("uuid", c.UUID.String()), slog.Any("error", c.Context().Err()))
 
 					t.tunMu.Lock()
 					delete(t.tunConns, c.UUID)

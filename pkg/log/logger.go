@@ -34,7 +34,7 @@ func NewDefaultLogWriter(level LogLevel) io.Writer {
 	return &logWriterWrapper{l: DefaultLogger, level: level}
 }
 
-func setLogger(level LogLevel, json bool, w io.Writer) {
+func setDefaultLogger(level LogLevel, json bool, w io.Writer) {
 	replace := func(groups []string, a slog.Attr) slog.Attr {
 		// Remove the directory from the source's filename.
 		if a.Key == slog.SourceKey {
@@ -148,6 +148,7 @@ func Init(opts ...Option) error {
 	for _, opt := range opts {
 		opt(sOpts)
 	}
+
 	logW, err := createLogFileIfNotExists()
 	if err != nil {
 		return fmt.Errorf("failed to open log file: %v", err)
@@ -156,14 +157,9 @@ func Init(opts ...Option) error {
 		logW = io.MultiWriter(os.Stderr, logW)
 	}
 
-	setLogger(sOpts.level, sOpts.json, logW)
+	setDefaultLogger(sOpts.level, sOpts.json, logW)
 
-	if sOpts.level == DebugLevel {
-		klog.SetSlogLogger(DefaultLogger)
-	} else {
-		klog.SetOutput(NewDefaultLogWriter(InfoLevel))
-		klog.LogToStderr(false)
-	}
+	klog.SetSlogLogger(DefaultLogger)
 	grpclog.SetLoggerV2(grpclog.NewLoggerV2(
 		NewDefaultLogWriter(InfoLevel),
 		NewDefaultLogWriter(WarnLevel),
@@ -223,12 +219,17 @@ func Fatalf(format string, args ...any) {
 }
 
 // New returns a new logr.Logger.
+// deprecated: Remove usage and this method.
 func New(enabled bool) logr.Logger {
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelDebug,
-	}))
-	if !enabled {
-		logger = slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{}))
-	}
-	return logr.FromSlogHandler(logger.Handler())
+	return logr.FromSlogHandler(slog.Default().Handler())
+}
+
+// FromContext returns an slog.Logger from the context.
+func FromContext(ctx context.Context) *slog.Logger {
+	return logr.FromContextAsSlogLogger(ctx)
+}
+
+// IntoContext returns a new context with the provided logger.
+func IntoContext(ctx context.Context, logger *slog.Logger) context.Context {
+	return logr.NewContextWithSlogLogger(ctx, logger)
 }

@@ -88,7 +88,7 @@ func Splice(tunDev tun.Device, conn Connection, opts ...SpliceOption) error {
 			n, err := tunDev.Read(pkts, sizes, 0)
 			if err != nil {
 				if strings.Contains(err.Error(), "closed") {
-					slog.Debug("TUN device closed")
+					slog.Error("TUN device closed", slog.Any("error", err))
 					return net.ErrClosed
 				}
 
@@ -97,7 +97,7 @@ func Splice(tunDev tun.Device, conn Connection, opts ...SpliceOption) error {
 					continue
 				}
 
-				slog.Error("Failed to read from TUN", slog.Any("error", err))
+				slog.Error("Unexpected error reading from TUN", slog.Any("error", err))
 			}
 
 			for i := 0; i < n; i++ {
@@ -158,7 +158,7 @@ func Splice(tunDev tun.Device, conn Connection, opts ...SpliceOption) error {
 				n, err := conn.ReadPacket((*pkt)[tunOffset:])
 				if err != nil {
 					if strings.Contains(err.Error(), "closed") {
-						slog.Debug("Connection closed")
+						slog.Info("Connection closed")
 						return net.ErrClosed
 					}
 

@@ -61,10 +61,6 @@ var (
 
 func main() {
 	flag.Parse()
-	// TODO(dilyevsky): This should be part of log.Init.
-	if *logLevel == "" {
-		*logLevel = log.InfoLevel.String()
-	}
 	lOpts := []log.Option{
 		log.WithAlsoLogToStderr(),
 		log.WithLevelString(*logLevel),
