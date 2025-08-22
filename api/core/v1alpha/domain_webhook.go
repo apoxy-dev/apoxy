@@ -2,7 +2,6 @@ package v1alpha
 
 import (
 	"context"
-	"fmt"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
@@ -35,7 +34,6 @@ func (r *Domain) ValidateUpdate(ctx context.Context, obj runtime.Object) field.E
 }
 
 func (r *Domain) validate() field.ErrorList {
-	fmt.Println("Domain.validate")
 	errs := field.ErrorList{}
 	if r.Spec.TLS != nil {
 		ca := r.Spec.TLS.CertificateAuthority
