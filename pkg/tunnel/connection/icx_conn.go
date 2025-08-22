@@ -7,6 +7,7 @@ import (
 	"net"
 	"sync"
 
+	"github.com/apoxy-dev/apoxy/pkg/netstack"
 	"github.com/apoxy-dev/icx"
 	"github.com/apoxy-dev/icx/udp"
 	"gvisor.dev/gvisor/pkg/tcpip"
@@ -37,7 +38,7 @@ func NewICXConn(pc net.PacketConn, handler *icx.Handler) (*ICXConn, error) {
 	return &ICXConn{
 		pc:        pc,
 		handler:   handler,
-		localAddr: toFullAddress(localAddr),
+		localAddr: netstack.ToFullAddress(localAddr),
 		pktPool: sync.Pool{
 			New: func() any {
 				b := make([]byte, 0, 65535)
@@ -78,7 +79,7 @@ func (c *ICXConn) ReadPacket(pkt []byte) (int, error) {
 	copy((*phyFrame)[payloadOffset:], (*phyFrame)[:n])
 
 	// Encode the UDP frame in-place starting from offset
-	phyFrameLen, err := udp.Encode(*phyFrame, toFullAddress(remoteAddr), c.localAddr, n, true)
+	phyFrameLen, err := udp.Encode(*phyFrame, netstack.ToFullAddress(remoteAddr), c.localAddr, n, true)
 	if err != nil {
 		return 0, err
 	}
@@ -149,18 +150,4 @@ func (c *ICXConn) WritePacket(pkt []byte) ([]byte, error) {
 	}
 
 	return nil, nil
-}
-
-func toFullAddress(addr *net.UDPAddr) *tcpip.FullAddress {
-	if addr.IP.To4() != nil {
-		return &tcpip.FullAddress{
-			Addr: tcpip.AddrFrom4Slice(addr.IP.To4()[:]),
-			Port: uint16(addr.Port),
-		}
-	} else {
-		return &tcpip.FullAddress{
-			Addr: tcpip.AddrFrom16Slice(addr.IP.To16()[:]),
-			Port: uint16(addr.Port),
-		}
-	}
 }
