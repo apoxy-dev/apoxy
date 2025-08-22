@@ -16,6 +16,7 @@ import (
 // +genclient:nonNamespaced
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
+// Tunnel represents a tunnel network.
 type Tunnel struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -24,10 +25,35 @@ type Tunnel struct {
 	Status TunnelStatus `json:"status,omitempty"`
 }
 
+type EgressGatewaySpec struct {
+	// Whether the egress gateway is enabled. Default is false.
+	// When enabled, the egress gateway will be used to route traffic from the
+	// tunnel client to the internet. Traffic will be SNAT'ed.
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+}
+
 type TunnelSpec struct {
+	// Configures egress gateway mode on the tunnel. In this mode, the tunnel
+	// server acts as a gateway for outbound connections originating from the
+	// client side in addition to its default mode (where the connections
+	// arrive in the direction of the client).
+	// +optional
+	EgressGateway *EgressGatewaySpec `json:"egressGateway,omitempty"`
+	// FUTURE (dpeckett): Add a JWKS URL for validating per endpoint JWTs.
+}
+
+type TunnelCredentials struct {
+	// Bearer token for authentication with the tunnel server.
+	Token string `json:"token,omitempty"`
+	// FUTURE (dpeckett): We should use per endpoint JWTs instead of a single token.
 }
 
 type TunnelStatus struct {
+	// A list of public addresses of the server instances for this network.
+	Addresses []string `json:"addresses,omitempty"`
+	// Credentials for the tunnel server.
+	Credentials *TunnelCredentials `json:"credentials,omitempty"`
 }
 
 var _ resource.StatusSubResource = &TunnelStatus{}

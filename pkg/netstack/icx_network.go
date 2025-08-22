@@ -47,7 +47,7 @@ type ICXNetwork struct {
 // NewICXNetwork creates a new ICXNetwork instance with the given handler, physical connection, MTU, and resolve configuration.
 // If pcapPath is provided, it will create a packet sniffer that writes to the specified file.
 // The handler must be configured in layer3 mode.
-func NewICXNetwork(handler *icx.Handler, phy *l2pc.L2PacketConn, pathMTU int, resolveConf *network.ResolveConfig, pcapPath string) (*ICXNetwork, error) {
+func NewICXNetwork(handler *icx.Handler, phy *l2pc.L2PacketConn, mtu int, resolveConf *network.ResolveConfig, pcapPath string) (*ICXNetwork, error) {
 	ipt := newIPTables()
 	opts := stack.Options{
 		NetworkProtocols: []stack.NetworkProtocolFactory{
@@ -79,7 +79,7 @@ func NewICXNetwork(handler *icx.Handler, phy *l2pc.L2PacketConn, pathMTU int, re
 	}
 
 	nicID := ipstack.NextNICID()
-	linkEP := channel.New(4096, uint32(icx.MTU(pathMTU)), "")
+	linkEP := channel.New(4096, uint32(mtu), "")
 	var nicEP stack.LinkEndpoint = linkEP
 
 	var pcapFile *os.File
@@ -116,7 +116,7 @@ func NewICXNetwork(handler *icx.Handler, phy *l2pc.L2PacketConn, pathMTU int, re
 		incomingPacket: make(chan *buffer.View),
 		pktPool: sync.Pool{
 			New: func() any {
-				b := make([]byte, 0, pathMTU)
+				b := make([]byte, 0, 65535)
 				return &b
 			},
 		},

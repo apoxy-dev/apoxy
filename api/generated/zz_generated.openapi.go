@@ -84,7 +84,9 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.TunnelNodeList":                       schema_apoxy_api_core_v1alpha_TunnelNodeList(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.TunnelNodeSpec":                       schema_apoxy_api_core_v1alpha_TunnelNodeSpec(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.TunnelNodeStatus":                     schema_apoxy_api_core_v1alpha_TunnelNodeStatus(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.EgressGatewaySpec":                   schema_apoxy_api_core_v1alpha2_EgressGatewaySpec(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.Tunnel":                              schema_apoxy_api_core_v1alpha2_Tunnel(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.TunnelCredentials":                   schema_apoxy_api_core_v1alpha2_TunnelCredentials(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.TunnelList":                          schema_apoxy_api_core_v1alpha2_TunnelList(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.TunnelSpec":                          schema_apoxy_api_core_v1alpha2_TunnelSpec(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.TunnelStatus":                        schema_apoxy_api_core_v1alpha2_TunnelStatus(ref),
@@ -2766,11 +2768,31 @@ func schema_apoxy_api_core_v1alpha_TunnelNodeStatus(ref common.ReferenceCallback
 	}
 }
 
-func schema_apoxy_api_core_v1alpha2_Tunnel(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_apoxy_api_core_v1alpha2_EgressGatewaySpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
 				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"enabled": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Whether the egress gateway is enabled. Default is false. When enabled, the egress gateway will be used to route traffic from the tunnel client to the internet. Traffic will be SNAT'ed.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func schema_apoxy_api_core_v1alpha2_Tunnel(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "Tunnel represents a tunnel network.",
+				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"kind": {
 						SchemaProps: spec.SchemaProps{
@@ -2809,6 +2831,25 @@ func schema_apoxy_api_core_v1alpha2_Tunnel(ref common.ReferenceCallback) common.
 		},
 		Dependencies: []string{
 			"github.com/apoxy-dev/apoxy/api/core/v1alpha2.TunnelSpec", "github.com/apoxy-dev/apoxy/api/core/v1alpha2.TunnelStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
+	}
+}
+
+func schema_apoxy_api_core_v1alpha2_TunnelCredentials(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"token": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Bearer token for authentication with the tunnel server.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+			},
+		},
 	}
 }
 
@@ -2866,8 +2907,18 @@ func schema_apoxy_api_core_v1alpha2_TunnelSpec(ref common.ReferenceCallback) com
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
 				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"egressGateway": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Configures egress gateway mode on the tunnel. In this mode, the tunnel server acts as a gateway for outbound connections originating from the client side in addition to its default mode (where the connections arrive in the direction of the client).",
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.EgressGatewaySpec"),
+						},
+					},
+				},
 			},
 		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/core/v1alpha2.EgressGatewaySpec"},
 	}
 }
 
@@ -2876,8 +2927,33 @@ func schema_apoxy_api_core_v1alpha2_TunnelStatus(ref common.ReferenceCallback) c
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
 				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"addresses": {
+						SchemaProps: spec.SchemaProps{
+							Description: "A list of public addresses of the server instances for this network.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"credentials": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Credentials for the tunnel server.",
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.TunnelCredentials"),
+						},
+					},
+				},
 			},
 		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/core/v1alpha2.TunnelCredentials"},
 	}
 }
 
