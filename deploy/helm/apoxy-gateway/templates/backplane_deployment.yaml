@@ -39,6 +39,21 @@ spec:
       serviceAccountName: {{ include "apoxy-gateway.serviceAccountName" . }}
       securityContext:
         {{- toYaml .Values.backplane.podSecurityContext | nindent 8 }}
+      initContainers:
+        - name: load-kernel-modules
+          image: busybox:latest
+          command:
+            - /bin/sh
+            - -c
+            - |
+              modprobe ip_tables || true
+              modprobe ip6_tables || true
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: lib-modules
+              mountPath: /lib/modules
+              readOnly: true
       containers:
         - name: backplane
           securityContext:
@@ -119,7 +134,10 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.backplane.extraVolumes }}
       volumes:
+        - name: lib-modules
+          hostPath:
+            path: /lib/modules
+        {{- with .Values.backplane.extraVolumes }}
         {{- toYaml . | nindent 8 }}
-      {{- end }}
+        {{- end }}
