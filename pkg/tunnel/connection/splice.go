@@ -114,23 +114,16 @@ func Splice(tunDev tun.Device, conn Connection, opts ...SpliceOption) error {
 
 				icmp, err := conn.WritePacket(packetData)
 				if err != nil {
-					if strings.Contains(err.Error(), "closed") {
-						slog.Debug("Connection closed")
-						return net.ErrClosed
-					}
-
 					slog.Error("Failed to write to connection", slog.Any("error", err))
-				}
-				if len(icmp) > 0 {
-					slog.Debug("Sending ICMP packet")
-					if _, err := tunDev.Write([][]byte{icmp}, 0); err != nil {
-						if strings.Contains(err.Error(), "closed") {
-							slog.Debug("TUN device closed")
-							return net.ErrClosed
-						}
 
-						slog.Error("Failed to write ICMP packet", slog.Any("error", err))
+					if len(icmp) > 0 {
+						slog.Debug("Sending ICMP packet")
+						if _, err := tunDev.Write([][]byte{icmp}, 0); err != nil {
+							slog.Error("Failed to write ICMP packet", slog.Any("error", err))
+						}
 					}
+
+					return fmt.Errorf("failed to write to connection: %w", err)
 				}
 			}
 		}
@@ -157,11 +150,6 @@ func Splice(tunDev tun.Device, conn Connection, opts ...SpliceOption) error {
 				pkt := pktPool.Get().(*[]byte)
 				n, err := conn.ReadPacket((*pkt)[tunOffset:])
 				if err != nil {
-					if strings.Contains(err.Error(), "closed") {
-						slog.Info("Connection closed")
-						return net.ErrClosed
-					}
-
 					slog.Error("Failed to read from connection", slog.Any("error", err))
 					return fmt.Errorf("failed to read from connection: %w", err)
 				}

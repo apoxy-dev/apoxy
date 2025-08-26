@@ -6,11 +6,11 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
-	"strings"
 	"sync"
 	"sync/atomic"
 
 	"github.com/dpeckett/triemap"
+	connectip "github.com/quic-go/connect-ip-go"
 
 	"github.com/apoxy-dev/apoxy/pkg/netstack"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/metrics"
@@ -41,17 +41,25 @@ func newMuxedConn() *muxedConn {
 	}
 }
 
-func (m *muxedConn) readPackets(src netip.Prefix, conn Connection) {
+func (m *muxedConn) readFromConn(src netip.Prefix, conn Connection) {
 	for {
 		pkt := m.packetBufferPool.Get().(*[]byte)
 
 		n, err := conn.ReadPacket(*pkt)
 		if err != nil {
-			if !errors.Is(err, net.ErrClosed) {
-				slog.Error("Failed to read from connection", slog.Any("error", err))
+			// If the connection is closed, remove it from the multiplexer and quit
+			// the read loop. Otherwise, treat it as transient error and just log it.
+			var closedErr *connectip.CloseError
+			if errors.As(err, &closedErr) {
+				slog.Info("Connection closed", slog.Any("src", src), slog.Bool("remoteClosed", closedErr.Remote))
+				m.conns.RemoveValue(conn)
+				m.packetBufferPool.Put(pkt)
+				return
 			}
-			slog.Info("Connection closed", slog.Any("src", src))
-			return
+
+			slog.Error("Failed to read from connection", slog.Any("error", err))
+			m.packetBufferPool.Put(pkt)
+			continue
 		}
 
 		slog.Debug("Read packet from connection", slog.Int("bytes", n))
@@ -76,7 +84,7 @@ func (m *muxedConn) Add(addr netip.Prefix, conn Connection) error {
 		return fmt.Errorf("invalid prefix for connection: %v", addr)
 	}
 	m.conns.Insert(addr, conn)
-	go m.readPackets(addr, conn)
+	go m.readFromConn(addr, conn)
 	return nil
 }
 
@@ -169,26 +177,38 @@ func (m *muxedConn) ReadPacket(pkt []byte) (int, error) {
 	return n, nil
 }
 
-func (m *muxedConn) writePacket(addr netip.Addr, pkt []byte) ([]byte, error) {
+func (m *muxedConn) writeToConn(addr netip.Addr, pkt []byte) []byte {
 	if !addr.IsValid() || !addr.IsGlobalUnicast() {
 		slog.Warn("Invalid IP", slog.String("ip", addr.String()))
-		return nil, nil
+		return nil
 	}
 
 	conn, ok := m.conns.Get(addr)
 	if !ok {
-		return nil, fmt.Errorf("no matching tunnel found for IP: %s", addr.String())
+		slog.Warn("No matching tunnel found for IP", slog.String("ip", addr.String()))
+		return nil
 	}
 
 	metrics.TunnelPacketsSent.Inc()
 	metrics.TunnelBytesSent.Add(float64(len(pkt)))
 
 	icmp, err := conn.WritePacket(pkt)
-	if err != nil && strings.Contains(err.Error(), "closed") { // Don't propagate close of underlying connection.
-		return icmp, err
+	var closedErr *connectip.CloseError
+	if err != nil {
+		if errors.As(err, &closedErr) {
+			slog.Info("Removing closed connection",
+				slog.String("ip", addr.String()),
+				slog.Bool("remoteClosed", closedErr.Remote))
+			m.conns.RemoveValue(conn)
+			return icmp
+		}
+
+		slog.Error("Failed to write to connection",
+			slog.String("ip", addr.String()),
+			slog.Any("error", err))
 	}
 
-	return icmp, nil
+	return icmp
 }
 
 // SrcMuxedConn implements Connection that multiplexes multiple Connections based
@@ -239,7 +259,7 @@ func (m *SrcMuxedConn) WritePacket(pkt []byte) ([]byte, error) {
 
 	slog.Debug("Packet source", slog.String("ip", srcAddr.String()))
 
-	return m.writePacket(srcAddr, pkt)
+	return m.writeToConn(srcAddr, pkt), nil
 }
 
 // SrcMuxedConn implements Connection that multiplexes multiple Connections based
@@ -290,5 +310,5 @@ func (m *DstMuxedConn) WritePacket(pkt []byte) ([]byte, error) {
 
 	slog.Debug("Packet destination", slog.String("ip", dstAddr.String()))
 
-	return m.writePacket(dstAddr, pkt)
+	return m.writeToConn(dstAddr, pkt), nil
 }
