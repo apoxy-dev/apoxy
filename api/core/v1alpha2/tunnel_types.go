@@ -28,32 +28,23 @@ type Tunnel struct {
 type EgressGatewaySpec struct {
 	// Whether the egress gateway is enabled. Default is false.
 	// When enabled, the egress gateway will be used to route traffic from the
-	// tunnel client to the internet. Traffic will be SNAT'ed.
+	// tunnel agent to the internet. Traffic will be SNAT'ed.
 	// +optional
 	Enabled bool `json:"enabled,omitempty"`
 }
 
 type TunnelSpec struct {
 	// Configures egress gateway mode on the tunnel. In this mode, the tunnel
-	// server acts as a gateway for outbound connections originating from the
-	// client side in addition to its default mode (where the connections
-	// arrive in the direction of the client).
+	// relay acts as a gateway for outbound connections originating from the
+	// agent side in addition to its default mode (where the connections arrive
+	// in the direction of the agent).
 	// +optional
 	EgressGateway *EgressGatewaySpec `json:"egressGateway,omitempty"`
-	// FUTURE (dpeckett): Add a JWKS URL for validating per endpoint JWTs.
-}
-
-type TunnelCredentials struct {
-	// Bearer token for authentication with the tunnel server.
-	Token string `json:"token,omitempty"`
-	// FUTURE (dpeckett): We should use per endpoint JWTs instead of a single token.
 }
 
 type TunnelStatus struct {
-	// A list of public addresses of the server instances for this network.
+	// A list of public address/ports of the relay instances for this network.
 	Addresses []string `json:"addresses,omitempty"`
-	// Credentials for the tunnel server.
-	Credentials *TunnelCredentials `json:"credentials,omitempty"`
 }
 
 var _ resource.StatusSubResource = &TunnelStatus{}
@@ -123,4 +114,11 @@ var _ resource.ObjectList = &TunnelList{}
 
 func (pl *TunnelList) GetListMeta() *metav1.ListMeta {
 	return &pl.ListMeta
+}
+
+// TunnelRef is a reference to a Tunnel.
+type TunnelRef struct {
+	// Name of the Tunnel. Required.
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
 }

@@ -18,31 +18,26 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip"
 )
 
+var (
+	token              string
+	insecureSkipVerify bool
+	socksListenAddr    string
+)
+
 var tunnelCmd = &cobra.Command{
 	Use:   "tunnel",
-	Short: "Manage icx tunnels",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		return nil
-	},
+	Short: "Manage tunnels",
+	Long:  "Manage icx tunnels and connect to the remote Apoxy Edge fabric.",
 }
 
-var connectTunnelCmd = &cobra.Command{
-	Use:   "connect [tunnel address]",
-	Short: "Connect to an icx tunnel",
-	Long:  `Establish a connection to the specified icx tunnel.`,
+var tunnelRunCmd = &cobra.Command{
+	Use:   "run [address:port]",
+	Short: "Run a tunnel",
+	Long:  "Create a secure tunnel to the remote Apoxy Edge fabric.",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// Address/port of the tunnel relay to connect to.
 		address := args[0]
-
-		token, err := cmd.Flags().GetString("token")
-		if err != nil {
-			return err
-		}
-
-		insecureSkipVerify, err := cmd.Flags().GetBool("insecure-skip-verify")
-		if err != nil {
-			return err
-		}
 
 		pc, err := net.ListenPacket("udp", ":0")
 		if err != nil {
@@ -72,7 +67,7 @@ var connectTunnelCmd = &cobra.Command{
 
 		connectResp, err := kexClient.Connect(cmd.Context(), "")
 		if err != nil {
-			return fmt.Errorf("failed to connect to tunnel control server: %w", err)
+			return fmt.Errorf("failed to connect to tunnel relay: %w", err)
 		}
 
 		// Ensure we disconnect when the command exits
@@ -120,16 +115,18 @@ var connectTunnelCmd = &cobra.Command{
 		}
 		defer net.Close()
 
-		// TODO (dpeckett): Start a SOCKS5 proxy and wait for shutdown signals.
+		// TODO (dpeckett): Start a SOCKS5 proxy and wait for shutdown signals
+		// (probably as part of a router abstraction).
 
 		return nil
 	},
 }
 
 func init() {
-	connectTunnelCmd.Flags().String("token", "", "The token to use for authenticating with the tunnel server.")
-	connectTunnelCmd.MarkFlagRequired("token")
-	connectTunnelCmd.Flags().Bool("insecure-skip-verify", false, "Skip TLS certificate verification.")
+	tunnelRunCmd.Flags().StringVar(&token, "token", "", "The token to use for authenticating with the tunnel relay.")
+	tunnelRunCmd.MarkFlagRequired("token")
+	tunnelRunCmd.Flags().BoolVar(&insecureSkipVerify, "insecure-skip-verify", false, "Skip TLS certificate verification.")
+	tunnelRunCmd.Flags().StringVar(&socksListenAddr, "socks-addr", "localhost:1080", "Listen address for SOCKS proxy.")
 
-	tunnelCmd.AddCommand(connectTunnelCmd)
+	tunnelCmd.AddCommand(tunnelRunCmd)
 }
