@@ -312,7 +312,6 @@ func (r *TunnelNodeDNSReconciler) recursiveResolve(
 		}
 
 		g.Go(func() error {
-			apoxylog.Debugf("Trying recursive resolution for %s via %s", name, addr)
 
 			response, _, err := client.ExchangeContext(ctx, rReq, addr)
 			if err != nil {
@@ -328,8 +327,6 @@ func (r *TunnelNodeDNSReconciler) recursiveResolve(
 				response.CopyTo(out)
 			}
 			ans = append(ans, response.Answer...)
-
-			apoxylog.Debugf("successful recursive resolution for %s via %s", name, addr)
 
 			return nil
 		})

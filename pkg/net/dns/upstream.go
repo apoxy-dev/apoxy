@@ -45,9 +45,7 @@ func isULA(addr netip.Addr) bool {
 
 // ServeDNS implements the plugin.Handler interface.
 func (u *upstream) ServeDNS(ctx context.Context, w mdns.ResponseWriter, r *mdns.Msg) (int, error) {
-	log.Debugf("Upstream.ServeDNS: %v", r.Question)
 	if len(u.Upstreams) == 0 {
-		log.Debugf("No upstreams, using next")
 		return u.Next.ServeDNS(ctx, w, r)
 	}
 
@@ -66,13 +64,11 @@ func (u *upstream) ServeDNS(ctx context.Context, w mdns.ResponseWriter, r *mdns.
 		if dotCount < u.Ndots {
 			// Try search domains first, then original name if all fail
 			if response.Rcode == mdns.RcodeNameError {
-				log.Debugf("Name has %d dots (< ndots=%d), trying search domains first: %s", dotCount, u.Ndots, originalName)
 				response = u.trySearchDomains(r, originalName, response)
 			}
 		} else {
 			// Try original name first (already done), then search domains if it failed
 			if response.Rcode == mdns.RcodeNameError {
-				log.Debugf("Name has %d dots (>= ndots=%d), trying search domains after original: %s", dotCount, u.Ndots, originalName)
 				response = u.trySearchDomains(r, originalName, response)
 			}
 		}
@@ -108,8 +104,6 @@ func (u *upstream) ServeDNS(ctx context.Context, w mdns.ResponseWriter, r *mdns.
 func (u *upstream) queryUpstream(r *mdns.Msg) (*mdns.Msg, int, error) {
 	upstream := u.Upstreams[rand.Intn(len(u.Upstreams))]
 
-	log.Debugf("Using upstream %v:%d", upstream, upstreamPort)
-
 	client := &mdns.Client{}
 	client.Dialer = &net.Dialer{
 		Timeout: 2 * time.Second,
@@ -140,7 +134,6 @@ func (u *upstream) trySearchDomains(originalQuery *mdns.Msg, originalName string
 		searchName := strings.TrimSuffix(originalName, ".") + "." + domain + "."
 		searchQuery.Question[0].Name = searchName
 
-		log.Debugf("Trying search domain query: %s", searchName)
 		searchResponse, _, searchErr := u.queryUpstream(searchQuery)
 		if searchErr != nil {
 			continue // Try next search domain
@@ -148,7 +141,6 @@ func (u *upstream) trySearchDomains(originalQuery *mdns.Msg, originalName string
 
 		// If we got a successful response, use it
 		if searchResponse.Rcode == mdns.RcodeSuccess {
-			log.Debugf("Search domain query succeeded with domain: %s", domain)
 			// Rewrite the response to use the original query name
 			for _, answer := range searchResponse.Answer {
 				answer.Header().Name = originalName
