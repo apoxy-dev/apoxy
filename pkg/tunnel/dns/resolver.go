@@ -319,6 +319,9 @@ func (r *TunnelNodeDNSReconciler) recursiveResolve(
 				return err
 			}
 			response = r.convertIPv4ToIPv6Response(req, response, upstream)
+			if response == nil {
+				return nil
+			}
 
 			mu.Lock()
 			defer mu.Unlock()
