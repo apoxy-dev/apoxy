@@ -253,18 +253,37 @@ func (r *TunnelNodeDNSReconciler) serveDNS(ctx context.Context, next plugin.Hand
 
 func (r *TunnelNodeDNSReconciler) upstreamHostFromAddr(addr netip.Addr) (string, error) {
 	if !addr.Is6() {
-		return "", errors.New("invalid IP address")
+		return "", fmt.Errorf("expecting v6 address, got %s", addr.String())
 	}
 
-	ipv6Bytes := addr.As16()
-	ipv4Bytes := tunResolver.Addr().As4()
-	ipv6Bytes[12] = ipv4Bytes[0]
-	ipv6Bytes[13] = ipv4Bytes[1]
-	ipv6Bytes[14] = ipv4Bytes[2]
-	ipv6Bytes[15] = ipv4Bytes[3]
+	v6, v4 := addr.As16(), tunResolver.Addr().As4()
+	copy(v6[12:], v4[:])
 
-	srvAddr := netip.AddrFrom16(ipv6Bytes)
+	srvAddr := netip.AddrFrom16(v6)
 	return netip.AddrPortFrom(srvAddr, tunResolver.Port()).String(), nil
+}
+
+// aToAAAA converts A records to AAAA records in-place by nesting A record's
+// IPv4 address into the IPv6 /96 address.
+func aToAAAA(req *dns.Msg, v6base netip.Addr, resp *dns.Msg) {
+	v6baseAs16 := v6base.As16()
+	for i, rr := range resp.Answer {
+		if a, ok := rr.(*dns.A); ok {
+			aaaa := new(dns.AAAA)
+			aaaa.Hdr = dns.RR_Header{
+				Name:   a.Hdr.Name,
+				Rrtype: dns.TypeAAAA,
+				Class:  a.Hdr.Class,
+				Ttl:    a.Hdr.Ttl,
+			}
+
+			aaaa.AAAA = make(net.IP, net.IPv6len)
+			copy(aaaa.AAAA[:12], v6baseAs16[:12])
+			copy(aaaa.AAAA[12:], a.A)
+
+			resp.Answer[i] = aaaa
+		}
+	}
 }
 
 func (r *TunnelNodeDNSReconciler) recursiveResolve(
@@ -312,24 +331,26 @@ func (r *TunnelNodeDNSReconciler) recursiveResolve(
 		}
 
 		g.Go(func() error {
-
-			response, _, err := client.ExchangeContext(ctx, rReq, addr)
+			resp, _, err := client.ExchangeContext(ctx, rReq, addr)
 			if err != nil {
 				apoxylog.Debugf("recursive query failed for %s via %s: %v", name, addr, err)
 				return err
 			}
-			response = r.convertIPv4ToIPv6Response(req, response, upstream)
-			if response == nil {
+			// If the response is not successful or there are no answers, return immediately
+			// as no conversion is possible.
+			if resp.Rcode != dns.RcodeSuccess || len(resp.Answer) == 0 {
 				return nil
 			}
+
+			aToAAAA(req, upstream, resp)
 
 			mu.Lock()
 			defer mu.Unlock()
 			if out == nil { // Copy first ever response in its entirety, answers will be replaced later.
 				out = &dns.Msg{}
-				response.CopyTo(out)
+				resp.CopyTo(out)
 			}
-			ans = append(ans, response.Answer...)
+			ans = append(ans, resp.Answer...)
 
 			return nil
 		})
@@ -357,40 +378,6 @@ func (r *TunnelNodeDNSReconciler) recursiveResolve(
 	}
 
 	return dns.RcodeSuccess, nil
-}
-
-func (r *TunnelNodeDNSReconciler) convertIPv4ToIPv6Response(originalReq *dns.Msg, ipv4Response *dns.Msg, baseIP netip.Addr) *dns.Msg {
-	if ipv4Response == nil || len(ipv4Response.Answer) == 0 {
-		return nil
-	}
-	ipv6Response := new(dns.Msg)
-	ipv6Response.SetReply(originalReq)
-	ipv6Response.Authoritative = ipv4Response.Authoritative
-	ipv6Response.RecursionAvailable = ipv4Response.RecursionAvailable
-	ipv6Response.Rcode = ipv4Response.Rcode
-	baseBytes := baseIP.As16()
-	for _, rr := range ipv4Response.Answer {
-		if aRecord, ok := rr.(*dns.A); ok {
-			var ipv6Bytes [16]byte
-			copy(ipv6Bytes[:12], baseBytes[:12])
-			copy(ipv6Bytes[12:], aRecord.A)
-			ipv6Addr := netip.AddrFrom16(ipv6Bytes)
-			aaaa := new(dns.AAAA)
-			aaaa.Hdr = dns.RR_Header{
-				Name:   aRecord.Hdr.Name,
-				Rrtype: dns.TypeAAAA,
-				Class:  aRecord.Hdr.Class,
-				Ttl:    aRecord.Hdr.Ttl,
-			}
-			aaaa.AAAA = ipv6Addr.AsSlice()
-			ipv6Response.Answer = append(ipv6Response.Answer, aaaa)
-		} else {
-			ipv6Response.Answer = append(ipv6Response.Answer, rr)
-		}
-	}
-	ipv6Response.Ns = ipv4Response.Ns
-	ipv6Response.Extra = ipv4Response.Extra
-	return ipv6Response
 }
 
 // Resolver returns a plugin.Handler that can be used with the CoreDNS server.
