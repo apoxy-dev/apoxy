@@ -96,6 +96,12 @@ type tunnelNodeReconciler struct {
 	tunDialer *tunnel.TunnelDialer
 	tunMu     sync.RWMutex
 	tunConns  map[uuid.UUID]*tunConn
+
+	// Dial parameters protected by dialMu
+	dialMu     sync.RWMutex
+	tunnelUID  uuid.UUID
+	srvAddr    string
+	clientOpts []tunnel.TunnelClientOption
 }
 
 var tunnelRunCmd = &cobra.Command{
@@ -314,6 +320,7 @@ func (t *tunnelNodeReconciler) reconcile(ctx context.Context, req ctrl.Request) 
 
 	log.Info("Not enough connections to this TunnelNode, attempting to establish more", slog.Int("min", minConns), slog.Int("cur", n))
 
+	// Prepare dial parameters
 	cOpts := []tunnel.TunnelClientOption{}
 	tnUUID, err := uuid.Parse(string(tunnelNode.ObjectMeta.UID))
 	if err != nil { // This can only happen in a test environment.
@@ -353,6 +360,13 @@ func (t *tunnelNodeReconciler) reconcile(ctx context.Context, req ctrl.Request) 
 		cOpts = append(cOpts, tunnel.WithInsecureSkipVerify(true))
 	}
 
+	// Update dial parameters with write lock
+	t.dialMu.Lock()
+	t.tunnelUID = tnUUID
+	t.srvAddr = srvAddr
+	t.clientOpts = cOpts
+	t.dialMu.Unlock()
+
 	if minConns-n < 0 {
 		// Cancel excess connections.
 		excess := n - minConns
@@ -374,7 +388,15 @@ func (t *tunnelNodeReconciler) reconcile(ctx context.Context, req ctrl.Request) 
 			go func() {
 				stopCh := make(chan struct{})
 				wait.BackoffUntil(func() {
-					c, err := t.tunDialer.Dial(ctx, tnUUID, srvAddr, cOpts...)
+					// Read dial parameters with read lock
+					t.dialMu.RLock()
+					tunnelUID := t.tunnelUID
+					srvAddr := t.srvAddr
+					clientOpts := make([]tunnel.TunnelClientOption, len(t.clientOpts))
+					copy(clientOpts, t.clientOpts)
+					t.dialMu.RUnlock()
+
+					c, err := t.tunDialer.Dial(ctx, tunnelUID, srvAddr, clientOpts...)
 					if err != nil {
 						log.Error("failed to start tunnel client", slog.Any("error", err))
 						return
