@@ -4,8 +4,8 @@ go 1.24.3
 
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.23.2
-	github.com/MicahParks/jwkset v0.9.5
-	github.com/MicahParks/keyfunc/v3 v3.3.10
+	github.com/MicahParks/jwkset v0.9.6
+	github.com/MicahParks/keyfunc/v3 v3.6.1
 	github.com/adrg/xdg v0.5.3
 	github.com/alphadose/haxmap v1.4.1
 	github.com/anatol/vmtest v0.0.0-20250318022921-2f32244e2f0f
@@ -35,7 +35,7 @@ require (
 	github.com/go-logr/logr v1.4.3
 	github.com/goccy/go-json v0.9.11
 	github.com/golang-jwt/jwt v3.2.2+incompatible
-	github.com/golang-jwt/jwt/v5 v5.2.2
+	github.com/golang-jwt/jwt/v5 v5.3.0
 	github.com/golang-migrate/migrate/v4 v4.17.1
 	github.com/golang/protobuf v1.5.4
 	github.com/google/go-cmp v0.7.0

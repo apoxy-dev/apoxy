@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"reflect"
+	"time"
 
 	"github.com/MicahParks/keyfunc/v3"
 	"github.com/golang-jwt/jwt/v5"
@@ -69,7 +70,10 @@ type RemoteValidator struct {
 
 // NewRemoteValidator creates a new Validator with the public key.
 func NewRemoteValidator(ctx context.Context, urls []string) (*RemoteValidator, error) {
-	fn, err := keyfunc.NewDefaultCtx(ctx, urls)
+	fn, err := keyfunc.NewDefaultOverrideCtx(ctx, urls, keyfunc.Override{
+		HTTPTimeout:      10 * time.Second,
+		RateLimitWaitMax: 10 * time.Second,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create keyfunc: %w", err)
 	}
