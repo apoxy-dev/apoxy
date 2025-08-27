@@ -48,6 +48,16 @@ const (
 	tunnelNodeEpochLabel = "core.apoxy.dev/tunnelnode-epoch"
 )
 
+// TunnelNodeNotReadyError wraps a ctrl.Result for cases where TunnelNode is not ready
+type TunnelNodeNotReadyError struct {
+	Result  ctrl.Result
+	Message string
+}
+
+func (e *TunnelNodeNotReadyError) Error() string {
+	return e.Message
+}
+
 var (
 	scheme       = runtime.NewScheme()
 	codecFactory = serializer.NewCodecFactory(scheme)
@@ -273,8 +283,8 @@ func (t *tunnelNodeReconciler) setupWithManager(
 }
 
 // buildTunnelClientOptions creates TunnelClientOptions from a TunnelNode.
-// Returns the options and server address, or an error with requeue result if the TunnelNode is not ready.
-func (t *tunnelNodeReconciler) buildTunnelClientOptions(ctx context.Context, tunnelNode *corev1alpha.TunnelNode) ([]tunnel.TunnelClientOption, string, *ctrl.Result, error) {
+// Returns the options and server address, or a TunnelNodeNotReadyError if the TunnelNode is not ready.
+func (t *tunnelNodeReconciler) buildTunnelClientOptions(ctx context.Context, tunnelNode *corev1alpha.TunnelNode) ([]tunnel.TunnelClientOption, string, error) {
 	log := log.FromContext(ctx)
 
 	cOpts := []tunnel.TunnelClientOption{}
@@ -282,13 +292,16 @@ func (t *tunnelNodeReconciler) buildTunnelClientOptions(ctx context.Context, tun
 	// Validate TunnelNode UID (we don't need to store it, just validate it)
 	if _, err := uuid.Parse(string(tunnelNode.ObjectMeta.UID)); err != nil {
 		log.Error("Failed to parse UID", slog.Any("error", err))
-		return nil, "", nil, err
+		return nil, "", err
 	}
 
 	// Check for credentials and add auth token
 	if tunnelNode.Status.Credentials == nil || tunnelNode.Status.Credentials.Token == "" {
 		log.Error("TunnelNode has no credentials, waiting for credentials")
-		return nil, "", &ctrl.Result{RequeueAfter: time.Second}, nil
+		return nil, "", &TunnelNodeNotReadyError{
+			Result:  ctrl.Result{RequeueAfter: time.Second},
+			Message: "TunnelNode has no credentials",
+		}
 	}
 	cOpts = append(cOpts, tunnel.WithAuthToken(tunnelNode.Status.Credentials.Token))
 
@@ -297,7 +310,10 @@ func (t *tunnelNodeReconciler) buildTunnelClientOptions(ctx context.Context, tun
 	if !t.cfg.IsLocalMode {
 		if len(tunnelNode.Status.Addresses) == 0 {
 			log.Error("TunnelNode has no addresses")
-			return nil, "", &ctrl.Result{RequeueAfter: time.Second}, nil
+			return nil, "", &TunnelNodeNotReadyError{
+				Result:  ctrl.Result{RequeueAfter: time.Second},
+				Message: "TunnelNode has no addresses",
+			}
 		}
 		// TODO: Pick unused address at random if available.
 		srvAddr = tunnelNode.Status.Addresses[rand.Intn(len(tunnelNode.Status.Addresses))]
@@ -315,7 +331,7 @@ func (t *tunnelNodeReconciler) buildTunnelClientOptions(ctx context.Context, tun
 		cOpts = append(cOpts, tunnel.WithInsecureSkipVerify(true))
 	}
 
-	return cOpts, srvAddr, nil, nil
+	return cOpts, srvAddr, nil
 }
 
 func (t *tunnelNodeReconciler) reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -361,12 +377,12 @@ func (t *tunnelNodeReconciler) reconcile(ctx context.Context, req ctrl.Request) 
 	log.Info("Not enough connections to this TunnelNode, attempting to establish more", slog.Int("min", minConns), slog.Int("cur", n))
 
 	// Build tunnel client options
-	cOpts, srvAddr, requeueResult, err := t.buildTunnelClientOptions(ctx, &tunnelNode)
+	cOpts, srvAddr, err := t.buildTunnelClientOptions(ctx, &tunnelNode)
 	if err != nil {
+		if notReadyErr, ok := err.(*TunnelNodeNotReadyError); ok {
+			return notReadyErr.Result, nil
+		}
 		return ctrl.Result{}, err
-	}
-	if requeueResult != nil {
-		return *requeueResult, nil
 	}
 
 	tnUUID, err := uuid.Parse(string(tunnelNode.ObjectMeta.UID))
@@ -400,7 +416,7 @@ func (t *tunnelNodeReconciler) reconcile(ctx context.Context, req ctrl.Request) 
 				wait.BackoffUntil(func() {
 					c, err := t.tunDialer.Dial(ctx, tnUUID, srvAddr, cOpts...)
 					if err != nil {
-						log.Error("failed to start tunnel client", slog.Any("error", err))
+						log.Error("Failed to start tunnel client", slog.Any("error", err))
 
 						// Ensure at most one refresh per second.
 						refreshMu.Lock()
@@ -408,26 +424,22 @@ func (t *tunnelNodeReconciler) reconcile(ctx context.Context, req ctrl.Request) 
 						if time.Since(lastRefresh) < time.Second {
 							return
 						}
-						log.Debug("refreshing TunnelNode options")
+						log.Debug("Refreshing TunnelNode options")
 						lastRefresh = time.Now()
 						// Fetch fresh TunnelNode and rebuild options
 						var freshTunnelNode corev1alpha.TunnelNode
 						if getErr := t.Get(ctx, req.NamespacedName, &freshTunnelNode); getErr != nil {
-							log.Error("failed to get fresh TunnelNode", slog.Any("error", getErr))
+							log.Error("Failed to get fresh TunnelNode", slog.Any("error", getErr))
 							return
 						}
 
 						// Rebuild options with fresh TunnelNode
-						cOpts, srvAddr, requeueResult, err = t.buildTunnelClientOptions(ctx, &freshTunnelNode)
+						cOpts, srvAddr, err = t.buildTunnelClientOptions(ctx, &freshTunnelNode)
 						if err != nil {
-							log.Error("failed to rebuild TunnelNode options", slog.Any("error", err))
+							log.Error("Failed to rebuild TunnelNode options", slog.Any("error", err))
 							return
 						}
-						if requeueResult != nil {
-							log.Error("TunnelNode unexpectedly not ready, will retry")
-							return
-						}
-						log.Info("successfully refreshed TunnelNode options, reconnecting...")
+						log.Info("Successfully refreshed TunnelNode options, reconnecting...")
 						return
 					}
 
