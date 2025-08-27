@@ -272,6 +272,52 @@ func (t *tunnelNodeReconciler) setupWithManager(
 		Complete(reconcile.Func(t.reconcile))
 }
 
+// buildTunnelClientOptions creates TunnelClientOptions from a TunnelNode.
+// Returns the options and server address, or an error with requeue result if the TunnelNode is not ready.
+func (t *tunnelNodeReconciler) buildTunnelClientOptions(ctx context.Context, tunnelNode *corev1alpha.TunnelNode) ([]tunnel.TunnelClientOption, string, *ctrl.Result, error) {
+	log := log.FromContext(ctx)
+
+	cOpts := []tunnel.TunnelClientOption{}
+
+	// Validate TunnelNode UID (we don't need to store it, just validate it)
+	if _, err := uuid.Parse(string(tunnelNode.ObjectMeta.UID)); err != nil {
+		log.Error("Failed to parse UID", slog.Any("error", err))
+		return nil, "", nil, err
+	}
+
+	// Check for credentials and add auth token
+	if tunnelNode.Status.Credentials == nil || tunnelNode.Status.Credentials.Token == "" {
+		log.Error("TunnelNode has no credentials, waiting for credentials")
+		return nil, "", &ctrl.Result{RequeueAfter: time.Second}, nil
+	}
+	cOpts = append(cOpts, tunnel.WithAuthToken(tunnelNode.Status.Credentials.Token))
+
+	// Determine server address
+	var srvAddr string
+	if !t.cfg.IsLocalMode {
+		if len(tunnelNode.Status.Addresses) == 0 {
+			log.Error("TunnelNode has no addresses")
+			return nil, "", &ctrl.Result{RequeueAfter: time.Second}, nil
+		}
+		// TODO: Pick unused address at random if available.
+		srvAddr = tunnelNode.Status.Addresses[rand.Intn(len(tunnelNode.Status.Addresses))]
+	} else {
+		apiServerHost := "localhost"
+		if os.Getenv("APOXY_API_SERVER_HOST") != "" {
+			apiServerHost = os.Getenv("APOXY_API_SERVER_HOST")
+		}
+		srvAddr = apiServerHost + ":9443"
+		log.Info("Using tunnel proxy server address", slog.String("address", srvAddr))
+	}
+
+	// Add insecure skip verify if needed
+	if t.cfg.IsLocalMode || insecureSkipVerify {
+		cOpts = append(cOpts, tunnel.WithInsecureSkipVerify(true))
+	}
+
+	return cOpts, srvAddr, nil, nil
+}
+
 func (t *tunnelNodeReconciler) reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := log.FromContext(ctx)
 	log.Info("Reconciling TunnelNode")
@@ -314,43 +360,19 @@ func (t *tunnelNodeReconciler) reconcile(ctx context.Context, req ctrl.Request) 
 
 	log.Info("Not enough connections to this TunnelNode, attempting to establish more", slog.Int("min", minConns), slog.Int("cur", n))
 
-	cOpts := []tunnel.TunnelClientOption{}
+	// Build tunnel client options
+	cOpts, srvAddr, requeueResult, err := t.buildTunnelClientOptions(ctx, &tunnelNode)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if requeueResult != nil {
+		return *requeueResult, nil
+	}
+
 	tnUUID, err := uuid.Parse(string(tunnelNode.ObjectMeta.UID))
 	if err != nil { // This can only happen in a test environment.
 		log.Error("Failed to parse UID", slog.Any("error", err))
 		return ctrl.Result{}, err
-	}
-	if tunnelNode.Status.Credentials == nil || tunnelNode.Status.Credentials.Token == "" {
-		log.Error("TunnelNode has no credentials, waiting for credentials")
-		return ctrl.Result{
-			RequeueAfter: time.Second,
-		}, nil
-	} else {
-		cOpts = append(cOpts, tunnel.WithAuthToken(tunnelNode.Status.Credentials.Token))
-	}
-
-	var srvAddr string
-	if !t.cfg.IsLocalMode {
-		if len(tunnelNode.Status.Addresses) == 0 {
-			log.Error("TunnelNode has no addresses")
-			return ctrl.Result{
-				RequeueAfter: time.Second,
-			}, nil
-		} else {
-			// TODO: Pick unused address at random if available.
-			srvAddr = tunnelNode.Status.Addresses[rand.Intn(len(tunnelNode.Status.Addresses))]
-		}
-	} else {
-		apiServerHost := "localhost"
-		if os.Getenv("APOXY_API_SERVER_HOST") != "" {
-			apiServerHost = os.Getenv("APOXY_API_SERVER_HOST")
-		}
-		srvAddr = apiServerHost + ":9443"
-		log.Info("Using tunnel proxy server address", slog.String("address", srvAddr))
-	}
-
-	if t.cfg.IsLocalMode || insecureSkipVerify {
-		cOpts = append(cOpts, tunnel.WithInsecureSkipVerify(true))
 	}
 
 	if minConns-n < 0 {
@@ -373,10 +395,39 @@ func (t *tunnelNodeReconciler) reconcile(ctx context.Context, req ctrl.Request) 
 		for i := 0; i < minConns-n; i++ {
 			go func() {
 				stopCh := make(chan struct{})
+				refreshMu := sync.Mutex{}
+				lastRefresh := time.Now()
 				wait.BackoffUntil(func() {
 					c, err := t.tunDialer.Dial(ctx, tnUUID, srvAddr, cOpts...)
 					if err != nil {
 						log.Error("failed to start tunnel client", slog.Any("error", err))
+
+						// Ensure at most one refresh per second.
+						refreshMu.Lock()
+						defer refreshMu.Unlock()
+						if time.Since(lastRefresh) < time.Second {
+							return
+						}
+						log.Debug("refreshing TunnelNode options")
+						lastRefresh = time.Now()
+						// Fetch fresh TunnelNode and rebuild options
+						var freshTunnelNode corev1alpha.TunnelNode
+						if getErr := t.Get(ctx, req.NamespacedName, &freshTunnelNode); getErr != nil {
+							log.Error("failed to get fresh TunnelNode", slog.Any("error", getErr))
+							return
+						}
+
+						// Rebuild options with fresh TunnelNode
+						cOpts, srvAddr, requeueResult, err = t.buildTunnelClientOptions(ctx, &freshTunnelNode)
+						if err != nil {
+							log.Error("failed to rebuild TunnelNode options", slog.Any("error", err))
+							return
+						}
+						if requeueResult != nil {
+							log.Error("TunnelNode unexpectedly not ready, will retry")
+							return
+						}
+						log.Info("successfully refreshed TunnelNode options, reconnecting...")
 						return
 					}
 
