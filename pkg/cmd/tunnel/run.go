@@ -408,11 +408,11 @@ func (t *tunnelNodeReconciler) reconcile(ctx context.Context, req ctrl.Request) 
 		t.tunMu.Unlock()
 		log.Info("Cancelled excess connections", slog.Int("cancelled", cancelled))
 	} else {
+		refreshMu := sync.Mutex{}
+		lastRefresh := time.Now()
 		for i := 0; i < minConns-n; i++ {
 			go func() {
 				stopCh := make(chan struct{})
-				refreshMu := sync.Mutex{}
-				lastRefresh := time.Now()
 				wait.BackoffUntil(func() {
 					c, err := t.tunDialer.Dial(ctx, tnUUID, srvAddr, cOpts...)
 					if err != nil {
