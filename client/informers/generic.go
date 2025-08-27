@@ -80,8 +80,6 @@ func (f *sharedInformerFactory) ForResource(resource schema.GroupVersionResource
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Core().V1alpha2().Tunnels().Informer()}, nil
 	case v1alpha2.SchemeGroupVersion.WithResource("tunnelagents"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Core().V1alpha2().TunnelAgents().Informer()}, nil
-	case v1alpha2.SchemeGroupVersion.WithResource("tunnelendpoints"):
-		return &genericInformer{resource: resource.GroupResource(), informer: f.Core().V1alpha2().TunnelEndpoints().Informer()}, nil
 
 		// Group=extensions.apoxy.dev, Version=v1alpha1
 	case extensionsv1alpha1.SchemeGroupVersion.WithResource("edgefunctions"):

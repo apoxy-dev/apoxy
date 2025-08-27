@@ -21,7 +21,12 @@ type Tunnel struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   TunnelSpec   `json:"spec,omitempty"`
+	// Spec is the specification of the tunnel.
+	// +required
+	Spec TunnelSpec `json:"spec,omitempty"`
+
+	// Status is the status of the tunnel network.
+	// +optional
 	Status TunnelStatus `json:"status,omitempty"`
 }
 
@@ -42,8 +47,15 @@ type TunnelSpec struct {
 	EgressGateway *EgressGatewaySpec `json:"egressGateway,omitempty"`
 }
 
+type TunnelCredentials struct {
+	// Bearer token for authentication with tunnel relays.
+	Token string `json:"token,omitempty"`
+}
+
 type TunnelStatus struct {
-	// A list of public address/ports of the relay instances for this network.
+	// Credentials for authenticating with tunnel relays.
+	Credentials *TunnelCredentials `json:"credentials,omitempty,omitzero"`
+	// A list of public relay hosts for this network.
 	Addresses []string `json:"addresses,omitempty"`
 }
 
@@ -120,5 +132,6 @@ func (pl *TunnelList) GetListMeta() *metav1.ListMeta {
 type TunnelRef struct {
 	// Name of the Tunnel. Required.
 	// +kubebuilder:validation:MinLength=1
+	// +required
 	Name string `json:"name"`
 }

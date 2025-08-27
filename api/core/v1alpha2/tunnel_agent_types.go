@@ -21,26 +21,50 @@ type TunnelAgent struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   TunnelAgentSpec   `json:"spec,omitempty"`
-	Status TunnelAgentStatus `json:"status,omitempty"`
+	// Spec is the specification of the tunnel agent.
+	// +required
+	Spec TunnelAgentSpec `json:"spec,omitempty,omitzero"`
+
+	// Status is the status of the tunnel agent.
+	// +optional
+	Status TunnelAgentStatus `json:"status,omitempty,omitzero"`
 }
 
+// TunnelAgentSpec represents the specification of a tunnel agent.
 type TunnelAgentSpec struct {
 	// Reference to the Tunnel this agent belongs to.
-	TunnelRef TunnelRef `json:"tunnelRef"`
+	// +required
+	TunnelRef TunnelRef `json:"tunnelRef,omitempty,omitzero"`
 }
 
-type TunnelCredentials struct {
-	// Bearer token for authentication with tunnel relays.
-	Token string `json:"token,omitempty"`
+// TunnelAgentConnection represents a connection between a tunnel agent and a relay.
+type TunnelAgentConnection struct {
+	// ID is the unique identifier of the connection.
+	// +required
+	ID string `json:"id,omitempty,omitzero"`
+
+	// ConnectedAt is the time when the agent was connected to the tunnel node.
+	// +required
+	ConnectedAt *metav1.Time `json:"connectedAt,omitempty,omitzero"`
+
+	// Address is the address of the agent assigned to this connection.
+	// +optional
+	Address string `json:"address,omitempty,omitzero"`
+
+	// VNI is the virtual network identifier assigned to this connection.
+	// +optional
+	VNI uint32 `json:"vni,omitempty,omitzero"`
+
+	// RelayAddress is the address of the relay managing this connection.
+	// +optional
+	RelayAddress string `json:"relayAddress,omitempty"`
 }
 
+// TunnelAgentStatus represents the status of a tunnel agent.
 type TunnelAgentStatus struct {
-	// Credentials for authenticating with tunnel relays.
-	Credentials *TunnelCredentials `json:"credentials,omitempty"`
-	// Overlay CIDR of the agent. Currently we're using a /96 prefix which
-	// can be used for 4in6 tunneling.
-	Prefix string `json:"prefix,omitempty"`
+	// Connections are active connections between the agent and (potentially multiple) relays.
+	// +optional
+	Connections []TunnelAgentConnection `json:"connections,omitempty,omitzero"`
 }
 
 var _ resource.StatusSubResource = &TunnelAgentStatus{}

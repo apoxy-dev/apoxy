@@ -35,10 +35,6 @@ func (c *FakeCoreV1alpha2) TunnelAgents() v1alpha2.TunnelAgentInterface {
 	return &FakeTunnelAgents{c}
 }
 
-func (c *FakeCoreV1alpha2) TunnelEndpoints() v1alpha2.TunnelEndpointInterface {
-	return &FakeTunnelEndpoints{c}
-}
-
 // RESTClient returns a RESTClient that is used to communicate
 // with API server by this client implementation.
 func (c *FakeCoreV1alpha2) RESTClient() rest.Interface {

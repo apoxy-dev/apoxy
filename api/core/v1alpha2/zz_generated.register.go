@@ -63,8 +63,6 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&Tunnel{},
 		&TunnelAgent{},
 		&TunnelAgentList{},
-		&TunnelEndpoint{},
-		&TunnelEndpointList{},
 		&TunnelList{},
 	)
 	// AddToGroupVersion allows the serialization of client types like ListOptions.

@@ -29,7 +29,6 @@ type CoreV1alpha2Interface interface {
 	RESTClient() rest.Interface
 	TunnelsGetter
 	TunnelAgentsGetter
-	TunnelEndpointsGetter
 }
 
 // CoreV1alpha2Client is used to interact with features provided by the core.apoxy.dev group.
@@ -43,10 +42,6 @@ func (c *CoreV1alpha2Client) Tunnels() TunnelInterface {
 
 func (c *CoreV1alpha2Client) TunnelAgents() TunnelAgentInterface {
 	return newTunnelAgents(c)
-}
-
-func (c *CoreV1alpha2Client) TunnelEndpoints() TunnelEndpointInterface {
-	return newTunnelEndpoints(c)
 }
 
 // NewForConfig creates a new CoreV1alpha2Client for the given config.

@@ -27,8 +27,6 @@ type Interface interface {
 	Tunnels() TunnelInformer
 	// TunnelAgents returns a TunnelAgentInformer.
 	TunnelAgents() TunnelAgentInformer
-	// TunnelEndpoints returns a TunnelEndpointInformer.
-	TunnelEndpoints() TunnelEndpointInformer
 }
 
 type version struct {
@@ -50,9 +48,4 @@ func (v *version) Tunnels() TunnelInformer {
 // TunnelAgents returns a TunnelAgentInformer.
 func (v *version) TunnelAgents() TunnelAgentInformer {
 	return &tunnelAgentInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
-}
-
-// TunnelEndpoints returns a TunnelEndpointInformer.
-func (v *version) TunnelEndpoints() TunnelEndpointInformer {
-	return &tunnelEndpointInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
 }

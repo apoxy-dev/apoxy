@@ -24,7 +24,3 @@ type TunnelListerExpansion interface{}
 // TunnelAgentListerExpansion allows custom methods to be added to
 // TunnelAgentLister.
 type TunnelAgentListerExpansion interface{}
-
-// TunnelEndpointListerExpansion allows custom methods to be added to
-// TunnelEndpointLister.
-type TunnelEndpointListerExpansion interface{}
