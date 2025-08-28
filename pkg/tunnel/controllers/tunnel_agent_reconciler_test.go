@@ -39,9 +39,11 @@ func TestAddConnection_UpsertsStatusAndAddsFinalizer(t *testing.T) {
 		WithObjects(agent).
 		Build()
 
-	relayName := "relay-a"
-	relayAddr := netip.MustParseAddrPort("203.0.113.10:443")
-	r := controllers.NewTunnelAgentReconciler(c, relayName, relayAddr)
+	relay := &mockRelay{}
+	relay.On("Name").Return("relay-a")
+	relay.On("Address").Return(netip.MustParseAddrPort("203.0.113.10:443"))
+
+	r := controllers.NewTunnelAgentReconciler(c, relay, "")
 
 	conn := &mockConn{}
 	conn.On("ID").Return("conn-123")
@@ -57,10 +59,10 @@ func TestAddConnection_UpsertsStatusAndAddsFinalizer(t *testing.T) {
 	entry := got.Status.Connections[0]
 	assert.Equal(t, "conn-123", entry.ID)
 	assert.Equal(t, "10.0.0.1/32", entry.Address)
-	assert.Equal(t, relayAddr.String(), entry.RelayAddress)
+	assert.Equal(t, relay.Address().String(), entry.RelayAddress)
 	assert.EqualValues(t, 42, entry.VNI)
 
-	finalizer := "tunnelrelay.apoxy.dev/" + relayName + "/finalizer"
+	finalizer := "tunnelrelay.apoxy.dev/" + relay.Name() + "/finalizer"
 	assert.True(t, controllerutil.ContainsFinalizer(&got, finalizer))
 
 	conn.AssertExpectations(t)
@@ -79,10 +81,11 @@ func TestRemoveConnection_RemovesStatusAndFinalizerOnlyWhenNoRelayConnsRemain(t 
 		WithObjects(agent).
 		Build()
 
-	relayName := "relay-a"
-	relayAddr := netip.MustParseAddrPort("203.0.113.20:443")
-	r := controllers.NewTunnelAgentReconciler(c, relayName, relayAddr)
-	finalizer := "tunnelrelay.apoxy.dev/" + relayName + "/finalizer"
+	relay := &mockRelay{}
+	relay.On("Name").Return("relay-a")
+	relay.On("Address").Return(netip.MustParseAddrPort("203.0.113.20:443"))
+	r := controllers.NewTunnelAgentReconciler(c, relay, "")
+	finalizer := "tunnelrelay.apoxy.dev/" + relay.Name() + "/finalizer"
 
 	// Two mock conns
 	conn1 := &mockConn{}
@@ -125,10 +128,11 @@ func TestReconcile_OnDeletion_ClosesConnectionsAndRemovesFinalizer(t *testing.T)
 		WithObjects(agent).
 		Build()
 
-	relayName := "relay-z"
-	relayAddr := netip.MustParseAddrPort("198.51.100.7:8443")
-	r := controllers.NewTunnelAgentReconciler(c, relayName, relayAddr)
-	finalizer := "tunnelrelay.apoxy.dev/" + relayName + "/finalizer"
+	relay := &mockRelay{}
+	relay.On("Name").Return("relay-z")
+	relay.On("Address").Return(netip.MustParseAddrPort("198.51.100.7:8443"))
+	r := controllers.NewTunnelAgentReconciler(c, relay, "")
+	finalizer := "tunnelrelay.apoxy.dev/" + relay.Name() + "/finalizer"
 
 	// Mock conn that should be closed
 	conn := &mockConn{}
@@ -178,7 +182,10 @@ func TestReconcile_NotFound_NoError(t *testing.T) {
 		WithStatusSubresource(&corev1alpha2.TunnelAgent{}).
 		Build()
 
-	r := controllers.NewTunnelAgentReconciler(c, "relay-n", netip.MustParseAddrPort("203.0.113.55:443"))
+	relay := &mockRelay{}
+	relay.On("Name").Return("relay-n")
+	relay.On("Address").Return(netip.MustParseAddrPort("203.0.113.55:443"))
+	r := controllers.NewTunnelAgentReconciler(c, relay, "")
 
 	_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "does-not-exist"}})
 	require.NoError(t, err)

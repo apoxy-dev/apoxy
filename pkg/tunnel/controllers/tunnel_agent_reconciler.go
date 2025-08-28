@@ -3,7 +3,6 @@ package controllers
 import (
 	"context"
 	"fmt"
-	"net/netip"
 
 	"github.com/alphadose/haxmap"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -22,19 +21,20 @@ import (
 const tunnelRelayFinalizerTmpl = "tunnelrelay.apoxy.dev/%s/finalizer"
 
 type TunnelAgentReconciler struct {
-	client       client.Client
-	relayAddress netip.AddrPort
-	finalizer    string
-	conns        *haxmap.Map[string, Connection]
+	client        client.Client
+	relay         Relay
+	labelSelector string
+	finalizer     string
+	conns         *haxmap.Map[string, Connection]
 }
 
-func NewTunnelAgentReconciler(c client.Client, relayName string, relayAddress netip.AddrPort) *TunnelAgentReconciler {
-	finalizer := fmt.Sprintf(tunnelRelayFinalizerTmpl, relayName)
+func NewTunnelAgentReconciler(c client.Client, relay Relay, labelSelector string) *TunnelAgentReconciler {
+	finalizer := fmt.Sprintf(tunnelRelayFinalizerTmpl, relay.Name())
 	return &TunnelAgentReconciler{
-		client:       c,
-		relayAddress: relayAddress,
-		finalizer:    finalizer,
-		conns:        haxmap.New[string, Connection](),
+		client:    c,
+		relay:     relay,
+		finalizer: finalizer,
+		conns:     haxmap.New[string, Connection](),
 	}
 }
 
@@ -77,8 +77,18 @@ func (r *TunnelAgentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 }
 
 func (r *TunnelAgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	lss, err := metav1.ParseToLabelSelector(r.labelSelector)
+	if err != nil {
+		return fmt.Errorf("failed to parse label selector: %w", err)
+	}
+
+	ls, err := predicate.LabelSelectorPredicate(*lss)
+	if err != nil {
+		return fmt.Errorf("failed to create label selector predicate: %w", err)
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&corev1alpha2.TunnelAgent{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		For(&corev1alpha2.TunnelAgent{}, builder.WithPredicates(predicate.GenerationChangedPredicate{}, ls)).
 		Complete(r)
 }
 
@@ -99,7 +109,7 @@ func (r *TunnelAgentReconciler) AddConnection(ctx context.Context, agentName str
 			ID:           conn.ID(),
 			ConnectedAt:  &now,
 			Address:      conn.Address().String(),
-			RelayAddress: r.relayAddress.String(),
+			RelayAddress: r.relay.Address().String(),
 			VNI:          conn.VNI(),
 		}
 

@@ -5,6 +5,7 @@ import (
 	"net/netip"
 )
 
+// Connection is a simple abstraction representing a connection from a TunnelAgent to a Relay.
 type Connection interface {
 	io.Closer
 	// ID is the unique identifier of the connection.
