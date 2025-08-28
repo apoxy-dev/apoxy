@@ -39,18 +39,21 @@ type TunnelAgentSpec struct {
 
 // TunnelAgentConnection represents a connection between a tunnel agent and a relay.
 type TunnelAgentConnection struct {
-	// Address is the address of the agent assigned to this connection.
-	// The combination of ip and port is used to identify the connection.
+	// ID is the unique identifier of the connection.
 	// +required
-	Address string `json:"address"`
-
-	// RelayAddress is the address of the relay managing this connection.
-	// +optional
-	RelayAddress string `json:"relayAddress,omitempty,omitzero"`
+	ID string `json:"id"`
 
 	// ConnectedAt is the time when the agent was connected to the tunnel node.
 	// +optional
 	ConnectedAt *metav1.Time `json:"connectedAt,omitempty,omitzero"`
+
+	// Address is the address of the agent assigned to this connection.
+	// +optional
+	Address string `json:"address,omitempty,omitzero"`
+
+	// RelayAddress is the address of the relay managing this connection.
+	// +optional
+	RelayAddress string `json:"relayAddress,omitempty,omitzero"`
 
 	// VNI is the virtual network identifier assigned to this connection.
 	// +optional

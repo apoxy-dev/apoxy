@@ -2901,10 +2901,23 @@ func schema_apoxy_api_core_v1alpha2_TunnelAgentConnection(ref common.ReferenceCa
 				Description: "TunnelAgentConnection represents a connection between a tunnel agent and a relay.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
+					"id": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ID is the unique identifier of the connection.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"connectedAt": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ConnectedAt is the time when the agent was connected to the tunnel node.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+						},
+					},
 					"address": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Address is the address of the agent assigned to this connection. The combination of ip and port is used to identify the connection.",
-							Default:     "",
+							Description: "Address is the address of the agent assigned to this connection.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -2916,12 +2929,6 @@ func schema_apoxy_api_core_v1alpha2_TunnelAgentConnection(ref common.ReferenceCa
 							Format:      "",
 						},
 					},
-					"connectedAt": {
-						SchemaProps: spec.SchemaProps{
-							Description: "ConnectedAt is the time when the agent was connected to the tunnel node.",
-							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
-						},
-					},
 					"vni": {
 						SchemaProps: spec.SchemaProps{
 							Description: "VNI is the virtual network identifier assigned to this connection.",
@@ -2930,7 +2937,7 @@ func schema_apoxy_api_core_v1alpha2_TunnelAgentConnection(ref common.ReferenceCa
 						},
 					},
 				},
-				Required: []string{"address"},
+				Required: []string{"id"},
 			},
 		},
 		Dependencies: []string{
