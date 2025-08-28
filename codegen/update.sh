@@ -18,6 +18,7 @@ go run "k8s.io/code-generator/cmd/deepcopy-gen@${CODEGEN_VERSION}" \
   ./api/config/v1alpha1 \
   ./api/controllers/v1alpha1 \
   ./api/core/v1alpha \
+  ./api/core/v1alpha2 \
   ./api/extensions/v1alpha1 \
   ./api/extensions/v1alpha2 \
   ./api/gateway/v1 \
@@ -32,6 +33,7 @@ go run "k8s.io/code-generator/cmd/register-gen@${CODEGEN_VERSION}" \
   ./api/config/v1alpha1 \
   ./api/controllers/v1alpha1 \
   ./api/core/v1alpha \
+  ./api/core/v1alpha2 \
   ./api/extensions/v1alpha1 \
   ./api/extensions/v1alpha2 \
   ./api/gateway/v1 \
@@ -48,6 +50,7 @@ go run "k8s.io/code-generator/cmd/client-gen@${CODEGEN_VERSION}" \
   --clientset-name "versioned" \
   --input "./api/controllers/v1alpha1" \
   --input "./api/core/v1alpha" \
+  --input "./api/core/v1alpha2" \
   --input "./api/extensions/v1alpha1" \
   --input "./api/extensions/v1alpha2" \
   --input "./api/gateway/v1" \
@@ -61,6 +64,7 @@ go run "k8s.io/code-generator/cmd/lister-gen@${CODEGEN_VERSION}" \
   --output-pkg "github.com/apoxy-dev/apoxy/client" \
   ./api/controllers/v1alpha1 \
   ./api/core/v1alpha \
+  ./api/core/v1alpha2 \
   ./api/extensions/v1alpha1 \
   ./api/extensions/v1alpha2 \
   ./api/gateway/v1 \
@@ -75,6 +79,7 @@ go run "k8s.io/code-generator/cmd/informer-gen@${CODEGEN_VERSION}" \
   --single-directory \
   ./api/controllers/v1alpha1 \
   ./api/core/v1alpha \
+  ./api/core/v1alpha2 \
   ./api/extensions/v1alpha1 \
   ./api/extensions/v1alpha2 \
   ./api/gateway/v1 \
@@ -98,6 +103,7 @@ go run "k8s.io/kube-openapi/cmd/openapi-gen@master" \
   sigs.k8s.io/gateway-api/apis/v1 \
   ./api/controllers/v1alpha1 \
   ./api/core/v1alpha \
+  ./api/core/v1alpha2 \
   ./api/extensions/v1alpha1 \
   ./api/extensions/v1alpha2 \
   ./api/gateway/v1 \

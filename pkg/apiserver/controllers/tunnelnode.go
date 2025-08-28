@@ -21,7 +21,7 @@ import (
 	corev1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
 )
 
-const apiserverFinalizer = "apiserver.apoxy.dev/finalizer"
+const ApiServerFinalizer = "apiserver.apoxy.dev/finalizer"
 
 // TunnelNodeReconciler implements a basic garbage collector for dead/orphaned
 // TunnelNode objects.
@@ -138,7 +138,7 @@ func (r *TunnelNodeReconciler) Reconcile(ctx context.Context, req reconcile.Requ
 			}
 		}
 
-		controllerutil.RemoveFinalizer(tn, apiserverFinalizer)
+		controllerutil.RemoveFinalizer(tn, ApiServerFinalizer)
 		if err := r.Update(ctx, tn); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -146,9 +146,9 @@ func (r *TunnelNodeReconciler) Reconcile(ctx context.Context, req reconcile.Requ
 		return ctrl.Result{}, nil // Deleted
 	}
 
-	if !controllerutil.ContainsFinalizer(tn, apiserverFinalizer) {
+	if !controllerutil.ContainsFinalizer(tn, ApiServerFinalizer) {
 		log.Info("Adding finalizer to Proxy")
-		controllerutil.AddFinalizer(tn, apiserverFinalizer)
+		controllerutil.AddFinalizer(tn, ApiServerFinalizer)
 		if err := r.Update(ctx, tn); err != nil {
 			return ctrl.Result{}, err
 		}
