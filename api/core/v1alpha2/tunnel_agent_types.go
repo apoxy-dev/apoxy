@@ -39,29 +39,31 @@ type TunnelAgentSpec struct {
 
 // TunnelAgentConnection represents a connection between a tunnel agent and a relay.
 type TunnelAgentConnection struct {
-	// ID is the unique identifier of the connection.
+	// Address is the address of the agent assigned to this connection.
+	// The combination of ip and port is used to identify the connection.
 	// +required
-	ID string `json:"id,omitempty,omitzero"`
+	Address string `json:"address"`
+
+	// RelayAddress is the address of the relay managing this connection.
+	// +optional
+	RelayAddress string `json:"relayAddress,omitempty,omitzero"`
 
 	// ConnectedAt is the time when the agent was connected to the tunnel node.
-	// +required
-	ConnectedAt *metav1.Time `json:"connectedAt,omitempty,omitzero"`
-
-	// Address is the address of the agent assigned to this connection.
 	// +optional
-	Address string `json:"address,omitempty,omitzero"`
+	ConnectedAt *metav1.Time `json:"connectedAt,omitempty,omitzero"`
 
 	// VNI is the virtual network identifier assigned to this connection.
 	// +optional
 	VNI uint32 `json:"vni,omitempty,omitzero"`
-
-	// RelayAddress is the address of the relay managing this connection.
-	// +optional
-	RelayAddress string `json:"relayAddress,omitempty"`
 }
 
 // TunnelAgentStatus represents the status of a tunnel agent.
 type TunnelAgentStatus struct {
+	// Overlay CIDR of the agent. Currently we're using a /96 prefix which
+	// can be used for 4in6 tunneling.
+	// +optional
+	Prefix string `json:"prefix,omitempty,omitzero"`
+
 	// Connections are active connections between the agent and (potentially multiple) relays.
 	// +optional
 	Connections []TunnelAgentConnection `json:"connections,omitempty,omitzero"`

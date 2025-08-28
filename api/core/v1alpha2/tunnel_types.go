@@ -54,9 +54,12 @@ type TunnelCredentials struct {
 
 type TunnelStatus struct {
 	// Credentials for authenticating with tunnel relays.
+	// +optional
 	Credentials *TunnelCredentials `json:"credentials,omitempty,omitzero"`
+
 	// A list of public relay hosts for this network.
-	Addresses []string `json:"addresses,omitempty"`
+	// +optional
+	Addresses []string `json:"addresses,omitempty,omitzero"`
 }
 
 var _ resource.StatusSubResource = &TunnelStatus{}

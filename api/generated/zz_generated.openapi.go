@@ -2901,9 +2901,17 @@ func schema_apoxy_api_core_v1alpha2_TunnelAgentConnection(ref common.ReferenceCa
 				Description: "TunnelAgentConnection represents a connection between a tunnel agent and a relay.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
-					"id": {
+					"address": {
 						SchemaProps: spec.SchemaProps{
-							Description: "ID is the unique identifier of the connection.",
+							Description: "Address is the address of the agent assigned to this connection. The combination of ip and port is used to identify the connection.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"relayAddress": {
+						SchemaProps: spec.SchemaProps{
+							Description: "RelayAddress is the address of the relay managing this connection.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -2914,13 +2922,6 @@ func schema_apoxy_api_core_v1alpha2_TunnelAgentConnection(ref common.ReferenceCa
 							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
 						},
 					},
-					"address": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Address is the address of the agent assigned to this connection.",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
 					"vni": {
 						SchemaProps: spec.SchemaProps{
 							Description: "VNI is the virtual network identifier assigned to this connection.",
@@ -2928,15 +2929,8 @@ func schema_apoxy_api_core_v1alpha2_TunnelAgentConnection(ref common.ReferenceCa
 							Format:      "int64",
 						},
 					},
-					"relayAddress": {
-						SchemaProps: spec.SchemaProps{
-							Description: "RelayAddress is the address of the relay managing this connection.",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
 				},
-				Required: []string{"id", "connectedAt"},
+				Required: []string{"address"},
 			},
 		},
 		Dependencies: []string{
@@ -3045,6 +3039,13 @@ func schema_apoxy_api_core_v1alpha2_TunnelAgentStatus(ref common.ReferenceCallba
 				Description: "TunnelAgentStatus represents the status of a tunnel agent.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
+					"prefix": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Overlay CIDR of the agent. Currently we're using a /96 prefix which can be used for 4in6 tunneling.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 					"connections": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Connections are active connections between the agent and (potentially multiple) relays.",
