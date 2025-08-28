@@ -25,6 +25,8 @@ import (
 type Interface interface {
 	// Tunnels returns a TunnelInformer.
 	Tunnels() TunnelInformer
+	// TunnelAgents returns a TunnelAgentInformer.
+	TunnelAgents() TunnelAgentInformer
 }
 
 type version struct {
@@ -41,4 +43,9 @@ func New(f internalinterfaces.SharedInformerFactory, namespace string, tweakList
 // Tunnels returns a TunnelInformer.
 func (v *version) Tunnels() TunnelInformer {
 	return &tunnelInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
+}
+
+// TunnelAgents returns a TunnelAgentInformer.
+func (v *version) TunnelAgents() TunnelAgentInformer {
+	return &tunnelAgentInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
 }

@@ -84,8 +84,17 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.TunnelNodeList":                       schema_apoxy_api_core_v1alpha_TunnelNodeList(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.TunnelNodeSpec":                       schema_apoxy_api_core_v1alpha_TunnelNodeSpec(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.TunnelNodeStatus":                     schema_apoxy_api_core_v1alpha_TunnelNodeStatus(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.EgressGatewaySpec":                   schema_apoxy_api_core_v1alpha2_EgressGatewaySpec(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.Tunnel":                              schema_apoxy_api_core_v1alpha2_Tunnel(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.TunnelAgent":                         schema_apoxy_api_core_v1alpha2_TunnelAgent(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.TunnelAgentConnection":               schema_apoxy_api_core_v1alpha2_TunnelAgentConnection(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.TunnelAgentList":                     schema_apoxy_api_core_v1alpha2_TunnelAgentList(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.TunnelAgentRef":                      schema_apoxy_api_core_v1alpha2_TunnelAgentRef(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.TunnelAgentSpec":                     schema_apoxy_api_core_v1alpha2_TunnelAgentSpec(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.TunnelAgentStatus":                   schema_apoxy_api_core_v1alpha2_TunnelAgentStatus(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.TunnelCredentials":                   schema_apoxy_api_core_v1alpha2_TunnelCredentials(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.TunnelList":                          schema_apoxy_api_core_v1alpha2_TunnelList(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.TunnelRef":                           schema_apoxy_api_core_v1alpha2_TunnelRef(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.TunnelSpec":                          schema_apoxy_api_core_v1alpha2_TunnelSpec(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.TunnelStatus":                        schema_apoxy_api_core_v1alpha2_TunnelStatus(ref),
 		"github.com/apoxy-dev/apoxy/api/extensions/v1alpha1.EdgeFunction":                  schema_apoxy_api_extensions_v1alpha1_EdgeFunction(ref),
@@ -2766,11 +2775,31 @@ func schema_apoxy_api_core_v1alpha_TunnelNodeStatus(ref common.ReferenceCallback
 	}
 }
 
-func schema_apoxy_api_core_v1alpha2_Tunnel(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_apoxy_api_core_v1alpha2_EgressGatewaySpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
 				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"enabled": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Whether the egress gateway is enabled. Default is false. When enabled, the egress gateway will be used to route traffic from the tunnel agent to the internet. Traffic will be SNAT'ed.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func schema_apoxy_api_core_v1alpha2_Tunnel(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "Tunnel represents a tunnel network.",
+				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"kind": {
 						SchemaProps: spec.SchemaProps{
@@ -2794,21 +2823,260 @@ func schema_apoxy_api_core_v1alpha2_Tunnel(ref common.ReferenceCallback) common.
 					},
 					"spec": {
 						SchemaProps: spec.SchemaProps{
-							Default: map[string]interface{}{},
-							Ref:     ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.TunnelSpec"),
+							Description: "Spec is the specification of the tunnel.",
+							Default:     map[string]interface{}{},
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.TunnelSpec"),
 						},
 					},
 					"status": {
 						SchemaProps: spec.SchemaProps{
+							Description: "Status is the status of the tunnel network.",
+							Default:     map[string]interface{}{},
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.TunnelStatus"),
+						},
+					},
+				},
+				Required: []string{"spec"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/core/v1alpha2.TunnelSpec", "github.com/apoxy-dev/apoxy/api/core/v1alpha2.TunnelStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
+	}
+}
+
+func schema_apoxy_api_core_v1alpha2_TunnelAgent(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "TunnelAgent represents a tunnel agent.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.TunnelStatus"),
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Spec is the specification of the tunnel agent.",
+							Default:     map[string]interface{}{},
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.TunnelAgentSpec"),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Status is the status of the tunnel agent.",
+							Default:     map[string]interface{}{},
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.TunnelAgentStatus"),
+						},
+					},
+				},
+				Required: []string{"spec"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/core/v1alpha2.TunnelAgentSpec", "github.com/apoxy-dev/apoxy/api/core/v1alpha2.TunnelAgentStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
+	}
+}
+
+func schema_apoxy_api_core_v1alpha2_TunnelAgentConnection(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "TunnelAgentConnection represents a connection between a tunnel agent and a relay.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"id": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ID is the unique identifier of the connection.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"connectedAt": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ConnectedAt is the time when the agent was connected to the tunnel node.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+						},
+					},
+					"address": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Address is the overlay address of the agent assigned to this connection.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"relayAddress": {
+						SchemaProps: spec.SchemaProps{
+							Description: "RelayAddress is the address of the relay managing this connection.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"id"},
+			},
+		},
+		Dependencies: []string{
+			"k8s.io/apimachinery/pkg/apis/meta/v1.Time"},
+	}
+}
+
+func schema_apoxy_api_core_v1alpha2_TunnelAgentList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "TunnelAgentList contains a list of TunnelAgent objects.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.TunnelAgent"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/core/v1alpha2.TunnelAgent", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
+	}
+}
+
+func schema_apoxy_api_core_v1alpha2_TunnelAgentRef(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "TunnelAgentRef is a reference to a TunnelAgent.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Name of the tunnel agent. Required.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"name"},
+			},
+		},
+	}
+}
+
+func schema_apoxy_api_core_v1alpha2_TunnelAgentSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "TunnelAgentSpec represents the specification of a tunnel agent.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"tunnelRef": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Reference to the Tunnel this agent belongs to.",
+							Default:     map[string]interface{}{},
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.TunnelRef"),
+						},
+					},
+				},
+				Required: []string{"tunnelRef"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/core/v1alpha2.TunnelRef"},
+	}
+}
+
+func schema_apoxy_api_core_v1alpha2_TunnelAgentStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "TunnelAgentStatus represents the status of a tunnel agent.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"connections": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Connections are active connections between the agent and (potentially multiple) relays.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.TunnelAgentConnection"),
+									},
+								},
+							},
 						},
 					},
 				},
 			},
 		},
 		Dependencies: []string{
-			"github.com/apoxy-dev/apoxy/api/core/v1alpha2.TunnelSpec", "github.com/apoxy-dev/apoxy/api/core/v1alpha2.TunnelStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
+			"github.com/apoxy-dev/apoxy/api/core/v1alpha2.TunnelAgentConnection"},
+	}
+}
+
+func schema_apoxy_api_core_v1alpha2_TunnelCredentials(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"token": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Bearer token for authentication with tunnel relays.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+			},
+		},
 	}
 }
 
@@ -2861,13 +3129,45 @@ func schema_apoxy_api_core_v1alpha2_TunnelList(ref common.ReferenceCallback) com
 	}
 }
 
+func schema_apoxy_api_core_v1alpha2_TunnelRef(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "TunnelRef is a reference to a Tunnel.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Name of the Tunnel. Required.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"name"},
+			},
+		},
+	}
+}
+
 func schema_apoxy_api_core_v1alpha2_TunnelSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
 				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"egressGateway": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Configures egress gateway mode on the tunnel. In this mode, the tunnel relay acts as a gateway for outbound connections originating from the agent side in addition to its default mode (where the connections arrive in the direction of the agent).",
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.EgressGatewaySpec"),
+						},
+					},
+				},
 			},
 		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/core/v1alpha2.EgressGatewaySpec"},
 	}
 }
 
@@ -2876,8 +3176,33 @@ func schema_apoxy_api_core_v1alpha2_TunnelStatus(ref common.ReferenceCallback) c
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
 				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"credentials": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Credentials for authenticating with tunnel relays.",
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.TunnelCredentials"),
+						},
+					},
+					"addresses": {
+						SchemaProps: spec.SchemaProps{
+							Description: "A list of public relay hosts for this network.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+				},
 			},
 		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/core/v1alpha2.TunnelCredentials"},
 	}
 }
 
