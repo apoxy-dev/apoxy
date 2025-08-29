@@ -19,6 +19,12 @@ exporters:
 {{- if .OTLPTracesEndpoint }}
   otlp:
     endpoint: {{.OTLPTracesEndpoint}}
+{{- if .OTLPTracesHeaders }}
+    headers:
+{{- range $key, $value := .OTLPTracesHeaders }}
+      {{ $key }}: {{ $value }}
+{{- end }}
+{{- end }}
 {{- if eq .OTLPTracesProtocol "grpc" }}
     tls:
       insecure: {{.OTLPTracesInsecure}}
