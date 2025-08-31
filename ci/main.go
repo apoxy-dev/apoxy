@@ -27,9 +27,7 @@ import (
 	"dagger/apoxy-cli/internal/dagger"
 )
 
-// Note that 0.12.0 and later fail to cross compile for Darwin.
-// See https://github.com/ziglang/zig/issues/20689
-const ZigVersion = "0.11.0"
+const ZigVersion = "0.15.1"
 
 type ApoxyCli struct{}
 
@@ -84,13 +82,13 @@ func (m *ApoxyCli) BuilderContainer(ctx context.Context, src *dagger.Directory) 
 			"apt-get", "install", "-yq", "xz-utils", "clang",
 		}).
 		WithExec([]string{
-			"wget", fmt.Sprintf("https://ziglang.org/download/%s/zig-linux-%s-%s.tar.xz", ZigVersion, hostArch(), ZigVersion),
+			"wget", fmt.Sprintf("https://zigmirror.hryx.net/zig/%s/zig-%s-linux-%s.tar.xz", ZigVersion, hostArch(), ZigVersion),
 		}).
 		WithExec([]string{
-			"tar", "-xf", fmt.Sprintf("zig-linux-%s-%s.tar.xz", hostArch(), ZigVersion),
+			"tar", "-xf", fmt.Sprintf("zig-%s-linux-%s.tar.xz", hostArch(), ZigVersion),
 		}).
 		WithExec([]string{
-			"ln", "-s", fmt.Sprintf("/zig-linux-%s-%s/zig", hostArch(), ZigVersion), "/bin/zig",
+			"ln", "-s", fmt.Sprintf("/zig-%s-linux-%s/zig", hostArch(), ZigVersion), "/bin/zig",
 		}).
 		WithNewFile("/bin/zig-wrapper", zigWrapperScript, dagger.ContainerWithNewFileOpts{
 			Permissions: 0755,
