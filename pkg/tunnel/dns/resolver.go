@@ -21,11 +21,11 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/log"
+	clog "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	corev1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
-	apoxylog "github.com/apoxy-dev/apoxy/pkg/log"
+	alog "github.com/apoxy-dev/apoxy/pkg/log"
 	apoxynet "github.com/apoxy-dev/apoxy/pkg/net"
 )
 
@@ -110,8 +110,8 @@ func (r *TunnelNodeDNSReconciler) reconcile(ctx context.Context, request ctrl.Re
 		return reconcile.Result{}, fmt.Errorf("failed to get TunnelNode: %w", err)
 	}
 
-	log := log.FromContext(ctx, "name", node.Name, "uid", node.UID)
-	log.Info("Reconciling TunnelNode")
+	log := clog.FromContext(ctx, "name", node.Name, "uid", node.UID)
+	log.Info("Reconciling TunnelNode Resolver")
 
 	if !node.DeletionTimestamp.IsZero() {
 		r.nameCache.Del(node.Name)
@@ -119,25 +119,28 @@ func (r *TunnelNodeDNSReconciler) reconcile(ctx context.Context, request ctrl.Re
 		return reconcile.Result{}, nil
 	}
 
-	ips := sets.New[netip.Addr]()
+	addrs := sets.New[netip.Addr]()
 	for _, agent := range node.Status.Agents {
 		if agent.AgentAddress == "" {
 			log.V(1).Info("Skipping empty Agent IP address", "agent", agent.Name)
 			continue
 		}
-		ip, err := netip.ParseAddr(agent.AgentAddress)
+		addr, err := netip.ParseAddr(agent.AgentAddress)
 		if err != nil {
 			log.Error(err, "Invalid Agent IP address", "addr", agent.AgentAddress, "agent", agent.Name)
 			continue
 		}
-		if ips.Has(ip) {
+		if addrs.Has(addr) {
 			continue
 		}
-		ips.Insert(ip)
+
+		log.Info("Adding Agent address", "addr", addr, "agent", agent.Name)
+
+		addrs.Insert(addr)
 	}
 
-	r.nameCache.Set(node.Name, ips)
-	r.uuidCache.Set(string(node.UID), ips)
+	r.nameCache.Set(node.Name, addrs)
+	r.uuidCache.Set(string(node.UID), addrs)
 
 	return ctrl.Result{}, nil
 }
@@ -152,14 +155,183 @@ func (r *TunnelNodeDNSReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 func (r *TunnelNodeDNSReconciler) name() string { return "tunnel-resolver" }
 
+func (r *TunnelNodeDNSReconciler) upstreamHostFromAddr(addr netip.Addr) (string, error) {
+	if !addr.Is6() {
+		return "", fmt.Errorf("expecting v6 address, got %s", addr.String())
+	}
+
+	v6, v4 := addr.As16(), tunResolver.Addr().As4()
+	copy(v6[12:], v4[:])
+
+	srvAddr := netip.AddrFrom16(v6)
+	return netip.AddrPortFrom(srvAddr, tunResolver.Port()).String(), nil
+}
+
+// aToAAAA converts A records to AAAA records in-place by nesting A record's
+// IPv4 address into the IPv6 /96 address.
+func aToAAAA(v6base netip.Addr, resp *dns.Msg) {
+	v6baseAs16 := v6base.As16()
+	for i, rr := range resp.Answer {
+		if a, ok := rr.(*dns.A); ok {
+			aaaa := new(dns.AAAA)
+			aaaa.Hdr = dns.RR_Header{
+				Name:   a.Hdr.Name,
+				Rrtype: dns.TypeAAAA,
+				Class:  a.Hdr.Class,
+				Ttl:    a.Hdr.Ttl,
+			}
+
+			aaaa.AAAA = make(net.IP, net.IPv6len)
+			copy(aaaa.AAAA[:12], v6baseAs16[:12])
+			copy(aaaa.AAAA[12:], a.A)
+
+			resp.Answer[i] = aaaa
+		}
+	}
+}
+
+func (r *TunnelNodeDNSReconciler) recursiveResolve(
+	ctx context.Context,
+	w dns.ResponseWriter,
+	req *dns.Msg,
+	name string,
+	upstreams []netip.Addr,
+) (int, error) {
+	ctx, cancel := context.WithTimeout(ctx, r.opts.timeout)
+	defer cancel()
+
+	log := alog.FromContext(ctx)
+	log.Info("Resolving recursively",
+		slog.String("qname", name),
+		slog.Any("upstreams", upstreams))
+
+	rReq := req.Copy()
+	rReq.Question[0].Name = name + "."
+	rReq.RecursionDesired = true
+
+	// If original request is for IPv6, convert to IPv4 request for upstream.
+	isAAAA := len(req.Question) > 0 && req.Question[0].Qtype == dns.TypeAAAA
+	if !isAAAA {
+		return dns.RcodeNotImplemented, errors.New("only AAAA queries are supported for recursive resolution")
+	}
+
+	// Rewrites request as A for upstream resolver.
+	rReq.Question[0].Qtype = dns.TypeA
+
+	var (
+		mu  sync.Mutex
+		out *dns.Msg
+		ans []dns.RR
+	)
+
+	g, _ := errgroup.WithContext(ctx)
+	client := &dns.Client{
+		// TODO(mattward): could go back to UDP when tunnels support UDP.
+		Net:     "tcp",
+		Dialer:  &net.Dialer{Timeout: r.opts.perUpstreamTimeout},
+		Timeout: r.opts.perUpstreamTimeout,
+	}
+
+	for _, upstream := range upstreams {
+		addr, err := r.upstreamHostFromAddr(upstream)
+		if err != nil {
+			slog.Debug("Invalid IP address", slog.String("addr", upstream.String()))
+			continue
+		}
+
+		g.Go(func() error {
+			resp, _, err := client.ExchangeContext(ctx, rReq, addr)
+			if err != nil {
+				slog.Info("Recursive query failed", slog.String("name", name), slog.String("addr", addr), slog.Any("error", err))
+				return err
+			}
+			// If the response is not successful or there are no answers, return immediately
+			// as no conversion is possible.
+			if resp.Rcode != dns.RcodeSuccess || len(resp.Answer) == 0 {
+				return nil
+			}
+
+			aToAAAA(upstream, resp)
+
+			mu.Lock()
+			defer mu.Unlock()
+			if out == nil { // Copy first ever response in its entirety, answers will be replaced later.
+				out = &dns.Msg{}
+				resp.CopyTo(out)
+				out.Question = req.Question // Reset original question to avoid response mismatch.
+			}
+			ans = append(ans, resp.Answer...)
+
+			return nil
+		})
+	}
+
+	if err := g.Wait(); err != nil {
+		return dns.RcodeServerFailure, err
+	}
+
+	if len(ans) == 0 {
+		return dns.RcodeNameError, errors.New("no answers")
+	}
+
+	// Clamp the answers and shuffle to provide load-balancing.
+	if r.opts.maxAnswers > 0 && len(ans) > r.opts.maxAnswers {
+		ans = ans[:r.opts.maxAnswers]
+	}
+	rand.Shuffle(len(ans), func(i, j int) {
+		ans[i], ans[j] = ans[j], ans[i]
+	})
+	out.Answer = ans
+
+	if err := w.WriteMsg(out); err != nil {
+		return dns.RcodeServerFailure, err
+	}
+
+	return dns.RcodeSuccess, nil
+}
+
+func (r *TunnelNodeDNSReconciler) getUpsreamsForSubdomain(
+	ctx context.Context,
+	subdomain string,
+) []netip.Addr {
+	log := alog.FromContext(ctx)
+	var (
+		found         bool
+		logAttr       slog.Attr
+		upstreamAddrs sets.Set[netip.Addr]
+	)
+	nodeUUID, err := uuid.Parse(subdomain)
+	if err == nil {
+		key := nodeUUID.String()
+		logAttr = slog.String("uuid", key)
+		upstreamAddrs, found = r.uuidCache.Get(key)
+	} else {
+		key := subdomain
+		logAttr = slog.String("name", key)
+		upstreamAddrs, found = r.nameCache.Get(key)
+	}
+	if !found {
+		return nil
+	}
+
+	randUpstreams := upstreamAddrs.UnsortedList() // returns a slice copy.
+	rand.Shuffle(len(randUpstreams), func(i, j int) {
+		randUpstreams[i], randUpstreams[j] = randUpstreams[j], randUpstreams[i]
+	})
+
+	log.Info("Getting upstreams for subdomain", logAttr, slog.Any("upstreams", randUpstreams))
+
+	return randUpstreams
+}
+
 func (r *TunnelNodeDNSReconciler) serveDNS(ctx context.Context, next plugin.Handler, w dns.ResponseWriter, req *dns.Msg) (int, error) {
 	if len(req.Question) == 0 {
 		return dns.RcodeSuccess, nil
 	}
 
-	log := slog.With(slog.String("qname", req.Question[0].Name))
-
 	qname := req.Question[0].Name
+	log := slog.With(slog.String("qname", qname))
+
 	if !strings.HasSuffix(qname, strings.TrimSuffix(apoxynet.TunnelDomain, ".")+".") {
 		log.Debug("Query name does not match TunnelDomain", slog.String("domain_suffix", apoxynet.TunnelDomain))
 		return plugin.NextOrFailure(r.name(), next, ctx, w, req)
@@ -172,44 +344,30 @@ func (r *TunnelNodeDNSReconciler) serveDNS(ctx context.Context, next plugin.Hand
 		return dns.RcodeNameError, nil
 	}
 
-	recursive := ""
+	// If the name contains subdomains, request recursive tunnel resolutions of
+	// the subdomain prefix.
+	// Example query:
+	//   my-service.my-tunnel.tun.apoxy.net. (orig qname) -> my-service (upstream qname)
 	if strings.Contains(name, ".") {
-		log.Info("Requesting recursive tunnel resolutions")
 		qp := strings.Split(name, ".")
-		recursive = strings.Join(qp[:len(qp)-1], ".")
+		subName := strings.Join(qp[:len(qp)-1], ".")
 		name = qp[len(qp)-1]
-	}
 
-	var (
-		found bool
-		ips   sets.Set[netip.Addr]
-	)
-	nodeUUID, err := uuid.Parse(name)
-	if err == nil {
-		ips, found = r.uuidCache.Get(nodeUUID.String())
-	} else {
-		ips, found = r.nameCache.Get(name)
-	}
-	if !found {
-		log.Warn("Node not found")
-		return dns.RcodeNameError, nil
-	}
+		upstreamAddrs := r.getUpsreamsForSubdomain(alog.IntoContext(ctx, log), name)
 
-	ipSlice := ips.UnsortedList() // returns a slice copy.
-	// Fisher-Yates shuffle to randomize the order of IPs.
-	for i := len(ips) - 1; i > 0; i-- {
-		j := rand.IntN(i + 1)
-		ipSlice[i], ipSlice[j] = ipSlice[j], ipSlice[i]
-	}
-	if recursive != "" {
-		return r.recursiveResolve(ctx, w, req, recursive, ipSlice)
+		log.Info("Requesting recursive tunnel resolutions",
+			slog.String("qname", subName),
+			slog.Any("upstreams", upstreamAddrs),
+		)
+
+		return r.recursiveResolve(alog.IntoContext(ctx, log), w, req, subName, upstreamAddrs)
 	}
 
 	msg := new(dns.Msg)
 	msg.SetReply(req)
 	msg.Authoritative = true
 
-	for _, ip := range ipSlice {
+	for _, ip := range r.getUpsreamsForSubdomain(alog.IntoContext(ctx, log), name) {
 		var rr dns.RR
 		log.Info("Processing IP", slog.String("addr", ip.String()))
 		if ip.Is4() && req.Question[0].Qtype == dns.TypeA {
@@ -245,135 +403,6 @@ func (r *TunnelNodeDNSReconciler) serveDNS(ctx context.Context, next plugin.Hand
 
 	if err := w.WriteMsg(msg); err != nil {
 		log.Error("Failed to write response", slog.Any("error", err))
-		return dns.RcodeServerFailure, err
-	}
-
-	return dns.RcodeSuccess, nil
-}
-
-func (r *TunnelNodeDNSReconciler) upstreamHostFromAddr(addr netip.Addr) (string, error) {
-	if !addr.Is6() {
-		return "", fmt.Errorf("expecting v6 address, got %s", addr.String())
-	}
-
-	v6, v4 := addr.As16(), tunResolver.Addr().As4()
-	copy(v6[12:], v4[:])
-
-	srvAddr := netip.AddrFrom16(v6)
-	return netip.AddrPortFrom(srvAddr, tunResolver.Port()).String(), nil
-}
-
-// aToAAAA converts A records to AAAA records in-place by nesting A record's
-// IPv4 address into the IPv6 /96 address.
-func aToAAAA(req *dns.Msg, v6base netip.Addr, resp *dns.Msg) {
-	v6baseAs16 := v6base.As16()
-	for i, rr := range resp.Answer {
-		if a, ok := rr.(*dns.A); ok {
-			aaaa := new(dns.AAAA)
-			aaaa.Hdr = dns.RR_Header{
-				Name:   a.Hdr.Name,
-				Rrtype: dns.TypeAAAA,
-				Class:  a.Hdr.Class,
-				Ttl:    a.Hdr.Ttl,
-			}
-
-			aaaa.AAAA = make(net.IP, net.IPv6len)
-			copy(aaaa.AAAA[:12], v6baseAs16[:12])
-			copy(aaaa.AAAA[12:], a.A)
-
-			resp.Answer[i] = aaaa
-		}
-	}
-}
-
-func (r *TunnelNodeDNSReconciler) recursiveResolve(
-	ctx context.Context,
-	w dns.ResponseWriter,
-	req *dns.Msg,
-	name string,
-	upstreams []netip.Addr,
-) (int, error) {
-	ctx, cancel := context.WithTimeout(ctx, r.opts.timeout)
-	defer cancel()
-
-	rReq := req.Copy()
-	rReq.Question[0].Name = name + "."
-	rReq.RecursionDesired = true
-
-	// If original request is for IPv6, convert to IPv4 request for upstream.
-	isAAAA := len(req.Question) > 0 && req.Question[0].Qtype == dns.TypeAAAA
-	if !isAAAA {
-		return dns.RcodeNotImplemented, errors.New("only AAAA queries are supported for recursive resolution")
-	}
-
-	// Rewrites request as A for upstream resolver.
-	rReq.Question[0].Qtype = dns.TypeA
-
-	var (
-		mu  sync.Mutex
-		out *dns.Msg
-		ans []dns.RR
-	)
-
-	g, _ := errgroup.WithContext(ctx)
-	client := &dns.Client{
-		// TODO(mattward): could go back to UDP when tunnels support UDP.
-		Net:     "tcp",
-		Dialer:  &net.Dialer{Timeout: r.opts.perUpstreamTimeout},
-		Timeout: r.opts.perUpstreamTimeout,
-	}
-
-	for _, upstream := range upstreams {
-		addr, err := r.upstreamHostFromAddr(upstream)
-		if err != nil {
-			apoxylog.Debugf("invalid IP address %s", upstream)
-			continue
-		}
-
-		g.Go(func() error {
-			resp, _, err := client.ExchangeContext(ctx, rReq, addr)
-			if err != nil {
-				apoxylog.Debugf("recursive query failed for %s via %s: %v", name, addr, err)
-				return err
-			}
-			// If the response is not successful or there are no answers, return immediately
-			// as no conversion is possible.
-			if resp.Rcode != dns.RcodeSuccess || len(resp.Answer) == 0 {
-				return nil
-			}
-
-			aToAAAA(req, upstream, resp)
-
-			mu.Lock()
-			defer mu.Unlock()
-			if out == nil { // Copy first ever response in its entirety, answers will be replaced later.
-				out = &dns.Msg{}
-				resp.CopyTo(out)
-			}
-			ans = append(ans, resp.Answer...)
-
-			return nil
-		})
-	}
-
-	if err := g.Wait(); err != nil {
-		return dns.RcodeServerFailure, err
-	}
-
-	if len(ans) == 0 {
-		return dns.RcodeNameError, errors.New("no answers")
-	}
-
-	// Clamp the answers and shuffle to provide load-balancing.
-	if r.opts.maxAnswers > 0 && len(ans) > r.opts.maxAnswers {
-		ans = ans[:r.opts.maxAnswers]
-	}
-	rand.Shuffle(len(ans), func(i, j int) {
-		ans[i], ans[j] = ans[j], ans[i]
-	})
-	out.Answer = ans
-
-	if err := w.WriteMsg(out); err != nil {
 		return dns.RcodeServerFailure, err
 	}
 

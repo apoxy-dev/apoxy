@@ -147,7 +147,7 @@ var tunnelRunCmd = &cobra.Command{
 			// Launch an internal recursive DNS resolver used
 			// to resolve addresses of IPv4 services.
 			if err := dns.ListenAndServe(dnsListenAddr); err != nil {
-				slog.Error("failed to start DNS server", slog.Any("error", err))
+				slog.Error("Failed to start DNS server", slog.Any("error", err))
 				os.Exit(1)
 			}
 		}()

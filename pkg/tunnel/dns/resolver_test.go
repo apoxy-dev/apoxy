@@ -59,10 +59,10 @@ func (h *nextHandler) ServeDNS(ctx context.Context, w cdns.ResponseWriter, r *cd
 }
 
 func TestTunnelNodeDNSReconciler(t *testing.T) {
-	// Create a mock TunnelNode
 	tunnelNode := &corev1alpha.TunnelNode{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "test-node",
+			UID:  "test-uid-1234",
 		},
 		Status: corev1alpha.TunnelNodeStatus{
 			Agents: []corev1alpha.AgentStatus{
@@ -72,6 +72,12 @@ func TestTunnelNodeDNSReconciler(t *testing.T) {
 					PrivateAddress: "fd00::1",
 					AgentAddress:   "192.168.1.100",
 				},
+				{
+					Name:           "agent2",
+					ConnectedAt:    ptr.To(metav1.Now()),
+					PrivateAddress: "10.0.0.1",
+					AgentAddress:   "192.168.1.101",
+				},
 			},
 		},
 	}
@@ -80,16 +86,13 @@ func TestTunnelNodeDNSReconciler(t *testing.T) {
 	err := corev1alpha.Install(scheme)
 	require.NoError(t, err)
 
-	// Create a fake client with the TunnelNode
 	client := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(tunnelNode).
 		Build()
 
-	// Create a reconciler
 	reconciler := NewTunnelNodeDNSReconciler(client)
 
-	// Test the reconcile logic
 	t.Run("Reconcile", func(t *testing.T) {
 		req := reconcile.Request{
 			NamespacedName: types.NamespacedName{
@@ -97,39 +100,42 @@ func TestTunnelNodeDNSReconciler(t *testing.T) {
 			},
 		}
 
-		// Reconcile the resource.
 		result, err := reconciler.reconcile(context.Background(), req)
 		require.NoError(t, err)
 		assert.Equal(t, ctrl.Result{}, result)
 
-		// Verify the cache was updated
+		// Verify the cache was updated with correct IPs.
 		addr, ok := reconciler.nameCache.Get("test-node")
 		require.True(t, ok)
-		expectedAddrs := sets.New(netip.MustParseAddr("fd00::1"))
+		expectedAddrs := sets.New(netip.MustParseAddr("192.168.1.100"), netip.MustParseAddr("192.168.1.101"))
 		assert.Equal(t, expectedAddrs, addr)
 
-		// Test handling of non-existent resources.
-		req = reconcile.Request{
+		// Verify UUID cache was also updated.
+		uuidAddr, ok := reconciler.uuidCache.Get("test-uid-1234")
+		require.True(t, ok)
+		assert.Equal(t, expectedAddrs, uuidAddr)
+	})
+
+	t.Run("Reconcile_NonExistent", func(t *testing.T) {
+		req := reconcile.Request{
 			NamespacedName: types.NamespacedName{
 				Name: "non-existent",
 			},
 		}
 
-		// Add a dummy entry to the cache.
 		reconciler.nameCache.Set("non-existent", sets.New(netip.MustParseAddr("fd00::2")))
 
-		// Reconcile the non-existent resource.
-		result, err = reconciler.reconcile(context.Background(), req)
+		result, err := reconciler.reconcile(context.Background(), req)
 		assert.NoError(t, err) // Should handle not found gracefully
 		assert.Equal(t, ctrl.Result{}, result)
 	})
 }
 
 func TestTunnelNodeDNSServer(t *testing.T) {
-	// Create a mock TunnelNode
 	tunnelNode := &corev1alpha.TunnelNode{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "test-node",
+			UID:  "550e8400-e29b-41d4-a716-446655440000",
 		},
 		Status: corev1alpha.TunnelNodeStatus{
 			Agents: []corev1alpha.AgentStatus{
@@ -137,19 +143,18 @@ func TestTunnelNodeDNSServer(t *testing.T) {
 					Name:           "agent1",
 					ConnectedAt:    ptr.To(metav1.Now()),
 					PrivateAddress: "fd00::1",
-					AgentAddress:   "192.168.1.100",
+					AgentAddress:   "fd00::1",
 				},
 				{
 					Name:           "agent3",
 					ConnectedAt:    ptr.To(metav1.Now()),
 					PrivateAddress: "10.0.0.1",
-					AgentAddress:   "192.168.1.102",
+					AgentAddress:   "10.0.0.1",
 				},
 			},
 		},
 	}
 
-	// Create a fake client with the TunnelNode
 	scheme := runtime.NewScheme()
 	err := corev1alpha.Install(scheme)
 	require.NoError(t, err)
@@ -159,114 +164,117 @@ func TestTunnelNodeDNSServer(t *testing.T) {
 		WithObjects(tunnelNode).
 		Build()
 
-	// Create a resolver
 	resolver := NewTunnelNodeDNSReconciler(client)
 
-	// Add the TunnelNode to the cache
+	// Add the TunnelNode to the cache.
 	resolver.nameCache.Set(tunnelNode.Name, sets.New(netip.MustParseAddr("fd00::1"), netip.MustParseAddr("10.0.0.1")))
+	resolver.uuidCache.Set(string(tunnelNode.UID), sets.New(netip.MustParseAddr("fd00::1"), netip.MustParseAddr("10.0.0.1")))
 
-	// Test the ServeDNS method
-	t.Run("ServeDNS - valid IPv6 query", func(t *testing.T) {
-		// Create a DNS message
+	t.Run("ServeDNS - valid IPv6 query by name", func(t *testing.T) {
 		msg := new(cdns.Msg)
 		msg.SetQuestion("test-node.tun.apoxy.net.", cdns.TypeAAAA)
 
-		// Create a response writer
 		rw := &testResponseWriter{}
 
-		// Call the handler
 		code, err := resolver.serveDNS(context.Background(), nil, rw, msg)
 		require.NoError(t, err)
 		assert.Equal(t, cdns.RcodeSuccess, code)
 
-		// Verify the response
 		require.NotNil(t, rw.msg)
 		require.Len(t, rw.msg.Answer, 1)
 		aaaa, ok := rw.msg.Answer[0].(*cdns.AAAA)
 		require.True(t, ok, "Answer should be AAAA record")
-		expectedIP := netip.MustParseAddr("fd00::1").String()
-		assert.Equal(t, expectedIP, aaaa.AAAA.String())
+		expectedIP := netip.MustParseAddr("fd00::1")
+		actualIP := netip.AddrFrom16([16]byte(aaaa.AAAA))
+		assert.Equal(t, expectedIP, actualIP)
 	})
 
-	t.Run("ServeDNS - valid IPv4 query", func(t *testing.T) {
-		// Create a DNS message
+	t.Run("ServeDNS - valid IPv4 query by name", func(t *testing.T) {
 		msg := new(cdns.Msg)
 		msg.SetQuestion("test-node.tun.apoxy.net.", cdns.TypeA)
 
-		// Create a response writer
 		rw := &testResponseWriter{}
 
-		// Call the handler
 		code, err := resolver.serveDNS(context.Background(), nil, rw, msg)
 		require.NoError(t, err)
 		assert.Equal(t, cdns.RcodeSuccess, code)
 
-		// Verify the response
 		require.NotNil(t, rw.msg)
 		require.Len(t, rw.msg.Answer, 1)
 		a, ok := rw.msg.Answer[0].(*cdns.A)
 		require.True(t, ok, "Answer should be A record")
-		expectedIP := netip.MustParseAddr("10.0.0.1").String()
-		assert.Equal(t, expectedIP, a.A.String())
+		expectedIP := netip.MustParseAddr("10.0.0.1")
+		actualIP := netip.AddrFrom4([4]byte(a.A))
+		assert.Equal(t, expectedIP, actualIP)
+	})
+
+	t.Run("ServeDNS - valid query by UUID", func(t *testing.T) {
+		msg := new(cdns.Msg)
+		msg.SetQuestion("550e8400-e29b-41d4-a716-446655440000.tun.apoxy.net.", cdns.TypeAAAA)
+
+		rw := &testResponseWriter{}
+
+		code, err := resolver.serveDNS(context.Background(), nil, rw, msg)
+		require.NoError(t, err)
+		assert.Equal(t, cdns.RcodeSuccess, code)
+
+		require.NotNil(t, rw.msg)
+		require.Len(t, rw.msg.Answer, 1)
+		aaaa, ok := rw.msg.Answer[0].(*cdns.AAAA)
+		require.True(t, ok, "Answer should be AAAA record")
+		expectedIP := netip.MustParseAddr("fd00::1")
+		actualIP := netip.AddrFrom16([16]byte(aaaa.AAAA))
+		assert.Equal(t, expectedIP, actualIP)
 	})
 
 	t.Run("ServeDNS - non-matching domain", func(t *testing.T) {
 		next := &nextHandler{code: cdns.RcodeSuccess}
 		handler := resolver.Resolver(next)
 
-		// Create a DNS message
 		msg := new(cdns.Msg)
 		msg.SetQuestion("example.com.", cdns.TypeA)
 
-		// Create a response writer
 		rw := &testResponseWriter{}
 
-		// Call the handler
 		code, err := handler.ServeDNS(context.Background(), rw, msg)
 		require.NoError(t, err)
-		assert.Equal(t, 0, code) // Should be handled by the next plugin
+		assert.Equal(t, cdns.RcodeSuccess, code) // Should be handled by the next plugin
+		assert.True(t, next.called, "Next handler should be called")
 	})
 
-	// Test the Resolver function
-	t.Run("Resolver", func(t *testing.T) {
-		next := &nextHandler{code: cdns.RcodeSuccess}
-		handler := resolver.Resolver(next)
-
-		// Create a DNS message for a non-existent agent
+	t.Run("ServeDNS - non-existent node", func(t *testing.T) {
 		msg := new(cdns.Msg)
-		msg.SetQuestion("non-existent.test-node.tun.apoxy.net.", cdns.TypeA)
+		msg.SetQuestion("non-existent.tun.apoxy.net.", cdns.TypeA)
 
-		// Create a response writer
 		rw := &testResponseWriter{}
 
-		// Call the handler
-		code, err := handler.ServeDNS(context.Background(), rw, msg)
+		code, err := resolver.serveDNS(context.Background(), nil, rw, msg)
+		require.NoError(t, err)
+		assert.Equal(t, cdns.RcodeNameError, code)
+	})
+
+	t.Run("ServeDNS - empty question", func(t *testing.T) {
+		msg := new(cdns.Msg)
+
+		rw := &testResponseWriter{}
+
+		code, err := resolver.serveDNS(context.Background(), nil, rw, msg)
 		require.NoError(t, err)
 		assert.Equal(t, cdns.RcodeSuccess, code)
-		assert.True(t, next.called, "Next handler should be called")
 	})
 }
 
-func TestTunnelNodeDNSReconciler_convertIPv4ToIPv6Response(t *testing.T) {
-	// Create a reconciler instance for testing
-	r := &TunnelNodeDNSReconciler{}
-
-	// IPv4-in-IPv6 mapping base address (::ffff:0:0/96)
-	baseIP := netip.MustParseAddr("::ffff:0:0")
-
+func TestAToAAAA(t *testing.T) {
 	t.Run("converts single A record to AAAA record", func(t *testing.T) {
-		// Create original IPv6 AAAA request
 		originalReq := new(cdns.Msg)
 		originalReq.SetQuestion(cdns.Fqdn("example.com"), cdns.TypeAAAA)
 
-		// Create IPv4 response with A record
 		ipv4Response := new(cdns.Msg)
 		ipv4Response.SetReply(originalReq)
 		ipv4Response.Authoritative = true
 		ipv4Response.RecursionAvailable = true
 		ipv4Response.Rcode = cdns.RcodeSuccess
 
-		// Add A record for 192.168.1.1
 		aRecord := &cdns.A{
 			Hdr: cdns.RR_Header{
 				Name:   "example.com.",
@@ -278,30 +286,29 @@ func TestTunnelNodeDNSReconciler_convertIPv4ToIPv6Response(t *testing.T) {
 		}
 		ipv4Response.Answer = append(ipv4Response.Answer, aRecord)
 
-		// Convert to IPv6 response
-		ipv6Response := r.convertIPv4ToIPv6Response(originalReq, ipv4Response, baseIP)
+		v6base := netip.MustParseAddr("fd00::1:0:0")
 
-		// Verify response structure
-		require.NotNil(t, ipv6Response)
-		assert.Equal(t, originalReq.Id, ipv6Response.Id)
-		assert.True(t, ipv6Response.Response)
-		assert.Equal(t, ipv4Response.Authoritative, ipv6Response.Authoritative)
-		assert.Equal(t, ipv4Response.RecursionAvailable, ipv6Response.RecursionAvailable)
-		assert.Equal(t, int(ipv4Response.Rcode), int(ipv6Response.Rcode))
+		aToAAAA(originalReq, v6base, ipv4Response)
 
-		// Verify AAAA record conversion
-		require.Len(t, ipv6Response.Answer, 1)
-		aaaa, ok := ipv6Response.Answer[0].(*cdns.AAAA)
+		require.NotNil(t, ipv4Response)
+		assert.True(t, ipv4Response.Response)
+		assert.Equal(t, true, ipv4Response.Authoritative)
+		assert.Equal(t, true, ipv4Response.RecursionAvailable)
+		assert.Equal(t, cdns.RcodeSuccess, ipv4Response.Rcode)
+
+		require.Len(t, ipv4Response.Answer, 1)
+		aaaa, ok := ipv4Response.Answer[0].(*cdns.AAAA)
 		require.True(t, ok, "Expected AAAA record")
 		assert.Equal(t, "example.com.", aaaa.Hdr.Name)
 		assert.Equal(t, cdns.TypeAAAA, aaaa.Hdr.Rrtype)
 		assert.Equal(t, uint16(cdns.ClassINET), aaaa.Hdr.Class)
 		assert.Equal(t, uint32(300), aaaa.Hdr.Ttl)
 
-		// Verify IPv6 address mapping (::ffff:192.168.1.1)
-		expectedIPv6 := netip.MustParseAddr("::ffff:192.168.1.1")
 		actualIPv6 := netip.AddrFrom16([16]byte(aaaa.AAAA))
-		assert.Equal(t, expectedIPv6, actualIPv6)
+		baseAs16 := v6base.As16()
+		actualAs16 := actualIPv6.As16()
+		assert.Equal(t, baseAs16[:12], actualAs16[:12], "First 12 bytes should match base IPv6")
+		assert.Equal(t, net.ParseIP("192.168.1.1").To4(), aaaa.AAAA[12:], "Last 4 bytes should be IPv4 address")
 	})
 
 	t.Run("converts multiple A records to AAAA records", func(t *testing.T) {
@@ -312,7 +319,6 @@ func TestTunnelNodeDNSReconciler_convertIPv4ToIPv6Response(t *testing.T) {
 		ipv4Response.SetReply(originalReq)
 		ipv4Response.Rcode = cdns.RcodeSuccess
 
-		// Add multiple A records
 		addresses := []string{"10.0.0.1", "10.0.0.2", "203.0.113.1"}
 		for i, addr := range addresses {
 			aRecord := &cdns.A{
@@ -327,27 +333,28 @@ func TestTunnelNodeDNSReconciler_convertIPv4ToIPv6Response(t *testing.T) {
 			ipv4Response.Answer = append(ipv4Response.Answer, aRecord)
 		}
 
-		ipv6Response := r.convertIPv4ToIPv6Response(originalReq, ipv4Response, baseIP)
+		v6base := netip.MustParseAddr("fd00::1:0:0")
 
-		require.NotNil(t, ipv6Response)
-		require.Len(t, ipv6Response.Answer, 3)
+		aToAAAA(originalReq, v6base, ipv4Response)
 
-		// Verify each converted record
-		expectedIPv6s := []string{"::ffff:10.0.0.1", "::ffff:10.0.0.2", "::ffff:203.0.113.1"}
-		for i, expectedAddr := range expectedIPv6s {
-			aaaa, ok := ipv6Response.Answer[i].(*cdns.AAAA)
+		require.NotNil(t, ipv4Response)
+		require.Len(t, ipv4Response.Answer, 3)
+
+		baseAs16 := v6base.As16()
+		for i, addr := range addresses {
+			aaaa, ok := ipv4Response.Answer[i].(*cdns.AAAA)
 			require.True(t, ok, "Expected AAAA record at index %d", i)
 			assert.Equal(t, "multi.example.com.", aaaa.Hdr.Name)
 			assert.Equal(t, cdns.TypeAAAA, aaaa.Hdr.Rrtype)
 			assert.Equal(t, uint32(600+i*100), aaaa.Hdr.Ttl)
 
-			actualIPv6 := netip.AddrFrom16([16]byte(aaaa.AAAA))
-			expectedIPv6 := netip.MustParseAddr(expectedAddr)
-			assert.Equal(t, expectedIPv6, actualIPv6)
+			actualAs16 := [16]byte(aaaa.AAAA)
+			assert.Equal(t, baseAs16[:12], actualAs16[:12], "First 12 bytes should match base IPv6")
+			assert.Equal(t, net.ParseIP(addr).To4(), aaaa.AAAA[12:], "Last 4 bytes should be IPv4 address")
 		}
 	})
 
-	t.Run("preserves non-A records unchanged", func(t *testing.T) {
+	t.Run("only converts A records leaving other types unchanged", func(t *testing.T) {
 		originalReq := new(cdns.Msg)
 		originalReq.SetQuestion(cdns.Fqdn("mixed.example.com"), cdns.TypeAAAA)
 
@@ -355,7 +362,6 @@ func TestTunnelNodeDNSReconciler_convertIPv4ToIPv6Response(t *testing.T) {
 		ipv4Response.SetReply(originalReq)
 		ipv4Response.Rcode = cdns.RcodeSuccess
 
-		// Add A record
 		aRecord := &cdns.A{
 			Hdr: cdns.RR_Header{
 				Name:   "mixed.example.com.",
@@ -366,7 +372,6 @@ func TestTunnelNodeDNSReconciler_convertIPv4ToIPv6Response(t *testing.T) {
 			A: net.ParseIP("192.168.1.1").To4(),
 		}
 
-		// Add CNAME record
 		cnameRecord := &cdns.CNAME{
 			Hdr: cdns.RR_Header{
 				Name:   "alias.example.com.",
@@ -377,7 +382,6 @@ func TestTunnelNodeDNSReconciler_convertIPv4ToIPv6Response(t *testing.T) {
 			Target: "mixed.example.com.",
 		}
 
-		// Add TXT record
 		txtRecord := &cdns.TXT{
 			Hdr: cdns.RR_Header{
 				Name:   "mixed.example.com.",
@@ -390,33 +394,32 @@ func TestTunnelNodeDNSReconciler_convertIPv4ToIPv6Response(t *testing.T) {
 
 		ipv4Response.Answer = append(ipv4Response.Answer, aRecord, cnameRecord, txtRecord)
 
-		ipv6Response := r.convertIPv4ToIPv6Response(originalReq, ipv4Response, baseIP)
+		v6base := netip.MustParseAddr("fd00::1")
 
-		require.NotNil(t, ipv6Response)
-		require.Len(t, ipv6Response.Answer, 3)
+		aToAAAA(originalReq, v6base, ipv4Response)
 
-		// First record should be converted AAAA
-		aaaa, ok := ipv6Response.Answer[0].(*cdns.AAAA)
+		require.NotNil(t, ipv4Response)
+		require.Len(t, ipv4Response.Answer, 3)
+
+		aaaa, ok := ipv4Response.Answer[0].(*cdns.AAAA)
 		require.True(t, ok, "Expected AAAA record")
 		assert.Equal(t, "mixed.example.com.", aaaa.Hdr.Name)
 		assert.Equal(t, cdns.TypeAAAA, aaaa.Hdr.Rrtype)
 
-		// Second record should be unchanged CNAME
-		cname, ok := ipv6Response.Answer[1].(*cdns.CNAME)
+		cname, ok := ipv4Response.Answer[1].(*cdns.CNAME)
 		require.True(t, ok, "Expected CNAME record")
 		assert.Equal(t, "alias.example.com.", cname.Hdr.Name)
 		assert.Equal(t, cdns.TypeCNAME, cname.Hdr.Rrtype)
 		assert.Equal(t, "mixed.example.com.", cname.Target)
 
-		// Third record should be unchanged TXT
-		txt, ok := ipv6Response.Answer[2].(*cdns.TXT)
+		txt, ok := ipv4Response.Answer[2].(*cdns.TXT)
 		require.True(t, ok, "Expected TXT record")
 		assert.Equal(t, "mixed.example.com.", txt.Hdr.Name)
 		assert.Equal(t, cdns.TypeTXT, txt.Hdr.Rrtype)
 		assert.Equal(t, []string{"v=spf1 include:_spf.example.com ~all"}, txt.Txt)
 	})
 
-	t.Run("preserves NS and Extra sections", func(t *testing.T) {
+	t.Run("handles empty response gracefully", func(t *testing.T) {
 		originalReq := new(cdns.Msg)
 		originalReq.SetQuestion(cdns.Fqdn("example.com"), cdns.TypeAAAA)
 
@@ -424,102 +427,34 @@ func TestTunnelNodeDNSReconciler_convertIPv4ToIPv6Response(t *testing.T) {
 		ipv4Response.SetReply(originalReq)
 		ipv4Response.Rcode = cdns.RcodeSuccess
 
-		// Add A record
-		aRecord := &cdns.A{
-			Hdr: cdns.RR_Header{
-				Name:   "example.com.",
-				Rrtype: cdns.TypeA,
-				Class:  cdns.ClassINET,
-				Ttl:    300,
-			},
-			A: net.ParseIP("192.168.1.1").To4(),
-		}
-		ipv4Response.Answer = append(ipv4Response.Answer, aRecord)
+		v6base := netip.MustParseAddr("fd00::1:0:0")
 
-		// Add NS record
-		nsRecord := &cdns.NS{
-			Hdr: cdns.RR_Header{
-				Name:   "example.com.",
-				Rrtype: cdns.TypeNS,
-				Class:  cdns.ClassINET,
-				Ttl:    86400,
-			},
-			Ns: "ns1.example.com.",
-		}
-		ipv4Response.Ns = append(ipv4Response.Ns, nsRecord)
+		aToAAAA(originalReq, v6base, ipv4Response)
 
-		// Add additional A record for NS
-		additionalA := &cdns.A{
-			Hdr: cdns.RR_Header{
-				Name:   "ns1.example.com.",
-				Rrtype: cdns.TypeA,
-				Class:  cdns.ClassINET,
-				Ttl:    86400,
-			},
-			A: net.ParseIP("203.0.113.1").To4(),
-		}
-		ipv4Response.Extra = append(ipv4Response.Extra, additionalA)
-
-		ipv6Response := r.convertIPv4ToIPv6Response(originalReq, ipv4Response, baseIP)
-
-		require.NotNil(t, ipv6Response)
-		
-		// Verify NS section is preserved
-		require.Len(t, ipv6Response.Ns, 1)
-		ns, ok := ipv6Response.Ns[0].(*cdns.NS)
-		require.True(t, ok)
-		assert.Equal(t, "example.com.", ns.Hdr.Name)
-		assert.Equal(t, "ns1.example.com.", ns.Ns)
-
-		// Verify Extra section is preserved
-		require.Len(t, ipv6Response.Extra, 1)
-		extraA, ok := ipv6Response.Extra[0].(*cdns.A)
-		require.True(t, ok)
-		assert.Equal(t, "ns1.example.com.", extraA.Hdr.Name)
-		assert.Equal(t, net.ParseIP("203.0.113.1").To4(), extraA.A)
-	})
-
-	t.Run("returns nil for nil response", func(t *testing.T) {
-		originalReq := new(cdns.Msg)
-		originalReq.SetQuestion(cdns.Fqdn("example.com"), cdns.TypeAAAA)
-
-		ipv6Response := r.convertIPv4ToIPv6Response(originalReq, nil, baseIP)
-		assert.Nil(t, ipv6Response)
-	})
-
-	t.Run("returns nil for empty answer section", func(t *testing.T) {
-		originalReq := new(cdns.Msg)
-		originalReq.SetQuestion(cdns.Fqdn("example.com"), cdns.TypeAAAA)
-
-		ipv4Response := new(cdns.Msg)
-		ipv4Response.SetReply(originalReq)
-		ipv4Response.Rcode = cdns.RcodeSuccess
-		// No answer records
-
-		ipv6Response := r.convertIPv4ToIPv6Response(originalReq, ipv4Response, baseIP)
-		assert.Nil(t, ipv6Response)
+		// Response should remain unchanged
+		assert.Len(t, ipv4Response.Answer, 0)
 	})
 
 	t.Run("handles different IPv4 addresses correctly", func(t *testing.T) {
-		originalReq := new(cdns.Msg)
-		originalReq.SetQuestion(cdns.Fqdn("test.example.com"), cdns.TypeAAAA)
-
 		testCases := []struct {
 			name     string
 			ipv4Addr string
-			expected string
+			baseIPv6 string
 		}{
-			{"localhost", "127.0.0.1", "::ffff:127.0.0.1"},
-			{"private_10", "10.0.0.1", "::ffff:10.0.0.1"},
-			{"private_172", "172.16.0.1", "::ffff:172.16.0.1"},
-			{"private_192", "192.168.0.1", "::ffff:192.168.0.1"},
-			{"public", "8.8.8.8", "::ffff:8.8.8.8"},
-			{"edge_case_0", "0.0.0.0", "::ffff:0.0.0.0"},
-			{"edge_case_255", "255.255.255.255", "::ffff:255.255.255.255"},
+			{"localhost", "127.0.0.1", "fd00::1"},
+			{"private_10", "10.0.0.1", "fd00::2"},
+			{"private_172", "172.16.0.1", "fd00::3"},
+			{"private_192", "192.168.0.1", "fd00::4"},
+			{"public", "8.8.8.8", "fd00::5"},
+			{"edge_case_0", "0.0.0.0", "fd00::6"},
+			{"edge_case_255", "255.255.255.255", "fd00::7"},
 		}
 
 		for _, tc := range testCases {
 			t.Run(tc.name, func(t *testing.T) {
+				originalReq := new(cdns.Msg)
+				originalReq.SetQuestion(cdns.Fqdn("test.example.com"), cdns.TypeAAAA)
+
 				ipv4Response := new(cdns.Msg)
 				ipv4Response.SetReply(originalReq)
 				ipv4Response.Rcode = cdns.RcodeSuccess
@@ -535,48 +470,45 @@ func TestTunnelNodeDNSReconciler_convertIPv4ToIPv6Response(t *testing.T) {
 				}
 				ipv4Response.Answer = append(ipv4Response.Answer, aRecord)
 
-				ipv6Response := r.convertIPv4ToIPv6Response(originalReq, ipv4Response, baseIP)
+				baseIP := netip.MustParseAddr(tc.baseIPv6)
+				aToAAAA(originalReq, baseIP, ipv4Response)
 
-				require.NotNil(t, ipv6Response)
-				require.Len(t, ipv6Response.Answer, 1)
+				require.NotNil(t, ipv4Response)
+				require.Len(t, ipv4Response.Answer, 1)
 
-				aaaa, ok := ipv6Response.Answer[0].(*cdns.AAAA)
+				aaaa, ok := ipv4Response.Answer[0].(*cdns.AAAA)
 				require.True(t, ok)
 
-				actualIPv6 := netip.AddrFrom16([16]byte(aaaa.AAAA))
-				expectedIPv6 := netip.MustParseAddr(tc.expected)
-				assert.Equal(t, expectedIPv6, actualIPv6, "IPv4 %s should map to IPv6 %s", tc.ipv4Addr, tc.expected)
+				// Verify the IPv6 address has the correct structure
+				actualAs16 := [16]byte(aaaa.AAAA)
+				baseAs16 := baseIP.As16()
+				assert.Equal(t, baseAs16[:12], actualAs16[:12], "First 12 bytes should match base IPv6")
+				assert.Equal(t, net.ParseIP(tc.ipv4Addr).To4(), aaaa.AAAA[12:], "Last 4 bytes should be IPv4 address")
 			})
 		}
 	})
+}
 
-	t.Run("preserves error response codes", func(t *testing.T) {
-		originalReq := new(cdns.Msg)
-		originalReq.SetQuestion(cdns.Fqdn("nonexistent.example.com"), cdns.TypeAAAA)
+func TestUpstreamHostFromAddr(t *testing.T) {
+	r := &TunnelNodeDNSReconciler{}
 
-		ipv4Response := new(cdns.Msg)
-		ipv4Response.SetReply(originalReq)
-		ipv4Response.Rcode = cdns.RcodeNameError
-		ipv4Response.Authoritative = true
-		ipv4Response.RecursionAvailable = false
+	t.Run("valid IPv6 address", func(t *testing.T) {
+		addr := netip.MustParseAddr("fd00::1")
+		host, err := r.upstreamHostFromAddr(addr)
+		require.NoError(t, err)
 
-		// Add a dummy A record to ensure it's not the empty answer check
-		aRecord := &cdns.A{
-			Hdr: cdns.RR_Header{
-				Name:   "nonexistent.example.com.",
-				Rrtype: cdns.TypeA,
-				Class:  cdns.ClassINET,
-				Ttl:    300,
-			},
-			A: net.ParseIP("192.168.1.1").To4(),
-		}
-		ipv4Response.Answer = append(ipv4Response.Answer, aRecord)
+		// Should embed the tunnel resolver IPv4 (127.0.0.1) into the IPv6 address
+		expected := netip.AddrPortFrom(
+			netip.MustParseAddr("fd00::7f00:1"),
+			8053,
+		).String()
+		assert.Equal(t, expected, host)
+	})
 
-		ipv6Response := r.convertIPv4ToIPv6Response(originalReq, ipv4Response, baseIP)
-
-		require.NotNil(t, ipv6Response)
-		assert.Equal(t, int(cdns.RcodeNameError), int(ipv6Response.Rcode))
-		assert.True(t, ipv6Response.Authoritative)
-		assert.False(t, ipv6Response.RecursionAvailable)
+	t.Run("invalid IPv4 address", func(t *testing.T) {
+		addr := netip.MustParseAddr("192.168.1.1")
+		_, err := r.upstreamHostFromAddr(addr)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "expecting v6 address")
 	})
 }
