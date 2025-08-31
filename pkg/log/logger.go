@@ -226,7 +226,11 @@ func New(enabled bool) logr.Logger {
 
 // FromContext returns an slog.Logger from the context.
 func FromContext(ctx context.Context) *slog.Logger {
-	return logr.FromContextAsSlogLogger(ctx)
+	log := logr.FromContextAsSlogLogger(ctx)
+	if log == nil {
+		log = slog.Default()
+	}
+	return log
 }
 
 // IntoContext returns a new context with the provided logger.
