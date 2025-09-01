@@ -27,7 +27,7 @@ import (
 	"dagger/apoxy-cli/internal/dagger"
 )
 
-const ZigVersion = "0.15.1"
+const ZigVersion = "0.14.1"
 
 type ApoxyCli struct{}
 
@@ -100,6 +100,22 @@ func (m *ApoxyCli) BuilderContainer(ctx context.Context, src *dagger.Directory) 
 		WithWorkdir("/src")
 }
 
+// DarwinBuilderContainer creates a container for building on macOS.
+func (m *ApoxyCli) DarwinBuilderContainer(ctx context.Context, src *dagger.Directory) *dagger.Container {
+	return m.BuilderContainer(ctx, src).
+		WithExec([]string{"apt-get", "update"}).
+		WithExec([]string{"apt-get", "install", "-yq", "gcc", "g++", "zlib1g-dev", "libmpc-dev", "libmpfr-dev", "libgmp-dev"}).
+		WithExec([]string{
+			"wget", fmt.Sprintf("https://apoxy-public-build-tools.s3.us-west-2.amazonaws.com/MacOSX14.sdk.tar.xz"),
+		}).
+		WithExec([]string{
+			"tar", "-xf", "MacOSX14.sdk.tar.xz",
+		}).
+		WithExec([]string{
+			"mv", "MacOSX14.sdk", "/macsdk",
+		})
+}
+
 // PublishBuilderContainer publishes a container for compiling go binaries.
 func (m *ApoxyCli) PublishBuilderContainer(
 	ctx context.Context,
@@ -151,25 +167,13 @@ func (m *ApoxyCli) BuildCLI(
 
 	targetArch := canonArchFromGoArch(goarch)
 	zigTarget := fmt.Sprintf("%s-linux-musl", targetArch)
+	var builder *dagger.Container
+
 	if os == "darwin" {
 		zigTarget = fmt.Sprintf("%s-macos", targetArch)
-	}
-
-	builder := m.BuilderContainer(ctx, src)
-
-	if os == "darwin" {
-		builder = builder.
-			WithExec([]string{"apt-get", "update"}).
-			WithExec([]string{"apt-get", "install", "-yq", "gcc", "g++", "zlib1g-dev", "libmpc-dev", "libmpfr-dev", "libgmp-dev"}).
-			WithExec([]string{
-				"wget", fmt.Sprintf("https://apoxy-public-build-tools.s3.us-west-2.amazonaws.com/MacOSX14.sdk.tar.xz"),
-			}).
-			WithExec([]string{
-				"tar", "-xf", "MacOSX14.sdk.tar.xz",
-			}).
-			WithExec([]string{
-				"mv", "MacOSX14.sdk", "/macsdk",
-			})
+		builder = m.DarwinBuilderContainer(ctx, src)
+	} else {
+		builder = m.BuilderContainer(ctx, src)
 	}
 
 	return builder.
@@ -179,25 +183,29 @@ func (m *ApoxyCli) BuildCLI(
 		WithEnvVariable("CC", strings.Join([]string{
 			"zig-wrapper cc",
 			"--target=" + zigTarget,
-			"--sysroot=/macsdk",
+			//"--sysroot=/macsdk",
 			"-I/macsdk/usr/include",
 			"-L/macsdk/usr/lib",
 			"-F/macsdk/System/Library/Frameworks",
 			"-Wno-expansion-to-defined",
 			"-Wno-availability",
 			"-Wno-nullability-completeness",
+			"-Wno-macro-redefined",
+			"-Wno-typedef-redefinition",
 			"-DZIG_STATIC_ZLIB=on",
 		}, " ")).
 		WithEnvVariable("CXX", strings.Join([]string{
 			"zig-wrapper c++",
 			"--target=" + zigTarget,
-			"--sysroot=/macsdk",
+			//"--sysroot=/macsdk",
 			"-I/macsdk/usr/include",
 			"-L/macsdk/usr/lib",
 			"-F/macsdk/System/Library/Frameworks",
 			"-Wno-expansion-to-defined",
 			"-Wno-availability",
 			"-Wno-nullability-completeness",
+			"-Wno-macro-redefined",
+			"-Wno-typedef-redefinition",
 			"-DZIG_STATIC_ZLIB=on",
 		}, " ")).
 		WithMountedCache("/go/pkg/mod", dag.CacheVolume("go-mod-"+goarch)).
