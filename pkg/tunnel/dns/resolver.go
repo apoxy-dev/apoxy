@@ -225,8 +225,12 @@ func (r *TunnelNodeDNSReconciler) recursiveResolve(
 	)
 
 	g, _ := errgroup.WithContext(ctx)
-	client := &dns.Client{
-		// TODO(mattward): could go back to UDP when tunnels support UDP.
+	udpClient := &dns.Client{
+		Net:     "udp",
+		Dialer:  &net.Dialer{Timeout: r.opts.perUpstreamTimeout},
+		Timeout: r.opts.perUpstreamTimeout,
+	}
+	tcpClient := &dns.Client{
 		Net:     "tcp",
 		Dialer:  &net.Dialer{Timeout: r.opts.perUpstreamTimeout},
 		Timeout: r.opts.perUpstreamTimeout,
@@ -240,15 +244,21 @@ func (r *TunnelNodeDNSReconciler) recursiveResolve(
 		}
 
 		g.Go(func() error {
-			resp, _, err := client.ExchangeContext(ctx, rReq, addr)
+			resp, _, err := udpClient.ExchangeContext(ctx, rReq, addr)
 			if err != nil {
-				slog.Info("Recursive query failed", slog.String("name", name), slog.String("addr", addr), slog.Any("error", err))
-				return err
-			}
-			// If the response is not successful or there are no answers, return immediately
-			// as no conversion is possible.
-			if resp.Rcode != dns.RcodeSuccess || len(resp.Answer) == 0 {
-				return nil
+				slog.Error("UDP query failed, retrying with TCP",
+					slog.String("name", name),
+					slog.String("addr", addr),
+					slog.Any("error", err))
+
+				resp, _, err = tcpClient.ExchangeContext(ctx, rReq, addr)
+				if err != nil {
+					slog.Error("TCP query failed",
+						slog.String("name", name),
+						slog.String("addr", addr),
+						slog.Any("error", err))
+					return nil // Not returning error as it will cause Wait to return non-nil error also.
+				}
 			}
 
 			aToAAAA(upstream, resp)
