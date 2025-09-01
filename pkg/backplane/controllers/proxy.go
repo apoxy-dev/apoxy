@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	goerrors "errors"
 	"fmt"
+	"log/slog"
 	"net/netip"
 	"strconv"
 	"sync"
@@ -25,7 +26,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
-	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/yaml"
@@ -34,7 +34,6 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/backplane/logs"
 	"github.com/apoxy-dev/apoxy/pkg/backplane/otel"
 	"github.com/apoxy-dev/apoxy/pkg/gateway/xds/bootstrap"
-	alog "github.com/apoxy-dev/apoxy/pkg/log"
 
 	ctrlv1alpha1 "github.com/apoxy-dev/apoxy/api/controllers/v1alpha1"
 )
@@ -230,11 +229,11 @@ func (r *ProxyReconciler) Reconcile(ctx context.Context, request reconcile.Reque
 		return reconcile.Result{}, fmt.Errorf("failed to get Proxy: %w", err)
 	}
 
-	log := log.FromContext(ctx, "app", string(p.UID), "name", p.Name, "replica", r.replicaName)
+	logger := slog.With("app", string(p.UID), "name", p.Name, "replica", r.replicaName)
 
 	rStatus, found := findReplicaStatus(p, r.replicaName)
 	if !found {
-		log.Info("Replica not found, creating new one")
+		logger.Info("Replica not found, creating new one")
 		p.Status.Replicas = append(p.Status.Replicas, &ctrlv1alpha1.ProxyReplicaStatus{
 			Name:           r.replicaName,
 			CreatedAt:      metav1.Now(),
@@ -252,29 +251,29 @@ func (r *ProxyReconciler) Reconcile(ctx context.Context, request reconcile.Reque
 
 	ps := r.RuntimeStatus()
 	if ps.Running {
-		log.V(1).Info("envoy is running")
+		logger.Debug("envoy is running")
 	} else {
-		log.V(1).Info("envoy is not running", "procstate", ps.ProcState.String())
+		logger.Debug("envoy is not running", "procstate", ps.ProcState.String())
 	}
 
 	if !p.ObjectMeta.DeletionTimestamp.IsZero() { // The object is being deleted
-		log.Info("Proxy is being deleted")
+		logger.Info("Proxy is being deleted")
 
 		// If state was terminating and proxy is not running, we can set status to stopped
 		// at which point the main proxy controller will delete the proxy.
 		if ps.Running {
 			switch rStatus.Phase {
 			case ctrlv1alpha1.ProxyReplicaPhaseRunning:
-				log.Info("Deleting Proxy")
+				logger.Info("Deleting Proxy")
 				if err := r.Runtime.Shutdown(ctx); err != nil {
 					return reconcile.Result{}, fmt.Errorf("failed to shutdown proxy: %w", err)
 				}
 				rStatus.Phase = ctrlv1alpha1.ProxyReplicaPhaseTerminating
 				rStatus.Reason = "Proxy is being deleted"
 			case ctrlv1alpha1.ProxyReplicaPhaseTerminating:
-				log.Info("Proxy is terminating")
+				logger.Info("Proxy is terminating")
 			case ctrlv1alpha1.ProxyReplicaPhaseStopped, ctrlv1alpha1.ProxyReplicaPhaseFailed:
-				log.Error(nil, "Proxy process is running but status is stopped or failed", "phase", rStatus.Phase)
+				logger.Error("Proxy process is running but status is stopped or failed", "phase", rStatus.Phase)
 			}
 		} else {
 			rStatus.Phase = ctrlv1alpha1.ProxyReplicaPhaseStopped
@@ -292,23 +291,23 @@ func (r *ProxyReconciler) Reconcile(ctx context.Context, request reconcile.Reque
 	if ps.StartedAt.IsZero() {
 		switch rStatus.Phase {
 		case ctrlv1alpha1.ProxyReplicaPhasePending:
-			log.Info("Starting Proxy")
+			logger.Info("Starting Proxy")
 		case ctrlv1alpha1.ProxyReplicaPhaseRunning:
-			log.Info("Proxy replica is running but no Envoy process is running")
+			logger.Info("Proxy replica is running but no Envoy process is running")
 			rStatus.Phase = ctrlv1alpha1.ProxyReplicaPhaseFailed
 			rStatus.Reason = "Replica is in running state but proxy process is not running"
 			goto UpdateStatus
 		case ctrlv1alpha1.ProxyReplicaPhaseTerminating:
-			log.Info("Proxy is terminating")
+			logger.Info("Proxy is terminating")
 			rStatus.Phase = ctrlv1alpha1.ProxyReplicaPhaseStopped
 			rStatus.Reason = "Proxy terminated"
 			goto UpdateStatus
 		case ctrlv1alpha1.ProxyReplicaPhaseStopped, ctrlv1alpha1.ProxyReplicaPhaseFailed:
-			log.Info("Proxy is stopped or failed, restarting")
+			logger.Info("Proxy is stopped or failed, restarting")
 			rStatus.Phase = ctrlv1alpha1.ProxyReplicaPhasePending
 			rStatus.Reason = "Restarting proxy"
 		default:
-			log.Error(nil, "Unexpected phase", "phase", rStatus.Phase)
+			logger.Error("Unexpected phase", "phase", rStatus.Phase)
 			rStatus.Phase = ctrlv1alpha1.ProxyReplicaPhaseFailed
 			rStatus.Reason = "Unexpected phase"
 			goto UpdateStatus
@@ -329,7 +328,7 @@ func (r *ProxyReconciler) Reconcile(ctx context.Context, request reconcile.Reque
 		cfg, err := bootstrap.GetRenderedBootstrapConfig(bsOpts...)
 		if err != nil {
 			// If the config is invalid, we can't start the proxy.
-			log.Error(err, "failed to validate proxy config")
+			logger.Error("failed to validate proxy config", "error", err)
 			rStatus.Phase = ctrlv1alpha1.ProxyReplicaPhaseFailed
 			rStatus.Reason = fmt.Sprintf("failed to validate proxy config: %v", err)
 
@@ -363,6 +362,7 @@ func (r *ProxyReconciler) Reconcile(ctx context.Context, request reconcile.Reque
 
 		if p.Spec.Monitoring != nil {
 			if p.Spec.Monitoring.Tracing != nil && p.Spec.Monitoring.Tracing.Enabled {
+				logger.Info("Enabling tracing")
 				opts = append(opts, envoy.WithOtelCollector(&otel.Collector{
 					ClickHouseOpts: r.options.chOpts,
 				}))
@@ -377,7 +377,7 @@ func (r *ProxyReconciler) Reconcile(ctx context.Context, request reconcile.Reque
 
 		if err := r.Start(ctx, opts...); err != nil {
 			if fatalErr, ok := err.(envoy.FatalError); ok {
-				log.Error(fatalErr, "failed to create proxy replica")
+				logger.Error("failed to create proxy replica", "error", fatalErr)
 				rStatus.Phase = ctrlv1alpha1.ProxyReplicaPhaseFailed
 				rStatus.Reason = fmt.Sprintf("failed to create proxy replica: %v", fatalErr)
 				if err := r.Status().Update(ctx, p); err != nil {
@@ -390,12 +390,12 @@ func (r *ProxyReconciler) Reconcile(ctx context.Context, request reconcile.Reque
 			return reconcile.Result{}, fmt.Errorf("failed to create proxy: %w", err)
 		}
 
-		log.Info("Started Envoy")
+		logger.Info("Started Envoy")
 
 		rStatus.Phase = ctrlv1alpha1.ProxyReplicaPhasePending
 		rStatus.Reason = "Proxy replica is being created"
 		if err := r.Status().Update(ctx, p); err != nil {
-			log.Info("Failed to update proxy replica status to pending")
+			logger.Info("Failed to update proxy replica status to pending")
 			return reconcile.Result{}, fmt.Errorf("failed to update proxy replica status: %w", err)
 		}
 
@@ -406,7 +406,7 @@ func (r *ProxyReconciler) Reconcile(ctx context.Context, request reconcile.Reque
 	if ps.Running {
 		switch rStatus.Phase {
 		case ctrlv1alpha1.ProxyReplicaPhasePending:
-			log.Info("Proxy is running", "start_time", ps.StartedAt)
+			logger.Info("Proxy is running", "start_time", ps.StartedAt)
 			rStatus.Phase = ctrlv1alpha1.ProxyReplicaPhaseRunning
 			rStatus.Reason = "Running"
 		case ctrlv1alpha1.ProxyReplicaPhaseTerminating:
@@ -415,12 +415,12 @@ func (r *ProxyReconciler) Reconcile(ctx context.Context, request reconcile.Reque
 			}
 		case ctrlv1alpha1.ProxyReplicaPhaseStopped:
 			// Replica is stopped but the process still running.
-			log.Info("Proxy is stopped but process is still running")
+			logger.Info("Proxy is stopped but process is still running")
 			rStatus.Phase = ctrlv1alpha1.ProxyReplicaPhaseFailed
 			rStatus.Reason = "Proxy is stopped but process is still running"
 		case ctrlv1alpha1.ProxyReplicaPhaseFailed:
 			// Replica is failed but the process still running.
-			log.Info("Proxy is failed but process is still running")
+			logger.Info("Proxy is failed but process is still running")
 			rStatus.Reason = "Proxy is failed but process is still running"
 		case ctrlv1alpha1.ProxyReplicaPhaseRunning: // Do nothing.
 		}
@@ -428,7 +428,7 @@ func (r *ProxyReconciler) Reconcile(ctx context.Context, request reconcile.Reque
 		switch rStatus.Phase {
 		case ctrlv1alpha1.ProxyReplicaPhasePending:
 			if time.Now().After(rStatus.CreatedAt.Time.Add(proxyReplicaPendingTimeout)) {
-				log.Error(nil, "Proxy replica failed to start in time", "timeout", proxyReplicaPendingTimeout, "start_time", ps.StartedAt)
+				logger.Error("Proxy replica failed to start in time", "timeout", proxyReplicaPendingTimeout, "start_time", ps.StartedAt)
 				rStatus.Phase = ctrlv1alpha1.ProxyReplicaPhaseFailed
 				rStatus.Reason = "Proxy replica failed to start"
 			} else {
@@ -527,7 +527,7 @@ func (r *ProxyReconciler) Shutdown(ctx context.Context, reason string) {
 	go func() {
 		defer wg.Done()
 		if err := r.Runtime.Shutdown(ctx); err != nil {
-			alog.Warnf("Failed to shutdown proxy: %v", err)
+			slog.Warn("Failed to shutdown proxy", "error", err)
 		}
 	}()
 
@@ -537,17 +537,17 @@ func (r *ProxyReconciler) Shutdown(ctx context.Context, reason string) {
 			p := &ctrlv1alpha1.Proxy{}
 			err := r.Get(ctx, types.NamespacedName{Name: r.proxyName}, p)
 			if errors.IsNotFound(err) {
-				alog.Infof("Proxy not found")
+				slog.Info("Proxy not found")
 				return nil
 			}
 			if err != nil {
-				alog.Errorf("Failed to get proxy: %v", err)
+				slog.Error("Failed to get proxy", "error", err)
 				return err
 			}
 
 			rStatus, found := findReplicaStatus(p, r.replicaName)
 			if !found {
-				alog.Infof("Proxy replica not found")
+				slog.Info("Proxy replica not found")
 				return nil
 			}
 
@@ -555,13 +555,13 @@ func (r *ProxyReconciler) Shutdown(ctx context.Context, reason string) {
 			rStatus.Reason = fmt.Sprintf("Proxy replica is being terminated (%s)", reason)
 
 			if err := r.Status().Update(ctx, p); err != nil {
-				alog.Errorf("Failed to update proxy replica status: %v", err)
+				slog.Error("Failed to update proxy replica status", "error", err)
 				return err
 			}
 
 			return nil
 		}); err != nil {
-			alog.Errorf("Failed to update proxy replica status: %v", err)
+			slog.Error("Failed to update proxy replica status", "error", err)
 		}
 	}()
 
