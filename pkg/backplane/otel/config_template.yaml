@@ -19,11 +19,9 @@ exporters:
 {{- if .OTLPTracesEndpoint }}
   otlp:
     endpoint: {{.OTLPTracesEndpoint}}
-{{- if .OTLPTracesHeaders }}
-    headers:
-{{- range $key, $value := .OTLPTracesHeaders }}
-      {{ $key }}: {{ $value }}
-{{- end }}
+{{- if .OTLPAuthToken }}
+    auth:
+      authenticator: bearertokenauth
 {{- end }}
 {{- if eq .OTLPTracesProtocol "grpc" }}
     tls:
@@ -45,10 +43,17 @@ exporters:
 extensions:
   zpages:
     endpoint: 0.0.0.0:55679
+{{- if .OTLPAuthToken }}
+  bearertokenauth:
+    token: "{{.OTLPAuthToken}}"
+{{- end }}
 
 service:
   extensions:
   - zpages
+{{- if .OTLPAuthToken }}
+  - bearertokenauth
+{{- end }}
   pipelines:
     traces:
       receivers:

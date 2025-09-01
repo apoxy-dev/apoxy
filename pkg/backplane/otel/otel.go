@@ -51,7 +51,7 @@ type TemplateVars struct {
 	OTLPTracesCertificate       string
 	OTLPTracesClientKey         string
 	OTLPTracesClientCertificate string
-	OTLPTracesHeaders           map[string]string
+	OTLPAuthToken               string
 }
 
 //go:embed config_template.yaml
@@ -242,18 +242,6 @@ func (c *Collector) Start(ctx context.Context, opts ...Option) error {
 			if otlpTracesClientCertificate == "" {
 				otlpTracesClientCertificate = os.Getenv("OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE")
 			}
-			otlpTracesHeadersMap := make(map[string]string)
-			otlpTracesHeaders := os.Getenv("OTEL_EXPORTER_OTLP_TRACES_HEADERS")
-			for _, s := range strings.Split(otlpTracesHeaders, ",") {
-				if strings.TrimSpace(s) == "" {
-					continue
-				}
-				kv := strings.Split(strings.TrimSpace(s), "=")
-				if len(kv) != 2 {
-					return fmt.Errorf("invalid header format: %s", s)
-				}
-				otlpTracesHeadersMap[kv[0]] = kv[1]
-			}
 
 			vars := TemplateVars{
 				OTLPPort:                    DefaultCollectorPort,
@@ -266,7 +254,7 @@ func (c *Collector) Start(ctx context.Context, opts ...Option) error {
 				OTLPTracesCertificate:       otlpTracesCertificate,
 				OTLPTracesClientKey:         otlpTracesClientKey,
 				OTLPTracesClientCertificate: otlpTracesClientCertificate,
-				OTLPTracesHeaders:           otlpTracesHeadersMap,
+				OTLPAuthToken:               os.Getenv("OTEL_EXPORTER_OTLP_AUTH_TOKEN"),
 			}
 			configContent, err := RenderConfigTemplate(vars)
 			if err != nil {
