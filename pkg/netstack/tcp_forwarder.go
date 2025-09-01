@@ -6,14 +6,13 @@ import (
 	"log/slog"
 	"net/netip"
 
+	"github.com/dpeckett/contextio"
+	"github.com/dpeckett/network"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 	"gvisor.dev/gvisor/pkg/waiter"
-
-	"github.com/dpeckett/contextio"
-	"github.com/dpeckett/network"
 )
 
 // ProtocolHandler is a function that handles packets for a specific protocol.

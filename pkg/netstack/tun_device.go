@@ -304,8 +304,10 @@ func (tun *TunDevice) ForwardTo(ctx context.Context, upstream network.Network) e
 	}
 
 	tcpForwarder := TCPForwarder(ctx, tun.stack, upstream)
-
 	tun.stack.SetTransportProtocolHandler(tcp.ProtocolNumber, tcpForwarder)
+
+	udpForwarder := UDPForwarder(ctx, tun.stack, upstream)
+	tun.stack.SetTransportProtocolHandler(udp.ProtocolNumber, udpForwarder)
 
 	return nil
 }
