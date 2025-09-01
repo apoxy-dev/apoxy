@@ -82,7 +82,7 @@ func (m *ApoxyCli) BuilderContainer(ctx context.Context, src *dagger.Directory) 
 			"apt-get", "install", "-yq", "xz-utils", "clang",
 		}).
 		WithExec([]string{
-			"wget", fmt.Sprintf("https://zigmirror.hryx.net/zig/%s/zig-%s-linux-%s.tar.xz", ZigVersion, hostArch(), ZigVersion),
+			"wget", fmt.Sprintf("https://ziglang.org/download/%s/zig-%s-linux-%s.tar.xz", ZigVersion, hostArch(), ZigVersion),
 		}).
 		WithExec([]string{
 			"tar", "-xf", fmt.Sprintf("zig-%s-linux-%s.tar.xz", hostArch(), ZigVersion),
