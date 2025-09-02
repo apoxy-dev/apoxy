@@ -13,6 +13,6 @@ var quicConfig *quic.Config = &quic.Config{
 	InitialPacketSize:              1350,
 	InitialConnectionReceiveWindow: 5 * 1000 * 1000,
 	MaxConnectionReceiveWindow:     100 * 1000 * 1000,
-	KeepAlivePeriod:                1 * time.Second,
+	KeepAlivePeriod:                5 * time.Second,
 	MaxIdleTimeout:                 15 * time.Second,
 }
