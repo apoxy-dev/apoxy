@@ -2917,7 +2917,7 @@ func schema_apoxy_api_core_v1alpha2_TunnelAgentConnection(ref common.ReferenceCa
 					},
 					"address": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Address is the overlay address of the agent assigned to this connection.",
+							Description: "Address is the overlay address/cidr of the agent assigned to this connection.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -2927,6 +2927,13 @@ func schema_apoxy_api_core_v1alpha2_TunnelAgentConnection(ref common.ReferenceCa
 							Description: "RelayAddress is the address of the relay managing this connection.",
 							Type:        []string{"string"},
 							Format:      "",
+						},
+					},
+					"vni": {
+						SchemaProps: spec.SchemaProps{
+							Description: "VNI is the 24-bit virtual network identifier used for this connection, if applicable.",
+							Type:        []string{"integer"},
+							Format:      "int32",
 						},
 					},
 				},

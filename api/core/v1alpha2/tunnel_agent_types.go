@@ -47,13 +47,17 @@ type TunnelAgentConnection struct {
 	// +optional
 	ConnectedAt *metav1.Time `json:"connectedAt,omitempty,omitzero"`
 
-	// Address is the overlay address of the agent assigned to this connection.
+	// Address is the overlay address/cidr of the agent assigned to this connection.
 	// +optional
 	Address string `json:"address,omitempty,omitzero"`
 
 	// RelayAddress is the address of the relay managing this connection.
 	// +optional
 	RelayAddress string `json:"relayAddress,omitempty,omitzero"`
+
+	// VNI is the 24-bit virtual network identifier used for this connection, if applicable.
+	// +optional
+	VNI *int `json:"vni,omitempty,omitzero"`
 }
 
 // TunnelAgentStatus represents the status of a tunnel agent.
