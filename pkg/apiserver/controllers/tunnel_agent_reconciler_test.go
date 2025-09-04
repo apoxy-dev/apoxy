@@ -69,7 +69,7 @@ func TestTunnelAgentReconciler(t *testing.T) {
 
 	// VNI assigned in status for the connection that was empty
 	require.NotNil(t, got.Status.Connections[0].VNI, "expected VNI to be set on the connection")
-	require.Greater(t, *got.Status.Connections[0].VNI, 0)
+	require.Equal(t, *got.Status.Connections[0].VNI, uint(1))
 }
 
 func mkAgentWithEmptyConnection(name, tunnelName string) *corev1alpha2.TunnelAgent {

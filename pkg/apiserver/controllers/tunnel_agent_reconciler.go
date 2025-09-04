@@ -200,7 +200,7 @@ func (r *TunnelAgentReconciler) ensureConnectionAllocations(
 
 		// Track newly made allocations so we can roll them back if Status().Update fails.
 		var newlyAllocatedPrefixes []netip.Prefix
-		var newlyAllocatedVNIs []uint32
+		var newlyAllocatedVNIs []uint
 
 		needsUpdate := false
 		addrAssigned := 0
@@ -243,8 +243,7 @@ func (r *TunnelAgentReconciler) ensureConnectionAllocations(
 					log.Error(vErr, "failed to allocate VNI")
 					return fmt.Errorf("failed to allocate VNI: %w", vErr)
 				}
-				vInt := int(v) // status uses *int; vniPool returns uint32
-				conn.VNI = &vInt
+				conn.VNI = &v
 				newlyAllocatedVNIs = append(newlyAllocatedVNIs, v)
 				vniAssigned++
 				needsUpdate = true
@@ -310,7 +309,7 @@ func (r *TunnelAgentReconciler) releaseResourcesIfPresent(log logr.Logger, agent
 
 		// Release VNI
 		if conn.VNI != nil {
-			r.vniPool.Free(uint32(*conn.VNI))
+			r.vniPool.Free(*conn.VNI)
 		}
 	}
 	return nil

@@ -57,7 +57,7 @@ type TunnelAgentConnection struct {
 
 	// VNI is the 24-bit virtual network identifier used for this connection, if applicable.
 	// +optional
-	VNI *int `json:"vni,omitempty,omitzero"`
+	VNI *uint `json:"vni,omitempty,omitzero"`
 }
 
 // TunnelAgentStatus represents the status of a tunnel agent.

@@ -23,7 +23,7 @@ func NewVNIPool() *VNIPool {
 	}
 }
 
-func (v *VNIPool) Allocate() (uint32, error) {
+func (v *VNIPool) Allocate() (uint, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 
@@ -32,14 +32,14 @@ func (v *VNIPool) Allocate() (uint32, error) {
 		return 0, fmt.Errorf("no available virtual network IDs")
 	}
 	v.pool.Add(vni)
-	return vni, nil
+	return uint(vni), nil
 }
 
-func (v *VNIPool) Free(vni uint32) {
+func (v *VNIPool) Free(vni uint) {
 	if vni >= maxVNI {
 		return
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	v.pool.Remove(vni)
+	v.pool.Remove(uint32(vni))
 }

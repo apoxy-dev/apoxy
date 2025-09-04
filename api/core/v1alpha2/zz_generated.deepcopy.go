@@ -105,7 +105,7 @@ func (in *TunnelAgentConnection) DeepCopyInto(out *TunnelAgentConnection) {
 	}
 	if in.VNI != nil {
 		in, out := &in.VNI, &out.VNI
-		*out = new(int)
+		*out = new(uint)
 		**out = **in
 	}
 	return

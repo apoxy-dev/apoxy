@@ -79,10 +79,15 @@ func (r *TunnelAgentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	for _, sc := range agent.Status.Connections {
 		if conn, ok := r.conns.Get(sc.ID); ok {
 			if sc.Address != "" {
-				conn.SetAddress(sc.Address)
+				if err := conn.SetOverlayAddress(sc.Address); err != nil {
+					return ctrl.Result{}, fmt.Errorf("failed to set overlay address for connection %q: %w", sc.ID, err)
+				}
 			}
+
 			if sc.VNI != nil {
-				conn.SetVNI(uint32(*sc.VNI))
+				if err := conn.SetVNI(uint(*sc.VNI)); err != nil {
+					return ctrl.Result{}, fmt.Errorf("failed to set VNI for connection %q: %w", sc.ID, err)
+				}
 			}
 		}
 	}

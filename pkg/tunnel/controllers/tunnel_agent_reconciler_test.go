@@ -186,13 +186,13 @@ func TestTunnelAgentReconcile_SetsAddressAndVNI(t *testing.T) {
 	require.NoError(t, c.Get(ctx, types.NamespacedName{Name: agent.Name}, &cur))
 	require.Len(t, cur.Status.Connections, 1)
 	cur.Status.Connections[0].Address = "10.123.0.5/32"
-	v := 4242
+	v := uint(4242)
 	cur.Status.Connections[0].VNI = &v
 	require.NoError(t, c.Status().Update(ctx, &cur))
 
-	// Expect our live connection to receive SetAddress + SetVNI on reconcile
-	conn.On("SetAddress", "10.123.0.5/32").Return().Once()
-	conn.On("SetVNI", uint32(4242)).Return().Once()
+	// Expect our live connection to receive SetOverlayAddress + SetVNI on reconcile
+	conn.On("SetOverlayAddress", "10.123.0.5/32").Return(nil).Once()
+	conn.On("SetVNI", uint(4242)).Return(nil).Once()
 
 	_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: agent.Name}})
 	require.NoError(t, err)
@@ -221,12 +221,14 @@ func (m *mockConn) ID() string {
 	return args.String(0)
 }
 
-func (m *mockConn) SetAddress(addr string) {
-	m.Called(addr)
+func (m *mockConn) SetOverlayAddress(addr string) error {
+	args := m.Called(addr)
+	return args.Error(0)
 }
 
-func (m *mockConn) SetVNI(v uint32) {
-	m.Called(v)
+func (m *mockConn) SetVNI(v uint) error {
+	args := m.Called(v)
+	return args.Error(0)
 }
 
 func (m *mockConn) Close() error {
