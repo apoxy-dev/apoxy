@@ -103,6 +103,11 @@ func (in *TunnelAgentConnection) DeepCopyInto(out *TunnelAgentConnection) {
 		in, out := &in.ConnectedAt, &out.ConnectedAt
 		*out = (*in).DeepCopy()
 	}
+	if in.VNI != nil {
+		in, out := &in.VNI, &out.VNI
+		*out = new(uint)
+		**out = **in
+	}
 	return
 }
 

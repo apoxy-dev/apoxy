@@ -18,6 +18,7 @@ import (
 
 	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/token"
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/vni"
 )
 
 type virtualNetwork struct {
@@ -31,8 +32,8 @@ type virtualNetwork struct {
 type Server struct {
 	handler     *icx.Handler
 	validator   token.JWTValidator
-	vniPool     *VNIPool    // todo: persist this?
-	ipam        tunnet.IPAM // todo: persist this?
+	vniPool     *vni.VNIPool // todo: persist this?
+	ipam        tunnet.IPAM  // todo: persist this?
 	networks    sync.Map
 	keyLifespan time.Duration
 }
@@ -41,7 +42,7 @@ func NewServer(ctx context.Context, handler *icx.Handler, validator token.JWTVal
 	return &Server{
 		handler:     handler,
 		validator:   validator,
-		vniPool:     NewVNIPool(),
+		vniPool:     vni.NewVNIPool(),
 		ipam:        tunnet.NewIPAMv4(ctx),
 		keyLifespan: keyLifespan,
 	}
