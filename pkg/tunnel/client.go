@@ -250,9 +250,6 @@ func (d *TunnelDialer) Dial(
 		return nil, fmt.Errorf("failed to dial QUIC connection: %w", err)
 	}
 
-	tr := &http3.Transport{EnableDatagrams: true}
-	hConn := tr.NewClientConn(qConn)
-
 	addrUrl := &url.URL{
 		Scheme: "https",
 		Host:   "proxy",
@@ -269,11 +266,17 @@ func (d *TunnelDialer) Dial(
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse URI template: %w", err)
 	}
+
+	tr := &http3.Transport{EnableDatagrams: true}
+	hConn := tr.NewClientConn(qConn)
+
 	conn, rsp, err := connectip.Dial(ctx, hConn, tmpl)
 	if err != nil {
+		hConn.CloseWithError(ApplicationCodeOK, fmt.Sprintf("failed to dial connect-ip connection: %v", err))
 		return nil, fmt.Errorf("failed to dial connect-ip connection: %w", err)
 	}
 	if rsp.StatusCode != http.StatusOK {
+		hConn.CloseWithError(ApplicationCodeOK, fmt.Sprintf("unexpected status code: %d", rsp.StatusCode))
 		return nil, fmt.Errorf("unexpected status code: %d", rsp.StatusCode)
 	}
 
@@ -281,12 +284,14 @@ func (d *TunnelDialer) Dial(
 
 	routes, err := conn.Routes(ctx)
 	if err != nil {
+		hConn.CloseWithError(ApplicationCodeInternalError, fmt.Sprintf("failed to setup routes: %v", err))
 		return nil, fmt.Errorf("failed to get routes: %w", err)
 	}
 
 	for _, route := range routes {
 		for _, p := range route.Prefixes() {
 			if err := d.Router.AddRoute(p); err != nil {
+				hConn.CloseWithError(ApplicationCodeInternalError, fmt.Sprintf("failed to setup route %s: %v", p.String(), err))
 				return nil, fmt.Errorf("failed to add route %s: %w", p.String(), err)
 			}
 		}
@@ -294,6 +299,7 @@ func (d *TunnelDialer) Dial(
 
 	connUUID, err := uuid.Parse(rsp.Header.Get("X-Apoxy-Connection-UUID"))
 	if err != nil {
+		hConn.CloseWithError(ApplicationCodeInternalError, fmt.Sprintf("failed to parse connection UUID: %v", err))
 		return nil, fmt.Errorf("failed to parse connection UUID: %w", err)
 	}
 

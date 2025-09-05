@@ -6,7 +6,10 @@ import (
 	"github.com/quic-go/quic-go"
 )
 
-const ApplicationCodeOK quic.ApplicationErrorCode = 0x0
+const (
+	ApplicationCodeOK            quic.ApplicationErrorCode = quic.ApplicationErrorCode(quic.NoError)
+	ApplicationCodeInternalError quic.ApplicationErrorCode = quic.ApplicationErrorCode(quic.InternalError)
+)
 
 var quicConfig *quic.Config = &quic.Config{
 	EnableDatagrams:                true,
