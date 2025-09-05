@@ -26,6 +26,7 @@ import (
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -206,6 +207,9 @@ func (t *tunnelNodeReconciler) run(ctx context.Context, tn *corev1alpha.TunnelNo
 		Metrics: metricsserver.Options{
 			BindAddress: "0",
 		},
+		Cache: cache.Options{
+			SyncPeriod: ptr.To(30 * time.Second),
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("unable to set up overall controller manager: %w", err)
@@ -267,13 +271,14 @@ func (t *tunnelNodeReconciler) setupWithManager(
 		For(
 			&corev1alpha.TunnelNode{},
 			builder.WithPredicates(
-				predicate.GenerationChangedPredicate{},
+				predicate.ResourceVersionChangedPredicate{},
 				targetRefPredicate(tunnelNodeName),
 			),
 		).
 		WithOptions(controller.Options{
 			MaxConcurrentReconciles: 1,
 			RecoverPanic:            ptr.To(true),
+			CacheSyncTimeout:        30 * time.Second,
 		}).
 		Complete(reconcile.Func(t.reconcile))
 }
@@ -313,14 +318,6 @@ func (t *tunnelNodeReconciler) reconcile(ctx context.Context, req ctrl.Request) 
 	// Local connections that belong to this specific TunnelNode.
 	tnLocalConns := allLocalConns.Intersection(remoteConns)
 
-	n := tnLocalConns.Len()
-	if n >= minConns { // Already enough connections to this TunnelNode, do nothing.
-		return ctrl.Result{}, nil
-	}
-
-	log.Info("Not enough connections to this TunnelNode, attempting to establish more", slog.Int("min", minConns), slog.Int("cur", n))
-
-	// Prepare dial parameters
 	cOpts := []tunnel.TunnelClientOption{}
 	tnUUID, err := uuid.Parse(string(tunnelNode.ObjectMeta.UID))
 	if err != nil { // This can only happen in a test environment.
@@ -353,19 +350,25 @@ func (t *tunnelNodeReconciler) reconcile(ctx context.Context, req ctrl.Request) 
 			apiServerHost = os.Getenv("APOXY_API_SERVER_HOST")
 		}
 		srvAddr = apiServerHost + ":9443"
-		log.Info("Using tunnel proxy server address", slog.String("address", srvAddr))
 	}
 
 	if t.cfg.IsLocalMode || insecureSkipVerify {
 		cOpts = append(cOpts, tunnel.WithInsecureSkipVerify(true))
 	}
 
-	// Update dial parameters with write lock
 	t.dialMu.Lock()
 	t.tunnelUID = tnUUID
 	t.srvAddr = srvAddr
 	t.clientOpts = cOpts
 	t.dialMu.Unlock()
+
+	n := tnLocalConns.Len()
+	if n >= minConns { // Already enough connections to this TunnelNode, do nothing.
+		return ctrl.Result{}, nil
+	}
+
+	log.Info("Not enough connections to this TunnelNode, attempting to establish more",
+		slog.Int("min", minConns), slog.Int("cur", n))
 
 	if minConns-n < 0 {
 		// Cancel excess connections.
@@ -395,6 +398,8 @@ func (t *tunnelNodeReconciler) reconcile(ctx context.Context, req ctrl.Request) 
 					clientOpts := make([]tunnel.TunnelClientOption, len(t.clientOpts))
 					copy(clientOpts, t.clientOpts)
 					t.dialMu.RUnlock()
+
+					log.Info("Dialing tunnel proxy server address", slog.String("address", srvAddr))
 
 					c, err := t.tunDialer.Dial(ctx, tunnelUID, srvAddr, clientOpts...)
 					if err != nil {

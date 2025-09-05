@@ -5,8 +5,10 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
+	utilnet "k8s.io/apimachinery/pkg/util/net"
 	"k8s.io/client-go/rest"
 
 	"github.com/apoxy-dev/apoxy/build"
@@ -33,6 +35,9 @@ type headerTransport struct {
 	host         string
 }
 
+var _ utilnet.RoundTripperWrapper = &headerTransport{}
+
+// RoundTrip implements the http.RoundTripper interface.
 func (t *headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	req.Header.Set("X-Apoxy-API-Key", t.apiKey)
 	req.Header.Set("X-Apoxy-Project-Id", t.projectID.String())
@@ -43,6 +48,11 @@ func (t *headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return t.roundTripper.RoundTrip(req)
 }
 
+// WrappedRoundTripper implements the utilnet.RoundTripperWrapper interface.
+func (t *headerTransport) WrappedRoundTripper() http.RoundTripper {
+	return t.roundTripper
+}
+
 func newA3YRESTConfig(baseURL, baseHost, apiKey string, projectID uuid.UUID) (*rest.Config, error) {
 	url, err := addSubdomain(baseURL, projectID.String())
 	if err != nil {
@@ -51,6 +61,7 @@ func newA3YRESTConfig(baseURL, baseHost, apiKey string, projectID uuid.UUID) (*r
 	config := &rest.Config{
 		Host:      fmt.Sprintf("https://%s", url.Host),
 		UserAgent: build.UserAgent(),
+		Timeout:   10 * time.Second,
 	}
 	if baseHost != "" {
 		config.Host = baseURL
