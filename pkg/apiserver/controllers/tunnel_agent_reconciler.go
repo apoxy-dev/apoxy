@@ -15,19 +15,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
-	"sigs.k8s.io/controller-runtime/pkg/handler"
 	controllerlog "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	corev1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
 	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/vni"
-)
-
-const (
-	indexByTunnelRef = "spec.tunnelRef.name"
 )
 
 // +kubebuilder:rbac:groups=core.apoxy.dev/v1alpha2,resources=tunnelagents,verbs=get;list;watch;update;patch
@@ -63,36 +56,36 @@ func (r *TunnelAgentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// handle deletion
 	if !agent.DeletionTimestamp.IsZero() {
 		if controllerutil.ContainsFinalizer(&agent, ApiServerFinalizer) {
-			if err := r.releaseResourcesIfPresent(log, &agent); err != nil {
-				log.Error(err, "failed to release resources; will retry")
+			changed, err := r.releaseResourcesIfPresent(ctx, log, req.NamespacedName)
+			if err != nil {
 				return ctrl.Result{}, fmt.Errorf("failed to release resources: %w", err)
 			}
 
-			// Remove finalizer
-			if err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-				var cur corev1alpha2.TunnelAgent
-				if getErr := r.client.Get(ctx, req.NamespacedName, &cur); getErr != nil {
-					return getErr
+			// releaseResourcesIfPresent potentially mutates the object, so we need
+			// to refetch it to avoid conflicts when we remove the finalizer.
+			if changed {
+				if err := r.client.Get(ctx, req.NamespacedName, &agent); err != nil {
+					if apierrors.IsNotFound(err) {
+						return ctrl.Result{}, nil
+					}
+					return ctrl.Result{}, err
 				}
-				controllerutil.RemoveFinalizer(&cur, ApiServerFinalizer)
-				return r.client.Update(ctx, &cur)
-			}); err != nil {
+			}
+
+			// Remove finalizer
+			controllerutil.RemoveFinalizer(&agent, ApiServerFinalizer)
+			if err := r.client.Update(ctx, &agent); err != nil {
 				return ctrl.Result{}, err
 			}
 		}
+
 		return ctrl.Result{}, nil
 	}
 
 	// ensure finalizer
 	if !controllerutil.ContainsFinalizer(&agent, ApiServerFinalizer) {
-		if err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-			var cur corev1alpha2.TunnelAgent
-			if getErr := r.client.Get(ctx, req.NamespacedName, &cur); getErr != nil {
-				return getErr
-			}
-			controllerutil.AddFinalizer(&cur, ApiServerFinalizer)
-			return r.client.Update(ctx, &cur)
-		}); err != nil {
+		controllerutil.AddFinalizer(&agent, ApiServerFinalizer)
+		if err := r.client.Update(ctx, &agent); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -100,6 +93,7 @@ func (r *TunnelAgentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// fetch owner Tunnel
 	tunnelName := agent.Spec.TunnelRef.Name
 	if tunnelName == "" {
+		// TODO: why would this happen? Should we mark the agent as failed.
 		log.Info("tunnelRef.name is empty; skipping")
 		return ctrl.Result{}, nil
 	}
@@ -107,28 +101,22 @@ func (r *TunnelAgentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	var tunnel corev1alpha2.Tunnel
 	if err := r.client.Get(ctx, client.ObjectKey{Name: tunnelName}, &tunnel); err != nil {
 		if apierrors.IsNotFound(err) {
-			log.Info("Referenced Tunnel not found; will retry", "tunnel", tunnelName)
-			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+			// TODO: why would this happen? Should we mark the agent as failed.
+			log.Info("Referenced Tunnel not found; skipping", "tunnelName", tunnelName)
+			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 		}
 		return ctrl.Result{}, err
 	}
 
-	// ensure controller ownerRef agent -> tunnel (retry on conflict)
-	if err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-		var cur corev1alpha2.TunnelAgent
-		if getErr := r.client.Get(ctx, req.NamespacedName, &cur); getErr != nil {
-			return getErr
-		}
-		changed, ensureErr := r.ensureControllerOwner(&cur, &tunnel)
-		if ensureErr != nil {
-			return ensureErr
-		}
-		if !changed {
-			return nil
-		}
-		return r.client.Update(ctx, &cur)
-	}); err != nil {
+	// ensure controller ownerRef agent -> tunnel
+	changed, err := r.ensureControllerOwner(&agent, &tunnel)
+	if err != nil {
 		return ctrl.Result{}, err
+	}
+	if changed {
+		if err := r.client.Update(ctx, &agent); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	// Assign overlay addresses and VNIs for any connections missing them
@@ -139,34 +127,11 @@ func (r *TunnelAgentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	return ctrl.Result{}, nil
 }
 
-func (r *TunnelAgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	// field index
-	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &corev1alpha2.TunnelAgent{}, indexByTunnelRef,
-		func(obj client.Object) []string {
-			ta := obj.(*corev1alpha2.TunnelAgent)
-			if ta.Spec.TunnelRef.Name == "" {
-				return nil
-			}
-			return []string{ta.Spec.TunnelRef.Name}
-		}); err != nil {
-		return fmt.Errorf("index TunnelAgents by TunnelRef: %w", err)
-	}
-
-	// map Tunnel -> its agents
-	mapTunnelToAgents := handler.TypedEnqueueRequestsFromMapFunc[*corev1alpha2.Tunnel](func(ctx context.Context, t *corev1alpha2.Tunnel) []reconcile.Request {
-		var list corev1alpha2.TunnelAgentList
-		if err := mgr.GetClient().List(ctx, &list, client.MatchingFields{indexByTunnelRef: t.Name}); err != nil {
-			return nil
-		}
-		reqs := make([]reconcile.Request, 0, len(list.Items))
-		for _, ta := range list.Items {
-			reqs = append(reqs, reconcile.Request{NamespacedName: client.ObjectKey{Name: ta.Name}})
-		}
-		return reqs
-	})
-
+func (r *TunnelAgentReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager) error {
 	// Reconcile when spec generation changes OR when status (e.g., Connections) changes.
-	statusChanged := predicate.Funcs{
+	statusOrGenChanged := predicate.Funcs{
+		CreateFunc: func(e event.CreateEvent) bool { return true },
+		DeleteFunc: func(e event.DeleteEvent) bool { return true },
 		UpdateFunc: func(e event.UpdateEvent) bool {
 			oldObj, ok1 := e.ObjectOld.(*corev1alpha2.TunnelAgent)
 			newObj, ok2 := e.ObjectNew.(*corev1alpha2.TunnelAgent)
@@ -180,10 +145,7 @@ func (r *TunnelAgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&corev1alpha2.TunnelAgent{}, builder.WithPredicates(statusChanged)).
-		WatchesRawSource(
-			source.Kind(mgr.GetCache(), &corev1alpha2.Tunnel{}, mapTunnelToAgents),
-		).
+		For(&corev1alpha2.TunnelAgent{}, builder.WithPredicates(statusOrGenChanged)).
 		Complete(r)
 }
 
@@ -194,25 +156,21 @@ func (r *TunnelAgentReconciler) ensureConnectionAllocations(
 ) error {
 	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 		var cur corev1alpha2.TunnelAgent
-		if getErr := r.client.Get(ctx, key, &cur); getErr != nil {
-			return getErr
+		if err := r.client.Get(ctx, key, &cur); err != nil {
+			return err
 		}
 
 		// Track newly made allocations so we can roll them back if Status().Update fails.
 		var newlyAllocatedPrefixes []netip.Prefix
 		var newlyAllocatedVNIs []uint
 
-		needsUpdate := false
-		addrAssigned := 0
-		vniAssigned := 0
-
 		for i := range cur.Status.Connections {
 			conn := &cur.Status.Connections[i]
 
 			// Allocate overlay address if missing
 			if conn.Address == "" {
-				pfx, ipErr := r.agentIPAM.Allocate()
-				if ipErr != nil {
+				pfx, err := r.agentIPAM.Allocate()
+				if err != nil {
 					// rollback anything we grabbed this pass
 					for _, p := range newlyAllocatedPrefixes {
 						_ = r.agentIPAM.Release(p)
@@ -220,58 +178,116 @@ func (r *TunnelAgentReconciler) ensureConnectionAllocations(
 					for _, v := range newlyAllocatedVNIs {
 						r.vniPool.Free(v)
 					}
-					log.Error(ipErr, "failed to allocate address")
-					return fmt.Errorf("failed to allocate address: %w", ipErr)
+					return fmt.Errorf("failed to allocate address: %w", err)
 				}
 				conn.Address = pfx.String()
 				newlyAllocatedPrefixes = append(newlyAllocatedPrefixes, pfx)
-				addrAssigned++
-				needsUpdate = true
+
+				log.Info("Allocated overlay address", "connectionID", conn.ID, "address", conn.Address)
 			}
 
 			// Allocate VNI if missing (nil means "unset"; zero can be valid but your pool won't return 0)
 			if conn.VNI == nil {
-				v, vErr := r.vniPool.Allocate()
-				if vErr != nil {
+				vni, err := r.vniPool.Allocate()
+				if err != nil {
 					// rollback anything we grabbed this pass
 					for _, p := range newlyAllocatedPrefixes {
 						_ = r.agentIPAM.Release(p)
 					}
-					for _, nv := range newlyAllocatedVNIs {
-						r.vniPool.Free(nv)
+					for _, vni := range newlyAllocatedVNIs {
+						r.vniPool.Free(vni)
 					}
-					log.Error(vErr, "failed to allocate VNI")
-					return fmt.Errorf("failed to allocate VNI: %w", vErr)
+					return fmt.Errorf("failed to allocate VNI: %w", err)
 				}
-				conn.VNI = &v
-				newlyAllocatedVNIs = append(newlyAllocatedVNIs, v)
-				vniAssigned++
-				needsUpdate = true
+				conn.VNI = &vni
+				newlyAllocatedVNIs = append(newlyAllocatedVNIs, vni)
+
+				log.Info("Allocated VNI", "connectionID", conn.ID, "vni", *conn.VNI)
 			}
 		}
 
-		if !needsUpdate {
-			log.Info("no connections missing address or VNI")
+		if len(newlyAllocatedPrefixes) == 0 && len(newlyAllocatedVNIs) == 0 {
+			// nothing changed
 			return nil
 		}
 
 		// Commit to status; if it fails, release fresh allocations from this attempt.
-		if updErr := r.client.Status().Update(ctx, &cur); updErr != nil {
+		if err := r.client.Status().Update(ctx, &cur); err != nil {
+			// rollback anything we grabbed this pass
 			for _, p := range newlyAllocatedPrefixes {
 				_ = r.agentIPAM.Release(p)
 			}
-			for _, v := range newlyAllocatedVNIs {
-				r.vniPool.Free(v)
+			for _, vni := range newlyAllocatedVNIs {
+				r.vniPool.Free(vni)
 			}
-			log.Error(updErr, "status update failed; released newly allocated resources",
-				"addresses", addrAssigned, "vnis", vniAssigned)
-			return updErr
+			return err
 		}
 
-		log.Info("assigned resources to connections",
-			"addresses", addrAssigned, "vnis", vniAssigned)
 		return nil
 	})
+}
+
+func (r *TunnelAgentReconciler) releaseResourcesIfPresent(
+	ctx context.Context,
+	log logr.Logger,
+	key client.ObjectKey,
+) (bool, error) {
+	var changed bool
+	err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		// Always work on a fresh copy to avoid write conflicts.
+		var cur corev1alpha2.TunnelAgent
+		if err := r.client.Get(ctx, key, &cur); err != nil {
+			if apierrors.IsNotFound(err) {
+				return nil
+			}
+
+			return err
+		}
+
+		// If there are no connections, we’re done.
+		if len(cur.Status.Connections) == 0 {
+			return nil
+		}
+
+		// Free resources that are still recorded in status and clear the fields.
+		for i := range cur.Status.Connections {
+			conn := &cur.Status.Connections[i]
+
+			// Release overlay address/prefix (if set)
+			if conn.Address != "" {
+				pfx, err := netip.ParsePrefix(conn.Address)
+				if err != nil {
+					return fmt.Errorf("failed to parse address %q for release: %w", conn.Address, err)
+				}
+				if err := r.agentIPAM.Release(pfx); err != nil {
+					return fmt.Errorf("failed to release address %q: %w", conn.Address, err)
+				}
+				log.Info("Released overlay address", "connectionID", conn.ID, "address", conn.Address)
+				conn.Address = "" // clear in status
+				changed = true
+			}
+
+			// Release VNI (if set)
+			if conn.VNI != nil {
+				v := *conn.VNI
+				r.vniPool.Free(v)
+				log.Info("Released VNI", "connectionID", conn.ID, "vni", v)
+				conn.VNI = nil // clear in status
+				changed = true
+			}
+		}
+
+		// Commit to status.
+		if changed {
+			if err := r.client.Status().Update(ctx, &cur); err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
+
+	return changed, err
 }
 
 func (r *TunnelAgentReconciler) ensureControllerOwner(child client.Object, owner client.Object) (bool, error) {
@@ -291,26 +307,4 @@ func (r *TunnelAgentReconciler) ensureControllerOwner(child client.Object, owner
 	}
 
 	return true, nil
-}
-
-func (r *TunnelAgentReconciler) releaseResourcesIfPresent(log logr.Logger, agent *corev1alpha2.TunnelAgent) error {
-	for _, conn := range agent.Status.Connections {
-		// Release overlay address/prefix
-		if conn.Address != "" {
-			if pfx, err := netip.ParsePrefix(conn.Address); err == nil {
-				if relErr := r.agentIPAM.Release(pfx); relErr != nil {
-					log.Error(relErr, "failed to release prefix", "address", conn.Address)
-					return relErr
-				}
-			} else {
-				log.Error(fmt.Errorf("unrecognized address format"), "skipping address release", "address", conn.Address)
-			}
-		}
-
-		// Release VNI
-		if conn.VNI != nil {
-			r.vniPool.Free(*conn.VNI)
-		}
-	}
-	return nil
 }

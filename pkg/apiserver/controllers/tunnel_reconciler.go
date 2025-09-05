@@ -7,7 +7,6 @@ import (
 	"io"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -40,68 +39,50 @@ func (r *TunnelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, nil
 		}
+
 		return ctrl.Result{}, err
 	}
 
 	// handle deletion
 	if !tunnel.DeletionTimestamp.IsZero() {
 		if controllerutil.ContainsFinalizer(&tunnel, ApiServerFinalizer) {
-			log.Info("handling Tunnel deletion")
-
 			// Remove finalizer
-			if err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-				var cur corev1alpha2.Tunnel
-				if getErr := r.client.Get(ctx, req.NamespacedName, &cur); getErr != nil {
-					return getErr
-				}
-				controllerutil.RemoveFinalizer(&cur, ApiServerFinalizer)
-				return r.client.Update(ctx, &cur)
-			}); err != nil {
+			controllerutil.RemoveFinalizer(&tunnel, ApiServerFinalizer)
+			if err := r.client.Update(ctx, &tunnel); err != nil {
 				return ctrl.Result{}, err
 			}
 		}
+
 		return ctrl.Result{}, nil
 	}
 
 	// ensure finalizer
 	if !controllerutil.ContainsFinalizer(&tunnel, ApiServerFinalizer) {
-		if err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-			var cur corev1alpha2.Tunnel
-			if getErr := r.client.Get(ctx, req.NamespacedName, &cur); getErr != nil {
-				return getErr
-			}
-			controllerutil.AddFinalizer(&cur, ApiServerFinalizer)
-			return r.client.Update(ctx, &cur)
-		}); err != nil {
+		controllerutil.AddFinalizer(&tunnel, ApiServerFinalizer)
+		if err := r.client.Update(ctx, &tunnel); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
 
 	// ensure bearer token
 	if tunnel.Status.Credentials == nil || tunnel.Status.Credentials.Token == "" {
+		log.Info("Generating new bearer token for Tunnel")
+
 		token, err := generateBearerToken(tokenLength)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
 
-		log.Info("Generating new bearer token for Tunnel")
+		if tunnel.Status.Credentials == nil {
+			tunnel.Status.Credentials = &corev1alpha2.TunnelCredentials{}
+		}
+		tunnel.Status.Credentials.Token = token
 
-		if err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-			var cur corev1alpha2.Tunnel
-			if getErr := r.client.Get(ctx, req.NamespacedName, &cur); getErr != nil {
-				return getErr
-			}
-			if cur.Status.Credentials == nil {
-				cur.Status.Credentials = &corev1alpha2.TunnelCredentials{}
-			}
-			cur.Status.Credentials.Token = token
-			return r.client.Status().Update(ctx, &cur)
-		}); err != nil {
+		if err := r.client.Status().Update(ctx, &tunnel); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
 
-	log.Info("Tunnel reconciled successfully")
 	return ctrl.Result{}, nil
 }
 
@@ -117,6 +98,5 @@ func generateBearerToken(n int) (string, error) {
 	if _, err := io.ReadFull(rand.Reader, b); err != nil {
 		return "", err
 	}
-	// URL-safe base64 without padding
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }

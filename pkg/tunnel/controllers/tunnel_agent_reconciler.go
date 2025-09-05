@@ -46,6 +46,7 @@ func (r *TunnelAgentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, nil
 		}
+
 		return ctrl.Result{}, err
 	}
 
@@ -60,15 +61,9 @@ func (r *TunnelAgentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 				}
 			}
 
-			// Remove our finalizer
-			if err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-				var cur corev1alpha2.TunnelAgent
-				if getErr := r.client.Get(ctx, req.NamespacedName, &cur); getErr != nil {
-					return getErr
-				}
-				controllerutil.RemoveFinalizer(&cur, r.finalizer)
-				return r.client.Update(ctx, &cur)
-			}); err != nil {
+			// Remove finalizer
+			controllerutil.RemoveFinalizer(&agent, r.finalizer)
+			if err := r.client.Update(ctx, &agent); err != nil {
 				return ctrl.Result{}, err
 			}
 		}
@@ -106,7 +101,7 @@ func (r *TunnelAgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		return fmt.Errorf("failed to create label selector predicate: %w", err)
 	}
 
-	// React to status-only updates (connections added/changed), spec/generation changes, and deletion toggles.
+	// Reconcile when spec generation changes OR when status (e.g., Connections) changes.
 	statusOrGenChanged := predicate.Funcs{
 		CreateFunc: func(e event.CreateEvent) bool { return true },
 		DeleteFunc: func(e event.DeleteEvent) bool { return true },
@@ -116,9 +111,9 @@ func (r *TunnelAgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			if !ok1 || !ok2 {
 				return false
 			}
-			return !equality.Semantic.DeepEqual(oldObj.Status.Connections, newObj.Status.Connections) ||
-				oldObj.GetGeneration() != newObj.GetGeneration() ||
-				(oldObj.DeletionTimestamp.IsZero() != newObj.DeletionTimestamp.IsZero())
+			genChanged := oldObj.GetGeneration() != newObj.GetGeneration()
+			statusDiff := !equality.Semantic.DeepEqual(oldObj.Status, newObj.Status)
+			return genChanged || statusDiff
 		},
 	}
 
