@@ -159,6 +159,8 @@ func applyFlagOverrides(cfg *configv1alpha1.Config) (*configv1alpha1.Config, err
 		logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
 		slog.SetDefault(logger)
 		klog.SetSlogLogger(logger)
+		kLevel := klog.Level(0)
+		kLevel.Set("5")
 		lOpts = append(lOpts, log.WithLevel(log.DebugLevel), log.WithDevMode())
 	} else {
 		klog.SetOutput(log.NewDefaultLogWriter(log.InfoLevel))
