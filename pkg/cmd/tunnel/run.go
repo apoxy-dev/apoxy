@@ -18,7 +18,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
-	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
@@ -94,9 +93,9 @@ type tunnelNodeReconciler struct {
 	cfg    *configv1alpha1.Config
 	a3y    versioned.Interface
 
-	tunDialer *tunnel.TunnelDialer
-	tunMu     sync.RWMutex
-	tunConns  map[uuid.UUID]*tunConn
+	tunDialer        *tunnel.TunnelDialer
+	tunMu            sync.RWMutex
+	tunDialerWorkers []*tunConn
 
 	// Dial parameters protected by dialMu
 	dialMu     sync.RWMutex
@@ -165,7 +164,7 @@ var tunnelRunCmd = &cobra.Command{
 			cfg:    cfg,
 			a3y:    a3y,
 
-			tunConns: make(map[uuid.UUID]*tunConn),
+			tunDialerWorkers: make([]*tunConn, 0),
 		}
 		return tun.run(ctx, tn)
 	},
@@ -298,25 +297,7 @@ func (t *tunnelNodeReconciler) reconcile(ctx context.Context, req ctrl.Request) 
 
 	log.Info("TunnelNode found")
 
-	remoteConns := sets.New[uuid.UUID]()
-	for _, agent := range tunnelNode.Status.Agents {
-		agentUUID, err := uuid.Parse(agent.Name)
-		if err != nil {
-			log.Error("Failed to parse agent UUID", "error", err)
-			continue
-		}
-		remoteConns.Insert(agentUUID)
-	}
-
-	t.tunMu.RLock()
-	tunConns := make(map[uuid.UUID]*tunnel.Conn, len(t.tunConns))
-	for _, c := range t.tunConns {
-		tunConns[c.id] = c.conn
-	}
-	allLocalConns := sets.KeySet[uuid.UUID, *tunnel.Conn](tunConns)
-	t.tunMu.RUnlock()
-	// Local connections that belong to this specific TunnelNode.
-	tnLocalConns := allLocalConns.Intersection(remoteConns)
+	// 1. First update stored tunnel info.
 
 	cOpts := []tunnel.TunnelClientOption{}
 	tnUUID, err := uuid.Parse(string(tunnelNode.ObjectMeta.UID))
@@ -362,34 +343,32 @@ func (t *tunnelNodeReconciler) reconcile(ctx context.Context, req ctrl.Request) 
 	t.clientOpts = cOpts
 	t.dialMu.Unlock()
 
-	n := tnLocalConns.Len()
-	if n >= minConns { // Already enough connections to this TunnelNode, do nothing.
-		return ctrl.Result{}, nil
-	}
+	// 2. Calculate how many connections are needed vs how many are already established.
 
-	log.Info("Not enough connections to this TunnelNode, attempting to establish more",
-		slog.Int("min", minConns), slog.Int("cur", n))
-
-	if minConns-n < 0 {
-		// Cancel excess connections.
+	t.tunMu.Lock()
+	defer t.tunMu.Unlock()
+	n := len(t.tunDialerWorkers)
+	if minConns-n < 0 { // Cancel excess connections.
 		excess := n - minConns
-		cancelled := 0
-		t.tunMu.Lock()
-		for id, conn := range t.tunConns {
-			if cancelled >= excess {
-				break
-			}
-			if tnLocalConns.Has(id) {
-				close(conn.stopCh)
-				cancelled++
-			}
+		log.Info("Too many connections to this TunnelNode, cancelling excess",
+			slog.Int("excess", excess))
+		// XXX: Is earliest-first the best method?
+		for _, conn := range t.tunDialerWorkers[:excess] {
+			log.Info("Cancelling connection", slog.String("id", conn.id.String()))
+			close(conn.stopCh)
 		}
-		t.tunMu.Unlock()
-		log.Info("Cancelled excess connections", slog.Int("cancelled", cancelled))
-	} else {
+		t.tunDialerWorkers = t.tunDialerWorkers[:excess]
+	} else if minConns-n > 0 {
+		log.Info("Not enough connections to this TunnelNode, attempting to establish more",
+			slog.Int("min", minConns), slog.Int("cur", n))
+
 		for i := 0; i < minConns-n; i++ {
+			conn := &tunConn{
+				id:     uuid.New(),
+				stopCh: make(chan struct{}),
+			}
+			t.tunDialerWorkers = append(t.tunDialerWorkers, conn)
 			go func() {
-				stopCh := make(chan struct{})
 				wait.BackoffUntil(func() {
 					// Read dial parameters with read lock
 					t.dialMu.RLock()
@@ -409,24 +388,29 @@ func (t *tunnelNodeReconciler) reconcile(ctx context.Context, req ctrl.Request) 
 
 					log.Info("Tunnel client connected", slog.String("uuid", c.UUID.String()))
 
-					t.tunMu.Lock()
-					t.tunConns[c.UUID] = &tunConn{
-						id:     c.UUID,
-						conn:   c,
-						stopCh: stopCh,
-					}
-					t.tunMu.Unlock()
+					conn.id = c.UUID
+					conn.conn = c
 
 					<-c.Context().Done() // Wait for the connection to close.
 
 					log.Error("Tunnel client disconnected", slog.String("uuid", c.UUID.String()), slog.Any("error", c.Context().Err()))
 
 					t.tunMu.Lock()
-					delete(t.tunConns, c.UUID)
+					// Finding the index of the connection to remove - it could have changed
+					// if some dial workers got canceled.
+					for i, c := range t.tunDialerWorkers {
+						if c.id == conn.id {
+							t.tunDialerWorkers[i] = t.tunDialerWorkers[len(t.tunDialerWorkers)-1]
+							t.tunDialerWorkers = t.tunDialerWorkers[:len(t.tunDialerWorkers)-1]
+							break
+						}
+					}
 					t.tunMu.Unlock()
-				}, backoff, false, stopCh)
+				}, backoff, false, conn.stopCh)
 			}()
 		}
+	} else {
+		log.Info("Matching tunnel connections", slog.Int("min", minConns), slog.Int("cur", n))
 	}
 
 	return ctrl.Result{}, nil
