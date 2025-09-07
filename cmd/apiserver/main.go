@@ -90,7 +90,7 @@ func main() {
 		Logger:    nil, // No logging.
 	})
 	if err != nil {
-		log.Fatalf("failed creating Temporal client: %w", err)
+		log.Fatalf("Failed creating Temporal client: %v", err)
 	}
 
 	gwSrv := gateway.NewServer()
