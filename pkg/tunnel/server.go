@@ -9,15 +9,16 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"os"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/alphadose/haxmap"
 	"github.com/google/uuid"
 	connectip "github.com/quic-go/connect-ip-go"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
+	"github.com/quic-go/quic-go/qlog"
 	"github.com/yosida95/uritemplate/v3"
 	"golang.org/x/sync/errgroup"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -55,6 +56,7 @@ type tunnelServerOptions struct {
 	extAddrs   []netip.Prefix
 	selector   string
 	ipamv4     tunnet.IPAM
+	keyLogPath string
 }
 
 func defaultServerOptions() *tunnelServerOptions {
@@ -67,6 +69,7 @@ func defaultServerOptions() *tunnelServerOptions {
 		extAddrs:   []netip.Prefix{},
 		selector:   "",
 		ipamv4:     tunnet.NewIPAMv4(context.Background()),
+		keyLogPath: "",
 	}
 }
 
@@ -128,6 +131,13 @@ func WithIPAMv4(ipamv4 tunnet.IPAM) TunnelServerOption {
 	}
 }
 
+// WithKeyLogPath sets the path to the TLS key log (disabled by default).
+func WithKeyLogPath(path string) TunnelServerOption {
+	return func(o *tunnelServerOptions) {
+		o.keyLogPath = path
+	}
+}
+
 type conn struct {
 	*connectip.Conn
 	obj            *corev1alpha.TunnelNode
@@ -135,7 +145,6 @@ type conn struct {
 }
 
 type TunnelServer struct {
-	http3.Server
 	client.Client
 
 	options *tunnelServerOptions
@@ -143,6 +152,7 @@ type TunnelServer struct {
 	jwtValidator token.JWTValidator
 	ln           *quic.EarlyListener
 	router       router.Router
+	handler      http.Handler
 
 	// tunnels maps tunnel UIDs to tunnel instances.
 	tunnels *haxmap.Map[string, *corev1alpha.TunnelNode]
@@ -165,9 +175,6 @@ func NewTunnelServer(
 
 	s := &TunnelServer{
 		Client: client,
-		Server: http3.Server{
-			EnableDatagrams: true,
-		},
 
 		options: options,
 
@@ -177,10 +184,6 @@ func NewTunnelServer(
 		tunnels: haxmap.New[string, *corev1alpha.TunnelNode](),
 		conns:   haxmap.New[string, *conn](),
 	}
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/connect/", s.handleConnect)
-	s.Handler = mux
 
 	return s, nil
 }
@@ -204,7 +207,7 @@ func (t *TunnelServer) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(reconcile.Func(t.reconcile)) // Using this contraption to keep reconcile method private.
 }
 
-func (t *TunnelServer) Start(ctx context.Context) error {
+func (t *TunnelServer) Start(gCtx context.Context) error {
 	bindTo, err := netip.ParseAddrPort(t.options.proxyAddr)
 	if err != nil {
 		return fmt.Errorf("failed to parse bind address: %w", err)
@@ -226,18 +229,33 @@ func (t *TunnelServer) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to load TLS certificate: %w", err)
 	}
 
+	tlsConfig := &tls.Config{
+		Certificates: []tls.Certificate{cert},
+	}
+	if t.options.keyLogPath != "" {
+		keyLogFile, err := os.Create("quic_keylog.txt")
+		if err != nil {
+			return fmt.Errorf("failed to create key log file: %w", err)
+		}
+		defer keyLogFile.Close()
+		tlsConfig.KeyLogWriter = keyLogFile
+	}
+
+	qc := quicConfig
+	qc.Tracer = qlog.DefaultConnectionTracer
+
 	if t.ln, err = quic.ListenEarly(
 		udpConn,
-		http3.ConfigureTLSConfig(&tls.Config{Certificates: []tls.Certificate{cert}}),
-		quicConfig,
+		http3.ConfigureTLSConfig(tlsConfig),
+		qc,
 	); err != nil {
 		return fmt.Errorf("failed to create QUIC listener: %w", err)
 	}
 
-	g, ctx := errgroup.WithContext(ctx)
+	g, gCtx := errgroup.WithContext(gCtx)
 
 	g.Go(func() error {
-		<-ctx.Done()
+		<-gCtx.Done()
 
 		if err := t.Stop(); err != nil {
 			return fmt.Errorf("failed to shutdown QUIC server: %w", err)
@@ -246,14 +264,37 @@ func (t *TunnelServer) Start(ctx context.Context) error {
 		return nil
 	})
 
+	// HTTP/3 server loop.
 	g.Go(func() error {
-		slog.Info("Starting HTTP/3 server", slog.String("addr", t.ln.Addr().String()))
-		return t.ServeListener(t.ln)
+		slog.Info("Serving HTTP/3", slog.String("addr", t.ln.Addr().String()))
+		for {
+			conn, err := t.ln.Accept(gCtx)
+			if errors.Is(err, quic.ErrServerClosed) || gCtx.Err() != nil {
+				slog.Info("QUIC listener closed or context canceled")
+				return nil
+			}
+			if err != nil {
+				slog.Error("Failed to accept QUIC connection", slog.Any("error", err))
+				continue
+			}
+
+			// Serves a single CONNECT-IP connection over HTTP/3.
+			oneShotSrv := &http3.Server{
+				EnableDatagrams: true,
+				Handler:         t.makeSingleConnectHandler(conn),
+			}
+			go func() {
+				if err := oneShotSrv.ServeQUICConn(conn); err != nil {
+					slog.Error("Failed to serve QUIC connection", slog.Any("error", err))
+
+				}
+			}()
+		}
 	})
 
 	// Start the router to handle network traffic.
 	g.Go(func() error {
-		return t.router.Start(ctx)
+		return t.router.Start(gCtx)
 	})
 
 	return g.Wait()
@@ -277,14 +318,11 @@ func (t *TunnelServer) Stop() error {
 		slog.Error("Failed to close router", slog.Any("error", err))
 	}
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	if err := t.Shutdown(shutdownCtx); err != nil {
-		slog.Error("Failed to shutdown server", slog.Any("error", err))
+	if err := t.ln.Close(); err != nil {
+		slog.Error("Failed to close listener", slog.Any("error", err))
 	}
 
-	return t.Server.Close()
+	return nil
 }
 
 func iproutesFromPrefixes(ps []netip.Prefix) []connectip.IPRoute {
@@ -299,179 +337,194 @@ func iproutesFromPrefixes(ps []netip.Prefix) []connectip.IPRoute {
 	return routes
 }
 
-func (t *TunnelServer) handleConnect(w http.ResponseWriter, r *http.Request) {
-	nodeID, err := uuid.Parse(strings.TrimPrefix(r.URL.Path, "/connect/"))
-	if err != nil {
-		slog.Error("Failed to parse UUID", slog.Any("error", err), slog.String("remote", r.RemoteAddr))
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
+// makeSingleConnectHandler creates a /connect handler that serves a single CONNECT-IP
+// connection and then closes the connection.
+func (t *TunnelServer) makeSingleConnectHandler(qConn quic.Connection) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		defer qConn.CloseWithError(ApplicationCodeOK, "")
 
-	metrics.TunnelConnectionRequests.Inc()
-
-	logger := slog.With(slog.String("uuid", nodeID.String()))
-	logger.Info("Received connection request", slog.String("URI", r.URL.String()))
-
-	authToken := r.URL.Query().Get("token")
-	if authToken == "" {
-		logger.Error("Missing token in connection request")
-		metrics.TunnelConnectionFailures.WithLabelValues("missing_token").Inc()
-		w.WriteHeader(http.StatusForbidden)
-		return
-	}
-
-	tn, ok := t.tunnels.Get(nodeID.String())
-	if !ok {
-		logger.Error("Tunnel not found")
-		metrics.TunnelConnectionFailures.WithLabelValues("tunnel_not_found").Inc()
-		w.WriteHeader(http.StatusNotFound)
-		return
-	}
-
-	logger = logger.With(slog.String("name", tn.Name))
-	if tn.Status.Credentials == nil || tn.Status.Credentials.Token == "" {
-		logger.Error("Missing credentials for TunnelNode")
-		metrics.TunnelConnectionFailures.WithLabelValues("missing_credentials").Inc()
-		w.WriteHeader(http.StatusForbidden)
-		return
-	}
-
-	claims, err := t.jwtValidator.Validate(authToken)
-	if err != nil {
-		logger.Error("Failed to validate token", slog.Any("error", err))
-		metrics.TunnelConnectionFailures.WithLabelValues("invalid_token").Inc()
-		w.WriteHeader(http.StatusForbidden)
-		return
-	}
-
-	tokenSubj, err := claims.GetSubject()
-	if err != nil {
-		logger.Error("Failed to get subject from token claims", slog.Any("error", err))
-		metrics.TunnelConnectionFailures.WithLabelValues("token_subject_error").Inc()
-		w.WriteHeader(http.StatusForbidden)
-		return
-	}
-
-	if tokenSubj != nodeID.String() {
-		logger.Error("Token subject does not match TunnelNode ID",
-			slog.String("expected", nodeID.String()),
-			slog.String("got", tokenSubj),
-		)
-		metrics.TunnelConnectionFailures.WithLabelValues("token_subject_mismatch").Inc()
-		w.WriteHeader(http.StatusForbidden)
-		return
-	}
-
-	logger.Info("Validated token for UUID")
-
-	req, err := connectip.ParseRequest(r, connectTmpl)
-	if err != nil {
-		logger.Error("Failed to parse request", slog.Any("error", err))
-		metrics.TunnelConnectionFailures.WithLabelValues("bad_request").Inc()
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
-
-	connID := uuid.NewString()
-	// Sends connection ID information to the client so that it can
-	// track its connection status. This must be done before initializing the proxy.
-	w.Header().Add("X-Apoxy-Connection-UUID", connID)
-
-	conn := &conn{
-		obj: tn.DeepCopy(),
-	}
-
-	p := connectip.Proxy{}
-	if conn.Conn, err = p.Proxy(w, req); err != nil {
-		logger.Error("Failed to proxy request", slog.Any("error", err))
-		metrics.TunnelConnectionFailures.WithLabelValues("proxy_error").Inc()
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-	defer conn.Close()
-
-	t.conns.Set(connID, conn)
-
-	agent := &corev1alpha.AgentStatus{
-		Name:        connID,
-		ConnectedAt: ptr.To(metav1.Now()),
-	}
-	// TODO(dilyevsky): Support multiple external addresses in the Status.
-	if len(t.options.extAddrs) > 0 && t.options.extAddrs[0].IsValid() {
-		agent.PrivateAddress = t.options.extAddrs[0].Addr().String()
-	}
-	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		upd := &corev1alpha.TunnelNode{}
-		if err := t.Get(r.Context(), types.NamespacedName{Name: tn.Name}, upd); apierrors.IsNotFound(err) {
-			logger.Warn("Node not found while adding agent")
-			return errors.New("node not found")
-		} else if err != nil {
-			logger.Error("Failed to get node", slog.Any("error", err))
-			return err
+		nodeID, err := uuid.Parse(strings.TrimPrefix(r.URL.Path, "/connect/"))
+		if err != nil {
+			slog.Error("Failed to parse UUID", slog.Any("error", err), slog.String("remote", r.RemoteAddr))
+			w.WriteHeader(http.StatusBadRequest)
+			return
 		}
 
-		upsertAgentStatus(&upd.Status, agent)
+		metrics.TunnelConnectionRequests.Inc()
 
-		return t.Status().Update(r.Context(), upd)
-	}); err != nil {
-		logger.Error("Failed to update agent status", slog.Any("error", err))
-	}
+		logger := slog.With(slog.String("uuid", nodeID.String()))
+		logger.Info("Received connection request",
+			slog.String("URI", r.URL.String()),
+			slog.String("remote", r.RemoteAddr))
 
-	// Blocking wait for the lifetime of the tunnel connection.
-	<-r.Context().Done()
-
-	if err := conn.Close(); err != nil &&
-		!strings.Contains(err.Error(), "close called for canceled stream") {
-		logger.Error("Failed to close connection", slog.Any("error", err))
-	}
-
-	if conn, exists := t.conns.Get(connID); !exists {
-		logger.Error("Tunnel connection not found", slog.Any("connUUID", connID))
-	} else {
-		if conn.addrv6.IsValid() {
-			if err := t.router.DelAddr(conn.addrv6); err != nil {
-				logger.Error("Failed to remove peer address", slog.Any("error", err), slog.Any("addr", conn.addrv6))
-			}
-			if err := t.router.DelRoute(conn.addrv6); err != nil {
-				logger.Error("Failed to remove route", slog.Any("error", err), slog.Any("addr", conn.addrv6))
-			}
-		}
-		if conn.addrv4.IsValid() {
-			if err := t.router.DelAddr(conn.addrv4); err != nil {
-				logger.Error("Failed to remove peer address", slog.Any("error", err), slog.Any("addr", conn.addrv4))
-			}
-			if err := t.router.DelRoute(conn.addrv4); err != nil {
-				logger.Error("Failed to remove route", slog.Any("error", err), slog.Any("addr", conn.addrv4))
-			}
-		}
-	}
-
-	t.conns.Del(connID)
-
-	if err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-		upd := &corev1alpha.TunnelNode{}
-		nn := types.NamespacedName{Name: tn.Name}
-		if err := t.Get(context.Background(), nn, upd); apierrors.IsNotFound(err) {
-			logger.Warn("Node not found")
-			return errors.New("node not found")
-		} else if err != nil {
-			logger.Error("Failed to get node", slog.Any("error", err))
-			return err
+		authToken := r.URL.Query().Get("token")
+		if authToken == "" {
+			logger.Error("Missing token in connection request")
+			metrics.TunnelConnectionFailures.WithLabelValues("missing_token").Inc()
+			w.WriteHeader(http.StatusForbidden)
+			return
 		}
 
-		for i, a := range upd.Status.Agents {
-			if a.Name == agent.Name {
-				upd.Status.Agents = append(upd.Status.Agents[:i], upd.Status.Agents[i+1:]...)
-				break
+		tn, ok := t.tunnels.Get(nodeID.String())
+		if !ok {
+			logger.Error("Tunnel not found")
+			metrics.TunnelConnectionFailures.WithLabelValues("tunnel_not_found").Inc()
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+
+		logger = logger.With(slog.String("name", tn.Name))
+		if tn.Status.Credentials == nil || tn.Status.Credentials.Token == "" {
+			logger.Error("Missing credentials for TunnelNode")
+			metrics.TunnelConnectionFailures.WithLabelValues("missing_credentials").Inc()
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+
+		claims, err := t.jwtValidator.Validate(authToken)
+		if err != nil {
+			logger.Error("Failed to validate token", slog.Any("error", err))
+			metrics.TunnelConnectionFailures.WithLabelValues("invalid_token").Inc()
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+
+		tokenSubj, err := claims.GetSubject()
+		if err != nil {
+			logger.Error("Failed to get subject from token claims", slog.Any("error", err))
+			metrics.TunnelConnectionFailures.WithLabelValues("token_subject_error").Inc()
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+
+		if tokenSubj != nodeID.String() {
+			logger.Error("Token subject does not match TunnelNode ID",
+				slog.String("expected", nodeID.String()),
+				slog.String("got", tokenSubj),
+			)
+			metrics.TunnelConnectionFailures.WithLabelValues("token_subject_mismatch").Inc()
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+
+		logger.Info("Validated token for UUID")
+
+		req, err := connectip.ParseRequest(r, connectTmpl)
+		if err != nil {
+			logger.Error("Failed to parse request", slog.Any("error", err))
+			metrics.TunnelConnectionFailures.WithLabelValues("bad_request").Inc()
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+
+		connID := uuid.NewString()
+		// Sends connection ID information to the client so that it can
+		// track its connection status. This must be done before initializing the proxy.
+		w.Header().Add("X-Apoxy-Connection-UUID", connID)
+
+		conn := &conn{
+			obj: tn.DeepCopy(),
+		}
+
+		p := connectip.Proxy{}
+		if conn.Conn, err = p.Proxy(w, req); err != nil {
+			logger.Error("Failed to proxy request", slog.Any("error", err))
+			metrics.TunnelConnectionFailures.WithLabelValues("proxy_error").Inc()
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		defer conn.Close()
+
+		t.conns.Set(connID, conn)
+
+		agent := &corev1alpha.AgentStatus{
+			Name:        connID,
+			ConnectedAt: ptr.To(metav1.Now()),
+		}
+		// TODO(dilyevsky): Support multiple external addresses in the Status.
+		if len(t.options.extAddrs) > 0 && t.options.extAddrs[0].IsValid() {
+			agent.PrivateAddress = t.options.extAddrs[0].Addr().String()
+		}
+		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			upd := &corev1alpha.TunnelNode{}
+			if err := t.Get(r.Context(), types.NamespacedName{Name: tn.Name}, upd); apierrors.IsNotFound(err) {
+				logger.Warn("Node not found while adding agent")
+				return errors.New("node not found")
+			} else if err != nil {
+				logger.Error("Failed to get node", slog.Any("error", err))
+				return err
+			}
+
+			upsertAgentStatus(&upd.Status, agent)
+
+			return t.Status().Update(r.Context(), upd)
+		}); err != nil {
+			logger.Error("Failed to update agent status", slog.Any("error", err))
+		}
+
+		// Blocking wait for the lifetime of the tunnel connection.
+		<-r.Context().Done()
+
+		logger.Info("Tunnel connection closed")
+
+		if err := conn.Close(); err != nil &&
+			!strings.Contains(err.Error(), "close called for canceled stream") {
+			logger.Error("Failed to close connection", slog.Any("error", err))
+		}
+
+		if conn, exists := t.conns.Get(connID); !exists {
+			logger.Error("Tunnel connection not found", slog.Any("connUUID", connID))
+		} else {
+			if conn.addrv6.IsValid() {
+				logger.Info("Removing peer address", slog.Any("addr", conn.addrv6))
+
+				if err := t.router.DelAddr(conn.addrv6); err != nil {
+					logger.Error("Failed to remove peer address", slog.Any("error", err), slog.Any("addr", conn.addrv6))
+				}
+				if err := t.router.DelRoute(conn.addrv6); err != nil {
+					logger.Error("Failed to remove route", slog.Any("error", err), slog.Any("addr", conn.addrv6))
+				}
+			}
+
+			if conn.addrv4.IsValid() {
+				logger.Info("Removing peer address", slog.Any("addr", conn.addrv4))
+
+				if err := t.router.DelAddr(conn.addrv4); err != nil {
+					logger.Error("Failed to remove peer address", slog.Any("error", err), slog.Any("addr", conn.addrv4))
+				}
+				if err := t.router.DelRoute(conn.addrv4); err != nil {
+					logger.Error("Failed to remove route", slog.Any("error", err), slog.Any("addr", conn.addrv4))
+				}
 			}
 		}
 
-		return t.Status().Update(context.Background(), upd)
-	}); err != nil {
-		logger.Error("Failed to update agent status", slog.Any("error", err))
-	}
+		t.conns.Del(connID)
 
-	logger.Info("Agent disconnected", slog.String("name", agent.Name))
+		if err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+			upd := &corev1alpha.TunnelNode{}
+			nn := types.NamespacedName{Name: tn.Name}
+			if err := t.Get(context.Background(), nn, upd); apierrors.IsNotFound(err) {
+				logger.Warn("Node not found")
+				return errors.New("node not found")
+			} else if err != nil {
+				logger.Error("Failed to get node", slog.Any("error", err))
+				return err
+			}
+
+			for i, a := range upd.Status.Agents {
+				if a.Name == agent.Name {
+					upd.Status.Agents = append(upd.Status.Agents[:i], upd.Status.Agents[i+1:]...)
+					break
+				}
+			}
+
+			return t.Status().Update(context.Background(), upd)
+		}); err != nil {
+			logger.Error("Failed to update agent status", slog.Any("error", err))
+		}
+
+		logger.Info("Agent disconnected", slog.String("name", agent.Name))
+	}
 }
 
 func (t *TunnelServer) reconcile(ctx context.Context, request reconcile.Request) (reconcile.Result, error) {

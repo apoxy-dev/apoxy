@@ -110,6 +110,8 @@ func (m *muxedConn) Del(addr netip.Prefix) error {
 		return fmt.Errorf("invalid prefix for connection: %v", addr)
 	}
 
+	slog.Info("Removing connection", slog.String("addr", addr.String()))
+
 	// Remove the connection from the map. Connection closing is handled by
 	// the layer above.
 	if ok := m.conns.Remove(addr); !ok {
