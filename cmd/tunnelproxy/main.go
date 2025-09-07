@@ -5,6 +5,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	_ "net/http/pprof"
 	"net/netip"
 	"os"
 	"strings"
@@ -48,6 +49,7 @@ var (
 	healthProbePort = flag.Int("health_probe_port", 8080, "Port for the health probe.")
 	readyProbePort  = flag.Int("ready_probe_port", 8083, "Port for the ready probe.")
 	metricsPort     = flag.Int("metrics_port", 8081, "Port for the metrics endpoint.")
+	pprofPort       = flag.Int("pprof_port", 6060, "Port for the pprof endpoint.")
 
 	apiServerAddr = flag.String("apiserver_addr", "host.docker.internal:8443", "APIServer address.")
 	jwksURLs      = flag.String("jwks_urls", "", "Comma-separated URLs of the JWKS endpoints.")
@@ -92,6 +94,7 @@ func main() {
 			BindAddress: fmt.Sprintf(":%d", *metricsPort),
 		},
 		HealthProbeBindAddress: fmt.Sprintf(":%d", *healthProbePort),
+		PprofBindAddress:       fmt.Sprintf(":%d", *pprofPort),
 	})
 	if err != nil {
 		log.Fatalf("Unable to start manager: %v", err)
