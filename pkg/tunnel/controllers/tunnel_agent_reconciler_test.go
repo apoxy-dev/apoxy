@@ -38,6 +38,8 @@ func TestTunnelAgentReconciler_AddConnection(t *testing.T) {
 	relay := &mockRelay{}
 	relay.On("Name").Return("relay-a")
 	relay.On("Address").Return(netip.MustParseAddrPort("203.0.113.10:443"))
+	relay.On("SetOnConnect", mock.Anything).Return().Once()
+	relay.On("SetOnDisconnect", mock.Anything).Return().Once()
 
 	r := controllers.NewTunnelAgentReconciler(c, relay, "")
 
@@ -52,7 +54,7 @@ func TestTunnelAgentReconciler_AddConnection(t *testing.T) {
 	require.Len(t, got.Status.Connections, 1)
 	entry := got.Status.Connections[0]
 	assert.Equal(t, "conn-123", entry.ID)
-	// Address and VNI should NOT be set by AddConnection (populated by the other reconciler).
+	// Address and VNI should NOT be set by AddConnection (populated by the apiserver reconciler).
 	assert.Equal(t, "", entry.Address)
 	assert.Nil(t, entry.VNI)
 	assert.Equal(t, relay.Address().String(), entry.RelayAddress)
@@ -61,6 +63,7 @@ func TestTunnelAgentReconciler_AddConnection(t *testing.T) {
 	assert.True(t, controllerutil.ContainsFinalizer(&got, finalizer))
 
 	conn.AssertExpectations(t)
+	relay.AssertExpectations(t)
 }
 
 func TestTunnelAgentReconciler_RemoveConnection(t *testing.T) {
@@ -79,6 +82,9 @@ func TestTunnelAgentReconciler_RemoveConnection(t *testing.T) {
 	relay := &mockRelay{}
 	relay.On("Name").Return("relay-a")
 	relay.On("Address").Return(netip.MustParseAddrPort("203.0.113.20:443"))
+	relay.On("SetOnConnect", mock.Anything).Return().Once()
+	relay.On("SetOnDisconnect", mock.Anything).Return().Once()
+
 	r := controllers.NewTunnelAgentReconciler(c, relay, "")
 	finalizer := "tunnelrelay.apoxy.dev/" + relay.Name() + "/finalizer"
 
@@ -104,6 +110,8 @@ func TestTunnelAgentReconciler_RemoveConnection(t *testing.T) {
 	require.NoError(t, c.Get(ctx, types.NamespacedName{Name: agent.Name}, &got))
 	assert.Empty(t, got.Status.Connections)
 	assert.False(t, controllerutil.ContainsFinalizer(&got, finalizer))
+
+	relay.AssertExpectations(t)
 }
 
 func TestTunnelAgentReconciler_ClosesConnections(t *testing.T) {
@@ -122,6 +130,9 @@ func TestTunnelAgentReconciler_ClosesConnections(t *testing.T) {
 	relay := &mockRelay{}
 	relay.On("Name").Return("relay-z")
 	relay.On("Address").Return(netip.MustParseAddrPort("198.51.100.7:8443"))
+	relay.On("SetOnConnect", mock.Anything).Return().Once()
+	relay.On("SetOnDisconnect", mock.Anything).Return().Once()
+
 	r := controllers.NewTunnelAgentReconciler(c, relay, "")
 	finalizer := "tunnelrelay.apoxy.dev/" + relay.Name() + "/finalizer"
 
@@ -155,6 +166,7 @@ func TestTunnelAgentReconciler_ClosesConnections(t *testing.T) {
 
 	// Ensure Close() was called
 	conn.AssertExpectations(t)
+	relay.AssertExpectations(t)
 }
 
 func TestTunnelAgentReconcile_SetsAddressAndVNI(t *testing.T) {
@@ -173,6 +185,9 @@ func TestTunnelAgentReconcile_SetsAddressAndVNI(t *testing.T) {
 	relay := &mockRelay{}
 	relay.On("Name").Return("relay-x")
 	relay.On("Address").Return(netip.MustParseAddrPort("192.0.2.77:7443"))
+	relay.On("SetOnConnect", mock.Anything).Return().Once()
+	relay.On("SetOnDisconnect", mock.Anything).Return().Once()
+
 	r := controllers.NewTunnelAgentReconciler(c, relay, "")
 
 	// Create a live connection tracked by the reconciler.
@@ -181,7 +196,7 @@ func TestTunnelAgentReconcile_SetsAddressAndVNI(t *testing.T) {
 
 	require.NoError(t, r.AddConnection(ctx, agent.Name, conn))
 
-	// Simulate the OTHER reconciler filling status.address & vni
+	// Simulate the apiserver reconciler filling status.address & vni
 	var cur corev1alpha2.TunnelAgent
 	require.NoError(t, c.Get(ctx, types.NamespacedName{Name: agent.Name}, &cur))
 	require.Len(t, cur.Status.Connections, 1)
@@ -198,6 +213,7 @@ func TestTunnelAgentReconcile_SetsAddressAndVNI(t *testing.T) {
 	require.NoError(t, err)
 
 	conn.AssertExpectations(t)
+	relay.AssertExpectations(t)
 }
 
 func mkAgent(name string) *corev1alpha2.TunnelAgent {
