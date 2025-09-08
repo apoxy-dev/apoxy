@@ -26,6 +26,7 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/adapter"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/api"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/controllers"
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/hasher"
 )
 
 const (
@@ -38,14 +39,14 @@ type Relay struct {
 	pc           net.PacketConn
 	cert         tls.Certificate
 	handler      *icx.Handler
-	idHasher     *adapter.Hasher
+	idHasher     *hasher.Hasher
 	tokens       *haxmap.Map[string, string]              // map[tunnelName]token
 	conns        *haxmap.Map[string, *adapter.Connection] // map[connectionID]Connection
 	onConnect    func(ctx context.Context, agentName string, conn controllers.Connection) error
 	onDisconnect func(ctx context.Context, agentName, id string) error
 }
 
-func NewRelay(name string, pc net.PacketConn, cert tls.Certificate, handler *icx.Handler, idHasher *adapter.Hasher) *Relay {
+func NewRelay(name string, pc net.PacketConn, cert tls.Certificate, handler *icx.Handler, idHasher *hasher.Hasher) *Relay {
 	return &Relay{
 		name:     name,
 		pc:       pc,

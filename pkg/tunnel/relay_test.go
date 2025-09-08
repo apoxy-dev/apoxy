@@ -9,15 +9,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/apoxy-dev/icx"
 	"github.com/stretchr/testify/require"
 	"gvisor.dev/gvisor/pkg/tcpip"
 
 	"github.com/apoxy-dev/apoxy/pkg/cryptoutils"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel"
-	"github.com/apoxy-dev/apoxy/pkg/tunnel/adapter"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/api"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/controllers"
-	"github.com/apoxy-dev/icx"
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/hasher"
 )
 
 func TestRelay_Connect_UpdateKeys_Disconnect(t *testing.T) {
@@ -96,7 +96,7 @@ func startRelay(t *testing.T, token string, onConnect func(context.Context, stri
 	_, err = rand.Read(idKey)
 	require.NoError(t, err)
 
-	idHasher := adapter.NewHasher(idKey)
+	idHasher := hasher.NewHasher(idKey)
 
 	r := tunnel.NewRelay("relay-it", pc, serverCert, h, idHasher)
 	r.SetCredentials("test-tunnel", token)
