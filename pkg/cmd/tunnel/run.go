@@ -368,7 +368,7 @@ func (t *tunnelNodeReconciler) reconcile(ctx context.Context, req ctrl.Request) 
 				stopCh: make(chan struct{}),
 			}
 			t.tunDialerWorkers = append(t.tunDialerWorkers, conn)
-			go func() {
+			go func(conn *tunConn) {
 				wait.BackoffUntil(func() {
 					// Read dial parameters with read lock
 					t.dialMu.RLock()
@@ -394,20 +394,8 @@ func (t *tunnelNodeReconciler) reconcile(ctx context.Context, req ctrl.Request) 
 					<-c.Context().Done() // Wait for the connection to close.
 
 					log.Error("Tunnel client disconnected", slog.String("uuid", c.UUID.String()), slog.Any("error", c.Context().Err()))
-
-					t.tunMu.Lock()
-					// Finding the index of the connection to remove - it could have changed
-					// if some dial workers got canceled.
-					for i, c := range t.tunDialerWorkers {
-						if c.id == conn.id {
-							t.tunDialerWorkers[i] = t.tunDialerWorkers[len(t.tunDialerWorkers)-1]
-							t.tunDialerWorkers = t.tunDialerWorkers[:len(t.tunDialerWorkers)-1]
-							break
-						}
-					}
-					t.tunMu.Unlock()
 				}, backoff, false, conn.stopCh)
-			}()
+			}(conn)
 		}
 	} else {
 		log.Info("Matching tunnel connections", slog.Int("min", minConns), slog.Int("cur", n))

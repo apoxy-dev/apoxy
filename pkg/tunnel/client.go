@@ -22,6 +22,7 @@ import (
 	"github.com/yosida95/uritemplate/v3"
 	"k8s.io/apimachinery/pkg/util/sets"
 
+	alog "github.com/apoxy-dev/apoxy/pkg/log"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/router"
 )
 
@@ -311,7 +312,7 @@ func (d *TunnelDialer) Dial(
 		router:    d.Router,
 		closeOnce: sync.Once{},
 	}
-	go c.run(ctx)
+	go c.run(alog.IntoContext(ctx, slog.With("conn", connUUID.String())))
 	return c, nil
 }
 
@@ -328,38 +329,43 @@ type Conn struct {
 }
 
 func (c *Conn) run(ctx context.Context) {
+	log := alog.FromContext(ctx)
 	for {
 		select {
 		case <-ctx.Done():
-			slog.Info("Context canceled")
+			log.Info("Context canceled")
 			return
 		case <-c.hConn.Context().Done():
-			slog.Info("HTTP3 connection closed")
+			log.Info("HTTP3 connection closed")
 			return
 		case <-time.After(time.Second):
 			addrs, err := c.conn.LocalPrefixes(ctx)
 			if err != nil {
-				slog.Error("Failed to get local prefixes", slog.Any("error", err))
+				if errors.Is(err, net.ErrClosed) {
+					log.Error("Connection closed", slog.Any("error", err))
+					return
+				}
+				log.Error("Failed to get local prefixes", slog.Any("error", err))
 				continue
 			}
 
-			slog.Info("Updating local prefixes", slog.Any("prefixes", addrs))
+			log.Info("Updating local prefixes", slog.Any("prefixes", addrs))
 
 			c.mu.Lock()
 			newAddrs := sets.New[netip.Prefix](addrs...)
 			oldAddrs := sets.New[netip.Prefix](c.addrs...)
 			for _, addr := range newAddrs.Difference(oldAddrs).UnsortedList() {
-				slog.Info("Adding local prefix", slog.Any("prefix", addr))
+				log.Info("Adding local prefix", slog.Any("prefix", addr))
 				c.router.AddAddr(addr, c.conn)
 			}
 			for _, addr := range oldAddrs.Difference(newAddrs).UnsortedList() {
-				slog.Info("Removing local prefix", slog.Any("prefix", addr))
+				log.Info("Removing local prefix", slog.Any("prefix", addr))
 				c.router.DelAddr(addr)
 			}
 			c.addrs = addrs
 			c.mu.Unlock()
 
-			slog.Info("Local prefixes updated", slog.Any("prefixes", addrs))
+			log.Info("Local prefixes updated", slog.Any("prefixes", addrs))
 		}
 	}
 }
