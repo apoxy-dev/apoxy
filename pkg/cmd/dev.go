@@ -20,6 +20,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
+	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/discovery"
 	memory "k8s.io/client-go/discovery/cached"
@@ -118,28 +119,27 @@ func updateFromFile(ctx context.Context, proxyNameOverride, path string) error {
 			Namespace(unObj.GetNamespace()).
 			Create(ctx, unObj, metav1.CreateOptions{})
 		if k8serrors.IsAlreadyExists(err) {
-			log.Debugf("Object gvk=%v name=%s already exists, updating...", unObj.GroupVersionKind(), maybeNamespaced(unObj))
+			log.Debugf("Object gvk=%v name=%s already exists, patching...", unObj.GroupVersionKind(), maybeNamespaced(unObj))
 
 			err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
-				latest, err := dynClient.Resource(mapping.Resource).
-					Namespace(unObj.GetNamespace()).
-					Get(ctx, unObj.GetName(), metav1.GetOptions{})
+				data, err := runtime.Encode(
+					unstructured.UnstructuredJSONScheme,
+					unObj,
+				)
 				if err != nil {
 					return err
 				}
 
-				unObj.SetResourceVersion(latest.GetResourceVersion())
-
 				_, err = dynClient.Resource(mapping.Resource).
 					Namespace(unObj.GetNamespace()).
-					Update(ctx, unObj, metav1.UpdateOptions{})
+					Patch(ctx, unObj.GetName(), types.StrategicMergePatchType, data, metav1.PatchOptions{})
 				return err
 			})
 			if err != nil {
-				return fmt.Errorf("failed to update object gvk=%v name=%s: %w", unObj.GroupVersionKind(), maybeNamespaced(unObj), err)
+				return fmt.Errorf("failed to patch object gvk=%v name=%s: %w", unObj.GroupVersionKind(), maybeNamespaced(unObj), err)
 			}
 
-			log.Debugf("Updated %v object %s\n", unObj.GroupVersionKind(), maybeNamespaced(unObj))
+			log.Debugf("Patched %v object %s\n", unObj.GroupVersionKind(), maybeNamespaced(unObj))
 		} else if err != nil {
 			return fmt.Errorf("failed to create object gvk=%v name=%s: %w", unObj.GroupVersionKind(), maybeNamespaced(unObj), err)
 		} else {
