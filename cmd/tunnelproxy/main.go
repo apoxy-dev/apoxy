@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	_ "net/http/pprof"
@@ -71,7 +72,7 @@ func main() {
 		lOpts = append(lOpts, log.WithDevMode())
 	}
 	log.Init(lOpts...)
-	ctx := signals.SetupSignalHandler()
+	gCtx := signals.SetupSignalHandler()
 
 	if *apiServerAddr == "" {
 		log.Fatalf("--apiserver_addr must be set")
@@ -107,9 +108,9 @@ func main() {
 		log.Fatalf("Failed to add readyz check: %v", err)
 	}
 
-	g, ctx := errgroup.WithContext(ctx)
+	g, gCtx := errgroup.WithContext(gCtx)
 
-	jwtValidator, err := token.NewRemoteValidator(ctx, strings.Split(*jwksURLs, ","))
+	jwtValidator, err := token.NewRemoteValidator(gCtx, strings.Split(*jwksURLs, ","))
 	if err != nil {
 		log.Fatalf("Failed to create JWT validator: %v", err)
 	}
@@ -168,7 +169,7 @@ func main() {
 		tunnel.WithExternalAddrs(extIPv4Prefix),
 		tunnel.WithLabelSelector(*tunnelNodeSelector),
 		tunnel.WithPublicAddr(*publicAddr),
-		tunnel.WithIPAMv4(tunnet.NewIPAMv4(ctx)),
+		tunnel.WithIPAMv4(tunnet.NewIPAMv4(gCtx)),
 	)
 	if err != nil {
 		log.Fatalf("Failed to create tunnel server: %v", err)
@@ -180,20 +181,23 @@ func main() {
 	if err := tunnelproxy.NewProxyTunnelReconciler(
 		mgr.GetClient(),
 		extIPv4Prefix.Addr(),
-	).SetupWithManager(ctx, mgr); err != nil {
+	).SetupWithManager(gCtx, mgr); err != nil {
 		log.Fatalf("Unable to setup Proxy Tunnel reconciler: %v", err)
 	}
 
+	// XXX: Separate context for manager so that it keeps working until
+	// server has shutdown cleanly.
+	mgrCtx, mgrCancel := context.WithCancel(context.Background())
 	g.Go(func() error {
+		defer mgrCancel()
 		log.Infof("Starting Tunnel Proxy server")
 
-		return srv.Start(ctx)
+		return srv.Start(gCtx)
 	})
-
 	g.Go(func() error {
 		log.Infof("Starting manager")
 
-		return mgr.Start(ctx)
+		return mgr.Start(mgrCtx)
 	})
 
 	if err := g.Wait(); err != nil {

@@ -207,7 +207,7 @@ func (t *TunnelServer) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(reconcile.Func(t.reconcile)) // Using this contraption to keep reconcile method private.
 }
 
-func (t *TunnelServer) Start(gCtx context.Context) error {
+func (t *TunnelServer) Start(ctx context.Context) error {
 	bindTo, err := netip.ParseAddrPort(t.options.proxyAddr)
 	if err != nil {
 		return fmt.Errorf("failed to parse bind address: %w", err)
@@ -252,10 +252,9 @@ func (t *TunnelServer) Start(gCtx context.Context) error {
 		return fmt.Errorf("failed to create QUIC listener: %w", err)
 	}
 
-	g, gCtx := errgroup.WithContext(gCtx)
-
+	g, ctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
-		<-gCtx.Done()
+		<-ctx.Done()
 
 		if err := t.Stop(); err != nil {
 			return fmt.Errorf("failed to shutdown QUIC server: %w", err)
@@ -263,13 +262,12 @@ func (t *TunnelServer) Start(gCtx context.Context) error {
 
 		return nil
 	})
-
 	// HTTP/3 server loop.
 	g.Go(func() error {
 		slog.Info("Serving HTTP/3", slog.String("addr", t.ln.Addr().String()))
 		for {
-			conn, err := t.ln.Accept(gCtx)
-			if errors.Is(err, quic.ErrServerClosed) || gCtx.Err() != nil {
+			conn, err := t.ln.Accept(ctx)
+			if errors.Is(err, quic.ErrServerClosed) || ctx.Err() != nil {
 				slog.Info("QUIC listener closed or context canceled")
 				return nil
 			}
@@ -281,20 +279,20 @@ func (t *TunnelServer) Start(gCtx context.Context) error {
 			// Serves a single CONNECT-IP connection over HTTP/3.
 			oneShotSrv := &http3.Server{
 				EnableDatagrams: true,
-				Handler:         t.makeSingleConnectHandler(conn),
+				Handler:         t.makeSingleConnectHandler(ctx, conn),
 			}
-			go func() {
+
+			g.Go(func() error {
 				if err := oneShotSrv.ServeQUICConn(conn); err != nil {
 					slog.Error("Failed to serve QUIC connection", slog.Any("error", err))
-
 				}
-			}()
+				return nil
+			})
 		}
 	})
-
 	// Start the router to handle network traffic.
 	g.Go(func() error {
-		return t.router.Start(gCtx)
+		return t.router.Start(ctx)
 	})
 
 	return g.Wait()
@@ -339,7 +337,7 @@ func iproutesFromPrefixes(ps []netip.Prefix) []connectip.IPRoute {
 
 // makeSingleConnectHandler creates a /connect handler that serves a single CONNECT-IP
 // connection and then closes the connection.
-func (t *TunnelServer) makeSingleConnectHandler(qConn quic.Connection) http.HandlerFunc {
+func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.Connection) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		defer qConn.CloseWithError(ApplicationCodeOK, "")
 
@@ -352,7 +350,7 @@ func (t *TunnelServer) makeSingleConnectHandler(qConn quic.Connection) http.Hand
 
 		metrics.TunnelConnectionRequests.Inc()
 
-		logger := slog.With(slog.String("uuid", nodeID.String()))
+		logger := slog.With(slog.String("tunUUID", nodeID.String()))
 		logger.Info("Received connection request",
 			slog.String("URI", r.URL.String()),
 			slog.String("remote", r.RemoteAddr))
@@ -421,6 +419,7 @@ func (t *TunnelServer) makeSingleConnectHandler(qConn quic.Connection) http.Hand
 		// Sends connection ID information to the client so that it can
 		// track its connection status. This must be done before initializing the proxy.
 		w.Header().Add("X-Apoxy-Connection-UUID", connID)
+		logger = logger.With(slog.String("connUUID", connID))
 
 		conn := &conn{
 			obj: tn.DeepCopy(),
@@ -463,9 +462,12 @@ func (t *TunnelServer) makeSingleConnectHandler(qConn quic.Connection) http.Hand
 		}
 
 		// Blocking wait for the lifetime of the tunnel connection.
-		<-r.Context().Done()
-
-		logger.Info("Tunnel connection closed")
+		select {
+		case <-r.Context().Done():
+			logger.Info("Tunnel connection closed")
+		case <-ctx.Done():
+			logger.Info("Server context closed", slog.Any("error", ctx.Err()))
+		}
 
 		if err := conn.Close(); err != nil &&
 			!strings.Contains(err.Error(), "close called for canceled stream") {
@@ -500,7 +502,7 @@ func (t *TunnelServer) makeSingleConnectHandler(qConn quic.Connection) http.Hand
 
 		t.conns.Del(connID)
 
-		if err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 			upd := &corev1alpha.TunnelNode{}
 			nn := types.NamespacedName{Name: tn.Name}
 			if err := t.Get(context.Background(), nn, upd); apierrors.IsNotFound(err) {
@@ -523,7 +525,7 @@ func (t *TunnelServer) makeSingleConnectHandler(qConn quic.Connection) http.Hand
 			logger.Error("Failed to update agent status", slog.Any("error", err))
 		}
 
-		logger.Info("Agent disconnected", slog.String("name", agent.Name))
+		logger.Info("Agent disconnected")
 	}
 }
 
