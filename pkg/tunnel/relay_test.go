@@ -1,15 +1,20 @@
 package tunnel_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/tls"
 	"net"
+	"net/http"
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/apoxy-dev/icx"
+	"github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/http3"
 	"github.com/stretchr/testify/require"
 	"gvisor.dev/gvisor/pkg/tcpip"
 
@@ -125,6 +130,64 @@ func startRelay(t *testing.T, token string, onConnect func(context.Context, stri
 	}
 
 	return r, caCert, stop
+}
+
+func TestRelay_InvalidAuthClosesQUIC(t *testing.T) {
+	const goodToken = "correct-token"
+	const badToken = "wrong-token"
+
+	// We don't expect to reach onConnect/onDisconnect for a bad token.
+	onConnect := func(ctx context.Context, agent string, conn controllers.Connection) error { return nil }
+	onDisconnect := func(ctx context.Context, agent, id string) error { return nil }
+
+	r, caCert, stop := startRelay(t, goodToken, onConnect, onDisconnect)
+	t.Cleanup(stop)
+
+	// Build a raw HTTP/3 client so we can inject a custom Dial that captures the QUIC connection.
+	tlsCfg := &tls.Config{
+		RootCAs:    cryptoutils.CertPoolForCertificate(caCert),
+		ServerName: "localhost",
+	}
+
+	var captured quic.EarlyConnection
+	rt := &http3.RoundTripper{
+		TLSClientConfig: tlsCfg,
+		// Capture the QUIC connection used underneath, so we can verify it gets closed.
+		Dial: func(ctx context.Context, addr string, tlsConf *tls.Config, cfg *quic.Config) (quic.EarlyConnection, error) {
+			c, err := quic.DialAddrEarly(ctx, addr, tlsConf, cfg)
+			if err == nil {
+				captured = c
+			}
+			return c, err
+		},
+	}
+	t.Cleanup(func() { _ = rt.Close() })
+
+	h3Client := &http.Client{
+		Transport: rt,
+		Timeout:   3 * time.Second,
+	}
+
+	// Send a request with an invalid token.
+	url := "https://" + r.Address() + "/v1/tunnel/test-tunnel"
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader([]byte(`{}`)))
+	require.NoError(t, err)
+	req.Header.Set("Authorization", "Bearer "+badToken)
+	req.Header.Set("Content-Type", "application/json")
+
+	_, err = h3Client.Do(req)
+	require.True(t, err != nil && strings.Contains(err.Error(), "H3_REQUEST_REJECTED"), "expected request to be rejected, got: %v", err)
+
+	// The relay calls CloseWithError on the underlying QUIC connection after writing 401.
+	// That should cause the client's connection context to be done very quickly.
+	require.NotNil(t, captured, "should have captured the QUIC connection")
+
+	select {
+	case <-captured.Context().Done():
+		// success: the QUIC connection was closed by the server
+	case <-time.After(750 * time.Millisecond):
+		t.Fatalf("expected QUIC connection to be closed after unauthorized response, but it remained open")
+	}
 }
 
 func clientForRelay(t *testing.T, r *tunnel.Relay, caCert tls.Certificate, token string) *api.Client {

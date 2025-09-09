@@ -157,13 +157,13 @@ func (r *Relay) handleConnect(w http.ResponseWriter, req *http.Request, ps httpr
 
 	localAddr, err := netip.ParseAddrPort(r.pc.LocalAddr().String())
 	if err != nil {
-		http.Error(w, "Failed to parse local address", http.StatusInternalServerError)
+		http.Error(w, "Failed to parse local address", http.StatusBadRequest)
 		return
 	}
 
 	remoteAddr, err := netip.ParseAddrPort(req.RemoteAddr)
 	if err != nil {
-		http.Error(w, "Failed to parse remote address", http.StatusInternalServerError)
+		http.Error(w, "Failed to parse remote address", http.StatusBadRequest)
 		return
 	}
 
@@ -320,32 +320,45 @@ func (r *Relay) handleUpdateKeys(w http.ResponseWriter, req *http.Request, ps ht
 
 func (r *Relay) withAuth(next httprouter.Handle) httprouter.Handle {
 	return func(w http.ResponseWriter, req *http.Request, ps httprouter.Params) {
-		authHeader := req.Header.Get("Authorization")
 		const prefix = "Bearer "
-		if authHeader == "" || len(authHeader) <= len(prefix) || authHeader[:len(prefix)] != prefix {
+		authHeader := req.Header.Get("Authorization")
+		if len(authHeader) <= len(prefix) || authHeader[:len(prefix)] != prefix {
+			slog.Warn("Missing or invalid Authorization header")
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			r.closeConn(w, http3.ErrCodeRequestRejected, "unauthorized")
 			return
 		}
 
 		tokenStr := authHeader[len(prefix):]
-
 		tunnelName := ps.ByName("name")
 		if tunnelName == "" {
 			slog.Warn("Missing tunnel name in request")
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			r.closeConn(w, http3.ErrCodeRequestRejected, "unauthorized")
 			return
 		}
 
-		storedToken, ok := r.tokens.Get(tunnelName)
-		if !ok || storedToken != tokenStr {
+		if storedToken, ok := r.tokens.Get(tunnelName); !ok || storedToken != tokenStr {
 			slog.Warn("Invalid token for tunnel", slog.String("tunnel", tunnelName))
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			r.closeConn(w, http3.ErrCodeRequestRejected, "unauthorized")
 			return
 		}
 
 		// Authenticated, call the next handler.
 		next(w, req, ps)
 	}
+}
+
+func (r *Relay) closeConn(w http.ResponseWriter, code http3.ErrCode, msg string) {
+	hij, ok := w.(http3.Hijacker)
+	if !ok {
+		slog.Warn("Failed to explicitly close quic connection")
+		return
+	}
+
+	h3c := hij.Connection()
+	_ = h3c.CloseWithError(quic.ApplicationErrorCode(code), msg)
 }
 
 func randomKey() (api.Key, error) {
