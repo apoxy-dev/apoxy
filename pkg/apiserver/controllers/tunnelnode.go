@@ -147,7 +147,7 @@ func (r *TunnelNodeReconciler) Reconcile(ctx context.Context, req reconcile.Requ
 	}
 
 	if !controllerutil.ContainsFinalizer(tn, ApiServerFinalizer) {
-		log.Info("Adding finalizer to Proxy")
+		log.Info("Adding finalizer to TunnelNode")
 		controllerutil.AddFinalizer(tn, ApiServerFinalizer)
 		if err := r.Update(ctx, tn); err != nil {
 			return ctrl.Result{}, err
