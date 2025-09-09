@@ -32,12 +32,15 @@ type TunnelAgentReconciler struct {
 
 func NewTunnelAgentReconciler(c client.Client, relay Relay, labelSelector string) *TunnelAgentReconciler {
 	finalizer := fmt.Sprintf(tunnelRelayFinalizerTmpl, relay.Name())
-	return &TunnelAgentReconciler{
+	r := &TunnelAgentReconciler{
 		client:    c,
 		relay:     relay,
 		finalizer: finalizer,
 		conns:     haxmap.New[string, Connection](),
 	}
+	relay.SetOnConnect(r.AddConnection)
+	relay.SetOnDisconnect(r.RemoveConnection)
+	return r
 }
 
 func (r *TunnelAgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {

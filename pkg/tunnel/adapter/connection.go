@@ -1,10 +1,10 @@
 package adapter
 
 import (
-	"crypto/sha256"
 	"fmt"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 
 	"github.com/apoxy-dev/icx"
 	"gvisor.dev/gvisor/pkg/tcpip"
@@ -13,16 +13,19 @@ import (
 // Connection is a connection like abstraction over an icx virtual network.
 type Connection struct {
 	mu          sync.Mutex
+	id          string
 	handler     *icx.Handler
-	localAddr   *netip.AddrPort
-	remoteAddr  *netip.AddrPort
+	localAddr   netip.AddrPort
+	remoteAddr  netip.AddrPort
 	vni         *uint
 	overlayAddr *netip.Prefix
+	keyEpoch    atomic.Uint32
 }
 
 // NewConnection creates a new Connection instance.
-func NewConnection(handler *icx.Handler, localAddr, remoteAddr *netip.AddrPort) *Connection {
+func NewConnection(id string, handler *icx.Handler, localAddr, remoteAddr netip.AddrPort) *Connection {
 	return &Connection{
+		id:         id,
 		handler:    handler,
 		localAddr:  localAddr,
 		remoteAddr: remoteAddr,
@@ -43,44 +46,15 @@ func (c *Connection) Close() error {
 	return nil
 }
 
-// ID is the unique identifier of the connection.
 func (c *Connection) ID() string {
+	return c.id
+}
+
+func (c *Connection) VNI() *uint {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	encode := func(ap *netip.AddrPort) []byte {
-		if ap == nil {
-			return []byte{0} // marker for nil
-		}
-		var b []byte
-		addr := ap.Addr()
-		if addr.Is4() {
-			b = append(b, 4) // family marker
-			a := addr.As4()
-			b = append(b, a[:]...)
-		} else {
-			b = append(b, 6) // family marker
-			a := addr.As16()
-			b = append(b, a[:]...)
-		}
-		p := ap.Port()
-		b = append(b, byte(p>>8), byte(p)) // big-endian port
-		return b
-	}
-
-	left := encode(c.localAddr)
-	right := encode(c.remoteAddr)
-
-	// Sort the pair to make the ID bidirectional
-	var data []byte
-	if string(left) < string(right) {
-		data = append(left, right...)
-	} else {
-		data = append(right, left...)
-	}
-
-	sum := sha256.Sum256(data)
-	return fmt.Sprintf("%x", sum[:16])
+	return c.vni
 }
 
 // Set the VNI assigned to this connection.
@@ -115,6 +89,17 @@ func (c *Connection) SetVNI(vni uint) error {
 	return nil
 }
 
+// OverlayAddress returns the overlay address/cidr assigned to this connection.
+func (c *Connection) OverlayAddress() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.overlayAddr != nil {
+		return c.overlayAddr.String()
+	}
+	return ""
+}
+
 // Set the overlay address/cidr assigned to this connection.
 func (c *Connection) SetOverlayAddress(addr string) error {
 	c.mu.Lock()
@@ -141,11 +126,12 @@ func (c *Connection) SetOverlayAddress(addr string) error {
 	return nil
 }
 
-func toFullAddress(addrPort *netip.AddrPort) *tcpip.FullAddress {
-	if addrPort == nil {
-		return nil
-	}
+// IncrementKeyEpoch increments and returns the current key epoch for this connection.
+func (c *Connection) IncrementKeyEpoch() uint32 {
+	return c.keyEpoch.Add(1)
+}
 
+func toFullAddress(addrPort netip.AddrPort) *tcpip.FullAddress {
 	if addrPort.Addr().Is4() {
 		addrv4 := addrPort.Addr().As4()
 		return &tcpip.FullAddress{
