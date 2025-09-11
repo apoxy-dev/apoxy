@@ -6,8 +6,8 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/apoxy-dev/apoxy/pkg/netstack"
 	"github.com/apoxy-dev/icx"
-	"gvisor.dev/gvisor/pkg/tcpip"
 )
 
 // Connection is a connection like abstraction over an icx virtual network.
@@ -81,7 +81,7 @@ func (c *Connection) SetVNI(vni uint) error {
 		addrs = []netip.Prefix{*c.overlayAddr}
 	}
 
-	if err := c.handler.AddVirtualNetwork(vni, toFullAddress(c.remoteAddr), addrs); err != nil {
+	if err := c.handler.AddVirtualNetwork(vni, netstack.ToFullAddress(c.remoteAddr), addrs); err != nil {
 		return fmt.Errorf("failed to add virtual network %d: %w", vni, err)
 	}
 	c.vni = &vni
@@ -129,20 +129,4 @@ func (c *Connection) SetOverlayAddress(addr string) error {
 // IncrementKeyEpoch increments and returns the current key epoch for this connection.
 func (c *Connection) IncrementKeyEpoch() uint32 {
 	return c.keyEpoch.Add(1)
-}
-
-func toFullAddress(addrPort netip.AddrPort) *tcpip.FullAddress {
-	if addrPort.Addr().Is4() {
-		addrv4 := addrPort.Addr().As4()
-		return &tcpip.FullAddress{
-			Addr: tcpip.AddrFrom4Slice(addrv4[:]),
-			Port: uint16(addrPort.Port()),
-		}
-	} else {
-		addrv6 := addrPort.Addr().As16()
-		return &tcpip.FullAddress{
-			Addr: tcpip.AddrFrom16Slice(addrv6[:]),
-			Port: uint16(addrPort.Port()),
-		}
-	}
 }

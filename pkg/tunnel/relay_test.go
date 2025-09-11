@@ -15,14 +15,18 @@ import (
 	"github.com/apoxy-dev/icx"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"gvisor.dev/gvisor/pkg/tcpip"
 
 	"github.com/apoxy-dev/apoxy/pkg/cryptoutils"
+	"github.com/apoxy-dev/apoxy/pkg/netstack"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/api"
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/connection"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/controllers"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/hasher"
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/router"
 )
 
 func TestRelay_Connect_UpdateKeys_Disconnect(t *testing.T) {
@@ -93,7 +97,7 @@ func startRelay(t *testing.T, token string, onConnect func(context.Context, stri
 	caCert, serverCert, err := cryptoutils.GenerateSelfSignedTLSCert("localhost")
 	require.NoError(t, err)
 
-	h, err := icx.NewHandler(icx.WithLocalAddr(toFullAddress(netip.MustParseAddrPort("127.0.0.1:6081"))),
+	h, err := icx.NewHandler(icx.WithLocalAddr(netstack.ToFullAddress(netip.MustParseAddrPort("127.0.0.1:6081"))),
 		icx.WithVirtMAC(tcpip.GetRandMacAddr()))
 	require.NoError(t, err)
 
@@ -103,7 +107,12 @@ func startRelay(t *testing.T, token string, onConnect func(context.Context, stri
 
 	idHasher := hasher.NewHasher(idKey)
 
-	r := tunnel.NewRelay("relay-it", pc, serverCert, h, idHasher)
+	rtr := &mockRouter{}
+
+	rtr.On("Start", mock.Anything).Return(nil)
+	rtr.On("Close").Return(nil)
+
+	r := tunnel.NewRelay("relay-it", pc, serverCert, h, idHasher, rtr)
 	r.SetCredentials("test-tunnel", token)
 	r.SetOnConnect(onConnect)
 	r.SetOnDisconnect(onDisconnect)
@@ -112,7 +121,9 @@ func startRelay(t *testing.T, token string, onConnect func(context.Context, stri
 
 	done := make(chan struct{})
 	go func() {
-		_ = r.Start(ctx) // on shutdown we don't assert the error path
+		if err := r.Start(ctx); err != nil {
+			t.Errorf("Relay stopped with error: %v", err)
+		}
 		close(done)
 	}()
 
@@ -211,18 +222,63 @@ func clientForRelay(t *testing.T, r *tunnel.Relay, caCert tls.Certificate, token
 	return c
 }
 
-func toFullAddress(addrPort netip.AddrPort) *tcpip.FullAddress {
-	if addrPort.Addr().Is4() {
-		addrv4 := addrPort.Addr().As4()
-		return &tcpip.FullAddress{
-			Addr: tcpip.AddrFrom4Slice(addrv4[:]),
-			Port: uint16(addrPort.Port()),
-		}
-	} else {
-		addrv6 := addrPort.Addr().As16()
-		return &tcpip.FullAddress{
-			Addr: tcpip.AddrFrom16Slice(addrv6[:]),
-			Port: uint16(addrPort.Port()),
-		}
+type mockRouter struct {
+	mock.Mock
+}
+
+func (m *mockRouter) Start(ctx context.Context) error {
+	args := m.Called(ctx)
+	return args.Error(0)
+}
+
+func (m *mockRouter) AddAddr(addr netip.Prefix, tun connection.Connection) error {
+	args := m.Called(addr, tun)
+	return args.Error(0)
+}
+
+func (m *mockRouter) ListAddrs() ([]netip.Prefix, error) {
+	args := m.Called()
+	var addrs []netip.Prefix
+	if v := args.Get(0); v != nil {
+		addrs = v.([]netip.Prefix)
 	}
+	return addrs, args.Error(1)
+}
+
+func (m *mockRouter) DelAddr(addr netip.Prefix) error {
+	args := m.Called(addr)
+	return args.Error(0)
+}
+
+func (m *mockRouter) AddRoute(dst netip.Prefix) error {
+	args := m.Called(dst)
+	return args.Error(0)
+}
+
+func (m *mockRouter) DelRoute(dst netip.Prefix) error {
+	args := m.Called(dst)
+	return args.Error(0)
+}
+
+func (m *mockRouter) ListRoutes() ([]router.TunnelRoute, error) {
+	args := m.Called()
+	var routes []router.TunnelRoute
+	if v := args.Get(0); v != nil {
+		routes = v.([]router.TunnelRoute)
+	}
+	return routes, args.Error(1)
+}
+
+func (m *mockRouter) LocalAddresses() ([]netip.Prefix, error) {
+	args := m.Called()
+	var addrs []netip.Prefix
+	if v := args.Get(0); v != nil {
+		addrs = v.([]netip.Prefix)
+	}
+	return addrs, args.Error(1)
+}
+
+func (m *mockRouter) Close() error {
+	args := m.Called()
+	return args.Error(0)
 }

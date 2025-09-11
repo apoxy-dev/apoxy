@@ -27,6 +27,7 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/api"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/controllers"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/hasher"
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/router"
 )
 
 const (
@@ -40,19 +41,21 @@ type Relay struct {
 	cert         tls.Certificate
 	handler      *icx.Handler
 	idHasher     *hasher.Hasher
+	router       router.Router
 	tokens       *haxmap.Map[string, string]              // map[tunnelName]token
 	conns        *haxmap.Map[string, *adapter.Connection] // map[connectionID]Connection
 	onConnect    func(ctx context.Context, agentName string, conn controllers.Connection) error
 	onDisconnect func(ctx context.Context, agentName, id string) error
 }
 
-func NewRelay(name string, pc net.PacketConn, cert tls.Certificate, handler *icx.Handler, idHasher *hasher.Hasher) *Relay {
+func NewRelay(name string, pc net.PacketConn, cert tls.Certificate, handler *icx.Handler, idHasher *hasher.Hasher, router router.Router) *Relay {
 	return &Relay{
 		name:     name,
 		pc:       pc,
 		cert:     cert,
 		handler:  handler,
 		idHasher: idHasher,
+		router:   router,
 		tokens:   haxmap.New[string, string](),
 		conns:    haxmap.New[string, *adapter.Connection](),
 	}
@@ -117,10 +120,9 @@ func (r *Relay) Start(ctx context.Context) error {
 
 		slog.Info("Stopping relay", slog.String("addr", ln.Addr().String()))
 
-		// TODO (dpeckett): implement ICX router
-		/*if err := r.router.Close(); err != nil {
+		if err := r.router.Close(); err != nil {
 			slog.Error("Failed to close router", slog.Any("error", err))
-		}*/
+		}
 
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -132,18 +134,18 @@ func (r *Relay) Start(ctx context.Context) error {
 		return srv.Close()
 	})
 
+	// Start the router to handle network traffic.
 	g.Go(func() error {
-		slog.Info("Starting relay", slog.String("addr", ln.Addr().String()))
-		return srv.ServeListener(ln)
+		return r.router.Start(ctx)
 	})
 
-	// TODO (dpeckett): implement ICX router
-	/*
-			// Start the router to handle network traffic.
-		g.Go(func() error {
-			return r.router.Start(ctx)
-		})
-	*/
+	g.Go(func() error {
+		slog.Info("Starting relay", slog.String("addr", ln.Addr().String()))
+		if err := srv.ServeListener(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			return err
+		}
+		return nil
+	})
 
 	return g.Wait()
 }

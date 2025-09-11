@@ -19,6 +19,7 @@ type routerOptions struct {
 	socksListenAddr       string
 	cksumRecalc           bool
 	preserveDefaultGwDsts []netip.Prefix
+	sourcePortHashing     bool
 }
 
 func defaultOptions() *routerOptions {
@@ -95,5 +96,13 @@ func WithChecksumRecalculation(enable bool) Option {
 func WithPreserveDefaultGwDsts(dsts []netip.Prefix) Option {
 	return func(o *routerOptions) {
 		o.preserveDefaultGwDsts = dsts
+	}
+}
+
+// WithSourcePortHashing enables or disables source port hashing for routing decisions.
+// Only valid for ICX routers.
+func WithSourcePortHashing(enable bool) Option {
+	return func(o *routerOptions) {
+		o.sourcePortHashing = enable
 	}
 }
