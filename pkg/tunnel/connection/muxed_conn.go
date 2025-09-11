@@ -58,6 +58,7 @@ func (m *muxedConn) readFromConn(src netip.Prefix, conn Connection) {
 			}
 
 			slog.Error("Failed to read from connection", slog.Any("error", err))
+
 			m.packetBufferPool.Put(pkt)
 			continue
 		}
@@ -83,6 +84,9 @@ func (m *muxedConn) Add(addr netip.Prefix, conn Connection) error {
 	if !addr.IsValid() {
 		return fmt.Errorf("invalid prefix for connection: %v", addr)
 	}
+
+	slog.Info("Adding connection", slog.String("prefix", addr.String()))
+
 	m.conns.Insert(addr, conn)
 	go m.readFromConn(addr, conn)
 	return nil
@@ -131,10 +135,12 @@ func (m *muxedConn) Prefixes() []netip.Prefix {
 }
 
 func (m *muxedConn) Close() error {
+	slog.Info("Closing muxed connection")
 	var firstErr error
 	m.closeOnce.Do(func() {
 		// Close all connections in the map.
 		m.conns.ForEach(func(prefix netip.Prefix, conn Connection) bool {
+			slog.Info("Closing underlying connection", slog.String("prefix", prefix.String()))
 			if err := conn.Close(); err != nil {
 				slog.Warn("Failed to close connection",
 					slog.String("prefix", prefix.String()), slog.Any("error", err))
