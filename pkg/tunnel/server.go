@@ -341,7 +341,7 @@ func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.
 	return func(w http.ResponseWriter, r *http.Request) {
 		defer qConn.CloseWithError(ApplicationCodeOK, "")
 
-		nodeID, err := uuid.Parse(strings.TrimPrefix(r.URL.Path, "/connect/"))
+		tunUID, err := uuid.Parse(strings.TrimPrefix(r.URL.Path, "/connect/"))
 		if err != nil {
 			slog.Error("Failed to parse UUID", slog.Any("error", err), slog.String("remote", r.RemoteAddr))
 			w.WriteHeader(http.StatusBadRequest)
@@ -350,7 +350,7 @@ func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.
 
 		metrics.TunnelConnectionRequests.Inc()
 
-		logger := slog.With(slog.String("tunUUID", nodeID.String()))
+		logger := slog.With(slog.String("tunUUID", tunUID.String()))
 		logger.Info("Received connection request",
 			slog.String("URI", r.URL.String()),
 			slog.String("remote", r.RemoteAddr))
@@ -363,7 +363,7 @@ func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.
 			return
 		}
 
-		tn, ok := t.tunnels.Get(nodeID.String())
+		tn, ok := t.tunnels.Get(tunUID.String())
 		if !ok {
 			logger.Error("Tunnel not found")
 			metrics.TunnelConnectionFailures.WithLabelValues("tunnel_not_found").Inc()
@@ -395,9 +395,9 @@ func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.
 			return
 		}
 
-		if tokenSubj != nodeID.String() {
+		if tokenSubj != tunUID.String() {
 			logger.Error("Token subject does not match TunnelNode ID",
-				slog.String("expected", nodeID.String()),
+				slog.String("expected", tunUID.String()),
 				slog.String("got", tokenSubj),
 			)
 			metrics.TunnelConnectionFailures.WithLabelValues("token_subject_mismatch").Inc()
@@ -420,11 +420,11 @@ func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.
 		// track its connection status. This must be done before initializing the proxy.
 		w.Header().Add("X-Apoxy-Connection-UUID", connID)
 		logger = logger.With(slog.String("connUUID", connID))
+		logger.Info("Establishing CONNECT-IP connection")
 
 		conn := &conn{
 			obj: tn.DeepCopy(),
 		}
-
 		p := connectip.Proxy{}
 		if conn.Conn, err = p.Proxy(w, req); err != nil {
 			logger.Error("Failed to proxy request", slog.Any("error", err))
@@ -435,6 +435,8 @@ func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.
 		defer conn.Close()
 
 		t.conns.Set(connID, conn)
+
+		logger.Info("Updating agent status")
 
 		agent := &corev1alpha.AgentStatus{
 			Name:        connID,
@@ -488,16 +490,18 @@ func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.
 				}
 			}
 
-			if conn.addrv4.IsValid() {
-				logger.Info("Removing peer address", slog.Any("addr", conn.addrv4))
+			/*
+				if conn.addrv4.IsValid() {
+					logger.Info("Removing peer address", slog.Any("addr", conn.addrv4))
 
-				if err := t.router.DelAddr(conn.addrv4); err != nil {
-					logger.Error("Failed to remove peer address", slog.Any("error", err), slog.Any("addr", conn.addrv4))
+					if err := t.router.DelAddr(conn.addrv4); err != nil {
+						logger.Error("Failed to remove peer address", slog.Any("error", err), slog.Any("addr", conn.addrv4))
+					}
+					if err := t.router.DelRoute(conn.addrv4); err != nil {
+						logger.Error("Failed to remove route", slog.Any("error", err), slog.Any("addr", conn.addrv4))
+					}
 				}
-				if err := t.router.DelRoute(conn.addrv4); err != nil {
-					logger.Error("Failed to remove route", slog.Any("error", err), slog.Any("addr", conn.addrv4))
-				}
-			}
+			*/
 		}
 
 		t.conns.Del(connID)
@@ -568,6 +572,7 @@ func (t *TunnelServer) reconcile(ctx context.Context, request reconcile.Request)
 	}
 
 	for _, agent := range node.Status.Agents {
+		log := log.WithValues("agent", agent.Name)
 		// TODO(dilyevsky): Agent status should have a tunnel proxy
 		// info to which agent is connected. Right now we just assume
 		// that if agent name (conn uuid) is missing from t.conns,
@@ -576,25 +581,25 @@ func (t *TunnelServer) reconcile(ctx context.Context, request reconcile.Request)
 			obj: node,
 		})
 		if !exists { // Connection belongs to a different node.
-			log.V(1).Info("Connection not found", "agent", agent.Name)
+			log.V(1).Info("Connection not found")
 			continue
 		}
 
 		// Check if we already allocated and assigned addresses.
-		if conn.addrv6.IsValid() && conn.addrv4.IsValid() {
-			log.V(1).Info("Agent address is already assigned", "agent", agent.Name)
+		if conn.addrv6.IsValid() /*&& conn.addrv4.IsValid()*/ {
+			log.V(1).Info("Agent address is already assigned")
 			continue
 		}
 
 		if agent.AgentAddress == "" {
-			log.Info("Agent address is empty", "agent", agent.Name)
+			log.Info("Agent address is empty")
 			continue
 		}
 
 		if !conn.addrv6.IsValid() {
 			addr, err := netip.ParseAddr(agent.AgentAddress)
 			if err != nil {
-				log.Error(err, "Failed to parse agent address", "agent", agent.Name, "address", agent.AgentAddress)
+				log.Error(err, "Failed to parse agent address", "address", agent.AgentAddress)
 				continue
 			}
 			conn.addrv6 = netip.PrefixFrom(addr, 96)
@@ -603,21 +608,26 @@ func (t *TunnelServer) reconcile(ctx context.Context, request reconcile.Request)
 
 		// TODO(dilyevsky): v4 prefix should also be delivered via agent status
 		// struct (needs api change to support multiple addresses).
-		if !conn.addrv4.IsValid() {
-			var err error
-			conn.addrv4, err = t.options.ipamv4.Allocate()
-			if err != nil {
-				log.Error(err, "Failed to allocate IPv4 address", "agent", agent.Name)
-				continue
+		/*
+			if !conn.addrv4.IsValid() {
+				var err error
+				conn.addrv4, err = t.options.ipamv4.Allocate()
+				if err != nil {
+					log.Error(err, "Failed to allocate IPv4 address")
+					continue
+				}
 			}
-		}
+		*/
 		t.conns.Set(agent.Name, conn)
+
+		log.Info("Assigned addresses to connection",
+			"ipv6", conn.addrv6, "ipv4", conn.addrv4)
 
 		if err := conn.AssignAddresses(ctx, []netip.Prefix{
 			conn.addrv6,
-			conn.addrv4,
+			// conn.addrv4,
 		}); err != nil {
-			log.Error(err, "Failed to assign address to connection", "agent", agent.Name)
+			log.Error(err, "Failed to assign address to connection")
 			metrics.TunnelConnectionFailures.WithLabelValues("address_assignment_failed").Inc()
 			return reconcile.Result{}, nil
 		}
@@ -632,27 +642,26 @@ func (t *TunnelServer) reconcile(ctx context.Context, request reconcile.Request)
 			metrics.TunnelConnectionFailures.WithLabelValues("route_addition_failed").Inc()
 			return reconcile.Result{}, nil
 		}
-		if err := t.router.AddAddr(conn.addrv4, conn); err != nil {
-			log.Error(err, "Failed to add TUN peer")
-			metrics.TunnelConnectionFailures.WithLabelValues("tun_peer_add_failed").Inc()
-			return reconcile.Result{}, nil
-		}
-		if err := t.router.AddRoute(conn.addrv4); err != nil {
-			log.Error(err, "Failed to add route")
-			metrics.TunnelConnectionFailures.WithLabelValues("route_addition_failed").Inc()
-			return reconcile.Result{}, nil
-		}
+		/*
+			if err := t.router.AddAddr(conn.addrv4, conn); err != nil {
+				log.Error(err, "Failed to add TUN peer")
+				metrics.TunnelConnectionFailures.WithLabelValues("tun_peer_add_failed").Inc()
+				return reconcile.Result{}, nil
+			}
+			if err := t.router.AddRoute(conn.addrv4); err != nil {
+				log.Error(err, "Failed to add route")
+				metrics.TunnelConnectionFailures.WithLabelValues("route_addition_failed").Inc()
+				return reconcile.Result{}, nil
+			}
+		*/
 
 		metrics.TunnelConnectionsActive.Inc()
 		defer metrics.TunnelConnectionsActive.Dec()
 
 		log.Info("Client addresses assigned", "ipv4", conn.addrv4, "ipv6", conn.addrv6)
 
-		advRoutes, err := t.router.ListAddrs()
-		if err != nil {
-			log.Error(err, "Failed to list addresses")
-			metrics.TunnelConnectionFailures.WithLabelValues("address_list_failed").Inc()
-			return reconcile.Result{}, nil
+		advRoutes := []netip.Prefix{
+			conn.addrv6,
 		}
 		for i, advRoute := range advRoutes {
 			if !advRoute.IsValid() {
@@ -668,6 +677,7 @@ func (t *TunnelServer) reconcile(ctx context.Context, request reconcile.Request)
 		}
 		// If egress gateway is enabled, route 0.0.0.0/0 via the tunnel.
 		if conn.obj.Spec.EgressGateway != nil && conn.obj.Spec.EgressGateway.Enabled {
+			log.Info("Enabling egress gateway")
 			advRoutes = append(advRoutes,
 				netip.PrefixFrom(netip.IPv4Unspecified(), 0),
 				netip.PrefixFrom(netip.IPv6Unspecified(), 0),
