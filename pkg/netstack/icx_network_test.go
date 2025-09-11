@@ -54,12 +54,15 @@ func TestICXNetwork_Speed(t *testing.T) {
 	uaA := pcA.LocalAddr().(*net.UDPAddr)
 	uaB := pcB.LocalAddr().(*net.UDPAddr)
 
+	aA := netip.AddrPortFrom(netip.MustParseAddr(uaA.IP.String()), uint16(uaA.Port))
+	aB := netip.AddrPortFrom(netip.MustParseAddr(uaB.IP.String()), uint16(uaB.Port))
+
 	// Build ICX handlers in L3 mode and link them together
-	hA, err := icx.NewHandler(icx.WithLocalAddr(toFullAddress(uaA)),
+	hA, err := icx.NewHandler(icx.WithLocalAddr(netstack.ToFullAddress(aA)),
 		icx.WithVirtMAC(tcpip.GetRandMacAddr()), icx.WithLayer3VirtFrames())
 	require.NoError(t, err)
 
-	hB, err := icx.NewHandler(icx.WithLocalAddr(toFullAddress(uaB)),
+	hB, err := icx.NewHandler(icx.WithLocalAddr(netstack.ToFullAddress(aB)),
 		icx.WithVirtMAC(tcpip.GetRandMacAddr()), icx.WithLayer3VirtFrames())
 	require.NoError(t, err)
 
@@ -68,10 +71,10 @@ func TestICXNetwork_Speed(t *testing.T) {
 	// Advertise a shared /24 so each side routes via the tunnel.
 	route := netip.MustParsePrefix("10.1.0.0/24")
 
-	err = hA.AddVirtualNetwork(vni, toFullAddress(uaB), []netip.Prefix{route})
+	err = hA.AddVirtualNetwork(vni, netstack.ToFullAddress(aB), []netip.Prefix{route})
 	require.NoError(t, err)
 
-	err = hB.AddVirtualNetwork(vni, toFullAddress(uaA), []netip.Prefix{route})
+	err = hB.AddVirtualNetwork(vni, netstack.ToFullAddress(aA), []netip.Prefix{route})
 	require.NoError(t, err)
 
 	var key [16]byte
@@ -89,11 +92,12 @@ func TestICXNetwork_Speed(t *testing.T) {
 	})
 
 	// Create two networks on top of the handlers
-	netA, err := netstack.NewICXNetwork(hA, l2A, 1500, nil, "")
+	mtu := icx.MTU(1500) // compute the inner MTU based on the path MTU
+	netA, err := netstack.NewICXNetwork(hA, l2A, mtu, nil, "")
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, netA.Close()) })
 
-	netB, err := netstack.NewICXNetwork(hB, l2B, 1500, nil, "")
+	netB, err := netstack.NewICXNetwork(hB, l2B, mtu, nil, "")
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, netB.Close()) })
 
@@ -235,17 +239,4 @@ func TestICXNetwork_Speed(t *testing.T) {
 		t.Logf("%d streams × %d bytes each: %d bytes in %s → %.2f MB/s, %.2f Mbit/s (%.2f Gbit/s)",
 			numStreams, totalBytes, totalRead, elapsed, mbpsBytes, mbps, gbps)
 	})
-}
-
-func toFullAddress(addr *net.UDPAddr) *tcpip.FullAddress {
-	if addr.IP.To4() != nil {
-		return &tcpip.FullAddress{
-			Addr: tcpip.AddrFrom4Slice(addr.IP.To4()[:]),
-			Port: uint16(addr.Port),
-		}
-	}
-	return &tcpip.FullAddress{
-		Addr: tcpip.AddrFrom16Slice(addr.IP.To16()[:]),
-		Port: uint16(addr.Port),
-	}
 }

@@ -47,7 +47,7 @@ type ICXNetwork struct {
 // NewICXNetwork creates a new ICXNetwork instance with the given handler, physical connection, MTU, and resolve configuration.
 // If pcapPath is provided, it will create a packet sniffer that writes to the specified file.
 // The handler must be configured in layer3 mode.
-func NewICXNetwork(handler *icx.Handler, phy *l2pc.L2PacketConn, pathMTU int, resolveConf *network.ResolveConfig, pcapPath string) (*ICXNetwork, error) {
+func NewICXNetwork(handler *icx.Handler, phy *l2pc.L2PacketConn, mtu int, resolveConf *network.ResolveConfig, pcapPath string) (*ICXNetwork, error) {
 	ipt := newIPTables()
 	opts := stack.Options{
 		NetworkProtocols: []stack.NetworkProtocolFactory{
@@ -79,7 +79,7 @@ func NewICXNetwork(handler *icx.Handler, phy *l2pc.L2PacketConn, pathMTU int, re
 	}
 
 	nicID := ipstack.NextNICID()
-	linkEP := channel.New(4096, uint32(icx.MTU(pathMTU)), "")
+	linkEP := channel.New(4096, uint32(mtu), "")
 	var nicEP stack.LinkEndpoint = linkEP
 
 	var pcapFile *os.File
@@ -116,7 +116,7 @@ func NewICXNetwork(handler *icx.Handler, phy *l2pc.L2PacketConn, pathMTU int, re
 		incomingPacket: make(chan *buffer.View),
 		pktPool: sync.Pool{
 			New: func() any {
-				b := make([]byte, 0, pathMTU)
+				b := make([]byte, 0, 65535)
 				return &b
 			},
 		},
@@ -291,6 +291,21 @@ func (net *ICXNetwork) DelAddr(addr netip.Prefix) error {
 	return nil
 }
 
+// LocalAddresses returns the list of local addresses assigned to the network.
+func (net *ICXNetwork) LocalAddresses() ([]netip.Prefix, error) {
+	nic := net.stack.NICInfo()[net.nicID]
+
+	var addrs []netip.Prefix
+	for _, assignedAddr := range nic.ProtocolAddresses {
+		addrs = append(addrs, netip.PrefixFrom(
+			addrFromNetstackIP(assignedAddr.AddressWithPrefix.Address),
+			assignedAddr.AddressWithPrefix.PrefixLen,
+		))
+	}
+
+	return addrs, nil
+}
+
 // ForwardTo forwards all inbound TCP traffic to the upstream network.
 func (net *ICXNetwork) ForwardTo(ctx context.Context, upstream network.Network) error {
 	// Allow outgoing packets to have a source address different from the NIC.
@@ -305,5 +320,9 @@ func (net *ICXNetwork) ForwardTo(ctx context.Context, upstream network.Network) 
 
 	tcpForwarder := TCPForwarder(ctx, net.stack, upstream)
 	net.stack.SetTransportProtocolHandler(tcp.ProtocolNumber, tcpForwarder)
+
+	udpForwarder := UDPForwarder(ctx, net.stack, upstream)
+	net.stack.SetTransportProtocolHandler(udp.ProtocolNumber, udpForwarder)
+
 	return nil
 }
