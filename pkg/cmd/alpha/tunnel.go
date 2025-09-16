@@ -119,6 +119,9 @@ var tunnelRunCmd = &cobra.Command{
 			}
 			relay := addr
 			g.Go(func() error {
+				// TODO (dpeckett): we will need to create a kind of multiplexed packetconn
+				// so that each QUIC client gets its own virtual private connection from pcQuic.
+				// This will be based on the remote ip presumably.
 				return manageRelayConnection(ctx, pcQuic, getHandler, relay, tlsConf)
 			})
 		}
