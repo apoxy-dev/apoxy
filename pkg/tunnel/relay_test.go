@@ -161,7 +161,7 @@ func TestRelay_InvalidAuthClosesQUIC(t *testing.T) {
 	}
 
 	var captured quic.EarlyConnection
-	rt := &http3.RoundTripper{
+	rt := &http3.Transport{
 		TLSClientConfig: tlsCfg,
 		// Capture the QUIC connection used underneath, so we can verify it gets closed.
 		Dial: func(ctx context.Context, addr string, tlsConf *tls.Config, cfg *quic.Config) (quic.EarlyConnection, error) {

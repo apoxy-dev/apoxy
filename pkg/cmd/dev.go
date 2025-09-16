@@ -54,7 +54,7 @@ func init() {
 		BoolVar(&useSubprocess, "use-subprocess", false, "Use subprocess for apiserver and backplane.")
 	devCmd.PersistentFlags().
 		StringVar(&clickhouseAddr, "clickhouse-addr", "", "ClickHouse address (host only, port 9000 will be used).")
-	rootCmd.AddCommand(devCmd)
+	RootCmd.AddCommand(devCmd)
 }
 
 func maybeNamespaced(un *unstructured.Unstructured) string {

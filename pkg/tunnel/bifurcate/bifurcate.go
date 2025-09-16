@@ -1,10 +1,12 @@
 package bifurcate
 
 import (
+	"log/slog"
 	"net"
 	"sync"
 
 	"github.com/apoxy-dev/icx/geneve"
+	"gvisor.dev/gvisor/pkg/tcpip/header"
 )
 
 type packet struct {
@@ -27,38 +29,73 @@ func Bifurcate(pc net.PacketConn) (net.PacketConn, net.PacketConn) {
 	geneveConn := newChanPacketConn(pc)
 	otherConn := newChanPacketConn(pc)
 
+	// Local copies we can nil out when a side is closed.
+	geneveCh := geneveConn.ch
+	otherCh := otherConn.ch
+	geneveClosed := geneveConn.closed
+	otherClosed := otherConn.closed
+
 	go func() {
+		defer func() { slog.Info("Bifurcate exiting") }()
+
 		for {
-			// Get a reusable packet from the pool
+			// If both sides are gone, stop.
+			if geneveCh == nil && otherCh == nil {
+				return
+			}
+
+			// Reuse packet buffer
 			p := packetPool.Get().(*packet)
-			p.buf = p.buf[:cap(p.buf)] // reset buffer to full capacity
+			p.buf = p.buf[:cap(p.buf)]
 
 			n, addr, err := pc.ReadFrom(p.buf)
 			if err != nil {
 				packetPool.Put(p)
+				// Propagate underlying error/closure to both children.
 				_ = geneveConn.Close()
 				_ = otherConn.Close()
 				return
 			}
 
 			p.addr = addr
-			p.buf = p.buf[:n] // trim to actual size
+			p.buf = p.buf[:n]
 
-			var targetChan chan *packet
 			if isGeneve(p.buf) {
-				targetChan = geneveConn.ch
+				for {
+					// If that side is closed, drop the packet.
+					if geneveCh == nil {
+						packetPool.Put(p)
+						break
+					}
+					select {
+					case geneveCh <- p:
+						// delivered
+						break
+					case <-geneveClosed:
+						// Stop sending to this side going forward.
+						geneveCh = nil
+						geneveClosed = nil
+						// try loop again, which will drop since geneveCh==nil
+						continue
+					}
+					break
+				}
 			} else {
-				targetChan = otherConn.ch
-			}
-
-			select {
-			case targetChan <- p:
-			case <-geneveConn.closed:
-				packetPool.Put(p)
-				return
-			case <-otherConn.closed:
-				packetPool.Put(p)
-				return
+				for {
+					if otherCh == nil {
+						packetPool.Put(p)
+						break
+					}
+					select {
+					case otherCh <- p:
+						break
+					case <-otherClosed:
+						otherCh = nil
+						otherClosed = nil
+						continue
+					}
+					break
+				}
 			}
 		}
 	}()
@@ -73,7 +110,15 @@ func isGeneve(b []byte) bool {
 		return false
 	}
 
-	// TODO: validate Geneve header fields if necessary
+	// Only Geneve version 0 is defined
+	if hdr.Version != 0 {
+		return false
+	}
+
+	// Check for valid protocol types (IPv4 or IPv6)
+	if hdr.ProtocolType != uint16(header.IPv4ProtocolNumber) && hdr.ProtocolType != uint16(header.IPv6ProtocolNumber) {
+		return false
+	}
 
 	return true
 }
