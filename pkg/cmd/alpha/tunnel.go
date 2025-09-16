@@ -10,13 +10,14 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/dpeckett/network"
+	"github.com/spf13/cobra"
+	"golang.org/x/sync/errgroup"
+
 	"github.com/apoxy-dev/apoxy/pkg/netstack"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/api"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/bifurcate"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/router"
-	"github.com/dpeckett/network"
-	"github.com/spf13/cobra"
-	"golang.org/x/sync/errgroup"
 )
 
 var (
