@@ -23,6 +23,14 @@ import (
 
 // Interface provides access to all the informers in this group version.
 type Interface interface {
+	// Backends returns a BackendInformer.
+	Backends() BackendInformer
+	// Domains returns a DomainInformer.
+	Domains() DomainInformer
+	// DomainZones returns a DomainZoneInformer.
+	DomainZones() DomainZoneInformer
+	// Proxies returns a ProxyInformer.
+	Proxies() ProxyInformer
 	// Tunnels returns a TunnelInformer.
 	Tunnels() TunnelInformer
 	// TunnelAgents returns a TunnelAgentInformer.
@@ -38,6 +46,26 @@ type version struct {
 // New returns a new Interface.
 func New(f internalinterfaces.SharedInformerFactory, namespace string, tweakListOptions internalinterfaces.TweakListOptionsFunc) Interface {
 	return &version{factory: f, namespace: namespace, tweakListOptions: tweakListOptions}
+}
+
+// Backends returns a BackendInformer.
+func (v *version) Backends() BackendInformer {
+	return &backendInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
+}
+
+// Domains returns a DomainInformer.
+func (v *version) Domains() DomainInformer {
+	return &domainInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
+}
+
+// DomainZones returns a DomainZoneInformer.
+func (v *version) DomainZones() DomainZoneInformer {
+	return &domainZoneInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
+}
+
+// Proxies returns a ProxyInformer.
+func (v *version) Proxies() ProxyInformer {
+	return &proxyInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
 }
 
 // Tunnels returns a TunnelInformer.
