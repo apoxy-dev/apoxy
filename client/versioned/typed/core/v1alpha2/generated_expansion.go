@@ -17,6 +17,14 @@ limitations under the License.
 
 package v1alpha2
 
+type BackendExpansion interface{}
+
+type DomainExpansion interface{}
+
+type DomainZoneExpansion interface{}
+
+type ProxyExpansion interface{}
+
 type TunnelExpansion interface{}
 
 type TunnelAgentExpansion interface{}
