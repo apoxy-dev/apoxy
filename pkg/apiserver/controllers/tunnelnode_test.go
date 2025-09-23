@@ -44,7 +44,7 @@ func TestTunnelNodeReconciler(t *testing.T) {
 
 	systemULA := tunnet.NewULA(context.Background(), net.SystemNetworkID)
 	// Agent prefixes are /96 subnets that can embed IPv4 suffixes.
-	agentIPAM, err := systemULA.IPAM(context.Background(), 96)
+	ipamv6, err := systemULA.IPAM(context.Background(), 96)
 	require.NoError(t, err)
 
 	r := NewTunnelNodeReconciler(
@@ -54,7 +54,8 @@ func TestTunnelNodeReconciler(t *testing.T) {
 		privKey,
 		pubKey,
 		time.Minute,
-		agentIPAM,
+		ipamv6,
+		net.NewIPAMv4(context.Background()),
 	)
 
 	r.validator, err = token.NewInMemoryValidator(r.jwtPublicKeyPEM)
@@ -62,7 +63,6 @@ func TestTunnelNodeReconciler(t *testing.T) {
 	r.issuer, err = token.NewIssuer(r.jwtPrivateKeyPEM)
 	require.NoError(t, err)
 
-	// Call the reconcile method.
 	_, err = r.Reconcile(context.TODO(), reconcile.Request{
 		NamespacedName: types.NamespacedName{
 			Name:      "test-tunnelnode",

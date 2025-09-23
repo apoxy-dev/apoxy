@@ -147,6 +147,11 @@ func (in *AgentStatus) DeepCopyInto(out *AgentStatus) {
 		in, out := &in.ConnectedAt, &out.ConnectedAt
 		*out = (*in).DeepCopy()
 	}
+	if in.AgentAddresses != nil {
+		in, out := &in.AgentAddresses, &out.AgentAddresses
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	return
 }
 

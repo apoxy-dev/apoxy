@@ -56,6 +56,10 @@ type AgentStatus struct {
 	// Overlay address of the agent. Currently we're using a /96 prefix which
 	// can be used for 4in6 tunneling.
 	AgentAddress string `json:"agentAddress,omitempty"`
+
+	// Extra addresses of the agent (for additional v4/v6 overlays, if configured).
+	// +optional
+	AgentAddresses []string `json:"agentAddresses,omitempty"`
 }
 
 type TunnelNodeCredentials struct {

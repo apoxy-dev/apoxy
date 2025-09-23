@@ -586,7 +586,7 @@ func (t *TunnelServer) reconcile(ctx context.Context, request reconcile.Request)
 		}
 
 		// Check if we already allocated and assigned addresses.
-		if conn.addrv6.IsValid() /*&& conn.addrv4.IsValid()*/ {
+		if conn.addrv6.IsValid() && conn.addrv4.IsValid() {
 			log.V(1).Info("Agent address is already assigned")
 			continue
 		}
@@ -606,18 +606,18 @@ func (t *TunnelServer) reconcile(ctx context.Context, request reconcile.Request)
 		}
 		t.conns.Set(agent.Name, conn)
 
-		// TODO(dilyevsky): v4 prefix should also be delivered via agent status
-		// struct (needs api change to support multiple addresses).
-		/*
-			if !conn.addrv4.IsValid() {
-				var err error
-				conn.addrv4, err = t.options.ipamv4.Allocate()
-				if err != nil {
-					log.Error(err, "Failed to allocate IPv4 address")
-					continue
+		if !conn.addrv4.IsValid() {
+			for _, agentAddr := range agent.AgentAddresses {
+				if addr, err := netip.ParseAddr(agentAddr); err == nil && addr.Is4() {
+					conn.addrv4 = netip.PrefixFrom(addr, 32)
+					break
 				}
 			}
-		*/
+			if !conn.addrv4.IsValid() {
+				log.Info("No IPv4 address allocated")
+				continue
+			}
+		}
 		t.conns.Set(agent.Name, conn)
 
 		log.Info("Assigned addresses to connection",
@@ -642,18 +642,16 @@ func (t *TunnelServer) reconcile(ctx context.Context, request reconcile.Request)
 			metrics.TunnelConnectionFailures.WithLabelValues("route_addition_failed").Inc()
 			return reconcile.Result{}, nil
 		}
-		/*
-			if err := t.router.AddAddr(conn.addrv4, conn); err != nil {
-				log.Error(err, "Failed to add TUN peer")
-				metrics.TunnelConnectionFailures.WithLabelValues("tun_peer_add_failed").Inc()
-				return reconcile.Result{}, nil
-			}
-			if err := t.router.AddRoute(conn.addrv4); err != nil {
-				log.Error(err, "Failed to add route")
-				metrics.TunnelConnectionFailures.WithLabelValues("route_addition_failed").Inc()
-				return reconcile.Result{}, nil
-			}
-		*/
+		if err := t.router.AddAddr(conn.addrv4, conn); err != nil {
+			log.Error(err, "Failed to add TUN peer")
+			metrics.TunnelConnectionFailures.WithLabelValues("tun_peer_add_failed").Inc()
+			return reconcile.Result{}, nil
+		}
+		if err := t.router.AddRoute(conn.addrv4); err != nil {
+			log.Error(err, "Failed to add route")
+			metrics.TunnelConnectionFailures.WithLabelValues("route_addition_failed").Inc()
+			return reconcile.Result{}, nil
+		}
 
 		metrics.TunnelConnectionsActive.Inc()
 		defer metrics.TunnelConnectionsActive.Dec()

@@ -47,7 +47,7 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/cryptoutils"
 	gw "github.com/apoxy-dev/apoxy/pkg/gateway"
 	"github.com/apoxy-dev/apoxy/pkg/log"
-	"github.com/apoxy-dev/apoxy/pkg/tunnel/net"
+	apoxynet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 
 	ctrlv1alpha1 "github.com/apoxy-dev/apoxy/api/controllers/v1alpha1"
@@ -352,7 +352,7 @@ func encodeSQLiteConnArgs(args map[string]string) string {
 
 // defaultOptions returns default options.
 func defaultOptions(ctx context.Context) (*options, error) {
-	systemULA := tunnet.NewULA(ctx, net.SystemNetworkID)
+	systemULA := tunnet.NewULA(ctx, apoxynet.SystemNetworkID)
 	// Agent prefixes are /96 subnets that can embed IPv4 suffixes.
 	agentIPAM, err := systemULA.IPAM(ctx, 96)
 	if err != nil {
@@ -360,7 +360,7 @@ func defaultOptions(ctx context.Context) (*options, error) {
 	}
 
 	// Proxy prefixes are /128 leafs under reserved proxy endpoint.
-	epULA, err := systemULA.WithEndpoint(ctx, net.ProxyEndpointID)
+	epULA, err := systemULA.WithEndpoint(ctx, apoxynet.ProxyEndpointID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create proxy endpoint: %w", err)
 	}
@@ -486,6 +486,7 @@ func (m *Manager) Start(
 		dOpts.jwtPublicKey,
 		dOpts.jwtRefreshThreshold,
 		dOpts.agentIPAM,
+		apoxynet.NewIPAMv4(context.Background()),
 	)
 	if err := tunnelNodeReconciler.SetupWithManager(ctx, m.manager); err != nil {
 		return fmt.Errorf("failed to set up TunnelNode controller: %v", err)

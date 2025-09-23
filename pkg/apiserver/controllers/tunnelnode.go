@@ -33,7 +33,7 @@ type TunnelNodeReconciler struct {
 	jwtPrivateKeyPEM      []byte
 	jwtPublicKeyPEM       []byte
 	tokenRefreshThreshold time.Duration
-	agentIPAM             tunnet.IPAM
+	ipamv6, ipamv4        tunnet.IPAM
 
 	validator *token.InMemoryValidator
 	issuer    *token.Issuer
@@ -46,7 +46,7 @@ func NewTunnelNodeReconciler(
 	jwtPrivateKey []byte,
 	jwtPublicKey []byte,
 	tokenRefreshThreshold time.Duration,
-	agentIPAM tunnet.IPAM,
+	ipamv6, ipamv4 tunnet.IPAM,
 ) *TunnelNodeReconciler {
 	return &TunnelNodeReconciler{
 		Client:                c,
@@ -55,7 +55,8 @@ func NewTunnelNodeReconciler(
 		jwtPrivateKeyPEM:      jwtPrivateKey,
 		jwtPublicKeyPEM:       jwtPublicKey,
 		tokenRefreshThreshold: tokenRefreshThreshold,
-		agentIPAM:             agentIPAM,
+		ipamv6:                ipamv6,
+		ipamv4:                ipamv4,
 	}
 }
 
@@ -133,7 +134,7 @@ func (r *TunnelNodeReconciler) Reconcile(ctx context.Context, req reconcile.Requ
 				log.Error(err, "Failed to parse IP address", "addr", agent.AgentAddress)
 				continue
 			}
-			if err := r.agentIPAM.Release(netip.PrefixFrom(addr, 96)); err != nil {
+			if err := r.ipamv6.Release(netip.PrefixFrom(addr, 96)); err != nil {
 				log.Error(err, "Failed to release IP address", "addr", addr)
 			}
 		}
@@ -192,18 +193,27 @@ func (r *TunnelNodeReconciler) Reconcile(ctx context.Context, req reconcile.Requ
 			continue
 		}
 
-		addr, err := r.agentIPAM.Allocate()
+		addrv6, err := r.ipamv6.Allocate()
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to allocate agent address: %w", err)
 		}
 
-		log.Info("Allocated agent address", "agent", agent.Name, "addr", addr)
+		log.Info("Allocated agent v6 address", "agent", agent.Name, "addr", addrv6)
 
-		tn.Status.Agents[i].AgentAddress = addr.Addr().String()
+		tn.Status.Agents[i].AgentAddress = addrv6.Addr().String()
+
+		addrv4, err := r.ipamv4.Allocate()
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to allocate agent address: %w", err)
+		}
+
+		log.Info("Allocated agent v4 address", "agent", agent.Name, "addr", addrv4)
+
+		tn.Status.Agents[i].AgentAddresses = append(tn.Status.Agents[i].AgentAddresses, addrv4.Addr().String())
 
 		if err := r.Status().Update(ctx, tn); err != nil {
-			if err := r.agentIPAM.Release(addr); err != nil {
-				log.Error(err, "Failed to release agent address", "agent", agent.Name, "addr", addr)
+			if err := r.ipamv6.Release(addrv6); err != nil {
+				log.Error(err, "Failed to release agent address", "agent", agent.Name, "addr", addrv6)
 			}
 			return ctrl.Result{}, fmt.Errorf("failed to update status: %w", err)
 		}

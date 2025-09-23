@@ -1357,6 +1357,21 @@ func schema_apoxy_api_core_v1alpha_AgentStatus(ref common.ReferenceCallback) com
 							Format:      "",
 						},
 					},
+					"agentAddresses": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Extra addresses of the agent (for additional v4/v6 overlays, if configured).",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
 				},
 			},
 		},
