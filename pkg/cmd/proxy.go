@@ -231,5 +231,5 @@ func init() {
 	// TODO: add flags for proxy config as raw envoy config
 
 	alphaProxyCmd.AddCommand(getAlphaProxyCmd, listAlphaProxyCmd, createAlphaProxyCmd, deleteAlphaProxyCmd)
-	rootCmd.AddCommand(alphaProxyCmd)
+	RootCmd.AddCommand(alphaProxyCmd)
 }

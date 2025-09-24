@@ -46,5 +46,5 @@ If your CLI is already authenticated this will return information about your ses
 
 func init() {
 	authCmd.PersistentFlags().BoolVar(&checkOnly, "check", false, "only check the authentication status")
-	rootCmd.AddCommand(authCmd)
+	RootCmd.AddCommand(authCmd)
 }

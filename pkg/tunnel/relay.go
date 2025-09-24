@@ -127,6 +127,8 @@ func (r *Relay) Start(ctx context.Context) error {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
+		slog.Info("Shutting down server", slog.String("addr", ln.Addr().String()))
+
 		if err := srv.Shutdown(shutdownCtx); err != nil {
 			slog.Error("Failed to shutdown server", slog.Any("error", err))
 		}
@@ -261,6 +263,7 @@ func (r *Relay) handleDisconnect(w http.ResponseWriter, req *http.Request, ps ht
 	r.conns.Del(request.ID)
 
 	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(""))
 }
 
 func (r *Relay) handleUpdateKeys(w http.ResponseWriter, req *http.Request, ps httprouter.Params) {

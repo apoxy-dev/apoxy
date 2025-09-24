@@ -204,5 +204,5 @@ func init() {
 	installK8sCmd.Flags().Bool("force", false, "If true, forces value overwrites (See: https://v1-28.docs.kubernetes.io/docs/reference/using-api/server-side-apply/#conflicts)")
 	k8sCmd.AddCommand(installK8sCmd)
 
-	rootCmd.AddCommand(k8sCmd)
+	RootCmd.AddCommand(k8sCmd)
 }

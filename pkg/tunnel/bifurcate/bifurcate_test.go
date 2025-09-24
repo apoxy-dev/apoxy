@@ -10,6 +10,7 @@ import (
 	"github.com/apoxy-dev/icx/geneve"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	"gvisor.dev/gvisor/pkg/tcpip/header"
 
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/bifurcate"
 )
@@ -64,9 +65,19 @@ func (m *MockPacketConn) SetWriteDeadline(t time.Time) error { return nil }
 func createGenevePacket(t *testing.T) []byte {
 	header := geneve.Header{
 		Version:      0,
-		ProtocolType: 0x6558,
+		ProtocolType: uint16(header.IPv4ProtocolNumber),
 		VNI:          0x123456,
-		NumOptions:   0,
+		NumOptions:   2,
+		Options: [2]geneve.Option{
+			{
+				Class: geneve.ClassExperimental,
+				Type:  1,
+			},
+			{
+				Class: geneve.ClassExperimental,
+				Type:  2,
+			},
+		},
 	}
 	buf := make([]byte, 128)
 	n, err := header.MarshalBinary(buf)

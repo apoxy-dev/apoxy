@@ -19,8 +19,8 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/cmd/tunnel"
 )
 
-// rootCmd represents the base command when called without any subcommands
-var rootCmd = &cobra.Command{
+// RootCmd represents the base command when called without any subcommands
+var RootCmd = &cobra.Command{
 	Use:   "apoxy",
 	Short: "Apoxy helps you expose, explore, and evolve your APIs and services.",
 	Long: `The Apoxy CLI is the quickest and easiest way to create and control Apoxy proxies.
@@ -43,19 +43,19 @@ Start by creating an account on https://apoxy.dev and logging in with 'apoxy aut
 // ExecuteContext executes root command with context.
 // This is called by main.main(). It only needs to happen once to the rootCmd.
 func ExecuteContext(ctx context.Context) error {
-	return rootCmd.ExecuteContext(ctx)
+	return RootCmd.ExecuteContext(ctx)
 }
 
 func init() {
-	rootCmd.PersistentFlags().StringVar(&config.ConfigFile, "config", "", "Config file (default is $HOME/.apoxy/config.yaml).")
-	rootCmd.PersistentFlags().BoolVar(&config.AlsoLogToStderr, "alsologtostderr", false, "Log to standard error as well as files.")
-	rootCmd.PersistentFlags().BoolVarP(&config.Verbose, "verbose", "v", false, "Enable verbose output.")
-	rootCmd.PersistentFlags().BoolVar(&config.LocalMode, "local", false, "Run in local mode.")
-	rootCmd.PersistentFlags().StringVar(&config.ProjectID, "project", "", "The project ID to use.")
-	rootCmd.PersistentFlags().BoolVar(&config.PprofEnabled, "pprof", false, "Enable pprof HTTP server on :6060.")
+	RootCmd.PersistentFlags().StringVar(&config.ConfigFile, "config", "", "Config file (default is $HOME/.apoxy/config.yaml).")
+	RootCmd.PersistentFlags().BoolVar(&config.AlsoLogToStderr, "alsologtostderr", false, "Log to standard error as well as files.")
+	RootCmd.PersistentFlags().BoolVarP(&config.Verbose, "verbose", "v", false, "Enable verbose output.")
+	RootCmd.PersistentFlags().BoolVar(&config.LocalMode, "local", false, "Run in local mode.")
+	RootCmd.PersistentFlags().StringVar(&config.ProjectID, "project", "", "The project ID to use.")
+	RootCmd.PersistentFlags().BoolVar(&config.PprofEnabled, "pprof", false, "Enable pprof HTTP server on :6060.")
 
-	rootCmd.AddCommand(alpha.Cmd())
-	rootCmd.AddCommand(tunnel.Cmd())
+	RootCmd.AddCommand(alpha.Cmd())
+	RootCmd.AddCommand(tunnel.Cmd())
 }
 
 // GenerateDocs generates the docs in the docs folder.
@@ -67,7 +67,7 @@ func GenerateDocs() {
 		return fmt.Sprintf("#%s", s)
 	}
 	emptyStr := func(s string) string { return "" }
-	files, err := genMarkdownTreeCustom(rootCmd, "./docs", emptyStr, anchorLinks)
+	files, err := genMarkdownTreeCustom(RootCmd, "./docs", emptyStr, anchorLinks)
 	if err != nil {
 		panic(err)
 	}

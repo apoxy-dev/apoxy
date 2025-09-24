@@ -190,5 +190,5 @@ func init() {
 	logsCmd.Flags().BoolP("follow", "f", false, "Follow logs in real-time")
 	logsCmd.Flags().DurationP("since", "", 0, "Show logs since a given duration (e.g. 5m, 1h)")
 	logsCmd.Flags().StringP("since-time", "", "", "Show logs from a given date (e.g. 2019-01-01T00:00:00Z)")
-	rootCmd.AddCommand(logsCmd)
+	RootCmd.AddCommand(logsCmd)
 }

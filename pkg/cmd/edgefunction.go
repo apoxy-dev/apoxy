@@ -242,5 +242,5 @@ func init() {
 		BoolVar(&showEdgeFunctionLabels, "show-labels", false, "Print the edge function's labels.")
 
 	alphaEdgeFunctionCmd.AddCommand(getAlphaEdgeFunctionCmd, listAlphaEdgeFunctionCmd, createAlphaEdgeFunctionCmd, deleteAlphaEdgeFunctionCmd)
-	rootCmd.AddCommand(alphaEdgeFunctionCmd)
+	RootCmd.AddCommand(alphaEdgeFunctionCmd)
 }

@@ -7,11 +7,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"path"
 	"time"
 
+	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 )
 
@@ -38,6 +41,9 @@ type ClientOptions struct {
 	TLSConfig *tls.Config
 	// Timeout for each request. Defaults to 10s if not set.
 	Timeout time.Duration
+	// PacketConn is an optional UDP PacketConn to use for QUIC connections.
+	// If nil, a new UDP socket will be created for each connection.
+	PacketConn net.PacketConn
 }
 
 func NewClient(opts ClientOptions) (*Client, error) {
@@ -68,6 +74,28 @@ func NewClient(opts ClientOptions) (*Client, error) {
 
 	t := &http3.Transport{
 		TLSClientConfig: opts.TLSConfig,
+		QUICConfig: &quic.Config{
+			Tracer: newConnectionTracer,
+		},
+	}
+
+	if opts.PacketConn != nil {
+		quicTransport := &quic.Transport{
+			Conn: opts.PacketConn,
+		}
+		t.Dial = func(ctx context.Context, addr string, tlsConf *tls.Config, quicConf *quic.Config) (quic.EarlyConnection, error) {
+			udpAddr, err := net.ResolveUDPAddr("udp", addr)
+			if err != nil {
+				return nil, err
+			}
+			slog.Debug("Dialing QUIC", slog.String("addr", addr), slog.String("udp", udpAddr.String()))
+			qc, err := quicTransport.DialEarly(ctx, udpAddr, tlsConf, quicConf)
+			if err != nil {
+				return nil, err
+			}
+			slog.Debug("Dialed QUIC", slog.String("addr", addr), slog.String("udp", udpAddr.String()))
+			return qc, nil
+		}
 	}
 
 	hc := &http.Client{
