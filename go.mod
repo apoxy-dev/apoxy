@@ -9,7 +9,7 @@ require (
 	github.com/adrg/xdg v0.5.3
 	github.com/alphadose/haxmap v1.4.1
 	github.com/anatol/vmtest v0.0.0-20250318022921-2f32244e2f0f
-	github.com/apoxy-dev/icx v0.7.2
+	github.com/apoxy-dev/icx v0.8.0
 	github.com/avast/retry-go/v4 v4.6.1
 	github.com/bramvdbogaerde/go-scp v1.5.0
 	github.com/buraksezer/olric v0.5.6
@@ -45,6 +45,7 @@ require (
 	github.com/google/gopacket v1.1.19
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/go-discover v0.0.0-20240726212017-342faf50e5d4
+	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/jedib0t/go-pretty/v6 v6.4.9
 	github.com/julienschmidt/httprouter v1.3.0
 	github.com/k3s-io/kine v0.13.2

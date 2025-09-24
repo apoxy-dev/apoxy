@@ -283,11 +283,6 @@ func (r *NetlinkRouter) AddAddr(addr netip.Prefix, tun connection.Connection) er
 	return nil
 }
 
-// ListAddrs lists all addresses on the tunnel added previously via AddAddr.
-func (r *NetlinkRouter) ListAddrs() ([]netip.Prefix, error) {
-	return r.dmux.List()
-}
-
 // DelAddr removes a tunnel connection with the given address. The addr
 // is used by the multiplexer to route traffic to the correct tunnel based
 // on the destination IP of the incoming packet.
@@ -349,20 +344,6 @@ func (r *NetlinkRouter) DelRoute(dst netip.Prefix) error {
 	return nil
 }
 
-// ListRoutes returns a list of all routes in the tunnel.
-func (r *NetlinkRouter) ListRoutes() ([]TunnelRoute, error) {
-	ps := r.dmux.Prefixes()
-	rts := make([]TunnelRoute, 0, len(ps))
-	for _, p := range ps {
-		rts = append(rts, TunnelRoute{
-			Dst: p,
-			// TODO: Add connID,
-			State: TunnelRouteStateActive,
-		})
-	}
-	return rts, nil
-}
-
 // Close releases any resources associated with the router.
 func (r *NetlinkRouter) Close() error {
 	var firstErr error
@@ -382,34 +363,4 @@ func (r *NetlinkRouter) Close() error {
 		}
 	})
 	return firstErr
-}
-
-// LocalAddresses returns the list of local addresses that are assigned to the router.
-func (r *NetlinkRouter) LocalAddresses() ([]netip.Prefix, error) {
-	if r.tunLink == nil {
-		return nil, nil
-	}
-
-	addrs, err := netlink.AddrList(r.tunLink, netlink.FAMILY_V6)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get addresses for link: %w", err)
-	}
-
-	var prefixes []netip.Prefix
-	for _, addr := range addrs {
-		ip, ok := netip.AddrFromSlice(addr.IP)
-		if !ok {
-			slog.Warn("Failed to convert IP address", slog.String("ip", addr.IP.String()))
-			continue
-		}
-		if !ip.IsGlobalUnicast() { // Skip non-global unicast addresses.
-			slog.Debug("Skipping non-global unicast address", slog.String("ip", addr.IP.String()))
-			continue
-		}
-
-		bits, _ := addr.Mask.Size()
-		prefixes = append(prefixes, netip.PrefixFrom(ip, bits))
-	}
-
-	return prefixes, nil
 }

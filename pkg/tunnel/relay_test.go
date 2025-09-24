@@ -236,15 +236,6 @@ func (m *mockRouter) AddAddr(addr netip.Prefix, tun connection.Connection) error
 	return args.Error(0)
 }
 
-func (m *mockRouter) ListAddrs() ([]netip.Prefix, error) {
-	args := m.Called()
-	var addrs []netip.Prefix
-	if v := args.Get(0); v != nil {
-		addrs = v.([]netip.Prefix)
-	}
-	return addrs, args.Error(1)
-}
-
 func (m *mockRouter) DelAddr(addr netip.Prefix) error {
 	args := m.Called(addr)
 	return args.Error(0)

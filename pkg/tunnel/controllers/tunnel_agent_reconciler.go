@@ -3,6 +3,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/alphadose/haxmap"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -192,7 +193,12 @@ func (r *TunnelAgentReconciler) AddConnection(ctx context.Context, agentName str
 // RemoveConnection deregisters a connection from the given agent by its ID.
 func (r *TunnelAgentReconciler) RemoveConnection(ctx context.Context, agentName, id string) error {
 	// Drop from in-memory map.
-	r.conns.Del(id)
+	conn, ok := r.conns.GetAndDel(id)
+	if ok {
+		if err := conn.Close(); err != nil {
+			slog.Warn("Failed to close connection", slog.String("id", id), slog.Any("error", err))
+		}
+	}
 
 	// Remove from status.connections (by ID)
 	if err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {

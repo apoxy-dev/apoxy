@@ -127,11 +127,6 @@ func (r *NetstackRouter) AddAddr(addr netip.Prefix, conn connection.Connection) 
 	return r.smux.Add(addr, conn)
 }
 
-// ListAddrs lists all addresses added to the tunnel.
-func (r *NetstackRouter) ListAddrs() ([]netip.Prefix, error) {
-	return r.tunDev.LocalAddresses()
-}
-
 // DelAddr removes a dst route from the tunnel.
 func (r *NetstackRouter) DelAddr(addr netip.Prefix) error {
 	if err := r.tunDev.DelAddr(addr); err != nil {
@@ -162,20 +157,6 @@ func (r *NetstackRouter) DelAll(dst netip.Prefix) error {
 	return nil
 }
 
-// ListRoutes returns a list of all routes in the tunnel.
-func (r *NetstackRouter) ListRoutes() ([]TunnelRoute, error) {
-	ps := r.smux.Prefixes()
-	rts := make([]TunnelRoute, 0, len(ps))
-	for _, p := range ps {
-		rts = append(rts, TunnelRoute{
-			Dst: p,
-			// TODO: Add connID,
-			State: TunnelRouteStateActive,
-		})
-	}
-	return rts, nil
-}
-
 // Close releases any resources associated with the router.
 func (r *NetstackRouter) Close() error {
 	var firstErr error
@@ -202,9 +183,4 @@ func (r *NetstackRouter) Close() error {
 		}
 	})
 	return firstErr
-}
-
-// LocalAddresses returns the list of local addresses that are assigned to the router.
-func (r *NetstackRouter) LocalAddresses() ([]netip.Prefix, error) {
-	return r.tunDev.LocalAddresses()
 }

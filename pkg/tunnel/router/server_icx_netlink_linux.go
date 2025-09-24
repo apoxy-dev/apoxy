@@ -1,9 +1,11 @@
 package router
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"net"
 	"net/netip"
@@ -19,6 +21,9 @@ import (
 	"github.com/slavc/xdp"
 	"github.com/vishvananda/netlink"
 	"gvisor.dev/gvisor/pkg/tcpip"
+	proxyutil "k8s.io/kubernetes/pkg/proxy/util"
+	utiliptables "k8s.io/kubernetes/pkg/util/iptables"
+	utilexec "k8s.io/utils/exec"
 
 	"github.com/apoxy-dev/apoxy/pkg/netstack"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/connection"
@@ -35,10 +40,12 @@ var (
 
 type ICXNetlinkRouter struct {
 	Handler       *icx.Handler
-	vethDev       *veth.Handle
+	tunDev        *veth.Handle
+	tunLink       netlink.Link
 	ingressFilter *xdp.Program
 	pcapFile      *os.File
 	tun           *tunnel.Tunnel
+	iptV4, iptV6  utiliptables.Interface
 	closeOnce     sync.Once
 }
 
@@ -68,12 +75,41 @@ func NewICXNetlinkRouter(opts ...Option) (*ICXNetlinkRouter, error) {
 		return nil, fmt.Errorf("failed to get number of TX queues for interface %s: %w", options.extIfaceName, err)
 	}
 
-	vethDev, err := veth.Create(options.tunIfaceName, numQueues, icx.MTU(extPathMTU))
+	tunDev, err := veth.Create(options.tunIfaceName, numQueues, icx.MTU(extPathMTU))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create veth device: %w", err)
 	}
 
-	virtMAC := tcpip.LinkAddress(vethDev.Link.Attrs().HardwareAddr)
+	tunLink, err := netlink.LinkByName(options.tunIfaceName)
+	if err != nil {
+		_ = tunDev.Close()
+		return nil, fmt.Errorf("failed to get veth interface: %w", err)
+	}
+
+	if !options.extIPv6Prefix.IsValid() {
+		slog.Warn("external IPv6 prefix is not valid - ingress is disabled")
+	}
+
+	for _, addr := range options.localAddresses {
+		ip := addr.Addr()
+		mask := net.CIDRMask(addr.Bits(), 128)
+		if ip.Is4() {
+			mask = net.CIDRMask(addr.Bits(), 32)
+		}
+
+		if err := netlink.AddrAdd(tunLink, &netlink.Addr{
+			IPNet: &net.IPNet{
+				IP:   ip.AsSlice(),
+				Mask: mask,
+			},
+		}); err != nil {
+			_ = tunDev.Close()
+			return nil, fmt.Errorf("failed to add address to veth interface: %w", err)
+		}
+		slog.Info("Added address to veth interface", slog.String("addr", addr.String()))
+	}
+
+	virtMAC := tcpip.LinkAddress(tunDev.Link.Attrs().HardwareAddr)
 
 	handlerOpts := []icx.HandlerOption{
 		icx.WithLocalAddr(localAddr),
@@ -85,13 +121,13 @@ func NewICXNetlinkRouter(opts ...Option) (*ICXNetlinkRouter, error) {
 
 	handler, err := icx.NewHandler(handlerOpts...)
 	if err != nil {
-		_ = vethDev.Close()
+		_ = tunDev.Close()
 		return nil, fmt.Errorf("failed to create handler: %w", err)
 	}
 
 	ingressFilter, err := filter.Bind(addrs...)
 	if err != nil {
-		_ = vethDev.Close()
+		_ = tunDev.Close()
 		return nil, fmt.Errorf("failed to create ingress filter: %w", err)
 	}
 
@@ -100,7 +136,7 @@ func NewICXNetlinkRouter(opts ...Option) (*ICXNetlinkRouter, error) {
 	if options.pcapPath != "" {
 		pcapFile, err = os.Create(options.pcapPath)
 		if err != nil {
-			_ = vethDev.Close()
+			_ = tunDev.Close()
 			_ = ingressFilter.Close()
 			return nil, fmt.Errorf("failed to create pcap file: %w", err)
 		}
@@ -111,19 +147,22 @@ func NewICXNetlinkRouter(opts ...Option) (*ICXNetlinkRouter, error) {
 		}
 	}
 
-	tun, err := tunnel.NewTunnel(options.extIfaceName, vethDev.Peer.Attrs().Name, ingressFilter, handler, pcapWriter)
+	tun, err := tunnel.NewTunnel(options.extIfaceName, tunDev.Peer.Attrs().Name, ingressFilter, handler, pcapWriter)
 	if err != nil {
-		_ = vethDev.Close()
+		_ = tunDev.Close()
 		_ = ingressFilter.Close()
 		return nil, fmt.Errorf("failed to create tunnel: %w", err)
 	}
 
 	return &ICXNetlinkRouter{
 		Handler:       handler,
-		vethDev:       vethDev,
+		tunDev:        tunDev,
+		tunLink:       tunLink,
 		ingressFilter: ingressFilter,
 		pcapFile:      pcapFile,
 		tun:           tun,
+		iptV4:         utiliptables.New(utilexec.New(), utiliptables.ProtocolIPv4),
+		iptV6:         utiliptables.New(utilexec.New(), utiliptables.ProtocolIPv6),
 	}, nil
 }
 
@@ -133,7 +172,7 @@ func (r *ICXNetlinkRouter) Close() error {
 		if err := r.tun.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
-		if err := r.vethDev.Close(); err != nil && firstErr == nil {
+		if err := r.tunDev.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
 		if err := r.ingressFilter.Close(); err != nil && firstErr == nil {
@@ -157,20 +196,26 @@ func (r *ICXNetlinkRouter) Start(ctx context.Context) error {
 }
 
 // AddAddr adds a tun with an associated address to the router.
-func (r *ICXNetlinkRouter) AddAddr(addr netip.Prefix, tun connection.Connection) error {
-	// TODO (dpeckett): implement
+func (r *ICXNetlinkRouter) AddAddr(_ netip.Prefix, _ connection.Connection) error {
+	// Virtual networks are managed externally, so we just need to
+	// sync the DNAT rules to include the new address.
+
+	if err := r.syncDNATChain(); err != nil {
+		return fmt.Errorf("failed to sync DNAT chain: %w", err)
+	}
+
 	return nil
 }
 
-// ListAddrs returns a list of all addresses currently managed by the router.
-func (r *ICXNetlinkRouter) ListAddrs() ([]netip.Prefix, error) {
-	// TODO (dpeckett): implement
-	return nil, nil
-}
-
 // DelAddr removes a tun by its addr from the router.
-func (r *ICXNetlinkRouter) DelAddr(addr netip.Prefix) error {
-	// TODO (dpeckett): implement
+func (r *ICXNetlinkRouter) DelAddr(_ netip.Prefix) error {
+	// Virtual networks are managed externally, so we just need to
+	// sync the DNAT rules to remove the address.
+
+	if err := r.syncDNATChain(); err != nil {
+		return fmt.Errorf("failed to sync DNAT chain: %w", err)
+	}
+
 	return nil
 }
 
@@ -178,7 +223,26 @@ func (r *ICXNetlinkRouter) DelAddr(addr netip.Prefix) error {
 // If multiple tunnels are provided, the router will distribute traffic across them
 // uniformly.
 func (r *ICXNetlinkRouter) AddRoute(dst netip.Prefix) error {
-	// TODO (dpeckett): implement
+	slog.Info("Adding route", slog.String("addr", dst.String()))
+
+	mask := net.CIDRMask(dst.Bits(), 128)
+	if dst.Addr().Is4() {
+		mask = net.CIDRMask(dst.Bits(), 32)
+	}
+	route := &netlink.Route{
+		LinkIndex: r.tunLink.Attrs().Index,
+		Dst: &net.IPNet{
+			IP:   dst.Addr().AsSlice(),
+			Mask: mask,
+		},
+		Scope: netlink.SCOPE_LINK,
+	}
+	if err := netlink.RouteAdd(route); err != nil {
+		return fmt.Errorf("failed to add route: %w", err)
+	}
+
+	slog.Info("Route added", slog.String("dst", dst.String()))
+
 	return nil
 }
 
@@ -188,20 +252,68 @@ func (r *ICXNetlinkRouter) AddRoute(dst netip.Prefix) error {
 // getting re-routed via a different tunnel or dropped (if no tunnel is available for
 // the given dst).
 func (r *ICXNetlinkRouter) DelRoute(dst netip.Prefix) error {
-	// TODO (dpeckett): implement
+	slog.Debug("Removing route", slog.String("prefix", dst.String()))
+
+	mask := net.CIDRMask(dst.Bits(), 128)
+	if dst.Addr().Is4() {
+		mask = net.CIDRMask(dst.Bits(), 32)
+	}
+	route := &netlink.Route{
+		LinkIndex: r.tunLink.Attrs().Index,
+		Dst: &net.IPNet{
+			IP:   dst.Addr().AsSlice(),
+			Mask: mask,
+		},
+		Scope: netlink.SCOPE_LINK,
+	}
+	if err := netlink.RouteDel(route); err != nil {
+		return fmt.Errorf("failed to remove route: %w", err)
+	}
+
+	slog.Info("Route removed", slog.String("dst", dst.String()))
 	return nil
 }
 
-// ListRoutes returns a list of all routes currently managed by the router.
-func (r *ICXNetlinkRouter) ListRoutes() ([]TunnelRoute, error) {
-	// TODO (dpeckett): implement
-	return nil, nil
-}
+func (r *ICXNetlinkRouter) syncDNATChain() error {
+	natChains := proxyutil.NewLineBuffer()
+	natChains.Write(utiliptables.MakeChainLine(ChainA3yTunRules))
 
-// LocalAddresses returns the list of local addresses that are assigned to the router.
-func (r *ICXNetlinkRouter) LocalAddresses() ([]netip.Prefix, error) {
-	// TODO (dpeckett): implement
-	return nil, nil
+	natRules := proxyutil.NewLineBuffer()
+
+	peers := r.Handler.ListVirtualNetworks()
+
+	for i, peer := range peers {
+		for _, addr := range peer.Addrs {
+			if addr.Addr().Is4() { // Skipping IPv4 peers - only IPv6 tunnel ingress is supported.
+				continue
+			}
+			natRules.Write(
+				"-A", string(ChainA3yTunRules),
+				"-m", "statistic",
+				"--mode", "random",
+				"--probability", probability(len(peers)-i),
+				"-j", "DNAT",
+				"--to-destination", addr.Addr().String(),
+			)
+		}
+	}
+
+	iptNewData := bytes.NewBuffer(nil)
+	iptNewData.WriteString("*nat\n")
+	iptNewData.Write(natChains.Bytes())
+	iptNewData.Write(natRules.Bytes())
+	iptNewData.WriteString("COMMIT\n")
+
+	if err := r.iptV6.Restore(
+		utiliptables.TableNAT,
+		iptNewData.Bytes(),
+		utiliptables.NoFlushTables,
+		utiliptables.RestoreCounters,
+	); err != nil {
+		return fmt.Errorf("failed to execute iptables-restore: %w", err)
+	}
+
+	return nil
 }
 
 func addrsForInterface(link netlink.Link, port int) ([]net.Addr, error) {

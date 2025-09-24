@@ -41,7 +41,7 @@ var (
 )
 
 // NewClientNetlinkRouter creates a new client-side netlink-based tunnel router.
-func NewClientNetlinkRouter(opts ...Option) (Router, error) {
+func NewClientNetlinkRouter(opts ...Option) (*ClientNetlinkRouter, error) {
 	return newClientNetlinkRouter(opts...)
 }
 
@@ -269,28 +269,6 @@ func (r *ClientNetlinkRouter) AddAddr(addr netip.Prefix, tun connection.Connecti
 	slog.Info("Added address to TUN interface", slog.String("addr", addr.String()))
 
 	return r.smux.Add(addr, tun)
-}
-
-// ListAddrs returns a list of addresses added to the TUN interface.
-func (r *ClientNetlinkRouter) ListAddrs() ([]netip.Prefix, error) {
-	ifcAddrs, err := netlink.AddrList(r.tunLink, netlink.FAMILY_ALL)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list addresses on TUN interface: %w", err)
-	}
-
-	var out []netip.Prefix
-	for _, ifcAddr := range ifcAddrs {
-		addr := netip.Addr{}
-		if ifcAddr.IP.To16() != nil {
-			addr = netip.AddrFrom16([16]byte(ifcAddr.IP.To16()))
-		} else if ifcAddr.IP.To4() != nil {
-			addr = netip.AddrFrom4([4]byte(ifcAddr.IP.To4()))
-		}
-		ones, _ := ifcAddr.Mask.Size()
-		out = append(out, netip.PrefixFrom(addr, ones))
-	}
-
-	return out, nil
 }
 
 // DelAddr deletes an address from a TUN interface and removes the corresponding route.
