@@ -23,7 +23,6 @@ import (
 	"github.com/quic-go/quic-go/http3"
 	"golang.org/x/sync/errgroup"
 
-	"github.com/apoxy-dev/apoxy/pkg/tunnel/adapter"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/api"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/controllers"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/hasher"
@@ -42,8 +41,8 @@ type Relay struct {
 	handler      *icx.Handler
 	idHasher     *hasher.Hasher
 	router       router.Router
-	tokens       *haxmap.Map[string, string]              // map[tunnelName]token
-	conns        *haxmap.Map[string, *adapter.Connection] // map[connectionID]Connection
+	tokens       *haxmap.Map[string, string]      // map[tunnelName]token
+	conns        *haxmap.Map[string, *connection] // map[connectionID]Connection
 	onConnect    func(ctx context.Context, agentName string, conn controllers.Connection) error
 	onDisconnect func(ctx context.Context, agentName, id string) error
 }
@@ -57,7 +56,7 @@ func NewRelay(name string, pc net.PacketConn, cert tls.Certificate, handler *icx
 		idHasher: idHasher,
 		router:   router,
 		tokens:   haxmap.New[string, string](),
-		conns:    haxmap.New[string, *adapter.Connection](),
+		conns:    haxmap.New[string, *connection](),
 	}
 }
 
@@ -172,7 +171,14 @@ func (r *Relay) handleConnect(w http.ResponseWriter, req *http.Request, ps httpr
 	}
 
 	id := r.idHasher.Hash(localAddr, remoteAddr)
-	conn := adapter.NewConnection(id, r.handler, localAddr, remoteAddr)
+
+	conn := &connection{
+		id:         id,
+		handler:    r.handler,
+		router:     r.router,
+		localAddr:  localAddr,
+		remoteAddr: remoteAddr,
+	}
 
 	r.conns.Set(conn.ID(), conn)
 

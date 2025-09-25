@@ -23,7 +23,6 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/connection"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/controllers"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/hasher"
-	"github.com/apoxy-dev/apoxy/pkg/tunnel/router"
 )
 
 func TestTunnelRun(t *testing.T) {
@@ -100,6 +99,10 @@ func startRelay(t *testing.T, token string, onConnect func(context.Context, stri
 
 	rtr.On("Start", mock.Anything).Return(nil)
 	rtr.On("Close").Return(nil)
+	rtr.On("AddAddr", mock.Anything, mock.Anything).Return(nil)
+	rtr.On("DelAddr", mock.Anything).Return(nil)
+	rtr.On("AddRoute", mock.Anything).Return(nil)
+	rtr.On("DelRoute", mock.Anything).Return(nil)
 
 	r := tunnel.NewRelay("relay-it", pc, serverCert, h, idHasher, rtr)
 	r.SetCredentials("test-tunnel", token)
@@ -146,15 +149,6 @@ func (m *mockRouter) AddAddr(addr netip.Prefix, tun connection.Connection) error
 	return args.Error(0)
 }
 
-func (m *mockRouter) ListAddrs() ([]netip.Prefix, error) {
-	args := m.Called()
-	var addrs []netip.Prefix
-	if v := args.Get(0); v != nil {
-		addrs = v.([]netip.Prefix)
-	}
-	return addrs, args.Error(1)
-}
-
 func (m *mockRouter) DelAddr(addr netip.Prefix) error {
 	args := m.Called(addr)
 	return args.Error(0)
@@ -168,24 +162,6 @@ func (m *mockRouter) AddRoute(dst netip.Prefix) error {
 func (m *mockRouter) DelRoute(dst netip.Prefix) error {
 	args := m.Called(dst)
 	return args.Error(0)
-}
-
-func (m *mockRouter) ListRoutes() ([]router.TunnelRoute, error) {
-	args := m.Called()
-	var routes []router.TunnelRoute
-	if v := args.Get(0); v != nil {
-		routes = v.([]router.TunnelRoute)
-	}
-	return routes, args.Error(1)
-}
-
-func (m *mockRouter) LocalAddresses() ([]netip.Prefix, error) {
-	args := m.Called()
-	var addrs []netip.Prefix
-	if v := args.Get(0); v != nil {
-		addrs = v.([]netip.Prefix)
-	}
-	return addrs, args.Error(1)
 }
 
 func (m *mockRouter) Close() error {

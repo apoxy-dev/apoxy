@@ -157,11 +157,6 @@ func (r *ICXNetstackRouter) AddAddr(addr netip.Prefix, tun connection.Connection
 	return nil
 }
 
-// ListAddrs returns a list of all addresses currently managed by the router.
-func (r *ICXNetstackRouter) ListAddrs() ([]netip.Prefix, error) {
-	return r.net.LocalAddresses()
-}
-
 // DelAddr removes a tun by its addr from the router.
 func (r *ICXNetstackRouter) DelAddr(addr netip.Prefix) error {
 	if err := r.net.DelAddr(addr); err != nil {
@@ -185,27 +180,4 @@ func (r *ICXNetstackRouter) AddRoute(dst netip.Prefix) error {
 // the given dst).
 func (r *ICXNetstackRouter) DelRoute(dst netip.Prefix) error {
 	return nil
-}
-
-// ListRoutes returns a list of all routes currently managed by the router.
-func (r *ICXNetstackRouter) ListRoutes() ([]TunnelRoute, error) {
-	localAddrs, err := r.net.LocalAddresses()
-	if err != nil {
-		return nil, fmt.Errorf("failed to list local addresses: %w", err)
-	}
-
-	var routes []TunnelRoute
-	for _, addr := range localAddrs {
-		routes = append(routes, TunnelRoute{
-			Dst:   addr,
-			State: TunnelRouteStateActive,
-		})
-	}
-
-	return routes, nil
-}
-
-// LocalAddresses returns the list of local addresses that are assigned to the router.
-func (r *ICXNetstackRouter) LocalAddresses() ([]netip.Prefix, error) {
-	return r.net.LocalAddresses()
 }

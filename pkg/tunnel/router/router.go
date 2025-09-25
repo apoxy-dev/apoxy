@@ -32,9 +32,6 @@ type Router interface {
 	// AddAddr adds a tun with an associated address to the router.
 	AddAddr(addr netip.Prefix, tun connection.Connection) error
 
-	// ListAddrs returns a list of all addresses currently managed by the router.
-	ListAddrs() ([]netip.Prefix, error)
-
 	// DelAddr removes a tun by its addr from the router.
 	DelAddr(addr netip.Prefix) error
 
@@ -49,10 +46,4 @@ type Router interface {
 	// getting re-routed via a different tunnel or dropped (if no tunnel is available for
 	// the given dst).
 	DelRoute(dst netip.Prefix) error
-
-	// ListRoutes returns a list of all routes currently managed by the router.
-	ListRoutes() ([]TunnelRoute, error)
-
-	// LocalAddresses returns the list of local addresses that are assigned to the router.
-	LocalAddresses() ([]netip.Prefix, error)
 }

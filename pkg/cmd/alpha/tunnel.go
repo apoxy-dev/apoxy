@@ -21,6 +21,7 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/netstack"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/api"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/bifurcate"
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/conntrackpc"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/router"
 )
 
@@ -59,6 +60,9 @@ var tunnelRunCmd = &cobra.Command{
 		pcGeneve, pcQuic := bifurcate.Bifurcate(pc)
 		defer pcGeneve.Close()
 		defer pcQuic.Close()
+
+		pcQuicMultiplexed := conntrackpc.New(pcQuic, conntrackpc.Options{})
+		defer pcQuicMultiplexed.Close()
 
 		// Context and goroutines.
 		g, ctx := errgroup.WithContext(cmd.Context())
@@ -119,9 +123,20 @@ var tunnelRunCmd = &cobra.Command{
 			}
 			relay := addr
 			g.Go(func() error {
-				// TODO (dpeckett): we will need to create a kind of multiplexed packetconn
-				// so that each QUIC client gets its own virtual private connection from pcQuic.
-				// This will be based on the remote ip presumably.
+				relayAddr, err := resolveAddrPort(ctx, relay)
+				if err != nil {
+					return fmt.Errorf("failed to resolve relay addr %q: %w", relay, err)
+				}
+
+				pcQuic, err := pcQuicMultiplexed.Open(&net.UDPAddr{
+					IP:   relayAddr.Addr().AsSlice(),
+					Port: int(relayAddr.Port()),
+				})
+				if err != nil {
+					return fmt.Errorf("failed to create multiplexed packet conn for relay %q: %w", relay, err)
+				}
+				defer pcQuic.Close()
+
 				return manageRelayConnection(ctx, pcQuic, getHandler, relay, tlsConf)
 			})
 		}
@@ -237,10 +252,10 @@ func manageRelayConnection(
 					return cleanupOnErr(fmt.Errorf("init router: %w", err))
 				}
 
-				// Parse relay addr
-				remoteAddr, err := netip.ParseAddrPort(relayAddr)
+				// Resolve relay addr (supports hostname:port and ip:port)
+				remoteAddr, err := resolveAddrPort(ctx, relayAddr)
 				if err != nil {
-					return cleanupOnErr(fmt.Errorf("parse relay addr %q: %w", relayAddr, err))
+					return cleanupOnErr(fmt.Errorf("resolve relay addr %q: %w", relayAddr, err))
 				}
 
 				overlayAddrs, err := stringsToPrefixes(connectResp.Addresses)
@@ -387,6 +402,51 @@ func manageKeyRotation(
 			slog.Info("Rotated tunnel keys", slog.Uint64("epoch", uint64(upd.Keys.Epoch)))
 			timer.Reset(applyAndSchedule(upd.Keys))
 		}
+	}
+}
+
+// resolveAddrPort accepts "host:port" where host may be a hostname or IP
+// (IPv4/IPv6, with or without brackets) and returns a concrete netip.AddrPort.
+func resolveAddrPort(ctx context.Context, hostport string) (netip.AddrPort, error) {
+	host, portStr, err := net.SplitHostPort(hostport)
+	if err != nil {
+		return netip.AddrPort{}, fmt.Errorf("split host/port: %w", err)
+	}
+	pn, err := net.LookupPort("udp", portStr)
+	if err != nil {
+		return netip.AddrPort{}, fmt.Errorf("lookup port %q: %w", portStr, err)
+	}
+	port := uint16(pn)
+
+	// If host is already an IP, use it.
+	if ip, err := netip.ParseAddr(host); err == nil {
+		return netip.AddrPortFrom(ip, port), nil
+	}
+
+	// Resolve hostname. Prefer IPv4, then IPv6.
+	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return netip.AddrPort{}, fmt.Errorf("lookup %q: %w", host, err)
+	}
+	var v4, v6 *netip.Addr
+	for _, a := range addrs {
+		if ip, ok := netip.AddrFromSlice(a.IP); ok {
+			if ip.Is4() && v4 == nil {
+				ipCopy := ip
+				v4 = &ipCopy
+			} else if ip.Is6() && v6 == nil {
+				ipCopy := ip
+				v6 = &ipCopy
+			}
+		}
+	}
+	switch {
+	case v4 != nil:
+		return netip.AddrPortFrom(*v4, port), nil
+	case v6 != nil:
+		return netip.AddrPortFrom(*v6, port), nil
+	default:
+		return netip.AddrPort{}, fmt.Errorf("no usable A/AAAA records for %q", host)
 	}
 }
 
