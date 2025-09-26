@@ -76,6 +76,10 @@ func (m *mockRelay) SetCredentials(tunnelName, token string) {
 	m.Called(tunnelName, token)
 }
 
+func (m *mockRelay) SetRelayAddresses(tunnelName string, addresses []string) {
+	m.Called(tunnelName, addresses)
+}
+
 func (m *mockRelay) SetOnConnect(onConnect func(ctx context.Context, agentName string, conn controllers.Connection) error) {
 	m.Called(onConnect)
 }

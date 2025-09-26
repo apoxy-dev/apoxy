@@ -175,8 +175,8 @@ func (r *TunnelAgentReconciler) ensureConnectionAllocations(
 					for _, p := range newlyAllocatedPrefixes {
 						_ = r.agentIPAM.Release(p)
 					}
-					for _, v := range newlyAllocatedVNIs {
-						r.vniPool.Free(v)
+					for _, vni := range newlyAllocatedVNIs {
+						r.vniPool.Release(vni)
 					}
 					return fmt.Errorf("failed to allocate address: %w", err)
 				}
@@ -195,7 +195,7 @@ func (r *TunnelAgentReconciler) ensureConnectionAllocations(
 						_ = r.agentIPAM.Release(p)
 					}
 					for _, vni := range newlyAllocatedVNIs {
-						r.vniPool.Free(vni)
+						r.vniPool.Release(vni)
 					}
 					return fmt.Errorf("failed to allocate VNI: %w", err)
 				}
@@ -218,7 +218,7 @@ func (r *TunnelAgentReconciler) ensureConnectionAllocations(
 				_ = r.agentIPAM.Release(p)
 			}
 			for _, vni := range newlyAllocatedVNIs {
-				r.vniPool.Free(vni)
+				r.vniPool.Release(vni)
 			}
 			return err
 		}
@@ -269,9 +269,9 @@ func (r *TunnelAgentReconciler) releaseResourcesIfPresent(
 
 			// Release VNI (if set)
 			if conn.VNI != nil {
-				v := *conn.VNI
-				r.vniPool.Free(v)
-				log.Info("Released VNI", "connectionID", conn.ID, "vni", v)
+				vni := *conn.VNI
+				r.vniPool.Release(vni)
+				log.Info("Released VNI", "connectionID", conn.ID, "vni", vni)
 				conn.VNI = nil // clear in status
 				changed = true
 			}

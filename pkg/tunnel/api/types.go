@@ -27,12 +27,15 @@ type ConnectResponse struct {
 	MTU int `json:"mtu"`
 	// Keys contains the symmetric keys for sending and receiving packets.
 	Keys Keys `json:"keys"`
-	// Addresses is a list of addresses assigned to the connection.
+	// Addresses is a list of overlay addresses assigned to the connection.
 	Addresses []string `json:"addresses"`
 	// Routes is a list of routes to configure for the connection.
-	Routes []Route `json:"routes"`
+	Routes []Route `json:"routes,omitempty"`
 	// DNS contains DNS configuration for the connection.
 	DNS *DNS `json:"dns,omitempty"`
+	// RelayAddresses is a list of alternate relay addresses that are serving the
+	// same tunnel. This can be used for establishing redundant routes.
+	RelayAddresses []string `json:"relayAddresses,omitempty"`
 }
 
 type UpdateKeysResponse struct {
@@ -75,8 +78,8 @@ type Keys struct {
 }
 
 type Route struct {
-	// Prefix is the CIDR prefix for the route.
-	Prefix string `json:"prefix"`
+	// Destination is the destination CIDR for the route.
+	Destination string `json:"destination"`
 }
 
 type DNS struct {
