@@ -625,7 +625,7 @@ func (t *TunnelServer) reconcile(ctx context.Context, request reconcile.Request)
 
 		if err := conn.AssignAddresses(ctx, []netip.Prefix{
 			conn.addrv6,
-			// conn.addrv4,
+			conn.addrv4,
 		}); err != nil {
 			log.Error(err, "Failed to assign address to connection")
 			metrics.TunnelConnectionFailures.WithLabelValues("address_assignment_failed").Inc()
