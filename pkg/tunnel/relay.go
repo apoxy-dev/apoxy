@@ -42,6 +42,7 @@ type Relay struct {
 	idHasher     *hasher.Hasher
 	router       router.Router
 	tokens       *haxmap.Map[string, string]      // map[tunnelName]token
+	relayAddrs   *haxmap.Map[string, []string]    // map[tunnelName][]string
 	conns        *haxmap.Map[string, *connection] // map[connectionID]Connection
 	onConnect    func(ctx context.Context, agentName string, conn controllers.Connection) error
 	onDisconnect func(ctx context.Context, agentName, id string) error
@@ -49,14 +50,15 @@ type Relay struct {
 
 func NewRelay(name string, pc net.PacketConn, cert tls.Certificate, handler *icx.Handler, idHasher *hasher.Hasher, router router.Router) *Relay {
 	return &Relay{
-		name:     name,
-		pc:       pc,
-		cert:     cert,
-		handler:  handler,
-		idHasher: idHasher,
-		router:   router,
-		tokens:   haxmap.New[string, string](),
-		conns:    haxmap.New[string, *connection](),
+		name:       name,
+		pc:         pc,
+		cert:       cert,
+		handler:    handler,
+		idHasher:   idHasher,
+		router:     router,
+		tokens:     haxmap.New[string, string](),
+		relayAddrs: haxmap.New[string, []string](),
+		conns:      haxmap.New[string, *connection](),
 	}
 }
 
@@ -73,6 +75,11 @@ func (r *Relay) Address() string {
 // SetCredentials sets the authentication token used by agents to authenticate with the relay.
 func (r *Relay) SetCredentials(tunnelName, token string) {
 	r.tokens.Set(tunnelName, token)
+}
+
+// SetRelayAddresses sets the list of relay addresses that are serving a tunnel.
+func (r *Relay) SetRelayAddresses(tunnelName string, addresses []string) {
+	r.relayAddrs.Set(tunnelName, addresses)
 }
 
 // SetOnConnect sets a callback that is invoked when a new connection is established to the relay.
@@ -158,6 +165,11 @@ func (r *Relay) handleConnect(w http.ResponseWriter, req *http.Request, ps httpr
 		return
 	}
 
+	if request.Agent == "" {
+		http.Error(w, "Missing agent name", http.StatusBadRequest)
+		return
+	}
+
 	localAddr, err := netip.ParseAddrPort(r.pc.LocalAddr().String())
 	if err != nil {
 		http.Error(w, "Failed to parse local address", http.StatusBadRequest)
@@ -225,14 +237,36 @@ func (r *Relay) handleConnect(w http.ResponseWriter, req *http.Request, ps httpr
 	}
 
 	vni := conn.VNI()
+	if vni == nil {
+		slog.Warn("Connection has no VNI assigned", slog.String("connID", conn.ID()))
+		http.Error(w, "Connection is not ready", http.StatusBadRequest)
+		return
+	}
+
+	var routes []api.Route
+	if oa := conn.OverlayAddress(); oa != "" {
+		if pfx, err := netip.ParsePrefix(oa); err == nil {
+			// We'll only advertise single-IP routes so extend the bitmask to max.
+			if pfx.Addr().Is4() {
+				pfx = netip.PrefixFrom(pfx.Addr(), 32)
+			} else {
+				pfx = netip.PrefixFrom(pfx.Addr(), 128)
+			}
+			routes = append(routes, api.Route{Destination: pfx.String()})
+		}
+	}
+
+	tunnelName := ps.ByName("name")
+	relayAddrs, _ := r.relayAddrs.Get(tunnelName)
 
 	resp := api.ConnectResponse{
-		ID:        conn.ID(),
-		VNI:       *vni,
-		MTU:       icx.MTU(1500),
-		Keys:      keys,
-		Addresses: []string{conn.OverlayAddress()},
-		// FUTURE: routes, DNS, etc.
+		ID:             conn.ID(),
+		VNI:            *vni,
+		MTU:            icx.MTU(1500),
+		Keys:           keys,
+		Addresses:      []string{conn.OverlayAddress()},
+		Routes:         routes,
+		RelayAddresses: relayAddrs,
 	}
 
 	if err := r.handler.UpdateVirtualNetworkKeys(*vni, keys.Epoch,
@@ -256,17 +290,27 @@ func (r *Relay) handleDisconnect(w http.ResponseWriter, req *http.Request, ps ht
 		return
 	}
 
+	conn, ok := r.conns.GetAndDel(request.ID)
+	if !ok {
+		http.Error(w, "Connection not found", http.StatusNotFound)
+		return
+	}
+
+	if err := conn.Close(); err != nil {
+		slog.Warn("Failed to close connection", slog.Any("error", err))
+		http.Error(w, "Failed to close connection", http.StatusInternalServerError)
+		return
+	}
+
 	r.mu.Lock()
 	onDisconnect := r.onDisconnect
 	r.mu.Unlock()
 
 	if err := onDisconnect(req.Context(), request.Agent, request.ID); err != nil {
-		slog.Error("onDisconnect callback failed", slog.Any("error", err))
+		slog.Warn("onDisconnect callback failed", slog.Any("error", err))
 		http.Error(w, "Failed to handle disconnection", http.StatusInternalServerError)
 		return
 	}
-
-	r.conns.Del(request.ID)
 
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(""))

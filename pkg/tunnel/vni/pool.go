@@ -35,7 +35,7 @@ func (v *VNIPool) Allocate() (uint, error) {
 	return uint(vni), nil
 }
 
-func (v *VNIPool) Free(vni uint) {
+func (v *VNIPool) Release(vni uint) {
 	if vni >= maxVNI {
 		return
 	}

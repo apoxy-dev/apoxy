@@ -27,6 +27,7 @@ import (
 
 	"github.com/apoxy-dev/apoxy/pkg/netstack"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/connection"
+	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 )
 
 const (
@@ -40,6 +41,7 @@ var (
 
 type ICXNetlinkRouter struct {
 	Handler       *icx.Handler
+	extLink       netlink.Link
 	tunDev        *veth.Handle
 	tunLink       netlink.Link
 	ingressFilter *xdp.Program
@@ -55,12 +57,12 @@ func NewICXNetlinkRouter(opts ...Option) (*ICXNetlinkRouter, error) {
 		opt(options)
 	}
 
-	phy, err := netlink.LinkByName(options.extIfaceName)
+	extLink, err := netlink.LinkByName(options.extIfaceName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find interface %s: %w", options.extIfaceName, err)
 	}
 
-	addrs, err := addrsForInterface(phy, icxDefaultPort)
+	addrs, err := addrsForInterface(extLink, icxDefaultPort)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get addresses for interface %s: %w", options.extIfaceName, err)
 	}
@@ -70,7 +72,7 @@ func NewICXNetlinkRouter(opts ...Option) (*ICXNetlinkRouter, error) {
 		return nil, fmt.Errorf("failed to select source address: %w", err)
 	}
 
-	numQueues, err := tunnel.NumQueues(phy)
+	numQueues, err := tunnel.NumQueues(extLink)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get number of TX queues for interface %s: %w", options.extIfaceName, err)
 	}
@@ -84,10 +86,6 @@ func NewICXNetlinkRouter(opts ...Option) (*ICXNetlinkRouter, error) {
 	if err != nil {
 		_ = tunDev.Close()
 		return nil, fmt.Errorf("failed to get veth interface: %w", err)
-	}
-
-	if !options.extIPv6Prefix.IsValid() {
-		slog.Warn("external IPv6 prefix is not valid - ingress is disabled")
 	}
 
 	for _, addr := range options.localAddresses {
@@ -156,6 +154,7 @@ func NewICXNetlinkRouter(opts ...Option) (*ICXNetlinkRouter, error) {
 
 	return &ICXNetlinkRouter{
 		Handler:       handler,
+		extLink:       extLink,
 		tunDev:        tunDev,
 		tunLink:       tunLink,
 		ingressFilter: ingressFilter,
@@ -170,16 +169,21 @@ func (r *ICXNetlinkRouter) Close() error {
 	var firstErr error
 	r.closeOnce.Do(func() {
 		if err := r.tun.Close(); err != nil && firstErr == nil {
-			firstErr = err
+			firstErr = fmt.Errorf("failed to close tunnel: %w", err)
 		}
+
 		if err := r.tunDev.Close(); err != nil && firstErr == nil {
-			firstErr = err
+			firstErr = fmt.Errorf("failed to close veth device: %w", err)
 		}
+
 		if err := r.ingressFilter.Close(); err != nil && firstErr == nil {
-			firstErr = err
+			firstErr = fmt.Errorf("failed to close ingress filter: %w", err)
 		}
-		if err := r.pcapFile.Close(); err != nil && firstErr == nil {
-			firstErr = err
+
+		if r.pcapFile != nil {
+			if err := r.pcapFile.Close(); err != nil && firstErr == nil {
+				firstErr = fmt.Errorf("failed to close pcap file: %w", err)
+			}
 		}
 	})
 	return firstErr
@@ -188,6 +192,14 @@ func (r *ICXNetlinkRouter) Close() error {
 // Start initializes the router and starts forwarding traffic.
 // It's a blocking call that should be run in a separate goroutine.
 func (r *ICXNetlinkRouter) Start(ctx context.Context) error {
+	if err := os.WriteFile("/proc/sys/net/ipv6/conf/all/forwarding", []byte("1"), 0644); err != nil {
+		return fmt.Errorf("failed to enable IPv6 forwarding: %w", err)
+	}
+
+	if err := r.setupDNAT(); err != nil {
+		return fmt.Errorf("failed to setup DNAT: %w", err)
+	}
+
 	if err := r.tun.Start(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		return fmt.Errorf("failed to start tunnel: %w", err)
 	}
@@ -271,6 +283,57 @@ func (r *ICXNetlinkRouter) DelRoute(dst netip.Prefix) error {
 	}
 
 	slog.Info("Route removed", slog.String("dst", dst.String()))
+	return nil
+}
+
+func (r *ICXNetlinkRouter) setupDNAT() error {
+	exists, err := r.iptV6.EnsureChain(utiliptables.TableNAT, ChainA3yTunRules)
+	if err != nil {
+		return fmt.Errorf("failed to ensure %s chain: %w", ChainA3yTunRules, err)
+	}
+	if exists { // Jump and forwarding rules should be already set up.
+		return nil
+	}
+
+	extName := r.extLink.Attrs().Name
+	tunName := r.tunLink.Attrs().Name
+
+	_, extIPv6Prefix := getExternalIPPrefixes(extName)
+
+	if extIPv6Prefix.IsValid() {
+		slog.Info("Setting up jump rule",
+			slog.String("ext_iface", extName),
+			slog.String("ext_addr", extIPv6Prefix.Addr().String()))
+
+		// Traffic arriving at the designated external interface will be processed by the A3Y-TUN-RULES chain.
+		jRuleSpec := []string{"-d", extIPv6Prefix.Addr().String(), "-i", extName, "-j", string(ChainA3yTunRules)}
+		if _, err := r.iptV6.EnsureRule(utiliptables.Append, utiliptables.TableNAT, utiliptables.ChainPrerouting, jRuleSpec...); err != nil {
+			return fmt.Errorf("failed to ensure jump rule: %w", err)
+		}
+	}
+
+	// Setup forwarding rules between the external and tunnel interfaces.
+	fwdRuleSpecs := [][]string{
+		{"-i", extName, "-o", tunName, "-j", "ACCEPT"},
+		{"-i", tunName, "-o", extName, "-j", "ACCEPT"},
+	}
+	slog.Info("Setting up forwarding rules", slog.String("ext_iface", extName), slog.String("tun_iface", tunName))
+	for _, ruleSpec := range fwdRuleSpecs {
+		if _, err := r.iptV6.EnsureRule(utiliptables.Append, utiliptables.TableFilter, utiliptables.ChainForward, ruleSpec...); err != nil {
+			return fmt.Errorf("failed to ensure forwarding rule: %w", err)
+		}
+	}
+
+	// Setup NAT for traffic returning from the tunnel.
+	masqRuleSpec := []string{"-o", extName, "-j", "MASQUERADE"}
+	slog.Info("Setting up masquerade rule", slog.String("ext_iface", extName))
+	if _, err := r.iptV4.EnsureRule(utiliptables.Append, utiliptables.TableNAT, utiliptables.ChainPostrouting, masqRuleSpec...); err != nil {
+		return fmt.Errorf("failed to ensure masquerade rule: %w", err)
+	}
+	if _, err := r.iptV6.EnsureRule(utiliptables.Append, utiliptables.TableNAT, utiliptables.ChainPostrouting, masqRuleSpec...); err != nil {
+		return fmt.Errorf("failed to ensure masquerade rule: %w", err)
+	}
+
 	return nil
 }
 
@@ -365,4 +428,27 @@ func selectSourceAddr(addrs []net.Addr) (*tcpip.FullAddress, error) {
 	}
 
 	return netstack.ToFullAddress(netip.MustParseAddrPort(localUDP.String())), nil
+}
+
+func getExternalIPPrefixes(extIfaceName string) (extIPv4Prefix, extIPv6Prefix netip.Prefix) {
+	extAddrs, err := tunnet.GetGlobalUnicastAddresses(extIfaceName)
+	if err != nil {
+		slog.Warn("Failed to get local IPv4 address",
+			slog.String("ext_iface", extIfaceName), slog.Any("error", err))
+	} else {
+		for _, addr := range extAddrs {
+			if addr.Addr().Is4() {
+				extIPv4Prefix = addr
+				break
+			}
+		}
+		for _, addr := range extAddrs {
+			if addr.Addr().Is6() {
+				extIPv6Prefix = addr
+				break
+			}
+		}
+	}
+
+	return
 }
