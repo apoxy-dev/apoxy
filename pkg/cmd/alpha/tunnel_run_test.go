@@ -60,7 +60,7 @@ func TestTunnelRun(t *testing.T) {
 		"alpha", "tunnel", "run",
 		"--agent", "test-agent",
 		"--name", "test-tunnel",
-		"--relay-addrs", r.Address(),
+		"--relay-addr", r.Address(),
 		"--token", "letmein",
 		"--insecure-skip-verify",
 	})
