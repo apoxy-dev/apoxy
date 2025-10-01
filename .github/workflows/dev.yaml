@@ -6,7 +6,7 @@ on:
       - "!main"
 jobs:
   build-all:
-    runs-on: depot-ubuntu-22.04-16,dagger=0.15.4
+    runs-on: depot-ubuntu-22.04-16,dagger=0.19.0
     steps:
       - uses: actions/checkout@v4
       - name: Setup Go
