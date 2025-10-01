@@ -26,7 +26,8 @@ func (r *Backend) ValidateUpdate(ctx context.Context, obj runtime.Object) field.
 func (r *Backend) validate() field.ErrorList {
 	errs := field.ErrorList{}
 
-	if r.Spec.DynamicProxy != nil && len(r.Spec.Endpoints) == 0 {
+	// Check that EITHER dynamic proxy OR endpoints set.
+	if r.Spec.DynamicProxy == nil && len(r.Spec.Endpoints) == 0 {
 		errs = append(errs, field.Required(field.NewPath("spec", "endpoints"), "endpoints cannot be empty"))
 	}
 	if r.Spec.DynamicProxy != nil && len(r.Spec.Endpoints) > 1 {
