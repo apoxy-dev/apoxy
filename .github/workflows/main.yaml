@@ -1,4 +1,4 @@
-name: CI
+name: Image Push
 on:
   push:
     branches:
