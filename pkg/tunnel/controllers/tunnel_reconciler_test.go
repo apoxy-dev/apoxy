@@ -39,7 +39,10 @@ func TestTunnelReconciler(t *testing.T) {
 		Build()
 
 	relay := &mockRelay{}
+	relay.On("Address").Return(netip.MustParseAddrPort("1.1.1.1:443"))
 	relay.On("SetCredentials", "tun-1", "secret-token").Once()
+	relay.On("SetRelayAddresses", "tun-1", mock.Anything).Once()
+	relay.On("SetEgressGateway", mock.Anything).Return().Once()
 
 	r := controllers.NewTunnelReconciler(c, relay, "")
 
@@ -78,6 +81,10 @@ func (m *mockRelay) SetCredentials(tunnelName, token string) {
 
 func (m *mockRelay) SetRelayAddresses(tunnelName string, addresses []string) {
 	m.Called(tunnelName, addresses)
+}
+
+func (m *mockRelay) SetEgressGateway(enabled bool) {
+	m.Called(enabled)
 }
 
 func (m *mockRelay) SetOnConnect(onConnect func(ctx context.Context, agentName string, conn controllers.Connection) error) {

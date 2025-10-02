@@ -7,7 +7,7 @@ import (
 )
 
 // GetGlobalUnicastAddresses returns the global unicast IPv4/IPv6 address of the specified interface.
-func GetGlobalUnicastAddresses(ifcName string) ([]netip.Prefix, error) {
+func GetGlobalUnicastAddresses(ifcName string, includeLoopback bool) ([]netip.Prefix, error) {
 	interfaces, err := net.Interfaces()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get network interfaces: %w", err)
@@ -20,7 +20,7 @@ func GetGlobalUnicastAddresses(ifcName string) ([]netip.Prefix, error) {
 		}
 
 		// Skip loopback and down interfaces
-		if iface.Flags&net.FlagLoopback != 0 || iface.Flags&net.FlagUp == 0 {
+		if (!includeLoopback && iface.Flags&net.FlagLoopback != 0) || iface.Flags&net.FlagUp == 0 {
 			continue
 		}
 
@@ -56,6 +56,30 @@ func GetGlobalUnicastAddresses(ifcName string) ([]netip.Prefix, error) {
 
 	if len(out) == 0 {
 		return nil, fmt.Errorf("no global unicast addresses found on the interface %s", ifcName)
+	}
+
+	return out, nil
+}
+
+// GetAllGlobalUnicastAddresses returns the global unicast IPv4/IPv6 addresses
+// across all non-loopback, up interfaces by calling GetGlobalUnicastAddresses
+// for each interface.
+func GetAllGlobalUnicastAddresses(includeLoopback bool) ([]netip.Prefix, error) {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get network interfaces: %w", err)
+	}
+
+	var out []netip.Prefix
+	for _, iface := range interfaces {
+		addrs, err := GetGlobalUnicastAddresses(iface.Name, includeLoopback)
+		if err == nil {
+			out = append(out, addrs...)
+		}
+	}
+
+	if len(out) == 0 {
+		return nil, fmt.Errorf("no global unicast addresses found on any interface")
 	}
 
 	return out, nil

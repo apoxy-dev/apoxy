@@ -91,9 +91,11 @@ func TestTunnelAgentReconciler_RemoveConnection(t *testing.T) {
 	// Two mock conns
 	conn1 := &mockConn{}
 	conn1.On("ID").Return("c1").Maybe()
+	conn1.On("Close").Return(nil).Once()
 
 	conn2 := &mockConn{}
 	conn2.On("ID").Return("c2").Maybe()
+	conn2.On("Close").Return(nil).Once()
 
 	require.NoError(t, r.AddConnection(ctx, agent.Name, conn1))
 	require.NoError(t, r.AddConnection(ctx, agent.Name, conn2))

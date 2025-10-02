@@ -32,7 +32,6 @@ import (
 
 const (
 	icxDefaultPort = 6081
-	extPathMTU     = 1500
 )
 
 var (
@@ -77,7 +76,7 @@ func NewICXNetlinkRouter(opts ...Option) (*ICXNetlinkRouter, error) {
 		return nil, fmt.Errorf("failed to get number of TX queues for interface %s: %w", options.extIfaceName, err)
 	}
 
-	tunDev, err := veth.Create(options.tunIfaceName, numQueues, icx.MTU(extPathMTU))
+	tunDev, err := veth.Create(options.tunIfaceName, numQueues, options.tunMTU)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create veth device: %w", err)
 	}
@@ -431,7 +430,7 @@ func selectSourceAddr(addrs []net.Addr) (*tcpip.FullAddress, error) {
 }
 
 func getExternalIPPrefixes(extIfaceName string) (extIPv4Prefix, extIPv6Prefix netip.Prefix) {
-	extAddrs, err := tunnet.GetGlobalUnicastAddresses(extIfaceName)
+	extAddrs, err := tunnet.GetGlobalUnicastAddresses(extIfaceName, false)
 	if err != nil {
 		slog.Warn("Failed to get local IPv4 address",
 			slog.String("ext_iface", extIfaceName), slog.Any("error", err))

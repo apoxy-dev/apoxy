@@ -4,6 +4,7 @@ package conntrackpc
 
 import (
 	"errors"
+	"log/slog"
 	"net"
 	"sync"
 	"time"
@@ -25,9 +26,6 @@ type Options struct {
 
 	// Size of each per-flow inbound queue (non-blocking fanout).
 	RxBufSize int
-
-	// If true, vconn.WriteTo's addr parameter can change the remote and re-key the flow.
-	AllowAddrOverrideOnWrite bool
 }
 
 func (o Options) withDefaults() Options {
@@ -74,6 +72,8 @@ func New(underlying net.PacketConn, opts Options) *ConntrackPacketConn {
 			// If v.key changed (due to re-key), skip closing.
 			if v.key == k {
 				_ = v.closeLocked(errFlowExpired)
+				slog.Debug("conntrack_packet_conn: flow evicted",
+					slog.String("key", k), slog.String("remote", v.remote.String()))
 			}
 		}
 	}
@@ -137,11 +137,13 @@ func (c *ConntrackPacketConn) Open(remote *net.UDPAddr) (*VirtualPacketConn, err
 	if v, ok := c.flows.Get(key); ok && !v.isClosed() {
 		// Refresh TTL by re-adding.
 		c.flows.Add(key, v)
+		slog.Debug("conntrack_packet_conn: flow opened (existing)", slog.String("key", key), slog.String("remote", remote.String()))
 		return v, nil
 	}
 
 	v := newVirtual(c, key, remote, c.opts.RxBufSize)
 	c.flows.Add(key, v)
+	slog.Debug("conntrack_packet_conn: flow opened", slog.String("key", key), slog.String("remote", remote.String()))
 	return v, nil
 }
 
@@ -185,11 +187,13 @@ func (c *ConntrackPacketConn) readLoop() {
 		if !ok {
 			if !c.opts.AutoCreate {
 				c.mu.Unlock()
+				slog.Debug("conntrack_packet_conn: packet dropped due to unknown flow", slog.String("from", from.String()), slog.Int("bytes", n))
 				continue
 			}
 			udpFrom, _ := from.(*net.UDPAddr)
 			v = newVirtual(c, key, udpFrom, c.opts.RxBufSize)
 			c.flows.Add(key, v) // registers & sets TTL
+			slog.Debug("conntrack_packet_conn: flow auto-created", slog.String("key", key), slog.String("remote", udpFrom.String()))
 		} else {
 			// refresh TTL on activity
 			c.flows.Add(key, v)
@@ -199,8 +203,10 @@ func (c *ConntrackPacketConn) readLoop() {
 		select {
 		case v.inbound <- append([]byte(nil), buf[:n]...):
 			v.touch()
+			slog.Debug("conntrack_packet_conn: packet delivered", slog.String("key", key), slog.Int("bytes", n))
 		default:
 			// drop to avoid HOL blocking
+			slog.Debug("conntrack_packet_conn: packet dropped due to backpressure", slog.String("key", key), slog.Int("bytes", n))
 		}
 		c.mu.Unlock()
 	}
@@ -287,26 +293,6 @@ func (v *VirtualPacketConn) WriteTo(b []byte, addr net.Addr) (int, error) {
 		return 0, net.ErrClosed
 	}
 	remote := v.remote
-
-	// Optional remote override + re-keying
-	if v.parent.opts.AllowAddrOverrideOnWrite && addr != nil {
-		if ua, ok := addr.(*net.UDPAddr); ok {
-			newKey := ua.String()
-			if newKey != v.key {
-				// Re-key safely: update fields, add new key, then remove old key.
-				v.parent.mu.Lock()
-				oldKey := v.key
-				v.key = newKey
-				v.remote = cloneUDPAddr(ua)
-				v.parent.flows.Add(newKey, v)
-				v.parent.flows.Remove(oldKey) // onEvicted won't close us now
-				v.parent.mu.Unlock()
-			} else {
-				v.remote = cloneUDPAddr(ua)
-			}
-			remote = ua
-		}
-	}
 
 	// Respect write deadline by temporarily setting it on the shared socket.
 	timer := v.nextWriteTimer()

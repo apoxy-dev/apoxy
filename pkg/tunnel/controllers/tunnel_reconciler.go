@@ -49,6 +49,13 @@ func (r *TunnelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	// Update relay addresses if they have changed.
 	r.relay.SetRelayAddresses(tunnel.Name, tunnel.Status.Addresses)
 
+	// Update egress gateway setting
+	var egressGatewayEnabled bool
+	if tunnel.Spec.EgressGateway != nil {
+		egressGatewayEnabled = tunnel.Spec.EgressGateway.Enabled
+	}
+	r.relay.SetEgressGateway(egressGatewayEnabled)
+
 	// Add our relay address to the list of addresses if missing.
 	if !slices.Contains(tunnel.Status.Addresses, r.relay.Address().String()) {
 		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {

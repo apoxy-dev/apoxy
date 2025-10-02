@@ -73,7 +73,11 @@ var tunnelRunCmd = &cobra.Command{
 		// Lazily create router/handler on first successful Connect.
 		getHandler := func(connectResp *api.ConnectResponse) (*icx.Handler, error) {
 			routerOnce.Do(func() {
-				var routerOpts []router.Option
+				routerOpts := []router.Option{
+					router.WithPacketConn(pcGeneve),
+					router.WithTunnelMTU(connectResp.MTU),
+				}
+
 				if socksListenAddr != "" {
 					routerOpts = append(routerOpts, router.WithSocksListenAddr(socksListenAddr))
 				}
@@ -89,13 +93,29 @@ var tunnelRunCmd = &cobra.Command{
 					routerOpts = append(routerOpts, router.WithResolveConfig(resolveConf))
 				}
 
-				r, routerErr = router.NewICXNetstackRouter(pcGeneve, connectResp.MTU, routerOpts...)
+				r, routerErr = router.NewICXNetstackRouter(routerOpts...)
 				if routerErr != nil {
 					return
 				}
 				handler = r.Handler
 
+				for _, addrStr := range connectResp.Addresses {
+					slog.Info("Adding address", slog.String("address", addrStr))
+
+					addr, err := netip.ParsePrefix(addrStr)
+					if err != nil {
+						slog.Warn("Failed to parse address", slog.String("address", addrStr), slog.Any("error", err))
+						continue
+					}
+
+					if err := r.AddAddr(addr, nil); err != nil {
+						slog.Warn("Failed to add address", slog.String("address", addrStr), slog.Any("error", err))
+					}
+				}
+
 				for _, route := range connectResp.Routes {
+					slog.Info("Adding route", slog.String("destination", route.Destination))
+
 					dst, err := netip.ParsePrefix(route.Destination)
 					if err != nil {
 						slog.Warn("Failed to parse route prefix", slog.String("prefix", route.Destination), slog.Any("error", err))
@@ -336,7 +356,16 @@ func manageRelayConnection(
 					return cleanupOnErr(fmt.Errorf("parse assigned addresses: %w", err))
 				}
 
-				// Multi-home: same VNI across different relays.
+				for _, route := range connectResp.Routes {
+					dst, err := netip.ParsePrefix(route.Destination)
+					if err != nil {
+						slog.Warn("Failed to parse route prefix", slog.String("prefix", route.Destination), slog.Any("error", err))
+						continue
+					}
+
+					overlayAddrs = append(overlayAddrs, dst)
+				}
+
 				if err := handler.AddVirtualNetwork(connectResp.VNI, netstack.ToFullAddress(remoteAddr), overlayAddrs); err != nil {
 					return cleanupOnErr(fmt.Errorf("add virtual network: %w", err))
 				}

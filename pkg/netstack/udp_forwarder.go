@@ -86,7 +86,7 @@ func udpHandler(ctx context.Context, upstream network.Network) func(req *udp.For
 		// - IPv4-mapped IPv6 addresses (::ffff:192.168.1.1) are converted to IPv4
 		// - Regular IPv6 addresses left as is (::1)
 		dstAddrPort := netip.AddrPortFrom(
-			Unmap4in6(addrFromNetstackIP(reqDetails.LocalAddress)),
+			addrFromNetstackIP(reqDetails.LocalAddress).Unmap(),
 			reqDetails.LocalPort,
 		)
 

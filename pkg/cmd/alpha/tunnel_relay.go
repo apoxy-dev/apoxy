@@ -1,5 +1,3 @@
-//go:build linux
-
 package alpha
 
 import (
@@ -9,24 +7,29 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"runtime"
 
 	"github.com/alphadose/haxmap"
 	"github.com/spf13/cobra"
 
 	"github.com/apoxy-dev/apoxy/pkg/cryptoutils"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel"
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/bifurcate"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/controllers"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/hasher"
 	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/router"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/vni"
+	"github.com/apoxy-dev/icx"
 )
 
 var (
-	relayName     string // the name for the relay
-	relayTunnel   string // the name of the tunnel to serve
-	extIfaceName  string // the external interface name
-	listenAddress string // the address to listen on for incoming connections
+	relayName            string // the name for the relay
+	relayTunnel          string // the name of the tunnel to serve
+	extIfaceName         string // the external interface name
+	listenAddress        string // the address to listen on for incoming connections
+	userMode             bool   // whether to use user-mode routing (no special privileges required)
+	relaySocksListenAddr string // when using user-mode routing, the address to listen on for SOCKS5 connections
 )
 
 var tunnelRelayCmd = &cobra.Command{
@@ -36,16 +39,38 @@ var tunnelRelayCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		routerOpts := []router.Option{
 			router.WithExternalInterface(extIfaceName),
+			router.WithEgressGateway(true),
+			router.WithSocksListenAddr(relaySocksListenAddr), // only used in user-mode
 		}
 
-		rtr, err := router.NewICXNetlinkRouter(routerOpts...)
-		if err != nil {
-			return fmt.Errorf("failed to create router: %w", err)
-		}
-
+		// One UDP socket shared between Geneve (data) and QUIC (control).
 		pc, err := net.ListenPacket("udp", listenAddress)
 		if err != nil {
 			return fmt.Errorf("failed to create UDP listener: %w", err)
+		}
+
+		pcGeneve, pcQuic := bifurcate.Bifurcate(pc)
+		defer pcGeneve.Close()
+		defer pcQuic.Close()
+
+		var rtr router.Router
+		var handler *icx.Handler
+		if userMode {
+			routerOpts = append(routerOpts, router.WithPacketConn(pcGeneve))
+
+			r, err := router.NewICXNetstackRouter(routerOpts...)
+			if err != nil {
+				return fmt.Errorf("failed to create router: %w", err)
+			}
+			rtr = r
+			handler = r.Handler
+		} else {
+			r, err := router.NewICXNetlinkRouter(routerOpts...)
+			if err != nil {
+				return fmt.Errorf("failed to create router: %w", err)
+			}
+			rtr = r
+			handler = r.Handler
 		}
 
 		idHasher := hasher.NewHasher([]byte("C0rr3ct-Horse-Battery-Staple_But_Salty_1x9Q7p3Z"))
@@ -55,12 +80,13 @@ var tunnelRelayCmd = &cobra.Command{
 			return fmt.Errorf("failed to generate self-signed TLS cert: %w", err)
 		}
 
-		relay := tunnel.NewRelay(relayName, pc, cert, rtr.Handler, idHasher, rtr)
+		relay := tunnel.NewRelay(relayName, pcQuic, cert, handler, idHasher, rtr)
 
 		slog.Info("Configuring relay", slog.String("tunnelName", relayTunnel), slog.String("listenAddress", listenAddress), slog.String("externalInterface", extIfaceName))
 
 		relay.SetCredentials(relayTunnel, "letmein")
-		relay.SetRelayAddresses(relayTunnel, []string{pc.LocalAddr().String()})
+		relay.SetRelayAddresses(relayTunnel, []string{pcQuic.LocalAddr().String()})
+		relay.SetEgressGateway(true)
 
 		systemULA := tunnet.NewULA(cmd.Context(), tunnet.SystemNetworkID)
 		agentIPAM, err := systemULA.IPAM(cmd.Context(), 96)
@@ -88,7 +114,10 @@ var tunnelRelayCmd = &cobra.Command{
 				slog.String("agent", agentName), slog.String("connID", conn.ID()),
 				slog.String("prefix", pfx.String()))
 
-			conn.SetOverlayAddress(pfx.String())
+			if err := conn.SetOverlayAddress(pfx.String()); err != nil {
+				agentIPAM.Release(pfx)
+				return fmt.Errorf("failed to set overlay address on connection: %w", err)
+			}
 
 			vni, err := vpool.Allocate()
 			if err != nil {
@@ -140,7 +169,9 @@ func init() {
 	tunnelRelayCmd.Flags().StringVarP(&relayName, "name", "n", "dev", "The name of the relay.")
 	tunnelRelayCmd.Flags().StringVarP(&relayTunnel, "tunnel-name", "t", "dev", "The name of the tunnel to serve.")
 	tunnelRelayCmd.Flags().StringVar(&extIfaceName, "ext-iface", "eth0", "External interface name.")
-	tunnelRelayCmd.Flags().StringVar(&listenAddress, "listen-addr", ":6081", "The address to listen on for incoming connections.")
+	tunnelRelayCmd.Flags().StringVar(&listenAddress, "listen-addr", "127.0.0.1:6081", "The address to listen on for incoming connections.")
+	tunnelRelayCmd.Flags().BoolVar(&userMode, "user-mode", runtime.GOOS != "linux", "Use user-mode routing (no special privileges required).")
+	tunnelRelayCmd.Flags().StringVar(&relaySocksListenAddr, "socks-addr", "localhost:1080", "When using user-mode routing, the address to listen on for SOCKS5 connections.")
 
 	tunnelCmd.AddCommand(tunnelRelayCmd)
 }

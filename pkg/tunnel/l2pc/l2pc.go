@@ -4,11 +4,15 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"sync"
 
+	"github.com/apoxy-dev/icx/addrselect"
 	"github.com/apoxy-dev/icx/udp"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
+
+	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 )
 
 var ErrInvalidFrame = errors.New("invalid frame")
@@ -16,7 +20,7 @@ var ErrInvalidFrame = errors.New("invalid frame")
 // L2PacketConn adapts a net.PacketConn (UDP) to read/write L2 Ethernet frames.
 type L2PacketConn struct {
 	pc           net.PacketConn
-	localAddr    *tcpip.FullAddress
+	localAddrs   addrselect.AddressList
 	localMAC     tcpip.LinkAddress
 	peerMACCache sync.Map
 	pktPool      sync.Pool
@@ -29,22 +33,48 @@ func NewL2PacketConn(pc net.PacketConn) (*L2PacketConn, error) {
 		return nil, fmt.Errorf("PacketConn must be UDP")
 	}
 
+	localAddrPort := netip.AddrPortFrom(netip.MustParseAddr(ua.IP.String()),
+		uint16(ua.Port))
+
+	localAddrPorts := []netip.AddrPort{localAddrPort}
+	if localAddrPort.Addr().IsUnspecified() {
+		localAddrs, err := tunnet.GetAllGlobalUnicastAddresses(true)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get local addresses: %w", err)
+		}
+
+		for _, addr := range localAddrs {
+			localAddrPorts = append(localAddrPorts, netip.AddrPortFrom(addr.Addr(), localAddrPort.Port()))
+		}
+	}
+
 	// Random locally-administered unicast MAC for "our" link address.
 	localMAC := tcpip.GetRandMacAddr()
 
-	c := &L2PacketConn{
-		pc: pc,
-		localAddr: &tcpip.FullAddress{
+	var localAddrs addrselect.AddressList
+	for _, ap := range localAddrPorts {
+		la := &tcpip.FullAddress{
 			Addr: func() tcpip.Address {
-				if ua.IP.To4() != nil {
-					return tcpip.AddrFrom4Slice(ua.IP.To4())
+				if ap.Addr().Is4() {
+					return tcpip.AddrFrom4Slice(ap.Addr().AsSlice())
 				}
-				return tcpip.AddrFrom16Slice(ua.IP.To16())
+				return tcpip.AddrFrom16Slice(ap.Addr().AsSlice())
 			}(),
 			Port:     uint16(ua.Port),
 			LinkAddr: localMAC,
-		},
-		localMAC: localMAC,
+		}
+		localAddrs = append(localAddrs, la)
+	}
+
+	// Ensure we have at least one address.
+	if len(localAddrs) == 0 {
+		return nil, fmt.Errorf("no valid local addresses found")
+	}
+
+	c := &L2PacketConn{
+		pc:         pc,
+		localAddrs: localAddrs,
+		localMAC:   localMAC,
 		pktPool: sync.Pool{
 			New: func() any {
 				b := make([]byte, 0, 65535)
@@ -135,11 +165,7 @@ func (c *L2PacketConn) ReadFrame(dst []byte) (int, error) {
 	// Build addresses for udp.Encode (note: for an inbound frame,
 	// src = remote, dst = local).
 	srcFA := toFullAddr(remote)
-	dstFA := &tcpip.FullAddress{
-		Addr:     c.localAddr.Addr,
-		Port:     c.localAddr.Port,
-		LinkAddr: c.localMAC, // Ethernet Dst = us
-	}
+	dstFA := c.localAddrs.Pick(srcFA)
 
 	// Random-but-stable (per remote IP) src MAC.
 	srcFA.LinkAddr = c.peerMACForIP(remote.IP)
@@ -156,11 +182,6 @@ func (c *L2PacketConn) ReadFrame(dst []byte) (int, error) {
 	}
 	copy(dst[:frameLen], (*phy)[:frameLen])
 	return frameLen, nil
-}
-
-// LocalAddr returns the local address of this connection.
-func (c *L2PacketConn) LocalAddr() *tcpip.FullAddress {
-	return c.localAddr
 }
 
 // LocalMAC returns the locally-administered unicast MAC address used by this connection.

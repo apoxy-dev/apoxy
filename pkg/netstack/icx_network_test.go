@@ -15,7 +15,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sync/errgroup"
-	"gvisor.dev/gvisor/pkg/tcpip"
 
 	"github.com/apoxy-dev/icx"
 
@@ -58,12 +57,10 @@ func TestICXNetwork_Speed(t *testing.T) {
 	aB := netip.AddrPortFrom(netip.MustParseAddr(uaB.IP.String()), uint16(uaB.Port))
 
 	// Build ICX handlers in L3 mode and link them together
-	hA, err := icx.NewHandler(icx.WithLocalAddr(netstack.ToFullAddress(aA)),
-		icx.WithVirtMAC(tcpip.GetRandMacAddr()), icx.WithLayer3VirtFrames())
+	hA, err := icx.NewHandler(icx.WithLocalAddr(netstack.ToFullAddress(aA)), icx.WithLayer3VirtFrames())
 	require.NoError(t, err)
 
-	hB, err := icx.NewHandler(icx.WithLocalAddr(netstack.ToFullAddress(aB)),
-		icx.WithVirtMAC(tcpip.GetRandMacAddr()), icx.WithLayer3VirtFrames())
+	hB, err := icx.NewHandler(icx.WithLocalAddr(netstack.ToFullAddress(aB)), icx.WithLayer3VirtFrames())
 	require.NoError(t, err)
 
 	const vni = 0x424242

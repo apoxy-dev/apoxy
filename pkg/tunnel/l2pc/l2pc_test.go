@@ -70,7 +70,6 @@ func TestNewL2PacketConn_UDPOnly(t *testing.T) {
 	c, err := l2pc.NewL2PacketConn(pc)
 	require.NoError(t, err)
 	require.NotNil(t, c)
-	require.Equal(t, uint16(pc.LocalAddr().(*net.UDPAddr).Port), c.LocalAddr().Port)
 	require.NotEmpty(t, c.LocalMAC())
 }
 

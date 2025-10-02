@@ -1,7 +1,6 @@
 package bifurcate
 
 import (
-	"log/slog"
 	"net"
 	"sync"
 
@@ -36,8 +35,6 @@ func Bifurcate(pc net.PacketConn) (net.PacketConn, net.PacketConn) {
 	otherClosed := otherConn.closed
 
 	go func() {
-		defer func() { slog.Info("Bifurcate exiting") }()
-
 		for {
 			// If both sides are gone, stop.
 			if geneveCh == nil && otherCh == nil {

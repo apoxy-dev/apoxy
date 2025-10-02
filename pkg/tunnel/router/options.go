@@ -1,8 +1,10 @@
 package router
 
 import (
+	"net"
 	"net/netip"
 
+	"github.com/apoxy-dev/icx"
 	"github.com/dpeckett/network"
 )
 
@@ -16,16 +18,20 @@ type routerOptions struct {
 	pcapPath              string
 	extIfaceName          string
 	tunIfaceName          string
+	tunMTU                int
 	socksListenAddr       string
 	cksumRecalc           bool
 	preserveDefaultGwDsts []netip.Prefix
 	sourcePortHashing     bool
+	pc                    net.PacketConn
+	egressGateway         bool
 }
 
 func defaultOptions() *routerOptions {
 	return &routerOptions{
 		extIfaceName:    "eth0",
 		tunIfaceName:    "tun0",
+		tunMTU:          icx.MTU(1500), // Default to a 1500 byte path MTU
 		socksListenAddr: "localhost:1080",
 		cksumRecalc:     false,
 	}
@@ -75,6 +81,13 @@ func WithTunnelInterface(name string) Option {
 	}
 }
 
+// WithTunnelMTU sets the tunnel interface MTU.
+func WithTunnelMTU(mtu int) Option {
+	return func(o *routerOptions) {
+		o.tunMTU = mtu
+	}
+}
+
 // WithSocksListenAddr sets the SOCKS listen address for the netstack router.
 // Only valid for netstack routers.
 func WithSocksListenAddr(addr string) Option {
@@ -104,5 +117,20 @@ func WithPreserveDefaultGwDsts(dsts []netip.Prefix) Option {
 func WithSourcePortHashing(enable bool) Option {
 	return func(o *routerOptions) {
 		o.sourcePortHashing = enable
+	}
+}
+
+// WithPacketConn sets the underlying PacketConn for the ICX router.
+// Only valid for ICX netstack router.
+func WithPacketConn(pc net.PacketConn) Option {
+	return func(o *routerOptions) {
+		o.pc = pc
+	}
+}
+
+// WithEgressGateway enables or disables internet egress for the router.
+func WithEgressGateway(enable bool) Option {
+	return func(o *routerOptions) {
+		o.egressGateway = enable
 	}
 }

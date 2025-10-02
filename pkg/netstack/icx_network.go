@@ -291,21 +291,6 @@ func (net *ICXNetwork) DelAddr(addr netip.Prefix) error {
 	return nil
 }
 
-// LocalAddresses returns the list of local addresses assigned to the network.
-func (net *ICXNetwork) LocalAddresses() ([]netip.Prefix, error) {
-	nic := net.stack.NICInfo()[net.nicID]
-
-	var addrs []netip.Prefix
-	for _, assignedAddr := range nic.ProtocolAddresses {
-		addrs = append(addrs, netip.PrefixFrom(
-			addrFromNetstackIP(assignedAddr.AddressWithPrefix.Address),
-			assignedAddr.AddressWithPrefix.PrefixLen,
-		))
-	}
-
-	return addrs, nil
-}
-
 // ForwardTo forwards all inbound TCP traffic to the upstream network.
 func (net *ICXNetwork) ForwardTo(ctx context.Context, upstream network.Network) error {
 	// Allow outgoing packets to have a source address different from the NIC.
@@ -325,4 +310,25 @@ func (net *ICXNetwork) ForwardTo(ctx context.Context, upstream network.Network) 
 	net.stack.SetTransportProtocolHandler(udp.ProtocolNumber, udpForwarder)
 
 	return nil
+}
+
+func prefixToSubnet(p netip.Prefix) (tcpip.Subnet, error) {
+	addr := tcpip.AddrFromSlice(p.Addr().AsSlice())
+
+	totalBits := 128
+	if p.Addr().Is4() {
+		totalBits = 32
+	}
+	ones := p.Bits()
+	if ones < 0 || ones > totalBits {
+		return tcpip.Subnet{}, fmt.Errorf("invalid prefix length %d", ones)
+	}
+
+	maskBytes := make([]byte, totalBits/8)
+	for i := 0; i < ones; i++ {
+		maskBytes[i/8] |= 1 << (7 - uint(i%8))
+	}
+	mask := tcpip.MaskFromBytes(maskBytes)
+
+	return tcpip.NewSubnet(addr, mask)
 }
