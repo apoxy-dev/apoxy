@@ -15,6 +15,8 @@ type Relay interface {
 	SetCredentials(tunnelName, token string)
 	// SetRelayAddresses sets the list of relay addresses that are serving a tunnel.
 	SetRelayAddresses(tunnelName string, addresses []string)
+	// SetEgressGateway enables or disables internet egress for the tunnel agents.
+	SetEgressGateway(enabled bool)
 	// SetOnConnect sets a callback that is invoked when a new connection is established to the relay.
 	SetOnConnect(onConnect func(ctx context.Context, agentName string, conn Connection) error)
 	// SetOnDisconnect sets a callback that is invoked when a connection is closed.

@@ -13,12 +13,12 @@ import (
 	"github.com/apoxy-dev/icx"
 	"github.com/dpeckett/network"
 	"golang.org/x/sync/errgroup"
-	"gvisor.dev/gvisor/pkg/tcpip"
 
 	"github.com/apoxy-dev/apoxy/pkg/netstack"
 	"github.com/apoxy-dev/apoxy/pkg/socksproxy"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/connection"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/l2pc"
+	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 )
 
 var (
@@ -26,37 +26,64 @@ var (
 )
 
 type ICXNetstackRouter struct {
-	Handler   *icx.Handler
-	phy       *l2pc.L2PacketConn
-	net       *netstack.ICXNetwork
-	proxy     *socksproxy.ProxyServer
-	closeOnce sync.Once
+	Handler       *icx.Handler
+	phy           *l2pc.L2PacketConn
+	net           *netstack.ICXNetwork
+	proxy         *socksproxy.ProxyServer
+	egressGateway bool
+	closeOnce     sync.Once
 }
 
-func NewICXNetstackRouter(pc net.PacketConn, mtu int, opts ...Option) (*ICXNetstackRouter, error) {
+func NewICXNetstackRouter(opts ...Option) (*ICXNetstackRouter, error) {
 	options := defaultOptions()
 	for _, opt := range opts {
 		opt(options)
 	}
 
-	phy, err := l2pc.NewL2PacketConn(pc)
+	if options.pc == nil {
+		return nil, fmt.Errorf("packet conn is required for ICX netstack router")
+	}
+
+	phy, err := l2pc.NewL2PacketConn(options.pc)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create L2 packet connection phy: %w", err)
 	}
 
-	localUDPAddr := pc.LocalAddr().(*net.UDPAddr)
+	handlerOpts := []icx.HandlerOption{
+		icx.WithLayer3VirtFrames(),
+	}
+	if options.sourcePortHashing {
+		handlerOpts = append(handlerOpts, icx.WithSourcePortHashing())
+	}
 
-	localAddr := netip.AddrPortFrom(netip.MustParseAddr(localUDPAddr.IP.String()),
+	localUDPAddr := options.pc.LocalAddr().(*net.UDPAddr)
+
+	localAddrPort := netip.AddrPortFrom(netip.MustParseAddr(localUDPAddr.IP.String()),
 		uint16(localUDPAddr.Port))
 
-	handler, err := icx.NewHandler(
-		icx.WithLocalAddr(netstack.ToFullAddress(localAddr)),
-		icx.WithVirtMAC(tcpip.GetRandMacAddr()), icx.WithLayer3VirtFrames())
+	localAddrPorts := []netip.AddrPort{localAddrPort}
+	if localAddrPort.Addr().IsUnspecified() {
+		localAddrs, err := tunnet.GetAllGlobalUnicastAddresses(true)
+		if err != nil {
+			_ = phy.Close()
+			return nil, fmt.Errorf("failed to get local addresses: %w", err)
+		}
+
+		for _, addr := range localAddrs {
+			localAddrPorts = append(localAddrPorts, netip.AddrPortFrom(addr.Addr(), localAddrPort.Port()))
+		}
+	}
+
+	for _, addr := range localAddrPorts {
+		handlerOpts = append(handlerOpts, icx.WithLocalAddr(netstack.ToFullAddress(addr)))
+	}
+
+	handler, err := icx.NewHandler(handlerOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create ICX handler: %w", err)
 	}
 
-	net, err := netstack.NewICXNetwork(handler, phy, mtu, options.resolveConf, options.pcapPath)
+	net, err := netstack.NewICXNetwork(handler, phy, options.tunMTU, options.resolveConf, options.pcapPath)
 	if err != nil {
 		_ = phy.Close()
 		return nil, fmt.Errorf("failed to create ICX network: %w", err)
@@ -69,10 +96,11 @@ func NewICXNetstackRouter(pc net.PacketConn, mtu int, opts ...Option) (*ICXNetst
 	)
 
 	return &ICXNetstackRouter{
-		Handler: handler,
-		phy:     phy,
-		net:     net,
-		proxy:   proxy,
+		Handler:       handler,
+		phy:           phy,
+		net:           net,
+		proxy:         proxy,
+		egressGateway: options.egressGateway,
 	}, nil
 }
 
@@ -107,13 +135,24 @@ func (r *ICXNetstackRouter) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to parse SOCKS listen port: %w", err)
 	}
 
-	slog.Info("Forwarding all inbound traffic to loopback interface")
+	if r.egressGateway {
+		slog.Info("Forwarding inbound traffic to internet")
 
-	if err := r.net.ForwardTo(ctx, network.Filtered(&network.FilteredNetworkConfig{
-		DeniedPorts: []uint16{uint16(socksListenPort)},
-		Upstream:    network.Host(),
-	})); err != nil {
-		return fmt.Errorf("failed to forward to loopback: %w", err)
+		if err := r.net.ForwardTo(ctx, network.Filtered(&network.FilteredNetworkConfig{
+			DeniedDestinations: []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8"), netip.MustParsePrefix("::1/128")},
+			Upstream:           network.Host(),
+		})); err != nil {
+			return fmt.Errorf("failed to forward to internet: %w", err)
+		}
+	} else {
+		slog.Info("Forwarding all inbound traffic to loopback interface")
+
+		if err := r.net.ForwardTo(ctx, network.Filtered(&network.FilteredNetworkConfig{
+			DeniedPorts: []uint16{uint16(socksListenPort)},
+			Upstream:    network.Loopback(),
+		})); err != nil {
+			return fmt.Errorf("failed to forward to loopback: %w", err)
+		}
 	}
 
 	g, ctx := errgroup.WithContext(ctx)
@@ -149,7 +188,7 @@ func (r *ICXNetstackRouter) Start(ctx context.Context) error {
 }
 
 // AddAddr adds a tun with an associated address to the router.
-func (r *ICXNetstackRouter) AddAddr(addr netip.Prefix, tun connection.Connection) error {
+func (r *ICXNetstackRouter) AddAddr(addr netip.Prefix, _ connection.Connection) error {
 	if err := r.net.AddAddr(addr); err != nil {
 		return fmt.Errorf("failed to add address to ICX network: %w", err)
 	}

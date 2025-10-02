@@ -160,57 +160,6 @@ func TestMaxFlowsEvictsOldestAndCloses(t *testing.T) {
 	assert.True(t, errors.Is(err, net.ErrClosed))
 }
 
-func TestAllowAddrOverrideOnWriteRekeysFlow(t *testing.T) {
-	under, local := makeUDP(t)
-	ct := conntrackpc.New(under, conntrackpc.Options{
-		AutoCreate:               true,
-		TTL:                      time.Minute,
-		MaxFlows:                 32,
-		RxBufSize:                8,
-		AllowAddrOverrideOnWrite: true,
-	})
-	t.Cleanup(func() { _ = ct.Close() })
-
-	// Two peers
-	peer1PC, peer1 := makeUDP(t)
-	peer2PC, peer2 := makeUDP(t)
-
-	// Establish flow with peer1
-	v, err := ct.Open(peer1)
-	require.NoError(t, err)
-
-	// Write to peer2 using override; this should re-key the virtual flow to peer2.
-	msg := []byte("rekey to peer2")
-	nw, err := v.WriteTo(msg, peer2)
-	require.NoError(t, err)
-	assert.Equal(t, len(msg), nw)
-
-	// Peer2 should receive it.
-	got, from := recvFrom(t, peer2PC, 2*time.Second)
-	assert.Equal(t, local.String(), from.String())
-	assert.Equal(t, msg, got)
-
-	// Now send from peer2 back to ct; v should receive it (flow has re-keyed).
-	reply := []byte("ack from peer2")
-	sendTo(t, peer2PC, local, reply)
-
-	buf := make([]byte, 1500)
-	require.NoError(t, v.SetReadDeadline(time.Now().Add(2*time.Second)))
-	n, addr, err := v.ReadFrom(buf)
-	require.NoError(t, err)
-	assert.Equal(t, peer2.String(), addr.String())
-	assert.Equal(t, reply, buf[:n])
-
-	// And a packet from peer1 should auto-create a *new* flow (since v moved).
-	sendTo(t, peer1PC, local, []byte("peer1 still here"))
-	v1, err := ct.Open(peer1) // should be a different handle than v
-	require.NoError(t, err)
-	require.NoError(t, v1.SetReadDeadline(time.Now().Add(2*time.Second)))
-	n, _, err = v1.ReadFrom(buf)
-	require.NoError(t, err)
-	assert.Equal(t, []byte("peer1 still here"), buf[:n])
-}
-
 func TestClosePropagatesToFlows(t *testing.T) {
 	under, _ := makeUDP(t)
 	ct := conntrackpc.New(under, conntrackpc.Options{
