@@ -119,7 +119,7 @@ func main() {
 		extIPv4Prefix netip.Prefix
 		extIPv6Prefix netip.Prefix
 	)
-	extAddrs, err := tunnet.GetGlobalUnicastAddresses(*extIface)
+	extAddrs, err := tunnet.GetGlobalUnicastAddresses(*extIface, false)
 	if err != nil {
 		log.Warnf("Failed to get local IPv6 address: %v", err)
 	} else {

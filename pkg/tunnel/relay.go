@@ -34,18 +34,19 @@ const (
 )
 
 type Relay struct {
-	mu           sync.Mutex
-	name         string
-	pc           net.PacketConn
-	cert         tls.Certificate
-	handler      *icx.Handler
-	idHasher     *hasher.Hasher
-	router       router.Router
-	tokens       *haxmap.Map[string, string]      // map[tunnelName]token
-	relayAddrs   *haxmap.Map[string, []string]    // map[tunnelName][]string
-	conns        *haxmap.Map[string, *connection] // map[connectionID]Connection
-	onConnect    func(ctx context.Context, agentName string, conn controllers.Connection) error
-	onDisconnect func(ctx context.Context, agentName, id string) error
+	mu            sync.Mutex
+	name          string
+	pc            net.PacketConn
+	cert          tls.Certificate
+	handler       *icx.Handler
+	idHasher      *hasher.Hasher
+	router        router.Router
+	egressGateway bool
+	tokens        *haxmap.Map[string, string]      // map[tunnelName]token
+	relayAddrs    *haxmap.Map[string, []string]    // map[tunnelName][]string
+	conns         *haxmap.Map[string, *connection] // map[connectionID]Connection
+	onConnect     func(ctx context.Context, agentName string, conn controllers.Connection) error
+	onDisconnect  func(ctx context.Context, agentName, id string) error
 }
 
 func NewRelay(name string, pc net.PacketConn, cert tls.Certificate, handler *icx.Handler, idHasher *hasher.Hasher, router router.Router) *Relay {
@@ -80,6 +81,14 @@ func (r *Relay) SetCredentials(tunnelName, token string) {
 // SetRelayAddresses sets the list of relay addresses that are serving a tunnel.
 func (r *Relay) SetRelayAddresses(tunnelName string, addresses []string) {
 	r.relayAddrs.Set(tunnelName, addresses)
+}
+
+// SetEgressGateway enables or disables internet egress for the tunnel agents.
+func (r *Relay) SetEgressGateway(enabled bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.egressGateway = enabled
 }
 
 // SetOnConnect sets a callback that is invoked when a new connection is established to the relay.
@@ -254,6 +263,12 @@ func (r *Relay) handleConnect(w http.ResponseWriter, req *http.Request, ps httpr
 			}
 			routes = append(routes, api.Route{Destination: pfx.String()})
 		}
+	}
+	if r.egressGateway {
+		// Default route for all traffic.
+		routes = append(routes,
+			api.Route{Destination: "0.0.0.0/0"},
+			api.Route{Destination: "::/0"})
 	}
 
 	tunnelName := ps.ByName("name")
