@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand"
+	"net/http"
 	"net/netip"
 	"os"
 	"sync"
@@ -72,6 +73,7 @@ var (
 	minConns           int
 	dnsListenAddr      string
 	autoCreate         bool
+	healthAddr         string
 
 	preserveDefaultGwDsts []netip.Prefix
 )
@@ -231,6 +233,33 @@ func (t *tunnelNodeReconciler) run(ctx context.Context, tn *corev1alpha.TunnelNo
 		}
 		return nil
 	})
+
+	// Start health endpoint server if configured
+	if healthAddr != "" {
+		mux := http.NewServeMux()
+		mux.HandleFunc("/healthz", t.healthHandler)
+
+		healthServer := &http.Server{
+			Addr:    healthAddr,
+			Handler: mux,
+		}
+
+		g.Go(func() error {
+			slog.Info("Starting health endpoint server", slog.String("address", healthAddr))
+			if err := healthServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				slog.Error("Health server failed", slog.Any("error", err))
+				return err
+			}
+			return nil
+		})
+
+		g.Go(func() error {
+			<-gctx.Done()
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			return healthServer.Shutdown(shutdownCtx)
+		})
+	}
 
 	r, err := tunnel.BuildClientRouter(
 		tunnel.WithPcapPath(tunnelNodePcapPath),
@@ -402,4 +431,33 @@ func (t *tunnelNodeReconciler) reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// healthHandler returns 200 OK when at least one tunnel connection is active, 503 otherwise.
+// This endpoint is used for health checks to determine if the tunnel node has active connections.
+// The health endpoint is only started when the --health-endpoint flag is provided with a valid
+// address (e.g., ":8080" or "0.0.0.0:8080").
+//
+// Response codes:
+//   - 200 OK: At least one tunnel connection is active
+//   - 503 Service Unavailable: No active tunnel connections
+func (t *tunnelNodeReconciler) healthHandler(w http.ResponseWriter, r *http.Request) {
+	t.tunMu.RLock()
+	defer t.tunMu.RUnlock()
+
+	// Check if we have at least one active connection
+	activeConns := 0
+	for _, conn := range t.tunDialerWorkers {
+		if conn.conn != nil && conn.conn.Context().Err() == nil {
+			activeConns++
+		}
+	}
+
+	if activeConns > 0 {
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "OK - %d active connection(s)\n", activeConns)
+	} else {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		fmt.Fprintf(w, "UNHEALTHY - no active connections\n")
+	}
 }
