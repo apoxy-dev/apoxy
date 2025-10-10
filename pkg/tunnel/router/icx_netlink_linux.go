@@ -61,14 +61,9 @@ func NewICXNetlinkRouter(opts ...Option) (*ICXNetlinkRouter, error) {
 		return nil, fmt.Errorf("failed to find interface %s: %w", options.extIfaceName, err)
 	}
 
-	addrs, err := addrsForInterface(extLink, icxDefaultPort)
+	extAddrs, err := addrsForInterface(extLink, icxDefaultPort)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get addresses for interface %s: %w", options.extIfaceName, err)
-	}
-
-	localAddr, err := selectSourceAddr(addrs)
-	if err != nil {
-		return nil, fmt.Errorf("failed to select source address: %w", err)
 	}
 
 	numQueues, err := tunnel.NumQueues(extLink)
@@ -109,9 +104,18 @@ func NewICXNetlinkRouter(opts ...Option) (*ICXNetlinkRouter, error) {
 	virtMAC := tcpip.LinkAddress(tunDev.Link.Attrs().HardwareAddr)
 
 	handlerOpts := []icx.HandlerOption{
-		icx.WithLocalAddr(localAddr),
 		icx.WithVirtMAC(virtMAC),
 	}
+
+	for _, addr := range extAddrs {
+		ua, ok := addr.(*net.UDPAddr)
+		if !ok {
+			continue
+		}
+		handlerOpts = append(handlerOpts,
+			icx.WithLocalAddr(netstack.ToFullAddress(netip.MustParseAddrPort(ua.String()))))
+	}
+
 	if options.sourcePortHashing {
 		handlerOpts = append(handlerOpts, icx.WithSourcePortHashing())
 	}
@@ -122,7 +126,7 @@ func NewICXNetlinkRouter(opts ...Option) (*ICXNetlinkRouter, error) {
 		return nil, fmt.Errorf("failed to create handler: %w", err)
 	}
 
-	ingressFilter, err := filter.Bind(addrs...)
+	ingressFilter, err := filter.Bind(extAddrs...)
 	if err != nil {
 		_ = tunDev.Close()
 		return nil, fmt.Errorf("failed to create ingress filter: %w", err)
@@ -144,7 +148,13 @@ func NewICXNetlinkRouter(opts ...Option) (*ICXNetlinkRouter, error) {
 		}
 	}
 
-	tun, err := tunnel.NewTunnel(options.extIfaceName, tunDev.Peer.Attrs().Name, ingressFilter, handler, pcapWriter)
+	tun, err := tunnel.NewTunnel(
+		handler,
+		tunnel.WithPhyName(options.extIfaceName),
+		tunnel.WithVirtName(tunDev.Peer.Attrs().Name),
+		tunnel.WithPhyFilter(ingressFilter),
+		tunnel.WithPcapWriter(pcapWriter),
+	)
 	if err != nil {
 		_ = tunDev.Close()
 		_ = ingressFilter.Close()
@@ -167,6 +177,10 @@ func NewICXNetlinkRouter(opts ...Option) (*ICXNetlinkRouter, error) {
 func (r *ICXNetlinkRouter) Close() error {
 	var firstErr error
 	r.closeOnce.Do(func() {
+		if err := r.teardownDNAT(); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("failed to teardown DNAT: %w", err)
+		}
+
 		if err := r.tun.Close(); err != nil && firstErr == nil {
 			firstErr = fmt.Errorf("failed to close tunnel: %w", err)
 		}
@@ -344,7 +358,11 @@ func (r *ICXNetlinkRouter) syncDNATChain() error {
 
 	peers := r.Handler.ListVirtualNetworks()
 
+	slog.Info("Syncing DNAT rules", slog.Int("num_peers", len(peers)))
+
 	for i, peer := range peers {
+		slog.Info("Adding DNAT rules for peer", slog.String("peer", peer.RemoteAddr.Addr.String()))
+
 		for _, addr := range peer.Addrs {
 			if addr.Addr().Is4() { // Skipping IPv4 peers - only IPv6 tunnel ingress is supported.
 				continue
@@ -378,6 +396,53 @@ func (r *ICXNetlinkRouter) syncDNATChain() error {
 	return nil
 }
 
+func (r *ICXNetlinkRouter) teardownDNAT() error {
+	var firstErr error
+
+	extName := r.extLink.Attrs().Name
+	tunName := r.tunLink.Attrs().Name
+
+	_, extIPv6Prefix := getExternalIPPrefixes(extName)
+
+	// Remove the v6 PREROUTING jump rule (if we added it).
+	if extIPv6Prefix.IsValid() {
+		jRuleSpec := []string{"-d", extIPv6Prefix.Addr().String(), "-i", extName, "-j", string(ChainA3yTunRules)}
+		if err := r.iptV6.DeleteRule(utiliptables.TableNAT, utiliptables.ChainPrerouting, jRuleSpec...); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("failed to delete v6 jump rule: %w", err)
+		}
+	}
+
+	// Remove the FORWARD rules (we added them via iptV6 in setup).
+	fwdRuleSpecs := [][]string{
+		{"-i", extName, "-o", tunName, "-j", "ACCEPT"},
+		{"-i", tunName, "-o", extName, "-j", "ACCEPT"},
+	}
+	for _, ruleSpec := range fwdRuleSpecs {
+		if err := r.iptV6.DeleteRule(utiliptables.TableFilter, utiliptables.ChainForward, ruleSpec...); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("failed to delete v6 forward rule %v: %w", ruleSpec, err)
+		}
+	}
+
+	// Remove POSTROUTING MASQUERADE (v4 + v6).
+	masqRuleSpec := []string{"-o", extName, "-j", "MASQUERADE"}
+	if err := r.iptV4.DeleteRule(utiliptables.TableNAT, utiliptables.ChainPostrouting, masqRuleSpec...); err != nil && firstErr == nil {
+		firstErr = fmt.Errorf("failed to delete v4 masquerade rule: %w", err)
+	}
+	if err := r.iptV6.DeleteRule(utiliptables.TableNAT, utiliptables.ChainPostrouting, masqRuleSpec...); err != nil && firstErr == nil {
+		firstErr = fmt.Errorf("failed to delete v6 masquerade rule: %w", err)
+	}
+
+	// Flush & delete the apoxy chain.
+	if err := r.iptV6.FlushChain(utiliptables.TableNAT, ChainA3yTunRules); err != nil && firstErr == nil {
+		firstErr = fmt.Errorf("failed to flush chain %s: %w", ChainA3yTunRules, err)
+	}
+	if err := r.iptV6.DeleteChain(utiliptables.TableNAT, ChainA3yTunRules); err != nil && firstErr == nil {
+		firstErr = fmt.Errorf("failed to delete chain %s: %w", ChainA3yTunRules, err)
+	}
+
+	return firstErr
+}
+
 func addrsForInterface(link netlink.Link, port int) ([]net.Addr, error) {
 	nlAddrs, err := netlink.AddrList(link, netlink.FAMILY_ALL)
 	if err != nil {
@@ -396,37 +461,6 @@ func addrsForInterface(link netlink.Link, port int) ([]net.Addr, error) {
 	}
 
 	return addrs, nil
-}
-
-func selectSourceAddr(addrs []net.Addr) (*tcpip.FullAddress, error) {
-	var localUDP *net.UDPAddr
-	bestScore := -1
-	for _, a := range addrs {
-		if ua, ok := a.(*net.UDPAddr); ok && ua.IP != nil {
-			score := 0
-			if ua.IP.IsGlobalUnicast() {
-				// Prefer IPv4 over IPv6 for most underlays unless otherwise configured.
-				if ua.IP.To4() != nil {
-					score = 3
-				} else {
-					score = 2
-				}
-			} else {
-				// Still consider non-global addresses as a last resort.
-				score = 1
-			}
-			if score > bestScore {
-				bestScore = score
-				localUDP = ua
-			}
-		}
-	}
-
-	if localUDP == nil {
-		return nil, fmt.Errorf("no valid UDP address found")
-	}
-
-	return netstack.ToFullAddress(netip.MustParseAddrPort(localUDP.String())), nil
 }
 
 func getExternalIPPrefixes(extIfaceName string) (extIPv4Prefix, extIPv6Prefix netip.Prefix) {
