@@ -31,6 +31,7 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/l2pc"
 )
 
+// TODO (dpeckett): nuke this at some point and merge the logic into the router.
 type ICXNetwork struct {
 	network.Network
 	handler        *icx.Handler

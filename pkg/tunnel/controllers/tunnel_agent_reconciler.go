@@ -84,7 +84,7 @@ func (r *TunnelAgentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			}
 
 			if sc.VNI != nil {
-				if err := conn.SetVNI(uint(*sc.VNI)); err != nil {
+				if err := conn.SetVNI(ctx, uint(*sc.VNI)); err != nil {
 					return ctrl.Result{}, fmt.Errorf("failed to set VNI for connection %q: %w", sc.ID, err)
 				}
 			}

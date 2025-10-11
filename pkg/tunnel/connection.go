@@ -1,10 +1,12 @@
 package tunnel
 
 import (
+	"context"
 	"fmt"
 	"net/netip"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/apoxy-dev/apoxy/pkg/netstack"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/controllers"
@@ -15,6 +17,7 @@ import (
 var _ controllers.Connection = (*connection)(nil)
 
 // connection is a connection like abstraction over an icx virtual network.
+// TODO (dpeckett): nuke this at some point and merge the logic into the router.
 type connection struct {
 	mu          sync.Mutex
 	id          string
@@ -65,7 +68,7 @@ func (c *connection) VNI() *uint {
 }
 
 // Set the VNI assigned to this connection.
-func (c *connection) SetVNI(vni uint) error {
+func (c *connection) SetVNI(ctx context.Context, vni uint) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -88,7 +91,22 @@ func (c *connection) SetVNI(vni uint) error {
 		addrs = []netip.Prefix{*c.overlayAddr}
 	}
 
-	if err := c.handler.AddVirtualNetwork(vni, netstack.ToFullAddress(c.remoteAddr), addrs); err != nil {
+	fa := netstack.ToFullAddress(c.remoteAddr)
+
+	// If using the netlink router, we need to resolve the MAC address of the peer.
+	rtr, ok := c.router.(*router.ICXNetlinkRouter)
+	if ok {
+		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+
+		var err error
+		fa.LinkAddr, err = rtr.ResolveMAC(ctx, c.remoteAddr)
+		if err != nil {
+			return fmt.Errorf("failed to resolve peer MAC address: %w", err)
+		}
+	}
+
+	if err := c.handler.AddVirtualNetwork(vni, fa, addrs); err != nil {
 		return fmt.Errorf("failed to add virtual network %d: %w", vni, err)
 	}
 	c.vni = &vni

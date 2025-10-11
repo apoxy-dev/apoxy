@@ -15,40 +15,44 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/connection"
 )
 
-func NewICXNetlinkRouter(_ ...Option) (*ICXNotImplementedRouter, error) {
+func NewICXNetlinkRouter(_ ...Option) (*ICXNetlinkRouter, error) {
 	h, err := icx.NewHandler(icx.WithLocalAddr(netstack.ToFullAddress(netip.MustParseAddrPort("127.0.0.1:6081"))),
 		icx.WithVirtMAC(tcpip.GetRandMacAddr()))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create ICX handler: %w", err)
 	}
 
-	return &ICXNotImplementedRouter{Handler: h}, nil
+	return &ICXNetlinkRouter{Handler: h}, nil
 }
 
-type ICXNotImplementedRouter struct {
+type ICXNetlinkRouter struct {
 	Handler *icx.Handler
 }
 
-func (r *ICXNotImplementedRouter) Start(ctx context.Context) error {
+func (r *ICXNetlinkRouter) Start(ctx context.Context) error {
 	return errors.New("not implemented")
 }
 
-func (r *ICXNotImplementedRouter) AddAddr(_ netip.Prefix, _ connection.Connection) error {
+func (r *ICXNetlinkRouter) AddAddr(_ netip.Prefix, _ connection.Connection) error {
 	return errors.New("not implemented")
 }
 
-func (r *ICXNotImplementedRouter) DelAddr(_ netip.Prefix) error {
+func (r *ICXNetlinkRouter) DelAddr(_ netip.Prefix) error {
 	return errors.New("not implemented")
 }
 
-func (r *ICXNotImplementedRouter) AddRoute(dst netip.Prefix) error {
+func (r *ICXNetlinkRouter) AddRoute(dst netip.Prefix) error {
 	return errors.New("not implemented")
 }
 
-func (r *ICXNotImplementedRouter) DelRoute(dst netip.Prefix) error {
+func (r *ICXNetlinkRouter) DelRoute(dst netip.Prefix) error {
 	return errors.New("not implemented")
 }
 
-func (r *ICXNotImplementedRouter) Close() error {
+func (r *ICXNetlinkRouter) Close() error {
 	return nil
+}
+
+func (r *ICXNetlinkRouter) ResolveMAC(ctx context.Context, addr netip.AddrPort) (tcpip.LinkAddress, error) {
+	return "", errors.New("not implemented")
 }
