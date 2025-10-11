@@ -112,8 +112,8 @@ func isGeneve(b []byte) bool {
 		return false
 	}
 
-	// Check for valid protocol types (IPv4 or IPv6)
-	if hdr.ProtocolType != uint16(header.IPv4ProtocolNumber) && hdr.ProtocolType != uint16(header.IPv6ProtocolNumber) {
+	// Check for valid protocol types (IPv4 or IPv6) or EtherType unknown (out-of-band messages).
+	if hdr.ProtocolType != uint16(header.IPv4ProtocolNumber) && hdr.ProtocolType != uint16(header.IPv6ProtocolNumber) && hdr.ProtocolType != 0 {
 		return false
 	}
 

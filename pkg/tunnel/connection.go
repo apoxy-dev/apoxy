@@ -93,6 +93,22 @@ func (c *connection) SetVNI(vni uint) error {
 	}
 	c.vni = &vni
 
+	if c.overlayAddr != nil {
+		// Clean up any existing routes first to avoid duplicates.
+		_ = c.router.DelAddr(*c.overlayAddr)
+		_ = c.router.DelRoute(*c.overlayAddr)
+
+		if err := c.router.AddAddr(*c.overlayAddr, nil); err != nil {
+			return fmt.Errorf("failed to add address to router: %w", err)
+		}
+		if err := c.router.AddRoute(*c.overlayAddr); err != nil {
+			// Try to roll back: remove the new addr to avoid duplicates.
+			_ = c.router.DelAddr(*c.overlayAddr)
+			_ = c.router.DelRoute(*c.overlayAddr)
+			return fmt.Errorf("failed to add route to router: %w", err)
+		}
+	}
+
 	return nil
 }
 

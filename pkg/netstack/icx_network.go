@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/apoxy-dev/icx"
 	"github.com/dpeckett/network"
@@ -163,23 +164,42 @@ func (net *ICXNetwork) Start() error {
 
 	// Outbound: netstack (L3) -> ICX -> L2PacketConn.WriteFrame
 	g.Go(func() error {
-		for {
-			view, ok := <-net.incomingPacket
-			if !ok {
-				return stdnet.ErrClosed // channel closed => done
-			}
-			ip := view.AsSlice() // raw IP bytes (v4 or v6)
+		// Avoid a busy loop.
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
 
-			phyFrame := net.pktPool.Get().(*[]byte)
-			*phyFrame = (*phyFrame)[:cap(*phyFrame)]
-			n, _ := net.handler.VirtToPhy(ip, *phyFrame)
-			if n > 0 {
-				if err := net.phy.WriteFrame((*phyFrame)[:n]); err != nil {
-					net.pktPool.Put(phyFrame)
-					return fmt.Errorf("writing phy frame failed: %w", err)
+		for {
+			select {
+			case view, ok := <-net.incomingPacket:
+				if !ok {
+					return stdnet.ErrClosed // channel closed => done
 				}
+
+				ip := view.AsSlice() // raw IP bytes (v4 or v6)
+
+				phyFrame := net.pktPool.Get().(*[]byte)
+				*phyFrame = (*phyFrame)[:cap(*phyFrame)]
+				n, _ := net.handler.VirtToPhy(ip, *phyFrame)
+				if n > 0 {
+					if err := net.phy.WriteFrame((*phyFrame)[:n]); err != nil {
+						net.pktPool.Put(phyFrame)
+						return fmt.Errorf("writing phy frame failed: %w", err)
+					}
+				}
+				net.pktPool.Put(phyFrame)
+
+			case <-ticker.C:
+				phyFrame := net.pktPool.Get().(*[]byte)
+				*phyFrame = (*phyFrame)[:cap(*phyFrame)]
+
+				if n := net.handler.ScheduledToPhy(*phyFrame); n > 0 {
+					if err := net.phy.WriteFrame((*phyFrame)[:n]); err != nil {
+						net.pktPool.Put(phyFrame)
+						return fmt.Errorf("writing scheduled phy frame failed: %w", err)
+					}
+				}
+				net.pktPool.Put(phyFrame)
 			}
-			net.pktPool.Put(phyFrame)
 		}
 	})
 
