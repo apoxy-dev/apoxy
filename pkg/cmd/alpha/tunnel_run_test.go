@@ -35,7 +35,7 @@ func TestTunnelRun(t *testing.T) {
 	// onConnect assigns VNI and overlay address so handleConnect can proceed.
 	onConnect := func(ctx context.Context, agent string, conn controllers.Connection) error {
 		// Choose a deterministic VNI for the test.
-		conn.SetVNI(101)
+		conn.SetVNI(ctx, 101)
 		conn.SetOverlayAddress("10.0.0.2/32")
 		t.Logf("onConnect called, agent=%s", agent)
 		if agent == "test-agent" {
