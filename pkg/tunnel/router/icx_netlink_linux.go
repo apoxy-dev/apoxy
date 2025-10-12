@@ -13,7 +13,9 @@ import (
 	"sync"
 
 	"github.com/apoxy-dev/icx"
+	"github.com/apoxy-dev/icx/addrselect"
 	"github.com/apoxy-dev/icx/filter"
+	"github.com/apoxy-dev/icx/mac"
 	"github.com/apoxy-dev/icx/tunnel"
 	"github.com/apoxy-dev/icx/veth"
 	"github.com/google/gopacket/layers"
@@ -47,6 +49,7 @@ type ICXNetlinkRouter struct {
 	pcapFile      *os.File
 	tun           *tunnel.Tunnel
 	iptV4, iptV6  utiliptables.Interface
+	extAddrs      addrselect.AddressList
 	closeOnce     sync.Once
 }
 
@@ -108,12 +111,12 @@ func NewICXNetlinkRouter(opts ...Option) (*ICXNetlinkRouter, error) {
 	}
 
 	for _, addr := range extAddrs {
-		ua, ok := addr.(*net.UDPAddr)
-		if !ok {
-			continue
-		}
+		fa := netstack.ToFullAddress(netip.MustParseAddrPort(addr.String()))
+		fa.LinkAddr = tcpip.LinkAddress(extLink.Attrs().HardwareAddr)
+
 		handlerOpts = append(handlerOpts,
-			icx.WithLocalAddr(netstack.ToFullAddress(netip.MustParseAddrPort(ua.String()))))
+			icx.WithLocalAddr(fa),
+		)
 	}
 
 	if options.sourcePortHashing {
@@ -161,6 +164,11 @@ func NewICXNetlinkRouter(opts ...Option) (*ICXNetlinkRouter, error) {
 		return nil, fmt.Errorf("failed to create tunnel: %w", err)
 	}
 
+	var extAddrsList addrselect.AddressList
+	for _, addr := range extAddrs {
+		extAddrsList = append(extAddrsList, netstack.ToFullAddress(netip.MustParseAddrPort(addr.String())))
+	}
+
 	return &ICXNetlinkRouter{
 		Handler:       handler,
 		extLink:       extLink,
@@ -171,6 +179,7 @@ func NewICXNetlinkRouter(opts ...Option) (*ICXNetlinkRouter, error) {
 		tun:           tun,
 		iptV4:         utiliptables.New(utilexec.New(), utiliptables.ProtocolIPv4),
 		iptV6:         utiliptables.New(utilexec.New(), utiliptables.ProtocolIPv6),
+		extAddrs:      extAddrsList,
 	}, nil
 }
 
@@ -297,6 +306,31 @@ func (r *ICXNetlinkRouter) DelRoute(dst netip.Prefix) error {
 
 	slog.Info("Route removed", slog.String("dst", dst.String()))
 	return nil
+}
+
+// ResolveMAC resolves the MAC address for the given peer address.
+func (r *ICXNetlinkRouter) ResolveMAC(ctx context.Context, peerAddr netip.AddrPort) (tcpip.LinkAddress, error) {
+	peerFullAddr := netstack.ToFullAddress(peerAddr)
+
+	localFullAddr := r.extAddrs.Pick(peerFullAddr)
+
+	slog.Debug("Resolving MAC address",
+		slog.String("local", localFullAddr.Addr.String()),
+		slog.String("peer", peerFullAddr.Addr.String()),
+	)
+
+	linkAddr, err := mac.Resolve(ctx, r.extLink, localFullAddr, peerFullAddr.Addr)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve peer MAC address: %w", err)
+	}
+
+	slog.Info("Resolved peer MAC address",
+		slog.String("local", localFullAddr.Addr.String()),
+		slog.String("peer", peerFullAddr.Addr.String()),
+		slog.String("mac", linkAddr.String()),
+	)
+
+	return linkAddr, nil
 }
 
 func (r *ICXNetlinkRouter) setupDNAT() error {

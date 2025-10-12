@@ -1,6 +1,7 @@
 package controllers_test
 
 import (
+	"context"
 	"net/netip"
 	"testing"
 
@@ -244,8 +245,8 @@ func (m *mockConn) SetOverlayAddress(addr string) error {
 	return args.Error(0)
 }
 
-func (m *mockConn) SetVNI(v uint) error {
-	args := m.Called(v)
+func (m *mockConn) SetVNI(ctx context.Context, v uint) error {
+	args := m.Called(ctx, v)
 	return args.Error(0)
 }
 

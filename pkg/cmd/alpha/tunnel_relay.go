@@ -30,6 +30,7 @@ var (
 	listenAddress        string // the address to listen on for incoming connections
 	userMode             bool   // whether to use user-mode routing (no special privileges required)
 	relaySocksListenAddr string // when using user-mode routing, the address to listen on for SOCKS5 connections
+	relayPcapPath        string // optional pcap path
 )
 
 var tunnelRelayCmd = &cobra.Command{
@@ -41,6 +42,10 @@ var tunnelRelayCmd = &cobra.Command{
 			router.WithExternalInterface(extIfaceName),
 			router.WithEgressGateway(true),
 			router.WithSocksListenAddr(relaySocksListenAddr), // only used in user-mode
+		}
+
+		if relayPcapPath != "" {
+			routerOpts = append(routerOpts, router.WithPcapPath(relayPcapPath))
 		}
 
 		// One UDP socket shared between Geneve (data) and QUIC (control).
@@ -128,7 +133,7 @@ var tunnelRelayCmd = &cobra.Command{
 				slog.String("agent", agentName), slog.String("connID", conn.ID()),
 				slog.Int("vni", int(vni)))
 
-			if err := conn.SetVNI(vni); err != nil {
+			if err := conn.SetVNI(cmd.Context(), vni); err != nil {
 				return fmt.Errorf("failed to set VNI on connection: %w", err)
 			}
 
@@ -172,6 +177,7 @@ func init() {
 	tunnelRelayCmd.Flags().StringVar(&listenAddress, "listen-addr", "127.0.0.1:6081", "The address to listen on for incoming connections.")
 	tunnelRelayCmd.Flags().BoolVar(&userMode, "user-mode", runtime.GOOS != "linux", "Use user-mode routing (no special privileges required).")
 	tunnelRelayCmd.Flags().StringVar(&relaySocksListenAddr, "socks-addr", "localhost:1080", "When using user-mode routing, the address to listen on for SOCKS5 connections.")
+	tunnelRelayCmd.Flags().StringVarP(&relayPcapPath, "pcap", "p", "", "Path to an optional packet capture file to write.")
 
 	tunnelCmd.AddCommand(tunnelRelayCmd)
 }
