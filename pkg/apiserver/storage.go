@@ -31,10 +31,14 @@ func NewKineStorage(ctx context.Context, dsn string) (rest.StoreFn, error) {
 		ConnectionPoolConfig: driversgeneric.ConnectionPoolConfig{
 			MaxOpen: goruntime.NumCPU(),
 		},
-		// Default is taken from kine: https://github.com/k3s-io/kine/blob/c1b2bd81f697c6b7aec85ea2562bcbcdfb981307/pkg/app/app.go#L106
-		NotifyInterval: 5 * time.Second,
-		// Default is taken from kine: https://github.com/k3s-io/kine/blob/c1b2bd81f697c6b7aec85ea2562bcbcdfb981307/pkg/app/app.go#L112
+		// Default are defined in kine: https://github.com/k3s-io/kine/blob/0dc5b174a18cf13b299a2b597afe0608cd769663/pkg/app/app.go#L27
+		NotifyInterval:      5 * time.Second,
 		EmulatedETCDVersion: "3.5.13",
+		CompactInterval:     5 * time.Minute,
+		CompactTimeout:      5 * time.Second,
+		CompactMinRetain:    1000,
+		CompactBatchSize:    1000,
+		PollBatchSize:       500,
 	})
 	if err != nil {
 		return nil, err
