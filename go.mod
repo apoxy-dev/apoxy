@@ -21,7 +21,6 @@ require (
 	github.com/docker/docker v28.2.2+incompatible
 	github.com/dpeckett/contextio v0.5.1
 	github.com/dpeckett/network v0.3.4
-	github.com/dpeckett/triemap v0.3.1
 	github.com/envoyproxy/gateway v0.5.0-rc.1.0.20240618131507-bdff5d56b59d
 	github.com/envoyproxy/go-control-plane v0.13.4
 	github.com/envoyproxy/go-control-plane/contrib v1.32.4
@@ -56,6 +55,7 @@ require (
 	github.com/mitchellh/mapstructure v1.5.0
 	github.com/opencontainers/image-spec v1.1.1
 	github.com/opencontainers/runc v1.2.2
+	github.com/phemmer/go-iptrie v0.0.0-20240326174613-ba542f5282c9
 	github.com/pkg/browser v0.0.0-20210911075715-681adbf594b8
 	github.com/prometheus/client_golang v1.23.2
 	github.com/quic-go/connect-ip-go v0.0.0-20241112091351-321f13c3d203
@@ -168,6 +168,7 @@ require (
 	github.com/docker/cli v24.0.6+incompatible // indirect
 	github.com/docker/distribution v2.8.2+incompatible // indirect
 	github.com/docker/docker-credential-helpers v0.7.0 // indirect
+	github.com/dpeckett/triemap v0.3.1 // indirect
 	github.com/dunglas/httpsfv v1.0.2 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/emicklei/go-restful/v3 v3.12.2 // indirect

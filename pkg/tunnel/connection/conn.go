@@ -9,6 +9,8 @@ import (
 type Connection interface {
 	io.Closer
 
+	String() string
+
 	ReadPacket([]byte) (int, error)
 	WritePacket([]byte) ([]byte, error)
 }

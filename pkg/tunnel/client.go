@@ -328,6 +328,16 @@ type Conn struct {
 	addrs []netip.Prefix
 }
 
+type connWrapper struct {
+	*connectip.Conn
+
+	addr netip.Prefix
+}
+
+func (cw *connWrapper) String() string {
+	return fmt.Sprintf("conn: %v", cw.addr)
+}
+
 func (c *Conn) run(ctx context.Context) {
 	log := alog.FromContext(ctx)
 	for {
@@ -356,7 +366,7 @@ func (c *Conn) run(ctx context.Context) {
 			oldAddrs := sets.New[netip.Prefix](c.addrs...)
 			for _, addr := range newAddrs.Difference(oldAddrs).UnsortedList() {
 				log.Info("Adding local prefix", slog.Any("prefix", addr))
-				c.router.AddAddr(addr, c.conn)
+				c.router.AddAddr(addr, &connWrapper{Conn: c.conn, addr: addr})
 			}
 			for _, addr := range oldAddrs.Difference(newAddrs).UnsortedList() {
 				log.Info("Removing local prefix", slog.Any("prefix", addr))

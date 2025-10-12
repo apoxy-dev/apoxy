@@ -140,8 +140,13 @@ func WithKeyLogPath(path string) TunnelServerOption {
 
 type conn struct {
 	*connectip.Conn
+	connID         string
 	obj            *corev1alpha.TunnelNode
 	addrv4, addrv6 netip.Prefix
+}
+
+func (c *conn) String() string {
+	return fmt.Sprintf("%s [%s]: %v %v", c.obj.Name, c.connID, c.addrv4, c.addrv6)
 }
 
 type TunnelServer struct {
@@ -423,7 +428,8 @@ func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.
 		logger.Info("Establishing CONNECT-IP connection")
 
 		conn := &conn{
-			obj: tn.DeepCopy(),
+			connID: connID,
+			obj:    tn.DeepCopy(),
 		}
 		p := connectip.Proxy{}
 		if conn.Conn, err = p.Proxy(w, req); err != nil {
@@ -490,18 +496,16 @@ func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.
 				}
 			}
 
-			/*
-				if conn.addrv4.IsValid() {
-					logger.Info("Removing peer address", slog.Any("addr", conn.addrv4))
+			if conn.addrv4.IsValid() {
+				logger.Info("Removing peer address", slog.Any("addr", conn.addrv4))
 
-					if err := t.router.DelAddr(conn.addrv4); err != nil {
-						logger.Error("Failed to remove peer address", slog.Any("error", err), slog.Any("addr", conn.addrv4))
-					}
-					if err := t.router.DelRoute(conn.addrv4); err != nil {
-						logger.Error("Failed to remove route", slog.Any("error", err), slog.Any("addr", conn.addrv4))
-					}
+				if err := t.router.DelAddr(conn.addrv4); err != nil {
+					logger.Error("Failed to remove peer address", slog.Any("error", err), slog.Any("addr", conn.addrv4))
 				}
-			*/
+				if err := t.router.DelRoute(conn.addrv4); err != nil {
+					logger.Error("Failed to remove route", slog.Any("error", err), slog.Any("addr", conn.addrv4))
+				}
+			}
 		}
 
 		t.conns.Del(connID)

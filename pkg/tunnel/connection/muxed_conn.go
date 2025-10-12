@@ -9,7 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/dpeckett/triemap"
+	"github.com/phemmer/go-iptrie"
 	connectip "github.com/quic-go/connect-ip-go"
 
 	"github.com/apoxy-dev/apoxy/pkg/netstack"
@@ -18,8 +18,11 @@ import (
 
 // muxedConn multiplexes multiple connection.Conn objects.
 type muxedConn struct {
-	// Maps tunnel destination address to CONNECT-IP connection.
-	conns            *triemap.TrieMap[Connection]
+	mu sync.RWMutex
+	// Maps tunnel destination address to CONNECT-IP connection using iptrie.
+	conns *iptrie.Trie
+	// Local tracking of prefixes since go-iptrie doesn't provide enumeration
+	prefixes         map[netip.Prefix]Connection
 	incomingPackets  chan *[]byte
 	packetBufferPool sync.Pool
 
@@ -30,7 +33,8 @@ type muxedConn struct {
 // newMuxedConn creates a new *muxedConn.
 func newMuxedConn() *muxedConn {
 	return &muxedConn{
-		conns:           triemap.New[Connection](),
+		conns:           iptrie.NewTrie(),
+		prefixes:        make(map[netip.Prefix]Connection),
 		incomingPackets: make(chan *[]byte, 100),
 		packetBufferPool: sync.Pool{
 			New: func() interface{} {
@@ -52,7 +56,7 @@ func (m *muxedConn) readFromConn(src netip.Prefix, conn Connection) {
 			var closedErr *connectip.CloseError
 			if errors.As(err, &closedErr) {
 				slog.Info("Connection closed", slog.Any("src", src), slog.Bool("remoteClosed", closedErr.Remote))
-				m.conns.RemoveValue(conn)
+				m.Remove(src)
 				m.packetBufferPool.Put(pkt)
 				return
 			}
@@ -87,19 +91,14 @@ func (m *muxedConn) Add(addr netip.Prefix, conn Connection) error {
 
 	slog.Info("Adding connection", slog.String("prefix", addr.String()))
 
+	m.mu.Lock()
 	m.conns.Insert(addr, conn)
-	go m.readFromConn(addr, conn)
-	return nil
-}
+	m.prefixes[addr] = conn
+	m.mu.Unlock()
 
-// List lists all connections in the multiplexer.
-func (m *muxedConn) List() ([]netip.Prefix, error) {
-	var prefixes []netip.Prefix
-	m.conns.ForEach(func(prefix netip.Prefix, value Connection) bool {
-		prefixes = append(prefixes, prefix)
-		return true
-	})
-	return prefixes, nil
+	go m.readFromConn(addr, conn)
+
+	return nil
 }
 
 // Del removes a connection from the multiplexer.
@@ -116,30 +115,47 @@ func (m *muxedConn) Del(addr netip.Prefix) error {
 
 	slog.Info("Removing connection", slog.String("addr", addr.String()))
 
-	// Remove the connection from the map. Connection closing is handled by
-	// the layer above.
-	if ok := m.conns.Remove(addr); !ok {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Remove the connection from both the trie and our local tracking
+	if _, exists := m.prefixes[addr]; !exists {
 		return fmt.Errorf("connection not found: %v", addr)
 	}
+
+	m.conns.Remove(addr)
+	delete(m.prefixes, addr)
 
 	return nil
 }
 
+// Remove is an internal helper that removes a connection without external validation
+func (m *muxedConn) Remove(addr netip.Prefix) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.conns.Remove(addr)
+	delete(m.prefixes, addr)
+}
+
 func (m *muxedConn) Prefixes() []netip.Prefix {
-	var prefixes []netip.Prefix
-	m.conns.ForEach(func(prefix netip.Prefix, value Connection) bool {
-		prefixes = append(prefixes, prefix)
-		return true
-	})
-	return prefixes
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	result := make([]netip.Prefix, 0, len(m.prefixes))
+	for prefix := range m.prefixes {
+		result = append(result, prefix)
+	}
+	return result
 }
 
 func (m *muxedConn) Close() error {
 	slog.Info("Closing muxed connection")
 	var firstErr error
 	m.closeOnce.Do(func() {
+		m.mu.Lock()
 		// Close all connections in the map.
-		m.conns.ForEach(func(prefix netip.Prefix, conn Connection) bool {
+		for prefix, conn := range m.prefixes {
 			slog.Info("Closing underlying connection", slog.String("prefix", prefix.String()))
 			if err := conn.Close(); err != nil {
 				slog.Warn("Failed to close connection",
@@ -148,11 +164,12 @@ func (m *muxedConn) Close() error {
 					firstErr = fmt.Errorf("failed to close connection: %w", err)
 				}
 			}
-			return true
-		})
+		}
 
-		// Clear the map.
-		m.conns.Clear()
+		// Clear the maps.
+		m.conns = iptrie.NewTrie()
+		m.prefixes = make(map[netip.Prefix]Connection)
+		m.mu.Unlock()
 
 		// Close the incoming packets channel.
 		close(m.incomingPackets)
@@ -191,26 +208,30 @@ func (m *muxedConn) writeToConn(addr netip.Addr, pkt []byte) []byte {
 		return nil
 	}
 
-	conn, ok := m.conns.Get(addr)
-	if !ok {
+	m.mu.RLock()
+	connInterface := m.conns.Find(addr)
+	m.mu.RUnlock()
+
+	if connInterface == nil {
 		slog.Warn("No matching tunnel found for IP", slog.String("ip", addr.String()))
 		return nil
 	}
+
+	conn, ok := connInterface.(Connection)
+	if !ok {
+		slog.Error("Invalid connection type in trie", slog.String("ip", addr.String()))
+		return nil
+	}
+
+	slog.Debug("Writing packet to connection", slog.String("ip", addr.String()), slog.String("conn", conn.String()))
 
 	metrics.TunnelPacketsSent.Inc()
 	metrics.TunnelBytesSent.Add(float64(len(pkt)))
 
 	icmp, err := conn.WritePacket(pkt)
-	var closedErr *connectip.CloseError
 	if err != nil {
-		if errors.As(err, &closedErr) {
-			slog.Info("Removing closed connection",
-				slog.String("ip", addr.String()),
-				slog.Bool("remoteClosed", closedErr.Remote))
-			m.conns.RemoveValue(conn)
-			return icmp
-		}
-
+		// Log the error but don't remove the connection here to avoid issues
+		// Let the read loop handle connection removal when it detects closure
 		slog.Error("Failed to write to connection",
 			slog.String("ip", addr.String()),
 			slog.Any("error", err))
@@ -230,6 +251,10 @@ func NewSrcMuxedConn() *SrcMuxedConn {
 	return &SrcMuxedConn{
 		muxedConn: *newMuxedConn(),
 	}
+}
+
+func (m *SrcMuxedConn) String() string {
+	return fmt.Sprintf("[src mux]: %v", m.muxedConn.Prefixes())
 }
 
 // WritePacket writes a pkt to one of the underlying Connection objects
@@ -270,7 +295,7 @@ func (m *SrcMuxedConn) WritePacket(pkt []byte) ([]byte, error) {
 	return m.writeToConn(srcAddr, pkt), nil
 }
 
-// SrcMuxedConn implements Connection that multiplexes multiple Connections based
+// DstMuxedConn implements Connection that multiplexes multiple Connections based
 // on the destination IP of the IPv4/v6 packet.
 type DstMuxedConn struct {
 	muxedConn
@@ -281,6 +306,10 @@ func NewDstMuxedConn() *DstMuxedConn {
 	return &DstMuxedConn{
 		muxedConn: *newMuxedConn(),
 	}
+}
+
+func (m *DstMuxedConn) String() string {
+	return fmt.Sprintf("[dst mux]: %v", m.muxedConn.Prefixes())
 }
 
 // WritePacket writes a pkt to one of the underlying Connection objects
