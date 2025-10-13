@@ -12,7 +12,6 @@ import (
 	"github.com/phemmer/go-iptrie"
 	connectip "github.com/quic-go/connect-ip-go"
 
-	"github.com/apoxy-dev/apoxy/pkg/netstack"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/metrics"
 )
 
@@ -35,10 +34,10 @@ func newMuxedConn() *muxedConn {
 	return &muxedConn{
 		conns:           iptrie.NewTrie(),
 		prefixes:        make(map[netip.Prefix]Connection),
-		incomingPackets: make(chan *[]byte, 100),
+		incomingPackets: make(chan *[]byte, 10000),
 		packetBufferPool: sync.Pool{
 			New: func() interface{} {
-				b := make([]byte, netstack.IPv6MinMTU)
+				b := make([]byte, 1500)
 				return &b
 			},
 		},
@@ -48,6 +47,8 @@ func newMuxedConn() *muxedConn {
 func (m *muxedConn) readFromConn(src netip.Prefix, conn Connection) {
 	for {
 		pkt := m.packetBufferPool.Get().(*[]byte)
+		// Reset the buffer to its original size.
+		*pkt = (*pkt)[:cap(*pkt)]
 
 		n, err := conn.ReadPacket(*pkt)
 		if err != nil {
@@ -56,12 +57,16 @@ func (m *muxedConn) readFromConn(src netip.Prefix, conn Connection) {
 			var closedErr *connectip.CloseError
 			if errors.As(err, &closedErr) {
 				slog.Info("Connection closed", slog.Any("src", src), slog.Bool("remoteClosed", closedErr.Remote))
+				metrics.TunnelPacketsReceivedErrors.WithLabelValues("read_closed").Inc()
+
 				m.Remove(src)
 				m.packetBufferPool.Put(pkt)
+
 				return
 			}
 
 			slog.Error("Failed to read from connection", slog.Any("error", err))
+			metrics.TunnelPacketsReceivedErrors.WithLabelValues("read_error").Inc()
 
 			m.packetBufferPool.Put(pkt)
 			continue
@@ -72,10 +77,17 @@ func (m *muxedConn) readFromConn(src netip.Prefix, conn Connection) {
 		*pkt = (*pkt)[:n]
 		select {
 		case m.incomingPackets <- pkt:
-		default:
-			// Channel is closed or full, return the buffer to the pool
+		default: // Channel is closed or full, return the buffer to the pool
+			if m.closed.Load() {
+				slog.Warn("Muxed connection closed", slog.Any("src", src))
+
+				m.packetBufferPool.Put(pkt)
+				return
+			}
+			slog.Warn("Packet queue full", slog.Int("bytes", n))
+			metrics.TunnelPacketsDropped.WithLabelValues("queue_full").Inc()
+
 			m.packetBufferPool.Put(pkt)
-			return
 		}
 
 		metrics.TunnelPacketsReceived.Inc()
@@ -194,9 +206,6 @@ func (m *muxedConn) ReadPacket(pkt []byte) (int, error) {
 
 	n := copy(pkt, *p)
 
-	// Slice len must be reset to capacity or else next time it's used,
-	// it may be too short.
-	*p = (*p)[:cap(*p)]
 	m.packetBufferPool.Put(p)
 
 	return n, nil
@@ -205,6 +214,7 @@ func (m *muxedConn) ReadPacket(pkt []byte) (int, error) {
 func (m *muxedConn) writeToConn(addr netip.Addr, pkt []byte) []byte {
 	if !addr.IsValid() || !addr.IsGlobalUnicast() {
 		slog.Warn("Invalid IP", slog.String("ip", addr.String()))
+		metrics.TunnelPacketsSentErrors.WithLabelValues("invalid_ip").Inc()
 		return nil
 	}
 
@@ -214,12 +224,14 @@ func (m *muxedConn) writeToConn(addr netip.Addr, pkt []byte) []byte {
 
 	if connInterface == nil {
 		slog.Warn("No matching tunnel found for IP", slog.String("ip", addr.String()))
+		metrics.TunnelPacketsSentErrors.WithLabelValues("no_tunnel").Inc()
 		return nil
 	}
 
 	conn, ok := connInterface.(Connection)
 	if !ok {
 		slog.Error("Invalid connection type in trie", slog.String("ip", addr.String()))
+		metrics.TunnelPacketsSentErrors.WithLabelValues("internal").Inc()
 		return nil
 	}
 
@@ -235,6 +247,7 @@ func (m *muxedConn) writeToConn(addr netip.Addr, pkt []byte) []byte {
 		slog.Error("Failed to write to connection",
 			slog.String("ip", addr.String()),
 			slog.Any("error", err))
+		metrics.TunnelPacketsSentErrors.WithLabelValues("write_error").Inc()
 	}
 
 	return icmp
