@@ -74,6 +74,7 @@ var (
 	dnsListenAddr      string
 	autoCreate         bool
 	healthAddr         string
+	metricsAddr        string
 
 	preserveDefaultGwDsts []netip.Prefix
 )
@@ -206,7 +207,7 @@ func (t *tunnelNodeReconciler) run(ctx context.Context, tn *corev1alpha.TunnelNo
 		Scheme:         scheme,
 		LeaderElection: false,
 		Metrics: metricsserver.Options{
-			BindAddress: "0",
+			BindAddress: metricsAddr,
 		},
 		Cache: cache.Options{
 			SyncPeriod: ptr.To(30 * time.Second),
@@ -228,10 +229,7 @@ func (t *tunnelNodeReconciler) run(ctx context.Context, tn *corev1alpha.TunnelNo
 	g, gctx := errgroup.WithContext(ctx)
 
 	g.Go(func() error {
-		if err := mgr.Start(gctx); err != nil {
-			slog.Error("Manager exited non-zero", slog.Any("error", err))
-		}
-		return nil
+		return mgr.Start(gctx)
 	})
 
 	// Start health endpoint server if configured
