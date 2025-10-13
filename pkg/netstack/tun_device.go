@@ -234,6 +234,10 @@ func (tun *TunDevice) Write(buf [][]byte, offset int) (int, error) {
 }
 
 func (tun *TunDevice) WriteNotify() {
+	if tun.closed.Load() {
+		return
+	}
+
 	pkt := tun.ep.Read()
 	if pkt == nil {
 		return
