@@ -281,7 +281,13 @@ func (d *TunnelDialer) Dial(
 		return nil, fmt.Errorf("unexpected status code: %d", rsp.StatusCode)
 	}
 
-	slog.Info("Connected to server", slog.String("addr", addr))
+	connUUID, err := uuid.Parse(rsp.Header.Get("X-Apoxy-Connection-UUID"))
+	if err != nil {
+		hConn.CloseWithError(ApplicationCodeInternalError, fmt.Sprintf("failed to parse connection UUID: %v", err))
+		return nil, fmt.Errorf("failed to parse connection UUID: %w", err)
+	}
+
+	slog.Info("Connected to server", slog.String("addr", addr), slog.String("connection_uuid", connUUID.String()))
 
 	routes, err := conn.Routes(ctx)
 	if err != nil {
@@ -296,12 +302,6 @@ func (d *TunnelDialer) Dial(
 				return nil, fmt.Errorf("failed to add route %s: %w", p.String(), err)
 			}
 		}
-	}
-
-	connUUID, err := uuid.Parse(rsp.Header.Get("X-Apoxy-Connection-UUID"))
-	if err != nil {
-		hConn.CloseWithError(ApplicationCodeInternalError, fmt.Sprintf("failed to parse connection UUID: %v", err))
-		return nil, fmt.Errorf("failed to parse connection UUID: %w", err)
 	}
 
 	c := &Conn{
