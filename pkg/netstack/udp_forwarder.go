@@ -82,11 +82,8 @@ func udpHandler(ctx context.Context, upstream network.Network) func(req *udp.For
 		reqDetails := req.ID()
 
 		srcAddrPort := netip.AddrPortFrom(addrFromNetstackIP(reqDetails.RemoteAddress), reqDetails.RemotePort)
-		// Handle 4in6 embedded IPs same as TCP forwarder:
-		// - IPv4-mapped IPv6 addresses (::ffff:192.168.1.1) are converted to IPv4
-		// - Regular IPv6 addresses left as is (::1)
 		dstAddrPort := netip.AddrPortFrom(
-			addrFromNetstackIP(reqDetails.LocalAddress).Unmap(),
+			Unmap4in6(addrFromNetstackIP(reqDetails.LocalAddress)),
 			reqDetails.LocalPort,
 		)
 

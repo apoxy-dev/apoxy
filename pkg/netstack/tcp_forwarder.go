@@ -30,16 +30,34 @@ func TCPForwarder(ctx context.Context, ipstack *stack.Stack, upstream network.Ne
 	return tcpForwarder.HandlePacket
 }
 
+// Unmap4in6 converts an IPv6 address to an IPv4 address if it is an IPv4-mapped IPv6 address.
+// If the address is not an IPv4-mapped IPv6 address, it is returned unchanged.
+// If the IPv4 address is zero, returns 127.0.0.1.
+// It is following /96 embedding scheme from RFC 6052 (https://datatracker.ietf.org/doc/html/rfc6052#section-2.2).
+func Unmap4in6(addr netip.Addr) netip.Addr {
+	if !addr.Is6() {
+		return addr
+	}
+	b16 := addr.As16()
+	v4addr := netip.AddrFrom4([4]byte{
+		b16[12],
+		b16[13],
+		b16[14],
+		b16[15],
+	})
+	if !v4addr.IsValid() {
+		return netip.AddrFrom4([4]byte{127, 0, 0, 1})
+	}
+	return v4addr
+}
+
 func tcpHandler(ctx context.Context, upstream network.Network) func(req *tcp.ForwarderRequest) {
 	return func(req *tcp.ForwarderRequest) {
 		reqDetails := req.ID()
 
 		srcAddrPort := netip.AddrPortFrom(addrFromNetstackIP(reqDetails.RemoteAddress), reqDetails.RemotePort)
-		// Handle 4in6 embedded IPs:
-		// - IPv4-mapped IPv6 addresses (::ffff:192.168.1.1) are converted to IPv4
-		// - Regular IPv6 addresses left as is (::1)
 		dstAddrPort := netip.AddrPortFrom(
-			addrFromNetstackIP(reqDetails.LocalAddress).Unmap(),
+			Unmap4in6(addrFromNetstackIP(reqDetails.LocalAddress)),
 			reqDetails.LocalPort,
 		)
 
