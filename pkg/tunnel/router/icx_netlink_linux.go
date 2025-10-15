@@ -49,7 +49,7 @@ type ICXNetlinkRouter struct {
 	pcapFile      *os.File
 	tun           *tunnel.Tunnel
 	iptV4, iptV6  utiliptables.Interface
-	extAddrs      addrselect.AddressList
+	extAddrs      addrselect.List
 	closeOnce     sync.Once
 }
 
@@ -164,7 +164,7 @@ func NewICXNetlinkRouter(opts ...Option) (*ICXNetlinkRouter, error) {
 		return nil, fmt.Errorf("failed to create tunnel: %w", err)
 	}
 
-	var extAddrsList addrselect.AddressList
+	var extAddrsList addrselect.List
 	for _, addr := range extAddrs {
 		extAddrsList = append(extAddrsList, netstack.ToFullAddress(netip.MustParseAddrPort(addr.String())))
 	}
@@ -312,7 +312,7 @@ func (r *ICXNetlinkRouter) DelRoute(dst netip.Prefix) error {
 func (r *ICXNetlinkRouter) ResolveMAC(ctx context.Context, peerAddr netip.AddrPort) (tcpip.LinkAddress, error) {
 	peerFullAddr := netstack.ToFullAddress(peerAddr)
 
-	localFullAddr := r.extAddrs.Pick(peerFullAddr)
+	localFullAddr := r.extAddrs.Select(peerFullAddr)
 
 	slog.Debug("Resolving MAC address",
 		slog.String("local", localFullAddr.Addr.String()),

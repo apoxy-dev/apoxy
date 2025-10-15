@@ -20,7 +20,7 @@ var ErrInvalidFrame = errors.New("invalid frame")
 // L2PacketConn adapts a net.PacketConn (UDP) to read/write L2 Ethernet frames.
 type L2PacketConn struct {
 	pc           net.PacketConn
-	localAddrs   addrselect.AddressList
+	localAddrs   addrselect.List
 	localMAC     tcpip.LinkAddress
 	peerMACCache sync.Map
 	pktPool      sync.Pool
@@ -51,7 +51,7 @@ func NewL2PacketConn(pc net.PacketConn) (*L2PacketConn, error) {
 	// Random locally-administered unicast MAC for "our" link address.
 	localMAC := tcpip.GetRandMacAddr()
 
-	var localAddrs addrselect.AddressList
+	var localAddrs addrselect.List
 	for _, ap := range localAddrPorts {
 		la := &tcpip.FullAddress{
 			Addr: func() tcpip.Address {
@@ -165,7 +165,7 @@ func (c *L2PacketConn) ReadFrame(dst []byte) (int, error) {
 	// Build addresses for udp.Encode (note: for an inbound frame,
 	// src = remote, dst = local).
 	srcFA := toFullAddr(remote)
-	dstFA := c.localAddrs.Pick(srcFA)
+	dstFA := c.localAddrs.Select(srcFA)
 
 	// Random-but-stable (per remote IP) src MAC.
 	srcFA.LinkAddr = c.peerMACForIP(remote.IP)
