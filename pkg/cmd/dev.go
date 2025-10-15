@@ -86,6 +86,10 @@ func updateFromFile(ctx context.Context, proxyNameOverride, path string) error {
 	mapper := restmapper.NewDeferredDiscoveryRESTMapper(memory.NewMemCacheClient(dc))
 
 	for _, objYaml := range strings.Split(string(cfg), "\n---\n") {
+		if strings.TrimSpace(objYaml) == "" {
+			continue
+		}
+
 		unObj := &unstructured.Unstructured{}
 		_, _, err := decodeFn([]byte(objYaml), nil, unObj)
 		if err != nil {
@@ -143,7 +147,7 @@ func updateFromFile(ctx context.Context, proxyNameOverride, path string) error {
 		} else if err != nil {
 			return fmt.Errorf("failed to create object gvk=%v name=%s: %w", unObj.GroupVersionKind(), maybeNamespaced(unObj), err)
 		} else {
-			log.Debugf("created object gvk=%v name=%s\n", unObj.GroupVersionKind(), maybeNamespaced(unObj))
+			log.Debugf("Created object gvk=%v name=%s\n", unObj.GroupVersionKind(), maybeNamespaced(unObj))
 		}
 	}
 	return err
