@@ -27,10 +27,6 @@ type FakeCoreV1alpha struct {
 	*testing.Fake
 }
 
-func (c *FakeCoreV1alpha) Addresses() v1alpha.AddressInterface {
-	return &FakeAddresses{c}
-}
-
 func (c *FakeCoreV1alpha) Backends() v1alpha.BackendInterface {
 	return &FakeBackends{c}
 }
@@ -45,10 +41,6 @@ func (c *FakeCoreV1alpha) Domains() v1alpha.DomainInterface {
 
 func (c *FakeCoreV1alpha) DomainZones() v1alpha.DomainZoneInterface {
 	return &FakeDomainZones{c}
-}
-
-func (c *FakeCoreV1alpha) Proxies() v1alpha.ProxyInterface {
-	return &FakeProxies{c}
 }
 
 func (c *FakeCoreV1alpha) TunnelNodes() v1alpha.TunnelNodeInterface {

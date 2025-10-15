@@ -27,22 +27,16 @@ import (
 
 type CoreV1alphaInterface interface {
 	RESTClient() rest.Interface
-	AddressesGetter
 	BackendsGetter
 	CloudMonitoringIntegrationsGetter
 	DomainsGetter
 	DomainZonesGetter
-	ProxiesGetter
 	TunnelNodesGetter
 }
 
 // CoreV1alphaClient is used to interact with features provided by the core.apoxy.dev group.
 type CoreV1alphaClient struct {
 	restClient rest.Interface
-}
-
-func (c *CoreV1alphaClient) Addresses() AddressInterface {
-	return newAddresses(c)
 }
 
 func (c *CoreV1alphaClient) Backends() BackendInterface {
@@ -59,10 +53,6 @@ func (c *CoreV1alphaClient) Domains() DomainInterface {
 
 func (c *CoreV1alphaClient) DomainZones() DomainZoneInterface {
 	return newDomainZones(c)
-}
-
-func (c *CoreV1alphaClient) Proxies() ProxyInterface {
-	return newProxies(c)
 }
 
 func (c *CoreV1alphaClient) TunnelNodes() TunnelNodeInterface {

@@ -1,11 +1,15 @@
 package v1alpha
 
 import (
+	"errors"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apiserver/pkg/registry/rest"
 	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource"
+
+	v1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
 )
 
 const (
@@ -238,8 +242,11 @@ func (as *DomainStatus) SubResourceName() string {
 	return "status"
 }
 
-func (as *DomainStatus) CopyTo(parent resource.ObjectWithStatusSubResource) {
-	parent.(*Domain).Status = *as
+func (as *DomainStatus) CopyTo(obj resource.ObjectWithStatusSubResource) {
+	parent, ok := obj.(*Domain)
+	if ok {
+		parent.Status = *as
+	}
 }
 
 var _ runtime.Object = &Domain{}
@@ -272,7 +279,7 @@ func (a *Domain) GetGroupVersionResource() schema.GroupVersionResource {
 }
 
 func (a *Domain) IsStorageVersion() bool {
-	return true
+	return false
 }
 
 func (a *Domain) GetSingularName() string {
@@ -281,6 +288,38 @@ func (a *Domain) GetSingularName() string {
 
 func (a *Domain) GetStatus() resource.StatusSubResource {
 	return &a.Status
+}
+
+var _ resource.MultiVersionObject = &Domain{}
+
+func (a *Domain) NewStorageVersionObject() runtime.Object {
+	return &v1alpha2.Domain{}
+}
+
+func (a *Domain) ConvertToStorageVersion(storageObj runtime.Object) error {
+	obj, ok := storageObj.(*v1alpha2.Domain)
+	if !ok {
+		return errors.New("failed to convert to v1alpha2 Domain")
+	}
+
+	obj.ObjectMeta = *a.ObjectMeta.DeepCopy()
+	obj.Spec = *convertDomainSpecFromV1Alpha1ToV1Alpha2(&a.Spec)
+	obj.Status = *convertDomainStatusFromV1Alpha1ToV1Alpha2(&a.Status)
+
+	return nil
+}
+
+func (a *Domain) ConvertFromStorageVersion(storageObj runtime.Object) error {
+	obj, ok := storageObj.(*v1alpha2.Domain)
+	if !ok {
+		return errors.New("failed to convert from v1alpha2 Domain")
+	}
+
+	a.ObjectMeta = *obj.ObjectMeta.DeepCopy()
+	a.Spec = *convertDomainSpecFromV1Alpha2ToV1Alpha1(&obj.Spec)
+	a.Status = *convertDomainStatusFromV1Alpha2ToV1Alpha1(&obj.Status)
+
+	return nil
 }
 
 //+kubebuilder:object:root=true

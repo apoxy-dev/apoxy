@@ -92,8 +92,11 @@ func (ps *EdgeFunctionRevisionStatus) SubResourceName() string {
 	return "status"
 }
 
-func (ps *EdgeFunctionRevisionStatus) CopyTo(parent resource.ObjectWithStatusSubResource) {
-	parent.(*EdgeFunctionRevision).Status = *ps
+func (ps *EdgeFunctionRevisionStatus) CopyTo(obj resource.ObjectWithStatusSubResource) {
+	parent, ok := obj.(*EdgeFunctionRevision)
+	if ok {
+		parent.Status = *ps
+	}
 }
 
 // +kubebuilder:object:root=true

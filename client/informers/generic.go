@@ -62,8 +62,6 @@ func (f *sharedInformerFactory) ForResource(resource schema.GroupVersionResource
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Controllers().V1alpha1().Proxies().Informer()}, nil
 
 		// Group=core.apoxy.dev, Version=v1alpha
-	case v1alpha.SchemeGroupVersion.WithResource("addresses"):
-		return &genericInformer{resource: resource.GroupResource(), informer: f.Core().V1alpha().Addresses().Informer()}, nil
 	case v1alpha.SchemeGroupVersion.WithResource("backends"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Core().V1alpha().Backends().Informer()}, nil
 	case v1alpha.SchemeGroupVersion.WithResource("cloudmonitoringintegrations"):
@@ -72,8 +70,6 @@ func (f *sharedInformerFactory) ForResource(resource schema.GroupVersionResource
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Core().V1alpha().Domains().Informer()}, nil
 	case v1alpha.SchemeGroupVersion.WithResource("domainzones"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Core().V1alpha().DomainZones().Informer()}, nil
-	case v1alpha.SchemeGroupVersion.WithResource("proxies"):
-		return &genericInformer{resource: resource.GroupResource(), informer: f.Core().V1alpha().Proxies().Informer()}, nil
 	case v1alpha.SchemeGroupVersion.WithResource("tunnelnodes"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Core().V1alpha().TunnelNodes().Informer()}, nil
 

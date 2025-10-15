@@ -23,8 +23,6 @@ import (
 
 // Interface provides access to all the informers in this group version.
 type Interface interface {
-	// Addresses returns a AddressInformer.
-	Addresses() AddressInformer
 	// Backends returns a BackendInformer.
 	Backends() BackendInformer
 	// CloudMonitoringIntegrations returns a CloudMonitoringIntegrationInformer.
@@ -33,8 +31,6 @@ type Interface interface {
 	Domains() DomainInformer
 	// DomainZones returns a DomainZoneInformer.
 	DomainZones() DomainZoneInformer
-	// Proxies returns a ProxyInformer.
-	Proxies() ProxyInformer
 	// TunnelNodes returns a TunnelNodeInformer.
 	TunnelNodes() TunnelNodeInformer
 }
@@ -48,11 +44,6 @@ type version struct {
 // New returns a new Interface.
 func New(f internalinterfaces.SharedInformerFactory, namespace string, tweakListOptions internalinterfaces.TweakListOptionsFunc) Interface {
 	return &version{factory: f, namespace: namespace, tweakListOptions: tweakListOptions}
-}
-
-// Addresses returns a AddressInformer.
-func (v *version) Addresses() AddressInformer {
-	return &addressInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
 }
 
 // Backends returns a BackendInformer.
@@ -73,11 +64,6 @@ func (v *version) Domains() DomainInformer {
 // DomainZones returns a DomainZoneInformer.
 func (v *version) DomainZones() DomainZoneInformer {
 	return &domainZoneInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
-}
-
-// Proxies returns a ProxyInformer.
-func (v *version) Proxies() ProxyInformer {
-	return &proxyInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
 }
 
 // TunnelNodes returns a TunnelNodeInformer.

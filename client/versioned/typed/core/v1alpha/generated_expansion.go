@@ -17,8 +17,6 @@ limitations under the License.
 
 package v1alpha
 
-type AddressExpansion interface{}
-
 type BackendExpansion interface{}
 
 type CloudMonitoringIntegrationExpansion interface{}
@@ -26,7 +24,5 @@ type CloudMonitoringIntegrationExpansion interface{}
 type DomainExpansion interface{}
 
 type DomainZoneExpansion interface{}
-
-type ProxyExpansion interface{}
 
 type TunnelNodeExpansion interface{}

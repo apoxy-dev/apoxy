@@ -21,7 +21,6 @@ limitations under the License.
 package v1alpha2
 
 import (
-	v1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 )
@@ -637,7 +636,7 @@ func (in *DomainZoneList) DeepCopyInto(out *DomainZoneList) {
 	in.ListMeta.DeepCopyInto(&out.ListMeta)
 	if in.Items != nil {
 		in, out := &in.Items, &out.Items
-		*out = make([]Domain, len(*in))
+		*out = make([]DomainZone, len(*in))
 		for i := range *in {
 			(*in)[i].DeepCopyInto(&(*out)[i])
 		}
@@ -1067,7 +1066,7 @@ func (in *ProxyTelementry) DeepCopyInto(out *ProxyTelementry) {
 	}
 	if in.OtelCollectorConfig != nil {
 		in, out := &in.OtelCollectorConfig, &out.OtelCollectorConfig
-		*out = new(v1alpha.LocalObjectReference)
+		*out = new(LocalObjectReference)
 		**out = **in
 	}
 	if in.ThirdPartySinks != nil {

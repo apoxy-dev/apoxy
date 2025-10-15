@@ -73,8 +73,11 @@ func (ps *TunnelAgentStatus) SubResourceName() string {
 	return "status"
 }
 
-func (ps *TunnelAgentStatus) CopyTo(parent resource.ObjectWithStatusSubResource) {
-	parent.(*TunnelAgent).Status = *ps
+func (ps *TunnelAgentStatus) CopyTo(obj resource.ObjectWithStatusSubResource) {
+	parent, ok := obj.(*TunnelAgent)
+	if ok {
+		parent.Status = *ps
+	}
 }
 
 var (
@@ -104,7 +107,7 @@ func (p *TunnelAgent) GetGroupVersionResource() schema.GroupVersionResource {
 	return schema.GroupVersionResource{
 		Group:    SchemeGroupVersion.Group,
 		Version:  SchemeGroupVersion.Version,
-		Resource: "TunnelAgents",
+		Resource: "tunnelagents",
 	}
 }
 
@@ -113,7 +116,7 @@ func (p *TunnelAgent) IsStorageVersion() bool {
 }
 
 func (p *TunnelAgent) GetSingularName() string {
-	return "TunnelAgent"
+	return "tunnelagent"
 }
 
 func (p *TunnelAgent) GetStatus() resource.StatusSubResource {

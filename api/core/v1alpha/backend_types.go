@@ -1,11 +1,15 @@
 package v1alpha
 
 import (
+	"errors"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apiserver/pkg/registry/rest"
 	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource"
+
+	v1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
 )
 
 // +kubebuilder:object:root=true
@@ -139,8 +143,11 @@ func (ps *BackendStatus) SubResourceName() string {
 	return "status"
 }
 
-func (ps *BackendStatus) CopyTo(parent resource.ObjectWithStatusSubResource) {
-	parent.(*Backend).Status = *ps
+func (ps *BackendStatus) CopyTo(obj resource.ObjectWithStatusSubResource) {
+	parent, ok := obj.(*Backend)
+	if ok {
+		parent.Status = *ps
+	}
 }
 
 var (
@@ -175,7 +182,7 @@ func (p *Backend) GetGroupVersionResource() schema.GroupVersionResource {
 }
 
 func (p *Backend) IsStorageVersion() bool {
-	return true
+	return false
 }
 
 func (p *Backend) GetSingularName() string {
@@ -184,6 +191,38 @@ func (p *Backend) GetSingularName() string {
 
 func (p *Backend) GetStatus() resource.StatusSubResource {
 	return &p.Status
+}
+
+var _ resource.MultiVersionObject = &Backend{}
+
+func (p *Backend) NewStorageVersionObject() runtime.Object {
+	return &v1alpha2.Backend{}
+}
+
+func (p *Backend) ConvertToStorageVersion(storageObj runtime.Object) error {
+	obj, ok := storageObj.(*v1alpha2.Backend)
+	if !ok {
+		return errors.New("failed to convert to v1alpha2 Backend")
+	}
+
+	obj.ObjectMeta = *p.ObjectMeta.DeepCopy()
+	obj.Spec = *convertBackendSpecFromV1Alpha1ToV1Alpha2(&p.Spec)
+	obj.Status = *convertBackendStatusFromV1Alpha1ToV1Alpha2(&p.Status)
+
+	return nil
+}
+
+func (p *Backend) ConvertFromStorageVersion(storageObj runtime.Object) error {
+	obj, ok := storageObj.(*v1alpha2.Backend)
+	if !ok {
+		return errors.New("failed to convert from v1alpha2 Backend")
+	}
+
+	p.ObjectMeta = *obj.ObjectMeta.DeepCopy()
+	p.Spec = *convertBackendSpecFromV1Alpha2ToV1Alpha1(&obj.Spec)
+	p.Status = *convertBackendStatusFromV1Alpha2ToV1Alpha1(&obj.Status)
+
+	return nil
 }
 
 // +kubebuilder:object:root=true

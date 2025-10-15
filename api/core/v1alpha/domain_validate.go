@@ -29,8 +29,11 @@ func (r *Domain) Validate(ctx context.Context) field.ErrorList {
 }
 
 func (r *Domain) ValidateUpdate(ctx context.Context, obj runtime.Object) field.ErrorList {
-	d := obj.(*Domain)
-	return d.validate()
+	d, ok := obj.(*Domain)
+	if ok {
+		return d.validate()
+	}
+	return field.ErrorList{}
 }
 
 func (r *Domain) validate() field.ErrorList {

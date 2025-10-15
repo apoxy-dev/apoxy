@@ -238,8 +238,11 @@ func (as *DomainStatus) SubResourceName() string {
 	return "status"
 }
 
-func (as *DomainStatus) CopyTo(parent resource.ObjectWithStatusSubResource) {
-	parent.(*Domain).Status = *as
+func (as *DomainStatus) CopyTo(obj resource.ObjectWithStatusSubResource) {
+	parent, ok := obj.(*Domain)
+	if ok {
+		parent.Status = *as
+	}
 }
 
 var _ runtime.Object = &Domain{}

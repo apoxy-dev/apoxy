@@ -45,11 +45,6 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/apoxy-dev/apoxy/api/controllers/v1alpha1.ProxyTracing":                 schema_apoxy_api_controllers_v1alpha1_ProxyTracing(ref),
 		"github.com/apoxy-dev/apoxy/api/controllers/v1alpha1.ProxyTracingTagValue":         schema_apoxy_api_controllers_v1alpha1_ProxyTracingTagValue(ref),
 		"github.com/apoxy-dev/apoxy/api/controllers/v1alpha1.ThirdPartySinks":              schema_apoxy_api_controllers_v1alpha1_ThirdPartySinks(ref),
-		"github.com/apoxy-dev/apoxy/api/core/v1alpha.AccessLog":                            schema_apoxy_api_core_v1alpha_AccessLog(ref),
-		"github.com/apoxy-dev/apoxy/api/core/v1alpha.Address":                              schema_apoxy_api_core_v1alpha_Address(ref),
-		"github.com/apoxy-dev/apoxy/api/core/v1alpha.AddressList":                          schema_apoxy_api_core_v1alpha_AddressList(ref),
-		"github.com/apoxy-dev/apoxy/api/core/v1alpha.AddressSpec":                          schema_apoxy_api_core_v1alpha_AddressSpec(ref),
-		"github.com/apoxy-dev/apoxy/api/core/v1alpha.AddressStatus":                        schema_apoxy_api_core_v1alpha_AddressStatus(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.AgentStatus":                          schema_apoxy_api_core_v1alpha_AgentStatus(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.AxiomCredentials":                     schema_apoxy_api_core_v1alpha_AxiomCredentials(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.Backend":                              schema_apoxy_api_core_v1alpha_Backend(ref),
@@ -77,15 +72,10 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.DynamicProxyDnsCacheConfig":           schema_apoxy_api_core_v1alpha_DynamicProxyDnsCacheConfig(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.DynamicProxySpec":                     schema_apoxy_api_core_v1alpha_DynamicProxySpec(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.EgressGatewaySpec":                    schema_apoxy_api_core_v1alpha_EgressGatewaySpec(ref),
-		"github.com/apoxy-dev/apoxy/api/core/v1alpha.FileAccessLog":                        schema_apoxy_api_core_v1alpha_FileAccessLog(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.ForwardingRule":                       schema_apoxy_api_core_v1alpha_ForwardingRule(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.GrafanaCredentials":                   schema_apoxy_api_core_v1alpha_GrafanaCredentials(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.LocalObjectReference":                 schema_apoxy_api_core_v1alpha_LocalObjectReference(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.PortRange":                            schema_apoxy_api_core_v1alpha_PortRange(ref),
-		"github.com/apoxy-dev/apoxy/api/core/v1alpha.Proxy":                                schema_apoxy_api_core_v1alpha_Proxy(ref),
-		"github.com/apoxy-dev/apoxy/api/core/v1alpha.ProxyList":                            schema_apoxy_api_core_v1alpha_ProxyList(ref),
-		"github.com/apoxy-dev/apoxy/api/core/v1alpha.ProxySpec":                            schema_apoxy_api_core_v1alpha_ProxySpec(ref),
-		"github.com/apoxy-dev/apoxy/api/core/v1alpha.ProxyStatus":                          schema_apoxy_api_core_v1alpha_ProxyStatus(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.TunnelNode":                           schema_apoxy_api_core_v1alpha_TunnelNode(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.TunnelNodeCredentials":                schema_apoxy_api_core_v1alpha_TunnelNodeCredentials(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.TunnelNodeList":                       schema_apoxy_api_core_v1alpha_TunnelNodeList(ref),
@@ -1152,189 +1142,6 @@ func schema_apoxy_api_controllers_v1alpha1_ThirdPartySinks(ref common.ReferenceC
 		},
 		Dependencies: []string{
 			"github.com/apoxy-dev/apoxy/api/controllers/v1alpha1.APIKey", "github.com/apoxy-dev/apoxy/api/controllers/v1alpha1.OpenTelemetrySink"},
-	}
-}
-
-func schema_apoxy_api_core_v1alpha_AccessLog(ref common.ReferenceCallback) common.OpenAPIDefinition {
-	return common.OpenAPIDefinition{
-		Schema: spec.Schema{
-			SchemaProps: spec.SchemaProps{
-				Description: "AccessLog defines the access log configuration.",
-				Type:        []string{"object"},
-				Properties: map[string]spec.Schema{
-					"fileAccessLog": {
-						SchemaProps: spec.SchemaProps{
-							Description: "FileAccessLog specifies the file access log configuration.",
-							Ref:         ref("github.com/apoxy-dev/apoxy/api/core/v1alpha.FileAccessLog"),
-						},
-					},
-				},
-			},
-		},
-		Dependencies: []string{
-			"github.com/apoxy-dev/apoxy/api/core/v1alpha.FileAccessLog"},
-	}
-}
-
-func schema_apoxy_api_core_v1alpha_Address(ref common.ReferenceCallback) common.OpenAPIDefinition {
-	return common.OpenAPIDefinition{
-		Schema: spec.Schema{
-			SchemaProps: spec.SchemaProps{
-				Description: "Address is the Schema for the addresses API.",
-				Type:        []string{"object"},
-				Properties: map[string]spec.Schema{
-					"kind": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"apiVersion": {
-						SchemaProps: spec.SchemaProps{
-							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"metadata": {
-						SchemaProps: spec.SchemaProps{
-							Default: map[string]interface{}{},
-							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"),
-						},
-					},
-					"spec": {
-						SchemaProps: spec.SchemaProps{
-							Default: map[string]interface{}{},
-							Ref:     ref("github.com/apoxy-dev/apoxy/api/core/v1alpha.AddressSpec"),
-						},
-					},
-					"status": {
-						SchemaProps: spec.SchemaProps{
-							Default: map[string]interface{}{},
-							Ref:     ref("github.com/apoxy-dev/apoxy/api/core/v1alpha.AddressStatus"),
-						},
-					},
-				},
-			},
-		},
-		Dependencies: []string{
-			"github.com/apoxy-dev/apoxy/api/core/v1alpha.AddressSpec", "github.com/apoxy-dev/apoxy/api/core/v1alpha.AddressStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
-	}
-}
-
-func schema_apoxy_api_core_v1alpha_AddressList(ref common.ReferenceCallback) common.OpenAPIDefinition {
-	return common.OpenAPIDefinition{
-		Schema: spec.Schema{
-			SchemaProps: spec.SchemaProps{
-				Description: "AddressList is a list of Address resources.",
-				Type:        []string{"object"},
-				Properties: map[string]spec.Schema{
-					"kind": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"apiVersion": {
-						SchemaProps: spec.SchemaProps{
-							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"metadata": {
-						SchemaProps: spec.SchemaProps{
-							Default: map[string]interface{}{},
-							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"),
-						},
-					},
-					"items": {
-						SchemaProps: spec.SchemaProps{
-							Type: []string{"array"},
-							Items: &spec.SchemaOrArray{
-								Schema: &spec.Schema{
-									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("github.com/apoxy-dev/apoxy/api/core/v1alpha.Address"),
-									},
-								},
-							},
-						},
-					},
-				},
-				Required: []string{"items"},
-			},
-		},
-		Dependencies: []string{
-			"github.com/apoxy-dev/apoxy/api/core/v1alpha.Address", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
-	}
-}
-
-func schema_apoxy_api_core_v1alpha_AddressSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
-	return common.OpenAPIDefinition{
-		Schema: spec.Schema{
-			SchemaProps: spec.SchemaProps{
-				Type: []string{"object"},
-				Properties: map[string]spec.Schema{
-					"provider": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Provider of the address. See provider constants for more information.",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"ip": {
-						SchemaProps: spec.SchemaProps{
-							Description: "IPv4/IPv6 address string. This is immutable and cannot be changed. Allocated by the IP address manager.",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"location": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Location of the address. Examples: \"us-east1\", \"us-west1\", etc. If not provided, the address is global (anycast) for cloud.",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"deletePolicy": {
-						SchemaProps: spec.SchemaProps{
-							Description: "DeletePolicy of the address. See delete policy constants for more information. Defaults to DeletePolicyDelete.",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-				},
-			},
-		},
-	}
-}
-
-func schema_apoxy_api_core_v1alpha_AddressStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
-	return common.OpenAPIDefinition{
-		Schema: spec.Schema{
-			SchemaProps: spec.SchemaProps{
-				Type: []string{"object"},
-				Properties: map[string]spec.Schema{
-					"phase": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Phase of the address.",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"status": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Status of the address.",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-				},
-			},
-		},
 	}
 }
 
@@ -2414,7 +2221,7 @@ func schema_apoxy_api_core_v1alpha_DomainZoneList(ref common.ReferenceCallback) 
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/apoxy-dev/apoxy/api/core/v1alpha.Domain"),
+										Ref:     ref("github.com/apoxy-dev/apoxy/api/core/v1alpha.DomainZone"),
 									},
 								},
 							},
@@ -2425,7 +2232,7 @@ func schema_apoxy_api_core_v1alpha_DomainZoneList(ref common.ReferenceCallback) 
 			},
 		},
 		Dependencies: []string{
-			"github.com/apoxy-dev/apoxy/api/core/v1alpha.Domain", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
+			"github.com/apoxy-dev/apoxy/api/core/v1alpha.DomainZone", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
 	}
 }
 
@@ -2555,26 +2362,6 @@ func schema_apoxy_api_core_v1alpha_EgressGatewaySpec(ref common.ReferenceCallbac
 						SchemaProps: spec.SchemaProps{
 							Description: "Whether the egress gateway is enabled. Default is false. When enabled, the egress gateway will be used to route traffic from the tunnel node to the internet. Traffic will be SNAT'ed.",
 							Type:        []string{"boolean"},
-							Format:      "",
-						},
-					},
-				},
-			},
-		},
-	}
-}
-
-func schema_apoxy_api_core_v1alpha_FileAccessLog(ref common.ReferenceCallback) common.OpenAPIDefinition {
-	return common.OpenAPIDefinition{
-		Schema: spec.Schema{
-			SchemaProps: spec.SchemaProps{
-				Description: "FileAccessLog defines the file access log configuration.",
-				Type:        []string{"object"},
-				Properties: map[string]spec.Schema{
-					"path": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Path where access logs collectors will look for access log files. Accepts absolute paths, and paths relative to the Proxy's current working directory. If empty, will use default path for the proxy type.",
-							Type:        []string{"string"},
 							Format:      "",
 						},
 					},
@@ -2730,220 +2517,6 @@ func schema_apoxy_api_core_v1alpha_PortRange(ref common.ReferenceCallback) commo
 				Required: []string{"startPort", "endPort"},
 			},
 		},
-	}
-}
-
-func schema_apoxy_api_core_v1alpha_Proxy(ref common.ReferenceCallback) common.OpenAPIDefinition {
-	return common.OpenAPIDefinition{
-		Schema: spec.Schema{
-			SchemaProps: spec.SchemaProps{
-				Description: "Proxy is the Schema for the proxies API.",
-				Type:        []string{"object"},
-				Properties: map[string]spec.Schema{
-					"kind": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"apiVersion": {
-						SchemaProps: spec.SchemaProps{
-							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"metadata": {
-						SchemaProps: spec.SchemaProps{
-							Default: map[string]interface{}{},
-							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"),
-						},
-					},
-					"spec": {
-						SchemaProps: spec.SchemaProps{
-							Default: map[string]interface{}{},
-							Ref:     ref("github.com/apoxy-dev/apoxy/api/core/v1alpha.ProxySpec"),
-						},
-					},
-					"status": {
-						SchemaProps: spec.SchemaProps{
-							Default: map[string]interface{}{},
-							Ref:     ref("github.com/apoxy-dev/apoxy/api/core/v1alpha.ProxyStatus"),
-						},
-					},
-				},
-			},
-		},
-		Dependencies: []string{
-			"github.com/apoxy-dev/apoxy/api/core/v1alpha.ProxySpec", "github.com/apoxy-dev/apoxy/api/core/v1alpha.ProxyStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
-	}
-}
-
-func schema_apoxy_api_core_v1alpha_ProxyList(ref common.ReferenceCallback) common.OpenAPIDefinition {
-	return common.OpenAPIDefinition{
-		Schema: spec.Schema{
-			SchemaProps: spec.SchemaProps{
-				Description: "ProxyList contains a list of Proxy objects.",
-				Type:        []string{"object"},
-				Properties: map[string]spec.Schema{
-					"kind": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"apiVersion": {
-						SchemaProps: spec.SchemaProps{
-							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"metadata": {
-						SchemaProps: spec.SchemaProps{
-							Default: map[string]interface{}{},
-							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"),
-						},
-					},
-					"items": {
-						SchemaProps: spec.SchemaProps{
-							Type: []string{"array"},
-							Items: &spec.SchemaOrArray{
-								Schema: &spec.Schema{
-									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("github.com/apoxy-dev/apoxy/api/core/v1alpha.Proxy"),
-									},
-								},
-							},
-						},
-					},
-				},
-				Required: []string{"items"},
-			},
-		},
-		Dependencies: []string{
-			"github.com/apoxy-dev/apoxy/api/core/v1alpha.Proxy", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
-	}
-}
-
-func schema_apoxy_api_core_v1alpha_ProxySpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
-	return common.OpenAPIDefinition{
-		Schema: spec.Schema{
-			SchemaProps: spec.SchemaProps{
-				Description: "ProxySpec defines the desired specification of a Proxy.",
-				Type:        []string{"object"},
-				Properties: map[string]spec.Schema{
-					"type": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Proxy type (currently only envoy is supported).",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"provider": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Provider is the infrastructure provider where the proxy will be deployed. Defaults to \"cloud\" provider.",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"nodeName": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Node name of the proxy.",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"configData": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Proxy configuration.",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"addressRef": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Reference to the IP (v4/v6) address attached to the proxy. If not specified, the proxy will allocate default address for the \"cloud\" provider. See other providers for their default address allocation mechanism.",
-							Ref:         ref("k8s.io/api/core/v1.ObjectReference"),
-						},
-					},
-					"location": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Location (region) of the proxy instance.",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"accessLog": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Access log collector configuration. This is used to configure the access log collector that will be used to collect access logs from the proxy so proxy config should have the configuration to produce access logs using the matching format/sink.",
-							Ref:         ref("github.com/apoxy-dev/apoxy/api/core/v1alpha.AccessLog"),
-						},
-					},
-					"dynamicForwardProxy": {
-						SchemaProps: spec.SchemaProps{
-							Description: "DynamicForwardProxy enables a dynamic forward proxy for sending traffic to dynamically created upstreams based on the host exctracted from the request.",
-							Type:        []string{"boolean"},
-							Format:      "",
-						},
-					},
-				},
-			},
-		},
-		Dependencies: []string{
-			"github.com/apoxy-dev/apoxy/api/core/v1alpha.AccessLog", "k8s.io/api/core/v1.ObjectReference"},
-	}
-}
-
-func schema_apoxy_api_core_v1alpha_ProxyStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
-	return common.OpenAPIDefinition{
-		Schema: spec.Schema{
-			SchemaProps: spec.SchemaProps{
-				Description: "ProxyStatus defines the observed state of Proxy.",
-				Type:        []string{"object"},
-				Properties: map[string]spec.Schema{
-					"startTimestamp": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Start time of the proxy.",
-							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
-						},
-					},
-					"address": {
-						SchemaProps: spec.SchemaProps{
-							Description: "IPv4/6 address string of the proxy. If provided in the spec, this will be the same as the addressRef data.",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"phase": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Phase of the proxy. Examples: \"Pending\", \"Running\", \"Failed\", etc.",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"machineID": {
-						SchemaProps: spec.SchemaProps{
-							Description: "MachineID of the proxy. Used to identify the proxy instance in the infrastructure provider.",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"status": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Status of the proxy.",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-				},
-			},
-		},
-		Dependencies: []string{
-			"k8s.io/apimachinery/pkg/apis/meta/v1.Time"},
 	}
 }
 
@@ -4177,7 +3750,7 @@ func schema_apoxy_api_core_v1alpha2_DomainZoneList(ref common.ReferenceCallback)
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.Domain"),
+										Ref:     ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.DomainZone"),
 									},
 								},
 							},
@@ -4188,7 +3761,7 @@ func schema_apoxy_api_core_v1alpha2_DomainZoneList(ref common.ReferenceCallback)
 			},
 		},
 		Dependencies: []string{
-			"github.com/apoxy-dev/apoxy/api/core/v1alpha2.Domain", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
+			"github.com/apoxy-dev/apoxy/api/core/v1alpha2.DomainZone", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
 	}
 }
 
@@ -4814,7 +4387,7 @@ func schema_apoxy_api_core_v1alpha2_ProxyTelementry(ref common.ReferenceCallback
 					"otelCollectorConfig": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Custom OpenTelemetry collector configuration. Only supported for unmanaged proxies. This must be a ConfigMap or a Secret in the same namespace as Backplane.",
-							Ref:         ref("github.com/apoxy-dev/apoxy/api/core/v1alpha.LocalObjectReference"),
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.LocalObjectReference"),
 						},
 					},
 					"thirdPartySinks": {
@@ -4827,7 +4400,7 @@ func schema_apoxy_api_core_v1alpha2_ProxyTelementry(ref common.ReferenceCallback
 			},
 		},
 		Dependencies: []string{
-			"github.com/apoxy-dev/apoxy/api/core/v1alpha.LocalObjectReference", "github.com/apoxy-dev/apoxy/api/core/v1alpha2.ProxyAccessLogs", "github.com/apoxy-dev/apoxy/api/core/v1alpha2.ProxyContentLogs", "github.com/apoxy-dev/apoxy/api/core/v1alpha2.ProxyTracing", "github.com/apoxy-dev/apoxy/api/core/v1alpha2.ThirdPartySinks"},
+			"github.com/apoxy-dev/apoxy/api/core/v1alpha2.LocalObjectReference", "github.com/apoxy-dev/apoxy/api/core/v1alpha2.ProxyAccessLogs", "github.com/apoxy-dev/apoxy/api/core/v1alpha2.ProxyContentLogs", "github.com/apoxy-dev/apoxy/api/core/v1alpha2.ProxyTracing", "github.com/apoxy-dev/apoxy/api/core/v1alpha2.ThirdPartySinks"},
 	}
 }
 

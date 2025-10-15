@@ -1,11 +1,15 @@
 package v1alpha
 
 import (
+	"errors"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apiserver/pkg/registry/rest"
 	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource"
+
+	v1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
 )
 
 // +kubebuilder:object:root=true
@@ -134,8 +138,11 @@ func (s *CloudMonitoringIntegrationStatus) SubResourceName() string {
 	return "status"
 }
 
-func (s *CloudMonitoringIntegrationStatus) CopyTo(parent resource.ObjectWithStatusSubResource) {
-	parent.(*CloudMonitoringIntegration).Status = *s
+func (s *CloudMonitoringIntegrationStatus) CopyTo(obj resource.ObjectWithStatusSubResource) {
+	parent, ok := obj.(*CloudMonitoringIntegration)
+	if ok {
+		parent.Status = *s
+	}
 }
 
 var (
@@ -170,7 +177,7 @@ func (c *CloudMonitoringIntegration) GetGroupVersionResource() schema.GroupVersi
 }
 
 func (c *CloudMonitoringIntegration) IsStorageVersion() bool {
-	return true
+	return false
 }
 
 func (c *CloudMonitoringIntegration) GetSingularName() string {
@@ -179,6 +186,38 @@ func (c *CloudMonitoringIntegration) GetSingularName() string {
 
 func (c *CloudMonitoringIntegration) GetStatus() resource.StatusSubResource {
 	return &c.Status
+}
+
+var _ resource.MultiVersionObject = &CloudMonitoringIntegration{}
+
+func (c *CloudMonitoringIntegration) NewStorageVersionObject() runtime.Object {
+	return &v1alpha2.CloudMonitoringIntegration{}
+}
+
+func (c *CloudMonitoringIntegration) ConvertToStorageVersion(storageObj runtime.Object) error {
+	obj, ok := storageObj.(*v1alpha2.CloudMonitoringIntegration)
+	if !ok {
+		return errors.New("failed to convert to v1alpha2 CloudMonitoringIntegration")
+	}
+
+	obj.ObjectMeta = *c.ObjectMeta.DeepCopy()
+	obj.Spec = *convertCloudMonitoringIntegrationSpecFromV1Alpha1ToV1Alpha2(&c.Spec)
+	obj.Status = *convertCloudMonitoringIntegrationStatusFromV1Alpha1ToV1Alpha2(&c.Status)
+
+	return nil
+}
+
+func (c *CloudMonitoringIntegration) ConvertFromStorageVersion(storageObj runtime.Object) error {
+	obj, ok := storageObj.(*v1alpha2.CloudMonitoringIntegration)
+	if !ok {
+		return errors.New("failed to convert from v1alpha2 CloudMonitoringIntegration")
+	}
+
+	c.ObjectMeta = *obj.ObjectMeta.DeepCopy()
+	c.Spec = *convertCloudMonitoringIntegrationSpecFromV1Alpha2ToV1Alpha1(&obj.Spec)
+	c.Status = *convertCloudMonitoringIntegrationStatusFromV1Alpha2ToV1Alpha1(&obj.Status)
+
+	return nil
 }
 
 // +kubebuilder:object:root=true

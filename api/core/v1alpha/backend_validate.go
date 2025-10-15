@@ -11,16 +11,21 @@ import (
 	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource/resourcestrategy"
 )
 
-var _ resourcestrategy.Validater = &Backend{}
-var _ resourcestrategy.ValidateUpdater = &Backend{}
+var (
+	_ resourcestrategy.Validater       = &Backend{}
+	_ resourcestrategy.ValidateUpdater = &Backend{}
+)
 
 func (r *Backend) Validate(ctx context.Context) field.ErrorList {
 	return r.validate()
 }
 
 func (r *Backend) ValidateUpdate(ctx context.Context, obj runtime.Object) field.ErrorList {
-	d := obj.(*Backend)
-	return d.validate()
+	backend, ok := obj.(*Backend)
+	if ok {
+		return backend.validate()
+	}
+	return field.ErrorList{}
 }
 
 func (r *Backend) validate() field.ErrorList {

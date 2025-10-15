@@ -17,10 +17,6 @@ limitations under the License.
 
 package v1alpha
 
-// AddressListerExpansion allows custom methods to be added to
-// AddressLister.
-type AddressListerExpansion interface{}
-
 // BackendListerExpansion allows custom methods to be added to
 // BackendLister.
 type BackendListerExpansion interface{}
@@ -36,10 +32,6 @@ type DomainListerExpansion interface{}
 // DomainZoneListerExpansion allows custom methods to be added to
 // DomainZoneLister.
 type DomainZoneListerExpansion interface{}
-
-// ProxyListerExpansion allows custom methods to be added to
-// ProxyLister.
-type ProxyListerExpansion interface{}
 
 // TunnelNodeListerExpansion allows custom methods to be added to
 // TunnelNodeLister.

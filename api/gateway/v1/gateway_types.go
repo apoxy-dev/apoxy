@@ -77,8 +77,11 @@ func (s *GatewayClassStatus) SubResourceName() string {
 	return "status"
 }
 
-func (s *GatewayClassStatus) CopyTo(parent resource.ObjectWithStatusSubResource) {
-	parent.(*GatewayClass).Status = *s
+func (s *GatewayClassStatus) CopyTo(obj resource.ObjectWithStatusSubResource) {
+	parent, ok := obj.(*GatewayClass)
+	if ok {
+		parent.Status = *s
+	}
 }
 
 // +kubebuilder:object:root=true
@@ -163,8 +166,11 @@ func (s *GatewayStatus) SubResourceName() string {
 	return "status"
 }
 
-func (s *GatewayStatus) CopyTo(parent resource.ObjectWithStatusSubResource) {
-	parent.(*Gateway).Status = *s
+func (s *GatewayStatus) CopyTo(obj resource.ObjectWithStatusSubResource) {
+	parent, ok := obj.(*Gateway)
+	if ok {
+		parent.Status = *s
+	}
 }
 
 // +kubebuilder:object:root=true
@@ -249,8 +255,11 @@ func (s *HTTPRouteStatus) SubResourceName() string {
 	return "status"
 }
 
-func (s *HTTPRouteStatus) CopyTo(parent resource.ObjectWithStatusSubResource) {
-	parent.(*HTTPRoute).Status = *s
+func (s *HTTPRouteStatus) CopyTo(obj resource.ObjectWithStatusSubResource) {
+	parent, ok := obj.(*HTTPRoute)
+	if ok {
+		parent.Status = *s
+	}
 }
 
 // +kubebuilder:object:root=true
@@ -335,8 +344,11 @@ func (s *GRPCRouteStatus) SubResourceName() string {
 	return "status"
 }
 
-func (s *GRPCRouteStatus) CopyTo(parent resource.ObjectWithStatusSubResource) {
-	parent.(*GRPCRoute).Status = *s
+func (s *GRPCRouteStatus) CopyTo(obj resource.ObjectWithStatusSubResource) {
+	parent, ok := obj.(*GRPCRoute)
+	if ok {
+		parent.Status = *s
+	}
 }
 
 // +kubebuilder:object:root=true

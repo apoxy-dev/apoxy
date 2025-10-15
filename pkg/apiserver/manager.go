@@ -318,19 +318,32 @@ func WithAgentIPAM(ipam tunnet.IPAM) Option {
 }
 
 func defaultResources() []resource.Object {
+	// Higher versions need to be registered first as storage resources.
 	return []resource.Object{
-		&corev1alpha.TunnelNode{},
+		&corev1alpha2.Backend{},
+		&corev1alpha2.CloudMonitoringIntegration{},
+		&corev1alpha2.Domain{},
+		&corev1alpha2.DomainZone{},
+		&corev1alpha2.Proxy{},
+		&corev1alpha2.Tunnel{},
+		&corev1alpha2.TunnelAgent{},
+
 		&corev1alpha.Backend{},
 		&corev1alpha.CloudMonitoringIntegration{},
 		&corev1alpha.Domain{},
+		&corev1alpha.DomainZone{},
+		&corev1alpha.TunnelNode{},
+
 		&ctrlv1alpha1.Proxy{},
+
 		&policyv1alpha1.RateLimit{},
-		// extensionsv1alpha2 is storage version so needs to be registered first.
+
 		&extensionsv1alpha2.EdgeFunction{},
 		&extensionsv1alpha2.EdgeFunctionRevision{},
-		// extensionsv1alpha1 will be converted to extensionsv1alpha2 when it is stored.
+
 		&extensionsv1alpha1.EdgeFunction{},
 		&extensionsv1alpha1.EdgeFunctionRevision{},
+
 		&gatewayv1.GatewayClass{},
 		&gatewayv1.Gateway{},
 		&gatewayv1.HTTPRoute{},

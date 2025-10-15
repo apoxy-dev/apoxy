@@ -139,8 +139,11 @@ func (ps *BackendStatus) SubResourceName() string {
 	return "status"
 }
 
-func (ps *BackendStatus) CopyTo(parent resource.ObjectWithStatusSubResource) {
-	parent.(*Backend).Status = *ps
+func (ps *BackendStatus) CopyTo(obj resource.ObjectWithStatusSubResource) {
+	parent, ok := obj.(*Backend)
+	if ok {
+		parent.Status = *ps
+	}
 }
 
 var (

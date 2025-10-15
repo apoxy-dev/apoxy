@@ -134,8 +134,11 @@ func (s *CloudMonitoringIntegrationStatus) SubResourceName() string {
 	return "status"
 }
 
-func (s *CloudMonitoringIntegrationStatus) CopyTo(parent resource.ObjectWithStatusSubResource) {
-	parent.(*CloudMonitoringIntegration).Status = *s
+func (s *CloudMonitoringIntegrationStatus) CopyTo(obj resource.ObjectWithStatusSubResource) {
+	parent, ok := obj.(*CloudMonitoringIntegration)
+	if ok {
+		parent.Status = *s
+	}
 }
 
 var (

@@ -3,7 +3,6 @@ package v1alpha2
 import (
 	"time"
 
-	corev1 "github.com/apoxy-dev/apoxy/api/core/v1alpha"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -103,7 +102,7 @@ type ProxyTelementry struct {
 	// Custom OpenTelemetry collector configuration.
 	// Only supported for unmanaged proxies.
 	// This must be a ConfigMap or a Secret in the same namespace as Backplane.
-	OtelCollectorConfig *corev1.LocalObjectReference `json:"otelCollectorConfig,omitempty"`
+	OtelCollectorConfig *LocalObjectReference `json:"otelCollectorConfig,omitempty"`
 
 	// For enabling third party integrations.
 	// This is only supported for cloud proxies.
@@ -199,8 +198,11 @@ func (ps *ProxyStatus) SubResourceName() string {
 	return "status"
 }
 
-func (ps *ProxyStatus) CopyTo(parent resource.ObjectWithStatusSubResource) {
-	parent.(*Proxy).Status = *ps
+func (ps *ProxyStatus) CopyTo(obj resource.ObjectWithStatusSubResource) {
+	parent, ok := obj.(*Proxy)
+	if ok {
+		parent.Status = *ps
+	}
 }
 
 // +kubebuilder:object:root=true

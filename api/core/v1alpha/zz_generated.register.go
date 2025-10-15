@@ -60,8 +60,6 @@ func init() {
 // Adds the list of known types to Scheme.
 func addKnownTypes(scheme *runtime.Scheme) error {
 	scheme.AddKnownTypes(SchemeGroupVersion,
-		&Address{},
-		&AddressList{},
 		&Backend{},
 		&BackendList{},
 		&CloudMonitoringIntegration{},
@@ -70,8 +68,6 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&DomainList{},
 		&DomainZone{},
 		&DomainZoneList{},
-		&Proxy{},
-		&ProxyList{},
 		&TunnelNode{},
 		&TunnelNodeList{},
 	)

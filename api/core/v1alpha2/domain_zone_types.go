@@ -53,8 +53,11 @@ func (as *DomainZoneStatus) SubResourceName() string {
 	return "status"
 }
 
-func (as *DomainZoneStatus) CopyTo(parent resource.ObjectWithStatusSubResource) {
-	parent.(*DomainZone).Status = *as
+func (as *DomainZoneStatus) CopyTo(obj resource.ObjectWithStatusSubResource) {
+	parent, ok := obj.(*DomainZone)
+	if ok {
+		parent.Status = *as
+	}
 }
 
 var _ runtime.Object = &DomainZone{}
@@ -105,7 +108,7 @@ func (a *DomainZone) GetStatus() resource.StatusSubResource {
 type DomainZoneList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []Domain `json:"items"`
+	Items           []DomainZone `json:"items"`
 }
 
 var _ resource.ObjectList = &DomainZoneList{}
