@@ -321,6 +321,7 @@ func defaultResources() []resource.Object {
 	return []resource.Object{
 		&corev1alpha.TunnelNode{},
 		&corev1alpha.Backend{},
+		&corev1alpha.CloudMonitoringIntegration{},
 		&corev1alpha.Domain{},
 		&ctrlv1alpha1.Proxy{},
 		&policyv1alpha1.RateLimit{},
