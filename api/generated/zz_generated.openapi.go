@@ -51,11 +51,17 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.AddressSpec":                          schema_apoxy_api_core_v1alpha_AddressSpec(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.AddressStatus":                        schema_apoxy_api_core_v1alpha_AddressStatus(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.AgentStatus":                          schema_apoxy_api_core_v1alpha_AgentStatus(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha.AxiomCredentials":                     schema_apoxy_api_core_v1alpha_AxiomCredentials(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.Backend":                              schema_apoxy_api_core_v1alpha_Backend(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.BackendEndpoint":                      schema_apoxy_api_core_v1alpha_BackendEndpoint(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.BackendList":                          schema_apoxy_api_core_v1alpha_BackendList(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.BackendSpec":                          schema_apoxy_api_core_v1alpha_BackendSpec(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.BackendStatus":                        schema_apoxy_api_core_v1alpha_BackendStatus(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha.CloudMonitoringIntegration":           schema_apoxy_api_core_v1alpha_CloudMonitoringIntegration(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha.CloudMonitoringIntegrationList":       schema_apoxy_api_core_v1alpha_CloudMonitoringIntegrationList(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha.CloudMonitoringIntegrationSpec":       schema_apoxy_api_core_v1alpha_CloudMonitoringIntegrationSpec(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha.CloudMonitoringIntegrationStatus":     schema_apoxy_api_core_v1alpha_CloudMonitoringIntegrationStatus(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha.DatadogCredentials":                   schema_apoxy_api_core_v1alpha_DatadogCredentials(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.Domain":                               schema_apoxy_api_core_v1alpha_Domain(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.DomainForwardingSpec":                 schema_apoxy_api_core_v1alpha_DomainForwardingSpec(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.DomainList":                           schema_apoxy_api_core_v1alpha_DomainList(ref),
@@ -73,6 +79,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.EgressGatewaySpec":                    schema_apoxy_api_core_v1alpha_EgressGatewaySpec(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.FileAccessLog":                        schema_apoxy_api_core_v1alpha_FileAccessLog(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.ForwardingRule":                       schema_apoxy_api_core_v1alpha_ForwardingRule(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha.GrafanaCredentials":                   schema_apoxy_api_core_v1alpha_GrafanaCredentials(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.LocalObjectReference":                 schema_apoxy_api_core_v1alpha_LocalObjectReference(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.PortRange":                            schema_apoxy_api_core_v1alpha_PortRange(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.Proxy":                                schema_apoxy_api_core_v1alpha_Proxy(ref),
@@ -85,11 +92,17 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.TunnelNodeSpec":                       schema_apoxy_api_core_v1alpha_TunnelNodeSpec(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.TunnelNodeStatus":                     schema_apoxy_api_core_v1alpha_TunnelNodeStatus(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.APIKey":                              schema_apoxy_api_core_v1alpha2_APIKey(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.AxiomCredentials":                    schema_apoxy_api_core_v1alpha2_AxiomCredentials(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.Backend":                             schema_apoxy_api_core_v1alpha2_Backend(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.BackendEndpoint":                     schema_apoxy_api_core_v1alpha2_BackendEndpoint(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.BackendList":                         schema_apoxy_api_core_v1alpha2_BackendList(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.BackendSpec":                         schema_apoxy_api_core_v1alpha2_BackendSpec(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.BackendStatus":                       schema_apoxy_api_core_v1alpha2_BackendStatus(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.CloudMonitoringIntegration":          schema_apoxy_api_core_v1alpha2_CloudMonitoringIntegration(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.CloudMonitoringIntegrationList":      schema_apoxy_api_core_v1alpha2_CloudMonitoringIntegrationList(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.CloudMonitoringIntegrationSpec":      schema_apoxy_api_core_v1alpha2_CloudMonitoringIntegrationSpec(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.CloudMonitoringIntegrationStatus":    schema_apoxy_api_core_v1alpha2_CloudMonitoringIntegrationStatus(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.DatadogCredentials":                  schema_apoxy_api_core_v1alpha2_DatadogCredentials(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.Domain":                              schema_apoxy_api_core_v1alpha2_Domain(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.DomainForwardingSpec":                schema_apoxy_api_core_v1alpha2_DomainForwardingSpec(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.DomainList":                          schema_apoxy_api_core_v1alpha2_DomainList(ref),
@@ -106,6 +119,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.DynamicProxySpec":                    schema_apoxy_api_core_v1alpha2_DynamicProxySpec(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.EgressGatewaySpec":                   schema_apoxy_api_core_v1alpha2_EgressGatewaySpec(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.ForwardingRule":                      schema_apoxy_api_core_v1alpha2_ForwardingRule(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.GrafanaCredentials":                  schema_apoxy_api_core_v1alpha2_GrafanaCredentials(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.LocalObjectReference":                schema_apoxy_api_core_v1alpha2_LocalObjectReference(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.OpenTelemetrySink":                   schema_apoxy_api_core_v1alpha2_OpenTelemetrySink(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.PortRange":                           schema_apoxy_api_core_v1alpha2_PortRange(ref),
@@ -1380,6 +1394,44 @@ func schema_apoxy_api_core_v1alpha_AgentStatus(ref common.ReferenceCallback) com
 	}
 }
 
+func schema_apoxy_api_core_v1alpha_AxiomCredentials(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "AxiomCredentials contains credentials for Axiom integration.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"apiToken": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIToken is the Axiom API token. This field should reference a secret in production environments.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"region": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Region specifies the Axiom region. Common values: us, eu",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"datasetName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "DatasetName is the name of the Axiom dataset to send data to.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"apiToken", "region", "datasetName"},
+			},
+		},
+	}
+}
+
 func schema_apoxy_api_core_v1alpha_Backend(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -1578,6 +1630,222 @@ func schema_apoxy_api_core_v1alpha_BackendStatus(ref common.ReferenceCallback) c
 		},
 		Dependencies: []string{
 			"k8s.io/apimachinery/pkg/apis/meta/v1.Condition"},
+	}
+}
+
+func schema_apoxy_api_core_v1alpha_CloudMonitoringIntegration(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "CloudMonitoringIntegration configures integration with cloud monitoring and observability platforms.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("github.com/apoxy-dev/apoxy/api/core/v1alpha.CloudMonitoringIntegrationSpec"),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("github.com/apoxy-dev/apoxy/api/core/v1alpha.CloudMonitoringIntegrationStatus"),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/core/v1alpha.CloudMonitoringIntegrationSpec", "github.com/apoxy-dev/apoxy/api/core/v1alpha.CloudMonitoringIntegrationStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
+	}
+}
+
+func schema_apoxy_api_core_v1alpha_CloudMonitoringIntegrationList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "CloudMonitoringIntegrationList contains a list of CloudMonitoringIntegration objects.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("github.com/apoxy-dev/apoxy/api/core/v1alpha.CloudMonitoringIntegration"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/core/v1alpha.CloudMonitoringIntegration", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
+	}
+}
+
+func schema_apoxy_api_core_v1alpha_CloudMonitoringIntegrationSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "CloudMonitoringIntegrationSpec defines the desired state of CloudMonitoringIntegration.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"enabled": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Enabled indicates whether the monitoring integration is active.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"datadogCredentials": {
+						SchemaProps: spec.SchemaProps{
+							Description: "DatadogCredentials configures DataDog integration. Only one of DatadogCredentials, GrafanaCredentials, or AxiomCredentials may be specified.",
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/core/v1alpha.DatadogCredentials"),
+						},
+					},
+					"grafanaCredentials": {
+						SchemaProps: spec.SchemaProps{
+							Description: "GrafanaCredentials configures Grafana Cloud integration. Only one of DatadogCredentials, GrafanaCredentials, or AxiomCredentials may be specified.",
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/core/v1alpha.GrafanaCredentials"),
+						},
+					},
+					"axiomCredentials": {
+						SchemaProps: spec.SchemaProps{
+							Description: "AxiomCredentials configures Axiom integration. Only one of DatadogCredentials, GrafanaCredentials, or AxiomCredentials may be specified.",
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/core/v1alpha.AxiomCredentials"),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/core/v1alpha.AxiomCredentials", "github.com/apoxy-dev/apoxy/api/core/v1alpha.DatadogCredentials", "github.com/apoxy-dev/apoxy/api/core/v1alpha.GrafanaCredentials"},
+	}
+}
+
+func schema_apoxy_api_core_v1alpha_CloudMonitoringIntegrationStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "CloudMonitoringIntegrationStatus defines the observed state of CloudMonitoringIntegration.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"conditions": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"type",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Conditions describe the current conditions of the CloudMonitoringIntegration.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
+									},
+								},
+							},
+						},
+					},
+					"lastSyncTime": {
+						SchemaProps: spec.SchemaProps{
+							Description: "LastSyncTime is the last time the integration successfully synced with the monitoring platform.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+						},
+					},
+					"observedGeneration": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ObservedGeneration reflects the generation of the most recently observed CloudMonitoringIntegration.",
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"k8s.io/apimachinery/pkg/apis/meta/v1.Condition", "k8s.io/apimachinery/pkg/apis/meta/v1.Time"},
+	}
+}
+
+func schema_apoxy_api_core_v1alpha_DatadogCredentials(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "DatadogCredentials contains credentials for DataDog integration.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"apiKey": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIKey is the DataDog API key. This field should reference a secret in production environments.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"site": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Site specifies the DataDog site to send data to. Common values: datadoghq.com, datadoghq.eu, us3.datadoghq.com, us5.datadoghq.com, ddog-gov.com",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"apiKey", "site"},
+			},
+		},
 	}
 }
 
@@ -2360,6 +2628,44 @@ func schema_apoxy_api_core_v1alpha_ForwardingRule(ref common.ReferenceCallback) 
 	}
 }
 
+func schema_apoxy_api_core_v1alpha_GrafanaCredentials(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "GrafanaCredentials contains credentials for Grafana Cloud integration.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"apiKey": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIKey is the Grafana Cloud API key. This field should reference a secret in production environments.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"instanceId": {
+						SchemaProps: spec.SchemaProps{
+							Description: "InstanceID is the Grafana Cloud instance identifier.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"endpoint": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Endpoint is the OTLP endpoint URL for Grafana Cloud. Example: https://otlp-endpoint-xyz.grafana.net/otlp",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"apiKey", "instanceId", "endpoint"},
+			},
+		},
+	}
+}
+
 func schema_apoxy_api_core_v1alpha_LocalObjectReference(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -2851,6 +3157,44 @@ func schema_apoxy_api_core_v1alpha2_APIKey(ref common.ReferenceCallback) common.
 	}
 }
 
+func schema_apoxy_api_core_v1alpha2_AxiomCredentials(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "AxiomCredentials contains credentials for Axiom integration.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"apiToken": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIToken is the Axiom API token. This field should reference a secret in production environments.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"region": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Region specifies the Axiom region. Common values: us, eu",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"datasetName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "DatasetName is the name of the Axiom dataset to send data to.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"apiToken", "region", "datasetName"},
+			},
+		},
+	}
+}
+
 func schema_apoxy_api_core_v1alpha2_Backend(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -3049,6 +3393,222 @@ func schema_apoxy_api_core_v1alpha2_BackendStatus(ref common.ReferenceCallback) 
 		},
 		Dependencies: []string{
 			"k8s.io/apimachinery/pkg/apis/meta/v1.Condition"},
+	}
+}
+
+func schema_apoxy_api_core_v1alpha2_CloudMonitoringIntegration(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "CloudMonitoringIntegration configures integration with cloud monitoring and observability platforms.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.CloudMonitoringIntegrationSpec"),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.CloudMonitoringIntegrationStatus"),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/core/v1alpha2.CloudMonitoringIntegrationSpec", "github.com/apoxy-dev/apoxy/api/core/v1alpha2.CloudMonitoringIntegrationStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
+	}
+}
+
+func schema_apoxy_api_core_v1alpha2_CloudMonitoringIntegrationList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "CloudMonitoringIntegrationList contains a list of CloudMonitoringIntegration objects.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.CloudMonitoringIntegration"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/core/v1alpha2.CloudMonitoringIntegration", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
+	}
+}
+
+func schema_apoxy_api_core_v1alpha2_CloudMonitoringIntegrationSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "CloudMonitoringIntegrationSpec defines the desired state of CloudMonitoringIntegration.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"enabled": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Enabled indicates whether the monitoring integration is active.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"datadogCredentials": {
+						SchemaProps: spec.SchemaProps{
+							Description: "DatadogCredentials configures DataDog integration. Only one of DatadogCredentials, GrafanaCredentials, or AxiomCredentials may be specified.",
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.DatadogCredentials"),
+						},
+					},
+					"grafanaCredentials": {
+						SchemaProps: spec.SchemaProps{
+							Description: "GrafanaCredentials configures Grafana Cloud integration. Only one of DatadogCredentials, GrafanaCredentials, or AxiomCredentials may be specified.",
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.GrafanaCredentials"),
+						},
+					},
+					"axiomCredentials": {
+						SchemaProps: spec.SchemaProps{
+							Description: "AxiomCredentials configures Axiom integration. Only one of DatadogCredentials, GrafanaCredentials, or AxiomCredentials may be specified.",
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.AxiomCredentials"),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/core/v1alpha2.AxiomCredentials", "github.com/apoxy-dev/apoxy/api/core/v1alpha2.DatadogCredentials", "github.com/apoxy-dev/apoxy/api/core/v1alpha2.GrafanaCredentials"},
+	}
+}
+
+func schema_apoxy_api_core_v1alpha2_CloudMonitoringIntegrationStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "CloudMonitoringIntegrationStatus defines the observed state of CloudMonitoringIntegration.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"conditions": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"type",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Conditions describe the current conditions of the CloudMonitoringIntegration.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
+									},
+								},
+							},
+						},
+					},
+					"lastSyncTime": {
+						SchemaProps: spec.SchemaProps{
+							Description: "LastSyncTime is the last time the integration successfully synced with the monitoring platform.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+						},
+					},
+					"observedGeneration": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ObservedGeneration reflects the generation of the most recently observed CloudMonitoringIntegration.",
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"k8s.io/apimachinery/pkg/apis/meta/v1.Condition", "k8s.io/apimachinery/pkg/apis/meta/v1.Time"},
+	}
+}
+
+func schema_apoxy_api_core_v1alpha2_DatadogCredentials(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "DatadogCredentials contains credentials for DataDog integration.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"apiKey": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIKey is the DataDog API key. This field should reference a secret in production environments.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"site": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Site specifies the DataDog site to send data to. Common values: datadoghq.com, datadoghq.eu, us3.datadoghq.com, us5.datadoghq.com, ddog-gov.com",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"apiKey", "site"},
+			},
+		},
 	}
 }
 
@@ -3808,6 +4368,44 @@ func schema_apoxy_api_core_v1alpha2_ForwardingRule(ref common.ReferenceCallback)
 		},
 		Dependencies: []string{
 			"github.com/apoxy-dev/apoxy/api/core/v1alpha2.PortRange"},
+	}
+}
+
+func schema_apoxy_api_core_v1alpha2_GrafanaCredentials(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "GrafanaCredentials contains credentials for Grafana Cloud integration.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"apiKey": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIKey is the Grafana Cloud API key. This field should reference a secret in production environments.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"instanceId": {
+						SchemaProps: spec.SchemaProps{
+							Description: "InstanceID is the Grafana Cloud instance identifier.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"endpoint": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Endpoint is the OTLP endpoint URL for Grafana Cloud. Example: https://otlp-endpoint-xyz.grafana.net/otlp",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"apiKey", "instanceId", "endpoint"},
+			},
+		},
 	}
 }
 

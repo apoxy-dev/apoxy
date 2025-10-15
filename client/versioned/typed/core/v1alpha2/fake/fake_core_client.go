@@ -31,6 +31,10 @@ func (c *FakeCoreV1alpha2) Backends() v1alpha2.BackendInterface {
 	return &FakeBackends{c}
 }
 
+func (c *FakeCoreV1alpha2) CloudMonitoringIntegrations() v1alpha2.CloudMonitoringIntegrationInterface {
+	return &FakeCloudMonitoringIntegrations{c}
+}
+
 func (c *FakeCoreV1alpha2) Domains() v1alpha2.DomainInterface {
 	return &FakeDomains{c}
 }

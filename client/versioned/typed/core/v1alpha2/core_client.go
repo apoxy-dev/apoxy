@@ -28,6 +28,7 @@ import (
 type CoreV1alpha2Interface interface {
 	RESTClient() rest.Interface
 	BackendsGetter
+	CloudMonitoringIntegrationsGetter
 	DomainsGetter
 	DomainZonesGetter
 	ProxiesGetter
@@ -42,6 +43,10 @@ type CoreV1alpha2Client struct {
 
 func (c *CoreV1alpha2Client) Backends() BackendInterface {
 	return newBackends(c)
+}
+
+func (c *CoreV1alpha2Client) CloudMonitoringIntegrations() CloudMonitoringIntegrationInterface {
+	return newCloudMonitoringIntegrations(c)
 }
 
 func (c *CoreV1alpha2Client) Domains() DomainInterface {

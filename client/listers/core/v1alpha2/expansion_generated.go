@@ -21,6 +21,10 @@ package v1alpha2
 // BackendLister.
 type BackendListerExpansion interface{}
 
+// CloudMonitoringIntegrationListerExpansion allows custom methods to be added to
+// CloudMonitoringIntegrationLister.
+type CloudMonitoringIntegrationListerExpansion interface{}
+
 // DomainListerExpansion allows custom methods to be added to
 // DomainLister.
 type DomainListerExpansion interface{}

@@ -21,6 +21,8 @@ type AddressExpansion interface{}
 
 type BackendExpansion interface{}
 
+type CloudMonitoringIntegrationExpansion interface{}
+
 type DomainExpansion interface{}
 
 type DomainZoneExpansion interface{}

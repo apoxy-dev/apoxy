@@ -27,6 +27,8 @@ type Interface interface {
 	Addresses() AddressInformer
 	// Backends returns a BackendInformer.
 	Backends() BackendInformer
+	// CloudMonitoringIntegrations returns a CloudMonitoringIntegrationInformer.
+	CloudMonitoringIntegrations() CloudMonitoringIntegrationInformer
 	// Domains returns a DomainInformer.
 	Domains() DomainInformer
 	// DomainZones returns a DomainZoneInformer.
@@ -56,6 +58,11 @@ func (v *version) Addresses() AddressInformer {
 // Backends returns a BackendInformer.
 func (v *version) Backends() BackendInformer {
 	return &backendInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
+}
+
+// CloudMonitoringIntegrations returns a CloudMonitoringIntegrationInformer.
+func (v *version) CloudMonitoringIntegrations() CloudMonitoringIntegrationInformer {
+	return &cloudMonitoringIntegrationInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
 }
 
 // Domains returns a DomainInformer.

@@ -64,6 +64,8 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&AddressList{},
 		&Backend{},
 		&BackendList{},
+		&CloudMonitoringIntegration{},
+		&CloudMonitoringIntegrationList{},
 		&Domain{},
 		&DomainList{},
 		&DomainZone{},

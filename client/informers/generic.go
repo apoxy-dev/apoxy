@@ -66,6 +66,8 @@ func (f *sharedInformerFactory) ForResource(resource schema.GroupVersionResource
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Core().V1alpha().Addresses().Informer()}, nil
 	case v1alpha.SchemeGroupVersion.WithResource("backends"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Core().V1alpha().Backends().Informer()}, nil
+	case v1alpha.SchemeGroupVersion.WithResource("cloudmonitoringintegrations"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Core().V1alpha().CloudMonitoringIntegrations().Informer()}, nil
 	case v1alpha.SchemeGroupVersion.WithResource("domains"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Core().V1alpha().Domains().Informer()}, nil
 	case v1alpha.SchemeGroupVersion.WithResource("domainzones"):
@@ -78,6 +80,8 @@ func (f *sharedInformerFactory) ForResource(resource schema.GroupVersionResource
 		// Group=core.apoxy.dev, Version=v1alpha2
 	case v1alpha2.SchemeGroupVersion.WithResource("backends"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Core().V1alpha2().Backends().Informer()}, nil
+	case v1alpha2.SchemeGroupVersion.WithResource("cloudmonitoringintegrations"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Core().V1alpha2().CloudMonitoringIntegrations().Informer()}, nil
 	case v1alpha2.SchemeGroupVersion.WithResource("domains"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Core().V1alpha2().Domains().Informer()}, nil
 	case v1alpha2.SchemeGroupVersion.WithResource("domainzones"):
