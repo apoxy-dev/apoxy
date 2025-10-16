@@ -9,7 +9,7 @@ require (
 	github.com/adrg/xdg v0.5.3
 	github.com/alphadose/haxmap v1.4.1
 	github.com/anatol/vmtest v0.0.0-20250318022921-2f32244e2f0f
-	github.com/apoxy-dev/icx v0.11.0
+	github.com/apoxy-dev/icx v0.12.1
 	github.com/avast/retry-go/v4 v4.6.1
 	github.com/bramvdbogaerde/go-scp v1.5.0
 	github.com/buraksezer/olric v0.5.6
@@ -20,7 +20,7 @@ require (
 	github.com/dgraph-io/badger/v4 v4.5.0
 	github.com/docker/docker v28.2.2+incompatible
 	github.com/dpeckett/contextio v0.5.1
-	github.com/dpeckett/network v0.3.4
+	github.com/dpeckett/network v0.5.0
 	github.com/envoyproxy/gateway v0.5.0-rc.1.0.20240618131507-bdff5d56b59d
 	github.com/envoyproxy/go-control-plane v0.13.4
 	github.com/envoyproxy/go-control-plane/contrib v1.32.4
@@ -168,7 +168,6 @@ require (
 	github.com/docker/cli v24.0.6+incompatible // indirect
 	github.com/docker/distribution v2.8.2+incompatible // indirect
 	github.com/docker/docker-credential-helpers v0.7.0 // indirect
-	github.com/dpeckett/triemap v0.3.1 // indirect
 	github.com/dunglas/httpsfv v1.0.2 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/emicklei/go-restful/v3 v3.12.2 // indirect

@@ -193,7 +193,7 @@ func (net *ICXNetwork) Start() error {
 				phyFrame := net.pktPool.Get().(*[]byte)
 				*phyFrame = (*phyFrame)[:cap(*phyFrame)]
 
-				if n := net.handler.ScheduledToPhy(*phyFrame); n > 0 {
+				if n := net.handler.ToPhy(*phyFrame); n > 0 {
 					if err := net.phy.WriteFrame((*phyFrame)[:n]); err != nil {
 						net.pktPool.Put(phyFrame)
 						return fmt.Errorf("writing scheduled phy frame failed: %w", err)
