@@ -72,6 +72,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.DynamicProxyDnsCacheConfig":           schema_apoxy_api_core_v1alpha_DynamicProxyDnsCacheConfig(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.DynamicProxySpec":                     schema_apoxy_api_core_v1alpha_DynamicProxySpec(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.EgressGatewaySpec":                    schema_apoxy_api_core_v1alpha_EgressGatewaySpec(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha.FQDNStatus":                           schema_apoxy_api_core_v1alpha_FQDNStatus(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.ForwardingRule":                       schema_apoxy_api_core_v1alpha_ForwardingRule(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.GrafanaCredentials":                   schema_apoxy_api_core_v1alpha_GrafanaCredentials(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.LocalObjectReference":                 schema_apoxy_api_core_v1alpha_LocalObjectReference(ref),
@@ -108,6 +109,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.DynamicProxyDnsCacheConfig":          schema_apoxy_api_core_v1alpha2_DynamicProxyDnsCacheConfig(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.DynamicProxySpec":                    schema_apoxy_api_core_v1alpha2_DynamicProxySpec(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.EgressGatewaySpec":                   schema_apoxy_api_core_v1alpha2_EgressGatewaySpec(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.FQDNStatus":                          schema_apoxy_api_core_v1alpha2_FQDNStatus(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.ForwardingRule":                      schema_apoxy_api_core_v1alpha2_ForwardingRule(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.GrafanaCredentials":                  schema_apoxy_api_core_v1alpha2_GrafanaCredentials(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.LocalObjectReference":                schema_apoxy_api_core_v1alpha2_LocalObjectReference(ref),
@@ -1871,20 +1873,20 @@ func schema_apoxy_api_core_v1alpha_DomainStatus(ref common.ReferenceCallback) co
 				Properties: map[string]spec.Schema{
 					"phase": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Phase of the domain.",
+							Description: "Phase of the domain (aggregated from all FQDNs).",
 							Type:        []string{"string"},
 							Format:      "",
 						},
 					},
-					"conditions": {
+					"fqdnStatus": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Conditions recorded for the domain.",
+							Description: "FQDNStatus contains the status of each FQDN managed by this Domain.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
+										Ref:     ref("github.com/apoxy-dev/apoxy/api/core/v1alpha.FQDNStatus"),
 									},
 								},
 							},
@@ -1894,7 +1896,7 @@ func schema_apoxy_api_core_v1alpha_DomainStatus(ref common.ReferenceCallback) co
 			},
 		},
 		Dependencies: []string{
-			"k8s.io/apimachinery/pkg/apis/meta/v1.Condition"},
+			"github.com/apoxy-dev/apoxy/api/core/v1alpha.FQDNStatus"},
 	}
 }
 
@@ -2368,6 +2370,52 @@ func schema_apoxy_api_core_v1alpha_EgressGatewaySpec(ref common.ReferenceCallbac
 				},
 			},
 		},
+	}
+}
+
+func schema_apoxy_api_core_v1alpha_FQDNStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "FQDNStatus represents the status of an individual FQDN managed by the Domain.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"fqdn": {
+						SchemaProps: spec.SchemaProps{
+							Description: "FQDN is the fully qualified domain name.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"phase": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Phase represents the current state of this FQDN.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"conditions": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Conditions contains detailed status information for this FQDN.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"fqdn", "phase"},
+			},
+		},
+		Dependencies: []string{
+			"k8s.io/apimachinery/pkg/apis/meta/v1.Condition"},
 	}
 }
 
@@ -3400,20 +3448,20 @@ func schema_apoxy_api_core_v1alpha2_DomainStatus(ref common.ReferenceCallback) c
 				Properties: map[string]spec.Schema{
 					"phase": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Phase of the domain.",
+							Description: "Phase of the domain (aggregated from all FQDNs).",
 							Type:        []string{"string"},
 							Format:      "",
 						},
 					},
-					"conditions": {
+					"fqdnStatus": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Conditions recorded for the domain.",
+							Description: "tFQDNStatus contains the status of each FQDN managed by this Domain.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
+										Ref:     ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.FQDNStatus"),
 									},
 								},
 							},
@@ -3423,7 +3471,7 @@ func schema_apoxy_api_core_v1alpha2_DomainStatus(ref common.ReferenceCallback) c
 			},
 		},
 		Dependencies: []string{
-			"k8s.io/apimachinery/pkg/apis/meta/v1.Condition"},
+			"github.com/apoxy-dev/apoxy/api/core/v1alpha2.FQDNStatus"},
 	}
 }
 
@@ -3897,6 +3945,52 @@ func schema_apoxy_api_core_v1alpha2_EgressGatewaySpec(ref common.ReferenceCallba
 				},
 			},
 		},
+	}
+}
+
+func schema_apoxy_api_core_v1alpha2_FQDNStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "FQDNStatus represents the status of an individual FQDN managed by the Domain.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"fqdn": {
+						SchemaProps: spec.SchemaProps{
+							Description: "FQDN is the fully qualified domain name.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"phase": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Phase represents the current state of this FQDN.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"conditions": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Conditions contains detailed status information for this FQDN.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"fqdn", "phase"},
+			},
+		},
+		Dependencies: []string{
+			"k8s.io/apimachinery/pkg/apis/meta/v1.Condition"},
 	}
 }
 

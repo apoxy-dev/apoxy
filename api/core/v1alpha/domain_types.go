@@ -227,13 +227,40 @@ const (
 	DomainPhaseError   = "Errored"
 )
 
-type DomainStatus struct {
-	// Phase of the domain.
-	Phase DomainPhase `json:"phase,omitempty"`
+// FQDNPhase represents the provisioning state of an individual FQDN.
+type FQDNPhase string
 
-	// Conditions recorded for the domain.
+const (
+	// FQDNPhaseWaitingForZone indicates the referenced Zone is not ready.
+	FQDNPhaseWaitingForZone FQDNPhase = "WaitingForZone"
+	// FQDNPhaseWaitingForDNS indicates DNS records are being created or verified.
+	FQDNPhaseWaitingForDNS FQDNPhase = "WaitingForDNS"
+	// FQDNPhaseActive indicates the FQDN is fully operational.
+	FQDNPhaseActive FQDNPhase = "Active"
+	// FQDNPhaseError indicates provisioning or validation has failed.
+	FQDNPhaseError FQDNPhase = "Error"
+)
+
+// FQDNStatus represents the status of an individual FQDN managed by the Domain.
+type FQDNStatus struct {
+	// FQDN is the fully qualified domain name.
+	FQDN string `json:"fqdn"`
+
+	// Phase represents the current state of this FQDN.
+	Phase FQDNPhase `json:"phase"`
+
+	// Conditions contains detailed status information for this FQDN.
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+type DomainStatus struct {
+	// Phase of the domain (aggregated from all FQDNs).
+	Phase DomainPhase `json:"phase,omitempty"`
+
+	// FQDNStatus contains the status of each FQDN managed by this Domain.
+	// +optional
+	FQDNStatus []FQDNStatus `json:"fqdnStatus,omitempty"`
 }
 
 var _ resource.StatusSubResource = &DomainStatus{}

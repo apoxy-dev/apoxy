@@ -268,9 +268,18 @@ func convertDomainStatusFromV1Alpha1ToV1Alpha2(in *DomainStatus) *v1alpha2.Domai
 		return nil
 	}
 
+	fqdnStatus := make([]v1alpha2.FQDNStatus, len(in.FQDNStatus))
+	for i, fs := range in.FQDNStatus {
+		fqdnStatus[i] = v1alpha2.FQDNStatus{
+			FQDN:       fs.FQDN,
+			Phase:      v1alpha2.FQDNPhase(fs.Phase),
+			Conditions: fs.Conditions,
+		}
+	}
+
 	return &v1alpha2.DomainStatus{
 		Phase:      v1alpha2.DomainPhase(in.Phase),
-		Conditions: in.Conditions,
+		FQDNStatus: fqdnStatus,
 	}
 }
 
@@ -280,8 +289,17 @@ func convertDomainStatusFromV1Alpha2ToV1Alpha1(in *v1alpha2.DomainStatus) *Domai
 		return nil
 	}
 
+	fqdnStatus := make([]FQDNStatus, len(in.FQDNStatus))
+	for i, fs := range in.FQDNStatus {
+		fqdnStatus[i] = FQDNStatus{
+			FQDN:       fs.FQDN,
+			Phase:      FQDNPhase(fs.Phase),
+			Conditions: fs.Conditions,
+		}
+	}
+
 	return &DomainStatus{
 		Phase:      DomainPhase(in.Phase),
-		Conditions: in.Conditions,
+		FQDNStatus: fqdnStatus,
 	}
 }
