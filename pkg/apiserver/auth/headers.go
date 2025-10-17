@@ -23,6 +23,7 @@ func NewHeaderAuthenticator() authenticator.Request {
 		[]string{UserHeaderKey},
 		[]string{GroupHeaderKey},
 		[]string{ExtraHeaderKey},
+		[]string{},
 	)
 	return union.New(
 		rhAuth,
