@@ -95,7 +95,7 @@ require (
 	k8s.io/klog/v2 v2.130.1
 	k8s.io/kube-aggregator v0.31.1
 	k8s.io/kube-openapi v0.0.0-20250318190949-c8a335a9a2ff
-	k8s.io/kubernetes v1.31.1
+	k8s.io/kubernetes v1.32.1
 	k8s.io/utils v0.0.0-20250604170112-4c0f3b243397
 	oras.land/oras-go/v2 v2.5.0
 	sigs.k8s.io/apiserver-runtime v1.1.2-0.20250117204231-9282f514a674
@@ -262,7 +262,7 @@ require (
 	github.com/minio/highwayhash v1.0.3 // indirect
 	github.com/mitchellh/go-homedir v1.1.0 // indirect
 	github.com/moby/sys/atomicwriter v0.1.0 // indirect
-	github.com/moby/sys/mountinfo v0.7.1 // indirect
+	github.com/moby/sys/mountinfo v0.7.2 // indirect
 	github.com/moby/sys/sequential v0.6.0 // indirect
 	github.com/moby/sys/user v0.4.0 // indirect
 	github.com/moby/sys/userns v0.1.0 // indirect
@@ -285,7 +285,7 @@ require (
 	github.com/onsi/ginkgo/v2 v2.22.0 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/opencontainers/runtime-spec v1.2.0 // indirect
-	github.com/opencontainers/selinux v1.11.0 // indirect
+	github.com/opencontainers/selinux v1.11.1 // indirect
 	github.com/opentracing/opentracing-go v1.2.0 // indirect
 	github.com/packethost/packngo v0.1.1-0.20180711074735-b9cb5096f54c // indirect
 	github.com/paulmach/orb v0.11.1 // indirect
@@ -398,6 +398,7 @@ require (
 	k8s.io/apiextensions-apiserver v0.32.1 // indirect
 	k8s.io/component-base v0.32.1 // indirect
 	k8s.io/component-helpers v0.31.1 // indirect
+	k8s.io/controller-manager v0.32.1 // indirect
 	k8s.io/kms v0.33.2 // indirect
 	lukechampine.com/uint128 v1.3.0 // indirect
 	modernc.org/cc/v3 v3.41.0 // indirect
