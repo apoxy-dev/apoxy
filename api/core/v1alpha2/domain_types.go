@@ -1,11 +1,18 @@
 package v1alpha2
 
 import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/duration"
 	"k8s.io/apiserver/pkg/registry/rest"
 	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource"
+	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource/resourcestrategy"
 )
 
 const (
@@ -276,6 +283,7 @@ var _ runtime.Object = &Domain{}
 var _ resource.Object = &Domain{}
 var _ resource.ObjectWithStatusSubResource = &Domain{}
 var _ rest.SingularNameProvider = &Domain{}
+var _ resourcestrategy.TableConverter = &Domain{}
 
 func (a *Domain) GetObjectMeta() *metav1.ObjectMeta {
 	return &a.ObjectMeta
@@ -324,7 +332,138 @@ type DomainList struct {
 }
 
 var _ resource.ObjectList = &DomainList{}
+var _ resourcestrategy.TableConverter = &DomainList{}
 
 func (pl *DomainList) GetListMeta() *metav1.ListMeta {
 	return &pl.ListMeta
+}
+
+// ConvertToTable handles table printing for DomainList from kubectl get
+func (dl *DomainList) ConvertToTable(ctx context.Context, tableOptions runtime.Object) (*metav1.Table, error) {
+	return domainListToTable(dl, tableOptions)
+}
+
+// ConvertToTable handles table printing from kubectl get
+func (d *Domain) ConvertToTable(ctx context.Context, tableOptions runtime.Object) (*metav1.Table, error) {
+	return domainToTable(d, tableOptions)
+}
+
+func domainToTable(domain *Domain, tableOptions runtime.Object) (*metav1.Table, error) {
+	table := &metav1.Table{}
+
+	// Add column definitions (unless NoHeaders is set)
+	if opt, ok := tableOptions.(*metav1.TableOptions); !ok || !opt.NoHeaders {
+		table.ColumnDefinitions = []metav1.TableColumnDefinition{
+			{Name: "Name", Type: "string", Format: "name", Description: "Name of the domain"},
+			{Name: "Zone", Type: "string", Description: "Zone the domain is managed under"},
+			{Name: "Target", Type: "string", Description: "Target type (DNS, Ref, or None)"},
+			{Name: "Status", Type: "string", Description: "Current status of the domain"},
+			{Name: "Age", Type: "string", Description: "Time since creation"},
+		}
+	}
+
+	// Add row data
+	table.Rows = append(table.Rows, metav1.TableRow{
+		Cells: []interface{}{
+			domain.Name,
+			domain.Spec.Zone,
+			getDomainTarget(domain),
+			string(domain.Status.Phase),
+			formatAge(domain.CreationTimestamp.Time),
+		},
+		Object: runtime.RawExtension{Object: domain},
+	})
+
+	// Set resource version
+	table.ResourceVersion = domain.ResourceVersion
+
+	return table, nil
+}
+
+func domainListToTable(list *DomainList, tableOptions runtime.Object) (*metav1.Table, error) {
+	table := &metav1.Table{}
+
+	// Add column definitions
+	if opt, ok := tableOptions.(*metav1.TableOptions); !ok || !opt.NoHeaders {
+		table.ColumnDefinitions = []metav1.TableColumnDefinition{
+			{Name: "Name", Type: "string", Format: "name", Description: "Name of the domain"},
+			{Name: "Zone", Type: "string", Description: "Zone the domain is managed under"},
+			{Name: "Target", Type: "string", Description: "Target type (DNS, Ref, or None)"},
+			{Name: "Phase", Type: "string", Description: "Current phase of the domain"},
+			{Name: "Age", Type: "string", Description: "Time since creation"},
+		}
+	}
+
+	// Add rows for each item
+	for i := range list.Items {
+		domain := &list.Items[i]
+		table.Rows = append(table.Rows, metav1.TableRow{
+			Cells: []interface{}{
+				domain.Name,
+				domain.Spec.Zone,
+				getDomainTarget(domain),
+				string(domain.Status.Phase),
+				formatAge(domain.CreationTimestamp.Time),
+			},
+			Object: runtime.RawExtension{Object: domain},
+		})
+	}
+
+	// Set list metadata
+	table.ResourceVersion = list.ResourceVersion
+	table.Continue = list.Continue
+	table.RemainingItemCount = list.RemainingItemCount
+
+	return table, nil
+}
+
+// getDomainTarget returns a human-readable string describing the domain's target
+func getDomainTarget(domain *Domain) string {
+	if domain.Spec.Target.DNS != nil {
+		dns := domain.Spec.Target.DNS
+		if dns.DNSOnly {
+			return "DNS-Only"
+		}
+		if len(dns.IPs) > 0 {
+			return fmt.Sprintf("DNS(IPs:%d)", len(dns.IPs))
+		}
+		if dns.FQDN != nil {
+			return fmt.Sprintf("DNS(CNAME:%s)", truncateString(*dns.FQDN, 20))
+		}
+		// Check for other DNS record types
+		var recordTypes []string
+		if len(dns.TXT) > 0 {
+			recordTypes = append(recordTypes, "TXT")
+		}
+		if len(dns.MX) > 0 {
+			recordTypes = append(recordTypes, "MX")
+		}
+		if len(dns.NS) > 0 {
+			recordTypes = append(recordTypes, "NS")
+		}
+		if len(recordTypes) > 0 {
+			return fmt.Sprintf("DNS(%s)", strings.Join(recordTypes, ","))
+		}
+		return "DNS"
+	}
+	if domain.Spec.Target.Ref != nil {
+		return fmt.Sprintf("Ref(%s)", domain.Spec.Target.Ref.Name)
+	}
+	return "None"
+}
+
+// truncateString truncates a string to maxLen characters, adding "..." if truncated
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen-3] + "..."
+}
+
+// formatAge formats a time as a Kubernetes-style age string (e.g., "5m", "2h", "7d")
+func formatAge(t time.Time) string {
+	if t.IsZero() {
+		return "<unknown>"
+	}
+	return duration.ShortHumanDuration(time.Since(t))
 }
