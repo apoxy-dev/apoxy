@@ -71,8 +71,10 @@ func (r *EdgeFunctionReconciler) startIngest(
 
 		rev = &extensionsv1alpha2.EdgeFunctionRevision{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:        revName,
-				Labels:      map[string]string{},
+				Name: revName,
+				Labels: map[string]string{
+					"extensions.apoxy.dev/edgefunction": obj.Name,
+				},
 				Annotations: map[string]string{},
 			},
 			Spec: *obj.Spec.Template.DeepCopy(),
