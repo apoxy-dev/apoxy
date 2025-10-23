@@ -19,6 +19,7 @@ import (
 	"github.com/apoxy-dev/icx"
 
 	"github.com/apoxy-dev/apoxy/pkg/netstack"
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/batchpc"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/bifurcate"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/l2pc"
 )
@@ -31,12 +32,18 @@ func TestICXNetwork_Speed(t *testing.T) {
 	slog.SetLogLoggerLevel(slog.LevelDebug)
 
 	// Create two underlying UDP packet conns on localhost
-	pcA, err := net.ListenPacket("udp", "127.0.0.1:0")
+	connA, err := net.ListenPacket("udp", "127.0.0.1:0")
+	require.NoError(t, err)
+
+	pcA, err := batchpc.New("udp4", connA)
 	require.NoError(t, err)
 
 	pcAGeneve, _ := bifurcate.Bifurcate(pcA)
 
-	pcB, err := net.ListenPacket("udp", "127.0.0.1:0")
+	connB, err := net.ListenPacket("udp", "127.0.0.1:0")
+	require.NoError(t, err)
+
+	pcB, err := batchpc.New("udp4", connB)
 	require.NoError(t, err)
 
 	pcBGeneve, _ := bifurcate.Bifurcate(pcB)

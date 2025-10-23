@@ -129,7 +129,7 @@ func NewICXNetlinkRouter(opts ...Option) (*ICXNetlinkRouter, error) {
 		return nil, fmt.Errorf("failed to create handler: %w", err)
 	}
 
-	ingressFilter, err := filter.Bind(extAddrs...)
+	ingressFilter, err := filter.Geneve(extAddrs...)
 	if err != nil {
 		_ = tunDev.Close()
 		return nil, fmt.Errorf("failed to create ingress filter: %w", err)

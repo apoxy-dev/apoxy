@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/batchpc"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/l2pc"
 	"github.com/apoxy-dev/icx/udp"
 	"github.com/stretchr/testify/require"
@@ -13,59 +14,13 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/header"
 )
 
-func makeIPv4Frame(srcMAC, dstMAC tcpip.LinkAddress, srcIP net.IP, srcPort uint16, dstIP net.IP, dstPort uint16, payload []byte) []byte {
-	buf := make([]byte, udp.PayloadOffsetIPv4+len(payload))
-	copy(buf[udp.PayloadOffsetIPv4:], payload)
-
-	src := &tcpip.FullAddress{
-		Addr:     tcpip.AddrFrom4Slice(srcIP.To4()),
-		Port:     srcPort,
-		LinkAddr: srcMAC,
-	}
-	dst := &tcpip.FullAddress{
-		Addr:     tcpip.AddrFrom4Slice(dstIP.To4()),
-		Port:     dstPort,
-		LinkAddr: dstMAC,
-	}
-	n, err := udp.Encode(buf, src, dst, len(payload), false /* calc checksum */)
-	if err != nil {
-		panic(err)
-	}
-	return buf[:n]
-}
-
-func makeIPv6Frame(srcMAC, dstMAC tcpip.LinkAddress, srcIP net.IP, srcPort uint16, dstIP net.IP, dstPort uint16, payload []byte) []byte {
-	buf := make([]byte, udp.PayloadOffsetIPv6+len(payload))
-	copy(buf[udp.PayloadOffsetIPv6:], payload)
-
-	src := &tcpip.FullAddress{
-		Addr:     tcpip.AddrFrom16Slice(dstTo16(srcIP)),
-		Port:     srcPort,
-		LinkAddr: srcMAC,
-	}
-	dst := &tcpip.FullAddress{
-		Addr:     tcpip.AddrFrom16Slice(dstTo16(dstIP)),
-		Port:     dstPort,
-		LinkAddr: dstMAC,
-	}
-	n, err := udp.Encode(buf, src, dst, len(payload), false /* calc checksum */)
-	if err != nil {
-		panic(err)
-	}
-	return buf[:n]
-}
-
-func dstTo16(ip net.IP) []byte {
-	if ip == nil {
-		return nil
-	}
-	return ip.To16()
-}
-
 func TestNewL2PacketConn_UDPOnly(t *testing.T) {
-	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
 	require.NoError(t, err)
-	defer pc.Close()
+
+	pc, err := batchpc.New("udp4", conn)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, pc.Close()) })
 
 	c, err := l2pc.NewL2PacketConn(pc)
 	require.NoError(t, err)
@@ -73,30 +28,30 @@ func TestNewL2PacketConn_UDPOnly(t *testing.T) {
 	require.NotEmpty(t, c.LocalMAC())
 }
 
-type notUDPConn struct{ net.PacketConn }
+type notUDPConn struct{ batchpc.BatchPacketConn }
 
 func (n notUDPConn) LocalAddr() net.Addr { return &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 1234} }
 
 func TestNewL2PacketConn_RejectsNonUDP(t *testing.T) {
-	realPC, err := net.ListenPacket("udp", "127.0.0.1:0")
-	require.NoError(t, err)
-	defer realPC.Close()
-
-	_, err = l2pc.NewL2PacketConn(notUDPConn{PacketConn: realPC})
+	_, err := l2pc.NewL2PacketConn(notUDPConn{})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "PacketConn must be UDP")
 }
 
 func TestWriteFrame_IPv4_UsesPayloadAndDst(t *testing.T) {
-	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
 	require.NoError(t, err)
-	defer pc.Close()
+
+	pc, err := batchpc.New("udp4", conn)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, pc.Close()) })
+
 	c, err := l2pc.NewL2PacketConn(pc)
 	require.NoError(t, err)
 
 	peer, err := net.ListenPacket("udp", "127.0.0.1:0")
 	require.NoError(t, err)
-	defer peer.Close()
+	t.Cleanup(func() { require.NoError(t, peer.Close()) })
 
 	dst := peer.LocalAddr().(*net.UDPAddr)
 
@@ -124,14 +79,15 @@ func TestWriteFrame_IPv4_UsesPayloadAndDst(t *testing.T) {
 
 func TestWriteFrame_IPv6_UsesPayloadAndDst(t *testing.T) {
 	peer, err := net.ListenPacket("udp", "[::1]:0")
-	if err != nil {
-		t.Skip("IPv6 loopback not available:", err)
-	}
-	defer peer.Close()
-
-	pc, err := net.ListenPacket("udp", "[::1]:0")
 	require.NoError(t, err)
-	defer pc.Close()
+	t.Cleanup(func() { require.NoError(t, peer.Close()) })
+
+	conn, err := net.ListenPacket("udp", "[::1]:0")
+	require.NoError(t, err)
+
+	pc, err := batchpc.New("udp6", conn)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, pc.Close()) })
 
 	c, err := l2pc.NewL2PacketConn(pc)
 	require.NoError(t, err)
@@ -161,9 +117,13 @@ func TestWriteFrame_IPv6_UsesPayloadAndDst(t *testing.T) {
 }
 
 func TestWriteFrame_InvalidFrames(t *testing.T) {
-	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
 	require.NoError(t, err)
-	defer pc.Close()
+
+	pc, err := batchpc.New("udp4", conn)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, pc.Close()) })
+
 	c, err := l2pc.NewL2PacketConn(pc)
 	require.NoError(t, err)
 
@@ -237,15 +197,19 @@ func TestWriteFrame_InvalidFrames(t *testing.T) {
 
 func TestReadFrame_IPv4_EncodesWithUDPEncodeAndStablePeerMAC(t *testing.T) {
 	// Adapter under test
-	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
 	require.NoError(t, err)
-	defer pc.Close()
+
+	pc, err := batchpc.New("udp4", conn)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, pc.Close()) })
+
 	c, err := l2pc.NewL2PacketConn(pc)
 	require.NoError(t, err)
 
 	peer, err := net.ListenPacket("udp", "127.0.0.1:0")
 	require.NoError(t, err)
-	defer peer.Close()
+	t.Cleanup(func() { require.NoError(t, peer.Close()) })
 
 	// Send to adapter
 	_, err = peer.WriteTo([]byte("v4-one"), pc.LocalAddr())
@@ -284,17 +248,19 @@ func TestReadFrame_IPv4_EncodesWithUDPEncodeAndStablePeerMAC(t *testing.T) {
 }
 
 func TestReadFrame_IPv6_EncodesWithUDPEncodeAndStablePeerMAC(t *testing.T) {
-	pc, err := net.ListenPacket("udp", "[::1]:0")
-	if err != nil {
-		t.Skip("IPv6 loopback not available:", err)
-	}
-	defer pc.Close()
+	conn, err := net.ListenPacket("udp", "[::1]:0")
+	require.NoError(t, err)
+
+	pc, err := batchpc.New("udp6", conn)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, pc.Close()) })
+
 	c, err := l2pc.NewL2PacketConn(pc)
 	require.NoError(t, err)
 
 	peer, err := net.ListenPacket("udp", "[::1]:0")
 	require.NoError(t, err)
-	defer peer.Close()
+	t.Cleanup(func() { require.NoError(t, peer.Close()) })
 
 	_, err = peer.WriteTo([]byte("v6-one"), pc.LocalAddr())
 	require.NoError(t, err)
@@ -326,15 +292,19 @@ func TestReadFrame_IPv6_EncodesWithUDPEncodeAndStablePeerMAC(t *testing.T) {
 }
 
 func TestReadFrame_BufferTooSmall(t *testing.T) {
-	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
 	require.NoError(t, err)
-	defer pc.Close()
+
+	pc, err := batchpc.New("udp4", conn)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, pc.Close()) })
+
 	c, err := l2pc.NewL2PacketConn(pc)
 	require.NoError(t, err)
 
 	peer, err := net.ListenPacket("udp", "127.0.0.1:0")
 	require.NoError(t, err)
-	defer peer.Close()
+	t.Cleanup(func() { require.NoError(t, peer.Close()) })
 
 	_, err = peer.WriteTo([]byte("tiny"), pc.LocalAddr())
 	require.NoError(t, err)
@@ -345,4 +315,248 @@ func TestReadFrame_BufferTooSmall(t *testing.T) {
 	_, err = c.ReadFrame(dst)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "destination buffer too small")
+}
+
+func TestWriteBatchFrames_IPv4_SendsAll(t *testing.T) {
+	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	require.NoError(t, err)
+
+	pc, err := batchpc.New("udp4", conn)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, pc.Close()) })
+
+	c, err := l2pc.NewL2PacketConn(pc)
+	require.NoError(t, err)
+
+	peer, err := net.ListenPacket("udp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, peer.Close()) })
+
+	dst := peer.LocalAddr().(*net.UDPAddr)
+
+	// Build three frames to the same peer.
+	payloads := [][]byte{[]byte("b1"), []byte("b2"), []byte("b3")}
+	msgs := make([]batchpc.Message, len(payloads))
+	for i := range payloads {
+		frame := makeIPv4Frame(
+			tcpip.GetRandMacAddr(),
+			tcpip.GetRandMacAddr(),
+			net.IPv4(127, 0, 0, 1),
+			12340+uint16(i),
+			dst.IP,
+			uint16(dst.Port),
+			payloads[i],
+		)
+		msgs[i].Buf = frame
+	}
+
+	n, err := c.WriteBatchFrames(msgs, 0)
+	require.NoError(t, err)
+	require.Equal(t, len(msgs), n)
+
+	// Receive all three payloads (order is not important).
+	_ = peer.SetReadDeadline(time.Now().Add(2 * time.Second))
+	got := map[string]int{}
+	for i := 0; i < len(payloads); i++ {
+		buf := make([]byte, 64)
+		ni, _, rerr := peer.ReadFrom(buf)
+		require.NoError(t, rerr)
+		got[string(buf[:ni])]++
+	}
+	require.Equal(t, 1, got["b1"])
+	require.Equal(t, 1, got["b2"])
+	require.Equal(t, 1, got["b3"])
+}
+
+func TestWriteBatchFrames_Empty_NoOp(t *testing.T) {
+	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	require.NoError(t, err)
+	pc, err := batchpc.New("udp4", conn)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, pc.Close()) })
+
+	c, err := l2pc.NewL2PacketConn(pc)
+	require.NoError(t, err)
+
+	n, err := c.WriteBatchFrames(nil, 0)
+	require.NoError(t, err)
+	require.Equal(t, 0, n)
+}
+
+func TestWriteBatchFrames_InvalidFrameStopsAtIndex(t *testing.T) {
+	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	require.NoError(t, err)
+	pc, err := batchpc.New("udp4", conn)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, pc.Close()) })
+	c, err := l2pc.NewL2PacketConn(pc)
+	require.NoError(t, err)
+
+	peer, err := net.ListenPacket("udp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, peer.Close()) })
+
+	dst := peer.LocalAddr().(*net.UDPAddr)
+
+	// Good, Bad, Good — should fail at index 1 with partial count 1.
+	good1 := makeIPv4Frame(tcpip.GetRandMacAddr(), tcpip.GetRandMacAddr(),
+		net.IPv4(127, 0, 0, 1), 1111, dst.IP, uint16(dst.Port), []byte("ok1"))
+	bad := []byte{0x01, 0x02} // too short → ErrInvalidFrame
+	good2 := makeIPv4Frame(tcpip.GetRandMacAddr(), tcpip.GetRandMacAddr(),
+		net.IPv4(127, 0, 0, 1), 2222, dst.IP, uint16(dst.Port), []byte("ok2"))
+
+	msgs := []batchpc.Message{
+		{Buf: good1},
+		{Buf: bad},
+		{Buf: good2},
+	}
+
+	n, err := c.WriteBatchFrames(msgs, 0)
+	require.Error(t, err)
+	require.True(t, errors.Is(err, l2pc.ErrInvalidFrame))
+	require.Equal(t, 1, n, "should report count up to first bad frame")
+}
+
+func TestReadBatchFrames_IPv4_EncodesFramesAndSetsAddr(t *testing.T) {
+	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	require.NoError(t, err)
+	pc, err := batchpc.New("udp4", conn)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, pc.Close()) })
+	c, err := l2pc.NewL2PacketConn(pc)
+	require.NoError(t, err)
+
+	peer, err := net.ListenPacket("udp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, peer.Close()) })
+
+	// Send three datagrams to the adapter.
+	want := [][]byte{[]byte("r1"), []byte("r2"), []byte("r3")}
+	for _, w := range want {
+		_, err := peer.WriteTo(w, pc.LocalAddr())
+		require.NoError(t, err)
+	}
+
+	_ = pc.SetReadDeadline(time.Now().Add(2 * time.Second))
+
+	// Prepare batch buffers.
+	msgs := make([]batchpc.Message, len(want))
+	for i := range msgs {
+		msgs[i].Buf = make([]byte, 4096)
+	}
+
+	n, err := c.ReadBatchFrames(msgs, 0)
+	require.NoError(t, err)
+	require.Equal(t, len(want), n)
+
+	// Validate each produced Ethernet+IP+UDP frame and that Addr is set.
+	got := map[string]int{}
+	for i := 0; i < n; i++ {
+		var src tcpip.FullAddress
+		pl, derr := udp.Decode(msgs[i].Buf, &src, false /* checksum */)
+		require.NoError(t, derr)
+		got[string(pl)]++
+		require.NotNil(t, msgs[i].Addr)
+		// Ethernet dst must be local MAC; src MAC should be stable per IP (not strictly checked here).
+		require.Equal(t, c.LocalMAC(), header.Ethernet(msgs[i].Buf).DestinationAddress())
+	}
+	require.Equal(t, 1, got["r1"])
+	require.Equal(t, 1, got["r2"])
+	require.Equal(t, 1, got["r3"])
+}
+
+func TestReadBatchFrames_Empty_NoOp(t *testing.T) {
+	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	require.NoError(t, err)
+	pc, err := batchpc.New("udp4", conn)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, pc.Close()) })
+	c, err := l2pc.NewL2PacketConn(pc)
+	require.NoError(t, err)
+
+	n, err := c.ReadBatchFrames(nil, 0)
+	require.NoError(t, err)
+	require.Equal(t, 0, n)
+}
+
+func TestReadBatchFrames_BufferTooSmallAtIndex(t *testing.T) {
+	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	require.NoError(t, err)
+	pc, err := batchpc.New("udp4", conn)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, pc.Close()) })
+	c, err := l2pc.NewL2PacketConn(pc)
+	require.NoError(t, err)
+
+	peer, err := net.ListenPacket("udp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, peer.Close()) })
+
+	// Send two datagrams.
+	_, err = peer.WriteTo([]byte("x1"), pc.LocalAddr())
+	require.NoError(t, err)
+	_, err = peer.WriteTo([]byte("x2"), pc.LocalAddr())
+	require.NoError(t, err)
+
+	_ = pc.SetReadDeadline(time.Now().Add(2 * time.Second))
+
+	// msgs[0] big enough, msgs[1] deliberately too small (< Ethernet+IPv4+UDP).
+	msgs := []batchpc.Message{
+		{Buf: make([]byte, 4096)},
+		{Buf: make([]byte, header.EthernetMinimumSize+header.IPv4MinimumSize+header.UDPMinimumSize-1)},
+	}
+
+	n, err := c.ReadBatchFrames(msgs, 0)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "destination buffer too small")
+	require.Equal(t, 1, n, "should process exactly the first frame before failing on index 1")
+}
+
+func makeIPv4Frame(srcMAC, dstMAC tcpip.LinkAddress, srcIP net.IP, srcPort uint16, dstIP net.IP, dstPort uint16, payload []byte) []byte {
+	buf := make([]byte, udp.PayloadOffsetIPv4+len(payload))
+	copy(buf[udp.PayloadOffsetIPv4:], payload)
+
+	src := &tcpip.FullAddress{
+		Addr:     tcpip.AddrFrom4Slice(srcIP.To4()),
+		Port:     srcPort,
+		LinkAddr: srcMAC,
+	}
+	dst := &tcpip.FullAddress{
+		Addr:     tcpip.AddrFrom4Slice(dstIP.To4()),
+		Port:     dstPort,
+		LinkAddr: dstMAC,
+	}
+	n, err := udp.Encode(buf, src, dst, len(payload), false /* calc checksum */)
+	if err != nil {
+		panic(err)
+	}
+	return buf[:n]
+}
+
+func makeIPv6Frame(srcMAC, dstMAC tcpip.LinkAddress, srcIP net.IP, srcPort uint16, dstIP net.IP, dstPort uint16, payload []byte) []byte {
+	buf := make([]byte, udp.PayloadOffsetIPv6+len(payload))
+	copy(buf[udp.PayloadOffsetIPv6:], payload)
+
+	src := &tcpip.FullAddress{
+		Addr:     tcpip.AddrFrom16Slice(dstTo16(srcIP)),
+		Port:     srcPort,
+		LinkAddr: srcMAC,
+	}
+	dst := &tcpip.FullAddress{
+		Addr:     tcpip.AddrFrom16Slice(dstTo16(dstIP)),
+		Port:     dstPort,
+		LinkAddr: dstMAC,
+	}
+	n, err := udp.Encode(buf, src, dst, len(payload), false /* calc checksum */)
+	if err != nil {
+		panic(err)
+	}
+	return buf[:n]
+}
+
+func dstTo16(ip net.IP) []byte {
+	if ip == nil {
+		return nil
+	}
+	return ip.To16()
 }
