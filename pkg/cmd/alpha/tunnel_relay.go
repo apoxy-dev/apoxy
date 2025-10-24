@@ -12,6 +12,8 @@ import (
 	"github.com/alphadose/haxmap"
 	"github.com/spf13/cobra"
 
+	"github.com/apoxy-dev/icx"
+
 	"github.com/apoxy-dev/apoxy/pkg/cryptoutils"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/batchpc"
@@ -21,7 +23,6 @@ import (
 	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/router"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/vni"
-	"github.com/apoxy-dev/icx"
 )
 
 var (
@@ -151,7 +152,7 @@ var tunnelRelayCmd = &cobra.Command{
 		relay.SetOnDisconnect(func(_ context.Context, agentName, id string) error {
 			if cm, ok := connections.Get(id); ok {
 				if err := agentIPAM.Release(cm.prefix); err != nil {
-					slog.Error("Failed to release prefix", err,
+					slog.Error("Failed to release prefix", slog.Any("error", err),
 						slog.String("agent", agentName), slog.String("connID", id),
 						slog.String("prefix", cm.prefix.String()))
 				}

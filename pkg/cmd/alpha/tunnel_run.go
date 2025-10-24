@@ -3,14 +3,13 @@ package alpha
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"log/slog"
-	"math/rand"
 	"net"
 	"net/netip"
 	"net/url"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/apoxy-dev/icx"
@@ -18,15 +17,25 @@ import (
 	"github.com/dpeckett/network"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
+	"k8s.io/apimachinery/pkg/util/sets"
 
 	"github.com/apoxy-dev/apoxy/pkg/netstack"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/api"
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/randalloc"
+
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/batchpc"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/bifurcate"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/conntrackpc"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/router"
 )
 
+// Watchdog tuning knobs
+const (
+	watchdogMaxSilence = 120 * time.Second
+	watchdogInterval   = 5 * time.Second
+)
+
+// Flags / globals
 var (
 	agentName          string // agent identifier
 	tunnelName         string // tunnel identifier
@@ -47,208 +56,52 @@ var tunnelRunCmd = &cobra.Command{
 			return fmt.Errorf("--min-conns must be at least 1")
 		}
 
-		// One UDP socket shared between Geneve (data) and QUIC (control).
-		lis, err := net.ListenPacket("udp", ":0")
-		if err != nil {
-			return fmt.Errorf("failed to create UDP socket: %w", err)
-		}
-
-		pc, err := batchpc.New("udp", lis)
-		if err != nil {
-			return fmt.Errorf("failed to create batch packet conn: %w", err)
-		}
-
-		pcGeneve, pcQuic := bifurcate.Bifurcate(pc)
-		defer pcGeneve.Close()
-		defer pcQuic.Close()
-
-		// Share a single QUIC socket across multiple relays.
-		pcQuicMultiplexed := conntrackpc.New(pcQuic, conntrackpc.Options{})
-		defer pcQuicMultiplexed.Close()
-
+		// Shared errgroup + context for background goroutines (router, connection slots).
 		g, ctx := errgroup.WithContext(cmd.Context())
 
-		var (
-			routerOnce sync.Once
-			routerErr  error
-			r          *router.ICXNetstackRouter
-			handler    *icx.Handler
-		)
-
-		// Lazily create router/handler on first successful Connect.
-		getHandler := func(connectResp *api.ConnectResponse) (*icx.Handler, error) {
-			routerOnce.Do(func() {
-				routerOpts := []router.Option{
-					router.WithPacketConn(pcGeneve),
-					router.WithTunnelMTU(connectResp.MTU),
-				}
-
-				if socksListenAddr != "" {
-					routerOpts = append(routerOpts, router.WithSocksListenAddr(socksListenAddr))
-				}
-				if pcapPath != "" {
-					routerOpts = append(routerOpts, router.WithPcapPath(pcapPath))
-				}
-				if connectResp.DNS != nil {
-					resolveConf := &network.ResolveConfig{
-						Nameservers:   connectResp.DNS.Servers,
-						SearchDomains: connectResp.DNS.SearchDomains,
-						NDots:         connectResp.DNS.NDots,
-					}
-					routerOpts = append(routerOpts, router.WithResolveConfig(resolveConf))
-				}
-
-				r, routerErr = router.NewICXNetstackRouter(routerOpts...)
-				if routerErr != nil {
-					return
-				}
-				handler = r.Handler
-
-				for _, addrStr := range connectResp.Addresses {
-					slog.Info("Adding address", slog.String("address", addrStr))
-
-					addr, err := netip.ParsePrefix(addrStr)
-					if err != nil {
-						slog.Warn("Failed to parse address", slog.String("address", addrStr), slog.Any("error", err))
-						continue
-					}
-
-					if err := r.AddAddr(addr, nil); err != nil {
-						slog.Warn("Failed to add address", slog.String("address", addrStr), slog.Any("error", err))
-					}
-				}
-
-				for _, route := range connectResp.Routes {
-					slog.Info("Adding route", slog.String("destination", route.Destination))
-
-					dst, err := netip.ParsePrefix(route.Destination)
-					if err != nil {
-						slog.Warn("Failed to parse route prefix", slog.String("prefix", route.Destination), slog.Any("error", err))
-						continue
-					}
-					if err := r.AddRoute(dst); err != nil {
-						slog.Warn("Failed to add route", slog.String("prefix", route.Destination), slog.Any("error", err))
-					}
-				}
-
-				g.Go(func() error { return r.Start(ctx) })
-			})
-			return handler, routerErr
+		// Build the shared packet plane (UDP socket -> bifurcated GENEVE + QUIC mux).
+		packetPlane, err := newPacketPlane()
+		if err != nil {
+			return err
 		}
-
-		defer func() {
-			if r != nil {
-				_ = r.Close()
-			}
-		}()
+		defer packetPlane.Close()
 
 		tlsConf := &tls.Config{InsecureSkipVerify: insecureSkipVerify}
 
-		// Bootstrap via seed relay to fetch MTU/DNS/routes and the relay pool.
-		seedAddr := strings.TrimSpace(seedRelayAddr)
-		seedResolved, err := resolveAddrPort(ctx, seedAddr)
+		// Bootstrap against the seed relay to learn MTU/DNS/routes, keys, VNI, and the relay address pool.
+		boot, err := bootstrapSession(ctx, seedRelayAddr, packetPlane.QuicMux, tlsConf)
 		if err != nil {
-			return fmt.Errorf("failed to resolve seed relay addr %q: %w", seedAddr, err)
+			return err
 		}
 
-		seedPcQuic, err := pcQuicMultiplexed.Open(&net.UDPAddr{
-			IP:   seedResolved.Addr().AsSlice(),
-			Port: int(seedResolved.Port()),
-		})
-		if err != nil {
-			return fmt.Errorf("failed to create multiplexed packet conn for seed relay %q: %w", seedAddr, err)
-		}
-		defer seedPcQuic.Close()
-
-		seedBaseURL := url.URL{Scheme: "https", Host: seedAddr}
-		seedClient, err := api.NewClient(api.ClientOptions{
-			BaseURL:    seedBaseURL.String(),
-			Agent:      agentName,
-			TunnelName: tunnelName,
-			Token:      token,
-			TLSConfig:  tlsConf,
-			PacketConn: seedPcQuic,
-		})
-		if err != nil {
-			return fmt.Errorf("create seed API client: %w", err)
-		}
-
-		slog.Info("Bootstrapping against seed relay", slog.String("relay", seedAddr))
-
-		seedResp, err := seedClient.Connect(ctx)
-		if err != nil {
-			_ = seedClient.Close()
-			return fmt.Errorf("bootstrap connect to seed relay %q: %w", seedAddr, err)
-		}
-
-		// Initialize router (MTU, DNS, routes) based on bootstrap response.
-		if _, err := getHandler(seedResp); err != nil {
-			_ = seedClient.Close()
-			return fmt.Errorf("init router: %w", err)
-		}
-
-		// Close bootstrap session; steady-state connections are created below.
-		if err := seedClient.Disconnect(ctx, seedResp.ID); err != nil {
-			slog.Warn("Failed to disconnect bootstrap session", slog.String("id", seedResp.ID), slog.Any("error", err))
-		}
-		_ = seedClient.Close()
-
-		// Build unique relay pool (ensure seed included once).
-		pool := make([]string, 0, len(seedResp.RelayAddresses)+1)
-		seen := map[string]struct{}{}
-		add := func(a string) {
-			a = strings.TrimSpace(a)
-			if a == "" {
-				return
-			}
-			if _, ok := seen[a]; ok {
-				return
-			}
-			seen[a] = struct{}{}
-			pool = append(pool, a)
-		}
-		for _, a := range seedResp.RelayAddresses {
-			add(a)
-		}
-		add(seedAddr)
-
-		if len(pool) == 0 {
-			return fmt.Errorf("server did not return any relay addresses and seed was empty")
-		}
-
-		// Randomly pick up to minConns relays.
-		rand.Shuffle(len(pool), func(i, j int) { pool[i], pool[j] = pool[j], pool[i] })
-		n := minConns
-		if n > len(pool) {
-			n = len(pool)
-		}
-		selected := pool[:n]
-
-		slog.Info("Selected relays for steady-state connections",
-			slog.Int("minConns", minConns),
-			slog.Int("selected", len(selected)),
-			slog.Any("relays", selected),
+		// Eagerly initialize and start the router (instead of deferring via a handlerFactory).
+		r, handler, err := initRouter(
+			ctx,
+			g,
+			boot.Connect,
+			routerInitOpts{
+				pcGeneve:        packetPlane.Geneve,
+				socksListenAddr: socksListenAddr,
+				pcapPath:        pcapPath,
+			},
 		)
+		if err != nil {
+			return err
+		}
+		defer r.Close()
 
-		// One connection manager per relay.
-		for _, relay := range selected {
-			relay := relay
+		// Create an allocator that ensures we never connect to the same relay
+		// from multiple slots at once.
+		alloc := randalloc.NewRandAllocator(boot.RelayAddresses)
+
+		// Spawn minConns independent connection slots.
+		// Each slot:
+		//   - acquires a unique relay from the allocator
+		//   - connects & manages that session
+		//   - when the session ends, releases the relay
+		for i := 0; i < minConns; i++ {
 			g.Go(func() error {
-				relayAddr, err := resolveAddrPort(ctx, relay)
-				if err != nil {
-					return fmt.Errorf("failed to resolve relay addr %q: %w", relay, err)
-				}
-
-				pcQuic, err := pcQuicMultiplexed.Open(&net.UDPAddr{
-					IP:   relayAddr.Addr().AsSlice(),
-					Port: int(relayAddr.Port()),
-				})
-				if err != nil {
-					return fmt.Errorf("failed to create multiplexed packet conn for relay %q: %w", relay, err)
-				}
-				defer pcQuic.Close()
-
-				return manageRelayConnection(ctx, pcQuic, getHandler, relay, tlsConf)
+				return manageConnectionSlot(ctx, packetPlane.QuicMux, handler, alloc, tlsConf)
 			})
 		}
 
@@ -274,159 +127,483 @@ func init() {
 	tunnelCmd.AddCommand(tunnelRunCmd)
 }
 
-// manageRelayConnection keeps a single relay session alive (connect → rotate-keys → reconnect).
-func manageRelayConnection(
-	ctx context.Context,
-	pcQuic net.PacketConn,
-	getHandler func(*api.ConnectResponse) (*icx.Handler, error),
-	relayAddr string,
-	tlsConf *tls.Config,
-) error {
-	baseURL := url.URL{Scheme: "https", Host: relayAddr}
+// packetPlane bundles the shared UDP socket and its derived logical planes:
+// - Geneve/data plane (pcGeneve)
+// - QUIC/control plane mux (pcQuicMux)
+type packetPlane struct {
+	Geneve  batchpc.BatchPacketConn
+	QuicMux *conntrackpc.ConntrackPacketConn
+	closers []func()
+}
 
-	var (
-		currentClient *api.Client
-		currentConnID string
-	)
-
-	// Best-effort disconnect/close of the active session.
-	disconnectClient := func() {
-		if currentClient == nil || currentConnID == "" {
-			return
-		}
-		disconnectCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := currentClient.Disconnect(disconnectCtx, currentConnID); err != nil {
-			slog.Error("Failed to disconnect from tunnel", slog.String("id", currentConnID), slog.Any("error", err))
-		}
-		slog.Info("Disconnected from tunnel", slog.String("id", currentConnID))
-		_ = currentClient.Close()
-		currentClient = nil
-		currentConnID = ""
+// newPacketPlane:
+//   - creates a UDP socket bound to :0
+//   - wraps it in a BatchPacketConn
+//   - bifurcates into Geneve (data plane) and QUIC (control)
+//   - wraps QUIC side in a conntrack multiplexer
+func newPacketPlane() (*packetPlane, error) {
+	lis, err := net.ListenPacket("udp", ":0")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create UDP socket: %w", err)
 	}
-	defer disconnectClient()
 
-	// Session lifecycle loop.
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
+	bpc, err := batchpc.New("udp", lis)
+	if err != nil {
+		lis.Close()
+		return nil, fmt.Errorf("failed to create batch packet conn: %w", err)
+	}
 
-		var (
-			connectResp *api.ConnectResponse
-			handler     *icx.Handler
-		)
+	pcGeneveInner, pcQuicInner := bifurcate.Bifurcate(bpc)
+	pcQuicMuxInner := conntrackpc.New(pcQuicInner, conntrackpc.Options{})
 
-		// Connect with exponential backoff.
-		err := retry.Do(
-			func() error {
-				client, err := api.NewClient(api.ClientOptions{
-					BaseURL:    baseURL.String(),
-					Agent:      agentName,
-					TunnelName: tunnelName,
-					Token:      token,
-					TLSConfig:  tlsConf,
-					PacketConn: pcQuic,
-				})
-				if err != nil {
-					return fmt.Errorf("create API client: %w", err)
-				}
+	return &packetPlane{
+		Geneve:  pcGeneveInner,
+		QuicMux: pcQuicMuxInner,
+		closers: []func(){
+			func() { pcGeneveInner.Close() },
+			func() { pcQuicMuxInner.Close() },
+			func() { pcQuicInner.Close() },
+		},
+	}, nil
+}
 
-				cleanupOnErr := func(e error) error {
-					_ = client.Close()
-					return e
-				}
-
-				slog.Info("Connecting to relay", slog.String("relay", relayAddr))
-
-				connectResp, err = client.Connect(ctx)
-				if err != nil {
-					return cleanupOnErr(fmt.Errorf("connect to relay: %w", err))
-				}
-
-				handler, err = getHandler(connectResp)
-				if err != nil {
-					return cleanupOnErr(fmt.Errorf("init router: %w", err))
-				}
-
-				remoteAddr, err := resolveAddrPort(ctx, relayAddr)
-				if err != nil {
-					return cleanupOnErr(fmt.Errorf("resolve relay addr %q: %w", relayAddr, err))
-				}
-
-				overlayAddrs, err := stringsToPrefixes(connectResp.Addresses)
-				if err != nil {
-					return cleanupOnErr(fmt.Errorf("parse assigned addresses: %w", err))
-				}
-
-				for _, route := range connectResp.Routes {
-					dst, err := netip.ParsePrefix(route.Destination)
-					if err != nil {
-						slog.Warn("Failed to parse route prefix", slog.String("prefix", route.Destination), slog.Any("error", err))
-						continue
-					}
-
-					overlayAddrs = append(overlayAddrs, dst)
-				}
-
-				if err := handler.AddVirtualNetwork(connectResp.VNI, netstack.ToFullAddress(remoteAddr), overlayAddrs); err != nil {
-					return cleanupOnErr(fmt.Errorf("add virtual network: %w", err))
-				}
-
-				currentClient = client
-				currentConnID = connectResp.ID
-
-				slog.Info("Connected to relay",
-					slog.String("relay", relayAddr),
-					slog.String("id", connectResp.ID),
-					slog.Int("vni", int(connectResp.VNI)),
-					slog.Int("mtu", connectResp.MTU),
-				)
-
-				return nil
-			},
-			retry.Context(ctx),
-			retry.Attempts(0), // until ctx canceled
-			retry.OnRetry(func(n uint, err error) {
-				slog.Warn("Reconnect attempt failed; backing off",
-					slog.String("relay", relayAddr),
-					slog.Uint64("attempt", uint64(n+1)),
-					slog.Any("error", err))
-			}),
-			retry.LastErrorOnly(true),
-		)
-
-		if err != nil {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			slog.Error("Failed to (re)connect to relay", slog.String("relay", relayAddr), slog.Any("error", err))
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(2 * time.Second):
-			}
-			continue
-		}
-
-		// Live connection: rotate keys until failure or shutdown.
-		waitErr := manageKeyRotation(ctx, handler, currentClient, currentConnID, connectResp.VNI, connectResp.Keys)
-
-		disconnectClient()
-
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		if waitErr != nil && waitErr != context.Canceled {
-			slog.Warn("Key rotation ended; will attempt to reconnect",
-				slog.String("relay", relayAddr), slog.Any("error", waitErr))
-		}
+// Close shuts down the packetPlane in the correct order.
+func (pp *packetPlane) Close() {
+	for _, c := range pp.closers {
+		c()
 	}
 }
 
-// manageKeyRotation applies initial keys and refreshes at half-life with retry on failures.
+// bootstrapInfo bundles info learned from the seed relay.
+type bootstrapInfo struct {
+	Connect        *api.ConnectResponse
+	RelayAddresses sets.Set[string]
+}
+
+// bootstrapSession connects to the seed relay, retrieves tunnel config and
+// the relay address pool, disconnects, and returns that bootstrap data.
+func bootstrapSession(
+	ctx context.Context,
+	seedRelayAddr string,
+	pcQuicMux *conntrackpc.ConntrackPacketConn,
+	tlsConf *tls.Config,
+) (*bootstrapInfo, error) {
+	seedAddr := strings.TrimSpace(seedRelayAddr)
+
+	seedResolved, err := resolveAddrPort(ctx, seedAddr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve seed relay addr %q: %w", seedAddr, err)
+	}
+
+	seedPcQuic, err := pcQuicMux.Open(&net.UDPAddr{
+		IP:   seedResolved.Addr().AsSlice(),
+		Port: int(seedResolved.Port()),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create multiplexed packet conn for seed relay %q: %w", seedAddr, err)
+	}
+	defer seedPcQuic.Close()
+
+	client, err := api.NewClient(api.ClientOptions{
+		BaseURL:    (&url.URL{Scheme: "https", Host: seedAddr}).String(),
+		Agent:      agentName,
+		TunnelName: tunnelName,
+		Token:      token,
+		TLSConfig:  tlsConf,
+		PacketConn: seedPcQuic,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create seed API client: %w", err)
+	}
+	defer client.Close()
+
+	slog.Info("Bootstrapping against seed relay", slog.String("relay", seedAddr))
+
+	connectResp, err := client.Connect(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("bootstrap connect to seed relay %q: %w", seedAddr, err)
+	}
+
+	// We're only using this connection for discovery. Close it gracefully.
+	if err := client.Disconnect(ctx, connectResp.ID); err != nil {
+		slog.Warn("Failed to disconnect bootstrap session",
+			slog.String("id", connectResp.ID),
+			slog.Any("error", err))
+	}
+
+	// Build a deduped set of relay addresses (seed + server-provided).
+	addrSet := sets.New[string]()
+
+	trimmedSeed := strings.TrimSpace(seedAddr)
+	if trimmedSeed != "" {
+		addrSet.Insert(trimmedSeed)
+	}
+	for _, a := range connectResp.RelayAddresses {
+		a = strings.TrimSpace(a)
+		if a != "" {
+			addrSet.Insert(a)
+		}
+	}
+
+	return &bootstrapInfo{
+		Connect:        connectResp,
+		RelayAddresses: addrSet,
+	}, nil
+}
+
+// routerInitOpts carries the static knobs we need to build the router.
+type routerInitOpts struct {
+	pcGeneve        batchpc.BatchPacketConn
+	socksListenAddr string
+	pcapPath        string
+}
+
+// initRouter eagerly creates and starts the ICXNetstackRouter / icx.Handler
+// using the bootstrap ConnectResponse.
+func initRouter(
+	ctx context.Context,
+	g *errgroup.Group,
+	connectResp *api.ConnectResponse,
+	opts routerInitOpts,
+) (*router.ICXNetstackRouter, *icx.Handler, error) {
+	routerOpts := []router.Option{
+		router.WithPacketConn(opts.pcGeneve),
+		router.WithTunnelMTU(connectResp.MTU),
+	}
+
+	if opts.socksListenAddr != "" {
+		routerOpts = append(routerOpts, router.WithSocksListenAddr(opts.socksListenAddr))
+	}
+	if opts.pcapPath != "" {
+		routerOpts = append(routerOpts, router.WithPcapPath(opts.pcapPath))
+	}
+	if connectResp.DNS != nil {
+		routerOpts = append(routerOpts, router.WithResolveConfig(&network.ResolveConfig{
+			Nameservers:   connectResp.DNS.Servers,
+			SearchDomains: connectResp.DNS.SearchDomains,
+			NDots:         connectResp.DNS.NDots,
+		}))
+	}
+
+	r, err := router.NewICXNetstackRouter(routerOpts...)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	h := r.Handler
+
+	// Add assigned addresses.
+	for _, addrStr := range connectResp.Addresses {
+		slog.Info("Adding address", slog.String("address", addrStr))
+
+		addr, err := netip.ParsePrefix(addrStr)
+		if err != nil {
+			slog.Warn("Failed to parse address",
+				slog.String("address", addrStr),
+				slog.Any("error", err))
+			continue
+		}
+
+		if err := r.AddAddr(addr, nil); err != nil {
+			slog.Warn("Failed to add address",
+				slog.String("address", addrStr),
+				slog.Any("error", err))
+		}
+	}
+
+	// Add routes.
+	for _, rt := range connectResp.Routes {
+		slog.Info("Adding route", slog.String("destination", rt.Destination))
+
+		dst, err := netip.ParsePrefix(rt.Destination)
+		if err != nil {
+			slog.Warn("Failed to parse route prefix",
+				slog.String("prefix", rt.Destination),
+				slog.Any("error", err))
+			continue
+		}
+		if err := r.AddRoute(dst); err != nil {
+			slog.Warn("Failed to add route",
+				slog.String("prefix", rt.Destination),
+				slog.Any("error", err))
+		}
+	}
+
+	// Start the router in the shared errgroup.
+	g.Go(func() error { return r.Start(ctx) })
+
+	return r, h, nil
+}
+
+// connectAndInitSession dials the relay, runs Connect, and returns the live
+// api.Client, the ConnectResponse, and the handler. It also wires the relay
+// into the handler via AddVirtualNetwork.
+//
+// On error it ensures cleanup.
+func connectAndInitSession(
+	ctx context.Context,
+	pcQuic net.PacketConn,
+	handler *icx.Handler,
+	relayAddr string,
+	tlsConf *tls.Config,
+) (*api.Client, *api.ConnectResponse, *icx.Handler, error) {
+	client, err := api.NewClient(api.ClientOptions{
+		BaseURL:    (&url.URL{Scheme: "https", Host: relayAddr}).String(),
+		Agent:      agentName,
+		TunnelName: tunnelName,
+		Token:      token,
+		TLSConfig:  tlsConf,
+		PacketConn: pcQuic,
+	})
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("create API client: %w", err)
+	}
+
+	cleanupOnErr := func(e error) (*api.Client, *api.ConnectResponse, *icx.Handler, error) {
+		_ = client.Close()
+		return nil, nil, nil, e
+	}
+
+	slog.Info("Connecting to relay", slog.String("relay", relayAddr))
+
+	connectResp, err := client.Connect(ctx)
+	if err != nil {
+		return cleanupOnErr(fmt.Errorf("connect to relay: %w", err))
+	}
+
+	remoteAddr, err := resolveAddrPort(ctx, relayAddr)
+	if err != nil {
+		return cleanupOnErr(fmt.Errorf("resolve relay addr %q: %w", relayAddr, err))
+	}
+
+	overlayAddrs, err := parsePrefixes(connectResp.Addresses)
+	if err != nil {
+		return cleanupOnErr(fmt.Errorf("parse assigned addresses: %w", err))
+	}
+
+	for _, route := range connectResp.Routes {
+		dst, err := netip.ParsePrefix(route.Destination)
+		if err != nil {
+			slog.Warn("Failed to parse route prefix",
+				slog.String("prefix", route.Destination),
+				slog.Any("error", err))
+			continue
+		}
+		overlayAddrs = append(overlayAddrs, dst)
+	}
+
+	if err := handler.AddVirtualNetwork(
+		connectResp.VNI,
+		netstack.ToFullAddress(remoteAddr),
+		overlayAddrs,
+	); err != nil {
+		return cleanupOnErr(fmt.Errorf("add virtual network: %w", err))
+	}
+
+	slog.Info("Connected to relay",
+		slog.String("relay", relayAddr),
+		slog.String("id", connectResp.ID),
+		slog.Int("vni", int(connectResp.VNI)),
+		slog.Int("mtu", connectResp.MTU),
+	)
+
+	return client, connectResp, handler, nil
+}
+
+// closeSession best-effort disconnect + close of an active session.
+func closeSession(client *api.Client, connID string) {
+	if client == nil || connID == "" {
+		return
+	}
+	disconnectCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := client.Disconnect(disconnectCtx, connID); err != nil {
+		slog.Error("Failed to disconnect from tunnel",
+			slog.String("id", connID),
+			slog.Any("error", err))
+	}
+	slog.Info("Disconnected from tunnel", slog.String("id", connID))
+	_ = client.Close()
+}
+
+// manageRelayConnectionOnce establishes and maintains a single relay session
+// to the specified relayAddr over pcQuic. It will:
+//
+//   - retry Connect() until it succeeds or ctx is canceled
+//   - once connected, run key rotation and watchdog concurrently
+//   - whichever fails first ends the session
+func manageRelayConnectionOnce(
+	ctx context.Context,
+	pcQuic net.PacketConn,
+	handler *icx.Handler,
+	relayAddr string,
+	tlsConf *tls.Config,
+) error {
+	var (
+		currentClient *api.Client
+		currentConnID string
+		connectResp   *api.ConnectResponse
+	)
+
+	defer func() {
+		closeSession(currentClient, currentConnID)
+	}()
+
+	// Keep retrying connect until context canceled.
+	err := retry.Do(
+		func() error {
+			c, cr, _, err := connectAndInitSession(ctx, pcQuic, handler, relayAddr, tlsConf)
+			if err != nil {
+				return err
+			}
+			currentClient = c
+			currentConnID = cr.ID
+			connectResp = cr
+			return nil
+		},
+		retry.Context(ctx),
+		retry.OnRetry(func(n uint, err error) {
+			slog.Warn("Reconnect attempt failed; backing off",
+				slog.String("relay", relayAddr),
+				slog.Uint64("attempt", uint64(n+1)),
+				slog.Any("error", err))
+		}),
+		retry.LastErrorOnly(true),
+	)
+	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		slog.Error("Failed to (re)connect to relay",
+			slog.String("relay", relayAddr),
+			slog.Any("error", err))
+		return fmt.Errorf("failed to connect to relay %q: %w", relayAddr, err)
+	}
+
+	// Once connected, run key rotation and watchdog concurrently.
+	sessionCtx, sessionCancel := context.WithCancel(ctx)
+	defer sessionCancel()
+
+	g, gctx := errgroup.WithContext(sessionCtx)
+	g.Go(func() error {
+		return manageKeyRotation(
+			gctx,
+			handler,
+			currentClient,
+			currentConnID,
+			connectResp.VNI,
+			connectResp.Keys,
+		)
+	})
+	g.Go(func() error {
+		return relayWatchdog(
+			gctx,
+			handler,
+			connectResp.VNI,
+			watchdogMaxSilence,
+			watchdogInterval,
+		)
+	})
+
+	// Wait for either goroutine to return an error.
+	waitErr := g.Wait()
+
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+
+	if waitErr != nil && waitErr != context.Canceled {
+		slog.Warn("Connection ended",
+			slog.String("relay", relayAddr),
+			slog.Any("error", waitErr))
+	}
+	return waitErr
+}
+
+// manageConnectionSlot owns one "connection slot" that we promised to keep
+// active. It repeatedly:
+//
+//   - asks the allocator for an exclusive relay address
+//   - opens a PacketConn to that relay
+//   - runs manageRelayConnectionOnce
+//   - when that session ends, releases the relay back to the allocator
+//
+// If minConns > number of relays, extra goroutines will block in Acquire()
+// until another slot releases a relay. This enforces "no two sessions to the
+// same relay address" at any instant.
+func manageConnectionSlot(
+	ctx context.Context,
+	pcQuicMux *conntrackpc.ConntrackPacketConn,
+	handler *icx.Handler,
+	alloc *randalloc.RandAllocator[string],
+	tlsConf *tls.Config,
+) error {
+	for {
+		// Block here until we get exclusive rights to a relay,
+		// or until ctx is canceled.
+		relayAddr, err := alloc.Acquire(ctx)
+		if err != nil {
+			return err // ctx canceled, etc.
+		}
+
+		slog.Info("Acquired relay slot",
+			slog.String("relay", relayAddr))
+
+		// We'll run the session in an inner func so we can defer cleanup
+		// (pcQuic.Close) per-session but still always Release() after.
+		err = func() error {
+			// Resolve relay -> concrete IP:port.
+			relayAddrParsed, err := resolveAddrPort(ctx, relayAddr)
+			if err != nil {
+				slog.Warn("failed to resolve relay, will pick a new relay",
+					slog.String("relay", relayAddr),
+					slog.Any("error", err))
+				return nil // we'll just loop and Acquire again
+			}
+
+			// Open per-relay PacketConn off the shared mux.
+			pcQuic, err := pcQuicMux.Open(&net.UDPAddr{
+				IP:   relayAddrParsed.Addr().AsSlice(),
+				Port: int(relayAddrParsed.Port()),
+			})
+			if err != nil {
+				slog.Warn("failed to create multiplexed packet conn for relay, will pick a new relay",
+					slog.String("relay", relayAddr),
+					slog.Any("error", err))
+				return nil // loop again
+			}
+
+			// Make sure we close the PacketConn when the session ends.
+			defer pcQuic.Close()
+
+			// Run the actual session lifecycle (watchdog, key rotation, etc).
+			sessErr := manageRelayConnectionOnce(ctx, pcQuic, handler, relayAddr, tlsConf)
+
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+
+			if sessErr != nil && !errors.Is(sessErr, context.Canceled) {
+				slog.Warn("Connection to relay ended; rotating to a new relay",
+					slog.String("relay", relayAddr),
+					slog.Any("error", sessErr))
+			}
+			return nil
+		}()
+
+		// Release the relay for other slots before the next loop iteration.
+		alloc.Release(relayAddr)
+
+		if err != nil {
+			return err
+		}
+
+		// loop: grab a (maybe different) relay next time
+	}
+}
+
+// manageKeyRotation applies initial keys and refreshes at half-life with retry
+// on failures.
 func manageKeyRotation(
 	ctx context.Context,
 	handler *icx.Handler,
@@ -455,6 +632,7 @@ func manageKeyRotation(
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+
 		case <-timer.C:
 			var upd *api.UpdateKeysResponse
 			err := retry.Do(
@@ -464,7 +642,7 @@ func manageKeyRotation(
 					return err
 				},
 				retry.Context(ctx),
-				retry.Attempts(0), // until ctx canceled
+				retry.Attempts(0), // keep trying until ctx canceled
 				retry.OnRetry(func(n uint, err error) {
 					slog.Warn("Key update failed; backing off",
 						slog.Uint64("attempt", uint64(n+1)),
@@ -475,56 +653,93 @@ func manageKeyRotation(
 			if err != nil {
 				return err // includes context cancellation
 			}
-			slog.Info("Rotated tunnel keys", slog.Uint64("epoch", uint64(upd.Keys.Epoch)))
+
+			slog.Info("Rotated tunnel keys",
+				slog.Uint64("epoch", uint64(upd.Keys.Epoch)))
+
 			timer.Reset(applyAndSchedule(upd.Keys))
 		}
 	}
 }
 
-// resolveAddrPort resolves "host:port" (IPv4/IPv6/hostname) to a concrete AddrPort, preferring IPv4.
-func resolveAddrPort(ctx context.Context, hostport string) (netip.AddrPort, error) {
-	host, portStr, err := net.SplitHostPort(hostport)
-	if err != nil {
-		return netip.AddrPort{}, fmt.Errorf("split host/port: %w", err)
-	}
-	pn, err := net.LookupPort("udp", portStr)
-	if err != nil {
-		return netip.AddrPort{}, fmt.Errorf("lookup port %q: %w", portStr, err)
-	}
-	port := uint16(pn)
+// relayWatchdog monitors RX silence for a specific VNI and returns an error if
+// we haven't received any packet from the remote in maxSilence.
+// It polls at checkInterval and exits if ctx is canceled.
+func relayWatchdog(
+	ctx context.Context,
+	handler *icx.Handler,
+	vni uint,
+	maxSilence time.Duration,
+	checkInterval time.Duration,
+) error {
+	ticker := time.NewTicker(checkInterval)
+	defer ticker.Stop()
 
-	// Fast-path for literal IPs.
-	if ip, err := netip.ParseAddr(host); err == nil {
-		return netip.AddrPortFrom(ip, port), nil
-	}
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
 
-	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
-	if err != nil {
-		return netip.AddrPort{}, fmt.Errorf("lookup %q: %w", host, err)
-	}
-	var v4, v6 *netip.Addr
-	for _, a := range addrs {
-		if ip, ok := netip.AddrFromSlice(a.IP); ok {
-			if ip.Is4() && v4 == nil {
-				ipCopy := ip
-				v4 = &ipCopy
-			} else if ip.Is6() && v6 == nil {
-				ipCopy := ip
-				v6 = &ipCopy
+		case <-ticker.C:
+			vnet, ok := handler.GetVirtualNetwork(vni)
+			if !ok {
+				// The VNI disappeared out from under us; treat as dead.
+				return fmt.Errorf("relayWatchdog: VNI %d no longer present", vni)
+			}
+
+			lastRxNs := vnet.Stats.LastRXUnixNano.Load()
+			now := time.Now()
+
+			// If we've never received anything (0 == not set), this is suspicious,
+			// but we don't want to instantly kill a brand new session.
+			// We'll treat "never received" as "lastRx == connect time == now",
+			// so it only trips after maxSilence has actually elapsed.
+			var lastRx time.Time
+			if lastRxNs == 0 {
+				lastRx = now
+			} else {
+				lastRx = time.Unix(0, lastRxNs)
+			}
+
+			silence := now.Sub(lastRx)
+			if silence > maxSilence {
+				slog.Warn("relayWatchdog: RX silence threshold exceeded; declaring tunnel dead",
+					slog.Uint64("vni", uint64(vni)),
+					slog.Duration("silence", silence),
+					slog.Duration("maxSilence", maxSilence),
+					slog.Time("lastRx", lastRx),
+				)
+				return fmt.Errorf("rx silence (%s) exceeded max (%s)", silence, maxSilence)
 			}
 		}
 	}
-	switch {
-	case v4 != nil:
-		return netip.AddrPortFrom(*v4, port), nil
-	case v6 != nil:
-		return netip.AddrPortFrom(*v6, port), nil
-	default:
-		return netip.AddrPort{}, fmt.Errorf("no usable A/AAAA records for %q", host)
-	}
 }
 
-func stringsToPrefixes(addrs []string) ([]netip.Prefix, error) {
+// resolveAddrPort resolves a host:port string into a netip.AddrPort by doing a
+// short-lived UDP dial. This both resolves DNS and also captures the concrete
+// remote address the OS actually chose.
+func resolveAddrPort(ctx context.Context, relayAddr string) (netip.AddrPort, error) {
+	// Create a short-lived UDP connection to the host:port.
+	// This triggers the OS resolver and routing logic.
+	dialer := net.Dialer{}
+	conn, err := dialer.DialContext(ctx, "udp", relayAddr)
+	if err != nil {
+		return netip.AddrPort{}, fmt.Errorf("probe dial failed for %q: %w", relayAddr, err)
+	}
+	defer conn.Close()
+
+	// Extract the resolved remote address that the OS actually chose.
+	ra := conn.RemoteAddr()
+	udpAddr, ok := ra.(*net.UDPAddr)
+	if !ok {
+		return netip.AddrPort{}, fmt.Errorf("unexpected remote addr type: %T", ra)
+	}
+
+	return netip.AddrPortFrom(netip.MustParseAddr(udpAddr.IP.String()), uint16(udpAddr.Port)), nil
+}
+
+// parsePrefixes parses a list of string addresses into netip.Prefixes.
+func parsePrefixes(addrs []string) ([]netip.Prefix, error) {
 	prefixes := make([]netip.Prefix, 0, len(addrs))
 	for _, addr := range addrs {
 		p, err := netip.ParsePrefix(addr)
