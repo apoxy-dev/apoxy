@@ -13,6 +13,9 @@ var _ resourcestrategy.Defaulter = &Proxy{}
 
 // Default sets the default values for a Proxy.
 func (r *Proxy) Default() {
+	if r.Spec.Shutdown == nil {
+		r.Spec.Shutdown = &ShutdownConfig{}
+	}
 	if r.Spec.Shutdown.DrainTimeout == nil {
 		r.Spec.Shutdown.DrainTimeout = &metav1.Duration{Duration: DefaultDrainTimeout}
 	}
