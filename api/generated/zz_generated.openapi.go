@@ -45,6 +45,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/apoxy-dev/apoxy/api/controllers/v1alpha1.ProxyTracing":                 schema_apoxy_api_controllers_v1alpha1_ProxyTracing(ref),
 		"github.com/apoxy-dev/apoxy/api/controllers/v1alpha1.ProxyTracingTagValue":         schema_apoxy_api_controllers_v1alpha1_ProxyTracingTagValue(ref),
 		"github.com/apoxy-dev/apoxy/api/controllers/v1alpha1.ThirdPartySinks":              schema_apoxy_api_controllers_v1alpha1_ThirdPartySinks(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha.Address":                              schema_apoxy_api_core_v1alpha_Address(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.AgentStatus":                          schema_apoxy_api_core_v1alpha_AgentStatus(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.AxiomCredentials":                     schema_apoxy_api_core_v1alpha_AxiomCredentials(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.Backend":                              schema_apoxy_api_core_v1alpha_Backend(ref),
@@ -76,13 +77,18 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.ForwardingRule":                       schema_apoxy_api_core_v1alpha_ForwardingRule(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.GrafanaCredentials":                   schema_apoxy_api_core_v1alpha_GrafanaCredentials(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.LocalObjectReference":                 schema_apoxy_api_core_v1alpha_LocalObjectReference(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha.NameserverStatus":                     schema_apoxy_api_core_v1alpha_NameserverStatus(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.PortRange":                            schema_apoxy_api_core_v1alpha_PortRange(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha.Registrant":                           schema_apoxy_api_core_v1alpha_Registrant(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha.RegistrationConfig":                   schema_apoxy_api_core_v1alpha_RegistrationConfig(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha.RegistrationStatus":                   schema_apoxy_api_core_v1alpha_RegistrationStatus(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.TunnelNode":                           schema_apoxy_api_core_v1alpha_TunnelNode(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.TunnelNodeCredentials":                schema_apoxy_api_core_v1alpha_TunnelNodeCredentials(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.TunnelNodeList":                       schema_apoxy_api_core_v1alpha_TunnelNodeList(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.TunnelNodeSpec":                       schema_apoxy_api_core_v1alpha_TunnelNodeSpec(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.TunnelNodeStatus":                     schema_apoxy_api_core_v1alpha_TunnelNodeStatus(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.APIKey":                              schema_apoxy_api_core_v1alpha2_APIKey(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.Address":                             schema_apoxy_api_core_v1alpha2_Address(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.AxiomCredentials":                    schema_apoxy_api_core_v1alpha2_AxiomCredentials(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.Backend":                             schema_apoxy_api_core_v1alpha2_Backend(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.BackendEndpoint":                     schema_apoxy_api_core_v1alpha2_BackendEndpoint(ref),
@@ -113,6 +119,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.ForwardingRule":                      schema_apoxy_api_core_v1alpha2_ForwardingRule(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.GrafanaCredentials":                  schema_apoxy_api_core_v1alpha2_GrafanaCredentials(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.LocalObjectReference":                schema_apoxy_api_core_v1alpha2_LocalObjectReference(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.NameserverStatus":                    schema_apoxy_api_core_v1alpha2_NameserverStatus(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.OpenTelemetrySink":                   schema_apoxy_api_core_v1alpha2_OpenTelemetrySink(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.PortRange":                           schema_apoxy_api_core_v1alpha2_PortRange(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.Proxy":                               schema_apoxy_api_core_v1alpha2_Proxy(ref),
@@ -125,6 +132,9 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.ProxyTelementry":                     schema_apoxy_api_core_v1alpha2_ProxyTelementry(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.ProxyTracing":                        schema_apoxy_api_core_v1alpha2_ProxyTracing(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.ProxyTracingTagValue":                schema_apoxy_api_core_v1alpha2_ProxyTracingTagValue(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.Registrant":                          schema_apoxy_api_core_v1alpha2_Registrant(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.RegistrationConfig":                  schema_apoxy_api_core_v1alpha2_RegistrationConfig(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.RegistrationStatus":                  schema_apoxy_api_core_v1alpha2_RegistrationStatus(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.ShutdownConfig":                      schema_apoxy_api_core_v1alpha2_ShutdownConfig(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.ThirdPartySinks":                     schema_apoxy_api_core_v1alpha2_ThirdPartySinks(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.Tunnel":                              schema_apoxy_api_core_v1alpha2_Tunnel(ref),
@@ -1144,6 +1154,61 @@ func schema_apoxy_api_controllers_v1alpha1_ThirdPartySinks(ref common.ReferenceC
 		},
 		Dependencies: []string{
 			"github.com/apoxy-dev/apoxy/api/controllers/v1alpha1.APIKey", "github.com/apoxy-dev/apoxy/api/controllers/v1alpha1.OpenTelemetrySink"},
+	}
+}
+
+func schema_apoxy_api_core_v1alpha_Address(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "Address contains postal address information.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"addressLine1": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Address line 1.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"addressLine2": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Address line 2.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"city": {
+						SchemaProps: spec.SchemaProps{
+							Description: "City.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"stateProvince": {
+						SchemaProps: spec.SchemaProps{
+							Description: "State or province.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"postalCode": {
+						SchemaProps: spec.SchemaProps{
+							Description: "PostalCode or ZIP code.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"country": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Country code (ISO 3166-1 alpha-2).",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+			},
+		},
 	}
 }
 
@@ -2243,8 +2308,33 @@ func schema_apoxy_api_core_v1alpha_DomainZoneSpec(ref common.ReferenceCallback) 
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
 				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"registrationConfig": {
+						SchemaProps: spec.SchemaProps{
+							Description: "RegistrationConfig contains configuration for domain registration.",
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/core/v1alpha.RegistrationConfig"),
+						},
+					},
+					"nameservers": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Nameservers to use for this domain zone. If not specified, defaults to Apoxy's nameservers.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+				},
 			},
 		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/core/v1alpha.RegistrationConfig"},
 	}
 }
 
@@ -2259,6 +2349,18 @@ func schema_apoxy_api_core_v1alpha_DomainZoneStatus(ref common.ReferenceCallback
 							Description: "Phase of the domain zone.",
 							Type:        []string{"string"},
 							Format:      "",
+						},
+					},
+					"registrationStatus": {
+						SchemaProps: spec.SchemaProps{
+							Description: "RegistrationStatus contains information about domain registration.",
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/core/v1alpha.RegistrationStatus"),
+						},
+					},
+					"nameservers": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Nameservers contains information about nameserver configuration.",
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/core/v1alpha.NameserverStatus"),
 						},
 					},
 					"conditions": {
@@ -2279,7 +2381,7 @@ func schema_apoxy_api_core_v1alpha_DomainZoneStatus(ref common.ReferenceCallback
 			},
 		},
 		Dependencies: []string{
-			"k8s.io/apimachinery/pkg/apis/meta/v1.Condition"},
+			"github.com/apoxy-dev/apoxy/api/core/v1alpha.NameserverStatus", "github.com/apoxy-dev/apoxy/api/core/v1alpha.RegistrationStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.Condition"},
 	}
 }
 
@@ -2539,6 +2641,49 @@ func schema_apoxy_api_core_v1alpha_LocalObjectReference(ref common.ReferenceCall
 	}
 }
 
+func schema_apoxy_api_core_v1alpha_NameserverStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "NameserverStatus contains information about nameserver configuration.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"required": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Required nameservers that should be configured.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"current": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Current nameservers that are actually configured.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
 func schema_apoxy_api_core_v1alpha_PortRange(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -2565,6 +2710,152 @@ func schema_apoxy_api_core_v1alpha_PortRange(ref common.ReferenceCallback) commo
 				Required: []string{"startPort", "endPort"},
 			},
 		},
+	}
+}
+
+func schema_apoxy_api_core_v1alpha_Registrant(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "Registrant contains contact information for domain registration.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"firstName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "FirstName of the registrant.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"lastName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "LastName of the registrant.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"email": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Email of the registrant.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"phone": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Phone number of the registrant.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"organization": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Organization of the registrant.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"address": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Address of the registrant.",
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/core/v1alpha.Address"),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/core/v1alpha.Address"},
+	}
+}
+
+func schema_apoxy_api_core_v1alpha_RegistrationConfig(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "RegistrationConfig contains configuration for domain registration.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"autoRenew": {
+						SchemaProps: spec.SchemaProps{
+							Description: "AutoRenew indicates whether the domain should be automatically renewed.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"registrationPeriodYears": {
+						SchemaProps: spec.SchemaProps{
+							Description: "RegistrationPeriodYears is the number of years to register the domain for.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"registrant": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Registrant contains the registrant contact information.",
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/core/v1alpha.Registrant"),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/core/v1alpha.Registrant"},
+	}
+}
+
+func schema_apoxy_api_core_v1alpha_RegistrationStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "RegistrationStatus contains information about domain registration.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"registrationID": {
+						SchemaProps: spec.SchemaProps{
+							Description: "RegistrationID is the unique identifier for the registration.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"estimatedCost": {
+						SchemaProps: spec.SchemaProps{
+							Description: "EstimatedCost is the estimated cost for registration or renewal.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"paymentURL": {
+						SchemaProps: spec.SchemaProps{
+							Description: "PaymentURL is the URL to complete payment for registration or renewal.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"registeredAt": {
+						SchemaProps: spec.SchemaProps{
+							Description: "RegisteredAt is the time when the domain was registered.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+						},
+					},
+					"expiresAt": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ExpiresAt is the time when the domain registration expires.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+						},
+					},
+					"error": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Error contains error information if registration failed.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"k8s.io/apimachinery/pkg/apis/meta/v1.Time"},
 	}
 }
 
@@ -2770,6 +3061,61 @@ func schema_apoxy_api_core_v1alpha2_APIKey(ref common.ReferenceCallback) common.
 							Description: "KeyData is the base64 encoded API key.",
 							Type:        []string{"string"},
 							Format:      "byte",
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func schema_apoxy_api_core_v1alpha2_Address(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "Address contains postal address information.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"addressLine1": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Address line 1.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"addressLine2": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Address line 2.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"city": {
+						SchemaProps: spec.SchemaProps{
+							Description: "City.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"stateProvince": {
+						SchemaProps: spec.SchemaProps{
+							Description: "State or province.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"postalCode": {
+						SchemaProps: spec.SchemaProps{
+							Description: "PostalCode or ZIP code.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"country": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Country code (ISO 3166-1 alpha-2).",
+							Type:        []string{"string"},
+							Format:      "",
 						},
 					},
 				},
@@ -3818,8 +4164,33 @@ func schema_apoxy_api_core_v1alpha2_DomainZoneSpec(ref common.ReferenceCallback)
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
 				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"registrationConfig": {
+						SchemaProps: spec.SchemaProps{
+							Description: "RegistrationConfig contains configuration for domain registration.",
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.RegistrationConfig"),
+						},
+					},
+					"nameservers": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Nameservers to use for this domain zone. If not specified, defaults to Apoxy's nameservers.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+				},
 			},
 		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/core/v1alpha2.RegistrationConfig"},
 	}
 }
 
@@ -3834,6 +4205,18 @@ func schema_apoxy_api_core_v1alpha2_DomainZoneStatus(ref common.ReferenceCallbac
 							Description: "Phase of the domain zone.",
 							Type:        []string{"string"},
 							Format:      "",
+						},
+					},
+					"registrationStatus": {
+						SchemaProps: spec.SchemaProps{
+							Description: "RegistrationStatus contains information about domain registration.",
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.RegistrationStatus"),
+						},
+					},
+					"nameservers": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Nameservers contains information about nameserver configuration.",
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.NameserverStatus"),
 						},
 					},
 					"conditions": {
@@ -3854,7 +4237,7 @@ func schema_apoxy_api_core_v1alpha2_DomainZoneStatus(ref common.ReferenceCallbac
 			},
 		},
 		Dependencies: []string{
-			"k8s.io/apimachinery/pkg/apis/meta/v1.Condition"},
+			"github.com/apoxy-dev/apoxy/api/core/v1alpha2.NameserverStatus", "github.com/apoxy-dev/apoxy/api/core/v1alpha2.RegistrationStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.Condition"},
 	}
 }
 
@@ -4109,6 +4492,49 @@ func schema_apoxy_api_core_v1alpha2_LocalObjectReference(ref common.ReferenceCal
 					},
 				},
 				Required: []string{"group", "kind", "name"},
+			},
+		},
+	}
+}
+
+func schema_apoxy_api_core_v1alpha2_NameserverStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "NameserverStatus contains information about nameserver configuration.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"required": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Required nameservers that should be configured.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"current": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Current nameservers that are actually configured.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+				},
 			},
 		},
 	}
@@ -4563,6 +4989,152 @@ func schema_apoxy_api_core_v1alpha2_ProxyTracingTagValue(ref common.ReferenceCal
 				Required: []string{"value", "header"},
 			},
 		},
+	}
+}
+
+func schema_apoxy_api_core_v1alpha2_Registrant(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "Registrant contains contact information for domain registration.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"firstName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "FirstName of the registrant.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"lastName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "LastName of the registrant.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"email": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Email of the registrant.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"phone": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Phone number of the registrant.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"organization": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Organization of the registrant.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"address": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Address of the registrant.",
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.Address"),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/core/v1alpha2.Address"},
+	}
+}
+
+func schema_apoxy_api_core_v1alpha2_RegistrationConfig(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "RegistrationConfig contains configuration for domain registration.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"autoRenew": {
+						SchemaProps: spec.SchemaProps{
+							Description: "AutoRenew indicates whether the domain should be automatically renewed.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"registrationPeriodYears": {
+						SchemaProps: spec.SchemaProps{
+							Description: "RegistrationPeriodYears is the number of years to register the domain for.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"registrant": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Registrant contains the registrant contact information.",
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.Registrant"),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/core/v1alpha2.Registrant"},
+	}
+}
+
+func schema_apoxy_api_core_v1alpha2_RegistrationStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "RegistrationStatus contains information about domain registration.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"registrationID": {
+						SchemaProps: spec.SchemaProps{
+							Description: "RegistrationID is the unique identifier for the registration.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"estimatedCost": {
+						SchemaProps: spec.SchemaProps{
+							Description: "EstimatedCost is the estimated cost for registration or renewal.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"paymentURL": {
+						SchemaProps: spec.SchemaProps{
+							Description: "PaymentURL is the URL to complete payment for registration or renewal.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"registeredAt": {
+						SchemaProps: spec.SchemaProps{
+							Description: "RegisteredAt is the time when the domain was registered.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+						},
+					},
+					"expiresAt": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ExpiresAt is the time when the domain registration expires.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+						},
+					},
+					"error": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Error contains error information if registration failed.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"k8s.io/apimachinery/pkg/apis/meta/v1.Time"},
 	}
 }
 

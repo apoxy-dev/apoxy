@@ -24,6 +24,83 @@ type DomainZone struct {
 }
 
 type DomainZoneSpec struct {
+	// RegistrationConfig contains configuration for domain registration.
+	// +optional
+	RegistrationConfig *RegistrationConfig `json:"registrationConfig,omitempty"`
+
+	// Nameservers to use for this domain zone.
+	// If not specified, defaults to Apoxy's nameservers.
+	// +optional
+	Nameservers []string `json:"nameservers,omitempty"`
+}
+
+// RegistrationConfig contains configuration for domain registration.
+type RegistrationConfig struct {
+	// AutoRenew indicates whether the domain should be automatically renewed.
+	// +optional
+	AutoRenew bool `json:"autoRenew,omitempty"`
+
+	// RegistrationPeriodYears is the number of years to register the domain for.
+	// +optional
+	RegistrationPeriodYears int `json:"registrationPeriodYears,omitempty"`
+
+	// Registrant contains the registrant contact information.
+	// +optional
+	Registrant *Registrant `json:"registrant,omitempty"`
+}
+
+// Registrant contains contact information for domain registration.
+type Registrant struct {
+	// FirstName of the registrant.
+	// +optional
+	FirstName string `json:"firstName,omitempty"`
+
+	// LastName of the registrant.
+	// +optional
+	LastName string `json:"lastName,omitempty"`
+
+	// Email of the registrant.
+	// +optional
+	Email string `json:"email,omitempty"`
+
+	// Phone number of the registrant.
+	// +optional
+	Phone string `json:"phone,omitempty"`
+
+	// Organization of the registrant.
+	// +optional
+	Organization string `json:"organization,omitempty"`
+
+	// Address of the registrant.
+	// +optional
+	Address *Address `json:"address,omitempty"`
+}
+
+// Address contains postal address information.
+type Address struct {
+	// Address line 1.
+	// +optional
+	AddressLine1 string `json:"addressLine1,omitempty"`
+
+	// Address line 2.
+	// +optional
+	AddressLine2 string `json:"addressLine2,omitempty"`
+
+	// City.
+	// +optional
+	City string `json:"city,omitempty"`
+
+	// State or province.
+	// +optional
+	StateProvince string `json:"stateProvince,omitempty"`
+
+	// PostalCode or ZIP code.
+	// +optional
+	PostalCode string `json:"postalCode,omitempty"`
+
+	// Country code (ISO 3166-1 alpha-2).
+	// +optional
+	Country string `json:"country,omitempty"`
 }
 
 // DomainZonePhase is the phase of the domain zone.
@@ -33,18 +110,76 @@ const (
 	// Indicates that the domain zone is pending.
 	// In order to become active, the domain owner must update the
 	// nameservers with the registrar to point to the Apoxy nameservers.
-	DomainZonePhasePending = "Pending"
+	DomainZonePhasePending DomainZonePhase = "Pending"
+	// PaymentRequired indicates that payment is required for domain registration.
+	DomainZonePhasePaymentRequired DomainZonePhase = "PaymentRequired"
+	// Registering indicates that domain registration is in progress.
+	DomainZonePhaseRegistering DomainZonePhase = "Registering"
+	// PendingNameservers indicates that the domain is registered but nameservers need to be updated.
+	DomainZonePhasePendingNameservers DomainZonePhase = "PendingNameservers"
 	// Active phase of the domain zone. User can create records in the domain zone.
-	DomainZonePhaseActive = "Active"
+	DomainZonePhaseActive DomainZonePhase = "Active"
+	// Expiring indicates that the domain is expiring soon and needs renewal.
+	DomainZonePhaseExpiring DomainZonePhase = "Expiring"
+	// Expired indicates that the domain has expired.
+	DomainZonePhaseExpired DomainZonePhase = "Expired"
+	// Error indicates that an unrecoverable error occurred.
+	DomainZonePhaseError DomainZonePhase = "Error"
 )
 
 type DomainZoneStatus struct {
 	// Phase of the domain zone.
 	Phase DomainZonePhase `json:"phase,omitempty"`
 
+	// RegistrationStatus contains information about domain registration.
+	// +optional
+	RegistrationStatus *RegistrationStatus `json:"registrationStatus,omitempty"`
+
+	// Nameservers contains information about nameserver configuration.
+	// +optional
+	Nameservers *NameserverStatus `json:"nameservers,omitempty"`
+
 	// Conditions of the domain zone.
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// RegistrationStatus contains information about domain registration.
+type RegistrationStatus struct {
+	// RegistrationID is the unique identifier for the registration.
+	// +optional
+	RegistrationID string `json:"registrationID,omitempty"`
+
+	// EstimatedCost is the estimated cost for registration or renewal.
+	// +optional
+	EstimatedCost string `json:"estimatedCost,omitempty"`
+
+	// PaymentURL is the URL to complete payment for registration or renewal.
+	// +optional
+	PaymentURL string `json:"paymentURL,omitempty"`
+
+	// RegisteredAt is the time when the domain was registered.
+	// +optional
+	RegisteredAt *metav1.Time `json:"registeredAt,omitempty"`
+
+	// ExpiresAt is the time when the domain registration expires.
+	// +optional
+	ExpiresAt *metav1.Time `json:"expiresAt,omitempty"`
+
+	// Error contains error information if registration failed.
+	// +optional
+	Error string `json:"error,omitempty"`
+}
+
+// NameserverStatus contains information about nameserver configuration.
+type NameserverStatus struct {
+	// Required nameservers that should be configured.
+	// +optional
+	Required []string `json:"required,omitempty"`
+
+	// Current nameservers that are actually configured.
+	// +optional
+	Current []string `json:"current,omitempty"`
 }
 
 var _ resource.StatusSubResource = &DomainZoneStatus{}
