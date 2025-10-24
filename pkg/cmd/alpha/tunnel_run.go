@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"net/netip"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/apoxy-dev/icx"
@@ -45,7 +47,11 @@ var (
 	insecureSkipVerify bool   // skip TLS verification (testing only)
 	socksListenAddr    string // SOCKS listen address
 	pcapPath           string // optional pcap path
+	healthAddr         string // listen address for health endpoint (e.g. ":8080"); empty disables
 )
+
+// connectionHealthCounter tracks how many relay sessions are currently live.
+var connectionHealthCounter atomic.Int32
 
 var tunnelRunCmd = &cobra.Command{
 	Use:   "run",
@@ -56,8 +62,37 @@ var tunnelRunCmd = &cobra.Command{
 			return fmt.Errorf("--min-conns must be at least 1")
 		}
 
-		// Shared errgroup + context for background goroutines (router, connection slots).
+		// Shared errgroup + context for background goroutines (router, connection slots, health server).
 		g, ctx := errgroup.WithContext(cmd.Context())
+
+		// Start health endpoint server if configured.
+		if strings.TrimSpace(healthAddr) != "" {
+			mux := http.NewServeMux()
+			mux.HandleFunc("/healthz", healthHandler)
+
+			healthServer := &http.Server{
+				Addr:    healthAddr,
+				Handler: mux,
+			}
+
+			// Serve the health endpoint.
+			g.Go(func() error {
+				slog.Info("Starting health endpoint server", slog.String("address", healthAddr))
+				if err := healthServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+					slog.Error("Health server failed", slog.Any("error", err))
+					return err
+				}
+				return nil
+			})
+
+			// Gracefully shut down the health server when the context is done.
+			g.Go(func() error {
+				<-ctx.Done()
+				shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				return healthServer.Shutdown(shutdownCtx)
+			})
+		}
 
 		// Build the shared packet plane (UDP socket -> bifurcated GENEVE + QUIC mux).
 		packetPlane, err := newPacketPlane()
@@ -118,6 +153,7 @@ func init() {
 	tunnelRunCmd.Flags().BoolVar(&insecureSkipVerify, "insecure-skip-verify", false, "Skip TLS certificate verification for relay connections.")
 	tunnelRunCmd.Flags().StringVarP(&pcapPath, "pcap", "p", "", "Path to an optional packet capture file to write.")
 	tunnelRunCmd.Flags().StringVar(&socksListenAddr, "socks-addr", "localhost:1080", "Listen address for SOCKS proxy.")
+	tunnelRunCmd.Flags().StringVar(&healthAddr, "health-addr", "localhost:8080", "Listen address for health endpoint (e.g. \":8080\"). Empty disables.")
 
 	cobra.CheckErr(tunnelRunCmd.MarkFlagRequired("agent"))
 	cobra.CheckErr(tunnelRunCmd.MarkFlagRequired("name"))
@@ -432,6 +468,9 @@ func closeSession(client *api.Client, connID string) {
 //   - retry Connect() until it succeeds or ctx is canceled
 //   - once connected, run key rotation and watchdog concurrently
 //   - whichever fails first ends the session
+//
+// It also increments/decrements connectionHealthCounter so that /healthz
+// can report whether we currently have any active sessions.
 func manageRelayConnectionOnce(
 	ctx context.Context,
 	pcQuic net.PacketConn,
@@ -445,7 +484,12 @@ func manageRelayConnectionOnce(
 		connectResp   *api.ConnectResponse
 	)
 
+	// When this function returns, that relay session is down, so decrement
+	// if we had actually marked it active.
 	defer func() {
+		if currentConnID != "" {
+			connectionHealthCounter.Add(-1)
+		}
 		closeSession(currentClient, currentConnID)
 	}()
 
@@ -479,6 +523,9 @@ func manageRelayConnectionOnce(
 			slog.Any("error", err))
 		return fmt.Errorf("failed to connect to relay %q: %w", relayAddr, err)
 	}
+
+	// Successful session establishment: mark this connection active.
+	connectionHealthCounter.Add(1)
 
 	// Once connected, run key rotation and watchdog concurrently.
 	sessionCtx, sessionCancel := context.WithCancel(ctx)
@@ -749,4 +796,25 @@ func parsePrefixes(addrs []string) ([]netip.Prefix, error) {
 		prefixes = append(prefixes, p)
 	}
 	return prefixes, nil
+}
+
+// healthHandler returns 200 OK when at least one tunnel connection is active,
+// 503 otherwise. This is used by external health checks.
+//
+// Response codes:
+//   - 200 OK: At least one tunnel connection is active
+//   - 503 Service Unavailable: No active tunnel connections
+//
+// Body is plain text with a short summary.
+func healthHandler(w http.ResponseWriter, r *http.Request) {
+	active := connectionHealthCounter.Load()
+
+	if active > 0 {
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "OK - %d active connection(s)\n", active)
+		return
+	}
+
+	w.WriteHeader(http.StatusServiceUnavailable)
+	fmt.Fprintf(w, "UNHEALTHY - no active connections\n")
 }
