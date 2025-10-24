@@ -2,26 +2,34 @@ package bifurcate
 
 import (
 	"net"
+	"sync"
 	"time"
 
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/batchpc"
 )
 
 type chanPacketConn struct {
-	pc batchpc.BatchPacketConn
+	pc            batchpc.BatchPacketConn
+	closeConnOnce *sync.Once
 	// Incoming batches from the bifurcator goroutine.
-	ch     chan []*batchpc.Message
-	closed chan struct{}
+	ch         chan []*batchpc.Message
+	closedOnce sync.Once
+	closed     chan struct{}
 	// Locally pending batch from the last receive (not yet fully consumed).
+	pendingMu    sync.Mutex
 	pending      []*batchpc.Message
 	pendingIndex int
+	// Last transient error to be surfaced on next Read/ReadBatch.
+	errMu   sync.Mutex
+	lastErr error
 }
 
-func newChanPacketConn(pc batchpc.BatchPacketConn) *chanPacketConn {
+func newChanPacketConn(pc batchpc.BatchPacketConn, closeConnOnce *sync.Once) *chanPacketConn {
 	return &chanPacketConn{
-		ch:     make(chan []*batchpc.Message, 1024),
-		pc:     pc,
-		closed: make(chan struct{}),
+		ch:            make(chan []*batchpc.Message, 1024),
+		pc:            pc,
+		closeConnOnce: closeConnOnce,
+		closed:        make(chan struct{}),
 	}
 }
 
@@ -29,6 +37,7 @@ func (pc *chanPacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
 	if err := pc.ensurePendingBlocking(); err != nil {
 		return 0, nil, err
 	}
+
 	msg := pc.popOne()
 	defer messagePool.Put(msg)
 
@@ -41,13 +50,15 @@ func (pc *chanPacketConn) WriteTo(p []byte, addr net.Addr) (int, error) {
 }
 
 func (pc *chanPacketConn) Close() error {
-	select {
-	case <-pc.closed:
-		return nil
-	default:
+	pc.closedOnce.Do(func() {
 		close(pc.closed)
-		return nil
-	}
+	})
+
+	var err error
+	pc.closeConnOnce.Do(func() {
+		err = pc.pc.Close()
+	})
+	return err
 }
 
 func (pc *chanPacketConn) LocalAddr() net.Addr {
@@ -77,10 +88,13 @@ func (pc *chanPacketConn) ReadBatch(msgs []batchpc.Message, flags int) (int, err
 		return 0, err
 	}
 
-	// 2) Fill from pending, then non-blocking drain of further batches.
 	fill := func() {
-		for n < len(msgs) && len(pc.pending) > 0 {
+		for n < len(msgs) {
 			msg := pc.popOne()
+			if msg == nil {
+				// nothing pending anymore
+				break
+			}
 			copied := copy(msgs[n].Buf, msg.Buf)
 			msgs[n].Buf = msgs[n].Buf[:copied]
 			msgs[n].Addr = msg.Addr
@@ -89,8 +103,10 @@ func (pc *chanPacketConn) ReadBatch(msgs []batchpc.Message, flags int) (int, err
 		}
 	}
 
-	fill() // consume current pending
+	// consume current pending
+	fill()
 
+	// 2) Then non-blocking drain of further batches.
 	for n < len(msgs) {
 		if !pc.tryFillPendingNonBlocking() {
 			break
@@ -105,8 +121,28 @@ func (pc *chanPacketConn) WriteBatch(msgs []batchpc.Message, flags int) (int, er
 	return pc.pc.WriteBatch(msgs, flags)
 }
 
-// popOne pulls one message from pending; assumes pending not empty.
+// pendingLenLocked returns len(pending). pendingMu MUST be held by caller.
+func (pc *chanPacketConn) pendingLenLocked() int {
+	return len(pc.pending)
+}
+
+// setPendingLocked sets the pending batch + resets index. pendingMu MUST be held.
+func (pc *chanPacketConn) setPendingLocked(batch []*batchpc.Message) {
+	pc.pending = batch
+	pc.pendingIndex = 0
+}
+
+// popOne pulls one message from pending.
+// Returns nil if pending is empty.
+// Takes the lock internally.
 func (pc *chanPacketConn) popOne() *batchpc.Message {
+	pc.pendingMu.Lock()
+	defer pc.pendingMu.Unlock()
+
+	if len(pc.pending) == 0 {
+		return nil
+	}
+
 	m := pc.pending[pc.pendingIndex]
 	pc.pendingIndex++
 	if pc.pendingIndex >= len(pc.pending) {
@@ -117,30 +153,79 @@ func (pc *chanPacketConn) popOne() *batchpc.Message {
 	return m
 }
 
+// ensurePendingBlocking guarantees there's at least one message in pending,
+// blocking on pc.ch if needed. Surfaces transient errors first.
 func (pc *chanPacketConn) ensurePendingBlocking() error {
-	if len(pc.pending) > 0 {
+	// Fast path: already have pending locally.
+	pc.pendingMu.Lock()
+	if pc.pendingLenLocked() > 0 {
+		pc.pendingMu.Unlock()
 		return nil
 	}
+	pc.pendingMu.Unlock()
+
+	// Check if there's a transient error waiting to be reported.
+	if err := pc.takeErr(); err != nil {
+		return err
+	}
+
 	select {
-	case batch := <-pc.ch:
-		pc.pending = batch
-		pc.pendingIndex = 0
+	case batch, ok := <-pc.ch:
+		if !ok {
+			// ch closed -> treat as connection closed
+			return net.ErrClosed
+		}
+		pc.pendingMu.Lock()
+		pc.setPendingLocked(batch)
+		pc.pendingMu.Unlock()
 		return nil
 	case <-pc.closed:
 		return net.ErrClosed
 	}
 }
 
+// tryFillPendingNonBlocking tries to pull a new batch into pending without blocking.
+// Returns true if pending now has data.
 func (pc *chanPacketConn) tryFillPendingNonBlocking() bool {
-	if len(pc.pending) > 0 {
+	// Check fast path first.
+	pc.pendingMu.Lock()
+	if pc.pendingLenLocked() > 0 {
+		pc.pendingMu.Unlock()
 		return true
 	}
+	pc.pendingMu.Unlock()
+
 	select {
-	case batch := <-pc.ch:
-		pc.pending = batch
-		pc.pendingIndex = 0
-		return true
+	case batch, ok := <-pc.ch:
+		if !ok {
+			return false
+		}
+		pc.pendingMu.Lock()
+		pc.setPendingLocked(batch)
+		hasData := pc.pendingLenLocked() > 0
+		pc.pendingMu.Unlock()
+		return hasData
 	default:
 		return false
 	}
+}
+
+// setErr records a transient error to be surfaced on the next Read/ReadBatch call.
+func (pc *chanPacketConn) setErr(err error) {
+	if err == nil {
+		return
+	}
+	pc.errMu.Lock()
+	pc.lastErr = err
+	pc.errMu.Unlock()
+}
+
+// takeErr returns (and clears) the currently stored transient error.
+// If there's no pending transient error it returns nil.
+func (pc *chanPacketConn) takeErr() error {
+	pc.errMu.Lock()
+	defer pc.errMu.Unlock()
+	err := pc.lastErr
+	pc.lastErr = nil
+	return err
 }

@@ -1,6 +1,9 @@
 package bifurcate
 
 import (
+	"errors"
+	"log/slog"
+	"net"
 	"sync"
 
 	"github.com/apoxy-dev/icx/geneve"
@@ -17,8 +20,9 @@ var messagePool = sync.Pool{
 
 // Bifurcate splits incoming packets from `pc` into geneve and other channels.
 func Bifurcate(pc batchpc.BatchPacketConn) (batchpc.BatchPacketConn, batchpc.BatchPacketConn) {
-	geneveConn := newChanPacketConn(pc)
-	otherConn := newChanPacketConn(pc)
+	var closeConnOnce sync.Once
+	geneveConn := newChanPacketConn(pc, &closeConnOnce)
+	otherConn := newChanPacketConn(pc, &closeConnOnce)
 
 	// Local copies we can nil out when a side is closed.
 	geneveCh := geneveConn.ch
@@ -53,17 +57,31 @@ func Bifurcate(pc batchpc.BatchPacketConn) (batchpc.BatchPacketConn, batchpc.Bat
 
 			n, err := pc.ReadBatch(msgs, 0)
 			if err != nil {
-				// Return any outstanding pooled messages.
+				// Recycle any pooled messages we haven't handed off.
 				for i := 0; i < len(pm); i++ {
 					if pm[i] != nil {
 						messagePool.Put(pm[i])
 						pm[i] = nil
 					}
 				}
-				_ = geneveConn.Close()
-				_ = otherConn.Close()
-				return
+
+				// Bubble the error up to each chanPacketConn.
+				geneveConn.setErr(err)
+				otherConn.setErr(err)
+
+				// Only close+exit if this is a permanent close.
+				if errors.Is(err, net.ErrClosed) {
+					_ = geneveConn.Close()
+					_ = otherConn.Close()
+					return
+				}
+
+				slog.Warn("Error reading batch from underlying connection", slog.Any("error", err))
+
+				// Transient error: keep the bifurcator alive.
+				continue
 			}
+
 			if n == 0 {
 				continue
 			}
@@ -74,7 +92,7 @@ func Bifurcate(pc batchpc.BatchPacketConn) (batchpc.BatchPacketConn, batchpc.Bat
 
 			for i := 0; i < n; i++ {
 				m := pm[i]
-				// msgs[i].Buf has been resized by underlying BatchPacketConn ReadBatch.
+				// msgs[i].Buf may have been resized by underlying BatchPacketConn ReadBatch.
 				m.Buf = msgs[i].Buf
 				m.Addr = msgs[i].Addr
 
@@ -101,6 +119,7 @@ func Bifurcate(pc batchpc.BatchPacketConn) (batchpc.BatchPacketConn, batchpc.Bat
 					for _, m := range batch {
 						messagePool.Put(m)
 					}
+					close(ch)
 					ch = nil
 					closed = nil
 				}
@@ -122,12 +141,12 @@ func isGeneve(b []byte) bool {
 		return false
 	}
 
-	// Only Geneve version 0 is defined
+	// Only Geneve version 0 is defined.
 	if hdr.Version != 0 {
 		return false
 	}
 
-	// Check for valid protocol types (IPv4 or IPv6) or EtherType unknown (out-of-band messages).
+	// Check for valid protocol types (IPv4 or IPv6) or EtherType 0 (mgmt / oob).
 	if hdr.ProtocolType != uint16(header.IPv4ProtocolNumber) &&
 		hdr.ProtocolType != uint16(header.IPv6ProtocolNumber) &&
 		hdr.ProtocolType != 0 {

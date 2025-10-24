@@ -163,12 +163,13 @@ func TestBifurcate_WriteBatchForwardsToUnderlying(t *testing.T) {
 	}
 }
 
-func TestBifurcate_ClosesBothOnReadError(t *testing.T) {
+func TestBifurcate_ClosesBothOnUnderlyingClose(t *testing.T) {
 	mockConn := newMockBatchPacketConn()
-	// Simulate read error: close the queue so next read fails.
-	close(mockConn.readQueue)
 
 	geneveConn, otherConn := bifurcate.Bifurcate(mockConn)
+
+	// close the underlying connection
+	_ = mockConn.Close()
 
 	// Give the goroutine a breath to observe the close.
 	time.Sleep(50 * time.Millisecond)
@@ -179,6 +180,42 @@ func TestBifurcate_ClosesBothOnReadError(t *testing.T) {
 
 	_, _, err = otherConn.ReadFrom(buf)
 	require.ErrorIs(t, err, net.ErrClosed)
+}
+
+func TestBifurcate_BubblesTransientErrorAndContinues(t *testing.T) {
+	t.Helper()
+
+	mockConn := newMockBatchPacketConn()
+	transientErr := errors.New("temporary I/O error")
+
+	remote := &net.UDPAddr{IP: net.IPv4(10, 9, 8, 7), Port: 31337}
+	genevePkt := createGenevePacket(t)
+
+	// First queued result is a transient error (channel stays open).
+	mockConn.readQueue <- readResult{
+		err: transientErr,
+	}
+	// Second queued result is a valid Geneve packet.
+	mockConn.enqueue(genevePkt, remote)
+
+	geneveConn, _ := bifurcate.Bifurcate(mockConn)
+
+	// Give the bifurcator goroutine a moment to observe both queued results:
+	// 1) record transientErr via setErr(...)
+	// 2) enqueue the good packet batch onto geneveConn.ch
+	time.Sleep(50 * time.Millisecond)
+
+	buf := make([]byte, 1024)
+
+	// First read should surface the transient error that was bubbled up.
+	_, _, err := geneveConn.ReadFrom(buf)
+	require.ErrorIs(t, err, transientErr)
+
+	// Second read should now succeed and return the real packet.
+	n, addr, err := geneveConn.ReadFrom(buf)
+	require.NoError(t, err)
+	require.Equal(t, remote.String(), addr.String())
+	require.True(t, bytes.Equal(buf[:n], genevePkt), "expected geneve packet after transient error")
 }
 
 func createGenevePacket(t *testing.T) []byte {
@@ -278,14 +315,17 @@ func (pc *mockBatchPacketConn) ReadBatch(msgs []batchpc.Message, flags int) (int
 	if len(msgs) == 0 {
 		return 0, nil
 	}
+
 	// First result: block
 	result, ok := <-pc.readQueue
 	if !ok {
-		return 0, errors.New("mock read closed")
+		// underlying permanently closed
+		return 0, net.ErrClosed
 	}
 	if result.err != nil {
 		return 0, result.err
 	}
+
 	n0 := copy(msgs[0].Buf, result.data)
 	msgs[0].Buf = msgs[0].Buf[:n0]
 	msgs[0].Addr = result.addr
@@ -296,7 +336,7 @@ func (pc *mockBatchPacketConn) ReadBatch(msgs []batchpc.Message, flags int) (int
 		select {
 		case rr, ok := <-pc.readQueue:
 			if !ok {
-				return n, errors.New("mock read closed")
+				return n, net.ErrClosed
 			}
 			if rr.err != nil {
 				return n, rr.err
@@ -309,6 +349,7 @@ func (pc *mockBatchPacketConn) ReadBatch(msgs []batchpc.Message, flags int) (int
 			return n, nil
 		}
 	}
+
 	return n, nil
 }
 

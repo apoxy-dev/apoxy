@@ -165,7 +165,6 @@ func (net *ICXNetwork) Close() error {
 }
 
 // Start copies packets to and from netstack and icx.
-// Upstream (netstack -> phy) uses batched I/O; downstream remains as before.
 func (net *ICXNetwork) Start() error {
 	const tickMs = 100 // periodically flush scheduled frames (ToPhy)
 
@@ -260,10 +259,14 @@ func (net *ICXNetwork) Start() error {
 			for i := 0; i < count; i++ {
 				msgs[i] = batch[i].msg
 			}
-			n, err := net.phy.WriteBatchFrames(msgs, 0)
+			_, err := net.phy.WriteBatchFrames(msgs, 0)
 			putOwned(batch)
 			if err != nil {
-				return fmt.Errorf("writing batched phy frames failed after %d/%d: %w", n, count, err)
+				if errors.Is(err, stdnet.ErrClosed) {
+					return err
+				}
+				slog.Warn("Error writing batched phy frames", slog.Any("error", err))
+				continue
 			}
 		}
 	})
@@ -277,7 +280,11 @@ func (net *ICXNetwork) Start() error {
 			n, err := net.phy.ReadFrame(*phyFrame)
 			if err != nil {
 				net.pktPool.Put(phyFrame)
-				return fmt.Errorf("reading phy frame failed: %w", err)
+				if errors.Is(err, stdnet.ErrClosed) {
+					return err
+				}
+				slog.Warn("Error reading frame from physical interface", slog.Any("error", err))
+				continue
 			}
 			if n == 0 {
 				net.pktPool.Put(phyFrame)
