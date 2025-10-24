@@ -21,6 +21,7 @@ import (
 
 	"github.com/apoxy-dev/apoxy/pkg/netstack"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/api"
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/batchpc"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/bifurcate"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/conntrackpc"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/router"
@@ -47,11 +48,15 @@ var tunnelRunCmd = &cobra.Command{
 		}
 
 		// One UDP socket shared between Geneve (data) and QUIC (control).
-		pc, err := net.ListenPacket("udp", ":0")
+		lis, err := net.ListenPacket("udp", ":0")
 		if err != nil {
 			return fmt.Errorf("failed to create UDP socket: %w", err)
 		}
-		defer pc.Close()
+
+		pc, err := batchpc.New("udp", lis)
+		if err != nil {
+			return fmt.Errorf("failed to create batch packet conn: %w", err)
+		}
 
 		pcGeneve, pcQuic := bifurcate.Bifurcate(pc)
 		defer pcGeneve.Close()

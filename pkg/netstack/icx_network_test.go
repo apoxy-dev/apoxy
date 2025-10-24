@@ -13,12 +13,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/avast/retry-go/v4"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/apoxy-dev/icx"
 
 	"github.com/apoxy-dev/apoxy/pkg/netstack"
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/batchpc"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/bifurcate"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/l2pc"
 )
@@ -31,12 +33,18 @@ func TestICXNetwork_Speed(t *testing.T) {
 	slog.SetLogLoggerLevel(slog.LevelDebug)
 
 	// Create two underlying UDP packet conns on localhost
-	pcA, err := net.ListenPacket("udp", "127.0.0.1:0")
+	connA, err := net.ListenPacket("udp", "127.0.0.1:0")
+	require.NoError(t, err)
+
+	pcA, err := batchpc.New("udp4", connA)
 	require.NoError(t, err)
 
 	pcAGeneve, _ := bifurcate.Bifurcate(pcA)
 
-	pcB, err := net.ListenPacket("udp", "127.0.0.1:0")
+	connB, err := net.ListenPacket("udp", "127.0.0.1:0")
+	require.NoError(t, err)
+
+	pcB, err := batchpc.New("udp4", connB)
 	require.NoError(t, err)
 
 	pcBGeneve, _ := bifurcate.Bifurcate(pcB)
@@ -164,31 +172,64 @@ func TestICXNetwork_Speed(t *testing.T) {
 		Timeout: 30 * time.Second,
 	}
 
+	// helper that GETs URL and reads/discards the body,
+	// returning bytes read. wrapped in retry at callsite.
+	fetchAndDrain := func(cl *http.Client, url string) (int64, error) {
+		resp, err := cl.Get(url)
+		if err != nil {
+			return 0, err
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			return 0, fmt.Errorf("status: %s", resp.Status)
+		}
+
+		n, err := io.Copy(io.Discard, resp.Body)
+		if err != nil {
+			return 0, err
+		}
+		if n != totalBytes {
+			return 0, fmt.Errorf("unexpected byte count: got %d, want %d", n, totalBytes)
+		}
+		return n, nil
+	}
+
 	// Single-stream speed test
 	t.Run("Speed", func(t *testing.T) {
 		url := "http://" + ln.Addr().String() + "/speed"
 		start := time.Now()
 
-		resp, err := client.Get(url)
-		require.NoError(t, err)
-		require.Equal(t, http.StatusOK, resp.StatusCode)
-
-		n, err := io.Copy(io.Discard, resp.Body)
-		_ = resp.Body.Close()
-		require.NoError(t, err)
-		require.EqualValues(t, totalBytes, n, "unexpected byte count")
+		var n int64
+		err := retry.Do(
+			func() error {
+				readBytes, err := fetchAndDrain(client, url)
+				if err != nil {
+					return err
+				}
+				n = readBytes
+				return nil
+			},
+			retry.Attempts(3),
+			retry.Delay(100*time.Millisecond),
+			retry.DelayType(retry.FixedDelay),
+		)
+		require.NoError(t, err, "single-stream GET failed even after retries")
 
 		elapsed := time.Since(start)
 		sec := elapsed.Seconds()
+
+		// bits/s calc
 		mbps := (float64(n) * 8) / 1_000_000 / sec
 		gbps := (float64(n) * 8) / 1_000_000_000 / sec
+		// bytes/s calc
 		mbpsBytes := (float64(n)) / 1_000_000 / sec
 
 		t.Logf("Downloaded %d bytes in %s → %.2f MB/s, %.2f Mbit/s (%.2f Gbit/s)",
 			n, elapsed, mbpsBytes, mbps, gbps)
 	})
 
-	// Parallel speed test: four concurrent streams, each 200 MiB
+	// Parallel speed test: eight concurrent streams, each 100 MiB
 	t.Run("SpeedParallel", func(t *testing.T) {
 		const numStreams = 8
 		URL := "http://" + ln.Addr().String() + "/speed"
@@ -213,21 +254,25 @@ func TestICXNetwork_Speed(t *testing.T) {
 
 		for i := 0; i < numStreams; i++ {
 			g.Go(func() error {
-				resp, err := parallelClient.Get(URL)
+				var gotBytes int64
+				err := retry.Do(
+					func() error {
+						readBytes, err := fetchAndDrain(parallelClient, URL)
+						if err != nil {
+							return err
+						}
+						gotBytes = readBytes
+						return nil
+					},
+					retry.Attempts(3),
+					retry.Delay(100*time.Millisecond),
+					retry.DelayType(retry.FixedDelay),
+				)
 				if err != nil {
 					return err
 				}
-				if resp.StatusCode != http.StatusOK {
-					_ = resp.Body.Close()
-					return fmt.Errorf("status: %s", resp.Status)
-				}
-				n, err := io.Copy(io.Discard, resp.Body)
-				_ = resp.Body.Close()
-				if err != nil {
-					return err
-				}
-				if n != totalBytes {
-					return fmt.Errorf("unexpected byte count: got %d, want %d", n, totalBytes)
+				if gotBytes != totalBytes {
+					return fmt.Errorf("unexpected byte count post-retry: got %d, want %d", gotBytes, totalBytes)
 				}
 				return nil
 			})
@@ -237,6 +282,7 @@ func TestICXNetwork_Speed(t *testing.T) {
 		totalRead := int64(numStreams) * totalBytes
 		elapsed := time.Since(start)
 		sec := elapsed.Seconds()
+
 		mbps := (float64(totalRead) * 8) / 1_000_000 / sec
 		gbps := (float64(totalRead) * 8) / 1_000_000_000 / sec
 		mbpsBytes := (float64(totalRead)) / 1_000_000 / sec

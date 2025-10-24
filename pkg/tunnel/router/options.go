@@ -1,9 +1,9 @@
 package router
 
 import (
-	"net"
 	"net/netip"
 
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/batchpc"
 	"github.com/apoxy-dev/icx"
 	"github.com/dpeckett/network"
 )
@@ -23,7 +23,7 @@ type routerOptions struct {
 	cksumRecalc           bool
 	preserveDefaultGwDsts []netip.Prefix
 	sourcePortHashing     bool
-	pc                    net.PacketConn
+	pc                    batchpc.BatchPacketConn
 	egressGateway         bool
 }
 
@@ -120,9 +120,9 @@ func WithSourcePortHashing(enable bool) Option {
 	}
 }
 
-// WithPacketConn sets the underlying PacketConn for the ICX router.
+// WithPacketConn sets a custom BatchPacketConn for the ICX netstack router.
 // Only valid for ICX netstack router.
-func WithPacketConn(pc net.PacketConn) Option {
+func WithPacketConn(pc batchpc.BatchPacketConn) Option {
 	return func(o *routerOptions) {
 		o.pc = pc
 	}

@@ -1,3 +1,4 @@
+// icx_network.go
 package netstack
 
 import (
@@ -28,22 +29,26 @@ import (
 
 	stdnet "net"
 
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/batchpc"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/l2pc"
 )
 
 // TODO (dpeckett): nuke this at some point and merge the logic into the router.
 type ICXNetwork struct {
 	network.Network
-	handler        *icx.Handler
-	phy            *l2pc.L2PacketConn
-	ep             *channel.Endpoint
-	stack          *stack.Stack
-	ipt            *IPTables
-	nicID          tcpip.NICID
-	pcapFile       *os.File
-	incomingPacket chan *buffer.View
-	pktPool        sync.Pool
-	closeOnce      sync.Once
+	handler  *icx.Handler
+	phy      *l2pc.L2PacketConn
+	ep       *channel.Endpoint
+	stack    *stack.Stack
+	ipt      *IPTables
+	nicID    tcpip.NICID
+	pcapFile *os.File
+
+	// Wakeup channel for batching outbound sends. Capacity 1 to coalesce notifies.
+	wakeOutbound chan struct{}
+
+	pktPool   sync.Pool
+	closeOnce sync.Once
 }
 
 // NewICXNetwork creates a new ICXNetwork instance with the given handler, physical connection, MTU, and resolve configuration.
@@ -107,15 +112,17 @@ func NewICXNetwork(handler *icx.Handler, phy *l2pc.L2PacketConn, mtu int, resolv
 	})
 
 	net := &ICXNetwork{
-		Network:        network.Netstack(ipstack, nicID, resolveConf),
-		handler:        handler,
-		phy:            phy,
-		ep:             linkEP,
-		stack:          ipstack,
-		ipt:            ipt,
-		nicID:          nicID,
-		pcapFile:       pcapFile,
-		incomingPacket: make(chan *buffer.View),
+		Network:  network.Netstack(ipstack, nicID, resolveConf),
+		handler:  handler,
+		phy:      phy,
+		ep:       linkEP,
+		stack:    ipstack,
+		ipt:      ipt,
+		nicID:    nicID,
+		pcapFile: pcapFile,
+
+		wakeOutbound: make(chan struct{}, 1),
+
 		pktPool: sync.Pool{
 			New: func() any {
 				b := make([]byte, 0, 65535)
@@ -129,14 +136,13 @@ func NewICXNetwork(handler *icx.Handler, phy *l2pc.L2PacketConn, mtu int, resolv
 }
 
 // WriteNotify is called by the channel endpoint when netstack has an outbound packet ready.
+// We just coalesce a wakeup; actual draining/batching happens in the outbound pump.
 func (net *ICXNetwork) WriteNotify() {
-	pkt := net.ep.Read()
-	if pkt == nil {
-		return
+	select {
+	case net.wakeOutbound <- struct{}{}:
+	default:
+		// already awake; coalesce
 	}
-	view := pkt.ToView()
-	pkt.DecRef()
-	net.incomingPacket <- view
 }
 
 // Close cleans up the network stack and closes the underlying resources.
@@ -146,8 +152,8 @@ func (net *ICXNetwork) Close() error {
 
 		net.ep.Close()
 
-		if net.incomingPacket != nil {
-			close(net.incomingPacket)
+		if net.wakeOutbound != nil {
+			close(net.wakeOutbound)
 		}
 
 		if net.pcapFile != nil {
@@ -159,47 +165,108 @@ func (net *ICXNetwork) Close() error {
 }
 
 // Start copies packets to and from netstack and icx.
-// This is a blocking call that runs until either side is closed.
 func (net *ICXNetwork) Start() error {
+	const tickMs = 100 // periodically flush scheduled frames (ToPhy)
+
 	var g errgroup.Group
 
-	// Outbound: netstack (L3) -> ICX -> L2PacketConn.WriteFrame
+	// Outbound: netstack (L3) -> ICX -> L2PacketConn.WriteBatchFrames (batched)
 	g.Go(func() error {
-		// Avoid a busy loop.
-		ticker := time.NewTicker(100 * time.Millisecond)
+		type owned struct {
+			msg batchpc.Message
+			buf *[]byte // owner to return to pool
+		}
+		putOwned := func(v []owned) {
+			for i := range v {
+				if v[i].buf != nil {
+					net.pktPool.Put(v[i].buf)
+					v[i].buf = nil
+				}
+			}
+		}
+
+		// Reuse per-iteration scratch arrays to avoid allocs.
+		// Assumes batchpc.MaxBatchSize is a const.
+		var (
+			batchOwned [batchpc.MaxBatchSize]owned
+			batchMsgs  [batchpc.MaxBatchSize]batchpc.Message
+		)
+
+		ticker := time.NewTicker(tickMs * time.Millisecond)
 		defer ticker.Stop()
 
 		for {
+			// Wake on notify or periodic tick.
 			select {
-			case view, ok := <-net.incomingPacket:
+			case _, ok := <-net.wakeOutbound:
 				if !ok {
-					return stdnet.ErrClosed // channel closed => done
+					return stdnet.ErrClosed
 				}
-
-				ip := view.AsSlice() // raw IP bytes (v4 or v6)
-
-				phyFrame := net.pktPool.Get().(*[]byte)
-				*phyFrame = (*phyFrame)[:cap(*phyFrame)]
-				n, _ := net.handler.VirtToPhy(ip, *phyFrame)
-				if n > 0 {
-					if err := net.phy.WriteFrame((*phyFrame)[:n]); err != nil {
-						net.pktPool.Put(phyFrame)
-						return fmt.Errorf("writing phy frame failed: %w", err)
-					}
-				}
-				net.pktPool.Put(phyFrame)
-
 			case <-ticker.C:
-				phyFrame := net.pktPool.Get().(*[]byte)
-				*phyFrame = (*phyFrame)[:cap(*phyFrame)]
+			}
 
-				if n := net.handler.ToPhy(*phyFrame); n > 0 {
-					if err := net.phy.WriteFrame((*phyFrame)[:n]); err != nil {
-						net.pktPool.Put(phyFrame)
-						return fmt.Errorf("writing scheduled phy frame failed: %w", err)
-					}
+			batch := batchOwned[:]
+			count := 0
+
+			// Drain endpoint fully into the batch.
+			for count < batchpc.MaxBatchSize {
+				pkt := net.ep.Read()
+				if pkt == nil {
+					break
 				}
-				net.pktPool.Put(phyFrame)
+				view := pkt.ToView()
+				pkt.DecRef()
+
+				ip := view.AsSlice() // raw L3 bytes
+				b := batch[count].buf
+				if b == nil {
+					b = net.pktPool.Get().(*[]byte)
+					*b = (*b)[:cap(*b)]
+					batch[count].buf = b
+				}
+				*b = (*b)[:cap(*b)]
+				if n, _ := net.handler.VirtToPhy(ip, *b); n > 0 {
+					batch[count].msg.Buf = (*b)[:n]
+					count++
+				}
+			}
+
+			// Coalesce scheduled frames (ToPhy) onto the same batch.
+			for count < batchpc.MaxBatchSize {
+				b := batch[count].buf
+				if b == nil {
+					b = net.pktPool.Get().(*[]byte)
+					*b = (*b)[:cap(*b)]
+					batch[count].buf = b
+				}
+				*b = (*b)[:cap(*b)]
+				if n := net.handler.ToPhy(*b); n > 0 {
+					batch[count].msg.Buf = (*b)[:n]
+					count++
+				} else {
+					break
+				}
+			}
+
+			if count == 0 {
+				// Nothing to send this cycle.
+				putOwned(batch)
+				continue
+			}
+
+			// Send in one go.
+			msgs := batchMsgs[:count]
+			for i := 0; i < count; i++ {
+				msgs[i] = batch[i].msg
+			}
+			_, err := net.phy.WriteBatchFrames(msgs, 0)
+			putOwned(batch)
+			if err != nil {
+				if errors.Is(err, stdnet.ErrClosed) {
+					return err
+				}
+				slog.Warn("Error writing batched phy frames", slog.Any("error", err))
+				continue
 			}
 		}
 	})
@@ -213,7 +280,11 @@ func (net *ICXNetwork) Start() error {
 			n, err := net.phy.ReadFrame(*phyFrame)
 			if err != nil {
 				net.pktPool.Put(phyFrame)
-				return fmt.Errorf("reading phy frame failed: %w", err)
+				if errors.Is(err, stdnet.ErrClosed) {
+					return err
+				}
+				slog.Warn("Error reading frame from physical interface", slog.Any("error", err))
+				continue
 			}
 			if n == 0 {
 				net.pktPool.Put(phyFrame)
@@ -247,8 +318,8 @@ func (net *ICXNetwork) Start() error {
 				pkb.DecRef()
 			default:
 				// drop silently
-				net.pktPool.Put(virtFrame)
 			}
+			net.pktPool.Put(virtFrame)
 		}
 	})
 
@@ -331,25 +402,4 @@ func (net *ICXNetwork) ForwardTo(ctx context.Context, upstream network.Network) 
 	net.stack.SetTransportProtocolHandler(udp.ProtocolNumber, udpForwarder)
 
 	return nil
-}
-
-func prefixToSubnet(p netip.Prefix) (tcpip.Subnet, error) {
-	addr := tcpip.AddrFromSlice(p.Addr().AsSlice())
-
-	totalBits := 128
-	if p.Addr().Is4() {
-		totalBits = 32
-	}
-	ones := p.Bits()
-	if ones < 0 || ones > totalBits {
-		return tcpip.Subnet{}, fmt.Errorf("invalid prefix length %d", ones)
-	}
-
-	maskBytes := make([]byte, totalBits/8)
-	for i := 0; i < ones; i++ {
-		maskBytes[i/8] |= 1 << (7 - uint(i%8))
-	}
-	mask := tcpip.MaskFromBytes(maskBytes)
-
-	return tcpip.NewSubnet(addr, mask)
 }

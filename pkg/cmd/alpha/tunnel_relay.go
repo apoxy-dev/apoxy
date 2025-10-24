@@ -14,6 +14,7 @@ import (
 
 	"github.com/apoxy-dev/apoxy/pkg/cryptoutils"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel"
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/batchpc"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/bifurcate"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/controllers"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/hasher"
@@ -49,9 +50,14 @@ var tunnelRelayCmd = &cobra.Command{
 		}
 
 		// One UDP socket shared between Geneve (data) and QUIC (control).
-		pc, err := net.ListenPacket("udp", listenAddress)
+		lis, err := net.ListenPacket("udp", listenAddress)
 		if err != nil {
 			return fmt.Errorf("failed to create UDP listener: %w", err)
+		}
+
+		pc, err := batchpc.New("udp", lis)
+		if err != nil {
+			return fmt.Errorf("failed to create batch packet conn: %w", err)
 		}
 
 		pcGeneve, pcQuic := bifurcate.Bifurcate(pc)
