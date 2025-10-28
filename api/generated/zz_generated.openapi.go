@@ -6889,7 +6889,7 @@ func schema_apoxy_api_extensions_v1alpha2_GoPluginSource(ref common.ReferenceCal
 			SchemaProps: spec.SchemaProps{
 				Type: []string{"object"},
 				Properties: map[string]spec.Schema{
-					"url.omitempty": {
+					"url": {
 						SchemaProps: spec.SchemaProps{
 							Description: "URL is the URL to the Go plugin .so",
 							Type:        []string{"string"},

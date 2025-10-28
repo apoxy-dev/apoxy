@@ -126,7 +126,7 @@ type OCIImageRef struct {
 type GoPluginSource struct {
 	// URL is the URL to the Go plugin .so
 	// +optional
-	URL *string `json:"url.omitempty"`
+	URL *string `json:"url,omitempty"`
 
 	// OCI is the OCI image reference to the Go plugin.
 	// +optional
