@@ -42,7 +42,8 @@ type TunnelNodeSpec struct {
 	EgressGateway *EgressGatewaySpec `json:"egressGateway,omitempty"`
 
 	// Specifies the default upstream used when this tunnel is referenced without
-	// an explicit host and port to forward traffic to.
+	// an explicit host and port to forward traffic to. If unspecified, the default
+	// upstream is "127.0.0.1:8080".
 	// +optional
 	DefaultUpstream string `json:"defaultUpstream,omitempty"`
 }
