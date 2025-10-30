@@ -40,6 +40,11 @@ type TunnelNodeSpec struct {
 	// direction of the Agent).
 	// +optional
 	EgressGateway *EgressGatewaySpec `json:"egressGateway,omitempty"`
+
+	// Specifies the default upstream used when this tunnel is referenced without
+	// an explicit host and port to forward traffic to.
+	// +optional
+	DefaultUpstream string `json:"defaultUpstream,omitempty"`
 }
 
 type AgentStatus struct {
