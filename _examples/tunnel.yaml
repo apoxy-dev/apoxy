@@ -1,0 +1,19 @@
+apiVersion: core.apoxy.dev/v1alpha2
+kind: Tunnel
+metadata:
+  name: example
+spec:
+  egressGateway:
+    enabled: true
+---
+apiVersion: core.apoxy.dev/v1alpha2
+kind: TunnelAgent
+metadata:
+  name: example
+spec:
+  tunnelRef:
+    name: example
+status:
+  # So we can test VNI and IPAM allocation.
+  connections:
+    - id: "example-1"
