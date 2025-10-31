@@ -395,10 +395,10 @@ func (net *ICXNetwork) ForwardTo(ctx context.Context, upstream network.Network) 
 		return fmt.Errorf("failed to enable promiscuous mode: %v", tcpipErr)
 	}
 
-	tcpForwarder := TCPForwarder(ctx, net.stack, upstream)
+	tcpForwarder := TCPForwarder(ctx, net.stack, upstream, "")
 	net.stack.SetTransportProtocolHandler(tcp.ProtocolNumber, tcpForwarder)
 
-	udpForwarder := UDPForwarder(ctx, net.stack, upstream)
+	udpForwarder := UDPForwarder(ctx, net.stack, upstream, "")
 	net.stack.SetTransportProtocolHandler(udp.ProtocolNumber, udpForwarder)
 
 	return nil

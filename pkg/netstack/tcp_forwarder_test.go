@@ -50,7 +50,7 @@ func TestTCPForwarder(t *testing.T) {
 	}()
 
 	// Setup the server stack to forward TCP packets to the hosts loopback interface.
-	serverStack.SetTransportProtocolHandler(tcp.ProtocolNumber, netstack.TCPForwarder(ctx, serverStack.Stack, network.Loopback()))
+	serverStack.SetTransportProtocolHandler(tcp.ProtocolNumber, netstack.TCPForwarder(ctx, serverStack.Stack, network.Loopback(), ""))
 
 	// Generate a large blob of random blob to send to the client.
 	blob := make([]byte, 1<<20)
