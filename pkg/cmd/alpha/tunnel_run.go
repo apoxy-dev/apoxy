@@ -37,7 +37,6 @@ const (
 	watchdogInterval   = 5 * time.Second
 )
 
-// Flags / globals
 var (
 	agentName          string // agent identifier
 	tunnelName         string // tunnel identifier
@@ -62,7 +61,6 @@ var tunnelRunCmd = &cobra.Command{
 			return fmt.Errorf("--min-conns must be at least 1")
 		}
 
-		// Shared errgroup + context for background goroutines (router, connection slots, health server).
 		g, ctx := errgroup.WithContext(cmd.Context())
 
 		// Start health endpoint server if configured.
@@ -75,7 +73,6 @@ var tunnelRunCmd = &cobra.Command{
 				Handler: mux,
 			}
 
-			// Serve the health endpoint.
 			g.Go(func() error {
 				slog.Info("Starting health endpoint server", slog.String("address", healthAddr))
 				if err := healthServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -85,7 +82,6 @@ var tunnelRunCmd = &cobra.Command{
 				return nil
 			})
 
-			// Gracefully shut down the health server when the context is done.
 			g.Go(func() error {
 				<-ctx.Done()
 				shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -94,7 +90,6 @@ var tunnelRunCmd = &cobra.Command{
 			})
 		}
 
-		// Build the shared packet plane (UDP socket -> bifurcated GENEVE + QUIC mux).
 		packetPlane, err := newPacketPlane()
 		if err != nil {
 			return err
@@ -109,7 +104,7 @@ var tunnelRunCmd = &cobra.Command{
 			return err
 		}
 
-		// Eagerly initialize and start the router (instead of deferring via a handlerFactory).
+		// Initialize and start the router.
 		r, handler, err := initRouter(
 			ctx,
 			g,
@@ -203,14 +198,12 @@ func newPacketPlane() (*packetPlane, error) {
 	}, nil
 }
 
-// Close shuts down the packetPlane in the correct order.
 func (pp *packetPlane) Close() {
 	for _, c := range pp.closers {
 		c()
 	}
 }
 
-// bootstrapInfo bundles info learned from the seed relay.
 type bootstrapInfo struct {
 	Connect        *api.ConnectResponse
 	RelayAddresses sets.Set[string]
@@ -287,15 +280,14 @@ func bootstrapSession(
 	}, nil
 }
 
-// routerInitOpts carries the static knobs we need to build the router.
 type routerInitOpts struct {
 	pcGeneve        batchpc.BatchPacketConn
 	socksListenAddr string
 	pcapPath        string
 }
 
-// initRouter eagerly creates and starts the ICXNetstackRouter / icx.Handler
-// using the bootstrap ConnectResponse.
+// initRouter creates and starts the ICXNetstackRouter / icx.Handler using the
+// bootstrap response.
 func initRouter(
 	ctx context.Context,
 	g *errgroup.Group,
@@ -365,7 +357,7 @@ func initRouter(
 		}
 	}
 
-	// Start the router in the shared errgroup.
+	// Start the router.
 	g.Go(func() error { return r.Start(ctx) })
 
 	return r, h, nil
@@ -374,8 +366,6 @@ func initRouter(
 // connectAndInitSession dials the relay, runs Connect, and returns the live
 // api.Client, the ConnectResponse, and the handler. It also wires the relay
 // into the handler via AddVirtualNetwork.
-//
-// On error it ensures cleanup.
 func connectAndInitSession(
 	ctx context.Context,
 	pcQuic net.PacketConn,
@@ -698,7 +688,7 @@ func manageKeyRotation(
 				retry.LastErrorOnly(true),
 			)
 			if err != nil {
-				return err // includes context cancellation
+				return err
 			}
 
 			slog.Info("Rotated tunnel keys",
