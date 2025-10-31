@@ -69,8 +69,9 @@ func (r *Relay) Name() string {
 }
 
 // Address is the underlay address of the relay.
-func (r *Relay) Address() string {
-	return r.pc.LocalAddr().String()
+func (r *Relay) Address() netip.AddrPort {
+	ua := r.pc.LocalAddr().(*net.UDPAddr)
+	return netip.AddrPortFrom(netip.MustParseAddr(ua.IP.String()), uint16(ua.Port))
 }
 
 // SetCredentials sets the authentication token used by agents to authenticate with the relay.

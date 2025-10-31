@@ -183,7 +183,7 @@ func TestRelay_InvalidAuthClosesQUIC(t *testing.T) {
 	}
 
 	// Send a request with an invalid token.
-	url := "https://" + r.Address() + "/v1/tunnel/test-tunnel"
+	url := "https://" + r.Address().String() + "/v1/tunnel/test-tunnel"
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader([]byte(`{}`)))
 	require.NoError(t, err)
 	req.Header.Set("Authorization", "Bearer "+badToken)
@@ -207,7 +207,7 @@ func TestRelay_InvalidAuthClosesQUIC(t *testing.T) {
 func clientForRelay(t *testing.T, r *tunnel.Relay, caCert tls.Certificate, token string) *api.Client {
 	t.Helper()
 
-	baseURL := "https://" + r.Address()
+	baseURL := "https://" + r.Address().String()
 	tlsCfg := &tls.Config{
 		RootCAs:    cryptoutils.CertPoolForCertificate(caCert),
 		ServerName: "localhost",
