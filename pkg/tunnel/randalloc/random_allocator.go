@@ -93,6 +93,20 @@ func (ra *RandAllocator[T]) Release(item T) {
 	ra.waitCh = make(chan struct{})
 }
 
+// Replace atomically swaps the candidate item set and wakes all waiters.
+// Any items currently in use may remain absent from the new item set; they
+// simply won't be handed out again once released.
+func (ra *RandAllocator[T]) Replace(vals sets.Set[T]) {
+	ra.mu.Lock()
+	defer ra.mu.Unlock()
+
+	ra.items = vals.UnsortedList()
+
+	// Wake all current waiters so they can observe the new set.
+	close(ra.waitCh)
+	ra.waitCh = make(chan struct{})
+}
+
 // pickFreeLocked picks a currently-free item at random.
 // caller must hold ra.mu.
 func (ra *RandAllocator[T]) pickFreeLocked() (T, bool) {

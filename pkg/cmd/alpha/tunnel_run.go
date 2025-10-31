@@ -120,9 +120,9 @@ var tunnelRunCmd = &cobra.Command{
 		}
 		defer r.Close()
 
-		// Create an allocator that ensures we never connect to the same relay
-		// from multiple slots at once.
-		alloc := randalloc.NewRandAllocator(boot.RelayAddresses)
+		// Create an relay address pool that ensures we never connect to the same
+		// relay from multiple slots at once.
+		relayAddressPool := randalloc.NewRandAllocator(boot.RelayAddresses)
 
 		// Spawn minConns independent connection slots.
 		// Each slot:
@@ -131,7 +131,7 @@ var tunnelRunCmd = &cobra.Command{
 		//   - when the session ends, releases the relay
 		for i := 0; i < minConns; i++ {
 			g.Go(func() error {
-				return manageConnectionSlot(ctx, packetPlane.QuicMux, handler, alloc, tlsConf)
+				return manageConnectionSlot(ctx, packetPlane.QuicMux, handler, relayAddressPool, tlsConf)
 			})
 		}
 
@@ -458,15 +458,13 @@ func closeSession(client *api.Client, connID string) {
 //   - retry Connect() until it succeeds or ctx is canceled
 //   - once connected, run key rotation and watchdog concurrently
 //   - whichever fails first ends the session
-//
-// It also increments/decrements connectionHealthCounter so that /healthz
-// can report whether we currently have any active sessions.
 func manageRelayConnectionOnce(
 	ctx context.Context,
 	pcQuic net.PacketConn,
 	handler *icx.Handler,
 	relayAddr string,
 	tlsConf *tls.Config,
+	onConnected func(*api.ConnectResponse),
 ) error {
 	var (
 		currentClient *api.Client
@@ -493,6 +491,12 @@ func manageRelayConnectionOnce(
 			currentClient = c
 			currentConnID = cr.ID
 			connectResp = cr
+
+			// Publish latest info to the caller (e.g., update relay pool).
+			if onConnected != nil {
+				onConnected(cr)
+			}
+
 			return nil
 		},
 		retry.Context(ctx),
@@ -560,10 +564,10 @@ func manageRelayConnectionOnce(
 // manageConnectionSlot owns one "connection slot" that we promised to keep
 // active. It repeatedly:
 //
-//   - asks the allocator for an exclusive relay address
+//   - asks the relay address pool for an exclusive relay address
 //   - opens a PacketConn to that relay
 //   - runs manageRelayConnectionOnce
-//   - when that session ends, releases the relay back to the allocator
+//   - when that session ends, releases the relay back to the pool
 //
 // If minConns > number of relays, extra goroutines will block in Acquire()
 // until another slot releases a relay. This enforces "no two sessions to the
@@ -572,13 +576,13 @@ func manageConnectionSlot(
 	ctx context.Context,
 	pcQuicMux *conntrackpc.ConntrackPacketConn,
 	handler *icx.Handler,
-	alloc *randalloc.RandAllocator[string],
+	relayAddressPool *randalloc.RandAllocator[string],
 	tlsConf *tls.Config,
 ) error {
 	for {
 		// Block here until we get exclusive rights to a relay,
 		// or until ctx is canceled.
-		relayAddr, err := alloc.Acquire(ctx)
+		relayAddr, err := relayAddressPool.Acquire(ctx)
 		if err != nil {
 			return err // ctx canceled, etc.
 		}
@@ -613,8 +617,33 @@ func manageConnectionSlot(
 			// Make sure we close the PacketConn when the session ends.
 			defer pcQuic.Close()
 
+			// Updater that refreshes the allocator from the server's latest view.
+			onConnected := func(cr *api.ConnectResponse) {
+				if cr == nil {
+					return
+				}
+				newSet := sets.New[string]()
+				for _, a := range cr.RelayAddresses {
+					a = strings.TrimSpace(a)
+					if a != "" {
+						newSet.Insert(a)
+					}
+				}
+				// Ensure the currently-connected relay remains in the pool so
+				// running sessions aren't stranded. It won't be handed out to
+				// another slot until we Release() this one anyway.
+				if relayAddr != "" {
+					newSet.Insert(strings.TrimSpace(relayAddr))
+				}
+
+				relayAddressPool.Replace(newSet)
+
+				slog.Info("Updated relay address pool from connect response",
+					slog.Int("count", newSet.Len()))
+			}
+
 			// Run the actual session lifecycle (watchdog, key rotation, etc).
-			sessErr := manageRelayConnectionOnce(ctx, pcQuic, handler, relayAddr, tlsConf)
+			sessErr := manageRelayConnectionOnce(ctx, pcQuic, handler, relayAddr, tlsConf, onConnected)
 
 			if ctx.Err() != nil {
 				return ctx.Err()
@@ -629,7 +658,7 @@ func manageConnectionSlot(
 		}()
 
 		// Release the relay for other slots before the next loop iteration.
-		alloc.Release(relayAddr)
+		relayAddressPool.Release(relayAddr)
 
 		if err != nil {
 			return err

@@ -201,3 +201,117 @@ func TestReleaseBroadcastsEvenIfNotInUse(t *testing.T) {
 		t.Fatalf("waiter did not wake after Release broadcasts")
 	}
 }
+
+func TestReplaceWakesWaitersAndUsesNewSet(t *testing.T) {
+	ra := newAllocator("old")
+
+	// Take the only old item so future Acquire blocks.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	gotOld, err := ra.Acquire(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, "old", gotOld)
+
+	// Start a waiter that will block until Replace or Release happens.
+	gotCh := make(chan string)
+	errCh := make(chan error)
+	go func() {
+		ctxW, cancelW := context.WithTimeout(context.Background(), time.Second)
+		defer cancelW()
+		addr, err := ra.Acquire(ctxW)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		gotCh <- addr
+	}()
+
+	// Replace the set while "old" is still in use.
+	ra.Replace(sets.New[string]("new1", "new2"))
+
+	// The waiter should wake and get one of the *new* items.
+	select {
+	case got := <-gotCh:
+		assert.Contains(t, []string{"new1", "new2"}, got, "waiter should receive an item from the NEW set after Replace()")
+	case err := <-errCh:
+		t.Fatalf("waiter got unexpected error: %v", err)
+	case <-time.After(time.Second):
+		t.Fatalf("waiter did not wake after Replace() broadcast")
+	}
+}
+
+func TestReplaceRemovesOldItemsOnceReleased(t *testing.T) {
+	ra := newAllocator("keep", "drop")
+
+	// Acquire both items so allocator marks them in use.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	a1, err := ra.Acquire(ctx)
+	require.NoError(t, err)
+	a2, err := ra.Acquire(ctx)
+	require.NoError(t, err)
+	got := sets.New[string](a1, a2)
+	require.True(t, got.Has("keep") && got.Has("drop"), "sanity: acquired both keep and drop")
+
+	// Replace the item set: keep "keep", drop "drop", add "new".
+	ra.Replace(sets.New[string]("keep", "new"))
+
+	// Release both old items.
+	ra.Release("drop")
+	ra.Release("keep")
+
+	// Now future acquires should *never* return "drop".
+	ctx2, cancel2 := context.WithTimeout(context.Background(), time.Second)
+	defer cancel2()
+
+	seen := sets.New[string]()
+	for i := 0; i < 2; i++ {
+		addr, err := ra.Acquire(ctx2)
+		require.NoError(t, err)
+		seen.Insert(addr)
+	}
+
+	// We only expect {"keep","new"} to be available.
+	assert.False(t, seen.Has("drop"), `"drop" should not be reissued after being removed by Replace`)
+	assert.Equal(t, sets.New[string]("keep", "new"), seen, "post-Replace pool should be exactly keep+new")
+}
+
+func TestReplaceSubsetAndReacquireBehavior(t *testing.T) {
+	ra := newAllocator("a", "b", "c")
+
+	// Acquire two so they're marked in-use.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	first, err := ra.Acquire(ctx)
+	require.NoError(t, err)
+	second, err := ra.Acquire(ctx)
+	require.NoError(t, err)
+
+	inUse := sets.New[string](first, second)
+	require.Len(t, inUse, 2)
+
+	// Replace with a subset that keeps only "b" plus add "d".
+	ra.Replace(sets.New[string]("b", "d"))
+
+	// Release both in-use items; only "b" should be eligible again (if it was one of the in-use),
+	// and "d" should be available. Any item not in the new set (like "a" or "c") must not reappear.
+	for _, it := range inUse.UnsortedList() {
+		ra.Release(it)
+	}
+
+	// Collect the next two acquires.
+	ctx2, cancel2 := context.WithTimeout(context.Background(), time.Second)
+	defer cancel2()
+
+	got := sets.New[string]()
+	for i := 0; i < 2; i++ {
+		addr, err := ra.Acquire(ctx2)
+		require.NoError(t, err)
+		got.Insert(addr)
+	}
+
+	// Expect only from {"b","d"}; never "a" or "c".
+	assert.Subset(t, []string{"b", "d"}, got.UnsortedList(), "acquires should come from the new set only")
+	assert.False(t, got.Has("a"), `"a" was removed by Replace and should not be returned`)
+	assert.False(t, got.Has("c"), `"c" was removed by Replace and should not be returned`)
+}
