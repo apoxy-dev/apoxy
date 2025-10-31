@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/netip"
@@ -19,15 +20,17 @@ import (
 	"github.com/dpeckett/network"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/client-go/tools/clientcmd"
 
+	"github.com/apoxy-dev/apoxy/client/versioned"
 	"github.com/apoxy-dev/apoxy/pkg/netstack"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/api"
-	"github.com/apoxy-dev/apoxy/pkg/tunnel/randalloc"
-
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/batchpc"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/bifurcate"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/conntrackpc"
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/randalloc"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/router"
 )
 
@@ -59,6 +62,40 @@ var tunnelRunCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if minConns < 1 {
 			return fmt.Errorf("--min-conns must be at least 1")
+		}
+
+		// Attempt kubernetes-based discovery if no relayAddr/token provided.
+		if seedRelayAddr == "" || token == "" {
+			clientConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
+				clientcmd.NewDefaultClientConfigLoadingRules(),
+				&clientcmd.ConfigOverrides{},
+			)
+
+			config, err := clientConfig.ClientConfig()
+			if err != nil {
+				return fmt.Errorf("loading kubeconfig: %w", err)
+			}
+
+			clientset, err := versioned.NewForConfig(config)
+			if err != nil {
+				return fmt.Errorf("creating clientset: %w", err)
+			}
+
+			tunnel, err := clientset.CoreV1alpha2().Tunnels().Get(cmd.Context(), tunnelName, metav1.GetOptions{})
+			if err != nil {
+				return fmt.Errorf("fetching Tunnel %q: %w", tunnelName, err)
+			}
+
+			if len(tunnel.Status.Addresses) == 0 {
+				return fmt.Errorf("tunnel %q has no relay addresses configured", tunnelName)
+			}
+
+			if tunnel.Status.Credentials == nil {
+				return fmt.Errorf("tunnel %q has no credentials configured", tunnelName)
+			}
+
+			seedRelayAddr = tunnel.Status.Addresses[rand.IntN(len(tunnel.Status.Addresses))]
+			token = tunnel.Status.Credentials.Token
 		}
 
 		g, ctx := errgroup.WithContext(cmd.Context())
@@ -142,9 +179,9 @@ var tunnelRunCmd = &cobra.Command{
 func init() {
 	tunnelRunCmd.Flags().StringVarP(&agentName, "agent", "a", "", "The name of this agent.")
 	tunnelRunCmd.Flags().StringVarP(&tunnelName, "name", "n", "", "The logical name of the tunnel to connect to.")
-	tunnelRunCmd.Flags().StringVarP(&seedRelayAddr, "relay-addr", "r", "", "Seed relay address (host:port). The client bootstraps here, then uses the returned relay list.")
+	tunnelRunCmd.Flags().StringVarP(&seedRelayAddr, "relay-addr", "r", "", "Seed relay address (host:port), required if not using kubernetes-based discovery.")
 	tunnelRunCmd.Flags().IntVar(&minConns, "min-conns", 1, "Minimum number of relays to maintain connections to (randomly selected from the server-provided list).")
-	tunnelRunCmd.Flags().StringVarP(&token, "token", "k", "", "The token to use for authenticating with the tunnel relays.")
+	tunnelRunCmd.Flags().StringVarP(&token, "token", "k", "", "The token to use for authenticating with the tunnel relays, required if not using kubernetes-based discovery.")
 	tunnelRunCmd.Flags().BoolVar(&insecureSkipVerify, "insecure-skip-verify", false, "Skip TLS certificate verification for relay connections.")
 	tunnelRunCmd.Flags().StringVarP(&pcapPath, "pcap", "p", "", "Path to an optional packet capture file to write.")
 	tunnelRunCmd.Flags().StringVar(&socksListenAddr, "socks-addr", "localhost:1080", "Listen address for SOCKS proxy.")
@@ -152,8 +189,6 @@ func init() {
 
 	cobra.CheckErr(tunnelRunCmd.MarkFlagRequired("agent"))
 	cobra.CheckErr(tunnelRunCmd.MarkFlagRequired("name"))
-	cobra.CheckErr(tunnelRunCmd.MarkFlagRequired("relay-addr"))
-	cobra.CheckErr(tunnelRunCmd.MarkFlagRequired("token"))
 
 	tunnelCmd.AddCommand(tunnelRunCmd)
 }
