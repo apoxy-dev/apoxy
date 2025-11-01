@@ -43,7 +43,7 @@ func (r *TunnelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, err
 	}
 
-	// Handle deletion with manual "reaper" semantics: foreground-like delete of controller-owned children.
+	// Handle deletion.
 	if !tunnel.DeletionTimestamp.IsZero() {
 		log.Info("Handling deletion of Tunnel")
 
