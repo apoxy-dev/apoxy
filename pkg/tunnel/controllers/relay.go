@@ -18,7 +18,7 @@ type Relay interface {
 	// SetEgressGateway enables or disables internet egress for the tunnel agents.
 	SetEgressGateway(enabled bool)
 	// SetOnConnect sets a callback that is invoked when a new connection is established to the relay.
-	SetOnConnect(onConnect func(ctx context.Context, agentName string, conn Connection) error)
+	SetOnConnect(onConnect func(ctx context.Context, tunnelName, agentName string, conn Connection) error)
 	// SetOnDisconnect sets a callback that is invoked when a connection is closed.
 	SetOnDisconnect(onDisconnect func(ctx context.Context, agentName, id string) error)
 }

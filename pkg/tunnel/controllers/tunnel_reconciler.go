@@ -11,6 +11,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	controllerlog "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -32,6 +33,10 @@ func NewTunnelReconciler(c client.Client, relay Relay, labelSelector string) *Tu
 }
 
 func (r *TunnelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	log := controllerlog.FromContext(ctx, "name", req.Name)
+
+	log.Info("Reconciling Tunnel")
+
 	var tunnel corev1alpha2.Tunnel
 	if err := r.client.Get(ctx, req.NamespacedName, &tunnel); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -43,10 +48,13 @@ func (r *TunnelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 	// Update relay credentials if they have changed.
 	if tunnel.Status.Credentials != nil {
+		log.Info("Updating credentials for tunnel")
+
 		r.relay.SetCredentials(tunnel.Name, tunnel.Status.Credentials.Token)
 	}
 
 	// Update relay addresses if they have changed.
+	log.Info("Updating relay addresses for tunnel")
 	r.relay.SetRelayAddresses(tunnel.Name, tunnel.Status.Addresses)
 
 	// Update egress gateway setting
@@ -91,6 +99,6 @@ func (r *TunnelReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&corev1alpha2.Tunnel{}, builder.WithPredicates(predicate.GenerationChangedPredicate{}, ls)).
+		For(&corev1alpha2.Tunnel{}, builder.WithPredicates(&predicate.ResourceVersionChangedPredicate{}, ls)).
 		Complete(r)
 }

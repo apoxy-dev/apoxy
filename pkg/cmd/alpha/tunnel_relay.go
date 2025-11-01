@@ -8,12 +8,10 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"net/netip"
 	"os"
 	goruntime "runtime"
 	"time"
 
-	"github.com/alphadose/haxmap"
 	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
@@ -34,15 +32,12 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/bifurcate"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/controllers"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/hasher"
-	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/router"
-	"github.com/apoxy-dev/apoxy/pkg/tunnel/vni"
 )
 
 var (
-	relayDevMode         bool   // whether to run in development mode
+	relayDevMode         bool   // whether to run in development mode (testing only)
 	relayName            string // the name for the relay
-	relayTunnel          string // the name of the tunnel to serve
 	extIfaceName         string // the external interface name
 	listenAddress        string // the address to listen on for incoming connections
 	userMode             bool   // whether to use user-mode routing (no special privileges required)
@@ -111,6 +106,7 @@ var tunnelRelayCmd = &cobra.Command{
 			cert     tls.Certificate
 		)
 
+		// Use a self-signed cert and a fixed hasher secret in dev mode.
 		if relayDevMode {
 			idHasher = hasher.NewHasher([]byte("C0rr3ct-Horse-Battery-Staple_But_Salty_1x9Q7p3Z"))
 
@@ -144,72 +140,57 @@ var tunnelRelayCmd = &cobra.Command{
 
 		g, ctx := errgroup.WithContext(cmd.Context())
 
-		if relayDevMode {
-			if err := devController(ctx, relay); err != nil {
-				return fmt.Errorf("failed to configure dev controller: %w", err)
-			}
-		} else {
-			slog.Info("Relay running in production mode",
-				slog.String("tunnelName", relayTunnel),
-				slog.String("listenAddress", listenAddress),
-				slog.String("externalInterface", extIfaceName),
-				slog.String("metricsAddr", relayMetricsAddr),
-				slog.String("healthProbeAddr", relayHealthAddr),
-				slog.String("labelSelector", labelSelector),
-			)
+		clientConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
+			clientcmd.NewDefaultClientConfigLoadingRules(),
+			&clientcmd.ConfigOverrides{},
+		)
 
-			clientConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
-				clientcmd.NewDefaultClientConfigLoadingRules(),
-				&clientcmd.ConfigOverrides{},
-			)
-
-			config, err := clientConfig.ClientConfig()
-			if err != nil {
-				return fmt.Errorf("loading kubeconfig: %w", err)
-			}
-
-			scheme := runtime.NewScheme()
-			if err := corev1alpha2.Install(scheme); err != nil {
-				return fmt.Errorf("installing corev1alpha2 scheme: %w", err)
-			}
-
-			ctrl.SetLogger(logr.FromSlogHandler(slog.Default().Handler()))
-
-			mgr, err := ctrl.NewManager(config, ctrl.Options{
-				Cache: cache.Options{
-					SyncPeriod: ptr.To(30 * time.Second),
-				},
-				Scheme:                 scheme,
-				LeaderElection:         false,
-				Metrics:                metricsserver.Options{BindAddress: relayMetricsAddr},
-				HealthProbeBindAddress: relayHealthAddr,
-			})
-			if err != nil {
-				return fmt.Errorf("unable to start manager: %w", err)
-			}
-
-			if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
-				return fmt.Errorf("failed to add healthz check: %w", err)
-			}
-
-			if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
-				return fmt.Errorf("failed to add readyz check: %w", err)
-			}
-
-			tunnelReconciler := controllers.NewTunnelReconciler(mgr.GetClient(), relay, labelSelector)
-			if err := tunnelReconciler.SetupWithManager(mgr); err != nil {
-				return fmt.Errorf("failed to setup tunnel reconciler: %w", err)
-			}
-
-			tunnelAgentReconciler := controllers.NewTunnelAgentReconciler(mgr.GetClient(), relay, labelSelector)
-			if err := tunnelAgentReconciler.SetupWithManager(mgr); err != nil {
-				return fmt.Errorf("failed to setup tunnel agent reconciler: %w", err)
-			}
-
-			g.Go(func() error {
-				return mgr.Start(ctx)
-			})
+		config, err := clientConfig.ClientConfig()
+		if err != nil {
+			return fmt.Errorf("loading kubeconfig: %w", err)
 		}
+
+		scheme := runtime.NewScheme()
+		if err := corev1alpha2.Install(scheme); err != nil {
+			return fmt.Errorf("installing corev1alpha2 scheme: %w", err)
+		}
+
+		ctrl.SetLogger(logr.FromSlogHandler(slog.Default().Handler()))
+
+		mgr, err := ctrl.NewManager(config, ctrl.Options{
+			Cache: cache.Options{
+				SyncPeriod: ptr.To(30 * time.Second),
+			},
+			Scheme:                 scheme,
+			LeaderElection:         false,
+			Metrics:                metricsserver.Options{BindAddress: relayMetricsAddr},
+			HealthProbeBindAddress: relayHealthAddr,
+		})
+		if err != nil {
+			return fmt.Errorf("unable to start manager: %w", err)
+		}
+
+		if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
+			return fmt.Errorf("failed to add healthz check: %w", err)
+		}
+
+		if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
+			return fmt.Errorf("failed to add readyz check: %w", err)
+		}
+
+		tunnelReconciler := controllers.NewTunnelReconciler(mgr.GetClient(), relay, labelSelector)
+		if err := tunnelReconciler.SetupWithManager(mgr); err != nil {
+			return fmt.Errorf("failed to setup tunnel reconciler: %w", err)
+		}
+
+		tunnelAgentReconciler := controllers.NewTunnelAgentReconciler(mgr.GetClient(), relay, labelSelector)
+		if err := tunnelAgentReconciler.SetupWithManager(mgr); err != nil {
+			return fmt.Errorf("failed to setup tunnel agent reconciler: %w", err)
+		}
+
+		g.Go(func() error {
+			return mgr.Start(ctx)
+		})
 
 		g.Go(func() error {
 			return relay.Start(ctx)
@@ -225,8 +206,7 @@ var tunnelRelayCmd = &cobra.Command{
 
 func init() {
 	tunnelRelayCmd.Flags().StringVarP(&relayName, "name", "n", "dev", "The name of the relay.")
-	tunnelRelayCmd.Flags().BoolVar(&relayDevMode, "dev", false, "Run the relay in development mode.")
-	tunnelRelayCmd.Flags().StringVarP(&relayTunnel, "tunnel-name", "t", "dev", "The name of the tunnel to serve (when running in development mode).")
+	tunnelRelayCmd.Flags().BoolVar(&relayDevMode, "dev", false, "Run the relay in development mode (insecure).")
 	tunnelRelayCmd.Flags().StringVar(&extIfaceName, "ext-iface", "eth0", "External interface name (when not using --user-mode).")
 	tunnelRelayCmd.Flags().StringVar(&listenAddress, "listen-addr", "127.0.0.1:6081", "The address to listen on for incoming connections.")
 	tunnelRelayCmd.Flags().BoolVar(&userMode, "user-mode", goruntime.GOOS != "linux", "Use user-mode routing (no special privileges required).")
@@ -240,88 +220,4 @@ func init() {
 	tunnelRelayCmd.Flags().StringVar(&labelSelector, "label-selector", "", "Label selector to filter Tunnel and TunnelAgent objects (e.g. 'app=apoxy').")
 
 	tunnelCmd.AddCommand(tunnelRelayCmd)
-}
-
-// A dummy controller for development.
-func devController(ctx context.Context, relay *tunnel.Relay) error {
-	slog.Info("Configuring dev relay",
-		slog.String("tunnelName", relayTunnel),
-		slog.String("listenAddress", listenAddress),
-		slog.String("externalInterface", extIfaceName),
-	)
-
-	relay.SetCredentials(relayTunnel, "letmein")
-	relay.SetRelayAddresses(relayTunnel, []string{listenAddress})
-	relay.SetEgressGateway(true)
-
-	systemULA := tunnet.NewULA(ctx, tunnet.SystemNetworkID)
-	agentIPAM, err := systemULA.IPAM(ctx, 96)
-	if err != nil {
-		return fmt.Errorf("failed to create system ULA IPAM: %w", err)
-	}
-
-	vpool := vni.NewVNIPool()
-
-	type connectionMetadata struct {
-		prefix netip.Prefix
-		vni    uint
-	}
-	connections := haxmap.New[string, connectionMetadata]()
-
-	relay.SetOnConnect(func(_ context.Context, agentName string, conn controllers.Connection) error {
-		slog.Info("Connected", slog.String("agent", agentName), slog.String("connID", conn.ID()))
-
-		pfx, err := agentIPAM.Allocate()
-		if err != nil {
-			return fmt.Errorf("failed to allocate prefix: %w", err)
-		}
-
-		slog.Info("Allocated prefix for connection",
-			slog.String("agent", agentName), slog.String("connID", conn.ID()),
-			slog.String("prefix", pfx.String()))
-
-		if err := conn.SetOverlayAddress(pfx.String()); err != nil {
-			agentIPAM.Release(pfx)
-			return fmt.Errorf("failed to set overlay address on connection: %w", err)
-		}
-
-		vni, err := vpool.Allocate()
-		if err != nil {
-			return fmt.Errorf("failed to allocate VNI: %w", err)
-		}
-
-		slog.Info("Allocated VNI for connection",
-			slog.String("agent", agentName), slog.String("connID", conn.ID()),
-			slog.Int("vni", int(vni)))
-
-		if err := conn.SetVNI(ctx, vni); err != nil {
-			return fmt.Errorf("failed to set VNI on connection: %w", err)
-		}
-
-		connections.Set(conn.ID(), connectionMetadata{prefix: pfx, vni: vni})
-
-		return nil
-	})
-
-	relay.SetOnDisconnect(func(_ context.Context, agentName, id string) error {
-		if cm, ok := connections.Get(id); ok {
-			if err := agentIPAM.Release(cm.prefix); err != nil {
-				slog.Error("Failed to release prefix", slog.Any("error", err),
-					slog.String("agent", agentName), slog.String("connID", id),
-					slog.String("prefix", cm.prefix.String()))
-			}
-
-			vpool.Release(cm.vni)
-
-			connections.Del(id)
-
-			slog.Info("Disconnected", slog.String("agent", agentName), slog.String("connID", id))
-		} else {
-			return fmt.Errorf("unknown connection ID: %s", id)
-		}
-
-		return nil
-	})
-
-	return nil
 }

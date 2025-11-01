@@ -30,7 +30,9 @@ import (
 )
 
 const (
-	keyLifespan = 24 * time.Hour
+	keyLifespan     = 24 * time.Hour
+	gcMaxSilence    = 120 * time.Second
+	gcCheckInterval = 5 * time.Second
 )
 
 type Relay struct {
@@ -45,7 +47,8 @@ type Relay struct {
 	tokens        *haxmap.Map[string, string]      // map[tunnelName]token
 	relayAddrs    *haxmap.Map[string, []string]    // map[tunnelName][]string
 	conns         *haxmap.Map[string, *connection] // map[connectionID]Connection
-	onConnect     func(ctx context.Context, agentName string, conn controllers.Connection) error
+	agents        *haxmap.Map[string, string]      // map[connectionID]agentName
+	onConnect     func(ctx context.Context, tunnelName, agentName string, conn controllers.Connection) error
 	onDisconnect  func(ctx context.Context, agentName, id string) error
 }
 
@@ -60,6 +63,7 @@ func NewRelay(name string, pc net.PacketConn, cert tls.Certificate, handler *icx
 		tokens:     haxmap.New[string, string](),
 		relayAddrs: haxmap.New[string, []string](),
 		conns:      haxmap.New[string, *connection](),
+		agents:     haxmap.New[string, string](),
 	}
 }
 
@@ -93,7 +97,7 @@ func (r *Relay) SetEgressGateway(enabled bool) {
 }
 
 // SetOnConnect sets a callback that is invoked when a new connection is established to the relay.
-func (r *Relay) SetOnConnect(onConnect func(ctx context.Context, agentName string, conn controllers.Connection) error) {
+func (r *Relay) SetOnConnect(onConnect func(ctx context.Context, tunnelName, agentName string, conn controllers.Connection) error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -131,6 +135,16 @@ func (r *Relay) Start(ctx context.Context) error {
 
 	g, ctx := errgroup.WithContext(ctx)
 
+	// Start the router to handle network traffic.
+	g.Go(func() error {
+		return r.router.Start(ctx)
+	})
+
+	// Start the garbage collector.
+	g.Go(func() error {
+		return r.startGC(ctx, gcMaxSilence, gcCheckInterval)
+	})
+
 	g.Go(func() error {
 		<-ctx.Done()
 
@@ -152,11 +166,6 @@ func (r *Relay) Start(ctx context.Context) error {
 		return srv.Close()
 	})
 
-	// Start the router to handle network traffic.
-	g.Go(func() error {
-		return r.router.Start(ctx)
-	})
-
 	g.Go(func() error {
 		slog.Info("Starting relay", slog.String("addr", ln.Addr().String()))
 		if err := srv.ServeListener(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -165,7 +174,11 @@ func (r *Relay) Start(ctx context.Context) error {
 		return nil
 	})
 
-	return g.Wait()
+	if err := g.Wait(); err != nil && !errors.Is(err, context.Canceled) {
+		return err
+	}
+
+	return nil
 }
 
 func (r *Relay) handleConnect(w http.ResponseWriter, req *http.Request, ps httprouter.Params) {
@@ -203,12 +216,14 @@ func (r *Relay) handleConnect(w http.ResponseWriter, req *http.Request, ps httpr
 	}
 
 	r.conns.Set(conn.ID(), conn)
+	r.agents.Set(conn.ID(), request.Agent)
 
 	r.mu.Lock()
 	onConnect := r.onConnect
 	r.mu.Unlock()
 
-	if err := onConnect(req.Context(), request.Agent, conn); err != nil {
+	tunnelName := ps.ByName("name")
+	if err := onConnect(req.Context(), tunnelName, request.Agent, conn); err != nil {
 		slog.Error("onConnect callback failed", slog.Any("error", err))
 		http.Error(w, "Failed to handle connection", http.StatusInternalServerError)
 		return
@@ -266,13 +281,11 @@ func (r *Relay) handleConnect(w http.ResponseWriter, req *http.Request, ps httpr
 		}
 	}
 	if r.egressGateway {
-		// Default route for all traffic.
 		routes = append(routes,
 			api.Route{Destination: "0.0.0.0/0"},
 			api.Route{Destination: "::/0"})
 	}
 
-	tunnelName := ps.ByName("name")
 	relayAddrs, _ := r.relayAddrs.Get(tunnelName)
 
 	resp := api.ConnectResponse{
@@ -311,6 +324,7 @@ func (r *Relay) handleDisconnect(w http.ResponseWriter, req *http.Request, ps ht
 		http.Error(w, "Connection not found", http.StatusNotFound)
 		return
 	}
+	r.agents.Del(request.ID)
 
 	if err := conn.Close(); err != nil {
 		slog.Warn("Failed to close connection", slog.Any("error", err))
@@ -410,7 +424,6 @@ func (r *Relay) withAuth(next httprouter.Handle) httprouter.Handle {
 		}
 
 		if storedToken, ok := r.tokens.Get(tunnelName); !ok || storedToken != tokenStr {
-			slog.Warn("Invalid token for tunnel", slog.String("tunnel", tunnelName))
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			r.closeConn(w, http3.ErrCodeRequestRejected, "unauthorized")
 			return
@@ -430,6 +443,70 @@ func (r *Relay) closeConn(w http.ResponseWriter, code http3.ErrCode, msg string)
 
 	h3c := hij.Connection()
 	_ = h3c.CloseWithError(quic.ApplicationErrorCode(code), msg)
+}
+
+func (r *Relay) startGC(ctx context.Context, maxSilence, checkInterval time.Duration) error {
+	ticker := time.NewTicker(checkInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			now := time.Now()
+			r.conns.ForEach(func(id string, conn *connection) bool {
+				vni := conn.VNI()
+				if vni == nil {
+					return true
+				}
+
+				vnet, ok := r.handler.GetVirtualNetwork(*vni)
+				if !ok {
+					return true
+				}
+
+				lastRxNs := vnet.Stats.LastRXUnixNano.Load()
+				lastRx := now
+				if lastRxNs != 0 {
+					lastRx = time.Unix(0, lastRxNs)
+				}
+
+				if since := now.Sub(lastRx); since > maxSilence {
+					// Connection has been silent for too long — clean it up.
+					if _, ok := r.conns.GetAndDel(id); ok {
+						agentName, _ := r.agents.Get(id)
+						r.agents.Del(id)
+
+						slog.Warn("GC: dropping idle connection",
+							slog.String("id", id),
+							slog.Duration("silence", since),
+							slog.Duration("maxSilence", maxSilence),
+						)
+
+						if err := conn.Close(); err != nil {
+							slog.Warn("GC: failed to close connection",
+								slog.String("id", id),
+								slog.Any("error", err))
+						}
+
+						r.mu.Lock()
+						onDisconnect := r.onDisconnect
+						r.mu.Unlock()
+						if onDisconnect != nil {
+							if err := onDisconnect(ctx, agentName, id); err != nil {
+								slog.Warn("GC: onDisconnect callback failed",
+									slog.String("id", id),
+									slog.String("agent", agentName),
+									slog.Any("error", err))
+							}
+						}
+					}
+				}
+				return true
+			})
+		}
+	}
 }
 
 func randomKey() (api.Key, error) {

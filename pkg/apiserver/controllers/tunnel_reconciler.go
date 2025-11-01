@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"io"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -39,13 +40,49 @@ func (r *TunnelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, nil
 		}
-
 		return ctrl.Result{}, err
 	}
 
-	// handle deletion
+	// Handle deletion with manual "reaper" semantics: foreground-like delete of controller-owned children.
 	if !tunnel.DeletionTimestamp.IsZero() {
+		log.Info("Handling deletion of Tunnel")
+
 		if controllerutil.ContainsFinalizer(&tunnel, ApiServerFinalizer) {
+			// Manually implement garbage collection of controller-owned TunnelAgents.
+			// This is due to us not using the built in gc controller from k8s.io/controller-manager.
+
+			// List controller-owned TunnelAgents by indexed controller owner UID.
+			var agents corev1alpha2.TunnelAgentList
+			if err := r.client.List(
+				ctx,
+				&agents,
+				client.MatchingFields{".metadata.controllerOwnerUID": string(tunnel.GetUID())},
+			); err != nil {
+				return ctrl.Result{}, err
+			}
+
+			// Kick off deletion for any children that still exist.
+			stillPresent := false
+			for i := range agents.Items {
+				a := &agents.Items[i]
+				stillPresent = true
+				if a.DeletionTimestamp.IsZero() {
+					if err := r.client.Delete(ctx, a); err != nil && !apierrors.IsNotFound(err) {
+						return ctrl.Result{}, err
+					}
+				}
+			}
+
+			// If any child remains (possibly terminating due to its own finalizers),
+			// requeue and keep the parent's finalizer to emulate foreground deletion.
+			if stillPresent {
+				log.Info("Waiting for controller-owned TunnelAgents to terminate", "remaining", len(agents.Items))
+				return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+			}
+
+			// No children remain → remove the parent's finalizer.
+			log.Info("All controller-owned TunnelAgents gone; removing Tunnel finalizer")
+
 			// Remove finalizer
 			controllerutil.RemoveFinalizer(&tunnel, ApiServerFinalizer)
 			if err := r.client.Update(ctx, &tunnel); err != nil {
@@ -56,7 +93,7 @@ func (r *TunnelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, nil
 	}
 
-	// ensure finalizer
+	// Ensure finalizer.
 	if !controllerutil.ContainsFinalizer(&tunnel, ApiServerFinalizer) {
 		controllerutil.AddFinalizer(&tunnel, ApiServerFinalizer)
 		if err := r.client.Update(ctx, &tunnel); err != nil {
@@ -64,7 +101,7 @@ func (r *TunnelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		}
 	}
 
-	// ensure bearer token
+	// Ensure bearer token in status.
 	if tunnel.Status.Credentials == nil || tunnel.Status.Credentials.Token == "" {
 		log.Info("Generating new bearer token for Tunnel")
 
@@ -88,7 +125,7 @@ func (r *TunnelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 func (r *TunnelReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&corev1alpha2.Tunnel{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		For(&corev1alpha2.Tunnel{}, builder.WithPredicates(&predicate.ResourceVersionChangedPredicate{})).
 		Complete(r)
 }
 

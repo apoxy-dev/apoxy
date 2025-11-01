@@ -168,7 +168,7 @@ var tunnelRunCmd = &cobra.Command{
 		//   - when the session ends, releases the relay
 		for i := 0; i < minConns; i++ {
 			g.Go(func() error {
-				return manageConnectionSlot(ctx, packetPlane.QuicMux, handler, relayAddressPool, tlsConf)
+				return manageConnectionSlot(ctx, packetPlane.QuicMux, handler, r, relayAddressPool, tlsConf)
 			})
 		}
 
@@ -355,25 +355,6 @@ func initRouter(
 
 	h := r.Handler
 
-	// Add assigned addresses.
-	for _, addrStr := range connectResp.Addresses {
-		slog.Info("Adding address", slog.String("address", addrStr))
-
-		addr, err := netip.ParsePrefix(addrStr)
-		if err != nil {
-			slog.Warn("Failed to parse address",
-				slog.String("address", addrStr),
-				slog.Any("error", err))
-			continue
-		}
-
-		if err := r.AddAddr(addr, nil); err != nil {
-			slog.Warn("Failed to add address",
-				slog.String("address", addrStr),
-				slog.Any("error", err))
-		}
-	}
-
 	// Add routes.
 	for _, rt := range connectResp.Routes {
 		slog.Info("Adding route", slog.String("destination", rt.Destination))
@@ -497,6 +478,7 @@ func manageRelayConnectionOnce(
 	ctx context.Context,
 	pcQuic net.PacketConn,
 	handler *icx.Handler,
+	r *router.ICXNetstackRouter,
 	relayAddr string,
 	tlsConf *tls.Config,
 	onConnected func(*api.ConnectResponse),
@@ -505,11 +487,22 @@ func manageRelayConnectionOnce(
 		currentClient *api.Client
 		currentConnID string
 		connectResp   *api.ConnectResponse
+		sessionAddrs  []netip.Prefix
 	)
 
 	// When this function returns, that relay session is down, so decrement
 	// if we had actually marked it active.
 	defer func() {
+		// Remove any addrs we attached for this session.
+		for _, a := range sessionAddrs {
+			if err := r.DelAddr(a); err != nil {
+				slog.Warn("Failed to remove address on disconnect",
+					slog.String("address", a.String()),
+					slog.Any("error", err))
+			} else {
+				slog.Info("Removed address", slog.String("address", a.String()))
+			}
+		}
 		if currentConnID != "" {
 			connectionHealthCounter.Add(-1)
 		}
@@ -555,6 +548,25 @@ func manageRelayConnectionOnce(
 
 	// Successful session establishment: mark this connection active.
 	connectionHealthCounter.Add(1)
+
+	// Parse and attach the assigned addresses for this live session.
+	if connectResp != nil {
+		addrs, err := parsePrefixes(connectResp.Addresses)
+		if err != nil {
+			slog.Warn("Failed to parse assigned addresses", slog.Any("error", err))
+		} else {
+			sessionAddrs = addrs
+			for _, a := range addrs {
+				if err := r.AddAddr(a, nil); err != nil {
+					slog.Warn("Failed to add address",
+						slog.String("address", a.String()),
+						slog.Any("error", err))
+				} else {
+					slog.Info("Added address", slog.String("address", a.String()))
+				}
+			}
+		}
+	}
 
 	// Once connected, run key rotation and watchdog concurrently.
 	sessionCtx, sessionCancel := context.WithCancel(ctx)
@@ -611,6 +623,7 @@ func manageConnectionSlot(
 	ctx context.Context,
 	pcQuicMux *conntrackpc.ConntrackPacketConn,
 	handler *icx.Handler,
+	r *router.ICXNetstackRouter,
 	relayAddressPool *randalloc.RandAllocator[string],
 	tlsConf *tls.Config,
 ) error {
@@ -678,7 +691,7 @@ func manageConnectionSlot(
 			}
 
 			// Run the actual session lifecycle (watchdog, key rotation, etc).
-			sessErr := manageRelayConnectionOnce(ctx, pcQuic, handler, relayAddr, tlsConf, onConnected)
+			sessErr := manageRelayConnectionOnce(ctx, pcQuic, handler, r, relayAddr, tlsConf, onConnected)
 
 			if ctx.Err() != nil {
 				return ctx.Err()

@@ -33,12 +33,12 @@ func TestTunnelRun(t *testing.T) {
 	var connected bool
 
 	// onConnect assigns VNI and overlay address so handleConnect can proceed.
-	onConnect := func(ctx context.Context, agent string, conn controllers.Connection) error {
+	onConnect := func(ctx context.Context, tunnelName, agentName string, conn controllers.Connection) error {
 		// Choose a deterministic VNI for the test.
 		conn.SetVNI(ctx, 101)
 		conn.SetOverlayAddress("10.0.0.2/32")
-		t.Logf("onConnect called, agent=%s", agent)
-		if agent == "test-agent" {
+		t.Logf("onConnect called, agent=%s", agentName)
+		if agentName == "test-agent" {
 			connected = true
 		}
 		return nil
@@ -76,7 +76,7 @@ func TestTunnelRun(t *testing.T) {
 	// TODO: verify traffic routing through the tunnel
 }
 
-func startRelay(t *testing.T, token string, onConnect func(context.Context, string, controllers.Connection) error, onDisconnect func(context.Context, string, string) error) (*tunnel.Relay, tls.Certificate, func()) {
+func startRelay(t *testing.T, token string, onConnect func(context.Context, string, string, controllers.Connection) error, onDisconnect func(context.Context, string, string) error) (*tunnel.Relay, tls.Certificate, func()) {
 	t.Helper()
 
 	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
