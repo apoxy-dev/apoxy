@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/netip"
@@ -19,15 +20,17 @@ import (
 	"github.com/dpeckett/network"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/client-go/tools/clientcmd"
 
+	"github.com/apoxy-dev/apoxy/client/versioned"
 	"github.com/apoxy-dev/apoxy/pkg/netstack"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/api"
-	"github.com/apoxy-dev/apoxy/pkg/tunnel/randalloc"
-
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/batchpc"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/bifurcate"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/conntrackpc"
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/randalloc"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/router"
 )
 
@@ -59,6 +62,40 @@ var tunnelRunCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if minConns < 1 {
 			return fmt.Errorf("--min-conns must be at least 1")
+		}
+
+		// Attempt kubernetes-based discovery if no relayAddr/token provided.
+		if seedRelayAddr == "" || token == "" {
+			clientConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
+				clientcmd.NewDefaultClientConfigLoadingRules(),
+				&clientcmd.ConfigOverrides{},
+			)
+
+			config, err := clientConfig.ClientConfig()
+			if err != nil {
+				return fmt.Errorf("loading kubeconfig: %w", err)
+			}
+
+			clientset, err := versioned.NewForConfig(config)
+			if err != nil {
+				return fmt.Errorf("creating clientset: %w", err)
+			}
+
+			tunnel, err := clientset.CoreV1alpha2().Tunnels().Get(cmd.Context(), tunnelName, metav1.GetOptions{})
+			if err != nil {
+				return fmt.Errorf("fetching Tunnel %q: %w", tunnelName, err)
+			}
+
+			if len(tunnel.Status.Addresses) == 0 {
+				return fmt.Errorf("tunnel %q has no relay addresses configured", tunnelName)
+			}
+
+			if tunnel.Status.Credentials == nil {
+				return fmt.Errorf("tunnel %q has no credentials configured", tunnelName)
+			}
+
+			seedRelayAddr = tunnel.Status.Addresses[rand.IntN(len(tunnel.Status.Addresses))]
+			token = tunnel.Status.Credentials.Token
 		}
 
 		g, ctx := errgroup.WithContext(cmd.Context())
@@ -131,7 +168,7 @@ var tunnelRunCmd = &cobra.Command{
 		//   - when the session ends, releases the relay
 		for i := 0; i < minConns; i++ {
 			g.Go(func() error {
-				return manageConnectionSlot(ctx, packetPlane.QuicMux, handler, relayAddressPool, tlsConf)
+				return manageConnectionSlot(ctx, packetPlane.QuicMux, handler, r, relayAddressPool, tlsConf)
 			})
 		}
 
@@ -142,9 +179,9 @@ var tunnelRunCmd = &cobra.Command{
 func init() {
 	tunnelRunCmd.Flags().StringVarP(&agentName, "agent", "a", "", "The name of this agent.")
 	tunnelRunCmd.Flags().StringVarP(&tunnelName, "name", "n", "", "The logical name of the tunnel to connect to.")
-	tunnelRunCmd.Flags().StringVarP(&seedRelayAddr, "relay-addr", "r", "", "Seed relay address (host:port). The client bootstraps here, then uses the returned relay list.")
+	tunnelRunCmd.Flags().StringVarP(&seedRelayAddr, "relay-addr", "r", "", "Seed relay address (host:port), required if not using kubernetes-based discovery.")
 	tunnelRunCmd.Flags().IntVar(&minConns, "min-conns", 1, "Minimum number of relays to maintain connections to (randomly selected from the server-provided list).")
-	tunnelRunCmd.Flags().StringVarP(&token, "token", "k", "", "The token to use for authenticating with the tunnel relays.")
+	tunnelRunCmd.Flags().StringVarP(&token, "token", "k", "", "The token to use for authenticating with the tunnel relays, required if not using kubernetes-based discovery.")
 	tunnelRunCmd.Flags().BoolVar(&insecureSkipVerify, "insecure-skip-verify", false, "Skip TLS certificate verification for relay connections.")
 	tunnelRunCmd.Flags().StringVarP(&pcapPath, "pcap", "p", "", "Path to an optional packet capture file to write.")
 	tunnelRunCmd.Flags().StringVar(&socksListenAddr, "socks-addr", "localhost:1080", "Listen address for SOCKS proxy.")
@@ -152,8 +189,6 @@ func init() {
 
 	cobra.CheckErr(tunnelRunCmd.MarkFlagRequired("agent"))
 	cobra.CheckErr(tunnelRunCmd.MarkFlagRequired("name"))
-	cobra.CheckErr(tunnelRunCmd.MarkFlagRequired("relay-addr"))
-	cobra.CheckErr(tunnelRunCmd.MarkFlagRequired("token"))
 
 	tunnelCmd.AddCommand(tunnelRunCmd)
 }
@@ -320,25 +355,6 @@ func initRouter(
 
 	h := r.Handler
 
-	// Add assigned addresses.
-	for _, addrStr := range connectResp.Addresses {
-		slog.Info("Adding address", slog.String("address", addrStr))
-
-		addr, err := netip.ParsePrefix(addrStr)
-		if err != nil {
-			slog.Warn("Failed to parse address",
-				slog.String("address", addrStr),
-				slog.Any("error", err))
-			continue
-		}
-
-		if err := r.AddAddr(addr, nil); err != nil {
-			slog.Warn("Failed to add address",
-				slog.String("address", addrStr),
-				slog.Any("error", err))
-		}
-	}
-
 	// Add routes.
 	for _, rt := range connectResp.Routes {
 		slog.Info("Adding route", slog.String("destination", rt.Destination))
@@ -462,6 +478,7 @@ func manageRelayConnectionOnce(
 	ctx context.Context,
 	pcQuic net.PacketConn,
 	handler *icx.Handler,
+	r *router.ICXNetstackRouter,
 	relayAddr string,
 	tlsConf *tls.Config,
 	onConnected func(*api.ConnectResponse),
@@ -470,11 +487,22 @@ func manageRelayConnectionOnce(
 		currentClient *api.Client
 		currentConnID string
 		connectResp   *api.ConnectResponse
+		sessionAddrs  []netip.Prefix
 	)
 
 	// When this function returns, that relay session is down, so decrement
 	// if we had actually marked it active.
 	defer func() {
+		// Remove any addrs we attached for this session.
+		for _, a := range sessionAddrs {
+			if err := r.DelAddr(a); err != nil {
+				slog.Warn("Failed to remove address on disconnect",
+					slog.String("address", a.String()),
+					slog.Any("error", err))
+			} else {
+				slog.Info("Removed address", slog.String("address", a.String()))
+			}
+		}
 		if currentConnID != "" {
 			connectionHealthCounter.Add(-1)
 		}
@@ -520,6 +548,25 @@ func manageRelayConnectionOnce(
 
 	// Successful session establishment: mark this connection active.
 	connectionHealthCounter.Add(1)
+
+	// Parse and attach the assigned addresses for this live session.
+	if connectResp != nil {
+		addrs, err := parsePrefixes(connectResp.Addresses)
+		if err != nil {
+			slog.Warn("Failed to parse assigned addresses", slog.Any("error", err))
+		} else {
+			sessionAddrs = addrs
+			for _, a := range addrs {
+				if err := r.AddAddr(a, nil); err != nil {
+					slog.Warn("Failed to add address",
+						slog.String("address", a.String()),
+						slog.Any("error", err))
+				} else {
+					slog.Info("Added address", slog.String("address", a.String()))
+				}
+			}
+		}
+	}
 
 	// Once connected, run key rotation and watchdog concurrently.
 	sessionCtx, sessionCancel := context.WithCancel(ctx)
@@ -576,6 +623,7 @@ func manageConnectionSlot(
 	ctx context.Context,
 	pcQuicMux *conntrackpc.ConntrackPacketConn,
 	handler *icx.Handler,
+	r *router.ICXNetstackRouter,
 	relayAddressPool *randalloc.RandAllocator[string],
 	tlsConf *tls.Config,
 ) error {
@@ -643,7 +691,7 @@ func manageConnectionSlot(
 			}
 
 			// Run the actual session lifecycle (watchdog, key rotation, etc).
-			sessErr := manageRelayConnectionOnce(ctx, pcQuic, handler, relayAddr, tlsConf, onConnected)
+			sessErr := manageRelayConnectionOnce(ctx, pcQuic, handler, r, relayAddr, tlsConf, onConnected)
 
 			if ctx.Err() != nil {
 				return ctx.Err()

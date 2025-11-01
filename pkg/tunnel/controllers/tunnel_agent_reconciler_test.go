@@ -28,12 +28,14 @@ func TestTunnelAgentReconciler_AddConnection(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1alpha2.Install(scheme))
 
-	agent := mkAgent("agent-1")
+	tunnel := mkTunnel("tunnel-1")
+
+	agent := mkAgent("tunnel-1", "agent-1")
 
 	c := fakeclient.NewClientBuilder().
 		WithScheme(scheme).
-		WithStatusSubresource(&corev1alpha2.TunnelAgent{}).
-		WithObjects(agent).
+		WithStatusSubresource(&corev1alpha2.Tunnel{}, &corev1alpha2.TunnelAgent{}).
+		WithObjects(tunnel, agent).
 		Build()
 
 	relay := &mockRelay{}
@@ -47,7 +49,7 @@ func TestTunnelAgentReconciler_AddConnection(t *testing.T) {
 	conn := &mockConn{}
 	conn.On("ID").Return("conn-123")
 
-	require.NoError(t, r.AddConnection(ctx, agent.Name, conn))
+	require.NoError(t, r.AddConnection(ctx, tunnel.Name, agent.Name, conn))
 
 	var got corev1alpha2.TunnelAgent
 	require.NoError(t, c.Get(ctx, types.NamespacedName{Name: agent.Name}, &got))
@@ -60,7 +62,7 @@ func TestTunnelAgentReconciler_AddConnection(t *testing.T) {
 	assert.Nil(t, entry.VNI)
 	assert.Equal(t, relay.Address().String(), entry.RelayAddress)
 
-	finalizer := "tunnelrelay.apoxy.dev/" + relay.Name() + "/finalizer"
+	finalizer := "tunnelrelay.apoxy.dev/" + relay.Name() + "-finalizer"
 	assert.True(t, controllerutil.ContainsFinalizer(&got, finalizer))
 
 	conn.AssertExpectations(t)
@@ -73,11 +75,14 @@ func TestTunnelAgentReconciler_RemoveConnection(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1alpha2.Install(scheme))
 
-	agent := mkAgent("agent-2")
+	tunnel := mkTunnel("tunnel-1")
+
+	agent := mkAgent("tunnel-1", "agent-2")
+
 	c := fakeclient.NewClientBuilder().
 		WithScheme(scheme).
-		WithStatusSubresource(&corev1alpha2.TunnelAgent{}).
-		WithObjects(agent).
+		WithStatusSubresource(&corev1alpha2.Tunnel{}, &corev1alpha2.TunnelAgent{}).
+		WithObjects(tunnel, agent).
 		Build()
 
 	relay := &mockRelay{}
@@ -87,7 +92,7 @@ func TestTunnelAgentReconciler_RemoveConnection(t *testing.T) {
 	relay.On("SetOnDisconnect", mock.Anything).Return().Once()
 
 	r := controllers.NewTunnelAgentReconciler(c, relay, "")
-	finalizer := "tunnelrelay.apoxy.dev/" + relay.Name() + "/finalizer"
+	finalizer := "tunnelrelay.apoxy.dev/" + relay.Name() + "-finalizer"
 
 	// Two mock conns
 	conn1 := &mockConn{}
@@ -98,8 +103,8 @@ func TestTunnelAgentReconciler_RemoveConnection(t *testing.T) {
 	conn2.On("ID").Return("c2").Maybe()
 	conn2.On("Close").Return(nil).Once()
 
-	require.NoError(t, r.AddConnection(ctx, agent.Name, conn1))
-	require.NoError(t, r.AddConnection(ctx, agent.Name, conn2))
+	require.NoError(t, r.AddConnection(ctx, tunnel.Name, agent.Name, conn1))
+	require.NoError(t, r.AddConnection(ctx, tunnel.Name, agent.Name, conn2))
 
 	// Remove first
 	require.NoError(t, r.RemoveConnection(ctx, agent.Name, "c1"))
@@ -108,11 +113,11 @@ func TestTunnelAgentReconciler_RemoveConnection(t *testing.T) {
 	assert.Len(t, got.Status.Connections, 1)
 	assert.True(t, controllerutil.ContainsFinalizer(&got, finalizer))
 
-	// Remove second
+	// Remove second — the CR should be deleted now that no connections remain
 	require.NoError(t, r.RemoveConnection(ctx, agent.Name, "c2"))
-	require.NoError(t, c.Get(ctx, types.NamespacedName{Name: agent.Name}, &got))
-	assert.Empty(t, got.Status.Connections)
-	assert.False(t, controllerutil.ContainsFinalizer(&got, finalizer))
+	err := c.Get(ctx, types.NamespacedName{Name: agent.Name}, &got)
+	require.Error(t, err)
+	assert.True(t, apierrors.IsNotFound(err))
 
 	relay.AssertExpectations(t)
 }
@@ -123,11 +128,14 @@ func TestTunnelAgentReconciler_ClosesConnections(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1alpha2.Install(scheme))
 
-	agent := mkAgent("agent-3")
+	tunnel := mkTunnel("tunnel-1")
+
+	agent := mkAgent("tunnel-1", "agent-3")
+
 	c := fakeclient.NewClientBuilder().
 		WithScheme(scheme).
-		WithStatusSubresource(&corev1alpha2.TunnelAgent{}).
-		WithObjects(agent).
+		WithStatusSubresource(&corev1alpha2.Tunnel{}, &corev1alpha2.TunnelAgent{}).
+		WithObjects(tunnel, agent).
 		Build()
 
 	relay := &mockRelay{}
@@ -137,7 +145,7 @@ func TestTunnelAgentReconciler_ClosesConnections(t *testing.T) {
 	relay.On("SetOnDisconnect", mock.Anything).Return().Once()
 
 	r := controllers.NewTunnelAgentReconciler(c, relay, "")
-	finalizer := "tunnelrelay.apoxy.dev/" + relay.Name() + "/finalizer"
+	finalizer := "tunnelrelay.apoxy.dev/" + relay.Name() + "-finalizer"
 
 	// Mock conn that should be closed
 	conn := &mockConn{}
@@ -145,7 +153,7 @@ func TestTunnelAgentReconciler_ClosesConnections(t *testing.T) {
 	conn.On("Close").Return(nil).Once()
 
 	// Add connection -> status + in-memory tracking + finalizer
-	require.NoError(t, r.AddConnection(ctx, agent.Name, conn))
+	require.NoError(t, r.AddConnection(ctx, tunnel.Name, agent.Name, conn))
 
 	// Ensure finalizer exists before deletion
 	var cur corev1alpha2.TunnelAgent
@@ -178,11 +186,14 @@ func TestTunnelAgentReconcile_SetsAddressAndVNI(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1alpha2.Install(scheme))
 
-	agent := mkAgent("agent-4")
+	tunnel := mkTunnel("tunnel-1")
+
+	agent := mkAgent("tunnel-1", "agent-4")
+
 	c := fakeclient.NewClientBuilder().
 		WithScheme(scheme).
-		WithStatusSubresource(&corev1alpha2.TunnelAgent{}).
-		WithObjects(agent).
+		WithStatusSubresource(&corev1alpha2.Tunnel{}, &corev1alpha2.TunnelAgent{}).
+		WithObjects(tunnel, agent).
 		Build()
 
 	relay := &mockRelay{}
@@ -197,7 +208,7 @@ func TestTunnelAgentReconcile_SetsAddressAndVNI(t *testing.T) {
 	conn := &mockConn{}
 	conn.On("ID").Return("live-1")
 
-	require.NoError(t, r.AddConnection(ctx, agent.Name, conn))
+	require.NoError(t, r.AddConnection(ctx, tunnel.Name, agent.Name, conn))
 
 	// Simulate the apiserver reconciler filling status.address & vni
 	var cur corev1alpha2.TunnelAgent
@@ -210,7 +221,7 @@ func TestTunnelAgentReconcile_SetsAddressAndVNI(t *testing.T) {
 
 	// Expect our live connection to receive SetOverlayAddress + SetVNI on reconcile
 	conn.On("SetOverlayAddress", "10.123.0.5/32").Return(nil).Once()
-	conn.On("SetVNI", uint(4242)).Return(nil).Once()
+	conn.On("SetVNI", mock.Anything, uint(4242)).Return(nil).Once()
 
 	_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: agent.Name}})
 	require.NoError(t, err)
@@ -219,14 +230,31 @@ func TestTunnelAgentReconcile_SetsAddressAndVNI(t *testing.T) {
 	relay.AssertExpectations(t)
 }
 
-func mkAgent(name string) *corev1alpha2.TunnelAgent {
+func mkTunnel(tunnelName string) *corev1alpha2.Tunnel {
+	return &corev1alpha2.Tunnel{
+		TypeMeta: metav1.TypeMeta{
+			Kind:       "Tunnel",
+			APIVersion: "core.apoxy.dev/v1alpha2",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: tunnelName,
+		},
+	}
+}
+
+func mkAgent(tunnelName, agentName string) *corev1alpha2.TunnelAgent {
 	return &corev1alpha2.TunnelAgent{
 		TypeMeta: metav1.TypeMeta{
 			Kind:       "TunnelAgent",
 			APIVersion: "core.apoxy.dev/v1alpha2",
 		},
 		ObjectMeta: metav1.ObjectMeta{
-			Name: name,
+			Name: agentName,
+		},
+		Spec: corev1alpha2.TunnelAgentSpec{
+			TunnelRef: corev1alpha2.TunnelRef{
+				Name: tunnelName,
+			},
 		},
 	}
 }

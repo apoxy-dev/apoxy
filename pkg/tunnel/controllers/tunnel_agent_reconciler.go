@@ -6,7 +6,6 @@ import (
 	"log/slog"
 
 	"github.com/alphadose/haxmap"
-	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -15,13 +14,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/event"
+	controllerlog "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	corev1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
 )
 
-const tunnelRelayFinalizerTmpl = "tunnelrelay.apoxy.dev/%s/finalizer"
+const tunnelRelayFinalizerTmpl = "tunnelrelay.apoxy.dev/%s-finalizer"
 
 type TunnelAgentReconciler struct {
 	client        client.Client
@@ -45,6 +44,10 @@ func NewTunnelAgentReconciler(c client.Client, relay Relay, labelSelector string
 }
 
 func (r *TunnelAgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	log := controllerlog.FromContext(ctx, "name", req.Name)
+
+	log.Info("Reconciling TunnelAgent")
+
 	var agent corev1alpha2.TunnelAgent
 	if err := r.client.Get(ctx, req.NamespacedName, &agent); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -105,37 +108,47 @@ func (r *TunnelAgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		return fmt.Errorf("failed to create label selector predicate: %w", err)
 	}
 
-	// Reconcile when spec generation changes OR when status (e.g., Connections) changes.
-	statusOrGenChanged := predicate.Funcs{
-		CreateFunc: func(e event.CreateEvent) bool { return true },
-		DeleteFunc: func(e event.DeleteEvent) bool { return true },
-		UpdateFunc: func(e event.UpdateEvent) bool {
-			oldObj, ok1 := e.ObjectOld.(*corev1alpha2.TunnelAgent)
-			newObj, ok2 := e.ObjectNew.(*corev1alpha2.TunnelAgent)
-			if !ok1 || !ok2 {
-				return false
-			}
-			genChanged := oldObj.GetGeneration() != newObj.GetGeneration()
-			statusDiff := !equality.Semantic.DeepEqual(oldObj.Status, newObj.Status)
-			return genChanged || statusDiff
-		},
-	}
-
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&corev1alpha2.TunnelAgent{}, builder.WithPredicates(ls, statusOrGenChanged)).
+		For(&corev1alpha2.TunnelAgent{}, builder.WithPredicates(&predicate.ResourceVersionChangedPredicate{}, ls)).
 		Complete(r)
 }
 
 // AddConnection registers a new active connection for the given agent.
-func (r *TunnelAgentReconciler) AddConnection(ctx context.Context, agentName string, conn Connection) error {
+func (r *TunnelAgentReconciler) AddConnection(ctx context.Context, tunnelName, agentName string, conn Connection) error {
 	// Track the connection in-memory.
 	r.conns.Set(conn.ID(), conn)
 
+	// Get the parent Tunnel object.
+	var tunnel corev1alpha2.Tunnel
+	if err := r.client.Get(ctx, types.NamespacedName{Name: tunnelName}, &tunnel); err != nil {
+		return fmt.Errorf("failed to get parent Tunnel %q for TunnelAgent %q: %w", tunnelName, agentName, err)
+	}
+
 	// Upsert connection in status (first), so we truly have a connection before adding the finalizer.
 	if err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-		var cur corev1alpha2.TunnelAgent
+		cur := corev1alpha2.TunnelAgent{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:   agentName,
+				Labels: tunnel.ObjectMeta.Labels,
+			},
+			Spec: corev1alpha2.TunnelAgentSpec{
+				TunnelRef: corev1alpha2.TunnelRef{
+					Name: tunnelName,
+				},
+			},
+		}
+
 		if err := r.client.Get(ctx, types.NamespacedName{Name: agentName}, &cur); err != nil {
-			return err
+			if apierrors.IsNotFound(err) {
+				// Create minimal object if missing.
+				slog.Info("Creating TunnelAgent object", slog.String("agent", agentName))
+
+				if err := r.client.Create(ctx, &cur); err != nil {
+					return fmt.Errorf("failed to create TunnelAgent %q: %w", agentName, err)
+				}
+			} else {
+				return fmt.Errorf("failed to get TunnelAgent %q: %w", agentName, err)
+			}
 		}
 
 		now := metav1.Now()
@@ -193,8 +206,7 @@ func (r *TunnelAgentReconciler) AddConnection(ctx context.Context, agentName str
 // RemoveConnection deregisters a connection from the given agent by its ID.
 func (r *TunnelAgentReconciler) RemoveConnection(ctx context.Context, agentName, id string) error {
 	// Drop from in-memory map.
-	conn, ok := r.conns.GetAndDel(id)
-	if ok {
+	if conn, ok := r.conns.GetAndDel(id); ok {
 		if err := conn.Close(); err != nil {
 			slog.Warn("Failed to close connection", slog.String("id", id), slog.Any("error", err))
 		}
@@ -204,6 +216,9 @@ func (r *TunnelAgentReconciler) RemoveConnection(ctx context.Context, agentName,
 	if err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 		var cur corev1alpha2.TunnelAgent
 		if err := r.client.Get(ctx, types.NamespacedName{Name: agentName}, &cur); err != nil {
+			if apierrors.IsNotFound(err) {
+				return nil // already gone
+			}
 			return err
 		}
 
@@ -221,12 +236,30 @@ func (r *TunnelAgentReconciler) RemoveConnection(ctx context.Context, agentName,
 	}
 
 	// If no connections remain for THIS relay, remove our relay-scoped finalizer.
+	// Additionally, if there are NO connections remaining at all, delete the TunnelAgent.
 	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 		var cur corev1alpha2.TunnelAgent
 		if err := r.client.Get(ctx, types.NamespacedName{Name: agentName}, &cur); err != nil {
+			if apierrors.IsNotFound(err) {
+				return nil
+			}
 			return err
 		}
 
+		// Check if any connections remain at all.
+		if len(cur.Status.Connections) == 0 {
+			// Ensure our finalizer (if present) is removed to avoid blocking deletion.
+			if controllerutil.ContainsFinalizer(&cur, r.finalizer) {
+				controllerutil.RemoveFinalizer(&cur, r.finalizer)
+				if err := r.client.Update(ctx, &cur); err != nil {
+					return err
+				}
+			}
+			// Delete the TunnelAgent object (ignore if it disappears between calls).
+			return client.IgnoreNotFound(r.client.Delete(ctx, &cur))
+		}
+
+		// Otherwise, only consider removing our finalizer if *this relay* no longer has any live connections.
 		hasRelayConn := false
 		for _, c := range cur.Status.Connections {
 			if _, ok := r.conns.Get(c.ID); ok {

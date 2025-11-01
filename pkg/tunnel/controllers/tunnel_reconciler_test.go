@@ -87,7 +87,7 @@ func (m *mockRelay) SetEgressGateway(enabled bool) {
 	m.Called(enabled)
 }
 
-func (m *mockRelay) SetOnConnect(onConnect func(ctx context.Context, agentName string, conn controllers.Connection) error) {
+func (m *mockRelay) SetOnConnect(onConnect func(ctx context.Context, tunnelName, agentName string, conn controllers.Connection) error) {
 	m.Called(onConnect)
 }
 
