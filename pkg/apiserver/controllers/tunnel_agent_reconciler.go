@@ -7,14 +7,12 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/event"
 	controllerlog "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
@@ -27,6 +25,8 @@ import (
 // +kubebuilder:rbac:groups=core.apoxy.dev/v1alpha2,resources=tunnelagents/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=core.apoxy.dev/v1alpha2,resources=tunnelagents/finalizers,verbs=update
 // +kubebuilder:rbac:groups=core.apoxy.dev/v1alpha2,resources=tunnels,verbs=get;list;watch
+
+const indexControllerOwnerUID = ".metadata.controllerOwnerUID"
 
 type TunnelAgentReconciler struct {
 	client    client.Client
@@ -45,6 +45,8 @@ func NewTunnelAgentReconciler(c client.Client, agentIPAM tunnet.IPAM, vniPool *v
 func (r *TunnelAgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := controllerlog.FromContext(ctx, "name", req.Name)
 
+	log.Info("Reconciling TunnelAgent")
+
 	var agent corev1alpha2.TunnelAgent
 	if err := r.client.Get(ctx, req.NamespacedName, &agent); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -53,16 +55,19 @@ func (r *TunnelAgentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, err
 	}
 
-	// handle deletion
+	// Handle deletion
 	if !agent.DeletionTimestamp.IsZero() {
+		log.Info("Handling deletion of TunnelAgent")
+
 		if controllerutil.ContainsFinalizer(&agent, ApiServerFinalizer) {
+			log.Info("Releasing resources for TunnelAgent")
+
 			changed, err := r.releaseResourcesIfPresent(ctx, log, req.NamespacedName)
 			if err != nil {
 				return ctrl.Result{}, fmt.Errorf("failed to release resources: %w", err)
 			}
 
-			// releaseResourcesIfPresent potentially mutates the object, so we need
-			// to refetch it to avoid conflicts when we remove the finalizer.
+			// Refetch to avoid conflicts if we modified the object
 			if changed {
 				if err := r.client.Get(ctx, req.NamespacedName, &agent); err != nil {
 					if apierrors.IsNotFound(err) {
@@ -71,6 +76,8 @@ func (r *TunnelAgentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 					return ctrl.Result{}, err
 				}
 			}
+
+			log.Info("Removing finalizer from TunnelAgent")
 
 			// Remove finalizer
 			controllerutil.RemoveFinalizer(&agent, ApiServerFinalizer)
@@ -82,7 +89,7 @@ func (r *TunnelAgentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, nil
 	}
 
-	// ensure finalizer
+	// Ensure finalizer
 	if !controllerutil.ContainsFinalizer(&agent, ApiServerFinalizer) {
 		controllerutil.AddFinalizer(&agent, ApiServerFinalizer)
 		if err := r.client.Update(ctx, &agent); err != nil {
@@ -90,7 +97,7 @@ func (r *TunnelAgentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		}
 	}
 
-	// fetch owner Tunnel
+	// Fetch owner Tunnel
 	tunnelName := agent.Spec.TunnelRef.Name
 	if tunnelName == "" {
 		// TODO: why would this happen? Should we mark the agent as failed.
@@ -98,17 +105,18 @@ func (r *TunnelAgentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, nil
 	}
 
+	log.Info("Fetching owner Tunnel", "tunnelName", tunnelName)
+
 	var tunnel corev1alpha2.Tunnel
 	if err := r.client.Get(ctx, client.ObjectKey{Name: tunnelName}, &tunnel); err != nil {
 		if apierrors.IsNotFound(err) {
-			// TODO: why would this happen? Should we mark the agent as failed.
 			log.Info("Referenced Tunnel not found; skipping", "tunnelName", tunnelName)
 			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 		}
 		return ctrl.Result{}, err
 	}
 
-	// ensure controller ownerRef agent -> tunnel
+	// Ensure controller ownerRef agent -> tunnel
 	changed, err := r.ensureControllerOwner(&agent, &tunnel)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -128,24 +136,26 @@ func (r *TunnelAgentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 }
 
 func (r *TunnelAgentReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager) error {
-	// Reconcile when spec generation changes OR when status (e.g., Connections) changes.
-	statusOrGenChanged := predicate.Funcs{
-		CreateFunc: func(e event.CreateEvent) bool { return true },
-		DeleteFunc: func(e event.DeleteEvent) bool { return true },
-		UpdateFunc: func(e event.UpdateEvent) bool {
-			oldObj, ok1 := e.ObjectOld.(*corev1alpha2.TunnelAgent)
-			newObj, ok2 := e.ObjectNew.(*corev1alpha2.TunnelAgent)
-			if !ok1 || !ok2 {
-				return false
+	// Cache index to quickly look up TunnelAgents by their controller owner UID.
+	if err := mgr.GetFieldIndexer().IndexField(
+		ctx,
+		&corev1alpha2.TunnelAgent{},
+		indexControllerOwnerUID,
+		func(obj client.Object) []string {
+			ta := obj.(*corev1alpha2.TunnelAgent)
+			for _, or := range ta.GetOwnerReferences() {
+				if or.Controller != nil && *or.Controller {
+					return []string{string(or.UID)}
+				}
 			}
-			genChanged := oldObj.GetGeneration() != newObj.GetGeneration()
-			statusDiff := !equality.Semantic.DeepEqual(oldObj.Status, newObj.Status)
-			return genChanged || statusDiff
+			return nil
 		},
+	); err != nil {
+		return err
 	}
 
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&corev1alpha2.TunnelAgent{}, builder.WithPredicates(statusOrGenChanged)).
+		For(&corev1alpha2.TunnelAgent{}, builder.WithPredicates(&predicate.ResourceVersionChangedPredicate{})).
 		Complete(r)
 }
 
@@ -182,11 +192,10 @@ func (r *TunnelAgentReconciler) ensureConnectionAllocations(
 				}
 				conn.Address = pfx.String()
 				newlyAllocatedPrefixes = append(newlyAllocatedPrefixes, pfx)
-
 				log.Info("Allocated overlay address", "connectionID", conn.ID, "address", conn.Address)
 			}
 
-			// Allocate VNI if missing (nil means "unset"; zero can be valid but your pool won't return 0)
+			// Allocate VNI if missing
 			if conn.VNI == nil {
 				vni, err := r.vniPool.Allocate()
 				if err != nil {
@@ -201,13 +210,11 @@ func (r *TunnelAgentReconciler) ensureConnectionAllocations(
 				}
 				conn.VNI = &vni
 				newlyAllocatedVNIs = append(newlyAllocatedVNIs, vni)
-
 				log.Info("Allocated VNI", "connectionID", conn.ID, "vni", *conn.VNI)
 			}
 		}
 
 		if len(newlyAllocatedPrefixes) == 0 && len(newlyAllocatedVNIs) == 0 {
-			// nothing changed
 			return nil
 		}
 
@@ -234,13 +241,11 @@ func (r *TunnelAgentReconciler) releaseResourcesIfPresent(
 ) (bool, error) {
 	var changed bool
 	err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-		// Always work on a fresh copy to avoid write conflicts.
 		var cur corev1alpha2.TunnelAgent
 		if err := r.client.Get(ctx, key, &cur); err != nil {
 			if apierrors.IsNotFound(err) {
 				return nil
 			}
-
 			return err
 		}
 
@@ -249,7 +254,6 @@ func (r *TunnelAgentReconciler) releaseResourcesIfPresent(
 			return nil
 		}
 
-		// Free resources that are still recorded in status and clear the fields.
 		for i := range cur.Status.Connections {
 			conn := &cur.Status.Connections[i]
 
@@ -263,7 +267,7 @@ func (r *TunnelAgentReconciler) releaseResourcesIfPresent(
 					return fmt.Errorf("failed to release address %q: %w", conn.Address, err)
 				}
 				log.Info("Released overlay address", "connectionID", conn.ID, "address", conn.Address)
-				conn.Address = "" // clear in status
+				conn.Address = ""
 				changed = true
 			}
 
@@ -272,18 +276,16 @@ func (r *TunnelAgentReconciler) releaseResourcesIfPresent(
 				vni := *conn.VNI
 				r.vniPool.Release(vni)
 				log.Info("Released VNI", "connectionID", conn.ID, "vni", vni)
-				conn.VNI = nil // clear in status
+				conn.VNI = nil
 				changed = true
 			}
 		}
 
-		// Commit to status.
 		if changed {
 			if err := r.client.Status().Update(ctx, &cur); err != nil {
 				return err
 			}
 		}
-
 		return nil
 	})
 
@@ -297,14 +299,8 @@ func (r *TunnelAgentReconciler) ensureControllerOwner(child client.Object, owner
 		}
 	}
 
-	// Set controller reference (overwrites any existing controller owner)
-	if err := controllerutil.SetControllerReference(
-		owner,
-		child,
-		r.client.Scheme(),
-	); err != nil {
+	if err := controllerutil.SetControllerReference(owner, child, r.client.Scheme()); err != nil {
 		return false, err
 	}
-
 	return true, nil
 }

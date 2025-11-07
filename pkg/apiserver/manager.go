@@ -49,6 +49,7 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/log"
 	apoxynet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/vni"
 
 	ctrlv1alpha1 "github.com/apoxy-dev/apoxy/api/controllers/v1alpha1"
 	corev1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
@@ -186,6 +187,7 @@ type options struct {
 	resources             []resource.Object
 	proxyIPAM             tunnet.IPAM
 	agentIPAM             tunnet.IPAM
+	vniPool               *vni.VNIPool
 }
 
 // WithJWTKeys sets the JWT key pair.
@@ -317,6 +319,13 @@ func WithAgentIPAM(ipam tunnet.IPAM) Option {
 	}
 }
 
+// WithVNIPool sets the VNI pool for tunnel agents.
+func WithVNIPool(pool *vni.VNIPool) Option {
+	return func(o *options) {
+		o.vniPool = pool
+	}
+}
+
 func defaultResources() []resource.Object {
 	// Higher versions need to be registered first as storage resources.
 	return []resource.Object{
@@ -383,6 +392,8 @@ func defaultOptions(ctx context.Context) (*options, error) {
 		return nil, fmt.Errorf("failed to create proxy IPAM: %w", err)
 	}
 
+	vniPool := vni.NewVNIPool()
+
 	opts := &options{
 		clientConfig: NewClientConfig(),
 
@@ -406,6 +417,7 @@ func defaultOptions(ctx context.Context) (*options, error) {
 
 		proxyIPAM: proxyIPAM,
 		agentIPAM: agentIPAM,
+		vniPool:   vniPool,
 	}
 
 	// Generate default JWT key pair if not provided
@@ -491,6 +503,7 @@ func (m *Manager) Start(
 		return fmt.Errorf("failed to set up Proxy controller: %v", err)
 	}
 
+	// Legacy v1alpha1 TunnelNode controller
 	log.Infof("Registering TunnelNode controller")
 	tunnelNodeReconciler := controllers.NewTunnelNodeReconciler(
 		m.manager.GetClient(),
@@ -512,6 +525,22 @@ func (m *Manager) Start(
 		}
 		return nil
 	})
+
+	log.Infof("Registering Tunnel controller")
+	tunnelReconciler := controllers.NewTunnelReconciler(m.manager.GetClient())
+	if err := tunnelReconciler.SetupWithManager(m.manager); err != nil {
+		return fmt.Errorf("failed to set up Tunnel controller: %v", err)
+	}
+
+	log.Infof("Registering TunnelAgent controller")
+	tunnelAgentReconciler := controllers.NewTunnelAgentReconciler(
+		m.manager.GetClient(),
+		dOpts.agentIPAM,
+		dOpts.vniPool,
+	)
+	if err := tunnelAgentReconciler.SetupWithManager(ctx, m.manager); err != nil {
+		return fmt.Errorf("failed to set up TunnelAgent controller: %v", err)
+	}
 
 	log.Infof("Registering Gateway controller")
 	gwOpts := []gateway.Option{}
