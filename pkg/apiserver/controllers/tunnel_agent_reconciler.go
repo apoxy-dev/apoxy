@@ -26,6 +26,8 @@ import (
 // +kubebuilder:rbac:groups=core.apoxy.dev/v1alpha2,resources=tunnelagents/finalizers,verbs=update
 // +kubebuilder:rbac:groups=core.apoxy.dev/v1alpha2,resources=tunnels,verbs=get;list;watch
 
+const indexControllerOwnerUID = ".metadata.controllerOwnerUID"
+
 type TunnelAgentReconciler struct {
 	client    client.Client
 	agentIPAM tunnet.IPAM
@@ -134,11 +136,11 @@ func (r *TunnelAgentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 }
 
 func (r *TunnelAgentReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager) error {
-	// So that the Tunnel reconciler can list controller-owned TunnelAgents.
+	// Cache index to quickly look up TunnelAgents by their controller owner UID.
 	if err := mgr.GetFieldIndexer().IndexField(
 		ctx,
 		&corev1alpha2.TunnelAgent{},
-		".metadata.controllerOwnerUID",
+		indexControllerOwnerUID,
 		func(obj client.Object) []string {
 			ta := obj.(*corev1alpha2.TunnelAgent)
 			for _, or := range ta.GetOwnerReferences() {

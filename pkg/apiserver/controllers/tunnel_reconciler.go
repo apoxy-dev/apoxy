@@ -56,7 +56,7 @@ func (r *TunnelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 			if err := r.client.List(
 				ctx,
 				&agents,
-				client.MatchingFields{".metadata.controllerOwnerUID": string(tunnel.GetUID())},
+				client.MatchingFields{indexControllerOwnerUID: string(tunnel.GetUID())},
 			); err != nil {
 				return ctrl.Result{}, err
 			}
