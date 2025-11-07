@@ -3,6 +3,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/netip"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	controllerlog "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	corev1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
@@ -26,7 +28,12 @@ import (
 // +kubebuilder:rbac:groups=core.apoxy.dev/v1alpha2,resources=tunnelagents/finalizers,verbs=update
 // +kubebuilder:rbac:groups=core.apoxy.dev/v1alpha2,resources=tunnels,verbs=get;list;watch
 
-const indexControllerOwnerUID = ".metadata.controllerOwnerUID"
+const (
+	// must be longer than the relays own gc max silence
+	gcMaxSilence            = 5 * time.Minute
+	gcCheckInterval         = time.Minute
+	indexControllerOwnerUID = ".metadata.controllerOwnerUID"
+)
 
 type TunnelAgentReconciler struct {
 	client    client.Client
@@ -64,7 +71,8 @@ func (r *TunnelAgentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 			changed, err := r.releaseResourcesIfPresent(ctx, log, req.NamespacedName)
 			if err != nil {
-				return ctrl.Result{}, fmt.Errorf("failed to release resources: %w", err)
+				log.Error(err, "Failed to release resources for TunnelAgent")
+				// not retryable, just log and continue so we don't block deletion.
 			}
 
 			// Refetch to avoid conflicts if we modified the object
@@ -154,6 +162,27 @@ func (r *TunnelAgentReconciler) SetupWithManager(ctx context.Context, mgr ctrl.M
 		return err
 	}
 
+	// Run periodic orphaned connection cleanup
+	err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
+		ticker := time.NewTicker(gcCheckInterval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return nil
+
+			case <-ticker.C:
+				if err := r.PruneOrphanedConnections(ctx); err != nil {
+					slog.Warn("Failed to run orphaned connection cleanup", slog.Any("error", err))
+				}
+			}
+		}
+	}))
+	if err != nil {
+		return err
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&corev1alpha2.TunnelAgent{}, builder.WithPredicates(&predicate.ResourceVersionChangedPredicate{})).
 		Complete(r)
@@ -234,6 +263,34 @@ func (r *TunnelAgentReconciler) ensureConnectionAllocations(
 	})
 }
 
+// releaseConnectionResources releases any resources held by a single connection.
+// It attempts to release both the IP prefix and the VNI; it returns the first
+// error encountered but will attempt both releases regardless.
+func (r *TunnelAgentReconciler) releaseConnectionResources(addr string, vniPtr *uint) error {
+	var firstErr error
+
+	// Release overlay address/prefix (if set)
+	if addr != "" {
+		pfx, err := netip.ParsePrefix(addr)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("failed to parse address %q for release: %w", addr, err)
+			}
+		} else {
+			if err := r.agentIPAM.Release(pfx); err != nil && firstErr == nil {
+				firstErr = fmt.Errorf("failed to release address %q: %w", addr, err)
+			}
+		}
+	}
+
+	// Release VNI (if set)
+	if vniPtr != nil {
+		r.vniPool.Release(*vniPtr)
+	}
+
+	return firstErr
+}
+
 func (r *TunnelAgentReconciler) releaseResourcesIfPresent(
 	ctx context.Context,
 	log logr.Logger,
@@ -257,28 +314,19 @@ func (r *TunnelAgentReconciler) releaseResourcesIfPresent(
 		for i := range cur.Status.Connections {
 			conn := &cur.Status.Connections[i]
 
-			// Release overlay address/prefix (if set)
-			if conn.Address != "" {
-				pfx, err := netip.ParsePrefix(conn.Address)
-				if err != nil {
-					return fmt.Errorf("failed to parse address %q for release: %w", conn.Address, err)
-				}
-				if err := r.agentIPAM.Release(pfx); err != nil {
-					return fmt.Errorf("failed to release address %q: %w", conn.Address, err)
-				}
-				log.Info("Released overlay address", "connectionID", conn.ID, "address", conn.Address)
-				conn.Address = ""
-				changed = true
+			if conn.Address == "" && conn.VNI == nil {
+				continue
 			}
 
-			// Release VNI (if set)
-			if conn.VNI != nil {
-				vni := *conn.VNI
-				r.vniPool.Release(vni)
-				log.Info("Released VNI", "connectionID", conn.ID, "vni", vni)
-				conn.VNI = nil
-				changed = true
+			// Release any resources the connection holds.
+			if err := r.releaseConnectionResources(conn.Address, conn.VNI); err != nil {
+				return err
 			}
+			log.Info("Released resources for connection", "connectionID", conn.ID, "address", conn.Address, "vni", conn.VNI)
+
+			conn.Address = ""
+			conn.VNI = nil
+			changed = true
 		}
 
 		if changed {
@@ -303,4 +351,93 @@ func (r *TunnelAgentReconciler) ensureControllerOwner(child client.Object, owner
 		return false, err
 	}
 	return true, nil
+}
+
+// PruneOrphanedConnections prunes orphaned connections from TunnelAgent status
+// (due to a relay unexpectedly shutting down). This is exposed for testing purposes.
+func (r *TunnelAgentReconciler) PruneOrphanedConnections(ctx context.Context) error {
+	var agents corev1alpha2.TunnelAgentList
+	if err := r.client.List(ctx, &agents); err != nil {
+		return err
+	}
+
+	var firstErr error
+	for i := range agents.Items {
+		agent := &agents.Items[i]
+		key := client.ObjectKeyFromObject(agent)
+
+		err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+			var cur corev1alpha2.TunnelAgent
+			if err := r.client.Get(ctx, key, &cur); err != nil {
+				if apierrors.IsNotFound(err) {
+					return nil
+				}
+				return err
+			}
+
+			// No connections to prune
+			if len(cur.Status.Connections) == 0 {
+				return nil
+			}
+
+			now := time.Now().UTC()
+			conns := make([]corev1alpha2.TunnelAgentConnection, 0, len(cur.Status.Connections))
+			updated := false
+
+			for j := range cur.Status.Connections {
+				conn := &cur.Status.Connections[j]
+
+				// Determine orphaned-ness
+				isOrphaned := false
+				switch {
+				case conn.LastRXTimestamp != nil:
+					isOrphaned = conn.LastRXTimestamp.Add(gcMaxSilence).Before(now)
+				case conn.ConnectedAt != nil:
+					isOrphaned = conn.ConnectedAt.Add(gcMaxSilence).Before(now)
+				default:
+					isOrphaned = false
+				}
+				if !isOrphaned {
+					conns = append(conns, *conn)
+					continue
+				}
+
+				slog.Info("Pruning orphaned connection from TunnelAgent",
+					slog.String("agent", agent.Name),
+					slog.String("connectionID", conn.ID),
+					slog.String("address", conn.Address))
+
+				// Release any resources the orphaned connection holds.
+				if err := r.releaseConnectionResources(conn.Address, conn.VNI); err != nil {
+					slog.Warn("Failed to release resources for orphaned connection",
+						slog.String("agent", agent.Name),
+						slog.String("connectionID", conn.ID),
+						slog.String("address", conn.Address),
+						slog.Any("error", err))
+				}
+
+				// Do not append to the new list: this prunes the connection.
+				updated = true
+			}
+			if !updated {
+				return nil
+			}
+
+			cur.Status.Connections = conns
+			if err := r.client.Status().Update(ctx, &cur); err != nil {
+				return err
+			}
+			return nil
+		})
+
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			slog.Warn("Failed pruning orphaned connections for agent",
+				slog.String("agent", agent.Name), slog.Any("error", err))
+		}
+	}
+
+	return firstErr
 }

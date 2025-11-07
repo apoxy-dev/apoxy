@@ -3,6 +3,7 @@ package controllers_test
 import (
 	"net/netip"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -143,6 +144,94 @@ func TestTunnelAgentReconciler_DeletionReleasesResourcesAndRemovesFinalizer(t *t
 	reV, err := vpool.Allocate()
 	require.NoError(t, err)
 	require.Equal(t, uint(1), reV, "expected released VNI to be available again")
+}
+
+func TestTunnelAgentPruneOrphanedConnections(t *testing.T) {
+	ctx := ctrl.LoggerInto(t.Context(), testLogr(t))
+
+	// Scheme
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1alpha2.Install(scheme))
+
+	// IPAM + VNI pool
+	systemULA := tunnet.NewULA(ctx, tunnet.SystemNetworkID)
+	agentIPAM, err := systemULA.IPAM(ctx, 96)
+	require.NoError(t, err)
+
+	vpool := vni.NewVNIPool()
+
+	// Allocate resources we'll assign to connections
+	pfxOrphaned, err := agentIPAM.Allocate()
+	require.NoError(t, err)
+	vOrphaned, err := vpool.Allocate()
+	require.NoError(t, err)
+	require.Equal(t, uint(1), vOrphaned)
+
+	pfxFresh, err := agentIPAM.Allocate()
+	require.NoError(t, err)
+	vFresh, err := vpool.Allocate()
+	require.NoError(t, err)
+	require.Equal(t, uint(2), vFresh)
+
+	// Times must be metav1.Time, not time.Time
+	now := time.Now().UTC()
+	orphaned := metav1.Time{Time: now.Add(-1 * time.Hour)} // orphaned -> should be pruned
+	fresh := metav1.Time{Time: now.Add(-1 * time.Minute)}  // fresh -> should stay
+
+	agent := &corev1alpha2.TunnelAgent{
+		TypeMeta: metav1.TypeMeta{
+			Kind:       "TunnelAgent",
+			APIVersion: "core.apoxy.dev/v1alpha2",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "agent-gc",
+		},
+		Spec: corev1alpha2.TunnelAgentSpec{
+			TunnelRef: corev1alpha2.TunnelRef{Name: "tun-any"},
+		},
+		Status: corev1alpha2.TunnelAgentStatus{
+			Connections: []corev1alpha2.TunnelAgentConnection{
+				{
+					ID:              "conn-orphaned",
+					Address:         pfxOrphaned.String(),
+					VNI:             &vOrphaned,
+					LastRXTimestamp: &orphaned,
+				},
+				{
+					ID:              "conn-fresh",
+					Address:         pfxFresh.String(),
+					VNI:             &vFresh,
+					LastRXTimestamp: &fresh,
+				},
+			},
+		},
+	}
+
+	c := fakeclient.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&corev1alpha2.Tunnel{}, &corev1alpha2.TunnelAgent{}).
+		WithObjects(agent).
+		Build()
+
+	r := controllers.NewTunnelAgentReconciler(c, agentIPAM, vpool)
+
+	// WHEN GC runs
+	require.NoError(t, r.PruneOrphanedConnections(ctx))
+
+	// THEN orphan pruned, fresh kept
+	var got corev1alpha2.TunnelAgent
+	require.NoError(t, c.Get(ctx, types.NamespacedName{Name: agent.Name}, &got))
+	require.Len(t, got.Status.Connections, 1)
+	require.Equal(t, "conn-fresh", got.Status.Connections[0].ID)
+
+	// Released resources are available again
+	rePfx, err := agentIPAM.Allocate()
+	require.NoError(t, err)
+	require.Equal(t, pfxOrphaned, rePfx)
+
+	reV, err := vpool.Allocate()
+	require.NoError(t, err)
+	require.Equal(t, vOrphaned, reV)
 }
 
 func mkAgentWithEmptyConnection(name, tunnelName string) *corev1alpha2.TunnelAgent {

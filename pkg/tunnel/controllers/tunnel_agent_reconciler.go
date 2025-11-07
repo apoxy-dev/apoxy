@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/alphadose/haxmap"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -15,11 +16,17 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	controllerlog "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	corev1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
 )
 
+// How often to push connection stats to the TunnelAgent status.
+// This is throttled to avoid overwhelming the API server.
+const statsUpdateInterval = 30 * time.Second
+
+// Each relay gets its own finalizer on the TunnelAgent object.
 const tunnelRelayFinalizerTmpl = "tunnelrelay.apoxy.dev/%s-finalizer"
 
 type TunnelAgentReconciler struct {
@@ -27,7 +34,8 @@ type TunnelAgentReconciler struct {
 	relay         Relay
 	labelSelector string
 	finalizer     string
-	conns         *haxmap.Map[string, Connection]
+	conns         *haxmap.Map[string, Connection] // id -> connection
+	connAgent     *haxmap.Map[string, string]     // id -> agent name
 }
 
 func NewTunnelAgentReconciler(c client.Client, relay Relay, labelSelector string) *TunnelAgentReconciler {
@@ -37,6 +45,7 @@ func NewTunnelAgentReconciler(c client.Client, relay Relay, labelSelector string
 		relay:     relay,
 		finalizer: finalizer,
 		conns:     haxmap.New[string, Connection](),
+		connAgent: haxmap.New[string, string](),
 	}
 	relay.SetOnConnect(r.AddConnection)
 	relay.SetOnDisconnect(r.RemoveConnection)
@@ -108,6 +117,24 @@ func (r *TunnelAgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		return fmt.Errorf("failed to create label selector predicate: %w", err)
 	}
 
+	// Periodically push connection stats to the API server.
+	err = mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
+		ticker := time.NewTicker(statsUpdateInterval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-ticker.C:
+				r.PushStatsOnce(ctx)
+			}
+		}
+	}))
+	if err != nil {
+		return err
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&corev1alpha2.TunnelAgent{}, builder.WithPredicates(&predicate.ResourceVersionChangedPredicate{}, ls)).
 		Complete(r)
@@ -117,6 +144,7 @@ func (r *TunnelAgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 func (r *TunnelAgentReconciler) AddConnection(ctx context.Context, tunnelName, agentName string, conn Connection) error {
 	// Track the connection in-memory.
 	r.conns.Set(conn.ID(), conn)
+	r.connAgent.Set(conn.ID(), agentName)
 
 	// Get the parent Tunnel object.
 	var tunnel corev1alpha2.Tunnel
@@ -211,6 +239,7 @@ func (r *TunnelAgentReconciler) RemoveConnection(ctx context.Context, agentName,
 			slog.Warn("Failed to close connection", slog.String("id", id), slog.Any("error", err))
 		}
 	}
+	r.connAgent.Del(id)
 
 	// Remove from status.connections (by ID)
 	if err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
@@ -274,4 +303,63 @@ func (r *TunnelAgentReconciler) RemoveConnection(ctx context.Context, agentName,
 		}
 		return nil
 	})
+}
+
+// pushStatsOnce performs a single stats sweep.
+// This is exposed for testing purposes.
+func (r *TunnelAgentReconciler) PushStatsOnce(ctx context.Context) {
+	// Snapshot live connection stats.
+	updatesByAgent := make(map[string][]corev1alpha2.TunnelAgentConnection)
+	r.conns.ForEach(func(id string, conn Connection) bool {
+		agentName, ok := r.connAgent.Get(id)
+		if !ok {
+			slog.Warn("Connection has no associated agent", slog.String("id", id))
+			return true // shouldn't happen, but skip safely
+		}
+
+		if s, ok := conn.Stats(); ok {
+			u := corev1alpha2.TunnelAgentConnection{
+				ID:      id,
+				RXBytes: s.RXBytes,
+				TxBytes: s.TXBytes,
+			}
+			if !s.LastRX.IsZero() {
+				t := metav1.NewTime(s.LastRX)
+				u.LastRXTimestamp = &t
+			}
+			updatesByAgent[agentName] = append(updatesByAgent[agentName], u)
+		}
+		return true
+	})
+
+	// Apply updates per agent with conflict retries.
+	for agentName, updates := range updatesByAgent {
+		_ = retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+			var cur corev1alpha2.TunnelAgent
+			if err := r.client.Get(ctx, types.NamespacedName{Name: agentName}, &cur); err != nil {
+				// If the object is gone, skip.
+				return client.IgnoreNotFound(err)
+			}
+
+			// Build a quick lookup: connection ID -> status entry.
+			connByID := make(map[string]*corev1alpha2.TunnelAgentConnection, len(cur.Status.Connections))
+			for i := range cur.Status.Connections {
+				c := &cur.Status.Connections[i]
+				connByID[c.ID] = c
+			}
+
+			// Apply stats only for known connections.
+			for _, u := range updates {
+				if c := connByID[u.ID]; c != nil {
+					c.RXBytes = u.RXBytes
+					c.TxBytes = u.TxBytes
+					if u.LastRXTimestamp != nil {
+						c.LastRXTimestamp = u.LastRXTimestamp
+					}
+				}
+			}
+
+			return r.client.Status().Update(ctx, &cur)
+		})
+	}
 }
