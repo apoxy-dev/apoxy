@@ -75,6 +75,7 @@ var (
 	autoCreate         bool
 	healthAddr         string
 	metricsAddr        string
+	overridePort       string
 
 	preserveDefaultGwDsts []netip.Prefix
 )
@@ -264,6 +265,7 @@ func (t *tunnelNodeReconciler) run(ctx context.Context, tn *corev1alpha.TunnelNo
 		tunnel.WithMode(tunnelMode),
 		tunnel.WithPreserveDefaultGatewayDestinations(preserveDefaultGwDsts),
 		tunnel.WithSocksListenAddr(socksListenAddr),
+		tunnel.WithOverridePort(overridePort),
 	)
 	if err != nil {
 		return fmt.Errorf("unable to build client router: %w", err)

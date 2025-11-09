@@ -66,6 +66,7 @@ type tunnelClientOptions struct {
 	// Userspace options
 	socksListenAddr       string
 	preserveDefaultGwDsts []netip.Prefix
+	overridePort          string
 }
 
 func defaultClientOptions() *tunnelClientOptions {
@@ -141,6 +142,14 @@ func WithPreserveDefaultGatewayDestinations(dsts []netip.Prefix) TunnelClientOpt
 	}
 }
 
+// WithOverridePort sets the destination port override for forwarded packets.
+// If empty string, the original destination port is preserved.
+func WithOverridePort(port string) TunnelClientOption {
+	return func(o *tunnelClientOptions) {
+		o.overridePort = port
+	}
+}
+
 // BuildClientRouter builds a router for the client tunnel side using provided
 // options and sane defaults.
 func BuildClientRouter(opts ...TunnelClientOption) (router.Router, error) {
@@ -173,6 +182,9 @@ func BuildClientRouter(opts ...TunnelClientOption) (router.Router, error) {
 	}
 	if options.socksListenAddr != "" {
 		routerOpts = append(routerOpts, router.WithSocksListenAddr(options.socksListenAddr))
+	}
+	if options.overridePort != "" {
+		routerOpts = append(routerOpts, router.WithOverridePort(options.overridePort))
 	}
 
 	switch options.mode {

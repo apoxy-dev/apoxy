@@ -295,6 +295,11 @@ func (tun *TunDevice) LocalAddresses() ([]netip.Prefix, error) {
 
 // ForwardTo forwards all inbound traffic to the upstream network.
 func (tun *TunDevice) ForwardTo(ctx context.Context, upstream network.Network) error {
+	return tun.ForwardToWithOptions(ctx, upstream, "")
+}
+
+// ForwardToWithOptions forwards all inbound traffic to the upstream network with optional port override.
+func (tun *TunDevice) ForwardToWithOptions(ctx context.Context, upstream network.Network, overridePort string) error {
 	// Allow outgoing packets to have a source address different from the address
 	// assigned to the NIC.
 	if tcpipErr := tun.stack.SetSpoofing(tun.nicID, true); tcpipErr != nil {
@@ -307,10 +312,10 @@ func (tun *TunDevice) ForwardTo(ctx context.Context, upstream network.Network) e
 		return fmt.Errorf("failed to enable promiscuous mode: %v", tcpipErr)
 	}
 
-	tcpForwarder := TCPForwarder(ctx, tun.stack, upstream)
+	tcpForwarder := TCPForwarder(ctx, tun.stack, upstream, overridePort)
 	tun.stack.SetTransportProtocolHandler(tcp.ProtocolNumber, tcpForwarder)
 
-	udpForwarder := UDPForwarder(ctx, tun.stack, upstream)
+	udpForwarder := UDPForwarder(ctx, tun.stack, upstream, overridePort)
 	tun.stack.SetTransportProtocolHandler(udp.ProtocolNumber, udpForwarder)
 
 	return nil
