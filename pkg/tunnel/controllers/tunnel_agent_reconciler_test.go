@@ -273,10 +273,10 @@ func TestTunnelAgentPushStatsOnce_UpdatesStatusForKnownConnection(t *testing.T) 
 	require.Len(t, got.Status.Connections, 1)
 	entry := got.Status.Connections[0]
 	assert.Equal(t, "conn-stat", entry.ID)
-	assert.Equal(t, uint64(1111), entry.RXBytes)
-	assert.Equal(t, uint64(2222), entry.TxBytes)
-	require.NotNil(t, entry.LastRXTimestamp)
-	assert.True(t, entry.LastRXTimestamp.Time.Equal(lastRX))
+	assert.Equal(t, int64(2222), *entry.RXBytes) // From the agent's perspective
+	assert.Equal(t, int64(1111), *entry.TXBytes)
+	require.NotNil(t, entry.LastRX)
+	assert.True(t, entry.LastRX.Time.Equal(lastRX))
 
 	relay.AssertExpectations(t)
 	conn.AssertExpectations(t)

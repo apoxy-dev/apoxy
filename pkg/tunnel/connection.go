@@ -85,10 +85,16 @@ func (c *connection) SetVNI(ctx context.Context, vni uint) error {
 		c.vni = nil
 	}
 
-	// Add new VNI
-	var addrs []netip.Prefix
+	var allowedRoutes []icx.Route
 	if c.overlayAddr != nil {
-		addrs = []netip.Prefix{*c.overlayAddr}
+		// Relays shouldn't have conflicting destinations, so we can use a wildcard src.
+		var src netip.Prefix
+		if c.overlayAddr.Addr().Is4() {
+			src = netip.MustParsePrefix("0.0.0.0/0")
+		} else {
+			src = netip.MustParsePrefix("::/0")
+		}
+		allowedRoutes = []icx.Route{{Src: src, Dst: *c.overlayAddr}}
 	}
 
 	fa := netstack.ToFullAddress(c.remoteAddr)
@@ -106,7 +112,7 @@ func (c *connection) SetVNI(ctx context.Context, vni uint) error {
 		}
 	}
 
-	if err := c.handler.AddVirtualNetwork(vni, fa, addrs); err != nil {
+	if err := c.handler.AddVirtualNetwork(vni, fa, allowedRoutes); err != nil {
 		return fmt.Errorf("failed to add virtual network %d: %w", vni, err)
 	}
 	c.vni = &vni
@@ -189,9 +195,18 @@ func (c *connection) SetOverlayAddress(addr string) error {
 	// Update in-memory state.
 	c.overlayAddr = &p
 
-	// 2) If a VNI is active, update its allowed prefixes in-place.
+	// Relays shouldn't have conflicting destinations, so we can use a wildcard src.
+	var src netip.Prefix
+	if c.overlayAddr.Addr().Is4() {
+		src = netip.MustParsePrefix("0.0.0.0/0")
+	} else {
+		src = netip.MustParsePrefix("::/0")
+	}
+	allowedRoutes := []icx.Route{{Src: src, Dst: p}}
+
+	// 2) If a VNI is active, update its allowed routes in-place.
 	if c.vni != nil {
-		if err := c.handler.UpdateVirtualNetworkAddrs(*c.vni, []netip.Prefix{p}); err != nil {
+		if err := c.handler.UpdateVirtualNetworkRoutes(*c.vni, allowedRoutes); err != nil {
 			// Attempt to roll back router state to old addr on failure.
 			if c.router != nil {
 				_ = c.router.DelAddr(p)
@@ -241,8 +256,8 @@ func (c *connection) Stats() (controllers.ConnectionStats, bool) {
 	}
 
 	return controllers.ConnectionStats{
-		RXBytes: vnet.Stats.RXBytes.Load(),
-		TXBytes: vnet.Stats.TXBytes.Load(),
+		RXBytes: int64(vnet.Stats.RXBytes.Load()),
+		TXBytes: int64(vnet.Stats.TXBytes.Load()),
 		LastRX:  lastRx,
 	}, true
 }

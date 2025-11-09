@@ -319,13 +319,18 @@ func (r *TunnelAgentReconciler) PushStatsOnce(ctx context.Context) {
 
 		if s, ok := conn.Stats(); ok {
 			u := corev1alpha2.TunnelAgentConnection{
-				ID:      id,
-				RXBytes: s.RXBytes,
-				TxBytes: s.TXBytes,
+				ID: id,
 			}
 			if !s.LastRX.IsZero() {
 				t := metav1.NewTime(s.LastRX)
-				u.LastRXTimestamp = &t
+				u.LastRX = &t
+			}
+			// Intentionally swap the order so transfer stats are from the agent's perspective.
+			if s.TXBytes != 0 {
+				u.RXBytes = &s.TXBytes
+			}
+			if s.RXBytes != 0 {
+				u.TXBytes = &s.RXBytes
 			}
 			updatesByAgent[agentName] = append(updatesByAgent[agentName], u)
 		}
@@ -334,7 +339,7 @@ func (r *TunnelAgentReconciler) PushStatsOnce(ctx context.Context) {
 
 	// Apply updates per agent with conflict retries.
 	for agentName, updates := range updatesByAgent {
-		_ = retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 			var cur corev1alpha2.TunnelAgent
 			if err := r.client.Get(ctx, types.NamespacedName{Name: agentName}, &cur); err != nil {
 				// If the object is gone, skip.
@@ -352,14 +357,17 @@ func (r *TunnelAgentReconciler) PushStatsOnce(ctx context.Context) {
 			for _, u := range updates {
 				if c := connByID[u.ID]; c != nil {
 					c.RXBytes = u.RXBytes
-					c.TxBytes = u.TxBytes
-					if u.LastRXTimestamp != nil {
-						c.LastRXTimestamp = u.LastRXTimestamp
+					c.TXBytes = u.TXBytes
+					if u.LastRX != nil {
+						c.LastRX = u.LastRX
 					}
 				}
 			}
 
 			return r.client.Status().Update(ctx, &cur)
 		})
+		if err != nil {
+			slog.Warn("Failed to update TunnelAgent stats", slog.String("agent", agentName), slog.Any("error", err))
+		}
 	}
 }
