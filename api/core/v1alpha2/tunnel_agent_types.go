@@ -58,6 +58,19 @@ type TunnelAgentConnection struct {
 	// VNI is the 24-bit virtual network identifier used for this connection, if applicable.
 	// +optional
 	VNI *uint `json:"vni,omitempty,omitzero"`
+
+	// LastRXTimestamp is the last time a packet was received from the agent on
+	// this connection.
+	// +optional
+	LastRXTimestamp *metav1.Time `json:"lastRxTimestamp,omitempty,omitzero"`
+
+	// RXBytes is the total number of bytes received from the agent on this connection.
+	// +optional
+	RXBytes uint64 `json:"rxBytes,omitempty,omitzero"`
+
+	// TXBytes is the total number of bytes transmitted to the agent on this connection.
+	// +optional
+	TxBytes uint64 `json:"txBytes,omitempty,omitzero"`
 }
 
 // TunnelAgentStatus represents the status of a tunnel agent.

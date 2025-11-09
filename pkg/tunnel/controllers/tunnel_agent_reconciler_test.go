@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/netip"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -230,6 +231,57 @@ func TestTunnelAgentReconcile_SetsAddressAndVNI(t *testing.T) {
 	relay.AssertExpectations(t)
 }
 
+func TestTunnelAgentPushStatsOnce_UpdatesStatusForKnownConnection(t *testing.T) {
+	ctx := ctrl.LoggerInto(t.Context(), testLogr(t))
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1alpha2.Install(scheme))
+
+	tunnel := mkTunnel("tun-stats")
+	agent := mkAgent("tun-stats", "agent-stats")
+
+	c := fakeclient.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&corev1alpha2.Tunnel{}, &corev1alpha2.TunnelAgent{}).
+		WithObjects(tunnel, agent).
+		Build()
+
+	relay := &mockRelay{}
+	relay.On("Name").Return("relay-stats")
+	relay.On("Address").Return(netip.MustParseAddrPort("203.0.113.30:443"))
+	relay.On("SetOnConnect", mock.Anything).Return().Once()
+	relay.On("SetOnDisconnect", mock.Anything).Return().Once()
+
+	r := controllers.NewTunnelAgentReconciler(c, relay, "")
+
+	conn := &mockConn{}
+	conn.On("ID").Return("conn-stat").Maybe()
+
+	require.NoError(t, r.AddConnection(ctx, tunnel.Name, agent.Name, conn))
+
+	lastRX := time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC)
+	conn.On("Stats").Return(controllers.ConnectionStats{
+		RXBytes: 1111,
+		TXBytes: 2222,
+		LastRX:  lastRX,
+	}, true).Once()
+
+	r.PushStatsOnce(ctx)
+
+	var got corev1alpha2.TunnelAgent
+	require.NoError(t, c.Get(ctx, types.NamespacedName{Name: agent.Name}, &got))
+	require.Len(t, got.Status.Connections, 1)
+	entry := got.Status.Connections[0]
+	assert.Equal(t, "conn-stat", entry.ID)
+	assert.Equal(t, uint64(1111), entry.RXBytes)
+	assert.Equal(t, uint64(2222), entry.TxBytes)
+	require.NotNil(t, entry.LastRXTimestamp)
+	assert.True(t, entry.LastRXTimestamp.Time.Equal(lastRX))
+
+	relay.AssertExpectations(t)
+	conn.AssertExpectations(t)
+}
+
 func mkTunnel(tunnelName string) *corev1alpha2.Tunnel {
 	return &corev1alpha2.Tunnel{
 		TypeMeta: metav1.TypeMeta{
@@ -276,6 +328,11 @@ func (m *mockConn) SetOverlayAddress(addr string) error {
 func (m *mockConn) SetVNI(ctx context.Context, v uint) error {
 	args := m.Called(ctx, v)
 	return args.Error(0)
+}
+
+func (m *mockConn) Stats() (controllers.ConnectionStats, bool) {
+	args := m.Called()
+	return args.Get(0).(controllers.ConnectionStats), args.Bool(1)
 }
 
 func (m *mockConn) Close() error {

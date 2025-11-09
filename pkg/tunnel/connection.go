@@ -218,3 +218,31 @@ func (c *connection) SetOverlayAddress(addr string) error {
 func (c *connection) IncrementKeyEpoch() uint32 {
 	return c.keyEpoch.Add(1)
 }
+
+// Stats returns a snapshot built from the currently configured VNI (if any).
+func (c *connection) Stats() (controllers.ConnectionStats, bool) {
+	c.mu.Lock()
+
+	if c.vni == nil || c.handler == nil {
+		c.mu.Unlock()
+		return controllers.ConnectionStats{}, false
+	}
+	c.mu.Unlock()
+
+	vnet, ok := c.handler.GetVirtualNetwork(*c.vni)
+	if !ok || vnet == nil {
+		return controllers.ConnectionStats{}, false
+	}
+
+	var lastRx time.Time
+	nano := vnet.Stats.LastRXUnixNano.Load()
+	if nano > 0 {
+		lastRx = time.Unix(0, nano)
+	}
+
+	return controllers.ConnectionStats{
+		RXBytes: vnet.Stats.RXBytes.Load(),
+		TXBytes: vnet.Stats.TXBytes.Load(),
+		LastRX:  lastRx,
+	}, true
+}

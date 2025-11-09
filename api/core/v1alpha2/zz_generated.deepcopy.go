@@ -1414,6 +1414,10 @@ func (in *TunnelAgentConnection) DeepCopyInto(out *TunnelAgentConnection) {
 		*out = new(uint)
 		**out = **in
 	}
+	if in.LastRXTimestamp != nil {
+		in, out := &in.LastRXTimestamp, &out.LastRXTimestamp
+		*out = (*in).DeepCopy()
+	}
 	return
 }
 

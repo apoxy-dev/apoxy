@@ -5358,6 +5358,26 @@ func schema_apoxy_api_core_v1alpha2_TunnelAgentConnection(ref common.ReferenceCa
 							Format:      "int32",
 						},
 					},
+					"lastRxTimestamp": {
+						SchemaProps: spec.SchemaProps{
+							Description: "LastRXTimestamp is the last time a packet was received from the agent on this connection.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+						},
+					},
+					"rxBytes": {
+						SchemaProps: spec.SchemaProps{
+							Description: "RXBytes is the total number of bytes received from the agent on this connection.",
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
+					"txBytes": {
+						SchemaProps: spec.SchemaProps{
+							Description: "TXBytes is the total number of bytes transmitted to the agent on this connection.",
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
 				},
 				Required: []string{"id"},
 			},
