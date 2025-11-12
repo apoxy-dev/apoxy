@@ -192,16 +192,16 @@ func TestTunnelAgentPruneOrphanedConnections(t *testing.T) {
 		Status: corev1alpha2.TunnelAgentStatus{
 			Connections: []corev1alpha2.TunnelAgentConnection{
 				{
-					ID:              "conn-orphaned",
-					Address:         pfxOrphaned.String(),
-					VNI:             &vOrphaned,
-					LastRXTimestamp: &orphaned,
+					ID:      "conn-orphaned",
+					Address: pfxOrphaned.String(),
+					VNI:     &vOrphaned,
+					LastRX:  &orphaned,
 				},
 				{
-					ID:              "conn-fresh",
-					Address:         pfxFresh.String(),
-					VNI:             &vFresh,
-					LastRXTimestamp: &fresh,
+					ID:      "conn-fresh",
+					Address: pfxFresh.String(),
+					VNI:     &vFresh,
+					LastRX:  &fresh,
 				},
 			},
 		},

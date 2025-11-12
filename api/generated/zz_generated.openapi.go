@@ -5358,9 +5358,9 @@ func schema_apoxy_api_core_v1alpha2_TunnelAgentConnection(ref common.ReferenceCa
 							Format:      "int32",
 						},
 					},
-					"lastRxTimestamp": {
+					"lastRx": {
 						SchemaProps: spec.SchemaProps{
-							Description: "LastRXTimestamp is the last time a packet was received from the agent on this connection.",
+							Description: "LastRX is the last time a packet was received from the agent on this connection.",
 							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
 						},
 					},

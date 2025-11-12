@@ -9,9 +9,9 @@ import (
 // ConnectionStats is a lightweight snapshot of connection counters.
 type ConnectionStats struct {
 	// RXBytes is the total number of bytes received on this connection.
-	RXBytes uint64
+	RXBytes int64
 	// TXBytes is the total number of bytes transmitted on this connection.
-	TXBytes uint64
+	TXBytes int64
 	// LastRX is the last time a packet was received on this connection.
 	// The zero value indicates that no packets have been received.
 	LastRX time.Time
