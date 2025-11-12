@@ -3,6 +3,7 @@ package v1alpha2
 import (
 	"context"
 	"encoding/base64"
+	"path/filepath"
 	"strings"
 
 	runtime "k8s.io/apimachinery/pkg/runtime"
@@ -59,73 +60,112 @@ func (r *EdgeFunction) validate() field.ErrorList {
 	spec := r.Spec
 
 	if spec.Template.Mode != "" && spec.Template.Mode != FilterEdgeFunctionMode && spec.Template.Mode != BackendEdgeFunctionMode {
-		errs = append(errs, field.Invalid(field.NewPath("spec").Child("template").Child("mode"), r, "mode must be either 'filter' or 'backend'"))
+		errs = append(errs,
+			field.Invalid(field.NewPath("spec").Child("template").Child("mode"),
+				r.Spec.Template.Mode, "mode must be either 'filter' or 'backend'"))
 	}
 
 	if spec.Template.Code.GoPluginSource != nil && (spec.Template.Mode != FilterEdgeFunctionMode && spec.Template.Mode != "") {
-		errs = append(errs, field.Invalid(field.NewPath("spec").Child("template").Child("code").Child("goPluginSource"), r, "goPluginSource can only be specified when mode is 'filter'"))
+		errs = append(errs,
+			field.Forbidden(field.NewPath("spec").Child("template").Child("code").Child("goPluginSource"),
+				"goPluginSource can only be specified when mode is 'filter'"))
 	}
 
 	if spec.Template.Mode == FilterEdgeFunctionMode && spec.Template.Runtime != nil && spec.Template.Runtime.Port != nil {
-		errs = append(errs, field.Invalid(field.NewPath("spec").Child("template").Child("runtime").Child("port"), r, "port cannot be specified when mode is 'filter'"))
+		errs = append(errs,
+			field.Forbidden(field.NewPath("spec").Child("template").Child("runtime").Child("port"),
+				"port cannot be specified when mode is 'filter'"))
 	}
 
 	if spec.Template.Code.GoPluginSource == nil && spec.Template.Code.JsSource == nil &&
 		spec.Template.Code.WasmSource == nil {
-		errs = append(errs, field.Invalid(field.NewPath("spec").Child("template").Child("code"), r, "code.goPluginSource, code.jsSource, or code.wasmSource must be specified"))
+		errs = append(errs,
+			field.Required(field.NewPath("spec").Child("template").Child("code"),
+				"goPluginSource, jsSource, or wasmSource must be specified"))
 	}
 	if spec.Template.Code.GoPluginSource != nil {
 		if spec.Template.Code.JsSource != nil || spec.Template.Code.WasmSource != nil {
-			errs = append(errs, field.Invalid(field.NewPath("spec").Child("template").Child("code"), r, "code.jsSource and code.wasmSource cannot be specified when code.goPluginSource is specified"))
+			errs = append(errs,
+				field.Forbidden(field.NewPath("spec").Child("template").Child("code"),
+					"jsSource and wasmSource cannot be specified when goPluginSource is specified"))
 		}
 
 		if spec.Template.Code.GoPluginSource.OCI == nil && spec.Template.Code.GoPluginSource.URL == nil {
-			errs = append(errs, field.Invalid(field.NewPath("spec").Child("template").Child("code").Child("goPluginSource"), r, "code.goPluginSource.oci or code.goPluginSource.url must be specified"))
+			errs = append(errs,
+				field.Required(field.NewPath("spec").Child("template").Child("code").Child("goPluginSource"),
+					"specific source must be specified"))
 		}
 		if spec.Template.Code.GoPluginSource.OCI != nil && spec.Template.Code.GoPluginSource.URL != nil {
-			errs = append(errs, field.Invalid(field.NewPath("spec").Child("template").Child("code").Child("goPluginSource"), r, "code.goPluginSource.oci and code.goPluginSource.url cannot both be specified"))
+			errs = append(errs,
+				field.Forbidden(field.NewPath("spec").Child("template").Child("code").Child("goPluginSource"),
+					"OCI and URL sources cannot both be specified"))
 		}
 		if spec.Template.Code.GoPluginSource.OCI != nil {
 			if spec.Template.Code.GoPluginSource.OCI.Repo == "" {
-				errs = append(errs, field.Invalid(field.NewPath("spec").Child("template").Child("code").Child("goPluginSource").Child("oci").Child("repo"), r, "code.goPluginSource.oci.repo must be specified"))
+				errs = append(errs,
+					field.Required(field.NewPath("spec").Child("template").Child("code").Child("goPluginSource").Child("oci").Child("repo"),
+						"OCI repository must be specified"))
 			}
 			if spec.Template.Code.GoPluginSource.OCI.Credentials != nil && spec.Template.Code.GoPluginSource.OCI.CredentialsRef != nil {
-				errs = append(errs, field.Invalid(field.NewPath("spec").Child("template").Child("code").Child("goPluginSource").Child("oci"), r, "code.goPluginSource.oci.credentials and code.goPluginSource.oci.credentialsRef cannot both be specified"))
+				errs = append(errs,
+					field.Forbidden(field.NewPath("spec").Child("template").Child("code").Child("goPluginSource").Child("oci"),
+						"credentials and credentialsRef cannot both be specified"))
 			}
 		}
 	} else if spec.Template.Code.JsSource != nil {
 		if spec.Template.Code.GoPluginSource != nil || spec.Template.Code.WasmSource != nil {
-			errs = append(errs, field.Invalid(field.NewPath("spec").Child("template").Child("code"), r, "code.goPluginSource and code.wasmSource cannot be specified when code.jsSource is specified"))
+			errs = append(errs,
+				field.Forbidden(field.NewPath("spec").Child("template").Child("code"),
+					"goPluginSource and wasmSource cannot be specified when jsSource is specified"))
 		}
 
 		if spec.Template.Code.JsSource.Assets == nil && spec.Template.Code.JsSource.Git == nil && spec.Template.Code.JsSource.Npm == nil {
-			errs = append(errs, field.Invalid(field.NewPath("spec").Child("template").Child("code").Child("jsSource"), r, "code.jsSource.assets or code.jsSource.url must be specified"))
+			errs = append(errs,
+				field.Required(field.NewPath("spec").Child("template").Child("code").Child("jsSource"),
+					"assets, git, or npm source must be specified"))
 		}
 
 		if spec.Template.Code.JsSource.Assets != nil && spec.Template.Code.JsSource.Git != nil {
-			errs = append(errs, field.Invalid(field.NewPath("spec").Child("template").Child("code").Child("jsSource"), r, "code.jsSource.assets and code.jsSource.git cannot both be specified"))
+			errs = append(errs,
+				field.Forbidden(field.NewPath("spec").Child("template").Child("code").Child("jsSource"),
+					"assets and git sources cannot both be specified"))
 		}
 		if spec.Template.Code.JsSource.Assets != nil && spec.Template.Code.JsSource.Npm != nil {
-			errs = append(errs, field.Invalid(field.NewPath("spec").Child("template").Child("code").Child("jsSource"), r, "code.jsSource.assets and code.jsSource.npm cannot both be specified"))
+			errs = append(errs,
+				field.Forbidden(field.NewPath("spec").Child("template").Child("code").Child("jsSource"),
+					"assets and npm sources cannot both be specified"))
 		}
 		if spec.Template.Code.JsSource.Git != nil && spec.Template.Code.JsSource.Npm != nil {
-			errs = append(errs, field.Invalid(field.NewPath("spec").Child("template").Child("code").Child("jsSource"), r, "code.jsSource.git and code.jsSource.npm cannot both be specified"))
+			errs = append(errs,
+				field.Forbidden(field.NewPath("spec").Child("template").Child("code").Child("jsSource"),
+					"git and npm sources cannot both be specified"))
 		}
 
 		if spec.Template.Code.JsSource.Assets != nil {
-			for _, f := range spec.Template.Code.JsSource.Assets.Files {
+			for i, f := range spec.Template.Code.JsSource.Assets.Files {
 				if f.Path == "" {
-					errs = append(errs, field.Invalid(field.NewPath("spec").Child("template").Child("code").Child("jsSource").Child("assets").Child("files").Child("path"), r, "code.jsSource.assets.files.path must be specified"))
+					errs = append(errs,
+						field.Required(field.NewPath("spec").Child("template").Child("code").Child("jsSource").Child("assets").Child("files").Index(i).Child("path"),
+							"path must be specified"))
 				}
 				if f.Content == "" {
-					errs = append(errs, field.Invalid(field.NewPath("spec").Child("template").Child("code").Child("jsSource").Child("assets").Child("files").Child("content"), r, "code.jsSource.assets.files.content must be specified"))
+					errs = append(errs,
+						field.Required(field.NewPath("spec").Child("template").Child("code").Child("jsSource").Child("assets").Child("files").Index(i).Child("content"),
+							"content must be specified"))
 				}
 
-				if f.Path == ".." || strings.HasPrefix(f.Path, "../") {
-					errs = append(errs, field.Invalid(field.NewPath("spec").Child("template").Child("code").Child("jsSource").Child("assets").Child("files").Child("path"), r, "code.jsSource.assets.files.path cannot start with '..'"))
+				cleanPath := filepath.Clean(f.Path)
+				if cleanPath != f.Path && strings.Contains(cleanPath, "..") {
+					errs = append(errs,
+						field.Invalid(field.NewPath("spec").Child("template").Child("code").Child("jsSource").Child("assets").Child("files").Index(i).Child("path"),
+							f.Path,
+							"path segment cannot contain '..'"))
 				}
-				if strings.Contains(f.Path, "\\") {
-					errs = append(errs, field.Invalid(field.NewPath("spec").Child("template").Child("code").Child("jsSource").Child("assets").Child("files").Child("path"), r, "code.jsSource.assets.files.path cannot contain backslashes"))
+				if filepath.IsAbs(f.Path) {
+					errs = append(errs,
+						field.Invalid(field.NewPath("spec").Child("template").Child("code").Child("jsSource").Child("assets").Child("files").Index(i).Child("path"),
+							f.Path,
+							"path must be relative"))
 				}
 			}
 		}

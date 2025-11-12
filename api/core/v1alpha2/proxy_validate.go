@@ -33,9 +33,8 @@ func (r *Proxy) validate() field.ErrorList {
 
 	if spec.Shutdown.MinimumDrainTime.Duration > spec.Shutdown.DrainTimeout.Duration {
 		errs = append(errs,
-			field.Invalid(
+			field.Forbidden(
 				field.NewPath("spec", "shutdown", "minimumDrainTime"),
-				r.Spec.Shutdown.MinimumDrainTime.Duration,
 				"minimumDrainTime must be less than or equal to drainTimeout"))
 	}
 

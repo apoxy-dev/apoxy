@@ -48,16 +48,16 @@ func (r *Domain) validate() field.ErrorList {
 	if r.Spec.TLS != nil {
 		ca := r.Spec.TLS.CertificateAuthority
 		if ca != "" && ca != "letsencrypt" {
-			errs = append(errs, field.Invalid(field.NewPath("spec").Child("tls").Child("certificateAuthority"), r, "unsupported certificate authority"))
+			errs = append(errs, field.Forbidden(field.NewPath("spec").Child("tls").Child("certificateAuthority"), "unsupported certificate authority"))
 		}
 	}
 
 	if r.Spec.Target.DNS != nil {
 		if r.Spec.Target.DNS.FQDN != nil && len(r.Spec.Target.DNS.IPs) > 0 {
-			errs = append(errs, field.Invalid(field.NewPath("spec").Child("target").Child("dns").Child("fqdn"), r, "cannot set both FQDN and IPs in DNS target configuration"))
+			errs = append(errs, field.Forbidden(field.NewPath("spec").Child("target").Child("dns").Child("fqdn"), "cannot set both FQDN and IPs in DNS target configuration"))
 		}
 		if r.Spec.Target.Ref != nil && (r.Spec.Target.DNS.FQDN != nil || len(r.Spec.Target.DNS.IPs) > 0) {
-			errs = append(errs, field.Invalid(field.NewPath("spec").Child("target").Child("ref"), r, "cannot set both Ref and FQDN/IPs in DNS target configuration"))
+			errs = append(errs, field.Forbidden(field.NewPath("spec").Child("target").Child("ref"), "cannot set both Ref and FQDN/IPs in DNS target configuration"))
 		}
 	}
 	return errs

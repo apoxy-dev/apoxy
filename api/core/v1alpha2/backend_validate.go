@@ -40,12 +40,12 @@ func (r *Backend) validate() field.ErrorList {
 		errs = append(errs, field.Required(field.NewPath("spec", "endpoints"), "endpoints cannot be empty"))
 	}
 	if r.Spec.DynamicProxy != nil && len(r.Spec.Endpoints) > 1 {
-		errs = append(errs, field.Invalid(field.NewPath("spec", "endpoints"), r.Spec.Endpoints, "only one endpoint can be specified"))
+		errs = append(errs, field.Forbidden(field.NewPath("spec", "endpoints"), "only one endpoint can be specified"))
 	}
 
 	for i, endpoint := range r.Spec.Endpoints {
 		if endpoint.IP != "" && endpoint.FQDN != "" {
-			errs = append(errs, field.Invalid(field.NewPath("spec", "endpoints", fmt.Sprintf("[%d]", i), "ip"), endpoint.IP, "ip and fqdn cannot be specified together"))
+			errs = append(errs, field.Forbidden(field.NewPath("spec", "endpoints", fmt.Sprintf("[%d]", i), "ip"), "ip and fqdn cannot be specified together"))
 		}
 
 		if endpoint.IP != "" {
