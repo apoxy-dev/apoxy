@@ -21,8 +21,7 @@ limitations under the License.
 package gatewayapi
 
 import (
-	controllersv1alpha1 "github.com/apoxy-dev/apoxy/api/controllers/v1alpha1"
-	v1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
+	corev1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
 	extensionsv1alpha2 "github.com/apoxy-dev/apoxy/api/extensions/v1alpha2"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
@@ -215,22 +214,22 @@ func (in *Resources) DeepCopyInto(out *Resources) {
 	}
 	if in.Backends != nil {
 		in, out := &in.Backends, &out.Backends
-		*out = make([]*v1alpha.Backend, len(*in))
+		*out = make([]*corev1alpha2.Backend, len(*in))
 		for i := range *in {
 			if (*in)[i] != nil {
 				in, out := &(*in)[i], &(*out)[i]
-				*out = new(v1alpha.Backend)
+				*out = new(corev1alpha2.Backend)
 				(*in).DeepCopyInto(*out)
 			}
 		}
 	}
 	if in.Proxies != nil {
 		in, out := &in.Proxies, &out.Proxies
-		*out = make([]*controllersv1alpha1.Proxy, len(*in))
+		*out = make([]*corev1alpha2.Proxy, len(*in))
 		for i := range *in {
 			if (*in)[i] != nil {
 				in, out := &(*in)[i], &(*out)[i]
-				*out = new(controllersv1alpha1.Proxy)
+				*out = new(corev1alpha2.Proxy)
 				(*in).DeepCopyInto(*out)
 			}
 		}

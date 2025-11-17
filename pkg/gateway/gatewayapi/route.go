@@ -27,7 +27,7 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/log"
 	apoxynet "github.com/apoxy-dev/apoxy/pkg/net"
 
-	"github.com/apoxy-dev/apoxy/api/core/v1alpha"
+	v1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
 	extensionsv1alpha2 "github.com/apoxy-dev/apoxy/api/extensions/v1alpha2"
 	agwapiv1a1 "github.com/apoxy-dev/apoxy/api/gateway/v1"
 )
@@ -1562,14 +1562,14 @@ func (t *Translator) processBackendDestinationSetting(backendRef gwapiv1.Backend
 	}
 
 	switch backend.Spec.Protocol {
-	case v1alpha.BackendProtoH2:
+	case v1alpha2.BackendProtoH2:
 		ds.Protocol = ir.HTTP2
 		ds.TLS = &ir.TLSUpstreamConfig{
 			UseSystemTrustStore: true,
 		}
-	case v1alpha.BackendProtoH2C:
+	case v1alpha2.BackendProtoH2C:
 		ds.Protocol = ir.HTTP2
-	case v1alpha.BackendProtoTLS:
+	case v1alpha2.BackendProtoTLS:
 		ds.Protocol = ir.HTTP
 		ds.TLS = &ir.TLSUpstreamConfig{
 			UseSystemTrustStore: true,

@@ -1,12 +1,13 @@
 package gatewayapi
 
 import (
-	apoxy_v1alpha1 "github.com/apoxy-dev/apoxy/api/controllers/v1alpha1"
+	envoy_v1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
+	gwapiv1 "sigs.k8s.io/gateway-api/apis/v1"
+
+	apoxy_v1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
 	"github.com/apoxy-dev/apoxy/pkg/backplane/otel"
 	"github.com/apoxy-dev/apoxy/pkg/gateway/ir"
 	"github.com/apoxy-dev/apoxy/pkg/log"
-	envoy_v1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
-	gwapiv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
 // processTracing processes the tracing configuration from the proxy spec
@@ -14,7 +15,7 @@ import (
 // is returned with the ServiceName of envoy-backplane and the Destination set
 // to emit data to localhost:4317. The Tags set in the ProxyTracing struct
 // are mapped to appropriate CustomTags.
-func (t *Translator) processTracing(gateway *gwapiv1.Gateway, proxies []*apoxy_v1alpha1.Proxy) *ir.Tracing {
+func (t *Translator) processTracing(gateway *gwapiv1.Gateway, proxies []*apoxy_v1alpha2.Proxy) *ir.Tracing {
 	if gateway.Spec.Infrastructure == nil ||
 		gateway.Spec.Infrastructure.ParametersRef == nil ||
 		gateway.Spec.Infrastructure.ParametersRef.Kind != "Proxy" {
@@ -24,9 +25,9 @@ func (t *Translator) processTracing(gateway *gwapiv1.Gateway, proxies []*apoxy_v
 		if proxy.Name != gateway.Spec.Infrastructure.ParametersRef.Name {
 			continue
 		}
-		if proxy.Spec.Monitoring == nil ||
-			proxy.Spec.Monitoring.Tracing == nil ||
-			!proxy.Spec.Monitoring.Tracing.Enabled {
+		if proxy.Spec.Telemetry == nil ||
+			proxy.Spec.Telemetry.Tracing == nil ||
+			!proxy.Spec.Telemetry.Tracing.Enabled {
 			return nil
 		}
 		log.Infof("Enabling tracing for proxy %s", proxy.Name)
@@ -52,9 +53,9 @@ func (t *Translator) processTracing(gateway *gwapiv1.Gateway, proxies []*apoxy_v
 		}
 
 		// Process custom tags if any
-		if len(proxy.Spec.Monitoring.Tracing.Tags) > 0 {
+		if len(proxy.Spec.Telemetry.Tracing.Tags) > 0 {
 			tracing.CustomTags = make(map[string]envoy_v1alpha1.CustomTag)
-			for tagName, tagValue := range proxy.Spec.Monitoring.Tracing.Tags {
+			for tagName, tagValue := range proxy.Spec.Telemetry.Tracing.Tags {
 				if tagValue.Header != "" {
 					// If header is specified, use RequestHeader tag type
 					tracing.CustomTags[tagName] = envoy_v1alpha1.CustomTag{

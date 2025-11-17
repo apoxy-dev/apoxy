@@ -28,8 +28,7 @@ import (
 	gatewayapirunner "github.com/apoxy-dev/apoxy/pkg/gateway/gatewayapi/runner"
 	"github.com/apoxy-dev/apoxy/pkg/gateway/message"
 
-	ctrlv1alpha1 "github.com/apoxy-dev/apoxy/api/controllers/v1alpha1"
-	corev1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
+	corev1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
 	extensionsv1alpha2 "github.com/apoxy-dev/apoxy/api/extensions/v1alpha2"
 	gatewayv1 "github.com/apoxy-dev/apoxy/api/gateway/v1"
 )
@@ -230,7 +229,7 @@ func (r *GatewayReconciler) reconcileGateways(
 		}
 
 		// Check if the Proxy object actually exists.
-		var proxy ctrlv1alpha1.Proxy
+		var proxy corev1alpha2.Proxy
 		pn := types.NamespacedName{Name: gw.Spec.Infrastructure.ParametersRef.Name}
 		if err := r.Get(ctx, pn, &proxy); err != nil {
 			return fmt.Errorf("failed to get Proxy %s: %w", pn, err)
@@ -380,7 +379,7 @@ func (r *GatewayReconciler) reconcileBackends(
 ) error {
 	log := clog.FromContext(ctx)
 
-	var bl corev1alpha.BackendList
+	var bl corev1alpha2.BackendList
 	if err := r.List(ctx, &bl); err != nil {
 		return fmt.Errorf("failed to list Backends: %w", err)
 	}
@@ -535,7 +534,7 @@ func (r *GatewayReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manag
 			builder.WithPredicates(predicate.ResourceVersionChangedPredicate{}),
 		).
 		Watches(
-			&corev1alpha.Backend{},
+			&corev1alpha2.Backend{},
 			handler.EnqueueRequestsFromMapFunc(r.enqueueClass),
 			builder.WithPredicates(predicate.ResourceVersionChangedPredicate{}),
 		).

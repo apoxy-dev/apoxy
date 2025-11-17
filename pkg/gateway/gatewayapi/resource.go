@@ -20,8 +20,7 @@ import (
 
 	"github.com/apoxy-dev/apoxy/pkg/gateway/ir"
 
-	ctrlv1alpha1 "github.com/apoxy-dev/apoxy/api/controllers/v1alpha1"
-	corev1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
+	corev1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
 	extensionsv1alpha2 "github.com/apoxy-dev/apoxy/api/extensions/v1alpha2"
 )
 
@@ -50,8 +49,8 @@ type Resources struct {
 	ExtensionRefFilters   []unstructured.Unstructured                `json:"extensionRefFilters,omitempty" yaml:"extensionRefFilters,omitempty"`
 	EdgeFunctionBackends  []*extensionsv1alpha2.EdgeFunction         `json:"edgeFunctionBackends,omitempty" yaml:"edgeFunctionBackends,omitempty"`
 	EdgeFunctionRevisions []*extensionsv1alpha2.EdgeFunctionRevision `json:"edgeFunctionFilters,omitempty" yaml:"edgeFunctionFilters,omitempty"`
-	Backends              []*corev1alpha.Backend                     `json:"backends,omitempty" yaml:"backends,omitempty"`
-	Proxies               []*ctrlv1alpha1.Proxy                      `json:"proxies,omitempty" yaml:"proxies,omitempty"`
+	Backends              []*corev1alpha2.Backend                    `json:"backends,omitempty" yaml:"backends,omitempty"`
+	Proxies               []*corev1alpha2.Proxy                      `json:"proxies,omitempty" yaml:"proxies,omitempty"`
 }
 
 func NewResources() *Resources {
@@ -148,7 +147,7 @@ func (r *Resources) GetEdgeFunctionBackend(name string) *extensionsv1alpha2.Edge
 	return nil
 }
 
-func (r *Resources) GetBackend(name string) *corev1alpha.Backend {
+func (r *Resources) GetBackend(name string) *corev1alpha2.Backend {
 	for _, backend := range r.Backends {
 		if backend.Name == name {
 			return backend
@@ -157,7 +156,7 @@ func (r *Resources) GetBackend(name string) *corev1alpha.Backend {
 	return nil
 }
 
-func (r *Resources) GetProxy(name string) (*ctrlv1alpha1.Proxy, bool) {
+func (r *Resources) GetProxy(name string) (*corev1alpha2.Proxy, bool) {
 	for _, proxy := range r.Proxies {
 		if proxy.Name == name {
 			return proxy, true
