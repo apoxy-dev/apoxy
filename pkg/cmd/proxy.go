@@ -4,21 +4,30 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/exp/slog"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/cli-runtime/pkg/printers"
 
-	"github.com/apoxy-dev/apoxy/api/controllers/v1alpha1"
 	"github.com/apoxy-dev/apoxy/config"
 	"github.com/apoxy-dev/apoxy/pkg/cmd/utils"
-	"github.com/apoxy-dev/apoxy/pretty"
 	"github.com/apoxy-dev/apoxy/rest"
+
+	corev1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
 )
 
-var showProxyLabels bool
+var (
+	// showProxyLabels is a flag to show labels in the output.
+	showProxyLabels bool
+	// proxyFile is a flag that specifies the file to read the configuration from.
+	proxyFile string
+)
 
 func labelsToString(labels map[string]string) string {
 	var l []string
@@ -28,74 +37,129 @@ func labelsToString(labels map[string]string) string {
 	return strings.Join(l, ",")
 }
 
-func buildAlphaProxyRow(r *v1alpha1.Proxy, labels bool) []interface{} {
-	if labels {
-		return []interface{}{
-			r.Name,
-			r.Spec.Provider,
-			r.Status.Phase,
-			pretty.SinceString(r.CreationTimestamp.Time),
-			labelsToString(r.Labels),
+// sinceString returns a string representation of a time.Duration since the provided time.Time.
+func sinceString(t time.Time) string {
+	d := time.Since(t).Round(time.Second)
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	} else if d < time.Hour {
+		return fmt.Sprintf("%dm%ds", int(d.Minutes()), int(d.Seconds())%60)
+	} else if d < 24*time.Hour {
+		return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
+	} else {
+		return fmt.Sprintf("%dd%dh", int(d.Hours()/24), int(d.Hours())%24)
+	}
+}
+
+func getProxyTablePrinter(showLabels bool) printers.ResourcePrinter {
+	printer := printers.NewTablePrinter(printers.PrintOptions{})
+
+	// Define columns based on whether labels are shown
+	var columnDefinitions []metav1.TableColumnDefinition
+	if showLabels {
+		columnDefinitions = []metav1.TableColumnDefinition{
+			{Name: "NAME", Type: "string"},
+			{Name: "PROVIDER", Type: "string"},
+			{Name: "REPLICAS", Type: "string"},
+			{Name: "AGE", Type: "string"},
+			{Name: "LABELS", Type: "string"},
+		}
+	} else {
+		columnDefinitions = []metav1.TableColumnDefinition{
+			{Name: "NAME", Type: "string"},
+			{Name: "PROVIDER", Type: "string"},
+			{Name: "REPLICAS", Type: "string"},
+			{Name: "AGE", Type: "string"},
 		}
 	}
-	return []interface{}{
-		r.Name,
-		r.Spec.Provider,
-		r.Status.Phase,
-		pretty.SinceString(r.CreationTimestamp.Time),
-	}
-}
 
-func buildAlphaProxyHeader(labels bool) pretty.Header {
-	if labels {
-		return pretty.Header{
-			"NAME",
-			"PROVIDER",
-			"STATUS",
-			"AGE",
-			"LABELS",
+	// Custom print function for Proxy
+	proxyPrintFunc := func(obj runtime.Object, w io.Writer) error {
+		proxy, ok := obj.(*corev1alpha2.Proxy)
+		if !ok {
+			return fmt.Errorf("expected *corev1alpha2.Proxy, got %T", obj)
 		}
+
+		table := &metav1.Table{
+			ColumnDefinitions: columnDefinitions,
+		}
+
+		replicaCount := fmt.Sprintf("%d", len(proxy.Status.Replicas))
+		row := metav1.TableRow{
+			Cells: []interface{}{
+				proxy.Name,
+				proxy.Spec.Provider,
+				replicaCount,
+				sinceString(proxy.CreationTimestamp.Time),
+			},
+		}
+		if showLabels {
+			row.Cells = append(row.Cells, labelsToString(proxy.Labels))
+		}
+		table.Rows = append(table.Rows, row)
+
+		return printer.PrintObj(table, w)
 	}
-	return pretty.Header{
-		"NAME",
-		"PROVIDER",
-		"STATUS",
-		"AGE",
+
+	// Custom print function for ProxyList
+	proxyListPrintFunc := func(obj runtime.Object, w io.Writer) error {
+		list, ok := obj.(*corev1alpha2.ProxyList)
+		if !ok {
+			return fmt.Errorf("expected *corev1alpha2.ProxyList, got %T", obj)
+		}
+
+		table := &metav1.Table{
+			ColumnDefinitions: columnDefinitions,
+		}
+
+		for _, proxy := range list.Items {
+			replicaCount := fmt.Sprintf("%d", len(proxy.Status.Replicas))
+			row := metav1.TableRow{
+				Cells: []interface{}{
+					proxy.Name,
+					proxy.Spec.Provider,
+					replicaCount,
+					sinceString(proxy.CreationTimestamp.Time),
+				},
+			}
+			if showLabels {
+				row.Cells = append(row.Cells, labelsToString(proxy.Labels))
+			}
+			table.Rows = append(table.Rows, row)
+		}
+
+		return printer.PrintObj(table, w)
 	}
+
+	// Return a delegating printer that handles both types
+	return printers.ResourcePrinterFunc(func(obj runtime.Object, w io.Writer) error {
+		switch obj.(type) {
+		case *corev1alpha2.Proxy:
+			return proxyPrintFunc(obj, w)
+		case *corev1alpha2.ProxyList:
+			return proxyListPrintFunc(obj, w)
+		default:
+			return fmt.Errorf("unsupported type: %T", obj)
+		}
+	})
 }
 
-func fmtAlphaProxy(r *v1alpha1.Proxy) {
-	t := pretty.Table{
-		Header: buildAlphaProxyHeader(false),
-		Rows: pretty.Rows{
-			buildAlphaProxyRow(r, false),
-		},
-	}
-	t.Print()
-}
-
-func getAlphaProxy(ctx context.Context, c *rest.APIClient, name string) error {
-	r, err := c.ControllersV1alpha1().Proxies().Get(ctx, name, metav1.GetOptions{})
+func getProxy(ctx context.Context, c *rest.APIClient, name string) error {
+	r, err := c.CoreV1alpha2().Proxies().Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return err
 	}
-	fmtAlphaProxy(r)
-	return nil
+	printer := getProxyTablePrinter(false)
+	return printer.PrintObj(r, os.Stdout)
 }
 
-func listAlphaProxies(ctx context.Context, c *rest.APIClient, opts metav1.ListOptions) error {
-	proxies, err := c.ControllersV1alpha1().Proxies().List(ctx, opts)
+func listProxies(ctx context.Context, c *rest.APIClient, opts metav1.ListOptions) error {
+	proxies, err := c.CoreV1alpha2().Proxies().List(ctx, opts)
 	if err != nil {
 		return err
 	}
-	t := pretty.Table{
-		Header: buildAlphaProxyHeader(showProxyLabels),
-	}
-	for _, p := range proxies.Items {
-		t.Rows = append(t.Rows, buildAlphaProxyRow(&p, showProxyLabels))
-	}
-	t.Print()
-	return nil
+	printer := getProxyTablePrinter(showProxyLabels)
+	return printer.PrintObj(proxies, os.Stdout)
 }
 
 // alphaProxyCmd represents the proxy command
@@ -110,12 +174,12 @@ var alphaProxyCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		return listAlphaProxies(cmd.Context(), c, metav1.ListOptions{})
+		return listProxies(cmd.Context(), c, metav1.ListOptions{})
 	},
 }
 
-// getAlphaProxyCmd represents the get proxy command
-var getAlphaProxyCmd = &cobra.Command{
+// getProxyCmd gets a single proxy object.
+var getProxyCmd = &cobra.Command{
 	Use:       "get <name>",
 	Short:     "Get proxy objects",
 	ValidArgs: []string{"name"},
@@ -126,12 +190,12 @@ var getAlphaProxyCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		return getAlphaProxy(cmd.Context(), c, args[0])
+		return getProxy(cmd.Context(), c, args[0])
 	},
 }
 
-// listAlphaProxyCmd represents the list proxy command
-var listAlphaProxyCmd = &cobra.Command{
+// listProxyCmd lists proxy objects.
+var listProxyCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List proxy objects",
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -140,15 +204,12 @@ var listAlphaProxyCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		return listAlphaProxies(cmd.Context(), c, metav1.ListOptions{})
+		return listProxies(cmd.Context(), c, metav1.ListOptions{})
 	},
 }
 
-// proxyFile is the file that contains the configuration to create.
-var proxyFile string
-
-// createAlphaProxyCmd represents the create proxy command
-var createAlphaProxyCmd = &cobra.Command{
+// createProxyCmd creates a Proxy object.
+var createProxyCmd = &cobra.Command{
 	Use:   "create [-f filename]",
 	Short: "Create proxy objects",
 	Long:  `Create proxy objects by providing a configuration as a file or via stdin.`,
@@ -179,7 +240,7 @@ var createAlphaProxyCmd = &cobra.Command{
 		}
 
 		// Parse proxyConfig into a proxy object.
-		proxy := &v1alpha1.Proxy{}
+		proxy := &corev1alpha2.Proxy{}
 		proxyJSON, err := utils.YAMLToJSON(proxyConfig)
 		if err != nil {
 			// Try assuming that the config is a JSON string?
@@ -191,7 +252,7 @@ var createAlphaProxyCmd = &cobra.Command{
 			return err
 		}
 
-		r, err := c.ControllersV1alpha1().Proxies().Create(cmd.Context(), proxy, metav1.CreateOptions{})
+		r, err := c.CoreV1alpha2().Proxies().Create(cmd.Context(), proxy, metav1.CreateOptions{})
 		if err != nil {
 			return err
 		}
@@ -200,8 +261,8 @@ var createAlphaProxyCmd = &cobra.Command{
 	},
 }
 
-// deleteAlphaProxyCmd represents the delete proxy command
-var deleteAlphaProxyCmd = &cobra.Command{
+// deleteProxyCmd deletes Proxy objects.
+var deleteProxyCmd = &cobra.Command{
 	Use:   "delete",
 	Short: "Delete proxy objects",
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -213,7 +274,7 @@ var deleteAlphaProxyCmd = &cobra.Command{
 		}
 
 		for _, name := range args {
-			if err = c.ControllersV1alpha1().Proxies().Delete(cmd.Context(), name, metav1.DeleteOptions{}); err != nil {
+			if err = c.CoreV1alpha2().Proxies().Delete(cmd.Context(), name, metav1.DeleteOptions{}); err != nil {
 				return err
 			}
 			fmt.Printf("proxy %q deleted\n", name)
@@ -224,12 +285,11 @@ var deleteAlphaProxyCmd = &cobra.Command{
 }
 
 func init() {
-	createAlphaProxyCmd.PersistentFlags().
+	createProxyCmd.PersistentFlags().
 		StringVarP(&proxyFile, "filename", "f", "", "The file that contains the configuration to create.")
-	listAlphaProxyCmd.PersistentFlags().
+	listProxyCmd.PersistentFlags().
 		BoolVar(&showProxyLabels, "show-labels", false, "Print the proxy's labels.")
-	// TODO: add flags for proxy config as raw envoy config
 
-	alphaProxyCmd.AddCommand(getAlphaProxyCmd, listAlphaProxyCmd, createAlphaProxyCmd, deleteAlphaProxyCmd)
+	alphaProxyCmd.AddCommand(getProxyCmd, listProxyCmd, createProxyCmd, deleteProxyCmd)
 	RootCmd.AddCommand(alphaProxyCmd)
 }

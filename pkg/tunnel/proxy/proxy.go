@@ -13,9 +13,10 @@ import (
 	clog "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	ctrlv1alpha1 "github.com/apoxy-dev/apoxy/api/controllers/v1alpha1"
 	"github.com/apoxy-dev/apoxy/pkg/net/lwtunnel"
 	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
+
+	corev1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
 )
 
 const (
@@ -58,7 +59,7 @@ func (r *ProxyTunnelReconciler) Reconcile(ctx context.Context, request reconcile
 
 	log.Info("Reconciling Proxy tunnels", "proxy", request.Name)
 
-	proxy := &ctrlv1alpha1.Proxy{}
+	proxy := &corev1alpha2.Proxy{}
 	if err := r.Get(ctx, request.NamespacedName, proxy); err != nil {
 		if errors.IsNotFound(err) {
 			log.Info("Proxy not found, cleaning up Geneve interface")
@@ -138,7 +139,7 @@ func (r *ProxyTunnelReconciler) SetupWithManager(
 	}
 
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&ctrlv1alpha1.Proxy{}).
+		For(&corev1alpha2.Proxy{}).
 		WithOptions(controller.Options{
 			MaxConcurrentReconciles: 1,
 			RecoverPanic:            ptr.To(true),

@@ -338,12 +338,12 @@ func (pl *DomainList) GetListMeta() *metav1.ListMeta {
 	return &pl.ListMeta
 }
 
-// ConvertToTable handles table printing for DomainList from kubectl get
+// ConvertToTable implements rest.TableConvertor that handles table pretty printing.
 func (dl *DomainList) ConvertToTable(ctx context.Context, tableOptions runtime.Object) (*metav1.Table, error) {
 	return domainListToTable(dl, tableOptions)
 }
 
-// ConvertToTable handles table printing from kubectl get
+// ConvertToTable implements rest.TableConvertor that handles table pretty printing.
 func (d *Domain) ConvertToTable(ctx context.Context, tableOptions runtime.Object) (*metav1.Table, error) {
 	return domainToTable(d, tableOptions)
 }

@@ -1,6 +1,8 @@
 package v1alpha2
 
 import (
+	"context"
+	"fmt"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -264,6 +266,84 @@ func (p *Proxy) GetStatus() resource.StatusSubResource {
 	return &p.Status
 }
 
+func proxyToTable(proxy *Proxy, tableOptions runtime.Object) (*metav1.Table, error) {
+	table := &metav1.Table{}
+
+	// Add column definitions (unless NoHeaders is set)
+	if opt, ok := tableOptions.(*metav1.TableOptions); !ok || !opt.NoHeaders {
+		table.ColumnDefinitions = []metav1.TableColumnDefinition{
+			{Name: "Name", Type: "string", Format: "name", Description: "Name of the proxy"},
+			{Name: "Provider", Type: "string", Description: "Infrastructure provider"},
+			{Name: "Replicas", Type: "integer", Description: "Number of replicas"},
+			{Name: "Telemetry", Type: "string", Description: "Telemetry configuration"},
+			{Name: "Age", Type: "string", Description: "Time since creation"},
+		}
+	}
+
+	// Add row data
+	table.Rows = append(table.Rows, metav1.TableRow{
+		Cells: []interface{}{
+			proxy.Name,
+			getProxyProvider(proxy),
+			len(proxy.Status.Replicas),
+			getProxyTelemetryInfo(proxy),
+			formatAge(proxy.CreationTimestamp.Time),
+		},
+		Object: runtime.RawExtension{Object: proxy},
+	})
+
+	// Set resource version
+	table.ResourceVersion = proxy.ResourceVersion
+
+	return table, nil
+}
+
+// getProxyProvider returns the infrastructure provider for the proxy
+func getProxyProvider(proxy *Proxy) string {
+	if proxy.Spec.Provider == "" {
+		return string(InfraProviderCloud)
+	}
+	return string(proxy.Spec.Provider)
+}
+
+// getProxyTelemetryInfo returns a summary of telemetry configuration
+func getProxyTelemetryInfo(proxy *Proxy) string {
+	if proxy.Spec.Telemetry == nil {
+		return "Default"
+	}
+
+	var features []string
+
+	if proxy.Spec.Telemetry.AccessLogs != nil && len(proxy.Spec.Telemetry.AccessLogs.JSON) > 0 {
+		features = append(features, "AccessLogs")
+	}
+
+	if proxy.Spec.Telemetry.ContentLogs != nil {
+		if proxy.Spec.Telemetry.ContentLogs.RequestBodyEnabled || proxy.Spec.Telemetry.ContentLogs.ResponseBodyEnabled {
+			features = append(features, "ContentLogs")
+		}
+	}
+
+	if proxy.Spec.Telemetry.Tracing != nil && proxy.Spec.Telemetry.Tracing.Enabled {
+		features = append(features, "Tracing")
+	}
+
+	if proxy.Spec.Telemetry.ThirdPartySinks != nil {
+		features = append(features, "3rdParty")
+	}
+
+	if len(features) == 0 {
+		return "Default"
+	}
+
+	return fmt.Sprintf("%v", features)
+}
+
+// ConvertToTable implements rest.TableConvertor that handles table pretty printing.
+func (p *Proxy) ConvertToTable(ctx context.Context, tableOptions runtime.Object) (*metav1.Table, error) {
+	return proxyToTable(p, tableOptions)
+}
+
 // +kubebuilder:object:root=true
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
@@ -278,4 +358,46 @@ var _ resource.ObjectList = &ProxyList{}
 
 func (pl *ProxyList) GetListMeta() *metav1.ListMeta {
 	return &pl.ListMeta
+}
+
+func proxyListToTable(list *ProxyList, tableOptions runtime.Object) (*metav1.Table, error) {
+	table := &metav1.Table{}
+
+	// Add column definitions
+	if opt, ok := tableOptions.(*metav1.TableOptions); !ok || !opt.NoHeaders {
+		table.ColumnDefinitions = []metav1.TableColumnDefinition{
+			{Name: "Name", Type: "string", Format: "name", Description: "Name of the proxy"},
+			{Name: "Provider", Type: "string", Description: "Infrastructure provider"},
+			{Name: "Replicas", Type: "integer", Description: "Number of replicas"},
+			{Name: "Telemetry", Type: "string", Description: "Telemetry configuration"},
+			{Name: "Age", Type: "string", Description: "Time since creation"},
+		}
+	}
+
+	// Add rows for each item
+	for i := range list.Items {
+		proxy := &list.Items[i]
+		table.Rows = append(table.Rows, metav1.TableRow{
+			Cells: []interface{}{
+				proxy.Name,
+				getProxyProvider(proxy),
+				len(proxy.Status.Replicas),
+				getProxyTelemetryInfo(proxy),
+				formatAge(proxy.CreationTimestamp.Time),
+			},
+			Object: runtime.RawExtension{Object: proxy},
+		})
+	}
+
+	// Set list metadata
+	table.ResourceVersion = list.ResourceVersion
+	table.Continue = list.Continue
+	table.RemainingItemCount = list.RemainingItemCount
+
+	return table, nil
+}
+
+// ConvertToTable implements rest.TableConvertor that handles table pretty printing.
+func (pl *ProxyList) ConvertToTable(ctx context.Context, tableOptions runtime.Object) (*metav1.Table, error) {
+	return proxyListToTable(pl, tableOptions)
 }
