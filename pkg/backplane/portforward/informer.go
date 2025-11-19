@@ -26,7 +26,7 @@ import (
 
 	gwapiv1 "sigs.k8s.io/gateway-api/apis/v1"
 
-	ctrlv1alpha1 "github.com/apoxy-dev/apoxy/api/controllers/v1alpha1"
+	corev1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
 )
 
 const (
@@ -72,7 +72,7 @@ func NewPortForwarder(rc *rest.Config, proxyName, replicaName, cname string) (*P
 	}, nil
 }
 
-func findReplicaStatus(p *ctrlv1alpha1.Proxy, rname string) (*ctrlv1alpha1.ProxyReplicaStatus, bool) {
+func findReplicaStatus(p *corev1alpha2.Proxy, rname string) (*corev1alpha2.ProxyReplicaStatus, bool) {
 	for i := range p.Status.Replicas {
 		if p.Status.Replicas[i].Name == rname {
 			return p.Status.Replicas[i], true
@@ -105,7 +105,7 @@ func (pf *PortForwarder) sync(key string) error {
 		return fmt.Errorf("could not get object by key %q: %v", key, err)
 	}
 
-	proxy := obj.(*ctrlv1alpha1.Proxy)
+	proxy := obj.(*corev1alpha2.Proxy)
 	if !exists {
 		for p, stopCh := range pf.portStopCh {
 			delete(pf.portStopCh, p)
@@ -115,13 +115,9 @@ func (pf *PortForwarder) sync(key string) error {
 		return nil
 	}
 
-	rs, ok := findReplicaStatus(proxy, pf.replicaName)
+	_, ok := findReplicaStatus(proxy, pf.replicaName)
 	if !ok {
 		log.Infof("replica %q not found in proxy %q", pf.replicaName, pf.proxyName)
-		return nil
-	}
-	if rs.Phase != ctrlv1alpha1.ProxyReplicaPhaseRunning {
-		log.Infof("replica %q is not running: %v", pf.replicaName, rs.Phase)
 		return nil
 	}
 

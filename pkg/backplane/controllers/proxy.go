@@ -3,39 +3,27 @@ package controllers
 import (
 	"context"
 	"crypto/tls"
-	goerrors "errors"
 	"fmt"
 	"log/slog"
 	"net/netip"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
-	bootstrapv3 "github.com/envoyproxy/go-control-plane/envoy/config/bootstrap/v3"
-	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	"github.com/google/uuid"
-	"google.golang.org/protobuf/encoding/protojson"
 	"k8s.io/apimachinery/pkg/api/errors"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/util/retry"
-	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-	"sigs.k8s.io/yaml"
 
 	"github.com/apoxy-dev/apoxy/pkg/backplane/envoy"
 	"github.com/apoxy-dev/apoxy/pkg/backplane/logs"
 	"github.com/apoxy-dev/apoxy/pkg/backplane/otel"
 	"github.com/apoxy-dev/apoxy/pkg/gateway/xds/bootstrap"
 
-	ctrlv1alpha1 "github.com/apoxy-dev/apoxy/api/controllers/v1alpha1"
+	corev1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
 )
 
 const (
@@ -157,7 +145,7 @@ func NewProxyReconciler(
 	}
 }
 
-func findReplicaStatus(p *ctrlv1alpha1.Proxy, rname string) (*ctrlv1alpha1.ProxyReplicaStatus, bool) {
+func findReplicaStatus(p *corev1alpha2.Proxy, rname string) (*corev1alpha2.ProxyReplicaStatus, bool) {
 	for i := range p.Status.Replicas {
 		if p.Status.Replicas[i].Name == rname {
 			return p.Status.Replicas[i], true
@@ -166,152 +154,42 @@ func findReplicaStatus(p *ctrlv1alpha1.Proxy, rname string) (*ctrlv1alpha1.Proxy
 	return nil, false
 }
 
-func adminUDSPath(nodeID string) string {
-	return fmt.Sprintf("/tmp/admin_%s.sock", nodeID)
-}
-
-func validateBootstrapConfig(nodeID, config string) (string, error) {
-	pb := &bootstrapv3.Bootstrap{}
-	if config == "" {
-		return "", goerrors.New("bootstrap config is empty")
-	}
-	jsonBytes, err := yaml.YAMLToJSON([]byte(config))
-	if err != nil {
-		return "", fmt.Errorf("failed to convert YAML to JSON: %v", err)
-	}
-	if err := protojson.Unmarshal(jsonBytes, pb); err != nil {
-		return "", fmt.Errorf("failed to unmarshal Envoy bootstrap config: %v", err)
-	}
-	if err := pb.ValidateAll(); err != nil {
-		return "", fmt.Errorf("invalid Envoy bootstrap config: %v", err)
-	}
-
-	if pb.Node == nil {
-		pb.Node = &corev3.Node{}
-	}
-	pb.Node.Id = nodeID
-
-	pb.Admin = &bootstrapv3.Admin{
-		AccessLogPath: "/dev/null",
-		Address: &corev3.Address{
-			Address: &corev3.Address_Pipe{
-				Pipe: &corev3.Pipe{
-					Path: adminUDSPath(nodeID),
-				},
-			},
-		},
-	}
-
-	cfgBytes, err := protojson.Marshal(pb)
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal Envoy bootstrap config: %v", err)
-	}
-	return string(cfgBytes), nil
-}
-
-type listenerStatus struct {
-	Name         string `json:"name"`
-	LocalAddress struct {
-		SocketAddress struct {
-			Address   string `json:"address"`
-			PortValue uint32 `json:"port_value"`
-		} `json:"socket_address"`
-	} `json:"local_address"`
-}
-
 func (r *ProxyReconciler) Reconcile(ctx context.Context, request reconcile.Request) (reconcile.Result, error) {
-	p := &ctrlv1alpha1.Proxy{}
+	p := &corev1alpha2.Proxy{}
 	err := r.Get(ctx, request.NamespacedName, p)
 	if errors.IsNotFound(err) {
 		return reconcile.Result{}, client.IgnoreNotFound(err)
 	}
 	if err != nil {
-		return reconcile.Result{}, fmt.Errorf("failed to get Proxy: %w", err)
+		return reconcile.Result{}, err
 	}
 
 	logger := slog.With("app", string(p.UID), "name", p.Name, "replica", r.replicaName)
 
-	rStatus, found := findReplicaStatus(p, r.replicaName)
-	if !found {
-		logger.Info("Replica not found, creating new one")
-		p.Status.Replicas = append(p.Status.Replicas, &ctrlv1alpha1.ProxyReplicaStatus{
-			Name:           r.replicaName,
-			CreatedAt:      metav1.Now(),
-			Phase:          ctrlv1alpha1.ProxyReplicaPhasePending,
-			Reason:         "Created by Backplane",
-			PrivateAddress: r.localPrivAddr.String(),
-		})
-		if err := r.Status().Update(ctx, p); err != nil {
-			return reconcile.Result{}, fmt.Errorf("failed to update Proxy status: %w", err)
-		}
-		return reconcile.Result{}, nil
-	}
-	// Make sure we set the private address which is only known to Backplane.
-	rStatus.PrivateAddress = r.localPrivAddr.String()
-
 	ps := r.RuntimeStatus()
-	if ps.Running {
-		logger.Debug("envoy is running")
-	} else {
-		logger.Debug("envoy is not running", "procstate", ps.ProcState.String())
-	}
 
 	if !p.ObjectMeta.DeletionTimestamp.IsZero() { // The object is being deleted
 		logger.Info("Proxy is being deleted")
 
-		// If state was terminating and proxy is not running, we can set status to stopped
-		// at which point the main proxy controller will delete the proxy.
 		if ps.Running {
-			switch rStatus.Phase {
-			case ctrlv1alpha1.ProxyReplicaPhaseRunning:
-				logger.Info("Deleting Proxy")
+			logger.Info("Proxy is being stopped")
+			go func() {
 				if err := r.Runtime.Shutdown(ctx); err != nil {
-					return reconcile.Result{}, fmt.Errorf("failed to shutdown proxy: %w", err)
+					logger.Error("failed to shutdown runtime", "error", err)
 				}
-				rStatus.Phase = ctrlv1alpha1.ProxyReplicaPhaseTerminating
-				rStatus.Reason = "Proxy is being deleted"
-			case ctrlv1alpha1.ProxyReplicaPhaseTerminating:
-				logger.Info("Proxy is terminating")
-			case ctrlv1alpha1.ProxyReplicaPhaseStopped, ctrlv1alpha1.ProxyReplicaPhaseFailed:
-				logger.Error("Proxy process is running but status is stopped or failed", "phase", rStatus.Phase)
-			}
-		} else {
-			rStatus.Phase = ctrlv1alpha1.ProxyReplicaPhaseStopped
-			rStatus.Reason = fmt.Sprintf("Proxy replica exited: %v", ps.ProcState)
-		}
-
-		if err := r.Status().Update(ctx, p); err != nil {
-			return reconcile.Result{}, fmt.Errorf("failed to update Proxy: %w", err)
+			}()
 		}
 
 		return ctrl.Result{}, nil // Deleted.
 	}
 
-	var requeueAfter time.Duration
+	// Envoy runtime was never started:
+	//   1. Initialize and start the runtime restart loop.
+	//   2. Create a new replica status entry and update status.
+	//
+	//  If status update fails, it can be
 	if ps.StartedAt.IsZero() {
-		switch rStatus.Phase {
-		case ctrlv1alpha1.ProxyReplicaPhasePending:
-			logger.Info("Starting Proxy")
-		case ctrlv1alpha1.ProxyReplicaPhaseRunning:
-			logger.Info("Proxy replica is running but no Envoy process is running")
-			rStatus.Phase = ctrlv1alpha1.ProxyReplicaPhaseFailed
-			rStatus.Reason = "Replica is in running state but proxy process is not running"
-			goto UpdateStatus
-		case ctrlv1alpha1.ProxyReplicaPhaseTerminating:
-			logger.Info("Proxy is terminating")
-			rStatus.Phase = ctrlv1alpha1.ProxyReplicaPhaseStopped
-			rStatus.Reason = "Proxy terminated"
-			goto UpdateStatus
-		case ctrlv1alpha1.ProxyReplicaPhaseStopped, ctrlv1alpha1.ProxyReplicaPhaseFailed:
-			logger.Info("Proxy is stopped or failed, restarting")
-			rStatus.Phase = ctrlv1alpha1.ProxyReplicaPhasePending
-			rStatus.Reason = "Restarting proxy"
-		default:
-			logger.Error("Unexpected phase", "phase", rStatus.Phase)
-			rStatus.Phase = ctrlv1alpha1.ProxyReplicaPhaseFailed
-			rStatus.Reason = "Unexpected phase"
-			goto UpdateStatus
-		}
+		logger.Info("Starting Proxy runtime")
 
 		bsOpts := []bootstrap.BootstrapOption{
 			bootstrap.WithXdsServerHost(r.apiServerHost),
@@ -329,14 +207,7 @@ func (r *ProxyReconciler) Reconcile(ctx context.Context, request reconcile.Reque
 		if err != nil {
 			// If the config is invalid, we can't start the proxy.
 			logger.Error("failed to validate proxy config", "error", err)
-			rStatus.Phase = ctrlv1alpha1.ProxyReplicaPhaseFailed
-			rStatus.Reason = fmt.Sprintf("failed to validate proxy config: %v", err)
-
-			if err := r.Status().Update(ctx, p); err != nil {
-				return reconcile.Result{}, fmt.Errorf("failed to update proxy status: %w", err)
-			}
-
-			return reconcile.Result{}, nil // Leave the proxy in failed state.
+			return reconcile.Result{}, nil
 		}
 
 		// TODO(dilyevsky): Pass these values from the Proxy object.
@@ -345,8 +216,8 @@ func (r *ProxyReconciler) Reconcile(ctx context.Context, request reconcile.Reque
 			envoy.WithBootstrapConfigYAML(cfg),
 			envoy.WithCluster(p.Name),
 			envoy.WithGoPluginDir(r.options.goPluginDir),
-			envoy.WithDrainTimeout(&p.Spec.DrainTimeout.Duration),
-			envoy.WithMinDrainTime(&p.Spec.MinimumDrainTime.Duration),
+			envoy.WithDrainTimeout(&p.Spec.Shutdown.DrainTimeout.Duration),
+			envoy.WithMinDrainTime(&p.Spec.Shutdown.MinimumDrainTime.Duration),
 			envoy.WithAdminHost(adminHost),
 			envoy.WithLogsDir("/var/log/apoxy"),
 		}
@@ -360,8 +231,8 @@ func (r *ProxyReconciler) Reconcile(ctx context.Context, request reconcile.Reque
 			}))
 		}
 
-		if p.Spec.Monitoring != nil {
-			if p.Spec.Monitoring.Tracing != nil && p.Spec.Monitoring.Tracing.Enabled {
+		if p.Spec.Telemetry != nil {
+			if p.Spec.Telemetry.Tracing != nil && p.Spec.Telemetry.Tracing.Enabled {
 				logger.Info("Enabling tracing")
 				opts = append(opts, envoy.WithOtelCollector(&otel.Collector{
 					ClickHouseOpts: r.options.chOpts,
@@ -378,11 +249,6 @@ func (r *ProxyReconciler) Reconcile(ctx context.Context, request reconcile.Reque
 		if err := r.Start(ctx, opts...); err != nil {
 			if fatalErr, ok := err.(envoy.FatalError); ok {
 				logger.Error("failed to create proxy replica", "error", fatalErr)
-				rStatus.Phase = ctrlv1alpha1.ProxyReplicaPhaseFailed
-				rStatus.Reason = fmt.Sprintf("failed to create proxy replica: %v", fatalErr)
-				if err := r.Status().Update(ctx, p); err != nil {
-					return reconcile.Result{}, fmt.Errorf("failed to update proxy status: %w", err)
-				}
 
 				return reconcile.Result{}, nil // Leave the proxy in failed state.
 			}
@@ -392,71 +258,24 @@ func (r *ProxyReconciler) Reconcile(ctx context.Context, request reconcile.Reque
 
 		logger.Info("Started Envoy")
 
-		rStatus.Phase = ctrlv1alpha1.ProxyReplicaPhasePending
-		rStatus.Reason = "Proxy replica is being created"
-		if err := r.Status().Update(ctx, p); err != nil {
-			logger.Info("Failed to update proxy replica status to pending")
-			return reconcile.Result{}, fmt.Errorf("failed to update proxy replica status: %w", err)
-		}
-
 		// Requeue after a short delay to check the status of the proxy.
 		return reconcile.Result{RequeueAfter: 2 * time.Second}, nil
 	}
 
-	if ps.Running {
-		switch rStatus.Phase {
-		case ctrlv1alpha1.ProxyReplicaPhasePending:
-			logger.Info("Proxy is running", "start_time", ps.StartedAt)
-			rStatus.Phase = ctrlv1alpha1.ProxyReplicaPhaseRunning
-			rStatus.Reason = "Running"
-		case ctrlv1alpha1.ProxyReplicaPhaseTerminating:
-			if err := r.Runtime.Shutdown(ctx); err != nil {
-				rStatus.Reason = fmt.Sprintf("Failed to shutdown proxy: %v", err)
-			}
-		case ctrlv1alpha1.ProxyReplicaPhaseStopped:
-			// Replica is stopped but the process still running.
-			logger.Info("Proxy is stopped but process is still running")
-			rStatus.Phase = ctrlv1alpha1.ProxyReplicaPhaseFailed
-			rStatus.Reason = "Proxy is stopped but process is still running"
-		case ctrlv1alpha1.ProxyReplicaPhaseFailed:
-			// Replica is failed but the process still running.
-			logger.Info("Proxy is failed but process is still running")
-			rStatus.Reason = "Proxy is failed but process is still running"
-		case ctrlv1alpha1.ProxyReplicaPhaseRunning: // Do nothing.
-		}
-	} else {
-		switch rStatus.Phase {
-		case ctrlv1alpha1.ProxyReplicaPhasePending:
-			if time.Now().After(rStatus.CreatedAt.Time.Add(proxyReplicaPendingTimeout)) {
-				logger.Error("Proxy replica failed to start in time", "timeout", proxyReplicaPendingTimeout, "start_time", ps.StartedAt)
-				rStatus.Phase = ctrlv1alpha1.ProxyReplicaPhaseFailed
-				rStatus.Reason = "Proxy replica failed to start"
-			} else {
-				rStatus.Phase = ctrlv1alpha1.ProxyReplicaPhasePending
-				rStatus.Reason = "Proxy replica is being created"
-				requeueAfter = 2 * time.Second
-			}
-		case ctrlv1alpha1.ProxyReplicaPhaseRunning:
-			rStatus.Phase = ctrlv1alpha1.ProxyReplicaPhaseFailed
-			rStatus.Reason = fmt.Sprintf("Proxy replica exited: %v", ps.ProcState)
-		case ctrlv1alpha1.ProxyReplicaPhaseTerminating:
-			rStatus.Phase = ctrlv1alpha1.ProxyReplicaPhaseStopped
-			rStatus.Reason = "Proxy replica stopped"
-		case ctrlv1alpha1.ProxyReplicaPhaseFailed, ctrlv1alpha1.ProxyReplicaPhaseStopped: // Do nothing.
-		default:
-			return reconcile.Result{}, fmt.Errorf("unknown proxy replica phase: %v", rStatus.Phase)
-		}
+	// Find the proxy replica by name.
+	rs, found := findReplicaStatus(p, r.replicaName)
+	if !found {
+		logger.Error("failed to find proxy replica", "name", r.replicaName)
+
+		// Requeue again and check in a bit if replica is created (on connection to xDS server).
+		// TODO(dilyevsky): Eventually we should do something more like killing the process
+		// if the proxy replica never connects.
+		return reconcile.Result{RequeueAfter: 2 * time.Second}, nil
 	}
 
-UpdateStatus:
-	if err := r.Status().Update(ctx, p); err != nil {
-		if apierrors.IsConflict(err) {
-			return reconcile.Result{Requeue: true}, nil
-		}
-		return reconcile.Result{}, fmt.Errorf("failed to update proxy replica status: %w", err)
-	}
+	logger.Info("Proxy replica found", "name", r.replicaName, "connectedAt", rs.ConnectedAt)
 
-	return reconcile.Result{RequeueAfter: requeueAfter}, nil
+	return reconcile.Result{}, nil
 }
 
 func namePredicate(name string) predicate.Funcs {
@@ -465,7 +284,7 @@ func namePredicate(name string) predicate.Funcs {
 			return false
 		}
 
-		p, ok := obj.(*ctrlv1alpha1.Proxy)
+		p, ok := obj.(*corev1alpha2.Proxy)
 		if !ok {
 			return false
 		}
@@ -475,8 +294,8 @@ func namePredicate(name string) predicate.Funcs {
 }
 
 func (r *ProxyReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager) error {
-	err := mgr.GetFieldIndexer().IndexField(ctx, &ctrlv1alpha1.Proxy{}, "metadata.name", func(rawObj client.Object) []string {
-		p := rawObj.(*ctrlv1alpha1.Proxy)
+	err := mgr.GetFieldIndexer().IndexField(ctx, &corev1alpha2.Proxy{}, "metadata.name", func(rawObj client.Object) []string {
+		p := rawObj.(*corev1alpha2.Proxy)
 		return []string{p.Name}
 	})
 	if err != nil {
@@ -484,16 +303,12 @@ func (r *ProxyReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager
 	}
 
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&ctrlv1alpha1.Proxy{},
+		For(&corev1alpha2.Proxy{},
 			builder.WithPredicates(
 				&predicate.ResourceVersionChangedPredicate{},
 				namePredicate(r.proxyName),
 			),
 		).
-		WithOptions(controller.Options{
-			MaxConcurrentReconciles: 1,
-			RecoverPanic:            ptr.To(true),
-		}).
 		Complete(r)
 }
 
@@ -518,52 +333,4 @@ func (r *ProxyReconciler) DownloadEnvoy(ctx context.Context) error {
 		return fmt.Errorf("failed to shutdown Envoy runtime: %w", err)
 	}
 	return nil
-}
-
-func (r *ProxyReconciler) Shutdown(ctx context.Context, reason string) {
-	var wg sync.WaitGroup
-	wg.Add(2)
-
-	go func() {
-		defer wg.Done()
-		if err := r.Runtime.Shutdown(ctx); err != nil {
-			slog.Warn("Failed to shutdown proxy", "error", err)
-		}
-	}()
-
-	go func() {
-		defer wg.Done()
-		if err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-			p := &ctrlv1alpha1.Proxy{}
-			err := r.Get(ctx, types.NamespacedName{Name: r.proxyName}, p)
-			if errors.IsNotFound(err) {
-				slog.Info("Proxy not found")
-				return nil
-			}
-			if err != nil {
-				slog.Error("Failed to get proxy", "error", err)
-				return err
-			}
-
-			rStatus, found := findReplicaStatus(p, r.replicaName)
-			if !found {
-				slog.Info("Proxy replica not found")
-				return nil
-			}
-
-			rStatus.Phase = ctrlv1alpha1.ProxyReplicaPhaseTerminating
-			rStatus.Reason = fmt.Sprintf("Proxy replica is being terminated (%s)", reason)
-
-			if err := r.Status().Update(ctx, p); err != nil {
-				slog.Error("Failed to update proxy replica status", "error", err)
-				return err
-			}
-
-			return nil
-		}); err != nil {
-			slog.Error("Failed to update proxy replica status", "error", err)
-		}
-	}()
-
-	wg.Wait()
 }

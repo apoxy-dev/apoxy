@@ -305,8 +305,7 @@ func (r *Runtime) run(ctx context.Context) error {
 		r.mu.Unlock()
 		return fmt.Errorf("failed to get envoy process create time: %w", err)
 	}
-	// Convert from milliseconds to seconds.
-	r.status.StartedAt = time.Unix(0, ctime*int64(time.Millisecond)).UTC()
+	r.status.StartedAt = time.Unix(0, ctime*int64(time.Millisecond)).UTC() // Convert from milliseconds to seconds.
 	r.status.Running = true
 	r.status.Starting = false
 	r.mu.Unlock()
@@ -528,7 +527,36 @@ func (r *Runtime) Shutdown(ctx context.Context) error {
 				log.Errorf("error shutting down otel collector: %v", err)
 			}
 		}
-		return r.cmd.Process.Kill()
+
+		if err := r.postEnvoyAdminAPI("quitquitquit"); err != nil {
+			log.Errorf("error posting to quitquitquit: %v", err)
+		}
+
+		exitCh := make(chan error)
+		go func() {
+			exitCh <- r.cmd.Wait()
+		}()
+
+		select {
+		case err := <-exitCh:
+			if err != nil {
+				exitErr, ok := err.(*exec.ExitError)
+				if ok {
+					return fmt.Errorf("envoy process exited with status %d", exitErr.ExitCode())
+				}
+				return err
+			}
+			return nil
+		case <-ctx.Done():
+			log.Infof("context done while waiting for envoy process to exit")
+			return ctx.Err()
+		case <-time.After(1 * time.Second):
+		}
+
+		if err := r.cmd.Process.Kill(); err != nil {
+			return err
+		}
+		return errors.New("envoy process killed")
 	})
 	return stopOnce()
 }

@@ -425,8 +425,8 @@ func main() {
 	go func() {
 		<-sig
 		log.Infof("Received SIGTERM, shutting down")
-		pctrl.Shutdown(ctx, "received SIGTERM") // Blocks until all resources are released.
-		metricsCancel()                         // Cancel metrics server context
+		pctrl.Shutdown(ctx) // Blocks until all resources are released.
+		metricsCancel()     // Cancel metrics server context
 		os.Exit(0)
 	}()
 

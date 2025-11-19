@@ -19,8 +19,8 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/net/lwtunnel"
 	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 
-	ctrlv1alpha1 "github.com/apoxy-dev/apoxy/api/controllers/v1alpha1"
 	corev1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
+	corev1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
 )
 
 var _ reconcile.Reconciler = &TunnelNodeReconciler{}
@@ -68,7 +68,7 @@ func (r *TunnelNodeReconciler) Reconcile(ctx context.Context, request reconcile.
 		return ctrl.Result{}, err
 	}
 
-	proxy := &ctrlv1alpha1.Proxy{}
+	proxy := &corev1alpha2.Proxy{}
 	if err := r.Get(ctx, types.NamespacedName{Name: r.proxyName}, proxy); err != nil {
 		if errors.IsNotFound(err) {
 			log.Info("Proxy not found")

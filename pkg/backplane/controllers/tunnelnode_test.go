@@ -24,7 +24,7 @@ func TestTunnelNodeReconciler_Reconcile(t *testing.T) {
 	}
 
 	scheme := runtime.NewScheme()
-	_ = corev1alpha.AddToScheme(scheme)
+	_ = corev1alpha.Install(scheme)
 
 	tests := []struct {
 		name          string
