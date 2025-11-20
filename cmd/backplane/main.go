@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"crypto/tls"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"net"
@@ -19,11 +18,8 @@ import (
 	chdriver "github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/google/uuid"
 	"google.golang.org/grpc"
-	"k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
-	"k8s.io/client-go/rest"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
@@ -31,7 +27,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	"github.com/apoxy-dev/apoxy/client/versioned"
 	"github.com/apoxy-dev/apoxy/pkg/apiserver"
 	bpctrl "github.com/apoxy-dev/apoxy/pkg/backplane/controllers"
 	"github.com/apoxy-dev/apoxy/pkg/backplane/healthchecker"
@@ -39,15 +34,14 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/backplane/metrics"
 	"github.com/apoxy-dev/apoxy/pkg/backplane/wasm/ext_proc"
 	"github.com/apoxy-dev/apoxy/pkg/backplane/wasm/manifest"
-	"github.com/apoxy-dev/apoxy/pkg/cmd/utils"
 	"github.com/apoxy-dev/apoxy/pkg/edgefunc/runc"
 	"github.com/apoxy-dev/apoxy/pkg/log"
 	"github.com/apoxy-dev/apoxy/pkg/net/dns"
 	tundns "github.com/apoxy-dev/apoxy/pkg/tunnel/dns"
 	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 
-	ctrlv1alpha1 "github.com/apoxy-dev/apoxy/api/controllers/v1alpha1"
 	corev1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
+	corev1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
 	extensionv1alpha2 "github.com/apoxy-dev/apoxy/api/extensions/v1alpha2"
 	gatewayv1 "github.com/apoxy-dev/apoxy/api/gateway/v1"
 )
@@ -55,9 +49,9 @@ import (
 var scheme = runtime.NewScheme()
 
 func init() {
-	utilruntime.Must(ctrlv1alpha1.AddToScheme(scheme))
-	utilruntime.Must(extensionv1alpha2.AddToScheme(scheme))
 	utilruntime.Must(corev1alpha.AddToScheme(scheme))
+	utilruntime.Must(corev1alpha2.AddToScheme(scheme))
+	utilruntime.Must(extensionv1alpha2.AddToScheme(scheme))
 	utilruntime.Must(gatewayv1.AddToScheme(scheme))
 }
 
@@ -67,7 +61,6 @@ var (
 
 	projectID = flag.String("project_id", "", "Apoxy project UUID.")
 
-	proxyPath       = flag.String("proxy_path", "", "Path to the Proxy to create in the API.")
 	proxyName       = flag.String("proxy", "", "Name of the Proxy to manage. Must not be used with --proxy_path.")
 	replicaName     = flag.String("replica", os.Getenv("HOSTNAME"), "Name of the replica to manage.")
 	envoyReleaseURL = flag.String("envoy_release_url", "", "URL to the Envoy release tarball.")
@@ -103,49 +96,6 @@ var (
 	extIface = flag.String("ext_iface", "eth0", "External interface name.")
 )
 
-func upsertProxyFromPath(ctx context.Context, rC *rest.Config, path string) (string, error) {
-	proxyConfig, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("failed to read file: %w", err)
-	}
-	proxy := &ctrlv1alpha1.Proxy{}
-	proxyJSON, err := utils.YAMLToJSON(string(proxyConfig))
-	if err != nil {
-		// Try assuming that the config is a JSON string?
-		proxyJSON = string(proxyConfig)
-	}
-	err = json.Unmarshal([]byte(proxyJSON), proxy)
-	if err != nil {
-		return "", fmt.Errorf("failed to unmarshal Proxy config: %w", err)
-	}
-
-	c := versioned.NewForConfigOrDie(rC)
-	_, err = c.ControllersV1alpha1().Proxies().Create(ctx, proxy, metav1.CreateOptions{})
-	if errors.IsAlreadyExists(err) {
-		e, err := c.ControllersV1alpha1().Proxies().Get(ctx, proxy.Name, metav1.GetOptions{})
-		if err != nil {
-			return "", fmt.Errorf("failed to get existing Proxy: %w", err)
-		}
-
-		proxy.ResourceVersion = e.ResourceVersion
-
-		_, err = c.ControllersV1alpha1().Proxies().Update(ctx, proxy, metav1.UpdateOptions{})
-		if err != nil {
-			return "", fmt.Errorf("failed to update existing Proxy: %w", err)
-		}
-
-		log.Infof("Proxy %s updated", proxy.Name)
-
-		return proxy.Name, nil
-	} else if err != nil {
-		return "", fmt.Errorf("failed to create Proxy: %w", err)
-	}
-
-	log.Infof("Proxy %s created", proxy.Name)
-
-	return proxy.Name, nil
-}
-
 func main() {
 	flag.Parse()
 	// TODO(dilyevsky): This should be part of log.Init.
@@ -167,21 +117,8 @@ func main() {
 	}
 	rC := apiserver.NewClientConfig(apiserver.WithClientHost(*apiServerAddr))
 
-	if *proxyPath == "" && *proxyName == "" {
-		log.Fatalf("either --proxy_path or --proxy must be set")
-	}
-	if *proxyPath != "" {
-		var err error
-		*proxyName, err = upsertProxyFromPath(ctx, rC, *proxyPath)
-		if err != nil {
-			log.Fatalf("Failed to update proxy from path: %v", err)
-		}
-	} else if *proxyName != "" {
-		if *replicaName == "" {
-			log.Fatalf("--replica must be set when --proxy is set")
-		}
-	} else {
-		log.Fatalf("only one of --proxy_path or --proxy must be set")
+	if *proxyName == "" || *replicaName == "" {
+		log.Fatalf("--proxy and --replica must be set")
 	}
 
 	var chConn chdriver.Conn
