@@ -32,15 +32,15 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/router"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/token"
 
-	ctrlv1alpha1 "github.com/apoxy-dev/apoxy/api/controllers/v1alpha1"
 	corev1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
+	corev1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
 )
 
 var scheme = runtime.NewScheme()
 
 func init() {
 	utilruntime.Must(corev1alpha.Install(scheme))
-	utilruntime.Must(ctrlv1alpha1.Install(scheme))
+	utilruntime.Must(corev1alpha2.Install(scheme))
 }
 
 var (
