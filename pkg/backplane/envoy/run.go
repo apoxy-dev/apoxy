@@ -16,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/shirou/gopsutil/process"
+	"google.golang.org/protobuf/encoding/protojson"
 
 	"github.com/apoxy-dev/apoxy/config"
 	"github.com/apoxy-dev/apoxy/pkg/backplane/logs"
@@ -197,7 +198,7 @@ func (r *Runtime) run(ctx context.Context) error {
 		}
 	}
 
-	nodeJSON, err := json.Marshal(nodeConfig)
+	nodeJSON, err := protojson.Marshal(nodeConfig) // Must use protojson.Marshal to hide non-json fields.
 	if err != nil {
 		return fmt.Errorf("failed to marshal node config to JSON: %w", err)
 	}
