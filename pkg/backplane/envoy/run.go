@@ -23,6 +23,7 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/log"
 
 	_ "github.com/apoxy-dev/apoxy/pkg/gateway/xds/extensions"
+	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 )
 
 const (
@@ -97,6 +98,14 @@ func WithAdminHost(host string) Option {
 	}
 }
 
+// WithNodeMetadata sets the metadata for the Envoy node in XDS discovery requests.
+// The metadata will be included in the node configuration and sent to the control plane.
+func WithNodeMetadata(metadata *NodeMetadata) Option {
+	return func(r *Runtime) {
+		r.nodeMetadata = metadata
+	}
+}
+
 // If this is not set, the default timeout is used (30 seconds).
 func WithDrainTimeout(timeout *time.Duration) Option {
 	return func(r *Runtime) {
@@ -145,6 +154,7 @@ type Runtime struct {
 	drainTimeout  *time.Duration
 	minDrainTime  *time.Duration
 	logsDir       string
+	nodeMetadata  *NodeMetadata
 
 	mu     sync.RWMutex
 	status RuntimeStatus
@@ -174,7 +184,25 @@ func (r *Runtime) setOptions(opts ...Option) {
 
 func (r *Runtime) run(ctx context.Context) error {
 	id := uuid.New().String()
-	configYAML := fmt.Sprintf(`node: { id: "%s", cluster: "%s" }`, id, r.Cluster)
+
+	nodeConfig := &corev3.Node{
+		Id:      id,
+		Cluster: r.Cluster,
+	}
+	if r.nodeMetadata != nil && !r.nodeMetadata.IsEmpty() {
+		var err error
+		nodeConfig.Metadata, err = r.nodeMetadata.ToStruct()
+		if err != nil {
+			return fmt.Errorf("failed to convert node metadata to map: %w", err)
+		}
+	}
+
+	nodeJSON, err := json.Marshal(nodeConfig)
+	if err != nil {
+		return fmt.Errorf("failed to marshal node config to JSON: %w", err)
+	}
+
+	configYAML := fmt.Sprintf(`node: %s`, string(nodeJSON))
 	log.Infof("envoy YAML config: %s", configYAML)
 
 	// Start OpenTelemetry collector if configured
