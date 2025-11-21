@@ -39,7 +39,7 @@ type ProxyReconciler struct {
 
 	proxyName     string
 	replicaName   string
-	localPrivAddr netip.Addr
+	privateAddr   netip.Addr
 	apiServerHost string
 
 	options *options
@@ -126,7 +126,7 @@ func NewProxyReconciler(
 	c client.Client,
 	proxyName string,
 	replicaName string,
-	localPrivAddr netip.Addr,
+	privateAddr netip.Addr,
 	apiServerHost string,
 	opts ...Option,
 ) *ProxyReconciler {
@@ -139,7 +139,7 @@ func NewProxyReconciler(
 		Client:        c,
 		proxyName:     proxyName,
 		replicaName:   replicaName,
-		localPrivAddr: localPrivAddr,
+		privateAddr:   privateAddr,
 		apiServerHost: apiServerHost,
 		options:       sOpts,
 	}
@@ -220,6 +220,10 @@ func (r *ProxyReconciler) Reconcile(ctx context.Context, request reconcile.Reque
 			envoy.WithMinDrainTime(&p.Spec.Shutdown.MinimumDrainTime.Duration),
 			envoy.WithAdminHost(adminHost),
 			envoy.WithLogsDir("/var/log/apoxy"),
+			envoy.WithNodeMetadata(&envoy.NodeMetadata{
+				Name:           r.replicaName,
+				PrivateAddress: r.privateAddr.String(),
+			}),
 		}
 		if r.options.releaseURL != "" {
 			opts = append(opts, envoy.WithRelease(&envoy.URLRelease{
