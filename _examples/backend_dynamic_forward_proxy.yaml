@@ -1,4 +1,4 @@
-apiVersion: controllers.apoxy.dev/v1alpha1
+apiVersion: core.apoxy.dev/v1alpha2
 kind: Proxy
 metadata:
   name: example
@@ -27,7 +27,7 @@ spec:
       port: 10000
       name: example
 ---
-apiVersion: core.apoxy.dev/v1alpha
+apiVersion: core.apoxy.dev/v1alpha2
 kind: Backend
 metadata:
   name: dynamic_forward_proxy

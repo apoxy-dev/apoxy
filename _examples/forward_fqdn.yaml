@@ -1,7 +1,7 @@
-apiVersion: controllers.apoxy.dev/v1alpha1
+apiVersion: core.apoxy.dev/v1alpha2
 kind: Proxy
 metadata:
-  name: example-proxy
+  name: example
 spec:
   provider: unmanaged
 ---
@@ -21,13 +21,13 @@ spec:
   infrastructure:
     parametersRef:
       kind: Proxy
-      name: example-proxy
+      name: example
   listeners:
     - protocol: HTTP
       port: 10000
       name: example-listener
 ---
-apiVersion: core.apoxy.dev/v1alpha
+apiVersion: core.apoxy.dev/v1alpha2
 kind: Backend
 metadata:
   name: debug-backend
