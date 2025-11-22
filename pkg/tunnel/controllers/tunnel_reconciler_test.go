@@ -77,11 +77,11 @@ func TestTunnelReconciler_OnShutdownRemovesAddress(t *testing.T) {
 	relay := &mockRelay{}
 	relay.On("Address").Return(relayAddr)
 
-	var onShutdown func()
+	var onShutdown func(context.Context)
 	relay.
 		On("SetOnShutdown", mock.Anything).
 		Run(func(args mock.Arguments) {
-			onShutdown = args.Get(0).(func())
+			onShutdown = args.Get(0).(func(context.Context))
 		}).
 		Return().
 		Once()
@@ -96,7 +96,7 @@ func TestTunnelReconciler_OnShutdownRemovesAddress(t *testing.T) {
 
 	// Invoke the captured shutdown hook.
 	require.NotNil(t, onShutdown, "onShutdown should be captured from SetOnShutdown")
-	onShutdown()
+	onShutdown(t.Context())
 
 	// After shutdown, our relay address should be removed from the status.
 	var after corev1alpha2.Tunnel
@@ -149,6 +149,6 @@ func (m *mockRelay) SetOnDisconnect(onDisconnect func(ctx context.Context, agent
 	m.Called(onDisconnect)
 }
 
-func (m *mockRelay) SetOnShutdown(onShutdown func()) {
+func (m *mockRelay) SetOnShutdown(onShutdown func(ctx context.Context)) {
 	m.Called(onShutdown)
 }

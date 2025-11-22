@@ -50,7 +50,7 @@ type Relay struct {
 	agents        *haxmap.Map[string, string]      // map[connectionID]agentName
 	onConnect     func(ctx context.Context, tunnelName, agentName string, conn controllers.Connection) error
 	onDisconnect  func(ctx context.Context, agentName, id string) error
-	onShutdown    func()
+	onShutdown    func(ctx context.Context)
 }
 
 func NewRelay(name string, pc net.PacketConn, cert tls.Certificate, handler *icx.Handler, idHasher *hasher.Hasher, router router.Router) *Relay {
@@ -114,7 +114,7 @@ func (r *Relay) SetOnDisconnect(onDisconnect func(ctx context.Context, agentName
 }
 
 // SetOnShutdown sets a callback that is invoked when the relay is shutting down.
-func (r *Relay) SetOnShutdown(onShutdown func()) {
+func (r *Relay) SetOnShutdown(onShutdown func(context.Context)) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -193,7 +193,10 @@ func (r *Relay) Start(ctx context.Context) error {
 	r.mu.Unlock()
 
 	if onShutdown != nil {
-		onShutdown()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		onShutdown(shutdownCtx)
 	}
 
 	return nil

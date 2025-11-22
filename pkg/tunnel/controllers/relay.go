@@ -22,5 +22,5 @@ type Relay interface {
 	// SetOnDisconnect sets a callback that is invoked when a connection is closed.
 	SetOnDisconnect(onDisconnect func(ctx context.Context, agentName, id string) error)
 	// SetOnShutdown sets a callback that is invoked when the relay is shutting down.
-	SetOnShutdown(onShutdown func())
+	SetOnShutdown(onShutdown func(ctx context.Context))
 }

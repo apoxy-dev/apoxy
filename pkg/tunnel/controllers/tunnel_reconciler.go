@@ -107,9 +107,7 @@ func (r *TunnelReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-func (r *TunnelReconciler) RemoveRelayAddress() {
-	ctx := context.Background()
-
+func (r *TunnelReconciler) RemoveRelayAddress(ctx context.Context) {
 	// Build the same label selector we filter on during watch.
 	lss, err := metav1.ParseToLabelSelector(r.labelSelector)
 	if err != nil {
