@@ -22,6 +22,7 @@ go run "k8s.io/code-generator/cmd/deepcopy-gen@${CODEGEN_VERSION}" \
   ./api/extensions/v1alpha1 \
   ./api/extensions/v1alpha2 \
   ./api/gateway/v1 \
+  ./api/gateway/v1alpha2 \
   ./pkg/gateway/gatewayapi \
   ./pkg/gateway/ir
 
@@ -37,6 +38,7 @@ go run "k8s.io/code-generator/cmd/register-gen@${CODEGEN_VERSION}" \
   ./api/extensions/v1alpha1 \
   ./api/extensions/v1alpha2 \
   ./api/gateway/v1 \
+  ./api/gateway/v1alpha2 \
   ./pkg/gateway/gatewayapi \
   ./pkg/gateway/ir
 
@@ -54,6 +56,7 @@ go run "k8s.io/code-generator/cmd/client-gen@${CODEGEN_VERSION}" \
   --input "./api/extensions/v1alpha1" \
   --input "./api/extensions/v1alpha2" \
   --input "./api/gateway/v1" \
+  --input "./api/gateway/v1alpha2" \
   --input "./api/policy/v1alpha1"
 
 echo "Generating listers and informers..."
@@ -68,6 +71,7 @@ go run "k8s.io/code-generator/cmd/lister-gen@${CODEGEN_VERSION}" \
   ./api/extensions/v1alpha1 \
   ./api/extensions/v1alpha2 \
   ./api/gateway/v1 \
+  ./api/gateway/v1alpha2 \
   ./api/policy/v1alpha1
 
 go run "k8s.io/code-generator/cmd/informer-gen@${CODEGEN_VERSION}" \
@@ -83,6 +87,7 @@ go run "k8s.io/code-generator/cmd/informer-gen@${CODEGEN_VERSION}" \
   ./api/extensions/v1alpha1 \
   ./api/extensions/v1alpha2 \
   ./api/gateway/v1 \
+  ./api/gateway/v1alpha2 \
   ./api/policy/v1alpha1
 
 echo "Generating OpenAPI schema..."
@@ -101,10 +106,12 @@ go run "k8s.io/kube-openapi/cmd/openapi-gen@master" \
   k8s.io/apimachinery/pkg/util/intstr \
   k8s.io/apimachinery/pkg/version \
   sigs.k8s.io/gateway-api/apis/v1 \
+  sigs.k8s.io/gateway-api/apis/v1alpha2 \
   ./api/controllers/v1alpha1 \
   ./api/core/v1alpha \
   ./api/core/v1alpha2 \
   ./api/extensions/v1alpha1 \
   ./api/extensions/v1alpha2 \
   ./api/gateway/v1 \
+  ./api/gateway/v1alpha2 \
   ./api/policy/v1alpha1

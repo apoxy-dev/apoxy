@@ -205,6 +205,15 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/apoxy-dev/apoxy/api/gateway/v1.HTTPRoute":                              schema_apoxy_api_gateway_v1_HTTPRoute(ref),
 		"github.com/apoxy-dev/apoxy/api/gateway/v1.HTTPRouteList":                          schema_apoxy_api_gateway_v1_HTTPRouteList(ref),
 		"github.com/apoxy-dev/apoxy/api/gateway/v1.HTTPRouteStatus":                        schema_apoxy_api_gateway_v1_HTTPRouteStatus(ref),
+		"github.com/apoxy-dev/apoxy/api/gateway/v1alpha2.TCPRoute":                         schema_apoxy_api_gateway_v1alpha2_TCPRoute(ref),
+		"github.com/apoxy-dev/apoxy/api/gateway/v1alpha2.TCPRouteList":                     schema_apoxy_api_gateway_v1alpha2_TCPRouteList(ref),
+		"github.com/apoxy-dev/apoxy/api/gateway/v1alpha2.TCPRouteStatus":                   schema_apoxy_api_gateway_v1alpha2_TCPRouteStatus(ref),
+		"github.com/apoxy-dev/apoxy/api/gateway/v1alpha2.TLSRoute":                         schema_apoxy_api_gateway_v1alpha2_TLSRoute(ref),
+		"github.com/apoxy-dev/apoxy/api/gateway/v1alpha2.TLSRouteList":                     schema_apoxy_api_gateway_v1alpha2_TLSRouteList(ref),
+		"github.com/apoxy-dev/apoxy/api/gateway/v1alpha2.TLSRouteStatus":                   schema_apoxy_api_gateway_v1alpha2_TLSRouteStatus(ref),
+		"github.com/apoxy-dev/apoxy/api/gateway/v1alpha2.UDPRoute":                         schema_apoxy_api_gateway_v1alpha2_UDPRoute(ref),
+		"github.com/apoxy-dev/apoxy/api/gateway/v1alpha2.UDPRouteList":                     schema_apoxy_api_gateway_v1alpha2_UDPRouteList(ref),
+		"github.com/apoxy-dev/apoxy/api/gateway/v1alpha2.UDPRouteStatus":                   schema_apoxy_api_gateway_v1alpha2_UDPRouteStatus(ref),
 		"github.com/apoxy-dev/apoxy/api/policy/v1alpha1.RateLimit":                         schema_apoxy_api_policy_v1alpha1_RateLimit(ref),
 		"github.com/apoxy-dev/apoxy/api/policy/v1alpha1.RateLimitDescriptor":               schema_apoxy_api_policy_v1alpha1_RateLimitDescriptor(ref),
 		"github.com/apoxy-dev/apoxy/api/policy/v1alpha1.RateLimitList":                     schema_apoxy_api_policy_v1alpha1_RateLimitList(ref),
@@ -558,6 +567,33 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"sigs.k8s.io/gateway-api/apis/v1.SecretObjectReference":                            schema_sigsk8sio_gateway_api_apis_v1_SecretObjectReference(ref),
 		"sigs.k8s.io/gateway-api/apis/v1.SessionPersistence":                               schema_sigsk8sio_gateway_api_apis_v1_SessionPersistence(ref),
 		"sigs.k8s.io/gateway-api/apis/v1.SupportedFeature":                                 schema_sigsk8sio_gateway_api_apis_v1_SupportedFeature(ref),
+		"sigs.k8s.io/gateway-api/apis/v1alpha2.BackendLBPolicy":                            schema_sigsk8sio_gateway_api_apis_v1alpha2_BackendLBPolicy(ref),
+		"sigs.k8s.io/gateway-api/apis/v1alpha2.BackendLBPolicyList":                        schema_sigsk8sio_gateway_api_apis_v1alpha2_BackendLBPolicyList(ref),
+		"sigs.k8s.io/gateway-api/apis/v1alpha2.BackendLBPolicySpec":                        schema_sigsk8sio_gateway_api_apis_v1alpha2_BackendLBPolicySpec(ref),
+		"sigs.k8s.io/gateway-api/apis/v1alpha2.GRPCRoute":                                  schema_sigsk8sio_gateway_api_apis_v1alpha2_GRPCRoute(ref),
+		"sigs.k8s.io/gateway-api/apis/v1alpha2.GRPCRouteList":                              schema_sigsk8sio_gateway_api_apis_v1alpha2_GRPCRouteList(ref),
+		"sigs.k8s.io/gateway-api/apis/v1alpha2.LocalPolicyTargetReference":                 schema_sigsk8sio_gateway_api_apis_v1alpha2_LocalPolicyTargetReference(ref),
+		"sigs.k8s.io/gateway-api/apis/v1alpha2.LocalPolicyTargetReferenceWithSectionName":  schema_sigsk8sio_gateway_api_apis_v1alpha2_LocalPolicyTargetReferenceWithSectionName(ref),
+		"sigs.k8s.io/gateway-api/apis/v1alpha2.NamespacedPolicyTargetReference":            schema_sigsk8sio_gateway_api_apis_v1alpha2_NamespacedPolicyTargetReference(ref),
+		"sigs.k8s.io/gateway-api/apis/v1alpha2.PolicyAncestorStatus":                       schema_sigsk8sio_gateway_api_apis_v1alpha2_PolicyAncestorStatus(ref),
+		"sigs.k8s.io/gateway-api/apis/v1alpha2.PolicyStatus":                               schema_sigsk8sio_gateway_api_apis_v1alpha2_PolicyStatus(ref),
+		"sigs.k8s.io/gateway-api/apis/v1alpha2.ReferenceGrant":                             schema_sigsk8sio_gateway_api_apis_v1alpha2_ReferenceGrant(ref),
+		"sigs.k8s.io/gateway-api/apis/v1alpha2.ReferenceGrantList":                         schema_sigsk8sio_gateway_api_apis_v1alpha2_ReferenceGrantList(ref),
+		"sigs.k8s.io/gateway-api/apis/v1alpha2.TCPRoute":                                   schema_sigsk8sio_gateway_api_apis_v1alpha2_TCPRoute(ref),
+		"sigs.k8s.io/gateway-api/apis/v1alpha2.TCPRouteList":                               schema_sigsk8sio_gateway_api_apis_v1alpha2_TCPRouteList(ref),
+		"sigs.k8s.io/gateway-api/apis/v1alpha2.TCPRouteRule":                               schema_sigsk8sio_gateway_api_apis_v1alpha2_TCPRouteRule(ref),
+		"sigs.k8s.io/gateway-api/apis/v1alpha2.TCPRouteSpec":                               schema_sigsk8sio_gateway_api_apis_v1alpha2_TCPRouteSpec(ref),
+		"sigs.k8s.io/gateway-api/apis/v1alpha2.TCPRouteStatus":                             schema_sigsk8sio_gateway_api_apis_v1alpha2_TCPRouteStatus(ref),
+		"sigs.k8s.io/gateway-api/apis/v1alpha2.TLSRoute":                                   schema_sigsk8sio_gateway_api_apis_v1alpha2_TLSRoute(ref),
+		"sigs.k8s.io/gateway-api/apis/v1alpha2.TLSRouteList":                               schema_sigsk8sio_gateway_api_apis_v1alpha2_TLSRouteList(ref),
+		"sigs.k8s.io/gateway-api/apis/v1alpha2.TLSRouteRule":                               schema_sigsk8sio_gateway_api_apis_v1alpha2_TLSRouteRule(ref),
+		"sigs.k8s.io/gateway-api/apis/v1alpha2.TLSRouteSpec":                               schema_sigsk8sio_gateway_api_apis_v1alpha2_TLSRouteSpec(ref),
+		"sigs.k8s.io/gateway-api/apis/v1alpha2.TLSRouteStatus":                             schema_sigsk8sio_gateway_api_apis_v1alpha2_TLSRouteStatus(ref),
+		"sigs.k8s.io/gateway-api/apis/v1alpha2.UDPRoute":                                   schema_sigsk8sio_gateway_api_apis_v1alpha2_UDPRoute(ref),
+		"sigs.k8s.io/gateway-api/apis/v1alpha2.UDPRouteList":                               schema_sigsk8sio_gateway_api_apis_v1alpha2_UDPRouteList(ref),
+		"sigs.k8s.io/gateway-api/apis/v1alpha2.UDPRouteRule":                               schema_sigsk8sio_gateway_api_apis_v1alpha2_UDPRouteRule(ref),
+		"sigs.k8s.io/gateway-api/apis/v1alpha2.UDPRouteSpec":                               schema_sigsk8sio_gateway_api_apis_v1alpha2_UDPRouteSpec(ref),
+		"sigs.k8s.io/gateway-api/apis/v1alpha2.UDPRouteStatus":                             schema_sigsk8sio_gateway_api_apis_v1alpha2_UDPRouteStatus(ref),
 	}
 }
 
@@ -7724,6 +7760,351 @@ func schema_apoxy_api_gateway_v1_HTTPRouteStatus(ref common.ReferenceCallback) c
 		},
 		Dependencies: []string{
 			"sigs.k8s.io/gateway-api/apis/v1.HTTPRouteStatus"},
+	}
+}
+
+func schema_apoxy_api_gateway_v1alpha2_TCPRoute(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("sigs.k8s.io/gateway-api/apis/v1alpha2.TCPRouteSpec"),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("github.com/apoxy-dev/apoxy/api/gateway/v1alpha2.TCPRouteStatus"),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/gateway/v1alpha2.TCPRouteStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta", "sigs.k8s.io/gateway-api/apis/v1alpha2.TCPRouteSpec"},
+	}
+}
+
+func schema_apoxy_api_gateway_v1alpha2_TCPRouteList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("github.com/apoxy-dev/apoxy/api/gateway/v1alpha2.TCPRoute"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/gateway/v1alpha2.TCPRoute", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
+	}
+}
+
+func schema_apoxy_api_gateway_v1alpha2_TCPRouteStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"TCPRouteStatus": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("sigs.k8s.io/gateway-api/apis/v1alpha2.TCPRouteStatus"),
+						},
+					},
+				},
+				Required: []string{"TCPRouteStatus"},
+			},
+		},
+		Dependencies: []string{
+			"sigs.k8s.io/gateway-api/apis/v1alpha2.TCPRouteStatus"},
+	}
+}
+
+func schema_apoxy_api_gateway_v1alpha2_TLSRoute(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("sigs.k8s.io/gateway-api/apis/v1alpha2.TLSRouteSpec"),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("github.com/apoxy-dev/apoxy/api/gateway/v1alpha2.TLSRouteStatus"),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/gateway/v1alpha2.TLSRouteStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta", "sigs.k8s.io/gateway-api/apis/v1alpha2.TLSRouteSpec"},
+	}
+}
+
+func schema_apoxy_api_gateway_v1alpha2_TLSRouteList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("github.com/apoxy-dev/apoxy/api/gateway/v1alpha2.TLSRoute"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/gateway/v1alpha2.TLSRoute", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
+	}
+}
+
+func schema_apoxy_api_gateway_v1alpha2_TLSRouteStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"TLSRouteStatus": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("sigs.k8s.io/gateway-api/apis/v1alpha2.TLSRouteStatus"),
+						},
+					},
+				},
+				Required: []string{"TLSRouteStatus"},
+			},
+		},
+		Dependencies: []string{
+			"sigs.k8s.io/gateway-api/apis/v1alpha2.TLSRouteStatus"},
+	}
+}
+
+func schema_apoxy_api_gateway_v1alpha2_UDPRoute(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("sigs.k8s.io/gateway-api/apis/v1alpha2.UDPRouteSpec"),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("github.com/apoxy-dev/apoxy/api/gateway/v1alpha2.UDPRouteStatus"),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/gateway/v1alpha2.UDPRouteStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta", "sigs.k8s.io/gateway-api/apis/v1alpha2.UDPRouteSpec"},
+	}
+}
+
+func schema_apoxy_api_gateway_v1alpha2_UDPRouteList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("github.com/apoxy-dev/apoxy/api/gateway/v1alpha2.UDPRoute"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/gateway/v1alpha2.UDPRoute", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
+	}
+}
+
+func schema_apoxy_api_gateway_v1alpha2_UDPRouteStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"UDPRouteStatus": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("sigs.k8s.io/gateway-api/apis/v1alpha2.UDPRouteStatus"),
+						},
+					},
+				},
+				Required: []string{"UDPRouteStatus"},
+			},
+		},
+		Dependencies: []string{
+			"sigs.k8s.io/gateway-api/apis/v1alpha2.UDPRouteStatus"},
 	}
 }
 
@@ -24139,7 +24520,7 @@ func schema_sigsk8sio_gateway_api_apis_v1_BackendRef(ref common.ReferenceCallbac
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "BackendRef defines how a Route should forward a request to a Kubernetes resource.\n\nNote that when a namespace different than the local namespace is specified, a ReferenceGrant object is required in the referent namespace to allow that namespace's owner to accept the reference. See the ReferenceGrant documentation for details.\n\n<gateway:experimental:description>\n\nWhen the BackendRef points to a Kubernetes Service, implementations SHOULD honor the appProtocol field if it is set for the target Service Port.\n\nImplementations supporting appProtocol SHOULD recognize the Kubernetes Standard Application Protocols defined in KEP-3726.\n\nIf a Service appProtocol isn't specified, an implementation MAY infer the backend protocol through its own means. Implementations MAY infer the protocol from the Route type referring to the backend Service.\n\nIf a Route is not able to send traffic to the backend using the specified protocol then the backend is considered invalid. Implementations MUST set the \"ResolvedRefs\" condition to \"False\" with the \"UnsupportedProtocol\" reason.\n\n</gateway:experimental:description>\n\nNote that when the BackendTLSPolicy object is enabled by the implementation, there are some extra rules about validity to consider here. See the fields where this struct is used for more information about the exact behavior.",
+				Description: "BackendRef defines how a Route should forward a request to a Kubernetes resource.\n\nNote that when a namespace different than the local namespace is specified, a ReferenceGrant object is required in the referent namespace to allow that namespace's owner to accept the reference. See the ReferenceGrant documentation for details.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"group": {
@@ -26615,7 +26996,7 @@ func schema_sigsk8sio_gateway_api_apis_v1_ParentReference(ref common.ReferenceCa
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "ParentReference identifies an API object (usually a Gateway) that can be considered a parent of this resource (usually a route). There are two kinds of parent resources with \"Core\" support:\n\n* Gateway (Gateway conformance profile) * Service (Mesh conformance profile, ClusterIP Services only)\n\nThis API may be extended in the future to support additional kinds of parent resources.\n\nThe API object must be valid in the cluster; the Group and Kind must be registered in the cluster for this reference to be valid.",
+				Description: "ParentReference identifies an API object (usually a Gateway) that can be considered a parent of this resource (usually a route). The only kind of parent resource with \"Core\" support is Gateway. This API may be extended in the future to support additional kinds of parent resources, such as HTTPRoute.\n\nNote that there are specific rules for ParentRefs which cross namespace boundaries. Cross-namespace references are only valid if they are explicitly allowed by something in the namespace they are referring to. For example: Gateway has the AllowedRoutes field, and ReferenceGrant provides a generic way to enable any other kind of cross-namespace reference.\n\nThe API object must be valid in the cluster; the Group and Kind must be registered in the cluster for this reference to be valid.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"group": {
@@ -26917,5 +27298,1190 @@ func schema_sigsk8sio_gateway_api_apis_v1_SupportedFeature(ref common.ReferenceC
 				Required: []string{"name"},
 			},
 		},
+	}
+}
+
+func schema_sigsk8sio_gateway_api_apis_v1alpha2_BackendLBPolicy(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "BackendLBPolicy provides a way to define load balancing rules for a backend.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Spec defines the desired state of BackendLBPolicy.",
+							Default:     map[string]interface{}{},
+							Ref:         ref("sigs.k8s.io/gateway-api/apis/v1alpha2.BackendLBPolicySpec"),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Status defines the current state of BackendLBPolicy.",
+							Default:     map[string]interface{}{},
+							Ref:         ref("sigs.k8s.io/gateway-api/apis/v1alpha2.PolicyStatus"),
+						},
+					},
+				},
+				Required: []string{"spec"},
+			},
+		},
+		Dependencies: []string{
+			"k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta", "sigs.k8s.io/gateway-api/apis/v1alpha2.BackendLBPolicySpec", "sigs.k8s.io/gateway-api/apis/v1alpha2.PolicyStatus"},
+	}
+}
+
+func schema_sigsk8sio_gateway_api_apis_v1alpha2_BackendLBPolicyList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "BackendLBPolicyList contains a list of BackendLBPolicies",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1alpha2.BackendLBPolicy"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			"k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta", "sigs.k8s.io/gateway-api/apis/v1alpha2.BackendLBPolicy"},
+	}
+}
+
+func schema_sigsk8sio_gateway_api_apis_v1alpha2_BackendLBPolicySpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "BackendLBPolicySpec defines the desired state of BackendLBPolicy. Note: there is no Override or Default policy configuration.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"targetRefs": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"group",
+									"kind",
+									"name",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "TargetRef identifies an API object to apply policy to. Currently, Backends (i.e. Service, ServiceImport, or any implementation-specific backendRef) are the only valid API target references.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1alpha2.LocalPolicyTargetReference"),
+									},
+								},
+							},
+						},
+					},
+					"sessionPersistence": {
+						SchemaProps: spec.SchemaProps{
+							Description: "SessionPersistence defines and configures session persistence for the backend.\n\nSupport: Extended",
+							Ref:         ref("sigs.k8s.io/gateway-api/apis/v1.SessionPersistence"),
+						},
+					},
+				},
+				Required: []string{"targetRefs"},
+			},
+		},
+		Dependencies: []string{
+			"sigs.k8s.io/gateway-api/apis/v1.SessionPersistence", "sigs.k8s.io/gateway-api/apis/v1alpha2.LocalPolicyTargetReference"},
+	}
+}
+
+func schema_sigsk8sio_gateway_api_apis_v1alpha2_GRPCRoute(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Spec defines the desired state of GRPCRoute.",
+							Default:     map[string]interface{}{},
+							Ref:         ref("sigs.k8s.io/gateway-api/apis/v1.GRPCRouteSpec"),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Status defines the current state of GRPCRoute.",
+							Default:     map[string]interface{}{},
+							Ref:         ref("sigs.k8s.io/gateway-api/apis/v1.GRPCRouteStatus"),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta", "sigs.k8s.io/gateway-api/apis/v1.GRPCRouteSpec", "sigs.k8s.io/gateway-api/apis/v1.GRPCRouteStatus"},
+	}
+}
+
+func schema_sigsk8sio_gateway_api_apis_v1alpha2_GRPCRouteList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1alpha2.GRPCRoute"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			"k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta", "sigs.k8s.io/gateway-api/apis/v1alpha2.GRPCRoute"},
+	}
+}
+
+func schema_sigsk8sio_gateway_api_apis_v1alpha2_LocalPolicyTargetReference(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "LocalPolicyTargetReference identifies an API object to apply a direct or inherited policy to. This should be used as part of Policy resources that can target Gateway API resources. For more information on how this policy attachment model works, and a sample Policy resource, refer to the policy attachment documentation for Gateway API.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"group": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Group is the group of the target resource.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is kind of the target resource.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Name is the name of the target resource.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"group", "kind", "name"},
+			},
+		},
+	}
+}
+
+func schema_sigsk8sio_gateway_api_apis_v1alpha2_LocalPolicyTargetReferenceWithSectionName(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "LocalPolicyTargetReferenceWithSectionName identifies an API object to apply a direct policy to. This should be used as part of Policy resources that can target single resources. For more information on how this policy attachment mode works, and a sample Policy resource, refer to the policy attachment documentation for Gateway API.\n\nNote: This should only be used for direct policy attachment when references to SectionName are actually needed. In all other cases, LocalPolicyTargetReference should be used.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"group": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Group is the group of the target resource.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is kind of the target resource.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Name is the name of the target resource.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"sectionName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "SectionName is the name of a section within the target resource. When unspecified, this targetRef targets the entire resource. In the following resources, SectionName is interpreted as the following:\n\n* Gateway: Listener name * HTTPRoute: HTTPRouteRule name * Service: Port name\n\nIf a SectionName is specified, but does not exist on the targeted object, the Policy must fail to attach, and the policy implementation should record a `ResolvedRefs` or similar Condition in the Policy's status.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"group", "kind", "name"},
+			},
+		},
+	}
+}
+
+func schema_sigsk8sio_gateway_api_apis_v1alpha2_NamespacedPolicyTargetReference(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "NamespacedPolicyTargetReference identifies an API object to apply a direct or inherited policy to, potentially in a different namespace. This should only be used as part of Policy resources that need to be able to target resources in different namespaces. For more information on how this policy attachment model works, and a sample Policy resource, refer to the policy attachment documentation for Gateway API.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"group": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Group is the group of the target resource.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is kind of the target resource.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Name is the name of the target resource.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"namespace": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Namespace is the namespace of the referent. When unspecified, the local namespace is inferred. Even when policy targets a resource in a different namespace, it MUST only apply to traffic originating from the same namespace as the policy.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"group", "kind", "name"},
+			},
+		},
+	}
+}
+
+func schema_sigsk8sio_gateway_api_apis_v1alpha2_PolicyAncestorStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "PolicyAncestorStatus describes the status of a route with respect to an associated Ancestor.\n\nAncestors refer to objects that are either the Target of a policy or above it in terms of object hierarchy. For example, if a policy targets a Service, the Policy's Ancestors are, in order, the Service, the HTTPRoute, the Gateway, and the GatewayClass. Almost always, in this hierarchy, the Gateway will be the most useful object to place Policy status on, so we recommend that implementations SHOULD use Gateway as the PolicyAncestorStatus object unless the designers have a _very_ good reason otherwise.\n\nIn the context of policy attachment, the Ancestor is used to distinguish which resource results in a distinct application of this policy. For example, if a policy targets a Service, it may have a distinct result per attached Gateway.\n\nPolicies targeting the same resource may have different effects depending on the ancestors of those resources. For example, different Gateways targeting the same Service may have different capabilities, especially if they have different underlying implementations.\n\nFor example, in BackendTLSPolicy, the Policy attaches to a Service that is used as a backend in a HTTPRoute that is itself attached to a Gateway. In this case, the relevant object for status is the Gateway, and that is the ancestor object referred to in this status.\n\nNote that a parent is also an ancestor, so for objects where the parent is the relevant object for status, this struct SHOULD still be used.\n\nThis struct is intended to be used in a slice that's effectively a map, with a composite key made up of the AncestorRef and the ControllerName.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"ancestorRef": {
+						SchemaProps: spec.SchemaProps{
+							Description: "AncestorRef corresponds with a ParentRef in the spec that this PolicyAncestorStatus struct describes the status of.",
+							Default:     map[string]interface{}{},
+							Ref:         ref("sigs.k8s.io/gateway-api/apis/v1.ParentReference"),
+						},
+					},
+					"controllerName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ControllerName is a domain/path string that indicates the name of the controller that wrote this status. This corresponds with the controllerName field on GatewayClass.\n\nExample: \"example.net/gateway-controller\".\n\nThe format of this field is DOMAIN \"/\" PATH, where DOMAIN and PATH are valid Kubernetes names (https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names).\n\nControllers MUST populate this field when writing status. Controllers should ensure that entries to status populated with their ControllerName are cleaned up when they are no longer necessary.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"conditions": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"type",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Conditions describes the status of the Policy with respect to the given Ancestor.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"ancestorRef", "controllerName"},
+			},
+		},
+		Dependencies: []string{
+			"k8s.io/apimachinery/pkg/apis/meta/v1.Condition", "sigs.k8s.io/gateway-api/apis/v1.ParentReference"},
+	}
+}
+
+func schema_sigsk8sio_gateway_api_apis_v1alpha2_PolicyStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "PolicyStatus defines the common attributes that all Policies should include within their status.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"ancestors": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Ancestors is a list of ancestor resources (usually Gateways) that are associated with the policy, and the status of the policy with respect to each ancestor. When this policy attaches to a parent, the controller that manages the parent and the ancestors MUST add an entry to this list when the controller first sees the policy and SHOULD update the entry as appropriate when the relevant ancestor is modified.\n\nNote that choosing the relevant ancestor is left to the Policy designers; an important part of Policy design is designing the right object level at which to namespace this status.\n\nNote also that implementations MUST ONLY populate ancestor status for the Ancestor resources they are responsible for. Implementations MUST use the ControllerName field to uniquely identify the entries in this list that they are responsible for.\n\nNote that to achieve this, the list of PolicyAncestorStatus structs MUST be treated as a map with a composite key, made up of the AncestorRef and ControllerName fields combined.\n\nA maximum of 16 ancestors will be represented in this list. An empty list means the Policy is not relevant for any ancestors.\n\nIf this slice is full, implementations MUST NOT add further entries. Instead they MUST consider the policy unimplementable and signal that on any related resources such as the ancestor that would be referenced here. For example, if this list was full on BackendTLSPolicy, no additional Gateways would be able to reference the Service targeted by the BackendTLSPolicy.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1alpha2.PolicyAncestorStatus"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"ancestors"},
+			},
+		},
+		Dependencies: []string{
+			"sigs.k8s.io/gateway-api/apis/v1alpha2.PolicyAncestorStatus"},
+	}
+}
+
+func schema_sigsk8sio_gateway_api_apis_v1alpha2_ReferenceGrant(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ReferenceGrant identifies kinds of resources in other namespaces that are trusted to reference the specified kinds of resources in the same namespace as the policy.\n\nEach ReferenceGrant can be used to represent a unique trust relationship. Additional Reference Grants can be used to add to the set of trusted sources of inbound references for the namespace they are defined within.\n\nA ReferenceGrant is required for all cross-namespace references in Gateway API (with the exception of cross-namespace Route-Gateway attachment, which is governed by the AllowedRoutes configuration on the Gateway, and cross-namespace Service ParentRefs on a \"consumer\" mesh Route, which defines routing rules applicable only to workloads in the Route namespace). ReferenceGrants allowing a reference from a Route to a Service are only applicable to BackendRefs.\n\nReferenceGrant is a form of runtime verification allowing users to assert which cross-namespace object references are permitted. Implementations that support ReferenceGrant MUST NOT permit cross-namespace references which have no grant, and MUST respond to the removal of a grant by revoking the access that the grant allowed.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Spec defines the desired state of ReferenceGrant.",
+							Default:     map[string]interface{}{},
+							Ref:         ref("sigs.k8s.io/gateway-api/apis/v1beta1.ReferenceGrantSpec"),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta", "sigs.k8s.io/gateway-api/apis/v1beta1.ReferenceGrantSpec"},
+	}
+}
+
+func schema_sigsk8sio_gateway_api_apis_v1alpha2_ReferenceGrantList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ReferenceGrantList contains a list of ReferenceGrant.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1alpha2.ReferenceGrant"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			"k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta", "sigs.k8s.io/gateway-api/apis/v1alpha2.ReferenceGrant"},
+	}
+}
+
+func schema_sigsk8sio_gateway_api_apis_v1alpha2_TCPRoute(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "TCPRoute provides a way to route TCP requests. When combined with a Gateway listener, it can be used to forward connections on the port specified by the listener to a set of backends specified by the TCPRoute.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Spec defines the desired state of TCPRoute.",
+							Default:     map[string]interface{}{},
+							Ref:         ref("sigs.k8s.io/gateway-api/apis/v1alpha2.TCPRouteSpec"),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Status defines the current state of TCPRoute.",
+							Default:     map[string]interface{}{},
+							Ref:         ref("sigs.k8s.io/gateway-api/apis/v1alpha2.TCPRouteStatus"),
+						},
+					},
+				},
+				Required: []string{"spec"},
+			},
+		},
+		Dependencies: []string{
+			"k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta", "sigs.k8s.io/gateway-api/apis/v1alpha2.TCPRouteSpec", "sigs.k8s.io/gateway-api/apis/v1alpha2.TCPRouteStatus"},
+	}
+}
+
+func schema_sigsk8sio_gateway_api_apis_v1alpha2_TCPRouteList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "TCPRouteList contains a list of TCPRoute",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1alpha2.TCPRoute"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			"k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta", "sigs.k8s.io/gateway-api/apis/v1alpha2.TCPRoute"},
+	}
+}
+
+func schema_sigsk8sio_gateway_api_apis_v1alpha2_TCPRouteRule(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "TCPRouteRule is the configuration for a given rule.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Name is the name of the route rule. This name MUST be unique within a Route if it is set.\n\nSupport: Extended",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"backendRefs": {
+						SchemaProps: spec.SchemaProps{
+							Description: "BackendRefs defines the backend(s) where matching requests should be sent. If unspecified or invalid (refers to a non-existent resource or a Service with no endpoints), the underlying implementation MUST actively reject connection attempts to this backend. Connection rejections must respect weight; if an invalid backend is requested to have 80% of connections, then 80% of connections must be rejected instead.\n\nSupport: Core for Kubernetes Service\n\nSupport: Extended for Kubernetes ServiceImport\n\nSupport: Implementation-specific for any other resource\n\nSupport for weight: Extended",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.BackendRef"),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"sigs.k8s.io/gateway-api/apis/v1.BackendRef"},
+	}
+}
+
+func schema_sigsk8sio_gateway_api_apis_v1alpha2_TCPRouteSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "TCPRouteSpec defines the desired state of TCPRoute",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"parentRefs": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ParentRefs references the resources (usually Gateways) that a Route wants to be attached to. Note that the referenced parent resource needs to allow this for the attachment to be complete. For Gateways, that means the Gateway needs to allow attachment from Routes of this kind and namespace. For Services, that means the Service must either be in the same namespace for a \"producer\" route, or the mesh implementation must support and allow \"consumer\" routes for the referenced Service. ReferenceGrant is not applicable for governing ParentRefs to Services - it is not possible to create a \"producer\" route for a Service in a different namespace from the Route.\n\nThere are two kinds of parent resources with \"Core\" support:\n\n* Gateway (Gateway conformance profile) * Service (Mesh conformance profile, ClusterIP Services only)\n\nThis API may be extended in the future to support additional kinds of parent resources.\n\nParentRefs must be _distinct_. This means either that:\n\n* They select different objects.  If this is the case, then parentRef\n  entries are distinct. In terms of fields, this means that the\n  multi-part key defined by `group`, `kind`, `namespace`, and `name` must\n  be unique across all parentRef entries in the Route.\n* They do not select different objects, but for each optional field used,\n  each ParentRef that selects the same object must set the same set of\n  optional fields to different values. If one ParentRef sets a\n  combination of optional fields, all must set the same combination.\n\nSome examples:\n\n* If one ParentRef sets `sectionName`, all ParentRefs referencing the\n  same object must also set `sectionName`.\n* If one ParentRef sets `port`, all ParentRefs referencing the same\n  object must also set `port`.\n* If one ParentRef sets `sectionName` and `port`, all ParentRefs\n  referencing the same object must also set `sectionName` and `port`.\n\nIt is possible to separately reference multiple distinct objects that may be collapsed by an implementation. For example, some implementations may choose to merge compatible Gateway Listeners together. If that is the case, the list of routes attached to those resources should also be merged.\n\nNote that for ParentRefs that cross namespace boundaries, there are specific rules. Cross-namespace references are only valid if they are explicitly allowed by something in the namespace they are referring to. For example, Gateway has the AllowedRoutes field, and ReferenceGrant provides a generic way to enable other kinds of cross-namespace reference.\n\n<gateway:experimental:description> ParentRefs from a Route to a Service in the same namespace are \"producer\" routes, which apply default routing rules to inbound connections from any namespace to the Service.\n\nParentRefs from a Route to a Service in a different namespace are \"consumer\" routes, and these routing rules are only applied to outbound connections originating from the same namespace as the Route, for which the intended destination of the connections are a Service targeted as a ParentRef of the Route. </gateway:experimental:description>\n\n<gateway:standard:validation:XValidation:message=\"sectionName must be specified when parentRefs includes 2 or more references to the same parent\",rule=\"self.all(p1, self.all(p2, p1.group == p2.group && p1.kind == p2.kind && p1.name == p2.name && (((!has(p1.__namespace__) || p1.__namespace__ == '') && (!has(p2.__namespace__) || p2.__namespace__ == '')) || (has(p1.__namespace__) && has(p2.__namespace__) && p1.__namespace__ == p2.__namespace__ )) ? ((!has(p1.sectionName) || p1.sectionName == '') == (!has(p2.sectionName) || p2.sectionName == '')) : true))\"> <gateway:standard:validation:XValidation:message=\"sectionName must be unique when parentRefs includes 2 or more references to the same parent\",rule=\"self.all(p1, self.exists_one(p2, p1.group == p2.group && p1.kind == p2.kind && p1.name == p2.name && (((!has(p1.__namespace__) || p1.__namespace__ == '') && (!has(p2.__namespace__) || p2.__namespace__ == '')) || (has(p1.__namespace__) && has(p2.__namespace__) && p1.__namespace__ == p2.__namespace__ )) && (((!has(p1.sectionName) || p1.sectionName == '') && (!has(p2.sectionName) || p2.sectionName == '')) || (has(p1.sectionName) && has(p2.sectionName) && p1.sectionName == p2.sectionName))))\"> <gateway:experimental:validation:XValidation:message=\"sectionName or port must be specified when parentRefs includes 2 or more references to the same parent\",rule=\"self.all(p1, self.all(p2, p1.group == p2.group && p1.kind == p2.kind && p1.name == p2.name && (((!has(p1.__namespace__) || p1.__namespace__ == '') && (!has(p2.__namespace__) || p2.__namespace__ == '')) || (has(p1.__namespace__) && has(p2.__namespace__) && p1.__namespace__ == p2.__namespace__)) ? ((!has(p1.sectionName) || p1.sectionName == '') == (!has(p2.sectionName) || p2.sectionName == '') && (!has(p1.port) || p1.port == 0) == (!has(p2.port) || p2.port == 0)): true))\"> <gateway:experimental:validation:XValidation:message=\"sectionName or port must be unique when parentRefs includes 2 or more references to the same parent\",rule=\"self.all(p1, self.exists_one(p2, p1.group == p2.group && p1.kind == p2.kind && p1.name == p2.name && (((!has(p1.__namespace__) || p1.__namespace__ == '') && (!has(p2.__namespace__) || p2.__namespace__ == '')) || (has(p1.__namespace__) && has(p2.__namespace__) && p1.__namespace__ == p2.__namespace__ )) && (((!has(p1.sectionName) || p1.sectionName == '') && (!has(p2.sectionName) || p2.sectionName == '')) || ( has(p1.sectionName) && has(p2.sectionName) && p1.sectionName == p2.sectionName)) && (((!has(p1.port) || p1.port == 0) && (!has(p2.port) || p2.port == 0)) || (has(p1.port) && has(p2.port) && p1.port == p2.port))))\">",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.ParentReference"),
+									},
+								},
+							},
+						},
+					},
+					"rules": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Rules are a list of TCP matchers and actions.\n\n<gateway:experimental:validation:XValidation:message=\"Rule name must be unique within the route\",rule=\"self.all(l1, !has(l1.name) || self.exists_one(l2, has(l2.name) && l1.name == l2.name))\">",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1alpha2.TCPRouteRule"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"rules"},
+			},
+		},
+		Dependencies: []string{
+			"sigs.k8s.io/gateway-api/apis/v1.ParentReference", "sigs.k8s.io/gateway-api/apis/v1alpha2.TCPRouteRule"},
+	}
+}
+
+func schema_sigsk8sio_gateway_api_apis_v1alpha2_TCPRouteStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "TCPRouteStatus defines the observed state of TCPRoute",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"parents": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Parents is a list of parent resources (usually Gateways) that are associated with the route, and the status of the route with respect to each parent. When this route attaches to a parent, the controller that manages the parent must add an entry to this list when the controller first sees the route and should update the entry as appropriate when the route or gateway is modified.\n\nNote that parent references that cannot be resolved by an implementation of this API will not be added to this list. Implementations of this API can only populate Route status for the Gateways/parent resources they are responsible for.\n\nA maximum of 32 Gateways will be represented in this list. An empty list means the route has not been attached to any Gateway.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.RouteParentStatus"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"parents"},
+			},
+		},
+		Dependencies: []string{
+			"sigs.k8s.io/gateway-api/apis/v1.RouteParentStatus"},
+	}
+}
+
+func schema_sigsk8sio_gateway_api_apis_v1alpha2_TLSRoute(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "The TLSRoute resource is similar to TCPRoute, but can be configured to match against TLS-specific metadata. This allows more flexibility in matching streams for a given TLS listener.\n\nIf you need to forward traffic to a single target for a TLS listener, you could choose to use a TCPRoute with a TLS listener.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Spec defines the desired state of TLSRoute.",
+							Default:     map[string]interface{}{},
+							Ref:         ref("sigs.k8s.io/gateway-api/apis/v1alpha2.TLSRouteSpec"),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Status defines the current state of TLSRoute.",
+							Default:     map[string]interface{}{},
+							Ref:         ref("sigs.k8s.io/gateway-api/apis/v1alpha2.TLSRouteStatus"),
+						},
+					},
+				},
+				Required: []string{"spec"},
+			},
+		},
+		Dependencies: []string{
+			"k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta", "sigs.k8s.io/gateway-api/apis/v1alpha2.TLSRouteSpec", "sigs.k8s.io/gateway-api/apis/v1alpha2.TLSRouteStatus"},
+	}
+}
+
+func schema_sigsk8sio_gateway_api_apis_v1alpha2_TLSRouteList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "TLSRouteList contains a list of TLSRoute",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1alpha2.TLSRoute"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			"k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta", "sigs.k8s.io/gateway-api/apis/v1alpha2.TLSRoute"},
+	}
+}
+
+func schema_sigsk8sio_gateway_api_apis_v1alpha2_TLSRouteRule(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "TLSRouteRule is the configuration for a given rule.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Name is the name of the route rule. This name MUST be unique within a Route if it is set.\n\nSupport: Extended",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"backendRefs": {
+						SchemaProps: spec.SchemaProps{
+							Description: "BackendRefs defines the backend(s) where matching requests should be sent. If unspecified or invalid (refers to a non-existent resource or a Service with no endpoints), the rule performs no forwarding; if no filters are specified that would result in a response being sent, the underlying implementation must actively reject request attempts to this backend, by rejecting the connection or returning a 500 status code. Request rejections must respect weight; if an invalid backend is requested to have 80% of requests, then 80% of requests must be rejected instead.\n\nSupport: Core for Kubernetes Service\n\nSupport: Extended for Kubernetes ServiceImport\n\nSupport: Implementation-specific for any other resource\n\nSupport for weight: Extended",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.BackendRef"),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"sigs.k8s.io/gateway-api/apis/v1.BackendRef"},
+	}
+}
+
+func schema_sigsk8sio_gateway_api_apis_v1alpha2_TLSRouteSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "TLSRouteSpec defines the desired state of a TLSRoute resource.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"parentRefs": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ParentRefs references the resources (usually Gateways) that a Route wants to be attached to. Note that the referenced parent resource needs to allow this for the attachment to be complete. For Gateways, that means the Gateway needs to allow attachment from Routes of this kind and namespace. For Services, that means the Service must either be in the same namespace for a \"producer\" route, or the mesh implementation must support and allow \"consumer\" routes for the referenced Service. ReferenceGrant is not applicable for governing ParentRefs to Services - it is not possible to create a \"producer\" route for a Service in a different namespace from the Route.\n\nThere are two kinds of parent resources with \"Core\" support:\n\n* Gateway (Gateway conformance profile) * Service (Mesh conformance profile, ClusterIP Services only)\n\nThis API may be extended in the future to support additional kinds of parent resources.\n\nParentRefs must be _distinct_. This means either that:\n\n* They select different objects.  If this is the case, then parentRef\n  entries are distinct. In terms of fields, this means that the\n  multi-part key defined by `group`, `kind`, `namespace`, and `name` must\n  be unique across all parentRef entries in the Route.\n* They do not select different objects, but for each optional field used,\n  each ParentRef that selects the same object must set the same set of\n  optional fields to different values. If one ParentRef sets a\n  combination of optional fields, all must set the same combination.\n\nSome examples:\n\n* If one ParentRef sets `sectionName`, all ParentRefs referencing the\n  same object must also set `sectionName`.\n* If one ParentRef sets `port`, all ParentRefs referencing the same\n  object must also set `port`.\n* If one ParentRef sets `sectionName` and `port`, all ParentRefs\n  referencing the same object must also set `sectionName` and `port`.\n\nIt is possible to separately reference multiple distinct objects that may be collapsed by an implementation. For example, some implementations may choose to merge compatible Gateway Listeners together. If that is the case, the list of routes attached to those resources should also be merged.\n\nNote that for ParentRefs that cross namespace boundaries, there are specific rules. Cross-namespace references are only valid if they are explicitly allowed by something in the namespace they are referring to. For example, Gateway has the AllowedRoutes field, and ReferenceGrant provides a generic way to enable other kinds of cross-namespace reference.\n\n<gateway:experimental:description> ParentRefs from a Route to a Service in the same namespace are \"producer\" routes, which apply default routing rules to inbound connections from any namespace to the Service.\n\nParentRefs from a Route to a Service in a different namespace are \"consumer\" routes, and these routing rules are only applied to outbound connections originating from the same namespace as the Route, for which the intended destination of the connections are a Service targeted as a ParentRef of the Route. </gateway:experimental:description>\n\n<gateway:standard:validation:XValidation:message=\"sectionName must be specified when parentRefs includes 2 or more references to the same parent\",rule=\"self.all(p1, self.all(p2, p1.group == p2.group && p1.kind == p2.kind && p1.name == p2.name && (((!has(p1.__namespace__) || p1.__namespace__ == '') && (!has(p2.__namespace__) || p2.__namespace__ == '')) || (has(p1.__namespace__) && has(p2.__namespace__) && p1.__namespace__ == p2.__namespace__ )) ? ((!has(p1.sectionName) || p1.sectionName == '') == (!has(p2.sectionName) || p2.sectionName == '')) : true))\"> <gateway:standard:validation:XValidation:message=\"sectionName must be unique when parentRefs includes 2 or more references to the same parent\",rule=\"self.all(p1, self.exists_one(p2, p1.group == p2.group && p1.kind == p2.kind && p1.name == p2.name && (((!has(p1.__namespace__) || p1.__namespace__ == '') && (!has(p2.__namespace__) || p2.__namespace__ == '')) || (has(p1.__namespace__) && has(p2.__namespace__) && p1.__namespace__ == p2.__namespace__ )) && (((!has(p1.sectionName) || p1.sectionName == '') && (!has(p2.sectionName) || p2.sectionName == '')) || (has(p1.sectionName) && has(p2.sectionName) && p1.sectionName == p2.sectionName))))\"> <gateway:experimental:validation:XValidation:message=\"sectionName or port must be specified when parentRefs includes 2 or more references to the same parent\",rule=\"self.all(p1, self.all(p2, p1.group == p2.group && p1.kind == p2.kind && p1.name == p2.name && (((!has(p1.__namespace__) || p1.__namespace__ == '') && (!has(p2.__namespace__) || p2.__namespace__ == '')) || (has(p1.__namespace__) && has(p2.__namespace__) && p1.__namespace__ == p2.__namespace__)) ? ((!has(p1.sectionName) || p1.sectionName == '') == (!has(p2.sectionName) || p2.sectionName == '') && (!has(p1.port) || p1.port == 0) == (!has(p2.port) || p2.port == 0)): true))\"> <gateway:experimental:validation:XValidation:message=\"sectionName or port must be unique when parentRefs includes 2 or more references to the same parent\",rule=\"self.all(p1, self.exists_one(p2, p1.group == p2.group && p1.kind == p2.kind && p1.name == p2.name && (((!has(p1.__namespace__) || p1.__namespace__ == '') && (!has(p2.__namespace__) || p2.__namespace__ == '')) || (has(p1.__namespace__) && has(p2.__namespace__) && p1.__namespace__ == p2.__namespace__ )) && (((!has(p1.sectionName) || p1.sectionName == '') && (!has(p2.sectionName) || p2.sectionName == '')) || ( has(p1.sectionName) && has(p2.sectionName) && p1.sectionName == p2.sectionName)) && (((!has(p1.port) || p1.port == 0) && (!has(p2.port) || p2.port == 0)) || (has(p1.port) && has(p2.port) && p1.port == p2.port))))\">",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.ParentReference"),
+									},
+								},
+							},
+						},
+					},
+					"hostnames": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Hostnames defines a set of SNI names that should match against the SNI attribute of TLS ClientHello message in TLS handshake. This matches the RFC 1123 definition of a hostname with 2 notable exceptions:\n\n1. IPs are not allowed in SNI names per RFC 6066. 2. A hostname may be prefixed with a wildcard label (`*.`). The wildcard\n   label must appear by itself as the first label.\n\nIf a hostname is specified by both the Listener and TLSRoute, there must be at least one intersecting hostname for the TLSRoute to be attached to the Listener. For example:\n\n* A Listener with `test.example.com` as the hostname matches TLSRoutes\n  that have either not specified any hostnames, or have specified at\n  least one of `test.example.com` or `*.example.com`.\n* A Listener with `*.example.com` as the hostname matches TLSRoutes\n  that have either not specified any hostnames or have specified at least\n  one hostname that matches the Listener hostname. For example,\n  `test.example.com` and `*.example.com` would both match. On the other\n  hand, `example.com` and `test.example.net` would not match.\n\nIf both the Listener and TLSRoute have specified hostnames, any TLSRoute hostnames that do not match the Listener hostname MUST be ignored. For example, if a Listener specified `*.example.com`, and the TLSRoute specified `test.example.com` and `test.example.net`, `test.example.net` must not be considered for a match.\n\nIf both the Listener and TLSRoute have specified hostnames, and none match with the criteria above, then the TLSRoute is not accepted. The implementation must raise an 'Accepted' Condition with a status of `False` in the corresponding RouteParentStatus.\n\nSupport: Core",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"rules": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Rules are a list of TLS matchers and actions.\n\n<gateway:experimental:validation:XValidation:message=\"Rule name must be unique within the route\",rule=\"self.all(l1, !has(l1.name) || self.exists_one(l2, has(l2.name) && l1.name == l2.name))\">",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1alpha2.TLSRouteRule"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"rules"},
+			},
+		},
+		Dependencies: []string{
+			"sigs.k8s.io/gateway-api/apis/v1.ParentReference", "sigs.k8s.io/gateway-api/apis/v1alpha2.TLSRouteRule"},
+	}
+}
+
+func schema_sigsk8sio_gateway_api_apis_v1alpha2_TLSRouteStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "TLSRouteStatus defines the observed state of TLSRoute",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"parents": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Parents is a list of parent resources (usually Gateways) that are associated with the route, and the status of the route with respect to each parent. When this route attaches to a parent, the controller that manages the parent must add an entry to this list when the controller first sees the route and should update the entry as appropriate when the route or gateway is modified.\n\nNote that parent references that cannot be resolved by an implementation of this API will not be added to this list. Implementations of this API can only populate Route status for the Gateways/parent resources they are responsible for.\n\nA maximum of 32 Gateways will be represented in this list. An empty list means the route has not been attached to any Gateway.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.RouteParentStatus"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"parents"},
+			},
+		},
+		Dependencies: []string{
+			"sigs.k8s.io/gateway-api/apis/v1.RouteParentStatus"},
+	}
+}
+
+func schema_sigsk8sio_gateway_api_apis_v1alpha2_UDPRoute(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "UDPRoute provides a way to route UDP traffic. When combined with a Gateway listener, it can be used to forward traffic on the port specified by the listener to a set of backends specified by the UDPRoute.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Spec defines the desired state of UDPRoute.",
+							Default:     map[string]interface{}{},
+							Ref:         ref("sigs.k8s.io/gateway-api/apis/v1alpha2.UDPRouteSpec"),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Status defines the current state of UDPRoute.",
+							Default:     map[string]interface{}{},
+							Ref:         ref("sigs.k8s.io/gateway-api/apis/v1alpha2.UDPRouteStatus"),
+						},
+					},
+				},
+				Required: []string{"spec"},
+			},
+		},
+		Dependencies: []string{
+			"k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta", "sigs.k8s.io/gateway-api/apis/v1alpha2.UDPRouteSpec", "sigs.k8s.io/gateway-api/apis/v1alpha2.UDPRouteStatus"},
+	}
+}
+
+func schema_sigsk8sio_gateway_api_apis_v1alpha2_UDPRouteList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "UDPRouteList contains a list of UDPRoute",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1alpha2.UDPRoute"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			"k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta", "sigs.k8s.io/gateway-api/apis/v1alpha2.UDPRoute"},
+	}
+}
+
+func schema_sigsk8sio_gateway_api_apis_v1alpha2_UDPRouteRule(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "UDPRouteRule is the configuration for a given rule.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Name is the name of the route rule. This name MUST be unique within a Route if it is set.\n\nSupport: Extended",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"backendRefs": {
+						SchemaProps: spec.SchemaProps{
+							Description: "BackendRefs defines the backend(s) where matching requests should be sent. If unspecified or invalid (refers to a non-existent resource or a Service with no endpoints), the underlying implementation MUST actively reject connection attempts to this backend. Packet drops must respect weight; if an invalid backend is requested to have 80% of the packets, then 80% of packets must be dropped instead.\n\nSupport: Core for Kubernetes Service\n\nSupport: Extended for Kubernetes ServiceImport\n\nSupport: Implementation-specific for any other resource\n\nSupport for weight: Extended",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.BackendRef"),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"sigs.k8s.io/gateway-api/apis/v1.BackendRef"},
+	}
+}
+
+func schema_sigsk8sio_gateway_api_apis_v1alpha2_UDPRouteSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "UDPRouteSpec defines the desired state of UDPRoute.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"parentRefs": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ParentRefs references the resources (usually Gateways) that a Route wants to be attached to. Note that the referenced parent resource needs to allow this for the attachment to be complete. For Gateways, that means the Gateway needs to allow attachment from Routes of this kind and namespace. For Services, that means the Service must either be in the same namespace for a \"producer\" route, or the mesh implementation must support and allow \"consumer\" routes for the referenced Service. ReferenceGrant is not applicable for governing ParentRefs to Services - it is not possible to create a \"producer\" route for a Service in a different namespace from the Route.\n\nThere are two kinds of parent resources with \"Core\" support:\n\n* Gateway (Gateway conformance profile) * Service (Mesh conformance profile, ClusterIP Services only)\n\nThis API may be extended in the future to support additional kinds of parent resources.\n\nParentRefs must be _distinct_. This means either that:\n\n* They select different objects.  If this is the case, then parentRef\n  entries are distinct. In terms of fields, this means that the\n  multi-part key defined by `group`, `kind`, `namespace`, and `name` must\n  be unique across all parentRef entries in the Route.\n* They do not select different objects, but for each optional field used,\n  each ParentRef that selects the same object must set the same set of\n  optional fields to different values. If one ParentRef sets a\n  combination of optional fields, all must set the same combination.\n\nSome examples:\n\n* If one ParentRef sets `sectionName`, all ParentRefs referencing the\n  same object must also set `sectionName`.\n* If one ParentRef sets `port`, all ParentRefs referencing the same\n  object must also set `port`.\n* If one ParentRef sets `sectionName` and `port`, all ParentRefs\n  referencing the same object must also set `sectionName` and `port`.\n\nIt is possible to separately reference multiple distinct objects that may be collapsed by an implementation. For example, some implementations may choose to merge compatible Gateway Listeners together. If that is the case, the list of routes attached to those resources should also be merged.\n\nNote that for ParentRefs that cross namespace boundaries, there are specific rules. Cross-namespace references are only valid if they are explicitly allowed by something in the namespace they are referring to. For example, Gateway has the AllowedRoutes field, and ReferenceGrant provides a generic way to enable other kinds of cross-namespace reference.\n\n<gateway:experimental:description> ParentRefs from a Route to a Service in the same namespace are \"producer\" routes, which apply default routing rules to inbound connections from any namespace to the Service.\n\nParentRefs from a Route to a Service in a different namespace are \"consumer\" routes, and these routing rules are only applied to outbound connections originating from the same namespace as the Route, for which the intended destination of the connections are a Service targeted as a ParentRef of the Route. </gateway:experimental:description>\n\n<gateway:standard:validation:XValidation:message=\"sectionName must be specified when parentRefs includes 2 or more references to the same parent\",rule=\"self.all(p1, self.all(p2, p1.group == p2.group && p1.kind == p2.kind && p1.name == p2.name && (((!has(p1.__namespace__) || p1.__namespace__ == '') && (!has(p2.__namespace__) || p2.__namespace__ == '')) || (has(p1.__namespace__) && has(p2.__namespace__) && p1.__namespace__ == p2.__namespace__ )) ? ((!has(p1.sectionName) || p1.sectionName == '') == (!has(p2.sectionName) || p2.sectionName == '')) : true))\"> <gateway:standard:validation:XValidation:message=\"sectionName must be unique when parentRefs includes 2 or more references to the same parent\",rule=\"self.all(p1, self.exists_one(p2, p1.group == p2.group && p1.kind == p2.kind && p1.name == p2.name && (((!has(p1.__namespace__) || p1.__namespace__ == '') && (!has(p2.__namespace__) || p2.__namespace__ == '')) || (has(p1.__namespace__) && has(p2.__namespace__) && p1.__namespace__ == p2.__namespace__ )) && (((!has(p1.sectionName) || p1.sectionName == '') && (!has(p2.sectionName) || p2.sectionName == '')) || (has(p1.sectionName) && has(p2.sectionName) && p1.sectionName == p2.sectionName))))\"> <gateway:experimental:validation:XValidation:message=\"sectionName or port must be specified when parentRefs includes 2 or more references to the same parent\",rule=\"self.all(p1, self.all(p2, p1.group == p2.group && p1.kind == p2.kind && p1.name == p2.name && (((!has(p1.__namespace__) || p1.__namespace__ == '') && (!has(p2.__namespace__) || p2.__namespace__ == '')) || (has(p1.__namespace__) && has(p2.__namespace__) && p1.__namespace__ == p2.__namespace__)) ? ((!has(p1.sectionName) || p1.sectionName == '') == (!has(p2.sectionName) || p2.sectionName == '') && (!has(p1.port) || p1.port == 0) == (!has(p2.port) || p2.port == 0)): true))\"> <gateway:experimental:validation:XValidation:message=\"sectionName or port must be unique when parentRefs includes 2 or more references to the same parent\",rule=\"self.all(p1, self.exists_one(p2, p1.group == p2.group && p1.kind == p2.kind && p1.name == p2.name && (((!has(p1.__namespace__) || p1.__namespace__ == '') && (!has(p2.__namespace__) || p2.__namespace__ == '')) || (has(p1.__namespace__) && has(p2.__namespace__) && p1.__namespace__ == p2.__namespace__ )) && (((!has(p1.sectionName) || p1.sectionName == '') && (!has(p2.sectionName) || p2.sectionName == '')) || ( has(p1.sectionName) && has(p2.sectionName) && p1.sectionName == p2.sectionName)) && (((!has(p1.port) || p1.port == 0) && (!has(p2.port) || p2.port == 0)) || (has(p1.port) && has(p2.port) && p1.port == p2.port))))\">",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.ParentReference"),
+									},
+								},
+							},
+						},
+					},
+					"rules": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Rules are a list of UDP matchers and actions.\n\n<gateway:experimental:validation:XValidation:message=\"Rule name must be unique within the route\",rule=\"self.all(l1, !has(l1.name) || self.exists_one(l2, has(l2.name) && l1.name == l2.name))\">",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1alpha2.UDPRouteRule"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"rules"},
+			},
+		},
+		Dependencies: []string{
+			"sigs.k8s.io/gateway-api/apis/v1.ParentReference", "sigs.k8s.io/gateway-api/apis/v1alpha2.UDPRouteRule"},
+	}
+}
+
+func schema_sigsk8sio_gateway_api_apis_v1alpha2_UDPRouteStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "UDPRouteStatus defines the observed state of UDPRoute.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"parents": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Parents is a list of parent resources (usually Gateways) that are associated with the route, and the status of the route with respect to each parent. When this route attaches to a parent, the controller that manages the parent must add an entry to this list when the controller first sees the route and should update the entry as appropriate when the route or gateway is modified.\n\nNote that parent references that cannot be resolved by an implementation of this API will not be added to this list. Implementations of this API can only populate Route status for the Gateways/parent resources they are responsible for.\n\nA maximum of 32 Gateways will be represented in this list. An empty list means the route has not been attached to any Gateway.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.RouteParentStatus"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"parents"},
+			},
+		},
+		Dependencies: []string{
+			"sigs.k8s.io/gateway-api/apis/v1.RouteParentStatus"},
 	}
 }
