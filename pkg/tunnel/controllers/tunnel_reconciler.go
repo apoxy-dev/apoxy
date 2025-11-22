@@ -3,10 +3,12 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"slices"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -25,11 +27,13 @@ type TunnelReconciler struct {
 }
 
 func NewTunnelReconciler(c client.Client, relay Relay, labelSelector string) *TunnelReconciler {
-	return &TunnelReconciler{
+	r := &TunnelReconciler{
 		client:        c,
 		relay:         relay,
 		labelSelector: labelSelector,
 	}
+	relay.SetOnShutdown(r.RemoveRelayAddress)
+	return r
 }
 
 func (r *TunnelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -101,4 +105,54 @@ func (r *TunnelReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&corev1alpha2.Tunnel{}, builder.WithPredicates(&predicate.ResourceVersionChangedPredicate{}, ls)).
 		Complete(r)
+}
+
+func (r *TunnelReconciler) RemoveRelayAddress(ctx context.Context) {
+	// Build the same label selector we filter on during watch.
+	lss, err := metav1.ParseToLabelSelector(r.labelSelector)
+	if err != nil {
+		slog.Error("Failed to parse label selector during shutdown cleanup", slog.Any("error", err))
+		return
+	}
+	sel, err := metav1.LabelSelectorAsSelector(lss)
+	if err != nil {
+		slog.Error("Failed to build label selector during shutdown cleanup", slog.Any("error", err))
+		return
+	}
+
+	var list corev1alpha2.TunnelList
+	if err := r.client.List(ctx, &list, &client.ListOptions{LabelSelector: sel}); err != nil {
+		slog.Error("Failed to list tunnels during shutdown cleanup", slog.Any("error", err))
+		return
+	}
+
+	relayAddr := r.relay.Address().String()
+	for _, t := range list.Items {
+		// Skip if there's nothing to remove.
+		if !slices.Contains(t.Status.Addresses, relayAddr) {
+			continue
+		}
+
+		key := types.NamespacedName{Namespace: t.Namespace, Name: t.Name}
+		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			var latest corev1alpha2.Tunnel
+			if err := r.client.Get(ctx, key, &latest); err != nil {
+				return err
+			}
+
+			// Filter out this relay's address.
+			filtered := latest.Status.Addresses[:0]
+			for _, a := range latest.Status.Addresses {
+				if a != relayAddr {
+					filtered = append(filtered, a)
+				}
+			}
+			latest.Status.Addresses = filtered
+
+			return r.client.Status().Update(ctx, &latest)
+		})
+		if err != nil {
+			slog.Error("Failed to remove relay address from tunnel during shutdown cleanup", slog.Any("error", err), slog.String("tunnel", key.String()))
+		}
+	}
 }
