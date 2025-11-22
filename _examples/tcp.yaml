@@ -1,0 +1,51 @@
+apiVersion: core.apoxy.dev/v1alpha2
+kind: Proxy
+metadata:
+  name: example-proxy
+spec:
+  provider: unmanaged
+---
+apiVersion: gateway.apoxy.dev/v1
+kind: GatewayClass
+metadata:
+  name: apoxy
+spec:
+  controllerName: gateway.apoxy.dev/gatewayclass-controller
+---
+apiVersion: gateway.apoxy.dev/v1
+kind: Gateway
+metadata:
+  name: example-gw
+spec:
+  gatewayClassName: apoxy
+  infrastructure:
+    parametersRef:
+      kind: Proxy
+      name: example-proxy
+  listeners:
+    - protocol: TCP
+      port: 10000
+      name: example-listener
+---
+apiVersion: core.apoxy.dev/v1alpha2
+kind: Backend
+metadata:
+  name: tcp-backend
+spec:
+  endpoints:
+    - ip: 127.0.0.1
+---
+apiVersion: gateway.apoxy.dev/v1alpha2
+kind: TCPRoute
+metadata:
+  name: default
+spec:
+  parentRefs:
+    - kind: Gateway
+      name: example-gw
+      port: 10000
+  rules:
+    - backendRefs:
+        - kind: Backend
+          name: tcp-backend
+          port: 18080

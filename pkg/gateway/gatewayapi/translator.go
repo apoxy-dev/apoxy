@@ -145,20 +145,16 @@ func (t *Translator) Translate(resources *Resources) *TranslateResult {
 	httpRoutes := t.ProcessHTTPRoutes(resources.HTTPRoutes, gateways, resources, xdsIR)
 
 	// Process all relevant GRPCRoutes.
-	//grpcRoutes := t.ProcessGRPCRoutes(resources.GRPCRoutes, gateways, resources, xdsIR)
-	var grpcRoutes []*GRPCRouteContext
+	grpcRoutes := t.ProcessGRPCRoutes(resources.GRPCRoutes, gateways, resources, xdsIR)
 
 	// Process all relevant TLSRoutes.
-	//tlsRoutes := t.ProcessTLSRoutes(resources.TLSRoutes, gateways, resources, xdsIR)
-	var tlsRoutes []*TLSRouteContext
+	tlsRoutes := t.ProcessTLSRoutes(resources.TLSRoutes, gateways, resources, xdsIR)
 
 	// Process all relevant TCPRoutes.
-	//tcpRoutes := t.ProcessTCPRoutes(resources.TCPRoutes, gateways, resources, xdsIR)
-	var tcpRoutes []*TCPRouteContext
+	tcpRoutes := t.ProcessTCPRoutes(resources.TCPRoutes, gateways, resources, xdsIR)
 
 	// Process all relevant UDPRoutes.
-	//udpRoutes := t.ProcessUDPRoutes(resources.UDPRoutes, gateways, resources, xdsIR)
-	var udpRoutes []*UDPRouteContext
+	udpRoutes := t.ProcessUDPRoutes(resources.UDPRoutes, gateways, resources, xdsIR)
 
 	// Process BackendTrafficPolicies
 	routes := []RouteContext{}
