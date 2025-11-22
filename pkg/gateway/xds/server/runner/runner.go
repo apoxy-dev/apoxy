@@ -18,6 +18,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/envoyproxy/gateway/api/v1alpha1"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/keepalive"
 
@@ -29,14 +31,12 @@ import (
 	runtimev3 "github.com/envoyproxy/go-control-plane/envoy/service/runtime/v3"
 	secretv3 "github.com/envoyproxy/go-control-plane/envoy/service/secret/v3"
 	serverv3 "github.com/envoyproxy/go-control-plane/pkg/server/v3"
-	"google.golang.org/grpc"
 
 	"github.com/apoxy-dev/apoxy/pkg/gateway/message"
 	"github.com/apoxy-dev/apoxy/pkg/gateway/xds/bootstrap"
 	"github.com/apoxy-dev/apoxy/pkg/gateway/xds/cache"
 	xdstypes "github.com/apoxy-dev/apoxy/pkg/gateway/xds/types"
 	"github.com/apoxy-dev/apoxy/pkg/log"
-	"github.com/envoyproxy/gateway/api/v1alpha1"
 )
 
 const (
@@ -54,10 +54,12 @@ const (
 )
 
 type Config struct {
-	Xds    *message.Xds
-	grpc   *grpc.Server
-	cache  cache.SnapshotCacheWithCallbacks
-	Logger *slog.Logger
+	Xds       *message.Xds
+	Logger    *slog.Logger
+	Resources *message.ProviderResources
+
+	grpc  *grpc.Server
+	cache cache.SnapshotCacheWithCallbacks
 }
 
 type Runner struct {
@@ -90,7 +92,7 @@ func (r *Runner) Start(ctx context.Context) (err error) {
 		}),
 	)
 
-	r.cache = cache.NewSnapshotCache(true, r.Logger)
+	r.cache = cache.NewSnapshotCache(true, r.Logger, r.Resources)
 	registerServer(serverv3.NewServer(ctx, r.cache, r.cache), r.grpc)
 
 	// Start and listen xDS gRPC Server.

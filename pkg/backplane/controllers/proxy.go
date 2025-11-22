@@ -22,6 +22,7 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/backplane/logs"
 	"github.com/apoxy-dev/apoxy/pkg/backplane/otel"
 	"github.com/apoxy-dev/apoxy/pkg/gateway/xds/bootstrap"
+	xdstypes "github.com/apoxy-dev/apoxy/pkg/gateway/xds/types"
 
 	corev1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
 )
@@ -220,7 +221,7 @@ func (r *ProxyReconciler) Reconcile(ctx context.Context, request reconcile.Reque
 			envoy.WithMinDrainTime(&p.Spec.Shutdown.MinimumDrainTime.Duration),
 			envoy.WithAdminHost(adminHost),
 			envoy.WithLogsDir("/var/log/apoxy"),
-			envoy.WithNodeMetadata(&envoy.NodeMetadata{
+			envoy.WithNodeMetadata(&xdstypes.NodeMetadata{
 				Name:           r.replicaName,
 				PrivateAddress: r.privateAddr.String(),
 			}),

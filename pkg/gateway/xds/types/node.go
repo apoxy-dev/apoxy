@@ -1,4 +1,4 @@
-package envoy
+package types
 
 import (
 	"encoding/json"
@@ -11,6 +11,7 @@ import (
 
 // NodeMetadata represents metadata attached to an Envoy node.
 // This metadata is sent with every XDS discovery request to the control plane.
+// +k8s:deepcopy-gen=true
 type NodeMetadata struct {
 	// Name is the human-readable name of the node/proxy instance
 	Name string `json:"name,omitempty"`

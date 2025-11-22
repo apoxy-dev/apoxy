@@ -132,8 +132,10 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, request reconcile.Req
 		if err := r.reconcileBackends(clog.IntoContext(ctx, log), res); err != nil {
 			log.Error(err, "Failed to reconcile BackendRefs for GatewayClass", "name", gwc.Name)
 		}
-		if err := r.reconcileServices(clog.IntoContext(ctx, log), res); err != nil {
-			log.Error(err, "Failed to reconcile Services for GatewayClass", "name", gwc.Name)
+		if r.watchK8s {
+			if err := r.reconcileServices(clog.IntoContext(ctx, log), res); err != nil {
+				log.Error(err, "Failed to reconcile Services for GatewayClass", "name", gwc.Name)
+			}
 		}
 		ress = append(ress, res)
 	}

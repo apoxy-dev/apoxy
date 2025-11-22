@@ -23,7 +23,8 @@ go run "k8s.io/code-generator/cmd/deepcopy-gen@${CODEGEN_VERSION}" \
   ./api/extensions/v1alpha2 \
   ./api/gateway/v1 \
   ./pkg/gateway/gatewayapi \
-  ./pkg/gateway/ir
+  ./pkg/gateway/ir \
+  ./pkg/gateway/xds/types
 
 echo "Generating register helpers..."
 

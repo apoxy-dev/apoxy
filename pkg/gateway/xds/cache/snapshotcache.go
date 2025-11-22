@@ -28,7 +28,9 @@ import (
 	serverv3 "github.com/envoyproxy/go-control-plane/pkg/server/v3"
 	"k8s.io/apimachinery/pkg/util/wait"
 
+	"github.com/apoxy-dev/apoxy/pkg/gateway/message"
 	"github.com/apoxy-dev/apoxy/pkg/gateway/xds/types"
+	xdstypes "github.com/apoxy-dev/apoxy/pkg/gateway/xds/types"
 	"github.com/apoxy-dev/apoxy/pkg/log"
 )
 
@@ -68,6 +70,48 @@ type snapshotCache struct {
 	mu               sync.Mutex
 	streamIDNodeInfo nodeInfoMap
 	nodeBackoffs     backoffMap
+	resources        *message.ProviderResources
+}
+
+// NewSnapshotCache gives you a fresh SnapshotCache.
+// It needs a logger that supports the go-control-plane
+// required interface (Debugf, Infof, Warnf, and Errorf).
+func NewSnapshotCache(ads bool, logger *slog.Logger, resources *message.ProviderResources) SnapshotCacheWithCallbacks {
+	l := envoylog.LoggerFuncs{
+		DebugFunc: func(f string, args ...interface{}) {
+			logger.Info(fmt.Sprintf(f, args...))
+		},
+		InfoFunc: func(f string, args ...interface{}) {
+			logger.Info(fmt.Sprintf(f, args...))
+		},
+		WarnFunc: func(f string, args ...interface{}) {
+			logger.Warn(fmt.Sprintf(f, args...))
+		},
+		ErrorFunc: func(f string, args ...interface{}) {
+			logger.Error(fmt.Sprintf(f, args...))
+		},
+	}
+	return &snapshotCache{
+		SnapshotCache: cachev3.NewSnapshotCache(ads, &Hash, l),
+		lastSnapshot:  make(snapshotMap),
+
+		streamIDNodeInfo: make(nodeInfoMap),
+		nodeBackoffs:     make(backoffMap),
+		resources:        resources,
+	}
+}
+
+// newSnapshotVersion increments the current snapshotVersion
+// and returns as a string.
+func (s *snapshotCache) newSnapshotVersion() string {
+	// Reset the snapshotVersion if it ever hits max size.
+	if s.snapshotVersion == math.MaxInt64 {
+		s.snapshotVersion = 0
+	}
+
+	// Increment the snapshot version & return as string.
+	s.snapshotVersion++
+	return strconv.FormatInt(s.snapshotVersion, 10)
 }
 
 // GenerateNewSnapshot takes a table of resources (the output from the IR->xDS
@@ -100,45 +144,6 @@ func (s *snapshotCache) GenerateNewSnapshot(irKey string, resources types.XdsRes
 	}
 
 	return nil
-}
-
-// newSnapshotVersion increments the current snapshotVersion
-// and returns as a string.
-func (s *snapshotCache) newSnapshotVersion() string {
-	// Reset the snapshotVersion if it ever hits max size.
-	if s.snapshotVersion == math.MaxInt64 {
-		s.snapshotVersion = 0
-	}
-
-	// Increment the snapshot version & return as string.
-	s.snapshotVersion++
-	return strconv.FormatInt(s.snapshotVersion, 10)
-}
-
-// NewSnapshotCache gives you a fresh SnapshotCache.
-// It needs a logger that supports the go-control-plane
-// required interface (Debugf, Infof, Warnf, and Errorf).
-func NewSnapshotCache(ads bool, logger *slog.Logger) SnapshotCacheWithCallbacks {
-	l := envoylog.LoggerFuncs{
-		DebugFunc: func(f string, args ...interface{}) {
-			logger.Info(fmt.Sprintf(f, args...))
-		},
-		InfoFunc: func(f string, args ...interface{}) {
-			logger.Info(fmt.Sprintf(f, args...))
-		},
-		WarnFunc: func(f string, args ...interface{}) {
-			logger.Warn(fmt.Sprintf(f, args...))
-		},
-		ErrorFunc: func(f string, args ...interface{}) {
-			logger.Error(fmt.Sprintf(f, args...))
-		},
-	}
-	return &snapshotCache{
-		SnapshotCache:    cachev3.NewSnapshotCache(ads, &Hash, l),
-		lastSnapshot:     make(snapshotMap),
-		streamIDNodeInfo: make(nodeInfoMap),
-		nodeBackoffs:     make(backoffMap),
-	}
 }
 
 // getNodeIDs retrieves the node ids from the node info map whose
@@ -196,10 +201,20 @@ func (s *snapshotCache) OnStreamRequest(streamID int64, req *discoveryv3.Discove
 
 	log.Infof("Stream %d requested resources for node %s in cluster %s", streamID, nodeID, cluster)
 
-	var nodeVersion string
+	if s.resources != nil {
+		meta, err := xdstypes.ExtractFromNode(s.streamIDNodeInfo[streamID])
+		if err != nil {
+			return err
+		}
+		log.Infof("Pushing resources for node %s in cluster %s", nodeID, cluster)
+		s.resources.EnvoyResources.Nodes.Store(message.NodeKey{ClusterName: cluster, NodeID: nodeID}, meta)
+	}
 
-	var errorCode int32
-	var errorMessage string
+	var (
+		nodeVersion  string
+		errorCode    int32
+		errorMessage string
+	)
 
 	// If no snapshot has been generated yet, we can't do anything, so don't mess with this request.
 	// go-control-plane will respond with an empty response, then send an update when a snapshot is generated.
@@ -290,10 +305,16 @@ func (s *snapshotCache) OnDeltaStreamOpen(_ context.Context, streamID int64, _ s
 	return nil
 }
 
-func (s *snapshotCache) OnDeltaStreamClosed(streamID int64, _ *corev3.Node) {
+func (s *snapshotCache) OnDeltaStreamClosed(streamID int64, node *corev3.Node) {
 	// TODO: something with the node?
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if s.resources != nil {
+		s.resources.EnvoyResources.Nodes.Delete(message.NodeKey{ClusterName: node.Cluster, NodeID: node.Id})
+	}
+
+	log.Infof("Stream %d closed for node %s in cluster %s", streamID, node.Id, node.Cluster)
 
 	delete(s.streamIDNodeInfo, streamID)
 }

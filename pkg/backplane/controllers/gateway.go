@@ -22,7 +22,7 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/gateway/xds/bootstrap"
 	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 
-	ctrlalphav1 "github.com/apoxy-dev/apoxy/api/controllers/v1alpha1"
+	corev1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
 	gatewayv1 "github.com/apoxy-dev/apoxy/api/gateway/v1"
 )
 
@@ -75,7 +75,7 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, request reconcile.Req
 	log.Info("Reconciling Gateway", "gateway", gw.Name)
 
 	// Fetch the associated Proxy to get admin endpoint information.
-	proxy := &ctrlalphav1.Proxy{}
+	proxy := &corev1alpha2.Proxy{}
 	err = r.Get(ctx, types.NamespacedName{Name: r.proxyName}, proxy)
 	if err != nil {
 		if errors.IsNotFound(err) {
@@ -83,12 +83,6 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, request reconcile.Req
 			return reconcile.Result{}, nil
 		}
 		return reconcile.Result{}, fmt.Errorf("failed to get Proxy: %w", err)
-	}
-
-	// Only process if Proxy is running
-	if proxy.Status.Phase != ctrlalphav1.ProxyPhaseRunning {
-		log.V(1).Info("Proxy not in running phase", "phase", proxy.Status.Phase)
-		return reconcile.Result{RequeueAfter: proxyReplicaPendingTimeout}, nil
 	}
 
 	// Extract listeners from Gateway spec and register health checks.
@@ -161,7 +155,7 @@ func (r *GatewayReconciler) extractEnvoyListeners(gw *gatewayv1.Gateway) []*envo
 }
 
 // updateGatewayStatus updates the Gateway status with conditions based on the Proxy state.
-func (r *GatewayReconciler) updateGatewayStatus(ctx context.Context, gw *gatewayv1.Gateway, proxy *ctrlalphav1.Proxy) error {
+func (r *GatewayReconciler) updateGatewayStatus(ctx context.Context, gw *gatewayv1.Gateway, proxy *corev1alpha2.Proxy) error {
 	acceptedCondition := metav1.Condition{
 		Type:               string(gwapiv1.GatewayConditionAccepted),
 		Status:             metav1.ConditionTrue,
@@ -169,12 +163,6 @@ func (r *GatewayReconciler) updateGatewayStatus(ctx context.Context, gw *gateway
 		LastTransitionTime: metav1.Now(),
 		Reason:             string(gwapiv1.GatewayReasonAccepted),
 		Message:            "Gateway accepted and associated with Proxy",
-	}
-
-	if proxy.Status.Phase != ctrlalphav1.ProxyPhaseRunning {
-		acceptedCondition.Status = metav1.ConditionFalse
-		acceptedCondition.Reason = "ProxyNotReady"
-		acceptedCondition.Message = fmt.Sprintf("Associated Proxy is in %s phase", proxy.Status.Phase)
 	}
 
 	programmedCondition := metav1.Condition{

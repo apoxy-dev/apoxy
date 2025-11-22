@@ -21,9 +21,10 @@ import (
 	"github.com/apoxy-dev/apoxy/config"
 	"github.com/apoxy-dev/apoxy/pkg/backplane/logs"
 	"github.com/apoxy-dev/apoxy/pkg/backplane/otel"
+	_ "github.com/apoxy-dev/apoxy/pkg/gateway/xds/extensions"
+	xdstypes "github.com/apoxy-dev/apoxy/pkg/gateway/xds/types"
 	"github.com/apoxy-dev/apoxy/pkg/log"
 
-	_ "github.com/apoxy-dev/apoxy/pkg/gateway/xds/extensions"
 	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 )
 
@@ -101,7 +102,7 @@ func WithAdminHost(host string) Option {
 
 // WithNodeMetadata sets the metadata for the Envoy node in XDS discovery requests.
 // The metadata will be included in the node configuration and sent to the control plane.
-func WithNodeMetadata(metadata *NodeMetadata) Option {
+func WithNodeMetadata(metadata *xdstypes.NodeMetadata) Option {
 	return func(r *Runtime) {
 		r.nodeMetadata = metadata
 	}
@@ -155,7 +156,7 @@ type Runtime struct {
 	drainTimeout  *time.Duration
 	minDrainTime  *time.Duration
 	logsDir       string
-	nodeMetadata  *NodeMetadata
+	nodeMetadata  *xdstypes.NodeMetadata
 
 	mu     sync.RWMutex
 	status RuntimeStatus

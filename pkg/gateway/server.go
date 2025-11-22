@@ -48,7 +48,8 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 
 	xdsServerRunner := xdsserverrunner.New(&xdsserverrunner.Config{
-		Xds: xds,
+		Xds:       xds,
+		Resources: s.Resources,
 	})
 	if err := xdsServerRunner.Start(ctx); err != nil {
 		return err

@@ -4,19 +4,23 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/netip"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	"github.com/apoxy-dev/apoxy/pkg/gateway/message"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 
-	ctrlv1alpha1 "github.com/apoxy-dev/apoxy/api/controllers/v1alpha1"
+	corev1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
 )
 
 const (
@@ -33,23 +37,107 @@ var _ reconcile.Reconciler = &ProxyReconciler{}
 type ProxyReconciler struct {
 	client.Client
 
-	ipam net.IPAM
+	resources *message.ProviderResources
+	ipam      net.IPAM
 }
 
 // NewProxyReconciler returns a new reconcile.Reconciler.
 func NewProxyReconciler(
+	ctx context.Context,
 	c client.Client,
+	resources *message.ProviderResources,
 	ipam net.IPAM,
 ) *ProxyReconciler {
+	go func() {
+		ch := resources.EnvoyResources.Nodes.Subscribe(ctx)
+		for snapshot := range ch {
+			slog.Info("Received xDS nodes snapshot")
+
+			for _, update := range snapshot.Updates {
+				proxyName, meta := update.Key.ClusterName, update.Value
+
+				slog.Info("Received update", "proxy", update.Key.ClusterName, "nodeID", update.Key.NodeID)
+
+				p := &corev1alpha2.Proxy{}
+				if err := c.Get(ctx, types.NamespacedName{Name: proxyName}, p); err != nil {
+					slog.Error("failed to get proxy", "proxy", proxyName, "error", err)
+					continue
+				}
+
+				if !update.Delete {
+					p.Status.Replicas = append(p.Status.Replicas, &corev1alpha2.ProxyReplicaStatus{
+						Name:           meta.Name,
+						ConnectedAt:    metav1.Now(),
+						PrivateAddress: meta.PrivateAddress,
+					})
+				} else {
+					for i, replica := range p.Status.Replicas {
+						if replica.Name == meta.Name {
+							p.Status.Replicas = append(p.Status.Replicas[:i], p.Status.Replicas[i+1:]...)
+							break
+						}
+					}
+				}
+
+				if err := c.Status().Update(ctx, p); err != nil {
+					slog.Error("failed to update proxy status", "proxy", proxyName, "error", err)
+				}
+			}
+		}
+		slog.Info("Node subscription closed")
+	}()
 	return &ProxyReconciler{
-		Client: c,
-		ipam:   ipam,
+		Client:    c,
+		resources: resources,
+		ipam:      ipam,
 	}
+}
+
+func (r *ProxyReconciler) releaseReplica(ctx context.Context, replica *corev1alpha2.ProxyReplicaStatus) error {
+	log := log.FromContext(ctx)
+
+	log.Info("releasing IP address for proxy replica", "address", replica.Address)
+
+	addr, err := netip.ParseAddr(replica.Address)
+	if err != nil {
+		log.Error(err, "failed to parse IP address", "address", replica.Address)
+		return err
+	}
+
+	if err := r.ipam.Release(netip.PrefixFrom(addr, 128)); err != nil {
+		log.Error(err, "failed to release IP", "address", replica.Address)
+		return err
+	}
+
+	return nil
+}
+
+func (r *ProxyReconciler) assignReplica(ctx context.Context, replica *corev1alpha2.ProxyReplicaStatus) error {
+	log := log.FromContext(ctx)
+
+	log.V(1).Info("allocating IP address for proxy replica")
+
+	addr, err := r.ipam.Allocate()
+	if err != nil {
+		log.Error(err, "failed to allocate IPv6 address")
+		return err
+	}
+
+	if !addr.IsSingleIP() {
+		log.Error(err, "allocated IP address is not a single IP", "address", addr.String())
+		return err
+	}
+
+	replica.Address = addr.Addr().String()
+
+	log.Info("Allocated IP address for proxy replica", "address", replica.Address)
+
+	return nil
 }
 
 // Reconcile implements reconcile.Reconciler.
 func (r *ProxyReconciler) Reconcile(ctx context.Context, request reconcile.Request) (ctrl.Result, error) {
-	p := &ctrlv1alpha1.Proxy{}
+	p := &corev1alpha2.Proxy{}
 	err := r.Get(ctx, request.NamespacedName, p)
 	if errors.IsNotFound(err) {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
@@ -62,79 +150,23 @@ func (r *ProxyReconciler) Reconcile(ctx context.Context, request reconcile.Reque
 	log.Info("Reconciling Proxy")
 
 	if p.ObjectMeta.DeletionTimestamp.IsZero() { // Not being deleted, so ensure finalizer is present.
-		if !controllerutil.ContainsFinalizer(p, ctrlv1alpha1.ProxyFinalizer) {
+		if !controllerutil.ContainsFinalizer(p, corev1alpha2.ProxyFinalizer) {
 			log.Info("Adding finalizer to Proxy")
-			controllerutil.AddFinalizer(p, ctrlv1alpha1.ProxyFinalizer)
+			controllerutil.AddFinalizer(p, corev1alpha2.ProxyFinalizer)
 			if err := r.Update(ctx, p); err != nil {
 				return ctrl.Result{}, err
 			}
 		}
 	} else { // The object is being deleted
-		log.Info("Proxy is being deleted", "phase", p.Status.Phase)
+		log.Info("Proxy is being deleted")
 
-		switch p.Status.Phase {
-		case ctrlv1alpha1.ProxyPhaseRunning, ctrlv1alpha1.ProxyPhasePending:
-			synced, err := r.syncProxy(ctx, p, true)
-			if err != nil {
-				return ctrl.Result{}, fmt.Errorf("failed to reconcile: %w", err)
-			}
-			if synced {
-				log.Info("Backplane deleted")
-				p.Status.Phase = ctrlv1alpha1.ProxyPhaseStopped
-				p.Status.Reason = "Proxy deleted"
-			} else {
-				p.Status.Phase = ctrlv1alpha1.ProxyPhaseTerminating
-			}
-
-			if err := r.Status().Update(ctx, p); err != nil {
+		for _, replica := range p.Status.Replicas {
+			if err := r.releaseReplica(ctx, replica); err != nil {
 				return ctrl.Result{}, err
 			}
-
-			return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
-		case ctrlv1alpha1.ProxyPhaseTerminating:
-			synced, err := r.syncProxy(ctx, p, true)
-			if err != nil {
-				return ctrl.Result{}, fmt.Errorf("failed to reconcile: %w", err)
-			}
-			if synced {
-				log.Info("Backplane deleted")
-				p.Status.Phase = ctrlv1alpha1.ProxyPhaseStopped
-				p.Status.Reason = "Proxy deleted"
-				if err := r.Status().Update(ctx, p); err != nil {
-					return ctrl.Result{}, err
-				}
-			} else if time.Now().After(p.ObjectMeta.DeletionTimestamp.Add(terminationTimeout)) {
-				log.Info("Proxy termination timed out. Setting status to stopped and cleaning up")
-				p.Status.Phase = ctrlv1alpha1.ProxyPhaseStopped
-				p.Status.Reason = fmt.Sprintf("Proxy termination timed out after %s", terminationTimeout)
-				if err := r.Status().Update(ctx, p); err != nil {
-					return ctrl.Result{}, err
-				}
-			} else {
-				return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
-			}
-		case ctrlv1alpha1.ProxyPhaseStopped, ctrlv1alpha1.ProxyPhaseFailed:
-			log.Info("Proxy is stopped or failed. Cleaning up")
-		default:
-			log.Error(nil, "Unknown phase", "app", string(p.UID), "phase", p.Status.Phase)
-			return ctrl.Result{}, fmt.Errorf("unknown phase %s", p.Status.Phase)
 		}
 
-		switch p.Spec.Provider {
-		case ctrlv1alpha1.InfraProviderCloud:
-			p.Status.Phase = ctrlv1alpha1.ProxyPhaseFailed
-			p.Status.Reason = "Infra provider not implemented"
-			if err := r.Status().Update(ctx, p); err != nil {
-				return ctrl.Result{}, err
-			}
-			return ctrl.Result{}, nil
-		case ctrlv1alpha1.InfraProviderUnmanaged:
-			log.Info("Deleting unmanaged Proxy")
-		default:
-			return ctrl.Result{}, fmt.Errorf("unknown provider: %s", p.Spec.Provider)
-		}
-
-		controllerutil.RemoveFinalizer(p, ctrlv1alpha1.ProxyFinalizer)
+		controllerutil.RemoveFinalizer(p, corev1alpha2.ProxyFinalizer)
 		if err := r.Update(ctx, p); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -142,20 +174,17 @@ func (r *ProxyReconciler) Reconcile(ctx context.Context, request reconcile.Reque
 		return ctrl.Result{}, nil // Deleted.
 	}
 
-	synced, err := r.syncProxy(ctx, p, false /* delete */)
-	if err != nil {
-		if _, ok := err.(retryableError); ok {
-			p.Status.Phase = ctrlv1alpha1.ProxyPhaseFailed
-			p.Status.Reason = fmt.Sprintf("Failed to provision cloud proxy: %v", err)
-			if err := r.Status().Update(ctx, p); err != nil {
-				return ctrl.Result{}, fmt.Errorf("failed to update Proxy status: %w", err)
-			}
-			return ctrl.Result{}, nil // Leave the Proxy in the failed state.
+	for _, replica := range p.Status.Replicas {
+		if replica.Address != "" {
+			log.V(1).Info("proxy replica already has an address", "address", replica.Address)
+			continue
 		}
-		return ctrl.Result{}, fmt.Errorf("failed to reconcile Fly machines: %w", err)
-	} else if synced {
-		p.Status.Phase = ctrlv1alpha1.ProxyPhaseRunning
-		p.Status.Reason = "Proxy is running"
+
+		log.Info("allocating IP address for proxy replica")
+
+		if err := r.assignReplica(ctx, replica); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	if err := r.Status().Update(ctx, p); err != nil {
@@ -168,83 +197,6 @@ func (r *ProxyReconciler) Reconcile(ctx context.Context, request reconcile.Reque
 // SetupWithManager sets up the controller with the Controller Manager.
 func (r *ProxyReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&ctrlv1alpha1.Proxy{}).
+		For(&corev1alpha2.Proxy{}).
 		Complete(r)
-}
-
-func (r *ProxyReconciler) releaseReplica(ctx context.Context, replica *ctrlv1alpha1.ProxyReplicaStatus) bool {
-	log := log.FromContext(ctx)
-
-	if replica.Phase != ctrlv1alpha1.ProxyReplicaPhaseStopped {
-		log.V(1).Info("waiting for proxy replica to stop", "name", replica.Name)
-		return false
-	}
-
-	log.Info("releasing IP address for proxy replica", "address", replica.Address)
-
-	addr, err := netip.ParseAddr(replica.Address)
-	if err != nil {
-		log.Error(err, "failed to parse IP address", "address", replica.Address)
-		return false
-	}
-
-	if err := r.ipam.Release(netip.PrefixFrom(addr, 128)); err != nil {
-		log.Error(err, "failed to release IP", "address", replica.Address)
-		return false
-	}
-
-	return true
-}
-
-func (r *ProxyReconciler) assignReplica(ctx context.Context, replica *ctrlv1alpha1.ProxyReplicaStatus) bool {
-	log := log.FromContext(ctx)
-
-	log.V(1).Info("allocating IP address for proxy replica")
-
-	addr, err := r.ipam.Allocate()
-	if err != nil {
-		log.Error(err, "failed to allocate IPv6 address")
-		return false
-	}
-
-	if !addr.IsSingleIP() {
-		log.Error(err, "allocated IP address is not a single IP", "address", addr.String())
-		return false
-	}
-
-	replica.Address = addr.Addr().String()
-
-	log.Info("Allocated IP address for proxy replica", "address", replica.Address)
-
-	return true
-}
-
-func (r *ProxyReconciler) syncProxy(ctx context.Context, p *ctrlv1alpha1.Proxy, delete bool) (bool, error) {
-	log := log.FromContext(ctx)
-
-	synced := true
-	if delete {
-		// Replicas are doing the termination themselves, we're just waiting for them to stop.
-		for _, replica := range p.Status.Replicas {
-			ok := r.releaseReplica(ctx, replica)
-			if !ok {
-				synced = false
-			}
-		}
-		return synced, nil
-	}
-
-	for _, replica := range p.Status.Replicas {
-		if replica.Address != "" {
-			log.V(1).Info("proxy replica already has an address", "address", replica.Address)
-			continue
-		}
-
-		log.V(1).Info("allocating IP address for proxy replica")
-		if !r.assignReplica(ctx, replica) {
-			synced = false
-		}
-	}
-
-	return synced, nil
 }

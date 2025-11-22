@@ -51,7 +51,6 @@ import (
 	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/vni"
 
-	ctrlv1alpha1 "github.com/apoxy-dev/apoxy/api/controllers/v1alpha1"
 	corev1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
 	corev1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
 	extensionsv1alpha1 "github.com/apoxy-dev/apoxy/api/extensions/v1alpha1"
@@ -71,7 +70,6 @@ var scheme = runtime.NewScheme()
 func init() {
 	utilruntime.Must(corev1alpha.Install(scheme))
 	utilruntime.Must(corev1alpha2.Install(scheme))
-	utilruntime.Must(ctrlv1alpha1.Install(scheme))
 	utilruntime.Must(policyv1alpha1.Install(scheme))
 	utilruntime.Must(extensionsv1alpha1.Install(scheme))
 	utilruntime.Must(extensionsv1alpha2.Install(scheme))
@@ -107,7 +105,7 @@ func waitForReadyz(url string, timeout time.Duration) error {
 }
 
 func waitForAPIService(ctx context.Context, c *rest.Config, groupVersion metav1.GroupVersion, timeout time.Duration) error {
-	log.Infof("waiting for API service %v ...", groupVersion)
+	log.Infof("Waiting for API service %v ...", groupVersion)
 	t := time.NewTimer(timeout)
 	retryTimeout := 200 * time.Millisecond
 	c.GroupVersion = &schema.GroupVersion{Group: groupVersion.Group, Version: groupVersion.Version}
@@ -343,8 +341,6 @@ func defaultResources() []resource.Object {
 		&corev1alpha.DomainZone{},
 		&corev1alpha.TunnelNode{},
 
-		&ctrlv1alpha1.Proxy{},
-
 		&policyv1alpha1.RateLimit{},
 
 		&extensionsv1alpha2.EdgeFunction{},
@@ -489,15 +485,17 @@ func (m *Manager) Start(
 
 	log.Infof("Starting API server built-in controllers")
 
-	if err := waitForAPIService(ctx, m.manager.GetConfig(), ctrlv1alpha1.GroupVersion, 2*time.Minute); err != nil {
-		return fmt.Errorf("failed to wait for APIService %s: %v", ctrlv1alpha1.GroupVersion.Group, err)
+	if err := waitForAPIService(ctx, m.manager.GetConfig(), corev1alpha2.GroupVersion, 2*time.Minute); err != nil {
+		return fmt.Errorf("failed to wait for APIService %s: %v", corev1alpha2.GroupVersion.Group, err)
 	}
 
 	g, ctx := errgroup.WithContext(ctx)
 
 	log.Infof("Registering Proxy controller")
 	if err := controllers.NewProxyReconciler(
+		ctx,
 		m.manager.GetClient(),
+		gwSrv.Resources,
 		dOpts.proxyIPAM,
 	).SetupWithManager(ctx, m.manager); err != nil {
 		return fmt.Errorf("failed to set up Proxy controller: %v", err)

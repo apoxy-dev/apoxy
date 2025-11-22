@@ -21,7 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	ctrlv1alpha1 "github.com/apoxy-dev/apoxy/api/controllers/v1alpha1"
+	corev1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
 	extensionsv1alpha2 "github.com/apoxy-dev/apoxy/api/extensions/v1alpha2"
 	"github.com/apoxy-dev/apoxy/pkg/backplane/wasm/manifest"
 	"github.com/apoxy-dev/apoxy/pkg/edgefunc"
@@ -341,7 +341,7 @@ func targetRefPredicate(proxyName string) predicate.Funcs {
 
 		// Check if the EdgeFunction is owned by the Proxy.
 		for _, owner := range rev.GetOwnerReferences() {
-			if owner.APIVersion == ctrlv1alpha1.GroupVersion.String() &&
+			if owner.APIVersion == corev1alpha2.GroupVersion.String() &&
 				owner.Kind == "Proxy" &&
 				owner.Name == proxyName {
 				return true

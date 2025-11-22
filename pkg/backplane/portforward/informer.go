@@ -209,7 +209,7 @@ func (pf *PortForwarder) runWorker() {
 func (pf *PortForwarder) Run(
 	ctx context.Context,
 ) error {
-	pf.informer = pf.factory.Controllers().V1alpha1().Proxies().Informer()
+	pf.informer = pf.factory.Core().V1alpha2().Proxies().Informer()
 	pf.informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			log.Debugf("Add %v", obj)

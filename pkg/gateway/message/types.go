@@ -22,6 +22,10 @@ type ProviderResources struct {
 	// a group of gateway API and other related resources.
 	GatewayAPIResources watchable.Map[string, *gatewayapi.ControllerResources]
 
+	// EnvoyResources is a map from an xDS cluster name to a group
+	// of resources for connected Envoy proxies.
+	EnvoyResources EnvoyResources
+
 	// GatewayAPIStatuses is a group of gateway api
 	// resource statuses maps.
 	GatewayAPIStatuses
@@ -99,6 +103,17 @@ func (p *PolicyStatuses) Close() {
 	p.ClientTrafficPolicyStatuses.Close()
 	p.SecurityPolicyStatuses.Close()
 	p.BackendTLSPolicyStatuses.Close()
+}
+
+// NodeKey is a unique identifier for an Envoy node in the
+// format of "clusterName/nodeID"
+type NodeKey struct {
+	ClusterName string
+	NodeID      string
+}
+
+type EnvoyResources struct {
+	Nodes watchable.Map[NodeKey, *xdstypes.NodeMetadata]
 }
 
 // XdsIR message
