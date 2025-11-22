@@ -123,8 +123,10 @@ github.com/apoxy-dev/apiserver-runtime v0.0.0-20251017224250-220a8896ee57 h1:p2e
 github.com/apoxy-dev/apiserver-runtime v0.0.0-20251017224250-220a8896ee57/go.mod h1:k8K1q/QnsxMM7/wsiga/cJWGW/38G907ex7JPFw0B04=
 github.com/apoxy-dev/connect-ip-go v0.0.0-20250530062404-603929a73f45 h1:SwPk1n/oSVX7YwlNpC9KNH9YaYkcL/k6OfqSGVnxyyI=
 github.com/apoxy-dev/connect-ip-go v0.0.0-20250530062404-603929a73f45/go.mod h1:z5rtgIizc+/K27UtB0occwZgqg/mz3IqgyUJW8aubbI=
-github.com/apoxy-dev/icx v0.14.0 h1:3BXuhRysBsK2isLu7Z3+1pMiySu2eI0Ts5iObw6fp60=
-github.com/apoxy-dev/icx v0.14.0/go.mod h1:QNPhLVUVbbSVSyERjmgGN4K8vzSC6bvZlN0tyflYf0U=
+github.com/apoxy-dev/icx v0.16.0 h1:+mijAkIuTZVbXF6vMtSWUfn/TINHUaCzB+Da2HnPfpQ=
+github.com/apoxy-dev/icx v0.16.0/go.mod h1:QNPhLVUVbbSVSyERjmgGN4K8vzSC6bvZlN0tyflYf0U=
+github.com/apoxy-dev/icx v0.16.1 h1:u7Db5R9Fm7LoQ9cY6lq25T+l086v/zlERpbGYYVajsM=
+github.com/apoxy-dev/icx v0.16.1/go.mod h1:QNPhLVUVbbSVSyERjmgGN4K8vzSC6bvZlN0tyflYf0U=
 github.com/apoxy-dev/quic-go v0.0.0-20250530165952-53cca597715e h1:10GIpiVyKoRgCyr0J2TvJtdn17bsFHN+ROWkeVJpcOU=
 github.com/apoxy-dev/quic-go v0.0.0-20250530165952-53cca597715e/go.mod h1:MFlGGpcpJqRAfmYi6NC2cptDPSxRWTOGNuP4wqrWmzQ=
 github.com/apoxy-dev/upgrade-cli v0.0.0-20240213232412-a56c3a52fa0e h1:FBNxMQD93z2ththupB/BYKLEaMWaEr+G+sJWJqU2wC4=

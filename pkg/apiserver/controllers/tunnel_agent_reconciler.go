@@ -390,8 +390,8 @@ func (r *TunnelAgentReconciler) PruneOrphanedConnections(ctx context.Context) er
 				// Determine orphaned-ness
 				isOrphaned := false
 				switch {
-				case conn.LastRXTimestamp != nil:
-					isOrphaned = conn.LastRXTimestamp.Add(gcMaxSilence).Before(now)
+				case conn.LastRX != nil:
+					isOrphaned = conn.LastRX.Add(gcMaxSilence).Before(now)
 				case conn.ConnectedAt != nil:
 					isOrphaned = conn.ConnectedAt.Add(gcMaxSilence).Before(now)
 				default:

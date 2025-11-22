@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/apoxy-dev/icx"
 	"github.com/apoxy-dev/icx/addrselect"
@@ -108,6 +109,7 @@ func NewICXNetlinkRouter(opts ...Option) (*ICXNetlinkRouter, error) {
 
 	handlerOpts := []icx.HandlerOption{
 		icx.WithVirtMAC(virtMAC),
+		icx.WithKeepAliveInterval(25 * time.Second),
 	}
 
 	for _, addr := range extAddrs {
@@ -397,8 +399,8 @@ func (r *ICXNetlinkRouter) syncDNATChain() error {
 	for i, peer := range peers {
 		slog.Info("Adding DNAT rules for peer", slog.String("peer", peer.RemoteAddr.Addr.String()))
 
-		for _, addr := range peer.Addrs {
-			if addr.Addr().Is4() { // Skipping IPv4 peers - only IPv6 tunnel ingress is supported.
+		for _, route := range peer.AllowedRoutes {
+			if route.Dst.Addr().Is4() { // Skipping IPv4 peers - only IPv6 tunnel ingress is supported.
 				continue
 			}
 			natRules.Write(
@@ -407,7 +409,7 @@ func (r *ICXNetlinkRouter) syncDNATChain() error {
 				"--mode", "random",
 				"--probability", probability(len(peers)-i),
 				"-j", "DNAT",
-				"--to-destination", addr.Addr().String(),
+				"--to-destination", route.Dst.Addr().String(),
 			)
 		}
 	}

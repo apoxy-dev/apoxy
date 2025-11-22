@@ -423,6 +423,7 @@ func connectAndInitSession(
 		return cleanupOnErr(fmt.Errorf("parse assigned addresses: %w", err))
 	}
 
+	var allowedRoutes []icx.Route
 	for _, route := range connectResp.Routes {
 		dst, err := netip.ParsePrefix(route.Destination)
 		if err != nil {
@@ -431,13 +432,19 @@ func connectAndInitSession(
 				slog.Any("error", err))
 			continue
 		}
-		overlayAddrs = append(overlayAddrs, dst)
+
+		for _, addr := range overlayAddrs {
+			allowedRoutes = append(allowedRoutes, icx.Route{
+				Src: addr,
+				Dst: dst,
+			})
+		}
 	}
 
 	if err := handler.AddVirtualNetwork(
 		connectResp.VNI,
 		netstack.ToFullAddress(remoteAddr),
-		overlayAddrs,
+		allowedRoutes,
 	); err != nil {
 		return cleanupOnErr(fmt.Errorf("add virtual network: %w", err))
 	}

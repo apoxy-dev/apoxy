@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/apoxy-dev/icx"
 	"github.com/dpeckett/network"
@@ -51,6 +52,7 @@ func NewICXNetstackRouter(opts ...Option) (*ICXNetstackRouter, error) {
 
 	handlerOpts := []icx.HandlerOption{
 		icx.WithLayer3VirtFrames(),
+		icx.WithKeepAliveInterval(25 * time.Second),
 	}
 	if options.sourcePortHashing {
 		handlerOpts = append(handlerOpts, icx.WithSourcePortHashing())
