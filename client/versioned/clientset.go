@@ -27,6 +27,7 @@ import (
 	extensionsv1alpha1 "github.com/apoxy-dev/apoxy/client/versioned/typed/extensions/v1alpha1"
 	extensionsv1alpha2 "github.com/apoxy-dev/apoxy/client/versioned/typed/extensions/v1alpha2"
 	gatewayv1 "github.com/apoxy-dev/apoxy/client/versioned/typed/gateway/v1"
+	gatewayv1alpha2 "github.com/apoxy-dev/apoxy/client/versioned/typed/gateway/v1alpha2"
 	policyv1alpha1 "github.com/apoxy-dev/apoxy/client/versioned/typed/policy/v1alpha1"
 	discovery "k8s.io/client-go/discovery"
 	rest "k8s.io/client-go/rest"
@@ -41,6 +42,7 @@ type Interface interface {
 	ExtensionsV1alpha1() extensionsv1alpha1.ExtensionsV1alpha1Interface
 	ExtensionsV1alpha2() extensionsv1alpha2.ExtensionsV1alpha2Interface
 	GatewayV1() gatewayv1.GatewayV1Interface
+	GatewayV1alpha2() gatewayv1alpha2.GatewayV1alpha2Interface
 	PolicyV1alpha1() policyv1alpha1.PolicyV1alpha1Interface
 }
 
@@ -53,6 +55,7 @@ type Clientset struct {
 	extensionsV1alpha1  *extensionsv1alpha1.ExtensionsV1alpha1Client
 	extensionsV1alpha2  *extensionsv1alpha2.ExtensionsV1alpha2Client
 	gatewayV1           *gatewayv1.GatewayV1Client
+	gatewayV1alpha2     *gatewayv1alpha2.GatewayV1alpha2Client
 	policyV1alpha1      *policyv1alpha1.PolicyV1alpha1Client
 }
 
@@ -84,6 +87,11 @@ func (c *Clientset) ExtensionsV1alpha2() extensionsv1alpha2.ExtensionsV1alpha2In
 // GatewayV1 retrieves the GatewayV1Client
 func (c *Clientset) GatewayV1() gatewayv1.GatewayV1Interface {
 	return c.gatewayV1
+}
+
+// GatewayV1alpha2 retrieves the GatewayV1alpha2Client
+func (c *Clientset) GatewayV1alpha2() gatewayv1alpha2.GatewayV1alpha2Interface {
+	return c.gatewayV1alpha2
 }
 
 // PolicyV1alpha1 retrieves the PolicyV1alpha1Client
@@ -159,6 +167,10 @@ func NewForConfigAndClient(c *rest.Config, httpClient *http.Client) (*Clientset,
 	if err != nil {
 		return nil, err
 	}
+	cs.gatewayV1alpha2, err = gatewayv1alpha2.NewForConfigAndClient(&configShallowCopy, httpClient)
+	if err != nil {
+		return nil, err
+	}
 	cs.policyV1alpha1, err = policyv1alpha1.NewForConfigAndClient(&configShallowCopy, httpClient)
 	if err != nil {
 		return nil, err
@@ -190,6 +202,7 @@ func New(c rest.Interface) *Clientset {
 	cs.extensionsV1alpha1 = extensionsv1alpha1.New(c)
 	cs.extensionsV1alpha2 = extensionsv1alpha2.New(c)
 	cs.gatewayV1 = gatewayv1.New(c)
+	cs.gatewayV1alpha2 = gatewayv1alpha2.New(c)
 	cs.policyV1alpha1 = policyv1alpha1.New(c)
 
 	cs.DiscoveryClient = discovery.NewDiscoveryClient(c)

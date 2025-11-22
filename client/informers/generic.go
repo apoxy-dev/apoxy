@@ -26,6 +26,7 @@ import (
 	extensionsv1alpha1 "github.com/apoxy-dev/apoxy/api/extensions/v1alpha1"
 	extensionsv1alpha2 "github.com/apoxy-dev/apoxy/api/extensions/v1alpha2"
 	v1 "github.com/apoxy-dev/apoxy/api/gateway/v1"
+	gatewayv1alpha2 "github.com/apoxy-dev/apoxy/api/gateway/v1alpha2"
 	policyv1alpha1 "github.com/apoxy-dev/apoxy/api/policy/v1alpha1"
 	schema "k8s.io/apimachinery/pkg/runtime/schema"
 	cache "k8s.io/client-go/tools/cache"
@@ -110,6 +111,14 @@ func (f *sharedInformerFactory) ForResource(resource schema.GroupVersionResource
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Gateway().V1().GatewayClasses().Informer()}, nil
 	case v1.SchemeGroupVersion.WithResource("httproutes"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Gateway().V1().HTTPRoutes().Informer()}, nil
+
+		// Group=gateway.apoxy.dev, Version=v1alpha2
+	case gatewayv1alpha2.SchemeGroupVersion.WithResource("tcproutes"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Gateway().V1alpha2().TCPRoutes().Informer()}, nil
+	case gatewayv1alpha2.SchemeGroupVersion.WithResource("tlsroutes"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Gateway().V1alpha2().TLSRoutes().Informer()}, nil
+	case gatewayv1alpha2.SchemeGroupVersion.WithResource("udproutes"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Gateway().V1alpha2().UDPRoutes().Informer()}, nil
 
 		// Group=policy.apoxy.dev, Version=v1alpha1
 	case policyv1alpha1.SchemeGroupVersion.WithResource("ratelimits"):
