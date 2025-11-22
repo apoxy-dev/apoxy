@@ -57,6 +57,7 @@ import (
 	extensionsv1alpha1 "github.com/apoxy-dev/apoxy/api/extensions/v1alpha1"
 	extensionsv1alpha2 "github.com/apoxy-dev/apoxy/api/extensions/v1alpha2"
 	gatewayv1 "github.com/apoxy-dev/apoxy/api/gateway/v1"
+	gatewayv1alpha2 "github.com/apoxy-dev/apoxy/api/gateway/v1alpha2"
 	apoxyopenapi "github.com/apoxy-dev/apoxy/api/generated"
 	policyv1alpha1 "github.com/apoxy-dev/apoxy/api/policy/v1alpha1"
 )
@@ -76,6 +77,7 @@ func init() {
 	utilruntime.Must(extensionsv1alpha1.Install(scheme))
 	utilruntime.Must(extensionsv1alpha2.Install(scheme))
 	utilruntime.Must(gatewayv1.Install(scheme))
+	utilruntime.Must(gatewayv1alpha2.Install(scheme))
 
 	gateway.Install(scheme)
 }
@@ -357,6 +359,10 @@ func defaultResources() []resource.Object {
 		&gatewayv1.Gateway{},
 		&gatewayv1.HTTPRoute{},
 		&gatewayv1.GRPCRoute{},
+
+		&gatewayv1alpha2.TCPRoute{},
+		&gatewayv1alpha2.UDPRoute{},
+		&gatewayv1alpha2.TLSRoute{},
 	}
 }
 

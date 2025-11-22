@@ -23,21 +23,20 @@ spec:
       kind: Proxy
       name: example-proxy
   listeners:
-    - protocol: HTTP
+    - protocol: TCP
       port: 10000
       name: example-listener
 ---
 apiVersion: core.apoxy.dev/v1alpha2
 kind: Backend
 metadata:
-  name: debug-backend
+  name: tcp-backend
 spec:
   endpoints:
-    - fqdn: next-debug-apoxy.vercel.app
-  protocol: tls
+    - ip: 127.0.0.1
 ---
-apiVersion: gateway.apoxy.dev/v1
-kind: HTTPRoute
+apiVersion: gateway.apoxy.dev/v1alpha2
+kind: TCPRoute
 metadata:
   name: default
 spec:
@@ -45,14 +44,8 @@ spec:
     - kind: Gateway
       name: example-gw
       port: 10000
-  hostnames:
-    - '*'
   rules:
     - backendRefs:
         - kind: Backend
-          name: debug-backend
-          port: 443
-      filters:
-        - type: URLRewrite
-          urlRewrite:
-            hostname: next-debug-apoxy.vercel.app
+          name: tcp-backend
+          port: 18080

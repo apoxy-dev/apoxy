@@ -23,6 +23,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	gwapiv1 "sigs.k8s.io/gateway-api/apis/v1"
+	gwapiv1a2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
 
 	"github.com/apoxy-dev/apoxy/pkg/gateway/gatewayapi"
 	gatewayapirunner "github.com/apoxy-dev/apoxy/pkg/gateway/gatewayapi/runner"
@@ -31,6 +32,7 @@ import (
 	corev1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
 	extensionsv1alpha2 "github.com/apoxy-dev/apoxy/api/extensions/v1alpha2"
 	gatewayv1 "github.com/apoxy-dev/apoxy/api/gateway/v1"
+	gatewayv1alpha2 "github.com/apoxy-dev/apoxy/api/gateway/v1alpha2"
 )
 
 func Install(scheme *runtime.Scheme) {
@@ -42,6 +44,15 @@ const (
 	gatewayHTTPRouteIndex = "gatewayHTTPRouteIndex"
 	backendHTTPRouteIndex = "backendHTTPRouteIndex"
 	serviceHTTPRouteIndex = "serviceHTTPRouteIndex"
+	gatewayTCPRouteIndex  = "gatewayTCPRouteIndex"
+	backendTCPRouteIndex  = "backendTCPRouteIndex"
+	serviceTCPRouteIndex  = "serviceTCPRouteIndex"
+	gatewayUDPRouteIndex  = "gatewayUDPRouteIndex"
+	backendUDPRouteIndex  = "backendUDPRouteIndex"
+	serviceUDPRouteIndex  = "serviceUDPRouteIndex"
+	gatewayTLSRouteIndex  = "gatewayTLSRouteIndex"
+	backendTLSRouteIndex  = "backendTLSRouteIndex"
+	serviceTLSRouteIndex  = "serviceTLSRouteIndex"
 	gatewayInfraRefIndex  = "gatewayInfraRefIndex"
 	edgeFunctionLiveIndex = "edgeFunctionLiveIndex"
 )
@@ -258,8 +269,16 @@ func (r *GatewayReconciler) reconcileGateways(
 		}
 
 		if err := r.reconcileHTTPRoutes(clog.IntoContext(ctx, log), gw, extRefs, res); err != nil {
-			log.Error(err, "Failed to reconcile Gateway", "name", gw.Name)
-			continue
+			log.Error(err, "Failed to reconcile HTTPRoutes for Gateway", "name", gw.Name)
+		}
+		if err := r.reconcileTCPRoutes(clog.IntoContext(ctx, log), gw, res); err != nil {
+			log.Error(err, "Failed to reconcile TCPRoutes for Gateway", "name", gw.Name)
+		}
+		if err := r.reconcileUDPRoutes(clog.IntoContext(ctx, log), gw, res); err != nil {
+			log.Error(err, "Failed to reconcile UDPRoutes for Gateway", "name", gw.Name)
+		}
+		if err := r.reconcileTLSRoutes(clog.IntoContext(ctx, log), gw, res); err != nil {
+			log.Error(err, "Failed to reconcile TLSRoutes for Gateway", "name", gw.Name)
 		}
 		res.Gateways = append(res.Gateways, &gwapiv1.Gateway{
 			TypeMeta:   gw.TypeMeta,
@@ -373,6 +392,99 @@ func (r *GatewayReconciler) reconcileHTTPRoutes(
 	return nil
 }
 
+func (r *GatewayReconciler) reconcileTCPRoutes(
+	ctx context.Context,
+	gw *gatewayv1.Gateway,
+	res *gatewayapi.Resources,
+) error {
+	log := clog.FromContext(ctx, "Gateway", gw.Name)
+
+	var trsl gatewayv1alpha2.TCPRouteList
+	if err := r.List(ctx, &trsl, client.MatchingFields{gatewayTCPRouteIndex: string(gw.Name)}); err != nil {
+		return fmt.Errorf("failed to list TCPRoutes: %w", err)
+	}
+
+	for _, tr := range trsl.Items {
+		if !tr.DeletionTimestamp.IsZero() {
+			log.V(1).Info("TCPRoute is being deleted", "name", tr.Name)
+			continue
+		}
+
+		log.Info("Reconciling TCPRoute", "name", tr.Name)
+
+		res.TCPRoutes = append(res.TCPRoutes, &gwapiv1a2.TCPRoute{
+			TypeMeta:   tr.TypeMeta,
+			ObjectMeta: tr.ObjectMeta,
+			Spec:       tr.Spec,
+			Status:     tr.Status.TCPRouteStatus,
+		})
+	}
+
+	return nil
+}
+
+func (r *GatewayReconciler) reconcileUDPRoutes(
+	ctx context.Context,
+	gw *gatewayv1.Gateway,
+	res *gatewayapi.Resources,
+) error {
+	log := clog.FromContext(ctx, "Gateway", gw.Name)
+
+	var ursl gatewayv1alpha2.UDPRouteList
+	if err := r.List(ctx, &ursl, client.MatchingFields{gatewayUDPRouteIndex: string(gw.Name)}); err != nil {
+		return fmt.Errorf("failed to list UDPRoutes: %w", err)
+	}
+
+	for _, ur := range ursl.Items {
+		if !ur.DeletionTimestamp.IsZero() {
+			log.V(1).Info("UDPRoute is being deleted", "name", ur.Name)
+			continue
+		}
+
+		log.Info("Reconciling UDPRoute", "name", ur.Name)
+
+		res.UDPRoutes = append(res.UDPRoutes, &gwapiv1a2.UDPRoute{
+			TypeMeta:   ur.TypeMeta,
+			ObjectMeta: ur.ObjectMeta,
+			Spec:       ur.Spec,
+			Status:     ur.Status.UDPRouteStatus,
+		})
+	}
+
+	return nil
+}
+
+func (r *GatewayReconciler) reconcileTLSRoutes(
+	ctx context.Context,
+	gw *gatewayv1.Gateway,
+	res *gatewayapi.Resources,
+) error {
+	log := clog.FromContext(ctx, "Gateway", gw.Name)
+
+	var tlsrsl gatewayv1alpha2.TLSRouteList
+	if err := r.List(ctx, &tlsrsl, client.MatchingFields{gatewayTLSRouteIndex: string(gw.Name)}); err != nil {
+		return fmt.Errorf("failed to list TLSRoutes: %w", err)
+	}
+
+	for _, tlsr := range tlsrsl.Items {
+		if !tlsr.DeletionTimestamp.IsZero() {
+			log.V(1).Info("TLSRoute is being deleted", "name", tlsr.Name)
+			continue
+		}
+
+		log.Info("Reconciling TLSRoute", "name", tlsr.Name)
+
+		res.TLSRoutes = append(res.TLSRoutes, &gwapiv1a2.TLSRoute{
+			TypeMeta:   tlsr.TypeMeta,
+			ObjectMeta: tlsr.ObjectMeta,
+			Spec:       tlsr.Spec,
+			Status:     tlsr.Status.TLSRouteStatus,
+		})
+	}
+
+	return nil
+}
+
 func (r *GatewayReconciler) reconcileBackends(
 	ctx context.Context,
 	res *gatewayapi.Resources,
@@ -390,11 +502,35 @@ func (r *GatewayReconciler) reconcileBackends(
 			continue
 		}
 
+		// Check if Backend is referenced by any route type
+		var hasRouteRef bool
+
 		var hrsl gatewayv1.HTTPRouteList
 		if err := r.List(ctx, &hrsl, client.MatchingFields{backendHTTPRouteIndex: string(b.Name)}); err != nil {
 			return fmt.Errorf("failed to list HTTPRoutes for Backend %s: %w", b.Name, err)
-		} else if len(hrsl.Items) == 0 {
-			log.Info("No matching HTTPRoute objects found for Backend", "name", b.Name)
+		}
+		hasRouteRef = hasRouteRef || len(hrsl.Items) > 0
+
+		var trsl gatewayv1alpha2.TCPRouteList
+		if err := r.List(ctx, &trsl, client.MatchingFields{backendTCPRouteIndex: string(b.Name)}); err != nil {
+			return fmt.Errorf("failed to list TCPRoutes for Backend %s: %w", b.Name, err)
+		}
+		hasRouteRef = hasRouteRef || len(trsl.Items) > 0
+
+		var ursl gatewayv1alpha2.UDPRouteList
+		if err := r.List(ctx, &ursl, client.MatchingFields{backendUDPRouteIndex: string(b.Name)}); err != nil {
+			return fmt.Errorf("failed to list UDPRoutes for Backend %s: %w", b.Name, err)
+		}
+		hasRouteRef = hasRouteRef || len(ursl.Items) > 0
+
+		var tlsrsl gatewayv1alpha2.TLSRouteList
+		if err := r.List(ctx, &tlsrsl, client.MatchingFields{backendTLSRouteIndex: string(b.Name)}); err != nil {
+			return fmt.Errorf("failed to list TLSRoutes for Backend %s: %w", b.Name, err)
+		}
+		hasRouteRef = hasRouteRef || len(tlsrsl.Items) > 0
+
+		if !hasRouteRef {
+			log.Info("No matching Route objects found for Backend", "name", b.Name)
 			continue
 		}
 
@@ -489,10 +625,139 @@ func (r *GatewayReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manag
 	}); err != nil {
 		return fmt.Errorf("failed to setup field indexer: %w", err)
 	}
+	// Indexes TCPRoute objects by the name of the referenced Gateway object.
+	if err := mgr.GetFieldIndexer().IndexField(ctx, &gatewayv1alpha2.TCPRoute{}, gatewayTCPRouteIndex, func(obj client.Object) []string {
+		route := obj.(*gatewayv1alpha2.TCPRoute)
+		var gateways []string
+		for _, ref := range route.Spec.ParentRefs {
+			if ref.Kind == nil || *ref.Kind == "Gateway" {
+				gateways = append(gateways, string(ref.Name))
+			}
+		}
+		return gateways
+	}); err != nil {
+		return fmt.Errorf("failed to setup field indexer: %w", err)
+	}
+	// Indexes TCPRoute objects by the name of the referenced Backend object.
+	if err := mgr.GetFieldIndexer().IndexField(ctx, &gatewayv1alpha2.TCPRoute{}, backendTCPRouteIndex, func(obj client.Object) []string {
+		route := obj.(*gatewayv1alpha2.TCPRoute)
+		var backends []string
+		for _, rule := range route.Spec.Rules {
+			for _, backend := range rule.BackendRefs {
+				if backend.Kind != nil && *backend.Kind == "Backend" {
+					backends = append(backends, string(backend.Name))
+				}
+			}
+		}
+		return backends
+	}); err != nil {
+		return fmt.Errorf("failed to setup field indexer: %w", err)
+	}
+	// Indexes UDPRoute objects by the name of the referenced Gateway object.
+	if err := mgr.GetFieldIndexer().IndexField(ctx, &gatewayv1alpha2.UDPRoute{}, gatewayUDPRouteIndex, func(obj client.Object) []string {
+		route := obj.(*gatewayv1alpha2.UDPRoute)
+		var gateways []string
+		for _, ref := range route.Spec.ParentRefs {
+			if ref.Kind == nil || *ref.Kind == "Gateway" {
+				gateways = append(gateways, string(ref.Name))
+			}
+		}
+		return gateways
+	}); err != nil {
+		return fmt.Errorf("failed to setup field indexer: %w", err)
+	}
+	// Indexes UDPRoute objects by the name of the referenced Backend object.
+	if err := mgr.GetFieldIndexer().IndexField(ctx, &gatewayv1alpha2.UDPRoute{}, backendUDPRouteIndex, func(obj client.Object) []string {
+		route := obj.(*gatewayv1alpha2.UDPRoute)
+		var backends []string
+		for _, rule := range route.Spec.Rules {
+			for _, backend := range rule.BackendRefs {
+				if backend.Kind != nil && *backend.Kind == "Backend" {
+					backends = append(backends, string(backend.Name))
+				}
+			}
+		}
+		return backends
+	}); err != nil {
+		return fmt.Errorf("failed to setup field indexer: %w", err)
+	}
+	// Indexes TLSRoute objects by the name of the referenced Gateway object.
+	if err := mgr.GetFieldIndexer().IndexField(ctx, &gatewayv1alpha2.TLSRoute{}, gatewayTLSRouteIndex, func(obj client.Object) []string {
+		route := obj.(*gatewayv1alpha2.TLSRoute)
+		var gateways []string
+		for _, ref := range route.Spec.ParentRefs {
+			if ref.Kind == nil || *ref.Kind == "Gateway" {
+				gateways = append(gateways, string(ref.Name))
+			}
+		}
+		return gateways
+	}); err != nil {
+		return fmt.Errorf("failed to setup field indexer: %w", err)
+	}
+	// Indexes TLSRoute objects by the name of the referenced Backend object.
+	if err := mgr.GetFieldIndexer().IndexField(ctx, &gatewayv1alpha2.TLSRoute{}, backendTLSRouteIndex, func(obj client.Object) []string {
+		route := obj.(*gatewayv1alpha2.TLSRoute)
+		var backends []string
+		for _, rule := range route.Spec.Rules {
+			for _, backend := range rule.BackendRefs {
+				if backend.Kind != nil && *backend.Kind == "Backend" {
+					backends = append(backends, string(backend.Name))
+				}
+			}
+		}
+		return backends
+	}); err != nil {
+		return fmt.Errorf("failed to setup field indexer: %w", err)
+	}
 	if r.watchK8s {
 		// Indexes HTTPRoute objects by the name of the referenced Service object.
 		if err := mgr.GetFieldIndexer().IndexField(ctx, &gatewayv1.HTTPRoute{}, serviceHTTPRouteIndex, func(obj client.Object) []string {
 			route := obj.(*gatewayv1.HTTPRoute)
+			var services []string
+			for _, rule := range route.Spec.Rules {
+				for _, backend := range rule.BackendRefs {
+					if backend.Kind != nil && *backend.Kind == "Service" {
+						services = append(services, string(backend.Name))
+					}
+				}
+			}
+			return services
+		}); err != nil {
+			return fmt.Errorf("failed to setup field indexer: %w", err)
+		}
+		// Indexes TCPRoute objects by the name of the referenced Service object.
+		if err := mgr.GetFieldIndexer().IndexField(ctx, &gatewayv1alpha2.TCPRoute{}, serviceTCPRouteIndex, func(obj client.Object) []string {
+			route := obj.(*gatewayv1alpha2.TCPRoute)
+			var services []string
+			for _, rule := range route.Spec.Rules {
+				for _, backend := range rule.BackendRefs {
+					if backend.Kind != nil && *backend.Kind == "Service" {
+						services = append(services, string(backend.Name))
+					}
+				}
+			}
+			return services
+		}); err != nil {
+			return fmt.Errorf("failed to setup field indexer: %w", err)
+		}
+		// Indexes UDPRoute objects by the name of the referenced Service object.
+		if err := mgr.GetFieldIndexer().IndexField(ctx, &gatewayv1alpha2.UDPRoute{}, serviceUDPRouteIndex, func(obj client.Object) []string {
+			route := obj.(*gatewayv1alpha2.UDPRoute)
+			var services []string
+			for _, rule := range route.Spec.Rules {
+				for _, backend := range rule.BackendRefs {
+					if backend.Kind != nil && *backend.Kind == "Service" {
+						services = append(services, string(backend.Name))
+					}
+				}
+			}
+			return services
+		}); err != nil {
+			return fmt.Errorf("failed to setup field indexer: %w", err)
+		}
+		// Indexes TLSRoute objects by the name of the referenced Service object.
+		if err := mgr.GetFieldIndexer().IndexField(ctx, &gatewayv1alpha2.TLSRoute{}, serviceTLSRouteIndex, func(obj client.Object) []string {
+			route := obj.(*gatewayv1alpha2.TLSRoute)
 			var services []string
 			for _, rule := range route.Spec.Rules {
 				for _, backend := range rule.BackendRefs {
@@ -530,6 +795,21 @@ func (r *GatewayReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manag
 		).
 		Watches(
 			&gatewayv1.HTTPRoute{},
+			handler.EnqueueRequestsFromMapFunc(r.enqueueClass),
+			builder.WithPredicates(predicate.ResourceVersionChangedPredicate{}),
+		).
+		Watches(
+			&gatewayv1alpha2.TCPRoute{},
+			handler.EnqueueRequestsFromMapFunc(r.enqueueClass),
+			builder.WithPredicates(predicate.ResourceVersionChangedPredicate{}),
+		).
+		Watches(
+			&gatewayv1alpha2.UDPRoute{},
+			handler.EnqueueRequestsFromMapFunc(r.enqueueClass),
+			builder.WithPredicates(predicate.ResourceVersionChangedPredicate{}),
+		).
+		Watches(
+			&gatewayv1alpha2.TLSRoute{},
 			handler.EnqueueRequestsFromMapFunc(r.enqueueClass),
 			builder.WithPredicates(predicate.ResourceVersionChangedPredicate{}),
 		).
