@@ -3,10 +3,12 @@ package types
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 
 	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	discoveryv3 "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
 	"google.golang.org/protobuf/types/known/structpb"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // NodeMetadata represents metadata attached to an Envoy node.
@@ -19,6 +21,9 @@ type NodeMetadata struct {
 	// PrivateAddress is the private/internal address of the node
 	// This can be used for internal communication or routing
 	PrivateAddress string `json:"private_address,omitempty"`
+
+	// ConnectedAt is the timestamp when the node was connected to the control plane.
+	ConnectedAt metav1.Time `json:"connected_at,omitempty"`
 }
 
 // ToMap converts NodeMetadata to a map[string]interface{} for serialization
@@ -103,8 +108,8 @@ func ExtractFromDiscoveryRequest(req *discoveryv3.DiscoveryRequest) (*NodeMetada
 	return nm, nil
 }
 
-// ExtractFromNode extracts NodeMetadata from an Envoy core.Node struct.
-func ExtractFromNode(node *corev3.Node) (*NodeMetadata, error) {
+// ExtractFromNodeWithTime extracts NodeMetadata from an Envoy core.Node struct.
+func ExtractFromNodeWithTime(node *corev3.Node, connectedAt time.Time) (*NodeMetadata, error) {
 	if node == nil {
 		return nil, fmt.Errorf("node is nil")
 	}
@@ -116,6 +121,8 @@ func ExtractFromNode(node *corev3.Node) (*NodeMetadata, error) {
 			return nil, fmt.Errorf("failed to extract metadata from node: %w", err)
 		}
 	}
+
+	nm.ConnectedAt = metav1.NewTime(connectedAt)
 
 	return nm, nil
 }

@@ -53,7 +53,13 @@ type SnapshotCacheWithCallbacks interface {
 
 type snapshotMap map[string]*cachev3.Snapshot
 
-type nodeInfoMap map[int64]*corev3.Node
+type nodeInfo struct {
+	*corev3.Node
+	connectedAt time.Time
+}
+
+// nodeInfoMap is a map of stream IDs to nodeInfo structs.
+type nodeInfoMap map[int64]*nodeInfo
 
 type nodeBackoff struct {
 	backoff     wait.Backoff
@@ -172,10 +178,16 @@ func (s *snapshotCache) OnStreamOpen(_ context.Context, streamID int64, _ string
 	return nil
 }
 
-func (s *snapshotCache) OnStreamClosed(streamID int64, _ *corev3.Node) {
+func (s *snapshotCache) OnStreamClosed(streamID int64, node *corev3.Node) {
 	// TODO: something with the node?
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if s.resources != nil {
+		s.resources.EnvoyResources.Nodes.Delete(message.NodeKey{ClusterName: node.Cluster, NodeID: node.Id})
+	}
+
+	log.Infof("Stream %d closed for node %s in cluster %s", streamID, node.Id, node.Cluster)
 
 	delete(s.streamIDNodeInfo, streamID)
 }
@@ -194,7 +206,10 @@ func (s *snapshotCache) OnStreamRequest(streamID int64, req *discoveryv3.Discove
 			return fmt.Errorf("couldn't get the node ID from the first discovery request on stream %d", streamID)
 		}
 		log.Debugf("First discovery request on stream %d, got nodeID %s, nodeCluster %s", streamID, req.Node.Id, req.Node.Cluster)
-		s.streamIDNodeInfo[streamID] = req.Node
+		s.streamIDNodeInfo[streamID] = &nodeInfo{
+			Node:        req.Node,
+			connectedAt: time.Now(),
+		}
 	}
 	nodeID := s.streamIDNodeInfo[streamID].Id
 	cluster := s.streamIDNodeInfo[streamID].Cluster
@@ -202,7 +217,7 @@ func (s *snapshotCache) OnStreamRequest(streamID int64, req *discoveryv3.Discove
 	log.Infof("Stream %d requested resources for node %s in cluster %s", streamID, nodeID, cluster)
 
 	if s.resources != nil {
-		meta, err := xdstypes.ExtractFromNode(s.streamIDNodeInfo[streamID])
+		meta, err := xdstypes.ExtractFromNodeWithTime(s.streamIDNodeInfo[streamID].Node, s.streamIDNodeInfo[streamID].connectedAt)
 		if err != nil {
 			return err
 		}
@@ -338,12 +353,24 @@ func (s *snapshotCache) OnStreamDeltaRequest(streamID int64, req *discoveryv3.De
 			return fmt.Errorf("couldn't get the node ID from the first incremental discovery request on stream %d", streamID)
 		}
 		log.Debugf("First incremental discovery request on stream %d, got nodeID %s", streamID, req.Node.Id)
-		s.streamIDNodeInfo[streamID] = req.Node
+		s.streamIDNodeInfo[streamID] = &nodeInfo{
+			Node:        req.Node,
+			connectedAt: time.Now(),
+		}
 	}
 	nodeID := s.streamIDNodeInfo[streamID].Id
 	cluster := s.streamIDNodeInfo[streamID].Cluster
 
 	log.Infof("Stream %d requested resources for node %s in cluster %s", streamID, nodeID, cluster)
+
+	if s.resources != nil {
+		meta, err := xdstypes.ExtractFromNodeWithTime(s.streamIDNodeInfo[streamID].Node, s.streamIDNodeInfo[streamID].connectedAt)
+		if err != nil {
+			return err
+		}
+		log.Infof("Pushing resources for node %s in cluster %s", nodeID, cluster)
+		s.resources.EnvoyResources.Nodes.Store(message.NodeKey{ClusterName: cluster, NodeID: nodeID}, meta)
+	}
 
 	// If no snapshot has been written into the snapshotCache yet, we can't do anything, so don't mess with
 	// this request. go-control-plane will respond with an empty response, then send an update when a

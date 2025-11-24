@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -189,7 +188,7 @@ func (r *ProxyReconciler) run(ctx context.Context) {
 				if !update.Delete {
 					p.Status.Replicas = append(p.Status.Replicas, &corev1alpha2.ProxyReplicaStatus{
 						Name:           meta.Name,
-						ConnectedAt:    metav1.Now(),
+						ConnectedAt:    meta.ConnectedAt,
 						PrivateAddress: meta.PrivateAddress,
 					})
 				} else {
@@ -236,7 +235,7 @@ func (r *ProxyReconciler) run(ctx context.Context) {
 					if !found {
 						p.Status.Replicas = append(p.Status.Replicas, &corev1alpha2.ProxyReplicaStatus{
 							Name:           meta.Name,
-							ConnectedAt:    metav1.Now(), // TODO(dilyevsky): Pass this via meta to capture actual connected time.
+							ConnectedAt:    meta.ConnectedAt,
 							PrivateAddress: meta.PrivateAddress,
 						})
 						updated = true
