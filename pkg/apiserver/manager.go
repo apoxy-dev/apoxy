@@ -495,6 +495,8 @@ func (m *Manager) Start(
 		return fmt.Errorf("failed to wait for APIService %s: %v", corev1alpha2.GroupVersion.Group, err)
 	}
 
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	g, ctx := errgroup.WithContext(ctx)
 
 	log.Infof("Registering Proxy controller")
@@ -503,6 +505,7 @@ func (m *Manager) Start(
 		m.manager.GetClient(),
 		gwSrv.Resources,
 		dOpts.proxyIPAM,
+		cancel,
 	).SetupWithManager(ctx, m.manager); err != nil {
 		return fmt.Errorf("failed to set up Proxy controller: %v", err)
 	}

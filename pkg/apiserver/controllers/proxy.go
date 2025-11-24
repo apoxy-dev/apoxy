@@ -18,6 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/apoxy-dev/apoxy/pkg/gateway/message"
+	xdstypes "github.com/apoxy-dev/apoxy/pkg/gateway/xds/types"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 
 	corev1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
@@ -31,14 +32,13 @@ type retryableError struct {
 	error
 }
 
-var _ reconcile.Reconciler = &ProxyReconciler{}
-
 // ProxyReconciler reconciles a Proxy object.
 type ProxyReconciler struct {
 	client.Client
 
 	resources *message.ProviderResources
 	ipam      net.IPAM
+	shutdown  func()
 }
 
 // NewProxyReconciler returns a new reconcile.Reconciler.
@@ -47,49 +47,14 @@ func NewProxyReconciler(
 	c client.Client,
 	resources *message.ProviderResources,
 	ipam net.IPAM,
+	shutdown func(),
 ) *ProxyReconciler {
-	go func() {
-		ch := resources.EnvoyResources.Nodes.Subscribe(ctx)
-		for snapshot := range ch {
-			slog.Info("Received xDS nodes snapshot")
-
-			for _, update := range snapshot.Updates {
-				proxyName, meta := update.Key.ClusterName, update.Value
-
-				slog.Info("Received update", "proxy", update.Key.ClusterName, "nodeID", update.Key.NodeID)
-
-				p := &corev1alpha2.Proxy{}
-				if err := c.Get(ctx, types.NamespacedName{Name: proxyName}, p); err != nil {
-					slog.Error("failed to get proxy", "proxy", proxyName, "error", err)
-					continue
-				}
-
-				if !update.Delete {
-					p.Status.Replicas = append(p.Status.Replicas, &corev1alpha2.ProxyReplicaStatus{
-						Name:           meta.Name,
-						ConnectedAt:    metav1.Now(),
-						PrivateAddress: meta.PrivateAddress,
-					})
-				} else {
-					for i, replica := range p.Status.Replicas {
-						if replica.Name == meta.Name {
-							p.Status.Replicas = append(p.Status.Replicas[:i], p.Status.Replicas[i+1:]...)
-							break
-						}
-					}
-				}
-
-				if err := c.Status().Update(ctx, p); err != nil {
-					slog.Error("failed to update proxy status", "proxy", proxyName, "error", err)
-				}
-			}
-		}
-		slog.Info("Node subscription closed")
-	}()
 	return &ProxyReconciler{
-		Client:    c,
+		Client: c,
+
 		resources: resources,
 		ipam:      ipam,
+		shutdown:  shutdown,
 	}
 }
 
@@ -135,8 +100,7 @@ func (r *ProxyReconciler) assignReplica(ctx context.Context, replica *corev1alph
 	return nil
 }
 
-// Reconcile implements reconcile.Reconciler.
-func (r *ProxyReconciler) Reconcile(ctx context.Context, request reconcile.Request) (ctrl.Result, error) {
+func (r *ProxyReconciler) reconcileRequest(ctx context.Context, request reconcile.Request) (ctrl.Result, error) {
 	p := &corev1alpha2.Proxy{}
 	err := r.Get(ctx, request.NamespacedName, p)
 	if errors.IsNotFound(err) {
@@ -194,9 +158,125 @@ func (r *ProxyReconciler) Reconcile(ctx context.Context, request reconcile.Reque
 	return ctrl.Result{}, nil
 }
 
+func (r *ProxyReconciler) run(ctx context.Context) {
+	ch := r.resources.EnvoyResources.Nodes.Subscribe(ctx)
+	defer r.shutdown() // Call shutdown hook if this loop exits.
+	for {
+		select {
+		case <-ctx.Done():
+			slog.Info("context done", "error", ctx.Err())
+			return
+
+		case snapshot, ok := <-ch:
+			if !ok {
+				slog.Info("Node subscription closed")
+				return
+			}
+
+			slog.Info("Received xDS nodes snapshot")
+
+			for _, update := range snapshot.Updates {
+				proxyName, meta := update.Key.ClusterName, update.Value
+
+				slog.Info("Received update", "proxy", update.Key.ClusterName, "nodeID", update.Key.NodeID)
+
+				p := &corev1alpha2.Proxy{}
+				if err := r.Get(ctx, types.NamespacedName{Name: proxyName}, p); err != nil {
+					slog.Error("failed to get proxy", "proxy", proxyName, "error", err)
+					continue
+				}
+
+				if !update.Delete {
+					p.Status.Replicas = append(p.Status.Replicas, &corev1alpha2.ProxyReplicaStatus{
+						Name:           meta.Name,
+						ConnectedAt:    metav1.Now(),
+						PrivateAddress: meta.PrivateAddress,
+					})
+				} else {
+					for i, replica := range p.Status.Replicas {
+						if replica.Name == meta.Name {
+							p.Status.Replicas = append(p.Status.Replicas[:i], p.Status.Replicas[i+1:]...)
+							break
+						}
+					}
+				}
+
+				if err := r.Status().Update(ctx, p); err != nil {
+					slog.Error("failed to update proxy status", "proxy", proxyName, "error", err)
+				}
+			}
+
+		case <-time.After(1 * time.Minute):
+			slog.Info("Resyncing connected Proxy replicas")
+
+			// Maps proxies to their connected nodes from the current state.
+			nodeMap := make(map[string][]*xdstypes.NodeMetadata)
+			for nk, meta := range r.resources.EnvoyResources.Nodes.LoadAll() {
+				nodeMap[nk.ClusterName] = append(nodeMap[nk.ClusterName], meta)
+			}
+
+			for proxyName, nodes := range nodeMap {
+				slog.Info("Proxy has connected nodes", "proxy", proxyName, "nodes", len(nodes))
+
+				p := &corev1alpha2.Proxy{}
+				if err := r.Get(ctx, types.NamespacedName{Name: proxyName}, p); err != nil {
+					slog.Error("failed to get proxy", "proxy", proxyName, "error", err)
+					continue
+				}
+
+				updated := false
+				for _, meta := range nodes {
+					found := false
+					for _, replica := range p.Status.Replicas {
+						if replica.Name == meta.Name {
+							found = true
+							break
+						}
+					}
+					if !found {
+						p.Status.Replicas = append(p.Status.Replicas, &corev1alpha2.ProxyReplicaStatus{
+							Name:           meta.Name,
+							ConnectedAt:    metav1.Now(), // TODO(dilyevsky): Pass this via meta to capture actual connected time.
+							PrivateAddress: meta.PrivateAddress,
+						})
+						updated = true
+					}
+				}
+
+				// Remove replicas that are no longer connected.
+				i := 0
+				for _, replica := range p.Status.Replicas {
+					found := false
+					for _, meta := range nodes {
+						if replica.Name == meta.Name {
+							found = true
+							break
+						}
+					}
+					if found {
+						p.Status.Replicas[i] = replica
+						i++
+					} else {
+						slog.Info("Removing disconnected replica", "proxy", proxyName, "replica", replica.Name)
+						updated = true
+					}
+				}
+				p.Status.Replicas = p.Status.Replicas[:i]
+
+				if updated {
+					if err := r.Status().Update(ctx, p); err != nil {
+						slog.Error("failed to update proxy status", "proxy", proxyName, "error", err)
+					}
+				}
+			}
+		}
+	}
+}
+
 // SetupWithManager sets up the controller with the Controller Manager.
 func (r *ProxyReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager) error {
+	go r.run(ctx)
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&corev1alpha2.Proxy{}).
-		Complete(r)
+		Complete(reconcile.Func(r.reconcileRequest))
 }
