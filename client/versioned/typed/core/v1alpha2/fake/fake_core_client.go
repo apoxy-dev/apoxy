@@ -47,6 +47,10 @@ func (c *FakeCoreV1alpha2) Proxies() v1alpha2.ProxyInterface {
 	return &FakeProxies{c}
 }
 
+func (c *FakeCoreV1alpha2) TLSCertificates() v1alpha2.TLSCertificateInterface {
+	return &FakeTLSCertificates{c}
+}
+
 func (c *FakeCoreV1alpha2) Tunnels() v1alpha2.TunnelInterface {
 	return &FakeTunnels{c}
 }

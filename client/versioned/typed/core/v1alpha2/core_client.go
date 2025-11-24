@@ -32,6 +32,7 @@ type CoreV1alpha2Interface interface {
 	DomainsGetter
 	DomainZonesGetter
 	ProxiesGetter
+	TLSCertificatesGetter
 	TunnelsGetter
 	TunnelAgentsGetter
 }
@@ -59,6 +60,10 @@ func (c *CoreV1alpha2Client) DomainZones() DomainZoneInterface {
 
 func (c *CoreV1alpha2Client) Proxies() ProxyInterface {
 	return newProxies(c)
+}
+
+func (c *CoreV1alpha2Client) TLSCertificates() TLSCertificateInterface {
+	return newTLSCertificates(c)
 }
 
 func (c *CoreV1alpha2Client) Tunnels() TunnelInterface {

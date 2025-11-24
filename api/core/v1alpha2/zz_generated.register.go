@@ -70,6 +70,8 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&DomainZoneList{},
 		&Proxy{},
 		&ProxyList{},
+		&TLSCertificate{},
+		&TLSCertificateList{},
 		&Tunnel{},
 		&TunnelAgent{},
 		&TunnelAgentList{},

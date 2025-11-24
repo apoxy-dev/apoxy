@@ -37,6 +37,10 @@ type DomainZoneListerExpansion interface{}
 // ProxyLister.
 type ProxyListerExpansion interface{}
 
+// TLSCertificateListerExpansion allows custom methods to be added to
+// TLSCertificateLister.
+type TLSCertificateListerExpansion interface{}
+
 // TunnelListerExpansion allows custom methods to be added to
 // TunnelLister.
 type TunnelListerExpansion interface{}

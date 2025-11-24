@@ -33,6 +33,8 @@ type Interface interface {
 	DomainZones() DomainZoneInformer
 	// Proxies returns a ProxyInformer.
 	Proxies() ProxyInformer
+	// TLSCertificates returns a TLSCertificateInformer.
+	TLSCertificates() TLSCertificateInformer
 	// Tunnels returns a TunnelInformer.
 	Tunnels() TunnelInformer
 	// TunnelAgents returns a TunnelAgentInformer.
@@ -73,6 +75,11 @@ func (v *version) DomainZones() DomainZoneInformer {
 // Proxies returns a ProxyInformer.
 func (v *version) Proxies() ProxyInformer {
 	return &proxyInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
+}
+
+// TLSCertificates returns a TLSCertificateInformer.
+func (v *version) TLSCertificates() TLSCertificateInformer {
+	return &tLSCertificateInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
 }
 
 // Tunnels returns a TunnelInformer.

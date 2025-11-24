@@ -27,6 +27,8 @@ type DomainZoneExpansion interface{}
 
 type ProxyExpansion interface{}
 
+type TLSCertificateExpansion interface{}
+
 type TunnelExpansion interface{}
 
 type TunnelAgentExpansion interface{}

@@ -334,6 +334,7 @@ func defaultResources() []resource.Object {
 		&corev1alpha2.Domain{},
 		&corev1alpha2.DomainZone{},
 		&corev1alpha2.Proxy{},
+		&corev1alpha2.TLSCertificate{},
 		&corev1alpha2.Tunnel{},
 		&corev1alpha2.TunnelAgent{},
 

@@ -136,6 +136,10 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.RegistrationConfig":                  schema_apoxy_api_core_v1alpha2_RegistrationConfig(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.RegistrationStatus":                  schema_apoxy_api_core_v1alpha2_RegistrationStatus(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.ShutdownConfig":                      schema_apoxy_api_core_v1alpha2_ShutdownConfig(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.TLSCertificate":                      schema_apoxy_api_core_v1alpha2_TLSCertificate(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.TLSCertificateList":                  schema_apoxy_api_core_v1alpha2_TLSCertificateList(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.TLSCertificateSpec":                  schema_apoxy_api_core_v1alpha2_TLSCertificateSpec(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.TLSCertificateStatus":                schema_apoxy_api_core_v1alpha2_TLSCertificateStatus(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.ThirdPartySinks":                     schema_apoxy_api_core_v1alpha2_ThirdPartySinks(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.Tunnel":                              schema_apoxy_api_core_v1alpha2_Tunnel(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.TunnelAgent":                         schema_apoxy_api_core_v1alpha2_TunnelAgent(ref),
@@ -5197,6 +5201,202 @@ func schema_apoxy_api_core_v1alpha2_ShutdownConfig(ref common.ReferenceCallback)
 		},
 		Dependencies: []string{
 			"k8s.io/apimachinery/pkg/apis/meta/v1.Duration"},
+	}
+}
+
+func schema_apoxy_api_core_v1alpha2_TLSCertificate(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "TLSCertificate represents a TLS certificate and private key pair. This matches the Kubernetes TLS secret type but is specific to that use case. The public/private key pair must exist beforehand. The public key certificate must be PEM encoded and match the given private key.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.TLSCertificateSpec"),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.TLSCertificateStatus"),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/core/v1alpha2.TLSCertificateSpec", "github.com/apoxy-dev/apoxy/api/core/v1alpha2.TLSCertificateStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
+	}
+}
+
+func schema_apoxy_api_core_v1alpha2_TLSCertificateList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "TLSCertificateList contains a list of TLSCertificate",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.TLSCertificate"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/core/v1alpha2.TLSCertificate", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
+	}
+}
+
+func schema_apoxy_api_core_v1alpha2_TLSCertificateSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "TLSCertificateSpec defines the desired state of TLSCertificate",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"certificate": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Certificate is the PEM-encoded TLS certificate. This should contain one or more certificate blocks.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"privateKey": {
+						SchemaProps: spec.SchemaProps{
+							Description: "PrivateKey is the PEM-encoded private key corresponding to the certificate. This must match the public key in the certificate.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"certificate", "privateKey"},
+			},
+		},
+	}
+}
+
+func schema_apoxy_api_core_v1alpha2_TLSCertificateStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "TLSCertificateStatus defines the observed state of TLSCertificate",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"notBefore": {
+						SchemaProps: spec.SchemaProps{
+							Description: "NotBefore is the time before which the certificate is not valid.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+						},
+					},
+					"notAfter": {
+						SchemaProps: spec.SchemaProps{
+							Description: "NotAfter is the time after which the certificate is not valid.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+						},
+					},
+					"issuer": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Issuer is the issuer of the certificate.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"subject": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Subject is the subject of the certificate.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"dnsNames": {
+						SchemaProps: spec.SchemaProps{
+							Description: "DNSNames is the list of DNS names in the certificate's Subject Alternative Names.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"conditions": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Conditions represent the latest available observations of the TLSCertificate's state.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"k8s.io/apimachinery/pkg/apis/meta/v1.Condition", "k8s.io/apimachinery/pkg/apis/meta/v1.Time"},
 	}
 }
 
