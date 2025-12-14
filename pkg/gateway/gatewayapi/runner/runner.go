@@ -17,10 +17,6 @@ import (
 	extensions "github.com/apoxy-dev/apoxy/api/extensions/v1alpha2"
 )
 
-const (
-	ControllerName = "gateway.apoxy.dev/gatewayclass-controller"
-)
-
 var (
 	extensionsGroupKinds = []schema.GroupKind{
 		{Group: extensions.GroupVersion.Group, Kind: "EdgeFunction"},
@@ -90,7 +86,7 @@ func (r *Runner) subscribeAndTranslate(ctx context.Context) {
 				log.Debug("Initiating translation for GWC", "GatewayClass", resources.GatewayClass.Name)
 				// Translate and publish IRs.
 				t := &gatewayapi.Translator{
-					GatewayControllerName: ControllerName,
+					GatewayControllerName: string(resources.GatewayClass.Spec.ControllerName),
 					GatewayClassName:      gwapiv1.ObjectName(resources.GatewayClass.Name),
 					ExtensionGroupKinds:   extensionsGroupKinds,
 					// TODO(dilyevsky): Re-enable support for Endpoint slices.

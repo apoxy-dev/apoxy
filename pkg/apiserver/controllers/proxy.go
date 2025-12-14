@@ -23,14 +23,6 @@ import (
 	corev1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
 )
 
-const (
-	terminationTimeout = 15 * time.Minute
-)
-
-type retryableError struct {
-	error
-}
-
 // ProxyReconciler reconciles a Proxy object.
 type ProxyReconciler struct {
 	client.Client

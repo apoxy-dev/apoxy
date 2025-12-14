@@ -24,6 +24,11 @@ import (
 	extensionsv1alpha2 "github.com/apoxy-dev/apoxy/api/extensions/v1alpha2"
 )
 
+const (
+	DefaultControllerName = "gateway.apoxy.dev/gatewayclass-controller"
+	CloudControllerName   = "apoxy.dev/gatewayclass-cloud"
+)
+
 type XdsIRMap map[string]*ir.Xds
 
 // Resources holds the Gateway API and related

@@ -337,6 +337,20 @@ func (t *Translator) validateAllowedNamespaces(listener *ListenerContext) {
 }
 
 func (t *Translator) validateTerminateModeAndGetTLSSecrets(listener *ListenerContext, resources *Resources) []*v1.Secret {
+	// For cloud gateways certificates are injected automatically by the Envoy runtime so
+	// check that none are supplied by the user.
+	if t.GatewayControllerName == CloudControllerName {
+		if len(listener.TLS.CertificateRefs) > 0 {
+			listener.SetCondition(
+				gwapiv1.ListenerConditionProgrammed,
+				metav1.ConditionFalse,
+				gwapiv1.ListenerReasonInvalid,
+				"Listener must not have any TLS certificate refs for cloud gateways",
+			)
+		}
+		return nil
+	}
+
 	if len(listener.TLS.CertificateRefs) == 0 {
 		listener.SetCondition(
 			gwapiv1.ListenerConditionProgrammed,

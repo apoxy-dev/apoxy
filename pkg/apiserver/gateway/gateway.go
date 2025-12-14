@@ -26,7 +26,6 @@ import (
 	gwapiv1a2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
 
 	"github.com/apoxy-dev/apoxy/pkg/gateway/gatewayapi"
-	gatewayapirunner "github.com/apoxy-dev/apoxy/pkg/gateway/gatewayapi/runner"
 	"github.com/apoxy-dev/apoxy/pkg/gateway/message"
 
 	corev1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
@@ -111,7 +110,7 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, request reconcile.Req
 			log.V(1).Info("GatewayClass is being deleted", "name", gwc.Name)
 			continue
 		}
-		if gwc.Spec.ControllerName == gatewayapirunner.ControllerName {
+		if gwc.Spec.ControllerName == gatewayapi.DefaultControllerName {
 			log.Info("Reconciling GatewayClass", "name", gwc.Name)
 			gwcs = append(gwcs, &gwc) // No longer requires copy since 1.22. See: https://go.dev/blog/loopvar-preview
 		}
@@ -151,7 +150,7 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, request reconcile.Req
 		ress = append(ress, res)
 	}
 
-	r.resources.GatewayAPIResources.Store(gatewayapirunner.ControllerName, &ress)
+	r.resources.GatewayAPIResources.Store(gatewayapi.DefaultControllerName, &ress)
 
 	return ctrl.Result{}, nil
 }
@@ -845,6 +844,6 @@ func (r *GatewayReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manag
 
 func (r *GatewayReconciler) enqueueClass(_ context.Context, _ client.Object) []reconcile.Request {
 	return []reconcile.Request{{NamespacedName: types.NamespacedName{
-		Name: gatewayapirunner.ControllerName,
+		Name: gatewayapi.DefaultControllerName,
 	}}}
 }
