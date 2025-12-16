@@ -5,7 +5,6 @@ import (
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
-	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource"
 	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource/resourcestrategy"
 )
 
@@ -30,17 +29,9 @@ func (r *Domain) Validate(ctx context.Context) field.ErrorList {
 }
 
 func (r *Domain) ValidateUpdate(ctx context.Context, obj runtime.Object) field.ErrorList {
-	d := &Domain{}
-	// XXX: Conversion needs to happen in apiserver-runtime before validation hooks are called.
-	if mv, ok := obj.(resource.MultiVersionObject); ok {
-		mv.ConvertToStorageVersion(d)
-	} else if d, ok = obj.(*Domain); !ok {
-		return field.ErrorList{
-			field.Invalid(field.NewPath("kind"), obj.GetObjectKind().GroupVersionKind().Kind, "expected Domain"),
-		}
-	}
-
-	return d.validate()
+	// obj is the old object, r (receiver) is the new object being applied
+	// We validate the new object (r), not the old one
+	return r.validate()
 }
 
 func (r *Domain) validate() field.ErrorList {
