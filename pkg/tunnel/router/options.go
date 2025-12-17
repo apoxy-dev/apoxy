@@ -25,6 +25,7 @@ type routerOptions struct {
 	sourcePortHashing     bool
 	pc                    batchpc.BatchPacketConn
 	egressGateway         bool
+	overridePort          string
 }
 
 func defaultOptions() *routerOptions {
@@ -132,5 +133,13 @@ func WithPacketConn(pc batchpc.BatchPacketConn) Option {
 func WithEgressGateway(enable bool) Option {
 	return func(o *routerOptions) {
 		o.egressGateway = enable
+	}
+}
+
+// WithOverridePort sets the destination port override for forwarded packets.
+// If empty string, the original destination port is preserved.
+func WithOverridePort(port string) Option {
+	return func(o *routerOptions) {
+		o.overridePort = port
 	}
 }

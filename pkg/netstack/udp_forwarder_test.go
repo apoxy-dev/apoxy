@@ -47,7 +47,7 @@ func TestUDPForwarder(t *testing.T) {
 	}()
 
 	// Setup the server stack to forward UDP packets to the hosts loopback interface.
-	serverStack.SetTransportProtocolHandler(udp.ProtocolNumber, netstack.UDPForwarder(ctx, serverStack.Stack, network.Loopback()))
+	serverStack.SetTransportProtocolHandler(udp.ProtocolNumber, netstack.UDPForwarder(ctx, serverStack.Stack, network.Loopback(), ""))
 
 	// Generate test data
 	testData := make([]byte, 1024)
@@ -144,7 +144,7 @@ func TestUDPForwarderMultipleSessions(t *testing.T) {
 	}()
 
 	// Setup the server stack to forward UDP packets
-	serverStack.SetTransportProtocolHandler(udp.ProtocolNumber, netstack.UDPForwarder(ctx, serverStack.Stack, network.Loopback()))
+	serverStack.SetTransportProtocolHandler(udp.ProtocolNumber, netstack.UDPForwarder(ctx, serverStack.Stack, network.Loopback(), ""))
 
 	// Start multiple UDP servers on different ports
 	numServers := 3
@@ -242,7 +242,7 @@ func TestUDPForwarderTimeout(t *testing.T) {
 	}()
 
 	// Setup the server stack to forward UDP packets
-	serverStack.SetTransportProtocolHandler(udp.ProtocolNumber, netstack.UDPForwarder(ctx, serverStack.Stack, network.Loopback()))
+	serverStack.SetTransportProtocolHandler(udp.ProtocolNumber, netstack.UDPForwarder(ctx, serverStack.Stack, network.Loopback(), ""))
 
 	// Start a UDP server
 	udpAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
