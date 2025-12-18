@@ -6,8 +6,10 @@
 package translator
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -24,8 +26,10 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
+	"k8s.io/apimachinery/pkg/util/sets"
 
 	"github.com/apoxy-dev/apoxy/pkg/gateway/ir"
+	"github.com/apoxy-dev/apoxy/pkg/gateway/utils"
 	"github.com/apoxy-dev/apoxy/pkg/gateway/utils/protocov"
 	"github.com/apoxy-dev/apoxy/pkg/gateway/xds/types"
 )
@@ -39,9 +43,15 @@ const AuthorityHeaderKey = ":authority"
 
 // Translator translates the xDS IR into xDS resources.
 type Translator struct {
+	Ctx context.Context
+
 	// GlobalRateLimit holds the global rate limit settings
 	// required during xds translation.
 	GlobalRateLimit *GlobalRateLimitSettings
+
+	// ExtensionServer holds client and configuration for interacting with extensions when generating xDS
+	// resources.
+	ExtensionServer *ExtensionServer
 }
 
 type GlobalRateLimitSettings struct {
@@ -59,8 +69,8 @@ type GlobalRateLimitSettings struct {
 }
 
 // Translate translates the XDS IR into xDS resources
-func (t *Translator) Translate(ir *ir.Xds) (*types.ResourceVersionTable, error) {
-	if ir == nil {
+func (t *Translator) Translate(xdsIR *ir.Xds) (*types.ResourceVersionTable, error) {
+	if xdsIR == nil {
 		return nil, errors.New("ir is nil")
 	}
 
@@ -77,26 +87,92 @@ func (t *Translator) Translate(ir *ir.Xds) (*types.ResourceVersionTable, error) 
 	// to collect all errors and reflect them in the status of the CRDs.
 	var errs error
 	if err := t.processHTTPListenerXdsTranslation(
-		tCtx, ir.HTTP, ir.AccessLog, ir.Tracing, ir.Metrics); err != nil {
+		tCtx, xdsIR.HTTP, xdsIR.AccessLog, xdsIR.Tracing, xdsIR.Metrics); err != nil {
 		errs = errors.Join(errs, err)
 	}
 
-	if err := processTCPListenerXdsTranslation(tCtx, ir.TCP, ir.AccessLog); err != nil {
+	if err := processTCPListenerXdsTranslation(tCtx, xdsIR.TCP, xdsIR.AccessLog); err != nil {
 		errs = errors.Join(errs, err)
 	}
 
-	if err := processUDPListenerXdsTranslation(tCtx, ir.UDP, ir.AccessLog); err != nil {
+	if err := processUDPListenerXdsTranslation(tCtx, xdsIR.UDP, xdsIR.AccessLog); err != nil {
 		errs = errors.Join(errs, err)
 	}
 
-	if err := processClusterForAccessLog(tCtx, ir.AccessLog); err != nil {
+	if err := t.notifyExtensionServerAboutListeners(tCtx, xdsIR); err != nil {
 		errs = errors.Join(errs, err)
 	}
-	if err := processClusterForTracing(tCtx, ir.Tracing); err != nil {
+
+	if err := processClusterForAccessLog(tCtx, xdsIR.AccessLog); err != nil {
+		errs = errors.Join(errs, err)
+	}
+	if err := processClusterForTracing(tCtx, xdsIR.Tracing); err != nil {
 		errs = errors.Join(errs, err)
 	}
 
 	return tCtx, errs
+}
+
+func findIRListenersByXDSListener(xdsIR *ir.Xds, listener *listenerv3.Listener) []ir.Listener {
+	ret := []ir.Listener{}
+
+	addr := listener.Address.GetSocketAddress()
+	if addr == nil {
+		return ret
+	}
+	for _, l := range xdsIR.HTTP {
+		if l.GetAddress() == addr.GetAddress() && l.GetPort() == addr.GetPortValue() {
+			ret = append(ret, l)
+		}
+	}
+	for _, l := range xdsIR.TCP {
+		if l.GetAddress() == addr.GetAddress() && l.GetPort() == addr.GetPortValue() {
+			ret = append(ret, l)
+		}
+	}
+	for _, l := range xdsIR.UDP {
+		if l.GetAddress() == addr.GetAddress() && l.GetPort() == addr.GetPortValue() {
+			ret = append(ret, l)
+		}
+	}
+	return ret
+}
+
+// notifyExtensionServerAboutListeners calls the extension server about all the translated listeners.
+func (t *Translator) notifyExtensionServerAboutListeners(
+	tCtx *types.ResourceVersionTable,
+	xdsIR *ir.Xds,
+) error {
+	if t.ExtensionServer == nil {
+		return nil
+	}
+
+	var errs error
+	for _, l := range tCtx.XdsResources[resourcev3.ListenerType] {
+		listener := l.(*listenerv3.Listener)
+		policies := []*ir.UnstructuredRef{}
+		alreadyIncludedPolicies := sets.New[utils.NamespacedNameWithGroupKind]()
+		for _, irListener := range findIRListenersByXDSListener(xdsIR, listener) {
+			for _, pol := range irListener.GetExtensionRefs() {
+				key := utils.GetNamespacedNameWithGroupKind(pol.Object)
+				if !alreadyIncludedPolicies.Has(key) {
+					policies = append(policies, pol)
+					alreadyIncludedPolicies.Insert(key)
+				}
+			}
+		}
+		if err := processExtensionPostListenerHook(t.Ctx, tCtx, listener, policies, t.ExtensionServer); err != nil {
+			// If the extension server returns an error, and the extension server is not configured to fail open,
+			// then propagate the error.
+			if !t.ExtensionServer.FailOpen {
+				errs = errors.Join(errs, err)
+			} else {
+				slog.Error("Extension Manager PostListener failure", "error", err)
+			}
+		}
+	}
+
+	return errs
 }
 
 func (t *Translator) processHTTPListenerXdsTranslation(

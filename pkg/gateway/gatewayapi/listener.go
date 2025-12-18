@@ -95,10 +95,12 @@ func (t *Translator) ProcessListeners(gateways []*GatewayContext, xdsIR XdsIRMap
 			case gwapiv1.HTTPProtocolType, gwapiv1.HTTPSProtocolType:
 				log.Infof("Adding HTTP listener %s to IR", listener.Name)
 				irListener := &ir.HTTPListener{
-					Name:    irHTTPListenerName(listener),
-					Address: "0.0.0.0",
-					Port:    uint32(containerPort),
-					TLS:     irTLSConfigs(listener.tlsSecrets),
+					CoreListenerDetails: ir.CoreListenerDetails{
+						Name:    irHTTPListenerName(listener),
+						Address: "0.0.0.0",
+						Port:    uint32(containerPort),
+					},
+					TLS: irTLSConfigs(listener.tlsSecrets),
 					Path: ir.PathSettings{
 						MergeSlashes:         true,
 						EscapedSlashesAction: ir.UnescapeAndRedirect,

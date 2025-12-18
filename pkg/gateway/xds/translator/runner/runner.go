@@ -59,8 +59,8 @@ func (r *Runner) subscribeAndTranslate(ctx context.Context) {
 			if update.Delete {
 				r.Xds.Delete(key)
 			} else {
-				// Translate to xds resources
-				t := &translator.Translator{}
+				// Translate to xds resources.
+				t := &translator.Translator{Ctx: ctx}
 
 				r.Logger.Info("translating xds ir", "key", key, "xds", val)
 
