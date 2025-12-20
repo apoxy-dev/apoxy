@@ -161,7 +161,7 @@ func (t *Translator) notifyExtensionServerAboutListeners(
 				}
 			}
 		}
-		if err := processExtensionPostListenerHook(t.Ctx, tCtx, listener, policies, t.ExtensionServer); err != nil {
+		if err := processExtensionPostListenerHook(t.Ctx, tCtx, listener, policies, t.ExtensionServer.EnvoyGatewayExtensionClient); err != nil {
 			// If the extension server returns an error, and the extension server is not configured to fail open,
 			// then propagate the error.
 			if !t.ExtensionServer.FailOpen {
