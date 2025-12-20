@@ -1132,7 +1132,7 @@ func (t *Translator) processTCPRouteParentRefs(tcpRoute *TCPRouteContext, resour
 					Name:     irRouteDestinationName(tcpRoute, -1 /*rule index*/),
 					Settings: destSettings,
 				},
-				TLS: &ir.TLS{Terminate: irTLSConfigs(listener.tlsSecrets)},
+				TLS: &ir.TLS{Terminate: irTLSConfigs(listener)},
 			}
 			gwXdsIR := xdsIR[irKey]
 			gwXdsIR.TCP = append(gwXdsIR.TCP, irListener)

@@ -110,7 +110,7 @@ func processExtensionPostListenerHook(
 	if err != nil {
 		return err
 	}
-	log.Debug("Processing extension post listener hook", "listener", xdsListener.Name)
+	log.Info("Processing extension post listener hook", "listener", xdsListener.Name)
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	resp, err := c.PostHTTPListenerModify(ctx,

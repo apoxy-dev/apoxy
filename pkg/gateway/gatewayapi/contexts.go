@@ -51,6 +51,7 @@ type ListenerContext struct {
 	gateway           *gwapiv1.Gateway
 	listenerStatusIdx int
 	namespaceSelector labels.Selector
+	isTLS             bool
 	tlsSecrets        []*v1.Secret
 }
 
@@ -121,6 +122,10 @@ func (l *ListenerContext) IsReady() bool {
 
 func (l *ListenerContext) GetConditions() []metav1.Condition {
 	return l.gateway.Status.Listeners[l.listenerStatusIdx].Conditions
+}
+
+func (l *ListenerContext) SetTLS(isTLS bool) {
+	l.isTLS = isTLS
 }
 
 func (l *ListenerContext) SetTLSSecrets(tlsSecrets []*v1.Secret) {

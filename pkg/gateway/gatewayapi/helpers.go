@@ -378,22 +378,22 @@ func irRouteDestinationName(route RouteContext, ruleIdx int) string {
 	return fmt.Sprintf("%srule/%d", irRoutePrefix(route), ruleIdx)
 }
 
-func irTLSConfigs(tlsSecrets []*v1.Secret) *ir.TLSConfig {
-	if len(tlsSecrets) == 0 {
+func irTLSConfigs(listener *ListenerContext) *ir.TLSConfig {
+	if !listener.isTLS {
 		return nil
 	}
 
-	tlsListenerConfigs := &ir.TLSConfig{
-		Certificates: make([]ir.TLSCertificate, len(tlsSecrets)),
+	tlsConfig := &ir.TLSConfig{
+		Certificates: make([]ir.TLSCertificate, len(listener.tlsSecrets)),
 	}
-	for i, tlsSecret := range tlsSecrets {
-		tlsListenerConfigs.Certificates[i] = ir.TLSCertificate{
+	for i, tlsSecret := range listener.tlsSecrets {
+		tlsConfig.Certificates[i] = ir.TLSCertificate{
 			Name:              irTLSListenerConfigName(tlsSecret),
 			ServerCertificate: tlsSecret.Data[v1.TLSCertKey],
 			PrivateKey:        tlsSecret.Data[v1.TLSPrivateKeyKey],
 		}
 	}
-	return tlsListenerConfigs
+	return tlsConfig
 }
 
 func irTLSListenerConfigName(secret *v1.Secret) string {

@@ -498,6 +498,7 @@ func (t *Translator) validateTLSConfiguration(listener *ListenerContext, resourc
 		}
 
 		secrets := t.validateTerminateModeAndGetTLSSecrets(listener, resources)
+		listener.SetTLS(true)
 		listener.SetTLSSecrets(secrets)
 
 	case gwapiv1.TLSProtocolType:
@@ -533,6 +534,7 @@ func (t *Translator) validateTLSConfiguration(listener *ListenerContext, resourc
 				)
 				break
 			}
+			listener.SetTLS(true)
 			secrets := t.validateTerminateModeAndGetTLSSecrets(listener, resources)
 			listener.SetTLSSecrets(secrets)
 		}
