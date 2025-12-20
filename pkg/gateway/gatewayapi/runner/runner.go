@@ -46,7 +46,7 @@ func (r *Runner) Start(ctx context.Context) (err error) {
 	log := log.DefaultLogger.With("runner", "gateway-api")
 
 	go r.subscribeAndTranslate(ctx)
-	log.Info("started translator runner")
+	log.Info("Started translator runner")
 	return
 }
 
@@ -59,7 +59,7 @@ func (r *Runner) subscribeAndTranslate(ctx context.Context) {
 		},
 		r.ProviderResources.GatewayAPIResources.Subscribe(ctx),
 		func(update message.Update[string, *gatewayapi.ControllerResources], errChan chan error) {
-			log.Info("received an update", "key", update.Key)
+			log.Info("Received an update", "key", update.Key)
 			val := update.Value
 			// There is only 1 key which is the controller name
 			// so when a delete is triggered, delete all IR keys
@@ -94,19 +94,19 @@ func (r *Runner) subscribeAndTranslate(ctx context.Context) {
 					EndpointRoutingDisabled: true,
 				}
 
-				log.Info("translating resources", "resources", resources)
+				log.Info("Translating resources", "resources", resources)
 
 				// Translate to IR
 				result := t.Translate(resources)
 				for key, val := range result.XdsIR {
-					log.Info("translated resources", "key", key, "value", val.YAMLString())
+					log.Info("Translated resources", "key", key, "value", val.YAMLString())
 					if err := val.Validate(); err != nil {
 						log.Error("unable to validate xds ir, skipped sending it", "error", err)
 						errChan <- err
 						continue
 					}
 
-					log.Info("storing xds ir", "key", key)
+					log.Info("Storing xds ir", "key", key)
 					r.XdsIR.Store(key, val)
 					newIRKeys = append(newIRKeys, key)
 				}
@@ -169,7 +169,7 @@ func (r *Runner) subscribeAndTranslate(ctx context.Context) {
 			r.deleteStatusKeys(statusesToDelete)
 		},
 	)
-	log.Info("shutting down")
+	log.Info("Shutting down")
 }
 
 // deleteAllIRKeys deletes all XdsIR and InfraIR

@@ -3,26 +3,33 @@ package gateway
 import (
 	"context"
 
+	"google.golang.org/grpc/credentials"
+
 	gatewayapirunner "github.com/apoxy-dev/apoxy/pkg/gateway/gatewayapi/runner"
 	"github.com/apoxy-dev/apoxy/pkg/gateway/message"
 	xdsserverrunner "github.com/apoxy-dev/apoxy/pkg/gateway/xds/server/runner"
 	xdstranslator "github.com/apoxy-dev/apoxy/pkg/gateway/xds/translator"
 	xdstranslatorrunner "github.com/apoxy-dev/apoxy/pkg/gateway/xds/translator/runner"
+	"github.com/apoxy-dev/apoxy/pkg/log"
 )
 
 // ServerOption is an xDS server option.
 type ServerOption func(*serverOptions)
 
 type serverOptions struct {
-	extensionServerAddr string
-	extensionFailOpen   bool
+	extensionEnabled     bool
+	extensionServerAddr  string
+	extensionServerCreds credentials.TransportCredentials
+	extensionFailOpen    bool
 }
 
 // WithExtensionServer sets the extension server for the server options. If failOpen is true,
 // the server will still translate xDS (unmodified) if the extension server is not available.
-func WithExtensionServer(addr string, failOpen bool) ServerOption {
+func WithExtensionServer(addr string, creds credentials.TransportCredentials, failOpen bool) ServerOption {
 	return func(o *serverOptions) {
+		o.extensionEnabled = true
 		o.extensionServerAddr = addr
+		o.extensionServerCreds = creds
 		o.extensionFailOpen = failOpen
 	}
 }
@@ -32,6 +39,8 @@ func WithExtensionServer(addr string, failOpen bool) ServerOption {
 // and publishes them via xDS snapshotter service.
 // The call will block until the ctx is canceled.
 func RunServer(ctx context.Context, resources *message.ProviderResources, opts ...ServerOption) error {
+	logger := log.DefaultLogger
+
 	options := &serverOptions{}
 	for _, opt := range opts {
 		opt(options)
@@ -51,14 +60,6 @@ func RunServer(ctx context.Context, resources *message.ProviderResources, opts .
 
 	xds := new(message.Xds)
 	defer xds.Close()
-	extensionSrv, err := xdstranslator.NewExtensionServer(
-		options.extensionServerAddr,
-		xdstranslator.WithExtensionFailOpen(options.extensionFailOpen),
-	)
-	if err != nil {
-		return err
-	}
-
 	// Start the Xds Translator Service
 	// It subscribes to the xdsIR, translates it into xds Resources and publishes it.
 	// It also computes the EnvoyPatchPolicy statuses and publishes it.
@@ -66,8 +67,21 @@ func RunServer(ctx context.Context, resources *message.ProviderResources, opts .
 		XdsIR:             xdsIR,
 		Xds:               xds,
 		ProviderResources: resources,
-		ExtensionServer:   extensionSrv,
 	})
+
+	if options.extensionEnabled {
+		logger.Info("Initializing extension server")
+		var err error
+		xdsTranslatorRunner.ExtensionServer, err = xdstranslator.NewExtensionServer(
+			options.extensionServerAddr,
+			xdstranslator.WithExtensionFailOpen(options.extensionFailOpen),
+			xdstranslator.WithExtensionCreds(options.extensionServerCreds),
+		)
+		if err != nil {
+			return err
+		}
+	}
+
 	if err := xdsTranslatorRunner.Start(ctx); err != nil {
 		return err
 	}

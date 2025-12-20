@@ -11,14 +11,17 @@ package translator
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	"github.com/apoxy-dev/apoxy/pkg/gateway/ir"
 	"github.com/apoxy-dev/apoxy/pkg/gateway/xds/types"
+	"github.com/apoxy-dev/apoxy/pkg/log"
 	"github.com/envoyproxy/gateway/proto/extension"
 	listenerv3 "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
 	cachetypes "github.com/envoyproxy/go-control-plane/pkg/cache/types"
 	resourcev3 "github.com/envoyproxy/go-control-plane/pkg/resource/v3"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
@@ -36,6 +39,7 @@ type ExtensionServerOption func(*extensionServerOptions)
 
 type extensionServerOptions struct {
 	FailOpen bool
+	Creds    credentials.TransportCredentials
 }
 
 // WithExtensionFailOpen sets the fail open option for the extension server.
@@ -45,15 +49,22 @@ func WithExtensionFailOpen(failOpen bool) func(*extensionServerOptions) {
 	}
 }
 
+// WithExtensionCreds sets the credentials for the extension server.
+func WithExtensionCreds(creds credentials.TransportCredentials) func(*extensionServerOptions) {
+	return func(opts *extensionServerOptions) {
+		opts.Creds = creds
+	}
+}
+
 // NewExtensionServer dials the extension server at the given address and returns a new ExtensionServer instance.
 func NewExtensionServer(addr string, opts ...ExtensionServerOption) (*ExtensionServer, error) {
-	conn, err := grpc.NewClient(addr)
-	if err != nil {
-		return nil, err
-	}
 	options := &extensionServerOptions{}
 	for _, opt := range opts {
 		opt(options)
+	}
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(options.Creds))
+	if err != nil {
+		return nil, err
 	}
 	return &ExtensionServer{
 		EnvoyGatewayExtensionClient: extension.NewEnvoyGatewayExtensionClient(conn),
@@ -89,9 +100,7 @@ func processExtensionPostListenerHook(
 	extensionRefs []*ir.UnstructuredRef,
 	c extension.EnvoyGatewayExtensionClient,
 ) error {
-	if c == nil {
-		return nil
-	}
+	log := log.DefaultLogger
 
 	unstructuredResources := make([]*unstructured.Unstructured, len(extensionRefs))
 	for refIdx, ref := range extensionRefs {
@@ -101,6 +110,9 @@ func processExtensionPostListenerHook(
 	if err != nil {
 		return err
 	}
+	log.Debug("Processing extension post listener hook", "listener", xdsListener.Name)
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
 	resp, err := c.PostHTTPListenerModify(ctx,
 		&extension.PostHTTPListenerModifyRequest{
 			Listener: xdsListener,

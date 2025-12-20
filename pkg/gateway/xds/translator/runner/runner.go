@@ -55,7 +55,7 @@ func (r *Runner) subscribeAndTranslate(ctx context.Context) {
 		message.Metadata{Runner: r.Name(), Message: "xds-ir"},
 		r.XdsIR.Subscribe(ctx),
 		func(update message.Update[string, *ir.Xds], errChan chan error) {
-			r.Logger.Info("received an update", "key", update.Key, "isDelete", update.Delete, "isNil", update.Value == nil)
+			r.Logger.Info("Received an update", "key", update.Key, "isDelete", update.Delete, "isNil", update.Value == nil)
 			key := update.Key
 			val := update.Value
 
@@ -68,7 +68,7 @@ func (r *Runner) subscribeAndTranslate(ctx context.Context) {
 					ExtensionServer: r.ExtensionServer,
 				}
 
-				r.Logger.Info("translating xds ir", "key", key, "xds", val)
+				r.Logger.Info("Translating xds ir", "key", key, "xds", val)
 
 				result, err := t.Translate(val)
 				if err != nil {
