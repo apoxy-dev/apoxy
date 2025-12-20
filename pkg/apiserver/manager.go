@@ -696,10 +696,12 @@ func start(
 		if opts.sqlitePath != "" && !strings.Contains(opts.sqlitePath, ":memory:") {
 			if _, err := os.Stat(opts.sqlitePath); os.IsNotExist(err) {
 				if err := os.MkdirAll(filepath.Dir(opts.sqlitePath), 0755); err != nil {
-					log.Fatalf("Failed to create database directory: %v", err)
+					readyCh <- fmt.Errorf("failed to create database directory: %v", err)
+					return
 				}
 				if _, err := os.Create(opts.sqlitePath); err != nil {
-					log.Fatalf("Failed to create database file: %v", err)
+					readyCh <- fmt.Errorf("failed to create database file: %v", err)
+					return
 				}
 			}
 		}
@@ -792,7 +794,8 @@ func start(
 	}()
 	go func() {
 		if err := waitForReadyz("https://localhost:8443", 300*time.Second); err != nil {
-			log.Fatalf("Failed to wait for APIServer: %v", err)
+			readyCh <- fmt.Errorf("failed to wait for /readyz endpoint: %v", err)
+			return
 		}
 		log.Infof("APIServer is ready")
 		readyCh <- nil
@@ -802,7 +805,7 @@ func start(
 
 	select {
 	case <-ctx.Done():
-		log.Fatalf("Context cancelled while while waiting for APIServer: %v", ctx.Err())
+		return fmt.Errorf("context cancelled while waiting for APIServer: %v", ctx.Err())
 	case err, ok := <-readyCh:
 		if !ok {
 			return errors.New("APIServer failed to start")
