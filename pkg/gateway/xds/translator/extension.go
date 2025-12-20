@@ -22,10 +22,13 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
+// ExtensionServer encapsulates the logic for interacting with Extensions for
+// Envoy Gateway when performing xDS translation.
 type ExtensionServer struct {
 	extension.EnvoyGatewayExtensionClient
 
-	// FailOpen indicates whether xDS translation should continue if an extension fails to respond.
+	// FailOpen indicates whether xDS translation should continue if an extension
+	// fails to respond.
 	FailOpen bool
 }
 
@@ -35,7 +38,8 @@ type extensionServerOptions struct {
 	FailOpen bool
 }
 
-func WithFailOpen(failOpen bool) func(*extensionServerOptions) {
+// WithExtensionFailOpen sets the fail open option for the extension server.
+func WithExtensionFailOpen(failOpen bool) func(*extensionServerOptions) {
 	return func(opts *extensionServerOptions) {
 		opts.FailOpen = failOpen
 	}
