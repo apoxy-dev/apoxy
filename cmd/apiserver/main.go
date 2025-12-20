@@ -19,6 +19,7 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/apiserver"
 	"github.com/apoxy-dev/apoxy/pkg/apiserver/ingest"
 	"github.com/apoxy-dev/apoxy/pkg/gateway"
+	"github.com/apoxy-dev/apoxy/pkg/gateway/message"
 	"github.com/apoxy-dev/apoxy/pkg/log"
 )
 
@@ -93,9 +94,9 @@ func main() {
 		log.Fatalf("Failed creating Temporal client: %v", err)
 	}
 
-	gwSrv := gateway.NewServer()
+	gwResources := new(message.ProviderResources)
 	go func() {
-		if err := gwSrv.Run(ctx); err != nil {
+		if err := gateway.RunServer(ctx, gwResources); err != nil {
 			log.Errorf("failed to serve Gateway APIs: %v", err)
 			ctxCancel(&startErr{Err: err})
 		}
@@ -123,7 +124,7 @@ func main() {
 			sOpts = append(sOpts, apiserver.WithClientConfig(rC))
 			sOpts = append(sOpts, apiserver.WithKubeAPI())
 		}
-		if err := m.Start(ctx, gwSrv, tc, sOpts...); err != nil {
+		if err := m.Start(ctx, gwResources, tc, sOpts...); err != nil {
 			log.Errorf("failed to start API server manager: %v", err)
 			ctxCancel(&startErr{Err: err})
 		}

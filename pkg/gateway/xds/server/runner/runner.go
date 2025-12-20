@@ -74,7 +74,7 @@ func (r *Runner) Name() string {
 	return string(v1alpha1.LogComponentXdsServerRunner)
 }
 
-// Start starts the xds-server runner
+// Start starts the xds-server runner.
 func (r *Runner) Start(ctx context.Context) (err error) {
 	r.Logger = log.DefaultLogger.With("runner", r.Name())
 

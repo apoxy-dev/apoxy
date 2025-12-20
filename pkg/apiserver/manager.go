@@ -45,7 +45,7 @@ import (
 	extensionscontroller "github.com/apoxy-dev/apoxy/pkg/apiserver/extensions"
 	"github.com/apoxy-dev/apoxy/pkg/apiserver/gateway"
 	"github.com/apoxy-dev/apoxy/pkg/cryptoutils"
-	gw "github.com/apoxy-dev/apoxy/pkg/gateway"
+	"github.com/apoxy-dev/apoxy/pkg/gateway/message"
 	"github.com/apoxy-dev/apoxy/pkg/log"
 	apoxynet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
@@ -453,7 +453,7 @@ func New() *Manager {
 // The manager is ready to serve when the ReadyCh channel is closed.
 func (m *Manager) Start(
 	ctx context.Context,
-	gwSrv *gw.Server,
+	gwResources *message.ProviderResources,
 	tc tclient.Client,
 	opts ...Option,
 ) error {
@@ -503,7 +503,7 @@ func (m *Manager) Start(
 	if err := controllers.NewProxyReconciler(
 		ctx,
 		m.manager.GetClient(),
-		gwSrv.Resources,
+		gwResources,
 		dOpts.proxyIPAM,
 		cancel,
 	).SetupWithManager(ctx, m.manager); err != nil {
@@ -556,7 +556,7 @@ func (m *Manager) Start(
 	}
 	if err := gateway.NewGatewayReconciler(
 		m.manager.GetClient(),
-		gwSrv.Resources,
+		gwResources,
 		gwOpts...,
 	).SetupWithManager(ctx, m.manager); err != nil {
 		return fmt.Errorf("failed to set up Gateway controller: %v", err)

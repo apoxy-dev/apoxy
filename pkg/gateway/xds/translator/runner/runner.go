@@ -24,6 +24,9 @@ type Config struct {
 	XdsIR             *message.XdsIR
 	Xds               *message.Xds
 	ProviderResources *message.ProviderResources
+	// ExtensionServer is an optional extension server to send hooks
+	// to during translation.
+	ExtensionServer *translator.ExtensionServer
 }
 
 type Runner struct {
@@ -60,7 +63,10 @@ func (r *Runner) subscribeAndTranslate(ctx context.Context) {
 				r.Xds.Delete(key)
 			} else {
 				// Translate to xds resources.
-				t := &translator.Translator{Ctx: ctx}
+				t := &translator.Translator{
+					Ctx:             ctx,
+					ExtensionServer: r.ExtensionServer,
+				}
 
 				r.Logger.Info("translating xds ir", "key", key, "xds", val)
 
