@@ -15,8 +15,19 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/cryptoutils"
 )
 
+// JWTValidator validates JWT tokens.
 type JWTValidator interface {
+	// Validate validates the token and returns its claims.
 	Validate(tokenStr string) (jwt.Claims, error)
+}
+
+// Validator extends JWTValidator with the ability to retrieve the public key.
+// Use this interface when you need to serve JWKS endpoints locally.
+// For remote validation (e.g., RemoteValidator), use JWTValidator instead.
+type Validator interface {
+	JWTValidator
+	// PublicKeyPEM returns the PEM-encoded public key used for validation.
+	PublicKeyPEM() []byte
 }
 
 func validate(keyFunc jwt.Keyfunc, tokenStr string) (jwt.Claims, error) {
@@ -42,9 +53,11 @@ func validate(keyFunc jwt.Keyfunc, tokenStr string) (jwt.Claims, error) {
 	return tokenClaims, nil
 }
 
-// InMemoryValidator validates JWT tokens signed with an ECDSA public key
+// InMemoryValidator validates JWT tokens signed with an ECDSA public key.
+// It implements the Validator interface.
 type InMemoryValidator struct {
-	publicKey *ecdsa.PublicKey
+	publicKey    *ecdsa.PublicKey
+	publicKeyPEM []byte
 }
 
 // NewInMemoryValidator creates a new Validator with the public key.
@@ -54,7 +67,10 @@ func NewInMemoryValidator(publicKeyPEM []byte) (*InMemoryValidator, error) {
 		return nil, fmt.Errorf("failed to parse ECDSA public key: %w", err)
 	}
 
-	return &InMemoryValidator{publicKey: publicKey}, nil
+	return &InMemoryValidator{
+		publicKey:    publicKey,
+		publicKeyPEM: publicKeyPEM,
+	}, nil
 }
 
 // Validate validates the token is valid.
@@ -62,6 +78,11 @@ func (v *InMemoryValidator) Validate(tokenStr string) (jwt.Claims, error) {
 	return validate(func(token *jwt.Token) (any, error) {
 		return v.publicKey, nil
 	}, tokenStr)
+}
+
+// PublicKeyPEM returns the PEM-encoded public key used for validation.
+func (v *InMemoryValidator) PublicKeyPEM() []byte {
+	return v.publicKeyPEM
 }
 
 type RemoteValidator struct {

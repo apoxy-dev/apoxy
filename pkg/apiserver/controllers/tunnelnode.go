@@ -30,30 +30,28 @@ type TunnelNodeReconciler struct {
 
 	jwksHost              string
 	jwksPort              int
-	jwtPrivateKeyPEM      []byte
-	jwtPublicKeyPEM       []byte
 	tokenRefreshThreshold time.Duration
 	ipamv6, ipamv4        tunnet.IPAM
 
-	validator *token.InMemoryValidator
+	validator token.Validator
 	issuer    token.TokenIssuer
 }
 
 func NewTunnelNodeReconciler(
 	c client.Client,
+	validator token.Validator,
+	issuer token.TokenIssuer,
 	jwksHost string,
 	jwksPort int,
-	jwtPrivateKey []byte,
-	jwtPublicKey []byte,
 	tokenRefreshThreshold time.Duration,
 	ipamv6, ipamv4 tunnet.IPAM,
 ) *TunnelNodeReconciler {
 	return &TunnelNodeReconciler{
 		Client:                c,
+		validator:             validator,
+		issuer:                issuer,
 		jwksHost:              jwksHost,
 		jwksPort:              jwksPort,
-		jwtPrivateKeyPEM:      jwtPrivateKey,
-		jwtPublicKeyPEM:       jwtPublicKey,
 		tokenRefreshThreshold: tokenRefreshThreshold,
 		ipamv6:                ipamv6,
 		ipamv4:                ipamv4,
@@ -222,17 +220,7 @@ func (r *TunnelNodeReconciler) Reconcile(ctx context.Context, req reconcile.Requ
 	return ctrl.Result{}, nil
 }
 
-func (r *TunnelNodeReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager) error {
-	var err error
-	r.validator, err = token.NewInMemoryValidator(r.jwtPublicKeyPEM)
-	if err != nil {
-		return fmt.Errorf("failed to create token validator: %w", err)
-	}
-	r.issuer, err = token.NewIssuer(r.jwtPrivateKeyPEM)
-	if err != nil {
-		return fmt.Errorf("failed to create token issuer: %w", err)
-	}
-
+func (r *TunnelNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&corev1alpha.TunnelNode{}).
 		Complete(r)
@@ -240,7 +228,7 @@ func (r *TunnelNodeReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Ma
 
 // ServeJWKS starts an HTTP server to serve JWK sets
 func (r *TunnelNodeReconciler) ServeJWKS(ctx context.Context) error {
-	jwksHandler, err := token.NewJWKSHandler(r.jwtPublicKeyPEM)
+	jwksHandler, err := token.NewJWKSHandler(r.validator.PublicKeyPEM())
 	if err != nil {
 		return fmt.Errorf("failed to create JWKS handler: %w", err)
 	}

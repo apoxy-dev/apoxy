@@ -49,6 +49,7 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/log"
 	apoxynet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/token"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/vni"
 
 	corev1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
@@ -512,17 +513,25 @@ func (m *Manager) Start(
 
 	// Legacy v1alpha1 TunnelNode controller
 	log.Infof("Registering TunnelNode controller")
+	tunnelNodeValidator, err := token.NewInMemoryValidator(dOpts.jwtPublicKey)
+	if err != nil {
+		return fmt.Errorf("failed to create tunnel node validator: %v", err)
+	}
+	tunnelNodeIssuer, err := token.NewIssuer(dOpts.jwtPrivateKey)
+	if err != nil {
+		return fmt.Errorf("failed to create tunnel node issuer: %v", err)
+	}
 	tunnelNodeReconciler := controllers.NewTunnelNodeReconciler(
 		m.manager.GetClient(),
+		tunnelNodeValidator,
+		tunnelNodeIssuer,
 		dOpts.jwksHost,
 		dOpts.jwksPort,
-		dOpts.jwtPrivateKey,
-		dOpts.jwtPublicKey,
 		dOpts.jwtRefreshThreshold,
 		dOpts.agentIPAM,
 		apoxynet.NewIPAMv4(context.Background()),
 	)
-	if err := tunnelNodeReconciler.SetupWithManager(ctx, m.manager); err != nil {
+	if err := tunnelNodeReconciler.SetupWithManager(m.manager); err != nil {
 		return fmt.Errorf("failed to set up TunnelNode controller: %v", err)
 	}
 	g.Go(func() error {

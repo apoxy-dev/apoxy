@@ -42,6 +42,11 @@ func TestTunnelNodeReconciler(t *testing.T) {
 	privKey, pubKey, err := cryptoutils.GenerateEllipticKeyPair()
 	require.NoError(t, err)
 
+	validator, err := token.NewInMemoryValidator(pubKey)
+	require.NoError(t, err)
+	issuer, err := token.NewIssuer(privKey)
+	require.NoError(t, err)
+
 	systemULA := tunnet.NewULA(context.Background(), net.SystemNetworkID)
 	// Agent prefixes are /96 subnets that can embed IPv4 suffixes.
 	ipamv6, err := systemULA.IPAM(context.Background(), 96)
@@ -49,19 +54,14 @@ func TestTunnelNodeReconciler(t *testing.T) {
 
 	r := NewTunnelNodeReconciler(
 		k8sClient,
+		validator,
+		issuer,
 		"localhost",
 		9444,
-		privKey,
-		pubKey,
 		time.Minute,
 		ipamv6,
 		net.NewIPAMv4(context.Background()),
 	)
-
-	r.validator, err = token.NewInMemoryValidator(r.jwtPublicKeyPEM)
-	require.NoError(t, err)
-	r.issuer, err = token.NewIssuer(r.jwtPrivateKeyPEM)
-	require.NoError(t, err)
 
 	_, err = r.Reconcile(context.TODO(), reconcile.Request{
 		NamespacedName: types.NamespacedName{
