@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 
 	"github.com/google/uuid"
 	"google.golang.org/grpc/grpclog"
@@ -213,8 +214,16 @@ func DefaultAPIClient() (*rest.APIClient, error) {
 		if os.Getenv("APOXY_API_SERVER_HOST") != "" {
 			apiServerHost = os.Getenv("APOXY_API_SERVER_HOST")
 		}
+		apiServerPort := 8443
+		if os.Getenv("APOXY_API_SERVER_PORT") != "" {
+			var err error
+			apiServerPort, err = strconv.Atoi(os.Getenv("APOXY_API_SERVER_PORT"))
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse API server port: %w", err)
+			}
+		}
 		return rest.NewAPIClient(
-			rest.WithBaseURL("https://"+apiServerHost+":8443"),
+			rest.WithBaseURL(fmt.Sprintf("https://%s:%d", apiServerHost, apiServerPort)),
 			rest.WithBaseHost(apiServerHost),
 			rest.WithProjectID(uuid.New()),
 		)
