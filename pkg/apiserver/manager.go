@@ -189,6 +189,8 @@ type options struct {
 	proxyIPAM             tunnet.IPAM
 	agentIPAM             tunnet.IPAM
 	vniPool               *vni.VNIPool
+	tokenValidator        token.Validator
+	tokenIssuer           token.TokenIssuer
 }
 
 // WithJWTKeys sets the JWT key pair.
@@ -217,6 +219,22 @@ func WithJWKSHost(host string) Option {
 func WithJWKSPort(port int) Option {
 	return func(o *options) {
 		o.jwksPort = port
+	}
+}
+
+// WithTokenValidator sets a custom token validator for the TunnelNodeReconciler.
+// If not set, a default InMemoryValidator will be created from the JWT public key.
+func WithTokenValidator(v token.Validator) Option {
+	return func(o *options) {
+		o.tokenValidator = v
+	}
+}
+
+// WithTokenIssuer sets a custom token issuer for the TunnelNodeReconciler.
+// If not set, a default Issuer will be created from the JWT private key.
+func WithTokenIssuer(i token.TokenIssuer) Option {
+	return func(o *options) {
+		o.tokenIssuer = i
 	}
 }
 
@@ -513,13 +531,25 @@ func (m *Manager) Start(
 
 	// Legacy v1alpha1 TunnelNode controller
 	log.Infof("Registering TunnelNode controller")
-	tunnelNodeValidator, err := token.NewInMemoryValidator(dOpts.jwtPublicKey)
-	if err != nil {
-		return fmt.Errorf("failed to create tunnel node validator: %v", err)
+	var tunnelNodeValidator token.Validator
+	if dOpts.tokenValidator != nil {
+		tunnelNodeValidator = dOpts.tokenValidator
+	} else {
+		var err error
+		tunnelNodeValidator, err = token.NewInMemoryValidator(dOpts.jwtPublicKey)
+		if err != nil {
+			return fmt.Errorf("failed to create tunnel node validator: %v", err)
+		}
 	}
-	tunnelNodeIssuer, err := token.NewIssuer(dOpts.jwtPrivateKey)
-	if err != nil {
-		return fmt.Errorf("failed to create tunnel node issuer: %v", err)
+	var tunnelNodeIssuer token.TokenIssuer
+	if dOpts.tokenIssuer != nil {
+		tunnelNodeIssuer = dOpts.tokenIssuer
+	} else {
+		var err error
+		tunnelNodeIssuer, err = token.NewIssuer(dOpts.jwtPrivateKey)
+		if err != nil {
+			return fmt.Errorf("failed to create tunnel node issuer: %v", err)
+		}
 	}
 	tunnelNodeReconciler := controllers.NewTunnelNodeReconciler(
 		m.manager.GetClient(),
