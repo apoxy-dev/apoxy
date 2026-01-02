@@ -36,7 +36,7 @@ type TunnelNodeReconciler struct {
 	ipamv6, ipamv4        tunnet.IPAM
 
 	validator *token.InMemoryValidator
-	issuer    *token.Issuer
+	issuer    token.TokenIssuer
 }
 
 func NewTunnelNodeReconciler(

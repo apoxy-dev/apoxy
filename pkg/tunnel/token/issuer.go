@@ -10,6 +10,12 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
+// TokenIssuer is an interface for issuing JWT tokens.
+type TokenIssuer interface {
+	IssueToken(subject string, ttl time.Duration) (string, jwt.Claims, error)
+}
+
+// Issuer implements TokenIssuer for issuing JWT tokens.
 type Issuer struct {
 	privateKey *ecdsa.PrivateKey
 	kid        string
