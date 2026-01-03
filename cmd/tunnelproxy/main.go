@@ -162,21 +162,20 @@ func main() {
 		log.Infof("Using network ID from K8S_POD_UID: %s", *networkID)
 	}
 
-	clientGetter := &tunnel.SingleClusterClientGetter{Client: mgr.GetClient()}
 	srv, err := tunnel.NewTunnelServer(
-		clientGetter,
+		mgr.GetClient(),
 		jwtValidator,
 		r,
 		tunnel.WithExternalAddrs(extIPv4Prefix),
+		tunnel.WithLabelSelector(*tunnelNodeSelector),
 		tunnel.WithPublicAddr(*publicAddr),
 		tunnel.WithIPAMv4(tunnet.NewIPAMv4(gCtx)),
 	)
 	if err != nil {
 		log.Fatalf("Failed to create tunnel server: %v", err)
 	}
-	reconciler := tunnel.NewTunnelNodeReconciler(mgr.GetClient(), srv, *tunnelNodeSelector)
-	if err := reconciler.SetupWithManager(mgr); err != nil {
-		log.Fatalf("Unable to setup TunnelNode reconciler: %v", err)
+	if err := tunnel.SetupWithManager(mgr, srv); err != nil {
+		log.Fatalf("Unable to setup Tunnel Proxy server: %v", err)
 	}
 
 	if err := tunnelproxy.NewProxyTunnelReconciler(

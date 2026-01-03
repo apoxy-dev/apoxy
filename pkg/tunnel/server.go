@@ -29,7 +29,6 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -49,15 +48,16 @@ var (
 type TunnelServerOption func(*tunnelServerOptions)
 
 type tunnelServerOptions struct {
-	proxyAddr  string
-	publicAddr string
-	ulaPrefix  netip.Prefix
-	certPath   string
-	keyPath    string
-	extAddrs   []netip.Prefix
-	selector   string
-	ipamv4     tunnet.IPAM
-	keyLogPath string
+	proxyAddr    string
+	publicAddr   string
+	ulaPrefix    netip.Prefix
+	certPath     string
+	keyPath      string
+	extAddrs     []netip.Prefix
+	selector     string
+	ipamv4       tunnet.IPAM
+	keyLogPath   string
+	clientGetter ClientGetter
 }
 
 func defaultServerOptions() *tunnelServerOptions {
@@ -139,6 +139,14 @@ func WithKeyLogPath(path string) TunnelServerOption {
 	}
 }
 
+// WithClientGetter sets a custom ClientGetter for multi-cluster support.
+// If not set, the default client passed to NewTunnelServer is used.
+func WithClientGetter(cg ClientGetter) TunnelServerOption {
+	return func(o *tunnelServerOptions) {
+		o.clientGetter = cg
+	}
+}
+
 type conn struct {
 	*connectip.Conn
 	connID         string
@@ -150,14 +158,13 @@ func (c *conn) String() string {
 	return fmt.Sprintf("%s [%s]: %v %v", c.obj.Name, c.connID, c.addrv4, c.addrv6)
 }
 
-// ClientGetter is an interface for obtaining a Kubernetes client.
-// This abstraction allows the TunnelServer to work with both single-cluster
-// and multi-cluster setups (e.g., multicluster-runtime).
+// ClientGetter provides access to Kubernetes clients.
+// In single-cluster mode, the clusterKey can be empty and the default client is returned.
+// In multi-cluster mode, the clusterKey identifies which cluster's client to use.
 type ClientGetter interface {
-	// GetClient returns a client for the given context.
-	// In single-cluster mode, clusterName can be empty.
-	// In multi-cluster mode, clusterName identifies the target cluster.
-	GetClient(ctx context.Context, clusterName string) (client.Client, error)
+	// GetClient returns a client for the given cluster key.
+	// The clusterKey is extracted from the connection URL path.
+	GetClient(ctx context.Context, clusterKey string) (client.Client, error)
 }
 
 // SingleClusterClientGetter wraps a single client.Client for use with ClientGetter.
@@ -165,22 +172,21 @@ type SingleClusterClientGetter struct {
 	Client client.Client
 }
 
-// GetClient returns the wrapped client, ignoring the clusterName.
-func (s *SingleClusterClientGetter) GetClient(ctx context.Context, clusterName string) (client.Client, error) {
+// GetClient returns the wrapped client, ignoring the clusterKey.
+func (s *SingleClusterClientGetter) GetClient(_ context.Context, _ string) (client.Client, error) {
 	return s.Client, nil
 }
 
 // TunnelServer manages QUIC tunnel connections and routes traffic via CONNECT-IP.
-// It is designed to be used with a separate TunnelNodeReconciler that handles
-// Kubernetes reconciliation, making it compatible with multicluster-runtime.
+// It exposes ReconcileWithClient for use by reconcilers (standard or multicluster).
 type TunnelServer struct {
 	options *tunnelServerOptions
 
+	client       client.Client
 	clientGetter ClientGetter
 	jwtValidator token.JWTValidator
 	ln           *quic.EarlyListener
 	router       router.Router
-	handler      http.Handler
 
 	// tunnels maps tunnel UIDs to tunnel instances.
 	tunnels *haxmap.Map[string, *corev1alpha.TunnelNode]
@@ -188,19 +194,10 @@ type TunnelServer struct {
 	conns *haxmap.Map[string, *conn]
 }
 
-// TunnelNodeReconciler reconciles TunnelNode objects and delegates connection
-// management to a TunnelServer. This reconciler can be used with multicluster-runtime
-// by using the EngageWithManager method instead of SetupWithManager.
-type TunnelNodeReconciler struct {
-	client        client.Client
-	server        *TunnelServer
-	labelSelector string
-}
-
 // NewTunnelServer creates a new server proxy that routes traffic via
 // QUIC tunnels.
 func NewTunnelServer(
-	clientGetter ClientGetter,
+	c client.Client,
 	v token.JWTValidator,
 	r router.Router,
 	opts ...TunnelServerOption,
@@ -210,9 +207,16 @@ func NewTunnelServer(
 		opt(options)
 	}
 
+	// Use provided ClientGetter or create a default single-cluster one.
+	clientGetter := options.clientGetter
+	if clientGetter == nil {
+		clientGetter = &SingleClusterClientGetter{Client: c}
+	}
+
 	s := &TunnelServer{
 		options: options,
 
+		client:       c,
 		clientGetter: clientGetter,
 		jwtValidator: v,
 		router:       r,
@@ -224,21 +228,9 @@ func NewTunnelServer(
 	return s, nil
 }
 
-// NewTunnelNodeReconciler creates a new reconciler for TunnelNode objects.
-// The reconciler delegates connection management to the provided TunnelServer.
-// For multicluster-runtime, use NewTunnelNodeReconcilerWithClientGetter instead.
-func NewTunnelNodeReconciler(c client.Client, server *TunnelServer, labelSelector string) *TunnelNodeReconciler {
-	return &TunnelNodeReconciler{
-		client:        c,
-		server:        server,
-		labelSelector: labelSelector,
-	}
-}
-
-// SetupWithManager sets up the reconciler with a standard controller-runtime manager.
-// For multicluster-runtime compatibility, use EngageWithManager instead.
-func (r *TunnelNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	lss, err := metav1.ParseToLabelSelector(r.labelSelector)
+// SetupWithManager sets up the TunnelServer as a reconciler with the manager.
+func SetupWithManager(mgr ctrl.Manager, srv *TunnelServer) error {
+	lss, err := metav1.ParseToLabelSelector(srv.options.selector)
 	if err != nil {
 		return fmt.Errorf("failed to parse label selector: %w", err)
 	}
@@ -253,50 +245,34 @@ func (r *TunnelNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				ls,
 			),
 		).
-		Complete(r)
+		Complete(reconcile.Func(func(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
+			return srv.ReconcileWithClient(ctx, srv.client, req)
+		}))
 }
 
-// EngageWithManager returns a builder that can be used with multicluster-runtime.
-// The caller is responsible for completing the builder with a cluster-aware handler.
-//
-// Example usage with multicluster-runtime:
-//
-//	import mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
-//
-//	reconciler := tunnel.NewTunnelNodeReconciler(server, labelSelector)
-//	err := mcbuilder.ControllerManagedBy(mgr).
-//	    For(&corev1alpha.TunnelNode{}, reconciler.Predicates()...).
-//	    Complete(reconciler)
-func (r *TunnelNodeReconciler) EngageWithManager(mgr ctrl.Manager) *builder.Builder {
-	return ctrl.NewControllerManagedBy(mgr).
-		For(&corev1alpha.TunnelNode{})
+// LabelSelector returns the label selector configured for this server.
+func (srv *TunnelServer) LabelSelector() string {
+	return srv.options.selector
 }
 
 // Predicates returns the predicates to use when setting up the controller.
-// This is useful when using EngageWithManager or multicluster-runtime.
-func (r *TunnelNodeReconciler) Predicates() []predicate.Predicate {
+// This is useful when integrating with multicluster-runtime.
+func (t *TunnelServer) Predicates() ([]predicate.Predicate, error) {
 	preds := []predicate.Predicate{
 		&predicate.ResourceVersionChangedPredicate{},
 	}
-	if r.labelSelector != "" {
-		lss, err := metav1.ParseToLabelSelector(r.labelSelector)
-		if err == nil {
-			if ls, err := predicate.LabelSelectorPredicate(*lss); err == nil {
-				preds = append(preds, ls)
-			}
+	if t.options.selector != "" {
+		lss, err := metav1.ParseToLabelSelector(t.options.selector)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse label selector: %w", err)
 		}
+		ls, err := predicate.LabelSelectorPredicate(*lss)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create label selector predicate: %w", err)
+		}
+		preds = append(preds, ls)
 	}
-	return preds
-}
-
-// EventHandler returns an event handler that enqueues reconcile requests.
-// This is useful when setting up watches in multicluster scenarios.
-func (r *TunnelNodeReconciler) EventHandler() handler.EventHandler {
-	return handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
-		return []reconcile.Request{
-			{NamespacedName: types.NamespacedName{Name: obj.GetName()}},
-		}
-	})
+	return preds, nil
 }
 
 func (t *TunnelServer) Start(ctx context.Context) error {
@@ -427,22 +403,67 @@ func iproutesFromPrefixes(ps []netip.Prefix) []connectip.IPRoute {
 	return routes
 }
 
+// parseConnectPath parses the URL path to extract the cluster key and tunnel UUID.
+// It supports two formats:
+//   - /connect/<tun uuid> - legacy single-cluster format (clusterKey is empty)
+//   - /proxy/namespaces/<cluster key>/connect/<tun uuid> - multicluster format
+//
+// Returns the cluster key (empty for legacy format) and the tunnel UUID.
+func parseConnectPath(path string) (clusterKey string, tunUID uuid.UUID, err error) {
+	// Try multicluster format: /proxy/namespaces/<cluster key>/connect/<tun uuid>
+	const namespacePrefix = "/proxy/namespaces/"
+	if strings.HasPrefix(path, namespacePrefix) {
+		// Remove the prefix and split by /connect/
+		remainder := strings.TrimPrefix(path, namespacePrefix)
+		parts := strings.SplitN(remainder, "/connect/", 2)
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			return "", uuid.Nil, fmt.Errorf("invalid multicluster path format: %s", path)
+		}
+		clusterKey = parts[0]
+		tunUID, err = uuid.Parse(parts[1])
+		if err != nil {
+			return "", uuid.Nil, fmt.Errorf("failed to parse tunnel UUID: %w", err)
+		}
+		return clusterKey, tunUID, nil
+	}
+
+	// Try legacy format: /connect/<tun uuid>
+	const connectPrefix = "/connect/"
+	if strings.HasPrefix(path, connectPrefix) {
+		tunUID, err = uuid.Parse(strings.TrimPrefix(path, connectPrefix))
+		if err != nil {
+			return "", uuid.Nil, fmt.Errorf("failed to parse tunnel UUID: %w", err)
+		}
+		return "", tunUID, nil
+	}
+
+	return "", uuid.Nil, fmt.Errorf("unrecognized path format: %s", path)
+}
+
 // makeSingleConnectHandler creates a /connect handler that serves a single CONNECT-IP
 // connection and then closes the connection.
 func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.Connection) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		defer qConn.CloseWithError(ApplicationCodeOK, "")
 
-		tunUID, err := uuid.Parse(strings.TrimPrefix(r.URL.Path, "/connect/"))
+		clusterKey, tunUID, err := parseConnectPath(r.URL.Path)
 		if err != nil {
-			slog.Error("Failed to parse UUID", slog.Any("error", err), slog.String("remote", r.RemoteAddr))
+			slog.Error("Failed to parse connection path", slog.Any("error", err), slog.String("remote", r.RemoteAddr))
 			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+
+		// Get the appropriate client for this cluster.
+		clusterClient, err := t.clientGetter.GetClient(ctx, clusterKey)
+		if err != nil {
+			slog.Error("Failed to get client for cluster", slog.Any("error", err), slog.String("clusterKey", clusterKey))
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
 		metrics.TunnelConnectionRequests.Inc()
 
-		logger := slog.With(slog.String("tunUUID", tunUID.String()))
+		logger := slog.With(slog.String("tunUUID", tunUID.String()), slog.String("clusterKey", clusterKey))
 		logger.Info("Received connection request",
 			slog.String("URI", r.URL.String()),
 			slog.String("remote", r.RemoteAddr))
@@ -539,12 +560,9 @@ func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.
 		if len(t.options.extAddrs) > 0 && t.options.extAddrs[0].IsValid() {
 			agent.PrivateAddress = t.options.extAddrs[0].Addr().String()
 		}
-		c, err := t.clientGetter.GetClient(r.Context(), "")
-		if err != nil {
-			logger.Error("Failed to get client", slog.Any("error", err))
-		} else if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 			upd := &corev1alpha.TunnelNode{}
-			if err := c.Get(r.Context(), types.NamespacedName{Name: tn.Name}, upd); apierrors.IsNotFound(err) {
+			if err := clusterClient.Get(r.Context(), types.NamespacedName{Name: tn.Name}, upd); apierrors.IsNotFound(err) {
 				logger.Warn("Node not found while adding agent")
 				return errors.New("node not found")
 			} else if err != nil {
@@ -554,7 +572,7 @@ func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.
 
 			upsertAgentStatus(&upd.Status, agent)
 
-			return c.Status().Update(r.Context(), upd)
+			return clusterClient.Status().Update(r.Context(), upd)
 		}); err != nil {
 			logger.Error("Failed to update agent status", slog.Any("error", err))
 		}
@@ -600,13 +618,13 @@ func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.
 
 		t.conns.Del(connID)
 
-		cleanupClient, cleanupErr := t.clientGetter.GetClient(context.Background(), "")
-		if cleanupErr != nil {
-			logger.Error("Failed to get client for cleanup", slog.Any("error", cleanupErr))
-		} else if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 			upd := &corev1alpha.TunnelNode{}
 			nn := types.NamespacedName{Name: tn.Name}
-			if err := cleanupClient.Get(context.Background(), nn, upd); apierrors.IsNotFound(err) {
+			// Background context because we want this to be executed even if
+			// connection context is canceled.
+			ctx := context.Background()
+			if err := clusterClient.Get(ctx, nn, upd); apierrors.IsNotFound(err) {
 				logger.Warn("Node not found")
 				return errors.New("node not found")
 			} else if err != nil {
@@ -621,7 +639,7 @@ func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.
 				}
 			}
 
-			return cleanupClient.Status().Update(context.Background(), upd)
+			return clusterClient.Status().Update(ctx, upd)
 		}); err != nil {
 			logger.Error("Failed to update agent status", slog.Any("error", err))
 		}
@@ -630,14 +648,9 @@ func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.
 	}
 }
 
-// Reconcile implements reconcile.Reconciler for TunnelNodeReconciler.
-func (r *TunnelNodeReconciler) Reconcile(ctx context.Context, request reconcile.Request) (reconcile.Result, error) {
-	return r.server.reconcileTunnelNode(ctx, r.client, request)
-}
-
-// reconcileTunnelNode handles the reconciliation logic for a TunnelNode.
-// This method is called by the TunnelNodeReconciler with the appropriate client.
-func (t *TunnelServer) reconcileTunnelNode(ctx context.Context, c client.Client, request reconcile.Request) (reconcile.Result, error) {
+// ReconcileWithClient reconciles a TunnelNode using the provided client.
+// This method can be used by both standard reconcilers and multicluster reconcilers.
+func (t *TunnelServer) ReconcileWithClient(ctx context.Context, c client.Client, request reconcile.Request) (reconcile.Result, error) {
 	defer metrics.TunnelNodesManaged.Set(float64(t.tunnels.Len()))
 
 	node := &corev1alpha.TunnelNode{}
@@ -655,7 +668,7 @@ func (t *TunnelServer) reconcileTunnelNode(ctx context.Context, c client.Client,
 
 		// TODO: Send GOAWAY to all connected clients for the associated tunnel node.
 
-		t.RemoveTunnelNode(node)
+		t.tunnels.Del(string(node.UID))
 
 		return reconcile.Result{}, nil
 	}
@@ -800,18 +813,4 @@ func (t *TunnelServer) reconcileTunnelNode(ctx context.Context, c client.Client,
 	}
 
 	return ctrl.Result{}, nil
-}
-
-// AddTunnelNode adds a TunnelNode to the server.
-// This is visible for testing purposes, it is usually called as part of
-// the reconcile loop.
-func (t *TunnelServer) AddTunnelNode(node *corev1alpha.TunnelNode) {
-	t.tunnels.Set(string(node.UID), node)
-}
-
-// RemoveTunnelNode removes a TunnelNode from the server.
-// This is visible for testing purposes, it is usually called as part of
-// the reconcile loop.
-func (t *TunnelServer) RemoveTunnelNode(node *corev1alpha.TunnelNode) {
-	t.tunnels.Del(string(node.UID))
 }

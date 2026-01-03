@@ -24,8 +24,9 @@ import (
 	"golang.org/x/sync/errgroup"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	apimachinerytypes "k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	corev1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
 	"github.com/apoxy-dev/apoxy/pkg/cryptoutils"
@@ -82,7 +83,7 @@ func TestTunnelEndToEnd_UserModeClient(t *testing.T) {
 	clientTunnelNode := &corev1alpha.TunnelNode{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "client",
-			UID:  apimachinerytypes.UID(clientUUID.String()),
+			UID:  types.UID(clientUUID.String()),
 		},
 		Status: corev1alpha.TunnelNodeStatus{
 			Credentials: &corev1alpha.TunnelNodeCredentials{
@@ -100,9 +101,8 @@ func TestTunnelEndToEnd_UserModeClient(t *testing.T) {
 	serverRouter, err := router.NewNetlinkRouter()
 	require.NoError(t, err)
 
-	clientGetter := &tunnel.SingleClusterClientGetter{Client: kubeClient}
 	server, err := tunnel.NewTunnelServer(
-		clientGetter,
+		kubeClient,
 		jwtValidator,
 		serverRouter,
 		tunnel.WithCertPath(filepath.Join(certsDir, "server.crt")),
@@ -111,8 +111,11 @@ func TestTunnelEndToEnd_UserModeClient(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	// Register the client with the server
-	server.AddTunnelNode(clientTunnelNode)
+	// Register the client with the server via reconcile
+	_, err = server.ReconcileWithClient(ctx, kubeClient, reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: clientTunnelNode.Name},
+	})
+	require.NoError(t, err)
 
 	g, ctx := errgroup.WithContext(ctx)
 
@@ -286,7 +289,7 @@ func TestTunnelEndToEnd_KernelModeClient(t *testing.T) {
 	clientTunnelNode := &corev1alpha.TunnelNode{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "client",
-			UID:  apimachinerytypes.UID(clientUUID.String()),
+			UID:  types.UID(clientUUID.String()),
 		},
 		Status: corev1alpha.TunnelNodeStatus{
 			Credentials: &corev1alpha.TunnelNodeCredentials{
@@ -310,9 +313,8 @@ func TestTunnelEndToEnd_KernelModeClient(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	clientGetter := &tunnel.SingleClusterClientGetter{Client: kubeClient}
 	server, err := tunnel.NewTunnelServer(
-		clientGetter,
+		kubeClient,
 		jwtValidator,
 		serverRouter,
 		tunnel.WithCertPath(filepath.Join(certsDir, "server.crt")),
@@ -321,8 +323,11 @@ func TestTunnelEndToEnd_KernelModeClient(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	// Register the client with the server
-	server.AddTunnelNode(clientTunnelNode)
+	// Register the client with the server via reconcile
+	_, err = server.ReconcileWithClient(ctx, kubeClient, reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: clientTunnelNode.Name},
+	})
+	require.NoError(t, err)
 
 	g, ctx := errgroup.WithContext(ctx)
 
