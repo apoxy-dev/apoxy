@@ -159,12 +159,11 @@ func (c *conn) String() string {
 }
 
 // ClientGetter provides access to Kubernetes clients.
-// In single-cluster mode, the clusterKey can be empty and the default client is returned.
-// In multi-cluster mode, the clusterKey identifies which cluster's client to use.
+// In single-cluster mode, the tunnel UUID is ignored and the default client is returned.
+// In multi-cluster mode, the tunnel UUID is used to look up which cluster's client to use.
 type ClientGetter interface {
-	// GetClient returns a client for the given cluster key.
-	// The clusterKey is extracted from the connection URL path.
-	GetClient(ctx context.Context, clusterKey string) (client.Client, error)
+	// GetClient returns a client for the given tunnel UUID.
+	GetClient(ctx context.Context, tunUID uuid.UUID) (client.Client, error)
 }
 
 // SingleClusterClientGetter wraps a single client.Client for use with ClientGetter.
@@ -172,8 +171,8 @@ type SingleClusterClientGetter struct {
 	Client client.Client
 }
 
-// GetClient returns the wrapped client, ignoring the clusterKey.
-func (s *SingleClusterClientGetter) GetClient(_ context.Context, _ string) (client.Client, error) {
+// GetClient returns the wrapped client, ignoring the tunnel UUID.
+func (s *SingleClusterClientGetter) GetClient(_ context.Context, _ uuid.UUID) (client.Client, error) {
 	return s.Client, nil
 }
 
@@ -403,67 +402,30 @@ func iproutesFromPrefixes(ps []netip.Prefix) []connectip.IPRoute {
 	return routes
 }
 
-// parseConnectPath parses the URL path to extract the cluster key and tunnel UUID.
-// It supports two formats:
-//   - /connect/<tun uuid> - legacy single-cluster format (clusterKey is empty)
-//   - /proxy/namespaces/<cluster key>/connect/<tun uuid> - multicluster format
-//
-// Returns the cluster key (empty for legacy format) and the tunnel UUID.
-func parseConnectPath(path string) (clusterKey string, tunUID uuid.UUID, err error) {
-	// Try multicluster format: /proxy/namespaces/<cluster key>/connect/<tun uuid>
-	const namespacePrefix = "/proxy/namespaces/"
-	if strings.HasPrefix(path, namespacePrefix) {
-		// Remove the prefix and split by /connect/
-		remainder := strings.TrimPrefix(path, namespacePrefix)
-		parts := strings.SplitN(remainder, "/connect/", 2)
-		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-			return "", uuid.Nil, fmt.Errorf("invalid multicluster path format: %s", path)
-		}
-		clusterKey = parts[0]
-		tunUID, err = uuid.Parse(parts[1])
-		if err != nil {
-			return "", uuid.Nil, fmt.Errorf("failed to parse tunnel UUID: %w", err)
-		}
-		return clusterKey, tunUID, nil
-	}
-
-	// Try legacy format: /connect/<tun uuid>
-	const connectPrefix = "/connect/"
-	if strings.HasPrefix(path, connectPrefix) {
-		tunUID, err = uuid.Parse(strings.TrimPrefix(path, connectPrefix))
-		if err != nil {
-			return "", uuid.Nil, fmt.Errorf("failed to parse tunnel UUID: %w", err)
-		}
-		return "", tunUID, nil
-	}
-
-	return "", uuid.Nil, fmt.Errorf("unrecognized path format: %s", path)
-}
-
 // makeSingleConnectHandler creates a /connect handler that serves a single CONNECT-IP
 // connection and then closes the connection.
 func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.Connection) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		defer qConn.CloseWithError(ApplicationCodeOK, "")
 
-		clusterKey, tunUID, err := parseConnectPath(r.URL.Path)
+		tunUID, err := uuid.Parse(strings.TrimPrefix(r.URL.Path, "/connect/"))
 		if err != nil {
-			slog.Error("Failed to parse connection path", slog.Any("error", err), slog.String("remote", r.RemoteAddr))
+			slog.Error("Failed to parse UUID", slog.Any("error", err), slog.String("remote", r.RemoteAddr))
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
 
-		// Get the appropriate client for this cluster.
-		clusterClient, err := t.clientGetter.GetClient(ctx, clusterKey)
+		// Get the appropriate client for this tunnel.
+		clusterClient, err := t.clientGetter.GetClient(ctx, tunUID)
 		if err != nil {
-			slog.Error("Failed to get client for cluster", slog.Any("error", err), slog.String("clusterKey", clusterKey))
+			slog.Error("Failed to get client for tunnel", slog.Any("error", err), slog.String("tunUID", tunUID.String()))
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
 		metrics.TunnelConnectionRequests.Inc()
 
-		logger := slog.With(slog.String("tunUUID", tunUID.String()), slog.String("clusterKey", clusterKey))
+		logger := slog.With(slog.String("tunUUID", tunUID.String()))
 		logger.Info("Received connection request",
 			slog.String("URI", r.URL.String()),
 			slog.String("remote", r.RemoteAddr))
