@@ -102,7 +102,7 @@ func TestTunnelEndToEnd_UserModeClient(t *testing.T) {
 	require.NoError(t, err)
 
 	server, err := tunnel.NewTunnelServer(
-		kubeClient,
+		&tunnel.SingleClusterClientGetter{Client: kubeClient},
 		jwtValidator,
 		serverRouter,
 		tunnel.WithCertPath(filepath.Join(certsDir, "server.crt")),
@@ -314,7 +314,7 @@ func TestTunnelEndToEnd_KernelModeClient(t *testing.T) {
 	require.NoError(t, err)
 
 	server, err := tunnel.NewTunnelServer(
-		kubeClient,
+		&tunnel.SingleClusterClientGetter{Client: kubeClient},
 		jwtValidator,
 		serverRouter,
 		tunnel.WithCertPath(filepath.Join(certsDir, "server.crt")),

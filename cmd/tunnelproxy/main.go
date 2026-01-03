@@ -163,7 +163,7 @@ func main() {
 	}
 
 	srv, err := tunnel.NewTunnelServer(
-		mgr.GetClient(),
+		&tunnel.SingleClusterClientGetter{Client: mgr.GetClient()},
 		jwtValidator,
 		r,
 		tunnel.WithExternalAddrs(extIPv4Prefix),

@@ -48,16 +48,15 @@ var (
 type TunnelServerOption func(*tunnelServerOptions)
 
 type tunnelServerOptions struct {
-	proxyAddr    string
-	publicAddr   string
-	ulaPrefix    netip.Prefix
-	certPath     string
-	keyPath      string
-	extAddrs     []netip.Prefix
-	selector     string
-	ipamv4       tunnet.IPAM
-	keyLogPath   string
-	clientGetter ClientGetter
+	proxyAddr  string
+	publicAddr string
+	ulaPrefix  netip.Prefix
+	certPath   string
+	keyPath    string
+	extAddrs   []netip.Prefix
+	selector   string
+	ipamv4     tunnet.IPAM
+	keyLogPath string
 }
 
 func defaultServerOptions() *tunnelServerOptions {
@@ -139,14 +138,6 @@ func WithKeyLogPath(path string) TunnelServerOption {
 	}
 }
 
-// WithClientGetter sets a custom ClientGetter for multi-cluster support.
-// If not set, the default client passed to NewTunnelServer is used.
-func WithClientGetter(cg ClientGetter) TunnelServerOption {
-	return func(o *tunnelServerOptions) {
-		o.clientGetter = cg
-	}
-}
-
 type conn struct {
 	*connectip.Conn
 	connID         string
@@ -181,7 +172,6 @@ func (s *SingleClusterClientGetter) GetClient(_ context.Context, _ uuid.UUID) (c
 type TunnelServer struct {
 	options *tunnelServerOptions
 
-	client       client.Client
 	clientGetter ClientGetter
 	jwtValidator token.JWTValidator
 	ln           *quic.EarlyListener
@@ -196,7 +186,7 @@ type TunnelServer struct {
 // NewTunnelServer creates a new server proxy that routes traffic via
 // QUIC tunnels.
 func NewTunnelServer(
-	c client.Client,
+	cg ClientGetter,
 	v token.JWTValidator,
 	r router.Router,
 	opts ...TunnelServerOption,
@@ -206,17 +196,10 @@ func NewTunnelServer(
 		opt(options)
 	}
 
-	// Use provided ClientGetter or create a default single-cluster one.
-	clientGetter := options.clientGetter
-	if clientGetter == nil {
-		clientGetter = &SingleClusterClientGetter{Client: c}
-	}
-
 	s := &TunnelServer{
 		options: options,
 
-		client:       c,
-		clientGetter: clientGetter,
+		clientGetter: cg,
 		jwtValidator: v,
 		router:       r,
 
@@ -245,7 +228,7 @@ func SetupWithManager(mgr ctrl.Manager, srv *TunnelServer) error {
 			),
 		).
 		Complete(reconcile.Func(func(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
-			return srv.ReconcileWithClient(ctx, srv.client, req)
+			return srv.ReconcileWithClient(ctx, mgr.GetClient(), req)
 		}))
 }
 
