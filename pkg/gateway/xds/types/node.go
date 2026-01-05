@@ -18,6 +18,10 @@ type NodeMetadata struct {
 	// Name is the human-readable name of the node/proxy instance
 	Name string `json:"name,omitempty"`
 
+	// Address is the primary address assigned to the node registering with the control plane.
+	// This is typically a public IP address of the node.
+	Address string `json:"address,omitempty"`
+
 	// PrivateAddress is the private/internal address of the node
 	// This can be used for internal communication or routing
 	PrivateAddress string `json:"private_address,omitempty"`
@@ -141,13 +145,15 @@ func (nm *NodeMetadata) Clone() *NodeMetadata {
 
 	return &NodeMetadata{
 		Name:           nm.Name,
+		Address:        nm.Address,
 		PrivateAddress: nm.PrivateAddress,
+		ConnectedAt:    nm.ConnectedAt,
 	}
 }
 
 // IsEmpty returns true if all fields are empty.
 func (nm *NodeMetadata) IsEmpty() bool {
-	return nm.Name == "" && nm.PrivateAddress == ""
+	return nm.Name == "" && nm.Address == "" && nm.PrivateAddress == ""
 }
 
 // Merge merges another NodeMetadata into this one.
@@ -159,6 +165,9 @@ func (nm *NodeMetadata) Merge(other *NodeMetadata) {
 
 	if other.Name != "" {
 		nm.Name = other.Name
+	}
+	if other.Address != "" {
+		nm.Address = other.Address
 	}
 	if other.PrivateAddress != "" {
 		nm.PrivateAddress = other.PrivateAddress

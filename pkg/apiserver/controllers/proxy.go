@@ -180,6 +180,7 @@ func (r *ProxyReconciler) run(ctx context.Context) {
 				if !update.Delete {
 					p.Status.Replicas = append(p.Status.Replicas, &corev1alpha2.ProxyReplicaStatus{
 						Name:           meta.Name,
+						Address:        meta.Address,
 						ConnectedAt:    meta.ConnectedAt,
 						PrivateAddress: meta.PrivateAddress,
 					})
@@ -227,6 +228,7 @@ func (r *ProxyReconciler) run(ctx context.Context) {
 					if !found {
 						p.Status.Replicas = append(p.Status.Replicas, &corev1alpha2.ProxyReplicaStatus{
 							Name:           meta.Name,
+							Address:        meta.Address,
 							ConnectedAt:    meta.ConnectedAt,
 							PrivateAddress: meta.PrivateAddress,
 						})
