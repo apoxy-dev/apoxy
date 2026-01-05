@@ -76,16 +76,16 @@ func setReplicaAddress(replica *corev1alpha2.ProxyReplicaStatus, addrType corev1
 // nodeMetadataToAddresses converts NodeMetadata addresses to ReplicaAddress slice.
 func nodeMetadataToAddresses(meta *xdstypes.NodeMetadata) []corev1alpha2.ReplicaAddress {
 	var addrs []corev1alpha2.ReplicaAddress
-	if meta.Address != "" {
+	if meta.ExternalAddress != "" {
 		addrs = append(addrs, corev1alpha2.ReplicaAddress{
 			Type:    corev1alpha2.ReplicaExternalIP,
-			Address: meta.Address,
+			Address: meta.ExternalAddress,
 		})
 	}
-	if meta.PrivateAddress != "" {
+	if meta.InternalAddress != "" {
 		addrs = append(addrs, corev1alpha2.ReplicaAddress{
 			Type:    corev1alpha2.ReplicaInternalIP,
-			Address: meta.PrivateAddress,
+			Address: meta.InternalAddress,
 		})
 	}
 	return addrs

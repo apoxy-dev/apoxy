@@ -15,16 +15,15 @@ import (
 // This metadata is sent with every XDS discovery request to the control plane.
 // +k8s:deepcopy-gen=true
 type NodeMetadata struct {
-	// Name is the human-readable name of the node/proxy instance
+	// Name is the human-readable name of the node/proxy instance.
 	Name string `json:"name,omitempty"`
 
-	// Address is the primary address assigned to the node registering with the control plane.
-	// This is typically a public IP address of the node.
-	Address string `json:"address,omitempty"`
+	// ExternalAddress is the external/public IP address of the node reachable by clients.
+	ExternalAddress string `json:"external_address,omitempty"`
 
-	// PrivateAddress is the private/internal address of the node
-	// This can be used for internal communication or routing
-	PrivateAddress string `json:"private_address,omitempty"`
+	// InternalAddress is the private/internal IP address of the node.
+	// This is used for internal communication or routing (e.g., Geneve tunnel endpoint).
+	InternalAddress string `json:"internal_address,omitempty"`
 
 	// ConnectedAt is the timestamp when the node was connected to the control plane.
 	ConnectedAt metav1.Time `json:"connected_at,omitempty"`
@@ -144,16 +143,16 @@ func (nm *NodeMetadata) Clone() *NodeMetadata {
 	}
 
 	return &NodeMetadata{
-		Name:           nm.Name,
-		Address:        nm.Address,
-		PrivateAddress: nm.PrivateAddress,
-		ConnectedAt:    nm.ConnectedAt,
+		Name:            nm.Name,
+		ExternalAddress: nm.ExternalAddress,
+		InternalAddress: nm.InternalAddress,
+		ConnectedAt:     nm.ConnectedAt,
 	}
 }
 
 // IsEmpty returns true if all fields are empty.
 func (nm *NodeMetadata) IsEmpty() bool {
-	return nm.Name == "" && nm.Address == "" && nm.PrivateAddress == ""
+	return nm.Name == "" && nm.ExternalAddress == "" && nm.InternalAddress == ""
 }
 
 // Merge merges another NodeMetadata into this one.
@@ -166,10 +165,10 @@ func (nm *NodeMetadata) Merge(other *NodeMetadata) {
 	if other.Name != "" {
 		nm.Name = other.Name
 	}
-	if other.Address != "" {
-		nm.Address = other.Address
+	if other.ExternalAddress != "" {
+		nm.ExternalAddress = other.ExternalAddress
 	}
-	if other.PrivateAddress != "" {
-		nm.PrivateAddress = other.PrivateAddress
+	if other.InternalAddress != "" {
+		nm.InternalAddress = other.InternalAddress
 	}
 }

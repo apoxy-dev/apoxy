@@ -232,8 +232,8 @@ func (r *ProxyReconciler) Reconcile(ctx context.Context, request reconcile.Reque
 			envoy.WithAdminHost(adminHost),
 			envoy.WithLogsDir("/var/log/apoxy"),
 			envoy.WithNodeMetadata(&xdstypes.NodeMetadata{
-				Name:           r.replicaName,
-				PrivateAddress: r.privateAddr.String(),
+				Name:            r.replicaName,
+				InternalAddress: r.privateAddr.String(),
 			}),
 		}
 		if r.options.releaseURL != "" {
