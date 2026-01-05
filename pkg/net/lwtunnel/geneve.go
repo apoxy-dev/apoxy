@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/netip"
 	"strings"
@@ -11,8 +12,6 @@ import (
 
 	"github.com/vishvananda/netlink"
 	"k8s.io/apimachinery/pkg/util/sets"
-	"sigs.k8s.io/controller-runtime/pkg/log"
-	clog "sigs.k8s.io/controller-runtime/pkg/log"
 
 	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 )
@@ -99,9 +98,7 @@ func (r *Geneve) hwAddr(addr netip.Addr) net.HardwareAddr {
 }
 
 // SetUp sets up the Geneve tunnel. Can be called multiple times.
-func (r *Geneve) SetUp(ctx context.Context, privAddr netip.Addr) error {
-	log := clog.FromContext(ctx)
-
+func (r *Geneve) SetUp(_ context.Context, privAddr netip.Addr) error {
 	// Create Geneve interface without a specific remote -
 	// this allows us to route to multiple remotes using Linux's
 	// lwtunnel infrastructure (https://github.com/torvalds/linux/blob/e347810e84094078d155663acbf36d82efe91f95/net/core/lwtunnel.c).
@@ -116,10 +113,10 @@ func (r *Geneve) SetUp(ctx context.Context, privAddr netip.Addr) error {
 		FlowBased: true, // external
 	}
 
-	log.Info("Setting up Geneve interface",
-		"dev", r.opts.dev,
-		"mtu", r.opts.mtu,
-		"hwaddr", hwAddr.String(),
+	slog.Info("Setting up Geneve interface",
+		slog.String("dev", r.opts.dev),
+		slog.Int("mtu", r.opts.mtu),
+		slog.String("hwaddr", hwAddr.String()),
 	)
 
 	_, err := netlink.LinkByName(r.opts.dev)
@@ -135,7 +132,7 @@ func (r *Geneve) SetUp(ctx context.Context, privAddr netip.Addr) error {
 		return fmt.Errorf("failed to bring up Geneve interface: %w", err)
 	}
 
-	log.Info("Successfully setup Geneve interface", "dev", r.opts.dev)
+	slog.Info("Successfully setup Geneve interface", slog.String("dev", r.opts.dev))
 
 	return nil
 }
@@ -143,10 +140,11 @@ func (r *Geneve) SetUp(ctx context.Context, privAddr netip.Addr) error {
 // SetAddr adds an IPv6 overlay address to the Geneve interface. This is
 // optional and only needed for originating end of the tunnel to assign
 // an inner source IP address.
-func (r *Geneve) SetAddr(ctx context.Context, ula netip.Addr) error {
-	log := clog.FromContext(ctx)
-
-	log.Info("Setting up Geneve link address", "dev", r.opts.dev, "addr", ula)
+func (r *Geneve) SetAddr(_ context.Context, ula netip.Addr) error {
+	slog.Info("Setting up Geneve link address",
+		slog.String("dev", r.opts.dev),
+		slog.String("addr", ula.String()),
+	)
 
 	link, err := netlink.LinkByName(r.opts.dev)
 	if err != nil {
@@ -157,18 +155,13 @@ func (r *Geneve) SetAddr(ctx context.Context, ula netip.Addr) error {
 	if err != nil {
 		return fmt.Errorf("failed to parse CIDR: %w", err)
 	}
-
-	af := netlink.FAMILY_V6
-	if addr.IP.To4() != nil {
-		af = netlink.FAMILY_V4
-	}
-	addrs, err := netlink.AddrList(link, af)
+	addrs, err := netlink.AddrList(link, netlink.FAMILY_V6)
 	if err != nil {
 		return fmt.Errorf("failed to list addresses: %w", err)
 	}
 	for _, existing := range addrs {
 		if existing.Equal(*addr) {
-			log.Info("IPv6 address already configured", "addr", existing)
+			slog.Info("IPv6 address already configured", slog.Any("addr", existing))
 			return nil
 		}
 	}
@@ -177,15 +170,13 @@ func (r *Geneve) SetAddr(ctx context.Context, ula netip.Addr) error {
 		return fmt.Errorf("failed to add IPv6 address: %w", err)
 	}
 
-	log.Info("Successfully configured IPv6 address", "addr", addr)
+	slog.Info("Successfully configured IPv6 address", slog.Any("addr", addr))
 
 	return nil
 }
 
-// cleanupGeneve removes the Geneve interface.
-func (r *Geneve) cleanupGeneve(ctx context.Context) error {
-	log := clog.FromContext(ctx)
-
+// Cleanup removes the Geneve interface.
+func (r *Geneve) Cleanup() error {
 	link, err := netlink.LinkByName(r.opts.dev)
 	if err != nil {
 		// Interface doesn't exist, nothing to do.
@@ -196,15 +187,13 @@ func (r *Geneve) cleanupGeneve(ctx context.Context) error {
 		return fmt.Errorf("failed to delete Geneve interface: %w", err)
 	}
 
-	log.Info("Successfully deleted Geneve interface", "dev", r.opts.dev)
+	slog.Info("Successfully deleted Geneve interface", slog.String("dev", r.opts.dev))
 
 	return nil
 }
 
 // routeAdd adds a route to the overlay addr via NVE.
-func (r *Geneve) routeAdd(ctx context.Context, ula tunnet.NetULA, nve netip.Addr) error {
-	log := clog.FromContext(ctx)
-
+func (r *Geneve) routeAdd(_ context.Context, ula tunnet.NetULA, nve netip.Addr) error {
 	link, err := netlink.LinkByName(r.opts.dev)
 	if err != nil {
 		return fmt.Errorf("failed to get Geneve interface: %w", err)
@@ -215,16 +204,12 @@ func (r *Geneve) routeAdd(ctx context.Context, ula tunnet.NetULA, nve netip.Addr
 	// This is equivalent to the following iproute2 command:
 	// ip route add <overlayIP>/96 encap ip id <gnvVNI> dst <nve> dev <gnvDev>
 	ulaAddr := ula.FullPrefix().Addr()
-	af, mask := netlink.FAMILY_V6, 128
-	if ulaAddr.Is4() {
-		af, mask = netlink.FAMILY_V4, 32
-	}
 	route := &netlink.Route{
 		LinkIndex: link.Attrs().Index,
-		Family:    af,
+		Family:    netlink.FAMILY_V6,
 		Dst: &net.IPNet{
 			IP:   ulaAddr.AsSlice(),
-			Mask: net.CIDRMask(ula.FullPrefix().Bits(), mask),
+			Mask: net.CIDRMask(ula.FullPrefix().Bits(), 128),
 		},
 		Encap: &IPEncap{
 			ID:     r.opts.vni,
@@ -244,8 +229,11 @@ func (r *Geneve) routeAdd(ctx context.Context, ula tunnet.NetULA, nve netip.Addr
 		}
 	}
 
-	log.Info("Configured route", "af", af, "dst", ula, "encap_id",
-		r.opts.vni, "encap_remote", nve.String())
+	slog.Info("Configured route",
+		slog.Any("dst", ula),
+		slog.Any("encap_id", r.opts.vni),
+		slog.String("encap_remote", nve.String()),
+	)
 
 	hwAddr := r.hwAddr(nve)
 	if err := netlink.NeighSet(&netlink.Neigh{
@@ -257,7 +245,10 @@ func (r *Geneve) routeAdd(ctx context.Context, ula tunnet.NetULA, nve netip.Addr
 		return fmt.Errorf("failed to add neighbor entry: %w", err)
 	}
 
-	log.Info("Neighbor entry set", "remote", ulaAddr, "hwAddr", hwAddr.String())
+	slog.Info("Neighbor entry set",
+		slog.String("remote", ulaAddr.String()),
+		slog.String("hwAddr", hwAddr.String()),
+	)
 
 	// Via is needed so that kernel can use the same dst hwaddr for the entire ula prefix.
 	// Can't set via during route creation because the route to gw does not yet exist.
@@ -266,28 +257,27 @@ func (r *Geneve) routeAdd(ctx context.Context, ula tunnet.NetULA, nve netip.Addr
 		return fmt.Errorf("failed to change route with gw %v: %w", route.Gw, err)
 	}
 
-	log.Info("Configured route gw",
-		"af", af, "dst", ula, "gw", ulaAddr,
-		"encap_id", r.opts.vni, "encap_remote", nve)
+	slog.Info("Configured route gw",
+		slog.Any("dst", ula),
+		slog.String("gw", ulaAddr.String()),
+		slog.Any("encap_id", r.opts.vni),
+		slog.String("encap_remote", nve.String()),
+	)
 
 	return nil
 }
 
-func (r *Geneve) routeDel(ctx context.Context, dst netip.Prefix) error {
+func (r *Geneve) routeDel(_ context.Context, dst netip.Prefix) error {
 	link, err := netlink.LinkByName(r.opts.dev)
 	if err != nil {
 		return fmt.Errorf("failed to get Geneve interface: %w", err)
 	}
 
-	mask := 128
-	if dst.Addr().Is4() {
-		mask = 32
-	}
 	route := &netlink.Route{
 		LinkIndex: link.Attrs().Index,
 		Dst: &net.IPNet{
 			IP:   dst.Addr().AsSlice(),
-			Mask: net.CIDRMask(dst.Bits(), mask),
+			Mask: net.CIDRMask(dst.Bits(), 128),
 		},
 	}
 
@@ -301,17 +291,15 @@ func (r *Geneve) routeDel(ctx context.Context, dst netip.Prefix) error {
 	return nil
 }
 
-// routeList returns the current routes for the Geneve interface.
-func (r *Geneve) routeList(ctx context.Context) (sets.Set[netip.Prefix], error) {
-	log := log.FromContext(ctx)
-
+// routeList returns the current IPv6 routes for the Geneve interface.
+func (r *Geneve) routeList(_ context.Context) (sets.Set[netip.Prefix], error) {
 	link, err := netlink.LinkByName(r.opts.dev)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get Geneve link: %w", err)
 	}
 
 	routes, err := netlink.RouteListFiltered(
-		netlink.FAMILY_ALL,
+		netlink.FAMILY_V6,
 		&netlink.Route{
 			Protocol: rtProtocol,
 		},
@@ -323,37 +311,22 @@ func (r *Geneve) routeList(ctx context.Context) (sets.Set[netip.Prefix], error) 
 
 	out := sets.New[netip.Prefix]()
 	for _, route := range routes {
-		// TODO(dilyevsky): netlink doesn't currently support deserialization of encap type ip.
-		//if route.Encap == nil || route.Encap.Type() != nl.LWTUNNEL_ENCAP_IP {
-		//	log.Info("Skipping route with no/mismatching encap", "dst", route.Dst, "encap", route.Encap)
-		//	continue
-		//}
-
-		//encap, ok := route.Encap.(*IPEncap)
-		//if !ok {
-		//	log.Info("Skipping route with non-Geneve Encap", "dst", route.Dst)
-		//	continue
-		//}
 		if link.Attrs().Index != route.LinkIndex {
-			log.V(1).Info("Skipping route with mismatching link index", "dst", route.Dst, "linkIndex", link.Attrs().Index, "routeLinkIndex", route.LinkIndex)
+			slog.Debug("Skipping route with mismatching link index",
+				slog.Any("dst", route.Dst),
+				slog.Int("linkIndex", link.Attrs().Index),
+				slog.Int("routeLinkIndex", route.LinkIndex),
+			)
 			continue
 		}
 
-		var dst netip.Prefix
 		bits, _ := route.Dst.Mask.Size()
-		if route.Dst.IP.To16() != nil {
-			dst = netip.PrefixFrom(
-				netip.AddrFrom16([16]byte(route.Dst.IP.To16())),
-				bits,
-			)
-		} else if route.Dst.IP.To4() != nil {
-			dst = netip.PrefixFrom(
-				netip.AddrFrom4([4]byte(route.Dst.IP.To4())),
-				bits,
-			)
-		}
+		dst := netip.PrefixFrom(
+			netip.AddrFrom16([16]byte(route.Dst.IP.To16())),
+			bits,
+		)
 
-		log.Info("Route found", "dst", dst)
+		slog.Debug("Route found", slog.String("dst", dst.String()))
 
 		out.Insert(dst)
 	}
@@ -377,16 +350,21 @@ func (r *Geneve) SyncEndpoints(ctx context.Context, eps []Endpoint) error {
 		return fmt.Errorf("failed to get current routes: %w", err)
 	}
 	updRoutes := sets.New[netip.Prefix]()
-	for _, r := range eps {
-		updRoutes.Insert(r.Dst.FullPrefix())
+	for _, ep := range eps {
+		updRoutes.Insert(ep.Dst.FullPrefix())
 	}
 
-	for _, route := range eps {
-		if err := r.routeAdd(ctx, route.Dst, route.Remote); err != nil {
+	// Only add routes that don't already exist.
+	for _, ep := range eps {
+		if curRoutes.Has(ep.Dst.FullPrefix()) {
+			continue
+		}
+		if err := r.routeAdd(ctx, ep.Dst, ep.Remote); err != nil {
 			return fmt.Errorf("failed to add route: %w", err)
 		}
 	}
 
+	// Remove routes that are no longer needed.
 	for _, route := range curRoutes.Difference(updRoutes).UnsortedList() {
 		if err := r.routeDel(ctx, route); err != nil {
 			return fmt.Errorf("failed to delete route: %w", err)
