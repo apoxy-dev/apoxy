@@ -1,5 +1,5 @@
 /*
-Copyright 2025 Apoxy, Inc.
+Copyright 2026 Apoxy, Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -28,15 +28,15 @@ type FakeGatewayV1alpha2 struct {
 }
 
 func (c *FakeGatewayV1alpha2) TCPRoutes() v1alpha2.TCPRouteInterface {
-	return &FakeTCPRoutes{c}
+	return newFakeTCPRoutes(c)
 }
 
 func (c *FakeGatewayV1alpha2) TLSRoutes() v1alpha2.TLSRouteInterface {
-	return &FakeTLSRoutes{c}
+	return newFakeTLSRoutes(c)
 }
 
 func (c *FakeGatewayV1alpha2) UDPRoutes() v1alpha2.UDPRouteInterface {
-	return &FakeUDPRoutes{c}
+	return newFakeUDPRoutes(c)
 }
 
 // RESTClient returns a RESTClient that is used to communicate

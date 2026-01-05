@@ -1,5 +1,5 @@
 /*
-Copyright 2025 Apoxy, Inc.
+Copyright 2026 Apoxy, Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,10 +18,10 @@ limitations under the License.
 package v1alpha1
 
 import (
-	v1alpha1 "github.com/apoxy-dev/apoxy/api/policy/v1alpha1"
-	"k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/client-go/tools/cache"
+	policyv1alpha1 "github.com/apoxy-dev/apoxy/api/policy/v1alpha1"
+	labels "k8s.io/apimachinery/pkg/labels"
+	listers "k8s.io/client-go/listers"
+	cache "k8s.io/client-go/tools/cache"
 )
 
 // RateLimitLister helps list RateLimits.
@@ -29,39 +29,19 @@ import (
 type RateLimitLister interface {
 	// List lists all RateLimits in the indexer.
 	// Objects returned here must be treated as read-only.
-	List(selector labels.Selector) (ret []*v1alpha1.RateLimit, err error)
+	List(selector labels.Selector) (ret []*policyv1alpha1.RateLimit, err error)
 	// Get retrieves the RateLimit from the index for a given name.
 	// Objects returned here must be treated as read-only.
-	Get(name string) (*v1alpha1.RateLimit, error)
+	Get(name string) (*policyv1alpha1.RateLimit, error)
 	RateLimitListerExpansion
 }
 
 // rateLimitLister implements the RateLimitLister interface.
 type rateLimitLister struct {
-	indexer cache.Indexer
+	listers.ResourceIndexer[*policyv1alpha1.RateLimit]
 }
 
 // NewRateLimitLister returns a new RateLimitLister.
 func NewRateLimitLister(indexer cache.Indexer) RateLimitLister {
-	return &rateLimitLister{indexer: indexer}
-}
-
-// List lists all RateLimits in the indexer.
-func (s *rateLimitLister) List(selector labels.Selector) (ret []*v1alpha1.RateLimit, err error) {
-	err = cache.ListAll(s.indexer, selector, func(m interface{}) {
-		ret = append(ret, m.(*v1alpha1.RateLimit))
-	})
-	return ret, err
-}
-
-// Get retrieves the RateLimit from the index for a given name.
-func (s *rateLimitLister) Get(name string) (*v1alpha1.RateLimit, error) {
-	obj, exists, err := s.indexer.GetByKey(name)
-	if err != nil {
-		return nil, err
-	}
-	if !exists {
-		return nil, errors.NewNotFound(v1alpha1.Resource("ratelimit"), name)
-	}
-	return obj.(*v1alpha1.RateLimit), nil
+	return &rateLimitLister{listers.New[*policyv1alpha1.RateLimit](indexer, policyv1alpha1.Resource("ratelimit"))}
 }

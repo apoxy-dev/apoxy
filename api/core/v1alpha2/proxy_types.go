@@ -166,6 +166,27 @@ type ProxySpec struct {
 	Telemetry *ProxyTelementry `json:"telemetry,omitempty"`
 }
 
+// ReplicaAddressType represents the type of address for a proxy replica.
+type ReplicaAddressType string
+
+const (
+	// ReplicaExternalIP is the external IP address of the replica reachable by clients.
+	ReplicaExternalIP ReplicaAddressType = "ExternalIP"
+	// ReplicaInternalIP is the internal/private IP address of the node running the replica.
+	ReplicaInternalIP ReplicaAddressType = "InternalIP"
+	// ReplicaInternalULA is the internal IPv6 ULA address used for overlay networking.
+	ReplicaInternalULA ReplicaAddressType = "InternalULA"
+)
+
+// ReplicaAddress represents an address assigned to a proxy replica.
+type ReplicaAddress struct {
+	// Type of the address.
+	Type ReplicaAddressType `json:"type"`
+
+	// Address is the actual address value.
+	Address string `json:"address"`
+}
+
 // ProxyReplicaStatus defines the status of a proxy replica.
 // This is used to track the status of individual proxy replicas.
 type ProxyReplicaStatus struct {
@@ -179,13 +200,9 @@ type ProxyReplicaStatus struct {
 	// +optional
 	Locality string `json:"locality,omitempty,omitzero"`
 
-	// Optional address assigned to the replica.
+	// Addresses is a list of addresses assigned to the replica.
 	// +optional
-	Address string `json:"address,omitempty,omitzero"`
-
-	// Optional private address assigned to the replica (used for internal platform communication).
-	// +optional
-	PrivateAddress string `json:"privateAddress,omitempty,omitzero"`
+	Addresses []ReplicaAddress `json:"addresses,omitempty"`
 }
 
 // ProxyStatus defines the observed state of Proxy.

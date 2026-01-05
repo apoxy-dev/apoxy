@@ -49,19 +49,66 @@ func NewProxyReconciler(
 	}
 }
 
+// getReplicaAddress returns the address of the given type from a replica, or empty string if not found.
+func getReplicaAddress(replica *corev1alpha2.ProxyReplicaStatus, addrType corev1alpha2.ReplicaAddressType) string {
+	for _, addr := range replica.Addresses {
+		if addr.Type == addrType {
+			return addr.Address
+		}
+	}
+	return ""
+}
+
+// setReplicaAddress sets or updates an address of the given type on a replica.
+func setReplicaAddress(replica *corev1alpha2.ProxyReplicaStatus, addrType corev1alpha2.ReplicaAddressType, address string) {
+	for i, addr := range replica.Addresses {
+		if addr.Type == addrType {
+			replica.Addresses[i].Address = address
+			return
+		}
+	}
+	replica.Addresses = append(replica.Addresses, corev1alpha2.ReplicaAddress{
+		Type:    addrType,
+		Address: address,
+	})
+}
+
+// nodeMetadataToAddresses converts NodeMetadata addresses to ReplicaAddress slice.
+func nodeMetadataToAddresses(meta *xdstypes.NodeMetadata) []corev1alpha2.ReplicaAddress {
+	var addrs []corev1alpha2.ReplicaAddress
+	if meta.Address != "" {
+		addrs = append(addrs, corev1alpha2.ReplicaAddress{
+			Type:    corev1alpha2.ReplicaExternalIP,
+			Address: meta.Address,
+		})
+	}
+	if meta.PrivateAddress != "" {
+		addrs = append(addrs, corev1alpha2.ReplicaAddress{
+			Type:    corev1alpha2.ReplicaInternalIP,
+			Address: meta.PrivateAddress,
+		})
+	}
+	return addrs
+}
+
 func (r *ProxyReconciler) releaseReplica(ctx context.Context, replica *corev1alpha2.ProxyReplicaStatus) error {
 	log := log.FromContext(ctx)
 
-	log.Info("releasing IP address for proxy replica", "address", replica.Address)
+	ulaAddr := getReplicaAddress(replica, corev1alpha2.ReplicaInternalULA)
+	if ulaAddr == "" {
+		return nil
+	}
 
-	addr, err := netip.ParseAddr(replica.Address)
+	log.Info("releasing IP address for proxy replica", "address", ulaAddr)
+
+	addr, err := netip.ParseAddr(ulaAddr)
 	if err != nil {
-		log.Error(err, "failed to parse IP address", "address", replica.Address)
+		log.Error(err, "failed to parse IP address", "address", ulaAddr)
 		return err
 	}
 
 	if err := r.ipam.Release(netip.PrefixFrom(addr, 128)); err != nil {
-		log.Error(err, "failed to release IP", "address", replica.Address)
+		log.Error(err, "failed to release IP", "address", ulaAddr)
 		return err
 	}
 
@@ -84,9 +131,9 @@ func (r *ProxyReconciler) assignReplica(ctx context.Context, replica *corev1alph
 		return err
 	}
 
-	replica.Address = addr.Addr().String()
+	setReplicaAddress(replica, corev1alpha2.ReplicaInternalULA, addr.Addr().String())
 
-	log.Info("Allocated IP address for proxy replica", "address", replica.Address)
+	log.Info("Allocated IP address for proxy replica", "address", addr.Addr().String())
 
 	return nil
 }
@@ -130,8 +177,8 @@ func (r *ProxyReconciler) reconcileRequest(ctx context.Context, request reconcil
 	}
 
 	for _, replica := range p.Status.Replicas {
-		if replica.Address != "" {
-			log.V(1).Info("proxy replica already has an address", "address", replica.Address)
+		if ulaAddr := getReplicaAddress(replica, corev1alpha2.ReplicaInternalULA); ulaAddr != "" {
+			log.V(1).Info("proxy replica already has a ULA address", "address", ulaAddr)
 			continue
 		}
 
@@ -179,10 +226,9 @@ func (r *ProxyReconciler) run(ctx context.Context) {
 
 				if !update.Delete {
 					p.Status.Replicas = append(p.Status.Replicas, &corev1alpha2.ProxyReplicaStatus{
-						Name:           meta.Name,
-						Address:        meta.Address,
-						ConnectedAt:    meta.ConnectedAt,
-						PrivateAddress: meta.PrivateAddress,
+						Name:        meta.Name,
+						ConnectedAt: meta.ConnectedAt,
+						Addresses:   nodeMetadataToAddresses(meta),
 					})
 				} else {
 					for i, replica := range p.Status.Replicas {
@@ -227,10 +273,9 @@ func (r *ProxyReconciler) run(ctx context.Context) {
 					}
 					if !found {
 						p.Status.Replicas = append(p.Status.Replicas, &corev1alpha2.ProxyReplicaStatus{
-							Name:           meta.Name,
-							Address:        meta.Address,
-							ConnectedAt:    meta.ConnectedAt,
-							PrivateAddress: meta.PrivateAddress,
+							Name:        meta.Name,
+							ConnectedAt: meta.ConnectedAt,
+							Addresses:   nodeMetadataToAddresses(meta),
 						})
 						updated = true
 					}

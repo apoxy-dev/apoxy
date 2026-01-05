@@ -1,5 +1,5 @@
 /*
-Copyright 2025 Apoxy, Inc.
+Copyright 2026 Apoxy, Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,12 +18,12 @@ limitations under the License.
 package v1
 
 import (
-	"context"
+	context "context"
 	time "time"
 
-	gatewayv1 "github.com/apoxy-dev/apoxy/api/gateway/v1"
+	apigatewayv1 "github.com/apoxy-dev/apoxy/api/gateway/v1"
 	internalinterfaces "github.com/apoxy-dev/apoxy/client/informers/internalinterfaces"
-	v1 "github.com/apoxy-dev/apoxy/client/listers/gateway/v1"
+	gatewayv1 "github.com/apoxy-dev/apoxy/client/listers/gateway/v1"
 	versioned "github.com/apoxy-dev/apoxy/client/versioned"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
@@ -35,7 +35,7 @@ import (
 // Gateways.
 type GatewayInformer interface {
 	Informer() cache.SharedIndexInformer
-	Lister() v1.GatewayLister
+	Lister() gatewayv1.GatewayLister
 }
 
 type gatewayInformer struct {
@@ -69,7 +69,7 @@ func NewFilteredGatewayInformer(client versioned.Interface, resyncPeriod time.Du
 				return client.GatewayV1().Gateways().Watch(context.TODO(), options)
 			},
 		},
-		&gatewayv1.Gateway{},
+		&apigatewayv1.Gateway{},
 		resyncPeriod,
 		indexers,
 	)
@@ -80,9 +80,9 @@ func (f *gatewayInformer) defaultInformer(client versioned.Interface, resyncPeri
 }
 
 func (f *gatewayInformer) Informer() cache.SharedIndexInformer {
-	return f.factory.InformerFor(&gatewayv1.Gateway{}, f.defaultInformer)
+	return f.factory.InformerFor(&apigatewayv1.Gateway{}, f.defaultInformer)
 }
 
-func (f *gatewayInformer) Lister() v1.GatewayLister {
-	return v1.NewGatewayLister(f.Informer().GetIndexer())
+func (f *gatewayInformer) Lister() gatewayv1.GatewayLister {
+	return gatewayv1.NewGatewayLister(f.Informer().GetIndexer())
 }

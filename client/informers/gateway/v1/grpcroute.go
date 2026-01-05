@@ -1,5 +1,5 @@
 /*
-Copyright 2025 Apoxy, Inc.
+Copyright 2026 Apoxy, Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,12 +18,12 @@ limitations under the License.
 package v1
 
 import (
-	"context"
+	context "context"
 	time "time"
 
-	gatewayv1 "github.com/apoxy-dev/apoxy/api/gateway/v1"
+	apigatewayv1 "github.com/apoxy-dev/apoxy/api/gateway/v1"
 	internalinterfaces "github.com/apoxy-dev/apoxy/client/informers/internalinterfaces"
-	v1 "github.com/apoxy-dev/apoxy/client/listers/gateway/v1"
+	gatewayv1 "github.com/apoxy-dev/apoxy/client/listers/gateway/v1"
 	versioned "github.com/apoxy-dev/apoxy/client/versioned"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
@@ -35,7 +35,7 @@ import (
 // GRPCRoutes.
 type GRPCRouteInformer interface {
 	Informer() cache.SharedIndexInformer
-	Lister() v1.GRPCRouteLister
+	Lister() gatewayv1.GRPCRouteLister
 }
 
 type gRPCRouteInformer struct {
@@ -69,7 +69,7 @@ func NewFilteredGRPCRouteInformer(client versioned.Interface, resyncPeriod time.
 				return client.GatewayV1().GRPCRoutes().Watch(context.TODO(), options)
 			},
 		},
-		&gatewayv1.GRPCRoute{},
+		&apigatewayv1.GRPCRoute{},
 		resyncPeriod,
 		indexers,
 	)
@@ -80,9 +80,9 @@ func (f *gRPCRouteInformer) defaultInformer(client versioned.Interface, resyncPe
 }
 
 func (f *gRPCRouteInformer) Informer() cache.SharedIndexInformer {
-	return f.factory.InformerFor(&gatewayv1.GRPCRoute{}, f.defaultInformer)
+	return f.factory.InformerFor(&apigatewayv1.GRPCRoute{}, f.defaultInformer)
 }
 
-func (f *gRPCRouteInformer) Lister() v1.GRPCRouteLister {
-	return v1.NewGRPCRouteLister(f.Informer().GetIndexer())
+func (f *gRPCRouteInformer) Lister() gatewayv1.GRPCRouteLister {
+	return gatewayv1.NewGRPCRouteLister(f.Informer().GetIndexer())
 }

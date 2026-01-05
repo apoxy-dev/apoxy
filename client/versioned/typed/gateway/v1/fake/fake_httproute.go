@@ -1,5 +1,5 @@
 /*
-Copyright 2025 Apoxy, Inc.
+Copyright 2026 Apoxy, Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,114 +18,30 @@ limitations under the License.
 package fake
 
 import (
-	"context"
-
 	v1 "github.com/apoxy-dev/apoxy/api/gateway/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	labels "k8s.io/apimachinery/pkg/labels"
-	types "k8s.io/apimachinery/pkg/types"
-	watch "k8s.io/apimachinery/pkg/watch"
-	testing "k8s.io/client-go/testing"
+	gatewayv1 "github.com/apoxy-dev/apoxy/client/versioned/typed/gateway/v1"
+	gentype "k8s.io/client-go/gentype"
 )
 
-// FakeHTTPRoutes implements HTTPRouteInterface
-type FakeHTTPRoutes struct {
+// fakeHTTPRoutes implements HTTPRouteInterface
+type fakeHTTPRoutes struct {
+	*gentype.FakeClientWithList[*v1.HTTPRoute, *v1.HTTPRouteList]
 	Fake *FakeGatewayV1
 }
 
-var httproutesResource = v1.SchemeGroupVersion.WithResource("httproutes")
-
-var httproutesKind = v1.SchemeGroupVersion.WithKind("HTTPRoute")
-
-// Get takes name of the hTTPRoute, and returns the corresponding hTTPRoute object, and an error if there is any.
-func (c *FakeHTTPRoutes) Get(ctx context.Context, name string, options metav1.GetOptions) (result *v1.HTTPRoute, err error) {
-	obj, err := c.Fake.
-		Invokes(testing.NewRootGetAction(httproutesResource, name), &v1.HTTPRoute{})
-	if obj == nil {
-		return nil, err
+func newFakeHTTPRoutes(fake *FakeGatewayV1) gatewayv1.HTTPRouteInterface {
+	return &fakeHTTPRoutes{
+		gentype.NewFakeClientWithList[*v1.HTTPRoute, *v1.HTTPRouteList](
+			fake.Fake,
+			"",
+			v1.SchemeGroupVersion.WithResource("httproutes"),
+			v1.SchemeGroupVersion.WithKind("HTTPRoute"),
+			func() *v1.HTTPRoute { return &v1.HTTPRoute{} },
+			func() *v1.HTTPRouteList { return &v1.HTTPRouteList{} },
+			func(dst, src *v1.HTTPRouteList) { dst.ListMeta = src.ListMeta },
+			func(list *v1.HTTPRouteList) []*v1.HTTPRoute { return gentype.ToPointerSlice(list.Items) },
+			func(list *v1.HTTPRouteList, items []*v1.HTTPRoute) { list.Items = gentype.FromPointerSlice(items) },
+		),
+		fake,
 	}
-	return obj.(*v1.HTTPRoute), err
-}
-
-// List takes label and field selectors, and returns the list of HTTPRoutes that match those selectors.
-func (c *FakeHTTPRoutes) List(ctx context.Context, opts metav1.ListOptions) (result *v1.HTTPRouteList, err error) {
-	obj, err := c.Fake.
-		Invokes(testing.NewRootListAction(httproutesResource, httproutesKind, opts), &v1.HTTPRouteList{})
-	if obj == nil {
-		return nil, err
-	}
-
-	label, _, _ := testing.ExtractFromListOptions(opts)
-	if label == nil {
-		label = labels.Everything()
-	}
-	list := &v1.HTTPRouteList{ListMeta: obj.(*v1.HTTPRouteList).ListMeta}
-	for _, item := range obj.(*v1.HTTPRouteList).Items {
-		if label.Matches(labels.Set(item.Labels)) {
-			list.Items = append(list.Items, item)
-		}
-	}
-	return list, err
-}
-
-// Watch returns a watch.Interface that watches the requested hTTPRoutes.
-func (c *FakeHTTPRoutes) Watch(ctx context.Context, opts metav1.ListOptions) (watch.Interface, error) {
-	return c.Fake.
-		InvokesWatch(testing.NewRootWatchAction(httproutesResource, opts))
-}
-
-// Create takes the representation of a hTTPRoute and creates it.  Returns the server's representation of the hTTPRoute, and an error, if there is any.
-func (c *FakeHTTPRoutes) Create(ctx context.Context, hTTPRoute *v1.HTTPRoute, opts metav1.CreateOptions) (result *v1.HTTPRoute, err error) {
-	obj, err := c.Fake.
-		Invokes(testing.NewRootCreateAction(httproutesResource, hTTPRoute), &v1.HTTPRoute{})
-	if obj == nil {
-		return nil, err
-	}
-	return obj.(*v1.HTTPRoute), err
-}
-
-// Update takes the representation of a hTTPRoute and updates it. Returns the server's representation of the hTTPRoute, and an error, if there is any.
-func (c *FakeHTTPRoutes) Update(ctx context.Context, hTTPRoute *v1.HTTPRoute, opts metav1.UpdateOptions) (result *v1.HTTPRoute, err error) {
-	obj, err := c.Fake.
-		Invokes(testing.NewRootUpdateAction(httproutesResource, hTTPRoute), &v1.HTTPRoute{})
-	if obj == nil {
-		return nil, err
-	}
-	return obj.(*v1.HTTPRoute), err
-}
-
-// UpdateStatus was generated because the type contains a Status member.
-// Add a +genclient:noStatus comment above the type to avoid generating UpdateStatus().
-func (c *FakeHTTPRoutes) UpdateStatus(ctx context.Context, hTTPRoute *v1.HTTPRoute, opts metav1.UpdateOptions) (*v1.HTTPRoute, error) {
-	obj, err := c.Fake.
-		Invokes(testing.NewRootUpdateSubresourceAction(httproutesResource, "status", hTTPRoute), &v1.HTTPRoute{})
-	if obj == nil {
-		return nil, err
-	}
-	return obj.(*v1.HTTPRoute), err
-}
-
-// Delete takes name of the hTTPRoute and deletes it. Returns an error if one occurs.
-func (c *FakeHTTPRoutes) Delete(ctx context.Context, name string, opts metav1.DeleteOptions) error {
-	_, err := c.Fake.
-		Invokes(testing.NewRootDeleteActionWithOptions(httproutesResource, name, opts), &v1.HTTPRoute{})
-	return err
-}
-
-// DeleteCollection deletes a collection of objects.
-func (c *FakeHTTPRoutes) DeleteCollection(ctx context.Context, opts metav1.DeleteOptions, listOpts metav1.ListOptions) error {
-	action := testing.NewRootDeleteCollectionAction(httproutesResource, listOpts)
-
-	_, err := c.Fake.Invokes(action, &v1.HTTPRouteList{})
-	return err
-}
-
-// Patch applies the patch and returns the patched hTTPRoute.
-func (c *FakeHTTPRoutes) Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts metav1.PatchOptions, subresources ...string) (result *v1.HTTPRoute, err error) {
-	obj, err := c.Fake.
-		Invokes(testing.NewRootPatchSubresourceAction(httproutesResource, name, pt, data, subresources...), &v1.HTTPRoute{})
-	if obj == nil {
-		return nil, err
-	}
-	return obj.(*v1.HTTPRoute), err
 }

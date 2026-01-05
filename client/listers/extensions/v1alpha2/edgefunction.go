@@ -1,5 +1,5 @@
 /*
-Copyright 2025 Apoxy, Inc.
+Copyright 2026 Apoxy, Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,10 +18,10 @@ limitations under the License.
 package v1alpha2
 
 import (
-	v1alpha2 "github.com/apoxy-dev/apoxy/api/extensions/v1alpha2"
-	"k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/client-go/tools/cache"
+	extensionsv1alpha2 "github.com/apoxy-dev/apoxy/api/extensions/v1alpha2"
+	labels "k8s.io/apimachinery/pkg/labels"
+	listers "k8s.io/client-go/listers"
+	cache "k8s.io/client-go/tools/cache"
 )
 
 // EdgeFunctionLister helps list EdgeFunctions.
@@ -29,39 +29,19 @@ import (
 type EdgeFunctionLister interface {
 	// List lists all EdgeFunctions in the indexer.
 	// Objects returned here must be treated as read-only.
-	List(selector labels.Selector) (ret []*v1alpha2.EdgeFunction, err error)
+	List(selector labels.Selector) (ret []*extensionsv1alpha2.EdgeFunction, err error)
 	// Get retrieves the EdgeFunction from the index for a given name.
 	// Objects returned here must be treated as read-only.
-	Get(name string) (*v1alpha2.EdgeFunction, error)
+	Get(name string) (*extensionsv1alpha2.EdgeFunction, error)
 	EdgeFunctionListerExpansion
 }
 
 // edgeFunctionLister implements the EdgeFunctionLister interface.
 type edgeFunctionLister struct {
-	indexer cache.Indexer
+	listers.ResourceIndexer[*extensionsv1alpha2.EdgeFunction]
 }
 
 // NewEdgeFunctionLister returns a new EdgeFunctionLister.
 func NewEdgeFunctionLister(indexer cache.Indexer) EdgeFunctionLister {
-	return &edgeFunctionLister{indexer: indexer}
-}
-
-// List lists all EdgeFunctions in the indexer.
-func (s *edgeFunctionLister) List(selector labels.Selector) (ret []*v1alpha2.EdgeFunction, err error) {
-	err = cache.ListAll(s.indexer, selector, func(m interface{}) {
-		ret = append(ret, m.(*v1alpha2.EdgeFunction))
-	})
-	return ret, err
-}
-
-// Get retrieves the EdgeFunction from the index for a given name.
-func (s *edgeFunctionLister) Get(name string) (*v1alpha2.EdgeFunction, error) {
-	obj, exists, err := s.indexer.GetByKey(name)
-	if err != nil {
-		return nil, err
-	}
-	if !exists {
-		return nil, errors.NewNotFound(v1alpha2.Resource("edgefunction"), name)
-	}
-	return obj.(*v1alpha2.EdgeFunction), nil
+	return &edgeFunctionLister{listers.New[*extensionsv1alpha2.EdgeFunction](indexer, extensionsv1alpha2.Resource("edgefunction"))}
 }

@@ -1,5 +1,5 @@
 /*
-Copyright 2025 Apoxy, Inc.
+Copyright 2026 Apoxy, Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,12 +18,12 @@ limitations under the License.
 package v1alpha2
 
 import (
-	"context"
+	context "context"
 	time "time"
 
-	extensionsv1alpha2 "github.com/apoxy-dev/apoxy/api/extensions/v1alpha2"
+	apiextensionsv1alpha2 "github.com/apoxy-dev/apoxy/api/extensions/v1alpha2"
 	internalinterfaces "github.com/apoxy-dev/apoxy/client/informers/internalinterfaces"
-	v1alpha2 "github.com/apoxy-dev/apoxy/client/listers/extensions/v1alpha2"
+	extensionsv1alpha2 "github.com/apoxy-dev/apoxy/client/listers/extensions/v1alpha2"
 	versioned "github.com/apoxy-dev/apoxy/client/versioned"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
@@ -35,7 +35,7 @@ import (
 // EdgeFunctions.
 type EdgeFunctionInformer interface {
 	Informer() cache.SharedIndexInformer
-	Lister() v1alpha2.EdgeFunctionLister
+	Lister() extensionsv1alpha2.EdgeFunctionLister
 }
 
 type edgeFunctionInformer struct {
@@ -69,7 +69,7 @@ func NewFilteredEdgeFunctionInformer(client versioned.Interface, resyncPeriod ti
 				return client.ExtensionsV1alpha2().EdgeFunctions().Watch(context.TODO(), options)
 			},
 		},
-		&extensionsv1alpha2.EdgeFunction{},
+		&apiextensionsv1alpha2.EdgeFunction{},
 		resyncPeriod,
 		indexers,
 	)
@@ -80,9 +80,9 @@ func (f *edgeFunctionInformer) defaultInformer(client versioned.Interface, resyn
 }
 
 func (f *edgeFunctionInformer) Informer() cache.SharedIndexInformer {
-	return f.factory.InformerFor(&extensionsv1alpha2.EdgeFunction{}, f.defaultInformer)
+	return f.factory.InformerFor(&apiextensionsv1alpha2.EdgeFunction{}, f.defaultInformer)
 }
 
-func (f *edgeFunctionInformer) Lister() v1alpha2.EdgeFunctionLister {
-	return v1alpha2.NewEdgeFunctionLister(f.Informer().GetIndexer())
+func (f *edgeFunctionInformer) Lister() extensionsv1alpha2.EdgeFunctionLister {
+	return extensionsv1alpha2.NewEdgeFunctionLister(f.Informer().GetIndexer())
 }

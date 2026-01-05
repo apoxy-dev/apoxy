@@ -1,5 +1,5 @@
 /*
-Copyright 2025 Apoxy, Inc.
+Copyright 2026 Apoxy, Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,114 +18,32 @@ limitations under the License.
 package fake
 
 import (
-	"context"
-
 	v1alpha2 "github.com/apoxy-dev/apoxy/api/gateway/v1alpha2"
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	labels "k8s.io/apimachinery/pkg/labels"
-	types "k8s.io/apimachinery/pkg/types"
-	watch "k8s.io/apimachinery/pkg/watch"
-	testing "k8s.io/client-go/testing"
+	gatewayv1alpha2 "github.com/apoxy-dev/apoxy/client/versioned/typed/gateway/v1alpha2"
+	gentype "k8s.io/client-go/gentype"
 )
 
-// FakeUDPRoutes implements UDPRouteInterface
-type FakeUDPRoutes struct {
+// fakeUDPRoutes implements UDPRouteInterface
+type fakeUDPRoutes struct {
+	*gentype.FakeClientWithList[*v1alpha2.UDPRoute, *v1alpha2.UDPRouteList]
 	Fake *FakeGatewayV1alpha2
 }
 
-var udproutesResource = v1alpha2.SchemeGroupVersion.WithResource("udproutes")
-
-var udproutesKind = v1alpha2.SchemeGroupVersion.WithKind("UDPRoute")
-
-// Get takes name of the uDPRoute, and returns the corresponding uDPRoute object, and an error if there is any.
-func (c *FakeUDPRoutes) Get(ctx context.Context, name string, options v1.GetOptions) (result *v1alpha2.UDPRoute, err error) {
-	obj, err := c.Fake.
-		Invokes(testing.NewRootGetAction(udproutesResource, name), &v1alpha2.UDPRoute{})
-	if obj == nil {
-		return nil, err
+func newFakeUDPRoutes(fake *FakeGatewayV1alpha2) gatewayv1alpha2.UDPRouteInterface {
+	return &fakeUDPRoutes{
+		gentype.NewFakeClientWithList[*v1alpha2.UDPRoute, *v1alpha2.UDPRouteList](
+			fake.Fake,
+			"",
+			v1alpha2.SchemeGroupVersion.WithResource("udproutes"),
+			v1alpha2.SchemeGroupVersion.WithKind("UDPRoute"),
+			func() *v1alpha2.UDPRoute { return &v1alpha2.UDPRoute{} },
+			func() *v1alpha2.UDPRouteList { return &v1alpha2.UDPRouteList{} },
+			func(dst, src *v1alpha2.UDPRouteList) { dst.ListMeta = src.ListMeta },
+			func(list *v1alpha2.UDPRouteList) []*v1alpha2.UDPRoute { return gentype.ToPointerSlice(list.Items) },
+			func(list *v1alpha2.UDPRouteList, items []*v1alpha2.UDPRoute) {
+				list.Items = gentype.FromPointerSlice(items)
+			},
+		),
+		fake,
 	}
-	return obj.(*v1alpha2.UDPRoute), err
-}
-
-// List takes label and field selectors, and returns the list of UDPRoutes that match those selectors.
-func (c *FakeUDPRoutes) List(ctx context.Context, opts v1.ListOptions) (result *v1alpha2.UDPRouteList, err error) {
-	obj, err := c.Fake.
-		Invokes(testing.NewRootListAction(udproutesResource, udproutesKind, opts), &v1alpha2.UDPRouteList{})
-	if obj == nil {
-		return nil, err
-	}
-
-	label, _, _ := testing.ExtractFromListOptions(opts)
-	if label == nil {
-		label = labels.Everything()
-	}
-	list := &v1alpha2.UDPRouteList{ListMeta: obj.(*v1alpha2.UDPRouteList).ListMeta}
-	for _, item := range obj.(*v1alpha2.UDPRouteList).Items {
-		if label.Matches(labels.Set(item.Labels)) {
-			list.Items = append(list.Items, item)
-		}
-	}
-	return list, err
-}
-
-// Watch returns a watch.Interface that watches the requested uDPRoutes.
-func (c *FakeUDPRoutes) Watch(ctx context.Context, opts v1.ListOptions) (watch.Interface, error) {
-	return c.Fake.
-		InvokesWatch(testing.NewRootWatchAction(udproutesResource, opts))
-}
-
-// Create takes the representation of a uDPRoute and creates it.  Returns the server's representation of the uDPRoute, and an error, if there is any.
-func (c *FakeUDPRoutes) Create(ctx context.Context, uDPRoute *v1alpha2.UDPRoute, opts v1.CreateOptions) (result *v1alpha2.UDPRoute, err error) {
-	obj, err := c.Fake.
-		Invokes(testing.NewRootCreateAction(udproutesResource, uDPRoute), &v1alpha2.UDPRoute{})
-	if obj == nil {
-		return nil, err
-	}
-	return obj.(*v1alpha2.UDPRoute), err
-}
-
-// Update takes the representation of a uDPRoute and updates it. Returns the server's representation of the uDPRoute, and an error, if there is any.
-func (c *FakeUDPRoutes) Update(ctx context.Context, uDPRoute *v1alpha2.UDPRoute, opts v1.UpdateOptions) (result *v1alpha2.UDPRoute, err error) {
-	obj, err := c.Fake.
-		Invokes(testing.NewRootUpdateAction(udproutesResource, uDPRoute), &v1alpha2.UDPRoute{})
-	if obj == nil {
-		return nil, err
-	}
-	return obj.(*v1alpha2.UDPRoute), err
-}
-
-// UpdateStatus was generated because the type contains a Status member.
-// Add a +genclient:noStatus comment above the type to avoid generating UpdateStatus().
-func (c *FakeUDPRoutes) UpdateStatus(ctx context.Context, uDPRoute *v1alpha2.UDPRoute, opts v1.UpdateOptions) (*v1alpha2.UDPRoute, error) {
-	obj, err := c.Fake.
-		Invokes(testing.NewRootUpdateSubresourceAction(udproutesResource, "status", uDPRoute), &v1alpha2.UDPRoute{})
-	if obj == nil {
-		return nil, err
-	}
-	return obj.(*v1alpha2.UDPRoute), err
-}
-
-// Delete takes name of the uDPRoute and deletes it. Returns an error if one occurs.
-func (c *FakeUDPRoutes) Delete(ctx context.Context, name string, opts v1.DeleteOptions) error {
-	_, err := c.Fake.
-		Invokes(testing.NewRootDeleteActionWithOptions(udproutesResource, name, opts), &v1alpha2.UDPRoute{})
-	return err
-}
-
-// DeleteCollection deletes a collection of objects.
-func (c *FakeUDPRoutes) DeleteCollection(ctx context.Context, opts v1.DeleteOptions, listOpts v1.ListOptions) error {
-	action := testing.NewRootDeleteCollectionAction(udproutesResource, listOpts)
-
-	_, err := c.Fake.Invokes(action, &v1alpha2.UDPRouteList{})
-	return err
-}
-
-// Patch applies the patch and returns the patched uDPRoute.
-func (c *FakeUDPRoutes) Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts v1.PatchOptions, subresources ...string) (result *v1alpha2.UDPRoute, err error) {
-	obj, err := c.Fake.
-		Invokes(testing.NewRootPatchSubresourceAction(udproutesResource, name, pt, data, subresources...), &v1alpha2.UDPRoute{})
-	if obj == nil {
-		return nil, err
-	}
-	return obj.(*v1alpha2.UDPRoute), err
 }

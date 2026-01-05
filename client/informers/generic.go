@@ -1,5 +1,5 @@
 /*
-Copyright 2025 Apoxy, Inc.
+Copyright 2026 Apoxy, Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,7 +18,7 @@ limitations under the License.
 package informers
 
 import (
-	"fmt"
+	fmt "fmt"
 
 	v1alpha1 "github.com/apoxy-dev/apoxy/api/controllers/v1alpha1"
 	v1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"

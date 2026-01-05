@@ -1,5 +1,5 @@
 /*
-Copyright 2025 Apoxy, Inc.
+Copyright 2026 Apoxy, Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -28,7 +28,7 @@ type FakePolicyV1alpha1 struct {
 }
 
 func (c *FakePolicyV1alpha1) RateLimits() v1alpha1.RateLimitInterface {
-	return &FakeRateLimits{c}
+	return newFakeRateLimits(c)
 }
 
 // RESTClient returns a RESTClient that is used to communicate

@@ -155,6 +155,16 @@ func findReplicaStatus(p *corev1alpha2.Proxy, rname string) (*corev1alpha2.Proxy
 	return nil, false
 }
 
+// getReplicaAddress returns the address of the given type from a replica, or empty string if not found.
+func getReplicaAddress(replica *corev1alpha2.ProxyReplicaStatus, addrType corev1alpha2.ReplicaAddressType) string {
+	for _, addr := range replica.Addresses {
+		if addr.Type == addrType {
+			return addr.Address
+		}
+	}
+	return ""
+}
+
 func (r *ProxyReconciler) Reconcile(ctx context.Context, request reconcile.Request) (reconcile.Result, error) {
 	p := &corev1alpha2.Proxy{}
 	err := r.Get(ctx, request.NamespacedName, p)

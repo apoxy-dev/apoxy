@@ -1,5 +1,5 @@
 /*
-Copyright 2025 Apoxy, Inc.
+Copyright 2026 Apoxy, Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,10 +18,10 @@ limitations under the License.
 package v1alpha2
 
 import (
-	v1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
-	"k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/client-go/tools/cache"
+	corev1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
+	labels "k8s.io/apimachinery/pkg/labels"
+	listers "k8s.io/client-go/listers"
+	cache "k8s.io/client-go/tools/cache"
 )
 
 // TunnelLister helps list Tunnels.
@@ -29,39 +29,19 @@ import (
 type TunnelLister interface {
 	// List lists all Tunnels in the indexer.
 	// Objects returned here must be treated as read-only.
-	List(selector labels.Selector) (ret []*v1alpha2.Tunnel, err error)
+	List(selector labels.Selector) (ret []*corev1alpha2.Tunnel, err error)
 	// Get retrieves the Tunnel from the index for a given name.
 	// Objects returned here must be treated as read-only.
-	Get(name string) (*v1alpha2.Tunnel, error)
+	Get(name string) (*corev1alpha2.Tunnel, error)
 	TunnelListerExpansion
 }
 
 // tunnelLister implements the TunnelLister interface.
 type tunnelLister struct {
-	indexer cache.Indexer
+	listers.ResourceIndexer[*corev1alpha2.Tunnel]
 }
 
 // NewTunnelLister returns a new TunnelLister.
 func NewTunnelLister(indexer cache.Indexer) TunnelLister {
-	return &tunnelLister{indexer: indexer}
-}
-
-// List lists all Tunnels in the indexer.
-func (s *tunnelLister) List(selector labels.Selector) (ret []*v1alpha2.Tunnel, err error) {
-	err = cache.ListAll(s.indexer, selector, func(m interface{}) {
-		ret = append(ret, m.(*v1alpha2.Tunnel))
-	})
-	return ret, err
-}
-
-// Get retrieves the Tunnel from the index for a given name.
-func (s *tunnelLister) Get(name string) (*v1alpha2.Tunnel, error) {
-	obj, exists, err := s.indexer.GetByKey(name)
-	if err != nil {
-		return nil, err
-	}
-	if !exists {
-		return nil, errors.NewNotFound(v1alpha2.Resource("tunnel"), name)
-	}
-	return obj.(*v1alpha2.Tunnel), nil
+	return &tunnelLister{listers.New[*corev1alpha2.Tunnel](indexer, corev1alpha2.Resource("tunnel"))}
 }

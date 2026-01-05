@@ -1,5 +1,5 @@
 /*
-Copyright 2025 Apoxy, Inc.
+Copyright 2026 Apoxy, Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,10 +18,10 @@ limitations under the License.
 package v1alpha
 
 import (
-	v1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
-	"k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/client-go/tools/cache"
+	corev1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
+	labels "k8s.io/apimachinery/pkg/labels"
+	listers "k8s.io/client-go/listers"
+	cache "k8s.io/client-go/tools/cache"
 )
 
 // DomainLister helps list Domains.
@@ -29,39 +29,19 @@ import (
 type DomainLister interface {
 	// List lists all Domains in the indexer.
 	// Objects returned here must be treated as read-only.
-	List(selector labels.Selector) (ret []*v1alpha.Domain, err error)
+	List(selector labels.Selector) (ret []*corev1alpha.Domain, err error)
 	// Get retrieves the Domain from the index for a given name.
 	// Objects returned here must be treated as read-only.
-	Get(name string) (*v1alpha.Domain, error)
+	Get(name string) (*corev1alpha.Domain, error)
 	DomainListerExpansion
 }
 
 // domainLister implements the DomainLister interface.
 type domainLister struct {
-	indexer cache.Indexer
+	listers.ResourceIndexer[*corev1alpha.Domain]
 }
 
 // NewDomainLister returns a new DomainLister.
 func NewDomainLister(indexer cache.Indexer) DomainLister {
-	return &domainLister{indexer: indexer}
-}
-
-// List lists all Domains in the indexer.
-func (s *domainLister) List(selector labels.Selector) (ret []*v1alpha.Domain, err error) {
-	err = cache.ListAll(s.indexer, selector, func(m interface{}) {
-		ret = append(ret, m.(*v1alpha.Domain))
-	})
-	return ret, err
-}
-
-// Get retrieves the Domain from the index for a given name.
-func (s *domainLister) Get(name string) (*v1alpha.Domain, error) {
-	obj, exists, err := s.indexer.GetByKey(name)
-	if err != nil {
-		return nil, err
-	}
-	if !exists {
-		return nil, errors.NewNotFound(v1alpha.Resource("domain"), name)
-	}
-	return obj.(*v1alpha.Domain), nil
+	return &domainLister{listers.New[*corev1alpha.Domain](indexer, corev1alpha.Resource("domain"))}
 }

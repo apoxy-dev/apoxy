@@ -1,5 +1,5 @@
 /*
-Copyright 2025 Apoxy, Inc.
+Copyright 2026 Apoxy, Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,114 +18,34 @@ limitations under the License.
 package fake
 
 import (
-	"context"
-
 	v1alpha2 "github.com/apoxy-dev/apoxy/api/extensions/v1alpha2"
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	labels "k8s.io/apimachinery/pkg/labels"
-	types "k8s.io/apimachinery/pkg/types"
-	watch "k8s.io/apimachinery/pkg/watch"
-	testing "k8s.io/client-go/testing"
+	extensionsv1alpha2 "github.com/apoxy-dev/apoxy/client/versioned/typed/extensions/v1alpha2"
+	gentype "k8s.io/client-go/gentype"
 )
 
-// FakeEdgeFunctionRevisions implements EdgeFunctionRevisionInterface
-type FakeEdgeFunctionRevisions struct {
+// fakeEdgeFunctionRevisions implements EdgeFunctionRevisionInterface
+type fakeEdgeFunctionRevisions struct {
+	*gentype.FakeClientWithList[*v1alpha2.EdgeFunctionRevision, *v1alpha2.EdgeFunctionRevisionList]
 	Fake *FakeExtensionsV1alpha2
 }
 
-var edgefunctionrevisionsResource = v1alpha2.SchemeGroupVersion.WithResource("edgefunctionrevisions")
-
-var edgefunctionrevisionsKind = v1alpha2.SchemeGroupVersion.WithKind("EdgeFunctionRevision")
-
-// Get takes name of the edgeFunctionRevision, and returns the corresponding edgeFunctionRevision object, and an error if there is any.
-func (c *FakeEdgeFunctionRevisions) Get(ctx context.Context, name string, options v1.GetOptions) (result *v1alpha2.EdgeFunctionRevision, err error) {
-	obj, err := c.Fake.
-		Invokes(testing.NewRootGetAction(edgefunctionrevisionsResource, name), &v1alpha2.EdgeFunctionRevision{})
-	if obj == nil {
-		return nil, err
+func newFakeEdgeFunctionRevisions(fake *FakeExtensionsV1alpha2) extensionsv1alpha2.EdgeFunctionRevisionInterface {
+	return &fakeEdgeFunctionRevisions{
+		gentype.NewFakeClientWithList[*v1alpha2.EdgeFunctionRevision, *v1alpha2.EdgeFunctionRevisionList](
+			fake.Fake,
+			"",
+			v1alpha2.SchemeGroupVersion.WithResource("edgefunctionrevisions"),
+			v1alpha2.SchemeGroupVersion.WithKind("EdgeFunctionRevision"),
+			func() *v1alpha2.EdgeFunctionRevision { return &v1alpha2.EdgeFunctionRevision{} },
+			func() *v1alpha2.EdgeFunctionRevisionList { return &v1alpha2.EdgeFunctionRevisionList{} },
+			func(dst, src *v1alpha2.EdgeFunctionRevisionList) { dst.ListMeta = src.ListMeta },
+			func(list *v1alpha2.EdgeFunctionRevisionList) []*v1alpha2.EdgeFunctionRevision {
+				return gentype.ToPointerSlice(list.Items)
+			},
+			func(list *v1alpha2.EdgeFunctionRevisionList, items []*v1alpha2.EdgeFunctionRevision) {
+				list.Items = gentype.FromPointerSlice(items)
+			},
+		),
+		fake,
 	}
-	return obj.(*v1alpha2.EdgeFunctionRevision), err
-}
-
-// List takes label and field selectors, and returns the list of EdgeFunctionRevisions that match those selectors.
-func (c *FakeEdgeFunctionRevisions) List(ctx context.Context, opts v1.ListOptions) (result *v1alpha2.EdgeFunctionRevisionList, err error) {
-	obj, err := c.Fake.
-		Invokes(testing.NewRootListAction(edgefunctionrevisionsResource, edgefunctionrevisionsKind, opts), &v1alpha2.EdgeFunctionRevisionList{})
-	if obj == nil {
-		return nil, err
-	}
-
-	label, _, _ := testing.ExtractFromListOptions(opts)
-	if label == nil {
-		label = labels.Everything()
-	}
-	list := &v1alpha2.EdgeFunctionRevisionList{ListMeta: obj.(*v1alpha2.EdgeFunctionRevisionList).ListMeta}
-	for _, item := range obj.(*v1alpha2.EdgeFunctionRevisionList).Items {
-		if label.Matches(labels.Set(item.Labels)) {
-			list.Items = append(list.Items, item)
-		}
-	}
-	return list, err
-}
-
-// Watch returns a watch.Interface that watches the requested edgeFunctionRevisions.
-func (c *FakeEdgeFunctionRevisions) Watch(ctx context.Context, opts v1.ListOptions) (watch.Interface, error) {
-	return c.Fake.
-		InvokesWatch(testing.NewRootWatchAction(edgefunctionrevisionsResource, opts))
-}
-
-// Create takes the representation of a edgeFunctionRevision and creates it.  Returns the server's representation of the edgeFunctionRevision, and an error, if there is any.
-func (c *FakeEdgeFunctionRevisions) Create(ctx context.Context, edgeFunctionRevision *v1alpha2.EdgeFunctionRevision, opts v1.CreateOptions) (result *v1alpha2.EdgeFunctionRevision, err error) {
-	obj, err := c.Fake.
-		Invokes(testing.NewRootCreateAction(edgefunctionrevisionsResource, edgeFunctionRevision), &v1alpha2.EdgeFunctionRevision{})
-	if obj == nil {
-		return nil, err
-	}
-	return obj.(*v1alpha2.EdgeFunctionRevision), err
-}
-
-// Update takes the representation of a edgeFunctionRevision and updates it. Returns the server's representation of the edgeFunctionRevision, and an error, if there is any.
-func (c *FakeEdgeFunctionRevisions) Update(ctx context.Context, edgeFunctionRevision *v1alpha2.EdgeFunctionRevision, opts v1.UpdateOptions) (result *v1alpha2.EdgeFunctionRevision, err error) {
-	obj, err := c.Fake.
-		Invokes(testing.NewRootUpdateAction(edgefunctionrevisionsResource, edgeFunctionRevision), &v1alpha2.EdgeFunctionRevision{})
-	if obj == nil {
-		return nil, err
-	}
-	return obj.(*v1alpha2.EdgeFunctionRevision), err
-}
-
-// UpdateStatus was generated because the type contains a Status member.
-// Add a +genclient:noStatus comment above the type to avoid generating UpdateStatus().
-func (c *FakeEdgeFunctionRevisions) UpdateStatus(ctx context.Context, edgeFunctionRevision *v1alpha2.EdgeFunctionRevision, opts v1.UpdateOptions) (*v1alpha2.EdgeFunctionRevision, error) {
-	obj, err := c.Fake.
-		Invokes(testing.NewRootUpdateSubresourceAction(edgefunctionrevisionsResource, "status", edgeFunctionRevision), &v1alpha2.EdgeFunctionRevision{})
-	if obj == nil {
-		return nil, err
-	}
-	return obj.(*v1alpha2.EdgeFunctionRevision), err
-}
-
-// Delete takes name of the edgeFunctionRevision and deletes it. Returns an error if one occurs.
-func (c *FakeEdgeFunctionRevisions) Delete(ctx context.Context, name string, opts v1.DeleteOptions) error {
-	_, err := c.Fake.
-		Invokes(testing.NewRootDeleteActionWithOptions(edgefunctionrevisionsResource, name, opts), &v1alpha2.EdgeFunctionRevision{})
-	return err
-}
-
-// DeleteCollection deletes a collection of objects.
-func (c *FakeEdgeFunctionRevisions) DeleteCollection(ctx context.Context, opts v1.DeleteOptions, listOpts v1.ListOptions) error {
-	action := testing.NewRootDeleteCollectionAction(edgefunctionrevisionsResource, listOpts)
-
-	_, err := c.Fake.Invokes(action, &v1alpha2.EdgeFunctionRevisionList{})
-	return err
-}
-
-// Patch applies the patch and returns the patched edgeFunctionRevision.
-func (c *FakeEdgeFunctionRevisions) Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts v1.PatchOptions, subresources ...string) (result *v1alpha2.EdgeFunctionRevision, err error) {
-	obj, err := c.Fake.
-		Invokes(testing.NewRootPatchSubresourceAction(edgefunctionrevisionsResource, name, pt, data, subresources...), &v1alpha2.EdgeFunctionRevision{})
-	if obj == nil {
-		return nil, err
-	}
-	return obj.(*v1alpha2.EdgeFunctionRevision), err
 }

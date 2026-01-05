@@ -7,7 +7,7 @@ set -o pipefail
 ROOT_DIR="$(git rev-parse --show-toplevel)"
 
 # Configurable variables
-CODEGEN_VERSION=v0.30.1 # Should match the k8s.io/apimachinery version in go.mod
+CODEGEN_VERSION=v0.32.1 # Should match the k8s.io/apimachinery version in go.mod
 BOILERPLATE_FILE="${ROOT_DIR}/codegen/boilerplate.go.txt"
 
 echo "Generating deepcopy helpers..."
@@ -42,6 +42,19 @@ go run "k8s.io/code-generator/cmd/register-gen@${CODEGEN_VERSION}" \
   ./api/gateway/v1alpha2 \
   ./pkg/gateway/gatewayapi \
   ./pkg/gateway/ir
+
+# Fix missing imports in generated register files (register-gen bug in v0.32.x)
+echo "Fixing register imports..."
+for f in $(find "${ROOT_DIR}" -name 'zz_generated.register.go'); do
+  if ! grep -q '"k8s.io/apimachinery/pkg/runtime"' "$f"; then
+    if grep -q 'v1 "k8s.io/apimachinery/pkg/apis/meta/v1"' "$f"; then
+      sed -i.bak -e 's|v1 "k8s.io/apimachinery/pkg/apis/meta/v1"|v1 "k8s.io/apimachinery/pkg/apis/meta/v1"\'$'\n''\t"k8s.io/apimachinery/pkg/runtime"\'$'\n''\t"k8s.io/apimachinery/pkg/runtime/schema"|' "$f"
+    elif grep -q 'metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"' "$f"; then
+      sed -i.bak -e 's|metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"|metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"\'$'\n''\t"k8s.io/apimachinery/pkg/runtime"\'$'\n''\t"k8s.io/apimachinery/pkg/runtime/schema"|' "$f"
+    fi
+    rm -f "${f}.bak"
+  fi
+done
 
 echo "Generating client code..."
 

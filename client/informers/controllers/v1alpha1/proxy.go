@@ -1,5 +1,5 @@
 /*
-Copyright 2025 Apoxy, Inc.
+Copyright 2026 Apoxy, Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,12 +18,12 @@ limitations under the License.
 package v1alpha1
 
 import (
-	"context"
+	context "context"
 	time "time"
 
-	controllersv1alpha1 "github.com/apoxy-dev/apoxy/api/controllers/v1alpha1"
+	apicontrollersv1alpha1 "github.com/apoxy-dev/apoxy/api/controllers/v1alpha1"
 	internalinterfaces "github.com/apoxy-dev/apoxy/client/informers/internalinterfaces"
-	v1alpha1 "github.com/apoxy-dev/apoxy/client/listers/controllers/v1alpha1"
+	controllersv1alpha1 "github.com/apoxy-dev/apoxy/client/listers/controllers/v1alpha1"
 	versioned "github.com/apoxy-dev/apoxy/client/versioned"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
@@ -35,7 +35,7 @@ import (
 // Proxies.
 type ProxyInformer interface {
 	Informer() cache.SharedIndexInformer
-	Lister() v1alpha1.ProxyLister
+	Lister() controllersv1alpha1.ProxyLister
 }
 
 type proxyInformer struct {
@@ -69,7 +69,7 @@ func NewFilteredProxyInformer(client versioned.Interface, resyncPeriod time.Dura
 				return client.ControllersV1alpha1().Proxies().Watch(context.TODO(), options)
 			},
 		},
-		&controllersv1alpha1.Proxy{},
+		&apicontrollersv1alpha1.Proxy{},
 		resyncPeriod,
 		indexers,
 	)
@@ -80,9 +80,9 @@ func (f *proxyInformer) defaultInformer(client versioned.Interface, resyncPeriod
 }
 
 func (f *proxyInformer) Informer() cache.SharedIndexInformer {
-	return f.factory.InformerFor(&controllersv1alpha1.Proxy{}, f.defaultInformer)
+	return f.factory.InformerFor(&apicontrollersv1alpha1.Proxy{}, f.defaultInformer)
 }
 
-func (f *proxyInformer) Lister() v1alpha1.ProxyLister {
-	return v1alpha1.NewProxyLister(f.Informer().GetIndexer())
+func (f *proxyInformer) Lister() controllersv1alpha1.ProxyLister {
+	return controllersv1alpha1.NewProxyLister(f.Informer().GetIndexer())
 }

@@ -1,5 +1,5 @@
 /*
-Copyright 2025 Apoxy, Inc.
+Copyright 2026 Apoxy, Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,15 +18,14 @@ limitations under the License.
 package v1alpha2
 
 import (
-	"context"
-	"time"
+	context "context"
 
-	v1alpha2 "github.com/apoxy-dev/apoxy/api/gateway/v1alpha2"
+	gatewayv1alpha2 "github.com/apoxy-dev/apoxy/api/gateway/v1alpha2"
 	scheme "github.com/apoxy-dev/apoxy/client/versioned/scheme"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	types "k8s.io/apimachinery/pkg/types"
 	watch "k8s.io/apimachinery/pkg/watch"
-	rest "k8s.io/client-go/rest"
+	gentype "k8s.io/client-go/gentype"
 )
 
 // TCPRoutesGetter has a method to return a TCPRouteInterface.
@@ -37,147 +36,34 @@ type TCPRoutesGetter interface {
 
 // TCPRouteInterface has methods to work with TCPRoute resources.
 type TCPRouteInterface interface {
-	Create(ctx context.Context, tCPRoute *v1alpha2.TCPRoute, opts v1.CreateOptions) (*v1alpha2.TCPRoute, error)
-	Update(ctx context.Context, tCPRoute *v1alpha2.TCPRoute, opts v1.UpdateOptions) (*v1alpha2.TCPRoute, error)
-	UpdateStatus(ctx context.Context, tCPRoute *v1alpha2.TCPRoute, opts v1.UpdateOptions) (*v1alpha2.TCPRoute, error)
+	Create(ctx context.Context, tCPRoute *gatewayv1alpha2.TCPRoute, opts v1.CreateOptions) (*gatewayv1alpha2.TCPRoute, error)
+	Update(ctx context.Context, tCPRoute *gatewayv1alpha2.TCPRoute, opts v1.UpdateOptions) (*gatewayv1alpha2.TCPRoute, error)
+	// Add a +genclient:noStatus comment above the type to avoid generating UpdateStatus().
+	UpdateStatus(ctx context.Context, tCPRoute *gatewayv1alpha2.TCPRoute, opts v1.UpdateOptions) (*gatewayv1alpha2.TCPRoute, error)
 	Delete(ctx context.Context, name string, opts v1.DeleteOptions) error
 	DeleteCollection(ctx context.Context, opts v1.DeleteOptions, listOpts v1.ListOptions) error
-	Get(ctx context.Context, name string, opts v1.GetOptions) (*v1alpha2.TCPRoute, error)
-	List(ctx context.Context, opts v1.ListOptions) (*v1alpha2.TCPRouteList, error)
+	Get(ctx context.Context, name string, opts v1.GetOptions) (*gatewayv1alpha2.TCPRoute, error)
+	List(ctx context.Context, opts v1.ListOptions) (*gatewayv1alpha2.TCPRouteList, error)
 	Watch(ctx context.Context, opts v1.ListOptions) (watch.Interface, error)
-	Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts v1.PatchOptions, subresources ...string) (result *v1alpha2.TCPRoute, err error)
+	Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts v1.PatchOptions, subresources ...string) (result *gatewayv1alpha2.TCPRoute, err error)
 	TCPRouteExpansion
 }
 
 // tCPRoutes implements TCPRouteInterface
 type tCPRoutes struct {
-	client rest.Interface
+	*gentype.ClientWithList[*gatewayv1alpha2.TCPRoute, *gatewayv1alpha2.TCPRouteList]
 }
 
 // newTCPRoutes returns a TCPRoutes
 func newTCPRoutes(c *GatewayV1alpha2Client) *tCPRoutes {
 	return &tCPRoutes{
-		client: c.RESTClient(),
+		gentype.NewClientWithList[*gatewayv1alpha2.TCPRoute, *gatewayv1alpha2.TCPRouteList](
+			"tcproutes",
+			c.RESTClient(),
+			scheme.ParameterCodec,
+			"",
+			func() *gatewayv1alpha2.TCPRoute { return &gatewayv1alpha2.TCPRoute{} },
+			func() *gatewayv1alpha2.TCPRouteList { return &gatewayv1alpha2.TCPRouteList{} },
+		),
 	}
-}
-
-// Get takes name of the tCPRoute, and returns the corresponding tCPRoute object, and an error if there is any.
-func (c *tCPRoutes) Get(ctx context.Context, name string, options v1.GetOptions) (result *v1alpha2.TCPRoute, err error) {
-	result = &v1alpha2.TCPRoute{}
-	err = c.client.Get().
-		Resource("tcproutes").
-		Name(name).
-		VersionedParams(&options, scheme.ParameterCodec).
-		Do(ctx).
-		Into(result)
-	return
-}
-
-// List takes label and field selectors, and returns the list of TCPRoutes that match those selectors.
-func (c *tCPRoutes) List(ctx context.Context, opts v1.ListOptions) (result *v1alpha2.TCPRouteList, err error) {
-	var timeout time.Duration
-	if opts.TimeoutSeconds != nil {
-		timeout = time.Duration(*opts.TimeoutSeconds) * time.Second
-	}
-	result = &v1alpha2.TCPRouteList{}
-	err = c.client.Get().
-		Resource("tcproutes").
-		VersionedParams(&opts, scheme.ParameterCodec).
-		Timeout(timeout).
-		Do(ctx).
-		Into(result)
-	return
-}
-
-// Watch returns a watch.Interface that watches the requested tCPRoutes.
-func (c *tCPRoutes) Watch(ctx context.Context, opts v1.ListOptions) (watch.Interface, error) {
-	var timeout time.Duration
-	if opts.TimeoutSeconds != nil {
-		timeout = time.Duration(*opts.TimeoutSeconds) * time.Second
-	}
-	opts.Watch = true
-	return c.client.Get().
-		Resource("tcproutes").
-		VersionedParams(&opts, scheme.ParameterCodec).
-		Timeout(timeout).
-		Watch(ctx)
-}
-
-// Create takes the representation of a tCPRoute and creates it.  Returns the server's representation of the tCPRoute, and an error, if there is any.
-func (c *tCPRoutes) Create(ctx context.Context, tCPRoute *v1alpha2.TCPRoute, opts v1.CreateOptions) (result *v1alpha2.TCPRoute, err error) {
-	result = &v1alpha2.TCPRoute{}
-	err = c.client.Post().
-		Resource("tcproutes").
-		VersionedParams(&opts, scheme.ParameterCodec).
-		Body(tCPRoute).
-		Do(ctx).
-		Into(result)
-	return
-}
-
-// Update takes the representation of a tCPRoute and updates it. Returns the server's representation of the tCPRoute, and an error, if there is any.
-func (c *tCPRoutes) Update(ctx context.Context, tCPRoute *v1alpha2.TCPRoute, opts v1.UpdateOptions) (result *v1alpha2.TCPRoute, err error) {
-	result = &v1alpha2.TCPRoute{}
-	err = c.client.Put().
-		Resource("tcproutes").
-		Name(tCPRoute.Name).
-		VersionedParams(&opts, scheme.ParameterCodec).
-		Body(tCPRoute).
-		Do(ctx).
-		Into(result)
-	return
-}
-
-// UpdateStatus was generated because the type contains a Status member.
-// Add a +genclient:noStatus comment above the type to avoid generating UpdateStatus().
-func (c *tCPRoutes) UpdateStatus(ctx context.Context, tCPRoute *v1alpha2.TCPRoute, opts v1.UpdateOptions) (result *v1alpha2.TCPRoute, err error) {
-	result = &v1alpha2.TCPRoute{}
-	err = c.client.Put().
-		Resource("tcproutes").
-		Name(tCPRoute.Name).
-		SubResource("status").
-		VersionedParams(&opts, scheme.ParameterCodec).
-		Body(tCPRoute).
-		Do(ctx).
-		Into(result)
-	return
-}
-
-// Delete takes name of the tCPRoute and deletes it. Returns an error if one occurs.
-func (c *tCPRoutes) Delete(ctx context.Context, name string, opts v1.DeleteOptions) error {
-	return c.client.Delete().
-		Resource("tcproutes").
-		Name(name).
-		Body(&opts).
-		Do(ctx).
-		Error()
-}
-
-// DeleteCollection deletes a collection of objects.
-func (c *tCPRoutes) DeleteCollection(ctx context.Context, opts v1.DeleteOptions, listOpts v1.ListOptions) error {
-	var timeout time.Duration
-	if listOpts.TimeoutSeconds != nil {
-		timeout = time.Duration(*listOpts.TimeoutSeconds) * time.Second
-	}
-	return c.client.Delete().
-		Resource("tcproutes").
-		VersionedParams(&listOpts, scheme.ParameterCodec).
-		Timeout(timeout).
-		Body(&opts).
-		Do(ctx).
-		Error()
-}
-
-// Patch applies the patch and returns the patched tCPRoute.
-func (c *tCPRoutes) Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts v1.PatchOptions, subresources ...string) (result *v1alpha2.TCPRoute, err error) {
-	result = &v1alpha2.TCPRoute{}
-	err = c.client.Patch(pt).
-		Resource("tcproutes").
-		Name(name).
-		SubResource(subresources...).
-		VersionedParams(&opts, scheme.ParameterCodec).
-		Body(data).
-		Do(ctx).
-		Into(result)
-	return
 }

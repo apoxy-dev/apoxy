@@ -1,5 +1,5 @@
 /*
-Copyright 2025 Apoxy, Inc.
+Copyright 2026 Apoxy, Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,10 +18,10 @@ limitations under the License.
 package v1alpha
 
 import (
-	v1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
-	"k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/client-go/tools/cache"
+	corev1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
+	labels "k8s.io/apimachinery/pkg/labels"
+	listers "k8s.io/client-go/listers"
+	cache "k8s.io/client-go/tools/cache"
 )
 
 // BackendLister helps list Backends.
@@ -29,39 +29,19 @@ import (
 type BackendLister interface {
 	// List lists all Backends in the indexer.
 	// Objects returned here must be treated as read-only.
-	List(selector labels.Selector) (ret []*v1alpha.Backend, err error)
+	List(selector labels.Selector) (ret []*corev1alpha.Backend, err error)
 	// Get retrieves the Backend from the index for a given name.
 	// Objects returned here must be treated as read-only.
-	Get(name string) (*v1alpha.Backend, error)
+	Get(name string) (*corev1alpha.Backend, error)
 	BackendListerExpansion
 }
 
 // backendLister implements the BackendLister interface.
 type backendLister struct {
-	indexer cache.Indexer
+	listers.ResourceIndexer[*corev1alpha.Backend]
 }
 
 // NewBackendLister returns a new BackendLister.
 func NewBackendLister(indexer cache.Indexer) BackendLister {
-	return &backendLister{indexer: indexer}
-}
-
-// List lists all Backends in the indexer.
-func (s *backendLister) List(selector labels.Selector) (ret []*v1alpha.Backend, err error) {
-	err = cache.ListAll(s.indexer, selector, func(m interface{}) {
-		ret = append(ret, m.(*v1alpha.Backend))
-	})
-	return ret, err
-}
-
-// Get retrieves the Backend from the index for a given name.
-func (s *backendLister) Get(name string) (*v1alpha.Backend, error) {
-	obj, exists, err := s.indexer.GetByKey(name)
-	if err != nil {
-		return nil, err
-	}
-	if !exists {
-		return nil, errors.NewNotFound(v1alpha.Resource("backend"), name)
-	}
-	return obj.(*v1alpha.Backend), nil
+	return &backendLister{listers.New[*corev1alpha.Backend](indexer, corev1alpha.Resource("backend"))}
 }

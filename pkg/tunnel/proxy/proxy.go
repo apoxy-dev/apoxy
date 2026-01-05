@@ -53,6 +53,16 @@ func NewProxyTunnelReconciler(
 	}
 }
 
+// getReplicaAddress returns the address of the given type from a replica, or empty string if not found.
+func getReplicaAddress(replica *corev1alpha2.ProxyReplicaStatus, addrType corev1alpha2.ReplicaAddressType) string {
+	for _, addr := range replica.Addresses {
+		if addr.Type == addrType {
+			return addr.Address
+		}
+	}
+	return ""
+}
+
 // Reconcile implements reconcile.Reconciler.
 func (r *ProxyTunnelReconciler) Reconcile(ctx context.Context, request reconcile.Request) (ctrl.Result, error) {
 	log := clog.FromContext(ctx)
@@ -72,21 +82,22 @@ func (r *ProxyTunnelReconciler) Reconcile(ctx context.Context, request reconcile
 
 	var eps []lwtunnel.Endpoint
 	for _, replica := range proxy.Status.Replicas {
-		if replica.Address == "" {
-			log.Info("Skipping replica with no address", "replica", replica.Name)
+		ulaAddr := getReplicaAddress(replica, corev1alpha2.ReplicaInternalULA)
+		if ulaAddr == "" {
+			log.Info("Skipping replica with no ULA address", "replica", replica.Name)
 			continue
 		}
 
-		replicaAddr, err := netip.ParseAddr(replica.Address)
+		replicaAddr, err := netip.ParseAddr(ulaAddr)
 		if err != nil {
-			log.Error(err, "Failed to parse replica address",
-				"replica", replica.Name, "address", replica.Address)
+			log.Error(err, "Failed to parse replica ULA address",
+				"replica", replica.Name, "address", ulaAddr)
 			continue
 		}
 
 		if !replicaAddr.Is6() || !replicaAddr.IsGlobalUnicast() {
-			log.Error(fmt.Errorf("invalid address"), "Replica address must be global unicast IPv6",
-				"replica", replica.Name, "address", replica.Address)
+			log.Error(fmt.Errorf("invalid address"), "Replica ULA address must be global unicast IPv6",
+				"replica", replica.Name, "address", ulaAddr)
 			continue
 		}
 
@@ -97,19 +108,20 @@ func (r *ProxyTunnelReconciler) Reconcile(ctx context.Context, request reconcile
 			continue
 		}
 
-		if replica.PrivateAddress == "" {
-			log.Info("Skipping replica with no private address", "replica", replica.Name)
+		internalIP := getReplicaAddress(replica, corev1alpha2.ReplicaInternalIP)
+		if internalIP == "" {
+			log.Info("Skipping replica with no internal IP address", "replica", replica.Name)
 			continue
 		}
-		privateAddr, err := netip.ParseAddr(replica.PrivateAddress)
+		privateAddr, err := netip.ParseAddr(internalIP)
 		if err != nil {
-			log.Error(err, "Failed to parse private address",
-				"replica", replica.Name, "address", replica.PrivateAddress)
+			log.Error(err, "Failed to parse internal IP address",
+				"replica", replica.Name, "address", internalIP)
 			continue
 		}
 		if !privateAddr.IsGlobalUnicast() {
-			log.Error(fmt.Errorf("invalid address"), "Private address must be global unicast",
-				"replica", replica.Name, "address", replica.PrivateAddress)
+			log.Error(fmt.Errorf("invalid address"), "Internal IP address must be global unicast",
+				"replica", replica.Name, "address", internalIP)
 			continue
 		}
 

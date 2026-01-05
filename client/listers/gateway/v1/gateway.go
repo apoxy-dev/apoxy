@@ -1,5 +1,5 @@
 /*
-Copyright 2025 Apoxy, Inc.
+Copyright 2026 Apoxy, Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,10 +18,10 @@ limitations under the License.
 package v1
 
 import (
-	v1 "github.com/apoxy-dev/apoxy/api/gateway/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/client-go/tools/cache"
+	gatewayv1 "github.com/apoxy-dev/apoxy/api/gateway/v1"
+	labels "k8s.io/apimachinery/pkg/labels"
+	listers "k8s.io/client-go/listers"
+	cache "k8s.io/client-go/tools/cache"
 )
 
 // GatewayLister helps list Gateways.
@@ -29,39 +29,19 @@ import (
 type GatewayLister interface {
 	// List lists all Gateways in the indexer.
 	// Objects returned here must be treated as read-only.
-	List(selector labels.Selector) (ret []*v1.Gateway, err error)
+	List(selector labels.Selector) (ret []*gatewayv1.Gateway, err error)
 	// Get retrieves the Gateway from the index for a given name.
 	// Objects returned here must be treated as read-only.
-	Get(name string) (*v1.Gateway, error)
+	Get(name string) (*gatewayv1.Gateway, error)
 	GatewayListerExpansion
 }
 
 // gatewayLister implements the GatewayLister interface.
 type gatewayLister struct {
-	indexer cache.Indexer
+	listers.ResourceIndexer[*gatewayv1.Gateway]
 }
 
 // NewGatewayLister returns a new GatewayLister.
 func NewGatewayLister(indexer cache.Indexer) GatewayLister {
-	return &gatewayLister{indexer: indexer}
-}
-
-// List lists all Gateways in the indexer.
-func (s *gatewayLister) List(selector labels.Selector) (ret []*v1.Gateway, err error) {
-	err = cache.ListAll(s.indexer, selector, func(m interface{}) {
-		ret = append(ret, m.(*v1.Gateway))
-	})
-	return ret, err
-}
-
-// Get retrieves the Gateway from the index for a given name.
-func (s *gatewayLister) Get(name string) (*v1.Gateway, error) {
-	obj, exists, err := s.indexer.GetByKey(name)
-	if err != nil {
-		return nil, err
-	}
-	if !exists {
-		return nil, errors.NewNotFound(v1.Resource("gateway"), name)
-	}
-	return obj.(*v1.Gateway), nil
+	return &gatewayLister{listers.New[*gatewayv1.Gateway](indexer, gatewayv1.Resource("gateway"))}
 }

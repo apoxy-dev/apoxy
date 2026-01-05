@@ -1,5 +1,5 @@
 /*
-Copyright 2025 Apoxy, Inc.
+Copyright 2026 Apoxy, Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,114 +18,32 @@ limitations under the License.
 package fake
 
 import (
-	"context"
-
 	v1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	labels "k8s.io/apimachinery/pkg/labels"
-	types "k8s.io/apimachinery/pkg/types"
-	watch "k8s.io/apimachinery/pkg/watch"
-	testing "k8s.io/client-go/testing"
+	corev1alpha "github.com/apoxy-dev/apoxy/client/versioned/typed/core/v1alpha"
+	gentype "k8s.io/client-go/gentype"
 )
 
-// FakeDomainZones implements DomainZoneInterface
-type FakeDomainZones struct {
+// fakeDomainZones implements DomainZoneInterface
+type fakeDomainZones struct {
+	*gentype.FakeClientWithList[*v1alpha.DomainZone, *v1alpha.DomainZoneList]
 	Fake *FakeCoreV1alpha
 }
 
-var domainzonesResource = v1alpha.SchemeGroupVersion.WithResource("domainzones")
-
-var domainzonesKind = v1alpha.SchemeGroupVersion.WithKind("DomainZone")
-
-// Get takes name of the domainZone, and returns the corresponding domainZone object, and an error if there is any.
-func (c *FakeDomainZones) Get(ctx context.Context, name string, options v1.GetOptions) (result *v1alpha.DomainZone, err error) {
-	obj, err := c.Fake.
-		Invokes(testing.NewRootGetAction(domainzonesResource, name), &v1alpha.DomainZone{})
-	if obj == nil {
-		return nil, err
+func newFakeDomainZones(fake *FakeCoreV1alpha) corev1alpha.DomainZoneInterface {
+	return &fakeDomainZones{
+		gentype.NewFakeClientWithList[*v1alpha.DomainZone, *v1alpha.DomainZoneList](
+			fake.Fake,
+			"",
+			v1alpha.SchemeGroupVersion.WithResource("domainzones"),
+			v1alpha.SchemeGroupVersion.WithKind("DomainZone"),
+			func() *v1alpha.DomainZone { return &v1alpha.DomainZone{} },
+			func() *v1alpha.DomainZoneList { return &v1alpha.DomainZoneList{} },
+			func(dst, src *v1alpha.DomainZoneList) { dst.ListMeta = src.ListMeta },
+			func(list *v1alpha.DomainZoneList) []*v1alpha.DomainZone { return gentype.ToPointerSlice(list.Items) },
+			func(list *v1alpha.DomainZoneList, items []*v1alpha.DomainZone) {
+				list.Items = gentype.FromPointerSlice(items)
+			},
+		),
+		fake,
 	}
-	return obj.(*v1alpha.DomainZone), err
-}
-
-// List takes label and field selectors, and returns the list of DomainZones that match those selectors.
-func (c *FakeDomainZones) List(ctx context.Context, opts v1.ListOptions) (result *v1alpha.DomainZoneList, err error) {
-	obj, err := c.Fake.
-		Invokes(testing.NewRootListAction(domainzonesResource, domainzonesKind, opts), &v1alpha.DomainZoneList{})
-	if obj == nil {
-		return nil, err
-	}
-
-	label, _, _ := testing.ExtractFromListOptions(opts)
-	if label == nil {
-		label = labels.Everything()
-	}
-	list := &v1alpha.DomainZoneList{ListMeta: obj.(*v1alpha.DomainZoneList).ListMeta}
-	for _, item := range obj.(*v1alpha.DomainZoneList).Items {
-		if label.Matches(labels.Set(item.Labels)) {
-			list.Items = append(list.Items, item)
-		}
-	}
-	return list, err
-}
-
-// Watch returns a watch.Interface that watches the requested domainZones.
-func (c *FakeDomainZones) Watch(ctx context.Context, opts v1.ListOptions) (watch.Interface, error) {
-	return c.Fake.
-		InvokesWatch(testing.NewRootWatchAction(domainzonesResource, opts))
-}
-
-// Create takes the representation of a domainZone and creates it.  Returns the server's representation of the domainZone, and an error, if there is any.
-func (c *FakeDomainZones) Create(ctx context.Context, domainZone *v1alpha.DomainZone, opts v1.CreateOptions) (result *v1alpha.DomainZone, err error) {
-	obj, err := c.Fake.
-		Invokes(testing.NewRootCreateAction(domainzonesResource, domainZone), &v1alpha.DomainZone{})
-	if obj == nil {
-		return nil, err
-	}
-	return obj.(*v1alpha.DomainZone), err
-}
-
-// Update takes the representation of a domainZone and updates it. Returns the server's representation of the domainZone, and an error, if there is any.
-func (c *FakeDomainZones) Update(ctx context.Context, domainZone *v1alpha.DomainZone, opts v1.UpdateOptions) (result *v1alpha.DomainZone, err error) {
-	obj, err := c.Fake.
-		Invokes(testing.NewRootUpdateAction(domainzonesResource, domainZone), &v1alpha.DomainZone{})
-	if obj == nil {
-		return nil, err
-	}
-	return obj.(*v1alpha.DomainZone), err
-}
-
-// UpdateStatus was generated because the type contains a Status member.
-// Add a +genclient:noStatus comment above the type to avoid generating UpdateStatus().
-func (c *FakeDomainZones) UpdateStatus(ctx context.Context, domainZone *v1alpha.DomainZone, opts v1.UpdateOptions) (*v1alpha.DomainZone, error) {
-	obj, err := c.Fake.
-		Invokes(testing.NewRootUpdateSubresourceAction(domainzonesResource, "status", domainZone), &v1alpha.DomainZone{})
-	if obj == nil {
-		return nil, err
-	}
-	return obj.(*v1alpha.DomainZone), err
-}
-
-// Delete takes name of the domainZone and deletes it. Returns an error if one occurs.
-func (c *FakeDomainZones) Delete(ctx context.Context, name string, opts v1.DeleteOptions) error {
-	_, err := c.Fake.
-		Invokes(testing.NewRootDeleteActionWithOptions(domainzonesResource, name, opts), &v1alpha.DomainZone{})
-	return err
-}
-
-// DeleteCollection deletes a collection of objects.
-func (c *FakeDomainZones) DeleteCollection(ctx context.Context, opts v1.DeleteOptions, listOpts v1.ListOptions) error {
-	action := testing.NewRootDeleteCollectionAction(domainzonesResource, listOpts)
-
-	_, err := c.Fake.Invokes(action, &v1alpha.DomainZoneList{})
-	return err
-}
-
-// Patch applies the patch and returns the patched domainZone.
-func (c *FakeDomainZones) Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts v1.PatchOptions, subresources ...string) (result *v1alpha.DomainZone, err error) {
-	obj, err := c.Fake.
-		Invokes(testing.NewRootPatchSubresourceAction(domainzonesResource, name, pt, data, subresources...), &v1alpha.DomainZone{})
-	if obj == nil {
-		return nil, err
-	}
-	return obj.(*v1alpha.DomainZone), err
 }

@@ -1,5 +1,5 @@
 /*
-Copyright 2025 Apoxy, Inc.
+Copyright 2026 Apoxy, Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,12 +18,12 @@ limitations under the License.
 package v1alpha
 
 import (
-	"context"
+	context "context"
 	time "time"
 
-	corev1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
+	apicorev1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
 	internalinterfaces "github.com/apoxy-dev/apoxy/client/informers/internalinterfaces"
-	v1alpha "github.com/apoxy-dev/apoxy/client/listers/core/v1alpha"
+	corev1alpha "github.com/apoxy-dev/apoxy/client/listers/core/v1alpha"
 	versioned "github.com/apoxy-dev/apoxy/client/versioned"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
@@ -35,7 +35,7 @@ import (
 // DomainZones.
 type DomainZoneInformer interface {
 	Informer() cache.SharedIndexInformer
-	Lister() v1alpha.DomainZoneLister
+	Lister() corev1alpha.DomainZoneLister
 }
 
 type domainZoneInformer struct {
@@ -69,7 +69,7 @@ func NewFilteredDomainZoneInformer(client versioned.Interface, resyncPeriod time
 				return client.CoreV1alpha().DomainZones().Watch(context.TODO(), options)
 			},
 		},
-		&corev1alpha.DomainZone{},
+		&apicorev1alpha.DomainZone{},
 		resyncPeriod,
 		indexers,
 	)
@@ -80,9 +80,9 @@ func (f *domainZoneInformer) defaultInformer(client versioned.Interface, resyncP
 }
 
 func (f *domainZoneInformer) Informer() cache.SharedIndexInformer {
-	return f.factory.InformerFor(&corev1alpha.DomainZone{}, f.defaultInformer)
+	return f.factory.InformerFor(&apicorev1alpha.DomainZone{}, f.defaultInformer)
 }
 
-func (f *domainZoneInformer) Lister() v1alpha.DomainZoneLister {
-	return v1alpha.NewDomainZoneLister(f.Informer().GetIndexer())
+func (f *domainZoneInformer) Lister() corev1alpha.DomainZoneLister {
+	return corev1alpha.NewDomainZoneLister(f.Informer().GetIndexer())
 }

@@ -1,5 +1,5 @@
 /*
-Copyright 2025 Apoxy, Inc.
+Copyright 2026 Apoxy, Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,12 +18,12 @@ limitations under the License.
 package v1alpha1
 
 import (
-	"context"
+	context "context"
 	time "time"
 
-	extensionsv1alpha1 "github.com/apoxy-dev/apoxy/api/extensions/v1alpha1"
+	apiextensionsv1alpha1 "github.com/apoxy-dev/apoxy/api/extensions/v1alpha1"
 	internalinterfaces "github.com/apoxy-dev/apoxy/client/informers/internalinterfaces"
-	v1alpha1 "github.com/apoxy-dev/apoxy/client/listers/extensions/v1alpha1"
+	extensionsv1alpha1 "github.com/apoxy-dev/apoxy/client/listers/extensions/v1alpha1"
 	versioned "github.com/apoxy-dev/apoxy/client/versioned"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
@@ -35,7 +35,7 @@ import (
 // EdgeFunctionRevisions.
 type EdgeFunctionRevisionInformer interface {
 	Informer() cache.SharedIndexInformer
-	Lister() v1alpha1.EdgeFunctionRevisionLister
+	Lister() extensionsv1alpha1.EdgeFunctionRevisionLister
 }
 
 type edgeFunctionRevisionInformer struct {
@@ -69,7 +69,7 @@ func NewFilteredEdgeFunctionRevisionInformer(client versioned.Interface, resyncP
 				return client.ExtensionsV1alpha1().EdgeFunctionRevisions().Watch(context.TODO(), options)
 			},
 		},
-		&extensionsv1alpha1.EdgeFunctionRevision{},
+		&apiextensionsv1alpha1.EdgeFunctionRevision{},
 		resyncPeriod,
 		indexers,
 	)
@@ -80,9 +80,9 @@ func (f *edgeFunctionRevisionInformer) defaultInformer(client versioned.Interfac
 }
 
 func (f *edgeFunctionRevisionInformer) Informer() cache.SharedIndexInformer {
-	return f.factory.InformerFor(&extensionsv1alpha1.EdgeFunctionRevision{}, f.defaultInformer)
+	return f.factory.InformerFor(&apiextensionsv1alpha1.EdgeFunctionRevision{}, f.defaultInformer)
 }
 
-func (f *edgeFunctionRevisionInformer) Lister() v1alpha1.EdgeFunctionRevisionLister {
-	return v1alpha1.NewEdgeFunctionRevisionLister(f.Informer().GetIndexer())
+func (f *edgeFunctionRevisionInformer) Lister() extensionsv1alpha1.EdgeFunctionRevisionLister {
+	return extensionsv1alpha1.NewEdgeFunctionRevisionLister(f.Informer().GetIndexer())
 }

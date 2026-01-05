@@ -1,5 +1,5 @@
 /*
-Copyright 2025 Apoxy, Inc.
+Copyright 2026 Apoxy, Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,12 +18,12 @@ limitations under the License.
 package v1alpha2
 
 import (
-	"context"
+	context "context"
 	time "time"
 
-	gatewayv1alpha2 "github.com/apoxy-dev/apoxy/api/gateway/v1alpha2"
+	apigatewayv1alpha2 "github.com/apoxy-dev/apoxy/api/gateway/v1alpha2"
 	internalinterfaces "github.com/apoxy-dev/apoxy/client/informers/internalinterfaces"
-	v1alpha2 "github.com/apoxy-dev/apoxy/client/listers/gateway/v1alpha2"
+	gatewayv1alpha2 "github.com/apoxy-dev/apoxy/client/listers/gateway/v1alpha2"
 	versioned "github.com/apoxy-dev/apoxy/client/versioned"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
@@ -35,7 +35,7 @@ import (
 // TCPRoutes.
 type TCPRouteInformer interface {
 	Informer() cache.SharedIndexInformer
-	Lister() v1alpha2.TCPRouteLister
+	Lister() gatewayv1alpha2.TCPRouteLister
 }
 
 type tCPRouteInformer struct {
@@ -69,7 +69,7 @@ func NewFilteredTCPRouteInformer(client versioned.Interface, resyncPeriod time.D
 				return client.GatewayV1alpha2().TCPRoutes().Watch(context.TODO(), options)
 			},
 		},
-		&gatewayv1alpha2.TCPRoute{},
+		&apigatewayv1alpha2.TCPRoute{},
 		resyncPeriod,
 		indexers,
 	)
@@ -80,9 +80,9 @@ func (f *tCPRouteInformer) defaultInformer(client versioned.Interface, resyncPer
 }
 
 func (f *tCPRouteInformer) Informer() cache.SharedIndexInformer {
-	return f.factory.InformerFor(&gatewayv1alpha2.TCPRoute{}, f.defaultInformer)
+	return f.factory.InformerFor(&apigatewayv1alpha2.TCPRoute{}, f.defaultInformer)
 }
 
-func (f *tCPRouteInformer) Lister() v1alpha2.TCPRouteLister {
-	return v1alpha2.NewTCPRouteLister(f.Informer().GetIndexer())
+func (f *tCPRouteInformer) Lister() gatewayv1alpha2.TCPRouteLister {
+	return gatewayv1alpha2.NewTCPRouteLister(f.Informer().GetIndexer())
 }

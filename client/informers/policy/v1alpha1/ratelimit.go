@@ -1,5 +1,5 @@
 /*
-Copyright 2025 Apoxy, Inc.
+Copyright 2026 Apoxy, Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,12 +18,12 @@ limitations under the License.
 package v1alpha1
 
 import (
-	"context"
+	context "context"
 	time "time"
 
-	policyv1alpha1 "github.com/apoxy-dev/apoxy/api/policy/v1alpha1"
+	apipolicyv1alpha1 "github.com/apoxy-dev/apoxy/api/policy/v1alpha1"
 	internalinterfaces "github.com/apoxy-dev/apoxy/client/informers/internalinterfaces"
-	v1alpha1 "github.com/apoxy-dev/apoxy/client/listers/policy/v1alpha1"
+	policyv1alpha1 "github.com/apoxy-dev/apoxy/client/listers/policy/v1alpha1"
 	versioned "github.com/apoxy-dev/apoxy/client/versioned"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
@@ -35,7 +35,7 @@ import (
 // RateLimits.
 type RateLimitInformer interface {
 	Informer() cache.SharedIndexInformer
-	Lister() v1alpha1.RateLimitLister
+	Lister() policyv1alpha1.RateLimitLister
 }
 
 type rateLimitInformer struct {
@@ -69,7 +69,7 @@ func NewFilteredRateLimitInformer(client versioned.Interface, resyncPeriod time.
 				return client.PolicyV1alpha1().RateLimits().Watch(context.TODO(), options)
 			},
 		},
-		&policyv1alpha1.RateLimit{},
+		&apipolicyv1alpha1.RateLimit{},
 		resyncPeriod,
 		indexers,
 	)
@@ -80,9 +80,9 @@ func (f *rateLimitInformer) defaultInformer(client versioned.Interface, resyncPe
 }
 
 func (f *rateLimitInformer) Informer() cache.SharedIndexInformer {
-	return f.factory.InformerFor(&policyv1alpha1.RateLimit{}, f.defaultInformer)
+	return f.factory.InformerFor(&apipolicyv1alpha1.RateLimit{}, f.defaultInformer)
 }
 
-func (f *rateLimitInformer) Lister() v1alpha1.RateLimitLister {
-	return v1alpha1.NewRateLimitLister(f.Informer().GetIndexer())
+func (f *rateLimitInformer) Lister() policyv1alpha1.RateLimitLister {
+	return policyv1alpha1.NewRateLimitLister(f.Informer().GetIndexer())
 }

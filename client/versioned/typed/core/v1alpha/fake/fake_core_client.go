@@ -1,5 +1,5 @@
 /*
-Copyright 2025 Apoxy, Inc.
+Copyright 2026 Apoxy, Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -28,23 +28,23 @@ type FakeCoreV1alpha struct {
 }
 
 func (c *FakeCoreV1alpha) Backends() v1alpha.BackendInterface {
-	return &FakeBackends{c}
+	return newFakeBackends(c)
 }
 
 func (c *FakeCoreV1alpha) CloudMonitoringIntegrations() v1alpha.CloudMonitoringIntegrationInterface {
-	return &FakeCloudMonitoringIntegrations{c}
+	return newFakeCloudMonitoringIntegrations(c)
 }
 
 func (c *FakeCoreV1alpha) Domains() v1alpha.DomainInterface {
-	return &FakeDomains{c}
+	return newFakeDomains(c)
 }
 
 func (c *FakeCoreV1alpha) DomainZones() v1alpha.DomainZoneInterface {
-	return &FakeDomainZones{c}
+	return newFakeDomainZones(c)
 }
 
 func (c *FakeCoreV1alpha) TunnelNodes() v1alpha.TunnelNodeInterface {
-	return &FakeTunnelNodes{c}
+	return newFakeTunnelNodes(c)
 }
 
 // RESTClient returns a RESTClient that is used to communicate

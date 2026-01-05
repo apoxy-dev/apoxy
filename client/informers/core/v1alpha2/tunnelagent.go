@@ -1,5 +1,5 @@
 /*
-Copyright 2025 Apoxy, Inc.
+Copyright 2026 Apoxy, Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,12 +18,12 @@ limitations under the License.
 package v1alpha2
 
 import (
-	"context"
+	context "context"
 	time "time"
 
-	corev1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
+	apicorev1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
 	internalinterfaces "github.com/apoxy-dev/apoxy/client/informers/internalinterfaces"
-	v1alpha2 "github.com/apoxy-dev/apoxy/client/listers/core/v1alpha2"
+	corev1alpha2 "github.com/apoxy-dev/apoxy/client/listers/core/v1alpha2"
 	versioned "github.com/apoxy-dev/apoxy/client/versioned"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
@@ -35,7 +35,7 @@ import (
 // TunnelAgents.
 type TunnelAgentInformer interface {
 	Informer() cache.SharedIndexInformer
-	Lister() v1alpha2.TunnelAgentLister
+	Lister() corev1alpha2.TunnelAgentLister
 }
 
 type tunnelAgentInformer struct {
@@ -69,7 +69,7 @@ func NewFilteredTunnelAgentInformer(client versioned.Interface, resyncPeriod tim
 				return client.CoreV1alpha2().TunnelAgents().Watch(context.TODO(), options)
 			},
 		},
-		&corev1alpha2.TunnelAgent{},
+		&apicorev1alpha2.TunnelAgent{},
 		resyncPeriod,
 		indexers,
 	)
@@ -80,9 +80,9 @@ func (f *tunnelAgentInformer) defaultInformer(client versioned.Interface, resync
 }
 
 func (f *tunnelAgentInformer) Informer() cache.SharedIndexInformer {
-	return f.factory.InformerFor(&corev1alpha2.TunnelAgent{}, f.defaultInformer)
+	return f.factory.InformerFor(&apicorev1alpha2.TunnelAgent{}, f.defaultInformer)
 }
 
-func (f *tunnelAgentInformer) Lister() v1alpha2.TunnelAgentLister {
-	return v1alpha2.NewTunnelAgentLister(f.Informer().GetIndexer())
+func (f *tunnelAgentInformer) Lister() corev1alpha2.TunnelAgentLister {
+	return corev1alpha2.NewTunnelAgentLister(f.Informer().GetIndexer())
 }

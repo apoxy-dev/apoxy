@@ -82,11 +82,12 @@ func (r *TunnelNodeReconciler) Reconcile(ctx context.Context, request reconcile.
 		log.Info("Proxy replica not found")
 		return ctrl.Result{}, nil
 	}
-	if rs.Address == "" {
-		log.Info("Proxy replica address not found")
+	ulaAddr := getReplicaAddress(rs, corev1alpha2.ReplicaInternalULA)
+	if ulaAddr == "" {
+		log.Info("Proxy replica ULA address not found")
 		return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
 	}
-	addr, err := netip.ParseAddr(rs.Address)
+	addr, err := netip.ParseAddr(ulaAddr)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to parse address: %w", err)
 	}

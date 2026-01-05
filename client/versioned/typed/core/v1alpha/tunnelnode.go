@@ -1,5 +1,5 @@
 /*
-Copyright 2025 Apoxy, Inc.
+Copyright 2026 Apoxy, Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,15 +18,14 @@ limitations under the License.
 package v1alpha
 
 import (
-	"context"
-	"time"
+	context "context"
 
-	v1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
+	corev1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
 	scheme "github.com/apoxy-dev/apoxy/client/versioned/scheme"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	types "k8s.io/apimachinery/pkg/types"
 	watch "k8s.io/apimachinery/pkg/watch"
-	rest "k8s.io/client-go/rest"
+	gentype "k8s.io/client-go/gentype"
 )
 
 // TunnelNodesGetter has a method to return a TunnelNodeInterface.
@@ -37,147 +36,34 @@ type TunnelNodesGetter interface {
 
 // TunnelNodeInterface has methods to work with TunnelNode resources.
 type TunnelNodeInterface interface {
-	Create(ctx context.Context, tunnelNode *v1alpha.TunnelNode, opts v1.CreateOptions) (*v1alpha.TunnelNode, error)
-	Update(ctx context.Context, tunnelNode *v1alpha.TunnelNode, opts v1.UpdateOptions) (*v1alpha.TunnelNode, error)
-	UpdateStatus(ctx context.Context, tunnelNode *v1alpha.TunnelNode, opts v1.UpdateOptions) (*v1alpha.TunnelNode, error)
+	Create(ctx context.Context, tunnelNode *corev1alpha.TunnelNode, opts v1.CreateOptions) (*corev1alpha.TunnelNode, error)
+	Update(ctx context.Context, tunnelNode *corev1alpha.TunnelNode, opts v1.UpdateOptions) (*corev1alpha.TunnelNode, error)
+	// Add a +genclient:noStatus comment above the type to avoid generating UpdateStatus().
+	UpdateStatus(ctx context.Context, tunnelNode *corev1alpha.TunnelNode, opts v1.UpdateOptions) (*corev1alpha.TunnelNode, error)
 	Delete(ctx context.Context, name string, opts v1.DeleteOptions) error
 	DeleteCollection(ctx context.Context, opts v1.DeleteOptions, listOpts v1.ListOptions) error
-	Get(ctx context.Context, name string, opts v1.GetOptions) (*v1alpha.TunnelNode, error)
-	List(ctx context.Context, opts v1.ListOptions) (*v1alpha.TunnelNodeList, error)
+	Get(ctx context.Context, name string, opts v1.GetOptions) (*corev1alpha.TunnelNode, error)
+	List(ctx context.Context, opts v1.ListOptions) (*corev1alpha.TunnelNodeList, error)
 	Watch(ctx context.Context, opts v1.ListOptions) (watch.Interface, error)
-	Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts v1.PatchOptions, subresources ...string) (result *v1alpha.TunnelNode, err error)
+	Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts v1.PatchOptions, subresources ...string) (result *corev1alpha.TunnelNode, err error)
 	TunnelNodeExpansion
 }
 
 // tunnelNodes implements TunnelNodeInterface
 type tunnelNodes struct {
-	client rest.Interface
+	*gentype.ClientWithList[*corev1alpha.TunnelNode, *corev1alpha.TunnelNodeList]
 }
 
 // newTunnelNodes returns a TunnelNodes
 func newTunnelNodes(c *CoreV1alphaClient) *tunnelNodes {
 	return &tunnelNodes{
-		client: c.RESTClient(),
+		gentype.NewClientWithList[*corev1alpha.TunnelNode, *corev1alpha.TunnelNodeList](
+			"tunnelnodes",
+			c.RESTClient(),
+			scheme.ParameterCodec,
+			"",
+			func() *corev1alpha.TunnelNode { return &corev1alpha.TunnelNode{} },
+			func() *corev1alpha.TunnelNodeList { return &corev1alpha.TunnelNodeList{} },
+		),
 	}
-}
-
-// Get takes name of the tunnelNode, and returns the corresponding tunnelNode object, and an error if there is any.
-func (c *tunnelNodes) Get(ctx context.Context, name string, options v1.GetOptions) (result *v1alpha.TunnelNode, err error) {
-	result = &v1alpha.TunnelNode{}
-	err = c.client.Get().
-		Resource("tunnelnodes").
-		Name(name).
-		VersionedParams(&options, scheme.ParameterCodec).
-		Do(ctx).
-		Into(result)
-	return
-}
-
-// List takes label and field selectors, and returns the list of TunnelNodes that match those selectors.
-func (c *tunnelNodes) List(ctx context.Context, opts v1.ListOptions) (result *v1alpha.TunnelNodeList, err error) {
-	var timeout time.Duration
-	if opts.TimeoutSeconds != nil {
-		timeout = time.Duration(*opts.TimeoutSeconds) * time.Second
-	}
-	result = &v1alpha.TunnelNodeList{}
-	err = c.client.Get().
-		Resource("tunnelnodes").
-		VersionedParams(&opts, scheme.ParameterCodec).
-		Timeout(timeout).
-		Do(ctx).
-		Into(result)
-	return
-}
-
-// Watch returns a watch.Interface that watches the requested tunnelNodes.
-func (c *tunnelNodes) Watch(ctx context.Context, opts v1.ListOptions) (watch.Interface, error) {
-	var timeout time.Duration
-	if opts.TimeoutSeconds != nil {
-		timeout = time.Duration(*opts.TimeoutSeconds) * time.Second
-	}
-	opts.Watch = true
-	return c.client.Get().
-		Resource("tunnelnodes").
-		VersionedParams(&opts, scheme.ParameterCodec).
-		Timeout(timeout).
-		Watch(ctx)
-}
-
-// Create takes the representation of a tunnelNode and creates it.  Returns the server's representation of the tunnelNode, and an error, if there is any.
-func (c *tunnelNodes) Create(ctx context.Context, tunnelNode *v1alpha.TunnelNode, opts v1.CreateOptions) (result *v1alpha.TunnelNode, err error) {
-	result = &v1alpha.TunnelNode{}
-	err = c.client.Post().
-		Resource("tunnelnodes").
-		VersionedParams(&opts, scheme.ParameterCodec).
-		Body(tunnelNode).
-		Do(ctx).
-		Into(result)
-	return
-}
-
-// Update takes the representation of a tunnelNode and updates it. Returns the server's representation of the tunnelNode, and an error, if there is any.
-func (c *tunnelNodes) Update(ctx context.Context, tunnelNode *v1alpha.TunnelNode, opts v1.UpdateOptions) (result *v1alpha.TunnelNode, err error) {
-	result = &v1alpha.TunnelNode{}
-	err = c.client.Put().
-		Resource("tunnelnodes").
-		Name(tunnelNode.Name).
-		VersionedParams(&opts, scheme.ParameterCodec).
-		Body(tunnelNode).
-		Do(ctx).
-		Into(result)
-	return
-}
-
-// UpdateStatus was generated because the type contains a Status member.
-// Add a +genclient:noStatus comment above the type to avoid generating UpdateStatus().
-func (c *tunnelNodes) UpdateStatus(ctx context.Context, tunnelNode *v1alpha.TunnelNode, opts v1.UpdateOptions) (result *v1alpha.TunnelNode, err error) {
-	result = &v1alpha.TunnelNode{}
-	err = c.client.Put().
-		Resource("tunnelnodes").
-		Name(tunnelNode.Name).
-		SubResource("status").
-		VersionedParams(&opts, scheme.ParameterCodec).
-		Body(tunnelNode).
-		Do(ctx).
-		Into(result)
-	return
-}
-
-// Delete takes name of the tunnelNode and deletes it. Returns an error if one occurs.
-func (c *tunnelNodes) Delete(ctx context.Context, name string, opts v1.DeleteOptions) error {
-	return c.client.Delete().
-		Resource("tunnelnodes").
-		Name(name).
-		Body(&opts).
-		Do(ctx).
-		Error()
-}
-
-// DeleteCollection deletes a collection of objects.
-func (c *tunnelNodes) DeleteCollection(ctx context.Context, opts v1.DeleteOptions, listOpts v1.ListOptions) error {
-	var timeout time.Duration
-	if listOpts.TimeoutSeconds != nil {
-		timeout = time.Duration(*listOpts.TimeoutSeconds) * time.Second
-	}
-	return c.client.Delete().
-		Resource("tunnelnodes").
-		VersionedParams(&listOpts, scheme.ParameterCodec).
-		Timeout(timeout).
-		Body(&opts).
-		Do(ctx).
-		Error()
-}
-
-// Patch applies the patch and returns the patched tunnelNode.
-func (c *tunnelNodes) Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts v1.PatchOptions, subresources ...string) (result *v1alpha.TunnelNode, err error) {
-	result = &v1alpha.TunnelNode{}
-	err = c.client.Patch(pt).
-		Resource("tunnelnodes").
-		Name(name).
-		SubResource(subresources...).
-		VersionedParams(&opts, scheme.ParameterCodec).
-		Body(data).
-		Do(ctx).
-		Into(result)
-	return
 }

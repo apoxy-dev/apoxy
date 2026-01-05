@@ -1,5 +1,5 @@
 /*
-Copyright 2025 Apoxy, Inc.
+Copyright 2026 Apoxy, Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -28,19 +28,19 @@ type FakeGatewayV1 struct {
 }
 
 func (c *FakeGatewayV1) GRPCRoutes() v1.GRPCRouteInterface {
-	return &FakeGRPCRoutes{c}
+	return newFakeGRPCRoutes(c)
 }
 
 func (c *FakeGatewayV1) Gateways() v1.GatewayInterface {
-	return &FakeGateways{c}
+	return newFakeGateways(c)
 }
 
 func (c *FakeGatewayV1) GatewayClasses() v1.GatewayClassInterface {
-	return &FakeGatewayClasses{c}
+	return newFakeGatewayClasses(c)
 }
 
 func (c *FakeGatewayV1) HTTPRoutes() v1.HTTPRouteInterface {
-	return &FakeHTTPRoutes{c}
+	return newFakeHTTPRoutes(c)
 }
 
 // RESTClient returns a RESTClient that is used to communicate

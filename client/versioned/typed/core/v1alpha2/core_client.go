@@ -1,5 +1,5 @@
 /*
-Copyright 2025 Apoxy, Inc.
+Copyright 2026 Apoxy, Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,10 +18,10 @@ limitations under the License.
 package v1alpha2
 
 import (
-	"net/http"
+	http "net/http"
 
-	v1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
-	"github.com/apoxy-dev/apoxy/client/versioned/scheme"
+	corev1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
+	scheme "github.com/apoxy-dev/apoxy/client/versioned/scheme"
 	rest "k8s.io/client-go/rest"
 )
 
@@ -114,10 +114,10 @@ func New(c rest.Interface) *CoreV1alpha2Client {
 }
 
 func setConfigDefaults(config *rest.Config) error {
-	gv := v1alpha2.SchemeGroupVersion
+	gv := corev1alpha2.SchemeGroupVersion
 	config.GroupVersion = &gv
 	config.APIPath = "/apis"
-	config.NegotiatedSerializer = scheme.Codecs.WithoutConversion()
+	config.NegotiatedSerializer = rest.CodecFactoryForGeneratedClient(scheme.Scheme, scheme.Codecs).WithoutConversion()
 
 	if config.UserAgent == "" {
 		config.UserAgent = rest.DefaultKubernetesUserAgent()

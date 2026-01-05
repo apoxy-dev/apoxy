@@ -1,5 +1,5 @@
 /*
-Copyright 2025 Apoxy, Inc.
+Copyright 2026 Apoxy, Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,10 +18,10 @@ limitations under the License.
 package v1alpha2
 
 import (
-	v1alpha2 "github.com/apoxy-dev/apoxy/api/gateway/v1alpha2"
-	"k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/client-go/tools/cache"
+	gatewayv1alpha2 "github.com/apoxy-dev/apoxy/api/gateway/v1alpha2"
+	labels "k8s.io/apimachinery/pkg/labels"
+	listers "k8s.io/client-go/listers"
+	cache "k8s.io/client-go/tools/cache"
 )
 
 // UDPRouteLister helps list UDPRoutes.
@@ -29,39 +29,19 @@ import (
 type UDPRouteLister interface {
 	// List lists all UDPRoutes in the indexer.
 	// Objects returned here must be treated as read-only.
-	List(selector labels.Selector) (ret []*v1alpha2.UDPRoute, err error)
+	List(selector labels.Selector) (ret []*gatewayv1alpha2.UDPRoute, err error)
 	// Get retrieves the UDPRoute from the index for a given name.
 	// Objects returned here must be treated as read-only.
-	Get(name string) (*v1alpha2.UDPRoute, error)
+	Get(name string) (*gatewayv1alpha2.UDPRoute, error)
 	UDPRouteListerExpansion
 }
 
 // uDPRouteLister implements the UDPRouteLister interface.
 type uDPRouteLister struct {
-	indexer cache.Indexer
+	listers.ResourceIndexer[*gatewayv1alpha2.UDPRoute]
 }
 
 // NewUDPRouteLister returns a new UDPRouteLister.
 func NewUDPRouteLister(indexer cache.Indexer) UDPRouteLister {
-	return &uDPRouteLister{indexer: indexer}
-}
-
-// List lists all UDPRoutes in the indexer.
-func (s *uDPRouteLister) List(selector labels.Selector) (ret []*v1alpha2.UDPRoute, err error) {
-	err = cache.ListAll(s.indexer, selector, func(m interface{}) {
-		ret = append(ret, m.(*v1alpha2.UDPRoute))
-	})
-	return ret, err
-}
-
-// Get retrieves the UDPRoute from the index for a given name.
-func (s *uDPRouteLister) Get(name string) (*v1alpha2.UDPRoute, error) {
-	obj, exists, err := s.indexer.GetByKey(name)
-	if err != nil {
-		return nil, err
-	}
-	if !exists {
-		return nil, errors.NewNotFound(v1alpha2.Resource("udproute"), name)
-	}
-	return obj.(*v1alpha2.UDPRoute), nil
+	return &uDPRouteLister{listers.New[*gatewayv1alpha2.UDPRoute](indexer, gatewayv1alpha2.Resource("udproute"))}
 }

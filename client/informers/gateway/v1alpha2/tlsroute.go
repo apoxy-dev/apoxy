@@ -1,5 +1,5 @@
 /*
-Copyright 2025 Apoxy, Inc.
+Copyright 2026 Apoxy, Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,12 +18,12 @@ limitations under the License.
 package v1alpha2
 
 import (
-	"context"
+	context "context"
 	time "time"
 
-	gatewayv1alpha2 "github.com/apoxy-dev/apoxy/api/gateway/v1alpha2"
+	apigatewayv1alpha2 "github.com/apoxy-dev/apoxy/api/gateway/v1alpha2"
 	internalinterfaces "github.com/apoxy-dev/apoxy/client/informers/internalinterfaces"
-	v1alpha2 "github.com/apoxy-dev/apoxy/client/listers/gateway/v1alpha2"
+	gatewayv1alpha2 "github.com/apoxy-dev/apoxy/client/listers/gateway/v1alpha2"
 	versioned "github.com/apoxy-dev/apoxy/client/versioned"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
@@ -35,7 +35,7 @@ import (
 // TLSRoutes.
 type TLSRouteInformer interface {
 	Informer() cache.SharedIndexInformer
-	Lister() v1alpha2.TLSRouteLister
+	Lister() gatewayv1alpha2.TLSRouteLister
 }
 
 type tLSRouteInformer struct {
@@ -69,7 +69,7 @@ func NewFilteredTLSRouteInformer(client versioned.Interface, resyncPeriod time.D
 				return client.GatewayV1alpha2().TLSRoutes().Watch(context.TODO(), options)
 			},
 		},
-		&gatewayv1alpha2.TLSRoute{},
+		&apigatewayv1alpha2.TLSRoute{},
 		resyncPeriod,
 		indexers,
 	)
@@ -80,9 +80,9 @@ func (f *tLSRouteInformer) defaultInformer(client versioned.Interface, resyncPer
 }
 
 func (f *tLSRouteInformer) Informer() cache.SharedIndexInformer {
-	return f.factory.InformerFor(&gatewayv1alpha2.TLSRoute{}, f.defaultInformer)
+	return f.factory.InformerFor(&apigatewayv1alpha2.TLSRoute{}, f.defaultInformer)
 }
 
-func (f *tLSRouteInformer) Lister() v1alpha2.TLSRouteLister {
-	return v1alpha2.NewTLSRouteLister(f.Informer().GetIndexer())
+func (f *tLSRouteInformer) Lister() gatewayv1alpha2.TLSRouteLister {
+	return gatewayv1alpha2.NewTLSRouteLister(f.Informer().GetIndexer())
 }

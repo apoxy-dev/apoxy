@@ -1,5 +1,5 @@
 /*
-Copyright 2025 Apoxy, Inc.
+Copyright 2026 Apoxy, Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,114 +18,34 @@ limitations under the License.
 package fake
 
 import (
-	"context"
-
 	v1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	labels "k8s.io/apimachinery/pkg/labels"
-	types "k8s.io/apimachinery/pkg/types"
-	watch "k8s.io/apimachinery/pkg/watch"
-	testing "k8s.io/client-go/testing"
+	corev1alpha2 "github.com/apoxy-dev/apoxy/client/versioned/typed/core/v1alpha2"
+	gentype "k8s.io/client-go/gentype"
 )
 
-// FakeTunnelAgents implements TunnelAgentInterface
-type FakeTunnelAgents struct {
+// fakeTunnelAgents implements TunnelAgentInterface
+type fakeTunnelAgents struct {
+	*gentype.FakeClientWithList[*v1alpha2.TunnelAgent, *v1alpha2.TunnelAgentList]
 	Fake *FakeCoreV1alpha2
 }
 
-var tunnelagentsResource = v1alpha2.SchemeGroupVersion.WithResource("tunnelagents")
-
-var tunnelagentsKind = v1alpha2.SchemeGroupVersion.WithKind("TunnelAgent")
-
-// Get takes name of the tunnelAgent, and returns the corresponding tunnelAgent object, and an error if there is any.
-func (c *FakeTunnelAgents) Get(ctx context.Context, name string, options v1.GetOptions) (result *v1alpha2.TunnelAgent, err error) {
-	obj, err := c.Fake.
-		Invokes(testing.NewRootGetAction(tunnelagentsResource, name), &v1alpha2.TunnelAgent{})
-	if obj == nil {
-		return nil, err
+func newFakeTunnelAgents(fake *FakeCoreV1alpha2) corev1alpha2.TunnelAgentInterface {
+	return &fakeTunnelAgents{
+		gentype.NewFakeClientWithList[*v1alpha2.TunnelAgent, *v1alpha2.TunnelAgentList](
+			fake.Fake,
+			"",
+			v1alpha2.SchemeGroupVersion.WithResource("tunnelagents"),
+			v1alpha2.SchemeGroupVersion.WithKind("TunnelAgent"),
+			func() *v1alpha2.TunnelAgent { return &v1alpha2.TunnelAgent{} },
+			func() *v1alpha2.TunnelAgentList { return &v1alpha2.TunnelAgentList{} },
+			func(dst, src *v1alpha2.TunnelAgentList) { dst.ListMeta = src.ListMeta },
+			func(list *v1alpha2.TunnelAgentList) []*v1alpha2.TunnelAgent {
+				return gentype.ToPointerSlice(list.Items)
+			},
+			func(list *v1alpha2.TunnelAgentList, items []*v1alpha2.TunnelAgent) {
+				list.Items = gentype.FromPointerSlice(items)
+			},
+		),
+		fake,
 	}
-	return obj.(*v1alpha2.TunnelAgent), err
-}
-
-// List takes label and field selectors, and returns the list of TunnelAgents that match those selectors.
-func (c *FakeTunnelAgents) List(ctx context.Context, opts v1.ListOptions) (result *v1alpha2.TunnelAgentList, err error) {
-	obj, err := c.Fake.
-		Invokes(testing.NewRootListAction(tunnelagentsResource, tunnelagentsKind, opts), &v1alpha2.TunnelAgentList{})
-	if obj == nil {
-		return nil, err
-	}
-
-	label, _, _ := testing.ExtractFromListOptions(opts)
-	if label == nil {
-		label = labels.Everything()
-	}
-	list := &v1alpha2.TunnelAgentList{ListMeta: obj.(*v1alpha2.TunnelAgentList).ListMeta}
-	for _, item := range obj.(*v1alpha2.TunnelAgentList).Items {
-		if label.Matches(labels.Set(item.Labels)) {
-			list.Items = append(list.Items, item)
-		}
-	}
-	return list, err
-}
-
-// Watch returns a watch.Interface that watches the requested tunnelAgents.
-func (c *FakeTunnelAgents) Watch(ctx context.Context, opts v1.ListOptions) (watch.Interface, error) {
-	return c.Fake.
-		InvokesWatch(testing.NewRootWatchAction(tunnelagentsResource, opts))
-}
-
-// Create takes the representation of a tunnelAgent and creates it.  Returns the server's representation of the tunnelAgent, and an error, if there is any.
-func (c *FakeTunnelAgents) Create(ctx context.Context, tunnelAgent *v1alpha2.TunnelAgent, opts v1.CreateOptions) (result *v1alpha2.TunnelAgent, err error) {
-	obj, err := c.Fake.
-		Invokes(testing.NewRootCreateAction(tunnelagentsResource, tunnelAgent), &v1alpha2.TunnelAgent{})
-	if obj == nil {
-		return nil, err
-	}
-	return obj.(*v1alpha2.TunnelAgent), err
-}
-
-// Update takes the representation of a tunnelAgent and updates it. Returns the server's representation of the tunnelAgent, and an error, if there is any.
-func (c *FakeTunnelAgents) Update(ctx context.Context, tunnelAgent *v1alpha2.TunnelAgent, opts v1.UpdateOptions) (result *v1alpha2.TunnelAgent, err error) {
-	obj, err := c.Fake.
-		Invokes(testing.NewRootUpdateAction(tunnelagentsResource, tunnelAgent), &v1alpha2.TunnelAgent{})
-	if obj == nil {
-		return nil, err
-	}
-	return obj.(*v1alpha2.TunnelAgent), err
-}
-
-// UpdateStatus was generated because the type contains a Status member.
-// Add a +genclient:noStatus comment above the type to avoid generating UpdateStatus().
-func (c *FakeTunnelAgents) UpdateStatus(ctx context.Context, tunnelAgent *v1alpha2.TunnelAgent, opts v1.UpdateOptions) (*v1alpha2.TunnelAgent, error) {
-	obj, err := c.Fake.
-		Invokes(testing.NewRootUpdateSubresourceAction(tunnelagentsResource, "status", tunnelAgent), &v1alpha2.TunnelAgent{})
-	if obj == nil {
-		return nil, err
-	}
-	return obj.(*v1alpha2.TunnelAgent), err
-}
-
-// Delete takes name of the tunnelAgent and deletes it. Returns an error if one occurs.
-func (c *FakeTunnelAgents) Delete(ctx context.Context, name string, opts v1.DeleteOptions) error {
-	_, err := c.Fake.
-		Invokes(testing.NewRootDeleteActionWithOptions(tunnelagentsResource, name, opts), &v1alpha2.TunnelAgent{})
-	return err
-}
-
-// DeleteCollection deletes a collection of objects.
-func (c *FakeTunnelAgents) DeleteCollection(ctx context.Context, opts v1.DeleteOptions, listOpts v1.ListOptions) error {
-	action := testing.NewRootDeleteCollectionAction(tunnelagentsResource, listOpts)
-
-	_, err := c.Fake.Invokes(action, &v1alpha2.TunnelAgentList{})
-	return err
-}
-
-// Patch applies the patch and returns the patched tunnelAgent.
-func (c *FakeTunnelAgents) Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts v1.PatchOptions, subresources ...string) (result *v1alpha2.TunnelAgent, err error) {
-	obj, err := c.Fake.
-		Invokes(testing.NewRootPatchSubresourceAction(tunnelagentsResource, name, pt, data, subresources...), &v1alpha2.TunnelAgent{})
-	if obj == nil {
-		return nil, err
-	}
-	return obj.(*v1alpha2.TunnelAgent), err
 }

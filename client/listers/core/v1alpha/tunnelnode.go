@@ -1,5 +1,5 @@
 /*
-Copyright 2025 Apoxy, Inc.
+Copyright 2026 Apoxy, Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,10 +18,10 @@ limitations under the License.
 package v1alpha
 
 import (
-	v1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
-	"k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/client-go/tools/cache"
+	corev1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
+	labels "k8s.io/apimachinery/pkg/labels"
+	listers "k8s.io/client-go/listers"
+	cache "k8s.io/client-go/tools/cache"
 )
 
 // TunnelNodeLister helps list TunnelNodes.
@@ -29,39 +29,19 @@ import (
 type TunnelNodeLister interface {
 	// List lists all TunnelNodes in the indexer.
 	// Objects returned here must be treated as read-only.
-	List(selector labels.Selector) (ret []*v1alpha.TunnelNode, err error)
+	List(selector labels.Selector) (ret []*corev1alpha.TunnelNode, err error)
 	// Get retrieves the TunnelNode from the index for a given name.
 	// Objects returned here must be treated as read-only.
-	Get(name string) (*v1alpha.TunnelNode, error)
+	Get(name string) (*corev1alpha.TunnelNode, error)
 	TunnelNodeListerExpansion
 }
 
 // tunnelNodeLister implements the TunnelNodeLister interface.
 type tunnelNodeLister struct {
-	indexer cache.Indexer
+	listers.ResourceIndexer[*corev1alpha.TunnelNode]
 }
 
 // NewTunnelNodeLister returns a new TunnelNodeLister.
 func NewTunnelNodeLister(indexer cache.Indexer) TunnelNodeLister {
-	return &tunnelNodeLister{indexer: indexer}
-}
-
-// List lists all TunnelNodes in the indexer.
-func (s *tunnelNodeLister) List(selector labels.Selector) (ret []*v1alpha.TunnelNode, err error) {
-	err = cache.ListAll(s.indexer, selector, func(m interface{}) {
-		ret = append(ret, m.(*v1alpha.TunnelNode))
-	})
-	return ret, err
-}
-
-// Get retrieves the TunnelNode from the index for a given name.
-func (s *tunnelNodeLister) Get(name string) (*v1alpha.TunnelNode, error) {
-	obj, exists, err := s.indexer.GetByKey(name)
-	if err != nil {
-		return nil, err
-	}
-	if !exists {
-		return nil, errors.NewNotFound(v1alpha.Resource("tunnelnode"), name)
-	}
-	return obj.(*v1alpha.TunnelNode), nil
+	return &tunnelNodeLister{listers.New[*corev1alpha.TunnelNode](indexer, corev1alpha.Resource("tunnelnode"))}
 }

@@ -1,5 +1,5 @@
 /*
-Copyright 2025 Apoxy, Inc.
+Copyright 2026 Apoxy, Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,12 +18,12 @@ limitations under the License.
 package v1alpha2
 
 import (
-	"context"
+	context "context"
 	time "time"
 
-	corev1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
+	apicorev1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
 	internalinterfaces "github.com/apoxy-dev/apoxy/client/informers/internalinterfaces"
-	v1alpha2 "github.com/apoxy-dev/apoxy/client/listers/core/v1alpha2"
+	corev1alpha2 "github.com/apoxy-dev/apoxy/client/listers/core/v1alpha2"
 	versioned "github.com/apoxy-dev/apoxy/client/versioned"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
@@ -35,7 +35,7 @@ import (
 // CloudMonitoringIntegrations.
 type CloudMonitoringIntegrationInformer interface {
 	Informer() cache.SharedIndexInformer
-	Lister() v1alpha2.CloudMonitoringIntegrationLister
+	Lister() corev1alpha2.CloudMonitoringIntegrationLister
 }
 
 type cloudMonitoringIntegrationInformer struct {
@@ -69,7 +69,7 @@ func NewFilteredCloudMonitoringIntegrationInformer(client versioned.Interface, r
 				return client.CoreV1alpha2().CloudMonitoringIntegrations().Watch(context.TODO(), options)
 			},
 		},
-		&corev1alpha2.CloudMonitoringIntegration{},
+		&apicorev1alpha2.CloudMonitoringIntegration{},
 		resyncPeriod,
 		indexers,
 	)
@@ -80,9 +80,9 @@ func (f *cloudMonitoringIntegrationInformer) defaultInformer(client versioned.In
 }
 
 func (f *cloudMonitoringIntegrationInformer) Informer() cache.SharedIndexInformer {
-	return f.factory.InformerFor(&corev1alpha2.CloudMonitoringIntegration{}, f.defaultInformer)
+	return f.factory.InformerFor(&apicorev1alpha2.CloudMonitoringIntegration{}, f.defaultInformer)
 }
 
-func (f *cloudMonitoringIntegrationInformer) Lister() v1alpha2.CloudMonitoringIntegrationLister {
-	return v1alpha2.NewCloudMonitoringIntegrationLister(f.Informer().GetIndexer())
+func (f *cloudMonitoringIntegrationInformer) Lister() corev1alpha2.CloudMonitoringIntegrationLister {
+	return corev1alpha2.NewCloudMonitoringIntegrationLister(f.Informer().GetIndexer())
 }

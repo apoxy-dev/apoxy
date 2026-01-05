@@ -1,5 +1,5 @@
 /*
-Copyright 2025 Apoxy, Inc.
+Copyright 2026 Apoxy, Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,10 +18,10 @@ limitations under the License.
 package v1alpha1
 
 import (
-	v1alpha1 "github.com/apoxy-dev/apoxy/api/extensions/v1alpha1"
-	"k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/client-go/tools/cache"
+	extensionsv1alpha1 "github.com/apoxy-dev/apoxy/api/extensions/v1alpha1"
+	labels "k8s.io/apimachinery/pkg/labels"
+	listers "k8s.io/client-go/listers"
+	cache "k8s.io/client-go/tools/cache"
 )
 
 // EdgeFunctionRevisionLister helps list EdgeFunctionRevisions.
@@ -29,39 +29,19 @@ import (
 type EdgeFunctionRevisionLister interface {
 	// List lists all EdgeFunctionRevisions in the indexer.
 	// Objects returned here must be treated as read-only.
-	List(selector labels.Selector) (ret []*v1alpha1.EdgeFunctionRevision, err error)
+	List(selector labels.Selector) (ret []*extensionsv1alpha1.EdgeFunctionRevision, err error)
 	// Get retrieves the EdgeFunctionRevision from the index for a given name.
 	// Objects returned here must be treated as read-only.
-	Get(name string) (*v1alpha1.EdgeFunctionRevision, error)
+	Get(name string) (*extensionsv1alpha1.EdgeFunctionRevision, error)
 	EdgeFunctionRevisionListerExpansion
 }
 
 // edgeFunctionRevisionLister implements the EdgeFunctionRevisionLister interface.
 type edgeFunctionRevisionLister struct {
-	indexer cache.Indexer
+	listers.ResourceIndexer[*extensionsv1alpha1.EdgeFunctionRevision]
 }
 
 // NewEdgeFunctionRevisionLister returns a new EdgeFunctionRevisionLister.
 func NewEdgeFunctionRevisionLister(indexer cache.Indexer) EdgeFunctionRevisionLister {
-	return &edgeFunctionRevisionLister{indexer: indexer}
-}
-
-// List lists all EdgeFunctionRevisions in the indexer.
-func (s *edgeFunctionRevisionLister) List(selector labels.Selector) (ret []*v1alpha1.EdgeFunctionRevision, err error) {
-	err = cache.ListAll(s.indexer, selector, func(m interface{}) {
-		ret = append(ret, m.(*v1alpha1.EdgeFunctionRevision))
-	})
-	return ret, err
-}
-
-// Get retrieves the EdgeFunctionRevision from the index for a given name.
-func (s *edgeFunctionRevisionLister) Get(name string) (*v1alpha1.EdgeFunctionRevision, error) {
-	obj, exists, err := s.indexer.GetByKey(name)
-	if err != nil {
-		return nil, err
-	}
-	if !exists {
-		return nil, errors.NewNotFound(v1alpha1.Resource("edgefunctionrevision"), name)
-	}
-	return obj.(*v1alpha1.EdgeFunctionRevision), nil
+	return &edgeFunctionRevisionLister{listers.New[*extensionsv1alpha1.EdgeFunctionRevision](indexer, extensionsv1alpha1.Resource("edgefunctionrevision"))}
 }
