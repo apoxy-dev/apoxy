@@ -99,16 +99,16 @@ func (r *ProxyReconciler) releaseReplica(ctx context.Context, replica *corev1alp
 		return nil
 	}
 
-	log.Info("releasing IP address for proxy replica", "address", ulaAddr)
+	log.Info("Releasing IP address for proxy replica", "address", ulaAddr)
 
 	addr, err := netip.ParseAddr(ulaAddr)
 	if err != nil {
-		log.Error(err, "failed to parse IP address", "address", ulaAddr)
+		log.Error(err, "Failed to parse IP address", "address", ulaAddr)
 		return err
 	}
 
 	if err := r.ipam.Release(netip.PrefixFrom(addr, 128)); err != nil {
-		log.Error(err, "failed to release IP", "address", ulaAddr)
+		log.Error(err, "Failed to release IP", "address", ulaAddr)
 		return err
 	}
 
@@ -118,16 +118,16 @@ func (r *ProxyReconciler) releaseReplica(ctx context.Context, replica *corev1alp
 func (r *ProxyReconciler) assignReplica(ctx context.Context, replica *corev1alpha2.ProxyReplicaStatus) error {
 	log := log.FromContext(ctx)
 
-	log.V(1).Info("allocating IP address for proxy replica")
+	log.V(1).Info("Allocating IP address for proxy replica")
 
 	addr, err := r.ipam.Allocate()
 	if err != nil {
-		log.Error(err, "failed to allocate IPv6 address")
+		log.Error(err, "Failed to allocate IPv6 address")
 		return err
 	}
 
 	if !addr.IsSingleIP() {
-		log.Error(err, "allocated IP address is not a single IP", "address", addr.String())
+		log.Error(err, "Allocated IP address is not a single IP", "address", addr.String())
 		return err
 	}
 
@@ -178,11 +178,11 @@ func (r *ProxyReconciler) reconcileRequest(ctx context.Context, request reconcil
 
 	for _, replica := range p.Status.Replicas {
 		if ulaAddr := getReplicaAddress(replica, corev1alpha2.ReplicaInternalULA); ulaAddr != "" {
-			log.V(1).Info("proxy replica already has a ULA address", "address", ulaAddr)
+			log.V(1).Info("Proxy replica already has a ULA address", "address", ulaAddr)
 			continue
 		}
 
-		log.Info("allocating IP address for proxy replica")
+		log.Info("Allocating IP address for proxy replica")
 
 		if err := r.assignReplica(ctx, replica); err != nil {
 			return ctrl.Result{}, err
@@ -202,7 +202,7 @@ func (r *ProxyReconciler) run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			slog.Info("context done", "error", ctx.Err())
+			slog.Info("Context done", "error", ctx.Err())
 			return
 
 		case snapshot, ok := <-ch:
@@ -220,7 +220,7 @@ func (r *ProxyReconciler) run(ctx context.Context) {
 
 				p := &corev1alpha2.Proxy{}
 				if err := r.Get(ctx, types.NamespacedName{Name: proxyName}, p); err != nil {
-					slog.Error("failed to get proxy", "proxy", proxyName, "error", err)
+					slog.Error("Failed to get proxy", "proxy", proxyName, "error", err)
 					continue
 				}
 
@@ -240,12 +240,12 @@ func (r *ProxyReconciler) run(ctx context.Context) {
 				}
 
 				if err := r.Status().Update(ctx, p); err != nil {
-					slog.Error("failed to update proxy status", "proxy", proxyName, "error", err)
+					slog.Error("Failed to update proxy status", "proxy", proxyName, "error", err)
 				}
 			}
 
 		case <-time.After(1 * time.Minute):
-			slog.Info("Resyncing connected Proxy replicas")
+			slog.Info("Resyncing connected proxy replicas")
 
 			// Maps proxies to their connected nodes from the current state.
 			nodeMap := make(map[string][]*xdstypes.NodeMetadata)
@@ -258,7 +258,7 @@ func (r *ProxyReconciler) run(ctx context.Context) {
 
 				p := &corev1alpha2.Proxy{}
 				if err := r.Get(ctx, types.NamespacedName{Name: proxyName}, p); err != nil {
-					slog.Error("failed to get proxy", "proxy", proxyName, "error", err)
+					slog.Error("Failed to get proxy", "proxy", proxyName, "error", err)
 					continue
 				}
 
@@ -303,7 +303,7 @@ func (r *ProxyReconciler) run(ctx context.Context) {
 
 				if updated {
 					if err := r.Status().Update(ctx, p); err != nil {
-						slog.Error("failed to update proxy status", "proxy", proxyName, "error", err)
+						slog.Error("Failed to update proxy status", "proxy", proxyName, "error", err)
 					}
 				}
 			}

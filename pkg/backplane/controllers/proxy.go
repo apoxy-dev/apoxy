@@ -186,7 +186,7 @@ func (r *ProxyReconciler) Reconcile(ctx context.Context, request reconcile.Reque
 			logger.Info("Proxy is being stopped")
 			go func() {
 				if err := r.Runtime.Shutdown(ctx); err != nil {
-					logger.Error("failed to shutdown runtime", "error", err)
+					logger.Error("Failed to shutdown runtime", "error", err)
 				}
 			}()
 		}
@@ -217,7 +217,7 @@ func (r *ProxyReconciler) Reconcile(ctx context.Context, request reconcile.Reque
 		cfg, err := bootstrap.GetRenderedBootstrapConfig(bsOpts...)
 		if err != nil {
 			// If the config is invalid, we can't start the proxy.
-			logger.Error("failed to validate proxy config", "error", err)
+			logger.Error("Failed to validate proxy config", "error", err)
 			return reconcile.Result{}, nil
 		}
 
@@ -263,7 +263,7 @@ func (r *ProxyReconciler) Reconcile(ctx context.Context, request reconcile.Reque
 
 		if err := r.Start(ctx, opts...); err != nil {
 			if fatalErr, ok := err.(envoy.FatalError); ok {
-				logger.Error("failed to create proxy replica", "error", fatalErr)
+				logger.Error("Failed to create proxy replica", "error", fatalErr)
 
 				return reconcile.Result{}, nil // Leave the proxy in failed state.
 			}
@@ -280,7 +280,7 @@ func (r *ProxyReconciler) Reconcile(ctx context.Context, request reconcile.Reque
 	// Find the proxy replica by name.
 	rs, found := findReplicaStatus(p, r.replicaName)
 	if !found {
-		logger.Error("failed to find proxy replica", "name", r.replicaName)
+		logger.Error("Failed to find proxy replica", "name", r.replicaName)
 
 		// Requeue again and check in a bit if replica is created (on connection to xDS server).
 		// TODO(dilyevsky): Eventually we should do something more like killing the process
