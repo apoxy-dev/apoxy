@@ -11,6 +11,7 @@ import (
 	"syscall"
 
 	"github.com/vishvananda/netlink"
+	"github.com/vishvananda/netns"
 	"k8s.io/apimachinery/pkg/util/sets"
 
 	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
@@ -31,6 +32,8 @@ type geneveOptions struct {
 	port uint16
 	// MTU for the Geneve interface.
 	mtu int
+	// Network namespace name (empty means use current namespace).
+	netns string
 }
 
 // Geneve manages Geneve tunnel interfaces and routes.
@@ -78,6 +81,13 @@ func WithMTU(mtu int) option {
 	}
 }
 
+// WithNetNS sets the network namespace for the Geneve interface and routes.
+func WithNetNS(ns string) option {
+	return func(o *geneveOptions) {
+		o.netns = ns
+	}
+}
+
 // NewGeneve creates a new Geneve tunnel manager.
 func NewGeneve(opts ...option) *Geneve {
 	setOpts := defaultGeneveOptions()
@@ -87,6 +97,28 @@ func NewGeneve(opts ...option) *Geneve {
 	return &Geneve{
 		opts: setOpts,
 	}
+}
+
+// getHandle returns a netlink.Handle for the configured namespace.
+// If no namespace is configured, returns nil (use default netlink functions).
+// The caller must close the handle when done.
+func (r *Geneve) getHandle() (*netlink.Handle, error) {
+	if r.opts.netns == "" {
+		return nil, nil
+	}
+
+	nsHandle, err := netns.GetFromName(r.opts.netns)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get netns handle for %s: %w", r.opts.netns, err)
+	}
+	defer nsHandle.Close()
+
+	h, err := netlink.NewHandleAt(nsHandle)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create netlink handle in namespace %s: %w", r.opts.netns, err)
+	}
+
+	return h, nil
 }
 
 func (r *Geneve) hwAddr(addr netip.Addr) net.HardwareAddr {
@@ -99,6 +131,14 @@ func (r *Geneve) hwAddr(addr netip.Addr) net.HardwareAddr {
 
 // SetUp sets up the Geneve tunnel. Can be called multiple times.
 func (r *Geneve) SetUp(_ context.Context, privAddr netip.Addr) error {
+	h, err := r.getHandle()
+	if err != nil {
+		return err
+	}
+	if h != nil {
+		defer h.Close()
+	}
+
 	// Create Geneve interface without a specific remote -
 	// this allows us to route to multiple remotes using Linux's
 	// lwtunnel infrastructure (https://github.com/torvalds/linux/blob/e347810e84094078d155663acbf36d82efe91f95/net/core/lwtunnel.c).
@@ -117,18 +157,35 @@ func (r *Geneve) SetUp(_ context.Context, privAddr netip.Addr) error {
 		slog.String("dev", r.opts.dev),
 		slog.Int("mtu", r.opts.mtu),
 		slog.String("hwaddr", hwAddr.String()),
+		slog.String("netns", r.opts.netns),
 	)
 
-	_, err := netlink.LinkByName(r.opts.dev)
+	var link netlink.Link
+	if h != nil {
+		link, err = h.LinkByName(r.opts.dev)
+	} else {
+		link, err = netlink.LinkByName(r.opts.dev)
+	}
 	if errors.As(err, &netlink.LinkNotFoundError{}) {
-		if err := netlink.LinkAdd(geneve); err != nil {
+		if h != nil {
+			err = h.LinkAdd(geneve)
+		} else {
+			err = netlink.LinkAdd(geneve)
+		}
+		if err != nil {
 			return fmt.Errorf("failed to add Geneve interface: %w", err)
 		}
+		link = geneve
 	} else if err != nil {
 		return fmt.Errorf("failed to get Geneve interface: %w", err)
 	}
 
-	if err := netlink.LinkSetUp(geneve); err != nil {
+	if h != nil {
+		err = h.LinkSetUp(link)
+	} else {
+		err = netlink.LinkSetUp(link)
+	}
+	if err != nil {
 		return fmt.Errorf("failed to bring up Geneve interface: %w", err)
 	}
 
@@ -141,12 +198,25 @@ func (r *Geneve) SetUp(_ context.Context, privAddr netip.Addr) error {
 // optional and only needed for originating end of the tunnel to assign
 // an inner source IP address.
 func (r *Geneve) SetAddr(_ context.Context, ula netip.Addr) error {
+	h, err := r.getHandle()
+	if err != nil {
+		return err
+	}
+	if h != nil {
+		defer h.Close()
+	}
+
 	slog.Info("Setting up Geneve link address",
 		slog.String("dev", r.opts.dev),
 		slog.String("addr", ula.String()),
 	)
 
-	link, err := netlink.LinkByName(r.opts.dev)
+	var link netlink.Link
+	if h != nil {
+		link, err = h.LinkByName(r.opts.dev)
+	} else {
+		link, err = netlink.LinkByName(r.opts.dev)
+	}
 	if err != nil {
 		return fmt.Errorf("failed to get Geneve interface: %w", err)
 	}
@@ -155,7 +225,13 @@ func (r *Geneve) SetAddr(_ context.Context, ula netip.Addr) error {
 	if err != nil {
 		return fmt.Errorf("failed to parse CIDR: %w", err)
 	}
-	addrs, err := netlink.AddrList(link, netlink.FAMILY_V6)
+
+	var addrs []netlink.Addr
+	if h != nil {
+		addrs, err = h.AddrList(link, netlink.FAMILY_V6)
+	} else {
+		addrs, err = netlink.AddrList(link, netlink.FAMILY_V6)
+	}
 	if err != nil {
 		return fmt.Errorf("failed to list addresses: %w", err)
 	}
@@ -166,7 +242,12 @@ func (r *Geneve) SetAddr(_ context.Context, ula netip.Addr) error {
 		}
 	}
 
-	if err := netlink.AddrAdd(link, addr); err != nil {
+	if h != nil {
+		err = h.AddrAdd(link, addr)
+	} else {
+		err = netlink.AddrAdd(link, addr)
+	}
+	if err != nil {
 		return fmt.Errorf("failed to add IPv6 address: %w", err)
 	}
 
@@ -177,13 +258,31 @@ func (r *Geneve) SetAddr(_ context.Context, ula netip.Addr) error {
 
 // Cleanup removes the Geneve interface.
 func (r *Geneve) Cleanup() error {
-	link, err := netlink.LinkByName(r.opts.dev)
+	h, err := r.getHandle()
+	if err != nil {
+		return err
+	}
+	if h != nil {
+		defer h.Close()
+	}
+
+	var link netlink.Link
+	if h != nil {
+		link, err = h.LinkByName(r.opts.dev)
+	} else {
+		link, err = netlink.LinkByName(r.opts.dev)
+	}
 	if err != nil {
 		// Interface doesn't exist, nothing to do.
 		return nil
 	}
 
-	if err := netlink.LinkDel(link); err != nil {
+	if h != nil {
+		err = h.LinkDel(link)
+	} else {
+		err = netlink.LinkDel(link)
+	}
+	if err != nil {
 		return fmt.Errorf("failed to delete Geneve interface: %w", err)
 	}
 
@@ -194,7 +293,20 @@ func (r *Geneve) Cleanup() error {
 
 // routeAdd adds a route to the overlay addr via NVE.
 func (r *Geneve) routeAdd(_ context.Context, ula tunnet.NetULA, nve netip.Addr) error {
-	link, err := netlink.LinkByName(r.opts.dev)
+	h, err := r.getHandle()
+	if err != nil {
+		return err
+	}
+	if h != nil {
+		defer h.Close()
+	}
+
+	var link netlink.Link
+	if h != nil {
+		link, err = h.LinkByName(r.opts.dev)
+	} else {
+		link, err = netlink.LinkByName(r.opts.dev)
+	}
 	if err != nil {
 		return fmt.Errorf("failed to get Geneve interface: %w", err)
 	}
@@ -219,9 +331,19 @@ func (r *Geneve) routeAdd(_ context.Context, ula tunnet.NetULA, nve netip.Addr) 
 		Protocol: rtProtocol,
 	}
 
-	if err := netlink.RouteAdd(route); err != nil {
+	if h != nil {
+		err = h.RouteAdd(route)
+	} else {
+		err = netlink.RouteAdd(route)
+	}
+	if err != nil {
 		if strings.Contains(err.Error(), "exists") {
-			if err := netlink.RouteReplace(route); err != nil {
+			if h != nil {
+				err = h.RouteReplace(route)
+			} else {
+				err = netlink.RouteReplace(route)
+			}
+			if err != nil {
 				return fmt.Errorf("failed to replace route: %w", err)
 			}
 		} else {
@@ -236,12 +358,18 @@ func (r *Geneve) routeAdd(_ context.Context, ula tunnet.NetULA, nve netip.Addr) 
 	)
 
 	hwAddr := r.hwAddr(nve)
-	if err := netlink.NeighSet(&netlink.Neigh{
+	neigh := &netlink.Neigh{
 		LinkIndex:    link.Attrs().Index,
 		State:        netlink.NUD_PERMANENT,
 		IP:           ulaAddr.AsSlice(),
 		HardwareAddr: hwAddr,
-	}); err != nil {
+	}
+	if h != nil {
+		err = h.NeighSet(neigh)
+	} else {
+		err = netlink.NeighSet(neigh)
+	}
+	if err != nil {
 		return fmt.Errorf("failed to add neighbor entry: %w", err)
 	}
 
@@ -253,7 +381,12 @@ func (r *Geneve) routeAdd(_ context.Context, ula tunnet.NetULA, nve netip.Addr) 
 	// Via is needed so that kernel can use the same dst hwaddr for the entire ula prefix.
 	// Can't set via during route creation because the route to gw does not yet exist.
 	route.Gw = ulaAddr.AsSlice()
-	if err := netlink.RouteChange(route); err != nil {
+	if h != nil {
+		err = h.RouteChange(route)
+	} else {
+		err = netlink.RouteChange(route)
+	}
+	if err != nil {
 		return fmt.Errorf("failed to change route with gw %v: %w", route.Gw, err)
 	}
 
@@ -268,7 +401,20 @@ func (r *Geneve) routeAdd(_ context.Context, ula tunnet.NetULA, nve netip.Addr) 
 }
 
 func (r *Geneve) routeDel(_ context.Context, dst netip.Prefix) error {
-	link, err := netlink.LinkByName(r.opts.dev)
+	h, err := r.getHandle()
+	if err != nil {
+		return err
+	}
+	if h != nil {
+		defer h.Close()
+	}
+
+	var link netlink.Link
+	if h != nil {
+		link, err = h.LinkByName(r.opts.dev)
+	} else {
+		link, err = netlink.LinkByName(r.opts.dev)
+	}
 	if err != nil {
 		return fmt.Errorf("failed to get Geneve interface: %w", err)
 	}
@@ -281,7 +427,12 @@ func (r *Geneve) routeDel(_ context.Context, dst netip.Prefix) error {
 		},
 	}
 
-	if err := netlink.RouteDel(route); err != nil {
+	if h != nil {
+		err = h.RouteDel(route)
+	} else {
+		err = netlink.RouteDel(route)
+	}
+	if err != nil {
 		if err == syscall.ENOENT {
 			return nil
 		}
@@ -293,18 +444,42 @@ func (r *Geneve) routeDel(_ context.Context, dst netip.Prefix) error {
 
 // routeList returns the current IPv6 routes for the Geneve interface.
 func (r *Geneve) routeList(_ context.Context) (sets.Set[netip.Prefix], error) {
-	link, err := netlink.LinkByName(r.opts.dev)
+	h, err := r.getHandle()
+	if err != nil {
+		return nil, err
+	}
+	if h != nil {
+		defer h.Close()
+	}
+
+	var link netlink.Link
+	if h != nil {
+		link, err = h.LinkByName(r.opts.dev)
+	} else {
+		link, err = netlink.LinkByName(r.opts.dev)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to get Geneve link: %w", err)
 	}
 
-	routes, err := netlink.RouteListFiltered(
-		netlink.FAMILY_V6,
-		&netlink.Route{
-			Protocol: rtProtocol,
-		},
-		netlink.RT_FILTER_PROTOCOL,
-	)
+	var routes []netlink.Route
+	if h != nil {
+		routes, err = h.RouteListFiltered(
+			netlink.FAMILY_V6,
+			&netlink.Route{
+				Protocol: rtProtocol,
+			},
+			netlink.RT_FILTER_PROTOCOL,
+		)
+	} else {
+		routes, err = netlink.RouteListFiltered(
+			netlink.FAMILY_V6,
+			&netlink.Route{
+				Protocol: rtProtocol,
+			},
+			netlink.RT_FILTER_PROTOCOL,
+		)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to list routes: %w", err)
 	}
