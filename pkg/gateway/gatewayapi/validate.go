@@ -525,6 +525,11 @@ func (t *Translator) validateTLSConfiguration(listener *ListenerContext, resourc
 		}
 
 		if listener.TLS.Mode != nil && *listener.TLS.Mode == gwapiv1.TLSModeTerminate {
+			// For cloud gateways certificates are injected automatically by the Envoy runtime so
+			// check that none are supplied by the user.
+			if t.GatewayControllerName == CloudControllerName {
+				break
+			}
 			if len(listener.TLS.CertificateRefs) == 0 {
 				listener.SetCondition(
 					gwapiv1.ListenerConditionProgrammed,
