@@ -178,6 +178,7 @@ type options struct {
 	sqliteConnArgs        map[string]string
 	certPairName, certDir string
 	enableKubeAPI         bool
+	controllerNames       []string
 	additionalControllers []CreateController
 	gcInterval            time.Duration
 	jwtPublicKey          []byte
@@ -305,6 +306,14 @@ func WithSQLiteConnArgs(args map[string]string) Option {
 func WithKubeAPI() Option {
 	return func(o *options) {
 		o.enableKubeAPI = true
+	}
+}
+
+// WithControllerNames sets the GatewayClass controller names to watch for.
+// If not set, defaults to both StandaloneControllerName and LegacyControllerName.
+func WithControllerNames(names ...string) Option {
+	return func(o *options) {
+		o.controllerNames = names
 	}
 }
 
@@ -592,6 +601,9 @@ func (m *Manager) Start(
 	gwOpts := []gateway.Option{}
 	if dOpts.enableKubeAPI {
 		gwOpts = append(gwOpts, gateway.WithKubeAPI())
+	}
+	if len(dOpts.controllerNames) > 0 {
+		gwOpts = append(gwOpts, gateway.WithControllerNames(dOpts.controllerNames...))
 	}
 	if err := gateway.NewGatewayReconciler(
 		m.manager.GetClient(),

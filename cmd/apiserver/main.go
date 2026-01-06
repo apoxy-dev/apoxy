@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	goruntime "runtime"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/temporalio/cli/temporalcli/devserver"
@@ -27,12 +28,13 @@ var (
 	devMode  = flag.Bool("dev", false, "Enable development mode.")
 	logLevel = flag.String("log_level", "info", "Log level.")
 
-	dbFilePath      = flag.String("db", "apoxy.db", "Path to the database file.")
-	tmprlDBFilePath = flag.String("temporal-db", "temporal.db", "Path to the Temporal database file.")
-	inCluster       = flag.Bool("in-cluster", false, "Enable in-cluster authentication.")
-	insecure        = flag.Bool("insecure", true, "Enable insecure mode.")
-	ingestStoreDir  = flag.String("ingest-store-dir", os.TempDir(), "Path to the ingest store directory.")
-	ingestStorePort = flag.Int("ingest-store-port", 8081, "Port for the ingest store.")
+	dbFilePath       = flag.String("db", "apoxy.db", "Path to the database file.")
+	tmprlDBFilePath  = flag.String("temporal-db", "temporal.db", "Path to the Temporal database file.")
+	inCluster        = flag.Bool("in-cluster", false, "Enable in-cluster authentication.")
+	insecure         = flag.Bool("insecure", true, "Enable insecure mode.")
+	ingestStoreDir   = flag.String("ingest-store-dir", os.TempDir(), "Path to the ingest store directory.")
+	ingestStorePort  = flag.Int("ingest-store-port", 8081, "Port for the ingest store.")
+	controllerNames  = flag.String("controller-names", "", "Comma-separated list of GatewayClass controller names to watch. Defaults to both standalone and legacy controller names.")
 )
 
 func stopCh(ctx context.Context) <-chan interface{} {
@@ -123,6 +125,10 @@ func main() {
 			}
 			sOpts = append(sOpts, apiserver.WithClientConfig(rC))
 			sOpts = append(sOpts, apiserver.WithKubeAPI())
+		}
+		if *controllerNames != "" {
+			names := strings.Split(*controllerNames, ",")
+			sOpts = append(sOpts, apiserver.WithControllerNames(names...))
 		}
 		if err := m.Start(ctx, gwResources, tc, sOpts...); err != nil {
 			log.Errorf("failed to start API server manager: %v", err)
