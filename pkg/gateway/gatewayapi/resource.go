@@ -25,8 +25,16 @@ import (
 )
 
 const (
-	DefaultControllerName = "gateway.apoxy.dev/gatewayclass-controller"
-	CloudControllerName   = "apoxy.dev/gatewayclass-cloud"
+	// StandaloneControllerName is the new default controller name for standalone gateways.
+	StandaloneControllerName = "apoxy.dev/gatewayclass-standalone"
+	// LegacyControllerName is the old default controller name (kept for backwards compatibility).
+	LegacyControllerName = "gateway.apoxy.dev/gatewayclass-controller"
+	// CloudControllerName is the controller name for cloud-managed gateways.
+	CloudControllerName = "apoxy.dev/gatewayclass-cloud"
+
+	// DefaultControllerName is an alias for StandaloneControllerName.
+	// Deprecated: Use StandaloneControllerName instead.
+	DefaultControllerName = StandaloneControllerName
 )
 
 type XdsIRMap map[string]*ir.Xds

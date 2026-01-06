@@ -66,8 +66,9 @@ var (
 type GatewayReconciler struct {
 	client.Client
 
-	resources *message.ProviderResources
-	watchK8s  bool
+	resources       *message.ProviderResources
+	controllerNames []string
+	watchK8s        bool
 }
 
 type Option func(*GatewayReconciler)
@@ -76,6 +77,14 @@ type Option func(*GatewayReconciler)
 func WithKubeAPI() Option {
 	return func(r *GatewayReconciler) {
 		r.watchK8s = true
+	}
+}
+
+// WithControllerNames sets the controller names to watch for.
+// If not set, defaults to both StandaloneControllerName and LegacyControllerName.
+func WithControllerNames(names ...string) Option {
+	return func(r *GatewayReconciler) {
+		r.controllerNames = names
 	}
 }
 
@@ -92,7 +101,24 @@ func NewGatewayReconciler(
 	for _, opt := range opts {
 		opt(r)
 	}
+	// Set default controller names if not specified.
+	if len(r.controllerNames) == 0 {
+		r.controllerNames = []string{
+			gatewayapi.StandaloneControllerName,
+			gatewayapi.LegacyControllerName,
+		}
+	}
 	return r
+}
+
+// matchesControllerName checks if the given controller name matches any of the configured names.
+func (r *GatewayReconciler) matchesControllerName(name gwapiv1.GatewayController) bool {
+	for _, cn := range r.controllerNames {
+		if string(name) == cn {
+			return true
+		}
+	}
+	return false
 }
 
 // Reconcile implements reconcile.Reconciler.
@@ -110,7 +136,7 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, request reconcile.Req
 			log.V(1).Info("GatewayClass is being deleted", "name", gwc.Name)
 			continue
 		}
-		if gwc.Spec.ControllerName == gatewayapi.DefaultControllerName {
+		if r.matchesControllerName(gwc.Spec.ControllerName) {
 			log.Info("Reconciling GatewayClass", "name", gwc.Name)
 			gwcs = append(gwcs, &gwc) // No longer requires copy since 1.22. See: https://go.dev/blog/loopvar-preview
 		}
@@ -150,7 +176,8 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, request reconcile.Req
 		ress = append(ress, res)
 	}
 
-	r.resources.GatewayAPIResources.Store(gatewayapi.DefaultControllerName, &ress)
+	// Store resources under the primary controller name (first in the list).
+	r.resources.GatewayAPIResources.Store(r.controllerNames[0], &ress)
 
 	return ctrl.Result{}, nil
 }
@@ -843,7 +870,8 @@ func (r *GatewayReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manag
 }
 
 func (r *GatewayReconciler) enqueueClass(_ context.Context, _ client.Object) []reconcile.Request {
+	// Use the primary controller name (first in the list) for reconcile requests.
 	return []reconcile.Request{{NamespacedName: types.NamespacedName{
-		Name: gatewayapi.DefaultControllerName,
+		Name: r.controllerNames[0],
 	}}}
 }
