@@ -121,6 +121,11 @@ func (r *GatewayReconciler) matchesControllerName(name gwapiv1.GatewayController
 	return false
 }
 
+// isCloudController checks if the given controller name is the cloud controller.
+func isCloudController(name gwapiv1.GatewayController) bool {
+	return string(name) == gatewayapi.CloudControllerName
+}
+
 // Reconcile implements reconcile.Reconciler.
 func (r *GatewayReconciler) Reconcile(ctx context.Context, request reconcile.Request) (ctrl.Result, error) {
 	log := clog.FromContext(ctx, "controller", request.Name)
@@ -278,18 +283,22 @@ func (r *GatewayReconciler) reconcileGateways(
 			res.Proxies = append(res.Proxies, &proxy)
 		}
 
-		for _, listener := range gw.Spec.Listeners {
-			log.V(1).Info("Processing Gateway Listener", "listener", listener)
-			if terminatesTLS(&listener) {
-				log.V(1).Info("Processing TLS Secret reference", "listener", listener.Name)
-				for _, certRef := range listener.TLS.CertificateRefs {
-					log.V(1).Info("Processing TLS Secret reference", "secretRef", certRef)
-					if refsSecret(&certRef) {
-						log.Info("Processing TLS Secret reference", "secretRef", certRef)
-						if err := r.processSecretRef(clog.IntoContext(ctx, log), certRef, res); err != nil {
-							log.Error(err,
-								"failed to process TLS SecretRef for gateway",
-								"gateway", gw, "secretRef", certRef)
+		// Only process TLS secret refs for non-cloud controllers.
+		// Cloud controller handles TLS termination differently.
+		if !isCloudController(gwc.Spec.ControllerName) {
+			for _, listener := range gw.Spec.Listeners {
+				log.V(1).Info("Processing Gateway Listener", "listener", listener)
+				if terminatesTLS(&listener) {
+					log.V(1).Info("Processing TLS Secret reference", "listener", listener.Name)
+					for _, certRef := range listener.TLS.CertificateRefs {
+						log.V(1).Info("Processing TLS Secret reference", "secretRef", certRef)
+						if refsSecret(&certRef) {
+							log.Info("Processing TLS Secret reference", "secretRef", certRef)
+							if err := r.processSecretRef(clog.IntoContext(ctx, log), certRef, res); err != nil {
+								log.Error(err,
+									"failed to process TLS SecretRef for gateway",
+									"gateway", gw, "secretRef", certRef)
+							}
 						}
 					}
 				}
