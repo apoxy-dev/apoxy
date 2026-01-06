@@ -10,6 +10,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apiserver/pkg/registry/rest"
 	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource"
+	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource/resourcestrategy"
 )
 
 const (
@@ -245,6 +246,7 @@ var (
 	_ resource.Object                      = &Proxy{}
 	_ resource.ObjectWithStatusSubResource = &Proxy{}
 	_ rest.SingularNameProvider            = &Proxy{}
+	_ resourcestrategy.TableConverter      = &Proxy{}
 )
 
 func (p *Proxy) GetObjectMeta() *metav1.ObjectMeta {
@@ -371,7 +373,10 @@ type ProxyList struct {
 	Items           []Proxy `json:"items"`
 }
 
-var _ resource.ObjectList = &ProxyList{}
+var (
+	_ resource.ObjectList             = &ProxyList{}
+	_ resourcestrategy.TableConverter = &ProxyList{}
+)
 
 func (pl *ProxyList) GetListMeta() *metav1.ListMeta {
 	return &pl.ListMeta

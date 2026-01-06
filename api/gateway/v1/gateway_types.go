@@ -1,11 +1,18 @@
 package v1
 
 import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/duration"
 	"k8s.io/apiserver/pkg/registry/rest"
 	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource"
+	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource/resourcestrategy"
 	gwapiv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
@@ -364,4 +371,280 @@ var _ resource.ObjectList = &GRPCRouteList{}
 
 func (pl *GRPCRouteList) GetListMeta() *metav1.ListMeta {
 	return &pl.ListMeta
+}
+
+// formatAge formats a time as a Kubernetes-style age string.
+func formatAge(t time.Time) string {
+	if t.IsZero() {
+		return "<unknown>"
+	}
+	return duration.ShortHumanDuration(time.Since(t))
+}
+
+// getListenersSummary returns a summary of gateway listeners.
+func getListenersSummary(listeners []gwapiv1.Listener) string {
+	if len(listeners) == 0 {
+		return "None"
+	}
+	var parts []string
+	for _, l := range listeners {
+		parts = append(parts, fmt.Sprintf("%s/%d", l.Protocol, l.Port))
+	}
+	return strings.Join(parts, ",")
+}
+
+// getParentRefsSummary returns a summary of parent references.
+func getParentRefsSummary(refs []gwapiv1.ParentReference) string {
+	if len(refs) == 0 {
+		return "None"
+	}
+	var parts []string
+	for _, ref := range refs {
+		parts = append(parts, string(ref.Name))
+	}
+	return strings.Join(parts, ",")
+}
+
+// getHostnamesSummary returns a summary of hostnames
+func getHostnamesSummary(hostnames []gwapiv1.Hostname) string {
+	if len(hostnames) == 0 {
+		return "*"
+	}
+	var parts []string
+	for _, h := range hostnames {
+		parts = append(parts, string(h))
+	}
+	return strings.Join(parts, ",")
+}
+
+var _ resourcestrategy.TableConverter = &GatewayClass{}
+
+func (gc *GatewayClass) ConvertToTable(ctx context.Context, tableOptions runtime.Object) (*metav1.Table, error) {
+	return gatewayClassToTable(gc, tableOptions)
+}
+
+func gatewayClassToTable(gc *GatewayClass, tableOptions runtime.Object) (*metav1.Table, error) {
+	table := &metav1.Table{}
+	if opt, ok := tableOptions.(*metav1.TableOptions); !ok || !opt.NoHeaders {
+		table.ColumnDefinitions = []metav1.TableColumnDefinition{
+			{Name: "Name", Type: "string", Format: "name", Description: "Name of the gateway class"},
+			{Name: "Controller", Type: "string", Description: "Controller that manages this class"},
+			{Name: "Age", Type: "string", Description: "Time since creation"},
+		}
+	}
+	table.Rows = append(table.Rows, metav1.TableRow{
+		Cells: []interface{}{
+			gc.Name,
+			string(gc.Spec.ControllerName),
+			formatAge(gc.CreationTimestamp.Time),
+		},
+		Object: runtime.RawExtension{Object: gc},
+	})
+	table.ResourceVersion = gc.ResourceVersion
+	return table, nil
+}
+
+var _ resourcestrategy.TableConverter = &GatewayClassList{}
+
+func (l *GatewayClassList) ConvertToTable(ctx context.Context, tableOptions runtime.Object) (*metav1.Table, error) {
+	table := &metav1.Table{}
+	if opt, ok := tableOptions.(*metav1.TableOptions); !ok || !opt.NoHeaders {
+		table.ColumnDefinitions = []metav1.TableColumnDefinition{
+			{Name: "Name", Type: "string", Format: "name", Description: "Name of the gateway class"},
+			{Name: "Controller", Type: "string", Description: "Controller that manages this class"},
+			{Name: "Age", Type: "string", Description: "Time since creation"},
+		}
+	}
+	for i := range l.Items {
+		gc := &l.Items[i]
+		table.Rows = append(table.Rows, metav1.TableRow{
+			Cells: []interface{}{
+				gc.Name,
+				string(gc.Spec.ControllerName),
+				formatAge(gc.CreationTimestamp.Time),
+			},
+			Object: runtime.RawExtension{Object: gc},
+		})
+	}
+	table.ResourceVersion = l.ResourceVersion
+	table.Continue = l.Continue
+	table.RemainingItemCount = l.RemainingItemCount
+	return table, nil
+}
+
+var _ resourcestrategy.TableConverter = &Gateway{}
+
+func (g *Gateway) ConvertToTable(ctx context.Context, tableOptions runtime.Object) (*metav1.Table, error) {
+	return gatewayToTable(g, tableOptions)
+}
+
+func gatewayToTable(g *Gateway, tableOptions runtime.Object) (*metav1.Table, error) {
+	table := &metav1.Table{}
+	if opt, ok := tableOptions.(*metav1.TableOptions); !ok || !opt.NoHeaders {
+		table.ColumnDefinitions = []metav1.TableColumnDefinition{
+			{Name: "Name", Type: "string", Format: "name", Description: "Name of the gateway"},
+			{Name: "Class", Type: "string", Description: "Gateway class"},
+			{Name: "Listeners", Type: "string", Description: "Listener configuration"},
+			{Name: "Age", Type: "string", Description: "Time since creation"},
+		}
+	}
+	table.Rows = append(table.Rows, metav1.TableRow{
+		Cells: []interface{}{
+			g.Name,
+			string(g.Spec.GatewayClassName),
+			getListenersSummary(g.Spec.Listeners),
+			formatAge(g.CreationTimestamp.Time),
+		},
+		Object: runtime.RawExtension{Object: g},
+	})
+	table.ResourceVersion = g.ResourceVersion
+	return table, nil
+}
+
+var _ resourcestrategy.TableConverter = &GatewayList{}
+
+func (l *GatewayList) ConvertToTable(ctx context.Context, tableOptions runtime.Object) (*metav1.Table, error) {
+	table := &metav1.Table{}
+	if opt, ok := tableOptions.(*metav1.TableOptions); !ok || !opt.NoHeaders {
+		table.ColumnDefinitions = []metav1.TableColumnDefinition{
+			{Name: "Name", Type: "string", Format: "name", Description: "Name of the gateway"},
+			{Name: "Class", Type: "string", Description: "Gateway class"},
+			{Name: "Listeners", Type: "string", Description: "Listener configuration"},
+			{Name: "Age", Type: "string", Description: "Time since creation"},
+		}
+	}
+	for i := range l.Items {
+		g := &l.Items[i]
+		table.Rows = append(table.Rows, metav1.TableRow{
+			Cells: []interface{}{
+				g.Name,
+				string(g.Spec.GatewayClassName),
+				getListenersSummary(g.Spec.Listeners),
+				formatAge(g.CreationTimestamp.Time),
+			},
+			Object: runtime.RawExtension{Object: g},
+		})
+	}
+	table.ResourceVersion = l.ResourceVersion
+	table.Continue = l.Continue
+	table.RemainingItemCount = l.RemainingItemCount
+	return table, nil
+}
+
+var _ resourcestrategy.TableConverter = &HTTPRoute{}
+
+func (r *HTTPRoute) ConvertToTable(ctx context.Context, tableOptions runtime.Object) (*metav1.Table, error) {
+	return httpRouteToTable(r, tableOptions)
+}
+
+func httpRouteToTable(r *HTTPRoute, tableOptions runtime.Object) (*metav1.Table, error) {
+	table := &metav1.Table{}
+	if opt, ok := tableOptions.(*metav1.TableOptions); !ok || !opt.NoHeaders {
+		table.ColumnDefinitions = []metav1.TableColumnDefinition{
+			{Name: "Name", Type: "string", Format: "name", Description: "Name of the HTTP route"},
+			{Name: "Hostnames", Type: "string", Description: "Hostnames for the route"},
+			{Name: "Parents", Type: "string", Description: "Parent gateway references"},
+			{Name: "Age", Type: "string", Description: "Time since creation"},
+		}
+	}
+	table.Rows = append(table.Rows, metav1.TableRow{
+		Cells: []interface{}{
+			r.Name,
+			getHostnamesSummary(r.Spec.Hostnames),
+			getParentRefsSummary(r.Spec.ParentRefs),
+			formatAge(r.CreationTimestamp.Time),
+		},
+		Object: runtime.RawExtension{Object: r},
+	})
+	table.ResourceVersion = r.ResourceVersion
+	return table, nil
+}
+
+var _ resourcestrategy.TableConverter = &HTTPRouteList{}
+
+func (l *HTTPRouteList) ConvertToTable(ctx context.Context, tableOptions runtime.Object) (*metav1.Table, error) {
+	table := &metav1.Table{}
+	if opt, ok := tableOptions.(*metav1.TableOptions); !ok || !opt.NoHeaders {
+		table.ColumnDefinitions = []metav1.TableColumnDefinition{
+			{Name: "Name", Type: "string", Format: "name", Description: "Name of the HTTP route"},
+			{Name: "Hostnames", Type: "string", Description: "Hostnames for the route"},
+			{Name: "Parents", Type: "string", Description: "Parent gateway references"},
+			{Name: "Age", Type: "string", Description: "Time since creation"},
+		}
+	}
+	for i := range l.Items {
+		r := &l.Items[i]
+		table.Rows = append(table.Rows, metav1.TableRow{
+			Cells: []interface{}{
+				r.Name,
+				getHostnamesSummary(r.Spec.Hostnames),
+				getParentRefsSummary(r.Spec.ParentRefs),
+				formatAge(r.CreationTimestamp.Time),
+			},
+			Object: runtime.RawExtension{Object: r},
+		})
+	}
+	table.ResourceVersion = l.ResourceVersion
+	table.Continue = l.Continue
+	table.RemainingItemCount = l.RemainingItemCount
+	return table, nil
+}
+
+var _ resourcestrategy.TableConverter = &GRPCRoute{}
+
+func (r *GRPCRoute) ConvertToTable(ctx context.Context, tableOptions runtime.Object) (*metav1.Table, error) {
+	return grpcRouteToTable(r, tableOptions)
+}
+
+func grpcRouteToTable(r *GRPCRoute, tableOptions runtime.Object) (*metav1.Table, error) {
+	table := &metav1.Table{}
+	if opt, ok := tableOptions.(*metav1.TableOptions); !ok || !opt.NoHeaders {
+		table.ColumnDefinitions = []metav1.TableColumnDefinition{
+			{Name: "Name", Type: "string", Format: "name", Description: "Name of the gRPC route"},
+			{Name: "Hostnames", Type: "string", Description: "Hostnames for the route"},
+			{Name: "Parents", Type: "string", Description: "Parent gateway references"},
+			{Name: "Age", Type: "string", Description: "Time since creation"},
+		}
+	}
+	table.Rows = append(table.Rows, metav1.TableRow{
+		Cells: []interface{}{
+			r.Name,
+			getHostnamesSummary(r.Spec.Hostnames),
+			getParentRefsSummary(r.Spec.ParentRefs),
+			formatAge(r.CreationTimestamp.Time),
+		},
+		Object: runtime.RawExtension{Object: r},
+	})
+	table.ResourceVersion = r.ResourceVersion
+	return table, nil
+}
+
+var _ resourcestrategy.TableConverter = &GRPCRouteList{}
+
+func (l *GRPCRouteList) ConvertToTable(ctx context.Context, tableOptions runtime.Object) (*metav1.Table, error) {
+	table := &metav1.Table{}
+	if opt, ok := tableOptions.(*metav1.TableOptions); !ok || !opt.NoHeaders {
+		table.ColumnDefinitions = []metav1.TableColumnDefinition{
+			{Name: "Name", Type: "string", Format: "name", Description: "Name of the gRPC route"},
+			{Name: "Hostnames", Type: "string", Description: "Hostnames for the route"},
+			{Name: "Parents", Type: "string", Description: "Parent gateway references"},
+			{Name: "Age", Type: "string", Description: "Time since creation"},
+		}
+	}
+	for i := range l.Items {
+		r := &l.Items[i]
+		table.Rows = append(table.Rows, metav1.TableRow{
+			Cells: []interface{}{
+				r.Name,
+				getHostnamesSummary(r.Spec.Hostnames),
+				getParentRefsSummary(r.Spec.ParentRefs),
+				formatAge(r.CreationTimestamp.Time),
+			},
+			Object: runtime.RawExtension{Object: r},
+		})
+	}
+	table.ResourceVersion = l.ResourceVersion
+	table.Continue = l.Continue
+	table.RemainingItemCount = l.RemainingItemCount
+	return table, nil
 }

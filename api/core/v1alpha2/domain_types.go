@@ -36,6 +36,14 @@ type Domain struct {
 	Status DomainStatus `json:"status,omitempty"`
 }
 
+var (
+	_ runtime.Object                       = &Domain{}
+	_ resource.Object                      = &Domain{}
+	_ resource.ObjectWithStatusSubResource = &Domain{}
+	_ rest.SingularNameProvider            = &Domain{}
+	_ resourcestrategy.TableConverter      = &Domain{}
+)
+
 type DomainSpec struct {
 	// The zone this domain is managed under.
 	// +kubebuilder:validation:Required
@@ -279,12 +287,6 @@ func (as *DomainStatus) CopyTo(obj resource.ObjectWithStatusSubResource) {
 	}
 }
 
-var _ runtime.Object = &Domain{}
-var _ resource.Object = &Domain{}
-var _ resource.ObjectWithStatusSubResource = &Domain{}
-var _ rest.SingularNameProvider = &Domain{}
-var _ resourcestrategy.TableConverter = &Domain{}
-
 func (a *Domain) GetObjectMeta() *metav1.ObjectMeta {
 	return &a.ObjectMeta
 }
@@ -331,8 +333,10 @@ type DomainList struct {
 	Items           []Domain `json:"items"`
 }
 
-var _ resource.ObjectList = &DomainList{}
-var _ resourcestrategy.TableConverter = &DomainList{}
+var (
+	_ resource.ObjectList             = &DomainList{}
+	_ resourcestrategy.TableConverter = &DomainList{}
+)
 
 func (pl *DomainList) GetListMeta() *metav1.ListMeta {
 	return &pl.ListMeta
