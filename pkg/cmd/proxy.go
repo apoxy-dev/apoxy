@@ -10,16 +10,15 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"golang.org/x/exp/slog"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/cli-runtime/pkg/printers"
 
-	"github.com/apoxy-dev/apoxy/config"
-	"github.com/apoxy-dev/apoxy/pkg/cmd/utils"
-	"github.com/apoxy-dev/apoxy/rest"
-
 	corev1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
+	"github.com/apoxy-dev/apoxy/client/versioned/scheme"
+	"github.com/apoxy-dev/apoxy/config"
+	"github.com/apoxy-dev/apoxy/rest"
 )
 
 var (
@@ -27,6 +26,12 @@ var (
 	showProxyLabels bool
 	// proxyFile is a flag that specifies the file to read the configuration from.
 	proxyFile string
+	// proxyApplyFile is a flag that specifies the file to read the configuration from for apply.
+	proxyApplyFile string
+	// proxyFieldManager is the field manager name for server-side apply.
+	proxyFieldManager string
+	// proxyForceConflicts forces apply even if there are conflicts.
+	proxyForceConflicts bool
 )
 
 func labelsToString(labels map[string]string) string {
@@ -214,17 +219,16 @@ var createProxyCmd = &cobra.Command{
 	Short: "Create proxy objects",
 	Long:  `Create proxy objects by providing a configuration as a file or via stdin.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// Load the config to create from a file or stdin.
-		var proxyConfig string
+		var data []byte
 		var err error
 		stat, _ := os.Stdin.Stat()
 		if stat.Mode()&os.ModeCharDevice == 0 {
 			if proxyFile != "" {
 				return fmt.Errorf("cannot use --filename with stdin")
 			}
-			proxyConfig, err = utils.ReadStdInAsString()
+			data, err = io.ReadAll(os.Stdin)
 		} else if proxyFile != "" {
-			proxyConfig, err = utils.ReadFileAsString(proxyFile)
+			data, err = os.ReadFile(proxyFile)
 		} else {
 			return fmt.Errorf("please provide a configuration via --filename or stdin")
 		}
@@ -239,17 +243,15 @@ var createProxyCmd = &cobra.Command{
 			return err
 		}
 
-		// Parse proxyConfig into a proxy object.
-		proxy := &corev1alpha2.Proxy{}
-		proxyJSON, err := utils.YAMLToJSON(proxyConfig)
+		// Decode using the apoxy scheme's universal deserializer (handles both YAML and JSON).
+		obj, _, err := scheme.Codecs.UniversalDeserializer().Decode(data, nil, nil)
 		if err != nil {
-			// Try assuming that the config is a JSON string?
-			slog.Debug("failed to parse proxy config as yaml - assuming input is JSON", "error", err)
-			proxyJSON = proxyConfig
+			return fmt.Errorf("failed to decode input: %w", err)
 		}
-		err = json.Unmarshal([]byte(proxyJSON), proxy)
-		if err != nil {
-			return err
+
+		proxy, ok := obj.(*corev1alpha2.Proxy)
+		if !ok {
+			return fmt.Errorf("expected Proxy, got %T", obj)
 		}
 
 		r, err := c.CoreV1alpha2().Proxies().Create(cmd.Context(), proxy, metav1.CreateOptions{})
@@ -284,12 +286,94 @@ var deleteProxyCmd = &cobra.Command{
 	},
 }
 
+// applyProxyCmd applies a Proxy object using server-side apply.
+var applyProxyCmd = &cobra.Command{
+	Use:   "apply [-f filename]",
+	Short: "Apply proxy configuration using server-side apply",
+	Long: `Apply proxy configuration using Kubernetes server-side apply.
+
+This command uses server-side apply to create or update proxy objects.
+Server-side apply tracks field ownership and allows multiple actors to
+manage different fields of the same object without conflicts.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		var data []byte
+		var err error
+		stat, _ := os.Stdin.Stat()
+		if stat.Mode()&os.ModeCharDevice == 0 {
+			if proxyApplyFile != "" {
+				return fmt.Errorf("cannot use --filename with stdin")
+			}
+			data, err = io.ReadAll(os.Stdin)
+		} else if proxyApplyFile != "" {
+			data, err = os.ReadFile(proxyApplyFile)
+		} else {
+			return fmt.Errorf("please provide a configuration via --filename or stdin")
+		}
+		if err != nil {
+			return err
+		}
+
+		cmd.SilenceUsage = true
+
+		c, err := config.DefaultAPIClient()
+		if err != nil {
+			return err
+		}
+
+		// Decode using the apoxy scheme's universal deserializer (handles both YAML and JSON).
+		obj, _, err := scheme.Codecs.UniversalDeserializer().Decode(data, nil, nil)
+		if err != nil {
+			return fmt.Errorf("failed to decode input: %w", err)
+		}
+
+		proxy, ok := obj.(*corev1alpha2.Proxy)
+		if !ok {
+			return fmt.Errorf("expected Proxy, got %T", obj)
+		}
+
+		if proxy.Name == "" {
+			return fmt.Errorf("proxy name is required")
+		}
+
+		// Server-side apply uses Patch with ApplyPatchType.
+		// The data must be a valid JSON representation of the object.
+		patchData, err := json.Marshal(proxy)
+		if err != nil {
+			return fmt.Errorf("failed to marshal proxy: %w", err)
+		}
+
+		result, err := c.CoreV1alpha2().Proxies().Patch(
+			cmd.Context(),
+			proxy.Name,
+			types.ApplyPatchType,
+			patchData,
+			metav1.PatchOptions{
+				FieldManager: proxyFieldManager,
+				Force:        &proxyForceConflicts,
+			},
+		)
+		if err != nil {
+			return err
+		}
+
+		fmt.Printf("proxy %q applied\n", result.Name)
+		return nil
+	},
+}
+
 func init() {
 	createProxyCmd.PersistentFlags().
 		StringVarP(&proxyFile, "filename", "f", "", "The file that contains the configuration to create.")
 	listProxyCmd.PersistentFlags().
 		BoolVar(&showProxyLabels, "show-labels", false, "Print the proxy's labels.")
 
-	alphaProxyCmd.AddCommand(getProxyCmd, listProxyCmd, createProxyCmd, deleteProxyCmd)
+	applyProxyCmd.PersistentFlags().
+		StringVarP(&proxyApplyFile, "filename", "f", "", "The file that contains the configuration to apply.")
+	applyProxyCmd.PersistentFlags().
+		StringVar(&proxyFieldManager, "field-manager", "apoxy-cli", "Name of the field manager for server-side apply.")
+	applyProxyCmd.PersistentFlags().
+		BoolVar(&proxyForceConflicts, "force-conflicts", false, "Force apply even if there are field ownership conflicts.")
+
+	alphaProxyCmd.AddCommand(getProxyCmd, listProxyCmd, createProxyCmd, deleteProxyCmd, applyProxyCmd)
 	RootCmd.AddCommand(alphaProxyCmd)
 }

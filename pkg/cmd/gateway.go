@@ -10,16 +10,15 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"golang.org/x/exp/slog"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/cli-runtime/pkg/printers"
 
-	"github.com/apoxy-dev/apoxy/config"
-	"github.com/apoxy-dev/apoxy/pkg/cmd/utils"
-	"github.com/apoxy-dev/apoxy/rest"
-
 	gatewayv1 "github.com/apoxy-dev/apoxy/api/gateway/v1"
+	"github.com/apoxy-dev/apoxy/client/versioned/scheme"
+	"github.com/apoxy-dev/apoxy/config"
+	"github.com/apoxy-dev/apoxy/rest"
 	gwapiv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
@@ -28,6 +27,12 @@ var (
 	showGatewayLabels bool
 	// gatewayFile is a flag that specifies the file to read the configuration from.
 	gatewayFile string
+	// gatewayApplyFile is a flag that specifies the file to read the configuration from for apply.
+	gatewayApplyFile string
+	// gatewayFieldManager is the field manager name for server-side apply.
+	gatewayFieldManager string
+	// gatewayForceConflicts forces apply even if there are conflicts.
+	gatewayForceConflicts bool
 )
 
 // gatewaySinceString returns a string representation of a time.Duration since the provided time.Time.
@@ -213,16 +218,16 @@ var createGatewayCmd = &cobra.Command{
 	Short: "Create gateway objects",
 	Long:  `Create gateway objects by providing a configuration as a file or via stdin.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		var gatewayConfig string
+		var data []byte
 		var err error
 		stat, _ := os.Stdin.Stat()
 		if stat.Mode()&os.ModeCharDevice == 0 {
 			if gatewayFile != "" {
 				return fmt.Errorf("cannot use --filename with stdin")
 			}
-			gatewayConfig, err = utils.ReadStdInAsString()
+			data, err = io.ReadAll(os.Stdin)
 		} else if gatewayFile != "" {
-			gatewayConfig, err = utils.ReadFileAsString(gatewayFile)
+			data, err = os.ReadFile(gatewayFile)
 		} else {
 			return fmt.Errorf("please provide a configuration via --filename or stdin")
 		}
@@ -237,15 +242,15 @@ var createGatewayCmd = &cobra.Command{
 			return err
 		}
 
-		gw := &gatewayv1.Gateway{}
-		gatewayJSON, err := utils.YAMLToJSON(gatewayConfig)
+		// Decode using the apoxy scheme's universal deserializer (handles both YAML and JSON).
+		obj, _, err := scheme.Codecs.UniversalDeserializer().Decode(data, nil, nil)
 		if err != nil {
-			slog.Debug("failed to parse gateway config as yaml - assuming input is JSON", "error", err)
-			gatewayJSON = gatewayConfig
+			return fmt.Errorf("failed to decode input: %w", err)
 		}
-		err = json.Unmarshal([]byte(gatewayJSON), gw)
-		if err != nil {
-			return err
+
+		gw, ok := obj.(*gatewayv1.Gateway)
+		if !ok {
+			return fmt.Errorf("expected Gateway, got %T", obj)
 		}
 
 		r, err := c.GatewayV1().Gateways().Create(cmd.Context(), gw, metav1.CreateOptions{})
@@ -280,12 +285,94 @@ var deleteGatewayCmd = &cobra.Command{
 	},
 }
 
+// applyGatewayCmd applies a Gateway object using server-side apply.
+var applyGatewayCmd = &cobra.Command{
+	Use:   "apply [-f filename]",
+	Short: "Apply gateway configuration using server-side apply",
+	Long: `Apply gateway configuration using Kubernetes server-side apply.
+
+This command uses server-side apply to create or update gateway objects.
+Server-side apply tracks field ownership and allows multiple actors to
+manage different fields of the same object without conflicts.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		var data []byte
+		var err error
+		stat, _ := os.Stdin.Stat()
+		if stat.Mode()&os.ModeCharDevice == 0 {
+			if gatewayApplyFile != "" {
+				return fmt.Errorf("cannot use --filename with stdin")
+			}
+			data, err = io.ReadAll(os.Stdin)
+		} else if gatewayApplyFile != "" {
+			data, err = os.ReadFile(gatewayApplyFile)
+		} else {
+			return fmt.Errorf("please provide a configuration via --filename or stdin")
+		}
+		if err != nil {
+			return err
+		}
+
+		cmd.SilenceUsage = true
+
+		c, err := config.DefaultAPIClient()
+		if err != nil {
+			return err
+		}
+
+		// Decode using the apoxy scheme's universal deserializer (handles both YAML and JSON).
+		obj, _, err := scheme.Codecs.UniversalDeserializer().Decode(data, nil, nil)
+		if err != nil {
+			return fmt.Errorf("failed to decode input: %w", err)
+		}
+
+		gw, ok := obj.(*gatewayv1.Gateway)
+		if !ok {
+			return fmt.Errorf("expected Gateway, got %T", obj)
+		}
+
+		if gw.Name == "" {
+			return fmt.Errorf("gateway name is required")
+		}
+
+		// Server-side apply uses Patch with ApplyPatchType.
+		// The data must be a valid JSON representation of the object.
+		patchData, err := json.Marshal(gw)
+		if err != nil {
+			return fmt.Errorf("failed to marshal gateway: %w", err)
+		}
+
+		result, err := c.GatewayV1().Gateways().Patch(
+			cmd.Context(),
+			gw.Name,
+			types.ApplyPatchType,
+			patchData,
+			metav1.PatchOptions{
+				FieldManager: gatewayFieldManager,
+				Force:        &gatewayForceConflicts,
+			},
+		)
+		if err != nil {
+			return err
+		}
+
+		fmt.Printf("gateway %q applied\n", result.Name)
+		return nil
+	},
+}
+
 func init() {
 	createGatewayCmd.PersistentFlags().
 		StringVarP(&gatewayFile, "filename", "f", "", "The file that contains the configuration to create.")
 	listGatewayCmd.PersistentFlags().
 		BoolVar(&showGatewayLabels, "show-labels", false, "Print the gateway's labels.")
 
-	alphaGatewayCmd.AddCommand(getGatewayCmd, listGatewayCmd, createGatewayCmd, deleteGatewayCmd)
+	applyGatewayCmd.PersistentFlags().
+		StringVarP(&gatewayApplyFile, "filename", "f", "", "The file that contains the configuration to apply.")
+	applyGatewayCmd.PersistentFlags().
+		StringVar(&gatewayFieldManager, "field-manager", "apoxy-cli", "Name of the field manager for server-side apply.")
+	applyGatewayCmd.PersistentFlags().
+		BoolVar(&gatewayForceConflicts, "force-conflicts", false, "Force apply even if there are field ownership conflicts.")
+
+	alphaGatewayCmd.AddCommand(getGatewayCmd, listGatewayCmd, createGatewayCmd, deleteGatewayCmd, applyGatewayCmd)
 	RootCmd.AddCommand(alphaGatewayCmd)
 }

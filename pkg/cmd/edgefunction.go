@@ -4,20 +4,31 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/spf13/cobra"
-	"golang.org/x/exp/slog"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/apoxy-dev/apoxy/api/extensions/v1alpha2"
+	"github.com/apoxy-dev/apoxy/client/versioned/scheme"
 	"github.com/apoxy-dev/apoxy/config"
-	"github.com/apoxy-dev/apoxy/pkg/cmd/utils"
 	"github.com/apoxy-dev/apoxy/pretty"
 	"github.com/apoxy-dev/apoxy/rest"
 )
 
-var showEdgeFunctionLabels bool
+var (
+	showEdgeFunctionLabels bool
+	// edgeFunctionFile is the file that contains the configuration to create.
+	edgeFunctionFile string
+	// edgeFunctionApplyFile is the file that contains the configuration to apply.
+	edgeFunctionApplyFile string
+	// edgeFunctionFieldManager is the field manager name for server-side apply.
+	edgeFunctionFieldManager string
+	// edgeFunctionForceConflicts forces apply even if there are conflicts.
+	edgeFunctionForceConflicts bool
+)
 
 func buildAlphaEdgeFunctionRow(r *v1alpha2.EdgeFunction, labels bool) []interface{} {
 	mode := r.Spec.Template.Mode
@@ -156,26 +167,22 @@ var listAlphaEdgeFunctionCmd = &cobra.Command{
 	},
 }
 
-// edgeFunctionFile is the file that contains the configuration to create.
-var edgeFunctionFile string
-
 // createAlphaEdgeFunctionCmd represents the create edgefunction command
 var createAlphaEdgeFunctionCmd = &cobra.Command{
 	Use:   "create [-f filename]",
 	Short: "Create edge function objects",
 	Long:  `Create edge function objects by providing a configuration as a file or via stdin.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// Load the config to create from a file or stdin.
-		var edgeFunctionConfig string
+		var data []byte
 		var err error
 		stat, _ := os.Stdin.Stat()
 		if stat.Mode()&os.ModeCharDevice == 0 {
 			if edgeFunctionFile != "" {
 				return fmt.Errorf("cannot use --filename with stdin")
 			}
-			edgeFunctionConfig, err = utils.ReadStdInAsString()
+			data, err = io.ReadAll(os.Stdin)
 		} else if edgeFunctionFile != "" {
-			edgeFunctionConfig, err = utils.ReadFileAsString(edgeFunctionFile)
+			data, err = os.ReadFile(edgeFunctionFile)
 		} else {
 			return fmt.Errorf("please provide a configuration via --filename or stdin")
 		}
@@ -190,17 +197,15 @@ var createAlphaEdgeFunctionCmd = &cobra.Command{
 			return err
 		}
 
-		// Parse edgeFunctionConfig into an EdgeFunction object.
-		edgeFunction := &v1alpha2.EdgeFunction{}
-		edgeFunctionJSON, err := utils.YAMLToJSON(edgeFunctionConfig)
+		// Decode using the apoxy scheme's universal deserializer (handles both YAML and JSON).
+		obj, _, err := scheme.Codecs.UniversalDeserializer().Decode(data, nil, nil)
 		if err != nil {
-			// Try assuming that the config is a JSON string?
-			slog.Debug("failed to parse edge function config as yaml - assuming input is JSON", "error", err)
-			edgeFunctionJSON = edgeFunctionConfig
+			return fmt.Errorf("failed to decode input: %w", err)
 		}
-		err = json.Unmarshal([]byte(edgeFunctionJSON), edgeFunction)
-		if err != nil {
-			return err
+
+		edgeFunction, ok := obj.(*v1alpha2.EdgeFunction)
+		if !ok {
+			return fmt.Errorf("expected EdgeFunction, got %T", obj)
 		}
 
 		r, err := c.ExtensionsV1alpha2().EdgeFunctions().Create(cmd.Context(), edgeFunction, metav1.CreateOptions{})
@@ -235,12 +240,94 @@ var deleteAlphaEdgeFunctionCmd = &cobra.Command{
 	},
 }
 
+// applyAlphaEdgeFunctionCmd applies an EdgeFunction object using server-side apply.
+var applyAlphaEdgeFunctionCmd = &cobra.Command{
+	Use:   "apply [-f filename]",
+	Short: "Apply edge function configuration using server-side apply",
+	Long: `Apply edge function configuration using Kubernetes server-side apply.
+
+This command uses server-side apply to create or update edge function objects.
+Server-side apply tracks field ownership and allows multiple actors to
+manage different fields of the same object without conflicts.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		var data []byte
+		var err error
+		stat, _ := os.Stdin.Stat()
+		if stat.Mode()&os.ModeCharDevice == 0 {
+			if edgeFunctionApplyFile != "" {
+				return fmt.Errorf("cannot use --filename with stdin")
+			}
+			data, err = io.ReadAll(os.Stdin)
+		} else if edgeFunctionApplyFile != "" {
+			data, err = os.ReadFile(edgeFunctionApplyFile)
+		} else {
+			return fmt.Errorf("please provide a configuration via --filename or stdin")
+		}
+		if err != nil {
+			return err
+		}
+
+		cmd.SilenceUsage = true
+
+		c, err := config.DefaultAPIClient()
+		if err != nil {
+			return err
+		}
+
+		// Decode using the apoxy scheme's universal deserializer (handles both YAML and JSON).
+		obj, _, err := scheme.Codecs.UniversalDeserializer().Decode(data, nil, nil)
+		if err != nil {
+			return fmt.Errorf("failed to decode input: %w", err)
+		}
+
+		edgeFunction, ok := obj.(*v1alpha2.EdgeFunction)
+		if !ok {
+			return fmt.Errorf("expected EdgeFunction, got %T", obj)
+		}
+
+		if edgeFunction.Name == "" {
+			return fmt.Errorf("edge function name is required")
+		}
+
+		// Server-side apply uses Patch with ApplyPatchType.
+		// The data must be a valid JSON representation of the object.
+		patchData, err := json.Marshal(edgeFunction)
+		if err != nil {
+			return fmt.Errorf("failed to marshal edge function: %w", err)
+		}
+
+		result, err := c.ExtensionsV1alpha2().EdgeFunctions().Patch(
+			cmd.Context(),
+			edgeFunction.Name,
+			types.ApplyPatchType,
+			patchData,
+			metav1.PatchOptions{
+				FieldManager: edgeFunctionFieldManager,
+				Force:        &edgeFunctionForceConflicts,
+			},
+		)
+		if err != nil {
+			return err
+		}
+
+		fmt.Printf("edge function %q applied\n", result.Name)
+		return nil
+	},
+}
+
 func init() {
 	createAlphaEdgeFunctionCmd.PersistentFlags().
 		StringVarP(&edgeFunctionFile, "filename", "f", "", "The file that contains the configuration to create.")
 	listAlphaEdgeFunctionCmd.PersistentFlags().
 		BoolVar(&showEdgeFunctionLabels, "show-labels", false, "Print the edge function's labels.")
 
-	alphaEdgeFunctionCmd.AddCommand(getAlphaEdgeFunctionCmd, listAlphaEdgeFunctionCmd, createAlphaEdgeFunctionCmd, deleteAlphaEdgeFunctionCmd)
+	applyAlphaEdgeFunctionCmd.PersistentFlags().
+		StringVarP(&edgeFunctionApplyFile, "filename", "f", "", "The file that contains the configuration to apply.")
+	applyAlphaEdgeFunctionCmd.PersistentFlags().
+		StringVar(&edgeFunctionFieldManager, "field-manager", "apoxy-cli", "Name of the field manager for server-side apply.")
+	applyAlphaEdgeFunctionCmd.PersistentFlags().
+		BoolVar(&edgeFunctionForceConflicts, "force-conflicts", false, "Force apply even if there are field ownership conflicts.")
+
+	alphaEdgeFunctionCmd.AddCommand(getAlphaEdgeFunctionCmd, listAlphaEdgeFunctionCmd, createAlphaEdgeFunctionCmd, deleteAlphaEdgeFunctionCmd, applyAlphaEdgeFunctionCmd)
 	RootCmd.AddCommand(alphaEdgeFunctionCmd)
 }

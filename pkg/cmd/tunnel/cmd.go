@@ -1,18 +1,18 @@
 package tunnel
 
 import (
-	"errors"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
-	"reflect"
 	"time"
 
 	"github.com/spf13/cobra"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/yaml"
+	"k8s.io/apimachinery/pkg/types"
 
 	corev1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
+	apoxyscheme "github.com/apoxy-dev/apoxy/client/versioned/scheme"
 	"github.com/apoxy-dev/apoxy/config"
 )
 
@@ -29,7 +29,15 @@ var tunnelCmd = &cobra.Command{
 	Long:  "Manage WireGuard tunnels state and connect to the remote Apoxy Edge fabric.",
 }
 
-var tunnelNodeFile string
+var (
+	tunnelNodeFile string
+	// tunnelNodeApplyFile is the file that contains the configuration to apply.
+	tunnelNodeApplyFile string
+	// tunnelNodeFieldManager is the field manager name for server-side apply.
+	tunnelNodeFieldManager string
+	// tunnelNodeForceConflicts forces apply even if there are conflicts.
+	tunnelNodeForceConflicts bool
+)
 
 var createCmd = &cobra.Command{
 	Use:   "create",
@@ -37,6 +45,24 @@ var createCmd = &cobra.Command{
 	Long:  "Create a TunnelNode object from a file or stdin.",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
+
+		var data []byte
+		var err error
+		stat, _ := os.Stdin.Stat()
+		if stat.Mode()&os.ModeCharDevice == 0 {
+			if tunnelNodeFile != "" {
+				return fmt.Errorf("cannot use --file with stdin")
+			}
+			data, err = io.ReadAll(os.Stdin)
+		} else if tunnelNodeFile != "" {
+			data, err = os.ReadFile(tunnelNodeFile)
+		} else {
+			return fmt.Errorf("either --file or stdin must be specified")
+		}
+		if err != nil {
+			return err
+		}
+
 		cmd.SilenceUsage = true
 
 		client, err := config.DefaultAPIClient()
@@ -44,27 +70,23 @@ var createCmd = &cobra.Command{
 			return fmt.Errorf("unable to create API client: %w", err)
 		}
 
-		var tunnelNode *corev1alpha.TunnelNode
-		stat, _ := os.Stdin.Stat()
-		if stat.Mode()&os.ModeCharDevice == 0 {
-			if tunnelNodeFile != "" {
-				return fmt.Errorf("cannot use --file with stdin")
-			}
-			tunnelNode, err = loadTunnelNodeFromStdin()
-		} else if tunnelNodeFile != "" {
-			tunnelNode, err = loadTunnelNodeFromPath(tunnelNodeFile)
-		} else {
-			return fmt.Errorf("either --file or stdin must be specified")
-		}
+		// Decode using the apoxy scheme's universal deserializer (handles both YAML and JSON).
+		obj, _, err := apoxyscheme.Codecs.UniversalDeserializer().Decode(data, nil, nil)
 		if err != nil {
-			return fmt.Errorf("failed to load TunnelNode: %w", err)
+			return fmt.Errorf("failed to decode input: %w", err)
 		}
 
-		_, err = client.CoreV1alpha().TunnelNodes().Create(ctx, tunnelNode, metav1.CreateOptions{})
+		tunnelNode, ok := obj.(*corev1alpha.TunnelNode)
+		if !ok {
+			return fmt.Errorf("expected TunnelNode, got %T", obj)
+		}
+
+		r, err := client.CoreV1alpha().TunnelNodes().Create(ctx, tunnelNode, metav1.CreateOptions{})
 		if err != nil {
 			return fmt.Errorf("unable to create TunnelNode: %w", err)
 		}
 
+		fmt.Printf("tunnelnode %q created\n", r.Name)
 		return nil
 	},
 }
@@ -116,6 +138,24 @@ var updateCmd = &cobra.Command{
 	Long:  "Update a TunnelNode object from a file or stdin.",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
+
+		var data []byte
+		var err error
+		stat, _ := os.Stdin.Stat()
+		if stat.Mode()&os.ModeCharDevice == 0 {
+			if tunnelNodeFile != "" {
+				return fmt.Errorf("cannot use --file with stdin")
+			}
+			data, err = io.ReadAll(os.Stdin)
+		} else if tunnelNodeFile != "" {
+			data, err = os.ReadFile(tunnelNodeFile)
+		} else {
+			return fmt.Errorf("either --file or stdin must be specified")
+		}
+		if err != nil {
+			return err
+		}
+
 		cmd.SilenceUsage = true
 
 		client, err := config.DefaultAPIClient()
@@ -123,24 +163,23 @@ var updateCmd = &cobra.Command{
 			return fmt.Errorf("unable to create API client: %w", err)
 		}
 
-		var tunnelNode *corev1alpha.TunnelNode
-		stat, _ := os.Stdin.Stat()
-		if stat.Mode()&os.ModeCharDevice == 0 {
-			if tunnelNodeFile != "" {
-				return fmt.Errorf("cannot use --file with stdin")
-			}
-			tunnelNode, err = loadTunnelNodeFromStdin()
-		} else if tunnelNodeFile != "" {
-			tunnelNode, err = loadTunnelNodeFromPath(tunnelNodeFile)
-		} else {
-			return fmt.Errorf("either --file or stdin must be specified")
+		// Decode using the apoxy scheme's universal deserializer (handles both YAML and JSON).
+		obj, _, err := apoxyscheme.Codecs.UniversalDeserializer().Decode(data, nil, nil)
+		if err != nil {
+			return fmt.Errorf("failed to decode input: %w", err)
 		}
 
-		_, err = client.CoreV1alpha().TunnelNodes().Update(ctx, tunnelNode, metav1.UpdateOptions{})
+		tunnelNode, ok := obj.(*corev1alpha.TunnelNode)
+		if !ok {
+			return fmt.Errorf("expected TunnelNode, got %T", obj)
+		}
+
+		r, err := client.CoreV1alpha().TunnelNodes().Update(ctx, tunnelNode, metav1.UpdateOptions{})
 		if err != nil {
 			return fmt.Errorf("unable to update TunnelNode: %w", err)
 		}
 
+		fmt.Printf("tunnelnode %q updated\n", r.Name)
 		return nil
 	},
 }
@@ -166,54 +205,96 @@ var deleteCmd = &cobra.Command{
 			return fmt.Errorf("unable to delete TunnelNode: %w", err)
 		}
 
+		fmt.Printf("tunnelnode %q deleted\n", tunnelNodeName)
 		return nil
 	},
 }
 
-func loadTunnelNodeFromPath(path string) (*corev1alpha.TunnelNode, error) {
-	yamlFile, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read file: %w", err)
-	}
+// applyCmd applies a TunnelNode object using server-side apply.
+var applyCmd = &cobra.Command{
+	Use:   "apply",
+	Short: "Apply TunnelNode configuration using server-side apply",
+	Long: `Apply TunnelNode configuration using Kubernetes server-side apply.
 
-	obj, gvk, err := decodeFn(yamlFile, nil, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode TunnelNode: %w", err)
-	}
+This command uses server-side apply to create or update TunnelNode objects.
+Server-side apply tracks field ownership and allows multiple actors to
+manage different fields of the same object without conflicts.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		ctx := cmd.Context()
 
-	tunnelNode, ok := obj.(*corev1alpha.TunnelNode)
-	if !ok {
-		return nil, fmt.Errorf("not a TunnelNode object: %v", gvk)
-	}
-
-	return tunnelNode, nil
-}
-
-func loadTunnelNodeFromStdin() (*corev1alpha.TunnelNode, error) {
-	decoder := yaml.NewYAMLOrJSONDecoder(os.Stdin, 4096)
-	for {
-		var obj interface{}
-		err := decoder.Decode(&obj)
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				return nil, nil
+		var data []byte
+		var err error
+		stat, _ := os.Stdin.Stat()
+		if stat.Mode()&os.ModeCharDevice == 0 {
+			if tunnelNodeApplyFile != "" {
+				return fmt.Errorf("cannot use --file with stdin")
 			}
-			return nil, fmt.Errorf("failed to decode TunnelNode: %w", err)
+			data, err = io.ReadAll(os.Stdin)
+		} else if tunnelNodeApplyFile != "" {
+			data, err = os.ReadFile(tunnelNodeApplyFile)
+		} else {
+			return fmt.Errorf("either --file or stdin must be specified")
+		}
+		if err != nil {
+			return err
+		}
+
+		cmd.SilenceUsage = true
+
+		client, err := config.DefaultAPIClient()
+		if err != nil {
+			return fmt.Errorf("unable to create API client: %w", err)
+		}
+
+		// Decode using the apoxy scheme's universal deserializer (handles both YAML and JSON).
+		obj, _, err := apoxyscheme.Codecs.UniversalDeserializer().Decode(data, nil, nil)
+		if err != nil {
+			return fmt.Errorf("failed to decode input: %w", err)
 		}
 
 		tunnelNode, ok := obj.(*corev1alpha.TunnelNode)
 		if !ok {
-			return nil, fmt.Errorf("not a TunnelNode object: %v", reflect.TypeOf(obj))
+			return fmt.Errorf("expected TunnelNode, got %T", obj)
 		}
 
-		return tunnelNode, nil
-	}
+		if tunnelNode.Name == "" {
+			return fmt.Errorf("tunnelnode name is required")
+		}
+
+		// Server-side apply uses Patch with ApplyPatchType.
+		// The data must be a valid JSON representation of the object.
+		patchData, err := json.Marshal(tunnelNode)
+		if err != nil {
+			return fmt.Errorf("failed to marshal tunnelnode: %w", err)
+		}
+
+		result, err := client.CoreV1alpha().TunnelNodes().Patch(
+			ctx,
+			tunnelNode.Name,
+			types.ApplyPatchType,
+			patchData,
+			metav1.PatchOptions{
+				FieldManager: tunnelNodeFieldManager,
+				Force:        &tunnelNodeForceConflicts,
+			},
+		)
+		if err != nil {
+			return fmt.Errorf("unable to apply TunnelNode: %w", err)
+		}
+
+		fmt.Printf("tunnelnode %q applied\n", result.Name)
+		return nil
+	},
 }
 
 func init() {
 	createCmd.Flags().StringVarP(&tunnelNodeFile, "file", "f", "", "Path to the TunnelNode file to create.")
 
 	updateCmd.Flags().StringVarP(&tunnelNodeFile, "file", "f", "", "Path to the TunnelNode file to update.")
+
+	applyCmd.Flags().StringVarP(&tunnelNodeApplyFile, "file", "f", "", "Path to the TunnelNode file to apply.")
+	applyCmd.Flags().StringVar(&tunnelNodeFieldManager, "field-manager", "apoxy-cli", "Name of the field manager for server-side apply.")
+	applyCmd.Flags().BoolVar(&tunnelNodeForceConflicts, "force-conflicts", false, "Force apply even if there are field ownership conflicts.")
 
 	tunnelRunCmd.Flags().StringVarP(&tunnelNodePcapPath, "pcap", "p", "", "Path to the TunnelNode file to create.")
 	tunnelRunCmd.Flags().StringVarP(&tunnelModeS, "mode", "m", "user", "Mode to run the TunnelNode in.")
@@ -230,6 +311,7 @@ func init() {
 	tunnelCmd.AddCommand(getCmd)
 	tunnelCmd.AddCommand(updateCmd)
 	tunnelCmd.AddCommand(deleteCmd)
+	tunnelCmd.AddCommand(applyCmd)
 	tunnelCmd.AddCommand(tunnelRunCmd)
 }
 
