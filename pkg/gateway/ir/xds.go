@@ -28,7 +28,8 @@ var (
 	ErrListenerAddressInvalid                  = errors.New("field Address must be a valid IP address")
 	ErrListenerPortInvalid                     = errors.New("field Port specified is invalid")
 	ErrHTTPListenerHostnamesEmpty              = errors.New("field Hostnames must be specified with at least a single hostname entry")
-	ErrTCPListenerSNIsEmpty                    = errors.New("field SNIs must be specified with at least a single server name entry")
+	ErrTCPRouteSNIsEmpty                       = errors.New("field SNIs must be specified with at least a single server name entry")
+	ErrRouteNameEmpty                          = errors.New("field Name must be specified")
 	ErrTLSServerCertEmpty                      = errors.New("field ServerCertificate must be specified")
 	ErrTLSPrivateKey                           = errors.New("field PrivateKey must be specified")
 	ErrHTTPRouteNameEmpty                      = errors.New("field Name must be specified")
@@ -105,6 +106,11 @@ func (x *Xds) sort() {
 	slices.SortFunc(x.TCP, func(l1, l2 *TCPListener) int {
 		return cmp.Compare(l1.Name, l2.Name)
 	})
+	for _, l := range x.TCP {
+		slices.SortFunc(l.Routes, func(r1, r2 *TCPRoute) int {
+			return cmp.Compare(r1.Name, r2.Name)
+		})
+	}
 	slices.SortFunc(x.UDP, func(l1, l2 *UDPListener) int {
 		return cmp.Compare(l1.Name, l2.Name)
 	})
@@ -1121,12 +1127,33 @@ func (s StringMatch) Validate() error {
 // +k8s:deepcopy-gen=true
 type TCPListener struct {
 	CoreListenerDetails `json:",inline" yaml:",inline"`
-	// TLS holds information for configuring TLS on a listener
+	// TCPKeepalive configuration for the listener
+	TCPKeepalive *TCPKeepalive `json:"tcpKeepalive,omitempty" yaml:"tcpKeepalive,omitempty"`
+	// Routes associated with TCP traffic to the listener
+	Routes []*TCPRoute `json:"routes,omitempty" yaml:"routes,omitempty"`
+}
+
+// TCPRoute holds the route configuration for a TCP listener.
+// +k8s:deepcopy-gen=true
+type TCPRoute struct {
+	// Name of the TCPRoute
+	Name string `json:"name" yaml:"name"`
+	// TLS holds information for configuring TLS on the route
 	TLS *TLS `json:"tls,omitempty" yaml:"tls,omitempty"`
 	// Destinations associated with TCP traffic to the service.
 	Destination *RouteDestination `json:"destination,omitempty" yaml:"destination,omitempty"`
-	// TCPKeepalive configuration for the listener
+	// TCPKeepalive configuration for the route
 	TCPKeepalive *TCPKeepalive `json:"tcpKeepalive,omitempty" yaml:"tcpKeepalive,omitempty"`
+	// load balancer policy to use when routing to the backend endpoints.
+	LoadBalancer *LoadBalancer `json:"loadBalancer,omitempty" yaml:"loadBalancer,omitempty"`
+	// Proxy Protocol Settings
+	ProxyProtocol *ProxyProtocol `json:"proxyProtocol,omitempty" yaml:"proxyProtocol,omitempty"`
+	// HealthCheck configuration for the route
+	HealthCheck *HealthCheck `json:"healthCheck,omitempty" yaml:"healthCheck,omitempty"`
+	// CircuitBreaker configuration for the route
+	CircuitBreaker *CircuitBreaker `json:"circuitBreaker,omitempty" yaml:"circuitBreaker,omitempty"`
+	// Timeout configuration for the route
+	Timeout *Timeout `json:"timeout,omitempty" yaml:"timeout,omitempty"`
 }
 
 // TLS holds information for configuring TLS on a listener
@@ -1140,31 +1167,43 @@ type TLS struct {
 }
 
 // Validate the fields within the TCPListener structure
-func (h TCPListener) Validate() error {
+func (t TCPListener) Validate() error {
 	var errs error
-	if h.Name == "" {
+	if t.Name == "" {
 		errs = errors.Join(errs, ErrListenerNameEmpty)
 	}
-	if _, err := netip.ParseAddr(h.Address); err != nil {
+	if _, err := netip.ParseAddr(t.Address); err != nil {
 		errs = errors.Join(errs, ErrListenerAddressInvalid)
 	}
-	if h.Port == 0 {
+	if t.Port == 0 {
 		errs = errors.Join(errs, ErrListenerPortInvalid)
 	}
-	if h.TLS != nil && h.TLS.Passthrough != nil {
-		if err := h.TLS.Passthrough.Validate(); err != nil {
+	for _, route := range t.Routes {
+		if err := route.Validate(); err != nil {
 			errs = errors.Join(errs, err)
 		}
 	}
+	return errs
+}
 
-	if h.TLS != nil && h.TLS.Terminate != nil {
-		if err := h.TLS.Terminate.Validate(); err != nil {
+// Validate the fields within the TCPRoute structure
+func (t TCPRoute) Validate() error {
+	var errs error
+	if t.Name == "" {
+		errs = errors.Join(errs, ErrRouteNameEmpty)
+	}
+	if t.TLS != nil && t.TLS.Passthrough != nil {
+		if err := t.TLS.Passthrough.Validate(); err != nil {
 			errs = errors.Join(errs, err)
 		}
 	}
-
-	if h.Destination != nil {
-		if err := h.Destination.Validate(); err != nil {
+	if t.TLS != nil && t.TLS.Terminate != nil {
+		if err := t.TLS.Terminate.Validate(); err != nil {
+			errs = errors.Join(errs, err)
+		}
+	}
+	if t.Destination != nil {
+		if err := t.Destination.Validate(); err != nil {
 			errs = errors.Join(errs, err)
 		}
 	}
@@ -1185,7 +1224,7 @@ type TLSInspectorConfig struct {
 func (t TLSInspectorConfig) Validate() error {
 	var errs error
 	if len(t.SNIs) == 0 {
-		errs = errors.Join(errs, ErrTCPListenerSNIsEmpty)
+		errs = errors.Join(errs, ErrTCPRouteSNIsEmpty)
 	}
 	return errs
 }

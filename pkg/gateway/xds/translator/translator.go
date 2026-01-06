@@ -39,7 +39,11 @@ var (
 	ErrXdsSecretExists  = errors.New("xds secret exists")
 )
 
-const AuthorityHeaderKey = ":authority"
+const (
+	AuthorityHeaderKey = ":authority"
+	// emptyClusterName is the dummy cluster for TCP listeners that have no routes
+	emptyClusterName = "EmptyCluster"
+)
 
 // Translator translates the xDS IR into xDS resources.
 type Translator struct {
@@ -449,31 +453,61 @@ func processTCPListenerXdsTranslation(tCtx *types.ResourceVersionTable, tcpListe
 			}
 		}
 
-		if err := addXdsTCPFilterChain(xdsListener, tcpListener, tcpListener.Destination.Name, accesslog); err != nil {
-			errs = errors.Join(errs, err)
-		}
+		// If there are no routes, add a route without a destination to the listener
+		// to create a filter chain. This is needed because Envoy requires a filter
+		// chain to be present in the listener, otherwise it will reject the listener
+		// and report a warning
+		if len(tcpListener.Routes) == 0 {
+			emptyRouteCluster := &clusterv3.Cluster{
+				Name:                 emptyClusterName,
+				ClusterDiscoveryType: &clusterv3.Cluster_Type{Type: clusterv3.Cluster_STATIC},
+			}
 
-		// 1:1 between IR TCPListener and xDS Cluster
-		if err := addXdsCluster(tCtx, &xdsClusterArgs{
-			name:         tcpListener.Destination.Name,
-			settings:     tcpListener.Destination.Settings,
-			tSocket:      nil,
-			endpointType: buildEndpointType(tcpListener.Destination.Settings),
-		}); err != nil && !errors.Is(err, ErrXdsClusterExists) {
-			errs = errors.Join(errs, err)
-		}
-
-		if tcpListener.TLS != nil && tcpListener.TLS.Terminate != nil {
-			for _, s := range tcpListener.TLS.Terminate.Certificates {
-				secret := buildXdsTLSCertSecret(s)
-				if err := tCtx.AddXdsResource(resourcev3.SecretType, secret); err != nil {
+			if findXdsCluster(tCtx, emptyClusterName) == nil {
+				if err := tCtx.AddXdsResource(resourcev3.ClusterType, emptyRouteCluster); err != nil {
 					errs = errors.Join(errs, err)
 				}
 			}
-			if tcpListener.TLS.Terminate.CACertificate != nil {
-				caSecret := buildXdsTLSCaCertSecret(tcpListener.TLS.Terminate.CACertificate)
-				if err := tCtx.AddXdsResource(resourcev3.SecretType, caSecret); err != nil {
-					errs = errors.Join(errs, err)
+
+			emptyRoute := &ir.TCPRoute{
+				Name: emptyClusterName,
+				Destination: &ir.RouteDestination{
+					Name: emptyClusterName,
+				},
+			}
+			if err := addXdsTCPFilterChain(xdsListener, emptyRoute, emptyClusterName, accesslog); err != nil {
+				errs = errors.Join(errs, err)
+			}
+		}
+
+		// Process each route in the TCP listener
+		for _, route := range tcpListener.Routes {
+			if err := addXdsTCPFilterChain(xdsListener, route, route.Destination.Name, accesslog); err != nil {
+				errs = errors.Join(errs, err)
+			}
+
+			// 1:1 between IR TCPRoute and xDS Cluster
+			if err := addXdsCluster(tCtx, &xdsClusterArgs{
+				name:         route.Destination.Name,
+				settings:     route.Destination.Settings,
+				tSocket:      nil,
+				endpointType: buildEndpointType(route.Destination.Settings),
+			}); err != nil && !errors.Is(err, ErrXdsClusterExists) {
+				errs = errors.Join(errs, err)
+			}
+
+			if route.TLS != nil && route.TLS.Terminate != nil {
+				for _, s := range route.TLS.Terminate.Certificates {
+					secret := buildXdsTLSCertSecret(s)
+					if err := tCtx.AddXdsResource(resourcev3.SecretType, secret); err != nil {
+						errs = errors.Join(errs, err)
+					}
+				}
+				if route.TLS.Terminate.CACertificate != nil {
+					caSecret := buildXdsTLSCaCertSecret(route.TLS.Terminate.CACertificate)
+					if err := tCtx.AddXdsResource(resourcev3.SecretType, caSecret); err != nil {
+						errs = errors.Join(errs, err)
+					}
 				}
 			}
 		}

@@ -775,7 +775,7 @@ func (t *Translator) processHTTPRouteParentRefListener(route RouteContext, route
 			}
 		}
 		irKey := t.getIRKey(listener.gateway)
-		irListener := xdsIR[irKey].GetHTTPListener(irHTTPListenerName(listener))
+		irListener := xdsIR[irKey].GetHTTPListener(irListenerName(listener))
 		if irListener != nil {
 			if GetRouteType(route) == KindGRPCRoute {
 				irListener.IsHTTP2 = true
@@ -865,26 +865,24 @@ func (t *Translator) processTLSRouteParentRefs(tlsRoute *TLSRouteContext, resour
 			hasHostnameIntersection = true
 
 			irKey := t.getIRKey(listener.gateway)
-
-			containerPort := servicePortToContainerPort(int32(listener.Port))
-			// Create the TCP Listener while parsing the TLSRoute since
-			// the listener directly links to a routeDestination.
-			irListener := &ir.TCPListener{
-				CoreListenerDetails: ir.CoreListenerDetails{
-					Name:    irTLSListenerName(listener, tlsRoute),
-					Address: "0.0.0.0",
-					Port:    uint32(containerPort),
-				},
-				TLS: &ir.TLS{Passthrough: &ir.TLSInspectorConfig{
-					SNIs: hosts,
-				}},
-				Destination: &ir.RouteDestination{
-					Name:     irRouteDestinationName(tlsRoute, -1 /*rule index*/),
-					Settings: destSettings,
-				},
-			}
 			gwXdsIR := xdsIR[irKey]
-			gwXdsIR.TCP = append(gwXdsIR.TCP, irListener)
+
+			// Get the existing TCP listener for this listener
+			irListener := gwXdsIR.GetTCPListener(irListenerName(listener))
+			if irListener != nil {
+				// Add the TLS route to the existing listener
+				irRoute := &ir.TCPRoute{
+					Name: irTCPRouteName(tlsRoute),
+					TLS: &ir.TLS{Passthrough: &ir.TLSInspectorConfig{
+						SNIs: hosts,
+					}},
+					Destination: &ir.RouteDestination{
+						Name:     irRouteDestinationName(tlsRoute, -1 /*rule index*/),
+						Settings: destSettings,
+					},
+				}
+				irListener.Routes = append(irListener.Routes, irRoute)
+			}
 
 		}
 
@@ -1118,24 +1116,22 @@ func (t *Translator) processTCPRouteParentRefs(tcpRoute *TCPRouteContext, resour
 			}
 			accepted = true
 			irKey := t.getIRKey(listener.gateway)
-
-			containerPort := servicePortToContainerPort(int32(listener.Port))
-			// Create the TCP Listener while parsing the TCPRoute since
-			// the listener directly links to a routeDestination.
-			irListener := &ir.TCPListener{
-				CoreListenerDetails: ir.CoreListenerDetails{
-					Name:    irTCPListenerName(listener, tcpRoute),
-					Address: "0.0.0.0",
-					Port:    uint32(containerPort),
-				},
-				Destination: &ir.RouteDestination{
-					Name:     irRouteDestinationName(tcpRoute, -1 /*rule index*/),
-					Settings: destSettings,
-				},
-				TLS: &ir.TLS{Terminate: irTLSConfigs(listener)},
-			}
 			gwXdsIR := xdsIR[irKey]
-			gwXdsIR.TCP = append(gwXdsIR.TCP, irListener)
+
+			// Get the existing TCP listener for this listener
+			irListener := gwXdsIR.GetTCPListener(irListenerName(listener))
+			if irListener != nil {
+				// Add the TCP route to the existing listener
+				irRoute := &ir.TCPRoute{
+					Name: irTCPRouteName(tcpRoute),
+					TLS:  &ir.TLS{Terminate: irTLSConfigs(listener)},
+					Destination: &ir.RouteDestination{
+						Name:     irRouteDestinationName(tcpRoute, -1 /*rule index*/),
+						Settings: destSettings,
+					},
+				}
+				irListener.Routes = append(irListener.Routes, irRoute)
+			}
 
 		}
 

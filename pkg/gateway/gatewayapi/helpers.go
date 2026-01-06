@@ -342,22 +342,18 @@ func irStringKey(gatewayNs, gatewayName string) string {
 	return fmt.Sprintf("%s/%s", gatewayNs, gatewayName)
 }
 
-// HTTPListenerName returns the name of the HTTP listener in the form
+// ListenerName returns the name of the listener in the form
 // of <gateway_namespace>/<gateway_name>/<listener_name>.
-func HTTPListenerName(gwNs, gwName string, listenerName gwapiv1.SectionName) string {
+func ListenerName(gwNs, gwName string, listenerName gwapiv1.SectionName) string {
 	return fmt.Sprintf("%s/%s/%s", gwNs, gwName, listenerName)
 }
 
-func irHTTPListenerName(listener *ListenerContext) string {
-	return HTTPListenerName(listener.gateway.Namespace, listener.gateway.Name, listener.Name)
+func irListenerName(listener *ListenerContext) string {
+	return ListenerName(listener.gateway.Namespace, listener.gateway.Name, listener.Name)
 }
 
-func irTLSListenerName(listener *ListenerContext, tlsRoute *TLSRouteContext) string {
-	return fmt.Sprintf("%s/%s/%s/%s", listener.gateway.Namespace, listener.gateway.Name, listener.Name, tlsRoute.Name)
-}
-
-func irTCPListenerName(listener *ListenerContext, tcpRoute *TCPRouteContext) string {
-	return fmt.Sprintf("%s/%s/%s/%s", listener.gateway.Namespace, listener.gateway.Name, listener.Name, tcpRoute.Name)
+func irTCPRouteName(route RouteContext) string {
+	return fmt.Sprintf("%s/%s/%s", strings.ToLower(string(GetRouteType(route))), route.GetNamespace(), route.GetName())
 }
 
 func irUDPListenerName(listener *ListenerContext, udpRoute *UDPRouteContext) string {

@@ -96,7 +96,7 @@ func (t *Translator) ProcessListeners(gateways []*GatewayContext, xdsIR XdsIRMap
 				log.Infof("Adding HTTP listener %s to IR", listener.Name)
 				irListener := &ir.HTTPListener{
 					CoreListenerDetails: ir.CoreListenerDetails{
-						Name:    irHTTPListenerName(listener),
+						Name:    irListenerName(listener),
 						Address: "0.0.0.0",
 						Port:    uint32(containerPort),
 					},
@@ -111,11 +111,21 @@ func (t *Translator) ProcessListeners(gateways []*GatewayContext, xdsIR XdsIRMap
 					irListener.Hostnames = append(irListener.Hostnames, string(*listener.Hostname))
 				} else {
 					// Hostname specifies the virtual hostname to match for protocol types that define this concept.
-					// When unspecified, all hostnames are matched. This field is ignored for protocols that don’t require hostname based matching.
+					// When unspecified, all hostnames are matched. This field is ignored for protocols that don't require hostname based matching.
 					// see more https://gateway-api.sigs.k8s.io/references/spec/#gateway.networking.k8s.io/gwapiv1.Listener.
 					irListener.Hostnames = append(irListener.Hostnames, "*")
 				}
 				xdsIR[irKey].HTTP = append(xdsIR[irKey].HTTP, irListener)
+			case gwapiv1.TCPProtocolType, gwapiv1.TLSProtocolType:
+				log.Infof("Adding TCP listener %s to IR", listener.Name)
+				irListener := &ir.TCPListener{
+					CoreListenerDetails: ir.CoreListenerDetails{
+						Name:    irListenerName(listener),
+						Address: "0.0.0.0",
+						Port:    uint32(containerPort),
+					},
+				}
+				xdsIR[irKey].TCP = append(xdsIR[irKey].TCP, irListener)
 			}
 		}
 	}
