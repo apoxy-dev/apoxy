@@ -528,6 +528,7 @@ func (t *Translator) validateTLSConfiguration(listener *ListenerContext, resourc
 			// For cloud gateways certificates are injected automatically by the Envoy runtime so
 			// check that none are supplied by the user.
 			if t.GatewayControllerName == CloudControllerName {
+				listener.SetTLS(true)
 				break
 			}
 			if len(listener.TLS.CertificateRefs) == 0 {

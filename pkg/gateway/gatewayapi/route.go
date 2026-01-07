@@ -867,15 +867,23 @@ func (t *Translator) processTLSRouteParentRefs(tlsRoute *TLSRouteContext, resour
 			irKey := t.getIRKey(listener.gateway)
 			gwXdsIR := xdsIR[irKey]
 
-			// Get the existing TCP listener for this listener
+			// Get the existing TCP listener for this listener.
 			irListener := gwXdsIR.GetTCPListener(irListenerName(listener))
 			if irListener != nil {
-				// Add the TLS route to the existing listener
+				// Determine TLS config based on listener's TLS mode.
+				var tlsConfig *ir.TLS
+				if listener.TLS != nil && listener.TLS.Mode != nil && *listener.TLS.Mode == gwapiv1.TLSModeTerminate {
+					// TLS Termination mode - use listener's TLS certificates.
+					tlsConfig = &ir.TLS{Terminate: irTLSConfigsForTCPListener(listener)}
+				} else {
+					// TLS Passthrough mode (default for TLSRoute).
+					tlsConfig = &ir.TLS{Passthrough: &ir.TLSInspectorConfig{SNIs: hosts}}
+				}
+
+				// Add the TLS route to the existing listener.
 				irRoute := &ir.TCPRoute{
 					Name: irTCPRouteName(tlsRoute),
-					TLS: &ir.TLS{Passthrough: &ir.TLSInspectorConfig{
-						SNIs: hosts,
-					}},
+					TLS:  tlsConfig,
 					Destination: &ir.RouteDestination{
 						Name:     irRouteDestinationName(tlsRoute, -1 /*rule index*/),
 						Settings: destSettings,
