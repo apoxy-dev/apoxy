@@ -331,7 +331,7 @@ type TLSConfig struct {
 	ALPNProtocols []string `json:"alpnProtocols,omitempty" yaml:"alpnProtocols,omitempty"`
 }
 
-// TLSCertificate holds a single certificate's details
+// TLSCertificate holds a single certificate's details.
 // +k8s:deepcopy-gen=true
 type TLSCertificate struct {
 	// Name of the Secret object.
@@ -342,7 +342,7 @@ type TLSCertificate struct {
 	PrivateKey []byte `json:"privateKey,omitempty" yaml:"privateKey,omitempty"`
 }
 
-// TLSCACertificate holds CA Certificate to validate clients
+// TLSCACertificate holds CA Certificate to validate clients.
 // +k8s:deepcopy-gen=true
 type TLSCACertificate struct {
 	// Name of the Secret object.
@@ -362,7 +362,7 @@ func (t TLSCertificate) Validate() error {
 	return errs
 }
 
-// Validate the fields within the TLSListenerConfig structure
+// Validate the fields within the TLSListenerConfig structure.
 func (t TLSConfig) Validate() error {
 	var errs error
 	for _, cert := range t.Certificates {
@@ -387,7 +387,7 @@ const (
 	UnescapeAndForward  = PathEscapedSlashAction(egv1a1.UnescapeAndForward)
 )
 
-// PathSettings holds configuration for path URI manipulations
+// PathSettings holds configuration for path URI manipulations.
 // +k8s:deepcopy-gen=true
 type PathSettings struct {
 	MergeSlashes         bool                   `json:"mergeSlashes" yaml:"mergeSlashes"`
@@ -398,7 +398,8 @@ type PathSettings struct {
 // +k8s:deepcopy-gen=true
 type ClientIPDetectionSettings egv1a1.ClientIPDetectionSettings
 
-// BackendWeights stores the weights of valid and invalid backends for the route so that 500 error responses can be returned in the same proportions
+// BackendWeights stores the weights of valid and invalid backends for the route so that 500 error responses can be returned in the same proportions.
+// +k8s:deepcopy-gen=true
 type BackendWeights struct {
 	Name    string `json:"name" yaml:"name"`
 	Valid   uint32 `json:"valid" yaml:"valid"`
@@ -1127,6 +1128,8 @@ func (s StringMatch) Validate() error {
 // +k8s:deepcopy-gen=true
 type TCPListener struct {
 	CoreListenerDetails `json:",inline" yaml:",inline"`
+	// TLS holds the TLS configuration for the TCP listener
+	TLS *TLSConfig `json:"tls,omitempty" yaml:"tls,omitempty"`
 	// TCPKeepalive configuration for the listener
 	TCPKeepalive *TCPKeepalive `json:"tcpKeepalive,omitempty" yaml:"tcpKeepalive,omitempty"`
 	// Routes associated with TCP traffic to the listener

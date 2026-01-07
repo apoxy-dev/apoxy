@@ -124,6 +124,7 @@ func (t *Translator) ProcessListeners(gateways []*GatewayContext, xdsIR XdsIRMap
 						Address: "0.0.0.0",
 						Port:    uint32(containerPort),
 					},
+					TLS: irTLSConfigsForTCPListener(listener),
 				}
 				xdsIR[irKey].TCP = append(xdsIR[irKey].TCP, irListener)
 			}
