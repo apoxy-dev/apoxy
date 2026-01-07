@@ -137,7 +137,7 @@ func (r *GatewayReconciler) extractEnvoyListeners(gw *gatewayv1.Gateway) []*envo
 		}
 
 		listeners = append(listeners, &envoy.Listener{
-			Name: gatewayapi.HTTPListenerName(gw.Namespace, gw.Name, l.Name),
+			Name: gatewayapi.ListenerName(gw.Namespace, gw.Name, l.Name),
 			Address: corev3.Address{
 				Address: &corev3.Address_SocketAddress{
 					SocketAddress: &corev3.SocketAddress{
