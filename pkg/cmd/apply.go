@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -11,15 +10,16 @@ import (
 
 	"github.com/spf13/cobra"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/discovery"
+	memory "k8s.io/client-go/discovery/cached"
+	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/restmapper"
 
-	corev1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
-	extensionsv1alpha1 "github.com/apoxy-dev/apoxy/api/extensions/v1alpha1"
-	gatewayv1 "github.com/apoxy-dev/apoxy/api/gateway/v1"
-	gatewayv1alpha2 "github.com/apoxy-dev/apoxy/api/gateway/v1alpha2"
 	"github.com/apoxy-dev/apoxy/client/versioned/scheme"
 	"github.com/apoxy-dev/apoxy/config"
-	"github.com/apoxy-dev/apoxy/rest"
 )
 
 var (
@@ -62,7 +62,18 @@ Examples:
 			return err
 		}
 
-		// Collect all file contents
+		// Set up dynamic client and REST mapper.
+		dc, err := discovery.NewDiscoveryClientForConfig(c.RESTConfig)
+		if err != nil {
+			return fmt.Errorf("failed to create discovery client: %w", err)
+		}
+		dynClient, err := dynamic.NewForConfig(c.RESTConfig)
+		if err != nil {
+			return fmt.Errorf("failed to create dynamic client: %w", err)
+		}
+		mapper := restmapper.NewDeferredDiscoveryRESTMapper(memory.NewMemCacheClient(dc))
+
+		// Collect all file contents.
 		var allData [][]byte
 		for _, f := range applyFiles {
 			data, err := readInput(f, applyRecursive)
@@ -72,19 +83,17 @@ Examples:
 			allData = append(allData, data...)
 		}
 
-		// Apply all resources, collecting errors
 		var errs []error
 		var applied int
 
 		for _, data := range allData {
-			// Split multi-document YAML
 			docs := splitYAMLDocuments(data)
 			for _, doc := range docs {
 				if len(strings.TrimSpace(string(doc))) == 0 {
 					continue
 				}
 
-				name, kind, err := applyResource(cmd.Context(), c, doc)
+				name, kind, err := applyResource(cmd.Context(), dynClient, mapper, doc)
 				if err != nil {
 					errs = append(errs, err)
 					fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -180,67 +189,45 @@ func splitYAMLDocuments(data []byte) [][]byte {
 	return docs
 }
 
-// applyResource decodes and applies a single resource.
-func applyResource(ctx context.Context, c *rest.APIClient, data []byte) (name, kind string, err error) {
-	obj, gvk, err := scheme.Codecs.UniversalDeserializer().Decode(data, nil, nil)
+// applyResource decodes and applies a single resource using the dynamic client.
+func applyResource(
+	ctx context.Context,
+	dynClient dynamic.Interface,
+	mapper *restmapper.DeferredDiscoveryRESTMapper,
+	data []byte,
+) (name, kind string, err error) {
+	// Decode into unstructured object.
+	unObj := &unstructured.Unstructured{}
+	_, gvk, err := scheme.Codecs.UniversalDeserializer().Decode(data, nil, unObj)
 	if err != nil {
 		return "", "", fmt.Errorf("failed to decode resource: %w", err)
 	}
 
-	// Get the name from the object
-	metaObj, ok := obj.(metav1.Object)
-	if !ok {
-		return "", "", fmt.Errorf("object does not implement metav1.Object")
-	}
-	name = metaObj.GetName()
+	name = unObj.GetName()
 	if name == "" {
 		return "", "", fmt.Errorf("resource name is required")
 	}
 	kind = gvk.Kind
 
-	// Marshal for patch
-	patchData, err := json.Marshal(obj)
+	// Get the REST mapping for this GVK.
+	mapping, err := mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
 	if err != nil {
-		return name, kind, fmt.Errorf("failed to marshal resource: %w", err)
+		return name, kind, fmt.Errorf("failed to get REST mapping for %s: %w", gvk.String(), err)
 	}
 
-	patchOpts := metav1.PatchOptions{
-		FieldManager: applyFieldManager,
-		Force:        &applyForceConflicts,
+	// Encode for patch.
+	patchData, err := runtime.Encode(unstructured.UnstructuredJSONScheme, unObj)
+	if err != nil {
+		return name, kind, fmt.Errorf("failed to encode resource: %w", err)
 	}
 
-	// Dispatch based on type
-	switch o := obj.(type) {
-	// Gateway API v1
-	case *gatewayv1.Gateway:
-		_, err = c.GatewayV1().Gateways().Patch(ctx, o.Name, types.ApplyPatchType, patchData, patchOpts)
-	case *gatewayv1.GatewayClass:
-		_, err = c.GatewayV1().GatewayClasses().Patch(ctx, o.Name, types.ApplyPatchType, patchData, patchOpts)
-	case *gatewayv1.HTTPRoute:
-		_, err = c.GatewayV1().HTTPRoutes().Patch(ctx, o.Name, types.ApplyPatchType, patchData, patchOpts)
-	case *gatewayv1.GRPCRoute:
-		_, err = c.GatewayV1().GRPCRoutes().Patch(ctx, o.Name, types.ApplyPatchType, patchData, patchOpts)
-
-	// Gateway API v1alpha2
-	case *gatewayv1alpha2.TCPRoute:
-		_, err = c.GatewayV1alpha2().TCPRoutes().Patch(ctx, o.Name, types.ApplyPatchType, patchData, patchOpts)
-	case *gatewayv1alpha2.TLSRoute:
-		_, err = c.GatewayV1alpha2().TLSRoutes().Patch(ctx, o.Name, types.ApplyPatchType, patchData, patchOpts)
-	case *gatewayv1alpha2.UDPRoute:
-		_, err = c.GatewayV1alpha2().UDPRoutes().Patch(ctx, o.Name, types.ApplyPatchType, patchData, patchOpts)
-
-	// Core API v1alpha2
-	case *corev1alpha2.Proxy:
-		_, err = c.CoreV1alpha2().Proxies().Patch(ctx, o.Name, types.ApplyPatchType, patchData, patchOpts)
-
-	// Extensions API
-	case *extensionsv1alpha1.EdgeFunction:
-		_, err = c.ExtensionsV1alpha1().EdgeFunctions().Patch(ctx, o.Name, types.ApplyPatchType, patchData, patchOpts)
-
-	default:
-		return name, kind, fmt.Errorf("unsupported resource type: %s", gvk.String())
-	}
-
+	// Apply using server-side apply.
+	_, err = dynClient.Resource(mapping.Resource).
+		Namespace(unObj.GetNamespace()).
+		Patch(ctx, name, types.ApplyPatchType, patchData, metav1.PatchOptions{
+			FieldManager: applyFieldManager,
+			Force:        &applyForceConflicts,
+		})
 	if err != nil {
 		return name, kind, fmt.Errorf("failed to apply %s %q: %w", kind, name, err)
 	}
