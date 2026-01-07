@@ -396,6 +396,12 @@ func addXdsTCPFilterChain(xdsListener *listenerv3.Listener, irRoute *ir.TCPRoute
 			return err
 		}
 		filterChain.TransportSocket = tSocket
+		// Add SNI matching for TLS Terminate mode.
+		if len(irRoute.TLS.Terminate.SNIs) > 0 {
+			if err := addServerNamesMatch(xdsListener, filterChain, irRoute.TLS.Terminate.SNIs); err != nil {
+				return err
+			}
+		}
 	}
 
 	xdsListener.FilterChains = append(xdsListener.FilterChains, filterChain)

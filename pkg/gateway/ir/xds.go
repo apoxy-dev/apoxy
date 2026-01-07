@@ -329,6 +329,8 @@ type TLSConfig struct {
 	SignatureAlgorithms []string `json:"signatureAlgorithms,omitempty" yaml:"signatureAlgorithms,omitempty"`
 	// ALPNProtocols exposed by this listener
 	ALPNProtocols []string `json:"alpnProtocols,omitempty" yaml:"alpnProtocols,omitempty"`
+	// SNIs for filter chain matching (used in TCP/TLS routes for SNI-based routing)
+	SNIs []string `json:"snis,omitempty" yaml:"snis,omitempty"`
 }
 
 // TLSCertificate holds a single certificate's details.

@@ -873,8 +873,12 @@ func (t *Translator) processTLSRouteParentRefs(tlsRoute *TLSRouteContext, resour
 				// Determine TLS config based on listener's TLS mode.
 				var tlsConfig *ir.TLS
 				if listener.TLS != nil && listener.TLS.Mode != nil && *listener.TLS.Mode == gwapiv1.TLSModeTerminate {
-					// TLS Termination mode - use listener's TLS certificates.
-					tlsConfig = &ir.TLS{Terminate: irTLSConfigsForTCPListener(listener)}
+					// TLS Termination mode - use listener's TLS certificates with SNI matching.
+					terminateConfig := irTLSConfigsForTCPListener(listener)
+					if terminateConfig != nil {
+						terminateConfig.SNIs = hosts
+					}
+					tlsConfig = &ir.TLS{Terminate: terminateConfig}
 				} else {
 					// TLS Passthrough mode (default for TLSRoute).
 					tlsConfig = &ir.TLS{Passthrough: &ir.TLSInspectorConfig{SNIs: hosts}}
