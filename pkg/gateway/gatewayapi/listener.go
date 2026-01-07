@@ -42,12 +42,12 @@ func (t *Translator) ProcessListeners(gateways []*GatewayContext, xdsIR XdsIRMap
 			// Process protocol & supported kinds
 			switch listener.Protocol {
 			case gwapiv1.TLSProtocolType:
-				if listener.TLS != nil {
+				if listener.TLS != nil && listener.TLS.Mode != nil {
 					switch *listener.TLS.Mode {
 					case gwapiv1.TLSModePassthrough:
 						t.validateAllowedRoutes(listener, KindTLSRoute)
 					case gwapiv1.TLSModeTerminate:
-						t.validateAllowedRoutes(listener, KindTCPRoute)
+						t.validateAllowedRoutes(listener, KindTCPRoute, KindTLSRoute)
 					default:
 						t.validateAllowedRoutes(listener, KindTCPRoute, KindTLSRoute)
 					}
