@@ -16,6 +16,7 @@ import (
 
 	"github.com/apoxy-dev/apoxy/config"
 	"github.com/apoxy-dev/apoxy/pkg/cmd/alpha"
+	"github.com/apoxy-dev/apoxy/pkg/cmd/gateway"
 	"github.com/apoxy-dev/apoxy/pkg/cmd/tunnel"
 )
 
@@ -55,6 +56,7 @@ func init() {
 	RootCmd.PersistentFlags().BoolVar(&config.PprofEnabled, "pprof", false, "Enable pprof HTTP server on :6060.")
 
 	RootCmd.AddCommand(alpha.Cmd())
+	RootCmd.AddCommand(gateway.Cmd())
 	RootCmd.AddCommand(tunnel.Cmd())
 }
 

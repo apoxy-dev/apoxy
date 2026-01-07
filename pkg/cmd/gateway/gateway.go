@@ -1,4 +1,4 @@
-package cmd
+package gateway
 
 import (
 	"context"
@@ -14,29 +14,25 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/cli-runtime/pkg/printers"
+	gwapiv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	gatewayv1 "github.com/apoxy-dev/apoxy/api/gateway/v1"
+	gatewayv1alpha2 "github.com/apoxy-dev/apoxy/api/gateway/v1alpha2"
 	"github.com/apoxy-dev/apoxy/client/versioned/scheme"
 	"github.com/apoxy-dev/apoxy/config"
 	"github.com/apoxy-dev/apoxy/rest"
-	gwapiv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
 var (
-	// showGatewayLabels is a flag to show labels in the output.
-	showGatewayLabels bool
-	// gatewayFile is a flag that specifies the file to read the configuration from.
-	gatewayFile string
-	// gatewayApplyFile is a flag that specifies the file to read the configuration from for apply.
-	gatewayApplyFile string
-	// gatewayFieldManager is the field manager name for server-side apply.
-	gatewayFieldManager string
-	// gatewayForceConflicts forces apply even if there are conflicts.
+	showGatewayLabels     bool
+	gatewayFile           string
+	gatewayApplyFile      string
+	gatewayFieldManager   string
 	gatewayForceConflicts bool
 )
 
-// gatewaySinceString returns a string representation of a time.Duration since the provided time.Time.
-func gatewaySinceString(t time.Time) string {
+// sinceString returns a string representation of a time.Duration since the provided time.Time.
+func sinceString(t time.Time) string {
 	d := time.Since(t).Round(time.Second)
 	if d < time.Minute {
 		return fmt.Sprintf("%ds", int(d.Seconds()))
@@ -47,6 +43,14 @@ func gatewaySinceString(t time.Time) string {
 	} else {
 		return fmt.Sprintf("%dd%dh", int(d.Hours()/24), int(d.Hours())%24)
 	}
+}
+
+func labelsToString(labels map[string]string) string {
+	var l []string
+	for k, v := range labels {
+		l = append(l, fmt.Sprintf("%s=%s", k, v))
+	}
+	return strings.Join(l, ",")
 }
 
 // getListenersSummary returns a summary of gateway listeners.
@@ -97,7 +101,7 @@ func getGatewayTablePrinter(showLabels bool) printers.ResourcePrinter {
 				gw.Name,
 				string(gw.Spec.GatewayClassName),
 				getListenersSummary(gw.Spec.Listeners),
-				gatewaySinceString(gw.CreationTimestamp.Time),
+				sinceString(gw.CreationTimestamp.Time),
 			},
 		}
 		if showLabels {
@@ -124,7 +128,7 @@ func getGatewayTablePrinter(showLabels bool) printers.ResourcePrinter {
 					gw.Name,
 					string(gw.Spec.GatewayClassName),
 					getListenersSummary(gw.Spec.Listeners),
-					gatewaySinceString(gw.CreationTimestamp.Time),
+					sinceString(gw.CreationTimestamp.Time),
 				},
 			}
 			if showLabels {
@@ -148,13 +152,136 @@ func getGatewayTablePrinter(showLabels bool) printers.ResourcePrinter {
 	})
 }
 
+// httpRouteReferencesGateway checks if a route references the given gateway name.
+func httpRouteReferencesGateway(refs []gwapiv1.ParentReference, gatewayName string) bool {
+	for _, ref := range refs {
+		if ref.Kind != nil && *ref.Kind != "Gateway" {
+			continue
+		}
+		if string(ref.Name) == gatewayName {
+			return true
+		}
+	}
+	return false
+}
+
+// getAttachedRoutes fetches all routes that reference the given gateway.
+func getAttachedRoutes(ctx context.Context, c *rest.APIClient, gatewayName string) (
+	httpRoutes []gatewayv1.HTTPRoute,
+	tcpRoutes []gatewayv1alpha2.TCPRoute,
+	tlsRoutes []gatewayv1alpha2.TLSRoute,
+	err error,
+) {
+	httpRouteList, err := c.GatewayV1().HTTPRoutes().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to list HTTP routes: %w", err)
+	}
+	for _, route := range httpRouteList.Items {
+		if httpRouteReferencesGateway(route.Spec.ParentRefs, gatewayName) {
+			httpRoutes = append(httpRoutes, route)
+		}
+	}
+
+	tcpRouteList, err := c.GatewayV1alpha2().TCPRoutes().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to list TCP routes: %w", err)
+	}
+	for _, route := range tcpRouteList.Items {
+		for _, ref := range route.Spec.ParentRefs {
+			if ref.Kind != nil && *ref.Kind != "Gateway" {
+				continue
+			}
+			if string(ref.Name) == gatewayName {
+				tcpRoutes = append(tcpRoutes, route)
+				break
+			}
+		}
+	}
+
+	tlsRouteList, err := c.GatewayV1alpha2().TLSRoutes().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to list TLS routes: %w", err)
+	}
+	for _, route := range tlsRouteList.Items {
+		for _, ref := range route.Spec.ParentRefs {
+			if ref.Kind != nil && *ref.Kind != "Gateway" {
+				continue
+			}
+			if string(ref.Name) == gatewayName {
+				tlsRoutes = append(tlsRoutes, route)
+				break
+			}
+		}
+	}
+
+	return httpRoutes, tcpRoutes, tlsRoutes, nil
+}
+
+// printAttachedRoutes prints a summary of routes attached to a gateway.
+func printAttachedRoutes(httpRoutes []gatewayv1.HTTPRoute, tcpRoutes []gatewayv1alpha2.TCPRoute, tlsRoutes []gatewayv1alpha2.TLSRoute) {
+	totalRoutes := len(httpRoutes) + len(tcpRoutes) + len(tlsRoutes)
+	if totalRoutes == 0 {
+		fmt.Println("\nAttached Routes: None")
+		return
+	}
+
+	fmt.Printf("\nAttached Routes (%d):\n", totalRoutes)
+
+	if len(httpRoutes) > 0 {
+		fmt.Printf("  HTTPRoutes (%d):\n", len(httpRoutes))
+		for _, r := range httpRoutes {
+			hostnames := "*"
+			if len(r.Spec.Hostnames) > 0 {
+				var parts []string
+				for _, h := range r.Spec.Hostnames {
+					parts = append(parts, string(h))
+				}
+				hostnames = strings.Join(parts, ",")
+			}
+			fmt.Printf("    - %s (hostnames: %s, rules: %d)\n", r.Name, hostnames, len(r.Spec.Rules))
+		}
+	}
+
+	if len(tcpRoutes) > 0 {
+		fmt.Printf("  TCPRoutes (%d):\n", len(tcpRoutes))
+		for _, r := range tcpRoutes {
+			fmt.Printf("    - %s (rules: %d)\n", r.Name, len(r.Spec.Rules))
+		}
+	}
+
+	if len(tlsRoutes) > 0 {
+		fmt.Printf("  TLSRoutes (%d):\n", len(tlsRoutes))
+		for _, r := range tlsRoutes {
+			hostnames := "*"
+			if len(r.Spec.Hostnames) > 0 {
+				var parts []string
+				for _, h := range r.Spec.Hostnames {
+					parts = append(parts, string(h))
+				}
+				hostnames = strings.Join(parts, ",")
+			}
+			fmt.Printf("    - %s (hostnames: %s, rules: %d)\n", r.Name, hostnames, len(r.Spec.Rules))
+		}
+	}
+}
+
 func getGateway(ctx context.Context, c *rest.APIClient, name string) error {
 	r, err := c.GatewayV1().Gateways().Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return err
 	}
 	printer := getGatewayTablePrinter(false)
-	return printer.PrintObj(r, os.Stdout)
+	if err := printer.PrintObj(r, os.Stdout); err != nil {
+		return err
+	}
+
+	httpRoutes, tcpRoutes, tlsRoutes, err := getAttachedRoutes(ctx, c, name)
+	if err != nil {
+		return err
+	}
+	printAttachedRoutes(httpRoutes, tcpRoutes, tlsRoutes)
+
+	return nil
 }
 
 func listGateways(ctx context.Context, c *rest.APIClient, opts metav1.ListOptions) error {
@@ -166,8 +293,13 @@ func listGateways(ctx context.Context, c *rest.APIClient, opts metav1.ListOption
 	return printer.PrintObj(gateways, os.Stdout)
 }
 
-// alphaGatewayCmd represents the gateway command.
-var alphaGatewayCmd = &cobra.Command{
+// Cmd returns the gateway command.
+func Cmd() *cobra.Command {
+	return cmd
+}
+
+// cmd is the gateway command.
+var cmd = &cobra.Command{
 	Use:     "gateway",
 	Short:   "Manage gateway objects",
 	Long:    `The gateway object in the Apoxy API.`,
@@ -182,8 +314,7 @@ var alphaGatewayCmd = &cobra.Command{
 	},
 }
 
-// getGatewayCmd gets a single gateway object.
-var getGatewayCmd = &cobra.Command{
+var getCmd = &cobra.Command{
 	Use:       "get <name>",
 	Short:     "Get gateway objects",
 	ValidArgs: []string{"name"},
@@ -198,8 +329,7 @@ var getGatewayCmd = &cobra.Command{
 	},
 }
 
-// listGatewayCmd lists gateway objects.
-var listGatewayCmd = &cobra.Command{
+var listCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List gateway objects",
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -212,8 +342,7 @@ var listGatewayCmd = &cobra.Command{
 	},
 }
 
-// createGatewayCmd creates a Gateway object.
-var createGatewayCmd = &cobra.Command{
+var createCmd = &cobra.Command{
 	Use:   "create [-f filename]",
 	Short: "Create gateway objects",
 	Long:  `Create gateway objects by providing a configuration as a file or via stdin.`,
@@ -242,7 +371,6 @@ var createGatewayCmd = &cobra.Command{
 			return err
 		}
 
-		// Decode using the apoxy scheme's universal deserializer (handles both YAML and JSON).
 		obj, _, err := scheme.Codecs.UniversalDeserializer().Decode(data, nil, nil)
 		if err != nil {
 			return fmt.Errorf("failed to decode input: %w", err)
@@ -262,8 +390,7 @@ var createGatewayCmd = &cobra.Command{
 	},
 }
 
-// deleteGatewayCmd deletes Gateway objects.
-var deleteGatewayCmd = &cobra.Command{
+var deleteCmd = &cobra.Command{
 	Use:   "delete",
 	Short: "Delete gateway objects",
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -285,8 +412,7 @@ var deleteGatewayCmd = &cobra.Command{
 	},
 }
 
-// applyGatewayCmd applies a Gateway object using server-side apply.
-var applyGatewayCmd = &cobra.Command{
+var applyCmd = &cobra.Command{
 	Use:   "apply [-f filename]",
 	Short: "Apply gateway configuration using server-side apply",
 	Long: `Apply gateway configuration using Kubernetes server-side apply.
@@ -319,7 +445,6 @@ manage different fields of the same object without conflicts.`,
 			return err
 		}
 
-		// Decode using the apoxy scheme's universal deserializer (handles both YAML and JSON).
 		obj, _, err := scheme.Codecs.UniversalDeserializer().Decode(data, nil, nil)
 		if err != nil {
 			return fmt.Errorf("failed to decode input: %w", err)
@@ -334,8 +459,6 @@ manage different fields of the same object without conflicts.`,
 			return fmt.Errorf("gateway name is required")
 		}
 
-		// Server-side apply uses Patch with ApplyPatchType.
-		// The data must be a valid JSON representation of the object.
 		patchData, err := json.Marshal(gw)
 		if err != nil {
 			return fmt.Errorf("failed to marshal gateway: %w", err)
@@ -361,18 +484,12 @@ manage different fields of the same object without conflicts.`,
 }
 
 func init() {
-	createGatewayCmd.PersistentFlags().
-		StringVarP(&gatewayFile, "filename", "f", "", "The file that contains the configuration to create.")
-	listGatewayCmd.PersistentFlags().
-		BoolVar(&showGatewayLabels, "show-labels", false, "Print the gateway's labels.")
+	createCmd.Flags().StringVarP(&gatewayFile, "filename", "f", "", "The file that contains the configuration to create.")
+	listCmd.Flags().BoolVar(&showGatewayLabels, "show-labels", false, "Print the gateway's labels.")
 
-	applyGatewayCmd.PersistentFlags().
-		StringVarP(&gatewayApplyFile, "filename", "f", "", "The file that contains the configuration to apply.")
-	applyGatewayCmd.PersistentFlags().
-		StringVar(&gatewayFieldManager, "field-manager", "apoxy-cli", "Name of the field manager for server-side apply.")
-	applyGatewayCmd.PersistentFlags().
-		BoolVar(&gatewayForceConflicts, "force-conflicts", false, "Force apply even if there are field ownership conflicts.")
+	applyCmd.Flags().StringVarP(&gatewayApplyFile, "filename", "f", "", "The file that contains the configuration to apply.")
+	applyCmd.Flags().StringVar(&gatewayFieldManager, "field-manager", "apoxy-cli", "Name of the field manager for server-side apply.")
+	applyCmd.Flags().BoolVar(&gatewayForceConflicts, "force-conflicts", false, "Force apply even if there are field ownership conflicts.")
 
-	alphaGatewayCmd.AddCommand(getGatewayCmd, listGatewayCmd, createGatewayCmd, deleteGatewayCmd, applyGatewayCmd)
-	RootCmd.AddCommand(alphaGatewayCmd)
+	cmd.AddCommand(getCmd, listCmd, createCmd, deleteCmd, applyCmd, routesCmd)
 }
