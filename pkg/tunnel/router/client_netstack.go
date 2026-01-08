@@ -32,6 +32,7 @@ type NetstackRouter struct {
 	resolveConf     *network.ResolveConfig
 	socksListenAddr string
 	cksumRecalc     bool
+	overridePort    string
 
 	closeOnce sync.Once
 }
@@ -63,6 +64,7 @@ func NewNetstackRouter(opts ...Option) (*NetstackRouter, error) {
 		resolveConf:     options.resolveConf,
 		socksListenAddr: options.socksListenAddr,
 		cksumRecalc:     options.cksumRecalc,
+		overridePort:    options.overridePort,
 	}, nil
 }
 
@@ -99,10 +101,10 @@ func (r *NetstackRouter) Start(ctx context.Context) error {
 
 	slog.Info("Forwarding all inbound traffic to loopback interface")
 
-	if err := r.tunDev.ForwardTo(ctx, network.Filtered(&network.FilteredNetworkConfig{
+	if err := r.tunDev.ForwardToWithOptions(ctx, network.Filtered(&network.FilteredNetworkConfig{
 		DeniedPorts: []uint16{uint16(socksListenPort)},
 		Upstream:    network.Host(),
-	})); err != nil {
+	}), r.overridePort); err != nil {
 		return fmt.Errorf("failed to forward to loopback: %w", err)
 	}
 

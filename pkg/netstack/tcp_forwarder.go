@@ -19,12 +19,13 @@ import (
 type ProtocolHandler func(stack.TransportEndpointID, *stack.PacketBuffer) bool
 
 // TCPForwarder forwards TCP connections to an upstream network.
-func TCPForwarder(ctx context.Context, ipstack *stack.Stack, upstream network.Network) ProtocolHandler {
+// If overridePort is not empty, all connections will be forwarded to that port instead of the original destination port.
+func TCPForwarder(ctx context.Context, ipstack *stack.Stack, upstream network.Network, overridePort string) ProtocolHandler {
 	tcpForwarder := tcp.NewForwarder(
 		ipstack,
 		0,     /* rcvWnd (0 - default) */
 		65535, /* maxInFlight */
-		tcpHandler(ctx, upstream),
+		tcpHandler(ctx, upstream, overridePort),
 	)
 
 	return tcpForwarder.HandlePacket
@@ -51,15 +52,24 @@ func Unmap4in6(addr netip.Addr) netip.Addr {
 	return v4addr
 }
 
-func tcpHandler(ctx context.Context, upstream network.Network) func(req *tcp.ForwarderRequest) {
+func tcpHandler(ctx context.Context, upstream network.Network, overridePort string) func(req *tcp.ForwarderRequest) {
 	return func(req *tcp.ForwarderRequest) {
 		reqDetails := req.ID()
 
 		srcAddrPort := netip.AddrPortFrom(addrFromNetstackIP(reqDetails.RemoteAddress), reqDetails.RemotePort)
-		dstAddrPort := netip.AddrPortFrom(
-			Unmap4in6(addrFromNetstackIP(reqDetails.LocalAddress)),
-			reqDetails.LocalPort,
-		)
+
+		// Extract IPv4 address from IPv6-mapped address
+		dstAddr := Unmap4in6(addrFromNetstackIP(reqDetails.LocalAddress))
+		dstPort := reqDetails.LocalPort
+
+		// Override port if specified
+		if overridePort != "" {
+			if port, err := netip.ParseAddrPort("127.0.0.1:" + overridePort); err == nil {
+				dstPort = port.Port()
+			}
+		}
+
+		dstAddrPort := netip.AddrPortFrom(dstAddr, dstPort)
 
 		logger := slog.With(
 			slog.String("src", srcAddrPort.String()),
