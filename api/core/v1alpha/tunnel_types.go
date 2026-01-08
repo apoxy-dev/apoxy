@@ -1,11 +1,18 @@
 package v1alpha
 
 import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/duration"
 	"k8s.io/apiserver/pkg/registry/rest"
 	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource"
+	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource/resourcestrategy"
 )
 
 // +kubebuilder:object:root=true
@@ -145,4 +152,98 @@ var _ resource.ObjectList = &TunnelNodeList{}
 
 func (pl *TunnelNodeList) GetListMeta() *metav1.ListMeta {
 	return &pl.ListMeta
+}
+
+// formatAge formats a time as a Kubernetes-style age string.
+func formatAge(t time.Time) string {
+	if t.IsZero() {
+		return "<unknown>"
+	}
+	return duration.ShortHumanDuration(time.Since(t))
+}
+
+// getOverlayAddresses collects overlay addresses from all agents.
+func getOverlayAddresses(agents []AgentStatus) string {
+	var addrs []string
+	for _, agent := range agents {
+		if agent.AgentAddress != "" {
+			addrs = append(addrs, agent.AgentAddress)
+		}
+		addrs = append(addrs, agent.AgentAddresses...)
+	}
+	if len(addrs) == 0 {
+		return "<none>"
+	}
+	return strings.Join(addrs, ",")
+}
+
+// getEndpoints returns the public endpoints as a string.
+func getEndpoints(addresses []string) string {
+	if len(addresses) == 0 {
+		return "<none>"
+	}
+	return strings.Join(addresses, ",")
+}
+
+var _ resourcestrategy.TableConverter = &TunnelNode{}
+
+func (tn *TunnelNode) ConvertToTable(ctx context.Context, tableOptions runtime.Object) (*metav1.Table, error) {
+	return tunnelNodeToTable(tn, tableOptions)
+}
+
+func tunnelNodeToTable(tn *TunnelNode, tableOptions runtime.Object) (*metav1.Table, error) {
+	table := &metav1.Table{}
+	if opt, ok := tableOptions.(*metav1.TableOptions); !ok || !opt.NoHeaders {
+		table.ColumnDefinitions = []metav1.TableColumnDefinition{
+			{Name: "Name", Type: "string", Format: "name", Description: "Name of the tunnel node"},
+			{Name: "Endpoints", Type: "string", Description: "Public endpoints for tunnel connections"},
+			{Name: "Overlay Addresses", Type: "string", Description: "Overlay network addresses"},
+			{Name: "Agents", Type: "string", Description: "Number of connected agents"},
+			{Name: "Age", Type: "string", Description: "Time since creation"},
+		}
+	}
+	table.Rows = append(table.Rows, metav1.TableRow{
+		Cells: []interface{}{
+			tn.Name,
+			getEndpoints(tn.Status.Addresses),
+			getOverlayAddresses(tn.Status.Agents),
+			fmt.Sprintf("%d", len(tn.Status.Agents)),
+			formatAge(tn.CreationTimestamp.Time),
+		},
+		Object: runtime.RawExtension{Object: tn},
+	})
+	table.ResourceVersion = tn.ResourceVersion
+	return table, nil
+}
+
+var _ resourcestrategy.TableConverter = &TunnelNodeList{}
+
+func (l *TunnelNodeList) ConvertToTable(ctx context.Context, tableOptions runtime.Object) (*metav1.Table, error) {
+	table := &metav1.Table{}
+	if opt, ok := tableOptions.(*metav1.TableOptions); !ok || !opt.NoHeaders {
+		table.ColumnDefinitions = []metav1.TableColumnDefinition{
+			{Name: "Name", Type: "string", Format: "name", Description: "Name of the tunnel node"},
+			{Name: "Endpoints", Type: "string", Description: "Public endpoints for tunnel connections"},
+			{Name: "Overlay Addresses", Type: "string", Description: "Overlay network addresses"},
+			{Name: "Agents", Type: "string", Description: "Number of connected agents"},
+			{Name: "Age", Type: "string", Description: "Time since creation"},
+		}
+	}
+	for i := range l.Items {
+		tn := &l.Items[i]
+		table.Rows = append(table.Rows, metav1.TableRow{
+			Cells: []interface{}{
+				tn.Name,
+				getEndpoints(tn.Status.Addresses),
+				getOverlayAddresses(tn.Status.Agents),
+				fmt.Sprintf("%d", len(tn.Status.Agents)),
+				formatAge(tn.CreationTimestamp.Time),
+			},
+			Object: runtime.RawExtension{Object: tn},
+		})
+	}
+	table.ResourceVersion = l.ResourceVersion
+	table.Continue = l.Continue
+	table.RemainingItemCount = l.RemainingItemCount
+	return table, nil
 }

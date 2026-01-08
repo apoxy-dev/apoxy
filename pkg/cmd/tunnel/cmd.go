@@ -1,6 +1,7 @@
 package tunnel
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/cli-runtime/pkg/printers"
 
 	corev1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
 	apoxyscheme "github.com/apoxy-dev/apoxy/client/versioned/scheme"
@@ -20,6 +22,29 @@ const (
 	// resyncPeriod is the interval at which the informer will resync its cache.
 	resyncPeriod = 30 * time.Second
 )
+
+// printTunnelNodeTable prints a TunnelNode or TunnelNodeList as a table.
+func printTunnelNodeTable(ctx context.Context, obj interface{}, w io.Writer) error {
+	printer := printers.NewTablePrinter(printers.PrintOptions{})
+
+	var table *metav1.Table
+	var err error
+
+	switch v := obj.(type) {
+	case *corev1alpha.TunnelNode:
+		table, err = v.ConvertToTable(ctx, &metav1.TableOptions{})
+	case *corev1alpha.TunnelNodeList:
+		table, err = v.ConvertToTable(ctx, &metav1.TableOptions{})
+	default:
+		return fmt.Errorf("unsupported type: %T", obj)
+	}
+
+	if err != nil {
+		return err
+	}
+
+	return printer.PrintObj(table, w)
+}
 
 // tunnelCmd implements the `tunnel` command that creates a secure tunnel
 // to the remote Apoxy Edge fabric.
@@ -92,7 +117,7 @@ var createCmd = &cobra.Command{
 }
 
 var getCmd = &cobra.Command{
-	Use:   "get",
+	Use:   "get [name]",
 	Short: "Get a TunnelNode",
 	Long:  "Get a TunnelNode object(s).",
 	Args:  cobra.RangeArgs(0, 1),
@@ -105,30 +130,19 @@ var getCmd = &cobra.Command{
 			return fmt.Errorf("unable to create API client: %w", err)
 		}
 
-		tunnelNodeName := ""
-		if len(args) > 0 {
-			tunnelNodeName = args[0]
-		}
-		if tunnelNodeName == "" { // List all TunnelNodes
+		if len(args) == 0 { // List all TunnelNodes
 			tunnelNodes, err := client.CoreV1alpha().TunnelNodes().List(ctx, metav1.ListOptions{})
 			if err != nil {
 				return fmt.Errorf("unable to list TunnelNodes: %w", err)
 			}
-
-			for _, tunnelNode := range tunnelNodes.Items {
-				fmt.Printf("TunnelNode: %v\n", tunnelNode)
-			}
-			return nil
+			return printTunnelNodeTable(ctx, tunnelNodes, os.Stdout)
 		}
 
-		tunnelNode, err := client.CoreV1alpha().TunnelNodes().Get(ctx, tunnelNodeName, metav1.GetOptions{})
+		tunnelNode, err := client.CoreV1alpha().TunnelNodes().Get(ctx, args[0], metav1.GetOptions{})
 		if err != nil {
 			return fmt.Errorf("unable to get TunnelNode: %w", err)
 		}
-
-		fmt.Printf("TunnelNode: %v\n", tunnelNode)
-
-		return nil
+		return printTunnelNodeTable(ctx, tunnelNode, os.Stdout)
 	},
 }
 
