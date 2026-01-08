@@ -561,7 +561,8 @@ func buildTLSVersion(version *ir.TLSVersion) tlsv3.TlsParameters_TlsProtocol {
 }
 
 func buildALPNProtocols(alpn []string, http3Listener bool) []string {
-	if len(alpn) == 0 {
+	// nil means use defaults, empty slice means no ALPN
+	if alpn == nil {
 		out := []string{"h2", "http/1.1"}
 		if http3Listener {
 			out = append(out, "h3")
