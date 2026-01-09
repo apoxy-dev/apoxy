@@ -256,8 +256,8 @@ func (r *Geneve) SetAddr(_ context.Context, ula netip.Addr) error {
 	return nil
 }
 
-// Cleanup removes the Geneve interface.
-func (r *Geneve) Cleanup() error {
+// TearDown removes the Geneve interface.
+func (r *Geneve) TearDown() error {
 	h, err := r.getHandle()
 	if err != nil {
 		return err

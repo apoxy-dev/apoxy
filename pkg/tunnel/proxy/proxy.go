@@ -30,24 +30,27 @@ const (
 // ProxyTunnelReconciler reconciles Proxy objects and manages L3 Geneve tunnels
 // to proxy replicas.
 type ProxyTunnelReconciler struct {
-	client.Client
-
 	localPrivAddr netip.Addr
-
-	gnv *lwtunnel.Geneve
+	gnv           *lwtunnel.Geneve
 }
 
 // NewProxyTunnelReconciler creates a new reconciler for managing proxy tunnels.
-func NewProxyTunnelReconciler(
-	c client.Client,
+func NewProxyTunnelReconciler(localPrivAddr netip.Addr) *ProxyTunnelReconciler {
+	return &ProxyTunnelReconciler{
+		localPrivAddr: localPrivAddr,
+		gnv:           lwtunnel.NewGeneve(),
+	}
+}
+
+// NewProxyTunnelReconcilerWithGeneve creates a new reconciler with a custom Geneve device.
+// This is useful for multicluster scenarios where each cluster needs its own device.
+func NewProxyTunnelReconcilerWithGeneve(
 	localPrivAddr netip.Addr,
+	gnv *lwtunnel.Geneve,
 ) *ProxyTunnelReconciler {
 	return &ProxyTunnelReconciler{
-		Client: c,
-
 		localPrivAddr: localPrivAddr,
-
-		gnv: lwtunnel.NewGeneve(),
+		gnv:           gnv,
 	}
 }
 
@@ -61,9 +64,64 @@ func getReplicaAddress(replica *corev1alpha2.ProxyReplicaStatus, addrType corev1
 	return ""
 }
 
+// replicaToEndpoint converts a ProxyReplicaStatus to a Geneve tunnel endpoint.
+// Returns the endpoint and true if successful, or an empty endpoint and false if
+// the replica doesn't have the required addresses.
+func replicaToEndpoint(ctx context.Context, replica *corev1alpha2.ProxyReplicaStatus) (lwtunnel.Endpoint, bool) {
+	log := clog.FromContext(ctx)
+
+	ulaAddr := getReplicaAddress(replica, corev1alpha2.ReplicaInternalULA)
+	if ulaAddr == "" {
+		return lwtunnel.Endpoint{}, false
+	}
+
+	replicaAddr, err := netip.ParseAddr(ulaAddr)
+	if err != nil {
+		log.Error(err, "Failed to parse replica ULA address",
+			"replica", replica.Name, "address", ulaAddr)
+		return lwtunnel.Endpoint{}, false
+	}
+
+	if !replicaAddr.Is6() || !replicaAddr.IsGlobalUnicast() {
+		log.Error(fmt.Errorf("invalid address"), "Replica ULA address must be global unicast IPv6",
+			"replica", replica.Name, "address", ulaAddr)
+		return lwtunnel.Endpoint{}, false
+	}
+
+	remoteULA, err := tunnet.ULAFromPrefix(ctx, netip.PrefixFrom(replicaAddr, 128))
+	if err != nil {
+		log.Error(err, "Failed to generate ULA for replica",
+			"replica", replica.Name, "address", replicaAddr)
+		return lwtunnel.Endpoint{}, false
+	}
+
+	internalIP := getReplicaAddress(replica, corev1alpha2.ReplicaInternalIP)
+	if internalIP == "" {
+		return lwtunnel.Endpoint{}, false
+	}
+
+	privateAddr, err := netip.ParseAddr(internalIP)
+	if err != nil {
+		log.Error(err, "Failed to parse internal IP address",
+			"replica", replica.Name, "address", internalIP)
+		return lwtunnel.Endpoint{}, false
+	}
+
+	if !privateAddr.IsGlobalUnicast() {
+		log.Error(fmt.Errorf("invalid address"), "Internal IP address must be global unicast",
+			"replica", replica.Name, "address", internalIP)
+		return lwtunnel.Endpoint{}, false
+	}
+
+	return lwtunnel.Endpoint{
+		Dst:    *remoteULA,
+		Remote: privateAddr,
+	}, true
+}
+
 // ReconcileWithClient reconciles a Proxy using the provided client.
 // This method can be used by both standard reconcilers and multicluster reconcilers.
-func (r *ProxyTunnelReconciler) ReconcileWithClient(ctx context.Context, c client.Client, request reconcile.Request) (ctrl.Result, error) {
+func (r *ProxyTunnelReconciler) ReconcileWithClient(ctx context.Context, c client.Client, request ctrl.Request) (ctrl.Result, error) {
 	log := clog.FromContext(ctx)
 
 	log.Info("Reconciling Proxy tunnels", "proxy", request.Name)
@@ -81,56 +139,11 @@ func (r *ProxyTunnelReconciler) ReconcileWithClient(ctx context.Context, c clien
 
 	var eps []lwtunnel.Endpoint
 	for _, replica := range proxy.Status.Replicas {
-		ulaAddr := getReplicaAddress(replica, corev1alpha2.ReplicaInternalULA)
-		if ulaAddr == "" {
-			log.Info("Skipping replica with no ULA address", "replica", replica.Name)
-			continue
+		if ep, ok := replicaToEndpoint(ctx, replica); ok {
+			eps = append(eps, ep)
+			log.Info("Added tunnel for replica",
+				"replica", replica.Name, "dst", ep.Dst.FullPrefix(), "nve", ep.Remote)
 		}
-
-		replicaAddr, err := netip.ParseAddr(ulaAddr)
-		if err != nil {
-			log.Error(err, "Failed to parse replica ULA address",
-				"replica", replica.Name, "address", ulaAddr)
-			continue
-		}
-
-		if !replicaAddr.Is6() || !replicaAddr.IsGlobalUnicast() {
-			log.Error(fmt.Errorf("invalid address"), "Replica ULA address must be global unicast IPv6",
-				"replica", replica.Name, "address", ulaAddr)
-			continue
-		}
-
-		remoteULA, err := tunnet.ULAFromPrefix(ctx, netip.PrefixFrom(replicaAddr, 128))
-		if err != nil {
-			log.Error(err, "Failed to generate ULA for replica",
-				"replica", replica.Name, "address", replicaAddr)
-			continue
-		}
-
-		internalIP := getReplicaAddress(replica, corev1alpha2.ReplicaInternalIP)
-		if internalIP == "" {
-			log.Info("Skipping replica with no internal IP address", "replica", replica.Name)
-			continue
-		}
-		privateAddr, err := netip.ParseAddr(internalIP)
-		if err != nil {
-			log.Error(err, "Failed to parse internal IP address",
-				"replica", replica.Name, "address", internalIP)
-			continue
-		}
-		if !privateAddr.IsGlobalUnicast() {
-			log.Error(fmt.Errorf("invalid address"), "Internal IP address must be global unicast",
-				"replica", replica.Name, "address", internalIP)
-			continue
-		}
-
-		eps = append(eps, lwtunnel.Endpoint{
-			Dst:    *remoteULA,
-			Remote: privateAddr,
-		})
-
-		log.Info("Added tunnel for replica",
-			"replica", replica.Name, "dst", replicaAddr, "nve", privateAddr)
 	}
 
 	if err := r.gnv.SyncEndpoints(ctx, eps); err != nil {
@@ -138,11 +151,6 @@ func (r *ProxyTunnelReconciler) ReconcileWithClient(ctx context.Context, c clien
 	}
 
 	return ctrl.Result{}, nil
-}
-
-// Reconcile implements reconcile.Reconciler using the embedded client.
-func (r *ProxyTunnelReconciler) Reconcile(ctx context.Context, request reconcile.Request) (ctrl.Result, error) {
-	return r.ReconcileWithClient(ctx, r.Client, request)
 }
 
 // SetupWithManager sets up the controller with the Controller Manager.
