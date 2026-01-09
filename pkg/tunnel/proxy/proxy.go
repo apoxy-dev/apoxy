@@ -27,8 +27,6 @@ const (
 	defaultProxyGeneveMTU  = 1400
 )
 
-var _ reconcile.Reconciler = &ProxyTunnelReconciler{}
-
 // ProxyTunnelReconciler reconciles Proxy objects and manages L3 Geneve tunnels
 // to proxy replicas.
 type ProxyTunnelReconciler struct {
@@ -63,14 +61,15 @@ func getReplicaAddress(replica *corev1alpha2.ProxyReplicaStatus, addrType corev1
 	return ""
 }
 
-// Reconcile implements reconcile.Reconciler.
-func (r *ProxyTunnelReconciler) Reconcile(ctx context.Context, request reconcile.Request) (ctrl.Result, error) {
+// ReconcileWithClient reconciles a Proxy using the provided client.
+// This method can be used by both standard reconcilers and multicluster reconcilers.
+func (r *ProxyTunnelReconciler) ReconcileWithClient(ctx context.Context, c client.Client, request reconcile.Request) (ctrl.Result, error) {
 	log := clog.FromContext(ctx)
 
 	log.Info("Reconciling Proxy tunnels", "proxy", request.Name)
 
 	proxy := &corev1alpha2.Proxy{}
-	if err := r.Get(ctx, request.NamespacedName, proxy); err != nil {
+	if err := c.Get(ctx, request.NamespacedName, proxy); err != nil {
 		if errors.IsNotFound(err) {
 			log.Info("Proxy not found, cleaning up Geneve interface")
 			return ctrl.Result{}, nil
@@ -141,11 +140,13 @@ func (r *ProxyTunnelReconciler) Reconcile(ctx context.Context, request reconcile
 	return ctrl.Result{}, nil
 }
 
+// Reconcile implements reconcile.Reconciler using the embedded client.
+func (r *ProxyTunnelReconciler) Reconcile(ctx context.Context, request reconcile.Request) (ctrl.Result, error) {
+	return r.ReconcileWithClient(ctx, r.Client, request)
+}
+
 // SetupWithManager sets up the controller with the Controller Manager.
-func (r *ProxyTunnelReconciler) SetupWithManager(
-	ctx context.Context,
-	mgr ctrl.Manager,
-) error {
+func SetupWithManager(ctx context.Context, mgr ctrl.Manager, r *ProxyTunnelReconciler) error {
 	if err := r.gnv.SetUp(ctx, r.localPrivAddr); err != nil {
 		return fmt.Errorf("failed to set up global network view: %w", err)
 	}
@@ -156,5 +157,7 @@ func (r *ProxyTunnelReconciler) SetupWithManager(
 			MaxConcurrentReconciles: 1,
 			RecoverPanic:            ptr.To(true),
 		}).
-		Complete(r)
+		Complete(reconcile.Func(func(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
+			return r.ReconcileWithClient(ctx, mgr.GetClient(), req)
+		}))
 }

@@ -182,7 +182,7 @@ func (r *ProxyReconciler) reconcileRequest(ctx context.Context, request reconcil
 			continue
 		}
 
-		log.Info("Allocating IP address for proxy replica")
+		log.Info("Allocating IP address for proxy replica", "replica", replica.Name)
 
 		if err := r.assignReplica(ctx, replica); err != nil {
 			return ctrl.Result{}, err

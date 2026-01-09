@@ -178,10 +178,10 @@ func main() {
 		log.Fatalf("Unable to setup Tunnel Proxy server: %v", err)
 	}
 
-	if err := tunnelproxy.NewProxyTunnelReconciler(
+	if err := tunnelproxy.SetupWithManager(gCtx, mgr, tunnelproxy.NewProxyTunnelReconciler(
 		mgr.GetClient(),
 		extIPv4Prefix.Addr(),
-	).SetupWithManager(gCtx, mgr); err != nil {
+	)); err != nil {
 		log.Fatalf("Unable to setup Proxy Tunnel reconciler: %v", err)
 	}
 
