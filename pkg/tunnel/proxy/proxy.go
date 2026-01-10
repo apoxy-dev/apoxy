@@ -54,8 +54,13 @@ func NewProxyTunnelReconcilerWithGeneve(
 	}
 }
 
-// getReplicaAddress returns the address of the given type from a replica, or empty string if not found.
-func getReplicaAddress(replica *corev1alpha2.ProxyReplicaStatus, addrType corev1alpha2.ReplicaAddressType) string {
+// TearDown removes the Geneve interface managed by this reconciler.
+func (r *ProxyTunnelReconciler) TearDown() error {
+	return r.gnv.TearDown()
+}
+
+// GetReplicaAddress returns the address of the given type from a replica, or empty string if not found.
+func GetReplicaAddress(replica *corev1alpha2.ProxyReplicaStatus, addrType corev1alpha2.ReplicaAddressType) string {
 	for _, addr := range replica.Addresses {
 		if addr.Type == addrType {
 			return addr.Address
@@ -64,59 +69,46 @@ func getReplicaAddress(replica *corev1alpha2.ProxyReplicaStatus, addrType corev1
 	return ""
 }
 
-// replicaToEndpoint converts a ProxyReplicaStatus to a Geneve tunnel endpoint.
-// Returns the endpoint and true if successful, or an empty endpoint and false if
-// the replica doesn't have the required addresses.
-func replicaToEndpoint(ctx context.Context, replica *corev1alpha2.ProxyReplicaStatus) (lwtunnel.Endpoint, bool) {
-	log := clog.FromContext(ctx)
-
-	ulaAddr := getReplicaAddress(replica, corev1alpha2.ReplicaInternalULA)
+// ReplicaToEndpoint converts a ProxyReplicaStatus to a Geneve tunnel endpoint.
+// Returns an error if the replica doesn't have required addresses or they are invalid.
+func ReplicaToEndpoint(ctx context.Context, replica *corev1alpha2.ProxyReplicaStatus) (lwtunnel.Endpoint, error) {
+	ulaAddr := GetReplicaAddress(replica, corev1alpha2.ReplicaInternalULA)
 	if ulaAddr == "" {
-		return lwtunnel.Endpoint{}, false
+		return lwtunnel.Endpoint{}, fmt.Errorf("replica %s missing ULA address", replica.Name)
 	}
 
 	replicaAddr, err := netip.ParseAddr(ulaAddr)
 	if err != nil {
-		log.Error(err, "Failed to parse replica ULA address",
-			"replica", replica.Name, "address", ulaAddr)
-		return lwtunnel.Endpoint{}, false
+		return lwtunnel.Endpoint{}, fmt.Errorf("failed to parse replica %s ULA address %s: %w", replica.Name, ulaAddr, err)
 	}
 
 	if !replicaAddr.Is6() || !replicaAddr.IsGlobalUnicast() {
-		log.Error(fmt.Errorf("invalid address"), "Replica ULA address must be global unicast IPv6",
-			"replica", replica.Name, "address", ulaAddr)
-		return lwtunnel.Endpoint{}, false
+		return lwtunnel.Endpoint{}, fmt.Errorf("replica %s ULA address %s must be global unicast IPv6", replica.Name, ulaAddr)
 	}
 
 	remoteULA, err := tunnet.ULAFromPrefix(ctx, netip.PrefixFrom(replicaAddr, 128))
 	if err != nil {
-		log.Error(err, "Failed to generate ULA for replica",
-			"replica", replica.Name, "address", replicaAddr)
-		return lwtunnel.Endpoint{}, false
+		return lwtunnel.Endpoint{}, fmt.Errorf("failed to generate ULA for replica %s: %w", replica.Name, err)
 	}
 
-	internalIP := getReplicaAddress(replica, corev1alpha2.ReplicaInternalIP)
+	internalIP := GetReplicaAddress(replica, corev1alpha2.ReplicaInternalIP)
 	if internalIP == "" {
-		return lwtunnel.Endpoint{}, false
+		return lwtunnel.Endpoint{}, fmt.Errorf("replica %s missing internal IP address", replica.Name)
 	}
 
 	privateAddr, err := netip.ParseAddr(internalIP)
 	if err != nil {
-		log.Error(err, "Failed to parse internal IP address",
-			"replica", replica.Name, "address", internalIP)
-		return lwtunnel.Endpoint{}, false
+		return lwtunnel.Endpoint{}, fmt.Errorf("failed to parse replica %s internal IP %s: %w", replica.Name, internalIP, err)
 	}
 
 	if !privateAddr.IsGlobalUnicast() {
-		log.Error(fmt.Errorf("invalid address"), "Internal IP address must be global unicast",
-			"replica", replica.Name, "address", internalIP)
-		return lwtunnel.Endpoint{}, false
+		return lwtunnel.Endpoint{}, fmt.Errorf("replica %s internal IP %s must be global unicast", replica.Name, internalIP)
 	}
 
 	return lwtunnel.Endpoint{
 		Dst:    *remoteULA,
 		Remote: privateAddr,
-	}, true
+	}, nil
 }
 
 // ReconcileWithClient reconciles a Proxy using the provided client.
@@ -139,11 +131,14 @@ func (r *ProxyTunnelReconciler) ReconcileWithClient(ctx context.Context, c clien
 
 	var eps []lwtunnel.Endpoint
 	for _, replica := range proxy.Status.Replicas {
-		if ep, ok := replicaToEndpoint(ctx, replica); ok {
-			eps = append(eps, ep)
-			log.Info("Added tunnel for replica",
-				"replica", replica.Name, "dst", ep.Dst.FullPrefix(), "nve", ep.Remote)
+		ep, err := ReplicaToEndpoint(ctx, replica)
+		if err != nil {
+			log.Error(err, "Failed to convert replica to endpoint", "replica", replica.Name)
+			continue
 		}
+		eps = append(eps, ep)
+		log.Info("Added tunnel for replica",
+			"replica", replica.Name, "dst", ep.Dst.FullPrefix(), "nve", ep.Remote)
 	}
 
 	if err := r.gnv.SyncEndpoints(ctx, eps); err != nil {
