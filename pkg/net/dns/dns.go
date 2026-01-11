@@ -15,36 +15,41 @@ var (
 	srv *dnsserver.Server
 )
 
-// Options configures the DNS server behavior.
-type Options struct {
-	// Plugins is a list of DNS plugins to add to the server chain.
-	Plugins []plugin.Plugin
-	// BlockNonGlobalIPs controls whether responses containing non-global unicast IPs
+// options holds the DNS server configuration.
+type options struct {
+	// plugins is a list of DNS plugins to add to the server chain.
+	plugins []plugin.Plugin
+	// blockNonGlobalIPs controls whether responses containing non-global unicast IPs
 	// (private, loopback, ULA addresses) should be blocked and return NXDOMAIN.
-	BlockNonGlobalIPs bool
+	blockNonGlobalIPs bool
 }
 
-func WithBlockNonGlobalIPs() func(*Options) {
-	return func(o *Options) {
-		o.BlockNonGlobalIPs = true
+// Option configures the DNS server.
+type Option func(*options)
+
+// WithBlockNonGlobalIPs blocks responses containing non-global unicast IPs.
+func WithBlockNonGlobalIPs() Option {
+	return func(o *options) {
+		o.blockNonGlobalIPs = true
 	}
 }
 
-func WithPlugins(p ...plugin.Plugin) func(*Options) {
-	return func(o *Options) {
-		o.Plugins = append(o.Plugins, p...)
+// WithPlugins adds DNS plugins to the server chain.
+func WithPlugins(p ...plugin.Plugin) Option {
+	return func(o *options) {
+		o.plugins = append(o.plugins, p...)
 	}
 }
 
 // ListenAndServe starts a DNS server with the given options.
-func ListenAndServe(addr string, opts ...func(*Options)) error {
-	var opt Options
-	for _, optFn := range opts {
-		optFn(&opt)
+func ListenAndServe(addr string, opts ...Option) error {
+	var sOpts options
+	for _, opt := range opts {
+		opt(&sOpts)
 	}
 	// runtime -> cache -> upstream
 	up := &upstream{
-		BlockNonGlobalIPs: opt.BlockNonGlobalIPs,
+		BlockNonGlobalIPs: sOpts.blockNonGlobalIPs,
 	}
 	if err := up.LoadResolvConf(); err != nil {
 		return err
@@ -65,8 +70,8 @@ func ListenAndServe(addr string, opts ...func(*Options)) error {
 		Debug:       true,
 	}
 	var stack plugin.Handler = upChain
-	for i := len(opt.Plugins) - 1; i >= 0; i-- {
-		stack = opt.Plugins[i](stack)
+	for i := len(sOpts.plugins) - 1; i >= 0; i-- {
+		stack = sOpts.plugins[i](stack)
 	}
 	c.AddPlugin(func(next plugin.Handler) plugin.Handler { return stack })
 
