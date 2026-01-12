@@ -28,10 +28,11 @@ var udpBuffPool = sync.Pool{
 }
 
 // UDPForwarder forwards UDP packets to an upstream network.
-func UDPForwarder(ctx context.Context, ipstack *stack.Stack, upstream network.Network) ProtocolHandler {
+// If overridePort is not empty, all packets will be forwarded to that port instead of the original destination port.
+func UDPForwarder(ctx context.Context, ipstack *stack.Stack, upstream network.Network, overridePort string) ProtocolHandler {
 	udpForwarder := udp.NewForwarder(
 		ipstack,
-		udpHandler(ctx, upstream),
+		udpHandler(ctx, upstream, overridePort),
 	)
 
 	return udpForwarder.HandlePacket
@@ -77,15 +78,24 @@ func copyPackets(ctx context.Context, src, dst net.Conn, once bool, extend func(
 	}
 }
 
-func udpHandler(ctx context.Context, upstream network.Network) func(req *udp.ForwarderRequest) {
+func udpHandler(ctx context.Context, upstream network.Network, overridePort string) func(req *udp.ForwarderRequest) {
 	return func(req *udp.ForwarderRequest) {
 		reqDetails := req.ID()
 
 		srcAddrPort := netip.AddrPortFrom(addrFromNetstackIP(reqDetails.RemoteAddress), reqDetails.RemotePort)
-		dstAddrPort := netip.AddrPortFrom(
-			Unmap4in6(addrFromNetstackIP(reqDetails.LocalAddress)),
-			reqDetails.LocalPort,
-		)
+
+		// Extract IPv4 address from IPv6-mapped address
+		dstAddr := Unmap4in6(addrFromNetstackIP(reqDetails.LocalAddress))
+		dstPort := reqDetails.LocalPort
+
+		// Override port if specified
+		if overridePort != "" {
+			if port, err := netip.ParseAddrPort("127.0.0.1:" + overridePort); err == nil {
+				dstPort = port.Port()
+			}
+		}
+
+		dstAddrPort := netip.AddrPortFrom(dstAddr, dstPort)
 
 		logger := slog.With(
 			slog.String("src", srcAddrPort.String()),
