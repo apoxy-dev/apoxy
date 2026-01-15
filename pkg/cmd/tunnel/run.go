@@ -114,6 +114,7 @@ type tunnelNodeReconciler struct {
 	// TUI status fields
 	tunnelName string
 	hasToken   bool
+	useTUI     bool
 }
 
 var tunnelRunCmd = &cobra.Command{
@@ -206,8 +207,11 @@ func getTunnelNode(
 
 func (t *tunnelNodeReconciler) run(ctx context.Context, tn *corev1alpha.TunnelNode) error {
 	// Determine if we should use TUI
-	isTTY := term.IsTerminal(int(os.Stdout.Fd()))
-	useTUI := isTTY && !noTUI
+	// Auto-detect non-interactive mode (no TTY on stdin or stdout)
+	stdoutTTY := term.IsTerminal(int(os.Stdout.Fd()))
+	stdinTTY := term.IsTerminal(int(os.Stdin.Fd()))
+	useTUI := stdoutTTY && stdinTTY && !noTUI
+	t.useTUI = useTUI
 
 	if !useTUI {
 		slog.Info("Running TunnelNode controller", slog.String("name", tn.Name))
@@ -315,6 +319,11 @@ func (t *tunnelNodeReconciler) run(ctx context.Context, tn *corev1alpha.TunnelNo
 		return nil
 	})
 	t.tunDialer = &tunnel.TunnelDialer{Router: r}
+
+	// Print startup summary in non-TUI mode
+	if !useTUI {
+		printStartupSummary(t.GetTunnelInfo(), minConns)
+	}
 
 	// Start TUI if enabled
 	if useTUI {
@@ -462,14 +471,23 @@ func (t *tunnelNodeReconciler) reconcile(ctx context.Context, req ctrl.Request) 
 					copy(clientOpts, t.clientOpts)
 					t.dialMu.RUnlock()
 
+					if !t.useTUI {
+						fmt.Printf("[%s] Connecting to %s...\n", time.Now().Format("15:04:05"), srvAddr)
+					}
 					log.Info("Dialing tunnel proxy server address", slog.String("address", srvAddr))
 
 					c, err := t.tunDialer.Dial(ctx, tunnelUID, srvAddr, clientOpts...)
 					if err != nil {
+						if !t.useTUI {
+							fmt.Printf("[%s] Connection failed: %v\n", time.Now().Format("15:04:05"), err)
+						}
 						log.Error("failed to start tunnel client", slog.Any("error", err))
 						return
 					}
 
+					if !t.useTUI {
+						fmt.Printf("[%s] Connected (id: %s)\n", time.Now().Format("15:04:05"), c.UUID.String()[:8])
+					}
 					log.Info("Tunnel client connected", slog.String("uuid", c.UUID.String()))
 
 					conn.id = c.UUID
@@ -478,6 +496,9 @@ func (t *tunnelNodeReconciler) reconcile(ctx context.Context, req ctrl.Request) 
 
 					<-c.Context().Done() // Wait for the connection to close.
 
+					if !t.useTUI {
+						fmt.Printf("[%s] Disconnected (id: %s): %v\n", time.Now().Format("15:04:05"), c.UUID.String()[:8], c.Context().Err())
+					}
 					log.Error("Tunnel client disconnected", slog.String("uuid", c.UUID.String()), slog.Any("error", c.Context().Err()))
 				}, backoff, false, conn.stopCh)
 			}(conn)
@@ -560,4 +581,17 @@ func (t *tunnelNodeReconciler) GetConnections() []tui.ConnectionStatus {
 		})
 	}
 	return conns
+}
+
+// printStartupSummary prints a summary box for non-TUI mode.
+func printStartupSummary(info tui.TunnelInfo, minConns int) {
+	fmt.Println("╭─ TUNNEL ──────────────────────────────────────────────────╮")
+	fmt.Printf("│  Name:       %-44s │\n", info.Name)
+	fmt.Printf("│  Server:     %-44s │\n", info.ServerAddr)
+	fmt.Printf("│  Mode:       %-44s │\n", info.Mode)
+	fmt.Printf("│  DNS:        %-44s │\n", info.DNSAddr)
+	fmt.Printf("│  Health:     %-44s │\n", info.HealthAddr)
+	fmt.Printf("│  Min Conns:  %-44d │\n", minConns)
+	fmt.Println("╰───────────────────────────────────────────────────────────╯")
+	fmt.Println()
 }
