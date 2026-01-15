@@ -23,6 +23,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 
 	alog "github.com/apoxy-dev/apoxy/pkg/log"
+	tunnelconn "github.com/apoxy-dev/apoxy/pkg/tunnel/connection"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/router"
 )
 
@@ -66,6 +67,8 @@ type tunnelClientOptions struct {
 	// Userspace options
 	socksListenAddr       string
 	preserveDefaultGwDsts []netip.Prefix
+	// Packet observer for TUI
+	packetObserver tunnelconn.PacketObserver
 }
 
 func defaultClientOptions() *tunnelClientOptions {
@@ -141,6 +144,14 @@ func WithPreserveDefaultGatewayDestinations(dsts []netip.Prefix) TunnelClientOpt
 	}
 }
 
+// WithPacketObserver sets the packet observer for the tunnel client.
+// The observer will receive notifications for each packet passing through the tunnel.
+func WithPacketObserver(obs tunnelconn.PacketObserver) TunnelClientOption {
+	return func(o *tunnelClientOptions) {
+		o.packetObserver = obs
+	}
+}
+
 // BuildClientRouter builds a router for the client tunnel side using provided
 // options and sane defaults.
 func BuildClientRouter(opts ...TunnelClientOption) (router.Router, error) {
@@ -173,6 +184,9 @@ func BuildClientRouter(opts ...TunnelClientOption) (router.Router, error) {
 	}
 	if options.socksListenAddr != "" {
 		routerOpts = append(routerOpts, router.WithSocksListenAddr(options.socksListenAddr))
+	}
+	if options.packetObserver != nil {
+		routerOpts = append(routerOpts, router.WithPacketObserver(options.packetObserver))
 	}
 
 	switch options.mode {

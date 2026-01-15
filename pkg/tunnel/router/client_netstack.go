@@ -32,6 +32,7 @@ type NetstackRouter struct {
 	resolveConf     *network.ResolveConfig
 	socksListenAddr string
 	cksumRecalc     bool
+	observer        connection.PacketObserver
 
 	closeOnce sync.Once
 }
@@ -63,6 +64,7 @@ func NewNetstackRouter(opts ...Option) (*NetstackRouter, error) {
 		resolveConf:     options.resolveConf,
 		socksListenAddr: options.socksListenAddr,
 		cksumRecalc:     options.cksumRecalc,
+		observer:        options.packetObserver,
 	}, nil
 }
 
@@ -83,6 +85,9 @@ func (r *NetstackRouter) Start(ctx context.Context) error {
 		var opts []connection.SpliceOption
 		if r.cksumRecalc {
 			opts = append(opts, connection.WithChecksumRecalculation())
+		}
+		if r.observer != nil {
+			opts = append(opts, connection.WithPacketObserver(r.observer))
 		}
 		return connection.Splice(r.tunDev, r.smux, opts...)
 	})

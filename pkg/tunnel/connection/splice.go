@@ -26,6 +26,7 @@ type SpliceConfig struct {
 	recalculateChecksum bool
 	verifyChecksum      bool
 	logChecksumErrors   bool
+	observer            PacketObserver
 }
 
 // SpliceOption is a function that configures splice behavior
@@ -49,6 +50,13 @@ func WithChecksumVerification() SpliceOption {
 func WithChecksumErrorLogging() SpliceOption {
 	return func(c *SpliceConfig) {
 		c.logChecksumErrors = true
+	}
+}
+
+// WithPacketObserver sets a packet observer for traffic monitoring
+func WithPacketObserver(obs PacketObserver) SpliceOption {
+	return func(c *SpliceConfig) {
+		c.observer = obs
 	}
 }
 
@@ -104,6 +112,11 @@ func Splice(tunDev tun.Device, conn Connection, opts ...SpliceOption) error {
 				packetData := pkts[i][:sizes[i]]
 				slog.Debug("Read packet from TUN", slog.Int("len", sizes[i]))
 
+				// Notify observer if set
+				if config.observer != nil {
+					config.observer.OnPacket(ExtractPacketInfo(packetData, DirectionOutbound))
+				}
+
 				// Recalculate TCP checksum if enabled and needed
 				if config.recalculateChecksum {
 					if err := recalculateChecksumIfNeeded(packetData, config); err != nil {
@@ -155,6 +168,11 @@ func Splice(tunDev tun.Device, conn Connection, opts ...SpliceOption) error {
 				}
 
 				slog.Debug("Read packet from connection", slog.Int("len", n))
+
+				// Notify observer if set
+				if config.observer != nil && n > 0 {
+					config.observer.OnPacket(ExtractPacketInfo((*pkt)[tunOffset:tunOffset+n], DirectionInbound))
+				}
 
 				*pkt = (*pkt)[:n+tunOffset]
 

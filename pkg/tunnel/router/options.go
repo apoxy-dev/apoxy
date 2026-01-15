@@ -4,6 +4,7 @@ import (
 	"net/netip"
 
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/batchpc"
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/connection"
 	"github.com/apoxy-dev/icx"
 	"github.com/dpeckett/network"
 )
@@ -25,6 +26,7 @@ type routerOptions struct {
 	sourcePortHashing     bool
 	pc                    batchpc.BatchPacketConn
 	egressGateway         bool
+	packetObserver        connection.PacketObserver
 }
 
 func defaultOptions() *routerOptions {
@@ -132,5 +134,13 @@ func WithPacketConn(pc batchpc.BatchPacketConn) Option {
 func WithEgressGateway(enable bool) Option {
 	return func(o *routerOptions) {
 		o.egressGateway = enable
+	}
+}
+
+// WithPacketObserver sets a packet observer for traffic monitoring.
+// Only valid for netstack routers.
+func WithPacketObserver(obs connection.PacketObserver) Option {
+	return func(o *routerOptions) {
+		o.packetObserver = obs
 	}
 }

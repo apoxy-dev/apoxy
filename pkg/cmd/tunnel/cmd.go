@@ -62,6 +62,8 @@ var (
 	tunnelNodeFieldManager string
 	// tunnelNodeForceConflicts forces apply even if there are conflicts.
 	tunnelNodeForceConflicts bool
+	// noTUI disables the TUI interface.
+	noTUI bool
 )
 
 var createCmd = &cobra.Command{
@@ -320,6 +322,7 @@ func init() {
 	tunnelRunCmd.Flags().BoolVar(&autoCreate, "auto", false, "Automatically create TunnelNode if it doesn't exist.")
 	tunnelRunCmd.Flags().StringVar(&healthAddr, "health-addr", ":8080", "Listen address for health endpoint (default: :8080).")
 	tunnelRunCmd.Flags().StringVar(&metricsAddr, "metrics-addr", ":8081", "Listen address for metrics endpoint (default: :8081).")
+	tunnelRunCmd.Flags().BoolVar(&noTUI, "no-tui", false, "Disable TUI interface.")
 
 	tunnelCmd.AddCommand(createCmd)
 	tunnelCmd.AddCommand(getCmd)

@@ -3,6 +3,7 @@ package tunnel
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"math/rand"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
+	"golang.org/x/term"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -35,9 +37,11 @@ import (
 
 	"github.com/apoxy-dev/apoxy/client/versioned"
 	"github.com/apoxy-dev/apoxy/config"
+	"github.com/apoxy-dev/apoxy/pkg/cmd/tunnel/tui"
 	"github.com/apoxy-dev/apoxy/pkg/log"
 	"github.com/apoxy-dev/apoxy/pkg/net/dns"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel"
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/connection"
 
 	configv1alpha1 "github.com/apoxy-dev/apoxy/api/config/v1alpha1"
 	corev1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
@@ -84,9 +88,10 @@ func init() {
 }
 
 type tunConn struct {
-	id     uuid.UUID
-	conn   *tunnel.Conn
-	stopCh chan struct{}
+	id          uuid.UUID
+	conn        *tunnel.Conn
+	stopCh      chan struct{}
+	connectedAt time.Time
 }
 
 type tunnelNodeReconciler struct {
@@ -105,6 +110,10 @@ type tunnelNodeReconciler struct {
 	tunnelUID  uuid.UUID
 	srvAddr    string
 	clientOpts []tunnel.TunnelClientOption
+
+	// TUI status fields
+	tunnelName string
+	hasToken   bool
 }
 
 var tunnelRunCmd = &cobra.Command{
@@ -196,7 +205,13 @@ func getTunnelNode(
 }
 
 func (t *tunnelNodeReconciler) run(ctx context.Context, tn *corev1alpha.TunnelNode) error {
-	slog.Info("Running TunnelNode controller", slog.String("name", tn.Name))
+	// Determine if we should use TUI
+	isTTY := term.IsTerminal(int(os.Stdout.Fd()))
+	useTUI := isTTY && !noTUI
+
+	if !useTUI {
+		slog.Info("Running TunnelNode controller", slog.String("name", tn.Name))
+	}
 
 	client, err := config.DefaultAPIClient()
 	if err != nil {
@@ -217,11 +232,17 @@ func (t *tunnelNodeReconciler) run(ctx context.Context, tn *corev1alpha.TunnelNo
 		return fmt.Errorf("unable to set up overall controller manager: %w", err)
 	}
 
-	l := log.New(t.cfg.Verbose)
+	// When TUI is active, suppress logging to avoid garbling the display
+	if useTUI {
+		// Disable slog default logger output
+		slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	}
+	l := log.New(t.cfg.Verbose && !useTUI)
 	ctrl.SetLogger(l)
 	klog.SetLogger(l)
 
 	t.Client = mgr.GetClient()
+	t.tunnelName = tn.Name
 	if err := t.setupWithManager(ctx, mgr, tn.Name); err != nil {
 		return fmt.Errorf("unable to set up controller: %w", err)
 	}
@@ -243,9 +264,13 @@ func (t *tunnelNodeReconciler) run(ctx context.Context, tn *corev1alpha.TunnelNo
 		}
 
 		g.Go(func() error {
-			slog.Info("Starting health endpoint server", slog.String("address", healthAddr))
+			if !useTUI {
+				slog.Info("Starting health endpoint server", slog.String("address", healthAddr))
+			}
 			if err := healthServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				slog.Error("Health server failed", slog.Any("error", err))
+				if !useTUI {
+					slog.Error("Health server failed", slog.Any("error", err))
+				}
 				return err
 			}
 			return nil
@@ -259,24 +284,54 @@ func (t *tunnelNodeReconciler) run(ctx context.Context, tn *corev1alpha.TunnelNo
 		})
 	}
 
-	r, err := tunnel.BuildClientRouter(
+	// Setup packet observer and channel for TUI
+	var packetsCh chan connection.PacketInfo
+	var observer *tui.TUIPacketObserver
+	if useTUI {
+		packetsCh = make(chan connection.PacketInfo, 100)
+		observer = tui.NewPacketObserver(packetsCh)
+	}
+
+	routerOpts := []tunnel.TunnelClientOption{
 		tunnel.WithPcapPath(tunnelNodePcapPath),
 		tunnel.WithMode(tunnelMode),
 		tunnel.WithPreserveDefaultGatewayDestinations(preserveDefaultGwDsts),
 		tunnel.WithSocksListenAddr(socksListenAddr),
-	)
+	}
+	if observer != nil {
+		routerOpts = append(routerOpts, tunnel.WithPacketObserver(observer))
+	}
+
+	r, err := tunnel.BuildClientRouter(routerOpts...)
 	if err != nil {
 		return fmt.Errorf("unable to build client router: %w", err)
 	}
 	g.Go(func() error {
 		if err := r.Start(gctx); err != nil {
-			slog.Error("Router exited non-zero", slog.Any("error", err))
+			if !useTUI {
+				slog.Error("Router exited non-zero", slog.Any("error", err))
+			}
 		}
 		return nil
 	})
 	t.tunDialer = &tunnel.TunnelDialer{Router: r}
 
-	return g.Wait()
+	// Start TUI if enabled
+	if useTUI {
+		g.Go(func() error {
+			defer close(packetsCh)
+			if err := tui.Run(gctx, packetsCh, t); err != nil {
+				return err
+			}
+			// TUI exited normally (user quit) - cancel context to stop other goroutines
+			return context.Canceled
+		})
+	}
+
+	if err := g.Wait(); err != nil && err != context.Canceled {
+		return err
+	}
+	return nil
 }
 
 func targetRefPredicate(tunnelNodeName string) predicate.Funcs {
@@ -368,6 +423,8 @@ func (t *tunnelNodeReconciler) reconcile(ctx context.Context, req ctrl.Request) 
 	t.tunnelUID = tnUUID
 	t.srvAddr = srvAddr
 	t.clientOpts = cOpts
+	t.tunnelName = tunnelNode.Name
+	t.hasToken = tunnelNode.Status.Credentials != nil && tunnelNode.Status.Credentials.Token != ""
 	t.dialMu.Unlock()
 
 	// 2. Calculate how many connections are needed vs how many are already established.
@@ -417,6 +474,7 @@ func (t *tunnelNodeReconciler) reconcile(ctx context.Context, req ctrl.Request) 
 
 					conn.id = c.UUID
 					conn.conn = c
+					conn.connectedAt = time.Now()
 
 					<-c.Context().Done() // Wait for the connection to close.
 
@@ -458,4 +516,48 @@ func (t *tunnelNodeReconciler) healthHandler(w http.ResponseWriter, r *http.Requ
 		w.WriteHeader(http.StatusServiceUnavailable)
 		fmt.Fprintf(w, "UNHEALTHY - no active connections\n")
 	}
+}
+
+// GetTunnelInfo returns the current tunnel info for the TUI.
+func (t *tunnelNodeReconciler) GetTunnelInfo() tui.TunnelInfo {
+	t.dialMu.RLock()
+	defer t.dialMu.RUnlock()
+
+	return tui.TunnelInfo{
+		Name:       t.tunnelName,
+		UID:        t.tunnelUID.String(),
+		ServerAddr: t.srvAddr,
+		HasToken:   t.hasToken,
+		Mode:       tunnelModeS,
+		DNSAddr:    dnsListenAddr,
+		HealthAddr: healthAddr,
+	}
+}
+
+// GetConnections returns the current connection status for the TUI.
+func (t *tunnelNodeReconciler) GetConnections() []tui.ConnectionStatus {
+	t.tunMu.RLock()
+	defer t.tunMu.RUnlock()
+
+	var conns []tui.ConnectionStatus
+	for _, conn := range t.tunDialerWorkers {
+		isHealthy := conn.conn != nil && conn.conn.Context().Err() == nil
+
+		var localAddrs []string
+		if conn.conn != nil {
+			if addrs, err := conn.conn.LocalAddrs(); err == nil {
+				for _, addr := range addrs {
+					localAddrs = append(localAddrs, addr.String())
+				}
+			}
+		}
+
+		conns = append(conns, tui.ConnectionStatus{
+			ID:          conn.id.String()[:8],
+			IsHealthy:   isHealthy,
+			ConnectedAt: conn.connectedAt,
+			LocalAddrs:  localAddrs,
+		})
+	}
+	return conns
 }
