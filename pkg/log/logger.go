@@ -233,39 +233,6 @@ func Fatalf(format string, args ...any) {
 	os.Exit(1)
 }
 
-func logStructured(level slog.Level, msg string, args ...any) {
-	ctx := context.Background()
-	logger := slog.Default()
-	if !logger.Enabled(ctx, level) {
-		return
-	}
-	var pcs [1]uintptr
-	runtime.Callers(3, pcs[:]) // skip [Callers, logStructured, Info/Debug/Warn/Error]
-	r := slog.NewRecord(time.Now(), level, msg, pcs[0])
-	r.Add(args...)
-	_ = logger.Handler().Handle(ctx, r)
-}
-
-// Info logs a structured info message with key-value pairs.
-func Info(msg string, args ...any) {
-	logStructured(slog.LevelInfo, msg, args...)
-}
-
-// Debug logs a structured debug message with key-value pairs.
-func Debug(msg string, args ...any) {
-	logStructured(slog.LevelDebug, msg, args...)
-}
-
-// Warn logs a structured warning message with key-value pairs.
-func Warn(msg string, args ...any) {
-	logStructured(slog.LevelWarn, msg, args...)
-}
-
-// Error logs a structured error message with key-value pairs.
-func Error(msg string, args ...any) {
-	logStructured(slog.LevelError, msg, args...)
-}
-
 // New returns a new logr.Logger.
 // deprecated: Remove usage and this method.
 func New(enabled bool) logr.Logger {
