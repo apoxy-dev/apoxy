@@ -116,6 +116,13 @@ func WithAlsoLogToStderr() Option {
 	}
 }
 
+// WithJSONOutput enables JSON-formatted log output.
+func WithJSONOutput() Option {
+	return func(o *options) {
+		o.json = true
+	}
+}
+
 // WithLevel sets the log level.
 // The default log level is InfoLevel.
 func WithLevel(level LogLevel) Option {
@@ -160,8 +167,11 @@ func Init(opts ...Option) error {
 	setDefaultLogger(sOpts.level, sOpts.json, logW)
 
 	klog.SetSlogLogger(DefaultLogger)
+	// Route gRPC's internal INFO messages to DEBUG level so they only appear
+	// when --dev or --log_level=debug is set. This reduces verbose gRPC logs
+	// like channel connectivity changes at normal INFO level.
 	grpclog.SetLoggerV2(grpclog.NewLoggerV2(
-		NewDefaultLogWriter(InfoLevel),
+		NewDefaultLogWriter(DebugLevel),
 		NewDefaultLogWriter(WarnLevel),
 		NewDefaultLogWriter(ErrorLevel),
 	))

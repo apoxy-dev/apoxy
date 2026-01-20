@@ -316,9 +316,9 @@ func (r *Runtime) run(ctx context.Context) error {
 			os.Remove(tmpStderrFile.Name())
 		}
 	} else {
-		// Default behavior: pipe to os.Stdout and os.Stderr
-		r.cmd.Stdout = os.Stdout
-		r.cmd.Stderr = os.Stderr
+		// Default behavior: wrap subprocess output in structured log entries.
+		r.cmd.Stdout = log.NewSubprocessWriter("envoy", log.InfoLevel)
+		r.cmd.Stderr = log.NewSubprocessWriter("envoy", log.WarnLevel)
 		if err := r.cmd.Start(); err != nil {
 			return fmt.Errorf("failed to start envoy: %w", err)
 		}
