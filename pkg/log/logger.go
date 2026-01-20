@@ -166,6 +166,11 @@ func Init(opts ...Option) error {
 
 	setDefaultLogger(sOpts.level, sOpts.json, logW)
 
+	// Update DefaultLogger to use the newly configured default.
+	// This is critical because DefaultLogger was set at package init time
+	// and klog, grpclog, and controller-runtime all reference it.
+	DefaultLogger = slog.Default()
+
 	klog.SetSlogLogger(DefaultLogger)
 	// Route gRPC's internal INFO messages to DEBUG level so they only appear
 	// when --dev or --log_level=debug is set. This reduces verbose gRPC logs
@@ -226,6 +231,39 @@ func Fatalf(format string, args ...any) {
 	level := slog.LevelError
 	logf(level, format, args...)
 	os.Exit(1)
+}
+
+func logStructured(level slog.Level, msg string, args ...any) {
+	ctx := context.Background()
+	logger := slog.Default()
+	if !logger.Enabled(ctx, level) {
+		return
+	}
+	var pcs [1]uintptr
+	runtime.Callers(3, pcs[:]) // skip [Callers, logStructured, Info/Debug/Warn/Error]
+	r := slog.NewRecord(time.Now(), level, msg, pcs[0])
+	r.Add(args...)
+	_ = logger.Handler().Handle(ctx, r)
+}
+
+// Info logs a structured info message with key-value pairs.
+func Info(msg string, args ...any) {
+	logStructured(slog.LevelInfo, msg, args...)
+}
+
+// Debug logs a structured debug message with key-value pairs.
+func Debug(msg string, args ...any) {
+	logStructured(slog.LevelDebug, msg, args...)
+}
+
+// Warn logs a structured warning message with key-value pairs.
+func Warn(msg string, args ...any) {
+	logStructured(slog.LevelWarn, msg, args...)
+}
+
+// Error logs a structured error message with key-value pairs.
+func Error(msg string, args ...any) {
+	logStructured(slog.LevelError, msg, args...)
 }
 
 // New returns a new logr.Logger.
