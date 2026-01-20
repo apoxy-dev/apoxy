@@ -7,6 +7,9 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/getsentry/sentry-go"
@@ -135,32 +138,44 @@ func (a *Authenticator) Authenticate() {
 	a.authCh = make(chan authContext)
 	port := a.launchServer()
 	next := url.QueryEscape(fmt.Sprintf("http://localhost:%d/auth", port))
+	log.Debugf("Using config: DashboardURL=%q", a.cfg.DashboardURL)
 	host := a.cfg.DashboardURL
 	if host == "" {
 		host = DefaultConfig.DashboardURL
+		log.Debugf("Using default dashboard URL: %q", host)
 	}
-	authUrl := fmt.Sprintf("%s/auth/cli?next=%s", host, next)
+	authUrl := fmt.Sprintf("%s/auth/cli?redirect=%s", host, next)
 	browser.OpenURL(authUrl)
 	fmt.Println("If a browser window did not open, you may authenticate using the following URL:")
 	fmt.Printf("\n\t%s\n\n", authUrl)
-	key := <-a.authCh
 
-	var projectUpdated bool
-	for i, p := range a.cfg.Projects {
-		if p.ID == a.cfg.CurrentProject {
-			a.cfg.Projects[i].APIKey = key.APIKey
-			a.cfg.Projects[i].ID = key.ProjectID
-			projectUpdated = true
-			break
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+	select {
+	case key := <-a.authCh:
+		var projectUpdated bool
+		for i, p := range a.cfg.Projects {
+			if p.ID == a.cfg.CurrentProject {
+				a.cfg.Projects[i].APIKey = key.APIKey
+				a.cfg.Projects[i].ID = key.ProjectID
+				projectUpdated = true
+				break
+			}
 		}
-	}
-	a.cfg.CurrentProject = key.ProjectID
-	if !projectUpdated {
-		log.Errorf("Failed to update project. ProjectID=%q", a.cfg.CurrentProject)
+		if !projectUpdated {
+			a.cfg.Projects = append(a.cfg.Projects, configv1alpha1.Project{
+				ID:     key.ProjectID,
+				APIKey: key.APIKey,
+			})
+			log.Debugf("Appended new project. ProjectID=%q", key.ProjectID)
+		}
+		a.cfg.CurrentProject = key.ProjectID
+
+		log.Debugf("API key set. APIKey=%q ProjectID=%q", key.APIKey, a.cfg.CurrentProject)
+		fmt.Println("Login Succcessful!")
+	case <-sigCh:
+		log.Errorf("Authentication cancelled by user")
 		return
 	}
-
-	log.Debugf("API key set. APIKey=%q ProjectID=%q", key.APIKey, a.cfg.CurrentProject)
-	fmt.Println("Login Succcessful!")
-	return
 }

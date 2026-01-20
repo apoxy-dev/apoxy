@@ -96,6 +96,7 @@ func Load() (*configv1alpha1.Config, error) {
 
 	var cfg *configv1alpha1.Config
 	if !versioned {
+		log.Debugf("Loading unversioned config")
 		var uc UnversionedConfig
 		if err := yaml.Unmarshal(yamlFile, &uc); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal unversioned config: %w", err)
@@ -116,6 +117,7 @@ func Load() (*configv1alpha1.Config, error) {
 			})
 		}
 	} else {
+		log.Debugf("Loading versioned config")
 		obj, gvk, err := codec.Decode(yamlFile, nil, nil)
 		if err != nil {
 			return nil, fmt.Errorf("failed to decode config: %w", err)
@@ -129,6 +131,8 @@ func Load() (*configv1alpha1.Config, error) {
 			return nil, fmt.Errorf("unrecognized config version: %v", gvk)
 		}
 	}
+
+	log.Debugf("Loaded config: %v", cfg)
 
 	return applyFlagOverrides(cfg)
 }
