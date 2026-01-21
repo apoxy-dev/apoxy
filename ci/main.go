@@ -271,7 +271,10 @@ Instructions:
 - Group changes by category: Features, Bug Fixes, Improvements, Infrastructure
 - Be concise but informative
 - Use markdown formatting with ## headers for categories
-- Each item should be a bullet point
+- Each item should be a bullet point with a descriptive title, optionally grouping related commits
+- After each title, include commit link(s) in the format: ([hash](https://github.com/apoxy-dev/apoxy/commit/<hash>))
+- For grouped items with multiple commits, list all links: ([hash1](url1), [hash2](url2))
+- Extract commit hashes from the beginning of each commit line
 - Focus on user-facing changes, skip minor refactors
 - Previous version: %s
 
@@ -300,10 +303,10 @@ func (m *ApoxyCli) PublishGithubRelease(
 	cliCtrMacosAmd64 := m.BuildCLI(ctx, src, "darwin/amd64", tag, sha)
 	cliCtrMacosArm64 := m.BuildCLI(ctx, src, "darwin/arm64", tag, sha)
 
-	// Generate release notes using LLM (auto-detects previous tag)
+	// Generate release notes using LLM (auto-detects previous tag).
 	releaseNotes, err := m.GenerateReleaseNotes(ctx, src, tag)
 
-	// Build release command with fallback
+	// Build release command with fallback.
 	var releaseCmd []string
 	if err != nil || releaseNotes == "" {
 		// Fallback to GitHub's auto-generated notes
