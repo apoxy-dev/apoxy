@@ -46,6 +46,7 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/apiserver/gateway"
 	"github.com/apoxy-dev/apoxy/pkg/cryptoutils"
 	"github.com/apoxy-dev/apoxy/pkg/gateway/message"
+	statusrunner "github.com/apoxy-dev/apoxy/pkg/gateway/status/runner"
 	"github.com/apoxy-dev/apoxy/pkg/log"
 	apoxynet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
@@ -521,6 +522,18 @@ func (m *Manager) Start(
 
 	if err := waitForAPIService(ctx, m.manager.GetConfig(), corev1alpha2.GroupVersion, 2*time.Minute); err != nil {
 		return fmt.Errorf("failed to wait for APIService %s: %v", corev1alpha2.GroupVersion.Group, err)
+	}
+
+	// Start the Status Runner to write Gateway API resource statuses back to the API server.
+	// This subscribes to status updates from the gateway translation pipeline and writes
+	// them back to Kubernetes.
+	log.Infof("Starting Gateway API Status Runner")
+	statusRunner := statusrunner.New(&statusrunner.Config{
+		Client:            m.manager.GetClient(),
+		ProviderResources: gwResources,
+	})
+	if err := statusRunner.Start(ctx); err != nil {
+		return fmt.Errorf("failed to start status runner: %v", err)
 	}
 
 	ctx, cancel := context.WithCancel(ctx)

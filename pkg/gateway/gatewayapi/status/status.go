@@ -28,6 +28,9 @@ import (
 	gwapiv1a2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
 
 	egv1a1 "github.com/envoyproxy/gateway/api/v1alpha1"
+
+	gatewayv1 "github.com/apoxy-dev/apoxy/api/gateway/v1"
+	gatewayv1alpha2 "github.com/apoxy-dev/apoxy/api/gateway/v1alpha2"
 )
 
 // Update contains an all the information needed to update an object's status.
@@ -84,16 +87,20 @@ func (u *UpdateHandler) apply(update Update) {
 			return err
 		}
 
+		// Deep copy before mutation to preserve original state for comparison.
+		// This is necessary because Mutate() modifies the object in-place.
+		oldObj := obj.DeepCopyObject().(client.Object)
+
 		newObj := update.Mutator.Mutate(obj)
 
-		if isStatusEqual(obj, newObj) {
+		if isStatusEqual(oldObj, newObj) {
 			u.log.WithName(update.NamespacedName.Name).
 				WithName(update.NamespacedName.Namespace).
 				Info("status unchanged, bypassing update")
 			return nil
 		}
 
-		newObj.SetUID(obj.GetUID())
+		newObj.SetUID(oldObj.GetUID())
 
 		return u.client.Status().Update(context.Background(), newObj)
 	}); err != nil {
@@ -171,6 +178,7 @@ func (u *UpdateWriter) Send(update Update) {
 //	ClientTrafficPolicy
 //	SecurityPolicy
 //	BackendTLSPolicy
+//	Apoxy Gateway types (gatewayv1.Gateway, gatewayv1.HTTPRoute, etc.)
 func isStatusEqual(objA, objB interface{}) bool {
 	opts := cmpopts.IgnoreFields(metav1.Condition{}, "LastTransitionTime")
 	switch a := objA.(type) {
@@ -236,6 +244,43 @@ func isStatusEqual(objA, objB interface{}) bool {
 		}
 	case *egv1a1.SecurityPolicy:
 		if b, ok := objB.(*egv1a1.SecurityPolicy); ok {
+			if cmp.Equal(a.Status, b.Status, opts) {
+				return true
+			}
+		}
+	// Apoxy Gateway types
+	case *gatewayv1.Gateway:
+		if b, ok := objB.(*gatewayv1.Gateway); ok {
+			if cmp.Equal(a.Status, b.Status, opts) {
+				return true
+			}
+		}
+	case *gatewayv1.HTTPRoute:
+		if b, ok := objB.(*gatewayv1.HTTPRoute); ok {
+			if cmp.Equal(a.Status, b.Status, opts) {
+				return true
+			}
+		}
+	case *gatewayv1.GRPCRoute:
+		if b, ok := objB.(*gatewayv1.GRPCRoute); ok {
+			if cmp.Equal(a.Status, b.Status, opts) {
+				return true
+			}
+		}
+	case *gatewayv1alpha2.TLSRoute:
+		if b, ok := objB.(*gatewayv1alpha2.TLSRoute); ok {
+			if cmp.Equal(a.Status, b.Status, opts) {
+				return true
+			}
+		}
+	case *gatewayv1alpha2.TCPRoute:
+		if b, ok := objB.(*gatewayv1alpha2.TCPRoute); ok {
+			if cmp.Equal(a.Status, b.Status, opts) {
+				return true
+			}
+		}
+	case *gatewayv1alpha2.UDPRoute:
+		if b, ok := objB.(*gatewayv1alpha2.UDPRoute); ok {
 			if cmp.Equal(a.Status, b.Status, opts) {
 				return true
 			}

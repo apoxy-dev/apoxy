@@ -6,6 +6,7 @@
 package gatewayapi
 
 import (
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	gwapiv1 "sigs.k8s.io/gateway-api/apis/v1"
 
@@ -201,6 +202,10 @@ func (t *Translator) GetRelevantGateways(gateways []*gwapiv1.Gateway) []*Gateway
 				Gateway: gateway.DeepCopy(),
 			}
 			gc.ResetListeners()
+
+			// Set Accepted condition - Gateway is accepted by this controller
+			gc.SetCondition(gwapiv1.GatewayConditionAccepted, metav1.ConditionTrue,
+				gwapiv1.GatewayReasonAccepted, "Gateway accepted by controller")
 
 			relevant = append(relevant, gc)
 		}

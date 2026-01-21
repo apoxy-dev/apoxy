@@ -2,8 +2,11 @@ package runner
 
 import (
 	"context"
+	"fmt"
 
 	egv1a1 "github.com/envoyproxy/gateway/api/v1alpha1"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -103,6 +106,22 @@ func (r *Runner) subscribeAndTranslate(ctx context.Context) {
 					if err := val.Validate(); err != nil {
 						log.Error("unable to validate xds ir, skipped sending it", "error", err)
 						errChan <- err
+
+						// Update Gateway status to reflect validation error
+						for _, gateway := range result.Gateways {
+							gwKey := utils.NamespacedName(gateway)
+							meta.SetStatusCondition(&gateway.Status.Conditions, metav1.Condition{
+								Type:               string(gwapiv1.GatewayConditionProgrammed),
+								Status:             metav1.ConditionFalse,
+								ObservedGeneration: gateway.Generation,
+								LastTransitionTime: metav1.Now(),
+								Reason:             string(gwapiv1.GatewayReasonInvalid),
+								Message:            fmt.Sprintf("IR validation failed: %v", err),
+							})
+							r.ProviderResources.GatewayStatuses.Store(gwKey, &gateway.Status)
+							delete(statusesToDelete.GatewayStatusKeys, gwKey)
+						}
+
 						continue
 					}
 

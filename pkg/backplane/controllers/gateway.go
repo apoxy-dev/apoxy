@@ -6,8 +6,6 @@ import (
 	"strconv"
 
 	"k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -154,48 +152,15 @@ func (r *GatewayReconciler) extractEnvoyListeners(gw *gatewayv1.Gateway) []*envo
 	return listeners
 }
 
-// updateGatewayStatus updates the Gateway status with conditions based on the Proxy state.
+// updateGatewayStatus updates the Gateway status based on the Proxy state.
+// Note: Gateway status conditions (Accepted, Programmed) are now managed by the
+// apiserver's status runner which subscribes to translation pipeline status updates.
+// This function is kept for potential future health-check based status updates.
 func (r *GatewayReconciler) updateGatewayStatus(ctx context.Context, gw *gatewayv1.Gateway, proxy *corev1alpha2.Proxy) error {
-	acceptedCondition := metav1.Condition{
-		Type:               string(gwapiv1.GatewayConditionAccepted),
-		Status:             metav1.ConditionTrue,
-		ObservedGeneration: gw.Generation,
-		LastTransitionTime: metav1.Now(),
-		Reason:             string(gwapiv1.GatewayReasonAccepted),
-		Message:            "Gateway accepted and associated with Proxy",
-	}
-
-	programmedCondition := metav1.Condition{
-		Type:               string(gwapiv1.GatewayConditionProgrammed),
-		Status:             metav1.ConditionTrue,
-		ObservedGeneration: gw.Generation,
-		LastTransitionTime: metav1.Now(),
-		Reason:             string(gwapiv1.GatewayReasonProgrammed),
-		Message:            "Gateway listeners are configured in Envoy",
-	}
-
-	meta.SetStatusCondition(&gw.Status.Conditions, acceptedCondition)
-	meta.SetStatusCondition(&gw.Status.Conditions, programmedCondition)
-
-	for i, l := range gw.Spec.Listeners {
-		if i < len(gw.Status.Listeners) {
-			gw.Status.Listeners[i].Name = l.Name
-			gw.Status.Listeners[i].AttachedRoutes = 0 // This would need route counting logic
-
-			// Set listener conditions
-			listenerAccepted := metav1.Condition{
-				Type:               string(gwapiv1.ListenerConditionAccepted),
-				Status:             metav1.ConditionTrue,
-				ObservedGeneration: gw.Generation,
-				LastTransitionTime: metav1.Now(),
-				Reason:             string(gwapiv1.ListenerReasonAccepted),
-				Message:            "Listener accepted",
-			}
-			meta.SetStatusCondition(&gw.Status.Listeners[i].Conditions, listenerAccepted)
-		}
-	}
-
-	return r.Status().Update(ctx, gw)
+	// Status conditions are managed by the apiserver status runner.
+	// The backplane should only update status based on health checks or
+	// runtime information that isn't available at translation time.
+	return nil
 }
 
 // SetupWithManager sets up the controller with the Manager.

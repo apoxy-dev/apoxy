@@ -25,6 +25,39 @@ type GatewayContext struct {
 	listeners []*ListenerContext
 }
 
+// SetCondition sets a condition on the Gateway status.
+func (g *GatewayContext) SetCondition(conditionType gwapiv1.GatewayConditionType, status metav1.ConditionStatus, reason gwapiv1.GatewayConditionReason, message string) {
+	cond := metav1.Condition{
+		Type:               string(conditionType),
+		Status:             status,
+		Reason:             string(reason),
+		Message:            message,
+		ObservedGeneration: g.Generation,
+		LastTransitionTime: metav1.NewTime(time.Now()),
+	}
+
+	idx := -1
+	for i, existing := range g.Status.Conditions {
+		if existing.Type == cond.Type {
+			// return early if the condition is unchanged
+			if existing.Status == cond.Status &&
+				existing.Reason == cond.Reason &&
+				existing.Message == cond.Message &&
+				existing.ObservedGeneration == cond.ObservedGeneration {
+				return
+			}
+			idx = i
+			break
+		}
+	}
+
+	if idx > -1 {
+		g.Status.Conditions[idx] = cond
+	} else {
+		g.Status.Conditions = append(g.Status.Conditions, cond)
+	}
+}
+
 // ResetListeners resets the listener statuses and re-generates the GatewayContext
 // ListenerContexts from the Gateway spec.
 func (g *GatewayContext) ResetListeners() {
