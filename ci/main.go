@@ -241,17 +241,16 @@ func (m *ApoxyCli) GenerateReleaseNotes(
 		WithDirectory("/src", src).
 		WithWorkdir("/src")
 
-	// Auto-detect previous tag (latest tag before HEAD)
+	// Auto-detect previous tag (latest tag before newTag).
 	previousTag, err := gitCtr.
-		WithExec([]string{"git", "describe", "--tags", "--abbrev=0", "HEAD^"}).
+		WithExec([]string{"git", "describe", "--tags", "--abbrev=0", newTag + "^"}).
 		Stdout(ctx)
 	if err != nil {
-		// No previous tag found, use all commits
+		// No previous tag found, use all commits.
 		previousTag = ""
 	}
 	previousTag = strings.TrimSpace(previousTag)
 
-	// Get git log
 	var logCmd []string
 	if previousTag != "" {
 		logCmd = []string{"git", "log", fmt.Sprintf("%s..HEAD", previousTag), "--oneline"}
@@ -264,7 +263,6 @@ func (m *ApoxyCli) GenerateReleaseNotes(
 		return "", fmt.Errorf("failed to get git log: %w", err)
 	}
 
-	// Use LLM to generate release notes
 	prompt := fmt.Sprintf(`Generate release notes for version %s based on these git commits.
 
 Instructions:
@@ -309,7 +307,7 @@ func (m *ApoxyCli) PublishGithubRelease(
 	// Build release command with fallback.
 	var releaseCmd []string
 	if err != nil || releaseNotes == "" {
-		// Fallback to GitHub's auto-generated notes
+		// Fallback to GitHub's auto-generated notes.
 		fmt.Println("LLM release notes failed, using GitHub generated notes:", err)
 		releaseCmd = []string{
 			"gh", "release", "create",
