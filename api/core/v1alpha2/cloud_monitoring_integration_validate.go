@@ -5,13 +5,13 @@ import (
 
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
-	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource"
-	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource/resourcestrategy"
+	"github.com/apoxy-dev/apoxy/pkg/apiserver/builder/resource"
+	"github.com/apoxy-dev/apoxy/pkg/apiserver/builder/rest"
 )
 
 var (
-	_ resourcestrategy.Validater       = &CloudMonitoringIntegration{}
-	_ resourcestrategy.ValidateUpdater = &CloudMonitoringIntegration{}
+	_ rest.Validater       = &CloudMonitoringIntegration{}
+	_ rest.ValidateUpdater = &CloudMonitoringIntegration{}
 )
 
 func (c *CloudMonitoringIntegration) Validate(ctx context.Context) field.ErrorList {
@@ -22,7 +22,7 @@ func (c *CloudMonitoringIntegration) ValidateUpdate(ctx context.Context, obj run
 	cmi := &CloudMonitoringIntegration{}
 	// XXX: Conversion needs to happen in apiserver-runtime before validation hooks are called.
 	if mv, ok := obj.(resource.MultiVersionObject); ok {
-		mv.ConvertToStorageVersion(cmi)
+		_ = mv.ConvertToStorageVersion(cmi)
 	} else if cmi, ok = obj.(*CloudMonitoringIntegration); !ok {
 		return field.ErrorList{
 			field.Invalid(field.NewPath("kind"), obj.GetObjectKind().GroupVersionKind().Kind, "expected CloudMonitoringIntegration"),

@@ -8,12 +8,12 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
-	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource"
-	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource/resourcestrategy"
+	"github.com/apoxy-dev/apoxy/pkg/apiserver/builder/resource"
+	"github.com/apoxy-dev/apoxy/pkg/apiserver/builder/rest"
 )
 
-var _ resourcestrategy.Validater = &Backend{}
-var _ resourcestrategy.ValidateUpdater = &Backend{}
+var _ rest.Validater = &Backend{}
+var _ rest.ValidateUpdater = &Backend{}
 
 func (r *Backend) Validate(ctx context.Context) field.ErrorList {
 	return r.validate()
@@ -23,7 +23,7 @@ func (r *Backend) ValidateUpdate(ctx context.Context, obj runtime.Object) field.
 	b := &Backend{}
 	// XXX: Conversion needs to happen in apiserver-runtime before validation hooks are called.
 	if mv, ok := obj.(resource.MultiVersionObject); ok {
-		mv.ConvertToStorageVersion(b)
+		_ = mv.ConvertToStorageVersion(b)
 	} else if b, ok = obj.(*Backend); !ok {
 		return field.ErrorList{
 			field.Invalid(field.NewPath("kind"), obj.GetObjectKind().GroupVersionKind().Kind, "expected Backend"),

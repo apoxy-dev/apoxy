@@ -10,9 +10,9 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/duration"
-	"k8s.io/apiserver/pkg/registry/rest"
-	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource"
-	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource/resourcestrategy"
+	apirest "k8s.io/apiserver/pkg/registry/rest"
+	"github.com/apoxy-dev/apoxy/pkg/apiserver/builder/resource"
+	"github.com/apoxy-dev/apoxy/pkg/apiserver/builder/rest"
 	gwapiv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
@@ -35,7 +35,7 @@ var (
 	_ runtime.Object                       = &GatewayClass{}
 	_ resource.Object                      = &GatewayClass{}
 	_ resource.ObjectWithStatusSubResource = &GatewayClass{}
-	_ rest.SingularNameProvider            = &GatewayClass{}
+	_ apirest.SingularNameProvider            = &GatewayClass{}
 )
 
 func (p *GatewayClass) GetObjectMeta() *metav1.ObjectMeta {
@@ -124,7 +124,7 @@ var (
 	_ runtime.Object                       = &Gateway{}
 	_ resource.Object                      = &Gateway{}
 	_ resource.ObjectWithStatusSubResource = &Gateway{}
-	_ rest.SingularNameProvider            = &Gateway{}
+	_ apirest.SingularNameProvider            = &Gateway{}
 )
 
 func (p *Gateway) GetObjectMeta() *metav1.ObjectMeta {
@@ -213,7 +213,7 @@ var (
 	_ runtime.Object                       = &HTTPRoute{}
 	_ resource.Object                      = &HTTPRoute{}
 	_ resource.ObjectWithStatusSubResource = &HTTPRoute{}
-	_ rest.SingularNameProvider            = &HTTPRoute{}
+	_ apirest.SingularNameProvider            = &HTTPRoute{}
 )
 
 func (p *HTTPRoute) GetObjectMeta() *metav1.ObjectMeta {
@@ -302,7 +302,7 @@ var (
 	_ runtime.Object                       = &GRPCRoute{}
 	_ resource.Object                      = &GRPCRoute{}
 	_ resource.ObjectWithStatusSubResource = &GRPCRoute{}
-	_ rest.SingularNameProvider            = &GRPCRoute{}
+	_ apirest.SingularNameProvider            = &GRPCRoute{}
 )
 
 func (p *GRPCRoute) GetObjectMeta() *metav1.ObjectMeta {
@@ -417,7 +417,7 @@ func getHostnamesSummary(hostnames []gwapiv1.Hostname) string {
 	return strings.Join(parts, ",")
 }
 
-var _ resourcestrategy.TableConverter = &GatewayClass{}
+var _ rest.TableConverter = &GatewayClass{}
 
 func (gc *GatewayClass) ConvertToTable(ctx context.Context, tableOptions runtime.Object) (*metav1.Table, error) {
 	return gatewayClassToTable(gc, tableOptions)
@@ -444,7 +444,7 @@ func gatewayClassToTable(gc *GatewayClass, tableOptions runtime.Object) (*metav1
 	return table, nil
 }
 
-var _ resourcestrategy.TableConverter = &GatewayClassList{}
+var _ rest.TableConverter = &GatewayClassList{}
 
 func (l *GatewayClassList) ConvertToTable(ctx context.Context, tableOptions runtime.Object) (*metav1.Table, error) {
 	table := &metav1.Table{}
@@ -472,7 +472,7 @@ func (l *GatewayClassList) ConvertToTable(ctx context.Context, tableOptions runt
 	return table, nil
 }
 
-var _ resourcestrategy.TableConverter = &Gateway{}
+var _ rest.TableConverter = &Gateway{}
 
 func (g *Gateway) ConvertToTable(ctx context.Context, tableOptions runtime.Object) (*metav1.Table, error) {
 	return gatewayToTable(g, tableOptions)
@@ -501,7 +501,7 @@ func gatewayToTable(g *Gateway, tableOptions runtime.Object) (*metav1.Table, err
 	return table, nil
 }
 
-var _ resourcestrategy.TableConverter = &GatewayList{}
+var _ rest.TableConverter = &GatewayList{}
 
 func (l *GatewayList) ConvertToTable(ctx context.Context, tableOptions runtime.Object) (*metav1.Table, error) {
 	table := &metav1.Table{}
@@ -531,7 +531,7 @@ func (l *GatewayList) ConvertToTable(ctx context.Context, tableOptions runtime.O
 	return table, nil
 }
 
-var _ resourcestrategy.TableConverter = &HTTPRoute{}
+var _ rest.TableConverter = &HTTPRoute{}
 
 func (r *HTTPRoute) ConvertToTable(ctx context.Context, tableOptions runtime.Object) (*metav1.Table, error) {
 	return httpRouteToTable(r, tableOptions)
@@ -560,7 +560,7 @@ func httpRouteToTable(r *HTTPRoute, tableOptions runtime.Object) (*metav1.Table,
 	return table, nil
 }
 
-var _ resourcestrategy.TableConverter = &HTTPRouteList{}
+var _ rest.TableConverter = &HTTPRouteList{}
 
 func (l *HTTPRouteList) ConvertToTable(ctx context.Context, tableOptions runtime.Object) (*metav1.Table, error) {
 	table := &metav1.Table{}
@@ -590,7 +590,7 @@ func (l *HTTPRouteList) ConvertToTable(ctx context.Context, tableOptions runtime
 	return table, nil
 }
 
-var _ resourcestrategy.TableConverter = &GRPCRoute{}
+var _ rest.TableConverter = &GRPCRoute{}
 
 func (r *GRPCRoute) ConvertToTable(ctx context.Context, tableOptions runtime.Object) (*metav1.Table, error) {
 	return grpcRouteToTable(r, tableOptions)
@@ -619,7 +619,7 @@ func grpcRouteToTable(r *GRPCRoute, tableOptions runtime.Object) (*metav1.Table,
 	return table, nil
 }
 
-var _ resourcestrategy.TableConverter = &GRPCRouteList{}
+var _ rest.TableConverter = &GRPCRouteList{}
 
 func (l *GRPCRouteList) ConvertToTable(ctx context.Context, tableOptions runtime.Object) (*metav1.Table, error) {
 	table := &metav1.Table{}

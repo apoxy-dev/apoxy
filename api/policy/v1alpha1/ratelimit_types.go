@@ -4,8 +4,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apiserver/pkg/registry/rest"
-	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource"
+	apirest "k8s.io/apiserver/pkg/registry/rest"
+	"github.com/apoxy-dev/apoxy/pkg/apiserver/builder/resource"
 )
 
 type RateLimitUnit string
@@ -115,7 +115,7 @@ var (
 	_ runtime.Object                       = &RateLimit{}
 	_ resource.Object                      = &RateLimit{}
 	_ resource.ObjectWithStatusSubResource = &RateLimit{}
-	_ rest.SingularNameProvider            = &RateLimit{}
+	_ apirest.SingularNameProvider            = &RateLimit{}
 )
 
 func (p *RateLimit) GetObjectMeta() *metav1.ObjectMeta {

@@ -10,9 +10,9 @@ import (
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/duration"
-	"k8s.io/apiserver/pkg/registry/rest"
-	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource"
-	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource/resourcestrategy"
+	apirest "k8s.io/apiserver/pkg/registry/rest"
+	"github.com/apoxy-dev/apoxy/pkg/apiserver/builder/resource"
+	"github.com/apoxy-dev/apoxy/pkg/apiserver/builder/rest"
 )
 
 // +kubebuilder:object:root=true
@@ -99,7 +99,7 @@ var (
 	_ runtime.Object                       = &TunnelNode{}
 	_ resource.Object                      = &TunnelNode{}
 	_ resource.ObjectWithStatusSubResource = &TunnelNode{}
-	_ rest.SingularNameProvider            = &TunnelNode{}
+	_ apirest.SingularNameProvider            = &TunnelNode{}
 )
 
 func (p *TunnelNode) GetObjectMeta() *metav1.ObjectMeta {
@@ -185,7 +185,7 @@ func getEndpoints(addresses []string) string {
 	return strings.Join(addresses, ",")
 }
 
-var _ resourcestrategy.TableConverter = &TunnelNode{}
+var _ rest.TableConverter = &TunnelNode{}
 
 func (tn *TunnelNode) ConvertToTable(ctx context.Context, tableOptions runtime.Object) (*metav1.Table, error) {
 	return tunnelNodeToTable(tn, tableOptions)
@@ -216,7 +216,7 @@ func tunnelNodeToTable(tn *TunnelNode, tableOptions runtime.Object) (*metav1.Tab
 	return table, nil
 }
 
-var _ resourcestrategy.TableConverter = &TunnelNodeList{}
+var _ rest.TableConverter = &TunnelNodeList{}
 
 func (l *TunnelNodeList) ConvertToTable(ctx context.Context, tableOptions runtime.Object) (*metav1.Table, error) {
 	table := &metav1.Table{}

@@ -10,9 +10,9 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/duration"
-	"k8s.io/apiserver/pkg/registry/rest"
-	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource"
-	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource/resourcestrategy"
+	apirest "k8s.io/apiserver/pkg/registry/rest"
+	"github.com/apoxy-dev/apoxy/pkg/apiserver/builder/resource"
+	"github.com/apoxy-dev/apoxy/pkg/apiserver/builder/rest"
 	gwapiv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
 )
 
@@ -35,7 +35,7 @@ var (
 	_ runtime.Object                       = &TLSRoute{}
 	_ resource.Object                      = &TLSRoute{}
 	_ resource.ObjectWithStatusSubResource = &TLSRoute{}
-	_ rest.SingularNameProvider            = &TLSRoute{}
+	_ apirest.SingularNameProvider            = &TLSRoute{}
 )
 
 func (p *TLSRoute) GetObjectMeta() *metav1.ObjectMeta {
@@ -124,7 +124,7 @@ var (
 	_ runtime.Object                       = &TCPRoute{}
 	_ resource.Object                      = &TCPRoute{}
 	_ resource.ObjectWithStatusSubResource = &TCPRoute{}
-	_ rest.SingularNameProvider            = &TCPRoute{}
+	_ apirest.SingularNameProvider            = &TCPRoute{}
 )
 
 func (p *TCPRoute) GetObjectMeta() *metav1.ObjectMeta {
@@ -213,7 +213,7 @@ var (
 	_ runtime.Object                       = &UDPRoute{}
 	_ resource.Object                      = &UDPRoute{}
 	_ resource.ObjectWithStatusSubResource = &UDPRoute{}
-	_ rest.SingularNameProvider            = &UDPRoute{}
+	_ apirest.SingularNameProvider            = &UDPRoute{}
 )
 
 func (p *UDPRoute) GetObjectMeta() *metav1.ObjectMeta {
@@ -322,8 +322,8 @@ func getRulesSummary(count int) string {
 }
 
 var (
-	_ resourcestrategy.TableConverter = &TLSRoute{}
-	_ resourcestrategy.TableConverter = &TLSRouteList{}
+	_ rest.TableConverter = &TLSRoute{}
+	_ rest.TableConverter = &TLSRouteList{}
 )
 
 func (r *TLSRoute) ConvertToTable(ctx context.Context, tableOptions runtime.Object) (*metav1.Table, error) {
@@ -382,8 +382,8 @@ func (l *TLSRouteList) ConvertToTable(ctx context.Context, tableOptions runtime.
 }
 
 var (
-	_ resourcestrategy.TableConverter = &TCPRoute{}
-	_ resourcestrategy.TableConverter = &TCPRouteList{}
+	_ rest.TableConverter = &TCPRoute{}
+	_ rest.TableConverter = &TCPRouteList{}
 )
 
 func (r *TCPRoute) ConvertToTable(ctx context.Context, tableOptions runtime.Object) (*metav1.Table, error) {
@@ -442,8 +442,8 @@ func (l *TCPRouteList) ConvertToTable(ctx context.Context, tableOptions runtime.
 }
 
 var (
-	_ resourcestrategy.TableConverter = &UDPRoute{}
-	_ resourcestrategy.TableConverter = &UDPRouteList{}
+	_ rest.TableConverter = &UDPRoute{}
+	_ rest.TableConverter = &UDPRouteList{}
 )
 
 func (r *UDPRoute) ConvertToTable(ctx context.Context, tableOptions runtime.Object) (*metav1.Table, error) {

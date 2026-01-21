@@ -10,9 +10,9 @@ import (
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/duration"
-	"k8s.io/apiserver/pkg/registry/rest"
-	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource"
-	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource/resourcestrategy"
+	apirest "k8s.io/apiserver/pkg/registry/rest"
+	"github.com/apoxy-dev/apoxy/pkg/apiserver/builder/resource"
+	"github.com/apoxy-dev/apoxy/pkg/apiserver/builder/rest"
 )
 
 const (
@@ -40,8 +40,8 @@ var (
 	_ runtime.Object                       = &Domain{}
 	_ resource.Object                      = &Domain{}
 	_ resource.ObjectWithStatusSubResource = &Domain{}
-	_ rest.SingularNameProvider            = &Domain{}
-	_ resourcestrategy.TableConverter      = &Domain{}
+	_ apirest.SingularNameProvider            = &Domain{}
+	_ rest.TableConverter      = &Domain{}
 )
 
 type DomainSpec struct {
@@ -335,7 +335,7 @@ type DomainList struct {
 
 var (
 	_ resource.ObjectList             = &DomainList{}
-	_ resourcestrategy.TableConverter = &DomainList{}
+	_ rest.TableConverter = &DomainList{}
 )
 
 func (pl *DomainList) GetListMeta() *metav1.ListMeta {

@@ -107,9 +107,13 @@ func updateFromFile(ctx context.Context, proxyNameOverride, path string) error {
 		log.Debugf("Creating object gvk=%v name=%s", unObj.GroupVersionKind(), maybeNamespaced(unObj))
 
 		if unObj.GetKind() == "Proxy" {
+			originalName := unObj.GetName()
+			log.Debugf("Overriding Proxy name: %q -> %q", originalName, proxyNameOverride)
 			unObj.SetName(proxyNameOverride)
 		} else if unObj.GetKind() == "Gateway" {
 			// Override .spec.infrastructure.parametersRef.name to proxy name.
+			originalRef, _, _ := unstructured.NestedString(unObj.Object, "spec", "infrastructure", "parametersRef", "name")
+			log.Debugf("Overriding Gateway .spec.infrastructure.parametersRef.name: %q -> %q", originalRef, proxyNameOverride)
 			if err := unstructured.SetNestedField(
 				unObj.Object,
 				proxyNameOverride,

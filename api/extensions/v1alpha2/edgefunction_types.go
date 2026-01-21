@@ -4,8 +4,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apiserver/pkg/registry/rest"
-	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource"
+	apirest "k8s.io/apiserver/pkg/registry/rest"
+	"github.com/apoxy-dev/apoxy/pkg/apiserver/builder/resource"
 
 	corev1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
 )
@@ -283,7 +283,7 @@ var (
 	_ runtime.Object                       = &EdgeFunction{}
 	_ resource.Object                      = &EdgeFunction{}
 	_ resource.ObjectWithStatusSubResource = &EdgeFunction{}
-	_ rest.SingularNameProvider            = &EdgeFunction{}
+	_ apirest.SingularNameProvider            = &EdgeFunction{}
 )
 
 func (p *EdgeFunction) GetObjectMeta() *metav1.ObjectMeta {

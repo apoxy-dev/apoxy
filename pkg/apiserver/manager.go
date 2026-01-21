@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/apoxy-dev/apoxy/pkg/apiserver/builder"
+	"github.com/apoxy-dev/apoxy/pkg/apiserver/builder/resource"
 	"github.com/sirupsen/logrus"
 	tclient "go.temporal.io/sdk/client"
 	"golang.org/x/sync/errgroup"
@@ -26,14 +28,11 @@ import (
 	"k8s.io/apiserver/pkg/authorization/authorizerfactory"
 	apiserver "k8s.io/apiserver/pkg/server"
 	"k8s.io/apiserver/pkg/server/dynamiccertificates"
-	apiserveropts "k8s.io/apiserver/pkg/server/options"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 	netutils "k8s.io/utils/net"
-	"sigs.k8s.io/apiserver-runtime/pkg/builder"
-	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
@@ -67,9 +66,18 @@ const (
 	apiserverUser = "apoxy-apiserver"
 )
 
-var scheme = runtime.NewScheme()
+var (
+	// scheme is the runtime scheme used by controller-runtime.
+	// It does NOT include internal versions to avoid GVK ambiguity in controllers.
+	scheme = runtime.NewScheme()
+
+	// apiserverScheme is the scheme used by the apiserver builder.
+	// It includes internal versions required for strategic merge patch.
+	apiserverScheme = runtime.NewScheme()
+)
 
 func init() {
+	// Install types into both schemes
 	utilruntime.Must(corev1alpha.Install(scheme))
 	utilruntime.Must(corev1alpha2.Install(scheme))
 	utilruntime.Must(policyv1alpha1.Install(scheme))
@@ -77,8 +85,82 @@ func init() {
 	utilruntime.Must(extensionsv1alpha2.Install(scheme))
 	utilruntime.Must(gatewayv1.Install(scheme))
 	utilruntime.Must(gatewayv1alpha2.Install(scheme))
-
 	gateway.Install(scheme)
+
+	utilruntime.Must(corev1alpha.Install(apiserverScheme))
+	utilruntime.Must(corev1alpha2.Install(apiserverScheme))
+	utilruntime.Must(policyv1alpha1.Install(apiserverScheme))
+	utilruntime.Must(extensionsv1alpha1.Install(apiserverScheme))
+	utilruntime.Must(extensionsv1alpha2.Install(apiserverScheme))
+	utilruntime.Must(gatewayv1.Install(apiserverScheme))
+	utilruntime.Must(gatewayv1alpha2.Install(apiserverScheme))
+	gateway.Install(apiserverScheme)
+
+	// Register internal versions ONLY in apiserverScheme.
+	// Required for strategic merge patch to work.
+	registerInternalVersions(apiserverScheme)
+}
+
+// registerInternalVersions registers internal versions for all storage version types.
+// This is required for strategic merge patch operations.
+func registerInternalVersions(s *runtime.Scheme) {
+	// Core v1alpha2 - storage versions
+	internalCore := schema.GroupVersion{Group: "core.apoxy.dev", Version: runtime.APIVersionInternal}
+	s.AddKnownTypes(internalCore,
+		&corev1alpha2.Proxy{},
+		&corev1alpha2.ProxyList{},
+		&corev1alpha2.Backend{},
+		&corev1alpha2.BackendList{},
+		&corev1alpha2.Domain{},
+		&corev1alpha2.DomainList{},
+		&corev1alpha2.DomainZone{},
+		&corev1alpha2.DomainZoneList{},
+		&corev1alpha2.Tunnel{},
+		&corev1alpha2.TunnelList{},
+		&corev1alpha2.TunnelAgent{},
+		&corev1alpha2.TunnelAgentList{},
+		&corev1alpha2.CloudMonitoringIntegration{},
+		&corev1alpha2.CloudMonitoringIntegrationList{},
+	)
+
+	// Extensions v1alpha2 - storage versions
+	internalExt := schema.GroupVersion{Group: "extensions.apoxy.dev", Version: runtime.APIVersionInternal}
+	s.AddKnownTypes(internalExt,
+		&extensionsv1alpha2.EdgeFunction{},
+		&extensionsv1alpha2.EdgeFunctionList{},
+		&extensionsv1alpha2.EdgeFunctionRevision{},
+		&extensionsv1alpha2.EdgeFunctionRevisionList{},
+	)
+
+	// Policy v1alpha1 - storage version
+	internalPolicy := schema.GroupVersion{Group: "policy.apoxy.dev", Version: runtime.APIVersionInternal}
+	s.AddKnownTypes(internalPolicy,
+		&policyv1alpha1.RateLimit{},
+		&policyv1alpha1.RateLimitList{},
+	)
+
+	// Gateway v1 - storage versions
+	internalGateway := schema.GroupVersion{Group: "gateway.apoxy.dev", Version: runtime.APIVersionInternal}
+	s.AddKnownTypes(internalGateway,
+		&gatewayv1.GatewayClass{},
+		&gatewayv1.GatewayClassList{},
+		&gatewayv1.Gateway{},
+		&gatewayv1.GatewayList{},
+		&gatewayv1.HTTPRoute{},
+		&gatewayv1.HTTPRouteList{},
+		&gatewayv1.GRPCRoute{},
+		&gatewayv1.GRPCRouteList{},
+	)
+
+	// Gateway v1alpha2 - storage versions (TCPRoute, UDPRoute, TLSRoute)
+	s.AddKnownTypes(internalGateway,
+		&gatewayv1alpha2.TCPRoute{},
+		&gatewayv1alpha2.TCPRouteList{},
+		&gatewayv1alpha2.UDPRoute{},
+		&gatewayv1alpha2.UDPRouteList{},
+		&gatewayv1alpha2.TLSRoute{},
+		&gatewayv1alpha2.TLSRouteList{},
+	)
 }
 
 func waitForReadyz(url string, timeout time.Duration) error {
@@ -768,53 +850,26 @@ func start(
 			return
 		}
 
-		srvBuilder := builder.APIServer
+		srvBuilder := builder.NewServerBuilder().WithScheme(apiserverScheme)
 		for _, r := range opts.resources {
 			srvBuilder = srvBuilder.WithResourceAndStorage(r, kineStore)
 		}
+
+		// Configure secure serving.
+		srvBuilder = srvBuilder.WithSecureServingAddress(netutils.ParseIPSloppy("0.0.0.0"), 8443)
+		if genCert != nil {
+			srvBuilder = srvBuilder.WithGeneratedCert(genCert)
+		}
+
 		if err := srvBuilder.
 			WithOpenAPIDefinitions("apoxy", "0.1.0", apoxyopenapi.GetOpenAPIDefinitions).
 			DisableAuthorization().
 			WithOptionsFns(func(o *builder.ServerOptions) *builder.ServerOptions {
 				o.StdErr = io.Discard
 				o.StdOut = io.Discard
-
-				o.RecommendedOptions.CoreAPI = nil
-				o.RecommendedOptions.Admission = nil
-				o.RecommendedOptions.Authentication = nil
-				o.RecommendedOptions.Authorization = nil
-
-				o.RecommendedOptions.SecureServing = &apiserveropts.SecureServingOptionsWithLoopback{
-					SecureServingOptions: &apiserveropts.SecureServingOptions{
-						BindAddress: netutils.ParseIPSloppy("0.0.0.0"),
-						BindPort:    8443,
-						ServerCert: apiserveropts.GeneratableKeyCert{
-							GeneratedCert: genCert,
-						},
-					},
-				}
-
-				if opts.enableInClusterAuth {
-					o.RecommendedOptions.Authentication = apiserveropts.NewDelegatingAuthenticationOptions()
-					o.RecommendedOptions.Authentication.RemoteKubeConfigFileOptional = true
-
-					o.RecommendedOptions.Authorization = apiserveropts.NewDelegatingAuthorizationOptions()
-					o.RecommendedOptions.Authorization.RemoteKubeConfigFileOptional = true
-					o.RecommendedOptions.Authorization.AlwaysAllowPaths = []string{"healthz"}
-					o.RecommendedOptions.Authorization.AlwaysAllowGroups = []string{
-						user.SystemPrivilegedGroup,
-					}
-				} else {
-					o.RecommendedOptions.Authentication = nil
-					o.RecommendedOptions.Authorization = nil
-				}
-
 				return o
 			}).
 			WithConfigFns(func(c *apiserver.RecommendedConfig) *apiserver.RecommendedConfig {
-				// TODO(dilyevsky): Figure out how to make the listener flexible.
-				// c.SecureServing.Listener = lst
-
 				c.ClientConfig = clientConfig
 				c.SharedInformerFactory = informers.NewSharedInformerFactory(
 					kubernetes.NewForConfigOrDie(c.ClientConfig),

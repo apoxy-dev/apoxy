@@ -8,12 +8,12 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
-	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource/resourcestrategy"
+	"github.com/apoxy-dev/apoxy/pkg/apiserver/builder/rest"
 )
 
 var (
-	_ resourcestrategy.Validater       = &Backend{}
-	_ resourcestrategy.ValidateUpdater = &Backend{}
+	_ rest.Validater       = &Backend{}
+	_ rest.ValidateUpdater = &Backend{}
 )
 
 func (r *Backend) Validate(ctx context.Context) field.ErrorList {

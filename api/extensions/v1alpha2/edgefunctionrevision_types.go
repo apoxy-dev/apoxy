@@ -4,8 +4,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apiserver/pkg/registry/rest"
-	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource"
+	apirest "k8s.io/apiserver/pkg/registry/rest"
+	"github.com/apoxy-dev/apoxy/pkg/apiserver/builder/resource"
 )
 
 // +kubebuilder:object:root=true
@@ -30,7 +30,7 @@ var (
 	_ runtime.Object                       = &EdgeFunctionRevision{}
 	_ resource.Object                      = &EdgeFunctionRevision{}
 	_ resource.ObjectWithStatusSubResource = &EdgeFunctionRevision{}
-	_ rest.SingularNameProvider            = &EdgeFunctionRevision{}
+	_ apirest.SingularNameProvider            = &EdgeFunctionRevision{}
 )
 
 // GetObjectMeta implements resource.Object
@@ -72,7 +72,7 @@ func (e *EdgeFunctionRevision) GetStatus() resource.StatusSubResource {
 	return &e.Status
 }
 
-// GetSingularName implements rest.SingularNameProvider
+// GetSingularName implements apirest.SingularNameProvider
 func (e *EdgeFunctionRevision) GetSingularName() string {
 	return "edgefunctionrevision"
 }

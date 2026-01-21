@@ -6,8 +6,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apiserver/pkg/registry/rest"
-	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource"
+	apirest "k8s.io/apiserver/pkg/registry/rest"
+	"github.com/apoxy-dev/apoxy/pkg/apiserver/builder/resource"
 
 	v1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
 )
@@ -279,7 +279,7 @@ func (as *DomainStatus) CopyTo(obj resource.ObjectWithStatusSubResource) {
 var _ runtime.Object = &Domain{}
 var _ resource.Object = &Domain{}
 var _ resource.ObjectWithStatusSubResource = &Domain{}
-var _ rest.SingularNameProvider = &Domain{}
+var _ apirest.SingularNameProvider = &Domain{}
 
 func (a *Domain) GetObjectMeta() *metav1.ObjectMeta {
 	return &a.ObjectMeta

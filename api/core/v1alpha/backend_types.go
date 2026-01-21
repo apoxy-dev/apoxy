@@ -6,8 +6,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apiserver/pkg/registry/rest"
-	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource"
+	apirest "k8s.io/apiserver/pkg/registry/rest"
+	"github.com/apoxy-dev/apoxy/pkg/apiserver/builder/resource"
 
 	v1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
 )
@@ -154,7 +154,7 @@ var (
 	_ runtime.Object                       = &Backend{}
 	_ resource.Object                      = &Backend{}
 	_ resource.ObjectWithStatusSubResource = &Backend{}
-	_ rest.SingularNameProvider            = &Backend{}
+	_ apirest.SingularNameProvider            = &Backend{}
 )
 
 func (p *Backend) GetObjectMeta() *metav1.ObjectMeta {

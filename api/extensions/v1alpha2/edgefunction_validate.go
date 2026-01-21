@@ -9,10 +9,10 @@ import (
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/utils/ptr"
-	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource/resourcestrategy"
+	"github.com/apoxy-dev/apoxy/pkg/apiserver/builder/rest"
 )
 
-var _ resourcestrategy.Defaulter = &EdgeFunction{}
+var _ rest.Defaulter = &EdgeFunction{}
 
 // Default sets the default values for an EdgeFunction.
 func (r *EdgeFunction) Default() {
@@ -51,8 +51,8 @@ func (r *EdgeFunction) Default() {
 	}
 }
 
-var _ resourcestrategy.Validater = &EdgeFunction{}
-var _ resourcestrategy.ValidateUpdater = &EdgeFunction{}
+var _ rest.Validater = &EdgeFunction{}
+var _ rest.ValidateUpdater = &EdgeFunction{}
 
 // validate validates the EdgeFunction and returns an error if it is invalid.
 func (r *EdgeFunction) validate() field.ErrorList {

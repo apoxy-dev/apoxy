@@ -16,7 +16,8 @@ import (
 	genericregistry "k8s.io/apiserver/pkg/registry/generic/registry"
 	"k8s.io/apiserver/pkg/storage/storagebackend"
 	"k8s.io/apiserver/pkg/util/flowcontrol/request"
-	"sigs.k8s.io/apiserver-runtime/pkg/builder/rest"
+
+	"github.com/apoxy-dev/apoxy/pkg/apiserver/builder/rest"
 )
 
 // NewKineStorage creates a new kine storage.

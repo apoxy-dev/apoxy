@@ -4,8 +4,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apiserver/pkg/registry/rest"
-	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource"
+	apirest "k8s.io/apiserver/pkg/registry/rest"
+	"github.com/apoxy-dev/apoxy/pkg/apiserver/builder/resource"
 )
 
 // +kubebuilder:object:root=true
@@ -79,7 +79,7 @@ var (
 	_ runtime.Object                       = &Tunnel{}
 	_ resource.Object                      = &Tunnel{}
 	_ resource.ObjectWithStatusSubResource = &Tunnel{}
-	_ rest.SingularNameProvider            = &Tunnel{}
+	_ apirest.SingularNameProvider            = &Tunnel{}
 )
 
 func (p *Tunnel) GetObjectMeta() *metav1.ObjectMeta {

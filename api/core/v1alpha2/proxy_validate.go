@@ -6,10 +6,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
-	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource/resourcestrategy"
+	"github.com/apoxy-dev/apoxy/pkg/apiserver/builder/rest"
 )
 
-var _ resourcestrategy.Defaulter = &Proxy{}
+var _ rest.Defaulter = &Proxy{}
 
 // Default sets the default values for a Proxy.
 func (r *Proxy) Default() {
@@ -24,8 +24,8 @@ func (r *Proxy) Default() {
 	}
 }
 
-var _ resourcestrategy.Validater = &Proxy{}
-var _ resourcestrategy.ValidateUpdater = &Proxy{}
+var _ rest.Validater = &Proxy{}
+var _ rest.ValidateUpdater = &Proxy{}
 
 func (r *Proxy) validate() field.ErrorList {
 	errs := field.ErrorList{}

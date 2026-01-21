@@ -5,12 +5,12 @@ import (
 
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
-	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource/resourcestrategy"
+	"github.com/apoxy-dev/apoxy/pkg/apiserver/builder/rest"
 )
 
 var (
-	_ resourcestrategy.Validater       = &CloudMonitoringIntegration{}
-	_ resourcestrategy.ValidateUpdater = &CloudMonitoringIntegration{}
+	_ rest.Validater       = &CloudMonitoringIntegration{}
+	_ rest.ValidateUpdater = &CloudMonitoringIntegration{}
 )
 
 func (c *CloudMonitoringIntegration) Validate(ctx context.Context) field.ErrorList {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"io"
 	"log/slog"
 	"os"
 	goruntime "runtime"
@@ -13,6 +14,7 @@ import (
 	"github.com/temporalio/cli/temporalcli/devserver"
 	tclient "go.temporal.io/sdk/client"
 	tworker "go.temporal.io/sdk/worker"
+	"google.golang.org/grpc/grpclog"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 
@@ -37,6 +39,11 @@ var (
 	controllerNames  = flag.String("controller-names", "", "Comma-separated list of GatewayClass controller names to watch. Defaults to both standalone and legacy controller names.")
 )
 
+func init() {
+	// Suppress gRPC internal logging - must be done before any gRPC connections are made.
+	grpclog.SetLoggerV2(grpclog.NewLoggerV2(io.Discard, io.Discard, io.Discard))
+}
+
 func stopCh(ctx context.Context) <-chan interface{} {
 	ch := make(chan interface{})
 	go func() {
@@ -56,6 +63,7 @@ func (r *startErr) Error() string {
 
 func main() {
 	flag.Parse()
+
 	// TODO(dilyevsky): This should be part of log.Init.
 	if *logLevel == "" {
 		*logLevel = log.InfoLevel.String()
@@ -74,8 +82,8 @@ func main() {
 		FrontendIP:             "127.0.0.1",
 		FrontendPort:           7223,
 		Namespaces:             []string{"default"},
-		Logger:                 log.DefaultLogger,
-		LogLevel:               slog.LevelError, // Too noisy otherwise.
+		Logger:                 slog.New(slog.NewTextHandler(io.Discard, nil)),
+		LogLevel:               slog.LevelError,
 		ClusterID:              uuid.NewString(),
 		MasterClusterName:      "active",
 		CurrentClusterName:     "active",
@@ -118,6 +126,9 @@ func main() {
 	go func() {
 		sOpts := []apiserver.Option{
 			apiserver.WithSQLitePath(*dbFilePath),
+		}
+		if *devMode {
+			sOpts = append(sOpts, apiserver.WithSimpleAuth())
 		}
 		if *inCluster {
 			if !*insecure {

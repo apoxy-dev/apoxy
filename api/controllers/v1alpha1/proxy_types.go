@@ -7,8 +7,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apiserver/pkg/registry/rest"
-	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource"
+	apirest "k8s.io/apiserver/pkg/registry/rest"
+	"github.com/apoxy-dev/apoxy/pkg/apiserver/builder/resource"
 	gwapiv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
@@ -291,7 +291,7 @@ var (
 	_ runtime.Object                       = &Proxy{}
 	_ resource.Object                      = &Proxy{}
 	_ resource.ObjectWithStatusSubResource = &Proxy{}
-	_ rest.SingularNameProvider            = &Proxy{}
+	_ apirest.SingularNameProvider            = &Proxy{}
 )
 
 func (p *Proxy) GetObjectMeta() *metav1.ObjectMeta {

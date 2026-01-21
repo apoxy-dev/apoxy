@@ -8,9 +8,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apiserver/pkg/registry/rest"
-	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource"
-	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource/resourcestrategy"
+	apirest "k8s.io/apiserver/pkg/registry/rest"
+	"github.com/apoxy-dev/apoxy/pkg/apiserver/builder/resource"
+	"github.com/apoxy-dev/apoxy/pkg/apiserver/builder/rest"
 )
 
 const (
@@ -245,8 +245,8 @@ var (
 	_ runtime.Object                       = &Proxy{}
 	_ resource.Object                      = &Proxy{}
 	_ resource.ObjectWithStatusSubResource = &Proxy{}
-	_ rest.SingularNameProvider            = &Proxy{}
-	_ resourcestrategy.TableConverter      = &Proxy{}
+	_ apirest.SingularNameProvider            = &Proxy{}
+	_ rest.TableConverter      = &Proxy{}
 )
 
 func (p *Proxy) GetObjectMeta() *metav1.ObjectMeta {
@@ -375,7 +375,7 @@ type ProxyList struct {
 
 var (
 	_ resource.ObjectList             = &ProxyList{}
-	_ resourcestrategy.TableConverter = &ProxyList{}
+	_ rest.TableConverter = &ProxyList{}
 )
 
 func (pl *ProxyList) GetListMeta() *metav1.ListMeta {

@@ -5,10 +5,10 @@ import (
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
-	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource/resourcestrategy"
+	"github.com/apoxy-dev/apoxy/pkg/apiserver/builder/rest"
 )
 
-var _ resourcestrategy.Defaulter = &Domain{}
+var _ rest.Defaulter = &Domain{}
 
 // Default sets the default values for a Domain.
 func (r *Domain) Default() {
@@ -21,8 +21,8 @@ func (r *Domain) Default() {
 	}
 }
 
-var _ resourcestrategy.Validater = &Domain{}
-var _ resourcestrategy.ValidateUpdater = &Domain{}
+var _ rest.Validater = &Domain{}
+var _ rest.ValidateUpdater = &Domain{}
 
 func (r *Domain) Validate(ctx context.Context) field.ErrorList {
 	return r.validate()
