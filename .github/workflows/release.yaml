@@ -9,6 +9,8 @@ jobs:
     runs-on: depot-ubuntu-22.04-16,dagger=0.19.10
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
