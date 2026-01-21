@@ -207,10 +207,10 @@ func getTunnelNode(
 
 func (t *tunnelNodeReconciler) run(ctx context.Context, tn *corev1alpha.TunnelNode) error {
 	// Determine if we should use TUI
-	// Auto-detect non-interactive mode (no TTY on stdin or stdout)
+	// Auto-detect non-interactive mode (no TTY on stdin or stdout, or verbose mode)
 	stdoutTTY := term.IsTerminal(int(os.Stdout.Fd()))
 	stdinTTY := term.IsTerminal(int(os.Stdin.Fd()))
-	useTUI := stdoutTTY && stdinTTY && !noTUI
+	useTUI := stdoutTTY && stdinTTY && !noTUI && !t.cfg.Verbose
 	t.useTUI = useTUI
 
 	if !useTUI {
