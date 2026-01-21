@@ -1,6 +1,9 @@
 {
   "name": "apoxy-cli",
-  "engineVersion": "v0.14.0",
-  "sdk": "go",
-  "source": "ci"
+  "engineVersion": "v0.19.10",
+  "sdk": {
+    "source": "go"
+  },
+  "source": "ci",
+  "disableDefaultFunctionCaching": true
 }

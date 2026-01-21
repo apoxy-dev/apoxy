@@ -230,6 +230,64 @@ func (m *ApoxyCli) BuildCLIRelease(
 		WithEntrypoint([]string{"/bin/apoxy"})
 }
 
+// GenerateReleaseNotes uses an LLM to generate release notes from git commits.
+func (m *ApoxyCli) GenerateReleaseNotes(
+	ctx context.Context,
+	src *dagger.Directory,
+	newTag string,
+) (string, error) {
+	gitCtr := dag.Container().
+		From("alpine/git:latest").
+		WithDirectory("/src", src).
+		WithWorkdir("/src")
+
+	// Auto-detect previous tag (latest tag before HEAD)
+	previousTag, err := gitCtr.
+		WithExec([]string{"git", "describe", "--tags", "--abbrev=0", "HEAD^"}).
+		Stdout(ctx)
+	if err != nil {
+		// No previous tag found, use all commits
+		previousTag = ""
+	}
+	previousTag = strings.TrimSpace(previousTag)
+
+	// Get git log
+	var logCmd []string
+	if previousTag != "" {
+		logCmd = []string{"git", "log", fmt.Sprintf("%s..HEAD", previousTag), "--oneline"}
+	} else {
+		logCmd = []string{"git", "log", "--oneline", "-50"} // Last 50 commits if no tag
+	}
+
+	commitLog, err := gitCtr.WithExec(logCmd).Stdout(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to get git log: %w", err)
+	}
+
+	// Use LLM to generate release notes
+	prompt := fmt.Sprintf(`Generate release notes for version %s based on these git commits.
+
+Instructions:
+- Group changes by category: Features, Bug Fixes, Improvements, Infrastructure
+- Be concise but informative
+- Use markdown formatting with ## headers for categories
+- Each item should be a bullet point
+- Focus on user-facing changes, skip minor refactors
+- Previous version: %s
+
+Commits:
+%s`, newTag, previousTag, commitLog)
+
+	result, err := dag.LLM().
+		WithPrompt(prompt).
+		LastReply(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to generate release notes: %w", err)
+	}
+
+	return result, nil
+}
+
 // PublishGithubRelease publishes a CLI binary to GitHub releases.
 func (m *ApoxyCli) PublishGithubRelease(
 	ctx context.Context,
@@ -241,6 +299,31 @@ func (m *ApoxyCli) PublishGithubRelease(
 	cliCtrLinuxArm64 := m.BuildCLI(ctx, src, "linux/arm64", tag, sha)
 	cliCtrMacosAmd64 := m.BuildCLI(ctx, src, "darwin/amd64", tag, sha)
 	cliCtrMacosArm64 := m.BuildCLI(ctx, src, "darwin/arm64", tag, sha)
+
+	// Generate release notes using LLM (auto-detects previous tag)
+	releaseNotes, err := m.GenerateReleaseNotes(ctx, src, tag)
+
+	// Build release command with fallback
+	var releaseCmd []string
+	if err != nil || releaseNotes == "" {
+		// Fallback to GitHub's auto-generated notes
+		fmt.Println("LLM release notes failed, using GitHub generated notes:", err)
+		releaseCmd = []string{
+			"gh", "release", "create",
+			tag,
+			"--generate-notes",
+			"--title", tag,
+			"--repo", "github.com/apoxy-dev/apoxy",
+		}
+	} else {
+		releaseCmd = []string{
+			"gh", "release", "create",
+			tag,
+			"--notes", releaseNotes,
+			"--title", tag,
+			"--repo", "github.com/apoxy-dev/apoxy",
+		}
+	}
 
 	return dag.Container().
 		From("ubuntu:22.04").
@@ -256,13 +339,7 @@ func (m *ApoxyCli) PublishGithubRelease(
 		WithFile("/apoxy-linux-arm64", cliCtrLinuxArm64.File("/apoxy")).
 		WithFile("/apoxy-darwin-amd64", cliCtrMacosAmd64.File("/apoxy")).
 		WithFile("/apoxy-darwin-arm64", cliCtrMacosArm64.File("/apoxy")).
-		WithExec([]string{
-			"gh", "release", "create",
-			tag,
-			"--generate-notes",
-			"--title", tag,
-			"--repo", "github.com/apoxy-dev/apoxy",
-		}).
+		WithExec(releaseCmd).
 		WithExec([]string{
 			"gh", "release", "upload",
 			tag,
