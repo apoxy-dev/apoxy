@@ -24,6 +24,11 @@ func (t *randSNATTarget) Action(
 	r *stack.Route,
 	_ stack.AddressableEndpoint,
 ) (stack.RuleVerdict, int) {
+	if len(t.Addrs) == 0 {
+		// No addresses available for SNAT, drop the packet.
+		slog.Debug("SNAT target has no addresses, dropping packet")
+		return stack.RuleDrop, 0
+	}
 	t.SNATTarget.Addr = t.Addrs[rand.Intn(len(t.Addrs))]
 	slog.Debug("SNAT target selected address", "address", t.SNATTarget.Addr)
 	return t.SNATTarget.Action(pkt, hook, r, nil)
