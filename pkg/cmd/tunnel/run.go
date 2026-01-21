@@ -510,32 +510,76 @@ func (t *tunnelNodeReconciler) reconcile(ctx context.Context, req ctrl.Request) 
 	return ctrl.Result{}, nil
 }
 
-// healthHandler returns 200 OK when at least one tunnel connection is active, 503 otherwise.
-// This endpoint is used for health checks to determine if the tunnel node has active connections.
+// healthHandler returns 200 OK when at least one tunnel connection is active and functional.
+// This endpoint is used for health checks to determine if the tunnel node has working connections.
 // The health endpoint is only started when the --health-endpoint flag is provided with a valid
 // address (e.g., ":8080" or "0.0.0.0:8080").
 //
 // Response codes:
-//   - 200 OK: At least one tunnel connection is active
-//   - 503 Service Unavailable: No active tunnel connections
+//   - 200 OK: At least one tunnel connection is active with assigned addresses
+//   - 503 Service Unavailable: No active tunnel connections or connections lack addresses
 func (t *tunnelNodeReconciler) healthHandler(w http.ResponseWriter, r *http.Request) {
 	t.tunMu.RLock()
 	defer t.tunMu.RUnlock()
 
-	// Check if we have at least one active connection
 	activeConns := 0
+	healthyConns := 0
+	var allAddrs []string
+	var connDetails []string
+
 	for _, conn := range t.tunDialerWorkers {
-		if conn.conn != nil && conn.conn.Context().Err() == nil {
-			activeConns++
+		if conn.conn == nil {
+			continue
 		}
+
+		// Check 1: QUIC connection context is alive.
+		if conn.conn.Context().Err() != nil {
+			continue
+		}
+		activeConns++
+
+		// Check 2: Connection has assigned addresses (tunnel is actually functional).
+		addrs, err := conn.conn.LocalAddrs()
+		if err != nil || len(addrs) == 0 {
+			connDetails = append(connDetails, fmt.Sprintf("  - %s: no addresses", conn.id.String()[:8]))
+			continue
+		}
+		healthyConns++
+
+		// Collect addresses for this connection.
+		var addrStrs []string
+		for _, addr := range addrs {
+			addrStrs = append(addrStrs, addr.String())
+			allAddrs = append(allAddrs, addr.String())
+		}
+		uptime := time.Since(conn.connectedAt).Truncate(time.Second)
+		connDetails = append(connDetails, fmt.Sprintf("  - %s: %v (uptime: %s)", conn.id.String()[:8], addrStrs, uptime))
 	}
 
-	if activeConns > 0 {
+	if healthyConns > 0 {
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, "OK - %d active connection(s)\n", activeConns)
+		fmt.Fprintf(w, "OK\n\n")
+		fmt.Fprintf(w, "Status: healthy\n")
+		fmt.Fprintf(w, "Connections: %d healthy, %d active\n", healthyConns, activeConns)
+		fmt.Fprintf(w, "Tunnel IPs: %v\n", allAddrs)
+		fmt.Fprintf(w, "\nConnection Details:\n")
+		for _, detail := range connDetails {
+			fmt.Fprintf(w, "%s\n", detail)
+		}
+	} else if activeConns > 0 {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		fmt.Fprintf(w, "UNHEALTHY\n\n")
+		fmt.Fprintf(w, "Status: degraded\n")
+		fmt.Fprintf(w, "Connections: %d active but none have addresses assigned\n", activeConns)
+		fmt.Fprintf(w, "\nConnection Details:\n")
+		for _, detail := range connDetails {
+			fmt.Fprintf(w, "%s\n", detail)
+		}
 	} else {
 		w.WriteHeader(http.StatusServiceUnavailable)
-		fmt.Fprintf(w, "UNHEALTHY - no active connections\n")
+		fmt.Fprintf(w, "UNHEALTHY\n\n")
+		fmt.Fprintf(w, "Status: disconnected\n")
+		fmt.Fprintf(w, "Connections: none active\n")
 	}
 }
 

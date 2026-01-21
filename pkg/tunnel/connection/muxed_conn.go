@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -55,8 +56,14 @@ func (m *muxedConn) readFromConn(src netip.Prefix, conn Connection) {
 			// If the connection is closed, remove it from the multiplexer and quit
 			// the read loop. Otherwise, treat it as transient error and just log it.
 			var closedErr *connectip.CloseError
-			if errors.As(err, &closedErr) {
-				slog.Info("Connection closed", slog.Any("src", src), slog.Bool("remoteClosed", closedErr.Remote))
+			isClosedErr := errors.As(err, &closedErr) ||
+				errors.Is(err, net.ErrClosed) ||
+				strings.Contains(err.Error(), "use of closed network connection")
+
+			if isClosedErr {
+				slog.Info("Connection closed, removing from mux",
+					slog.Any("src", src),
+					slog.Any("error", err))
 				metrics.TunnelPacketsReceivedErrors.WithLabelValues("read_closed").Inc()
 
 				m.Remove(src)

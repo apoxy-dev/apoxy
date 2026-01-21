@@ -354,6 +354,20 @@ func (cw *connWrapper) String() string {
 
 func (c *Conn) run(ctx context.Context) {
 	log := alog.FromContext(ctx)
+
+	// Cleanup: remove all addresses from router when connection closes.
+	defer func() {
+		c.mu.RLock()
+		addrs := make([]netip.Prefix, len(c.addrs))
+		copy(addrs, c.addrs)
+		c.mu.RUnlock()
+
+		for _, addr := range addrs {
+			log.Info("Removing local prefix on connection close", slog.Any("prefix", addr))
+			c.router.DelAddr(addr)
+		}
+	}()
+
 	for {
 		select {
 		case <-ctx.Done():
