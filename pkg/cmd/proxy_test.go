@@ -2,16 +2,19 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"strings"
 	"testing"
 	"time"
 
 	corev1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/cli-runtime/pkg/printers"
 )
 
-func TestGetProxyTablePrinter(t *testing.T) {
+func TestPrintProxyTable(t *testing.T) {
 	now := metav1.NewTime(time.Now().Add(-1 * time.Hour))
+	ctx := context.Background()
 
 	tests := []struct {
 		name       string
@@ -28,7 +31,7 @@ func TestGetProxyTablePrinter(t *testing.T) {
 					CreationTimestamp: now,
 				},
 				Spec: corev1alpha2.ProxySpec{
-					Provider: "managed",
+					Provider: "cloud",
 				},
 				Status: corev1alpha2.ProxyStatus{
 					Replicas: []*corev1alpha2.ProxyReplicaStatus{
@@ -40,12 +43,10 @@ func TestGetProxyTablePrinter(t *testing.T) {
 			wantOutput: []string{
 				"NAME",
 				"PROVIDER",
-				"REPLICAS",
-				"AGE",
+				"STATUS",
 				"test-proxy",
-				"managed",
-				"2",
-				"1h0m",
+				"cloud",
+				"Ready (2)",
 			},
 		},
 		{
@@ -72,13 +73,11 @@ func TestGetProxyTablePrinter(t *testing.T) {
 			wantOutput: []string{
 				"NAME",
 				"PROVIDER",
-				"REPLICAS",
-				"AGE",
+				"STATUS",
 				"LABELS",
 				"test-proxy-labels",
 				"unmanaged",
-				"1",
-				"1h0m",
+				"Ready (1)",
 				"env=prod", // labels can be in any order
 				"team=platform",
 			},
@@ -87,11 +86,18 @@ func TestGetProxyTablePrinter(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var buf bytes.Buffer
-			printer := getProxyTablePrinter(tt.showLabels)
-
-			err := printer.PrintObj(tt.proxy, &buf)
+			table, err := tt.proxy.ConvertToTable(ctx, &metav1.TableOptions{})
 			if err != nil {
+				t.Fatalf("ConvertToTable failed: %v", err)
+			}
+
+			if tt.showLabels {
+				addLabelsColumnToTable(table)
+			}
+
+			var buf bytes.Buffer
+			printer := printers.NewTablePrinter(printers.PrintOptions{})
+			if err := printer.PrintObj(table, &buf); err != nil {
 				t.Fatalf("PrintObj failed: %v", err)
 			}
 
@@ -105,8 +111,9 @@ func TestGetProxyTablePrinter(t *testing.T) {
 	}
 }
 
-func TestGetProxyTablePrinterList(t *testing.T) {
+func TestPrintProxyListTable(t *testing.T) {
 	now := metav1.NewTime(time.Now().Add(-2 * time.Hour))
+	ctx := context.Background()
 
 	proxyList := &corev1alpha2.ProxyList{
 		Items: []corev1alpha2.Proxy{
@@ -116,7 +123,7 @@ func TestGetProxyTablePrinterList(t *testing.T) {
 					CreationTimestamp: now,
 				},
 				Spec: corev1alpha2.ProxySpec{
-					Provider: "managed",
+					Provider: "cloud",
 				},
 				Status: corev1alpha2.ProxyStatus{
 					Replicas: []*corev1alpha2.ProxyReplicaStatus{
@@ -152,16 +159,13 @@ func TestGetProxyTablePrinterList(t *testing.T) {
 			wantOutput: []string{
 				"NAME",
 				"PROVIDER",
-				"REPLICAS",
-				"AGE",
+				"STATUS",
 				"proxy-1",
-				"managed",
-				"2",
-				"2h0m",
+				"cloud",
+				"Ready (2)",
 				"proxy-2",
 				"unmanaged",
-				"0",
-				"30m",
+				"NotReady",
 			},
 		},
 		{
@@ -170,15 +174,14 @@ func TestGetProxyTablePrinterList(t *testing.T) {
 			wantOutput: []string{
 				"NAME",
 				"PROVIDER",
-				"REPLICAS",
-				"AGE",
+				"STATUS",
 				"LABELS",
 				"proxy-1",
-				"managed",
-				"2",
+				"cloud",
+				"Ready (2)",
 				"proxy-2",
 				"unmanaged",
-				"0",
+				"NotReady",
 				"env=staging",
 			},
 		},
@@ -186,11 +189,18 @@ func TestGetProxyTablePrinterList(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var buf bytes.Buffer
-			printer := getProxyTablePrinter(tt.showLabels)
-
-			err := printer.PrintObj(proxyList, &buf)
+			table, err := proxyList.ConvertToTable(ctx, &metav1.TableOptions{})
 			if err != nil {
+				t.Fatalf("ConvertToTable failed: %v", err)
+			}
+
+			if tt.showLabels {
+				addLabelsColumnToTable(table)
+			}
+
+			var buf bytes.Buffer
+			printer := printers.NewTablePrinter(printers.PrintOptions{})
+			if err := printer.PrintObj(table, &buf); err != nil {
 				t.Fatalf("PrintObj failed: %v", err)
 			}
 
@@ -249,49 +259,6 @@ func TestLabelsToString(t *testing.T) {
 			} else {
 				if got != tt.want {
 					t.Errorf("labelsToString() = %v, want %v", got, tt.want)
-				}
-			}
-		})
-	}
-}
-
-func TestSinceString(t *testing.T) {
-	tests := []struct {
-		name string
-		time time.Time
-		want string
-	}{
-		{
-			name: "seconds ago",
-			time: time.Now().Add(-30 * time.Second),
-			want: "30s",
-		},
-		{
-			name: "minutes ago",
-			time: time.Now().Add(-5*time.Minute - 30*time.Second),
-			want: "5m30s",
-		},
-		{
-			name: "hours ago",
-			time: time.Now().Add(-2*time.Hour - 15*time.Minute),
-			want: "2h15m",
-		},
-		{
-			name: "days ago",
-			time: time.Now().Add(-3*24*time.Hour - 5*time.Hour),
-			want: "3d5h",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := sinceString(tt.time)
-			// Due to timing, we'll allow a 1 second tolerance
-			if got != tt.want {
-				// Check if it's within tolerance (e.g., "29s" vs "30s")
-				// For simplicity in testing, we'll just check the format is correct
-				if !strings.Contains(got, "s") && !strings.Contains(got, "m") && !strings.Contains(got, "h") && !strings.Contains(got, "d") {
-					t.Errorf("sinceString() = %v, want format like %v", got, tt.want)
 				}
 			}
 		})

@@ -417,6 +417,50 @@ func getHostnamesSummary(hostnames []gwapiv1.Hostname) string {
 	return strings.Join(parts, ",")
 }
 
+// getGatewayStatusSummary returns status from gateway conditions.
+func getGatewayStatusSummary(status GatewayStatus) string {
+	for _, cond := range status.Conditions {
+		if cond.Type == string(gwapiv1.GatewayConditionAccepted) {
+			if cond.Status == metav1.ConditionTrue {
+				return "Accepted"
+			}
+			return cond.Reason
+		}
+	}
+	return "Unknown"
+}
+
+// getRouteStatusSummary returns status from route parent conditions.
+func getRouteStatusSummary(parents []gwapiv1.RouteParentStatus) string {
+	if len(parents) == 0 {
+		return "Unknown"
+	}
+	for _, parent := range parents {
+		for _, cond := range parent.Conditions {
+			if cond.Type == string(gwapiv1.RouteConditionAccepted) {
+				if cond.Status == metav1.ConditionTrue {
+					return "Accepted"
+				}
+				return cond.Reason
+			}
+		}
+	}
+	return "Unknown"
+}
+
+// getGatewayClassStatusSummary returns status from gateway class conditions.
+func getGatewayClassStatusSummary(status GatewayClassStatus) string {
+	for _, cond := range status.Conditions {
+		if cond.Type == string(gwapiv1.GatewayClassConditionStatusAccepted) {
+			if cond.Status == metav1.ConditionTrue {
+				return "Accepted"
+			}
+			return cond.Reason
+		}
+	}
+	return "Unknown"
+}
+
 var _ resourcestrategy.TableConverter = &GatewayClass{}
 
 func (gc *GatewayClass) ConvertToTable(ctx context.Context, tableOptions runtime.Object) (*metav1.Table, error) {
@@ -429,6 +473,7 @@ func gatewayClassToTable(gc *GatewayClass, tableOptions runtime.Object) (*metav1
 		table.ColumnDefinitions = []metav1.TableColumnDefinition{
 			{Name: "Name", Type: "string", Format: "name", Description: "Name of the gateway class"},
 			{Name: "Controller", Type: "string", Description: "Controller that manages this class"},
+			{Name: "Status", Type: "string", Description: "Status of the gateway class"},
 			{Name: "Age", Type: "string", Description: "Time since creation"},
 		}
 	}
@@ -436,6 +481,7 @@ func gatewayClassToTable(gc *GatewayClass, tableOptions runtime.Object) (*metav1
 		Cells: []interface{}{
 			gc.Name,
 			string(gc.Spec.ControllerName),
+			getGatewayClassStatusSummary(gc.Status),
 			formatAge(gc.CreationTimestamp.Time),
 		},
 		Object: runtime.RawExtension{Object: gc},
@@ -452,6 +498,7 @@ func (l *GatewayClassList) ConvertToTable(ctx context.Context, tableOptions runt
 		table.ColumnDefinitions = []metav1.TableColumnDefinition{
 			{Name: "Name", Type: "string", Format: "name", Description: "Name of the gateway class"},
 			{Name: "Controller", Type: "string", Description: "Controller that manages this class"},
+			{Name: "Status", Type: "string", Description: "Status of the gateway class"},
 			{Name: "Age", Type: "string", Description: "Time since creation"},
 		}
 	}
@@ -461,6 +508,7 @@ func (l *GatewayClassList) ConvertToTable(ctx context.Context, tableOptions runt
 			Cells: []interface{}{
 				gc.Name,
 				string(gc.Spec.ControllerName),
+				getGatewayClassStatusSummary(gc.Status),
 				formatAge(gc.CreationTimestamp.Time),
 			},
 			Object: runtime.RawExtension{Object: gc},
@@ -485,6 +533,7 @@ func gatewayToTable(g *Gateway, tableOptions runtime.Object) (*metav1.Table, err
 			{Name: "Name", Type: "string", Format: "name", Description: "Name of the gateway"},
 			{Name: "Class", Type: "string", Description: "Gateway class"},
 			{Name: "Listeners", Type: "string", Description: "Listener configuration"},
+			{Name: "Status", Type: "string", Description: "Status of the gateway"},
 			{Name: "Age", Type: "string", Description: "Time since creation"},
 		}
 	}
@@ -493,6 +542,7 @@ func gatewayToTable(g *Gateway, tableOptions runtime.Object) (*metav1.Table, err
 			g.Name,
 			string(g.Spec.GatewayClassName),
 			getListenersSummary(g.Spec.Listeners),
+			getGatewayStatusSummary(g.Status),
 			formatAge(g.CreationTimestamp.Time),
 		},
 		Object: runtime.RawExtension{Object: g},
@@ -510,6 +560,7 @@ func (l *GatewayList) ConvertToTable(ctx context.Context, tableOptions runtime.O
 			{Name: "Name", Type: "string", Format: "name", Description: "Name of the gateway"},
 			{Name: "Class", Type: "string", Description: "Gateway class"},
 			{Name: "Listeners", Type: "string", Description: "Listener configuration"},
+			{Name: "Status", Type: "string", Description: "Status of the gateway"},
 			{Name: "Age", Type: "string", Description: "Time since creation"},
 		}
 	}
@@ -520,6 +571,7 @@ func (l *GatewayList) ConvertToTable(ctx context.Context, tableOptions runtime.O
 				g.Name,
 				string(g.Spec.GatewayClassName),
 				getListenersSummary(g.Spec.Listeners),
+				getGatewayStatusSummary(g.Status),
 				formatAge(g.CreationTimestamp.Time),
 			},
 			Object: runtime.RawExtension{Object: g},
@@ -544,6 +596,7 @@ func httpRouteToTable(r *HTTPRoute, tableOptions runtime.Object) (*metav1.Table,
 			{Name: "Name", Type: "string", Format: "name", Description: "Name of the HTTP route"},
 			{Name: "Hostnames", Type: "string", Description: "Hostnames for the route"},
 			{Name: "Parents", Type: "string", Description: "Parent gateway references"},
+			{Name: "Status", Type: "string", Description: "Status of the route"},
 			{Name: "Age", Type: "string", Description: "Time since creation"},
 		}
 	}
@@ -552,6 +605,7 @@ func httpRouteToTable(r *HTTPRoute, tableOptions runtime.Object) (*metav1.Table,
 			r.Name,
 			getHostnamesSummary(r.Spec.Hostnames),
 			getParentRefsSummary(r.Spec.ParentRefs),
+			getRouteStatusSummary(r.Status.Parents),
 			formatAge(r.CreationTimestamp.Time),
 		},
 		Object: runtime.RawExtension{Object: r},
@@ -569,6 +623,7 @@ func (l *HTTPRouteList) ConvertToTable(ctx context.Context, tableOptions runtime
 			{Name: "Name", Type: "string", Format: "name", Description: "Name of the HTTP route"},
 			{Name: "Hostnames", Type: "string", Description: "Hostnames for the route"},
 			{Name: "Parents", Type: "string", Description: "Parent gateway references"},
+			{Name: "Status", Type: "string", Description: "Status of the route"},
 			{Name: "Age", Type: "string", Description: "Time since creation"},
 		}
 	}
@@ -579,6 +634,7 @@ func (l *HTTPRouteList) ConvertToTable(ctx context.Context, tableOptions runtime
 				r.Name,
 				getHostnamesSummary(r.Spec.Hostnames),
 				getParentRefsSummary(r.Spec.ParentRefs),
+				getRouteStatusSummary(r.Status.Parents),
 				formatAge(r.CreationTimestamp.Time),
 			},
 			Object: runtime.RawExtension{Object: r},
@@ -603,6 +659,7 @@ func grpcRouteToTable(r *GRPCRoute, tableOptions runtime.Object) (*metav1.Table,
 			{Name: "Name", Type: "string", Format: "name", Description: "Name of the gRPC route"},
 			{Name: "Hostnames", Type: "string", Description: "Hostnames for the route"},
 			{Name: "Parents", Type: "string", Description: "Parent gateway references"},
+			{Name: "Status", Type: "string", Description: "Status of the route"},
 			{Name: "Age", Type: "string", Description: "Time since creation"},
 		}
 	}
@@ -611,6 +668,7 @@ func grpcRouteToTable(r *GRPCRoute, tableOptions runtime.Object) (*metav1.Table,
 			r.Name,
 			getHostnamesSummary(r.Spec.Hostnames),
 			getParentRefsSummary(r.Spec.ParentRefs),
+			getRouteStatusSummary(r.Status.Parents),
 			formatAge(r.CreationTimestamp.Time),
 		},
 		Object: runtime.RawExtension{Object: r},
@@ -628,6 +686,7 @@ func (l *GRPCRouteList) ConvertToTable(ctx context.Context, tableOptions runtime
 			{Name: "Name", Type: "string", Format: "name", Description: "Name of the gRPC route"},
 			{Name: "Hostnames", Type: "string", Description: "Hostnames for the route"},
 			{Name: "Parents", Type: "string", Description: "Parent gateway references"},
+			{Name: "Status", Type: "string", Description: "Status of the route"},
 			{Name: "Age", Type: "string", Description: "Time since creation"},
 		}
 	}
@@ -638,6 +697,7 @@ func (l *GRPCRouteList) ConvertToTable(ctx context.Context, tableOptions runtime
 				r.Name,
 				getHostnamesSummary(r.Spec.Hostnames),
 				getParentRefsSummary(r.Spec.ParentRefs),
+				getRouteStatusSummary(r.Status.Parents),
 				formatAge(r.CreationTimestamp.Time),
 			},
 			Object: runtime.RawExtension{Object: r},

@@ -52,6 +52,7 @@ type routeInfo struct {
 	Type      string
 	Hostnames string
 	Parents   string
+	Status    string
 	Rules     int
 	Age       string
 	Labels    map[string]string
@@ -72,6 +73,7 @@ func collectAllRoutes(ctx context.Context, c *rest.APIClient) ([]routeInfo, erro
 			Type:      "HTTPRoute",
 			Hostnames: getHTTPHostnames(r.Spec.Hostnames),
 			Parents:   getHTTPParents(r.Spec.ParentRefs),
+			Status:    getHTTPRouteStatus(r.Status.Parents),
 			Rules:     len(r.Spec.Rules),
 			Age:       sinceString(r.CreationTimestamp.Time),
 			Labels:    r.Labels,
@@ -89,6 +91,7 @@ func collectAllRoutes(ctx context.Context, c *rest.APIClient) ([]routeInfo, erro
 			Type:      "TCPRoute",
 			Hostnames: "-",
 			Parents:   getTCPParents(r.Spec.ParentRefs),
+			Status:    getTCPRouteStatus(r.Status.Parents),
 			Rules:     len(r.Spec.Rules),
 			Age:       sinceString(r.CreationTimestamp.Time),
 			Labels:    r.Labels,
@@ -106,6 +109,7 @@ func collectAllRoutes(ctx context.Context, c *rest.APIClient) ([]routeInfo, erro
 			Type:      "TLSRoute",
 			Hostnames: getTLSHostnames(r.Spec.Hostnames),
 			Parents:   getTLSParents(r.Spec.ParentRefs),
+			Status:    getTLSRouteStatus(r.Status.Parents),
 			Rules:     len(r.Spec.Rules),
 			Age:       sinceString(r.CreationTimestamp.Time),
 			Labels:    r.Labels,
@@ -113,6 +117,60 @@ func collectAllRoutes(ctx context.Context, c *rest.APIClient) ([]routeInfo, erro
 	}
 
 	return routes, nil
+}
+
+// getHTTPRouteStatus returns the status of an HTTP route from its parent conditions.
+func getHTTPRouteStatus(parents []gwapiv1.RouteParentStatus) string {
+	if len(parents) == 0 {
+		return "Unknown"
+	}
+	for _, parent := range parents {
+		for _, cond := range parent.Conditions {
+			if cond.Type == string(gwapiv1.RouteConditionAccepted) {
+				if cond.Status == metav1.ConditionTrue {
+					return "Accepted"
+				}
+				return cond.Reason
+			}
+		}
+	}
+	return "Unknown"
+}
+
+// getTCPRouteStatus returns the status of a TCP route from its parent conditions.
+func getTCPRouteStatus(parents []gwapiv1alpha2.RouteParentStatus) string {
+	if len(parents) == 0 {
+		return "Unknown"
+	}
+	for _, parent := range parents {
+		for _, cond := range parent.Conditions {
+			if cond.Type == string(gwapiv1.RouteConditionAccepted) {
+				if cond.Status == metav1.ConditionTrue {
+					return "Accepted"
+				}
+				return cond.Reason
+			}
+		}
+	}
+	return "Unknown"
+}
+
+// getTLSRouteStatus returns the status of a TLS route from its parent conditions.
+func getTLSRouteStatus(parents []gwapiv1alpha2.RouteParentStatus) string {
+	if len(parents) == 0 {
+		return "Unknown"
+	}
+	for _, parent := range parents {
+		for _, cond := range parent.Conditions {
+			if cond.Type == string(gwapiv1.RouteConditionAccepted) {
+				if cond.Status == metav1.ConditionTrue {
+					return "Accepted"
+				}
+				return cond.Reason
+			}
+		}
+	}
+	return "Unknown"
 }
 
 func getHTTPHostnames(hostnames []gwapiv1.Hostname) string {
@@ -181,6 +239,7 @@ func getRoutesTablePrinter(showLabels bool) func(routes []routeInfo) error {
 				{Name: "TYPE", Type: "string"},
 				{Name: "HOSTNAMES", Type: "string"},
 				{Name: "PARENTS", Type: "string"},
+				{Name: "STATUS", Type: "string"},
 				{Name: "RULES", Type: "string"},
 				{Name: "AGE", Type: "string"},
 				{Name: "LABELS", Type: "string"},
@@ -191,6 +250,7 @@ func getRoutesTablePrinter(showLabels bool) func(routes []routeInfo) error {
 				{Name: "TYPE", Type: "string"},
 				{Name: "HOSTNAMES", Type: "string"},
 				{Name: "PARENTS", Type: "string"},
+				{Name: "STATUS", Type: "string"},
 				{Name: "RULES", Type: "string"},
 				{Name: "AGE", Type: "string"},
 			}
@@ -207,6 +267,7 @@ func getRoutesTablePrinter(showLabels bool) func(routes []routeInfo) error {
 					r.Type,
 					r.Hostnames,
 					r.Parents,
+					r.Status,
 					fmt.Sprintf("%d", r.Rules),
 					r.Age,
 				},
@@ -246,6 +307,7 @@ func getRoute(ctx context.Context, c *rest.APIClient, ref string) error {
 			Type:      "HTTPRoute",
 			Hostnames: getHTTPHostnames(r.Spec.Hostnames),
 			Parents:   getHTTPParents(r.Spec.ParentRefs),
+			Status:    getHTTPRouteStatus(r.Status.Parents),
 			Rules:     len(r.Spec.Rules),
 			Age:       sinceString(r.CreationTimestamp.Time),
 			Labels:    r.Labels,
@@ -260,6 +322,7 @@ func getRoute(ctx context.Context, c *rest.APIClient, ref string) error {
 			Type:      "TCPRoute",
 			Hostnames: "-",
 			Parents:   getTCPParents(r.Spec.ParentRefs),
+			Status:    getTCPRouteStatus(r.Status.Parents),
 			Rules:     len(r.Spec.Rules),
 			Age:       sinceString(r.CreationTimestamp.Time),
 			Labels:    r.Labels,
@@ -274,6 +337,7 @@ func getRoute(ctx context.Context, c *rest.APIClient, ref string) error {
 			Type:      "TLSRoute",
 			Hostnames: getTLSHostnames(r.Spec.Hostnames),
 			Parents:   getTLSParents(r.Spec.ParentRefs),
+			Status:    getTLSRouteStatus(r.Status.Parents),
 			Rules:     len(r.Spec.Rules),
 			Age:       sinceString(r.CreationTimestamp.Time),
 			Labels:    r.Labels,

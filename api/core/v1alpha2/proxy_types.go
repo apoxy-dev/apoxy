@@ -285,6 +285,15 @@ func (p *Proxy) GetStatus() resource.StatusSubResource {
 	return &p.Status
 }
 
+// getProxyStatusSummary returns a summary of proxy status.
+func getProxyStatusSummary(status ProxyStatus) string {
+	count := len(status.Replicas)
+	if count == 0 {
+		return "NotReady"
+	}
+	return fmt.Sprintf("Ready (%d)", count)
+}
+
 func proxyToTable(proxy *Proxy, tableOptions runtime.Object) (*metav1.Table, error) {
 	table := &metav1.Table{}
 
@@ -293,7 +302,7 @@ func proxyToTable(proxy *Proxy, tableOptions runtime.Object) (*metav1.Table, err
 		table.ColumnDefinitions = []metav1.TableColumnDefinition{
 			{Name: "Name", Type: "string", Format: "name", Description: "Name of the proxy"},
 			{Name: "Provider", Type: "string", Description: "Infrastructure provider"},
-			{Name: "Replicas", Type: "integer", Description: "Number of replicas"},
+			{Name: "Status", Type: "string", Description: "Status of the proxy"},
 			{Name: "Telemetry", Type: "string", Description: "Telemetry configuration"},
 			{Name: "Age", Type: "string", Description: "Time since creation"},
 		}
@@ -304,7 +313,7 @@ func proxyToTable(proxy *Proxy, tableOptions runtime.Object) (*metav1.Table, err
 		Cells: []interface{}{
 			proxy.Name,
 			getProxyProvider(proxy),
-			len(proxy.Status.Replicas),
+			getProxyStatusSummary(proxy.Status),
 			getProxyTelemetryInfo(proxy),
 			formatAge(proxy.CreationTimestamp.Time),
 		},
@@ -390,7 +399,7 @@ func proxyListToTable(list *ProxyList, tableOptions runtime.Object) (*metav1.Tab
 		table.ColumnDefinitions = []metav1.TableColumnDefinition{
 			{Name: "Name", Type: "string", Format: "name", Description: "Name of the proxy"},
 			{Name: "Provider", Type: "string", Description: "Infrastructure provider"},
-			{Name: "Replicas", Type: "integer", Description: "Number of replicas"},
+			{Name: "Status", Type: "string", Description: "Status of the proxy"},
 			{Name: "Telemetry", Type: "string", Description: "Telemetry configuration"},
 			{Name: "Age", Type: "string", Description: "Time since creation"},
 		}
@@ -403,7 +412,7 @@ func proxyListToTable(list *ProxyList, tableOptions runtime.Object) (*metav1.Tab
 			Cells: []interface{}{
 				proxy.Name,
 				getProxyProvider(proxy),
-				len(proxy.Status.Replicas),
+				getProxyStatusSummary(proxy.Status),
 				getProxyTelemetryInfo(proxy),
 				formatAge(proxy.CreationTimestamp.Time),
 			},

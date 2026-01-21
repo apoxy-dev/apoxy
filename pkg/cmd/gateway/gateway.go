@@ -11,7 +11,6 @@ import (
 
 	"github.com/spf13/cobra"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/cli-runtime/pkg/printers"
 	gwapiv1 "sigs.k8s.io/gateway-api/apis/v1"
@@ -53,103 +52,46 @@ func labelsToString(labels map[string]string) string {
 	return strings.Join(l, ",")
 }
 
-// getListenersSummary returns a summary of gateway listeners.
-func getListenersSummary(listeners []gwapiv1.Listener) string {
-	if len(listeners) == 0 {
-		return "None"
+// addLabelsColumnToTable appends a Labels column to a table and populates it from the embedded objects.
+func addLabelsColumnToTable(table *metav1.Table) {
+	table.ColumnDefinitions = append(table.ColumnDefinitions, metav1.TableColumnDefinition{
+		Name: "Labels", Type: "string", Description: "Labels for the resource",
+	})
+	for i := range table.Rows {
+		if table.Rows[i].Object.Object != nil {
+			if meta, ok := table.Rows[i].Object.Object.(metav1.Object); ok {
+				table.Rows[i].Cells = append(table.Rows[i].Cells, labelsToString(meta.GetLabels()))
+			} else {
+				table.Rows[i].Cells = append(table.Rows[i].Cells, "")
+			}
+		} else {
+			table.Rows[i].Cells = append(table.Rows[i].Cells, "")
+		}
 	}
-	var parts []string
-	for _, l := range listeners {
-		parts = append(parts, fmt.Sprintf("%s/%d", l.Protocol, l.Port))
-	}
-	return strings.Join(parts, ",")
 }
 
-func getGatewayTablePrinter(showLabels bool) printers.ResourcePrinter {
-	printer := printers.NewTablePrinter(printers.PrintOptions{})
-
-	var columnDefinitions []metav1.TableColumnDefinition
+func printGatewayTable(ctx context.Context, gw *gatewayv1.Gateway, showLabels bool) error {
+	table, err := gw.ConvertToTable(ctx, &metav1.TableOptions{})
+	if err != nil {
+		return err
+	}
 	if showLabels {
-		columnDefinitions = []metav1.TableColumnDefinition{
-			{Name: "NAME", Type: "string"},
-			{Name: "CLASS", Type: "string"},
-			{Name: "LISTENERS", Type: "string"},
-			{Name: "AGE", Type: "string"},
-			{Name: "LABELS", Type: "string"},
-		}
-	} else {
-		columnDefinitions = []metav1.TableColumnDefinition{
-			{Name: "NAME", Type: "string"},
-			{Name: "CLASS", Type: "string"},
-			{Name: "LISTENERS", Type: "string"},
-			{Name: "AGE", Type: "string"},
-		}
+		addLabelsColumnToTable(table)
 	}
+	printer := printers.NewTablePrinter(printers.PrintOptions{})
+	return printer.PrintObj(table, os.Stdout)
+}
 
-	gatewayPrintFunc := func(obj runtime.Object, w io.Writer) error {
-		gw, ok := obj.(*gatewayv1.Gateway)
-		if !ok {
-			return fmt.Errorf("expected *gatewayv1.Gateway, got %T", obj)
-		}
-
-		table := &metav1.Table{
-			ColumnDefinitions: columnDefinitions,
-		}
-
-		row := metav1.TableRow{
-			Cells: []interface{}{
-				gw.Name,
-				string(gw.Spec.GatewayClassName),
-				getListenersSummary(gw.Spec.Listeners),
-				sinceString(gw.CreationTimestamp.Time),
-			},
-		}
-		if showLabels {
-			row.Cells = append(row.Cells, labelsToString(gw.Labels))
-		}
-		table.Rows = append(table.Rows, row)
-
-		return printer.PrintObj(table, w)
+func printGatewayListTable(ctx context.Context, list *gatewayv1.GatewayList, showLabels bool) error {
+	table, err := list.ConvertToTable(ctx, &metav1.TableOptions{})
+	if err != nil {
+		return err
 	}
-
-	gatewayListPrintFunc := func(obj runtime.Object, w io.Writer) error {
-		list, ok := obj.(*gatewayv1.GatewayList)
-		if !ok {
-			return fmt.Errorf("expected *gatewayv1.GatewayList, got %T", obj)
-		}
-
-		table := &metav1.Table{
-			ColumnDefinitions: columnDefinitions,
-		}
-
-		for _, gw := range list.Items {
-			row := metav1.TableRow{
-				Cells: []interface{}{
-					gw.Name,
-					string(gw.Spec.GatewayClassName),
-					getListenersSummary(gw.Spec.Listeners),
-					sinceString(gw.CreationTimestamp.Time),
-				},
-			}
-			if showLabels {
-				row.Cells = append(row.Cells, labelsToString(gw.Labels))
-			}
-			table.Rows = append(table.Rows, row)
-		}
-
-		return printer.PrintObj(table, w)
+	if showLabels {
+		addLabelsColumnToTable(table)
 	}
-
-	return printers.ResourcePrinterFunc(func(obj runtime.Object, w io.Writer) error {
-		switch obj.(type) {
-		case *gatewayv1.Gateway:
-			return gatewayPrintFunc(obj, w)
-		case *gatewayv1.GatewayList:
-			return gatewayListPrintFunc(obj, w)
-		default:
-			return fmt.Errorf("unsupported type: %T", obj)
-		}
-	})
+	printer := printers.NewTablePrinter(printers.PrintOptions{})
+	return printer.PrintObj(table, os.Stdout)
 }
 
 // httpRouteReferencesGateway checks if a route references the given gateway name.
@@ -270,8 +212,7 @@ func getGateway(ctx context.Context, c *rest.APIClient, name string) error {
 	if err != nil {
 		return err
 	}
-	printer := getGatewayTablePrinter(false)
-	if err := printer.PrintObj(r, os.Stdout); err != nil {
+	if err := printGatewayTable(ctx, r, false); err != nil {
 		return err
 	}
 
@@ -289,8 +230,7 @@ func listGateways(ctx context.Context, c *rest.APIClient, opts metav1.ListOption
 	if err != nil {
 		return err
 	}
-	printer := getGatewayTablePrinter(showGatewayLabels)
-	return printer.PrintObj(gateways, os.Stdout)
+	return printGatewayListTable(ctx, gateways, showGatewayLabels)
 }
 
 // Cmd returns the gateway command.

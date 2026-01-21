@@ -7,11 +7,9 @@ import (
 	"io"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/spf13/cobra"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/cli-runtime/pkg/printers"
 
@@ -42,111 +40,46 @@ func labelsToString(labels map[string]string) string {
 	return strings.Join(l, ",")
 }
 
-// sinceString returns a string representation of a time.Duration since the provided time.Time.
-func sinceString(t time.Time) string {
-	d := time.Since(t).Round(time.Second)
-	if d < time.Minute {
-		return fmt.Sprintf("%ds", int(d.Seconds()))
-	} else if d < time.Hour {
-		return fmt.Sprintf("%dm%ds", int(d.Minutes()), int(d.Seconds())%60)
-	} else if d < 24*time.Hour {
-		return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
-	} else {
-		return fmt.Sprintf("%dd%dh", int(d.Hours()/24), int(d.Hours())%24)
+// addLabelsColumnToTable appends a Labels column to a table and populates it from the embedded objects.
+func addLabelsColumnToTable(table *metav1.Table) {
+	table.ColumnDefinitions = append(table.ColumnDefinitions, metav1.TableColumnDefinition{
+		Name: "Labels", Type: "string", Description: "Labels for the resource",
+	})
+	for i := range table.Rows {
+		if table.Rows[i].Object.Object != nil {
+			if meta, ok := table.Rows[i].Object.Object.(metav1.Object); ok {
+				table.Rows[i].Cells = append(table.Rows[i].Cells, labelsToString(meta.GetLabels()))
+			} else {
+				table.Rows[i].Cells = append(table.Rows[i].Cells, "")
+			}
+		} else {
+			table.Rows[i].Cells = append(table.Rows[i].Cells, "")
+		}
 	}
 }
 
-func getProxyTablePrinter(showLabels bool) printers.ResourcePrinter {
-	printer := printers.NewTablePrinter(printers.PrintOptions{})
-
-	// Define columns based on whether labels are shown
-	var columnDefinitions []metav1.TableColumnDefinition
+func printProxyTable(ctx context.Context, proxy *corev1alpha2.Proxy, showLabels bool) error {
+	table, err := proxy.ConvertToTable(ctx, &metav1.TableOptions{})
+	if err != nil {
+		return err
+	}
 	if showLabels {
-		columnDefinitions = []metav1.TableColumnDefinition{
-			{Name: "NAME", Type: "string"},
-			{Name: "PROVIDER", Type: "string"},
-			{Name: "REPLICAS", Type: "string"},
-			{Name: "AGE", Type: "string"},
-			{Name: "LABELS", Type: "string"},
-		}
-	} else {
-		columnDefinitions = []metav1.TableColumnDefinition{
-			{Name: "NAME", Type: "string"},
-			{Name: "PROVIDER", Type: "string"},
-			{Name: "REPLICAS", Type: "string"},
-			{Name: "AGE", Type: "string"},
-		}
+		addLabelsColumnToTable(table)
 	}
+	printer := printers.NewTablePrinter(printers.PrintOptions{})
+	return printer.PrintObj(table, os.Stdout)
+}
 
-	// Custom print function for Proxy
-	proxyPrintFunc := func(obj runtime.Object, w io.Writer) error {
-		proxy, ok := obj.(*corev1alpha2.Proxy)
-		if !ok {
-			return fmt.Errorf("expected *corev1alpha2.Proxy, got %T", obj)
-		}
-
-		table := &metav1.Table{
-			ColumnDefinitions: columnDefinitions,
-		}
-
-		replicaCount := fmt.Sprintf("%d", len(proxy.Status.Replicas))
-		row := metav1.TableRow{
-			Cells: []interface{}{
-				proxy.Name,
-				proxy.Spec.Provider,
-				replicaCount,
-				sinceString(proxy.CreationTimestamp.Time),
-			},
-		}
-		if showLabels {
-			row.Cells = append(row.Cells, labelsToString(proxy.Labels))
-		}
-		table.Rows = append(table.Rows, row)
-
-		return printer.PrintObj(table, w)
+func printProxyListTable(ctx context.Context, list *corev1alpha2.ProxyList, showLabels bool) error {
+	table, err := list.ConvertToTable(ctx, &metav1.TableOptions{})
+	if err != nil {
+		return err
 	}
-
-	// Custom print function for ProxyList
-	proxyListPrintFunc := func(obj runtime.Object, w io.Writer) error {
-		list, ok := obj.(*corev1alpha2.ProxyList)
-		if !ok {
-			return fmt.Errorf("expected *corev1alpha2.ProxyList, got %T", obj)
-		}
-
-		table := &metav1.Table{
-			ColumnDefinitions: columnDefinitions,
-		}
-
-		for _, proxy := range list.Items {
-			replicaCount := fmt.Sprintf("%d", len(proxy.Status.Replicas))
-			row := metav1.TableRow{
-				Cells: []interface{}{
-					proxy.Name,
-					proxy.Spec.Provider,
-					replicaCount,
-					sinceString(proxy.CreationTimestamp.Time),
-				},
-			}
-			if showLabels {
-				row.Cells = append(row.Cells, labelsToString(proxy.Labels))
-			}
-			table.Rows = append(table.Rows, row)
-		}
-
-		return printer.PrintObj(table, w)
+	if showLabels {
+		addLabelsColumnToTable(table)
 	}
-
-	// Return a delegating printer that handles both types
-	return printers.ResourcePrinterFunc(func(obj runtime.Object, w io.Writer) error {
-		switch obj.(type) {
-		case *corev1alpha2.Proxy:
-			return proxyPrintFunc(obj, w)
-		case *corev1alpha2.ProxyList:
-			return proxyListPrintFunc(obj, w)
-		default:
-			return fmt.Errorf("unsupported type: %T", obj)
-		}
-	})
+	printer := printers.NewTablePrinter(printers.PrintOptions{})
+	return printer.PrintObj(table, os.Stdout)
 }
 
 func getProxy(ctx context.Context, c *rest.APIClient, name string) error {
@@ -154,8 +87,7 @@ func getProxy(ctx context.Context, c *rest.APIClient, name string) error {
 	if err != nil {
 		return err
 	}
-	printer := getProxyTablePrinter(false)
-	return printer.PrintObj(r, os.Stdout)
+	return printProxyTable(ctx, r, false)
 }
 
 func listProxies(ctx context.Context, c *rest.APIClient, opts metav1.ListOptions) error {
@@ -163,8 +95,7 @@ func listProxies(ctx context.Context, c *rest.APIClient, opts metav1.ListOptions
 	if err != nil {
 		return err
 	}
-	printer := getProxyTablePrinter(showProxyLabels)
-	return printer.PrintObj(proxies, os.Stdout)
+	return printProxyListTable(ctx, proxies, showProxyLabels)
 }
 
 // alphaProxyCmd represents the proxy command
