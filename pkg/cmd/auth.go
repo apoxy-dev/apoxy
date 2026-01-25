@@ -9,7 +9,11 @@ import (
 	"github.com/apoxy-dev/apoxy/config"
 )
 
-var checkOnly bool
+var (
+	checkOnly    bool
+	dashboardURL string
+	apiBaseURL   string
+)
 
 // authCmd represents the auth command
 var authCmd = &cobra.Command{
@@ -25,7 +29,17 @@ If your CLI is already authenticated this will return information about your ses
 			return
 		}
 
-		auth := config.NewAuthenticator(cfg)
+		// Override dashboard URL if provided
+		if dashboardURL != "" {
+			cfg.DashboardURL = dashboardURL
+		}
+
+		var opts []config.AuthenticatorOption
+		if apiBaseURL != "" {
+			opts = append(opts, config.WithAPIBaseURL(apiBaseURL))
+		}
+
+		auth := config.NewAuthenticator(cfg, opts...)
 		ok, err := auth.Check()
 
 		if ok && err == nil {
@@ -46,5 +60,7 @@ If your CLI is already authenticated this will return information about your ses
 
 func init() {
 	authCmd.PersistentFlags().BoolVar(&checkOnly, "check", false, "only check the authentication status")
+	authCmd.PersistentFlags().StringVar(&dashboardURL, "dashboard-url", "", "dashboard URL for authentication (default: https://dashboard.apoxy.dev)")
+	authCmd.PersistentFlags().StringVar(&apiBaseURL, "api-base-url", "", "API base URL (default: https://api.apoxy.dev)")
 	RootCmd.AddCommand(authCmd)
 }

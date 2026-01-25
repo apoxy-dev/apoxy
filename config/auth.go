@@ -28,14 +28,29 @@ type authContext struct {
 }
 
 type Authenticator struct {
-	cfg    *configv1alpha1.Config
-	authCh chan authContext
+	cfg        *configv1alpha1.Config
+	authCh     chan authContext
+	apiBaseURL string // optional override
 }
 
-func NewAuthenticator(cfg *configv1alpha1.Config) *Authenticator {
-	return &Authenticator{
+// AuthenticatorOption is a functional option for configuring the Authenticator.
+type AuthenticatorOption func(*Authenticator)
+
+// WithAPIBaseURL sets the API base URL for the authenticated project.
+func WithAPIBaseURL(url string) AuthenticatorOption {
+	return func(a *Authenticator) {
+		a.apiBaseURL = url
+	}
+}
+
+func NewAuthenticator(cfg *configv1alpha1.Config, opts ...AuthenticatorOption) *Authenticator {
+	a := &Authenticator{
 		cfg: cfg,
 	}
+	for _, opt := range opts {
+		opt(a)
+	}
+	return a
 }
 
 func (a *Authenticator) Check() (bool, error) {
@@ -159,15 +174,22 @@ func (a *Authenticator) Authenticate() {
 			if p.ID == a.cfg.CurrentProject {
 				a.cfg.Projects[i].APIKey = key.APIKey
 				a.cfg.Projects[i].ID = key.ProjectID
+				if a.apiBaseURL != "" {
+					a.cfg.Projects[i].APIBaseURL = a.apiBaseURL
+				}
 				projectUpdated = true
 				break
 			}
 		}
 		if !projectUpdated {
-			a.cfg.Projects = append(a.cfg.Projects, configv1alpha1.Project{
+			newProject := configv1alpha1.Project{
 				ID:     key.ProjectID,
 				APIKey: key.APIKey,
-			})
+			}
+			if a.apiBaseURL != "" {
+				newProject.APIBaseURL = a.apiBaseURL
+			}
+			a.cfg.Projects = append(a.cfg.Projects, newProject)
 			log.Debugf("Appended new project. ProjectID=%q", key.ProjectID)
 		}
 		a.cfg.CurrentProject = key.ProjectID

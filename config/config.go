@@ -250,7 +250,7 @@ func DefaultAPIClient() (*rest.APIClient, error) {
 	}
 	project := cfg.Projects[idx]
 
-	if project.KubernetesConfig != nil {
+	if project.KubernetesConfig != nil && (project.KubernetesConfig.InCluster || project.KubernetesConfig.KubeconfigPath != "" || project.KubernetesConfig.Context != "") {
 		var restConfig *k8srest.Config
 		if project.KubernetesConfig.InCluster {
 			restConfig, err = k8srest.InClusterConfig()
