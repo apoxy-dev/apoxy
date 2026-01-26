@@ -88,6 +88,7 @@ type options struct {
 	level           LogLevel
 	json            bool
 	alsoLogToStderr bool
+	stderrOnly      bool
 }
 
 func defaultOptions() *options {
