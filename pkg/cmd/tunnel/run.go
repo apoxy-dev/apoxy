@@ -42,6 +42,7 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/net/dns"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/connection"
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/endpointselect"
 
 	configv1alpha1 "github.com/apoxy-dev/apoxy/api/config/v1alpha1"
 	corev1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
@@ -105,6 +106,9 @@ type tunnelNodeReconciler struct {
 	tunMu            sync.RWMutex
 	tunDialerWorkers []*tunConn
 
+	// Endpoint selector for choosing tunnel server addresses.
+	endpointSelector endpointselect.Selector
+
 	// Dial parameters protected by dialMu
 	dialMu     sync.RWMutex
 	tunnelUID  uuid.UUID
@@ -140,6 +144,20 @@ var tunnelRunCmd = &cobra.Command{
 			preserveDefaultGwDsts = append(preserveDefaultGwDsts, dst)
 		}
 
+		// Parse and create endpoint selector.
+		strategy, err := endpointselect.ParseStrategy(endpointSelection)
+		if err != nil {
+			return fmt.Errorf("unable to parse endpoint selection strategy: %w", err)
+		}
+		selectorOpts := []endpointselect.Option{}
+		if insecureSkipVerify {
+			selectorOpts = append(selectorOpts, endpointselect.WithInsecureSkipVerify(true))
+		}
+		selector, err := endpointselect.NewSelector(strategy, selectorOpts...)
+		if err != nil {
+			return fmt.Errorf("unable to create endpoint selector: %w", err)
+		}
+
 		cmd.SilenceUsage = true
 
 		cfg, err := config.Load()
@@ -173,9 +191,10 @@ var tunnelRunCmd = &cobra.Command{
 		}
 
 		tun := &tunnelNodeReconciler{
-			scheme: scheme,
-			cfg:    cfg,
-			a3y:    a3y,
+			scheme:           scheme,
+			cfg:              cfg,
+			a3y:              a3y,
+			endpointSelector: selector,
 
 			tunDialerWorkers: make([]*tunConn, 0),
 		}
@@ -412,9 +431,18 @@ func (t *tunnelNodeReconciler) reconcile(ctx context.Context, req ctrl.Request) 
 			return ctrl.Result{
 				RequeueAfter: time.Second,
 			}, nil
+		} else if len(tunnelNode.Status.Addresses) == 1 {
+			srvAddr = tunnelNode.Status.Addresses[0]
 		} else {
-			// TODO: Pick unused address at random if available.
-			srvAddr = tunnelNode.Status.Addresses[rand.Intn(len(tunnelNode.Status.Addresses))]
+			// Use endpoint selector to choose the best endpoint.
+			selected, err := t.endpointSelector.Select(ctx, tunnelNode.Status.Addresses)
+			if err != nil {
+				log.Warn("Endpoint selection failed, using random",
+					slog.Any("error", err))
+				srvAddr = tunnelNode.Status.Addresses[rand.Intn(len(tunnelNode.Status.Addresses))]
+			} else {
+				srvAddr = selected
+			}
 		}
 	} else {
 		apiServerHost := "localhost"

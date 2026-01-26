@@ -64,6 +64,8 @@ var (
 	tunnelNodeForceConflicts bool
 	// noTUI disables the TUI interface.
 	noTUI bool
+	// endpointSelection is the endpoint selection strategy.
+	endpointSelection string
 )
 
 var createCmd = &cobra.Command{
@@ -323,6 +325,8 @@ func init() {
 	tunnelRunCmd.Flags().StringVar(&healthAddr, "health-addr", ":8080", "Listen address for health endpoint (default: :8080).")
 	tunnelRunCmd.Flags().StringVar(&metricsAddr, "metrics-addr", ":8081", "Listen address for metrics endpoint (default: :8081).")
 	tunnelRunCmd.Flags().BoolVar(&noTUI, "no-tui", false, "Disable TUI interface.")
+	tunnelRunCmd.Flags().StringVar(&endpointSelection, "endpoint-selection", "latency",
+		"Endpoint selection strategy: 'latency' (default) or 'random'")
 
 	tunnelCmd.AddCommand(createCmd)
 	tunnelCmd.AddCommand(getCmd)

@@ -12,6 +12,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/alphadose/haxmap"
 	"github.com/google/uuid"
@@ -385,10 +386,20 @@ func iproutesFromPrefixes(ps []netip.Prefix) []connectip.IPRoute {
 	return routes
 }
 
-// makeSingleConnectHandler creates a /connect handler that serves a single CONNECT-IP
-// connection and then closes the connection.
+// makeSingleConnectHandler creates a handler that serves /ping for latency probes
+// and /connect for CONNECT-IP connections.
 func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.Connection) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Handle /ping for latency probes - no auth required.
+		if r.URL.Path == "/ping" {
+			metrics.TunnelPingRequests.Inc()
+			w.Header().Set("X-Apoxy-Server-Time", time.Now().UTC().Format(time.RFC3339Nano))
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("pong"))
+			return // Don't close QUIC connection for ping requests.
+		}
+
+		// All other requests close the QUIC connection when done.
 		defer qConn.CloseWithError(ApplicationCodeOK, "")
 
 		tunUID, err := uuid.Parse(strings.TrimPrefix(r.URL.Path, "/connect/"))

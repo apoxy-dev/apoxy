@@ -7,6 +7,12 @@ import (
 
 var (
 	// TunnelServer metrics.
+	TunnelPingRequests = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "tunnel_ping_requests_total",
+			Help: "Total number of ping requests for latency probing.",
+		},
+	)
 	TunnelConnectionRequests = prometheus.NewCounter(
 		prometheus.CounterOpts{
 			Name: "tunnel_connection_requests_total",
@@ -88,6 +94,7 @@ var (
 
 func init() {
 	// Register metrics with the controller-runtime metrics registry.
+	metrics.Registry.MustRegister(TunnelPingRequests)
 	metrics.Registry.MustRegister(TunnelConnectionRequests)
 	metrics.Registry.MustRegister(TunnelConnectionsActive)
 	metrics.Registry.MustRegister(TunnelConnectionFailures)
