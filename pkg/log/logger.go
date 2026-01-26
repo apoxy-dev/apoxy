@@ -117,6 +117,14 @@ func WithAlsoLogToStderr() Option {
 	}
 }
 
+// WithStderrOnly logs only to stderr, skipping log file creation.
+// Use this for server processes that should not create CLI log files.
+func WithStderrOnly() Option {
+	return func(o *options) {
+		o.stderrOnly = true
+	}
+}
+
 // WithJSONOutput enables JSON-formatted log output.
 func WithJSONOutput() Option {
 	return func(o *options) {
