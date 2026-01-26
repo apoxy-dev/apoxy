@@ -88,6 +88,7 @@ type options struct {
 	level           LogLevel
 	json            bool
 	alsoLogToStderr bool
+	stderrOnly      bool
 }
 
 func defaultOptions() *options {
@@ -113,6 +114,14 @@ func WithDevMode() Option {
 func WithAlsoLogToStderr() Option {
 	return func(o *options) {
 		o.alsoLogToStderr = true
+	}
+}
+
+// WithStderrOnly logs only to stderr, skipping log file creation.
+// Use this for server processes that should not create CLI log files.
+func WithStderrOnly() Option {
+	return func(o *options) {
+		o.stderrOnly = true
 	}
 }
 
@@ -156,12 +165,18 @@ func Init(opts ...Option) error {
 		opt(sOpts)
 	}
 
-	logW, err := createLogFileIfNotExists()
-	if err != nil {
-		return fmt.Errorf("failed to open log file: %v", err)
-	}
-	if sOpts.alsoLogToStderr {
-		logW = io.MultiWriter(os.Stderr, logW)
+	var logW io.Writer
+	if sOpts.stderrOnly {
+		logW = os.Stderr
+	} else {
+		var err error
+		logW, err = createLogFileIfNotExists()
+		if err != nil {
+			return fmt.Errorf("failed to open log file: %v", err)
+		}
+		if sOpts.alsoLogToStderr {
+			logW = io.MultiWriter(os.Stderr, logW)
+		}
 	}
 
 	setDefaultLogger(sOpts.level, sOpts.json, logW)
