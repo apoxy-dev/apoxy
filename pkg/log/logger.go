@@ -165,12 +165,18 @@ func Init(opts ...Option) error {
 		opt(sOpts)
 	}
 
-	logW, err := createLogFileIfNotExists()
-	if err != nil {
-		return fmt.Errorf("failed to open log file: %v", err)
-	}
-	if sOpts.alsoLogToStderr {
-		logW = io.MultiWriter(os.Stderr, logW)
+	var logW io.Writer
+	if sOpts.stderrOnly {
+		logW = os.Stderr
+	} else {
+		var err error
+		logW, err = createLogFileIfNotExists()
+		if err != nil {
+			return fmt.Errorf("failed to open log file: %v", err)
+		}
+		if sOpts.alsoLogToStderr {
+			logW = io.MultiWriter(os.Stderr, logW)
+		}
 	}
 
 	setDefaultLogger(sOpts.level, sOpts.json, logW)
