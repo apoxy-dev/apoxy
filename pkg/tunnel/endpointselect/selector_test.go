@@ -107,10 +107,88 @@ func TestLatencySelector_Select(t *testing.T) {
 			WithProbeTimeout(500*time.Millisecond),
 			WithMaxConcurrent(5),
 			WithInsecureSkipVerify(true),
+			WithPingsPerEndpoint(5),
 		)
 		assert.Equal(t, 500*time.Millisecond, s.opts.probeTimeout)
 		assert.Equal(t, 5, s.opts.maxConcurrent)
 		assert.True(t, s.opts.insecureSkip)
+		assert.Equal(t, 5, s.opts.pingsPerEndpoint)
+	})
+
+	t.Run("default pings per endpoint is 3", func(t *testing.T) {
+		s := NewLatencySelector()
+		assert.Equal(t, 3, s.opts.pingsPerEndpoint)
+	})
+
+	t.Run("pings per endpoint minimum is 1", func(t *testing.T) {
+		s := NewLatencySelector(WithPingsPerEndpoint(0))
+		assert.Equal(t, 1, s.opts.pingsPerEndpoint)
+
+		s = NewLatencySelector(WithPingsPerEndpoint(-5))
+		assert.Equal(t, 1, s.opts.pingsPerEndpoint)
+	})
+}
+
+func TestAggregateLatencies(t *testing.T) {
+	t.Run("empty slice returns zero", func(t *testing.T) {
+		result := aggregateLatencies([]time.Duration{})
+		assert.Equal(t, time.Duration(0), result)
+	})
+
+	t.Run("single value returns that value", func(t *testing.T) {
+		result := aggregateLatencies([]time.Duration{100 * time.Millisecond})
+		assert.Equal(t, 100*time.Millisecond, result)
+	})
+
+	t.Run("two values returns average", func(t *testing.T) {
+		result := aggregateLatencies([]time.Duration{
+			100 * time.Millisecond,
+			200 * time.Millisecond,
+		})
+		assert.Equal(t, 150*time.Millisecond, result)
+	})
+
+	t.Run("three values returns median (middle value)", func(t *testing.T) {
+		// With 3 pings: discards high and low, returns the one remaining (median).
+		result := aggregateLatencies([]time.Duration{
+			100 * time.Millisecond, // low - discarded
+			150 * time.Millisecond, // middle - kept
+			300 * time.Millisecond, // high - discarded
+		})
+		assert.Equal(t, 150*time.Millisecond, result)
+	})
+
+	t.Run("three values in different order returns same median", func(t *testing.T) {
+		// Verify sorting works correctly.
+		result := aggregateLatencies([]time.Duration{
+			300 * time.Millisecond, // high - discarded
+			100 * time.Millisecond, // low - discarded
+			150 * time.Millisecond, // middle - kept
+		})
+		assert.Equal(t, 150*time.Millisecond, result)
+	})
+
+	t.Run("five values discards outliers and averages middle three", func(t *testing.T) {
+		result := aggregateLatencies([]time.Duration{
+			50 * time.Millisecond,  // low - discarded
+			100 * time.Millisecond, // kept
+			150 * time.Millisecond, // kept
+			200 * time.Millisecond, // kept
+			500 * time.Millisecond, // high - discarded
+		})
+		// Average of 100, 150, 200 = 450/3 = 150ms
+		assert.Equal(t, 150*time.Millisecond, result)
+	})
+
+	t.Run("removes outliers from noisy measurements", func(t *testing.T) {
+		// Simulate realistic scenario: 2 normal pings and 1 outlier.
+		result := aggregateLatencies([]time.Duration{
+			25 * time.Millisecond,   // normal
+			30 * time.Millisecond,   // normal
+			500 * time.Millisecond,  // outlier (network blip)
+		})
+		// Should return 30ms (middle value after sorting: 25, 30, 500).
+		assert.Equal(t, 30*time.Millisecond, result)
 	})
 }
 

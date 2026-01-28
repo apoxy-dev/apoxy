@@ -149,7 +149,9 @@ var tunnelRunCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("unable to parse endpoint selection strategy: %w", err)
 		}
-		selectorOpts := []endpointselect.Option{}
+		selectorOpts := []endpointselect.Option{
+			endpointselect.WithPingsPerEndpoint(3),
+		}
 		if insecureSkipVerify {
 			selectorOpts = append(selectorOpts, endpointselect.WithInsecureSkipVerify(true))
 		}
