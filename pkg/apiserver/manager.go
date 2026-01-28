@@ -31,6 +31,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
+	"k8s.io/kube-openapi/pkg/common"
 	netutils "k8s.io/utils/net"
 	"sigs.k8s.io/apiserver-runtime/pkg/builder"
 	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource"
@@ -193,6 +194,7 @@ type options struct {
 	vniPool               *vni.VNIPool
 	tokenValidator        token.Validator
 	tokenIssuer           token.TokenIssuer
+	openAPIDefinitions    common.GetOpenAPIDefinitions
 }
 
 // WithJWTKeys sets the JWT key pair.
@@ -331,6 +333,16 @@ func WithGCInterval(interval time.Duration) Option {
 func WithResource(obj resource.Object) Option {
 	return func(o *options) {
 		o.resources = append(o.resources, obj)
+	}
+}
+
+// WithOpenAPIDefinitions sets a custom OpenAPI definitions function.
+// If not provided, the default apoxy OpenAPI definitions will be used.
+// This is useful when registering custom resources that need their own
+// OpenAPI schema definitions.
+func WithOpenAPIDefinitions(getter common.GetOpenAPIDefinitions) Option {
+	return func(o *options) {
+		o.openAPIDefinitions = getter
 	}
 }
 
@@ -793,8 +805,13 @@ func start(
 		for _, r := range opts.resources {
 			srvBuilder = srvBuilder.WithResourceAndStorage(r, kineStore)
 		}
+		// Use custom OpenAPI definitions if provided, otherwise use the default.
+		openAPIGetter := opts.openAPIDefinitions
+		if openAPIGetter == nil {
+			openAPIGetter = apoxyopenapi.GetOpenAPIDefinitions
+		}
 		if err := srvBuilder.
-			WithOpenAPIDefinitions("apoxy", "0.1.0", apoxyopenapi.GetOpenAPIDefinitions).
+			WithOpenAPIDefinitions("apoxy", "0.1.0", openAPIGetter).
 			DisableAuthorization().
 			WithOptionsFns(func(o *builder.ServerOptions) *builder.ServerOptions {
 				o.StdErr = io.Discard
