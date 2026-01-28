@@ -17,10 +17,12 @@ import (
 	"k8s.io/apiserver/pkg/storage/storagebackend"
 	"k8s.io/apiserver/pkg/util/flowcontrol/request"
 	"sigs.k8s.io/apiserver-runtime/pkg/builder/rest"
+	"sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
 // NewKineStorage creates a new kine storage.
-func NewKineStorage(ctx context.Context, dsn string) (rest.StoreFn, error) {
+// logFormat should be "json" for production or "plain" for development.
+func NewKineStorage(ctx context.Context, dsn, logFormat string) (rest.StoreFn, error) {
 	tmpDir := os.Getenv("KINE_TMPDIR")
 	if tmpDir == "" {
 		tmpDir = os.TempDir()
@@ -31,6 +33,7 @@ func NewKineStorage(ctx context.Context, dsn string) (rest.StoreFn, error) {
 		ConnectionPoolConfig: driversgeneric.ConnectionPoolConfig{
 			MaxOpen: goruntime.NumCPU(),
 		},
+		MetricsRegisterer: metrics.Registry,
 		// Default are defined in kine: https://github.com/k3s-io/kine/blob/0dc5b174a18cf13b299a2b597afe0608cd769663/pkg/app/app.go#L27
 		NotifyInterval:      5 * time.Second,
 		EmulatedETCDVersion: "3.5.13",
@@ -39,6 +42,7 @@ func NewKineStorage(ctx context.Context, dsn string) (rest.StoreFn, error) {
 		CompactMinRetain:    1000,
 		CompactBatchSize:    1000,
 		PollBatchSize:       500,
+		LogFormat:           logFormat,
 	})
 	if err != nil {
 		return nil, err

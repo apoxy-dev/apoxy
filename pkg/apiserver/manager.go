@@ -752,8 +752,16 @@ func start(
 	l := log.New(config.Verbose)
 	ctrl.SetLogger(l)
 	klog.SetLogger(l)
-	// Disables useless kine logging.
-	logrus.SetOutput(io.Discard)
+	// Route kine's logrus output through slog so compaction and other
+	// operational messages are visible at the configured log level.
+	// Use JSON format for production, plain text for development.
+	kineLogLevel := log.InfoLevel
+	kineLogFormat := "json"
+	if config.Verbose {
+		kineLogLevel = log.DebugLevel
+		kineLogFormat = "plain"
+	}
+	logrus.SetOutput(log.NewDefaultLogWriter(kineLogLevel))
 
 	readyCh := make(chan error)
 	go func() {
@@ -775,7 +783,7 @@ func start(
 			sqliteConn += "?" + connArgs
 		}
 		log.Debugf("Using SQLite connection: %s", sqliteConn)
-		kineStore, err := NewKineStorage(ctx, sqliteConn)
+		kineStore, err := NewKineStorage(ctx, sqliteConn, kineLogFormat)
 		if err != nil {
 			readyCh <- fmt.Errorf("failed to create kine storage: %w", err)
 			return
