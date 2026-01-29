@@ -173,28 +173,29 @@ func (c *certSource) GetCertificate(*tls.ClientHelloInfo) (*tls.Certificate, err
 type Option func(*options)
 
 type options struct {
-	clientConfig          *rest.Config
-	enableSimpleAuth      bool
-	enableInClusterAuth   bool
-	sqlitePath            string
-	sqliteConnArgs        map[string]string
-	certPairName, certDir string
-	enableKubeAPI         bool
-	controllerNames       []string
-	additionalControllers []CreateController
-	gcInterval            time.Duration
-	jwtPublicKey          []byte
-	jwtPrivateKey         []byte
-	jwtRefreshThreshold   time.Duration
-	jwksHost              string
-	jwksPort              int
-	resources             []resource.Object
-	proxyIPAM             tunnet.IPAM
-	agentIPAM             tunnet.IPAM
-	vniPool               *vni.VNIPool
-	tokenValidator        token.Validator
-	tokenIssuer           token.TokenIssuer
-	openAPIDefinitions    common.GetOpenAPIDefinitions
+	clientConfig           *rest.Config
+	enableSimpleAuth       bool
+	enableInClusterAuth    bool
+	sqlitePath             string
+	sqliteConnArgs         map[string]string
+	certPairName, certDir  string
+	enableKubeAPI          bool
+	controllerNames        []string
+	additionalControllers  []CreateController
+	skipBuiltinControllers bool
+	gcInterval             time.Duration
+	jwtPublicKey           []byte
+	jwtPrivateKey          []byte
+	jwtRefreshThreshold    time.Duration
+	jwksHost               string
+	jwksPort               int
+	resources              []resource.Object
+	proxyIPAM              tunnet.IPAM
+	agentIPAM              tunnet.IPAM
+	vniPool                *vni.VNIPool
+	tokenValidator         token.Validator
+	tokenIssuer            token.TokenIssuer
+	openAPIDefinitions     common.GetOpenAPIDefinitions
 }
 
 // WithJWTKeys sets the JWT key pair.
@@ -367,6 +368,15 @@ func WithVNIPool(pool *vni.VNIPool) Option {
 	}
 }
 
+// WithSkipBuiltinControllers skips the built-in controllers (Proxy, TunnelNode, Gateway, etc.)
+// and the APIService wait. Use this when you only need the apiserver functionality without
+// the full controller set, e.g., for custom apiservers that register their own resource types.
+func WithSkipBuiltinControllers() Option {
+	return func(o *options) {
+		o.skipBuiltinControllers = true
+	}
+}
+
 func defaultResources() []resource.Object {
 	// Higher versions need to be registered first as storage resources.
 	return []resource.Object{
@@ -530,129 +540,133 @@ func (m *Manager) Start(
 		return fmt.Errorf("unable to start manager: %v", err)
 	}
 
-	log.Infof("Starting API server built-in controllers")
-
-	if err := waitForAPIService(ctx, m.manager.GetConfig(), corev1alpha2.GroupVersion, 2*time.Minute); err != nil {
-		return fmt.Errorf("failed to wait for APIService %s: %v", corev1alpha2.GroupVersion.Group, err)
-	}
-
-	// Start the Status Runner to write Gateway API resource statuses back to the API server.
-	// This subscribes to status updates from the gateway translation pipeline and writes
-	// them back to Kubernetes.
-	log.Infof("Starting Gateway API Status Runner")
-	statusRunner := statusrunner.New(&statusrunner.Config{
-		Client:            m.manager.GetClient(),
-		ProviderResources: gwResources,
-	})
-	if err := statusRunner.Start(ctx); err != nil {
-		return fmt.Errorf("failed to start status runner: %v", err)
-	}
-
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	g, ctx := errgroup.WithContext(ctx)
 
-	log.Infof("Registering Proxy controller")
-	if err := controllers.NewProxyReconciler(
-		ctx,
-		m.manager.GetClient(),
-		gwResources,
-		dOpts.proxyIPAM,
-		cancel,
-	).SetupWithManager(ctx, m.manager); err != nil {
-		return fmt.Errorf("failed to set up Proxy controller: %v", err)
-	}
+	// Skip built-in controllers if requested. This is useful for custom apiservers
+	// that only need the apiserver functionality without the full controller set.
+	if !dOpts.skipBuiltinControllers {
+		log.Infof("Starting API server built-in controllers")
 
-	// Legacy v1alpha1 TunnelNode controller
-	log.Infof("Registering TunnelNode controller")
-	var tunnelNodeValidator token.Validator
-	if dOpts.tokenValidator != nil {
-		tunnelNodeValidator = dOpts.tokenValidator
-	} else {
-		var err error
-		tunnelNodeValidator, err = token.NewInMemoryValidator(dOpts.jwtPublicKey)
-		if err != nil {
-			return fmt.Errorf("failed to create tunnel node validator: %v", err)
+		if err := waitForAPIService(ctx, m.manager.GetConfig(), corev1alpha2.GroupVersion, 2*time.Minute); err != nil {
+			return fmt.Errorf("failed to wait for APIService %s: %v", corev1alpha2.GroupVersion.Group, err)
 		}
-	}
-	var tunnelNodeIssuer token.TokenIssuer
-	if dOpts.tokenIssuer != nil {
-		tunnelNodeIssuer = dOpts.tokenIssuer
-	} else {
-		var err error
-		tunnelNodeIssuer, err = token.NewIssuer(dOpts.jwtPrivateKey)
-		if err != nil {
-			return fmt.Errorf("failed to create tunnel node issuer: %v", err)
+
+		// Start the Status Runner to write Gateway API resource statuses back to the API server.
+		// This subscribes to status updates from the gateway translation pipeline and writes
+		// them back to Kubernetes.
+		log.Infof("Starting Gateway API Status Runner")
+		statusRunner := statusrunner.New(&statusrunner.Config{
+			Client:            m.manager.GetClient(),
+			ProviderResources: gwResources,
+		})
+		if err := statusRunner.Start(ctx); err != nil {
+			return fmt.Errorf("failed to start status runner: %v", err)
 		}
-	}
-	tunnelNodeReconciler := controllers.NewTunnelNodeReconciler(
-		m.manager.GetClient(),
-		tunnelNodeValidator,
-		tunnelNodeIssuer,
-		dOpts.jwksHost,
-		dOpts.jwksPort,
-		dOpts.jwtRefreshThreshold,
-		dOpts.agentIPAM,
-		apoxynet.NewIPAMv4(context.Background()),
-	)
-	if err := tunnelNodeReconciler.SetupWithManager(m.manager); err != nil {
-		return fmt.Errorf("failed to set up TunnelNode controller: %v", err)
-	}
-	g.Go(func() error {
-		if err := tunnelNodeReconciler.ServeJWKS(ctx); err != nil {
-			log.Errorf("failed to serve JWKS: %v", err)
-			return fmt.Errorf("failed to serve JWKS: %v", err)
+
+		log.Infof("Registering Proxy controller")
+		if err := controllers.NewProxyReconciler(
+			ctx,
+			m.manager.GetClient(),
+			gwResources,
+			dOpts.proxyIPAM,
+			cancel,
+		).SetupWithManager(ctx, m.manager); err != nil {
+			return fmt.Errorf("failed to set up Proxy controller: %v", err)
 		}
-		return nil
-	})
 
-	log.Infof("Registering Tunnel controller")
-	tunnelReconciler := controllers.NewTunnelReconciler(m.manager.GetClient())
-	if err := tunnelReconciler.SetupWithManager(m.manager); err != nil {
-		return fmt.Errorf("failed to set up Tunnel controller: %v", err)
-	}
+		// Legacy v1alpha1 TunnelNode controller
+		log.Infof("Registering TunnelNode controller")
+		var tunnelNodeValidator token.Validator
+		if dOpts.tokenValidator != nil {
+			tunnelNodeValidator = dOpts.tokenValidator
+		} else {
+			var err error
+			tunnelNodeValidator, err = token.NewInMemoryValidator(dOpts.jwtPublicKey)
+			if err != nil {
+				return fmt.Errorf("failed to create tunnel node validator: %v", err)
+			}
+		}
+		var tunnelNodeIssuer token.TokenIssuer
+		if dOpts.tokenIssuer != nil {
+			tunnelNodeIssuer = dOpts.tokenIssuer
+		} else {
+			var err error
+			tunnelNodeIssuer, err = token.NewIssuer(dOpts.jwtPrivateKey)
+			if err != nil {
+				return fmt.Errorf("failed to create tunnel node issuer: %v", err)
+			}
+		}
+		tunnelNodeReconciler := controllers.NewTunnelNodeReconciler(
+			m.manager.GetClient(),
+			tunnelNodeValidator,
+			tunnelNodeIssuer,
+			dOpts.jwksHost,
+			dOpts.jwksPort,
+			dOpts.jwtRefreshThreshold,
+			dOpts.agentIPAM,
+			apoxynet.NewIPAMv4(context.Background()),
+		)
+		if err := tunnelNodeReconciler.SetupWithManager(m.manager); err != nil {
+			return fmt.Errorf("failed to set up TunnelNode controller: %v", err)
+		}
+		g.Go(func() error {
+			if err := tunnelNodeReconciler.ServeJWKS(ctx); err != nil {
+				log.Errorf("failed to serve JWKS: %v", err)
+				return fmt.Errorf("failed to serve JWKS: %v", err)
+			}
+			return nil
+		})
 
-	log.Infof("Registering TunnelAgent controller")
-	tunnelAgentReconciler := controllers.NewTunnelAgentReconciler(
-		m.manager.GetClient(),
-		dOpts.agentIPAM,
-		dOpts.vniPool,
-	)
-	if err := tunnelAgentReconciler.SetupWithManager(ctx, m.manager); err != nil {
-		return fmt.Errorf("failed to set up TunnelAgent controller: %v", err)
-	}
+		log.Infof("Registering Tunnel controller")
+		tunnelReconciler := controllers.NewTunnelReconciler(m.manager.GetClient())
+		if err := tunnelReconciler.SetupWithManager(m.manager); err != nil {
+			return fmt.Errorf("failed to set up Tunnel controller: %v", err)
+		}
 
-	log.Infof("Registering Gateway controller")
-	gwOpts := []gateway.Option{}
-	if dOpts.enableKubeAPI {
-		gwOpts = append(gwOpts, gateway.WithKubeAPI())
-	}
-	if len(dOpts.controllerNames) > 0 {
-		gwOpts = append(gwOpts, gateway.WithControllerNames(dOpts.controllerNames...))
-	}
-	if err := gateway.NewGatewayReconciler(
-		m.manager.GetClient(),
-		gwResources,
-		gwOpts...,
-	).SetupWithManager(ctx, m.manager); err != nil {
-		return fmt.Errorf("failed to set up Gateway controller: %v", err)
-	}
+		log.Infof("Registering TunnelAgent controller")
+		tunnelAgentReconciler := controllers.NewTunnelAgentReconciler(
+			m.manager.GetClient(),
+			dOpts.agentIPAM,
+			dOpts.vniPool,
+		)
+		if err := tunnelAgentReconciler.SetupWithManager(ctx, m.manager); err != nil {
+			return fmt.Errorf("failed to set up TunnelAgent controller: %v", err)
+		}
 
-	log.Infof("Registering EdgeFunction controller")
-	if err := extensionscontroller.NewEdgeFunctionReconciler(
-		m.manager.GetClient(),
-		m.manager.GetScheme(),
-		tc,
-	).SetupWithManager(ctx, m.manager); err != nil {
-		return fmt.Errorf("failed to set up EdgeFunction controller: %v", err)
-	}
-	if err := extensionscontroller.NewEdgeFunctionRevisionGCReconciler(
-		m.manager.GetClient(),
-		m.manager.GetScheme(),
-		tc,
-		dOpts.gcInterval,
-	).SetupWithManager(ctx, m.manager); err != nil {
-		return fmt.Errorf("failed to set up EdgeFunctionRevision GC controller: %v", err)
+		log.Infof("Registering Gateway controller")
+		gwOpts := []gateway.Option{}
+		if dOpts.enableKubeAPI {
+			gwOpts = append(gwOpts, gateway.WithKubeAPI())
+		}
+		if len(dOpts.controllerNames) > 0 {
+			gwOpts = append(gwOpts, gateway.WithControllerNames(dOpts.controllerNames...))
+		}
+		if err := gateway.NewGatewayReconciler(
+			m.manager.GetClient(),
+			gwResources,
+			gwOpts...,
+		).SetupWithManager(ctx, m.manager); err != nil {
+			return fmt.Errorf("failed to set up Gateway controller: %v", err)
+		}
+
+		log.Infof("Registering EdgeFunction controller")
+		if err := extensionscontroller.NewEdgeFunctionReconciler(
+			m.manager.GetClient(),
+			m.manager.GetScheme(),
+			tc,
+		).SetupWithManager(ctx, m.manager); err != nil {
+			return fmt.Errorf("failed to set up EdgeFunction controller: %v", err)
+		}
+		if err := extensionscontroller.NewEdgeFunctionRevisionGCReconciler(
+			m.manager.GetClient(),
+			m.manager.GetScheme(),
+			tc,
+			dOpts.gcInterval,
+		).SetupWithManager(ctx, m.manager); err != nil {
+			return fmt.Errorf("failed to set up EdgeFunctionRevision GC controller: %v", err)
+		}
 	}
 
 	if len(dOpts.additionalControllers) > 0 {
