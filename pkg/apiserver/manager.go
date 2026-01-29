@@ -196,6 +196,7 @@ type options struct {
 	tokenValidator         token.Validator
 	tokenIssuer            token.TokenIssuer
 	openAPIDefinitions     common.GetOpenAPIDefinitions
+	addToScheme            func(*runtime.Scheme) error
 }
 
 // WithJWTKeys sets the JWT key pair.
@@ -377,6 +378,14 @@ func WithSkipBuiltinControllers() Option {
 	}
 }
 
+// WithAddToScheme registers additional types with the controller-runtime scheme.
+// This must be called before Start() to ensure types are available to controllers.
+func WithAddToScheme(fn func(*runtime.Scheme) error) Option {
+	return func(o *options) {
+		o.addToScheme = fn
+	}
+}
+
 func defaultResources() []resource.Object {
 	// Higher versions need to be registered first as storage resources.
 	return []resource.Object{
@@ -525,6 +534,13 @@ func (m *Manager) Start(
 		return err
 	}
 	close(m.ReadyCh)
+
+	// Register additional types with the scheme if provided.
+	if dOpts.addToScheme != nil {
+		if err := dOpts.addToScheme(scheme); err != nil {
+			return fmt.Errorf("failed to add types to scheme: %w", err)
+		}
+	}
 
 	whSrvOpts := webhook.Options{
 		CertDir:  dOpts.certDir,
