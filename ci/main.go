@@ -417,8 +417,67 @@ func (m *ApoxyCli) BuildEdgeRuntime(
 	return builder.WithExec([]string{"cargo", "build", "--release"})
 }
 
-// PullEdgeRuntime builds the Apoxy edge-runtime fork from source.
-// The built container includes the edge-runtime binary and main service.
+// PublishEdgeRuntime builds edge-runtime for the host architecture and publishes it.
+// This should be run on native arch workers (amd64 and arm64) in parallel.
+func (m *ApoxyCli) PublishEdgeRuntime(
+	ctx context.Context,
+	registryPassword *dagger.Secret,
+	sha string,
+	// +optional
+	sccacheToken *dagger.Secret,
+) error {
+	platform := hostPlatform()
+	goarch := runtime.GOARCH
+
+	builder := m.BuildEdgeRuntime(ctx, platform, nil, sccacheToken)
+
+	// Create container with edge-runtime binary.
+	ctr := dag.Container().
+		From("debian:bookworm-slim").
+		WithExec([]string{"apt-get", "update"}).
+		WithExec([]string{"apt-get", "install", "-y", "libssl-dev", "ca-certificates"}).
+		WithExec([]string{"rm", "-rf", "/var/lib/apt/lists/*"}).
+		WithFile("/usr/local/bin/edge-runtime", builder.File("/src/target/release/edge-runtime"))
+
+	// Publish with arch-specific tag.
+	addr, err := ctr.
+		WithRegistryAuth("registry-1.docker.io", "apoxy", registryPassword).
+		Publish(ctx, fmt.Sprintf("docker.io/apoxy/edge-runtime:%s-%s", sha, goarch))
+	if err != nil {
+		return fmt.Errorf("failed to publish edge-runtime: %w", err)
+	}
+
+	fmt.Printf("Published edge-runtime image to %s\n", addr)
+	return nil
+}
+
+// PublishEdgeRuntimeMultiarch combines arch-specific edge-runtime images into a multi-arch manifest.
+func (m *ApoxyCli) PublishEdgeRuntimeMultiarch(
+	ctx context.Context,
+	registryPassword *dagger.Secret,
+	sha string,
+) error {
+	crane := m.CraneContainer(ctx, registryPassword)
+
+	manifest := fmt.Sprintf("docker.io/apoxy/edge-runtime:%s", sha)
+	craneCmd := []string{
+		"crane", "index", "append",
+		"--manifest", manifest + "-amd64",
+		"--manifest", manifest + "-arm64",
+		"--tag", manifest,
+	}
+
+	output, err := crane.WithExec(craneCmd).Stdout(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to create multi-arch manifest for edge-runtime: %w", err)
+	}
+	fmt.Printf("Published multi-arch edge-runtime image: %s\n", output)
+	return nil
+}
+
+// PullEdgeRuntime pulls edge-runtime from registry or builds from source.
+// If edgeRuntimeTag is provided, pulls from docker.io/apoxy/edge-runtime:<tag>.
+// Otherwise builds from source (slow, avoid in CI).
 func (m *ApoxyCli) PullEdgeRuntime(
 	ctx context.Context,
 	// +default=linux/arm64
@@ -427,52 +486,59 @@ func (m *ApoxyCli) PullEdgeRuntime(
 	apoxyCliSrc *dagger.Directory,
 	// +optional
 	sccacheToken *dagger.Secret,
+	// +optional
+	edgeRuntimeTag string,
 ) *dagger.Container {
 	goarch := archOf(platform)
-	targetArch := canonArchFromGoArch(goarch)
 
-	// Build edge-runtime from source.
-	edgeRuntimeSrc := dag.Git("https://github.com/apoxy-dev/edge-runtime").
-		Branch("main").
-		Tree()
+	var edgeRuntimeBinary *dagger.File
 
-	builder := dag.Container(dagger.ContainerOpts{Platform: platform}).
-		From("rust:1.82.0-bookworm").
-		WithExec([]string{"apt-get", "update"}).
-		WithExec([]string{"apt-get", "install", "-y", "llvm-dev", "libclang-dev", "gcc", "cmake", "binutils", "clang", "mold", "curl"}).
-		// Install sccache for compilation caching (0.11.0 is compatible with rustc 1.82.0).
-		WithExec([]string{"sh", "-c", "curl -fsSL https://github.com/mozilla/sccache/releases/download/v0.11.0/sccache-v0.11.0-$(uname -m)-unknown-linux-musl.tar.gz | tar xzf - -C /usr/local/bin --strip-components=1 --wildcards '*/sccache'"}).
-		WithEnvVariable("SCCACHE_WEBDAV_ENDPOINT", "https://cache.depot.dev").
-		WithEnvVariable("RUSTC_WRAPPER", "/usr/local/bin/sccache").
-		// Configure mold as linker for faster linking.
-		WithEnvVariable("CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER", "clang").
-		WithEnvVariable("CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS", "-C link-arg=-fuse-ld=mold").
-		WithEnvVariable("CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER", "clang").
-		WithEnvVariable("CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS", "-C link-arg=-fuse-ld=mold").
-		WithMountedCache("/usr/local/cargo/registry", dag.CacheVolume("cargo-registry-"+goarch)).
-		WithMountedCache("/src/target", dag.CacheVolume("cargo-target-"+goarch)).
-		WithMountedCache("/root/.cache/sccache", dag.CacheVolume("sccache-"+targetArch)).
-		WithWorkdir("/src").
-		WithDirectory("/src", edgeRuntimeSrc)
+	if edgeRuntimeTag != "" {
+		// Pull pre-built edge-runtime from registry.
+		edgeRuntimeCtr := dag.Container(dagger.ContainerOpts{Platform: platform}).
+			From(fmt.Sprintf("docker.io/apoxy/edge-runtime:%s", edgeRuntimeTag))
+		edgeRuntimeBinary = edgeRuntimeCtr.File("/usr/local/bin/edge-runtime")
+	} else {
+		// Build from source (fallback for local dev).
+		targetArch := canonArchFromGoArch(goarch)
+		edgeRuntimeSrc := dag.Git("https://github.com/apoxy-dev/edge-runtime").
+			Branch("main").
+			Tree()
 
-	if sccacheToken != nil {
-		builder = builder.WithSecretVariable("SCCACHE_WEBDAV_TOKEN", sccacheToken)
+		builder := dag.Container(dagger.ContainerOpts{Platform: platform}).
+			From("rust:1.82.0-bookworm").
+			WithExec([]string{"apt-get", "update"}).
+			WithExec([]string{"apt-get", "install", "-y", "llvm-dev", "libclang-dev", "gcc", "cmake", "binutils", "clang", "mold", "curl"}).
+			WithExec([]string{"sh", "-c", "curl -fsSL https://github.com/mozilla/sccache/releases/download/v0.11.0/sccache-v0.11.0-$(uname -m)-unknown-linux-musl.tar.gz | tar xzf - -C /usr/local/bin --strip-components=1 --wildcards '*/sccache'"}).
+			WithEnvVariable("SCCACHE_WEBDAV_ENDPOINT", "https://cache.depot.dev").
+			WithEnvVariable("RUSTC_WRAPPER", "/usr/local/bin/sccache").
+			WithEnvVariable("CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER", "clang").
+			WithEnvVariable("CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS", "-C link-arg=-fuse-ld=mold").
+			WithEnvVariable("CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER", "clang").
+			WithEnvVariable("CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS", "-C link-arg=-fuse-ld=mold").
+			WithMountedCache("/usr/local/cargo/registry", dag.CacheVolume("cargo-registry-"+goarch)).
+			WithMountedCache("/src/target", dag.CacheVolume("cargo-target-"+goarch)).
+			WithMountedCache("/root/.cache/sccache", dag.CacheVolume("sccache-"+targetArch)).
+			WithWorkdir("/src").
+			WithDirectory("/src", edgeRuntimeSrc)
+
+		if sccacheToken != nil {
+			builder = builder.WithSecretVariable("SCCACHE_WEBDAV_TOKEN", sccacheToken)
+		}
+
+		builder = builder.WithExec([]string{"cargo", "build", "--release"})
+		edgeRuntimeBinary = builder.File("/src/target/release/edge-runtime")
 	}
 
-	builder = builder.
-		WithExec([]string{"cargo", "build", "--release"}).
-		WithExec([]string{"cp", "/src/target/release/edge-runtime", "/edge-runtime"})
-
-	// Create a minimal container with the binary and main service.
+	// Create container with the binary and main service.
 	ctr := dag.Container(dagger.ContainerOpts{Platform: platform}).
 		From("debian:bookworm-slim").
 		WithExec([]string{"apt-get", "update"}).
 		WithExec([]string{"apt-get", "install", "-y", "libssl-dev", "ca-certificates"}).
 		WithExec([]string{"rm", "-rf", "/var/lib/apt/lists/*"}).
-		WithFile("/usr/local/bin/edge-runtime", builder.File("/edge-runtime")).
+		WithFile("/usr/local/bin/edge-runtime", edgeRuntimeBinary).
 		WithExec([]string{"mkdir", "-p", "/etc/main"})
 
-	// Copy the main service from this repo.
 	if apoxyCliSrc != nil {
 		ctr = ctr.WithFile("/etc/main/index.ts", apoxyCliSrc.File("pkg/edgefunc/mainservice/main-service.ts"))
 	}
@@ -488,6 +554,8 @@ func (m *ApoxyCli) BuildAPIServer(
 	platform string,
 	// +optional
 	sccacheToken *dagger.Secret,
+	// +optional
+	edgeRuntimeTag string,
 ) *dagger.Container {
 	if platform == "" {
 		platform = runtime.GOOS + "/" + runtime.GOARCH
@@ -502,7 +570,7 @@ func (m *ApoxyCli) BuildAPIServer(
 		WithEnvVariable("CC", fmt.Sprintf("zig-wrapper cc --target=%s-linux-musl", canonArchFromGoArch(goarch))).
 		WithExec([]string{"go", "build", "-o", "apiserver", "./cmd/apiserver"})
 
-	runtimeCtr := m.PullEdgeRuntime(ctx, p, src, sccacheToken)
+	runtimeCtr := m.PullEdgeRuntime(ctx, p, src, sccacheToken, edgeRuntimeTag)
 
 	return dag.Container(dagger.ContainerOpts{Platform: p}).
 		From("cgr.dev/chainguard/wolfi-base:latest").
@@ -556,6 +624,8 @@ func (m *ApoxyCli) BuildBackplane(
 	platform string,
 	// +optional
 	sccacheToken *dagger.Secret,
+	// +optional
+	edgeRuntimeTag string,
 ) *dagger.Container {
 	if platform == "" {
 		platform = runtime.GOOS + "/" + runtime.GOARCH
@@ -587,7 +657,7 @@ func (m *ApoxyCli) BuildBackplane(
 		WithExec([]string{"go", "build", "-o", "/src/" + otelOut}).
 		WithWorkdir("/src")
 
-	runtimeCtr := m.PullEdgeRuntime(ctx, p, src, sccacheToken)
+	runtimeCtr := m.PullEdgeRuntime(ctx, p, src, sccacheToken, edgeRuntimeTag)
 
 	return dag.Container(dagger.ContainerOpts{Platform: p}).
 		From("cgr.dev/chainguard/wolfi-base:latest").
@@ -685,10 +755,12 @@ func (m *ApoxyCli) PublishImages(
 	sha string,
 	// +optional
 	sccacheToken *dagger.Secret,
+	// +optional
+	edgeRuntimeTag string,
 ) error {
 	var apiCtrs []*dagger.Container
 	for _, platform := range []string{"linux/amd64", "linux/arm64"} {
-		apiCtrs = append(apiCtrs, m.BuildAPIServer(ctx, src, platform, sccacheToken))
+		apiCtrs = append(apiCtrs, m.BuildAPIServer(ctx, src, platform, sccacheToken, edgeRuntimeTag))
 	}
 
 	addr, err := dag.Container().
@@ -708,7 +780,7 @@ func (m *ApoxyCli) PublishImages(
 
 	var bCtrs []*dagger.Container
 	for _, platform := range []string{"linux/amd64", "linux/arm64"} {
-		bCtrs = append(bCtrs, m.BuildBackplane(ctx, src, platform, sccacheToken))
+		bCtrs = append(bCtrs, m.BuildBackplane(ctx, src, platform, sccacheToken, edgeRuntimeTag))
 	}
 
 	addr, err = dag.Container().
@@ -819,80 +891,3 @@ func (m *ApoxyCli) PublishHelmRelease(
 		Stdout(ctx)
 }
 
-// PublishSingleArchImages builds and publishes images for the host architecture only.
-// This is meant to be run on native arch workers (amd64 and arm64) in parallel,
-// then combined with PublishMultiarchImages.
-func (m *ApoxyCli) PublishSingleArchImages(
-	ctx context.Context,
-	src *dagger.Directory,
-	registryPassword *dagger.Secret,
-	tag string,
-	sha string,
-	// +optional
-	sccacheToken *dagger.Secret,
-) error {
-	platform := hostPlatform()
-	goarch := runtime.GOARCH // amd64 or arm64
-
-	// Build containers for native platform only.
-	apiCtr := m.BuildAPIServer(ctx, src, platform, sccacheToken)
-	bpCtr := m.BuildBackplane(ctx, src, platform, sccacheToken)
-	tpCtr := m.BuildTunnelproxy(ctx, src, platform)
-	kcCtr := m.BuildKubeController(ctx, src, platform)
-	cliCtr := m.BuildCLIRelease(ctx, src, platform, tag, sha)
-
-	// Publish with platform-specific tags.
-	images := []struct {
-		name string
-		ctr  *dagger.Container
-	}{
-		{"apiserver", apiCtr},
-		{"backplane", bpCtr},
-		{"tunnelproxy", tpCtr},
-		{"kube-controller", kcCtr},
-		{"apoxy", cliCtr},
-	}
-
-	for _, img := range images {
-		// Publish as a plain image (not a manifest list) so crane can combine them later.
-		addr, err := img.ctr.
-			WithRegistryAuth("registry-1.docker.io", "apoxy", registryPassword).
-			Publish(ctx, fmt.Sprintf("docker.io/apoxy/%s:%s-%s", img.name, tag, goarch))
-		if err != nil {
-			return fmt.Errorf("failed to publish %s: %w", img.name, err)
-		}
-		fmt.Printf("Published %s image to %s\n", img.name, addr)
-	}
-
-	return nil
-}
-
-// PublishMultiarchImages combines platform-specific images into multi-arch manifests using crane.
-// Run this after PublishSingleArchImages has completed on both amd64 and arm64 workers.
-func (m *ApoxyCli) PublishMultiarchImages(
-	ctx context.Context,
-	registryPassword *dagger.Secret,
-	tag string,
-) error {
-	images := []string{"apiserver", "backplane", "tunnelproxy", "kube-controller", "apoxy"}
-
-	crane := m.CraneContainer(ctx, registryPassword)
-
-	for _, img := range images {
-		manifest := fmt.Sprintf("docker.io/apoxy/%s:%s", img, tag)
-		craneCmd := []string{
-			"crane", "index", "append",
-			"--manifest", manifest + "-amd64",
-			"--manifest", manifest + "-arm64",
-			"--tag", manifest,
-		}
-
-		output, err := crane.WithExec(craneCmd).Stdout(ctx)
-		if err != nil {
-			return fmt.Errorf("failed to create multi-arch manifest for %s: %w", img, err)
-		}
-		fmt.Printf("Published multi-arch %s image: %s\n", img, output)
-	}
-
-	return nil
-}

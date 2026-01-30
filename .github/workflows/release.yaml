@@ -5,7 +5,7 @@ on:
     tags:
       - v**
 jobs:
-  build-single-arch:
+  build-edge-runtime:
     strategy:
       matrix:
         include:
@@ -22,17 +22,17 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ">=1.24"
-      - name: Build and publish ${{ matrix.arch }} images
+      - name: Build and publish edge-runtime (${{ matrix.arch }})
         env:
           APOXY_DOCKERHUB_PASSWORD: ${{ secrets.APOXY_DOCKERHUB_PASSWORD }}
           SCCACHE_WEBDAV_TOKEN: ${{ secrets.SCCACHE_WEBDAV_TOKEN }}
           SHUTUP: 1
         timeout-minutes: 30
         run: |
-          dagger call -v publish-single-arch-images --src=. --tag=$GITHUB_REF_NAME --sha=${GITHUB_SHA::7} --registry-password=env:APOXY_DOCKERHUB_PASSWORD --sccache-token=env:SCCACHE_WEBDAV_TOKEN
+          dagger call -v publish-edge-runtime --sha=${GITHUB_SHA::7} --registry-password=env:APOXY_DOCKERHUB_PASSWORD --sccache-token=env:SCCACHE_WEBDAV_TOKEN
 
-  publish-multiarch:
-    needs: build-single-arch
+  publish-edge-runtime-multiarch:
+    needs: build-edge-runtime
     runs-on: depot-ubuntu-22.04,dagger=0.19.10
     steps:
       - uses: actions/checkout@v4
@@ -42,16 +42,35 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ">=1.24"
-      - name: Create multi-arch manifests
+      - name: Create edge-runtime multi-arch manifest
         env:
           APOXY_DOCKERHUB_PASSWORD: ${{ secrets.APOXY_DOCKERHUB_PASSWORD }}
           SHUTUP: 1
-        timeout-minutes: 10
+        timeout-minutes: 5
         run: |
-          dagger call -v publish-multiarch-images --tag=$GITHUB_REF_NAME --registry-password=env:APOXY_DOCKERHUB_PASSWORD
+          dagger call -v publish-edge-runtime-multiarch --sha=${GITHUB_SHA::7} --registry-password=env:APOXY_DOCKERHUB_PASSWORD
+
+  publish-images:
+    needs: publish-edge-runtime-multiarch
+    runs-on: depot-ubuntu-22.04-32,dagger=0.19.10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ">=1.24"
+      - name: Build and publish all images
+        env:
+          APOXY_DOCKERHUB_PASSWORD: ${{ secrets.APOXY_DOCKERHUB_PASSWORD }}
+          SHUTUP: 1
+        timeout-minutes: 30
+        run: |
+          dagger call -v publish-images --src=. --tag=$GITHUB_REF_NAME --sha=${GITHUB_SHA::7} --registry-password=env:APOXY_DOCKERHUB_PASSWORD --edge-runtime-tag=${GITHUB_SHA::7}
 
   publish-github-release:
-    needs: publish-multiarch
+    needs: publish-images
     runs-on: depot-ubuntu-22.04-16,dagger=0.19.10
     steps:
       - uses: actions/checkout@v4
