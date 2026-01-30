@@ -399,18 +399,19 @@ func (m *ApoxyCli) BuildEdgeRuntime(
 // The built container includes the edge-runtime binary and main service.
 func (m *ApoxyCli) PullEdgeRuntime(
 	ctx context.Context,
-	p dagger.Platform,
+	// +default=linux/arm64
+	platform dagger.Platform,
 	// +optional
 	apoxyCliSrc *dagger.Directory,
 ) *dagger.Container {
-	goarch := archOf(p)
+	goarch := archOf(platform)
 
 	// Build edge-runtime from source.
 	edgeRuntimeSrc := dag.Git("https://github.com/apoxy-dev/edge-runtime").
 		Branch("main").
 		Tree()
 
-	builder := dag.Container(dagger.ContainerOpts{Platform: p}).
+	builder := dag.Container(dagger.ContainerOpts{Platform: platform}).
 		From("rust:1.82.0-bookworm").
 		WithExec([]string{"apt-get", "update"}).
 		WithExec([]string{"apt-get", "install", "-y", "llvm-dev", "libclang-dev", "gcc", "cmake", "binutils"}).
@@ -422,7 +423,7 @@ func (m *ApoxyCli) PullEdgeRuntime(
 		WithExec([]string{"cp", "/src/target/release/edge-runtime", "/edge-runtime"})
 
 	// Create a minimal container with the binary and main service.
-	ctr := dag.Container(dagger.ContainerOpts{Platform: p}).
+	ctr := dag.Container(dagger.ContainerOpts{Platform: platform}).
 		From("debian:bookworm-slim").
 		WithExec([]string{"apt-get", "update"}).
 		WithExec([]string{"apt-get", "install", "-y", "libssl-dev", "ca-certificates"}).
