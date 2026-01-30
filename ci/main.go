@@ -429,7 +429,9 @@ func (m *ApoxyCli) PublishEdgeRuntime(
 	platform := hostPlatform()
 	goarch := runtime.GOARCH
 
-	builder := m.BuildEdgeRuntime(ctx, platform, nil, sccacheToken)
+	// Build edge-runtime and copy binary out of cache mount.
+	builder := m.BuildEdgeRuntime(ctx, platform, nil, sccacheToken).
+		WithExec([]string{"cp", "/src/target/release/edge-runtime", "/edge-runtime"})
 
 	// Create container with edge-runtime binary.
 	ctr := dag.Container().
@@ -437,7 +439,7 @@ func (m *ApoxyCli) PublishEdgeRuntime(
 		WithExec([]string{"apt-get", "update"}).
 		WithExec([]string{"apt-get", "install", "-y", "libssl-dev", "ca-certificates"}).
 		WithExec([]string{"rm", "-rf", "/var/lib/apt/lists/*"}).
-		WithFile("/usr/local/bin/edge-runtime", builder.File("/src/target/release/edge-runtime"))
+		WithFile("/usr/local/bin/edge-runtime", builder.File("/edge-runtime"))
 
 	// Publish with arch-specific tag.
 	addr, err := ctr.
