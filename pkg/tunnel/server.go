@@ -48,16 +48,26 @@ var (
 
 type TunnelServerOption func(*tunnelServerOptions)
 
+// OnConnectFunc is called when a tunnel connection is established.
+// The connID is a UUID identifying the connection, and tn is the TunnelNode object.
+type OnConnectFunc func(ctx context.Context, connID string, tn *corev1alpha.TunnelNode)
+
+// OnDisconnectFunc is called when a tunnel connection is closed.
+// The connID is the same UUID that was passed to OnConnectFunc.
+type OnDisconnectFunc func(ctx context.Context, connID string)
+
 type tunnelServerOptions struct {
-	proxyAddr  string
-	publicAddr string
-	ulaPrefix  netip.Prefix
-	certPath   string
-	keyPath    string
-	extAddrs   []netip.Prefix
-	selector   string
-	ipamv4     tunnet.IPAM
-	keyLogPath string
+	proxyAddr    string
+	publicAddr   string
+	ulaPrefix    netip.Prefix
+	certPath     string
+	keyPath      string
+	extAddrs     []netip.Prefix
+	selector     string
+	ipamv4       tunnet.IPAM
+	keyLogPath   string
+	onConnect    OnConnectFunc
+	onDisconnect OnDisconnectFunc
 }
 
 func defaultServerOptions() *tunnelServerOptions {
@@ -136,6 +146,20 @@ func WithIPAMv4(ipamv4 tunnet.IPAM) TunnelServerOption {
 func WithKeyLogPath(path string) TunnelServerOption {
 	return func(o *tunnelServerOptions) {
 		o.keyLogPath = path
+	}
+}
+
+// WithOnConnect sets a callback that is invoked when a tunnel connection is established.
+func WithOnConnect(fn OnConnectFunc) TunnelServerOption {
+	return func(o *tunnelServerOptions) {
+		o.onConnect = fn
+	}
+}
+
+// WithOnDisconnect sets a callback that is invoked when a tunnel connection is closed.
+func WithOnDisconnect(fn OnDisconnectFunc) TunnelServerOption {
+	return func(o *tunnelServerOptions) {
+		o.onDisconnect = fn
 	}
 }
 
@@ -506,6 +530,11 @@ func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.
 
 		t.conns.Set(connID, conn)
 
+		// Invoke onConnect callback if configured.
+		if t.options.onConnect != nil {
+			t.options.onConnect(ctx, connID, tn)
+		}
+
 		logger.Info("Updating agent status")
 
 		agent := &corev1alpha.AgentStatus{
@@ -544,6 +573,11 @@ func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.
 		if err := conn.Close(); err != nil &&
 			!strings.Contains(err.Error(), "close called for canceled stream") {
 			logger.Error("Failed to close connection", slog.Any("error", err))
+		}
+
+		// Invoke onDisconnect callback if configured.
+		if t.options.onDisconnect != nil {
+			t.options.onDisconnect(context.Background(), connID)
 		}
 
 		if conn, exists := t.conns.Get(connID); !exists {
@@ -769,4 +803,84 @@ func (t *TunnelServer) ReconcileWithClient(ctx context.Context, c client.Client,
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// ConfigureAgentAddress configures routing for an agent connection with the given addresses.
+// Called when an overlay address is allocated for a connected agent.
+// The connID is the connection UUID (same as agent.Name in TunnelNode status).
+// addrv6 is the allocated ULA prefix (e.g., fd61:706f:7879:...::/96).
+// addrv4 is optional and can be an invalid prefix if not needed.
+// egressGateway enables routing 0.0.0.0/0 and ::/0 via the tunnel.
+func (t *TunnelServer) ConfigureAgentAddress(
+	ctx context.Context,
+	connID string,
+	addrv6 netip.Prefix,
+	addrv4 netip.Prefix,
+	egressGateway bool,
+) error {
+	log := log.FromContext(ctx).WithValues("connID", connID, "addrv6", addrv6, "addrv4", addrv4)
+
+	conn, exists := t.conns.Get(connID)
+	if !exists {
+		return fmt.Errorf("connection %s not found", connID)
+	}
+
+	// Check if addresses are already configured.
+	if conn.addrv6.IsValid() && conn.addrv6 == addrv6 {
+		log.V(1).Info("Agent address already configured")
+		return nil
+	}
+
+	// Set addresses on connection.
+	conn.addrv6 = addrv6
+	if addrv4.IsValid() {
+		conn.addrv4 = addrv4
+	}
+	t.conns.Set(connID, conn)
+
+	// Assign addresses to CONNECT-IP connection.
+	addrs := []netip.Prefix{addrv6}
+	if addrv4.IsValid() {
+		addrs = append(addrs, addrv4)
+	}
+	if err := conn.AssignAddresses(ctx, addrs); err != nil {
+		return fmt.Errorf("failed to assign addresses: %w", err)
+	}
+
+	// Add to router.
+	if err := t.router.AddAddr(addrv6, conn); err != nil {
+		return fmt.Errorf("failed to add IPv6 addr: %w", err)
+	}
+	if err := t.router.AddRoute(addrv6); err != nil {
+		return fmt.Errorf("failed to add IPv6 route: %w", err)
+	}
+	if addrv4.IsValid() {
+		if err := t.router.AddAddr(addrv4, conn); err != nil {
+			return fmt.Errorf("failed to add IPv4 addr: %w", err)
+		}
+		if err := t.router.AddRoute(addrv4); err != nil {
+			return fmt.Errorf("failed to add IPv4 route: %w", err)
+		}
+	}
+
+	metrics.TunnelConnectionsActive.Inc()
+
+	log.Info("Client addresses assigned")
+
+	// Advertise routes to client.
+	advRoutes := []netip.Prefix{netip.PrefixFrom(addrv6.Addr(), 128)}
+	if egressGateway {
+		advRoutes = append(advRoutes,
+			netip.PrefixFrom(netip.IPv4Unspecified(), 0),
+			netip.PrefixFrom(netip.IPv6Unspecified(), 0),
+		)
+	}
+
+	log.Info("Advertising routes", "routes", advRoutes)
+
+	if err := conn.AdvertiseRoute(ctx, iproutesFromPrefixes(advRoutes)); err != nil {
+		return fmt.Errorf("failed to advertise routes: %w", err)
+	}
+
+	return nil
 }
