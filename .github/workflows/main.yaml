@@ -16,6 +16,6 @@ jobs:
         env:
           APOXY_DOCKERHUB_PASSWORD: ${{ secrets.APOXY_DOCKERHUB_PASSWORD }}
           SHUTUP: 1
-        timeout-minutes: 15
+        timeout-minutes: 30
         run: |
           dagger call -v publish-images --src=. --tag=latest --sha=${GITHUB_SHA::7} --registry-password=env:APOXY_DOCKERHUB_PASSWORD
