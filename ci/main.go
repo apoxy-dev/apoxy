@@ -394,11 +394,11 @@ func (m *ApoxyCli) BuildEdgeRuntime(
 	builder := dag.Container(dagger.ContainerOpts{Platform: p}).
 		From("rust:1.82.0-bookworm").
 		WithExec([]string{"apt-get", "update"}).
-		WithExec([]string{"apt-get", "install", "-y", "llvm-dev", "libclang-dev", "gcc", "cmake", "binutils", "clang", "mold"}).
+		WithExec([]string{"apt-get", "install", "-y", "llvm-dev", "libclang-dev", "gcc", "cmake", "binutils", "clang", "mold", "curl"}).
 		// Install sccache for compilation caching (0.11.0 is compatible with rustc 1.82.0).
-		WithExec([]string{"cargo", "install", "sccache", "--version", "0.11.0", "--locked"}).
+		WithExec([]string{"sh", "-c", "curl -fsSL https://github.com/mozilla/sccache/releases/download/v0.11.0/sccache-v0.11.0-$(uname -m)-unknown-linux-musl.tar.gz | tar xzf - -C /usr/local/bin --strip-components=1 --wildcards '*/sccache'"}).
 		WithEnvVariable("SCCACHE_WEBDAV_ENDPOINT", "https://cache.depot.dev").
-		WithEnvVariable("RUSTC_WRAPPER", "/usr/local/cargo/bin/sccache").
+		WithEnvVariable("RUSTC_WRAPPER", "/usr/local/bin/sccache").
 		// Configure mold as linker for faster linking.
 		WithEnvVariable("CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER", "clang").
 		WithEnvVariable("CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS", "-C link-arg=-fuse-ld=mold").
@@ -439,11 +439,11 @@ func (m *ApoxyCli) PullEdgeRuntime(
 	builder := dag.Container(dagger.ContainerOpts{Platform: platform}).
 		From("rust:1.82.0-bookworm").
 		WithExec([]string{"apt-get", "update"}).
-		WithExec([]string{"apt-get", "install", "-y", "llvm-dev", "libclang-dev", "gcc", "cmake", "binutils", "clang", "mold"}).
+		WithExec([]string{"apt-get", "install", "-y", "llvm-dev", "libclang-dev", "gcc", "cmake", "binutils", "clang", "mold", "curl"}).
 		// Install sccache for compilation caching (0.11.0 is compatible with rustc 1.82.0).
-		WithExec([]string{"cargo", "install", "sccache", "--version", "0.11.0", "--locked"}).
+		WithExec([]string{"sh", "-c", "curl -fsSL https://github.com/mozilla/sccache/releases/download/v0.11.0/sccache-v0.11.0-$(uname -m)-unknown-linux-musl.tar.gz | tar xzf - -C /usr/local/bin --strip-components=1 --wildcards '*/sccache'"}).
 		WithEnvVariable("SCCACHE_WEBDAV_ENDPOINT", "https://cache.depot.dev").
-		WithEnvVariable("RUSTC_WRAPPER", "/usr/local/cargo/bin/sccache").
+		WithEnvVariable("RUSTC_WRAPPER", "/usr/local/bin/sccache").
 		// Configure mold as linker for faster linking.
 		WithEnvVariable("CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER", "clang").
 		WithEnvVariable("CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS", "-C link-arg=-fuse-ld=mold").
