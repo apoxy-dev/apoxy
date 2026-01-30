@@ -598,14 +598,12 @@ func hostPlatform() string {
 
 // CraneContainer returns a container with crane installed and authenticated.
 func (m *ApoxyCli) CraneContainer(ctx context.Context, registryPassword *dagger.Secret) *dagger.Container {
-	cranePlatform := hostArch()
-	if cranePlatform == "x86_64" {
-		cranePlatform = "x86_64"
-	} else if cranePlatform == "aarch64" {
+	cranePlatform := "x86_64"
+	if runtime.GOARCH == "arm64" {
 		cranePlatform = "arm64"
 	}
 
-	return dag.Container().
+	return dag.Container(dagger.ContainerOpts{Platform: dagger.Platform(hostPlatform())}).
 		From("alpine:latest").
 		WithExec([]string{"apk", "add", "--no-cache", "curl"}).
 		WithExec([]string{
@@ -893,4 +891,3 @@ func (m *ApoxyCli) PublishHelmRelease(
 		}).
 		Stdout(ctx)
 }
-
