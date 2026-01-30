@@ -5,7 +5,53 @@ on:
     tags:
       - v**
 jobs:
-  release-all:
+  build-single-arch:
+    strategy:
+      matrix:
+        include:
+          - runner: depot-ubuntu-22.04-16,dagger=0.19.10
+            arch: amd64
+          - runner: depot-ubuntu-22.04-arm-16,dagger=0.19.10
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ">=1.24"
+      - name: Build and publish ${{ matrix.arch }} images
+        env:
+          APOXY_DOCKERHUB_PASSWORD: ${{ secrets.APOXY_DOCKERHUB_PASSWORD }}
+          SCCACHE_WEBDAV_TOKEN: ${{ secrets.SCCACHE_WEBDAV_TOKEN }}
+          SHUTUP: 1
+        timeout-minutes: 30
+        run: |
+          dagger call -v publish-single-arch-images --src=. --tag=$GITHUB_REF_NAME --sha=${GITHUB_SHA::7} --registry-password=env:APOXY_DOCKERHUB_PASSWORD --sccache-token=env:SCCACHE_WEBDAV_TOKEN
+
+  publish-multiarch:
+    needs: build-single-arch
+    runs-on: depot-ubuntu-22.04,dagger=0.19.10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ">=1.24"
+      - name: Create multi-arch manifests
+        env:
+          APOXY_DOCKERHUB_PASSWORD: ${{ secrets.APOXY_DOCKERHUB_PASSWORD }}
+          SHUTUP: 1
+        timeout-minutes: 10
+        run: |
+          dagger call -v publish-multiarch-images --tag=$GITHUB_REF_NAME --registry-password=env:APOXY_DOCKERHUB_PASSWORD
+
+  publish-github-release:
+    needs: publish-multiarch
     runs-on: depot-ubuntu-22.04-16,dagger=0.19.10
     steps:
       - uses: actions/checkout@v4
@@ -14,16 +60,14 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: ">=1.21.5"
-      - name: Run Dagger pipeline
+          go-version: ">=1.24"
+      - name: Publish GitHub release and Helm chart
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          APOXY_PROJECT_API_KEY: ${{ secrets.APOXY_PROJECT_API_KEY }}
           APOXY_DOCKERHUB_PASSWORD: ${{ secrets.APOXY_DOCKERHUB_PASSWORD }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           SHUTUP: 1
         timeout-minutes: 15
         run: |
-          dagger call -v publish-images --src=. --tag=$GITHUB_REF_NAME --sha=${GITHUB_SHA::7} --registry-password=env:APOXY_DOCKERHUB_PASSWORD --sccache-token=env:SCCACHE_WEBDAV_TOKEN
           dagger call -v publish-github-release --src=. --tag=$GITHUB_REF_NAME --github-token=env:GITHUB_TOKEN --sha=${GITHUB_SHA::7}
           dagger call -v publish-helm-release --src=./deploy/helm --tag=$GITHUB_REF_NAME --registry-password=env:APOXY_DOCKERHUB_PASSWORD

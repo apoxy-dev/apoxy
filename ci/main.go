@@ -520,6 +520,34 @@ func osOf(p dagger.Platform) string {
 	return platforms.MustParse(string(p)).OS
 }
 
+// hostPlatform returns the host platform string (e.g., "linux/amd64").
+func hostPlatform() string {
+	return runtime.GOOS + "/" + runtime.GOARCH
+}
+
+// CraneContainer returns a container with crane installed and authenticated.
+func (m *ApoxyCli) CraneContainer(ctx context.Context, registryPassword *dagger.Secret) *dagger.Container {
+	cranePlatform := hostArch()
+	if cranePlatform == "x86_64" {
+		cranePlatform = "x86_64"
+	} else if cranePlatform == "aarch64" {
+		cranePlatform = "arm64"
+	}
+
+	return dag.Container().
+		From("alpine:latest").
+		WithExec([]string{"apk", "add", "--no-cache", "curl"}).
+		WithExec([]string{
+			"sh", "-c",
+			fmt.Sprintf("curl -sL https://github.com/google/go-containerregistry/releases/latest/download/go-containerregistry_Linux_%s.tar.gz | tar xzf - -C /usr/local/bin crane", cranePlatform),
+		}).
+		WithSecretVariable("REGISTRY_PASSWORD", registryPassword).
+		WithExec([]string{
+			"sh", "-c",
+			`echo $REGISTRY_PASSWORD | crane auth login registry-1.docker.io -u apoxy --password-stdin`,
+		})
+}
+
 // BuildBackplane builds a backplane binary.
 func (m *ApoxyCli) BuildBackplane(
 	ctx context.Context,
@@ -789,4 +817,83 @@ func (m *ApoxyCli) PublishHelmRelease(
 			"oci://registry-1.docker.io/apoxy",
 		}).
 		Stdout(ctx)
+}
+
+// PublishSingleArchImages builds and publishes images for the host architecture only.
+// This is meant to be run on native arch workers (amd64 and arm64) in parallel,
+// then combined with PublishMultiarchImages.
+func (m *ApoxyCli) PublishSingleArchImages(
+	ctx context.Context,
+	src *dagger.Directory,
+	registryPassword *dagger.Secret,
+	tag string,
+	sha string,
+	// +optional
+	sccacheToken *dagger.Secret,
+) error {
+	platform := hostPlatform()
+	goarch := runtime.GOARCH // amd64 or arm64
+
+	// Build containers for native platform only.
+	apiCtr := m.BuildAPIServer(ctx, src, platform, sccacheToken)
+	bpCtr := m.BuildBackplane(ctx, src, platform, sccacheToken)
+	tpCtr := m.BuildTunnelproxy(ctx, src, platform)
+	kcCtr := m.BuildKubeController(ctx, src, platform)
+	cliCtr := m.BuildCLIRelease(ctx, src, platform, tag, sha)
+
+	// Publish with platform-specific tags.
+	images := []struct {
+		name string
+		ctr  *dagger.Container
+	}{
+		{"apiserver", apiCtr},
+		{"backplane", bpCtr},
+		{"tunnelproxy", tpCtr},
+		{"kube-controller", kcCtr},
+		{"apoxy", cliCtr},
+	}
+
+	for _, img := range images {
+		addr, err := dag.Container().
+			WithRegistryAuth("registry-1.docker.io", "apoxy", registryPassword).
+			Publish(ctx, fmt.Sprintf("docker.io/apoxy/%s:%s-%s", img.name, tag, goarch), dagger.ContainerPublishOpts{
+				PlatformVariants: []*dagger.Container{img.ctr},
+			})
+		if err != nil {
+			return fmt.Errorf("failed to publish %s: %w", img.name, err)
+		}
+		fmt.Printf("Published %s image to %s\n", img.name, addr)
+	}
+
+	return nil
+}
+
+// PublishMultiarchImages combines platform-specific images into multi-arch manifests using crane.
+// Run this after PublishSingleArchImages has completed on both amd64 and arm64 workers.
+func (m *ApoxyCli) PublishMultiarchImages(
+	ctx context.Context,
+	registryPassword *dagger.Secret,
+	tag string,
+) error {
+	images := []string{"apiserver", "backplane", "tunnelproxy", "kube-controller", "apoxy"}
+
+	crane := m.CraneContainer(ctx, registryPassword)
+
+	for _, img := range images {
+		manifest := fmt.Sprintf("docker.io/apoxy/%s:%s", img, tag)
+		craneCmd := []string{
+			"crane", "index", "append",
+			"--manifest", manifest + "-amd64",
+			"--manifest", manifest + "-arm64",
+			"--tag", manifest,
+		}
+
+		output, err := crane.WithExec(craneCmd).Stdout(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to create multi-arch manifest for %s: %w", img, err)
+		}
+		fmt.Printf("Published multi-arch %s image: %s\n", img, output)
+	}
+
+	return nil
 }
