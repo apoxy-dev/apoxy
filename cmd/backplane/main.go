@@ -16,6 +16,7 @@ import (
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 	chdriver "github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+	"github.com/coredns/coredns/plugin"
 	"github.com/google/uuid"
 	"google.golang.org/grpc"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -34,6 +35,7 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/backplane/metrics"
 	"github.com/apoxy-dev/apoxy/pkg/backplane/wasm/ext_proc"
 	"github.com/apoxy-dev/apoxy/pkg/backplane/wasm/manifest"
+	edgefuncctrl "github.com/apoxy-dev/apoxy/pkg/edgefunc/controller"
 	"github.com/apoxy-dev/apoxy/pkg/edgefunc/runc"
 	"github.com/apoxy-dev/apoxy/pkg/log"
 	"github.com/apoxy-dev/apoxy/pkg/net/dns"
@@ -94,6 +96,9 @@ var (
 
 	dnsPort  = flag.Int("dns_port", 8053, "Port for the DNS server.")
 	extIface = flag.String("ext_iface", "eth0", "External interface name.")
+
+	useEdgeController    = flag.Bool("use_edge_controller", false, "Use new per-namespace EdgeController instead of legacy per-function runtime.")
+	edgeControllerNS     = flag.String("edge_controller_namespace", "default", "Default namespace for EdgeController.")
 )
 
 func main() {
@@ -306,15 +311,31 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to set up EdgeFunction controller: %v", err)
 	}
-	if err := bpctrl.NewEdgeFunctionRevisionReconciler(
-		mgr.GetClient(),
-		*replicaName,
-		net.JoinHostPort(apiServerHost, strconv.Itoa(*wasmStorePort)),
-		ms,
-		*goPluginDir,
-		*esZipDir,
-		edgeRuntime,
-	).SetupWithManager(ctx, mgr, *proxyName); err != nil {
+
+	var edgeController *edgefuncctrl.EdgeController
+	if *useEdgeController {
+		log.Infof("Using new per-namespace EdgeController (namespace=%s)", *edgeControllerNS)
+		edgeController = edgefuncctrl.NewEdgeControllerFromRuntime(
+			edgeRuntime,
+			*esZipDir,
+			edgefuncctrl.Namespace(*edgeControllerNS),
+		)
+	} else {
+		log.Infof("Using legacy per-function EdgeRuntime")
+	}
+
+	edgeFuncReconciler := bpctrl.NewEdgeFunctionRevisionReconciler(bpctrl.EdgeFunctionRevisionReconcilerArgs{
+		Client:           mgr.GetClient(),
+		ReplicaName:      *replicaName,
+		ApiserverHost:    net.JoinHostPort(apiServerHost, strconv.Itoa(*wasmStorePort)),
+		WasmStore:        ms,
+		GoStoreDir:       *goPluginDir,
+		JsStoreDir:       *esZipDir,
+		EdgeRuntime:      edgeRuntime,
+		EdgeController:   edgeController,
+		DefaultNamespace: edgefuncctrl.Namespace(*edgeControllerNS),
+	})
+	if err := edgeFuncReconciler.SetupWithManager(ctx, mgr, *proxyName); err != nil {
 		log.Fatalf("failed to set up EdgeFunction controller: %v", err)
 	}
 
@@ -333,9 +354,17 @@ func main() {
 	}
 
 	go func() {
+		// Use EdgeController's resolver if available, otherwise use legacy runtime's resolver.
+		var edgeFuncResolver func(next plugin.Handler) plugin.Handler
+		if edgeController != nil {
+			edgeFuncResolver = edgeController.Resolver
+		} else {
+			edgeFuncResolver = edgeRuntime.Resolver
+		}
+
 		if err := dns.ListenAndServe(
 			fmt.Sprintf(":%d", *dnsPort),
-			dns.WithPlugins(edgeRuntime.Resolver, tunnelResolver.Resolver),
+			dns.WithPlugins(edgeFuncResolver, tunnelResolver.Resolver),
 			dns.WithBlockNonGlobalIPs(),
 		); err != nil {
 			log.Fatalf("failed to start DNS server: %v", err)

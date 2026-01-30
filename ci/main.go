@@ -371,6 +371,9 @@ func (m *ApoxyCli) PublishGithubRelease(
 		})
 }
 
+// EdgeRuntimeVersion is the version of the Apoxy edge-runtime fork.
+const EdgeRuntimeVersion = "v0.1.0"
+
 func (m *ApoxyCli) BuildEdgeRuntime(
 	ctx context.Context,
 	platform string,
@@ -378,8 +381,8 @@ func (m *ApoxyCli) BuildEdgeRuntime(
 	src *dagger.Directory,
 ) *dagger.Container {
 	if src == nil {
-		src = dag.Git("https://github.com/supabase/edge-runtime").
-			Tag("v1.62.2").
+		src = dag.Git("https://github.com/apoxy-dev/edge-runtime").
+			Branch("main").
 			Tree()
 	}
 	p := dagger.Platform(platform)
@@ -392,13 +395,47 @@ func (m *ApoxyCli) BuildEdgeRuntime(
 		WithExec([]string{"cargo", "build", "--release"})
 }
 
-// PullEdgeRuntime pulls the edge runtime image from dockerhub.
+// PullEdgeRuntime builds the Apoxy edge-runtime fork from source.
+// The built container includes the edge-runtime binary and main service.
 func (m *ApoxyCli) PullEdgeRuntime(
 	ctx context.Context,
 	p dagger.Platform,
+	// +optional
+	apoxyCliSrc *dagger.Directory,
 ) *dagger.Container {
-	return dag.Container(dagger.ContainerOpts{Platform: p}).
-		From("docker.io/supabase/edge-runtime:v1.62.2")
+	goarch := archOf(p)
+
+	// Build edge-runtime from source.
+	edgeRuntimeSrc := dag.Git("https://github.com/apoxy-dev/edge-runtime").
+		Branch("main").
+		Tree()
+
+	builder := dag.Container(dagger.ContainerOpts{Platform: p}).
+		From("rust:1.82.0-bookworm").
+		WithExec([]string{"apt-get", "update"}).
+		WithExec([]string{"apt-get", "install", "-y", "llvm-dev", "libclang-dev", "gcc", "cmake", "binutils"}).
+		WithMountedCache("/usr/local/cargo/registry", dag.CacheVolume("cargo-registry-"+goarch)).
+		WithMountedCache("/src/target", dag.CacheVolume("cargo-target-"+goarch)).
+		WithWorkdir("/src").
+		WithDirectory("/src", edgeRuntimeSrc).
+		WithExec([]string{"cargo", "build", "--release"}).
+		WithExec([]string{"cp", "/src/target/release/edge-runtime", "/edge-runtime"})
+
+	// Create a minimal container with the binary and main service.
+	ctr := dag.Container(dagger.ContainerOpts{Platform: p}).
+		From("debian:bookworm-slim").
+		WithExec([]string{"apt-get", "update"}).
+		WithExec([]string{"apt-get", "install", "-y", "libssl-dev", "ca-certificates"}).
+		WithExec([]string{"rm", "-rf", "/var/lib/apt/lists/*"}).
+		WithFile("/usr/local/bin/edge-runtime", builder.File("/edge-runtime")).
+		WithExec([]string{"mkdir", "-p", "/etc/main"})
+
+	// Copy the main service from this repo.
+	if apoxyCliSrc != nil {
+		ctr = ctr.WithFile("/etc/main/index.ts", apoxyCliSrc.File("pkg/edgefunc/mainservice/main-service.ts"))
+	}
+
+	return ctr
 }
 
 // BuildAPIServer builds an API server binary.
@@ -421,12 +458,13 @@ func (m *ApoxyCli) BuildAPIServer(
 		WithEnvVariable("CC", fmt.Sprintf("zig-wrapper cc --target=%s-linux-musl", canonArchFromGoArch(goarch))).
 		WithExec([]string{"go", "build", "-o", "apiserver", "./cmd/apiserver"})
 
-	runtimeCtr := m.PullEdgeRuntime(ctx, p)
+	runtimeCtr := m.PullEdgeRuntime(ctx, p, src)
 
 	return dag.Container(dagger.ContainerOpts{Platform: p}).
 		From("cgr.dev/chainguard/wolfi-base:latest").
 		WithFile("/bin/apiserver", builder.File("/src/apiserver")).
 		WithFile("/bin/edge-runtime", runtimeCtr.File("/usr/local/bin/edge-runtime")).
+		WithDirectory("/etc/main", runtimeCtr.Directory("/etc/main")).
 		WithEntrypoint([]string{"/bin/apiserver"})
 }
 
@@ -475,7 +513,7 @@ func (m *ApoxyCli) BuildBackplane(
 		WithExec([]string{"go", "build", "-o", "/src/" + otelOut}).
 		WithWorkdir("/src")
 
-	runtimeCtr := m.PullEdgeRuntime(ctx, p)
+	runtimeCtr := m.PullEdgeRuntime(ctx, p, src)
 
 	return dag.Container(dagger.ContainerOpts{Platform: p}).
 		From("cgr.dev/chainguard/wolfi-base:latest").
@@ -484,6 +522,7 @@ func (m *ApoxyCli) BuildBackplane(
 		WithFile("/bin/dial-stdio", builder.File(dsOut)).
 		WithFile("/bin/otel-collector", builder.File(otelOut)).
 		WithFile("/bin/edge-runtime", runtimeCtr.File("/usr/local/bin/edge-runtime")).
+		WithDirectory("/etc/main", runtimeCtr.Directory("/etc/main")).
 		WithExec([]string{
 			"/bin/backplane",
 			"--project_id=apoxy",

@@ -35,7 +35,9 @@ func init() {
 	}
 }
 
-func config(id, rootFS, runtimeBinPath, esZipPath string) *configs.Config {
+// baseConfig creates the base container configuration shared by both single-function
+// and namespace-based containers.
+func baseConfig(id, rootFS, runtimeBinPath string) *configs.Config {
 	devs := make([]*devices.Rule, len(specconv.AllowedDevices))
 	for i, d := range specconv.AllowedDevices {
 		devs[i] = &d.Rule
@@ -141,12 +143,6 @@ func config(id, rootFS, runtimeBinPath, esZipPath string) *configs.Config {
 				Device:      "bind",
 				Flags:       syscall.MS_BIND | syscall.MS_RDONLY | syscall.MS_REC,
 			},
-			{
-				Source:      esZipPath,
-				Destination: "/bin.eszip",
-				Device:      "bind",
-				Flags:       syscall.MS_BIND | syscall.MS_RDONLY | syscall.MS_REC,
-			},
 		},
 		// TODO(dilyevsky): User/group mappings can not be specified without the NEWUSER flag (see above).
 		//UIDMappings: []configs.IDMap{
@@ -200,8 +196,42 @@ func config(id, rootFS, runtimeBinPath, esZipPath string) *configs.Config {
 	return c
 }
 
+// config creates a container configuration for a single-function container
+// with a single eszip file mounted read-only.
+func config(id, rootFS, runtimeBinPath, esZipPath string) *configs.Config {
+	c := baseConfig(id, rootFS, runtimeBinPath)
+
+	// Mount the single eszip file read-only.
+	c.Mounts = append(c.Mounts, &configs.Mount{
+		Source:      esZipPath,
+		Destination: "/bin.eszip",
+		Device:      "bind",
+		Flags:       syscall.MS_BIND | syscall.MS_RDONLY | syscall.MS_REC,
+	})
+
+	return c
+}
+
+// namespaceConfig creates a container configuration for a namespace-based container
+// with an eszip directory mounted for dynamic function loading.
+func namespaceConfig(id, rootFS, runtimeBinPath, eszipDir string) *configs.Config {
+	c := baseConfig(id, rootFS, runtimeBinPath)
+
+	// Mount the eszip directory as writable for dynamic function loading.
+	// The edge-runtime will read eszip files from this directory.
+	c.Mounts = append(c.Mounts, &configs.Mount{
+		Source:      eszipDir,
+		Destination: "/eszips",
+		Device:      "bind",
+		Flags:       syscall.MS_BIND | syscall.MS_REC, // No MS_RDONLY for dynamic loading
+	})
+
+	return c
+}
+
 // Exec implements edgefunc.Runtime.Exec.
-func (r *runtime) Exec(ctx context.Context, id string, esZipPath string, port int) error {
+// This creates a single-function container with one eszip file.
+func (r *Runtime) Exec(ctx context.Context, id string, esZipPath string, port int) error {
 	status, err := r.ExecStatus(ctx, id)
 	if err == nil && status.State != edgefunc.StateStopped {
 		return edgefunc.ErrAlreadyExists
@@ -264,8 +294,76 @@ func (r *runtime) Exec(ctx context.Context, id string, esZipPath string, port in
 	return nil
 }
 
+// ExecNamespace creates a namespace-based container that can host multiple functions.
+// The container runs edge-runtime in server mode without --main-service, exposing
+// both a service port (for requests) and a control port (for the /_internal/* API).
+// Functions are loaded dynamically via the control API.
+func (r *Runtime) ExecNamespace(ctx context.Context, id string, eszipDir string, servicePort, controlPort int) error {
+	status, err := r.ExecStatus(ctx, id)
+	if err == nil && status.State != edgefunc.StateStopped {
+		return edgefunc.ErrAlreadyExists
+	}
+
+	if err := r.net.Up(ctx, id); err != nil {
+		return fmt.Errorf("failed to bring up network: %v", err)
+	}
+
+	rootFS := filepath.Join(r.rootBaseDir, id)
+	if err := os.MkdirAll(rootFS, 0755); err != nil {
+		return fmt.Errorf("failed to create rootfs: %v", err)
+	}
+
+	// Ensure eszip directory exists.
+	if err := os.MkdirAll(eszipDir, 0755); err != nil {
+		return fmt.Errorf("failed to create eszip directory: %v", err)
+	}
+
+	cfg := namespaceConfig(id, rootFS, r.runtimeBinPath, eszipDir)
+	ctr, err := libcontainer.Create(r.stateDir, id, cfg)
+	if err != nil {
+		return fmt.Errorf("failed to create container: %v", err)
+	}
+
+	// Start edge-runtime in server mode (no --main-service flag).
+	// This enables the control API at /_internal/* for dynamic function loading.
+	args := []string{
+		"/edge-runtime",
+		"start",
+		"--verbose",
+		"--disable-module-cache",
+		"--port=" + strconv.Itoa(servicePort),
+		"--control-port=" + strconv.Itoa(controlPort),
+	}
+	p := &libcontainer.Process{
+		Args:            args,
+		User:            "0:0",
+		Cwd:             "/",
+		NoNewPrivileges: ptr.To(true),
+
+		Stdin:    os.Stdin,
+		Stdout:   os.Stdout,
+		Stderr:   os.Stderr,
+		LogLevel: "5", // logrus.DebugLevel index.
+
+		Init: true,
+	}
+
+	log.Infof("Running edge-runtime namespace container %s (service=%d, control=%d)", id, servicePort, controlPort)
+
+	if err := ctr.Run(p); err != nil {
+		if err := ctr.Destroy(); err != nil {
+			log.Errorf("failed to destroy container: %v", err)
+		}
+		return fmt.Errorf("failed to run container: %v", err)
+	}
+
+	log.Infof("Namespace container %s started", id)
+
+	return nil
+}
+
 // StopExec implements edgefunc.Runtime.StopExec.
-func (r *runtime) StopExec(ctx context.Context, id string) error {
+func (r *Runtime) StopExec(ctx context.Context, id string) error {
 	ctr, err := libcontainer.Load(r.stateDir, id)
 	if err != nil && err != libcontainer.ErrNotExist {
 		return fmt.Errorf("failed to load container: %v", err)
@@ -300,7 +398,7 @@ func (r *runtime) StopExec(ctx context.Context, id string) error {
 }
 
 // DeleteExec implements edgefunc.Runtime.DeleteExec.
-func (r *runtime) DeleteExec(ctx context.Context, id string) error {
+func (r *Runtime) DeleteExec(ctx context.Context, id string) error {
 	ctr, err := libcontainer.Load(r.stateDir, id)
 	if err != nil && err != libcontainer.ErrNotExist {
 		return fmt.Errorf("failed to load container: %v", err)
@@ -330,7 +428,7 @@ func stateFromStatus(status libcontainer.Status) edgefunc.State {
 }
 
 // ExecStatus implements edgefunc.Runtime.ExecStatus.
-func (r *runtime) ExecStatus(ctx context.Context, id string) (edgefunc.Status, error) {
+func (r *Runtime) ExecStatus(ctx context.Context, id string) (edgefunc.Status, error) {
 	ctr, err := libcontainer.Load(r.stateDir, id)
 	if err != nil && err != libcontainer.ErrNotExist {
 		return edgefunc.Status{}, fmt.Errorf("failed to load container: %v", err)
@@ -355,7 +453,7 @@ func (r *runtime) ExecStatus(ctx context.Context, id string) (edgefunc.Status, e
 }
 
 // ListExecs implements edgefunc.Runtime.ListExecs.
-func (r *runtime) ListExecs(ctx context.Context) ([]edgefunc.Status, error) {
+func (r *Runtime) ListExecs(ctx context.Context) ([]edgefunc.Status, error) {
 	dir, err := os.ReadDir(r.stateDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read state dir: %v", err)

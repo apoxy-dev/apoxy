@@ -1,3 +1,5 @@
+//go:build linux
+
 package runc
 
 import (
@@ -18,7 +20,7 @@ const (
 )
 
 // Resolver implements edgefunc.Runtime.Resolver.
-func (r *runtime) Resolver(next plugin.Handler) plugin.Handler {
+func (r *Runtime) Resolver(next plugin.Handler) plugin.Handler {
 	return plugin.HandlerFunc(func(ctx context.Context, w dns.ResponseWriter, req *dns.Msg) (int, error) {
 		if len(req.Question) == 0 {
 			return dns.RcodeSuccess, nil

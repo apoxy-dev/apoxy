@@ -16,7 +16,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller"
+	ctrlcontroller "sigs.k8s.io/controller-runtime/pkg/controller"
 	clog "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -25,6 +25,7 @@ import (
 	extensionsv1alpha2 "github.com/apoxy-dev/apoxy/api/extensions/v1alpha2"
 	"github.com/apoxy-dev/apoxy/pkg/backplane/wasm/manifest"
 	"github.com/apoxy-dev/apoxy/pkg/edgefunc"
+	edgefuncctrl "github.com/apoxy-dev/apoxy/pkg/edgefunc/controller"
 )
 
 const (
@@ -43,27 +44,49 @@ type EdgeFunctionRevisionReconciler struct {
 	wasmStore     manifest.Store
 	goStoreDir    string
 	jsStoreDir    string
-	edgeRuntime   edgefunc.Runtime
+
+	// edgeRuntime is the legacy per-function runtime (deprecated).
+	edgeRuntime edgefunc.Runtime
+
+	// edgeController is the new per-namespace controller.
+	// When set, it takes precedence over edgeRuntime for JS functions.
+	edgeController *edgefuncctrl.EdgeController
+
+	// defaultNamespace is used when using the edgeController.
+	defaultNamespace edgefuncctrl.Namespace
+}
+
+// EdgeFunctionRevisionReconcilerArgs contains the arguments for creating an EdgeFunctionRevisionReconciler.
+type EdgeFunctionRevisionReconcilerArgs struct {
+	Client        client.Client
+	ReplicaName   string
+	ApiserverHost string
+	WasmStore     manifest.Store
+	GoStoreDir    string
+	JsStoreDir    string
+
+	// EdgeRuntime is the legacy per-function runtime.
+	// Either EdgeRuntime or EdgeController must be set.
+	EdgeRuntime edgefunc.Runtime
+
+	// EdgeController is the new per-namespace controller.
+	// When set, it takes precedence over EdgeRuntime for JS functions.
+	EdgeController   *edgefuncctrl.EdgeController
+	DefaultNamespace edgefuncctrl.Namespace
 }
 
 // NewEdgeFunctionRevisionReconciler returns a new reconcile.Reconciler.
-func NewEdgeFunctionRevisionReconciler(
-	c client.Client,
-	replicaName string,
-	apiserverHost string,
-	wasmStore manifest.Store,
-	goStoreDir string,
-	jsStoreDir string,
-	edgeRuntime edgefunc.Runtime,
-) *EdgeFunctionRevisionReconciler {
+func NewEdgeFunctionRevisionReconciler(args EdgeFunctionRevisionReconcilerArgs) *EdgeFunctionRevisionReconciler {
 	return &EdgeFunctionRevisionReconciler{
-		Client:        c,
-		replicaName:   replicaName,
-		apiserverHost: apiserverHost,
-		wasmStore:     wasmStore,
-		goStoreDir:    goStoreDir,
-		jsStoreDir:    jsStoreDir,
-		edgeRuntime:   edgeRuntime,
+		Client:           args.Client,
+		replicaName:      args.ReplicaName,
+		apiserverHost:    args.ApiserverHost,
+		wasmStore:        args.WasmStore,
+		goStoreDir:       args.GoStoreDir,
+		jsStoreDir:       args.JsStoreDir,
+		edgeRuntime:      args.EdgeRuntime,
+		edgeController:   args.EdgeController,
+		defaultNamespace: args.DefaultNamespace,
 	}
 }
 
@@ -103,6 +126,70 @@ func hasReadyCondition(conditions []metav1.Condition) bool {
 }
 
 func (r *EdgeFunctionRevisionReconciler) reconileEdgeRuntime(
+	ctx context.Context,
+	rev *extensionsv1alpha2.EdgeFunctionRevision,
+	runtimeSpec *extensionsv1alpha2.EdgeFunctionRuntime,
+) error {
+	// Use new per-namespace controller if available.
+	if r.edgeController != nil {
+		return r.reconcileEdgeRuntimeWithController(ctx, rev)
+	}
+
+	// Fall back to legacy per-function runtime.
+	return r.reconcileEdgeRuntimeLegacy(ctx, rev.Status.Ref, runtimeSpec)
+}
+
+// reconcileEdgeRuntimeWithController uses the new per-namespace EdgeController.
+func (r *EdgeFunctionRevisionReconciler) reconcileEdgeRuntimeWithController(
+	ctx context.Context,
+	rev *extensionsv1alpha2.EdgeFunctionRevision,
+) error {
+	log := clog.FromContext(ctx)
+	ref := rev.Status.Ref
+	namespace := r.defaultNamespace
+
+	log.Info("Reconciling Edge Runtime with controller", "namespace", namespace, "ref", ref)
+
+	// Download eszip if not present.
+	// For the controller mode, we write to the namespace's eszip directory.
+	// The runtime manager will ensure the directory exists when the runtime starts.
+	eszipPath := filepath.Join(r.jsStoreDir, string(namespace), ref+".eszip")
+	if _, err := os.Stat(eszipPath); os.IsNotExist(err) {
+		jsBundle, err := r.downloadFuncData(clog.IntoContext(ctx, log), "js", ref)
+		if err != nil {
+			return fmt.Errorf("failed to download Js data: %w", err)
+		}
+
+		if err := os.MkdirAll(filepath.Dir(eszipPath), 0755); err != nil {
+			return fmt.Errorf("failed to create eszip directory: %w", err)
+		}
+
+		// Write the data file first, then create symlink for atomic update.
+		dataPath := filepath.Join(r.jsStoreDir, string(namespace), ref+".data")
+		if err := os.WriteFile(dataPath, jsBundle, 0644); err != nil {
+			return fmt.Errorf("failed to write eszip data: %w", err)
+		}
+		if err := os.Symlink(ref+".data", eszipPath); err != nil {
+			return fmt.Errorf("failed to create eszip symlink: %w", err)
+		}
+
+		log.Info("Downloaded and wrote eszip", "path", eszipPath, "size", len(jsBundle))
+	} else if err != nil {
+		return fmt.Errorf("failed to stat eszip: %w", err)
+	}
+
+	// Deploy using the EdgeController.
+	if err := r.edgeController.Deploy(ctx, namespace, rev); err != nil {
+		return fmt.Errorf("failed to deploy via EdgeController: %w", err)
+	}
+
+	log.Info("Deployed Edge Function via EdgeController", "ref", ref)
+
+	return nil
+}
+
+// reconcileEdgeRuntimeLegacy uses the legacy per-function runtime.
+func (r *EdgeFunctionRevisionReconciler) reconcileEdgeRuntimeLegacy(
 	ctx context.Context,
 	ref string,
 	runtimeSpec *extensionsv1alpha2.EdgeFunctionRuntime,
@@ -159,6 +246,47 @@ func (r *EdgeFunctionRevisionReconciler) maybeCleanupEdgeRuntime(ctx context.Con
 	log := clog.FromContext(ctx, "Ref", ref)
 
 	log.Info("Cleaning up Edge Runtime")
+
+	// Use new controller if available.
+	if r.edgeController != nil {
+		return r.maybeCleanupEdgeRuntimeWithController(ctx, ref)
+	}
+
+	// Fall back to legacy cleanup.
+	return r.maybeCleanupEdgeRuntimeLegacy(ctx, ref)
+}
+
+// maybeCleanupEdgeRuntimeWithController cleans up using the new EdgeController.
+func (r *EdgeFunctionRevisionReconciler) maybeCleanupEdgeRuntimeWithController(ctx context.Context, ref string) (bool, error) {
+	log := clog.FromContext(ctx, "Ref", ref)
+	namespace := r.defaultNamespace
+	functionID := edgefuncctrl.FunctionID(ref)
+
+	log.Info("Cleaning up Edge Runtime via EdgeController", "namespace", namespace, "functionID", functionID)
+
+	if err := r.edgeController.Undeploy(ctx, namespace, functionID); err != nil {
+		log.Error(err, "Failed to undeploy function")
+		return false, err
+	}
+
+	// Also clean up the eszip file.
+	eszipPath := filepath.Join(r.jsStoreDir, string(namespace), ref+".eszip")
+	if err := os.Remove(eszipPath); err != nil && !os.IsNotExist(err) {
+		log.Error(err, "Failed to delete eszip file")
+	}
+	dataPath := filepath.Join(r.jsStoreDir, string(namespace), ref+".data")
+	if err := os.Remove(dataPath); err != nil && !os.IsNotExist(err) {
+		log.Error(err, "Failed to delete data file")
+	}
+
+	log.Info("Edge Runtime cleaned up via EdgeController")
+
+	return true, nil
+}
+
+// maybeCleanupEdgeRuntimeLegacy cleans up using the legacy per-function runtime.
+func (r *EdgeFunctionRevisionReconciler) maybeCleanupEdgeRuntimeLegacy(ctx context.Context, ref string) (bool, error) {
+	log := clog.FromContext(ctx, "Ref", ref)
 
 	if err := r.edgeRuntime.StopExec(ctx, ref); err != nil {
 		log.Error(err, "Failed to stop Edge Runtime")
@@ -313,7 +441,7 @@ func (r *EdgeFunctionRevisionReconciler) Reconcile(ctx context.Context, request 
 	} else if rev.Spec.Code.JsSource != nil {
 		log.Info("Js source detected")
 
-		if err := r.reconileEdgeRuntime(ctx, ref, rev.Spec.Runtime); err != nil {
+		if err := r.reconileEdgeRuntime(ctx, rev, rev.Spec.Runtime); err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to reconile Edge Runtime: %w", err)
 		}
 	} else {
@@ -369,7 +497,7 @@ func (r *EdgeFunctionRevisionReconciler) SetupWithManager(
 				targetRefPredicate(proxyName),
 			),
 		).
-		WithOptions(controller.Options{
+		WithOptions(ctrlcontroller.Options{
 			MaxConcurrentReconciles: 1,
 			RecoverPanic:            ptr.To(true),
 		}).

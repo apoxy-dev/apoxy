@@ -1,3 +1,5 @@
+//go:build linux
+
 package runc
 
 import (
@@ -5,8 +7,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
-	"github.com/apoxy-dev/apoxy/pkg/edgefunc"
 	"github.com/apoxy-dev/apoxy/pkg/edgefunc/runc/network"
 	"github.com/apoxy-dev/apoxy/pkg/log"
 )
@@ -41,14 +43,20 @@ func WithWorkDir(p string) Option {
 	}
 }
 
-type runtime struct {
+// Runtime is the runc-based edge function runtime.
+// It implements both edgefunc.Runtime for backward compatibility
+// and provides additional methods for the new controller-based approach.
+type Runtime struct {
 	runtimeBinPath        string
 	stateDir, rootBaseDir string
 	net                   *network.Network
 }
 
+// runtime is an alias for backward compatibility.
+type runtime = Runtime
+
 // NewRuntime returns a new edgefunc.Runtime implementation based on runc.
-func NewRuntime(ctx context.Context, opts ...Option) (edgefunc.Runtime, error) {
+func NewRuntime(ctx context.Context, opts ...Option) (*Runtime, error) {
 	runtimeOpts := defaultOptions()
 	for _, o := range opts {
 		o(runtimeOpts)
@@ -70,7 +78,7 @@ func NewRuntime(ctx context.Context, opts ...Option) (edgefunc.Runtime, error) {
 	}
 
 	if _, err := os.Stat(runtimeOpts.runtimeBinPath); err != nil {
-		fmt.Errorf("edge-runtime binary not found at %s", runtimeOpts.runtimeBinPath)
+		log.Warnf("edge-runtime binary not found at %s: %v", runtimeOpts.runtimeBinPath, err)
 	}
 
 	cnet := network.NewNetwork()
@@ -78,7 +86,7 @@ func NewRuntime(ctx context.Context, opts ...Option) (edgefunc.Runtime, error) {
 		return nil, fmt.Errorf("failed to load network: %w", err)
 	}
 
-	return &runtime{
+	return &Runtime{
 		runtimeBinPath: runtimeOpts.runtimeBinPath,
 		stateDir:       stateDir,
 		rootBaseDir:    rootBaseDir,
@@ -86,9 +94,15 @@ func NewRuntime(ctx context.Context, opts ...Option) (edgefunc.Runtime, error) {
 	}, nil
 }
 
-// Run initaliazes and runs the runtime bookkeeping loop.
+// Network returns the network manager for this runtime.
+// This is used by the EdgeController to get container IP addresses.
+func (r *Runtime) Network() *network.Network {
+	return r.net
+}
+
+// Run initializes and runs the runtime bookkeeping loop.
 // It will block until the context is cancelled.
-func (r *runtime) Run(ctx context.Context) error {
+func (r *Runtime) Run(ctx context.Context) error {
 	log.Infof("Starting runc runtime...")
 
 	for {
@@ -96,8 +110,8 @@ func (r *runtime) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		default:
-			// TODO(dilyevsky): Implement.
+			// TODO(dilyevsky): Implement bookkeeping.
+			time.Sleep(time.Second)
 		}
 	}
-	panic("unreachable")
 }
