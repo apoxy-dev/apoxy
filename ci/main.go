@@ -854,11 +854,10 @@ func (m *ApoxyCli) PublishSingleArchImages(
 	}
 
 	for _, img := range images {
-		addr, err := dag.Container().
+		// Publish as a plain image (not a manifest list) so crane can combine them later.
+		addr, err := img.ctr.
 			WithRegistryAuth("registry-1.docker.io", "apoxy", registryPassword).
-			Publish(ctx, fmt.Sprintf("docker.io/apoxy/%s:%s-%s", img.name, tag, goarch), dagger.ContainerPublishOpts{
-				PlatformVariants: []*dagger.Container{img.ctr},
-			})
+			Publish(ctx, fmt.Sprintf("docker.io/apoxy/%s:%s-%s", img.name, tag, goarch))
 		if err != nil {
 			return fmt.Errorf("failed to publish %s: %w", img.name, err)
 		}
