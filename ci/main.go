@@ -464,6 +464,7 @@ func (m *ApoxyCli) PublishEdgeRuntimeMultiarch(
 	manifest := fmt.Sprintf("docker.io/apoxy/edge-runtime:%s", sha)
 	craneCmd := []string{
 		"crane", "index", "append",
+		"--docker-empty-base", // Use Docker manifest list format instead of OCI index
 		"--manifest", manifest + "-amd64",
 		"--manifest", manifest + "-arm64",
 		"--tag", manifest,
