@@ -21,7 +21,7 @@ jobs:
           dagger call -v build-cli --src=.
           # Make sure we can build for Darwin as well.
           dagger call -v build-cli --src=. --platform=darwin/arm64
-          dagger call -v build-apiserver --src=.
-          dagger call -v build-backplane --src=.
+          dagger call -v build-apiserver --src=. --sccache-token=env:SCCACHE_WEBDAV_TOKEN
+          dagger call -v build-backplane --src=. --sccache-token=env:SCCACHE_WEBDAV_TOKEN
           dagger call -v build-kube-controller --src=.
           dagger call -v build-tunnelproxy --src=.

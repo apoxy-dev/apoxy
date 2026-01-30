@@ -24,6 +24,6 @@ jobs:
           SHUTUP: 1
         timeout-minutes: 15
         run: |
-          dagger call -v publish-images --src=. --tag=$GITHUB_REF_NAME --sha=${GITHUB_SHA::7} --registry-password=env:APOXY_DOCKERHUB_PASSWORD
+          dagger call -v publish-images --src=. --tag=$GITHUB_REF_NAME --sha=${GITHUB_SHA::7} --registry-password=env:APOXY_DOCKERHUB_PASSWORD --sccache-token=env:SCCACHE_WEBDAV_TOKEN
           dagger call -v publish-github-release --src=. --tag=$GITHUB_REF_NAME --github-token=env:GITHUB_TOKEN --sha=${GITHUB_SHA::7}
           dagger call -v publish-helm-release --src=./deploy/helm --tag=$GITHUB_REF_NAME --registry-password=env:APOXY_DOCKERHUB_PASSWORD

@@ -18,4 +18,4 @@ jobs:
           SHUTUP: 1
         timeout-minutes: 30
         run: |
-          dagger call -v publish-images --src=. --tag=latest --sha=${GITHUB_SHA::7} --registry-password=env:APOXY_DOCKERHUB_PASSWORD
+          dagger call -v publish-images --src=. --tag=latest --sha=${GITHUB_SHA::7} --registry-password=env:APOXY_DOCKERHUB_PASSWORD --sccache-token=env:SCCACHE_WEBDAV_TOKEN
