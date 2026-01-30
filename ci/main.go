@@ -374,6 +374,9 @@ func (m *ApoxyCli) PublishGithubRelease(
 // EdgeRuntimeVersion is the version of the Apoxy edge-runtime fork.
 const EdgeRuntimeVersion = "v0.1.0"
 
+// GARRegistry is the Google Artifact Registry for internal images.
+const GARRegistry = "us-west1-docker.pkg.dev"
+
 func (m *ApoxyCli) BuildEdgeRuntime(
 	ctx context.Context,
 	platform string,
@@ -417,11 +420,11 @@ func (m *ApoxyCli) BuildEdgeRuntime(
 	return builder.WithExec([]string{"cargo", "build", "--release"})
 }
 
-// PublishEdgeRuntime builds edge-runtime for the host architecture and publishes it.
+// PublishEdgeRuntime builds edge-runtime for the host architecture and publishes it to GAR.
 // This should be run on native arch workers (amd64 and arm64) in parallel.
 func (m *ApoxyCli) PublishEdgeRuntime(
 	ctx context.Context,
-	registryPassword *dagger.Secret,
+	gcrCreds *dagger.Secret,
 	sha string,
 	// +optional
 	sccacheToken *dagger.Secret,
@@ -441,10 +444,10 @@ func (m *ApoxyCli) PublishEdgeRuntime(
 		WithExec([]string{"rm", "-rf", "/var/lib/apt/lists/*"}).
 		WithFile("/usr/local/bin/edge-runtime", builder.File("/edge-runtime"))
 
-	// Publish with arch-specific tag.
+	// Publish to GAR with arch-specific tag.
 	addr, err := ctr.
-		WithRegistryAuth("registry-1.docker.io", "apoxy", registryPassword).
-		Publish(ctx, fmt.Sprintf("docker.io/apoxy/edge-runtime:%s-%s", sha, goarch))
+		WithRegistryAuth(GARRegistry, "_json_key", gcrCreds).
+		Publish(ctx, fmt.Sprintf("%s/apoxy-internal/cloud/edge-runtime:%s-%s", GARRegistry, sha, goarch))
 	if err != nil {
 		return fmt.Errorf("failed to publish edge-runtime: %w", err)
 	}
@@ -453,18 +456,17 @@ func (m *ApoxyCli) PublishEdgeRuntime(
 	return nil
 }
 
-// PublishEdgeRuntimeMultiarch combines arch-specific edge-runtime images into a multi-arch manifest.
+// PublishEdgeRuntimeMultiarch combines arch-specific edge-runtime images into a multi-arch manifest in GAR.
 func (m *ApoxyCli) PublishEdgeRuntimeMultiarch(
 	ctx context.Context,
-	registryPassword *dagger.Secret,
+	gcrCreds *dagger.Secret,
 	sha string,
 ) error {
-	crane := m.CraneContainer(ctx, registryPassword)
+	crane := m.CraneContainer(ctx, gcrCreds)
 
-	manifest := fmt.Sprintf("docker.io/apoxy/edge-runtime:%s", sha)
+	manifest := fmt.Sprintf("%s/apoxy-internal/cloud/edge-runtime:%s", GARRegistry, sha)
 	craneCmd := []string{
 		"crane", "index", "append",
-		"--docker-empty-base", // Use Docker manifest list format instead of OCI index
 		"--manifest", manifest + "-amd64",
 		"--manifest", manifest + "-arm64",
 		"--tag", manifest,
@@ -478,8 +480,8 @@ func (m *ApoxyCli) PublishEdgeRuntimeMultiarch(
 	return nil
 }
 
-// PullEdgeRuntime pulls edge-runtime from registry or builds from source.
-// If edgeRuntimeTag is provided, pulls from docker.io/apoxy/edge-runtime:<tag>.
+// PullEdgeRuntime pulls edge-runtime from GAR or builds from source.
+// If edgeRuntimeTag is provided, pulls from GAR.
 // Otherwise builds from source (slow, avoid in CI).
 func (m *ApoxyCli) PullEdgeRuntime(
 	ctx context.Context,
@@ -491,15 +493,18 @@ func (m *ApoxyCli) PullEdgeRuntime(
 	sccacheToken *dagger.Secret,
 	// +optional
 	edgeRuntimeTag string,
+	// +optional
+	gcrCreds *dagger.Secret,
 ) *dagger.Container {
 	goarch := archOf(platform)
 
 	var edgeRuntimeBinary *dagger.File
 
 	if edgeRuntimeTag != "" {
-		// Pull pre-built edge-runtime from registry.
+		// Pull pre-built edge-runtime from GAR.
 		edgeRuntimeCtr := dag.Container(dagger.ContainerOpts{Platform: platform}).
-			From(fmt.Sprintf("docker.io/apoxy/edge-runtime:%s", edgeRuntimeTag))
+			WithRegistryAuth(GARRegistry, "_json_key", gcrCreds).
+			From(fmt.Sprintf("%s/apoxy-internal/cloud/edge-runtime:%s", GARRegistry, edgeRuntimeTag))
 		edgeRuntimeBinary = edgeRuntimeCtr.File("/usr/local/bin/edge-runtime")
 	} else {
 		// Build from source (fallback for local dev).
@@ -559,6 +564,8 @@ func (m *ApoxyCli) BuildAPIServer(
 	sccacheToken *dagger.Secret,
 	// +optional
 	edgeRuntimeTag string,
+	// +optional
+	gcrCreds *dagger.Secret,
 ) *dagger.Container {
 	if platform == "" {
 		platform = runtime.GOOS + "/" + runtime.GOARCH
@@ -573,7 +580,7 @@ func (m *ApoxyCli) BuildAPIServer(
 		WithEnvVariable("CC", fmt.Sprintf("zig-wrapper cc --target=%s-linux-musl", canonArchFromGoArch(goarch))).
 		WithExec([]string{"go", "build", "-o", "apiserver", "./cmd/apiserver"})
 
-	runtimeCtr := m.PullEdgeRuntime(ctx, p, src, sccacheToken, edgeRuntimeTag)
+	runtimeCtr := m.PullEdgeRuntime(ctx, p, src, sccacheToken, edgeRuntimeTag, gcrCreds)
 
 	return dag.Container(dagger.ContainerOpts{Platform: p}).
 		From("cgr.dev/chainguard/wolfi-base:latest").
@@ -596,8 +603,8 @@ func hostPlatform() string {
 	return runtime.GOOS + "/" + runtime.GOARCH
 }
 
-// CraneContainer returns a container with crane installed and authenticated.
-func (m *ApoxyCli) CraneContainer(ctx context.Context, registryPassword *dagger.Secret) *dagger.Container {
+// CraneContainer returns a container with crane installed and authenticated to GAR.
+func (m *ApoxyCli) CraneContainer(ctx context.Context, gcrCreds *dagger.Secret) *dagger.Container {
 	cranePlatform := "x86_64"
 	if runtime.GOARCH == "arm64" {
 		cranePlatform = "arm64"
@@ -610,10 +617,10 @@ func (m *ApoxyCli) CraneContainer(ctx context.Context, registryPassword *dagger.
 			"sh", "-c",
 			fmt.Sprintf("curl -sL https://github.com/google/go-containerregistry/releases/latest/download/go-containerregistry_Linux_%s.tar.gz | tar xzf - -C /usr/local/bin crane", cranePlatform),
 		}).
-		WithSecretVariable("REGISTRY_PASSWORD", registryPassword).
+		WithSecretVariable("GCR_CREDS", gcrCreds).
 		WithExec([]string{
 			"sh", "-c",
-			`echo $REGISTRY_PASSWORD | crane auth login registry-1.docker.io -u apoxy --password-stdin`,
+			fmt.Sprintf(`echo "$GCR_CREDS" | crane auth login %s -u _json_key --password-stdin`, GARRegistry),
 		})
 }
 
@@ -627,6 +634,8 @@ func (m *ApoxyCli) BuildBackplane(
 	sccacheToken *dagger.Secret,
 	// +optional
 	edgeRuntimeTag string,
+	// +optional
+	gcrCreds *dagger.Secret,
 ) *dagger.Container {
 	if platform == "" {
 		platform = runtime.GOOS + "/" + runtime.GOARCH
@@ -658,7 +667,7 @@ func (m *ApoxyCli) BuildBackplane(
 		WithExec([]string{"go", "build", "-o", "/src/" + otelOut}).
 		WithWorkdir("/src")
 
-	runtimeCtr := m.PullEdgeRuntime(ctx, p, src, sccacheToken, edgeRuntimeTag)
+	runtimeCtr := m.PullEdgeRuntime(ctx, p, src, sccacheToken, edgeRuntimeTag, gcrCreds)
 
 	return dag.Container(dagger.ContainerOpts{Platform: p}).
 		From("cgr.dev/chainguard/wolfi-base:latest").
@@ -758,10 +767,12 @@ func (m *ApoxyCli) PublishImages(
 	sccacheToken *dagger.Secret,
 	// +optional
 	edgeRuntimeTag string,
+	// +optional
+	gcrCreds *dagger.Secret,
 ) error {
 	var apiCtrs []*dagger.Container
 	for _, platform := range []string{"linux/amd64", "linux/arm64"} {
-		apiCtrs = append(apiCtrs, m.BuildAPIServer(ctx, src, platform, sccacheToken, edgeRuntimeTag))
+		apiCtrs = append(apiCtrs, m.BuildAPIServer(ctx, src, platform, sccacheToken, edgeRuntimeTag, gcrCreds))
 	}
 
 	addr, err := dag.Container().
@@ -781,7 +792,7 @@ func (m *ApoxyCli) PublishImages(
 
 	var bCtrs []*dagger.Container
 	for _, platform := range []string{"linux/amd64", "linux/arm64"} {
-		bCtrs = append(bCtrs, m.BuildBackplane(ctx, src, platform, sccacheToken, edgeRuntimeTag))
+		bCtrs = append(bCtrs, m.BuildBackplane(ctx, src, platform, sccacheToken, edgeRuntimeTag, gcrCreds))
 	}
 
 	addr, err = dag.Container().
