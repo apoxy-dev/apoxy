@@ -57,17 +57,18 @@ type OnConnectFunc func(ctx context.Context, connID string, tn *corev1alpha.Tunn
 type OnDisconnectFunc func(ctx context.Context, connID string)
 
 type tunnelServerOptions struct {
-	proxyAddr    string
-	publicAddr   string
-	ulaPrefix    netip.Prefix
-	certPath     string
-	keyPath      string
-	extAddrs     []netip.Prefix
-	selector     string
-	ipamv4       tunnet.IPAM
-	keyLogPath   string
-	onConnect    OnConnectFunc
-	onDisconnect OnDisconnectFunc
+	proxyAddr                 string
+	publicAddr                string
+	ulaPrefix                 netip.Prefix
+	certPath                  string
+	keyPath                   string
+	extAddrs                  []netip.Prefix
+	selector                  string
+	ipamv4                    tunnet.IPAM
+	keyLogPath                string
+	onConnect                 OnConnectFunc
+	onDisconnect              OnDisconnectFunc
+	externalAddressConfig     bool
 }
 
 func defaultServerOptions() *tunnelServerOptions {
@@ -160,6 +161,14 @@ func WithOnConnect(fn OnConnectFunc) TunnelServerOption {
 func WithOnDisconnect(fn OnDisconnectFunc) TunnelServerOption {
 	return func(o *tunnelServerOptions) {
 		o.onDisconnect = fn
+	}
+}
+
+// WithExternalAddressConfig disables address configuration in ReconcileWithClient.
+// Use this when address configuration is handled externally (e.g., by EndpointAddressReconciler).
+func WithExternalAddressConfig() TunnelServerOption {
+	return func(o *tunnelServerOptions) {
+		o.externalAddressConfig = true
 	}
 }
 
@@ -678,128 +687,48 @@ func (t *TunnelServer) ReconcileWithClient(ctx context.Context, c client.Client,
 		}
 	}
 
-	for _, agent := range node.Status.Agents {
-		log := log.WithValues("agent", agent.Name)
-		// TODO(dilyevsky): Agent status should have a tunnel proxy
-		// info to which agent is connected. Right now we just assume
-		// that if agent name (conn uuid) is missing from t.conns,
-		// then it belongs to a different node.
-		conn, exists := t.conns.GetOrSet(agent.Name, &conn{
-			obj: node,
-		})
-		if !exists { // Connection belongs to a different node.
-			log.V(1).Info("Connection not found")
-			continue
-		}
+	// Configure agent addresses from TunnelNode status unless external address
+	// configuration is enabled (e.g., via EndpointAddressReconciler).
+	if !t.options.externalAddressConfig {
+		for _, agent := range node.Status.Agents {
+			log := log.WithValues("agent", agent.Name)
 
-		// Check if we already allocated and assigned addresses.
-		if conn.addrv6.IsValid() && conn.addrv4.IsValid() {
-			log.V(1).Info("Agent address is already assigned")
-			continue
-		}
+			// Check if connection exists for this agent.
+			if _, exists := t.conns.Get(agent.Name); !exists {
+				log.V(1).Info("Connection not found")
+				continue
+			}
 
-		if agent.AgentAddress == "" {
-			log.Info("Agent address is empty")
-			continue
-		}
-
-		if !conn.addrv6.IsValid() {
-			addr, err := netip.ParseAddr(agent.AgentAddress)
+			// Parse IPv6 address from agent status.
+			if agent.AgentAddress == "" {
+				log.Info("Agent address is empty")
+				continue
+			}
+			addrv6, err := netip.ParseAddr(agent.AgentAddress)
 			if err != nil {
 				log.Error(err, "Failed to parse agent address", "address", agent.AgentAddress)
 				continue
 			}
-			conn.addrv6 = netip.PrefixFrom(addr, 96)
-		}
-		t.conns.Set(agent.Name, conn)
 
-		if !conn.addrv4.IsValid() {
+			// Parse IPv4 address from agent addresses if available.
+			var addrv4 netip.Prefix
 			for _, agentAddr := range agent.AgentAddresses {
 				if addr, err := netip.ParseAddr(agentAddr); err == nil && addr.Is4() {
-					conn.addrv4 = netip.PrefixFrom(addr, 32)
+					addrv4 = netip.PrefixFrom(addr, 32)
 					break
 				}
 			}
-			if !conn.addrv4.IsValid() {
-				log.Info("No IPv4 address allocated")
+
+			// Configure the agent address using the shared method.
+			if err := t.ConfigureAgentAddress(ctx, agent.Name, netip.PrefixFrom(addrv6, 96), addrv4); err != nil {
+				log.Error(err, "Failed to configure agent address")
+				metrics.TunnelConnectionFailures.WithLabelValues("address_configuration_failed").Inc()
 				continue
 			}
-		}
-		t.conns.Set(agent.Name, conn)
 
-		log.Info("Assigned addresses to connection",
-			"ipv6", conn.addrv6, "ipv4", conn.addrv4)
-
-		if err := conn.AssignAddresses(ctx, []netip.Prefix{
-			conn.addrv6,
-			conn.addrv4,
-		}); err != nil {
-			log.Error(err, "Failed to assign address to connection")
-			metrics.TunnelConnectionFailures.WithLabelValues("address_assignment_failed").Inc()
-			return reconcile.Result{}, nil
+			// TODO(dilyevsky): Add agent status Phase and update it here. Consider creating
+			// a whole separate top-level object for Agent-TunnelProxy connections.
 		}
-
-		if err := t.router.AddAddr(conn.addrv6, conn); err != nil {
-			log.Error(err, "Failed to add TUN peer")
-			metrics.TunnelConnectionFailures.WithLabelValues("tun_peer_add_failed").Inc()
-			return reconcile.Result{}, nil
-		}
-		if err := t.router.AddRoute(conn.addrv6); err != nil {
-			log.Error(err, "Failed to add route")
-			metrics.TunnelConnectionFailures.WithLabelValues("route_addition_failed").Inc()
-			return reconcile.Result{}, nil
-		}
-		if err := t.router.AddAddr(conn.addrv4, conn); err != nil {
-			log.Error(err, "Failed to add TUN peer")
-			metrics.TunnelConnectionFailures.WithLabelValues("tun_peer_add_failed").Inc()
-			return reconcile.Result{}, nil
-		}
-		if err := t.router.AddRoute(conn.addrv4); err != nil {
-			log.Error(err, "Failed to add route")
-			metrics.TunnelConnectionFailures.WithLabelValues("route_addition_failed").Inc()
-			return reconcile.Result{}, nil
-		}
-
-		metrics.TunnelConnectionsActive.Inc()
-		defer metrics.TunnelConnectionsActive.Dec()
-
-		log.Info("Client addresses assigned", "ipv4", conn.addrv4, "ipv6", conn.addrv6)
-
-		advRoutes := []netip.Prefix{
-			conn.addrv6,
-		}
-		for i, advRoute := range advRoutes {
-			if !advRoute.IsValid() {
-				log.Info("WARNING: route to be advertised is invalid", "route", advRoute.String())
-				continue
-			}
-			// We'll only advertise single-IP routes so extend the bitmask to max.
-			if advRoute.Addr().Is4() {
-				advRoutes[i] = netip.PrefixFrom(advRoute.Addr(), 32)
-			} else {
-				advRoutes[i] = netip.PrefixFrom(advRoute.Addr(), 128)
-			}
-		}
-		// If egress gateway is enabled, route 0.0.0.0/0 via the tunnel.
-		if conn.obj.Spec.EgressGateway != nil && conn.obj.Spec.EgressGateway.Enabled {
-			log.Info("Enabling egress gateway")
-			advRoutes = append(advRoutes,
-				netip.PrefixFrom(netip.IPv4Unspecified(), 0),
-				netip.PrefixFrom(netip.IPv6Unspecified(), 0),
-			)
-		}
-
-		log.Info("Advertising routes", "routes", advRoutes)
-
-		if err := conn.AdvertiseRoute(ctx, iproutesFromPrefixes(advRoutes)); err != nil {
-			log.Error(err, "Failed to advertise route to connection")
-			metrics.TunnelConnectionFailures.WithLabelValues("route_advertisement_failed").Inc()
-			conn.Close()
-			return reconcile.Result{}, nil
-		}
-
-		// TODO(dilyevsky): Add agent status Phase and update it here. Consider creating
-		// a whole separate top-level object for Agent-TunnelProxy connections.
 	}
 
 	return ctrl.Result{}, nil
@@ -810,13 +739,11 @@ func (t *TunnelServer) ReconcileWithClient(ctx context.Context, c client.Client,
 // The connID is the connection UUID (same as agent.Name in TunnelNode status).
 // addrv6 is the allocated ULA prefix (e.g., fd61:706f:7879:...::/96).
 // addrv4 is optional and can be an invalid prefix if not needed.
-// egressGateway enables routing 0.0.0.0/0 and ::/0 via the tunnel.
 func (t *TunnelServer) ConfigureAgentAddress(
 	ctx context.Context,
 	connID string,
 	addrv6 netip.Prefix,
 	addrv4 netip.Prefix,
-	egressGateway bool,
 ) error {
 	log := log.FromContext(ctx).WithValues("connID", connID, "addrv6", addrv6, "addrv4", addrv4)
 
@@ -867,9 +794,10 @@ func (t *TunnelServer) ConfigureAgentAddress(
 
 	log.Info("Client addresses assigned")
 
-	// Advertise routes to client.
+	// Advertise routes to client - read egress gateway from TunnelNode spec.
 	advRoutes := []netip.Prefix{netip.PrefixFrom(addrv6.Addr(), 128)}
-	if egressGateway {
+	if conn.obj.Spec.EgressGateway != nil && conn.obj.Spec.EgressGateway.Enabled {
+		log.Info("Enabling egress gateway")
 		advRoutes = append(advRoutes,
 			netip.PrefixFrom(netip.IPv4Unspecified(), 0),
 			netip.PrefixFrom(netip.IPv6Unspecified(), 0),
