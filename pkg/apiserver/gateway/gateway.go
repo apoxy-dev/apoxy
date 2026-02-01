@@ -376,21 +376,45 @@ func (r *GatewayReconciler) reconcileHTTPRoutes(
 			for _, filter := range rule.Filters {
 				if filter.ExtensionRef != nil {
 					if filter.ExtensionRef.Group == "" {
-						filter.ExtensionRef.Group = "extensions.apoxy.dev"
+						filter.ExtensionRef.Group = extensionsv1alpha2.GroupName
 					}
-					key := extensionRefKey{
-						Name: string(filter.ExtensionRef.Name),
-						GroupKind: schema.GroupKind{
-							Group: string(filter.ExtensionRef.Group),
-							Kind:  string(filter.ExtensionRef.Kind),
-						},
-					}
-					if ref, ok := extRefs[key]; ok {
-						log.Info("Found extension reference",
-							"name", ref.GetName(), "gvk", ref.GroupVersionKind())
-						res.ExtensionRefFilters = append(res.ExtensionRefFilters, *ref)
+					// Handle DirectResponse specially
+					if string(filter.ExtensionRef.Group) == extensionsv1alpha2.GroupName && string(filter.ExtensionRef.Kind) == "DirectResponse" {
+						log.Info("Processing DirectResponse filter reference",
+							"name", filter.ExtensionRef.Name, "group", filter.ExtensionRef.Group)
+						// Fetch the DirectResponse object
+						dr := &extensionsv1alpha2.DirectResponse{}
+						if err := r.Get(ctx, types.NamespacedName{Name: string(filter.ExtensionRef.Name)}, dr); err != nil {
+							log.Error(err, "Failed to get DirectResponse reference", "name", filter.ExtensionRef.Name)
+						} else {
+							// Check if it's already in the list to avoid duplicates
+							alreadyExists := false
+							for _, existingDr := range res.DirectResponses {
+								if existingDr.Name == dr.Name {
+									alreadyExists = true
+									break
+								}
+							}
+							if !alreadyExists {
+								res.DirectResponses = append(res.DirectResponses, dr)
+							}
+						}
 					} else {
-						log.Info("Unable to find extension reference", "name", key.Name, "group", key.GroupKind.Group, "kind", key.GroupKind.Kind)
+						// Handle other extension refs
+						key := extensionRefKey{
+							Name: string(filter.ExtensionRef.Name),
+							GroupKind: schema.GroupKind{
+								Group: string(filter.ExtensionRef.Group),
+								Kind:  string(filter.ExtensionRef.Kind),
+							},
+						}
+						if ref, ok := extRefs[key]; ok {
+							log.Info("Found extension reference",
+								"name", ref.GetName(), "gvk", ref.GroupVersionKind())
+							res.ExtensionRefFilters = append(res.ExtensionRefFilters, *ref)
+						} else {
+							log.Info("Unable to find extension reference", "name", key.Name, "group", key.GroupKind.Group, "kind", key.GroupKind.Kind)
+						}
 					}
 				}
 			}
@@ -857,6 +881,11 @@ func (r *GatewayReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manag
 		).
 		Watches(
 			&extensionsv1alpha2.EdgeFunction{},
+			handler.EnqueueRequestsFromMapFunc(r.enqueueClass),
+			builder.WithPredicates(predicate.ResourceVersionChangedPredicate{}),
+		).
+		Watches(
+			&extensionsv1alpha2.DirectResponse{},
 			handler.EnqueueRequestsFromMapFunc(r.enqueueClass),
 			builder.WithPredicates(predicate.ResourceVersionChangedPredicate{}),
 		)

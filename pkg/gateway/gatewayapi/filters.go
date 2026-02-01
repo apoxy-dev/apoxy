@@ -12,6 +12,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	gwapiv1 "sigs.k8s.io/gateway-api/apis/v1"
 
+	extensionsv1alpha2 "github.com/apoxy-dev/apoxy/api/extensions/v1alpha2"
 	"github.com/apoxy-dev/apoxy/pkg/gateway/ir"
 	"github.com/apoxy-dev/apoxy/pkg/log"
 )
@@ -658,6 +659,46 @@ func (t *Translator) processResponseHeaderModifierFilter(
 func (t *Translator) processExtensionRefHTTPFilter(extFilter *gwapiv1.LocalObjectReference, filterContext *HTTPFiltersContext, resources *Resources) {
 	// Make sure the config actually exists.
 	if extFilter == nil {
+		return
+	}
+
+	// Handle DirectResponse specially - convert to IR DirectResponse
+	if string(extFilter.Group) == extensionsv1alpha2.GroupName && string(extFilter.Kind) == "DirectResponse" {
+		for _, dr := range resources.DirectResponses {
+			if dr.Name == string(extFilter.Name) {
+				// Convert to IR DirectResponse
+				statusCode := uint32(200)
+				if dr.Spec.StatusCode != nil {
+					statusCode = uint32(*dr.Spec.StatusCode)
+				}
+
+				var body *string
+				if dr.Spec.Body != nil && dr.Spec.Body.Inline != nil {
+					body = dr.Spec.Body.Inline
+				}
+
+				// Convert headers from CRD to IR format
+				var headers []ir.AddHeader
+				for _, h := range dr.Spec.Headers {
+					headers = append(headers, ir.AddHeader{
+						Name:   h.Name,
+						Value:  h.Value,
+						Append: false, // Direct response headers are set, not appended
+					})
+				}
+
+				filterContext.DirectResponse = &ir.DirectResponse{
+					StatusCode:  statusCode,
+					Body:        body,
+					ContentType: dr.Spec.ContentType,
+					Headers:     headers,
+				}
+				return
+			}
+		}
+		// DirectResponse not found
+		errMsg := fmt.Sprintf("DirectResponse %s not found", extFilter.Name)
+		t.processUnresolvedHTTPFilter(errMsg, filterContext)
 		return
 	}
 

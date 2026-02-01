@@ -51,6 +51,11 @@ func buildXdsRoute(httpRoute *ir.HTTPRoute) (*routev3.Route, error) {
 	switch {
 	case httpRoute.DirectResponse != nil:
 		router.Action = &routev3.Route_DirectResponse{DirectResponse: buildXdsDirectResponseAction(httpRoute.DirectResponse)}
+		// Add response headers for DirectResponse (ContentType and custom headers)
+		directResponseHeaders := buildXdsDirectResponseHeaders(httpRoute.DirectResponse)
+		if len(directResponseHeaders) > 0 {
+			router.ResponseHeadersToAdd = append(router.ResponseHeadersToAdd, directResponseHeaders...)
+		}
 	case httpRoute.Redirect != nil:
 		router.Action = &routev3.Route_Redirect{Redirect: buildXdsRedirectAction(httpRoute)}
 	case httpRoute.URLRewrite != nil:
@@ -430,6 +435,44 @@ func buildXdsDirectResponseAction(res *ir.DirectResponse) *routev3.DirectRespons
 	}
 
 	return routeAction
+}
+
+// buildXdsDirectResponseHeaders builds response headers for DirectResponse including ContentType and custom headers.
+func buildXdsDirectResponseHeaders(res *ir.DirectResponse) []*corev3.HeaderValueOption {
+	var headers []*corev3.HeaderValueOption
+
+	// Add Content-Type header if specified
+	if res.ContentType != nil {
+		headers = append(headers, &corev3.HeaderValueOption{
+			Header: &corev3.HeaderValue{
+				Key:   "Content-Type",
+				Value: *res.ContentType,
+			},
+			AppendAction: corev3.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD,
+		})
+	}
+
+	// Add custom headers
+	for _, h := range res.Headers {
+		appendAction := corev3.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD
+		if h.Append {
+			appendAction = corev3.HeaderValueOption_APPEND_IF_EXISTS_OR_ADD
+		}
+		header := &corev3.HeaderValueOption{
+			Header: &corev3.HeaderValue{
+				Key:   h.Name,
+				Value: h.Value,
+			},
+			AppendAction: appendAction,
+		}
+		// Allow empty headers to be set
+		if h.Value == "" {
+			header.KeepEmptyValue = true
+		}
+		headers = append(headers, header)
+	}
+
+	return headers
 }
 
 func buildXdsRequestMirrorPolicies(mirrorDestinations []*ir.RouteDestination) []*routev3.RouteAction_RequestMirrorPolicy {

@@ -234,6 +234,17 @@ func (in *Resources) DeepCopyInto(out *Resources) {
 			}
 		}
 	}
+	if in.DirectResponses != nil {
+		in, out := &in.DirectResponses, &out.DirectResponses
+		*out = make([]*extensionsv1alpha2.DirectResponse, len(*in))
+		for i := range *in {
+			if (*in)[i] != nil {
+				in, out := &(*in)[i], &(*out)[i]
+				*out = new(extensionsv1alpha2.DirectResponse)
+				(*in).DeepCopyInto(*out)
+			}
+		}
+	}
 	return
 }
 

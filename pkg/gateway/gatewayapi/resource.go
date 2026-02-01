@@ -64,6 +64,7 @@ type Resources struct {
 	EdgeFunctionRevisions []*extensionsv1alpha2.EdgeFunctionRevision `json:"edgeFunctionFilters,omitempty" yaml:"edgeFunctionFilters,omitempty"`
 	Backends              []*corev1alpha2.Backend                    `json:"backends,omitempty" yaml:"backends,omitempty"`
 	Proxies               []*corev1alpha2.Proxy                      `json:"proxies,omitempty" yaml:"proxies,omitempty"`
+	DirectResponses       []*extensionsv1alpha2.DirectResponse       `json:"directResponses,omitempty" yaml:"directResponses,omitempty"`
 }
 
 func NewResources() *Resources {
@@ -79,6 +80,7 @@ func NewResources() *Resources {
 		ReferenceGrants:     []*gwapiv1b1.ReferenceGrant{},
 		Namespaces:          []*v1.Namespace{},
 		ExtensionRefFilters: []unstructured.Unstructured{},
+		DirectResponses:     []*extensionsv1alpha2.DirectResponse{},
 	}
 }
 

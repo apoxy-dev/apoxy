@@ -979,6 +979,10 @@ type DirectResponse struct {
 	Body *string `json:"body,omitempty" yaml:"body,omitempty"`
 	// StatusCode will be used for the direct response's status code.
 	StatusCode uint32 `json:"statusCode" yaml:"statusCode"`
+	// ContentType specifies the Content-Type header value for the response.
+	ContentType *string `json:"contentType,omitempty" yaml:"contentType,omitempty"`
+	// Headers are additional HTTP headers to include in the response.
+	Headers []AddHeader `json:"headers,omitempty" yaml:"headers,omitempty"`
 }
 
 // Validate the fields within the DirectResponse structure
