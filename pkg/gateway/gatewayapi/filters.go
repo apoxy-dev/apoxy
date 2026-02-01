@@ -661,6 +661,34 @@ func (t *Translator) processExtensionRefHTTPFilter(extFilter *gwapiv1.LocalObjec
 		return
 	}
 
+	// Handle DirectResponse specially - convert to IR DirectResponse
+	if string(extFilter.Group) == "gateway.apoxy.dev" && string(extFilter.Kind) == "DirectResponse" {
+		for _, dr := range resources.DirectResponses {
+			if dr.Name == string(extFilter.Name) {
+				// Convert to IR DirectResponse
+				statusCode := uint32(200)
+				if dr.Spec.StatusCode != nil {
+					statusCode = uint32(*dr.Spec.StatusCode)
+				}
+
+				var body *string
+				if dr.Spec.Body != nil && dr.Spec.Body.Inline != nil {
+					body = dr.Spec.Body.Inline
+				}
+
+				filterContext.DirectResponse = &ir.DirectResponse{
+					StatusCode: statusCode,
+					Body:       body,
+				}
+				return
+			}
+		}
+		// DirectResponse not found
+		errMsg := fmt.Sprintf("DirectResponse %s not found", extFilter.Name)
+		t.processUnresolvedHTTPFilter(errMsg, filterContext)
+		return
+	}
+
 	// This list of resources will be empty unless an extension is loaded (and introduces resources)
 	for _, res := range resources.ExtensionRefFilters {
 		log.Debugf("Checking if resource gvk=%v name=%s matches filter %+v", res.GroupVersionKind(), res.GetName(), *extFilter)

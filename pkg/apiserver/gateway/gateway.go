@@ -31,6 +31,7 @@ import (
 	corev1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
 	extensionsv1alpha2 "github.com/apoxy-dev/apoxy/api/extensions/v1alpha2"
 	gatewayv1 "github.com/apoxy-dev/apoxy/api/gateway/v1"
+	gatewayv1alpha1 "github.com/apoxy-dev/apoxy/api/gateway/v1alpha1"
 	gatewayv1alpha2 "github.com/apoxy-dev/apoxy/api/gateway/v1alpha2"
 )
 
@@ -378,19 +379,43 @@ func (r *GatewayReconciler) reconcileHTTPRoutes(
 					if filter.ExtensionRef.Group == "" {
 						filter.ExtensionRef.Group = "extensions.apoxy.dev"
 					}
-					key := extensionRefKey{
-						Name: string(filter.ExtensionRef.Name),
-						GroupKind: schema.GroupKind{
-							Group: string(filter.ExtensionRef.Group),
-							Kind:  string(filter.ExtensionRef.Kind),
-						},
-					}
-					if ref, ok := extRefs[key]; ok {
-						log.Info("Found extension reference",
-							"name", ref.GetName(), "gvk", ref.GroupVersionKind())
-						res.ExtensionRefFilters = append(res.ExtensionRefFilters, *ref)
+					// Handle DirectResponse specially
+					if string(filter.ExtensionRef.Group) == "gateway.apoxy.dev" && string(filter.ExtensionRef.Kind) == "DirectResponse" {
+						log.Info("Processing DirectResponse filter reference",
+							"name", filter.ExtensionRef.Name, "group", filter.ExtensionRef.Group)
+						// Fetch the DirectResponse object
+						dr := &gatewayv1alpha1.DirectResponse{}
+						if err := r.Get(ctx, types.NamespacedName{Name: string(filter.ExtensionRef.Name)}, dr); err != nil {
+							log.Info("Unable to find DirectResponse reference", "name", filter.ExtensionRef.Name)
+						} else {
+							// Check if it's already in the list to avoid duplicates
+							alreadyExists := false
+							for _, existingDr := range res.DirectResponses {
+								if existingDr.Name == dr.Name {
+									alreadyExists = true
+									break
+								}
+							}
+							if !alreadyExists {
+								res.DirectResponses = append(res.DirectResponses, dr)
+							}
+						}
 					} else {
-						log.Info("Unable to find extension reference", "name", key.Name, "group", key.GroupKind.Group, "kind", key.GroupKind.Kind)
+						// Handle other extension refs
+						key := extensionRefKey{
+							Name: string(filter.ExtensionRef.Name),
+							GroupKind: schema.GroupKind{
+								Group: string(filter.ExtensionRef.Group),
+								Kind:  string(filter.ExtensionRef.Kind),
+							},
+						}
+						if ref, ok := extRefs[key]; ok {
+							log.Info("Found extension reference",
+								"name", ref.GetName(), "gvk", ref.GroupVersionKind())
+							res.ExtensionRefFilters = append(res.ExtensionRefFilters, *ref)
+						} else {
+							log.Info("Unable to find extension reference", "name", key.Name, "group", key.GroupKind.Group, "kind", key.GroupKind.Kind)
+						}
 					}
 				}
 			}
