@@ -676,9 +676,21 @@ func (t *Translator) processExtensionRefHTTPFilter(extFilter *gwapiv1.LocalObjec
 					body = dr.Spec.Body.Inline
 				}
 
+				// Convert headers from CRD to IR format
+				var headers []ir.AddHeader
+				for _, h := range dr.Spec.Headers {
+					headers = append(headers, ir.AddHeader{
+						Name:   h.Name,
+						Value:  h.Value,
+						Append: false, // Direct response headers are set, not appended
+					})
+				}
+
 				filterContext.DirectResponse = &ir.DirectResponse{
-					StatusCode: statusCode,
-					Body:       body,
+					StatusCode:  statusCode,
+					Body:        body,
+					ContentType: dr.Spec.ContentType,
+					Headers:     headers,
 				}
 				return
 			}

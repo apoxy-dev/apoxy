@@ -81,6 +81,7 @@ func NewResources() *Resources {
 		ReferenceGrants:     []*gwapiv1b1.ReferenceGrant{},
 		Namespaces:          []*v1.Namespace{},
 		ExtensionRefFilters: []unstructured.Unstructured{},
+		DirectResponses:     []*gatewayv1alpha1.DirectResponse{},
 	}
 }
 

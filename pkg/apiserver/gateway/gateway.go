@@ -386,7 +386,7 @@ func (r *GatewayReconciler) reconcileHTTPRoutes(
 						// Fetch the DirectResponse object
 						dr := &gatewayv1alpha1.DirectResponse{}
 						if err := r.Get(ctx, types.NamespacedName{Name: string(filter.ExtensionRef.Name)}, dr); err != nil {
-							log.Info("Unable to find DirectResponse reference", "name", filter.ExtensionRef.Name)
+							log.Error(err, "Failed to get DirectResponse reference", "name", filter.ExtensionRef.Name)
 						} else {
 							// Check if it's already in the list to avoid duplicates
 							alreadyExists := false
@@ -882,6 +882,11 @@ func (r *GatewayReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manag
 		).
 		Watches(
 			&extensionsv1alpha2.EdgeFunction{},
+			handler.EnqueueRequestsFromMapFunc(r.enqueueClass),
+			builder.WithPredicates(predicate.ResourceVersionChangedPredicate{}),
+		).
+		Watches(
+			&gatewayv1alpha1.DirectResponse{},
 			handler.EnqueueRequestsFromMapFunc(r.enqueueClass),
 			builder.WithPredicates(predicate.ResourceVersionChangedPredicate{}),
 		)
