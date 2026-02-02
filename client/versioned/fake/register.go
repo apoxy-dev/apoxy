@@ -24,7 +24,6 @@ import (
 	extensionsv1alpha1 "github.com/apoxy-dev/apoxy/api/extensions/v1alpha1"
 	extensionsv1alpha2 "github.com/apoxy-dev/apoxy/api/extensions/v1alpha2"
 	gatewayv1 "github.com/apoxy-dev/apoxy/api/gateway/v1"
-	gatewayv1alpha1 "github.com/apoxy-dev/apoxy/api/gateway/v1alpha1"
 	gatewayv1alpha2 "github.com/apoxy-dev/apoxy/api/gateway/v1alpha2"
 	policyv1alpha1 "github.com/apoxy-dev/apoxy/api/policy/v1alpha1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -44,7 +43,6 @@ var localSchemeBuilder = runtime.SchemeBuilder{
 	extensionsv1alpha1.AddToScheme,
 	extensionsv1alpha2.AddToScheme,
 	gatewayv1.AddToScheme,
-	gatewayv1alpha1.AddToScheme,
 	gatewayv1alpha2.AddToScheme,
 	policyv1alpha1.AddToScheme,
 }

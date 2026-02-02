@@ -479,6 +479,16 @@ func (in *DirectResponse) DeepCopyInto(out *DirectResponse) {
 		*out = new(string)
 		**out = **in
 	}
+	if in.ContentType != nil {
+		in, out := &in.ContentType, &out.ContentType
+		*out = new(string)
+		**out = **in
+	}
+	if in.Headers != nil {
+		in, out := &in.Headers, &out.Headers
+		*out = make([]AddHeader, len(*in))
+		copy(*out, *in)
+	}
 	return
 }
 

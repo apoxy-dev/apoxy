@@ -662,7 +662,7 @@ func (t *Translator) processExtensionRefHTTPFilter(extFilter *gwapiv1.LocalObjec
 	}
 
 	// Handle DirectResponse specially - convert to IR DirectResponse
-	if string(extFilter.Group) == "gateway.apoxy.dev" && string(extFilter.Kind) == "DirectResponse" {
+	if string(extFilter.Group) == "extensions.apoxy.dev" && string(extFilter.Kind) == "DirectResponse" {
 		for _, dr := range resources.DirectResponses {
 			if dr.Name == string(extFilter.Name) {
 				// Convert to IR DirectResponse

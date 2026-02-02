@@ -31,7 +31,6 @@ import (
 	corev1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
 	extensionsv1alpha2 "github.com/apoxy-dev/apoxy/api/extensions/v1alpha2"
 	gatewayv1 "github.com/apoxy-dev/apoxy/api/gateway/v1"
-	gatewayv1alpha1 "github.com/apoxy-dev/apoxy/api/gateway/v1alpha1"
 	gatewayv1alpha2 "github.com/apoxy-dev/apoxy/api/gateway/v1alpha2"
 )
 
@@ -380,11 +379,11 @@ func (r *GatewayReconciler) reconcileHTTPRoutes(
 						filter.ExtensionRef.Group = "extensions.apoxy.dev"
 					}
 					// Handle DirectResponse specially
-					if string(filter.ExtensionRef.Group) == "gateway.apoxy.dev" && string(filter.ExtensionRef.Kind) == "DirectResponse" {
+					if string(filter.ExtensionRef.Group) == "extensions.apoxy.dev" && string(filter.ExtensionRef.Kind) == "DirectResponse" {
 						log.Info("Processing DirectResponse filter reference",
 							"name", filter.ExtensionRef.Name, "group", filter.ExtensionRef.Group)
 						// Fetch the DirectResponse object
-						dr := &gatewayv1alpha1.DirectResponse{}
+						dr := &extensionsv1alpha2.DirectResponse{}
 						if err := r.Get(ctx, types.NamespacedName{Name: string(filter.ExtensionRef.Name)}, dr); err != nil {
 							log.Error(err, "Failed to get DirectResponse reference", "name", filter.ExtensionRef.Name)
 						} else {
@@ -886,7 +885,7 @@ func (r *GatewayReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manag
 			builder.WithPredicates(predicate.ResourceVersionChangedPredicate{}),
 		).
 		Watches(
-			&gatewayv1alpha1.DirectResponse{},
+			&extensionsv1alpha2.DirectResponse{},
 			handler.EnqueueRequestsFromMapFunc(r.enqueueClass),
 			builder.WithPredicates(predicate.ResourceVersionChangedPredicate{}),
 		)

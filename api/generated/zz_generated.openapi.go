@@ -173,6 +173,11 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/apoxy-dev/apoxy/api/extensions/v1alpha1.RuntimeCapabilities":           schema_apoxy_api_extensions_v1alpha1_RuntimeCapabilities(ref),
 		"github.com/apoxy-dev/apoxy/api/extensions/v1alpha1.SourceFile":                    schema_apoxy_api_extensions_v1alpha1_SourceFile(ref),
 		"github.com/apoxy-dev/apoxy/api/extensions/v1alpha1.WasmSource":                    schema_apoxy_api_extensions_v1alpha1_WasmSource(ref),
+		"github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.CustomResponseBody":            schema_apoxy_api_extensions_v1alpha2_CustomResponseBody(ref),
+		"github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.DirectResponse":                schema_apoxy_api_extensions_v1alpha2_DirectResponse(ref),
+		"github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.DirectResponseList":            schema_apoxy_api_extensions_v1alpha2_DirectResponseList(ref),
+		"github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.DirectResponseSpec":            schema_apoxy_api_extensions_v1alpha2_DirectResponseSpec(ref),
+		"github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.DirectResponseStatus":          schema_apoxy_api_extensions_v1alpha2_DirectResponseStatus(ref),
 		"github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.EdgeFunction":                  schema_apoxy_api_extensions_v1alpha2_EdgeFunction(ref),
 		"github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.EdgeFunctionCodeSource":        schema_apoxy_api_extensions_v1alpha2_EdgeFunctionCodeSource(ref),
 		"github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.EdgeFunctionList":              schema_apoxy_api_extensions_v1alpha2_EdgeFunctionList(ref),
@@ -185,6 +190,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.EdgeFunctionStatus":            schema_apoxy_api_extensions_v1alpha2_EdgeFunctionStatus(ref),
 		"github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.EnvVar":                        schema_apoxy_api_extensions_v1alpha2_EnvVar(ref),
 		"github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.GoPluginSource":                schema_apoxy_api_extensions_v1alpha2_GoPluginSource(ref),
+		"github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.Header":                        schema_apoxy_api_extensions_v1alpha2_Header(ref),
 		"github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.JavaScriptAssetsSource":        schema_apoxy_api_extensions_v1alpha2_JavaScriptAssetsSource(ref),
 		"github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.JavaScriptGitSource":           schema_apoxy_api_extensions_v1alpha2_JavaScriptGitSource(ref),
 		"github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.JavaScriptNpmSource":           schema_apoxy_api_extensions_v1alpha2_JavaScriptNpmSource(ref),
@@ -6559,6 +6565,209 @@ func schema_apoxy_api_extensions_v1alpha1_WasmSource(ref common.ReferenceCallbac
 	}
 }
 
+func schema_apoxy_api_extensions_v1alpha2_CustomResponseBody(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "CustomResponseBody defines the body of the direct response.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"type": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Type specifies how the body is provided. Currently only \"Inline\" is supported.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"inline": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Inline is the literal body content when Type is \"Inline\".",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"type"},
+			},
+		},
+	}
+}
+
+func schema_apoxy_api_extensions_v1alpha2_DirectResponse(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "DirectResponse is the Schema for the directresponses API. It defines a static response that can be returned by an HTTPRoute instead of forwarding to a backend.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.DirectResponseSpec"),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.DirectResponseStatus"),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.DirectResponseSpec", "github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.DirectResponseStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
+	}
+}
+
+func schema_apoxy_api_extensions_v1alpha2_DirectResponseList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "DirectResponseList contains a list of DirectResponse.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.DirectResponse"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.DirectResponse", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
+	}
+}
+
+func schema_apoxy_api_extensions_v1alpha2_DirectResponseSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "DirectResponseSpec defines the desired state of DirectResponse.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"statusCode": {
+						SchemaProps: spec.SchemaProps{
+							Description: "StatusCode is the HTTP status code to return. Defaults to 200 if not specified.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"contentType": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ContentType is the Content-Type header value. Defaults to \"text/plain\" if not specified.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"headers": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Headers are additional HTTP headers to include in the response.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.Header"),
+									},
+								},
+							},
+						},
+					},
+					"body": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Body is the response body configuration.",
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.CustomResponseBody"),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.CustomResponseBody", "github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.Header"},
+	}
+}
+
+func schema_apoxy_api_extensions_v1alpha2_DirectResponseStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "DirectResponseStatus defines the observed state of DirectResponse.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"conditions": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Conditions describe the current conditions of the DirectResponse.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"k8s.io/apimachinery/pkg/apis/meta/v1.Condition"},
+	}
+}
+
 func schema_apoxy_api_extensions_v1alpha2_EdgeFunction(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -7032,6 +7241,36 @@ func schema_apoxy_api_extensions_v1alpha2_GoPluginSource(ref common.ReferenceCal
 		},
 		Dependencies: []string{
 			"github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.OCIImageRef"},
+	}
+}
+
+func schema_apoxy_api_extensions_v1alpha2_Header(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "Header defines a custom HTTP header to include in the response.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Name is the header name.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"value": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Value is the header value.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"name", "value"},
+			},
+		},
 	}
 }
 
