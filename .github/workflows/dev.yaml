@@ -4,6 +4,9 @@ on:
     types: [opened, synchronize, reopened]
     branches:
       - main # Only for PRs targeting main branch.
+env:
+  # Last known good edge-runtime tag from GAR. Update when releasing new edge-runtime.
+  EDGE_RUNTIME_TAG: "80d07c9"
 jobs:
   build-all:
     runs-on: depot-ubuntu-22.04-16,dagger=0.19.10
@@ -15,13 +18,15 @@ jobs:
           go-version: ">=1.21.5"
       - name: Run Dagger pipeline
         env:
+          APOXY_INTERNAL_GAR_CREDENTIALS: ${{ secrets.APOXY_INTERNAL_GAR_CREDENTIALS }}
+          SCCACHE_WEBDAV_TOKEN: ${{ secrets.SCCACHE_WEBDAV_TOKEN }}
           SHUTUP: 1
         timeout-minutes: 15
         run: |
           dagger call -v build-cli --src=.
           # Make sure we can build for Darwin as well.
           dagger call -v build-cli --src=. --platform=darwin/arm64
-          dagger call -v build-apiserver --src=. --sccache-token=env:SCCACHE_WEBDAV_TOKEN
-          dagger call -v build-backplane --src=. --sccache-token=env:SCCACHE_WEBDAV_TOKEN
+          dagger call -v build-apiserver --src=. --sccache-token=env:SCCACHE_WEBDAV_TOKEN --edge-runtime-tag=$EDGE_RUNTIME_TAG --gcr-creds=env:APOXY_INTERNAL_GAR_CREDENTIALS
+          dagger call -v build-backplane --src=. --sccache-token=env:SCCACHE_WEBDAV_TOKEN --edge-runtime-tag=$EDGE_RUNTIME_TAG --gcr-creds=env:APOXY_INTERNAL_GAR_CREDENTIALS
           dagger call -v build-kube-controller --src=.
           dagger call -v build-tunnelproxy --src=.
