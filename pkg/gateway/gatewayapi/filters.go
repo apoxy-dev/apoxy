@@ -12,6 +12,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	gwapiv1 "sigs.k8s.io/gateway-api/apis/v1"
 
+	extensionsv1alpha2 "github.com/apoxy-dev/apoxy/api/extensions/v1alpha2"
 	"github.com/apoxy-dev/apoxy/pkg/gateway/ir"
 	"github.com/apoxy-dev/apoxy/pkg/log"
 )
@@ -662,7 +663,7 @@ func (t *Translator) processExtensionRefHTTPFilter(extFilter *gwapiv1.LocalObjec
 	}
 
 	// Handle DirectResponse specially - convert to IR DirectResponse
-	if string(extFilter.Group) == "extensions.apoxy.dev" && string(extFilter.Kind) == "DirectResponse" {
+	if string(extFilter.Group) == extensionsv1alpha2.GroupName && string(extFilter.Kind) == "DirectResponse" {
 		for _, dr := range resources.DirectResponses {
 			if dr.Name == string(extFilter.Name) {
 				// Convert to IR DirectResponse

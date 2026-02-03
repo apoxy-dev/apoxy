@@ -376,10 +376,10 @@ func (r *GatewayReconciler) reconcileHTTPRoutes(
 			for _, filter := range rule.Filters {
 				if filter.ExtensionRef != nil {
 					if filter.ExtensionRef.Group == "" {
-						filter.ExtensionRef.Group = "extensions.apoxy.dev"
+						filter.ExtensionRef.Group = extensionsv1alpha2.GroupName
 					}
 					// Handle DirectResponse specially
-					if string(filter.ExtensionRef.Group) == "extensions.apoxy.dev" && string(filter.ExtensionRef.Kind) == "DirectResponse" {
+					if string(filter.ExtensionRef.Group) == extensionsv1alpha2.GroupName && string(filter.ExtensionRef.Kind) == "DirectResponse" {
 						log.Info("Processing DirectResponse filter reference",
 							"name", filter.ExtensionRef.Name, "group", filter.ExtensionRef.Group)
 						// Fetch the DirectResponse object
