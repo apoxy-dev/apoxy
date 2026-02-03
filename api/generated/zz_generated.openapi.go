@@ -1933,21 +1933,6 @@ func schema_apoxy_api_core_v1alpha_DomainSpec(ref common.ReferenceCallback) comm
 							Format:      "",
 						},
 					},
-					"subdomains": {
-						SchemaProps: spec.SchemaProps{
-							Description: "The list of subdomains nested under the domain. Allows for wildcard subdomains.",
-							Type:        []string{"array"},
-							Items: &spec.SchemaOrArray{
-								Schema: &spec.Schema{
-									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
-									},
-								},
-							},
-						},
-					},
 					"customDomains": {
 						SchemaProps: spec.SchemaProps{
 							Description: "The list of custom domain names to also route to the target, which may be under another domain. Routing may require additional verification steps.",
@@ -3787,21 +3772,6 @@ func schema_apoxy_api_core_v1alpha2_DomainSpec(ref common.ReferenceCallback) com
 							Description: "The zone this domain is managed under.",
 							Type:        []string{"string"},
 							Format:      "",
-						},
-					},
-					"subdomains": {
-						SchemaProps: spec.SchemaProps{
-							Description: "The list of subdomains nested under the domain. Allows for wildcard subdomains.",
-							Type:        []string{"array"},
-							Items: &spec.SchemaOrArray{
-								Schema: &spec.Schema{
-									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
-									},
-								},
-							},
 						},
 					},
 					"customDomains": {

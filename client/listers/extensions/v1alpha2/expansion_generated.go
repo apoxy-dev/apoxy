@@ -17,6 +17,10 @@ limitations under the License.
 
 package v1alpha2
 
+// DirectResponseListerExpansion allows custom methods to be added to
+// DirectResponseLister.
+type DirectResponseListerExpansion interface{}
+
 // EdgeFunctionListerExpansion allows custom methods to be added to
 // EdgeFunctionLister.
 type EdgeFunctionListerExpansion interface{}

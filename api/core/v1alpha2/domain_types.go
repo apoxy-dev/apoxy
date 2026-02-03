@@ -51,11 +51,6 @@ type DomainSpec struct {
 	// +kubebuilder:validation:Pattern=`^[a-zA-Z0-9]([-a-zA-Z0-9]*[a-zA-Z0-9])?$`
 	Zone string `json:"zone,omitempty"`
 
-	// The list of subdomains nested under the domain.
-	// Allows for wildcard subdomains.
-	// +kubebuilder:validation:MaxItems=50
-	Subdomains []string `json:"subdomains,omitempty"`
-
 	// The list of custom domain names to also route
 	// to the target, which may be under another domain.
 	// Routing may require additional verification steps.

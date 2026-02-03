@@ -27,6 +27,7 @@ import (
 
 type ExtensionsV1alpha2Interface interface {
 	RESTClient() rest.Interface
+	DirectResponsesGetter
 	EdgeFunctionsGetter
 	EdgeFunctionRevisionsGetter
 }
@@ -34,6 +35,10 @@ type ExtensionsV1alpha2Interface interface {
 // ExtensionsV1alpha2Client is used to interact with features provided by the extensions.apoxy.dev group.
 type ExtensionsV1alpha2Client struct {
 	restClient rest.Interface
+}
+
+func (c *ExtensionsV1alpha2Client) DirectResponses() DirectResponseInterface {
+	return newDirectResponses(c)
 }
 
 func (c *ExtensionsV1alpha2Client) EdgeFunctions() EdgeFunctionInterface {

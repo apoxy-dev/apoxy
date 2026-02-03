@@ -27,6 +27,10 @@ type FakeExtensionsV1alpha2 struct {
 	*testing.Fake
 }
 
+func (c *FakeExtensionsV1alpha2) DirectResponses() v1alpha2.DirectResponseInterface {
+	return newFakeDirectResponses(c)
+}
+
 func (c *FakeExtensionsV1alpha2) EdgeFunctions() v1alpha2.EdgeFunctionInterface {
 	return newFakeEdgeFunctions(c)
 }

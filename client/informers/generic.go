@@ -97,6 +97,8 @@ func (f *sharedInformerFactory) ForResource(resource schema.GroupVersionResource
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Extensions().V1alpha1().EdgeFunctionRevisions().Informer()}, nil
 
 		// Group=extensions.apoxy.dev, Version=v1alpha2
+	case extensionsv1alpha2.SchemeGroupVersion.WithResource("directresponses"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Extensions().V1alpha2().DirectResponses().Informer()}, nil
 	case extensionsv1alpha2.SchemeGroupVersion.WithResource("edgefunctions"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Extensions().V1alpha2().EdgeFunctions().Informer()}, nil
 	case extensionsv1alpha2.SchemeGroupVersion.WithResource("edgefunctionrevisions"):

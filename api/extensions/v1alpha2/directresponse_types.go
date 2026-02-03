@@ -2,6 +2,10 @@ package v1alpha2
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	runtime "k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apiserver/pkg/registry/rest"
+	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource"
 )
 
 // BodyType defines how the response body is specified.
@@ -69,11 +73,25 @@ type DirectResponseStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
+var _ resource.StatusSubResource = &DirectResponseStatus{}
+
+func (s *DirectResponseStatus) SubResourceName() string {
+	return "status"
+}
+
+func (s *DirectResponseStatus) CopyTo(obj resource.ObjectWithStatusSubResource) {
+	parent, ok := obj.(*DirectResponse)
+	if ok {
+		parent.Status = *s
+	}
+}
+
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:categories=gateway-api
-// +kubebuilder:printcolumn:name="Status Code",type=integer,JSONPath=`.spec.statusCode`
-// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
+// +kubebuilder:subresource:log
+
+// +genclient
+// +genclient:nonNamespaced
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // DirectResponse is the Schema for the directresponses API.
@@ -87,6 +105,49 @@ type DirectResponse struct {
 	Status DirectResponseStatus `json:"status,omitempty"`
 }
 
+var (
+	_ runtime.Object                       = &DirectResponse{}
+	_ resource.Object                      = &DirectResponse{}
+	_ resource.ObjectWithStatusSubResource = &DirectResponse{}
+	_ rest.SingularNameProvider            = &DirectResponse{}
+)
+
+func (d *DirectResponse) GetObjectMeta() *metav1.ObjectMeta {
+	return &d.ObjectMeta
+}
+
+func (d *DirectResponse) NamespaceScoped() bool {
+	return false
+}
+
+func (d *DirectResponse) New() runtime.Object {
+	return &DirectResponse{}
+}
+
+func (d *DirectResponse) NewList() runtime.Object {
+	return &DirectResponseList{}
+}
+
+func (d *DirectResponse) GetGroupVersionResource() schema.GroupVersionResource {
+	return schema.GroupVersionResource{
+		Group:    SchemeGroupVersion.Group,
+		Version:  SchemeGroupVersion.Version,
+		Resource: "directresponses",
+	}
+}
+
+func (d *DirectResponse) IsStorageVersion() bool {
+	return true
+}
+
+func (d *DirectResponse) GetSingularName() string {
+	return "directresponse"
+}
+
+func (d *DirectResponse) GetStatus() resource.StatusSubResource {
+	return &d.Status
+}
+
 // +kubebuilder:object:root=true
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
@@ -95,4 +156,10 @@ type DirectResponseList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []DirectResponse `json:"items"`
+}
+
+var _ resource.ObjectList = &DirectResponseList{}
+
+func (dl *DirectResponseList) GetListMeta() *metav1.ListMeta {
+	return &dl.ListMeta
 }

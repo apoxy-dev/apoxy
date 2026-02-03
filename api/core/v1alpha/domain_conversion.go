@@ -12,7 +12,6 @@ func convertDomainSpecFromV1Alpha1ToV1Alpha2(in *DomainSpec) *v1alpha2.DomainSpe
 
 	out := &v1alpha2.DomainSpec{
 		Zone:           in.Zone,
-		Subdomains:     in.Subdomains,
 		CustomDomains:  in.CustomDomains,
 		Target:         *convertDomainTargetSpecFromV1Alpha1ToV1Alpha2(&in.Target),
 		TLS:            convertDomainTLSSpecFromV1Alpha1ToV1Alpha2(in.TLS),
@@ -31,7 +30,6 @@ func convertDomainSpecFromV1Alpha2ToV1Alpha1(in *v1alpha2.DomainSpec) *DomainSpe
 
 	out := &DomainSpec{
 		Zone:           in.Zone,
-		Subdomains:     in.Subdomains,
 		CustomDomains:  in.CustomDomains,
 		Target:         *convertDomainTargetSpecFromV1Alpha2ToV1Alpha1(&in.Target),
 		TLS:            convertDomainTLSSpecFromV1Alpha2ToV1Alpha1(in.TLS),

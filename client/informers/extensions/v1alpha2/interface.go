@@ -23,6 +23,8 @@ import (
 
 // Interface provides access to all the informers in this group version.
 type Interface interface {
+	// DirectResponses returns a DirectResponseInformer.
+	DirectResponses() DirectResponseInformer
 	// EdgeFunctions returns a EdgeFunctionInformer.
 	EdgeFunctions() EdgeFunctionInformer
 	// EdgeFunctionRevisions returns a EdgeFunctionRevisionInformer.
@@ -38,6 +40,11 @@ type version struct {
 // New returns a new Interface.
 func New(f internalinterfaces.SharedInformerFactory, namespace string, tweakListOptions internalinterfaces.TweakListOptionsFunc) Interface {
 	return &version{factory: f, namespace: namespace, tweakListOptions: tweakListOptions}
+}
+
+// DirectResponses returns a DirectResponseInformer.
+func (v *version) DirectResponses() DirectResponseInformer {
+	return &directResponseInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
 }
 
 // EdgeFunctions returns a EdgeFunctionInformer.

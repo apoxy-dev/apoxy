@@ -405,6 +405,7 @@ func defaultResources() []resource.Object {
 
 		&policyv1alpha1.RateLimit{},
 
+		&extensionsv1alpha2.DirectResponse{},
 		&extensionsv1alpha2.EdgeFunction{},
 		&extensionsv1alpha2.EdgeFunctionRevision{},
 
