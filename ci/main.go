@@ -886,7 +886,7 @@ func (m *ApoxyCli) PublishHelmRelease(
 		WithWorkdir("/src").
 		WithSecretVariable("REGISTRY_PASSWORD", registryPassword).
 		WithExec([]string{
-			"sh", "-c", `echo $REGISTRY_PASSWORD | helm registry login registry-1.docker.io -u apoxy --password-stdin`,
+			"sh", "-c", `echo "$REGISTRY_PASSWORD" | helm registry login registry-1.docker.io -u apoxy --password-stdin`,
 		}).
 		WithExec([]string{
 			"helm", "package",
