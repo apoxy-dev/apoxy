@@ -23,6 +23,7 @@ import (
 var (
 	extensionsGroupKinds = []schema.GroupKind{
 		{Group: extensions.GroupVersion.Group, Kind: "EdgeFunction"},
+		{Group: extensions.GroupVersion.Group, Kind: "DirectResponse"},
 	}
 )
 
