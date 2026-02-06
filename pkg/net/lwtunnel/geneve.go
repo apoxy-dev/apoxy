@@ -194,9 +194,9 @@ func (r *Geneve) SetUp(_ context.Context, privAddr netip.Addr) error {
 	return nil
 }
 
-// SetAddr adds an IPv6 overlay address to the Geneve interface. This is
-// optional and only needed for originating end of the tunnel to assign
-// an inner source IP address.
+// SetAddr sets the IPv6 overlay address on the Geneve interface, removing any
+// previously assigned overlay addresses. This is optional and only needed for
+// the originating end of the tunnel to assign an inner source IP address.
 func (r *Geneve) SetAddr(_ context.Context, ula netip.Addr) error {
 	h, err := r.getHandle()
 	if err != nil {
@@ -235,11 +235,33 @@ func (r *Geneve) SetAddr(_ context.Context, ula netip.Addr) error {
 	if err != nil {
 		return fmt.Errorf("failed to list addresses: %w", err)
 	}
+
+	// Check if the desired address is already configured, and remove any
+	// stale non-link-local addresses (e.g. from a previous endpoint allocation).
+	alreadyConfigured := false
 	for _, existing := range addrs {
 		if existing.Equal(*addr) {
-			slog.Info("IPv6 address already configured", slog.Any("addr", existing))
-			return nil
+			alreadyConfigured = true
+			continue
 		}
+		existingIP, ok := netip.AddrFromSlice(existing.IP)
+		if !ok || existingIP.IsLinkLocalUnicast() {
+			continue
+		}
+		slog.Info("Removing stale overlay address", slog.Any("addr", existing))
+		if h != nil {
+			err = h.AddrDel(link, &existing)
+		} else {
+			err = netlink.AddrDel(link, &existing)
+		}
+		if err != nil {
+			return fmt.Errorf("failed to remove stale address %v: %w", existing, err)
+		}
+	}
+
+	if alreadyConfigured {
+		slog.Info("IPv6 address already configured", slog.Any("addr", addr))
+		return nil
 	}
 
 	if h != nil {
