@@ -107,6 +107,10 @@ func (t *Translator) Translate(xdsIR *ir.Xds) (*types.ResourceVersionTable, erro
 		errs = errors.Join(errs, err)
 	}
 
+	if err := t.notifyExtensionServerAboutClusters(tCtx); err != nil {
+		errs = errors.Join(errs, err)
+	}
+
 	if err := processClusterForAccessLog(tCtx, xdsIR.AccessLog); err != nil {
 		errs = errors.Join(errs, err)
 	}
@@ -115,6 +119,23 @@ func (t *Translator) Translate(xdsIR *ir.Xds) (*types.ResourceVersionTable, erro
 	}
 
 	return tCtx, errs
+}
+
+// notifyExtensionServerAboutClusters calls the extension server's
+// PostClusterModify hook for each translated xDS cluster.
+func (t *Translator) notifyExtensionServerAboutClusters(tCtx *types.ResourceVersionTable) error {
+	if t.ExtensionServer == nil {
+		return nil
+	}
+
+	if err := processExtensionPostClusterHook(t.Ctx, tCtx, t.ExtensionServer.conn); err != nil {
+		if !t.ExtensionServer.FailOpen {
+			return err
+		}
+		slog.Error("Extension Manager PostCluster failure", "error", err)
+	}
+
+	return nil
 }
 
 func findIRListenersByXDSListener(xdsIR *ir.Xds, listener *listenerv3.Listener) []ir.Listener {

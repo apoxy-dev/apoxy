@@ -10,16 +10,18 @@ package translator
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/apoxy-dev/apoxy/pkg/gateway/ir"
 	"github.com/apoxy-dev/apoxy/pkg/gateway/xds/types"
 	"github.com/apoxy-dev/apoxy/pkg/log"
-	"github.com/envoyproxy/gateway/proto/extension"
+	clusterv3 "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
 	listenerv3 "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
 	cachetypes "github.com/envoyproxy/go-control-plane/pkg/cache/types"
 	resourcev3 "github.com/envoyproxy/go-control-plane/pkg/resource/v3"
+	"github.com/envoyproxy/gateway/proto/extension"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -29,6 +31,10 @@ import (
 // Envoy Gateway when performing xDS translation.
 type ExtensionServer struct {
 	extension.EnvoyGatewayExtensionClient
+
+	// conn is the underlying gRPC connection, used for RPCs not present in
+	// the current version of the extension proto (e.g., PostClusterModify).
+	conn grpc.ClientConnInterface
 
 	// FailOpen indicates whether xDS translation should continue if an extension
 	// fails to respond.
@@ -68,6 +74,7 @@ func NewExtensionServer(addr string, opts ...ExtensionServerOption) (*ExtensionS
 	}
 	return &ExtensionServer{
 		EnvoyGatewayExtensionClient: extension.NewEnvoyGatewayExtensionClient(conn),
+		conn:                        conn,
 		FailOpen:                    options.FailOpen,
 	}, nil
 }
@@ -143,6 +150,66 @@ func processExtensionPostListenerHook(
 			},
 		); err != nil {
 			return err
+		}
+	}
+
+	return nil
+}
+
+// TODO(APO-426): Remove these vendored types and use extension.PostClusterModifyRequest/Response
+// directly once envoyproxy/gateway is upgraded to v1.5.0+ (blocked on apiserver-runtime k8s v0.33 compat).
+//
+// postClusterModifyRequest mirrors the PostClusterModifyRequest message from
+// envoyproxy/gateway v1.5.0+ extension proto, vendored here to avoid a dep
+// upgrade that cascades into incompatible k8s versions.
+type postClusterModifyRequest struct {
+	Cluster *clusterv3.Cluster `protobuf:"bytes,1,opt,name=cluster,proto3" json:"cluster,omitempty"`
+}
+
+func (m *postClusterModifyRequest) Reset()         { *m = postClusterModifyRequest{} }
+func (m *postClusterModifyRequest) String() string  { return fmt.Sprintf("%+v", *m) }
+func (m *postClusterModifyRequest) ProtoMessage()   {}
+
+// postClusterModifyResponse mirrors the PostClusterModifyResponse message.
+type postClusterModifyResponse struct {
+	Cluster *clusterv3.Cluster `protobuf:"bytes,1,opt,name=cluster,proto3" json:"cluster,omitempty"`
+}
+
+func (m *postClusterModifyResponse) Reset()         { *m = postClusterModifyResponse{} }
+func (m *postClusterModifyResponse) String() string  { return fmt.Sprintf("%+v", *m) }
+func (m *postClusterModifyResponse) ProtoMessage()   {}
+
+const postClusterModifyFullMethod = "/envoygateway.extension.EnvoyGatewayExtension/PostClusterModify"
+
+// processExtensionPostClusterHook calls PostClusterModify on the extension
+// server for each translated xDS cluster, allowing the extension to modify
+// clusters in-place (e.g., to set per-project DNS resolver ports).
+func processExtensionPostClusterHook(
+	ctx context.Context,
+	tCtx *types.ResourceVersionTable,
+	conn grpc.ClientConnInterface,
+) error {
+	clusters := tCtx.XdsResources[resourcev3.ClusterType]
+	if len(clusters) == 0 {
+		return nil
+	}
+
+	log.DefaultLogger.Info("Processing extension post cluster hook", "clusters", len(clusters))
+
+	for i, r := range clusters {
+		cluster := r.(*clusterv3.Cluster)
+
+		reqCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		resp := &postClusterModifyResponse{}
+		err := conn.Invoke(reqCtx, postClusterModifyFullMethod, &postClusterModifyRequest{
+			Cluster: cluster,
+		}, resp)
+		cancel()
+		if err != nil {
+			return err
+		}
+		if resp.Cluster != nil {
+			tCtx.XdsResources[resourcev3.ClusterType][i] = resp.Cluster
 		}
 	}
 
