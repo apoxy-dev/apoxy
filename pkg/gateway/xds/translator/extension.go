@@ -10,7 +10,6 @@ package translator
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"time"
 
@@ -31,10 +30,6 @@ import (
 // Envoy Gateway when performing xDS translation.
 type ExtensionServer struct {
 	extension.EnvoyGatewayExtensionClient
-
-	// conn is the underlying gRPC connection, used for RPCs not present in
-	// the current version of the extension proto (e.g., PostClusterModify).
-	conn grpc.ClientConnInterface
 
 	// FailOpen indicates whether xDS translation should continue if an extension
 	// fails to respond.
@@ -74,7 +69,6 @@ func NewExtensionServer(addr string, opts ...ExtensionServerOption) (*ExtensionS
 	}
 	return &ExtensionServer{
 		EnvoyGatewayExtensionClient: extension.NewEnvoyGatewayExtensionClient(conn),
-		conn:                        conn,
 		FailOpen:                    options.FailOpen,
 	}, nil
 }
@@ -156,61 +150,42 @@ func processExtensionPostListenerHook(
 	return nil
 }
 
-// TODO(APO-426): Remove these vendored types and use extension.PostClusterModifyRequest/Response
-// directly once envoyproxy/gateway is upgraded to v1.5.0+ (blocked on apiserver-runtime k8s v0.33 compat).
-//
-// postClusterModifyRequest mirrors the PostClusterModifyRequest message from
-// envoyproxy/gateway v1.5.0+ extension proto, vendored here to avoid a dep
-// upgrade that cascades into incompatible k8s versions.
-type postClusterModifyRequest struct {
-	Cluster *clusterv3.Cluster `protobuf:"bytes,1,opt,name=cluster,proto3" json:"cluster,omitempty"`
-}
-
-func (m *postClusterModifyRequest) Reset()         { *m = postClusterModifyRequest{} }
-func (m *postClusterModifyRequest) String() string  { return fmt.Sprintf("%+v", *m) }
-func (m *postClusterModifyRequest) ProtoMessage()   {}
-
-// postClusterModifyResponse mirrors the PostClusterModifyResponse message.
-type postClusterModifyResponse struct {
-	Cluster *clusterv3.Cluster `protobuf:"bytes,1,opt,name=cluster,proto3" json:"cluster,omitempty"`
-}
-
-func (m *postClusterModifyResponse) Reset()         { *m = postClusterModifyResponse{} }
-func (m *postClusterModifyResponse) String() string  { return fmt.Sprintf("%+v", *m) }
-func (m *postClusterModifyResponse) ProtoMessage()   {}
-
-const postClusterModifyFullMethod = "/envoygateway.extension.EnvoyGatewayExtension/PostClusterModify"
-
-// processExtensionPostClusterHook calls PostClusterModify on the extension
-// server for each translated xDS cluster, allowing the extension to modify
+// processExtensionPostTranslateHook calls PostTranslateModify on the extension
+// server with all translated xDS clusters, allowing the extension to modify
 // clusters in-place (e.g., to set per-project DNS resolver ports).
-func processExtensionPostClusterHook(
+func processExtensionPostTranslateHook(
 	ctx context.Context,
 	tCtx *types.ResourceVersionTable,
-	conn grpc.ClientConnInterface,
+	c extension.EnvoyGatewayExtensionClient,
 ) error {
 	clusters := tCtx.XdsResources[resourcev3.ClusterType]
 	if len(clusters) == 0 {
 		return nil
 	}
 
-	log.DefaultLogger.Info("Processing extension post cluster hook", "clusters", len(clusters))
+	log.DefaultLogger.Info("Processing extension post translate hook", "clusters", len(clusters))
 
+	clusterProtos := make([]*clusterv3.Cluster, len(clusters))
 	for i, r := range clusters {
-		cluster := r.(*clusterv3.Cluster)
+		clusterProtos[i] = r.(*clusterv3.Cluster)
+	}
 
-		reqCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		resp := &postClusterModifyResponse{}
-		err := conn.Invoke(reqCtx, postClusterModifyFullMethod, &postClusterModifyRequest{
-			Cluster: cluster,
-		}, resp)
-		cancel()
-		if err != nil {
-			return err
+	reqCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	resp, err := c.PostTranslateModify(reqCtx, &extension.PostTranslateModifyRequest{
+		Clusters: clusterProtos,
+	})
+	if err != nil {
+		return err
+	}
+
+	// Replace clusters with modified versions from the extension server.
+	if resp.GetClusters() != nil {
+		newClusters := make([]cachetypes.Resource, len(resp.GetClusters()))
+		for i, c := range resp.GetClusters() {
+			newClusters[i] = c
 		}
-		if resp.Cluster != nil {
-			tCtx.XdsResources[resourcev3.ClusterType][i] = resp.Cluster
-		}
+		tCtx.XdsResources[resourcev3.ClusterType] = newClusters
 	}
 
 	return nil

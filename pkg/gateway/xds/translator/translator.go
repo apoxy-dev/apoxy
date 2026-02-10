@@ -122,17 +122,17 @@ func (t *Translator) Translate(xdsIR *ir.Xds) (*types.ResourceVersionTable, erro
 }
 
 // notifyExtensionServerAboutClusters calls the extension server's
-// PostClusterModify hook for each translated xDS cluster.
+// PostTranslateModify hook with all translated xDS clusters.
 func (t *Translator) notifyExtensionServerAboutClusters(tCtx *types.ResourceVersionTable) error {
 	if t.ExtensionServer == nil {
 		return nil
 	}
 
-	if err := processExtensionPostClusterHook(t.Ctx, tCtx, t.ExtensionServer.conn); err != nil {
+	if err := processExtensionPostTranslateHook(t.Ctx, tCtx, t.ExtensionServer.EnvoyGatewayExtensionClient); err != nil {
 		if !t.ExtensionServer.FailOpen {
 			return err
 		}
-		slog.Error("Extension Manager PostCluster failure", "error", err)
+		slog.Error("Extension Manager PostTranslate failure", "error", err)
 	}
 
 	return nil
