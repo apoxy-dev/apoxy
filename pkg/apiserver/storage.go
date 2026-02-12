@@ -64,6 +64,29 @@ func enableAutoVacuum(path string) error {
 	if _, err := db.Exec("PRAGMA auto_vacuum = INCREMENTAL"); err != nil {
 		return fmt.Errorf("setting auto_vacuum: %w", err)
 	}
+
+	// Drop litestream recovery artifacts (lost_and_found tables from sqlite3 .recover).
+	rows, err := db.Query("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'lost_and_found%'")
+	if err != nil {
+		return fmt.Errorf("querying lost_and_found tables: %w", err)
+	}
+	var toDrop []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			rows.Close()
+			return fmt.Errorf("scanning table name: %w", err)
+		}
+		toDrop = append(toDrop, name)
+	}
+	rows.Close()
+	for _, name := range toDrop {
+		slog.Info("Dropping litestream recovery artifact", "table", name)
+		if _, err := db.Exec("DROP TABLE IF EXISTS " + name); err != nil {
+			return fmt.Errorf("dropping table %s: %w", name, err)
+		}
+	}
+
 	// VACUUM is required to convert the database to the new auto_vacuum mode.
 	if _, err := db.Exec("VACUUM"); err != nil {
 		return fmt.Errorf("vacuuming database: %w", err)
