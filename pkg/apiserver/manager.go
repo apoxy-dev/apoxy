@@ -423,19 +423,6 @@ func defaultResources() []resource.Object {
 	}
 }
 
-func encodeSQLiteConnArgs(args map[string]string) string {
-	var buf strings.Builder
-	for k, v := range args {
-		if buf.Len() > 0 {
-			buf.WriteString("&")
-		}
-		buf.WriteString(k)
-		buf.WriteString("=")
-		buf.WriteString(v)
-	}
-	return buf.String()
-}
-
 // defaultOptions returns default options.
 func defaultOptions(ctx context.Context) (*options, error) {
 	systemULA := tunnet.NewULA(ctx, apoxynet.SystemNetworkID)
@@ -820,13 +807,7 @@ func start(
 				}
 			}
 		}
-		sqliteConn := "sqlite://" + opts.sqlitePath
-		connArgs := encodeSQLiteConnArgs(opts.sqliteConnArgs)
-		if connArgs != "" {
-			sqliteConn += "?" + connArgs
-		}
-		log.Debugf("Using SQLite connection: %s", sqliteConn)
-		kineStore, err := NewKineStorage(ctx, sqliteConn, kineLogFormat)
+		kineStore, err := NewKineStorage(ctx, opts.sqlitePath, opts.sqliteConnArgs, kineLogFormat)
 		if err != nil {
 			readyCh <- fmt.Errorf("failed to create kine storage: %w", err)
 			return
