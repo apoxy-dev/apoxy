@@ -224,23 +224,38 @@ func (r *ProxyReconciler) run(ctx context.Context) {
 					continue
 				}
 
+				updated := false
 				if !update.Delete {
-					p.Status.Replicas = append(p.Status.Replicas, &corev1alpha2.ProxyReplicaStatus{
-						Name:        meta.Name,
-						ConnectedAt: meta.ConnectedAt,
-						Addresses:   nodeMetadataToAddresses(meta),
-					})
+					// Check if replica already exists before appending.
+					found := false
+					for _, replica := range p.Status.Replicas {
+						if replica.Name == meta.Name {
+							found = true
+							break
+						}
+					}
+					if !found {
+						p.Status.Replicas = append(p.Status.Replicas, &corev1alpha2.ProxyReplicaStatus{
+							Name:        meta.Name,
+							ConnectedAt: meta.ConnectedAt,
+							Addresses:   nodeMetadataToAddresses(meta),
+						})
+						updated = true
+					}
 				} else {
 					for i, replica := range p.Status.Replicas {
 						if replica.Name == meta.Name {
 							p.Status.Replicas = append(p.Status.Replicas[:i], p.Status.Replicas[i+1:]...)
+							updated = true
 							break
 						}
 					}
 				}
 
-				if err := r.Status().Update(ctx, p); err != nil {
-					slog.Error("Failed to update proxy status", "proxy", proxyName, "error", err)
+				if updated {
+					if err := r.Status().Update(ctx, p); err != nil {
+						slog.Error("Failed to update proxy status", "proxy", proxyName, "error", err)
+					}
 				}
 			}
 
