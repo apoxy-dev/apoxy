@@ -26,6 +26,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
+// SQLite auto_vacuum modes: https://www.sqlite.org/pragma.html#pragma_auto_vacuum
+const sqliteAutoVacuumIncremental = 2
+
 // encodeSQLiteConnArgs encodes connection arguments as a query string.
 func encodeSQLiteConnArgs(args map[string]string) string {
 	var buf strings.Builder
@@ -51,21 +54,8 @@ func enableAutoVacuum(path string) error {
 	}
 	defer db.Close()
 
-	var mode int
-	if err := db.QueryRow("PRAGMA auto_vacuum").Scan(&mode); err != nil {
-		return fmt.Errorf("querying auto_vacuum mode: %w", err)
-	}
-	if mode == 2 {
-		slog.Info("SQLite auto_vacuum already set to incremental")
-		return nil
-	}
-
-	slog.Info("Setting SQLite auto_vacuum to incremental", "current_mode", mode)
-	if _, err := db.Exec("PRAGMA auto_vacuum = INCREMENTAL"); err != nil {
-		return fmt.Errorf("setting auto_vacuum: %w", err)
-	}
-
 	// Drop litestream recovery artifacts (lost_and_found tables from sqlite3 .recover).
+	// This runs unconditionally so cleanup happens even when auto_vacuum is already set.
 	rows, err := db.Query("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'lost_and_found%'")
 	if err != nil {
 		return fmt.Errorf("querying lost_and_found tables: %w", err)
@@ -85,6 +75,29 @@ func enableAutoVacuum(path string) error {
 		if _, err := db.Exec("DROP TABLE IF EXISTS " + name); err != nil {
 			return fmt.Errorf("dropping table %s: %w", name, err)
 		}
+	}
+
+	var mode int
+	if err := db.QueryRow("PRAGMA auto_vacuum").Scan(&mode); err != nil {
+		return fmt.Errorf("querying auto_vacuum mode: %w", err)
+	}
+
+	if mode == sqliteAutoVacuumIncremental {
+		if len(toDrop) == 0 {
+			slog.Info("SQLite auto_vacuum already set to incremental")
+			return nil
+		}
+		// Tables were dropped; VACUUM to reclaim space.
+		slog.Info("SQLite auto_vacuum already set, vacuuming to reclaim dropped tables", "dropped", len(toDrop))
+		if _, err := db.Exec("VACUUM"); err != nil {
+			return fmt.Errorf("vacuuming database: %w", err)
+		}
+		return nil
+	}
+
+	slog.Info("Setting SQLite auto_vacuum to incremental", "current_mode", mode)
+	if _, err := db.Exec("PRAGMA auto_vacuum = INCREMENTAL"); err != nil {
+		return fmt.Errorf("setting auto_vacuum: %w", err)
 	}
 
 	// VACUUM is required to convert the database to the new auto_vacuum mode.
