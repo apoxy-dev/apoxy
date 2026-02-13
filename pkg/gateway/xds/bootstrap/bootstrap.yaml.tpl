@@ -42,6 +42,7 @@ dynamic_resources:
     grpc_services:
     - envoy_grpc:
         cluster_name: xds_cluster
+        authority: {{ .XdsServer.Address }}
     set_node_on_first_message_only: true
   lds_config:
     ads: {}
