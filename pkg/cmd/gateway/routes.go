@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -19,8 +20,23 @@ import (
 	gatewayv1alpha2 "github.com/apoxy-dev/apoxy/api/gateway/v1alpha2"
 	"github.com/apoxy-dev/apoxy/client/versioned/scheme"
 	"github.com/apoxy-dev/apoxy/config"
+	"github.com/apoxy-dev/apoxy/pkg/cmd/resource"
 	"github.com/apoxy-dev/apoxy/rest"
 )
+
+// sinceString returns a string representation of a time.Duration since the provided time.Time.
+func sinceString(t time.Time) string {
+	d := time.Since(t).Round(time.Second)
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	} else if d < time.Hour {
+		return fmt.Sprintf("%dm%ds", int(d.Minutes()), int(d.Seconds())%60)
+	} else if d < 24*time.Hour {
+		return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
+	} else {
+		return fmt.Sprintf("%dd%dh", int(d.Hours()/24), int(d.Hours())%24)
+	}
+}
 
 var (
 	showRoutesLabels     bool
@@ -273,7 +289,7 @@ func getRoutesTablePrinter(showLabels bool) func(routes []routeInfo) error {
 				},
 			}
 			if showLabels {
-				row.Cells = append(row.Cells, labelsToString(r.Labels))
+				row.Cells = append(row.Cells, resource.LabelsToString(r.Labels))
 			}
 			table.Rows = append(table.Rows, row)
 		}

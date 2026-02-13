@@ -1,11 +1,16 @@
 package v1alpha2
 
 import (
+	"context"
+	"fmt"
+	"strings"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apiserver/pkg/registry/rest"
 	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource"
+	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource/resourcestrategy"
 )
 
 // +kubebuilder:object:root=true
@@ -151,6 +156,7 @@ var (
 	_ resource.Object                      = &Backend{}
 	_ resource.ObjectWithStatusSubResource = &Backend{}
 	_ rest.SingularNameProvider            = &Backend{}
+	_ resourcestrategy.TableConverter      = &Backend{}
 )
 
 func (p *Backend) GetObjectMeta() *metav1.ObjectMeta {
@@ -189,6 +195,48 @@ func (p *Backend) GetStatus() resource.StatusSubResource {
 	return &p.Status
 }
 
+func getBackendEndpointsSummary(endpoints []BackendEndpoint) string {
+	if len(endpoints) == 0 {
+		return "None"
+	}
+	var parts []string
+	for _, ep := range endpoints {
+		if ep.FQDN != "" {
+			parts = append(parts, ep.FQDN)
+		} else if ep.IP != "" {
+			parts = append(parts, ep.IP)
+		}
+	}
+	if len(parts) == 0 {
+		return "None"
+	}
+	return strings.Join(parts, ",")
+}
+
+// ConvertToTable implements rest.TableConvertor for pretty printing.
+func (b *Backend) ConvertToTable(ctx context.Context, tableOptions runtime.Object) (*metav1.Table, error) {
+	table := &metav1.Table{}
+	if opt, ok := tableOptions.(*metav1.TableOptions); !ok || !opt.NoHeaders {
+		table.ColumnDefinitions = []metav1.TableColumnDefinition{
+			{Name: "Name", Type: "string", Format: "name", Description: "Name of the backend"},
+			{Name: "Endpoints", Type: "string", Description: "Backend endpoints"},
+			{Name: "Protocol", Type: "string", Description: "Backend protocol"},
+			{Name: "Age", Type: "string", Description: "Time since creation"},
+		}
+	}
+	table.Rows = append(table.Rows, metav1.TableRow{
+		Cells: []interface{}{
+			b.Name,
+			getBackendEndpointsSummary(b.Spec.Endpoints),
+			fmt.Sprintf("%s", b.Spec.Protocol),
+			formatAge(b.CreationTimestamp.Time),
+		},
+		Object: runtime.RawExtension{Object: b},
+	})
+	table.ResourceVersion = b.ResourceVersion
+	return table, nil
+}
+
 // +kubebuilder:object:root=true
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
@@ -199,8 +247,40 @@ type BackendList struct {
 	Items           []Backend `json:"items"`
 }
 
-var _ resource.ObjectList = &BackendList{}
+var (
+	_ resource.ObjectList             = &BackendList{}
+	_ resourcestrategy.TableConverter = &BackendList{}
+)
 
 func (pl *BackendList) GetListMeta() *metav1.ListMeta {
 	return &pl.ListMeta
+}
+
+// ConvertToTable implements rest.TableConvertor for pretty printing.
+func (bl *BackendList) ConvertToTable(ctx context.Context, tableOptions runtime.Object) (*metav1.Table, error) {
+	table := &metav1.Table{}
+	if opt, ok := tableOptions.(*metav1.TableOptions); !ok || !opt.NoHeaders {
+		table.ColumnDefinitions = []metav1.TableColumnDefinition{
+			{Name: "Name", Type: "string", Format: "name", Description: "Name of the backend"},
+			{Name: "Endpoints", Type: "string", Description: "Backend endpoints"},
+			{Name: "Protocol", Type: "string", Description: "Backend protocol"},
+			{Name: "Age", Type: "string", Description: "Time since creation"},
+		}
+	}
+	for i := range bl.Items {
+		b := &bl.Items[i]
+		table.Rows = append(table.Rows, metav1.TableRow{
+			Cells: []interface{}{
+				b.Name,
+				getBackendEndpointsSummary(b.Spec.Endpoints),
+				fmt.Sprintf("%s", b.Spec.Protocol),
+				formatAge(b.CreationTimestamp.Time),
+			},
+			Object: runtime.RawExtension{Object: b},
+		})
+	}
+	table.ResourceVersion = bl.ResourceVersion
+	table.Continue = bl.Continue
+	table.RemainingItemCount = bl.RemainingItemCount
+	return table, nil
 }

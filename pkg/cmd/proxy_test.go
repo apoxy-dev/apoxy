@@ -8,6 +8,7 @@ import (
 	"time"
 
 	corev1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
+	"github.com/apoxy-dev/apoxy/pkg/cmd/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/cli-runtime/pkg/printers"
 )
@@ -92,7 +93,7 @@ func TestPrintProxyTable(t *testing.T) {
 			}
 
 			if tt.showLabels {
-				addLabelsColumnToTable(table)
+				resource.AddLabelsColumnToTable(table)
 			}
 
 			var buf bytes.Buffer
@@ -195,7 +196,7 @@ func TestPrintProxyListTable(t *testing.T) {
 			}
 
 			if tt.showLabels {
-				addLabelsColumnToTable(table)
+				resource.AddLabelsColumnToTable(table)
 			}
 
 			var buf bytes.Buffer
@@ -246,19 +247,19 @@ func TestLabelsToString(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := labelsToString(tt.labels)
+			got := resource.LabelsToString(tt.labels)
 
 			if tt.name == "multiple labels" {
 				// For multiple labels, check that both expected key-value pairs are present
 				if !strings.Contains(got, "env=prod") || !strings.Contains(got, "team=platform") {
-					t.Errorf("labelsToString() = %v, want to contain both env=prod and team=platform", got)
+					t.Errorf("LabelsToString() = %v, want to contain both env=prod and team=platform", got)
 				}
 				if strings.Count(got, ",") != 1 {
-					t.Errorf("labelsToString() = %v, expected exactly one comma", got)
+					t.Errorf("LabelsToString() = %v, expected exactly one comma", got)
 				}
 			} else {
 				if got != tt.want {
-					t.Errorf("labelsToString() = %v, want %v", got, tt.want)
+					t.Errorf("LabelsToString() = %v, want %v", got, tt.want)
 				}
 			}
 		})

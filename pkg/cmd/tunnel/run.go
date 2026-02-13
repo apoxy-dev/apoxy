@@ -80,6 +80,8 @@ var (
 	autoCreate         bool
 	healthAddr         string
 	metricsAddr        string
+	noTUI              bool
+	endpointSelection  string
 
 	preserveDefaultGwDsts []netip.Prefix
 )

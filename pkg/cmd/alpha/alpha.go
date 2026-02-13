@@ -18,6 +18,5 @@ func Cmd() *cobra.Command {
 }
 
 func init() {
-	alphaCmd.AddCommand(rateLimitCmd)
 	alphaCmd.AddCommand(tunnelCmd)
 }
