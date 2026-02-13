@@ -29,6 +29,9 @@ const (
 	// DefaultXdsServerPort is the default listening port of the xds-server.
 	DefaultXdsServerPort = 18000
 
+	// DefaultTLSCAPath is the default path to system CA certificates.
+	DefaultTLSCAPath = "/etc/ssl/certs/ca-certificates.crt"
+
 	envoyReadinessAddress = "0.0.0.0"
 	EnvoyReadinessPort    = 19001
 	EnvoyReadinessPath    = "/ready"
@@ -69,6 +72,8 @@ type bootstrapParameters struct {
 	StatsMatcher *StatsMatcherParameters
 	// OverloadManager defines the configuration of the Envoy overload manager.
 	OverloadManager OverloadManagerParameters
+	// XdsTLSCAPath is the path to the CA certificate for xDS TLS. Empty disables TLS.
+	XdsTLSCAPath string
 }
 
 type OverloadManagerParameters struct {
@@ -133,6 +138,9 @@ type BootstrapConfig struct {
 	XdsServerHost string
 	// XdsServerPort is the port of the Xds Server within Envoy Gateway.
 	XdsServerPort int32
+	// XdsTLSCAPath enables TLS for the xDS server connection using the CA certificate at this path.
+	// Empty string disables TLS.
+	XdsTLSCAPath string
 	// OverloadMaxHeapSizeBytes defines the maximum heap size in bytes for the Envoy overload manager.
 	OverloadMaxHeapSizeBytes *uint64
 	// OverloadMaxActiveDownstreamConnections defines the maximum number of active downstream connections for the Envoy overload manager.
@@ -169,6 +177,18 @@ func WithXdsServerHost(host string) BootstrapOption {
 func WithXdsServerPort(port int32) BootstrapOption {
 	return func(cfg *BootstrapConfig) {
 		cfg.XdsServerPort = port
+	}
+}
+
+// WithXdsTLS enables TLS for the xDS server connection using system CA certificates.
+func WithXdsTLS() BootstrapOption {
+	return WithXdsTLSCAPath(DefaultTLSCAPath)
+}
+
+// WithXdsTLSCAPath enables TLS for the xDS server connection using the CA certificate at the given path.
+func WithXdsTLSCAPath(caPath string) BootstrapOption {
+	return func(cfg *BootstrapConfig) {
+		cfg.XdsTLSCAPath = caPath
 	}
 }
 
@@ -212,6 +232,7 @@ func GetRenderedBootstrapConfig(opts ...BootstrapOption) (string, error) {
 				MaxHeapSizeBytes:               sOpts.OverloadMaxHeapSizeBytes,
 				MaxActiveDownstreamConnections: sOpts.OverloadMaxActiveDownstreamConnections,
 			},
+			XdsTLSCAPath: sOpts.XdsTLSCAPath,
 		},
 	}
 

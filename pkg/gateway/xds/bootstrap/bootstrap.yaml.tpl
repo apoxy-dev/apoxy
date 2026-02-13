@@ -160,6 +160,16 @@ static_resources:
             connection_keepalive:
               interval: 30s
               timeout: 5s
+{{- if .XdsTLSCAPath }}
+    transport_socket:
+      name: envoy.transport_sockets.tls
+      typed_config:
+        "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+        common_tls_context:
+          validation_context:
+            trusted_ca:
+              filename: {{ .XdsTLSCAPath }}
+{{- end }}
 overload_manager:
   refresh_interval: 0.25s
   resource_monitors:
