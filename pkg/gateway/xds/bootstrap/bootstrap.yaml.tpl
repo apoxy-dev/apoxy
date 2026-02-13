@@ -165,6 +165,7 @@ static_resources:
       name: envoy.transport_sockets.tls
       typed_config:
         "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+        sni: {{ .XdsServer.Address }}
         common_tls_context:
           validation_context:
             trusted_ca:
