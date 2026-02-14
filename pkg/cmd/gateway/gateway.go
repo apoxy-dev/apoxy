@@ -154,6 +154,6 @@ var gatewayResource = &resource.ResourceCommand[*gatewayv1.Gateway, *gatewayv1.G
 // Cmd returns the gateway command with the routes subcommand attached.
 func Cmd() *cobra.Command {
 	cmd := gatewayResource.Build()
-	cmd.AddCommand(routesCmd)
+	cmd.AddCommand(buildRoutesCmd())
 	return cmd
 }

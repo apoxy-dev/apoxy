@@ -75,7 +75,8 @@ type ResourceCommand[T Object, TList runtime.Object] struct {
 	ListFlags func(cmd *cobra.Command) func() string
 }
 
-func printStructured(obj runtime.Object, format string) error {
+// PrintStructured serializes a runtime.Object as JSON or YAML to stdout.
+func PrintStructured(obj runtime.Object, format string) error {
 	// Populate Kind/APIVersion from the scheme so they appear in output.
 	// The Kubernetes client strips TypeMeta during deserialization.
 	gvks, _, err := scheme.Scheme.ObjectKinds(obj)
@@ -109,7 +110,7 @@ func printStructured(obj runtime.Object, format string) error {
 
 func (r *ResourceCommand[T, TList]) printObj(ctx context.Context, obj T, showLabels bool, outputFormat string) error {
 	if outputFormat != "" {
-		return printStructured(obj, outputFormat)
+		return PrintStructured(obj, outputFormat)
 	}
 	if r.TablePrinter != nil {
 		table, err := r.TablePrinter.ObjToTable(obj).ConvertToTable(ctx, &metav1.TableOptions{})
@@ -131,7 +132,7 @@ func (r *ResourceCommand[T, TList]) printObj(ctx context.Context, obj T, showLab
 
 func (r *ResourceCommand[T, TList]) printList(ctx context.Context, list TList, showLabels bool, outputFormat string) error {
 	if outputFormat != "" {
-		return printStructured(list, outputFormat)
+		return PrintStructured(list, outputFormat)
 	}
 	if r.TablePrinter != nil {
 		table, err := r.TablePrinter.ListToTable(list).ConvertToTable(ctx, &metav1.TableOptions{})
