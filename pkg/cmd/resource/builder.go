@@ -9,6 +9,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	sigyaml "sigs.k8s.io/yaml"
 
 	"github.com/apoxy-dev/apoxy/client/versioned/scheme"
 	"github.com/apoxy-dev/apoxy/config"
@@ -74,7 +75,42 @@ type ResourceCommand[T Object, TList runtime.Object] struct {
 	ListFlags func(cmd *cobra.Command) func() string
 }
 
-func (r *ResourceCommand[T, TList]) printObj(ctx context.Context, obj T, showLabels bool) error {
+func printStructured(obj runtime.Object, format string) error {
+	// Populate Kind/APIVersion from the scheme so they appear in output.
+	// The Kubernetes client strips TypeMeta during deserialization.
+	gvks, _, err := scheme.Scheme.ObjectKinds(obj)
+	if err == nil && len(gvks) > 0 {
+		obj.GetObjectKind().SetGroupVersionKind(gvks[0])
+	}
+
+	switch format {
+	case "json":
+		data, err := json.MarshalIndent(obj, "", "  ")
+		if err != nil {
+			return fmt.Errorf("failed to marshal JSON: %w", err)
+		}
+		fmt.Println(string(data))
+		return nil
+	case "yaml":
+		data, err := json.Marshal(obj)
+		if err != nil {
+			return fmt.Errorf("failed to marshal JSON: %w", err)
+		}
+		out, err := sigyaml.JSONToYAML(data)
+		if err != nil {
+			return fmt.Errorf("failed to convert to YAML: %w", err)
+		}
+		fmt.Print(string(out))
+		return nil
+	default:
+		return fmt.Errorf("unsupported output format: %q", format)
+	}
+}
+
+func (r *ResourceCommand[T, TList]) printObj(ctx context.Context, obj T, showLabels bool, outputFormat string) error {
+	if outputFormat != "" {
+		return printStructured(obj, outputFormat)
+	}
 	if r.TablePrinter != nil {
 		table, err := r.TablePrinter.ObjToTable(obj).ConvertToTable(ctx, &metav1.TableOptions{})
 		if err != nil {
@@ -93,7 +129,10 @@ func (r *ResourceCommand[T, TList]) printObj(ctx context.Context, obj T, showLab
 	return fmt.Errorf("no printer configured")
 }
 
-func (r *ResourceCommand[T, TList]) printList(ctx context.Context, list TList, showLabels bool) error {
+func (r *ResourceCommand[T, TList]) printList(ctx context.Context, list TList, showLabels bool, outputFormat string) error {
+	if outputFormat != "" {
+		return printStructured(list, outputFormat)
+	}
 	if r.TablePrinter != nil {
 		table, err := r.TablePrinter.ListToTable(list).ConvertToTable(ctx, &metav1.TableOptions{})
 		if err != nil {
@@ -119,6 +158,7 @@ func (r *ResourceCommand[T, TList]) printList(ctx context.Context, list TList, s
 func (r *ResourceCommand[T, TList]) Build() *cobra.Command {
 	var (
 		showLabels     bool
+		outputFormat   string
 		fieldSelector  string
 		createFile     string
 		applyFile      string
@@ -154,7 +194,7 @@ func (r *ResourceCommand[T, TList]) Build() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return r.printList(cmd.Context(), list, showLabels)
+			return r.printList(cmd.Context(), list, showLabels, outputFormat)
 		},
 	}
 
@@ -173,7 +213,7 @@ func (r *ResourceCommand[T, TList]) Build() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := r.printObj(cmd.Context(), obj, false); err != nil {
+			if err := r.printObj(cmd.Context(), obj, false, outputFormat); err != nil {
 				return err
 			}
 			if r.PostGet != nil {
@@ -206,7 +246,7 @@ func (r *ResourceCommand[T, TList]) Build() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return r.printList(cmd.Context(), list, showLabels)
+			return r.printList(cmd.Context(), list, showLabels, outputFormat)
 		},
 	}
 
@@ -328,6 +368,9 @@ manage different fields of the same object without conflicts.`, r.KindName, r.Ki
 	}
 
 	// Register flags.
+	rootCmd.Flags().StringVarP(&outputFormat, "output", "o", "", `Output format: "json" or "yaml". Default is table.`)
+	getCmd.Flags().StringVarP(&outputFormat, "output", "o", "", `Output format: "json" or "yaml". Default is table.`)
+	listCmd.Flags().StringVarP(&outputFormat, "output", "o", "", `Output format: "json" or "yaml". Default is table.`)
 	rootCmd.Flags().StringVar(&fieldSelector, "field-selector", "", "Filter list results by field selectors (e.g. spec.zone=example.com).")
 	listCmd.Flags().StringVar(&fieldSelector, "field-selector", "", "Filter list results by field selectors (e.g. spec.zone=example.com).")
 	createCmd.Flags().StringVarP(&createFile, "filename", "f", "", "The file that contains the configuration to create.")

@@ -1,7 +1,12 @@
 package resource
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"io"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -39,13 +44,20 @@ type fakeClient struct {
 	lastListOpts metav1.ListOptions
 }
 
-func (f *fakeClient) Get(_ context.Context, _ string, _ metav1.GetOptions) (*fakeObj, error) {
-	return &fakeObj{}, nil
+func (f *fakeClient) Get(_ context.Context, name string, _ metav1.GetOptions) (*fakeObj, error) {
+	return &fakeObj{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+	}, nil
 }
 
 func (f *fakeClient) List(_ context.Context, opts metav1.ListOptions) (*fakeList, error) {
 	f.lastListOpts = opts
-	return &fakeList{}, nil
+	return &fakeList{
+		Items: []*fakeObj{
+			{ObjectMeta: metav1.ObjectMeta{Name: "item1"}},
+			{ObjectMeta: metav1.ObjectMeta{Name: "item2"}},
+		},
+	}, nil
 }
 
 func (f *fakeClient) Create(_ context.Context, obj *fakeObj, _ metav1.CreateOptions) (*fakeObj, error) {
@@ -115,6 +127,94 @@ func TestFieldSelectorFlag(t *testing.T) {
 			assert.Equal(t, tt.wantFS, fc.lastListOpts.FieldSelector)
 		})
 	}
+}
+
+// captureStdout runs fn while capturing os.Stdout and returns what was written.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	orig := os.Stdout
+	os.Stdout = w
+	defer func() { os.Stdout = orig }()
+
+	fn()
+	w.Close()
+
+	var buf bytes.Buffer
+	_, err = io.Copy(&buf, r)
+	require.NoError(t, err)
+	return buf.String()
+}
+
+func TestOutputFormat(t *testing.T) {
+	tests := []struct {
+		name      string
+		args      []string
+		checkJSON bool
+		checkYAML bool
+	}{
+		{
+			name:      "get -o json",
+			args:      []string{"get", "my-resource", "-o", "json"},
+			checkJSON: true,
+		},
+		{
+			name:      "list -o json via root",
+			args:      []string{"-o", "json"},
+			checkJSON: true,
+		},
+		{
+			name:      "list -o json via subcommand",
+			args:      []string{"list", "-o", "json"},
+			checkJSON: true,
+		},
+		{
+			name:      "get -o yaml",
+			args:      []string{"get", "my-resource", "-o", "yaml"},
+			checkYAML: true,
+		},
+		{
+			name:      "list -o yaml via root",
+			args:      []string{"-o", "yaml"},
+			checkYAML: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fc := &fakeClient{}
+			cmd := buildTestCommand(fc, nil)
+
+			out := captureStdout(t, func() {
+				err := executeCommand(cmd, tt.args...)
+				require.NoError(t, err)
+			})
+
+			if tt.checkJSON {
+				assert.True(t, json.Valid([]byte(out)), "output should be valid JSON: %s", out)
+			}
+			if tt.checkYAML {
+				assert.True(t, strings.Contains(out, "name:") || strings.Contains(out, "items:"),
+					"output should contain YAML fields: %s", out)
+				assert.False(t, json.Valid([]byte(out)), "YAML output should not be valid JSON")
+			}
+		})
+	}
+}
+
+func TestOutputFormatDefaultIsTable(t *testing.T) {
+	fc := &fakeClient{}
+	cmd := buildTestCommand(fc, nil)
+
+	out := captureStdout(t, func() {
+		err := executeCommand(cmd, "get", "my-resource")
+		require.NoError(t, err)
+	})
+
+	// Table output contains the header from CustomPrinter.
+	assert.Contains(t, out, "NAME")
+	assert.False(t, json.Valid([]byte(out)), "default output should not be JSON")
 }
 
 func TestListFlagsMerge(t *testing.T) {
