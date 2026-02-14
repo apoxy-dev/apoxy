@@ -3,6 +3,7 @@ package v1alpha2
 import (
 	"context"
 	"fmt"
+	"net"
 	"strings"
 	"time"
 
@@ -352,21 +353,18 @@ func domainToTable(domain *Domain, tableOptions runtime.Object) (*metav1.Table, 
 
 	// Add column definitions (unless NoHeaders is set)
 	if opt, ok := tableOptions.(*metav1.TableOptions); !ok || !opt.NoHeaders {
-		table.ColumnDefinitions = []metav1.TableColumnDefinition{
-			{Name: "Name", Type: "string", Format: "name", Description: "Name of the domain"},
-			{Name: "Zone", Type: "string", Description: "Zone the domain is managed under"},
-			{Name: "Target", Type: "string", Description: "Target type (DNS, Ref, or None)"},
-			{Name: "Status", Type: "string", Description: "Current status of the domain"},
-			{Name: "Age", Type: "string", Description: "Time since creation"},
-		}
+		table.ColumnDefinitions = domainColumnDefinitions()
 	}
 
 	// Add row data
+	typ, value, ttl := getDomainColumns(domain)
 	table.Rows = append(table.Rows, metav1.TableRow{
 		Cells: []interface{}{
 			domain.Name,
 			domain.Spec.Zone,
-			getDomainTarget(domain),
+			typ,
+			value,
+			ttl,
 			string(domain.Status.Phase),
 			formatAge(domain.CreationTimestamp.Time),
 		},
@@ -384,23 +382,20 @@ func domainListToTable(list *DomainList, tableOptions runtime.Object) (*metav1.T
 
 	// Add column definitions
 	if opt, ok := tableOptions.(*metav1.TableOptions); !ok || !opt.NoHeaders {
-		table.ColumnDefinitions = []metav1.TableColumnDefinition{
-			{Name: "Name", Type: "string", Format: "name", Description: "Name of the domain"},
-			{Name: "Zone", Type: "string", Description: "Zone the domain is managed under"},
-			{Name: "Target", Type: "string", Description: "Target type (DNS, Ref, or None)"},
-			{Name: "Status", Type: "string", Description: "Current status of the domain"},
-			{Name: "Age", Type: "string", Description: "Time since creation"},
-		}
+		table.ColumnDefinitions = domainColumnDefinitions()
 	}
 
 	// Add rows for each item
 	for i := range list.Items {
 		domain := &list.Items[i]
+		typ, value, ttl := getDomainColumns(domain)
 		table.Rows = append(table.Rows, metav1.TableRow{
 			Cells: []interface{}{
 				domain.Name,
 				domain.Spec.Zone,
-				getDomainTarget(domain),
+				typ,
+				value,
+				ttl,
 				string(domain.Status.Phase),
 				formatAge(domain.CreationTimestamp.Time),
 			},
@@ -416,15 +411,52 @@ func domainListToTable(list *DomainList, tableOptions runtime.Object) (*metav1.T
 	return table, nil
 }
 
-// getDomainTarget returns a human-readable string describing the domain's target.
-func getDomainTarget(domain *Domain) string {
+func domainColumnDefinitions() []metav1.TableColumnDefinition {
+	return []metav1.TableColumnDefinition{
+		{Name: "Name", Type: "string", Format: "name", Description: "Name of the domain"},
+		{Name: "Zone", Type: "string", Description: "Zone the domain is managed under"},
+		{Name: "Type", Type: "string", Description: "Record type (Ref, DNS:A, DNS:AAAA, DNS:CNAME, etc.)"},
+		{Name: "Value", Type: "string", Description: "Target value"},
+		{Name: "TTL", Type: "integer", Description: "Time-to-live in seconds"},
+		{Name: "Status", Type: "string", Description: "Current status of the domain"},
+		{Name: "Age", Type: "string", Description: "Time since creation"},
+	}
+}
+
+// getDomainColumns returns the Type, Value, and TTL columns for a domain row.
+func getDomainColumns(domain *Domain) (typ, value string, ttl int32) {
+	if domain.Spec.Target.Ref != nil {
+		ref := domain.Spec.Target.Ref
+		scheme := string(ref.Kind)
+		switch ref.Kind {
+		case "Gateway":
+			scheme = "gateway"
+		case "Tunnel", "TunnelNode":
+			scheme = "tunnel"
+		case "EdgeFunction":
+			scheme = "func"
+		}
+		return "Ref", fmt.Sprintf("%s://%s", scheme, ref.Name), 10
+	}
 	if domain.Spec.Target.DNS != nil {
 		dns := domain.Spec.Target.DNS
+		if dns.TTL != nil {
+			ttl = *dns.TTL
+		}
 		if len(dns.IPs) > 0 {
-			return fmt.Sprintf("🌐 A/AAAA → %d IPs", len(dns.IPs))
+			first := dns.IPs[0]
+			recType := "A"
+			if ip := net.ParseIP(first); ip != nil && ip.To4() == nil {
+				recType = "AAAA"
+			}
+			value = first
+			if n := len(dns.IPs) - 1; n > 0 {
+				value += fmt.Sprintf(" (+%d)", n)
+			}
+			return "DNS:" + recType, value, ttl
 		}
 		if dns.FQDN != nil {
-			return fmt.Sprintf("🌐 CNAME → %s", truncateString(*dns.FQDN, 20))
+			return "DNS:CNAME", truncateString(*dns.FQDN, 30), ttl
 		}
 		var recordTypes []string
 		if len(dns.TXT) > 0 {
@@ -442,25 +474,26 @@ func getDomainTarget(domain *Domain) string {
 		if len(dns.CAA) > 0 {
 			recordTypes = append(recordTypes, "CAA")
 		}
+		if len(dns.DKIM) > 0 {
+			recordTypes = append(recordTypes, "DKIM")
+		}
+		if len(dns.SPF) > 0 {
+			recordTypes = append(recordTypes, "SPF")
+		}
+		if len(dns.DMARC) > 0 {
+			recordTypes = append(recordTypes, "DMARC")
+		}
+		if len(dns.DS) > 0 {
+			recordTypes = append(recordTypes, "DS")
+		}
+		if len(dns.DNSKEY) > 0 {
+			recordTypes = append(recordTypes, "DNSKEY")
+		}
 		if len(recordTypes) > 0 {
-			return "📋 " + strings.Join(recordTypes, ",")
+			return "DNS:" + strings.Join(recordTypes, ","), "", ttl
 		}
-		return "🌐 DNS"
 	}
-	if domain.Spec.Target.Ref != nil {
-		ref := domain.Spec.Target.Ref
-		icon, label := "🔗", string(ref.Kind)
-		switch ref.Kind {
-		case "Gateway":
-			icon, label = "⛩", "gateway"
-		case "Tunnel", "TunnelNode":
-			icon, label = "🔗", "tunnel"
-		case "EdgeFunction":
-			icon, label = "⚡", "func"
-		}
-		return fmt.Sprintf("%s %s:%s", icon, label, ref.Name)
-	}
-	return "—"
+	return "—", "", 0
 }
 
 // truncateString truncates a string to maxLen characters, adding "..." if truncated
