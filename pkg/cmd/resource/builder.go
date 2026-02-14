@@ -68,6 +68,10 @@ type ResourceCommand[T Object, TList runtime.Object] struct {
 
 	// PostGet is an optional hook called after Get to display additional information.
 	PostGet func(ctx context.Context, c *rest.APIClient, name string, obj T) error
+
+	// ListFlags registers custom flags on both the root and list commands.
+	// Returns a function that produces a field selector string from those flags.
+	ListFlags func(cmd *cobra.Command) func() string
 }
 
 func (r *ResourceCommand[T, TList]) printObj(ctx context.Context, obj T, showLabels bool) error {
@@ -115,11 +119,15 @@ func (r *ResourceCommand[T, TList]) printList(ctx context.Context, list TList, s
 func (r *ResourceCommand[T, TList]) Build() *cobra.Command {
 	var (
 		showLabels     bool
+		fieldSelector  string
 		createFile     string
 		applyFile      string
 		fieldManager   string
 		forceConflicts bool
 	)
+
+	// Register ListFlags on root and list commands; hold the closures for runtime.
+	var rootListFlagsFn, listListFlagsFn func() string
 
 	rootCmd := &cobra.Command{
 		Use:     r.Use,
@@ -132,7 +140,17 @@ func (r *ResourceCommand[T, TList]) Build() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			list, err := r.ClientFunc(c).List(cmd.Context(), metav1.ListOptions{})
+			fs := fieldSelector
+			if rootListFlagsFn != nil {
+				if extra := rootListFlagsFn(); extra != "" {
+					if fs != "" {
+						fs += "," + extra
+					} else {
+						fs = extra
+					}
+				}
+			}
+			list, err := r.ClientFunc(c).List(cmd.Context(), metav1.ListOptions{FieldSelector: fs})
 			if err != nil {
 				return err
 			}
@@ -174,7 +192,17 @@ func (r *ResourceCommand[T, TList]) Build() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			list, err := r.ClientFunc(c).List(cmd.Context(), metav1.ListOptions{})
+			fs := fieldSelector
+			if listListFlagsFn != nil {
+				if extra := listListFlagsFn(); extra != "" {
+					if fs != "" {
+						fs += "," + extra
+					} else {
+						fs = extra
+					}
+				}
+			}
+			list, err := r.ClientFunc(c).List(cmd.Context(), metav1.ListOptions{FieldSelector: fs})
 			if err != nil {
 				return err
 			}
@@ -300,11 +328,18 @@ manage different fields of the same object without conflicts.`, r.KindName, r.Ki
 	}
 
 	// Register flags.
+	rootCmd.Flags().StringVar(&fieldSelector, "field-selector", "", "Filter list results by field selectors (e.g. spec.zone=example.com).")
+	listCmd.Flags().StringVar(&fieldSelector, "field-selector", "", "Filter list results by field selectors (e.g. spec.zone=example.com).")
 	createCmd.Flags().StringVarP(&createFile, "filename", "f", "", "The file that contains the configuration to create.")
 	listCmd.Flags().BoolVar(&showLabels, "show-labels", false, fmt.Sprintf("Print the %s's labels.", r.KindName))
 	applyCmd.Flags().StringVarP(&applyFile, "filename", "f", "", "The file that contains the configuration to apply.")
 	applyCmd.Flags().StringVar(&fieldManager, "field-manager", "apoxy-cli", "Name of the field manager for server-side apply.")
 	applyCmd.Flags().BoolVar(&forceConflicts, "force-conflicts", false, "Force apply even if there are field ownership conflicts.")
+
+	if r.ListFlags != nil {
+		rootListFlagsFn = r.ListFlags(rootCmd)
+		listListFlagsFn = r.ListFlags(listCmd)
+	}
 
 	rootCmd.AddCommand(getCmd, listCmd, createCmd, deleteCmd, applyCmd)
 	return rootCmd

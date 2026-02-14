@@ -206,6 +206,7 @@ func NewKineStorage(ctx context.Context, dbPath string, connArgs map[string]stri
 			etcdConfig:     etcdConfig,
 			groupVersioner: s.StorageVersioner,
 		}
+		options.AttrFunc = customGetAttrs
 	}, nil
 }
 

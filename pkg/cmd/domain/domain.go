@@ -21,6 +21,16 @@ var domainResource = &resource.ResourceCommand[*corev1alpha2.Domain, *corev1alph
 		ObjToTable:  func(d *corev1alpha2.Domain) resource.TableConverter { return d },
 		ListToTable: func(l *corev1alpha2.DomainList) resource.TableConverter { return l },
 	},
+	ListFlags: func(cmd *cobra.Command) func() string {
+		var zone string
+		cmd.Flags().StringVar(&zone, "zone", "", "Filter domains by zone name.")
+		return func() string {
+			if zone != "" {
+				return "spec.zone=" + zone
+			}
+			return ""
+		}
+	},
 }
 
 var zoneResource = &resource.ResourceCommand[*corev1alpha2.DomainZone, *corev1alpha2.DomainZoneList]{
