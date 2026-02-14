@@ -388,7 +388,7 @@ func domainListToTable(list *DomainList, tableOptions runtime.Object) (*metav1.T
 			{Name: "Name", Type: "string", Format: "name", Description: "Name of the domain"},
 			{Name: "Zone", Type: "string", Description: "Zone the domain is managed under"},
 			{Name: "Target", Type: "string", Description: "Target type (DNS, Ref, or None)"},
-			{Name: "Phase", Type: "string", Description: "Current phase of the domain"},
+			{Name: "Status", Type: "string", Description: "Current status of the domain"},
 			{Name: "Age", Type: "string", Description: "Time since creation"},
 		}
 	}
@@ -416,20 +416,16 @@ func domainListToTable(list *DomainList, tableOptions runtime.Object) (*metav1.T
 	return table, nil
 }
 
-// getDomainTarget returns a human-readable string describing the domain's target
+// getDomainTarget returns a human-readable string describing the domain's target.
 func getDomainTarget(domain *Domain) string {
 	if domain.Spec.Target.DNS != nil {
 		dns := domain.Spec.Target.DNS
-		if dns.DNSOnly {
-			return "DNS-Only"
-		}
 		if len(dns.IPs) > 0 {
-			return fmt.Sprintf("DNS(IPs:%d)", len(dns.IPs))
+			return fmt.Sprintf("🌐 A/AAAA → %d IPs", len(dns.IPs))
 		}
 		if dns.FQDN != nil {
-			return fmt.Sprintf("DNS(CNAME:%s)", truncateString(*dns.FQDN, 20))
+			return fmt.Sprintf("🌐 CNAME → %s", truncateString(*dns.FQDN, 20))
 		}
-		// Check for other DNS record types
 		var recordTypes []string
 		if len(dns.TXT) > 0 {
 			recordTypes = append(recordTypes, "TXT")
@@ -440,15 +436,31 @@ func getDomainTarget(domain *Domain) string {
 		if len(dns.NS) > 0 {
 			recordTypes = append(recordTypes, "NS")
 		}
-		if len(recordTypes) > 0 {
-			return fmt.Sprintf("DNS(%s)", strings.Join(recordTypes, ","))
+		if len(dns.SRV) > 0 {
+			recordTypes = append(recordTypes, "SRV")
 		}
-		return "DNS"
+		if len(dns.CAA) > 0 {
+			recordTypes = append(recordTypes, "CAA")
+		}
+		if len(recordTypes) > 0 {
+			return "📋 " + strings.Join(recordTypes, ",")
+		}
+		return "🌐 DNS"
 	}
 	if domain.Spec.Target.Ref != nil {
-		return fmt.Sprintf("Ref(%s)", domain.Spec.Target.Ref.Name)
+		ref := domain.Spec.Target.Ref
+		icon, label := "🔗", string(ref.Kind)
+		switch ref.Kind {
+		case "Gateway":
+			icon, label = "⛩", "gateway"
+		case "Tunnel", "TunnelNode":
+			icon, label = "🔗", "tunnel"
+		case "EdgeFunction":
+			icon, label = "⚡", "func"
+		}
+		return fmt.Sprintf("%s %s:%s", icon, label, ref.Name)
 	}
-	return "None"
+	return "—"
 }
 
 // truncateString truncates a string to maxLen characters, adding "..." if truncated

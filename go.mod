@@ -53,6 +53,8 @@ require (
 	github.com/k3s-io/kine v1.14.2
 	github.com/kdomanski/iso9660 v0.4.0
 	github.com/klauspost/cpuid/v2 v2.2.10
+	github.com/mattn/go-runewidth v0.0.16
+	github.com/mattn/go-sqlite3 v1.14.32
 	github.com/metal-stack/go-ipam v1.14.12
 	github.com/miekg/dns v1.1.63
 	github.com/mitchellh/mapstructure v1.5.0
@@ -272,8 +274,6 @@ require (
 	github.com/mattn/go-colorable v0.1.13 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-localereader v0.0.1 // indirect
-	github.com/mattn/go-runewidth v0.0.16 // indirect
-	github.com/mattn/go-sqlite3 v1.14.32 // indirect
 	github.com/matttproud/golang_protobuf_extensions v1.0.4 // indirect
 	github.com/minio/highwayhash v1.0.3 // indirect
 	github.com/mitchellh/go-homedir v1.1.0 // indirect

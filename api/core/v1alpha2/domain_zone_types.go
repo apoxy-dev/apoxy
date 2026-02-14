@@ -1,11 +1,15 @@
 package v1alpha2
 
 import (
+	"context"
+	"strings"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apiserver/pkg/registry/rest"
 	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource"
+	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource/resourcestrategy"
 )
 
 // +kubebuilder:object:root=true
@@ -195,10 +199,13 @@ func (as *DomainZoneStatus) CopyTo(obj resource.ObjectWithStatusSubResource) {
 	}
 }
 
-var _ runtime.Object = &DomainZone{}
-var _ resource.Object = &DomainZone{}
-var _ resource.ObjectWithStatusSubResource = &DomainZone{}
-var _ rest.SingularNameProvider = &DomainZone{}
+var (
+	_ runtime.Object                       = &DomainZone{}
+	_ resource.Object                      = &DomainZone{}
+	_ resource.ObjectWithStatusSubResource = &DomainZone{}
+	_ rest.SingularNameProvider            = &DomainZone{}
+	_ resourcestrategy.TableConverter      = &DomainZone{}
+)
 
 func (a *DomainZone) GetObjectMeta() *metav1.ObjectMeta {
 	return &a.ObjectMeta
@@ -246,8 +253,71 @@ type DomainZoneList struct {
 	Items           []DomainZone `json:"items"`
 }
 
-var _ resource.ObjectList = &DomainZoneList{}
+var (
+	_ resource.ObjectList             = &DomainZoneList{}
+	_ resourcestrategy.TableConverter = &DomainZoneList{}
+)
 
 func (pl *DomainZoneList) GetListMeta() *metav1.ListMeta {
 	return &pl.ListMeta
+}
+
+// ConvertToTable implements rest.TableConvertor for pretty printing.
+func (dz *DomainZone) ConvertToTable(ctx context.Context, tableOptions runtime.Object) (*metav1.Table, error) {
+	table := &metav1.Table{}
+	if opt, ok := tableOptions.(*metav1.TableOptions); !ok || !opt.NoHeaders {
+		table.ColumnDefinitions = []metav1.TableColumnDefinition{
+			{Name: "Name", Type: "string", Format: "name", Description: "Name of the domain zone"},
+			{Name: "Status", Type: "string", Description: "Current phase of the domain zone"},
+			{Name: "Nameservers", Type: "string", Description: "Required nameservers"},
+			{Name: "Age", Type: "string", Description: "Time since creation"},
+		}
+	}
+	table.Rows = append(table.Rows, metav1.TableRow{
+		Cells: []interface{}{
+			dz.Name,
+			string(dz.Status.Phase),
+			getDomainZoneNameservers(dz),
+			formatAge(dz.CreationTimestamp.Time),
+		},
+		Object: runtime.RawExtension{Object: dz},
+	})
+	table.ResourceVersion = dz.ResourceVersion
+	return table, nil
+}
+
+// ConvertToTable implements rest.TableConvertor for pretty printing.
+func (dzl *DomainZoneList) ConvertToTable(ctx context.Context, tableOptions runtime.Object) (*metav1.Table, error) {
+	table := &metav1.Table{}
+	if opt, ok := tableOptions.(*metav1.TableOptions); !ok || !opt.NoHeaders {
+		table.ColumnDefinitions = []metav1.TableColumnDefinition{
+			{Name: "Name", Type: "string", Format: "name", Description: "Name of the domain zone"},
+			{Name: "Status", Type: "string", Description: "Current phase of the domain zone"},
+			{Name: "Nameservers", Type: "string", Description: "Required nameservers"},
+			{Name: "Age", Type: "string", Description: "Time since creation"},
+		}
+	}
+	for i := range dzl.Items {
+		dz := &dzl.Items[i]
+		table.Rows = append(table.Rows, metav1.TableRow{
+			Cells: []interface{}{
+				dz.Name,
+				string(dz.Status.Phase),
+				getDomainZoneNameservers(dz),
+				formatAge(dz.CreationTimestamp.Time),
+			},
+			Object: runtime.RawExtension{Object: dz},
+		})
+	}
+	table.ResourceVersion = dzl.ResourceVersion
+	table.Continue = dzl.Continue
+	table.RemainingItemCount = dzl.RemainingItemCount
+	return table, nil
+}
+
+func getDomainZoneNameservers(dz *DomainZone) string {
+	if dz.Status.Nameservers == nil || len(dz.Status.Nameservers.Required) == 0 {
+		return ""
+	}
+	return strings.Join(dz.Status.Nameservers.Required, ",")
 }

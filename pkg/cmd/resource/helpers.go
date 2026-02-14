@@ -6,8 +6,8 @@ import (
 	"os"
 	"strings"
 
+	"github.com/mattn/go-runewidth"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/cli-runtime/pkg/printers"
 )
 
 // LabelsToString formats a label map as a comma-separated key=value string.
@@ -54,11 +54,69 @@ func ReadInputData(filename string) ([]byte, error) {
 	return nil, fmt.Errorf("please provide a configuration via --filename or stdin")
 }
 
-// PrintTable prints a metav1.Table to stdout, optionally appending a labels column.
+// PrintTable prints a metav1.Table to stdout using display-width-aware
+// column alignment (handles emoji and other wide Unicode correctly).
 func PrintTable(table *metav1.Table, showLabels bool) error {
 	if showLabels {
 		AddLabelsColumnToTable(table)
 	}
-	printer := printers.NewTablePrinter(printers.PrintOptions{})
-	return printer.PrintObj(table, os.Stdout)
+
+	numCols := len(table.ColumnDefinitions)
+	if numCols == 0 {
+		return nil
+	}
+
+	// Stringify all cells.
+	headers := make([]string, numCols)
+	for i, col := range table.ColumnDefinitions {
+		headers[i] = strings.ToUpper(col.Name)
+	}
+	rows := make([][]string, len(table.Rows))
+	for i, row := range table.Rows {
+		cells := make([]string, numCols)
+		for j := 0; j < numCols; j++ {
+			if j < len(row.Cells) {
+				cells[j] = fmt.Sprintf("%v", row.Cells[j])
+			}
+		}
+		rows[i] = cells
+	}
+
+	// Compute max display width per column.
+	widths := make([]int, numCols)
+	for i, h := range headers {
+		widths[i] = runewidth.StringWidth(h)
+	}
+	for _, row := range rows {
+		for i, cell := range row {
+			if w := runewidth.StringWidth(cell); w > widths[i] {
+				widths[i] = w
+			}
+		}
+	}
+
+	// Print header.
+	const colGap = "   "
+	var b strings.Builder
+	for i, h := range headers {
+		if i > 0 {
+			b.WriteString(colGap)
+		}
+		b.WriteString(runewidth.FillRight(h, widths[i]))
+	}
+	b.WriteString("\n")
+
+	// Print rows.
+	for _, row := range rows {
+		for i, cell := range row {
+			if i > 0 {
+				b.WriteString(colGap)
+			}
+			b.WriteString(runewidth.FillRight(cell, widths[i]))
+		}
+		b.WriteString("\n")
+	}
+
+	_, err := fmt.Fprint(os.Stdout, b.String())
+	return err
 }
