@@ -16,7 +16,7 @@ import (
 	"golang.org/x/sync/errgroup"
 	"golang.zx2c4.com/wireguard/tun"
 	utiliptables "k8s.io/kubernetes/pkg/util/iptables"
-	utilexec "k8s.io/utils/exec"
+
 
 	"github.com/apoxy-dev/apoxy/pkg/netstack"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/connection"
@@ -111,8 +111,8 @@ func newClientNetlinkRouter(opts ...Option) (*ClientNetlinkRouter, error) {
 	return &ClientNetlinkRouter{
 		tunDev:  tunDev,
 		tunLink: tunLink,
-		iptV4:   utiliptables.New(utilexec.New(), utiliptables.ProtocolIPv4),
-		iptV6:   utiliptables.New(utilexec.New(), utiliptables.ProtocolIPv6),
+		iptV4:   utiliptables.New(utiliptables.ProtocolIPv4),
+		iptV6:   utiliptables.New(utiliptables.ProtocolIPv6),
 		smux:    connection.NewSrcMuxedConn(),
 		options: options,
 		closed:  make(chan struct{}),

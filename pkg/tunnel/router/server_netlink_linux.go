@@ -17,7 +17,7 @@ import (
 	"golang.zx2c4.com/wireguard/tun"
 	proxyutil "k8s.io/kubernetes/pkg/proxy/util"
 	utiliptables "k8s.io/kubernetes/pkg/util/iptables"
-	utilexec "k8s.io/utils/exec"
+
 
 	"github.com/apoxy-dev/apoxy/pkg/netstack"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/connection"
@@ -120,8 +120,8 @@ func NewNetlinkRouter(opts ...Option) (*NetlinkRouter, error) {
 		tunDev:  tunDev,
 		tunLink: tunLink,
 
-		iptV4: utiliptables.New(utilexec.New(), utiliptables.ProtocolIPv4),
-		iptV6: utiliptables.New(utilexec.New(), utiliptables.ProtocolIPv6),
+		iptV4: utiliptables.New(utiliptables.ProtocolIPv4),
+		iptV6: utiliptables.New(utiliptables.ProtocolIPv6),
 
 		dmux: connection.NewDstMuxedConn(),
 	}, nil
