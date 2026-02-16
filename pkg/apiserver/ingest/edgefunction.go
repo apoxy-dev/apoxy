@@ -472,7 +472,7 @@ func (w *worker) pullOCIImage(
 				return nil, fmt.Errorf("failed to parse dockerconfigjson: %w", err)
 			}
 			keyring := &credentialprovider.BasicDockerKeyring{}
-			keyring.Add(dockerConfig.Auths)
+			keyring.Add(nil, dockerConfig.Auths)
 
 			credsFunc = func(_ context.Context, _ string) (auth.Credential, error) {
 				authConfs, ok := keyring.Lookup(ociRef.Repo)
