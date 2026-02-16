@@ -59,7 +59,7 @@ require (
 	github.com/miekg/dns v1.1.63
 	github.com/mitchellh/mapstructure v1.5.0
 	github.com/opencontainers/image-spec v1.1.1
-	github.com/opencontainers/runc v1.2.2
+	github.com/opencontainers/runc v1.2.5
 	github.com/phemmer/go-iptrie v0.0.0-20240326174613-ba542f5282c9
 	github.com/pkg/browser v0.0.0-20210911075715-681adbf594b8
 	github.com/prometheus/client_golang v1.23.2
