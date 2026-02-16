@@ -231,8 +231,9 @@ func (g *kineRESTOptionsGetter) GetRESTOptions(resource schema.GroupResource, _ 
 		StorageConfig: &storagebackend.ConfigForResource{
 			GroupResource: resource,
 			Config: storagebackend.Config{
-				Prefix: "/kine/",
-				Codec:  codec,
+				Prefix:              "/kine/",
+				Codec:               codec,
+				EventsHistoryWindow: storagebackend.DefaultEventsHistoryWindow,
 				Transport: storagebackend.TransportConfig{
 					ServerList:    g.etcdConfig.Endpoints,
 					TrustedCAFile: g.etcdConfig.TLSConfig.CAFile,
