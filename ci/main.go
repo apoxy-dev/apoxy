@@ -212,7 +212,7 @@ func (m *ApoxyCli) BuildCLI(
 		WithEnvVariable("GOMODCACHE", "/go/pkg/mod").
 		WithMountedCache("/go/build-cache", dag.CacheVolume("go-build-"+goarch)).
 		WithEnvVariable("GOCACHE", "/go/build-cache").
-		WithExec([]string{"go", "build", "-o", "/apoxy", "-ldflags", strings.Join(ldFlags, " "), "-tags", "netgo", "."})
+		WithExec([]string{"go", "build", "-o", "/apoxy", "-ldflags", strings.Join(ldFlags, " "), "-tags", "netgo,sqlite_enable_dbstat_vtab", "."})
 }
 
 // BuildCLIRelease builds a CLI container for release.
@@ -578,7 +578,7 @@ func (m *ApoxyCli) BuildAPIServer(
 		WithEnvVariable("GOOS", "linux").
 		WithEnvVariable("CGO_ENABLED", "1").
 		WithEnvVariable("CC", fmt.Sprintf("zig-wrapper cc --target=%s-linux-musl", canonArchFromGoArch(goarch))).
-		WithExec([]string{"go", "build", "-o", "apiserver", "./cmd/apiserver"})
+		WithExec([]string{"go", "build", "-tags", "sqlite_enable_dbstat_vtab", "-o", "apiserver", "./cmd/apiserver"})
 
 	runtimeCtr := m.PullEdgeRuntime(ctx, p, src, sccacheToken, edgeRuntimeTag, gcrCreds)
 
@@ -656,7 +656,7 @@ func (m *ApoxyCli) BuildBackplane(
 		WithEnvVariable("GOCACHE", "/go/build-cache").
 		WithEnvVariable("CGO_ENABLED", "1").
 		WithEnvVariable("CC", fmt.Sprintf("zig-wrapper cc --target=%s-linux-musl", canonArchFromGoArch(goarch))).
-		WithExec([]string{"go", "build", "-ldflags", "-v -linkmode=external", "-o", bpOut, "./cmd/backplane"}).
+		WithExec([]string{"go", "build", "-tags", "sqlite_enable_dbstat_vtab", "-ldflags", "-v -linkmode=external", "-o", bpOut, "./cmd/backplane"}).
 		WithExec([]string{"go", "build", "-ldflags", "-v -linkmode=external", "-o", dsOut, "./cmd/dial-stdio"}).
 		WithExec([]string{"wget", "https://github.com/apoxy-dev/otel-collector/archive/refs/tags/v1.2.0.tar.gz"}).
 		WithExec([]string{"tar", "-xvf", "v1.2.0.tar.gz"}).
@@ -713,7 +713,7 @@ func (m *ApoxyCli) BuildTunnelproxy(
 		WithEnvVariable("GOCACHE", "/go/build-cache").
 		WithEnvVariable("CGO_ENABLED", "1").
 		WithEnvVariable("CC", fmt.Sprintf("zig-wrapper cc --target=%s-linux-musl", canonArchFromGoArch(goarch))).
-		WithExec([]string{"go", "build", "-ldflags", "-v -linkmode=external", "-o", tpOut, "./cmd/tunnelproxy"}).
+		WithExec([]string{"go", "build", "-tags", "sqlite_enable_dbstat_vtab", "-ldflags", "-v -linkmode=external", "-o", tpOut, "./cmd/tunnelproxy"}).
 		WithWorkdir("/src")
 
 	return dag.Container(dagger.ContainerOpts{Platform: p}).
@@ -747,7 +747,7 @@ func (m *ApoxyCli) BuildKubeController(
 		WithEnvVariable("GOCACHE", "/go/build-cache").
 		WithEnvVariable("CGO_ENABLED", "1").
 		WithEnvVariable("CC", fmt.Sprintf("zig-wrapper cc --target=%s-linux-musl", canonArchFromGoArch(goarch))).
-		WithExec([]string{"go", "build", "-ldflags", "-v -linkmode=external", "-o", kcOut, "./cmd/kube-controller"}).
+		WithExec([]string{"go", "build", "-tags", "sqlite_enable_dbstat_vtab", "-ldflags", "-v -linkmode=external", "-o", kcOut, "./cmd/kube-controller"}).
 		WithWorkdir("/src")
 
 	return dag.Container(dagger.ContainerOpts{Platform: p}).

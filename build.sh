@@ -39,7 +39,7 @@ LDFLAGS=(
 
 echo "Building version ${VERSION} (${COMMIT_HASH})..."
 
-go install -ldflags="${LDFLAGS[*]}"
+go install -tags sqlite_enable_dbstat_vtab -ldflags="${LDFLAGS[*]}"
 
 # Check if GOPATH is set
 if [ -z "${GOPATH}" ]; then
