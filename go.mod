@@ -432,13 +432,12 @@ require (
 	sigs.k8s.io/apiserver-network-proxy/konnectivity-client v0.31.2 // indirect
 	sigs.k8s.io/json v0.0.0-20241014173422-cfa47c3a1cc8 // indirect
 	sigs.k8s.io/randfill v1.0.0 // indirect
-	sigs.k8s.io/structured-merge-diff/v4 v4.7.0 // indirect
 	sigs.k8s.io/structured-merge-diff/v6 v6.3.0 // indirect
 )
 
 replace github.com/getsavvyinc/upgrade-cli => github.com/apoxy-dev/upgrade-cli v0.0.0-20240213232412-a56c3a52fa0e
 
-replace sigs.k8s.io/apiserver-runtime => github.com/apoxy-dev/apiserver-runtime v0.0.0-20251017224250-220a8896ee57
+replace sigs.k8s.io/apiserver-runtime => github.com/apoxy-dev/apiserver-runtime v0.0.0-20260216084430-e8bb0988a3bc
 
 replace github.com/quic-go/quic-go => github.com/apoxy-dev/quic-go v0.0.0-20250530165952-53cca597715e
 
