@@ -95,19 +95,19 @@ require (
 	gopkg.in/yaml.v2 v2.4.0
 	gopkg.in/yaml.v3 v3.0.1
 	gvisor.dev/gvisor v0.0.0-20250606001031-fa4c4dd86b43
-	k8s.io/api v0.34.2
-	k8s.io/apimachinery v0.34.2
-	k8s.io/apiserver v0.34.2
-	k8s.io/cli-runtime v0.32.1
-	k8s.io/client-go v0.34.2
+	k8s.io/api v0.34.3
+	k8s.io/apimachinery v0.34.3
+	k8s.io/apiserver v0.34.3
+	k8s.io/cli-runtime v0.34.3
+	k8s.io/client-go v0.34.3
 	k8s.io/klog/v2 v2.130.1
-	k8s.io/kube-aggregator v0.31.1
+	k8s.io/kube-aggregator v0.34.3
 	k8s.io/kube-openapi v0.0.0-20250710124328-f3f2b991d03b
-	k8s.io/kubernetes v1.32.1
+	k8s.io/kubernetes v1.34.4
 	k8s.io/utils v0.0.0-20250604170112-4c0f3b243397
 	oras.land/oras-go/v2 v2.5.0
 	sigs.k8s.io/apiserver-runtime v1.1.2-0.20250117204231-9282f514a674
-	sigs.k8s.io/controller-runtime v0.20.4
+	sigs.k8s.io/controller-runtime v0.22.5
 	sigs.k8s.io/gateway-api v1.2.0
 	sigs.k8s.io/mcs-api v0.1.0
 	sigs.k8s.io/yaml v1.6.0
@@ -171,7 +171,7 @@ require (
 	github.com/coreos/go-semver v0.3.1 // indirect
 	github.com/coreos/go-systemd/v22 v22.5.0 // indirect
 	github.com/cpuguy83/go-md2man/v2 v2.0.7 // indirect
-	github.com/cyphar/filepath-securejoin v0.3.4 // indirect
+	github.com/cyphar/filepath-securejoin v0.4.1 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/denverdino/aliyungo v0.0.0-20170926055100-d3308649c661 // indirect
 	github.com/dgraph-io/ristretto/v2 v2.0.0 // indirect
@@ -246,7 +246,7 @@ require (
 	github.com/hashicorp/vic v1.5.1-0.20190403131502-bbfe86ec9443 // indirect
 	github.com/iancoleman/strcase v0.3.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
-	github.com/ishidawataru/sctp v0.0.0-20230406120618-7ff4192f6ff2 // indirect
+	github.com/ishidawataru/sctp v0.0.0-20250521072954-ae8eb7fa7995 // indirect
 	github.com/jackc/pgerrcode v0.0.0-20240316143900-6e2875d9b438 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
@@ -414,11 +414,11 @@ require (
 	gopkg.in/resty.v1 v1.12.0 // indirect
 	gopkg.in/square/go-jose.v2 v2.6.0 // indirect
 	gopkg.in/validator.v2 v2.0.1 // indirect
-	k8s.io/apiextensions-apiserver v0.32.1 // indirect
-	k8s.io/component-base v0.34.2 // indirect
-	k8s.io/component-helpers v0.31.1 // indirect
-	k8s.io/controller-manager v0.32.1 // indirect
-	k8s.io/kms v0.34.2 // indirect
+	k8s.io/apiextensions-apiserver v0.34.3 // indirect
+	k8s.io/component-base v0.34.3 // indirect
+	k8s.io/component-helpers v0.34.3 // indirect
+	k8s.io/controller-manager v0.34.3 // indirect
+	k8s.io/kms v0.34.3 // indirect
 	lukechampine.com/uint128 v1.3.0 // indirect
 	modernc.org/cc/v3 v3.41.0 // indirect
 	modernc.org/ccgo/v3 v3.17.0 // indirect
@@ -437,7 +437,7 @@ require (
 
 replace github.com/getsavvyinc/upgrade-cli => github.com/apoxy-dev/upgrade-cli v0.0.0-20240213232412-a56c3a52fa0e
 
-replace sigs.k8s.io/apiserver-runtime => github.com/apoxy-dev/apiserver-runtime v0.0.0-20260216084430-e8bb0988a3bc
+replace sigs.k8s.io/apiserver-runtime => github.com/apoxy-dev/apiserver-runtime v0.0.0-20260216100146-51b8f9542e20
 
 replace github.com/quic-go/quic-go => github.com/apoxy-dev/quic-go v0.0.0-20250530165952-53cca597715e
 
