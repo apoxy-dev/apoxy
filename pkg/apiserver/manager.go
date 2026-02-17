@@ -378,6 +378,15 @@ func WithSkipBuiltinControllers() Option {
 	}
 }
 
+// WithSkipTunnelNodeIPAM disables local IPAM allocation in the TunnelNodeReconciler.
+// Use this when agent addresses are managed externally (e.g., by an infra-apiserver
+// Endpoint watcher that writes addresses to TunnelNode.Status.Agents).
+func WithSkipTunnelNodeIPAM() Option {
+	return func(o *options) {
+		o.agentIPAM = nil
+	}
+}
+
 // WithAddToScheme registers additional types with the controller-runtime scheme.
 // This must be called before Start() to ensure types are available to controllers.
 func WithAddToScheme(fn func(*runtime.Scheme) error) Option {
@@ -602,6 +611,10 @@ func (m *Manager) Start(
 				return fmt.Errorf("failed to create tunnel node issuer: %v", err)
 			}
 		}
+		var ipamv4 tunnet.IPAM
+		if dOpts.agentIPAM != nil {
+			ipamv4 = apoxynet.NewIPAMv4(context.Background())
+		}
 		tunnelNodeReconciler := controllers.NewTunnelNodeReconciler(
 			m.manager.GetClient(),
 			tunnelNodeValidator,
@@ -610,7 +623,7 @@ func (m *Manager) Start(
 			dOpts.jwksPort,
 			dOpts.jwtRefreshThreshold,
 			dOpts.agentIPAM,
-			apoxynet.NewIPAMv4(context.Background()),
+			ipamv4,
 		)
 		if err := tunnelNodeReconciler.SetupWithManager(m.manager); err != nil {
 			return fmt.Errorf("failed to set up TunnelNode controller: %v", err)

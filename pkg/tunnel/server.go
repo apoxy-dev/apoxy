@@ -57,18 +57,17 @@ type OnConnectFunc func(ctx context.Context, connID string, tn *corev1alpha.Tunn
 type OnDisconnectFunc func(ctx context.Context, connID string)
 
 type tunnelServerOptions struct {
-	proxyAddr                 string
-	publicAddr                string
-	ulaPrefix                 netip.Prefix
-	certPath                  string
-	keyPath                   string
-	extAddrs                  []netip.Prefix
-	selector                  string
-	ipamv4                    tunnet.IPAM
-	keyLogPath                string
-	onConnect                 OnConnectFunc
-	onDisconnect              OnDisconnectFunc
-	externalAddressConfig     bool
+	proxyAddr    string
+	publicAddr   string
+	ulaPrefix    netip.Prefix
+	certPath     string
+	keyPath      string
+	extAddrs     []netip.Prefix
+	selector     string
+	ipamv4       tunnet.IPAM
+	keyLogPath   string
+	onConnect    OnConnectFunc
+	onDisconnect OnDisconnectFunc
 }
 
 func defaultServerOptions() *tunnelServerOptions {
@@ -161,14 +160,6 @@ func WithOnConnect(fn OnConnectFunc) TunnelServerOption {
 func WithOnDisconnect(fn OnDisconnectFunc) TunnelServerOption {
 	return func(o *tunnelServerOptions) {
 		o.onDisconnect = fn
-	}
-}
-
-// WithExternalAddressConfig disables address configuration in ReconcileWithClient.
-// Use this when address configuration is handled externally (e.g., by EndpointAddressReconciler).
-func WithExternalAddressConfig() TunnelServerOption {
-	return func(o *tunnelServerOptions) {
-		o.externalAddressConfig = true
 	}
 }
 
@@ -647,99 +638,12 @@ func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.
 	}
 }
 
-// ReconcileWithClient reconciles a TunnelNode using the provided client.
-// This method can be used by both standard reconcilers and multicluster reconcilers.
-func (t *TunnelServer) ReconcileWithClient(ctx context.Context, c client.Client, request reconcile.Request) (reconcile.Result, error) {
-	defer metrics.TunnelNodesManaged.Set(float64(t.tunnels.Len()))
-
-	node := &corev1alpha.TunnelNode{}
-	if err := c.Get(ctx, request.NamespacedName, node); apierrors.IsNotFound(err) {
-		return reconcile.Result{}, client.IgnoreNotFound(err)
-	} else if err != nil {
-		return reconcile.Result{}, fmt.Errorf("failed to get TunnelNode: %w", err)
-	}
-
-	log := log.FromContext(ctx, "name", node.Name, "uid", node.UID)
-	log.Info("Reconciling TunnelNode")
-
-	if !node.DeletionTimestamp.IsZero() {
-		log.Info("Deleting TunnelNode")
-
-		// TODO: Send GOAWAY to all connected clients for the associated tunnel node.
-
-		t.tunnels.Del(string(node.UID))
-
-		return reconcile.Result{}, nil
-	}
-
-	t.tunnels.Set(string(node.UID), node)
-
-	if t.options.publicAddr != "" {
-		var updated bool
-		if !slices.Contains(node.Status.Addresses, t.options.publicAddr) {
-			node.Status.Addresses = append(node.Status.Addresses, t.options.publicAddr)
-			updated = true
-		}
-		if updated {
-			if err := c.Status().Update(ctx, node); err != nil {
-				return reconcile.Result{}, fmt.Errorf("failed to update TunnelNode status: %w", err)
-			}
-		}
-	}
-
-	// Configure agent addresses from TunnelNode status unless external address
-	// configuration is enabled (e.g., via EndpointAddressReconciler).
-	if !t.options.externalAddressConfig {
-		for _, agent := range node.Status.Agents {
-			log := log.WithValues("agent", agent.Name)
-
-			// Check if connection exists for this agent.
-			if _, exists := t.conns.Get(agent.Name); !exists {
-				log.V(1).Info("Connection not found")
-				continue
-			}
-
-			// Parse IPv6 address from agent status.
-			if agent.AgentAddress == "" {
-				log.Info("Agent address is empty")
-				continue
-			}
-			addrv6, err := netip.ParseAddr(agent.AgentAddress)
-			if err != nil {
-				log.Error(err, "Failed to parse agent address", "address", agent.AgentAddress)
-				continue
-			}
-
-			// Parse IPv4 address from agent addresses if available.
-			var addrv4 netip.Prefix
-			for _, agentAddr := range agent.AgentAddresses {
-				if addr, err := netip.ParseAddr(agentAddr); err == nil && addr.Is4() {
-					addrv4 = netip.PrefixFrom(addr, 32)
-					break
-				}
-			}
-
-			// Configure the agent address using the shared method.
-			if err := t.ConfigureAgentAddress(ctx, agent.Name, netip.PrefixFrom(addrv6, 96), addrv4); err != nil {
-				log.Error(err, "Failed to configure agent address")
-				metrics.TunnelConnectionFailures.WithLabelValues("address_configuration_failed").Inc()
-				continue
-			}
-
-			// TODO(dilyevsky): Add agent status Phase and update it here. Consider creating
-			// a whole separate top-level object for Agent-TunnelProxy connections.
-		}
-	}
-
-	return ctrl.Result{}, nil
-}
-
-// ConfigureAgentAddress configures routing for an agent connection with the given addresses.
+// setupConn sets up routing for an agent connection with the given addresses.
 // Called when an overlay address is allocated for a connected agent.
 // The connID is the connection UUID (same as agent.Name in TunnelNode status).
 // addrv6 is the allocated ULA prefix (e.g., fd61:706f:7879:...::/96).
 // addrv4 is optional and can be an invalid prefix if not needed.
-func (t *TunnelServer) ConfigureAgentAddress(
+func (t *TunnelServer) setupConn(
 	ctx context.Context,
 	connID string,
 	addrv6 netip.Prefix,
@@ -811,4 +715,84 @@ func (t *TunnelServer) ConfigureAgentAddress(
 	}
 
 	return nil
+}
+
+// ReconcileWithClient reconciles a TunnelNode using the provided client.
+// This method can be used by both standard reconcilers and multicluster reconcilers.
+func (t *TunnelServer) ReconcileWithClient(ctx context.Context, c client.Client, request reconcile.Request) (reconcile.Result, error) {
+	defer metrics.TunnelNodesManaged.Set(float64(t.tunnels.Len()))
+
+	node := &corev1alpha.TunnelNode{}
+	if err := c.Get(ctx, request.NamespacedName, node); apierrors.IsNotFound(err) {
+		return reconcile.Result{}, client.IgnoreNotFound(err)
+	} else if err != nil {
+		return reconcile.Result{}, fmt.Errorf("failed to get TunnelNode: %w", err)
+	}
+
+	log := log.FromContext(ctx, "name", node.Name, "uid", node.UID)
+	log.Info("Reconciling TunnelNode")
+
+	if !node.DeletionTimestamp.IsZero() {
+		log.Info("Deleting TunnelNode")
+
+		// TODO: Send GOAWAY to all connected clients for the associated tunnel node.
+
+		t.tunnels.Del(string(node.UID))
+
+		return reconcile.Result{}, nil
+	}
+
+	t.tunnels.Set(string(node.UID), node)
+
+	if t.options.publicAddr != "" {
+		var updated bool
+		if !slices.Contains(node.Status.Addresses, t.options.publicAddr) {
+			node.Status.Addresses = append(node.Status.Addresses, t.options.publicAddr)
+			updated = true
+		}
+		if updated {
+			if err := c.Status().Update(ctx, node); err != nil {
+				return reconcile.Result{}, fmt.Errorf("failed to update TunnelNode status: %w", err)
+			}
+		}
+	}
+
+	// Configure agent addresses from TunnelNode status.
+	for _, agent := range node.Status.Agents {
+		log := log.WithValues("agent", agent.Name)
+
+		// Check if connection exists for this agent.
+		if _, exists := t.conns.Get(agent.Name); !exists {
+			log.V(1).Info("Connection not found")
+			continue
+		}
+
+		// Parse IPv6 address from agent status.
+		if agent.AgentAddress == "" {
+			log.Info("Agent address is empty")
+			continue
+		}
+		addrv6, err := netip.ParseAddr(agent.AgentAddress)
+		if err != nil {
+			log.Error(err, "Failed to parse agent address", "address", agent.AgentAddress)
+			continue
+		}
+
+		// Parse IPv4 address from agent addresses if available.
+		var addrv4 netip.Prefix
+		for _, agentAddr := range agent.AgentAddresses {
+			if addr, err := netip.ParseAddr(agentAddr); err == nil && addr.Is4() {
+				addrv4 = netip.PrefixFrom(addr, 32)
+				break
+			}
+		}
+
+		if err := t.setupConn(ctx, agent.Name, netip.PrefixFrom(addrv6, 96), addrv4); err != nil {
+			log.Error(err, "Failed to configure agent address")
+			metrics.TunnelConnectionFailures.WithLabelValues("address_configuration_failed").Inc()
+			continue
+		}
+	}
+
+	return ctrl.Result{}, nil
 }

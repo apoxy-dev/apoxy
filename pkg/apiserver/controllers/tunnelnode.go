@@ -123,17 +123,19 @@ func (r *TunnelNodeReconciler) Reconcile(ctx context.Context, req reconcile.Requ
 	if !tn.ObjectMeta.DeletionTimestamp.IsZero() {
 		log.Info("TunnelNode is being deleted")
 
-		for _, agent := range tn.Status.Agents {
-			if agent.AgentAddress == "" {
-				continue
-			}
-			addr, err := netip.ParseAddr(agent.AgentAddress)
-			if err != nil {
-				log.Error(err, "Failed to parse IP address", "addr", agent.AgentAddress)
-				continue
-			}
-			if err := r.ipamv6.Release(netip.PrefixFrom(addr, 96)); err != nil {
-				log.Error(err, "Failed to release IP address", "addr", addr)
+		if r.ipamv6 != nil {
+			for _, agent := range tn.Status.Agents {
+				if agent.AgentAddress == "" {
+					continue
+				}
+				addr, err := netip.ParseAddr(agent.AgentAddress)
+				if err != nil {
+					log.Error(err, "Failed to parse IP address", "addr", agent.AgentAddress)
+					continue
+				}
+				if err := r.ipamv6.Release(netip.PrefixFrom(addr, 96)); err != nil {
+					log.Error(err, "Failed to release IP address", "addr", addr)
+				}
 			}
 		}
 
@@ -185,35 +187,40 @@ func (r *TunnelNodeReconciler) Reconcile(ctx context.Context, req reconcile.Requ
 		}
 	}
 
-	for i, agent := range tn.Status.Agents {
-		if agent.AgentAddress != "" {
-			log.V(1).Info("Agent already has address", "agent", agent.Name, "addr", agent.AgentAddress)
-			continue
-		}
-
-		addrv6, err := r.ipamv6.Allocate()
-		if err != nil {
-			return ctrl.Result{}, fmt.Errorf("failed to allocate agent address: %w", err)
-		}
-
-		log.Info("Allocated agent v6 address", "agent", agent.Name, "addr", addrv6)
-
-		tn.Status.Agents[i].AgentAddress = addrv6.Addr().String()
-
-		addrv4, err := r.ipamv4.Allocate()
-		if err != nil {
-			return ctrl.Result{}, fmt.Errorf("failed to allocate agent address: %w", err)
-		}
-
-		log.Info("Allocated agent v4 address", "agent", agent.Name, "addr", addrv4)
-
-		tn.Status.Agents[i].AgentAddresses = append(tn.Status.Agents[i].AgentAddresses, addrv4.Addr().String())
-
-		if err := r.Status().Update(ctx, tn); err != nil {
-			if err := r.ipamv6.Release(addrv6); err != nil {
-				log.Error(err, "Failed to release agent address", "agent", agent.Name, "addr", addrv6)
+	// Allocate agent addresses via local IPAM when configured.
+	if r.ipamv6 != nil {
+		for i, agent := range tn.Status.Agents {
+			if agent.AgentAddress != "" {
+				log.V(1).Info("Agent already has address", "agent", agent.Name, "addr", agent.AgentAddress)
+				continue
 			}
-			return ctrl.Result{}, fmt.Errorf("failed to update status: %w", err)
+
+			addrv6, err := r.ipamv6.Allocate()
+			if err != nil {
+				return ctrl.Result{}, fmt.Errorf("failed to allocate agent address: %w", err)
+			}
+
+			log.Info("Allocated agent v6 address", "agent", agent.Name, "addr", addrv6)
+
+			tn.Status.Agents[i].AgentAddress = addrv6.Addr().String()
+
+			if r.ipamv4 != nil {
+				addrv4, err := r.ipamv4.Allocate()
+				if err != nil {
+					return ctrl.Result{}, fmt.Errorf("failed to allocate agent address: %w", err)
+				}
+
+				log.Info("Allocated agent v4 address", "agent", agent.Name, "addr", addrv4)
+
+				tn.Status.Agents[i].AgentAddresses = append(tn.Status.Agents[i].AgentAddresses, addrv4.Addr().String())
+			}
+
+			if err := r.Status().Update(ctx, tn); err != nil {
+				if err := r.ipamv6.Release(addrv6); err != nil {
+					log.Error(err, "Failed to release agent address", "agent", agent.Name, "addr", addrv6)
+				}
+				return ctrl.Result{}, fmt.Errorf("failed to update status: %w", err)
+			}
 		}
 	}
 
