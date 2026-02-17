@@ -74,12 +74,6 @@ type DomainTargetSpec struct {
 }
 
 type DomainTargetDNS struct {
-	// DNSOnly is a flag to indicate if the domain represents only a DNS record
-	// and no traffic is routed via Apoxy. This flag only applies to A/AAAA/CNAME records.
-	// +kubebuilder:validation:Default=false
-	// +optional
-	DNSOnly bool `json:"dnsOnly,omitempty"`
-
 	// IPs is the list of IP addresses of the target.
 	// Setting this field will create an A/AAAA record (multi-value).
 	// Cannot be set with FQDN.

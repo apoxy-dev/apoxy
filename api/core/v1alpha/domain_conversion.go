@@ -71,8 +71,7 @@ func convertDomainTargetDNSFromV1Alpha1ToV1Alpha2(in *DomainTargetDNS) *v1alpha2
 	}
 
 	return &v1alpha2.DomainTargetDNS{
-		DNSOnly: in.DNSOnly,
-		IPs:     in.IPs,
+		IPs: in.IPs,
 		FQDN:    in.FQDN,
 		TXT:     in.TXT,
 		MX:      in.MX,
@@ -95,8 +94,7 @@ func convertDomainTargetDNSFromV1Alpha2ToV1Alpha1(in *v1alpha2.DomainTargetDNS) 
 	}
 
 	return &DomainTargetDNS{
-		DNSOnly: in.DNSOnly,
-		IPs:     in.IPs,
+		IPs: in.IPs,
 		FQDN:    in.FQDN,
 		TXT:     in.TXT,
 		MX:      in.MX,
