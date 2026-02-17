@@ -128,6 +128,39 @@ type CloudMonitoringIntegrationStatus struct {
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 }
 
+// Condition type constants for CloudMonitoringIntegration.
+const (
+	// CloudMonitoringIntegrationConditionConnected indicates the integration
+	// has been validated and the collector config has been applied.
+	CloudMonitoringIntegrationConditionConnected = "Connected"
+
+	// CloudMonitoringIntegrationConditionUpdating indicates the collector
+	// config is being regenerated and applied after an integration change.
+	CloudMonitoringIntegrationConditionUpdating = "Updating"
+)
+
+// Condition reason constants for CloudMonitoringIntegration.
+const (
+	// CloudMonitoringIntegrationReasonReady means the integration is valid,
+	// config applied, and collector healthy.
+	CloudMonitoringIntegrationReasonReady = "Ready"
+
+	// CloudMonitoringIntegrationReasonDisabled means spec.enabled is false.
+	CloudMonitoringIntegrationReasonDisabled = "Disabled"
+
+	// CloudMonitoringIntegrationReasonValidationFailed means credential fields
+	// are missing or malformed.
+	CloudMonitoringIntegrationReasonValidationFailed = "ValidationFailed"
+
+	// CloudMonitoringIntegrationReasonConfigPending means the collector config
+	// was updated but collector has not confirmed health yet.
+	CloudMonitoringIntegrationReasonConfigPending = "ConfigPending"
+
+	// CloudMonitoringIntegrationReasonCollectorUnhealthy means the collector
+	// reported unhealthy after config change.
+	CloudMonitoringIntegrationReasonCollectorUnhealthy = "CollectorUnhealthy"
+)
+
 var _ resource.StatusSubResource = &CloudMonitoringIntegrationStatus{}
 
 func (s *CloudMonitoringIntegrationStatus) SubResourceName() string {
