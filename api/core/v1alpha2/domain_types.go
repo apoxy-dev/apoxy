@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"strings"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -350,20 +349,23 @@ func domainToTable(domain *Domain, tableOptions runtime.Object) (*metav1.Table, 
 		table.ColumnDefinitions = domainColumnDefinitions()
 	}
 
-	// Add row data
-	typ, value, ttl := getDomainColumns(domain)
-	table.Rows = append(table.Rows, metav1.TableRow{
-		Cells: []interface{}{
-			domain.Name,
-			domain.Spec.Zone,
-			typ,
-			value,
-			ttl,
-			string(domain.Status.Phase),
-			formatAge(domain.CreationTimestamp.Time),
-		},
-		Object: runtime.RawExtension{Object: domain},
-	})
+	// Add row data — one row per record type
+	rows := getDomainRows(domain)
+	for i, r := range rows {
+		row := metav1.TableRow{
+			Cells: []interface{}{
+				"", "", r.typ, r.value, r.ttl, "", "",
+			},
+		}
+		if i == 0 {
+			row.Cells[0] = domain.Name
+			row.Cells[1] = domain.Spec.Zone
+			row.Cells[5] = string(domain.Status.Phase)
+			row.Cells[6] = formatAge(domain.CreationTimestamp.Time)
+			row.Object = runtime.RawExtension{Object: domain}
+		}
+		table.Rows = append(table.Rows, row)
+	}
 
 	// Set resource version
 	table.ResourceVersion = domain.ResourceVersion
@@ -379,22 +381,25 @@ func domainListToTable(list *DomainList, tableOptions runtime.Object) (*metav1.T
 		table.ColumnDefinitions = domainColumnDefinitions()
 	}
 
-	// Add rows for each item
+	// Add rows for each item — one row per record type
 	for i := range list.Items {
 		domain := &list.Items[i]
-		typ, value, ttl := getDomainColumns(domain)
-		table.Rows = append(table.Rows, metav1.TableRow{
-			Cells: []interface{}{
-				domain.Name,
-				domain.Spec.Zone,
-				typ,
-				value,
-				ttl,
-				string(domain.Status.Phase),
-				formatAge(domain.CreationTimestamp.Time),
-			},
-			Object: runtime.RawExtension{Object: domain},
-		})
+		rows := getDomainRows(domain)
+		for j, r := range rows {
+			row := metav1.TableRow{
+				Cells: []interface{}{
+					"", "", r.typ, r.value, r.ttl, "", "",
+				},
+			}
+			if j == 0 {
+				row.Cells[0] = domain.Name
+				row.Cells[1] = domain.Spec.Zone
+				row.Cells[5] = string(domain.Status.Phase)
+				row.Cells[6] = formatAge(domain.CreationTimestamp.Time)
+				row.Object = runtime.RawExtension{Object: domain}
+			}
+			table.Rows = append(table.Rows, row)
+		}
 	}
 
 	// Set list metadata
@@ -417,8 +422,18 @@ func domainColumnDefinitions() []metav1.TableColumnDefinition {
 	}
 }
 
-// getDomainColumns returns the Type, Value, and TTL columns for a domain row.
-func getDomainColumns(domain *Domain) (typ, value string, ttl int32) {
+// domainRow represents a single display row for a domain record type.
+type domainRow struct {
+	typ   string
+	value string
+	ttl   int32
+}
+
+// getDomainRows returns one row per record type for display in a table.
+// Multi-value fields are collapsed using (+N) notation.
+func getDomainRows(domain *Domain) []domainRow {
+	var rows []domainRow
+
 	if domain.Spec.Target.Ref != nil {
 		ref := domain.Spec.Target.Ref
 		scheme := string(ref.Kind)
@@ -430,64 +445,127 @@ func getDomainColumns(domain *Domain) (typ, value string, ttl int32) {
 		case "EdgeFunction":
 			scheme = "func"
 		}
-		return "Ref", fmt.Sprintf("%s://%s", scheme, ref.Name), 10
+		rows = append(rows, domainRow{
+			typ:   "Ref",
+			value: fmt.Sprintf("%s://%s", scheme, ref.Name),
+			ttl:   10,
+		})
 	}
+
 	if domain.Spec.Target.DNS != nil {
 		dns := domain.Spec.Target.DNS
+		var ttl int32
 		if dns.TTL != nil {
 			ttl = *dns.TTL
 		}
+
 		if len(dns.IPs) > 0 {
 			first := dns.IPs[0]
 			recType := "A"
 			if ip := net.ParseIP(first); ip != nil && ip.To4() == nil {
 				recType = "AAAA"
 			}
-			value = first
-			if n := len(dns.IPs) - 1; n > 0 {
-				value += fmt.Sprintf(" (+%d)", n)
-			}
-			return "DNS:" + recType, value, ttl
+			rows = append(rows, domainRow{
+				typ:   "DNS:" + recType,
+				value: formatMultiValue(dns.IPs, 30),
+				ttl:   ttl,
+			})
 		}
 		if dns.FQDN != nil {
-			return "DNS:CNAME", truncateString(*dns.FQDN, 30), ttl
+			rows = append(rows, domainRow{
+				typ:   "DNS:CNAME",
+				value: truncateString(*dns.FQDN, 30),
+				ttl:   ttl,
+			})
 		}
-		var recordTypes []string
 		if len(dns.TXT) > 0 {
-			recordTypes = append(recordTypes, "TXT")
+			rows = append(rows, domainRow{
+				typ:   "DNS:TXT",
+				value: formatMultiValue(dns.TXT, 30),
+				ttl:   ttl,
+			})
 		}
 		if len(dns.MX) > 0 {
-			recordTypes = append(recordTypes, "MX")
+			rows = append(rows, domainRow{
+				typ:   "DNS:MX",
+				value: formatMultiValue(dns.MX, 30),
+				ttl:   ttl,
+			})
 		}
 		if len(dns.NS) > 0 {
-			recordTypes = append(recordTypes, "NS")
+			rows = append(rows, domainRow{
+				typ:   "DNS:NS",
+				value: formatMultiValue(dns.NS, 30),
+				ttl:   ttl,
+			})
 		}
 		if len(dns.SRV) > 0 {
-			recordTypes = append(recordTypes, "SRV")
+			rows = append(rows, domainRow{
+				typ:   "DNS:SRV",
+				value: formatMultiValue(dns.SRV, 30),
+				ttl:   ttl,
+			})
 		}
 		if len(dns.CAA) > 0 {
-			recordTypes = append(recordTypes, "CAA")
+			rows = append(rows, domainRow{
+				typ:   "DNS:CAA",
+				value: formatMultiValue(dns.CAA, 30),
+				ttl:   ttl,
+			})
 		}
 		if len(dns.DKIM) > 0 {
-			recordTypes = append(recordTypes, "DKIM")
+			rows = append(rows, domainRow{
+				typ:   "DNS:DKIM",
+				value: formatMultiValue(dns.DKIM, 30),
+				ttl:   ttl,
+			})
 		}
 		if len(dns.SPF) > 0 {
-			recordTypes = append(recordTypes, "SPF")
+			rows = append(rows, domainRow{
+				typ:   "DNS:SPF",
+				value: formatMultiValue(dns.SPF, 30),
+				ttl:   ttl,
+			})
 		}
 		if len(dns.DMARC) > 0 {
-			recordTypes = append(recordTypes, "DMARC")
+			rows = append(rows, domainRow{
+				typ:   "DNS:DMARC",
+				value: formatMultiValue(dns.DMARC, 30),
+				ttl:   ttl,
+			})
 		}
 		if len(dns.DS) > 0 {
-			recordTypes = append(recordTypes, "DS")
+			rows = append(rows, domainRow{
+				typ:   "DNS:DS",
+				value: formatMultiValue(dns.DS, 30),
+				ttl:   ttl,
+			})
 		}
 		if len(dns.DNSKEY) > 0 {
-			recordTypes = append(recordTypes, "DNSKEY")
-		}
-		if len(recordTypes) > 0 {
-			return "DNS:" + strings.Join(recordTypes, ","), "", ttl
+			rows = append(rows, domainRow{
+				typ:   "DNS:DNSKEY",
+				value: formatMultiValue(dns.DNSKEY, 30),
+				ttl:   ttl,
+			})
 		}
 	}
-	return "—", "", 0
+
+	if len(rows) == 0 {
+		return []domainRow{{typ: "—"}}
+	}
+	return rows
+}
+
+// formatMultiValue formats a slice of values as "first (+N)" with truncation.
+func formatMultiValue(values []string, maxLen int) string {
+	if len(values) == 0 {
+		return ""
+	}
+	v := truncateString(values[0], maxLen)
+	if n := len(values) - 1; n > 0 {
+		v += fmt.Sprintf(" (+%d)", n)
+	}
+	return v
 }
 
 // truncateString truncates a string to maxLen characters, adding "..." if truncated
