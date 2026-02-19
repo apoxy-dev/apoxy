@@ -84,9 +84,6 @@ func init() {
 	utilruntime.Must(gatewayv1alpha2.Install(scheme))
 
 	gateway.Install(scheme)
-
-	// Also register cross-version conversions on the controller-runtime scheme.
-	utilruntime.Must(registerCrossVersionConversions(scheme))
 }
 
 // registerCrossVersionConversions registers direct conversion functions between
