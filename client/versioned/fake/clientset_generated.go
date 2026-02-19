@@ -25,6 +25,8 @@ import (
 	fakecorev1alpha "github.com/apoxy-dev/apoxy/client/versioned/typed/core/v1alpha/fake"
 	corev1alpha2 "github.com/apoxy-dev/apoxy/client/versioned/typed/core/v1alpha2"
 	fakecorev1alpha2 "github.com/apoxy-dev/apoxy/client/versioned/typed/core/v1alpha2/fake"
+	corev1alpha3 "github.com/apoxy-dev/apoxy/client/versioned/typed/core/v1alpha3"
+	fakecorev1alpha3 "github.com/apoxy-dev/apoxy/client/versioned/typed/core/v1alpha3/fake"
 	extensionsv1alpha1 "github.com/apoxy-dev/apoxy/client/versioned/typed/extensions/v1alpha1"
 	fakeextensionsv1alpha1 "github.com/apoxy-dev/apoxy/client/versioned/typed/extensions/v1alpha1/fake"
 	extensionsv1alpha2 "github.com/apoxy-dev/apoxy/client/versioned/typed/extensions/v1alpha2"
@@ -109,6 +111,11 @@ func (c *Clientset) CoreV1alpha() corev1alpha.CoreV1alphaInterface {
 // CoreV1alpha2 retrieves the CoreV1alpha2Client
 func (c *Clientset) CoreV1alpha2() corev1alpha2.CoreV1alpha2Interface {
 	return &fakecorev1alpha2.FakeCoreV1alpha2{Fake: &c.Fake}
+}
+
+// CoreV1alpha3 retrieves the CoreV1alpha3Client
+func (c *Clientset) CoreV1alpha3() corev1alpha3.CoreV1alpha3Interface {
+	return &fakecorev1alpha3.FakeCoreV1alpha3{Fake: &c.Fake}
 }
 
 // ExtensionsV1alpha1 retrieves the ExtensionsV1alpha1Client

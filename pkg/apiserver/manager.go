@@ -17,6 +17,7 @@ import (
 	tclient "go.temporal.io/sdk/client"
 	"golang.org/x/sync/errgroup"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/conversion"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -56,6 +57,7 @@ import (
 
 	corev1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
 	corev1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
+	corev1alpha3 "github.com/apoxy-dev/apoxy/api/core/v1alpha3"
 	extensionsv1alpha1 "github.com/apoxy-dev/apoxy/api/extensions/v1alpha1"
 	extensionsv1alpha2 "github.com/apoxy-dev/apoxy/api/extensions/v1alpha2"
 	gatewayv1 "github.com/apoxy-dev/apoxy/api/gateway/v1"
@@ -74,6 +76,7 @@ var scheme = runtime.NewScheme()
 func init() {
 	utilruntime.Must(corev1alpha.Install(scheme))
 	utilruntime.Must(corev1alpha2.Install(scheme))
+	utilruntime.Must(corev1alpha3.Install(scheme))
 	utilruntime.Must(policyv1alpha1.Install(scheme))
 	utilruntime.Must(extensionsv1alpha1.Install(scheme))
 	utilruntime.Must(extensionsv1alpha2.Install(scheme))
@@ -81,6 +84,74 @@ func init() {
 	utilruntime.Must(gatewayv1alpha2.Install(scheme))
 
 	gateway.Install(scheme)
+
+	// Also register cross-version conversions on the controller-runtime scheme.
+	utilruntime.Must(registerCrossVersionConversions(scheme))
+}
+
+// registerCrossVersionConversions registers direct conversion functions between
+// v1alpha and v1alpha2 Domain/DomainZone types that chain through the v1alpha3
+// hub. The k8s scheme only supports direct conversion lookups (no multi-hop),
+// so when stored v1alpha2 data needs to be served as v1alpha (or vice versa),
+// we need explicit conversion functions for each pair.
+func registerCrossVersionConversions(s *runtime.Scheme) error {
+	if err := s.AddConversionFunc(
+		&corev1alpha2.Domain{}, &corev1alpha.Domain{},
+		func(from, to interface{}, _ conversion.Scope) error {
+			src := from.(*corev1alpha2.Domain)
+			dst := to.(*corev1alpha.Domain)
+			intermediate := &corev1alpha3.Domain{}
+			if err := src.ConvertToStorageVersion(intermediate); err != nil {
+				return err
+			}
+			return dst.ConvertFromStorageVersion(intermediate)
+		},
+	); err != nil {
+		return err
+	}
+	if err := s.AddConversionFunc(
+		&corev1alpha.Domain{}, &corev1alpha2.Domain{},
+		func(from, to interface{}, _ conversion.Scope) error {
+			src := from.(*corev1alpha.Domain)
+			dst := to.(*corev1alpha2.Domain)
+			intermediate := &corev1alpha3.Domain{}
+			if err := src.ConvertToStorageVersion(intermediate); err != nil {
+				return err
+			}
+			return dst.ConvertFromStorageVersion(intermediate)
+		},
+	); err != nil {
+		return err
+	}
+	if err := s.AddConversionFunc(
+		&corev1alpha2.DomainZone{}, &corev1alpha.DomainZone{},
+		func(from, to interface{}, _ conversion.Scope) error {
+			src := from.(*corev1alpha2.DomainZone)
+			dst := to.(*corev1alpha.DomainZone)
+			intermediate := &corev1alpha3.DomainZone{}
+			if err := src.ConvertToStorageVersion(intermediate); err != nil {
+				return err
+			}
+			return dst.ConvertFromStorageVersion(intermediate)
+		},
+	); err != nil {
+		return err
+	}
+	if err := s.AddConversionFunc(
+		&corev1alpha.DomainZone{}, &corev1alpha2.DomainZone{},
+		func(from, to interface{}, _ conversion.Scope) error {
+			src := from.(*corev1alpha.DomainZone)
+			dst := to.(*corev1alpha2.DomainZone)
+			intermediate := &corev1alpha3.DomainZone{}
+			if err := src.ConvertToStorageVersion(intermediate); err != nil {
+				return err
+			}
+			return dst.ConvertFromStorageVersion(intermediate)
+		},
+	); err != nil {
+		return err
+	}
+	return nil
 }
 
 func waitForReadyz(url string, timeout time.Duration) error {
@@ -398,6 +469,9 @@ func WithAddToScheme(fn func(*runtime.Scheme) error) Option {
 func defaultResources() []resource.Object {
 	// Higher versions need to be registered first as storage resources.
 	return []resource.Object{
+		&corev1alpha3.Domain{},
+		&corev1alpha3.DomainZone{},
+
 		&corev1alpha2.Backend{},
 		&corev1alpha2.CloudMonitoringIntegration{},
 		&corev1alpha2.Domain{},
@@ -826,7 +900,8 @@ func start(
 			return
 		}
 
-		srvBuilder := builder.APIServer
+		srvBuilder := builder.APIServer.
+			WithAdditionalSchemeInstallers(registerCrossVersionConversions)
 		for _, r := range opts.resources {
 			srvBuilder = srvBuilder.WithResourceAndStorage(r, kineStore)
 		}

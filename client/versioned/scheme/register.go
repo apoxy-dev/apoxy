@@ -21,6 +21,7 @@ import (
 	controllersv1alpha1 "github.com/apoxy-dev/apoxy/api/controllers/v1alpha1"
 	corev1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
 	corev1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
+	corev1alpha3 "github.com/apoxy-dev/apoxy/api/core/v1alpha3"
 	extensionsv1alpha1 "github.com/apoxy-dev/apoxy/api/extensions/v1alpha1"
 	extensionsv1alpha2 "github.com/apoxy-dev/apoxy/api/extensions/v1alpha2"
 	gatewayv1 "github.com/apoxy-dev/apoxy/api/gateway/v1"
@@ -40,6 +41,7 @@ var localSchemeBuilder = runtime.SchemeBuilder{
 	controllersv1alpha1.AddToScheme,
 	corev1alpha.AddToScheme,
 	corev1alpha2.AddToScheme,
+	corev1alpha3.AddToScheme,
 	extensionsv1alpha1.AddToScheme,
 	extensionsv1alpha2.AddToScheme,
 	gatewayv1.AddToScheme,

@@ -23,6 +23,7 @@ import (
 	v1alpha1 "github.com/apoxy-dev/apoxy/api/controllers/v1alpha1"
 	v1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
 	v1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
+	v1alpha3 "github.com/apoxy-dev/apoxy/api/core/v1alpha3"
 	extensionsv1alpha1 "github.com/apoxy-dev/apoxy/api/extensions/v1alpha1"
 	extensionsv1alpha2 "github.com/apoxy-dev/apoxy/api/extensions/v1alpha2"
 	v1 "github.com/apoxy-dev/apoxy/api/gateway/v1"
@@ -89,6 +90,12 @@ func (f *sharedInformerFactory) ForResource(resource schema.GroupVersionResource
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Core().V1alpha2().Tunnels().Informer()}, nil
 	case v1alpha2.SchemeGroupVersion.WithResource("tunnelagents"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Core().V1alpha2().TunnelAgents().Informer()}, nil
+
+		// Group=core.apoxy.dev, Version=v1alpha3
+	case v1alpha3.SchemeGroupVersion.WithResource("domains"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Core().V1alpha3().Domains().Informer()}, nil
+	case v1alpha3.SchemeGroupVersion.WithResource("domainzones"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Core().V1alpha3().DomainZones().Informer()}, nil
 
 		// Group=extensions.apoxy.dev, Version=v1alpha1
 	case extensionsv1alpha1.SchemeGroupVersion.WithResource("edgefunctions"):

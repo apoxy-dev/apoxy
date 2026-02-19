@@ -19,6 +19,7 @@ go run "k8s.io/code-generator/cmd/deepcopy-gen@${CODEGEN_VERSION}" \
   ./api/controllers/v1alpha1 \
   ./api/core/v1alpha \
   ./api/core/v1alpha2 \
+  ./api/core/v1alpha3 \
   ./api/extensions/v1alpha1 \
   ./api/extensions/v1alpha2 \
   ./api/gateway/v1 \
@@ -36,6 +37,7 @@ go run "k8s.io/code-generator/cmd/register-gen@${CODEGEN_VERSION}" \
   ./api/controllers/v1alpha1 \
   ./api/core/v1alpha \
   ./api/core/v1alpha2 \
+  ./api/core/v1alpha3 \
   ./api/extensions/v1alpha1 \
   ./api/extensions/v1alpha2 \
   ./api/gateway/v1 \
@@ -67,6 +69,7 @@ go run "k8s.io/code-generator/cmd/client-gen@${CODEGEN_VERSION}" \
   --input "./api/controllers/v1alpha1" \
   --input "./api/core/v1alpha" \
   --input "./api/core/v1alpha2" \
+  --input "./api/core/v1alpha3" \
   --input "./api/extensions/v1alpha1" \
   --input "./api/extensions/v1alpha2" \
   --input "./api/gateway/v1" \
@@ -82,6 +85,7 @@ go run "k8s.io/code-generator/cmd/lister-gen@${CODEGEN_VERSION}" \
   ./api/controllers/v1alpha1 \
   ./api/core/v1alpha \
   ./api/core/v1alpha2 \
+  ./api/core/v1alpha3 \
   ./api/extensions/v1alpha1 \
   ./api/extensions/v1alpha2 \
   ./api/gateway/v1 \
@@ -98,6 +102,7 @@ go run "k8s.io/code-generator/cmd/informer-gen@${CODEGEN_VERSION}" \
   ./api/controllers/v1alpha1 \
   ./api/core/v1alpha \
   ./api/core/v1alpha2 \
+  ./api/core/v1alpha3 \
   ./api/extensions/v1alpha1 \
   ./api/extensions/v1alpha2 \
   ./api/gateway/v1 \
@@ -124,6 +129,7 @@ go run "k8s.io/kube-openapi/cmd/openapi-gen@master" \
   ./api/controllers/v1alpha1 \
   ./api/core/v1alpha \
   ./api/core/v1alpha2 \
+  ./api/core/v1alpha3 \
   ./api/extensions/v1alpha1 \
   ./api/extensions/v1alpha2 \
   ./api/gateway/v1 \

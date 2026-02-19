@@ -9,7 +9,7 @@ import (
 	"k8s.io/apiserver/pkg/registry/rest"
 	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource"
 
-	v1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
+	v1alpha3 "github.com/apoxy-dev/apoxy/api/core/v1alpha3"
 )
 
 const (
@@ -309,31 +309,31 @@ func (a *Domain) GetStatus() resource.StatusSubResource {
 var _ resource.MultiVersionObject = &Domain{}
 
 func (a *Domain) NewStorageVersionObject() runtime.Object {
-	return &v1alpha2.Domain{}
+	return &v1alpha3.Domain{}
 }
 
 func (a *Domain) ConvertToStorageVersion(storageObj runtime.Object) error {
-	obj, ok := storageObj.(*v1alpha2.Domain)
+	obj, ok := storageObj.(*v1alpha3.Domain)
 	if !ok {
-		return errors.New("failed to convert to v1alpha2 Domain")
+		return errors.New("failed to convert to v1alpha3 Domain")
 	}
 
 	obj.ObjectMeta = *a.ObjectMeta.DeepCopy()
-	obj.Spec = *convertDomainSpecFromV1Alpha1ToV1Alpha2(&a.Spec)
-	obj.Status = *convertDomainStatusFromV1Alpha1ToV1Alpha2(&a.Status)
+	obj.Spec = *convertDomainSpecFromV1Alpha1ToV1Alpha3(&a.Spec)
+	obj.Status = *convertDomainStatusFromV1Alpha1ToV1Alpha3(&a.Status)
 
 	return nil
 }
 
 func (a *Domain) ConvertFromStorageVersion(storageObj runtime.Object) error {
-	obj, ok := storageObj.(*v1alpha2.Domain)
+	obj, ok := storageObj.(*v1alpha3.Domain)
 	if !ok {
-		return errors.New("failed to convert from v1alpha2 Domain")
+		return errors.New("failed to convert from v1alpha3 Domain")
 	}
 
 	a.ObjectMeta = *obj.ObjectMeta.DeepCopy()
-	a.Spec = *convertDomainSpecFromV1Alpha2ToV1Alpha1(&obj.Spec)
-	a.Status = *convertDomainStatusFromV1Alpha2ToV1Alpha1(&obj.Status)
+	a.Spec = *convertDomainSpecFromV1Alpha3ToV1Alpha1(&obj.Spec)
+	a.Status = *convertDomainStatusFromV1Alpha3ToV1Alpha1(&obj.Status)
 
 	return nil
 }

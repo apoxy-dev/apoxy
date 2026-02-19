@@ -2,6 +2,7 @@ package v1alpha2
 
 import (
 	"context"
+	"errors"
 	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -10,6 +11,8 @@ import (
 	"k8s.io/apiserver/pkg/registry/rest"
 	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource"
 	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource/resourcestrategy"
+
+	v1alpha3 "github.com/apoxy-dev/apoxy/api/core/v1alpha3"
 )
 
 // +kubebuilder:object:root=true
@@ -232,7 +235,7 @@ func (a *DomainZone) GetGroupVersionResource() schema.GroupVersionResource {
 }
 
 func (a *DomainZone) IsStorageVersion() bool {
-	return true
+	return false
 }
 
 func (a *DomainZone) GetSingularName() string {
@@ -241,6 +244,130 @@ func (a *DomainZone) GetSingularName() string {
 
 func (a *DomainZone) GetStatus() resource.StatusSubResource {
 	return &a.Status
+}
+
+var _ resource.MultiVersionObject = &DomainZone{}
+
+func (a *DomainZone) NewStorageVersionObject() runtime.Object {
+	return &v1alpha3.DomainZone{}
+}
+
+func (a *DomainZone) ConvertToStorageVersion(storageObj runtime.Object) error {
+	obj, ok := storageObj.(*v1alpha3.DomainZone)
+	if !ok {
+		return errors.New("failed to convert to v1alpha3 DomainZone")
+	}
+
+	obj.ObjectMeta = *a.ObjectMeta.DeepCopy()
+
+	// Convert Spec
+	obj.Spec.Nameservers = a.Spec.Nameservers
+	if a.Spec.RegistrationConfig != nil {
+		obj.Spec.RegistrationConfig = &v1alpha3.RegistrationConfig{
+			AutoRenew:               a.Spec.RegistrationConfig.AutoRenew,
+			RegistrationPeriodYears: a.Spec.RegistrationConfig.RegistrationPeriodYears,
+		}
+		if a.Spec.RegistrationConfig.Registrant != nil {
+			obj.Spec.RegistrationConfig.Registrant = &v1alpha3.Registrant{
+				FirstName:    a.Spec.RegistrationConfig.Registrant.FirstName,
+				LastName:     a.Spec.RegistrationConfig.Registrant.LastName,
+				Email:        a.Spec.RegistrationConfig.Registrant.Email,
+				Phone:        a.Spec.RegistrationConfig.Registrant.Phone,
+				Organization: a.Spec.RegistrationConfig.Registrant.Organization,
+			}
+			if a.Spec.RegistrationConfig.Registrant.Address != nil {
+				obj.Spec.RegistrationConfig.Registrant.Address = &v1alpha3.Address{
+					AddressLine1:  a.Spec.RegistrationConfig.Registrant.Address.AddressLine1,
+					AddressLine2:  a.Spec.RegistrationConfig.Registrant.Address.AddressLine2,
+					City:          a.Spec.RegistrationConfig.Registrant.Address.City,
+					StateProvince: a.Spec.RegistrationConfig.Registrant.Address.StateProvince,
+					PostalCode:    a.Spec.RegistrationConfig.Registrant.Address.PostalCode,
+					Country:       a.Spec.RegistrationConfig.Registrant.Address.Country,
+				}
+			}
+		}
+	}
+
+	// Convert Status
+	obj.Status.Phase = v1alpha3.DomainZonePhase(a.Status.Phase)
+	obj.Status.Conditions = a.Status.Conditions
+	if a.Status.RegistrationStatus != nil {
+		obj.Status.RegistrationStatus = &v1alpha3.RegistrationStatus{
+			RegistrationID: a.Status.RegistrationStatus.RegistrationID,
+			EstimatedCost:  a.Status.RegistrationStatus.EstimatedCost,
+			PaymentURL:     a.Status.RegistrationStatus.PaymentURL,
+			RegisteredAt:   a.Status.RegistrationStatus.RegisteredAt,
+			ExpiresAt:      a.Status.RegistrationStatus.ExpiresAt,
+			Error:          a.Status.RegistrationStatus.Error,
+		}
+	}
+	if a.Status.Nameservers != nil {
+		obj.Status.Nameservers = &v1alpha3.NameserverStatus{
+			Required: a.Status.Nameservers.Required,
+			Current:  a.Status.Nameservers.Current,
+		}
+	}
+
+	return nil
+}
+
+func (a *DomainZone) ConvertFromStorageVersion(storageObj runtime.Object) error {
+	obj, ok := storageObj.(*v1alpha3.DomainZone)
+	if !ok {
+		return errors.New("failed to convert from v1alpha3 DomainZone")
+	}
+
+	a.ObjectMeta = *obj.ObjectMeta.DeepCopy()
+
+	// Convert Spec
+	a.Spec.Nameservers = obj.Spec.Nameservers
+	if obj.Spec.RegistrationConfig != nil {
+		a.Spec.RegistrationConfig = &RegistrationConfig{
+			AutoRenew:               obj.Spec.RegistrationConfig.AutoRenew,
+			RegistrationPeriodYears: obj.Spec.RegistrationConfig.RegistrationPeriodYears,
+		}
+		if obj.Spec.RegistrationConfig.Registrant != nil {
+			a.Spec.RegistrationConfig.Registrant = &Registrant{
+				FirstName:    obj.Spec.RegistrationConfig.Registrant.FirstName,
+				LastName:     obj.Spec.RegistrationConfig.Registrant.LastName,
+				Email:        obj.Spec.RegistrationConfig.Registrant.Email,
+				Phone:        obj.Spec.RegistrationConfig.Registrant.Phone,
+				Organization: obj.Spec.RegistrationConfig.Registrant.Organization,
+			}
+			if obj.Spec.RegistrationConfig.Registrant.Address != nil {
+				a.Spec.RegistrationConfig.Registrant.Address = &Address{
+					AddressLine1:  obj.Spec.RegistrationConfig.Registrant.Address.AddressLine1,
+					AddressLine2:  obj.Spec.RegistrationConfig.Registrant.Address.AddressLine2,
+					City:          obj.Spec.RegistrationConfig.Registrant.Address.City,
+					StateProvince: obj.Spec.RegistrationConfig.Registrant.Address.StateProvince,
+					PostalCode:    obj.Spec.RegistrationConfig.Registrant.Address.PostalCode,
+					Country:       obj.Spec.RegistrationConfig.Registrant.Address.Country,
+				}
+			}
+		}
+	}
+
+	// Convert Status
+	a.Status.Phase = DomainZonePhase(obj.Status.Phase)
+	a.Status.Conditions = obj.Status.Conditions
+	if obj.Status.RegistrationStatus != nil {
+		a.Status.RegistrationStatus = &RegistrationStatus{
+			RegistrationID: obj.Status.RegistrationStatus.RegistrationID,
+			EstimatedCost:  obj.Status.RegistrationStatus.EstimatedCost,
+			PaymentURL:     obj.Status.RegistrationStatus.PaymentURL,
+			RegisteredAt:   obj.Status.RegistrationStatus.RegisteredAt,
+			ExpiresAt:      obj.Status.RegistrationStatus.ExpiresAt,
+			Error:          obj.Status.RegistrationStatus.Error,
+		}
+	}
+	if obj.Status.Nameservers != nil {
+		a.Status.Nameservers = &NameserverStatus{
+			Required: obj.Status.Nameservers.Required,
+			Current:  obj.Status.Nameservers.Current,
+		}
+	}
+
+	return nil
 }
 
 //+kubebuilder:object:root=true

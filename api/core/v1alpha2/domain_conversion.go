@@ -1,16 +1,16 @@
-package v1alpha
+package v1alpha2
 
 import (
 	v1alpha3 "github.com/apoxy-dev/apoxy/api/core/v1alpha3"
 )
 
-// convertDomainSpecFromV1Alpha1ToV1Alpha3 converts a v1alpha DomainSpec (flat DNS) to v1alpha3 (struct DNS).
-func convertDomainSpecFromV1Alpha1ToV1Alpha3(in *DomainSpec) *v1alpha3.DomainSpec {
+// convertDomainSpecToV1Alpha3 converts a v1alpha2 DomainSpec (flat DNS) to v1alpha3 (struct DNS).
+func convertDomainSpecToV1Alpha3(in *DomainSpec) *v1alpha3.DomainSpec {
 	if in == nil {
 		return nil
 	}
 
-	return &v1alpha3.DomainSpec{
+	out := &v1alpha3.DomainSpec{
 		Zone:           in.Zone,
 		CustomDomains:  in.CustomDomains,
 		Target:         *convertDomainTargetSpecToV1Alpha3(&in.Target),
@@ -18,15 +18,17 @@ func convertDomainSpecFromV1Alpha1ToV1Alpha3(in *DomainSpec) *v1alpha3.DomainSpe
 		ForwardingSpec: convertDomainForwardingSpecToV1Alpha3(in.ForwardingSpec),
 		Filters:        convertLocalObjectReferencesToV1Alpha3(in.Filters),
 	}
+
+	return out
 }
 
-// convertDomainSpecFromV1Alpha3ToV1Alpha1 converts a v1alpha3 DomainSpec (struct DNS) to v1alpha (flat DNS).
-func convertDomainSpecFromV1Alpha3ToV1Alpha1(in *v1alpha3.DomainSpec) *DomainSpec {
+// convertDomainSpecFromV1Alpha3 converts a v1alpha3 DomainSpec (struct DNS) to v1alpha2 (flat DNS).
+func convertDomainSpecFromV1Alpha3(in *v1alpha3.DomainSpec) *DomainSpec {
 	if in == nil {
 		return nil
 	}
 
-	return &DomainSpec{
+	out := &DomainSpec{
 		Zone:           in.Zone,
 		CustomDomains:  in.CustomDomains,
 		Target:         *convertDomainTargetSpecFromV1Alpha3(&in.Target),
@@ -34,6 +36,8 @@ func convertDomainSpecFromV1Alpha3ToV1Alpha1(in *v1alpha3.DomainSpec) *DomainSpe
 		ForwardingSpec: convertDomainForwardingSpecFromV1Alpha3(in.ForwardingSpec),
 		Filters:        convertLocalObjectReferencesFromV1Alpha3(in.Filters),
 	}
+
+	return out
 }
 
 func convertDomainTargetSpecToV1Alpha3(in *DomainTargetSpec) *v1alpha3.DomainTargetSpec {
@@ -42,7 +46,7 @@ func convertDomainTargetSpecToV1Alpha3(in *DomainTargetSpec) *v1alpha3.DomainTar
 	}
 
 	return &v1alpha3.DomainTargetSpec{
-		DNS: convertDomainTargetDNSToV1Alpha3(in.DNS),
+		DNS: convertDomainTargetDNSToV1Alpha3(in.DNS, in),
 		Ref: convertLocalObjectReferenceToV1Alpha3(in.Ref),
 	}
 }
@@ -58,8 +62,9 @@ func convertDomainTargetSpecFromV1Alpha3(in *v1alpha3.DomainTargetSpec) *DomainT
 	}
 }
 
-// convertDomainTargetDNSToV1Alpha3 converts flat v1alpha DNS fields to v1alpha3 per-record structs.
-func convertDomainTargetDNSToV1Alpha3(in *DomainTargetDNS) *v1alpha3.DomainTargetDNS {
+// convertDomainTargetDNSToV1Alpha3 converts flat DNS fields to per-record struct fields.
+// The single v1alpha2 TTL is distributed to all record types.
+func convertDomainTargetDNSToV1Alpha3(in *DomainTargetDNS, target *DomainTargetSpec) *v1alpha3.DomainTargetDNS {
 	if in == nil {
 		return nil
 	}
@@ -142,13 +147,16 @@ func convertDomainTargetDNSToV1Alpha3(in *DomainTargetDNS) *v1alpha3.DomainTarge
 	return out
 }
 
-// convertDomainTargetDNSFromV1Alpha3 converts v1alpha3 per-record struct DNS to flat v1alpha DNS.
+// convertDomainTargetDNSFromV1Alpha3 converts per-record struct DNS fields to flat v1alpha2 fields.
+// The first non-nil per-record TTL is picked as the single v1alpha2 TTL.
 func convertDomainTargetDNSFromV1Alpha3(in *v1alpha3.DomainTargetDNS) *DomainTargetDNS {
 	if in == nil {
 		return nil
 	}
 
 	out := &DomainTargetDNS{}
+
+	// Collect the first non-nil TTL from any record type.
 	var firstTTL *int32
 
 	if in.IPs != nil {
@@ -318,9 +326,9 @@ func convertLocalObjectReferenceFromV1Alpha3(in *v1alpha3.LocalObjectReference) 
 	}
 
 	return &LocalObjectReference{
-		Group: string(in.Group),
-		Kind:  string(in.Kind),
-		Name:  string(in.Name),
+		Group: Group(in.Group),
+		Kind:  Kind(in.Kind),
+		Name:  ObjectName(in.Name),
 	}
 }
 
@@ -348,7 +356,7 @@ func convertLocalObjectReferencesFromV1Alpha3(in []*v1alpha3.LocalObjectReferenc
 	return out
 }
 
-func convertDomainStatusFromV1Alpha1ToV1Alpha3(in *DomainStatus) *v1alpha3.DomainStatus {
+func convertDomainStatusToV1Alpha3(in *DomainStatus) *v1alpha3.DomainStatus {
 	if in == nil {
 		return nil
 	}
@@ -368,7 +376,7 @@ func convertDomainStatusFromV1Alpha1ToV1Alpha3(in *DomainStatus) *v1alpha3.Domai
 	}
 }
 
-func convertDomainStatusFromV1Alpha3ToV1Alpha1(in *v1alpha3.DomainStatus) *DomainStatus {
+func convertDomainStatusFromV1Alpha3(in *v1alpha3.DomainStatus) *DomainStatus {
 	if in == nil {
 		return nil
 	}
