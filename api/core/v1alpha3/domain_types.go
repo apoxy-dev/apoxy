@@ -137,45 +137,6 @@ type DNSMXRecords struct {
 	TTL *int32 `json:"ttl,omitempty"`
 }
 
-// DNSDKIMRecords holds DKIM record values with an optional per-record TTL.
-type DNSDKIMRecords struct {
-	// Values is the list of DKIM record values.
-	// +kubebuilder:validation:MinItems=1
-	Values []string `json:"values"`
-
-	// TTL is the time-to-live for this record type.
-	// +kubebuilder:validation:Minimum=0
-	// +kubebuilder:validation:Maximum=3600
-	// +optional
-	TTL *int32 `json:"ttl,omitempty"`
-}
-
-// DNSSPFRecords holds SPF record values with an optional per-record TTL.
-type DNSSPFRecords struct {
-	// Values is the list of SPF record values.
-	// +kubebuilder:validation:MinItems=1
-	Values []string `json:"values"`
-
-	// TTL is the time-to-live for this record type.
-	// +kubebuilder:validation:Minimum=0
-	// +kubebuilder:validation:Maximum=3600
-	// +optional
-	TTL *int32 `json:"ttl,omitempty"`
-}
-
-// DNSDMARCRecords holds DMARC record values with an optional per-record TTL.
-type DNSDMARCRecords struct {
-	// Values is the list of DMARC record values.
-	// +kubebuilder:validation:MinItems=1
-	Values []string `json:"values"`
-
-	// TTL is the time-to-live for this record type.
-	// +kubebuilder:validation:Minimum=0
-	// +kubebuilder:validation:Maximum=3600
-	// +optional
-	TTL *int32 `json:"ttl,omitempty"`
-}
-
 // DNSCAARecords holds CAA record values with an optional per-record TTL.
 type DNSCAARecords struct {
 	// Values is the list of CAA record values.
@@ -215,32 +176,6 @@ type DNSNSRecords struct {
 	TTL *int32 `json:"ttl,omitempty"`
 }
 
-// DNSDSRecords holds DS record values with an optional per-record TTL.
-type DNSDSRecords struct {
-	// Values is the list of DS record values.
-	// +kubebuilder:validation:MinItems=1
-	Values []string `json:"values"`
-
-	// TTL is the time-to-live for this record type.
-	// +kubebuilder:validation:Minimum=0
-	// +kubebuilder:validation:Maximum=3600
-	// +optional
-	TTL *int32 `json:"ttl,omitempty"`
-}
-
-// DNSDNSKEYRecords holds DNSKEY record values with an optional per-record TTL.
-type DNSDNSKEYRecords struct {
-	// Values is the list of DNSKEY record values.
-	// +kubebuilder:validation:MinItems=1
-	Values []string `json:"values"`
-
-	// TTL is the time-to-live for this record type.
-	// +kubebuilder:validation:Minimum=0
-	// +kubebuilder:validation:Maximum=3600
-	// +optional
-	TTL *int32 `json:"ttl,omitempty"`
-}
-
 type DomainTargetDNS struct {
 	// IPs holds A/AAAA record addresses.
 	// Cannot be set with FQDN.
@@ -260,18 +195,6 @@ type DomainTargetDNS struct {
 	// +optional
 	MX *DNSMXRecords `json:"mx,omitempty"`
 
-	// DKIM holds DomainKeys Identified Mail record values.
-	// +optional
-	DKIM *DNSDKIMRecords `json:"dkim,omitempty"`
-
-	// SPF holds Sender Policy Framework record values.
-	// +optional
-	SPF *DNSSPFRecords `json:"spf,omitempty"`
-
-	// DMARC holds Domain-based Message Authentication, Reporting & Conformance record values.
-	// +optional
-	DMARC *DNSDMARCRecords `json:"dmarc,omitempty"`
-
 	// CAA holds Certification Authority Authorization record values.
 	// +optional
 	CAA *DNSCAARecords `json:"caa,omitempty"`
@@ -284,13 +207,6 @@ type DomainTargetDNS struct {
 	// +optional
 	NS *DNSNSRecords `json:"ns,omitempty"`
 
-	// DS holds Delegation Signer record values.
-	// +optional
-	DS *DNSDSRecords `json:"ds,omitempty"`
-
-	// DNSKEY holds DNS Key record values.
-	// +optional
-	DNSKEY *DNSDNSKEYRecords `json:"dnskey,omitempty"`
 }
 
 type DomainTLSSpec struct {
@@ -639,41 +555,6 @@ func getDomainRows(domain *Domain) []domainRow {
 				typ:   "DNS:CAA",
 				value: formatMultiValue(dns.CAA.Values, 30),
 				ttl:   resolveTTL(dns.CAA.TTL),
-			})
-		}
-		if dns.DKIM != nil && len(dns.DKIM.Values) > 0 {
-			rows = append(rows, domainRow{
-				typ:   "DNS:DKIM",
-				value: formatMultiValue(dns.DKIM.Values, 30),
-				ttl:   resolveTTL(dns.DKIM.TTL),
-			})
-		}
-		if dns.SPF != nil && len(dns.SPF.Values) > 0 {
-			rows = append(rows, domainRow{
-				typ:   "DNS:SPF",
-				value: formatMultiValue(dns.SPF.Values, 30),
-				ttl:   resolveTTL(dns.SPF.TTL),
-			})
-		}
-		if dns.DMARC != nil && len(dns.DMARC.Values) > 0 {
-			rows = append(rows, domainRow{
-				typ:   "DNS:DMARC",
-				value: formatMultiValue(dns.DMARC.Values, 30),
-				ttl:   resolveTTL(dns.DMARC.TTL),
-			})
-		}
-		if dns.DS != nil && len(dns.DS.Values) > 0 {
-			rows = append(rows, domainRow{
-				typ:   "DNS:DS",
-				value: formatMultiValue(dns.DS.Values, 30),
-				ttl:   resolveTTL(dns.DS.TTL),
-			})
-		}
-		if dns.DNSKEY != nil && len(dns.DNSKEY.Values) > 0 {
-			rows = append(rows, domainRow{
-				typ:   "DNS:DNSKEY",
-				value: formatMultiValue(dns.DNSKEY.Values, 30),
-				ttl:   resolveTTL(dns.DNSKEY.TTL),
 			})
 		}
 	}
