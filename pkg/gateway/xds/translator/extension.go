@@ -152,16 +152,14 @@ func processExtensionPostListenerHook(
 
 // processExtensionPostTranslateHook calls PostTranslateModify on the extension
 // server with all translated xDS clusters, allowing the extension to modify
-// clusters in-place (e.g., to set per-project DNS resolver ports).
+// or add clusters (e.g., to set per-project DNS resolver ports or inject an
+// OTEL collector cluster for access logging).
 func processExtensionPostTranslateHook(
 	ctx context.Context,
 	tCtx *types.ResourceVersionTable,
 	c extension.EnvoyGatewayExtensionClient,
 ) error {
 	clusters := tCtx.XdsResources[resourcev3.ClusterType]
-	if len(clusters) == 0 {
-		return nil
-	}
 
 	log.DefaultLogger.Info("Processing extension post translate hook", "clusters", len(clusters))
 
@@ -180,6 +178,8 @@ func processExtensionPostTranslateHook(
 	}
 
 	// Replace clusters with modified versions from the extension server.
+	// The extension may add new clusters (e.g., OTEL collector) even when
+	// the translation produced none.
 	if resp.GetClusters() != nil {
 		newClusters := make([]cachetypes.Resource, len(resp.GetClusters()))
 		for i, c := range resp.GetClusters() {
