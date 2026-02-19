@@ -90,6 +90,24 @@ func convertDomainTargetDNSToV1Alpha3(in *DomainTargetDNS) *v1alpha3.DomainTarge
 			TTL:    in.TTL,
 		}
 	}
+	if len(in.DKIM) > 0 {
+		out.DKIM = &v1alpha3.DNSDKIMRecords{
+			Values: in.DKIM,
+			TTL:    in.TTL,
+		}
+	}
+	if len(in.SPF) > 0 {
+		out.SPF = &v1alpha3.DNSSPFRecords{
+			Values: in.SPF,
+			TTL:    in.TTL,
+		}
+	}
+	if len(in.DMARC) > 0 {
+		out.DMARC = &v1alpha3.DNSDMARCRecords{
+			Values: in.DMARC,
+			TTL:    in.TTL,
+		}
+	}
 	if len(in.CAA) > 0 {
 		out.CAA = &v1alpha3.DNSCAARecords{
 			Values: in.CAA,
@@ -108,6 +126,19 @@ func convertDomainTargetDNSToV1Alpha3(in *DomainTargetDNS) *v1alpha3.DomainTarge
 			TTL:         in.TTL,
 		}
 	}
+	if len(in.DS) > 0 {
+		out.DS = &v1alpha3.DNSDSRecords{
+			Values: in.DS,
+			TTL:    in.TTL,
+		}
+	}
+	if len(in.DNSKEY) > 0 {
+		out.DNSKEY = &v1alpha3.DNSDNSKEYRecords{
+			Values: in.DNSKEY,
+			TTL:    in.TTL,
+		}
+	}
+
 	return out
 }
 
@@ -144,6 +175,24 @@ func convertDomainTargetDNSFromV1Alpha3(in *v1alpha3.DomainTargetDNS) *DomainTar
 			firstTTL = in.MX.TTL
 		}
 	}
+	if in.DKIM != nil {
+		out.DKIM = in.DKIM.Values
+		if firstTTL == nil {
+			firstTTL = in.DKIM.TTL
+		}
+	}
+	if in.SPF != nil {
+		out.SPF = in.SPF.Values
+		if firstTTL == nil {
+			firstTTL = in.SPF.TTL
+		}
+	}
+	if in.DMARC != nil {
+		out.DMARC = in.DMARC.Values
+		if firstTTL == nil {
+			firstTTL = in.DMARC.TTL
+		}
+	}
 	if in.CAA != nil {
 		out.CAA = in.CAA.Values
 		if firstTTL == nil {
@@ -162,6 +211,19 @@ func convertDomainTargetDNSFromV1Alpha3(in *v1alpha3.DomainTargetDNS) *DomainTar
 			firstTTL = in.NS.TTL
 		}
 	}
+	if in.DS != nil {
+		out.DS = in.DS.Values
+		if firstTTL == nil {
+			firstTTL = in.DS.TTL
+		}
+	}
+	if in.DNSKEY != nil {
+		out.DNSKEY = in.DNSKEY.Values
+		if firstTTL == nil {
+			firstTTL = in.DNSKEY.TTL
+		}
+	}
+
 	out.TTL = firstTTL
 	return out
 }

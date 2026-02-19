@@ -155,8 +155,13 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha3.DNSAddressRecords":                   schema_apoxy_api_core_v1alpha3_DNSAddressRecords(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha3.DNSCAARecords":                       schema_apoxy_api_core_v1alpha3_DNSCAARecords(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha3.DNSCNAMERecord":                      schema_apoxy_api_core_v1alpha3_DNSCNAMERecord(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha3.DNSDKIMRecords":                      schema_apoxy_api_core_v1alpha3_DNSDKIMRecords(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha3.DNSDMARCRecords":                     schema_apoxy_api_core_v1alpha3_DNSDMARCRecords(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha3.DNSDNSKEYRecords":                    schema_apoxy_api_core_v1alpha3_DNSDNSKEYRecords(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha3.DNSDSRecords":                        schema_apoxy_api_core_v1alpha3_DNSDSRecords(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha3.DNSMXRecords":                        schema_apoxy_api_core_v1alpha3_DNSMXRecords(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha3.DNSNSRecords":                        schema_apoxy_api_core_v1alpha3_DNSNSRecords(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha3.DNSSPFRecords":                       schema_apoxy_api_core_v1alpha3_DNSSPFRecords(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha3.DNSSRVRecords":                       schema_apoxy_api_core_v1alpha3_DNSSRVRecords(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha3.DNSTXTRecords":                       schema_apoxy_api_core_v1alpha3_DNSTXTRecords(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha3.Domain":                              schema_apoxy_api_core_v1alpha3_Domain(ref),
@@ -5941,6 +5946,150 @@ func schema_apoxy_api_core_v1alpha3_DNSCNAMERecord(ref common.ReferenceCallback)
 	}
 }
 
+func schema_apoxy_api_core_v1alpha3_DNSDKIMRecords(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "DNSDKIMRecords holds DKIM (DomainKeys Identified Mail) values with an optional per-record TTL. Stored as TXT records under <selector>._domainkey.<domain>. Values should be DKIM public key records (e.g. \"v=DKIM1; k=rsa; p=...\").",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"values": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Values is the list of DKIM record values.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"ttl": {
+						SchemaProps: spec.SchemaProps{
+							Description: "TTL is the time-to-live for this record type.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+				},
+				Required: []string{"values"},
+			},
+		},
+	}
+}
+
+func schema_apoxy_api_core_v1alpha3_DNSDMARCRecords(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "DNSDMARCRecords holds DMARC (Domain-based Message Authentication, Reporting & Conformance) values with an optional per-record TTL. Stored as TXT records under _dmarc.<domain>. Values should follow DMARC syntax (e.g. \"v=DMARC1; p=reject; rua=mailto:...\").",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"values": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Values is the list of DMARC record values.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"ttl": {
+						SchemaProps: spec.SchemaProps{
+							Description: "TTL is the time-to-live for this record type.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+				},
+				Required: []string{"values"},
+			},
+		},
+	}
+}
+
+func schema_apoxy_api_core_v1alpha3_DNSDNSKEYRecords(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "DNSDNSKEYRecords holds DNSKEY records for DNSSEC, with an optional per-record TTL. Values should be DNSKEY record data (e.g. \"257 3 8 <base64-encoded-key>\").",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"values": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Values is the list of DNSKEY record values.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"ttl": {
+						SchemaProps: spec.SchemaProps{
+							Description: "TTL is the time-to-live for this record type.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+				},
+				Required: []string{"values"},
+			},
+		},
+	}
+}
+
+func schema_apoxy_api_core_v1alpha3_DNSDSRecords(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "DNSDSRecords holds DS (Delegation Signer) records for DNSSEC chain of trust, with an optional per-record TTL. Values should be DS record data (e.g. \"12345 8 2 <digest>\").",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"values": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Values is the list of DS record values.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"ttl": {
+						SchemaProps: spec.SchemaProps{
+							Description: "TTL is the time-to-live for this record type.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+				},
+				Required: []string{"values"},
+			},
+		},
+	}
+}
+
 func schema_apoxy_api_core_v1alpha3_DNSMXRecords(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -6008,6 +6157,42 @@ func schema_apoxy_api_core_v1alpha3_DNSNSRecords(ref common.ReferenceCallback) c
 					},
 				},
 				Required: []string{"nameservers"},
+			},
+		},
+	}
+}
+
+func schema_apoxy_api_core_v1alpha3_DNSSPFRecords(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "DNSSPFRecords holds SPF (Sender Policy Framework) values with an optional per-record TTL. Stored as TXT records. Values should follow SPF syntax (e.g. \"v=spf1 include:_spf.google.com ~all\").",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"values": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Values is the list of SPF record values.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"ttl": {
+						SchemaProps: spec.SchemaProps{
+							Description: "TTL is the time-to-live for this record type.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+				},
+				Required: []string{"values"},
 			},
 		},
 	}
@@ -6361,6 +6546,24 @@ func schema_apoxy_api_core_v1alpha3_DomainTargetDNS(ref common.ReferenceCallback
 							Ref:         ref("github.com/apoxy-dev/apoxy/api/core/v1alpha3.DNSMXRecords"),
 						},
 					},
+					"dkim": {
+						SchemaProps: spec.SchemaProps{
+							Description: "DKIM holds DKIM (DomainKeys Identified Mail) values. Stored as TXT records under <selector>._domainkey.<domain>. Values should be DKIM public key records (e.g. \"v=DKIM1; k=rsa; p=...\").",
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/core/v1alpha3.DNSDKIMRecords"),
+						},
+					},
+					"spf": {
+						SchemaProps: spec.SchemaProps{
+							Description: "SPF holds SPF (Sender Policy Framework) values. Stored as TXT records. Values should follow SPF syntax (e.g. \"v=spf1 include:_spf.google.com ~all\").",
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/core/v1alpha3.DNSSPFRecords"),
+						},
+					},
+					"dmarc": {
+						SchemaProps: spec.SchemaProps{
+							Description: "DMARC holds DMARC (Domain-based Message Authentication, Reporting & Conformance) values. Stored as TXT records under _dmarc.<domain>. Values should follow DMARC syntax (e.g. \"v=DMARC1; p=reject; rua=mailto:...\").",
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/core/v1alpha3.DNSDMARCRecords"),
+						},
+					},
 					"caa": {
 						SchemaProps: spec.SchemaProps{
 							Description: "CAA holds Certification Authority Authorization record values.",
@@ -6379,11 +6582,23 @@ func schema_apoxy_api_core_v1alpha3_DomainTargetDNS(ref common.ReferenceCallback
 							Ref:         ref("github.com/apoxy-dev/apoxy/api/core/v1alpha3.DNSNSRecords"),
 						},
 					},
+					"ds": {
+						SchemaProps: spec.SchemaProps{
+							Description: "DS holds DS (Delegation Signer) records for DNSSEC chain of trust. Values should be DS record data (e.g. \"12345 8 2 <digest>\").",
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/core/v1alpha3.DNSDSRecords"),
+						},
+					},
+					"dnskey": {
+						SchemaProps: spec.SchemaProps{
+							Description: "DNSKEY holds DNSKEY records for DNSSEC. Values should be DNSKEY record data (e.g. \"257 3 8 <base64-encoded-key>\").",
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/core/v1alpha3.DNSDNSKEYRecords"),
+						},
+					},
 				},
 			},
 		},
 		Dependencies: []string{
-			"github.com/apoxy-dev/apoxy/api/core/v1alpha3.DNSAddressRecords", "github.com/apoxy-dev/apoxy/api/core/v1alpha3.DNSCAARecords", "github.com/apoxy-dev/apoxy/api/core/v1alpha3.DNSCNAMERecord", "github.com/apoxy-dev/apoxy/api/core/v1alpha3.DNSMXRecords", "github.com/apoxy-dev/apoxy/api/core/v1alpha3.DNSNSRecords", "github.com/apoxy-dev/apoxy/api/core/v1alpha3.DNSSRVRecords", "github.com/apoxy-dev/apoxy/api/core/v1alpha3.DNSTXTRecords"},
+			"github.com/apoxy-dev/apoxy/api/core/v1alpha3.DNSAddressRecords", "github.com/apoxy-dev/apoxy/api/core/v1alpha3.DNSCAARecords", "github.com/apoxy-dev/apoxy/api/core/v1alpha3.DNSCNAMERecord", "github.com/apoxy-dev/apoxy/api/core/v1alpha3.DNSDKIMRecords", "github.com/apoxy-dev/apoxy/api/core/v1alpha3.DNSDMARCRecords", "github.com/apoxy-dev/apoxy/api/core/v1alpha3.DNSDNSKEYRecords", "github.com/apoxy-dev/apoxy/api/core/v1alpha3.DNSDSRecords", "github.com/apoxy-dev/apoxy/api/core/v1alpha3.DNSMXRecords", "github.com/apoxy-dev/apoxy/api/core/v1alpha3.DNSNSRecords", "github.com/apoxy-dev/apoxy/api/core/v1alpha3.DNSSPFRecords", "github.com/apoxy-dev/apoxy/api/core/v1alpha3.DNSSRVRecords", "github.com/apoxy-dev/apoxy/api/core/v1alpha3.DNSTXTRecords"},
 	}
 }
 
