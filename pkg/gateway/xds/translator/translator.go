@@ -107,6 +107,10 @@ func (t *Translator) Translate(xdsIR *ir.Xds) (*types.ResourceVersionTable, erro
 		errs = errors.Join(errs, err)
 	}
 
+	if err := t.notifyExtensionServerAboutRoutes(tCtx); err != nil {
+		errs = errors.Join(errs, err)
+	}
+
 	if err := t.notifyExtensionServerAboutClusters(tCtx); err != nil {
 		errs = errors.Join(errs, err)
 	}
@@ -119,6 +123,24 @@ func (t *Translator) Translate(xdsIR *ir.Xds) (*types.ResourceVersionTable, erro
 	}
 
 	return tCtx, errs
+}
+
+// notifyExtensionServerAboutRoutes calls the extension server's PostRouteModify
+// hook for each route in every RouteConfiguration. This allows the extension to
+// inject per-route metadata (e.g., project_id into filter_metadata).
+func (t *Translator) notifyExtensionServerAboutRoutes(tCtx *types.ResourceVersionTable) error {
+	if t.ExtensionServer == nil {
+		return nil
+	}
+
+	if err := processExtensionPostRouteHook(t.Ctx, tCtx, t.ExtensionServer.EnvoyGatewayExtensionClient); err != nil {
+		if !t.ExtensionServer.FailOpen {
+			return err
+		}
+		slog.Error("Extension Manager PostRoute failure", "error", err)
+	}
+
+	return nil
 }
 
 // notifyExtensionServerAboutClusters calls the extension server's

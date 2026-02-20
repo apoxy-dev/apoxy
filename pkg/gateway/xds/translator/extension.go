@@ -18,6 +18,7 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/log"
 	clusterv3 "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
 	listenerv3 "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
+	routev3 "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
 	cachetypes "github.com/envoyproxy/go-control-plane/pkg/cache/types"
 	resourcev3 "github.com/envoyproxy/go-control-plane/pkg/resource/v3"
 	"github.com/envoyproxy/gateway/proto/extension"
@@ -144,6 +145,39 @@ func processExtensionPostListenerHook(
 			},
 		); err != nil {
 			return err
+		}
+	}
+
+	return nil
+}
+
+// processExtensionPostRouteHook calls PostRouteModify on the extension server
+// for each route in every RouteConfiguration, allowing the extension to inject
+// per-route metadata (e.g., project_id into filter_metadata).
+func processExtensionPostRouteHook(
+	ctx context.Context,
+	tCtx *types.ResourceVersionTable,
+	c extension.EnvoyGatewayExtensionClient,
+) error {
+	log := log.DefaultLogger
+
+	for _, r := range tCtx.XdsResources[resourcev3.RouteType] {
+		routeCfg := r.(*routev3.RouteConfiguration)
+		for _, vh := range routeCfg.GetVirtualHosts() {
+			for i, route := range vh.GetRoutes() {
+				log.Info("Processing extension post route hook", "route", route.GetName())
+				reqCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+				resp, err := c.PostRouteModify(reqCtx, &extension.PostRouteModifyRequest{
+					Route: route,
+				})
+				cancel()
+				if err != nil {
+					return err
+				}
+				if resp.GetRoute() != nil {
+					vh.Routes[i] = resp.GetRoute()
+				}
+			}
 		}
 	}
 
