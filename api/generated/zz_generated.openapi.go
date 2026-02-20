@@ -161,6 +161,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha3.DNSDSRecords":                        schema_apoxy_api_core_v1alpha3_DNSDSRecords(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha3.DNSMXRecords":                        schema_apoxy_api_core_v1alpha3_DNSMXRecords(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha3.DNSNSRecords":                        schema_apoxy_api_core_v1alpha3_DNSNSRecords(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha3.DNSRecordStatus":                     schema_apoxy_api_core_v1alpha3_DNSRecordStatus(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha3.DNSSPFRecords":                       schema_apoxy_api_core_v1alpha3_DNSSPFRecords(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha3.DNSSRVRecords":                       schema_apoxy_api_core_v1alpha3_DNSSRVRecords(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha3.DNSTXTRecords":                       schema_apoxy_api_core_v1alpha3_DNSTXTRecords(ref),
@@ -176,7 +177,6 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha3.DomainZoneList":                      schema_apoxy_api_core_v1alpha3_DomainZoneList(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha3.DomainZoneSpec":                      schema_apoxy_api_core_v1alpha3_DomainZoneSpec(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha3.DomainZoneStatus":                    schema_apoxy_api_core_v1alpha3_DomainZoneStatus(ref),
-		"github.com/apoxy-dev/apoxy/api/core/v1alpha3.FQDNStatus":                          schema_apoxy_api_core_v1alpha3_FQDNStatus(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha3.ForwardingRule":                      schema_apoxy_api_core_v1alpha3_ForwardingRule(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha3.LocalObjectReference":                schema_apoxy_api_core_v1alpha3_LocalObjectReference(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha3.NameserverStatus":                    schema_apoxy_api_core_v1alpha3_NameserverStatus(ref),
@@ -6162,6 +6162,59 @@ func schema_apoxy_api_core_v1alpha3_DNSNSRecords(ref common.ReferenceCallback) c
 	}
 }
 
+func schema_apoxy_api_core_v1alpha3_DNSRecordStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "DNSRecordStatus represents the status of an individual DNS record managed by a Domain.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Name is the DNS record name. For zone-managed domains this is relative to the zone (e.g. \"@\", \"_dmarc\", \"www\"). For CNAME-only domains this is the full FQDN (e.g. \"api.example.com\").",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"type": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Type is the DNS record type (\"A\", \"AAAA\", \"TXT\", \"MX\", etc.).",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"source": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Source indicates where this record comes from.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"ready": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Ready indicates whether this record has been created and verified.",
+							Default:     false,
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"message": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Message provides human-readable detail.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"name", "type", "source", "ready"},
+			},
+		},
+	}
+}
+
 func schema_apoxy_api_core_v1alpha3_DNSSPFRecords(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -6468,22 +6521,29 @@ func schema_apoxy_api_core_v1alpha3_DomainStatus(ref common.ReferenceCallback) c
 			SchemaProps: spec.SchemaProps{
 				Type: []string{"object"},
 				Properties: map[string]spec.Schema{
-					"phase": {
+					"conditions": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Phase of the domain (aggregated from all FQDNs).",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"fqdnStatus": {
-						SchemaProps: spec.SchemaProps{
-							Description: "FQDNStatus contains the status of each FQDN managed by this Domain.",
+							Description: "Conditions contains aggregate domain-level conditions. Standard conditions: Ready, ZoneReady, DNSConfigured, CNAMEConfigured, TLSReady, TargetReady, ForwardingReady.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/apoxy-dev/apoxy/api/core/v1alpha3.FQDNStatus"),
+										Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
+									},
+								},
+							},
+						},
+					},
+					"records": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Records contains per-record-type status for DNS records managed by this Domain.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("github.com/apoxy-dev/apoxy/api/core/v1alpha3.DNSRecordStatus"),
 									},
 								},
 							},
@@ -6493,7 +6553,7 @@ func schema_apoxy_api_core_v1alpha3_DomainStatus(ref common.ReferenceCallback) c
 			},
 		},
 		Dependencies: []string{
-			"github.com/apoxy-dev/apoxy/api/core/v1alpha3.FQDNStatus"},
+			"github.com/apoxy-dev/apoxy/api/core/v1alpha3.DNSRecordStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.Condition"},
 	}
 }
 
@@ -6802,52 +6862,6 @@ func schema_apoxy_api_core_v1alpha3_DomainZoneStatus(ref common.ReferenceCallbac
 		},
 		Dependencies: []string{
 			"github.com/apoxy-dev/apoxy/api/core/v1alpha3.NameserverStatus", "github.com/apoxy-dev/apoxy/api/core/v1alpha3.RegistrationStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.Condition"},
-	}
-}
-
-func schema_apoxy_api_core_v1alpha3_FQDNStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
-	return common.OpenAPIDefinition{
-		Schema: spec.Schema{
-			SchemaProps: spec.SchemaProps{
-				Description: "FQDNStatus represents the status of an individual FQDN managed by the Domain.",
-				Type:        []string{"object"},
-				Properties: map[string]spec.Schema{
-					"fqdn": {
-						SchemaProps: spec.SchemaProps{
-							Description: "FQDN is the fully qualified domain name.",
-							Default:     "",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"phase": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Phase represents the current state of this FQDN.",
-							Default:     "",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"conditions": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Conditions contains detailed status information for this FQDN.",
-							Type:        []string{"array"},
-							Items: &spec.SchemaOrArray{
-								Schema: &spec.Schema{
-									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
-									},
-								},
-							},
-						},
-					},
-				},
-				Required: []string{"fqdn", "phase"},
-			},
-		},
-		Dependencies: []string{
-			"k8s.io/apimachinery/pkg/apis/meta/v1.Condition"},
 	}
 }
 

@@ -1,6 +1,8 @@
 package v1alpha2
 
 import (
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	v1alpha3 "github.com/apoxy-dev/apoxy/api/core/v1alpha3"
 )
 
@@ -361,19 +363,49 @@ func convertDomainStatusToV1Alpha3(in *DomainStatus) *v1alpha3.DomainStatus {
 		return nil
 	}
 
-	fqdnStatus := make([]v1alpha3.FQDNStatus, len(in.FQDNStatus))
-	for i, fs := range in.FQDNStatus {
-		fqdnStatus[i] = v1alpha3.FQDNStatus{
-			FQDN:       fs.FQDN,
-			Phase:      v1alpha3.FQDNPhase(fs.Phase),
-			Conditions: fs.Conditions,
+	out := &v1alpha3.DomainStatus{}
+
+	// Build top-level Ready condition from Phase.
+	switch in.Phase {
+	case DomainPhaseActive:
+		out.Conditions = append(out.Conditions, metav1.Condition{
+			Type:               "Ready",
+			Status:             metav1.ConditionTrue,
+			Reason:             "DomainActive",
+			Message:            "Domain is ready",
+			LastTransitionTime: metav1.Now(),
+		})
+	case DomainPhaseError:
+		out.Conditions = append(out.Conditions, metav1.Condition{
+			Type:               "Ready",
+			Status:             metav1.ConditionFalse,
+			Reason:             "ValidationFailed",
+			Message:            "Domain has errors",
+			LastTransitionTime: metav1.Now(),
+		})
+	default:
+		out.Conditions = append(out.Conditions, metav1.Condition{
+			Type:               "Ready",
+			Status:             metav1.ConditionFalse,
+			Reason:             "DNSNotReady",
+			Message:            "Domain is pending",
+			LastTransitionTime: metav1.Now(),
+		})
+	}
+
+	// Forward conditions from the first FQDNStatus (if any).
+	if len(in.FQDNStatus) > 0 {
+		for _, cond := range in.FQDNStatus[0].Conditions {
+			// Skip Ready — we already derived it from Phase above.
+			if cond.Type == "Ready" {
+				continue
+			}
+			out.Conditions = append(out.Conditions, cond)
 		}
 	}
 
-	return &v1alpha3.DomainStatus{
-		Phase:      v1alpha3.DomainPhase(in.Phase),
-		FQDNStatus: fqdnStatus,
-	}
+	// Records left empty — not representable in older versions.
+	return out
 }
 
 func convertDomainStatusFromV1Alpha3(in *v1alpha3.DomainStatus) *DomainStatus {
@@ -381,17 +413,54 @@ func convertDomainStatusFromV1Alpha3(in *v1alpha3.DomainStatus) *DomainStatus {
 		return nil
 	}
 
-	fqdnStatus := make([]FQDNStatus, len(in.FQDNStatus))
-	for i, fs := range in.FQDNStatus {
-		fqdnStatus[i] = FQDNStatus{
-			FQDN:       fs.FQDN,
-			Phase:      FQDNPhase(fs.Phase),
-			Conditions: fs.Conditions,
+	out := &DomainStatus{}
+
+	// Derive Phase from the top-level Ready condition.
+	out.Phase = DomainPhasePending
+	for _, cond := range in.Conditions {
+		if cond.Type == "Ready" {
+			if cond.Status == metav1.ConditionTrue {
+				out.Phase = DomainPhaseActive
+			} else {
+				switch cond.Reason {
+				case "ValidationFailed", "CertificateError", "InvalidTargetRef":
+					out.Phase = DomainPhaseError
+				default:
+					out.Phase = DomainPhasePending
+				}
+			}
+			break
 		}
 	}
 
-	return &DomainStatus{
-		Phase:      DomainPhase(in.Phase),
-		FQDNStatus: fqdnStatus,
+	// Derive a single FQDNStatus from the top-level conditions.
+	if len(in.Conditions) > 0 {
+		fqdnPhase := FQDNPhaseActive
+		for _, cond := range in.Conditions {
+			if cond.Type == "Ready" {
+				if cond.Status == metav1.ConditionTrue {
+					fqdnPhase = FQDNPhaseActive
+				} else {
+					switch cond.Reason {
+					case "ZoneNotReady":
+						fqdnPhase = FQDNPhaseWaitingForZone
+					case "DNSNotReady", "CNAMENotConfigured", "ConfiguringDNS":
+						fqdnPhase = FQDNPhaseWaitingForDNS
+					default:
+						fqdnPhase = FQDNPhaseError
+					}
+				}
+				break
+			}
+		}
+		out.FQDNStatus = []FQDNStatus{
+			{
+				FQDN:       "", // Domain name not available during conversion.
+				Phase:      fqdnPhase,
+				Conditions: in.Conditions,
+			},
+		}
 	}
+
+	return out
 }

@@ -12,9 +12,7 @@ var _ resourcestrategy.Defaulter = &Domain{}
 
 // Default sets the default values for a Domain.
 func (r *Domain) Default() {
-	if r.Status.Phase == "" {
-		r.Status.Phase = DomainPhasePending
-	}
+	// No defaults needed — empty Conditions means "Pending" in the table printer.
 }
 
 var _ resourcestrategy.Validater = &Domain{}

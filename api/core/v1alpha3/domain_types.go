@@ -379,26 +379,45 @@ const (
 	FQDNPhaseError FQDNPhase = "Error"
 )
 
-// FQDNStatus represents the status of an individual FQDN managed by the Domain.
-type FQDNStatus struct {
-	// FQDN is the fully qualified domain name.
-	FQDN string `json:"fqdn"`
+// DNSRecordSource indicates the origin of a DNS record.
+type DNSRecordSource string
 
-	// Phase represents the current state of this FQDN.
-	Phase FQDNPhase `json:"phase"`
+const (
+	// DNSRecordSourceSpec indicates the record comes from spec.target.dns.
+	DNSRecordSourceSpec DNSRecordSource = "spec"
+	// DNSRecordSourceRef indicates the record was resolved from spec.target.ref.
+	DNSRecordSourceRef DNSRecordSource = "ref"
+	// DNSRecordSourceSystem indicates the record was auto-generated (e.g. CNAME-only mode).
+	DNSRecordSourceSystem DNSRecordSource = "system"
+)
 
-	// Conditions contains detailed status information for this FQDN.
+// DNSRecordStatus represents the status of an individual DNS record managed by a Domain.
+type DNSRecordStatus struct {
+	// Name is the DNS record name. For zone-managed domains this is relative to the
+	// zone (e.g. "@", "_dmarc", "www"). For CNAME-only domains this is the full FQDN
+	// (e.g. "api.example.com").
+	Name string `json:"name"`
+	// Type is the DNS record type ("A", "AAAA", "TXT", "MX", etc.).
+	Type string `json:"type"`
+	// Source indicates where this record comes from.
+	Source DNSRecordSource `json:"source"`
+	// Ready indicates whether this record has been created and verified.
+	Ready bool `json:"ready"`
+	// Message provides human-readable detail.
 	// +optional
-	Conditions []metav1.Condition `json:"conditions,omitempty"`
+	Message string `json:"message,omitempty"`
 }
 
 type DomainStatus struct {
-	// Phase of the domain (aggregated from all FQDNs).
-	Phase DomainPhase `json:"phase,omitempty"`
-
-	// FQDNStatus contains the status of each FQDN managed by this Domain.
+	// Conditions contains aggregate domain-level conditions.
+	// Standard conditions: Ready, ZoneReady, DNSConfigured, CNAMEConfigured,
+	// TLSReady, TargetReady, ForwardingReady.
 	// +optional
-	FQDNStatus []FQDNStatus `json:"fqdnStatus,omitempty"`
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// Records contains per-record-type status for DNS records managed by this Domain.
+	// +optional
+	Records []DNSRecordStatus `json:"records,omitempty"`
 }
 
 var _ resource.StatusSubResource = &DomainStatus{}
@@ -479,6 +498,19 @@ func (d *Domain) ConvertToTable(ctx context.Context, tableOptions runtime.Object
 	return domainToTable(d, tableOptions)
 }
 
+// domainStatusString returns a human-readable status string from the Ready condition.
+func domainStatusString(domain *Domain) string {
+	for _, c := range domain.Status.Conditions {
+		if c.Type == "Ready" {
+			if c.Status == metav1.ConditionTrue {
+				return "Ready"
+			}
+			return c.Reason
+		}
+	}
+	return "Pending"
+}
+
 func domainToTable(domain *Domain, tableOptions runtime.Object) (*metav1.Table, error) {
 	table := &metav1.Table{}
 
@@ -498,7 +530,7 @@ func domainToTable(domain *Domain, tableOptions runtime.Object) (*metav1.Table, 
 		if i == 0 {
 			row.Cells[0] = domain.Name
 			row.Cells[1] = domain.Spec.Zone
-			row.Cells[5] = string(domain.Status.Phase)
+			row.Cells[5] = domainStatusString(domain)
 			row.Cells[6] = formatAge(domain.CreationTimestamp.Time)
 			row.Object = runtime.RawExtension{Object: domain}
 		}
@@ -532,7 +564,7 @@ func domainListToTable(list *DomainList, tableOptions runtime.Object) (*metav1.T
 			if j == 0 {
 				row.Cells[0] = domain.Name
 				row.Cells[1] = domain.Spec.Zone
-				row.Cells[5] = string(domain.Status.Phase)
+				row.Cells[5] = domainStatusString(domain)
 				row.Cells[6] = formatAge(domain.CreationTimestamp.Time)
 				row.Object = runtime.RawExtension{Object: domain}
 			}
