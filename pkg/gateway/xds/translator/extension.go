@@ -16,12 +16,12 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/gateway/ir"
 	"github.com/apoxy-dev/apoxy/pkg/gateway/xds/types"
 	"github.com/apoxy-dev/apoxy/pkg/log"
+	"github.com/envoyproxy/gateway/proto/extension"
 	clusterv3 "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
 	listenerv3 "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
 	routev3 "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
 	cachetypes "github.com/envoyproxy/go-control-plane/pkg/cache/types"
 	resourcev3 "github.com/envoyproxy/go-control-plane/pkg/resource/v3"
-	"github.com/envoyproxy/gateway/proto/extension"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -163,7 +163,8 @@ func processExtensionPostRouteHook(
 
 	for _, r := range tCtx.XdsResources[resourcev3.RouteType] {
 		routeCfg := r.(*routev3.RouteConfiguration)
-		for _, vh := range routeCfg.GetVirtualHosts() {
+		for vhIdx := range routeCfg.GetVirtualHosts() {
+			vh := routeCfg.VirtualHosts[vhIdx]
 			for i, route := range vh.GetRoutes() {
 				log.Info("Processing extension post route hook", "route", route.GetName())
 				reqCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
@@ -177,6 +178,19 @@ func processExtensionPostRouteHook(
 				if resp.GetRoute() != nil {
 					vh.Routes[i] = resp.GetRoute()
 				}
+			}
+
+			log.Info("Processing extension post virtual host hook", "virtualHost", vh.GetName())
+			vhCtx, vhCancel := context.WithTimeout(ctx, 2*time.Second)
+			vhResp, err := c.PostVirtualHostModify(vhCtx, &extension.PostVirtualHostModifyRequest{
+				VirtualHost: vh,
+			})
+			vhCancel()
+			if err != nil {
+				return err
+			}
+			if vhResp.GetVirtualHost() != nil {
+				routeCfg.VirtualHosts[vhIdx] = vhResp.GetVirtualHost()
 			}
 		}
 	}
