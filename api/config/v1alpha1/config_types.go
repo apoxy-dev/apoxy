@@ -28,8 +28,8 @@ type Config struct {
 	CurrentProject uuid.UUID `json:"currentProject,omitempty"`
 	// Projects is a list of projects that this instance is managing.
 	Projects []Project `json:"projects,omitempty"`
-	// Tunnel is the configuration for the tunnel.
-	Tunnel *TunnelConfig `json:"tunnel,omitempty"`
+	// Runtime configures components started by `apoxy run`.
+	Runtime *RuntimeConfig `json:"runtime,omitempty"`
 	// IsLocalMode is the configuration for the local mode.
 	IsLocalMode bool `json:"isLocalMode,omitempty"`
 }
@@ -118,3 +118,54 @@ const (
 	// Use an unprivileged userspace implementation of WireGuard.
 	TunnelModeUserspace TunnelMode = "userspace"
 )
+
+// RuntimeConfig configures components started by `apoxy run`.
+type RuntimeConfig struct {
+	// Components is the list of runtime components to start.
+	Components []RuntimeComponent `json:"components,omitempty"`
+}
+
+// RuntimeComponentType identifies a runtime component.
+type RuntimeComponentType string
+
+const (
+	// RuntimeComponentKubeMirror mirrors Kubernetes API resources to Apoxy.
+	RuntimeComponentKubeMirror RuntimeComponentType = "kube-mirror"
+	// RuntimeComponentTunnel runs the tunnel component.
+	RuntimeComponentTunnel RuntimeComponentType = "tunnel"
+)
+
+// RuntimeComponent is a single runtime component entry.
+type RuntimeComponent struct {
+	// Type identifies the component.
+	Type RuntimeComponentType `json:"type"`
+	// KubeMirror configures the kube-mirror component.
+	// +optional
+	KubeMirror *KubeMirrorConfig `json:"kubeMirror,omitempty"`
+	// Tunnel configures the tunnel component.
+	// +optional
+	Tunnel *TunnelConfig `json:"tunnel,omitempty"`
+}
+
+// MirrorMode specifies which Kubernetes API resources to mirror.
+type MirrorMode string
+
+const (
+	MirrorModeGateway MirrorMode = "gateway"
+	MirrorModeIngress MirrorMode = "ingress"
+	MirrorModeAll     MirrorMode = "all"
+)
+
+// KubeMirrorConfig configures the kube-mirror runtime component.
+type KubeMirrorConfig struct {
+	// ClusterName is an identifier for this cluster used for multi-cluster deconfliction.
+	ClusterName string `json:"clusterName,omitempty"`
+	// Mirror specifies which K8s API resources to mirror. Defaults to "all".
+	Mirror MirrorMode `json:"mirror,omitempty"`
+	// Namespace to operate in. Defaults to "apoxy".
+	Namespace string `json:"namespace,omitempty"`
+	// BootstrapToken for Apoxy Cloud connectivity.
+	BootstrapToken string `json:"bootstrapToken,omitempty"`
+	// ServiceName for the K8s Service. Defaults to "kube-mirror".
+	ServiceName string `json:"serviceName,omitempty"`
+}
