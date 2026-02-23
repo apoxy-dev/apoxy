@@ -6,13 +6,20 @@ import (
 
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
+	"k8s.io/apimachinery/pkg/runtime"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	ctrl "sigs.k8s.io/controller-runtime"
+	gwapiv1 "sigs.k8s.io/gateway-api/apis/v1"
+	gwapiv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
 
 	configv1alpha1 "github.com/apoxy-dev/apoxy/api/config/v1alpha1"
+	"github.com/apoxy-dev/apoxy/client/versioned"
 	"github.com/apoxy-dev/apoxy/config"
 	"github.com/apoxy-dev/apoxy/pkg/kube-controller/apiregistration"
 	"github.com/apoxy-dev/apoxy/pkg/kube-controller/apiserviceproxy"
+	"github.com/apoxy-dev/apoxy/pkg/kube-controller/controllers"
 	"github.com/apoxy-dev/apoxy/pkg/log"
 )
 
@@ -177,7 +184,34 @@ func runKubeAggregation(ctx context.Context, cfg *configv1alpha1.Config, ac *con
 }
 
 func runKubeMirror(ctx context.Context, cfg *configv1alpha1.Config, mc *configv1alpha1.KubeMirrorConfig) error {
-	return fmt.Errorf("kube-mirror runtime component not yet implemented")
+	log.Infof("Starting kube-mirror component (cluster=%s, mirror=%s, namespace=%s)",
+		mc.ClusterName, mc.Mirror, mc.Namespace)
+
+	kCluster, err := rest.InClusterConfig()
+	if err != nil {
+		return fmt.Errorf("failed to create in-cluster config: %w", err)
+	}
+
+	scheme := runtime.NewScheme()
+	utilruntime.Must(gwapiv1.Install(scheme))
+	utilruntime.Must(gwapiv1alpha2.Install(scheme))
+
+	mgr, err := ctrl.NewManager(kCluster, ctrl.Options{Scheme: scheme})
+	if err != nil {
+		return fmt.Errorf("failed to create controller manager: %w", err)
+	}
+
+	apoxyClient, err := versioned.NewForConfig(kCluster)
+	if err != nil {
+		return fmt.Errorf("failed to create Apoxy client: %w", err)
+	}
+
+	reconciler := controllers.NewMirrorReconciler(mgr.GetClient(), apoxyClient, mc)
+	if err := reconciler.SetupWithManager(ctx, mgr); err != nil {
+		return fmt.Errorf("failed to setup mirror reconciler: %w", err)
+	}
+
+	return mgr.Start(ctx)
 }
 
 func init() {
