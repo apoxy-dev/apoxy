@@ -129,6 +129,8 @@ type RuntimeConfig struct {
 type RuntimeComponentType string
 
 const (
+	// RuntimeComponentKubeAggregation runs API aggregation proxy and service registration.
+	RuntimeComponentKubeAggregation RuntimeComponentType = "kube-aggregation"
 	// RuntimeComponentKubeMirror mirrors Kubernetes API resources to Apoxy.
 	RuntimeComponentKubeMirror RuntimeComponentType = "kube-mirror"
 	// RuntimeComponentTunnel runs the tunnel component.
@@ -139,12 +141,27 @@ const (
 type RuntimeComponent struct {
 	// Type identifies the component.
 	Type RuntimeComponentType `json:"type"`
+	// KubeAggregation configures the kube-aggregation component.
+	// +optional
+	KubeAggregation *KubeAggregationConfig `json:"kubeAggregation,omitempty"`
 	// KubeMirror configures the kube-mirror component.
 	// +optional
 	KubeMirror *KubeMirrorConfig `json:"kubeMirror,omitempty"`
 	// Tunnel configures the tunnel component.
 	// +optional
 	Tunnel *TunnelConfig `json:"tunnel,omitempty"`
+}
+
+// KubeAggregationConfig configures the kube-aggregation runtime component.
+type KubeAggregationConfig struct {
+	// ClusterName is an identifier for this cluster used for multi-cluster deconfliction.
+	ClusterName string `json:"clusterName,omitempty"`
+	// Namespace to operate in. Defaults to "apoxy".
+	Namespace string `json:"namespace,omitempty"`
+	// BootstrapToken for Apoxy Cloud connectivity.
+	BootstrapToken string `json:"bootstrapToken,omitempty"`
+	// ServiceName for the K8s Service. Defaults to "kube-aggregation".
+	ServiceName string `json:"serviceName,omitempty"`
 }
 
 // MirrorMode specifies which Kubernetes API resources to mirror.

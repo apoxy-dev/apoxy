@@ -25,11 +25,13 @@ Components are defined under runtime.components in the config. Example:
 
   runtime:
     components:
+      - type: kube-aggregation
+        kubeAggregation:
+          clusterName: "prod-us-east-1"
+          namespace: "apoxy"
       - type: kube-mirror
         kubeMirror:
-          clusterName: "prod-us-east-1"
           mirror: "all"
-          namespace: "apoxy"
       - type: tunnel
         tunnel:
           mode: "kernel"`,
@@ -49,6 +51,17 @@ Components are defined under runtime.components in the config. Example:
 
 		for _, comp := range cfg.Runtime.Components {
 			switch comp.Type {
+			case configv1alpha1.RuntimeComponentKubeAggregation:
+				if comp.KubeAggregation == nil {
+					return fmt.Errorf("kube-aggregation component requires kubeAggregation config")
+				}
+				aggCfg := resolveKubeAggregationConfig(comp.KubeAggregation)
+				if err := validateKubeAggregationConfig(cfg, aggCfg); err != nil {
+					return fmt.Errorf("invalid kube-aggregation config: %w", err)
+				}
+				g.Go(func() error {
+					return runKubeAggregation(ctx, cfg, aggCfg)
+				})
 			case configv1alpha1.RuntimeComponentKubeMirror:
 				if comp.KubeMirror == nil {
 					return fmt.Errorf("kube-mirror component requires kubeMirror config")
@@ -97,9 +110,27 @@ func validateKubeMirrorConfig(cfg *configv1alpha1.Config, mc *configv1alpha1.Kub
 	return nil
 }
 
-func runKubeMirror(ctx context.Context, cfg *configv1alpha1.Config, mc *configv1alpha1.KubeMirrorConfig) error {
-	log.Infof("Starting kube-mirror component (cluster=%s, mirror=%s, namespace=%s)",
-		mc.ClusterName, mc.Mirror, mc.Namespace)
+func resolveKubeAggregationConfig(in *configv1alpha1.KubeAggregationConfig) *configv1alpha1.KubeAggregationConfig {
+	out := in.DeepCopy()
+	if out.Namespace == "" {
+		out.Namespace = "apoxy"
+	}
+	if out.ServiceName == "" {
+		out.ServiceName = "kube-aggregation"
+	}
+	return out
+}
+
+func validateKubeAggregationConfig(cfg *configv1alpha1.Config, ac *configv1alpha1.KubeAggregationConfig) error {
+	if cfg.CurrentProject.String() == "00000000-0000-0000-0000-000000000000" {
+		return fmt.Errorf("currentProject must be set in config")
+	}
+	return nil
+}
+
+func runKubeAggregation(ctx context.Context, cfg *configv1alpha1.Config, ac *configv1alpha1.KubeAggregationConfig) error {
+	log.Infof("Starting kube-aggregation component (cluster=%s, namespace=%s)",
+		ac.ClusterName, ac.Namespace)
 
 	kCluster, err := rest.InClusterConfig()
 	if err != nil {
@@ -109,12 +140,12 @@ func runKubeMirror(ctx context.Context, cfg *configv1alpha1.Config, mc *configv1
 
 	var proxyOpts []apiserviceproxy.Option
 	proxyOpts = append(proxyOpts, apiserviceproxy.WithProjectID(cfg.CurrentProject.String()))
-	proxyOpts = append(proxyOpts, apiserviceproxy.WithNamespace(mc.Namespace))
-	if mc.ClusterName != "" {
-		proxyOpts = append(proxyOpts, apiserviceproxy.WithClusterName(mc.ClusterName))
+	proxyOpts = append(proxyOpts, apiserviceproxy.WithNamespace(ac.Namespace))
+	if ac.ClusterName != "" {
+		proxyOpts = append(proxyOpts, apiserviceproxy.WithClusterName(ac.ClusterName))
 	}
-	if mc.BootstrapToken != "" {
-		proxyOpts = append(proxyOpts, apiserviceproxy.WithToken(mc.BootstrapToken))
+	if ac.BootstrapToken != "" {
+		proxyOpts = append(proxyOpts, apiserviceproxy.WithToken(ac.BootstrapToken))
 	}
 
 	apiSvc, err := apiserviceproxy.NewAPIServiceProxy(ctx, kc, proxyOpts...)
@@ -134,7 +165,7 @@ func runKubeMirror(ctx context.Context, cfg *configv1alpha1.Config, mc *configv1
 		if err != nil {
 			return fmt.Errorf("failed to create API registration client: %w", err)
 		}
-		if err := apiReg.RegisterAPIServices(ctx, mc.ServiceName, mc.Namespace, apiserviceproxy.DefaultPort, apiSvc.CABundle()); err != nil {
+		if err := apiReg.RegisterAPIServices(ctx, ac.ServiceName, ac.Namespace, apiserviceproxy.DefaultPort, apiSvc.CABundle()); err != nil {
 			return fmt.Errorf("failed to register API services: %w", err)
 		}
 		log.Infof("API services registered")
@@ -143,6 +174,10 @@ func runKubeMirror(ctx context.Context, cfg *configv1alpha1.Config, mc *configv1
 	})
 
 	return g.Wait()
+}
+
+func runKubeMirror(ctx context.Context, cfg *configv1alpha1.Config, mc *configv1alpha1.KubeMirrorConfig) error {
+	return fmt.Errorf("kube-mirror runtime component not yet implemented")
 }
 
 func init() {
