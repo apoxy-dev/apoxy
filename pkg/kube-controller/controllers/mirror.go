@@ -18,6 +18,7 @@ import (
 	apoxygatewayv1 "github.com/apoxy-dev/apoxy/api/gateway/v1"
 	apoxygatewayv1alpha2 "github.com/apoxy-dev/apoxy/api/gateway/v1alpha2"
 	"github.com/apoxy-dev/apoxy/client/versioned"
+	"github.com/apoxy-dev/apoxy/pkg/gateway/gatewayapi"
 	"github.com/apoxy-dev/apoxy/pkg/log"
 )
 
@@ -63,6 +64,82 @@ func (r *MirrorReconciler) originLabels(namespace, name string) map[string]strin
 		labelNamespace: namespace,
 		labelName:      name,
 	}
+}
+
+// matchesControllerName returns true if the given controller name is an Apoxy controller.
+func (r *MirrorReconciler) matchesControllerName(name gwapiv1.GatewayController) bool {
+	return string(name) == gatewayapi.StandaloneControllerName
+}
+
+// isApoxyGateway checks whether the Gateway's GatewayClass has an Apoxy controller name.
+func (r *MirrorReconciler) isApoxyGateway(ctx context.Context, gw *gwapiv1.Gateway) (bool, error) {
+	gwc := &gwapiv1.GatewayClass{}
+	if err := r.localClient.Get(ctx, client.ObjectKey{Name: string(gw.Spec.GatewayClassName)}, gwc); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return r.matchesControllerName(gwc.Spec.ControllerName), nil
+}
+
+// isRouteForApoxyGateway checks whether any v1 ParentReference points to a Gateway
+// whose GatewayClass has an Apoxy controller name.
+func (r *MirrorReconciler) isRouteForApoxyGateway(ctx context.Context, namespace string, refs []gwapiv1.ParentReference) (bool, error) {
+	for _, ref := range refs {
+		if ref.Group != nil && string(*ref.Group) != gwapiv1.GroupName {
+			continue
+		}
+		if ref.Kind != nil && string(*ref.Kind) != "Gateway" {
+			continue
+		}
+		ns := namespace
+		if ref.Namespace != nil {
+			ns = string(*ref.Namespace)
+		}
+		gw := &gwapiv1.Gateway{}
+		if err := r.localClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: string(ref.Name)}, gw); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			return false, err
+		}
+		if match, err := r.isApoxyGateway(ctx, gw); err != nil {
+			return false, err
+		} else if match {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// isRouteForApoxyGatewayV1Alpha2 is the v1alpha2 variant of isRouteForApoxyGateway.
+func (r *MirrorReconciler) isRouteForApoxyGatewayV1Alpha2(ctx context.Context, namespace string, refs []gwapiv1alpha2.ParentReference) (bool, error) {
+	for _, ref := range refs {
+		if ref.Group != nil && string(*ref.Group) != gwapiv1.GroupName {
+			continue
+		}
+		if ref.Kind != nil && string(*ref.Kind) != "Gateway" {
+			continue
+		}
+		ns := namespace
+		if ref.Namespace != nil {
+			ns = string(*ref.Namespace)
+		}
+		gw := &gwapiv1.Gateway{}
+		if err := r.localClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: string(ref.Name)}, gw); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			return false, err
+		}
+		if match, err := r.isApoxyGateway(ctx, gw); err != nil {
+			return false, err
+		} else if match {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // SetupWithManager registers controllers for each Gateway API resource type.
@@ -148,6 +225,11 @@ func (r *MirrorReconciler) reconcileGateway(ctx context.Context, req reconcile.R
 		}
 		return reconcile.Result{}, err
 	}
+	if match, err := r.isApoxyGateway(ctx, gw); err != nil {
+		return reconcile.Result{}, err
+	} else if !match {
+		return reconcile.Result{}, nil
+	}
 	return r.syncGateway(ctx, gw)
 }
 
@@ -200,6 +282,11 @@ func (r *MirrorReconciler) reconcileHTTPRoute(ctx context.Context, req reconcile
 			return r.deleteApoxyHTTPRoute(ctx, r.mirrorName(req.Namespace, req.Name))
 		}
 		return reconcile.Result{}, err
+	}
+	if match, err := r.isRouteForApoxyGateway(ctx, route.Namespace, route.Spec.ParentRefs); err != nil {
+		return reconcile.Result{}, err
+	} else if !match {
+		return reconcile.Result{}, nil
 	}
 	return r.syncHTTPRoute(ctx, route)
 }
@@ -257,6 +344,11 @@ func (r *MirrorReconciler) reconcileGRPCRoute(ctx context.Context, req reconcile
 		}
 		return reconcile.Result{}, err
 	}
+	if match, err := r.isRouteForApoxyGateway(ctx, route.Namespace, route.Spec.ParentRefs); err != nil {
+		return reconcile.Result{}, err
+	} else if !match {
+		return reconcile.Result{}, nil
+	}
 	return r.syncGRPCRoute(ctx, route)
 }
 
@@ -312,6 +404,11 @@ func (r *MirrorReconciler) reconcileTCPRoute(ctx context.Context, req reconcile.
 			return r.deleteApoxyTCPRoute(ctx, r.mirrorName(req.Namespace, req.Name))
 		}
 		return reconcile.Result{}, err
+	}
+	if match, err := r.isRouteForApoxyGatewayV1Alpha2(ctx, route.Namespace, route.Spec.ParentRefs); err != nil {
+		return reconcile.Result{}, err
+	} else if !match {
+		return reconcile.Result{}, nil
 	}
 	return r.syncTCPRoute(ctx, route)
 }
@@ -369,6 +466,11 @@ func (r *MirrorReconciler) reconcileTLSRoute(ctx context.Context, req reconcile.
 		}
 		return reconcile.Result{}, err
 	}
+	if match, err := r.isRouteForApoxyGatewayV1Alpha2(ctx, route.Namespace, route.Spec.ParentRefs); err != nil {
+		return reconcile.Result{}, err
+	} else if !match {
+		return reconcile.Result{}, nil
+	}
 	return r.syncTLSRoute(ctx, route)
 }
 
@@ -424,6 +526,11 @@ func (r *MirrorReconciler) reconcileUDPRoute(ctx context.Context, req reconcile.
 			return r.deleteApoxyUDPRoute(ctx, r.mirrorName(req.Namespace, req.Name))
 		}
 		return reconcile.Result{}, err
+	}
+	if match, err := r.isRouteForApoxyGatewayV1Alpha2(ctx, route.Namespace, route.Spec.ParentRefs); err != nil {
+		return reconcile.Result{}, err
+	} else if !match {
+		return reconcile.Result{}, nil
 	}
 	return r.syncUDPRoute(ctx, route)
 }
