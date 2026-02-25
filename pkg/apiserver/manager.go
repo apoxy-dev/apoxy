@@ -21,6 +21,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/apiserver/pkg/admission"
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 	"k8s.io/apiserver/pkg/authentication/request/union"
 	"k8s.io/apiserver/pkg/authentication/user"
@@ -40,8 +41,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
+	a3yinformers "github.com/apoxy-dev/apoxy/client/informers"
+	a3yclient "github.com/apoxy-dev/apoxy/client/versioned"
 	a3yscheme "github.com/apoxy-dev/apoxy/client/versioned/scheme"
 	"github.com/apoxy-dev/apoxy/config"
+	a3yadmission "github.com/apoxy-dev/apoxy/pkg/apiserver/admission"
 	"github.com/apoxy-dev/apoxy/pkg/apiserver/auth"
 	"github.com/apoxy-dev/apoxy/pkg/apiserver/controllers"
 	extensionscontroller "github.com/apoxy-dev/apoxy/pkg/apiserver/extensions"
@@ -265,6 +269,12 @@ type options struct {
 	tokenIssuer            token.TokenIssuer
 	openAPIDefinitions     common.GetOpenAPIDefinitions
 	addToScheme            func(*runtime.Scheme) error
+	admissionPlugins       []admissionPlugin
+}
+
+type admissionPlugin struct {
+	name    string
+	factory admission.Factory
 }
 
 // WithJWTKeys sets the JWT key pair.
@@ -460,6 +470,23 @@ func WithSkipTunnelNodeIPAM() Option {
 func WithAddToScheme(fn func(*runtime.Scheme) error) Option {
 	return func(o *options) {
 		o.addToScheme = fn
+	}
+}
+
+// WithAdmissionPlugin registers an in-process admission plugin with the
+// apiserver. The plugin factory is called during server startup and the
+// resulting plugin is injected with the Apoxy SharedInformerFactory if it
+// implements admission.WantsApoxyInformerFactory.
+//
+// Plugins run inside the apiserver request chain and can perform
+// cross-resource validation or mutation that the per-resource
+// resourcestrategy interfaces cannot.
+func WithAdmissionPlugin(name string, factory admission.Factory) Option {
+	return func(o *options) {
+		o.admissionPlugins = append(o.admissionPlugins, admissionPlugin{
+			name:    name,
+			factory: factory,
+		})
 	}
 }
 
@@ -915,9 +942,38 @@ func start(
 				o.StdOut = io.Discard
 
 				o.RecommendedOptions.CoreAPI = nil
-				o.RecommendedOptions.Admission = nil
 				o.RecommendedOptions.Authentication = nil
 				o.RecommendedOptions.Authorization = nil
+
+				// Enable admission plugin chain. CoreAPI is nil so the
+				// default webhook/lifecycle plugins cannot be used; only
+				// custom in-process plugins registered via
+				// WithAdmissionPlugin will run.
+				admissionOpts := &apiserveropts.AdmissionOptions{
+					Plugins:                admission.NewPlugins(),
+					RecommendedPluginOrder: make([]string, 0, len(opts.admissionPlugins)),
+				}
+				for _, p := range opts.admissionPlugins {
+					admissionOpts.Plugins.Register(p.name, p.factory)
+					admissionOpts.RecommendedPluginOrder = append(
+						admissionOpts.RecommendedPluginOrder, p.name)
+				}
+				o.RecommendedOptions.Admission = admissionOpts
+
+				// Inject the Apoxy SharedInformerFactory into admission
+				// plugins that implement WantsApoxyInformerFactory.
+				o.RecommendedOptions.ExtraAdmissionInitializers = func(
+					c *apiserver.RecommendedConfig,
+				) ([]admission.PluginInitializer, error) {
+					a3yClient, err := a3yclient.NewForConfig(c.ClientConfig)
+					if err != nil {
+						return nil, fmt.Errorf("failed to create apoxy client for admission: %w", err)
+					}
+					a3yFactory := a3yinformers.NewSharedInformerFactory(a3yClient, 0)
+					return []admission.PluginInitializer{
+						a3yadmission.New(a3yFactory),
+					}, nil
+				}
 
 				o.RecommendedOptions.SecureServing = &apiserveropts.SecureServingOptionsWithLoopback{
 					SecureServingOptions: &apiserveropts.SecureServingOptions{
