@@ -59,7 +59,7 @@ func (p *plainPlugin) ValidateInitialization() error {
 func TestInitializerInjectsInformerFactory(t *testing.T) {
 	client := fake.NewSimpleClientset()
 	factory := a3yinformers.NewSharedInformerFactory(client, 0)
-	initializer := New(factory)
+	initializer := New(factory, client)
 
 	plugin := &testPlugin{Handler: admission.NewHandler(admission.Create)}
 	initializer.Initialize(plugin)
@@ -71,7 +71,7 @@ func TestInitializerInjectsInformerFactory(t *testing.T) {
 func TestInitializerSkipsNonWanting(t *testing.T) {
 	client := fake.NewSimpleClientset()
 	factory := a3yinformers.NewSharedInformerFactory(client, 0)
-	initializer := New(factory)
+	initializer := New(factory, client)
 
 	plugin := &plainPlugin{Handler: admission.NewHandler(admission.Create)}
 
@@ -117,7 +117,7 @@ func TestPluginFactoryAndInitialize(t *testing.T) {
 	// Initialize with our custom initializer.
 	client := fake.NewSimpleClientset()
 	informerFactory := a3yinformers.NewSharedInformerFactory(client, 0)
-	initializer := New(informerFactory)
+	initializer := New(informerFactory, client)
 	initializer.Initialize(plugin)
 
 	// After initialization, ValidateInitialization should pass.

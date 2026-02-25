@@ -625,6 +625,14 @@ func (m *Manager) Start(
 		dOpts.resources = defaultResources()
 	}
 
+	// Register the DomainRecord reflection admission plugin.
+	// The client config is passed directly because the apiserver-runtime builder
+	// overwrites ExtraAdmissionInitializers, preventing standard injection.
+	dOpts.admissionPlugins = append(dOpts.admissionPlugins, admissionPlugin{
+		name:    "DomainRecordReflection",
+		factory: a3yadmission.NewDomainRecordReflectionFactory(dOpts.clientConfig),
+	})
+
 	if err = start(ctx, dOpts); err != nil {
 		m.ReadyCh <- err
 		return err
@@ -663,6 +671,15 @@ func (m *Manager) Start(
 
 		if err := waitForAPIService(ctx, m.manager.GetConfig(), corev1alpha2.GroupVersion, 2*time.Minute); err != nil {
 			return fmt.Errorf("failed to wait for APIService %s: %v", corev1alpha2.GroupVersion.Group, err)
+		}
+
+		// Run one-time migration of existing Domains to DomainRecords.
+		migrationClient, err := a3yclient.NewForConfig(m.manager.GetConfig())
+		if err != nil {
+			return fmt.Errorf("failed to create migration client: %v", err)
+		}
+		if err := controllers.MigrateDomainsToDomainRecords(ctx, migrationClient); err != nil {
+			return fmt.Errorf("failed to migrate domains to domain records: %v", err)
 		}
 
 		// Start the Status Runner to write Gateway API resource statuses back to the API server.
@@ -972,7 +989,7 @@ func start(
 					}
 					a3yFactory := a3yinformers.NewSharedInformerFactory(a3yClient, 0)
 					return []admission.PluginInitializer{
-						a3yadmission.New(a3yFactory),
+						a3yadmission.New(a3yFactory, a3yClient),
 					}, nil
 				}
 
