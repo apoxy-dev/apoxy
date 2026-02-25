@@ -943,7 +943,7 @@ func start(
 		}
 
 		srvBuilder := builder.APIServer.
-			WithAdditionalSchemeInstallers(registerCrossVersionConversions)
+			WithAdditionalSchemeInstallers(registerCrossVersionConversions, registerFieldLabelConversions)
 		for _, r := range opts.resources {
 			srvBuilder = srvBuilder.WithResourceAndStorage(r, kineStore)
 		}
