@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -224,6 +225,9 @@ func (r *ResourceCommand[T, TList]) Build() *cobra.Command {
 			}
 			obj, err := r.ClientFunc(c).Get(cmd.Context(), name, metav1.GetOptions{})
 			if err != nil {
+				if r.NameTransform != nil && apierrors.IsNotFound(err) {
+					return fmt.Errorf("%s %q not found", r.KindName, args[0])
+				}
 				return err
 			}
 			if err := r.printObj(cmd.Context(), obj, false, outputFormat); err != nil {
@@ -326,6 +330,9 @@ func (r *ResourceCommand[T, TList]) Build() *cobra.Command {
 					}
 				}
 				if err = r.ClientFunc(c).Delete(cmd.Context(), name, metav1.DeleteOptions{}); err != nil {
+					if r.NameTransform != nil && apierrors.IsNotFound(err) {
+						return fmt.Errorf("%s %q not found", r.KindName, arg)
+					}
 					return err
 				}
 				fmt.Printf("%s %q deleted\n", r.KindName, arg)
