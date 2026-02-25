@@ -25,6 +25,8 @@ import (
 type Interface interface {
 	// Domains returns a DomainInformer.
 	Domains() DomainInformer
+	// DomainRecords returns a DomainRecordInformer.
+	DomainRecords() DomainRecordInformer
 	// DomainZones returns a DomainZoneInformer.
 	DomainZones() DomainZoneInformer
 }
@@ -43,6 +45,11 @@ func New(f internalinterfaces.SharedInformerFactory, namespace string, tweakList
 // Domains returns a DomainInformer.
 func (v *version) Domains() DomainInformer {
 	return &domainInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
+}
+
+// DomainRecords returns a DomainRecordInformer.
+func (v *version) DomainRecords() DomainRecordInformer {
+	return &domainRecordInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
 }
 
 // DomainZones returns a DomainZoneInformer.

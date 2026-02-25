@@ -94,6 +94,8 @@ func (f *sharedInformerFactory) ForResource(resource schema.GroupVersionResource
 		// Group=core.apoxy.dev, Version=v1alpha3
 	case v1alpha3.SchemeGroupVersion.WithResource("domains"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Core().V1alpha3().Domains().Informer()}, nil
+	case v1alpha3.SchemeGroupVersion.WithResource("domainrecords"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Core().V1alpha3().DomainRecords().Informer()}, nil
 	case v1alpha3.SchemeGroupVersion.WithResource("domainzones"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Core().V1alpha3().DomainZones().Informer()}, nil
 

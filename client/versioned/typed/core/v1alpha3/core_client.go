@@ -28,6 +28,7 @@ import (
 type CoreV1alpha3Interface interface {
 	RESTClient() rest.Interface
 	DomainsGetter
+	DomainRecordsGetter
 	DomainZonesGetter
 }
 
@@ -38,6 +39,10 @@ type CoreV1alpha3Client struct {
 
 func (c *CoreV1alpha3Client) Domains() DomainInterface {
 	return newDomains(c)
+}
+
+func (c *CoreV1alpha3Client) DomainRecords() DomainRecordInterface {
+	return newDomainRecords(c)
 }
 
 func (c *CoreV1alpha3Client) DomainZones() DomainZoneInterface {

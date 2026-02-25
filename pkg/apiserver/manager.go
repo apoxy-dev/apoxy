@@ -494,6 +494,7 @@ func defaultResources() []resource.Object {
 	// Higher versions need to be registered first as storage resources.
 	return []resource.Object{
 		&corev1alpha3.Domain{},
+		&corev1alpha3.DomainRecord{},
 		&corev1alpha3.DomainZone{},
 
 		&corev1alpha2.Backend{},

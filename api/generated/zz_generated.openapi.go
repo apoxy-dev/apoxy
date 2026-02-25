@@ -168,6 +168,12 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha3.Domain":                              schema_apoxy_api_core_v1alpha3_Domain(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha3.DomainForwardingSpec":                schema_apoxy_api_core_v1alpha3_DomainForwardingSpec(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha3.DomainList":                          schema_apoxy_api_core_v1alpha3_DomainList(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha3.DomainRecord":                        schema_apoxy_api_core_v1alpha3_DomainRecord(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha3.DomainRecordList":                    schema_apoxy_api_core_v1alpha3_DomainRecordList(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha3.DomainRecordSpec":                    schema_apoxy_api_core_v1alpha3_DomainRecordSpec(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha3.DomainRecordStatus":                  schema_apoxy_api_core_v1alpha3_DomainRecordStatus(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha3.DomainRecordTarget":                  schema_apoxy_api_core_v1alpha3_DomainRecordTarget(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha3.DomainRecordTargetDNS":               schema_apoxy_api_core_v1alpha3_DomainRecordTargetDNS(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha3.DomainSpec":                          schema_apoxy_api_core_v1alpha3_DomainSpec(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha3.DomainStatus":                        schema_apoxy_api_core_v1alpha3_DomainStatus(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha3.DomainTLSSpec":                       schema_apoxy_api_core_v1alpha3_DomainTLSSpec(ref),
@@ -6443,6 +6449,412 @@ func schema_apoxy_api_core_v1alpha3_DomainList(ref common.ReferenceCallback) com
 		},
 		Dependencies: []string{
 			"github.com/apoxy-dev/apoxy/api/core/v1alpha3.Domain", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
+	}
+}
+
+func schema_apoxy_api_core_v1alpha3_DomainRecord(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("github.com/apoxy-dev/apoxy/api/core/v1alpha3.DomainRecordSpec"),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("github.com/apoxy-dev/apoxy/api/core/v1alpha3.DomainRecordStatus"),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/core/v1alpha3.DomainRecordSpec", "github.com/apoxy-dev/apoxy/api/core/v1alpha3.DomainRecordStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
+	}
+}
+
+func schema_apoxy_api_core_v1alpha3_DomainRecordList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "DomainRecordList is a list of DomainRecord resources.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("github.com/apoxy-dev/apoxy/api/core/v1alpha3.DomainRecord"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/core/v1alpha3.DomainRecord", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
+	}
+}
+
+func schema_apoxy_api_core_v1alpha3_DomainRecordSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"zone": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Zone is the name of the DomainZone that manages this record. Optional - empty means standalone (custom domain, not zone-managed).",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Name is the DNS record name (e.g. \"example.com\", \"www.example.com\").",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"ttl": {
+						SchemaProps: spec.SchemaProps{
+							Description: "TTL in seconds. Optional, defaults to 300.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"target": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Target specifies the record data.",
+							Default:     map[string]interface{}{},
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/core/v1alpha3.DomainRecordTarget"),
+						},
+					},
+					"tls": {
+						SchemaProps: spec.SchemaProps{
+							Description: "TLS configures TLS certificate provisioning for this record's domains. Only valid when target.ref is set.",
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/core/v1alpha3.DomainTLSSpec"),
+						},
+					},
+				},
+				Required: []string{"name", "target"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/core/v1alpha3.DomainRecordTarget", "github.com/apoxy-dev/apoxy/api/core/v1alpha3.DomainTLSSpec"},
+	}
+}
+
+func schema_apoxy_api_core_v1alpha3_DomainRecordStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"type": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Type is the resolved DNS record type (A, AAAA, CNAME, TXT, MX, etc.). Derived from the populated DNS field or resolved from ref.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"conditions": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Conditions contains domain record conditions. Standard conditions: Ready, ZoneReady, TargetReady.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
+									},
+								},
+							},
+						},
+					},
+					"resolvedValues": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ResolvedValues contains the actual DNS values configured. Populated by the controller when target.ref is used.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"k8s.io/apimachinery/pkg/apis/meta/v1.Condition"},
+	}
+}
+
+func schema_apoxy_api_core_v1alpha3_DomainRecordTarget(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"dns": {
+						SchemaProps: spec.SchemaProps{
+							Description: "DNS specifies the record data directly. Exactly one of DNS or Ref must be set.",
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/core/v1alpha3.DomainRecordTargetDNS"),
+						},
+					},
+					"ref": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Ref specifies a reference to another object within Apoxy (e.g. Proxy, Gateway, DomainRecord). Exactly one of DNS or Ref must be set.",
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/core/v1alpha3.LocalObjectReference"),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/core/v1alpha3.DomainRecordTargetDNS", "github.com/apoxy-dev/apoxy/api/core/v1alpha3.LocalObjectReference"},
+	}
+}
+
+func schema_apoxy_api_core_v1alpha3_DomainRecordTargetDNS(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "DomainRecordTargetDNS specifies DNS record data. Exactly one field must be populated. The populated field determines the DNS record type.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"ips": {
+						SchemaProps: spec.SchemaProps{
+							Description: "IPs holds A/AAAA record addresses. The record type (A vs AAAA) is determined by the IP address format.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"fqdn": {
+						SchemaProps: spec.SchemaProps{
+							Description: "FQDN holds a CNAME record target.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"txt": {
+						SchemaProps: spec.SchemaProps{
+							Description: "TXT holds TXT record values.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"mx": {
+						SchemaProps: spec.SchemaProps{
+							Description: "MX holds Mail Exchange record values (e.g. \"10 mail.example.com\").",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"dkim": {
+						SchemaProps: spec.SchemaProps{
+							Description: "DKIM holds DKIM (DomainKeys Identified Mail) values. Values should be DKIM public key records (e.g. \"v=DKIM1; k=rsa; p=...\").",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"spf": {
+						SchemaProps: spec.SchemaProps{
+							Description: "SPF holds SPF (Sender Policy Framework) values. Values should follow SPF syntax (e.g. \"v=spf1 include:_spf.google.com ~all\").",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"dmarc": {
+						SchemaProps: spec.SchemaProps{
+							Description: "DMARC holds DMARC values. Values should follow DMARC syntax (e.g. \"v=DMARC1; p=reject; rua=mailto:...\").",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"caa": {
+						SchemaProps: spec.SchemaProps{
+							Description: "CAA holds Certification Authority Authorization record values.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"srv": {
+						SchemaProps: spec.SchemaProps{
+							Description: "SRV holds Service Locator record values.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"ns": {
+						SchemaProps: spec.SchemaProps{
+							Description: "NS holds Name Server record values.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"ds": {
+						SchemaProps: spec.SchemaProps{
+							Description: "DS holds DS (Delegation Signer) records for DNSSEC chain of trust. Values should be DS record data (e.g. \"12345 8 2 <digest>\").",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"dnskey": {
+						SchemaProps: spec.SchemaProps{
+							Description: "DNSKEY holds DNSKEY records for DNSSEC. Values should be DNSKEY record data (e.g. \"257 3 8 <base64-encoded-key>\").",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
 	}
 }
 

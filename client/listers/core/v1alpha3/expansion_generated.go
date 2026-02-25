@@ -21,6 +21,10 @@ package v1alpha3
 // DomainLister.
 type DomainListerExpansion interface{}
 
+// DomainRecordListerExpansion allows custom methods to be added to
+// DomainRecordLister.
+type DomainRecordListerExpansion interface{}
+
 // DomainZoneListerExpansion allows custom methods to be added to
 // DomainZoneLister.
 type DomainZoneListerExpansion interface{}

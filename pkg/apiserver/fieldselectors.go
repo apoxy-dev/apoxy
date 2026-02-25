@@ -10,6 +10,7 @@ import (
 	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource"
 
 	corev1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
+	corev1alpha3 "github.com/apoxy-dev/apoxy/api/core/v1alpha3"
 )
 
 // customGetAttrs returns labels and fields for field selector filtering.
@@ -32,6 +33,10 @@ func customGetAttrs(obj runtime.Object) (labels.Set, fields.Set, error) {
 		fs["spec.provider"] = string(o.Spec.Provider)
 	case *corev1alpha2.Backend:
 		fs["spec.protocol"] = string(o.Spec.Protocol)
+	case *corev1alpha3.DomainRecord:
+		fs["spec.zone"] = o.Spec.Zone
+		fs["spec.name"] = o.Spec.Name
+		fs["status.type"] = o.Status.Type
 	}
 
 	return labels.Set(om.Labels), fs, nil
