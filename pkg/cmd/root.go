@@ -29,6 +29,7 @@ var RootCmd = &cobra.Command{
 
 Start by creating an account on https://apoxy.dev and logging in with 'apoxy auth'.
 `,
+	SilenceErrors:     true,
 	DisableAutoGenTag: true,
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
 		if config.PprofEnabled {

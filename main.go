@@ -17,6 +17,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -50,7 +51,7 @@ func main() {
 	}()
 
 	if err := cmd.ExecuteContext(ctx); err != nil {
-		log.Fatalf("Error: %s", err)
+		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
 		os.Exit(1)
 	}
 }

@@ -430,7 +430,7 @@ func domainRecordToTable(r *DomainRecord, tableOptions runtime.Object) (*metav1.
 
 	table.Rows = append(table.Rows, metav1.TableRow{
 		Cells: []interface{}{
-			r.Name,
+			r.Spec.Name,
 			domainRecordTypeString(r),
 			r.Spec.Zone,
 			domainRecordTTL(r),
@@ -456,7 +456,7 @@ func domainRecordListToTable(list *DomainRecordList, tableOptions runtime.Object
 		r := &list.Items[i]
 		table.Rows = append(table.Rows, metav1.TableRow{
 			Cells: []interface{}{
-				r.Name,
+				r.Spec.Name,
 				domainRecordTypeString(r),
 				r.Spec.Zone,
 				domainRecordTTL(r),

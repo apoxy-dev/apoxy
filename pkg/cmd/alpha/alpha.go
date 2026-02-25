@@ -19,4 +19,5 @@ func Cmd() *cobra.Command {
 
 func init() {
 	alphaCmd.AddCommand(tunnelCmd)
+	alphaCmd.AddCommand(domainRecordResource.Build())
 }

@@ -73,6 +73,10 @@ type ResourceCommand[T Object, TList runtime.Object] struct {
 	// ListFlags registers custom flags on both the root and list commands.
 	// Returns a function that produces a field selector string from those flags.
 	ListFlags func(cmd *cobra.Command) func() string
+
+	// NameTransform converts a user-facing name argument into the internal
+	// metadata.name used by the API. If nil, the argument is used as-is.
+	NameTransform func(string) (string, error)
 }
 
 // PrintStructured serializes a runtime.Object as JSON or YAML to stdout.
@@ -205,12 +209,20 @@ func (r *ResourceCommand[T, TList]) Build() *cobra.Command {
 		ValidArgs: []string{"name"},
 		Args:      cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			name := args[0]
+			if r.NameTransform != nil {
+				var err error
+				name, err = r.NameTransform(name)
+				if err != nil {
+					return err
+				}
+			}
 			cmd.SilenceUsage = true
 			c, err := config.DefaultAPIClient()
 			if err != nil {
 				return err
 			}
-			obj, err := r.ClientFunc(c).Get(cmd.Context(), args[0], metav1.GetOptions{})
+			obj, err := r.ClientFunc(c).Get(cmd.Context(), name, metav1.GetOptions{})
 			if err != nil {
 				return err
 			}
@@ -218,7 +230,7 @@ func (r *ResourceCommand[T, TList]) Build() *cobra.Command {
 				return err
 			}
 			if r.PostGet != nil {
-				return r.PostGet(cmd.Context(), c, args[0], obj)
+				return r.PostGet(cmd.Context(), c, name, obj)
 			}
 			return nil
 		},
@@ -291,6 +303,13 @@ func (r *ResourceCommand[T, TList]) Build() *cobra.Command {
 		Use:   "delete",
 		Short: fmt.Sprintf("Delete %s objects", r.KindName),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if r.NameTransform != nil {
+				for _, arg := range args {
+					if _, err := r.NameTransform(arg); err != nil {
+						return err
+					}
+				}
+			}
 			cmd.SilenceUsage = true
 
 			c, err := config.DefaultAPIClient()
@@ -298,11 +317,18 @@ func (r *ResourceCommand[T, TList]) Build() *cobra.Command {
 				return err
 			}
 
-			for _, name := range args {
+			for _, arg := range args {
+				name := arg
+				if r.NameTransform != nil {
+					name, err = r.NameTransform(arg)
+					if err != nil {
+						return err
+					}
+				}
 				if err = r.ClientFunc(c).Delete(cmd.Context(), name, metav1.DeleteOptions{}); err != nil {
 					return err
 				}
-				fmt.Printf("%s %q deleted\n", r.KindName, name)
+				fmt.Printf("%s %q deleted\n", r.KindName, arg)
 			}
 			return nil
 		},
