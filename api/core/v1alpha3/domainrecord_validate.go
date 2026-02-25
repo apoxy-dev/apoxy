@@ -30,7 +30,7 @@ func (r *DomainRecord) PrepareForCreate(ctx context.Context) {
 			suffix = key
 		}
 	}
-	r.Name = fmt.Sprintf("%s.%s", r.Spec.Name, suffix)
+	r.Name = fmt.Sprintf("%s--%s", r.Spec.Name, suffix)
 	r.GenerateName = ""
 }
 

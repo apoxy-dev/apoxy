@@ -38,7 +38,7 @@ func TestDomainToDomainRecords_Ref(t *testing.T) {
 
 	require.Len(t, records, 1)
 	r := records[0]
-	assert.Equal(t, "example.ref", r.Name)
+	assert.Equal(t, "example--ref", r.Name)
 	assert.Equal(t, "example", r.Spec.Name)
 	assert.Equal(t, "example.com", r.Spec.Zone)
 	assert.NotNil(t, r.Spec.Target.Ref)
@@ -77,7 +77,7 @@ func TestDomainToDomainRecords_DNS(t *testing.T) {
 	require.Len(t, records, 3)
 
 	// IPs record.
-	ips := findRecord(records, "example.ips")
+	ips := findRecord(records, "example--ips")
 	require.NotNil(t, ips)
 	assert.Equal(t, "example", ips.Spec.Name)
 	assert.Equal(t, "example.com", ips.Spec.Zone)
@@ -87,14 +87,14 @@ func TestDomainToDomainRecords_DNS(t *testing.T) {
 	assert.True(t, isReflected(ips))
 
 	// TXT record.
-	txt := findRecord(records, "example.txt")
+	txt := findRecord(records, "example--txt")
 	require.NotNil(t, txt)
 	require.NotNil(t, txt.Spec.Target.DNS)
 	assert.Equal(t, []string{"v=spf1 include:example.com ~all"}, txt.Spec.Target.DNS.TXT)
 	assert.Equal(t, int32Ptr(300), txt.Spec.TTL)
 
 	// NS record.
-	ns := findRecord(records, "example.ns")
+	ns := findRecord(records, "example--ns")
 	require.NotNil(t, ns)
 	require.NotNil(t, ns.Spec.Target.DNS)
 	assert.Equal(t, []string{"ns1.example.com", "ns2.example.com"}, ns.Spec.Target.DNS.NS)
@@ -121,7 +121,7 @@ func TestDomainToDomainRecords_FQDN(t *testing.T) {
 
 	require.Len(t, records, 1)
 	r := records[0]
-	assert.Equal(t, "example.fqdn", r.Name)
+	assert.Equal(t, "example--fqdn", r.Name)
 	require.NotNil(t, r.Spec.Target.DNS)
 	require.NotNil(t, r.Spec.Target.DNS.FQDN)
 	assert.Equal(t, "target.example.com", *r.Spec.Target.DNS.FQDN)
@@ -150,17 +150,17 @@ func TestDomainToDomainRecords_CustomDomains(t *testing.T) {
 	require.Len(t, records, 2)
 
 	// Main ref record.
-	ref := findRecord(records, "example.ref")
+	ref := findRecord(records, "example--ref")
 	require.NotNil(t, ref)
 
 	// Custom domain record.
-	cd := findRecord(records, "custom.example.org.ref")
+	cd := findRecord(records, "custom.example.org--ref")
 	require.NotNil(t, cd)
 	assert.Equal(t, "custom.example.org", cd.Spec.Name)
 	assert.Equal(t, "", cd.Spec.Zone) // standalone
 	require.NotNil(t, cd.Spec.Target.Ref)
 	assert.Equal(t, corev1alpha3.Kind("DomainRecord"), cd.Spec.Target.Ref.Kind)
-	assert.Equal(t, corev1alpha3.ObjectName("example.ref"), cd.Spec.Target.Ref.Name)
+	assert.Equal(t, corev1alpha3.ObjectName("example--ref"), cd.Spec.Target.Ref.Name)
 	assert.NotNil(t, cd.Spec.TLS)
 	assert.True(t, isReflected(cd))
 }
@@ -241,7 +241,7 @@ func TestDomainRecordsToDomainSpec_CustomDomain(t *testing.T) {
 					Ref: &corev1alpha3.LocalObjectReference{
 						Group: "core.apoxy.dev",
 						Kind:  "DomainRecord",
-						Name:  "example.ref",
+						Name:  "example--ref",
 					},
 				},
 				TLS: &corev1alpha3.DomainTLSSpec{CertificateAuthority: "letsencrypt"},
@@ -412,7 +412,7 @@ func TestAdmitDomain_CreatesDomainRecords(t *testing.T) {
 	list, err := client.CoreV1alpha3().DomainRecords().List(context.Background(), metav1.ListOptions{})
 	require.NoError(t, err)
 	require.Len(t, list.Items, 1)
-	assert.Equal(t, "example.ref", list.Items[0].Name)
+	assert.Equal(t, "example--ref", list.Items[0].Name)
 	assert.True(t, isReflected(&list.Items[0]))
 }
 
@@ -424,7 +424,7 @@ func TestAdmitDomainRecord_CreatesDomain(t *testing.T) {
 	}
 
 	dr := &corev1alpha3.DomainRecord{
-		ObjectMeta: metav1.ObjectMeta{Name: "example.ips"},
+		ObjectMeta: metav1.ObjectMeta{Name: "example--ips"},
 		Spec: corev1alpha3.DomainRecordSpec{
 			Zone: "example.com",
 			Name: "example",
@@ -442,7 +442,7 @@ func TestAdmitDomainRecord_CreatesDomain(t *testing.T) {
 		nil,
 		schema.GroupVersionKind{Group: "core.apoxy.dev", Version: "v1alpha3", Kind: "DomainRecord"},
 		"",
-		"example.ips",
+		"example--ips",
 		domainRecordGVR,
 		"",
 		admission.Create,
@@ -486,7 +486,7 @@ func TestAdmitDomainRecord_SkipsIfUserManagedDomainExists(t *testing.T) {
 	}
 
 	dr := &corev1alpha3.DomainRecord{
-		ObjectMeta: metav1.ObjectMeta{Name: "example.ips"},
+		ObjectMeta: metav1.ObjectMeta{Name: "example--ips"},
 		Spec: corev1alpha3.DomainRecordSpec{
 			Zone: "example.com",
 			Name: "example",
@@ -504,7 +504,7 @@ func TestAdmitDomainRecord_SkipsIfUserManagedDomainExists(t *testing.T) {
 		nil,
 		schema.GroupVersionKind{Group: "core.apoxy.dev", Version: "v1alpha3", Kind: "DomainRecord"},
 		"",
-		"example.ips",
+		"example--ips",
 		domainRecordGVR,
 		"",
 		admission.Create,
@@ -534,7 +534,7 @@ func TestAdmitDomainRecord_SkipsReflected(t *testing.T) {
 
 	dr := &corev1alpha3.DomainRecord{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        "example.ref",
+			Name:        "example--ref",
 			Annotations: map[string]string{ReflectedAnnotation: "true"},
 		},
 		Spec: corev1alpha3.DomainRecordSpec{
@@ -555,7 +555,7 @@ func TestAdmitDomainRecord_SkipsReflected(t *testing.T) {
 		nil,
 		schema.GroupVersionKind{Group: "core.apoxy.dev", Version: "v1alpha3", Kind: "DomainRecord"},
 		"",
-		"example.ref",
+		"example--ref",
 		domainRecordGVR,
 		"",
 		admission.Create,
@@ -631,18 +631,18 @@ func TestDomainToDomainRecords_AllDNSFields(t *testing.T) {
 		names[r.Name] = true
 		assert.True(t, isReflected(&r))
 	}
-	assert.True(t, names["all-dns.ips"])
-	assert.True(t, names["all-dns.fqdn"])
-	assert.True(t, names["all-dns.txt"])
-	assert.True(t, names["all-dns.mx"])
-	assert.True(t, names["all-dns.dkim"])
-	assert.True(t, names["all-dns.spf"])
-	assert.True(t, names["all-dns.dmarc"])
-	assert.True(t, names["all-dns.caa"])
-	assert.True(t, names["all-dns.srv"])
-	assert.True(t, names["all-dns.ns"])
-	assert.True(t, names["all-dns.ds"])
-	assert.True(t, names["all-dns.dnskey"])
+	assert.True(t, names["all-dns--ips"])
+	assert.True(t, names["all-dns--fqdn"])
+	assert.True(t, names["all-dns--txt"])
+	assert.True(t, names["all-dns--mx"])
+	assert.True(t, names["all-dns--dkim"])
+	assert.True(t, names["all-dns--spf"])
+	assert.True(t, names["all-dns--dmarc"])
+	assert.True(t, names["all-dns--caa"])
+	assert.True(t, names["all-dns--srv"])
+	assert.True(t, names["all-dns--ns"])
+	assert.True(t, names["all-dns--ds"])
+	assert.True(t, names["all-dns--dnskey"])
 }
 
 func TestDomainRecordSpecEqual(t *testing.T) {

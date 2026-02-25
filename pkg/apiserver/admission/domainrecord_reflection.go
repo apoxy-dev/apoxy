@@ -561,7 +561,7 @@ func DomainToDomainRecords(domain *corev1alpha3.Domain) []corev1alpha3.DomainRec
 	if domain.Spec.Target.Ref != nil {
 		dr := corev1alpha3.DomainRecord{
 			ObjectMeta: metav1.ObjectMeta{
-				Name: fmt.Sprintf("%s.ref", domain.Name),
+				Name: fmt.Sprintf("%s--ref", domain.Name),
 			},
 			Spec: corev1alpha3.DomainRecordSpec{
 				Zone: domain.Spec.Zone,
@@ -671,7 +671,7 @@ func DomainToDomainRecords(domain *corev1alpha3.Domain) []corev1alpha3.DomainRec
 	for _, cd := range domain.Spec.CustomDomains {
 		dr := corev1alpha3.DomainRecord{
 			ObjectMeta: metav1.ObjectMeta{
-				Name: fmt.Sprintf("%s.ref", cd),
+				Name: fmt.Sprintf("%s--ref", cd),
 			},
 			Spec: corev1alpha3.DomainRecordSpec{
 				Name: cd,
@@ -679,7 +679,7 @@ func DomainToDomainRecords(domain *corev1alpha3.Domain) []corev1alpha3.DomainRec
 					Ref: &corev1alpha3.LocalObjectReference{
 						Group: corev1alpha3.Group(corev1alpha3.SchemeGroupVersion.Group),
 						Kind:  "DomainRecord",
-						Name:  corev1alpha3.ObjectName(fmt.Sprintf("%s.ref", domain.Name)),
+						Name:  corev1alpha3.ObjectName(fmt.Sprintf("%s--ref", domain.Name)),
 					},
 				},
 				TLS: domain.Spec.TLS.DeepCopy(),
@@ -696,7 +696,7 @@ func DomainToDomainRecords(domain *corev1alpha3.Domain) []corev1alpha3.DomainRec
 func newDNSRecord(domain *corev1alpha3.Domain, fieldKey string, ttl *int32) corev1alpha3.DomainRecord {
 	dr := corev1alpha3.DomainRecord{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: fmt.Sprintf("%s.%s", domain.Name, fieldKey),
+			Name: fmt.Sprintf("%s--%s", domain.Name, fieldKey),
 		},
 		Spec: corev1alpha3.DomainRecordSpec{
 			Zone: domain.Spec.Zone,
