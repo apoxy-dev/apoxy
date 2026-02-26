@@ -203,4 +203,33 @@ func TestValidateUpdate_StatusTypeServerAuthoritative(t *testing.T) {
 	}
 }
 
+func TestValidateUpdate_DeletionBypassesValidation(t *testing.T) {
+	now := metav1.Now()
+	// An object with an invalid spec (e.g. after a schema migration dropped
+	// fields) that is being deleted should pass validation so that finalizers
+	// can be removed.
+	deleting := &DomainRecord{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "foobar.example.com--ips",
+			DeletionTimestamp: &now,
+		},
+		Spec: DomainRecordSpec{
+			Name: "foobar.example.com",
+			TTL:  int32Ptr(300),
+			Target: DomainRecordTarget{
+				DNS: &DomainRecordTargetDNS{}, // Empty — fields dropped by migration.
+			},
+		},
+		Status: DomainRecordStatus{Type: "A/AAAA"},
+	}
+	old := &DomainRecord{
+		ObjectMeta: metav1.ObjectMeta{Name: "foobar.example.com--ips"},
+		Spec:       deleting.Spec,
+		Status:     deleting.Status,
+	}
+
+	errs := deleting.ValidateUpdate(context.Background(), old)
+	assert.Empty(t, errs, "expected no validation errors when object is being deleted")
+}
+
 func strPtr(s string) *string { return &s }

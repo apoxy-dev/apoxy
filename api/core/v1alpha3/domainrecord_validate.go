@@ -48,6 +48,12 @@ func (r *DomainRecord) Validate(ctx context.Context) field.ErrorList {
 }
 
 func (r *DomainRecord) ValidateUpdate(ctx context.Context, obj runtime.Object) field.ErrorList {
+	// Allow finalizer removal on objects being deleted, even if the spec
+	// is no longer valid (e.g. after a schema migration dropped fields).
+	if r.DeletionTimestamp != nil {
+		return nil
+	}
+
 	old := obj.(*DomainRecord)
 	errs := r.validate()
 
