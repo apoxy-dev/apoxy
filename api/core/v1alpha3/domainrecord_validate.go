@@ -22,16 +22,13 @@ func (r *DomainRecord) Default() {
 
 var _ resourcestrategy.PrepareForCreater = &DomainRecord{}
 
-// PrepareForCreate generates metadata.name from spec.name and the target field key.
+// PrepareForCreate derives metadata.name from spec when the user omits it.
 func (r *DomainRecord) PrepareForCreate(ctx context.Context) {
-	suffix := "ref"
-	if r.Spec.Target.DNS != nil {
-		if key := r.Spec.Target.DNS.DNSFieldKey(); key != "" {
-			suffix = key
-		}
-	}
-	r.Name = fmt.Sprintf("%s--%s", r.Spec.Name, suffix)
 	r.GenerateName = ""
+	if r.Name != "" {
+		return // user provided a name; Validate will check it
+	}
+	r.Name = r.derivedName()
 }
 
 var _ resourcestrategy.Validater = &DomainRecord{}
@@ -74,6 +71,21 @@ func (r *DomainRecord) ValidateUpdate(ctx context.Context, obj runtime.Object) f
 	return errs
 }
 
+// derivedName returns the expected metadata.name for the record,
+// derived from spec.name and the target field key.
+func (r *DomainRecord) derivedName() string {
+	if r.Spec.Name == "" {
+		return ""
+	}
+	suffix := "ref"
+	if r.Spec.Target.DNS != nil {
+		if key := r.Spec.Target.DNS.DNSFieldKey(); key != "" {
+			suffix = key
+		}
+	}
+	return fmt.Sprintf("%s--%s", r.Spec.Name, suffix)
+}
+
 // targetFieldKey returns the target field key for a DomainRecord.
 func targetFieldKey(r *DomainRecord) string {
 	if r.Spec.Target.Ref != nil {
@@ -103,6 +115,16 @@ func (r *DomainRecord) validate() field.ErrorList {
 				break
 			}
 		}
+	}
+
+	// metadata.name must match the derived name when explicitly set.
+	expectedName := r.derivedName()
+	if expectedName != "" && r.Name != expectedName {
+		errs = append(errs, field.Invalid(
+			field.NewPath("metadata", "name"),
+			r.Name,
+			fmt.Sprintf("must be %q (derived from spec)", expectedName),
+		))
 	}
 
 	// TTL range validation.
