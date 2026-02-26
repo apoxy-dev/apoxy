@@ -6680,9 +6680,24 @@ func schema_apoxy_api_core_v1alpha3_DomainRecordTargetDNS(ref common.ReferenceCa
 				Description: "DomainRecordTargetDNS specifies DNS record data. Exactly one field must be populated. The populated field determines the DNS record type.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
-					"ips": {
+					"a": {
 						SchemaProps: spec.SchemaProps{
-							Description: "IPs holds A/AAAA record addresses. The record type (A vs AAAA) is determined by the IP address format.",
+							Description: "A holds IPv4 A record addresses.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"aaaa": {
+						SchemaProps: spec.SchemaProps{
+							Description: "AAAA holds IPv6 AAAA record addresses.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{

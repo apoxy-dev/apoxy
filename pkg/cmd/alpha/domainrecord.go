@@ -15,8 +15,8 @@ import (
 // dnsTypeToFieldKey maps the user-visible DNS record type to the internal
 // field key used in the metadata.name (e.g. "example.com--ips").
 var dnsTypeToFieldKey = map[string]string{
-	"a":      "ips",
-	"aaaa":   "ips",
+	"a":      "a",
+	"aaaa":   "aaaa",
 	"cname":  "fqdn",
 	"txt":    "txt",
 	"mx":     "mx",

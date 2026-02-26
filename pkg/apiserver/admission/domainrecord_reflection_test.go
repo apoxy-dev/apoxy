@@ -76,15 +76,15 @@ func TestDomainToDomainRecords_DNS(t *testing.T) {
 
 	require.Len(t, records, 3)
 
-	// IPs record.
-	ips := findRecord(records, "example--ips")
-	require.NotNil(t, ips)
-	assert.Equal(t, "example", ips.Spec.Name)
-	assert.Equal(t, "example.com", ips.Spec.Zone)
-	require.NotNil(t, ips.Spec.Target.DNS)
-	assert.Equal(t, []string{"1.2.3.4", "5.6.7.8"}, ips.Spec.Target.DNS.IPs)
-	assert.Equal(t, int32Ptr(60), ips.Spec.TTL)
-	assert.True(t, isReflected(ips))
+	// A record.
+	aRec := findRecord(records, "example--a")
+	require.NotNil(t, aRec)
+	assert.Equal(t, "example", aRec.Spec.Name)
+	assert.Equal(t, "example.com", aRec.Spec.Zone)
+	require.NotNil(t, aRec.Spec.Target.DNS)
+	assert.Equal(t, []string{"1.2.3.4", "5.6.7.8"}, aRec.Spec.Target.DNS.A)
+	assert.Equal(t, int32Ptr(60), aRec.Spec.TTL)
+	assert.True(t, isReflected(aRec))
 
 	// TXT record.
 	txt := findRecord(records, "example--txt")
@@ -200,7 +200,7 @@ func TestDomainRecordsToDomainSpec_DNS(t *testing.T) {
 				TTL:  int32Ptr(60),
 				Target: corev1alpha3.DomainRecordTarget{
 					DNS: &corev1alpha3.DomainRecordTargetDNS{
-						IPs: []string{"1.2.3.4"},
+						A: []string{"1.2.3.4"},
 					},
 				},
 			},
@@ -424,14 +424,14 @@ func TestAdmitDomainRecord_CreatesDomain(t *testing.T) {
 	}
 
 	dr := &corev1alpha3.DomainRecord{
-		ObjectMeta: metav1.ObjectMeta{Name: "example--ips"},
+		ObjectMeta: metav1.ObjectMeta{Name: "example--a"},
 		Spec: corev1alpha3.DomainRecordSpec{
 			Zone: "example.com",
 			Name: "example",
 			TTL:  int32Ptr(60),
 			Target: corev1alpha3.DomainRecordTarget{
 				DNS: &corev1alpha3.DomainRecordTargetDNS{
-					IPs: []string{"1.2.3.4"},
+					A: []string{"1.2.3.4"},
 				},
 			},
 		},
@@ -442,7 +442,7 @@ func TestAdmitDomainRecord_CreatesDomain(t *testing.T) {
 		nil,
 		schema.GroupVersionKind{Group: "core.apoxy.dev", Version: "v1alpha3", Kind: "DomainRecord"},
 		"",
-		"example--ips",
+		"example--a",
 		domainRecordGVR,
 		"",
 		admission.Create,
@@ -486,14 +486,14 @@ func TestAdmitDomainRecord_SkipsIfUserManagedDomainExists(t *testing.T) {
 	}
 
 	dr := &corev1alpha3.DomainRecord{
-		ObjectMeta: metav1.ObjectMeta{Name: "example--ips"},
+		ObjectMeta: metav1.ObjectMeta{Name: "example--a"},
 		Spec: corev1alpha3.DomainRecordSpec{
 			Zone: "example.com",
 			Name: "example",
 			TTL:  int32Ptr(60),
 			Target: corev1alpha3.DomainRecordTarget{
 				DNS: &corev1alpha3.DomainRecordTargetDNS{
-					IPs: []string{"9.9.9.9"},
+					A: []string{"9.9.9.9"},
 				},
 			},
 		},
@@ -504,7 +504,7 @@ func TestAdmitDomainRecord_SkipsIfUserManagedDomainExists(t *testing.T) {
 		nil,
 		schema.GroupVersionKind{Group: "core.apoxy.dev", Version: "v1alpha3", Kind: "DomainRecord"},
 		"",
-		"example--ips",
+		"example--a",
 		domainRecordGVR,
 		"",
 		admission.Create,
@@ -631,7 +631,7 @@ func TestDomainToDomainRecords_AllDNSFields(t *testing.T) {
 		names[r.Name] = true
 		assert.True(t, isReflected(&r))
 	}
-	assert.True(t, names["all-dns--ips"])
+	assert.True(t, names["all-dns--a"])
 	assert.True(t, names["all-dns--fqdn"])
 	assert.True(t, names["all-dns--txt"])
 	assert.True(t, names["all-dns--mx"])
@@ -653,7 +653,7 @@ func TestDomainRecordSpecEqual(t *testing.T) {
 			TTL:  int32Ptr(60),
 			Target: corev1alpha3.DomainRecordTarget{
 				DNS: &corev1alpha3.DomainRecordTargetDNS{
-					IPs: []string{"1.2.3.4"},
+					A: []string{"1.2.3.4"},
 				},
 			},
 		},
@@ -665,7 +665,7 @@ func TestDomainRecordSpecEqual(t *testing.T) {
 			TTL:  int32Ptr(60),
 			Target: corev1alpha3.DomainRecordTarget{
 				DNS: &corev1alpha3.DomainRecordTargetDNS{
-					IPs: []string{"1.2.3.4"},
+					A: []string{"1.2.3.4"},
 				},
 			},
 		},

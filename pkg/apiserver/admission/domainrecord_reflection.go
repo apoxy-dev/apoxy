@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -492,7 +493,10 @@ func dnsTargetEqual(a, b *corev1alpha3.DomainRecordTargetDNS) bool {
 	if a == nil || b == nil {
 		return false
 	}
-	if !stringSliceEqual(a.IPs, b.IPs) {
+	if !stringSliceEqual(a.A, b.A) {
+		return false
+	}
+	if !stringSliceEqual(a.AAAA, b.AAAA) {
 		return false
 	}
 	if !stringPtrEqual(a.FQDN, b.FQDN) {
@@ -581,11 +585,32 @@ func DomainToDomainRecords(domain *corev1alpha3.Domain) []corev1alpha3.DomainRec
 		dns := domain.Spec.Target.DNS
 
 		if dns.IPs != nil && len(dns.IPs.Addresses) > 0 {
-			dr := newDNSRecord(domain, "ips", dns.IPs.TTL)
-			dr.Spec.Target.DNS = &corev1alpha3.DomainRecordTargetDNS{
-				IPs: append([]string(nil), dns.IPs.Addresses...),
+			var v4, v6 []string
+			for _, addr := range dns.IPs.Addresses {
+				ip := net.ParseIP(addr)
+				if ip == nil {
+					continue
+				}
+				if ip.To4() == nil {
+					v6 = append(v6, addr)
+				} else {
+					v4 = append(v4, addr)
+				}
 			}
-			records = append(records, dr)
+			if len(v4) > 0 {
+				dr := newDNSRecord(domain, "a", dns.IPs.TTL)
+				dr.Spec.Target.DNS = &corev1alpha3.DomainRecordTargetDNS{
+					A: v4,
+				}
+				records = append(records, dr)
+			}
+			if len(v6) > 0 {
+				dr := newDNSRecord(domain, "aaaa", dns.IPs.TTL)
+				dr.Spec.Target.DNS = &corev1alpha3.DomainRecordTargetDNS{
+					AAAA: v6,
+				}
+				records = append(records, dr)
+			}
 		}
 		if dns.FQDN != nil {
 			dr := newDNSRecord(domain, "fqdn", dns.FQDN.TTL)
@@ -760,11 +785,14 @@ func DomainRecordsToDomainSpec(records []corev1alpha3.DomainRecord) corev1alpha3
 		}
 
 		dns := r.Spec.Target.DNS
-		if len(dns.IPs) > 0 {
-			spec.Target.DNS.IPs = &corev1alpha3.DNSAddressRecords{
-				Addresses: append([]string(nil), dns.IPs...),
-				TTL:       copyInt32Ptr(r.Spec.TTL),
+		if len(dns.A) > 0 || len(dns.AAAA) > 0 {
+			if spec.Target.DNS.IPs == nil {
+				spec.Target.DNS.IPs = &corev1alpha3.DNSAddressRecords{
+					TTL: copyInt32Ptr(r.Spec.TTL),
+				}
 			}
+			spec.Target.DNS.IPs.Addresses = append(spec.Target.DNS.IPs.Addresses, dns.A...)
+			spec.Target.DNS.IPs.Addresses = append(spec.Target.DNS.IPs.Addresses, dns.AAAA...)
 		}
 		if dns.FQDN != nil {
 			fqdn := *dns.FQDN

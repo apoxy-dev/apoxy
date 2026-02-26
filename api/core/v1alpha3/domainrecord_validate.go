@@ -3,6 +3,7 @@ package v1alpha3
 import (
 	"context"
 	"fmt"
+	"net"
 	"strings"
 
 	"k8s.io/apimachinery/pkg/runtime"
@@ -22,13 +23,21 @@ func (r *DomainRecord) Default() {
 
 var _ resourcestrategy.PrepareForCreater = &DomainRecord{}
 
-// PrepareForCreate derives metadata.name from spec when the user omits it.
+// PrepareForCreate derives metadata.name from spec when the user omits it
+// and sets status.type from the populated DNS field.
 func (r *DomainRecord) PrepareForCreate(ctx context.Context) {
 	r.GenerateName = ""
-	if r.Name != "" {
-		return // user provided a name; Validate will check it
+	if r.Name == "" {
+		r.Name = r.derivedName()
 	}
-	r.Name = r.derivedName()
+	r.Status.Type = deriveRecordType(r)
+}
+
+var _ resourcestrategy.PrepareForUpdater = &DomainRecord{}
+
+// PrepareForUpdate re-derives status.type on updates.
+func (r *DomainRecord) PrepareForUpdate(ctx context.Context, old runtime.Object) {
+	r.Status.Type = deriveRecordType(r)
 }
 
 var _ resourcestrategy.Validater = &DomainRecord{}
@@ -154,6 +163,27 @@ func (r *DomainRecord) validate() field.ErrorList {
 		}
 		if count > 1 {
 			errs = append(errs, field.Forbidden(targetPath.Child("dns"), "exactly one DNS field must be populated, found multiple"))
+		}
+
+		dns := r.Spec.Target.DNS
+		dnsPath := targetPath.Child("dns")
+		for i, addr := range dns.A {
+			ip := net.ParseIP(addr)
+			if ip == nil || ip.To4() == nil {
+				errs = append(errs, field.Invalid(
+					dnsPath.Child("a").Index(i), addr,
+					"must be a valid IPv4 address",
+				))
+			}
+		}
+		for i, addr := range dns.AAAA {
+			ip := net.ParseIP(addr)
+			if ip == nil || ip.To4() != nil {
+				errs = append(errs, field.Invalid(
+					dnsPath.Child("aaaa").Index(i), addr,
+					"must be a valid IPv6 address",
+				))
+			}
 		}
 	}
 

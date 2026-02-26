@@ -3,7 +3,6 @@ package v1alpha3
 import (
 	"context"
 	"fmt"
-	"net"
 	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -85,10 +84,13 @@ type DomainRecordTarget struct {
 // DomainRecordTargetDNS specifies DNS record data. Exactly one field must be populated.
 // The populated field determines the DNS record type.
 type DomainRecordTargetDNS struct {
-	// IPs holds A/AAAA record addresses.
-	// The record type (A vs AAAA) is determined by the IP address format.
+	// A holds IPv4 A record addresses.
 	// +optional
-	IPs []string `json:"ips,omitempty"`
+	A []string `json:"a,omitempty"`
+
+	// AAAA holds IPv6 AAAA record addresses.
+	// +optional
+	AAAA []string `json:"aaaa,omitempty"`
 
 	// FQDN holds a CNAME record target.
 	// +optional
@@ -146,8 +148,11 @@ func (d *DomainRecordTargetDNS) DNSFieldKey() string {
 	if d == nil {
 		return ""
 	}
-	if len(d.IPs) > 0 {
-		return "ips"
+	if len(d.A) > 0 {
+		return "a"
+	}
+	if len(d.AAAA) > 0 {
+		return "aaaa"
 	}
 	if d.FQDN != nil {
 		return "fqdn"
@@ -191,7 +196,10 @@ func (d *DomainRecordTargetDNS) PopulatedFieldCount() int {
 		return 0
 	}
 	count := 0
-	if len(d.IPs) > 0 {
+	if len(d.A) > 0 {
+		count++
+	}
+	if len(d.AAAA) > 0 {
 		count++
 	}
 	if d.FQDN != nil {
@@ -346,8 +354,11 @@ func domainRecordTargetString(r *DomainRecord) string {
 	}
 	if r.Spec.Target.DNS != nil {
 		dns := r.Spec.Target.DNS
-		if len(dns.IPs) > 0 {
-			return formatMultiValue(dns.IPs, 40)
+		if len(dns.A) > 0 {
+			return formatMultiValue(dns.A, 40)
+		}
+		if len(dns.AAAA) > 0 {
+			return formatMultiValue(dns.AAAA, 40)
 		}
 		if dns.FQDN != nil {
 			return truncateString(*dns.FQDN, 40)
@@ -386,31 +397,29 @@ func domainRecordTargetString(r *DomainRecord) string {
 	return ""
 }
 
-// domainRecordTypeString returns the DNS record type for display.
-func domainRecordTypeString(r *DomainRecord) string {
-	if r.Status.Type != "" {
-		return r.Status.Type
-	}
+// deriveRecordType returns the DNS record type string for a DomainRecord.
+func deriveRecordType(r *DomainRecord) string {
 	if r.Spec.Target.Ref != nil {
 		return "Ref"
 	}
 	if r.Spec.Target.DNS != nil {
-		dns := r.Spec.Target.DNS
-		if len(dns.IPs) > 0 {
-			if ip := net.ParseIP(dns.IPs[0]); ip != nil && ip.To4() == nil {
-				return "AAAA"
-			}
-			return "A"
-		}
-		if dns.FQDN != nil {
+		if r.Spec.Target.DNS.FQDN != nil {
 			return "CNAME"
 		}
-		key := dns.DNSFieldKey()
+		key := r.Spec.Target.DNS.DNSFieldKey()
 		if key != "" {
 			return strings.ToUpper(key)
 		}
 	}
 	return ""
+}
+
+// domainRecordTypeString returns the DNS record type for display.
+func domainRecordTypeString(r *DomainRecord) string {
+	if r.Status.Type != "" {
+		return r.Status.Type
+	}
+	return deriveRecordType(r)
 }
 
 // domainRecordTTL returns the effective TTL for display.
