@@ -1,0 +1,55 @@
+apiVersion: core.apoxy.dev/v1alpha3
+kind: DomainRecord
+spec:
+  name: foobar.up-hyena-l2q.d.edge.fun
+  target:
+    dns:
+      ips:
+      - 1.2.3.4
+  ttl: 300
+  zone: up-hyena-l2q.d.edge.fun
+---
+apiVersion: core.apoxy.dev/v1alpha3
+kind: DomainRecord
+spec:
+  name: foobar.up-hyena-l2q.d.edge.fun
+  target:
+    dns:
+      txt:
+      - example2.com
+  ttl: 300
+  zone: up-hyena-l2q.d.edge.fun
+---
+apiVersion: core.apoxy.dev/v1alpha3
+kind: DomainRecord
+spec:
+  name: up-hyena-l2q.d.edge.fun
+  target:
+    dns:
+      dkim:
+      - v=DKIM1; k=rsa; p=MIGfMA0GCSqGSIb3DQEBA...
+  ttl: 20
+  zone: up-hyena-l2q.d.edge.fun
+---
+apiVersion: core.apoxy.dev/v1alpha3
+kind: DomainRecord
+spec:
+  name: up-hyena-l2q.d.edge.fun
+  target:
+    dns:
+      ns:
+      - ok
+  ttl: 300
+  zone: up-hyena-l2q.d.edge.fun
+---
+apiVersion: core.apoxy.dev/v1alpha3
+kind: DomainRecord
+spec:
+  name: up-hyena-l2q.d.edge.fun
+  target:
+    ref:
+      group: gateway.apoxy.dev
+      kind: Gateway
+      name: dedicated
+  ttl: 300
+  zone: up-hyena-l2q.d.edge.fun

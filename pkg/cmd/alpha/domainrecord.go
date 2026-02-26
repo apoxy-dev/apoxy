@@ -7,6 +7,7 @@ import (
 	"github.com/spf13/cobra"
 
 	corev1alpha3 "github.com/apoxy-dev/apoxy/api/core/v1alpha3"
+	"github.com/apoxy-dev/apoxy/client/versioned/scheme"
 	"github.com/apoxy-dev/apoxy/pkg/cmd/resource"
 	"github.com/apoxy-dev/apoxy/rest"
 )
@@ -45,6 +46,42 @@ func domainRecordNameTransform(arg string) (string, error) {
 	return fmt.Sprintf("%s--%s", name, fieldKey), nil
 }
 
+// domainRecordDefaultName derives the internal metadata.name from a
+// DomainRecord's spec fields.
+func domainRecordDefaultName(dr *corev1alpha3.DomainRecord) (string, error) {
+	if dr.Spec.Name == "" {
+		return "", fmt.Errorf("spec.name is required")
+	}
+	if dr.Spec.Target.Ref != nil {
+		return fmt.Sprintf("%s--ref", dr.Spec.Name), nil
+	}
+	if dr.Spec.Target.DNS != nil {
+		key := dr.Spec.Target.DNS.DNSFieldKey()
+		if key == "" {
+			return "", fmt.Errorf("spec.target.dns must have at least one populated field")
+		}
+		return fmt.Sprintf("%s--%s", dr.Spec.Name, key), nil
+	}
+	return "", fmt.Errorf("spec.target must have either dns or ref set")
+}
+
+func init() {
+	resource.RegisterDefaultName(
+		corev1alpha3.SchemeGroupVersion.WithKind("DomainRecord"),
+		func(data []byte) (string, error) {
+			obj, _, err := scheme.Codecs.UniversalDeserializer().Decode(data, nil, nil)
+			if err != nil {
+				return "", err
+			}
+			dr, ok := obj.(*corev1alpha3.DomainRecord)
+			if !ok {
+				return "", fmt.Errorf("unexpected type %T", obj)
+			}
+			return domainRecordDefaultName(dr)
+		},
+	)
+}
+
 var domainRecordResource = &resource.ResourceCommand[*corev1alpha3.DomainRecord, *corev1alpha3.DomainRecordList]{
 	Use:      "domains",
 	Aliases:  []string{"dr", "domainrecord", "domainrecords"},
@@ -58,7 +95,8 @@ var domainRecordResource = &resource.ResourceCommand[*corev1alpha3.DomainRecord,
 		ObjToTable:  func(r *corev1alpha3.DomainRecord) resource.TableConverter { return r },
 		ListToTable: func(l *corev1alpha3.DomainRecordList) resource.TableConverter { return l },
 	},
-	NameTransform: domainRecordNameTransform,
+	NameTransform:   domainRecordNameTransform,
+	DefaultName: domainRecordDefaultName,
 	ListFlags: func(cmd *cobra.Command) func() string {
 		var zone string
 		cmd.Flags().StringVar(&zone, "zone", "", "Filter domain records by zone name.")

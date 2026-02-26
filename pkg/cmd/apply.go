@@ -20,6 +20,7 @@ import (
 
 	"github.com/apoxy-dev/apoxy/client/versioned/scheme"
 	"github.com/apoxy-dev/apoxy/config"
+	"github.com/apoxy-dev/apoxy/pkg/cmd/resource"
 )
 
 var (
@@ -204,6 +205,16 @@ func applyResource(
 	}
 
 	name = unObj.GetName()
+	if name == "" {
+		if fn, ok := resource.LookupDefaultName(*gvk); ok {
+			derivedName, err := fn(data)
+			if err != nil {
+				return "", "", err
+			}
+			unObj.SetName(derivedName)
+			name = derivedName
+		}
+	}
 	if name == "" {
 		return "", "", fmt.Errorf("resource name is required")
 	}

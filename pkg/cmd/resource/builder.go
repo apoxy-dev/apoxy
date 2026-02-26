@@ -9,6 +9,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	sigyaml "sigs.k8s.io/yaml"
 
@@ -17,6 +18,22 @@ import (
 	"github.com/apoxy-dev/apoxy/pretty"
 	"github.com/apoxy-dev/apoxy/rest"
 )
+
+// defaultNameRegistry maps GVK to a function that derives metadata.name
+// from raw resource data when it's not set in the input.
+var defaultNameRegistry = map[schema.GroupVersionKind]func(data []byte) (string, error){}
+
+// RegisterDefaultName registers a function that derives metadata.name
+// from raw resource data for resources of the given GVK.
+func RegisterDefaultName(gvk schema.GroupVersionKind, fn func(data []byte) (string, error)) {
+	defaultNameRegistry[gvk] = fn
+}
+
+// LookupDefaultName returns the DefaultName function for the given GVK, if registered.
+func LookupDefaultName(gvk schema.GroupVersionKind) (func(data []byte) (string, error), bool) {
+	fn, ok := defaultNameRegistry[gvk]
+	return fn, ok
+}
 
 // Object combines runtime.Object with metav1.Object to allow accessing both
 // Kubernetes object metadata (Name, Labels, etc.) and runtime type information.
@@ -78,6 +95,11 @@ type ResourceCommand[T Object, TList runtime.Object] struct {
 	// NameTransform converts a user-facing name argument into the internal
 	// metadata.name used by the API. If nil, the argument is used as-is.
 	NameTransform func(string) (string, error)
+
+	// DefaultName derives metadata.name from the object's spec when
+	// metadata.name is empty. Used by the apply command.
+	// If nil, metadata.name must be provided in the input.
+	DefaultName func(T) (string, error)
 }
 
 // PrintStructured serializes a runtime.Object as JSON or YAML to stdout.
@@ -370,6 +392,14 @@ manage different fields of the same object without conflicts.`, r.KindName, r.Ki
 			typed, ok := obj.(T)
 			if !ok {
 				return fmt.Errorf("expected %s, got %T", r.KindName, obj)
+			}
+
+			if typed.GetName() == "" && r.DefaultName != nil {
+				n, err := r.DefaultName(typed)
+				if err != nil {
+					return err
+				}
+				typed.SetName(n)
 			}
 
 			name := typed.GetName()
