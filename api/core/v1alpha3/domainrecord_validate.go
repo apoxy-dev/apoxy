@@ -77,6 +77,15 @@ func (r *DomainRecord) ValidateUpdate(ctx context.Context, obj runtime.Object) f
 		))
 	}
 
+	// status.type is server-authoritative; reject updates that tamper with it.
+	if expected := deriveRecordType(r); r.Status.Type != expected {
+		errs = append(errs, field.Invalid(
+			field.NewPath("status", "type"),
+			r.Status.Type,
+			fmt.Sprintf("must be %q (derived from spec)", expected),
+		))
+	}
+
 	return errs
 }
 
