@@ -203,6 +203,93 @@ func TestValidateUpdate_StatusTypeServerAuthoritative(t *testing.T) {
 	}
 }
 
+func TestValidateUpdate_Immutability(t *testing.T) {
+	base := func() *DomainRecord {
+		return &DomainRecord{
+			ObjectMeta: metav1.ObjectMeta{Name: "example--a"},
+			Spec: DomainRecordSpec{
+				Name: "example",
+				Zone: "example.com",
+				TTL:  int32Ptr(60),
+				Target: DomainRecordTarget{
+					DNS: &DomainRecordTargetDNS{
+						A: []string{"1.2.3.4"},
+					},
+				},
+			},
+			Status: DomainRecordStatus{Type: "A"},
+		}
+	}
+
+	tests := []struct {
+		name       string
+		mutate     func(r *DomainRecord)
+		wantErr    bool
+		errField   string
+		errDetail  string
+	}{
+		{
+			name:    "same spec — no error",
+			mutate:  func(r *DomainRecord) {},
+			wantErr: false,
+		},
+		{
+			name: "spec.name changed",
+			mutate: func(r *DomainRecord) {
+				r.Spec.Name = "other"
+				r.Name = "other--a" // keep metadata.name consistent
+			},
+			wantErr:   true,
+			errField:  "spec.name",
+			errDetail: "immutable",
+		},
+		{
+			name: "spec.zone changed",
+			mutate: func(r *DomainRecord) {
+				r.Spec.Zone = "other.com"
+			},
+			wantErr:   true,
+			errField:  "spec.zone",
+			errDetail: "immutable",
+		},
+		{
+			name: "target key changed (a → txt)",
+			mutate: func(r *DomainRecord) {
+				r.Spec.Target.DNS = &DomainRecordTargetDNS{
+					TXT: []string{"v=spf1 include:example.com ~all"},
+				}
+				r.Name = "example--txt" // keep metadata.name consistent
+			},
+			wantErr:   true,
+			errField:  "spec.target",
+			errDetail: "cannot change target field key",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			old := base()
+			updated := base()
+			tt.mutate(updated)
+
+			errs := updated.ValidateUpdate(context.Background(), old)
+			if !tt.wantErr {
+				assert.Empty(t, errs, "expected no validation errors")
+				return
+			}
+			require.NotEmpty(t, errs, "expected validation errors")
+			var found bool
+			for _, e := range errs {
+				if e.Field == tt.errField {
+					found = true
+					assert.Contains(t, e.Detail, tt.errDetail)
+				}
+			}
+			assert.True(t, found, "expected error on field %q, got: %v", tt.errField, errs)
+		})
+	}
+}
+
 func TestValidateUpdate_DeletionBypassesValidation(t *testing.T) {
 	now := metav1.Now()
 	// An object with an invalid spec (e.g. after a schema migration dropped
