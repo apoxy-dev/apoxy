@@ -29,7 +29,7 @@ type CloudMonitoringIntegrationSpec struct {
 	// Enabled indicates whether the monitoring integration is active.
 	// +kubebuilder:default=true
 	// +optional
-	Enabled bool `json:"enabled,omitempty"`
+	Enabled bool `json:"enabled"`
 
 	// DatadogCredentials configures DataDog integration.
 	// Only one of DatadogCredentials, GrafanaCredentials, or AxiomCredentials may be specified.
