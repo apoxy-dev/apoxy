@@ -81,7 +81,16 @@ Components are defined under runtime.components in the config. Example:
 					return runKubeMirror(ctx, cfg, mirrorCfg)
 				})
 			case configv1alpha1.RuntimeComponentTunnel:
-				return fmt.Errorf("tunnel runtime component not yet implemented")
+				if comp.Tunnel == nil {
+					return fmt.Errorf("tunnel component requires tunnel config")
+				}
+				tunCfg := resolveTunnelConfig(comp.Tunnel)
+				if err := validateTunnelConfig(cfg, tunCfg); err != nil {
+					return fmt.Errorf("invalid tunnel config: %w", err)
+				}
+				g.Go(func() error {
+					return runTunnel(ctx, cfg, tunCfg)
+				})
 			default:
 				return fmt.Errorf("unknown runtime component type: %q", comp.Type)
 			}

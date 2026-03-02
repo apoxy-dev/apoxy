@@ -215,6 +215,11 @@ func (in *TunnelConfig) DeepCopyInto(out *TunnelConfig) {
 		*out = make([]STUNServer, len(*in))
 		copy(*out, *in)
 	}
+	if in.MinConns != nil {
+		in, out := &in.MinConns, &out.MinConns
+		*out = new(int)
+		**out = **in
+	}
 	return
 }
 

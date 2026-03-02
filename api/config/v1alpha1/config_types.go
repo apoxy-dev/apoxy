@@ -94,6 +94,9 @@ type STUNServer struct {
 
 // TunnelConfig is the configuration for the tunnel.
 type TunnelConfig struct {
+	// Name is the name of the TunnelNode to connect to.
+	// Required when running as a runtime component.
+	Name string `json:"name,omitempty"`
 	// Mode is the mode of the tunnel.
 	Mode TunnelMode `json:"mode,omitempty"`
 	// SocksPort, when running in userspace mode, is the port to listen on for
@@ -107,6 +110,29 @@ type TunnelConfig struct {
 	// If not specified, packet sniffing will be disabled.
 	// This is only available in userspace mode and intended for debugging purposes.
 	PacketCapturePath string `json:"packetCapturePath,omitempty"`
+	// MinConns is the minimum number of concurrent tunnel connections to maintain.
+	// Defaults to 1.
+	// +optional
+	MinConns *int `json:"minConns,omitempty"`
+	// HealthAddr is the address to listen on for health checks.
+	// Defaults to ":8080". Set to empty string to disable.
+	// +optional
+	HealthAddr string `json:"healthAddr,omitempty"`
+	// MetricsAddr is the address to listen on for metrics.
+	// Defaults to ":8081". Set to empty string to disable.
+	// +optional
+	MetricsAddr string `json:"metricsAddr,omitempty"`
+	// AutoCreate will auto-create the TunnelNode if it doesn't exist.
+	// +optional
+	AutoCreate bool `json:"autoCreate,omitempty"`
+	// EndpointSelection is the strategy for selecting tunnel server endpoints.
+	// Valid values are "latency" and "random". Defaults to "latency".
+	// +optional
+	EndpointSelection string `json:"endpointSelection,omitempty"`
+	// InsecureSkipVerify skips TLS verification when connecting to tunnel servers.
+	// Only use for development/testing.
+	// +optional
+	InsecureSkipVerify bool `json:"insecureSkipVerify,omitempty"`
 }
 
 // TunnelMode is the mode of the tunnel.
