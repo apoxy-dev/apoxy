@@ -1,0 +1,41 @@
+{{- if .Values.kubeController.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "apoxy-gateway.fullname" . }}-kube-controller
+  namespace: {{ include "apoxy-gateway.namespace" . }}
+  labels:
+    {{- include "apoxy-gateway.labels" . | nindent 4 }}
+    app.kubernetes.io/component: kube-controller
+data:
+  config.yaml: |
+    apiVersion: config.apoxy.dev/v1alpha1
+    kind: Config
+    currentProject: {{ .Values.kubeController.projectId | quote }}
+    runtime:
+      components:
+        - type: kube-aggregation
+          kubeAggregation:
+            {{- with .Values.kubeController.clusterName }}
+            clusterName: {{ . | quote }}
+            {{- end }}
+            namespace: {{ .Values.kubeController.namespace | quote }}
+            bootstrapToken: {{ .Values.kubeController.bootstrapToken | quote }}
+            serviceName: {{ .Values.kubeController.serviceName | quote }}
+        {{- if .Values.kubeController.mirror }}
+        - type: kube-mirror
+          kubeMirror:
+            {{- with .Values.kubeController.clusterName }}
+            clusterName: {{ . | quote }}
+            {{- end }}
+            mirror: {{ .Values.kubeController.mirror | quote }}
+            namespace: {{ .Values.kubeController.namespace | quote }}
+            bootstrapToken: {{ .Values.kubeController.bootstrapToken | quote }}
+        {{- end }}
+        {{- if .Values.kubeController.tunnel.enabled }}
+        - type: tunnel
+          tunnel:
+            name: {{ .Values.kubeController.tunnel.name | quote }}
+            mode: {{ .Values.kubeController.tunnel.mode | quote }}
+        {{- end }}
+{{- end }}

@@ -49,6 +49,8 @@ func main() {
 	ctx := ctrl.SetupSignalHandler()
 
 	flag.Parse()
+
+	log.Warnf("DEPRECATED: The standalone kube-controller binary is deprecated. Use 'apoxy run --config <path>' instead.")
 	// TODO(dilyevsky): This should be part of log.Init.
 	if *logLevel == "" {
 		*logLevel = log.InfoLevel.String()

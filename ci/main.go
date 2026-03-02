@@ -723,39 +723,6 @@ func (m *ApoxyCli) BuildTunnelproxy(
 		WithEntrypoint([]string{"/bin/tunnelproxy"})
 }
 
-// BuildKubeController builds a kube controller binary.
-func (m *ApoxyCli) BuildKubeController(
-	ctx context.Context,
-	src *dagger.Directory,
-	// +optional
-	platform string,
-) *dagger.Container {
-	if platform == "" {
-		platform = runtime.GOOS + "/" + runtime.GOARCH
-	}
-	p := dagger.Platform(platform)
-	goarch := archOf(p)
-
-	kcOut := filepath.Join("build", "kube-controller-"+goarch)
-
-	builder := m.BuilderContainer(ctx, src).
-		WithEnvVariable("GOARCH", goarch).
-		WithEnvVariable("GOOS", "linux").
-		WithMountedCache("/go/pkg/mod", dag.CacheVolume("go-mod-"+goarch)).
-		WithEnvVariable("GOMODCACHE", "/go/pkg/mod").
-		WithMountedCache("/go/build-cache", dag.CacheVolume("go-build-"+goarch)).
-		WithEnvVariable("GOCACHE", "/go/build-cache").
-		WithEnvVariable("CGO_ENABLED", "1").
-		WithEnvVariable("CC", fmt.Sprintf("zig-wrapper cc --target=%s-linux-musl", canonArchFromGoArch(goarch))).
-		WithExec([]string{"go", "build", "-tags", "sqlite_enable_dbstat_vtab", "-ldflags", "-v -linkmode=external", "-o", kcOut, "./cmd/kube-controller"}).
-		WithWorkdir("/src")
-
-	return dag.Container(dagger.ContainerOpts{Platform: p}).
-		From("ubuntu:24.04").
-		WithFile("/bin/kube-controller", builder.File(kcOut)).
-		WithEntrypoint([]string{"/bin/kube-controller"})
-}
-
 // PublishImages publishes images to the registry.
 func (m *ApoxyCli) PublishImages(
 	ctx context.Context,
@@ -832,7 +799,7 @@ func (m *ApoxyCli) PublishImages(
 
 	var kcCtrs []*dagger.Container
 	for _, platform := range []string{"linux/amd64", "linux/arm64"} {
-		kcCtrs = append(kcCtrs, m.BuildKubeController(ctx, src, platform))
+		kcCtrs = append(kcCtrs, m.BuildCLIRelease(ctx, src, platform, tag, sha))
 	}
 
 	addr, err = dag.Container().

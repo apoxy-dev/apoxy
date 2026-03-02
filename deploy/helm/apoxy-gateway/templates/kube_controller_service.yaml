@@ -1,0 +1,20 @@
+{{- if .Values.kubeController.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "apoxy-gateway.fullname" . }}-kube-controller
+  namespace: {{ include "apoxy-gateway.namespace" . }}
+  labels:
+    {{- include "apoxy-gateway.labels" . | nindent 4 }}
+    app.kubernetes.io/component: kube-controller
+spec:
+  type: ClusterIP
+  ports:
+    - port: 443
+      targetPort: api-proxy
+      protocol: TCP
+      name: https
+  selector:
+    {{- include "apoxy-gateway.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: kube-controller
+{{- end }}

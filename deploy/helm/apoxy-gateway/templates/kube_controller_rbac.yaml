@@ -1,0 +1,42 @@
+{{- if .Values.kubeController.enabled }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "apoxy-gateway.fullname" . }}-kube-controller
+  labels:
+    {{- include "apoxy-gateway.labels" . | nindent 4 }}
+    app.kubernetes.io/component: kube-controller
+rules:
+  # kube-aggregation: register and manage APIServices
+  - apiGroups: ["apiregistration.k8s.io"]
+    resources: ["apiservices"]
+    verbs: ["get", "list", "create", "update", "delete"]
+  # kube-aggregation: proxy needs access to services, endpoints, secrets
+  - apiGroups: [""]
+    resources: ["services", "endpoints", "secrets"]
+    verbs: ["get", "list"]
+  # kube-mirror: watch Gateway API resources
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources: ["gateways", "httproutes", "grpcroutes", "tcproutes", "udproutes", "referencegrants"]
+    verbs: ["get", "list", "watch"]
+  # kube-mirror: watch Ingress resources
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses", "ingressclasses"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "apoxy-gateway.fullname" . }}-kube-controller
+  labels:
+    {{- include "apoxy-gateway.labels" . | nindent 4 }}
+    app.kubernetes.io/component: kube-controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "apoxy-gateway.fullname" . }}-kube-controller
+subjects:
+  - kind: ServiceAccount
+    name: {{ default (printf "%s-kube-controller" (include "apoxy-gateway.fullname" .)) .Values.kubeController.serviceAccount.name }}
+    namespace: {{ include "apoxy-gateway.namespace" . }}
+{{- end }}

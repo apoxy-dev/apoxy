@@ -28,5 +28,4 @@ jobs:
           dagger call -v build-cli --src=. --platform=darwin/arm64
           dagger call -v build-apiserver --src=. --sccache-token=env:SCCACHE_WEBDAV_TOKEN --edge-runtime-tag=$EDGE_RUNTIME_TAG --gcr-creds=env:APOXY_INTERNAL_GAR_CREDENTIALS
           dagger call -v build-backplane --src=. --sccache-token=env:SCCACHE_WEBDAV_TOKEN --edge-runtime-tag=$EDGE_RUNTIME_TAG --gcr-creds=env:APOXY_INTERNAL_GAR_CREDENTIALS
-          dagger call -v build-kube-controller --src=.
           dagger call -v build-tunnelproxy --src=.
