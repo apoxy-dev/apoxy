@@ -23,6 +23,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	runtimejson "k8s.io/apimachinery/pkg/runtime/serializer/json"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/discovery/cached/memory"
 	"k8s.io/client-go/dynamic"
@@ -34,6 +35,8 @@ import (
 
 	"github.com/apoxy-dev/apoxy/config"
 )
+
+const clusterNameAnnotation = "apoxy.dev/cluster-name"
 
 var (
 	decoder = scheme.Codecs.UniversalDeserializer()
@@ -818,6 +821,21 @@ will automatically connect to the Apoxy API and begin managing your in-cluster A
 		yes, err := cmd.Flags().GetBool("yes")
 		if err != nil {
 			return err
+		}
+
+		// If --cluster-name wasn't explicitly provided, recover it from the
+		// existing namespace's apoxy.dev/cluster-name annotation so the API
+		// returns YAML consistent with the current install.
+		if clusterName == "" {
+			clientset, err := kubernetes.NewForConfig(kc)
+			if err == nil {
+				ns, err := clientset.CoreV1().Namespaces().Get(cmd.Context(), namespace, metav1.GetOptions{})
+				if err == nil {
+					if v, ok := ns.Annotations[clusterNameAnnotation]; ok {
+						clusterName = v
+					}
+				}
+			}
 		}
 
 		yamlz, err := getYAML(clusterName, mirror)
