@@ -251,7 +251,7 @@ func colorizedDiff(diff string) string {
 
 // --- Plan building ---
 
-func buildPlan(ctx context.Context, dynClient dynamic.Interface, mapper meta.RESTMapper, yamlz []byte, ns string) ([]resourcePlan, error) {
+func buildPlan(ctx context.Context, dynClient dynamic.Interface, mapper meta.RESTMapper, yamlz []byte, ns string, force bool) ([]resourcePlan, error) {
 	var plans []resourcePlan
 	for _, y := range strings.Split(string(yamlz), "---") {
 		if strings.TrimSpace(y) == "" {
@@ -302,7 +302,23 @@ func buildPlan(ctx context.Context, dynClient dynamic.Interface, mapper meta.RES
 			return nil, fmt.Errorf("failed to get %s (%s): %w", obj.GetName(), gvkStr, err)
 		}
 
-		diff := computeDiff(existing, obj)
+		// Dry-run SSA apply to get the object with all server defaults applied,
+		// then diff that against what's currently live.
+		jsonData, err := json.Marshal(obj)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal %s (%s): %w", obj.GetName(), gvkStr, err)
+		}
+		f := force
+		applied, err := resource.Patch(ctx, obj.GetName(), types.ApplyPatchType, jsonData, metav1.PatchOptions{
+			FieldManager: "apoxy-cli",
+			Force:        &f,
+			DryRun:       []string{metav1.DryRunAll},
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to dry-run apply %s (%s): %w", obj.GetName(), gvkStr, err)
+		}
+
+		diff := computeDiff(existing, applied)
 		action := actionUpdate
 		if diff == "" {
 			action = actionUnchanged
@@ -710,7 +726,7 @@ func installController(ctx context.Context, kc *rest.Config, yamlz []byte, ns st
 		return installControllerDryRun(ctx, dynClient, mapper, yamlz, ns, force)
 	}
 
-	plans, err := buildPlan(ctx, dynClient, mapper, yamlz, ns)
+	plans, err := buildPlan(ctx, dynClient, mapper, yamlz, ns, force)
 	if err != nil {
 		return err
 	}
