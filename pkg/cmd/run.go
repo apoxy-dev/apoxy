@@ -50,7 +50,20 @@ Components are defined under runtime.components in the config. Example:
 			return fmt.Errorf("failed to load config: %w", err)
 		}
 		if cfg.Runtime == nil || len(cfg.Runtime.Components) == 0 {
-			return fmt.Errorf("no runtime components configured (check runtime.components in config)")
+			return fmt.Errorf("no runtime components configured\n\n" +
+				"Add a runtime section to your config (%s):\n\n" +
+				"  runtime:\n" +
+				"    components:\n" +
+				"      - type: kube-aggregation\n" +
+				"        kubeAggregation:\n" +
+				"          clusterName: \"my-cluster\"\n" +
+				"      - type: kube-mirror\n" +
+				"        kubeMirror:\n" +
+				"          mirror: \"gateway\"\n" +
+				"      - type: tunnel\n" +
+				"        tunnel:\n" +
+				"          mode: \"userspace\"\n",
+				config.ConfigFile)
 		}
 
 		ctx := cmd.Context()
