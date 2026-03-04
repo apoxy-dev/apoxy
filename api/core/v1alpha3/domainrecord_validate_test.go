@@ -319,4 +319,76 @@ func TestValidateUpdate_DeletionBypassesValidation(t *testing.T) {
 	assert.Empty(t, errs, "expected no validation errors when object is being deleted")
 }
 
+func TestDefault_RefTargetGetsTLS(t *testing.T) {
+	tests := []struct {
+		name    string
+		record  *DomainRecord
+		wantTLS bool
+	}{
+		{
+			name: "ref target with no TLS gets TLS defaulted",
+			record: &DomainRecord{
+				Spec: DomainRecordSpec{
+					Name: "example",
+					Target: DomainRecordTarget{
+						Ref: &LocalObjectReference{
+							Group: "gateway.networking.k8s.io",
+							Kind:  "Gateway",
+							Name:  "my-gw",
+						},
+					},
+				},
+			},
+			wantTLS: true,
+		},
+		{
+			name: "ref target with existing TLS is not overwritten",
+			record: &DomainRecord{
+				Spec: DomainRecordSpec{
+					Name: "example",
+					Target: DomainRecordTarget{
+						Ref: &LocalObjectReference{
+							Group: "gateway.networking.k8s.io",
+							Kind:  "Gateway",
+							Name:  "my-gw",
+						},
+					},
+					TLS: &DomainTLSSpec{CertificateAuthority: "letsencrypt"},
+				},
+			},
+			wantTLS: true,
+		},
+		{
+			name: "DNS target does not get TLS defaulted",
+			record: &DomainRecord{
+				Spec: DomainRecordSpec{
+					Name: "example",
+					Target: DomainRecordTarget{
+						DNS: &DomainRecordTargetDNS{
+							A: []string{"1.2.3.4"},
+						},
+					},
+				},
+			},
+			wantTLS: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			origTLS := tt.record.Spec.TLS
+			tt.record.Default()
+			if tt.wantTLS {
+				require.NotNil(t, tt.record.Spec.TLS, "expected spec.tls to be non-nil")
+				// If TLS was already set, ensure it wasn't overwritten.
+				if origTLS != nil {
+					assert.Equal(t, origTLS.CertificateAuthority, tt.record.Spec.TLS.CertificateAuthority)
+				}
+			} else {
+				assert.Nil(t, tt.record.Spec.TLS, "expected spec.tls to remain nil")
+			}
+		})
+	}
+}
+
 func strPtr(s string) *string { return &s }

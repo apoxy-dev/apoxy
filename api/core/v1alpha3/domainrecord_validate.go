@@ -19,6 +19,10 @@ func (r *DomainRecord) Default() {
 		defaultTTL := int32(300)
 		r.Spec.TTL = &defaultTTL
 	}
+	// Default TLS for ref targets — ref targets always terminate TLS.
+	if r.Spec.Target.Ref != nil && r.Spec.TLS == nil {
+		r.Spec.TLS = &DomainTLSSpec{}
+	}
 }
 
 var _ resourcestrategy.PrepareForCreater = &DomainRecord{}
