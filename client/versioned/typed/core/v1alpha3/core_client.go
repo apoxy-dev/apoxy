@@ -27,7 +27,6 @@ import (
 
 type CoreV1alpha3Interface interface {
 	RESTClient() rest.Interface
-	DomainsGetter
 	DomainRecordsGetter
 	DomainZonesGetter
 }
@@ -35,10 +34,6 @@ type CoreV1alpha3Interface interface {
 // CoreV1alpha3Client is used to interact with features provided by the core.apoxy.dev group.
 type CoreV1alpha3Client struct {
 	restClient rest.Interface
-}
-
-func (c *CoreV1alpha3Client) Domains() DomainInterface {
-	return newDomains(c)
 }
 
 func (c *CoreV1alpha3Client) DomainRecords() DomainRecordInterface {

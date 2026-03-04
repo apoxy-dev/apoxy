@@ -25,10 +25,6 @@ type BackendListerExpansion interface{}
 // CloudMonitoringIntegrationLister.
 type CloudMonitoringIntegrationListerExpansion interface{}
 
-// DomainListerExpansion allows custom methods to be added to
-// DomainLister.
-type DomainListerExpansion interface{}
-
 // DomainZoneListerExpansion allows custom methods to be added to
 // DomainZoneLister.
 type DomainZoneListerExpansion interface{}

@@ -17,10 +17,6 @@ limitations under the License.
 
 package v1alpha3
 
-// DomainListerExpansion allows custom methods to be added to
-// DomainLister.
-type DomainListerExpansion interface{}
-
 // DomainRecordListerExpansion allows custom methods to be added to
 // DomainRecordLister.
 type DomainRecordListerExpansion interface{}

@@ -27,8 +27,6 @@ type Interface interface {
 	Backends() BackendInformer
 	// CloudMonitoringIntegrations returns a CloudMonitoringIntegrationInformer.
 	CloudMonitoringIntegrations() CloudMonitoringIntegrationInformer
-	// Domains returns a DomainInformer.
-	Domains() DomainInformer
 	// DomainZones returns a DomainZoneInformer.
 	DomainZones() DomainZoneInformer
 	// TunnelNodes returns a TunnelNodeInformer.
@@ -54,11 +52,6 @@ func (v *version) Backends() BackendInformer {
 // CloudMonitoringIntegrations returns a CloudMonitoringIntegrationInformer.
 func (v *version) CloudMonitoringIntegrations() CloudMonitoringIntegrationInformer {
 	return &cloudMonitoringIntegrationInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
-}
-
-// Domains returns a DomainInformer.
-func (v *version) Domains() DomainInformer {
-	return &domainInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
 }
 
 // DomainZones returns a DomainZoneInformer.

@@ -91,39 +91,11 @@ func init() {
 }
 
 // registerCrossVersionConversions registers direct conversion functions between
-// v1alpha and v1alpha2 Domain/DomainZone types that chain through the v1alpha3
-// hub. The k8s scheme only supports direct conversion lookups (no multi-hop),
+// v1alpha and v1alpha2 types that chain through the v1alpha3 hub.
+// The k8s scheme only supports direct conversion lookups (no multi-hop),
 // so when stored v1alpha2 data needs to be served as v1alpha (or vice versa),
 // we need explicit conversion functions for each pair.
 func registerCrossVersionConversions(s *runtime.Scheme) error {
-	if err := s.AddConversionFunc(
-		&corev1alpha2.Domain{}, &corev1alpha.Domain{},
-		func(from, to interface{}, _ conversion.Scope) error {
-			src := from.(*corev1alpha2.Domain)
-			dst := to.(*corev1alpha.Domain)
-			intermediate := &corev1alpha3.Domain{}
-			if err := src.ConvertToStorageVersion(intermediate); err != nil {
-				return err
-			}
-			return dst.ConvertFromStorageVersion(intermediate)
-		},
-	); err != nil {
-		return err
-	}
-	if err := s.AddConversionFunc(
-		&corev1alpha.Domain{}, &corev1alpha2.Domain{},
-		func(from, to interface{}, _ conversion.Scope) error {
-			src := from.(*corev1alpha.Domain)
-			dst := to.(*corev1alpha2.Domain)
-			intermediate := &corev1alpha3.Domain{}
-			if err := src.ConvertToStorageVersion(intermediate); err != nil {
-				return err
-			}
-			return dst.ConvertFromStorageVersion(intermediate)
-		},
-	); err != nil {
-		return err
-	}
 	if err := s.AddConversionFunc(
 		&corev1alpha2.DomainZone{}, &corev1alpha.DomainZone{},
 		func(from, to interface{}, _ conversion.Scope) error {
@@ -493,13 +465,11 @@ func WithAdmissionPlugin(name string, factory admission.Factory) Option {
 func defaultResources() []resource.Object {
 	// Higher versions need to be registered first as storage resources.
 	return []resource.Object{
-		&corev1alpha3.Domain{},
 		&corev1alpha3.DomainRecord{},
 		&corev1alpha3.DomainZone{},
 
 		&corev1alpha2.Backend{},
 		&corev1alpha2.CloudMonitoringIntegration{},
-		&corev1alpha2.Domain{},
 		&corev1alpha2.DomainZone{},
 		&corev1alpha2.Proxy{},
 		&corev1alpha2.Tunnel{},
@@ -507,7 +477,6 @@ func defaultResources() []resource.Object {
 
 		&corev1alpha.Backend{},
 		&corev1alpha.CloudMonitoringIntegration{},
-		&corev1alpha.Domain{},
 		&corev1alpha.DomainZone{},
 		&corev1alpha.TunnelNode{},
 
@@ -625,14 +594,6 @@ func (m *Manager) Start(
 		dOpts.resources = defaultResources()
 	}
 
-	// Register the DomainRecord reflection admission plugin.
-	// The client config is passed directly because the apiserver-runtime builder
-	// overwrites ExtraAdmissionInitializers, preventing standard injection.
-	dOpts.admissionPlugins = append(dOpts.admissionPlugins, admissionPlugin{
-		name:    "DomainRecordReflection",
-		factory: a3yadmission.NewDomainRecordReflectionFactory(dOpts.clientConfig),
-	})
-
 	if err = start(ctx, dOpts); err != nil {
 		m.ReadyCh <- err
 		return err
@@ -671,15 +632,6 @@ func (m *Manager) Start(
 
 		if err := waitForAPIService(ctx, m.manager.GetConfig(), corev1alpha2.GroupVersion, 2*time.Minute); err != nil {
 			return fmt.Errorf("failed to wait for APIService %s: %v", corev1alpha2.GroupVersion.Group, err)
-		}
-
-		// Run one-time migration of existing Domains to DomainRecords.
-		migrationClient, err := a3yclient.NewForConfig(m.manager.GetConfig())
-		if err != nil {
-			return fmt.Errorf("failed to create migration client: %v", err)
-		}
-		if err := controllers.MigrateDomainsToDomainRecords(ctx, migrationClient); err != nil {
-			return fmt.Errorf("failed to migrate domains to domain records: %v", err)
 		}
 
 		// Start the Status Runner to write Gateway API resource statuses back to the API server.

@@ -17,8 +17,6 @@ limitations under the License.
 
 package v1alpha3
 
-type DomainExpansion interface{}
-
 type DomainRecordExpansion interface{}
 
 type DomainZoneExpansion interface{}

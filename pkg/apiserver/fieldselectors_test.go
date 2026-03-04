@@ -10,29 +10,6 @@ import (
 	corev1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
 )
 
-func TestCustomGetAttrs_Domain(t *testing.T) {
-	domain := &corev1alpha2.Domain{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   "test-domain",
-			Labels: map[string]string{"app": "web"},
-		},
-		Spec: corev1alpha2.DomainSpec{
-			Zone: "example.com",
-		},
-		Status: corev1alpha2.DomainStatus{
-			Phase: corev1alpha2.DomainPhaseActive,
-		},
-	}
-
-	lbls, fs, err := customGetAttrs(domain)
-	require.NoError(t, err)
-
-	assert.Equal(t, "web", lbls["app"])
-	assert.Equal(t, "test-domain", fs["metadata.name"])
-	assert.Equal(t, "example.com", fs["spec.zone"])
-	assert.Equal(t, "Active", fs["status.phase"])
-}
-
 func TestCustomGetAttrs_DomainZone(t *testing.T) {
 	dz := &corev1alpha2.DomainZone{
 		ObjectMeta: metav1.ObjectMeta{
@@ -82,19 +59,4 @@ func TestCustomGetAttrs_Backend(t *testing.T) {
 
 	assert.Equal(t, "my-backend", fs["metadata.name"])
 	assert.Equal(t, "h2", fs["spec.protocol"])
-}
-
-func TestCustomGetAttrs_EmptyFields(t *testing.T) {
-	domain := &corev1alpha2.Domain{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "empty",
-		},
-	}
-
-	_, fs, err := customGetAttrs(domain)
-	require.NoError(t, err)
-
-	assert.Equal(t, "empty", fs["metadata.name"])
-	assert.Equal(t, "", fs["spec.zone"])
-	assert.Equal(t, "", fs["status.phase"])
 }

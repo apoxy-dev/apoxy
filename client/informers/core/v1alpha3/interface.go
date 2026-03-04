@@ -23,8 +23,6 @@ import (
 
 // Interface provides access to all the informers in this group version.
 type Interface interface {
-	// Domains returns a DomainInformer.
-	Domains() DomainInformer
 	// DomainRecords returns a DomainRecordInformer.
 	DomainRecords() DomainRecordInformer
 	// DomainZones returns a DomainZoneInformer.
@@ -40,11 +38,6 @@ type version struct {
 // New returns a new Interface.
 func New(f internalinterfaces.SharedInformerFactory, namespace string, tweakListOptions internalinterfaces.TweakListOptionsFunc) Interface {
 	return &version{factory: f, namespace: namespace, tweakListOptions: tweakListOptions}
-}
-
-// Domains returns a DomainInformer.
-func (v *version) Domains() DomainInformer {
-	return &domainInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
 }
 
 // DomainRecords returns a DomainRecordInformer.

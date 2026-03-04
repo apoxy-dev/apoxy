@@ -27,10 +27,6 @@ type FakeCoreV1alpha3 struct {
 	*testing.Fake
 }
 
-func (c *FakeCoreV1alpha3) Domains() v1alpha3.DomainInterface {
-	return newFakeDomains(c)
-}
-
 func (c *FakeCoreV1alpha3) DomainRecords() v1alpha3.DomainRecordInterface {
 	return newFakeDomainRecords(c)
 }

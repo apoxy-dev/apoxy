@@ -35,10 +35,6 @@ func (c *FakeCoreV1alpha) CloudMonitoringIntegrations() v1alpha.CloudMonitoringI
 	return newFakeCloudMonitoringIntegrations(c)
 }
 
-func (c *FakeCoreV1alpha) Domains() v1alpha.DomainInterface {
-	return newFakeDomains(c)
-}
-
 func (c *FakeCoreV1alpha) DomainZones() v1alpha.DomainZoneInterface {
 	return newFakeDomainZones(c)
 }

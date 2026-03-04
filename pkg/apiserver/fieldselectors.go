@@ -25,9 +25,6 @@ func customGetAttrs(obj runtime.Object) (labels.Set, fields.Set, error) {
 	fs := generic.ObjectMetaFieldsSet(om, false) // non-namespaced
 
 	switch o := obj.(type) {
-	case *corev1alpha2.Domain:
-		fs["spec.zone"] = o.Spec.Zone
-		fs["status.phase"] = string(o.Status.Phase)
 	case *corev1alpha2.DomainZone:
 		fs["status.phase"] = string(o.Status.Phase)
 	case *corev1alpha2.Proxy:
@@ -65,12 +62,6 @@ func selectableFieldConversion(extra ...string) func(label, value string) (strin
 // server accepts them in ?fieldSelector= query parameters. Without this
 // registration, only metadata.name and metadata.namespace are accepted.
 func registerFieldLabelConversions(s *runtime.Scheme) error {
-	if err := s.AddFieldLabelConversionFunc(
-		schema.GroupVersionKind{Group: corev1alpha2.GroupName, Version: "v1alpha2", Kind: "Domain"},
-		selectableFieldConversion("spec.zone", "status.phase"),
-	); err != nil {
-		return err
-	}
 	if err := s.AddFieldLabelConversionFunc(
 		schema.GroupVersionKind{Group: corev1alpha2.GroupName, Version: "v1alpha2", Kind: "DomainZone"},
 		selectableFieldConversion("status.phase"),

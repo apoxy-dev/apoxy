@@ -29,7 +29,6 @@ type CoreV1alphaInterface interface {
 	RESTClient() rest.Interface
 	BackendsGetter
 	CloudMonitoringIntegrationsGetter
-	DomainsGetter
 	DomainZonesGetter
 	TunnelNodesGetter
 }
@@ -45,10 +44,6 @@ func (c *CoreV1alphaClient) Backends() BackendInterface {
 
 func (c *CoreV1alphaClient) CloudMonitoringIntegrations() CloudMonitoringIntegrationInterface {
 	return newCloudMonitoringIntegrations(c)
-}
-
-func (c *CoreV1alphaClient) Domains() DomainInterface {
-	return newDomains(c)
 }
 
 func (c *CoreV1alphaClient) DomainZones() DomainZoneInterface {

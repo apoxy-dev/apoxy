@@ -8,22 +8,22 @@ import (
 	"github.com/apoxy-dev/apoxy/rest"
 )
 
-var domainResource = &resource.ResourceCommand[*corev1alpha3.Domain, *corev1alpha3.DomainList]{
+var domainRecordResource = &resource.ResourceCommand[*corev1alpha3.DomainRecord, *corev1alpha3.DomainRecordList]{
 	Use:      "domain",
-	Aliases:  []string{"d", "domains"},
-	Short:    "Manage domain objects",
-	Long:     `Domains configure DNS records and routing for your services.`,
-	KindName: "domain",
-	ClientFunc: func(c *rest.APIClient) resource.ResourceClient[*corev1alpha3.Domain, *corev1alpha3.DomainList] {
-		return c.CoreV1alpha3().Domains()
+	Aliases:  []string{"d", "domains", "domainrecord", "domainrecords", "dr"},
+	Short:    "Manage domain record objects",
+	Long:     `Domain records configure DNS records and routing for your services.`,
+	KindName: "domainrecord",
+	ClientFunc: func(c *rest.APIClient) resource.ResourceClient[*corev1alpha3.DomainRecord, *corev1alpha3.DomainRecordList] {
+		return c.CoreV1alpha3().DomainRecords()
 	},
-	TablePrinter: &resource.TablePrinterConfig[*corev1alpha3.Domain, *corev1alpha3.DomainList]{
-		ObjToTable:  func(d *corev1alpha3.Domain) resource.TableConverter { return d },
-		ListToTable: func(l *corev1alpha3.DomainList) resource.TableConverter { return l },
+	TablePrinter: &resource.TablePrinterConfig[*corev1alpha3.DomainRecord, *corev1alpha3.DomainRecordList]{
+		ObjToTable:  func(d *corev1alpha3.DomainRecord) resource.TableConverter { return d },
+		ListToTable: func(l *corev1alpha3.DomainRecordList) resource.TableConverter { return l },
 	},
 	ListFlags: func(cmd *cobra.Command) func() string {
 		var zone string
-		cmd.Flags().StringVar(&zone, "zone", "", "Filter domains by zone name.")
+		cmd.Flags().StringVar(&zone, "zone", "", "Filter domain records by zone name.")
 		return func() string {
 			if zone != "" {
 				return "spec.zone=" + zone
@@ -50,7 +50,7 @@ var zoneResource = &resource.ResourceCommand[*corev1alpha3.DomainZone, *corev1al
 
 // Cmd returns the domain command with the zone subcommand attached.
 func Cmd() *cobra.Command {
-	cmd := domainResource.Build()
+	cmd := domainRecordResource.Build()
 	cmd.AddCommand(zoneResource.Build())
 	return cmd
 }
