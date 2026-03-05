@@ -142,8 +142,12 @@ func buildXdsCluster(args *xdsClusterArgs) *clusterv3.Cluster {
 		}
 	} else {
 		cluster.ClusterDiscoveryType = &clusterv3.Cluster_Type{Type: clusterv3.Cluster_STRICT_DNS}
-		cluster.DnsRefreshRate = durationpb.New(30 * time.Second)
-		cluster.RespectDnsTtl = true
+		cluster.DnsRefreshRate = durationpb.New(2 * time.Second)
+		cluster.DnsFailureRefreshRate = &clusterv3.Cluster_RefreshRate{
+			BaseInterval: durationpb.New(1 * time.Second),
+			MaxInterval:  durationpb.New(2 * time.Second),
+		}
+		cluster.RespectDnsTtl = false
 	}
 
 	// build common, HTTP/1 and HTTP/2  protocol options for cluster
