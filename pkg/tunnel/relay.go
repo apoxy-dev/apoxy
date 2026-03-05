@@ -26,6 +26,7 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/api"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/controllers"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/hasher"
+	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/router"
 )
 
@@ -299,6 +300,13 @@ func (r *Relay) handleConnect(w http.ResponseWriter, req *http.Request, ps httpr
 				pfx = netip.PrefixFrom(pfx.Addr(), 128)
 			}
 			routes = append(routes, api.Route{Destination: pfx.String()})
+			// Always include the network prefix so the agent can reach other endpoints
+			// in the same overlay network (e.g. backplane services).
+			if pfx.Addr().Is6() {
+				if ula, err := tunnet.ULAFromPrefix(req.Context(), pfx); err == nil {
+					routes = append(routes, api.Route{Destination: ula.NetPrefix().String()})
+				}
+			}
 		}
 	}
 	if r.egressGateway {

@@ -698,8 +698,13 @@ func (t *TunnelServer) setupConn(
 
 	log.Info("Client addresses assigned")
 
-	// Advertise routes to client - read egress gateway from TunnelNode spec.
+	// Advertise routes to client.
 	advRoutes := []netip.Prefix{netip.PrefixFrom(addrv6.Addr(), 128)}
+	// Always include the network prefix so the agent can reach other endpoints
+	// in the same overlay network (e.g. backplane services).
+	if ula, err := tunnet.ULAFromPrefix(ctx, addrv6); err == nil {
+		advRoutes = append(advRoutes, ula.NetPrefix())
+	}
 	if conn.obj.Spec.EgressGateway != nil && conn.obj.Spec.EgressGateway.Enabled {
 		log.Info("Enabling egress gateway")
 		advRoutes = append(advRoutes,
