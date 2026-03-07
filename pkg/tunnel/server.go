@@ -374,9 +374,9 @@ func (t *TunnelServer) Start(ctx context.Context) error {
 }
 
 func upsertAgentStatus(s *corev1alpha.TunnelNodeStatus, agent *corev1alpha.AgentStatus) {
-	for _, a := range s.Agents {
-		if a.Name == agent.Name {
-			a = *agent
+	for i := range s.Agents {
+		if s.Agents[i].Name == agent.Name {
+			s.Agents[i] = *agent
 			return
 		}
 	}
@@ -530,11 +530,9 @@ func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.
 
 		t.conns.Set(connID, conn)
 
-		// Invoke onConnect callback if configured.
-		if t.options.onConnect != nil {
-			t.options.onConnect(ctx, connID, tn)
-		}
-
+		// Register the agent in TunnelNode status before allocating the
+		// endpoint so the InfraEndpointReconciler can find the agent when
+		// it writes the overlay address.
 		logger.Info("Updating agent status")
 
 		agent := &corev1alpha.AgentStatus{
@@ -560,6 +558,13 @@ func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.
 			return clusterClient.Status().Update(r.Context(), upd)
 		}); err != nil {
 			logger.Error("Failed to update agent status", slog.Any("error", err))
+		}
+
+		// Invoke onConnect callback if configured.
+		// This triggers endpoint allocation; agent must be in TunnelNode
+		// status first so the address reconciler can find it.
+		if t.options.onConnect != nil {
+			t.options.onConnect(ctx, connID, tn)
 		}
 
 		// Blocking wait for the lifetime of the tunnel connection.
@@ -763,6 +768,7 @@ func (t *TunnelServer) ReconcileWithClient(ctx context.Context, c client.Client,
 	}
 
 	// Configure agent addresses from TunnelNode status.
+	var pendingAddress bool
 	for _, agent := range node.Status.Agents {
 		log := log.WithValues("agent", agent.Name)
 
@@ -774,7 +780,8 @@ func (t *TunnelServer) ReconcileWithClient(ctx context.Context, c client.Client,
 
 		// Parse IPv6 address from agent status.
 		if agent.AgentAddress == "" {
-			log.Info("Agent address is empty")
+			log.Info("Agent address is empty, will requeue")
+			pendingAddress = true
 			continue
 		}
 		addrv6, err := netip.ParseAddr(agent.AgentAddress)
@@ -797,6 +804,10 @@ func (t *TunnelServer) ReconcileWithClient(ctx context.Context, c client.Client,
 			metrics.TunnelConnectionFailures.WithLabelValues("address_configuration_failed").Inc()
 			continue
 		}
+	}
+
+	if pendingAddress {
+		return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
 	}
 
 	return ctrl.Result{}, nil
