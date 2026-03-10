@@ -23,10 +23,10 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	runtimejson "k8s.io/apimachinery/pkg/runtime/serializer/json"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/discovery/cached/memory"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/restmapper"
@@ -72,6 +72,42 @@ func getYAML(clusterName, mirror string) ([]byte, error) {
 	}
 
 	return io.ReadAll(resp.Body)
+}
+
+func resolveKubeconfigPath(explicitPath string) string {
+	if explicitPath != "" {
+		return explicitPath
+	}
+	if kubeconfig, ok := os.LookupEnv("KUBECONFIG"); ok {
+		return kubeconfig
+	}
+	return clientcmd.RecommendedHomeFile
+}
+
+func loadKubeClientConfig(kubeconfigPath, kubeContext string) (*rest.Config, string, error) {
+	loadingRules := &clientcmd.ClientConfigLoadingRules{ExplicitPath: kubeconfigPath}
+	overrides := &clientcmd.ConfigOverrides{}
+	if kubeContext != "" {
+		overrides.CurrentContext = kubeContext
+	}
+
+	clientConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, overrides)
+	rawConfig, err := clientConfig.RawConfig()
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to load kubeconfig: %w", err)
+	}
+
+	kc, err := clientConfig.ClientConfig()
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to build Kubernetes config: %w", err)
+	}
+
+	selectedContext := rawConfig.CurrentContext
+	if kubeContext != "" {
+		selectedContext = kubeContext
+	}
+
+	return kc, selectedContext, nil
 }
 
 // --- Plan types ---
@@ -789,29 +825,19 @@ will automatically connect to the Apoxy API and begin managing your in-cluster A
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cmd.SilenceUsage = true
 
-		// 1. If --kubeconfig is set, use that.
-		// 2. If KUBECONFIG is set, use that.
-		// 3. Otherwise, use the default path.
 		kubeconfig, err := cmd.Flags().GetString("kubeconfig")
 		if err != nil {
 			return err
 		}
-		if kubeconfig == "" {
-			var ok bool
-			kubeconfig, ok = os.LookupEnv("KUBECONFIG")
-			if !ok {
-				kubeconfig = clientcmd.RecommendedHomeFile
-			}
-		}
-		rawConfig, err := clientcmd.LoadFromFile(kubeconfig)
+		kubeconfig = resolveKubeconfigPath(kubeconfig)
+		kubeContext, err := cmd.Flags().GetString("context")
 		if err != nil {
-			return fmt.Errorf("failed to load kubeconfig: %w", err)
+			return err
 		}
-		kubeContext := rawConfig.CurrentContext
 
-		kc, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
+		kc, kubeContext, err := loadKubeClientConfig(kubeconfig, kubeContext)
 		if err != nil {
-			return fmt.Errorf("failed to build Kubernetes config: %w", err)
+			return err
 		}
 
 		namespace, err := cmd.Flags().GetString("namespace")
@@ -875,6 +901,7 @@ var k8sCmd = &cobra.Command{
 
 func init() {
 	installK8sCmd.Flags().String("kubeconfig", "", "Path to the kubeconfig file to use for Kubernetes API access")
+	installK8sCmd.Flags().String("context", "", "Kubernetes context to use from the kubeconfig file")
 	installK8sCmd.Flags().String("namespace", "apoxy", "The namespace to install the controller into")
 	installK8sCmd.Flags().Bool("dry-run", false, "If true, only print the YAML that would be applied")
 	installK8sCmd.Flags().Bool("force", false, "If true, forces value overwrites (See: https://v1-28.docs.kubernetes.io/docs/reference/using-api/server-side-apply/#conflicts)")
