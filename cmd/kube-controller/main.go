@@ -90,6 +90,9 @@ func main() {
 	if *namespace != "" {
 		proxyOpts = append(proxyOpts, apiserviceproxy.WithNamespace(*namespace))
 	}
+	if *svcName != "" {
+		proxyOpts = append(proxyOpts, apiserviceproxy.WithServiceName(*svcName))
+	}
 	if *clusterName != "" {
 		proxyOpts = append(proxyOpts, apiserviceproxy.WithClusterName(*clusterName))
 	}

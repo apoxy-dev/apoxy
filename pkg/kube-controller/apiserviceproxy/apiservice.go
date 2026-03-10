@@ -4,10 +4,12 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"net/http/httputil"
+	"time"
 
 	"github.com/google/uuid"
 	"k8s.io/client-go/kubernetes"
@@ -22,10 +24,11 @@ type APIServiceProxy struct {
 	kC   kubernetes.Interface
 	opts *Options
 
-	proxy    *httputil.ReverseProxy
-	cert     tls.Certificate
-	certPool *x509.CertPool
-	caBundle []byte
+	proxy              *httputil.ReverseProxy
+	servingCert        tls.Certificate
+	upstreamClientCert tls.Certificate
+	upstreamRootCAs    *x509.CertPool
+	caBundle           []byte
 }
 
 // NewAPIServiceProxy creates a new APIServiceProxy with the given options.
@@ -68,16 +71,30 @@ func (p *APIServiceProxy) CABundle() []byte {
 // It listens on a unix socket and proxies requests to the Apoxy API.
 func (p *APIServiceProxy) Run(ctx context.Context) error {
 	log.Printf("starting api service proxy")
+	if len(p.servingCert.Certificate) == 0 {
+		return fmt.Errorf("serving certificate is not configured")
+	}
 
 	s := &http.Server{
 		Addr:    fmt.Sprintf(":%d", DefaultPort),
 		Handler: p.proxy,
 		TLSConfig: &tls.Config{
-			Certificates:       []tls.Certificate{p.cert},
-			ClientCAs:          p.certPool,
-			InsecureSkipVerify: true,
+			Certificates: []tls.Certificate{p.servingCert},
+			MinVersion:   tls.VersionTLS12,
 		},
 	}
 
-	return s.ListenAndServeTLS("", "")
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := s.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("failed to shut down api service proxy: %v", err)
+		}
+	}()
+
+	if err := s.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	return nil
 }

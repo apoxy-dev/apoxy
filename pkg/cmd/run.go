@@ -50,18 +50,18 @@ Components are defined under runtime.components in the config. Example:
 			return fmt.Errorf("failed to load config: %w", err)
 		}
 		if cfg.Runtime == nil || len(cfg.Runtime.Components) == 0 {
-			return fmt.Errorf("no runtime components configured\n\n" +
-				"Add a runtime section to your config (%s):\n\n" +
-				"  runtime:\n" +
-				"    components:\n" +
-				"      - type: kube-aggregation\n" +
-				"        kubeAggregation:\n" +
-				"          clusterName: \"my-cluster\"\n" +
-				"      - type: kube-mirror\n" +
-				"        kubeMirror:\n" +
-				"          mirror: \"gateway\"\n" +
-				"      - type: tunnel\n" +
-				"        tunnel:\n" +
+			return fmt.Errorf("no runtime components configured\n\n"+
+				"Add a runtime section to your config (%s):\n\n"+
+				"  runtime:\n"+
+				"    components:\n"+
+				"      - type: kube-aggregation\n"+
+				"        kubeAggregation:\n"+
+				"          clusterName: \"my-cluster\"\n"+
+				"      - type: kube-mirror\n"+
+				"        kubeMirror:\n"+
+				"          mirror: \"gateway\"\n"+
+				"      - type: tunnel\n"+
+				"        tunnel:\n"+
 				"          mode: \"userspace\"\n",
 				config.ConfigFile)
 		}
@@ -170,6 +170,7 @@ func runKubeAggregation(ctx context.Context, cfg *configv1alpha1.Config, ac *con
 	var proxyOpts []apiserviceproxy.Option
 	proxyOpts = append(proxyOpts, apiserviceproxy.WithProjectID(cfg.CurrentProject.String()))
 	proxyOpts = append(proxyOpts, apiserviceproxy.WithNamespace(ac.Namespace))
+	proxyOpts = append(proxyOpts, apiserviceproxy.WithServiceName(ac.ServiceName))
 	if ac.ClusterName != "" {
 		proxyOpts = append(proxyOpts, apiserviceproxy.WithClusterName(ac.ClusterName))
 	}

@@ -6,7 +6,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
 	"net/http"
 	"net/http/httputil"
@@ -24,10 +24,11 @@ const (
 	apizHost                 = "apiz.apoxy.dev"
 	kubeControllerUserPrefix = "kube-controller-"
 
-	apizCertSecretName = "apiz-cert"
-	tlsSecretCert      = "tls.crt"
-	tlsSecretKey       = "tls.key"
-	tlsSecretCA        = "ca.crt"
+	apizCertSecretName          = "apiz-cert"
+	apiServiceServingSecretName = "apiservice-serving-cert"
+	tlsSecretCert               = "tls.crt"
+	tlsSecretKey                = "tls.key"
+	tlsSecretCA                 = "ca.crt"
 
 	// Apoxy API headers.
 	ApoxyAPIKeyHeaderKey    = "x-apoxy-api-key"
@@ -51,7 +52,11 @@ func (p *APIServiceProxy) configureCloudProxy(ctx context.Context) error {
 	}
 	p.proxy = httputil.NewSingleHostReverseProxy(remote)
 
-	ok, err := p.loadCertificate(ctx)
+	if err := p.ensureServingCertificate(ctx); err != nil {
+		return fmt.Errorf("failed to ensure serving certificate: %w", err)
+	}
+
+	ok, err := p.loadUpstreamCertificate(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to load certificate: %w", err)
 	}
@@ -63,16 +68,17 @@ func (p *APIServiceProxy) configureCloudProxy(ctx context.Context) error {
 
 	p.proxy.Transport = &http.Transport{
 		TLSClientConfig: &tls.Config{
-			Certificates: []tls.Certificate{p.cert},
-			RootCAs:      p.certPool,
+			Certificates: []tls.Certificate{p.upstreamClientCert},
+			RootCAs:      p.upstreamRootCAs,
+			MinVersion:   tls.VersionTLS12,
 		},
 	}
 
 	return nil
 }
 
-// loadCertificate loads the certificate from the secret.
-func (p *APIServiceProxy) loadCertificate(ctx context.Context) (bool, error) {
+// loadUpstreamCertificate loads the upstream client certificate from the secret.
+func (p *APIServiceProxy) loadUpstreamCertificate(ctx context.Context) (bool, error) {
 	log.Printf("loading certificate for project %s", p.opts.ProjectID)
 
 	secret, err := p.kC.CoreV1().Secrets(p.opts.Namespace).Get(ctx, apizCertSecretName, metav1.GetOptions{})
@@ -87,10 +93,10 @@ func (p *APIServiceProxy) loadCertificate(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	p.cert = cert
+	p.upstreamClientCert = cert
 
-	p.certPool = x509.NewCertPool()
-	if !p.certPool.AppendCertsFromPEM(secret.Data[tlsSecretCA]) {
+	p.upstreamRootCAs = x509.NewCertPool()
+	if !p.upstreamRootCAs.AppendCertsFromPEM(secret.Data[tlsSecretCA]) {
 		return false, fmt.Errorf("failed to append CA certificate to cert pool")
 	}
 
@@ -116,7 +122,11 @@ func (p *APIServiceProxy) saveCertificate(ctx context.Context, certPem, keyPem, 
 		if !errors.IsAlreadyExists(err) {
 			return err
 		}
-		// Update the secret.
+		existing, getErr := p.kC.CoreV1().Secrets(p.opts.Namespace).Get(ctx, apizCertSecretName, metav1.GetOptions{})
+		if getErr != nil {
+			return getErr
+		}
+		certSecret.ResourceVersion = existing.ResourceVersion
 		if _, err := p.kC.CoreV1().Secrets(p.opts.Namespace).Update(ctx, certSecret, metav1.UpdateOptions{}); err != nil {
 			return err
 		}
@@ -143,7 +153,7 @@ func (p *APIServiceProxy) issueCertificate(ctx context.Context) error {
 	}
 	defer resp.Body.Close()
 
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return err
 	}
@@ -161,6 +171,68 @@ func (p *APIServiceProxy) issueCertificate(ctx context.Context) error {
 		return err
 	}
 
-	_, err = p.loadCertificate(ctx)
+	_, err = p.loadUpstreamCertificate(ctx)
 	return err
+}
+
+func (p *APIServiceProxy) ensureServingCertificate(ctx context.Context) error {
+	ok, err := p.loadServingCertificate(ctx)
+	if err != nil {
+		return err
+	}
+	if ok {
+		return nil
+	}
+
+	cert, certPEM, keyPEM, caPEM, err := generateServingCertificate(p.opts.ServiceName, p.opts.Namespace)
+	if err != nil {
+		return err
+	}
+
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: apiServiceServingSecretName,
+		},
+		Data: map[string][]byte{
+			tlsSecretCert: certPEM,
+			tlsSecretKey:  keyPEM,
+			tlsSecretCA:   caPEM,
+		},
+		Type: corev1.SecretTypeTLS,
+	}
+	if _, err := p.kC.CoreV1().Secrets(p.opts.Namespace).Create(ctx, secret, metav1.CreateOptions{}); err != nil {
+		if !errors.IsAlreadyExists(err) {
+			return err
+		}
+		ok, loadErr := p.loadServingCertificate(ctx)
+		if loadErr != nil {
+			return loadErr
+		}
+		if !ok {
+			return fmt.Errorf("serving certificate secret %q already exists but could not be loaded", apiServiceServingSecretName)
+		}
+		return nil
+	}
+
+	p.servingCert = cert
+	p.caBundle = caPEM
+	return nil
+}
+
+func (p *APIServiceProxy) loadServingCertificate(ctx context.Context) (bool, error) {
+	secret, err := p.kC.CoreV1().Secrets(p.opts.Namespace).Get(ctx, apiServiceServingSecretName, metav1.GetOptions{})
+	if err != nil {
+		if errors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, err
+	}
+
+	cert, err := tls.X509KeyPair(secret.Data[tlsSecretCert], secret.Data[tlsSecretKey])
+	if err != nil {
+		return false, err
+	}
+	p.servingCert = cert
+	p.caBundle = append([]byte(nil), secret.Data[tlsSecretCA]...)
+	return true, nil
 }

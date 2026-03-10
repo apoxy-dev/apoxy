@@ -10,6 +10,7 @@ import (
 type Options struct {
 	ProjectID      uuid.UUID
 	Namespace      string
+	ServiceName    string
 	ClusterName    string
 	Token          string
 	KubeconfigPath string
@@ -33,6 +34,13 @@ func WithProjectID(id string) Option {
 func WithNamespace(ns string) Option {
 	return func(o *Options) {
 		o.Namespace = ns
+	}
+}
+
+// WithServiceName sets the Kubernetes Service name for the aggregated API endpoint.
+func WithServiceName(name string) Option {
+	return func(o *Options) {
+		o.ServiceName = name
 	}
 }
 
