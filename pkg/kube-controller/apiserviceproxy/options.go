@@ -14,6 +14,7 @@ type Options struct {
 	ClusterName    string
 	Token          string
 	KubeconfigPath string
+	APIHost        string
 }
 
 // Option is a function that configures the APIServiceProxy.
@@ -62,5 +63,12 @@ func WithToken(token string) Option {
 func WithKubeconfigPath(path string) Option {
 	return func(o *Options) {
 		o.KubeconfigPath = path
+	}
+}
+
+// WithAPIHost sets the Apoxy Cloud API host for certificate issuance.
+func WithAPIHost(host string) Option {
+	return func(o *Options) {
+		o.APIHost = host
 	}
 }

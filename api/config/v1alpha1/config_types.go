@@ -188,6 +188,9 @@ type KubeAggregationConfig struct {
 	BootstrapToken string `json:"bootstrapToken,omitempty"`
 	// ServiceName for the K8s Service. Defaults to "kube-aggregation".
 	ServiceName string `json:"serviceName,omitempty"`
+	// APIHost is the Apoxy Cloud API host for certificate issuance and upstream
+	// connectivity. Defaults to "api.apoxy.dev".
+	APIHost string `json:"apiHost,omitempty"`
 }
 
 // MirrorMode specifies which Kubernetes API resources to mirror.

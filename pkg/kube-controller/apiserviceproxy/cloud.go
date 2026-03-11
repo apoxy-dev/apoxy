@@ -11,17 +11,21 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strings"
 
+	"github.com/google/uuid"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+var systemCertPool = x509.SystemCertPool
+
 const (
-	// Cosmos APIs.
-	apiHost = "api.apoxy.dev"
+	// Default Cosmos API host.
+	defaultAPIHost = "api.apoxy.dev"
 	// APIServer APIs.
-	apizHost                 = "apiz.apoxy.dev"
+	defaultAPIProxyHost      = "apiz.apoxy.dev"
 	kubeControllerUserPrefix = "kube-controller-"
 
 	apizCertSecretName          = "apiz-cert"
@@ -37,20 +41,21 @@ const (
 )
 
 // IssueClientCertResponse is the response from the certificate issuance endpoint.
+// Field names use camelCase to match gRPC-gateway's default protojson output.
 type IssueClientCertResponse struct {
 	Certificate string `json:"certificate"`
-	PrivateKey  string `json:"private_key"`
+	PrivateKey  string `json:"privateKey"`
 	CA          string `json:"ca"`
 }
 
 func (p *APIServiceProxy) configureCloudProxy(ctx context.Context) error {
 	log.Printf("configuring cloud proxy for project %s", p.opts.ProjectID)
 
-	remote, err := url.Parse(fmt.Sprintf("https://%s", apizHost))
+	remote, err := url.Parse(fmt.Sprintf("https://%s", resolveAPIProxyHost(p.opts.ProjectID, p.opts.APIHost)))
 	if err != nil {
 		return fmt.Errorf("failed to parse remote URL: %w", err)
 	}
-	p.proxy = httputil.NewSingleHostReverseProxy(remote)
+	p.proxy = newCloudReverseProxy(remote)
 
 	if err := p.ensureServingCertificate(ctx); err != nil {
 		return fmt.Errorf("failed to ensure serving certificate: %w", err)
@@ -58,7 +63,8 @@ func (p *APIServiceProxy) configureCloudProxy(ctx context.Context) error {
 
 	ok, err := p.loadUpstreamCertificate(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to load certificate: %w", err)
+		log.Printf("existing upstream certificate is invalid, re-issuing: %v", err)
+		ok = false
 	}
 	if !ok {
 		if err := p.issueCertificate(ctx); err != nil {
@@ -75,6 +81,64 @@ func (p *APIServiceProxy) configureCloudProxy(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+func resolveAPIProxyHost(projectID uuid.UUID, apiHost string) string {
+	host := resolveBaseAPIProxyHost(apiHost)
+	if projectID == uuid.Nil {
+		return host
+	}
+	projectPrefix := projectID.String() + "."
+	if strings.HasPrefix(host, projectPrefix) {
+		return host
+	}
+	if strings.HasPrefix(host, "apiz.") || strings.HasPrefix(host, "apiz-") {
+		return projectPrefix + host
+	}
+	return host
+}
+
+func resolveBaseAPIProxyHost(apiHost string) string {
+	switch {
+	case apiHost == "", apiHost == defaultAPIHost:
+		return defaultAPIProxyHost
+	case strings.HasPrefix(apiHost, "apiz."), strings.HasPrefix(apiHost, "apiz-"):
+		return apiHost
+	case strings.HasPrefix(apiHost, "api."):
+		return "apiz." + strings.TrimPrefix(apiHost, "api.")
+	case strings.HasPrefix(apiHost, "api-"):
+		return "apiz-" + strings.TrimPrefix(apiHost, "api-")
+	default:
+		return apiHost
+	}
+}
+
+func newCloudReverseProxy(remote *url.URL) *httputil.ReverseProxy {
+	proxy := httputil.NewSingleHostReverseProxy(remote)
+	originalDirector := proxy.Director
+	proxy.Director = func(req *http.Request) {
+		originalDirector(req)
+		req.Host = remote.Host
+	}
+	proxy.ErrorHandler = func(w http.ResponseWriter, req *http.Request, err error) {
+		log.Printf("api service proxy upstream error for %s %s: %v", req.Method, req.URL.String(), err)
+		w.WriteHeader(http.StatusBadGateway)
+	}
+	return proxy
+}
+
+func buildUpstreamRootCAs(caPEM []byte) (*x509.CertPool, error) {
+	roots, err := systemCertPool()
+	if err != nil || roots == nil {
+		roots = x509.NewCertPool()
+	}
+	if len(caPEM) == 0 {
+		return roots, nil
+	}
+	if !roots.AppendCertsFromPEM(caPEM) {
+		return nil, fmt.Errorf("failed to append CA certificate to cert pool")
+	}
+	return roots, nil
 }
 
 // loadUpstreamCertificate loads the upstream client certificate from the secret.
@@ -95,9 +159,9 @@ func (p *APIServiceProxy) loadUpstreamCertificate(ctx context.Context) (bool, er
 	}
 	p.upstreamClientCert = cert
 
-	p.upstreamRootCAs = x509.NewCertPool()
-	if !p.upstreamRootCAs.AppendCertsFromPEM(secret.Data[tlsSecretCA]) {
-		return false, fmt.Errorf("failed to append CA certificate to cert pool")
+	p.upstreamRootCAs, err = buildUpstreamRootCAs(secret.Data[tlsSecretCA])
+	if err != nil {
+		return false, err
 	}
 
 	return true, nil
@@ -138,7 +202,11 @@ func (p *APIServiceProxy) saveCertificate(ctx context.Context, certPem, keyPem, 
 func (p *APIServiceProxy) issueCertificate(ctx context.Context) error {
 	log.Printf("issuing certificate for project %s", p.opts.ProjectID)
 
-	addr := fmt.Sprintf("https://%s/v1/terra/serviceaccount/certificate", apiHost)
+	host := p.opts.APIHost
+	if host == "" {
+		host = defaultAPIHost
+	}
+	addr := fmt.Sprintf("https://%s/v1/terra/serviceaccount/certificate", host)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, addr, nil)
 	if err != nil {
 		return err

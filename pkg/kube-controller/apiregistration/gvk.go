@@ -95,7 +95,6 @@ var (
 
 	// AllAPIServices is a list of all API services to be registered
 	AllAPIServices = []*APIServiceDefinition{
-		ControllersV1Alpha1,
 		CoreV1Alpha,
 		ExtensionsV1Alpha1,
 		ExtensionsV1Alpha2,
