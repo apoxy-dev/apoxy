@@ -6,10 +6,13 @@ import (
 	"encoding/hex"
 	"fmt"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gwapiv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gwapiv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
@@ -142,42 +145,61 @@ func (r *MirrorReconciler) isRouteForApoxyGatewayV1Alpha2(ctx context.Context, n
 	return false, nil
 }
 
+func resourceIsAvailable(scheme *runtime.Scheme, mapper meta.RESTMapper, obj client.Object) (bool, string, error) {
+	gvk, err := apiutil.GVKForObject(obj, scheme)
+	if err != nil {
+		return false, "", err
+	}
+	if _, err := mapper.RESTMapping(gvk.GroupKind(), gvk.Version); err != nil {
+		if meta.IsNoMatchError(err) {
+			return false, gvk.String(), nil
+		}
+		return false, gvk.String(), err
+	}
+	return true, gvk.String(), nil
+}
+
+func setupControllerIfAvailable(mgr ctrl.Manager, name string, obj client.Object, fn reconcile.Func) error {
+	ok, gvk, err := resourceIsAvailable(mgr.GetScheme(), mgr.GetRESTMapper(), obj)
+	if err != nil {
+		return fmt.Errorf("checking %s availability: %w", name, err)
+	}
+	if !ok {
+		log.Infof("Mirror: skipping %s controller; resource %s is not installed", name, gvk)
+		return nil
+	}
+	if err := ctrl.NewControllerManagedBy(mgr).
+		For(obj).
+		Complete(fn); err != nil {
+		return fmt.Errorf("setting up %s controller: %w", name, err)
+	}
+	return nil
+}
+
 // SetupWithManager registers controllers for each Gateway API resource type.
 func (r *MirrorReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager) error {
-	if err := ctrl.NewControllerManagedBy(mgr).
-		For(&gwapiv1.Gateway{}).
-		Complete(reconcile.Func(r.reconcileGateway)); err != nil {
-		return fmt.Errorf("setting up Gateway controller: %w", err)
+	if err := setupControllerIfAvailable(mgr, "Gateway", &gwapiv1.Gateway{}, reconcile.Func(r.reconcileGateway)); err != nil {
+		return err
 	}
 
-	if err := ctrl.NewControllerManagedBy(mgr).
-		For(&gwapiv1.HTTPRoute{}).
-		Complete(reconcile.Func(r.reconcileHTTPRoute)); err != nil {
-		return fmt.Errorf("setting up HTTPRoute controller: %w", err)
+	if err := setupControllerIfAvailable(mgr, "HTTPRoute", &gwapiv1.HTTPRoute{}, reconcile.Func(r.reconcileHTTPRoute)); err != nil {
+		return err
 	}
 
-	if err := ctrl.NewControllerManagedBy(mgr).
-		For(&gwapiv1.GRPCRoute{}).
-		Complete(reconcile.Func(r.reconcileGRPCRoute)); err != nil {
-		return fmt.Errorf("setting up GRPCRoute controller: %w", err)
+	if err := setupControllerIfAvailable(mgr, "GRPCRoute", &gwapiv1.GRPCRoute{}, reconcile.Func(r.reconcileGRPCRoute)); err != nil {
+		return err
 	}
 
-	if err := ctrl.NewControllerManagedBy(mgr).
-		For(&gwapiv1alpha2.TCPRoute{}).
-		Complete(reconcile.Func(r.reconcileTCPRoute)); err != nil {
-		return fmt.Errorf("setting up TCPRoute controller: %w", err)
+	if err := setupControllerIfAvailable(mgr, "TCPRoute", &gwapiv1alpha2.TCPRoute{}, reconcile.Func(r.reconcileTCPRoute)); err != nil {
+		return err
 	}
 
-	if err := ctrl.NewControllerManagedBy(mgr).
-		For(&gwapiv1alpha2.TLSRoute{}).
-		Complete(reconcile.Func(r.reconcileTLSRoute)); err != nil {
-		return fmt.Errorf("setting up TLSRoute controller: %w", err)
+	if err := setupControllerIfAvailable(mgr, "TLSRoute", &gwapiv1alpha2.TLSRoute{}, reconcile.Func(r.reconcileTLSRoute)); err != nil {
+		return err
 	}
 
-	if err := ctrl.NewControllerManagedBy(mgr).
-		For(&gwapiv1alpha2.UDPRoute{}).
-		Complete(reconcile.Func(r.reconcileUDPRoute)); err != nil {
-		return fmt.Errorf("setting up UDPRoute controller: %w", err)
+	if err := setupControllerIfAvailable(mgr, "UDPRoute", &gwapiv1alpha2.UDPRoute{}, reconcile.Func(r.reconcileUDPRoute)); err != nil {
+		return err
 	}
 
 	return nil
