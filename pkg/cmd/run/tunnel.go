@@ -381,6 +381,12 @@ func runTunnel(ctx context.Context, cfg *configv1alpha1.Config, tc *configv1alph
 		slog.String("tunnelNodeName", tc.Name),
 		slog.String("mode", string(tc.Mode)))
 
+	// Uses in-cluster config to reach the Apoxy API via K8s API server aggregation.
+	// The kube-aggregation component (deployed alongside this tunnel) registers an
+	// APIService that proxies Apoxy resource requests to the cloud API using its own
+	// bootstrapToken. Going direct (config.APIClientForConfig) would require separate
+	// API credentials in the runtime config, which the onboarding endpoint doesn't
+	// currently provide. The extra local hop through aggregation is negligible.
 	kCluster, err := k8srest.InClusterConfig()
 	if err != nil {
 		return fmt.Errorf("unable to create in-cluster config: %w", err)
