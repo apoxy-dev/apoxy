@@ -18,9 +18,14 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/log"
 )
 
-const (
+var (
 	upstreamPort = 53
 )
+
+// setUpstreamPort overrides the upstream port (for testing).
+func setUpstreamPort(port int) {
+	upstreamPort = port
+}
 
 // upstream is a plugin that sends queries to a random upstream.
 type upstream struct {
@@ -49,28 +54,42 @@ func (u *upstream) ServeDNS(ctx context.Context, w mdns.ResponseWriter, r *mdns.
 		return u.Next.ServeDNS(ctx, w, r)
 	}
 
-	// Try the original query first
-	response, rcode, err := u.queryUpstream(r)
-	if err != nil {
-		return rcode, err
-	}
+	var response *mdns.Msg
 
-	// Apply search domain logic based on ndots and search domains
 	if len(u.SearchDomains) > 0 && len(r.Question) > 0 {
 		originalName := r.Question[0].Name
 		dotCount := u.countDots(originalName)
 
-		// Determine search strategy based on ndots
 		if dotCount < u.Ndots {
-			// Try search domains first, then original name if all fail
-			if response.Rcode == mdns.RcodeNameError {
-				response = u.trySearchDomains(r, originalName, response)
+			// Few dots: try search domains first, bare name as fallback.
+			response = u.trySearchDomains(r, originalName, nil)
+			if response == nil {
+				var rcode int
+				var err error
+				response, rcode, err = u.queryUpstream(r)
+				if err != nil {
+					return rcode, err
+				}
 			}
 		} else {
-			// Try original name first (already done), then search domains if it failed
+			// Enough dots: try bare name first, search domains as fallback.
+			var rcode int
+			var err error
+			response, rcode, err = u.queryUpstream(r)
+			if err != nil {
+				return rcode, err
+			}
 			if response.Rcode == mdns.RcodeNameError {
 				response = u.trySearchDomains(r, originalName, response)
 			}
+		}
+	} else {
+		// No search domains: query upstream directly.
+		var rcode int
+		var err error
+		response, rcode, err = u.queryUpstream(r)
+		if err != nil {
+			return rcode, err
 		}
 	}
 
@@ -127,6 +146,8 @@ func (u *upstream) countDots(name string) int {
 }
 
 // trySearchDomains attempts to resolve a name using configured search domains.
+// fallbackResponse may be nil when called before any upstream query (ndots path).
+// Returns nil if no search domain succeeded and fallbackResponse was nil.
 func (u *upstream) trySearchDomains(originalQuery *mdns.Msg, originalName string, fallbackResponse *mdns.Msg) *mdns.Msg {
 	for _, domain := range u.SearchDomains {
 		// Create a new query with the search domain appended
@@ -154,7 +175,7 @@ func (u *upstream) trySearchDomains(originalQuery *mdns.Msg, originalName string
 			return searchResponse
 		}
 	}
-	// If no search domain worked, return the original response
+	// If no search domain worked, return the fallback (may be nil).
 	return fallbackResponse
 }
 

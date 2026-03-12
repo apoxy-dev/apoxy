@@ -35,6 +35,7 @@ import (
 	corev1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
 	"github.com/apoxy-dev/apoxy/client/versioned"
 	"github.com/apoxy-dev/apoxy/pkg/log"
+	"github.com/apoxy-dev/apoxy/pkg/net/dns"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/endpointselect"
 )
@@ -67,6 +68,9 @@ func resolveTunnelConfig(in *configv1alpha1.TunnelConfig) *configv1alpha1.Tunnel
 	}
 	if out.SocksPort == nil {
 		out.SocksPort = ptr.To(1080)
+	}
+	if out.DNSAddr == "" {
+		out.DNSAddr = "127.0.0.1:8053"
 	}
 	return out
 }
@@ -481,6 +485,19 @@ func runTunnel(ctx context.Context, cfg *configv1alpha1.Config, tc *configv1alph
 	g.Go(func() error {
 		return mgr.Start(gctx)
 	})
+
+	// Start internal DNS proxy so search domain expansion works.
+	if tc.DNSAddr != "" {
+		dnsAddr := tc.DNSAddr
+		g.Go(func() error {
+			slog.Info("Starting DNS proxy", slog.String("address", dnsAddr))
+			if err := dns.ListenAndServe(dnsAddr); err != nil {
+				slog.Error("DNS server failed", slog.Any("error", err))
+				return fmt.Errorf("dns server: %w", err)
+			}
+			return nil
+		})
+	}
 
 	// Start the router — each pod independently connects to the tunnel server.
 	g.Go(func() error {

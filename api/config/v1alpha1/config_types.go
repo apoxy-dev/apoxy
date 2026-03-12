@@ -133,6 +133,10 @@ type TunnelConfig struct {
 	// Only use for development/testing.
 	// +optional
 	InsecureSkipVerify bool `json:"insecureSkipVerify,omitempty"`
+	// DNSAddr is the address to listen on for the internal DNS proxy.
+	// Defaults to "127.0.0.1:8053". Set to empty string to disable.
+	// +optional
+	DNSAddr string `json:"dnsAddr,omitempty"`
 }
 
 // TunnelMode is the mode of the tunnel.
