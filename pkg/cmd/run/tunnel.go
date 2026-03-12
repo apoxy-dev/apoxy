@@ -15,6 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
 	k8srest "k8s.io/client-go/rest"
@@ -488,6 +489,19 @@ func runTunnel(ctx context.Context, cfg *configv1alpha1.Config, tc *configv1alph
 	// Start controller manager.
 	g.Go(func() error {
 		return mgr.Start(gctx)
+	})
+
+	// Trigger one bootstrap reconcile after the manager cache is ready so the
+	// tunnel connects even when the TunnelNode already exists and doesn't emit
+	// an update event after startup.
+	g.Go(func() error {
+		if !mgr.GetCache().WaitForCacheSync(gctx) {
+			return gctx.Err()
+		}
+		_, err := rec.reconcile(gctx, ctrl.Request{
+			NamespacedName: types.NamespacedName{Name: tn.Name},
+		})
+		return err
 	})
 
 	// Start health endpoint server if configured.
