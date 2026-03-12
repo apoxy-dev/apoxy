@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
@@ -486,6 +488,164 @@ func runConfirmation(kubeContext string) (bool, error) {
 	return result.(confirmModel).confirmed, nil
 }
 
+// --- Cluster name selection (bubbletea) ---
+
+var (
+	nameAdjs = []string{
+		"autumn", "bold", "calm", "deft", "eager",
+		"fair", "glad", "hale", "keen", "live",
+		"neat", "open", "pure", "rare", "safe",
+		"true", "warm", "wise", "bright", "swift",
+	}
+	nameNouns = []string{
+		"arch", "bay", "cape", "dale", "edge",
+		"ford", "glen", "hill", "isle", "knoll",
+		"lake", "mesa", "node", "oak", "peak",
+		"reef", "sky", "vale", "wave", "zone",
+	}
+)
+
+func randomClusterName() string {
+	return nameAdjs[rand.IntN(len(nameAdjs))] + "-" + nameNouns[rand.IntN(len(nameNouns))]
+}
+
+type clusterNameModel struct {
+	contextName string
+	randomName  string
+	cursor      int // 0=context, 1=random, 2=custom
+	textInput   textinput.Model
+	inputMode   bool
+	result      string
+	done        bool
+	aborted     bool
+}
+
+func newClusterNameModel(contextName string) clusterNameModel {
+	ti := textinput.New()
+	ti.Placeholder = "my-cluster"
+	ti.CharLimit = 63
+	return clusterNameModel{
+		contextName: contextName,
+		randomName:  randomClusterName(),
+		textInput:   ti,
+	}
+}
+
+func (m clusterNameModel) Init() tea.Cmd { return nil }
+
+func (m clusterNameModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if m.inputMode {
+		switch msg := msg.(type) {
+		case tea.KeyMsg:
+			switch msg.String() {
+			case "enter":
+				v := strings.TrimSpace(m.textInput.Value())
+				if v != "" {
+					m.result = v
+					m.done = true
+					return m, tea.Quit
+				}
+				return m, nil
+			case "esc":
+				m.inputMode = false
+				m.textInput.Blur()
+				return m, nil
+			case "ctrl+c":
+				m.aborted = true
+				m.done = true
+				return m, tea.Quit
+			}
+		}
+		var cmd tea.Cmd
+		m.textInput, cmd = m.textInput.Update(msg)
+		return m, cmd
+	}
+
+	if msg, ok := msg.(tea.KeyMsg); ok {
+		switch msg.String() {
+		case "up", "k":
+			if m.cursor > 0 {
+				m.cursor--
+			}
+		case "down", "j":
+			if m.cursor < 2 {
+				m.cursor++
+			}
+		case "r":
+			m.randomName = randomClusterName()
+		case "enter":
+			switch m.cursor {
+			case 0:
+				m.result = m.contextName
+				m.done = true
+				return m, tea.Quit
+			case 1:
+				m.result = m.randomName
+				m.done = true
+				return m, tea.Quit
+			case 2:
+				m.inputMode = true
+				m.textInput.Focus()
+				return m, m.textInput.Cursor.BlinkCmd()
+			}
+		case "ctrl+c", "q", "esc":
+			m.aborted = true
+			m.done = true
+			return m, tea.Quit
+		}
+	}
+	return m, nil
+}
+
+func (m clusterNameModel) View() string {
+	if m.done && !m.aborted {
+		return fmt.Sprintf("Cluster name: %s\n", styleCreate.Render(m.result))
+	}
+
+	var b strings.Builder
+	b.WriteString("Select cluster name:\n\n")
+
+	choices := []string{
+		fmt.Sprintf("%s  (kube context)", m.contextName),
+		fmt.Sprintf("%s  (random — r to regenerate)", m.randomName),
+		"Enter custom name",
+	}
+
+	for i, choice := range choices {
+		cursor := "  "
+		if m.cursor == i {
+			cursor = styleCreate.Render("▸ ")
+		}
+		b.WriteString(fmt.Sprintf("  %s%s\n", cursor, choice))
+	}
+
+	if m.inputMode {
+		b.WriteString(fmt.Sprintf("\n  Name: %s\n", m.textInput.View()))
+	}
+
+	b.WriteString("\n  ↑/↓ select • enter confirm")
+	if !m.inputMode {
+		b.WriteString(" • r randomize")
+	} else {
+		b.WriteString(" • esc back")
+	}
+	b.WriteString("\n")
+	return b.String()
+}
+
+func runClusterNameSelection(contextName string) (string, error) {
+	p := tea.NewProgram(newClusterNameModel(contextName))
+	result, err := p.Run()
+	if err != nil {
+		return "", err
+	}
+	m := result.(clusterNameModel)
+	if m.aborted {
+		return "", fmt.Errorf("aborted")
+	}
+	return m.result, nil
+}
+
 // --- Apply model (bubbletea with spinner per resource) ---
 
 type applyResultMsg applyResult
@@ -875,9 +1035,11 @@ will automatically connect to the Apoxy API and begin managing your in-cluster A
 			return err
 		}
 
-		// If --cluster-name wasn't explicitly provided, recover it from the
-		// existing namespace's apoxy.dev/cluster-name annotation so the API
-		// returns YAML consistent with the current install.
+		// Resolve cluster name:
+		// 1. Explicit --cluster-name flag takes priority.
+		// 2. Existing namespace annotation (re-install).
+		// 3. Interactive: prompt with kube context name as default.
+		// 4. Non-interactive: use kube context name.
 		if clusterName == "" {
 			clientset, err := kubernetes.NewForConfig(kc)
 			if err == nil {
@@ -887,6 +1049,18 @@ will automatically connect to the Apoxy API and begin managing your in-cluster A
 						clusterName = v
 					}
 				}
+			}
+		}
+		if clusterName == "" {
+			isTTY := term.IsTerminal(int(os.Stdout.Fd())) && term.IsTerminal(int(os.Stdin.Fd()))
+			if isTTY && !yes {
+				selected, err := runClusterNameSelection(kubeContext)
+				if err != nil {
+					return err
+				}
+				clusterName = selected
+			} else {
+				clusterName = kubeContext
 			}
 		}
 
@@ -915,7 +1089,7 @@ func init() {
 	installK8sCmd.Flags().String("namespace", "apoxy", "The namespace to install the controller into")
 	installK8sCmd.Flags().Bool("dry-run", false, "If true, only print the YAML that would be applied")
 	installK8sCmd.Flags().Bool("force", false, "If true, forces value overwrites (See: https://v1-28.docs.kubernetes.io/docs/reference/using-api/server-side-apply/#conflicts)")
-	installK8sCmd.Flags().String("cluster-name", "", "Cluster name identifier for multi-cluster deployments")
+	installK8sCmd.Flags().String("cluster-name", "", "Cluster name identifier (defaults to kube context name)")
 	installK8sCmd.Flags().String("mirror", "", "Mirror mode (gateway, ingress, all)")
 	installK8sCmd.Flags().String("image", "", "Controller image override to pass to the onboarding manifest generator")
 	installK8sCmd.Flags().BoolP("yes", "y", false, "Skip confirmation and apply changes immediately")
