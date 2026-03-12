@@ -115,6 +115,7 @@ func resolveBaseAPIProxyHost(apiHost string) string {
 
 func newCloudReverseProxy(remote *url.URL) *httputil.ReverseProxy {
 	proxy := httputil.NewSingleHostReverseProxy(remote)
+	proxy.ErrorLog = newReverseProxyErrorLogger()
 	originalDirector := proxy.Director
 	proxy.Director = func(req *http.Request) {
 		originalDirector(req)

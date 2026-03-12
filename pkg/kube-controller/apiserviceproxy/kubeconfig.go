@@ -37,6 +37,7 @@ func (p *APIServiceProxy) configureKubeconfigProxy(ctx context.Context) error {
 			req.Host = hostURL.Host
 		},
 		Transport: transport,
+		ErrorLog:  newReverseProxyErrorLogger(),
 	}
 
 	cert, _, _, caBundle, err := generateServingCertificate(p.opts.ServiceName, p.opts.Namespace)

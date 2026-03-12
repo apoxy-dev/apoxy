@@ -8,6 +8,7 @@ import (
 
 	configv1alpha1 "github.com/apoxy-dev/apoxy/api/config/v1alpha1"
 	"github.com/apoxy-dev/apoxy/config"
+	"github.com/apoxy-dev/apoxy/pkg/log"
 )
 
 var runCmd = &cobra.Command{
@@ -35,6 +36,9 @@ Components are defined under runtime.components in the config. Example:
 		cfg, err := config.Load()
 		if err != nil {
 			return fmt.Errorf("failed to load config: %w", err)
+		}
+		if err := initRuntimeLogger(cfg); err != nil {
+			return fmt.Errorf("failed to initialize runtime logger: %w", err)
 		}
 		if cfg.Runtime == nil || len(cfg.Runtime.Components) == 0 {
 			return fmt.Errorf("no runtime components configured\n\n"+
@@ -102,6 +106,16 @@ Components are defined under runtime.components in the config. Example:
 
 func Cmd() *cobra.Command {
 	return runCmd
+}
+
+func initRuntimeLogger(cfg *configv1alpha1.Config) error {
+	opts := []log.Option{log.WithStderrOnly()}
+	if config.Verbose || cfg.Verbose {
+		opts = append(opts, log.WithDevMode(), log.WithLevel(log.DebugLevel))
+	} else {
+		opts = append(opts, log.WithLevel(log.InfoLevel))
+	}
+	return log.Init(opts...)
 }
 
 func resolveKubeMirrorConfig(in *configv1alpha1.KubeMirrorConfig) *configv1alpha1.KubeMirrorConfig {
