@@ -30,7 +30,9 @@ func runKubeMirror(ctx context.Context, cfg *configv1alpha1.Config, mc *configv1
 	utilruntime.Must(gwapiv1.Install(scheme))
 	utilruntime.Must(gwapiv1alpha2.Install(scheme))
 
-	mgr, err := ctrl.NewManager(kCluster, ctrl.Options{Scheme: scheme})
+	mgr, err := ctrl.NewManager(kCluster, withLeaderElection(ctrl.Options{
+		Scheme: scheme,
+	}, "kube-mirror", mc.Namespace, mc.ClusterName))
 	if err != nil {
 		return fmt.Errorf("failed to create controller manager: %w", err)
 	}

@@ -446,16 +446,15 @@ func runTunnel(ctx context.Context, cfg *configv1alpha1.Config, tc *configv1alph
 	tunScheme := runtime.NewScheme()
 	utilruntime.Must(corev1alpha.Install(tunScheme))
 
-	mgr, err := ctrl.NewManager(kCluster, ctrl.Options{
-		Scheme:         tunScheme,
-		LeaderElection: false,
+	mgr, err := ctrl.NewManager(kCluster, withLeaderElection(ctrl.Options{
+		Scheme: tunScheme,
 		Metrics: metricsserver.Options{
 			BindAddress: tc.MetricsAddr,
 		},
 		Cache: cache.Options{
 			SyncPeriod: ptr.To(30 * time.Second),
 		},
-	})
+	}, "tunnel", runtimeNamespace(), tc.Name))
 	if err != nil {
 		return fmt.Errorf("unable to set up controller manager: %w", err)
 	}
@@ -478,23 +477,33 @@ func runTunnel(ctx context.Context, cfg *configv1alpha1.Config, tc *configv1alph
 
 	g, gctx := errgroup.WithContext(ctx)
 
-	// Start router.
+	// Start controller manager.
 	g.Go(func() error {
+		return mgr.Start(gctx)
+	})
+
+	// Only the elected replica should start the tunnel dataplane and bootstrap
+	// its initial reconcile. Followers stay hot but idle for fast failover.
+	g.Go(func() error {
+		select {
+		case <-mgr.Elected():
+			slog.Info("Acquired tunnel leadership", slog.String("tunnelNodeName", tn.Name))
+		case <-gctx.Done():
+			return gctx.Err()
+		}
+
 		if err := r.Start(gctx); err != nil {
 			slog.Error("Router exited with error", slog.Any("error", err))
 		}
 		return nil
 	})
 
-	// Start controller manager.
 	g.Go(func() error {
-		return mgr.Start(gctx)
-	})
-
-	// Trigger one bootstrap reconcile after the manager cache is ready so the
-	// tunnel connects even when the TunnelNode already exists and doesn't emit
-	// an update event after startup.
-	g.Go(func() error {
+		select {
+		case <-mgr.Elected():
+		case <-gctx.Done():
+			return gctx.Err()
+		}
 		if !mgr.GetCache().WaitForCacheSync(gctx) {
 			return gctx.Err()
 		}

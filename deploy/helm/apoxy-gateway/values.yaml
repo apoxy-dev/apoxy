@@ -44,32 +44,6 @@ apiserver:
   tolerations: []
   affinity: {}
 
-kubeController:
-  enabled: true
-  image:
-    repository: apoxy/kube-controller
-    pullPolicy: IfNotPresent
-  serviceAccount:
-    create: true
-    annotations: {}
-    name: ""
-  projectId: ""
-  bootstrapToken: ""
-  clusterName: ""
-  namespace: "apoxy"
-  serviceName: "kube-controller"
-  mirror: ""
-  tunnel:
-    enabled: false
-    name: ""
-    mode: "user"
-  resources: {}
-  nodeSelector: {}
-  tolerations: []
-  affinity: {}
-  imagePullSecrets: []
-  podAnnotations: {}
-
 backplane:
   image:
     repository: apoxy/backplane

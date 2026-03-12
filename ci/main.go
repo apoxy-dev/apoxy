@@ -797,26 +797,6 @@ func (m *ApoxyCli) PublishImages(
 
 	fmt.Println("Tunnelproxy images published to", addr)
 
-	var kcCtrs []*dagger.Container
-	for _, platform := range []string{"linux/amd64", "linux/arm64"} {
-		kcCtrs = append(kcCtrs, m.BuildCLIRelease(ctx, src, platform, tag, sha))
-	}
-
-	addr, err = dag.Container().
-		WithRegistryAuth(
-			"registry-1.docker.io",
-			"apoxy",
-			registryPassword,
-		).
-		Publish(ctx, "docker.io/apoxy/kube-controller:"+tag, dagger.ContainerPublishOpts{
-			PlatformVariants: kcCtrs,
-		})
-	if err != nil {
-		return err
-	}
-
-	fmt.Println("Kube controller images published to", addr)
-
 	var cliCtrs []*dagger.Container
 	for _, platform := range []string{"linux/amd64", "linux/arm64"} {
 		cliCtr := m.BuildCLIRelease(ctx, src, platform, tag, sha)
