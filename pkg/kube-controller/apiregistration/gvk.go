@@ -59,6 +59,20 @@ var (
 		VersionPriority:      100,
 	}
 
+	CoreV1Alpha2 = &APIServiceDefinition{
+		Group:                "core.apoxy.dev",
+		Version:              "v1alpha2",
+		GroupPriorityMinimum: 1000,
+		VersionPriority:      100,
+	}
+
+	CoreV1Alpha3 = &APIServiceDefinition{
+		Group:                "core.apoxy.dev",
+		Version:              "v1alpha3",
+		GroupPriorityMinimum: 1000,
+		VersionPriority:      100,
+	}
+
 	// Extensions API
 	ExtensionsV1Alpha1 = &APIServiceDefinition{
 		Group:                "extensions.apoxy.dev",
@@ -82,24 +96,30 @@ var (
 		VersionPriority:      100,
 	}
 
+	GatewayV1Alpha2 = &APIServiceDefinition{
+		Group:                "gateway.apoxy.dev",
+		Version:              "v1alpha2",
+		GroupPriorityMinimum: 1000,
+		VersionPriority:      100,
+	}
+
 	// Policy API
-	// TODO: Enable when policy API is implemented
-	/*
-		PolicyV1Alpha1 = &APIServiceDefinition{
-			Group:                "policy.apoxy.dev",
-			Version:              "v1alpha1",
-			GroupPriorityMinimum: 1000,
-			VersionPriority:      100,
-		}
-	*/
+	PolicyV1Alpha1 = &APIServiceDefinition{
+		Group:                "policy.apoxy.dev",
+		Version:              "v1alpha1",
+		GroupPriorityMinimum: 1000,
+		VersionPriority:      100,
+	}
 
 	// AllAPIServices is a list of all API services to be registered
 	AllAPIServices = []*APIServiceDefinition{
 		CoreV1Alpha,
+		CoreV1Alpha2,
+		CoreV1Alpha3,
 		ExtensionsV1Alpha1,
 		ExtensionsV1Alpha2,
 		GatewayV1,
-		// TODO: Enable when policy API is implemented
-		// PolicyV1Alpha1,
+		GatewayV1Alpha2,
+		PolicyV1Alpha1,
 	}
 )
