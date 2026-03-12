@@ -15,12 +15,12 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/log"
 )
 
-// APIRegistration handles registration of Apoxy APIs with Kubernetes API Aggregation
+// APIRegistration handles registration of Apoxy APIs with Kubernetes API Aggregation.
 type APIRegistration struct {
 	apiRegC apiregistrationclient.Interface
 }
 
-// NewAPIRegistration creates a new APIRegistration with the given client-go config
+// NewAPIRegistration creates a new APIRegistration with the given client-go config.
 func NewAPIRegistration(config *rest.Config) (*APIRegistration, error) {
 	apiRegC, err := apiregistrationclient.NewForConfig(config)
 	if err != nil {
@@ -32,7 +32,7 @@ func NewAPIRegistration(config *rest.Config) (*APIRegistration, error) {
 	}, nil
 }
 
-// RegisterAPIServices registers all Apoxy API services with Kubernetes API Aggregation
+// RegisterAPIServices registers all Apoxy API services with Kubernetes API Aggregation.
 func (a *APIRegistration) RegisterAPIServices(ctx context.Context, serviceName, namespace string, port int, caBundle []byte) error {
 	log.Infof("setting up API Aggregation")
 	desired := make(map[string]struct{}, len(AllAPIServices))

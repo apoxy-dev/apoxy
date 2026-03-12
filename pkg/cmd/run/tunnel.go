@@ -1,4 +1,4 @@
-package cmd
+package run
 
 import (
 	"context"
@@ -17,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
+	k8srest "k8s.io/client-go/rest"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/clock"
 	"k8s.io/utils/ptr"
@@ -31,7 +32,7 @@ import (
 
 	configv1alpha1 "github.com/apoxy-dev/apoxy/api/config/v1alpha1"
 	corev1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
-	"github.com/apoxy-dev/apoxy/config"
+	"github.com/apoxy-dev/apoxy/client/versioned"
 	"github.com/apoxy-dev/apoxy/pkg/log"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/endpointselect"
@@ -79,12 +80,69 @@ func validateTunnelConfig(cfg *configv1alpha1.Config, tc *configv1alpha1.TunnelC
 	switch tc.Mode {
 	case configv1alpha1.TunnelModeKernel, configv1alpha1.TunnelModeUserspace:
 	default:
-		return fmt.Errorf("invalid tunnel mode %q: must be one of kernel, userspace", tc.Mode)
+		return fmt.Errorf("invalid tunnel mode %q: must be one of kernel, user", tc.Mode)
 	}
 	if _, err := endpointselect.ParseStrategy(tc.EndpointSelection); err != nil {
 		return fmt.Errorf("invalid endpointSelection %q: %w", tc.EndpointSelection, err)
 	}
 	return nil
+}
+
+func ensureRuntimeTunnelNode(
+	ctx context.Context,
+	a3y versioned.Interface,
+	tc *configv1alpha1.TunnelConfig,
+) (*corev1alpha.TunnelNode, error) {
+	var tunnelNode *corev1alpha.TunnelNode
+	err := wait.PollUntilContextCancel(ctx, time.Second, true, func(ctx context.Context) (bool, error) {
+		tn, err := a3y.CoreV1alpha().TunnelNodes().Get(ctx, tc.Name, metav1.GetOptions{})
+		if err == nil {
+			tunnelNode = tn
+			return true, nil
+		}
+
+		if errors.IsNotFound(err) {
+			if !tc.AutoCreate {
+				return false, err
+			}
+
+			slog.Info("TunnelNode not found, auto-creating", slog.String("name", tc.Name))
+			tn, createErr := a3y.CoreV1alpha().TunnelNodes().Create(ctx, &corev1alpha.TunnelNode{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: tc.Name,
+				},
+				Spec: corev1alpha.TunnelNodeSpec{},
+			}, metav1.CreateOptions{})
+			if createErr == nil {
+				tunnelNode = tn
+				return true, nil
+			}
+			if errors.IsAlreadyExists(createErr) || errors.IsNotFound(createErr) || isRetryableTunnelNodeError(createErr) {
+				slog.Info("TunnelNode API not ready yet, retrying auto-create", slog.Any("error", createErr))
+				return false, nil
+			}
+			return false, createErr
+		}
+
+		if isRetryableTunnelNodeError(err) {
+			slog.Info("TunnelNode API not ready yet, retrying", slog.Any("error", err))
+			return false, nil
+		}
+
+		return false, err
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return tunnelNode, nil
+}
+
+func isRetryableTunnelNodeError(err error) bool {
+	return errors.IsServiceUnavailable(err) ||
+		errors.IsServerTimeout(err) ||
+		errors.IsTimeout(err) ||
+		errors.IsTooManyRequests(err)
 }
 
 // runtimeTunConn represents a single tunnel connection worker.
@@ -100,6 +158,7 @@ type runtimeTunnelReconciler struct {
 	client.Client
 
 	scheme   *runtime.Scheme
+	runCtx   context.Context
 	cfg      *configv1alpha1.Config
 	tunCfg   *configv1alpha1.TunnelConfig
 	minConns int
@@ -232,7 +291,12 @@ func (r *runtimeTunnelReconciler) reconcile(ctx context.Context, req ctrl.Reques
 
 					slog.Info("Connecting to tunnel server", slog.String("address", srvAddr))
 
-					c, err := r.tunDialer.Dial(ctx, tunnelUID, srvAddr, clientOpts...)
+					dialCtx := r.runCtx
+					if dialCtx == nil {
+						dialCtx = ctx
+					}
+
+					c, err := r.tunDialer.Dial(dialCtx, tunnelUID, srvAddr, clientOpts...)
 					if err != nil {
 						slog.Error("Failed to dial tunnel", slog.Any("error", err))
 						return
@@ -317,28 +381,23 @@ func runTunnel(ctx context.Context, cfg *configv1alpha1.Config, tc *configv1alph
 		slog.String("tunnelNodeName", tc.Name),
 		slog.String("mode", string(tc.Mode)))
 
-	a3y, err := config.DefaultAPIClient()
+	kCluster, err := k8srest.InClusterConfig()
+	if err != nil {
+		return fmt.Errorf("unable to create in-cluster config: %w", err)
+	}
+
+	a3y, err := versioned.NewForConfig(kCluster)
 	if err != nil {
 		return fmt.Errorf("unable to create API client: %w", err)
 	}
 
-	// Fetch or auto-create TunnelNode.
-	tn, err := a3y.CoreV1alpha().TunnelNodes().Get(ctx, tc.Name, metav1.GetOptions{})
+	// Wait for the aggregated API to come up, then fetch or auto-create the TunnelNode.
+	tn, err := ensureRuntimeTunnelNode(ctx, a3y, tc)
 	if err != nil {
-		if errors.IsNotFound(err) && tc.AutoCreate {
-			slog.Info("TunnelNode not found, auto-creating", slog.String("name", tc.Name))
-			tn, err = a3y.CoreV1alpha().TunnelNodes().Create(ctx, &corev1alpha.TunnelNode{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: tc.Name,
-				},
-				Spec: corev1alpha.TunnelNodeSpec{},
-			}, metav1.CreateOptions{})
-			if err != nil {
-				return fmt.Errorf("unable to auto-create TunnelNode: %w", err)
-			}
-		} else {
+		if errors.IsNotFound(err) {
 			return fmt.Errorf("unable to get TunnelNode: %w", err)
 		}
+		return fmt.Errorf("unable to ensure TunnelNode: %w", err)
 	}
 
 	// Create endpoint selector.
@@ -380,7 +439,7 @@ func runTunnel(ctx context.Context, cfg *configv1alpha1.Config, tc *configv1alph
 	tunScheme := runtime.NewScheme()
 	utilruntime.Must(corev1alpha.Install(tunScheme))
 
-	mgr, err := ctrl.NewManager(a3y.RESTConfig, ctrl.Options{
+	mgr, err := ctrl.NewManager(kCluster, ctrl.Options{
 		Scheme:         tunScheme,
 		LeaderElection: false,
 		Metrics: metricsserver.Options{
@@ -397,6 +456,7 @@ func runTunnel(ctx context.Context, cfg *configv1alpha1.Config, tc *configv1alph
 	rec := &runtimeTunnelReconciler{
 		Client:           mgr.GetClient(),
 		scheme:           tunScheme,
+		runCtx:           ctx,
 		cfg:              cfg,
 		tunCfg:           tc,
 		minConns:         *tc.MinConns,

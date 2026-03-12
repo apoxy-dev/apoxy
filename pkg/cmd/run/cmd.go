@@ -1,26 +1,13 @@
-package cmd
+package run
 
 import (
-	"context"
 	"fmt"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
-	"k8s.io/apimachinery/pkg/runtime"
-	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
-	ctrl "sigs.k8s.io/controller-runtime"
-	gwapiv1 "sigs.k8s.io/gateway-api/apis/v1"
-	gwapiv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
 
 	configv1alpha1 "github.com/apoxy-dev/apoxy/api/config/v1alpha1"
-	"github.com/apoxy-dev/apoxy/client/versioned"
 	"github.com/apoxy-dev/apoxy/config"
-	"github.com/apoxy-dev/apoxy/pkg/kube-controller/apiregistration"
-	"github.com/apoxy-dev/apoxy/pkg/kube-controller/apiserviceproxy"
-	"github.com/apoxy-dev/apoxy/pkg/kube-controller/controllers"
-	"github.com/apoxy-dev/apoxy/pkg/log"
 )
 
 var runCmd = &cobra.Command{
@@ -62,7 +49,7 @@ Components are defined under runtime.components in the config. Example:
 				"          mirror: \"gateway\"\n"+
 				"      - type: tunnel\n"+
 				"        tunnel:\n"+
-				"          mode: \"userspace\"\n",
+				"          mode: \"user\"\n",
 				config.ConfigFile)
 		}
 
@@ -113,6 +100,10 @@ Components are defined under runtime.components in the config. Example:
 	},
 }
 
+func Cmd() *cobra.Command {
+	return runCmd
+}
+
 func resolveKubeMirrorConfig(in *configv1alpha1.KubeMirrorConfig) *configv1alpha1.KubeMirrorConfig {
 	out := in.DeepCopy()
 	if out.Mirror == "" {
@@ -155,91 +146,4 @@ func validateKubeAggregationConfig(cfg *configv1alpha1.Config, ac *configv1alpha
 		return fmt.Errorf("currentProject must be set in config")
 	}
 	return nil
-}
-
-func runKubeAggregation(ctx context.Context, cfg *configv1alpha1.Config, ac *configv1alpha1.KubeAggregationConfig) error {
-	log.Infof("Starting kube-aggregation component (cluster=%s, namespace=%s)",
-		ac.ClusterName, ac.Namespace)
-
-	kCluster, err := rest.InClusterConfig()
-	if err != nil {
-		return fmt.Errorf("failed to create in-cluster config: %w", err)
-	}
-	kc := kubernetes.NewForConfigOrDie(kCluster)
-
-	var proxyOpts []apiserviceproxy.Option
-	proxyOpts = append(proxyOpts, apiserviceproxy.WithProjectID(cfg.CurrentProject.String()))
-	proxyOpts = append(proxyOpts, apiserviceproxy.WithNamespace(ac.Namespace))
-	proxyOpts = append(proxyOpts, apiserviceproxy.WithServiceName(ac.ServiceName))
-	if ac.ClusterName != "" {
-		proxyOpts = append(proxyOpts, apiserviceproxy.WithClusterName(ac.ClusterName))
-	}
-	if ac.BootstrapToken != "" {
-		proxyOpts = append(proxyOpts, apiserviceproxy.WithToken(ac.BootstrapToken))
-	}
-	if ac.APIHost != "" {
-		proxyOpts = append(proxyOpts, apiserviceproxy.WithAPIHost(ac.APIHost))
-	}
-
-	apiSvc, err := apiserviceproxy.NewAPIServiceProxy(ctx, kc, proxyOpts...)
-	if err != nil {
-		return fmt.Errorf("failed to create API service proxy: %w", err)
-	}
-
-	g, ctx := errgroup.WithContext(ctx)
-
-	g.Go(func() error {
-		log.Infof("Starting API service proxy")
-		return apiSvc.Run(ctx)
-	})
-
-	g.Go(func() error {
-		apiReg, err := apiregistration.NewAPIRegistration(kCluster)
-		if err != nil {
-			return fmt.Errorf("failed to create API registration client: %w", err)
-		}
-		if err := apiReg.RegisterAPIServices(ctx, ac.ServiceName, ac.Namespace, 443, apiSvc.CABundle()); err != nil {
-			return fmt.Errorf("failed to register API services: %w", err)
-		}
-		log.Infof("API services registered")
-		<-ctx.Done()
-		return nil
-	})
-
-	return g.Wait()
-}
-
-func runKubeMirror(ctx context.Context, cfg *configv1alpha1.Config, mc *configv1alpha1.KubeMirrorConfig) error {
-	log.Infof("Starting kube-mirror component (cluster=%s, mirror=%s, namespace=%s)",
-		mc.ClusterName, mc.Mirror, mc.Namespace)
-
-	kCluster, err := rest.InClusterConfig()
-	if err != nil {
-		return fmt.Errorf("failed to create in-cluster config: %w", err)
-	}
-
-	scheme := runtime.NewScheme()
-	utilruntime.Must(gwapiv1.Install(scheme))
-	utilruntime.Must(gwapiv1alpha2.Install(scheme))
-
-	mgr, err := ctrl.NewManager(kCluster, ctrl.Options{Scheme: scheme})
-	if err != nil {
-		return fmt.Errorf("failed to create controller manager: %w", err)
-	}
-
-	apoxyClient, err := versioned.NewForConfig(kCluster)
-	if err != nil {
-		return fmt.Errorf("failed to create Apoxy client: %w", err)
-	}
-
-	reconciler := controllers.NewMirrorReconciler(mgr.GetClient(), apoxyClient, mc)
-	if err := reconciler.SetupWithManager(ctx, mgr); err != nil {
-		return fmt.Errorf("failed to setup mirror reconciler: %w", err)
-	}
-
-	return mgr.Start(ctx)
-}
-
-func init() {
-	RootCmd.AddCommand(runCmd)
 }

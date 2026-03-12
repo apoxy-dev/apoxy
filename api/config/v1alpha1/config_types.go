@@ -99,7 +99,7 @@ type TunnelConfig struct {
 	Name string `json:"name,omitempty"`
 	// Mode is the mode of the tunnel.
 	Mode TunnelMode `json:"mode,omitempty"`
-	// SocksPort, when running in userspace mode, is the port to listen on for
+	// SocksPort, when running in user mode, is the port to listen on for
 	// SOCKS5 proxy connections. If not specified it will default to 1080.
 	SocksPort *int `json:"socksPort,omitempty"`
 	// STUNServers is an optional list of STUN servers to use for determining the
@@ -108,7 +108,7 @@ type TunnelConfig struct {
 	STUNServers []STUNServer `json:"stunServers,omitempty"`
 	// PacketCapturePath is an optional path to write packet captures to.
 	// If not specified, packet sniffing will be disabled.
-	// This is only available in userspace mode and intended for debugging purposes.
+	// This is only available in user mode and intended for debugging purposes.
 	PacketCapturePath string `json:"packetCapturePath,omitempty"`
 	// MinConns is the minimum number of concurrent tunnel connections to maintain.
 	// Defaults to 1.
@@ -141,8 +141,8 @@ type TunnelMode string
 const (
 	// Use the kernel implementation of WireGuard.
 	TunnelModeKernel TunnelMode = "kernel"
-	// Use an unprivileged userspace implementation of WireGuard.
-	TunnelModeUserspace TunnelMode = "userspace"
+	// Use an unprivileged user-mode implementation of WireGuard.
+	TunnelModeUserspace TunnelMode = "user"
 )
 
 // RuntimeConfig configures components started by `apoxy run`.

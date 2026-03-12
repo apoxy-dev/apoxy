@@ -18,6 +18,7 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/cmd/alpha"
 	"github.com/apoxy-dev/apoxy/pkg/cmd/domain"
 	"github.com/apoxy-dev/apoxy/pkg/cmd/gateway"
+	run "github.com/apoxy-dev/apoxy/pkg/cmd/run"
 	"github.com/apoxy-dev/apoxy/pkg/cmd/tunnel"
 )
 
@@ -60,6 +61,7 @@ func init() {
 	RootCmd.AddCommand(alpha.Cmd())
 	RootCmd.AddCommand(domain.Cmd())
 	RootCmd.AddCommand(gateway.Cmd())
+	RootCmd.AddCommand(run.Cmd())
 	RootCmd.AddCommand(tunnel.Cmd())
 }
 
