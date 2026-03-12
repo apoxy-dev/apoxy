@@ -21,7 +21,7 @@ var (
 	_ Router = (*NetstackRouter)(nil)
 )
 
-// NetstackRouter implements Router using a userspace network stack.
+// NetstackRouter implements Router using a user-mode network stack.
 // This router can be used for both client and server sides.
 type NetstackRouter struct {
 	tunDev *netstack.TunDevice

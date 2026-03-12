@@ -49,11 +49,7 @@ var tunnelBackoff = wait.NewExponentialBackoffManager(
 
 func resolveTunnelConfig(in *configv1alpha1.TunnelConfig) *configv1alpha1.TunnelConfig {
 	out := in.DeepCopy()
-	switch out.Mode {
-	case "":
-		out.Mode = configv1alpha1.TunnelModeUserspace
-	case "userspace":
-		// Normalize legacy alias from onboarding endpoint.
+	if out.Mode == "" {
 		out.Mode = configv1alpha1.TunnelModeUserspace
 	}
 	if out.MinConns == nil {

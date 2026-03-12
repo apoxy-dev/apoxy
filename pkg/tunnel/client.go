@@ -84,7 +84,7 @@ func WithAuthToken(token string) TunnelClientOption {
 	}
 }
 
-// WithMode sets the mode of the tunnel client (kernel or userspace).
+// WithMode sets the mode of the tunnel client (kernel or user).
 func WithMode(mode TunnelClientMode) TunnelClientOption {
 	return func(o *tunnelClientOptions) {
 		o.mode = mode

@@ -144,7 +144,7 @@ The tunnel system provides VPN-like connectivity:
 - **TunnelServer**: Manages QUIC connections and routing
 - **Geneve**: Linux Geneve tunnel interface management with lwtunnel routing
 - **IPAM**: IPv6 address allocation for tunnel endpoints
-- **Router**: Netlink-based routing (kernel mode) or netstack (userspace)
+- **Router**: Netlink-based routing (kernel mode) or netstack (user mode)
 
 Key types:
 - `TunnelServer` - Main server managing connections

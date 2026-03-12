@@ -62,7 +62,7 @@ kubeController:
   tunnel:
     enabled: false
     name: ""
-    mode: "userspace"
+    mode: "user"
   resources: {}
   nodeSelector: {}
   tolerations: []
