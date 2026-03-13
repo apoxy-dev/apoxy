@@ -5,11 +5,15 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"time"
 
+	coordinationv1 "k8s.io/api/coordination/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/utils/ptr"
+	coordinationclient "k8s.io/client-go/kubernetes/typed/coordination/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
@@ -29,27 +33,35 @@ const (
 	labelCluster   = "mirror.apoxy.dev/cluster"
 	labelNamespace = "mirror.apoxy.dev/namespace"
 	labelName      = "mirror.apoxy.dev/name"
+
+	annotationHeartbeat = "mirror.apoxy.dev/heartbeat"
+
+	heartbeatInterval      = 10 * time.Second
+	heartbeatLeaseDuration = 30 * time.Second
 )
 
 // MirrorReconciler watches local Gateway API resources and mirrors them to Apoxy.
 type MirrorReconciler struct {
-	localClient client.Client
-	apoxyClient versioned.Interface
-	clusterName string
-	mirrorMode  configv1alpha1.MirrorMode
+	localClient       client.Client
+	apoxyClient       versioned.Interface
+	coordinationClient coordinationclient.CoordinationV1Interface
+	clusterName       string
+	mirrorMode        configv1alpha1.MirrorMode
 }
 
 // NewMirrorReconciler creates a new MirrorReconciler.
 func NewMirrorReconciler(
 	localClient client.Client,
 	apoxyClient versioned.Interface,
+	coordinationClient coordinationclient.CoordinationV1Interface,
 	cfg *configv1alpha1.KubeMirrorConfig,
 ) *MirrorReconciler {
 	return &MirrorReconciler{
-		localClient: localClient,
-		apoxyClient: apoxyClient,
-		clusterName: cfg.ClusterName,
-		mirrorMode:  cfg.Mirror,
+		localClient:        localClient,
+		apoxyClient:        apoxyClient,
+		coordinationClient: coordinationClient,
+		clusterName:        cfg.ClusterName,
+		mirrorMode:         cfg.Mirror,
 	}
 }
 
@@ -66,6 +78,13 @@ func (r *MirrorReconciler) originLabels(namespace, name string) map[string]strin
 		labelCluster:   r.clusterName,
 		labelNamespace: namespace,
 		labelName:      name,
+	}
+}
+
+// heartbeatAnnotations returns annotations with the current heartbeat timestamp.
+func (r *MirrorReconciler) heartbeatAnnotations() map[string]string {
+	return map[string]string{
+		annotationHeartbeat: time.Now().UTC().Format(time.RFC3339),
 	}
 }
 
@@ -259,8 +278,9 @@ func (r *MirrorReconciler) syncGateway(ctx context.Context, gw *gwapiv1.Gateway)
 	apoxyName := r.mirrorName(gw.Namespace, gw.Name)
 	apoxy := &apoxygatewayv1.Gateway{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:   apoxyName,
-			Labels: r.originLabels(gw.Namespace, gw.Name),
+			Name:        apoxyName,
+			Labels:      r.originLabels(gw.Namespace, gw.Name),
+			Annotations: r.heartbeatAnnotations(),
 		},
 		Spec: *gw.Spec.DeepCopy(),
 	}
@@ -320,8 +340,9 @@ func (r *MirrorReconciler) syncHTTPRoute(ctx context.Context, route *gwapiv1.HTT
 
 	apoxy := &apoxygatewayv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:   apoxyName,
-			Labels: r.originLabels(route.Namespace, route.Name),
+			Name:        apoxyName,
+			Labels:      r.originLabels(route.Namespace, route.Name),
+			Annotations: r.heartbeatAnnotations(),
 		},
 		Spec: spec,
 	}
@@ -381,8 +402,9 @@ func (r *MirrorReconciler) syncGRPCRoute(ctx context.Context, route *gwapiv1.GRP
 
 	apoxy := &apoxygatewayv1.GRPCRoute{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:   apoxyName,
-			Labels: r.originLabels(route.Namespace, route.Name),
+			Name:        apoxyName,
+			Labels:      r.originLabels(route.Namespace, route.Name),
+			Annotations: r.heartbeatAnnotations(),
 		},
 		Spec: spec,
 	}
@@ -442,8 +464,9 @@ func (r *MirrorReconciler) syncTCPRoute(ctx context.Context, route *gwapiv1alpha
 
 	apoxy := &apoxygatewayv1alpha2.TCPRoute{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:   apoxyName,
-			Labels: r.originLabels(route.Namespace, route.Name),
+			Name:        apoxyName,
+			Labels:      r.originLabels(route.Namespace, route.Name),
+			Annotations: r.heartbeatAnnotations(),
 		},
 		Spec: spec,
 	}
@@ -503,8 +526,9 @@ func (r *MirrorReconciler) syncTLSRoute(ctx context.Context, route *gwapiv1alpha
 
 	apoxy := &apoxygatewayv1alpha2.TLSRoute{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:   apoxyName,
-			Labels: r.originLabels(route.Namespace, route.Name),
+			Name:        apoxyName,
+			Labels:      r.originLabels(route.Namespace, route.Name),
+			Annotations: r.heartbeatAnnotations(),
 		},
 		Spec: spec,
 	}
@@ -564,8 +588,9 @@ func (r *MirrorReconciler) syncUDPRoute(ctx context.Context, route *gwapiv1alpha
 
 	apoxy := &apoxygatewayv1alpha2.UDPRoute{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:   apoxyName,
-			Labels: r.originLabels(route.Namespace, route.Name),
+			Name:        apoxyName,
+			Labels:      r.originLabels(route.Namespace, route.Name),
+			Annotations: r.heartbeatAnnotations(),
 		},
 		Spec: spec,
 	}
@@ -598,4 +623,65 @@ func (r *MirrorReconciler) deleteApoxyUDPRoute(ctx context.Context, name string)
 		return reconcile.Result{}, fmt.Errorf("deleting Apoxy UDPRoute %s: %w", name, err)
 	}
 	return reconcile.Result{}, nil
+}
+
+// RunHeartbeat periodically creates or renews a coordination Lease to signal
+// that this mirror controller is alive. The GC controller on the cloud side
+// uses lease expiry to clean up orphaned mirrored objects.
+func (r *MirrorReconciler) RunHeartbeat(ctx context.Context, namespace string) error {
+	leaseName := "mirror-" + r.clusterName
+	durationSecs := int32(heartbeatLeaseDuration / time.Second)
+
+	ticker := time.NewTicker(heartbeatInterval)
+	defer ticker.Stop()
+
+	// Renew immediately on start, then every tick.
+	for {
+		if err := r.renewLease(ctx, namespace, leaseName, durationSecs); err != nil {
+			log.Errorf("Mirror heartbeat: failed to renew lease %s: %v", leaseName, err)
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func (r *MirrorReconciler) renewLease(ctx context.Context, namespace, leaseName string, durationSecs int32) error {
+	now := metav1.NewMicroTime(time.Now())
+	leases := r.coordinationClient.Leases(namespace)
+
+	existing, err := leases.Get(ctx, leaseName, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		lease := &coordinationv1.Lease{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      leaseName,
+				Namespace: namespace,
+			},
+			Spec: coordinationv1.LeaseSpec{
+				HolderIdentity:       ptr.To(r.clusterName),
+				LeaseDurationSeconds: ptr.To(durationSecs),
+				AcquireTime:          &now,
+				RenewTime:            &now,
+			},
+		}
+		if _, err := leases.Create(ctx, lease, metav1.CreateOptions{}); err != nil {
+			return fmt.Errorf("creating lease: %w", err)
+		}
+		log.Infof("Mirror heartbeat: created lease %s", leaseName)
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("getting lease: %w", err)
+	}
+
+	existing.Spec.RenewTime = &now
+	existing.Spec.HolderIdentity = ptr.To(r.clusterName)
+	existing.Spec.LeaseDurationSeconds = ptr.To(durationSecs)
+	if _, err := leases.Update(ctx, existing, metav1.UpdateOptions{}); err != nil {
+		return fmt.Errorf("updating lease: %w", err)
+	}
+	return nil
 }
