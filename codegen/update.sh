@@ -17,6 +17,7 @@ go run "k8s.io/code-generator/cmd/deepcopy-gen@${CODEGEN_VERSION}" \
   --go-header-file "${BOILERPLATE_FILE}" \
   ./api/config/v1alpha1 \
   ./api/controllers/v1alpha1 \
+  ./api/coordination/v1 \
   ./api/core/v1alpha \
   ./api/core/v1alpha2 \
   ./api/core/v1alpha3 \
@@ -35,6 +36,7 @@ go run "k8s.io/code-generator/cmd/register-gen@${CODEGEN_VERSION}" \
   --go-header-file "${BOILERPLATE_FILE}" \
   ./api/config/v1alpha1 \
   ./api/controllers/v1alpha1 \
+  ./api/coordination/v1 \
   ./api/core/v1alpha \
   ./api/core/v1alpha2 \
   ./api/core/v1alpha3 \
@@ -67,6 +69,7 @@ go run "k8s.io/code-generator/cmd/client-gen@${CODEGEN_VERSION}" \
   --input-base "github.com/apoxy-dev/apoxy" \
   --clientset-name "versioned" \
   --input "./api/controllers/v1alpha1" \
+  --input "./api/coordination/v1" \
   --input "./api/core/v1alpha" \
   --input "./api/core/v1alpha2" \
   --input "./api/core/v1alpha3" \
@@ -83,6 +86,7 @@ go run "k8s.io/code-generator/cmd/lister-gen@${CODEGEN_VERSION}" \
   --output-dir "client/listers" \
   --output-pkg "github.com/apoxy-dev/apoxy/client" \
   ./api/controllers/v1alpha1 \
+  ./api/coordination/v1 \
   ./api/core/v1alpha \
   ./api/core/v1alpha2 \
   ./api/core/v1alpha3 \
@@ -100,6 +104,7 @@ go run "k8s.io/code-generator/cmd/informer-gen@${CODEGEN_VERSION}" \
   --listers-package=github.com/apoxy-dev/apoxy/client/listers \
   --single-directory \
   ./api/controllers/v1alpha1 \
+  ./api/coordination/v1 \
   ./api/core/v1alpha \
   ./api/core/v1alpha2 \
   ./api/core/v1alpha3 \

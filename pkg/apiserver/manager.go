@@ -59,6 +59,7 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/token"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/vni"
 
+	coordinationv1 "github.com/apoxy-dev/apoxy/api/coordination/v1"
 	corev1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
 	corev1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
 	corev1alpha3 "github.com/apoxy-dev/apoxy/api/core/v1alpha3"
@@ -88,6 +89,7 @@ func init() {
 	utilruntime.Must(gatewayv1alpha2.Install(scheme))
 
 	gateway.Install(scheme)
+	utilruntime.Must(coordinationv1.AddToScheme(scheme))
 }
 
 // registerCrossVersionConversions registers direct conversion functions between
@@ -497,6 +499,8 @@ func defaultResources() []resource.Object {
 		&gatewayv1alpha2.TCPRoute{},
 		&gatewayv1alpha2.UDPRoute{},
 		&gatewayv1alpha2.TLSRoute{},
+
+		&coordinationv1.Lease{},
 	}
 }
 

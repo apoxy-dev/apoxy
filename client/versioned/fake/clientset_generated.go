@@ -21,6 +21,8 @@ import (
 	clientset "github.com/apoxy-dev/apoxy/client/versioned"
 	controllersv1alpha1 "github.com/apoxy-dev/apoxy/client/versioned/typed/controllers/v1alpha1"
 	fakecontrollersv1alpha1 "github.com/apoxy-dev/apoxy/client/versioned/typed/controllers/v1alpha1/fake"
+	coordinationv1 "github.com/apoxy-dev/apoxy/client/versioned/typed/coordination/v1"
+	fakecoordinationv1 "github.com/apoxy-dev/apoxy/client/versioned/typed/coordination/v1/fake"
 	corev1alpha "github.com/apoxy-dev/apoxy/client/versioned/typed/core/v1alpha"
 	fakecorev1alpha "github.com/apoxy-dev/apoxy/client/versioned/typed/core/v1alpha/fake"
 	corev1alpha2 "github.com/apoxy-dev/apoxy/client/versioned/typed/core/v1alpha2"
@@ -101,6 +103,11 @@ var (
 // ControllersV1alpha1 retrieves the ControllersV1alpha1Client
 func (c *Clientset) ControllersV1alpha1() controllersv1alpha1.ControllersV1alpha1Interface {
 	return &fakecontrollersv1alpha1.FakeControllersV1alpha1{Fake: &c.Fake}
+}
+
+// CoordinationV1 retrieves the CoordinationV1Client
+func (c *Clientset) CoordinationV1() coordinationv1.CoordinationV1Interface {
+	return &fakecoordinationv1.FakeCoordinationV1{Fake: &c.Fake}
 }
 
 // CoreV1alpha retrieves the CoreV1alphaClient

@@ -7,13 +7,12 @@ import (
 	"fmt"
 	"time"
 
-	coordinationv1 "k8s.io/api/coordination/v1"
+	k8scoordinationv1 "k8s.io/api/coordination/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/ptr"
-	coordinationclient "k8s.io/client-go/kubernetes/typed/coordination/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
@@ -22,6 +21,7 @@ import (
 	gwapiv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
 
 	configv1alpha1 "github.com/apoxy-dev/apoxy/api/config/v1alpha1"
+	coordinationv1 "github.com/apoxy-dev/apoxy/api/coordination/v1"
 	apoxygatewayv1 "github.com/apoxy-dev/apoxy/api/gateway/v1"
 	apoxygatewayv1alpha2 "github.com/apoxy-dev/apoxy/api/gateway/v1alpha2"
 	"github.com/apoxy-dev/apoxy/client/versioned"
@@ -42,26 +42,23 @@ const (
 
 // MirrorReconciler watches local Gateway API resources and mirrors them to Apoxy.
 type MirrorReconciler struct {
-	localClient       client.Client
-	apoxyClient       versioned.Interface
-	coordinationClient coordinationclient.CoordinationV1Interface
-	clusterName       string
-	mirrorMode        configv1alpha1.MirrorMode
+	localClient client.Client
+	apoxyClient versioned.Interface
+	clusterName string
+	mirrorMode  configv1alpha1.MirrorMode
 }
 
 // NewMirrorReconciler creates a new MirrorReconciler.
 func NewMirrorReconciler(
 	localClient client.Client,
 	apoxyClient versioned.Interface,
-	coordinationClient coordinationclient.CoordinationV1Interface,
 	cfg *configv1alpha1.KubeMirrorConfig,
 ) *MirrorReconciler {
 	return &MirrorReconciler{
-		localClient:        localClient,
-		apoxyClient:        apoxyClient,
-		coordinationClient: coordinationClient,
-		clusterName:        cfg.ClusterName,
-		mirrorMode:         cfg.Mirror,
+		localClient: localClient,
+		apoxyClient: apoxyClient,
+		clusterName: cfg.ClusterName,
+		mirrorMode:  cfg.Mirror,
 	}
 }
 
@@ -651,7 +648,7 @@ func (r *MirrorReconciler) RunHeartbeat(ctx context.Context, namespace string) e
 
 func (r *MirrorReconciler) renewLease(ctx context.Context, namespace, leaseName string, durationSecs int32) error {
 	now := metav1.NewMicroTime(time.Now())
-	leases := r.coordinationClient.Leases(namespace)
+	leases := r.apoxyClient.CoordinationV1().Leases(namespace)
 
 	existing, err := leases.Get(ctx, leaseName, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
@@ -660,7 +657,7 @@ func (r *MirrorReconciler) renewLease(ctx context.Context, namespace, leaseName 
 				Name:      leaseName,
 				Namespace: namespace,
 			},
-			Spec: coordinationv1.LeaseSpec{
+			Spec: k8scoordinationv1.LeaseSpec{
 				HolderIdentity:       ptr.To(r.clusterName),
 				LeaseDurationSeconds: ptr.To(durationSecs),
 				AcquireTime:          &now,

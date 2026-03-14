@@ -22,6 +22,7 @@ import (
 	http "net/http"
 
 	controllersv1alpha1 "github.com/apoxy-dev/apoxy/client/versioned/typed/controllers/v1alpha1"
+	coordinationv1 "github.com/apoxy-dev/apoxy/client/versioned/typed/coordination/v1"
 	corev1alpha "github.com/apoxy-dev/apoxy/client/versioned/typed/core/v1alpha"
 	corev1alpha2 "github.com/apoxy-dev/apoxy/client/versioned/typed/core/v1alpha2"
 	corev1alpha3 "github.com/apoxy-dev/apoxy/client/versioned/typed/core/v1alpha3"
@@ -38,6 +39,7 @@ import (
 type Interface interface {
 	Discovery() discovery.DiscoveryInterface
 	ControllersV1alpha1() controllersv1alpha1.ControllersV1alpha1Interface
+	CoordinationV1() coordinationv1.CoordinationV1Interface
 	CoreV1alpha() corev1alpha.CoreV1alphaInterface
 	CoreV1alpha2() corev1alpha2.CoreV1alpha2Interface
 	CoreV1alpha3() corev1alpha3.CoreV1alpha3Interface
@@ -52,6 +54,7 @@ type Interface interface {
 type Clientset struct {
 	*discovery.DiscoveryClient
 	controllersV1alpha1 *controllersv1alpha1.ControllersV1alpha1Client
+	coordinationV1      *coordinationv1.CoordinationV1Client
 	coreV1alpha         *corev1alpha.CoreV1alphaClient
 	coreV1alpha2        *corev1alpha2.CoreV1alpha2Client
 	coreV1alpha3        *corev1alpha3.CoreV1alpha3Client
@@ -65,6 +68,11 @@ type Clientset struct {
 // ControllersV1alpha1 retrieves the ControllersV1alpha1Client
 func (c *Clientset) ControllersV1alpha1() controllersv1alpha1.ControllersV1alpha1Interface {
 	return c.controllersV1alpha1
+}
+
+// CoordinationV1 retrieves the CoordinationV1Client
+func (c *Clientset) CoordinationV1() coordinationv1.CoordinationV1Interface {
+	return c.coordinationV1
 }
 
 // CoreV1alpha retrieves the CoreV1alphaClient
@@ -155,6 +163,10 @@ func NewForConfigAndClient(c *rest.Config, httpClient *http.Client) (*Clientset,
 	if err != nil {
 		return nil, err
 	}
+	cs.coordinationV1, err = coordinationv1.NewForConfigAndClient(&configShallowCopy, httpClient)
+	if err != nil {
+		return nil, err
+	}
 	cs.coreV1alpha, err = corev1alpha.NewForConfigAndClient(&configShallowCopy, httpClient)
 	if err != nil {
 		return nil, err
@@ -209,6 +221,7 @@ func NewForConfigOrDie(c *rest.Config) *Clientset {
 func New(c rest.Interface) *Clientset {
 	var cs Clientset
 	cs.controllersV1alpha1 = controllersv1alpha1.New(c)
+	cs.coordinationV1 = coordinationv1.New(c)
 	cs.coreV1alpha = corev1alpha.New(c)
 	cs.coreV1alpha2 = corev1alpha2.New(c)
 	cs.coreV1alpha3 = corev1alpha3.New(c)

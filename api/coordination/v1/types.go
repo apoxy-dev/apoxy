@@ -8,13 +8,15 @@ import (
 	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource"
 )
 
+// +genclient
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 // +k8s:openapi-gen=true
 // +kubebuilder:object:root=true
 
-// Lease is a wrapper around the standard coordination.k8s.io/v1 Lease that
-// implements the apiserver-runtime resource.Object interface. It reuses the
-// upstream LeaseSpec so clients can use the standard coordination API.
+// Lease is a wrapper around the standard coordination/v1 LeaseSpec that
+// implements the apiserver-runtime resource.Object interface. Served under
+// the coordination.apoxy.dev group so edge clusters can route it through
+// the apiservice proxy to the cloud apiserver.
 type Lease struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

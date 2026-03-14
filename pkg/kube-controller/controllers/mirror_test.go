@@ -7,12 +7,11 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	coordinationv1 "k8s.io/api/coordination/v1"
+	k8scoordinationv1 "k8s.io/api/coordination/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	kubernetesfake "k8s.io/client-go/kubernetes/fake"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -20,12 +19,13 @@ import (
 	gwapiv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
 
 	configv1alpha1 "github.com/apoxy-dev/apoxy/api/config/v1alpha1"
+	apoxycoordinationv1 "github.com/apoxy-dev/apoxy/api/coordination/v1"
 	apoxygatewayv1 "github.com/apoxy-dev/apoxy/api/gateway/v1"
 	apoxyfake "github.com/apoxy-dev/apoxy/client/versioned/fake"
 	"github.com/apoxy-dev/apoxy/pkg/gateway/gatewayapi"
 )
 
-func newTestReconciler(t *testing.T, localObjs []runtime.Object, apoxyObjs []runtime.Object, coordObjs []runtime.Object) *MirrorReconciler {
+func newTestReconciler(t *testing.T, localObjs []runtime.Object, apoxyObjs []runtime.Object) *MirrorReconciler {
 	t.Helper()
 
 	scheme := runtime.NewScheme()
@@ -39,12 +39,10 @@ func newTestReconciler(t *testing.T, localObjs []runtime.Object, apoxyObjs []run
 	localClient := builder.Build()
 
 	apoxyClient := apoxyfake.NewSimpleClientset(apoxyObjs...)
-	kubeClient := kubernetesfake.NewSimpleClientset(coordObjs...)
 
 	return NewMirrorReconciler(
 		localClient,
 		apoxyClient,
-		kubeClient.CoordinationV1(),
 		&configv1alpha1.KubeMirrorConfig{
 			ClusterName: "test-cluster",
 			Mirror:      configv1alpha1.MirrorModeGateway,
@@ -68,7 +66,7 @@ func apoxyGatewayClass() *gwapiv1.GatewayClass {
 
 func TestMirrorName(t *testing.T) {
 	t.Parallel()
-	r := newTestReconciler(t, nil, nil, nil)
+	r := newTestReconciler(t, nil, nil)
 
 	name := r.mirrorName("default", "my-gateway")
 	assert.Contains(t, name, "my-gateway-")
@@ -85,7 +83,7 @@ func TestMirrorName(t *testing.T) {
 
 func TestOriginLabels(t *testing.T) {
 	t.Parallel()
-	r := newTestReconciler(t, nil, nil, nil)
+	r := newTestReconciler(t, nil, nil)
 
 	labels := r.originLabels("prod", "gw")
 	assert.Equal(t, "test-cluster", labels[labelCluster])
@@ -97,7 +95,7 @@ func TestOriginLabels(t *testing.T) {
 
 func TestHeartbeatAnnotations(t *testing.T) {
 	t.Parallel()
-	r := newTestReconciler(t, nil, nil, nil)
+	r := newTestReconciler(t, nil, nil)
 
 	before := time.Now().UTC()
 	anns := r.heartbeatAnnotations()
@@ -113,7 +111,7 @@ func TestHeartbeatAnnotations(t *testing.T) {
 
 func TestRewriteV1ParentRefs(t *testing.T) {
 	t.Parallel()
-	r := newTestReconciler(t, nil, nil, nil)
+	r := newTestReconciler(t, nil, nil)
 
 	ns := gwapiv1.Namespace("default")
 	refs := []gwapiv1.ParentReference{
@@ -137,7 +135,7 @@ func TestRewriteV1ParentRefs(t *testing.T) {
 
 func TestRewriteV1Alpha2ParentRefs(t *testing.T) {
 	t.Parallel()
-	r := newTestReconciler(t, nil, nil, nil)
+	r := newTestReconciler(t, nil, nil)
 
 	ns := gwapiv1alpha2.Namespace("kube-system")
 	refs := []gwapiv1alpha2.ParentReference{
@@ -155,7 +153,7 @@ func TestRewriteV1Alpha2ParentRefs(t *testing.T) {
 func TestSyncGateway_Create(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	r := newTestReconciler(t, nil, nil, nil)
+	r := newTestReconciler(t, nil, nil)
 
 	gw := &gwapiv1.Gateway{
 		ObjectMeta: metav1.ObjectMeta{
@@ -215,7 +213,7 @@ func TestSyncGateway_Update(t *testing.T) {
 		},
 	}
 
-	r := newTestReconciler(t, nil, []runtime.Object{existing}, nil)
+	r := newTestReconciler(t, nil, []runtime.Object{existing})
 
 	gw := &gwapiv1.Gateway{
 		ObjectMeta: metav1.ObjectMeta{
@@ -248,7 +246,7 @@ func TestSyncGateway_Update(t *testing.T) {
 func TestSyncHTTPRoute_Create(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	r := newTestReconciler(t, nil, nil, nil)
+	r := newTestReconciler(t, nil, nil)
 
 	ns := gwapiv1.Namespace("default")
 	route := &gwapiv1.HTTPRoute{
@@ -292,7 +290,7 @@ func TestSyncHTTPRoute_Create(t *testing.T) {
 func TestSyncTCPRoute_Create(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	r := newTestReconciler(t, nil, nil, nil)
+	r := newTestReconciler(t, nil, nil)
 
 	ns := gwapiv1alpha2.Namespace("default")
 	route := &gwapiv1alpha2.TCPRoute{
@@ -338,7 +336,7 @@ func TestDeleteApoxyGateway(t *testing.T) {
 		},
 	}
 
-	r := newTestReconciler(t, nil, []runtime.Object{existing}, nil)
+	r := newTestReconciler(t, nil, []runtime.Object{existing})
 
 	// Delete existing.
 	result, err := r.deleteApoxyGateway(ctx, apoxyName)
@@ -365,7 +363,7 @@ func TestDeleteApoxyHTTPRoute(t *testing.T) {
 		},
 	}
 
-	r := newTestReconciler(t, nil, []runtime.Object{existing}, nil)
+	r := newTestReconciler(t, nil, []runtime.Object{existing})
 
 	result, err := r.deleteApoxyHTTPRoute(ctx, apoxyName)
 	require.NoError(t, err)
@@ -397,7 +395,7 @@ func TestReconcileGateway_CreatesMirror(t *testing.T) {
 		},
 	}
 
-	r := newTestReconciler(t, []runtime.Object{gwc, gw}, nil, nil)
+	r := newTestReconciler(t, []runtime.Object{gwc, gw}, nil)
 
 	result, err := r.reconcileGateway(ctx, reconcile.Request{
 		NamespacedName: nn("default", "my-gw"),
@@ -427,7 +425,7 @@ func TestReconcileGateway_IgnoresNonApoxy(t *testing.T) {
 		Spec: gwapiv1.GatewaySpec{GatewayClassName: "other"},
 	}
 
-	r := newTestReconciler(t, []runtime.Object{gwc, gw}, nil, nil)
+	r := newTestReconciler(t, []runtime.Object{gwc, gw}, nil)
 
 	result, err := r.reconcileGateway(ctx, reconcile.Request{
 		NamespacedName: nn("default", "other-gw"),
@@ -450,7 +448,7 @@ func TestReconcileGateway_DeletesOnNotFound(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: apoxyName},
 	}
 
-	r := newTestReconciler(t, nil, []runtime.Object{existing}, nil)
+	r := newTestReconciler(t, nil, []runtime.Object{existing})
 
 	// Gateway no longer exists locally.
 	result, err := r.reconcileGateway(ctx, reconcile.Request{
@@ -486,7 +484,7 @@ func TestReconcileHTTPRoute_CreatesMirror(t *testing.T) {
 		},
 	}
 
-	r := newTestReconciler(t, []runtime.Object{gwc, gw, route}, nil, nil)
+	r := newTestReconciler(t, []runtime.Object{gwc, gw, route}, nil)
 
 	result, err := r.reconcileHTTPRoute(ctx, reconcile.Request{
 		NamespacedName: nn("default", "my-route"),
@@ -507,12 +505,12 @@ func TestReconcileHTTPRoute_CreatesMirror(t *testing.T) {
 func TestRenewLease_CreatesNew(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	r := newTestReconciler(t, nil, nil, nil)
+	r := newTestReconciler(t, nil, nil)
 
 	err := r.renewLease(ctx, "apoxy-system", "mirror-test-cluster", 30)
 	require.NoError(t, err)
 
-	lease, err := r.coordinationClient.Leases("apoxy-system").Get(ctx, "mirror-test-cluster", metav1.GetOptions{})
+	lease, err := r.apoxyClient.CoordinationV1().Leases("apoxy-system").Get(ctx, "mirror-test-cluster", metav1.GetOptions{})
 	require.NoError(t, err)
 
 	assert.Equal(t, "test-cluster", *lease.Spec.HolderIdentity)
@@ -525,27 +523,29 @@ func TestRenewLease_RenewsExisting(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
+	r := newTestReconciler(t, nil, nil)
+
+	// Pre-create a lease via the apoxy client.
 	oldTime := metav1.NewMicroTime(time.Now().Add(-20 * time.Second))
-	existingLease := &coordinationv1.Lease{
+	_, err := r.apoxyClient.CoordinationV1().Leases("apoxy-system").Create(ctx, &apoxycoordinationv1.Lease{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "mirror-test-cluster",
 			Namespace: "apoxy-system",
 		},
-		Spec: coordinationv1.LeaseSpec{
+		Spec: k8scoordinationv1.LeaseSpec{
 			HolderIdentity:       ptr.To("test-cluster"),
 			LeaseDurationSeconds: ptr.To(int32(30)),
 			AcquireTime:          &oldTime,
 			RenewTime:            &oldTime,
 		},
-	}
-
-	r := newTestReconciler(t, nil, nil, []runtime.Object{existingLease})
-
-	before := time.Now()
-	err := r.renewLease(ctx, "apoxy-system", "mirror-test-cluster", 30)
+	}, metav1.CreateOptions{})
 	require.NoError(t, err)
 
-	lease, err := r.coordinationClient.Leases("apoxy-system").Get(ctx, "mirror-test-cluster", metav1.GetOptions{})
+	before := time.Now()
+	err = r.renewLease(ctx, "apoxy-system", "mirror-test-cluster", 30)
+	require.NoError(t, err)
+
+	lease, err := r.apoxyClient.CoordinationV1().Leases("apoxy-system").Get(ctx, "mirror-test-cluster", metav1.GetOptions{})
 	require.NoError(t, err)
 
 	// RenewTime should be updated to approximately now.
@@ -576,7 +576,7 @@ func TestReconcileTCPRoute_CreatesMirror(t *testing.T) {
 		},
 	}
 
-	r := newTestReconciler(t, []runtime.Object{gwc, gw, route}, nil, nil)
+	r := newTestReconciler(t, []runtime.Object{gwc, gw, route}, nil)
 
 	result, err := r.reconcileTCPRoute(ctx, reconcile.Request{
 		NamespacedName: nn("default", "tcp-route"),

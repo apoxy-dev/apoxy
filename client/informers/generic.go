@@ -21,12 +21,13 @@ import (
 	fmt "fmt"
 
 	v1alpha1 "github.com/apoxy-dev/apoxy/api/controllers/v1alpha1"
+	v1 "github.com/apoxy-dev/apoxy/api/coordination/v1"
 	v1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
 	v1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
 	v1alpha3 "github.com/apoxy-dev/apoxy/api/core/v1alpha3"
 	extensionsv1alpha1 "github.com/apoxy-dev/apoxy/api/extensions/v1alpha1"
 	extensionsv1alpha2 "github.com/apoxy-dev/apoxy/api/extensions/v1alpha2"
-	v1 "github.com/apoxy-dev/apoxy/api/gateway/v1"
+	gatewayv1 "github.com/apoxy-dev/apoxy/api/gateway/v1"
 	gatewayv1alpha2 "github.com/apoxy-dev/apoxy/api/gateway/v1alpha2"
 	policyv1alpha1 "github.com/apoxy-dev/apoxy/api/policy/v1alpha1"
 	schema "k8s.io/apimachinery/pkg/runtime/schema"
@@ -62,6 +63,10 @@ func (f *sharedInformerFactory) ForResource(resource schema.GroupVersionResource
 	// Group=controllers.apoxy.dev, Version=v1alpha1
 	case v1alpha1.SchemeGroupVersion.WithResource("proxies"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Controllers().V1alpha1().Proxies().Informer()}, nil
+
+		// Group=coordination.apoxy.dev, Version=v1
+	case v1.SchemeGroupVersion.WithResource("leases"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Coordination().V1().Leases().Informer()}, nil
 
 		// Group=core.apoxy.dev, Version=v1alpha
 	case v1alpha.SchemeGroupVersion.WithResource("backends"):
@@ -108,13 +113,13 @@ func (f *sharedInformerFactory) ForResource(resource schema.GroupVersionResource
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Extensions().V1alpha2().EdgeFunctionRevisions().Informer()}, nil
 
 		// Group=gateway.apoxy.dev, Version=v1
-	case v1.SchemeGroupVersion.WithResource("grpcroutes"):
+	case gatewayv1.SchemeGroupVersion.WithResource("grpcroutes"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Gateway().V1().GRPCRoutes().Informer()}, nil
-	case v1.SchemeGroupVersion.WithResource("gateways"):
+	case gatewayv1.SchemeGroupVersion.WithResource("gateways"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Gateway().V1().Gateways().Informer()}, nil
-	case v1.SchemeGroupVersion.WithResource("gatewayclasses"):
+	case gatewayv1.SchemeGroupVersion.WithResource("gatewayclasses"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Gateway().V1().GatewayClasses().Informer()}, nil
-	case v1.SchemeGroupVersion.WithResource("httproutes"):
+	case gatewayv1.SchemeGroupVersion.WithResource("httproutes"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Gateway().V1().HTTPRoutes().Informer()}, nil
 
 		// Group=gateway.apoxy.dev, Version=v1alpha2

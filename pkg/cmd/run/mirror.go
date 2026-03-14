@@ -7,7 +7,6 @@ import (
 	"golang.org/x/sync/errgroup"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
-	coordinationclient "k8s.io/client-go/kubernetes/typed/coordination/v1"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	gwapiv1 "sigs.k8s.io/gateway-api/apis/v1"
@@ -44,12 +43,7 @@ func runKubeMirror(ctx context.Context, cfg *configv1alpha1.Config, mc *configv1
 		return fmt.Errorf("failed to create Apoxy client: %w", err)
 	}
 
-	coordClient, err := coordinationclient.NewForConfig(kCluster)
-	if err != nil {
-		return fmt.Errorf("failed to create coordination client: %w", err)
-	}
-
-	reconciler := controllers.NewMirrorReconciler(mgr.GetClient(), apoxyClient, coordClient, mc)
+	reconciler := controllers.NewMirrorReconciler(mgr.GetClient(), apoxyClient, mc)
 	if err := reconciler.SetupWithManager(ctx, mgr); err != nil {
 		return fmt.Errorf("failed to setup mirror reconciler: %w", err)
 	}

@@ -19,6 +19,7 @@ package fake
 
 import (
 	controllersv1alpha1 "github.com/apoxy-dev/apoxy/api/controllers/v1alpha1"
+	coordinationv1 "github.com/apoxy-dev/apoxy/api/coordination/v1"
 	corev1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
 	corev1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
 	corev1alpha3 "github.com/apoxy-dev/apoxy/api/core/v1alpha3"
@@ -39,6 +40,7 @@ var codecs = serializer.NewCodecFactory(scheme)
 
 var localSchemeBuilder = runtime.SchemeBuilder{
 	controllersv1alpha1.AddToScheme,
+	coordinationv1.AddToScheme,
 	corev1alpha.AddToScheme,
 	corev1alpha2.AddToScheme,
 	corev1alpha3.AddToScheme,

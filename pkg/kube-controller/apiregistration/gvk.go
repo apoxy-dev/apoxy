@@ -111,8 +111,17 @@ var (
 		VersionPriority:      100,
 	}
 
+	// Coordination API
+	CoordinationV1 = &APIServiceDefinition{
+		Group:                "coordination.apoxy.dev",
+		Version:              "v1",
+		GroupPriorityMinimum: 1000,
+		VersionPriority:      100,
+	}
+
 	// AllAPIServices is a list of all API services to be registered
 	AllAPIServices = []*APIServiceDefinition{
+		CoordinationV1,
 		CoreV1Alpha,
 		CoreV1Alpha2,
 		CoreV1Alpha3,
