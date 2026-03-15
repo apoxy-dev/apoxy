@@ -123,6 +123,7 @@ go run "k8s.io/kube-openapi/cmd/openapi-gen@master" \
   --output-pkg "generated" \
   --output-file zz_generated.openapi.go \
   --report-filename /dev/null \
+  k8s.io/api/coordination/v1 \
   k8s.io/api/core/v1 \
   k8s.io/apimachinery/pkg/api/resource \
   k8s.io/apimachinery/pkg/apis/meta/v1 \
@@ -132,6 +133,7 @@ go run "k8s.io/kube-openapi/cmd/openapi-gen@master" \
   sigs.k8s.io/gateway-api/apis/v1 \
   sigs.k8s.io/gateway-api/apis/v1alpha2 \
   ./api/controllers/v1alpha1 \
+  ./api/coordination/v1 \
   ./api/core/v1alpha \
   ./api/core/v1alpha2 \
   ./api/core/v1alpha3 \

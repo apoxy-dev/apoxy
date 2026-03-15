@@ -46,6 +46,8 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/apoxy-dev/apoxy/api/controllers/v1alpha1.ProxyTracingTagValue":         schema_apoxy_api_controllers_v1alpha1_ProxyTracingTagValue(ref),
 		"github.com/apoxy-dev/apoxy/api/controllers/v1alpha1.ReplicaAddress":               schema_apoxy_api_controllers_v1alpha1_ReplicaAddress(ref),
 		"github.com/apoxy-dev/apoxy/api/controllers/v1alpha1.ThirdPartySinks":              schema_apoxy_api_controllers_v1alpha1_ThirdPartySinks(ref),
+		"github.com/apoxy-dev/apoxy/api/coordination/v1.Lease":                             schema_apoxy_api_coordination_v1_Lease(ref),
+		"github.com/apoxy-dev/apoxy/api/coordination/v1.LeaseList":                         schema_apoxy_api_coordination_v1_LeaseList(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.Address":                              schema_apoxy_api_core_v1alpha_Address(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.AgentStatus":                          schema_apoxy_api_core_v1alpha_AgentStatus(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.AxiomCredentials":                     schema_apoxy_api_core_v1alpha_AxiomCredentials(ref),
@@ -223,6 +225,9 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/apoxy-dev/apoxy/api/policy/v1alpha1.RateLimitPolicy":                   schema_apoxy_api_policy_v1alpha1_RateLimitPolicy(ref),
 		"github.com/apoxy-dev/apoxy/api/policy/v1alpha1.RateLimitSpec":                     schema_apoxy_api_policy_v1alpha1_RateLimitSpec(ref),
 		"github.com/apoxy-dev/apoxy/api/policy/v1alpha1.RateLimitStatus":                   schema_apoxy_api_policy_v1alpha1_RateLimitStatus(ref),
+		"k8s.io/api/coordination/v1.Lease":                                                 schema_k8sio_api_coordination_v1_Lease(ref),
+		"k8s.io/api/coordination/v1.LeaseList":                                             schema_k8sio_api_coordination_v1_LeaseList(ref),
+		"k8s.io/api/coordination/v1.LeaseSpec":                                             schema_k8sio_api_coordination_v1_LeaseSpec(ref),
 		"k8s.io/api/core/v1.AWSElasticBlockStoreVolumeSource":                              schema_k8sio_api_core_v1_AWSElasticBlockStoreVolumeSource(ref),
 		"k8s.io/api/core/v1.Affinity":                                                      schema_k8sio_api_core_v1_Affinity(ref),
 		"k8s.io/api/core/v1.AppArmorProfile":                                               schema_k8sio_api_core_v1_AppArmorProfile(ref),
@@ -1233,6 +1238,96 @@ func schema_apoxy_api_controllers_v1alpha1_ThirdPartySinks(ref common.ReferenceC
 	}
 }
 
+func schema_apoxy_api_coordination_v1_Lease(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "Lease is a wrapper around the standard coordination/v1 LeaseSpec that implements the apiserver-runtime resource.Object interface. Served under the coordination.apoxy.dev group so edge clusters can route it through the apiservice proxy to the cloud apiserver.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/api/coordination/v1.LeaseSpec"),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"k8s.io/api/coordination/v1.LeaseSpec", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
+	}
+}
+
+func schema_apoxy_api_coordination_v1_LeaseList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "LeaseList contains a list of Lease objects.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("github.com/apoxy-dev/apoxy/api/coordination/v1.Lease"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/coordination/v1.Lease", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
+	}
+}
+
 func schema_apoxy_api_core_v1alpha_Address(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -1326,6 +1421,22 @@ func schema_apoxy_api_core_v1alpha_AgentStatus(ref common.ReferenceCallback) com
 							Description: "Extra addresses of the agent (for additional v4/v6 overlays, if configured).",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"labels": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Labels are metadata key-value pairs associated with this agent connection. Used to identify cluster membership, failure domains, etc.",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: "",
@@ -8337,6 +8448,162 @@ func schema_apoxy_api_policy_v1alpha1_RateLimitStatus(ref common.ReferenceCallba
 				},
 			},
 		},
+	}
+}
+
+func schema_k8sio_api_coordination_v1_Lease(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "Lease defines a lease concept.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Description: "More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata",
+							Default:     map[string]interface{}{},
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Description: "spec contains the specification of the Lease. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#spec-and-status",
+							Default:     map[string]interface{}{},
+							Ref:         ref("k8s.io/api/coordination/v1.LeaseSpec"),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"k8s.io/api/coordination/v1.LeaseSpec", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
+	}
+}
+
+func schema_k8sio_api_coordination_v1_LeaseList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "LeaseList is a list of Lease objects.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Standard list metadata. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata",
+							Default:     map[string]interface{}{},
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Description: "items is a list of schema objects.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("k8s.io/api/coordination/v1.Lease"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			"k8s.io/api/coordination/v1.Lease", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
+	}
+}
+
+func schema_k8sio_api_coordination_v1_LeaseSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "LeaseSpec is a specification of a Lease.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"holderIdentity": {
+						SchemaProps: spec.SchemaProps{
+							Description: "holderIdentity contains the identity of the holder of a current lease. If Coordinated Leader Election is used, the holder identity must be equal to the elected LeaseCandidate.metadata.name field.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"leaseDurationSeconds": {
+						SchemaProps: spec.SchemaProps{
+							Description: "leaseDurationSeconds is a duration that candidates for a lease need to wait to force acquire it. This is measured against the time of last observed renewTime.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"acquireTime": {
+						SchemaProps: spec.SchemaProps{
+							Description: "acquireTime is a time when the current lease was acquired.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.MicroTime"),
+						},
+					},
+					"renewTime": {
+						SchemaProps: spec.SchemaProps{
+							Description: "renewTime is a time when the current holder of a lease has last updated the lease.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.MicroTime"),
+						},
+					},
+					"leaseTransitions": {
+						SchemaProps: spec.SchemaProps{
+							Description: "leaseTransitions is the number of transitions of a lease between holders.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"strategy": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Strategy indicates the strategy for picking the leader for coordinated leader election. If the field is not specified, there is no active coordination for this lease. (Alpha) Using this field requires the CoordinatedLeaderElection feature gate to be enabled.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"preferredHolder": {
+						SchemaProps: spec.SchemaProps{
+							Description: "PreferredHolder signals to a lease holder that the lease has a more optimal holder and should be given up. This field can only be set if Strategy is also set.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"k8s.io/apimachinery/pkg/apis/meta/v1.MicroTime"},
 	}
 }
 
