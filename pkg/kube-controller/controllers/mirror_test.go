@@ -517,6 +517,8 @@ func TestRenewLease_CreatesNew(t *testing.T) {
 	assert.Equal(t, int32(30), *lease.Spec.LeaseDurationSeconds)
 	assert.NotNil(t, lease.Spec.AcquireTime)
 	assert.NotNil(t, lease.Spec.RenewTime)
+	// Cluster label.
+	assert.Equal(t, "test-cluster", lease.Labels[labelCluster])
 }
 
 func TestRenewLease_RenewsExisting(t *testing.T) {
@@ -551,6 +553,8 @@ func TestRenewLease_RenewsExisting(t *testing.T) {
 	// RenewTime should be updated to approximately now.
 	assert.True(t, lease.Spec.RenewTime.Time.After(before.Add(-time.Second)))
 	assert.Equal(t, "test-cluster", *lease.Spec.HolderIdentity)
+	// Cluster label set on update.
+	assert.Equal(t, "test-cluster", lease.Labels[labelCluster])
 }
 
 // --- reconcileTCPRoute (v1alpha2 round-trip) ---

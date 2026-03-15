@@ -67,6 +67,11 @@ type AgentStatus struct {
 	// Extra addresses of the agent (for additional v4/v6 overlays, if configured).
 	// +optional
 	AgentAddresses []string `json:"agentAddresses,omitempty"`
+
+	// Labels are metadata key-value pairs associated with this agent connection.
+	// Used to identify cluster membership, failure domains, etc.
+	// +optional
+	Labels map[string]string `json:"labels,omitempty"`
 }
 
 type TunnelNodeCredentials struct {

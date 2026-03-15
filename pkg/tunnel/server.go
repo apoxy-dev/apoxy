@@ -508,6 +508,13 @@ func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.
 			return
 		}
 
+		labels := make(map[string]string)
+		for key, values := range r.URL.Query() {
+			if strings.HasPrefix(key, "label.") && len(values) > 0 {
+				labels[strings.TrimPrefix(key, "label.")] = values[0]
+			}
+		}
+
 		connID := uuid.NewString()
 		// Sends connection ID information to the client so that it can
 		// track its connection status. This must be done before initializing the proxy.
@@ -538,6 +545,7 @@ func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.
 		agent := &corev1alpha.AgentStatus{
 			Name:        connID,
 			ConnectedAt: ptr.To(metav1.Now()),
+			Labels:      labels,
 		}
 		// TODO(dilyevsky): Support multiple external addresses in the Status.
 		if len(t.options.extAddrs) > 0 && t.options.extAddrs[0].IsValid() {

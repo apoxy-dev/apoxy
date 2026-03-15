@@ -228,6 +228,9 @@ func (r *runtimeTunnelReconciler) reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
 	cOpts = append(cOpts, tunnel.WithAuthToken(tunnelNode.Status.Credentials.Token))
+	if len(r.tunCfg.Labels) > 0 {
+		cOpts = append(cOpts, tunnel.WithLabels(r.tunCfg.Labels))
+	}
 
 	var srvAddr string
 	if !r.cfg.IsLocalMode {

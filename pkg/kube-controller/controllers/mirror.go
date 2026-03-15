@@ -656,6 +656,9 @@ func (r *MirrorReconciler) renewLease(ctx context.Context, namespace, leaseName 
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      leaseName,
 				Namespace: namespace,
+				Labels: map[string]string{
+					labelCluster: r.clusterName,
+				},
 			},
 			Spec: k8scoordinationv1.LeaseSpec{
 				HolderIdentity:       ptr.To(r.clusterName),
@@ -674,6 +677,10 @@ func (r *MirrorReconciler) renewLease(ctx context.Context, namespace, leaseName 
 		return fmt.Errorf("getting lease: %w", err)
 	}
 
+	if existing.Labels == nil {
+		existing.Labels = make(map[string]string)
+	}
+	existing.Labels[labelCluster] = r.clusterName
 	existing.Spec.RenewTime = &now
 	existing.Spec.HolderIdentity = ptr.To(r.clusterName)
 	existing.Spec.LeaseDurationSeconds = ptr.To(durationSecs)

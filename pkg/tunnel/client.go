@@ -69,6 +69,8 @@ type tunnelClientOptions struct {
 	preserveDefaultGwDsts []netip.Prefix
 	// Packet observer for TUI
 	packetObserver tunnelconn.PacketObserver
+	// Labels to send on tunnel connections.
+	labels map[string]string
 }
 
 func defaultClientOptions() *tunnelClientOptions {
@@ -149,6 +151,13 @@ func WithPreserveDefaultGatewayDestinations(dsts []netip.Prefix) TunnelClientOpt
 func WithPacketObserver(obs tunnelconn.PacketObserver) TunnelClientOption {
 	return func(o *tunnelClientOptions) {
 		o.packetObserver = obs
+	}
+}
+
+// WithLabels sets metadata labels to send on tunnel connections.
+func WithLabels(labels map[string]string) TunnelClientOption {
+	return func(o *tunnelClientOptions) {
+		o.labels = labels
 	}
 }
 
@@ -273,9 +282,11 @@ func (d *TunnelDialer) Dial(
 	q := addrUrl.Query()
 	if options.authToken != "" {
 		q.Add("token", options.authToken)
-		addrUrl.RawQuery = q.Encode()
 	}
-	addrUrl.RawQuery = addrUrl.Query().Encode()
+	for k, v := range options.labels {
+		q.Add("label."+k, v)
+	}
+	addrUrl.RawQuery = q.Encode()
 
 	tmpl, err := uritemplate.New(addrUrl.String())
 	if err != nil {

@@ -137,6 +137,10 @@ type TunnelConfig struct {
 	// Defaults to "127.0.0.1:8053". Set to empty string to disable.
 	// +optional
 	DNSAddr string `json:"dnsAddr,omitempty"`
+	// Labels are metadata key-value pairs attached to agent connections.
+	// Convention: set "apoxy.dev/cluster" to identify cluster membership.
+	// +optional
+	Labels map[string]string `json:"labels,omitempty"`
 }
 
 // TunnelMode is the mode of the tunnel.
