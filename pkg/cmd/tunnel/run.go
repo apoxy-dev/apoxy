@@ -620,7 +620,7 @@ func (t *tunnelNodeReconciler) GetTunnelInfo() tui.TunnelInfo {
 	t.dialMu.RLock()
 	defer t.dialMu.RUnlock()
 
-	return tui.TunnelInfo{
+	info := tui.TunnelInfo{
 		Name:       t.tunnelName,
 		UID:        t.tunnelUID.String(),
 		ServerAddr: t.srvAddr,
@@ -629,6 +629,10 @@ func (t *tunnelNodeReconciler) GetTunnelInfo() tui.TunnelInfo {
 		DNSAddr:    dnsListenAddr,
 		HealthAddr: healthAddr,
 	}
+	if !t.cfg.IsLocalMode && t.cfg.DashboardURL != "" {
+		info.DashboardURL = t.cfg.DashboardURL + "/tunnels/" + t.tunnelName
+	}
+	return info
 }
 
 // GetConnections returns the current connection status for the TUI.
@@ -650,7 +654,7 @@ func (t *tunnelNodeReconciler) GetConnections() []tui.ConnectionStatus {
 		}
 
 		conns = append(conns, tui.ConnectionStatus{
-			ID:          conn.id.String()[:8],
+			ID:          conn.id.String(),
 			IsHealthy:   isHealthy,
 			ConnectedAt: conn.connectedAt,
 			LocalAddrs:  localAddrs,

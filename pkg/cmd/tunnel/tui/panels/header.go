@@ -45,24 +45,22 @@ func (p HeaderPanel) View() string {
 
 	// Tunnel info section
 	tunnelHeader := HeaderStyle.Render(" TUNNEL ")
-	tokenDisplay := "******"
-	if !p.tunnelInfo.HasToken {
-		tokenDisplay = "<none>"
-	}
-
 	info1 := fmt.Sprintf("%s%s: %-20s  %s: %-30s  %s: %s",
 		LeftMargin,
 		LabelStyle.Render("Name"), ValueStyle.Render(p.tunnelInfo.Name),
 		LabelStyle.Render("Server"), ValueStyle.Render(p.tunnelInfo.ServerAddr),
 		LabelStyle.Render("Mode"), ValueStyle.Render(p.tunnelInfo.Mode))
 
-	info2 := fmt.Sprintf("%s%s: %-20s  %s: %s",
-		LeftMargin,
-		LabelStyle.Render("Token"), ValueStyle.Render(tokenDisplay),
-		LabelStyle.Render("DNS"), ValueStyle.Render(p.tunnelInfo.DNSAddr))
+	tunnelContent := tunnelHeader + "\n" + info1
+	if p.tunnelInfo.DashboardURL != "" {
+		link := fmt.Sprintf("%s%s: %s",
+			LeftMargin,
+			LabelStyle.Render("Dashboard"),
+			DimStyle.Render(p.tunnelInfo.DashboardURL))
+		tunnelContent += "\n" + link
+	}
 
-	tunnelBox := BorderStyle.Width(p.width - 2).Render(
-		tunnelHeader + "\n" + info1 + "\n" + info2)
+	tunnelBox := BorderStyle.Width(p.width - 2).Render(tunnelContent)
 	sb.WriteString(tunnelBox)
 	sb.WriteString("\n")
 
@@ -123,9 +121,13 @@ func (p HeaderPanel) View() string {
 
 // Height returns the height of the header panel.
 func (p HeaderPanel) Height() int {
-	// tunnel box: 1 margin + 1 top border + 3 content lines + 1 bottom border = 6
+	// tunnel box: 1 margin + 1 top border + 2 content lines + 1 bottom border = 5
+	// (+ 1 if dashboard link is shown)
 	// conn box: 1 top border + 1 header + 1 column header + connections + 1 bottom border
-	tunnelHeight := 6
+	tunnelHeight := 5
+	if p.tunnelInfo.DashboardURL != "" {
+		tunnelHeight = 6
+	}
 	connHeight := 4 + len(p.connections)
 	if len(p.connections) == 0 {
 		connHeight = 5

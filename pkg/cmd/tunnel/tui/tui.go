@@ -17,7 +17,6 @@ func Run(ctx context.Context, packetsCh <-chan connection.PacketInfo, statusProv
 	p := tea.NewProgram(
 		model,
 		tea.WithAltScreen(),
-		tea.WithMouseCellMotion(),
 	)
 
 	// Handle context cancellation

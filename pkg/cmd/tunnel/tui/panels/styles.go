@@ -11,7 +11,7 @@ const (
 	LeftMargin = "  "
 
 	// CONNECTIONS table column widths
-	ConnIDWidth     = 10
+	ConnIDWidth     = 38 // full UUID (36 chars) + 2 padding
 	ConnStatusWidth = 12
 	ConnUptimeWidth = 10
 	ConnAddrsWidth  = 40
@@ -19,8 +19,8 @@ const (
 	// TRAFFIC table column widths
 	TimeWidth  = 10
 	ProtoWidth = 6
-	SrcWidth   = 28
-	DstWidth   = 28
+	SrcWidth   = 42 // full IPv6 ULA + port
+	DstWidth   = 42
 	SizeWidth  = 7
 	FlagsWidth = 6
 	DirWidth   = 4
@@ -96,13 +96,14 @@ var (
 
 // TunnelInfo contains information about the tunnel.
 type TunnelInfo struct {
-	Name       string
-	UID        string
-	ServerAddr string
-	HasToken   bool
-	Mode       string
-	DNSAddr    string
-	HealthAddr string
+	Name         string
+	UID          string
+	ServerAddr   string
+	HasToken     bool
+	Mode         string
+	DNSAddr      string
+	HealthAddr   string
+	DashboardURL string // non-empty when running in cloud mode
 }
 
 // ConnectionStatus contains status information about a single connection.
