@@ -168,6 +168,7 @@ type conn struct {
 	connID         string
 	obj            *corev1alpha.TunnelNode
 	addrv4, addrv6 netip.Prefix
+	cancel         context.CancelFunc
 }
 
 func (c *conn) String() string {
@@ -522,9 +523,13 @@ func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.
 		logger = logger.With(slog.String("connUUID", connID))
 		logger.Info("Establishing CONNECT-IP connection")
 
+		connCtx, connCancel := context.WithCancel(ctx)
+		defer connCancel()
+
 		conn := &conn{
 			connID: connID,
 			obj:    tn.DeepCopy(),
+			cancel: connCancel,
 		}
 		p := connectip.Proxy{}
 		if conn.Conn, err = p.Proxy(w, req); err != nil {
@@ -579,8 +584,8 @@ func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.
 		select {
 		case <-r.Context().Done():
 			logger.Info("Tunnel connection closed")
-		case <-ctx.Done():
-			logger.Info("Server context closed", slog.Any("error", ctx.Err()))
+		case <-connCtx.Done():
+			logger.Info("Connection context canceled", slog.Any("error", connCtx.Err()))
 		}
 
 		if err := conn.Close(); err != nil &&
@@ -735,6 +740,27 @@ func (t *TunnelServer) setupConn(
 	return nil
 }
 
+// CloseConnectionsByName closes all active connections for the TunnelNode with the given name.
+func (t *TunnelServer) CloseConnectionsByName(name string) {
+	t.conns.ForEach(func(connID string, c *conn) bool {
+		if c.obj.Name == name {
+			slog.Info("Closing connection for removed TunnelNode",
+				slog.String("connID", connID),
+				slog.String("tunnelNode", name),
+			)
+			c.cancel()
+		}
+		return true
+	})
+	// Remove from tunnels map by scanning for the name.
+	t.tunnels.ForEach(func(uid string, tn *corev1alpha.TunnelNode) bool {
+		if tn.Name == name {
+			t.tunnels.Del(uid)
+		}
+		return true
+	})
+}
+
 // ReconcileWithClient reconciles a TunnelNode using the provided client.
 // This method can be used by both standard reconcilers and multicluster reconcilers.
 func (t *TunnelServer) ReconcileWithClient(ctx context.Context, c client.Client, request reconcile.Request) (reconcile.Result, error) {
@@ -753,7 +779,14 @@ func (t *TunnelServer) ReconcileWithClient(ctx context.Context, c client.Client,
 	if !node.DeletionTimestamp.IsZero() {
 		log.Info("Deleting TunnelNode")
 
-		// TODO: Send GOAWAY to all connected clients for the associated tunnel node.
+		// Close all active connections for this tunnel node.
+		t.conns.ForEach(func(connID string, c *conn) bool {
+			if c.obj.UID == node.UID {
+				log.Info("Closing connection for deleted TunnelNode", "connID", connID)
+				c.cancel()
+			}
+			return true
+		})
 
 		t.tunnels.Del(string(node.UID))
 
