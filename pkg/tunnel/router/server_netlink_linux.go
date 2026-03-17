@@ -18,7 +18,6 @@ import (
 	proxyutil "k8s.io/kubernetes/pkg/proxy/util"
 	utiliptables "k8s.io/kubernetes/pkg/util/iptables"
 
-
 	"github.com/apoxy-dev/apoxy/pkg/netstack"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/connection"
 	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
@@ -28,10 +27,17 @@ var (
 	_ Router = (*NetlinkRouter)(nil)
 )
 
+var (
+	// apoxyOverlayPrefix is the global Apoxy overlay space. Traffic already
+	// sourced from this prefix does not need to be rewritten on tunnel egress.
+	apoxyOverlayPrefix = netip.MustParsePrefix("fd61:706f:7879::/48")
+)
+
 // NetlinkRouter implements Router using Linux's netlink subsystem.
 type NetlinkRouter struct {
 	extLink       netlink.Link
 	extIPv6Prefix netip.Prefix
+	localAddrs    []netip.Prefix
 
 	cksumRecalc bool
 
@@ -114,6 +120,7 @@ func NewNetlinkRouter(opts ...Option) (*NetlinkRouter, error) {
 	return &NetlinkRouter{
 		extLink:       extLink,
 		extIPv6Prefix: options.extIPv6Prefix,
+		localAddrs:    append([]netip.Prefix(nil), options.localAddresses...),
 
 		cksumRecalc: options.cksumRecalc,
 
@@ -180,6 +187,52 @@ func (r *NetlinkRouter) setupDNAT() error {
 	return nil
 }
 
+func serverSNATAddrs(localAddrs []netip.Prefix) (netip.Addr, netip.Addr) {
+	var ipv4, ipv6 netip.Addr
+	for _, prefix := range localAddrs {
+		addr := prefix.Addr()
+		if !addr.IsValid() {
+			continue
+		}
+		if addr.Is4() && !ipv4.IsValid() {
+			ipv4 = addr
+			continue
+		}
+		if addr.Is6() && !ipv6.IsValid() {
+			ipv6 = addr
+		}
+	}
+	return ipv4, ipv6
+}
+
+func (r *NetlinkRouter) setupSNAT() error {
+	tunName := r.tunLink.Attrs().Name
+	ipv4, ipv6 := serverSNATAddrs(r.localAddrs)
+
+	if ipv4.IsValid() {
+		ruleSpec := []string{"-o", tunName, "-j", "SNAT", "--to-source", ipv4.String()}
+		slog.Info("Setting up pinned tunnel IPv4 source", slog.String("tun_iface", tunName), slog.String("src", ipv4.String()))
+		if _, err := r.iptV4.EnsureRule(utiliptables.Append, utiliptables.TableNAT, utiliptables.ChainPostrouting, ruleSpec...); err != nil {
+			return fmt.Errorf("failed to ensure IPv4 tunnel SNAT rule: %w", err)
+		}
+	}
+
+	if ipv6.IsValid() {
+		ruleSpec := []string{"-o", tunName, "!", "-s", apoxyOverlayPrefix.String(), "-j", "SNAT", "--to-source", ipv6.String()}
+		slog.Info(
+			"Setting up pinned tunnel IPv6 source",
+			slog.String("tun_iface", tunName),
+			slog.String("src", ipv6.String()),
+			slog.String("exclude_src_prefix", apoxyOverlayPrefix.String()),
+		)
+		if _, err := r.iptV6.EnsureRule(utiliptables.Append, utiliptables.TableNAT, utiliptables.ChainPostrouting, ruleSpec...); err != nil {
+			return fmt.Errorf("failed to ensure IPv6 tunnel SNAT rule: %w", err)
+		}
+	}
+
+	return nil
+}
+
 // Start initializes the router and starts forwarding traffic.
 func (r *NetlinkRouter) Start(ctx context.Context) error {
 	slog.Info("Starting TUN muxer")
@@ -191,6 +244,9 @@ func (r *NetlinkRouter) Start(ctx context.Context) error {
 
 	if err := r.setupDNAT(); err != nil {
 		return fmt.Errorf("failed to setup DNAT: %w", err)
+	}
+	if err := r.setupSNAT(); err != nil {
+		return fmt.Errorf("failed to setup SNAT: %w", err)
 	}
 
 	// Create error group with context
