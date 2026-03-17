@@ -356,10 +356,6 @@ func getProxyTelemetryInfo(proxy *Proxy) string {
 		features = append(features, "Tracing")
 	}
 
-	if proxy.Spec.Telemetry.ThirdPartySinks != nil {
-		features = append(features, "3rdParty")
-	}
-
 	if len(features) == 0 {
 		return "Default"
 	}
