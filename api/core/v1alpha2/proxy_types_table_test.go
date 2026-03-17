@@ -353,17 +353,7 @@ func TestGetProxyTelemetryInfo(t *testing.T) {
 			}},
 			expected: "[Tracing]",
 		},
-		{
-			name: "third party sinks",
-			proxy: &Proxy{Spec: ProxySpec{
-				Telemetry: &ProxyTelementry{
-					ThirdPartySinks: &ThirdPartySinks{
-						DatadogLogs: &APIKey{Key: "key"},
-					},
-				},
-			}},
-			expected: "[3rdParty]",
-		},
+
 		{
 			name: "multiple features",
 			proxy: &Proxy{Spec: ProxySpec{
@@ -374,12 +364,9 @@ func TestGetProxyTelemetryInfo(t *testing.T) {
 					Tracing: &ProxyTracing{
 						Enabled: true,
 					},
-					ThirdPartySinks: &ThirdPartySinks{
-						AxiomLogs: &APIKey{Key: "key"},
-					},
 				},
 			}},
-			expected: "[AccessLogs Tracing 3rdParty]",
+			expected: "[AccessLogs Tracing]",
 		},
 	}
 

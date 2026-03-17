@@ -27,6 +27,11 @@ func (r *Proxy) Default() {
 var _ resourcestrategy.Validater = &Proxy{}
 var _ resourcestrategy.ValidateUpdater = &Proxy{}
 
+// isCloudProvider returns true if the proxy uses the cloud infrastructure provider.
+func isCloudProvider(p InfraProvider) bool {
+	return p == InfraProviderCloud || p == ""
+}
+
 func (r *Proxy) validate() field.ErrorList {
 	errs := field.ErrorList{}
 	spec := r.Spec
@@ -36,6 +41,27 @@ func (r *Proxy) validate() field.ErrorList {
 			field.Forbidden(
 				field.NewPath("spec", "shutdown", "minimumDrainTime"),
 				"minimumDrainTime must be less than or equal to drainTimeout"))
+	}
+
+	// Telemetry settings are managed by CloudMonitoringIntegration for cloud proxies.
+	if isCloudProvider(spec.Provider) && spec.Telemetry != nil {
+		telPath := field.NewPath("spec", "telemetry")
+		msg := "telemetry settings are not configurable for cloud proxies; use CloudMonitoringIntegration instead"
+		if spec.Telemetry.AccessLogs != nil {
+			errs = append(errs, field.Forbidden(telPath.Child("accessLogs"), msg))
+		}
+		if spec.Telemetry.ContentLogs != nil {
+			errs = append(errs, field.Forbidden(telPath.Child("contentLogs"), msg))
+		}
+		if spec.Telemetry.Tracing != nil {
+			errs = append(errs, field.Forbidden(telPath.Child("tracing"), msg))
+		}
+		if spec.Telemetry.OtelCollectorConfig != nil {
+			errs = append(errs, field.Forbidden(telPath.Child("otelCollectorConfig"), msg))
+		}
+		if spec.Telemetry.ThirdPartySinks != nil {
+			errs = append(errs, field.Forbidden(telPath.Child("thirdPartySinks"), msg))
+		}
 	}
 
 	return errs
