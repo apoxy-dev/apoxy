@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	goruntime "runtime"
 	"strings"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/prometheus/client_golang/prometheus"
 
 	driversgeneric "github.com/k3s-io/kine/pkg/drivers/generic"
 	"github.com/k3s-io/kine/pkg/endpoint"
@@ -22,8 +24,9 @@ import (
 	genericregistry "k8s.io/apiserver/pkg/registry/generic/registry"
 	"k8s.io/apiserver/pkg/storage/storagebackend"
 	"k8s.io/apiserver/pkg/util/flowcontrol/request"
-	"sigs.k8s.io/apiserver-runtime/pkg/builder/rest"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
+
+	serverbuilder "github.com/apoxy-dev/apoxy/pkg/apiserver/server/builder"
 )
 
 // SQLite auto_vacuum modes: https://www.sqlite.org/pragma.html#pragma_auto_vacuum
@@ -153,7 +156,7 @@ func startIncrementalVacuum(ctx context.Context, path string, interval time.Dura
 // dbPath is the SQLite database file path (or "file::memory:" for in-memory).
 // connArgs are SQLite connection parameters (e.g. {"cache": "shared", "_journal_mode": "WAL"}).
 // logFormat should be "json" for production or "plain" for development.
-func NewKineStorage(ctx context.Context, dbPath string, connArgs map[string]string, logFormat string) (rest.StoreFn, error) {
+func NewKineStorage(ctx context.Context, dbPath string, connArgs map[string]string, logFormat string) (serverbuilder.StoreFn, error) {
 	// Skipped for in-memory DBs where there are no file pages to reclaim.
 	if !strings.Contains(dbPath, ":memory:") {
 		// Enable incremental auto_vacuum before kine opens the database.
@@ -173,13 +176,25 @@ func NewKineStorage(ctx context.Context, dbPath string, connArgs map[string]stri
 	if tmpDir == "" {
 		tmpDir = os.TempDir()
 	}
+	listenerDir, err := os.MkdirTemp(tmpDir, "apiserver-kine-*")
+	if err != nil {
+		return nil, fmt.Errorf("creating kine listener dir: %w", err)
+	}
+	go func() {
+		<-ctx.Done()
+		_ = os.RemoveAll(listenerDir)
+	}()
+	metricsRegisterer := prometheus.WrapRegistererWith(
+		prometheus.Labels{"kine_listener": filepath.Base(listenerDir)},
+		metrics.Registry,
+	)
 	etcdConfig, err := endpoint.Listen(ctx, endpoint.Config{
 		Endpoint: dsn,
-		Listener: "unix://" + tmpDir + "/apiserver-kine.sock",
+		Listener: "unix://" + filepath.Join(listenerDir, "kine.sock"),
 		ConnectionPoolConfig: driversgeneric.ConnectionPoolConfig{
 			MaxOpen: goruntime.NumCPU(),
 		},
-		MetricsRegisterer: metrics.Registry,
+		MetricsRegisterer: metricsRegisterer,
 		// Default are defined in kine: https://github.com/k3s-io/kine/blob/0dc5b174a18cf13b299a2b597afe0608cd769663/pkg/app/app.go#L27
 		NotifyInterval:      5 * time.Second,
 		EmulatedETCDVersion: "3.5.13",
