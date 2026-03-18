@@ -208,6 +208,12 @@ type ProxyReplicaStatus struct {
 
 // ProxyStatus defines the observed state of Proxy.
 type ProxyStatus struct {
+	// Addresses is the list of externally-reachable IP addresses for this Proxy.
+	// Written by the backplane (shared mode) or apiserver (dedicated mode)
+	// from Global Accelerator anycast IPs.
+	// +optional
+	Addresses []string `json:"addresses,omitempty"`
+
 	// Replicas are statuses of the individual proxy replicas.
 	Replicas []*ProxyReplicaStatus `json:"replicas,omitempty"`
 }
