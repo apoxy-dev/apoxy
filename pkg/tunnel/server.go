@@ -740,6 +740,15 @@ func (t *TunnelServer) setupConn(
 	return nil
 }
 
+// CloseConnection closes the tunnel connection with the given ID.
+// No-op if the connection does not exist.
+func (t *TunnelServer) CloseConnection(connID string) {
+	if c, exists := t.conns.Get(connID); exists {
+		slog.Info("Closing connection by ID", slog.String("connID", connID))
+		c.cancel()
+	}
+}
+
 // CloseConnectionsByName closes all active connections for the TunnelNode with the given name.
 func (t *TunnelServer) CloseConnectionsByName(name string) {
 	t.conns.ForEach(func(connID string, c *conn) bool {
