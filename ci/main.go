@@ -340,7 +340,15 @@ func (m *ApoxyCli) PublishGithubRelease(
 		WithFile("/apoxy-linux-arm64", cliCtrLinuxArm64.File("/apoxy")).
 		WithFile("/apoxy-darwin-amd64", cliCtrMacosAmd64.File("/apoxy")).
 		WithFile("/apoxy-darwin-arm64", cliCtrMacosArm64.File("/apoxy")).
+		// Create tarballs for each platform
+		WithExec([]string{"sh", "-c", "cd /tmp && cp /apoxy-linux-amd64 apoxy && tar czf /apoxy_Linux_x86_64.tar.gz apoxy && rm apoxy"}).
+		WithExec([]string{"sh", "-c", "cd /tmp && cp /apoxy-linux-arm64 apoxy && tar czf /apoxy_Linux_arm64.tar.gz apoxy && rm apoxy"}).
+		WithExec([]string{"sh", "-c", "cd /tmp && cp /apoxy-darwin-amd64 apoxy && tar czf /apoxy_Darwin_x86_64.tar.gz apoxy && rm apoxy"}).
+		WithExec([]string{"sh", "-c", "cd /tmp && cp /apoxy-darwin-arm64 apoxy && tar czf /apoxy_Darwin_arm64.tar.gz apoxy && rm apoxy"}).
+		// Compute SHA256 checksums for tarballs
+		WithExec([]string{"sh", "-c", "sha256sum /apoxy_*.tar.gz > /checksums.txt && cat /checksums.txt"}).
 		WithExec(releaseCmd).
+		// Upload raw binaries (for install.sh compatibility)
 		WithExec([]string{
 			"gh", "release", "upload",
 			tag,
@@ -368,7 +376,94 @@ func (m *ApoxyCli) PublishGithubRelease(
 			"/apoxy-darwin-arm64",
 			"--clobber",
 			"--repo", "github.com/apoxy-dev/apoxy",
+		}).
+		// Upload tarballs for Homebrew
+		WithExec([]string{
+			"gh", "release", "upload",
+			tag,
+			"/apoxy_Linux_x86_64.tar.gz",
+			"--clobber",
+			"--repo", "github.com/apoxy-dev/apoxy",
+		}).
+		WithExec([]string{
+			"gh", "release", "upload",
+			tag,
+			"/apoxy_Linux_arm64.tar.gz",
+			"--clobber",
+			"--repo", "github.com/apoxy-dev/apoxy",
+		}).
+		WithExec([]string{
+			"gh", "release", "upload",
+			tag,
+			"/apoxy_Darwin_x86_64.tar.gz",
+			"--clobber",
+			"--repo", "github.com/apoxy-dev/apoxy",
+		}).
+		WithExec([]string{
+			"gh", "release", "upload",
+			tag,
+			"/apoxy_Darwin_arm64.tar.gz",
+			"--clobber",
+			"--repo", "github.com/apoxy-dev/apoxy",
 		})
+}
+
+// PublishHomebrewFormula updates the Homebrew formula with the latest release.
+func (m *ApoxyCli) PublishHomebrewFormula(
+	ctx context.Context,
+	tag string,
+	githubToken *dagger.Secret,
+	homebrewToken *dagger.Secret,
+) *dagger.Container {
+	// Strip leading 'v' from tag to get version
+	version := strings.TrimPrefix(tag, "v")
+
+	return dag.Container().
+		From("ubuntu:22.04").
+		WithEnvVariable("DEBIAN_FRONTEND", "noninteractive").
+		WithExec([]string{"apt-get", "update"}).
+		WithExec([]string{"apt-get", "install", "-y", "curl", "wget", "tar", "git"}).
+		WithExec([]string{"wget", "https://github.com/cli/cli/releases/download/v2.62.0/gh_2.62.0_linux_amd64.tar.gz"}).
+		WithExec([]string{"tar", "xzf", "gh_2.62.0_linux_amd64.tar.gz"}).
+		WithExec([]string{"mv", "gh_2.62.0_linux_amd64/bin/gh", "/usr/local/bin/gh"}).
+		WithExec([]string{"rm", "-rf", "gh_2.62.0_linux_amd64", "gh_2.62.0_linux_amd64.tar.gz"}).
+		WithSecretVariable("GITHUB_TOKEN", githubToken).
+		WithSecretVariable("HOMEBREW_TAP_TOKEN", homebrewToken).
+		// Download all 4 tarballs from the GitHub Release
+		WithExec([]string{"sh", "-c", "mkdir -p /releases && cd /releases && gh release download " + tag + " -R github.com/apoxy-dev/apoxy -p 'apoxy_*.tar.gz'"}).
+		// Compute SHA256 checksums in sorted order
+		WithExec([]string{"sh", "-c", "cd /releases && ls -1 apoxy_*.tar.gz | sort | while read f; do sha256sum \"$f\" | awk '{print $1}'; done > /shas.txt && cat /shas.txt"}).
+		// Clone homebrew-tap repository
+		WithExec([]string{"sh", "-c", "cd /tmp && git clone https://x-access-token:$HOMEBREW_TAP_TOKEN@github.com/apoxy-dev/homebrew-tap.git"}).
+		// Configure git for commit
+		WithExec([]string{"git", "config", "--global", "user.email", "github-actions[bot]@users.noreply.github.com"}).
+		WithExec([]string{"git", "config", "--global", "user.name", "github-actions[bot]"}).
+		WithWorkdir("/tmp/homebrew-tap").
+		// Extract the 4 SHA256 values in sorted order: Darwin arm64, Darwin x86_64, Linux arm64, Linux x86_64
+		WithExec([]string{"sh", "-c", fmt.Sprintf(`
+SHA_ARRAY=($(cat /shas.txt))
+SHA_DARWIN_ARM64="${SHA_ARRAY[0]}"
+SHA_DARWIN_X86_64="${SHA_ARRAY[1]}"
+SHA_LINUX_ARM64="${SHA_ARRAY[2]}"
+SHA_LINUX_X86_64="${SHA_ARRAY[3]}"
+
+# Replace version placeholder
+sed -i "s/version \"0.0.0\"/version \"%s\"/g" Formula/apoxy.rb
+
+# Replace URL placeholders with version
+sed -i "s|/v0.0.0/|/%s/|g" Formula/apoxy.rb
+
+# Replace SHA256 placeholders
+sed -i "0,/sha256 \"0000000000000000000000000000000000000000000000000000000000000000\"/s//sha256 \"$SHA_DARWIN_ARM64\"/" Formula/apoxy.rb
+sed -i "0,/sha256 \"0000000000000000000000000000000000000000000000000000000000000000\"/s//sha256 \"$SHA_DARWIN_X86_64\"/" Formula/apoxy.rb
+sed -i "0,/sha256 \"0000000000000000000000000000000000000000000000000000000000000000\"/s//sha256 \"$SHA_LINUX_ARM64\"/" Formula/apoxy.rb
+sed -i "0,/sha256 \"0000000000000000000000000000000000000000000000000000000000000000\"/s//sha256 \"$SHA_LINUX_X86_64\"/" Formula/apoxy.rb
+
+git add Formula/apoxy.rb
+git commit -m "apoxy %s"
+git push origin main
+`, version, tag, tag)}).
+		WithExec([]string{"cat", "Formula/apoxy.rb"})
 }
 
 // EdgeRuntimeVersion is the version of the Apoxy edge-runtime fork.

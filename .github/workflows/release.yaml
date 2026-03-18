@@ -91,3 +91,30 @@ jobs:
         run: |
           dagger call -v publish-github-release --src=. --tag=$GITHUB_REF_NAME --github-token=env:GITHUB_TOKEN --sha=${GITHUB_SHA::7}
           dagger call -v publish-helm-release --src=./deploy/helm --tag=$GITHUB_REF_NAME --registry-password=env:APOXY_DOCKERHUB_PASSWORD
+
+  publish-homebrew-formula:
+    needs: publish-github-release
+    runs-on: depot-ubuntu-22.04,dagger=0.19.10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ">=1.24"
+      - name: Generate GitHub App token
+        uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.HOMEBREW_TAP_APP_ID }}
+          private-key: ${{ secrets.HOMEBREW_TAP_APP_PRIVATE_KEY }}
+          repositories: homebrew-tap
+      - name: Update Homebrew formula
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          SHUTUP: 1
+        timeout-minutes: 10
+        run: |
+          dagger call -v publish-homebrew-formula --tag=$GITHUB_REF_NAME --github-token=env:GITHUB_TOKEN --homebrew-token=env:HOMEBREW_TAP_GITHUB_TOKEN
