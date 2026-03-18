@@ -3838,6 +3838,21 @@ func schema_apoxy_api_core_v1alpha2_ProxyStatus(ref common.ReferenceCallback) co
 				Description: "ProxyStatus defines the observed state of Proxy.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
+					"addresses": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Addresses is the list of externally-reachable IP addresses for this Proxy. Written by the backplane (shared mode) or apiserver (dedicated mode) from Global Accelerator anycast IPs.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
 					"replicas": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Replicas are statuses of the individual proxy replicas.",
