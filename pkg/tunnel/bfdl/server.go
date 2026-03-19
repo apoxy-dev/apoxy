@@ -134,6 +134,8 @@ func (s *Server) Start(ctx context.Context) error {
 
 	// RX loop: receive and respond to incoming BFD packets.
 	buf := make([]byte, 128)
+	var rxPkt, resp Packet
+	var out [bfdPacketLen]byte
 	for {
 		n, raddr, err := conn.ReadFromUDP(buf)
 		if err != nil {
@@ -144,8 +146,7 @@ func (s *Server) Start(ctx context.Context) error {
 			continue
 		}
 
-		pkt, err := Unmarshal(buf[:n])
-		if err != nil {
+		if err := UnmarshalInto(&rxPkt, buf[:n]); err != nil {
 			slog.Debug("BFD unmarshal error", "error", err, "src", raddr)
 			BFDPacketErrors.WithLabelValues("server", "rx").Inc()
 			continue
@@ -153,7 +154,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 		BFDPacketsRx.WithLabelValues("server").Inc()
 
-		resp, connID := s.handlePacket(pkt, raddr)
+		connID, ok := s.handlePacket(&rxPkt, raddr, &resp)
 
 		// Check blackhole: drop response and skip onAlive.
 		s.mu.RLock()
@@ -163,9 +164,9 @@ func (s *Server) Start(ctx context.Context) error {
 			continue
 		}
 
-		if resp != nil {
-			out := Marshal(resp)
-			if _, err := conn.WriteToUDP(out, raddr); err != nil {
+		if ok {
+			MarshalTo(out[:], &resp)
+			if _, err := conn.WriteToUDP(out[:], raddr); err != nil {
 				slog.Warn("BFD write error", "error", err, "dst", raddr)
 				BFDPacketErrors.WithLabelValues("server", "tx").Inc()
 			} else {
@@ -192,9 +193,8 @@ func (s *Server) txLoop(ctx context.Context, conn *net.UDPConn) {
 		case <-ticker.C:
 			s.mu.Lock()
 			type txTarget struct {
-				pkt    *Packet
-				addr   net.UDPAddr
-				connID string
+				pkt  Packet
+				addr net.UDPAddr
 			}
 			targets := make([]txTarget, 0, len(s.sessions))
 			for _, ss := range s.sessions {
@@ -219,17 +219,19 @@ func (s *Server) txLoop(ctx context.Context, conn *net.UDPConn) {
 					continue
 				}
 
+				var pkt Packet
+				ss.BuildTx(&pkt)
 				targets = append(targets, txTarget{
-					pkt:    ss.BuildTx(),
-					addr:   ss.peerAddr,
-					connID: ss.connID,
+					pkt:  pkt,
+					addr: ss.peerAddr,
 				})
 			}
 			s.mu.Unlock()
 
+			var out [bfdPacketLen]byte
 			for _, t := range targets {
-				out := Marshal(t.pkt)
-				if _, err := conn.WriteToUDP(out, &t.addr); err != nil {
+				MarshalTo(out[:], &t.pkt)
+				if _, err := conn.WriteToUDP(out[:], &t.addr); err != nil {
 					slog.Debug("BFD server TX error", "error", err, "dst", t.addr.String())
 					BFDPacketErrors.WithLabelValues("server", "tx").Inc()
 				} else {
@@ -240,23 +242,25 @@ func (s *Server) txLoop(ctx context.Context, conn *net.UDPConn) {
 	}
 }
 
-// handlePacket processes an incoming BFD packet and returns a response.
-func (s *Server) handlePacket(pkt *Packet, raddr *net.UDPAddr) (*Packet, string) {
+// handlePacket processes an incoming BFD packet. If a session exists or can
+// be created, it writes the response into resp and returns (connID, true).
+// Returns ("", false) when the packet should be dropped.
+func (s *Server) handlePacket(rx *Packet, raddr *net.UDPAddr, resp *Packet) (string, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	var ss *serverSession
 
 	// Fast path: lookup by YourDiscr (remote knows our discriminator).
-	if pkt.YourDiscr != 0 {
-		ss = s.sessions[pkt.YourDiscr]
+	if rx.YourDiscr != 0 {
+		ss = s.sessions[rx.YourDiscr]
 	}
 
 	// Slow path: lookup by source IP (initial packet).
 	if ss == nil {
 		srcIP, ok := netip.AddrFromSlice(raddr.IP)
 		if !ok {
-			return nil, ""
+			return "", false
 		}
 		srcIP = srcIP.Unmap()
 
@@ -265,7 +269,7 @@ func (s *Server) handlePacket(pkt *Packet, raddr *net.UDPAddr) (*Packet, string)
 			// No existing session. Check if peer is registered.
 			connID, registered := s.peers[srcIP]
 			if !registered {
-				return nil, ""
+				return "", false
 			}
 
 			// Create new session.
@@ -303,6 +307,6 @@ func (s *Server) handlePacket(pkt *Packet, raddr *net.UDPAddr) (*Packet, string)
 	// Update peer address (port may change).
 	ss.peerAddr = *raddr
 
-	resp := ss.ProcessRx(pkt)
-	return resp, ss.connID
+	ss.ProcessRx(rx, resp)
+	return ss.connID, true
 }

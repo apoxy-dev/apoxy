@@ -19,22 +19,23 @@ func TestSessionStateMachine(t *testing.T) {
 	}
 
 	// Client sends Down to server -> server transitions to Init.
-	clientPkt := client.BuildTx()
-	resp := server.ProcessRx(clientPkt)
+	var clientPkt, resp Packet
+	client.BuildTx(&clientPkt)
+	server.ProcessRx(&clientPkt, &resp)
 	if server.State() != StateInit {
 		t.Fatalf("server after recv Down: got %v, want Init", server.State())
 	}
 
 	// Server responds with Init to client -> client transitions to Up.
-	resp2 := client.ProcessRx(resp)
+	var resp2 Packet
+	client.ProcessRx(&resp, &resp2)
 	if client.State() != StateUp {
 		t.Fatalf("client after recv Init: got %v, want Up", client.State())
 	}
-	_ = resp2
 
 	// Client sends Up to server -> server transitions to Up.
-	clientPkt = client.BuildTx()
-	server.ProcessRx(clientPkt)
+	client.BuildTx(&clientPkt)
+	server.ProcessRx(&clientPkt, &resp)
 	if server.State() != StateUp {
 		t.Fatalf("server after recv Up: got %v, want Up", server.State())
 	}
@@ -49,7 +50,8 @@ func TestSessionExpired(t *testing.T) {
 	}
 
 	// Simulate an Rx.
-	s.ProcessRx(&Packet{Version: 1, State: StateDown, MyDiscr: 99, DetectMult: 3})
+	var resp Packet
+	s.ProcessRx(&Packet{Version: 1, State: StateDown, MyDiscr: 99, DetectMult: 3}, &resp)
 
 	// Not expired immediately after Rx.
 	if s.Expired() {
@@ -71,13 +73,14 @@ func TestSessionOnStateChange(t *testing.T) {
 	})
 
 	// Receive Down -> transition to Init.
-	s.ProcessRx(&Packet{Version: 1, State: StateDown, MyDiscr: 2, DetectMult: 3})
+	var resp Packet
+	s.ProcessRx(&Packet{Version: 1, State: StateDown, MyDiscr: 2, DetectMult: 3}, &resp)
 	if len(transitions) != 1 || transitions[0].old != StateDown || transitions[0].new != StateInit {
 		t.Fatalf("expected Down->Init transition, got %+v", transitions)
 	}
 
 	// Receive Up -> transition to Up.
-	s.ProcessRx(&Packet{Version: 1, State: StateUp, MyDiscr: 2, DetectMult: 3})
+	s.ProcessRx(&Packet{Version: 1, State: StateUp, MyDiscr: 2, DetectMult: 3}, &resp)
 	if len(transitions) != 2 || transitions[1].old != StateInit || transitions[1].new != StateUp {
 		t.Fatalf("expected Init->Up transition, got %+v", transitions)
 	}

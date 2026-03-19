@@ -63,7 +63,9 @@ type Packet struct {
 	RequiredMinEcho  uint32 // Microseconds, always 0 (no echo mode).
 }
 
-// Marshal encodes a BFD control packet into a 24-byte wire format.
+// MarshalTo encodes a BFD control packet into buf, which must be at least
+// bfdPacketLen (24) bytes. Use with a stack-allocated [bfdPacketLen]byte
+// to avoid heap allocation.
 //
 // Wire format (RFC 5880 section 4.1):
 //
@@ -82,9 +84,7 @@ type Packet struct {
 //	+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 //	|                 Required Min Echo RX Interval                 |
 //	+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-func Marshal(p *Packet) []byte {
-	buf := make([]byte, bfdPacketLen)
-
+func MarshalTo(buf []byte, p *Packet) {
 	// Byte 0: Version (3 bits) | Diag (5 bits).
 	buf[0] = (p.Version << 5) | (p.Diag & 0x1f)
 
@@ -110,32 +110,36 @@ func Marshal(p *Packet) []byte {
 	binary.BigEndian.PutUint32(buf[12:16], p.DesiredMinTx)
 	binary.BigEndian.PutUint32(buf[16:20], p.RequiredMinRx)
 	binary.BigEndian.PutUint32(buf[20:24], p.RequiredMinEcho)
+}
 
+// Marshal encodes a BFD control packet into a newly allocated 24-byte slice.
+func Marshal(p *Packet) []byte {
+	buf := make([]byte, bfdPacketLen)
+	MarshalTo(buf, p)
 	return buf
 }
 
-// Unmarshal decodes a BFD control packet from wire format.
-func Unmarshal(b []byte) (*Packet, error) {
+// UnmarshalInto decodes a BFD control packet from wire format into p.
+// Use with a stack-allocated Packet to avoid heap allocation.
+func UnmarshalInto(p *Packet, b []byte) error {
 	if len(b) < bfdPacketLen {
-		return nil, fmt.Errorf("packet too short: %d < %d", len(b), bfdPacketLen)
+		return fmt.Errorf("packet too short: %d < %d", len(b), bfdPacketLen)
 	}
 
-	p := &Packet{
-		Version:    b[0] >> 5,
-		Diag:       b[0] & 0x1f,
-		State:      State(b[1] >> 6),
-		Poll:       b[1]&0x20 != 0,
-		Final:      b[1]&0x10 != 0,
-		DetectMult: b[2],
-	}
+	p.Version = b[0] >> 5
+	p.Diag = b[0] & 0x1f
+	p.State = State(b[1] >> 6)
+	p.Poll = b[1]&0x20 != 0
+	p.Final = b[1]&0x10 != 0
+	p.DetectMult = b[2]
 
 	if p.Version != 1 {
-		return nil, fmt.Errorf("unsupported BFD version: %d", p.Version)
+		return fmt.Errorf("unsupported BFD version: %d", p.Version)
 	}
 
 	length := b[3]
 	if length < bfdPacketLen {
-		return nil, fmt.Errorf("invalid packet length field: %d", length)
+		return fmt.Errorf("invalid packet length field: %d", length)
 	}
 
 	p.MyDiscr = binary.BigEndian.Uint32(b[4:8])
@@ -144,5 +148,15 @@ func Unmarshal(b []byte) (*Packet, error) {
 	p.RequiredMinRx = binary.BigEndian.Uint32(b[16:20])
 	p.RequiredMinEcho = binary.BigEndian.Uint32(b[20:24])
 
+	return nil
+}
+
+// Unmarshal decodes a BFD control packet from wire format into a newly
+// allocated Packet.
+func Unmarshal(b []byte) (*Packet, error) {
+	p := &Packet{}
+	if err := UnmarshalInto(p, b); err != nil {
+		return nil, err
+	}
 	return p, nil
 }

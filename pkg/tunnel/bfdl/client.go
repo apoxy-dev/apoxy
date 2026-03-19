@@ -6,10 +6,17 @@ import (
 	"math/rand/v2"
 	"net"
 	"net/netip"
+	"sync"
 	"time"
 
 	apoxynet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 )
+
+// pktPool recycles Packet objects between the read goroutine and the
+// main Run loop to avoid per-packet heap allocations.
+var pktPool = sync.Pool{
+	New: func() any { return new(Packet) },
+}
 
 // BFDServerAddr is the well-known server-side BFD address (proxySourceAddr).
 var BFDServerAddr = netip.MustParseAddr(apoxynet.ApoxyULAAddr)
@@ -19,6 +26,7 @@ type Client struct {
 	session    *Session
 	conn       net.PacketConn
 	serverAddr netip.AddrPort
+	dst        *net.UDPAddr // cached WriteTo target
 
 	// downCh is closed when the session transitions to Down from Up
 	// (detect timer expired). Consumers should select on this to
@@ -36,6 +44,7 @@ func NewClient(conn net.PacketConn, serverAddr netip.AddrPort) *Client {
 	c := &Client{
 		conn:       conn,
 		serverAddr: serverAddr,
+		dst:        net.UDPAddrFromAddrPort(serverAddr),
 		downCh:     make(chan struct{}),
 	}
 
@@ -88,8 +97,9 @@ func (c *Client) Run(ctx context.Context) error {
 				BFDPacketErrors.WithLabelValues("client", "rx").Inc()
 				continue
 			}
-			pkt, err := Unmarshal(buf[:n])
-			if err != nil {
+			pkt := pktPool.Get().(*Packet)
+			if err := UnmarshalInto(pkt, buf[:n]); err != nil {
+				pktPool.Put(pkt)
 				slog.Debug("BFD client unmarshal error", "error", err)
 				BFDPacketErrors.WithLabelValues("client", "rx").Inc()
 				continue
@@ -98,6 +108,7 @@ func (c *Client) Run(ctx context.Context) error {
 			select {
 			case readCh <- pkt:
 			default:
+				pktPool.Put(pkt)
 			}
 		}
 	}()
@@ -105,21 +116,21 @@ func (c *Client) Run(ctx context.Context) error {
 	// Send initial packet immediately.
 	c.sendTx()
 
-	dst := net.UDPAddrFromAddrPort(c.serverAddr)
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		case pkt := <-readCh:
-			resp := c.session.ProcessRx(pkt)
-			if resp != nil {
-				out := Marshal(resp)
-				if _, err := c.conn.WriteTo(out, dst); err != nil {
-					slog.Debug("BFD client write error", "error", err)
-					BFDPacketErrors.WithLabelValues("client", "tx").Inc()
-				} else {
-					BFDPacketsTx.WithLabelValues("client").Inc()
-				}
+			var resp Packet
+			c.session.ProcessRx(pkt, &resp)
+			pktPool.Put(pkt)
+			var out [bfdPacketLen]byte
+			MarshalTo(out[:], &resp)
+			if _, err := c.conn.WriteTo(out[:], c.dst); err != nil {
+				slog.Debug("BFD client write error", "error", err)
+				BFDPacketErrors.WithLabelValues("client", "tx").Inc()
+			} else {
+				BFDPacketsTx.WithLabelValues("client").Inc()
 			}
 		case <-txTicker.C:
 			c.sendTx()
@@ -149,10 +160,11 @@ func (c *Client) Run(ctx context.Context) error {
 }
 
 func (c *Client) sendTx() {
-	pkt := c.session.BuildTx()
-	out := Marshal(pkt)
-	dst := net.UDPAddrFromAddrPort(c.serverAddr)
-	if _, err := c.conn.WriteTo(out, dst); err != nil {
+	var pkt Packet
+	c.session.BuildTx(&pkt)
+	var out [bfdPacketLen]byte
+	MarshalTo(out[:], &pkt)
+	if _, err := c.conn.WriteTo(out[:], c.dst); err != nil {
 		slog.Debug("BFD client write error", "error", err)
 		BFDPacketErrors.WithLabelValues("client", "tx").Inc()
 	} else {

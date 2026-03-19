@@ -40,7 +40,7 @@ func (s *Session) SetOnStateChange(fn OnStateChangeFunc) {
 	s.onStateChange = fn
 }
 
-// ProcessRx handles an incoming BFD packet and returns a response packet (or nil).
+// ProcessRx handles an incoming BFD packet and writes the response into resp.
 //
 // Simplified RFC 5880 section 6.8.6 state transitions:
 //
@@ -49,30 +49,30 @@ func (s *Session) SetOnStateChange(fn OnStateChangeFunc) {
 //	Local=Init  + Remote=Init  -> Up
 //	Local=Init  + Remote=Up    -> Up
 //	Local=Up    + Remote=Down  -> Down
-func (s *Session) ProcessRx(pkt *Packet) *Packet {
+func (s *Session) ProcessRx(rx, resp *Packet) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.lastRx = time.Now()
-	s.remoteDiscr = pkt.MyDiscr
-	s.remoteState = pkt.State
+	s.remoteDiscr = rx.MyDiscr
+	s.remoteState = rx.State
 
 	oldState := s.localState
 	switch s.localState {
 	case StateDown:
-		switch pkt.State {
+		switch rx.State {
 		case StateDown:
 			s.localState = StateInit
 		case StateInit:
 			s.localState = StateUp
 		}
 	case StateInit:
-		switch pkt.State {
+		switch rx.State {
 		case StateInit, StateUp:
 			s.localState = StateUp
 		}
 	case StateUp:
-		if pkt.State == StateDown {
+		if rx.State == StateDown {
 			s.localState = StateDown
 		}
 	}
@@ -81,19 +81,19 @@ func (s *Session) ProcessRx(pkt *Packet) *Packet {
 		s.onStateChange(oldState, s.localState)
 	}
 
-	// Build response.
-	return s.buildTxLocked()
+	s.buildTxLocked(resp)
 }
 
-// BuildTx creates an outgoing BFD control packet for periodic transmission.
-func (s *Session) BuildTx() *Packet {
+// BuildTx writes an outgoing BFD control packet into pkt for periodic
+// transmission.
+func (s *Session) BuildTx(pkt *Packet) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.buildTxLocked()
+	s.buildTxLocked(pkt)
 }
 
-func (s *Session) buildTxLocked() *Packet {
-	return &Packet{
+func (s *Session) buildTxLocked(pkt *Packet) {
+	*pkt = Packet{
 		Version:       1,
 		State:         s.localState,
 		DetectMult:    s.detectMult,
