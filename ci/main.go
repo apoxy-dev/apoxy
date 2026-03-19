@@ -266,7 +266,10 @@ func (m *ApoxyCli) GenerateReleaseNotes(
 	prompt := fmt.Sprintf(`Generate release notes for version %s based on these git commits.
 
 Instructions:
-- Group changes by category: Features, Bug Fixes, Improvements, Infrastructure
+- Output ONLY the release notes content. Do not include any preamble, commentary, or conversational text.
+- Start with a 1-2 sentence summary of the most important changes in this release.
+- Then group changes by category: Features, Bug Fixes, Improvements, Infrastructure
+- Only include categories that have changes.
 - Be concise but informative
 - Use markdown formatting with ## headers for categories
 - Each item should be a bullet point with a descriptive title, optionally grouping related commits
