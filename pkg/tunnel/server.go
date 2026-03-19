@@ -34,6 +34,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/bfdl"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/metrics"
 	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/router"
@@ -68,6 +69,10 @@ type tunnelServerOptions struct {
 	keyLogPath   string
 	onConnect    OnConnectFunc
 	onDisconnect OnDisconnectFunc
+
+	// BFD options.
+	bfdListenAddr netip.Addr   // If set, enables BFD server.
+	onAlive       bfdl.OnAliveFunc // Called on each valid BFD Rx.
 }
 
 func defaultServerOptions() *tunnelServerOptions {
@@ -163,6 +168,20 @@ func WithOnDisconnect(fn OnDisconnectFunc) TunnelServerOption {
 	}
 }
 
+// WithBFDListenAddr enables the BFD server on the given overlay address.
+func WithBFDListenAddr(addr netip.Addr) TunnelServerOption {
+	return func(o *tunnelServerOptions) {
+		o.bfdListenAddr = addr
+	}
+}
+
+// WithOnAlive sets a callback invoked on each valid BFD Rx from a client.
+func WithOnAlive(fn bfdl.OnAliveFunc) TunnelServerOption {
+	return func(o *tunnelServerOptions) {
+		o.onAlive = fn
+	}
+}
+
 type conn struct {
 	*connectip.Conn
 	connID         string
@@ -202,6 +221,7 @@ type TunnelServer struct {
 	jwtValidator token.JWTValidator
 	ln           *quic.EarlyListener
 	router       router.Router
+	bfdServer    *bfdl.Server
 
 	// tunnels maps tunnel UIDs to tunnel instances.
 	tunnels *haxmap.Map[string, *corev1alpha.TunnelNode]
@@ -328,6 +348,11 @@ func (t *TunnelServer) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to create QUIC listener: %w", err)
 	}
 
+	// Create BFD server if configured.
+	if t.options.bfdListenAddr.IsValid() {
+		t.bfdServer = bfdl.NewServer(t.options.bfdListenAddr, t.options.onAlive)
+	}
+
 	g, ctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
 		<-ctx.Done()
@@ -370,6 +395,12 @@ func (t *TunnelServer) Start(ctx context.Context) error {
 	g.Go(func() error {
 		return t.router.Start(ctx)
 	})
+	// Start BFD server if configured.
+	if t.bfdServer != nil {
+		g.Go(func() error {
+			return t.bfdServer.Start(ctx)
+		})
+	}
 
 	return g.Wait()
 }
@@ -383,6 +414,12 @@ func upsertAgentStatus(s *corev1alpha.TunnelNodeStatus, agent *corev1alpha.Agent
 	}
 
 	s.Agents = append(s.Agents, *agent)
+}
+
+// BFDServer returns the BFD server instance, or nil if BFD is not enabled.
+// Useful for testing (e.g. suppressing heartbeats for specific connections).
+func (t *TunnelServer) BFDServer() *bfdl.Server {
+	return t.bfdServer
 }
 
 func (t *TunnelServer) Stop() error {
@@ -601,6 +638,11 @@ func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.
 		if conn, exists := t.conns.Get(connID); !exists {
 			logger.Error("Tunnel connection not found", slog.Any("connUUID", connID))
 		} else {
+			// Remove BFD peer before cleaning up routes.
+			if t.bfdServer != nil && conn.addrv6.IsValid() {
+				t.bfdServer.RemovePeer(conn.addrv6.Addr())
+			}
+
 			if conn.addrv6.IsValid() {
 				logger.Info("Removing peer address", slog.Any("addr", conn.addrv6))
 
@@ -713,6 +755,11 @@ func (t *TunnelServer) setupConn(
 	}
 
 	metrics.TunnelConnectionsActive.Inc()
+
+	// Register BFD peer so the server can track liveness.
+	if t.bfdServer != nil {
+		t.bfdServer.AddPeer(addrv6.Addr(), connID)
+	}
 
 	log.Info("Client addresses assigned")
 

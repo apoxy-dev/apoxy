@@ -41,6 +41,7 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/log"
 	"github.com/apoxy-dev/apoxy/pkg/net/dns"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel"
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/bfdl"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/connection"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/endpointselect"
 
@@ -576,6 +577,13 @@ func (t *tunnelNodeReconciler) healthHandler(w http.ResponseWriter, r *http.Requ
 			connDetails = append(connDetails, fmt.Sprintf("  - %s: no addresses", conn.id.String()[:8]))
 			continue
 		}
+
+		// Check 3: BFD session state (skip for new connections within grace period).
+		bfdState := conn.conn.BFDState()
+		if time.Since(conn.connectedAt) > 30*time.Second && bfdState != bfdl.StateUp {
+			connDetails = append(connDetails, fmt.Sprintf("  - %s: BFD %s", conn.id.String()[:8], bfdState))
+			continue
+		}
 		healthyConns++
 
 		// Collect addresses for this connection.
@@ -585,7 +593,11 @@ func (t *tunnelNodeReconciler) healthHandler(w http.ResponseWriter, r *http.Requ
 			allAddrs = append(allAddrs, addr.String())
 		}
 		uptime := time.Since(conn.connectedAt).Truncate(time.Second)
-		connDetails = append(connDetails, fmt.Sprintf("  - %s: %v (uptime: %s)", conn.id.String()[:8], addrStrs, uptime))
+		bfdInfo := ""
+		if bfdState == bfdl.StateUp {
+			bfdInfo = ", BFD Up"
+		}
+		connDetails = append(connDetails, fmt.Sprintf("  - %s: %v (uptime: %s%s)", conn.id.String()[:8], addrStrs, uptime, bfdInfo))
 	}
 
 	if healthyConns > 0 {

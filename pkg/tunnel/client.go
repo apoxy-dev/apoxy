@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"net/url"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/dpeckett/network"
@@ -23,6 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 
 	alog "github.com/apoxy-dev/apoxy/pkg/log"
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/bfdl"
 	tunnelconn "github.com/apoxy-dev/apoxy/pkg/tunnel/connection"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/router"
 )
@@ -351,6 +353,24 @@ type Conn struct {
 
 	mu    sync.RWMutex
 	addrs []netip.Prefix
+
+	bfdClient atomic.Pointer[bfdl.Client]
+}
+
+// BFDState returns the current BFD session state for this connection.
+func (c *Conn) BFDState() bfdl.State {
+	if b := c.bfdClient.Load(); b != nil {
+		return b.State()
+	}
+	return bfdl.StateDown
+}
+
+// LastAlive returns when the last valid BFD packet was received from the server.
+func (c *Conn) LastAlive() time.Time {
+	if b := c.bfdClient.Load(); b != nil {
+		return b.LastAlive()
+	}
+	return time.Time{}
 }
 
 type connWrapper struct {
@@ -379,6 +399,25 @@ func (c *Conn) run(ctx context.Context) {
 		}
 	}()
 
+	bfdStarted := false
+	var bfdDown <-chan struct{} // Nil until BFD client starts.
+
+	// LocalPrefixes() blocks until the peer sends a new address assignment
+	// capsule (it is designed to be called in a loop per its docstring). We
+	// run it in a goroutine so the main select stays responsive to bfdDown,
+	// context cancellation, and connection close. After each result is
+	// consumed we re-launch the goroutine to wait for the next change.
+	type prefixResult struct {
+		addrs []netip.Prefix
+		err   error
+	}
+	prefixCh := make(chan prefixResult, 1)
+	fetchPrefixes := func() {
+		addrs, err := c.conn.LocalPrefixes(ctx)
+		prefixCh <- prefixResult{addrs, err}
+	}
+	go fetchPrefixes()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -387,17 +426,22 @@ func (c *Conn) run(ctx context.Context) {
 		case <-c.hConn.Context().Done():
 			log.Info("HTTP3 connection closed")
 			return
-		case <-time.After(time.Second):
-			addrs, err := c.conn.LocalPrefixes(ctx)
-			if err != nil {
-				if errors.Is(err, net.ErrClosed) {
-					log.Error("Connection closed", slog.Any("error", err))
+		case <-bfdDown:
+			log.Warn("BFD session down, closing connection")
+			c.Close()
+			return
+		case res := <-prefixCh:
+			if res.err != nil {
+				if errors.Is(res.err, net.ErrClosed) {
+					log.Error("Connection closed", slog.Any("error", res.err))
 					return
 				}
-				log.Error("Failed to get local prefixes", slog.Any("error", err))
+				log.Error("Failed to get local prefixes", slog.Any("error", res.err))
+				go fetchPrefixes()
 				continue
 			}
 
+			addrs := res.addrs
 			log.Info("Updating local prefixes", slog.Any("prefixes", addrs))
 
 			c.mu.Lock()
@@ -414,7 +458,32 @@ func (c *Conn) run(ctx context.Context) {
 			c.addrs = addrs
 			c.mu.Unlock()
 
+			// Start BFD client after first IPv6 address is assigned.
+			if !bfdStarted {
+				for _, addr := range newAddrs.Difference(oldAddrs).UnsortedList() {
+					if !addr.Addr().Is6() {
+						continue
+					}
+					if dialer, ok := c.router.(router.OverlayDialer); ok {
+						pktConn, err := dialer.ListenPacket(netip.AddrPortFrom(addr.Addr(), 0))
+						if err != nil {
+							log.Error("Failed to create BFD socket", slog.Any("error", err))
+							break
+						}
+						client := bfdl.NewClient(pktConn, netip.AddrPortFrom(bfdl.BFDServerAddr, bfdl.BFDPort))
+						c.bfdClient.Store(client)
+						go client.Run(ctx)
+						bfdDown = client.Down()
+						bfdStarted = true
+						log.Info("BFD client started", slog.Any("localAddr", addr))
+					}
+					break
+				}
+			}
+
 			log.Info("Local prefixes updated", slog.Any("prefixes", addrs))
+			// Fetch next prefix update asynchronously.
+			go fetchPrefixes()
 		}
 	}
 }

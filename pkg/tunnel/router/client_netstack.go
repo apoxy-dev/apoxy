@@ -18,7 +18,8 @@ import (
 )
 
 var (
-	_ Router = (*NetstackRouter)(nil)
+	_ Router        = (*NetstackRouter)(nil)
+	_ OverlayDialer = (*NetstackRouter)(nil)
 )
 
 // NetstackRouter implements Router using a user-mode network stack.
@@ -160,6 +161,12 @@ func (r *NetstackRouter) DelAll(dst netip.Prefix) error {
 	}
 
 	return nil
+}
+
+// ListenPacket creates an unconnected UDP PacketConn bound to the given
+// overlay address inside the gvisor network stack.
+func (r *NetstackRouter) ListenPacket(addr netip.AddrPort) (net.PacketConn, error) {
+	return r.tunDev.ListenPacket(addr)
 }
 
 // Close releases any resources associated with the router.

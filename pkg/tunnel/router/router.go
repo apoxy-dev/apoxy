@@ -3,6 +3,7 @@ package router
 import (
 	"context"
 	"io"
+	"net"
 	"net/netip"
 
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/connection"
@@ -46,4 +47,12 @@ type Router interface {
 	// getting re-routed via a different tunnel or dropped (if no tunnel is available for
 	// the given dst).
 	DelRoute(dst netip.Prefix) error
+}
+
+// OverlayDialer is optionally implemented by routers that support creating
+// UDP sockets on the overlay network (for BFD, etc.).
+type OverlayDialer interface {
+	// ListenPacket creates an unconnected UDP PacketConn bound to the given
+	// overlay address. Port 0 means ephemeral.
+	ListenPacket(addr netip.AddrPort) (net.PacketConn, error)
 }

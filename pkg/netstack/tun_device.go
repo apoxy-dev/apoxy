@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/netip"
 	"os"
 	"sync/atomic"
@@ -14,6 +15,7 @@ import (
 
 	"gvisor.dev/gvisor/pkg/buffer"
 	"gvisor.dev/gvisor/pkg/tcpip"
+	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
 	"gvisor.dev/gvisor/pkg/tcpip/link/channel"
 	"gvisor.dev/gvisor/pkg/tcpip/link/sniffer"
@@ -291,6 +293,21 @@ func (tun *TunDevice) LocalAddresses() ([]netip.Prefix, error) {
 	}
 
 	return addrs, nil
+}
+
+// ListenPacket creates an unconnected UDP PacketConn bound to the given
+// overlay address inside the gvisor network stack.
+func (tun *TunDevice) ListenPacket(addr netip.AddrPort) (net.PacketConn, error) {
+	fa := &tcpip.FullAddress{
+		NIC:  tun.nicID,
+		Addr: tcpip.AddrFromSlice(addr.Addr().AsSlice()),
+		Port: addr.Port(),
+	}
+	protoNum := ipv6.ProtocolNumber
+	if addr.Addr().Is4() {
+		protoNum = ipv4.ProtocolNumber
+	}
+	return gonet.DialUDP(tun.stack, fa, nil, protoNum)
 }
 
 // ForwardTo forwards all inbound traffic to the upstream network.

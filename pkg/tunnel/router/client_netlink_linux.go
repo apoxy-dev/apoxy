@@ -37,7 +37,8 @@ const (
 )
 
 var (
-	_ Router = (*ClientNetlinkRouter)(nil)
+	_ Router        = (*ClientNetlinkRouter)(nil)
+	_ OverlayDialer = (*ClientNetlinkRouter)(nil)
 )
 
 // NewClientNetlinkRouter creates a new client-side netlink-based tunnel router.
@@ -556,6 +557,12 @@ func (r *ClientNetlinkRouter) setDefaultRouteMetric(isIPv4 bool) (int, error) {
 	}
 
 	return 0, nil
+}
+
+// ListenPacket creates an unconnected UDP PacketConn bound to the given
+// overlay address on the kernel network stack.
+func (r *ClientNetlinkRouter) ListenPacket(addr netip.AddrPort) (net.PacketConn, error) {
+	return net.ListenPacket("udp6", net.JoinHostPort(addr.Addr().String(), fmt.Sprintf("%d", addr.Port())))
 }
 
 // LocalAddresses returns the list of local addresses that are assigned to the router.
