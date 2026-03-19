@@ -1,13 +1,21 @@
 ## apoxy
 
-Apoxy helps you expose, explore, and evolve your APIs and services.
+Open-source edge platform built on Envoy, Kubernetes APIs, and QUIC tunneling.
 
 ### Synopsis
 
-The Apoxy CLI is the quickest and easiest way to create and control Apoxy proxies.
+Apoxy is an open-source edge platform built on Envoy, Kubernetes API infrastructure,
+and QUIC tunneling. Core capabilities include:
 
-Start by creating an account on https://apoxy.dev and logging in with 'apoxy auth'.
+  - API Gateway with Gateway API routing
+  - Edge computing runtime for JS/WASM/Go functions
+  - Secure tunneling via QUIC and connect-ip protocols
 
+Apoxy Cloud is the managed offering — it handles DNS registration, instant TLS
+certificates, and built-in observability so you focus on routing and logic instead
+of infrastructure.
+
+Get started at https://apoxy.dev and log in with 'apoxy auth'.
 
 ### Options
 
@@ -16,6 +24,7 @@ Start by creating an account on https://apoxy.dev and logging in with 'apoxy aut
       --config string     Config file (default is $HOME/.apoxy/config.yaml).
   -h, --help              help for apoxy
       --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
       --project string    The project ID to use.
   -v, --verbose           Enable verbose output.
 ```
@@ -23,11 +32,17 @@ Start by creating an account on https://apoxy.dev and logging in with 'apoxy aut
 ### SEE ALSO
 
 * [apoxy alpha](#apoxy-alpha)	 - Alpha features that are still under development
+* [apoxy apply](#apoxy-apply)	 - Apply resources from file(s) or directory
 * [apoxy auth](#apoxy-auth)	 - Authenticate this CLI
+* [apoxy backend](#apoxy-backend)	 - Manage backend objects
 * [apoxy dev](#apoxy-dev)	 - Develop against the Apoxy API locally
+* [apoxy domain](#apoxy-domain)	 - Manage domain record objects
+* [apoxy edgefunction](#apoxy-edgefunction)	 - Manage edge function objects
+* [apoxy gateway](#apoxy-gateway)	 - Manage gateway objects
 * [apoxy k8s](#apoxy-k8s)	 - Commands that manage Apoxy on Kubernetes
 * [apoxy logs](#apoxy-logs)	 - View proxy logs
 * [apoxy proxy](#apoxy-proxy)	 - Manage proxy objects
+* [apoxy run](#apoxy-run)	 - Run Apoxy runtime components defined in config
 * [apoxy tunnel](#apoxy-tunnel)	 - Manage tunnels
 * [apoxy upgrade](#apoxy-upgrade)	 - Upgrade Apoxy CLI to the latest version
 * [apoxy version](#apoxy-version)	 - The version of this CLI
@@ -54,35 +69,38 @@ apoxy alpha [flags]
       --alsologtostderr   Log to standard error as well as files.
       --config string     Config file (default is $HOME/.apoxy/config.yaml).
       --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
       --project string    The project ID to use.
   -v, --verbose           Enable verbose output.
 ```
 
 ### SEE ALSO
 
-* [apoxy](#apoxy)	 - Apoxy helps you expose, explore, and evolve your APIs and services.
-* [apoxy alpha ratelimit](#apoxy-alpha-ratelimit)	 - Manage RateLimit objects
-* [apoxy alpha stunserver](#apoxy-alpha-stunserver)	 - Run a minimal STUN server
-* [apoxy alpha stunserver](#apoxy-alpha-stunserver)	 - Run a minimal STUN server
+* [apoxy](#apoxy)	 - Open-source edge platform built on Envoy, Kubernetes APIs, and QUIC tunneling.
+* [apoxy alpha domains](#apoxy-alpha-domains)	 - Manage domain record objects
+* [apoxy alpha tunnel](#apoxy-alpha-tunnel)	 - Manage tunnels
 
 
 
-## apoxy alpha ratelimit
+## apoxy alpha domains
 
-Manage RateLimit objects
+Manage domain record objects
 
 ### Synopsis
 
-Manages RateLimit objects within an Apoxy Control Plane.
+Domain records configure individual DNS records within a domain zone.
 
 ```
-apoxy alpha ratelimit [flags]
+apoxy alpha domains [flags]
 ```
 
 ### Options
 
 ```
-  -h, --help   help for ratelimit
+      --field-selector string   Filter list results by field selectors (e.g. spec.zone=example.com).
+  -h, --help                    help for domains
+  -o, --output string           Output format: "json" or "yaml". Default is table.
+      --zone string             Filter domain records by zone name.
 ```
 
 ### Options inherited from parent commands
@@ -91,6 +109,7 @@ apoxy alpha ratelimit [flags]
       --alsologtostderr   Log to standard error as well as files.
       --config string     Config file (default is $HOME/.apoxy/config.yaml).
       --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
       --project string    The project ID to use.
   -v, --verbose           Enable verbose output.
 ```
@@ -98,26 +117,37 @@ apoxy alpha ratelimit [flags]
 ### SEE ALSO
 
 * [apoxy alpha](#apoxy-alpha)	 - Alpha features that are still under development
-* [apoxy alpha ratelimit create](#apoxy-alpha-ratelimit-create)	 - Create RateLimit objects
+* [apoxy alpha domains apply](#apoxy-alpha-domains-apply)	 - Apply domainrecord configuration using server-side apply
+* [apoxy alpha domains create](#apoxy-alpha-domains-create)	 - Create domainrecord objects
+* [apoxy alpha domains delete](#apoxy-alpha-domains-delete)	 - Delete domainrecord objects
+* [apoxy alpha domains get](#apoxy-alpha-domains-get)	 - Get domainrecord objects
+* [apoxy alpha domains list](#apoxy-alpha-domains-list)	 - List domainrecord objects
 
 
 
-## apoxy alpha ratelimit create
+## apoxy alpha domains apply
 
-Create RateLimit objects
+Apply domainrecord configuration using server-side apply
 
 ### Synopsis
 
-Create RateLimit objects by providing a configuration as a file or via stdin.
+Apply domainrecord configuration using Kubernetes server-side apply.
+
+This command uses server-side apply to create or update domainrecord objects.
+Server-side apply tracks field ownership and allows multiple actors to
+manage different fields of the same object without conflicts.
 
 ```
-apoxy alpha ratelimit create [-f filename] [flags]
+apoxy alpha domains apply [-f filename] [flags]
 ```
 
 ### Options
 
 ```
-  -h, --help   help for create
+      --field-manager string   Name of the field manager for server-side apply. (default "apoxy-cli")
+  -f, --filename string        The file that contains the configuration to apply.
+      --force-conflicts        Force apply even if there are field ownership conflicts.
+  -h, --help                   help for apply
 ```
 
 ### Options inherited from parent commands
@@ -126,29 +156,34 @@ apoxy alpha ratelimit create [-f filename] [flags]
       --alsologtostderr   Log to standard error as well as files.
       --config string     Config file (default is $HOME/.apoxy/config.yaml).
       --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
       --project string    The project ID to use.
   -v, --verbose           Enable verbose output.
 ```
 
 ### SEE ALSO
 
-* [apoxy alpha ratelimit](#apoxy-alpha-ratelimit)	 - Manage RateLimit objects
+* [apoxy alpha domains](#apoxy-alpha-domains)	 - Manage domain record objects
 
 
 
-## apoxy alpha stunserver
+## apoxy alpha domains create
 
-Run a minimal STUN server
+Create domainrecord objects
+
+### Synopsis
+
+Create domainrecord objects by providing a configuration as a file or via stdin.
 
 ```
-apoxy alpha stunserver [flags]
+apoxy alpha domains create [-f filename] [flags]
 ```
 
 ### Options
 
 ```
-  -h, --help            help for stunserver
-  -l, --listen string   Address to listen on (default "localhost:3478")
+  -f, --filename string   The file that contains the configuration to create.
+  -h, --help              help for create
 ```
 
 ### Options inherited from parent commands
@@ -157,6 +192,136 @@ apoxy alpha stunserver [flags]
       --alsologtostderr   Log to standard error as well as files.
       --config string     Config file (default is $HOME/.apoxy/config.yaml).
       --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy alpha domains](#apoxy-alpha-domains)	 - Manage domain record objects
+
+
+
+## apoxy alpha domains delete
+
+Delete domainrecord objects
+
+```
+apoxy alpha domains delete [flags]
+```
+
+### Options
+
+```
+  -h, --help   help for delete
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy alpha domains](#apoxy-alpha-domains)	 - Manage domain record objects
+
+
+
+## apoxy alpha domains get
+
+Get domainrecord objects
+
+```
+apoxy alpha domains get <name> [flags]
+```
+
+### Options
+
+```
+  -h, --help            help for get
+  -o, --output string   Output format: "json" or "yaml". Default is table.
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy alpha domains](#apoxy-alpha-domains)	 - Manage domain record objects
+
+
+
+## apoxy alpha domains list
+
+List domainrecord objects
+
+```
+apoxy alpha domains list [flags]
+```
+
+### Options
+
+```
+      --field-selector string   Filter list results by field selectors (e.g. spec.zone=example.com).
+  -h, --help                    help for list
+  -o, --output string           Output format: "json" or "yaml". Default is table.
+      --show-labels             Print the domainrecord's labels.
+      --zone string             Filter domain records by zone name.
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy alpha domains](#apoxy-alpha-domains)	 - Manage domain record objects
+
+
+
+## apoxy alpha tunnel
+
+Manage tunnels
+
+### Synopsis
+
+Manage icx tunnels and connect to the remote Apoxy Edge fabric.
+
+### Options
+
+```
+  -h, --help   help for tunnel
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
       --project string    The project ID to use.
   -v, --verbose           Enable verbose output.
 ```
@@ -164,22 +329,35 @@ apoxy alpha stunserver [flags]
 ### SEE ALSO
 
 * [apoxy alpha](#apoxy-alpha)	 - Alpha features that are still under development
+* [apoxy alpha tunnel run](#apoxy-alpha-tunnel-run)	 - Run a tunnel
 
 
 
-## apoxy alpha stunserver
+## apoxy alpha tunnel run
 
-Run a minimal STUN server
+Run a tunnel
+
+### Synopsis
+
+Create a secure tunnel to the remote Apoxy Edge fabric.
 
 ```
-apoxy alpha stunserver [flags]
+apoxy alpha tunnel run [flags]
 ```
 
 ### Options
 
 ```
-  -h, --help            help for stunserver
-  -l, --listen string   Address to listen on (default "localhost:3478")
+  -a, --agent string           The name of this agent.
+      --health-addr string     Listen address for health endpoint (e.g. ":8080"). Empty disables. (default "localhost:8080")
+  -h, --help                   help for run
+      --insecure-skip-verify   Skip TLS certificate verification for relay connections.
+      --min-conns int          Minimum number of relays to maintain connections to (randomly selected from the server-provided list). (default 1)
+  -n, --name string            The logical name of the tunnel to connect to.
+  -p, --pcap string            Path to an optional packet capture file to write.
+  -r, --relay-addr string      Seed relay address (host:port), required if not using kubernetes-based discovery.
+      --socks-addr string      Listen address for SOCKS proxy. (default "localhost:1080")
+  -k, --token string           The token to use for authenticating with the tunnel relays, required if not using kubernetes-based discovery.
 ```
 
 ### Options inherited from parent commands
@@ -188,13 +366,69 @@ apoxy alpha stunserver [flags]
       --alsologtostderr   Log to standard error as well as files.
       --config string     Config file (default is $HOME/.apoxy/config.yaml).
       --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
       --project string    The project ID to use.
   -v, --verbose           Enable verbose output.
 ```
 
 ### SEE ALSO
 
-* [apoxy alpha](#apoxy-alpha)	 - Alpha features that are still under development
+* [apoxy alpha tunnel](#apoxy-alpha-tunnel)	 - Manage tunnels
+
+
+
+## apoxy apply
+
+Apply resources from file(s) or directory
+
+### Synopsis
+
+Apply configuration to resources using server-side apply.
+
+Supports multiple files, directories, and stdin. When a directory is specified,
+all .yaml, .yml, and .json files are processed.
+
+Examples:
+  # Apply a single file
+  apoxy apply -f gateway.yaml
+
+  # Apply multiple files
+  apoxy apply -f gateway.yaml -f routes.yaml
+
+  # Apply all manifests in a directory
+  apoxy apply -f ./manifests/
+
+  # Apply from stdin
+  cat manifest.yaml | apoxy apply -f -
+
+```
+apoxy apply -f <filename> [flags]
+```
+
+### Options
+
+```
+      --field-manager string   Name of the field manager for server-side apply (default "apoxy-cli")
+  -f, --filename stringArray   Files or directories containing resources to apply (can be specified multiple times)
+      --force-conflicts        Force apply even if there are field ownership conflicts
+  -h, --help                   help for apply
+  -R, --recursive              Process directories recursively
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy](#apoxy)	 - Open-source edge platform built on Envoy, Kubernetes APIs, and QUIC tunneling.
 
 
 
@@ -215,8 +449,10 @@ apoxy auth [flags]
 ### Options
 
 ```
-      --check   only check the authentication status
-  -h, --help    help for auth
+      --api-base-url string    API base URL (default: https://api.apoxy.dev)
+      --check                  only check the authentication status
+      --dashboard-url string   dashboard URL for authentication (default: https://dashboard.apoxy.dev)
+  -h, --help                   help for auth
 ```
 
 ### Options inherited from parent commands
@@ -225,13 +461,231 @@ apoxy auth [flags]
       --alsologtostderr   Log to standard error as well as files.
       --config string     Config file (default is $HOME/.apoxy/config.yaml).
       --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
       --project string    The project ID to use.
   -v, --verbose           Enable verbose output.
 ```
 
 ### SEE ALSO
 
-* [apoxy](#apoxy)	 - Apoxy helps you expose, explore, and evolve your APIs and services.
+* [apoxy](#apoxy)	 - Open-source edge platform built on Envoy, Kubernetes APIs, and QUIC tunneling.
+
+
+
+## apoxy backend
+
+Manage backend objects
+
+### Synopsis
+
+Backends configure upstream endpoints for proxies.
+
+```
+apoxy backend [flags]
+```
+
+### Options
+
+```
+      --field-selector string   Filter list results by field selectors (e.g. spec.zone=example.com).
+  -h, --help                    help for backend
+  -o, --output string           Output format: "json" or "yaml". Default is table.
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy](#apoxy)	 - Open-source edge platform built on Envoy, Kubernetes APIs, and QUIC tunneling.
+* [apoxy backend apply](#apoxy-backend-apply)	 - Apply backend configuration using server-side apply
+* [apoxy backend create](#apoxy-backend-create)	 - Create backend objects
+* [apoxy backend delete](#apoxy-backend-delete)	 - Delete backend objects
+* [apoxy backend get](#apoxy-backend-get)	 - Get backend objects
+* [apoxy backend list](#apoxy-backend-list)	 - List backend objects
+
+
+
+## apoxy backend apply
+
+Apply backend configuration using server-side apply
+
+### Synopsis
+
+Apply backend configuration using Kubernetes server-side apply.
+
+This command uses server-side apply to create or update backend objects.
+Server-side apply tracks field ownership and allows multiple actors to
+manage different fields of the same object without conflicts.
+
+```
+apoxy backend apply [-f filename] [flags]
+```
+
+### Options
+
+```
+      --field-manager string   Name of the field manager for server-side apply. (default "apoxy-cli")
+  -f, --filename string        The file that contains the configuration to apply.
+      --force-conflicts        Force apply even if there are field ownership conflicts.
+  -h, --help                   help for apply
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy backend](#apoxy-backend)	 - Manage backend objects
+
+
+
+## apoxy backend create
+
+Create backend objects
+
+### Synopsis
+
+Create backend objects by providing a configuration as a file or via stdin.
+
+```
+apoxy backend create [-f filename] [flags]
+```
+
+### Options
+
+```
+  -f, --filename string   The file that contains the configuration to create.
+  -h, --help              help for create
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy backend](#apoxy-backend)	 - Manage backend objects
+
+
+
+## apoxy backend delete
+
+Delete backend objects
+
+```
+apoxy backend delete [flags]
+```
+
+### Options
+
+```
+  -h, --help   help for delete
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy backend](#apoxy-backend)	 - Manage backend objects
+
+
+
+## apoxy backend get
+
+Get backend objects
+
+```
+apoxy backend get <name> [flags]
+```
+
+### Options
+
+```
+  -h, --help            help for get
+  -o, --output string   Output format: "json" or "yaml". Default is table.
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy backend](#apoxy-backend)	 - Manage backend objects
+
+
+
+## apoxy backend list
+
+List backend objects
+
+```
+apoxy backend list [flags]
+```
+
+### Options
+
+```
+      --field-selector string   Filter list results by field selectors (e.g. spec.zone=example.com).
+  -h, --help                    help for list
+  -o, --output string           Output format: "json" or "yaml". Default is table.
+      --show-labels             Print the backend's labels.
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy backend](#apoxy-backend)	 - Manage backend objects
 
 
 
@@ -246,7 +700,9 @@ apoxy dev [path/to/proxy.yaml] [flags]
 ### Options
 
 ```
-  -h, --help   help for dev
+      --clickhouse-addr string   ClickHouse address (host only, port 9000 will be used).
+  -h, --help                     help for dev
+      --use-subprocess           Use subprocess for apiserver and backplane.
 ```
 
 ### Options inherited from parent commands
@@ -255,13 +711,1119 @@ apoxy dev [path/to/proxy.yaml] [flags]
       --alsologtostderr   Log to standard error as well as files.
       --config string     Config file (default is $HOME/.apoxy/config.yaml).
       --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
       --project string    The project ID to use.
   -v, --verbose           Enable verbose output.
 ```
 
 ### SEE ALSO
 
-* [apoxy](#apoxy)	 - Apoxy helps you expose, explore, and evolve your APIs and services.
+* [apoxy](#apoxy)	 - Open-source edge platform built on Envoy, Kubernetes APIs, and QUIC tunneling.
+
+
+
+## apoxy domain
+
+Manage domain record objects
+
+### Synopsis
+
+Domain records configure DNS records and routing for your services.
+
+```
+apoxy domain [flags]
+```
+
+### Options
+
+```
+      --field-selector string   Filter list results by field selectors (e.g. spec.zone=example.com).
+  -h, --help                    help for domain
+  -o, --output string           Output format: "json" or "yaml". Default is table.
+      --zone string             Filter domain records by zone name.
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy](#apoxy)	 - Open-source edge platform built on Envoy, Kubernetes APIs, and QUIC tunneling.
+* [apoxy domain apply](#apoxy-domain-apply)	 - Apply domainrecord configuration using server-side apply
+* [apoxy domain create](#apoxy-domain-create)	 - Create domainrecord objects
+* [apoxy domain delete](#apoxy-domain-delete)	 - Delete domainrecord objects
+* [apoxy domain get](#apoxy-domain-get)	 - Get domainrecord objects
+* [apoxy domain list](#apoxy-domain-list)	 - List domainrecord objects
+* [apoxy domain zone](#apoxy-domain-zone)	 - Manage domain zone objects
+
+
+
+## apoxy domain apply
+
+Apply domainrecord configuration using server-side apply
+
+### Synopsis
+
+Apply domainrecord configuration using Kubernetes server-side apply.
+
+This command uses server-side apply to create or update domainrecord objects.
+Server-side apply tracks field ownership and allows multiple actors to
+manage different fields of the same object without conflicts.
+
+```
+apoxy domain apply [-f filename] [flags]
+```
+
+### Options
+
+```
+      --field-manager string   Name of the field manager for server-side apply. (default "apoxy-cli")
+  -f, --filename string        The file that contains the configuration to apply.
+      --force-conflicts        Force apply even if there are field ownership conflicts.
+  -h, --help                   help for apply
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy domain](#apoxy-domain)	 - Manage domain record objects
+
+
+
+## apoxy domain create
+
+Create domainrecord objects
+
+### Synopsis
+
+Create domainrecord objects by providing a configuration as a file or via stdin.
+
+```
+apoxy domain create [-f filename] [flags]
+```
+
+### Options
+
+```
+  -f, --filename string   The file that contains the configuration to create.
+  -h, --help              help for create
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy domain](#apoxy-domain)	 - Manage domain record objects
+
+
+
+## apoxy domain delete
+
+Delete domainrecord objects
+
+```
+apoxy domain delete [flags]
+```
+
+### Options
+
+```
+  -h, --help   help for delete
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy domain](#apoxy-domain)	 - Manage domain record objects
+
+
+
+## apoxy domain get
+
+Get domainrecord objects
+
+```
+apoxy domain get <name> [flags]
+```
+
+### Options
+
+```
+  -h, --help            help for get
+  -o, --output string   Output format: "json" or "yaml". Default is table.
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy domain](#apoxy-domain)	 - Manage domain record objects
+
+
+
+## apoxy domain list
+
+List domainrecord objects
+
+```
+apoxy domain list [flags]
+```
+
+### Options
+
+```
+      --field-selector string   Filter list results by field selectors (e.g. spec.zone=example.com).
+  -h, --help                    help for list
+  -o, --output string           Output format: "json" or "yaml". Default is table.
+      --show-labels             Print the domainrecord's labels.
+      --zone string             Filter domain records by zone name.
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy domain](#apoxy-domain)	 - Manage domain record objects
+
+
+
+## apoxy domain zone
+
+Manage domain zone objects
+
+### Synopsis
+
+Domain zones represent DNS zones that domains are managed under.
+
+```
+apoxy domain zone [flags]
+```
+
+### Options
+
+```
+      --field-selector string   Filter list results by field selectors (e.g. spec.zone=example.com).
+  -h, --help                    help for zone
+  -o, --output string           Output format: "json" or "yaml". Default is table.
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy domain](#apoxy-domain)	 - Manage domain record objects
+* [apoxy domain zone apply](#apoxy-domain-zone-apply)	 - Apply domainzone configuration using server-side apply
+* [apoxy domain zone create](#apoxy-domain-zone-create)	 - Create domainzone objects
+* [apoxy domain zone delete](#apoxy-domain-zone-delete)	 - Delete domainzone objects
+* [apoxy domain zone get](#apoxy-domain-zone-get)	 - Get domainzone objects
+* [apoxy domain zone list](#apoxy-domain-zone-list)	 - List domainzone objects
+
+
+
+## apoxy domain zone apply
+
+Apply domainzone configuration using server-side apply
+
+### Synopsis
+
+Apply domainzone configuration using Kubernetes server-side apply.
+
+This command uses server-side apply to create or update domainzone objects.
+Server-side apply tracks field ownership and allows multiple actors to
+manage different fields of the same object without conflicts.
+
+```
+apoxy domain zone apply [-f filename] [flags]
+```
+
+### Options
+
+```
+      --field-manager string   Name of the field manager for server-side apply. (default "apoxy-cli")
+  -f, --filename string        The file that contains the configuration to apply.
+      --force-conflicts        Force apply even if there are field ownership conflicts.
+  -h, --help                   help for apply
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy domain zone](#apoxy-domain-zone)	 - Manage domain zone objects
+
+
+
+## apoxy domain zone create
+
+Create domainzone objects
+
+### Synopsis
+
+Create domainzone objects by providing a configuration as a file or via stdin.
+
+```
+apoxy domain zone create [-f filename] [flags]
+```
+
+### Options
+
+```
+  -f, --filename string   The file that contains the configuration to create.
+  -h, --help              help for create
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy domain zone](#apoxy-domain-zone)	 - Manage domain zone objects
+
+
+
+## apoxy domain zone delete
+
+Delete domainzone objects
+
+```
+apoxy domain zone delete [flags]
+```
+
+### Options
+
+```
+  -h, --help   help for delete
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy domain zone](#apoxy-domain-zone)	 - Manage domain zone objects
+
+
+
+## apoxy domain zone get
+
+Get domainzone objects
+
+```
+apoxy domain zone get <name> [flags]
+```
+
+### Options
+
+```
+  -h, --help            help for get
+  -o, --output string   Output format: "json" or "yaml". Default is table.
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy domain zone](#apoxy-domain-zone)	 - Manage domain zone objects
+
+
+
+## apoxy domain zone list
+
+List domainzone objects
+
+```
+apoxy domain zone list [flags]
+```
+
+### Options
+
+```
+      --field-selector string   Filter list results by field selectors (e.g. spec.zone=example.com).
+  -h, --help                    help for list
+  -o, --output string           Output format: "json" or "yaml". Default is table.
+      --show-labels             Print the domainzone's labels.
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy domain zone](#apoxy-domain-zone)	 - Manage domain zone objects
+
+
+
+## apoxy edgefunction
+
+Manage edge function objects
+
+### Synopsis
+
+Edge functions allow you to run custom code at the edge of the Apoxy network.
+
+```
+apoxy edgefunction [flags]
+```
+
+### Options
+
+```
+      --field-selector string   Filter list results by field selectors (e.g. spec.zone=example.com).
+  -h, --help                    help for edgefunction
+  -o, --output string           Output format: "json" or "yaml". Default is table.
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy](#apoxy)	 - Open-source edge platform built on Envoy, Kubernetes APIs, and QUIC tunneling.
+* [apoxy edgefunction apply](#apoxy-edgefunction-apply)	 - Apply edge function configuration using server-side apply
+* [apoxy edgefunction create](#apoxy-edgefunction-create)	 - Create edge function objects
+* [apoxy edgefunction delete](#apoxy-edgefunction-delete)	 - Delete edge function objects
+* [apoxy edgefunction get](#apoxy-edgefunction-get)	 - Get edge function objects
+* [apoxy edgefunction list](#apoxy-edgefunction-list)	 - List edge function objects
+
+
+
+## apoxy edgefunction apply
+
+Apply edge function configuration using server-side apply
+
+### Synopsis
+
+Apply edge function configuration using Kubernetes server-side apply.
+
+This command uses server-side apply to create or update edge function objects.
+Server-side apply tracks field ownership and allows multiple actors to
+manage different fields of the same object without conflicts.
+
+```
+apoxy edgefunction apply [-f filename] [flags]
+```
+
+### Options
+
+```
+      --field-manager string   Name of the field manager for server-side apply. (default "apoxy-cli")
+  -f, --filename string        The file that contains the configuration to apply.
+      --force-conflicts        Force apply even if there are field ownership conflicts.
+  -h, --help                   help for apply
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy edgefunction](#apoxy-edgefunction)	 - Manage edge function objects
+
+
+
+## apoxy edgefunction create
+
+Create edge function objects
+
+### Synopsis
+
+Create edge function objects by providing a configuration as a file or via stdin.
+
+```
+apoxy edgefunction create [-f filename] [flags]
+```
+
+### Options
+
+```
+  -f, --filename string   The file that contains the configuration to create.
+  -h, --help              help for create
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy edgefunction](#apoxy-edgefunction)	 - Manage edge function objects
+
+
+
+## apoxy edgefunction delete
+
+Delete edge function objects
+
+```
+apoxy edgefunction delete [flags]
+```
+
+### Options
+
+```
+  -h, --help   help for delete
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy edgefunction](#apoxy-edgefunction)	 - Manage edge function objects
+
+
+
+## apoxy edgefunction get
+
+Get edge function objects
+
+```
+apoxy edgefunction get <name> [flags]
+```
+
+### Options
+
+```
+  -h, --help            help for get
+  -o, --output string   Output format: "json" or "yaml". Default is table.
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy edgefunction](#apoxy-edgefunction)	 - Manage edge function objects
+
+
+
+## apoxy edgefunction list
+
+List edge function objects
+
+```
+apoxy edgefunction list [flags]
+```
+
+### Options
+
+```
+      --field-selector string   Filter list results by field selectors (e.g. spec.zone=example.com).
+  -h, --help                    help for list
+  -o, --output string           Output format: "json" or "yaml". Default is table.
+      --show-labels             Print the edge function's labels.
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy edgefunction](#apoxy-edgefunction)	 - Manage edge function objects
+
+
+
+## apoxy gateway
+
+Manage gateway objects
+
+### Synopsis
+
+The gateway object in the Apoxy API.
+
+```
+apoxy gateway [flags]
+```
+
+### Options
+
+```
+      --field-selector string   Filter list results by field selectors (e.g. spec.zone=example.com).
+  -h, --help                    help for gateway
+  -o, --output string           Output format: "json" or "yaml". Default is table.
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy](#apoxy)	 - Open-source edge platform built on Envoy, Kubernetes APIs, and QUIC tunneling.
+* [apoxy gateway apply](#apoxy-gateway-apply)	 - Apply gateway configuration using server-side apply
+* [apoxy gateway create](#apoxy-gateway-create)	 - Create gateway objects
+* [apoxy gateway delete](#apoxy-gateway-delete)	 - Delete gateway objects
+* [apoxy gateway get](#apoxy-gateway-get)	 - Get gateway objects
+* [apoxy gateway list](#apoxy-gateway-list)	 - List gateway objects
+* [apoxy gateway routes](#apoxy-gateway-routes)	 - Manage gateway routes (HTTP, TCP, TLS)
+
+
+
+## apoxy gateway apply
+
+Apply gateway configuration using server-side apply
+
+### Synopsis
+
+Apply gateway configuration using Kubernetes server-side apply.
+
+This command uses server-side apply to create or update gateway objects.
+Server-side apply tracks field ownership and allows multiple actors to
+manage different fields of the same object without conflicts.
+
+```
+apoxy gateway apply [-f filename] [flags]
+```
+
+### Options
+
+```
+      --field-manager string   Name of the field manager for server-side apply. (default "apoxy-cli")
+  -f, --filename string        The file that contains the configuration to apply.
+      --force-conflicts        Force apply even if there are field ownership conflicts.
+  -h, --help                   help for apply
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy gateway](#apoxy-gateway)	 - Manage gateway objects
+
+
+
+## apoxy gateway create
+
+Create gateway objects
+
+### Synopsis
+
+Create gateway objects by providing a configuration as a file or via stdin.
+
+```
+apoxy gateway create [-f filename] [flags]
+```
+
+### Options
+
+```
+  -f, --filename string   The file that contains the configuration to create.
+  -h, --help              help for create
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy gateway](#apoxy-gateway)	 - Manage gateway objects
+
+
+
+## apoxy gateway delete
+
+Delete gateway objects
+
+```
+apoxy gateway delete [flags]
+```
+
+### Options
+
+```
+  -h, --help   help for delete
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy gateway](#apoxy-gateway)	 - Manage gateway objects
+
+
+
+## apoxy gateway get
+
+Get gateway objects
+
+```
+apoxy gateway get <name> [flags]
+```
+
+### Options
+
+```
+  -h, --help            help for get
+  -o, --output string   Output format: "json" or "yaml". Default is table.
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy gateway](#apoxy-gateway)	 - Manage gateway objects
+
+
+
+## apoxy gateway list
+
+List gateway objects
+
+```
+apoxy gateway list [flags]
+```
+
+### Options
+
+```
+      --field-selector string   Filter list results by field selectors (e.g. spec.zone=example.com).
+  -h, --help                    help for list
+  -o, --output string           Output format: "json" or "yaml". Default is table.
+      --show-labels             Print the gateway's labels.
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy gateway](#apoxy-gateway)	 - Manage gateway objects
+
+
+
+## apoxy gateway routes
+
+Manage gateway routes (HTTP, TCP, TLS)
+
+### Synopsis
+
+Manage routes attached to gateways. Supports HTTPRoute, TCPRoute, and TLSRoute resources.
+
+```
+apoxy gateway routes [flags]
+```
+
+### Options
+
+```
+  -h, --help            help for routes
+  -o, --output string   Output format: "json" or "yaml". Default is table.
+      --show-labels     Print the route's labels.
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy gateway](#apoxy-gateway)	 - Manage gateway objects
+* [apoxy gateway routes apply](#apoxy-gateway-routes-apply)	 - Apply a route configuration using server-side apply
+* [apoxy gateway routes create](#apoxy-gateway-routes-create)	 - Create a route from file
+* [apoxy gateway routes delete](#apoxy-gateway-routes-delete)	 - Delete a route by name
+* [apoxy gateway routes get](#apoxy-gateway-routes-get)	 - Get a route by name
+* [apoxy gateway routes list](#apoxy-gateway-routes-list)	 - List all routes
+
+
+
+## apoxy gateway routes apply
+
+Apply a route configuration using server-side apply
+
+### Synopsis
+
+Apply a route configuration using Kubernetes server-side apply.
+The route type is detected from the file.
+
+```
+apoxy gateway routes apply [-f filename] [flags]
+```
+
+### Options
+
+```
+      --field-manager string   Name of the field manager for server-side apply. (default "apoxy-cli")
+  -f, --filename string        File containing the route configuration.
+      --force-conflicts        Force apply even if there are field ownership conflicts.
+  -h, --help                   help for apply
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy gateway routes](#apoxy-gateway-routes)	 - Manage gateway routes (HTTP, TCP, TLS)
+
+
+
+## apoxy gateway routes create
+
+Create a route from file
+
+### Synopsis
+
+Create a route from a YAML or JSON file. The route type is detected from the file.
+
+```
+apoxy gateway routes create [-f filename] [flags]
+```
+
+### Options
+
+```
+  -f, --filename string   File containing the route configuration.
+  -h, --help              help for create
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy gateway routes](#apoxy-gateway-routes)	 - Manage gateway routes (HTTP, TCP, TLS)
+
+
+
+## apoxy gateway routes delete
+
+Delete a route by name
+
+### Synopsis
+
+Delete a route by name. Optionally specify the type as a prefix.
+
+Examples:
+  apoxy gateway routes delete my-route        # delete HTTPRoute (default)
+  apoxy gateway routes delete http/my-route   # delete HTTPRoute
+  apoxy gateway routes delete tcp/my-route    # delete TCPRoute
+  apoxy gateway routes delete tls/my-route    # delete TLSRoute
+
+```
+apoxy gateway routes delete [TYPE/]<name> [flags]
+```
+
+### Options
+
+```
+  -h, --help   help for delete
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy gateway routes](#apoxy-gateway-routes)	 - Manage gateway routes (HTTP, TCP, TLS)
+
+
+
+## apoxy gateway routes get
+
+Get a route by name
+
+### Synopsis
+
+Get a route by name. Optionally specify the type as a prefix.
+
+Examples:
+  apoxy gateway routes get my-route        # get HTTPRoute (default)
+  apoxy gateway routes get http/my-route   # get HTTPRoute
+  apoxy gateway routes get tcp/my-route    # get TCPRoute
+  apoxy gateway routes get tls/my-route    # get TLSRoute
+
+```
+apoxy gateway routes get [TYPE/]<name> [flags]
+```
+
+### Options
+
+```
+  -h, --help            help for get
+  -o, --output string   Output format: "json" or "yaml". Default is table.
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy gateway routes](#apoxy-gateway-routes)	 - Manage gateway routes (HTTP, TCP, TLS)
+
+
+
+## apoxy gateway routes list
+
+List all routes
+
+```
+apoxy gateway routes list [flags]
+```
+
+### Options
+
+```
+  -h, --help            help for list
+  -o, --output string   Output format: "json" or "yaml". Default is table.
+      --show-labels     Print the route's labels.
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy gateway routes](#apoxy-gateway-routes)	 - Manage gateway routes (HTTP, TCP, TLS)
 
 
 
@@ -281,13 +1843,14 @@ Commands that manage Apoxy on Kubernetes
       --alsologtostderr   Log to standard error as well as files.
       --config string     Config file (default is $HOME/.apoxy/config.yaml).
       --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
       --project string    The project ID to use.
   -v, --verbose           Enable verbose output.
 ```
 
 ### SEE ALSO
 
-* [apoxy](#apoxy)	 - Apoxy helps you expose, explore, and evolve your APIs and services.
+* [apoxy](#apoxy)	 - Open-source edge platform built on Envoy, Kubernetes APIs, and QUIC tunneling.
 * [apoxy k8s install](#apoxy-k8s-install)	 - Install Apoxy Controller in Kubernetes
 
 
@@ -310,11 +1873,16 @@ apoxy k8s install [flags]
 ### Options
 
 ```
-      --dry-run             If true, only print the YAML that would be applied
-      --force               If true, forces value overwrites (See: https://v1-28.docs.kubernetes.io/docs/reference/using-api/server-side-apply/#conflicts)
-  -h, --help                help for install
-      --kubeconfig string   Path to the kubeconfig file to use for Kubernetes API access
-      --namespace string    The namespace to install the controller into (default "apoxy")
+      --cluster-name string   Cluster name identifier (defaults to kube context name)
+      --context string        Kubernetes context to use from the kubeconfig file
+      --dry-run               If true, only print the YAML that would be applied
+      --force                 If true, forces value overwrites (See: https://v1-28.docs.kubernetes.io/docs/reference/using-api/server-side-apply/#conflicts)
+  -h, --help                  help for install
+      --image string          Controller image override to pass to the onboarding manifest generator
+      --kubeconfig string     Path to the kubeconfig file to use for Kubernetes API access
+      --mirror string         Mirror mode (gateway, ingress, all)
+      --namespace string      The namespace to install the controller into (default "apoxy")
+  -y, --yes                   Skip confirmation and apply changes immediately
 ```
 
 ### Options inherited from parent commands
@@ -323,6 +1891,7 @@ apoxy k8s install [flags]
       --alsologtostderr   Log to standard error as well as files.
       --config string     Config file (default is $HOME/.apoxy/config.yaml).
       --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
       --project string    The project ID to use.
   -v, --verbose           Enable verbose output.
 ```
@@ -363,13 +1932,14 @@ apoxy logs [flags]
       --alsologtostderr   Log to standard error as well as files.
       --config string     Config file (default is $HOME/.apoxy/config.yaml).
       --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
       --project string    The project ID to use.
   -v, --verbose           Enable verbose output.
 ```
 
 ### SEE ALSO
 
-* [apoxy](#apoxy)	 - Apoxy helps you expose, explore, and evolve your APIs and services.
+* [apoxy](#apoxy)	 - Open-source edge platform built on Envoy, Kubernetes APIs, and QUIC tunneling.
 
 
 
@@ -388,7 +1958,9 @@ apoxy proxy [flags]
 ### Options
 
 ```
-  -h, --help   help for proxy
+      --field-selector string   Filter list results by field selectors (e.g. spec.zone=example.com).
+  -h, --help                    help for proxy
+  -o, --output string           Output format: "json" or "yaml". Default is table.
 ```
 
 ### Options inherited from parent commands
@@ -397,17 +1969,61 @@ apoxy proxy [flags]
       --alsologtostderr   Log to standard error as well as files.
       --config string     Config file (default is $HOME/.apoxy/config.yaml).
       --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
       --project string    The project ID to use.
   -v, --verbose           Enable verbose output.
 ```
 
 ### SEE ALSO
 
-* [apoxy](#apoxy)	 - Apoxy helps you expose, explore, and evolve your APIs and services.
+* [apoxy](#apoxy)	 - Open-source edge platform built on Envoy, Kubernetes APIs, and QUIC tunneling.
+* [apoxy proxy apply](#apoxy-proxy-apply)	 - Apply proxy configuration using server-side apply
 * [apoxy proxy create](#apoxy-proxy-create)	 - Create proxy objects
 * [apoxy proxy delete](#apoxy-proxy-delete)	 - Delete proxy objects
 * [apoxy proxy get](#apoxy-proxy-get)	 - Get proxy objects
 * [apoxy proxy list](#apoxy-proxy-list)	 - List proxy objects
+
+
+
+## apoxy proxy apply
+
+Apply proxy configuration using server-side apply
+
+### Synopsis
+
+Apply proxy configuration using Kubernetes server-side apply.
+
+This command uses server-side apply to create or update proxy objects.
+Server-side apply tracks field ownership and allows multiple actors to
+manage different fields of the same object without conflicts.
+
+```
+apoxy proxy apply [-f filename] [flags]
+```
+
+### Options
+
+```
+      --field-manager string   Name of the field manager for server-side apply. (default "apoxy-cli")
+  -f, --filename string        The file that contains the configuration to apply.
+      --force-conflicts        Force apply even if there are field ownership conflicts.
+  -h, --help                   help for apply
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy proxy](#apoxy-proxy)	 - Manage proxy objects
 
 
 
@@ -436,6 +2052,7 @@ apoxy proxy create [-f filename] [flags]
       --alsologtostderr   Log to standard error as well as files.
       --config string     Config file (default is $HOME/.apoxy/config.yaml).
       --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
       --project string    The project ID to use.
   -v, --verbose           Enable verbose output.
 ```
@@ -466,6 +2083,7 @@ apoxy proxy delete [flags]
       --alsologtostderr   Log to standard error as well as files.
       --config string     Config file (default is $HOME/.apoxy/config.yaml).
       --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
       --project string    The project ID to use.
   -v, --verbose           Enable verbose output.
 ```
@@ -487,7 +2105,8 @@ apoxy proxy get <name> [flags]
 ### Options
 
 ```
-  -h, --help   help for get
+  -h, --help            help for get
+  -o, --output string   Output format: "json" or "yaml". Default is table.
 ```
 
 ### Options inherited from parent commands
@@ -496,6 +2115,7 @@ apoxy proxy get <name> [flags]
       --alsologtostderr   Log to standard error as well as files.
       --config string     Config file (default is $HOME/.apoxy/config.yaml).
       --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
       --project string    The project ID to use.
   -v, --verbose           Enable verbose output.
 ```
@@ -517,8 +2137,10 @@ apoxy proxy list [flags]
 ### Options
 
 ```
-  -h, --help          help for list
-      --show-labels   Print the proxy's labels.
+      --field-selector string   Filter list results by field selectors (e.g. spec.zone=example.com).
+  -h, --help                    help for list
+  -o, --output string           Output format: "json" or "yaml". Default is table.
+      --show-labels             Print the proxy's labels.
 ```
 
 ### Options inherited from parent commands
@@ -527,6 +2149,7 @@ apoxy proxy list [flags]
       --alsologtostderr   Log to standard error as well as files.
       --config string     Config file (default is $HOME/.apoxy/config.yaml).
       --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
       --project string    The project ID to use.
   -v, --verbose           Enable verbose output.
 ```
@@ -534,6 +2157,56 @@ apoxy proxy list [flags]
 ### SEE ALSO
 
 * [apoxy proxy](#apoxy-proxy)	 - Manage proxy objects
+
+
+
+## apoxy run
+
+Run Apoxy runtime components defined in config
+
+### Synopsis
+
+Start and monitor all runtime components specified in the config file's runtime section.
+
+Components are defined under runtime.components in the config. Example:
+
+  runtime:
+    components:
+      - type: kube-aggregation
+        kubeAggregation:
+          clusterName: "prod-us-east-1"
+          namespace: "apoxy"
+      - type: kube-mirror
+        kubeMirror:
+          mirror: "all"
+      - type: tunnel
+        tunnel:
+          mode: "kernel"
+
+```
+apoxy run [flags]
+```
+
+### Options
+
+```
+  -h, --help   help for run
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy](#apoxy)	 - Open-source edge platform built on Envoy, Kubernetes APIs, and QUIC tunneling.
 
 
 
@@ -545,10 +2218,16 @@ Manage tunnels
 
 Manage WireGuard tunnels state and connect to the remote Apoxy Edge fabric.
 
+```
+apoxy tunnel [flags]
+```
+
 ### Options
 
 ```
-  -h, --help   help for tunnel
+      --field-selector string   Filter list results by field selectors (e.g. spec.zone=example.com).
+  -h, --help                    help for tunnel
+  -o, --output string           Output format: "json" or "yaml". Default is table.
 ```
 
 ### Options inherited from parent commands
@@ -557,38 +2236,46 @@ Manage WireGuard tunnels state and connect to the remote Apoxy Edge fabric.
       --alsologtostderr   Log to standard error as well as files.
       --config string     Config file (default is $HOME/.apoxy/config.yaml).
       --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
       --project string    The project ID to use.
   -v, --verbose           Enable verbose output.
 ```
 
 ### SEE ALSO
 
-* [apoxy](#apoxy)	 - Apoxy helps you expose, explore, and evolve your APIs and services.
-* [apoxy tunnel create](#apoxy-tunnel-create)	 - Create a TunnelNode
-* [apoxy tunnel delete](#apoxy-tunnel-delete)	 - Delete a TunnelNode
-* [apoxy tunnel get](#apoxy-tunnel-get)	 - Get a TunnelNode
+* [apoxy](#apoxy)	 - Open-source edge platform built on Envoy, Kubernetes APIs, and QUIC tunneling.
+* [apoxy tunnel apply](#apoxy-tunnel-apply)	 - Apply tunnelnode configuration using server-side apply
+* [apoxy tunnel create](#apoxy-tunnel-create)	 - Create tunnelnode objects
+* [apoxy tunnel delete](#apoxy-tunnel-delete)	 - Delete tunnelnode objects
+* [apoxy tunnel get](#apoxy-tunnel-get)	 - Get tunnelnode objects
+* [apoxy tunnel list](#apoxy-tunnel-list)	 - List tunnelnode objects
 * [apoxy tunnel run](#apoxy-tunnel-run)	 - Run a tunnel
-* [apoxy tunnel update](#apoxy-tunnel-update)	 - Update a TunnelNode
 
 
 
-## apoxy tunnel create
+## apoxy tunnel apply
 
-Create a TunnelNode
+Apply tunnelnode configuration using server-side apply
 
 ### Synopsis
 
-Create a TunnelNode object from a file or stdin.
+Apply tunnelnode configuration using Kubernetes server-side apply.
+
+This command uses server-side apply to create or update tunnelnode objects.
+Server-side apply tracks field ownership and allows multiple actors to
+manage different fields of the same object without conflicts.
 
 ```
-apoxy tunnel create [flags]
+apoxy tunnel apply [-f filename] [flags]
 ```
 
 ### Options
 
 ```
-  -f, --file string   Path to the TunnelNode file to create.
-  -h, --help          help for create
+      --field-manager string   Name of the field manager for server-side apply. (default "apoxy-cli")
+  -f, --filename string        The file that contains the configuration to apply.
+      --force-conflicts        Force apply even if there are field ownership conflicts.
+  -h, --help                   help for apply
 ```
 
 ### Options inherited from parent commands
@@ -597,6 +2284,43 @@ apoxy tunnel create [flags]
       --alsologtostderr   Log to standard error as well as files.
       --config string     Config file (default is $HOME/.apoxy/config.yaml).
       --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy tunnel](#apoxy-tunnel)	 - Manage tunnels
+
+
+
+## apoxy tunnel create
+
+Create tunnelnode objects
+
+### Synopsis
+
+Create tunnelnode objects by providing a configuration as a file or via stdin.
+
+```
+apoxy tunnel create [-f filename] [flags]
+```
+
+### Options
+
+```
+  -f, --filename string   The file that contains the configuration to create.
+  -h, --help              help for create
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
       --project string    The project ID to use.
   -v, --verbose           Enable verbose output.
 ```
@@ -609,11 +2333,7 @@ apoxy tunnel create [flags]
 
 ## apoxy tunnel delete
 
-Delete a TunnelNode
-
-### Synopsis
-
-Delete a TunnelNode object.
+Delete tunnelnode objects
 
 ```
 apoxy tunnel delete [flags]
@@ -631,6 +2351,7 @@ apoxy tunnel delete [flags]
       --alsologtostderr   Log to standard error as well as files.
       --config string     Config file (default is $HOME/.apoxy/config.yaml).
       --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
       --project string    The project ID to use.
   -v, --verbose           Enable verbose output.
 ```
@@ -643,20 +2364,17 @@ apoxy tunnel delete [flags]
 
 ## apoxy tunnel get
 
-Get a TunnelNode
-
-### Synopsis
-
-Get a TunnelNode object(s).
+Get tunnelnode objects
 
 ```
-apoxy tunnel get [flags]
+apoxy tunnel get <name> [flags]
 ```
 
 ### Options
 
 ```
-  -h, --help   help for get
+  -h, --help            help for get
+  -o, --output string   Output format: "json" or "yaml". Default is table.
 ```
 
 ### Options inherited from parent commands
@@ -665,6 +2383,41 @@ apoxy tunnel get [flags]
       --alsologtostderr   Log to standard error as well as files.
       --config string     Config file (default is $HOME/.apoxy/config.yaml).
       --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy tunnel](#apoxy-tunnel)	 - Manage tunnels
+
+
+
+## apoxy tunnel list
+
+List tunnelnode objects
+
+```
+apoxy tunnel list [flags]
+```
+
+### Options
+
+```
+      --field-selector string   Filter list results by field selectors (e.g. spec.zone=example.com).
+  -h, --help                    help for list
+  -o, --output string           Output format: "json" or "yaml". Default is table.
+      --show-labels             Print the tunnelnode's labels.
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
       --project string    The project ID to use.
   -v, --verbose           Enable verbose output.
 ```
@@ -690,9 +2443,19 @@ apoxy tunnel run [flags]
 ### Options
 
 ```
-  -f, --file string   Path to the TunnelNode file to create.
-  -h, --help          help for run
-  -n, --name string   Name of the TunnelNode to run.
+      --auto                               Automatically create TunnelNode if it doesn't exist.
+      --dns-addr string                    Listen address for the DNS proxy. Note that you must configure backplane to use this address as well. (default "127.0.0.1:8053")
+      --endpoint-selection string          Endpoint selection strategy: 'latency' (default) or 'random' (default "latency")
+      --health-addr string                 Listen address for health endpoint (default: :8080). (default ":8080")
+  -h, --help                               help for run
+      --insecure-skip-verify               Skip TLS certificate verification.
+      --metrics-addr string                Listen address for metrics endpoint (default: :8081). (default ":8081")
+      --min-conns int                      Minimum number of connections to maintain. (default 1)
+  -m, --mode string                        Mode to run the TunnelNode in. (default "user")
+      --no-tui                             Disable TUI interface.
+  -p, --pcap string                        Path to the TunnelNode file to create.
+      --preserve-default-gw-dsts strings   Preserve default gateway.
+      --socks-addr string                  Listen address for SOCKS proxy. (default "localhost:1080")
 ```
 
 ### Options inherited from parent commands
@@ -701,41 +2464,7 @@ apoxy tunnel run [flags]
       --alsologtostderr   Log to standard error as well as files.
       --config string     Config file (default is $HOME/.apoxy/config.yaml).
       --local             Run in local mode.
-      --project string    The project ID to use.
-  -v, --verbose           Enable verbose output.
-```
-
-### SEE ALSO
-
-* [apoxy tunnel](#apoxy-tunnel)	 - Manage tunnels
-
-
-
-## apoxy tunnel update
-
-Update a TunnelNode
-
-### Synopsis
-
-Update a TunnelNode object from a file or stdin.
-
-```
-apoxy tunnel update [flags]
-```
-
-### Options
-
-```
-  -f, --file string   Path to the TunnelNode file to update.
-  -h, --help          help for update
-```
-
-### Options inherited from parent commands
-
-```
-      --alsologtostderr   Log to standard error as well as files.
-      --config string     Config file (default is $HOME/.apoxy/config.yaml).
-      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
       --project string    The project ID to use.
   -v, --verbose           Enable verbose output.
 ```
@@ -770,13 +2499,14 @@ apoxy upgrade [flags]
       --alsologtostderr   Log to standard error as well as files.
       --config string     Config file (default is $HOME/.apoxy/config.yaml).
       --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
       --project string    The project ID to use.
   -v, --verbose           Enable verbose output.
 ```
 
 ### SEE ALSO
 
-* [apoxy](#apoxy)	 - Apoxy helps you expose, explore, and evolve your APIs and services.
+* [apoxy](#apoxy)	 - Open-source edge platform built on Envoy, Kubernetes APIs, and QUIC tunneling.
 
 
 
@@ -800,13 +2530,14 @@ apoxy version [flags]
       --alsologtostderr   Log to standard error as well as files.
       --config string     Config file (default is $HOME/.apoxy/config.yaml).
       --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
       --project string    The project ID to use.
   -v, --verbose           Enable verbose output.
 ```
 
 ### SEE ALSO
 
-* [apoxy](#apoxy)	 - Apoxy helps you expose, explore, and evolve your APIs and services.
+* [apoxy](#apoxy)	 - Open-source edge platform built on Envoy, Kubernetes APIs, and QUIC tunneling.
 
 
 

@@ -25,11 +25,19 @@ import (
 // RootCmd represents the base command when called without any subcommands
 var RootCmd = &cobra.Command{
 	Use:   "apoxy",
-	Short: "Apoxy helps you expose, explore, and evolve your APIs and services.",
-	Long: `The Apoxy CLI is the quickest and easiest way to create and control Apoxy proxies.
+	Short: "Open-source edge platform built on Envoy, Kubernetes APIs, and QUIC tunneling.",
+	Long: `Apoxy is an open-source edge platform built on Envoy, Kubernetes API infrastructure,
+and QUIC tunneling. Core capabilities include:
 
-Start by creating an account on https://apoxy.dev and logging in with 'apoxy auth'.
-`,
+  - API Gateway with Gateway API routing
+  - Edge computing runtime for JS/WASM/Go functions
+  - Secure tunneling via QUIC and connect-ip protocols
+
+Apoxy Cloud is the managed offering — it handles DNS registration, instant TLS
+certificates, and built-in observability so you focus on routing and logic instead
+of infrastructure.
+
+Get started at https://apoxy.dev and log in with 'apoxy auth'.`,
 	SilenceErrors:     true,
 	DisableAutoGenTag: true,
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
