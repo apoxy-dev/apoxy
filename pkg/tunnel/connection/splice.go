@@ -110,7 +110,6 @@ func Splice(tunDev tun.Device, conn Connection, opts ...SpliceOption) error {
 
 			for i := 0; i < n; i++ {
 				packetData := pkts[i][:sizes[i]]
-				slog.Debug("Read packet from TUN", slog.Int("len", sizes[i]))
 
 				// Notify observer if set
 				if config.observer != nil {
@@ -167,8 +166,6 @@ func Splice(tunDev tun.Device, conn Connection, opts ...SpliceOption) error {
 					return fmt.Errorf("failed to read from connection: %w", err)
 				}
 
-				slog.Debug("Read packet from connection", slog.Int("len", n))
-
 				// Notify observer if set
 				if config.observer != nil && n > 0 {
 					config.observer.OnPacket(ExtractPacketInfo((*pkt)[tunOffset:tunOffset+n], DirectionInbound))
@@ -216,8 +213,6 @@ func Splice(tunDev tun.Device, conn Connection, opts ...SpliceOption) error {
 						break gatherBatch
 					}
 				}
-
-				slog.Debug("Write packet to TUN", slog.Int("batch_size", batchCount))
 
 				if _, err := tunDev.Write(pkts[:batchCount], tunOffset); err != nil {
 					if strings.Contains(err.Error(), "closed") {

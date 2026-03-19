@@ -218,6 +218,58 @@ func TestBifurcate_BubblesTransientErrorAndContinues(t *testing.T) {
 	require.True(t, bytes.Equal(buf[:n], genevePkt), "expected geneve packet after transient error")
 }
 
+func TestBifurcate_IsGeneveEdgeCases(t *testing.T) {
+	remote := &net.UDPAddr{IP: net.IPv4(10, 1, 1, 1), Port: 9999}
+
+	tests := []struct {
+		name     string
+		pkt      []byte
+		isGeneve bool
+	}{
+		{"too short (7 bytes)", []byte{0, 0, 0x08, 0x00, 0, 0, 0}, false},
+		{"valid IPv4 proto", makeGeneveHeader(0, uint16(header.IPv4ProtocolNumber)), true},
+		{"valid IPv6 proto", makeGeneveHeader(0, uint16(header.IPv6ProtocolNumber)), true},
+		{"valid proto 0 (mgmt)", makeGeneveHeader(0, 0), true},
+		{"invalid version 1", makeGeneveHeader(1, uint16(header.IPv4ProtocolNumber)), false},
+		{"invalid version 3", makeGeneveHeader(3, uint16(header.IPv4ProtocolNumber)), false},
+		{"unsupported proto 0xFFFF", makeGeneveHeader(0, 0xFFFF), false},
+		{"empty", []byte{}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockConn := newMockBatchPacketConn()
+			mockConn.enqueue(tt.pkt, remote)
+
+			geneveConn, otherConn := bifurcate.Bifurcate(mockConn)
+			defer geneveConn.Close()
+			defer otherConn.Close()
+
+			buf := make([]byte, 1024)
+			if tt.isGeneve {
+				n, _, err := geneveConn.ReadFrom(buf)
+				require.NoError(t, err)
+				require.Equal(t, tt.pkt, buf[:n])
+			} else {
+				n, _, err := otherConn.ReadFrom(buf)
+				require.NoError(t, err)
+				require.Equal(t, tt.pkt, buf[:n])
+			}
+		})
+	}
+}
+
+// makeGeneveHeader builds a minimal 8-byte Geneve header with given version and protocol type.
+func makeGeneveHeader(version uint8, proto uint16) []byte {
+	buf := make([]byte, 8)
+	buf[0] = version << 6 // version in top 2 bits, optLen=0
+	buf[1] = 0            // flags
+	buf[2] = byte(proto >> 8)
+	buf[3] = byte(proto)
+	// bytes 4-7: VNI + reserved (zeros)
+	return buf
+}
+
 func createGenevePacket(t *testing.T) []byte {
 	h := geneve.Header{
 		Version:      0,

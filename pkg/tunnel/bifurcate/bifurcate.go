@@ -6,7 +6,6 @@ import (
 	"net"
 	"sync"
 
-	"github.com/apoxy-dev/icx/geneve"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
 
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/batchpc"
@@ -35,6 +34,9 @@ func Bifurcate(pc batchpc.BatchPacketConn) (batchpc.BatchPacketConn, batchpc.Bat
 		msgs := make([]batchpc.Message, batchpc.MaxBatchSize)
 		// Shadow array of pooled message pointers we own & recycle.
 		pm := make([]*batchpc.Message, batchpc.MaxBatchSize)
+		// Pre-allocated classification slices, reused via [:0] each iteration.
+		gBatch := make([]*batchpc.Message, 0, batchpc.MaxBatchSize)
+		oBatch := make([]*batchpc.Message, 0, batchpc.MaxBatchSize)
 
 		for {
 			// If both sides are gone, stop.
@@ -86,9 +88,9 @@ func Bifurcate(pc batchpc.BatchPacketConn) (batchpc.BatchPacketConn, batchpc.Bat
 				continue
 			}
 
-			// Classify into destination batches (slices referencing pooled messages).
-			gBatch := make([]*batchpc.Message, 0, n)
-			oBatch := make([]*batchpc.Message, 0, n)
+			// Classify into destination batches (reset pre-allocated slices).
+			gBatch = gBatch[:0]
+			oBatch = oBatch[:0]
 
 			for i := 0; i < n; i++ {
 				m := pm[i]
@@ -134,24 +136,24 @@ func Bifurcate(pc batchpc.BatchPacketConn) (batchpc.BatchPacketConn, batchpc.Bat
 	return geneveConn, otherConn
 }
 
+// isGeneve performs a fast inline check of the Geneve header without full
+// deserialization. The fixed Geneve header is 8 bytes:
+//
+//	byte 0: version (2 bits) | opt len (6 bits)
+//	byte 1: flags (8 bits)
+//	byte 2-3: protocol type (big-endian)
+//	byte 4-7: VNI (24 bits) | reserved (8 bits)
 func isGeneve(b []byte) bool {
-	var hdr geneve.Header
-	_, err := hdr.UnmarshalBinary(b)
-	if err != nil {
+	if len(b) < 8 {
 		return false
 	}
-
 	// Only Geneve version 0 is defined.
-	if hdr.Version != 0 {
+	if b[0]>>6 != 0 {
 		return false
 	}
-
 	// Check for valid protocol types (IPv4 or IPv6) or EtherType 0 (mgmt / oob).
-	if hdr.ProtocolType != uint16(header.IPv4ProtocolNumber) &&
-		hdr.ProtocolType != uint16(header.IPv6ProtocolNumber) &&
-		hdr.ProtocolType != 0 {
-		return false
-	}
-
-	return true
+	proto := uint16(b[2])<<8 | uint16(b[3])
+	return proto == uint16(header.IPv4ProtocolNumber) ||
+		proto == uint16(header.IPv6ProtocolNumber) ||
+		proto == 0
 }

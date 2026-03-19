@@ -250,14 +250,19 @@ func (c *L2PacketConn) LocalMAC() tcpip.LinkAddress {
 // peerMACForIP returns a cached random, locally-administered unicast MAC
 // for the given remote IP, creating it on first use.
 func (c *L2PacketConn) peerMACForIP(ip net.IP) tcpip.LinkAddress {
-	key := ip.String()
-	if v, ok := c.peerMACCache.Load(key); ok {
+	// Use netip.Addr as map key to avoid ip.String() allocation on every lookup.
+	addr, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		// Fallback for malformed IPs — should not happen in practice.
+		addr = netip.Addr{}
+	}
+	if v, ok := c.peerMACCache.Load(addr); ok {
 		return v.(tcpip.LinkAddress)
 	}
 	// Create and publish a new random MAC.
 	newMAC := tcpip.GetRandMacAddr()
 	// Use LoadOrStore to avoid races/duplication.
-	if v, loaded := c.peerMACCache.LoadOrStore(key, newMAC); loaded {
+	if v, loaded := c.peerMACCache.LoadOrStore(addr, newMAC); loaded {
 		return v.(tcpip.LinkAddress)
 	}
 	return newMAC

@@ -79,8 +79,6 @@ func (m *muxedConn) readFromConn(src netip.Prefix, conn Connection) {
 			continue
 		}
 
-		slog.Debug("Read packet from connection", slog.Int("bytes", n))
-
 		*pkt = (*pkt)[:n]
 		select {
 		case m.incomingPackets <- pkt:
@@ -242,8 +240,6 @@ func (m *muxedConn) writeToConn(addr netip.Addr, pkt []byte) []byte {
 		return nil
 	}
 
-	slog.Debug("Writing packet to connection", slog.String("ip", addr.String()), slog.String("conn", conn.String()))
-
 	metrics.TunnelPacketsSent.Inc()
 	metrics.TunnelBytesSent.Add(float64(len(pkt)))
 
@@ -284,8 +280,6 @@ func (m *SrcMuxedConn) WritePacket(pkt []byte) ([]byte, error) {
 		return nil, net.ErrClosed
 	}
 
-	slog.Debug("Write packet to connection", slog.Int("bytes", len(pkt)))
-
 	var srcAddr netip.Addr
 	switch pkt[0] >> 4 {
 	case 6:
@@ -309,8 +303,6 @@ func (m *SrcMuxedConn) WritePacket(pkt []byte) ([]byte, error) {
 	default:
 		return nil, fmt.Errorf("unknown packet type: %d", pkt[0]>>4)
 	}
-
-	slog.Debug("Packet source", slog.String("ip", srcAddr.String()))
 
 	return m.writeToConn(srcAddr, pkt), nil
 }
@@ -339,8 +331,6 @@ func (m *DstMuxedConn) WritePacket(pkt []byte) ([]byte, error) {
 		return nil, net.ErrClosed
 	}
 
-	slog.Debug("Write packet to connection", slog.Int("bytes", len(pkt)))
-
 	var dstAddr netip.Addr
 	switch pkt[0] >> 4 {
 	case 6:
@@ -364,8 +354,6 @@ func (m *DstMuxedConn) WritePacket(pkt []byte) ([]byte, error) {
 	default:
 		return nil, fmt.Errorf("unknown packet type: %d", pkt[0]>>4)
 	}
-
-	slog.Debug("Packet destination", slog.String("ip", dstAddr.String()))
 
 	return m.writeToConn(dstAddr, pkt), nil
 }
