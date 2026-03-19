@@ -441,11 +441,10 @@ func (m *ApoxyCli) PublishHomebrewFormula(
 		WithWorkdir("/tmp/homebrew-tap").
 		// Extract the 4 SHA256 values in sorted order: Darwin arm64, Darwin x86_64, Linux arm64, Linux x86_64
 		WithExec([]string{"sh", "-c", fmt.Sprintf(`
-SHA_ARRAY=($(cat /shas.txt))
-SHA_DARWIN_ARM64="${SHA_ARRAY[0]}"
-SHA_DARWIN_X86_64="${SHA_ARRAY[1]}"
-SHA_LINUX_ARM64="${SHA_ARRAY[2]}"
-SHA_LINUX_X86_64="${SHA_ARRAY[3]}"
+SHA_DARWIN_ARM64=$(sed -n '1p' /shas.txt)
+SHA_DARWIN_X86_64=$(sed -n '2p' /shas.txt)
+SHA_LINUX_ARM64=$(sed -n '3p' /shas.txt)
+SHA_LINUX_X86_64=$(sed -n '4p' /shas.txt)
 
 # Replace version placeholder
 sed -i "s/version \"0.0.0\"/version \"%s\"/g" Formula/apoxy.rb
