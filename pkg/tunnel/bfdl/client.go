@@ -7,10 +7,12 @@ import (
 	"net"
 	"net/netip"
 	"time"
+
+	apoxynet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 )
 
 // BFDServerAddr is the well-known server-side BFD address (proxySourceAddr).
-var BFDServerAddr = netip.MustParseAddr("fd61:706f:7879::")
+var BFDServerAddr = netip.MustParseAddr(apoxynet.ApoxyULAAddr)
 
 // Client drives a BFD session from the tunnel agent side.
 type Client struct {

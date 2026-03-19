@@ -19,6 +19,10 @@ const (
 	//  e: endpoint name fnv hash
 	//  a: IPv4 address downstream of the tunnel node endpoint
 	apoxyULAPrefixS = "fd61:706f:7879::/48"
+
+	// ApoxyULAAddr is the base address of the ApoxyNet ULA prefix.
+	// Used as the server-side address for overlay services (e.g. BFD).
+	ApoxyULAAddr = "fd61:706f:7879::"
 )
 
 var (
