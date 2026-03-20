@@ -97,6 +97,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.traffic.SetFilter(panels.FilterAll)
 			return m, nil
 
+		case key.Matches(msg, m.keys.ToggleBFD):
+			m.traffic.ToggleBFD()
+			return m, nil
+
 		case key.Matches(msg, m.keys.Clear):
 			m.traffic.Clear()
 			return m, nil

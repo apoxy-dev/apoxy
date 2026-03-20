@@ -6,6 +6,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/bfdl"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/connection"
 )
 
@@ -27,6 +28,7 @@ type TrafficPanel struct {
 	height   int
 	packets  []connection.PacketInfo
 	filter   ProtocolFilter
+	hideBFD  bool // hide BFD control packets (UDP port 3784)
 	scrollY  int
 	autoTail bool // auto-scroll to bottom
 }
@@ -36,6 +38,7 @@ func NewTrafficPanel() TrafficPanel {
 	return TrafficPanel{
 		packets:  make([]connection.PacketInfo, 0, maxPackets),
 		filter:   FilterAll,
+		hideBFD:  true,
 		autoTail: true,
 	}
 }
@@ -70,6 +73,22 @@ func (p *TrafficPanel) Clear() {
 func (p *TrafficPanel) SetFilter(f ProtocolFilter) {
 	p.filter = f
 	p.scrollY = 0
+}
+
+// ToggleBFD toggles visibility of BFD control packets.
+func (p *TrafficPanel) ToggleBFD() {
+	p.hideBFD = !p.hideBFD
+	p.scrollY = 0
+}
+
+// HideBFD returns whether BFD packets are currently hidden.
+func (p *TrafficPanel) HideBFD() bool {
+	return p.hideBFD
+}
+
+func isBFDPacket(pkt connection.PacketInfo) bool {
+	return pkt.Protocol == connection.ProtocolUDP &&
+		(pkt.SrcPort == bfdl.BFDPort || pkt.DstPort == bfdl.BFDPort)
 }
 
 // ScrollUp scrolls up by one line.
@@ -121,13 +140,18 @@ func (p *TrafficPanel) visibleLines() int {
 }
 
 func (p *TrafficPanel) filteredPackets() []connection.PacketInfo {
-	if p.filter == FilterAll {
+	if p.filter == FilterAll && !p.hideBFD {
 		return p.packets
 	}
 
 	var result []connection.PacketInfo
 	for _, pkt := range p.packets {
+		if p.hideBFD && isBFDPacket(pkt) {
+			continue
+		}
 		switch p.filter {
+		case FilterAll:
+			result = append(result, pkt)
 		case FilterTCP:
 			if pkt.Protocol == connection.ProtocolTCP {
 				result = append(result, pkt)
@@ -147,16 +171,21 @@ func (p *TrafficPanel) filteredPackets() []connection.PacketInfo {
 
 // FilterName returns the name of the current filter.
 func (p *TrafficPanel) FilterName() string {
+	var name string
 	switch p.filter {
 	case FilterTCP:
-		return "TCP"
+		name = "TCP"
 	case FilterUDP:
-		return "UDP"
+		name = "UDP"
 	case FilterICMP:
-		return "ICMP"
+		name = "ICMP"
 	default:
-		return "all"
+		name = "all"
 	}
+	if p.hideBFD {
+		name += ", no pings"
+	}
+	return name
 }
 
 // View renders the traffic panel.
