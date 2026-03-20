@@ -142,10 +142,13 @@ func Splice(tunDev tun.Device, conn Connection, opts ...SpliceOption) error {
 	// Connection -> TUN path
 	//
 	// When the connection is a muxedConn with matching headroom, we use
-	// readPacketDirect to receive pooled buffers without an extra copy.
+	// readPacketDirect to receive pooled buffers without an extra copy, and
+	// tryReadPacketDirect for non-blocking batch accumulation — eliminating
+	// the intermediate channel and goroutine.
 	// Otherwise we fall back to the standard ReadPacket-into-local-pool path.
 	type directReader interface {
 		readPacketDirect() (*[]byte, error)
+		tryReadPacketDirect() (*[]byte, bool)
 		putPacketBuffer(*[]byte)
 	}
 	dr, zeroCopy := conn.(directReader)
@@ -155,14 +158,76 @@ func Splice(tunDev tun.Device, conn Connection, opts ...SpliceOption) error {
 			slog.Debug("Stopped reading from connection")
 		}()
 
-		// Fallback pool only allocated when zero-copy is not available.
-		var pktPool *sync.Pool
-		if !zeroCopy {
-			pktPool = &sync.Pool{
-				New: func() any {
-					return ptr.To(make([]byte, netstack.IPv6MinMTU+tunOffset))
-				},
+		pkts := make([][]byte, batchSize)
+
+		if zeroCopy {
+			// Zero-copy path: read directly from the muxedConn's internal
+			// packet channel without an intermediate goroutine or channel.
+			// This reduces per-packet overhead (no channel hop, no extra
+			// goroutine switch) and improves batching by draining all
+			// available packets from the 10k-deep internal queue.
+			for {
+				// Block for the first packet.
+				pkt, err := dr.readPacketDirect()
+				if err != nil {
+					if errors.Is(err, net.ErrClosed) {
+						return nil
+					}
+					slog.Error("Failed to read from connection", slog.Any("error", err))
+					return fmt.Errorf("failed to read from connection: %w", err)
+				}
+
+				if config.observer != nil && len(*pkt) > tunOffset {
+					config.observer.OnPacket(ExtractPacketInfo((*pkt)[tunOffset:], DirectionInbound))
+				}
+				if config.recalculateChecksum {
+					if err := recalculateChecksumIfNeeded((*pkt)[tunOffset:], config); err != nil {
+						slog.Debug("Failed to recalculate checksum on incoming packet", slog.Any("error", err))
+					}
+				}
+
+				pkts[0] = *pkt
+				batchCount := 1
+
+				// Drain available packets non-blockingly to maximize batch size.
+				for batchCount < batchSize {
+					pkt, ok := dr.tryReadPacketDirect()
+					if !ok {
+						break
+					}
+					if config.observer != nil && len(*pkt) > tunOffset {
+						config.observer.OnPacket(ExtractPacketInfo((*pkt)[tunOffset:], DirectionInbound))
+					}
+					if config.recalculateChecksum {
+						if err := recalculateChecksumIfNeeded((*pkt)[tunOffset:], config); err != nil {
+							slog.Debug("Failed to recalculate checksum on incoming packet", slog.Any("error", err))
+						}
+					}
+					pkts[batchCount] = *pkt
+					batchCount++
+				}
+
+				if _, err := tunDev.Write(pkts[:batchCount], tunOffset); err != nil {
+					if strings.Contains(err.Error(), "closed") {
+						slog.Debug("TUN device closed")
+						return net.ErrClosed
+					}
+					slog.Error("Failed to write to TUN", slog.Any("error", err))
+					return fmt.Errorf("failed to write to TUN: %w", err)
+				}
+
+				for i := 0; i < batchCount; i++ {
+					p := pkts[i][:cap(pkts[i])]
+					dr.putPacketBuffer(&p)
+				}
 			}
+		}
+
+		// Non-zero-copy fallback: use intermediate channel for batching.
+		pktPool := &sync.Pool{
+			New: func() any {
+				return ptr.To(make([]byte, netstack.IPv6MinMTU+tunOffset))
+			},
 		}
 
 		pktCh := make(chan *[]byte, batchSize)
@@ -171,32 +236,20 @@ func Splice(tunDev tun.Device, conn Connection, opts ...SpliceOption) error {
 			defer close(pktCh)
 
 			for {
-				var pkt *[]byte
-				if zeroCopy {
-					var err error
-					pkt, err = dr.readPacketDirect()
-					if err != nil {
-						slog.Error("Failed to read from connection", slog.Any("error", err))
-						return fmt.Errorf("failed to read from connection: %w", err)
-					}
-				} else {
-					pkt = pktPool.Get().(*[]byte)
-					*pkt = (*pkt)[:cap(*pkt)]
-					n, err := conn.ReadPacket((*pkt)[tunOffset:])
-					if err != nil {
-						slog.Error("Failed to read from connection", slog.Any("error", err))
-						return fmt.Errorf("failed to read from connection: %w", err)
-					}
-					*pkt = (*pkt)[:n+tunOffset]
+				pkt := pktPool.Get().(*[]byte)
+				*pkt = (*pkt)[:cap(*pkt)]
+				n, err := conn.ReadPacket((*pkt)[tunOffset:])
+				if err != nil {
+					slog.Error("Failed to read from connection", slog.Any("error", err))
+					return fmt.Errorf("failed to read from connection: %w", err)
 				}
+				*pkt = (*pkt)[:n+tunOffset]
 
-				if config.observer != nil && len(*pkt) > tunOffset {
+				if config.observer != nil && n > 0 {
 					config.observer.OnPacket(ExtractPacketInfo((*pkt)[tunOffset:], DirectionInbound))
 				}
-
 				if config.recalculateChecksum {
-					packetData := (*pkt)[tunOffset:]
-					if err := recalculateChecksumIfNeeded(packetData, config); err != nil {
+					if err := recalculateChecksumIfNeeded((*pkt)[tunOffset:], config); err != nil {
 						slog.Debug("Failed to recalculate checksum on incoming packet", slog.Any("error", err))
 					}
 				}
@@ -204,8 +257,6 @@ func Splice(tunDev tun.Device, conn Connection, opts ...SpliceOption) error {
 				pktCh <- pkt
 			}
 		})
-
-		pkts := make([][]byte, batchSize)
 
 		for {
 			select {
@@ -217,14 +268,12 @@ func Splice(tunDev tun.Device, conn Connection, opts ...SpliceOption) error {
 				pkts[0] = *pkt
 				batchCount := 1
 
-				closed := false
 			gatherBatch:
-				for batchCount < batchSize && !closed {
+				for batchCount < batchSize {
 					select {
 					case pkt, ok := <-pktCh:
 						if !ok {
-							closed = true
-							break
+							break gatherBatch
 						}
 						pkts[batchCount] = *pkt
 						batchCount++
@@ -238,18 +287,13 @@ func Splice(tunDev tun.Device, conn Connection, opts ...SpliceOption) error {
 						slog.Debug("TUN device closed")
 						return net.ErrClosed
 					}
-
 					slog.Error("Failed to write to TUN", slog.Any("error", err))
 					return fmt.Errorf("failed to write to TUN: %w", err)
 				}
 
 				for i := 0; i < batchCount; i++ {
 					p := pkts[i][:cap(pkts[i])]
-					if zeroCopy {
-						dr.putPacketBuffer(&p)
-					} else {
-						pktPool.Put(&p)
-					}
+					pktPool.Put(&p)
 				}
 			}
 		}

@@ -243,6 +243,24 @@ func (m *muxedConn) readPacketDirect() (*[]byte, error) {
 	return p, nil
 }
 
+// tryReadPacketDirect attempts a non-blocking read from the incoming packet
+// channel. Returns (nil, false) if no packet is immediately available.
+func (m *muxedConn) tryReadPacketDirect() (*[]byte, bool) {
+	if m.closed.Load() {
+		return nil, false
+	}
+
+	select {
+	case p, ok := <-m.incomingPackets:
+		if !ok {
+			return nil, false
+		}
+		return p, true
+	default:
+		return nil, false
+	}
+}
+
 // putPacketBuffer returns a buffer obtained from readPacketDirect to the pool.
 func (m *muxedConn) putPacketBuffer(p *[]byte) {
 	*p = (*p)[:cap(*p)]
