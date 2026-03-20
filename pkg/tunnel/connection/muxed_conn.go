@@ -26,19 +26,30 @@ type muxedConn struct {
 	incomingPackets  chan *[]byte
 	packetBufferPool sync.Pool
 
+	// headroom is the number of bytes reserved before packet data in pooled
+	// buffers. This allows callers using readPacketDirect to receive buffers
+	// with pre-allocated headroom (e.g. for TUN transport headers), avoiding
+	// an extra copy.
+	headroom int
+
 	closeOnce sync.Once
 	closed    atomic.Bool
 }
 
+const defaultMTU = 1500
+
 // newMuxedConn creates a new *muxedConn.
 func newMuxedConn() *muxedConn {
+	headroom := tunOffset
+	bufSize := headroom + defaultMTU
 	return &muxedConn{
 		conns:           iptrie.NewTrie(),
 		prefixes:        make(map[netip.Prefix]Connection),
 		incomingPackets: make(chan *[]byte, 10000),
+		headroom:        headroom,
 		packetBufferPool: sync.Pool{
 			New: func() interface{} {
-				b := make([]byte, 1500)
+				b := make([]byte, bufSize)
 				return &b
 			},
 		},
@@ -48,10 +59,10 @@ func newMuxedConn() *muxedConn {
 func (m *muxedConn) readFromConn(src netip.Prefix, conn Connection) {
 	for {
 		pkt := m.packetBufferPool.Get().(*[]byte)
-		// Reset the buffer to its original size.
+		// Reset the buffer to its full capacity.
 		*pkt = (*pkt)[:cap(*pkt)]
 
-		n, err := conn.ReadPacket(*pkt)
+		n, err := conn.ReadPacket((*pkt)[m.headroom:])
 		if err != nil {
 			// If the connection is closed, remove it from the multiplexer and quit
 			// the read loop. Otherwise, treat it as transient error and just log it.
@@ -79,7 +90,7 @@ func (m *muxedConn) readFromConn(src netip.Prefix, conn Connection) {
 			continue
 		}
 
-		*pkt = (*pkt)[:n]
+		*pkt = (*pkt)[:n+m.headroom]
 		select {
 		case m.incomingPackets <- pkt:
 		default: // Channel is closed or full, return the buffer to the pool
@@ -209,11 +220,33 @@ func (m *muxedConn) ReadPacket(pkt []byte) (int, error) {
 		return 0, net.ErrClosed
 	}
 
-	n := copy(pkt, *p)
+	n := copy(pkt, (*p)[m.headroom:])
 
 	m.packetBufferPool.Put(p)
 
 	return n, nil
+}
+
+// readPacketDirect returns the next packet's pooled buffer directly, avoiding
+// a copy. Packet data starts at buf[m.headroom:]. The caller must call
+// putPacketBuffer when done with the buffer.
+func (m *muxedConn) readPacketDirect() (*[]byte, error) {
+	if m.closed.Load() {
+		return nil, net.ErrClosed
+	}
+
+	p, ok := <-m.incomingPackets
+	if !ok {
+		return nil, net.ErrClosed
+	}
+
+	return p, nil
+}
+
+// putPacketBuffer returns a buffer obtained from readPacketDirect to the pool.
+func (m *muxedConn) putPacketBuffer(p *[]byte) {
+	*p = (*p)[:cap(*p)]
+	m.packetBufferPool.Put(p)
 }
 
 func (m *muxedConn) writeToConn(addr netip.Addr, pkt []byte) []byte {

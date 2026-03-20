@@ -21,7 +21,7 @@ const (
 	tunOffset = device.MessageTransportHeaderSize
 )
 
-// SpliceConfig holds configuration options for splice operations
+// SpliceConfig holds configuration options for splice operations.
 type SpliceConfig struct {
 	recalculateChecksum bool
 	verifyChecksum      bool
@@ -29,31 +29,31 @@ type SpliceConfig struct {
 	observer            PacketObserver
 }
 
-// SpliceOption is a function that configures splice behavior
+// SpliceOption is a function that configures splice behavior.
 type SpliceOption func(*SpliceConfig)
 
-// WithChecksumRecalculation enables TCP checksum recalculation
+// WithChecksumRecalculation enables TCP checksum recalculation.
 func WithChecksumRecalculation() SpliceOption {
 	return func(c *SpliceConfig) {
 		c.recalculateChecksum = true
 	}
 }
 
-// WithChecksumVerification enables TCP checksum verification (for debugging)
+// WithChecksumVerification enables TCP checksum verification (for debugging).
 func WithChecksumVerification() SpliceOption {
 	return func(c *SpliceConfig) {
 		c.verifyChecksum = true
 	}
 }
 
-// WithChecksumErrorLogging enables detailed logging of checksum errors
+// WithChecksumErrorLogging enables detailed logging of checksum errors.
 func WithChecksumErrorLogging() SpliceOption {
 	return func(c *SpliceConfig) {
 		c.logChecksumErrors = true
 	}
 }
 
-// WithPacketObserver sets a packet observer for traffic monitoring
+// WithPacketObserver sets a packet observer for traffic monitoring.
 func WithPacketObserver(obs PacketObserver) SpliceOption {
 	return func(c *SpliceConfig) {
 		c.observer = obs
@@ -111,12 +111,10 @@ func Splice(tunDev tun.Device, conn Connection, opts ...SpliceOption) error {
 			for i := 0; i < n; i++ {
 				packetData := pkts[i][:sizes[i]]
 
-				// Notify observer if set
 				if config.observer != nil {
 					config.observer.OnPacket(ExtractPacketInfo(packetData, DirectionOutbound))
 				}
 
-				// Recalculate TCP checksum if enabled and needed
 				if config.recalculateChecksum {
 					if err := recalculateChecksumIfNeeded(packetData, config); err != nil {
 						slog.Debug("Failed to recalculate checksum", slog.Any("error", err))
@@ -142,15 +140,29 @@ func Splice(tunDev tun.Device, conn Connection, opts ...SpliceOption) error {
 	})
 
 	// Connection -> TUN path
+	//
+	// When the connection is a muxedConn with matching headroom, we use
+	// readPacketDirect to receive pooled buffers without an extra copy.
+	// Otherwise we fall back to the standard ReadPacket-into-local-pool path.
+	type directReader interface {
+		readPacketDirect() (*[]byte, error)
+		putPacketBuffer(*[]byte)
+	}
+	dr, zeroCopy := conn.(directReader)
+
 	g.Go(func() error {
 		defer func() {
 			slog.Debug("Stopped reading from connection")
 		}()
 
-		var pktPool = sync.Pool{
-			New: func() any {
-				return ptr.To(make([]byte, netstack.IPv6MinMTU+tunOffset))
-			},
+		// Fallback pool only allocated when zero-copy is not available.
+		var pktPool *sync.Pool
+		if !zeroCopy {
+			pktPool = &sync.Pool{
+				New: func() any {
+					return ptr.To(make([]byte, netstack.IPv6MinMTU+tunOffset))
+				},
+			}
 		}
 
 		pktCh := make(chan *[]byte, batchSize)
@@ -159,26 +171,33 @@ func Splice(tunDev tun.Device, conn Connection, opts ...SpliceOption) error {
 			defer close(pktCh)
 
 			for {
-				pkt := pktPool.Get().(*[]byte)
-				n, err := conn.ReadPacket((*pkt)[tunOffset:])
-				if err != nil {
-					slog.Error("Failed to read from connection", slog.Any("error", err))
-					return fmt.Errorf("failed to read from connection: %w", err)
+				var pkt *[]byte
+				if zeroCopy {
+					var err error
+					pkt, err = dr.readPacketDirect()
+					if err != nil {
+						slog.Error("Failed to read from connection", slog.Any("error", err))
+						return fmt.Errorf("failed to read from connection: %w", err)
+					}
+				} else {
+					pkt = pktPool.Get().(*[]byte)
+					*pkt = (*pkt)[:cap(*pkt)]
+					n, err := conn.ReadPacket((*pkt)[tunOffset:])
+					if err != nil {
+						slog.Error("Failed to read from connection", slog.Any("error", err))
+						return fmt.Errorf("failed to read from connection: %w", err)
+					}
+					*pkt = (*pkt)[:n+tunOffset]
 				}
 
-				// Notify observer if set
-				if config.observer != nil && n > 0 {
-					config.observer.OnPacket(ExtractPacketInfo((*pkt)[tunOffset:tunOffset+n], DirectionInbound))
+				if config.observer != nil && len(*pkt) > tunOffset {
+					config.observer.OnPacket(ExtractPacketInfo((*pkt)[tunOffset:], DirectionInbound))
 				}
 
-				*pkt = (*pkt)[:n+tunOffset]
-
-				// Recalculate TCP checksum if enabled and needed
 				if config.recalculateChecksum {
 					packetData := (*pkt)[tunOffset:]
 					if err := recalculateChecksumIfNeeded(packetData, config); err != nil {
 						slog.Debug("Failed to recalculate checksum on incoming packet", slog.Any("error", err))
-						// Continue processing - not all packets are TCP
 					}
 				}
 
@@ -225,8 +244,12 @@ func Splice(tunDev tun.Device, conn Connection, opts ...SpliceOption) error {
 				}
 
 				for i := 0; i < batchCount; i++ {
-					pkt := pkts[i][:cap(pkts[i])]
-					pktPool.Put(&pkt)
+					p := pkts[i][:cap(pkts[i])]
+					if zeroCopy {
+						dr.putPacketBuffer(&p)
+					} else {
+						pktPool.Put(&p)
+					}
 				}
 			}
 		}
@@ -247,17 +270,14 @@ func Splice(tunDev tun.Device, conn Connection, opts ...SpliceOption) error {
 	return nil
 }
 
-// recalculateChecksumIfNeeded recalculates TCP checksum if the packet is TCP
+// recalculateChecksumIfNeeded recalculates TCP checksum if the packet is TCP.
 func recalculateChecksumIfNeeded(packetData []byte, config *SpliceConfig) error {
 	if len(packetData) < 20 {
-		return nil // Packet too short to be IP
+		return nil // Packet too short to be an IP packet.
 	}
 
-	// Check if this is a TCP packet
-	version := packetData[0] >> 4
 	isTCP := false
-
-	switch version {
+	switch packetData[0] >> 4 {
 	case 4:
 		if len(packetData) >= 20 {
 			ihl := int(packetData[0]&0x0F) * 4
@@ -270,14 +290,12 @@ func recalculateChecksumIfNeeded(packetData []byte, config *SpliceConfig) error 
 			isTCP = true
 		}
 	default:
-		return nil // Unknown IP version
+		return nil // Unknown IP version.
 	}
-
 	if !isTCP {
-		return nil // Not a TCP packet
+		return nil // Not a TCP packet.
 	}
 
-	// Verify checksum before recalculation if enabled
 	if config.verifyChecksum {
 		valid, err := tunnet.VerifyTCPChecksum(packetData)
 		if err != nil {
@@ -291,7 +309,6 @@ func recalculateChecksumIfNeeded(packetData []byte, config *SpliceConfig) error 
 		}
 	}
 
-	// Recalculate the checksum
 	if err := tunnet.RecalculateTCPChecksum(packetData); err != nil {
 		if config.logChecksumErrors {
 			slog.Error("Failed to recalculate TCP checksum", slog.Any("error", err))
