@@ -72,7 +72,7 @@ func (s *Session) ProcessRx(rx, resp *Packet) {
 			s.localState = StateUp
 		}
 	case StateUp:
-		if rx.State == StateDown {
+		if rx.State == StateDown || rx.State == StateAdminDown {
 			s.localState = StateDown
 		}
 	}
@@ -121,6 +121,23 @@ func (s *Session) Expired() bool {
 	}
 	detectTime := time.Duration(s.detectMult) * s.txInterval
 	return time.Since(s.lastRx) > detectTime
+}
+
+// AdminDown transitions the session to AdminDown state. This signals the
+// remote peer that this session is being intentionally shut down (e.g.,
+// during graceful drain). The remote peer should transition to Down.
+func (s *Session) AdminDown() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	oldState := s.localState
+	if oldState == StateAdminDown {
+		return
+	}
+	s.localState = StateAdminDown
+	if s.onStateChange != nil {
+		s.onStateChange(oldState, StateAdminDown)
+	}
 }
 
 // LastRx returns when the last valid BFD packet was received.

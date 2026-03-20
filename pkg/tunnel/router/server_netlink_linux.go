@@ -48,6 +48,8 @@ type NetlinkRouter struct {
 
 	dmux *connection.DstMuxedConn
 
+	packetObserver connection.PacketObserver
+
 	closeOnce sync.Once
 }
 
@@ -131,6 +133,8 @@ func NewNetlinkRouter(opts ...Option) (*NetlinkRouter, error) {
 		iptV6: utiliptables.New(utiliptables.ProtocolIPv6),
 
 		dmux: connection.NewDstMuxedConn(),
+
+		packetObserver: options.packetObserver,
 	}, nil
 }
 
@@ -264,6 +268,9 @@ func (r *NetlinkRouter) Start(ctx context.Context) error {
 		var opts []connection.SpliceOption
 		if r.cksumRecalc {
 			opts = append(opts, connection.WithChecksumRecalculation())
+		}
+		if r.packetObserver != nil {
+			opts = append(opts, connection.WithPacketObserver(r.packetObserver))
 		}
 		return connection.Splice(r.tunDev, r.dmux, opts...)
 	})

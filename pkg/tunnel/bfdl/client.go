@@ -56,6 +56,16 @@ func NewClient(conn net.PacketConn, serverAddr netip.AddrPort) *Client {
 		BFDSessionsActive.WithLabelValues("client", old.String()).Dec()
 		BFDSessionsActive.WithLabelValues("client", new.String()).Inc()
 		BFDStateTransitions.WithLabelValues("client", old.String(), new.String()).Inc()
+
+		// Signal consumers on any Up -> Down transition (detect timer
+		// expiry or AdminDown from server).
+		if old == StateUp && new == StateDown {
+			select {
+			case <-c.downCh:
+			default:
+				close(c.downCh)
+			}
+		}
 	})
 	c.session = session
 
@@ -146,14 +156,6 @@ func (c *Client) Run(ctx context.Context) error {
 					c.session.onStateChange(old, StateDown)
 				}
 				c.session.mu.Unlock()
-
-				// Signal consumers that BFD failed.
-				select {
-				case <-c.downCh:
-					// Already closed.
-				default:
-					close(c.downCh)
-				}
 			}
 		}
 	}

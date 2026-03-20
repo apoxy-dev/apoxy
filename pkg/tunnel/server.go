@@ -12,6 +12,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/alphadose/haxmap"
@@ -35,6 +36,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/bfdl"
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/conntrack"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/metrics"
 	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/router"
@@ -71,8 +73,11 @@ type tunnelServerOptions struct {
 	onDisconnect OnDisconnectFunc
 
 	// BFD options.
-	bfdListenAddr netip.Addr   // If set, enables BFD server.
+	bfdListenAddr netip.Addr      // If set, enables BFD server.
 	onAlive       bfdl.OnAliveFunc // Called on each valid BFD Rx.
+
+	// TCP connection tracker for drain support.
+	connTracker *conntrack.Tracker
 }
 
 func defaultServerOptions() *tunnelServerOptions {
@@ -182,6 +187,14 @@ func WithOnAlive(fn bfdl.OnAliveFunc) TunnelServerOption {
 	}
 }
 
+// WithConnTracker sets an externally-created TCP connection tracker. If set,
+// it is used for ActiveTCPConns() reporting during graceful drain.
+func WithConnTracker(ct *conntrack.Tracker) TunnelServerOption {
+	return func(o *tunnelServerOptions) {
+		o.connTracker = ct
+	}
+}
+
 type conn struct {
 	*connectip.Conn
 	connID         string
@@ -222,11 +235,22 @@ type TunnelServer struct {
 	ln           *quic.EarlyListener
 	router       router.Router
 	bfdServer    *bfdl.Server
+	connTracker  *conntrack.Tracker
 
 	// tunnels maps tunnel UIDs to tunnel instances.
 	tunnels *haxmap.Map[string, *corev1alpha.TunnelNode]
 	// conns maps tunnel connection IDs to connection instances.
 	conns *haxmap.Map[string, *conn]
+
+	stopMu        sync.Mutex
+	stopped       bool
+	draining      bool
+	rejectNewConn bool
+
+	// drainCancel cancels the drainCtx, which controls the lifetime of
+	// the router and BFD server. Only called after Drain() force-closes
+	// all connections.
+	drainCancel context.CancelFunc
 }
 
 // NewTunnelServer creates a new server proxy that routes traffic via
@@ -242,12 +266,18 @@ func NewTunnelServer(
 		opt(options)
 	}
 
+	ct := options.connTracker
+	if ct == nil {
+		ct = conntrack.NewTracker()
+	}
+
 	s := &TunnelServer{
 		options: options,
 
 		clientGetter: cg,
 		jwtValidator: v,
 		router:       r,
+		connTracker:  ct,
 
 		tunnels: haxmap.New[string, *corev1alpha.TunnelNode](),
 		conns:   haxmap.New[string, *conn](),
@@ -353,22 +383,38 @@ func (t *TunnelServer) Start(ctx context.Context) error {
 		t.bfdServer = bfdl.NewServer(t.options.bfdListenAddr, t.options.onAlive)
 	}
 
-	g, ctx := errgroup.WithContext(ctx)
+	// drainCtx controls the lifetime of the router and BFD server. It
+	// survives SIGTERM and is only cancelled after Drain() force-closes
+	// all connections (or if no drain happens, by Stop()).
+	drainCtx, drainCancel := context.WithCancel(context.Background())
+	t.drainCancel = drainCancel
+
+	// serverCtx is derived from the parent ctx and is used for the accept
+	// loop. When SIGTERM fires (parent ctx cancelled), the accept loop
+	// exits. Connection handlers and the router use independent contexts
+	// so they survive shutdown during graceful drain.
+	g, serverCtx := errgroup.WithContext(ctx)
+	// When the server context is cancelled (SIGTERM), wait for Drain()
+	// or Stop() to shut down the listener. If draining, we must NOT close
+	// the listener here because the UDP socket is shared with existing
+	// QUIC connections. Instead, Drain()/Stop() will close it when done.
 	g.Go(func() error {
-		<-ctx.Done()
-
-		if err := t.Stop(); err != nil {
-			return fmt.Errorf("failed to shutdown QUIC server: %w", err)
-		}
-
+		<-serverCtx.Done()
+		// The accept loop checks serverCtx.Err() and will exit once
+		// it gets an error from Accept(). We need to unblock Accept()
+		// by either closing the listener (non-drain) or waiting for
+		// Drain() to do it (drain path). For non-drain, Stop() is
+		// called from the main errgroup which closes the listener.
+		// For drain, the accept loop will keep accepting but rejecting
+		// new connections until Drain() closes the listener.
 		return nil
 	})
 	// HTTP/3 server loop.
 	g.Go(func() error {
 		slog.Info("Serving HTTP/3", slog.String("addr", t.ln.Addr().String()))
 		for {
-			conn, err := t.ln.Accept(ctx)
-			if errors.Is(err, quic.ErrServerClosed) || ctx.Err() != nil {
+			conn, err := t.ln.Accept(serverCtx)
+			if errors.Is(err, quic.ErrServerClosed) || serverCtx.Err() != nil {
 				slog.Info("QUIC listener closed or context canceled")
 				return nil
 			}
@@ -377,7 +423,18 @@ func (t *TunnelServer) Start(ctx context.Context) error {
 				continue
 			}
 
+			// Reject new connections during drain.
+			t.stopMu.Lock()
+			reject := t.rejectNewConn
+			t.stopMu.Unlock()
+			if reject {
+				conn.CloseWithError(quic.ApplicationErrorCode(0), "draining")
+				continue
+			}
+
 			// Serves a single CONNECT-IP connection over HTTP/3.
+			// Pass the original (non-errgroup) ctx so connections are NOT
+			// cancelled by the server shutdown — drain controls their lifetime.
 			oneShotSrv := &http3.Server{
 				EnableDatagrams: true,
 				Handler:         t.makeSingleConnectHandler(ctx, conn),
@@ -391,14 +448,15 @@ func (t *TunnelServer) Start(ctx context.Context) error {
 			})
 		}
 	})
-	// Start the router to handle network traffic.
+	// Start the router to handle network traffic. Uses drainCtx so it
+	// stays alive during graceful drain (cancelled by Drain() or Stop()).
 	g.Go(func() error {
-		return t.router.Start(ctx)
+		return t.router.Start(drainCtx)
 	})
-	// Start BFD server if configured.
+	// Start BFD server if configured. Uses drainCtx for same reason.
 	if t.bfdServer != nil {
 		g.Go(func() error {
-			return t.bfdServer.Start(ctx)
+			return t.bfdServer.Start(drainCtx)
 		})
 	}
 
@@ -423,17 +481,95 @@ func (t *TunnelServer) BFDServer() *bfdl.Server {
 }
 
 func (t *TunnelServer) Stop() error {
-	slog.Info("Stopping Tunnel server", slog.String("addr", t.ln.Addr().String()))
-
-	if err := t.router.Close(); err != nil {
-		slog.Error("Failed to close router", slog.Any("error", err))
+	t.stopMu.Lock()
+	draining := t.draining
+	if t.stopped {
+		t.stopMu.Unlock()
+		return nil
 	}
+	t.stopped = true
+	t.stopMu.Unlock()
+
+	slog.Info("Stopping Tunnel server")
 
 	if err := t.ln.Close(); err != nil {
 		slog.Error("Failed to close listener", slog.Any("error", err))
 	}
 
+	if !draining {
+		// No drain in progress — force-close everything immediately.
+		t.conns.ForEach(func(connID string, c *conn) bool {
+			c.cancel()
+			return true
+		})
+		if t.drainCancel != nil {
+			t.drainCancel()
+		}
+	}
+	// If draining, Drain() manages connection and router lifecycle.
+
 	return nil
+}
+
+// BeginDrain signals that a graceful drain is in progress. Must be called
+// before the server's context is cancelled so that Stop() knows not to
+// force-close connections and the router.
+func (t *TunnelServer) BeginDrain() {
+	t.stopMu.Lock()
+	t.draining = true
+	t.stopMu.Unlock()
+	slog.Info("Tunnel server entering drain mode")
+}
+
+// StopAccepting stops accepting new tunnel connections. Existing QUIC
+// connections remain alive (the listener is NOT closed, to preserve the
+// underlying UDP socket that existing connections are multiplexed on).
+func (t *TunnelServer) StopAccepting() {
+	t.stopMu.Lock()
+	t.rejectNewConn = true
+	t.stopMu.Unlock()
+	slog.Info("Rejecting new tunnel connections (drain mode)")
+}
+
+// Drain sends BFD AdminDown to all peers, waits for the context to expire,
+// then force-closes all remaining connections and the router.
+func (t *TunnelServer) Drain(ctx context.Context) {
+	// Send BFD AdminDown to notify clients.
+	if t.bfdServer != nil {
+		t.bfdServer.Drain()
+	}
+
+	// Wait for the caller's timeout.
+	<-ctx.Done()
+
+	// Force-close all remaining connections.
+	t.conns.ForEach(func(connID string, c *conn) bool {
+		slog.Info("Force-closing connection during drain", slog.String("connID", connID))
+		c.cancel()
+		return true
+	})
+
+	// Close the QUIC listener (and its underlying UDP socket).
+	if t.ln != nil {
+		t.ln.Close()
+	}
+
+	// Cancel drainCtx to shut down the router and BFD server.
+	if t.drainCancel != nil {
+		t.drainCancel()
+	}
+}
+
+// ActiveTCPConns returns the number of active TCP connections being tracked
+// across all tunnels.
+func (t *TunnelServer) ActiveTCPConns() int {
+	return t.connTracker.ActiveCount()
+}
+
+// ConnTracker returns the TCP connection tracker for integration with the
+// router's packet forwarding path.
+func (t *TunnelServer) ConnTracker() *conntrack.Tracker {
+	return t.connTracker
 }
 
 func iproutesFromPrefixes(ps []netip.Prefix) []connectip.IPRoute {
@@ -560,7 +696,10 @@ func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.
 		logger = logger.With(slog.String("connUUID", connID))
 		logger.Info("Establishing CONNECT-IP connection")
 
-		connCtx, connCancel := context.WithCancel(ctx)
+		// Connection context is independent of the server lifecycle so that
+		// existing connections survive SIGTERM during graceful drain. The
+		// connection is closed explicitly by Drain() calling c.cancel().
+		connCtx, connCancel := context.WithCancel(context.Background())
 		defer connCancel()
 
 		conn := &conn{

@@ -138,7 +138,6 @@ func WithEgressGateway(enable bool) Option {
 }
 
 // WithPacketObserver sets a packet observer for traffic monitoring.
-// Only valid for netstack routers.
 func WithPacketObserver(obs connection.PacketObserver) Option {
 	return func(o *routerOptions) {
 		o.packetObserver = obs

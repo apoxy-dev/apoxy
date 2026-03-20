@@ -41,6 +41,9 @@ type Server struct {
 	// client's detect timer will fire after 30s, transitioning its
 	// session to Down. Used for integration testing.
 	blackholed map[string]struct{}
+
+	// conn is the UDP socket used for sending BFD packets. Set by Start().
+	conn *net.UDPConn
 }
 
 // NewServer creates a new BFD server.
@@ -73,6 +76,46 @@ func (s *Server) ResumeHeartbeat(connID string) {
 	defer s.mu.Unlock()
 	delete(s.blackholed, connID)
 	slog.Info("BFD un-blackholed", "connID", connID)
+}
+
+// Drain transitions all active sessions to AdminDown and sends a burst of
+// packets to notify clients. This causes clients to close their downCh
+// sub-second instead of waiting for the detect timer (30s).
+func (s *Server) Drain() {
+	s.mu.Lock()
+	conn := s.conn
+	if conn == nil {
+		s.mu.Unlock()
+		return
+	}
+
+	// Collect sessions and transition to AdminDown.
+	type drainTarget struct {
+		session  *serverSession
+		peerAddr net.UDPAddr
+	}
+	targets := make([]drainTarget, 0, len(s.sessions))
+	for _, ss := range s.sessions {
+		ss.AdminDown()
+		targets = append(targets, drainTarget{session: ss, peerAddr: ss.peerAddr})
+	}
+	s.mu.Unlock()
+
+	// Send a burst of 3 AdminDown packets per session for reliability.
+	var out [bfdPacketLen]byte
+	var pkt Packet
+	for _, t := range targets {
+		for i := 0; i < 3; i++ {
+			t.session.BuildTx(&pkt)
+			MarshalTo(out[:], &pkt)
+			if _, err := conn.WriteToUDP(out[:], &t.peerAddr); err != nil {
+				slog.Warn("BFD drain: failed to send AdminDown",
+					"connID", t.session.connID, "error", err)
+				break
+			}
+		}
+		slog.Info("BFD drain: sent AdminDown burst", "connID", t.session.connID)
+	}
 }
 
 // AddPeer registers a client for BFD. Called when setupConn assigns an
@@ -119,6 +162,10 @@ func (s *Server) Start(ctx context.Context) error {
 		return err
 	}
 	defer conn.Close()
+
+	s.mu.Lock()
+	s.conn = conn
+	s.mu.Unlock()
 
 	slog.Info("BFD server listening", "addr", addr.String())
 
