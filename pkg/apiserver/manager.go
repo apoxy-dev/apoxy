@@ -244,6 +244,11 @@ type options struct {
 	openAPIDefinitions     common.GetOpenAPIDefinitions
 	addToScheme            func(*runtime.Scheme) error
 	admissionPlugins       []admissionPlugin
+	auditPolicyFile    string
+	auditLogPath       string
+	auditLogMaxAge     int // days
+	auditLogMaxBackups int
+	auditLogMaxSizeMB  int // megabytes
 }
 
 type admissionPlugin struct {
@@ -461,6 +466,26 @@ func WithAdmissionPlugin(name string, factory admission.Factory) Option {
 			name:    name,
 			factory: factory,
 		})
+	}
+}
+
+// WithAuditPolicyFile sets the path to an audit policy YAML file.
+// When set, the apiserver will emit audit events filtered by the policy.
+func WithAuditPolicyFile(path string) Option {
+	return func(o *options) { o.auditPolicyFile = path }
+}
+
+// WithAuditLogPath sets the file path for audit log output.
+func WithAuditLogPath(path string) Option {
+	return func(o *options) { o.auditLogPath = path }
+}
+
+// WithAuditLogRotation configures lumberjack-based rotation for the audit log.
+func WithAuditLogRotation(maxAgeDays, maxBackups, maxSizeMB int) Option {
+	return func(o *options) {
+		o.auditLogMaxAge = maxAgeDays
+		o.auditLogMaxBackups = maxBackups
+		o.auditLogMaxSizeMB = maxSizeMB
 	}
 }
 
@@ -972,6 +997,22 @@ func start(
 				} else {
 					o.RecommendedOptions.Authentication = nil
 					o.RecommendedOptions.Authorization = nil
+				}
+
+				if opts.auditPolicyFile != "" {
+					o.RecommendedOptions.Audit = apiserveropts.NewAuditOptions()
+					o.RecommendedOptions.Audit.PolicyFile = opts.auditPolicyFile
+					o.RecommendedOptions.Audit.LogOptions.Path = opts.auditLogPath
+					o.RecommendedOptions.Audit.LogOptions.Format = "json"
+					if opts.auditLogMaxAge > 0 {
+						o.RecommendedOptions.Audit.LogOptions.MaxAge = opts.auditLogMaxAge
+					}
+					if opts.auditLogMaxBackups > 0 {
+						o.RecommendedOptions.Audit.LogOptions.MaxBackups = opts.auditLogMaxBackups
+					}
+					if opts.auditLogMaxSizeMB > 0 {
+						o.RecommendedOptions.Audit.LogOptions.MaxSize = opts.auditLogMaxSizeMB
+					}
 				}
 
 				return o
