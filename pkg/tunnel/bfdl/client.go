@@ -131,17 +131,10 @@ func (c *Client) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case pkt := <-readCh:
-			var resp Packet
-			c.session.ProcessRx(pkt, &resp)
+			// Update session state only; TX timer handles all transmissions
+			// to avoid echo amplification between client and server.
+			c.session.ProcessRx(pkt, nil)
 			pktPool.Put(pkt)
-			var out [bfdPacketLen]byte
-			MarshalTo(out[:], &resp)
-			if _, err := c.conn.WriteTo(out[:], c.dst); err != nil {
-				slog.Debug("BFD client write error", "error", err)
-				BFDPacketErrors.WithLabelValues("client", "tx").Inc()
-			} else {
-				BFDPacketsTx.WithLabelValues("client").Inc()
-			}
 		case <-txTicker.C:
 			c.sendTx()
 		case <-detectTicker.C:

@@ -81,7 +81,9 @@ func (s *Session) ProcessRx(rx, resp *Packet) {
 		s.onStateChange(oldState, s.localState)
 	}
 
-	s.buildTxLocked(resp)
+	if resp != nil {
+		s.buildTxLocked(resp)
+	}
 }
 
 // BuildTx writes an outgoing BFD control packet into pkt for periodic

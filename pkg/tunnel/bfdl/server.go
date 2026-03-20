@@ -179,10 +179,10 @@ func (s *Server) Start(ctx context.Context) error {
 	// and check for detect-timer expirations.
 	go s.txLoop(ctx, conn)
 
-	// RX loop: receive and respond to incoming BFD packets.
+	// RX loop: receive BFD packets and update session state.
+	// Packets are sent exclusively by the TX loop to avoid echo amplification.
 	buf := make([]byte, 128)
-	var rxPkt, resp Packet
-	var out [bfdPacketLen]byte
+	var rxPkt Packet
 	for {
 		n, raddr, err := conn.ReadFromUDP(buf)
 		if err != nil {
@@ -201,24 +201,14 @@ func (s *Server) Start(ctx context.Context) error {
 
 		BFDPacketsRx.WithLabelValues("server").Inc()
 
-		connID, ok := s.handlePacket(&rxPkt, raddr, &resp)
+		connID := s.handlePacket(&rxPkt, raddr)
 
-		// Check blackhole: drop response and skip onAlive.
+		// Check blackhole: skip onAlive.
 		s.mu.RLock()
 		_, hole := s.blackholed[connID]
 		s.mu.RUnlock()
 		if hole {
 			continue
-		}
-
-		if ok {
-			MarshalTo(out[:], &resp)
-			if _, err := conn.WriteToUDP(out[:], raddr); err != nil {
-				slog.Warn("BFD write error", "error", err, "dst", raddr)
-				BFDPacketErrors.WithLabelValues("server", "tx").Inc()
-			} else {
-				BFDPacketsTx.WithLabelValues("server").Inc()
-			}
 		}
 
 		if connID != "" && s.onAlive != nil {
@@ -289,10 +279,9 @@ func (s *Server) txLoop(ctx context.Context, conn *net.UDPConn) {
 	}
 }
 
-// handlePacket processes an incoming BFD packet. If a session exists or can
-// be created, it writes the response into resp and returns (connID, true).
-// Returns ("", false) when the packet should be dropped.
-func (s *Server) handlePacket(rx *Packet, raddr *net.UDPAddr, resp *Packet) (string, bool) {
+// handlePacket processes an incoming BFD packet, updating session state.
+// Returns the connID if the packet was handled, or "" if dropped.
+func (s *Server) handlePacket(rx *Packet, raddr *net.UDPAddr) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -307,7 +296,7 @@ func (s *Server) handlePacket(rx *Packet, raddr *net.UDPAddr, resp *Packet) (str
 	if ss == nil {
 		srcIP, ok := netip.AddrFromSlice(raddr.IP)
 		if !ok {
-			return "", false
+			return ""
 		}
 		srcIP = srcIP.Unmap()
 
@@ -316,7 +305,7 @@ func (s *Server) handlePacket(rx *Packet, raddr *net.UDPAddr, resp *Packet) (str
 			// No existing session. Check if peer is registered.
 			connID, registered := s.peers[srcIP]
 			if !registered {
-				return "", false
+				return ""
 			}
 
 			// Create new session.
@@ -354,6 +343,6 @@ func (s *Server) handlePacket(rx *Packet, raddr *net.UDPAddr, resp *Packet) (str
 	// Update peer address (port may change).
 	ss.peerAddr = *raddr
 
-	ss.ProcessRx(rx, resp)
-	return ss.connID, true
+	ss.ProcessRx(rx, nil)
+	return ss.connID
 }
