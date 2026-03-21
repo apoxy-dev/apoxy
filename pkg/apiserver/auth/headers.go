@@ -35,11 +35,11 @@ type headerRoundTripper struct {
 	roundTripper http.RoundTripper
 	userHeader   string
 	groupHeaders []string
-	extraHeaders []string
+	extraHeaders map[string]string
 }
 
 // NewHeaderRoundTripper returns a new round tripper that adds the given headers to the request.
-func NewHeaderRoundTripper(rt http.RoundTripper, userHeader string, groupHeaders, extraHeaders []string) *headerRoundTripper {
+func NewHeaderRoundTripper(rt http.RoundTripper, userHeader string, groupHeaders []string, extraHeaders map[string]string) *headerRoundTripper {
 	return &headerRoundTripper{
 		roundTripper: rt,
 		userHeader:   userHeader,
@@ -54,14 +54,14 @@ func (rt *headerRoundTripper) RoundTrip(req *http.Request) (*http.Response, erro
 	for _, groupHeader := range rt.groupHeaders {
 		req.Header.Add(GroupHeaderKey, groupHeader)
 	}
-	for _, extraHeader := range rt.extraHeaders {
-		req.Header.Add(ExtraHeaderKey, extraHeader)
+	for k, v := range rt.extraHeaders {
+		req.Header.Set(ExtraHeaderKey+k, v)
 	}
 	return rt.roundTripper.RoundTrip(req)
 }
 
 // NewTransportWrapperFunc returns a new transport.WrapperFunc that adds the given headers to the request.
-func NewTransportWrapperFunc(userHeader string, groupHeaders, extraHeaders []string) func(rt http.RoundTripper) http.RoundTripper {
+func NewTransportWrapperFunc(userHeader string, groupHeaders []string, extraHeaders map[string]string) func(rt http.RoundTripper) http.RoundTripper {
 	return func(rt http.RoundTripper) http.RoundTripper {
 		return NewHeaderRoundTripper(rt, userHeader, groupHeaders, extraHeaders)
 	}

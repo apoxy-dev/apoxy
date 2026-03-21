@@ -5,6 +5,8 @@ import (
 
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/transport"
+
+	"github.com/apoxy-dev/apoxy/build"
 )
 
 // ClientOption is a set of options for the client.
@@ -68,5 +70,6 @@ func NewClientConfig(opts ...ClientOption) *rest.Config {
 		TLSClientConfig: sOpts.tlsConfig,
 		BearerToken:     sOpts.bearerToken,
 		WrapTransport:   sOpts.transportWrapFunc,
+		UserAgent:       build.APIServerUserAgent(),
 	}
 }
