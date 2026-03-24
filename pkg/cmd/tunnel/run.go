@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"math/rand"
+	"slices"
 	"net/http"
 	"net/netip"
 	"os"
@@ -111,6 +112,10 @@ type tunnelNodeReconciler struct {
 
 	// Endpoint selector for choosing tunnel server addresses.
 	endpointSelector endpointselect.Selector
+
+	// Cached endpoint selection — only re-probe when addresses change.
+	lastAddresses []string
+	lastSelected  string
 
 	// Dial parameters protected by dialMu
 	dialMu     sync.RWMutex
@@ -439,14 +444,25 @@ func (t *tunnelNodeReconciler) reconcile(ctx context.Context, req ctrl.Request) 
 		} else if len(tunnelNode.Status.Addresses) == 1 {
 			srvAddr = tunnelNode.Status.Addresses[0]
 		} else {
-			// Use endpoint selector to choose the best endpoint.
-			selected, err := t.endpointSelector.Select(ctx, tunnelNode.Status.Addresses)
-			if err != nil {
-				log.Warn("Endpoint selection failed, using random",
-					slog.Any("error", err))
-				srvAddr = tunnelNode.Status.Addresses[rand.Intn(len(tunnelNode.Status.Addresses))]
+			// Re-probe only when the address list changes.
+			addrs := tunnelNode.Status.Addresses
+			sorted := make([]string, len(addrs))
+			copy(sorted, addrs)
+			slices.Sort(sorted)
+
+			if t.lastSelected != "" && slices.Equal(sorted, t.lastAddresses) {
+				srvAddr = t.lastSelected
 			} else {
-				srvAddr = selected
+				selected, err := t.endpointSelector.Select(ctx, addrs)
+				if err != nil {
+					log.Warn("Endpoint selection failed, using random",
+						slog.Any("error", err))
+					srvAddr = addrs[rand.Intn(len(addrs))]
+				} else {
+					srvAddr = selected
+				}
+				t.lastAddresses = sorted
+				t.lastSelected = srvAddr
 			}
 		}
 	} else {
