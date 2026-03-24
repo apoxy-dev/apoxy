@@ -936,6 +936,9 @@ func (t *TunnelServer) CloseConnection(connID string) {
 }
 
 // CloseConnectionsByName closes all active connections for the TunnelNode with the given name.
+// WARNING: In multi-tenant environments, multiple TunnelNodes across different
+// projects can share the same name. Prefer CloseConnectionsByUID to avoid
+// cross-project collisions.
 func (t *TunnelServer) CloseConnectionsByName(name string) {
 	t.conns.ForEach(func(connID string, c *conn) bool {
 		if c.obj.Name == name {
@@ -954,6 +957,24 @@ func (t *TunnelServer) CloseConnectionsByName(name string) {
 		}
 		return true
 	})
+}
+
+// CloseConnectionsByUID closes all active connections for the TunnelNode with
+// the given UID. This is safe in multi-tenant environments where multiple
+// projects may have TunnelNodes with the same name but different UIDs.
+func (t *TunnelServer) CloseConnectionsByUID(uid string) {
+	t.conns.ForEach(func(connID string, c *conn) bool {
+		if string(c.obj.UID) == uid {
+			slog.Info("Closing connection for removed TunnelNode",
+				slog.String("connID", connID),
+				slog.String("tunnelNode", c.obj.Name),
+				slog.String("uid", uid),
+			)
+			c.cancel()
+		}
+		return true
+	})
+	t.tunnels.Del(uid)
 }
 
 // ReconcileWithClient reconciles a TunnelNode using the provided client.
