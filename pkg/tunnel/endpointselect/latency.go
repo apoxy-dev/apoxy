@@ -135,9 +135,17 @@ func (s *LatencySelector) SelectWithResults(ctx context.Context, endpoints []str
 }
 
 // probeAll probes all endpoints concurrently and returns the results.
+// Once at least one probe succeeds, remaining probes are cancelled
+// so unreachable endpoints don't block selection.
 func (s *LatencySelector) probeAll(ctx context.Context, endpoints []string) []ProbeResult {
 	results := make([]ProbeResult, len(endpoints))
 	var wg sync.WaitGroup
+
+	// Cancel remaining probes once we have a successful result.
+	probeCtx, probeCancel := context.WithCancel(ctx)
+	defer probeCancel()
+
+	var once sync.Once
 
 	// Semaphore to limit concurrent probes.
 	sem := make(chan struct{}, s.opts.maxConcurrent)
@@ -151,16 +159,20 @@ func (s *LatencySelector) probeAll(ctx context.Context, endpoints []string) []Pr
 			select {
 			case sem <- struct{}{}:
 				defer func() { <-sem }()
-			case <-ctx.Done():
+			case <-probeCtx.Done():
 				results[idx] = ProbeResult{
 					Addr:     addr,
-					Error:    ctx.Err(),
+					Error:    probeCtx.Err(),
 					ProbedAt: time.Now(),
 				}
 				return
 			}
 
-			results[idx] = s.probe(ctx, addr)
+			results[idx] = s.probe(probeCtx, addr)
+			if results[idx].Error == nil {
+				// Got a successful probe — cancel the rest.
+				once.Do(probeCancel)
+			}
 		}(i, endpoint)
 	}
 
