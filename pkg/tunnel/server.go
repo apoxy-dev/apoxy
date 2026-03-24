@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -1010,19 +1009,6 @@ func (t *TunnelServer) ReconcileWithClient(ctx context.Context, c client.Client,
 	}
 
 	t.tunnels.Set(string(node.UID), node)
-
-	if t.options.publicAddr != "" {
-		var updated bool
-		if !slices.Contains(node.Status.Addresses, t.options.publicAddr) {
-			node.Status.Addresses = append(node.Status.Addresses, t.options.publicAddr)
-			updated = true
-		}
-		if updated {
-			if err := c.Status().Update(ctx, node); err != nil {
-				return reconcile.Result{}, fmt.Errorf("failed to update TunnelNode status: %w", err)
-			}
-		}
-	}
 
 	// Configure agent addresses from TunnelNode status.
 	var pendingAddress bool
