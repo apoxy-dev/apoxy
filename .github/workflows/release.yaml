@@ -81,15 +81,19 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ">=1.24"
+      - name: Decode Apple P12 certificate
+        run: echo "${{ secrets.APPLE_P12_BASE64 }}" | base64 -d > /tmp/apple-developer-id.p12
       - name: Publish GitHub release and Helm chart
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           APOXY_DOCKERHUB_PASSWORD: ${{ secrets.APOXY_DOCKERHUB_PASSWORD }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          APPLE_P12_PASSWORD: ${{ secrets.APPLE_P12_PASSWORD }}
+          APPLE_NOTARY_KEY_JSON: ${{ secrets.APPLE_NOTARY_KEY_JSON }}
           SHUTUP: 1
-        timeout-minutes: 15
+        timeout-minutes: 30
         run: |
-          dagger call -v publish-github-release --src=. --tag=$GITHUB_REF_NAME --github-token=env:GITHUB_TOKEN --sha=${GITHUB_SHA::7}
+          dagger call -v publish-github-release --src=. --tag=$GITHUB_REF_NAME --github-token=env:GITHUB_TOKEN --sha=${GITHUB_SHA::7} --apple-p12=file:/tmp/apple-developer-id.p12 --apple-p12-password=env:APPLE_P12_PASSWORD --apple-notary-key=env:APPLE_NOTARY_KEY_JSON
           dagger call -v publish-helm-release --src=./deploy/helm --tag=$GITHUB_REF_NAME --registry-password=env:APOXY_DOCKERHUB_PASSWORD
 
   publish-homebrew-formula:

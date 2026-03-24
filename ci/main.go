@@ -28,6 +28,7 @@ import (
 )
 
 const ZigVersion = "0.14.1"
+const RcodesignVersion = "0.29.0"
 
 type ApoxyCli struct{}
 
@@ -292,12 +293,71 @@ Commits:
 	return result, nil
 }
 
+// SignDarwinBinary signs and notarizes a macOS binary using rcodesign.
+// This runs entirely on Linux using rcodesign (Rust reimplementation of Apple codesign).
+func (m *ApoxyCli) SignDarwinBinary(
+	ctx context.Context,
+	binary *dagger.File,
+	appleP12 *dagger.Secret,
+	appleP12Password *dagger.Secret,
+	appleNotaryKey *dagger.Secret,
+) *dagger.File {
+	rcodesignURL := fmt.Sprintf(
+		"https://github.com/indygreg/apple-platform-rs/releases/download/apple-codesign%%2F%s/apple-codesign-%s-x86_64-unknown-linux-musl.tar.gz",
+		RcodesignVersion, RcodesignVersion,
+	)
+
+	return dag.Container().
+		From("ubuntu:22.04").
+		WithEnvVariable("DEBIAN_FRONTEND", "noninteractive").
+		WithExec([]string{"apt-get", "update"}).
+		WithExec([]string{"apt-get", "install", "-y", "wget", "zip"}).
+		// Install rcodesign.
+		WithExec([]string{"sh", "-c", fmt.Sprintf(
+			"wget -qO- '%s' | tar xzf - -C /usr/local/bin --strip-components=1 --wildcards '*/rcodesign'",
+			rcodesignURL,
+		)}).
+		// Mount secrets.
+		WithMountedSecret("/secrets/developer-id.p12", appleP12).
+		WithMountedSecret("/secrets/p12-password", appleP12Password).
+		WithMountedSecret("/secrets/notary-key.json", appleNotaryKey).
+		// Copy unsigned binary.
+		WithFile("/work/apoxy", binary).
+		// Sign with hardened runtime.
+		WithExec([]string{
+			"rcodesign", "sign",
+			"--p12-file", "/secrets/developer-id.p12",
+			"--p12-password-file", "/secrets/p12-password",
+			"--code-signature-flags", "runtime",
+			"/work/apoxy",
+		}).
+		// Verify signature.
+		WithExec([]string{"rcodesign", "verify", "/work/apoxy"}).
+		// Notarize: wrap in ZIP (required by Apple), submit, and wait.
+		WithExec([]string{"sh", "-c", "cd /work && zip apoxy.zip apoxy"}).
+		WithExec([]string{
+			"rcodesign", "notary-submit",
+			"--api-key-path", "/secrets/notary-key.json",
+			"--max-wait-seconds", "900",
+			"--wait",
+			"/work/apoxy.zip",
+		}).
+		// Return the signed binary (not the ZIP).
+		File("/work/apoxy")
+}
+
 // PublishGithubRelease publishes a CLI binary to GitHub releases.
 func (m *ApoxyCli) PublishGithubRelease(
 	ctx context.Context,
 	src *dagger.Directory,
 	githubToken *dagger.Secret,
 	tag, sha string,
+	// +optional
+	appleP12 *dagger.Secret,
+	// +optional
+	appleP12Password *dagger.Secret,
+	// +optional
+	appleNotaryKey *dagger.Secret,
 ) *dagger.Container {
 	cliCtrLinuxAmd64 := m.BuildCLI(ctx, src, "linux/amd64", tag, sha)
 	cliCtrLinuxArm64 := m.BuildCLI(ctx, src, "linux/arm64", tag, sha)
@@ -329,6 +389,13 @@ func (m *ApoxyCli) PublishGithubRelease(
 		}
 	}
 
+	darwinAmd64Binary := cliCtrMacosAmd64.File("/apoxy")
+	darwinArm64Binary := cliCtrMacosArm64.File("/apoxy")
+	if appleP12 != nil && appleP12Password != nil && appleNotaryKey != nil {
+		darwinAmd64Binary = m.SignDarwinBinary(ctx, darwinAmd64Binary, appleP12, appleP12Password, appleNotaryKey)
+		darwinArm64Binary = m.SignDarwinBinary(ctx, darwinArm64Binary, appleP12, appleP12Password, appleNotaryKey)
+	}
+
 	return dag.Container().
 		From("ubuntu:22.04").
 		WithEnvVariable("DEBIAN_FRONTEND", "noninteractive").
@@ -341,8 +408,8 @@ func (m *ApoxyCli) PublishGithubRelease(
 		WithSecretVariable("GITHUB_TOKEN", githubToken).
 		WithFile("/apoxy-linux-amd64", cliCtrLinuxAmd64.File("/apoxy")).
 		WithFile("/apoxy-linux-arm64", cliCtrLinuxArm64.File("/apoxy")).
-		WithFile("/apoxy-darwin-amd64", cliCtrMacosAmd64.File("/apoxy")).
-		WithFile("/apoxy-darwin-arm64", cliCtrMacosArm64.File("/apoxy")).
+		WithFile("/apoxy-darwin-amd64", darwinAmd64Binary).
+		WithFile("/apoxy-darwin-arm64", darwinArm64Binary).
 		// Create tarballs for each platform
 		WithExec([]string{"sh", "-c", "cd /tmp && cp /apoxy-linux-amd64 apoxy && tar czf /apoxy_Linux_x86_64.tar.gz apoxy && rm apoxy"}).
 		WithExec([]string{"sh", "-c", "cd /tmp && cp /apoxy-linux-arm64 apoxy && tar czf /apoxy_Linux_arm64.tar.gz apoxy && rm apoxy"}).
