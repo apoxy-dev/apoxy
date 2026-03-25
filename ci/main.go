@@ -311,7 +311,7 @@ func (m *ApoxyCli) SignDarwinBinary(
 		From("ubuntu:22.04").
 		WithEnvVariable("DEBIAN_FRONTEND", "noninteractive").
 		WithExec([]string{"apt-get", "update"}).
-		WithExec([]string{"apt-get", "install", "-y", "wget", "zip"}).
+		WithExec([]string{"apt-get", "install", "-y", "wget", "zip", "openssl"}).
 		// Install rcodesign.
 		WithExec([]string{"sh", "-c", fmt.Sprintf(
 			"wget -qO- '%s' | tar xzf - -C /usr/local/bin --strip-components=1 --wildcards '*/rcodesign'",
@@ -321,20 +321,21 @@ func (m *ApoxyCli) SignDarwinBinary(
 		WithMountedSecret("/secrets/developer-id.p12", appleP12).
 		WithMountedSecret("/secrets/p12-password", appleP12Password).
 		WithMountedSecret("/secrets/notary-key.json", appleNotaryKey).
+		// Extract leaf cert and key from .p12 (avoids rcodesign picking the intermediate cert).
+		WithExec([]string{"sh", "-c", "openssl pkcs12 -in /secrets/developer-id.p12 -clcerts -nokeys -passin file:/secrets/p12-password -out /tmp/cert.pem -legacy"}).
+		WithExec([]string{"sh", "-c", "openssl pkcs12 -in /secrets/developer-id.p12 -nocerts -nodes -passin file:/secrets/p12-password -out /tmp/key.pem -legacy"}).
 		// Copy unsigned binary.
 		WithFile("/work/apoxy", binary).
-		// Sign with hardened runtime.
+		// Sign with hardened runtime using extracted PEM files.
 		WithExec([]string{
 			"rcodesign", "sign",
-			"--p12-file", "/secrets/developer-id.p12",
-			"--p12-password-file", "/secrets/p12-password",
+			"--pem-source", "/tmp/cert.pem",
+			"--pem-source", "/tmp/key.pem",
 			"--code-signature-flags", "runtime",
 			"--timestamp-url", "http://timestamp.apple.com/ts01",
 			"/work/apoxy",
 		}).
 		// Notarize: wrap in ZIP (required by Apple), submit, and wait.
-		// Note: skipping rcodesign verify — it has known bugs (self-reported).
-		// Apple's notarization validates the signature server-side.
 		WithExec([]string{"sh", "-c", "cd /work && zip apoxy.zip apoxy"}).
 		WithExec([]string{
 			"rcodesign", "notary-submit",
