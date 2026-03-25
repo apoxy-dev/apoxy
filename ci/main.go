@@ -329,6 +329,7 @@ func (m *ApoxyCli) SignDarwinBinary(
 			"--p12-file", "/secrets/developer-id.p12",
 			"--p12-password-file", "/secrets/p12-password",
 			"--code-signature-flags", "runtime",
+			"--timestamp-url", "http://timestamp.apple.com/ts01",
 			"/work/apoxy",
 		}).
 		// Notarize: wrap in ZIP (required by Apple), submit, and wait.
