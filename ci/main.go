@@ -331,9 +331,9 @@ func (m *ApoxyCli) SignDarwinBinary(
 			"--code-signature-flags", "runtime",
 			"/work/apoxy",
 		}).
-		// Verify signature.
-		WithExec([]string{"rcodesign", "verify", "/work/apoxy"}).
 		// Notarize: wrap in ZIP (required by Apple), submit, and wait.
+		// Note: skipping rcodesign verify — it has known bugs (self-reported).
+		// Apple's notarization validates the signature server-side.
 		WithExec([]string{"sh", "-c", "cd /work && zip apoxy.zip apoxy"}).
 		WithExec([]string{
 			"rcodesign", "notary-submit",
