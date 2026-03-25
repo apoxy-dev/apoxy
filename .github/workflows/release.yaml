@@ -22,7 +22,7 @@ jobs:
           SHUTUP: 1
         timeout-minutes: 30
         run: |
-          dagger call -v publish-images --src=. --tag=$GITHUB_REF_NAME --sha=${GITHUB_SHA::7} --registry-password=env:APOXY_DOCKERHUB_PASSWORD --edge-runtime-tag=a5e7d79 --gcr-creds=env:APOXY_INTERNAL_GAR_CREDENTIALS
+          dagger call -v publish-images --src=. --tag=$GITHUB_REF_NAME --sha=${GITHUB_SHA::7} --registry-password=env:APOXY_DOCKERHUB_PASSWORD --edge-runtime-tag=38f78c0 --gcr-creds=env:APOXY_INTERNAL_GAR_CREDENTIALS
 
   publish-github-release:
     needs: publish-images
