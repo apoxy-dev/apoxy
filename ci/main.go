@@ -340,7 +340,7 @@ func (m *ApoxyCli) SignDarwinBinary(
 		WithExec([]string{
 			"rcodesign", "notary-submit",
 			"--api-key-path", "/secrets/notary-key.json",
-			"--max-wait-seconds", "900",
+			"--max-wait-seconds", "1800",
 			"--wait",
 			"/work/apoxy.zip",
 		}).
