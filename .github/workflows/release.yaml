@@ -25,7 +25,6 @@ jobs:
           dagger call -v publish-images --src=. --tag=$GITHUB_REF_NAME --sha=${GITHUB_SHA::7} --registry-password=env:APOXY_DOCKERHUB_PASSWORD --edge-runtime-tag=38f78c0 --gcr-creds=env:APOXY_INTERNAL_GAR_CREDENTIALS
 
   publish-github-release:
-    needs: publish-images
     runs-on: depot-ubuntu-22.04-16,dagger=0.19.10
     steps:
       - uses: actions/checkout@v4
