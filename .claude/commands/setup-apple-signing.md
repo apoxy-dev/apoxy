@@ -57,13 +57,15 @@ openssl x509 -inform der -in <DOWNLOADED_CER_PATH> -out developer_id.pem
 curl -sO https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer
 openssl x509 -inform der -in DeveloperIDG2CA.cer -out DeveloperIDG2CA.pem
 
-# Bundle into .p12
+# Bundle into .p12 (MUST use -legacy for rcodesign compatibility)
+# OpenSSL 3.x defaults to AES-256-CBC which rcodesign cannot decrypt.
 openssl pkcs12 -export \
   -out developer_id.p12 \
   -inkey developer_id.key \
   -in developer_id.pem \
   -certfile DeveloperIDG2CA.pem \
-  -password pass:$P12_PASSWORD
+  -password pass:$P12_PASSWORD \
+  -legacy
 ```
 
 Replace `<DOWNLOADED_CER_PATH>` with the path the user provided. Confirm the `.p12` was created and is non-empty.
