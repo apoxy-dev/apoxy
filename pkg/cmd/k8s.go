@@ -45,7 +45,7 @@ var (
 	encoder = runtimejson.NewYAMLSerializer(runtimejson.DefaultMetaFactory, scheme.Scheme, scheme.Scheme)
 )
 
-func onboardingPath(clusterName, mirror, image string) string {
+func onboardingPath(clusterName, mirror, image, version string) string {
 	path := "/v1/onboarding/k8s.yaml"
 	params := url.Values{}
 	if clusterName != "" {
@@ -57,19 +57,22 @@ func onboardingPath(clusterName, mirror, image string) string {
 	if image != "" {
 		params.Set("image", image)
 	}
+	if version != "" {
+		params.Set("version", version)
+	}
 	if len(params) == 0 {
 		return path
 	}
 	return path + "?" + params.Encode()
 }
 
-func getYAML(clusterName, mirror, image string) ([]byte, error) {
+func getYAML(clusterName, mirror, image, version string) ([]byte, error) {
 	c, err := config.DefaultAPIClient()
 	if err != nil {
 		return nil, err
 	}
 
-	resp, err := c.SendRequest(http.MethodGet, onboardingPath(clusterName, mirror, image), nil)
+	resp, err := c.SendRequest(http.MethodGet, onboardingPath(clusterName, mirror, image, version), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -1030,6 +1033,10 @@ will automatically connect to the Apoxy API and begin managing your in-cluster A
 		if err != nil {
 			return err
 		}
+		version, err := cmd.Flags().GetString("version")
+		if err != nil {
+			return err
+		}
 		yes, err := cmd.Flags().GetBool("yes")
 		if err != nil {
 			return err
@@ -1064,7 +1071,7 @@ will automatically connect to the Apoxy API and begin managing your in-cluster A
 			}
 		}
 
-		yamlz, err := getYAML(clusterName, mirror, image)
+		yamlz, err := getYAML(clusterName, mirror, image, version)
 		if err != nil {
 			return fmt.Errorf("failed to get YAML: %w", err)
 		}
@@ -1092,6 +1099,7 @@ func init() {
 	installK8sCmd.Flags().String("cluster-name", "", "Cluster name identifier (defaults to kube context name)")
 	installK8sCmd.Flags().String("mirror", "", "Mirror mode (gateway, ingress, all)")
 	installK8sCmd.Flags().String("image", "", "Controller image override to pass to the onboarding manifest generator")
+	installK8sCmd.Flags().String("version", "", "Controller version override (e.g. v0.3.0)")
 	installK8sCmd.Flags().BoolP("yes", "y", false, "Skip confirmation and apply changes immediately")
 	k8sCmd.AddCommand(installK8sCmd)
 

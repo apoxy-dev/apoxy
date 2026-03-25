@@ -7,15 +7,23 @@ import (
 )
 
 func TestOnboardingPath(t *testing.T) {
-	got := onboardingPath("silent-hill", "gateway", "docker.io/apoxy/apoxy:v0.1.6-dev-849f400")
+	got := onboardingPath("silent-hill", "gateway", "docker.io/apoxy/apoxy:v0.1.6-dev-849f400", "")
 	want := "/v1/onboarding/k8s.yaml?cluster_name=silent-hill&image=docker.io%2Fapoxy%2Fapoxy%3Av0.1.6-dev-849f400&mirror=gateway"
 	if got != want {
 		t.Fatalf("onboardingPath() = %q, want %q", got, want)
 	}
 }
 
+func TestOnboardingPathWithVersion(t *testing.T) {
+	got := onboardingPath("silent-hill", "gateway", "", "v0.3.0")
+	want := "/v1/onboarding/k8s.yaml?cluster_name=silent-hill&mirror=gateway&version=v0.3.0"
+	if got != want {
+		t.Fatalf("onboardingPath() = %q, want %q", got, want)
+	}
+}
+
 func TestOnboardingPathWithoutParams(t *testing.T) {
-	got := onboardingPath("", "", "")
+	got := onboardingPath("", "", "", "")
 	want := "/v1/onboarding/k8s.yaml"
 	if got != want {
 		t.Fatalf("onboardingPath() = %q, want %q", got, want)
