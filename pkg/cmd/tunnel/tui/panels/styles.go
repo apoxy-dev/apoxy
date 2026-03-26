@@ -92,6 +92,12 @@ var (
 	ColumnHeaderStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("250")).
 				Bold(true)
+
+	// Paused indicator style
+	PausedStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("226")). // yellow
+			Background(lipgloss.Color("52"))   // dark red
 )
 
 // TunnelInfo contains information about the tunnel.

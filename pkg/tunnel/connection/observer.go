@@ -103,6 +103,13 @@ type PacketObserver interface {
 	OnPacket(info PacketInfo)
 }
 
+// SuspendableObserver is an optional interface that PacketObservers can implement
+// to allow the hot path to skip packet parsing when observation is suspended.
+type SuspendableObserver interface {
+	IsSuspended() bool
+	CountPacket() // lightweight increment when suspended, for rate tracking
+}
+
 // ExtractPacketInfo parses an IP packet to extract metadata.
 func ExtractPacketInfo(packet []byte, dir Direction) PacketInfo {
 	info := PacketInfo{

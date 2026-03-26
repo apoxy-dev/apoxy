@@ -23,17 +23,19 @@ type Model struct {
 	quitting bool
 
 	packetsCh      <-chan connection.PacketInfo
+	observer       *TUIPacketObserver
 	statusProvider StatusProvider
 }
 
 // NewModel creates a new TUI model.
-func NewModel(packetsCh <-chan connection.PacketInfo, statusProvider StatusProvider) Model {
+func NewModel(packetsCh <-chan connection.PacketInfo, observer *TUIPacketObserver, statusProvider StatusProvider) Model {
 	return Model{
 		header:         panels.NewHeaderPanel(),
 		traffic:        panels.NewTrafficPanel(),
 		help:           panels.NewHelpPanel(),
 		keys:           DefaultKeyMap,
 		packetsCh:      packetsCh,
+		observer:       observer,
 		statusProvider: statusProvider,
 	}
 }
@@ -101,19 +103,40 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.traffic.ToggleBFD()
 			return m, nil
 
+		case key.Matches(msg, m.keys.Suspend):
+			if m.observer != nil {
+				if m.observer.IsSuspended() {
+					m.observer.Resume()
+					m.traffic.SetPaused(false, false)
+				} else {
+					m.observer.Suspend()
+					m.traffic.SetPaused(true, false)
+				}
+			}
+			return m, nil
+
 		case key.Matches(msg, m.keys.Clear):
 			m.traffic.Clear()
 			return m, nil
 		}
 
 	case PacketMsg:
-		m.traffic.AddPacket(msg.Info)
+		if m.observer == nil || !m.observer.IsSuspended() {
+			m.traffic.AddPacket(msg.Info)
+		}
 		return m, waitForPacket(m.packetsCh)
 
 	case TickMsg:
 		if m.statusProvider != nil {
 			m.header.SetTunnelInfo(m.statusProvider.GetTunnelInfo())
 			m.header.SetConnections(m.statusProvider.GetConnections())
+		}
+		if m.observer != nil {
+			pps, didAutoSuspend := m.observer.CheckAutoSuspend(500 * time.Millisecond)
+			m.traffic.SetPacketRate(pps)
+			if didAutoSuspend {
+				m.traffic.SetPaused(true, true)
+			}
 		}
 		return m, tickStatus()
 	}

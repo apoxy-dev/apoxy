@@ -21,6 +21,15 @@ const (
 	tunOffset = device.MessageTransportHeaderSize
 )
 
+// observePacket handles packet observation, skipping ExtractPacketInfo when suspended.
+func observePacket(obs PacketObserver, packet []byte, dir Direction) {
+	if s, ok := obs.(SuspendableObserver); ok && s.IsSuspended() {
+		s.CountPacket()
+		return
+	}
+	obs.OnPacket(ExtractPacketInfo(packet, dir))
+}
+
 // SpliceConfig holds configuration options for splice operations.
 type SpliceConfig struct {
 	recalculateChecksum bool
@@ -112,7 +121,7 @@ func Splice(tunDev tun.Device, conn Connection, opts ...SpliceOption) error {
 				packetData := pkts[i][:sizes[i]]
 
 				if config.observer != nil {
-					config.observer.OnPacket(ExtractPacketInfo(packetData, DirectionOutbound))
+					observePacket(config.observer, packetData, DirectionOutbound)
 				}
 
 				if config.recalculateChecksum {
@@ -178,7 +187,7 @@ func Splice(tunDev tun.Device, conn Connection, opts ...SpliceOption) error {
 				}
 
 				if config.observer != nil && len(*pkt) > tunOffset {
-					config.observer.OnPacket(ExtractPacketInfo((*pkt)[tunOffset:], DirectionInbound))
+					observePacket(config.observer, (*pkt)[tunOffset:], DirectionInbound)
 				}
 				if config.recalculateChecksum {
 					if err := recalculateChecksumIfNeeded((*pkt)[tunOffset:], config); err != nil {
@@ -196,7 +205,7 @@ func Splice(tunDev tun.Device, conn Connection, opts ...SpliceOption) error {
 						break
 					}
 					if config.observer != nil && len(*pkt) > tunOffset {
-						config.observer.OnPacket(ExtractPacketInfo((*pkt)[tunOffset:], DirectionInbound))
+						observePacket(config.observer, (*pkt)[tunOffset:], DirectionInbound)
 					}
 					if config.recalculateChecksum {
 						if err := recalculateChecksumIfNeeded((*pkt)[tunOffset:], config); err != nil {
@@ -246,7 +255,7 @@ func Splice(tunDev tun.Device, conn Connection, opts ...SpliceOption) error {
 				*pkt = (*pkt)[:n+tunOffset]
 
 				if config.observer != nil && n > 0 {
-					config.observer.OnPacket(ExtractPacketInfo((*pkt)[tunOffset:], DirectionInbound))
+					observePacket(config.observer, (*pkt)[tunOffset:], DirectionInbound)
 				}
 				if config.recalculateChecksum {
 					if err := recalculateChecksumIfNeeded((*pkt)[tunOffset:], config); err != nil {

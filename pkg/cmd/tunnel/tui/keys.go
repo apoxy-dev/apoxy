@@ -13,6 +13,7 @@ type keyMap struct {
 	FilterICMP key.Binding
 	FilterAll  key.Binding
 	ToggleBFD  key.Binding
+	Suspend    key.Binding
 	Clear      key.Binding
 }
 
@@ -27,17 +28,18 @@ var DefaultKeyMap = keyMap{
 	FilterICMP: key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "ICMP")),
 	FilterAll:  key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "all")),
 	ToggleBFD:  key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "toggle pings")),
+	Suspend:    key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "pause")),
 	Clear:      key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "clear")),
 }
 
 func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.FilterTCP, k.FilterUDP, k.FilterICMP, k.FilterAll, k.ToggleBFD, k.Clear, k.Quit}
+	return []key.Binding{k.FilterTCP, k.FilterUDP, k.FilterICMP, k.FilterAll, k.ToggleBFD, k.Suspend, k.Clear, k.Quit}
 }
 
 func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.ScrollUp, k.ScrollDown, k.Top, k.Bottom},
-		{k.FilterTCP, k.FilterUDP, k.FilterICMP, k.FilterAll, k.ToggleBFD},
+		{k.FilterTCP, k.FilterUDP, k.FilterICMP, k.FilterAll, k.ToggleBFD, k.Suspend},
 		{k.Clear, k.Quit},
 	}
 }

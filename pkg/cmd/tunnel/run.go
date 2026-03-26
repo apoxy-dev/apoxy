@@ -358,7 +358,7 @@ func (t *tunnelNodeReconciler) run(ctx context.Context, tn *corev1alpha.TunnelNo
 	if useTUI {
 		g.Go(func() error {
 			defer close(packetsCh)
-			if err := tui.Run(gctx, packetsCh, t); err != nil {
+			if err := tui.Run(gctx, packetsCh, observer, t); err != nil {
 				return err
 			}
 			// TUI exited normally (user quit) - cancel context to stop other goroutines

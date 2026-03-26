@@ -36,6 +36,7 @@ func (p HelpPanel) View() string {
 		HelpStyle.Render("i") + DimStyle.Render(":ICMP"),
 		HelpStyle.Render("a") + DimStyle.Render(":all"),
 		HelpStyle.Render("p") + DimStyle.Render(":pings"),
+		HelpStyle.Render("s") + DimStyle.Render(":pause"),
 		HelpStyle.Render("c") + DimStyle.Render(":clear"),
 		HelpStyle.Render("q") + DimStyle.Render(":quit"),
 	}

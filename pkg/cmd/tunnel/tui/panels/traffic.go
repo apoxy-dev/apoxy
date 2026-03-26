@@ -31,6 +31,10 @@ type TrafficPanel struct {
 	hideBFD  bool // hide BFD control packets (UDP port 3784)
 	scrollY  int
 	autoTail bool // auto-scroll to bottom
+
+	paused     bool  // traffic observation is suspended
+	autoPaused bool  // suspension was triggered automatically
+	packetRate int64 // current raw packets/sec
 }
 
 // NewTrafficPanel creates a new traffic panel.
@@ -84,6 +88,22 @@ func (p *TrafficPanel) ToggleBFD() {
 // HideBFD returns whether BFD packets are currently hidden.
 func (p *TrafficPanel) HideBFD() bool {
 	return p.hideBFD
+}
+
+// SetPaused sets the paused state and whether it was auto-triggered.
+func (p *TrafficPanel) SetPaused(paused bool, auto bool) {
+	p.paused = paused
+	p.autoPaused = auto
+}
+
+// IsPaused returns whether traffic observation is paused.
+func (p *TrafficPanel) IsPaused() bool {
+	return p.paused
+}
+
+// SetPacketRate sets the current raw packet rate for display.
+func (p *TrafficPanel) SetPacketRate(pps int64) {
+	p.packetRate = pps
 }
 
 func isBFDPacket(pkt connection.PacketInfo) bool {
@@ -199,6 +219,13 @@ func (p TrafficPanel) View() string {
 	// Header with filter info
 	filterInfo := fmt.Sprintf(" TRAFFIC (%s) ", p.FilterName())
 	headerContent := HeaderStyle.Render(filterInfo)
+	if p.paused {
+		label := "PAUSED"
+		if p.autoPaused {
+			label = fmt.Sprintf("AUTO-PAUSED (%d pkt/s)", p.packetRate)
+		}
+		headerContent += " " + PausedStyle.Render(" "+label+" ")
+	}
 
 	header := headerContent
 	headerBox := TrafficBorderStyle.Width(p.width - 2).Render(header)
