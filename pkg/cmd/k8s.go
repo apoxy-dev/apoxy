@@ -18,6 +18,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -913,6 +914,24 @@ func installControllerDryRun(ctx context.Context, dynClient dynamic.Interface, m
 	return nil
 }
 
+func ensureNamespace(ctx context.Context, kc *rest.Config, ns string) error {
+	clientset, err := kubernetes.NewForConfig(kc)
+	if err != nil {
+		return err
+	}
+	_, err = clientset.CoreV1().Namespaces().Get(ctx, ns, metav1.GetOptions{})
+	if err == nil {
+		return nil
+	}
+	if !apierrors.IsNotFound(err) {
+		return err
+	}
+	_, err = clientset.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: ns},
+	}, metav1.CreateOptions{})
+	return err
+}
+
 // --- Main orchestration ---
 
 func installController(ctx context.Context, kc *rest.Config, yamlz []byte, ns string, dryRun, force, yes bool, kubeContext string) error {
@@ -926,6 +945,13 @@ func installController(ctx context.Context, kc *rest.Config, yamlz []byte, ns st
 		return err
 	}
 	mapper := restmapper.NewDeferredDiscoveryRESTMapper(memory.NewMemCacheClient(dc))
+
+	// Ensure the target namespace exists before any server-side dry-run or
+	// plan building — both paths use SSA dry-run patches that require the
+	// namespace to be present for validation.
+	if err := ensureNamespace(ctx, kc, ns); err != nil {
+		return fmt.Errorf("failed to ensure namespace %q: %w", ns, err)
+	}
 
 	if dryRun {
 		return installControllerDryRun(ctx, dynClient, mapper, yamlz, ns, force)
