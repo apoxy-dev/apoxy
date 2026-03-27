@@ -19,12 +19,13 @@ import (
 )
 
 type Client struct {
-	http       *http.Client
-	h3         *http3.Transport
-	baseURL    *url.URL
-	tunnelName string
-	token      string
-	agent      string
+	http        *http.Client
+	h3          *http3.Transport
+	baseURL     *url.URL
+	tunnelName  string
+	token       string
+	agent       string
+	metricsPort int
 }
 
 type ClientOptions struct {
@@ -44,6 +45,9 @@ type ClientOptions struct {
 	// PacketConn is an optional UDP PacketConn to use for QUIC connections.
 	// If nil, a new UDP socket will be created for each connection.
 	PacketConn net.PacketConn
+	// MetricsPort is the port the agent's Prometheus metrics server listens on.
+	// Advertised to the relay so it can scrape metrics through the overlay.
+	MetricsPort int
 }
 
 func NewClient(opts ClientOptions) (*Client, error) {
@@ -104,12 +108,13 @@ func NewClient(opts ClientOptions) (*Client, error) {
 	}
 
 	return &Client{
-		http:       hc,
-		h3:         t,
-		baseURL:    u,
-		tunnelName: opts.TunnelName,
-		token:      opts.Token,
-		agent:      opts.Agent,
+		http:        hc,
+		h3:          t,
+		baseURL:     u,
+		tunnelName:  opts.TunnelName,
+		token:       opts.Token,
+		agent:       opts.Agent,
+		metricsPort: opts.MetricsPort,
 	}, nil
 }
 
@@ -119,7 +124,7 @@ func (c *Client) Close() error {
 
 // Connect to the relay and establish a new tunnel connection.
 func (c *Client) Connect(ctx context.Context) (*ConnectResponse, error) {
-	reqBody := ConnectRequest{Agent: c.agent}
+	reqBody := ConnectRequest{Agent: c.agent, MetricsPort: c.metricsPort}
 	var resp ConnectResponse
 	if err := c.doJSON(ctx, http.MethodPost, c.path("/v1/tunnel/"+c.tunnelName), reqBody, &resp, http.StatusCreated); err != nil {
 		return nil, err

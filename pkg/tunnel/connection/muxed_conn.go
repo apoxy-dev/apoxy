@@ -108,6 +108,11 @@ func (m *muxedConn) readFromConn(src netip.Prefix, conn Connection) {
 
 		metrics.TunnelPacketsReceived.Inc()
 		metrics.TunnelBytesReceived.Add(float64(n))
+
+		if c := metrics.GetProtocolCounters(protocolFromPacket((*pkt)[m.headroom:m.headroom+n]), "rx"); c != nil {
+			c.Packets.Inc()
+			c.Bytes.Add(float64(n))
+		}
 	}
 }
 
@@ -294,6 +299,11 @@ func (m *muxedConn) writeToConn(addr netip.Addr, pkt []byte) []byte {
 	metrics.TunnelPacketsSent.Inc()
 	metrics.TunnelBytesSent.Add(float64(len(pkt)))
 
+	if c := metrics.GetProtocolCounters(protocolFromPacket(pkt), "tx"); c != nil {
+		c.Packets.Inc()
+		c.Bytes.Add(float64(len(pkt)))
+	}
+
 	icmp, err := conn.WritePacket(pkt)
 	if err != nil {
 		// Log the error but don't remove the connection here to avoid issues
@@ -305,6 +315,31 @@ func (m *muxedConn) writeToConn(addr netip.Addr, pkt []byte) []byte {
 	}
 
 	return icmp
+}
+
+// protocolFromPacket extracts the IP protocol number from an IPv4/IPv6 packet
+// and returns a label string ("tcp", "udp", "icmp", "other"). Returns "" if
+// the packet is too short to determine the protocol.
+func protocolFromPacket(pkt []byte) string {
+	if len(pkt) == 0 {
+		return ""
+	}
+	var proto byte
+	switch pkt[0] >> 4 {
+	case 4:
+		if len(pkt) < 20 {
+			return ""
+		}
+		proto = pkt[9] // IPv4 protocol field.
+	case 6:
+		if len(pkt) < 40 {
+			return ""
+		}
+		proto = pkt[6] // IPv6 next header field.
+	default:
+		return ""
+	}
+	return metrics.ProtocolFromIPHeader(proto)
 }
 
 // SrcMuxedConn implements Connection that multiplexes multiple Connections based

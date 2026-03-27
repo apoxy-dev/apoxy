@@ -67,6 +67,16 @@ var (
 		},
 		[]string{"role", "direction"},
 	)
+
+	// BFDHeartbeatsReceived counts valid BFD heartbeat packets received.
+	// Labels: "role" (server|client).
+	BFDHeartbeatsReceived = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "tunnel_bfd_heartbeats_received_total",
+			Help: "Total valid BFD heartbeat packets received.",
+		},
+		[]string{"role"},
+	)
 )
 
 func init() {
@@ -77,5 +87,6 @@ func init() {
 		BFDStateTransitions,
 		BFDDetectTimeouts,
 		BFDPacketErrors,
+		BFDHeartbeatsReceived,
 	)
 }

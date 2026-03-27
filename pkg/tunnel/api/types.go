@@ -16,6 +16,9 @@ type Request struct {
 type ConnectRequest struct {
 	// Agent is the name of the agent.
 	Agent string `json:"agent"`
+	// MetricsPort is the port the agent's Prometheus metrics server listens on.
+	// 0 means the agent does not expose metrics.
+	MetricsPort int `json:"metricsPort,omitempty"`
 }
 
 type ConnectResponse struct {

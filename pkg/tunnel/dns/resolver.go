@@ -16,12 +16,14 @@ import (
 	"github.com/coredns/coredns/plugin"
 	"github.com/google/uuid"
 	"github.com/miekg/dns"
+	"github.com/prometheus/client_golang/prometheus"
 	"golang.org/x/sync/errgroup"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/util/sets"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	clog "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/metrics"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	corev1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
@@ -32,6 +34,34 @@ import (
 const (
 	upstreamTimeout = 2 * time.Second
 )
+
+var (
+	dnsQueriesTotal = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "tunnel_dns_queries_total",
+		Help: "Total DNS queries handled by the tunnel resolver.",
+	})
+	dnsQueriesFailed = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "tunnel_dns_queries_failed_total",
+		Help: "Total DNS queries that failed.",
+	})
+	dnsCacheHits = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "tunnel_dns_cache_hits_total",
+		Help: "Total DNS cache hits (name or UUID found in cache).",
+	})
+	dnsCacheMisses = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "tunnel_dns_cache_misses_total",
+		Help: "Total DNS cache misses.",
+	})
+)
+
+func init() {
+	metrics.Registry.MustRegister(
+		dnsQueriesTotal,
+		dnsQueriesFailed,
+		dnsCacheHits,
+		dnsCacheMisses,
+	)
+}
 
 var tunResolver = netip.AddrPortFrom(
 	netip.AddrFrom4([4]byte{127, 0, 0, 1}),
@@ -281,6 +311,7 @@ func (r *TunnelNodeDNSReconciler) recursiveResolve(
 	}
 
 	if len(ans) == 0 {
+		dnsQueriesFailed.Inc()
 		return dns.RcodeNameError, errors.New("no answers")
 	}
 
@@ -321,9 +352,11 @@ func (r *TunnelNodeDNSReconciler) getUpsreamsForSubdomain(
 		upstreamAddrs, found = r.nameCache.Get(key)
 	}
 	if !found {
+		dnsCacheMisses.Inc()
 		return nil
 	}
 
+	dnsCacheHits.Inc()
 	randUpstreams := upstreamAddrs.UnsortedList() // returns a slice copy.
 	rand.Shuffle(len(randUpstreams), func(i, j int) {
 		randUpstreams[i], randUpstreams[j] = randUpstreams[j], randUpstreams[i]
@@ -346,6 +379,8 @@ func (r *TunnelNodeDNSReconciler) serveDNS(ctx context.Context, next plugin.Hand
 		log.Debug("Query name does not match TunnelDomain", slog.String("domain_suffix", apoxynet.TunnelDomain))
 		return plugin.NextOrFailure(r.name(), next, ctx, w, req)
 	}
+
+	dnsQueriesTotal.Inc()
 
 	name := strings.TrimSuffix(qname, apoxynet.TunnelDomain+".")
 	name = strings.TrimSuffix(name, ".")
@@ -408,6 +443,7 @@ func (r *TunnelNodeDNSReconciler) serveDNS(ctx context.Context, next plugin.Hand
 
 	if len(msg.Answer) == 0 {
 		log.Warn("No valid IP addresses found")
+		dnsQueriesFailed.Inc()
 		return dns.RcodeServerFailure, nil
 	}
 

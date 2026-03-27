@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -77,6 +78,10 @@ type tunnelServerOptions struct {
 
 	// TCP connection tracker for drain support.
 	connTracker *conntrack.Tracker
+
+	// Metrics scraping for connected agents.
+	metricsScraper  *metrics.AgentScraper
+	projectIDLookup func(tunnelUID string) string // Optional: resolves tunnel UID to project ID.
 }
 
 func defaultServerOptions() *tunnelServerOptions {
@@ -194,12 +199,29 @@ func WithConnTracker(ct *conntrack.Tracker) TunnelServerOption {
 	}
 }
 
+// WithAgentScraper enables periodic metrics scraping from connected agents
+// via their overlay addresses. The scraper must be started separately.
+func WithAgentScraper(s *metrics.AgentScraper) TunnelServerOption {
+	return func(o *tunnelServerOptions) {
+		o.metricsScraper = s
+	}
+}
+
+// WithProjectIDLookup sets a function that resolves a tunnel UID to its project ID.
+// Used by the metrics scraper to label scraped metrics with the owning project.
+func WithProjectIDLookup(fn func(tunnelUID string) string) TunnelServerOption {
+	return func(o *tunnelServerOptions) {
+		o.projectIDLookup = fn
+	}
+}
+
 type conn struct {
 	*connectip.Conn
 	connID         string
 	obj            *corev1alpha.TunnelNode
 	addrv4, addrv6 netip.Prefix
 	cancel         context.CancelFunc
+	labels         map[string]string
 }
 
 func (c *conn) String() string {
@@ -283,6 +305,11 @@ func NewTunnelServer(
 	}
 
 	return s, nil
+}
+
+// MetricsScraper returns the agent metrics scraper, if configured.
+func (t *TunnelServer) MetricsScraper() *metrics.AgentScraper {
+	return t.options.metricsScraper
 }
 
 // SetupWithManager sets up the TunnelServer as a reconciler with the manager.
@@ -705,6 +732,7 @@ func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.
 			connID: connID,
 			obj:    tn.DeepCopy(),
 			cancel: connCancel,
+			labels: labels,
 		}
 		p := connectip.Proxy{}
 		if conn.Conn, err = p.Proxy(w, req); err != nil {
@@ -771,6 +799,11 @@ func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.
 		// Invoke onDisconnect callback if configured.
 		if t.options.onDisconnect != nil {
 			t.options.onDisconnect(context.Background(), connID)
+		}
+
+		// Unregister from agent metrics scraper.
+		if t.options.metricsScraper != nil {
+			t.options.metricsScraper.Unregister(connID)
 		}
 
 		if conn, exists := t.conns.Get(connID); !exists {
@@ -897,6 +930,28 @@ func (t *TunnelServer) setupConn(
 	// Register BFD peer so the server can track liveness.
 	if t.bfdServer != nil {
 		t.bfdServer.AddPeer(addrv6.Addr(), connID)
+	}
+
+	// Register with agent metrics scraper now that the overlay address is known.
+	if t.options.metricsScraper != nil {
+		var projectID string
+		if t.options.projectIDLookup != nil {
+			projectID = t.options.projectIDLookup(string(conn.obj.UID))
+		}
+		var metricsPort int
+		if portStr, ok := conn.labels[metrics.LabelMetricsPort]; ok {
+			if p, err := strconv.Atoi(portStr); err == nil {
+				metricsPort = p
+			}
+		}
+		t.options.metricsScraper.Register(metrics.ScrapeTarget{
+			ConnID:      connID,
+			TunnelNode:  conn.obj.Name,
+			AgentName:   connID,
+			ProjectID:   projectID,
+			OverlayAddr: addrv6.Addr().String(),
+			MetricsPort: metricsPort,
+		})
 	}
 
 	log.Info("Client addresses assigned")

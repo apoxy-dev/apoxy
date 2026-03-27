@@ -26,6 +26,7 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/api"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/controllers"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/hasher"
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/metrics"
 	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/router"
 )
@@ -49,9 +50,10 @@ type Relay struct {
 	relayAddrs    *haxmap.Map[string, []string]    // map[tunnelName][]string
 	conns         *haxmap.Map[string, *connection] // map[connectionID]Connection
 	agents        *haxmap.Map[string, string]      // map[connectionID]agentName
-	onConnect     func(ctx context.Context, tunnelName, agentName string, conn controllers.Connection) error
-	onDisconnect  func(ctx context.Context, agentName, id string) error
-	onShutdown    func(ctx context.Context)
+	onConnect      func(ctx context.Context, tunnelName, agentName string, conn controllers.Connection) error
+	onDisconnect   func(ctx context.Context, agentName, id string) error
+	onShutdown     func(ctx context.Context)
+	metricsScraper *metrics.AgentScraper
 }
 
 func NewRelay(name string, pc net.PacketConn, cert tls.Certificate, handler *icx.Handler, idHasher *hasher.Hasher, router router.Router) *Relay {
@@ -120,6 +122,19 @@ func (r *Relay) SetOnShutdown(onShutdown func(context.Context)) {
 	defer r.mu.Unlock()
 
 	r.onShutdown = onShutdown
+}
+
+// SetMetricsScraper configures the agent metrics scraper.
+func (r *Relay) SetMetricsScraper(s *metrics.AgentScraper) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.metricsScraper = s
+}
+
+// MetricsScraper returns the agent metrics scraper, if configured.
+func (r *Relay) MetricsScraper() *metrics.AgentScraper {
+	return r.metricsScraper
 }
 
 // Start starts the relay.
@@ -333,6 +348,20 @@ func (r *Relay) handleConnect(w http.ResponseWriter, req *http.Request, ps httpr
 		return
 	}
 
+	// Register with agent metrics scraper now that overlay address is known.
+	if r.metricsScraper != nil {
+		overlayAddr := conn.OverlayAddress()
+		if pfx, err := netip.ParsePrefix(overlayAddr); err == nil {
+			r.metricsScraper.Register(metrics.ScrapeTarget{
+				ConnID:      conn.ID(),
+				TunnelNode:  tunnelName,
+				AgentName:   request.Agent,
+				OverlayAddr: pfx.Addr().String(),
+				MetricsPort: request.MetricsPort,
+			})
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
@@ -354,6 +383,11 @@ func (r *Relay) handleDisconnect(w http.ResponseWriter, req *http.Request, ps ht
 		return
 	}
 	r.agents.Del(request.ID)
+
+	// Unregister from agent metrics scraper.
+	if r.metricsScraper != nil {
+		r.metricsScraper.Unregister(request.ID)
+	}
 
 	if err := conn.Close(); err != nil {
 		slog.Warn("Failed to close connection", slog.Any("error", err))
@@ -517,6 +551,10 @@ func (r *Relay) startGC(ctx context.Context, maxSilence, checkInterval time.Dura
 							slog.Warn("GC: failed to close connection",
 								slog.String("id", id),
 								slog.Any("error", err))
+						}
+
+						if r.metricsScraper != nil {
+							r.metricsScraper.Unregister(id)
 						}
 
 						r.mu.Lock()

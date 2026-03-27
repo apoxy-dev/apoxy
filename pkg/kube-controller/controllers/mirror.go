@@ -286,18 +286,23 @@ func (r *MirrorReconciler) syncGateway(ctx context.Context, gw *gwapiv1.Gateway)
 	if apierrors.IsNotFound(err) {
 		log.Infof("Mirror: creating Gateway %s (from %s/%s)", apoxyName, gw.Namespace, gw.Name)
 		if _, err := r.apoxyClient.GatewayV1().Gateways().Create(ctx, apoxy, metav1.CreateOptions{}); err != nil {
+			MirrorSyncErrors.WithLabelValues("Gateway").Inc()
 			return reconcile.Result{}, fmt.Errorf("creating Apoxy Gateway %s: %w", apoxyName, err)
 		}
+		MirrorSyncedResources.WithLabelValues("Gateway").Inc()
 		return reconcile.Result{}, nil
 	} else if err != nil {
+		MirrorSyncErrors.WithLabelValues("Gateway").Inc()
 		return reconcile.Result{}, fmt.Errorf("getting Apoxy Gateway %s: %w", apoxyName, err)
 	}
 
 	apoxy.ResourceVersion = existing.ResourceVersion
 	log.Infof("Mirror: updating Gateway %s (from %s/%s)", apoxyName, gw.Namespace, gw.Name)
 	if _, err := r.apoxyClient.GatewayV1().Gateways().Update(ctx, apoxy, metav1.UpdateOptions{}); err != nil {
+		MirrorSyncErrors.WithLabelValues("Gateway").Inc()
 		return reconcile.Result{}, fmt.Errorf("updating Apoxy Gateway %s: %w", apoxyName, err)
 	}
+	MirrorSyncedResources.WithLabelValues("Gateway").Inc()
 	return reconcile.Result{}, nil
 }
 
@@ -348,18 +353,23 @@ func (r *MirrorReconciler) syncHTTPRoute(ctx context.Context, route *gwapiv1.HTT
 	if apierrors.IsNotFound(err) {
 		log.Infof("Mirror: creating HTTPRoute %s (from %s/%s)", apoxyName, route.Namespace, route.Name)
 		if _, err := r.apoxyClient.GatewayV1().HTTPRoutes().Create(ctx, apoxy, metav1.CreateOptions{}); err != nil {
+			MirrorSyncErrors.WithLabelValues("HTTPRoute").Inc()
 			return reconcile.Result{}, fmt.Errorf("creating Apoxy HTTPRoute %s: %w", apoxyName, err)
 		}
+		MirrorSyncedResources.WithLabelValues("HTTPRoute").Inc()
 		return reconcile.Result{}, nil
 	} else if err != nil {
+		MirrorSyncErrors.WithLabelValues("HTTPRoute").Inc()
 		return reconcile.Result{}, fmt.Errorf("getting Apoxy HTTPRoute %s: %w", apoxyName, err)
 	}
 
 	apoxy.ResourceVersion = existing.ResourceVersion
 	log.Infof("Mirror: updating HTTPRoute %s (from %s/%s)", apoxyName, route.Namespace, route.Name)
 	if _, err := r.apoxyClient.GatewayV1().HTTPRoutes().Update(ctx, apoxy, metav1.UpdateOptions{}); err != nil {
+		MirrorSyncErrors.WithLabelValues("HTTPRoute").Inc()
 		return reconcile.Result{}, fmt.Errorf("updating Apoxy HTTPRoute %s: %w", apoxyName, err)
 	}
+	MirrorSyncedResources.WithLabelValues("HTTPRoute").Inc()
 	return reconcile.Result{}, nil
 }
 
@@ -410,18 +420,23 @@ func (r *MirrorReconciler) syncGRPCRoute(ctx context.Context, route *gwapiv1.GRP
 	if apierrors.IsNotFound(err) {
 		log.Infof("Mirror: creating GRPCRoute %s (from %s/%s)", apoxyName, route.Namespace, route.Name)
 		if _, err := r.apoxyClient.GatewayV1().GRPCRoutes().Create(ctx, apoxy, metav1.CreateOptions{}); err != nil {
+			MirrorSyncErrors.WithLabelValues("GRPCRoute").Inc()
 			return reconcile.Result{}, fmt.Errorf("creating Apoxy GRPCRoute %s: %w", apoxyName, err)
 		}
+		MirrorSyncedResources.WithLabelValues("GRPCRoute").Inc()
 		return reconcile.Result{}, nil
 	} else if err != nil {
+		MirrorSyncErrors.WithLabelValues("GRPCRoute").Inc()
 		return reconcile.Result{}, fmt.Errorf("getting Apoxy GRPCRoute %s: %w", apoxyName, err)
 	}
 
 	apoxy.ResourceVersion = existing.ResourceVersion
 	log.Infof("Mirror: updating GRPCRoute %s (from %s/%s)", apoxyName, route.Namespace, route.Name)
 	if _, err := r.apoxyClient.GatewayV1().GRPCRoutes().Update(ctx, apoxy, metav1.UpdateOptions{}); err != nil {
+		MirrorSyncErrors.WithLabelValues("GRPCRoute").Inc()
 		return reconcile.Result{}, fmt.Errorf("updating Apoxy GRPCRoute %s: %w", apoxyName, err)
 	}
+	MirrorSyncedResources.WithLabelValues("GRPCRoute").Inc()
 	return reconcile.Result{}, nil
 }
 
@@ -472,18 +487,23 @@ func (r *MirrorReconciler) syncTCPRoute(ctx context.Context, route *gwapiv1alpha
 	if apierrors.IsNotFound(err) {
 		log.Infof("Mirror: creating TCPRoute %s (from %s/%s)", apoxyName, route.Namespace, route.Name)
 		if _, err := r.apoxyClient.GatewayV1alpha2().TCPRoutes().Create(ctx, apoxy, metav1.CreateOptions{}); err != nil {
+			MirrorSyncErrors.WithLabelValues("TCPRoute").Inc()
 			return reconcile.Result{}, fmt.Errorf("creating Apoxy TCPRoute %s: %w", apoxyName, err)
 		}
+		MirrorSyncedResources.WithLabelValues("TCPRoute").Inc()
 		return reconcile.Result{}, nil
 	} else if err != nil {
+		MirrorSyncErrors.WithLabelValues("TCPRoute").Inc()
 		return reconcile.Result{}, fmt.Errorf("getting Apoxy TCPRoute %s: %w", apoxyName, err)
 	}
 
 	apoxy.ResourceVersion = existing.ResourceVersion
 	log.Infof("Mirror: updating TCPRoute %s (from %s/%s)", apoxyName, route.Namespace, route.Name)
 	if _, err := r.apoxyClient.GatewayV1alpha2().TCPRoutes().Update(ctx, apoxy, metav1.UpdateOptions{}); err != nil {
+		MirrorSyncErrors.WithLabelValues("TCPRoute").Inc()
 		return reconcile.Result{}, fmt.Errorf("updating Apoxy TCPRoute %s: %w", apoxyName, err)
 	}
+	MirrorSyncedResources.WithLabelValues("TCPRoute").Inc()
 	return reconcile.Result{}, nil
 }
 
@@ -534,18 +554,23 @@ func (r *MirrorReconciler) syncTLSRoute(ctx context.Context, route *gwapiv1alpha
 	if apierrors.IsNotFound(err) {
 		log.Infof("Mirror: creating TLSRoute %s (from %s/%s)", apoxyName, route.Namespace, route.Name)
 		if _, err := r.apoxyClient.GatewayV1alpha2().TLSRoutes().Create(ctx, apoxy, metav1.CreateOptions{}); err != nil {
+			MirrorSyncErrors.WithLabelValues("TLSRoute").Inc()
 			return reconcile.Result{}, fmt.Errorf("creating Apoxy TLSRoute %s: %w", apoxyName, err)
 		}
+		MirrorSyncedResources.WithLabelValues("TLSRoute").Inc()
 		return reconcile.Result{}, nil
 	} else if err != nil {
+		MirrorSyncErrors.WithLabelValues("TLSRoute").Inc()
 		return reconcile.Result{}, fmt.Errorf("getting Apoxy TLSRoute %s: %w", apoxyName, err)
 	}
 
 	apoxy.ResourceVersion = existing.ResourceVersion
 	log.Infof("Mirror: updating TLSRoute %s (from %s/%s)", apoxyName, route.Namespace, route.Name)
 	if _, err := r.apoxyClient.GatewayV1alpha2().TLSRoutes().Update(ctx, apoxy, metav1.UpdateOptions{}); err != nil {
+		MirrorSyncErrors.WithLabelValues("TLSRoute").Inc()
 		return reconcile.Result{}, fmt.Errorf("updating Apoxy TLSRoute %s: %w", apoxyName, err)
 	}
+	MirrorSyncedResources.WithLabelValues("TLSRoute").Inc()
 	return reconcile.Result{}, nil
 }
 
@@ -596,18 +621,23 @@ func (r *MirrorReconciler) syncUDPRoute(ctx context.Context, route *gwapiv1alpha
 	if apierrors.IsNotFound(err) {
 		log.Infof("Mirror: creating UDPRoute %s (from %s/%s)", apoxyName, route.Namespace, route.Name)
 		if _, err := r.apoxyClient.GatewayV1alpha2().UDPRoutes().Create(ctx, apoxy, metav1.CreateOptions{}); err != nil {
+			MirrorSyncErrors.WithLabelValues("UDPRoute").Inc()
 			return reconcile.Result{}, fmt.Errorf("creating Apoxy UDPRoute %s: %w", apoxyName, err)
 		}
+		MirrorSyncedResources.WithLabelValues("UDPRoute").Inc()
 		return reconcile.Result{}, nil
 	} else if err != nil {
+		MirrorSyncErrors.WithLabelValues("UDPRoute").Inc()
 		return reconcile.Result{}, fmt.Errorf("getting Apoxy UDPRoute %s: %w", apoxyName, err)
 	}
 
 	apoxy.ResourceVersion = existing.ResourceVersion
 	log.Infof("Mirror: updating UDPRoute %s (from %s/%s)", apoxyName, route.Namespace, route.Name)
 	if _, err := r.apoxyClient.GatewayV1alpha2().UDPRoutes().Update(ctx, apoxy, metav1.UpdateOptions{}); err != nil {
+		MirrorSyncErrors.WithLabelValues("UDPRoute").Inc()
 		return reconcile.Result{}, fmt.Errorf("updating Apoxy UDPRoute %s: %w", apoxyName, err)
 	}
+	MirrorSyncedResources.WithLabelValues("UDPRoute").Inc()
 	return reconcile.Result{}, nil
 }
 
@@ -636,6 +666,7 @@ func (r *MirrorReconciler) RunHeartbeat(ctx context.Context, namespace string) e
 	for {
 		if err := r.renewLease(ctx, namespace, leaseName, durationSecs); err != nil {
 			log.Errorf("Mirror heartbeat: failed to renew lease %s: %v", leaseName, err)
+			MirrorHeartbeatFailures.Inc()
 		}
 
 		select {

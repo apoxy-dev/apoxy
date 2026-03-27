@@ -211,8 +211,11 @@ func (s *Server) Start(ctx context.Context) error {
 			continue
 		}
 
-		if connID != "" && s.onAlive != nil {
-			s.onAlive(ctx, connID)
+		if connID != "" {
+			BFDHeartbeatsReceived.WithLabelValues("server").Inc()
+			if s.onAlive != nil {
+				s.onAlive(ctx, connID)
+			}
 		}
 	}
 }

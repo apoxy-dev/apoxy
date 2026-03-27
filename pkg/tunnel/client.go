@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"strconv"
 	"net/http"
 	"net/netip"
 	"net/url"
@@ -26,6 +27,7 @@ import (
 	alog "github.com/apoxy-dev/apoxy/pkg/log"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/bfdl"
 	tunnelconn "github.com/apoxy-dev/apoxy/pkg/tunnel/connection"
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/metrics"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/router"
 )
 
@@ -73,6 +75,9 @@ type tunnelClientOptions struct {
 	packetObserver tunnelconn.PacketObserver
 	// Labels to send on tunnel connections.
 	labels map[string]string
+	// metricsPort is the port the agent's metrics server listens on.
+	// Advertised to the server for overlay scraping.
+	metricsPort int
 }
 
 func defaultClientOptions() *tunnelClientOptions {
@@ -160,6 +165,14 @@ func WithPacketObserver(obs tunnelconn.PacketObserver) TunnelClientOption {
 func WithLabels(labels map[string]string) TunnelClientOption {
 	return func(o *tunnelClientOptions) {
 		o.labels = labels
+	}
+}
+
+// WithClientMetricsPort advertises the agent's metrics port to the server
+// so the server can scrape metrics from this agent through the overlay.
+func WithClientMetricsPort(port int) TunnelClientOption {
+	return func(o *tunnelClientOptions) {
+		o.metricsPort = port
 	}
 }
 
@@ -287,6 +300,9 @@ func (d *TunnelDialer) Dial(
 	}
 	for k, v := range options.labels {
 		q.Add("label."+k, v)
+	}
+	if options.metricsPort > 0 {
+		q.Add("label."+metrics.LabelMetricsPort, strconv.Itoa(options.metricsPort))
 	}
 	addrUrl.RawQuery = q.Encode()
 
