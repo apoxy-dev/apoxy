@@ -29,6 +29,8 @@ type Interface interface {
 	EdgeFunctions() EdgeFunctionInformer
 	// EdgeFunctionRevisions returns a EdgeFunctionRevisionInformer.
 	EdgeFunctionRevisions() EdgeFunctionRevisionInformer
+	// HTTPRouteFilters returns a HTTPRouteFilterInformer.
+	HTTPRouteFilters() HTTPRouteFilterInformer
 }
 
 type version struct {
@@ -55,4 +57,9 @@ func (v *version) EdgeFunctions() EdgeFunctionInformer {
 // EdgeFunctionRevisions returns a EdgeFunctionRevisionInformer.
 func (v *version) EdgeFunctionRevisions() EdgeFunctionRevisionInformer {
 	return &edgeFunctionRevisionInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
+}
+
+// HTTPRouteFilters returns a HTTPRouteFilterInformer.
+func (v *version) HTTPRouteFilters() HTTPRouteFilterInformer {
+	return &hTTPRouteFilterInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
 }

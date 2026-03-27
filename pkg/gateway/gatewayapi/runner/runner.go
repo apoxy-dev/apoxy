@@ -24,6 +24,7 @@ var (
 	extensionsGroupKinds = []schema.GroupKind{
 		{Group: extensions.GroupVersion.Group, Kind: "EdgeFunction"},
 		{Group: extensions.GroupVersion.Group, Kind: "DirectResponse"},
+		{Group: extensions.GroupVersion.Group, Kind: "HTTPRouteFilter"},
 	}
 )
 

@@ -30,6 +30,7 @@ type ExtensionsV1alpha2Interface interface {
 	DirectResponsesGetter
 	EdgeFunctionsGetter
 	EdgeFunctionRevisionsGetter
+	HTTPRouteFiltersGetter
 }
 
 // ExtensionsV1alpha2Client is used to interact with features provided by the extensions.apoxy.dev group.
@@ -47,6 +48,10 @@ func (c *ExtensionsV1alpha2Client) EdgeFunctions() EdgeFunctionInterface {
 
 func (c *ExtensionsV1alpha2Client) EdgeFunctionRevisions() EdgeFunctionRevisionInterface {
 	return newEdgeFunctionRevisions(c)
+}
+
+func (c *ExtensionsV1alpha2Client) HTTPRouteFilters() HTTPRouteFilterInterface {
+	return newHTTPRouteFilters(c)
 }
 
 // NewForConfig creates a new ExtensionsV1alpha2Client for the given config.

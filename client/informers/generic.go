@@ -111,6 +111,8 @@ func (f *sharedInformerFactory) ForResource(resource schema.GroupVersionResource
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Extensions().V1alpha2().EdgeFunctions().Informer()}, nil
 	case extensionsv1alpha2.SchemeGroupVersion.WithResource("edgefunctionrevisions"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Extensions().V1alpha2().EdgeFunctionRevisions().Informer()}, nil
+	case extensionsv1alpha2.SchemeGroupVersion.WithResource("httproutefilters"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Extensions().V1alpha2().HTTPRouteFilters().Informer()}, nil
 
 		// Group=gateway.apoxy.dev, Version=v1
 	case gatewayv1.SchemeGroupVersion.WithResource("grpcroutes"):

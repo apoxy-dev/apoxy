@@ -103,6 +103,8 @@ func newOrderedHTTPFilter(filter *hcmv3.HttpFilter) *OrderedHTTPFilter {
 		order = 7
 	case filter.Name == wellknown.HTTPRateLimit:
 		order = 8
+	case isFilterType(filter, compressorFilter):
+		order = 9
 	case isFilterType(filter, dynamicForwardProxyFilter):
 		order = 99
 	case filter.Name == wellknown.Router:

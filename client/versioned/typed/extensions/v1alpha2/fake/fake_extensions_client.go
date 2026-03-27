@@ -39,6 +39,10 @@ func (c *FakeExtensionsV1alpha2) EdgeFunctionRevisions() v1alpha2.EdgeFunctionRe
 	return newFakeEdgeFunctionRevisions(c)
 }
 
+func (c *FakeExtensionsV1alpha2) HTTPRouteFilters() v1alpha2.HTTPRouteFilterInterface {
+	return newFakeHTTPRouteFilters(c)
+}
+
 // RESTClient returns a RESTClient that is used to communicate
 // with API server by this client implementation.
 func (c *FakeExtensionsV1alpha2) RESTClient() rest.Interface {

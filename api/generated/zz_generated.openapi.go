@@ -170,6 +170,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/apoxy-dev/apoxy/api/extensions/v1alpha1.RuntimeCapabilities":           schema_apoxy_api_extensions_v1alpha1_RuntimeCapabilities(ref),
 		"github.com/apoxy-dev/apoxy/api/extensions/v1alpha1.SourceFile":                    schema_apoxy_api_extensions_v1alpha1_SourceFile(ref),
 		"github.com/apoxy-dev/apoxy/api/extensions/v1alpha1.WasmSource":                    schema_apoxy_api_extensions_v1alpha1_WasmSource(ref),
+		"github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.CompressorSpec":                schema_apoxy_api_extensions_v1alpha2_CompressorSpec(ref),
 		"github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.CustomResponseBody":            schema_apoxy_api_extensions_v1alpha2_CustomResponseBody(ref),
 		"github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.DirectResponse":                schema_apoxy_api_extensions_v1alpha2_DirectResponse(ref),
 		"github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.DirectResponseList":            schema_apoxy_api_extensions_v1alpha2_DirectResponseList(ref),
@@ -187,6 +188,10 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.EdgeFunctionStatus":            schema_apoxy_api_extensions_v1alpha2_EdgeFunctionStatus(ref),
 		"github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.EnvVar":                        schema_apoxy_api_extensions_v1alpha2_EnvVar(ref),
 		"github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.GoPluginSource":                schema_apoxy_api_extensions_v1alpha2_GoPluginSource(ref),
+		"github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.HTTPRouteFilter":               schema_apoxy_api_extensions_v1alpha2_HTTPRouteFilter(ref),
+		"github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.HTTPRouteFilterList":           schema_apoxy_api_extensions_v1alpha2_HTTPRouteFilterList(ref),
+		"github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.HTTPRouteFilterSpec":           schema_apoxy_api_extensions_v1alpha2_HTTPRouteFilterSpec(ref),
+		"github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.HTTPRouteFilterStatus":         schema_apoxy_api_extensions_v1alpha2_HTTPRouteFilterStatus(ref),
 		"github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.Header":                        schema_apoxy_api_extensions_v1alpha2_Header(ref),
 		"github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.JavaScriptAssetsSource":        schema_apoxy_api_extensions_v1alpha2_JavaScriptAssetsSource(ref),
 		"github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.JavaScriptGitSource":           schema_apoxy_api_extensions_v1alpha2_JavaScriptGitSource(ref),
@@ -6386,6 +6391,63 @@ func schema_apoxy_api_extensions_v1alpha1_WasmSource(ref common.ReferenceCallbac
 	}
 }
 
+func schema_apoxy_api_extensions_v1alpha2_CompressorSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "CompressorSpec configures response compression on a route.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"disabled": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Disabled disables compression on this route. When true, no other fields may be set.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"algorithms": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Algorithms is the list of compression algorithms to enable. When not specified, all supported algorithms (gzip, brotli, zstd) are enabled.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"minContentLength": {
+						SchemaProps: spec.SchemaProps{
+							Description: "MinContentLength is the minimum response body size in bytes that will trigger compression. Must be at least 50. Defaults to 128 if not specified.",
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
+					"contentType": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ContentType is a list of MIME types that will trigger compression. When not specified, a default set is used that covers common compressible types (application/json, text/html, text/plain, etc.). See https://docs.apoxy.dev/docs/guides/response-compression#default-content-types for the full list.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
 func schema_apoxy_api_extensions_v1alpha2_CustomResponseBody(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -7062,6 +7124,152 @@ func schema_apoxy_api_extensions_v1alpha2_GoPluginSource(ref common.ReferenceCal
 		},
 		Dependencies: []string{
 			"github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.OCIImageRef"},
+	}
+}
+
+func schema_apoxy_api_extensions_v1alpha2_HTTPRouteFilter(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "HTTPRouteFilter is the Schema for the httproutefilters API. It defines per-route HTTP filter configuration that can be attached to an HTTPRoute via extensionRef.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.HTTPRouteFilterSpec"),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.HTTPRouteFilterStatus"),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.HTTPRouteFilterSpec", "github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.HTTPRouteFilterStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
+	}
+}
+
+func schema_apoxy_api_extensions_v1alpha2_HTTPRouteFilterList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "HTTPRouteFilterList contains a list of HTTPRouteFilter.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.HTTPRouteFilter"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.HTTPRouteFilter", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
+	}
+}
+
+func schema_apoxy_api_extensions_v1alpha2_HTTPRouteFilterSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "HTTPRouteFilterSpec defines the desired state of HTTPRouteFilter. This is a union type: exactly one field must be set.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"compressor": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Compressor configures response compression on the route.",
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.CompressorSpec"),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.CompressorSpec"},
+	}
+}
+
+func schema_apoxy_api_extensions_v1alpha2_HTTPRouteFilterStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "HTTPRouteFilterStatus defines the observed state of HTTPRouteFilter.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"conditions": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Conditions describe the current conditions of the HTTPRouteFilter.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"k8s.io/apimachinery/pkg/apis/meta/v1.Condition"},
 	}
 }
 

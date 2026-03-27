@@ -234,7 +234,20 @@ func (r *GatewayReconciler) getExtensionRefs(
 		}] = &unstructured.Unstructured{Object: un}
 	}
 
-	// TODO(dilyevsky): Process other extensions.
+	hrfList := extensionsv1alpha2.HTTPRouteFilterList{}
+	if err := r.List(ctx, &hrfList); err != nil {
+		return nil, fmt.Errorf("failed to list HTTPRouteFilters: %w", err)
+	}
+	for _, hrf := range hrfList.Items {
+		un, err := conv.ToUnstructured(&hrf)
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert HTTPRouteFilter to Unstructured: %w", err)
+		}
+		extRefs[extensionRefKey{
+			Name:      hrf.Name,
+			GroupKind: schema.GroupKind{Group: hrf.GroupVersionKind().Group, Kind: "HTTPRouteFilter"},
+		}] = &unstructured.Unstructured{Object: un}
+	}
 
 	return extRefs, nil
 }
@@ -886,6 +899,11 @@ func (r *GatewayReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manag
 		).
 		Watches(
 			&extensionsv1alpha2.DirectResponse{},
+			handler.EnqueueRequestsFromMapFunc(r.enqueueClass),
+			builder.WithPredicates(predicate.ResourceVersionChangedPredicate{}),
+		).
+		Watches(
+			&extensionsv1alpha2.HTTPRouteFilter{},
 			handler.EnqueueRequestsFromMapFunc(r.enqueueClass),
 			builder.WithPredicates(predicate.ResourceVersionChangedPredicate{}),
 		)

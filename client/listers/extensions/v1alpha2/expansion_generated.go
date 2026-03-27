@@ -28,3 +28,7 @@ type EdgeFunctionListerExpansion interface{}
 // EdgeFunctionRevisionListerExpansion allows custom methods to be added to
 // EdgeFunctionRevisionLister.
 type EdgeFunctionRevisionListerExpansion interface{}
+
+// HTTPRouteFilterListerExpansion allows custom methods to be added to
+// HTTPRouteFilterLister.
+type HTTPRouteFilterListerExpansion interface{}

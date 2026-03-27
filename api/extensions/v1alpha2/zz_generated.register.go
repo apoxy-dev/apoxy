@@ -66,6 +66,8 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&EdgeFunctionList{},
 		&EdgeFunctionRevision{},
 		&EdgeFunctionRevisionList{},
+		&HTTPRouteFilter{},
+		&HTTPRouteFilterList{},
 	)
 	// AddToGroupVersion allows the serialization of client types like ListOptions.
 	v1.AddToGroupVersion(scheme, SchemeGroupVersion)

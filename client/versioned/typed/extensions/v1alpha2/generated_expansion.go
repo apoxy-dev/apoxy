@@ -22,3 +22,5 @@ type DirectResponseExpansion interface{}
 type EdgeFunctionExpansion interface{}
 
 type EdgeFunctionRevisionExpansion interface{}
+
+type HTTPRouteFilterExpansion interface{}
