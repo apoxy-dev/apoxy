@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
+	crmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
 func fakeFamily(name string, mtype dto.MetricType, value float64, labels ...[2]string) *dto.MetricFamily {
@@ -154,6 +155,36 @@ func TestReexportCollector_PrefixesMetricNames(t *testing.T) {
 	m := <-ch
 	desc := m.Desc().String()
 	assert.Contains(t, desc, "apoxy_test_metric", "metric name should be prefixed with apoxy_")
+}
+
+// TestAgentMetricsNotRegisteredByInit verifies that init() does not register
+// the agent-only metrics (tunnel_agent_info, tunnel_agent_uptime_seconds) with
+// the controller-runtime metrics registry. These must only be registered via
+// the explicit RegisterAgentMetrics() call from agent processes.
+func TestAgentMetricsNotRegisteredByInit(t *testing.T) {
+	// Gather all metrics from the controller-runtime registry (where init() registers).
+	gatherer, ok := crmetrics.Registry.(prometheus.Gatherer)
+	require.True(t, ok, "crmetrics.Registry must implement prometheus.Gatherer")
+
+	families, err := gatherer.Gather()
+	require.NoError(t, err)
+
+	registered := make(map[string]bool)
+	for _, f := range families {
+		registered[f.GetName()] = true
+	}
+
+	// Agent-only metrics must NOT be present from init() alone.
+	assert.False(t, registered["tunnel_agent_info"],
+		"tunnel_agent_info should not be registered by init()")
+	assert.False(t, registered["tunnel_agent_uptime_seconds"],
+		"tunnel_agent_uptime_seconds should not be registered by init()")
+
+	// Shared metrics should be present.
+	assert.True(t, registered["tunnel_connections_active"],
+		"tunnel_connections_active should be registered by init()")
+	assert.True(t, registered["tunnel_packets_sent_total"],
+		"tunnel_packets_sent_total should be registered by init()")
 }
 
 func TestReexportCollector_NoMetricsAfterUnregister(t *testing.T) {

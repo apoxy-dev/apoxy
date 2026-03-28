@@ -47,6 +47,7 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/bfdl"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/connection"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/endpointselect"
+	tunnelmetrics "github.com/apoxy-dev/apoxy/pkg/tunnel/metrics"
 
 	configv1alpha1 "github.com/apoxy-dev/apoxy/api/config/v1alpha1"
 	corev1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
@@ -92,6 +93,7 @@ var (
 
 func init() {
 	utilruntime.Must(corev1alpha.Install(scheme))
+	tunnelmetrics.RegisterAgentMetrics()
 }
 
 type tunConn struct {

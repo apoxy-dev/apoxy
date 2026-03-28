@@ -145,12 +145,7 @@ var (
 )
 
 func init() {
-	// Set agent info label values once at startup.
-	TunnelAgentInfo.WithLabelValues(build.BuildVersion, build.BuildDate, build.CommitHash).Set(1)
-
-	// Register metrics with the controller-runtime metrics registry.
-	metrics.Registry.MustRegister(TunnelAgentInfo)
-	metrics.Registry.MustRegister(TunnelAgentUptimeSeconds)
+	// Register shared metrics used by both agent and server processes.
 	metrics.Registry.MustRegister(TunnelConnectionReconnects)
 	metrics.Registry.MustRegister(TunnelPingRequests)
 	metrics.Registry.MustRegister(TunnelConnectionRequests)
@@ -166,6 +161,16 @@ func init() {
 	metrics.Registry.MustRegister(TunnelPacketsDropped)
 	metrics.Registry.MustRegister(TunnelPacketsByProtocol)
 	metrics.Registry.MustRegister(TunnelBytesByProtocol)
+}
+
+// RegisterAgentMetrics registers agent-only metrics (info and uptime) with the
+// controller-runtime metrics registry. This must be called explicitly by agent
+// processes — server processes (tunnelproxy) should NOT call this, as they
+// re-export agent metrics via the AgentScraper/ReexportCollector path instead.
+func RegisterAgentMetrics() {
+	TunnelAgentInfo.WithLabelValues(build.BuildVersion, build.BuildDate, build.CommitHash).Set(1)
+	metrics.Registry.MustRegister(TunnelAgentInfo)
+	metrics.Registry.MustRegister(TunnelAgentUptimeSeconds)
 }
 
 // ProtocolFromIPHeader returns a protocol label from the IP next-header/protocol byte.

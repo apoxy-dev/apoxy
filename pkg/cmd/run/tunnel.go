@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"slices"
 	"sync"
 	"time"
 
@@ -38,7 +39,12 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/net/dns"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/endpointselect"
+	tunnelmetrics "github.com/apoxy-dev/apoxy/pkg/tunnel/metrics"
 )
+
+func init() {
+	tunnelmetrics.RegisterAgentMetrics()
+}
 
 var tunnelBackoff = wait.NewExponentialBackoffManager(
 	1*time.Second,
@@ -173,6 +179,8 @@ type runtimeTunnelReconciler struct {
 	tunConns  []*runtimeTunConn
 
 	endpointSelector endpointselect.Selector
+	lastAddresses    []string
+	lastSelected     string
 
 	// Dial parameters protected by dialMu.
 	dialMu     sync.RWMutex
@@ -240,12 +248,25 @@ func (r *runtimeTunnelReconciler) reconcile(ctx context.Context, req ctrl.Reques
 		} else if len(tunnelNode.Status.Addresses) == 1 {
 			srvAddr = tunnelNode.Status.Addresses[0]
 		} else {
-			selected, err := r.endpointSelector.Select(ctx, tunnelNode.Status.Addresses)
-			if err != nil {
-				l.Warn("Endpoint selection failed, using random", slog.Any("error", err))
-				srvAddr = tunnelNode.Status.Addresses[rand.Intn(len(tunnelNode.Status.Addresses))]
+			// Re-probe only when the address list changes.
+			addrs := tunnelNode.Status.Addresses
+			sorted := make([]string, len(addrs))
+			copy(sorted, addrs)
+			slices.Sort(sorted)
+
+			if r.lastSelected != "" && slices.Equal(sorted, r.lastAddresses) {
+				srvAddr = r.lastSelected
 			} else {
-				srvAddr = selected
+				selected, err := r.endpointSelector.Select(ctx, addrs)
+				if err != nil {
+					l.Warn("Endpoint selection failed, using random",
+						slog.Any("error", err))
+					srvAddr = addrs[rand.Intn(len(addrs))]
+				} else {
+					srvAddr = selected
+				}
+				r.lastAddresses = sorted
+				r.lastSelected = srvAddr
 			}
 		}
 	} else {
