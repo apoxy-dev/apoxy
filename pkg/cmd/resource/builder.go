@@ -35,6 +35,7 @@ func LookupDefaultName(gvk schema.GroupVersionKind) (func(data []byte) (string, 
 	return fn, ok
 }
 
+
 // Object combines runtime.Object with metav1.Object to allow accessing both
 // Kubernetes object metadata (Name, Labels, etc.) and runtime type information.
 type Object interface {
@@ -100,6 +101,10 @@ type ResourceCommand[T Object, TList runtime.Object] struct {
 	// metadata.name is empty. Used by the apply command.
 	// If nil, metadata.name must be provided in the input.
 	DefaultName func(T) (string, error)
+
+	// PreApply is called before server-side apply and may mutate the object
+	// (e.g. set annotations). If nil, no pre-processing is done.
+	PreApply func(ctx context.Context, obj T) error
 }
 
 // PrintStructured serializes a runtime.Object as JSON or YAML to stdout.
@@ -405,6 +410,12 @@ manage different fields of the same object without conflicts.`, r.KindName, r.Ki
 			name := typed.GetName()
 			if name == "" {
 				return fmt.Errorf("%s name is required", r.KindName)
+			}
+
+			if r.PreApply != nil {
+				if err := r.PreApply(cmd.Context(), typed); err != nil {
+					return err
+				}
 			}
 
 			patchData, err := json.Marshal(typed)

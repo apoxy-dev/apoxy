@@ -15,6 +15,18 @@ import (
 
 const (
 	DomainRecordFinalizer = "domainrecord.core.apoxy.dev/finalizer"
+
+	// DomainReplaceAnnotation enables atomic record-type changes. Because a
+	// DomainRecord's target field key is immutable and its metadata.name is
+	// derived from it, changing a record's type (e.g. A → CNAME) requires
+	// creating a new object and deleting the old one. Setting this annotation
+	// to the metadata.name of the old record allows the new record to be
+	// created first — the admission webhook skips the compatibility check
+	// for the named record, the controller syncs DNS for the new record
+	// (excluding the old one from the desired state), deletes the old record,
+	// and finally clears the annotation. If creation of the new record fails
+	// for any reason, the old record remains untouched.
+	DomainReplaceAnnotation = "core.apoxy.dev/replaces"
 )
 
 // +kubebuilder:object:root=true

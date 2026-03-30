@@ -78,8 +78,8 @@ func (r *DomainRecord) ValidateUpdate(ctx context.Context, obj runtime.Object) f
 	}
 
 	// Reject changes to the target field key (e.g. switching from ips to txt).
-	oldKey := targetFieldKey(old)
-	newKey := targetFieldKey(r)
+	oldKey := old.TargetFieldKey()
+	newKey := r.TargetFieldKey()
 	if oldKey != newKey {
 		errs = append(errs, field.Forbidden(
 			field.NewPath("spec", "target"),
@@ -114,8 +114,9 @@ func (r *DomainRecord) derivedName() string {
 	return fmt.Sprintf("%s--%s", r.Spec.Name, suffix)
 }
 
-// targetFieldKey returns the target field key for a DomainRecord.
-func targetFieldKey(r *DomainRecord) string {
+// TargetFieldKey returns the canonical target field key for a DomainRecord:
+// "ref" for Ref targets, or the DNS field key (e.g. "a", "fqdn").
+func (r *DomainRecord) TargetFieldKey() string {
 	if r.Spec.Target.Ref != nil {
 		return "ref"
 	}
