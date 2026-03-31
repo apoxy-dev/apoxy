@@ -35,6 +35,7 @@ Get started at https://apoxy.dev and log in with 'apoxy auth'.
 * [apoxy apply](#apoxy-apply)	 - Apply resources from file(s) or directory
 * [apoxy auth](#apoxy-auth)	 - Authenticate this CLI
 * [apoxy backend](#apoxy-backend)	 - Manage backend objects
+* [apoxy delete](#apoxy-delete)	 - Delete resources by file or type/name
 * [apoxy dev](#apoxy-dev)	 - Develop against the Apoxy API locally
 * [apoxy domain](#apoxy-domain)	 - Manage domain record objects
 * [apoxy edgefunction](#apoxy-edgefunction)	 - Manage edge function objects
@@ -686,6 +687,77 @@ apoxy backend list [flags]
 ### SEE ALSO
 
 * [apoxy backend](#apoxy-backend)	 - Manage backend objects
+
+
+
+## apoxy delete
+
+Delete resources by file or type/name
+
+### Synopsis
+
+Delete resources identified in file(s), directories, stdin, or by type and name.
+
+Supports two modes:
+  1. File-based: delete resources specified in YAML/JSON files, directories, or stdin.
+  2. Type+name: delete one or more resources by specifying the resource type and name(s).
+
+When a directory is specified with -f, all .yaml, .yml, and .json files are processed.
+
+Examples:
+  # Delete resources in a single file
+  apoxy delete -f gateway.yaml
+
+  # Delete resources in multiple files
+  apoxy delete -f gateway.yaml -f routes.yaml
+
+  # Delete all resources in a directory
+  apoxy delete -f ./manifests/
+
+  # Delete from stdin
+  cat manifest.yaml | apoxy delete -f -
+
+  # Delete a resource by type and name
+  apoxy delete proxy my-proxy
+
+  # Delete multiple resources by type and name
+  apoxy delete backend backend-a backend-b
+
+  # Delete a resource, ignoring if it doesn't exist
+  apoxy delete proxy my-proxy --ignore-not-found
+
+  # Delete and wait for the resource to be fully removed
+  apoxy delete proxy my-proxy --wait
+
+```
+apoxy delete (-f <filename> | <type> <name> [<name>...]) [flags]
+```
+
+### Options
+
+```
+  -f, --filename stringArray   Files or directories containing resources to delete (can be specified multiple times)
+  -h, --help                   help for delete
+      --ignore-not-found       Treat "resource not found" as a successful delete
+  -R, --recursive              Process directories recursively
+      --timeout duration       Timeout for --wait (e.g. 30s, 2m) (default 1m0s)
+      --wait                   Wait for the resource to be fully deleted before returning
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy](#apoxy)	 - Open-source edge platform built on Envoy, Kubernetes APIs, and QUIC tunneling.
 
 
 
@@ -1882,6 +1954,7 @@ apoxy k8s install [flags]
       --kubeconfig string     Path to the kubeconfig file to use for Kubernetes API access
       --mirror string         Mirror mode (gateway, ingress, all)
       --namespace string      The namespace to install the controller into (default "apoxy")
+      --version string        Controller version override (e.g. v0.3.0)
   -y, --yes                   Skip confirmation and apply changes immediately
 ```
 
