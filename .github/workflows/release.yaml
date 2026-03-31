@@ -4,8 +4,14 @@ on:
     # Tags starting with v are used for releases (e.g v0.1.0)
     tags:
       - v**
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v0.18.1) — runs only the homebrew formula update"
+        required: true
 jobs:
   publish-images:
+    if: ${{ github.event_name == 'push' }}
     runs-on: depot-ubuntu-22.04-32,dagger=0.19.10
     steps:
       - uses: actions/checkout@v4
@@ -25,6 +31,7 @@ jobs:
           dagger call -v publish-images --src=. --tag=$GITHUB_REF_NAME --sha=${GITHUB_SHA::7} --registry-password=env:APOXY_DOCKERHUB_PASSWORD --edge-runtime-tag=38f78c0 --gcr-creds=env:APOXY_INTERNAL_GAR_CREDENTIALS
 
   publish-github-release:
+    if: ${{ github.event_name == 'push' }}
     runs-on: depot-ubuntu-22.04-16,dagger=0.19.10
     steps:
       - uses: actions/checkout@v4
@@ -51,7 +58,10 @@ jobs:
 
   publish-homebrew-formula:
     needs: publish-github-release
+    if: ${{ always() && (github.event_name == 'workflow_dispatch' || needs.publish-github-release.result == 'success') }}
     runs-on: depot-ubuntu-22.04,dagger=0.19.10
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -74,4 +84,4 @@ jobs:
           SHUTUP: 1
         timeout-minutes: 10
         run: |
-          dagger call -v publish-homebrew-formula --tag=$GITHUB_REF_NAME --github-token=env:GITHUB_TOKEN --homebrew-token=env:HOMEBREW_TAP_GITHUB_TOKEN
+          dagger call -v publish-homebrew-formula --tag=$RELEASE_TAG --github-token=env:GITHUB_TOKEN --homebrew-token=env:HOMEBREW_TAP_GITHUB_TOKEN
