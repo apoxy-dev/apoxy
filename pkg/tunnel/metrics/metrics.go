@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -163,14 +164,18 @@ func init() {
 	metrics.Registry.MustRegister(TunnelBytesByProtocol)
 }
 
+var registerAgentOnce sync.Once
+
 // RegisterAgentMetrics registers agent-only metrics (info and uptime) with the
 // controller-runtime metrics registry. This must be called explicitly by agent
 // processes — server processes (tunnelproxy) should NOT call this, as they
 // re-export agent metrics via the AgentScraper/ReexportCollector path instead.
 func RegisterAgentMetrics() {
-	TunnelAgentInfo.WithLabelValues(build.BuildVersion, build.BuildDate, build.CommitHash).Set(1)
-	metrics.Registry.MustRegister(TunnelAgentInfo)
-	metrics.Registry.MustRegister(TunnelAgentUptimeSeconds)
+	registerAgentOnce.Do(func() {
+		TunnelAgentInfo.WithLabelValues(build.BuildVersion, build.BuildDate, build.CommitHash).Set(1)
+		metrics.Registry.MustRegister(TunnelAgentInfo)
+		metrics.Registry.MustRegister(TunnelAgentUptimeSeconds)
+	})
 }
 
 // ProtocolFromIPHeader returns a protocol label from the IP next-header/protocol byte.
