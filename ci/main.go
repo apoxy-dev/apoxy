@@ -481,6 +481,46 @@ func (m *ApoxyCli) PublishGithubRelease(
 }
 
 // PublishHomebrewFormula updates the Homebrew formula with the latest release.
+// homebrewFormulaTemplate is the template for the Homebrew formula.
+// It is written fresh each release so we don't depend on placeholder values
+// surviving in the homebrew-tap repository between releases.
+const homebrewFormulaTemplate = `# This file is generated automatically by the Apoxy release pipeline.
+# Do not edit manually — the source of truth is in the apoxy repo at ci/main.go.
+class Apoxy < Formula
+  desc "Apoxy CLI - cloud-native API proxy"
+  homepage "https://apoxy.dev"
+  version "{{VERSION}}"
+
+  on_macos do
+    if Hardware::CPU.arm?
+      url "https://github.com/apoxy-dev/apoxy/releases/download/{{TAG}}/apoxy_Darwin_arm64.tar.gz"
+      sha256 "{{SHA_DARWIN_ARM64}}"
+    else
+      url "https://github.com/apoxy-dev/apoxy/releases/download/{{TAG}}/apoxy_Darwin_x86_64.tar.gz"
+      sha256 "{{SHA_DARWIN_X86_64}}"
+    end
+  end
+
+  on_linux do
+    if Hardware::CPU.arm?
+      url "https://github.com/apoxy-dev/apoxy/releases/download/{{TAG}}/apoxy_Linux_arm64.tar.gz"
+      sha256 "{{SHA_LINUX_ARM64}}"
+    else
+      url "https://github.com/apoxy-dev/apoxy/releases/download/{{TAG}}/apoxy_Linux_x86_64.tar.gz"
+      sha256 "{{SHA_LINUX_X86_64}}"
+    end
+  end
+
+  def install
+    bin.install "apoxy"
+  end
+
+  test do
+    system "#{bin}/apoxy", "version"
+  end
+end
+`
+
 func (m *ApoxyCli) PublishHomebrewFormula(
 	ctx context.Context,
 	tag string,
@@ -511,29 +551,28 @@ func (m *ApoxyCli) PublishHomebrewFormula(
 		WithExec([]string{"git", "config", "--global", "user.email", "github-actions[bot]@users.noreply.github.com"}).
 		WithExec([]string{"git", "config", "--global", "user.name", "github-actions[bot]"}).
 		WithWorkdir("/tmp/homebrew-tap").
-		// Extract the 4 SHA256 values in sorted order: Darwin arm64, Darwin x86_64, Linux arm64, Linux x86_64
+		// Generate formula from embedded template and push
 		WithExec([]string{"sh", "-c", fmt.Sprintf(`
 SHA_DARWIN_ARM64=$(sed -n '1p' /shas.txt)
 SHA_DARWIN_X86_64=$(sed -n '2p' /shas.txt)
 SHA_LINUX_ARM64=$(sed -n '3p' /shas.txt)
 SHA_LINUX_X86_64=$(sed -n '4p' /shas.txt)
 
-# Replace version placeholder
-sed -i "s/version \"0.0.0\"/version \"%s\"/g" Formula/apoxy.rb
+cat > Formula/apoxy.rb << 'TEMPLATE'
+%s
+TEMPLATE
 
-# Replace URL placeholders with version
-sed -i "s|/v0.0.0/|/%s/|g" Formula/apoxy.rb
-
-# Replace SHA256 placeholders
-sed -i "0,/sha256 \"0000000000000000000000000000000000000000000000000000000000000000\"/s//sha256 \"$SHA_DARWIN_ARM64\"/" Formula/apoxy.rb
-sed -i "0,/sha256 \"0000000000000000000000000000000000000000000000000000000000000000\"/s//sha256 \"$SHA_DARWIN_X86_64\"/" Formula/apoxy.rb
-sed -i "0,/sha256 \"0000000000000000000000000000000000000000000000000000000000000000\"/s//sha256 \"$SHA_LINUX_ARM64\"/" Formula/apoxy.rb
-sed -i "0,/sha256 \"0000000000000000000000000000000000000000000000000000000000000000\"/s//sha256 \"$SHA_LINUX_X86_64\"/" Formula/apoxy.rb
+sed -i "s/{{VERSION}}/%s/g" Formula/apoxy.rb
+sed -i "s/{{TAG}}/%s/g" Formula/apoxy.rb
+sed -i "s/{{SHA_DARWIN_ARM64}}/$SHA_DARWIN_ARM64/g" Formula/apoxy.rb
+sed -i "s/{{SHA_DARWIN_X86_64}}/$SHA_DARWIN_X86_64/g" Formula/apoxy.rb
+sed -i "s/{{SHA_LINUX_ARM64}}/$SHA_LINUX_ARM64/g" Formula/apoxy.rb
+sed -i "s/{{SHA_LINUX_X86_64}}/$SHA_LINUX_X86_64/g" Formula/apoxy.rb
 
 git add Formula/apoxy.rb
 git commit -m "apoxy %s"
 git push origin main
-`, version, tag, tag)}).
+`, homebrewFormulaTemplate, version, tag, tag)}).
 		WithExec([]string{"cat", "Formula/apoxy.rb"})
 }
 
