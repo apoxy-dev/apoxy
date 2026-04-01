@@ -796,6 +796,8 @@ func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.
 			logger.Error("Failed to close connection", slog.Any("error", err))
 		}
 
+		metrics.TunnelConnectionsActive.Dec()
+
 		// Invoke onDisconnect callback if configured.
 		if t.options.onDisconnect != nil {
 			t.options.onDisconnect(context.Background(), connID)

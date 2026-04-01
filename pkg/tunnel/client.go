@@ -400,6 +400,12 @@ func (cw *connWrapper) String() string {
 }
 
 func (c *Conn) run(ctx context.Context) {
+	// Derive a connection-scoped context so that child goroutines (BFD client,
+	// prefix fetcher) are stopped when this function returns — regardless of
+	// whether the exit was triggered by BFD, QUIC close, or parent cancel.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	log := alog.FromContext(ctx)
 
 	// Cleanup: remove all addresses from router when connection closes.
