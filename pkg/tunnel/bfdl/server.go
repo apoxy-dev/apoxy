@@ -13,6 +13,13 @@ import (
 // OnAliveFunc is called on each valid BFD packet received from a client.
 type OnAliveFunc func(ctx context.Context, connID string)
 
+// OnDownFunc is called when a BFD session transitions from Up to Down
+// (detect timer expired — the client has not sent packets within the
+// detection interval). This fires before the QUIC connection closes,
+// giving the caller a chance to mark the endpoint as not-ready so that
+// DNS-based service discovery stops routing to it immediately.
+type OnDownFunc func(ctx context.Context, connID string)
+
 // serverSession wraps a Session with server-side metadata.
 type serverSession struct {
 	*Session
@@ -30,6 +37,7 @@ type serverSession struct {
 type Server struct {
 	listenAddr netip.Addr
 	onAlive    OnAliveFunc
+	onDown     OnDownFunc
 
 	mu       sync.RWMutex
 	sessions map[uint32]*serverSession    // localDiscr -> session
@@ -47,10 +55,11 @@ type Server struct {
 }
 
 // NewServer creates a new BFD server.
-func NewServer(listenAddr netip.Addr, onAlive OnAliveFunc) *Server {
+func NewServer(listenAddr netip.Addr, onAlive OnAliveFunc, onDown OnDownFunc) *Server {
 	return &Server{
 		listenAddr: listenAddr,
 		onAlive:    onAlive,
+		onDown:     onDown,
 		sessions:   make(map[uint32]*serverSession),
 		addrIdx:    make(map[netip.Addr]*serverSession),
 		peers:      make(map[netip.Addr]string),
@@ -237,6 +246,7 @@ func (s *Server) txLoop(ctx context.Context, conn *net.UDPConn) {
 				addr net.UDPAddr
 			}
 			targets := make([]txTarget, 0, len(s.sessions))
+			var expiredConns []string // connIDs that transitioned Up→Down
 			for _, ss := range s.sessions {
 				// Check detect timer expiration.
 				if ss.Expired() && ss.State() == StateUp {
@@ -252,6 +262,7 @@ func (s *Server) txLoop(ctx context.Context, conn *net.UDPConn) {
 					BFDSessionsActive.WithLabelValues("server", old.String()).Dec()
 					BFDSessionsActive.WithLabelValues("server", StateDown.String()).Inc()
 					BFDStateTransitions.WithLabelValues("server", old.String(), StateDown.String()).Inc()
+					expiredConns = append(expiredConns, ss.connID)
 				}
 
 				// Skip blackholed connections.
@@ -267,6 +278,14 @@ func (s *Server) txLoop(ctx context.Context, conn *net.UDPConn) {
 				})
 			}
 			s.mu.Unlock()
+
+			// Notify downstream that these sessions are down. Called outside
+			// the lock so the callback can safely interact with the server.
+			if s.onDown != nil {
+				for _, connID := range expiredConns {
+					s.onDown(ctx, connID)
+				}
+			}
 
 			var out [bfdPacketLen]byte
 			for _, t := range targets {

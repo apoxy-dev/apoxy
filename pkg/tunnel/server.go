@@ -75,6 +75,7 @@ type tunnelServerOptions struct {
 	// BFD options.
 	bfdListenAddr netip.Addr      // If set, enables BFD server.
 	onAlive       bfdl.OnAliveFunc // Called on each valid BFD Rx.
+	onDown        bfdl.OnDownFunc  // Called when BFD detect timer expires (Up→Down).
 
 	// TCP connection tracker for drain support.
 	connTracker *conntrack.Tracker
@@ -188,6 +189,16 @@ func WithBFDListenAddr(addr netip.Addr) TunnelServerOption {
 func WithOnAlive(fn bfdl.OnAliveFunc) TunnelServerOption {
 	return func(o *tunnelServerOptions) {
 		o.onAlive = fn
+	}
+}
+
+// WithOnDown sets a callback invoked when a BFD session's detect timer
+// expires (Up→Down transition). This fires before the QUIC connection
+// closes, allowing the caller to proactively mark the endpoint as
+// not-ready so DNS-based service discovery stops routing to it.
+func WithOnDown(fn bfdl.OnDownFunc) TunnelServerOption {
+	return func(o *tunnelServerOptions) {
+		o.onDown = fn
 	}
 }
 
@@ -406,7 +417,7 @@ func (t *TunnelServer) Start(ctx context.Context) error {
 
 	// Create BFD server if configured.
 	if t.options.bfdListenAddr.IsValid() {
-		t.bfdServer = bfdl.NewServer(t.options.bfdListenAddr, t.options.onAlive)
+		t.bfdServer = bfdl.NewServer(t.options.bfdListenAddr, t.options.onAlive, t.options.onDown)
 	}
 
 	// drainCtx controls the lifetime of the router and BFD server. It
