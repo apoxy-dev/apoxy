@@ -11,6 +11,7 @@ import (
 
 	"github.com/dpeckett/network"
 	"golang.org/x/sync/errgroup"
+	crmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
 	"github.com/apoxy-dev/apoxy/pkg/netstack"
 	"github.com/apoxy-dev/apoxy/pkg/socksproxy"
@@ -49,6 +50,7 @@ func NewNetstackRouter(opts ...Option) (*NetstackRouter, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create virtual TUN device: %w", err)
 	}
+	tunDev.RegisterTCPStatsMetrics(crmetrics.Registry)
 
 	proxy := socksproxy.NewServer(
 		options.socksListenAddr,
