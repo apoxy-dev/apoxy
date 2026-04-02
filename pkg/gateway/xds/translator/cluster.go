@@ -33,7 +33,7 @@ import (
 const (
 	extensionOptionsKey = "envoy.extensions.upstreams.http.v3.HttpProtocolOptions"
 	// https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/cluster/v3/cluster.proto#envoy-v3-api-field-config-cluster-v3-cluster-per-connection-buffer-limit-bytes
-	tcpClusterPerConnectionBufferLimitBytes = 32768
+	tcpClusterPerConnectionBufferLimitBytes = 1048576 // 1 MiB
 	tcpClusterPerConnectTimeout             = 10 * time.Second
 )
 
