@@ -6,12 +6,11 @@ import (
 	"io"
 	"log/slog"
 	"math/rand"
-	"net"
 	"net/http"
 	"net/netip"
 	"os"
 	"slices"
-	"strconv"
+
 	"sync"
 	"time"
 
@@ -479,13 +478,6 @@ func (t *tunnelNodeReconciler) reconcile(ctx context.Context, req ctrl.Request) 
 
 	if t.cfg.IsLocalMode || insecureSkipVerify {
 		cOpts = append(cOpts, tunnel.WithInsecureSkipVerify(true))
-	}
-	// Advertise the metrics port so the server can scrape agent metrics
-	// through the overlay network.
-	if _, portStr, err := net.SplitHostPort(metricsAddr); err == nil {
-		if p, err := strconv.Atoi(portStr); err == nil && p > 0 {
-			cOpts = append(cOpts, tunnel.WithClientMetricsPort(p))
-		}
 	}
 
 	t.dialMu.Lock()

@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	// StaleResultTimeout is how long a scrape result remains valid.
+	// StaleResultTimeout is how long a pushed result remains valid.
 	// Results older than this are skipped during collection.
 	StaleResultTimeout = 60 * time.Second
 
@@ -20,13 +20,13 @@ const (
 	labelProjectID  = "project_id"
 )
 
-// ReexportCollector implements prometheus.Collector by iterating over scraped
+// ReexportCollector implements prometheus.Collector by iterating over pushed
 // agent metrics and re-emitting them with tunnel_node, agent, and project_id
 // labels injected. It should be registered with the tunnelproxy's Prometheus
 // registry so agent metrics appear on the tunnelproxy's /metrics endpoint.
 type ReexportCollector struct {
-	scraper *AgentScraper
-	prefix  string
+	store  *MetricsStore
+	prefix string
 }
 
 // ReexportOption configures a ReexportCollector.
@@ -38,11 +38,11 @@ func WithReexportPrefix(prefix string) ReexportOption {
 	return func(c *ReexportCollector) { c.prefix = prefix }
 }
 
-// NewReexportCollector creates a new ReexportCollector backed by the given scraper.
-func NewReexportCollector(scraper *AgentScraper, opts ...ReexportOption) *ReexportCollector {
+// NewReexportCollector creates a new ReexportCollector backed by the given store.
+func NewReexportCollector(store *MetricsStore, opts ...ReexportOption) *ReexportCollector {
 	c := &ReexportCollector{
-		scraper: scraper,
-		prefix:  "apoxy_",
+		store:  store,
+		prefix: "apoxy_",
 	}
 	for _, o := range opts {
 		o(c)
@@ -55,12 +55,12 @@ func NewReexportCollector(scraper *AgentScraper, opts ...ReexportOption) *Reexpo
 // and mark this as an unchecked collector.
 func (c *ReexportCollector) Describe(ch chan<- *prometheus.Desc) {}
 
-// Collect implements prometheus.Collector. It takes a snapshot of the scrape
+// Collect implements prometheus.Collector. It takes a snapshot of the store
 // results (briefly holding RLock), then iterates the snapshot without any lock.
 func (c *ReexportCollector) Collect(ch chan<- prometheus.Metric) {
 	now := time.Now()
-	c.scraper.ForEachResult(func(connID string, result *ScrapeResult) bool {
-		if now.Sub(result.ScrapedAt) > StaleResultTimeout {
+	c.store.ForEachResult(func(connID string, result *StoreResult) bool {
+		if now.Sub(result.PushedAt) > StaleResultTimeout {
 			return true
 		}
 		c.collectResult(ch, result)
@@ -68,7 +68,7 @@ func (c *ReexportCollector) Collect(ch chan<- prometheus.Metric) {
 	})
 }
 
-func (c *ReexportCollector) collectResult(ch chan<- prometheus.Metric, result *ScrapeResult) {
+func (c *ReexportCollector) collectResult(ch chan<- prometheus.Metric, result *StoreResult) {
 	extraLabels := []*dto.LabelPair{
 		{Name: proto.String(labelTunnelNode), Value: proto.String(result.Target.TunnelNode)},
 		{Name: proto.String(labelAgent), Value: proto.String(result.Target.AgentName)},

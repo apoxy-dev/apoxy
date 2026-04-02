@@ -53,7 +53,7 @@ type Relay struct {
 	onConnect      func(ctx context.Context, tunnelName, agentName string, conn controllers.Connection) error
 	onDisconnect   func(ctx context.Context, agentName, id string) error
 	onShutdown     func(ctx context.Context)
-	metricsScraper *metrics.AgentScraper
+	metricsStore *metrics.MetricsStore
 }
 
 func NewRelay(name string, pc net.PacketConn, cert tls.Certificate, handler *icx.Handler, idHasher *hasher.Hasher, router router.Router) *Relay {
@@ -124,17 +124,17 @@ func (r *Relay) SetOnShutdown(onShutdown func(context.Context)) {
 	r.onShutdown = onShutdown
 }
 
-// SetMetricsScraper configures the agent metrics scraper.
-func (r *Relay) SetMetricsScraper(s *metrics.AgentScraper) {
+// SetMetricsStore configures the push-based metrics store.
+func (r *Relay) SetMetricsStore(s *metrics.MetricsStore) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	r.metricsScraper = s
+	r.metricsStore = s
 }
 
-// MetricsScraper returns the agent metrics scraper, if configured.
-func (r *Relay) MetricsScraper() *metrics.AgentScraper {
-	return r.metricsScraper
+// MetricsStore returns the metrics store, if configured.
+func (r *Relay) MetricsStore() *metrics.MetricsStore {
+	return r.metricsStore
 }
 
 // Start starts the relay.
@@ -348,18 +348,13 @@ func (r *Relay) handleConnect(w http.ResponseWriter, req *http.Request, ps httpr
 		return
 	}
 
-	// Register with agent metrics scraper now that overlay address is known.
-	if r.metricsScraper != nil {
-		overlayAddr := conn.OverlayAddress()
-		if pfx, err := netip.ParsePrefix(overlayAddr); err == nil {
-			r.metricsScraper.Register(metrics.ScrapeTarget{
-				ConnID:      conn.ID(),
-				TunnelNode:  tunnelName,
-				AgentName:   request.Agent,
-				OverlayAddr: pfx.Addr().String(),
-				MetricsPort: request.MetricsPort,
-			})
-		}
+	// Register with metrics store so pushed metrics get the right labels.
+	if r.metricsStore != nil {
+		r.metricsStore.Register(metrics.StoreTarget{
+			ConnID:     conn.ID(),
+			TunnelNode: tunnelName,
+			AgentName:  request.Agent,
+		})
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -385,8 +380,8 @@ func (r *Relay) handleDisconnect(w http.ResponseWriter, req *http.Request, ps ht
 	r.agents.Del(request.ID)
 
 	// Unregister from agent metrics scraper.
-	if r.metricsScraper != nil {
-		r.metricsScraper.Unregister(request.ID)
+	if r.metricsStore != nil {
+		r.metricsStore.Unregister(request.ID)
 	}
 
 	if err := conn.Close(); err != nil {
@@ -553,8 +548,8 @@ func (r *Relay) startGC(ctx context.Context, maxSilence, checkInterval time.Dura
 								slog.Any("error", err))
 						}
 
-						if r.metricsScraper != nil {
-							r.metricsScraper.Unregister(id)
+						if r.metricsStore != nil {
+							r.metricsStore.Unregister(id)
 						}
 
 						r.mu.Lock()

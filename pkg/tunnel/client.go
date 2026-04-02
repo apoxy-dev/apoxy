@@ -1,6 +1,7 @@
 package tunnel
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -8,7 +9,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"strconv"
 	"net/http"
 	"net/netip"
 	"net/url"
@@ -18,16 +18,18 @@ import (
 
 	"github.com/dpeckett/network"
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/common/expfmt"
 	connectip "github.com/quic-go/connect-ip-go"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 	"github.com/yosida95/uritemplate/v3"
 	"k8s.io/apimachinery/pkg/util/sets"
+	crmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
 	alog "github.com/apoxy-dev/apoxy/pkg/log"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/bfdl"
 	tunnelconn "github.com/apoxy-dev/apoxy/pkg/tunnel/connection"
-	"github.com/apoxy-dev/apoxy/pkg/tunnel/metrics"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/router"
 )
 
@@ -75,9 +77,6 @@ type tunnelClientOptions struct {
 	packetObserver tunnelconn.PacketObserver
 	// Labels to send on tunnel connections.
 	labels map[string]string
-	// metricsPort is the port the agent's metrics server listens on.
-	// Advertised to the server for overlay scraping.
-	metricsPort int
 }
 
 func defaultClientOptions() *tunnelClientOptions {
@@ -165,14 +164,6 @@ func WithPacketObserver(obs tunnelconn.PacketObserver) TunnelClientOption {
 func WithLabels(labels map[string]string) TunnelClientOption {
 	return func(o *tunnelClientOptions) {
 		o.labels = labels
-	}
-}
-
-// WithClientMetricsPort advertises the agent's metrics port to the server
-// so the server can scrape metrics from this agent through the overlay.
-func WithClientMetricsPort(port int) TunnelClientOption {
-	return func(o *tunnelClientOptions) {
-		o.metricsPort = port
 	}
 }
 
@@ -301,9 +292,6 @@ func (d *TunnelDialer) Dial(
 	for k, v := range options.labels {
 		q.Add("label."+k, v)
 	}
-	if options.metricsPort > 0 {
-		q.Add("label."+metrics.LabelMetricsPort, strconv.Itoa(options.metricsPort))
-	}
 	addrUrl.RawQuery = q.Encode()
 
 	tmpl, err := uritemplate.New(addrUrl.String())
@@ -420,6 +408,9 @@ func (c *Conn) run(ctx context.Context) {
 			c.router.DelAddr(addr)
 		}
 	}()
+
+	// Push metrics to the server periodically over the existing HTTP/3 connection.
+	go c.startMetricsPush(ctx, 15*time.Second)
 
 	bfdStarted := false
 	var bfdDown <-chan struct{} // Nil until BFD client starts.
@@ -551,4 +542,75 @@ func (c *Conn) Close() error {
 		}
 	})
 	return firstErr
+}
+
+// startMetricsPush periodically collects metrics from the local Prometheus
+// registry and pushes them to the server over the existing HTTP/3 connection.
+// This runs until ctx is cancelled (connection close).
+func (c *Conn) startMetricsPush(ctx context.Context, interval time.Duration) {
+	log := alog.FromContext(ctx)
+
+	// Wait a short period before the first push to let the connection stabilize.
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(2 * time.Second):
+	}
+
+	if err := c.pushMetrics(ctx); err != nil {
+		log.Warn("Failed initial metrics push", slog.Any("error", err))
+	}
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := c.pushMetrics(ctx); err != nil {
+				log.Debug("Failed to push metrics", slog.Any("error", err))
+			}
+		}
+	}
+}
+
+// pushMetrics gathers all metrics from the controller-runtime registry,
+// encodes them in Prometheus text format, and POSTs to the server.
+func (c *Conn) pushMetrics(ctx context.Context) error {
+	gatherer, ok := crmetrics.Registry.(prometheus.Gatherer)
+	if !ok {
+		return fmt.Errorf("metrics registry does not implement Gatherer")
+	}
+
+	families, err := gatherer.Gather()
+	if err != nil {
+		return fmt.Errorf("gathering metrics: %w", err)
+	}
+
+	var buf bytes.Buffer
+	enc := expfmt.NewEncoder(&buf, expfmt.NewFormat(expfmt.TypeTextPlain))
+	for _, mf := range families {
+		if err := enc.Encode(mf); err != nil {
+			return fmt.Errorf("encoding metric %s: %w", mf.GetName(), err)
+		}
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://proxy/metrics/push", &buf)
+	if err != nil {
+		return fmt.Errorf("creating request: %w", err)
+	}
+	req.Header.Set("Content-Type", string(expfmt.NewFormat(expfmt.TypeTextPlain)))
+
+	resp, err := c.hConn.RoundTrip(req)
+	if err != nil {
+		return fmt.Errorf("round trip: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("server returned status %d", resp.StatusCode)
+	}
+	return nil
 }

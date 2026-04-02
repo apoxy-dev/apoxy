@@ -24,9 +24,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager/signals"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
+	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
+
 	"github.com/apoxy-dev/apoxy/pkg/apiserver"
 	"github.com/apoxy-dev/apoxy/pkg/log"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel"
+	tunnelmetrics "github.com/apoxy-dev/apoxy/pkg/tunnel/metrics"
 	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 	tunnelproxy "github.com/apoxy-dev/apoxy/pkg/tunnel/proxy"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/router"
@@ -162,6 +165,9 @@ func main() {
 		log.Infof("Using network ID from K8S_POD_UID: %s", *networkID)
 	}
 
+	// Create metrics store for push-based agent metrics collection.
+	metricsStore := tunnelmetrics.NewMetricsStore()
+
 	srv, err := tunnel.NewTunnelServer(
 		&tunnel.SingleClusterClientGetter{Client: mgr.GetClient()},
 		jwtValidator,
@@ -170,10 +176,16 @@ func main() {
 		tunnel.WithLabelSelector(*tunnelNodeSelector),
 		tunnel.WithPublicAddr(*publicAddr),
 		tunnel.WithIPAMv4(tunnet.NewIPAMv4(gCtx)),
+		tunnel.WithMetricsStore(metricsStore),
 	)
 	if err != nil {
 		log.Fatalf("Failed to create tunnel server: %v", err)
 	}
+
+	// Register agent metrics re-export collector.
+	reexporter := tunnelmetrics.NewReexportCollector(metricsStore)
+	ctrlmetrics.Registry.MustRegister(reexporter)
+	log.Infof("Agent metrics re-export collector registered")
 	if err := tunnel.SetupWithManager(mgr, srv); err != nil {
 		log.Fatalf("Unable to setup Tunnel Proxy server: %v", err)
 	}

@@ -35,25 +35,24 @@ func fakeFamily(name string, mtype dto.MetricType, value float64, labels ...[2]s
 }
 
 func TestReexportCollector_InjectsLabels(t *testing.T) {
-	scraper := NewAgentScraper()
+	store := NewMetricsStore()
 
 	// Inject a fake result directly.
-	scraper.results["conn-1"] = &ScrapeResult{
-		Target: ScrapeTarget{
-			ConnID:      "conn-1",
-			TunnelNode:  "my-laptop",
-			AgentName:   "agent-1",
-			ProjectID:   "proj-abc",
-			OverlayAddr: "fd00::1",
+	store.results["conn-1"] = &StoreResult{
+		Target: StoreTarget{
+			ConnID:     "conn-1",
+			TunnelNode: "my-laptop",
+			AgentName:  "agent-1",
+			ProjectID:  "proj-abc",
 		},
 		Families: map[string]*dto.MetricFamily{
 			"tunnel_connections_active": fakeFamily("tunnel_connections_active", dto.MetricType_GAUGE, 1),
 			"tunnel_bytes_sent_total":   fakeFamily("tunnel_bytes_sent_total", dto.MetricType_COUNTER, 4096),
 		},
-		ScrapedAt: time.Now(),
+		PushedAt: time.Now(),
 	}
 
-	collector := NewReexportCollector(scraper)
+	collector := NewReexportCollector(store)
 
 	// Collect into a channel.
 	ch := make(chan prometheus.Metric, 100)
@@ -84,33 +83,33 @@ func TestReexportCollector_InjectsLabels(t *testing.T) {
 }
 
 func TestReexportCollector_SkipsStaleResults(t *testing.T) {
-	scraper := NewAgentScraper()
+	store := NewMetricsStore()
 
 	// Inject a stale result.
-	scraper.results["conn-stale"] = &ScrapeResult{
-		Target: ScrapeTarget{
+	store.results["conn-stale"] = &StoreResult{
+		Target: StoreTarget{
 			ConnID:     "conn-stale",
 			TunnelNode: "stale-node",
 		},
 		Families: map[string]*dto.MetricFamily{
 			"tunnel_connections_active": fakeFamily("tunnel_connections_active", dto.MetricType_GAUGE, 1),
 		},
-		ScrapedAt: time.Now().Add(-2 * StaleResultTimeout),
+		PushedAt: time.Now().Add(-2 * StaleResultTimeout),
 	}
 
 	// Inject a fresh result.
-	scraper.results["conn-fresh"] = &ScrapeResult{
-		Target: ScrapeTarget{
+	store.results["conn-fresh"] = &StoreResult{
+		Target: StoreTarget{
 			ConnID:     "conn-fresh",
 			TunnelNode: "fresh-node",
 		},
 		Families: map[string]*dto.MetricFamily{
 			"tunnel_connections_active": fakeFamily("tunnel_connections_active", dto.MetricType_GAUGE, 1),
 		},
-		ScrapedAt: time.Now(),
+		PushedAt: time.Now(),
 	}
 
-	collector := NewReexportCollector(scraper)
+	collector := NewReexportCollector(store)
 
 	ch := make(chan prometheus.Metric, 100)
 	collector.Collect(ch)
@@ -133,20 +132,20 @@ func TestReexportCollector_SkipsStaleResults(t *testing.T) {
 }
 
 func TestReexportCollector_PrefixesMetricNames(t *testing.T) {
-	scraper := NewAgentScraper()
+	store := NewMetricsStore()
 
-	scraper.results["conn-1"] = &ScrapeResult{
-		Target: ScrapeTarget{
+	store.results["conn-1"] = &StoreResult{
+		Target: StoreTarget{
 			ConnID:     "conn-1",
 			TunnelNode: "node-1",
 		},
 		Families: map[string]*dto.MetricFamily{
 			"test_metric": fakeFamily("test_metric", dto.MetricType_GAUGE, 42),
 		},
-		ScrapedAt: time.Now(),
+		PushedAt: time.Now(),
 	}
 
-	collector := NewReexportCollector(scraper)
+	collector := NewReexportCollector(store)
 
 	ch := make(chan prometheus.Metric, 100)
 	collector.Collect(ch)
@@ -188,23 +187,23 @@ func TestAgentMetricsNotRegisteredByInit(t *testing.T) {
 }
 
 func TestReexportCollector_NoMetricsAfterUnregister(t *testing.T) {
-	scraper := NewAgentScraper()
+	store := NewMetricsStore()
 
-	scraper.results["conn-1"] = &ScrapeResult{
-		Target: ScrapeTarget{
+	store.results["conn-1"] = &StoreResult{
+		Target: StoreTarget{
 			ConnID:     "conn-1",
 			TunnelNode: "node-1",
 		},
 		Families: map[string]*dto.MetricFamily{
 			"tunnel_connections_active": fakeFamily("tunnel_connections_active", dto.MetricType_GAUGE, 1),
 		},
-		ScrapedAt: time.Now(),
+		PushedAt: time.Now(),
 	}
 
 	// Unregister should remove the result.
-	scraper.Unregister("conn-1")
+	store.Unregister("conn-1")
 
-	collector := NewReexportCollector(scraper)
+	collector := NewReexportCollector(store)
 
 	ch := make(chan prometheus.Metric, 100)
 	collector.Collect(ch)
@@ -215,4 +214,40 @@ func TestReexportCollector_NoMetricsAfterUnregister(t *testing.T) {
 		collected = append(collected, m)
 	}
 	assert.Empty(t, collected, "no metrics should be emitted after unregister")
+}
+
+func TestMetricsStore_PushAndResults(t *testing.T) {
+	store := NewMetricsStore()
+
+	store.Register(StoreTarget{
+		ConnID:     "conn-1",
+		TunnelNode: "node-1",
+		AgentName:  "agent-1",
+		ProjectID:  "proj-1",
+	})
+
+	// Push metrics.
+	families := map[string]*dto.MetricFamily{
+		"test_gauge": fakeFamily("test_gauge", dto.MetricType_GAUGE, 42),
+	}
+	store.Push("conn-1", families)
+
+	// Verify.
+	results := store.Results()
+	require.Len(t, results, 1)
+	require.Contains(t, results, "conn-1")
+	assert.Equal(t, "node-1", results["conn-1"].Target.TunnelNode)
+	assert.Contains(t, results["conn-1"].Families, "test_gauge")
+	assert.False(t, results["conn-1"].PushedAt.IsZero())
+}
+
+func TestMetricsStore_PushUnknownConnID(t *testing.T) {
+	store := NewMetricsStore()
+
+	// Push to unknown connection — should be a no-op.
+	store.Push("unknown", map[string]*dto.MetricFamily{
+		"test": fakeFamily("test", dto.MetricType_GAUGE, 1),
+	})
+
+	assert.Empty(t, store.Results())
 }

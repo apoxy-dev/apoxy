@@ -5,18 +5,21 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/netip"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/alphadose/haxmap"
 	"github.com/google/uuid"
+	dto "github.com/prometheus/client_model/go"
+	"github.com/prometheus/common/expfmt"
 	connectip "github.com/quic-go/connect-ip-go"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
@@ -80,8 +83,8 @@ type tunnelServerOptions struct {
 	// TCP connection tracker for drain support.
 	connTracker *conntrack.Tracker
 
-	// Metrics scraping for connected agents.
-	metricsScraper  *metrics.AgentScraper
+	// Metrics store for connected agents (push-based).
+	metricsStore    *metrics.MetricsStore
 	projectIDLookup func(tunnelUID string) string // Optional: resolves tunnel UID to project ID.
 }
 
@@ -210,11 +213,12 @@ func WithConnTracker(ct *conntrack.Tracker) TunnelServerOption {
 	}
 }
 
-// WithAgentScraper enables periodic metrics scraping from connected agents
-// via their overlay addresses. The scraper must be started separately.
-func WithAgentScraper(s *metrics.AgentScraper) TunnelServerOption {
+// WithMetricsStore enables push-based metrics collection from connected agents.
+// Agents push metrics over the existing HTTP/3 connection; the store must be
+// started separately to satisfy errgroup patterns.
+func WithMetricsStore(s *metrics.MetricsStore) TunnelServerOption {
 	return func(o *tunnelServerOptions) {
-		o.metricsScraper = s
+		o.metricsStore = s
 	}
 }
 
@@ -319,8 +323,9 @@ func NewTunnelServer(
 }
 
 // MetricsScraper returns the agent metrics scraper, if configured.
-func (t *TunnelServer) MetricsScraper() *metrics.AgentScraper {
-	return t.options.metricsScraper
+// MetricsStore returns the push-based metrics store, if configured.
+func (t *TunnelServer) MetricsStore() *metrics.MetricsStore {
+	return t.options.metricsStore
 }
 
 // SetupWithManager sets up the TunnelServer as a reconciler with the manager.
@@ -621,9 +626,14 @@ func iproutesFromPrefixes(ps []netip.Prefix) []connectip.IPRoute {
 	return routes
 }
 
-// makeSingleConnectHandler creates a handler that serves /ping for latency probes
-// and /connect for CONNECT-IP connections.
+// makeSingleConnectHandler creates a handler that serves /ping for latency probes,
+// /metrics/push for agent metrics, and /connect for CONNECT-IP connections.
 func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.Connection) http.HandlerFunc {
+	// connID is set by the /connect handler and read by /metrics/push.
+	// It is safe for concurrent access because HTTP/3 streams are served
+	// on separate goroutines.
+	var connID atomic.Value
+
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Handle /ping for latency probes - no auth required.
 		if r.URL.Path == "/ping" {
@@ -631,10 +641,22 @@ func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.
 			w.Header().Set("X-Apoxy-Server-Time", time.Now().UTC().Format(time.RFC3339Nano))
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte("pong"))
-			return // Don't close QUIC connection for ping requests.
+			return // Don't close QUIC connection.
 		}
 
-		// All other requests close the QUIC connection when done.
+		// Handle /metrics/push for agent metrics - no auth required
+		// (already authenticated by QUIC connection).
+		if r.URL.Path == "/metrics/push" {
+			t.handleMetricsPush(w, r, &connID)
+			return // Don't close QUIC connection.
+		}
+
+		if !strings.HasPrefix(r.URL.Path, "/connect/") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+
+		// CONNECT-IP handler - closes the QUIC connection when done.
 		defer qConn.CloseWithError(ApplicationCodeOK, "")
 
 		tunUID, err := uuid.Parse(strings.TrimPrefix(r.URL.Path, "/connect/"))
@@ -726,11 +748,12 @@ func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.
 			}
 		}
 
-		connID := uuid.NewString()
+		cid := uuid.NewString()
+		connID.Store(cid) // Make available to /metrics/push handler.
 		// Sends connection ID information to the client so that it can
 		// track its connection status. This must be done before initializing the proxy.
-		w.Header().Add("X-Apoxy-Connection-UUID", connID)
-		logger = logger.With(slog.String("connUUID", connID))
+		w.Header().Add("X-Apoxy-Connection-UUID", cid)
+		logger = logger.With(slog.String("connUUID", cid))
 		logger.Info("Establishing CONNECT-IP connection")
 
 		// Connection context is independent of the server lifecycle so that
@@ -740,7 +763,7 @@ func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.
 		defer connCancel()
 
 		conn := &conn{
-			connID: connID,
+			connID: cid,
 			obj:    tn.DeepCopy(),
 			cancel: connCancel,
 			labels: labels,
@@ -754,7 +777,7 @@ func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.
 		}
 		defer conn.Close()
 
-		t.conns.Set(connID, conn)
+		t.conns.Set(cid, conn)
 
 		// Register the agent in TunnelNode status before allocating the
 		// endpoint so the InfraEndpointReconciler can find the agent when
@@ -762,7 +785,7 @@ func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.
 		logger.Info("Updating agent status")
 
 		agent := &corev1alpha.AgentStatus{
-			Name:        connID,
+			Name:        cid,
 			ConnectedAt: ptr.To(metav1.Now()),
 			Labels:      labels,
 		}
@@ -791,7 +814,7 @@ func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.
 		// This triggers endpoint allocation; agent must be in TunnelNode
 		// status first so the address reconciler can find it.
 		if t.options.onConnect != nil {
-			t.options.onConnect(ctx, connID, tn)
+			t.options.onConnect(ctx, cid, tn)
 		}
 
 		// Blocking wait for the lifetime of the tunnel connection.
@@ -811,16 +834,16 @@ func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.
 
 		// Invoke onDisconnect callback if configured.
 		if t.options.onDisconnect != nil {
-			t.options.onDisconnect(context.Background(), connID)
+			t.options.onDisconnect(context.Background(), cid)
 		}
 
-		// Unregister from agent metrics scraper.
-		if t.options.metricsScraper != nil {
-			t.options.metricsScraper.Unregister(connID)
+		// Unregister from metrics store.
+		if t.options.metricsStore != nil {
+			t.options.metricsStore.Unregister(cid)
 		}
 
-		if conn, exists := t.conns.Get(connID); !exists {
-			logger.Error("Tunnel connection not found", slog.Any("connUUID", connID))
+		if conn, exists := t.conns.Get(cid); !exists {
+			logger.Error("Tunnel connection not found", slog.Any("connUUID", cid))
 		} else {
 			// Remove BFD peer before cleaning up routes.
 			if t.bfdServer != nil && conn.addrv6.IsValid() {
@@ -850,7 +873,7 @@ func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.
 			}
 		}
 
-		t.conns.Del(connID)
+		t.conns.Del(cid)
 
 		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 			upd := &corev1alpha.TunnelNode{}
@@ -880,6 +903,48 @@ func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.
 
 		logger.Info("Agent disconnected")
 	}
+}
+
+// handleMetricsPush handles POST /metrics/push requests from agents.
+// The agent pushes its Prometheus metrics in text exposition format over the
+// existing HTTP/3 connection, avoiding the need for overlay-based scraping.
+func (t *TunnelServer) handleMetricsPush(w http.ResponseWriter, r *http.Request, connIDRef *atomic.Value) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	id, ok := connIDRef.Load().(string)
+	if !ok || id == "" {
+		// Push arrived before /connect completed.
+		w.WriteHeader(http.StatusPreconditionFailed)
+		return
+	}
+
+	if t.options.metricsStore == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
+
+	families := make(map[string]*dto.MetricFamily)
+	dec := expfmt.NewDecoder(r.Body, expfmt.NewFormat(expfmt.TypeTextPlain))
+	for {
+		mf := new(dto.MetricFamily)
+		if err := dec.Decode(mf); err != nil {
+			if err == io.EOF {
+				break
+			}
+			slog.Warn("Failed to parse pushed metrics",
+				slog.String("conn_id", id),
+				slog.Any("error", err))
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		families[mf.GetName()] = mf
+	}
+
+	t.options.metricsStore.Push(id, families)
+	w.WriteHeader(http.StatusOK)
 }
 
 // setupConn sets up routing for an agent connection with the given addresses.
@@ -945,25 +1010,17 @@ func (t *TunnelServer) setupConn(
 		t.bfdServer.AddPeer(addrv6.Addr(), connID)
 	}
 
-	// Register with agent metrics scraper now that the overlay address is known.
-	if t.options.metricsScraper != nil {
+	// Register with metrics store so pushed metrics get the right labels.
+	if t.options.metricsStore != nil {
 		var projectID string
 		if t.options.projectIDLookup != nil {
 			projectID = t.options.projectIDLookup(string(conn.obj.UID))
 		}
-		var metricsPort int
-		if portStr, ok := conn.labels[metrics.LabelMetricsPort]; ok {
-			if p, err := strconv.Atoi(portStr); err == nil {
-				metricsPort = p
-			}
-		}
-		t.options.metricsScraper.Register(metrics.ScrapeTarget{
-			ConnID:      connID,
-			TunnelNode:  conn.obj.Name,
-			AgentName:   connID,
-			ProjectID:   projectID,
-			OverlayAddr: addrv6.Addr().String(),
-			MetricsPort: metricsPort,
+		t.options.metricsStore.Register(metrics.StoreTarget{
+			ConnID:     connID,
+			TunnelNode: conn.obj.Name,
+			AgentName:  connID,
+			ProjectID:  projectID,
 		})
 	}
 
