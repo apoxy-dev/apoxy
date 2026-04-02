@@ -98,7 +98,7 @@ func Splice(tunDev tun.Device, conn Connection, opts ...SpliceOption) error {
 		sizes := make([]int, batchSize)
 		pkts := make([][]byte, batchSize)
 		for i := range pkts {
-			pkts[i] = make([]byte, netstack.IPv6MinMTU)
+			pkts[i] = make([]byte, netstack.TunnelMTU)
 		}
 
 		for {
@@ -235,7 +235,7 @@ func Splice(tunDev tun.Device, conn Connection, opts ...SpliceOption) error {
 		// Non-zero-copy fallback: use intermediate channel for batching.
 		pktPool := &sync.Pool{
 			New: func() any {
-				return ptr.To(make([]byte, netstack.IPv6MinMTU+tunOffset))
+				return ptr.To(make([]byte, netstack.TunnelMTU+tunOffset))
 			},
 		}
 

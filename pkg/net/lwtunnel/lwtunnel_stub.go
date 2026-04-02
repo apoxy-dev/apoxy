@@ -35,7 +35,7 @@ func WithMTU(mtu int) option       { return func(o *geneveOptions) { o.mtu = mtu
 func WithNetNS(ns string) option   { return func(o *geneveOptions) { o.netns = ns } }
 
 func NewGeneve(opts ...option) *Geneve {
-	o := &geneveOptions{dev: "gnv0", vni: 0x61, port: 6081, mtu: 1380}
+	o := &geneveOptions{dev: "gnv0", vni: 0x61, port: 6081, mtu: DefaultGeneveMTU}
 	for _, opt := range opts {
 		opt(o)
 	}

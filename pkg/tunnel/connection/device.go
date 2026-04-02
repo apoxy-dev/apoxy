@@ -25,7 +25,7 @@ func (d *Device) Close() error {
 }
 
 func (d *Device) MTU() (int, error) {
-	return netstack.IPv6MinMTU, nil
+	return netstack.TunnelMTU, nil
 }
 
 func (d *Device) Name() string {

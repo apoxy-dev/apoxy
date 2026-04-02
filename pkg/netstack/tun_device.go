@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/dpeckett/network"
+	"github.com/prometheus/client_golang/prometheus"
 	"golang.zx2c4.com/wireguard/tun"
 
 	"gvisor.dev/gvisor/pkg/buffer"
@@ -29,6 +30,12 @@ import (
 )
 
 const IPv6MinMTU = 1280 // IPv6 minimum MTU, required for some PPPoE links.
+
+// TunnelMTU is the MTU used for tunnel TUN devices. Sized to fit in a single
+// QUIC datagram after PMTUD on a typical 1500-byte internet path:
+// 1500 (Ethernet) - 20 (IP) - 8 (UDP) - ~26 (QUIC framing) - 1 (contextID) ≈ 1445.
+// We use 1420 to leave headroom for path variance.
+const TunnelMTU = 1420
 
 var _ tun.Device = (*TunDevice)(nil)
 
@@ -80,18 +87,18 @@ func NewTunDevice(pcapPath string) (*TunDevice, error) {
 
 	// High-performance TCP buffer settings.
 	tcpRcvBuf := tcpip.TCPReceiveBufferSizeRangeOption{
-		Min:     64 << 10,  // 64 KiB
-		Default: 2 << 20,   // 2 MiB
-		Max:     16 << 20,  // 16 MiB
+		Min:     64 << 10, // 64 KiB
+		Default: 2 << 20,  // 2 MiB
+		Max:     16 << 20, // 16 MiB
 	}
 	tcpipErr = ipstack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpRcvBuf)
 	if tcpipErr != nil {
 		return nil, fmt.Errorf("could not set TCP receive buffer size: %v", tcpipErr)
 	}
 	tcpSndBuf := tcpip.TCPSendBufferSizeRangeOption{
-		Min:     64 << 10,  // 64 KiB
-		Default: 2 << 20,   // 2 MiB
-		Max:     16 << 20,  // 16 MiB
+		Min:     64 << 10, // 64 KiB
+		Default: 2 << 20,  // 2 MiB
+		Max:     16 << 20, // 16 MiB
 	}
 	tcpipErr = ipstack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpSndBuf)
 	if tcpipErr != nil {
@@ -129,7 +136,7 @@ func NewTunDevice(pcapPath string) (*TunDevice, error) {
 	}
 
 	nicID := ipstack.NextNICID()
-	linkEP := channel.New(4096, uint32(IPv6MinMTU), "")
+	linkEP := channel.New(4096, uint32(TunnelMTU), "")
 	var nicEP stack.LinkEndpoint = linkEP
 
 	var pcapFile *os.File
@@ -359,6 +366,36 @@ func (tun *TunDevice) ListenPacket(addr netip.AddrPort) (net.PacketConn, error) 
 		protoNum = ipv4.ProtocolNumber
 	}
 	return gonet.DialUDP(tun.stack, fa, nil, protoNum)
+}
+
+// RegisterTCPStatsMetrics registers netstack TCP stats as Prometheus gauges
+// that are read at push/scrape time. Call once after creating the TunDevice.
+func (tun *TunDevice) RegisterTCPStatsMetrics(reg prometheus.Registerer) {
+	s := tun.stack.Stats().TCP
+	gauges := []struct {
+		name string
+		help string
+		fn   func() float64
+	}{
+		{"tunnel_netstack_tcp_segments_sent_total", "TCP segments sent.", func() float64 { return float64(s.SegmentsSent.Value()) }},
+		{"tunnel_netstack_tcp_segments_received_total", "TCP segments received.", func() float64 { return float64(s.ValidSegmentsReceived.Value()) }},
+		{"tunnel_netstack_tcp_retransmits_total", "TCP segments retransmitted.", func() float64 { return float64(s.Retransmits.Value()) }},
+		{"tunnel_netstack_tcp_fast_retransmit_total", "TCP fast retransmits.", func() float64 { return float64(s.FastRetransmit.Value()) }},
+		{"tunnel_netstack_tcp_slow_start_retransmits_total", "TCP slow start retransmits.", func() float64 { return float64(s.SlowStartRetransmits.Value()) }},
+		{"tunnel_netstack_tcp_timeouts_total", "TCP RTO timeouts.", func() float64 { return float64(s.Timeouts.Value()) }},
+		{"tunnel_netstack_tcp_fast_recovery_total", "TCP fast recovery events.", func() float64 { return float64(s.FastRecovery.Value()) }},
+		{"tunnel_netstack_tcp_sack_recovery_total", "TCP SACK recovery events.", func() float64 { return float64(s.SACKRecovery.Value()) }},
+		{"tunnel_netstack_tcp_checksum_errors_total", "TCP checksum errors.", func() float64 { return float64(s.ChecksumErrors.Value()) }},
+		{"tunnel_netstack_tcp_established", "Current established TCP connections.", func() float64 { return float64(s.CurrentEstablished.Value()) }},
+		{"tunnel_netstack_tcp_resets_sent_total", "TCP resets sent.", func() float64 { return float64(s.ResetsSent.Value()) }},
+		{"tunnel_netstack_tcp_resets_received_total", "TCP resets received.", func() float64 { return float64(s.ResetsReceived.Value()) }},
+	}
+	for _, g := range gauges {
+		reg.MustRegister(prometheus.NewGaugeFunc(
+			prometheus.GaugeOpts{Name: g.name, Help: g.help},
+			g.fn,
+		))
+	}
 }
 
 // ForwardTo forwards all inbound traffic to the upstream network.

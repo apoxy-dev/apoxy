@@ -49,7 +49,7 @@ func defaultGeneveOptions() *geneveOptions {
 		dev:  "gnv0",
 		vni:  0x61,
 		port: 6081,
-		mtu:  1380,
+		mtu:  DefaultGeneveMTU,
 	}
 }
 
@@ -180,6 +180,20 @@ func (r *Geneve) SetUp(_ context.Context, privAddr netip.Addr) error {
 		link = geneve
 	} else if err != nil {
 		return fmt.Errorf("failed to get Geneve interface: %w", err)
+	} else if link.Attrs().MTU != r.opts.mtu {
+		slog.Info("Updating Geneve interface MTU",
+			slog.String("dev", r.opts.dev),
+			slog.Int("old_mtu", link.Attrs().MTU),
+			slog.Int("new_mtu", r.opts.mtu),
+		)
+		if h != nil {
+			err = h.LinkSetMTU(link, r.opts.mtu)
+		} else {
+			err = netlink.LinkSetMTU(link, r.opts.mtu)
+		}
+		if err != nil {
+			return fmt.Errorf("failed to update Geneve MTU: %w", err)
+		}
 	}
 
 	if h != nil {

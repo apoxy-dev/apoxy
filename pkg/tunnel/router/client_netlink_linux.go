@@ -76,9 +76,9 @@ func newClientNetlinkRouter(opts ...Option) (*ClientNetlinkRouter, error) {
 		opt(options)
 	}
 
-	slog.Info("Create a TUN device", "name", options.tunIfaceName, "mtu", netstack.IPv6MinMTU)
+	slog.Info("Create a TUN device", "name", options.tunIfaceName, "mtu", netstack.TunnelMTU)
 
-	tunDev, err := tun.CreateTUN(options.tunIfaceName, netstack.IPv6MinMTU)
+	tunDev, err := tun.CreateTUN(options.tunIfaceName, netstack.TunnelMTU)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create TUN interface: %w", err)
 	}

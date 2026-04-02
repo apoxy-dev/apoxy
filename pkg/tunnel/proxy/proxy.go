@@ -24,7 +24,7 @@ const (
 	defaultProxyGeneveDev  = "proxy-gnv0"
 	defaultProxyGenevePort = 6082
 	defaultProxyGeneveVNI  = 200
-	defaultProxyGeneveMTU  = 1400
+	defaultProxyGeneveMTU  = lwtunnel.DefaultGeneveMTU
 )
 
 // ProxyTunnelReconciler reconciles Proxy objects and manages L3 Geneve tunnels
