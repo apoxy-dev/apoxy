@@ -9,6 +9,7 @@ import (
 	"os"
 	"sync/atomic"
 	"syscall"
+	"time"
 
 	"github.com/dpeckett/network"
 	"golang.zx2c4.com/wireguard/tun"
@@ -77,6 +78,56 @@ func NewTunDevice(pcapPath string) (*TunDevice, error) {
 		return nil, fmt.Errorf("could not set TCP delay: %v", tcpipErr)
 	}
 
+	// High-performance TCP buffer settings.
+	tcpRcvBuf := tcpip.TCPReceiveBufferSizeRangeOption{
+		Min:     64 << 10,  // 64 KiB
+		Default: 2 << 20,   // 2 MiB
+		Max:     16 << 20,  // 16 MiB
+	}
+	tcpipErr = ipstack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpRcvBuf)
+	if tcpipErr != nil {
+		return nil, fmt.Errorf("could not set TCP receive buffer size: %v", tcpipErr)
+	}
+	tcpSndBuf := tcpip.TCPSendBufferSizeRangeOption{
+		Min:     64 << 10,  // 64 KiB
+		Default: 2 << 20,   // 2 MiB
+		Max:     16 << 20,  // 16 MiB
+	}
+	tcpipErr = ipstack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpSndBuf)
+	if tcpipErr != nil {
+		return nil, fmt.Errorf("could not set TCP send buffer size: %v", tcpipErr)
+	}
+	// Let the stack auto-tune receive buffer based on RTT and throughput.
+	tcpModBuf := tcpip.TCPModerateReceiveBufferOption(true)
+	tcpipErr = ipstack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpModBuf)
+	if tcpipErr != nil {
+		return nil, fmt.Errorf("could not enable TCP moderate receive buffer: %v", tcpipErr)
+	}
+	// Allow reusing sockets in TIME_WAIT for new connections (like tcp_tw_reuse).
+	tcpTWReuse := tcpip.TCPTimeWaitReuseOption(tcpip.TCPTimeWaitReuseGlobal)
+	tcpipErr = ipstack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpTWReuse)
+	if tcpipErr != nil {
+		return nil, fmt.Errorf("could not set TCP TIME_WAIT reuse: %v", tcpipErr)
+	}
+	// Shorten TIME_WAIT from the default 60s.
+	tcpTWTimeout := tcpip.TCPTimeWaitTimeoutOption(10 * time.Second)
+	tcpipErr = ipstack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpTWTimeout)
+	if tcpipErr != nil {
+		return nil, fmt.Errorf("could not set TCP TIME_WAIT timeout: %v", tcpipErr)
+	}
+	// Shorten FIN_WAIT_2 linger from the default 60s.
+	tcpLingerTimeout := tcpip.TCPLingerTimeoutOption(10 * time.Second)
+	tcpipErr = ipstack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpLingerTimeout)
+	if tcpipErr != nil {
+		return nil, fmt.Errorf("could not set TCP linger timeout: %v", tcpipErr)
+	}
+	// Reduce min RTO to improve latency on retransmits (default 200ms).
+	tcpMinRTO := tcpip.TCPMinRTOOption(100 * time.Millisecond)
+	tcpipErr = ipstack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpMinRTO)
+	if tcpipErr != nil {
+		return nil, fmt.Errorf("could not set TCP min RTO: %v", tcpipErr)
+	}
+
 	nicID := ipstack.NextNICID()
 	linkEP := channel.New(4096, uint32(IPv6MinMTU), "")
 	var nicEP stack.LinkEndpoint = linkEP
@@ -117,7 +168,7 @@ func NewTunDevice(pcapPath string) (*TunDevice, error) {
 		nicID:          nicID,
 		pcapFile:       pcapFile,
 		events:         make(chan tun.Event, 1),
-		incomingPacket: make(chan *buffer.View),
+		incomingPacket: make(chan *buffer.View, 1024),
 		mtu:            int(linkEP.MTU()),
 	}
 	tunDev.ep.AddNotify(tunDev)
