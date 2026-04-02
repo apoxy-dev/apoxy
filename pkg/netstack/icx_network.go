@@ -76,13 +76,51 @@ func NewICXNetwork(handler *icx.Handler, phy *l2pc.L2PacketConn, mtu int, resolv
 	if tcpipErr := ipstack.SetTransportProtocolOption(tcp.ProtocolNumber, &sackEnabledOpt); tcpipErr != nil {
 		return nil, fmt.Errorf("could not enable TCP SACK: %v", tcpipErr)
 	}
-	tcpCCOpt := tcpip.CongestionControlOption("cubic")
+	tcpCCOpt := tcpip.CongestionControlOption("bbr")
 	if tcpipErr := ipstack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpCCOpt); tcpipErr != nil {
 		return nil, fmt.Errorf("could not set TCP congestion control: %v", tcpipErr)
 	}
 	tcpDelayOpt := tcpip.TCPDelayEnabled(false)
 	if tcpipErr := ipstack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpDelayOpt); tcpipErr != nil {
 		return nil, fmt.Errorf("could not set TCP delay: %v", tcpipErr)
+	}
+
+	// High-performance TCP buffer settings.
+	tcpRcvBuf := tcpip.TCPReceiveBufferSizeRangeOption{
+		Min:     64 << 10,  // 64 KiB
+		Default: 2 << 20,   // 2 MiB
+		Max:     16 << 20,  // 16 MiB
+	}
+	if tcpipErr := ipstack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpRcvBuf); tcpipErr != nil {
+		return nil, fmt.Errorf("could not set TCP receive buffer size: %v", tcpipErr)
+	}
+	tcpSndBuf := tcpip.TCPSendBufferSizeRangeOption{
+		Min:     64 << 10,  // 64 KiB
+		Default: 2 << 20,   // 2 MiB
+		Max:     16 << 20,  // 16 MiB
+	}
+	if tcpipErr := ipstack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpSndBuf); tcpipErr != nil {
+		return nil, fmt.Errorf("could not set TCP send buffer size: %v", tcpipErr)
+	}
+	tcpModBuf := tcpip.TCPModerateReceiveBufferOption(true)
+	if tcpipErr := ipstack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpModBuf); tcpipErr != nil {
+		return nil, fmt.Errorf("could not enable TCP moderate receive buffer: %v", tcpipErr)
+	}
+	tcpTWReuse := tcpip.TCPTimeWaitReuseOption(tcpip.TCPTimeWaitReuseGlobal)
+	if tcpipErr := ipstack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpTWReuse); tcpipErr != nil {
+		return nil, fmt.Errorf("could not set TCP TIME_WAIT reuse: %v", tcpipErr)
+	}
+	tcpTWTimeout := tcpip.TCPTimeWaitTimeoutOption(10 * time.Second)
+	if tcpipErr := ipstack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpTWTimeout); tcpipErr != nil {
+		return nil, fmt.Errorf("could not set TCP TIME_WAIT timeout: %v", tcpipErr)
+	}
+	tcpLingerTimeout := tcpip.TCPLingerTimeoutOption(10 * time.Second)
+	if tcpipErr := ipstack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpLingerTimeout); tcpipErr != nil {
+		return nil, fmt.Errorf("could not set TCP linger timeout: %v", tcpipErr)
+	}
+	tcpMinRTO := tcpip.TCPMinRTOOption(100 * time.Millisecond)
+	if tcpipErr := ipstack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpMinRTO); tcpipErr != nil {
+		return nil, fmt.Errorf("could not set TCP min RTO: %v", tcpipErr)
 	}
 
 	nicID := ipstack.NextNICID()

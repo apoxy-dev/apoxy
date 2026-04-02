@@ -77,8 +77,8 @@ func copyPackets(ctx context.Context, src, dst net.Conn, once bool, extend func(
 	}
 }
 
-func udpHandler(ctx context.Context, upstream network.Network) func(req *udp.ForwarderRequest) {
-	return func(req *udp.ForwarderRequest) {
+func udpHandler(ctx context.Context, upstream network.Network) udp.ForwarderHandler {
+	return func(req *udp.ForwarderRequest) bool {
 		reqDetails := req.ID()
 
 		srcAddrPort := netip.AddrPortFrom(addrFromNetstackIP(reqDetails.RemoteAddress), reqDetails.RemotePort)
@@ -148,5 +148,7 @@ func udpHandler(ctx context.Context, upstream network.Network) func(req *udp.For
 			cleanup()
 			logger.Debug("UDP forwarding complete")
 		}()
+
+		return true
 	}
 }

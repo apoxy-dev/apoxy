@@ -13,6 +13,7 @@ const (
 
 var quicConfig *quic.Config = &quic.Config{
 	EnableDatagrams:                true,
+	DisableCongestionControl:       true,
 	InitialPacketSize:              1350,
 	InitialConnectionReceiveWindow: 5 * 1000 * 1000,
 	MaxConnectionReceiveWindow:     100 * 1000 * 1000,
