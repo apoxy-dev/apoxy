@@ -16,6 +16,8 @@ const (
 	repo  = "apoxy-cli"
 )
 
+var upgradeForce bool
+
 // upgradeCmd upgrade the CLI to the latest version.
 var upgradeCmd = &cobra.Command{
 	Use:   "upgrade",
@@ -24,11 +26,16 @@ var upgradeCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cmd.SilenceUsage = true
 
+		if build.IsDev() && !upgradeForce {
+			fmt.Printf("Skipping upgrade for dev build %s. Use --force to override.\n", build.Version())
+			return nil
+		}
+
 		p, err := os.Executable()
 		if err != nil {
 			return fmt.Errorf("unable to find the current executable: %w", err)
 		}
-		v := build.Version()
+		v := build.BuildVersion
 
 		u := upgrade.NewUpgrader(owner, repo, p)
 		if ok, err := u.IsNewVersionAvailable(context.Background(), v); err != nil {
@@ -49,5 +56,6 @@ var upgradeCmd = &cobra.Command{
 }
 
 func init() {
+	upgradeCmd.Flags().BoolVar(&upgradeForce, "force", false, "Force upgrade even for dev builds.")
 	RootCmd.AddCommand(upgradeCmd)
 }
