@@ -17,7 +17,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
-	"golang.org/x/term"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -40,6 +39,7 @@ import (
 	"github.com/apoxy-dev/apoxy/client/versioned"
 	"github.com/apoxy-dev/apoxy/config"
 	"github.com/apoxy-dev/apoxy/pkg/cmd/tunnel/tui"
+	"github.com/apoxy-dev/apoxy/pkg/cmd/utils"
 	"github.com/apoxy-dev/apoxy/pkg/log"
 	"github.com/apoxy-dev/apoxy/pkg/net/dns"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel"
@@ -239,11 +239,9 @@ func getTunnelNode(
 }
 
 func (t *tunnelNodeReconciler) run(ctx context.Context, tn *corev1alpha.TunnelNode) error {
-	// Determine if we should use TUI
-	// Auto-detect non-interactive mode (no TTY on stdin or stdout, or verbose mode)
-	stdoutTTY := term.IsTerminal(int(os.Stdout.Fd()))
-	stdinTTY := term.IsTerminal(int(os.Stdin.Fd()))
-	useTUI := stdoutTTY && stdinTTY && !noTUI && !t.cfg.Verbose
+	// Determine if we should use TUI.
+	// Auto-detect non-interactive mode (no TTY on stdin or stdout, or verbose mode).
+	useTUI := utils.IsInteractive() && !noTUI && !t.cfg.Verbose
 	t.useTUI = useTUI
 
 	if !useTUI {

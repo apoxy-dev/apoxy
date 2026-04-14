@@ -18,7 +18,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
-	"golang.org/x/term"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -39,6 +38,7 @@ import (
 	sigyaml "sigs.k8s.io/yaml"
 
 	"github.com/apoxy-dev/apoxy/config"
+	"github.com/apoxy-dev/apoxy/pkg/cmd/utils"
 )
 
 const clusterNameAnnotation = "apoxy.dev/cluster-name"
@@ -976,7 +976,7 @@ func installController(ctx context.Context, kc *rest.Config, yamlz []byte, ns st
 		return nil
 	}
 
-	isTTY := term.IsTerminal(int(os.Stdout.Fd())) && term.IsTerminal(int(os.Stdin.Fd()))
+	isTTY := utils.IsInteractive()
 
 	if isTTY {
 		fmt.Println(renderPlan(plans))
@@ -1101,7 +1101,7 @@ will automatically connect to the Apoxy API and begin managing your in-cluster A
 			}
 		}
 		if clusterName == "" {
-			isTTY := term.IsTerminal(int(os.Stdout.Fd())) && term.IsTerminal(int(os.Stdin.Fd()))
+			isTTY := utils.IsInteractive()
 			if isTTY && !yes {
 				selected, err := runClusterNameSelection(kubeContext)
 				if err != nil {

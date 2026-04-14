@@ -8,8 +8,14 @@ import (
 	"os"
 	"strings"
 
+	"golang.org/x/term"
 	"gopkg.in/yaml.v3"
 )
+
+// IsInteractive reports whether both stdin and stdout are connected to a TTY.
+func IsInteractive() bool {
+	return term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd()))
+}
 
 // ReadFileAsString returns a file as a string or an error.
 func ReadFileAsString(filename string) (string, error) {
