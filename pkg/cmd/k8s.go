@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -18,6 +19,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -934,7 +936,7 @@ func ensureNamespace(ctx context.Context, kc *rest.Config, ns string) error {
 
 // --- Main orchestration ---
 
-func installController(ctx context.Context, kc *rest.Config, yamlz []byte, ns string, dryRun, force, yes bool, kubeContext string) error {
+func installController(ctx context.Context, kc *rest.Config, yamlz []byte, ns string, dryRun, force, yes, wait bool, waitTimeout time.Duration, kubeContext string) error {
 	dc, err := discovery.NewDiscoveryClientForConfig(kc)
 	if err != nil {
 		return err
@@ -1007,6 +1009,12 @@ func installController(ctx context.Context, kc *rest.Config, yamlz []byte, ns st
 		}
 	}
 
+	if wait {
+		if err := waitForRollouts(ctx, kc, plans, ns, waitTimeout, isTTY); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
@@ -1067,6 +1075,14 @@ will automatically connect to the Apoxy API and begin managing your in-cluster A
 		if err != nil {
 			return err
 		}
+		wait, err := cmd.Flags().GetBool("wait")
+		if err != nil {
+			return err
+		}
+		waitTimeout, err := cmd.Flags().GetDuration("wait-timeout")
+		if err != nil {
+			return err
+		}
 
 		// Resolve cluster name:
 		// 1. Explicit --cluster-name flag takes priority.
@@ -1102,7 +1118,7 @@ will automatically connect to the Apoxy API and begin managing your in-cluster A
 			return fmt.Errorf("failed to get YAML: %w", err)
 		}
 
-		if err := installController(cmd.Context(), kc, yamlz, namespace, dryRun, force, yes, kubeContext); err != nil {
+		if err := installController(cmd.Context(), kc, yamlz, namespace, dryRun, force, yes, wait, waitTimeout, kubeContext); err != nil {
 			return fmt.Errorf("failed to install controller: %w", err)
 		}
 
@@ -1116,6 +1132,332 @@ var k8sCmd = &cobra.Command{
 	Short: "Commands that manage Apoxy on Kubernetes",
 }
 
+// --- Rollout wait ---
+
+type rolloutTarget struct {
+	kind      string
+	namespace string
+	name      string
+}
+
+type rolloutStatus struct {
+	ready   bool
+	message string
+	err     error
+}
+
+type rolloutUpdate struct {
+	index  int
+	status rolloutStatus
+}
+
+func rolloutTargetsFromPlans(plans []resourcePlan, defaultNS string) []rolloutTarget {
+	var targets []rolloutTarget
+	for _, p := range plans {
+		if p.action == actionUnchanged {
+			continue
+		}
+		gvk := p.obj.GroupVersionKind()
+		if gvk.Group != "apps" {
+			continue
+		}
+		if gvk.Kind != "Deployment" && gvk.Kind != "StatefulSet" {
+			continue
+		}
+		ns := p.obj.GetNamespace()
+		if ns == "" {
+			ns = defaultNS
+		}
+		targets = append(targets, rolloutTarget{
+			kind:      gvk.Kind,
+			namespace: ns,
+			name:      p.obj.GetName(),
+		})
+	}
+	return targets
+}
+
+func deploymentReady(d *appsv1.Deployment) (bool, string) {
+	if d.Generation > d.Status.ObservedGeneration {
+		return false, "waiting for controller to observe spec update"
+	}
+	for _, c := range d.Status.Conditions {
+		if c.Type == appsv1.DeploymentProgressing && c.Reason == "ProgressDeadlineExceeded" {
+			return false, "progress deadline exceeded"
+		}
+	}
+	replicas := int32(1)
+	if d.Spec.Replicas != nil {
+		replicas = *d.Spec.Replicas
+	}
+	if d.Status.UpdatedReplicas < replicas {
+		return false, fmt.Sprintf("%d/%d pods updated", d.Status.UpdatedReplicas, replicas)
+	}
+	if d.Status.Replicas > d.Status.UpdatedReplicas {
+		return false, fmt.Sprintf("%d old pod(s) pending termination", d.Status.Replicas-d.Status.UpdatedReplicas)
+	}
+	if d.Status.AvailableReplicas < d.Status.UpdatedReplicas {
+		return false, fmt.Sprintf("%d/%d pods available", d.Status.AvailableReplicas, d.Status.UpdatedReplicas)
+	}
+	return true, fmt.Sprintf("%d/%d available", d.Status.AvailableReplicas, replicas)
+}
+
+func statefulSetReady(s *appsv1.StatefulSet) (bool, string) {
+	if s.Generation > s.Status.ObservedGeneration {
+		return false, "waiting for controller to observe spec update"
+	}
+	replicas := int32(1)
+	if s.Spec.Replicas != nil {
+		replicas = *s.Spec.Replicas
+	}
+	if s.Status.UpdatedReplicas < replicas {
+		return false, fmt.Sprintf("%d/%d pods updated", s.Status.UpdatedReplicas, replicas)
+	}
+	if s.Status.ReadyReplicas < replicas {
+		return false, fmt.Sprintf("%d/%d pods ready", s.Status.ReadyReplicas, replicas)
+	}
+	if s.Status.UpdateRevision != "" && s.Status.UpdateRevision != s.Status.CurrentRevision {
+		return false, "rollout in progress"
+	}
+	return true, fmt.Sprintf("%d/%d ready", s.Status.ReadyReplicas, replicas)
+}
+
+func checkRolloutOnce(ctx context.Context, clientset kubernetes.Interface, t rolloutTarget) rolloutStatus {
+	switch t.kind {
+	case "Deployment":
+		d, err := clientset.AppsV1().Deployments(t.namespace).Get(ctx, t.name, metav1.GetOptions{})
+		if err != nil {
+			return rolloutStatus{err: err}
+		}
+		ok, msg := deploymentReady(d)
+		return rolloutStatus{ready: ok, message: msg}
+	case "StatefulSet":
+		s, err := clientset.AppsV1().StatefulSets(t.namespace).Get(ctx, t.name, metav1.GetOptions{})
+		if err != nil {
+			return rolloutStatus{err: err}
+		}
+		ok, msg := statefulSetReady(s)
+		return rolloutStatus{ready: ok, message: msg}
+	}
+	return rolloutStatus{err: fmt.Errorf("unknown kind %q", t.kind)}
+}
+
+func waitForRollouts(ctx context.Context, kc *rest.Config, plans []resourcePlan, defaultNS string, timeout time.Duration, isTTY bool) error {
+	targets := rolloutTargetsFromPlans(plans, defaultNS)
+	if len(targets) == 0 {
+		return nil
+	}
+	clientset, err := kubernetes.NewForConfig(kc)
+	if err != nil {
+		return err
+	}
+	wctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	if isTTY {
+		return runRolloutTUI(wctx, clientset, targets)
+	}
+	return runRolloutPlain(wctx, clientset, targets)
+}
+
+func runRolloutPlain(ctx context.Context, clientset kubernetes.Interface, targets []rolloutTarget) error {
+	fmt.Println("\nWaiting for workloads to become ready...")
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	ready := make([]bool, len(targets))
+	lastMsg := make([]string, len(targets))
+	var lastErr error
+
+	for {
+		allReady := true
+		for i, t := range targets {
+			if ready[i] {
+				continue
+			}
+			st := checkRolloutOnce(ctx, clientset, t)
+			msg := st.message
+			if st.err != nil {
+				msg = st.err.Error()
+				if !apierrors.IsNotFound(st.err) {
+					lastErr = fmt.Errorf("%s/%s: %w", t.kind, t.name, st.err)
+				}
+			}
+			if st.ready {
+				ready[i] = true
+				fmt.Printf("  ✓ %s/%s: %s\n", t.kind, t.name, msg)
+				continue
+			}
+			allReady = false
+			if msg != lastMsg[i] {
+				fmt.Printf("  … %s/%s: %s\n", t.kind, t.name, msg)
+				lastMsg[i] = msg
+			}
+		}
+		if allReady {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			var pending []string
+			for i, t := range targets {
+				if !ready[i] {
+					pending = append(pending, fmt.Sprintf("%s/%s", t.kind, t.name))
+				}
+			}
+			if lastErr != nil {
+				return fmt.Errorf("timed out waiting for %s: %w", strings.Join(pending, ", "), lastErr)
+			}
+			return fmt.Errorf("timed out waiting for %s", strings.Join(pending, ", "))
+		case <-ticker.C:
+		}
+	}
+}
+
+// --- Rollout TUI ---
+
+type rolloutBatchMsg struct {
+	updates []rolloutUpdate
+}
+
+type rolloutTickMsg struct{}
+
+type rolloutModel struct {
+	ctx       context.Context
+	clientset kubernetes.Interface
+	targets   []rolloutTarget
+	status    []rolloutStatus
+	done      []bool
+	spinner   spinner.Model
+	allReady  bool
+	timedOut  bool
+}
+
+func newRolloutModel(ctx context.Context, clientset kubernetes.Interface, targets []rolloutTarget) rolloutModel {
+	s := spinner.New()
+	s.Spinner = spinner.Dot
+	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
+	return rolloutModel{
+		ctx:       ctx,
+		clientset: clientset,
+		targets:   targets,
+		status:    make([]rolloutStatus, len(targets)),
+		done:      make([]bool, len(targets)),
+		spinner:   s,
+	}
+}
+
+func (m rolloutModel) pollAll() tea.Cmd {
+	return func() tea.Msg {
+		results := make([]rolloutUpdate, 0, len(m.targets))
+		for i, t := range m.targets {
+			if m.done[i] {
+				continue
+			}
+			st := checkRolloutOnce(m.ctx, m.clientset, t)
+			results = append(results, rolloutUpdate{index: i, status: st})
+		}
+		return rolloutBatchMsg{updates: results}
+	}
+}
+
+func (m rolloutModel) Init() tea.Cmd {
+	return tea.Batch(m.spinner.Tick, m.pollAll())
+}
+
+func (m rolloutModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		return m, cmd
+	case rolloutBatchMsg:
+		for _, u := range msg.updates {
+			m.status[u.index] = u.status
+			if u.status.ready {
+				m.done[u.index] = true
+			}
+		}
+		allReady := true
+		for _, d := range m.done {
+			if !d {
+				allReady = false
+				break
+			}
+		}
+		if allReady {
+			m.allReady = true
+			return m, tea.Quit
+		}
+		if m.ctx.Err() != nil {
+			m.timedOut = true
+			return m, tea.Quit
+		}
+		return m, tea.Tick(2*time.Second, func(time.Time) tea.Msg { return rolloutTickMsg{} })
+	case rolloutTickMsg:
+		return m, m.pollAll()
+	case tea.KeyMsg:
+		if msg.String() == "ctrl+c" {
+			return m, tea.Quit
+		}
+	}
+	return m, nil
+}
+
+func (m rolloutModel) View() string {
+	var b strings.Builder
+	b.WriteString("\nWaiting for workloads to become ready...\n\n")
+	for i, t := range m.targets {
+		st := m.status[i]
+		var icon string
+		switch {
+		case m.done[i]:
+			icon = styleCreate.Render("✓")
+		case m.timedOut:
+			icon = styleError.Render("✗")
+		default:
+			icon = m.spinner.View()
+		}
+		msg := st.message
+		if st.err != nil {
+			msg = st.err.Error()
+		}
+		if msg == "" {
+			msg = "checking..."
+		}
+		b.WriteString(fmt.Sprintf("  %s %s/%s: %s\n", icon, t.kind, t.name, msg))
+	}
+	if m.allReady {
+		b.WriteString("\nAll workloads ready.\n")
+	}
+	if m.timedOut {
+		b.WriteString(styleError.Render("\nTimed out waiting for rollout.\n"))
+	}
+	return b.String()
+}
+
+func runRolloutTUI(ctx context.Context, clientset kubernetes.Interface, targets []rolloutTarget) error {
+	model := newRolloutModel(ctx, clientset, targets)
+	finalModel, err := tea.NewProgram(model).Run()
+	if err != nil {
+		return err
+	}
+	m := finalModel.(rolloutModel)
+	if m.timedOut || ctx.Err() != nil {
+		var pending []string
+		for i, t := range targets {
+			if !m.done[i] {
+				pending = append(pending, fmt.Sprintf("%s/%s", t.kind, t.name))
+			}
+		}
+		return fmt.Errorf("timed out waiting for %s", strings.Join(pending, ", "))
+	}
+	if !m.allReady {
+		return fmt.Errorf("rollout interrupted")
+	}
+	return nil
+}
+
 func init() {
 	installK8sCmd.Flags().String("kubeconfig", "", "Path to the kubeconfig file to use for Kubernetes API access")
 	installK8sCmd.Flags().String("context", "", "Kubernetes context to use from the kubeconfig file")
@@ -1127,6 +1469,8 @@ func init() {
 	installK8sCmd.Flags().String("image", "", "Controller image override to pass to the onboarding manifest generator")
 	installK8sCmd.Flags().String("version", "", "Controller version override (e.g. v0.3.0)")
 	installK8sCmd.Flags().BoolP("yes", "y", false, "Skip confirmation and apply changes immediately")
+	installK8sCmd.Flags().Bool("wait", true, "Wait for Deployments and StatefulSets to become healthy after apply")
+	installK8sCmd.Flags().Duration("wait-timeout", 90*time.Second, "Maximum time to wait for workloads to become healthy")
 	k8sCmd.AddCommand(installK8sCmd)
 
 	RootCmd.AddCommand(k8sCmd)
