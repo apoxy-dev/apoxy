@@ -80,6 +80,13 @@ func (m *muxedConn) readFromConn(src netip.Prefix, conn Connection) {
 				m.Remove(src)
 				m.packetBufferPool.Put(pkt)
 
+				// Reclaim the async sender goroutine. The underlying is
+				// already closed (that's what ReadPacket just told us), so
+				// only the sender needs to stop — we must not double-close.
+				if w, ok := conn.(*asyncSendConn); ok {
+					w.shutdownSender()
+				}
+
 				return
 			}
 
@@ -117,6 +124,11 @@ func (m *muxedConn) readFromConn(src netip.Prefix, conn Connection) {
 }
 
 // Add adds a new connection to the multiplexer.
+//
+// The connection is wrapped in an asyncSendConn so that a slow or
+// backpressured underlying connection cannot stall writes destined for its
+// siblings via the shared splice goroutine (see async_send.go). Reads flow
+// through the embedded Connection unchanged.
 func (m *muxedConn) Add(addr netip.Prefix, conn Connection) error {
 	if !addr.IsValid() {
 		return fmt.Errorf("invalid prefix for connection: %v", addr)
@@ -124,12 +136,33 @@ func (m *muxedConn) Add(addr netip.Prefix, conn Connection) error {
 
 	slog.Info("Adding connection", slog.String("prefix", addr.String()))
 
+	wrapped := newAsyncSendConn(conn, addr.String(), func(icmp []byte) {
+		// ICMP reply (e.g. DatagramTooLarge → "packet too big") from the
+		// underlying WritePacket must be delivered back up to the TUN.
+		// Reuse the inbound path: push into incomingPackets with the same
+		// headroom layout readFromConn produces. Drop on overflow.
+		buf := m.packetBufferPool.Get().(*[]byte)
+		*buf = (*buf)[:cap(*buf)]
+		if m.headroom+len(icmp) > cap(*buf) {
+			m.packetBufferPool.Put(buf)
+			return
+		}
+		copy((*buf)[m.headroom:], icmp)
+		*buf = (*buf)[:m.headroom+len(icmp)]
+		select {
+		case m.incomingPackets <- buf:
+		default:
+			m.packetBufferPool.Put(buf)
+			metrics.TunnelPacketsDropped.WithLabelValues("icmp_queue_full").Inc()
+		}
+	})
+
 	m.mu.Lock()
-	m.conns.Insert(addr, conn)
-	m.prefixes[addr] = conn
+	m.conns.Insert(addr, wrapped)
+	m.prefixes[addr] = wrapped
 	m.mu.Unlock()
 
-	go m.readFromConn(addr, conn)
+	go m.readFromConn(addr, wrapped)
 
 	return nil
 }

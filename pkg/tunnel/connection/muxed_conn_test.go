@@ -74,11 +74,21 @@ func TestMuxedConnection(t *testing.T) {
 		pkt[0] = 0x60 // IPv6
 		copy(pkt[24:40], netip.MustParseAddr("2001:db8::1").AsSlice())
 
-		mockConn.On("WritePacket", pkt).Return([]byte("ok"), nil).Once()
+		// Writes are asynchronous: the muxer enqueues a copy and returns
+		// immediately. Signal when the sender goroutine invokes WritePacket
+		// on the underlying conn so we can assert it deterministically.
+		done := make(chan struct{})
+		mockConn.On("WritePacket", mock.Anything).Return([]byte(nil), nil).
+			Once().Run(func(mock.Arguments) { close(done) })
 
 		resp, err := mux.WritePacket(pkt)
 		assert.NoError(t, err)
-		assert.Equal(t, []byte("ok"), resp)
+		assert.Nil(t, resp)
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("async sender did not call underlying WritePacket within 1s")
+		}
 		mockConn.AssertExpectations(t)
 	})
 
@@ -89,9 +99,12 @@ func TestMuxedConnection(t *testing.T) {
 		pkt[0] = 0x60
 		copy(pkt[24:40], netip.MustParseAddr("2001:db8::1").AsSlice())
 
+		// writeToConn logs and drops when no conn matches; WritePacket
+		// surfaces no error — packet is simply counted as a sent error
+		// metric and never delivered.
 		resp, err := mux.WritePacket(pkt)
+		assert.NoError(t, err)
 		assert.Nil(t, resp)
-		assert.ErrorContains(t, err, "no matching tunnel")
 	})
 
 	t.Run("ReadPacket - Success", func(t *testing.T) {
@@ -152,11 +165,18 @@ func TestSrcMuxedConnection(t *testing.T) {
 		pkt[0] = 0x60                                                 // IPv6
 		copy(pkt[8:24], netip.MustParseAddr("2001:db8::1").AsSlice()) // Source address
 
-		mockConn.On("WritePacket", pkt).Return([]byte("ok"), nil).Once()
+		done := make(chan struct{})
+		mockConn.On("WritePacket", mock.Anything).Return([]byte(nil), nil).
+			Once().Run(func(mock.Arguments) { close(done) })
 
 		resp, err := mux.WritePacket(pkt)
 		assert.NoError(t, err)
-		assert.Equal(t, []byte("ok"), resp)
+		assert.Nil(t, resp)
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("async sender did not call underlying WritePacket within 1s")
+		}
 		mockConn.AssertExpectations(t)
 	})
 
@@ -172,11 +192,18 @@ func TestSrcMuxedConnection(t *testing.T) {
 		pkt[0] = 0x45                                                // IPv4
 		copy(pkt[12:16], netip.MustParseAddr("192.0.2.1").AsSlice()) // Source address
 
-		mockConn.On("WritePacket", pkt).Return([]byte("ok"), nil).Once()
+		done := make(chan struct{})
+		mockConn.On("WritePacket", mock.Anything).Return([]byte(nil), nil).
+			Once().Run(func(mock.Arguments) { close(done) })
 
 		resp, err := mux.WritePacket(pkt)
 		assert.NoError(t, err)
-		assert.Equal(t, []byte("ok"), resp)
+		assert.Nil(t, resp)
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("async sender did not call underlying WritePacket within 1s")
+		}
 		mockConn.AssertExpectations(t)
 	})
 
@@ -187,9 +214,12 @@ func TestSrcMuxedConnection(t *testing.T) {
 		pkt[0] = 0x60
 		copy(pkt[8:24], netip.MustParseAddr("2001:db8::1").AsSlice())
 
+		// writeToConn logs and drops when no conn matches; WritePacket
+		// surfaces no error — the packet is just counted as a sent error
+		// metric and never delivered.
 		resp, err := mux.WritePacket(pkt)
+		assert.NoError(t, err)
 		assert.Nil(t, resp)
-		assert.ErrorContains(t, err, "no matching tunnel")
 	})
 
 	t.Run("WritePacket - Invalid Packet", func(t *testing.T) {
