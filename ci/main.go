@@ -71,7 +71,7 @@ esac
 // BuilderContainer builds a containers for compiling go binaries.
 func (m *ApoxyCli) BuilderContainer(ctx context.Context, src *dagger.Directory) *dagger.Container {
 	return dag.Container().
-		From("golang:1.24-bookworm").
+		From("golang:1.25-bookworm").
 		WithWorkdir("/").
 		WithMountedCache("/go/pkg/mod", dag.CacheVolume("go-mod")).
 		WithEnvVariable("GOMODCACHE", "/go/pkg/mod").
