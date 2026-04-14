@@ -124,6 +124,7 @@ type tunnelNodeReconciler struct {
 	dialMu     sync.RWMutex
 	tunnelUID  uuid.UUID
 	srvAddr    string
+	srvAddrs   []string // All available relay addresses for multi-conn distribution.
 	clientOpts []tunnel.TunnelClientOption
 
 	// TUI status fields
@@ -438,14 +439,31 @@ func (t *tunnelNodeReconciler) reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	var srvAddr string
-	if !t.cfg.IsLocalMode {
-		if len(tunnelNode.Status.Addresses) == 0 {
+	var srvAddrs []string
+	if len(tunnelNode.Status.Addresses) == 0 {
+		if t.cfg.IsLocalMode {
+			// Fallback for local mode when no addresses are set.
+			apiServerHost := "localhost"
+			if os.Getenv("APOXY_API_SERVER_HOST") != "" {
+				apiServerHost = os.Getenv("APOXY_API_SERVER_HOST")
+			}
+			srvAddr = apiServerHost + ":9443"
+			srvAddrs = []string{srvAddr}
+		} else {
 			log.Error("TunnelNode has no addresses")
 			return ctrl.Result{
 				RequeueAfter: time.Second,
 			}, nil
-		} else if len(tunnelNode.Status.Addresses) == 1 {
-			srvAddr = tunnelNode.Status.Addresses[0]
+		}
+	} else if len(tunnelNode.Status.Addresses) == 1 {
+		srvAddr = tunnelNode.Status.Addresses[0]
+		srvAddrs = tunnelNode.Status.Addresses
+	} else {
+		srvAddrs = tunnelNode.Status.Addresses
+		if t.cfg.IsLocalMode {
+			// In local mode, skip endpoint probing — use the first address
+			// as primary. Workers distribute across all addresses.
+			srvAddr = srvAddrs[0]
 		} else {
 			// Re-probe only when the address list changes.
 			addrs := tunnelNode.Status.Addresses
@@ -468,12 +486,6 @@ func (t *tunnelNodeReconciler) reconcile(ctx context.Context, req ctrl.Request) 
 				t.lastSelected = srvAddr
 			}
 		}
-	} else {
-		apiServerHost := "localhost"
-		if os.Getenv("APOXY_API_SERVER_HOST") != "" {
-			apiServerHost = os.Getenv("APOXY_API_SERVER_HOST")
-		}
-		srvAddr = apiServerHost + ":9443"
 	}
 
 	if t.cfg.IsLocalMode || insecureSkipVerify {
@@ -483,6 +495,7 @@ func (t *tunnelNodeReconciler) reconcile(ctx context.Context, req ctrl.Request) 
 	t.dialMu.Lock()
 	t.tunnelUID = tnUUID
 	t.srvAddr = srvAddr
+	t.srvAddrs = srvAddrs
 	t.clientOpts = cOpts
 	t.tunnelName = tunnelNode.Name
 	t.hasToken = tunnelNode.Status.Credentials != nil && tunnelNode.Status.Credentials.Token != ""
@@ -508,39 +521,56 @@ func (t *tunnelNodeReconciler) reconcile(ctx context.Context, req ctrl.Request) 
 			slog.Int("min", minConns), slog.Int("cur", n))
 
 		for i := 0; i < minConns-n; i++ {
+			workerIdx := n + i // Global index across all workers.
 			conn := &tunConn{
 				id:     uuid.New(),
 				stopCh: make(chan struct{}),
 			}
 			t.tunDialerWorkers = append(t.tunDialerWorkers, conn)
-			go func(conn *tunConn) {
+			go func(conn *tunConn, idx int) {
 				wait.BackoffUntil(func() {
 					// Read dial parameters with read lock
 					t.dialMu.RLock()
 					tunnelUID := t.tunnelUID
+					// Distribute connections across available addresses
+					// so that each worker connects to a distinct relay.
 					srvAddr := t.srvAddr
+					if len(t.srvAddrs) > 1 {
+						srvAddr = t.srvAddrs[idx%len(t.srvAddrs)]
+					}
+					srvAddrsSnap := append([]string(nil), t.srvAddrs...)
 					clientOpts := make([]tunnel.TunnelClientOption, len(t.clientOpts))
 					copy(clientOpts, t.clientOpts)
 					t.dialMu.RUnlock()
 
 					if !t.useTUI {
-						fmt.Printf("[%s] Connecting to %s...\n", time.Now().Format("15:04:05"), srvAddr)
+						fmt.Printf("[%s] [worker=%d srvAddrs=%v] Connecting to %s...\n",
+							time.Now().Format("15:04:05"), idx, srvAddrsSnap, srvAddr)
 					}
-					log.Info("Dialing tunnel proxy server address", slog.String("address", srvAddr))
+					log.Info("Dialing tunnel proxy server address",
+						slog.Int("worker", idx),
+						slog.String("address", srvAddr))
 
 					c, err := t.tunDialer.Dial(ctx, tunnelUID, srvAddr, clientOpts...)
 					if err != nil {
 						if !t.useTUI {
-							fmt.Printf("[%s] Connection failed: %v\n", time.Now().Format("15:04:05"), err)
+							fmt.Printf("[%s] [worker=%d] Connection failed: %v\n",
+								time.Now().Format("15:04:05"), idx, err)
 						}
-						log.Error("failed to start tunnel client", slog.Any("error", err))
+						log.Error("failed to start tunnel client",
+							slog.Int("worker", idx),
+							slog.Any("error", err))
 						return
 					}
 
 					if !t.useTUI {
-						fmt.Printf("[%s] Connected (id: %s)\n", time.Now().Format("15:04:05"), c.UUID.String()[:8])
+						fmt.Printf("[%s] [worker=%d dialed=%s] Connected (id: %s)\n",
+							time.Now().Format("15:04:05"), idx, srvAddr, c.UUID.String()[:8])
 					}
-					log.Info("Tunnel client connected", slog.String("uuid", c.UUID.String()))
+					log.Info("Tunnel client connected",
+						slog.Int("worker", idx),
+						slog.String("dialed", srvAddr),
+						slog.String("uuid", c.UUID.String()))
 
 					conn.id = c.UUID
 					conn.conn = c
@@ -549,11 +579,15 @@ func (t *tunnelNodeReconciler) reconcile(ctx context.Context, req ctrl.Request) 
 					<-c.Context().Done() // Wait for the connection to close.
 
 					if !t.useTUI {
-						fmt.Printf("[%s] Disconnected (id: %s): %v\n", time.Now().Format("15:04:05"), c.UUID.String()[:8], c.Context().Err())
+						fmt.Printf("[%s] [worker=%d] Disconnected (id: %s): %v\n",
+							time.Now().Format("15:04:05"), idx, c.UUID.String()[:8], c.Context().Err())
 					}
-					log.Error("Tunnel client disconnected", slog.String("uuid", c.UUID.String()), slog.Any("error", c.Context().Err()))
+					log.Error("Tunnel client disconnected",
+						slog.Int("worker", idx),
+						slog.String("uuid", c.UUID.String()),
+						slog.Any("error", c.Context().Err()))
 				}, backoff, false, conn.stopCh)
-			}(conn)
+			}(conn, workerIdx)
 		}
 	} else {
 		log.Info("Matching tunnel connections", slog.Int("min", minConns), slog.Int("cur", n))
