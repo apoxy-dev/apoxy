@@ -412,72 +412,39 @@ func (m *ApoxyCli) PublishGithubRelease(
 		WithFile("/apoxy-linux-arm64", cliCtrLinuxArm64.File("/apoxy")).
 		WithFile("/apoxy-darwin-amd64", darwinAmd64Binary).
 		WithFile("/apoxy-darwin-arm64", darwinArm64Binary).
-		// Create tarballs for each platform
-		WithExec([]string{"sh", "-c", "cd /tmp && cp /apoxy-linux-amd64 apoxy && tar czf /apoxy_Linux_x86_64.tar.gz apoxy && rm apoxy"}).
-		WithExec([]string{"sh", "-c", "cd /tmp && cp /apoxy-linux-arm64 apoxy && tar czf /apoxy_Linux_arm64.tar.gz apoxy && rm apoxy"}).
-		WithExec([]string{"sh", "-c", "cd /tmp && cp /apoxy-darwin-amd64 apoxy && tar czf /apoxy_Darwin_x86_64.tar.gz apoxy && rm apoxy"}).
-		WithExec([]string{"sh", "-c", "cd /tmp && cp /apoxy-darwin-arm64 apoxy && tar czf /apoxy_Darwin_arm64.tar.gz apoxy && rm apoxy"}).
-		// Compute SHA256 checksums for tarballs
-		WithExec([]string{"sh", "-c", "sha256sum /apoxy_*.tar.gz > /checksums.txt && cat /checksums.txt"}).
+		// Create tarballs for each platform. The Homebrew-style (x86_64) names
+		// feed the brew formula; the goarch-style (amd64) names are what
+		// `apoxy upgrade` (getsavvyinc/upgrade-cli) matches against.
+		WithExec([]string{"sh", "-c", "cd /tmp && cp /apoxy-linux-amd64 apoxy && tar czf /apoxy_Linux_x86_64.tar.gz apoxy && cp /apoxy_Linux_x86_64.tar.gz /apoxy_linux_amd64.tar.gz && rm apoxy"}).
+		WithExec([]string{"sh", "-c", "cd /tmp && cp /apoxy-linux-arm64 apoxy && tar czf /apoxy_Linux_arm64.tar.gz apoxy && cp /apoxy_Linux_arm64.tar.gz /apoxy_linux_arm64.tar.gz && rm apoxy"}).
+		WithExec([]string{"sh", "-c", "cd /tmp && cp /apoxy-darwin-amd64 apoxy && tar czf /apoxy_Darwin_x86_64.tar.gz apoxy && cp /apoxy_Darwin_x86_64.tar.gz /apoxy_darwin_amd64.tar.gz && rm apoxy"}).
+		WithExec([]string{"sh", "-c", "cd /tmp && cp /apoxy-darwin-arm64 apoxy && tar czf /apoxy_Darwin_arm64.tar.gz apoxy && cp /apoxy_Darwin_arm64.tar.gz /apoxy_darwin_arm64.tar.gz && rm apoxy"}).
+		// Compute SHA256 checksums for all tarballs. Run from / so the file
+		// names in checksums.txt have no leading slash, which is what the
+		// upgrade-cli parser expects.
+		WithExec([]string{"sh", "-c", "cd / && sha256sum apoxy_*.tar.gz > /checksums.txt && cat /checksums.txt"}).
 		WithExec(releaseCmd).
-		// Upload raw binaries (for install.sh compatibility)
-		WithExec([]string{
-			"gh", "release", "upload",
-			tag,
+		WithExec(append([]string{
+			"gh", "release", "upload", tag,
+			"--clobber", "--repo", "github.com/apoxy-dev/apoxy",
+		},
+			// Raw binaries for install.sh.
 			"/apoxy-linux-amd64",
-			"--clobber",
-			"--repo", "github.com/apoxy-dev/apoxy",
-		}).
-		WithExec([]string{
-			"gh", "release", "upload",
-			tag,
 			"/apoxy-linux-arm64",
-			"--clobber",
-			"--repo", "github.com/apoxy-dev/apoxy",
-		}).
-		WithExec([]string{
-			"gh", "release", "upload",
-			tag,
 			"/apoxy-darwin-amd64",
-			"--clobber",
-			"--repo", "github.com/apoxy-dev/apoxy",
-		}).
-		WithExec([]string{
-			"gh", "release", "upload",
-			tag,
 			"/apoxy-darwin-arm64",
-			"--clobber",
-			"--repo", "github.com/apoxy-dev/apoxy",
-		}).
-		// Upload tarballs for Homebrew
-		WithExec([]string{
-			"gh", "release", "upload",
-			tag,
+			// Homebrew-style tarballs.
 			"/apoxy_Linux_x86_64.tar.gz",
-			"--clobber",
-			"--repo", "github.com/apoxy-dev/apoxy",
-		}).
-		WithExec([]string{
-			"gh", "release", "upload",
-			tag,
 			"/apoxy_Linux_arm64.tar.gz",
-			"--clobber",
-			"--repo", "github.com/apoxy-dev/apoxy",
-		}).
-		WithExec([]string{
-			"gh", "release", "upload",
-			tag,
 			"/apoxy_Darwin_x86_64.tar.gz",
-			"--clobber",
-			"--repo", "github.com/apoxy-dev/apoxy",
-		}).
-		WithExec([]string{
-			"gh", "release", "upload",
-			tag,
 			"/apoxy_Darwin_arm64.tar.gz",
-			"--clobber",
-			"--repo", "github.com/apoxy-dev/apoxy",
-		})
+			// goarch-named tarballs + checksums.txt for `apoxy upgrade`.
+			"/apoxy_linux_amd64.tar.gz",
+			"/apoxy_linux_arm64.tar.gz",
+			"/apoxy_darwin_amd64.tar.gz",
+			"/apoxy_darwin_arm64.tar.gz",
+			"/checksums.txt",
+		))
 }
 
 // PublishHomebrewFormula updates the Homebrew formula with the latest release.
