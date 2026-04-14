@@ -30,6 +30,7 @@ import (
 	alog "github.com/apoxy-dev/apoxy/pkg/log"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/bfdl"
 	tunnelconn "github.com/apoxy-dev/apoxy/pkg/tunnel/connection"
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/metrics"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/router"
 )
 
@@ -292,6 +293,7 @@ func (d *TunnelDialer) Dial(
 	for k, v := range options.labels {
 		q.Add("label."+k, v)
 	}
+	q.Add(metrics.QueryParamAgentProcessID, metrics.AgentProcessID())
 	addrUrl.RawQuery = q.Encode()
 
 	tmpl, err := uritemplate.New(addrUrl.String())

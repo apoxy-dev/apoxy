@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -40,11 +41,13 @@ func TestReexportCollector_InjectsLabels(t *testing.T) {
 	// Inject a fake result directly.
 	store.results["conn-1"] = &StoreResult{
 		Target: StoreTarget{
-			ConnID:     "conn-1",
-			TunnelNode: "my-laptop",
-			AgentName:  "agent-1",
-			ProjectID:  "proj-abc",
+			ConnID:         "conn-1",
+			TunnelNode:     "my-laptop",
+			AgentName:      "conn-1",
+			AgentProcessID: "proc-xyz",
+			ProjectID:      "proj-abc",
 		},
+		RegisteredAt: time.Now(),
 		Families: map[string]*dto.MetricFamily{
 			"tunnel_connections_active": fakeFamily("tunnel_connections_active", dto.MetricType_GAUGE, 1),
 			"tunnel_bytes_sent_total":   fakeFamily("tunnel_bytes_sent_total", dto.MetricType_COUNTER, 4096),
@@ -64,7 +67,8 @@ func TestReexportCollector_InjectsLabels(t *testing.T) {
 		collected = append(collected, m)
 	}
 
-	require.Len(t, collected, 2, "expected 2 metrics re-exported")
+	// 2 re-exported agent metrics + 1 first-party connection uptime metric.
+	require.Len(t, collected, 3, "expected 2 re-exported metrics + 1 conn uptime")
 
 	// Verify labels are injected on each metric.
 	for _, m := range collected {
@@ -77,7 +81,9 @@ func TestReexportCollector_InjectsLabels(t *testing.T) {
 		}
 
 		assert.Equal(t, "my-laptop", labelMap["tunnel_node"], "expected tunnel_node label")
-		assert.Equal(t, "agent-1", labelMap["agent"], "expected agent label")
+		assert.Equal(t, "conn-1", labelMap["agent"], "expected legacy agent label (=conn_id)")
+		assert.Equal(t, "conn-1", labelMap["conn_id"], "expected conn_id label")
+		assert.Equal(t, "proc-xyz", labelMap["agent_process_id"], "expected agent_process_id label")
 		assert.Equal(t, "proj-abc", labelMap["project_id"], "expected project_id label")
 	}
 }
@@ -91,6 +97,7 @@ func TestReexportCollector_SkipsStaleResults(t *testing.T) {
 			ConnID:     "conn-stale",
 			TunnelNode: "stale-node",
 		},
+		RegisteredAt: time.Now().Add(-2 * StaleResultTimeout),
 		Families: map[string]*dto.MetricFamily{
 			"tunnel_connections_active": fakeFamily("tunnel_connections_active", dto.MetricType_GAUGE, 1),
 		},
@@ -103,6 +110,7 @@ func TestReexportCollector_SkipsStaleResults(t *testing.T) {
 			ConnID:     "conn-fresh",
 			TunnelNode: "fresh-node",
 		},
+		RegisteredAt: time.Now(),
 		Families: map[string]*dto.MetricFamily{
 			"tunnel_connections_active": fakeFamily("tunnel_connections_active", dto.MetricType_GAUGE, 1),
 		},
@@ -115,20 +123,28 @@ func TestReexportCollector_SkipsStaleResults(t *testing.T) {
 	collector.Collect(ch)
 	close(ch)
 
-	var collected []prometheus.Metric
+	// Re-exported agent metrics are skipped when the push is stale, but
+	// conn-uptime is still emitted for every registered connection.
+	reexported := 0
+	uptimes := map[string]float64{}
 	for m := range ch {
-		collected = append(collected, m)
+		d := &dto.Metric{}
+		require.NoError(t, m.Write(d))
+		labels := map[string]string{}
+		for _, lp := range d.GetLabel() {
+			labels[lp.GetName()] = lp.GetValue()
+		}
+		if strings.Contains(m.Desc().String(), connUptimeMetric) {
+			uptimes[labels["tunnel_node"]] = d.GetGauge().GetValue()
+			continue
+		}
+		reexported++
+		assert.Equal(t, "fresh-node", labels["tunnel_node"],
+			"only the fresh result should be re-exported")
 	}
-
-	require.Len(t, collected, 1, "should only have fresh result")
-
-	d := &dto.Metric{}
-	require.NoError(t, collected[0].Write(d))
-	labelMap := make(map[string]string)
-	for _, lp := range d.GetLabel() {
-		labelMap[lp.GetName()] = lp.GetValue()
-	}
-	assert.Equal(t, "fresh-node", labelMap["tunnel_node"])
+	assert.Equal(t, 1, reexported, "exactly one re-exported metric expected")
+	assert.Len(t, uptimes, 2, "uptime should be emitted for both conns")
+	assert.InDelta(t, (2 * StaleResultTimeout).Seconds(), uptimes["stale-node"], 1.0)
 }
 
 func TestReexportCollector_PrefixesMetricNames(t *testing.T) {
@@ -139,6 +155,7 @@ func TestReexportCollector_PrefixesMetricNames(t *testing.T) {
 			ConnID:     "conn-1",
 			TunnelNode: "node-1",
 		},
+		RegisteredAt: time.Now(),
 		Families: map[string]*dto.MetricFamily{
 			"test_metric": fakeFamily("test_metric", dto.MetricType_GAUGE, 42),
 		},
@@ -151,9 +168,13 @@ func TestReexportCollector_PrefixesMetricNames(t *testing.T) {
 	collector.Collect(ch)
 	close(ch)
 
-	m := <-ch
-	desc := m.Desc().String()
-	assert.Contains(t, desc, "apoxy_test_metric", "metric name should be prefixed with apoxy_")
+	sawReexport := false
+	for m := range ch {
+		if strings.Contains(m.Desc().String(), "apoxy_test_metric") {
+			sawReexport = true
+		}
+	}
+	assert.True(t, sawReexport, "re-exported metric should be prefixed with apoxy_")
 }
 
 // TestAgentMetricsNotRegisteredByInit verifies that init() does not register
@@ -194,6 +215,7 @@ func TestReexportCollector_NoMetricsAfterUnregister(t *testing.T) {
 			ConnID:     "conn-1",
 			TunnelNode: "node-1",
 		},
+		RegisteredAt: time.Now(),
 		Families: map[string]*dto.MetricFamily{
 			"tunnel_connections_active": fakeFamily("tunnel_connections_active", dto.MetricType_GAUGE, 1),
 		},
@@ -239,6 +261,110 @@ func TestMetricsStore_PushAndResults(t *testing.T) {
 	assert.Equal(t, "node-1", results["conn-1"].Target.TunnelNode)
 	assert.Contains(t, results["conn-1"].Families, "test_gauge")
 	assert.False(t, results["conn-1"].PushedAt.IsZero())
+	assert.False(t, results["conn-1"].RegisteredAt.IsZero(),
+		"Register must populate RegisteredAt for per-conn uptime")
+}
+
+// TestReexportCollector_ConnUptime verifies the first-party
+// tunnel_connection_uptime_seconds metric reflects time since Register,
+// independent of agent push state.
+func TestReexportCollector_ConnUptime(t *testing.T) {
+	store := NewMetricsStore()
+
+	start := time.Now().Add(-42 * time.Second)
+	store.results["conn-1"] = &StoreResult{
+		Target: StoreTarget{
+			ConnID:         "conn-1",
+			TunnelNode:     "node-1",
+			AgentName:      "conn-1",
+			AgentProcessID: "proc-xyz",
+			ProjectID:      "proj-1",
+		},
+		RegisteredAt: start,
+		// No Push yet — conn just registered.
+	}
+
+	collector := NewReexportCollector(store)
+
+	ch := make(chan prometheus.Metric, 100)
+	collector.Collect(ch)
+	close(ch)
+
+	var found *dto.Metric
+	var foundDesc string
+	for m := range ch {
+		if !strings.Contains(m.Desc().String(), connUptimeMetric) {
+			continue
+		}
+		d := &dto.Metric{}
+		require.NoError(t, m.Write(d))
+		found = d
+		foundDesc = m.Desc().String()
+	}
+	require.NotNil(t, found, "conn-uptime metric must be emitted even without a push")
+	assert.Contains(t, foundDesc, "apoxy_"+connUptimeMetric)
+
+	labels := map[string]string{}
+	for _, lp := range found.GetLabel() {
+		labels[lp.GetName()] = lp.GetValue()
+	}
+	assert.Equal(t, "node-1", labels[labelTunnelNode])
+	assert.Equal(t, "conn-1", labels[labelAgent], "legacy label equals conn_id")
+	assert.Equal(t, "conn-1", labels[labelConnID])
+	assert.Equal(t, "proc-xyz", labels[labelAgentProcessID])
+	assert.Equal(t, "proj-1", labels[labelProjectID])
+	assert.InDelta(t, 42.0, found.GetGauge().GetValue(), 2.0,
+		"uptime should reflect seconds since RegisteredAt")
+}
+
+// TestReexportCollector_DistinguishesProcesses verifies that two conns from
+// the same agent process share agent_process_id, and the label is present
+// on both re-exported metrics and the per-conn uptime metric.
+func TestReexportCollector_DistinguishesProcesses(t *testing.T) {
+	store := NewMetricsStore()
+
+	// Two conns, same agent process.
+	for _, cid := range []string{"conn-a", "conn-b"} {
+		store.results[cid] = &StoreResult{
+			Target: StoreTarget{
+				ConnID:         cid,
+				TunnelNode:     "laptop-1",
+				AgentName:      cid,
+				AgentProcessID: "same-proc-uuid",
+				ProjectID:      "proj-1",
+			},
+			RegisteredAt: time.Now(),
+			Families: map[string]*dto.MetricFamily{
+				"tunnel_agent_uptime_seconds": fakeFamily(
+					"tunnel_agent_uptime_seconds", dto.MetricType_GAUGE, 99),
+			},
+			PushedAt: time.Now(),
+		}
+	}
+
+	collector := NewReexportCollector(store)
+	ch := make(chan prometheus.Metric, 100)
+	collector.Collect(ch)
+	close(ch)
+
+	procIDs := map[string]struct{}{}
+	connIDs := map[string]struct{}{}
+	for m := range ch {
+		d := &dto.Metric{}
+		require.NoError(t, m.Write(d))
+		for _, lp := range d.GetLabel() {
+			if lp.GetName() == labelAgentProcessID {
+				procIDs[lp.GetValue()] = struct{}{}
+			}
+			if lp.GetName() == labelConnID {
+				connIDs[lp.GetValue()] = struct{}{}
+			}
+		}
+	}
+	assert.Equal(t, map[string]struct{}{"same-proc-uuid": {}}, procIDs,
+		"both conns must share the same agent_process_id")
+	assert.Equal(t, map[string]struct{}{"conn-a": {}, "conn-b": {}}, connIDs,
+		"conn_id must differ per connection")
 }
 
 func TestMetricsStore_PushUnknownConnID(t *testing.T) {

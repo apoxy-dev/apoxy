@@ -1,9 +1,12 @@
 package metrics
 
 import (
+	"os"
+	"regexp"
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
 
@@ -12,6 +15,48 @@ import (
 
 // startTime is the time the process started. Used for uptime calculation.
 var startTime = time.Now()
+
+// QueryParamAgentProcessID is the CONNECT-IP query-string key the agent uses
+// to tell the server its stable per-process ID. Referenced by both the client
+// and the server handler so a rename can't silently break the wire.
+const QueryParamAgentProcessID = "agent_process_id"
+
+// processID is stable for the process lifetime so callers can distinguish
+// "same process with multiple conns" from "multiple processes each with one
+// conn". Prefers a CRI container ID (cross-refs kubelet/containerd metadata)
+// and falls back to a UUID when none is detectable.
+var processID = initProcessID()
+
+// containerIDRegex matches the 64-char hex token that CRI runtimes
+// (containerd, cri-o, docker, podman) embed in cgroup paths. Covers both
+// cgroup v1 and v2 layouts and the common systemd-slice wrappers
+// (`cri-containerd-<id>.scope`, `docker-<id>.scope`, etc).
+var containerIDRegex = regexp.MustCompile(`[0-9a-f]{64}`)
+
+func initProcessID() string {
+	// Linux-only: on macOS/Windows the read fails and we fall back to a UUID.
+	// Both paths rotate on container/process restart, so cardinality is bounded
+	// by the same restart rate either way.
+	if id := detectContainerID("/proc/self/cgroup"); id != "" {
+		return id
+	}
+	return uuid.NewString()
+}
+
+func detectContainerID(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return parseCgroupForContainerID(data)
+}
+
+func parseCgroupForContainerID(data []byte) string {
+	return containerIDRegex.FindString(string(data))
+}
+
+// AgentProcessID returns the stable per-process ID for this agent.
+func AgentProcessID() string { return processID }
 
 var (
 	// Agent info and lifecycle metrics.

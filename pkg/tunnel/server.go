@@ -233,6 +233,7 @@ func WithProjectIDLookup(fn func(tunnelUID string) string) TunnelServerOption {
 type conn struct {
 	*connectip.Conn
 	connID         string
+	agentProcessID string
 	obj            *corev1alpha.TunnelNode
 	addrv4, addrv6 netip.Prefix
 	cancel         context.CancelFunc
@@ -763,10 +764,11 @@ func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.
 		defer connCancel()
 
 		conn := &conn{
-			connID: cid,
-			obj:    tn.DeepCopy(),
-			cancel: connCancel,
-			labels: labels,
+			connID:         cid,
+			agentProcessID: r.URL.Query().Get(metrics.QueryParamAgentProcessID),
+			obj:            tn.DeepCopy(),
+			cancel:         connCancel,
+			labels:         labels,
 		}
 		p := connectip.Proxy{}
 		if conn.Conn, err = p.Proxy(w, req); err != nil {
@@ -1017,10 +1019,11 @@ func (t *TunnelServer) setupConn(
 			projectID = t.options.projectIDLookup(string(conn.obj.UID))
 		}
 		t.options.metricsStore.Register(metrics.StoreTarget{
-			ConnID:     connID,
-			TunnelNode: conn.obj.Name,
-			AgentName:  connID,
-			ProjectID:  projectID,
+			ConnID:         connID,
+			TunnelNode:     conn.obj.Name,
+			AgentName:      connID,
+			AgentProcessID: conn.agentProcessID,
+			ProjectID:      projectID,
 		})
 	}
 

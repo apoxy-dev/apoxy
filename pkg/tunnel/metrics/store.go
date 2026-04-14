@@ -13,15 +13,29 @@ import (
 type StoreTarget struct {
 	ConnID     string
 	TunnelNode string
-	AgentName  string
-	ProjectID  string
+	// AgentName is the legacy label value used for the "agent" label on
+	// re-exported metrics. In the tunnelproxy CONNECT-IP path it is set to
+	// ConnID (so "agent" is really per-conn). Retained for dashboard
+	// backwards-compatibility; prefer ConnID and AgentProcessID for new queries.
+	AgentName string
+	// AgentProcessID is a stable UUID for the agent *process* the connection
+	// originates from. Multiple conns opened by the same agent process share
+	// this value; use it to deduplicate process-scoped metrics like
+	// tunnel_agent_uptime_seconds across min-conns > 1 sessions. May be empty
+	// if the agent is old enough to not send it.
+	AgentProcessID string
+	ProjectID      string
 }
 
 // StoreResult holds the parsed metric families from a single agent push.
 type StoreResult struct {
-	Target   StoreTarget
-	Families map[string]*dto.MetricFamily
-	PushedAt time.Time
+	Target StoreTarget
+	// RegisteredAt is the time the connection was registered with the store.
+	// Used to compute per-connection uptime independent of the agent process
+	// uptime (which is shared across all conns of the same agent).
+	RegisteredAt time.Time
+	Families     map[string]*dto.MetricFamily
+	PushedAt     time.Time
 }
 
 // MetricsStore accepts pushed metrics from tunnel agents and makes them
@@ -61,8 +75,9 @@ func (s *MetricsStore) Register(target StoreTarget) {
 	defer s.resultsMu.Unlock()
 
 	s.results[target.ConnID] = &StoreResult{
-		Target:   target,
-		Families: make(map[string]*dto.MetricFamily),
+		Target:       target,
+		RegisteredAt: time.Now(),
+		Families:     make(map[string]*dto.MetricFamily),
 	}
 }
 

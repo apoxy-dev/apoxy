@@ -7,7 +7,6 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
-	"google.golang.org/protobuf/proto"
 )
 
 const (
@@ -15,18 +14,51 @@ const (
 	// Results older than this are skipped during collection.
 	StaleResultTimeout = 60 * time.Second
 
-	labelTunnelNode = "tunnel_node"
-	labelAgent      = "agent"
-	labelProjectID  = "project_id"
+	labelTunnelNode     = "tunnel_node"
+	labelAgent          = "agent" // Deprecated alias for conn_id; retained for dashboard compatibility.
+	labelConnID         = "conn_id"
+	labelAgentProcessID = "agent_process_id"
+	labelProjectID      = "project_id"
+
+	// connUptimeMetric is the first-party per-connection uptime metric emitted
+	// by the ReexportCollector (computed from StoreResult.RegisteredAt). Unlike
+	// tunnel_agent_uptime_seconds — which is re-exported from the agent and
+	// reports the agent *process* uptime duplicated across every conn_id — this
+	// metric reflects the lifetime of a single CONNECT-IP session.
+	connUptimeMetric = "tunnel_connection_uptime_seconds"
 )
 
+// targetLabelNames is the canonical order of the labels we inject on every
+// metric emitted by this collector (both re-exported agent metrics and the
+// first-party conn uptime gauge). Single source of truth so the connUptimeDesc
+// and per-result label-value slice stay in lock-step.
+var targetLabelNames = []string{
+	labelTunnelNode,
+	labelAgent,
+	labelConnID,
+	labelAgentProcessID,
+	labelProjectID,
+}
+
+func targetLabelValues(t StoreTarget) []string {
+	return []string{
+		t.TunnelNode,
+		t.AgentName, // legacy "agent" value; today always equal to ConnID on the server side
+		t.ConnID,
+		t.AgentProcessID,
+		t.ProjectID,
+	}
+}
+
 // ReexportCollector implements prometheus.Collector by iterating over pushed
-// agent metrics and re-emitting them with tunnel_node, agent, and project_id
-// labels injected. It should be registered with the tunnelproxy's Prometheus
-// registry so agent metrics appear on the tunnelproxy's /metrics endpoint.
+// agent metrics and re-emitting them with tunnel_node, agent, conn_id,
+// agent_process_id, and project_id labels injected. It should be registered
+// with the tunnelproxy's Prometheus registry so agent metrics appear on the
+// tunnelproxy's /metrics endpoint.
 type ReexportCollector struct {
-	store  *MetricsStore
-	prefix string
+	store          *MetricsStore
+	prefix         string
+	connUptimeDesc *prometheus.Desc
 }
 
 // ReexportOption configures a ReexportCollector.
@@ -47,6 +79,12 @@ func NewReexportCollector(store *MetricsStore, opts ...ReexportOption) *Reexport
 	for _, o := range opts {
 		o(c)
 	}
+	c.connUptimeDesc = prometheus.NewDesc(
+		c.prefix+connUptimeMetric,
+		"Seconds since this tunnel connection was registered with the tunnelproxy.",
+		targetLabelNames,
+		nil,
+	)
 	return c
 }
 
@@ -60,25 +98,34 @@ func (c *ReexportCollector) Describe(ch chan<- *prometheus.Desc) {}
 func (c *ReexportCollector) Collect(ch chan<- prometheus.Metric) {
 	now := time.Now()
 	c.store.ForEachResult(func(connID string, result *StoreResult) bool {
+		values := targetLabelValues(result.Target)
+		// Guard tolerates tests that populate store.results directly, bypassing
+		// Register. In production Register always stamps RegisteredAt.
+		if !result.RegisteredAt.IsZero() {
+			ch <- prometheus.MustNewConstMetric(
+				c.connUptimeDesc,
+				prometheus.GaugeValue,
+				now.Sub(result.RegisteredAt).Seconds(),
+				values...,
+			)
+		}
 		if now.Sub(result.PushedAt) > StaleResultTimeout {
 			return true
 		}
-		c.collectResult(ch, result)
+		c.collectResult(ch, result, values)
 		return true
 	})
 }
 
-func (c *ReexportCollector) collectResult(ch chan<- prometheus.Metric, result *StoreResult) {
-	extraLabels := []*dto.LabelPair{
-		{Name: proto.String(labelTunnelNode), Value: proto.String(result.Target.TunnelNode)},
-		{Name: proto.String(labelAgent), Value: proto.String(result.Target.AgentName)},
-		{Name: proto.String(labelProjectID), Value: proto.String(result.Target.ProjectID)},
-	}
-
+func (c *ReexportCollector) collectResult(
+	ch chan<- prometheus.Metric,
+	result *StoreResult,
+	targetValues []string,
+) {
 	for name, family := range result.Families {
 		prefixedName := c.prefix + name
 		for _, m := range family.Metric {
-			pm, err := c.toPrometheusMetric(prefixedName, family.GetType(), m, extraLabels)
+			pm, err := c.toPrometheusMetric(prefixedName, family.GetType(), m, targetValues)
 			if err != nil {
 				slog.Debug("Skipping metric",
 					slog.String("name", prefixedName),
@@ -95,20 +142,17 @@ func (c *ReexportCollector) toPrometheusMetric(
 	name string,
 	mtype dto.MetricType,
 	m *dto.Metric,
-	extraLabels []*dto.LabelPair,
+	targetValues []string,
 ) (prometheus.Metric, error) {
-	// Copy labels to avoid mutating the protobuf message's backing array.
 	existing := m.GetLabel()
-	allLabels := make([]*dto.LabelPair, 0, len(existing)+len(extraLabels))
-	allLabels = append(allLabels, existing...)
-	allLabels = append(allLabels, extraLabels...)
-
-	labelNames := make([]string, len(allLabels))
-	labelValues := make([]string, len(allLabels))
-	for i, lp := range allLabels {
-		labelNames[i] = lp.GetName()
-		labelValues[i] = lp.GetValue()
+	labelNames := make([]string, 0, len(existing)+len(targetLabelNames))
+	labelValues := make([]string, 0, len(existing)+len(targetLabelNames))
+	for _, lp := range existing {
+		labelNames = append(labelNames, lp.GetName())
+		labelValues = append(labelValues, lp.GetValue())
 	}
+	labelNames = append(labelNames, targetLabelNames...)
+	labelValues = append(labelValues, targetValues...)
 
 	desc := prometheus.NewDesc(name, "Re-exported agent metric.", labelNames, nil)
 
