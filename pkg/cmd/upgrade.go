@@ -31,28 +31,41 @@ var upgradeCmd = &cobra.Command{
 			return nil
 		}
 
-		p, err := os.Executable()
+		upgraded, err := runUpgradeInPlace(cmd.Context())
 		if err != nil {
-			return fmt.Errorf("unable to find the current executable: %w", err)
+			return err
 		}
-		v := build.BuildVersion
-
-		u := upgrade.NewUpgrader(owner, repo, p)
-		if ok, err := u.IsNewVersionAvailable(context.Background(), v); err != nil {
-			return fmt.Errorf("unable to check for new version: %w", err)
-		} else if !ok {
+		if !upgraded {
 			return nil
 		}
-
-		fmt.Println("Upgrading Apoxy CLI to the latest version...")
-		if err := u.Upgrade(cmd.Context(), v); err != nil {
-			return fmt.Errorf("unable to upgrade to the latest version: %w", err)
-		} else {
-			fmt.Println("Upgrade complete!")
-		}
-
+		fmt.Println("Upgrade complete!")
 		return nil
 	},
+}
+
+// runUpgradeInPlace replaces the running binary with the latest release, if a
+// newer one is available. Returns (upgraded, error). Dev-build guarding is the
+// caller's responsibility.
+func runUpgradeInPlace(ctx context.Context) (bool, error) {
+	p, err := os.Executable()
+	if err != nil {
+		return false, fmt.Errorf("unable to find the current executable: %w", err)
+	}
+
+	u := upgrade.NewUpgrader(owner, repo, p)
+	ok, err := u.IsNewVersionAvailable(ctx, build.BuildVersion)
+	if err != nil {
+		return false, fmt.Errorf("unable to check for new version: %w", err)
+	}
+	if !ok {
+		return false, nil
+	}
+
+	fmt.Println("Upgrading Apoxy CLI to the latest version...")
+	if err := u.Upgrade(ctx, build.BuildVersion); err != nil {
+		return false, fmt.Errorf("unable to upgrade to the latest version: %w", err)
+	}
+	return true, nil
 }
 
 func init() {

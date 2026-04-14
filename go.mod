@@ -47,6 +47,7 @@ require (
 	github.com/google/gopacket v1.1.19
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/go-discover v0.0.0-20240726212017-342faf50e5d4
+	github.com/hashicorp/go-version v1.6.0
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/jedib0t/go-pretty/v6 v6.6.8
 	github.com/julienschmidt/httprouter v1.3.0
@@ -247,7 +248,6 @@ require (
 	github.com/hashicorp/go-msgpack v0.5.3 // indirect
 	github.com/hashicorp/go-multierror v1.1.1 // indirect
 	github.com/hashicorp/go-sockaddr v1.0.2 // indirect
-	github.com/hashicorp/go-version v1.6.0 // indirect
 	github.com/hashicorp/golang-lru v0.5.4 // indirect
 	github.com/hashicorp/logutils v1.0.0 // indirect
 	github.com/hashicorp/mdns v1.0.1 // indirect

@@ -6,6 +6,17 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
+// UpgradeCheckState is the local state for the automatic upgrade-check prompt.
+type UpgradeCheckState struct {
+	// LastChecked is when the CLI last queried GitHub for the latest release.
+	LastChecked *metav1.Time `json:"lastChecked,omitempty"`
+	// LatestVersion is the newest release seen on the last check.
+	LatestVersion string `json:"latestVersion,omitempty"`
+	// DismissedVersion is the release the user chose "don't ask again" for.
+	// The prompt is suppressed until a strictly newer version is released.
+	DismissedVersion string `json:"dismissedVersion,omitempty"`
+}
+
 var _ runtime.Object = (*Config)(nil)
 
 // +kubebuilder:object:root=true
@@ -32,6 +43,8 @@ type Config struct {
 	Runtime *RuntimeConfig `json:"runtime,omitempty"`
 	// IsLocalMode is the configuration for the local mode.
 	IsLocalMode bool `json:"isLocalMode,omitempty"`
+	// UpgradeCheck holds state for the automatic upgrade-check prompt.
+	UpgradeCheck *UpgradeCheckState `json:"upgradeCheck,omitempty"`
 }
 
 // Project is a configuration for a project.

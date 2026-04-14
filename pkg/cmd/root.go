@@ -49,6 +49,7 @@ Get started at https://apoxy.dev and log in with 'apoxy auth'.`,
 				}
 			}()
 		}
+		maybePromptUpgrade(cmd)
 	},
 }
 
