@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -43,43 +42,6 @@ const LabelKeyVersion = "apoxy.dev/version"
 var (
 	ErrNotConnected = errors.New("not connected")
 )
-
-// ErrRateLimited is returned by Dial when the server responds with HTTP 429
-// on the /connect stream. Callers can inspect RetryAfter (populated from the
-// Retry-After response header; zero when the header is missing or unparsable)
-// to back off. The current worker loop in cmd/tunnel/run.go does not act on
-// this yet; the typed error exists so smart backoff can land without another
-// wire-format change.
-type ErrRateLimited struct {
-	RetryAfter time.Duration
-}
-
-func (e *ErrRateLimited) Error() string {
-	if e.RetryAfter > 0 {
-		return fmt.Sprintf("tunnel dial rate-limited: retry after %s", e.RetryAfter)
-	}
-	return "tunnel dial rate-limited"
-}
-
-// parseRetryAfterHeader parses an HTTP Retry-After value. RFC 7231 allows
-// both an integer seconds count and an HTTP-date; the server only sends the
-// integer form, so we try that first and fall back to http.ParseTime for
-// defensive compatibility. Returns 0 if the value is missing or unparsable —
-// callers should treat 0 as "back off on your own schedule."
-func parseRetryAfterHeader(v string) time.Duration {
-	if v == "" {
-		return 0
-	}
-	if secs, err := strconv.Atoi(v); err == nil && secs >= 0 {
-		return time.Duration(secs) * time.Second
-	}
-	if t, err := http.ParseTime(v); err == nil {
-		if d := time.Until(t); d > 0 {
-			return d
-		}
-	}
-	return 0
-}
 
 type TunnelClientOption func(*tunnelClientOptions)
 
@@ -355,14 +317,6 @@ func (d *TunnelDialer) Dial(
 
 	conn, rsp, err := connectip.Dial(ctx, hConn, tmpl)
 	if err != nil {
-		// connect-ip-go returns a non-nil rsp on non-2xx responses even when
-		// err is set. Translate 429 into the typed ErrRateLimited so callers
-		// can later back off on the server-signalled delay.
-		if rsp != nil && rsp.StatusCode == http.StatusTooManyRequests {
-			retryAfter := parseRetryAfterHeader(rsp.Header.Get("Retry-After"))
-			hConn.CloseWithError(ApplicationCodeOK, "rate-limited")
-			return nil, &ErrRateLimited{RetryAfter: retryAfter}
-		}
 		hConn.CloseWithError(ApplicationCodeOK, fmt.Sprintf("failed to dial connect-ip connection: %v", err))
 		return nil, fmt.Errorf("failed to dial connect-ip connection: %w", err)
 	}

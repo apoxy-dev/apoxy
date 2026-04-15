@@ -84,30 +84,3 @@ func TestAgentProcessID_Stable(t *testing.T) {
 	assert.NotEmpty(t, a)
 	assert.Equal(t, a, b, "AgentProcessID must be stable across calls")
 }
-
-func TestIsValidAgentProcessID(t *testing.T) {
-	tests := []struct {
-		name  string
-		input string
-		want  bool
-	}{
-		// Accepted: the two forms initProcessID actually produces.
-		{"UUID v4", "550e8400-e29b-41d4-a716-446655440000", true},
-		{"64-char CRI container ID", "3bf3c5a2e4d8f9c0a1b2c3d4e5f6789012345678abcdef0123456789abcdef01", true},
-
-		// Rejected: cardinality-amplification attempts.
-		{"empty", "", false},
-		{"short hex", "abcdef01", false},
-		{"uppercase hex", "3BF3C5A2E4D8F9C0A1B2C3D4E5F6789012345678ABCDEF0123456789ABCDEF01", false}, // CRI IDs are lowercase.
-		{"63 chars", "3bf3c5a2e4d8f9c0a1b2c3d4e5f6789012345678abcdef0123456789abcdef0", false},
-		{"65 chars", "3bf3c5a2e4d8f9c0a1b2c3d4e5f6789012345678abcdef0123456789abcdef011", false},
-		{"non-hex 64 chars", "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz", false},
-		{"UUID-like but too short", "550e8400-e29b-41d4-a716-44665544", false},
-		{"garbage", "hello-world", false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, IsValidAgentProcessID(tt.input))
-		})
-	}
-}
