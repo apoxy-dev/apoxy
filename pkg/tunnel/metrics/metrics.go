@@ -58,6 +58,25 @@ func parseCgroupForContainerID(data []byte) string {
 // AgentProcessID returns the stable per-process ID for this agent.
 func AgentProcessID() string { return processID }
 
+// IsValidAgentProcessID reports whether s is a well-formed agent process ID
+// as produced by initProcessID: either a UUID or a 64-char hex CRI container
+// ID. Server-side handlers use this to bucket malformed values into a shared
+// "default" rate-limit bucket so a client that fills the query param with
+// garbage can't allocate unbounded distinct limiter entries.
+func IsValidAgentProcessID(s string) bool {
+	if s == "" {
+		return false
+	}
+	if _, err := uuid.Parse(s); err == nil {
+		return true
+	}
+	// CRI container ID: 64-char lowercase hex.
+	if len(s) == 64 && containerIDRegex.MatchString(s) {
+		return true
+	}
+	return false
+}
+
 var (
 	// Agent info and lifecycle metrics.
 
@@ -116,6 +135,40 @@ var (
 			Name: "tunnel_nodes_managed_total",
 			Help: "Number of currently managed tunnel nodes.",
 		},
+	)
+
+	// Reconnect circuit-breaker metrics.
+
+	// TunnelConnectRateLimited counts /connect requests rejected by the
+	// per-(tunUID, agent_process_id) reconnect limiter. The "identity" label
+	// distinguishes "known" (agent sent a valid agent_process_id) from
+	// "default" (empty or malformed; aggregated into a per-tunUID default bucket).
+	TunnelConnectRateLimited = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "tunnel_connect_rate_limited_total",
+			Help: "Number of /connect requests rejected by the reconnect circuit breaker.",
+		},
+		[]string{"reason", "identity"},
+	)
+	// TunnelConnectLimiterEntries is the current size of the reconnect-limiter
+	// map. Updated after each janitor pass.
+	TunnelConnectLimiterEntries = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "tunnel_connect_limiter_entries",
+			Help: "Current number of active reconnect rate-limit buckets.",
+		},
+	)
+	// TunnelConnectGapSeconds is the time between consecutive accepted
+	// /connect requests for the same (tunUID, agent_process_id). A spike in
+	// the low buckets is the leading indicator of a flapping agent, well
+	// before the limiter itself starts firing.
+	TunnelConnectGapSeconds = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "tunnel_connect_gap_seconds",
+			Help:    "Seconds since previous accepted /connect for the same (tunUID, agent_process_id). First observation per key is skipped.",
+			Buckets: []float64{1, 2, 5, 10, 30, 60, 300, 900},
+		},
+		[]string{"identity"},
 	)
 
 	// MuxedConn metrics.
@@ -198,6 +251,9 @@ func init() {
 	metrics.Registry.MustRegister(TunnelConnectionsActive)
 	metrics.Registry.MustRegister(TunnelConnectionFailures)
 	metrics.Registry.MustRegister(TunnelNodesManaged)
+	metrics.Registry.MustRegister(TunnelConnectRateLimited)
+	metrics.Registry.MustRegister(TunnelConnectLimiterEntries)
+	metrics.Registry.MustRegister(TunnelConnectGapSeconds)
 	metrics.Registry.MustRegister(TunnelPacketsSent)
 	metrics.Registry.MustRegister(TunnelBytesSent)
 	metrics.Registry.MustRegister(TunnelPacketsSentErrors)

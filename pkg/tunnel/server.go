@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"net/netip"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -26,6 +28,7 @@ import (
 	"github.com/quic-go/quic-go/qlog"
 	"github.com/yosida95/uritemplate/v3"
 	"golang.org/x/sync/errgroup"
+	"golang.org/x/time/rate"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -51,6 +54,37 @@ import (
 var (
 	connectTmpl = uritemplate.MustNew("https://proxy/connect")
 )
+
+// Reconnect circuit-breaker parameters. Hardcoded for MVP; promote to
+// TunnelServerOption flags once we have production data to tune from.
+//
+// Burst 10 covers legitimate startup patterns (multi-conn agents with
+// min-conns up to ~10, plus one rolling replacement). Refill at 1 token
+// per 6s caps sustained reconnect rate to ~10/min per (tunUID,
+// agent_process_id), which is still 5x a healthy baseline and well below
+// the ~30/min a 2s flap loop would sustain.
+const (
+	reconnectLimiterBurst       = 10
+	reconnectLimiterRefillEvery = 6 * time.Second
+	// Entries with no Reserve() call for this long are evicted by the janitor.
+	reconnectLimiterIdleTTL = 10 * time.Minute
+	// How often the janitor sweeps the map.
+	reconnectLimiterJanitorTick = 2 * time.Minute
+)
+
+// limiterEntry wraps a rate.Limiter with atomic timestamps so the handler
+// hot path and the janitor can coordinate without a mutex.
+//
+//   - lastUsed is advanced on every Reserve() attempt (accept or reject). The
+//     janitor deletes entries whose lastUsed is older than reconnectLimiterIdleTTL.
+//   - lastAcceptedAt is advanced only on accepted connects and drives the
+//     TunnelConnectGapSeconds leading-indicator histogram. Zero means "no
+//     prior accept" and suppresses the first observation per key.
+type limiterEntry struct {
+	limiter        *rate.Limiter
+	lastUsed       atomic.Int64
+	lastAcceptedAt atomic.Int64
+}
 
 type TunnelServerOption func(*tunnelServerOptions)
 
@@ -278,6 +312,14 @@ type TunnelServer struct {
 	tunnels *haxmap.Map[string, *corev1alpha.TunnelNode]
 	// conns maps tunnel connection IDs to connection instances.
 	conns *haxmap.Map[string, *conn]
+	// reconnectLimiters maps "tunUID|agent_process_id" to a token-bucket
+	// limiter that rejects rapid reconnects. Keyed on agent_process_id so
+	// a flapping agent process trips on its own, not on other agents of
+	// the same tunnel. Empty or malformed agent_process_id values are
+	// aggregated into a shared "default" bucket per tunUID so 0.18-era
+	// clients (which don't send the query param) remain protected and
+	// cardinality-amplification via garbage values is prevented.
+	reconnectLimiters *haxmap.Map[string, *limiterEntry]
 
 	stopMu        sync.Mutex
 	stopped       bool
@@ -316,8 +358,9 @@ func NewTunnelServer(
 		router:       r,
 		connTracker:  ct,
 
-		tunnels: haxmap.New[string, *corev1alpha.TunnelNode](),
-		conns:   haxmap.New[string, *conn](),
+		tunnels:           haxmap.New[string, *corev1alpha.TunnelNode](),
+		conns:             haxmap.New[string, *conn](),
+		reconnectLimiters: haxmap.New[string, *limiterEntry](),
 	}
 
 	return s, nil
@@ -503,7 +546,55 @@ func (t *TunnelServer) Start(ctx context.Context) error {
 		})
 	}
 
+	// Reconnect-limiter janitor. Uses drainCtx so it keeps running through
+	// graceful drain (its state matters until the listener is closed).
+	g.Go(func() error {
+		t.runReconnectLimiterJanitor(drainCtx)
+		return nil
+	})
+
 	return g.Wait()
+}
+
+// getOrCreateReconnectLimiter returns the limiter entry for key, creating it
+// lazily with the default burst/refill if not yet present. Safe for concurrent
+// use.
+func (t *TunnelServer) getOrCreateReconnectLimiter(key string) *limiterEntry {
+	entry, _ := t.reconnectLimiters.GetOrCompute(key, func() *limiterEntry {
+		return &limiterEntry{
+			limiter: rate.NewLimiter(rate.Every(reconnectLimiterRefillEvery), reconnectLimiterBurst),
+		}
+	})
+	return entry
+}
+
+// runReconnectLimiterJanitor periodically evicts idle limiter entries so a
+// long-lived server does not accumulate unbounded state from churning
+// agent_process_ids. Publishes the current map size on each pass.
+func (t *TunnelServer) runReconnectLimiterJanitor(ctx context.Context) {
+	ticker := time.NewTicker(reconnectLimiterJanitorTick)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			t.sweepReconnectLimiters(now)
+		}
+	}
+}
+
+// sweepReconnectLimiters deletes entries whose lastUsed timestamp is older
+// than reconnectLimiterIdleTTL relative to now. Exposed for testing.
+func (t *TunnelServer) sweepReconnectLimiters(now time.Time) {
+	cutoff := now.Add(-reconnectLimiterIdleTTL).UnixNano()
+	t.reconnectLimiters.ForEach(func(key string, entry *limiterEntry) bool {
+		if entry.lastUsed.Load() < cutoff {
+			t.reconnectLimiters.Del(key)
+		}
+		return true
+	})
+	metrics.TunnelConnectLimiterEntries.Set(float64(t.reconnectLimiters.Len()))
 }
 
 func upsertAgentStatus(s *corev1alpha.TunnelNodeStatus, agent *corev1alpha.AgentStatus) {
@@ -733,6 +824,54 @@ func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.
 		}
 
 		logger.Info("Validated token for UUID")
+
+		// Reconnect circuit breaker. Rejects a flapping agent process (same
+		// agent_process_id reconnecting faster than the refill rate) with a
+		// 429 + Retry-After. Placed here so rejection is cheap (no CONNECT-IP
+		// stream setup, no Status update, no endpoint allocation) but has a
+		// validated tenant identity in hand. The existing defer-close at the
+		// top of this branch sends ApplicationCodeOK after the HTTP/3 stream
+		// flushes; we deliberately do NOT add a distinct close code because
+		// the current client does not inspect peer close codes (see plan).
+		agentPID := r.URL.Query().Get(metrics.QueryParamAgentProcessID)
+		identity := "known"
+		if !metrics.IsValidAgentProcessID(agentPID) {
+			agentPID = "default"
+			identity = "default"
+		}
+		limiterKey := tunUID.String() + "|" + agentPID
+		entry := t.getOrCreateReconnectLimiter(limiterKey)
+		entry.lastUsed.Store(time.Now().UnixNano())
+
+		// Single Reserve() — peek-and-commit with Cancel() on reject avoids
+		// the race that an Allow()+Reserve() double-consultation has when
+		// concurrent requests slip between the two calls.
+		res := entry.limiter.Reserve()
+		if !res.OK() || res.Delay() > 0 {
+			delay := res.Delay()
+			res.Cancel()
+			retryAfter := int(math.Ceil(delay.Seconds()))
+			if retryAfter < 1 {
+				retryAfter = 1
+			}
+			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+			w.WriteHeader(http.StatusTooManyRequests)
+			logger.Warn("Rate-limited agent reconnect",
+				slog.String("agent_process_id", agentPID),
+				slog.String("identity", identity),
+				slog.Int("retry_after_s", retryAfter))
+			metrics.TunnelConnectRateLimited.WithLabelValues("bucket_empty", identity).Inc()
+			return
+		}
+
+		// Leading-indicator: observe the gap since the last accepted connect
+		// for this key. A spike in the <5s bucket is visible well before the
+		// limiter starts rejecting, which lets us alert on flap onset.
+		nowNanos := time.Now().UnixNano()
+		if prev := entry.lastAcceptedAt.Swap(nowNanos); prev > 0 {
+			metrics.TunnelConnectGapSeconds.WithLabelValues(identity).
+				Observe(time.Duration(nowNanos - prev).Seconds())
+		}
 
 		req, err := connectip.ParseRequest(r, connectTmpl)
 		if err != nil {
