@@ -253,11 +253,18 @@ func (t *tunnelNodeReconciler) run(ctx context.Context, tn *corev1alpha.TunnelNo
 		return fmt.Errorf("unable to create API client: %w", err)
 	}
 
+	// In TUI mode the user owns the terminal — don't bind health/metrics
+	// listeners on default ports that may collide with other apoxy processes.
+	metricsBindAddr := metricsAddr
+	if useTUI {
+		metricsBindAddr = "0"
+	}
+
 	mgr, err := ctrl.NewManager(client.RESTConfig, ctrl.Options{
 		Scheme:         scheme,
 		LeaderElection: false,
 		Metrics: metricsserver.Options{
-			BindAddress: metricsAddr,
+			BindAddress: metricsBindAddr,
 		},
 		Cache: cache.Options{
 			SyncPeriod: ptr.To(30 * time.Second),
@@ -288,8 +295,8 @@ func (t *tunnelNodeReconciler) run(ctx context.Context, tn *corev1alpha.TunnelNo
 		return mgr.Start(gctx)
 	})
 
-	// Start health endpoint server if configured
-	if healthAddr != "" {
+	// Start health endpoint server if configured (skipped in TUI mode).
+	if healthAddr != "" && !useTUI {
 		mux := http.NewServeMux()
 		mux.HandleFunc("/healthz", t.healthHandler)
 
