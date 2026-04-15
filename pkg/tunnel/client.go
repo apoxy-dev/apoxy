@@ -27,12 +27,17 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	crmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
+	"github.com/apoxy-dev/apoxy/build"
 	alog "github.com/apoxy-dev/apoxy/pkg/log"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/bfdl"
 	tunnelconn "github.com/apoxy-dev/apoxy/pkg/tunnel/connection"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/metrics"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/router"
 )
+
+// LabelKeyVersion is the agent label that carries the CLI build version.
+// Always sent by Dial so AgentStatus.Labels can surface the agent's version.
+const LabelKeyVersion = "apoxy.dev/version"
 
 var (
 	ErrNotConnected = errors.New("not connected")
@@ -292,6 +297,12 @@ func (d *TunnelDialer) Dial(
 	}
 	for k, v := range options.labels {
 		q.Add("label."+k, v)
+	}
+	// Always advertise the CLI build version so it surfaces in AgentStatus.
+	// Caller-provided label wins (server reads values[0]) so tests/overrides
+	// can substitute a value.
+	if _, ok := options.labels[LabelKeyVersion]; !ok {
+		q.Add("label."+LabelKeyVersion, build.BuildVersion)
 	}
 	q.Add(metrics.QueryParamAgentProcessID, metrics.AgentProcessID())
 	addrUrl.RawQuery = q.Encode()
