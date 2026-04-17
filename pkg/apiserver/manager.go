@@ -1055,6 +1055,17 @@ func start(
 				kubernetes.NewForConfigOrDie(c.ClientConfig),
 				0,
 			)
+			// TODO: replace this post-hoc nil with
+			// o.RecommendedOptions.Features.EnablePriorityAndFairness = false
+			// in an optionsFn before ApplyTo. FeatureOptions.ApplyTo sets
+			// c.FlowControl = utilflowcontrol.New(...) by default, which
+			// registers an APF post-start hook that LISTs FlowSchema /
+			// PriorityLevelConfiguration via loopback — APIs this embedded
+			// apiserver doesn't serve — failing readyz. Disabling the feature
+			// flag is the upstream-intended opt-out (same switch sample-apiserver
+			// exposes) and would also let server/start.go drop its second
+			// ApplyRecommendedConfigFns pass, since that pass exists only to
+			// re-nil this field.
 			c.FlowControl = nil
 
 			if opts.enableSimpleAuth {
