@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation"
@@ -12,9 +13,17 @@ import (
 )
 
 var (
+	_ resourcestrategy.Defaulter       = &Backend{}
 	_ resourcestrategy.Validater       = &Backend{}
 	_ resourcestrategy.ValidateUpdater = &Backend{}
 )
+
+// Default normalizes user-supplied fields before validation. The xDS
+// translator matches Spec.Protocol case-sensitively, so lowercase on
+// write to keep "H2" from silently falling through to plaintext.
+func (r *Backend) Default() {
+	r.Spec.Protocol = BackendProto(strings.ToLower(string(r.Spec.Protocol)))
+}
 
 func (r *Backend) Validate(ctx context.Context) field.ErrorList {
 	return r.validate()

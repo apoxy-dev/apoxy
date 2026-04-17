@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation"
@@ -12,8 +13,17 @@ import (
 	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource/resourcestrategy"
 )
 
+var _ resourcestrategy.Defaulter = &Backend{}
 var _ resourcestrategy.Validater = &Backend{}
 var _ resourcestrategy.ValidateUpdater = &Backend{}
+
+// Default normalizes user-supplied fields before validation. The xDS
+// translator switches on Spec.Protocol case-sensitively, so a stray "H2"
+// would silently drop the upstream TLS context and Envoy would send
+// plaintext to port 443. Lowercase on write to match the enum.
+func (r *Backend) Default() {
+	r.Spec.Protocol = BackendProto(strings.ToLower(string(r.Spec.Protocol)))
+}
 
 func (r *Backend) Validate(ctx context.Context) field.ErrorList {
 	return r.validate()
