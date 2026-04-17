@@ -102,6 +102,12 @@ func (o *ApoxyServerOptions) Config() (*serverapiserver.Config, error) {
 	}
 
 	serverConfig := genericapiserver.NewRecommendedConfig(o.codecs)
+	// Config fns run twice on purpose, bracketing ApplyTo. The first pass
+	// populates fields ApplyTo depends on (e.g. ClientConfig, which
+	// Admission.ApplyTo uses to build its kube client). The second pass
+	// overrides fields ApplyTo writes that the caller wants suppressed —
+	// notably c.FlowControl, which FeatureOptions.ApplyTo sets whenever
+	// EnablePriorityAndFairness is true (its default).
 	serverConfig = o.ApplyRecommendedConfigFns(serverConfig)
 
 	if ro := o.serverOptions.RecommendedOptions; ro != nil {

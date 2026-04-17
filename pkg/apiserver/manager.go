@@ -93,11 +93,14 @@ func init() {
 	utilruntime.Must(coordinationv1.AddToScheme(scheme))
 }
 
-// registerCrossVersionConversions registers direct conversion functions between
-// v1alpha and v1alpha2 types that chain through the v1alpha3 hub.
-// The k8s scheme only supports direct conversion lookups (no multi-hop),
+// registerCrossVersionConversions registers direct singular conversion
+// functions between v1alpha and v1alpha2 types that chain through the v1alpha3
+// hub. The k8s scheme only supports direct conversion lookups (no multi-hop),
 // so when stored v1alpha2 data needs to be served as v1alpha (or vice versa),
 // we need explicit conversion functions for each pair.
+//
+// List-type conversions are auto-registered by the builder after all types are
+// in the scheme — see server/builder.registerListConversions.
 func registerCrossVersionConversions(s *runtime.Scheme) error {
 	if err := s.AddConversionFunc(
 		&corev1alpha2.DomainZone{}, &corev1alpha.DomainZone{},
@@ -252,11 +255,11 @@ type options struct {
 	openAPIDefinitions     common.GetOpenAPIDefinitions
 	addToScheme            func(*runtime.Scheme) error
 	admissionPlugins       []admissionPlugin
-	auditPolicyFile    string
-	auditLogPath       string
-	auditLogMaxAge     int // days
-	auditLogMaxBackups int
-	auditLogMaxSizeMB  int // megabytes
+	auditPolicyFile        string
+	auditLogPath           string
+	auditLogMaxAge         int // days
+	auditLogMaxBackups     int
+	auditLogMaxSizeMB      int // megabytes
 }
 
 type admissionPlugin struct {

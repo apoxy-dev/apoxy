@@ -3,12 +3,14 @@ package builder
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 
 	serverapiserver "github.com/apoxy-dev/apoxy/pkg/apiserver/server/apiserver"
 	"github.com/apoxy-dev/apoxy/pkg/apiserver/server/start"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/conversion"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
@@ -163,7 +165,92 @@ func (s *Server) buildCodec() (runtime.Codec, error) {
 		return nil, fmt.Errorf("no group versions registered")
 	}
 
+	// The scheme only resolves list conversions for exact type pairs; conversion-gen
+	// would otherwise emit them per-type. Register them reflectively here so a
+	// non-storage list (e.g. v1alpha.BackendList requested while v1alpha2 is
+	// storage) round-trips through the singular converters.
+	if err := registerListConversions(s.apiScheme); err != nil {
+		return nil, fmt.Errorf("registering list conversions: %w", err)
+	}
+
 	return s.codecs.LegacyCodec(s.orderedGroupVersions...), nil
+}
+
+func registerListConversions(s *runtime.Scheme) error {
+	listsByGroupKind := map[schema.GroupKind][]reflect.Type{}
+	for gvk, t := range s.AllKnownTypes() {
+		if gvk.Version == runtime.APIVersionInternal {
+			continue
+		}
+		f, ok := t.FieldByName("Items")
+		if !ok || f.Type.Kind() != reflect.Slice {
+			continue
+		}
+		gk := schema.GroupKind{Group: gvk.Group, Kind: strings.TrimSuffix(gvk.Kind, "List")}
+		listsByGroupKind[gk] = append(listsByGroupKind[gk], t)
+	}
+
+	for _, listTypes := range listsByGroupKind {
+		for _, from := range listTypes {
+			for _, to := range listTypes {
+				if from == to {
+					continue
+				}
+				fn, err := listConverter(from, to)
+				if err != nil {
+					return err
+				}
+				if err := s.AddConversionFunc(reflect.New(from).Interface(), reflect.New(to).Interface(), fn); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func listConverter(srcType, dstType reflect.Type) (conversion.ConversionFunc, error) {
+	srcItems, err := requireField(srcType, "Items")
+	if err != nil {
+		return nil, err
+	}
+	dstItems, err := requireField(dstType, "Items")
+	if err != nil {
+		return nil, err
+	}
+	srcMeta, err := requireField(srcType, "ListMeta")
+	if err != nil {
+		return nil, err
+	}
+	dstMeta, err := requireField(dstType, "ListMeta")
+	if err != nil {
+		return nil, err
+	}
+
+	return func(srcObj, dstObj interface{}, scope conversion.Scope) error {
+		srcVal := reflect.ValueOf(srcObj).Elem()
+		dstVal := reflect.ValueOf(dstObj).Elem()
+		dstVal.FieldByIndex(dstMeta.Index).Set(srcVal.FieldByIndex(srcMeta.Index))
+
+		srcSlice := srcVal.FieldByIndex(srcItems.Index)
+		n := srcSlice.Len()
+		dstSlice := reflect.MakeSlice(dstItems.Type, n, n)
+		for i := 0; i < n; i++ {
+			if err := scope.Convert(srcSlice.Index(i).Addr().Interface(), dstSlice.Index(i).Addr().Interface()); err != nil {
+				return fmt.Errorf("converting item %d: %w", i, err)
+			}
+		}
+		dstVal.FieldByIndex(dstItems.Index).Set(dstSlice)
+		return nil
+	}, nil
+}
+
+func requireField(t reflect.Type, name string) (reflect.StructField, error) {
+	f, ok := t.FieldByName(name)
+	if !ok {
+		return reflect.StructField{}, fmt.Errorf("%s missing %s field", t.Name(), name)
+	}
+	return f, nil
 }
 
 func (s *Server) withGroupVersions(versions ...schema.GroupVersion) {
@@ -294,16 +381,23 @@ func newStorageProvider(obj builderresource.Object, fn StoreFn) serverapiserver.
 			TableConvertor: registryrest.NewDefaultTableConvertor(gvr.GroupResource()),
 		}
 
+		singular := gvr.GroupResource()
+		if sn, ok := obj.(registryrest.SingularNameProvider); ok {
+			if name := sn.GetSingularName(); name != "" {
+				singular.Resource = name
+			}
+		}
+
 		store := &genericregistry.Store{
-			NewFunc:                  obj.New,
-			NewListFunc:              obj.NewList,
-			DefaultQualifiedResource: gvr.GroupResource(),
-			SingularQualifiedResource: gvr.GroupResource(),
-			TableConvertor:           strategy,
-			CreateStrategy:           strategy,
-			UpdateStrategy:           strategy,
-			DeleteStrategy:           strategy,
-			StorageVersioner:         gvr.GroupVersion(),
+			NewFunc:                   obj.New,
+			NewListFunc:               obj.NewList,
+			DefaultQualifiedResource:  gvr.GroupResource(),
+			SingularQualifiedResource: singular,
+			TableConvertor:            strategy,
+			CreateStrategy:            strategy,
+			UpdateStrategy:            strategy,
+			DeleteStrategy:            strategy,
+			StorageVersioner:          gvr.GroupVersion(),
 		}
 
 		options := &generic.StoreOptions{RESTOptions: optsGetter}
