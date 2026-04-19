@@ -5,7 +5,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
-	"k8s.io/apimachinery/pkg/version"
 	genericapiserver "k8s.io/apiserver/pkg/server"
 	"k8s.io/apiserver/pkg/util/compatibility"
 )
@@ -13,7 +12,8 @@ import (
 func NewScheme() *runtime.Scheme {
 	scheme := runtime.NewScheme()
 
-	// Whitelist the unversioned API types for any apiserver.
+	// These meta types must be unversioned so discovery, watch, and error
+	// responses serialize without a version prefix.
 	unversioned := schema.GroupVersion{
 		Group:   "",
 		Version: "v1",
@@ -33,12 +33,9 @@ func NewScheme() *runtime.Scheme {
 
 // ExtraConfig holds custom apiserver config
 type ExtraConfig struct {
-	Scheme         *runtime.Scheme
-	Codecs         serializer.CodecFactory
-	APIs           map[schema.GroupVersionResource]StorageProvider
-	ServingInfo    *genericapiserver.SecureServingInfo
-	Version        *version.Info
-	ParameterCodec runtime.ParameterCodec
+	Scheme *runtime.Scheme
+	Codecs serializer.CodecFactory
+	APIs   map[schema.GroupVersionResource]StorageProvider
 }
 
 // Config defines the config for the apiserver
@@ -83,8 +80,7 @@ func (c completedConfig) New() (*ApoxyServer, error) {
 		GenericAPIServer: genericServer,
 	}
 
-	// Add new APIs through inserting into APIs
-	apiGroups, err := buildAPIGroupInfos(c.ExtraConfig.Scheme, c.ExtraConfig.Codecs, c.ExtraConfig.APIs, c.GenericConfig.RESTOptionsGetter, c.ExtraConfig.ParameterCodec)
+	apiGroups, err := buildAPIGroupInfos(c.ExtraConfig.Scheme, c.ExtraConfig.Codecs, c.ExtraConfig.APIs, c.GenericConfig.RESTOptionsGetter, nil)
 	if err != nil {
 		return nil, err
 	}

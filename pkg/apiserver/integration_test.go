@@ -19,6 +19,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apiserver/pkg/admission"
 	kuser "k8s.io/apiserver/pkg/authentication/user"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource"
 
 	corev1alpha3 "github.com/apoxy-dev/apoxy/api/core/v1alpha3"
@@ -90,7 +91,7 @@ func TestAPIServerIntegrationDomainRecordCRUDAndSQLite(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "api.example.com--a"},
 		Spec: corev1alpha3.DomainRecordSpec{
 			Name: "api.example.com",
-			TTL:  int32Ptr(60),
+			TTL:  ptr.To[int32](60),
 			Target: corev1alpha3.DomainRecordTarget{
 				DNS: &corev1alpha3.DomainRecordTargetDNS{
 					A: []string{"192.0.2.10"},
@@ -112,7 +113,7 @@ func TestAPIServerIntegrationDomainRecordCRUDAndSQLite(t *testing.T) {
 	require.Len(t, list.Items, 1)
 
 	updated := got.DeepCopy()
-	updated.Spec.TTL = int32Ptr(600)
+	updated.Spec.TTL = ptr.To[int32](600)
 	updated, err = records.Update(context.Background(), updated, metav1.UpdateOptions{})
 	require.NoError(t, err)
 	require.Equal(t, int32(600), *updated.Spec.TTL)
@@ -239,10 +240,6 @@ func startTestServer(t *testing.T, opts ...Option) *testServer {
 		opt(serverOpts)
 	}
 
-	if len(serverOpts.resources) == 0 {
-		serverOpts.resources = []resource.Object{&corev1alpha3.DomainRecord{}}
-	}
-
 	require.NoError(t, start(ctx, serverOpts))
 
 	addr := net.JoinHostPort(serverOpts.loopbackHost(), fmt.Sprintf("%d", serverOpts.bindPort))
@@ -333,8 +330,4 @@ func receiveIdentity(t *testing.T, observed <-chan observedIdentity) observedIde
 		t.Fatal("timed out waiting for admission plugin to observe user identity")
 		return observedIdentity{}
 	}
-}
-
-func int32Ptr(v int32) *int32 {
-	return &v
 }

@@ -213,17 +213,6 @@ func generateSelfSignedCerts(certDir, pairName string) (certFile, keyFile string
 	return filepath.Join(certDir, pairName+".crt"), filepath.Join(certDir, pairName+".key"), filepath.Join(certDir, "ca.crt"), nil
 }
 
-type certSource struct {
-	cert, key []byte
-}
-
-func (c *certSource) GetCertificate(*tls.ClientHelloInfo) (*tls.Certificate, error) {
-	return &tls.Certificate{
-		Certificate: [][]byte{c.cert},
-		PrivateKey:  c.key,
-	}, nil
-}
-
 // Option is an API server option.
 type Option func(*options)
 
@@ -348,7 +337,7 @@ func WithSQLitePath(path string) Option {
 	}
 }
 
-// WithSQLiteConnArgs sets the SQLite connection arguments.
+// WithInMemorySQLite configures the server to use an in-memory SQLite database.
 func WithInMemorySQLite() Option {
 	return func(o *options) {
 		o.sqlitePath = "file::memory:"
@@ -888,7 +877,7 @@ func start(
 	}
 
 	// Create client for communicating with the API server locally.
-	clientConfig := NewClientConfig(WithClientHost(opts.loopbackHostPort()))
+	var clientConfig *rest.Config
 	if opts.enableSimpleAuth {
 		w := auth.NewTransportWrapperFunc(apiserverUser, []string{user.SystemPrivilegedGroup}, nil)
 		clientConfig = NewClientConfig(
@@ -924,6 +913,8 @@ func start(
 				CAFile:   serverCAFile,
 			}),
 		)
+	} else {
+		clientConfig = NewClientConfig(WithClientHost(opts.loopbackHostPort()))
 	}
 
 	l := log.New(config.Verbose)
