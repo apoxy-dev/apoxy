@@ -7,8 +7,6 @@ import (
 	"strings"
 	"sync"
 
-	serverapiserver "github.com/apoxy-dev/apoxy/pkg/apiserver/server/apiserver"
-	"github.com/apoxy-dev/apoxy/pkg/apiserver/server/start"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/conversion"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -22,9 +20,11 @@ import (
 	genericapiserver "k8s.io/apiserver/pkg/server"
 	"k8s.io/apiserver/pkg/storage/names"
 	openapicommon "k8s.io/kube-openapi/pkg/common"
-	builderresource "sigs.k8s.io/apiserver-runtime/pkg/builder/resource"
-	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource/resourcestrategy"
-	builderutil "sigs.k8s.io/apiserver-runtime/pkg/builder/resource/util"
+
+	builderresource "github.com/apoxy-dev/apoxy/api/resource"
+	"github.com/apoxy-dev/apoxy/api/resource/resourcestrategy"
+	serverapiserver "github.com/apoxy-dev/apoxy/pkg/apiserver/server/apiserver"
+	"github.com/apoxy-dev/apoxy/pkg/apiserver/server/start"
 )
 
 type ServerOptions = start.ServerOptions
@@ -367,7 +367,7 @@ func (s *statusSubresourceStrategy) PrepareForUpdate(ctx context.Context, obj, o
 	statusOld := old.(builderresource.ObjectWithStatusSubResource)
 
 	statusObj.GetStatus().CopyTo(statusOld)
-	if err := builderutil.DeepCopy(statusOld, statusObj); err != nil {
+	if err := builderresource.DeepCopy(statusOld, statusObj); err != nil {
 		utilruntime.HandleError(err)
 	}
 }

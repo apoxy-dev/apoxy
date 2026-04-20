@@ -7,10 +7,12 @@ import (
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apiserver/pkg/registry/rest"
-	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource"
+
+	"github.com/apoxy-dev/apoxy/api/resource"
+
+	gwapiv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	v1alpha2 "github.com/apoxy-dev/apoxy/api/extensions/v1alpha2"
-	gwapiv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
 type SourceFile struct {

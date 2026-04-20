@@ -36,10 +36,11 @@ import (
 	"k8s.io/klog/v2"
 	"k8s.io/kube-openapi/pkg/common"
 	netutils "k8s.io/utils/net"
-	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
+
+	"github.com/apoxy-dev/apoxy/api/resource"
 
 	a3yinformers "github.com/apoxy-dev/apoxy/client/informers"
 	a3yclient "github.com/apoxy-dev/apoxy/client/versioned"

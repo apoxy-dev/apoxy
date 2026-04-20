@@ -6,7 +6,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
-	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource/resourcestrategy"
+
+	"github.com/apoxy-dev/apoxy/api/resource/resourcestrategy"
 )
 
 var _ resourcestrategy.Defaulter = &Proxy{}

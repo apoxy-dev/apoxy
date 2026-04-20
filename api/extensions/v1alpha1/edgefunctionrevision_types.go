@@ -3,12 +3,13 @@ package v1alpha1
 import (
 	"errors"
 
-	"github.com/apoxy-dev/apoxy/api/extensions/v1alpha2"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apiserver/pkg/registry/rest"
-	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource"
+
+	"github.com/apoxy-dev/apoxy/api/extensions/v1alpha2"
+	"github.com/apoxy-dev/apoxy/api/resource"
 )
 
 // +kubebuilder:object:root=true

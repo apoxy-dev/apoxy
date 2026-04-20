@@ -20,7 +20,8 @@ import (
 	"k8s.io/apiserver/pkg/admission"
 	kuser "k8s.io/apiserver/pkg/authentication/user"
 	"k8s.io/utils/ptr"
-	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource"
+
+	"github.com/apoxy-dev/apoxy/api/resource"
 
 	corev1alpha3 "github.com/apoxy-dev/apoxy/api/core/v1alpha3"
 	a3yclient "github.com/apoxy-dev/apoxy/client/versioned"

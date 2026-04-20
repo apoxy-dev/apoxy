@@ -9,6 +9,4 @@ The active pieces are:
 - `builder/`: registration of resources, status subresources, and config hooks
 - `start/`: recommended-config application and non-blocking server startup
 
-The builder still reuses the `sigs.k8s.io/apiserver-runtime/pkg/builder/resource`
-interfaces that Apoxy API types already implement, but it no longer depends on
-the sample-apiserver-based builder and startup path.
+Resource interfaces that Apoxy API types implement live in `api/resource/`.

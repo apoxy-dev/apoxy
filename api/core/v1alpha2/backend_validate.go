@@ -9,8 +9,9 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
-	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource"
-	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource/resourcestrategy"
+
+	"github.com/apoxy-dev/apoxy/api/resource"
+	"github.com/apoxy-dev/apoxy/api/resource/resourcestrategy"
 )
 
 var _ resourcestrategy.Defaulter = &Backend{}

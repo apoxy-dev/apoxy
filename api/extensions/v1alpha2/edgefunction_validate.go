@@ -9,7 +9,8 @@ import (
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/utils/ptr"
-	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource/resourcestrategy"
+
+	"github.com/apoxy-dev/apoxy/api/resource/resourcestrategy"
 )
 
 var _ resourcestrategy.Defaulter = &EdgeFunction{}

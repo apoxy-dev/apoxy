@@ -133,8 +133,6 @@ github.com/antlr4-go/antlr/v4 v4.13.0/go.mod h1:pfChB/xh/Unjila75QW7+VU4TSnWnnk9
 github.com/apache/thrift v0.16.0/go.mod h1:PHK3hniurgQaNMZYaCLEqXKsYK8upmhPbmdP2FXSqgU=
 github.com/apache/thrift v0.20.0 h1:631+KvYbsBZxmuJjYwhezVsrfc/TbqtZV4QcxOX1fOI=
 github.com/apache/thrift v0.20.0/go.mod h1:hOk1BQqcp2OLzGsyVXdfMk7YFlMxK3aoEVhjD06QhB8=
-github.com/apoxy-dev/apiserver-runtime v0.0.0-20260216100146-51b8f9542e20 h1:Au//RJBFq+e4c6P1FnjMwE8SErN4ypd7Sd0br0ugz/8=
-github.com/apoxy-dev/apiserver-runtime v0.0.0-20260216100146-51b8f9542e20/go.mod h1:w3Gg0RdgFcrDJQJpVVl61HDPdHO1S1YDcpeAoTai4L0=
 github.com/apoxy-dev/connect-ip-go v0.0.0-20250530062404-603929a73f45 h1:SwPk1n/oSVX7YwlNpC9KNH9YaYkcL/k6OfqSGVnxyyI=
 github.com/apoxy-dev/connect-ip-go v0.0.0-20250530062404-603929a73f45/go.mod h1:z5rtgIizc+/K27UtB0occwZgqg/mz3IqgyUJW8aubbI=
 github.com/apoxy-dev/gvisor v0.0.0-20260402225801-fe4a1e4de650 h1:Nb+r8n5r+UUyrKEj8+oM93j3XnGpQvw8wl4GevTx8K4=

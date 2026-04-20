@@ -8,7 +8,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apiserver/pkg/registry/generic"
-	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource"
+
+	"github.com/apoxy-dev/apoxy/api/resource"
 
 	corev1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
 	corev1alpha3 "github.com/apoxy-dev/apoxy/api/core/v1alpha3"
