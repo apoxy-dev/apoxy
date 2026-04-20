@@ -4,12 +4,13 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -35,7 +36,6 @@ import (
 	"k8s.io/klog/v2"
 	"k8s.io/kube-openapi/pkg/common"
 	netutils "k8s.io/utils/net"
-	"sigs.k8s.io/apiserver-runtime/pkg/builder"
 	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
@@ -50,6 +50,7 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/apiserver/controllers"
 	extensionscontroller "github.com/apoxy-dev/apoxy/pkg/apiserver/extensions"
 	"github.com/apoxy-dev/apoxy/pkg/apiserver/gateway"
+	builder "github.com/apoxy-dev/apoxy/pkg/apiserver/server/builder"
 	"github.com/apoxy-dev/apoxy/pkg/cryptoutils"
 	"github.com/apoxy-dev/apoxy/pkg/gateway/message"
 	statusrunner "github.com/apoxy-dev/apoxy/pkg/gateway/status/runner"
@@ -92,11 +93,14 @@ func init() {
 	utilruntime.Must(coordinationv1.AddToScheme(scheme))
 }
 
-// registerCrossVersionConversions registers direct conversion functions between
-// v1alpha and v1alpha2 types that chain through the v1alpha3 hub.
-// The k8s scheme only supports direct conversion lookups (no multi-hop),
+// registerCrossVersionConversions registers direct singular conversion
+// functions between v1alpha and v1alpha2 types that chain through the v1alpha3
+// hub. The k8s scheme only supports direct conversion lookups (no multi-hop),
 // so when stored v1alpha2 data needs to be served as v1alpha (or vice versa),
 // we need explicit conversion functions for each pair.
+//
+// List-type conversions are auto-registered by the builder after all types are
+// in the scheme — see server/builder.registerListConversions.
 func registerCrossVersionConversions(s *runtime.Scheme) error {
 	if err := s.AddConversionFunc(
 		&corev1alpha2.DomainZone{}, &corev1alpha.DomainZone{},
@@ -131,6 +135,7 @@ func registerCrossVersionConversions(s *runtime.Scheme) error {
 
 func waitForReadyz(url string, timeout time.Duration) error {
 	t := time.NewTimer(timeout)
+	defer t.Stop()
 	retryTimeout := 200 * time.Millisecond
 	client := &http.Client{
 		Transport: &http.Transport{
@@ -142,7 +147,11 @@ func waitForReadyz(url string, timeout time.Duration) error {
 	for {
 		resp, err := client.Get(url + "/readyz")
 		if err == nil && resp.StatusCode == http.StatusOK {
+			resp.Body.Close()
 			return nil
+		}
+		if resp != nil {
+			resp.Body.Close()
 		}
 
 		log.Debugf("failed readyz request: %v", err)
@@ -204,17 +213,6 @@ func generateSelfSignedCerts(certDir, pairName string) (certFile, keyFile string
 	return filepath.Join(certDir, pairName+".crt"), filepath.Join(certDir, pairName+".key"), filepath.Join(certDir, "ca.crt"), nil
 }
 
-type certSource struct {
-	cert, key []byte
-}
-
-func (c *certSource) GetCertificate(*tls.ClientHelloInfo) (*tls.Certificate, error) {
-	return &tls.Certificate{
-		Certificate: [][]byte{c.cert},
-		PrivateKey:  c.key,
-	}, nil
-}
-
 // Option is an API server option.
 type Option func(*options)
 
@@ -225,6 +223,8 @@ type options struct {
 	sqlitePath             string
 	sqliteConnArgs         map[string]string
 	certPairName, certDir  string
+	bindAddress            string
+	bindPort               int
 	enableKubeAPI          bool
 	controllerNames        []string
 	additionalControllers  []CreateController
@@ -244,11 +244,11 @@ type options struct {
 	openAPIDefinitions     common.GetOpenAPIDefinitions
 	addToScheme            func(*runtime.Scheme) error
 	admissionPlugins       []admissionPlugin
-	auditPolicyFile    string
-	auditLogPath       string
-	auditLogMaxAge     int // days
-	auditLogMaxBackups int
-	auditLogMaxSizeMB  int // megabytes
+	auditPolicyFile        string
+	auditLogPath           string
+	auditLogMaxAge         int // days
+	auditLogMaxBackups     int
+	auditLogMaxSizeMB      int // megabytes
 }
 
 type admissionPlugin struct {
@@ -337,7 +337,7 @@ func WithSQLitePath(path string) Option {
 	}
 }
 
-// WithSQLiteConnArgs sets the SQLite connection arguments.
+// WithInMemorySQLite configures the server to use an in-memory SQLite database.
 func WithInMemorySQLite() Option {
 	return func(o *options) {
 		o.sqlitePath = "file::memory:"
@@ -361,6 +361,20 @@ func WithCerts(certPairName, certDir string) Option {
 func WithSQLiteConnArgs(args map[string]string) Option {
 	return func(o *options) {
 		o.sqliteConnArgs = args
+	}
+}
+
+// WithBindAddress sets the secure serving bind address.
+func WithBindAddress(address string) Option {
+	return func(o *options) {
+		o.bindAddress = address
+	}
+}
+
+// WithBindPort sets the secure serving bind port.
+func WithBindPort(port int) Option {
+	return func(o *options) {
+		o.bindPort = port
 	}
 }
 
@@ -565,6 +579,8 @@ func defaultOptions(ctx context.Context) (*options, error) {
 		enableInClusterAuth: false,
 		certDir:             "",
 		certPairName:        "tls",
+		bindAddress:         "0.0.0.0",
+		bindPort:            8443,
 
 		gcInterval: 10 * time.Minute,
 
@@ -586,6 +602,21 @@ func defaultOptions(ctx context.Context) (*options, error) {
 	}
 
 	return opts, nil
+}
+
+func (o *options) loopbackHost() string {
+	ip := net.ParseIP(o.bindAddress)
+	if ip != nil && ip.IsUnspecified() {
+		return "localhost"
+	}
+	if o.bindAddress == "" {
+		return "localhost"
+	}
+	return o.bindAddress
+}
+
+func (o *options) loopbackHostPort() string {
+	return net.JoinHostPort(o.loopbackHost(), strconv.Itoa(o.bindPort))
 }
 
 // Manager manages APIServer instance as well as built-in controllers.
@@ -831,25 +862,28 @@ func start(
 		}
 	} else {
 		log.Infof("Using certificate pair name %q and directory %q", opts.certPairName, opts.certDir)
-		serverCertFile := filepath.Join(opts.certDir, opts.certPairName+".crt")
+		serverCertFile = filepath.Join(opts.certDir, opts.certPairName+".crt")
 		if _, err := os.Stat(serverCertFile); err != nil {
 			return fmt.Errorf("failed to stat server certificate file %q: %v", serverCertFile, err)
 		}
-		serverKeyFile := filepath.Join(opts.certDir, opts.certPairName+".key")
+		serverKeyFile = filepath.Join(opts.certDir, opts.certPairName+".key")
 		if _, err := os.Stat(serverKeyFile); err != nil {
 			return fmt.Errorf("failed to stat server key file %q: %v", serverKeyFile, err)
 		}
-		serverCAFile := filepath.Join(opts.certDir, "ca.crt")
+		serverCAFile = filepath.Join(opts.certDir, "ca.crt")
 		if _, err := os.Stat(serverCAFile); err != nil {
 			return fmt.Errorf("failed to stat server CA file %q: %v", serverCAFile, err)
 		}
 	}
 
 	// Create client for communicating with the API server locally.
-	clientConfig := NewClientConfig()
+	var clientConfig *rest.Config
 	if opts.enableSimpleAuth {
 		w := auth.NewTransportWrapperFunc(apiserverUser, []string{user.SystemPrivilegedGroup}, nil)
-		clientConfig = NewClientConfig(WithTransportWrapper(w))
+		clientConfig = NewClientConfig(
+			WithClientHost(opts.loopbackHostPort()),
+			WithTransportWrapper(w),
+		)
 	} else if opts.enableInClusterAuth {
 		log.Infof("Using in-cluster configuration")
 
@@ -872,23 +906,16 @@ func start(
 			return fmt.Errorf("failed to create x509 authenticator: %v", err)
 		}
 		clientConfig = NewClientConfig(
+			WithClientHost(opts.loopbackHostPort()),
 			WithClientTLSConfig(rest.TLSClientConfig{
 				CertFile: clientCertFile,
 				KeyFile:  clientKeyFile,
 				CAFile:   serverCAFile,
 			}),
 		)
+	} else {
+		clientConfig = NewClientConfig(WithClientHost(opts.loopbackHostPort()))
 	}
-
-	// Reset flags. APIServer cmd expects its own flagset.
-	flag.CommandLine = flag.NewFlagSet("apiserver", flag.ExitOnError)
-	os.Args = append(
-		[]string{
-			os.Args[0],
-			// Disable API priority and fairness (flow control) which doesn't work anyway.
-			"--enable-priority-and-fairness=false",
-		},
-		flag.Args()...) // Keep non-flag arguments.
 
 	l := log.New(config.Verbose)
 	ctrl.SetLogger(l)
@@ -904,174 +931,165 @@ func start(
 	}
 	logrus.SetOutput(log.NewDefaultLogWriter(kineLogLevel))
 
-	readyCh := make(chan error)
-	go func() {
-		if opts.sqlitePath != "" && !strings.Contains(opts.sqlitePath, ":memory:") {
-			if _, err := os.Stat(opts.sqlitePath); os.IsNotExist(err) {
-				if err := os.MkdirAll(filepath.Dir(opts.sqlitePath), 0755); err != nil {
-					readyCh <- fmt.Errorf("failed to create database directory: %v", err)
-					return
-				}
-				if _, err := os.Create(opts.sqlitePath); err != nil {
-					readyCh <- fmt.Errorf("failed to create database file: %v", err)
-					return
-				}
+	if opts.sqlitePath != "" && !strings.Contains(opts.sqlitePath, ":memory:") {
+		if _, err := os.Stat(opts.sqlitePath); os.IsNotExist(err) {
+			if err := os.MkdirAll(filepath.Dir(opts.sqlitePath), 0755); err != nil {
+				return fmt.Errorf("failed to create database directory: %v", err)
+			}
+			if _, err := os.Create(opts.sqlitePath); err != nil {
+				return fmt.Errorf("failed to create database file: %v", err)
 			}
 		}
-		kineStore, err := NewKineStorage(ctx, opts.sqlitePath, opts.sqliteConnArgs, kineLogFormat)
-		if err != nil {
-			readyCh <- fmt.Errorf("failed to create kine storage: %w", err)
-			return
-		}
+	}
+	kineStore, err := NewKineStorage(ctx, opts.sqlitePath, opts.sqliteConnArgs, kineLogFormat)
+	if err != nil {
+		return fmt.Errorf("failed to create kine storage: %w", err)
+	}
 
-		srvBuilder := builder.APIServer.
-			WithAdditionalSchemeInstallers(registerCrossVersionConversions, registerFieldLabelConversions)
-		for _, r := range opts.resources {
-			srvBuilder = srvBuilder.WithResourceAndStorage(r, kineStore)
-		}
-		// Use custom OpenAPI definitions if provided, otherwise use the default.
-		openAPIGetter := opts.openAPIDefinitions
-		if openAPIGetter == nil {
-			openAPIGetter = apoxyopenapi.GetOpenAPIDefinitions
-		}
-		if err := srvBuilder.
-			WithOpenAPIDefinitions("apoxy", "0.1.0", openAPIGetter).
-			DisableAuthorization().
-			WithOptionsFns(func(o *builder.ServerOptions) *builder.ServerOptions {
-				o.StdErr = io.Discard
-				o.StdOut = io.Discard
+	srvBuilder := builder.NewServerBuilder().
+		WithAdditionalSchemeInstallers(registerCrossVersionConversions, registerFieldLabelConversions)
+	for _, r := range opts.resources {
+		srvBuilder = srvBuilder.WithResourceAndStorage(r, kineStore)
+	}
+	// Use custom OpenAPI definitions if provided, otherwise use the default.
+	openAPIGetter := opts.openAPIDefinitions
+	if openAPIGetter == nil {
+		openAPIGetter = apoxyopenapi.GetOpenAPIDefinitions
+	}
+	serverOpts, err := srvBuilder.
+		WithOpenAPIDefinitions("apoxy", "0.1.0", openAPIGetter).
+		DisableAuthorization().
+		WithOptionsFns(func(o *builder.ServerOptions) *builder.ServerOptions {
+			o.StdErr = io.Discard
+			o.StdOut = io.Discard
 
-				o.RecommendedOptions.CoreAPI = nil
+			o.RecommendedOptions.CoreAPI = nil
+			o.RecommendedOptions.Authentication = nil
+			o.RecommendedOptions.Authorization = nil
+
+			// Enable admission plugin chain. CoreAPI is nil so the
+			// default webhook/lifecycle plugins cannot be used; only
+			// custom in-process plugins registered via
+			// WithAdmissionPlugin will run.
+			admissionOpts := &apiserveropts.AdmissionOptions{
+				Plugins:                admission.NewPlugins(),
+				RecommendedPluginOrder: make([]string, 0, len(opts.admissionPlugins)),
+			}
+			for _, p := range opts.admissionPlugins {
+				admissionOpts.Plugins.Register(p.name, p.factory)
+				admissionOpts.RecommendedPluginOrder = append(
+					admissionOpts.RecommendedPluginOrder, p.name)
+			}
+			o.RecommendedOptions.Admission = admissionOpts
+
+			// Inject the Apoxy SharedInformerFactory into admission
+			// plugins that implement WantsApoxyInformerFactory.
+			o.RecommendedOptions.ExtraAdmissionInitializers = func(
+				c *apiserver.RecommendedConfig,
+			) ([]admission.PluginInitializer, error) {
+				a3yClient, err := a3yclient.NewForConfig(c.ClientConfig)
+				if err != nil {
+					return nil, fmt.Errorf("failed to create apoxy client for admission: %w", err)
+				}
+				a3yFactory := a3yinformers.NewSharedInformerFactory(a3yClient, 0)
+				return []admission.PluginInitializer{
+					a3yadmission.New(a3yFactory, a3yClient),
+				}, nil
+			}
+
+			o.RecommendedOptions.SecureServing = &apiserveropts.SecureServingOptionsWithLoopback{
+				SecureServingOptions: &apiserveropts.SecureServingOptions{
+					BindAddress: netutils.ParseIPSloppy(opts.bindAddress),
+					BindPort:    opts.bindPort,
+					ServerCert: apiserveropts.GeneratableKeyCert{
+						GeneratedCert: genCert,
+					},
+				},
+			}
+
+			if opts.enableInClusterAuth {
+				o.RecommendedOptions.Authentication = apiserveropts.NewDelegatingAuthenticationOptions()
+				o.RecommendedOptions.Authentication.RemoteKubeConfigFileOptional = true
+
+				o.RecommendedOptions.Authorization = apiserveropts.NewDelegatingAuthorizationOptions()
+				o.RecommendedOptions.Authorization.RemoteKubeConfigFileOptional = true
+				o.RecommendedOptions.Authorization.AlwaysAllowPaths = []string{"healthz"}
+				o.RecommendedOptions.Authorization.AlwaysAllowGroups = []string{
+					user.SystemPrivilegedGroup,
+				}
+			} else {
 				o.RecommendedOptions.Authentication = nil
 				o.RecommendedOptions.Authorization = nil
+			}
 
-				// Enable admission plugin chain. CoreAPI is nil so the
-				// default webhook/lifecycle plugins cannot be used; only
-				// custom in-process plugins registered via
-				// WithAdmissionPlugin will run.
-				admissionOpts := &apiserveropts.AdmissionOptions{
-					Plugins:                admission.NewPlugins(),
-					RecommendedPluginOrder: make([]string, 0, len(opts.admissionPlugins)),
+			if opts.auditPolicyFile != "" {
+				o.RecommendedOptions.Audit = apiserveropts.NewAuditOptions()
+				o.RecommendedOptions.Audit.PolicyFile = opts.auditPolicyFile
+				o.RecommendedOptions.Audit.LogOptions.Path = opts.auditLogPath
+				o.RecommendedOptions.Audit.LogOptions.Format = "json"
+				if opts.auditLogMaxAge > 0 {
+					o.RecommendedOptions.Audit.LogOptions.MaxAge = opts.auditLogMaxAge
 				}
-				for _, p := range opts.admissionPlugins {
-					admissionOpts.Plugins.Register(p.name, p.factory)
-					admissionOpts.RecommendedPluginOrder = append(
-						admissionOpts.RecommendedPluginOrder, p.name)
+				if opts.auditLogMaxBackups > 0 {
+					o.RecommendedOptions.Audit.LogOptions.MaxBackups = opts.auditLogMaxBackups
 				}
-				o.RecommendedOptions.Admission = admissionOpts
-
-				// Inject the Apoxy SharedInformerFactory into admission
-				// plugins that implement WantsApoxyInformerFactory.
-				o.RecommendedOptions.ExtraAdmissionInitializers = func(
-					c *apiserver.RecommendedConfig,
-				) ([]admission.PluginInitializer, error) {
-					a3yClient, err := a3yclient.NewForConfig(c.ClientConfig)
-					if err != nil {
-						return nil, fmt.Errorf("failed to create apoxy client for admission: %w", err)
-					}
-					a3yFactory := a3yinformers.NewSharedInformerFactory(a3yClient, 0)
-					return []admission.PluginInitializer{
-						a3yadmission.New(a3yFactory, a3yClient),
-					}, nil
+				if opts.auditLogMaxSizeMB > 0 {
+					o.RecommendedOptions.Audit.LogOptions.MaxSize = opts.auditLogMaxSizeMB
 				}
+			}
 
-				o.RecommendedOptions.SecureServing = &apiserveropts.SecureServingOptionsWithLoopback{
-					SecureServingOptions: &apiserveropts.SecureServingOptions{
-						BindAddress: netutils.ParseIPSloppy("0.0.0.0"),
-						BindPort:    8443,
-						ServerCert: apiserveropts.GeneratableKeyCert{
-							GeneratedCert: genCert,
-						},
-					},
-				}
+			return o
+		}).
+		WithConfigFns(func(c *apiserver.RecommendedConfig) *apiserver.RecommendedConfig {
+			c.ClientConfig = clientConfig
+			c.SharedInformerFactory = informers.NewSharedInformerFactory(
+				kubernetes.NewForConfigOrDie(c.ClientConfig),
+				0,
+			)
+			// TODO: replace this post-hoc nil with
+			// o.RecommendedOptions.Features.EnablePriorityAndFairness = false
+			// in an optionsFn before ApplyTo. FeatureOptions.ApplyTo sets
+			// c.FlowControl = utilflowcontrol.New(...) by default, which
+			// registers an APF post-start hook that LISTs FlowSchema /
+			// PriorityLevelConfiguration via loopback — APIs this embedded
+			// apiserver doesn't serve — failing readyz. Disabling the feature
+			// flag is the upstream-intended opt-out (same switch sample-apiserver
+			// exposes) and would also let server/start.go drop its second
+			// ApplyRecommendedConfigFns pass, since that pass exists only to
+			// re-nil this field.
+			c.FlowControl = nil
 
-				if opts.enableInClusterAuth {
-					o.RecommendedOptions.Authentication = apiserveropts.NewDelegatingAuthenticationOptions()
-					o.RecommendedOptions.Authentication.RemoteKubeConfigFileOptional = true
-
-					o.RecommendedOptions.Authorization = apiserveropts.NewDelegatingAuthorizationOptions()
-					o.RecommendedOptions.Authorization.RemoteKubeConfigFileOptional = true
-					o.RecommendedOptions.Authorization.AlwaysAllowPaths = []string{"healthz"}
-					o.RecommendedOptions.Authorization.AlwaysAllowGroups = []string{
-						user.SystemPrivilegedGroup,
-					}
-				} else {
-					o.RecommendedOptions.Authentication = nil
-					o.RecommendedOptions.Authorization = nil
-				}
-
-				if opts.auditPolicyFile != "" {
-					o.RecommendedOptions.Audit = apiserveropts.NewAuditOptions()
-					o.RecommendedOptions.Audit.PolicyFile = opts.auditPolicyFile
-					o.RecommendedOptions.Audit.LogOptions.Path = opts.auditLogPath
-					o.RecommendedOptions.Audit.LogOptions.Format = "json"
-					if opts.auditLogMaxAge > 0 {
-						o.RecommendedOptions.Audit.LogOptions.MaxAge = opts.auditLogMaxAge
-					}
-					if opts.auditLogMaxBackups > 0 {
-						o.RecommendedOptions.Audit.LogOptions.MaxBackups = opts.auditLogMaxBackups
-					}
-					if opts.auditLogMaxSizeMB > 0 {
-						o.RecommendedOptions.Audit.LogOptions.MaxSize = opts.auditLogMaxSizeMB
-					}
-				}
-
-				return o
-			}).
-			WithConfigFns(func(c *apiserver.RecommendedConfig) *apiserver.RecommendedConfig {
-				// TODO(dilyevsky): Figure out how to make the listener flexible.
-				// c.SecureServing.Listener = lst
-
-				c.ClientConfig = clientConfig
-				c.SharedInformerFactory = informers.NewSharedInformerFactory(
-					kubernetes.NewForConfigOrDie(c.ClientConfig),
-					0,
+			if opts.enableSimpleAuth {
+				// For simple auth, we use a header authenticator and an always allow authorizer.
+				c.Authentication.Authenticator = auth.NewHeaderAuthenticator()
+				c.Authorization.Authorizer = authorizerfactory.NewAlwaysAllowAuthorizer()
+			} else if opts.enableInClusterAuth {
+				// For in-cluster auth, we use the default delegating (to the kube-apiserver)
+				// authenticator and authorizer.
+				// The union authenticator will try authenticators in order until one succeeds.
+				c.Authentication.Authenticator = union.New(
+					localClientAuth,
+					c.Authentication.Authenticator,
 				)
-				c.FlowControl = nil
+			}
 
-				if opts.enableSimpleAuth {
-					// For simple auth, we use a header authenticator and an always allow authorizer.
-					c.Authentication.Authenticator = auth.NewHeaderAuthenticator()
-					c.Authorization.Authorizer = authorizerfactory.NewAlwaysAllowAuthorizer()
-				} else if opts.enableInClusterAuth {
-					// For in-cluster auth, we use the default delegating (to the kube-apiserver)
-					// authenticator and authorizer.
-					// The union authenticator will try authenticators in order until one succeeds.
-					c.Authentication.Authenticator = union.New(
-						localClientAuth,
-						c.Authentication.Authenticator,
-					)
-				}
-
-				return c
-			}).
-			WithoutEtcd().
-			Execute(); err != nil {
-			readyCh <- err
-		}
-	}()
-	go func() {
-		if err := waitForReadyz("https://localhost:8443", 300*time.Second); err != nil {
-			readyCh <- fmt.Errorf("failed to wait for /readyz endpoint: %v", err)
-			return
-		}
-		log.Infof("APIServer is ready")
-		readyCh <- nil
-	}()
-
-	log.Infof("Waiting for APIServer...")
-
-	select {
-	case <-ctx.Done():
-		return fmt.Errorf("context cancelled while waiting for APIServer: %v", ctx.Err())
-	case err, ok := <-readyCh:
-		if !ok {
-			return errors.New("APIServer failed to start")
-		}
-		if err != nil {
-			return fmt.Errorf("APIServer failed to start: %v", err)
-		}
+			return c
+		}).
+		WithoutEtcd().
+		Build()
+	if err != nil {
+		return fmt.Errorf("failed to build APIServer: %w", err)
 	}
+
+	if _, err := serverOpts.RunApoxyServer(ctx); err != nil {
+		return fmt.Errorf("failed to start APIServer: %w", err)
+	}
+
+	if err := waitForReadyz("https://"+opts.loopbackHostPort(), 300*time.Second); err != nil {
+		return fmt.Errorf("failed to wait for /readyz endpoint: %v", err)
+	}
+
+	log.Infof("APIServer is ready")
 
 	return nil
 }
