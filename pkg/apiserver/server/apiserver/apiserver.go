@@ -1,12 +1,16 @@
 package apiserver
 
 import (
+	apimachineryversion "k8s.io/apimachinery/pkg/version"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	genericapiserver "k8s.io/apiserver/pkg/server"
 	"k8s.io/apiserver/pkg/util/compatibility"
+	basecompatibility "k8s.io/component-base/compatibility"
+
+	"github.com/apoxy-dev/apoxy/build"
 )
 
 func NewScheme() *runtime.Scheme {
@@ -61,12 +65,50 @@ type CompletedConfig struct {
 
 // Complete fills in any fields not set that are required to have valid data. It's mutating the receiver.
 func (cfg *Config) Complete() CompletedConfig {
-	cfg.GenericConfig.EffectiveVersion = compatibility.DefaultBuildEffectiveVersion()
+	cfg.GenericConfig.EffectiveVersion = apoxyEffectiveVersion{
+		EffectiveVersion: compatibility.DefaultBuildEffectiveVersion(),
+	}
 
 	c := completedConfig{}
 	c.GenericConfig = cfg.GenericConfig.Complete()
 	c.ExtraConfig = &cfg.ExtraConfig
 	return CompletedConfig{&c}
+}
+
+// apoxyEffectiveVersion wraps the upstream EffectiveVersion so that /version
+// reports the actual apoxy build metadata instead of the k8s component-base
+// defaults, which remain as unexpanded "$Format:%H$" placeholders in a
+// vendored build. Binary/Emulation/MinCompatibility fields pass through
+// unchanged so kube-client version negotiation behaves normally.
+type apoxyEffectiveVersion struct {
+	basecompatibility.EffectiveVersion
+}
+
+func (a apoxyEffectiveVersion) Info() *apimachineryversion.Info {
+	info := a.EffectiveVersion.Info()
+	if info == nil {
+		return nil
+	}
+	out := *info
+	// Rebuild GitVersion as vMAJOR.MINOR.0-apoxy-<sha>. The upstream default
+	// is "v0.0.0-master+$Format:%H$" which is both noisy and wrong (the
+	// $Format placeholder never gets expanded in a vendored build), yet
+	// clients parse this field for server version detection — keeping a
+	// clean semver prefix makes utilversion.ParseGeneric still yield the
+	// real k8s compatibility version.
+	if bv := a.EffectiveVersion.BinaryVersion(); bv != nil {
+		out.GitVersion = "v" + bv.String()
+	}
+	if v := build.BuildVersion; v != "" && v != "0.0.0-dev" {
+		out.GitVersion = out.GitVersion + "-apoxy-" + v
+	}
+	if c := build.CommitHash; c != "" && c != "n/a" {
+		out.GitCommit = c
+	}
+	if d := build.BuildDate; d != "" && d != "n/a" {
+		out.BuildDate = d
+	}
+	return &out
 }
 
 // New returns a new instance of ApoxyServer from the given config.
