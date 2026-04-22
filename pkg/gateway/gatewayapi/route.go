@@ -33,10 +33,13 @@ import (
 )
 
 const (
-	// Following the description in `timeout` section of https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/route/v3/route_components.proto
-	// Request timeout, which is defined as Duration, specifies the upstream timeout for the route
-	// If not specified, the default is 15s
-	HTTPRequestTimeout = "15s"
+	// Default upstream request timeout applied when an HTTPRoute rule does not
+	// set spec.rules[].timeouts.request. Envoy's built-in default is 15s, which
+	// is too aggressive for long-running tunnel-backed requests; we bump it to
+	// 100s to give slow upstreams (e.g. Grafana dashboard queries over a QUIC
+	// tunnel with occasional cross-region packet loss) enough headroom to
+	// complete before Envoy cuts the flow.
+	HTTPRequestTimeout = "100s"
 )
 
 var (
@@ -272,20 +275,24 @@ func (t *Translator) processHTTPRouteRules(httpRoute *HTTPRouteContext, parentRe
 }
 
 func processTimeout(irRoute *ir.HTTPRoute, rule gwapiv1.HTTPRouteRule) {
+	var rto *ir.Timeout
+	// Timeout is translated from multiple resources and may already be partially set
+	if irRoute.Timeout != nil {
+		rto = irRoute.Timeout.DeepCopy()
+	} else {
+		rto = &ir.Timeout{}
+	}
+
+	// Seed with the platform default so a route without spec.timeouts still
+	// gets an explicit timeout (instead of falling back to Envoy's 15s).
+	def, _ := time.ParseDuration(HTTPRequestTimeout)
+	setRequestTimeout(rto, metav1.Duration{Duration: def})
+
 	if rule.Timeouts != nil {
-		var rto *ir.Timeout
-
-		// Timeout is translated from multiple resources and may already be partially set
-		if irRoute.Timeout != nil {
-			rto = irRoute.Timeout.DeepCopy()
-		} else {
-			rto = &ir.Timeout{}
-		}
-
 		if rule.Timeouts.Request != nil {
 			d, err := time.ParseDuration(string(*rule.Timeouts.Request))
 			if err != nil {
-				d, _ = time.ParseDuration(HTTPRequestTimeout)
+				d = def
 			}
 			setRequestTimeout(rto, metav1.Duration{Duration: d})
 		}
@@ -295,13 +302,13 @@ func processTimeout(irRoute *ir.HTTPRoute, rule gwapiv1.HTTPRouteRule) {
 		if rule.Timeouts.BackendRequest != nil {
 			d, err := time.ParseDuration(string(*rule.Timeouts.BackendRequest))
 			if err != nil {
-				d, _ = time.ParseDuration(HTTPRequestTimeout)
+				d = def
 			}
 			setRequestTimeout(rto, metav1.Duration{Duration: d})
 		}
-
-		irRoute.Timeout = rto
 	}
+
+	irRoute.Timeout = rto
 }
 
 func setRequestTimeout(irTimeout *ir.Timeout, d metav1.Duration) {
