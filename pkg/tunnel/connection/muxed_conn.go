@@ -141,6 +141,7 @@ func (m *muxedConn) Add(addr netip.Prefix, conn Connection) error {
 		// underlying WritePacket must be delivered back up to the TUN.
 		// Reuse the inbound path: push into incomingPackets with the same
 		// headroom layout readFromConn produces. Drop on overflow.
+		metrics.TunnelConnectIPICMPReturned.Inc()
 		buf := m.packetBufferPool.Get().(*[]byte)
 		*buf = (*buf)[:cap(*buf)]
 		if m.headroom+len(icmp) > cap(*buf) {

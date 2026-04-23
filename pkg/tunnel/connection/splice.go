@@ -14,6 +14,7 @@ import (
 	"k8s.io/utils/ptr"
 
 	"github.com/apoxy-dev/apoxy/pkg/netstack"
+	tunnelmetrics "github.com/apoxy-dev/apoxy/pkg/tunnel/metrics"
 	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 )
 
@@ -136,6 +137,7 @@ func Splice(tunDev tun.Device, conn Connection, opts ...SpliceOption) error {
 					slog.Error("Failed to write to connection", slog.Any("error", err))
 
 					if len(icmp) > 0 {
+						tunnelmetrics.TunnelConnectIPICMPReturned.Inc()
 						slog.Debug("Sending ICMP packet")
 						if _, err := tunDev.Write([][]byte{icmp}, 0); err != nil {
 							slog.Error("Failed to write ICMP packet", slog.Any("error", err))

@@ -188,6 +188,19 @@ var (
 		},
 		[]string{"protocol", "direction"},
 	)
+
+	// TunnelConnectIPICMPReturned counts ICMP packets that CONNECT-IP
+	// synthesized in response to an outbound-write failure (notably the QUIC
+	// DatagramTooLargeError path that emits an ICMPv6 Packet-Too-Big back at
+	// the sender for PMTUD). Cross-reference with tunnel_icmp6_packet_too_big_*
+	// to detect PTB generation vs. propagation issues.
+	// TODO(APO-543): remove once PMTUD-over-tunnel is verified healthy.
+	TunnelConnectIPICMPReturned = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "tunnel_connect_ip_icmp_returned_total",
+			Help: "ICMP packets synthesized by connect-ip-go on WritePacket failure (e.g. QUIC DatagramTooLargeError → ICMPv6 PTB).",
+		},
+	)
 )
 
 func init() {
@@ -207,6 +220,7 @@ func init() {
 	metrics.Registry.MustRegister(TunnelPacketsDropped)
 	metrics.Registry.MustRegister(TunnelPacketsByProtocol)
 	metrics.Registry.MustRegister(TunnelBytesByProtocol)
+	metrics.Registry.MustRegister(TunnelConnectIPICMPReturned)
 }
 
 var registerAgentOnce sync.Once
