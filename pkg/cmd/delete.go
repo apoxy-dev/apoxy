@@ -109,26 +109,16 @@ func deleteFromFiles(
 	dynClient dynamic.Interface,
 	mapper *restmapper.DeferredDiscoveryRESTMapper,
 ) error {
-	// Collect all file contents.
-	var allData [][]byte
-	for _, f := range deleteFiles {
-		data, err := readInput(f, deleteRecursive)
-		if err != nil {
-			return err
-		}
-		allData = append(allData, data...)
+	allData, err := resource.ReadInputs(deleteFiles, deleteRecursive)
+	if err != nil {
+		return err
 	}
 
 	var errs []error
 	var deleted int
 
 	for _, data := range allData {
-		docs := splitYAMLDocuments(data)
-		for _, doc := range docs {
-			if len(strings.TrimSpace(string(doc))) == 0 {
-				continue
-			}
-
+		for _, doc := range resource.SplitYAMLDocuments(data) {
 			name, kind, notFound, err := deleteResource(ctx, dynClient, mapper, doc)
 			if err != nil {
 				errs = append(errs, err)
