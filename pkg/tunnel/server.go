@@ -38,6 +38,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	"github.com/apoxy-dev/apoxy/pkg/diag"
+	"github.com/apoxy-dev/apoxy/pkg/diag/protocol"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/bfdl"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/conntrack"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/metrics"
@@ -279,6 +281,8 @@ type TunnelServer struct {
 	// conns maps tunnel connection IDs to connection instances.
 	conns *haxmap.Map[string, *conn]
 
+	diagSessions *diag.Sessions
+
 	stopMu        sync.Mutex
 	stopped       bool
 	draining      bool
@@ -316,8 +320,9 @@ func NewTunnelServer(
 		router:       r,
 		connTracker:  ct,
 
-		tunnels: haxmap.New[string, *corev1alpha.TunnelNode](),
-		conns:   haxmap.New[string, *conn](),
+		tunnels:      haxmap.New[string, *corev1alpha.TunnelNode](),
+		conns:        haxmap.New[string, *conn](),
+		diagSessions: diag.NewSessions(),
 	}
 
 	return s, nil
@@ -327,6 +332,13 @@ func NewTunnelServer(
 // MetricsStore returns the push-based metrics store, if configured.
 func (t *TunnelServer) MetricsStore() *metrics.MetricsStore {
 	return t.options.metricsStore
+}
+
+// DiagSessions returns the per-agent diag stream registry. Callers
+// (e.g. tunnelproxy operator endpoints) look up an agent's session by
+// its TunnelNode UID and call Invoke to drive a command.
+func (t *TunnelServer) DiagSessions() *diag.Sessions {
+	return t.diagSessions
 }
 
 // SetupWithManager sets up the TunnelServer as a reconciler with the manager.
@@ -649,6 +661,15 @@ func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.
 		// (already authenticated by QUIC connection).
 		if r.URL.Path == "/metrics/push" {
 			t.handleMetricsPush(w, r, &connID)
+			return // Don't close QUIC connection.
+		}
+
+		// Handle /diag/rpc — long-lived bidi stream for agent
+		// diagnostics. Auth is inherited from the same QUIC TLS that
+		// carries /connect on this conn; we bind the session to the
+		// tunnel UID set by the /connect handler above.
+		if r.URL.Path == protocol.Path {
+			t.handleDiagRPC(w, r, &connID)
 			return // Don't close QUIC connection.
 		}
 

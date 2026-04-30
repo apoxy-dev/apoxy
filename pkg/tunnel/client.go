@@ -28,6 +28,7 @@ import (
 	crmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
 	"github.com/apoxy-dev/apoxy/build"
+	"github.com/apoxy-dev/apoxy/pkg/diag"
 	alog "github.com/apoxy-dev/apoxy/pkg/log"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/bfdl"
 	tunnelconn "github.com/apoxy-dev/apoxy/pkg/tunnel/connection"
@@ -83,6 +84,10 @@ type tunnelClientOptions struct {
 	packetObserver tunnelconn.PacketObserver
 	// Labels to send on tunnel connections.
 	labels map[string]string
+	// Diag command registry. When non-nil, the conn opens a long-lived
+	// /diag/rpc stream to tunnelproxy and dispatches incoming commands
+	// against this registry.
+	diagRegistry *diag.Registry
 }
 
 func defaultClientOptions() *tunnelClientOptions {
@@ -163,6 +168,16 @@ func WithPreserveDefaultGatewayDestinations(dsts []netip.Prefix) TunnelClientOpt
 func WithPacketObserver(obs tunnelconn.PacketObserver) TunnelClientOption {
 	return func(o *tunnelClientOptions) {
 		o.packetObserver = obs
+	}
+}
+
+// WithDiagRegistry enables the agent diagnostics surface. When set,
+// the conn opens a long-lived /diag/rpc stream to tunnelproxy and runs
+// commands from r in response to operator requests. Auth is inherited
+// from the existing QUIC TLS to tunnelproxy.
+func WithDiagRegistry(r *diag.Registry) TunnelClientOption {
+	return func(o *tunnelClientOptions) {
+		o.diagRegistry = r
 	}
 }
 
@@ -351,10 +366,11 @@ func (d *TunnelDialer) Dial(
 	c := &Conn{
 		UUID: connUUID,
 
-		conn:      conn,
-		hConn:     hConn,
-		router:    d.Router,
-		closeOnce: sync.Once{},
+		conn:         conn,
+		hConn:        hConn,
+		router:       d.Router,
+		closeOnce:    sync.Once{},
+		diagRegistry: options.diagRegistry,
 	}
 	go c.run(alog.IntoContext(ctx, slog.With("conn", connUUID.String())))
 	return c, nil
@@ -363,10 +379,11 @@ func (d *TunnelDialer) Dial(
 type Conn struct {
 	UUID uuid.UUID
 
-	conn      *connectip.Conn
-	hConn     *http3.ClientConn
-	router    router.Router
-	closeOnce sync.Once
+	conn         *connectip.Conn
+	hConn        *http3.ClientConn
+	router       router.Router
+	closeOnce    sync.Once
+	diagRegistry *diag.Registry
 
 	mu    sync.RWMutex
 	addrs []netip.Prefix
@@ -424,6 +441,10 @@ func (c *Conn) run(ctx context.Context) {
 
 	// Push metrics to the server periodically over the existing HTTP/3 connection.
 	go c.startMetricsPush(ctx, 15*time.Second)
+
+	if c.diagRegistry != nil {
+		go c.startDiagDispatcher(ctx)
+	}
 
 	bfdStarted := false
 	var bfdDown <-chan struct{} // Nil until BFD client starts.

@@ -35,6 +35,8 @@ import (
 	configv1alpha1 "github.com/apoxy-dev/apoxy/api/config/v1alpha1"
 	corev1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
 	"github.com/apoxy-dev/apoxy/client/versioned"
+	"github.com/apoxy-dev/apoxy/pkg/diag"
+	"github.com/apoxy-dev/apoxy/pkg/diag/commands"
 	"github.com/apoxy-dev/apoxy/pkg/log"
 	"github.com/apoxy-dev/apoxy/pkg/net/dns"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel"
@@ -182,6 +184,9 @@ type runtimeTunnelReconciler struct {
 	lastAddresses    []string
 	lastSelected     string
 
+	// Process-scoped diag command registry, shared across reconnects.
+	diagRegistry *diag.Registry
+
 	// Dial parameters protected by dialMu.
 	dialMu     sync.RWMutex
 	tunnelUID  uuid.UUID
@@ -238,6 +243,9 @@ func (r *runtimeTunnelReconciler) reconcile(ctx context.Context, req ctrl.Reques
 	cOpts = append(cOpts, tunnel.WithAuthToken(tunnelNode.Status.Credentials.Token))
 	if len(r.tunCfg.Labels) > 0 {
 		cOpts = append(cOpts, tunnel.WithLabels(r.tunCfg.Labels))
+	}
+	if r.diagRegistry != nil {
+		cOpts = append(cOpts, tunnel.WithDiagRegistry(r.diagRegistry))
 	}
 
 	var srvAddr string
@@ -497,6 +505,7 @@ func runTunnel(ctx context.Context, cfg *configv1alpha1.Config, tc *configv1alph
 		endpointSelector: selector,
 		tunConns:         make([]*runtimeTunConn, 0),
 		tunDialer:        &tunnel.TunnelDialer{Router: r},
+		diagRegistry:     commands.NewDefaultRegistry(),
 	}
 
 	if err := rec.setupWithManager(mgr, tn.Name); err != nil {

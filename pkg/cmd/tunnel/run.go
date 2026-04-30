@@ -40,6 +40,8 @@ import (
 	"github.com/apoxy-dev/apoxy/config"
 	"github.com/apoxy-dev/apoxy/pkg/cmd/tunnel/tui"
 	"github.com/apoxy-dev/apoxy/pkg/cmd/utils"
+	"github.com/apoxy-dev/apoxy/pkg/diag"
+	"github.com/apoxy-dev/apoxy/pkg/diag/commands"
 	"github.com/apoxy-dev/apoxy/pkg/log"
 	"github.com/apoxy-dev/apoxy/pkg/net/dns"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel"
@@ -115,6 +117,9 @@ type tunnelNodeReconciler struct {
 
 	// Endpoint selector for choosing tunnel server addresses.
 	endpointSelector endpointselect.Selector
+
+	// Process-scoped diag command registry, shared across reconnects.
+	diagRegistry *diag.Registry
 
 	// Cached endpoint selection — only re-probe when addresses change.
 	lastAddresses []string
@@ -209,6 +214,7 @@ var tunnelRunCmd = &cobra.Command{
 			cfg:              cfg,
 			a3y:              a3y,
 			endpointSelector: selector,
+			diagRegistry:     commands.NewDefaultRegistry(),
 
 			tunDialerWorkers: make([]*tunConn, 0),
 		}
@@ -441,6 +447,9 @@ func (t *tunnelNodeReconciler) reconcile(ctx context.Context, req ctrl.Request) 
 		}, nil
 	} else {
 		cOpts = append(cOpts, tunnel.WithAuthToken(tunnelNode.Status.Credentials.Token))
+	}
+	if t.diagRegistry != nil {
+		cOpts = append(cOpts, tunnel.WithDiagRegistry(t.diagRegistry))
 	}
 
 	var srvAddr string
