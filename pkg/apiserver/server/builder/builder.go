@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/conversion"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -49,6 +51,14 @@ type Server struct {
 
 	registeredGroupVersions map[schema.GroupVersion]struct{}
 	orderedGroupVersions    []schema.GroupVersion
+
+	// trackGeneration enables CRD-style metadata.generation tracking
+	// in the default strategy: PrepareForCreate sets generation=1, and
+	// PrepareForUpdate bumps it when the object's Spec changed (compared
+	// via apiequality.Semantic.DeepEqual). Off by default for backward
+	// compatibility with consumers that registered resources before this
+	// behavior was added.
+	trackGeneration bool
 }
 
 func NewServerBuilder() *Server {
@@ -101,6 +111,22 @@ func (s *Server) WithoutEtcd() *Server {
 	})
 }
 
+// WithGenerationTracking enables CRD-style metadata.generation handling
+// on every resource subsequently registered with WithResourceAndStorage:
+// PrepareForCreate sets generation=1, and PrepareForUpdate bumps it
+// when the object's Spec field has changed (compared via
+// apiequality.Semantic.DeepEqual). Off by default — opt-in so existing
+// consumers (apoxy-cloud's project apiserver, etc.) keep their current
+// behavior until they're independently audited for the change.
+//
+// Resources without a Spec field are unaffected (no field to compare,
+// no generation bump). Per-type PrepareForUpdater hooks continue to
+// fire after the generation bump.
+func (s *Server) WithGenerationTracking() *Server {
+	s.trackGeneration = true
+	return s
+}
+
 func (s *Server) WithResourceAndStorage(obj builderresource.Object, fn StoreFn) *Server {
 	s.apiSchemeBuilder.Register(builderresource.AddToScheme(obj))
 	s.openapiSchemeBuilder.Register(func(scheme *runtime.Scheme) error {
@@ -108,7 +134,7 @@ func (s *Server) WithResourceAndStorage(obj builderresource.Object, fn StoreFn) 
 		return nil
 	})
 
-	sp := newStorageProvider(obj, fn)
+	sp := newStorageProvider(obj, fn, s.trackGeneration)
 	s.forGroupVersionResource(obj.GetGroupVersionResource(), sp)
 	s.withStatusSubresource(obj, sp)
 	return s
@@ -372,13 +398,14 @@ func (s *statusSubresourceStrategy) PrepareForUpdate(ctx context.Context, obj, o
 	}
 }
 
-func newStorageProvider(obj builderresource.Object, fn StoreFn) serverapiserver.StorageProvider {
+func newStorageProvider(obj builderresource.Object, fn StoreFn, trackGeneration bool) serverapiserver.StorageProvider {
 	return func(scheme *runtime.Scheme, optsGetter generic.RESTOptionsGetter) (registryrest.Storage, error) {
 		gvr := obj.GetGroupVersionResource()
 		strategy := &defaultStrategy{
-			Object:         obj,
-			ObjectTyper:    scheme,
-			TableConvertor: registryrest.NewDefaultTableConvertor(gvr.GroupResource()),
+			Object:          obj,
+			ObjectTyper:     scheme,
+			TableConvertor:  registryrest.NewDefaultTableConvertor(gvr.GroupResource()),
+			trackGeneration: trackGeneration,
 		}
 
 		singular := gvr.GroupResource()
@@ -417,6 +444,11 @@ type defaultStrategy struct {
 	Object runtime.Object
 	runtime.ObjectTyper
 	TableConvertor registryrest.TableConvertor
+	// trackGeneration mirrors the Server-level flag. When true,
+	// PrepareForCreate seeds metadata.generation=1 and PrepareForUpdate
+	// bumps it on Spec changes — matching upstream CRD strategy
+	// (k8s.io/apiextensions-apiserver/pkg/registry/customresource).
+	trackGeneration bool
 }
 
 func (d defaultStrategy) GenerateName(base string) string {
@@ -440,6 +472,11 @@ func (d defaultStrategy) NamespaceScoped() bool {
 }
 
 func (d defaultStrategy) PrepareForCreate(ctx context.Context, obj runtime.Object) {
+	if d.trackGeneration {
+		if accessor, err := meta.Accessor(obj); err == nil {
+			accessor.SetGeneration(1)
+		}
+	}
 	if v, ok := obj.(resourcestrategy.PrepareForCreater); ok {
 		v.PrepareForCreate(ctx)
 	}
@@ -449,9 +486,58 @@ func (d defaultStrategy) PrepareForUpdate(ctx context.Context, obj, old runtime.
 	if v, ok := obj.(builderresource.ObjectWithStatusSubResource); ok {
 		old.(builderresource.ObjectWithStatusSubResource).GetStatus().CopyTo(v)
 	}
+	if d.trackGeneration {
+		// Compare Spec only — status writes go through statusSubresourceStrategy
+		// (a separate path) so they don't reach this strategy. Metadata
+		// changes (labels, annotations, finalizers, owner refs) intentionally
+		// don't bump generation; matches upstream CRD strategy semantics.
+		if specChanged(obj, old) {
+			if newAcc, err := meta.Accessor(obj); err == nil {
+				if oldAcc, oerr := meta.Accessor(old); oerr == nil {
+					newAcc.SetGeneration(oldAcc.GetGeneration() + 1)
+				}
+			}
+		}
+	}
 	if v, ok := obj.(resourcestrategy.PrepareForUpdater); ok {
 		v.PrepareForUpdate(ctx, old)
 	}
+}
+
+// specChanged reports whether the Spec field of newObj differs from
+// the Spec field of oldObj. Returns false (== "treat as unchanged") for
+// objects that don't expose a Spec field — those are pure-status types
+// or non-spec resources where generation tracking doesn't apply.
+func specChanged(newObj, oldObj runtime.Object) bool {
+	newSpec, ok := extractSpec(newObj)
+	if !ok {
+		return false
+	}
+	oldSpec, ok := extractSpec(oldObj)
+	if !ok {
+		return false
+	}
+	return !apiequality.Semantic.DeepEqual(oldSpec, newSpec)
+}
+
+// extractSpec returns obj's "Spec" struct field via reflection. Returns
+// (nil, false) when obj is nil, isn't a struct (or pointer-to-struct),
+// or has no "Spec" field. The convention `Spec <Kind>Spec` is universal
+// across kubebuilder/apiserver-runtime types; we lean on it here so the
+// generic strategy doesn't need a type-specific shim per resource.
+func extractSpec(obj runtime.Object) (any, bool) {
+	v := reflect.ValueOf(obj)
+	if v.Kind() == reflect.Ptr {
+		v = v.Elem()
+	}
+	if !v.IsValid() || v.Kind() != reflect.Struct {
+		return nil, false
+	}
+	f := v.FieldByName("Spec")
+	if !f.IsValid() {
+		return nil, false
+	}
+	return f.Interface(), true
 }
 
 func (d defaultStrategy) Validate(ctx context.Context, obj runtime.Object) field.ErrorList {
