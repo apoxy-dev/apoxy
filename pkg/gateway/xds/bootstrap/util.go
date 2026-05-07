@@ -17,15 +17,19 @@ import (
 
 // ApplyBootstrapConfig applies the bootstrap config to the default bootstrap config and return the result config.
 func ApplyBootstrapConfig(boostrapConfig *egv1a1.ProxyBootstrap, defaultBootstrap string) (string, error) {
+	var value string
+	if boostrapConfig.Value != nil {
+		value = *boostrapConfig.Value
+	}
 	bootstrapType := boostrapConfig.Type
 	if bootstrapType != nil && *bootstrapType == egv1a1.BootstrapTypeMerge {
-		mergedBootstrap, err := mergeBootstrap(defaultBootstrap, boostrapConfig.Value)
+		mergedBootstrap, err := mergeBootstrap(defaultBootstrap, value)
 		if err != nil {
 			return "", err
 		}
 		return mergedBootstrap, nil
 	}
-	return boostrapConfig.Value, nil
+	return value, nil
 }
 
 func mergeBootstrap(base, override string) (string, error) {
