@@ -1,8 +1,9 @@
 package config
 
 import (
-	"context"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -15,7 +16,6 @@ import (
 	"github.com/getsentry/sentry-go"
 	"github.com/google/uuid"
 	"github.com/pkg/browser"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	configv1alpha1 "github.com/apoxy-dev/apoxy/api/config/v1alpha1"
 	"github.com/apoxy-dev/apoxy/pkg/log"
@@ -53,36 +53,39 @@ func NewAuthenticator(cfg *configv1alpha1.Config, opts ...AuthenticatorOption) *
 	return a
 }
 
-func (a *Authenticator) Check() (bool, error) {
-	log.Debugf("checking Apoxy authentication")
+// ErrUnauthenticated is returned by Check when the server explicitly rejects
+// the credentials (HTTP 401/403). Other errors mean the check could not be
+// completed (network, missing config, server error).
+var ErrUnauthenticated = errors.New("not authenticated")
+
+func (a *Authenticator) Check() error {
+	log.Debugf("Checking Apoxy authentication")
 	c, err := DefaultAPIClient()
 	if err != nil {
-		log.Debugf("error creating API client: %v", err)
-		return true, err
+		return err
 	}
 
 	if c.BaseHost != "" {
 		resp, err := c.SendRequest(http.MethodPost, "/v1/terra/check", nil)
 		if err != nil {
-			log.Debugf("API request error: %v", err)
-			return true, err
+			return err
 		}
+		defer resp.Body.Close()
+		_, _ = io.Copy(io.Discard, resp.Body)
 
 		log.Debugf("/v1/terra/check returned status=%d", resp.StatusCode)
-		if resp.StatusCode != 200 {
-			return false, nil
+		switch resp.StatusCode {
+		case http.StatusOK:
+			return nil
+		case http.StatusUnauthorized, http.StatusForbidden:
+			return ErrUnauthenticated
+		default:
+			return fmt.Errorf("/v1/terra/check returned status %d", resp.StatusCode)
 		}
 	}
 
-	log.Debugf("checking API server authentication")
-	_, err = c.ControllersV1alpha1().Proxies().List(context.Background(), metav1.ListOptions{})
-	if err != nil {
-		return false, err
-	}
-	log.Debugf("API server authentication successful")
-
-	return true, nil
-
+	_, err = c.Discovery().ServerVersion()
+	return err
 }
 func (a *Authenticator) healthzHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "OK")

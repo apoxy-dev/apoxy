@@ -40,13 +40,13 @@ If your CLI is already authenticated this will return information about your ses
 		}
 
 		auth := config.NewAuthenticator(cfg, opts...)
-		ok, err := auth.Check()
+		err = auth.Check()
 
-		if ok && err == nil {
+		if err == nil {
 			fmt.Println("Authenticated")
 			os.Exit(0)
-		} else if checkOnly { // If we're only checking, exit with an error.
-			fmt.Println("Invalid authentication")
+		} else if checkOnly {
+			fmt.Fprintf(os.Stderr, "Invalid authentication: %v\n", err)
 			os.Exit(1)
 		}
 
