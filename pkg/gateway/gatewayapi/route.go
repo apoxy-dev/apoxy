@@ -116,7 +116,6 @@ func (t *Translator) ProcessGRPCRoutes(grpcRoutes []*gwapiv1a2.GRPCRoute, gatewa
 }
 
 func (t *Translator) processHTTPRouteParentRefs(httpRoute *HTTPRouteContext, resources *Resources, xdsIR XdsIRMap) {
-	log.Infof("Processing HTTPRoute %s", httpRoute.HTTPRoute.Name)
 	for _, parentRef := range httpRoute.ParentRefs {
 		// Need to compute Route rules within the parentRef loop because
 		// any conditions that come out of it have to go on each RouteParentStatus,
@@ -135,7 +134,6 @@ func (t *Translator) processHTTPRouteParentRefs(httpRoute *HTTPRouteContext, res
 
 		// If no negative condition has been set for ResolvedRefs, set "ResolvedRefs=True"
 		if !parentRef.HasCondition(httpRoute, gwapiv1.RouteConditionResolvedRefs, metav1.ConditionFalse) {
-			log.Infof("Resolved all the Object references for the Route")
 			parentRef.SetCondition(httpRoute,
 				gwapiv1.RouteConditionResolvedRefs,
 				metav1.ConditionTrue,
@@ -146,13 +144,11 @@ func (t *Translator) processHTTPRouteParentRefs(httpRoute *HTTPRouteContext, res
 
 		// Skip parent refs that did not accept the route
 		if parentRef.HasCondition(httpRoute, gwapiv1.RouteConditionAccepted, metav1.ConditionFalse) {
-			log.Infof("ParentRef did not accept the Route")
 			continue
 		}
 
 		var hasHostnameIntersection = t.processHTTPRouteParentRefListener(httpRoute, routeRoutes, parentRef, xdsIR)
 		if !hasHostnameIntersection {
-			log.Infof("No hostname intersections between the HTTPRoute and this parent ref's Listener(s).")
 			parentRef.SetCondition(httpRoute,
 				gwapiv1.RouteConditionAccepted,
 				metav1.ConditionFalse,
@@ -164,7 +160,6 @@ func (t *Translator) processHTTPRouteParentRefs(httpRoute *HTTPRouteContext, res
 		// If no negative conditions have been set, the route is considered "Accepted=True".
 		if parentRef.HTTPRoute != nil &&
 			len(parentRef.HTTPRoute.Status.Parents[parentRef.routeParentStatusIdx].Conditions) == 0 {
-			log.Infof("Route is accepted")
 			parentRef.SetCondition(httpRoute,
 				gwapiv1.RouteConditionAccepted,
 				metav1.ConditionTrue,
@@ -1243,8 +1238,6 @@ func (t *Translator) processDestination(
 		ds = t.processServiceDestinationSetting(backendRef.BackendObjectReference, backendNamespace, protocol, resources)
 		ds.Filters = t.processDestinationFilters(routeType, backendRefContext, parentRef, route, resources)
 	case KindBackend:
-		log.Infof("Processing backend %s/%s", backendNamespace, backendRef.Name)
-
 		var err error
 		ds, err = t.processBackendDestinationSetting(backendRef.BackendObjectReference, resources)
 		if err != nil {
@@ -1266,7 +1259,7 @@ func (t *Translator) processDestination(
 		}
 		ds.Filters = t.processDestinationFilters(routeType, backendRefContext, parentRef, route, resources)
 	case KindEdgeFunction:
-		log.Infof("Processing edge function backend ref %s", backendRef.Name)
+		log.DefaultLogger.Debug("Processing edge function backend ref", "name", backendRef.Name)
 
 		var err error
 		if ds, err = t.processEdgeFunctionDestinationSetting(backendRef.BackendObjectReference, protocol, resources); err != nil {

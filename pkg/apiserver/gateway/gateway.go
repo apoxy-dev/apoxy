@@ -138,11 +138,11 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, request reconcile.Req
 	var gwcs []*gatewayv1.GatewayClass
 	for _, gwc := range gwcsl.Items {
 		if !gwc.DeletionTimestamp.IsZero() {
-			log.V(1).Info("GatewayClass is being deleted", "name", gwc.Name)
+			log.Info("GatewayClass is being deleted", "name", gwc.Name)
 			continue
 		}
 		if r.matchesControllerName(gwc.Spec.ControllerName) {
-			log.Info("Reconciling GatewayClass", "name", gwc.Name)
+			log.V(1).Info("Reconciling GatewayClass", "name", gwc.Name)
 			gwcs = append(gwcs, &gwc) // No longer requires copy since 1.22. See: https://go.dev/blog/loopvar-preview
 		}
 	}
@@ -267,10 +267,10 @@ func (r *GatewayReconciler) reconcileGateways(
 	var gws []*gatewayv1.Gateway
 	for _, gw := range gwsl.Items {
 		if !gw.DeletionTimestamp.IsZero() {
-			log.V(1).Info("Gateway is being deleted", "name", gw.Name)
+			log.Info("Gateway is being deleted", "name", gw.Name)
 			continue
 		}
-		log.Info("Reconciling Gateway", "name", gw.Name)
+		log.V(1).Info("Reconciling Gateway", "name", gw.Name)
 		gws = append(gws, &gw) // No longer requires copy since 1.22. See: https://go.dev/blog/loopvar-preview
 	}
 
@@ -281,7 +281,7 @@ func (r *GatewayReconciler) reconcileGateways(
 
 	for _, gw := range gws {
 		if gw.Spec.Infrastructure == nil || gw.Spec.Infrastructure.ParametersRef.Kind != "Proxy" {
-			log.Info("Gateway does not have a Proxy reference", "name", gw.Name)
+			log.V(1).Info("Gateway does not have a Proxy reference", "name", gw.Name)
 			continue
 		}
 
@@ -306,7 +306,7 @@ func (r *GatewayReconciler) reconcileGateways(
 					for _, certRef := range listener.TLS.CertificateRefs {
 						log.V(1).Info("Processing TLS Secret reference", "secretRef", certRef)
 						if refsSecret(&certRef) {
-							log.Info("Processing TLS Secret reference", "secretRef", certRef)
+							log.V(1).Info("Processing TLS Secret reference", "secretRef", certRef)
 							if err := r.processSecretRef(clog.IntoContext(ctx, log), certRef, res); err != nil {
 								log.Error(err,
 									"failed to process TLS SecretRef for gateway",
@@ -359,7 +359,7 @@ func (r *GatewayReconciler) processSecretRef(
 
 	res.Secrets = append(res.Secrets, secret)
 
-	log.Info("Secret added to resources", "name", secret.Name, "namespace", secret.Namespace)
+	log.V(1).Info("Secret added to resources", "name", secret.Name, "namespace", secret.Namespace)
 
 	return nil
 }
@@ -379,11 +379,11 @@ func (r *GatewayReconciler) reconcileHTTPRoutes(
 
 	for _, hr := range hrsl.Items {
 		if !hr.DeletionTimestamp.IsZero() {
-			log.V(1).Info("HTTPRoute is being deleted", "name", hr.Name)
+			log.Info("HTTPRoute is being deleted", "name", hr.Name)
 			continue
 		}
 
-		log.Info("Reconciling HTTPRoute", "name", hr.Name)
+		log.V(1).Info("Reconciling HTTPRoute", "name", hr.Name)
 
 		for _, rule := range hr.Spec.Rules {
 			for _, filter := range rule.Filters {
@@ -393,7 +393,7 @@ func (r *GatewayReconciler) reconcileHTTPRoutes(
 					}
 					// Handle DirectResponse specially
 					if string(filter.ExtensionRef.Group) == extensionsv1alpha2.GroupName && string(filter.ExtensionRef.Kind) == "DirectResponse" {
-						log.Info("Processing DirectResponse filter reference",
+						log.V(1).Info("Processing DirectResponse filter reference",
 							"name", filter.ExtensionRef.Name, "group", filter.ExtensionRef.Group)
 						// Fetch the DirectResponse object
 						dr := &extensionsv1alpha2.DirectResponse{}
@@ -422,11 +422,11 @@ func (r *GatewayReconciler) reconcileHTTPRoutes(
 							},
 						}
 						if ref, ok := extRefs[key]; ok {
-							log.Info("Found extension reference",
+							log.V(1).Info("Found extension reference",
 								"name", ref.GetName(), "gvk", ref.GroupVersionKind())
 							res.ExtensionRefFilters = append(res.ExtensionRefFilters, *ref)
 						} else {
-							log.Info("Unable to find extension reference", "name", key.Name, "group", key.GroupKind.Group, "kind", key.GroupKind.Kind)
+							log.V(1).Info("Unable to find extension reference", "name", key.Name, "group", key.GroupKind.Group, "kind", key.GroupKind.Kind)
 						}
 					}
 				}
@@ -441,7 +441,7 @@ func (r *GatewayReconciler) reconcileHTTPRoutes(
 						},
 					}
 					if ref, ok := extRefs[key]; ok {
-						log.Info("Found extension backend reference",
+						log.V(1).Info("Found extension backend reference",
 							"name", ref.GetName(), "gvk", ref.GroupVersionKind())
 						var fun extensionsv1alpha2.EdgeFunction
 						if err := conv.FromUnstructured(ref.UnstructuredContent(), &fun); err != nil {
@@ -449,7 +449,7 @@ func (r *GatewayReconciler) reconcileHTTPRoutes(
 						}
 						res.EdgeFunctionBackends = append(res.EdgeFunctionBackends, &fun)
 					} else {
-						log.Info("Unable to find extension backend reference", "name", key.Name, "group", key.GroupKind.Group, "kind", key.GroupKind.Kind)
+						log.V(1).Info("Unable to find extension backend reference", "name", key.Name, "group", key.GroupKind.Group, "kind", key.GroupKind.Kind)
 					}
 				}
 			}
@@ -480,11 +480,11 @@ func (r *GatewayReconciler) reconcileTCPRoutes(
 
 	for _, tr := range trsl.Items {
 		if !tr.DeletionTimestamp.IsZero() {
-			log.V(1).Info("TCPRoute is being deleted", "name", tr.Name)
+			log.Info("TCPRoute is being deleted", "name", tr.Name)
 			continue
 		}
 
-		log.Info("Reconciling TCPRoute", "name", tr.Name)
+		log.V(1).Info("Reconciling TCPRoute", "name", tr.Name)
 
 		res.TCPRoutes = append(res.TCPRoutes, &gwapiv1a2.TCPRoute{
 			TypeMeta:   tr.TypeMeta,
@@ -511,11 +511,11 @@ func (r *GatewayReconciler) reconcileUDPRoutes(
 
 	for _, ur := range ursl.Items {
 		if !ur.DeletionTimestamp.IsZero() {
-			log.V(1).Info("UDPRoute is being deleted", "name", ur.Name)
+			log.Info("UDPRoute is being deleted", "name", ur.Name)
 			continue
 		}
 
-		log.Info("Reconciling UDPRoute", "name", ur.Name)
+		log.V(1).Info("Reconciling UDPRoute", "name", ur.Name)
 
 		res.UDPRoutes = append(res.UDPRoutes, &gwapiv1a2.UDPRoute{
 			TypeMeta:   ur.TypeMeta,
@@ -542,11 +542,11 @@ func (r *GatewayReconciler) reconcileTLSRoutes(
 
 	for _, tlsr := range tlsrsl.Items {
 		if !tlsr.DeletionTimestamp.IsZero() {
-			log.V(1).Info("TLSRoute is being deleted", "name", tlsr.Name)
+			log.Info("TLSRoute is being deleted", "name", tlsr.Name)
 			continue
 		}
 
-		log.Info("Reconciling TLSRoute", "name", tlsr.Name)
+		log.V(1).Info("Reconciling TLSRoute", "name", tlsr.Name)
 
 		res.TLSRoutes = append(res.TLSRoutes, &gwapiv1a2.TLSRoute{
 			TypeMeta:   tlsr.TypeMeta,
@@ -572,7 +572,7 @@ func (r *GatewayReconciler) reconcileBackends(
 
 	for _, b := range bl.Items {
 		if !b.DeletionTimestamp.IsZero() {
-			log.V(1).Info("Backend is being deleted", "name", b.Name)
+			log.Info("Backend is being deleted", "name", b.Name)
 			continue
 		}
 
@@ -608,7 +608,7 @@ func (r *GatewayReconciler) reconcileBackends(
 			continue
 		}
 
-		log.Info("Reconciling Backend", "name", b.Name)
+		log.V(1).Info("Reconciling Backend", "name", b.Name)
 
 		res.Backends = append(res.Backends, &b) // No longer requires copy since 1.22. See: https://go.dev/blog/loopvar-preview
 	}
@@ -629,11 +629,11 @@ func (r *GatewayReconciler) reconcileServices(
 
 	for _, svc := range svcl.Items {
 		if !svc.DeletionTimestamp.IsZero() {
-			log.V(1).Info("Service is being deleted", "name", svc.Name)
+			log.Info("Service is being deleted", "name", svc.Name)
 			continue
 		}
 
-		log.Info("Reconciling Service", "name", svc.Name)
+		log.V(1).Info("Reconciling Service", "name", svc.Name)
 
 		var hrsl gatewayv1.HTTPRouteList
 		if err := r.List(ctx, &hrsl, client.MatchingFields{serviceHTTPRouteIndex: string(svc.Name)}); err != nil {
@@ -855,57 +855,70 @@ func (r *GatewayReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manag
 		return fmt.Errorf("failed to setup field indexer: %w", err)
 	}
 
+	// Predicate choice per watched type is load-bearing for the controller's
+	// reconcile rate — see predicates.go for the full reasoning. Summary:
+	//   - generationOrDeletion: spec changes + deletionTimestamp-set updates.
+	//     The default for all Gateway-API spec-driven types. Filters out the
+	//     status writes this controller itself emits, breaking the
+	//     write-amplification loop.
+	//   - edgeFunctionRetrigger: same, plus Status.LiveRevision changes,
+	//     because the field indexer below keys on Status.LiveRevision and
+	//     the translator routes traffic to the published live revision.
+	//   - ResourceVersionChangedPredicate{}: kept only for corev1.Secret —
+	//     Secret has no .spec/.status split (Generation never bumps) and
+	//     the controller does not write Secrets, so there is no
+	//     amplification loop and the broad predicate is fine.
 	b := ctrl.NewControllerManagedBy(mgr).
-		For(&gatewayv1.GatewayClass{}).
+		For(&gatewayv1.GatewayClass{}, builder.WithPredicates(generationOrDeletion)).
 		Watches(
 			&gatewayv1.GatewayClass{},
 			handler.EnqueueRequestsFromMapFunc(r.enqueueClass),
-			builder.WithPredicates(predicate.ResourceVersionChangedPredicate{}),
+			builder.WithPredicates(generationOrDeletion),
 		).
 		Watches(
 			&gatewayv1.Gateway{},
 			handler.EnqueueRequestsFromMapFunc(r.enqueueClass),
-			builder.WithPredicates(predicate.ResourceVersionChangedPredicate{}),
+			builder.WithPredicates(generationOrDeletion),
 		).
 		Watches(
 			&gatewayv1.HTTPRoute{},
 			handler.EnqueueRequestsFromMapFunc(r.enqueueClass),
-			builder.WithPredicates(predicate.ResourceVersionChangedPredicate{}),
+			builder.WithPredicates(generationOrDeletion),
 		).
 		Watches(
 			&gatewayv1alpha2.TCPRoute{},
 			handler.EnqueueRequestsFromMapFunc(r.enqueueClass),
-			builder.WithPredicates(predicate.ResourceVersionChangedPredicate{}),
+			builder.WithPredicates(generationOrDeletion),
 		).
 		Watches(
 			&gatewayv1alpha2.UDPRoute{},
 			handler.EnqueueRequestsFromMapFunc(r.enqueueClass),
-			builder.WithPredicates(predicate.ResourceVersionChangedPredicate{}),
+			builder.WithPredicates(generationOrDeletion),
 		).
 		Watches(
 			&gatewayv1alpha2.TLSRoute{},
 			handler.EnqueueRequestsFromMapFunc(r.enqueueClass),
-			builder.WithPredicates(predicate.ResourceVersionChangedPredicate{}),
+			builder.WithPredicates(generationOrDeletion),
 		).
 		Watches(
 			&corev1alpha2.Backend{},
 			handler.EnqueueRequestsFromMapFunc(r.enqueueClass),
-			builder.WithPredicates(predicate.ResourceVersionChangedPredicate{}),
+			builder.WithPredicates(generationOrDeletion),
 		).
 		Watches(
 			&extensionsv1alpha2.EdgeFunction{},
 			handler.EnqueueRequestsFromMapFunc(r.enqueueClass),
-			builder.WithPredicates(predicate.ResourceVersionChangedPredicate{}),
+			builder.WithPredicates(edgeFunctionRetrigger),
 		).
 		Watches(
 			&extensionsv1alpha2.DirectResponse{},
 			handler.EnqueueRequestsFromMapFunc(r.enqueueClass),
-			builder.WithPredicates(predicate.ResourceVersionChangedPredicate{}),
+			builder.WithPredicates(generationOrDeletion),
 		).
 		Watches(
 			&extensionsv1alpha2.HTTPRouteFilter{},
 			handler.EnqueueRequestsFromMapFunc(r.enqueueClass),
-			builder.WithPredicates(predicate.ResourceVersionChangedPredicate{}),
+			builder.WithPredicates(generationOrDeletion),
 		)
 
 	if r.watchK8s {
@@ -913,7 +926,7 @@ func (r *GatewayReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manag
 			Watches(
 				&corev1.Service{},
 				handler.EnqueueRequestsFromMapFunc(r.enqueueClass),
-				builder.WithPredicates(predicate.ResourceVersionChangedPredicate{}),
+				builder.WithPredicates(generationOrDeletion),
 			).
 			Watches(
 				&corev1.Secret{},

@@ -70,7 +70,7 @@ func (r *Runner) subscribeToGatewayStatuses(ctx context.Context) {
 				return
 			}
 
-			log.Infof("Received gateway status update: %s", update.Key)
+			log.DefaultLogger.Debug("Received gateway status update", "key", update.Key)
 
 			// Send status update to the handler
 			r.statusUpdater.Send(status.Update{
@@ -95,7 +95,7 @@ func (r *Runner) subscribeToHTTPRouteStatuses(ctx context.Context) {
 				return
 			}
 
-			log.Infof("Received HTTPRoute status update: %s", update.Key)
+			log.DefaultLogger.Debug("Received HTTPRoute status update", "key", update.Key)
 
 			r.statusUpdater.Send(status.Update{
 				NamespacedName: update.Key,
@@ -119,7 +119,7 @@ func (r *Runner) subscribeToGRPCRouteStatuses(ctx context.Context) {
 				return
 			}
 
-			log.Infof("Received GRPCRoute status update: %s", update.Key)
+			log.DefaultLogger.Debug("Received GRPCRoute status update", "key", update.Key)
 
 			r.statusUpdater.Send(status.Update{
 				NamespacedName: update.Key,
@@ -143,7 +143,7 @@ func (r *Runner) subscribeToTLSRouteStatuses(ctx context.Context) {
 				return
 			}
 
-			log.Infof("Received TLSRoute status update: %s", update.Key)
+			log.DefaultLogger.Debug("Received TLSRoute status update", "key", update.Key)
 
 			r.statusUpdater.Send(status.Update{
 				NamespacedName: update.Key,
@@ -167,7 +167,7 @@ func (r *Runner) subscribeToTCPRouteStatuses(ctx context.Context) {
 				return
 			}
 
-			log.Infof("Received TCPRoute status update: %s", update.Key)
+			log.DefaultLogger.Debug("Received TCPRoute status update", "key", update.Key)
 
 			r.statusUpdater.Send(status.Update{
 				NamespacedName: update.Key,
@@ -191,7 +191,7 @@ func (r *Runner) subscribeToUDPRouteStatuses(ctx context.Context) {
 				return
 			}
 
-			log.Infof("Received UDPRoute status update: %s", update.Key)
+			log.DefaultLogger.Debug("Received UDPRoute status update", "key", update.Key)
 
 			r.statusUpdater.Send(status.Update{
 				NamespacedName: update.Key,

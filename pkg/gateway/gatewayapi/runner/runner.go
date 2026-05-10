@@ -64,7 +64,7 @@ func (r *Runner) subscribeAndTranslate(ctx context.Context) {
 		},
 		r.ProviderResources.GatewayAPIResources.Subscribe(ctx),
 		func(update message.Update[string, *gatewayapi.ControllerResources], errChan chan error) {
-			log.Info("Received an update", "key", update.Key)
+			log.Debug("Received an update", "key", update.Key)
 			val := update.Value
 			// There is only 1 key which is the controller name
 			// so when a delete is triggered, delete all IR keys
@@ -99,12 +99,12 @@ func (r *Runner) subscribeAndTranslate(ctx context.Context) {
 					EndpointRoutingDisabled: true,
 				}
 
-				log.Info("Translating resources", "resources", resources)
+				log.Debug("Translating resources", "resources", resources)
 
 				// Translate to IR
 				result := t.Translate(resources)
 				for key, val := range result.XdsIR {
-					log.Info("Translated resources", "key", key, "value", val.YAMLString())
+					log.Debug("Translated resources", "key", key, "value", val.YAMLString())
 					if err := val.Validate(); err != nil {
 						log.Error("unable to validate xds ir, skipped sending it", "error", err)
 						errChan <- err
@@ -127,7 +127,7 @@ func (r *Runner) subscribeAndTranslate(ctx context.Context) {
 						continue
 					}
 
-					log.Info("Storing xds ir", "key", key)
+					log.Debug("Storing xds ir", "key", key)
 					r.XdsIR.Store(key, val)
 					newIRKeys = append(newIRKeys, key)
 				}
@@ -312,7 +312,7 @@ func getIRKeysToDelete(curKeys, newKeys []string) []string {
 	curSet := sets.NewString(curKeys...)
 	newSet := sets.NewString(newKeys...)
 
-	log.Infof("Diffing IR keys, current: %v, new: %v", curSet.List(), newSet.List())
+	log.DefaultLogger.Debug("Diffing IR keys", "current", curSet.List(), "new", newSet.List())
 
 	delSet := curSet.Difference(newSet)
 

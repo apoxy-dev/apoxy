@@ -30,7 +30,7 @@ func (t *Translator) ProcessListeners(gateways []*GatewayContext, xdsIR XdsIRMap
 	// and compute status for each, and add valid ones
 	// to the Xds IR.
 	for _, gateway := range gateways {
-		log.Infof("Processing listeners for Gateway %s", gateway.Gateway.Name)
+		log.DefaultLogger.Debug("Processing listeners for Gateway", "name", gateway.Gateway.Name)
 		irKey := t.getIRKey(gateway.Gateway)
 
 		// TODO(dsky): Merge config from Proxy object here.
@@ -86,14 +86,14 @@ func (t *Translator) ProcessListeners(gateways []*GatewayContext, xdsIR XdsIRMap
 				continue
 			}
 
-			log.Infof("Adding listener %s to IR", listener.Name)
+			log.DefaultLogger.Debug("Adding listener to IR", "name", listener.Name)
 
 			// Add the listener to the Xds IR
 			servicePort := &protocolPort{protocol: listener.Protocol, port: int32(listener.Port)}
 			containerPort := servicePortToContainerPort(servicePort.port)
 			switch listener.Protocol {
 			case gwapiv1.HTTPProtocolType, gwapiv1.HTTPSProtocolType:
-				log.Infof("Adding HTTP listener %s to IR", listener.Name)
+				log.DefaultLogger.Debug("Adding HTTP listener to IR", "name", listener.Name)
 				irListener := &ir.HTTPListener{
 					CoreListenerDetails: ir.CoreListenerDetails{
 						Name:    irListenerName(listener),
@@ -117,7 +117,7 @@ func (t *Translator) ProcessListeners(gateways []*GatewayContext, xdsIR XdsIRMap
 				}
 				xdsIR[irKey].HTTP = append(xdsIR[irKey].HTTP, irListener)
 			case gwapiv1.TCPProtocolType, gwapiv1.TLSProtocolType:
-				log.Infof("Adding TCP listener %s to IR", listener.Name)
+				log.DefaultLogger.Debug("Adding TCP listener to IR", "name", listener.Name)
 				irListener := &ir.TCPListener{
 					CoreListenerDetails: ir.CoreListenerDetails{
 						Name:    irListenerName(listener),

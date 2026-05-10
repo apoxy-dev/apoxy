@@ -96,7 +96,7 @@ func (u *UpdateHandler) apply(update Update) {
 		if isStatusEqual(oldObj, newObj) {
 			u.log.WithName(update.NamespacedName.Name).
 				WithName(update.NamespacedName.Namespace).
-				Info("status unchanged, bypassing update")
+				V(1).Info("Status unchanged, bypassing update")
 			return nil
 		}
 
@@ -126,7 +126,7 @@ func (u *UpdateHandler) Start(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case update := <-u.updateChannel:
-			u.log.Info("received a status update", "namespace", update.NamespacedName.Namespace,
+			u.log.V(1).Info("Received a status update", "namespace", update.NamespacedName.Namespace,
 				"name", update.NamespacedName.Name)
 
 			u.apply(update)
