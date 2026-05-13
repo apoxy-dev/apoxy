@@ -213,7 +213,26 @@ func Store(cfg *configv1alpha1.Config) error {
 
 // DefaultAPIClient returns a new Apoxy API client.
 func DefaultAPIClient() (*rest.APIClient, error) {
+	// In LocalMode, prefer a config-file project's APIBaseURL if one is
+	// present (e.g. dev points at a local cosmos via the standard config
+	// flow). Falls back to the legacy https://localhost:8443 default only
+	// when the config has no project — that path serves `apoxy dev` where
+	// LocalMode is flipped programmatically before any user config exists.
 	if LocalMode {
+		if cfg, err := Load(); err == nil && cfg.CurrentProject != uuid.Nil {
+			idx := slices.IndexFunc(cfg.Projects, func(p configv1alpha1.Project) bool {
+				return p.ID == cfg.CurrentProject
+			})
+			if idx >= 0 && cfg.Projects[idx].APIBaseURL != "" {
+				p := cfg.Projects[idx]
+				return rest.NewAPIClient(
+					rest.WithBaseURL(p.APIBaseURL),
+					rest.WithBaseHost(p.APIBaseHost),
+					rest.WithAPIKey(p.APIKey),
+					rest.WithProjectID(p.ID),
+				)
+			}
+		}
 		apiServerHost := "localhost"
 		if os.Getenv("APOXY_API_SERVER_HOST") != "" {
 			apiServerHost = os.Getenv("APOXY_API_SERVER_HOST")

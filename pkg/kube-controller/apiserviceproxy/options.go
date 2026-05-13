@@ -15,6 +15,10 @@ type Options struct {
 	Token          string
 	KubeconfigPath string
 	APIHost        string
+	// LocalMode disables upstream TLS verification — cosmos-tls in dev is
+	// self-signed by cert-manager and not present in the pod's system
+	// trust store. Only set in dev installs (`apoxy k8s install --local`).
+	LocalMode bool
 }
 
 // Option is a function that configures the APIServiceProxy.
@@ -70,5 +74,15 @@ func WithKubeconfigPath(path string) Option {
 func WithAPIHost(host string) Option {
 	return func(o *Options) {
 		o.APIHost = host
+	}
+}
+
+// WithLocalMode enables local-mode TLS handling: outbound HTTPS to cosmos
+// and the apiserver proxy skips certificate verification, since the dev
+// cluster uses cert-manager self-signed certs that aren't in the pod trust
+// store. Never set this in production.
+func WithLocalMode(local bool) Option {
+	return func(o *Options) {
+		o.LocalMode = local
 	}
 }

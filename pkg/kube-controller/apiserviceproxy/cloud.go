@@ -74,9 +74,10 @@ func (p *APIServiceProxy) configureCloudProxy(ctx context.Context) error {
 
 	p.proxy.Transport = &http.Transport{
 		TLSClientConfig: &tls.Config{
-			Certificates: []tls.Certificate{p.upstreamClientCert},
-			RootCAs:      p.upstreamRootCAs,
-			MinVersion:   tls.VersionTLS12,
+			Certificates:       []tls.Certificate{p.upstreamClientCert},
+			RootCAs:            p.upstreamRootCAs,
+			MinVersion:         tls.VersionTLS12,
+			InsecureSkipVerify: p.opts.LocalMode,
 		},
 	}
 
@@ -216,7 +217,14 @@ func (p *APIServiceProxy) issueCertificate(ctx context.Context) error {
 	req.Header.Set(ApoxyProjectIdHeaderKey, p.opts.ProjectID.String())
 	req.Header.Set(ApoxyServiceUserKey, kubeControllerUserPrefix+p.opts.ClusterName)
 
-	resp, err := http.DefaultClient.Do(req)
+	client := http.DefaultClient
+	if p.opts.LocalMode {
+		// Cosmos serving cert in dev is cert-manager self-signed and not in
+		// the pod trust store; skip verification rather than mounting the
+		// dev CA into every kube-controller pod.
+		client = &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}}
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}

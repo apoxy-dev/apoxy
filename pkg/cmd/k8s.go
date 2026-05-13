@@ -1118,12 +1118,71 @@ will automatically connect to the Apoxy API and begin managing your in-cluster A
 			return fmt.Errorf("failed to get YAML: %w", err)
 		}
 
+		if config.LocalMode {
+			yamlz, err = injectLocalModeIntoManifest(yamlz)
+			if err != nil {
+				return fmt.Errorf("failed to inject local mode into manifest: %w", err)
+			}
+		}
+
 		if err := installController(cmd.Context(), kc, yamlz, namespace, dryRun, force, yes, wait, waitTimeout, kubeContext); err != nil {
 			return fmt.Errorf("failed to install controller: %w", err)
 		}
 
 		return nil
 	},
+}
+
+// injectLocalModeIntoManifest walks the install YAML and flips
+// isLocalMode: true in the embedded config.yaml inside the kube-controller
+// ConfigMap. The kube-controller binary reads that field at startup and
+// uses it to skip upstream TLS verification — required in dev because
+// cosmos-tls is cert-manager self-signed and not in the pod trust store.
+func injectLocalModeIntoManifest(yamlz []byte) ([]byte, error) {
+	docs := bytes.Split(yamlz, []byte("\n---\n"))
+	for i, doc := range docs {
+		trimmed := bytes.TrimSpace(doc)
+		if len(trimmed) == 0 {
+			continue
+		}
+		var head struct {
+			Kind     string `json:"kind"`
+			Metadata struct {
+				Name string `json:"name"`
+			} `json:"metadata"`
+		}
+		if err := sigyaml.Unmarshal(trimmed, &head); err != nil {
+			continue
+		}
+		if head.Kind != "ConfigMap" || head.Metadata.Name != "kube-controller" {
+			continue
+		}
+		var cm corev1.ConfigMap
+		if err := sigyaml.Unmarshal(trimmed, &cm); err != nil {
+			return nil, fmt.Errorf("decoding kube-controller ConfigMap: %w", err)
+		}
+		body, ok := cm.Data["config.yaml"]
+		if !ok {
+			return nil, fmt.Errorf("kube-controller ConfigMap has no config.yaml key")
+		}
+		var cfgDoc map[string]any
+		if err := sigyaml.Unmarshal([]byte(body), &cfgDoc); err != nil {
+			return nil, fmt.Errorf("decoding embedded config.yaml: %w", err)
+		}
+		cfgDoc["isLocalMode"] = true
+		mutated, err := sigyaml.Marshal(cfgDoc)
+		if err != nil {
+			return nil, fmt.Errorf("re-marshaling embedded config.yaml: %w", err)
+		}
+		cm.Data["config.yaml"] = string(mutated)
+		updated, err := sigyaml.Marshal(&cm)
+		if err != nil {
+			return nil, fmt.Errorf("re-marshaling ConfigMap: %w", err)
+		}
+		docs[i] = updated
+		return bytes.Join(docs, []byte("\n---\n")), nil
+	}
+	return nil, fmt.Errorf("kube-controller ConfigMap not found in install manifest")
 }
 
 var k8sCmd = &cobra.Command{

@@ -37,6 +37,9 @@ func runKubeAggregation(ctx context.Context, cfg *configv1alpha1.Config, ac *con
 	if ac.APIHost != "" {
 		proxyOpts = append(proxyOpts, apiserviceproxy.WithAPIHost(ac.APIHost))
 	}
+	if cfg.IsLocalMode {
+		proxyOpts = append(proxyOpts, apiserviceproxy.WithLocalMode(true))
+	}
 
 	apiSvc, err := apiserviceproxy.NewAPIServiceProxy(ctx, kc, proxyOpts...)
 	if err != nil {
