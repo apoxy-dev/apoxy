@@ -88,7 +88,7 @@ func runCertWatcher(
 func reloadOnce(dir string, store *certStore, onSwap func(*certBundle)) {
 	b, err := loadBundleFromDisk(dir)
 	if err != nil {
-		certReloads.WithLabelValues("failure").Inc()
+		certReloads.WithLabelValues(resultFailure).Inc()
 		slog.Error("Failed to reload upstream cert", "dir", dir, "err", err)
 		return
 	}
@@ -98,7 +98,7 @@ func reloadOnce(dir string, store *certStore, onSwap func(*certBundle)) {
 		return
 	}
 	store.Store(b)
-	certReloads.WithLabelValues("success").Inc()
+	certReloads.WithLabelValues(resultSuccess).Inc()
 	certExpiry.Set(float64(b.notAfter.Unix()))
 	slog.Info(
 		"Reloaded upstream client cert",

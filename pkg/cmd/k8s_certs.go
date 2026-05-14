@@ -636,17 +636,16 @@ func waitForCertHotReload(ctx context.Context, clientset kubernetes.Interface, n
 	}
 }
 
-// parseExpiryMetric pulls the apoxy_kube_controller_cert_expiry_seconds
-// value out of a prometheus text-format scrape. Returns (value, true) on
-// success, (0, false) on any malformed input — caller treats that as
-// "keep polling."
+// parseExpiryMetric pulls apiserviceproxy.CertExpiryMetricName out of a
+// prometheus text-format scrape. Returns (value, true) on success, (0,
+// false) on any malformed input — caller treats that as "keep polling."
 func parseExpiryMetric(body []byte) (int64, bool) {
 	for _, line := range strings.Split(string(body), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		if !strings.HasPrefix(line, "apoxy_kube_controller_cert_expiry_seconds") {
+		if !strings.HasPrefix(line, apiserviceproxy.CertExpiryMetricName) {
 			continue
 		}
 		// Format: "<name>[{labels}] <value>" — the gauge has no labels.

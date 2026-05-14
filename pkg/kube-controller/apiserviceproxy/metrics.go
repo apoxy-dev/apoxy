@@ -5,8 +5,17 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
+const (
+	// CertExpiryMetricName is the gauge the CLI scrapes from a running
+	// pod to confirm `apoxy k8s certs rotate --no-restart` took effect.
+	// Exported so the rotate-flow caller doesn't hard-code the string.
+	CertExpiryMetricName = "apoxy_kube_controller_cert_expiry_seconds"
+
+	resultSuccess = "success"
+	resultFailure = "failure"
+)
+
 var (
-	// certReloads counts cert-reload attempts by outcome.
 	certReloads = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "apoxy_kube_controller_cert_reloads_total",
@@ -14,12 +23,9 @@ var (
 		},
 		[]string{"result"},
 	)
-	// certExpiry tracks the live cert's NotAfter as a unix seconds gauge.
-	// Useful for an absolute alert ("cert expires in <14d") that doesn't
-	// need to know about the controller's reload cadence.
 	certExpiry = prometheus.NewGauge(
 		prometheus.GaugeOpts{
-			Name: "apoxy_kube_controller_cert_expiry_seconds",
+			Name: CertExpiryMetricName,
 			Help: "Unix-seconds expiry (NotAfter) of the live upstream client cert.",
 		},
 	)

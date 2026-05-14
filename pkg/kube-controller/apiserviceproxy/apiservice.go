@@ -3,7 +3,6 @@ package apiserviceproxy
 import (
 	"context"
 	"crypto/tls"
-	"crypto/x509"
 	"errors"
 	"fmt"
 	"log"
@@ -24,20 +23,16 @@ type APIServiceProxy struct {
 	kC   kubernetes.Interface
 	opts *Options
 
-	proxy              *httputil.ReverseProxy
-	servingCert        tls.Certificate
-	upstreamClientCert tls.Certificate
-	upstreamRootCAs    *x509.CertPool
-	caBundle           []byte
+	proxy       *httputil.ReverseProxy
+	servingCert tls.Certificate
+	caBundle    []byte
 
 	// certStore holds the current upstream client cert bundle; the
 	// fsnotify watcher refreshes it in place when kubelet projects a
 	// new Secret generation onto the cert-dir mount.
 	certStore *certStore
-	// transport delegates to an inner *http.Transport that we swap on
-	// every successful cert reload so the reverse proxy picks up the
-	// new TLS config without rebuilding the proxy or restarting the
-	// pod.
+	// transport delegates to an inner *http.Transport that swappableTransport
+	// replaces on every successful cert reload.
 	transport *swappableTransport
 }
 

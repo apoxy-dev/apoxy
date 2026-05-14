@@ -18,8 +18,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
-	"github.com/apoxy-dev/apoxy/pkg/cert"
 )
 
 var systemCertPool = x509.SystemCertPool
@@ -70,25 +68,20 @@ func (p *APIServiceProxy) configureCloudProxy(ctx context.Context) error {
 		return fmt.Errorf("failed to ensure serving certificate: %w", err)
 	}
 
-	ok, err := p.loadUpstreamCertificate(ctx)
+	boot, err := p.loadUpstreamCertificate(ctx)
 	if err != nil {
 		log.Printf("existing upstream certificate is invalid, re-issuing: %v", err)
-		ok = false
 	}
-	if !ok {
-		if err := p.issueCertificate(ctx); err != nil {
+	if boot == nil {
+		boot, err = p.issueCertificate(ctx)
+		if err != nil {
 			return fmt.Errorf("failed to issue certificate: %w", err)
 		}
 	}
 
-	// Seed the cert store from the bootstrap-loaded material. We can't
-	// rely on the on-disk mount yet — on first boot the Secret is created
-	// here via issueCertificate and the kubelet projection lags by up to
-	// ~60s. The watcher (below) will take over once the file lands.
-	boot, err := bundleFromInMemory(p.upstreamClientCert, p.upstreamRootCAs)
-	if err != nil {
-		return fmt.Errorf("failed to seed cert store: %w", err)
-	}
+	// On first boot the Secret is created here by issueCertificate and the
+	// kubelet projection lags by up to ~60s; seed from this in-memory
+	// bundle and let the watcher take over once the file lands.
 	p.certStore = newCertStore()
 	p.certStore.Store(boot)
 	certExpiry.Set(float64(boot.notAfter.Unix()))
@@ -98,7 +91,11 @@ func (p *APIServiceProxy) configureCloudProxy(ctx context.Context) error {
 
 	go func() {
 		err := runCertWatcher(ctx, p.opts.CertDir, p.certStore, func(b *certBundle) {
-			p.transport.Store(buildTransport(b, p.opts.LocalMode))
+			old := p.transport.Store(buildTransport(b, p.opts.LocalMode))
+			// Drop the old idle-conn pool so we don't leak file
+			// descriptors across rotations. In-flight requests still
+			// finish on their existing TCP connections.
+			old.CloseIdleConnections()
 		})
 		if err != nil {
 			slog.Error("Cert watcher exited with error", "err", err)
@@ -106,25 +103,6 @@ func (p *APIServiceProxy) configureCloudProxy(ctx context.Context) error {
 	}()
 
 	return nil
-}
-
-// bundleFromInMemory wraps the cert/pool pair the bootstrap path produced
-// (in-memory; not from disk) into a certBundle. Mirrors bundleFromPEM but
-// skips the PEM round-trip because we already have parsed material.
-func bundleFromInMemory(c tls.Certificate, roots *x509.CertPool) (*certBundle, error) {
-	if len(c.Certificate) == 0 {
-		return nil, fmt.Errorf("bootstrap cert has no certificates")
-	}
-	leaf, err := x509.ParseCertificate(c.Certificate[0])
-	if err != nil {
-		return nil, fmt.Errorf("parse bootstrap leaf: %w", err)
-	}
-	return &certBundle{
-		cert:     c,
-		rootCAs:  roots,
-		fp:       cert.Fingerprint(c.Certificate[0]),
-		notAfter: leaf.NotAfter,
-	}, nil
 }
 
 func resolveAPIProxyHost(projectID uuid.UUID, apiHost string) string {
@@ -186,30 +164,20 @@ func buildUpstreamRootCAs(caPEM []byte) (*x509.CertPool, error) {
 	return roots, nil
 }
 
-// loadUpstreamCertificate loads the upstream client certificate from the secret.
-func (p *APIServiceProxy) loadUpstreamCertificate(ctx context.Context) (bool, error) {
+// loadUpstreamCertificate reads + parses the upstream client cert from the
+// existing apiz-cert Secret. Returns (nil, nil) if the Secret is missing —
+// the caller treats that as "first boot, mint a new one."
+func (p *APIServiceProxy) loadUpstreamCertificate(ctx context.Context) (*certBundle, error) {
 	log.Printf("loading certificate for project %s", p.opts.ProjectID)
 
 	secret, err := p.kC.CoreV1().Secrets(p.opts.Namespace).Get(ctx, apizCertSecretName, metav1.GetOptions{})
 	if err != nil {
 		if errors.IsNotFound(err) {
-			return false, nil
+			return nil, nil
 		}
-		return false, err
+		return nil, err
 	}
-
-	cert, err := tls.X509KeyPair(secret.Data[tlsSecretCert], secret.Data[tlsSecretKey])
-	if err != nil {
-		return false, err
-	}
-	p.upstreamClientCert = cert
-
-	p.upstreamRootCAs, err = buildUpstreamRootCAs(secret.Data[tlsSecretCA])
-	if err != nil {
-		return false, err
-	}
-
-	return true, nil
+	return bundleFromPEM(secret.Data[tlsSecretCert], secret.Data[tlsSecretKey], secret.Data[tlsSecretCA])
 }
 
 func (p *APIServiceProxy) saveCertificate(ctx context.Context, certPem, keyPem, caPem []byte) error {
@@ -244,7 +212,7 @@ func (p *APIServiceProxy) saveCertificate(ctx context.Context, certPem, keyPem, 
 	return nil
 }
 
-func (p *APIServiceProxy) issueCertificate(ctx context.Context) error {
+func (p *APIServiceProxy) issueCertificate(ctx context.Context) (*certBundle, error) {
 	log.Printf("issuing certificate for project %s", p.opts.ProjectID)
 
 	host := p.opts.APIHost
@@ -254,7 +222,7 @@ func (p *APIServiceProxy) issueCertificate(ctx context.Context) error {
 	addr := fmt.Sprintf("https://%s/v1/terra/serviceaccount/certificate", host)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, addr, nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	req.Header.Set(ApoxyAPIKeyHeaderKey, p.opts.Token)
 	req.Header.Set(ApoxyProjectIdHeaderKey, p.opts.ProjectID.String())
@@ -269,30 +237,29 @@ func (p *APIServiceProxy) issueCertificate(ctx context.Context) error {
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("failed to issue certificate (status code %d): %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("failed to issue certificate (status code %d): %s", resp.StatusCode, string(body))
 	}
 
 	var certResp IssueClientCertResponse
 	if err := json.Unmarshal(body, &certResp); err != nil {
-		return err
+		return nil, err
 	}
 
-	if err := p.saveCertificate(ctx, []byte(certResp.Certificate), []byte(certResp.PrivateKey), []byte(certResp.CA)); err != nil {
-		return err
+	certPEM, keyPEM, caPEM := []byte(certResp.Certificate), []byte(certResp.PrivateKey), []byte(certResp.CA)
+	if err := p.saveCertificate(ctx, certPEM, keyPEM, caPEM); err != nil {
+		return nil, err
 	}
-
-	_, err = p.loadUpstreamCertificate(ctx)
-	return err
+	return bundleFromPEM(certPEM, keyPEM, caPEM)
 }
 
 func (p *APIServiceProxy) ensureServingCertificate(ctx context.Context) error {

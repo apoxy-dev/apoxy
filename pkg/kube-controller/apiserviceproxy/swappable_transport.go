@@ -24,11 +24,8 @@ func (s *swappableTransport) RoundTrip(req *http.Request) (*http.Response, error
 	return s.inner.Load().RoundTrip(req)
 }
 
-// Store atomically swaps the inner transport. The previous transport is
-// returned so the caller can close idle connections on it; we don't do
-// that automatically because in-flight requests may still be using them
-// and Go's http.Transport handles connection eviction on its own once
-// they go idle.
+// Store atomically swaps the inner transport and returns the previous
+// one for connection cleanup.
 func (s *swappableTransport) Store(t *http.Transport) *http.Transport {
 	return s.inner.Swap(t)
 }
