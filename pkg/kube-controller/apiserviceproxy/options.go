@@ -19,6 +19,12 @@ type Options struct {
 	// self-signed by cert-manager and not present in the pod's system
 	// trust store. Only set in dev installs (`apoxy k8s install --local`).
 	LocalMode bool
+	// CertDir is the path the apiz-cert Secret is mounted at inside the
+	// pod. When set, the proxy watches this directory for kubelet
+	// projections and hot-reloads the upstream client cert without a
+	// pod restart. When empty, hot-reload is disabled; rotation still
+	// works via the legacy pod-template-annotation restart.
+	CertDir string
 }
 
 // Option is a function that configures the APIServiceProxy.
@@ -84,5 +90,14 @@ func WithAPIHost(host string) Option {
 func WithLocalMode(local bool) Option {
 	return func(o *Options) {
 		o.LocalMode = local
+	}
+}
+
+// WithCertDir sets the directory the upstream client cert is mounted at.
+// When non-empty, the proxy watches this dir for kubelet Secret-projection
+// updates and hot-reloads the cert without a pod restart.
+func WithCertDir(dir string) Option {
+	return func(o *Options) {
+		o.CertDir = dir
 	}
 }

@@ -40,6 +40,11 @@ func runKubeAggregation(ctx context.Context, cfg *configv1alpha1.Config, ac *con
 	if cfg.IsLocalMode {
 		proxyOpts = append(proxyOpts, apiserviceproxy.WithLocalMode(true))
 	}
+	// Enable fsnotify hot-reload of the upstream cert. The watcher
+	// no-ops cleanly when the Secret isn't mounted, so this is safe to
+	// always pass; older onboarding manifests just continue using the
+	// pod-restart rotation path.
+	proxyOpts = append(proxyOpts, apiserviceproxy.WithCertDir(apiserviceproxy.DefaultCertDir))
 
 	apiSvc, err := apiserviceproxy.NewAPIServiceProxy(ctx, kc, proxyOpts...)
 	if err != nil {

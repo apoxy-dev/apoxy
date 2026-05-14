@@ -380,6 +380,8 @@ func runCertsRotate(cmd *cobra.Command, args []string) error {
 	userJWTFlag, _ := cmd.Flags().GetString("user-jwt")
 	waitTimeout, _ := cmd.Flags().GetDuration("wait-timeout")
 	allowDisruption, _ := cmd.Flags().GetBool("allow-disruption")
+	noRestart, _ := cmd.Flags().GetBool("no-restart")
+	reloadWait, _ := cmd.Flags().GetDuration("reload-wait")
 
 	kc, kubeCtxName, err := loadKubeClientConfig(kubeconfigPath, kubeContext)
 	if err != nil {
@@ -407,8 +409,15 @@ func runCertsRotate(cmd *cobra.Command, args []string) error {
 		}
 		return fmt.Errorf("get deployment %s/%s: %w", namespace, kubeControllerName, err)
 	}
-	if err := assertSafeStrategy(dep, allowDisruption); err != nil {
-		return err
+	// --no-restart skips the rolling restart so the pod hot-reloads the
+	// cert via fsnotify on the projected Secret. Skip the strategy check
+	// (no pod swap means single-replica + Recreate constraints don't
+	// apply). Override --allow-disruption silently — the constraints are
+	// only meaningful for the restart path.
+	if !noRestart {
+		if err := assertSafeStrategy(dep, allowDisruption); err != nil {
+			return err
+		}
 	}
 
 	serviceUser := kubeControllerPrefix + clusterName
@@ -427,7 +436,11 @@ func runCertsRotate(cmd *cobra.Command, args []string) error {
 	fmt.Println("Plan:")
 	fmt.Println("  1. Issue a new cert from cosmos (old cert remains valid).")
 	fmt.Printf("  2. Update Secret %s/%s with new cert material.\n", namespace, certSecretName)
-	fmt.Printf("  3. Roll Deployment %s/%s (rolling update; new pod up before old terminates).\n", namespace, kubeControllerName)
+	if noRestart {
+		fmt.Printf("  3. Wait for kube-controller to hot-reload the cert via fsnotify (kubelet projection ~60s).\n")
+	} else {
+		fmt.Printf("  3. Roll Deployment %s/%s (rolling update; new pod up before old terminates).\n", namespace, kubeControllerName)
+	}
 	if revoke {
 		fmt.Println("  4. Revoke the old cert on cosmos (requires user JWT).")
 	} else {
@@ -449,7 +462,7 @@ func runCertsRotate(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("issue new cert: %w", err)
 	}
-	newFP, _, err := fingerprintFromCertPEM([]byte(issued.Certificate))
+	newFP, newExp, err := fingerprintFromCertPEM([]byte(issued.Certificate))
 	if err != nil {
 		return fmt.Errorf("parse new cert: %w", err)
 	}
@@ -471,21 +484,32 @@ func runCertsRotate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("update secret %s/%s: %w", namespace, certSecretName, err)
 	}
 
-	fmt.Printf("\n[3/4] Rolling Deployment %s/%s...\n", namespace, kubeControllerName)
-	if err := triggerDeploymentRestart(ctx, clientset, namespace, kubeControllerName, newFP); err != nil {
-		return fmt.Errorf("trigger restart: %w", err)
-	}
-	// waitTimeout=0 means "don't wait" — useful in dev where the pod
-	// readiness signal aggregates the tunnel component, which can't reach
-	// the in-cluster tunnelproxy without extra wiring.
-	if waitTimeout > 0 {
-		targets := []rolloutTarget{{kind: "Deployment", namespace: namespace, name: kubeControllerName}}
-		if err := waitForCertRollout(ctx, clientset, targets, waitTimeout); err != nil {
-			return fmt.Errorf("wait for rollout: %w", err)
+	if noRestart {
+		fmt.Printf("\n[3/4] Waiting for kube-controller to hot-reload (up to %s)...\n", reloadWait)
+		if reloadWait > 0 {
+			if err := waitForCertHotReload(ctx, clientset, namespace, newExp, reloadWait); err != nil {
+				fmt.Printf("       %v\n", err)
+				fmt.Println("       The Secret has the new cert; the running pod will pick it up on the next kubelet sync.")
+				fmt.Println("       Verify with: apoxy k8s certs list")
+			}
+		}
+	} else {
+		fmt.Printf("\n[3/4] Rolling Deployment %s/%s...\n", namespace, kubeControllerName)
+		if err := triggerDeploymentRestart(ctx, clientset, namespace, kubeControllerName, newFP); err != nil {
+			return fmt.Errorf("trigger restart: %w", err)
+		}
+		// waitTimeout=0 means "don't wait" — useful in dev where the pod
+		// readiness signal aggregates the tunnel component, which can't reach
+		// the in-cluster tunnelproxy without extra wiring.
+		if waitTimeout > 0 {
+			targets := []rolloutTarget{{kind: "Deployment", namespace: namespace, name: kubeControllerName}}
+			if err := waitForCertRollout(ctx, clientset, targets, waitTimeout); err != nil {
+				return fmt.Errorf("wait for rollout: %w", err)
+			}
 		}
 	}
 
-	fmt.Println("\n[4/4] New pod is healthy with rotated cert.")
+	fmt.Println("\n[4/4] Cert rotation complete.")
 	fmt.Printf("       new = %s\n       old = %s\n", newFP, oldFP)
 
 	if revoke {
@@ -563,6 +587,80 @@ func waitForCertRollout(ctx context.Context, clientset kubernetes.Interface, tar
 		return runRolloutTUI(wctx, clientset, targets)
 	}
 	return runRolloutPlain(wctx, clientset, targets)
+}
+
+// waitForCertHotReload polls the kube-controller's prometheus /metrics via
+// the apiserver pod-proxy until the cert-expiry gauge matches the new
+// cert's NotAfter. The gauge is bumped only on a successful reload, so a
+// match is a positive signal that the running pod has the new cert in
+// memory. We avoid port-forwarding so this works in headless CI without
+// extra plumbing.
+func waitForCertHotReload(ctx context.Context, clientset kubernetes.Interface, namespace string, newExpiry time.Time, timeout time.Duration) error {
+	wctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	pods, err := clientset.CoreV1().Pods(namespace).List(wctx, metav1.ListOptions{
+		LabelSelector: "app=" + kubeControllerName,
+	})
+	if err != nil {
+		return fmt.Errorf("list kube-controller pods: %w", err)
+	}
+	if len(pods.Items) == 0 {
+		return fmt.Errorf("no kube-controller pods found in namespace %s", namespace)
+	}
+	// Single-replica deployment, so taking the first pod is fine.
+	pod := pods.Items[0]
+	target := newExpiry.Unix()
+
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		body, err := clientset.CoreV1().RESTClient().Get().
+			Namespace(namespace).
+			Resource("pods").
+			Name(pod.Name + ":8083").
+			SubResource("proxy").
+			Suffix("metrics").
+			DoRaw(wctx)
+		if err == nil {
+			if got, ok := parseExpiryMetric(body); ok && got == target {
+				fmt.Printf("       hot-reload confirmed (pod %s, expiry gauge=%d).\n", pod.Name, got)
+				return nil
+			}
+		}
+		select {
+		case <-wctx.Done():
+			return fmt.Errorf("timed out after %s waiting for hot-reload on pod %s", timeout, pod.Name)
+		case <-ticker.C:
+		}
+	}
+}
+
+// parseExpiryMetric pulls the apoxy_kube_controller_cert_expiry_seconds
+// value out of a prometheus text-format scrape. Returns (value, true) on
+// success, (0, false) on any malformed input — caller treats that as
+// "keep polling."
+func parseExpiryMetric(body []byte) (int64, bool) {
+	for _, line := range strings.Split(string(body), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if !strings.HasPrefix(line, "apoxy_kube_controller_cert_expiry_seconds") {
+			continue
+		}
+		// Format: "<name>[{labels}] <value>" — the gauge has no labels.
+		parts := strings.Fields(line)
+		if len(parts) < 2 {
+			continue
+		}
+		var v float64
+		if _, err := fmt.Sscanf(parts[len(parts)-1], "%f", &v); err != nil {
+			continue
+		}
+		return int64(v), true
+	}
+	return 0, false
 }
 
 func runCertsRevoke(cmd *cobra.Command, args []string) error {
@@ -665,6 +763,8 @@ func init() {
 	certsRotateK8sCmd.Flags().String("user-jwt", "", "User JWT used for revoke; defaults to APOXY_USER_JWT then ~/.config/apoxy/user-jwt")
 	certsRotateK8sCmd.Flags().Duration("wait-timeout", 5*time.Minute, "Maximum wait for the new pod to become Ready (kube-controller startup probe is generous)")
 	certsRotateK8sCmd.Flags().Bool("allow-disruption", false, "Allow rotate to proceed against multi-replica or Recreate-strategy Deployments")
+	certsRotateK8sCmd.Flags().Bool("no-restart", false, "Skip the pod-template restart; rely on the controller's fsnotify hot-reload (requires a controller built with hot-reload support)")
+	certsRotateK8sCmd.Flags().Duration("reload-wait", 3*time.Minute, "Maximum wait for the running pod to pick up the new cert when --no-restart is set")
 
 	certsRevokeK8sCmd.Flags().String("user-jwt", "", "User JWT used for revoke; defaults to APOXY_USER_JWT then ~/.config/apoxy/user-jwt")
 

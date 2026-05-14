@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -17,6 +18,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/apoxy-dev/apoxy/pkg/cert"
 )
 
 var systemCertPool = x509.SystemCertPool
@@ -33,6 +36,12 @@ const (
 	tlsSecretCert               = "tls.crt"
 	tlsSecretKey                = "tls.key"
 	tlsSecretCA                 = "ca.crt"
+
+	// DefaultCertDir is the in-pod mount path of the apiz-cert Secret.
+	// The apoxy-cloud onboarding manifest must mount the Secret at this
+	// path for hot-reload to engage. If the mount is absent the watcher
+	// no-ops and falls back to the legacy restart-driven rotation.
+	DefaultCertDir = "/etc/apoxy/certs"
 
 	// Apoxy API headers.
 	ApoxyAPIKeyHeaderKey    = "x-apoxy-api-key"
@@ -72,16 +81,50 @@ func (p *APIServiceProxy) configureCloudProxy(ctx context.Context) error {
 		}
 	}
 
-	p.proxy.Transport = &http.Transport{
-		TLSClientConfig: &tls.Config{
-			Certificates:       []tls.Certificate{p.upstreamClientCert},
-			RootCAs:            p.upstreamRootCAs,
-			MinVersion:         tls.VersionTLS12,
-			InsecureSkipVerify: p.opts.LocalMode,
-		},
+	// Seed the cert store from the bootstrap-loaded material. We can't
+	// rely on the on-disk mount yet — on first boot the Secret is created
+	// here via issueCertificate and the kubelet projection lags by up to
+	// ~60s. The watcher (below) will take over once the file lands.
+	boot, err := bundleFromInMemory(p.upstreamClientCert, p.upstreamRootCAs)
+	if err != nil {
+		return fmt.Errorf("failed to seed cert store: %w", err)
 	}
+	p.certStore = newCertStore()
+	p.certStore.Store(boot)
+	certExpiry.Set(float64(boot.notAfter.Unix()))
+
+	p.transport = newSwappableTransport(buildTransport(boot, p.opts.LocalMode))
+	p.proxy.Transport = p.transport
+
+	go func() {
+		err := runCertWatcher(ctx, p.opts.CertDir, p.certStore, func(b *certBundle) {
+			p.transport.Store(buildTransport(b, p.opts.LocalMode))
+		})
+		if err != nil {
+			slog.Error("Cert watcher exited with error", "err", err)
+		}
+	}()
 
 	return nil
+}
+
+// bundleFromInMemory wraps the cert/pool pair the bootstrap path produced
+// (in-memory; not from disk) into a certBundle. Mirrors bundleFromPEM but
+// skips the PEM round-trip because we already have parsed material.
+func bundleFromInMemory(c tls.Certificate, roots *x509.CertPool) (*certBundle, error) {
+	if len(c.Certificate) == 0 {
+		return nil, fmt.Errorf("bootstrap cert has no certificates")
+	}
+	leaf, err := x509.ParseCertificate(c.Certificate[0])
+	if err != nil {
+		return nil, fmt.Errorf("parse bootstrap leaf: %w", err)
+	}
+	return &certBundle{
+		cert:     c,
+		rootCAs:  roots,
+		fp:       cert.Fingerprint(c.Certificate[0]),
+		notAfter: leaf.NotAfter,
+	}, nil
 }
 
 func resolveAPIProxyHost(projectID uuid.UUID, apiHost string) string {
