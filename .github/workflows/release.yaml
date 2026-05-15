@@ -56,6 +56,34 @@ jobs:
           dagger call -v publish-github-release --src=. --tag=$GITHUB_REF_NAME --github-token=env:GITHUB_TOKEN --sha=${GITHUB_SHA::7} --apple-p12=file:/tmp/apple-developer-id.p12 --apple-p12-password=env:APPLE_P12_PASSWORD --apple-notary-key=env:APPLE_NOTARY_KEY_JSON
           dagger call -v publish-helm-release --src=./deploy/helm --tag=$GITHUB_REF_NAME --registry-password=env:APOXY_DOCKERHUB_PASSWORD
 
+  publish-apoxy-cloud-changelog:
+    needs: publish-github-release
+    if: ${{ github.event_name == 'push' && needs.publish-github-release.result == 'success' }}
+    runs-on: depot-ubuntu-22.04,dagger=0.19.10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ">=1.24"
+      - name: Generate GitHub App token
+        uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.APOXY_CLOUD_APP_ID }}
+          private-key: ${{ secrets.APOXY_CLOUD_APP_PRIVATE_KEY }}
+          repositories: apoxy-cloud
+      - name: Append release notes to apoxy-cloud changelog
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APOXY_CLOUD_TOKEN: ${{ steps.app-token.outputs.token }}
+          SHUTUP: 1
+        timeout-minutes: 10
+        run: |
+          dagger call -v publish-apoxy-cloud-changelog --tag=$GITHUB_REF_NAME --github-token=env:GITHUB_TOKEN --apoxy-cloud-token=env:APOXY_CLOUD_TOKEN
+
   publish-homebrew-formula:
     needs: publish-github-release
     if: ${{ always() && (github.event_name == 'workflow_dispatch' || needs.publish-github-release.result == 'success') }}
