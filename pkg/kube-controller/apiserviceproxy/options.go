@@ -1,9 +1,20 @@
 package apiserviceproxy
 
 import (
+	"time"
+
 	"github.com/google/uuid"
 
 	"github.com/apoxy-dev/apoxy/pkg/log"
+)
+
+// Default cadence + threshold for cert auto-renewal. The renewer attempts
+// renewal once per RenewInterval, and only when the live cert's remaining
+// validity drops below RenewThreshold. With cosmos's 365-day certs that
+// means each pod self-renews ~once a year, well before expiry.
+const (
+	DefaultRenewInterval  = time.Hour
+	DefaultRenewThreshold = 30 * 24 * time.Hour
 )
 
 // Options contains the configuration for the APIServiceProxy.
@@ -25,6 +36,14 @@ type Options struct {
 	// pod restart. When empty, hot-reload is disabled; rotation still
 	// works via the legacy pod-template-annotation restart.
 	CertDir string
+	// RenewInterval is how often the auto-renewer wakes up to check the
+	// live cert's remaining validity. Negative disables auto-renewal
+	// entirely (useful in tests and audited environments where rotation
+	// must be operator-driven). Zero falls back to DefaultRenewInterval.
+	RenewInterval time.Duration
+	// RenewThreshold is the remaining-validity window below which the
+	// renewer issues a fresh cert. Zero falls back to DefaultRenewThreshold.
+	RenewThreshold time.Duration
 }
 
 // Option is a function that configures the APIServiceProxy.
@@ -99,5 +118,21 @@ func WithLocalMode(local bool) Option {
 func WithCertDir(dir string) Option {
 	return func(o *Options) {
 		o.CertDir = dir
+	}
+}
+
+// WithRenewInterval sets how often the auto-renewer checks the live cert.
+// A negative duration disables auto-renewal.
+func WithRenewInterval(d time.Duration) Option {
+	return func(o *Options) {
+		o.RenewInterval = d
+	}
+}
+
+// WithRenewThreshold sets the remaining-validity window below which the
+// renewer issues a fresh cert.
+func WithRenewThreshold(d time.Duration) Option {
+	return func(o *Options) {
+		o.RenewThreshold = d
 	}
 }

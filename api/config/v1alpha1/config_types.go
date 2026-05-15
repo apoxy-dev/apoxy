@@ -212,6 +212,17 @@ type KubeAggregationConfig struct {
 	// APIHost is the Apoxy Cloud API host for certificate issuance and upstream
 	// connectivity. Defaults to "api.apoxy.dev".
 	APIHost string `json:"apiHost,omitempty"`
+	// CertRenewInterval is how often the auto-renewer wakes up to check
+	// the live cert's remaining validity. A negative value disables
+	// auto-renewal entirely. Zero falls back to the runtime default
+	// (1h).
+	// +optional
+	CertRenewInterval *metav1.Duration `json:"certRenewInterval,omitempty"`
+	// CertRenewThreshold is the remaining-validity window below which
+	// the controller issues a fresh cert against cosmos. Zero falls
+	// back to the runtime default (30 days).
+	// +optional
+	CertRenewThreshold *metav1.Duration `json:"certRenewThreshold,omitempty"`
 }
 
 // MirrorMode specifies which Kubernetes API resources to mirror.

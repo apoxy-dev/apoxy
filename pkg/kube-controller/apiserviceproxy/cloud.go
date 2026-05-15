@@ -18,6 +18,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
 )
 
 var systemCertPool = x509.SystemCertPool
@@ -181,8 +182,14 @@ func (p *APIServiceProxy) loadUpstreamCertificate(ctx context.Context) (*certBun
 }
 
 func (p *APIServiceProxy) saveCertificate(ctx context.Context, certPem, keyPem, caPem []byte) error {
-	log.Printf("saving certificate for project %s", p.opts.ProjectID)
+	return saveApizCertSecret(ctx, p.kC, p.opts.Namespace, certPem, keyPem, caPem)
+}
 
+// saveApizCertSecret writes (or updates) the apiz-cert Secret in the given
+// namespace. Update is guarded by ResourceVersion so concurrent rotators
+// (e.g. manual `apoxy k8s certs rotate` racing the auto-renewer) fail loudly
+// rather than silently clobbering each other.
+func saveApizCertSecret(ctx context.Context, kc kubernetes.Interface, namespace string, certPem, keyPem, caPem []byte) error {
 	certSecret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: apizCertSecretName,
@@ -195,16 +202,16 @@ func (p *APIServiceProxy) saveCertificate(ctx context.Context, certPem, keyPem, 
 		Type: corev1.SecretTypeTLS,
 	}
 
-	if _, err := p.kC.CoreV1().Secrets(p.opts.Namespace).Create(ctx, certSecret, metav1.CreateOptions{}); err != nil {
+	if _, err := kc.CoreV1().Secrets(namespace).Create(ctx, certSecret, metav1.CreateOptions{}); err != nil {
 		if !errors.IsAlreadyExists(err) {
 			return err
 		}
-		existing, getErr := p.kC.CoreV1().Secrets(p.opts.Namespace).Get(ctx, apizCertSecretName, metav1.GetOptions{})
+		existing, getErr := kc.CoreV1().Secrets(namespace).Get(ctx, apizCertSecretName, metav1.GetOptions{})
 		if getErr != nil {
 			return getErr
 		}
 		certSecret.ResourceVersion = existing.ResourceVersion
-		if _, err := p.kC.CoreV1().Secrets(p.opts.Namespace).Update(ctx, certSecret, metav1.UpdateOptions{}); err != nil {
+		if _, err := kc.CoreV1().Secrets(namespace).Update(ctx, certSecret, metav1.UpdateOptions{}); err != nil {
 			return err
 		}
 	}
@@ -219,15 +226,6 @@ func (p *APIServiceProxy) issueCertificate(ctx context.Context) (*certBundle, er
 	if host == "" {
 		host = defaultAPIHost
 	}
-	addr := fmt.Sprintf("https://%s/v1/terra/serviceaccount/certificate", host)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, addr, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set(ApoxyAPIKeyHeaderKey, p.opts.Token)
-	req.Header.Set(ApoxyProjectIdHeaderKey, p.opts.ProjectID.String())
-	req.Header.Set(ApoxyServiceUserKey, kubeControllerUserPrefix+p.opts.ClusterName)
-
 	client := http.DefaultClient
 	if p.opts.LocalMode {
 		// Cosmos serving cert in dev is cert-manager self-signed and not in
@@ -235,29 +233,49 @@ func (p *APIServiceProxy) issueCertificate(ctx context.Context) (*certBundle, er
 		// dev CA into every kube-controller pod.
 		client = &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}}
 	}
-	resp, err := client.Do(req)
+	return doIssueCertificate(ctx, client, host, map[string]string{
+		ApoxyAPIKeyHeaderKey:    p.opts.Token,
+		ApoxyProjectIdHeaderKey: p.opts.ProjectID.String(),
+		ApoxyServiceUserKey:     kubeControllerUserPrefix + p.opts.ClusterName,
+	}, p.kC, p.opts.Namespace)
+}
+
+// doIssueCertificate POSTs to cosmos's IssueServiceCert endpoint, validates
+// the returned PEMs, persists them to the apiz-cert Secret, and returns the
+// new bundle. Shared by the bootstrap path (API-key auth, api.* host) and
+// the renewal path (mTLS auth, apiz.* host).
+func doIssueCertificate(ctx context.Context, client *http.Client, host string, headers map[string]string, kc kubernetes.Interface, namespace string) (*certBundle, error) {
+	addr := fmt.Sprintf("https://%s/v1/terra/serviceaccount/certificate", host)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, addr, nil)
 	if err != nil {
 		return nil, err
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("issue cert: %w", err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read issue-cert response: %w", err)
 	}
-
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to issue certificate (status code %d): %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("issue cert: status %d: %s", resp.StatusCode, string(body))
 	}
 
 	var certResp IssueClientCertResponse
 	if err := json.Unmarshal(body, &certResp); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("decode issue-cert response: %w", err)
 	}
 
 	certPEM, keyPEM, caPEM := []byte(certResp.Certificate), []byte(certResp.PrivateKey), []byte(certResp.CA)
-	if err := p.saveCertificate(ctx, certPEM, keyPEM, caPEM); err != nil {
-		return nil, err
+	if err := saveApizCertSecret(ctx, kc, namespace, certPEM, keyPEM, caPEM); err != nil {
+		return nil, fmt.Errorf("save issued cert secret: %w", err)
 	}
 	return bundleFromPEM(certPEM, keyPEM, caPEM)
 }

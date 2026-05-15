@@ -11,6 +11,17 @@ const (
 	// Exported so the rotate-flow caller doesn't hard-code the string.
 	CertExpiryMetricName = "apoxy_kube_controller_cert_expiry_seconds"
 
+	// CertRenewalsMetricName is the auto-renewal outcome counter (vector
+	// with a `result` label). Exported so integration tests and alert
+	// rules can reference the canonical name.
+	CertRenewalsMetricName = "apoxy_kube_controller_cert_renewals_total"
+
+	// Event reasons emitted by the auto-renewer on the kube-controller
+	// Deployment. Exported so tests and docs can match the canonical
+	// strings rather than copying literals.
+	EventReasonCertRenewed       = "CertRenewed"
+	EventReasonCertRenewalFailed = "CertRenewalFailed"
+
 	resultSuccess = "success"
 	resultFailure = "failure"
 )
@@ -29,8 +40,25 @@ var (
 			Help: "Unix-seconds expiry (NotAfter) of the live upstream client cert.",
 		},
 	)
+	certRenewals = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "apoxy_kube_controller_cert_renewals_total",
+			Help: "Total kube-controller upstream-cert auto-renewal attempts.",
+		},
+		[]string{"result"},
+	)
+	// certRenewSkipped tracks ticks where the live cert was still well
+	// inside its validity window. Alerting on this counter going flat
+	// catches a stuck auto-renewal loop without firing during normal
+	// pre-renewal steady state.
+	certRenewSkipped = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "apoxy_kube_controller_cert_renewal_skipped_total",
+			Help: "Auto-renewal ticks that found the cert still above the renewal threshold.",
+		},
+	)
 )
 
 func init() {
-	metrics.Registry.MustRegister(certReloads, certExpiry)
+	metrics.Registry.MustRegister(certReloads, certExpiry, certRenewals, certRenewSkipped)
 }
