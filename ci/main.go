@@ -544,41 +544,6 @@ git push origin main
 		WithExec([]string{"cat", "Formula/apoxy.rb"})
 }
 
-// PublishApoxyCloudChangelog appends the new release notes to
-// apoxy-cloud's run/docs2 changelog and pushes the commit.
-//
-// The tool lives in apoxy-cloud at run/docs2/tools/changelog and reads
-// the release body via the GitHub REST API, so this step depends on the
-// GitHub release already being published.
-func (m *ApoxyCli) PublishApoxyCloudChangelog(
-	ctx context.Context,
-	tag string,
-	githubToken *dagger.Secret,
-	apoxyCloudToken *dagger.Secret,
-) *dagger.Container {
-	return dag.Container().
-		From("golang:1.25-bookworm").
-		WithSecretVariable("GITHUB_TOKEN", githubToken).
-		WithSecretVariable("APOXY_CLOUD_TOKEN", apoxyCloudToken).
-		WithExec([]string{"sh", "-c", "cd /tmp && git clone --depth=1 https://x-access-token:$APOXY_CLOUD_TOKEN@github.com/apoxy-dev/apoxy-cloud.git"}).
-		WithExec([]string{"git", "config", "--global", "user.email", "github-actions[bot]@users.noreply.github.com"}).
-		WithExec([]string{"git", "config", "--global", "user.name", "github-actions[bot]"}).
-		WithWorkdir("/tmp/apoxy-cloud").
-		WithMountedCache("/root/.cache/go-build", dag.CacheVolume("apoxy-cloud-go-build")).
-		WithMountedCache("/go/pkg/mod", dag.CacheVolume("apoxy-cloud-go-mod")).
-		WithExec([]string{"sh", "-c", fmt.Sprintf(`
-set -e
-go run ./run/docs2/tools/changelog --tag %s
-git add run/docs2/content/docs/changelog/
-if git diff --cached --quiet; then
-  echo "No changelog changes for %s; skipping commit."
-  exit 0
-fi
-git commit -m "[docs2] add %s release notes"
-git push origin main
-`, tag, tag, tag)})
-}
-
 // EdgeRuntimeVersion is the version of the Apoxy edge-runtime fork.
 const EdgeRuntimeVersion = "v0.1.0"
 
