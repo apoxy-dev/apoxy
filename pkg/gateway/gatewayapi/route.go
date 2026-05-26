@@ -40,6 +40,17 @@ const (
 	// tunnel with occasional cross-region packet loss) enough headroom to
 	// complete before Envoy cuts the flow.
 	HTTPRequestTimeout = "100s"
+
+	// Default upstream HTTP connection idle timeout for the cluster's
+	// CommonHttpProtocolOptions. Envoy's built-in default is 1 hour, which
+	// loses the "intermediary closes first" race against any backend whose
+	// keep-alive timer is short (uvicorn defaults to 5s, gunicorn to 2s).
+	// When the backend FINs an idle conn, Envoy's pool keeps it for up to
+	// an hour, picks it for the next request, and we get UC on the RST.
+	// 60s matches nginx/HAProxy upstream defaults and leaves comfortable
+	// headroom over the 30s TCP keepalive idle so most connection reuse
+	// for normal request cadences still works.
+	HTTPConnectionIdleTimeout = "60s"
 )
 
 var (
@@ -283,6 +294,12 @@ func processTimeout(irRoute *ir.HTTPRoute, rule gwapiv1.HTTPRouteRule) {
 	def, _ := time.ParseDuration(HTTPRequestTimeout)
 	setRequestTimeout(rto, metav1.Duration{Duration: def})
 
+	// Seed an upstream-cluster connection idle timeout so Envoy reliably
+	// closes idle conns before backends (uvicorn 5s, gunicorn 2s) do,
+	// avoiding the half-closed-pool UC race.
+	idleDef, _ := time.ParseDuration(HTTPConnectionIdleTimeout)
+	setConnectionIdleTimeout(rto, metav1.Duration{Duration: idleDef})
+
 	if rule.Timeouts != nil {
 		if rule.Timeouts.Request != nil {
 			d, err := time.ParseDuration(string(*rule.Timeouts.Request))
@@ -323,12 +340,47 @@ func setRequestTimeout(irTimeout *ir.Timeout, d metav1.Duration) {
 	}
 }
 
+func setConnectionIdleTimeout(irTimeout *ir.Timeout, d metav1.Duration) {
+	switch {
+	case irTimeout == nil:
+		irTimeout = &ir.Timeout{
+			HTTP: &ir.HTTPTimeout{
+				ConnectionIdleTimeout: ptr.To(d),
+			},
+		}
+	case irTimeout.HTTP == nil:
+		irTimeout.HTTP = &ir.HTTPTimeout{
+			ConnectionIdleTimeout: ptr.To(d),
+		}
+	default:
+		irTimeout.HTTP.ConnectionIdleTimeout = ptr.To(d)
+	}
+}
+
 func setTCPKeepalive(irRoute *ir.HTTPRoute, idleTime, interval uint32) {
 	// TODO(dilyevsky): Get this setting from the Proxy object. Put in reasonable defaults for now.
 	// https://linear.app/apoxy/issue/APO-258/implement-tcpkeepalive-settting
 	irRoute.TCPKeepalive = &ir.TCPKeepalive{
 		IdleTime: ptr.To(idleTime),
 		Interval: ptr.To(interval),
+	}
+}
+
+// setDefaultRetry installs a conservative retry policy when the HTTPRoute
+// spec doesn't carry one. NumRetries=1 + IdempotentOnly=true means a single
+// transparent retry on connection-level failures (reset/connect-failure/etc.
+// already covered by retryDefaultRetryOn in the xDS translator), scoped to
+// idempotent methods only so POST/PATCH are never silently retried after
+// the upstream may have already processed them. This exists primarily to
+// mask the residual UC race window after a backend (uvicorn/gunicorn) FINs
+// a pooled conn just before Envoy reuses it.
+func setDefaultRetry(irRoute *ir.HTTPRoute) {
+	if irRoute.Retry != nil {
+		return
+	}
+	irRoute.Retry = &ir.Retry{
+		NumRetries:     ptr.To(uint32(1)),
+		IdempotentOnly: ptr.To(true),
 	}
 }
 
@@ -377,6 +429,7 @@ func (t *Translator) processHTTPRouteRule(httpRoute *HTTPRouteContext, ruleIdx i
 		if err := setRetry(irRoute, rule); err != nil {
 			return nil, err
 		}
+		setDefaultRetry(irRoute)
 		applyHTTPFiltersContextToIRRoute(httpFiltersContext, irRoute)
 		ruleRoutes = append(ruleRoutes, irRoute)
 	}
@@ -393,6 +446,7 @@ func (t *Translator) processHTTPRouteRule(httpRoute *HTTPRouteContext, ruleIdx i
 		if err := setRetry(irRoute, rule); err != nil {
 			return nil, err
 		}
+		setDefaultRetry(irRoute)
 
 		if match.Path != nil {
 			switch PathMatchTypeDerefOr(match.Path.Type, gwapiv1.PathMatchPathPrefix) {

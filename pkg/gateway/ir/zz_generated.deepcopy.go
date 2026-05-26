@@ -1665,6 +1665,11 @@ func (in *Retry) DeepCopyInto(out *Retry) {
 		*out = new(PerRetryPolicy)
 		(*in).DeepCopyInto(*out)
 	}
+	if in.IdempotentOnly != nil {
+		in, out := &in.IdempotentOnly, &out.IdempotentOnly
+		*out = new(bool)
+		**out = **in
+	}
 	return
 }
 

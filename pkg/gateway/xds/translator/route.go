@@ -26,6 +26,12 @@ const (
 	retryDefaultRetryOn             = "cancelled,connect-failure,refused-stream,reset,retriable-status-codes,unavailable"
 	retryDefaultRetriableStatusCode = 503
 	retryDefaultNumRetries          = 2
+
+	// Idempotent HTTP methods. Used as the :method regex on
+	// RetriableRequestHeaders when ir.Retry.IdempotentOnly is set, so that the
+	// platform-default retry policy doesn't silently retry POST/PATCH on a UC
+	// race after the request may have already been processed upstream.
+	idempotentMethodsRegex = "^(GET|HEAD|PUT|DELETE|OPTIONS|TRACE)$"
 )
 
 func buildXdsRoute(httpRoute *ir.HTTPRoute) (*routev3.Route, error) {
@@ -556,6 +562,21 @@ func buildRetryPolicy(route *ir.HTTPRoute) (*routev3.RetryPolicy, error) {
 
 		if rr.NumRetries != nil {
 			rp.NumRetries = &wrapperspb.UInt32Value{Value: *rr.NumRetries}
+		}
+
+		if rr.IdempotentOnly != nil && *rr.IdempotentOnly {
+			rp.RetriableRequestHeaders = []*routev3.HeaderMatcher{{
+				Name: ":method",
+				HeaderMatchSpecifier: &routev3.HeaderMatcher_StringMatch{
+					StringMatch: &matcherv3.StringMatcher{
+						MatchPattern: &matcherv3.StringMatcher_SafeRegex{
+							SafeRegex: &matcherv3.RegexMatcher{
+								Regex: idempotentMethodsRegex,
+							},
+						},
+					},
+				},
+			}}
 		}
 
 		if rr.RetryOn != nil {

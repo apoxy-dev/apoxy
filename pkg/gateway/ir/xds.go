@@ -1758,6 +1758,12 @@ type Retry struct {
 
 	// PerRetry is the retry policy to be applied per retry attempt.
 	PerRetry *PerRetryPolicy `json:"perRetry,omitempty"`
+
+	// IdempotentOnly, when true, scopes the retry policy to idempotent HTTP
+	// methods (GET/HEAD/PUT/DELETE/OPTIONS/TRACE) by emitting a
+	// RetriableRequestHeaders matcher on :method. Used by the platform-default
+	// retry policy so a UC race on a webhook POST is not silently retried.
+	IdempotentOnly *bool `json:"idempotentOnly,omitempty"`
 }
 
 type TriggerEnum egv1a1.TriggerEnum
