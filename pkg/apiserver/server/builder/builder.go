@@ -140,6 +140,27 @@ func (s *Server) WithResourceAndStorage(obj builderresource.Object, fn StoreFn) 
 	return s
 }
 
+// WithStorage registers a StorageProvider at an arbitrary GVR. If the
+// Resource contains "/", it is mounted as a subresource; otherwise as
+// a top-level resource. The returned rest.Storage's implemented rest.*
+// interfaces drive method routing (GET/LIST/WATCH/POST/...); methods
+// not implemented yield 405 from the generic apiserver handler.
+//
+// Unlike WithResourceAndStorage, this does NOT register the kind in
+// the API scheme. Callers wire the scheme themselves via
+// WithAdditionalSchemeInstallers; intentional for cases where one Go
+// type is mounted at multiple GVRs (e.g. a top-level resource shared
+// with per-parent subresources) and the scheme registration should
+// not be duplicated.
+func (s *Server) WithStorage(gvr schema.GroupVersionResource, sp serverapiserver.StorageProvider) *Server {
+	if strings.Contains(gvr.Resource, "/") {
+		s.forGroupVersionSubresource(gvr, sp)
+	} else {
+		s.forGroupVersionResource(gvr, sp)
+	}
+	return s
+}
+
 func (s *Server) Build() (*start.ApoxyServerOptions, error) {
 	codec, err := s.buildCodec()
 	if err != nil {
