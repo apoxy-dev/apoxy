@@ -162,10 +162,11 @@ func (*dynamicForwardProxy) patchResources(
 		}
 
 		args := &xdsClusterArgs{
-			name:         r.Destination.Name,
-			settings:     r.Destination.Settings,
-			timeout:      r.Timeout,
-			tcpkeepalive: r.TCPKeepalive,
+			name:           r.Destination.Name,
+			settings:       r.Destination.Settings,
+			timeout:        r.Timeout,
+			tcpkeepalive:   r.TCPKeepalive,
+			circuitBreaker: r.CircuitBreaker,
 		}
 
 		if err := createDynamicForwardProxyCluster(
@@ -212,6 +213,11 @@ func createDynamicForwardProxyCluster(
 			},
 		},
 	}
+
+	// Apply circuit breaker limits so the dynamic forward proxy cluster is not
+	// silently capped at Envoy's implicit 1024 max_connections / max_requests
+	// defaults.
+	cluster.CircuitBreakers = buildXdsClusterCircuitBreaker(args.circuitBreaker)
 
 	if setting.TLS != nil {
 		if cluster.TransportSocket, err = buildXdsUpstreamTLSSocketWthCert(setting.TLS); err != nil {
