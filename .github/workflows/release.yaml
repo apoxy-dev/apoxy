@@ -19,7 +19,7 @@ jobs:
           APOXY_PROJECT_API_KEY: ${{ secrets.APOXY_PROJECT_API_KEY }}
           APOXY_DOCKERHUB_PASSWORD: ${{ secrets.APOXY_DOCKERHUB_PASSWORD }}
           SHUTUP: 1
-        timeout-minutes: 15
+        timeout-minutes: 30
         run: |
           dagger call -v publish-images --src=. --tag=$GITHUB_REF_NAME --sha=${GITHUB_SHA::7} --registry-password=env:APOXY_DOCKERHUB_PASSWORD
           dagger call -v publish-github-release --src=. --tag=$GITHUB_REF_NAME --github-token=env:GITHUB_TOKEN --sha=${GITHUB_SHA::7}
