@@ -219,6 +219,15 @@ func createDynamicForwardProxyCluster(
 	// defaults.
 	cluster.CircuitBreakers = buildXdsClusterCircuitBreaker(args.circuitBreaker)
 
+	// Apply upstream HTTP protocol options based on the destination setting's
+	// protocol, mirroring buildXdsCluster. The custom DFP cluster bypasses the
+	// normal cluster builder, so without this an h2/h2c Backend would still be
+	// spoken to over HTTP/1.1 upstream. Returns nil (leaving Envoy's HTTP/1.1
+	// default) when no HTTP/2 or other protocol option is required.
+	if epo := buildTypedExtensionProtocolOptions(args); epo != nil {
+		cluster.TypedExtensionProtocolOptions = epo
+	}
+
 	if setting.TLS != nil {
 		if cluster.TransportSocket, err = buildXdsUpstreamTLSSocketWthCert(setting.TLS); err != nil {
 			return fmt.Errorf("failed to build xds upstream tls socket: %w", err)
