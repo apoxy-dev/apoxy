@@ -48,7 +48,7 @@ var (
 	encoder = runtimejson.NewYAMLSerializer(runtimejson.DefaultMetaFactory, scheme.Scheme, scheme.Scheme)
 )
 
-func onboardingPath(clusterName, mirror, image, version string) string {
+func onboardingPath(clusterName, mirror, image, version, namespace string) string {
 	path := "/v1/onboarding/k8s.yaml"
 	params := url.Values{}
 	if clusterName != "" {
@@ -63,19 +63,28 @@ func onboardingPath(clusterName, mirror, image, version string) string {
 	if version != "" {
 		params.Set("version", version)
 	}
+	if namespace != "" {
+		// Tell cosmos which namespace the controller is installed into so the
+		// generated manifest stamps it into every namespaced object, the
+		// ClusterRoleBinding subject, and the controller's runtime config.
+		// Without this the server defaults to "apoxy" and a non-default
+		// install namespace leaves the SA unbound and the controller pointed
+		// at the wrong namespace.
+		params.Set("namespace", namespace)
+	}
 	if len(params) == 0 {
 		return path
 	}
 	return path + "?" + params.Encode()
 }
 
-func getYAML(clusterName, mirror, image, version string) ([]byte, error) {
+func getYAML(clusterName, mirror, image, version, namespace string) ([]byte, error) {
 	c, err := config.DefaultAPIClient()
 	if err != nil {
 		return nil, err
 	}
 
-	resp, err := c.SendRequest(http.MethodGet, onboardingPath(clusterName, mirror, image, version), nil)
+	resp, err := c.SendRequest(http.MethodGet, onboardingPath(clusterName, mirror, image, version, namespace), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -1113,7 +1122,7 @@ will automatically connect to the Apoxy API and begin managing your in-cluster A
 			}
 		}
 
-		yamlz, err := getYAML(clusterName, mirror, image, version)
+		yamlz, err := getYAML(clusterName, mirror, image, version, namespace)
 		if err != nil {
 			return fmt.Errorf("failed to get YAML: %w", err)
 		}
