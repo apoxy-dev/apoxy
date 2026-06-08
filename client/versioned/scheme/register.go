@@ -18,6 +18,7 @@ limitations under the License.
 package scheme
 
 import (
+	computev1alpha1 "github.com/apoxy-dev/apoxy/api/compute/v1alpha1"
 	controllersv1alpha1 "github.com/apoxy-dev/apoxy/api/controllers/v1alpha1"
 	coordinationv1 "github.com/apoxy-dev/apoxy/api/coordination/v1"
 	corev1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
@@ -39,6 +40,7 @@ var Scheme = runtime.NewScheme()
 var Codecs = serializer.NewCodecFactory(Scheme)
 var ParameterCodec = runtime.NewParameterCodec(Scheme)
 var localSchemeBuilder = runtime.SchemeBuilder{
+	computev1alpha1.AddToScheme,
 	controllersv1alpha1.AddToScheme,
 	coordinationv1.AddToScheme,
 	corev1alpha.AddToScheme,

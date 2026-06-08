@@ -31,6 +31,41 @@ import (
 
 func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenAPIDefinition {
 	return map[string]common.OpenAPIDefinition{
+		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.BackendConfig":                    schema_apoxy_api_compute_v1alpha1_BackendConfig(ref),
+		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.Binding":                          schema_apoxy_api_compute_v1alpha1_Binding(ref),
+		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.Build":                            schema_apoxy_api_compute_v1alpha1_Build(ref),
+		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.BuildConfig":                      schema_apoxy_api_compute_v1alpha1_BuildConfig(ref),
+		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.BuildList":                        schema_apoxy_api_compute_v1alpha1_BuildList(ref),
+		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.BuildSpec":                        schema_apoxy_api_compute_v1alpha1_BuildSpec(ref),
+		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.BuildStatus":                      schema_apoxy_api_compute_v1alpha1_BuildStatus(ref),
+		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.BundleRef":                        schema_apoxy_api_compute_v1alpha1_BundleRef(ref),
+		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.Capabilities":                     schema_apoxy_api_compute_v1alpha1_Capabilities(ref),
+		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.EnvVar":                           schema_apoxy_api_compute_v1alpha1_EnvVar(ref),
+		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.FilterConfig":                     schema_apoxy_api_compute_v1alpha1_FilterConfig(ref),
+		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.GitRepo":                          schema_apoxy_api_compute_v1alpha1_GitRepo(ref),
+		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.GitSource":                        schema_apoxy_api_compute_v1alpha1_GitSource(ref),
+		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.KVBinding":                        schema_apoxy_api_compute_v1alpha1_KVBinding(ref),
+		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.Module":                           schema_apoxy_api_compute_v1alpha1_Module(ref),
+		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.OCICredentials":                   schema_apoxy_api_compute_v1alpha1_OCICredentials(ref),
+		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.OCICredentialsRef":                schema_apoxy_api_compute_v1alpha1_OCICredentialsRef(ref),
+		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.PreviewPolicy":                    schema_apoxy_api_compute_v1alpha1_PreviewPolicy(ref),
+		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.SecretBinding":                    schema_apoxy_api_compute_v1alpha1_SecretBinding(ref),
+		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.Service":                          schema_apoxy_api_compute_v1alpha1_Service(ref),
+		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceBinding":                   schema_apoxy_api_compute_v1alpha1_ServiceBinding(ref),
+		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceConfig":                    schema_apoxy_api_compute_v1alpha1_ServiceConfig(ref),
+		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceConfigSpec":                schema_apoxy_api_compute_v1alpha1_ServiceConfigSpec(ref),
+		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceLimits":                    schema_apoxy_api_compute_v1alpha1_ServiceLimits(ref),
+		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceList":                      schema_apoxy_api_compute_v1alpha1_ServiceList(ref),
+		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.BundleManifest":                  schema_apoxy_api_compute_v1alpha1_BundleManifest(ref),
+		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceRevision":                  schema_apoxy_api_compute_v1alpha1_ServiceRevision(ref),
+		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceRevisionList":              schema_apoxy_api_compute_v1alpha1_ServiceRevisionList(ref),
+		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceRevisionSpec":              schema_apoxy_api_compute_v1alpha1_ServiceRevisionSpec(ref),
+		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceRuntime":                   schema_apoxy_api_compute_v1alpha1_ServiceRuntime(ref),
+		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceSource":                    schema_apoxy_api_compute_v1alpha1_ServiceSource(ref),
+		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceSpec":                      schema_apoxy_api_compute_v1alpha1_ServiceSpec(ref),
+		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceStatus":                    schema_apoxy_api_compute_v1alpha1_ServiceStatus(ref),
+		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceTemplateSpec":              schema_apoxy_api_compute_v1alpha1_ServiceTemplateSpec(ref),
+		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.Triggers":                         schema_apoxy_api_compute_v1alpha1_Triggers(ref),
 		"github.com/apoxy-dev/apoxy/api/controllers/v1alpha1.APIKey":                       schema_apoxy_api_controllers_v1alpha1_APIKey(ref),
 		"github.com/apoxy-dev/apoxy/api/controllers/v1alpha1.OpenTelemetrySink":            schema_apoxy_api_controllers_v1alpha1_OpenTelemetrySink(ref),
 		"github.com/apoxy-dev/apoxy/api/controllers/v1alpha1.Proxy":                        schema_apoxy_api_controllers_v1alpha1_Proxy(ref),
@@ -524,6 +559,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"k8s.io/apimachinery/pkg/runtime.Unknown":                                          schema_k8sio_apimachinery_pkg_runtime_Unknown(ref),
 		"k8s.io/apimachinery/pkg/util/intstr.IntOrString":                                  schema_apimachinery_pkg_util_intstr_IntOrString(ref),
 		"k8s.io/apimachinery/pkg/version.Info":                                             schema_k8sio_apimachinery_pkg_version_Info(ref),
+		"sigs.k8s.io/gateway-api/apis/v1.AllowedListeners":                                 schema_sigsk8sio_gateway_api_apis_v1_AllowedListeners(ref),
 		"sigs.k8s.io/gateway-api/apis/v1.AllowedRoutes":                                    schema_sigsk8sio_gateway_api_apis_v1_AllowedRoutes(ref),
 		"sigs.k8s.io/gateway-api/apis/v1.BackendObjectReference":                           schema_sigsk8sio_gateway_api_apis_v1_BackendObjectReference(ref),
 		"sigs.k8s.io/gateway-api/apis/v1.BackendRef":                                       schema_sigsk8sio_gateway_api_apis_v1_BackendRef(ref),
@@ -542,7 +578,6 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"sigs.k8s.io/gateway-api/apis/v1.GRPCRouteSpec":                                    schema_sigsk8sio_gateway_api_apis_v1_GRPCRouteSpec(ref),
 		"sigs.k8s.io/gateway-api/apis/v1.GRPCRouteStatus":                                  schema_sigsk8sio_gateway_api_apis_v1_GRPCRouteStatus(ref),
 		"sigs.k8s.io/gateway-api/apis/v1.Gateway":                                          schema_sigsk8sio_gateway_api_apis_v1_Gateway(ref),
-		"sigs.k8s.io/gateway-api/apis/v1.GatewayAddress":                                   schema_sigsk8sio_gateway_api_apis_v1_GatewayAddress(ref),
 		"sigs.k8s.io/gateway-api/apis/v1.GatewayBackendTLS":                                schema_sigsk8sio_gateway_api_apis_v1_GatewayBackendTLS(ref),
 		"sigs.k8s.io/gateway-api/apis/v1.GatewayClass":                                     schema_sigsk8sio_gateway_api_apis_v1_GatewayClass(ref),
 		"sigs.k8s.io/gateway-api/apis/v1.GatewayClassList":                                 schema_sigsk8sio_gateway_api_apis_v1_GatewayClassList(ref),
@@ -551,10 +586,12 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"sigs.k8s.io/gateway-api/apis/v1.GatewayInfrastructure":                            schema_sigsk8sio_gateway_api_apis_v1_GatewayInfrastructure(ref),
 		"sigs.k8s.io/gateway-api/apis/v1.GatewayList":                                      schema_sigsk8sio_gateway_api_apis_v1_GatewayList(ref),
 		"sigs.k8s.io/gateway-api/apis/v1.GatewaySpec":                                      schema_sigsk8sio_gateway_api_apis_v1_GatewaySpec(ref),
+		"sigs.k8s.io/gateway-api/apis/v1.GatewaySpecAddress":                               schema_sigsk8sio_gateway_api_apis_v1_GatewaySpecAddress(ref),
 		"sigs.k8s.io/gateway-api/apis/v1.GatewayStatus":                                    schema_sigsk8sio_gateway_api_apis_v1_GatewayStatus(ref),
 		"sigs.k8s.io/gateway-api/apis/v1.GatewayStatusAddress":                             schema_sigsk8sio_gateway_api_apis_v1_GatewayStatusAddress(ref),
 		"sigs.k8s.io/gateway-api/apis/v1.GatewayTLSConfig":                                 schema_sigsk8sio_gateway_api_apis_v1_GatewayTLSConfig(ref),
 		"sigs.k8s.io/gateway-api/apis/v1.HTTPBackendRef":                                   schema_sigsk8sio_gateway_api_apis_v1_HTTPBackendRef(ref),
+		"sigs.k8s.io/gateway-api/apis/v1.HTTPCORSFilter":                                   schema_sigsk8sio_gateway_api_apis_v1_HTTPCORSFilter(ref),
 		"sigs.k8s.io/gateway-api/apis/v1.HTTPHeader":                                       schema_sigsk8sio_gateway_api_apis_v1_HTTPHeader(ref),
 		"sigs.k8s.io/gateway-api/apis/v1.HTTPHeaderFilter":                                 schema_sigsk8sio_gateway_api_apis_v1_HTTPHeaderFilter(ref),
 		"sigs.k8s.io/gateway-api/apis/v1.HTTPHeaderMatch":                                  schema_sigsk8sio_gateway_api_apis_v1_HTTPHeaderMatch(ref),
@@ -574,6 +611,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"sigs.k8s.io/gateway-api/apis/v1.HTTPRouteTimeouts":                                schema_sigsk8sio_gateway_api_apis_v1_HTTPRouteTimeouts(ref),
 		"sigs.k8s.io/gateway-api/apis/v1.HTTPURLRewriteFilter":                             schema_sigsk8sio_gateway_api_apis_v1_HTTPURLRewriteFilter(ref),
 		"sigs.k8s.io/gateway-api/apis/v1.Listener":                                         schema_sigsk8sio_gateway_api_apis_v1_Listener(ref),
+		"sigs.k8s.io/gateway-api/apis/v1.ListenerNamespaces":                               schema_sigsk8sio_gateway_api_apis_v1_ListenerNamespaces(ref),
 		"sigs.k8s.io/gateway-api/apis/v1.ListenerStatus":                                   schema_sigsk8sio_gateway_api_apis_v1_ListenerStatus(ref),
 		"sigs.k8s.io/gateway-api/apis/v1.LocalObjectReference":                             schema_sigsk8sio_gateway_api_apis_v1_LocalObjectReference(ref),
 		"sigs.k8s.io/gateway-api/apis/v1.LocalParametersReference":                         schema_sigsk8sio_gateway_api_apis_v1_LocalParametersReference(ref),
@@ -587,9 +625,6 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"sigs.k8s.io/gateway-api/apis/v1.SecretObjectReference":                            schema_sigsk8sio_gateway_api_apis_v1_SecretObjectReference(ref),
 		"sigs.k8s.io/gateway-api/apis/v1.SessionPersistence":                               schema_sigsk8sio_gateway_api_apis_v1_SessionPersistence(ref),
 		"sigs.k8s.io/gateway-api/apis/v1.SupportedFeature":                                 schema_sigsk8sio_gateway_api_apis_v1_SupportedFeature(ref),
-		"sigs.k8s.io/gateway-api/apis/v1alpha2.BackendLBPolicy":                            schema_sigsk8sio_gateway_api_apis_v1alpha2_BackendLBPolicy(ref),
-		"sigs.k8s.io/gateway-api/apis/v1alpha2.BackendLBPolicyList":                        schema_sigsk8sio_gateway_api_apis_v1alpha2_BackendLBPolicyList(ref),
-		"sigs.k8s.io/gateway-api/apis/v1alpha2.BackendLBPolicySpec":                        schema_sigsk8sio_gateway_api_apis_v1alpha2_BackendLBPolicySpec(ref),
 		"sigs.k8s.io/gateway-api/apis/v1alpha2.GRPCRoute":                                  schema_sigsk8sio_gateway_api_apis_v1alpha2_GRPCRoute(ref),
 		"sigs.k8s.io/gateway-api/apis/v1alpha2.GRPCRouteList":                              schema_sigsk8sio_gateway_api_apis_v1alpha2_GRPCRouteList(ref),
 		"sigs.k8s.io/gateway-api/apis/v1alpha2.LocalPolicyTargetReference":                 schema_sigsk8sio_gateway_api_apis_v1alpha2_LocalPolicyTargetReference(ref),
@@ -614,6 +649,1381 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"sigs.k8s.io/gateway-api/apis/v1alpha2.UDPRouteRule":                               schema_sigsk8sio_gateway_api_apis_v1alpha2_UDPRouteRule(ref),
 		"sigs.k8s.io/gateway-api/apis/v1alpha2.UDPRouteSpec":                               schema_sigsk8sio_gateway_api_apis_v1alpha2_UDPRouteSpec(ref),
 		"sigs.k8s.io/gateway-api/apis/v1alpha2.UDPRouteStatus":                             schema_sigsk8sio_gateway_api_apis_v1alpha2_UDPRouteStatus(ref),
+	}
+}
+
+func schema_apoxy_api_compute_v1alpha1_BackendConfig(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "BackendConfig configures a service running in backend mode (the default).\n\nProtocol is the discriminator that decides whether Port is user-meaningful:\n  - http1/http2: the service is served via Envoy. The listen port is the\n    internal Envoy<->runtime contract, programmed by the controller, and is\n    NOT set here (Port is ignored). This mirrors workerd, which keeps port\n    off the Service entirely and on a separate top-level `sockets` entry.\n  - tcp/udp (future): the service is an L4 listener, so Port IS the contract\n    and the demux key. This is also the value an HTTPRoute-style backendRef\n    port would later select among, once a Service can expose multiple L4\n    listeners. For http services a backendRef should omit port (Gateway API\n    only requires it for core Services; PortNumber min=1 rejects a 0 sentinel).",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"protocol": {
+						SchemaProps: spec.SchemaProps{
+							Type:   []string{"string"},
+							Format: "",
+						},
+					},
+					"port": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Port is only meaningful for tcp/udp; ignored for http1/http2.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func schema_apoxy_api_compute_v1alpha1_Binding(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "Binding grants a capability to the service. workerd's model is no ambient authority: a service reaches nothing it isn't explicitly bound to.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Name is the identifier exposed to service code (env.<Name>).",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"type": {
+						SchemaProps: spec.SchemaProps{
+							Default: "",
+							Type:    []string{"string"},
+							Format:  "",
+						},
+					},
+					"secret": {
+						SchemaProps: spec.SchemaProps{
+							Ref: ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.SecretBinding"),
+						},
+					},
+					"kv": {
+						SchemaProps: spec.SchemaProps{
+							Ref: ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.KVBinding"),
+						},
+					},
+					"service": {
+						SchemaProps: spec.SchemaProps{
+							Ref: ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceBinding"),
+						},
+					},
+				},
+				Required: []string{"name", "type"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.KVBinding", "github.com/apoxy-dev/apoxy/api/compute/v1alpha1.SecretBinding", "github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceBinding"},
+	}
+}
+
+func schema_apoxy_api_compute_v1alpha1_Build(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.BuildSpec"),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.BuildStatus"),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.BuildSpec", "github.com/apoxy-dev/apoxy/api/compute/v1alpha1.BuildStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
+	}
+}
+
+func schema_apoxy_api_compute_v1alpha1_BuildConfig(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"rootDir": {
+						SchemaProps: spec.SchemaProps{
+							Description: "RootDir within the repo, default \".\".",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"builder": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Builder image used to produce the bundle (e.g. an image wrapping wrangler/esbuild).",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"command": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Command overrides the builder default build command.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"output": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Output is where built bundles are pushed. The per-build digest lands in Build.Status.",
+							Default:     map[string]interface{}{},
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.BundleRef"),
+						},
+					},
+					"env": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.EnvVar"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"output"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.BundleRef", "github.com/apoxy-dev/apoxy/api/compute/v1alpha1.EnvVar"},
+	}
+}
+
+func schema_apoxy_api_compute_v1alpha1_BuildList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.Build"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.Build", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
+	}
+}
+
+func schema_apoxy_api_compute_v1alpha1_BuildSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "BuildSpec is the immutable input of a build. Builds are owned (ownerRef) by the Service whose spec.source produced them.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"serviceRef": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ServiceRef is the owning Service.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"commit": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Commit being built.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"ref": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Ref (branch or tag) the commit came from.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"serviceRef", "commit", "ref"},
+			},
+		},
+	}
+}
+
+func schema_apoxy_api_compute_v1alpha1_BuildStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"phase": {
+						SchemaProps: spec.SchemaProps{
+							Type:   []string{"string"},
+							Format: "",
+						},
+					},
+					"bundle": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Bundle is the produced artifact (digest filled) on success.",
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.BundleRef"),
+						},
+					},
+					"logsRef": {
+						SchemaProps: spec.SchemaProps{
+							Description: "LogsRef points at build logs (e.g. an object-store URL).",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"startedAt": {
+						SchemaProps: spec.SchemaProps{
+							Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+						},
+					},
+					"completedAt": {
+						SchemaProps: spec.SchemaProps{
+							Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+						},
+					},
+					"conditions": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.BundleRef", "k8s.io/apimachinery/pkg/apis/meta/v1.Condition", "k8s.io/apimachinery/pkg/apis/meta/v1.Time"},
+	}
+}
+
+func schema_apoxy_api_compute_v1alpha1_BundleRef(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "BundleRef points at an OCI artifact containing a service bundle. Digest is preferred and is what controllers pin; Tag is a convenience for humans/CLI.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"repo": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Repo is the OCI repository, e.g. \"registry.apoxy.dev/acme/api\".",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"digest": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Digest pins the exact artifact, e.g. \"sha256:...\". Strongly preferred: the serving path is digest-addressed and immutable.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"tag": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Tag is resolved to a Digest by the controller if Digest is unset.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"credentials": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Only one of Credentials or CredentialsRef may be set.",
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.OCICredentials"),
+						},
+					},
+					"credentialsRef": {
+						SchemaProps: spec.SchemaProps{
+							Ref: ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.OCICredentialsRef"),
+						},
+					},
+				},
+				Required: []string{"repo"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.OCICredentials", "github.com/apoxy-dev/apoxy/api/compute/v1alpha1.OCICredentialsRef"},
+	}
+}
+
+func schema_apoxy_api_compute_v1alpha1_Capabilities(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "Capabilities are coarse gates layered on top of bindings (e.g. egress).",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"fetchAPI": {
+						SchemaProps: spec.SchemaProps{
+							Description: "FetchAPI permits outbound fetch() to the public internet. Default true.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func schema_apoxy_api_compute_v1alpha1_EnvVar(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Default: "",
+							Type:    []string{"string"},
+							Format:  "",
+						},
+					},
+					"value": {
+						SchemaProps: spec.SchemaProps{
+							Default: "",
+							Type:    []string{"string"},
+							Format:  "",
+						},
+					},
+				},
+				Required: []string{"name", "value"},
+			},
+		},
+	}
+}
+
+func schema_apoxy_api_compute_v1alpha1_FilterConfig(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "FilterConfig configures a service running in filter mode; its presence in a ServiceConfig selects filter mode.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"phase": {
+						SchemaProps: spec.SchemaProps{
+							Type:   []string{"string"},
+							Format: "",
+						},
+					},
+					"failureMode": {
+						SchemaProps: spec.SchemaProps{
+							Type:   []string{"string"},
+							Format: "",
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func schema_apoxy_api_compute_v1alpha1_GitRepo(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"url": {
+						SchemaProps: spec.SchemaProps{
+							Description: "URL of the git repository.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"credentialsRef": {
+						SchemaProps: spec.SchemaProps{
+							Ref: ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.OCICredentialsRef"),
+						},
+					},
+				},
+				Required: []string{"url"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.OCICredentialsRef"},
+	}
+}
+
+func schema_apoxy_api_compute_v1alpha1_GitSource(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "GitSource is the self-contained git/CI pipeline for a Service (spec.source.git). Everything git-related lives here: the repo, how it's built, what triggers a build, and optional preview environments. Whether a new build goes live is not configured here — that is governed by spec.liveRevision (empty = auto-promote the latest revision, set = pinned).",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"url": {
+						SchemaProps: spec.SchemaProps{
+							Description: "URL of the git repository.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"credentialsRef": {
+						SchemaProps: spec.SchemaProps{
+							Ref: ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.OCICredentialsRef"),
+						},
+					},
+					"build": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.BuildConfig"),
+						},
+					},
+					"triggers": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.Triggers"),
+						},
+					},
+					"previews": {
+						SchemaProps: spec.SchemaProps{
+							Ref: ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.PreviewPolicy"),
+						},
+					},
+				},
+				Required: []string{"url", "build", "triggers"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.BuildConfig", "github.com/apoxy-dev/apoxy/api/compute/v1alpha1.OCICredentialsRef", "github.com/apoxy-dev/apoxy/api/compute/v1alpha1.PreviewPolicy", "github.com/apoxy-dev/apoxy/api/compute/v1alpha1.Triggers"},
+	}
+}
+
+func schema_apoxy_api_compute_v1alpha1_KVBinding(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"namespace": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Namespace identifies the KV store partition (a store name, not a k8s namespace).",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"namespace"},
+			},
+		},
+	}
+}
+
+func schema_apoxy_api_compute_v1alpha1_Module(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "Module is one entry in the service's flat module namespace. The first esModule is the entrypoint. These map 1:1 onto workerd capnp `modules` entries.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Default: "",
+							Type:    []string{"string"},
+							Format:  "",
+						},
+					},
+					"type": {
+						SchemaProps: spec.SchemaProps{
+							Default: "",
+							Type:    []string{"string"},
+							Format:  "",
+						},
+					},
+					"path": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Path within the modules layer of the bundle.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"name", "type", "path"},
+			},
+		},
+	}
+}
+
+func schema_apoxy_api_compute_v1alpha1_OCICredentials(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "OCICredentials are inline registry credentials. Password is write-only.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"username": {
+						SchemaProps: spec.SchemaProps{
+							Type:   []string{"string"},
+							Format: "",
+						},
+					},
+					"password": {
+						SchemaProps: spec.SchemaProps{
+							Type:   []string{"string"},
+							Format: "",
+						},
+					},
+					"passwordData": {
+						SchemaProps: spec.SchemaProps{
+							Type:   []string{"string"},
+							Format: "byte",
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func schema_apoxy_api_compute_v1alpha1_OCICredentialsRef(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "OCICredentialsRef references a Secret (or equivalent) holding pull credentials. Namespace is retained here (unlike intra-group refs) because on-prem this points at a real Kubernetes Secret, which may be namespaced even though our own CRDs are cluster-scoped.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"group": {
+						SchemaProps: spec.SchemaProps{
+							Default: "",
+							Type:    []string{"string"},
+							Format:  "",
+						},
+					},
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Default: "",
+							Type:    []string{"string"},
+							Format:  "",
+						},
+					},
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Default: "",
+							Type:    []string{"string"},
+							Format:  "",
+						},
+					},
+					"namespace": {
+						SchemaProps: spec.SchemaProps{
+							Default: "",
+							Type:    []string{"string"},
+							Format:  "",
+						},
+					},
+				},
+				Required: []string{"group", "kind", "name", "namespace"},
+			},
+		},
+	}
+}
+
+func schema_apoxy_api_compute_v1alpha1_PreviewPolicy(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"enabled": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Enabled spawns ephemeral preview Services (owned by this Service) per non-production branch / PR.",
+							Default:     false,
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"ttl": {
+						SchemaProps: spec.SchemaProps{
+							Description: "TTL after which idle previews are garbage-collected.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Duration"),
+						},
+					},
+				},
+				Required: []string{"enabled"},
+			},
+		},
+		Dependencies: []string{
+			"k8s.io/apimachinery/pkg/apis/meta/v1.Duration"},
+	}
+}
+
+func schema_apoxy_api_compute_v1alpha1_SecretBinding(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"ref": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.OCICredentialsRef"),
+						},
+					},
+					"key": {
+						SchemaProps: spec.SchemaProps{
+							Type:   []string{"string"},
+							Format: "",
+						},
+					},
+				},
+				Required: []string{"ref"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.OCICredentialsRef"},
+	}
+}
+
+func schema_apoxy_api_compute_v1alpha1_Service(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceSpec"),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceStatus"),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceSpec", "github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
+	}
+}
+
+func schema_apoxy_api_compute_v1alpha1_ServiceBinding(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ServiceBinding wires service-to-service calls (e.g. a filter Service invoking a backend Service) without going back out over the network. ServiceRef is cluster-scoped (single tenant), so no namespace.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"serviceRef": {
+						SchemaProps: spec.SchemaProps{
+							Default: "",
+							Type:    []string{"string"},
+							Format:  "",
+						},
+					},
+				},
+				Required: []string{"serviceRef"},
+			},
+		},
+	}
+}
+
+func schema_apoxy_api_compute_v1alpha1_ServiceConfig(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ServiceConfig is the runtime-mode union. The mode is implicit in which member is set rather than carried in a separate discriminator field:\n  - filter set  -> filter mode\n  - backend set -> backend mode\n  - neither set -> backend mode (the default; the defaulter materializes an\n    empty backend block)\n  - both set    -> rejected by validation",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"filter": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Filter selects filter mode and its settings.",
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.FilterConfig"),
+						},
+					},
+					"backend": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Backend selects backend mode and its settings; this is the default mode when neither member is set.",
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.BackendConfig"),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.BackendConfig", "github.com/apoxy-dev/apoxy/api/compute/v1alpha1.FilterConfig"},
+	}
+}
+
+func schema_apoxy_api_compute_v1alpha1_ServiceConfigSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ServiceConfigSpec is the user-owned serving configuration shared by a Service template and a minted ServiceRevision: the runtime-mode union plus runtime settings, bindings, and env. It deliberately carries NO bundle — the bundle a service runs always comes from spec.source resolution, never from this config.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"filter": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Filter selects filter mode and its settings.",
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.FilterConfig"),
+						},
+					},
+					"backend": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Backend selects backend mode and its settings; this is the default mode when neither member is set.",
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.BackendConfig"),
+						},
+					},
+					"runtime": {
+						SchemaProps: spec.SchemaProps{
+							Ref: ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceRuntime"),
+						},
+					},
+					"bindings": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.Binding"),
+									},
+								},
+							},
+						},
+					},
+					"env": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.EnvVar"),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.BackendConfig", "github.com/apoxy-dev/apoxy/api/compute/v1alpha1.Binding", "github.com/apoxy-dev/apoxy/api/compute/v1alpha1.EnvVar", "github.com/apoxy-dev/apoxy/api/compute/v1alpha1.FilterConfig", "github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceRuntime"},
+	}
+}
+
+func schema_apoxy_api_compute_v1alpha1_ServiceLimits(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"cpuTime": {
+						SchemaProps: spec.SchemaProps{
+							Description: "CPUTime is the per-request CPU budget (workerd-style), e.g. \"50ms\".",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Duration"),
+						},
+					},
+					"memory": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Memory cap, e.g. \"128Mi\".",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"k8s.io/apimachinery/pkg/apis/meta/v1.Duration"},
+	}
+}
+
+func schema_apoxy_api_compute_v1alpha1_ServiceList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.Service"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.Service", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
+	}
+}
+
+func schema_apoxy_api_compute_v1alpha1_BundleManifest(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "BundleManifest is the on-disk schema embedded as the OCI config blob. It is NOT a stored API object; the builder emits it and the data plane reads it to reconstruct a workerd config. Kept here so build and serve agree on a schema.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"modules": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.Module"),
+									},
+								},
+							},
+						},
+					},
+					"compatibilityDate": {
+						SchemaProps: spec.SchemaProps{
+							Default: "",
+							Type:    []string{"string"},
+							Format:  "",
+						},
+					},
+					"compatibilityFlags": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"assetsPrefix": {
+						SchemaProps: spec.SchemaProps{
+							Description: "AssetsPrefix, if set, indicates a disk-backed static service mounted here.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"modules", "compatibilityDate"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.Module"},
+	}
+}
+
+func schema_apoxy_api_compute_v1alpha1_ServiceRevision(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceRevisionSpec"),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceStatus"),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceRevisionSpec", "github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
+	}
+}
+
+func schema_apoxy_api_compute_v1alpha1_ServiceRevisionList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceRevision"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceRevision", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
+	}
+}
+
+func schema_apoxy_api_compute_v1alpha1_ServiceRevisionSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ServiceRevisionSpec is a minted, immutable revision: a snapshot of the serving config plus the concrete resolved bundle. Unlike the template, Bundle is always present and digest-pinned — it is the artifact the data plane runs.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"filter": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Filter selects filter mode and its settings.",
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.FilterConfig"),
+						},
+					},
+					"backend": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Backend selects backend mode and its settings; this is the default mode when neither member is set.",
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.BackendConfig"),
+						},
+					},
+					"runtime": {
+						SchemaProps: spec.SchemaProps{
+							Ref: ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceRuntime"),
+						},
+					},
+					"bindings": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.Binding"),
+									},
+								},
+							},
+						},
+					},
+					"env": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.EnvVar"),
+									},
+								},
+							},
+						},
+					},
+					"bundle": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Bundle is the resolved OCI artifact this revision runs. It is always digest-pinned and is set by the controller when minting the revision from spec.source; it is never user-authored.",
+							Default:     map[string]interface{}{},
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.BundleRef"),
+						},
+					},
+				},
+				Required: []string{"bundle"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.BackendConfig", "github.com/apoxy-dev/apoxy/api/compute/v1alpha1.Binding", "github.com/apoxy-dev/apoxy/api/compute/v1alpha1.BundleRef", "github.com/apoxy-dev/apoxy/api/compute/v1alpha1.EnvVar", "github.com/apoxy-dev/apoxy/api/compute/v1alpha1.FilterConfig", "github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceRuntime"},
+	}
+}
+
+func schema_apoxy_api_compute_v1alpha1_ServiceRuntime(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"compatibilityDate": {
+						SchemaProps: spec.SchemaProps{
+							Description: "CompatibilityDate is required by workerd; pinned per revision.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"compatibilityFlags": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"timeout": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Timeout is the wall-clock request timeout. Default 30s.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Duration"),
+						},
+					},
+					"limits": {
+						SchemaProps: spec.SchemaProps{
+							Ref: ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceLimits"),
+						},
+					},
+					"capabilities": {
+						SchemaProps: spec.SchemaProps{
+							Ref: ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.Capabilities"),
+						},
+					},
+				},
+				Required: []string{"compatibilityDate"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.Capabilities", "github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceLimits", "k8s.io/apimachinery/pkg/apis/meta/v1.Duration"},
+	}
+}
+
+func schema_apoxy_api_compute_v1alpha1_ServiceSource(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ServiceSource is where a Service's bundle comes from. Exactly one variant is set; the populated member IS the discriminator. The resolved digest always lands in the minted ServiceRevision.spec.bundle — users never author a bundle directly.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"oci": {
+						SchemaProps: spec.SchemaProps{
+							Description: "OCI is a directly-pushed OCI bundle (push model). The controller resolves its tag to a digest and mints a revision pinned to that digest.",
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.BundleRef"),
+						},
+					},
+					"git": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Git is a git/CI build pipeline (git model). Builds produce the digest and mint revisions.",
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.GitSource"),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.BundleRef", "github.com/apoxy-dev/apoxy/api/compute/v1alpha1.GitSource"},
+	}
+}
+
+func schema_apoxy_api_compute_v1alpha1_ServiceSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"template": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Template is the desired serving config for the next minted revision. Always user-owned. A change to Template mints a ServiceRevision.",
+							Default:     map[string]interface{}{},
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceTemplateSpec"),
+						},
+					},
+					"source": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Source is where the service's bundle comes from. Exactly one variant: a directly-pushed OCI bundle (oci) or a git/CI pipeline (git). The resolved digest always lands in the minted ServiceRevision.spec.bundle.",
+							Default:     map[string]interface{}{},
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceSource"),
+						},
+					},
+					"liveRevision": {
+						SchemaProps: spec.SchemaProps{
+							Description: "LiveRevision selects which ServiceRevision serves:\n  - empty: auto — the latest ready revision is served (continuous deploy\n    for push, auto-promote for git). The served name is reported in\n    status.liveRevision; the controller never writes this field.\n  - set: pinned — exactly the named revision is served (rollback, or\n    manual git promotion). New revisions are still minted but do not go\n    live until this is repointed. The target must still be retained\n    (see RevisionHistoryLimit).",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"revisionHistoryLimit": {
+						SchemaProps: spec.SchemaProps{
+							Description: "RevisionHistoryLimit defaults to 10.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+				},
+				Required: []string{"template", "source"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceSource", "github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceTemplateSpec"},
+	}
+}
+
+func schema_apoxy_api_compute_v1alpha1_ServiceStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"observedGeneration": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ObservedGeneration is the most recent spec generation the controller has reconciled into this status.",
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
+					"liveRevision": {
+						SchemaProps: spec.SchemaProps{
+							Description: "LiveRevision is the ServiceRevision currently being served. When spec.liveRevision is empty (auto) it tracks LatestRevision; when pinned it echoes the pinned revision once that revision is actually serving.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"latestRevision": {
+						SchemaProps: spec.SchemaProps{
+							Description: "LatestRevision is the most recently minted ServiceRevision name. A gap between this and LiveRevision means a newer revision exists but is not live (a pending rollout, or a held manual promotion).",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"conditions": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"k8s.io/apimachinery/pkg/apis/meta/v1.Condition"},
+	}
+}
+
+func schema_apoxy_api_compute_v1alpha1_ServiceTemplateSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ServiceTemplateSpec is Service.spec.template: the desired config for the NEXT minted revision. Following the Knative Service/Revision shape, it pairs metadata (propagated onto minted ServiceRevisions) with the bundle-less config spec. Editing it mints a new ServiceRevision.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Description: "metadata's labels/annotations propagate to minted revisions; an explicit name (or generateName) controls revision naming. Namespace is rejected: these kinds are cluster-scoped.",
+							Default:     map[string]interface{}{},
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceConfigSpec"),
+						},
+					},
+				},
+				Required: []string{"spec"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceConfigSpec", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
+	}
+}
+
+func schema_apoxy_api_compute_v1alpha1_Triggers(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"productionBranch": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ProductionBranch is built+promoted on push. Default \"main\".",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"paths": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Paths, if set, restricts triggering to changes under these globs.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"onPullRequest": {
+						SchemaProps: spec.SchemaProps{
+							Description: "OnPullRequest enables preview builds for PR branches.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+				},
+			},
+		},
 	}
 }
 
@@ -666,9 +2076,8 @@ func schema_apoxy_api_controllers_v1alpha1_OpenTelemetrySink(ref common.Referenc
 								Allows: true,
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -748,9 +2157,8 @@ func schema_apoxy_api_controllers_v1alpha1_ProxyAccessLogs(ref common.ReferenceC
 								Allows: true,
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -824,8 +2232,7 @@ func schema_apoxy_api_controllers_v1alpha1_ProxyList(ref common.ReferenceCallbac
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("github.com/apoxy-dev/apoxy/api/controllers/v1alpha1.Proxy"),
+										Ref: ref("github.com/apoxy-dev/apoxy/api/controllers/v1alpha1.Proxy"),
 									},
 								},
 							},
@@ -965,8 +2372,7 @@ func schema_apoxy_api_controllers_v1alpha1_ProxyReplicaStatus(ref common.Referen
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("github.com/apoxy-dev/apoxy/api/controllers/v1alpha1.ReplicaAddress"),
+										Ref: ref("github.com/apoxy-dev/apoxy/api/controllers/v1alpha1.ReplicaAddress"),
 									},
 								},
 							},
@@ -1002,8 +2408,7 @@ func schema_apoxy_api_controllers_v1alpha1_ProxySpec(ref common.ReferenceCallbac
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("github.com/apoxy-dev/apoxy/api/controllers/v1alpha1.ProxyListener"),
+										Ref: ref("github.com/apoxy-dev/apoxy/api/controllers/v1alpha1.ProxyListener"),
 									},
 								},
 							},
@@ -1064,9 +2469,8 @@ func schema_apoxy_api_controllers_v1alpha1_ProxyStatus(ref common.ReferenceCallb
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -1115,8 +2519,7 @@ func schema_apoxy_api_controllers_v1alpha1_ProxyTracing(ref common.ReferenceCall
 								Allows: true,
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("github.com/apoxy-dev/apoxy/api/controllers/v1alpha1.ProxyTracingTagValue"),
+										Ref: ref("github.com/apoxy-dev/apoxy/api/controllers/v1alpha1.ProxyTracingTagValue"),
 									},
 								},
 							},
@@ -1228,8 +2631,7 @@ func schema_apoxy_api_controllers_v1alpha1_ThirdPartySinks(ref common.ReferenceC
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("github.com/apoxy-dev/apoxy/api/controllers/v1alpha1.OpenTelemetrySink"),
+										Ref: ref("github.com/apoxy-dev/apoxy/api/controllers/v1alpha1.OpenTelemetrySink"),
 									},
 								},
 							},
@@ -1317,8 +2719,7 @@ func schema_apoxy_api_coordination_v1_LeaseList(ref common.ReferenceCallback) co
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("github.com/apoxy-dev/apoxy/api/coordination/v1.Lease"),
+										Ref: ref("github.com/apoxy-dev/apoxy/api/coordination/v1.Lease"),
 									},
 								},
 							},
@@ -1428,9 +2829,8 @@ func schema_apoxy_api_core_v1alpha_AgentStatus(ref common.ReferenceCallback) com
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -1444,9 +2844,8 @@ func schema_apoxy_api_core_v1alpha_AgentStatus(ref common.ReferenceCallback) com
 								Allows: true,
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -1604,8 +3003,7 @@ func schema_apoxy_api_core_v1alpha_BackendList(ref common.ReferenceCallback) com
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("github.com/apoxy-dev/apoxy/api/core/v1alpha.Backend"),
+										Ref: ref("github.com/apoxy-dev/apoxy/api/core/v1alpha.Backend"),
 									},
 								},
 							},
@@ -1633,8 +3031,7 @@ func schema_apoxy_api_core_v1alpha_BackendSpec(ref common.ReferenceCallback) com
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("github.com/apoxy-dev/apoxy/api/core/v1alpha.BackendEndpoint"),
+										Ref: ref("github.com/apoxy-dev/apoxy/api/core/v1alpha.BackendEndpoint"),
 									},
 								},
 							},
@@ -1684,8 +3081,7 @@ func schema_apoxy_api_core_v1alpha_BackendStatus(ref common.ReferenceCallback) c
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
+										Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
 									},
 								},
 							},
@@ -1779,8 +3175,7 @@ func schema_apoxy_api_core_v1alpha_CloudMonitoringIntegrationList(ref common.Ref
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("github.com/apoxy-dev/apoxy/api/core/v1alpha.CloudMonitoringIntegration"),
+										Ref: ref("github.com/apoxy-dev/apoxy/api/core/v1alpha.CloudMonitoringIntegration"),
 									},
 								},
 							},
@@ -1857,8 +3252,7 @@ func schema_apoxy_api_core_v1alpha_CloudMonitoringIntegrationStatus(ref common.R
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
+										Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
 									},
 								},
 							},
@@ -1994,8 +3388,7 @@ func schema_apoxy_api_core_v1alpha_DomainZoneList(ref common.ReferenceCallback) 
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("github.com/apoxy-dev/apoxy/api/core/v1alpha.DomainZone"),
+										Ref: ref("github.com/apoxy-dev/apoxy/api/core/v1alpha.DomainZone"),
 									},
 								},
 							},
@@ -2029,9 +3422,8 @@ func schema_apoxy_api_core_v1alpha_DomainZoneSpec(ref common.ReferenceCallback) 
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -2077,8 +3469,7 @@ func schema_apoxy_api_core_v1alpha_DomainZoneStatus(ref common.ReferenceCallback
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
+										Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
 									},
 								},
 							},
@@ -2272,9 +3663,8 @@ func schema_apoxy_api_core_v1alpha_NameserverStatus(ref common.ReferenceCallback
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -2287,9 +3677,8 @@ func schema_apoxy_api_core_v1alpha_NameserverStatus(ref common.ReferenceCallback
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -2546,8 +3935,7 @@ func schema_apoxy_api_core_v1alpha_TunnelNodeList(ref common.ReferenceCallback) 
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("github.com/apoxy-dev/apoxy/api/core/v1alpha.TunnelNode"),
+										Ref: ref("github.com/apoxy-dev/apoxy/api/core/v1alpha.TunnelNode"),
 									},
 								},
 							},
@@ -2595,9 +3983,8 @@ func schema_apoxy_api_core_v1alpha_TunnelNodeStatus(ref common.ReferenceCallback
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -2616,8 +4003,7 @@ func schema_apoxy_api_core_v1alpha_TunnelNodeStatus(ref common.ReferenceCallback
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("github.com/apoxy-dev/apoxy/api/core/v1alpha.AgentStatus"),
+										Ref: ref("github.com/apoxy-dev/apoxy/api/core/v1alpha.AgentStatus"),
 									},
 								},
 							},
@@ -2856,8 +4242,7 @@ func schema_apoxy_api_core_v1alpha2_BackendList(ref common.ReferenceCallback) co
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.Backend"),
+										Ref: ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.Backend"),
 									},
 								},
 							},
@@ -2885,8 +4270,7 @@ func schema_apoxy_api_core_v1alpha2_BackendSpec(ref common.ReferenceCallback) co
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.BackendEndpoint"),
+										Ref: ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.BackendEndpoint"),
 									},
 								},
 							},
@@ -2936,8 +4320,7 @@ func schema_apoxy_api_core_v1alpha2_BackendStatus(ref common.ReferenceCallback) 
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
+										Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
 									},
 								},
 							},
@@ -3031,8 +4414,7 @@ func schema_apoxy_api_core_v1alpha2_CloudMonitoringIntegrationList(ref common.Re
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.CloudMonitoringIntegration"),
+										Ref: ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.CloudMonitoringIntegration"),
 									},
 								},
 							},
@@ -3110,8 +4492,7 @@ func schema_apoxy_api_core_v1alpha2_CloudMonitoringIntegrationStatus(ref common.
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
+										Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
 									},
 								},
 							},
@@ -3247,8 +4628,7 @@ func schema_apoxy_api_core_v1alpha2_DomainZoneList(ref common.ReferenceCallback)
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.DomainZone"),
+										Ref: ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.DomainZone"),
 									},
 								},
 							},
@@ -3282,9 +4662,8 @@ func schema_apoxy_api_core_v1alpha2_DomainZoneSpec(ref common.ReferenceCallback)
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -3330,8 +4709,7 @@ func schema_apoxy_api_core_v1alpha2_DomainZoneStatus(ref common.ReferenceCallbac
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
+										Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
 									},
 								},
 							},
@@ -3525,9 +4903,8 @@ func schema_apoxy_api_core_v1alpha2_NameserverStatus(ref common.ReferenceCallbac
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -3540,9 +4917,8 @@ func schema_apoxy_api_core_v1alpha2_NameserverStatus(ref common.ReferenceCallbac
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -3577,9 +4953,8 @@ func schema_apoxy_api_core_v1alpha2_OpenTelemetrySink(ref common.ReferenceCallba
 								Allows: true,
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -3659,9 +5034,8 @@ func schema_apoxy_api_core_v1alpha2_ProxyAccessLogs(ref common.ReferenceCallback
 								Allows: true,
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -3735,8 +5109,7 @@ func schema_apoxy_api_core_v1alpha2_ProxyList(ref common.ReferenceCallback) comm
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.Proxy"),
+										Ref: ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.Proxy"),
 									},
 								},
 							},
@@ -3786,8 +5159,7 @@ func schema_apoxy_api_core_v1alpha2_ProxyReplicaStatus(ref common.ReferenceCallb
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.ReplicaAddress"),
+										Ref: ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.ReplicaAddress"),
 									},
 								},
 							},
@@ -3850,9 +5222,8 @@ func schema_apoxy_api_core_v1alpha2_ProxyStatus(ref common.ReferenceCallback) co
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -3946,8 +5317,7 @@ func schema_apoxy_api_core_v1alpha2_ProxyTracing(ref common.ReferenceCallback) c
 								Allows: true,
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.ProxyTracingTagValue"),
+										Ref: ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.ProxyTracingTagValue"),
 									},
 								},
 							},
@@ -4231,8 +5601,7 @@ func schema_apoxy_api_core_v1alpha2_ThirdPartySinks(ref common.ReferenceCallback
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.OpenTelemetrySink"),
+										Ref: ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.OpenTelemetrySink"),
 									},
 								},
 							},
@@ -4450,8 +5819,7 @@ func schema_apoxy_api_core_v1alpha2_TunnelAgentList(ref common.ReferenceCallback
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.TunnelAgent"),
+										Ref: ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.TunnelAgent"),
 									},
 								},
 							},
@@ -4525,8 +5893,7 @@ func schema_apoxy_api_core_v1alpha2_TunnelAgentStatus(ref common.ReferenceCallba
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.TunnelAgentConnection"),
+										Ref: ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.TunnelAgentConnection"),
 									},
 								},
 							},
@@ -4592,8 +5959,7 @@ func schema_apoxy_api_core_v1alpha2_TunnelList(ref common.ReferenceCallback) com
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.Tunnel"),
+										Ref: ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.Tunnel"),
 									},
 								},
 							},
@@ -4669,9 +6035,8 @@ func schema_apoxy_api_core_v1alpha2_TunnelStatus(ref common.ReferenceCallback) c
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -4819,8 +6184,7 @@ func schema_apoxy_api_core_v1alpha3_DomainRecordList(ref common.ReferenceCallbac
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("github.com/apoxy-dev/apoxy/api/core/v1alpha3.DomainRecord"),
+										Ref: ref("github.com/apoxy-dev/apoxy/api/core/v1alpha3.DomainRecord"),
 									},
 								},
 							},
@@ -4905,8 +6269,7 @@ func schema_apoxy_api_core_v1alpha3_DomainRecordStatus(ref common.ReferenceCallb
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
+										Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
 									},
 								},
 							},
@@ -4919,9 +6282,8 @@ func schema_apoxy_api_core_v1alpha3_DomainRecordStatus(ref common.ReferenceCallb
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -4975,9 +6337,8 @@ func schema_apoxy_api_core_v1alpha3_DomainRecordTargetDNS(ref common.ReferenceCa
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -4990,9 +6351,8 @@ func schema_apoxy_api_core_v1alpha3_DomainRecordTargetDNS(ref common.ReferenceCa
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -5012,9 +6372,8 @@ func schema_apoxy_api_core_v1alpha3_DomainRecordTargetDNS(ref common.ReferenceCa
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -5027,9 +6386,8 @@ func schema_apoxy_api_core_v1alpha3_DomainRecordTargetDNS(ref common.ReferenceCa
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -5042,9 +6400,8 @@ func schema_apoxy_api_core_v1alpha3_DomainRecordTargetDNS(ref common.ReferenceCa
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -5057,9 +6414,8 @@ func schema_apoxy_api_core_v1alpha3_DomainRecordTargetDNS(ref common.ReferenceCa
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -5072,9 +6428,8 @@ func schema_apoxy_api_core_v1alpha3_DomainRecordTargetDNS(ref common.ReferenceCa
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -5087,9 +6442,8 @@ func schema_apoxy_api_core_v1alpha3_DomainRecordTargetDNS(ref common.ReferenceCa
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -5102,9 +6456,8 @@ func schema_apoxy_api_core_v1alpha3_DomainRecordTargetDNS(ref common.ReferenceCa
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -5117,9 +6470,8 @@ func schema_apoxy_api_core_v1alpha3_DomainRecordTargetDNS(ref common.ReferenceCa
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -5132,9 +6484,8 @@ func schema_apoxy_api_core_v1alpha3_DomainRecordTargetDNS(ref common.ReferenceCa
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -5147,9 +6498,8 @@ func schema_apoxy_api_core_v1alpha3_DomainRecordTargetDNS(ref common.ReferenceCa
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -5260,8 +6610,7 @@ func schema_apoxy_api_core_v1alpha3_DomainZoneList(ref common.ReferenceCallback)
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("github.com/apoxy-dev/apoxy/api/core/v1alpha3.DomainZone"),
+										Ref: ref("github.com/apoxy-dev/apoxy/api/core/v1alpha3.DomainZone"),
 									},
 								},
 							},
@@ -5295,9 +6644,8 @@ func schema_apoxy_api_core_v1alpha3_DomainZoneSpec(ref common.ReferenceCallback)
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -5343,8 +6691,7 @@ func schema_apoxy_api_core_v1alpha3_DomainZoneStatus(ref common.ReferenceCallbac
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
+										Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
 									},
 								},
 							},
@@ -5410,9 +6757,8 @@ func schema_apoxy_api_core_v1alpha3_NameserverStatus(ref common.ReferenceCallbac
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -5425,9 +6771,8 @@ func schema_apoxy_api_core_v1alpha3_NameserverStatus(ref common.ReferenceCallbac
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -5702,8 +7047,7 @@ func schema_apoxy_api_extensions_v1alpha1_EdgeFunctionList(ref common.ReferenceC
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("github.com/apoxy-dev/apoxy/api/extensions/v1alpha1.EdgeFunction"),
+										Ref: ref("github.com/apoxy-dev/apoxy/api/extensions/v1alpha1.EdgeFunction"),
 									},
 								},
 							},
@@ -5797,8 +7141,7 @@ func schema_apoxy_api_extensions_v1alpha1_EdgeFunctionRevisionList(ref common.Re
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("github.com/apoxy-dev/apoxy/api/extensions/v1alpha1.EdgeFunctionRevision"),
+										Ref: ref("github.com/apoxy-dev/apoxy/api/extensions/v1alpha1.EdgeFunctionRevision"),
 									},
 								},
 							},
@@ -5835,8 +7178,7 @@ func schema_apoxy_api_extensions_v1alpha1_EdgeFunctionRevisionStatus(ref common.
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
+										Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
 									},
 								},
 							},
@@ -5912,8 +7254,7 @@ func schema_apoxy_api_extensions_v1alpha1_EdgeFunctionSpec(ref common.ReferenceC
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("github.com/apoxy-dev/apoxy/api/extensions/v1alpha1.EnvVar"),
+										Ref: ref("github.com/apoxy-dev/apoxy/api/extensions/v1alpha1.EnvVar"),
 									},
 								},
 							},
@@ -5954,8 +7295,7 @@ func schema_apoxy_api_extensions_v1alpha1_EdgeFunctionStatus(ref common.Referenc
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
+										Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
 									},
 								},
 							},
@@ -6081,8 +7421,7 @@ func schema_apoxy_api_extensions_v1alpha1_JavaScriptAssetsSource(ref common.Refe
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("github.com/apoxy-dev/apoxy/api/extensions/v1alpha1.SourceFile"),
+										Ref: ref("github.com/apoxy-dev/apoxy/api/extensions/v1alpha1.SourceFile"),
 									},
 								},
 							},
@@ -6412,9 +7751,8 @@ func schema_apoxy_api_extensions_v1alpha2_CompressorSpec(ref common.ReferenceCal
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -6434,9 +7772,8 @@ func schema_apoxy_api_extensions_v1alpha2_CompressorSpec(ref common.ReferenceCal
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -6557,8 +7894,7 @@ func schema_apoxy_api_extensions_v1alpha2_DirectResponseList(ref common.Referenc
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.DirectResponse"),
+										Ref: ref("github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.DirectResponse"),
 									},
 								},
 							},
@@ -6601,8 +7937,7 @@ func schema_apoxy_api_extensions_v1alpha2_DirectResponseSpec(ref common.Referenc
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.Header"),
+										Ref: ref("github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.Header"),
 									},
 								},
 							},
@@ -6636,8 +7971,7 @@ func schema_apoxy_api_extensions_v1alpha2_DirectResponseStatus(ref common.Refere
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
+										Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
 									},
 								},
 							},
@@ -6768,8 +8102,7 @@ func schema_apoxy_api_extensions_v1alpha2_EdgeFunctionList(ref common.ReferenceC
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.EdgeFunction"),
+										Ref: ref("github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.EdgeFunction"),
 									},
 								},
 							},
@@ -6863,8 +8196,7 @@ func schema_apoxy_api_extensions_v1alpha2_EdgeFunctionRevisionList(ref common.Re
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.EdgeFunctionRevision"),
+										Ref: ref("github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.EdgeFunctionRevision"),
 									},
 								},
 							},
@@ -6907,8 +8239,7 @@ func schema_apoxy_api_extensions_v1alpha2_EdgeFunctionRevisionSpec(ref common.Re
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.EnvVar"),
+										Ref: ref("github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.EnvVar"),
 									},
 								},
 							},
@@ -6951,8 +8282,7 @@ func schema_apoxy_api_extensions_v1alpha2_EdgeFunctionRevisionStatus(ref common.
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
+										Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
 									},
 								},
 							},
@@ -7049,8 +8379,7 @@ func schema_apoxy_api_extensions_v1alpha2_EdgeFunctionStatus(ref common.Referenc
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
+										Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
 									},
 								},
 							},
@@ -7207,8 +8536,7 @@ func schema_apoxy_api_extensions_v1alpha2_HTTPRouteFilterList(ref common.Referen
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.HTTPRouteFilter"),
+										Ref: ref("github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.HTTPRouteFilter"),
 									},
 								},
 							},
@@ -7258,8 +8586,7 @@ func schema_apoxy_api_extensions_v1alpha2_HTTPRouteFilterStatus(ref common.Refer
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
+										Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
 									},
 								},
 							},
@@ -7315,8 +8642,7 @@ func schema_apoxy_api_extensions_v1alpha2_JavaScriptAssetsSource(ref common.Refe
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.SourceFile"),
+										Ref: ref("github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.SourceFile"),
 									},
 								},
 							},
@@ -7711,8 +9037,7 @@ func schema_apoxy_api_gateway_v1_GRPCRouteList(ref common.ReferenceCallback) com
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("github.com/apoxy-dev/apoxy/api/gateway/v1.GRPCRoute"),
+										Ref: ref("github.com/apoxy-dev/apoxy/api/gateway/v1.GRPCRoute"),
 									},
 								},
 							},
@@ -7872,8 +9197,7 @@ func schema_apoxy_api_gateway_v1_GatewayClassList(ref common.ReferenceCallback) 
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("github.com/apoxy-dev/apoxy/api/gateway/v1.GatewayClass"),
+										Ref: ref("github.com/apoxy-dev/apoxy/api/gateway/v1.GatewayClass"),
 									},
 								},
 							},
@@ -7941,8 +9265,7 @@ func schema_apoxy_api_gateway_v1_GatewayList(ref common.ReferenceCallback) commo
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("github.com/apoxy-dev/apoxy/api/gateway/v1.Gateway"),
+										Ref: ref("github.com/apoxy-dev/apoxy/api/gateway/v1.Gateway"),
 									},
 								},
 							},
@@ -8056,8 +9379,7 @@ func schema_apoxy_api_gateway_v1_HTTPRouteList(ref common.ReferenceCallback) com
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("github.com/apoxy-dev/apoxy/api/gateway/v1.HTTPRoute"),
+										Ref: ref("github.com/apoxy-dev/apoxy/api/gateway/v1.HTTPRoute"),
 									},
 								},
 							},
@@ -8171,8 +9493,7 @@ func schema_apoxy_api_gateway_v1alpha2_TCPRouteList(ref common.ReferenceCallback
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("github.com/apoxy-dev/apoxy/api/gateway/v1alpha2.TCPRoute"),
+										Ref: ref("github.com/apoxy-dev/apoxy/api/gateway/v1alpha2.TCPRoute"),
 									},
 								},
 							},
@@ -8286,8 +9607,7 @@ func schema_apoxy_api_gateway_v1alpha2_TLSRouteList(ref common.ReferenceCallback
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("github.com/apoxy-dev/apoxy/api/gateway/v1alpha2.TLSRoute"),
+										Ref: ref("github.com/apoxy-dev/apoxy/api/gateway/v1alpha2.TLSRoute"),
 									},
 								},
 							},
@@ -8401,8 +9721,7 @@ func schema_apoxy_api_gateway_v1alpha2_UDPRouteList(ref common.ReferenceCallback
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("github.com/apoxy-dev/apoxy/api/gateway/v1alpha2.UDPRoute"),
+										Ref: ref("github.com/apoxy-dev/apoxy/api/gateway/v1alpha2.UDPRoute"),
 									},
 								},
 							},
@@ -8558,8 +9877,7 @@ func schema_apoxy_api_policy_v1alpha1_RateLimitList(ref common.ReferenceCallback
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("github.com/apoxy-dev/apoxy/api/policy/v1alpha1.RateLimit"),
+										Ref: ref("github.com/apoxy-dev/apoxy/api/policy/v1alpha1.RateLimit"),
 									},
 								},
 							},
@@ -8752,8 +10070,7 @@ func schema_k8sio_api_coordination_v1_LeaseList(ref common.ReferenceCallback) co
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/coordination/v1.Lease"),
+										Ref: ref("k8s.io/api/coordination/v1.Lease"),
 									},
 								},
 							},
@@ -8997,8 +10314,7 @@ func schema_k8sio_api_core_v1_AvoidPods(ref common.ReferenceCallback) common.Ope
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.PreferAvoidPodsEntry"),
+										Ref: ref("k8s.io/api/core/v1.PreferAvoidPodsEntry"),
 									},
 								},
 							},
@@ -9246,9 +10562,8 @@ func schema_k8sio_api_core_v1_CSIPersistentVolumeSource(ref common.ReferenceCall
 								Allows: true,
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -9330,9 +10645,8 @@ func schema_k8sio_api_core_v1_CSIVolumeSource(ref common.ReferenceCallback) comm
 								Allows: true,
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -9372,9 +10686,8 @@ func schema_k8sio_api_core_v1_Capabilities(ref common.ReferenceCallback) common.
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -9392,9 +10705,8 @@ func schema_k8sio_api_core_v1_Capabilities(ref common.ReferenceCallback) common.
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -9425,9 +10737,8 @@ func schema_k8sio_api_core_v1_CephFSPersistentVolumeSource(ref common.ReferenceC
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -9495,9 +10806,8 @@ func schema_k8sio_api_core_v1_CephFSVolumeSource(ref common.ReferenceCallback) c
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -9794,8 +11104,7 @@ func schema_k8sio_api_core_v1_ComponentStatus(ref common.ReferenceCallback) comm
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.ComponentCondition"),
+										Ref: ref("k8s.io/api/core/v1.ComponentCondition"),
 									},
 								},
 							},
@@ -9844,8 +11153,7 @@ func schema_k8sio_api_core_v1_ComponentStatusList(ref common.ReferenceCallback) 
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.ComponentStatus"),
+										Ref: ref("k8s.io/api/core/v1.ComponentStatus"),
 									},
 								},
 							},
@@ -9903,9 +11211,8 @@ func schema_k8sio_api_core_v1_ConfigMap(ref common.ReferenceCallback) common.Ope
 								Allows: true,
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -10039,8 +11346,7 @@ func schema_k8sio_api_core_v1_ConfigMapList(ref common.ReferenceCallback) common
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.ConfigMap"),
+										Ref: ref("k8s.io/api/core/v1.ConfigMap"),
 									},
 								},
 							},
@@ -10134,8 +11440,7 @@ func schema_k8sio_api_core_v1_ConfigMapProjection(ref common.ReferenceCallback) 
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.KeyToPath"),
+										Ref: ref("k8s.io/api/core/v1.KeyToPath"),
 									},
 								},
 							},
@@ -10183,8 +11488,7 @@ func schema_k8sio_api_core_v1_ConfigMapVolumeSource(ref common.ReferenceCallback
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.KeyToPath"),
+										Ref: ref("k8s.io/api/core/v1.KeyToPath"),
 									},
 								},
 							},
@@ -10246,9 +11550,8 @@ func schema_k8sio_api_core_v1_Container(ref common.ReferenceCallback) common.Ope
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -10266,9 +11569,8 @@ func schema_k8sio_api_core_v1_Container(ref common.ReferenceCallback) common.Ope
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -10299,8 +11601,7 @@ func schema_k8sio_api_core_v1_Container(ref common.ReferenceCallback) common.Ope
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.ContainerPort"),
+										Ref: ref("k8s.io/api/core/v1.ContainerPort"),
 									},
 								},
 							},
@@ -10318,8 +11619,7 @@ func schema_k8sio_api_core_v1_Container(ref common.ReferenceCallback) common.Ope
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.EnvFromSource"),
+										Ref: ref("k8s.io/api/core/v1.EnvFromSource"),
 									},
 								},
 							},
@@ -10342,8 +11642,7 @@ func schema_k8sio_api_core_v1_Container(ref common.ReferenceCallback) common.Ope
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.EnvVar"),
+										Ref: ref("k8s.io/api/core/v1.EnvVar"),
 									},
 								},
 							},
@@ -10368,8 +11667,7 @@ func schema_k8sio_api_core_v1_Container(ref common.ReferenceCallback) common.Ope
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.ContainerResizePolicy"),
+										Ref: ref("k8s.io/api/core/v1.ContainerResizePolicy"),
 									},
 								},
 							},
@@ -10394,8 +11692,7 @@ func schema_k8sio_api_core_v1_Container(ref common.ReferenceCallback) common.Ope
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.ContainerRestartRule"),
+										Ref: ref("k8s.io/api/core/v1.ContainerRestartRule"),
 									},
 								},
 							},
@@ -10418,8 +11715,7 @@ func schema_k8sio_api_core_v1_Container(ref common.ReferenceCallback) common.Ope
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.VolumeMount"),
+										Ref: ref("k8s.io/api/core/v1.VolumeMount"),
 									},
 								},
 							},
@@ -10442,8 +11738,7 @@ func schema_k8sio_api_core_v1_Container(ref common.ReferenceCallback) common.Ope
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.VolumeDevice"),
+										Ref: ref("k8s.io/api/core/v1.VolumeDevice"),
 									},
 								},
 							},
@@ -10589,9 +11884,8 @@ func schema_k8sio_api_core_v1_ContainerImage(ref common.ReferenceCallback) commo
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -10747,9 +12041,8 @@ func schema_k8sio_api_core_v1_ContainerRestartRuleOnExitCodes(ref common.Referen
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: 0,
-										Type:    []string{"integer"},
-										Format:  "int32",
+										Type:   []string{"integer"},
+										Format: "int32",
 									},
 								},
 							},
@@ -11019,8 +12312,7 @@ func schema_k8sio_api_core_v1_ContainerStatus(ref common.ReferenceCallback) comm
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.VolumeMountStatus"),
+										Ref: ref("k8s.io/api/core/v1.VolumeMountStatus"),
 									},
 								},
 							},
@@ -11049,8 +12341,7 @@ func schema_k8sio_api_core_v1_ContainerStatus(ref common.ReferenceCallback) comm
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.ResourceStatus"),
+										Ref: ref("k8s.io/api/core/v1.ResourceStatus"),
 									},
 								},
 							},
@@ -11135,8 +12426,7 @@ func schema_k8sio_api_core_v1_DownwardAPIProjection(ref common.ReferenceCallback
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.DownwardAPIVolumeFile"),
+										Ref: ref("k8s.io/api/core/v1.DownwardAPIVolumeFile"),
 									},
 								},
 							},
@@ -11212,8 +12502,7 @@ func schema_k8sio_api_core_v1_DownwardAPIVolumeSource(ref common.ReferenceCallba
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.DownwardAPIVolumeFile"),
+										Ref: ref("k8s.io/api/core/v1.DownwardAPIVolumeFile"),
 									},
 								},
 							},
@@ -11379,8 +12668,7 @@ func schema_k8sio_api_core_v1_EndpointSubset(ref common.ReferenceCallback) commo
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.EndpointAddress"),
+										Ref: ref("k8s.io/api/core/v1.EndpointAddress"),
 									},
 								},
 							},
@@ -11398,8 +12686,7 @@ func schema_k8sio_api_core_v1_EndpointSubset(ref common.ReferenceCallback) commo
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.EndpointAddress"),
+										Ref: ref("k8s.io/api/core/v1.EndpointAddress"),
 									},
 								},
 							},
@@ -11417,8 +12704,7 @@ func schema_k8sio_api_core_v1_EndpointSubset(ref common.ReferenceCallback) commo
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.EndpointPort"),
+										Ref: ref("k8s.io/api/core/v1.EndpointPort"),
 									},
 								},
 							},
@@ -11472,8 +12758,7 @@ func schema_k8sio_api_core_v1_Endpoints(ref common.ReferenceCallback) common.Ope
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.EndpointSubset"),
+										Ref: ref("k8s.io/api/core/v1.EndpointSubset"),
 									},
 								},
 							},
@@ -11522,8 +12807,7 @@ func schema_k8sio_api_core_v1_EndpointsList(ref common.ReferenceCallback) common
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.Endpoints"),
+										Ref: ref("k8s.io/api/core/v1.Endpoints"),
 									},
 								},
 							},
@@ -11688,9 +12972,8 @@ func schema_k8sio_api_core_v1_EphemeralContainer(ref common.ReferenceCallback) c
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -11708,9 +12991,8 @@ func schema_k8sio_api_core_v1_EphemeralContainer(ref common.ReferenceCallback) c
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -11741,8 +13023,7 @@ func schema_k8sio_api_core_v1_EphemeralContainer(ref common.ReferenceCallback) c
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.ContainerPort"),
+										Ref: ref("k8s.io/api/core/v1.ContainerPort"),
 									},
 								},
 							},
@@ -11760,8 +13041,7 @@ func schema_k8sio_api_core_v1_EphemeralContainer(ref common.ReferenceCallback) c
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.EnvFromSource"),
+										Ref: ref("k8s.io/api/core/v1.EnvFromSource"),
 									},
 								},
 							},
@@ -11784,8 +13064,7 @@ func schema_k8sio_api_core_v1_EphemeralContainer(ref common.ReferenceCallback) c
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.EnvVar"),
+										Ref: ref("k8s.io/api/core/v1.EnvVar"),
 									},
 								},
 							},
@@ -11810,8 +13089,7 @@ func schema_k8sio_api_core_v1_EphemeralContainer(ref common.ReferenceCallback) c
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.ContainerResizePolicy"),
+										Ref: ref("k8s.io/api/core/v1.ContainerResizePolicy"),
 									},
 								},
 							},
@@ -11836,8 +13114,7 @@ func schema_k8sio_api_core_v1_EphemeralContainer(ref common.ReferenceCallback) c
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.ContainerRestartRule"),
+										Ref: ref("k8s.io/api/core/v1.ContainerRestartRule"),
 									},
 								},
 							},
@@ -11860,8 +13137,7 @@ func schema_k8sio_api_core_v1_EphemeralContainer(ref common.ReferenceCallback) c
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.VolumeMount"),
+										Ref: ref("k8s.io/api/core/v1.VolumeMount"),
 									},
 								},
 							},
@@ -11884,8 +13160,7 @@ func schema_k8sio_api_core_v1_EphemeralContainer(ref common.ReferenceCallback) c
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.VolumeDevice"),
+										Ref: ref("k8s.io/api/core/v1.VolumeDevice"),
 									},
 								},
 							},
@@ -12015,9 +13290,8 @@ func schema_k8sio_api_core_v1_EphemeralContainerCommon(ref common.ReferenceCallb
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -12035,9 +13309,8 @@ func schema_k8sio_api_core_v1_EphemeralContainerCommon(ref common.ReferenceCallb
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -12068,8 +13341,7 @@ func schema_k8sio_api_core_v1_EphemeralContainerCommon(ref common.ReferenceCallb
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.ContainerPort"),
+										Ref: ref("k8s.io/api/core/v1.ContainerPort"),
 									},
 								},
 							},
@@ -12087,8 +13359,7 @@ func schema_k8sio_api_core_v1_EphemeralContainerCommon(ref common.ReferenceCallb
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.EnvFromSource"),
+										Ref: ref("k8s.io/api/core/v1.EnvFromSource"),
 									},
 								},
 							},
@@ -12111,8 +13382,7 @@ func schema_k8sio_api_core_v1_EphemeralContainerCommon(ref common.ReferenceCallb
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.EnvVar"),
+										Ref: ref("k8s.io/api/core/v1.EnvVar"),
 									},
 								},
 							},
@@ -12137,8 +13407,7 @@ func schema_k8sio_api_core_v1_EphemeralContainerCommon(ref common.ReferenceCallb
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.ContainerResizePolicy"),
+										Ref: ref("k8s.io/api/core/v1.ContainerResizePolicy"),
 									},
 								},
 							},
@@ -12163,8 +13432,7 @@ func schema_k8sio_api_core_v1_EphemeralContainerCommon(ref common.ReferenceCallb
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.ContainerRestartRule"),
+										Ref: ref("k8s.io/api/core/v1.ContainerRestartRule"),
 									},
 								},
 							},
@@ -12187,8 +13455,7 @@ func schema_k8sio_api_core_v1_EphemeralContainerCommon(ref common.ReferenceCallb
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.VolumeMount"),
+										Ref: ref("k8s.io/api/core/v1.VolumeMount"),
 									},
 								},
 							},
@@ -12211,8 +13478,7 @@ func schema_k8sio_api_core_v1_EphemeralContainerCommon(ref common.ReferenceCallb
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.VolumeDevice"),
+										Ref: ref("k8s.io/api/core/v1.VolumeDevice"),
 									},
 								},
 							},
@@ -12489,8 +13755,7 @@ func schema_k8sio_api_core_v1_EventList(ref common.ReferenceCallback) common.Ope
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.Event"),
+										Ref: ref("k8s.io/api/core/v1.Event"),
 									},
 								},
 							},
@@ -12579,9 +13844,8 @@ func schema_k8sio_api_core_v1_ExecAction(ref common.ReferenceCallback) common.Op
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -12612,9 +13876,8 @@ func schema_k8sio_api_core_v1_FCVolumeSource(ref common.ReferenceCallback) commo
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -12653,9 +13916,8 @@ func schema_k8sio_api_core_v1_FCVolumeSource(ref common.ReferenceCallback) commo
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -12761,9 +14023,8 @@ func schema_k8sio_api_core_v1_FlexPersistentVolumeSource(ref common.ReferenceCal
 								Allows: true,
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -12821,9 +14082,8 @@ func schema_k8sio_api_core_v1_FlexVolumeSource(ref common.ReferenceCallback) com
 								Allows: true,
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -13102,8 +14362,7 @@ func schema_k8sio_api_core_v1_HTTPGetAction(ref common.ReferenceCallback) common
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.HTTPHeader"),
+										Ref: ref("k8s.io/api/core/v1.HTTPHeader"),
 									},
 								},
 							},
@@ -13175,9 +14434,8 @@ func schema_k8sio_api_core_v1_HostAlias(ref common.ReferenceCallback) common.Ope
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -13307,9 +14565,8 @@ func schema_k8sio_api_core_v1_ISCSIPersistentVolumeSource(ref common.ReferenceCa
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -13416,9 +14673,8 @@ func schema_k8sio_api_core_v1_ISCSIVolumeSource(ref common.ReferenceCallback) co
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -13771,8 +15027,7 @@ func schema_k8sio_api_core_v1_LimitRangeList(ref common.ReferenceCallback) commo
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.LimitRange"),
+										Ref: ref("k8s.io/api/core/v1.LimitRange"),
 									},
 								},
 							},
@@ -13806,8 +15061,7 @@ func schema_k8sio_api_core_v1_LimitRangeSpec(ref common.ReferenceCallback) commo
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.LimitRangeItem"),
+										Ref: ref("k8s.io/api/core/v1.LimitRangeItem"),
 									},
 								},
 							},
@@ -13857,9 +15111,8 @@ func schema_k8sio_api_core_v1_LinuxContainerUser(ref common.ReferenceCallback) c
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: 0,
-										Type:    []string{"integer"},
-										Format:  "int64",
+										Type:   []string{"integer"},
+										Format: "int64",
 									},
 								},
 							},
@@ -13962,8 +15215,7 @@ func schema_k8sio_api_core_v1_LoadBalancerIngress(ref common.ReferenceCallback) 
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.PortStatus"),
+										Ref: ref("k8s.io/api/core/v1.PortStatus"),
 									},
 								},
 							},
@@ -13996,8 +15248,7 @@ func schema_k8sio_api_core_v1_LoadBalancerStatus(ref common.ReferenceCallback) c
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.LoadBalancerIngress"),
+										Ref: ref("k8s.io/api/core/v1.LoadBalancerIngress"),
 									},
 								},
 							},
@@ -14270,8 +15521,7 @@ func schema_k8sio_api_core_v1_NamespaceList(ref common.ReferenceCallback) common
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.Namespace"),
+										Ref: ref("k8s.io/api/core/v1.Namespace"),
 									},
 								},
 							},
@@ -14305,9 +15555,8 @@ func schema_k8sio_api_core_v1_NamespaceSpec(ref common.ReferenceCallback) common
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -14351,8 +15600,7 @@ func schema_k8sio_api_core_v1_NamespaceStatus(ref common.ReferenceCallback) comm
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.NamespaceCondition"),
+										Ref: ref("k8s.io/api/core/v1.NamespaceCondition"),
 									},
 								},
 							},
@@ -14471,8 +15719,7 @@ func schema_k8sio_api_core_v1_NodeAffinity(ref common.ReferenceCallback) common.
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.PreferredSchedulingTerm"),
+										Ref: ref("k8s.io/api/core/v1.PreferredSchedulingTerm"),
 									},
 								},
 							},
@@ -14682,8 +15929,7 @@ func schema_k8sio_api_core_v1_NodeList(ref common.ReferenceCallback) common.Open
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.Node"),
+										Ref: ref("k8s.io/api/core/v1.Node"),
 									},
 								},
 							},
@@ -14807,8 +16053,7 @@ func schema_k8sio_api_core_v1_NodeSelector(ref common.ReferenceCallback) common.
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.NodeSelectorTerm"),
+										Ref: ref("k8s.io/api/core/v1.NodeSelectorTerm"),
 									},
 								},
 							},
@@ -14864,9 +16109,8 @@ func schema_k8sio_api_core_v1_NodeSelectorRequirement(ref common.ReferenceCallba
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -14898,8 +16142,7 @@ func schema_k8sio_api_core_v1_NodeSelectorTerm(ref common.ReferenceCallback) com
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.NodeSelectorRequirement"),
+										Ref: ref("k8s.io/api/core/v1.NodeSelectorRequirement"),
 									},
 								},
 							},
@@ -14917,8 +16160,7 @@ func schema_k8sio_api_core_v1_NodeSelectorTerm(ref common.ReferenceCallback) com
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.NodeSelectorRequirement"),
+										Ref: ref("k8s.io/api/core/v1.NodeSelectorRequirement"),
 									},
 								},
 							},
@@ -14964,9 +16206,8 @@ func schema_k8sio_api_core_v1_NodeSpec(ref common.ReferenceCallback) common.Open
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -14998,8 +16239,7 @@ func schema_k8sio_api_core_v1_NodeSpec(ref common.ReferenceCallback) common.Open
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.Taint"),
+										Ref: ref("k8s.io/api/core/v1.Taint"),
 									},
 								},
 							},
@@ -15086,8 +16326,7 @@ func schema_k8sio_api_core_v1_NodeStatus(ref common.ReferenceCallback) common.Op
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.NodeCondition"),
+										Ref: ref("k8s.io/api/core/v1.NodeCondition"),
 									},
 								},
 							},
@@ -15110,8 +16349,7 @@ func schema_k8sio_api_core_v1_NodeStatus(ref common.ReferenceCallback) common.Op
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.NodeAddress"),
+										Ref: ref("k8s.io/api/core/v1.NodeAddress"),
 									},
 								},
 							},
@@ -15143,8 +16381,7 @@ func schema_k8sio_api_core_v1_NodeStatus(ref common.ReferenceCallback) common.Op
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.ContainerImage"),
+										Ref: ref("k8s.io/api/core/v1.ContainerImage"),
 									},
 								},
 							},
@@ -15162,9 +16399,8 @@ func schema_k8sio_api_core_v1_NodeStatus(ref common.ReferenceCallback) common.Op
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -15182,8 +16418,7 @@ func schema_k8sio_api_core_v1_NodeStatus(ref common.ReferenceCallback) common.Op
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.AttachedVolume"),
+										Ref: ref("k8s.io/api/core/v1.AttachedVolume"),
 									},
 								},
 							},
@@ -15207,8 +16442,7 @@ func schema_k8sio_api_core_v1_NodeStatus(ref common.ReferenceCallback) common.Op
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.NodeRuntimeHandler"),
+										Ref: ref("k8s.io/api/core/v1.NodeRuntimeHandler"),
 									},
 								},
 							},
@@ -15644,8 +16878,7 @@ func schema_k8sio_api_core_v1_PersistentVolumeClaimList(ref common.ReferenceCall
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.PersistentVolumeClaim"),
+										Ref: ref("k8s.io/api/core/v1.PersistentVolumeClaim"),
 									},
 								},
 							},
@@ -15679,10 +16912,9 @@ func schema_k8sio_api_core_v1_PersistentVolumeClaimSpec(ref common.ReferenceCall
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
-										Enum:    []interface{}{"ReadOnlyMany", "ReadWriteMany", "ReadWriteOnce", "ReadWriteOncePod"},
+										Type:   []string{"string"},
+										Format: "",
+										Enum:   []interface{}{"ReadOnlyMany", "ReadWriteMany", "ReadWriteOnce", "ReadWriteOncePod"},
 									},
 								},
 							},
@@ -15777,10 +17009,9 @@ func schema_k8sio_api_core_v1_PersistentVolumeClaimStatus(ref common.ReferenceCa
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
-										Enum:    []interface{}{"ReadOnlyMany", "ReadWriteMany", "ReadWriteOnce", "ReadWriteOncePod"},
+										Type:   []string{"string"},
+										Format: "",
+										Enum:   []interface{}{"ReadOnlyMany", "ReadWriteMany", "ReadWriteOnce", "ReadWriteOncePod"},
 									},
 								},
 							},
@@ -15817,8 +17048,7 @@ func schema_k8sio_api_core_v1_PersistentVolumeClaimStatus(ref common.ReferenceCa
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.PersistentVolumeClaimCondition"),
+										Ref: ref("k8s.io/api/core/v1.PersistentVolumeClaimCondition"),
 									},
 								},
 							},
@@ -15851,10 +17081,9 @@ func schema_k8sio_api_core_v1_PersistentVolumeClaimStatus(ref common.ReferenceCa
 								Allows: true,
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
-										Enum:    []interface{}{"ControllerResizeInProgress", "ControllerResizeInfeasible", "NodeResizeInProgress", "NodeResizeInfeasible", "NodeResizePending"},
+										Type:   []string{"string"},
+										Format: "",
+										Enum:   []interface{}{"ControllerResizeInProgress", "ControllerResizeInfeasible", "NodeResizeInProgress", "NodeResizeInfeasible", "NodeResizePending"},
 									},
 								},
 							},
@@ -15975,8 +17204,7 @@ func schema_k8sio_api_core_v1_PersistentVolumeList(ref common.ReferenceCallback)
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.PersistentVolume"),
+										Ref: ref("k8s.io/api/core/v1.PersistentVolume"),
 									},
 								},
 							},
@@ -16303,10 +17531,9 @@ func schema_k8sio_api_core_v1_PersistentVolumeSpec(ref common.ReferenceCallback)
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
-										Enum:    []interface{}{"ReadOnlyMany", "ReadWriteMany", "ReadWriteOnce", "ReadWriteOncePod"},
+										Type:   []string{"string"},
+										Format: "",
+										Enum:   []interface{}{"ReadOnlyMany", "ReadWriteMany", "ReadWriteOnce", "ReadWriteOncePod"},
 									},
 								},
 							},
@@ -16350,9 +17577,8 @@ func schema_k8sio_api_core_v1_PersistentVolumeSpec(ref common.ReferenceCallback)
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -16528,8 +17754,7 @@ func schema_k8sio_api_core_v1_PodAffinity(ref common.ReferenceCallback) common.O
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.PodAffinityTerm"),
+										Ref: ref("k8s.io/api/core/v1.PodAffinityTerm"),
 									},
 								},
 							},
@@ -16547,8 +17772,7 @@ func schema_k8sio_api_core_v1_PodAffinity(ref common.ReferenceCallback) common.O
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.WeightedPodAffinityTerm"),
+										Ref: ref("k8s.io/api/core/v1.WeightedPodAffinityTerm"),
 									},
 								},
 							},
@@ -16587,9 +17811,8 @@ func schema_k8sio_api_core_v1_PodAffinityTerm(ref common.ReferenceCallback) comm
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -16621,9 +17844,8 @@ func schema_k8sio_api_core_v1_PodAffinityTerm(ref common.ReferenceCallback) comm
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -16641,9 +17863,8 @@ func schema_k8sio_api_core_v1_PodAffinityTerm(ref common.ReferenceCallback) comm
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -16677,8 +17898,7 @@ func schema_k8sio_api_core_v1_PodAntiAffinity(ref common.ReferenceCallback) comm
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.PodAffinityTerm"),
+										Ref: ref("k8s.io/api/core/v1.PodAffinityTerm"),
 									},
 								},
 							},
@@ -16696,8 +17916,7 @@ func schema_k8sio_api_core_v1_PodAntiAffinity(ref common.ReferenceCallback) comm
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.WeightedPodAffinityTerm"),
+										Ref: ref("k8s.io/api/core/v1.WeightedPodAffinityTerm"),
 									},
 								},
 							},
@@ -16913,9 +18132,8 @@ func schema_k8sio_api_core_v1_PodDNSConfig(ref common.ReferenceCallback) common.
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -16933,9 +18151,8 @@ func schema_k8sio_api_core_v1_PodDNSConfig(ref common.ReferenceCallback) common.
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -16953,8 +18170,7 @@ func schema_k8sio_api_core_v1_PodDNSConfig(ref common.ReferenceCallback) common.
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.PodDNSConfigOption"),
+										Ref: ref("k8s.io/api/core/v1.PodDNSConfigOption"),
 									},
 								},
 							},
@@ -17063,9 +18279,8 @@ func schema_k8sio_api_core_v1_PodExecOptions(ref common.ReferenceCallback) commo
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -17097,8 +18312,7 @@ func schema_k8sio_api_core_v1_PodExtendedResourceClaimStatus(ref common.Referenc
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.ContainerExtendedResourceRequest"),
+										Ref: ref("k8s.io/api/core/v1.ContainerExtendedResourceRequest"),
 									},
 								},
 							},
@@ -17178,8 +18392,7 @@ func schema_k8sio_api_core_v1_PodList(ref common.ReferenceCallback) common.OpenA
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.Pod"),
+										Ref: ref("k8s.io/api/core/v1.Pod"),
 									},
 								},
 							},
@@ -17347,9 +18560,8 @@ func schema_k8sio_api_core_v1_PodPortForwardOptions(ref common.ReferenceCallback
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: 0,
-										Type:    []string{"integer"},
-										Format:  "int32",
+										Type:   []string{"integer"},
+										Format: "int32",
 									},
 								},
 							},
@@ -17556,9 +18768,8 @@ func schema_k8sio_api_core_v1_PodSecurityContext(ref common.ReferenceCallback) c
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: 0,
-										Type:    []string{"integer"},
-										Format:  "int64",
+										Type:   []string{"integer"},
+										Format: "int64",
 									},
 								},
 							},
@@ -17591,8 +18802,7 @@ func schema_k8sio_api_core_v1_PodSecurityContext(ref common.ReferenceCallback) c
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.Sysctl"),
+										Ref: ref("k8s.io/api/core/v1.Sysctl"),
 									},
 								},
 							},
@@ -17678,8 +18888,7 @@ func schema_k8sio_api_core_v1_PodSpec(ref common.ReferenceCallback) common.OpenA
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.Volume"),
+										Ref: ref("k8s.io/api/core/v1.Volume"),
 									},
 								},
 							},
@@ -17702,8 +18911,7 @@ func schema_k8sio_api_core_v1_PodSpec(ref common.ReferenceCallback) common.OpenA
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.Container"),
+										Ref: ref("k8s.io/api/core/v1.Container"),
 									},
 								},
 							},
@@ -17726,8 +18934,7 @@ func schema_k8sio_api_core_v1_PodSpec(ref common.ReferenceCallback) common.OpenA
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.Container"),
+										Ref: ref("k8s.io/api/core/v1.Container"),
 									},
 								},
 							},
@@ -17750,8 +18957,7 @@ func schema_k8sio_api_core_v1_PodSpec(ref common.ReferenceCallback) common.OpenA
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.EphemeralContainer"),
+										Ref: ref("k8s.io/api/core/v1.EphemeralContainer"),
 									},
 								},
 							},
@@ -17800,9 +19006,8 @@ func schema_k8sio_api_core_v1_PodSpec(ref common.ReferenceCallback) common.OpenA
 								Allows: true,
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -17887,8 +19092,7 @@ func schema_k8sio_api_core_v1_PodSpec(ref common.ReferenceCallback) common.OpenA
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.LocalObjectReference"),
+										Ref: ref("k8s.io/api/core/v1.LocalObjectReference"),
 									},
 								},
 							},
@@ -17933,8 +19137,7 @@ func schema_k8sio_api_core_v1_PodSpec(ref common.ReferenceCallback) common.OpenA
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.Toleration"),
+										Ref: ref("k8s.io/api/core/v1.Toleration"),
 									},
 								},
 							},
@@ -17957,8 +19160,7 @@ func schema_k8sio_api_core_v1_PodSpec(ref common.ReferenceCallback) common.OpenA
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.HostAlias"),
+										Ref: ref("k8s.io/api/core/v1.HostAlias"),
 									},
 								},
 							},
@@ -17996,8 +19198,7 @@ func schema_k8sio_api_core_v1_PodSpec(ref common.ReferenceCallback) common.OpenA
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.PodReadinessGate"),
+										Ref: ref("k8s.io/api/core/v1.PodReadinessGate"),
 									},
 								},
 							},
@@ -18057,8 +19258,7 @@ func schema_k8sio_api_core_v1_PodSpec(ref common.ReferenceCallback) common.OpenA
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.TopologySpreadConstraint"),
+										Ref: ref("k8s.io/api/core/v1.TopologySpreadConstraint"),
 									},
 								},
 							},
@@ -18101,8 +19301,7 @@ func schema_k8sio_api_core_v1_PodSpec(ref common.ReferenceCallback) common.OpenA
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.PodSchedulingGate"),
+										Ref: ref("k8s.io/api/core/v1.PodSchedulingGate"),
 									},
 								},
 							},
@@ -18125,8 +19324,7 @@ func schema_k8sio_api_core_v1_PodSpec(ref common.ReferenceCallback) common.OpenA
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.PodResourceClaim"),
+										Ref: ref("k8s.io/api/core/v1.PodResourceClaim"),
 									},
 								},
 							},
@@ -18193,8 +19391,7 @@ func schema_k8sio_api_core_v1_PodStatus(ref common.ReferenceCallback) common.Ope
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.PodCondition"),
+										Ref: ref("k8s.io/api/core/v1.PodCondition"),
 									},
 								},
 							},
@@ -18242,8 +19439,7 @@ func schema_k8sio_api_core_v1_PodStatus(ref common.ReferenceCallback) common.Ope
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.HostIP"),
+										Ref: ref("k8s.io/api/core/v1.HostIP"),
 									},
 								},
 							},
@@ -18273,8 +19469,7 @@ func schema_k8sio_api_core_v1_PodStatus(ref common.ReferenceCallback) common.Ope
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.PodIP"),
+										Ref: ref("k8s.io/api/core/v1.PodIP"),
 									},
 								},
 							},
@@ -18298,8 +19493,7 @@ func schema_k8sio_api_core_v1_PodStatus(ref common.ReferenceCallback) common.Ope
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.ContainerStatus"),
+										Ref: ref("k8s.io/api/core/v1.ContainerStatus"),
 									},
 								},
 							},
@@ -18317,8 +19511,7 @@ func schema_k8sio_api_core_v1_PodStatus(ref common.ReferenceCallback) common.Ope
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.ContainerStatus"),
+										Ref: ref("k8s.io/api/core/v1.ContainerStatus"),
 									},
 								},
 							},
@@ -18344,8 +19537,7 @@ func schema_k8sio_api_core_v1_PodStatus(ref common.ReferenceCallback) common.Ope
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.ContainerStatus"),
+										Ref: ref("k8s.io/api/core/v1.ContainerStatus"),
 									},
 								},
 							},
@@ -18375,8 +19567,7 @@ func schema_k8sio_api_core_v1_PodStatus(ref common.ReferenceCallback) common.Ope
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.PodResourceClaimStatus"),
+										Ref: ref("k8s.io/api/core/v1.PodResourceClaimStatus"),
 									},
 								},
 							},
@@ -18517,8 +19708,7 @@ func schema_k8sio_api_core_v1_PodTemplateList(ref common.ReferenceCallback) comm
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.PodTemplate"),
+										Ref: ref("k8s.io/api/core/v1.PodTemplate"),
 									},
 								},
 							},
@@ -18849,8 +20039,7 @@ func schema_k8sio_api_core_v1_ProjectedVolumeSource(ref common.ReferenceCallback
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.VolumeProjection"),
+										Ref: ref("k8s.io/api/core/v1.VolumeProjection"),
 									},
 								},
 							},
@@ -18948,9 +20137,8 @@ func schema_k8sio_api_core_v1_RBDPersistentVolumeSource(ref common.ReferenceCall
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -19036,9 +20224,8 @@ func schema_k8sio_api_core_v1_RBDVolumeSource(ref common.ReferenceCallback) comm
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -19294,8 +20481,7 @@ func schema_k8sio_api_core_v1_ReplicationControllerList(ref common.ReferenceCall
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.ReplicationController"),
+										Ref: ref("k8s.io/api/core/v1.ReplicationController"),
 									},
 								},
 							},
@@ -19346,9 +20532,8 @@ func schema_k8sio_api_core_v1_ReplicationControllerSpec(ref common.ReferenceCall
 								Allows: true,
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -19428,8 +20613,7 @@ func schema_k8sio_api_core_v1_ReplicationControllerStatus(ref common.ReferenceCa
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.ReplicationControllerCondition"),
+										Ref: ref("k8s.io/api/core/v1.ReplicationControllerCondition"),
 									},
 								},
 							},
@@ -19629,8 +20813,7 @@ func schema_k8sio_api_core_v1_ResourceQuotaList(ref common.ReferenceCallback) co
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.ResourceQuota"),
+										Ref: ref("k8s.io/api/core/v1.ResourceQuota"),
 									},
 								},
 							},
@@ -19678,10 +20861,9 @@ func schema_k8sio_api_core_v1_ResourceQuotaSpec(ref common.ReferenceCallback) co
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
-										Enum:    []interface{}{"BestEffort", "CrossNamespacePodAffinity", "NotBestEffort", "NotTerminating", "PriorityClass", "Terminating", "VolumeAttributesClass"},
+										Type:   []string{"string"},
+										Format: "",
+										Enum:   []interface{}{"BestEffort", "CrossNamespacePodAffinity", "NotBestEffort", "NotTerminating", "PriorityClass", "Terminating", "VolumeAttributesClass"},
 									},
 								},
 							},
@@ -19794,8 +20976,7 @@ func schema_k8sio_api_core_v1_ResourceRequirements(ref common.ReferenceCallback)
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.ResourceClaim"),
+										Ref: ref("k8s.io/api/core/v1.ResourceClaim"),
 									},
 								},
 							},
@@ -19839,8 +21020,7 @@ func schema_k8sio_api_core_v1_ResourceStatus(ref common.ReferenceCallback) commo
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.ResourceHealth"),
+										Ref: ref("k8s.io/api/core/v1.ResourceHealth"),
 									},
 								},
 							},
@@ -20093,8 +21273,7 @@ func schema_k8sio_api_core_v1_ScopeSelector(ref common.ReferenceCallback) common
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.ScopedResourceSelectorRequirement"),
+										Ref: ref("k8s.io/api/core/v1.ScopedResourceSelectorRequirement"),
 									},
 								},
 							},
@@ -20150,9 +21329,8 @@ func schema_k8sio_api_core_v1_ScopedResourceSelectorRequirement(ref common.Refer
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -20265,9 +21443,8 @@ func schema_k8sio_api_core_v1_Secret(ref common.ReferenceCallback) common.OpenAP
 								Allows: true,
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -20393,8 +21570,7 @@ func schema_k8sio_api_core_v1_SecretList(ref common.ReferenceCallback) common.Op
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.Secret"),
+										Ref: ref("k8s.io/api/core/v1.Secret"),
 									},
 								},
 							},
@@ -20436,8 +21612,7 @@ func schema_k8sio_api_core_v1_SecretProjection(ref common.ReferenceCallback) com
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.KeyToPath"),
+										Ref: ref("k8s.io/api/core/v1.KeyToPath"),
 									},
 								},
 							},
@@ -20516,8 +21691,7 @@ func schema_k8sio_api_core_v1_SecretVolumeSource(ref common.ReferenceCallback) c
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.KeyToPath"),
+										Ref: ref("k8s.io/api/core/v1.KeyToPath"),
 									},
 								},
 							},
@@ -20771,8 +21945,7 @@ func schema_k8sio_api_core_v1_ServiceAccount(ref common.ReferenceCallback) commo
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.ObjectReference"),
+										Ref: ref("k8s.io/api/core/v1.ObjectReference"),
 									},
 								},
 							},
@@ -20790,8 +21963,7 @@ func schema_k8sio_api_core_v1_ServiceAccount(ref common.ReferenceCallback) commo
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.LocalObjectReference"),
+										Ref: ref("k8s.io/api/core/v1.LocalObjectReference"),
 									},
 								},
 							},
@@ -20847,8 +22019,7 @@ func schema_k8sio_api_core_v1_ServiceAccountList(ref common.ReferenceCallback) c
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.ServiceAccount"),
+										Ref: ref("k8s.io/api/core/v1.ServiceAccount"),
 									},
 								},
 							},
@@ -20934,8 +22105,7 @@ func schema_k8sio_api_core_v1_ServiceList(ref common.ReferenceCallback) common.O
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.Service"),
+										Ref: ref("k8s.io/api/core/v1.Service"),
 									},
 								},
 							},
@@ -21069,8 +22239,7 @@ func schema_k8sio_api_core_v1_ServiceSpec(ref common.ReferenceCallback) common.O
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.ServicePort"),
+										Ref: ref("k8s.io/api/core/v1.ServicePort"),
 									},
 								},
 							},
@@ -21089,9 +22258,8 @@ func schema_k8sio_api_core_v1_ServiceSpec(ref common.ReferenceCallback) common.O
 								Allows: true,
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -21116,9 +22284,8 @@ func schema_k8sio_api_core_v1_ServiceSpec(ref common.ReferenceCallback) common.O
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -21144,9 +22311,8 @@ func schema_k8sio_api_core_v1_ServiceSpec(ref common.ReferenceCallback) common.O
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -21179,9 +22345,8 @@ func schema_k8sio_api_core_v1_ServiceSpec(ref common.ReferenceCallback) common.O
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -21234,10 +22399,9 @@ func schema_k8sio_api_core_v1_ServiceSpec(ref common.ReferenceCallback) common.O
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
-										Enum:    []interface{}{"", "IPv4", "IPv6"},
+										Type:   []string{"string"},
+										Format: "",
+										Enum:   []interface{}{"", "IPv4", "IPv6"},
 									},
 								},
 							},
@@ -21319,8 +22483,7 @@ func schema_k8sio_api_core_v1_ServiceStatus(ref common.ReferenceCallback) common
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
+										Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
 									},
 								},
 							},
@@ -21657,9 +22820,8 @@ func schema_k8sio_api_core_v1_TopologySelectorLabelRequirement(ref common.Refere
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -21691,8 +22853,7 @@ func schema_k8sio_api_core_v1_TopologySelectorTerm(ref common.ReferenceCallback)
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/api/core/v1.TopologySelectorLabelRequirement"),
+										Ref: ref("k8s.io/api/core/v1.TopologySelectorLabelRequirement"),
 									},
 								},
 							},
@@ -21784,9 +22945,8 @@ func schema_k8sio_api_core_v1_TopologySpreadConstraint(ref common.ReferenceCallb
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -22745,8 +23905,7 @@ func schema_pkg_apis_meta_v1_APIGroup(ref common.ReferenceCallback) common.OpenA
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.GroupVersionForDiscovery"),
+										Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.GroupVersionForDiscovery"),
 									},
 								},
 							},
@@ -22771,8 +23930,7 @@ func schema_pkg_apis_meta_v1_APIGroup(ref common.ReferenceCallback) common.OpenA
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ServerAddressByClientCIDR"),
+										Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.ServerAddressByClientCIDR"),
 									},
 								},
 							},
@@ -22820,8 +23978,7 @@ func schema_pkg_apis_meta_v1_APIGroupList(ref common.ReferenceCallback) common.O
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.APIGroup"),
+										Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.APIGroup"),
 									},
 								},
 							},
@@ -22896,9 +24053,8 @@ func schema_pkg_apis_meta_v1_APIResource(ref common.ReferenceCallback) common.Op
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -22916,9 +24072,8 @@ func schema_pkg_apis_meta_v1_APIResource(ref common.ReferenceCallback) common.Op
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -22936,9 +24091,8 @@ func schema_pkg_apis_meta_v1_APIResource(ref common.ReferenceCallback) common.Op
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -22999,8 +24153,7 @@ func schema_pkg_apis_meta_v1_APIResourceList(ref common.ReferenceCallback) commo
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.APIResource"),
+										Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.APIResource"),
 									},
 								},
 							},
@@ -23048,9 +24201,8 @@ func schema_pkg_apis_meta_v1_APIVersions(ref common.ReferenceCallback) common.Op
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -23068,8 +24220,7 @@ func schema_pkg_apis_meta_v1_APIVersions(ref common.ReferenceCallback) common.Op
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ServerAddressByClientCIDR"),
+										Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.ServerAddressByClientCIDR"),
 									},
 								},
 							},
@@ -23117,9 +24268,8 @@ func schema_pkg_apis_meta_v1_ApplyOptions(ref common.ReferenceCallback) common.O
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -23242,9 +24392,8 @@ func schema_pkg_apis_meta_v1_CreateOptions(ref common.ReferenceCallback) common.
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -23330,9 +24479,8 @@ func schema_pkg_apis_meta_v1_DeleteOptions(ref common.ReferenceCallback) common.
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -23400,9 +24548,8 @@ func schema_pkg_apis_meta_v1_FieldSelectorRequirement(ref common.ReferenceCallba
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -23685,9 +24832,8 @@ func schema_pkg_apis_meta_v1_LabelSelector(ref common.ReferenceCallback) common.
 								Allows: true,
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -23705,8 +24851,7 @@ func schema_pkg_apis_meta_v1_LabelSelector(ref common.ReferenceCallback) common.
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.LabelSelectorRequirement"),
+										Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.LabelSelectorRequirement"),
 									},
 								},
 							},
@@ -23760,9 +24905,8 @@ func schema_pkg_apis_meta_v1_LabelSelectorRequirement(ref common.ReferenceCallba
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -24120,9 +25264,8 @@ func schema_pkg_apis_meta_v1_ObjectMeta(ref common.ReferenceCallback) common.Ope
 								Allows: true,
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -24136,9 +25279,8 @@ func schema_pkg_apis_meta_v1_ObjectMeta(ref common.ReferenceCallback) common.Ope
 								Allows: true,
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -24161,8 +25303,7 @@ func schema_pkg_apis_meta_v1_ObjectMeta(ref common.ReferenceCallback) common.Ope
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.OwnerReference"),
+										Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.OwnerReference"),
 									},
 								},
 							},
@@ -24181,9 +25322,8 @@ func schema_pkg_apis_meta_v1_ObjectMeta(ref common.ReferenceCallback) common.Ope
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -24201,8 +25341,7 @@ func schema_pkg_apis_meta_v1_ObjectMeta(ref common.ReferenceCallback) common.Ope
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ManagedFieldsEntry"),
+										Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.ManagedFieldsEntry"),
 									},
 								},
 							},
@@ -24352,8 +25491,7 @@ func schema_pkg_apis_meta_v1_PartialObjectMetadataList(ref common.ReferenceCallb
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.PartialObjectMetadata"),
+										Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.PartialObjectMetadata"),
 									},
 								},
 							},
@@ -24412,9 +25550,8 @@ func schema_pkg_apis_meta_v1_PatchOptions(ref common.ReferenceCallback) common.O
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -24493,9 +25630,8 @@ func schema_pkg_apis_meta_v1_RootPaths(ref common.ReferenceCallback) common.Open
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -24694,8 +25830,7 @@ func schema_pkg_apis_meta_v1_StatusDetails(ref common.ReferenceCallback) common.
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.StatusCause"),
+										Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.StatusCause"),
 									},
 								},
 							},
@@ -24756,8 +25891,7 @@ func schema_pkg_apis_meta_v1_Table(ref common.ReferenceCallback) common.OpenAPID
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.TableColumnDefinition"),
+										Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.TableColumnDefinition"),
 									},
 								},
 							},
@@ -24775,8 +25909,7 @@ func schema_pkg_apis_meta_v1_Table(ref common.ReferenceCallback) common.OpenAPID
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.TableRow"),
+										Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.TableRow"),
 									},
 								},
 							},
@@ -24917,8 +26050,7 @@ func schema_pkg_apis_meta_v1_TableRow(ref common.ReferenceCallback) common.OpenA
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.TableRowCondition"),
+										Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.TableRowCondition"),
 									},
 								},
 							},
@@ -25085,9 +26217,8 @@ func schema_pkg_apis_meta_v1_UpdateOptions(ref common.ReferenceCallback) common.
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -25347,6 +26478,27 @@ func schema_k8sio_apimachinery_pkg_version_Info(ref common.ReferenceCallback) co
 	}
 }
 
+func schema_sigsk8sio_gateway_api_apis_v1_AllowedListeners(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "AllowedListeners defines which ListenerSets can be attached to this Gateway.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"namespaces": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Namespaces defines which namespaces ListenerSets can be attached to this Gateway. While this feature is experimental, the default value is to allow no ListenerSets.",
+							Ref:         ref("sigs.k8s.io/gateway-api/apis/v1.ListenerNamespaces"),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"sigs.k8s.io/gateway-api/apis/v1.ListenerNamespaces"},
+	}
+}
+
 func schema_sigsk8sio_gateway_api_apis_v1_AllowedRoutes(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -25367,8 +26519,7 @@ func schema_sigsk8sio_gateway_api_apis_v1_AllowedRoutes(ref common.ReferenceCall
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.RouteGroupKind"),
+										Ref: ref("sigs.k8s.io/gateway-api/apis/v1.RouteGroupKind"),
 									},
 								},
 							},
@@ -25436,7 +26587,7 @@ func schema_sigsk8sio_gateway_api_apis_v1_BackendRef(ref common.ReferenceCallbac
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "BackendRef defines how a Route should forward a request to a Kubernetes resource.\n\nNote that when a namespace different than the local namespace is specified, a ReferenceGrant object is required in the referent namespace to allow that namespace's owner to accept the reference. See the ReferenceGrant documentation for details.",
+				Description: "BackendRef defines how a Route should forward a request to a Kubernetes resource.\n\nNote that when a namespace different than the local namespace is specified, a ReferenceGrant object is required in the referent namespace to allow that namespace's owner to accept the reference. See the ReferenceGrant documentation for details.\n\n<gateway:experimental:description>\n\nWhen the BackendRef points to a Kubernetes Service, implementations SHOULD honor the appProtocol field if it is set for the target Service Port.\n\nImplementations supporting appProtocol SHOULD recognize the Kubernetes Standard Application Protocols defined in KEP-3726.\n\nIf a Service appProtocol isn't specified, an implementation MAY infer the backend protocol through its own means. Implementations MAY infer the protocol from the Route type referring to the backend Service.\n\nIf a Route is not able to send traffic to the backend using the specified protocol then the backend is considered invalid. Implementations MUST set the \"ResolvedRefs\" condition to \"False\" with the \"UnsupportedProtocol\" reason.\n\n</gateway:experimental:description>\n\nNote that when the BackendTLSPolicy object is enabled by the implementation, there are some extra rules about validity to consider here. See the fields where this struct is used for more information about the exact behavior.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"group": {
@@ -25503,8 +26654,7 @@ func schema_sigsk8sio_gateway_api_apis_v1_CommonRouteSpec(ref common.ReferenceCa
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.ParentReference"),
+										Ref: ref("sigs.k8s.io/gateway-api/apis/v1.ParentReference"),
 									},
 								},
 							},
@@ -25527,7 +26677,7 @@ func schema_sigsk8sio_gateway_api_apis_v1_CookieConfig(ref common.ReferenceCallb
 				Properties: map[string]spec.Schema{
 					"lifetimeType": {
 						SchemaProps: spec.SchemaProps{
-							Description: "LifetimeType specifies whether the cookie has a permanent or session-based lifetime. A permanent cookie persists until its specified expiry time, defined by the Expires or Max-Age cookie attributes, while a session cookie is deleted when the current session ends.\n\nWhen set to \"Permanent\", AbsoluteTimeout indicates the cookie's lifetime via the Expires or Max-Age cookie attributes and is required.\n\nWhen set to \"Session\", AbsoluteTimeout indicates the absolute lifetime of the cookie tracked by the gateway and is optional.\n\nSupport: Core for \"Session\" type\n\nSupport: Extended for \"Permanent\" type",
+							Description: "LifetimeType specifies whether the cookie has a permanent or session-based lifetime. A permanent cookie persists until its specified expiry time, defined by the Expires or Max-Age cookie attributes, while a session cookie is deleted when the current session ends.\n\nWhen set to \"Permanent\", AbsoluteTimeout indicates the cookie's lifetime via the Expires or Max-Age cookie attributes and is required.\n\nWhen set to \"Session\", AbsoluteTimeout indicates the absolute lifetime of the cookie tracked by the gateway and is optional.\n\nDefaults to \"Session\".\n\nSupport: Core for \"Session\" type\n\nSupport: Extended for \"Permanent\" type",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -25578,8 +26728,7 @@ func schema_sigsk8sio_gateway_api_apis_v1_FrontendTLSValidation(ref common.Refer
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.ObjectReference"),
+										Ref: ref("sigs.k8s.io/gateway-api/apis/v1.ObjectReference"),
 									},
 								},
 							},
@@ -25650,8 +26799,7 @@ func schema_sigsk8sio_gateway_api_apis_v1_GRPCBackendRef(ref common.ReferenceCal
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.GRPCRouteFilter"),
+										Ref: ref("sigs.k8s.io/gateway-api/apis/v1.GRPCRouteFilter"),
 									},
 								},
 							},
@@ -25815,7 +26963,7 @@ func schema_sigsk8sio_gateway_api_apis_v1_GRPCRouteFilter(ref common.ReferenceCa
 					},
 					"requestMirror": {
 						SchemaProps: spec.SchemaProps{
-							Description: "RequestMirror defines a schema for a filter that mirrors requests. Requests are sent to the specified destination, but responses from that destination are ignored.\n\nThis filter can be used multiple times within the same rule. Note that not all implementations will be able to support mirroring to multiple backends.\n\nSupport: Extended\n\n\n<gateway:experimental:validation:XValidation:message=\"Only one of percent or fraction may be specified in HTTPRequestMirrorFilter\",rule=\"!(has(self.percent) && has(self.fraction))\">",
+							Description: "RequestMirror defines a schema for a filter that mirrors requests. Requests are sent to the specified destination, but responses from that destination are ignored.\n\nThis filter can be used multiple times within the same rule. Note that not all implementations will be able to support mirroring to multiple backends.\n\nSupport: Extended",
 							Ref:         ref("sigs.k8s.io/gateway-api/apis/v1.HTTPRequestMirrorFilter"),
 						},
 					},
@@ -25867,8 +27015,7 @@ func schema_sigsk8sio_gateway_api_apis_v1_GRPCRouteList(ref common.ReferenceCall
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.GRPCRoute"),
+										Ref: ref("sigs.k8s.io/gateway-api/apis/v1.GRPCRoute"),
 									},
 								},
 							},
@@ -25911,8 +27058,7 @@ func schema_sigsk8sio_gateway_api_apis_v1_GRPCRouteMatch(ref common.ReferenceCal
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.GRPCHeaderMatch"),
+										Ref: ref("sigs.k8s.io/gateway-api/apis/v1.GRPCHeaderMatch"),
 									},
 								},
 							},
@@ -25947,8 +27093,7 @@ func schema_sigsk8sio_gateway_api_apis_v1_GRPCRouteRule(ref common.ReferenceCall
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.GRPCRouteMatch"),
+										Ref: ref("sigs.k8s.io/gateway-api/apis/v1.GRPCRouteMatch"),
 									},
 								},
 							},
@@ -25956,13 +27101,12 @@ func schema_sigsk8sio_gateway_api_apis_v1_GRPCRouteRule(ref common.ReferenceCall
 					},
 					"filters": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Filters define the filters that are applied to requests that match this rule.\n\nThe effects of ordering of multiple behaviors are currently unspecified. This can change in the future based on feedback during the alpha stage.\n\nConformance-levels at this level are defined based on the type of filter:\n\n- ALL core filters MUST be supported by all implementations that support\n  GRPCRoute.\n- Implementers are encouraged to support extended filters. - Implementation-specific custom filters have no API guarantees across\n  implementations.\n\nSpecifying the same filter multiple times is not supported unless explicitly indicated in the filter.\n\nIf an implementation can not support a combination of filters, it must clearly document that limitation. In cases where incompatible or unsupported filters are specified and cause the `Accepted` condition to be set to status `False`, implementations may use the `IncompatibleFilters` reason to specify this configuration error.\n\nSupport: Core",
+							Description: "Filters define the filters that are applied to requests that match this rule.\n\nThe effects of ordering of multiple behaviors are currently unspecified. This can change in the future based on feedback during the alpha stage.\n\nConformance-levels at this level are defined based on the type of filter:\n\n- ALL core filters MUST be supported by all implementations that support\n  GRPCRoute.\n- Implementers are encouraged to support extended filters. - Implementation-specific custom filters have no API guarantees across\n  implementations.\n\nSpecifying the same filter multiple times is not supported unless explicitly indicated in the filter.\n\nIf an implementation cannot support a combination of filters, it must clearly document that limitation. In cases where incompatible or unsupported filters are specified and cause the `Accepted` condition to be set to status `False`, implementations may use the `IncompatibleFilters` reason to specify this configuration error.\n\nSupport: Core",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.GRPCRouteFilter"),
+										Ref: ref("sigs.k8s.io/gateway-api/apis/v1.GRPCRouteFilter"),
 									},
 								},
 							},
@@ -25975,8 +27119,7 @@ func schema_sigsk8sio_gateway_api_apis_v1_GRPCRouteRule(ref common.ReferenceCall
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.GRPCBackendRef"),
+										Ref: ref("sigs.k8s.io/gateway-api/apis/v1.GRPCBackendRef"),
 									},
 								},
 							},
@@ -26010,8 +27153,7 @@ func schema_sigsk8sio_gateway_api_apis_v1_GRPCRouteSpec(ref common.ReferenceCall
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.ParentReference"),
+										Ref: ref("sigs.k8s.io/gateway-api/apis/v1.ParentReference"),
 									},
 								},
 							},
@@ -26024,9 +27166,8 @@ func schema_sigsk8sio_gateway_api_apis_v1_GRPCRouteSpec(ref common.ReferenceCall
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -26039,8 +27180,7 @@ func schema_sigsk8sio_gateway_api_apis_v1_GRPCRouteSpec(ref common.ReferenceCall
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.GRPCRouteRule"),
+										Ref: ref("sigs.k8s.io/gateway-api/apis/v1.GRPCRouteRule"),
 									},
 								},
 							},
@@ -26068,8 +27208,7 @@ func schema_sigsk8sio_gateway_api_apis_v1_GRPCRouteStatus(ref common.ReferenceCa
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.RouteParentStatus"),
+										Ref: ref("sigs.k8s.io/gateway-api/apis/v1.RouteParentStatus"),
 									},
 								},
 							},
@@ -26131,35 +27270,6 @@ func schema_sigsk8sio_gateway_api_apis_v1_Gateway(ref common.ReferenceCallback) 
 		},
 		Dependencies: []string{
 			"k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta", "sigs.k8s.io/gateway-api/apis/v1.GatewaySpec", "sigs.k8s.io/gateway-api/apis/v1.GatewayStatus"},
-	}
-}
-
-func schema_sigsk8sio_gateway_api_apis_v1_GatewayAddress(ref common.ReferenceCallback) common.OpenAPIDefinition {
-	return common.OpenAPIDefinition{
-		Schema: spec.Schema{
-			SchemaProps: spec.SchemaProps{
-				Description: "GatewayAddress describes an address that can be bound to a Gateway.",
-				Type:        []string{"object"},
-				Properties: map[string]spec.Schema{
-					"type": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Type of the address.",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"value": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Value of the address. The validity of the values will depend on the type and support by the controller.\n\nExamples: `1.2.3.4`, `128::1`, `my-ip-address`.",
-							Default:     "",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-				},
-				Required: []string{"value"},
-			},
-		},
 	}
 }
 
@@ -26267,8 +27377,7 @@ func schema_sigsk8sio_gateway_api_apis_v1_GatewayClassList(ref common.ReferenceC
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.GatewayClass"),
+										Ref: ref("sigs.k8s.io/gateway-api/apis/v1.GatewayClass"),
 									},
 								},
 							},
@@ -26342,8 +27451,7 @@ func schema_sigsk8sio_gateway_api_apis_v1_GatewayClassStatus(ref common.Referenc
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
+										Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
 									},
 								},
 							},
@@ -26364,8 +27472,7 @@ func schema_sigsk8sio_gateway_api_apis_v1_GatewayClassStatus(ref common.Referenc
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.SupportedFeature"),
+										Ref: ref("sigs.k8s.io/gateway-api/apis/v1.SupportedFeature"),
 									},
 								},
 							},
@@ -26394,9 +27501,8 @@ func schema_sigsk8sio_gateway_api_apis_v1_GatewayInfrastructure(ref common.Refer
 								Allows: true,
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -26410,9 +27516,8 @@ func schema_sigsk8sio_gateway_api_apis_v1_GatewayInfrastructure(ref common.Refer
 								Allows: true,
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -26420,7 +27525,7 @@ func schema_sigsk8sio_gateway_api_apis_v1_GatewayInfrastructure(ref common.Refer
 					},
 					"parametersRef": {
 						SchemaProps: spec.SchemaProps{
-							Description: "ParametersRef is a reference to a resource that contains the configuration parameters corresponding to the Gateway. This is optional if the controller does not require any additional configuration.\n\nThis follows the same semantics as GatewayClass's `parametersRef`, but on a per-Gateway basis\n\nThe Gateway's GatewayClass may provide its own `parametersRef`. When both are specified, the merging behavior is implementation specific. It is generally recommended that GatewayClass provides defaults that can be overridden by a Gateway.\n\nSupport: Implementation-specific",
+							Description: "ParametersRef is a reference to a resource that contains the configuration parameters corresponding to the Gateway. This is optional if the controller does not require any additional configuration.\n\nThis follows the same semantics as GatewayClass's `parametersRef`, but on a per-Gateway basis\n\nThe Gateway's GatewayClass may provide its own `parametersRef`. When both are specified, the merging behavior is implementation specific. It is generally recommended that GatewayClass provides defaults that can be overridden by a Gateway.\n\nIf the referent cannot be found, refers to an unsupported kind, or when the data within that resource is malformed, the Gateway SHOULD be rejected with the \"Accepted\" status condition set to \"False\" and an \"InvalidParameters\" reason.\n\nSupport: Implementation-specific",
 							Ref:         ref("sigs.k8s.io/gateway-api/apis/v1.LocalParametersReference"),
 						},
 					},
@@ -26465,8 +27570,7 @@ func schema_sigsk8sio_gateway_api_apis_v1_GatewayList(ref common.ReferenceCallba
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.Gateway"),
+										Ref: ref("sigs.k8s.io/gateway-api/apis/v1.Gateway"),
 									},
 								},
 							},
@@ -26506,13 +27610,12 @@ func schema_sigsk8sio_gateway_api_apis_v1_GatewaySpec(ref common.ReferenceCallba
 							},
 						},
 						SchemaProps: spec.SchemaProps{
-							Description: "Listeners associated with this Gateway. Listeners define logical endpoints that are bound on this Gateway's addresses. At least one Listener MUST be specified.\n\nEach Listener in a set of Listeners (for example, in a single Gateway) MUST be _distinct_, in that a traffic flow MUST be able to be assigned to exactly one listener. (This section uses \"set of Listeners\" rather than \"Listeners in a single Gateway\" because implementations MAY merge configuration from multiple Gateways onto a single data plane, and these rules _also_ apply in that case).\n\nPractically, this means that each listener in a set MUST have a unique combination of Port, Protocol, and, if supported by the protocol, Hostname.\n\nSome combinations of port, protocol, and TLS settings are considered Core support and MUST be supported by implementations based on their targeted conformance profile:\n\nHTTP Profile\n\n1. HTTPRoute, Port: 80, Protocol: HTTP 2. HTTPRoute, Port: 443, Protocol: HTTPS, TLS Mode: Terminate, TLS keypair provided\n\nTLS Profile\n\n1. TLSRoute, Port: 443, Protocol: TLS, TLS Mode: Passthrough\n\n\"Distinct\" Listeners have the following property:\n\nThe implementation can match inbound requests to a single distinct Listener. When multiple Listeners share values for fields (for example, two Listeners with the same Port value), the implementation can match requests to only one of the Listeners using other Listener fields.\n\nFor example, the following Listener scenarios are distinct:\n\n1. Multiple Listeners with the same Port that all use the \"HTTP\"\n   Protocol that all have unique Hostname values.\n2. Multiple Listeners with the same Port that use either the \"HTTPS\" or\n   \"TLS\" Protocol that all have unique Hostname values.\n3. A mixture of \"TCP\" and \"UDP\" Protocol Listeners, where no Listener\n   with the same Protocol has the same Port value.\n\nSome fields in the Listener struct have possible values that affect whether the Listener is distinct. Hostname is particularly relevant for HTTP or HTTPS protocols.\n\nWhen using the Hostname value to select between same-Port, same-Protocol Listeners, the Hostname value must be different on each Listener for the Listener to be distinct.\n\nWhen the Listeners are distinct based on Hostname, inbound request hostnames MUST match from the most specific to least specific Hostname values to choose the correct Listener and its associated set of Routes.\n\nExact matches must be processed before wildcard matches, and wildcard matches must be processed before fallback (empty Hostname value) matches. For example, `\"foo.example.com\"` takes precedence over `\"*.example.com\"`, and `\"*.example.com\"` takes precedence over `\"\"`.\n\nAdditionally, if there are multiple wildcard entries, more specific wildcard entries must be processed before less specific wildcard entries. For example, `\"*.foo.example.com\"` takes precedence over `\"*.example.com\"`. The precise definition here is that the higher the number of dots in the hostname to the right of the wildcard character, the higher the precedence.\n\nThe wildcard character will match any number of characters _and dots_ to the left, however, so `\"*.example.com\"` will match both `\"foo.bar.example.com\"` _and_ `\"bar.example.com\"`.\n\nIf a set of Listeners contains Listeners that are not distinct, then those Listeners are Conflicted, and the implementation MUST set the \"Conflicted\" condition in the Listener Status to \"True\".\n\nImplementations MAY choose to accept a Gateway with some Conflicted Listeners only if they only accept the partial Listener set that contains no Conflicted Listeners. To put this another way, implementations may accept a partial Listener set only if they throw out *all* the conflicting Listeners. No picking one of the conflicting listeners as the winner. This also means that the Gateway must have at least one non-conflicting Listener in this case, otherwise it violates the requirement that at least one Listener must be present.\n\nThe implementation MUST set a \"ListenersNotValid\" condition on the Gateway Status when the Gateway contains Conflicted Listeners whether or not they accept the Gateway. That Condition SHOULD clearly indicate in the Message which Listeners are conflicted, and which are Accepted. Additionally, the Listener status for those listeners SHOULD indicate which Listeners are conflicted and not Accepted.\n\nA Gateway's Listeners are considered \"compatible\" if:\n\n1. They are distinct. 2. The implementation can serve them in compliance with the Addresses\n   requirement that all Listeners are available on all assigned\n   addresses.\n\nCompatible combinations in Extended support are expected to vary across implementations. A combination that is compatible for one implementation may not be compatible for another.\n\nFor example, an implementation that cannot serve both TCP and UDP listeners on the same address, or cannot mix HTTPS and generic TLS listens on the same port would not consider those cases compatible, even though they are distinct.\n\nNote that requests SHOULD match at most one Listener. For example, if Listeners are defined for \"foo.example.com\" and \"*.example.com\", a request to \"foo.example.com\" SHOULD only be routed using routes attached to the \"foo.example.com\" Listener (and not the \"*.example.com\" Listener). This concept is known as \"Listener Isolation\". Implementations that do not support Listener Isolation MUST clearly document this.\n\nImplementations MAY merge separate Gateways onto a single set of Addresses if all Listeners across all Gateways are compatible.\n\nSupport: Core",
+							Description: "Listeners associated with this Gateway. Listeners define logical endpoints that are bound on this Gateway's addresses. At least one Listener MUST be specified.\n\n## Distinct Listeners\n\nEach Listener in a set of Listeners (for example, in a single Gateway) MUST be _distinct_, in that a traffic flow MUST be able to be assigned to exactly one listener. (This section uses \"set of Listeners\" rather than \"Listeners in a single Gateway\" because implementations MAY merge configuration from multiple Gateways onto a single data plane, and these rules _also_ apply in that case).\n\nPractically, this means that each listener in a set MUST have a unique combination of Port, Protocol, and, if supported by the protocol, Hostname.\n\nSome combinations of port, protocol, and TLS settings are considered Core support and MUST be supported by implementations based on the objects they support:\n\nHTTPRoute\n\n1. HTTPRoute, Port: 80, Protocol: HTTP 2. HTTPRoute, Port: 443, Protocol: HTTPS, TLS Mode: Terminate, TLS keypair provided\n\nTLSRoute\n\n1. TLSRoute, Port: 443, Protocol: TLS, TLS Mode: Passthrough\n\n\"Distinct\" Listeners have the following property:\n\n**The implementation can match inbound requests to a single distinct Listener**.\n\nWhen multiple Listeners share values for fields (for example, two Listeners with the same Port value), the implementation can match requests to only one of the Listeners using other Listener fields.\n\nWhen multiple listeners have the same value for the Protocol field, then each of the Listeners with matching Protocol values MUST have different values for other fields.\n\nThe set of fields that MUST be different for a Listener differs per protocol. The following rules define the rules for what fields MUST be considered for Listeners to be distinct with each protocol currently defined in the Gateway API spec.\n\nThe set of listeners that all share a protocol value MUST have _different_ values for _at least one_ of these fields to be distinct:\n\n* **HTTP, HTTPS, TLS**: Port, Hostname * **TCP, UDP**: Port\n\nOne **very** important rule to call out involves what happens when an implementation:\n\n* Supports TCP protocol Listeners, as well as HTTP, HTTPS, or TLS protocol\n  Listeners, and\n* sees HTTP, HTTPS, or TLS protocols with the same `port` as one with TCP\n  Protocol.\n\nIn this case all the Listeners that share a port with the TCP Listener are not distinct and so MUST NOT be accepted.\n\nIf an implementation does not support TCP Protocol Listeners, then the previous rule does not apply, and the TCP Listeners SHOULD NOT be accepted.\n\nNote that the `tls` field is not used for determining if a listener is distinct, because Listeners that _only_ differ on TLS config will still conflict in all cases.\n\n### Listeners that are distinct only by Hostname\n\nWhen the Listeners are distinct based only on Hostname, inbound request hostnames MUST match from the most specific to least specific Hostname values to choose the correct Listener and its associated set of Routes.\n\nExact matches MUST be processed before wildcard matches, and wildcard matches MUST be processed before fallback (empty Hostname value) matches. For example, `\"foo.example.com\"` takes precedence over `\"*.example.com\"`, and `\"*.example.com\"` takes precedence over `\"\"`.\n\nAdditionally, if there are multiple wildcard entries, more specific wildcard entries must be processed before less specific wildcard entries. For example, `\"*.foo.example.com\"` takes precedence over `\"*.example.com\"`.\n\nThe precise definition here is that the higher the number of dots in the hostname to the right of the wildcard character, the higher the precedence.\n\nThe wildcard character will match any number of characters _and dots_ to the left, however, so `\"*.example.com\"` will match both `\"foo.bar.example.com\"` _and_ `\"bar.example.com\"`.\n\n## Handling indistinct Listeners\n\nIf a set of Listeners contains Listeners that are not distinct, then those Listeners are _Conflicted_, and the implementation MUST set the \"Conflicted\" condition in the Listener Status to \"True\".\n\nThe words \"indistinct\" and \"conflicted\" are considered equivalent for the purpose of this documentation.\n\nImplementations MAY choose to accept a Gateway with some Conflicted Listeners only if they only accept the partial Listener set that contains no Conflicted Listeners.\n\nSpecifically, an implementation MAY accept a partial Listener set subject to the following rules:\n\n* The implementation MUST NOT pick one conflicting Listener as the winner.\n  ALL indistinct Listeners must not be accepted for processing.\n* At least one distinct Listener MUST be present, or else the Gateway effectively\n  contains _no_ Listeners, and must be rejected from processing as a whole.\n\nThe implementation MUST set a \"ListenersNotValid\" condition on the Gateway Status when the Gateway contains Conflicted Listeners whether or not they accept the Gateway. That Condition SHOULD clearly indicate in the Message which Listeners are conflicted, and which are Accepted. Additionally, the Listener status for those listeners SHOULD indicate which Listeners are conflicted and not Accepted.\n\n## General Listener behavior\n\nNote that, for all distinct Listeners, requests SHOULD match at most one Listener. For example, if Listeners are defined for \"foo.example.com\" and \"*.example.com\", a request to \"foo.example.com\" SHOULD only be routed using routes attached to the \"foo.example.com\" Listener (and not the \"*.example.com\" Listener).\n\nThis concept is known as \"Listener Isolation\", and it is an Extended feature of Gateway API. Implementations that do not support Listener Isolation MUST clearly document this, and MUST NOT claim support for the `GatewayHTTPListenerIsolation` feature.\n\nImplementations that _do_ support Listener Isolation SHOULD claim support for the Extended `GatewayHTTPListenerIsolation` feature and pass the associated conformance tests.\n\n## Compatible Listeners\n\nA Gateway's Listeners are considered _compatible_ if:\n\n1. They are distinct. 2. The implementation can serve them in compliance with the Addresses\n   requirement that all Listeners are available on all assigned\n   addresses.\n\nCompatible combinations in Extended support are expected to vary across implementations. A combination that is compatible for one implementation may not be compatible for another.\n\nFor example, an implementation that cannot serve both TCP and UDP listeners on the same address, or cannot mix HTTPS and generic TLS listens on the same port would not consider those cases compatible, even though they are distinct.\n\nImplementations MAY merge separate Gateways onto a single set of Addresses if all Listeners across all Gateways are compatible.\n\nIn a future release the MinItems=1 requirement MAY be dropped.\n\nSupport: Core",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.Listener"),
+										Ref: ref("sigs.k8s.io/gateway-api/apis/v1.Listener"),
 									},
 								},
 							},
@@ -26525,8 +27628,7 @@ func schema_sigsk8sio_gateway_api_apis_v1_GatewaySpec(ref common.ReferenceCallba
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.GatewayAddress"),
+										Ref: ref("sigs.k8s.io/gateway-api/apis/v1.GatewaySpecAddress"),
 									},
 								},
 							},
@@ -26544,12 +27646,45 @@ func schema_sigsk8sio_gateway_api_apis_v1_GatewaySpec(ref common.ReferenceCallba
 							Ref:         ref("sigs.k8s.io/gateway-api/apis/v1.GatewayBackendTLS"),
 						},
 					},
+					"allowedListeners": {
+						SchemaProps: spec.SchemaProps{
+							Description: "AllowedListeners defines which ListenerSets can be attached to this Gateway. While this feature is experimental, the default value is to allow no ListenerSets.\n\n<gateway:experimental>",
+							Ref:         ref("sigs.k8s.io/gateway-api/apis/v1.AllowedListeners"),
+						},
+					},
 				},
 				Required: []string{"gatewayClassName", "listeners"},
 			},
 		},
 		Dependencies: []string{
-			"sigs.k8s.io/gateway-api/apis/v1.GatewayAddress", "sigs.k8s.io/gateway-api/apis/v1.GatewayBackendTLS", "sigs.k8s.io/gateway-api/apis/v1.GatewayInfrastructure", "sigs.k8s.io/gateway-api/apis/v1.Listener"},
+			"sigs.k8s.io/gateway-api/apis/v1.AllowedListeners", "sigs.k8s.io/gateway-api/apis/v1.GatewayBackendTLS", "sigs.k8s.io/gateway-api/apis/v1.GatewayInfrastructure", "sigs.k8s.io/gateway-api/apis/v1.GatewaySpecAddress", "sigs.k8s.io/gateway-api/apis/v1.Listener"},
+	}
+}
+
+func schema_sigsk8sio_gateway_api_apis_v1_GatewaySpecAddress(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "GatewaySpecAddress describes an address that can be bound to a Gateway.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"type": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Type of the address.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"value": {
+						SchemaProps: spec.SchemaProps{
+							Description: "When a value is unspecified, an implementation SHOULD automatically assign an address matching the requested type if possible.\n\nIf an implementation does not support an empty value, they MUST set the \"Programmed\" condition in status to False with a reason of \"AddressNotAssigned\".\n\nExamples: `1.2.3.4`, `128::1`, `my-ip-address`.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+			},
+		},
 	}
 }
 
@@ -26567,8 +27702,7 @@ func schema_sigsk8sio_gateway_api_apis_v1_GatewayStatus(ref common.ReferenceCall
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.GatewayStatusAddress"),
+										Ref: ref("sigs.k8s.io/gateway-api/apis/v1.GatewayStatusAddress"),
 									},
 								},
 							},
@@ -26589,8 +27723,7 @@ func schema_sigsk8sio_gateway_api_apis_v1_GatewayStatus(ref common.ReferenceCall
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
+										Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
 									},
 								},
 							},
@@ -26611,8 +27744,7 @@ func schema_sigsk8sio_gateway_api_apis_v1_GatewayStatus(ref common.ReferenceCall
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.ListenerStatus"),
+										Ref: ref("sigs.k8s.io/gateway-api/apis/v1.ListenerStatus"),
 									},
 								},
 							},
@@ -26676,8 +27808,7 @@ func schema_sigsk8sio_gateway_api_apis_v1_GatewayTLSConfig(ref common.ReferenceC
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.SecretObjectReference"),
+										Ref: ref("sigs.k8s.io/gateway-api/apis/v1.SecretObjectReference"),
 									},
 								},
 							},
@@ -26697,9 +27828,8 @@ func schema_sigsk8sio_gateway_api_apis_v1_GatewayTLSConfig(ref common.ReferenceC
 								Allows: true,
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -26770,8 +27900,7 @@ func schema_sigsk8sio_gateway_api_apis_v1_HTTPBackendRef(ref common.ReferenceCal
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.HTTPRouteFilter"),
+										Ref: ref("sigs.k8s.io/gateway-api/apis/v1.HTTPRouteFilter"),
 									},
 								},
 							},
@@ -26786,6 +27915,109 @@ func schema_sigsk8sio_gateway_api_apis_v1_HTTPBackendRef(ref common.ReferenceCal
 	}
 }
 
+func schema_sigsk8sio_gateway_api_apis_v1_HTTPCORSFilter(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "HTTPCORSFilter defines a filter that that configures Cross-Origin Request Sharing (CORS).",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"allowOrigins": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "set",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "AllowOrigins indicates whether the response can be shared with requested resource from the given `Origin`.\n\nThe `Origin` consists of a scheme and a host, with an optional port, and takes the form `<scheme>://<host>(:<port>)`.\n\nValid values for scheme are: `http` and `https`.\n\nValid values for port are any integer between 1 and 65535 (the list of available TCP/UDP ports). Note that, if not included, port `80` is assumed for `http` scheme origins, and port `443` is assumed for `https` origins. This may affect origin matching.\n\nThe host part of the origin may contain the wildcard character `*`. These wildcard characters behave as follows:\n\n* `*` is a greedy match to the _left_, including any number of\n  DNS labels to the left of its position. This also means that\n  `*` will include any number of period `.` characters to the\n  left of its position.\n* A wildcard by itself matches all hosts.\n\nAn origin value that includes _only_ the `*` character indicates requests from all `Origin`s are allowed.\n\nWhen the `AllowOrigins` field is configured with multiple origins, it means the server supports clients from multiple origins. If the request `Origin` matches the configured allowed origins, the gateway must return the given `Origin` and sets value of the header `Access-Control-Allow-Origin` same as the `Origin` header provided by the client.\n\nThe status code of a successful response to a \"preflight\" request is always an OK status (i.e., 204 or 200).\n\nIf the request `Origin` does not match the configured allowed origins, the gateway returns 204/200 response but doesn't set the relevant cross-origin response headers. Alternatively, the gateway responds with 403 status to the \"preflight\" request is denied, coupled with omitting the CORS headers. The cross-origin request fails on the client side. Therefore, the client doesn't attempt the actual cross-origin request.\n\nThe `Access-Control-Allow-Origin` response header can only use `*` wildcard as value when the `AllowCredentials` field is unspecified.\n\nWhen the `AllowCredentials` field is specified and `AllowOrigins` field specified with the `*` wildcard, the gateway must return a single origin in the value of the `Access-Control-Allow-Origin` response header, instead of specifying the `*` wildcard. The value of the header `Access-Control-Allow-Origin` is same as the `Origin` header provided by the client.\n\nSupport: Extended",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"allowCredentials": {
+						SchemaProps: spec.SchemaProps{
+							Description: "AllowCredentials indicates whether the actual cross-origin request allows to include credentials.\n\nThe only valid value for the `Access-Control-Allow-Credentials` response header is true (case-sensitive).\n\nIf the credentials are not allowed in cross-origin requests, the gateway will omit the header `Access-Control-Allow-Credentials` entirely rather than setting its value to false.\n\nSupport: Extended",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"allowMethods": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "set",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "AllowMethods indicates which HTTP methods are supported for accessing the requested resource.\n\nValid values are any method defined by RFC9110, along with the special value `*`, which represents all HTTP methods are allowed.\n\nMethod names are case sensitive, so these values are also case-sensitive. (See https://www.rfc-editor.org/rfc/rfc2616#section-5.1.1)\n\nMultiple method names in the value of the `Access-Control-Allow-Methods` response header are separated by a comma (\",\").\n\nA CORS-safelisted method is a method that is `GET`, `HEAD`, or `POST`. (See https://fetch.spec.whatwg.org/#cors-safelisted-method) The CORS-safelisted methods are always allowed, regardless of whether they are specified in the `AllowMethods` field.\n\nWhen the `AllowMethods` field is configured with one or more methods, the gateway must return the `Access-Control-Allow-Methods` response header which value is present in the `AllowMethods` field.\n\nIf the HTTP method of the `Access-Control-Request-Method` request header is not included in the list of methods specified by the response header `Access-Control-Allow-Methods`, it will present an error on the client side.\n\nThe `Access-Control-Allow-Methods` response header can only use `*` wildcard as value when the `AllowCredentials` field is unspecified.\n\nWhen the `AllowCredentials` field is specified and `AllowMethods` field specified with the `*` wildcard, the gateway must specify one HTTP method in the value of the Access-Control-Allow-Methods response header. The value of the header `Access-Control-Allow-Methods` is same as the `Access-Control-Request-Method` header provided by the client. If the header `Access-Control-Request-Method` is not included in the request, the gateway will omit the `Access-Control-Allow-Methods` response header, instead of specifying the `*` wildcard. A Gateway implementation may choose to add implementation-specific default methods.\n\nSupport: Extended",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"allowHeaders": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "set",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "AllowHeaders indicates which HTTP request headers are supported for accessing the requested resource.\n\nHeader names are not case sensitive.\n\nMultiple header names in the value of the `Access-Control-Allow-Headers` response header are separated by a comma (\",\").\n\nWhen the `AllowHeaders` field is configured with one or more headers, the gateway must return the `Access-Control-Allow-Headers` response header which value is present in the `AllowHeaders` field.\n\nIf any header name in the `Access-Control-Request-Headers` request header is not included in the list of header names specified by the response header `Access-Control-Allow-Headers`, it will present an error on the client side.\n\nIf any header name in the `Access-Control-Allow-Headers` response header does not recognize by the client, it will also occur an error on the client side.\n\nA wildcard indicates that the requests with all HTTP headers are allowed. The `Access-Control-Allow-Headers` response header can only use `*` wildcard as value when the `AllowCredentials` field is unspecified.\n\nWhen the `AllowCredentials` field is specified and `AllowHeaders` field specified with the `*` wildcard, the gateway must specify one or more HTTP headers in the value of the `Access-Control-Allow-Headers` response header. The value of the header `Access-Control-Allow-Headers` is same as the `Access-Control-Request-Headers` header provided by the client. If the header `Access-Control-Request-Headers` is not included in the request, the gateway will omit the `Access-Control-Allow-Headers` response header, instead of specifying the `*` wildcard. A Gateway implementation may choose to add implementation-specific default headers.\n\nSupport: Extended",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"exposeHeaders": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "set",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "ExposeHeaders indicates which HTTP response headers can be exposed to client-side scripts in response to a cross-origin request.\n\nA CORS-safelisted response header is an HTTP header in a CORS response that it is considered safe to expose to the client scripts. The CORS-safelisted response headers include the following headers: `Cache-Control` `Content-Language` `Content-Length` `Content-Type` `Expires` `Last-Modified` `Pragma` (See https://fetch.spec.whatwg.org/#cors-safelisted-response-header-name) The CORS-safelisted response headers are exposed to client by default.\n\nWhen an HTTP header name is specified using the `ExposeHeaders` field, this additional header will be exposed as part of the response to the client.\n\nHeader names are not case sensitive.\n\nMultiple header names in the value of the `Access-Control-Expose-Headers` response header are separated by a comma (\",\").\n\nA wildcard indicates that the responses with all HTTP headers are exposed to clients. The `Access-Control-Expose-Headers` response header can only use `*` wildcard as value when the `AllowCredentials` field is unspecified.\n\nSupport: Extended",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"maxAge": {
+						SchemaProps: spec.SchemaProps{
+							Description: "MaxAge indicates the duration (in seconds) for the client to cache the results of a \"preflight\" request.\n\nThe information provided by the `Access-Control-Allow-Methods` and `Access-Control-Allow-Headers` response headers can be cached by the client until the time specified by `Access-Control-Max-Age` elapses.\n\nThe default value of `Access-Control-Max-Age` response header is 5 (seconds).",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
 func schema_sigsk8sio_gateway_api_apis_v1_HTTPHeader(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -26795,7 +28027,7 @@ func schema_sigsk8sio_gateway_api_apis_v1_HTTPHeader(ref common.ReferenceCallbac
 				Properties: map[string]spec.Schema{
 					"name": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Name is the name of the HTTP Header to be matched. Name matching MUST be case insensitive. (See https://tools.ietf.org/html/rfc7230#section-3.2).\n\nIf multiple entries specify equivalent header names, the first entry with an equivalent name MUST be considered for a match. Subsequent entries with an equivalent header name MUST be ignored. Due to the case-insensitivity of header names, \"foo\" and \"Foo\" are considered equivalent.",
+							Description: "Name is the name of the HTTP Header to be matched. Name matching MUST be case-insensitive. (See https://tools.ietf.org/html/rfc7230#section-3.2).\n\nIf multiple entries specify equivalent header names, the first entry with an equivalent name MUST be considered for a match. Subsequent entries with an equivalent header name MUST be ignored. Due to the case-insensitivity of header names, \"foo\" and \"Foo\" are considered equivalent.",
 							Default:     "",
 							Type:        []string{"string"},
 							Format:      "",
@@ -26838,8 +28070,7 @@ func schema_sigsk8sio_gateway_api_apis_v1_HTTPHeaderFilter(ref common.ReferenceC
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.HTTPHeader"),
+										Ref: ref("sigs.k8s.io/gateway-api/apis/v1.HTTPHeader"),
 									},
 								},
 							},
@@ -26860,8 +28091,7 @@ func schema_sigsk8sio_gateway_api_apis_v1_HTTPHeaderFilter(ref common.ReferenceC
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.HTTPHeader"),
+										Ref: ref("sigs.k8s.io/gateway-api/apis/v1.HTTPHeader"),
 									},
 								},
 							},
@@ -26879,9 +28109,8 @@ func schema_sigsk8sio_gateway_api_apis_v1_HTTPHeaderFilter(ref common.ReferenceC
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -26911,7 +28140,7 @@ func schema_sigsk8sio_gateway_api_apis_v1_HTTPHeaderMatch(ref common.ReferenceCa
 					},
 					"name": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Name is the name of the HTTP Header to be matched. Name matching MUST be case insensitive. (See https://tools.ietf.org/html/rfc7230#section-3.2).\n\nIf multiple entries specify equivalent header names, only the first entry with an equivalent name MUST be considered for a match. Subsequent entries with an equivalent header name MUST be ignored. Due to the case-insensitivity of header names, \"foo\" and \"Foo\" are considered equivalent.\n\nWhen a header is repeated in an HTTP request, it is implementation-specific behavior as to how this is represented. Generally, proxies should follow the guidance from the RFC: https://www.rfc-editor.org/rfc/rfc7230.html#section-3.2.2 regarding processing a repeated header, with special handling for \"Set-Cookie\".",
+							Description: "Name is the name of the HTTP Header to be matched. Name matching MUST be case-insensitive. (See https://tools.ietf.org/html/rfc7230#section-3.2).\n\nIf multiple entries specify equivalent header names, only the first entry with an equivalent name MUST be considered for a match. Subsequent entries with an equivalent header name MUST be ignored. Due to the case-insensitivity of header names, \"foo\" and \"Foo\" are considered equivalent.\n\nWhen a header is repeated in an HTTP request, it is implementation-specific behavior as to how this is represented. Generally, proxies should follow the guidance from the RFC: https://www.rfc-editor.org/rfc/rfc7230.html#section-3.2.2 regarding processing a repeated header, with special handling for \"Set-Cookie\".",
 							Default:     "",
 							Type:        []string{"string"},
 							Format:      "",
@@ -27048,14 +28277,14 @@ func schema_sigsk8sio_gateway_api_apis_v1_HTTPRequestMirrorFilter(ref common.Ref
 					},
 					"percent": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Percent represents the percentage of requests that should be mirrored to BackendRef. Its minimum value is 0 (indicating 0% of requests) and its maximum value is 100 (indicating 100% of requests).\n\nOnly one of Fraction or Percent may be specified. If neither field is specified, 100% of requests will be mirrored.\n\n<gateway:experimental>",
+							Description: "Percent represents the percentage of requests that should be mirrored to BackendRef. Its minimum value is 0 (indicating 0% of requests) and its maximum value is 100 (indicating 100% of requests).\n\nOnly one of Fraction or Percent may be specified. If neither field is specified, 100% of requests will be mirrored.",
 							Type:        []string{"integer"},
 							Format:      "int32",
 						},
 					},
 					"fraction": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Fraction represents the fraction of requests that should be mirrored to BackendRef.\n\nOnly one of Fraction or Percent may be specified. If neither field is specified, 100% of requests will be mirrored.\n\n<gateway:experimental>",
+							Description: "Fraction represents the fraction of requests that should be mirrored to BackendRef.\n\nOnly one of Fraction or Percent may be specified. If neither field is specified, 100% of requests will be mirrored.",
 							Ref:         ref("sigs.k8s.io/gateway-api/apis/v1.Fraction"),
 						},
 					},
@@ -27171,12 +28400,12 @@ func schema_sigsk8sio_gateway_api_apis_v1_HTTPRouteFilter(ref common.ReferenceCa
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "HTTPRouteFilter defines processing steps that must be completed during the request or response lifecycle. HTTPRouteFilters are meant as an extension point to express processing that may be done in Gateway implementations. Some examples include request or response modification, implementing authentication strategies, rate-limiting, and traffic shaping. API guarantee/conformance is defined based on the type of the filter.",
+				Description: "HTTPRouteFilter defines processing steps that must be completed during the request or response lifecycle. HTTPRouteFilters are meant as an extension point to express processing that may be done in Gateway implementations. Some examples include request or response modification, implementing authentication strategies, rate-limiting, and traffic shaping. API guarantee/conformance is defined based on the type of the filter.\n\n<gateway:experimental:validation:XValidation:message=\"filter.cors must be nil if the filter.type is not CORS\",rule=\"!(has(self.cors) && self.type != 'CORS')\"> <gateway:experimental:validation:XValidation:message=\"filter.cors must be specified for CORS filter.type\",rule=\"!(!has(self.cors) && self.type == 'CORS')\">",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"type": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Type identifies the type of filter to apply. As with other API fields, types are classified into three conformance levels:\n\n- Core: Filter types and their corresponding configuration defined by\n  \"Support: Core\" in this package, e.g. \"RequestHeaderModifier\". All\n  implementations must support core filters.\n\n- Extended: Filter types and their corresponding configuration defined by\n  \"Support: Extended\" in this package, e.g. \"RequestMirror\". Implementers\n  are encouraged to support extended filters.\n\n- Implementation-specific: Filters that are defined and supported by\n  specific vendors.\n  In the future, filters showing convergence in behavior across multiple\n  implementations will be considered for inclusion in extended or core\n  conformance levels. Filter-specific configuration for such filters\n  is specified using the ExtensionRef field. `Type` should be set to\n  \"ExtensionRef\" for custom filters.\n\nImplementers are encouraged to define custom implementation types to extend the core API with implementation-specific behavior.\n\nIf a reference to a custom filter type cannot be resolved, the filter MUST NOT be skipped. Instead, requests that would have been processed by that filter MUST receive a HTTP error response.\n\nNote that values may be added to this enum, implementations must ensure that unknown values will not cause a crash.\n\nUnknown values here must result in the implementation setting the Accepted Condition for the Route to `status: False`, with a Reason of `UnsupportedValue`.",
+							Description: "Type identifies the type of filter to apply. As with other API fields, types are classified into three conformance levels:\n\n- Core: Filter types and their corresponding configuration defined by\n  \"Support: Core\" in this package, e.g. \"RequestHeaderModifier\". All\n  implementations must support core filters.\n\n- Extended: Filter types and their corresponding configuration defined by\n  \"Support: Extended\" in this package, e.g. \"RequestMirror\". Implementers\n  are encouraged to support extended filters.\n\n- Implementation-specific: Filters that are defined and supported by\n  specific vendors.\n  In the future, filters showing convergence in behavior across multiple\n  implementations will be considered for inclusion in extended or core\n  conformance levels. Filter-specific configuration for such filters\n  is specified using the ExtensionRef field. `Type` should be set to\n  \"ExtensionRef\" for custom filters.\n\nImplementers are encouraged to define custom implementation types to extend the core API with implementation-specific behavior.\n\nIf a reference to a custom filter type cannot be resolved, the filter MUST NOT be skipped. Instead, requests that would have been processed by that filter MUST receive a HTTP error response.\n\nNote that values may be added to this enum, implementations must ensure that unknown values will not cause a crash.\n\nUnknown values here must result in the implementation setting the Accepted Condition for the Route to `status: False`, with a Reason of `UnsupportedValue`.\n\n<gateway:experimental:validation:Enum=RequestHeaderModifier;ResponseHeaderModifier;RequestMirror;RequestRedirect;URLRewrite;ExtensionRef;CORS>",
 							Default:     "",
 							Type:        []string{"string"},
 							Format:      "",
@@ -27196,7 +28425,7 @@ func schema_sigsk8sio_gateway_api_apis_v1_HTTPRouteFilter(ref common.ReferenceCa
 					},
 					"requestMirror": {
 						SchemaProps: spec.SchemaProps{
-							Description: "RequestMirror defines a schema for a filter that mirrors requests. Requests are sent to the specified destination, but responses from that destination are ignored.\n\nThis filter can be used multiple times within the same rule. Note that not all implementations will be able to support mirroring to multiple backends.\n\nSupport: Extended\n\n\n<gateway:experimental:validation:XValidation:message=\"Only one of percent or fraction may be specified in HTTPRequestMirrorFilter\",rule=\"!(has(self.percent) && has(self.fraction))\">",
+							Description: "RequestMirror defines a schema for a filter that mirrors requests. Requests are sent to the specified destination, but responses from that destination are ignored.\n\nThis filter can be used multiple times within the same rule. Note that not all implementations will be able to support mirroring to multiple backends.\n\nSupport: Extended",
 							Ref:         ref("sigs.k8s.io/gateway-api/apis/v1.HTTPRequestMirrorFilter"),
 						},
 					},
@@ -27212,6 +28441,12 @@ func schema_sigsk8sio_gateway_api_apis_v1_HTTPRouteFilter(ref common.ReferenceCa
 							Ref:         ref("sigs.k8s.io/gateway-api/apis/v1.HTTPURLRewriteFilter"),
 						},
 					},
+					"cors": {
+						SchemaProps: spec.SchemaProps{
+							Description: "CORS defines a schema for a filter that responds to the cross-origin request based on HTTP response header.\n\nSupport: Extended\n\n<gateway:experimental>",
+							Ref:         ref("sigs.k8s.io/gateway-api/apis/v1.HTTPCORSFilter"),
+						},
+					},
 					"extensionRef": {
 						SchemaProps: spec.SchemaProps{
 							Description: "ExtensionRef is an optional, implementation-specific extension to the \"filter\" behavior.  For example, resource \"myroutefilter\" in group \"networking.example.net\"). ExtensionRef MUST NOT be used for core and extended filters.\n\nThis filter can be used multiple times within the same rule.\n\nSupport: Implementation-specific",
@@ -27223,7 +28458,7 @@ func schema_sigsk8sio_gateway_api_apis_v1_HTTPRouteFilter(ref common.ReferenceCa
 			},
 		},
 		Dependencies: []string{
-			"sigs.k8s.io/gateway-api/apis/v1.HTTPHeaderFilter", "sigs.k8s.io/gateway-api/apis/v1.HTTPRequestMirrorFilter", "sigs.k8s.io/gateway-api/apis/v1.HTTPRequestRedirectFilter", "sigs.k8s.io/gateway-api/apis/v1.HTTPURLRewriteFilter", "sigs.k8s.io/gateway-api/apis/v1.LocalObjectReference"},
+			"sigs.k8s.io/gateway-api/apis/v1.HTTPCORSFilter", "sigs.k8s.io/gateway-api/apis/v1.HTTPHeaderFilter", "sigs.k8s.io/gateway-api/apis/v1.HTTPRequestMirrorFilter", "sigs.k8s.io/gateway-api/apis/v1.HTTPRequestRedirectFilter", "sigs.k8s.io/gateway-api/apis/v1.HTTPURLRewriteFilter", "sigs.k8s.io/gateway-api/apis/v1.LocalObjectReference"},
 	}
 }
 
@@ -27260,8 +28495,7 @@ func schema_sigsk8sio_gateway_api_apis_v1_HTTPRouteList(ref common.ReferenceCall
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.HTTPRoute"),
+										Ref: ref("sigs.k8s.io/gateway-api/apis/v1.HTTPRoute"),
 									},
 								},
 							},
@@ -27304,8 +28538,7 @@ func schema_sigsk8sio_gateway_api_apis_v1_HTTPRouteMatch(ref common.ReferenceCal
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.HTTPHeaderMatch"),
+										Ref: ref("sigs.k8s.io/gateway-api/apis/v1.HTTPHeaderMatch"),
 									},
 								},
 							},
@@ -27326,8 +28559,7 @@ func schema_sigsk8sio_gateway_api_apis_v1_HTTPRouteMatch(ref common.ReferenceCal
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.HTTPQueryParamMatch"),
+										Ref: ref("sigs.k8s.io/gateway-api/apis/v1.HTTPQueryParamMatch"),
 									},
 								},
 							},
@@ -27362,9 +28594,8 @@ func schema_sigsk8sio_gateway_api_apis_v1_HTTPRouteRetry(ref common.ReferenceCal
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: 0,
-										Type:    []string{"integer"},
-										Format:  "int32",
+										Type:   []string{"integer"},
+										Format: "int32",
 									},
 								},
 							},
@@ -27372,7 +28603,7 @@ func schema_sigsk8sio_gateway_api_apis_v1_HTTPRouteRetry(ref common.ReferenceCal
 					},
 					"attempts": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Attempts specifies the maxmimum number of times an individual request from the gateway to a backend should be retried.\n\nIf the maximum number of retries has been attempted without a successful response from the backend, the Gateway MUST return an error.\n\nWhen this field is unspecified, the number of times to attempt to retry a backend request is implementation-specific.\n\nSupport: Extended",
+							Description: "Attempts specifies the maximum number of times an individual request from the gateway to a backend should be retried.\n\nIf the maximum number of retries has been attempted without a successful response from the backend, the Gateway MUST return an error.\n\nWhen this field is unspecified, the number of times to attempt to retry a backend request is implementation-specific.\n\nSupport: Extended",
 							Type:        []string{"integer"},
 							Format:      "int32",
 						},
@@ -27411,8 +28642,7 @@ func schema_sigsk8sio_gateway_api_apis_v1_HTTPRouteRule(ref common.ReferenceCall
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.HTTPRouteMatch"),
+										Ref: ref("sigs.k8s.io/gateway-api/apis/v1.HTTPRouteMatch"),
 									},
 								},
 							},
@@ -27420,13 +28650,12 @@ func schema_sigsk8sio_gateway_api_apis_v1_HTTPRouteRule(ref common.ReferenceCall
 					},
 					"filters": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Filters define the filters that are applied to requests that match this rule.\n\nWherever possible, implementations SHOULD implement filters in the order they are specified.\n\nImplementations MAY choose to implement this ordering strictly, rejecting any combination or order of filters that can not be supported. If implementations choose a strict interpretation of filter ordering, they MUST clearly document that behavior.\n\nTo reject an invalid combination or order of filters, implementations SHOULD consider the Route Rules with this configuration invalid. If all Route Rules in a Route are invalid, the entire Route would be considered invalid. If only a portion of Route Rules are invalid, implementations MUST set the \"PartiallyInvalid\" condition for the Route.\n\nConformance-levels at this level are defined based on the type of filter:\n\n- ALL core filters MUST be supported by all implementations. - Implementers are encouraged to support extended filters. - Implementation-specific custom filters have no API guarantees across\n  implementations.\n\nSpecifying the same filter multiple times is not supported unless explicitly indicated in the filter.\n\nAll filters are expected to be compatible with each other except for the URLRewrite and RequestRedirect filters, which may not be combined. If an implementation can not support other combinations of filters, they must clearly document that limitation. In cases where incompatible or unsupported filters are specified and cause the `Accepted` condition to be set to status `False`, implementations may use the `IncompatibleFilters` reason to specify this configuration error.\n\nSupport: Core",
+							Description: "Filters define the filters that are applied to requests that match this rule.\n\nWherever possible, implementations SHOULD implement filters in the order they are specified.\n\nImplementations MAY choose to implement this ordering strictly, rejecting any combination or order of filters that cannot be supported. If implementations choose a strict interpretation of filter ordering, they MUST clearly document that behavior.\n\nTo reject an invalid combination or order of filters, implementations SHOULD consider the Route Rules with this configuration invalid. If all Route Rules in a Route are invalid, the entire Route would be considered invalid. If only a portion of Route Rules are invalid, implementations MUST set the \"PartiallyInvalid\" condition for the Route.\n\nConformance-levels at this level are defined based on the type of filter:\n\n- ALL core filters MUST be supported by all implementations. - Implementers are encouraged to support extended filters. - Implementation-specific custom filters have no API guarantees across\n  implementations.\n\nSpecifying the same filter multiple times is not supported unless explicitly indicated in the filter.\n\nAll filters are expected to be compatible with each other except for the URLRewrite and RequestRedirect filters, which may not be combined. If an implementation cannot support other combinations of filters, they must clearly document that limitation. In cases where incompatible or unsupported filters are specified and cause the `Accepted` condition to be set to status `False`, implementations may use the `IncompatibleFilters` reason to specify this configuration error.\n\nSupport: Core",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.HTTPRouteFilter"),
+										Ref: ref("sigs.k8s.io/gateway-api/apis/v1.HTTPRouteFilter"),
 									},
 								},
 							},
@@ -27439,8 +28668,7 @@ func schema_sigsk8sio_gateway_api_apis_v1_HTTPRouteRule(ref common.ReferenceCall
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.HTTPBackendRef"),
+										Ref: ref("sigs.k8s.io/gateway-api/apis/v1.HTTPBackendRef"),
 									},
 								},
 							},
@@ -27486,8 +28714,7 @@ func schema_sigsk8sio_gateway_api_apis_v1_HTTPRouteSpec(ref common.ReferenceCall
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.ParentReference"),
+										Ref: ref("sigs.k8s.io/gateway-api/apis/v1.ParentReference"),
 									},
 								},
 							},
@@ -27500,9 +28727,8 @@ func schema_sigsk8sio_gateway_api_apis_v1_HTTPRouteSpec(ref common.ReferenceCall
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -27515,8 +28741,7 @@ func schema_sigsk8sio_gateway_api_apis_v1_HTTPRouteSpec(ref common.ReferenceCall
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.HTTPRouteRule"),
+										Ref: ref("sigs.k8s.io/gateway-api/apis/v1.HTTPRouteRule"),
 									},
 								},
 							},
@@ -27544,8 +28769,7 @@ func schema_sigsk8sio_gateway_api_apis_v1_HTTPRouteStatus(ref common.ReferenceCa
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.RouteParentStatus"),
+										Ref: ref("sigs.k8s.io/gateway-api/apis/v1.RouteParentStatus"),
 									},
 								},
 							},
@@ -27632,7 +28856,7 @@ func schema_sigsk8sio_gateway_api_apis_v1_Listener(ref common.ReferenceCallback)
 					},
 					"hostname": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Hostname specifies the virtual hostname to match for protocol types that define this concept. When unspecified, all hostnames are matched. This field is ignored for protocols that don't require hostname based matching.\n\nImplementations MUST apply Hostname matching appropriately for each of the following protocols:\n\n* TLS: The Listener Hostname MUST match the SNI. * HTTP: The Listener Hostname MUST match the Host header of the request. * HTTPS: The Listener Hostname SHOULD match at both the TLS and HTTP\n  protocol layers as described above. If an implementation does not\n  ensure that both the SNI and Host header match the Listener hostname,\n  it MUST clearly document that.\n\nFor HTTPRoute and TLSRoute resources, there is an interaction with the `spec.hostnames` array. When both listener and route specify hostnames, there MUST be an intersection between the values for a Route to be accepted. For more information, refer to the Route specific Hostnames documentation.\n\nHostnames that are prefixed with a wildcard label (`*.`) are interpreted as a suffix match. That means that a match for `*.example.com` would match both `test.example.com`, and `foo.test.example.com`, but not `example.com`.\n\nSupport: Core",
+							Description: "Hostname specifies the virtual hostname to match for protocol types that define this concept. When unspecified, all hostnames are matched. This field is ignored for protocols that don't require hostname based matching.\n\nImplementations MUST apply Hostname matching appropriately for each of the following protocols:\n\n* TLS: The Listener Hostname MUST match the SNI. * HTTP: The Listener Hostname MUST match the Host header of the request. * HTTPS: The Listener Hostname SHOULD match both the SNI and Host header.\n  Note that this does not require the SNI and Host header to be the same.\n  The semantics of this are described in more detail below.\n\nTo ensure security, Section 11.1 of RFC-6066 emphasizes that server implementations that rely on SNI hostname matching MUST also verify hostnames within the application protocol.\n\nSection 9.1.2 of RFC-7540 provides a mechanism for servers to reject the reuse of a connection by responding with the HTTP 421 Misdirected Request status code. This indicates that the origin server has rejected the request because it appears to have been misdirected.\n\nTo detect misdirected requests, Gateways SHOULD match the authority of the requests with all the SNI hostname(s) configured across all the Gateway Listeners on the same port and protocol:\n\n* If another Listener has an exact match or more specific wildcard entry,\n  the Gateway SHOULD return a 421.\n* If the current Listener (selected by SNI matching during ClientHello)\n  does not match the Host:\n    * If another Listener does match the Host the Gateway SHOULD return a\n      421.\n    * If no other Listener matches the Host, the Gateway MUST return a\n      404.\n\nFor HTTPRoute and TLSRoute resources, there is an interaction with the `spec.hostnames` array. When both listener and route specify hostnames, there MUST be an intersection between the values for a Route to be accepted. For more information, refer to the Route specific Hostnames documentation.\n\nHostnames that are prefixed with a wildcard label (`*.`) are interpreted as a suffix match. That means that a match for `*.example.com` would match both `test.example.com`, and `foo.test.example.com`, but not `example.com`.\n\nSupport: Core",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -27674,6 +28898,34 @@ func schema_sigsk8sio_gateway_api_apis_v1_Listener(ref common.ReferenceCallback)
 	}
 }
 
+func schema_sigsk8sio_gateway_api_apis_v1_ListenerNamespaces(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ListenerNamespaces indicate which namespaces ListenerSets should be selected from.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"from": {
+						SchemaProps: spec.SchemaProps{
+							Description: "From indicates where ListenerSets can attach to this Gateway. Possible values are:\n\n* Same: Only ListenerSets in the same namespace may be attached to this Gateway. * Selector: ListenerSets in namespaces selected by the selector may be attached to this Gateway. * All: ListenerSets in all namespaces may be attached to this Gateway. * None: Only listeners defined in the Gateway's spec are allowed\n\nWhile this feature is experimental, the default value None",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"selector": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Selector must be specified when From is set to \"Selector\". In that case, only ListenerSets in Namespaces matching this Selector will be selected by this Gateway. This field is ignored for other values of \"From\".",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.LabelSelector"),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"k8s.io/apimachinery/pkg/apis/meta/v1.LabelSelector"},
+	}
+}
+
 func schema_sigsk8sio_gateway_api_apis_v1_ListenerStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -27696,8 +28948,7 @@ func schema_sigsk8sio_gateway_api_apis_v1_ListenerStatus(ref common.ReferenceCal
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.RouteGroupKind"),
+										Ref: ref("sigs.k8s.io/gateway-api/apis/v1.RouteGroupKind"),
 									},
 								},
 							},
@@ -27726,8 +28977,7 @@ func schema_sigsk8sio_gateway_api_apis_v1_ListenerStatus(ref common.ReferenceCal
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
+										Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
 									},
 								},
 							},
@@ -27827,7 +29077,7 @@ func schema_sigsk8sio_gateway_api_apis_v1_ObjectReference(ref common.ReferenceCa
 				Properties: map[string]spec.Schema{
 					"group": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Group is the group of the referent. For example, \"gateway.networking.k8s.io\". When unspecified or empty string, core API group is inferred.",
+							Description: "Group is the group of the referent. For example, \"gateway.networking.k8s.io\". When set to the empty string, core API group is inferred.",
 							Default:     "",
 							Type:        []string{"string"},
 							Format:      "",
@@ -27912,7 +29162,7 @@ func schema_sigsk8sio_gateway_api_apis_v1_ParentReference(ref common.ReferenceCa
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "ParentReference identifies an API object (usually a Gateway) that can be considered a parent of this resource (usually a route). The only kind of parent resource with \"Core\" support is Gateway. This API may be extended in the future to support additional kinds of parent resources, such as HTTPRoute.\n\nNote that there are specific rules for ParentRefs which cross namespace boundaries. Cross-namespace references are only valid if they are explicitly allowed by something in the namespace they are referring to. For example: Gateway has the AllowedRoutes field, and ReferenceGrant provides a generic way to enable any other kind of cross-namespace reference.\n\nThe API object must be valid in the cluster; the Group and Kind must be registered in the cluster for this reference to be valid.",
+				Description: "ParentReference identifies an API object (usually a Gateway) that can be considered a parent of this resource (usually a route). There are two kinds of parent resources with \"Core\" support:\n\n* Gateway (Gateway conformance profile) * Service (Mesh conformance profile, ClusterIP Services only)\n\nThis API may be extended in the future to support additional kinds of parent resources.\n\nThe API object must be valid in the cluster; the Group and Kind must be registered in the cluster for this reference to be valid.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"group": {
@@ -28054,13 +29304,12 @@ func schema_sigsk8sio_gateway_api_apis_v1_RouteParentStatus(ref common.Reference
 							},
 						},
 						SchemaProps: spec.SchemaProps{
-							Description: "Conditions describes the status of the route with respect to the Gateway. Note that the route's availability is also subject to the Gateway's own status conditions and listener status.\n\nIf the Route's ParentRef specifies an existing Gateway that supports Routes of this kind AND that Gateway's controller has sufficient access, then that Gateway's controller MUST set the \"Accepted\" condition on the Route, to indicate whether the route has been accepted or rejected by the Gateway, and why.\n\nA Route MUST be considered \"Accepted\" if at least one of the Route's rules is implemented by the Gateway.\n\nThere are a number of cases where the \"Accepted\" condition may not be set due to lack of controller visibility, that includes when:\n\n* The Route refers to a non-existent parent. * The Route is of a type that the controller does not support. * The Route is in a namespace the controller does not have access to.",
+							Description: "Conditions describes the status of the route with respect to the Gateway. Note that the route's availability is also subject to the Gateway's own status conditions and listener status.\n\nIf the Route's ParentRef specifies an existing Gateway that supports Routes of this kind AND that Gateway's controller has sufficient access, then that Gateway's controller MUST set the \"Accepted\" condition on the Route, to indicate whether the route has been accepted or rejected by the Gateway, and why.\n\nA Route MUST be considered \"Accepted\" if at least one of the Route's rules is implemented by the Gateway.\n\nThere are a number of cases where the \"Accepted\" condition may not be set due to lack of controller visibility, that includes when:\n\n* The Route refers to a nonexistent parent. * The Route is of a type that the controller does not support. * The Route is in a namespace the controller does not have access to.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
+										Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
 									},
 								},
 							},
@@ -28089,8 +29338,7 @@ func schema_sigsk8sio_gateway_api_apis_v1_RouteStatus(ref common.ReferenceCallba
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.RouteParentStatus"),
+										Ref: ref("sigs.k8s.io/gateway-api/apis/v1.RouteParentStatus"),
 									},
 								},
 							},
@@ -28217,148 +29465,24 @@ func schema_sigsk8sio_gateway_api_apis_v1_SupportedFeature(ref common.ReferenceC
 	}
 }
 
-func schema_sigsk8sio_gateway_api_apis_v1alpha2_BackendLBPolicy(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_sigsk8sio_gateway_api_apis_v1_supportedFeatureInternal(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "BackendLBPolicy provides a way to define load balancing rules for a backend.",
+				Description: "This is solely for the purpose of ensuring backward compatibility and SHOULD NOT be used elsewhere.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
-					"kind": {
+					"name": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"apiVersion": {
-						SchemaProps: spec.SchemaProps{
-							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"metadata": {
-						SchemaProps: spec.SchemaProps{
-							Default: map[string]interface{}{},
-							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"),
-						},
-					},
-					"spec": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Spec defines the desired state of BackendLBPolicy.",
-							Default:     map[string]interface{}{},
-							Ref:         ref("sigs.k8s.io/gateway-api/apis/v1alpha2.BackendLBPolicySpec"),
-						},
-					},
-					"status": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Status defines the current state of BackendLBPolicy.",
-							Default:     map[string]interface{}{},
-							Ref:         ref("sigs.k8s.io/gateway-api/apis/v1alpha2.PolicyStatus"),
+							Default: "",
+							Type:    []string{"string"},
+							Format:  "",
 						},
 					},
 				},
-				Required: []string{"spec"},
+				Required: []string{"name"},
 			},
 		},
-		Dependencies: []string{
-			"k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta", "sigs.k8s.io/gateway-api/apis/v1alpha2.BackendLBPolicySpec", "sigs.k8s.io/gateway-api/apis/v1alpha2.PolicyStatus"},
-	}
-}
-
-func schema_sigsk8sio_gateway_api_apis_v1alpha2_BackendLBPolicyList(ref common.ReferenceCallback) common.OpenAPIDefinition {
-	return common.OpenAPIDefinition{
-		Schema: spec.Schema{
-			SchemaProps: spec.SchemaProps{
-				Description: "BackendLBPolicyList contains a list of BackendLBPolicies",
-				Type:        []string{"object"},
-				Properties: map[string]spec.Schema{
-					"kind": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"apiVersion": {
-						SchemaProps: spec.SchemaProps{
-							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"metadata": {
-						SchemaProps: spec.SchemaProps{
-							Default: map[string]interface{}{},
-							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"),
-						},
-					},
-					"items": {
-						SchemaProps: spec.SchemaProps{
-							Type: []string{"array"},
-							Items: &spec.SchemaOrArray{
-								Schema: &spec.Schema{
-									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1alpha2.BackendLBPolicy"),
-									},
-								},
-							},
-						},
-					},
-				},
-				Required: []string{"items"},
-			},
-		},
-		Dependencies: []string{
-			"k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta", "sigs.k8s.io/gateway-api/apis/v1alpha2.BackendLBPolicy"},
-	}
-}
-
-func schema_sigsk8sio_gateway_api_apis_v1alpha2_BackendLBPolicySpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
-	return common.OpenAPIDefinition{
-		Schema: spec.Schema{
-			SchemaProps: spec.SchemaProps{
-				Description: "BackendLBPolicySpec defines the desired state of BackendLBPolicy. Note: there is no Override or Default policy configuration.",
-				Type:        []string{"object"},
-				Properties: map[string]spec.Schema{
-					"targetRefs": {
-						VendorExtensible: spec.VendorExtensible{
-							Extensions: spec.Extensions{
-								"x-kubernetes-list-map-keys": []interface{}{
-									"group",
-									"kind",
-									"name",
-								},
-								"x-kubernetes-list-type": "map",
-							},
-						},
-						SchemaProps: spec.SchemaProps{
-							Description: "TargetRef identifies an API object to apply policy to. Currently, Backends (i.e. Service, ServiceImport, or any implementation-specific backendRef) are the only valid API target references.",
-							Type:        []string{"array"},
-							Items: &spec.SchemaOrArray{
-								Schema: &spec.Schema{
-									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1alpha2.LocalPolicyTargetReference"),
-									},
-								},
-							},
-						},
-					},
-					"sessionPersistence": {
-						SchemaProps: spec.SchemaProps{
-							Description: "SessionPersistence defines and configures session persistence for the backend.\n\nSupport: Extended",
-							Ref:         ref("sigs.k8s.io/gateway-api/apis/v1.SessionPersistence"),
-						},
-					},
-				},
-				Required: []string{"targetRefs"},
-			},
-		},
-		Dependencies: []string{
-			"sigs.k8s.io/gateway-api/apis/v1.SessionPersistence", "sigs.k8s.io/gateway-api/apis/v1alpha2.LocalPolicyTargetReference"},
 	}
 }
 
@@ -28442,8 +29566,7 @@ func schema_sigsk8sio_gateway_api_apis_v1alpha2_GRPCRouteList(ref common.Referen
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1alpha2.GRPCRoute"),
+										Ref: ref("sigs.k8s.io/gateway-api/apis/v1alpha2.GRPCRoute"),
 									},
 								},
 							},
@@ -28623,8 +29746,7 @@ func schema_sigsk8sio_gateway_api_apis_v1alpha2_PolicyAncestorStatus(ref common.
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
+										Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
 									},
 								},
 							},
@@ -28653,8 +29775,7 @@ func schema_sigsk8sio_gateway_api_apis_v1alpha2_PolicyStatus(ref common.Referenc
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1alpha2.PolicyAncestorStatus"),
+										Ref: ref("sigs.k8s.io/gateway-api/apis/v1alpha2.PolicyAncestorStatus"),
 									},
 								},
 							},
@@ -28744,8 +29865,7 @@ func schema_sigsk8sio_gateway_api_apis_v1alpha2_ReferenceGrantList(ref common.Re
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1alpha2.ReferenceGrant"),
+										Ref: ref("sigs.k8s.io/gateway-api/apis/v1alpha2.ReferenceGrant"),
 									},
 								},
 							},
@@ -28843,8 +29963,7 @@ func schema_sigsk8sio_gateway_api_apis_v1alpha2_TCPRouteList(ref common.Referenc
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1alpha2.TCPRoute"),
+										Ref: ref("sigs.k8s.io/gateway-api/apis/v1alpha2.TCPRoute"),
 									},
 								},
 							},
@@ -28875,13 +29994,12 @@ func schema_sigsk8sio_gateway_api_apis_v1alpha2_TCPRouteRule(ref common.Referenc
 					},
 					"backendRefs": {
 						SchemaProps: spec.SchemaProps{
-							Description: "BackendRefs defines the backend(s) where matching requests should be sent. If unspecified or invalid (refers to a non-existent resource or a Service with no endpoints), the underlying implementation MUST actively reject connection attempts to this backend. Connection rejections must respect weight; if an invalid backend is requested to have 80% of connections, then 80% of connections must be rejected instead.\n\nSupport: Core for Kubernetes Service\n\nSupport: Extended for Kubernetes ServiceImport\n\nSupport: Implementation-specific for any other resource\n\nSupport for weight: Extended",
+							Description: "BackendRefs defines the backend(s) where matching requests should be sent. If unspecified or invalid (refers to a nonexistent resource or a Service with no endpoints), the underlying implementation MUST actively reject connection attempts to this backend. Connection rejections must respect weight; if an invalid backend is requested to have 80% of connections, then 80% of connections must be rejected instead.\n\nSupport: Core for Kubernetes Service\n\nSupport: Extended for Kubernetes ServiceImport\n\nSupport: Implementation-specific for any other resource\n\nSupport for weight: Extended",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.BackendRef"),
+										Ref: ref("sigs.k8s.io/gateway-api/apis/v1.BackendRef"),
 									},
 								},
 							},
@@ -28909,8 +30027,7 @@ func schema_sigsk8sio_gateway_api_apis_v1alpha2_TCPRouteSpec(ref common.Referenc
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.ParentReference"),
+										Ref: ref("sigs.k8s.io/gateway-api/apis/v1.ParentReference"),
 									},
 								},
 							},
@@ -28923,8 +30040,7 @@ func schema_sigsk8sio_gateway_api_apis_v1alpha2_TCPRouteSpec(ref common.Referenc
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1alpha2.TCPRouteRule"),
+										Ref: ref("sigs.k8s.io/gateway-api/apis/v1alpha2.TCPRouteRule"),
 									},
 								},
 							},
@@ -28953,8 +30069,7 @@ func schema_sigsk8sio_gateway_api_apis_v1alpha2_TCPRouteStatus(ref common.Refere
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.RouteParentStatus"),
+										Ref: ref("sigs.k8s.io/gateway-api/apis/v1.RouteParentStatus"),
 									},
 								},
 							},
@@ -29052,8 +30167,7 @@ func schema_sigsk8sio_gateway_api_apis_v1alpha2_TLSRouteList(ref common.Referenc
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1alpha2.TLSRoute"),
+										Ref: ref("sigs.k8s.io/gateway-api/apis/v1alpha2.TLSRoute"),
 									},
 								},
 							},
@@ -29084,13 +30198,12 @@ func schema_sigsk8sio_gateway_api_apis_v1alpha2_TLSRouteRule(ref common.Referenc
 					},
 					"backendRefs": {
 						SchemaProps: spec.SchemaProps{
-							Description: "BackendRefs defines the backend(s) where matching requests should be sent. If unspecified or invalid (refers to a non-existent resource or a Service with no endpoints), the rule performs no forwarding; if no filters are specified that would result in a response being sent, the underlying implementation must actively reject request attempts to this backend, by rejecting the connection or returning a 500 status code. Request rejections must respect weight; if an invalid backend is requested to have 80% of requests, then 80% of requests must be rejected instead.\n\nSupport: Core for Kubernetes Service\n\nSupport: Extended for Kubernetes ServiceImport\n\nSupport: Implementation-specific for any other resource\n\nSupport for weight: Extended",
+							Description: "BackendRefs defines the backend(s) where matching requests should be sent. If unspecified or invalid (refers to a nonexistent resource or a Service with no endpoints), the rule performs no forwarding; if no filters are specified that would result in a response being sent, the underlying implementation must actively reject request attempts to this backend, by rejecting the connection or returning a 500 status code. Request rejections must respect weight; if an invalid backend is requested to have 80% of requests, then 80% of requests must be rejected instead.\n\nSupport: Core for Kubernetes Service\n\nSupport: Extended for Kubernetes ServiceImport\n\nSupport: Implementation-specific for any other resource\n\nSupport for weight: Extended",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.BackendRef"),
+										Ref: ref("sigs.k8s.io/gateway-api/apis/v1.BackendRef"),
 									},
 								},
 							},
@@ -29118,8 +30231,7 @@ func schema_sigsk8sio_gateway_api_apis_v1alpha2_TLSRouteSpec(ref common.Referenc
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.ParentReference"),
+										Ref: ref("sigs.k8s.io/gateway-api/apis/v1.ParentReference"),
 									},
 								},
 							},
@@ -29132,9 +30244,8 @@ func schema_sigsk8sio_gateway_api_apis_v1alpha2_TLSRouteSpec(ref common.Referenc
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
+										Type:   []string{"string"},
+										Format: "",
 									},
 								},
 							},
@@ -29147,8 +30258,7 @@ func schema_sigsk8sio_gateway_api_apis_v1alpha2_TLSRouteSpec(ref common.Referenc
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1alpha2.TLSRouteRule"),
+										Ref: ref("sigs.k8s.io/gateway-api/apis/v1alpha2.TLSRouteRule"),
 									},
 								},
 							},
@@ -29177,8 +30287,7 @@ func schema_sigsk8sio_gateway_api_apis_v1alpha2_TLSRouteStatus(ref common.Refere
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.RouteParentStatus"),
+										Ref: ref("sigs.k8s.io/gateway-api/apis/v1.RouteParentStatus"),
 									},
 								},
 							},
@@ -29276,8 +30385,7 @@ func schema_sigsk8sio_gateway_api_apis_v1alpha2_UDPRouteList(ref common.Referenc
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1alpha2.UDPRoute"),
+										Ref: ref("sigs.k8s.io/gateway-api/apis/v1alpha2.UDPRoute"),
 									},
 								},
 							},
@@ -29308,13 +30416,12 @@ func schema_sigsk8sio_gateway_api_apis_v1alpha2_UDPRouteRule(ref common.Referenc
 					},
 					"backendRefs": {
 						SchemaProps: spec.SchemaProps{
-							Description: "BackendRefs defines the backend(s) where matching requests should be sent. If unspecified or invalid (refers to a non-existent resource or a Service with no endpoints), the underlying implementation MUST actively reject connection attempts to this backend. Packet drops must respect weight; if an invalid backend is requested to have 80% of the packets, then 80% of packets must be dropped instead.\n\nSupport: Core for Kubernetes Service\n\nSupport: Extended for Kubernetes ServiceImport\n\nSupport: Implementation-specific for any other resource\n\nSupport for weight: Extended",
+							Description: "BackendRefs defines the backend(s) where matching requests should be sent. If unspecified or invalid (refers to a nonexistent resource or a Service with no endpoints), the underlying implementation MUST actively reject connection attempts to this backend. Packet drops must respect weight; if an invalid backend is requested to have 80% of the packets, then 80% of packets must be dropped instead.\n\nSupport: Core for Kubernetes Service\n\nSupport: Extended for Kubernetes ServiceImport\n\nSupport: Implementation-specific for any other resource\n\nSupport for weight: Extended",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.BackendRef"),
+										Ref: ref("sigs.k8s.io/gateway-api/apis/v1.BackendRef"),
 									},
 								},
 							},
@@ -29342,8 +30449,7 @@ func schema_sigsk8sio_gateway_api_apis_v1alpha2_UDPRouteSpec(ref common.Referenc
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.ParentReference"),
+										Ref: ref("sigs.k8s.io/gateway-api/apis/v1.ParentReference"),
 									},
 								},
 							},
@@ -29356,8 +30462,7 @@ func schema_sigsk8sio_gateway_api_apis_v1alpha2_UDPRouteSpec(ref common.Referenc
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1alpha2.UDPRouteRule"),
+										Ref: ref("sigs.k8s.io/gateway-api/apis/v1alpha2.UDPRouteRule"),
 									},
 								},
 							},
@@ -29386,8 +30491,7 @@ func schema_sigsk8sio_gateway_api_apis_v1alpha2_UDPRouteStatus(ref common.Refere
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("sigs.k8s.io/gateway-api/apis/v1.RouteParentStatus"),
+										Ref: ref("sigs.k8s.io/gateway-api/apis/v1.RouteParentStatus"),
 									},
 								},
 							},

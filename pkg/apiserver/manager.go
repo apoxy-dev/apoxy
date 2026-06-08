@@ -61,6 +61,7 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/token"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/vni"
 
+	computev1alpha1 "github.com/apoxy-dev/apoxy/api/compute/v1alpha1"
 	coordinationv1 "github.com/apoxy-dev/apoxy/api/coordination/v1"
 	corev1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
 	corev1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
@@ -81,6 +82,7 @@ const (
 var scheme = runtime.NewScheme()
 
 func init() {
+	utilruntime.Must(computev1alpha1.Install(scheme))
 	utilruntime.Must(corev1alpha.Install(scheme))
 	utilruntime.Must(corev1alpha2.Install(scheme))
 	utilruntime.Must(corev1alpha3.Install(scheme))
@@ -531,6 +533,10 @@ func defaultResources() []resource.Object {
 
 		&extensionsv1alpha1.EdgeFunction{},
 		&extensionsv1alpha1.EdgeFunctionRevision{},
+
+		&computev1alpha1.Service{},
+		&computev1alpha1.ServiceRevision{},
+		&computev1alpha1.Build{},
 
 		&gatewayv1.GatewayClass{},
 		&gatewayv1.Gateway{},

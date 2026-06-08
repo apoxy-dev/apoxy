@@ -20,7 +20,8 @@ package informers
 import (
 	fmt "fmt"
 
-	v1alpha1 "github.com/apoxy-dev/apoxy/api/controllers/v1alpha1"
+	v1alpha1 "github.com/apoxy-dev/apoxy/api/compute/v1alpha1"
+	controllersv1alpha1 "github.com/apoxy-dev/apoxy/api/controllers/v1alpha1"
 	v1 "github.com/apoxy-dev/apoxy/api/coordination/v1"
 	v1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
 	v1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
@@ -60,8 +61,16 @@ func (f *genericInformer) Lister() cache.GenericLister {
 // TODO extend this to unknown resources with a client pool
 func (f *sharedInformerFactory) ForResource(resource schema.GroupVersionResource) (GenericInformer, error) {
 	switch resource {
-	// Group=controllers.apoxy.dev, Version=v1alpha1
-	case v1alpha1.SchemeGroupVersion.WithResource("proxies"):
+	// Group=compute.apoxy.dev, Version=v1alpha1
+	case v1alpha1.SchemeGroupVersion.WithResource("builds"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Compute().V1alpha1().Builds().Informer()}, nil
+	case v1alpha1.SchemeGroupVersion.WithResource("services"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Compute().V1alpha1().Services().Informer()}, nil
+	case v1alpha1.SchemeGroupVersion.WithResource("servicerevisions"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Compute().V1alpha1().ServiceRevisions().Informer()}, nil
+
+		// Group=controllers.apoxy.dev, Version=v1alpha1
+	case controllersv1alpha1.SchemeGroupVersion.WithResource("proxies"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Controllers().V1alpha1().Proxies().Informer()}, nil
 
 		// Group=coordination.apoxy.dev, Version=v1

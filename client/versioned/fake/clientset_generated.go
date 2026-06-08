@@ -19,6 +19,8 @@ package fake
 
 import (
 	clientset "github.com/apoxy-dev/apoxy/client/versioned"
+	computev1alpha1 "github.com/apoxy-dev/apoxy/client/versioned/typed/compute/v1alpha1"
+	fakecomputev1alpha1 "github.com/apoxy-dev/apoxy/client/versioned/typed/compute/v1alpha1/fake"
 	controllersv1alpha1 "github.com/apoxy-dev/apoxy/client/versioned/typed/controllers/v1alpha1"
 	fakecontrollersv1alpha1 "github.com/apoxy-dev/apoxy/client/versioned/typed/controllers/v1alpha1/fake"
 	coordinationv1 "github.com/apoxy-dev/apoxy/client/versioned/typed/coordination/v1"
@@ -99,6 +101,11 @@ var (
 	_ clientset.Interface = &Clientset{}
 	_ testing.FakeClient  = &Clientset{}
 )
+
+// ComputeV1alpha1 retrieves the ComputeV1alpha1Client
+func (c *Clientset) ComputeV1alpha1() computev1alpha1.ComputeV1alpha1Interface {
+	return &fakecomputev1alpha1.FakeComputeV1alpha1{Fake: &c.Fake}
+}
 
 // ControllersV1alpha1 retrieves the ControllersV1alpha1Client
 func (c *Clientset) ControllersV1alpha1() controllersv1alpha1.ControllersV1alpha1Interface {

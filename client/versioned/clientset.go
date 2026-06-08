@@ -21,6 +21,7 @@ import (
 	fmt "fmt"
 	http "net/http"
 
+	computev1alpha1 "github.com/apoxy-dev/apoxy/client/versioned/typed/compute/v1alpha1"
 	controllersv1alpha1 "github.com/apoxy-dev/apoxy/client/versioned/typed/controllers/v1alpha1"
 	coordinationv1 "github.com/apoxy-dev/apoxy/client/versioned/typed/coordination/v1"
 	corev1alpha "github.com/apoxy-dev/apoxy/client/versioned/typed/core/v1alpha"
@@ -38,6 +39,7 @@ import (
 
 type Interface interface {
 	Discovery() discovery.DiscoveryInterface
+	ComputeV1alpha1() computev1alpha1.ComputeV1alpha1Interface
 	ControllersV1alpha1() controllersv1alpha1.ControllersV1alpha1Interface
 	CoordinationV1() coordinationv1.CoordinationV1Interface
 	CoreV1alpha() corev1alpha.CoreV1alphaInterface
@@ -53,6 +55,7 @@ type Interface interface {
 // Clientset contains the clients for groups.
 type Clientset struct {
 	*discovery.DiscoveryClient
+	computeV1alpha1     *computev1alpha1.ComputeV1alpha1Client
 	controllersV1alpha1 *controllersv1alpha1.ControllersV1alpha1Client
 	coordinationV1      *coordinationv1.CoordinationV1Client
 	coreV1alpha         *corev1alpha.CoreV1alphaClient
@@ -63,6 +66,11 @@ type Clientset struct {
 	gatewayV1           *gatewayv1.GatewayV1Client
 	gatewayV1alpha2     *gatewayv1alpha2.GatewayV1alpha2Client
 	policyV1alpha1      *policyv1alpha1.PolicyV1alpha1Client
+}
+
+// ComputeV1alpha1 retrieves the ComputeV1alpha1Client
+func (c *Clientset) ComputeV1alpha1() computev1alpha1.ComputeV1alpha1Interface {
+	return c.computeV1alpha1
 }
 
 // ControllersV1alpha1 retrieves the ControllersV1alpha1Client
@@ -159,6 +167,10 @@ func NewForConfigAndClient(c *rest.Config, httpClient *http.Client) (*Clientset,
 
 	var cs Clientset
 	var err error
+	cs.computeV1alpha1, err = computev1alpha1.NewForConfigAndClient(&configShallowCopy, httpClient)
+	if err != nil {
+		return nil, err
+	}
 	cs.controllersV1alpha1, err = controllersv1alpha1.NewForConfigAndClient(&configShallowCopy, httpClient)
 	if err != nil {
 		return nil, err
@@ -220,6 +232,7 @@ func NewForConfigOrDie(c *rest.Config) *Clientset {
 // New creates a new Clientset for the given RESTClient.
 func New(c rest.Interface) *Clientset {
 	var cs Clientset
+	cs.computeV1alpha1 = computev1alpha1.New(c)
 	cs.controllersV1alpha1 = controllersv1alpha1.New(c)
 	cs.coordinationV1 = coordinationv1.New(c)
 	cs.coreV1alpha = corev1alpha.New(c)

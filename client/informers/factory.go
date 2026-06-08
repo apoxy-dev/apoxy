@@ -22,6 +22,7 @@ import (
 	sync "sync"
 	time "time"
 
+	compute "github.com/apoxy-dev/apoxy/client/informers/compute"
 	controllers "github.com/apoxy-dev/apoxy/client/informers/controllers"
 	coordination "github.com/apoxy-dev/apoxy/client/informers/coordination"
 	core "github.com/apoxy-dev/apoxy/client/informers/core"
@@ -258,12 +259,17 @@ type SharedInformerFactory interface {
 	// client.
 	InformerFor(obj runtime.Object, newFunc internalinterfaces.NewInformerFunc) cache.SharedIndexInformer
 
+	Compute() compute.Interface
 	Controllers() controllers.Interface
 	Coordination() coordination.Interface
 	Core() core.Interface
 	Extensions() extensions.Interface
 	Gateway() gateway.Interface
 	Policy() policy.Interface
+}
+
+func (f *sharedInformerFactory) Compute() compute.Interface {
+	return compute.New(f, f.namespace, f.tweakListOptions)
 }
 
 func (f *sharedInformerFactory) Controllers() controllers.Interface {
