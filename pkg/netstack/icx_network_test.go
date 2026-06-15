@@ -1,6 +1,7 @@
 package netstack_test
 
 import (
+	"context"
 	"crypto/rand"
 	"errors"
 	"fmt"
@@ -25,6 +26,12 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/l2pc"
 )
 
+// TestICXNetwork_Speed drives real HTTP traffic through the ICX netstack
+// datapath. It is -v-gated. NOTE: single-stream throughput currently collapses
+// under a pre-existing l2pc/bifurcate underlay issue (the harness discards
+// bifurcate's non-geneve half, producing a flood of nil-addr reads) — verified
+// to reproduce identically on the pre-extraction code, so it is NOT a regression
+// of the icx/vtep datapath move. Tracked separately from the datapath work.
 func TestICXNetwork_Speed(t *testing.T) {
 	if !testing.Verbose() {
 		t.Skip("Not running speed test in non-verbose mode")
@@ -81,22 +88,29 @@ func TestICXNetwork_Speed(t *testing.T) {
 
 	const vni = 0x424242
 
-	// Advertise a shared /24 so each side routes via the tunnel.
+	// Advertise a shared /24 so each side routes via the tunnel. The route is
+	// symmetric: outbound matches on Dst, inbound validates the source against
+	// Dst, so {Src, Dst} both spanning the /24 carries traffic both ways.
 	route := netip.MustParsePrefix("10.1.0.0/24")
 
-	err = hA.AddVirtualNetwork(vni, netstack.ToFullAddress(aB), []netip.Prefix{route})
+	err = hA.AddVirtualNetwork(vni, netstack.ToFullAddress(aB), []icx.Route{{Src: route, Dst: route}})
 	require.NoError(t, err)
 
-	err = hB.AddVirtualNetwork(vni, netstack.ToFullAddress(aA), []netip.Prefix{route})
+	err = hB.AddVirtualNetwork(vni, netstack.ToFullAddress(aA), []icx.Route{{Src: route, Dst: route}})
 	require.NoError(t, err)
 
-	var key [16]byte
-	copy(key[:], []byte("0123456789abcdef"))
+	// Per-direction keys: each direction needs its own key, and one side's TX key
+	// must equal the other side's RX key. k1 carries A->B, k2 carries B->A.
+	var k1, k2 [16]byte
+	copy(k1[:], []byte("0123456789abcdef"))
+	copy(k2[:], []byte("fedcba9876543210"))
 
-	err = hA.UpdateVirtualNetworkKeys(vni, 1, key, key, time.Now().Add(time.Hour))
+	// hA: rx from B (B->A = k2), tx to B (A->B = k1).
+	err = hA.UpdateVirtualNetworkKeys(vni, 1, k2, k1, time.Now().Add(time.Hour))
 	require.NoError(t, err)
 
-	err = hB.UpdateVirtualNetworkKeys(vni, 1, key, key, time.Now().Add(time.Hour))
+	// hB: rx from A (A->B = k1), tx to A (B->A = k2).
+	err = hB.UpdateVirtualNetworkKeys(vni, 1, k1, k2, time.Now().Add(time.Hour))
 	require.NoError(t, err)
 
 	t.Cleanup(func() {
@@ -120,11 +134,14 @@ func TestICXNetwork_Speed(t *testing.T) {
 	require.NoError(t, netA.AddAddr(ipA))
 	require.NoError(t, netB.AddAddr(ipB))
 
-	// Start splicing packets
+	// Start splicing packets. Start now takes a context; the datapath stops when
+	// the context is cancelled and the underlay is closed (via t.Cleanup).
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
 	go func() {
 		var g errgroup.Group
-		g.Go(netA.Start)
-		g.Go(netB.Start)
+		g.Go(func() error { return netA.Start(ctx) })
+		g.Go(func() error { return netB.Start(ctx) })
 		if err := g.Wait(); err != nil && !errors.Is(err, net.ErrClosed) {
 			panic(fmt.Errorf("splice failed: %w", err))
 		}

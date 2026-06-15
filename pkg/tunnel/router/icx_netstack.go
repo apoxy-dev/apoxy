@@ -169,7 +169,7 @@ func (r *ICXNetstackRouter) Start(ctx context.Context) error {
 		slog.Info("Splicing packets between netstack and ICX")
 
 		// This will be terminated when the router is closed.
-		if err := r.net.Start(); err != nil && !errors.Is(err, net.ErrClosed) {
+		if err := r.net.Start(ctx); err != nil && !errors.Is(err, net.ErrClosed) {
 			return fmt.Errorf("failed to splice packets: %w", err)
 		}
 

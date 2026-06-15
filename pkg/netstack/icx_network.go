@@ -3,7 +3,6 @@ package netstack
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/netip"
@@ -12,10 +11,9 @@ import (
 	"time"
 
 	"github.com/apoxy-dev/icx"
+	icxns "github.com/apoxy-dev/icx/vtep/netstack"
 	"github.com/dpeckett/network"
-	"golang.org/x/sync/errgroup"
 
-	"gvisor.dev/gvisor/pkg/buffer"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
 	"gvisor.dev/gvisor/pkg/tcpip/link/channel"
@@ -26,8 +24,6 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/transport/icmp"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
-
-	stdnet "net"
 
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/batchpc"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/l2pc"
@@ -44,11 +40,35 @@ type ICXNetwork struct {
 	nicID    tcpip.NICID
 	pcapFile *os.File
 
-	// Wakeup channel for batching outbound sends. Capacity 1 to coalesce notifies.
-	wakeOutbound chan struct{}
+	// dp is the shared ICX netstack datapath driver (icx/vtep/netstack). It owns
+	// the channel.Endpoint <-> engine <-> underlay pump; this type contributes
+	// the gVisor stack, SNAT, and TCP/UDP forwarders around it.
+	dp *icxns.Datapath
 
-	pktPool   sync.Pool
 	closeOnce sync.Once
+}
+
+// l2Underlay adapts *l2pc.L2PacketConn to the icx netstack datapath's Underlay.
+// WriteFrames reuses a scratch []batchpc.Message; the datapath's outbound pump
+// is single-goroutine, so the scratch needs no synchronization.
+type l2Underlay struct {
+	phy  *l2pc.L2PacketConn
+	msgs []batchpc.Message
+}
+
+func (u *l2Underlay) ReadFrame(buf []byte) (int, error) {
+	return u.phy.ReadFrame(buf)
+}
+
+func (u *l2Underlay) WriteFrames(frames [][]byte) (int, error) {
+	if cap(u.msgs) < len(frames) {
+		u.msgs = make([]batchpc.Message, len(frames))
+	}
+	msgs := u.msgs[:len(frames)]
+	for i, f := range frames {
+		msgs[i].Buf = f
+	}
+	return u.phy.WriteBatchFrames(msgs, 0)
 }
 
 // NewICXNetwork creates a new ICXNetwork instance with the given handler, physical connection, MTU, and resolve configuration.
@@ -76,7 +96,11 @@ func NewICXNetwork(handler *icx.Handler, phy *l2pc.L2PacketConn, mtu int, resolv
 	if tcpipErr := ipstack.SetTransportProtocolOption(tcp.ProtocolNumber, &sackEnabledOpt); tcpipErr != nil {
 		return nil, fmt.Errorf("could not enable TCP SACK: %v", tcpipErr)
 	}
-	tcpCCOpt := tcpip.CongestionControlOption("bbr")
+	// The gVisor netstack only registers the reno and cubic congestion-control
+	// algorithms; "bbr" is not built in and SetTransportProtocolOption rejects it
+	// with ErrNoSuchFile, which previously failed ICXNetwork construction outright.
+	// cubic is the modern loss-based default and a strict upgrade over reno here.
+	tcpCCOpt := tcpip.CongestionControlOption("cubic")
 	if tcpipErr := ipstack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpCCOpt); tcpipErr != nil {
 		return nil, fmt.Errorf("could not set TCP congestion control: %v", tcpipErr)
 	}
@@ -149,6 +173,16 @@ func NewICXNetwork(handler *icx.Handler, phy *l2pc.L2PacketConn, mtu int, resolv
 		{Destination: header.IPv6EmptySubnet, NIC: nicID},
 	})
 
+	dp, err := icxns.New(icxns.Config{
+		Engine:   handler,
+		Endpoint: linkEP,
+		Underlay: &l2Underlay{phy: phy},
+	})
+	if err != nil {
+		_ = phy.Close()
+		return nil, fmt.Errorf("could not create ICX netstack datapath: %w", err)
+	}
+
 	net := &ICXNetwork{
 		Network:  network.Netstack(ipstack, nicID, resolveConf),
 		handler:  handler,
@@ -158,41 +192,22 @@ func NewICXNetwork(handler *icx.Handler, phy *l2pc.L2PacketConn, mtu int, resolv
 		ipt:      ipt,
 		nicID:    nicID,
 		pcapFile: pcapFile,
-
-		wakeOutbound: make(chan struct{}, 1),
-
-		pktPool: sync.Pool{
-			New: func() any {
-				b := make([]byte, 0, 65535)
-				return &b
-			},
-		},
+		dp:       dp,
 	}
-	net.ep.AddNotify(net)
 
 	return net, nil
-}
-
-// WriteNotify is called by the channel endpoint when netstack has an outbound packet ready.
-// We just coalesce a wakeup; actual draining/batching happens in the outbound pump.
-func (net *ICXNetwork) WriteNotify() {
-	select {
-	case net.wakeOutbound <- struct{}{}:
-	default:
-		// already awake; coalesce
-	}
 }
 
 // Close cleans up the network stack and closes the underlying resources.
 func (net *ICXNetwork) Close() error {
 	net.closeOnce.Do(func() {
+		if net.dp != nil {
+			_ = net.dp.Close()
+		}
+
 		net.stack.RemoveNIC(net.nicID)
 
 		net.ep.Close()
-
-		if net.wakeOutbound != nil {
-			close(net.wakeOutbound)
-		}
 
 		if net.pcapFile != nil {
 			_ = net.pcapFile.Close()
@@ -203,171 +218,12 @@ func (net *ICXNetwork) Close() error {
 }
 
 // Start copies packets to and from netstack and icx.
-func (net *ICXNetwork) Start() error {
-	const tickMs = 100 // periodically flush scheduled frames (ToPhy)
-
-	var g errgroup.Group
-
-	// Outbound: netstack (L3) -> ICX -> L2PacketConn.WriteBatchFrames (batched)
-	g.Go(func() error {
-		type owned struct {
-			msg batchpc.Message
-			buf *[]byte // owner to return to pool
-		}
-		putOwned := func(v []owned) {
-			for i := range v {
-				if v[i].buf != nil {
-					net.pktPool.Put(v[i].buf)
-					v[i].buf = nil
-				}
-			}
-		}
-
-		// Reuse per-iteration scratch arrays to avoid allocs.
-		// Assumes batchpc.MaxBatchSize is a const.
-		var (
-			batchOwned [batchpc.MaxBatchSize]owned
-			batchMsgs  [batchpc.MaxBatchSize]batchpc.Message
-		)
-
-		ticker := time.NewTicker(tickMs * time.Millisecond)
-		defer ticker.Stop()
-
-		for {
-			// Wake on notify or periodic tick.
-			select {
-			case _, ok := <-net.wakeOutbound:
-				if !ok {
-					return stdnet.ErrClosed
-				}
-			case <-ticker.C:
-			}
-
-			batch := batchOwned[:]
-			count := 0
-
-			// Drain endpoint fully into the batch.
-			for count < batchpc.MaxBatchSize {
-				pkt := net.ep.Read()
-				if pkt == nil {
-					break
-				}
-				view := pkt.ToView()
-				pkt.DecRef()
-
-				ip := view.AsSlice() // raw L3 bytes
-				b := batch[count].buf
-				if b == nil {
-					b = net.pktPool.Get().(*[]byte)
-					*b = (*b)[:cap(*b)]
-					batch[count].buf = b
-				}
-				*b = (*b)[:cap(*b)]
-				if n, _ := net.handler.VirtToPhy(ip, *b); n > 0 {
-					batch[count].msg.Buf = (*b)[:n]
-					count++
-				}
-			}
-
-			// Coalesce scheduled frames (ToPhy) onto the same batch.
-			for count < batchpc.MaxBatchSize {
-				b := batch[count].buf
-				if b == nil {
-					b = net.pktPool.Get().(*[]byte)
-					*b = (*b)[:cap(*b)]
-					batch[count].buf = b
-				}
-				*b = (*b)[:cap(*b)]
-				if n := net.handler.ToPhy(*b); n > 0 {
-					batch[count].msg.Buf = (*b)[:n]
-					count++
-				} else {
-					break
-				}
-			}
-
-			if count == 0 {
-				// Nothing to send this cycle.
-				putOwned(batch)
-				continue
-			}
-
-			// Send in one go.
-			msgs := batchMsgs[:count]
-			for i := 0; i < count; i++ {
-				msgs[i] = batch[i].msg
-			}
-			_, err := net.phy.WriteBatchFrames(msgs, 0)
-			putOwned(batch)
-			if err != nil {
-				if errors.Is(err, stdnet.ErrClosed) {
-					return err
-				}
-				slog.Warn("Error writing batched phy frames", slog.Any("error", err))
-				continue
-			}
-		}
-	})
-
-	// Inbound: L2PacketConn.ReadFrame -> ICX -> netstack.InjectInbound(L3)
-	g.Go(func() error {
-		for {
-			phyFrame := net.pktPool.Get().(*[]byte)
-			*phyFrame = (*phyFrame)[:cap(*phyFrame)]
-
-			n, err := net.phy.ReadFrame(*phyFrame)
-			if err != nil {
-				net.pktPool.Put(phyFrame)
-				if errors.Is(err, stdnet.ErrClosed) {
-					return err
-				}
-				slog.Warn("Error reading frame from physical interface", slog.Any("error", err))
-				continue
-			}
-			if n == 0 {
-				net.pktPool.Put(phyFrame)
-				continue
-			}
-
-			virtFrame := net.pktPool.Get().(*[]byte)
-			*virtFrame = (*virtFrame)[:cap(*virtFrame)]
-
-			vn := net.handler.PhyToVirt((*phyFrame)[:n], *virtFrame)
-			net.pktPool.Put(phyFrame)
-
-			if vn == 0 {
-				net.pktPool.Put(virtFrame)
-				continue
-			}
-
-			payload := (*virtFrame)[:vn] // raw IP (L3)
-			switch payload[0] >> 4 {
-			case header.IPv4Version:
-				pkb := stack.NewPacketBuffer(stack.PacketBufferOptions{
-					Payload: buffer.MakeWithData(payload),
-				})
-				net.ep.InjectInbound(header.IPv4ProtocolNumber, pkb)
-				pkb.DecRef()
-			case header.IPv6Version:
-				pkb := stack.NewPacketBuffer(stack.PacketBufferOptions{
-					Payload: buffer.MakeWithData(payload),
-				})
-				net.ep.InjectInbound(header.IPv6ProtocolNumber, pkb)
-				pkb.DecRef()
-			default:
-				// drop silently
-			}
-			net.pktPool.Put(virtFrame)
-		}
-	})
-
-	// Wait for either side to finish. If inbound ends with an error (e.g., phy closed),
-	// that error is returned; if both exit cleanly, Wait returns nil.
-	if err := g.Wait(); err != nil && !errors.Is(err, stdnet.ErrClosed) {
-		return fmt.Errorf("packet splicing failed: %w", err)
-	}
-
-	return nil
+// Start runs the netstack <-> ICX datapath until ctx is cancelled or the
+// underlying transport (phy) is closed. It blocks and should run in its own
+// goroutine. The two pump loops (channel.Endpoint <-> engine <-> underlay) now
+// live in the shared icx/vtep/netstack driver; this method just drives it.
+func (net *ICXNetwork) Start(ctx context.Context) error {
+	return net.dp.Run(ctx)
 }
 
 func (net *ICXNetwork) AddAddr(addr netip.Prefix) error {
