@@ -9,7 +9,7 @@ require (
 	github.com/adrg/xdg v0.5.3
 	github.com/alphadose/haxmap v1.4.1
 	github.com/anatol/vmtest v0.0.0-20250318022921-2f32244e2f0f
-	github.com/apoxy-dev/icx v0.16.1
+	github.com/apoxy-dev/icx v0.17.1-0.20260615010611-839a2c1c5f47
 	github.com/avast/retry-go/v4 v4.6.1
 	github.com/bramvdbogaerde/go-scp v1.5.0
 	github.com/buraksezer/olric v0.5.6
@@ -68,10 +68,9 @@ require (
 	github.com/prometheus/client_model v0.6.2
 	github.com/prometheus/common v0.66.1
 	github.com/quic-go/connect-ip-go v0.0.0-20241112091351-321f13c3d203
-	github.com/quic-go/quic-go v0.50.1
+	github.com/quic-go/quic-go v0.59.1
 	github.com/shirou/gopsutil v3.21.11+incompatible
 	github.com/sirupsen/logrus v1.9.4
-	github.com/slavc/xdp v0.3.4
 	github.com/spf13/cobra v1.9.1
 	github.com/stretchr/testify v1.11.1
 	github.com/telepresenceio/watchable v0.0.0-20220726211108-9bb86f92afa7

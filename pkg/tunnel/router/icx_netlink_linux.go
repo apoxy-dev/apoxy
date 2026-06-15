@@ -16,12 +16,12 @@ import (
 	"github.com/apoxy-dev/icx"
 	"github.com/apoxy-dev/icx/addrselect"
 	"github.com/apoxy-dev/icx/filter"
+	"github.com/apoxy-dev/icx/forwarder"
 	"github.com/apoxy-dev/icx/mac"
-	"github.com/apoxy-dev/icx/tunnel"
+	"github.com/apoxy-dev/icx/queues"
 	"github.com/apoxy-dev/icx/veth"
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcapgo"
-	"github.com/slavc/xdp"
 	"github.com/vishvananda/netlink"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	proxyutil "k8s.io/kubernetes/pkg/proxy/util"
@@ -46,9 +46,9 @@ type ICXNetlinkRouter struct {
 	extLink       netlink.Link
 	tunDev        *veth.Handle
 	tunLink       netlink.Link
-	ingressFilter *xdp.Program
+	ingressFilter *filter.Program
 	pcapFile      *os.File
-	tun           *tunnel.Tunnel
+	tun           *forwarder.Forwarder
 	iptV4, iptV6  utiliptables.Interface
 	extAddrs      addrselect.List
 	closeOnce     sync.Once
@@ -70,7 +70,7 @@ func NewICXNetlinkRouter(opts ...Option) (*ICXNetlinkRouter, error) {
 		return nil, fmt.Errorf("failed to get addresses for interface %s: %w", options.extIfaceName, err)
 	}
 
-	numQueues, err := tunnel.NumQueues(extLink)
+	numQueues, err := queues.NumQueues(extLink)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get number of TX queues for interface %s: %w", options.extIfaceName, err)
 	}
@@ -153,12 +153,12 @@ func NewICXNetlinkRouter(opts ...Option) (*ICXNetlinkRouter, error) {
 		}
 	}
 
-	tun, err := tunnel.NewTunnel(
+	tun, err := forwarder.NewForwarder(
 		handler,
-		tunnel.WithPhyName(options.extIfaceName),
-		tunnel.WithVirtName(tunDev.Peer.Attrs().Name),
-		tunnel.WithPhyFilter(ingressFilter),
-		tunnel.WithPcapWriter(pcapWriter),
+		forwarder.WithPhyName(options.extIfaceName),
+		forwarder.WithVirtName(tunDev.Peer.Attrs().Name),
+		forwarder.WithPhyFilter(ingressFilter),
+		forwarder.WithPcapWriter(pcapWriter),
 	)
 	if err != nil {
 		_ = tunDev.Close()
