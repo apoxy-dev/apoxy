@@ -140,13 +140,32 @@ func (b *batch4) WriteBatch(msgs []Message, flags int) (int, error) {
 		return 0, nil
 	}
 	tmp := b.getTmp(len(msgs))
+	defer b.putTmp(tmp)
 	for i := range msgs {
 		(*tmp)[i].Buffers = [][]byte{msgs[i].Buf}
 		(*tmp)[i].Addr = msgs[i].Addr
 	}
-	n, err := b.ipv4pc.WriteBatch(*tmp, flags)
-	b.putTmp(tmp)
-	return n, err
+	// sendmmsg reports the number of messages actually sent, which can be fewer
+	// than offered: under EAGAIN, a size/permission error partway through the
+	// batch, or on platforms with no batch syscall where x/net degrades to a
+	// single SendMsg per call (darwin et al.). Loop over the unsent suffix so a
+	// short write never silently drops the tail of the batch.
+	total := 0
+	for total < len(msgs) {
+		n, err := b.ipv4pc.WriteBatch((*tmp)[total:], flags)
+		if n > 0 {
+			total += n
+		}
+		if err != nil {
+			return total, err
+		}
+		if n == 0 {
+			// No progress and no error: avoid an infinite loop. Not expected from
+			// x/net (a zero count comes with an error), but guard regardless.
+			return total, fmt.Errorf("batchudp: WriteBatch made no progress (%d/%d sent)", total, len(msgs))
+		}
+	}
+	return total, nil
 }
 
 // IPv6 implementation.
@@ -214,11 +233,24 @@ func (b *batch6) WriteBatch(msgs []Message, flags int) (int, error) {
 		return 0, nil
 	}
 	tmp := b.getTmp(len(msgs))
+	defer b.putTmp(tmp)
 	for i := range msgs {
 		(*tmp)[i].Buffers = [][]byte{msgs[i].Buf}
 		(*tmp)[i].Addr = msgs[i].Addr
 	}
-	n, err := b.ipv6pc.WriteBatch(*tmp, flags)
-	b.putTmp(tmp)
-	return n, err
+	// See batch4.WriteBatch: a short sendmmsg must not drop the unsent tail.
+	total := 0
+	for total < len(msgs) {
+		n, err := b.ipv6pc.WriteBatch((*tmp)[total:], flags)
+		if n > 0 {
+			total += n
+		}
+		if err != nil {
+			return total, err
+		}
+		if n == 0 {
+			return total, fmt.Errorf("batchudp: WriteBatch made no progress (%d/%d sent)", total, len(msgs))
+		}
+	}
+	return total, nil
 }
