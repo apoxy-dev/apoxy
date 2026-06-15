@@ -34,9 +34,6 @@ func Bifurcate(pc batchpc.BatchPacketConn) (batchpc.BatchPacketConn, batchpc.Bat
 		msgs := make([]batchpc.Message, batchpc.MaxBatchSize)
 		// Shadow array of pooled message pointers we own & recycle.
 		pm := make([]*batchpc.Message, batchpc.MaxBatchSize)
-		// Pre-allocated classification slices, reused via [:0] each iteration.
-		gBatch := make([]*batchpc.Message, 0, batchpc.MaxBatchSize)
-		oBatch := make([]*batchpc.Message, 0, batchpc.MaxBatchSize)
 
 		for {
 			// If both sides are gone, stop.
@@ -88,9 +85,15 @@ func Bifurcate(pc batchpc.BatchPacketConn) (batchpc.BatchPacketConn, batchpc.Bat
 				continue
 			}
 
-			// Classify into destination batches (reset pre-allocated slices).
-			gBatch = gBatch[:0]
-			oBatch = oBatch[:0]
+			// Classify into destination batches. These slices are handed to the
+			// receiver over a channel by reference, and the receiver may not have
+			// drained the previous batch yet (the channel is buffered). Allocating
+			// fresh slices each iteration is mandatory: reusing a backing array and
+			// re-filling it via [:0]+append would overwrite the message pointers a
+			// receiver is still reading, delivering a different message's buffer and
+			// nil/wrong source address. Allocate per iteration, never reuse.
+			gBatch := make([]*batchpc.Message, 0, batchpc.MaxBatchSize)
+			oBatch := make([]*batchpc.Message, 0, batchpc.MaxBatchSize)
 
 			for i := 0; i < n; i++ {
 				m := pm[i]
