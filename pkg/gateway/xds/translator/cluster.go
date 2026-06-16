@@ -8,6 +8,7 @@ package translator
 import (
 	"encoding/hex"
 	"fmt"
+	"math"
 	"sort"
 	"time"
 
@@ -336,6 +337,18 @@ func buildXdsClusterCircuitBreaker(circuitBreaker *ir.CircuitBreaker) *clusterv3
 		MaxRetries: &wrapperspb.UInt32Value{
 			Value: uint32(1024),
 		},
+		// Envoy applies implicit defaults of 1024 for max_connections and
+		// max_requests whenever any circuit breaker threshold is present. Since we
+		// always emit a threshold (for MaxRetries above), regular HTTP and dynamic
+		// forward proxy clusters would otherwise be silently capped at 1024
+		// connections / parallel requests. Default both to unlimited; callers may
+		// override below.
+		MaxConnections: &wrapperspb.UInt32Value{
+			Value: math.MaxUint32,
+		},
+		MaxRequests: &wrapperspb.UInt32Value{
+			Value: math.MaxUint32,
+		},
 	}
 
 	if circuitBreaker != nil {
@@ -527,6 +540,23 @@ func buildTypedExtensionProtocolOptions(args *xdsClusterArgs) map[string]*anypb.
 			ExplicitHttpConfig: &httpv3.HttpProtocolOptions_ExplicitHttpConfig{
 				ProtocolConfig: &httpv3.HttpProtocolOptions_ExplicitHttpConfig_HttpProtocolOptions{},
 			},
+		}
+	}
+
+	// Envoy's dynamic_forward_proxy cluster factory rejects the cluster unless
+	// upstream_http_protocol_options enables both auto_sni and auto_san_validation
+	// (or allow_insecure_cluster_options is set). Envoy only auto-injects those
+	// defaults when the cluster carries no typed_extension_protocol_options; once we
+	// emit HttpProtocolOptions here (e.g. to speak HTTP/2 upstream for an h2/h2c
+	// Backend) that auto-injection is a no-op, so we must set them explicitly.
+	// Enabling them derives the upstream SNI from the dynamically resolved host and
+	// validates the upstream certificate SAN against it — preserving TLS verification
+	// for h2/TLS backends, and a no-op for cleartext upstreams. The same args.settings
+	// guard is used by addXdsCluster to detect the dynamic forward proxy path.
+	if len(args.settings) > 0 && args.settings[0].DynamicForwardProxy != nil {
+		protocolOptions.UpstreamHttpProtocolOptions = &corev3.UpstreamHttpProtocolOptions{
+			AutoSni:           true,
+			AutoSanValidation: true,
 		}
 	}
 

@@ -162,10 +162,11 @@ func (*dynamicForwardProxy) patchResources(
 		}
 
 		args := &xdsClusterArgs{
-			name:         r.Destination.Name,
-			settings:     r.Destination.Settings,
-			timeout:      r.Timeout,
-			tcpkeepalive: r.TCPKeepalive,
+			name:           r.Destination.Name,
+			settings:       r.Destination.Settings,
+			timeout:        r.Timeout,
+			tcpkeepalive:   r.TCPKeepalive,
+			circuitBreaker: r.CircuitBreaker,
 		}
 
 		if err := createDynamicForwardProxyCluster(
@@ -211,6 +212,20 @@ func createDynamicForwardProxyCluster(
 				TypedConfig: pb,
 			},
 		},
+	}
+
+	// Apply circuit breaker limits so the dynamic forward proxy cluster is not
+	// silently capped at Envoy's implicit 1024 max_connections / max_requests
+	// defaults.
+	cluster.CircuitBreakers = buildXdsClusterCircuitBreaker(args.circuitBreaker)
+
+	// Apply upstream HTTP protocol options based on the destination setting's
+	// protocol, mirroring buildXdsCluster. The custom DFP cluster bypasses the
+	// normal cluster builder, so without this an h2/h2c Backend would still be
+	// spoken to over HTTP/1.1 upstream. Returns nil (leaving Envoy's HTTP/1.1
+	// default) when no HTTP/2 or other protocol option is required.
+	if epo := buildTypedExtensionProtocolOptions(args); epo != nil {
+		cluster.TypedExtensionProtocolOptions = epo
 	}
 
 	if setting.TLS != nil {
