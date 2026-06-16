@@ -896,6 +896,66 @@ func (m *ApoxyCli) BuildTunnelproxy(
 		WithEntrypoint([]string{"/bin/tunnelproxy"})
 }
 
+// consoleDriftScript regenerates the console's committed codegen artifacts and
+// fails if either is stale. It diffs against snapshots (cmp) rather than
+// `git diff`, so it does not depend on a .git checkout being in the build
+// context. The Go-rendered spec is mounted at /tmp/fresh-openapi.json.
+const consoleDriftScript = `set -eu
+if ! cmp -s /src/console/openapi.json /tmp/fresh-openapi.json; then
+  echo "::error::console/openapi.json is stale. Regenerate: go run ./cmd/openapi-dump -o console/openapi.json -title \"Apoxy Console API\" -version v0"
+  diff /src/console/openapi.json /tmp/fresh-openapi.json | head -40 || true
+  exit 1
+fi
+cp /src/console/packages/core/src/schema/schema.d.ts /tmp/schema.committed.d.ts
+pnpm -C /src/console codegen
+if ! cmp -s /src/console/packages/core/src/schema/schema.d.ts /tmp/schema.committed.d.ts; then
+  echo "::error::console schema.d.ts is stale. Regenerate: pnpm -C console codegen"
+  exit 1
+fi
+echo "console: no codegen drift"
+`
+
+// Console installs the console pnpm workspace, type-checks, tests and builds it,
+// then verifies the committed OpenAPI/TS codegen is not stale. The OpenAPI spec
+// is rendered from the Go API types in the Go builder (the codegen source of
+// truth) and compared against the committed artifacts in a Node container, so
+// the whole check runs hermetically in Dagger — the daggerized form of the
+// `console-check` job.
+func (m *ApoxyCli) Console(ctx context.Context, src *dagger.Directory) (string, error) {
+	freshSpec := m.BuilderContainer(ctx, src).
+		WithExec([]string{
+			"go", "run", "./cmd/openapi-dump",
+			"-o", "/tmp/openapi.json",
+			"-title", "Apoxy Console API",
+			"-version", "v0",
+		}).
+		File("/tmp/openapi.json")
+
+	return dag.Container().
+		From("node:20-bookworm").
+		WithEnvVariable("COREPACK_ENABLE_DOWNLOAD_PROMPT", "0").
+		// Pin the exact pnpm from package.json's packageManager so the committed
+		// lockfile is read by a compatible pnpm (the bundled corepack default is
+		// an older major and rejects the lockfile).
+		WithExec([]string{"corepack", "enable"}).
+		WithExec([]string{"corepack", "prepare", "pnpm@10.11.0", "--activate"}).
+		WithMountedCache("/pnpm-store", dag.CacheVolume("pnpm-store")).
+		// Exclude host node_modules/dist: they are platform-specific (macOS) and
+		// carry their own incompatible internal lockfile, which breaks install.
+		WithDirectory("/src", src, dagger.ContainerWithDirectoryOpts{
+			Exclude: []string{"secrets/**", "**/node_modules/**", "**/dist/**"},
+		}).
+		WithWorkdir("/src/console").
+		WithExec([]string{"pnpm", "config", "set", "store-dir", "/pnpm-store"}).
+		WithExec([]string{"pnpm", "install", "--frozen-lockfile"}).
+		WithExec([]string{"pnpm", "-r", "typecheck"}).
+		WithExec([]string{"pnpm", "-r", "test"}).
+		WithExec([]string{"pnpm", "-C", "apps/apoxy-console", "build"}).
+		WithFile("/tmp/fresh-openapi.json", freshSpec).
+		WithExec([]string{"sh", "-c", consoleDriftScript}).
+		Stdout(ctx)
+}
+
 // BuildWorkerdHost builds the workerd-host runtime container: stock workerd run
 // inside a gVisor/runsc sandbox via clrk's pkg/sandbox (APO-625, M1 backend
 // mode). The binary is its own runsc re-exec target (sandbox.DispatchRunsc), so
