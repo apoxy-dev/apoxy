@@ -448,7 +448,7 @@ replace github.com/quic-go/quic-go => github.com/apoxy-dev/quic-go v0.0.0-202604
 
 replace github.com/quic-go/connect-ip-go => github.com/apoxy-dev/connect-ip-go v0.0.0-20250530062404-603929a73f45
 
-replace gvisor.dev/gvisor => github.com/apoxy-dev/gvisor v0.0.0-20260402225801-fe4a1e4de650
+replace gvisor.dev/gvisor => github.com/apoxy-dev/gvisor v0.0.0-20260519215827-5d6cfb0c0960
 
 // Pin otelgrpc to v0.59.0: v0.60.0+ removed UnaryServerInterceptor/UnaryClientInterceptor
 // which go.temporal.io/server v1.23.0 still calls. cloud.google.com/go/auth wants v0.61.0

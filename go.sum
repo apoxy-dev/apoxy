@@ -136,6 +136,8 @@ github.com/apoxy-dev/connect-ip-go v0.0.0-20250530062404-603929a73f45 h1:SwPk1n/
 github.com/apoxy-dev/connect-ip-go v0.0.0-20250530062404-603929a73f45/go.mod h1:z5rtgIizc+/K27UtB0occwZgqg/mz3IqgyUJW8aubbI=
 github.com/apoxy-dev/gvisor v0.0.0-20260402225801-fe4a1e4de650 h1:Nb+r8n5r+UUyrKEj8+oM93j3XnGpQvw8wl4GevTx8K4=
 github.com/apoxy-dev/gvisor v0.0.0-20260402225801-fe4a1e4de650/go.mod h1:QkHjoMIBaYtpVufgwv3keYAbln78mBoCuShZrPrer1Q=
+github.com/apoxy-dev/gvisor v0.0.0-20260519215827-5d6cfb0c0960 h1:jxKOcn02IBc2d28oxHdM/tuuQNin2b6sKshgd8BSi4g=
+github.com/apoxy-dev/gvisor v0.0.0-20260519215827-5d6cfb0c0960/go.mod h1:QkHjoMIBaYtpVufgwv3keYAbln78mBoCuShZrPrer1Q=
 github.com/apoxy-dev/icx v0.17.1-0.20260615010611-839a2c1c5f47 h1:d6ap0Yk9zPXAGHraVMakQ68ClWWr6yFwuf4Q61+ldxU=
 github.com/apoxy-dev/icx v0.17.1-0.20260615010611-839a2c1c5f47/go.mod h1:ywnL9PKozx6fwuZ+MyGVtBykC1FPdOiqfgUliYOTDMU=
 github.com/apoxy-dev/icx v0.17.1-0.20260615070513-dd891eb19e9e h1:LCiSTNMCpbJUMEWbBnGLNaHXWvDs/1LV4hdpukYR2YE=
