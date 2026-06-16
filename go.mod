@@ -9,7 +9,7 @@ require (
 	github.com/adrg/xdg v0.5.3
 	github.com/alphadose/haxmap v1.4.1
 	github.com/anatol/vmtest v0.0.0-20250318022921-2f32244e2f0f
-	github.com/apoxy-dev/clrk v0.0.0-20260615230105-aff0985cd9e1
+	github.com/apoxy-dev/clrk v0.0.0-20260616175522-c5f7cd3a26fa
 	github.com/apoxy-dev/icx v0.17.1-0.20260615171738-e5278a0a64d3
 	github.com/avast/retry-go/v4 v4.6.1
 	github.com/bramvdbogaerde/go-scp v1.5.0
