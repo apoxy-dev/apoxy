@@ -539,6 +539,23 @@ func buildTypedExtensionProtocolOptions(args *xdsClusterArgs) map[string]*anypb.
 		}
 	}
 
+	// Envoy's dynamic_forward_proxy cluster factory rejects the cluster unless
+	// upstream_http_protocol_options enables both auto_sni and auto_san_validation
+	// (or allow_insecure_cluster_options is set). Envoy only auto-injects those
+	// defaults when the cluster carries no typed_extension_protocol_options; once we
+	// emit HttpProtocolOptions here (e.g. to speak HTTP/2 upstream for an h2/h2c
+	// Backend) that auto-injection is a no-op, so we must set them explicitly.
+	// Enabling them derives the upstream SNI from the dynamically resolved host and
+	// validates the upstream certificate SAN against it — preserving TLS verification
+	// for h2/TLS backends, and a no-op for cleartext upstreams. The same args.settings
+	// guard is used by addXdsCluster to detect the dynamic forward proxy path.
+	if len(args.settings) > 0 && args.settings[0].DynamicForwardProxy != nil {
+		protocolOptions.UpstreamHttpProtocolOptions = &corev3.UpstreamHttpProtocolOptions{
+			AutoSni:           true,
+			AutoSanValidation: true,
+		}
+	}
+
 	anyProtocolOptions, _ := anypb.New(&protocolOptions)
 
 	extensionOptions := map[string]*anypb.Any{
