@@ -33,11 +33,17 @@ func (f *fakeCore) Create(ctx context.Context, spec sandbox.Spec) (*sandbox.Inst
 	}
 	f.events = append(f.events, "create:"+string(spec.ID))
 	f.created = append(f.created, spec)
-	return &sandbox.Instance{
+	inst := &sandbox.Instance{
 		ID:        spec.ID,
 		Phase:     sandbox.SandboxReady,
 		SandboxIP: netip.AddrFrom4([4]byte{10, 88, byte(len(f.created)), 2}),
-	}, nil
+	}
+	// Model the core surfacing the ingress socket for an inbound-enabled
+	// sandbox (the real manager sets this at Start on the same instance).
+	if spec.InboundListenAddr != "" {
+		inst.InboundSocket = "/fake/" + strings.ReplaceAll(string(spec.ID), "/", "_") + ".in.sock"
+	}
+	return inst, nil
 }
 
 func (f *fakeCore) Start(ctx context.Context, id sandbox.SandboxID) error {
@@ -123,6 +129,9 @@ func TestEnsure_CreatesAndStarts(t *testing.T) {
 	if !res.SandboxIP.IsValid() {
 		t.Errorf("SandboxIP not surfaced from the created instance: %v", res.SandboxIP)
 	}
+	if res.InboundSocket == "" {
+		t.Errorf("InboundSocket not surfaced for an HTTP-socket resident")
+	}
 	if want := []string{"create:acme/r1", "start:acme/r1"}; !equalStrs(core.eventLog(), want) {
 		t.Errorf("events = %v, want %v", core.eventLog(), want)
 	}
@@ -141,6 +150,9 @@ func TestEnsure_CreatesAndStarts(t *testing.T) {
 	}
 	if !reflect.DeepEqual(spec.Egress, sandbox.EgressInit{}) {
 		t.Errorf("Egress should be zero for M1 backend mode, got %+v", spec.Egress)
+	}
+	if spec.InboundListenAddr != "127.0.0.1:8080" {
+		t.Errorf("InboundListenAddr = %q, want 127.0.0.1:8080 (derived from the http socket)", spec.InboundListenAddr)
 	}
 	if spec.Stdio {
 		t.Errorf("Stdio should be false for a resident socket server")

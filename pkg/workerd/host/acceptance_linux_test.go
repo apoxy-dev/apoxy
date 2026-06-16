@@ -13,15 +13,19 @@
 //
 // Scope note: these assert the lifecycle the extracted sandbox core can
 // guarantee — create/start, make-before-break reload, and per-tenant isolation
-// (distinct in-Sentry SandboxIPs). They deliberately do NOT curl the workerd
-// fetch socket: under sentrystack that socket binds inside the in-Sentry
-// netstack and there is no host route to Resident.SandboxIP. Reaching it needs
-// the host->sandbox ingress forwarder (APO-628), at which point the gated
-// fetch assertion below is unskipped.
+// (distinct in-Sentry SandboxIPs) — plus the end-to-end ingress path. Under
+// sentrystack the worker's fetch socket binds inside the in-Sentry netstack
+// with no host route to Resident.SandboxIP; the APO-694 inbound forwarder
+// fronts it with a host AF_UNIX socket (Resident.InboundSocket), so the reload
+// test curls that socket and asserts the worker's fetch handler answers. The
+// Envoy upstream-cluster wiring on top of this socket is APO-628.
 package host_test
 
 import (
 	"context"
+	"io"
+	"net"
+	"net/http"
 	"os"
 	"testing"
 	"time"
@@ -96,8 +100,34 @@ func TestAcceptance_EnsureRunsAndReloads(t *testing.T) {
 		t.Fatalf("after reload the sole live resident should be r2, got %+v", live)
 	}
 
-	// TODO(APO-628): once the host->sandbox ingress forwarder lands, dial
-	// r2.SandboxIP:8080 and assert the worker's fetch handler responds.
+	// APO-694 ingress: dial the host AF_UNIX socket fronting the worker and
+	// assert the fetch handler answers end to end (host → unix sock →
+	// in-Sentry inbound forwarder → workerd). A completed HTTP response — any
+	// status — proves the path; the bundle's body is caller-defined, so we
+	// don't assert on it.
+	if r2.InboundSocket == "" {
+		t.Fatal("r2 has no InboundSocket; the ingress forwarder did not open the host socket")
+	}
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "unix", r2.InboundSocket)
+			},
+		},
+	}
+	resp, err := client.Get("http://worker/")
+	if err != nil {
+		t.Fatalf("inbound fetch through the sandbox failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if _, err := io.ReadAll(resp.Body); err != nil {
+		t.Fatalf("reading fetch response body: %v", err)
+	}
+	if resp.StatusCode == 0 {
+		t.Fatal("worker returned no HTTP status through the ingress socket")
+	}
+	t.Logf("worker fetch handler responded through ingress socket: HTTP %d", resp.StatusCode)
 
 	if err := rt.Stop(ctx, "acme"); err != nil {
 		t.Fatalf("Stop: %v", err)

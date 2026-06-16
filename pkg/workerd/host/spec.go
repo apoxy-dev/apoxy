@@ -4,6 +4,7 @@ package host
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -78,7 +79,31 @@ func buildSpec(id sandbox.SandboxID, imageRef string, want ResidentRef, cfgHostP
 		Stdio: false,
 		// M1 backend mode: lo+eth0, direct dial, no egress forwarder.
 		Egress: sandbox.EgressInit{},
+		// Ingress (APO-694): the worker's http socket binds inside the
+		// in-Sentry netstack with no host route, so opt the sandbox into the
+		// inbound forwarder. The core opens a host AF_UNIX socket fronting the
+		// worker (surfaced as Instance.InboundSocket) that an Envoy upstream
+		// cluster — or the acceptance test — dials. Empty for non-HTTP sockets.
+		InboundListenAddr: hostInboundAddr(want.Socket),
 	}
+}
+
+// hostInboundAddr is the in-sandbox "ip:port" the inbound forwarder dials to
+// reach the resident worker, derived from the worker's listening socket. The
+// worker's http socket binds "*:<port>" (all in-Sentry interfaces), so the
+// forwarder dials it on loopback — 127.0.0.1 is always present, even before
+// eth0 addressing, and a wildcard listener accepts the loopback destination.
+// Returns "" for a non-HTTP socket (filter/UDS), which leaves the sandbox
+// without a TCP ingress forwarder.
+func hostInboundAddr(sock SocketSpec) string {
+	if sock.Kind != HTTPSocket {
+		return ""
+	}
+	_, port, err := net.SplitHostPort(sock.Addr)
+	if err != nil || port == "" {
+		return ""
+	}
+	return net.JoinHostPort("127.0.0.1", port)
 }
 
 // workerdEnv is the process environment for the workerd binary itself (NOT the

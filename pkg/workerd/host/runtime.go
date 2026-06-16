@@ -44,11 +44,18 @@ type Resident struct {
 	SandboxID sandbox.SandboxID
 	Socket    SocketSpec
 	Phase     sandbox.SandboxPhase
-	// SandboxIP is the in-Sentry container IP the workerd socket binds on. M1
-	// backend mode has no host route to it yet — reaching it needs the
-	// host->sandbox ingress forwarder (APO-628) — but it is surfaced here for
-	// per-tenant isolation assertions and for the lifecycle owner (APO-796).
+	// SandboxIP is the in-Sentry container IP the workerd socket binds on.
+	// There is no host route to it — reaching the worker goes through
+	// InboundSocket — but it is surfaced here for per-tenant isolation
+	// assertions and for the lifecycle owner (APO-796).
 	SandboxIP netip.Addr
+
+	// InboundSocket is the host AF_UNIX socket path that fronts the in-Sentry
+	// worker via the APO-694 ingress forwarder. An Envoy upstream cluster
+	// (APO-628) — or the acceptance test — dials this to reach the worker's
+	// fetch handler. Set once the resident is Running; empty if the socket
+	// is non-HTTP.
+	InboundSocket string
 }
 
 // Runtime is the workerd policy layer over the tenant-neutral sandbox.Runtime.
@@ -168,6 +175,9 @@ func (r *Runtime) startResident(ctx context.Context, want ResidentRef) (*Residen
 		Socket:    want.Socket,
 		Phase:     sandbox.SandboxRunning,
 		SandboxIP: inst.SandboxIP,
+		// Populated by the core during Start (inst is the same instance the
+		// manager mutated), so it reflects the opened ingress socket here.
+		InboundSocket: inst.InboundSocket,
 	}, nil
 }
 
