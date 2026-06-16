@@ -1,8 +1,8 @@
 @import "tailwindcss";
 
-/* Design tokens ship as plain CSS from core (ADR-0003). */
+/* Design tokens ship as plain CSS from core. */
 @import "@apoxy/console-core/tokens.css";
 
-/* console-core ships as source (ADR-0003/0004); scan it so Tailwind emits the
+/* console-core ships as source; scan it so Tailwind emits the
    arbitrary utilities its primitives reference. */
 @source "../../../packages/core/src";
