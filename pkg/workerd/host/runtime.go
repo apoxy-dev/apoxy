@@ -5,6 +5,7 @@ package host
 import (
 	"context"
 	"fmt"
+	"net/netip"
 	"sync"
 
 	computev1alpha1 "github.com/apoxy-dev/apoxy/api/compute/v1alpha1"
@@ -43,6 +44,11 @@ type Resident struct {
 	SandboxID sandbox.SandboxID
 	Socket    SocketSpec
 	Phase     sandbox.SandboxPhase
+	// SandboxIP is the in-Sentry container IP the workerd socket binds on. M1
+	// backend mode has no host route to it yet — reaching it needs the
+	// host->sandbox ingress forwarder (APO-628) — but it is surfaced here for
+	// per-tenant isolation assertions and for the lifecycle owner (APO-796).
+	SandboxIP netip.Addr
 }
 
 // Runtime is the workerd policy layer over the tenant-neutral sandbox.Runtime.
@@ -147,7 +153,8 @@ func (r *Runtime) startResident(ctx context.Context, want ResidentRef) (*Residen
 	}
 
 	spec := buildSpec(id, imageRef, want, cfgHostPath)
-	if _, err := r.core.Create(ctx, spec); err != nil {
+	inst, err := r.core.Create(ctx, spec)
+	if err != nil {
 		return nil, fmt.Errorf("creating sandbox: %w", err)
 	}
 	if err := r.core.Start(ctx, id); err != nil {
@@ -160,6 +167,7 @@ func (r *Runtime) startResident(ctx context.Context, want ResidentRef) (*Residen
 		SandboxID: id,
 		Socket:    want.Socket,
 		Phase:     sandbox.SandboxRunning,
+		SandboxIP: inst.SandboxIP,
 	}, nil
 }
 

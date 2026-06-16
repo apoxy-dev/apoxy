@@ -5,6 +5,7 @@ package host
 import (
 	"context"
 	"fmt"
+	"net/netip"
 	"reflect"
 	"strings"
 	"sync"
@@ -32,7 +33,11 @@ func (f *fakeCore) Create(ctx context.Context, spec sandbox.Spec) (*sandbox.Inst
 	}
 	f.events = append(f.events, "create:"+string(spec.ID))
 	f.created = append(f.created, spec)
-	return &sandbox.Instance{ID: spec.ID, Phase: sandbox.SandboxReady}, nil
+	return &sandbox.Instance{
+		ID:        spec.ID,
+		Phase:     sandbox.SandboxReady,
+		SandboxIP: netip.AddrFrom4([4]byte{10, 88, byte(len(f.created)), 2}),
+	}, nil
 }
 
 func (f *fakeCore) Start(ctx context.Context, id sandbox.SandboxID) error {
@@ -114,6 +119,9 @@ func TestEnsure_CreatesAndStarts(t *testing.T) {
 	}
 	if res.SandboxID != "acme/r1" {
 		t.Errorf("SandboxID = %q, want acme/r1", res.SandboxID)
+	}
+	if !res.SandboxIP.IsValid() {
+		t.Errorf("SandboxIP not surfaced from the created instance: %v", res.SandboxIP)
 	}
 	if want := []string{"create:acme/r1", "start:acme/r1"}; !equalStrs(core.eventLog(), want) {
 		t.Errorf("events = %v, want %v", core.eventLog(), want)
