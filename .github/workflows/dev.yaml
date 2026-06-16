@@ -29,3 +29,38 @@ jobs:
           dagger call -v build-apiserver --src=. --sccache-token=env:SCCACHE_WEBDAV_TOKEN --edge-runtime-tag=$EDGE_RUNTIME_TAG --gcr-creds=env:APOXY_INTERNAL_GAR_CREDENTIALS
           dagger call -v build-backplane --src=. --sccache-token=env:SCCACHE_WEBDAV_TOKEN --edge-runtime-tag=$EDGE_RUNTIME_TAG --gcr-creds=env:APOXY_INTERNAL_GAR_CREDENTIALS
           dagger call -v build-tunnelproxy --src=.
+
+  console-check:
+    runs-on: depot-ubuntu-22.04-4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ">=1.21.5"
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.11.0
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: console/pnpm-lock.yaml
+      - name: Install
+        run: pnpm -C console install --frozen-lockfile
+      - name: Typecheck
+        run: pnpm -C console typecheck
+      - name: Test
+        run: pnpm -C console test
+      - name: Build
+        run: pnpm -C console build
+      # Drift gate: regenerate the OpenAPI spec from the Go types and the TS
+      # schema from that spec, then fail if either committed artifact is stale.
+      - name: Codegen drift check
+        run: |
+          go run ./cmd/openapi-dump -o console/openapi.json -title "Apoxy Console API" -version v0
+          pnpm -C console codegen
+          git diff --exit-code -- console/openapi.json console/packages/core/src/schema/schema.d.ts \
+            || { echo "::error::OpenAPI/schema drift. Regenerate locally: 'go run ./cmd/openapi-dump -o console/openapi.json -title \"Apoxy Console API\" -version v0' then 'pnpm -C console codegen', and commit."; exit 1; }
