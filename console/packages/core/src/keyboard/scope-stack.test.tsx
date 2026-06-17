@@ -154,4 +154,22 @@ describe('scope stack dispatch', () => {
     fireEvent.keyDown(document.body, { key: 'k' })
     expect(run).not.toHaveBeenCalled()
   })
+
+  it('defers Enter to a focused link/button instead of firing a bare enter binding', () => {
+    const open = vi.fn()
+    const { container } = provider(
+      <>
+        <Scope level="view" bindings={[{ keys: 'enter', run: open }]} />
+        <a href="/proxies/alpha" data-testid="row-link">
+          alpha
+        </a>
+      </>,
+    )
+    const link = container.querySelector('a')!
+    fireEvent.keyDown(link, { key: 'Enter' }) // focused link owns Enter
+    expect(open).not.toHaveBeenCalled()
+    // …but Enter elsewhere (no activation target) still triggers the binding.
+    fireEvent.keyDown(document.body, { key: 'Enter' })
+    expect(open).toHaveBeenCalledTimes(1)
+  })
 })

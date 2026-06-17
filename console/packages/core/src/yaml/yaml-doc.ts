@@ -26,13 +26,27 @@ const SERVER_META_KEYS = [
  * spec, name/namespace, labels, and annotations the user actually authors.
  */
 export function forEditing<T extends K8sObject>(obj: T): Record<string, unknown> {
-  const clone = structuredClone(obj) as Record<string, unknown>
+  const clone = deepClone(obj) as Record<string, unknown>
   delete clone.status
   const meta = clone.metadata as Record<string, unknown> | undefined
   if (meta) {
     for (const k of SERVER_META_KEYS) delete meta[k]
   }
   return clone
+}
+
+/**
+ * Deep-clone an object for editing. `structuredClone` is preferred, but it
+ * throws on any non-cloneable value (a function, a class instance with methods);
+ * fall back to a JSON round-trip — which silently drops such values — so opening
+ * the tray can never crash on an unexpected object shape.
+ */
+function deepClone<T>(obj: T): unknown {
+  try {
+    return structuredClone(obj)
+  } catch {
+    return JSON.parse(JSON.stringify(obj))
+  }
 }
 
 /** Serialize a value as YAML for the editor (2-space indent, no anchors). */

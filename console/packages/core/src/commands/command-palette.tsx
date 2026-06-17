@@ -60,13 +60,15 @@ export function CommandPalette({
     }
   }, [open, setIndex])
 
-  // Snap the cursor to the top match whenever the result set changes. Done in an
-  // effect (not inside onChange) so the clamp reads the NEW result count, not the
-  // stale committed one — otherwise a 0-match → N-match edit would leave the
-  // cursor at -1 and Enter would do nothing.
+  // Snap the cursor to the top match whenever the *query* changes. Keyed on the
+  // query (not the `results` array identity) so an unrelated re-render that
+  // rebuilds `commands` — e.g. discovery refetching while the palette is open —
+  // doesn't reset the user's cursor. Run as an effect (post-commit) so setIndex
+  // clamps against the NEW result count: a 0-match → N-match edit lands on 0
+  // rather than stranding the cursor at -1 where Enter would do nothing.
   useEffect(() => {
     setIndex(0)
-  }, [results, setIndex])
+  }, [query, setIndex])
 
   // Keep the highlighted option scrolled into view as the cursor moves.
   useEffect(() => {

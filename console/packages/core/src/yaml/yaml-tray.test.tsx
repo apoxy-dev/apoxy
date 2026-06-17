@@ -127,9 +127,36 @@ describe('YamlTray', () => {
     // Wait for the live watch to connect before emitting, so the event isn't
     // dropped in the gap between the initial LIST and the watch loop.
     await waitFor(() => expect(fake.connections(gvr)).toBe(1))
-    // The live watch advances the object past the opened resourceVersion.
-    fake.emit(gvr, 'MODIFIED', proxy('alpha', '2'))
+    // A real spec change on the server (not just a resourceVersion bump).
+    fake.emit(gvr, 'MODIFIED', { ...proxy('alpha', '2'), spec: { replicas: 9 } } as K8sObject)
     expect(await screen.findByText(/changed on the server/)).toBeDefined()
+  })
+
+  it('does not warn on a resourceVersion-only change (status/managed-fields churn)', async () => {
+    const { fake, wrapper: W } = harness([proxy('alpha', '1')])
+    render(<YamlTray entry={entry} object={proxy('alpha', '1')} open onClose={vi.fn()} />, { wrapper: W })
+    await waitFor(() => expect(fake.connections(gvr)).toBe(1))
+    // The editable projection (spec/metadata) is unchanged; only the rv bumps —
+    // the banner must NOT appear (findByText rejects when it never shows).
+    fake.emit(gvr, 'MODIFIED', proxy('alpha', '2'))
+    await expect(screen.findByText(/changed on the server/, undefined, { timeout: 200 })).rejects.toThrow()
+  })
+
+  it('shows only one confirm prompt at a time (reload vs close)', async () => {
+    const { fake, wrapper: W } = harness([proxy('alpha', '1')])
+    render(<YamlTray entry={entry} object={proxy('alpha', '1')} open onClose={vi.fn()} />, { wrapper: W })
+    await waitFor(() => expect(fake.connections(gvr)).toBe(1))
+    const ta = screen.getByRole('textbox', { name: 'Proxy YAML' }) as HTMLTextAreaElement
+    fireEvent.change(ta, { target: { value: ta.value + '\n# edit\n' } }) // dirty
+    fake.emit(gvr, 'MODIFIED', { ...proxy('alpha', '2'), spec: { replicas: 9 } } as K8sObject) // changed on server
+
+    // Open the reload confirm, then trigger the close confirm via the backdrop.
+    fireEvent.click(await screen.findByRole('button', { name: 'Reload' }))
+    expect(screen.getByText(/Discard your edits/)).toBeDefined()
+    fireEvent.mouseDown(screen.getByRole('dialog').parentElement!) // backdrop -> requestClose
+    // Only the close confirm is shown now; the reload confirm was dismissed.
+    expect(screen.getByText(/Discard unsaved changes\?/)).toBeDefined()
+    expect(screen.queryByText(/Discard your edits/)).toBeNull()
   })
 
   it('clears a stale conflict so a later non-conflict error is shown', async () => {
@@ -166,7 +193,7 @@ describe('YamlTray', () => {
 
     const ta = screen.getByRole('textbox', { name: 'Proxy YAML' }) as HTMLTextAreaElement
     fireEvent.change(ta, { target: { value: ta.value + '\n# my edit\n' } }) // dirty
-    fake.emit(gvr, 'MODIFIED', proxy('alpha', '2')) // changed on server
+    fake.emit(gvr, 'MODIFIED', { ...proxy('alpha', '2'), spec: { replicas: 9 } } as K8sObject) // changed on server
 
     fireEvent.click(await screen.findByRole('button', { name: 'Reload' }))
     // Dirty -> confirm prompt, edits not yet discarded.
@@ -186,5 +213,18 @@ describe('YamlTray', () => {
     expect(onClose).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: 'Discard' }))
     expect(onClose).toHaveBeenCalled()
+  })
+
+  it('keeps unsaved edits when the object disappears while editing', () => {
+    const { wrapper: W } = harness([proxy('alpha')])
+    const { rerender } = render(<YamlTray entry={entry} object={proxy('alpha')} open onClose={vi.fn()} />, {
+      wrapper: W,
+    })
+    const ta = screen.getByRole('textbox', { name: 'Proxy YAML' }) as HTMLTextAreaElement
+    fireEvent.change(ta, { target: { value: ta.value + '\n# keep me\n' } })
+    // The object is deleted on the server: the detail view re-renders the tray
+    // with object=undefined. The buffer must survive (not reset to a skeleton).
+    rerender(<YamlTray entry={entry} object={undefined} open onClose={vi.fn()} />)
+    expect((screen.getByRole('textbox', { name: 'Proxy YAML' }) as HTMLTextAreaElement).value).toContain('# keep me')
   })
 })

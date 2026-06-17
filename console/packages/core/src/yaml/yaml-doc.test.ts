@@ -40,6 +40,17 @@ describe('forEditing', () => {
     expect(obj.metadata.uid).toBe('abc')
     expect(obj.status).toEqual({ phase: 'Healthy' })
   })
+  it('does not throw on a non-cloneable value (drops it via the JSON fallback)', () => {
+    const weird = {
+      apiVersion: 'v1',
+      kind: 'X',
+      metadata: { name: 'a' },
+      spec: { fn: () => 1, n: 7 },
+    } as unknown as K8sObject
+    const edit = forEditing(weird) as { spec: Record<string, unknown> }
+    expect(edit.spec.n).toBe(7) // plain data survives
+    expect(edit.spec.fn).toBeUndefined() // the function is dropped, not a crash
+  })
 })
 
 describe('toYaml / fromYaml', () => {

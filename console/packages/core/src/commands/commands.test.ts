@@ -62,6 +62,14 @@ describe('scoreCommand', () => {
   it('matches everything for a blank query', () => {
     expect(scoreCommand(cmd, '')).toBe(1)
   })
+  it('ranks a tighter prefix above a longer one', () => {
+    const gauge: Command = { id: 'g', title: 'Gauge', run: () => {} }
+    const gateways: Command = { id: 'w', title: 'Gateways', run: () => {} }
+    // Both prefix-match 'ga'; the shorter title is the closer hit.
+    expect(scoreCommand(gauge, 'ga')).toBeGreaterThan(scoreCommand(gateways, 'ga'))
+    // Prefix matches still outrank substring matches regardless of length.
+    expect(scoreCommand(gateways, 'ga')).toBeGreaterThan(scoreCommand({ ...gateways, title: 'XGateways' }, 'ga'))
+  })
 })
 
 describe('isSubsequence', () => {

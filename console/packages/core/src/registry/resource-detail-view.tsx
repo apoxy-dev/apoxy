@@ -75,12 +75,16 @@ export function ResourceDetailView({ entry, name, actions }: ResourceDetailViewP
     )
   }
   if (!obj) {
+    // Keep `headerActions` and the tray mounted here too: if the object is
+    // deleted on the server while its tray is open, this branch takes over, and
+    // unmounting the tray would silently discard the user's unsaved edits.
     return (
       <div>
-        <PageHeader title={name} subtitle={entry.kind} actions={actions} />
+        <PageHeader title={name} subtitle={entry.kind} actions={headerActions} />
         <Panel>
           <StateMessage>{q.isPending ? 'Loading…' : `${entry.kind} “${name}” not found.`}</StateMessage>
         </Panel>
+        {tray}
       </div>
     )
   }

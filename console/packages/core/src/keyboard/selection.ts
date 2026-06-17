@@ -7,7 +7,7 @@
 // movement logic is component-agnostic and the math is unit-testable in isolation
 // via the exported pure reducers.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 // --- 1-D list ---------------------------------------------------------------
 
@@ -28,6 +28,13 @@ export interface UseListSelectionOptions {
   onActivate?: (index: number) => void
   /** Initial cursor; `-1` (default) means nothing selected. */
   initialIndex?: number
+  /**
+   * Optional stable identity for each row (parallel to `count`). When supplied,
+   * the cursor follows the *selected item* across list mutations — a delete or
+   * reorder under the cursor re-points it to the same item's new position rather
+   * than leaving it on whatever now sits at the old index.
+   */
+  keys?: readonly string[]
 }
 
 export interface ListSelection {
@@ -40,13 +47,33 @@ export interface ListSelection {
 }
 
 export function useListSelection(opts: UseListSelectionOptions): ListSelection {
-  const { count, loop = false, onActivate, initialIndex = -1 } = opts
+  const { count, loop = false, onActivate, initialIndex = -1, keys } = opts
   const [index, setIndexState] = useState(initialIndex)
 
-  // Keep the cursor in range as the list shrinks (rows deleted under it).
+  // Without identity keys, just keep the cursor in range as the list shrinks
+  // (rows deleted under it). With keys, the anchor effect below owns range too.
   useEffect(() => {
+    if (keys) return
     if (index > count - 1) setIndexState(count > 0 ? count - 1 : -1)
-  }, [count, index])
+  }, [count, index, keys])
+
+  // Identity anchoring: when `keys` changes, move the cursor to follow the item
+  // it pointed at to that item's new position (pre-paint, so the highlight never
+  // visibly jumps to the wrong row). Done off the *previous* keys so we know
+  // which item was selected before the mutation.
+  const prevKeys = useRef<readonly string[] | undefined>(keys)
+  useLayoutEffect(() => {
+    const pk = prevKeys.current
+    prevKeys.current = keys
+    if (!keys || !pk || pk === keys) return
+    setIndexState((cur) => {
+      if (cur < 0) return cur
+      const selected = pk[cur]
+      if (selected === undefined) return clampIndex(cur, keys.length)
+      const at = keys.indexOf(selected)
+      return at >= 0 ? at : clampIndex(cur, keys.length)
+    })
+  }, [keys])
 
   const ref = useRef({ index, count, loop, onActivate })
   ref.current = { index, count, loop, onActivate }

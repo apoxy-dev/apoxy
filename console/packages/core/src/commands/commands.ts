@@ -68,7 +68,10 @@ export function scoreCommand(command: Command, q: string): number {
   if (!q) return 1
   const title = command.title.toLowerCase()
   if (title === q) return 1000
-  if (title.startsWith(q)) return 800 - title.indexOf(q)
+  // Prefix match: prefer the title closest to the query length (`ga` ranks
+  // `Gauge` over `Gateways`). Bounded so prefix scores stay above the substring
+  // tier below regardless of title length.
+  if (title.startsWith(q)) return 800 - Math.min(100, title.length - q.length)
   const ti = title.indexOf(q)
   if (ti >= 0) return 600 - ti
   for (const kw of command.keywords ?? []) {

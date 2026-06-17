@@ -42,8 +42,9 @@ export function YamlTray({ entry, object, open, onClose, onSaved, editor }: Yaml
   const [saveError, setSaveError] = useState<string | null>(null)
   const [confirmingClose, setConfirmingClose] = useState(false)
   const [confirmingReload, setConfirmingReload] = useState(false)
-  // resourceVersion the editor's baseline was taken at, for change detection.
-  const openedRV = useRef<string | undefined>(undefined)
+  // Identity (uid) the editor's buffer was last baselined for, so we re-baseline
+  // on a genuine new object but never on a live update or a transient drop.
+  const baselinedFor = useRef<{ uid: string | undefined } | null>(null)
 
   const { apply, isPending } = useApplyResource(entry.gvr)
 
@@ -51,24 +52,32 @@ export function YamlTray({ entry, object, open, onClose, onSaved, editor }: Yaml
   // server-side change while editing. Disabled for the create case (no name).
   const name = object?.metadata.name ?? ''
   const live = useK8sObject(entry.gvr, name, { enabled: open && name !== '' }).data
-  const liveRV = live?.metadata.resourceVersion
 
   // (Re)baseline when the tray opens or the edited object's identity changes.
   // Keyed on uid (stable across MODIFIED), so live updates never clobber edits.
-  // A layout effect (pre-paint) so `openedRV` is current before the first paint,
-  // otherwise a stale ref would flash the "changed on server" banner on reopen.
+  // Critically, a transient drop to `object === undefined` (e.g. the object is
+  // deleted on the server while editing) is IGNORED so the user's buffer and
+  // unsaved edits survive instead of being wiped to a create skeleton. A layout
+  // effect (pre-paint) so the baseline is set before the first paint.
   const uid = object?.metadata.uid
   useLayoutEffect(() => {
-    if (!open) return
+    if (!open) {
+      baselinedFor.current = null
+      return
+    }
+    const prev = baselinedFor.current
+    const justOpened = prev === null
+    const switchedObject = prev !== null && uid !== prev.uid && object !== undefined
+    if (!justOpened && !switchedObject) return
     const value = object ? forEditing(object) : skeleton(entry.gvr, entry.kind)
     const yaml = toYaml(value)
     setText(yaml)
     setBaseline(yaml)
-    openedRV.current = object?.metadata.resourceVersion
     setConflict(false)
     setSaveError(null)
     setConfirmingClose(false)
     setConfirmingReload(false)
+    baselinedFor.current = { uid }
     // entry.gvr/kind are stable for a given entry; baseline tracks open + identity.
   }, [open, uid])
 
@@ -83,7 +92,13 @@ export function YamlTray({ entry, object, open, onClose, onSaved, editor }: Yaml
   const blocking = hasBlockingProblems(problems)
 
   const dirty = text !== baseline
-  const changedOnServer = open && !!openedRV.current && !!liveRV && liveRV !== openedRV.current
+  // Compare the *editable projection* (forEditing strips status/managedFields/rv)
+  // rather than raw resourceVersion, so a status or managed-fields write — which
+  // bumps the rv but changes nothing the user is editing — doesn't nag with a
+  // false "changed on the server" banner. `baseline` is the projection captured
+  // at open/reload, so this is server-now vs. what-we-loaded.
+  const liveProjection = useMemo(() => (live ? toYaml(forEditing(live)) : undefined), [live])
+  const changedOnServer = open && !!object && liveProjection !== undefined && liveProjection !== baseline
   // Edits to an existing object require a change; a create skeleton can be saved
   // as soon as it validates (its required-name check gates it instead).
   const saveDisabled = isPending || blocking || (!!object && !dirty)
@@ -93,7 +108,6 @@ export function YamlTray({ entry, object, open, onClose, onSaved, editor }: Yaml
     const yaml = toYaml(forEditing(live))
     setText(yaml)
     setBaseline(yaml)
-    openedRV.current = live.metadata.resourceVersion
     setConflict(false)
     setSaveError(null)
     setConfirmingReload(false)
@@ -101,8 +115,10 @@ export function YamlTray({ entry, object, open, onClose, onSaved, editor }: Yaml
 
   function requestReload() {
     // Reloading replaces the editor with the server copy; confirm first when
-    // there are unsaved edits, mirroring the close guard.
+    // there are unsaved edits, mirroring the close guard. Cancel any pending
+    // close confirm so the two prompts can't show at once.
     if (dirty && !confirmingReload) {
+      setConfirmingClose(false)
       setConfirmingReload(true)
       return
     }
@@ -111,6 +127,7 @@ export function YamlTray({ entry, object, open, onClose, onSaved, editor }: Yaml
 
   function requestClose() {
     if (dirty && !confirmingClose) {
+      setConfirmingReload(false)
       setConfirmingClose(true)
       return
     }

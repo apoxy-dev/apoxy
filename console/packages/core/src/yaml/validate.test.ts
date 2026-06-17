@@ -3,6 +3,16 @@ import { hasBlockingProblems, validateObject, type JSONSchema } from './validate
 
 const ok = { apiVersion: 'core.apoxy.dev/v1alpha2', kind: 'Proxy', metadata: { name: 'p1' } }
 
+describe('problem de-duplication', () => {
+  it('reports an identity-required error once when both passes flag it', () => {
+    // A schema marking apiVersion required overlaps the always-on structural check.
+    const schema: JSONSchema = { type: 'object', required: ['apiVersion'] }
+    const problems = validateObject({ kind: 'Proxy', metadata: { name: 'x' } }, schema)
+    const dupes = problems.filter((p) => p.path === '.apiVersion' && /required/.test(p.message))
+    expect(dupes).toHaveLength(1)
+  })
+})
+
 describe('structural k8s checks (always on)', () => {
   it('passes a well-formed object', () => {
     expect(validateObject(ok)).toEqual([])

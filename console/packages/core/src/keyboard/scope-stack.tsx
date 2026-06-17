@@ -12,6 +12,7 @@ import {
   type Chord,
   detectMac,
   eventChord,
+  isActivationTarget,
   isEditableTarget,
   isModifierOnly,
   parseSequence,
@@ -150,20 +151,25 @@ export function KeyboardScopeProvider({ children, sequenceTimeoutMs = 1200, isMa
     function onKeyDown(e: KeyboardEvent) {
       const chord = eventChord(e, mac)
       if (isModifierOnly(chord)) return
-      const editable = isEditableTarget(e.target)
+      // Restrict to `allowInEditable` bindings while typing, and likewise defer a
+      // bare Enter/Space to a focused control that natively activates on it (a
+      // link/button the user tabbed to) so a scope's Enter-to-open can't hijack it.
+      const deferToTarget =
+        !chord.mod && !chord.alt && (chord.key === 'enter' || chord.key === ' ') && isActivationTarget(e.target)
+      const restricted = isEditableTarget(e.target) || deferToTarget
 
       // `seq` is the sequence actually being dispatched — it must track the
       // retry below, or a freshly-started sequence would be stored with the
       // dead prefix still attached and could never complete.
       let seq = [...pending.current, chord]
-      let result = dispatch(seq, e, editable)
+      let result = dispatch(seq, e, restricted)
 
       // A dead sequence (`g` then an unrelated key): drop the prefix and retry
       // the fresh chord on its own, so the new key isn't swallowed.
       if (result === 'none' && pending.current.length > 0) {
         clearPending()
         seq = [chord]
-        result = dispatch(seq, e, editable)
+        result = dispatch(seq, e, restricted)
       }
 
       if (result === 'ran') {
@@ -210,18 +216,34 @@ export function useKeyboardScope(scope: KeyboardScope): void {
   const latest = useRef(scope)
   latest.current = scope
 
+  // Cache parsed sequences by their spec string so the hot keydown path doesn't
+  // re-run parseSequence for every binding on every keystroke (binding objects
+  // are fresh each render, but their `keys` specs almost never change).
+  const seqCache = useRef<Map<string, Chord[]>>(new Map())
+
   useEffect(() => {
     if (!registry) return
-    const parsed = () =>
-      latest.current.bindings.map((binding) => ({ binding, seq: parseSequence(binding.keys) }))
-    // Register a live view: the registry reads `bindings`/`enabled` through
-    // getters so updates between renders are visible without re-registering.
+    const cache = seqCache.current
+    const parseOne = (spec: string): Chord[] => {
+      let seq = cache.get(spec)
+      if (!seq) {
+        seq = parseSequence(spec)
+        cache.set(spec, seq)
+      }
+      return seq
+    }
+    const parsed = () => latest.current.bindings.map((binding) => ({ binding, seq: parseOne(binding.keys) }))
+    // Register a live view: the registry reads `level`/`bindings`/`enabled`
+    // through getters so updates between renders — including a changed `level`
+    // (and thus priority) — are visible without re-registering.
     const entry: RegisteredScope = {
       id,
       get level() {
         return latest.current.level
       },
-      priority: priorityOf(scope.level),
+      get priority() {
+        return priorityOf(latest.current.level)
+      },
       get bindings() {
         return latest.current.bindings
       },
@@ -237,7 +259,7 @@ export function useKeyboardScope(scope: KeyboardScope): void {
     }
     registry.register(entry)
     return () => registry.unregister(id)
-    // Re-register only when the id or numeric priority changes; binding/enabled
-    // updates flow through the getters above.
-  }, [registry, id, priorityOf(scope.level)])
+    // Register once per id; all scope fields (level/priority/bindings/enabled)
+    // flow through the live getters above, so no re-registration is needed.
+  }, [registry, id])
 }

@@ -61,7 +61,9 @@ export function TextAreaEditor({ value, onChange, readOnly, ariaLabel = 'YAML ed
         autoCorrect="off"
         wrap="off"
         onChange={(e) => onChange(e.target.value)}
-        onKeyDown={handleTab}
+        // No Tab-to-spaces in read-only mode: it would trap focus and mutate the
+        // "immutable" content through the native setter, bypassing `readOnly`.
+        onKeyDown={readOnly ? undefined : handleTab}
         className={cn(
           'min-w-0 flex-1 resize-none overflow-auto whitespace-pre bg-transparent px-[var(--sp-3)] py-[var(--sp-3)] text-[color:var(--text-primary)] outline-none',
           readOnly && 'text-[color:var(--text-secondary)]',

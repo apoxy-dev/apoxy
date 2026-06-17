@@ -27,7 +27,10 @@ export interface ResourceListViewProps {
 
 const TH =
   'border-b border-[color:var(--border-default)] bg-[var(--apx-mist)] px-[var(--sp-4)] py-[var(--sp-3)] text-left text-[length:var(--t-overline)] font-medium uppercase tracking-[0.06em] text-[color:var(--text-muted)]'
-const TD = 'border-b border-[color:var(--border-subtle)] px-[var(--sp-4)] align-middle'
+// `whitespace-nowrap` keeps cell content on one line: a row can't grow past
+// ROW_HEIGHT, so the windowing/scroll math below stays exact (overflow goes to
+// the container's horizontal scroll, not a second line).
+const TD = 'border-b border-[color:var(--border-subtle)] whitespace-nowrap px-[var(--sp-4)] align-middle'
 
 // Fixed row height drives the windowing math; rows are pinned to it so the
 // spacer heights stay exact.
@@ -45,8 +48,13 @@ export function ResourceListView({ entry, actions, subtitle }: ResourceListViewP
   const hrefOf = (obj: K8sObject | undefined): string | undefined =>
     obj?.metadata.name ? `/${entry.path}/${obj.metadata.name}` : undefined
 
+  // Stable per-row identity so the cursor follows the selected object across
+  // live watch updates (a delete/reorder must not silently re-point Enter).
+  const keys = useMemo(() => items.map((o) => o.metadata.uid ?? o.metadata.name ?? ''), [items])
+
   const selection = useListSelection({
     count,
+    keys,
     onActivate: (i) => {
       const href = hrefOf(items[i])
       if (href) navigate(href)
@@ -94,6 +102,13 @@ export function ResourceListView({ entry, actions, subtitle }: ResourceListViewP
       document.getElementById(`${entry.path}-row-${index}`)?.scrollIntoView?.({ block: 'nearest' })
     }
   }, [index, virtualize, entry.path])
+
+  // Drive arrow/Home/End navigation from the focused table, but leave Enter to
+  // the global view scope — which defers to a focused row link — so a focused
+  // link's own activation isn't hijacked by the cursor row.
+  const onNavKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key !== 'Enter') selection.onKeyDown(e)
+  }
 
   const defaultSubtitle = list.isPending ? 'Loading…' : `${count} ${count === 1 ? 'item' : 'items'}`
   const lower = entry.displayName.toLowerCase()
@@ -176,14 +191,21 @@ export function ResourceListView({ entry, actions, subtitle }: ResourceListViewP
         ) : virtualize ? (
           <div
             ref={scrollRef}
+            tabIndex={0}
+            onKeyDown={onNavKeyDown}
             onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
             style={{ maxHeight: VIEWPORT_MAX }}
-            className="overflow-auto"
+            className="overflow-auto outline-none"
           >
             {table}
           </div>
         ) : (
-          table
+          // Focusable so ↑/↓ drive the row cursor when the table has focus (j/k
+          // work globally via the scope above; arrows are scoped to focus so they
+          // don't hijack page scroll elsewhere).
+          <div tabIndex={0} onKeyDown={onNavKeyDown} className="outline-none">
+            {table}
+          </div>
         )}
       </Panel>
     </div>

@@ -91,9 +91,16 @@ export class InMemoryClient {
     body: Partial<T> & K8sObject,
     _opts?: { namespace?: string; fieldManager?: string; force?: boolean },
   ): Promise<T> {
-    const existed = this.store.get(colKey(gvr))?.has(name) ?? false
-    const merged = { ...body, metadata: { ...body.metadata, name } } as K8sObject
-    return this.emit(gvr, existed ? 'MODIFIED' : 'ADDED', merged) as T
+    const existing = this.store.get(colKey(gvr))?.get(name)
+    // Like the real apiserver's SSA response: merge over the stored object so
+    // server-owned identity (uid, and the status subresource) survives an update
+    // instead of being replaced by the uid-stripped request body.
+    const merged = {
+      ...existing,
+      ...body,
+      metadata: { ...existing?.metadata, ...body.metadata, name },
+    } as K8sObject
+    return this.emit(gvr, existing ? 'MODIFIED' : 'ADDED', merged) as T
   }
 
   /** Delete the named object and broadcast it. */

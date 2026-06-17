@@ -103,6 +103,32 @@ describe('CommandPalette', () => {
     expect(run).toHaveBeenCalledWith('gateways')
   })
 
+  it('keeps the cursor when commands are rebuilt and the query is unchanged', () => {
+    const mk = (): Command[] => [
+      { id: 'proxies', title: 'Proxies', run: vi.fn() },
+      { id: 'gateways', title: 'Gateways', run: vi.fn() },
+      { id: 'backends', title: 'Backends', run: vi.fn() },
+    ]
+    const { rerender } = render(
+      <KeyboardScopeProvider isMac={false}>
+        <CommandPalette open onClose={vi.fn()} commands={mk()} />
+      </KeyboardScopeProvider>,
+    )
+    const input = screen.getByRole('combobox')
+    fireEvent.keyDown(input, { key: 'ArrowDown' }) // 0 -> 1
+    fireEvent.keyDown(input, { key: 'ArrowDown' }) // 1 -> 2
+    const before = input.getAttribute('aria-activedescendant')
+    // A fresh commands array with the same items + query (e.g. discovery
+    // refetched while the palette is open) must NOT reset the cursor to 0.
+    rerender(
+      <KeyboardScopeProvider isMac={false}>
+        <CommandPalette open onClose={vi.fn()} commands={mk()} />
+      </KeyboardScopeProvider>,
+    )
+    expect(input.getAttribute('aria-activedescendant')).toBe(before)
+    expect(before).toMatch(/-opt-2$/)
+  })
+
   it('renders one header per group even when a group repeats non-contiguously', () => {
     const list: Command[] = [
       { id: 'a1', title: 'Alpha', group: 'A', run: vi.fn() },

@@ -147,3 +147,34 @@ export function isEditableTarget(target: EventTarget | null): boolean {
   // implementations (jsdom); coerce so the result is always a boolean.
   return el.isContentEditable === true
 }
+
+/** Roles whose elements treat Enter/Space as their own activation key. */
+const ACTIVATION_ROLES = new Set([
+  'button',
+  'link',
+  'menuitem',
+  'menuitemcheckbox',
+  'menuitemradio',
+  'option',
+  'tab',
+  'switch',
+  'checkbox',
+  'radio',
+])
+
+/**
+ * Whether a focused element natively activates on Enter/Space (a link with an
+ * href, a button, a `<summary>`, or an element with an activation role). The
+ * scope stack defers Enter/Space to such a target so its own bare bindings (e.g.
+ * a list's Enter-to-open) don't hijack the keyboard activation of a focused
+ * control the user explicitly tabbed to.
+ */
+export function isActivationTarget(target: EventTarget | null): boolean {
+  if (!target || !(target instanceof Element)) return false
+  const el = target as HTMLElement
+  const tag = el.tagName
+  if (tag === 'BUTTON' || tag === 'SUMMARY') return true
+  if (tag === 'A' && el.hasAttribute('href')) return true
+  const role = el.getAttribute('role')
+  return role !== null && ACTIVATION_ROLES.has(role)
+}

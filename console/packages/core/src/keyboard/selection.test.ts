@@ -1,5 +1,7 @@
+// @vitest-environment jsdom
 import { describe, expect, it } from 'vitest'
-import { moveMiller, nextIndex } from './selection'
+import { act, renderHook } from '@testing-library/react'
+import { moveMiller, nextIndex, useListSelection } from './selection'
 
 describe('nextIndex (1-D)', () => {
   it('clamps at the ends without loop', () => {
@@ -63,5 +65,34 @@ describe('moveMiller (2-D)', () => {
     expect(moveMiller({ col: 0, row: 1 }, 1, 0, [2, 0, 0])).toEqual({ col: 0, row: 1 })
     // Leading empty columns: ArrowLeft must not deselect either.
     expect(moveMiller({ col: 2, row: 1 }, -1, 0, [0, 0, 2])).toEqual({ col: 2, row: 1 })
+  })
+})
+
+describe('useListSelection identity anchoring', () => {
+  const setup = (keys: string[]) =>
+    renderHook((p: { keys: string[] }) => useListSelection({ count: p.keys.length, keys: p.keys }), {
+      initialProps: { keys },
+    })
+
+  it('follows the selected item when a row above it is removed', () => {
+    const { result, rerender } = setup(['a', 'b', 'c', 'd'])
+    act(() => result.current.setIndex(2)) // select 'c'
+    expect(result.current.index).toBe(2)
+    rerender({ keys: ['b', 'c', 'd'] }) // 'a' deleted above the cursor
+    expect(result.current.index).toBe(1) // cursor still on 'c'
+  })
+
+  it('follows the selected item across a reorder that keeps the count', () => {
+    const { result, rerender } = setup(['a', 'b', 'c'])
+    act(() => result.current.setIndex(0)) // select 'a'
+    rerender({ keys: ['c', 'b', 'a'] }) // reversed
+    expect(result.current.index).toBe(2) // cursor still on 'a'
+  })
+
+  it('clamps into range when the selected item itself is removed', () => {
+    const { result, rerender } = setup(['a', 'b', 'c'])
+    act(() => result.current.setIndex(2)) // select 'c'
+    rerender({ keys: ['a', 'b'] }) // 'c' deleted
+    expect(result.current.index).toBe(1) // clamped to the last surviving row
   })
 })
