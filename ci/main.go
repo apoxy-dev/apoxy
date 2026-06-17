@@ -907,9 +907,14 @@ if ! cmp -s /src/console/openapi.json /tmp/fresh-openapi.json; then
   exit 1
 fi
 cp /src/console/apps/apoxy-console/src/schema/schema.d.ts /tmp/schema.committed.d.ts
+cp /src/console/apps/apoxy-console/src/schema/resource-schemas.ts /tmp/resource-schemas.committed.ts
 pnpm -C /src/console codegen
 if ! cmp -s /src/console/apps/apoxy-console/src/schema/schema.d.ts /tmp/schema.committed.d.ts; then
   echo "::error::console schema.d.ts is stale. Regenerate: pnpm -C console codegen"
+  exit 1
+fi
+if ! cmp -s /src/console/apps/apoxy-console/src/schema/resource-schemas.ts /tmp/resource-schemas.committed.ts; then
+  echo "::error::console resource-schemas.ts is stale. Regenerate: pnpm -C console codegen"
   exit 1
 fi
 echo "console: no codegen drift"
