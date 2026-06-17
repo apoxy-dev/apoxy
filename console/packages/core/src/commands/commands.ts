@@ -20,6 +20,10 @@ export interface Command {
   /** Extra terms matched in addition to the title. */
   keywords?: string[]
   icon?: ReactNode
+  /** Optional key binding (a scope-stack spec, e.g. `g p` or `mod+k`). When set,
+   *  the same command both shows in the palette and fires from the keyboard —
+   *  one source for the action and its shortcut. See `useCommandKeyBindings`. */
+  keys?: string
   run: () => void
 }
 
@@ -60,6 +64,9 @@ export function buildResourceCommands(registry: Registry, opts: BuildResourceCom
           group,
           keywords: [e.kind, e.gvr.resource, e.gvr.group].filter(Boolean),
           icon: e.icon,
+          // A registry-declared shortcut becomes a `g`-sequence go-to, derived
+          // here so the palette entry and the keyboard binding share one source.
+          keys: e.shortcut ? `g ${e.shortcut}` : undefined,
           run: () => opts.navigate(`/${e.path}`),
         },
       ]

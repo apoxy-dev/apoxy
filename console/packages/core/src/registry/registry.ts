@@ -34,6 +34,7 @@ function normalize(input: ResourceEntryInput<K8sObject>): ResourceEntry {
     yamlEditable: input.yamlEditable ?? false,
     schema: input.schema,
     requires: input.requires ?? [gvr],
+    shortcut: input.shortcut,
     detail: input.detail,
   }
 }

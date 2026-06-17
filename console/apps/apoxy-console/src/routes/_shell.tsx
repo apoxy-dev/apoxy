@@ -23,6 +23,7 @@ import {
   buildResourceCommands,
   buildSidebar,
   cn,
+  useCommandKeyBindings,
   useCreate,
   useDiscovery,
   useKeyboardScope,
@@ -113,18 +114,19 @@ function ShellBody() {
   const [paletteOpen, setPaletteOpen] = useState(false)
   const commands = useMemo<Command[]>(
     () => [
-      { id: 'home', title: 'Overview', group: 'Go to', keywords: ['home', 'dashboard'], run: () => navigate('/') },
+      { id: 'home', title: 'Overview', group: 'Go to', keywords: ['home', 'dashboard'], keys: 'g h', run: () => navigate('/') },
       ...buildResourceCommands(registry, { navigate, isServed, onCreate: openCreate }),
     ],
     [navigate, isServed, openCreate],
   )
 
+  // g-navigation is derived from the command list: every command with a `keys`
+  // spec (Overview's `g h`, each kind's `g <shortcut>`) registers its binding
+  // from the same source the palette renders, so the two can't drift.
+  useCommandKeyBindings(commands)
   useKeyboardScope({
     level: 'global',
-    bindings: [
-      { keys: 'mod+k', run: () => setPaletteOpen(true) },
-      { keys: 'g h', run: () => navigate('/') },
-    ],
+    bindings: [{ keys: 'mod+k', run: () => setPaletteOpen(true) }],
   })
 
   return (

@@ -63,6 +63,10 @@ export interface ResourceEntryInput<T extends K8sObject = K8sObject> {
    *  Defaults to `[gvr]` — an entry hides when its own resource isn't served.
    *  An explicit empty array opts out of discovery gating (always shown). */
   requires?: GVR[]
+  /** Optional `g`-sequence tail for go-to navigation (e.g. `'p'` → `g p` jumps
+   *  to this kind's list). The palette entry and the keyboard binding both derive
+   *  from this one field, so they can't drift; omit it for no chord. */
+  shortcut?: string
   /** Custom detail renderer; falls back to the generic detail view. */
   detail?: ComponentType<ResourceDetailProps<T>>
 }
@@ -80,6 +84,7 @@ export interface ResourceEntry<T extends K8sObject = K8sObject> {
   readonly yamlEditable: boolean
   readonly schema?: JSONSchema
   readonly requires: GVR[]
+  readonly shortcut?: string
   readonly detail?: ComponentType<ResourceDetailProps<T>>
 }
 

@@ -68,6 +68,7 @@ export const registry = createRegistry([
     servedVersion: 'v1alpha2',
     sidebarGroup: 'Operate',
     icon: proxyIcon,
+    shortcut: 'p',
     yamlEditable: true,
     schema: schemaFor('core.apoxy.dev', 'v1alpha2', 'Proxy'),
     columns: [nameCol, statusCol, createdCol],
@@ -80,6 +81,7 @@ export const registry = createRegistry([
     servedVersion: 'v1alpha2',
     sidebarGroup: 'Operate',
     icon: backendIcon,
+    shortcut: 'b',
     yamlEditable: true,
     schema: schemaFor('core.apoxy.dev', 'v1alpha2', 'Backend'),
     columns: [nameCol, statusCol, createdCol],
@@ -92,6 +94,7 @@ export const registry = createRegistry([
     servedVersion: 'v1alpha2',
     sidebarGroup: 'Operate',
     icon: domainIcon,
+    shortcut: 'd',
     yamlEditable: true,
     // No schema is generated for kind "Domain": the served kind is DomainZone
     // (this entry's kind/resource are an M5 follow-up). The tray falls back to
@@ -107,6 +110,7 @@ export const registry = createRegistry([
     servedVersion: 'v1alpha2',
     sidebarGroup: 'Connect',
     icon: tunnelIcon,
+    shortcut: 't',
     columns: [nameCol, statusCol, createdCol],
   }),
 ])

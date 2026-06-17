@@ -13,6 +13,7 @@ import { Fragment, useEffect, useId, useLayoutEffect, useMemo, useRef, useState,
 import { cn } from '../lib/cn'
 import { useListSelection } from '../keyboard/selection'
 import { useKeyboardScope } from '../keyboard/scope-stack'
+import { formatChord, parseSequence } from '../keyboard/keys'
 import { filterCommands, type Command } from './commands'
 
 export interface CommandPaletteProps {
@@ -272,6 +273,17 @@ export function CommandPalette({
                         </span>
                       )}
                     </span>
+                    {cmd.keys && (
+                      // The command's own key binding, rendered as key tiles — the
+                      // palette entry and the shortcut are one and the same source.
+                      <span aria-hidden="true" className="flex flex-none items-center gap-[3px]">
+                        {parseSequence(cmd.keys).map((chord, ki) => (
+                          <kbd key={ki} className={HINT_KBD}>
+                            {formatChord(chord)}
+                          </kbd>
+                        ))}
+                      </span>
+                    )}
                     <span
                       aria-hidden="true"
                       className={cn('flex-none', active ? 'text-[color:var(--text-muted)]' : 'text-[color:var(--text-disabled)]')}

@@ -11,4 +11,6 @@ export {
   type ScoredCommand,
 } from './commands'
 
+export { useCommandKeyBindings, type UseCommandKeyBindingsOptions } from './command-bindings'
+
 export { CommandPalette, type CommandPaletteProps } from './command-palette'

@@ -64,6 +64,24 @@ describe('buildResourceCommands', () => {
     expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({ kind: 'Proxy' }))
   })
 
+  it('derives a g-sequence binding from a registry shortcut, shared with the palette', () => {
+    const withShortcut = createRegistry([
+      defineResource({
+        kind: 'Proxy', displayName: 'Proxies', group: 'core.apoxy.dev', resource: 'proxies',
+        servedVersion: 'v1alpha2', sidebarGroup: 'Operate', shortcut: 'p', columns: [],
+      }),
+      defineResource({
+        kind: 'Gateway', displayName: 'Gateways', group: 'gateway.networking.k8s.io', resource: 'gateways',
+        servedVersion: 'v1', sidebarGroup: 'Network', columns: [],
+      }),
+    ])
+    const cmds = buildResourceCommands(withShortcut, { navigate: vi.fn() })
+    // The same command object carries the palette entry AND its key binding.
+    expect(cmds.find((c) => c.id === 'nav:proxies')!.keys).toBe('g p')
+    // A kind with no shortcut stays palette-only (no chord).
+    expect(cmds.find((c) => c.id === 'nav:gateways')!.keys).toBeUndefined()
+  })
+
   it('emits no create commands without onCreate', () => {
     const editable = createRegistry([
       defineResource({
