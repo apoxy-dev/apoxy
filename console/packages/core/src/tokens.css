@@ -79,6 +79,32 @@
   --border-default:   var(--apx-fog);
   --border-subtle:    var(--apx-mist);
 
+  /* --- Side rail ---
+     The rail is a dark chrome strip in BOTH themes, so it does NOT follow the
+     ink/paper inversion (which would flip it light in dark mode). It gets its
+     own tokens; the rail's two tints (#3A3735 hairline, #2C2A28 hover) are the
+     design's verbatim rail shades and have no other semantic home. */
+  --rail-bg:          var(--apx-ink);
+  --rail-text:        var(--apx-bone);
+  --rail-text-muted:  var(--apx-fog);
+  --rail-text-dim:    var(--apx-stone);
+  --rail-hairline:    #3A3735;
+  --rail-hover:       #2C2A28;
+
+  /* --- Modal scrims (page backdrops) ---
+     Tokenized so they darken in dark mode: a faint ink wash over near-black
+     surfaces would be invisible, so the modal would lose its separation. */
+  --scrim:            rgba(30, 29, 28, 0.22);   /* ⌘K command palette */
+  --scrim-tray:       rgba(30, 29, 28, 0.40);   /* side tray / dialog */
+
+  /* --- Status badge label colors ---
+     Darker than the accent for contrast on the tinted fill; they flip to light
+     tints in dark mode (the tint backgrounds flip too). */
+  --badge-success-text: #2F5A2D;
+  --badge-warning-text: #74541A;
+  --badge-danger-text:  #8A3A28;
+  --badge-info-text:    #2E72B0;
+
   /* --- Type --- */
   --font-display:     'TWK Everett', 'Inter Display', 'Inter', ui-sans-serif, system-ui, sans-serif;
   --font-body:        'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
@@ -179,4 +205,81 @@
   -moz-osx-font-smoothing: grayscale;
   font-feature-settings: 'cv11', 'ss01';
   text-rendering: optimizeLegibility;
+}
+
+/* ==========================================================================
+   Dark theme — set [data-theme="dark"] on <html>.
+   Apoxy is token-driven, so flipping the palette here re-themes the whole
+   console without touching a single component. Ported from the Apoxy Design
+   System dark set: surfaces and ink invert (warm), accents brighten just
+   enough to read on dark. The rail stays dark in both themes (its tokens go
+   deepest here). Semantic tokens are restated because they're resolved at
+   :root and CSS custom properties don't re-cascade their references.
+   ========================================================================== */
+[data-theme="dark"] {
+  /* Surfaces, light → dark (warm) */
+  --apx-paper:        #161513;
+  --apx-bone:         #1B1A18;
+  --apx-white:        #1F1E1B;
+  --apx-mist:         #242220;
+  --apx-fog:          #2F2D2A;
+  --apx-stone:        #58544F;
+  --apx-slate:        #9A9690;
+  --apx-graphite:     #C5C2BC;
+  --apx-ink:          #ECEAE4;
+  --apx-ink-2:        #ECEAE4;
+
+  /* Accents — brightened just enough to read on dark */
+  --apx-blue:         #5AA8E8;
+  --apx-blue-deep:    #8AC4F0;
+  --apx-blue-tint:    #1A2C42;
+  --apx-coral:        #EA7A60;
+  --apx-coral-tint:   #3A1F18;
+  --apx-leaf:         #7BBF74;
+  --apx-leaf-tint:    #1B2F1A;
+  --apx-amber:        #D9A140;
+  --apx-amber-tint:   #3A2D14;
+
+  /* Re-derive semantic surfaces / text / borders */
+  --surface-canvas:   var(--apx-paper);
+  --surface-card:     var(--apx-white);
+  --surface-inset:    var(--apx-mist);
+  --surface-invert:   #F1EFE9;
+  --text-primary:     var(--apx-ink);
+  --text-secondary:   var(--apx-graphite);
+  --text-muted:       var(--apx-slate);
+  --text-disabled:    var(--apx-stone);
+  --text-on-invert:   #1B1A18;
+  --text-link:        var(--apx-ink);
+  --text-link-hover:  var(--apx-blue);
+  --border-strong:    var(--apx-graphite);
+  --border-default:   var(--apx-fog);
+  --border-subtle:    var(--apx-mist);
+
+  /* Rail goes deepest in dark mode */
+  --rail-bg:          #100F0E;
+  --rail-text:        #F1EFE9;
+  --rail-text-muted:  #C5C2BC;
+  --rail-text-dim:    #8E8A84;
+  --rail-hairline:    #26241F;
+  --rail-hover:       #211F1C;
+
+  /* Scrims go near-opaque over the dark canvas; the tray is the heavier modal
+     so its backdrop stays at least as dark as the palette's. */
+  --scrim:            rgba(0, 0, 0, 0.55);
+  --scrim-tray:       rgba(0, 0, 0, 0.70);
+
+  /* Badge labels flip to light tints so they read on the dark tinted fills */
+  --badge-success-text: #9CC998;
+  --badge-warning-text: #E0BC75;
+  --badge-danger-text:  #F4A48F;
+  --badge-info-text:    #8AC4F0;
+
+  /* Shadows go deeper, since paper-bounce is gone */
+  --sh-1: 0 1px 0 rgba(0,0,0,0.5), 0 1px 2px rgba(0,0,0,0.55);
+  --sh-2: 0 2px 4px rgba(0,0,0,0.45), 0 4px 12px rgba(0,0,0,0.5);
+  --sh-3: 0 4px 8px rgba(0,0,0,0.5), 0 12px 32px rgba(0,0,0,0.55);
+  --sh-4: 0 8px 16px rgba(0,0,0,0.5), 0 24px 64px rgba(0,0,0,0.6);
+
+  color-scheme: dark;
 }

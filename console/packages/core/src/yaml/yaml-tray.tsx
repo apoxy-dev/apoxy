@@ -184,14 +184,14 @@ export function YamlTray({ entry, object, open, onClose, onSaved, editor }: Yaml
     <div
       role="presentation"
       onMouseDown={requestClose}
-      className="fixed inset-0 z-40 flex justify-end bg-[rgba(30,29,28,0.4)]"
+      className="fixed inset-0 z-40 flex justify-end bg-[var(--scrim-tray)]"
     >
       <div
         role="dialog"
         aria-modal="true"
         aria-label={title}
         onMouseDown={(e) => e.stopPropagation()}
-        className="flex h-screen w-full max-w-[640px] flex-col border-l border-[color:var(--border-strong)] bg-[var(--apx-paper)] shadow-[var(--sh-4)]"
+        className="flex h-full w-full max-w-[640px] flex-col border-l border-[color:var(--border-strong)] bg-[var(--apx-paper)] shadow-[var(--sh-4)]"
       >
         <header className="flex flex-none items-center justify-between border-b border-[color:var(--border-default)] bg-[var(--apx-white)] px-[var(--sp-5)] py-[var(--sp-4)]">
           <div className="min-w-0">

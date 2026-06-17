@@ -4,8 +4,12 @@
 // `useListSelection` for ↑/↓/Enter — rather than pulling a palette library, so
 // it stays app-agnostic and unit-testable in jsdom. Arrow/Enter are handled on
 // the input; Escape and a second ⌘K close it via the scope.
+//
+// Styled to the design's `.cmdk-*`: a search row with a leading icon + `esc`
+// hint, grouped results with a glyph tile and a mono sub-line, live match
+// highlighting, and a footer of keyboard hints.
 
-import { useEffect, useId, useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { cn } from '../lib/cn'
 import { useListSelection } from '../keyboard/selection'
 import { useKeyboardScope } from '../keyboard/scope-stack'
@@ -18,7 +22,69 @@ export interface CommandPaletteProps {
   placeholder?: string
   /** Accessible label for the dialog. */
   label?: string
+  /** Optional brand text shown in the footer (the app supplies it; core stays
+   *  app-agnostic, so nothing renders when unset). */
+  brand?: string
 }
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/** A compiled, case-insensitive matcher for the current query. */
+interface Matcher {
+  set: Set<string>
+  re: RegExp
+}
+
+/** Build the matcher once per query. Tokens are ordered longest-first so a token
+ *  that prefixes another (`g` vs `gw`) doesn't win the alternation and truncate
+ *  the longer match. A global regex is safe to reuse across `String.split`,
+ *  which ignores `lastIndex`. */
+function buildMatcher(query: string): Matcher | null {
+  const tokens = query.trim().toLowerCase().split(/\s+/).filter(Boolean)
+  if (!tokens.length) return null
+  const ordered = tokens.slice().sort((a, b) => b.length - a.length)
+  return { set: new Set(tokens), re: new RegExp(`(${ordered.map(escapeRegExp).join('|')})`, 'ig') }
+}
+
+/** Wrap each query token where it appears in `text`, preserving the original. */
+function highlight(text: string, matcher: Matcher | null): ReactNode {
+  if (!matcher) return text
+  // `split` with a capture group keeps the delimiters (original case); a part is
+  // a match when its lowercase form is one of the tokens.
+  return text.split(matcher.re).map((part, i) =>
+    part && matcher.set.has(part.toLowerCase()) ? (
+      <mark key={i} className="rounded-none bg-[var(--apx-blue-tint)] px-[1px] text-[color:var(--apx-blue-deep)]">
+        {part}
+      </mark>
+    ) : (
+      <Fragment key={i}>{part}</Fragment>
+    ),
+  )
+}
+
+const SearchIcon = (
+  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" aria-hidden="true">
+    <circle cx="7" cy="7" r="4.5" />
+    <path d="M10.5 10.5L14 14" strokeLinecap="round" />
+  </svg>
+)
+
+const FallbackGlyph = (
+  <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
+    <rect x="2.5" y="2.5" width="11" height="11" />
+  </svg>
+)
+
+const GoIcon = (
+  <svg viewBox="0 0 12 12" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
+    <path d="M3 6h6M6.5 3.5 9 6l-2.5 2.5" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+)
+
+const HINT_KBD =
+  'inline-flex min-w-[16px] items-center justify-center rounded-none border border-[color:var(--border-default)] bg-[var(--apx-paper)] px-[4px] py-[1px] font-mono text-[length:var(--t-overline)] text-[color:var(--text-muted)]'
 
 export function CommandPalette({
   open,
@@ -26,12 +92,15 @@ export function CommandPalette({
   commands,
   placeholder = 'Search resources and actions…',
   label = 'Command palette',
+  brand,
 }: CommandPaletteProps) {
   const [query, setQuery] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
+  const opener = useRef<HTMLElement | null>(null)
   const listId = useId()
 
   const results = useMemo(() => filterCommands(commands, query), [commands, query])
+  const matcher = useMemo(() => buildMatcher(query), [query])
 
   const selection = useListSelection({
     count: results.length,
@@ -47,16 +116,21 @@ export function CommandPalette({
   })
   const { index, setIndex } = selection
 
-  // Reset query + cursor and focus the field each time the palette opens. The
-  // cursor reset here is safe (on open the full list shows, so the count is not
-  // stale); the per-query reset below handles the stale-count edge case.
-  useEffect(() => {
-    if (open) {
-      setQuery('')
-      setIndex(0)
-      // Focus after paint so the input exists and the browser doesn't scroll-jump.
-      const id = requestAnimationFrame(() => inputRef.current?.focus())
-      return () => cancelAnimationFrame(id)
+  // On open: capture the opener for focus restore, then reset query + cursor.
+  // A layout effect (pre-paint) clears the prior query so reopening never
+  // flashes the last search for a frame. On close, the cleanup returns focus to
+  // whatever opened the palette (the ⌘K trigger) so keyboard focus isn't
+  // stranded on <body>. The per-query reset below handles the stale-count edge.
+  useLayoutEffect(() => {
+    if (!open) return
+    opener.current = (document.activeElement as HTMLElement) ?? null
+    setQuery('')
+    setIndex(0)
+    // Focus after paint so the input exists and the browser doesn't scroll-jump.
+    const id = requestAnimationFrame(() => inputRef.current?.focus())
+    return () => {
+      cancelAnimationFrame(id)
+      opener.current?.focus?.()
     }
   }, [open, setIndex])
 
@@ -87,6 +161,13 @@ export function CommandPalette({
     ],
   })
 
+  // Per-group totals for the header counts (only shown in the grouped view).
+  const groupCounts = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const cmd of results) if (cmd.group) counts.set(cmd.group, (counts.get(cmd.group) ?? 0) + 1)
+    return counts
+  }, [results])
+
   if (!open) return null
 
   const grouped = query.trim() === ''
@@ -98,33 +179,45 @@ export function CommandPalette({
     <div
       role="presentation"
       onMouseDown={onClose}
-      className="fixed inset-0 z-50 flex items-start justify-center bg-[rgba(30,29,28,0.4)] px-[var(--sp-4)] pt-[12vh]"
+      className="fixed inset-0 z-50 flex items-start justify-center bg-[var(--scrim)] px-[var(--sp-6)] pt-[11vh]"
     >
       <div
         role="dialog"
         aria-modal="true"
         aria-label={label}
         onMouseDown={(e) => e.stopPropagation()}
-        className="flex max-h-[68vh] w-full max-w-[560px] flex-col overflow-hidden border border-[color:var(--border-strong)] bg-[var(--apx-white)] shadow-[var(--sh-4)]"
+        className="flex max-h-[min(64vh,560px)] w-[min(640px,94vw)] flex-col overflow-hidden border border-[color:var(--apx-ink)] bg-[var(--surface-card)] shadow-[var(--sh-4)]"
       >
-        <input
-          ref={inputRef}
-          type="text"
-          role="combobox"
-          aria-expanded="true"
-          aria-controls={listId}
-          aria-autocomplete="list"
-          aria-activedescendant={index >= 0 ? `${listId}-opt-${index}` : undefined}
-          value={query}
-          placeholder={placeholder}
-          onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={selection.onKeyDown}
-          className="w-full flex-none border-0 border-b border-[color:var(--border-default)] bg-transparent px-[var(--sp-5)] py-[var(--sp-4)] text-[length:var(--t-body)] text-[color:var(--text-primary)] outline-none placeholder:text-[color:var(--text-muted)]"
-        />
+        <div className="flex flex-none items-center gap-[11px] border-b border-[color:var(--border-default)] px-[var(--sp-4)] py-[14px]">
+          <span aria-hidden="true" className="flex flex-none text-[color:var(--text-muted)]">
+            {SearchIcon}
+          </span>
+          <input
+            ref={inputRef}
+            type="text"
+            role="combobox"
+            aria-expanded="true"
+            aria-controls={listId}
+            aria-autocomplete="list"
+            // Guard against the post-narrow render where `index` can briefly
+            // exceed the new result count before the query-reset effect runs.
+            aria-activedescendant={index >= 0 && index < results.length ? `${listId}-opt-${index}` : undefined}
+            value={query}
+            placeholder={placeholder}
+            spellCheck={false}
+            autoComplete="off"
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={selection.onKeyDown}
+            className="min-w-0 flex-1 border-0 bg-transparent text-[length:var(--t-body)] text-[color:var(--text-primary)] outline-none placeholder:text-[color:var(--text-disabled)]"
+          />
+          <kbd className="flex-none rounded-none border border-[color:var(--border-default)] bg-[var(--apx-paper)] px-[7px] py-[2px] font-mono text-[length:var(--t-overline)] text-[color:var(--text-muted)]">
+            esc
+          </kbd>
+        </div>
 
-        <ul id={listId} role="listbox" aria-label={label} className="min-h-0 flex-1 overflow-y-auto py-[var(--sp-1)]">
+        <ul id={listId} role="listbox" aria-label={label} className="min-h-0 flex-1 overflow-y-auto p-[6px]">
           {results.length === 0 ? (
-            <li className="px-[var(--sp-5)] py-[var(--sp-6)] text-center text-[length:var(--t-body-sm)] text-[color:var(--text-muted)]">
+            <li className="px-[10px] py-[var(--sp-6)] text-center text-[length:var(--t-body-sm)] text-[color:var(--text-muted)]">
               No matches
             </li>
           ) : (
@@ -135,13 +228,18 @@ export function CommandPalette({
               return (
                 <li key={cmd.id} role="presentation">
                   {header && (
-                    <div className="px-[var(--sp-5)] pb-[var(--sp-1)] pt-[var(--sp-3)] text-[length:var(--t-overline)] uppercase tracking-[0.12em] text-[color:var(--text-muted)]">
-                      {header}
+                    <div className="flex items-center justify-between px-[10px] pb-[5px] pt-[12px] font-mono text-[length:var(--t-overline)] font-medium uppercase tracking-[0.12em] text-[color:var(--text-muted)]">
+                      <span>{header}</span>
+                      <span className="text-[color:var(--text-disabled)]">{groupCounts.get(header)}</span>
                     </div>
                   )}
                   <div
                     id={`${listId}-opt-${i}`}
                     role="option"
+                    // Pin the name: the match-highlight splits the visible label
+                    // into <mark> spans, which would otherwise make the computed
+                    // name read "Gate ways". Keep the subtitle in the name.
+                    aria-label={cmd.subtitle ? `${cmd.title}, ${cmd.subtitle}` : cmd.title}
                     aria-selected={active}
                     onMouseMove={() => setIndex(i)}
                     onClick={() => {
@@ -149,27 +247,62 @@ export function CommandPalette({
                       cmd.run()
                     }}
                     className={cn(
-                      'flex cursor-pointer items-center gap-[var(--sp-3)] px-[var(--sp-5)] py-[var(--sp-3)] text-[length:var(--t-body-sm)]',
-                      active ? 'bg-[var(--apx-mist)] text-[color:var(--text-primary)]' : 'text-[color:var(--text-secondary)]',
+                      'flex cursor-pointer items-center gap-[12px] rounded-none border px-[10px] py-[var(--sp-2)]',
+                      active ? 'border-[color:var(--border-default)] bg-[var(--apx-bone)]' : 'border-transparent',
                     )}
                   >
-                    {cmd.icon && (
-                      <span aria-hidden="true" className="flex h-4 w-4 flex-none items-center justify-center text-[color:var(--text-muted)]">
-                        {cmd.icon}
+                    <span
+                      aria-hidden="true"
+                      className={cn(
+                        'flex h-[30px] w-[30px] flex-none items-center justify-center border bg-[var(--surface-card)]',
+                        active
+                          ? 'border-[color:var(--apx-ink)] text-[color:var(--text-primary)]'
+                          : 'border-[color:var(--border-default)] text-[color:var(--text-muted)]',
+                      )}
+                    >
+                      {cmd.icon ?? FallbackGlyph}
+                    </span>
+                    <span className="flex min-w-0 flex-1 flex-col gap-[1px]">
+                      <span className="truncate text-[length:var(--t-body-sm)] font-medium text-[color:var(--text-primary)]">
+                        {highlight(cmd.title, matcher)}
                       </span>
-                    )}
-                    <span className="min-w-0 flex-1 truncate font-medium">{cmd.title}</span>
-                    {cmd.subtitle && (
-                      <span className="flex-none truncate font-mono text-[length:var(--t-overline)] text-[color:var(--text-muted)]">
-                        {cmd.subtitle}
-                      </span>
-                    )}
+                      {cmd.subtitle && (
+                        <span className="truncate font-mono text-[length:var(--t-micro)] text-[color:var(--text-muted)]">
+                          {cmd.subtitle}
+                        </span>
+                      )}
+                    </span>
+                    <span
+                      aria-hidden="true"
+                      className={cn('flex-none', active ? 'text-[color:var(--text-muted)]' : 'text-[color:var(--text-disabled)]')}
+                    >
+                      {GoIcon}
+                    </span>
                   </div>
                 </li>
               )
             })
           )}
         </ul>
+
+        <div className="flex flex-none items-center justify-between border-t border-[color:var(--border-default)] bg-[var(--apx-paper)] px-[var(--sp-4)] py-[var(--sp-2)] text-[length:var(--t-overline)] text-[color:var(--text-muted)]">
+          <div className="flex items-center gap-[var(--sp-4)]">
+            <span className="flex items-center gap-[5px]">
+              <kbd className={HINT_KBD}>↑</kbd>
+              <kbd className={HINT_KBD}>↓</kbd>
+              Navigate
+            </span>
+            <span className="flex items-center gap-[5px]">
+              <kbd className={HINT_KBD}>↵</kbd>
+              Open
+            </span>
+            <span className="flex items-center gap-[5px]">
+              <kbd className={HINT_KBD}>esc</kbd>
+              Close
+            </span>
+          </div>
+          {brand && <span className="font-mono uppercase tracking-[0.14em] text-[color:var(--text-disabled)]">{brand}</span>}
+        </div>
       </div>
     </div>
   )

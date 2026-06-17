@@ -4,9 +4,10 @@
 // that become hairline dividers when collapsed. Brand / org-switcher / me slots
 // are passed in (the app makes them collapse-aware) so the rail is app-agnostic.
 //
-// The two dark-rail shades (#3A3735 hairline, #2C2A28 hover/active) are the
-// design's own rail tints — verbatim from the CLRK app.css — and have no
-// semantic token, so they're inlined as arbitrary values.
+// Colors come from the dedicated `--rail-*` tokens (see tokens.css): the rail is
+// a dark chrome strip in BOTH light and dark themes, so it can't reuse
+// --apx-ink/--apx-bone (which invert in dark mode). The tokens carry the
+// design's verbatim rail tints (hairline, hover) too.
 
 import type { ReactNode } from 'react'
 import { cn } from '../../lib/cn'
@@ -51,13 +52,13 @@ export function Sidebar({
   return (
     <aside
       className={cn(
-        'sticky top-0 flex h-screen flex-col gap-[18px] bg-[var(--apx-ink)] py-[var(--sp-6)] text-[color:var(--apx-bone)] transition-[width,padding] duration-200',
+        'flex h-full flex-col gap-[18px] bg-[var(--rail-bg)] py-[var(--sp-6)] text-[color:var(--rail-text)] transition-[width,padding] duration-200',
         collapsed ? 'w-[68px] px-[var(--sp-2)]' : 'w-[240px] px-[var(--sp-4)]',
       )}
     >
       <div
         className={cn(
-          'flex items-baseline border-b border-[#3A3735] pb-[var(--sp-4)] pt-[4px]',
+          'flex items-baseline border-b border-[color:var(--rail-hairline)] pb-[var(--sp-4)] pt-[4px]',
           collapsed ? 'justify-center gap-0 px-0' : 'gap-[6px] px-[var(--sp-2)]',
         )}
       >
@@ -70,7 +71,7 @@ export function Sidebar({
             aria-expanded={!collapsed}
             title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
             className={cn(
-              'inline-flex h-7 w-7 flex-none items-center justify-center self-center rounded-none bg-transparent text-[color:var(--apx-fog)] transition-colors hover:bg-[#2C2A28] hover:text-[color:var(--apx-bone)]',
+              'inline-flex h-7 w-7 flex-none items-center justify-center self-center rounded-none bg-transparent text-[color:var(--rail-text-muted)] transition-colors hover:bg-[color:var(--rail-hover)] hover:text-[color:var(--rail-text)]',
               !collapsed && 'ml-auto',
             )}
           >
@@ -87,10 +88,10 @@ export function Sidebar({
             {collapsed ? (
               // A hairline between groups when icon-only — but not above the first.
               groupIndex > 0 ? (
-                <div aria-hidden="true" className="mx-[8px] my-[7px] border-t border-[#3A3735]" />
+                <div aria-hidden="true" className="mx-[8px] my-[7px] border-t border-[color:var(--rail-hairline)]" />
               ) : null
             ) : (
-              <div className="px-[10px] pb-[6px] pt-[14px] text-[length:var(--t-micro)] uppercase tracking-[0.16em] text-[color:var(--apx-stone)]">
+              <div className="px-[10px] pb-[6px] pt-[14px] text-[length:var(--t-micro)] uppercase tracking-[0.16em] text-[color:var(--rail-text-dim)]">
                 {group.name}
               </div>
             )}
@@ -105,9 +106,9 @@ export function Sidebar({
                   title={collapsed ? item.label : undefined}
                   className={cn(
                     'flex items-center gap-[10px] rounded-none py-[8px] text-[length:var(--t-body-sm)] font-medium no-underline transition-colors',
-                    'hover:bg-[#2C2A28] hover:text-[color:var(--apx-bone)]',
+                    'hover:bg-[color:var(--rail-hover)] hover:text-[color:var(--rail-text)]',
                     collapsed ? 'justify-center px-0 py-[9px]' : 'px-[10px]',
-                    active ? 'bg-[#2C2A28] text-[color:var(--apx-bone)]' : 'text-[color:var(--apx-fog)]',
+                    active ? 'bg-[color:var(--rail-hover)] text-[color:var(--rail-text)]' : 'text-[color:var(--rail-text-muted)]',
                   )}
                 >
                   {item.icon && (
@@ -123,7 +124,7 @@ export function Sidebar({
         ))}
       </nav>
 
-      {footer && <div className="mt-auto border-t border-[#3A3735] pt-[14px]">{footer}</div>}
+      {footer && <div className="mt-auto border-t border-[color:var(--rail-hairline)] pt-[14px]">{footer}</div>}
     </aside>
   )
 }

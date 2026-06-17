@@ -4,13 +4,15 @@ import { cn } from '../../lib/cn'
 export type BadgeVariant = 'success' | 'warning' | 'danger' | 'info' | 'neutral'
 
 // Square status pills from the mockup: tinted fill, matching hairline border, a
-// small square status dot. The darker text tints (#2F5A2D / #74541A / #8A3A28)
-// are the mockup's own per-status label colors — inlined, as they have no token.
+// small square status dot. The four status label colors come from --badge-*-text
+// tokens (darker than the accent for contrast on the tint); neutral uses the
+// shared --text-secondary. All are tokenized, not inlined, so every variant
+// flips in dark mode along with its fill.
 const styles: Record<BadgeVariant, { wrap: string; dot: string }> = {
-  success: { wrap: 'bg-[var(--apx-leaf-tint)] border-[color:var(--apx-leaf)] text-[#2F5A2D]', dot: 'bg-[var(--apx-leaf)]' },
-  warning: { wrap: 'bg-[var(--apx-amber-tint)] border-[color:var(--apx-amber)] text-[#74541A]', dot: 'bg-[var(--apx-amber)]' },
-  danger: { wrap: 'bg-[var(--apx-coral-tint)] border-[color:var(--apx-coral)] text-[#8A3A28]', dot: 'bg-[var(--apx-coral)]' },
-  info: { wrap: 'bg-[var(--apx-blue-tint)] border-[color:var(--apx-blue)] text-[color:var(--apx-blue-deep)]', dot: 'bg-[var(--apx-blue)]' },
+  success: { wrap: 'bg-[var(--apx-leaf-tint)] border-[color:var(--apx-leaf)] text-[color:var(--badge-success-text)]', dot: 'bg-[var(--apx-leaf)]' },
+  warning: { wrap: 'bg-[var(--apx-amber-tint)] border-[color:var(--apx-amber)] text-[color:var(--badge-warning-text)]', dot: 'bg-[var(--apx-amber)]' },
+  danger: { wrap: 'bg-[var(--apx-coral-tint)] border-[color:var(--apx-coral)] text-[color:var(--badge-danger-text)]', dot: 'bg-[var(--apx-coral)]' },
+  info: { wrap: 'bg-[var(--apx-blue-tint)] border-[color:var(--apx-blue)] text-[color:var(--badge-info-text)]', dot: 'bg-[var(--apx-blue)]' },
   neutral: { wrap: 'bg-[var(--apx-mist)] border-[color:var(--border-default)] text-[color:var(--text-secondary)]', dot: 'bg-[var(--apx-graphite)]' },
 }
 
