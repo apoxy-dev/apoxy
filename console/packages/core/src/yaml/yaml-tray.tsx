@@ -256,7 +256,7 @@ export function YamlTray({ entry, object, open, onClose, onSaved, editor }: Yaml
             </Banner>
           )}
 
-          <Editor value={text} onChange={setText} ariaLabel={`${entry.kind} YAML`} />
+          <Editor value={text} onChange={setText} schema={entry.schema} ariaLabel={`${entry.kind} YAML`} />
 
           <div className="max-h-[28%] flex-none overflow-auto">
             {problems.length === 0 ? (

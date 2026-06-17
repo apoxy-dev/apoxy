@@ -38,6 +38,9 @@ importers:
       '@carbon/icons-react':
         specifier: ^11.48.0
         version: 11.82.0(react@19.2.7)
+      '@codemirror/autocomplete':
+        specifier: ^6.18.0
+        version: 6.20.3
       '@codemirror/commands':
         specifier: ^6.7.0
         version: 6.10.3

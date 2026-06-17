@@ -8,12 +8,16 @@
 
 import { createContext, useContext, useLayoutEffect, useMemo, useRef, type ComponentType, type ReactNode } from 'react'
 import { cn } from '../lib/cn'
+import type { JSONSchema } from './validate'
 
 export interface TrayEditorProps {
   value: string
   onChange: (value: string) => void
   readOnly?: boolean
   ariaLabel?: string
+  /** The focused kind's JSON Schema, for editors that offer schema-aware
+   *  completion (the CodeMirror editor). The textarea fallback ignores it. */
+  schema?: JSONSchema
 }
 
 /** The contract any tray editor implements; the production CodeMirror swap fits here. */
