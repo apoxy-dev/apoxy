@@ -11,25 +11,25 @@
    `body { zoom: 0.9 }`) so the rail, top bar, and page read at the intended
    scale rather than ~11% oversized.
 
-   The design zooms `body` and sizes the shell in `100vh`, but that combination
-   is not portable: Chrome resolves `vh` against the *un-zoomed* viewport, so a
-   0.9-zoomed `100vh` box covers only ~90% of the screen (a gap on the right and
-   bottom), while Safari compensates and fills. So we zoom a viewport-locked
-   root instead and size it in percentages (resolved against the parent — never
-   `vh`), which both engines agree on:
+   The design zooms `body` and sizes the shell in `100vh`, which isn't portable
+   (Chrome resolves `vh` against the *un-zoomed* viewport, leaving a gap), so we
+   zoom a viewport-locked root and size it in percentages instead:
 
-   - `position: fixed` pins #root to the viewport box (its containing block is
-     the initial containing block, unaffected by the zoom/vh ambiguity).
-   - `width/height: calc(100% / 0.9)` makes the layout box 111% of the viewport;
-     `zoom: 0.9` then scales it back to exactly 100% in both dimensions.
+   - `position: fixed` + `inset: 0` pins #root to the viewport box.
+   - `zoom: 0.9` scales the subtree to 90%. Under the current, spec-compliant
+     CSS `zoom` (Chrome, Safari, Firefox), percentage lengths and the fixed
+     containing block already resolve in the *zoomed* coordinate space — so
+     `width/height: 100%` is 1/0.9 of the viewport pre-scale and lands at exactly
+     100% after the 0.9 scale. (An earlier `calc(100% / 0.9)` here predated that
+     model and double-compensated, overflowing the viewport by ~11% — the work
+     area's right edge and bottom were clipped under `overflow: hidden`.)
    - The app fills #root with `h-full`/flex and scrolls internally (the work
      area), so the document itself never scrolls and no `vh` is needed. */
 #root {
   position: fixed;
-  top: 0;
-  left: 0;
-  width: calc(100% / 0.9);
-  height: calc(100% / 0.9);
+  inset: 0;
+  width: 100%;
+  height: 100%;
   overflow: hidden;
   zoom: 0.9;
 }
