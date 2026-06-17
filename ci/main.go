@@ -906,9 +906,9 @@ if ! cmp -s /src/console/openapi.json /tmp/fresh-openapi.json; then
   diff /src/console/openapi.json /tmp/fresh-openapi.json | head -40 || true
   exit 1
 fi
-cp /src/console/packages/core/src/schema/schema.d.ts /tmp/schema.committed.d.ts
+cp /src/console/apps/apoxy-console/src/schema/schema.d.ts /tmp/schema.committed.d.ts
 pnpm -C /src/console codegen
-if ! cmp -s /src/console/packages/core/src/schema/schema.d.ts /tmp/schema.committed.d.ts; then
+if ! cmp -s /src/console/apps/apoxy-console/src/schema/schema.d.ts /tmp/schema.committed.d.ts; then
   echo "::error::console schema.d.ts is stale. Regenerate: pnpm -C console codegen"
   exit 1
 fi
