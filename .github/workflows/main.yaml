@@ -41,7 +41,7 @@ jobs:
         env:
           APOXY_INTERNAL_GAR_CREDENTIALS: ${{ secrets.APOXY_INTERNAL_GAR_CREDENTIALS }}
           SHUTUP: 1
-        timeout-minutes: 5
+        timeout-minutes: 20
         run: |
           dagger call -v publish-edge-runtime-multiarch --sha=${GITHUB_SHA::7} --gcr-creds=env:APOXY_INTERNAL_GAR_CREDENTIALS
 
