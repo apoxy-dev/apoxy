@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -25,14 +26,48 @@ type ProxyServer struct {
 	proxyCtx       context.Context
 	proxyCtxCancel context.CancelFunc
 	activeConns    int64 // atomic counter for active connections
+	cfg            *config
+
+	// conns tracks in-flight downstream connections so Close can reap any that
+	// are still wedged at shutdown. Closing the downstream end unwinds
+	// go-socks5's handleConnect, which closes the matching upstream end via its
+	// deferred Close.
+	mu      sync.Mutex
+	conns   map[*downstreamConnWrapper]struct{}
+	closing bool // set under mu once Close has snapshotted conns
+}
+
+// trackConn registers an in-flight connection for shutdown reaping. It returns
+// false if the server is already closing, in which case the caller must close
+// the connection itself — this closes the race where a connection accepted
+// after Close's snapshot would otherwise be tracked but never reaped.
+func (s *ProxyServer) trackConn(c *downstreamConnWrapper) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closing {
+		return false
+	}
+	s.conns[c] = struct{}{}
+	return true
+}
+
+func (s *ProxyServer) untrackConn(c *downstreamConnWrapper) {
+	s.mu.Lock()
+	delete(s.conns, c)
+	s.mu.Unlock()
 }
 
 // NewServer creates a new SOCKS5 proxy server.
 // Requests to private addresses (excluding loopback) will be forwarded to the upstream network.
 // Requests to public addresses will be forwarded to the fallback network.
-func NewServer(addr string, upstream network.Network, fallback network.Network) *ProxyServer {
+func NewServer(addr string, upstream network.Network, fallback network.Network, opts ...Option) *ProxyServer {
+	cfg := defaultConfig()
+	for _, opt := range opts {
+		opt(cfg)
+	}
+
 	options := []socks5.Option{
-		socks5.WithDialAndRequest((&dialer{upstream: upstream, fallback: fallback}).DialContext),
+		socks5.WithDialAndRequest((&dialer{upstream: upstream, fallback: fallback, cfg: cfg}).DialContext),
 		socks5.WithResolver(&resolver{net: upstream}),
 		socks5.WithBufferPool(bufferpool.NewPool(256 * 1024)),
 		socks5.WithLogger(&logger{}),
@@ -48,13 +83,37 @@ func NewServer(addr string, upstream network.Network, fallback network.Network) 
 		server:         socks5.NewServer(options...),
 		proxyCtx:       proxyCtx,
 		proxyCtxCancel: proxyCtxCancel,
+		cfg:            cfg,
+		conns:          make(map[*downstreamConnWrapper]struct{}),
 	}
 }
 
 func (s *ProxyServer) Close() error {
 	s.proxyCtxCancel()
+
+	// Reap any in-flight connections. Closing the downstream end makes
+	// go-socks5's blocked io.CopyBuffer return, which unwinds handleConnect
+	// (closing the upstream end via its deferred Close) and lets both proxy
+	// goroutines exit. Mark closing and snapshot under the lock, then close
+	// outside it so each wrapper's own Close (which deregisters) doesn't
+	// deadlock on s.mu. Setting closing under the same lock makes trackConn
+	// reject any connection accepted after this snapshot, so none can slip
+	// through tracked-but-unreaped.
+	s.mu.Lock()
+	s.closing = true
+	pending := make([]*downstreamConnWrapper, 0, len(s.conns))
+	for c := range s.conns {
+		pending = append(pending, c)
+	}
+	s.mu.Unlock()
+
+	for _, c := range pending {
+		_ = c.Close()
+	}
+
 	slog.Info("SOCKS proxy server closing",
 		slog.String("addr", s.Addr),
+		slog.Int("reaped_connections", len(pending)),
 		slog.Int64("active_connections", atomic.LoadInt64(&s.activeConns)))
 	return nil
 }
@@ -69,8 +128,8 @@ func (s *ProxyServer) ListenAndServe(ctx context.Context) error {
 
 	// Wrap the listener to track connections
 	trackedListener := &connTrackingListener{
-		Listener:    lis,
-		activeConns: &s.activeConns,
+		Listener: lis,
+		srv:      s,
 	}
 
 	go func() {
@@ -95,7 +154,7 @@ func (s *ProxyServer) ListenAndServe(ctx context.Context) error {
 // connTrackingListener wraps a net.Listener to track downstream connection metrics.
 type connTrackingListener struct {
 	net.Listener
-	activeConns *int64
+	srv *ProxyServer
 }
 
 func (l *connTrackingListener) Accept() (net.Conn, error) {
@@ -104,22 +163,37 @@ func (l *connTrackingListener) Accept() (net.Conn, error) {
 		return nil, err
 	}
 
+	s := l.srv
 	SocksConnectionRequests.Inc()
-	atomic.AddInt64(l.activeConns, 1)
+	atomic.AddInt64(&s.activeConns, 1)
 	SocksConnectionsActive.Inc()
 
-	// Log connection at info level
+	// Detect a dead/half-open downstream peer (unanswered keepalive probes) so a
+	// wedged copy eventually errors instead of pinning the connection forever.
+	applyKeepAlive(conn, s.cfg.keepAlive, s.cfg.keepAlivePeriod)
+
+	now := time.Now()
 	remoteAddr := conn.RemoteAddr().String()
 	slog.Info("SOCKS connection accepted",
 		slog.String("remote_addr", remoteAddr),
-		slog.Int64("active_connections", atomic.LoadInt64(l.activeConns)))
+		slog.Int64("active_connections", atomic.LoadInt64(&s.activeConns)))
 
-	return &downstreamConnWrapper{
+	wrapped := &downstreamConnWrapper{
 		Conn:        conn,
-		activeConns: l.activeConns,
-		startTime:   time.Now(),
+		activeConns: &s.activeConns,
+		startTime:   now,
 		remoteAddr:  remoteAddr,
-	}, nil
+		guard:       newDeadlineGuard(s.cfg, now),
+	}
+	wrapped.onClose = func() { s.untrackConn(wrapped) }
+	if !s.trackConn(wrapped) {
+		// Server is shutting down; refuse the late connection and stop serving.
+		// wrapped.Close balances the metric counters incremented above.
+		_ = wrapped.Close()
+		return nil, net.ErrClosed
+	}
+
+	return wrapped, nil
 }
 
 // downstreamConnWrapper wraps a net.Conn to track metrics for incoming SOCKS connections.
@@ -131,42 +205,53 @@ type downstreamConnWrapper struct {
 	bytesRead    int64
 	bytesWritten int64
 	destType     string // Set by dialer
-	closedOnce   bool
+	guard        *deadlineGuard
+	onClose      func()
+	closeOnce    sync.Once
+	closeErr     error
 }
 
 func (c *downstreamConnWrapper) Read(b []byte) (int, error) {
+	c.guard.touch(c.Conn)
 	n, err := c.Conn.Read(b)
 	atomic.AddInt64(&c.bytesRead, int64(n))
 	return n, err
 }
 
 func (c *downstreamConnWrapper) Write(b []byte) (int, error) {
+	c.guard.touch(c.Conn)
 	n, err := c.Conn.Write(b)
 	atomic.AddInt64(&c.bytesWritten, int64(n))
 	return n, err
 }
 
 func (c *downstreamConnWrapper) Close() error {
-	if c.closedOnce {
-		return nil
-	}
-	c.closedOnce = true
+	// Close is invoked both by go-socks5's ServeConn defer and by the server's
+	// shutdown reaper, so it must be idempotent and concurrency-safe.
+	c.closeOnce.Do(func() {
+		duration := time.Since(c.startTime).Seconds()
+		atomic.AddInt64(c.activeConns, -1)
+		SocksConnectionsActive.Dec()
 
-	duration := time.Since(c.startTime).Seconds()
-	atomic.AddInt64(c.activeConns, -1)
-	SocksConnectionsActive.Dec()
+		if c.onClose != nil {
+			c.onClose()
+		}
 
-	// Note: Data transfer metrics are handled by dialedConn now
+		// Note: Data transfer metrics are handled by dialedConn now
 
-	// Log connection closure at info level
-	slog.Info("SOCKS connection closed",
-		slog.Float64("duration_seconds", duration),
-		slog.Int64("bytes_read", c.bytesRead),
-		slog.Int64("bytes_written", c.bytesWritten),
-		slog.String("destination_type", c.destType),
-		slog.Int64("active_connections", atomic.LoadInt64(c.activeConns)))
+		// Log connection closure at info level. Load the byte counters
+		// atomically: the shutdown reaper can call Close while a Proxy
+		// goroutine is still writing them via atomic.AddInt64.
+		slog.Info("SOCKS connection closed",
+			slog.Float64("duration_seconds", duration),
+			slog.Int64("bytes_read", atomic.LoadInt64(&c.bytesRead)),
+			slog.Int64("bytes_written", atomic.LoadInt64(&c.bytesWritten)),
+			slog.String("destination_type", c.destType),
+			slog.Int64("active_connections", atomic.LoadInt64(c.activeConns)))
 
-	return c.Conn.Close()
+		c.closeErr = c.Conn.Close()
+	})
+	return c.closeErr
 }
 
 // upstreamConnWrapper wraps a net.Conn to track metrics for outgoing dialed connections.
@@ -177,9 +262,11 @@ type upstreamConnWrapper struct {
 	bytesRead    int64
 	bytesWritten int64
 	startTime    time.Time
+	guard        *deadlineGuard
 }
 
 func (c *upstreamConnWrapper) Read(b []byte) (int, error) {
+	c.guard.touch(c.Conn)
 	n, err := c.Conn.Read(b)
 	if n > 0 {
 		atomic.AddInt64(&c.bytesRead, int64(n))
@@ -189,6 +276,7 @@ func (c *upstreamConnWrapper) Read(b []byte) (int, error) {
 }
 
 func (c *upstreamConnWrapper) Write(b []byte) (int, error) {
+	c.guard.touch(c.Conn)
 	n, err := c.Conn.Write(b)
 	if n > 0 {
 		atomic.AddInt64(&c.bytesWritten, int64(n))
@@ -205,10 +293,12 @@ func (c *upstreamConnWrapper) Close() error {
 	duration := time.Since(c.startTime).Seconds()
 	SocksConnectionDuration.WithLabelValues(c.destType).Observe(duration)
 
+	// Load atomically: handleConnect's deferred target.Close can run while the
+	// sibling Proxy goroutine is still reading this upstream conn.
 	c.logger.Debug("Dialed connection closed",
 		slog.String("destination_type", c.destType),
-		slog.Int64("bytes_read", c.bytesRead),
-		slog.Int64("bytes_written", c.bytesWritten),
+		slog.Int64("bytes_read", atomic.LoadInt64(&c.bytesRead)),
+		slog.Int64("bytes_written", atomic.LoadInt64(&c.bytesWritten)),
 		slog.Float64("duration_s", duration))
 
 	return c.Conn.Close()
@@ -217,6 +307,7 @@ func (c *upstreamConnWrapper) Close() error {
 type dialer struct {
 	upstream network.Network
 	fallback network.Network
+	cfg      *config
 }
 
 func (d *dialer) DialContext(ctx context.Context, network, address string, req *socks5.Request) (net.Conn, error) {
@@ -324,11 +415,15 @@ func (d *dialer) DialContext(ctx context.Context, network, address string, req *
 
 	SocksCommands.WithLabelValues(cmdType, "success").Inc()
 
+	// Detect a dead/half-open upstream peer so a wedged copy eventually errors.
+	applyKeepAlive(conn, d.cfg.keepAlive, d.cfg.keepAlivePeriod)
+
 	return &upstreamConnWrapper{
 		Conn:      conn,
 		logger:    logger,
 		destType:  destType,
 		startTime: dialStart,
+		guard:     newDeadlineGuard(d.cfg, dialStart),
 	}, nil
 }
 
