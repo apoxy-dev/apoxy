@@ -119,6 +119,44 @@ const editorTheme = EditorView.theme({
   },
   '.cm-lineNumbers .cm-gutterElement': { padding: '0 var(--sp-2) 0 var(--sp-3)' },
   '.cm-matchingBracket': { backgroundColor: 'var(--apx-blue-tint)', outline: 'none' },
+  // Completion dropdown: dress CodeMirror's default (a stock bright-blue list) in
+  // the design — a paper card, 0px radius, hairline border, mono type — so it
+  // reads like the command palette, not a foreign widget. All token-driven, so it
+  // flips with the light/dark theme.
+  '.cm-tooltip.cm-tooltip-autocomplete': {
+    border: '1px solid var(--border-default)',
+    borderRadius: '0',
+    backgroundColor: 'var(--surface-card)',
+    boxShadow: 'var(--sh-4)',
+  },
+  '.cm-tooltip-autocomplete > ul': {
+    fontFamily: 'var(--font-mono)',
+    fontSize: 'var(--t-micro)',
+    maxHeight: '14em',
+  },
+  '.cm-tooltip-autocomplete > ul > li': {
+    padding: '2px var(--sp-3)',
+    color: 'var(--text-primary)',
+    lineHeight: 'var(--lh-snug)',
+  },
+  '.cm-tooltip-autocomplete > ul > li[aria-selected]': {
+    backgroundColor: 'var(--apx-blue-tint)',
+    color: 'var(--apx-blue-deep)',
+  },
+  // Matched portion: the design's blue accent + weight instead of the default
+  // underline; detail (e.g. "required") recedes to muted, upright not italic.
+  '.cm-completionMatchedText': {
+    textDecoration: 'none',
+    color: 'var(--apx-blue-deep)',
+    fontWeight: '600',
+  },
+  '.cm-completionDetail': {
+    color: 'var(--text-muted)',
+    fontStyle: 'normal',
+    marginLeft: 'var(--sp-2)',
+  },
+  // The leading type glyph (property vs value): keep it, just de-emphasized.
+  '.cm-completionIcon': { color: 'var(--text-muted)', opacity: '0.7', paddingRight: 'var(--sp-2)' },
 })
 
 export function CodeMirrorEditor({ value, onChange, readOnly, schema, ariaLabel = 'YAML editor' }: TrayEditorProps) {
