@@ -2,7 +2,7 @@
 // Derives a single object from the managed list via useK8sObject (no independent
 // GET/watch) and renders a metadata summary plus the raw object. When the kind
 // is `yamlEditable`, an Edit affordance (gated by a SelfSubjectAccessReview, and
-// also reachable with `e`) opens the tray over the current object. A kind
+// also reachable with `y`) opens the tray over the current object. A kind
 // needing bespoke rendering supplies `entry.detail`, which replaces the body.
 
 import { Fragment, useState, type ReactNode } from 'react'
@@ -35,13 +35,13 @@ export function ResourceDetailView({ entry, name, actions }: ResourceDetailViewP
     enabled: entry.yamlEditable,
   })
 
-  // `e` opens the tray on an editable, loaded object (shadowed while it is open).
+  // `y` opens the tray on an editable, loaded object (shadowed while it is open).
   // Gated by the same SSAR as the Edit button, so the keyboard path can't bypass
   // an access check the button enforces.
   useKeyboardScope({
     level: 'view',
     enabled: entry.yamlEditable && !!obj && !editing && canEdit.allowed,
-    bindings: [{ keys: 'e', run: () => setEditing(true) }],
+    bindings: [{ keys: 'y', run: () => setEditing(true) }],
   })
 
   const editAction =

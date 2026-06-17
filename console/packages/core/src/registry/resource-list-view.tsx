@@ -16,6 +16,7 @@ import { useListSelection } from '../keyboard/selection'
 import { computeWindow } from '../keyboard/windowing'
 import { useCan } from './discovery'
 import { useCreate } from '../yaml/create-context'
+import { YamlTray } from '../yaml/yaml-tray'
 import { Panel, StateMessage } from './views-common'
 import type { ResourceEntry } from './types'
 import type { K8sObject } from '../lib/k8s-types'
@@ -64,6 +65,13 @@ export function ResourceListView({ entry, actions, subtitle }: ResourceListViewP
       New {entry.kind}
     </Button>
   ) : null
+
+  // `y` opens the YAML tray on the focused row. Gated by one resource-level
+  // update SelfSubjectAccessReview (a per-row review would be N requests); the
+  // apiserver still enforces on save. The tray is modal, so it shadows j/k/y
+  // while open. Local state keeps the list usable on its own (no provider needed).
+  const canEdit = useCan('update', entry.gvr, { enabled: entry.yamlEditable })
+  const [editing, setEditing] = useState<K8sObject | null>(null)
   const headerActions =
     newAction || actions ? (
       <>
@@ -98,6 +106,23 @@ export function ResourceListView({ entry, actions, subtitle }: ResourceListViewP
       { keys: 'j', run: () => selection.move(1) },
       { keys: 'k', run: () => selection.move(-1) },
       { keys: 'enter', run: () => selection.activate() },
+    ],
+  })
+
+  // `y` opens the tray for the focused row (requires a focused row, so it never
+  // guesses which object to edit). Separate scope: its enable gate adds the
+  // editable + access-review conditions on top of "has rows".
+  useKeyboardScope({
+    level: 'view',
+    enabled: count > 0 && entry.yamlEditable && canEdit.allowed && !editing,
+    bindings: [
+      {
+        keys: 'y',
+        run: () => {
+          const obj = index >= 0 ? items[index] : undefined
+          if (obj) setEditing(obj)
+        },
+      },
     ],
   })
 
@@ -235,6 +260,9 @@ export function ResourceListView({ entry, actions, subtitle }: ResourceListViewP
           </div>
         )}
       </Panel>
+      {entry.yamlEditable && (
+        <YamlTray entry={entry} object={editing ?? undefined} open={!!editing} onClose={() => setEditing(null)} />
+      )}
     </div>
   )
 }

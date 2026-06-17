@@ -81,15 +81,15 @@ describe('ResourceDetailView edit gate', () => {
     expect(await screen.findByRole('dialog', { name: 'Edit Proxy' })).toBeDefined()
   })
 
-  it('opens the tray with the `e` shortcut', async () => {
+  it('opens the tray with the `y` shortcut', async () => {
     const { wrapper: W } = harness()
     render(<ResourceDetailView entry={entryFor(true)} name="alpha" />, { wrapper: W })
-    // Wait until the object loaded and the SSAR resolved (the `e` scope is gated
+    // Wait until the object loaded and the SSAR resolved (the `y` scope is gated
     // on both), then press the bare key on the window the dispatcher listens on.
     await screen.findByRole('button', { name: 'Edit' })
     await waitFor(() => expect((screen.getByRole('button', { name: 'Edit' }) as HTMLButtonElement).disabled).toBe(false))
     act(() => {
-      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'e', bubbles: true }))
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'y', bubbles: true }))
     })
     expect(await screen.findByRole('dialog', { name: 'Edit Proxy' })).toBeDefined()
   })
@@ -100,9 +100,9 @@ describe('ResourceDetailView edit gate', () => {
     render(<ResourceDetailView entry={entryFor(true)} name="alpha" />, { wrapper: W })
     const edit = await screen.findByRole('button', { name: 'Edit' })
     await waitFor(() => expect((edit as HTMLButtonElement).disabled).toBe(true))
-    // The keyboard path is gated by the same review, so `e` must not open it.
+    // The keyboard path is gated by the same review, so `y` must not open it.
     act(() => {
-      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'e', bubbles: true }))
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'y', bubbles: true }))
     })
     expect(screen.queryByRole('dialog')).toBeNull()
   })
