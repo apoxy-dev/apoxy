@@ -2,13 +2,24 @@
   "name": "@apoxy/console-core",
   "version": "0.0.0",
   "type": "module",
-  "sideEffects": ["**/*.css"],
+  "sideEffects": [
+    "**/*.css"
+  ],
   "types": "./src/index.ts",
   "exports": {
-    ".": { "types": "./src/index.ts", "default": "./src/index.ts" },
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
     "./tokens.css": "./src/tokens.css",
-    "./components": { "types": "./src/components/ui/index.ts", "default": "./src/components/ui/index.ts" },
-    "./lib": { "types": "./src/lib/index.ts", "default": "./src/lib/index.ts" }
+    "./components": {
+      "types": "./src/components/ui/index.ts",
+      "default": "./src/components/ui/index.ts"
+    },
+    "./lib": {
+      "types": "./src/lib/index.ts",
+      "default": "./src/lib/index.ts"
+    }
   },
   "scripts": {
     "build": "tsc --noEmit -p tsconfig.json",
@@ -22,7 +33,8 @@
   },
   "dependencies": {
     "clsx": "^2.1.1",
-    "tailwind-merge": "^2.5.5"
+    "tailwind-merge": "^2.5.5",
+    "yaml": "^2.9.0"
   },
   "devDependencies": {
     "@tanstack/react-query": "^5.101.0",

@@ -1,21 +1,28 @@
 // The pathless layout route: it owns the fixed chrome (collapsible rail +
 // topbar) and renders the matched page through <Outlet>. Sidebar and
 // breadcrumbs derive from the registry + current location, so the shell never
-// names a kind directly. Collapse state is persisted to localStorage.
+// names a kind directly. It also installs the M4 keyboard layer: a scope-stack
+// provider, the ⌘K command palette (registry-fed), and g-navigation. Collapse
+// state is persisted to localStorage.
 
 import { useCallback, useMemo, useState } from 'react'
-import { createFileRoute, Outlet, useLocation } from '@tanstack/react-router'
+import { createFileRoute, Outlet, useLocation, useRouter } from '@tanstack/react-router'
 import {
   AppShell,
   Breadcrumbs,
   CommandButton,
+  CommandPalette,
+  KeyboardScopeProvider,
   LinkProvider,
   Sidebar,
   Topbar,
   buildBreadcrumbs,
+  buildResourceCommands,
   buildSidebar,
   cn,
   useDiscovery,
+  useKeyboardScope,
+  type Command,
 } from '@apoxy/console-core'
 import { SidePanelClose, SidePanelOpen } from '@carbon/icons-react'
 import { registry } from '../registry'
@@ -40,6 +47,24 @@ function writeCollapsed(v: boolean): void {
 }
 
 function Shell() {
+  // The scope provider must wrap the whole shell so the palette, list nav, and
+  // tray all register against one stack.
+  return (
+    <KeyboardScopeProvider>
+      <ShellBody />
+    </KeyboardScopeProvider>
+  )
+}
+
+function ShellBody() {
+  const router = useRouter()
+  const navigate = useCallback(
+    (to: string) => {
+      void router.navigate({ to: to as never })
+    },
+    [router],
+  )
+
   const { pathname } = useLocation()
   const segments = pathname.split('/').filter(Boolean)
   const slug = segments[0]
@@ -62,8 +87,26 @@ function Shell() {
   const crumbs = buildBreadcrumbs(entry, name, { root: { label: 'Apoxy', to: '/' } })
   const activePath = slug ? `/${slug}` : '/'
 
+  // ⌘K command palette, fed by the registry (+ an Overview entry).
+  const [paletteOpen, setPaletteOpen] = useState(false)
+  const commands = useMemo<Command[]>(
+    () => [
+      { id: 'home', title: 'Overview', group: 'Go to', keywords: ['home', 'dashboard'], run: () => navigate('/') },
+      ...buildResourceCommands(registry, { navigate, isServed }),
+    ],
+    [navigate, isServed],
+  )
+
+  useKeyboardScope({
+    level: 'global',
+    bindings: [
+      { keys: 'mod+k', run: () => setPaletteOpen(true) },
+      { keys: 'g h', run: () => navigate('/') },
+    ],
+  })
+
   return (
-    <LinkProvider component={RouterLink}>
+    <LinkProvider component={RouterLink} navigate={navigate}>
       <AppShell
         sidebar={
           <Sidebar
@@ -79,12 +122,13 @@ function Shell() {
         topbar={
           <Topbar
             breadcrumbs={<Breadcrumbs items={crumbs} />}
-            actions={<CommandButton placeholder="Search resources…" />}
+            actions={<CommandButton placeholder="Search resources…" onOpen={() => setPaletteOpen(true)} />}
           />
         }
       >
         <Outlet />
       </AppShell>
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} commands={commands} />
     </LinkProvider>
   )
 }

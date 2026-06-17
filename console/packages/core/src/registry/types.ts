@@ -6,6 +6,7 @@
 
 import type { ComponentType, ReactNode } from 'react'
 import type { GVR, K8sObject } from '../lib/k8s-types'
+import type { JSONSchema } from '../yaml/validate'
 
 /** One column of the generic list table, derived from the registry entry. */
 export interface ResourceColumn<T extends K8sObject = K8sObject> {
@@ -54,6 +55,10 @@ export interface ResourceEntryInput<T extends K8sObject = K8sObject> {
   columns: ResourceColumn<T>[]
   /** Whether the YAML tray can edit this kind via SSA. Defaults to `false`. */
   yamlEditable?: boolean
+  /** Per-kind JSON Schema for tray validation (the app supplies it from its
+   *  generated OpenAPI). Optional — without it the tray still enforces the
+   *  structural k8s checks (apiVersion/kind/metadata.name). */
+  schema?: JSONSchema
   /** GVRs that must be served (per discovery) for this entry to appear.
    *  Defaults to `[gvr]` — an entry hides when its own resource isn't served.
    *  An explicit empty array opts out of discovery gating (always shown). */
@@ -73,6 +78,7 @@ export interface ResourceEntry<T extends K8sObject = K8sObject> {
   readonly icon?: ReactNode
   readonly columns: ResourceColumn<T>[]
   readonly yamlEditable: boolean
+  readonly schema?: JSONSchema
   readonly requires: GVR[]
   readonly detail?: ComponentType<ResourceDetailProps<T>>
 }

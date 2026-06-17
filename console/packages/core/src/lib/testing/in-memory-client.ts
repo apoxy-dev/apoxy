@@ -54,6 +54,12 @@ export class InMemoryClient {
       queue.push(ev)
       wake?.()
     }
+    // Register the abort handler ONCE: it just wakes the loop, which then
+    // observes `signal.aborted` at the top and returns. Re-adding it inside the
+    // wait would leak a listener for every delivered event (it is normally
+    // resolved by wake(), not abort, so `{ once: true }` never fires).
+    const onAbort = () => wake?.()
+    signal?.addEventListener('abort', onAbort)
     const set = this.listeners.get(col) ?? new Set<Listener>()
     set.add(listener)
     this.listeners.set(col, set)
@@ -63,7 +69,6 @@ export class InMemoryClient {
         if (queue.length === 0) {
           await new Promise<void>((resolve) => {
             wake = resolve
-            signal?.addEventListener('abort', () => resolve(), { once: true })
           })
           wake = null
         }
@@ -74,7 +79,27 @@ export class InMemoryClient {
       }
     } finally {
       set.delete(listener)
+      signal?.removeEventListener('abort', onAbort)
     }
+  }
+
+  /** Server-Side Apply: upsert the object and broadcast the change. Tests spy on
+   *  this to simulate a 409 conflict on the tray write path. */
+  async apply<T extends K8sObject = K8sObject>(
+    gvr: GVR,
+    name: string,
+    body: Partial<T> & K8sObject,
+    _opts?: { namespace?: string; fieldManager?: string; force?: boolean },
+  ): Promise<T> {
+    const existed = this.store.get(colKey(gvr))?.has(name) ?? false
+    const merged = { ...body, metadata: { ...body.metadata, name } } as K8sObject
+    return this.emit(gvr, existed ? 'MODIFIED' : 'ADDED', merged) as T
+  }
+
+  /** Delete the named object and broadcast it. */
+  async delete(gvr: GVR, name: string): Promise<K8sObject> {
+    const current = this.store.get(colKey(gvr))?.get(name) ?? { metadata: { name } }
+    return this.emit(gvr, 'DELETED', current)
   }
 
   /** Apply a mutation and broadcast it to live watchers. */
