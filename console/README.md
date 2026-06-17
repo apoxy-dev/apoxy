@@ -38,3 +38,24 @@ pnpm codegen          # regenerate schema.d.ts from the apiserver OpenAPI
 
 Toolchain: pnpm workspaces, Vite 8 (Rolldown), React 19 (no compiler at launch),
 TanStack Router file routing, Tailwind v4 (tokens shipped as plain CSS), Vitest.
+
+## Adding a view
+
+The console is **registry-driven**: a view for a resource kind is a single
+`defineResource({...})` entry in `apps/apoxy-console/src/registry.tsx`. Adding
+one auto-generates the sidebar item, the route, breadcrumbs, the ⌘K command
+palette entry, the list table, the detail view, and (opt-in via `yamlEditable`)
+the YAML edit tray — no new screen, route, or sidebar edit. Discovery gates each
+entry so it hides when its apiserver doesn't serve the GVR.
+
+```tsx
+defineResource<Phased>({
+  kind: 'Gateway', group: 'gateway.apoxy.dev', resource: 'gateways',
+  servedVersion: 'v1', sidebarGroup: 'Operate', icon: <Gateway size={16} />,
+  yamlEditable: true, columns: [nameCol, statusCol, createdCol],
+})
+```
+
+Then `pnpm typecheck && pnpm test && pnpm build`. For the full walkthrough
+(custom columns/detail, schema validation, non-resource pages, guardrails) run
+the `add-console-view` skill (`.claude/skills/add-console-view/`).
