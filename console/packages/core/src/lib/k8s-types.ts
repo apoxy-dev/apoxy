@@ -1,27 +1,99 @@
 // Runtime-facing Kubernetes API types for the GVR client and WatchManager.
-// These alias the generated OpenAPI meta types where one exists so
-// the hand-written client stays honest with the Go source, and add the small
-// generic envelopes (GVR, K8sList, WatchEvent) the schema does not name.
+//
+// The meta types below (ObjectMeta, ListMeta, Status and their nested shapes)
+// mirror `k8s.io/apimachinery/pkg/apis/meta/v1`. They are identical on every
+// Kubernetes-convention apiserver, so they are hand-written here rather than
+// pulled from any one app's generated OpenAPI — that keeps this package
+// app-agnostic (no apoxy/clrk schema bundled in core). Feature packages bring
+// their own typed spec/status and intersect them with {@link K8sObject}.
 
-import type { components } from '../schema/schema'
+/** A wall-clock timestamp in RFC3339 form, as the apiserver serializes it. */
+export type Time = string
 
-type Schemas = components['schemas']
+/** Identifies an owning object (same namespace as the dependent, or cluster-scoped). */
+export interface OwnerReference {
+  apiVersion: string
+  kind: string
+  name: string
+  uid: string
+  controller?: boolean
+  blockOwnerDeletion?: boolean
+}
+
+/** A single server-side-apply field-manager entry. */
+export interface ManagedFieldsEntry {
+  manager?: string
+  operation?: string
+  apiVersion?: string
+  time?: Time
+  fieldsType?: string
+  fieldsV1?: Record<string, unknown>
+  subresource?: string
+}
 
 /** Standard object metadata as served by the apiserver. */
-export type ObjectMeta = Schemas['io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta']
+export interface ObjectMeta {
+  name?: string
+  generateName?: string
+  namespace?: string
+  uid?: string
+  resourceVersion?: string
+  generation?: number
+  creationTimestamp?: Time
+  deletionTimestamp?: Time
+  deletionGracePeriodSeconds?: number
+  labels?: Record<string, string>
+  annotations?: Record<string, string>
+  finalizers?: string[]
+  ownerReferences?: OwnerReference[]
+  managedFields?: ManagedFieldsEntry[]
+  selfLink?: string
+}
+
 /** Standard list metadata (carries the `resourceVersion` the watch resumes from). */
-export type ListMeta = Schemas['io.k8s.apimachinery.pkg.apis.meta.v1.ListMeta']
+export interface ListMeta {
+  resourceVersion?: string
+  continue?: string
+  remainingItemCount?: number
+  selfLink?: string
+}
+
+/** One machine-readable cause attached to a {@link Status} failure. */
+export interface StatusCause {
+  reason?: string
+  message?: string
+  field?: string
+}
+
+/** Extended detail the server may attach to a {@link Status} failure. */
+export interface StatusDetails {
+  name?: string
+  group?: string
+  kind?: string
+  uid?: string
+  causes?: StatusCause[]
+  retryAfterSeconds?: number
+}
+
 /** The apiserver's failure envelope, returned as the body of non-2xx responses. */
-export type Status = Schemas['io.k8s.apimachinery.pkg.apis.meta.v1.Status']
+export interface Status {
+  apiVersion?: string
+  kind?: string
+  metadata?: ListMeta
+  status?: string
+  message?: string
+  reason?: string
+  details?: StatusDetails
+  code?: number
+}
 
 /**
  * Group/Version/Resource address. `resource` is the lowercase plural
- * (e.g. `proxies`). `group` is empty (`''`) for the core `/api/v1` group.
+ * (e.g. `widgets`). `group` is empty (`''`) for the core `/api/v1` group.
  *
  * Whether a resource is namespaced is a property of the *request*, not the GVR:
- * apoxy resources are cluster-scoped and project scoping is a RequestDecorator
- * concern, so `namespace` is an optional per-call parameter rather
- * than part of the address.
+ * cluster-scoped resources and project scoping (a RequestDecorator concern) mean
+ * `namespace` is an optional per-call parameter rather than part of the address.
  */
 export interface GVR {
   group: string

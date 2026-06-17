@@ -3,5 +3,6 @@
 // `@apoxy/console-core/tokens.css`; they are intentionally not re-exported here.
 
 export * from './components/ui'
+export * from './components/chrome'
 export * from './lib'
-export type { paths, components, operations } from './schema/schema'
+export * from './registry'

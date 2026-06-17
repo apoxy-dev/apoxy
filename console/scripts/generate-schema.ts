@@ -1,7 +1,9 @@
 /**
  * APO-765 — schema.d.ts codegen (openapi-typescript).
  *
- * Generates `packages/core/src/schema/schema.d.ts` from the apiserver OpenAPI.
+ * Generates `apps/apoxy-console/src/schema/schema.d.ts` from the apiserver
+ * OpenAPI. These are apoxy-specific types, so they live in the apoxy app rather
+ * than in the app-agnostic `@apoxy/console-core` (CLRK generates its own).
  * The committed output is the source of truth; this is not fetched at runtime.
  *
  * Source resolution (offline preferred — hermetic CI, no running apiserver):
@@ -19,7 +21,7 @@ import { fileURLToPath } from 'node:url'
 import openapiTS, { astToString } from 'openapi-typescript'
 
 const here = dirname(fileURLToPath(import.meta.url))
-const OUT = resolve(here, '../packages/core/src/schema/schema.d.ts')
+const OUT = resolve(here, '../apps/apoxy-console/src/schema/schema.d.ts')
 const LOCAL_SPEC = resolve(here, '../openapi.json')
 const REMOTE = process.env.APOXY_OPENAPI_URL
 

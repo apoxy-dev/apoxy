@@ -8,8 +8,7 @@
     ".": { "types": "./src/index.ts", "default": "./src/index.ts" },
     "./tokens.css": "./src/tokens.css",
     "./components": { "types": "./src/components/ui/index.ts", "default": "./src/components/ui/index.ts" },
-    "./lib": { "types": "./src/lib/index.ts", "default": "./src/lib/index.ts" },
-    "./schema": { "types": "./src/schema/schema.d.ts" }
+    "./lib": { "types": "./src/lib/index.ts", "default": "./src/lib/index.ts" }
   },
   "scripts": {
     "build": "tsc --noEmit -p tsconfig.json",

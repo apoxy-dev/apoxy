@@ -23,7 +23,7 @@ console/
   apps/
     apoxy-console/        OSS embeddable console (go:embed in `apoxy console`); CI smoke consumer
   scripts/
-    generate-schema.ts    openapi-typescript codegen → core/src/schema/schema.d.ts
+    generate-schema.ts    openapi-typescript codegen → apps/apoxy-console/src/schema/schema.d.ts
 ```
 
 ## Develop

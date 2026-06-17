@@ -42,3 +42,7 @@ export {
   useK8sObject,
 } from './hooks'
 export type { UseK8sListOptions, UseK8sObjectOptions } from './hooks'
+
+// Generic CRUD hooks (apply/delete) — never write the cache
+export { useApplyResource, useDeleteResource } from './mutations'
+export type { UseApplyResourceResult, UseDeleteResourceResult } from './mutations'
