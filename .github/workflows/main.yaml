@@ -58,7 +58,8 @@ jobs:
         env:
           APOXY_DOCKERHUB_PASSWORD: ${{ secrets.APOXY_DOCKERHUB_PASSWORD }}
           APOXY_INTERNAL_GAR_CREDENTIALS: ${{ secrets.APOXY_INTERNAL_GAR_CREDENTIALS }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SHUTUP: 1
         timeout-minutes: 30
         run: |
-          dagger call -v publish-images --src=. --tag=latest --sha=${GITHUB_SHA::7} --registry-password=env:APOXY_DOCKERHUB_PASSWORD --edge-runtime-tag=${GITHUB_SHA::7} --gcr-creds=env:APOXY_INTERNAL_GAR_CREDENTIALS
+          dagger call -v publish-images --src=. --tag=latest --sha=${GITHUB_SHA::7} --registry-password=env:APOXY_DOCKERHUB_PASSWORD --edge-runtime-tag=${GITHUB_SHA::7} --gcr-creds=env:APOXY_INTERNAL_GAR_CREDENTIALS --github-token=env:GITHUB_TOKEN
