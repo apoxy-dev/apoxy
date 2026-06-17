@@ -10,9 +10,12 @@ import { cn } from '../lib/cn'
 import { useK8sList } from '../lib/hooks'
 import { useLink, useNavigate } from '../components/chrome/link-context'
 import { PageHeader } from '../components/chrome/page-header'
+import { Button } from '../components/ui/button'
 import { useKeyboardScope } from '../keyboard/scope-stack'
 import { useListSelection } from '../keyboard/selection'
 import { computeWindow } from '../keyboard/windowing'
+import { useCan } from './discovery'
+import { useCreate } from '../yaml/create-context'
 import { Panel, StateMessage } from './views-common'
 import type { ResourceEntry } from './types'
 import type { K8sObject } from '../lib/k8s-types'
@@ -44,6 +47,30 @@ export function ResourceListView({ entry, actions, subtitle }: ResourceListViewP
   const list = useK8sList(entry.gvr)
   const items = useMemo(() => list.data?.items ?? [], [list.data])
   const count = items.length
+
+  // "New <kind>": open the shared create tray, gated by `yamlEditable` and a
+  // create SelfSubjectAccessReview. Only offered when a CreateProvider is mounted
+  // (`create` is null in isolation/tests), so the list stays usable on its own.
+  const create = useCreate()
+  const canCreate = useCan('create', entry.gvr, { enabled: entry.yamlEditable && !!create })
+  const showCreate = !!create && entry.yamlEditable && canCreate.allowed
+  useKeyboardScope({
+    level: 'view',
+    enabled: showCreate,
+    bindings: [{ keys: 'n', run: () => create?.openCreate(entry) }],
+  })
+  const newAction = showCreate ? (
+    <Button variant="primary" size="sm" onClick={() => create?.openCreate(entry)}>
+      New {entry.kind}
+    </Button>
+  ) : null
+  const headerActions =
+    newAction || actions ? (
+      <>
+        {newAction}
+        {actions}
+      </>
+    ) : undefined
 
   const hrefOf = (obj: K8sObject | undefined): string | undefined =>
     obj?.metadata.name ? `/${entry.path}/${obj.metadata.name}` : undefined
@@ -180,7 +207,7 @@ export function ResourceListView({ entry, actions, subtitle }: ResourceListViewP
 
   return (
     <div>
-      <PageHeader title={entry.displayName} subtitle={subtitle ?? defaultSubtitle} actions={actions} />
+      <PageHeader title={entry.displayName} subtitle={subtitle ?? defaultSubtitle} actions={headerActions} />
       <Panel className="overflow-hidden">
         {list.isError ? (
           <StateMessage tone="error">{list.error?.message ?? 'Failed to load.'}</StateMessage>

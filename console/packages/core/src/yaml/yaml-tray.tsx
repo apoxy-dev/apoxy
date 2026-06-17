@@ -19,7 +19,7 @@ import type { K8sObject } from '../lib/k8s-types'
 import type { ResourceEntry } from '../registry/types'
 import { forEditing, fromYaml, skeleton, toYaml } from './yaml-doc'
 import { hasBlockingProblems, validateObject, type Problem } from './validate'
-import { TextAreaEditor, type TrayEditor } from './editor'
+import { TextAreaEditor, useTrayEditor, type TrayEditor } from './editor'
 
 export interface YamlTrayProps {
   entry: ResourceEntry
@@ -34,7 +34,10 @@ export interface YamlTrayProps {
 }
 
 export function YamlTray({ entry, object, open, onClose, onSaved, editor }: YamlTrayProps) {
-  const Editor = editor ?? TextAreaEditor
+  // Explicit prop wins; otherwise the app-installed editor (CodeMirror); else the
+  // dependency-free textarea, so the tray always renders (incl. in jsdom tests).
+  const provided = useTrayEditor()
+  const Editor = editor ?? provided ?? TextAreaEditor
 
   const [text, setText] = useState('')
   const [baseline, setBaseline] = useState('')

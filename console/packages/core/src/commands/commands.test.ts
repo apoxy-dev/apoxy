@@ -42,6 +42,38 @@ describe('buildResourceCommands', () => {
     })
     expect(cmds.map((c) => c.title)).toEqual(['Proxies'])
   })
+
+  it('adds a "New <kind>" command per editable kind when onCreate is given', () => {
+    const editable = createRegistry([
+      defineResource({
+        kind: 'Proxy', displayName: 'Proxies', group: 'core.apoxy.dev', resource: 'proxies',
+        servedVersion: 'v1alpha2', sidebarGroup: 'Operate', yamlEditable: true, columns: [],
+      }),
+      defineResource({
+        kind: 'TunnelAgent', displayName: 'Tunnel agents', group: 'core.apoxy.dev', resource: 'tunnelagents',
+        servedVersion: 'v1alpha2', sidebarGroup: 'Connect', columns: [],
+      }),
+    ])
+    const onCreate = vi.fn()
+    const cmds = buildResourceCommands(editable, { navigate: vi.fn(), onCreate })
+    // Nav command for both kinds, but a New command only for the editable one.
+    expect(cmds.map((c) => c.title)).toEqual(['Proxies', 'New Proxy', 'Tunnel agents'])
+    const newCmd = cmds.find((c) => c.id === 'new:proxies')!
+    expect(newCmd.group).toBe('Create')
+    newCmd.run()
+    expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({ kind: 'Proxy' }))
+  })
+
+  it('emits no create commands without onCreate', () => {
+    const editable = createRegistry([
+      defineResource({
+        kind: 'Proxy', group: 'core.apoxy.dev', resource: 'proxies',
+        servedVersion: 'v1alpha2', sidebarGroup: 'Operate', yamlEditable: true, columns: [],
+      }),
+    ])
+    const cmds = buildResourceCommands(editable, { navigate: vi.fn() })
+    expect(cmds.every((c) => !c.id.startsWith('new:'))).toBe(true)
+  })
 })
 
 describe('scoreCommand', () => {

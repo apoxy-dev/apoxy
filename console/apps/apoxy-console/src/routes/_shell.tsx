@@ -12,21 +12,25 @@ import {
   Breadcrumbs,
   CommandButton,
   CommandPalette,
+  CreateProvider,
   IconButton,
   KeyboardScopeProvider,
   LinkProvider,
   Sidebar,
   Topbar,
+  TrayEditorProvider,
   buildBreadcrumbs,
   buildResourceCommands,
   buildSidebar,
   cn,
+  useCreate,
   useDiscovery,
   useKeyboardScope,
   type Command,
 } from '@apoxy/console-core'
 import { SidePanelClose, SidePanelOpen } from '@carbon/icons-react'
 import { registry } from '../registry'
+import { TrayEditor } from '../tray-editor'
 import { RouterLink } from '../router-link'
 import { rootCrumbLabel } from '../project-context'
 import { applyTheme, readTheme, storeTheme, THEME_KEY, type Theme } from '../theme'
@@ -56,11 +60,17 @@ function writeCollapsed(v: boolean): void {
 
 function Shell() {
   // The scope provider must wrap the whole shell so the palette, list nav, and
-  // tray all register against one stack.
+  // tray all register against one stack. CreateProvider owns the single shared
+  // "new object" tray, opened from the list "New" button and the ⌘K palette.
+  // TrayEditorProvider installs the CodeMirror editor into every YAML tray.
   return (
-    <KeyboardScopeProvider>
-      <ShellBody />
-    </KeyboardScopeProvider>
+    <TrayEditorProvider editor={TrayEditor}>
+      <KeyboardScopeProvider>
+        <CreateProvider>
+          <ShellBody />
+        </CreateProvider>
+      </KeyboardScopeProvider>
+    </TrayEditorProvider>
   )
 }
 
@@ -97,14 +107,16 @@ function ShellBody() {
   const crumbs = buildBreadcrumbs(entry, name, { root: { label: rootCrumbLabel, to: '/' } })
   const activePath = slug ? `/${slug}` : '/'
 
-  // ⌘K command palette, fed by the registry (+ an Overview entry).
+  // ⌘K command palette, fed by the registry (+ an Overview entry). `onCreate`
+  // adds a "New <kind>" command for each editable kind, opening the shared tray.
+  const { openCreate } = useCreate() ?? {}
   const [paletteOpen, setPaletteOpen] = useState(false)
   const commands = useMemo<Command[]>(
     () => [
       { id: 'home', title: 'Overview', group: 'Go to', keywords: ['home', 'dashboard'], run: () => navigate('/') },
-      ...buildResourceCommands(registry, { navigate, isServed }),
+      ...buildResourceCommands(registry, { navigate, isServed, onCreate: openCreate }),
     ],
-    [navigate, isServed],
+    [navigate, isServed, openCreate],
   )
 
   useKeyboardScope({

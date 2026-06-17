@@ -6,7 +6,7 @@
 // is a drop-in that implements the same props; it belongs in the app layer,
 // where a browser-only widget that can't render in jsdom is appropriate.
 
-import { useLayoutEffect, useMemo, useRef, type ComponentType } from 'react'
+import { createContext, useContext, useLayoutEffect, useMemo, useRef, type ComponentType, type ReactNode } from 'react'
 import { cn } from '../lib/cn'
 
 export interface TrayEditorProps {
@@ -18,6 +18,23 @@ export interface TrayEditorProps {
 
 /** The contract any tray editor implements; the production CodeMirror swap fits here. */
 export type TrayEditor = ComponentType<TrayEditorProps>
+
+// The editor injection seam (APO-777): the YAML tray is mounted *inside* core
+// (the detail-view edit affordance and the create flow), so the app can't pass
+// an `editor` prop to those mounts directly. Instead the app installs its editor
+// once via <TrayEditorProvider> — a browser-only CodeMirror widget that lives in
+// the app layer (it can't render in jsdom) — and every tray picks it up. With no
+// provider, the tray falls back to the dependency-free TextAreaEditor.
+const TrayEditorContext = createContext<TrayEditor | null>(null)
+
+export function TrayEditorProvider({ editor, children }: { editor: TrayEditor; children: ReactNode }) {
+  return <TrayEditorContext.Provider value={editor}>{children}</TrayEditorContext.Provider>
+}
+
+/** The app-provided tray editor, or null when none is installed (tests, SSR). */
+export function useTrayEditor(): TrayEditor | null {
+  return useContext(TrayEditorContext)
+}
 
 export function TextAreaEditor({ value, onChange, readOnly, ariaLabel = 'YAML editor' }: TrayEditorProps) {
   const taRef = useRef<HTMLTextAreaElement>(null)

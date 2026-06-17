@@ -5,7 +5,7 @@
 
 import type { ReactNode } from 'react'
 import type { GVR } from '../lib/k8s-types'
-import type { Registry } from '../registry/types'
+import type { Registry, ResourceEntry } from '../registry/types'
 
 /** One palette command. `run` performs the action; `keywords` widen matching. */
 export interface Command {
@@ -30,27 +30,52 @@ export interface BuildResourceCommandsOptions {
   isServed?: (gvr: GVR) => boolean
   /** Group label for the generated navigation commands. Defaults to `Go to`. */
   group?: string
+  /** When provided, also emit a "New <kind>" command for each `yamlEditable`
+   *  kind, calling this to open the create tray. (The apiserver enforces the
+   *  create permission on save, so these are discovery-gated but not SSAR-gated
+   *  here — a per-command access review would be N requests.) */
+  onCreate?: (entry: ResourceEntry) => void
+  /** Group label for the generated create commands. Defaults to `Create`. */
+  createGroup?: string
 }
 
 /**
  * One navigation command per registry entry (gated by discovery, like the
- * sidebar). Adding a kind to the registry adds it to the palette for free.
+ * sidebar), plus a "New <kind>" command per editable kind when `onCreate` is
+ * given. Adding a kind to the registry adds it to the palette for free.
  */
 export function buildResourceCommands(registry: Registry, opts: BuildResourceCommandsOptions): Command[] {
   const isServed = opts.isServed ?? (() => true)
   const group = opts.group ?? 'Go to'
+  const createGroup = opts.createGroup ?? 'Create'
   return registry
     .all()
     .filter((e) => e.requires.every(isServed))
-    .map((e) => ({
-      id: `nav:${e.path}`,
-      title: e.displayName,
-      subtitle: `${e.gvr.group || 'core'}/${e.gvr.version}`,
-      group,
-      keywords: [e.kind, e.gvr.resource, e.gvr.group].filter(Boolean),
-      icon: e.icon,
-      run: () => opts.navigate(`/${e.path}`),
-    }))
+    .flatMap((e) => {
+      const commands: Command[] = [
+        {
+          id: `nav:${e.path}`,
+          title: e.displayName,
+          subtitle: `${e.gvr.group || 'core'}/${e.gvr.version}`,
+          group,
+          keywords: [e.kind, e.gvr.resource, e.gvr.group].filter(Boolean),
+          icon: e.icon,
+          run: () => opts.navigate(`/${e.path}`),
+        },
+      ]
+      if (opts.onCreate && e.yamlEditable) {
+        commands.push({
+          id: `new:${e.path}`,
+          title: `New ${e.kind}`,
+          subtitle: `${e.gvr.group || 'core'}/${e.gvr.version}`,
+          group: createGroup,
+          keywords: ['new', 'create', e.kind, e.gvr.resource].filter(Boolean),
+          icon: e.icon,
+          run: () => opts.onCreate?.(e),
+        })
+      }
+      return commands
+    })
 }
 
 /** A command plus its computed relevance, for ranked display. */

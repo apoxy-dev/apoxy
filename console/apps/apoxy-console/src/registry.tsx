@@ -6,6 +6,7 @@
 import { Badge, defineResource, createRegistry, type BadgeVariant, type K8sObject } from '@apoxy/console-core'
 import { BareMetalServer, Connect, Gateway, Globe } from '@carbon/icons-react'
 import type { ReactNode } from 'react'
+import { schemaFor } from './schema/schema-for'
 
 /** Objects that carry a coarse status phase we can badge. */
 interface Phased extends K8sObject {
@@ -68,6 +69,7 @@ export const registry = createRegistry([
     sidebarGroup: 'Operate',
     icon: proxyIcon,
     yamlEditable: true,
+    schema: schemaFor('core.apoxy.dev', 'v1alpha2', 'Proxy'),
     columns: [nameCol, statusCol, createdCol],
   }),
   defineResource<Phased>({
@@ -79,6 +81,7 @@ export const registry = createRegistry([
     sidebarGroup: 'Operate',
     icon: backendIcon,
     yamlEditable: true,
+    schema: schemaFor('core.apoxy.dev', 'v1alpha2', 'Backend'),
     columns: [nameCol, statusCol, createdCol],
   }),
   defineResource<Phased>({
@@ -90,6 +93,10 @@ export const registry = createRegistry([
     sidebarGroup: 'Operate',
     icon: domainIcon,
     yamlEditable: true,
+    // No schema is generated for kind "Domain": the served kind is DomainZone
+    // (this entry's kind/resource are an M5 follow-up). The tray falls back to
+    // the always-on structural checks until the kind is reconciled.
+    schema: schemaFor('core.apoxy.dev', 'v1alpha2', 'Domain'),
     columns: [nameCol, statusCol, createdCol],
   }),
   defineResource<Phased>({

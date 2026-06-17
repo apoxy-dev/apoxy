@@ -90,6 +90,51 @@ describe('schema validation (optional)', () => {
   })
 })
 
+describe('$ref / $defs resolution', () => {
+  // A root that defers spec validation to a shared definition, the way the
+  // generated per-kind schemas do (spec → $ref → <Kind>Spec).
+  const schema: JSONSchema = {
+    type: 'object',
+    properties: { spec: { $ref: 'Spec' } },
+    $defs: {
+      Spec: {
+        type: 'object',
+        required: ['port'],
+        properties: { port: { type: 'integer', minimum: 1 }, child: { $ref: 'Spec' } },
+        additionalProperties: false,
+      },
+    },
+  }
+
+  it('validates through a $ref against the root $defs', () => {
+    const p = validateObject({ ...ok, spec: { port: 'nope' } }, schema)
+    expect(p.some((x) => x.path === '.spec.port' && /Expected integer/.test(x.message))).toBe(true)
+  })
+  it('enforces required/bounds reached through a $ref', () => {
+    const p = validateObject({ ...ok, spec: { port: 0 } }, schema)
+    expect(p.some((x) => x.path === '.spec.port' && /≥ 1/.test(x.message))).toBe(true)
+    const q = validateObject({ ...ok, spec: {} }, schema)
+    expect(q.some((x) => x.path === '.spec.port' && /required/.test(x.message))).toBe(true)
+  })
+  it('follows a recursive $ref as deep as the data nests without hanging', () => {
+    const p = validateObject({ ...ok, spec: { port: 1, child: { port: 1, child: { port: 'x' } } } }, schema)
+    expect(p.some((x) => x.path === '.spec.child.child.port')).toBe(true)
+  })
+  it('treats an unknown $ref as no constraint (advisory validator)', () => {
+    const s: JSONSchema = { type: 'object', properties: { spec: { $ref: 'Missing' } }, $defs: {} }
+    expect(validateObject({ ...ok, spec: { anything: true } }, s)).toEqual([])
+  })
+  it('breaks a direct ref→ref cycle', () => {
+    const s: JSONSchema = {
+      type: 'object',
+      properties: { spec: { $ref: 'A' } },
+      $defs: { A: { $ref: 'B' }, B: { $ref: 'A' } },
+    }
+    // Must terminate (no constraint applied) rather than recurse forever.
+    expect(validateObject({ ...ok, spec: {} }, s)).toEqual([])
+  })
+})
+
 describe('hasBlockingProblems', () => {
   it('is true only for error-severity problems', () => {
     expect(hasBlockingProblems([{ path: '', message: 'x', severity: 'warning' }])).toBe(false)

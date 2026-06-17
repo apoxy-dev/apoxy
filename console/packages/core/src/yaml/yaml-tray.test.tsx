@@ -227,4 +227,33 @@ describe('YamlTray', () => {
     rerender(<YamlTray entry={entry} object={undefined} open onClose={vi.fn()} />)
     expect((screen.getByRole('textbox', { name: 'Proxy YAML' }) as HTMLTextAreaElement).value).toContain('# keep me')
   })
+
+  it('flags a per-kind schema violation in the problem list (the entry.schema path)', () => {
+    // A schema shaped like the generated ones: spec is a $ref into $defs.
+    const schemaEntry = createRegistry([
+      defineResource({
+        kind: 'Proxy',
+        group: 'core.apoxy.dev',
+        resource: 'proxies',
+        servedVersion: 'v1alpha2',
+        sidebarGroup: 'Operate',
+        yamlEditable: true,
+        schema: {
+          type: 'object',
+          properties: { spec: { $ref: 'ProxySpec' } },
+          $defs: { ProxySpec: { type: 'object', properties: { replicas: { type: 'integer', minimum: 1 } } } },
+        },
+        columns: [],
+      }),
+    ]).byPath('proxies')!
+    const { wrapper: W } = harness([proxy('alpha')])
+    render(<YamlTray entry={schemaEntry} object={proxy('alpha')} open onClose={vi.fn()} />, { wrapper: W })
+    const ta = screen.getByRole('textbox', { name: 'Proxy YAML' }) as HTMLTextAreaElement
+    fireEvent.change(ta, {
+      target: { value: 'apiVersion: core.apoxy.dev/v1alpha2\nkind: Proxy\nmetadata:\n  name: alpha\nspec:\n  replicas: two\n' },
+    })
+    // Resolved through the $ref into $defs — proves the registry schema reaches
+    // the validator, not just the always-on structural checks.
+    expect(screen.getByText(/\.spec\.replicas: Expected integer/)).toBeDefined()
+  })
 })

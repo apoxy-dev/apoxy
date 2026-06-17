@@ -2,7 +2,8 @@
 // drawer, its editor seam, the YAML round-trip, and the per-kind validation.
 
 export { YamlTray, type YamlTrayProps } from './yaml-tray'
-export { TextAreaEditor, type TrayEditor, type TrayEditorProps } from './editor'
+export { CreateProvider, useCreate, type CreateApi, type CreateProviderProps } from './create-context'
+export { TextAreaEditor, TrayEditorProvider, useTrayEditor, type TrayEditor, type TrayEditorProps } from './editor'
 export { forEditing, toYaml, fromYaml, skeleton, type ParseResult } from './yaml-doc'
 export {
   validateObject,
