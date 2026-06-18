@@ -20,10 +20,13 @@ import {
 } from '@apoxy/console-core'
 import {
   attachesToGateway,
+  backendMatchesQuery,
   listenerHealth,
   routeHealth,
   routeId,
+  routeMatchesQuery,
   routesForListener,
+  ruleMatchesQuery,
   ruleMatchSummary,
   type GatewayListener,
   type GatewayObject,
@@ -56,67 +59,73 @@ export function GatewayDetail({ object }: ResourceDetailProps) {
 
   const getItems = useCallback(
     (col: number, selected: (string | null)[], query: string): MillerItem[] => {
+      const q = query.trim().toLowerCase()
       if (col === 0) {
-        return listeners.map((l) => ({
-          id: l.name,
-          name: l.name,
-          status: listenerHealth(gw, l.name),
-          sub: <ProtoBadge protocol={l.protocol} port={l.port} hostname={l.hostname} />,
-        }))
+        // Keep a listener only if some route under it matches the filter, so
+        // searching a rule/backend surfaces the listener that leads to it.
+        return listeners
+          .filter((l) => !q || routesForListener(routes, gw, l.name).some((r) => routeMatchesQuery(r, q)))
+          .map((l) => ({
+            id: l.name,
+            name: l.name,
+            status: listenerHealth(gw, l.name),
+            sub: <ProtoBadge protocol={l.protocol} port={l.port} hostname={l.hostname} />,
+          }))
       }
       if (col === 1) {
-        const q = query.trim().toLowerCase()
-        let rs = routesForListener(routes, gw, selected[0] ?? null)
-        if (q) {
-          rs = rs.filter(
-            (r) =>
-              (r.spec?.hostnames ?? []).some((h) => h.toLowerCase().includes(q)) ||
-              (r.metadata.name ?? '').toLowerCase().includes(q) ||
-              (r.kind ?? '').toLowerCase().includes(q),
-          )
-        }
-        return rs.map((r) => ({
-          id: routeId(r),
-          name: r.spec?.hostnames?.join(', ') || '*',
-          mono: true,
-          status: routeHealth(r),
-          sub: (
-            <>
-              <RouteKindTag kind={(r.kind as RouteKind) ?? 'HTTPRoute'} />
-              <span>{r.metadata.name}</span>
-              <span>· {pluralize(r.spec?.rules?.length ?? 0, 'rule')}</span>
-            </>
-          ),
-        }))
+        return routesForListener(routes, gw, selected[0] ?? null)
+          .filter((r) => routeMatchesQuery(r, q))
+          .map((r) => ({
+            id: routeId(r),
+            name: r.spec?.hostnames?.join(', ') || '*',
+            mono: true,
+            status: routeHealth(r),
+            sub: (
+              <>
+                <RouteKindTag kind={(r.kind as RouteKind) ?? 'HTTPRoute'} />
+                <span>{r.metadata.name}</span>
+                <span>· {pluralize(r.spec?.rules?.length ?? 0, 'rule')}</span>
+              </>
+            ),
+          }))
       }
       const route = routesForListener(routes, gw, selected[0] ?? null).find((r) => routeId(r) === selected[1])
+      const kind = (route?.kind as RouteKind) ?? 'HTTPRoute'
       if (col === 2) {
-        return (route?.spec?.rules ?? []).map((rule, i) => ({
-          id: String(i),
-          name: ruleMatchSummary(rule, (route?.kind as RouteKind) ?? 'HTTPRoute'),
-          sub:
-            rule.filters && rule.filters.length > 0 ? (
-              <>
-                {rule.filters.map((f, j) => (
-                  <span key={j} className={CHIP}>
-                    {f.type ?? 'filter'}
-                  </span>
-                ))}
-              </>
-            ) : (
-              <span className="text-[color:var(--text-disabled)]">—</span>
-            ),
-        }))
+        // Filter rules but keep each rule's original index as its id, so the
+        // Targets column can still resolve `rules[Number(selected[2])]`.
+        return (route?.spec?.rules ?? [])
+          .map((rule, i) => ({ rule, i }))
+          .filter(({ rule }) => ruleMatchesQuery(rule, kind, q))
+          .map(({ rule, i }) => ({
+            id: String(i),
+            name: ruleMatchSummary(rule, kind),
+            sub:
+              rule.filters && rule.filters.length > 0 ? (
+                <>
+                  {rule.filters.map((f, j) => (
+                    <span key={j} className={CHIP}>
+                      {f.type ?? 'filter'}
+                    </span>
+                  ))}
+                </>
+              ) : (
+                <span className="text-[color:var(--text-disabled)]">—</span>
+              ),
+          }))
       }
       const rule = route?.spec?.rules?.[Number(selected[2])]
-      return (rule?.backendRefs ?? []).map((b, i) => ({
-        id: String(i),
-        name: b.name ?? '—',
-        mono: true,
-        status: 'ok' as const,
-        sub: b.port != null ? `:${b.port}` : undefined,
-        ...(b.weight != null ? { meter: { value: b.weight, canary: b.weight <= 10 } } : {}),
-      }))
+      return (rule?.backendRefs ?? [])
+        .map((b, i) => ({ b, i }))
+        .filter(({ b }) => backendMatchesQuery(b, q))
+        .map(({ b, i }) => ({
+          id: String(i),
+          name: b.name ?? '—',
+          mono: true,
+          status: 'ok' as const,
+          sub: b.port != null ? `:${b.port}` : undefined,
+          ...(b.weight != null ? { meter: { value: b.weight, canary: b.weight <= 10 } } : {}),
+        }))
     },
     [listeners, routes, gw],
   )
@@ -171,7 +180,7 @@ export function GatewayDetail({ object }: ResourceDetailProps) {
         columns={columns}
         getItems={getItems}
         template="1.1fr 1.5fr 1.5fr 1.7fr"
-        searchPlaceholder="Filter routes, hostnames, kinds…"
+        searchPlaceholder="Filter routes, rules, backends…"
         ariaLabel={loading ? 'Gateway routes (loading)' : 'Gateway routes'}
       />
     </div>

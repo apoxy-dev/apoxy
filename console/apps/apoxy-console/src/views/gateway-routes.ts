@@ -144,3 +144,34 @@ export function ruleMatchSummary(rule: RouteRule, kind: RouteKind): string {
   if (typeof m.method === 'string') return `method ${m.method}`
   return 'match'
 }
+
+// ── filter matching ──────────────────────────────────────────────────────────
+// The Miller filter box searches the whole subtree, not just one column: a
+// backend matches by name:port, a rule matches by its summary/filter/backends,
+// and a route matches by hostname/name/kind or any of its rules. So typing a
+// backend name keeps the route + rule that lead to it visible and drills there.
+// `q` is the already-lowercased query; an empty `q` matches everything.
+
+/** Whether a backend ref matches the filter `q`. */
+export function backendMatchesQuery(b: BackendRef, q: string): boolean {
+  if (!q) return true
+  return `${b.name ?? ''}:${b.port ?? ''}`.toLowerCase().includes(q)
+}
+
+/** Whether a rule matches `q` — its match summary, a filter type, or a backend. */
+export function ruleMatchesQuery(rule: RouteRule, kind: RouteKind, q: string): boolean {
+  if (!q) return true
+  if (ruleMatchSummary(rule, kind).toLowerCase().includes(q)) return true
+  if ((rule.filters ?? []).some((f) => (f.type ?? '').toLowerCase().includes(q))) return true
+  return (rule.backendRefs ?? []).some((b) => backendMatchesQuery(b, q))
+}
+
+/** Whether a route matches `q` — its hostname/name/kind, or any of its rules. */
+export function routeMatchesQuery(route: RouteObject, q: string): boolean {
+  if (!q) return true
+  const kind = (route.kind as RouteKind) ?? 'HTTPRoute'
+  if ((route.spec?.hostnames ?? []).some((h) => h.toLowerCase().includes(q))) return true
+  if ((route.metadata.name ?? '').toLowerCase().includes(q)) return true
+  if ((route.kind ?? '').toLowerCase().includes(q)) return true
+  return (route.spec?.rules ?? []).some((rl) => ruleMatchesQuery(rl, kind, q))
+}

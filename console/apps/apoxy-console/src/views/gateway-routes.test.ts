@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import {
   attachesToGateway,
+  backendMatchesQuery,
   listenerHealth,
   routeHealth,
   routeId,
+  routeMatchesQuery,
   routesForListener,
+  ruleMatchesQuery,
   ruleMatchSummary,
   type GatewayObject,
   type ParentRef,
@@ -116,6 +119,31 @@ describe('routeId', () => {
   it('namespaces the id by kind + namespace + name', () => {
     expect(routeId(route('a', [{ name: 'edge' }]))).toBe('HTTPRoute/default/a')
   })
+})
+
+describe('query matching', () => {
+  const r = route('web-app', [{ name: 'edge' }], {
+    hostnames: ['app.apoxy.dev'],
+    rules: [
+      { matches: [{ path: { type: 'PathPrefix', value: '/api' } }], backendRefs: [{ name: 'api-svc', port: 9090 }] },
+    ],
+  })
+
+  it('matches a route by hostname', () => expect(routeMatchesQuery(r, 'apoxy')).toBe(true))
+  it('matches a route by a backend nested in one of its rules', () => expect(routeMatchesQuery(r, 'api-svc')).toBe(true))
+  it('matches a route by a rule path', () => expect(routeMatchesQuery(r, '/api')).toBe(true))
+  it('does not match an unrelated query', () => expect(routeMatchesQuery(r, 'zzz')).toBe(false))
+  it('an empty query matches everything', () => expect(routeMatchesQuery(r, '')).toBe(true))
+
+  it('matches a rule by its backend', () =>
+    expect(ruleMatchesQuery(r.spec!.rules![0]!, 'HTTPRoute', 'api-svc')).toBe(true))
+  it('matches a rule by its path match', () =>
+    expect(ruleMatchesQuery(r.spec!.rules![0]!, 'HTTPRoute', '/api')).toBe(true))
+  it('does not match a rule on an unrelated query', () =>
+    expect(ruleMatchesQuery(r.spec!.rules![0]!, 'HTTPRoute', 'zzz')).toBe(false))
+
+  it('matches a backend by name', () => expect(backendMatchesQuery({ name: 'api-svc', port: 9090 }, 'api-svc')).toBe(true))
+  it('matches a backend by port', () => expect(backendMatchesQuery({ name: 'api-svc', port: 9090 }, '9090')).toBe(true))
 })
 
 describe('ruleMatchSummary', () => {
