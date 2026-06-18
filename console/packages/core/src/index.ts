@@ -4,6 +4,7 @@
 
 export * from './components/ui'
 export * from './components/chrome'
+export * from './components/miller'
 export * from './lib'
 export * from './registry'
 export * from './keyboard'

@@ -9,8 +9,18 @@ import { registry } from './registry'
 // this passes, and it asserts the registry actually drives the sidebar.
 describe('apoxy console', () => {
   it('registers the starter kinds in their sidebar groups', () => {
-    expect(registry.all().map((e) => e.kind)).toEqual(['Proxy', 'Backend', 'Domain', 'TunnelAgent'])
-    expect(registry.groups().map((g) => g.name)).toEqual(['Operate', 'Connect'])
+    expect(registry.all().map((e) => e.kind)).toEqual([
+      'Proxy',
+      'Backend',
+      'Domain',
+      'TunnelAgent',
+      'Gateway',
+      'GatewayClass',
+      'HTTPRoute',
+      'GRPCRoute',
+      'TLSRoute',
+    ])
+    expect(registry.groups().map((g) => g.name)).toEqual(['Operate', 'Connect', 'Gateway'])
   })
 
   it('renders a registry-driven sidebar', () => {

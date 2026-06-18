@@ -4,9 +4,10 @@
 // these move into per-API-group feature packages; this is the starter set.)
 
 import { Badge, defineResource, createRegistry, type BadgeVariant, type K8sObject } from '@apoxy/console-core'
-import { BareMetalServer, Connect, Gateway, Globe } from '@carbon/icons-react'
+import { BareMetalServer, Categories, Connect, FlowConnection, Gateway, GatewayApi, Globe, Locked, Roadmap } from '@carbon/icons-react'
 import type { ReactNode } from 'react'
 import { schemaFor } from './schema/schema-for'
+import { GatewayDetail } from './views/gateway-detail'
 
 /** Objects that carry a coarse status phase we can badge. */
 interface Phased extends K8sObject {
@@ -58,6 +59,26 @@ const tunnelIcon = <Connect size={16} />
 const nameCol = { id: 'name', header: 'Name', width: '34%', cell: (o: K8sObject) => o.metadata.name }
 const statusCol = { id: 'status', header: 'Status', cell: (o: Phased) => phaseBadge(o.status?.phase) }
 const createdCol = { id: 'created', header: 'Created', mono: true, cell: created }
+
+// Gateway-API columns: these kinds carry their state in `status.conditions`, not
+// a coarse `status.phase`, so they show structural columns instead of a badge.
+const classCol = { id: 'class', header: 'Class', cell: (o: Phased) => (o.spec?.gatewayClassName as string) ?? '—' }
+const listenersCol = {
+  id: 'listeners',
+  header: 'Listeners',
+  mono: true,
+  cell: (o: Phased) => String((o.spec?.listeners as unknown[] | undefined)?.length ?? 0),
+}
+const controllerCol = { id: 'controller', header: 'Controller', mono: true, cell: (o: Phased) => (o.spec?.controllerName as string) ?? '—' }
+const hostnamesCol = {
+  id: 'hostnames',
+  header: 'Hostnames',
+  mono: true,
+  cell: (o: Phased) => {
+    const h = o.spec?.hostnames as string[] | undefined
+    return h && h.length > 0 ? h.join(', ') : '*'
+  },
+}
 
 export const registry = createRegistry([
   defineResource<Phased>({
@@ -112,5 +133,69 @@ export const registry = createRegistry([
     icon: tunnelIcon,
     shortcut: 't',
     columns: [nameCol, statusCol, createdCol],
+  }),
+  // Gateway-API kinds (APO-782). The Gateway detail is the Miller route browser
+  // (Listeners → Routes → Rules → Targets); the rest use the generic views.
+  defineResource<Phased>({
+    kind: 'Gateway',
+    displayName: 'Gateways',
+    group: 'gateway.apoxy.dev',
+    resource: 'gateways',
+    servedVersion: 'v1',
+    sidebarGroup: 'Gateway',
+    icon: <GatewayApi size={16} />,
+    shortcut: 'g',
+    yamlEditable: true,
+    schema: schemaFor('gateway.apoxy.dev', 'v1', 'Gateway'),
+    detail: GatewayDetail,
+    columns: [nameCol, classCol, listenersCol, createdCol],
+  }),
+  defineResource<Phased>({
+    kind: 'GatewayClass',
+    displayName: 'Gateway classes',
+    group: 'gateway.apoxy.dev',
+    resource: 'gatewayclasses',
+    servedVersion: 'v1',
+    sidebarGroup: 'Gateway',
+    icon: <Categories size={16} />,
+    yamlEditable: true,
+    schema: schemaFor('gateway.apoxy.dev', 'v1', 'GatewayClass'),
+    columns: [nameCol, controllerCol, createdCol],
+  }),
+  defineResource<Phased>({
+    kind: 'HTTPRoute',
+    displayName: 'HTTP routes',
+    group: 'gateway.apoxy.dev',
+    resource: 'httproutes',
+    servedVersion: 'v1',
+    sidebarGroup: 'Gateway',
+    icon: <Roadmap size={16} />,
+    yamlEditable: true,
+    schema: schemaFor('gateway.apoxy.dev', 'v1', 'HTTPRoute'),
+    columns: [nameCol, hostnamesCol, createdCol],
+  }),
+  defineResource<Phased>({
+    kind: 'GRPCRoute',
+    displayName: 'gRPC routes',
+    group: 'gateway.apoxy.dev',
+    resource: 'grpcroutes',
+    servedVersion: 'v1',
+    sidebarGroup: 'Gateway',
+    icon: <FlowConnection size={16} />,
+    yamlEditable: true,
+    schema: schemaFor('gateway.apoxy.dev', 'v1', 'GRPCRoute'),
+    columns: [nameCol, hostnamesCol, createdCol],
+  }),
+  defineResource<Phased>({
+    kind: 'TLSRoute',
+    displayName: 'TLS routes',
+    group: 'gateway.apoxy.dev',
+    resource: 'tlsroutes',
+    servedVersion: 'v1alpha2',
+    sidebarGroup: 'Gateway',
+    icon: <Locked size={16} />,
+    yamlEditable: true,
+    schema: schemaFor('gateway.apoxy.dev', 'v1alpha2', 'TLSRoute'),
+    columns: [nameCol, hostnamesCol, createdCol],
   }),
 ])
