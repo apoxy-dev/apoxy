@@ -4,10 +4,11 @@
 // Listeners → Routes → Rules → Targets; the very same component backs clrk's
 // EgressGateway browser by supplying a different `getItems`. So it is kept
 // strictly kind-agnostic: the consumer owns the data (`getItems` returns the rows
-// of a column given the selections to its left), and this component owns
-// selection, keyboard navigation (←/→ across columns, ↑/↓ within one, on the
-// shared `moveMiller` cursor), and the design's column chrome. It is purely
-// presentational — no API types leak in — which is what makes it reusable.
+// of a column given the selections to its left, plus the filter query), and this
+// component owns selection, keyboard navigation (←/→ across columns, ↑/↓ within
+// one, on the shared `moveMiller` cursor), the optional filter box, and the
+// design's column chrome. It is purely presentational — no API types leak in —
+// which is what makes it reusable.
 
 import {
   useCallback,
@@ -35,6 +36,9 @@ export interface MillerItem {
   sub?: ReactNode;
   /** Leading status pip; omit for none. */
   status?: MillerStatus;
+  /** Optional weight/utilization bar under the row (e.g. a backend traffic split);
+   *  `value` is a percentage, `canary` tints it for a small-share lane. */
+  meter?: { value: number; canary?: boolean };
   /** Optional per-row edit affordance (the hover pencil). */
   onEdit?: () => void;
 }
@@ -50,16 +54,20 @@ export interface MillerColumnDef {
   addDisabled?: boolean;
   /** Shown, centered, when the column has no rows. */
   emptyMessage?: ReactNode;
+  /** Optional content pinned below the column's rows, given the resolved
+   *  selection — e.g. an "apparent path" summary under a Targets column. */
+  footer?: (selected: (string | null)[]) => ReactNode;
 }
 
 export interface MillerBrowserProps {
   columns: MillerColumnDef[];
   /**
    * Rows of column `col`, given the resolved selected id of every column to its
-   * left (`selected[0..col-1]`). Must be pure; memoize it (useCallback) so the
+   * left (`selected[0..col-1]`) and the current filter `query` (empty string
+   * when no search box is shown). Must be pure; memoize it (useCallback) so the
    * browser recomputes only when its real inputs change.
    */
-  getItems: (col: number, selected: (string | null)[]) => MillerItem[];
+  getItems: (col: number, selected: (string | null)[], query: string) => MillerItem[];
   /** CSS grid-template-columns for the panes; defaults to equal weights. */
   template?: string;
   /** Min height of the frame in px (the design uses 660). */
@@ -67,6 +75,9 @@ export interface MillerBrowserProps {
   ariaLabel?: string;
   /** Notified with the resolved selection whenever it changes. */
   onSelectionChange?: (selected: (string | null)[]) => void;
+  /** When set, a filter box is shown above the columns; its text is passed as the
+   *  third arg to getItems so the consumer decides what to match. `/` focuses it. */
+  searchPlaceholder?: string;
 }
 
 const PIP: Record<MillerStatus, string> = {
@@ -82,6 +93,7 @@ export function MillerBrowser({
   minHeight = 660,
   ariaLabel = "Miller columns",
   onSelectionChange,
+  searchPlaceholder,
 }: MillerBrowserProps) {
   // Explicit user picks (nullable). The resolved selection below fills nulls and
   // now-invalid ids by auto-selecting each column's first row, cascading L→R.
@@ -89,15 +101,18 @@ export function MillerBrowser({
     columns.map(() => null),
   );
   const [activeCol, setActiveCol] = useState(0);
+  const [query, setQuery] = useState("");
+  const searchRef = useRef<HTMLInputElement>(null);
 
   // Resolve items + selection together in one left→right pass: each column's
-  // rows depend on the resolved selection to its left, and a pick that no longer
-  // exists (because its parent changed) falls back to that column's first row.
+  // rows depend on the resolved selection to its left (and the filter query), and
+  // a pick that no longer exists (parent changed, or filtered out) falls back to
+  // that column's first row.
   const { itemsByCol, selected } = useMemo(() => {
     const itemsByCol: MillerItem[][] = [];
     const selected: (string | null)[] = [];
     for (let c = 0; c < columns.length; c++) {
-      const items = getItems(c, selected);
+      const items = getItems(c, selected, query);
       const pick = picks[c] ?? null;
       const resolved =
         pick !== null && items.some((i) => i.id === pick)
@@ -107,13 +122,29 @@ export function MillerBrowser({
       selected.push(resolved);
     }
     return { itemsByCol, selected };
-  }, [columns, getItems, picks]);
+  }, [columns, getItems, picks, query]);
 
   const selKey = selected.join(" ");
   useEffect(() => {
     onSelectionChange?.(selected);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- fire on resolved change only
   }, [selKey]);
+
+  // Press "/" (when not already typing somewhere) to jump to the filter box, the
+  // design's documented shortcut. Only wired when the box is shown.
+  useEffect(() => {
+    if (searchPlaceholder == null) return;
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key !== "/" || e.metaKey || e.ctrlKey || e.altKey) return;
+      const el = document.activeElement as HTMLElement | null;
+      const tag = el?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || el?.isContentEditable) return;
+      e.preventDefault();
+      searchRef.current?.focus();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [searchPlaceholder]);
 
   // Pick row `id` in column `col`: keep the upstream picks, drop everything
   // downstream so the memo re-resolves the right-hand columns to their first
@@ -175,7 +206,7 @@ export function MillerBrowser({
 
   const grid = template ?? columns.map(() => "1fr").join(" ");
 
-  return (
+  const gridEl = (
     <div
       role="grid"
       aria-label={ariaLabel}
@@ -190,11 +221,47 @@ export function MillerBrowser({
           def={col}
           items={itemsByCol[c] ?? []}
           selectedId={selected[c] ?? null}
+          footer={col.footer ? col.footer(selected) : null}
           active={c === activeCol}
           last={c === columns.length - 1}
           onPick={(id) => pick(c, id)}
         />
       ))}
+    </div>
+  );
+
+  if (searchPlaceholder == null) return gridEl;
+
+  return (
+    <div className="flex flex-col">
+      <div className="mb-[16px] flex items-center justify-between gap-[16px]">
+        <label className="flex max-w-[420px] flex-1 items-center gap-[8px] rounded-none border border-[color:var(--border-default)] bg-[var(--apx-white)] px-[12px] py-[8px]">
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            className="flex-none opacity-50"
+            aria-hidden="true"
+          >
+            <circle cx="7" cy="7" r="4.5" />
+            <path d="M11 11l3.5 3.5" />
+          </svg>
+          <input
+            ref={searchRef}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder={searchPlaceholder}
+            className="min-w-0 flex-1 border-0 bg-transparent text-[length:var(--t-body-sm)] text-[color:var(--text-primary)] outline-none placeholder:text-[color:var(--text-muted)]"
+          />
+          <kbd className="flex-none font-mono text-[length:var(--t-micro)] text-[color:var(--text-muted)]">
+            /
+          </kbd>
+        </label>
+      </div>
+      {gridEl}
     </div>
   );
 }
@@ -203,6 +270,7 @@ function MillerCol({
   def,
   items,
   selectedId,
+  footer,
   active,
   last,
   onPick,
@@ -210,6 +278,7 @@ function MillerCol({
   def: MillerColumnDef;
   items: MillerItem[];
   selectedId: string | null;
+  footer?: ReactNode;
   active: boolean;
   last: boolean;
   onPick: (id: string) => void;
@@ -256,20 +325,23 @@ function MillerCol({
         </span>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {items.length === 0 ? (
+        {items.length === 0 && footer == null ? (
           <div className="px-[16px] py-[24px] text-center font-mono text-[length:var(--t-body-sm)] text-[color:var(--text-disabled)]">
             {def.emptyMessage ?? "—"}
           </div>
         ) : (
-          items.map((it) => (
-            <MillerRow
-              key={it.id}
-              item={it}
-              selected={it.id === selectedId}
-              active={active}
-              onPick={() => onPick(it.id)}
-            />
-          ))
+          <>
+            {items.map((it) => (
+              <MillerRow
+                key={it.id}
+                item={it}
+                selected={it.id === selectedId}
+                active={active}
+                onPick={() => onPick(it.id)}
+              />
+            ))}
+            {footer}
+          </>
         )}
       </div>
     </div>
@@ -321,6 +393,26 @@ function MillerRow({
         {item.sub != null && (
           <div className="flex flex-wrap items-center gap-[6px] font-mono text-[length:var(--t-micro)] text-[color:var(--text-muted)]">
             {item.sub}
+          </div>
+        )}
+        {item.meter && (
+          <div className="mt-[2px] flex items-center gap-[8px]">
+            <div className="h-[4px] flex-1 bg-[var(--apx-mist)]">
+              <div
+                className={cn(
+                  "h-full",
+                  item.meter.canary
+                    ? "bg-[var(--apx-blue)]"
+                    : "bg-[var(--apx-ink)]",
+                )}
+                style={{
+                  width: `${Math.max(0, Math.min(100, item.meter.value))}%`,
+                }}
+              />
+            </div>
+            <span className="flex-none font-mono text-[length:var(--t-micro)] text-[color:var(--text-muted)]">
+              {item.meter.value}%
+            </span>
           </div>
         )}
       </div>

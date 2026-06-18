@@ -1,9 +1,12 @@
 // Custom detail view for a Gateway (APO-782): the Routing tab is a four-column
-// Miller drill-down — Listeners → Routes attached → Rules → Targets — built on
-// console-core's generic <MillerBrowser>. The gateway↔route relationship is
-// derived client-side from the managed HTTPRoute/GRPCRoute/TLSRoute lists (see
-// gateway-routes.ts); no per-gateway query is issued. The browser itself is
-// kind-agnostic, so clrk's EgressGateway reuses it with its own getItems.
+// Miller drill-down — Listeners → Routes attached → Rules → Targets · apparent
+// path — built on console-core's generic <MillerBrowser>. The gateway↔route
+// relationship is derived client-side from the managed HTTPRoute/GRPCRoute/
+// TLSRoute lists (see gateway-routes.ts); no per-gateway query is issued. The
+// browser itself is kind-agnostic, so clrk's EgressGateway reuses it with its own
+// getItems. Layout mirrors the CLRK design: tabs sit above the summary cards (the
+// cards belong to the routing tab), a filter box sits above the columns, and the
+// rightmost column ends in an "apparent path" trace of where a request goes.
 
 import { useCallback, useMemo, type ReactNode } from 'react'
 import {
@@ -18,12 +21,15 @@ import {
 import {
   attachesToGateway,
   listenerHealth,
+  routeHealth,
   routeId,
   routesForListener,
   ruleMatchSummary,
+  type GatewayListener,
   type GatewayObject,
   type RouteKind,
   type RouteObject,
+  type RouteRule,
 } from './gateway-routes'
 
 const HTTPROUTE_GVR: GVR = { group: 'gateway.apoxy.dev', version: 'v1', resource: 'httproutes' }
@@ -49,7 +55,7 @@ export function GatewayDetail({ object }: ResourceDetailProps) {
   const listeners = useMemo(() => gw.spec?.listeners ?? [], [gw])
 
   const getItems = useCallback(
-    (col: number, selected: (string | null)[]): MillerItem[] => {
+    (col: number, selected: (string | null)[], query: string): MillerItem[] => {
       if (col === 0) {
         return listeners.map((l) => ({
           id: l.name,
@@ -59,10 +65,21 @@ export function GatewayDetail({ object }: ResourceDetailProps) {
         }))
       }
       if (col === 1) {
-        return routesForListener(routes, gw, selected[0] ?? null).map((r) => ({
+        const q = query.trim().toLowerCase()
+        let rs = routesForListener(routes, gw, selected[0] ?? null)
+        if (q) {
+          rs = rs.filter(
+            (r) =>
+              (r.spec?.hostnames ?? []).some((h) => h.toLowerCase().includes(q)) ||
+              (r.metadata.name ?? '').toLowerCase().includes(q) ||
+              (r.kind ?? '').toLowerCase().includes(q),
+          )
+        }
+        return rs.map((r) => ({
           id: routeId(r),
           name: r.spec?.hostnames?.join(', ') || '*',
           mono: true,
+          status: routeHealth(r),
           sub: (
             <>
               <RouteKindTag kind={(r.kind as RouteKind) ?? 'HTTPRoute'} />
@@ -94,10 +111,11 @@ export function GatewayDetail({ object }: ResourceDetailProps) {
       const rule = route?.spec?.rules?.[Number(selected[2])]
       return (rule?.backendRefs ?? []).map((b, i) => ({
         id: String(i),
-        name: `${b.name ?? '—'}${b.port != null ? `:${b.port}` : ''}`,
+        name: b.name ?? '—',
         mono: true,
         status: 'ok' as const,
-        sub: b.weight != null ? `weight ${b.weight}%` : undefined,
+        sub: b.port != null ? `:${b.port}` : undefined,
+        ...(b.weight != null ? { meter: { value: b.weight, canary: b.weight <= 10 } } : {}),
       }))
     },
     [listeners, routes, gw],
@@ -118,13 +136,25 @@ export function GatewayDetail({ object }: ResourceDetailProps) {
         emptyMessage: loading ? 'Loading…' : 'No routes attached to this listener.',
       },
       { id: 'rules', label: 'Rules', emptyMessage: 'Pick a route' },
-      { id: 'targets', label: 'Targets', emptyMessage: 'No backend targets' },
+      {
+        id: 'targets',
+        label: 'Targets · apparent path',
+        emptyMessage: 'Pick a rule',
+        footer: (selected) => {
+          const listener = listeners.find((l) => l.name === selected[0])
+          const route = routesForListener(routes, gw, selected[0] ?? null).find((r) => routeId(r) === selected[1])
+          const rule = route?.spec?.rules?.[Number(selected[2])]
+          if (!listener || !route || !rule) return null
+          return <ApparentPath listener={listener} route={route} rule={rule} />
+        },
+      },
     ],
-    [loading],
+    [loading, listeners, routes, gw],
   )
 
   return (
     <div className="flex flex-col gap-[var(--sp-4)]">
+      <TabBar active="routing" tabs={[{ id: 'routing', label: 'Routing', count: loading ? undefined : routes.length }]} />
       <StatStrip
         stats={[
           { lab: 'Listeners', val: listeners.length },
@@ -137,12 +167,11 @@ export function GatewayDetail({ object }: ResourceDetailProps) {
           { lab: 'Status', val: <GatewayStatusText gw={gw} /> },
         ]}
       />
-      <TabBar active="routing" tabs={[{ id: 'routing', label: 'Routing', count: loading ? undefined : routes.length }]} />
       <MillerBrowser
         columns={columns}
         getItems={getItems}
         template="1.1fr 1.5fr 1.5fr 1.7fr"
-        minHeight={520}
+        searchPlaceholder="Filter routes, hostnames, kinds…"
         ariaLabel={loading ? 'Gateway routes (loading)' : 'Gateway routes'}
       />
     </div>
@@ -157,6 +186,49 @@ const CHIP =
 
 function pluralize(n: number, noun: string): string {
   return `${n} ${noun}${n === 1 ? '' : 's'}`
+}
+
+// The "apparent path": a monospace trace of where a request entering this
+// listener actually goes once the selected rule applies — listener address, the
+// matched route/rule, each filter, and the resolved backend(s) or the upstream it
+// falls through to. Mirrors the CLRK design's Targets · apparent path block.
+function ApparentPath({ listener, route, rule }: { listener: GatewayListener; route: RouteObject; rule: RouteRule }) {
+  const proto = (listener.protocol ?? 'HTTP').toLowerCase()
+  const host = route.spec?.hostnames?.[0] ?? '*'
+  const kind = (route.kind as RouteKind) ?? 'HTTPRoute'
+  const backends = rule.backendRefs ?? []
+  return (
+    <div className="mt-[6px] border-t border-[color:var(--border-subtle)] px-[14px] py-[16px]">
+      <div className="mb-[8px] text-[length:var(--t-overline)] font-medium uppercase tracking-[0.12em] text-[color:var(--text-muted)]">
+        Apparent path
+      </div>
+      <div className="whitespace-pre font-mono text-[length:var(--t-micro)] leading-[1.7] text-[color:var(--text-secondary)]">
+        <div>
+          {proto}://{host}
+          {listener.port != null ? `:${listener.port}` : ''}
+        </div>
+        <div className="text-[color:var(--apx-slate)]">
+          {'  └─ '}
+          <RouteKindTag kind={kind} /> {ruleMatchSummary(rule, kind)}
+        </div>
+        {(rule.filters ?? []).map((f, i) => (
+          <div key={i} className="text-[color:var(--apx-blue-deep)]">
+            {`     ↳ ${f.type ?? 'filter'}`}
+          </div>
+        ))}
+        {backends.length > 0 ? (
+          backends.map((b, i) => (
+            <div key={i}>
+              {`     → ${b.name ?? '—'}${b.port != null ? `:${b.port}` : ''}`}
+              {b.weight != null && <span className="text-[color:var(--apx-slate)]"> ({b.weight}%)</span>}
+            </div>
+          ))
+        ) : (
+          <div>{`     → upstream ${host}`}</div>
+        )}
+      </div>
+    </div>
+  )
 }
 
 function StatStrip({ stats }: { stats: Array<{ lab: string; val: ReactNode; unit?: string; mono?: boolean }> }) {

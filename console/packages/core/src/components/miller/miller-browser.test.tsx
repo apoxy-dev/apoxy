@@ -113,4 +113,33 @@ describe('MillerBrowser', () => {
     fireEvent.click(within(col('Listeners')).getByTitle('Edit'))
     expect(onEdit).toHaveBeenCalledTimes(1)
   })
+
+  it('filters rows through getItems when a search box is shown', () => {
+    const items = (c: number, _sel: (string | null)[], q: string): MillerItem[] =>
+      c === 0 ? Object.keys(TREE).filter((id) => id.includes(q)).map((id) => ({ id, name: id })) : []
+    render(<MillerBrowser columns={[COLUMNS[0]!]} getItems={items} searchPlaceholder="Filter…" />)
+    expect(rowNames('Listeners')).toEqual(['web', 'admin', 'edge'])
+    fireEvent.change(screen.getByPlaceholderText('Filter…'), { target: { value: 'ed' } })
+    expect(rowNames('Listeners')).toEqual(['edge'])
+  })
+
+  it('focuses the search box on "/"', () => {
+    render(<MillerBrowser columns={[COLUMNS[0]!]} getItems={() => []} searchPlaceholder="Filter…" />)
+    const input = screen.getByPlaceholderText('Filter…')
+    expect(document.activeElement).not.toBe(input)
+    fireEvent.keyDown(document, { key: '/' })
+    expect(document.activeElement).toBe(input)
+  })
+
+  it('renders a column footer below its rows, given the resolved selection', () => {
+    const cols: MillerColumnDef[] = [{ id: 'a', label: 'Listeners', footer: (sel) => <div>chosen:{sel[0]}</div> }]
+    render(<MillerBrowser columns={cols} getItems={getItems} />)
+    expect(col('Listeners').textContent).toContain('chosen:web')
+  })
+
+  it('renders a weight meter for items that carry one', () => {
+    const items = (c: number): MillerItem[] => (c === 0 ? [{ id: 'b', name: 'b', meter: { value: 73 } }] : [])
+    render(<MillerBrowser columns={[COLUMNS[0]!]} getItems={items} />)
+    expect(col('Listeners').textContent).toContain('73%')
+  })
 })

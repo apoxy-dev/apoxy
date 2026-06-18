@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   attachesToGateway,
   listenerHealth,
+  routeHealth,
   routeId,
   routesForListener,
   ruleMatchSummary,
@@ -87,6 +88,28 @@ describe('listenerHealth', () => {
   it('is ok when Programmed=True', () => expect(listenerHealth(gw, 'http')).toBe('ok'))
   it('is err when Programmed=False', () => expect(listenerHealth(gw, 'https')).toBe('err'))
   it('is warn for an unknown listener', () => expect(listenerHealth(gw, 'mystery')).toBe('warn'))
+})
+
+describe('routeHealth', () => {
+  const withStatus = (conds: Array<{ type: string; status: string }>): RouteObject => ({
+    kind: 'HTTPRoute',
+    metadata: { name: 'r', namespace: 'default' },
+    spec: {},
+    status: { parents: [{ conditions: conds }] },
+  })
+  it('is ok when Accepted and ResolvedRefs are True', () => {
+    expect(
+      routeHealth(withStatus([{ type: 'Accepted', status: 'True' }, { type: 'ResolvedRefs', status: 'True' }])),
+    ).toBe('ok')
+  })
+  it('is err when any relevant condition is False', () => {
+    expect(
+      routeHealth(withStatus([{ type: 'Accepted', status: 'False' }, { type: 'ResolvedRefs', status: 'True' }])),
+    ).toBe('err')
+  })
+  it('is warn when the route has no status yet', () => {
+    expect(routeHealth(route('a', [{ name: 'edge' }]))).toBe('warn')
+  })
 })
 
 describe('routeId', () => {

@@ -53,6 +53,7 @@ export interface RouteRule {
 export interface RouteObject extends K8sObject {
   kind?: string
   spec?: { parentRefs?: ParentRef[]; hostnames?: string[]; rules?: RouteRule[] }
+  status?: { parents?: Array<{ conditions?: Condition[] }> }
 }
 
 /** A stable id for a route across the three kinds (kind + namespace + name). */
@@ -97,6 +98,25 @@ export function routesForListener(
       (p) => refTargetsGateway(p, r, gw) && (p.sectionName == null || p.sectionName === listenerName),
     ),
   )
+}
+
+/**
+ * Route health from `status.parents[].conditions`, for the route row's pip — a
+ * route is a top-level object with its own Accepted/ResolvedRefs status, so it
+ * gets a green/red indicator independent of the listener it binds to. Any failing
+ * condition is err; all-true is ok; no status yet is warn.
+ */
+export function routeHealth(route: RouteObject): 'ok' | 'warn' | 'err' {
+  const parents = route.status?.parents ?? []
+  let sawTrue = false
+  for (const p of parents) {
+    for (const c of p.conditions ?? []) {
+      if (c.type !== 'Accepted' && c.type !== 'ResolvedRefs') continue
+      if (c.status === 'False') return 'err'
+      if (c.status === 'True') sawTrue = true
+    }
+  }
+  return sawTrue ? 'ok' : 'warn'
 }
 
 /** Listener health from `status.listeners[].conditions`, for the row's pip. */
