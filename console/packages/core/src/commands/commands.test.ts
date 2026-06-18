@@ -43,20 +43,21 @@ describe('buildResourceCommands', () => {
     expect(cmds.map((c) => c.title)).toEqual(['Proxies'])
   })
 
-  it('adds a "New <kind>" command per editable kind when onCreate is given', () => {
+  it('adds a "New <kind>" command per kind with a wizard when onCreate is given', () => {
     const editable = createRegistry([
       defineResource({
         kind: 'Proxy', displayName: 'Proxies', group: 'core.apoxy.dev', resource: 'proxies',
-        servedVersion: 'v1alpha2', sidebarGroup: 'Operate', yamlEditable: true, columns: [],
+        servedVersion: 'v1alpha2', sidebarGroup: 'Operate', createWizard: () => null, columns: [],
       }),
       defineResource({
+        // yamlEditable but no wizard → read-only create → no "New" command.
         kind: 'TunnelAgent', displayName: 'Tunnel agents', group: 'core.apoxy.dev', resource: 'tunnelagents',
-        servedVersion: 'v1alpha2', sidebarGroup: 'Connect', columns: [],
+        servedVersion: 'v1alpha2', sidebarGroup: 'Connect', yamlEditable: true, columns: [],
       }),
     ])
     const onCreate = vi.fn()
     const cmds = buildResourceCommands(editable, { navigate: vi.fn(), onCreate })
-    // Nav command for both kinds, but a New command only for the editable one.
+    // Nav command for both kinds, but a New command only for the one with a wizard.
     expect(cmds.map((c) => c.title)).toEqual(['Proxies', 'New Proxy', 'Tunnel agents'])
     const newCmd = cmds.find((c) => c.id === 'new:proxies')!
     expect(newCmd.group).toBe('Create')

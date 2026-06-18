@@ -49,12 +49,14 @@ export function ResourceListView({ entry, actions, subtitle }: ResourceListViewP
   const items = useMemo(() => list.data?.items ?? [], [list.data])
   const count = items.length
 
-  // "New <kind>": open the shared create tray, gated by `yamlEditable` and a
-  // create SelfSubjectAccessReview. Only offered when a CreateProvider is mounted
-  // (`create` is null in isolation/tests), so the list stays usable on its own.
+  // "New <kind>": open the kind's bespoke create wizard, gated by a registered
+  // `createWizard` and a create SelfSubjectAccessReview. A kind with no wizard has
+  // no "New" affordance (read-only create) — there is no generic raw-YAML create.
+  // Only offered when a CreateProvider is mounted (`create` is null in
+  // isolation/tests), so the list stays usable on its own.
   const create = useCreate()
-  const canCreate = useCan('create', entry.gvr, { enabled: entry.yamlEditable && !!create })
-  const showCreate = !!create && entry.yamlEditable && canCreate.allowed
+  const canCreate = useCan('create', entry.gvr, { enabled: !!entry.createWizard && !!create })
+  const showCreate = !!create && !!entry.createWizard && canCreate.allowed
   useKeyboardScope({
     level: 'view',
     enabled: showCreate,

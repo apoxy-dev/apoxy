@@ -1,3 +1,5 @@
 export { Button, type ButtonProps } from './button'
 export { Card, CardTitle, CardMeta } from './card'
 export { Badge, type BadgeProps, type BadgeVariant } from './badge'
+export { DropdownMenu, type DropdownMenuProps, type DropdownItem } from './dropdown-menu'
+export { ConfirmDialog, type ConfirmDialogProps } from './confirm-dialog'

@@ -60,11 +60,22 @@ export function TextAreaEditor({ value, onChange, readOnly, ariaLabel = 'YAML ed
   }, [])
 
   return (
-    <div className="flex min-h-0 flex-1 overflow-hidden border border-[color:var(--border-default)] bg-[var(--apx-white)] font-mono text-[length:var(--t-micro)] leading-[var(--lh-snug)]">
+    // Borderless: the editor fills its container edge-to-edge and the parent
+    // (tray body / wizard YAML pane) supplies the one frame — so no box-in-box.
+    // The only internal rule is the gutter's right hairline, matching the
+    // design's `.yaml-code` (a single continuous vertical line, no card border).
+    // Same 13px / 1.65 line-height / transparent surface as the read-only
+    // `YamlCode` view, so the textarea fallback and the manifest viewer read as one
+    // editor (the parent supplies the surface colour).
+    <div className="flex min-h-0 flex-1 overflow-hidden font-mono text-[length:var(--t-caption)] leading-[var(--yaml-line-h)]">
       <div
         ref={gutterRef}
         aria-hidden="true"
-        className="flex-none select-none overflow-hidden border-r border-[color:var(--border-subtle)] bg-[var(--apx-mist)] px-[var(--sp-2)] py-[var(--sp-3)] text-right text-[color:var(--text-muted)]"
+        // The shared YAML gutter geometry (--yaml-* tokens): right-aligned with a
+        // min-width so the text column doesn't shift across the 9→10→100
+        // boundaries, while a 4+ digit document grows the column rather than
+        // clipping. The numbers sit at 12px (--t-micro), matching the read-only gutter.
+        className="min-w-[var(--yaml-gutter-w)] flex-none select-none overflow-hidden border-r border-[color:var(--border-subtle)] py-[var(--yaml-block-pad)] pr-[var(--yaml-gutter-gap)] text-right text-[length:var(--t-micro)] text-[color:var(--text-disabled)]"
       >
         {lineNumbers.map((n) => (
           <div key={n} className="tabular-nums">
@@ -86,7 +97,7 @@ export function TextAreaEditor({ value, onChange, readOnly, ariaLabel = 'YAML ed
         // "immutable" content through the native setter, bypassing `readOnly`.
         onKeyDown={readOnly ? undefined : handleTab}
         className={cn(
-          'min-w-0 flex-1 resize-none overflow-auto whitespace-pre bg-transparent px-[var(--sp-3)] py-[var(--sp-3)] text-[color:var(--text-primary)] outline-none',
+          'min-w-0 flex-1 resize-none overflow-auto whitespace-pre bg-transparent py-[var(--yaml-block-pad)] pl-[var(--yaml-text-pad)] pr-[var(--sp-3)] text-[color:var(--text-primary)] outline-none',
           readOnly && 'text-[color:var(--text-secondary)]',
         )}
       />

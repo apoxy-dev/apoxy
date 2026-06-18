@@ -36,6 +36,7 @@ function normalize(input: ResourceEntryInput<K8sObject>): ResourceEntry {
     requires: input.requires ?? [gvr],
     shortcut: input.shortcut,
     detail: input.detail,
+    createWizard: input.createWizard,
   }
 }
 

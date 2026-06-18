@@ -30,6 +30,29 @@ export interface ResourceDetailProps<T extends K8sObject = K8sObject> {
 }
 
 /**
+ * Props for a kind's bespoke create/edit wizard (the `createWizard` seam). One
+ * component serves both modes: `object` is present when editing an existing
+ * object and absent when creating a new one. A wizard is what gives a kind its
+ * "New" button (list view) and its "Edit" button (detail view) — a kind without
+ * one has no structured create/edit path (it is read-only, aside from the raw
+ * YAML escape hatch on `yamlEditable` kinds and Delete).
+ *
+ * Deliberately non-generic: the registry erases each entry to `K8sObject`, and a
+ * bespoke wizard narrows `object` to its own kind internally (as a custom
+ * `detail` renderer does), so this stays assignable regardless of the entry's
+ * column type.
+ */
+export interface WizardProps {
+  entry: ResourceEntry
+  /** The object being edited; absent in create mode. */
+  object?: K8sObject
+  open: boolean
+  onClose: () => void
+  /** Notified with the server object after a successful create/update. */
+  onSaved?: (obj: K8sObject) => void
+}
+
+/**
  * What an author writes to register a kind. The API version is named exactly
  * once — `servedVersion` — and the GVR is derived from it, so a kind's version
  * lives in a single place. `path`/`displayName`/`requires` default sensibly.
@@ -69,6 +92,10 @@ export interface ResourceEntryInput<T extends K8sObject = K8sObject> {
   shortcut?: string
   /** Custom detail renderer; falls back to the generic detail view. */
   detail?: ComponentType<ResourceDetailProps<T>>
+  /** A bespoke create/edit wizard. Its presence gives the kind a "New" button
+   *  (list) and an "Edit" button (detail); a kind without one has no structured
+   *  create/edit path. See {@link WizardProps}. */
+  createWizard?: ComponentType<WizardProps>
 }
 
 /** A normalized registry entry: every default resolved, `gvr` computed. */
@@ -86,6 +113,7 @@ export interface ResourceEntry<T extends K8sObject = K8sObject> {
   readonly requires: GVR[]
   readonly shortcut?: string
   readonly detail?: ComponentType<ResourceDetailProps<T>>
+  readonly createWizard?: ComponentType<WizardProps>
 }
 
 /** A sidebar section: its label and the entries registered under it, in order. */

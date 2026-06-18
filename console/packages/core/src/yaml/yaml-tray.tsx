@@ -20,6 +20,7 @@ import type { ResourceEntry } from '../registry/types'
 import { forEditing, fromYaml, skeleton, toYaml } from './yaml-doc'
 import { hasBlockingProblems, validateObject, type Problem } from './validate'
 import { TextAreaEditor, useTrayEditor, type TrayEditor } from './editor'
+import { Banner } from './tray-chrome'
 
 export interface YamlTrayProps {
   entry: ResourceEntry
@@ -194,7 +195,7 @@ export function YamlTray({ entry, object, open, onClose, onSaved, editor }: Yaml
         aria-modal="true"
         aria-label={title}
         onMouseDown={(e) => e.stopPropagation()}
-        className="flex h-full w-full max-w-[640px] flex-col border-l border-[color:var(--border-strong)] bg-[var(--apx-paper)] shadow-[var(--sh-4)]"
+        className="flex h-full w-full max-w-[660px] flex-col border-l border-[color:var(--apx-ink)] bg-[var(--apx-paper)] shadow-[var(--sh-4)]"
       >
         <header className="flex flex-none items-center justify-between border-b border-[color:var(--border-default)] bg-[var(--apx-white)] px-[var(--sp-5)] py-[var(--sp-4)]">
           <div className="min-w-0">
@@ -217,7 +218,9 @@ export function YamlTray({ entry, object, open, onClose, onSaved, editor }: Yaml
           </button>
         </header>
 
-        <div className="flex min-h-0 flex-1 flex-col gap-[var(--sp-3)] p-[var(--sp-5)]">
+        <div className="flex min-h-0 flex-1 flex-col">
+          {(changedOnServer || conflict || saveError) && (
+            <div className="flex flex-none flex-col gap-[var(--sp-2)] px-[var(--sp-5)] pt-[var(--sp-4)]">
           {changedOnServer && (
             <Banner tone="warning" role="status">
               {confirmingReload ? (
@@ -255,13 +258,18 @@ export function YamlTray({ entry, object, open, onClose, onSaved, editor }: Yaml
               <span className="truncate">{saveError}</span>
             </Banner>
           )}
+            </div>
+          )}
 
-          <Editor value={text} onChange={setText} schema={entry.schema} ariaLabel={`${entry.kind} YAML`} />
+          {/* Editor is full-bleed and borderless — it sits directly under the
+              header (whose border-b is the only rule above it), exactly like the
+              read-only manifest viewer, so opening Edit adds no extra top border. */}
+          <div className="flex min-h-0 flex-1 flex-col">
+            <Editor value={text} onChange={setText} schema={entry.schema} ariaLabel={`${entry.kind} YAML`} />
+          </div>
 
-          <div className="max-h-[28%] flex-none overflow-auto">
-            {problems.length === 0 ? (
-              <p className="text-[length:var(--t-overline)] text-[color:var(--apx-leaf)]">No problems found.</p>
-            ) : (
+          {problems.length > 0 && (
+            <div className="max-h-[28%] flex-none overflow-auto border-t border-[color:var(--border-default)] px-[var(--sp-5)] py-[var(--sp-3)]">
               <ul className="flex flex-col gap-[2px]">
                 {problems.map((p, i) => (
                   <li
@@ -275,8 +283,8 @@ export function YamlTray({ entry, object, open, onClose, onSaved, editor }: Yaml
                   </li>
                 ))}
               </ul>
-            )}
-          </div>
+            </div>
+          )}
         </div>
 
         <footer className="flex flex-none items-center justify-between gap-[var(--sp-3)] border-t border-[color:var(--border-default)] bg-[var(--apx-white)] px-[var(--sp-5)] py-[var(--sp-4)]">
@@ -318,26 +326,3 @@ export function YamlTray({ entry, object, open, onClose, onSaved, editor }: Yaml
   )
 }
 
-function Banner({
-  tone,
-  role,
-  children,
-}: {
-  tone: 'warning' | 'error'
-  role: 'status' | 'alert'
-  children: React.ReactNode
-}) {
-  return (
-    <div
-      role={role}
-      className={cn(
-        'flex flex-none items-center justify-between gap-[var(--sp-3)] border px-[var(--sp-3)] py-[var(--sp-2)] text-[length:var(--t-body-sm)]',
-        tone === 'error'
-          ? 'border-[color:var(--apx-coral)] bg-[var(--apx-coral-tint)] text-[color:var(--apx-ink)]'
-          : 'border-[color:var(--apx-amber)] bg-[var(--apx-amber-tint)] text-[color:var(--apx-ink)]',
-      )}
-    >
-      {children}
-    </div>
-  )
-}

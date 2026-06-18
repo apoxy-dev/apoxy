@@ -158,6 +158,17 @@
   --sp-24: 96px;
   --sp-32: 128px;
 
+  /* --- YAML code geometry ---
+     The read-only manifest renderer and the two editors (textarea + CodeMirror)
+     must lay a line out pixel-identically, so opening Edit on a manifest never
+     resizes or respaces the document. These are the single source of that
+     geometry — theme-agnostic, so they live only here. */
+  --yaml-gutter-w:   46px;   /* line-number column width */
+  --yaml-gutter-gap: 14px;   /* gap between the number and the divider */
+  --yaml-text-pad:   16px;   /* left pad of the code text */
+  --yaml-block-pad:  14px;   /* top/bottom pad of the code block */
+  --yaml-line-h:     1.65;   /* code line-height */
+
   /* --- Radius ---
      Apoxy is square. Every surface — buttons, inputs, cards, modals,
      code blocks, badges, avatars, focus rings — has a 0 px corner.

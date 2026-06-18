@@ -8,6 +8,7 @@ import { BareMetalServer, Categories, Connect, FlowConnection, Gateway, GatewayA
 import type { ReactNode } from 'react'
 import { schemaFor } from './schema/schema-for'
 import { GatewayDetail } from './views/gateway-detail'
+import { GatewayWizard } from './views/gateway-wizard'
 
 /** Objects that carry a coarse status phase we can badge. */
 interface Phased extends K8sObject {
@@ -148,6 +149,7 @@ export const registry = createRegistry([
     yamlEditable: true,
     schema: schemaFor('gateway.apoxy.dev', 'v1', 'Gateway'),
     detail: GatewayDetail,
+    createWizard: GatewayWizard,
     columns: [nameCol, classCol, listenersCol, createdCol],
   }),
   defineResource<Phased>({

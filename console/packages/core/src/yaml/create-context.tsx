@@ -1,12 +1,11 @@
-// The create seam (APO-778). A single shared YAML tray for *new* objects, opened
-// from anywhere: the list view's "New <kind>" button and the ⌘K palette's
-// "New <kind>" command both call `openCreate(entry)`. One tray instance keeps the
-// create skeleton + SSA write path in one place rather than duplicating it per
-// trigger. The tray opens with no `object`, so it renders the kind's skeleton and
-// gates Save on a required `metadata.name` (the structural check).
+// The create seam (APO-778, reworked for bespoke wizards). A single shared mount
+// for *new* objects, opened from anywhere: the list view's "New <kind>" button
+// and the ⌘K palette's "New <kind>" command both call `openCreate(entry)`. Create
+// now runs through the kind's bespoke `createWizard` (a structured form with an
+// optional YAML tab) — there is no generic raw-YAML create — so `openCreate` is
+// only wired for kinds that register a wizard.
 
 import { createContext, useContext, useMemo, useState, type ReactNode } from 'react'
-import { YamlTray } from './yaml-tray'
 import type { ResourceEntry } from '../registry/types'
 import type { K8sObject } from '../lib/k8s-types'
 
@@ -32,11 +31,14 @@ export interface CreateProviderProps {
 export function CreateProvider({ children, onCreated }: CreateProviderProps) {
   const [creating, setCreating] = useState<ResourceEntry | null>(null)
   const api = useMemo<CreateApi>(() => ({ openCreate: (entry) => setCreating(entry) }), [])
+  // Only kinds with a bespoke wizard reach here (the "New" affordance is gated on
+  // it), but guard anyway so a stray openCreate is a no-op, not a crash.
+  const Wizard = creating?.createWizard
   return (
     <CreateContext.Provider value={api}>
       {children}
-      {creating && (
-        <YamlTray
+      {creating && Wizard && (
+        <Wizard
           entry={creating}
           open
           onClose={() => setCreating(null)}

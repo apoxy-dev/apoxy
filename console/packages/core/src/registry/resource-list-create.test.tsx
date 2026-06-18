@@ -9,8 +9,10 @@ import type { ConsoleClient } from '../lib/console-client'
 import { InMemoryClient } from '../lib/testing/in-memory-client'
 import { KeyboardScopeProvider } from '../keyboard/scope-stack'
 import { CreateProvider } from '../yaml/create-context'
+import { WizardShell } from '../yaml/wizard-shell'
 import { createRegistry, defineResource } from './registry'
 import { ResourceListView } from './resource-list-view'
+import type { WizardProps } from './types'
 import type { GVR, K8sObject } from '../lib/k8s-types'
 
 const gvr: GVR = { group: 'core.apoxy.dev', version: 'v1alpha2', resource: 'proxies' }
@@ -18,6 +20,22 @@ const noDelay: Scheduler = { sleep: () => Promise.resolve() }
 
 function proxy(name: string): K8sObject {
   return { apiVersion: 'core.apoxy.dev/v1alpha2', kind: 'Proxy', metadata: { name, uid: name } } as K8sObject
+}
+
+// A minimal bespoke wizard built on the shared shell — enough to drive the
+// list's "New" affordance (which is gated on a registered `createWizard`).
+function TestWizard({ entry: e, object, open, onClose, onSaved }: WizardProps) {
+  return (
+    <WizardShell
+      entry={e}
+      object={object}
+      open={open}
+      onClose={onClose}
+      onSaved={onSaved}
+      emptyDraft={() => ({ apiVersion: 'core.apoxy.dev/v1alpha2', kind: 'Proxy', metadata: { name: '' }, spec: {} }) as K8sObject}
+      steps={[{ id: 'main', label: 'Main', render: () => null }]}
+    />
+  )
 }
 
 const entry = createRegistry([
@@ -29,6 +47,7 @@ const entry = createRegistry([
     servedVersion: 'v1alpha2',
     sidebarGroup: 'Operate',
     yamlEditable: true,
+    createWizard: TestWizard,
     columns: [{ id: 'name', header: 'Name', cell: (o) => o.metadata.name }],
   }),
 ]).all()[0]!
@@ -73,14 +92,14 @@ function mount(opts: { withProvider: boolean; seed?: K8sObject[] }) {
 }
 
 describe('ResourceListView create flow', () => {
-  it('opens the create tray from the "New" button when create is allowed', async () => {
+  it('opens the create wizard from the "New" button when create is allowed', async () => {
     mount({ withProvider: true })
     const button = await screen.findByRole('button', { name: 'New Proxy' })
     fireEvent.click(button)
     expect(await screen.findByRole('dialog', { name: 'New Proxy' })).toBeDefined()
   })
 
-  it('opens the create tray with the `n` shortcut', async () => {
+  it('opens the create wizard with the `n` shortcut', async () => {
     mount({ withProvider: true })
     await screen.findByRole('button', { name: 'New Proxy' })
     act(() => {

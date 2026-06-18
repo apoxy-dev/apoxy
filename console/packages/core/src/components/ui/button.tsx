@@ -1,7 +1,7 @@
 import { forwardRef, type ButtonHTMLAttributes } from 'react'
 import { cn } from '../../lib/cn'
 
-type Variant = 'primary' | 'secondary' | 'ghost'
+type Variant = 'primary' | 'secondary' | 'ghost' | 'danger'
 type Size = 'sm' | 'md'
 
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
@@ -22,6 +22,10 @@ const variants: Record<Variant, string> = {
   secondary:
     'border border-[color:var(--apx-ink)] bg-transparent text-[color:var(--apx-ink)] hover:bg-[var(--apx-mist)]',
   ghost: 'bg-transparent text-[color:var(--apx-ink)] hover:bg-[var(--apx-mist)]',
+  // The design's `.btn--danger`: coral-outlined with a tint, filling solid coral on
+  // hover. The border is what the bare ghost Delete button was missing.
+  danger:
+    'border border-[color:var(--apx-coral)] bg-[var(--apx-coral-tint)] text-[color:var(--apx-coral)] hover:bg-[var(--apx-coral)] hover:text-[color:var(--apx-white)]',
 }
 
 const sizes: Record<Size, string> = {

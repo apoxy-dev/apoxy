@@ -7,6 +7,7 @@ export type {
   ResourceEntryInput,
   ResourceColumn,
   ResourceDetailProps,
+  WizardProps,
 } from './types'
 export { createRegistry, defineResource } from './registry'
 

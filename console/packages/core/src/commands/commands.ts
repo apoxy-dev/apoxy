@@ -34,8 +34,8 @@ export interface BuildResourceCommandsOptions {
   isServed?: (gvr: GVR) => boolean
   /** Group label for the generated navigation commands. Defaults to `Go to`. */
   group?: string
-  /** When provided, also emit a "New <kind>" command for each `yamlEditable`
-   *  kind, calling this to open the create tray. (The apiserver enforces the
+  /** When provided, also emit a "New <kind>" command for each kind with a
+   *  bespoke `createWizard`, calling this to open it. (The apiserver enforces the
    *  create permission on save, so these are discovery-gated but not SSAR-gated
    *  here — a per-command access review would be N requests.) */
   onCreate?: (entry: ResourceEntry) => void
@@ -45,8 +45,8 @@ export interface BuildResourceCommandsOptions {
 
 /**
  * One navigation command per registry entry (gated by discovery, like the
- * sidebar), plus a "New <kind>" command per editable kind when `onCreate` is
- * given. Adding a kind to the registry adds it to the palette for free.
+ * sidebar), plus a "New <kind>" command per kind with a wizard when `onCreate`
+ * is given. Adding a kind to the registry adds it to the palette for free.
  */
 export function buildResourceCommands(registry: Registry, opts: BuildResourceCommandsOptions): Command[] {
   const isServed = opts.isServed ?? (() => true)
@@ -70,7 +70,7 @@ export function buildResourceCommands(registry: Registry, opts: BuildResourceCom
           run: () => opts.navigate(`/${e.path}`),
         },
       ]
-      if (opts.onCreate && e.yamlEditable) {
+      if (opts.onCreate && e.createWizard) {
         commands.push({
           id: `new:${e.path}`,
           title: `New ${e.kind}`,
