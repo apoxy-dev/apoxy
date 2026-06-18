@@ -46,6 +46,13 @@ func sandboxID(tenant, revision string) sandbox.SandboxID {
 	return sandbox.SandboxID(tenant + "/" + revision)
 }
 
+// BundleImageRef builds the digest-pinned OCI reference for a bundle, exported
+// for the ServiceManager control plane (pkg/workerd/manager), which pulls a
+// revision's modules to inline into the WorkerLoader payload.
+func BundleImageRef(b computev1alpha1.BundleRef) (string, error) {
+	return bundleImageRef(b)
+}
+
 // bundleImageRef builds the OCI reference Create pulls — digest-pinned when a
 // digest is set (the serving path is digest-addressed and immutable).
 func bundleImageRef(b computev1alpha1.BundleRef) (string, error) {
@@ -93,10 +100,15 @@ func buildSpec(id sandbox.SandboxID, imageRef string, want ResidentRef, cfgHostP
 // worker's http socket binds "*:<port>" (all in-Sentry interfaces), so the
 // forwarder dials it on loopback — 127.0.0.1 is always present, even before
 // eth0 addressing, and a wildcard listener accepts the loopback destination.
-// Returns "" for a non-HTTP socket (filter/UDS), which leaves the sandbox
-// without a TCP ingress forwarder.
+// Returns "" for a non-HTTP socket, a unix-socket listener, or an unparseable
+// address — any of which leaves the sandbox without a TCP ingress forwarder.
 func hostInboundAddr(sock SocketSpec) string {
 	if sock.Kind != HTTPSocket {
+		return ""
+	}
+	// A "unix:/path" listener has no TCP host:port to forward. net.SplitHostPort
+	// would mis-parse it as host="unix", port="/path", so guard it explicitly.
+	if strings.HasPrefix(sock.Addr, "unix:") {
 		return ""
 	}
 	_, port, err := net.SplitHostPort(sock.Addr)

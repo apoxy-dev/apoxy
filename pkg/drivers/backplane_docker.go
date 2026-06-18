@@ -79,6 +79,11 @@ func (d *BackplaneDockerDriver) Start(
 		"--privileged",
 		"--network", dockerutils.NetworkName,
 	)
+	// APO-796: share the resident-socket volume so Envoy can dial the workerd
+	// resident's host UDS that the co-located workerd-manager surfaces there.
+	if setOpts.WorkerdSocketVolume != "" {
+		cmd.Args = append(cmd.Args, "-v", setOpts.WorkerdSocketVolume+":"+workerdSocketMountPath)
+	}
 
 	apiserverAddr := setOpts.APIServerAddr
 	if apiserverAddr == "" {

@@ -45,6 +45,7 @@ var (
 	decodeFn       = codecFactory.UniversalDeserializer().Decode
 	useSubprocess  bool
 	clickhouseAddr string
+	workerdImage   string
 )
 
 func init() {
@@ -54,6 +55,8 @@ func init() {
 		BoolVar(&useSubprocess, "use-subprocess", false, "Use subprocess for apiserver and backplane.")
 	devCmd.PersistentFlags().
 		StringVar(&clickhouseAddr, "clickhouse-addr", "", "ClickHouse address (host only, port 9000 will be used).")
+	devCmd.PersistentFlags().
+		StringVar(&workerdImage, "workerd-image", "", "Stock workerd OCI image to run the APO-796 compute Service runtime. When set, `apoxy dev` starts the privileged workerd-manager alongside the backplane (docker driver only).")
 	RootCmd.AddCommand(devCmd)
 }
 
@@ -363,20 +366,53 @@ var devCmd = &cobra.Command{
 			return fmt.Errorf("failed to get apiserver address: %v", err)
 		}
 
-		cname, err := bpDriver.Start(
-			ctx,
-			projectID,
-			proxyName,
+		// APO-796: when the compute Service runtime is enabled, the backplane and
+		// the workerd-manager share a volume carrying the resident workerd's host
+		// UDS (the backplane's Envoy dials it). Only the docker driver supports the
+		// privileged/runsc manager.
+		workerdEnabled := workerdImage != "" && !useSubprocess
+		workerdVolume := ""
+		bpOpts := []drivers.Option{
 			drivers.WithArgs([]string{
 				fmt.Sprintf("--ch_addrs=%s:9000", clickhouseAddr),
 				fmt.Sprintf("--dev=%t", true),
 			}...),
 			drivers.WithAPIServerAddr(fmt.Sprintf("%s:8443", apiserverAddr)),
-		)
+		}
+		if workerdEnabled {
+			workerdVolume = fmt.Sprintf("apoxy-workerd-%s", proxyName)
+			bpOpts = append(bpOpts, drivers.WithWorkerdSocketVolume(workerdVolume))
+		}
+
+		cname, err := bpDriver.Start(ctx, projectID, proxyName, bpOpts...)
 		if err != nil {
 			return err
 		}
 		defer bpDriver.Stop(projectID, proxyName)
+
+		if workerdImage != "" && useSubprocess {
+			log.Warnf("--workerd-image is set but ignored: the workerd-manager requires the docker driver (not --use-subprocess)")
+		}
+		if workerdEnabled {
+			fmt.Printf("Starting workerd-manager using driver mode: %s\n", driverMode)
+			wmDriver, err := drivers.GetDriver(driverMode, drivers.WorkerdManagerService)
+			if err != nil {
+				return err
+			}
+			if _, err := wmDriver.Start(
+				ctx,
+				projectID,
+				proxyName,
+				// Join the apiserver's netns so kube-API + routing publish reach it
+				// over loopback; share the resident-socket volume with the backplane.
+				drivers.WithNetworkContainer(apiserverAddr),
+				drivers.WithWorkerdSocketVolume(workerdVolume),
+				drivers.WithArgs(fmt.Sprintf("--workerd_image=%s", workerdImage)),
+			); err != nil {
+				return err
+			}
+			defer wmDriver.Stop(projectID, proxyName)
+		}
 
 		if !useSubprocess {
 			rc := apiserver.NewClientConfig()

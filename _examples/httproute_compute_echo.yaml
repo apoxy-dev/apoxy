@@ -1,0 +1,75 @@
+# APO-796 compute Service echo demo — the workerd-runtime analogue of
+# httproute_edgefunc.yaml. An HTTPRoute routes to a compute.apoxy.dev Service
+# backendRef; the apiserver mints a ServiceRevision from spec.source, the
+# co-located workerd-manager loads it into the shared resident workerd as an
+# isolate, and the backplane demuxes to it via the x-apoxy-service header.
+#
+# Prerequisite: the echo OCI bundle referenced by spec.source.oci must be built
+# and pushed first — see _examples/compute_echo/README.md.
+apiVersion: core.apoxy.dev/v1alpha2
+kind: Proxy
+metadata:
+  name: example
+spec:
+  provider: unmanaged
+---
+apiVersion: gateway.apoxy.dev/v1
+kind: GatewayClass
+metadata:
+  name: apoxy
+spec:
+  controllerName: gateway.apoxy.dev/gatewayclass-controller
+---
+apiVersion: gateway.apoxy.dev/v1
+kind: Gateway
+metadata:
+  name: example
+spec:
+  gatewayClassName: apoxy
+  infrastructure:
+    parametersRef:
+      kind: Proxy
+      name: example
+  listeners:
+    - protocol: HTTP
+      port: 10000
+      name: example
+---
+apiVersion: gateway.apoxy.dev/v1
+kind: HTTPRoute
+metadata:
+  name: echo
+spec:
+  parentRefs:
+    - name: example
+      port: 10000
+      kind: Gateway
+  hostnames:
+    - "*"
+  rules:
+    - backendRefs:
+        # A compute Service backendRef: group selects the workerd runtime (the
+        # kind is "Service", same as a core Service, so the group disambiguates).
+        # http services omit port — the resident is reached by the demux header,
+        # not an upstream port.
+        - group: compute.apoxy.dev
+          kind: Service
+          name: echo
+---
+apiVersion: compute.apoxy.dev/v1alpha1
+kind: Service
+metadata:
+  name: echo
+spec:
+  # backend mode (the default): a full fetch handler served via Envoy and
+  # referenced as a backendRef above.
+  template:
+    spec:
+      backend:
+        protocol: http1
+  source:
+    oci:
+      # The pushed echo bundle. Replace with your registry/repo and pin a digest
+      # for production; see _examples/compute_echo/README.md to build + push it.
+      repo: ttl.sh/apoxy-examples-echo
+      tag: latest

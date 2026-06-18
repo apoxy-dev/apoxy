@@ -228,6 +228,12 @@ func (t *Translator) processHTTPRouteRules(httpRoute *HTTPRouteContext, parentRe
 					}
 				}
 				route.Destination.Settings = append(route.Destination.Settings, ds)
+				// APO-796: mark a compute.apoxy.dev Service route so the xDS workerd
+				// hook re-points it to the resident cluster and sets the
+				// x-apoxy-service demux header.
+				if IsComputeServiceBackendRef(backendRef.BackendObjectReference) {
+					route.WorkerdService = string(backendRef.Name)
+				}
 			}
 		}
 
@@ -1289,6 +1295,17 @@ func (t *Translator) processDestination(
 			AddressType: addrType,
 		}
 	case KindService:
+		if IsComputeServiceBackendRef(backendRef.BackendObjectReference) {
+			// A compute.apoxy.dev Service is served by the shared resident workerd,
+			// reached through the single resident cluster the xDS workerd hook
+			// injects. It has no endpoints of its own; give the route a placeholder
+			// destination so it stays valid and receives a RouteAction the hook can
+			// re-point. If the resident is not yet published, traffic falls through
+			// to the placeholder (connection refused -> 503), the desired
+			// "not ready" behavior.
+			ds = workerdPlaceholderDestination()
+			break
+		}
 		ds = t.processServiceDestinationSetting(backendRef.BackendObjectReference, backendNamespace, protocol, resources)
 		ds.Filters = t.processDestinationFilters(routeType, backendRefContext, parentRef, route, resources)
 	case KindBackend:
@@ -1365,6 +1382,17 @@ func inspectAppProtocolByRouteKind(kind gwapiv1.Kind) ir.AppProtocol {
 		return ir.HTTPS
 	}
 	return ir.TCP
+}
+
+// workerdPlaceholderDestination is the unroutable placeholder a compute.apoxy.dev
+// Service route carries until the xDS workerd hook re-points it to the resident
+// cluster. It keeps the route valid (a backend with an endpoint) without sending
+// real traffic anywhere; a not-yet-published resident therefore yields 503.
+func workerdPlaceholderDestination() *ir.DestinationSetting {
+	return &ir.DestinationSetting{
+		Protocol:  ir.HTTP,
+		Endpoints: []*ir.DestinationEndpoint{ir.NewDestEndpoint("127.0.0.1", 1)},
+	}
 }
 
 func (t *Translator) processServiceDestinationSetting(

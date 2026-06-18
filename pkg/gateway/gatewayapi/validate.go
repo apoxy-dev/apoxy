@@ -51,6 +51,12 @@ func (t *Translator) validateBackendRef(backendRefContext BackendRefContext, par
 	backendRefKind := KindDerefOr(backendRef.Kind, KindService)
 	switch backendRefKind {
 	case KindService:
+		// A compute.apoxy.dev Service is not a core Service — it has no
+		// EndpointSlices or ClusterIP to resolve; the workerd hook routes it to the
+		// resident cluster. Skip the core-Service validation.
+		if IsComputeServiceBackendRef(backendRef.BackendObjectReference) {
+			break
+		}
 		if !t.validateBackendService(backendRef, parentRef, resources, backendNamespace, route, protocol) {
 			return false
 		}
@@ -63,7 +69,7 @@ func (t *Translator) validateBackendRef(backendRefContext BackendRefContext, par
 }
 
 func (t *Translator) validateBackendRefGroup(backendRef *gwapiv1a2.BackendRef, parentRef *RouteParentContext, route RouteContext) bool {
-	accepted := []string{GroupApoxyCore, GroupApoxyExtensions, GroupMultiClusterService}
+	accepted := []string{GroupApoxyCore, GroupApoxyExtensions, GroupApoxyCompute, GroupMultiClusterService}
 	if backendRef.Group != nil &&
 		*backendRef.Group != "" &&
 		!sets.NewString(accepted...).Has(string(*backendRef.Group)) {
@@ -168,6 +174,11 @@ func (t *Translator) validateBackendNamespace(backendRef *gwapiv1a2.BackendRef, 
 
 func (t *Translator) validateBackendPort(backendRef *gwapiv1a2.BackendRef, parentRef *RouteParentContext, route RouteContext) bool {
 	if backendRef != nil && backendRef.Kind != nil && string(*backendRef.Kind) == KindEdgeFunction {
+		return true
+	}
+	// A compute.apoxy.dev Service backend carries no port: the resident workerd
+	// demuxes by header, not by upstream port.
+	if backendRef != nil && IsComputeServiceBackendRef(backendRef.BackendObjectReference) {
 		return true
 	}
 	if backendRef.Port == nil {

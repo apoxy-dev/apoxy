@@ -86,7 +86,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	return &Runtime{
 		core:          core,
 		rootDir:       cfg.RootDir,
-		fetchManifest: fetchBundleManifest,
+		fetchManifest: FetchBundleManifest,
 		residents:     make(map[string]*Resident),
 	}, nil
 }

@@ -101,6 +101,16 @@ func KindDerefOr(kind *gwapiv1.Kind, defaultKind string) string {
 	return defaultKind
 }
 
+// IsComputeServiceBackendRef reports whether backendRef points at a
+// compute.apoxy.dev Service — the workerd-backed Service (APO-796). Such a
+// backend is not a core Service: it has no endpoints of its own and no port; the
+// xDS workerd hook re-points its route to the shared resident workerd cluster and
+// sets the x-apoxy-service demux header.
+func IsComputeServiceBackendRef(backendRef gwapiv1.BackendObjectReference) bool {
+	return GroupDerefOr(backendRef.Group, "") == GroupApoxyCompute &&
+		KindDerefOr(backendRef.Kind, KindService) == KindService
+}
+
 // IsRefToGateway returns whether the provided parent ref is a reference
 // to a Gateway with the given namespace/name, irrespective of whether a
 // section/listener name has been specified (i.e. a parent ref to a listener

@@ -16,11 +16,15 @@ import (
 	computev1alpha1 "github.com/apoxy-dev/apoxy/api/compute/v1alpha1"
 )
 
-// fetchBundleManifest fetches the OCI config blob — the JSON-encoded
+// FetchBundleManifest fetches the OCI config blob — the JSON-encoded
 // BundleManifest (media type application/vnd.apoxy.dev.service.config.v1+json)
 // — for a bundle image. The sandbox ImageStore extracts the rootfs but does not
 // surface this config blob, so the host fetches it directly. (R1.)
-func fetchBundleManifest(ctx context.Context, imageRef string) (computev1alpha1.BundleManifest, error) {
+//
+// It is also the manifest source for the ServiceManager control plane
+// (pkg/workerd/manager), which inlines a revision's module bytes into the
+// WorkerLoader payload rather than mounting the bundle rootfs.
+func FetchBundleManifest(ctx context.Context, imageRef string) (computev1alpha1.BundleManifest, error) {
 	var out computev1alpha1.BundleManifest
 
 	repo, err := remote.NewRepository(imageRef)

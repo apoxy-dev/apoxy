@@ -148,6 +148,8 @@ github.com/apoxy-dev/clrk v0.0.0-20260615230105-aff0985cd9e1 h1:6nsWyZlFJkro0xnB
 github.com/apoxy-dev/clrk v0.0.0-20260615230105-aff0985cd9e1/go.mod h1:oc8LV7heNYgBAz33FXwDk1/dE0epBuMlRLEmV7vubvI=
 github.com/apoxy-dev/clrk v0.0.0-20260616175522-c5f7cd3a26fa h1:bY8Cv2Qq80nXb6gEzPS6JJ2zd3QYm5gQGSYY05eNmUI=
 github.com/apoxy-dev/clrk v0.0.0-20260616175522-c5f7cd3a26fa/go.mod h1:oc8LV7heNYgBAz33FXwDk1/dE0epBuMlRLEmV7vubvI=
+github.com/apoxy-dev/clrk v0.0.0-20260617221242-a4ce619e5d42 h1:kcrg/d4srKq6onyIAFgT4nTdoj5fTaeH78a2ZIR+96U=
+github.com/apoxy-dev/clrk v0.0.0-20260617221242-a4ce619e5d42/go.mod h1:oc8LV7heNYgBAz33FXwDk1/dE0epBuMlRLEmV7vubvI=
 github.com/apoxy-dev/connect-ip-go v0.0.0-20250530062404-603929a73f45 h1:SwPk1n/oSVX7YwlNpC9KNH9YaYkcL/k6OfqSGVnxyyI=
 github.com/apoxy-dev/connect-ip-go v0.0.0-20250530062404-603929a73f45/go.mod h1:z5rtgIizc+/K27UtB0occwZgqg/mz3IqgyUJW8aubbI=
 github.com/apoxy-dev/gvisor v0.0.0-20260402225801-fe4a1e4de650 h1:Nb+r8n5r+UUyrKEj8+oM93j3XnGpQvw8wl4GevTx8K4=

@@ -65,7 +65,7 @@ func TestBuildWorkerdConfig(t *testing.T) {
 	cases := []struct {
 		name      string
 		in        BuildInput
-		wantErr   error  // exact sentinel, if expected
+		wantErr   error    // exact sentinel, if expected
 		wantSubs  []string // substrings that must be present on success
 		absentSub []string // substrings that must NOT be present
 	}{
@@ -299,11 +299,11 @@ func TestBuildWorkerdConfig_Deterministic(t *testing.T) {
 
 func TestCapnpStr_Escaping(t *testing.T) {
 	cases := map[string]string{
-		`plain`:        `"plain"`,
-		`a"b`:          `"a\"b"`,
-		`a\b`:          `"a\\b"`,
-		"tab\tafter":   `"tab\tafter"`,
-		"nl\nafter":    `"nl\nafter"`,
+		`plain`:      `"plain"`,
+		`a"b`:        `"a\"b"`,
+		`a\b`:        `"a\\b"`,
+		"tab\tafter": `"tab\tafter"`,
+		"nl\nafter":  `"nl\nafter"`,
 	}
 	for in, want := range cases {
 		if got := capnpStr(in); got != want {

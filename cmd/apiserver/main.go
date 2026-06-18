@@ -16,12 +16,17 @@ import (
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
 	a3yversionedclient "github.com/apoxy-dev/apoxy/client/versioned"
 	"github.com/apoxy-dev/apoxy/pkg/apiserver"
 	"github.com/apoxy-dev/apoxy/pkg/apiserver/ingest"
 	"github.com/apoxy-dev/apoxy/pkg/gateway"
 	"github.com/apoxy-dev/apoxy/pkg/gateway/message"
+	gatewayworkerd "github.com/apoxy-dev/apoxy/pkg/gateway/workerd"
+	xdstranslator "github.com/apoxy-dev/apoxy/pkg/gateway/xds/translator"
 	"github.com/apoxy-dev/apoxy/pkg/log"
+	workerdmanager "github.com/apoxy-dev/apoxy/pkg/workerd/manager"
 )
 
 var (
@@ -35,6 +40,11 @@ var (
 	ingestStoreDir   = flag.String("ingest-store-dir", os.TempDir(), "Path to the ingest store directory.")
 	ingestStorePort  = flag.Int("ingest-store-port", 8081, "Port for the ingest store.")
 	controllerNames  = flag.String("controller-names", "", "Comma-separated list of GatewayClass controller names to watch. Defaults to both standalone and legacy controller names.")
+	// APO-796: the co-located workerd-manager POSTs its routing snapshot (resident
+	// socket + live-revision demux) here; the Gateway→xDS translator injects the
+	// resident cluster and x-apoxy-service demux header from it. Empty disables the
+	// receiver (workerd routing stays inert). Must be loopback.
+	workerdPublishAddr = flag.String("workerd_publish_addr", "127.0.0.1:2021", "Loopback host:port for the private workerd-manager routing publish channel (empty disables).")
 )
 
 func stopCh(ctx context.Context) <-chan interface{} {
@@ -96,6 +106,21 @@ func main() {
 		log.Fatalf("Failed creating Temporal client: %v", err)
 	}
 
+	// APO-796 workerd data plane: install the registry the Gateway→xDS translator
+	// reads to inject the resident workerd cluster + x-apoxy-service demux header,
+	// and serve the private publish channel the co-located workerd-manager pushes
+	// its routing snapshot to. The translator hook is inert until a snapshot lands.
+	if *workerdPublishAddr != "" {
+		workerdRegistry := gatewayworkerd.NewRegistry()
+		xdstranslator.SetWorkerdRegistry(workerdRegistry)
+		go func() {
+			if err := gatewayworkerd.NewServer(workerdRegistry).Serve(ctx, *workerdPublishAddr); err != nil {
+				log.Errorf("workerd publish channel exited: %v", err)
+				ctxCancel(&startErr{Err: err})
+			}
+		}()
+	}
+
 	gwResources := new(message.ProviderResources)
 	go func() {
 		if err := gateway.RunServer(ctx, gwResources); err != nil {
@@ -118,6 +143,11 @@ func main() {
 	go func() {
 		sOpts := []apiserver.Option{
 			apiserver.WithSQLitePath(*dbFilePath),
+			// APO-796: mint/promote/GC compute.apoxy.dev ServiceRevisions. The
+			// data-plane resident reconciler runs separately in cmd/workerd-manager.
+			apiserver.WithAdditionalController(func(c client.Client) apiserver.Controller {
+				return workerdmanager.NewServiceReconciler(c)
+			}),
 		}
 		if *inCluster {
 			if !*insecure {

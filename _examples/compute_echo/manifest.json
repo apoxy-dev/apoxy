@@ -1,0 +1,6 @@
+{
+  "modules": [
+    { "name": "echo.js", "type": "esModule", "path": "echo.js" }
+  ],
+  "compatibilityDate": "2025-01-01"
+}

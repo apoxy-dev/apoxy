@@ -984,13 +984,51 @@ func (m *ApoxyCli) BuildWorkerdHost(
 	// +optional
 	githubToken *dagger.Secret,
 ) *dagger.Container {
+	return m.buildRunscBinaryImage(ctx, src, platform, clrkSrc, githubToken, "./cmd/workerd-host", "workerd-host")
+}
+
+// buildWorkerdManager builds the workerd-manager runtime container: the APO-796
+// ServiceManager data plane. Like workerd-host it is its own runsc re-exec
+// target (sandbox.DispatchRunsc) and runs stock workerd in a gVisor sandbox, so
+// it shares the same static-linked, runsc-capable image recipe. It is not a
+// standalone dagger function (no dagger.gen.go case) — the publish loop calls it
+// directly — because regenerating the dagger bindings is out of band; promote it
+// to an exported dagger function via codegen when convenient.
+func (m *ApoxyCli) buildWorkerdManager(
+	ctx context.Context,
+	src *dagger.Directory,
+	platform string,
+	clrkSrc *dagger.Directory,
+	githubToken *dagger.Secret,
+) *dagger.Container {
+	return m.buildRunscBinaryImage(ctx, src, platform, clrkSrc, githubToken, "./cmd/workerd-manager", "workerd-manager")
+}
+
+// buildRunscBinaryImage builds a static, runsc-capable container for a clrk
+// DispatchRunsc binary (workerd-host, workerd-manager). The binary is its own
+// runsc re-exec target, so the image entrypoint and /proc/self/exe must be the
+// same stable path. CGO is off (the gVisor systrap runtime + in-Sentry netstack
+// link without cgo), matching the GOOS=linux cross-compile.
+//
+// clrk is a private module. For local builds, pass clrkSrc to mount a sibling
+// clrk checkout and replace the go.mod pin. For CI, pass githubToken so the
+// builder can fetch the pinned clrk commit over HTTPS.
+func (m *ApoxyCli) buildRunscBinaryImage(
+	ctx context.Context,
+	src *dagger.Directory,
+	platform string,
+	clrkSrc *dagger.Directory,
+	githubToken *dagger.Secret,
+	cmdPath string,
+	binName string,
+) *dagger.Container {
 	if platform == "" {
 		platform = runtime.GOOS + "/" + runtime.GOARCH
 	}
 	p := dagger.Platform(platform)
 	goarch := archOf(p)
 
-	whOut := filepath.Join("build", "workerd-host-"+goarch)
+	out := filepath.Join("build", binName+"-"+goarch)
 
 	builder := m.BuilderContainer(ctx, src).
 		WithEnvVariable("GOARCH", goarch).
@@ -1011,7 +1049,7 @@ func (m *ApoxyCli) BuildWorkerdHost(
 				`git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "https://github.com/"`})
 	}
 	// Override the clrk pin with a local sibling checkout when provided (local
-	// builds, or iterating on clrk alongside workerd-host).
+	// builds, or iterating on clrk alongside the runtime).
 	if clrkSrc != nil {
 		builder = builder.
 			WithMountedDirectory("/clrk", clrkSrc).
@@ -1019,7 +1057,7 @@ func (m *ApoxyCli) BuildWorkerdHost(
 	}
 
 	builder = builder.
-		WithExec([]string{"go", "build", "-ldflags", "-v", "-o", whOut, "./cmd/workerd-host"}).
+		WithExec([]string{"go", "build", "-ldflags", "-v", "-o", out, cmdPath}).
 		WithWorkdir("/src")
 
 	return dag.Container(dagger.ContainerOpts{Platform: p}).
@@ -1028,8 +1066,73 @@ func (m *ApoxyCli) BuildWorkerdHost(
 		// basic net tooling for sandbox setup. M1 backend mode uses direct dial
 		// with no host egress data path (APO-723 adds that).
 		WithExec([]string{"apk", "add", "-u", "iptables", "ip6tables", "iproute2"}).
-		WithFile("/bin/workerd-host", builder.File(whOut)).
-		WithEntrypoint([]string{"/bin/workerd-host"})
+		WithFile("/bin/"+binName, builder.File(out)).
+		WithEntrypoint([]string{"/bin/" + binName})
+}
+
+// buildWorkerd builds the stock upstream workerd OCI image the APO-796 resident
+// runs (referenced via `apoxy dev --workerd-image` and the manager's
+// --workerd_image). It does NOT compile workerd: it lifts the prebuilt
+// @cloudflare/workerd-linux-<arch> binary from npm into a minimal wolfi image
+// with `workerd` on PATH. The npm package name encodes the target arch, so the
+// fetch container's own platform is irrelevant. Pin `version` for reproducibility;
+// it must support the WorkerLoader binding the resident dispatcher uses.
+func (m *ApoxyCli) buildWorkerd(
+	ctx context.Context,
+	platform string,
+	// +optional
+	version string,
+) *dagger.Container {
+	if platform == "" {
+		platform = runtime.GOOS + "/" + runtime.GOARCH
+	}
+	if version == "" {
+		version = "latest"
+	}
+	p := dagger.Platform(platform)
+	npmArch := "64"
+	if archOf(p) == "arm64" {
+		npmArch = "arm64"
+	}
+	npmPkg := "@cloudflare/workerd-linux-" + npmArch
+
+	workerdBin := dag.Container().
+		From("node:22-bookworm-slim").
+		WithExec([]string{"npm", "install", "--no-save", "--prefix", "/w", npmPkg + "@" + version}).
+		File("/w/node_modules/" + npmPkg + "/bin/workerd")
+
+	return dag.Container(dagger.ContainerOpts{Platform: p}).
+		From("cgr.dev/chainguard/wolfi-base:latest").
+		// workerd is dynamically linked against libstdc++/libgcc.
+		WithExec([]string{"apk", "add", "-u", "libstdc++", "libgcc"}).
+		WithFile("/usr/bin/workerd", workerdBin).
+		WithEntrypoint([]string{"/usr/bin/workerd"})
+}
+
+// PublishWorkerd builds the stock workerd image for both linux platforms and
+// publishes it. Separated from PublishImages so the workerd runtime image (which
+// needs no clrk/source build) can be pushed on its own.
+func (m *ApoxyCli) PublishWorkerd(
+	ctx context.Context,
+	registryPassword *dagger.Secret,
+	tag string,
+	// +optional
+	version string,
+) error {
+	var ctrs []*dagger.Container
+	for _, platform := range []string{"linux/amd64", "linux/arm64"} {
+		ctrs = append(ctrs, m.buildWorkerd(ctx, platform, version))
+	}
+	addr, err := dag.Container().
+		WithRegistryAuth("registry-1.docker.io", "apoxy", registryPassword).
+		Publish(ctx, "docker.io/apoxy/workerd:"+tag, dagger.ContainerPublishOpts{
+			PlatformVariants: ctrs,
+		})
+	if err != nil {
+		return err
+	}
+	fmt.Println("Workerd images published to", addr)
+	return nil
 }
 
 // PublishImages publishes images to the registry.
@@ -1108,6 +1211,28 @@ func (m *ApoxyCli) PublishImages(
 
 	fmt.Println("Tunnelproxy images published to", addr)
 
+	// The stock workerd runtime image (APO-796). Unlike workerd-host/manager it
+	// builds from the npm prebuilt with no clrk/source dependency, so it always
+	// publishes.
+	var wdCtrs []*dagger.Container
+	for _, platform := range []string{"linux/amd64", "linux/arm64"} {
+		wdCtrs = append(wdCtrs, m.buildWorkerd(ctx, platform, ""))
+	}
+	addr, err = dag.Container().
+		WithRegistryAuth(
+			"registry-1.docker.io",
+			"apoxy",
+			registryPassword,
+		).
+		Publish(ctx, "docker.io/apoxy/workerd:"+tag, dagger.ContainerPublishOpts{
+			PlatformVariants: wdCtrs,
+		})
+	if err != nil {
+		return err
+	}
+
+	fmt.Println("Workerd images published to", addr)
+
 	// workerd-host depends on the private clrk module, which the default CI
 	// GITHUB_TOKEN cannot fetch (clrk is a separate private repo). Publish it
 	// only when a clrk-capable token is supplied, so the rest of the pipeline
@@ -1132,8 +1257,28 @@ func (m *ApoxyCli) PublishImages(
 		}
 
 		fmt.Println("Workerd-host images published to", addr)
+
+		var wmCtrs []*dagger.Container
+		for _, platform := range []string{"linux/amd64", "linux/arm64"} {
+			wmCtrs = append(wmCtrs, m.buildWorkerdManager(ctx, src, platform, nil, githubToken))
+		}
+
+		addr, err = dag.Container().
+			WithRegistryAuth(
+				"registry-1.docker.io",
+				"apoxy",
+				registryPassword,
+			).
+			Publish(ctx, "docker.io/apoxy/workerd-manager:"+tag, dagger.ContainerPublishOpts{
+				PlatformVariants: wmCtrs,
+			})
+		if err != nil {
+			return err
+		}
+
+		fmt.Println("Workerd-manager images published to", addr)
 	} else {
-		fmt.Println("Skipping workerd-host publish: no --github-token for the private clrk module")
+		fmt.Println("Skipping workerd-host/workerd-manager publish: no --github-token for the private clrk module")
 	}
 
 	var cliCtrs []*dagger.Container

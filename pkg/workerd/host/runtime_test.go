@@ -17,12 +17,25 @@ import (
 
 // fakeCore is an in-memory sandbox.Runtime that records the lifecycle calls in
 // order, so the wrapper's make-before-break sequencing can be asserted.
+//
+// It faithfully models clrk's Manager timing: Create returns an instance with
+// an EMPTY InboundSocket and Phase=Ready; Start opens the ingress socket and
+// sets Phase=Running on the SAME instance pointer the Create caller holds (see
+// clrk manager.go — sb.InboundSocket is assigned in Start, not Create). This
+// keeps the wrapper honest: it must read InboundSocket only after Start, and
+// Status reflects a crashed/stopped sandbox so self-heal can be exercised.
 type fakeCore struct {
 	mu        sync.Mutex
 	events    []string
 	created   []sandbox.Spec
 	createErr error
 	startErr  error
+	// instances holds the live instances by id; Start mutates these in place so a
+	// Create caller's pointer sees the post-Start fields.
+	instances map[sandbox.SandboxID]*sandbox.Instance
+	// pendingInbound records the host socket Start should surface per id (only
+	// for inbound-enabled specs).
+	pendingInbound map[sandbox.SandboxID]string
 }
 
 func (f *fakeCore) Create(ctx context.Context, spec sandbox.Spec) (*sandbox.Instance, error) {
@@ -33,15 +46,20 @@ func (f *fakeCore) Create(ctx context.Context, spec sandbox.Spec) (*sandbox.Inst
 	}
 	f.events = append(f.events, "create:"+string(spec.ID))
 	f.created = append(f.created, spec)
+	if f.instances == nil {
+		f.instances = make(map[sandbox.SandboxID]*sandbox.Instance)
+		f.pendingInbound = make(map[sandbox.SandboxID]string)
+	}
 	inst := &sandbox.Instance{
 		ID:        spec.ID,
 		Phase:     sandbox.SandboxReady,
 		SandboxIP: netip.AddrFrom4([4]byte{10, 88, byte(len(f.created)), 2}),
+		// InboundSocket is deliberately empty here; the real core opens it at
+		// Start. Record the path to surface then.
 	}
-	// Model the core surfacing the ingress socket for an inbound-enabled
-	// sandbox (the real manager sets this at Start on the same instance).
+	f.instances[spec.ID] = inst
 	if spec.InboundListenAddr != "" {
-		inst.InboundSocket = "/fake/" + strings.ReplaceAll(string(spec.ID), "/", "_") + ".in.sock"
+		f.pendingInbound[spec.ID] = "/fake/" + strings.ReplaceAll(string(spec.ID), "/", "_") + ".in.sock"
 	}
 	return inst, nil
 }
@@ -53,6 +71,14 @@ func (f *fakeCore) Start(ctx context.Context, id sandbox.SandboxID) error {
 		return f.startErr
 	}
 	f.events = append(f.events, "start:"+string(id))
+	if inst, ok := f.instances[id]; ok {
+		inst.Phase = sandbox.SandboxRunning
+		if sock, ok := f.pendingInbound[id]; ok {
+			// Same pointer the Create caller holds: this is what makes reading
+			// InboundSocket only-after-Start correct.
+			inst.InboundSocket = sock
+		}
+	}
 	return nil
 }
 
@@ -60,6 +86,9 @@ func (f *fakeCore) Stop(ctx context.Context, id sandbox.SandboxID) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.events = append(f.events, "stop:"+string(id))
+	if inst, ok := f.instances[id]; ok {
+		inst.Phase = sandbox.SandboxStopped
+	}
 	return nil
 }
 
@@ -73,10 +102,28 @@ func (f *fakeCore) Purge(ctx context.Context, id sandbox.SandboxID) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.events = append(f.events, "purge:"+string(id))
+	delete(f.instances, id)
+	delete(f.pendingInbound, id)
 }
 
 func (f *fakeCore) Status(ctx context.Context, id sandbox.SandboxID) (*sandbox.Instance, error) {
-	return &sandbox.Instance{ID: id, Phase: sandbox.SandboxRunning}, nil
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	inst, ok := f.instances[id]
+	if !ok {
+		return nil, sandbox.ErrNotFound
+	}
+	return inst, nil
+}
+
+// crash models the sandbox process dying out from under the host: Status then
+// reports it Stopped, so a self-healing EnsureResident must recreate it.
+func (f *fakeCore) crash(id sandbox.SandboxID) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if inst, ok := f.instances[id]; ok {
+		inst.Phase = sandbox.SandboxStopped
+	}
 }
 
 func (f *fakeCore) List() []*sandbox.Instance { return nil }

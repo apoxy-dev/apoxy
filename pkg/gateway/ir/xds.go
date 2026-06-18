@@ -479,6 +479,12 @@ type HTTPRoute struct {
 	Mirrors []*RouteDestination `json:"mirrors,omitempty" yaml:"mirrors,omitempty"`
 	// Destination associated with this matched route.
 	Destination *RouteDestination `json:"destination,omitempty" yaml:"destination,omitempty"`
+	// WorkerdService, when non-empty, marks this route as backed by a
+	// compute.apoxy.dev Service of this (bare) name. The xDS translator's workerd
+	// hook re-points the route to the single resident workerd cluster and sets the
+	// x-apoxy-service demux header, instead of using the route's own (placeholder)
+	// destination. (APO-796)
+	WorkerdService string `json:"workerdService,omitempty" yaml:"workerdService,omitempty"`
 	// Rewrite to be changed for this route.
 	URLRewrite *URLRewrite `json:"urlRewrite,omitempty" yaml:"urlRewrite,omitempty"`
 	// RateLimit defines the more specific match conditions as well as limits for ratelimiting

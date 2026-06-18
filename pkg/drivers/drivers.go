@@ -15,6 +15,16 @@ type Option func(*Options)
 type Options struct {
 	Args          []string
 	APIServerAddr string
+	// NetworkContainer, when set, joins the container's network namespace
+	// (`docker run --network container:<name>`) instead of the apoxy bridge. The
+	// workerd-manager uses this to share the apiserver's netns so its publish and
+	// kube-API traffic reach the apiserver over loopback.
+	NetworkContainer string
+	// WorkerdSocketVolume, when set, is a Docker volume mounted at
+	// /run/workerd-manager in both the backplane and the workerd-manager, so the
+	// backplane's Envoy can dial the resident workerd's host UDS the manager
+	// surfaces there.
+	WorkerdSocketVolume string
 }
 
 // DefaultOptions returns the default options.
@@ -33,6 +43,20 @@ func WithArgs(args ...string) Option {
 func WithAPIServerAddr(addr string) Option {
 	return func(o *Options) {
 		o.APIServerAddr = addr
+	}
+}
+
+// WithNetworkContainer joins another container's network namespace.
+func WithNetworkContainer(name string) Option {
+	return func(o *Options) {
+		o.NetworkContainer = name
+	}
+}
+
+// WithWorkerdSocketVolume mounts the shared resident-socket volume.
+func WithWorkerdSocketVolume(name string) Option {
+	return func(o *Options) {
+		o.WorkerdSocketVolume = name
 	}
 }
 
@@ -59,6 +83,9 @@ const (
 	APIServerService ServiceType = "apiserver"
 	// TunnelProxyService represents the tunnel proxy service.
 	TunnelProxyService ServiceType = "tunnelproxy"
+	// WorkerdManagerService represents the workerd-manager service (APO-796): the
+	// privileged/runsc data-plane sidecar that runs the shared resident workerd.
+	WorkerdManagerService ServiceType = "workerd-manager"
 
 	// DockerMode represents the docker driver mode.
 	DockerMode DriverMode = "docker"
@@ -75,8 +102,22 @@ func GetDriver(driverType DriverMode, serviceType ServiceType) (Driver, error) {
 		return GetAPIServerDriver(driverType)
 	case TunnelProxyService:
 		return GetTunnelProxyDriver(driverType)
+	case WorkerdManagerService:
+		return GetWorkerdManagerDriver(driverType)
 	default:
 		return nil, fmt.Errorf("unknown service type %q", serviceType)
+	}
+}
+
+// GetWorkerdManagerDriver returns a workerd-manager driver by mode. Only
+// DockerMode is supported: the manager needs a privileged gVisor-capable
+// container, which the subprocess/supervisor path cannot provide.
+func GetWorkerdManagerDriver(driver DriverMode) (Driver, error) {
+	switch driver {
+	case DockerMode:
+		return NewWorkerdManagerDockerDriver(), nil
+	default:
+		return nil, fmt.Errorf("workerd-manager only supports the docker driver, got %q", driver)
 	}
 }
 

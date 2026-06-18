@@ -36,6 +36,7 @@ const (
 
 	GroupApoxyCore           = "core.apoxy.dev"
 	GroupApoxyExtensions     = "extensions.apoxy.dev"
+	GroupApoxyCompute        = "compute.apoxy.dev"
 	GroupMultiClusterService = "multicluster.x-k8s.io"
 
 	// OwningGatewayNamespaceLabel is the owner reference label used for managed infra.
