@@ -27,9 +27,9 @@ func readStagedResidentConfig(t *testing.T, rootDir string) string {
 
 func testResidentConfig() ResidentConfig {
 	return ResidentConfig{
-		WorkerdImage:      "reg.example.com/apoxy/workerd:stock",
-		ControlSocketPath: "/run/workerd-manager/control.sock",
-		RootDir:           "", // set per-test via newResidentHostWithCore + t.TempDir
+		WorkerdImage:    "reg.example.com/apoxy/workerd:stock",
+		ControlHostAddr: "127.0.0.1:2024",
+		RootDir:         "", // set per-test via newResidentHostWithCore + t.TempDir
 	}
 }
 
@@ -40,13 +40,13 @@ func newTestResidentHost(t *testing.T, core *fakeCore) *ResidentHost {
 	return newResidentHostWithCore(core, cfg)
 }
 
-func TestNewResidentHost_RequiresImageAndControlSocket(t *testing.T) {
+func TestNewResidentHost_RequiresImageAndControlAddr(t *testing.T) {
 	cases := []struct {
 		name string
 		cfg  ResidentConfig
 	}{
-		{"no image", ResidentConfig{ControlSocketPath: "/c.sock"}},
-		{"no control socket", ResidentConfig{WorkerdImage: "img"}},
+		{"no image", ResidentConfig{ControlHostAddr: "127.0.0.1:2024"}},
+		{"no control addr", ResidentConfig{WorkerdImage: "img"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -85,10 +85,12 @@ func TestEnsureResident_CreatesAndStartsTheDispatcher(t *testing.T) {
 		t.Errorf("Image = %q", spec.Image)
 	}
 	cmd := strings.Join(spec.Command, " ")
-	if cmd != "workerd serve /worker/config.capnp --experimental --platform=systrap" {
+	// Absolute workerd path (the image store doesn't propagate PATH) and no
+	// --platform flag (that is a runsc flag; workerd exits if handed it).
+	if cmd != "/usr/bin/workerd serve /worker/config.capnp --experimental" {
 		t.Errorf("Command = %q", cmd)
 	}
-	// Exactly one mount: the dispatcher config. The control socket is NOT a bind
+	// Exactly one mount: the dispatcher config. The control channel is NOT a bind
 	// mount (clrk has no host-UDS); it rides the control forwarder instead.
 	if len(spec.Mounts) != 1 {
 		t.Fatalf("want 1 mount (config only), got %d: %+v", len(spec.Mounts), spec.Mounts)

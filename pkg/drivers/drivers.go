@@ -17,8 +17,9 @@ type Options struct {
 	APIServerAddr string
 	// NetworkContainer, when set, joins the container's network namespace
 	// (`docker run --network container:<name>`) instead of the apoxy bridge. The
-	// workerd-manager uses this to share the apiserver's netns so its publish and
-	// kube-API traffic reach the apiserver over loopback.
+	// workerd-manager uses this to share the co-located BACKPLANE's netns (1:1
+	// backplane↔resident coupling); it reaches the apiserver (kube-API + the
+	// routing publish channel) over the docker network by name.
 	NetworkContainer string
 	// WorkerdSocketVolume, when set, is a Docker volume mounted at
 	// /run/workerd-manager in both the backplane and the workerd-manager, so the

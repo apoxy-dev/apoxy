@@ -111,15 +111,26 @@ func containerSHA(imageRef string) (string, error) {
 		return "", fmt.Errorf("failed to parse image reference: %w", err)
 	}
 
-	img, err := remote.Get(
+	if img, err := remote.Get(
 		ref,
 		remote.WithAuthFromKeychain(authn.DefaultKeychain),
-	)
-	if err != nil {
-		return "", fmt.Errorf("failed to fetch image %s: %w", ref.Name(), err)
+	); err == nil {
+		return img.Digest.String(), nil
 	}
 
-	return img.Digest.String(), nil
+	// Fall back to a locally-built image that was never pushed (e.g. `apoxy dev`
+	// run against images built from source): the docker daemon's image ID is a
+	// stable per-image digest. Production refs resolve remotely above, so this
+	// never runs for published images.
+	out, err := exec.Command("docker", "image", "inspect", "--format", "{{.Id}}", imageRef).Output()
+	if err != nil {
+		return "", fmt.Errorf("image %s not found in any registry or the local docker daemon", ref.Name())
+	}
+	id := strings.TrimSpace(string(out))
+	if id == "" {
+		return "", fmt.Errorf("empty local image id for %s", ref.Name())
+	}
+	return id, nil
 }
 
 // Collect finds running containers, garbage collects dangling containers if needed,

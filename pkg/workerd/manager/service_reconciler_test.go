@@ -95,14 +95,16 @@ func TestServiceReconciler_MintsAndTracksLatest(t *testing.T) {
 	if got.Status.LatestRevision != rev.Name {
 		t.Errorf("LatestRevision = %q, want %q", got.Status.LatestRevision, rev.Name)
 	}
-	if got.Status.LiveRevision != "" {
-		t.Errorf("LiveRevision = %q, want empty (revision not resident-ready yet)", got.Status.LiveRevision)
+	if got.Status.LiveRevision != rev.Name {
+		t.Errorf("LiveRevision = %q, want %q (auto-promoted intent; readiness is per-node)", got.Status.LiveRevision, rev.Name)
 	}
 	if !meta.IsStatusConditionTrue(got.Status.Conditions, computev1alpha1.ConditionAccepted) {
 		t.Errorf("Accepted should be true: %+v", got.Status.Conditions)
 	}
+	// Minting does not set Ready: which revision each backplane actually serves is
+	// reported per-node over the publish channel, not by the control plane.
 	if meta.IsStatusConditionTrue(got.Status.Conditions, computev1alpha1.ConditionReady) {
-		t.Errorf("Ready should be false before resident-ready")
+		t.Errorf("minting must not set Ready")
 	}
 }
 
@@ -117,27 +119,16 @@ func TestServiceReconciler_Idempotent(t *testing.T) {
 	}
 }
 
-func TestServiceReconciler_PromotesWhenResidentReady(t *testing.T) {
+func TestServiceReconciler_LiveTracksLatest(t *testing.T) {
 	svc := ociService("api", "reg/acme/api", "sha256:abc")
 	r, c := newReconciler(t, svc)
 	reconcileOnce(t, r, "api")
-
 	rev := listRevisions(t, c)[0]
-	// The resident reconciler marks the revision ResidentReady.
-	meta.SetStatusCondition(&rev.Status.Conditions, metav1.Condition{
-		Type: computev1alpha1.ConditionResidentReady, Status: metav1.ConditionTrue, Reason: "Serving",
-	})
-	if err := c.Status().Update(context.Background(), &rev); err != nil {
-		t.Fatalf("update revision status: %v", err)
-	}
-
-	reconcileOnce(t, r, "api")
-	got := getService(t, c, "api")
-	if got.Status.LiveRevision != rev.Name {
-		t.Errorf("LiveRevision = %q, want %q after resident-ready", got.Status.LiveRevision, rev.Name)
-	}
-	if !meta.IsStatusConditionTrue(got.Status.Conditions, computev1alpha1.ConditionReady) {
-		t.Errorf("Ready should be true once live")
+	// Auto: LiveRevision records the latest minted revision (intent). Per-node
+	// readiness and previous-revision fallback are the workerd-manager's job,
+	// reported over the publish channel — not gated here.
+	if lr := getService(t, c, "api").Status.LiveRevision; lr != rev.Name {
+		t.Errorf("LiveRevision = %q, want %q (latest)", lr, rev.Name)
 	}
 }
 
@@ -147,27 +138,18 @@ func TestServiceReconciler_PinnedLiveRevision(t *testing.T) {
 	reconcileOnce(t, r, "api")
 	rev := listRevisions(t, c)[0]
 
-	// Pin liveRevision to the (not-yet-ready) revision: must NOT go live.
+	// Pin liveRevision: the control plane records the pin as the intended revision
+	// immediately. There is no control-plane readiness gate — readiness is per-node
+	// and reported via the publish channel, so the manager won't actually serve the
+	// pinned revision on a node until that node has warmed it.
 	svc2 := getService(t, c, "api")
 	svc2.Spec.LiveRevision = rev.Name
 	if err := c.Update(context.Background(), svc2); err != nil {
 		t.Fatalf("update service: %v", err)
 	}
 	reconcileOnce(t, r, "api")
-	if lr := getService(t, c, "api").Status.LiveRevision; lr != "" {
-		t.Errorf("pinned-but-not-ready LiveRevision = %q, want empty", lr)
-	}
-
-	// Now mark it ready -> promotes.
-	meta.SetStatusCondition(&rev.Status.Conditions, metav1.Condition{
-		Type: computev1alpha1.ConditionResidentReady, Status: metav1.ConditionTrue, Reason: "Serving",
-	})
-	if err := c.Status().Update(context.Background(), &rev); err != nil {
-		t.Fatalf("update revision status: %v", err)
-	}
-	reconcileOnce(t, r, "api")
 	if lr := getService(t, c, "api").Status.LiveRevision; lr != rev.Name {
-		t.Errorf("LiveRevision = %q, want %q", lr, rev.Name)
+		t.Errorf("pinned LiveRevision = %q, want %q", lr, rev.Name)
 	}
 }
 

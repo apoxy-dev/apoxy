@@ -12,7 +12,7 @@ func TestRegistryActiveAndResidentSocket(t *testing.T) {
 	if got := r.ResidentSocket(); got != "" {
 		t.Fatalf("empty resident socket = %q, want \"\"", got)
 	}
-	r.Set(Snapshot{ResidentSocket: "/run/workerd/resident.sock"})
+	r.Upsert(Snapshot{ResidentSocket: "/run/workerd/resident.sock"})
 	if !r.Active() {
 		t.Fatal("registry with a resident socket must be active")
 	}
@@ -23,7 +23,7 @@ func TestRegistryActiveAndResidentSocket(t *testing.T) {
 
 func TestRegistryDemuxHeader(t *testing.T) {
 	r := NewRegistry()
-	r.Set(Snapshot{
+	r.Upsert(Snapshot{
 		ResidentSocket: "/run/workerd/resident.sock",
 		Demux: map[string]string{
 			"7ce458d7-e20c-443c-aeeb-dbc5663c1240:echo": "echo-r1",
@@ -79,7 +79,7 @@ func TestRegistryDemuxHeader(t *testing.T) {
 // match: a service "service" must not match a key whose service is "my-service".
 func TestRegistryDemuxHeaderExactServiceSegment(t *testing.T) {
 	r := NewRegistry()
-	r.Set(Snapshot{
+	r.Upsert(Snapshot{
 		ResidentSocket: "/s.sock",
 		Demux:          map[string]string{"proj:my-service": "my-service-r1"},
 	})
@@ -96,9 +96,42 @@ func TestRegistryDemuxHeaderExactServiceSegment(t *testing.T) {
 func TestRegistrySetCopiesDemux(t *testing.T) {
 	r := NewRegistry()
 	in := map[string]string{"proj:echo": "echo-r1"}
-	r.Set(Snapshot{ResidentSocket: "/s.sock", Demux: in})
+	r.Upsert(Snapshot{ResidentSocket: "/s.sock", Demux: in})
 	in["proj:echo"] = "tampered"
 	if got, _ := r.DemuxHeader("echo"); got != "proj:echo:echo-r1" {
 		t.Fatalf("stored demux was mutated by caller: %q", got)
+	}
+}
+
+// TestRegistryPerNodeAggregate covers the node-keyed registry: each node's row is
+// independent, reads aggregate across nodes, re-upsert replaces only that node's
+// row, and Delete drops a node.
+func TestRegistryPerNodeAggregate(t *testing.T) {
+	r := NewRegistry()
+	r.Upsert(Snapshot{NodeID: "node-a", ResidentSocket: "/a.sock", Demux: map[string]string{"proj:echo": "echo-r1"}})
+	r.Upsert(Snapshot{NodeID: "node-b", ResidentSocket: "/b.sock", Demux: map[string]string{"proj:web": "web-r2"}})
+
+	if !r.Active() {
+		t.Fatal("registry with nodes must be active")
+	}
+	if got, ok := r.DemuxHeader("echo"); !ok || got != "proj:echo:echo-r1" {
+		t.Fatalf("DemuxHeader(echo) = %q,%v", got, ok)
+	}
+	if got, ok := r.DemuxHeader("web"); !ok || got != "proj:web:web-r2" {
+		t.Fatalf("DemuxHeader(web) = %q,%v", got, ok)
+	}
+	// Re-upserting a node replaces only its row.
+	r.Upsert(Snapshot{NodeID: "node-a", ResidentSocket: "/a.sock", Demux: map[string]string{"proj:echo": "echo-r9"}})
+	if got, _ := r.DemuxHeader("echo"); got != "proj:echo:echo-r9" {
+		t.Fatalf("after re-upsert DemuxHeader(echo) = %q", got)
+	}
+	// Deleting a node drops its services.
+	r.Delete("node-b")
+	if _, ok := r.DemuxHeader("web"); ok {
+		t.Fatal("web must be gone after node-b delete")
+	}
+	r.Delete("node-a")
+	if r.Active() {
+		t.Fatal("registry must be inactive after all nodes removed")
 	}
 }

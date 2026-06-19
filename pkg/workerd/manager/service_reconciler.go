@@ -2,10 +2,11 @@
 
 // Package manager implements the APO-796 ServiceManager: the control-plane
 // Service->ServiceRevision minting reconciler (platform-neutral, this file) and
-// the data-plane resident reconciler that drives the workerd resident
-// (Linux-only, resident_reconciler_linux.go). The minting reconciler runs inside
-// the apiserver via apiserver.WithAdditionalController; the resident reconciler
-// runs inside cmd/workerd-manager next to the runsc host.
+// the data-plane resident reconciler (resident_reconciler.go) that drives the
+// workerd resident and publishes this node's serveable routing. The minting
+// reconciler runs inside the apiserver via apiserver.WithAdditionalController; the
+// resident reconciler runs inside cmd/workerd-manager next to the runsc host and
+// is strictly read-only on the API.
 package manager
 
 import (
@@ -101,32 +102,20 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req reconcile.Request
 		ObservedGeneration: svc.Generation,
 	})
 
-	// Promote: pinned spec.liveRevision, else auto = the latest revision. Only
-	// flip status.liveRevision once the target revision is resident-ready, so
-	// traffic never cuts to an isolate that is not yet accepting (the resident
-	// reconciler writes ResidentReady on the ServiceRevision).
+	// LiveRevision records the INTENDED revision (an explicit spec.liveRevision pin,
+	// else the latest minted). It is NOT readiness-gated here: which revision each
+	// backplane actually serves is a per-node decision the workerd-manager reports
+	// over the private publish channel — it keeps serving the previous revision
+	// until it has pulled the new bundle (make-before-break). The control plane no
+	// longer waits on a data-plane readiness signal, because the data plane never
+	// writes the API (it cannot: the revision is cluster-scoped and shared by N
+	// nodes). Per-node "serve previous until this backplane pulled it" lives in
+	// pkg/workerd/manager; full promotion policy is a design follow-up.
 	target := svc.Spec.LiveRevision
 	if target == "" {
 		target = rev.Name
 	}
-	targetReady, err := r.revisionReady(ctx, target)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
-	if targetReady {
-		svc.Status.LiveRevision = target
-		meta.SetStatusCondition(&svc.Status.Conditions, metav1.Condition{
-			Type: computev1alpha1.ConditionReady, Status: metav1.ConditionTrue,
-			Reason: "ResidentReady", Message: "live revision is resident and serving",
-			ObservedGeneration: svc.Generation,
-		})
-	} else {
-		meta.SetStatusCondition(&svc.Status.Conditions, metav1.Condition{
-			Type: computev1alpha1.ConditionReady, Status: metav1.ConditionFalse,
-			Reason: "AwaitingResident", Message: "target revision is not yet resident-ready",
-			ObservedGeneration: svc.Generation,
-		})
-	}
+	svc.Status.LiveRevision = target
 
 	if err := r.Status().Update(ctx, svc); err != nil {
 		return ctrl.Result{}, err
@@ -136,11 +125,6 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req reconcile.Request
 		log.Error(err, "Revision GC failed (non-fatal)")
 	}
 
-	// Requeue to re-check readiness for promotion until the live revision matches
-	// the target.
-	if svc.Status.LiveRevision != target {
-		return ctrl.Result{RequeueAfter: requeueAwaitResident}, nil
-	}
 	return ctrl.Result{}, nil
 }
 
@@ -231,21 +215,6 @@ func (r *ServiceReconciler) ensureRevision(ctx context.Context, svc *computev1al
 		return nil, err
 	}
 	return rev, nil
-}
-
-// revisionReady reports whether the named ServiceRevision has ResidentReady=True.
-func (r *ServiceReconciler) revisionReady(ctx context.Context, name string) (bool, error) {
-	if name == "" {
-		return false, nil
-	}
-	rev := &computev1alpha1.ServiceRevision{}
-	if err := r.Get(ctx, client.ObjectKey{Name: name}, rev); err != nil {
-		if apierrors.IsNotFound(err) {
-			return false, nil
-		}
-		return false, err
-	}
-	return meta.IsStatusConditionTrue(rev.Status.Conditions, computev1alpha1.ConditionResidentReady), nil
 }
 
 // gcRevisions deletes revisions beyond RevisionHistoryLimit, oldest first, never

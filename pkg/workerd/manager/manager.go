@@ -8,10 +8,7 @@ import "time"
 // short, bounded waits for state another controller (the resident reconciler /
 // a build) is expected to produce soon — not hot loops.
 const (
-	// requeueAwaitBuild is how long to wait before re-checking for a build's
-	// bundle (git source).
+	// requeueAwaitBuild is how long to wait before re-checking for a revision's
+	// bundle to become pullable/resolvable (a build or a slow registry).
 	requeueAwaitBuild = 15 * time.Second
-	// requeueAwaitResident is how long to wait before re-checking whether the
-	// target revision has become resident-ready so it can be promoted live.
-	requeueAwaitResident = 5 * time.Second
 )

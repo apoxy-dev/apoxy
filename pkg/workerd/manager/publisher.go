@@ -10,17 +10,29 @@ import (
 	"net/http"
 )
 
-// PublishSnapshot is the routing state the manager pushes to the co-located
-// backplane over the private node-local channel (APO-796). Its JSON shape is the
-// wire contract shared with apoxy-cloud backplane/workerd.Snapshot; keep the
-// field tags in sync.
+// PublishSnapshot is THIS node's routing state the manager pushes to the apiserver
+// (dev) / backplane (prod) over the private node-local channel (APO-796). Its JSON
+// shape is the wire contract shared with apoxy-cloud backplane/workerd.Snapshot;
+// keep the field tags in sync.
+//
+// It reports per-node readiness: the manager is 1:1 with a backplane, and what it
+// advertises here is what THIS node can actually serve right now, sourced from
+// node-local warm state — not a global, control-plane-gated Status.LiveRevision.
 type PublishSnapshot struct {
+	// NodeID identifies the backplane node this manager is co-located with (the
+	// backplane's --replica / Proxy replica name). The receiver keys the published
+	// routing state by node, so each backplane's resident readiness is tracked
+	// independently and never collides with another node's.
+	NodeID string `json:"nodeId"`
 	// ResidentSocket is the host AF_UNIX path the resident dispatcher listens on
-	// (host.ResidentInstance.InboundSocket). The backplane points one static
-	// Envoy cluster at it.
+	// (host.ResidentInstance.InboundSocket). Envoy points one static cluster at it.
 	ResidentSocket string `json:"residentSocket"`
-	// Demux maps a compute Service name to its live ServiceRevision name. The
-	// backplane sets `x-apoxy-service: <service>:<rev>` from it.
+	// Demux maps a project-qualified service key "<project>:<service>" to the
+	// ServiceRevision THIS node currently serves for it — the newest revision this
+	// node has warmed (honoring an explicit spec.liveRevision pin). The receiver
+	// builds `x-apoxy-service: <project>:<service>:<revision>` from it. Because the
+	// value is sourced from node-local warm state, a node keeps advertising the
+	// PREVIOUS revision until it has pulled the new bundle (make-before-break).
 	Demux map[string]string `json:"demux"`
 }
 

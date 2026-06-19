@@ -832,6 +832,10 @@ func (t *Translator) processHTTPRouteParentRefListener(route RouteContext, route
 					Retry:                 routeRoute.Retry,
 					IsHTTP2:               routeRoute.IsHTTP2,
 					TCPKeepalive:          routeRoute.TCPKeepalive,
+					// APO-796: carry the compute Service marker onto the per-host
+					// route so the xDS workerd hook re-points it to the resident
+					// cluster. Omitting it drops the marker before translation.
+					WorkerdService: routeRoute.WorkerdService,
 				}
 				perHostRoutes = append(perHostRoutes, hostRoute)
 			}

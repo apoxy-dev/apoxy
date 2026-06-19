@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"testing"
 
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -35,11 +33,27 @@ func (f *fakeResident) EnsureResident(_ context.Context) (*host.ResidentInstance
 func (f *fakeResident) Stop(_ context.Context) error    { return nil }
 func (f *fakeResident) Cleanup(_ context.Context) error { return nil }
 
-func newResidentReconciler(t *testing.T, resident host.ResidentRuntime, f *fakeFetcher, objs ...client.Object) (*ResidentReconciler, client.Client) {
+// fakePublisher records the last snapshot the read-only reconciler publishes.
+type fakePublisher struct {
+	last  PublishSnapshot
+	calls int
+	err   error
+}
+
+func (f *fakePublisher) Publish(_ context.Context, snap PublishSnapshot) error {
+	f.calls++
+	if f.err != nil {
+		return f.err
+	}
+	f.last = snap
+	return nil
+}
+
+func newResidentReconciler(t *testing.T, resident host.ResidentRuntime, pub Publisher, f *fakeFetcher, objs ...client.Object) (*ResidentReconciler, client.Client) {
 	t.Helper()
 	c := newFakeClient(t, objs...)
 	store := NewStore(newResolverWithFetcher(c, "proj", f))
-	return NewResidentReconciler(c, resident, store, "proj"), c
+	return NewResidentReconciler(c, resident, store, pub, "/run/in.sock", "node-a", "proj"), c
 }
 
 func reconcileRevision(t *testing.T, r *ResidentReconciler, name string) (reconcile.Result, error) {
@@ -56,107 +70,157 @@ func getRevision(t *testing.T, c client.Client, name string) *computev1alpha1.Se
 	return rev
 }
 
-// drive runs reconcile until it stops requesting an immediate requeue (the first
-// pass only adds the finalizer), returning the final result.
-func drive(t *testing.T, r *ResidentReconciler, name string) reconcile.Result {
-	t.Helper()
-	for i := 0; i < 5; i++ {
-		res, err := reconcileRevision(t, r, name)
-		if err != nil {
-			t.Fatalf("Reconcile(%s): %v", name, err)
-		}
-		if !res.Requeue {
-			return res
-		}
-	}
-	t.Fatalf("Reconcile(%s) never settled", name)
-	return reconcile.Result{}
+// revisionAt is revision() stamped with a creation time so newest-first ordering
+// is deterministic in make-before-break tests.
+func revisionAt(name, service, digest string, unixTs int64) *computev1alpha1.ServiceRevision {
+	rev := revision(name, service, digest)
+	rev.CreationTimestamp = metav1.Unix(unixTs, 0)
+	return rev
 }
 
-func TestResidentReconciler_MarksReadyWhenResolvable(t *testing.T) {
-	f := &fakeFetcher{manifest: esManifest(), modules: map[string][]byte{"index.js": []byte("export default {}")}}
-	r, c := newResidentReconciler(t, &fakeResident{}, f, revision("api-abc", "api", "sha256:d"))
-
-	drive(t, r, "api-abc")
-
-	rev := getRevision(t, c, "api-abc")
-	cond := meta.FindStatusCondition(rev.Status.Conditions, computev1alpha1.ConditionResidentReady)
-	if cond == nil || cond.Status != metav1.ConditionTrue {
-		t.Fatalf("ResidentReady = %+v, want True", cond)
-	}
-	if cond.Reason != "Loadable" {
-		t.Errorf("reason = %q, want Loadable", cond.Reason)
-	}
-	// The finalizer is held so a delete can drain the cached definition.
-	if !hasFinalizer(rev, residentFinalizer) {
-		t.Errorf("resident finalizer not set: %+v", rev.Finalizers)
-	}
+func okFetcher() *fakeFetcher {
+	return &fakeFetcher{manifest: esManifest(), modules: map[string][]byte{"index.js": []byte("export default {}")}}
 }
 
-func TestResidentReconciler_ResidentDown(t *testing.T) {
-	f := &fakeFetcher{manifest: esManifest(), modules: map[string][]byte{"index.js": []byte("x")}}
-	r, c := newResidentReconciler(t, &fakeResident{ensureErr: fmt.Errorf("runsc create failed")}, f, revision("api-abc", "api", "sha256:d"))
-
-	// First pass adds the finalizer (no error); the next surfaces the resident
-	// failure as an error so controller-runtime backs off.
-	if _, err := reconcileRevision(t, r, "api-abc"); err != nil {
-		t.Fatalf("finalizer pass should not error: %v", err)
-	}
-	if _, err := reconcileRevision(t, r, "api-abc"); err == nil {
-		t.Fatal("want error when the resident cannot be ensured")
-	}
-	rev := getRevision(t, c, "api-abc")
-	cond := meta.FindStatusCondition(rev.Status.Conditions, computev1alpha1.ConditionResidentReady)
-	if cond == nil || cond.Status != metav1.ConditionFalse || cond.Reason != "ResidentDown" {
-		t.Errorf("ResidentReady = %+v, want False/ResidentDown", cond)
-	}
-}
-
-func TestResidentReconciler_DefinitionUnavailable(t *testing.T) {
-	// Resident is up, but the bundle won't pull.
-	f := &fakeFetcher{manifestErr: fmt.Errorf("registry down")}
-	r, c := newResidentReconciler(t, &fakeResident{}, f, revision("api-abc", "api", "sha256:d"))
-
-	res := drive(t, r, "api-abc")
-	if res.RequeueAfter == 0 {
-		t.Errorf("want a requeue-after for a transient bundle failure, got %+v", res)
-	}
-	rev := getRevision(t, c, "api-abc")
-	cond := meta.FindStatusCondition(rev.Status.Conditions, computev1alpha1.ConditionResidentReady)
-	if cond == nil || cond.Status != metav1.ConditionFalse || cond.Reason != "DefinitionUnavailable" {
-		t.Errorf("ResidentReady = %+v, want False/DefinitionUnavailable", cond)
-	}
-}
-
-func TestResidentReconciler_Unroutable(t *testing.T) {
-	// A revision with no service label can't be turned into a demux id.
-	rev := revision("api-abc", "api", "sha256:d")
-	rev.Labels = nil
-	f := &fakeFetcher{manifest: esManifest(), modules: map[string][]byte{"index.js": []byte("x")}}
-	r, c := newResidentReconciler(t, &fakeResident{}, f, rev)
+// TestResidentReconciler_WarmsAndPublishesReadOnly is the core invariant: a
+// successful reconcile warms the store and publishes THIS node's serveable demux,
+// and writes NOTHING on the API object (no conditions, no finalizers).
+func TestResidentReconciler_WarmsAndPublishesReadOnly(t *testing.T) {
+	pub := &fakePublisher{}
+	r, c := newResidentReconciler(t, &fakeResident{}, pub, okFetcher(), revision("api-abc", "api", "sha256:d"))
 
 	if _, err := reconcileRevision(t, r, "api-abc"); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
-	got := getRevision(t, c, "api-abc")
-	cond := meta.FindStatusCondition(got.Status.Conditions, computev1alpha1.ConditionResidentReady)
-	if cond == nil || cond.Reason != "Unroutable" {
-		t.Errorf("ResidentReady = %+v, want Unroutable", cond)
+
+	if !r.store.cached("proj:api:api-abc") {
+		t.Fatal("definition should be cached after a successful reconcile")
+	}
+	if pub.last.NodeID != "node-a" || pub.last.ResidentSocket != "/run/in.sock" {
+		t.Errorf("published node/socket = %q/%q, want node-a//run/in.sock", pub.last.NodeID, pub.last.ResidentSocket)
+	}
+	if got := pub.last.Demux["proj:api"]; got != "api-abc" {
+		t.Errorf("published demux[proj:api] = %q, want api-abc", got)
+	}
+
+	rev := getRevision(t, c, "api-abc")
+	if len(rev.Status.Conditions) != 0 {
+		t.Errorf("resident must not write status conditions: %+v", rev.Status.Conditions)
+	}
+	if len(rev.Finalizers) != 0 {
+		t.Errorf("resident must not set finalizers: %+v", rev.Finalizers)
 	}
 }
 
-func TestResidentReconciler_DeleteInvalidatesAndReleases(t *testing.T) {
-	f := &fakeFetcher{manifest: esManifest(), modules: map[string][]byte{"index.js": []byte("export default {}")}}
-	r, c := newResidentReconciler(t, &fakeResident{}, f, revision("api-abc", "api", "sha256:d"))
+// TestResidentReconciler_ResidentDownErrorsNoWrite: an un-ensurable resident is
+// surfaced as an error (for backoff) and still never writes the API object.
+func TestResidentReconciler_ResidentDownErrorsNoWrite(t *testing.T) {
+	pub := &fakePublisher{}
+	r, c := newResidentReconciler(t, &fakeResident{ensureErr: fmt.Errorf("runsc create failed")}, pub, okFetcher(), revision("api-abc", "api", "sha256:d"))
 
-	// Bring it to ready (also warms the cache and adds the finalizer).
-	drive(t, r, "api-abc")
-	if !r.store.cached("proj:api:api-abc") {
-		t.Fatal("expected the definition to be cached after readiness")
+	if _, err := reconcileRevision(t, r, "api-abc"); err == nil {
+		t.Fatal("want an error when the resident cannot be ensured")
+	}
+	rev := getRevision(t, c, "api-abc")
+	if len(rev.Status.Conditions) != 0 || len(rev.Finalizers) != 0 {
+		t.Errorf("resident-down must not write the API object: conds=%+v finalizers=%+v", rev.Status.Conditions, rev.Finalizers)
+	}
+}
+
+// TestResidentReconciler_KeepsPreviousUntilNewWarms is the interim fallback: a
+// newly minted revision whose bundle won't pull yet must NOT displace the
+// previous revision this node already serves.
+func TestResidentReconciler_KeepsPreviousUntilNewWarms(t *testing.T) {
+	f := okFetcher()
+	pub := &fakePublisher{}
+	r, c := newResidentReconciler(t, &fakeResident{}, pub, f, revisionAt("api-v1", "api", "sha256:1", 100))
+
+	if _, err := reconcileRevision(t, r, "api-v1"); err != nil {
+		t.Fatalf("v1 reconcile: %v", err)
+	}
+	if pub.last.Demux["proj:api"] != "api-v1" {
+		t.Fatalf("v1 should be live, demux = %q", pub.last.Demux["proj:api"])
 	}
 
-	// Delete: the finalizer keeps the object until the reconciler releases it.
+	// A newer revision is minted but its bundle won't pull.
+	if err := c.Create(context.Background(), revisionAt("api-v2", "api", "sha256:2", 200)); err != nil {
+		t.Fatalf("create v2: %v", err)
+	}
+	f.manifestErr = fmt.Errorf("registry down")
+
+	res, err := reconcileRevision(t, r, "api-v2")
+	if err != nil {
+		t.Fatalf("v2 reconcile should not hard-error (transient): %v", err)
+	}
+	if res.RequeueAfter == 0 {
+		t.Errorf("want a requeue-after for the transient bundle failure, got %+v", res)
+	}
+	if got := pub.last.Demux["proj:api"]; got != "api-v1" {
+		t.Errorf("must keep serving the previous revision; demux = %q, want api-v1", got)
+	}
+}
+
+// TestResidentReconciler_FlipsToNewRevisionOnceWarmed: once the new revision
+// warms, the node advertises it (make-before-break completes).
+func TestResidentReconciler_FlipsToNewRevisionOnceWarmed(t *testing.T) {
+	pub := &fakePublisher{}
+	r, c := newResidentReconciler(t, &fakeResident{}, pub, okFetcher(), revisionAt("api-v1", "api", "sha256:1", 100))
+
+	if _, err := reconcileRevision(t, r, "api-v1"); err != nil {
+		t.Fatalf("v1 reconcile: %v", err)
+	}
+	if err := c.Create(context.Background(), revisionAt("api-v2", "api", "sha256:2", 200)); err != nil {
+		t.Fatalf("create v2: %v", err)
+	}
+	if _, err := reconcileRevision(t, r, "api-v2"); err != nil {
+		t.Fatalf("v2 reconcile: %v", err)
+	}
+	if got := pub.last.Demux["proj:api"]; got != "api-v2" {
+		t.Errorf("after warming v2, demux = %q, want api-v2 (newest warmed)", got)
+	}
+}
+
+// TestResidentReconciler_HonorsPin: an explicit spec.liveRevision pin is served
+// once warmed, even if a newer revision exists.
+func TestResidentReconciler_HonorsPin(t *testing.T) {
+	pub := &fakePublisher{}
+	svc := &computev1alpha1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: "api"},
+		Spec:       computev1alpha1.ServiceSpec{LiveRevision: "api-v1"},
+	}
+	r, _ := newResidentReconciler(t, &fakeResident{}, pub, okFetcher(),
+		svc, revisionAt("api-v1", "api", "sha256:1", 100), revisionAt("api-v2", "api", "sha256:2", 200))
+
+	// Warm both revisions.
+	if _, err := reconcileRevision(t, r, "api-v1"); err != nil {
+		t.Fatalf("v1: %v", err)
+	}
+	if _, err := reconcileRevision(t, r, "api-v2"); err != nil {
+		t.Fatalf("v2: %v", err)
+	}
+	if got := pub.last.Demux["proj:api"]; got != "api-v1" {
+		t.Errorf("pinned liveRevision should win; demux = %q, want api-v1", got)
+	}
+}
+
+// TestResidentReconciler_DeletePrunesCacheNoFinalizer: deletion drains the node's
+// cache via the watch event, without a finalizer, and stops advertising it.
+func TestResidentReconciler_DeletePrunesCacheNoFinalizer(t *testing.T) {
+	pub := &fakePublisher{}
+	r, c := newResidentReconciler(t, &fakeResident{}, pub, okFetcher(), revision("api-abc", "api", "sha256:d"))
+
+	if _, err := reconcileRevision(t, r, "api-abc"); err != nil {
+		t.Fatalf("warm reconcile: %v", err)
+	}
+	if !r.store.cached("proj:api:api-abc") {
+		t.Fatal("want cached after warm")
+	}
+
 	rev := getRevision(t, c, "api-abc")
+	if len(rev.Finalizers) != 0 {
+		t.Fatalf("resident must not set a finalizer: %+v", rev.Finalizers)
+	}
+	// No finalizer -> Delete removes the object immediately.
 	if err := c.Delete(context.Background(), rev); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
@@ -165,20 +229,41 @@ func TestResidentReconciler_DeleteInvalidatesAndReleases(t *testing.T) {
 	}
 
 	if r.store.cached("proj:api:api-abc") {
-		t.Error("delete should invalidate the cached definition")
+		t.Error("deleted revision's definition should be pruned from the cache")
 	}
-	// Finalizer released -> the object is actually gone.
-	err := c.Get(context.Background(), client.ObjectKey{Name: "api-abc"}, &computev1alpha1.ServiceRevision{})
-	if !apierrors.IsNotFound(err) {
-		t.Errorf("revision should be deleted after finalizer release, got %v", err)
+	if got := pub.last.Demux["proj:api"]; got != "" {
+		t.Errorf("deleted service must not be advertised; demux = %q", got)
 	}
 }
 
-func hasFinalizer(o client.Object, f string) bool {
-	for _, x := range o.GetFinalizers() {
-		if x == f {
-			return true
-		}
+// TestResidentReconciler_UnroutableSkipped: a revision with no service label is
+// not warmed and the API object is untouched.
+func TestResidentReconciler_UnroutableSkipped(t *testing.T) {
+	rev := revision("api-abc", "api", "sha256:d")
+	rev.Labels = nil
+	pub := &fakePublisher{}
+	r, c := newResidentReconciler(t, &fakeResident{}, pub, okFetcher(), rev)
+
+	if _, err := reconcileRevision(t, r, "api-abc"); err != nil {
+		t.Fatalf("reconcile: %v", err)
 	}
-	return false
+	got := getRevision(t, c, "api-abc")
+	if len(got.Status.Conditions) != 0 || len(got.Finalizers) != 0 {
+		t.Errorf("unroutable revision must be untouched: conds=%+v finalizers=%+v", got.Status.Conditions, got.Finalizers)
+	}
+	if r.store.cached("proj:api:api-abc") {
+		t.Error("unroutable revision must not be warmed")
+	}
+}
+
+// TestResidentReconciler_NilPublisherNoop: with no publisher configured, reconcile
+// still warms and never panics.
+func TestResidentReconciler_NilPublisherNoop(t *testing.T) {
+	r, _ := newResidentReconciler(t, &fakeResident{}, nil, okFetcher(), revision("api-abc", "api", "sha256:d"))
+	if _, err := reconcileRevision(t, r, "api-abc"); err != nil {
+		t.Fatalf("reconcile with nil publisher: %v", err)
+	}
+	if !r.store.cached("proj:api:api-abc") {
+		t.Error("definition should still be warmed without a publisher")
+	}
 }

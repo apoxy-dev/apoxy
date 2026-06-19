@@ -49,7 +49,7 @@ func (d *WorkerdManagerDockerDriver) Start(
 		opt(setOpts)
 	}
 	if setOpts.NetworkContainer == "" {
-		return "", fmt.Errorf("workerd-manager driver requires WithNetworkContainer (the apiserver container)")
+		return "", fmt.Errorf("workerd-manager driver requires WithNetworkContainer (the co-located backplane container)")
 	}
 
 	if err := d.Init(ctx, opts...); err != nil {
@@ -88,9 +88,11 @@ func (d *WorkerdManagerDockerDriver) Start(
 		"--label", "org.apoxy.workerd_manager="+serviceName,
 		// gVisor/runsc needs the broad privileges the backplane also takes.
 		"--privileged",
-		// Share the apiserver's network namespace so the manager reaches the kube
-		// API (localhost:8443) and the routing publish channel (127.0.0.1:2021) over
-		// loopback. This keeps the publish receiver loopback-only.
+		// Join the co-located BACKPLANE's network namespace (1:1 backplane↔resident
+		// coupling): the backplane's Envoy dials the resident UDS, and the manager
+		// reaches the apiserver (kube-API + routing publish) over the docker network
+		// by name. The caller (dev.go) supplies --apiserver_host and
+		// --backplane_publish_addr accordingly.
 		"--network", "container:"+setOpts.NetworkContainer,
 	)
 	if setOpts.WorkerdSocketVolume != "" {
@@ -100,12 +102,12 @@ func (d *WorkerdManagerDockerDriver) Start(
 	cmd.Args = append(cmd.Args, imageRef)
 	cmd.Args = append(cmd.Args, []string{
 		"--project_id=" + orgID.String(),
-		// Dev kube-auth: an insecure rest.Config to the apiserver over the shared
-		// loopback (see cmd/workerd-manager dev mode).
+		// Dev kube-auth: an insecure rest.Config to --apiserver_host (supplied by
+		// dev.go, reached over the docker network by name).
 		"--dev=true",
-		// The apiserver's loopback publish channel (apiserver --workerd_publish_addr).
-		"--backplane_publish_addr=127.0.0.1:2021",
 	}...)
+	// The caller supplies --apiserver_host, --backplane_publish_addr, --node_id and
+	// --workerd_image (topology-specific), keeping this driver topology-agnostic.
 	cmd.Args = append(cmd.Args, setOpts.Args...)
 
 	log.Debugf("Running command: %v", cmd.String())

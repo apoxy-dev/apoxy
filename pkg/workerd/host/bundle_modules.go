@@ -15,9 +15,6 @@ import (
 
 	ocispecv1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"oras.land/oras-go/v2/content"
-	"oras.land/oras-go/v2/registry/remote"
-	"oras.land/oras-go/v2/registry/remote/auth"
-	orasretry "oras.land/oras-go/v2/registry/remote/retry"
 
 	computev1alpha1 "github.com/apoxy-dev/apoxy/api/compute/v1alpha1"
 )
@@ -37,14 +34,9 @@ const maxModuleLayerBytes = 64 << 20
 // payload the dispatcher pulls. The returned map is keyed to match
 // BundleManifest.Modules[i].Path; the caller maps Path -> Module.Name.
 func FetchBundleModules(ctx context.Context, imageRef string) (map[string][]byte, error) {
-	repo, err := remote.NewRepository(imageRef)
+	repo, err := newBundleRepository(imageRef)
 	if err != nil {
 		return nil, fmt.Errorf("creating repository: %w", err)
-	}
-	repo.Client = &auth.Client{
-		Client:     orasretry.DefaultClient,
-		Cache:      auth.NewCache(),
-		Credential: auth.StaticCredential(repo.Reference.Registry, auth.EmptyCredential),
 	}
 
 	manifestDesc, err := repo.Resolve(ctx, repo.Reference.Reference)

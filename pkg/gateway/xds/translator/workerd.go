@@ -54,6 +54,21 @@ func SetWorkerdRegistry(r WorkerdRegistry) {
 	workerdRegistry = r
 }
 
+// workerdNotifier is the optional change-signal a registry exposes so the
+// xds-translator runner can re-translate when a publish lands after the initial
+// translation (the IR bus dedups by value, so it can't carry this signal).
+type workerdNotifier interface{ Notify() <-chan struct{} }
+
+// WorkerdRegistryNotify returns the registry's change channel, or nil if no
+// registry is installed or it has no change signal. The xds-translator runner
+// re-runs translation on each receive so a late publish takes effect.
+func WorkerdRegistryNotify() <-chan struct{} {
+	if n, ok := workerdRegistry.(workerdNotifier); ok {
+		return n.Notify()
+	}
+	return nil
+}
+
 func init() {
 	registerHTTPFilter(&workerd{})
 }

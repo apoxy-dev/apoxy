@@ -10,19 +10,19 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"os"
-	"path/filepath"
 )
 
 // workerPath is the control endpoint the dispatcher's WorkerLoader callback
-// fetches worker definitions from: GET /worker?id=<service>:<revision>.
+// fetches worker definitions from: GET /worker?id=<project>:<service>:<revision>.
 // Must match pkg/workerd/host/dispatcher.js.
 const workerPath = "/worker"
 
 // ControlServer is the manager side of the dispatcher control channel: an HTTP
 // server that serves WorkerCode payloads the resident's WorkerLoader callback
-// pulls. It listens on a host AF_UNIX socket; the clrk control forwarder bridges
-// the dispatcher's in-sandbox TCP connections to it (see host.ResidentConfig).
+// pulls. It listens on a host loopback TCP address; the clrk control forwarder
+// bridges the dispatcher's in-sandbox connections to it (see host.ResidentConfig).
+// It is TCP, not AF_UNIX: the Sentry's plugin seccomp only allows socket() for
+// AF_INET/AF_INET6, so the forwarder cannot dial a host unix socket.
 type ControlServer struct {
 	store *Store
 }
@@ -66,21 +66,14 @@ func (c *ControlServer) handleWorker(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
-// ServeUnix listens on a host AF_UNIX socket at socketPath and serves the
-// control API until ctx is cancelled. It removes a stale socket first and
-// creates the parent directory.
-func (c *ControlServer) ServeUnix(ctx context.Context, socketPath string) error {
-	if err := os.MkdirAll(filepath.Dir(socketPath), 0o755); err != nil {
-		return fmt.Errorf("creating control socket dir: %w", err)
-	}
-	// A leftover socket from a previous incarnation blocks bind.
-	if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("removing stale control socket: %w", err)
-	}
-
-	ln, err := net.Listen("unix", socketPath)
+// ServeTCP listens on the host loopback TCP address addr (e.g. "127.0.0.1:2024")
+// and serves the control API until ctx is cancelled. The address is in the
+// manager's own netns, which the Sentry's control forwarder shares, so a guest
+// dispatcher reaches it through the forwarder's host TCP dial.
+func (c *ControlServer) ServeTCP(ctx context.Context, addr string) error {
+	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		return fmt.Errorf("listening on control socket %s: %w", socketPath, err)
+		return fmt.Errorf("listening on control addr %s: %w", addr, err)
 	}
 
 	srv := &http.Server{Handler: c.Handler()}
@@ -90,7 +83,7 @@ func (c *ControlServer) ServeUnix(ctx context.Context, socketPath string) error 
 	stop := context.AfterFunc(ctx, func() { _ = srv.Close() })
 	defer stop()
 
-	slog.Info("Serving workerd control channel", "socket", socketPath)
+	slog.Info("Serving workerd control channel", "addr", addr)
 	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("serving control channel: %w", err)
 	}

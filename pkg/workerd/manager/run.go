@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/rest"
@@ -32,29 +33,48 @@ import (
 // on linux — host.NewResidentHost needs the gVisor core — but compiles
 // everywhere so the package is unit-testable with fakes on darwin.
 func Run() error {
+	// A dedicated FlagSet, not the global flag.CommandLine: controller-runtime's
+	// client/config init() already registers a global --kubeconfig, so defining
+	// the manager's own flags on the default set panics with "flag redefined".
+	fs := flag.NewFlagSet("workerd-manager", flag.ExitOnError)
 	var (
-		stateDir      = flag.String("state_dir", "/run/workerd-manager/state", "runsc --root state dir")
-		rootDir       = flag.String("root_dir", "/run/workerd-manager/root", "host staging dir for the dispatcher config")
-		imageBaseDir  = flag.String("image_base_dir", "/run/workerd-manager/images", "OCI image extraction dir")
-		workerdImage  = flag.String("workerd_image", "", "stock workerd OCI image the resident runs (required)")
-		listenAddr    = flag.String("listen_addr", "*:8080", "dispatcher http socket bind address")
-		controlSocket = flag.String("control_socket", "/run/workerd-manager/control.sock", "host AF_UNIX socket the control channel listens on")
-		controlFwd    = flag.String("control_forward_addr", "", "in-sandbox TCP address the dispatcher dials for the control channel (default 127.0.0.2:80)")
-		kubeconfig    = flag.String("kubeconfig", "", "path to the project apiserver kubeconfig (in-cluster config if empty)")
-		backplaneAddr = flag.String("backplane_publish_addr", "", "loopback host:port of the co-located backplane's private workerd publish channel (empty disables publishing)")
-		projectID     = flag.String("project_id", "", "the project this manager serves; scopes the demux id so the shared resident never collides two projects' services (required)")
-		devMode       = flag.Bool("dev", false, "dev mode: build an insecure apiserver client to --apiserver_host instead of using kubeconfig/in-cluster config")
-		apiserverHost = flag.String("apiserver_host", "localhost:8443", "apiserver host:port for --dev mode (reached over the shared loopback when co-located with the apiserver)")
+		stateDir      = fs.String("state_dir", "/run/workerd-manager/state", "runsc --root state dir")
+		rootDir       = fs.String("root_dir", "/run/workerd-manager/root", "host staging dir for the dispatcher config")
+		imageBaseDir  = fs.String("image_base_dir", "/run/workerd-manager/images", "OCI image extraction dir")
+		workerdImage  = fs.String("workerd_image", "", "stock workerd OCI image the resident runs (required)")
+		listenAddr    = fs.String("listen_addr", "*:8080", "dispatcher http socket bind address")
+		controlAddr   = fs.String("control_addr", "127.0.0.1:2024", "host loopback TCP address the control channel listens on (the Sentry control forwarder dials it; TCP because the plugin seccomp blocks host AF_UNIX)")
+		controlFwd    = fs.String("control_forward_addr", "", "in-sandbox TCP address the dispatcher dials for the control channel (default 127.0.0.2:80)")
+		kubeconfig    = fs.String("kubeconfig", "", "path to the project apiserver kubeconfig (in-cluster config if empty)")
+		backplaneAddr = fs.String("backplane_publish_addr", "", "host:port of the private workerd publish channel this node reports its serveable routing to (the apiserver in dev, the backplane in prod); empty disables publishing")
+		projectID     = fs.String("project_id", "", "the project this manager serves; scopes the demux id so the shared resident never collides two projects' services (required)")
+		nodeID        = fs.String("node_id", "", "this backplane node's identity (its --replica / Proxy replica name); the receiver keys published readiness by node so two backplanes never collide (empty = the singleton node, valid in dedicated/dev)")
+		devMode       = fs.Bool("dev", false, "dev mode: build an insecure apiserver client to --apiserver_host instead of using kubeconfig/in-cluster config")
+		apiserverHost = fs.String("apiserver_host", "localhost:8443", "apiserver host:port for --dev mode (reached over the docker network by name when co-located with the backplane)")
 	)
-	flag.Parse()
+	if err := fs.Parse(os.Args[1:]); err != nil {
+		return err
+	}
 
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	// Route controller-runtime's logr through slog so cache-sync/reconcile errors
+	// surface instead of being silently discarded ("log.SetLogger never called").
+	ctrl.SetLogger(logr.FromSlogHandler(slog.Default().Handler()))
 
 	if *workerdImage == "" {
 		return fmt.Errorf("workerd-manager: --workerd_image is required")
 	}
 	if *projectID == "" {
 		return fmt.Errorf("workerd-manager: --project_id is required")
+	}
+
+	// The resident's runsc state/staging/image-extraction dirs live under the
+	// shared volume (/run/workerd-manager); only the mount point exists, so create
+	// the subdirs the sandbox core and image store expect before first use.
+	for _, d := range []string{*stateDir, *rootDir, *imageBaseDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			return fmt.Errorf("creating manager dir %s: %w", d, err)
+		}
 	}
 
 	// PID-1 reaper for the Sentry/gofer orphans (no-op off linux).
@@ -69,7 +89,7 @@ func Run() error {
 		ImageBaseDir:       *imageBaseDir,
 		WorkerdImage:       *workerdImage,
 		ListenAddr:         *listenAddr,
-		ControlSocketPath:  *controlSocket,
+		ControlHostAddr:    *controlAddr,
 		ControlForwardAddr: *controlFwd,
 	})
 	if err != nil {
@@ -106,24 +126,22 @@ func Run() error {
 	store := NewStore(NewResolver(mgr.GetClient(), *projectID))
 	control := NewControlServer(store)
 	go func() {
-		if err := control.ServeUnix(ctx, *controlSocket); err != nil {
+		if err := control.ServeTCP(ctx, *controlAddr); err != nil {
 			slog.Error("Control channel server exited", "error", err)
 			stop()
 		}
 	}()
 
-	if err := NewResidentReconciler(mgr.GetClient(), resident, store, *projectID).SetupWithManager(ctx, mgr); err != nil {
-		return fmt.Errorf("setting up resident reconciler: %w", err)
-	}
-
-	// Publish the resident socket + live-revision map to the co-located backplane
-	// over the private node-local channel (the backplane never reads the customer
-	// compute API for this).
+	// The resident reconciler is read-only on the API: it keeps the resident up,
+	// warms each revision, and publishes THIS node's serveable routing (resident
+	// socket + the revision it serves per service) over the private channel. A nil
+	// publisher (no --backplane_publish_addr) disables publishing.
+	var publisher Publisher
 	if *backplaneAddr != "" {
-		pub := NewPublishReconciler(mgr.GetClient(), NewHTTPPublisher(*backplaneAddr), residentInst.InboundSocket, *projectID)
-		if err := pub.SetupWithManager(ctx, mgr); err != nil {
-			return fmt.Errorf("setting up publish reconciler: %w", err)
-		}
+		publisher = NewHTTPPublisher(*backplaneAddr)
+	}
+	if err := NewResidentReconciler(mgr.GetClient(), resident, store, publisher, residentInst.InboundSocket, *nodeID, *projectID).SetupWithManager(ctx, mgr); err != nil {
+		return fmt.Errorf("setting up resident reconciler: %w", err)
 	}
 
 	slog.Info("Starting workerd-manager")

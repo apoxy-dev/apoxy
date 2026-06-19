@@ -45,11 +45,11 @@ func acceptanceResident(t *testing.T) *host.ResidentHost {
 	t.Helper()
 	dir := t.TempDir()
 	rh, err := host.NewResidentHost(host.ResidentConfig{
-		StateDir:          dir + "/state",
-		RootDir:           dir + "/root",
-		ImageBaseDir:      dir + "/images",
-		WorkerdImage:      acceptanceWorkerdImage(t),
-		ControlSocketPath: dir + "/control.sock",
+		StateDir:        dir + "/state",
+		RootDir:         dir + "/root",
+		ImageBaseDir:    dir + "/images",
+		WorkerdImage:    acceptanceWorkerdImage(t),
+		ControlHostAddr: "127.0.0.1:2024",
 	})
 	if err != nil {
 		t.Fatalf("NewResidentHost: %v", err)

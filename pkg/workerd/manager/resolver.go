@@ -149,3 +149,11 @@ func serviceRevisionID(projectID string, rev *computev1alpha1.ServiceRevision) (
 func serviceDemuxKey(projectID, service string) string {
 	return projectID + ":" + service
 }
+
+// demuxID is the dispatcher demux id for a (service, revision) pair on this
+// manager's project: "<project>:<service>:<revision>". It is the string-arg twin
+// of serviceRevisionID (which reads the service off a revision's label) — the
+// publish path knows the service name directly.
+func demuxID(projectID, service, revName string) string {
+	return serviceDemuxKey(projectID, service) + ":" + revName
+}

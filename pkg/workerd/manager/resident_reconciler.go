@@ -5,12 +5,11 @@ package manager
 import (
 	"context"
 	"fmt"
+	"sort"
 
-	"k8s.io/apimachinery/pkg/api/meta"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	clog "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -18,109 +17,167 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/workerd/host"
 )
 
-// residentFinalizer drains a revision's cached definition before the
-// ServiceRevision is deleted, so a delete races neither the dispatcher's pull
-// nor the cache.
-const residentFinalizer = "compute.apoxy.dev/resident"
-
 var _ reconcile.Reconciler = &ResidentReconciler{}
 
 // ResidentReconciler is the data-plane half of the APO-796 ServiceManager. It
-// runs inside cmd/workerd-manager next to the runsc host, watches
-// ServiceRevisions, keeps the single resident workerd up, warms each revision's
-// WorkerDefinition (validating the bundle is pullable and the modules build),
-// and reports ResidentReady so the minting reconciler can promote LiveRevision.
+// runs inside cmd/workerd-manager next to the runsc host, 1:1 with a backplane
+// node. It watches ServiceRevisions, keeps the single resident workerd up, warms
+// each revision's WorkerDefinition (validating the bundle is pullable and the
+// modules build), and publishes THIS node's serveable routing state to the
+// apiserver/backplane over the private channel.
+//
+// It is strictly READ-ONLY on the Service/ServiceRevision API objects: with
+// dozens-to-hundreds of revisions across N nodes, a data-plane writer on a shared,
+// cluster-scoped object is a last-writer-wins race and write amplification. So
+// readiness is NOT recorded on the Revision; it is reported per-node on the
+// publish channel, where it belongs (this node knows what IT can serve).
 //
 // Request routing is PULL-only in M1: the dispatcher fetches a definition on its
-// first request for a revision; this reconciler does not push loads. Readiness
-// therefore means "the resident is up AND this revision resolves", which is the
-// honest gate that breaks the promote/route chicken-and-egg (the backplane only
-// sends a revision's demux header once it is the live revision).
+// first request for a revision. "Readiness" therefore means "the resident is up
+// AND this node has warmed this revision", and the node advertises the newest
+// revision it has warmed per service — so it keeps serving the PREVIOUS revision
+// until it has pulled a new one (make-before-break, the interim promotion model).
 type ResidentReconciler struct {
 	client.Client
-	resident  host.ResidentRuntime
-	store     *Store
-	projectID string
+	resident       host.ResidentRuntime
+	store          *Store
+	publisher      Publisher
+	residentSocket string
+	nodeID         string
+	projectID      string
 }
 
-// NewResidentReconciler returns a resident reconciler driving resident + store,
-// scoped to the project the manager serves.
-func NewResidentReconciler(c client.Client, resident host.ResidentRuntime, store *Store, projectID string) *ResidentReconciler {
-	return &ResidentReconciler{Client: c, resident: resident, store: store, projectID: projectID}
+// NewResidentReconciler returns a resident reconciler driving resident + store and
+// publishing this node's serveable routing to publisher (nil disables publishing).
+// nodeID is the backplane/replica identity the receiver keys the published state
+// by; residentSocket is the host UDS the resident dispatcher listens on.
+func NewResidentReconciler(c client.Client, resident host.ResidentRuntime, store *Store, publisher Publisher, residentSocket, nodeID, projectID string) *ResidentReconciler {
+	return &ResidentReconciler{
+		Client:         c,
+		resident:       resident,
+		store:          store,
+		publisher:      publisher,
+		residentSocket: residentSocket,
+		nodeID:         nodeID,
+		projectID:      projectID,
+	}
 }
 
-// Reconcile keeps the resident up and the revision's ResidentReady condition
-// current.
+// Reconcile keeps the resident up, warms the revision into the store, and
+// republishes this node's serveable routing state. It never writes the API object.
 func (r *ResidentReconciler) Reconcile(ctx context.Context, req reconcile.Request) (ctrl.Result, error) {
 	log := clog.FromContext(ctx, "revision", req.Name)
 
 	rev := &computev1alpha1.ServiceRevision{}
 	if err := r.Get(ctx, req.NamespacedName, rev); err != nil {
-		return ctrl.Result{}, client.IgnoreNotFound(err)
+		if apierrors.IsNotFound(err) {
+			// The revision is gone (GC or cascade delete). Republish so this node
+			// stops advertising it; the store is pruned to the surviving set inside
+			// republish (no finalizer needed — the cache is non-authoritative and
+			// the workerd isolate idles out on its own).
+			return ctrl.Result{}, r.republish(ctx)
+		}
+		return ctrl.Result{}, err
 	}
 
 	id, idErr := serviceRevisionID(r.projectID, rev)
 
-	// Deletion: drop the cached definition and release the finalizer.
+	// Terminating or unroutable (no service label): nothing to warm; just refresh
+	// the published view (which drops the revision from this node's serveable set).
 	if !rev.DeletionTimestamp.IsZero() {
-		if idErr == nil {
-			r.store.Invalidate(id)
-		}
-		if controllerutil.RemoveFinalizer(rev, residentFinalizer) {
-			if err := r.Update(ctx, rev); err != nil {
-				return ctrl.Result{}, err
-			}
-		}
-		return ctrl.Result{}, nil
+		return ctrl.Result{}, r.republish(ctx)
 	}
-
-	// A revision with no service label can't be routed; surface it rather than
-	// silently treating it as not-ready forever.
 	if idErr != nil {
-		r.setResidentReady(rev, metav1.ConditionFalse, "Unroutable", idErr.Error())
-		return ctrl.Result{}, r.Status().Update(ctx, rev)
-	}
-
-	if controllerutil.AddFinalizer(rev, residentFinalizer) {
-		// Persist the finalizer before doing work, then reconcile the freshly
-		// updated object on the next pass.
-		if err := r.Update(ctx, rev); err != nil {
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{Requeue: true}, nil
+		log.Info("Skipping unroutable revision (no service label)", "error", idErr.Error())
+		return ctrl.Result{}, r.republish(ctx)
 	}
 
 	// Keep the single resident up (idempotent; self-heals if it died).
 	if _, err := r.resident.EnsureResident(ctx); err != nil {
-		log.Error(err, "Resident not ready")
-		r.setResidentReady(rev, metav1.ConditionFalse, "ResidentDown", err.Error())
-		// Surface the error so controller-runtime backs off and retries.
-		if uerr := r.Status().Update(ctx, rev); uerr != nil {
-			return ctrl.Result{}, uerr
-		}
+		// No API write: surface the error so controller-runtime backs off and retries.
 		return ctrl.Result{}, fmt.Errorf("ensuring resident: %w", err)
 	}
 
-	// Validate the revision resolves (bundle pullable, modules build). On success
-	// the definition is cached so the dispatcher's first pull is served warm.
+	// Validate the revision resolves (bundle pullable, modules build) and cache it
+	// so the dispatcher's first pull is served warm. On failure the node keeps
+	// advertising whatever it has already warmed (the previous revision) and retries.
 	if _, err := r.store.Warm(ctx, id); err != nil {
-		log.Error(err, "Worker definition not resolvable")
-		r.setResidentReady(rev, metav1.ConditionFalse, "DefinitionUnavailable", err.Error())
-		return ctrl.Result{RequeueAfter: requeueAwaitBuild}, r.Status().Update(ctx, rev)
+		log.Error(err, "Worker definition not resolvable; keeping previous revision live")
+		if perr := r.republish(ctx); perr != nil {
+			return ctrl.Result{}, perr
+		}
+		return ctrl.Result{RequeueAfter: requeueAwaitBuild}, nil
 	}
 
-	r.setResidentReady(rev, metav1.ConditionTrue, "Loadable", "resident is up and the worker definition resolved")
-	return ctrl.Result{}, r.Status().Update(ctx, rev)
+	// Warmed: advertise this node's now-current serveable set.
+	return ctrl.Result{}, r.republish(ctx)
 }
 
-// setResidentReady writes the ResidentReady condition on the revision status.
-func (r *ResidentReconciler) setResidentReady(rev *computev1alpha1.ServiceRevision, status metav1.ConditionStatus, reason, msg string) {
-	meta.SetStatusCondition(&rev.Status.Conditions, metav1.Condition{
-		Type:               computev1alpha1.ConditionResidentReady,
-		Status:             status,
-		Reason:             reason,
-		Message:            msg,
-		ObservedGeneration: rev.Generation,
+// republish computes this node's serveable demux from local warm state and pushes
+// it (with the resident socket) to the receiver. For each service it advertises an
+// explicit spec.liveRevision pin once warmed, else the NEWEST revision this node
+// has warmed — so a node serves the previous revision until it pulls the new one.
+// It also prunes the store to the surviving revision set. No API object is written.
+func (r *ResidentReconciler) republish(ctx context.Context) error {
+	if r.publisher == nil {
+		return nil
+	}
+
+	revs := &computev1alpha1.ServiceRevisionList{}
+	if err := r.List(ctx, revs); err != nil {
+		return fmt.Errorf("listing revisions: %w", err)
+	}
+	svcs := &computev1alpha1.ServiceList{}
+	if err := r.List(ctx, svcs); err != nil {
+		return fmt.Errorf("listing services: %w", err)
+	}
+
+	// Pinned revision per service (spec.liveRevision), if any.
+	pin := make(map[string]string, len(svcs.Items))
+	for i := range svcs.Items {
+		s := &svcs.Items[i]
+		if s.Spec.LiveRevision != "" {
+			pin[s.Name] = s.Spec.LiveRevision
+		}
+	}
+
+	// Group revisions by service (newest first) and collect the valid id set.
+	type rinfo struct {
+		name    string
+		created int64
+	}
+	byService := make(map[string][]rinfo)
+	valid := make(map[string]bool, len(revs.Items))
+	for i := range revs.Items {
+		rev := &revs.Items[i]
+		svc := rev.Labels[serviceLabel]
+		if svc == "" {
+			continue
+		}
+		valid[demuxID(r.projectID, svc, rev.Name)] = true
+		byService[svc] = append(byService[svc], rinfo{name: rev.Name, created: rev.CreationTimestamp.UnixNano()})
+	}
+	r.store.retain(valid)
+
+	demux := make(map[string]string)
+	for svc, list := range byService {
+		sort.SliceStable(list, func(i, j int) bool { return list[i].created > list[j].created })
+		if p, ok := pin[svc]; ok && r.store.cached(demuxID(r.projectID, svc, p)) {
+			demux[serviceDemuxKey(r.projectID, svc)] = p
+			continue
+		}
+		for _, ri := range list {
+			if r.store.cached(demuxID(r.projectID, svc, ri.name)) {
+				demux[serviceDemuxKey(r.projectID, svc)] = ri.name
+				break
+			}
+		}
+	}
+
+	return r.publisher.Publish(ctx, PublishSnapshot{
+		NodeID:         r.nodeID,
+		ResidentSocket: r.residentSocket,
+		Demux:          demux,
 	})
 }
 

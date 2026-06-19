@@ -71,5 +71,8 @@ spec:
     oci:
       # The pushed echo bundle. Replace with your registry/repo and pin a digest
       # for production; see _examples/compute_echo/README.md to build + push it.
-      repo: ttl.sh/apoxy-examples-echo
+      # Local dev: an insecure registry on the apoxy docker network (the manager
+      # pulls it over plain HTTP via APOXY_INSECURE_BUNDLE_REGISTRIES).
+      repo: apoxy-registry:5000/echo
       tag: latest
+      digest: sha256:296c42626544a713ebc1ba29f9822b54c578560563abc8cbbda5c3ed4d4f3a43

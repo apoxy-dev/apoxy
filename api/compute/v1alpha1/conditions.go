@@ -1,16 +1,16 @@
 package v1alpha1
 
-// Condition types shared by the compute control plane (the Service minting
-// reconciler) and data plane (the workerd resident reconciler, APO-796).
+// Condition types for the compute control plane (the Service minting reconciler,
+// APO-796). The data plane (the workerd resident reconciler) is READ-ONLY on these
+// objects — it reports per-node readiness over the private publish channel, never
+// by writing a condition — so there is no data-plane-written condition here.
 const (
 	// ConditionAccepted (on Service) reports that the Service spec is valid and a
 	// ServiceRevision has been minted from spec.template + spec.source.
 	ConditionAccepted = "Accepted"
-	// ConditionReady (on Service) reports that the live revision is resident and
-	// serving (its ResidentReady condition is true).
+	// ConditionReady (on Service) reports that the Service's intended revision is
+	// being served. Which revision each backplane actually serves is a per-node
+	// decision the workerd-manager reports over the private publish channel, so
+	// this is a control-plane summary and is never written by the data plane.
 	ConditionReady = "Ready"
-	// ConditionResidentReady (on ServiceRevision) reports that the workerd
-	// resident has loaded this revision's isolate and it is accepting requests.
-	// It is written by the resident reconciler (the ServiceManager data plane).
-	ConditionResidentReady = "ResidentReady"
 )

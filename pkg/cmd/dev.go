@@ -403,11 +403,19 @@ var devCmd = &cobra.Command{
 				ctx,
 				projectID,
 				proxyName,
-				// Join the apiserver's netns so kube-API + routing publish reach it
-				// over loopback; share the resident-socket volume with the backplane.
-				drivers.WithNetworkContainer(apiserverAddr),
+				// Reflect the 1:1 backplane↔resident coupling: join the BACKPLANE's
+				// netns and share its resident-socket volume (the backplane's Envoy
+				// dials the resident UDS). Reach the apiserver (kube-API + the routing
+				// publish channel) over the docker network by name, and report this
+				// node's readiness under its identity (the proxy/replica name).
+				drivers.WithNetworkContainer(cname),
 				drivers.WithWorkerdSocketVolume(workerdVolume),
-				drivers.WithArgs(fmt.Sprintf("--workerd_image=%s", workerdImage)),
+				drivers.WithArgs(
+					fmt.Sprintf("--workerd_image=%s", workerdImage),
+					fmt.Sprintf("--apiserver_host=%s:8443", apiserverAddr),
+					fmt.Sprintf("--backplane_publish_addr=%s:2021", apiserverAddr),
+					fmt.Sprintf("--node_id=%s", proxyName),
+				),
 			); err != nil {
 				return err
 			}

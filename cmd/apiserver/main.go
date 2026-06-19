@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"log/slog"
+	"net"
 	"os"
 	goruntime "runtime"
 	"strings"
@@ -40,11 +41,13 @@ var (
 	ingestStoreDir   = flag.String("ingest-store-dir", os.TempDir(), "Path to the ingest store directory.")
 	ingestStorePort  = flag.Int("ingest-store-port", 8081, "Port for the ingest store.")
 	controllerNames  = flag.String("controller-names", "", "Comma-separated list of GatewayClass controller names to watch. Defaults to both standalone and legacy controller names.")
-	// APO-796: the co-located workerd-manager POSTs its routing snapshot (resident
-	// socket + live-revision demux) here; the Gateway→xDS translator injects the
-	// resident cluster and x-apoxy-service demux header from it. Empty disables the
-	// receiver (workerd routing stays inert). Must be loopback.
-	workerdPublishAddr = flag.String("workerd_publish_addr", "127.0.0.1:2021", "Loopback host:port for the private workerd-manager routing publish channel (empty disables).")
+	// APO-796: each backplane node's workerd-manager POSTs its per-node routing
+	// snapshot (resident socket + the revision it serves per service) here; the
+	// Gateway→xDS translator injects the resident cluster and x-apoxy-service demux
+	// header from it. Empty disables the receiver (workerd routing stays inert).
+	// Loopback by default; in --dev it binds the docker network (the manager runs
+	// in the backplane's netns and reaches it by name).
+	workerdPublishAddr = flag.String("workerd_publish_addr", "127.0.0.1:2021", "host:port for the private workerd-manager routing publish channel (empty disables).")
 )
 
 func stopCh(ctx context.Context) <-chan interface{} {
@@ -113,8 +116,23 @@ func main() {
 	if *workerdPublishAddr != "" {
 		workerdRegistry := gatewayworkerd.NewRegistry()
 		xdstranslator.SetWorkerdRegistry(workerdRegistry)
+		srv := gatewayworkerd.NewServer(workerdRegistry)
+		publishAddr := *workerdPublishAddr
+		if *devMode {
+			// Dev reflects the 1:1 backplane↔resident coupling: the workerd-manager
+			// runs in the BACKPLANE's netns, so it reaches this apiserver-hosted
+			// channel over the docker network by name, not loopback. Bind all
+			// interfaces and allow the non-loopback bind (private docker bridge).
+			srv.AllowNonLoopback = true
+			if host, port, err := net.SplitHostPort(publishAddr); err == nil {
+				switch host {
+				case "127.0.0.1", "localhost", "::1", "":
+					publishAddr = ":" + port
+				}
+			}
+		}
 		go func() {
-			if err := gatewayworkerd.NewServer(workerdRegistry).Serve(ctx, *workerdPublishAddr); err != nil {
+			if err := srv.Serve(ctx, publishAddr); err != nil {
 				log.Errorf("workerd publish channel exited: %v", err)
 				ctxCancel(&startErr{Err: err})
 			}

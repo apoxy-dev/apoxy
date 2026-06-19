@@ -32,16 +32,16 @@ const (
 	// defaultControlForwardAddr is the in-sandbox TCP address the dispatcher's
 	// MANAGER external service dials to reach the host manager. It is an
 	// otherwise-unused loopback target the clrk control forwarder intercepts and
-	// splices to the host manager's control socket (ControlSocketPath).
+	// splices to the host manager's control listener (ControlHostAddr).
 	//
-	// The dispatcher reaches the manager over plain TCP, NOT a unix socket:
-	// clrk's in-Sentry netstack has no AF_UNIX provider and runsc host-UDS
-	// passthrough is disabled, so a guest cannot connect() a host unix socket.
-	// The control forwarder (the one net-new clrk dependency; see
+	// The control path is plain TCP end to end, NOT a unix socket: clrk's
+	// in-Sentry netstack has no AF_UNIX provider, AND the Sentry's own plugin
+	// seccomp filter only allows socket() for AF_INET/AF_INET6 — so neither the
+	// guest nor the Sentry's host-side dial can touch a host unix socket. The
+	// control forwarder (the one net-new clrk dependency; see
 	// docs/workerd-runtime-mvp.md) mirrors the APO-694 inbound forwarder in
-	// reverse — guest TCP in, host net.Dial("unix", ControlSocketPath) out —
-	// and needs no fd donation because the Sentry shares the host net+mount
-	// namespaces.
+	// reverse — guest TCP in, host net.Dial("tcp", ControlHostAddr) out — and
+	// needs no fd donation because the Sentry shares the host net namespace.
 	defaultControlForwardAddr = "127.0.0.2:80"
 )
 
@@ -61,13 +61,13 @@ type ResidentConfig struct {
 	// ListenAddr is the dispatcher's http socket bind address (workerd syntax,
 	// e.g. "*:8080"). Defaults to defaultResidentListenAddr.
 	ListenAddr string
-	// ControlSocketPath is the HOST AF_UNIX path the manager's control HTTP
-	// server listens on. The clrk control forwarder dials it for each connection
-	// the dispatcher opens to ControlForwardAddr.
-	ControlSocketPath string
+	// ControlHostAddr is the HOST loopback TCP address (e.g. "127.0.0.1:2024")
+	// the manager's control HTTP server listens on. The clrk control forwarder
+	// dials it for each connection the dispatcher opens to ControlForwardAddr.
+	ControlHostAddr string
 	// ControlForwardAddr is the in-sandbox TCP address the dispatcher dials for
 	// the control channel; the clrk control forwarder routes it to
-	// ControlSocketPath. Defaults to defaultControlForwardAddr.
+	// ControlHostAddr. Defaults to defaultControlForwardAddr.
 	ControlForwardAddr string
 }
 
@@ -114,8 +114,8 @@ func NewResidentHost(cfg ResidentConfig) (*ResidentHost, error) {
 	if cfg.WorkerdImage == "" {
 		return nil, fmt.Errorf("workerd-host: ResidentConfig requires WorkerdImage")
 	}
-	if cfg.ControlSocketPath == "" {
-		return nil, fmt.Errorf("workerd-host: ResidentConfig requires ControlSocketPath")
+	if cfg.ControlHostAddr == "" {
+		return nil, fmt.Errorf("workerd-host: ResidentConfig requires ControlHostAddr")
 	}
 	core, err := newCore(Config{StateDir: cfg.StateDir, RootDir: cfg.RootDir, ImageBaseDir: cfg.ImageBaseDir})
 	if err != nil {
@@ -220,20 +220,22 @@ func (h *ResidentHost) Cleanup(ctx context.Context) error {
 //
 // The control channel (dispatcher -> host manager) is wired via the clrk control
 // forwarder: cfg.ControlForwardAddr is the in-sandbox ip:port the dispatcher's
-// MANAGER binding dials, and cfg.ControlSocketPath is the host AF_UNIX socket the
+// MANAGER binding dials, and cfg.ControlHostAddr is the host loopback TCP addr the
 // forwarder splices each such connection to (the manager's control server).
 // These mirror InboundListenAddr/InboundSocket but in the guest->host direction
-// and need no fd donation — the Sentry shares the host net+mount namespaces and
-// net.Dial("unix", ...)s the host socket directly. See
+// and need no fd donation — the Sentry shares the host net namespace and
+// net.Dial("tcp", ...)s the manager's control listener directly. See
 // docs/workerd-runtime-mvp.md §"control channel".
 func buildResidentSpec(cfg ResidentConfig, cfgHostPath string) sandbox.Spec {
 	return sandbox.Spec{
 		ID:    residentSandboxID,
 		Image: cfg.WorkerdImage,
-		// Stock workerd serving the dispatcher config. --experimental enables the
-		// workerLoader binding; --platform=systrap because KVM is unavailable
-		// inside gVisor.
-		Command: []string{"workerd", "serve", inJailConfigPath(), "--experimental", "--platform=systrap"},
+		// Stock workerd serving the dispatcher config. Absolute path: the sandbox
+		// process env carries no PATH (the image store doesn't propagate the image's
+		// Env), so a bare "workerd" won't resolve. --experimental enables the
+		// workerLoader binding. (--platform=systrap is a runsc flag, already set on
+		// the sandbox; workerd has no such option and exits if given it.)
+		Command: []string{"/usr/bin/workerd", "serve", inJailConfigPath(), "--experimental"},
 		Mounts: []sandbox.Mount{
 			// The dispatcher config (read-only; rootfs is digest-shared).
 			{Source: cfgHostPath, Destination: inJailConfigPath(), Type: "bind", Options: []string{"ro"}},
@@ -246,9 +248,10 @@ func buildResidentSpec(cfg ResidentConfig, cfgHostPath string) sandbox.Spec {
 		InboundListenAddr: hostInboundAddr(SocketSpec{Kind: HTTPSocket, Addr: cfg.ListenAddr}),
 		// Control (dispatcher -> host manager): the clrk control forwarder accepts
 		// the dispatcher's connections to ControlForwardAddr on an in-stack
-		// listener and splices each to ControlSocketPath (the manager's control
-		// server). Guest->host mirror of inbound; no fd donation.
+		// listener and splices each to ControlHostAddr (the manager's control
+		// server, a host loopback TCP listener). Guest->host mirror of inbound;
+		// no fd donation.
 		ControlForwardAddr: cfg.ControlForwardAddr,
-		ControlSocketPath:  cfg.ControlSocketPath,
+		ControlHostAddr:    cfg.ControlHostAddr,
 	}
 }

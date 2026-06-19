@@ -17,12 +17,20 @@ import (
 // publisher (apoxy-cli pkg/workerd/manager.httpPublisher).
 const publishPath = "/publish"
 
-// Server is the private, node-local HTTP server the co-located workerd-manager
-// publishes routing snapshots to. It listens on a loopback address, never on a
-// customer-reachable interface, and writes each accepted snapshot into the
+// Server is the private HTTP server each co-located workerd-manager publishes its
+// node's routing snapshot to. It listens on a loopback address by default, never
+// on a customer-reachable interface, and writes each accepted snapshot into the
 // shared Registry the translator reads.
 type Server struct {
 	registry *Registry
+
+	// AllowNonLoopback, when true, permits Serve to bind a non-loopback address.
+	// DEV ONLY: with the tight backplane↔resident coupling reflected in dev, the
+	// workerd-manager runs in the BACKPLANE's netns (not the apiserver's), so it
+	// reaches this apiserver-hosted channel over the container network by name
+	// rather than loopback. The channel still trusts its caller, so this must only
+	// be enabled on a private network (the dev docker bridge).
+	AllowNonLoopback bool
 }
 
 // NewServer returns a publish server writing to registry.
@@ -51,9 +59,9 @@ func (s *Server) handlePublish(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "snapshot is missing residentSocket", http.StatusBadRequest)
 		return
 	}
-	s.registry.Set(snap)
+	s.registry.Upsert(snap)
 	slog.Info("Published workerd routing snapshot",
-		"residentSocket", snap.ResidentSocket, "services", len(snap.Demux))
+		"node", snap.NodeID, "residentSocket", snap.ResidentSocket, "services", len(snap.Demux))
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -64,8 +72,10 @@ func (s *Server) handlePublish(w http.ResponseWriter, req *http.Request) {
 // anyone redirect all workerd traffic. A non-loopback addr is rejected before
 // binding.
 func (s *Server) Serve(ctx context.Context, addr string) error {
-	if err := validateLoopbackAddr(addr); err != nil {
-		return err
+	if !s.AllowNonLoopback {
+		if err := validateLoopbackAddr(addr); err != nil {
+			return err
+		}
 	}
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
