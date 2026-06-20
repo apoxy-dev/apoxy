@@ -19,6 +19,8 @@ export type {
   SidebarModel,
   BuildSidebarOptions,
   Breadcrumb,
+  BreadcrumbSwitch,
+  BreadcrumbSwitchOption,
   BuildBreadcrumbsOptions,
 } from './nav'
 
@@ -46,6 +48,12 @@ export type {
 
 // Generic renderers + the splat-route dispatcher
 export { ResourceView, type ResourceViewProps } from './resource-view'
-export { ResourceListView, type ResourceListViewProps } from './resource-list-view'
-export { ResourceDetailView, type ResourceDetailViewProps } from './resource-detail-view'
+export {
+  ResourceListView,
+  type ResourceListViewProps,
+} from './resource-list-view'
+export {
+  ResourceDetailView,
+  type ResourceDetailViewProps,
+} from './resource-detail-view'
 export { Panel, StateMessage } from './views-common'

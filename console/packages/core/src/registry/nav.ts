@@ -36,7 +36,10 @@ export interface BuildSidebarOptions {
 }
 
 /** True when every GVR an entry requires is served. */
-function entryServed(entry: ResourceEntry, isServed: (gvr: GVR) => boolean): boolean {
+function entryServed(
+  entry: ResourceEntry,
+  isServed: (gvr: GVR) => boolean,
+): boolean {
   return entry.requires.every(isServed)
 }
 
@@ -45,27 +48,64 @@ function entryServed(entry: ResourceEntry, isServed: (gvr: GVR) => boolean): boo
  * `requires[]` are not all served are dropped; groups left empty after gating
  * are omitted. With no `isServed` (or before discovery loads) everything shows.
  */
-export function buildSidebar(registry: Registry, opts: BuildSidebarOptions = {}): SidebarModel {
+export function buildSidebar(
+  registry: Registry,
+  opts: BuildSidebarOptions = {},
+): SidebarModel {
   const isServed = opts.isServed ?? (() => true)
   const groups: SidebarGroupModel[] = []
   for (const group of registry.groups()) {
     const items: SidebarItem[] = group.entries
       .filter((e) => entryServed(e, isServed))
-      .map((e) => ({ to: `/${e.path}`, label: e.displayName, kind: e.kind, icon: e.icon, gvr: e.gvr }))
+      .map((e) => ({
+        to: `/${e.path}`,
+        label: e.displayName,
+        kind: e.kind,
+        icon: e.icon,
+        gvr: e.gvr,
+      }))
     if (items.length > 0) groups.push({ name: group.name, items })
   }
   return { groups }
+}
+
+/** One choice in a breadcrumb object-switcher. */
+export interface BreadcrumbSwitchOption {
+  /** Object id used both as the `<select>` value and in the URL. */
+  id: string
+  label: string
+  /** Optional secondary text (e.g. a namespace), shown after the label. */
+  sublabel?: string
+}
+
+/**
+ * An object-switcher attached to the leaf crumb: a dropdown that jumps to a
+ * sibling of the same kind. Generic — the host supplies the options (typically
+ * from a managed list) and the navigation callback.
+ */
+export interface BreadcrumbSwitch {
+  /** The id of the object currently on screen (the selected option). */
+  value: string
+  options: BreadcrumbSwitchOption[]
+  /** Navigate to the chosen sibling. */
+  onSelect: (id: string) => void
+  /** Accessible name for the select (e.g. "Switch Egress Gateway"). */
+  ariaLabel?: string
 }
 
 /** A breadcrumb: a label, and a link target unless it is the current location. */
 export interface Breadcrumb {
   label: string
   to?: string
+  /** When set (leaf crumb only), render an object-switcher dropdown in place. */
+  switcher?: BreadcrumbSwitch
 }
 
 export interface BuildBreadcrumbsOptions {
   /** A leading crumb (e.g. the project/overview root). */
   root?: Breadcrumb
+  /** Attach an object-switcher to the leaf (name) crumb of a detail view. */
+  leafSwitch?: BreadcrumbSwitch
 }
 
 /**
@@ -81,8 +121,11 @@ export function buildBreadcrumbs(
   const crumbs: Breadcrumb[] = []
   if (opts.root) crumbs.push(opts.root)
   if (entry) {
-    crumbs.push({ label: entry.displayName, to: name ? `/${entry.path}` : undefined })
-    if (name) crumbs.push({ label: name })
+    crumbs.push({
+      label: entry.displayName,
+      to: name ? `/${entry.path}` : undefined,
+    })
+    if (name) crumbs.push({ label: name, switcher: opts.leafSwitch })
   }
   return crumbs
 }
