@@ -47,14 +47,14 @@ export function YamlMenu({ entry, object, onEditRaw }: YamlMenuProps) {
       label: 'View YAML',
       sub: onEditRaw ? 'Inspect & edit the manifest' : 'Inspect the rendered manifest',
       kbd: 'Y',
-      icon: <EyeIcon />,
+      icon: <ViewIcon />,
       onSelect: () => setViewing(true),
     },
     {
       id: 'copy',
       label: 'Copy kubectl command',
       sub: 'kubectl apply for this object',
-      icon: <TerminalIcon />,
+      icon: <CopyIcon />,
       onSelect: () => void navigator.clipboard?.writeText(kubectlApplyCommand(yaml)).catch(() => {}),
     },
     {
@@ -69,7 +69,7 @@ export function YamlMenu({ entry, object, onEditRaw }: YamlMenuProps) {
 
   return (
     <>
-      <DropdownMenu label="YAML" ariaLabel="YAML actions" icon={<ManifestIcon />} items={items} onOpenChange={setMenuOpen} />
+      <DropdownMenu label="YAML" ariaLabel="YAML actions" icon={<CodeIcon />} items={items} onOpenChange={setMenuOpen} />
       <ManifestTray
         open={viewing}
         onClose={() => setViewing(false)}
@@ -104,34 +104,42 @@ function downloadYaml(yaml: string, name: string): void {
   setTimeout(() => URL.revokeObjectURL(url), 0)
 }
 
-function ManifestIcon(): ReactNode {
+// All four glyphs are IBM Carbon icons, inlined to match the design's YAML menu
+// (yaml-menu.jsx) exactly and keep @apoxy/console-core dependency-free.
+/** Carbon `Code` (`</>`) — the YAML menu's trigger glyph. */
+function CodeIcon(): ReactNode {
   return (
-    <svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
-      <path d="M2 2h9v9H2z" />
-      <path d="M5 6h3M5 8h3" />
+    <svg width="15" height="15" viewBox="0 0 32 32" fill="currentColor" aria-hidden="true">
+      <path d="M31 16 24 23 22.59 21.59 28.17 16 22.59 10.41 24 9 31 16z" />
+      <path d="M1 16 8 9 9.41 10.41 3.83 16 9.41 21.59 8 23 1 16z" />
+      <path d="M5.91 15H26.08V17H5.91z" transform="rotate(-75 15.996 16)" />
     </svg>
   )
 }
-function EyeIcon(): ReactNode {
+/** Carbon `View` (eye). */
+function ViewIcon(): ReactNode {
   return (
-    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.4" aria-hidden="true">
-      <path d="M1 7s2-4 6-4 6 4 6 4-2 4-6 4-6-4-6-4z" />
-      <circle cx="7" cy="7" r="2" />
+    <svg width="16" height="16" viewBox="0 0 32 32" fill="currentColor" aria-hidden="true">
+      <path d="M30.94,15.66A16.69,16.69,0,0,0,16,5,16.69,16.69,0,0,0,1.06,15.66a1,1,0,0,0,0,.68A16.69,16.69,0,0,0,16,27,16.69,16.69,0,0,0,30.94,16.34,1,1,0,0,0,30.94,15.66ZM16,25c-5.3,0-10.9-3.93-12.93-9C5.1,10.93,10.7,7,16,7s10.9,3.93,12.93,9C26.9,21.07,21.3,25,16,25Z" />
+      <path d="M16,10a6,6,0,1,0,6,6A6,6,0,0,0,16,10Zm0,10a4,4,0,1,1,4-4A4,4,0,0,1,16,20Z" />
     </svg>
   )
 }
-function TerminalIcon(): ReactNode {
+/** Carbon `Copy`. */
+function CopyIcon(): ReactNode {
   return (
-    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.4" aria-hidden="true">
-      <path d="M2 3h10v8H2z" />
-      <path d="M4 6l2 1.5L4 9M7.5 9H10" />
+    <svg width="16" height="16" viewBox="0 0 32 32" fill="currentColor" aria-hidden="true">
+      <path d="M28,10V28H10V10H28m0-2H10a2,2,0,0,0-2,2V28a2,2,0,0,0,2,2H28a2,2,0,0,0,2-2V10a2,2,0,0,0-2-2Z" />
+      <path d="M4,18H2V4A2,2,0,0,1,4,2H18V4H4Z" />
     </svg>
   )
 }
+/** Carbon `Download`. */
 function DownloadIcon(): ReactNode {
   return (
-    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.4" aria-hidden="true">
-      <path d="M7 1v8M3 6l4 4 4-4M2 12h10" />
+    <svg width="16" height="16" viewBox="0 0 32 32" fill="currentColor" aria-hidden="true">
+      <path d="M26,24v4H6V24H4v4H4a2,2,0,0,0,2,2H26a2,2,0,0,0,2-2h0V24Z" />
+      <path d="M26 14 24.59 12.59 17 20.17 17 2 15 2 15 20.17 7.41 12.59 6 14 16 24 26 14z" />
     </svg>
   )
 }
