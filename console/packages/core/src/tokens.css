@@ -6,25 +6,59 @@
    ========================================================================== */
 
 /* --- Fonts ----------------------------------------------------------------
-   Inter is bundled locally via colors_and_type.css (see fonts/ directory).
-   TWK Everett is the licensed brand display face — drop the woff2 files into
-   assets/fonts/ to activate; Inter Display is the documented fallback.
+   Every @font-face lives in THIS file. Consumers do a single
+   `@import '@apoxy/console-core/tokens.css'`; a nested @import (e.g. to a
+   separate colors_and_type.css) does not survive Tailwind/Vite's @import
+   hoisting once tokens.css is itself imported, so the faces have to be here.
+   - Inter (UI body) and JetBrains Mono (code): bundled variable woff2 in fonts/.
+   - TWK Everett (licensed display face): static woff2 in assets/fonts/.
    -------------------------------------------------------------------------- */
-@import url("colors_and_type.css");
-
 @font-face {
   font-family: 'TWK Everett';
-  src: url('assets/fonts/TWKEverett-Regular.woff2') format('woff2'),
-       url('assets/fonts/TWKEverett-Regular.woff') format('woff');
+  src: url('assets/fonts/TWKEverett-Regular.woff2') format('woff2');
   font-weight: 400;
   font-style: normal;
   font-display: swap;
 }
 @font-face {
   font-family: 'TWK Everett';
-  src: url('assets/fonts/TWKEverett-Medium.woff2') format('woff2'),
-       url('assets/fonts/TWKEverett-Medium.woff') format('woff');
+  src: url('assets/fonts/TWKEverett-Medium.woff2') format('woff2');
   font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* Inter — one variable woff2 (weights 100–900). `Inter Small` / `Inter Display`
+   keep their distinct family names (tokens pick them deliberately for ≤14px UI
+   and ≥40px headlines) but resolve to the same file; Inter's optical-size axis
+   does the size-specific shaping the static optical cuts used to. */
+@font-face {
+  font-family: 'Inter';
+  src: url('fonts/Inter-roman.var.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Inter Small';
+  src: url('fonts/Inter-roman.var.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Inter Display';
+  src: url('fonts/Inter-roman.var.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* JetBrains Mono — one variable woff2 (weights 100–800), the code/mono face. */
+@font-face {
+  font-family: 'JetBrains Mono';
+  src: url('fonts/JetBrainsMono-roman.var.woff2') format('woff2');
+  font-weight: 100 800;
   font-style: normal;
   font-display: swap;
 }
@@ -167,7 +201,12 @@
   --yaml-gutter-gap: 14px;   /* gap between the number and the divider */
   --yaml-text-pad:   16px;   /* left pad of the code text */
   --yaml-block-pad:  14px;   /* top/bottom pad of the code block */
-  --yaml-line-h:     1.65;   /* code line-height */
+  /* ABSOLUTE, not a unitless multiplier: the editor's line-number gutter (12px
+     digits) and the textarea/code (13px) sit in separate columns, so a unitless
+     line-height would give them different line-box heights and the numbers would
+     drift out of register with the content. An absolute length makes every line
+     box identical regardless of font-size, keeping numbers and rows locked. */
+  --yaml-line-h:     21px;   /* code line-height (≈ 13px × 1.6) */
 
   /* --- Radius ---
      Apoxy is square. Every surface — buttons, inputs, cards, modals,

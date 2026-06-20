@@ -1,16 +1,21 @@
 # Fonts
 
-`colors_and_type.css` declares `@font-face` rules that load **Inter** (three optical sizes:
-`18pt`, `24pt`, `28pt`) from this directory, and `tokens.css` loads **TWK Everett** from
-`../assets/fonts/`. The binary font files are intentionally **not** committed in this
-scaffold — until they are dropped in, the token font stacks fall back to
-`ui-sans-serif`/`system-ui`, so the build and layout are correct, just not on-brand.
+All `@font-face` rules live in `../tokens.css` (a single file, so a consumer that
+`@import '@apoxy/console-core/tokens.css'` gets every face — a nested `@import`
+does not survive Tailwind/Vite hoisting once tokens.css is itself imported).
 
-To activate the real faces, copy the files from the **Apoxy Design System** project
-(claude.ai/design, project `019df41b-2666-72f6-881c-d558b01ca8c8`) into:
+Bundled faces:
 
-- `packages/core/src/fonts/` — `Inter_18pt-*.ttf`, `Inter_24pt-*.ttf`, `Inter_28pt-*.ttf`
-- `packages/core/src/assets/fonts/` — `TWKEverett-Regular.woff2`, `TWKEverett-Medium.woff2`
-  (+ `.woff`)
+- `fonts/Inter-roman.var.woff2` — **Inter**, the UI body face. One variable woff2
+  (weights 100–900 + optical-size axis); the `Inter`, `Inter Small`, and
+  `Inter Display` families all resolve to it.
+- `fonts/JetBrainsMono-roman.var.woff2` — **JetBrains Mono**, the code/mono face
+  (variable, weights 100–800).
+- `../assets/fonts/TWKEverett-{Regular,Medium}.woff2` — **TWK Everett**, the
+  licensed display face (static woff2).
+
+Inter and JetBrains Mono are OFL; their variable woff2 come from the
+`@fontsource-variable/*` packages. TWK Everett is licensed — its woff2 are the
+files from the Apoxy Design System project (claude.ai/design).
 
 Tracked under the design-tokens part of APO-763 / primitives APO-766.
