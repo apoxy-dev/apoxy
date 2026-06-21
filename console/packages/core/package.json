@@ -32,6 +32,7 @@
     "react-dom": "^19.0.0"
   },
   "dependencies": {
+    "@carbon/icons-react": "^11.48.0",
     "clsx": "^2.1.1",
     "tailwind-merge": "^2.5.5",
     "yaml": "^2.9.0"
