@@ -8,7 +8,7 @@ package main
 
 import (
 	"github.com/apoxy-dev/apoxy/pkg/workerd/host"
-	"github.com/apoxy-dev/clrk/pkg/sandbox"
+	"github.com/apoxy-dev/apoxy/pkg/sandbox"
 )
 
 func main() {

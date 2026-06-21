@@ -8,4 +8,4 @@ package main
 // M1 backend mode needs no egress forwarder. The resident control channel
 // (dispatcher -> host manager) needs the clrk control forwarder, which will be
 // registered here once it lands (mirroring the inbound forwarder import).
-import _ "github.com/apoxy-dev/clrk/pkg/sandbox/sentrystack"
+import _ "github.com/apoxy-dev/apoxy/pkg/sandbox/sentrystack"

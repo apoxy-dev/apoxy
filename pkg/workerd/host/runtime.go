@@ -9,7 +9,7 @@ import (
 	"sync"
 
 	computev1alpha1 "github.com/apoxy-dev/apoxy/api/compute/v1alpha1"
-	"github.com/apoxy-dev/clrk/pkg/sandbox"
+	"github.com/apoxy-dev/apoxy/pkg/sandbox"
 )
 
 // Config constructs a Runtime.

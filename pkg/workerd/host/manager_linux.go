@@ -3,7 +3,7 @@
 
 package host
 
-import "github.com/apoxy-dev/clrk/pkg/sandbox"
+import "github.com/apoxy-dev/apoxy/pkg/sandbox"
 
 // newCore builds the gVisor/runsc sandbox manager: it initializes the host
 // cgroup v2 hierarchy and the OCI image store, then constructs the Manager.

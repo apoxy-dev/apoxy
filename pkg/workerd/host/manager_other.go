@@ -6,7 +6,7 @@ package host
 import (
 	"errors"
 
-	"github.com/apoxy-dev/clrk/pkg/sandbox"
+	"github.com/apoxy-dev/apoxy/pkg/sandbox"
 )
 
 // errUnsupportedPlatform is returned when constructing the gVisor sandbox core

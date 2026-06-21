@@ -2,7 +2,7 @@
 
 package host
 
-import "github.com/apoxy-dev/clrk/pkg/sandbox"
+import "github.com/apoxy-dev/apoxy/pkg/sandbox"
 
 // ApplyEgress installs egress routing for a tenant's resident. M1 backend mode
 // uses direct dial with no egress data path, so this is a documented no-op that

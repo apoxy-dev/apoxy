@@ -13,7 +13,7 @@ import (
 	"os"
 
 	"github.com/apoxy-dev/apoxy/pkg/workerd/manager"
-	"github.com/apoxy-dev/clrk/pkg/sandbox"
+	"github.com/apoxy-dev/apoxy/pkg/sandbox"
 )
 
 func main() {

@@ -9,7 +9,7 @@ import (
 	"os/signal"
 	"unsafe"
 
-	"github.com/apoxy-dev/clrk/pkg/sandbox"
+	"github.com/apoxy-dev/apoxy/pkg/sandbox"
 	"golang.org/x/sys/unix"
 )
 

@@ -12,7 +12,7 @@ import (
 	"testing"
 
 	computev1alpha1 "github.com/apoxy-dev/apoxy/api/compute/v1alpha1"
-	"github.com/apoxy-dev/clrk/pkg/sandbox"
+	"github.com/apoxy-dev/apoxy/pkg/sandbox"
 )
 
 // fakeCore is an in-memory sandbox.Runtime that records the lifecycle calls in

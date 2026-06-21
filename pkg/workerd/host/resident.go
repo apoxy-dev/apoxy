@@ -10,7 +10,7 @@ import (
 	"net/netip"
 	"sync"
 
-	"github.com/apoxy-dev/clrk/pkg/sandbox"
+	"github.com/apoxy-dev/apoxy/pkg/sandbox"
 )
 
 // The resident model (APO-796): ONE long-lived workerd per backplane runs the

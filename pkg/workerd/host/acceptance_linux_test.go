@@ -32,7 +32,7 @@ import (
 
 	computev1alpha1 "github.com/apoxy-dev/apoxy/api/compute/v1alpha1"
 	"github.com/apoxy-dev/apoxy/pkg/workerd/host"
-	"github.com/apoxy-dev/clrk/pkg/sandbox"
+	"github.com/apoxy-dev/apoxy/pkg/sandbox"
 )
 
 func acceptanceBundle(t *testing.T) computev1alpha1.BundleRef {
