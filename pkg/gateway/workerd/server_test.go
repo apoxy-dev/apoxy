@@ -78,7 +78,7 @@ func TestHandlePublishRoundTripsDemux(t *testing.T) {
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("status = %d", rec.Code)
 	}
-	if got, ok := reg.DemuxHeader("echo"); !ok || got != "proj:echo:echo-r1" {
+	if got, ok := reg.DemuxHeader("echo"); !ok || got != "proj:echo" {
 		t.Fatalf("DemuxHeader(echo) = %q,%v", got, ok)
 	}
 }

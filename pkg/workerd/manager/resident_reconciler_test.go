@@ -257,7 +257,9 @@ func TestResidentReconciler_UnroutableSkipped(t *testing.T) {
 }
 
 // TestResidentReconciler_NilPublisherNoop: with no publisher configured, reconcile
-// still warms and never panics.
+// still warms AND records the demux selection so /resolve works — the resident
+// serves requests it must resolve even with no backplane to publish to. This
+// guards the hoist of store.setDemux above the publisher!=nil short-circuit.
 func TestResidentReconciler_NilPublisherNoop(t *testing.T) {
 	r, _ := newResidentReconciler(t, &fakeResident{}, nil, okFetcher(), revision("api-abc", "api", "sha256:d"))
 	if _, err := reconcileRevision(t, r, "api-abc"); err != nil {
@@ -265,5 +267,11 @@ func TestResidentReconciler_NilPublisherNoop(t *testing.T) {
 	}
 	if !r.store.cached("proj:api:api-abc") {
 		t.Error("definition should still be warmed without a publisher")
+	}
+	// The /resolve seam (control server -> store.liveRevision) must be populated
+	// even with no publisher; otherwise the resident 503s every workerd request in
+	// a no-backplane deployment while the publish-path assertions stay green.
+	if rev, ok := r.store.liveRevision("proj:api"); !ok || rev != "api-abc" {
+		t.Errorf("store.liveRevision(proj:api) = (%q,%v), want (api-abc,true)", rev, ok)
 	}
 }

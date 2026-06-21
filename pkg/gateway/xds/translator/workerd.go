@@ -23,7 +23,8 @@ const (
 	workerdResidentClusterName = "apoxy-workerd-resident"
 	// workerdServiceHeader is the demux header the dispatcher reads
 	// (apoxy-cli pkg/workerd/host/dispatcher.js SERVICE_HEADER). Value format:
-	// "<project>:<service>:<revision>".
+	// "<project>:<service>". The dispatcher resolves the live revision from this
+	// key itself, so the revision is deliberately NOT in the header.
 	workerdServiceHeader = "x-apoxy-service"
 )
 
@@ -36,9 +37,10 @@ type WorkerdRegistry interface {
 	ResidentSocket() string
 	// Active reports whether a resident socket has been published.
 	Active() bool
-	// DemuxHeader returns the x-apoxy-service header value
-	// ("<project>:<service>:<liveRevision>") for a bare compute Service name, or
-	// ok=false if the service has no live revision published.
+	// DemuxHeader returns the x-apoxy-service header value ("<project>:<service>")
+	// for a bare compute Service name, or ok=false if the service has no live
+	// revision published. The revision is not included — the resident's dispatcher
+	// resolves it — so a rollout never re-translates xDS.
 	DemuxHeader(service string) (string, bool)
 }
 
@@ -142,9 +144,10 @@ func (*workerd) patchResources(tCtx *types.ResourceVersionTable, routes []*ir.HT
 }
 
 // patchRoute re-points a workerd-backed route to the resident cluster and sets
-// the x-apoxy-service demux header to "<project>:<service>:<liveRevision>". It is
-// a no-op for non-workerd routes, or when the Service has no live revision yet
-// (the route then keeps its placeholder destination and the client sees 503).
+// the x-apoxy-service demux header to "<project>:<service>" (the resident's
+// dispatcher resolves the live revision). It is a no-op for non-workerd routes,
+// or when the Service has no live revision yet (the route then keeps its
+// placeholder destination and the client sees 503).
 func (*workerd) patchRoute(route *routev3.Route, irRoute *ir.HTTPRoute) error {
 	if irRoute == nil || irRoute.WorkerdService == "" {
 		return nil

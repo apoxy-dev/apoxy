@@ -23,6 +23,14 @@ type Store struct {
 
 	mu   sync.RWMutex
 	defs map[string]host.WorkerDefinition
+
+	// demuxMu guards demux, the latest "<project>:<service>" -> live revision
+	// selection the resident reconciler computed. The control server's /resolve
+	// handler serves it so the dispatcher resolves a service to its
+	// revision-bearing id in the resident, instead of the backplane stamping the
+	// revision into the Envoy demux header.
+	demuxMu sync.RWMutex
+	demux   map[string]string
 }
 
 // NewStore returns a Store backed by resolver.
@@ -70,6 +78,33 @@ func (s *Store) cached(id string) bool {
 	defer s.mu.RUnlock()
 	_, ok := s.defs[id]
 	return ok
+}
+
+// setDemux records the latest "<project>:<service>" -> live revision selection the
+// resident reconciler computed (the same map it publishes to the backplane). The
+// control server's /resolve handler serves it so the dispatcher resolves a service
+// to its revision-bearing id in the resident, instead of the backplane stamping
+// the revision into the Envoy demux header.
+func (s *Store) setDemux(demux map[string]string) {
+	cp := make(map[string]string, len(demux))
+	for k, v := range demux {
+		cp[k] = v
+	}
+	s.demuxMu.Lock()
+	s.demux = cp
+	s.demuxMu.Unlock()
+}
+
+// liveRevision returns the revision the resident currently serves for the
+// project-qualified service key "<project>:<service>", and whether one exists. A
+// present-but-empty value reads as "no live revision" so the contract matches the
+// backplane's HasLiveRevision gate structurally, not by each caller remembering
+// to re-check for empty.
+func (s *Store) liveRevision(serviceKey string) (string, bool) {
+	s.demuxMu.RLock()
+	defer s.demuxMu.RUnlock()
+	rev := s.demux[serviceKey]
+	return rev, rev != ""
 }
 
 // retain drops cached definitions whose id is not in valid, bounding the cache to

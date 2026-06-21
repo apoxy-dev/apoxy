@@ -113,16 +113,13 @@ func (r *ResidentReconciler) Reconcile(ctx context.Context, req reconcile.Reques
 	return ctrl.Result{}, r.republish(ctx)
 }
 
-// republish computes this node's serveable demux from local warm state and pushes
-// it (with the resident socket) to the receiver. For each service it advertises an
-// explicit spec.liveRevision pin once warmed, else the NEWEST revision this node
-// has warmed — so a node serves the previous revision until it pulls the new one.
-// It also prunes the store to the surviving revision set. No API object is written.
+// republish computes this node's serveable demux from local warm state, records it
+// for the control server's /resolve handler, and pushes it (with the resident
+// socket) to the receiver. For each service it advertises an explicit
+// spec.liveRevision pin once warmed, else the NEWEST revision this node has
+// warmed — so a node serves the previous revision until it pulls the new one. It
+// also prunes the store to the surviving revision set. No API object is written.
 func (r *ResidentReconciler) republish(ctx context.Context) error {
-	if r.publisher == nil {
-		return nil
-	}
-
 	revs := &computev1alpha1.ServiceRevisionList{}
 	if err := r.List(ctx, revs); err != nil {
 		return fmt.Errorf("listing revisions: %w", err)
@@ -174,6 +171,15 @@ func (r *ResidentReconciler) republish(ctx context.Context) error {
 		}
 	}
 
+	// Record the selection so the control server's /resolve handler can map a
+	// service to its live revision id for the dispatcher. This is independent of
+	// publishing: even with no backplane to publish to, the resident still serves
+	// requests and must resolve them.
+	r.store.setDemux(demux)
+
+	if r.publisher == nil {
+		return nil
+	}
 	return r.publisher.Publish(ctx, PublishSnapshot{
 		NodeID:         r.nodeID,
 		ResidentSocket: r.residentSocket,

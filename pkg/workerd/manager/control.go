@@ -17,6 +17,13 @@ import (
 // Must match pkg/workerd/host/dispatcher.js.
 const workerPath = "/worker"
 
+// resolvePath is the control endpoint the dispatcher resolves a service to its
+// live revision id through: GET /resolve?service=<project>:<service>. The
+// dispatcher uses the returned id as its WorkerLoader cache key and its /worker
+// argument, so the revision is never stamped into the Envoy demux header and a
+// rollout never re-translates Envoy config. Must match pkg/workerd/host/dispatcher.js.
+const resolvePath = "/resolve"
+
 // ControlServer is the manager side of the dispatcher control channel: an HTTP
 // server that serves WorkerCode payloads the resident's WorkerLoader callback
 // pulls. It listens on a host loopback TCP address; the clrk control forwarder
@@ -32,11 +39,42 @@ func NewControlServer(store *Store) *ControlServer {
 	return &ControlServer{store: store}
 }
 
+// resolveResponse is the /resolve body: the full demux id the dispatcher loads
+// (and pulls via /worker), plus the bare revision for observability.
+type resolveResponse struct {
+	ID       string `json:"id"`
+	Revision string `json:"revision"`
+}
+
 // Handler is the control HTTP handler (exported for tests via httptest).
 func (c *ControlServer) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(workerPath, c.handleWorker)
+	mux.HandleFunc(resolvePath, c.handleResolve)
 	return mux
+}
+
+// handleResolve maps a project-qualified service key "<project>:<service>" to the
+// revision-bearing demux id the resident currently serves for it. The dispatcher
+// resolves here (rather than reading the revision off the Envoy header) so the
+// revision lives entirely in the resident; the backplane routes here only once a
+// revision is live, so a miss is a brief rollout-edge window the dispatcher
+// surfaces as a 503.
+func (c *ControlServer) handleResolve(w http.ResponseWriter, req *http.Request) {
+	service := req.URL.Query().Get("service")
+	if service == "" {
+		http.Error(w, "missing service", http.StatusBadRequest)
+		return
+	}
+	rev, ok := c.store.liveRevision(service)
+	if !ok {
+		http.Error(w, "no live revision for service "+service, http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(resolveResponse{ID: service + ":" + rev, Revision: rev}); err != nil {
+		slog.Error("Failed to encode resolve response", "service", service, "error", err)
+	}
 }
 
 func (c *ControlServer) handleWorker(w http.ResponseWriter, req *http.Request) {

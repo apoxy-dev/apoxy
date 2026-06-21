@@ -39,9 +39,10 @@ type Snapshot struct {
 	ResidentSocket string `json:"residentSocket"`
 	// Demux maps a project-qualified service key "<project>:<service>" to the
 	// ServiceRevision THIS node currently serves for it (the newest revision this
-	// node has warmed). The translator sets
-	// `x-apoxy-service: <project>:<service>:<revision>` on requests so the
-	// dispatcher demuxes to the right isolate.
+	// node has warmed). The translator reads only presence-with-a-non-empty-value
+	// and stamps `x-apoxy-service: <project>:<service>` (NO revision); the
+	// resident's dispatcher resolves the revision itself (via the manager's
+	// /resolve endpoint), so a rollout never re-translates xDS.
 	Demux map[string]string `json:"demux"`
 }
 
@@ -165,8 +166,11 @@ func (r *Registry) Active() bool {
 }
 
 // DemuxHeader returns the x-apoxy-service demux header value
-// ("<project>:<service>:<revision>") for a bare compute Service name, aggregated
-// across nodes, or ok=false if no node serves a revision for it.
+// ("<project>:<service>") for a bare compute Service name, aggregated across
+// nodes, or ok=false if no node serves a live revision for it. The revision is
+// deliberately NOT included: the resident's dispatcher resolves the live revision
+// itself (via the manager's /resolve endpoint), so a rollout never re-translates
+// xDS. A node advertising an empty revision for a service does not count as live.
 //
 // The translator only knows the Service name from the HTTPRoute backendRef, not
 // the publishing manager's project id, so the lookup matches on the service
@@ -187,7 +191,7 @@ func (r *Registry) DemuxHeader(service string) (string, bool) {
 				continue
 			}
 			if key[i+1:] == service {
-				return key + ":" + rev, true
+				return key, true
 			}
 		}
 	}

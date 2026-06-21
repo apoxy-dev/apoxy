@@ -16,7 +16,7 @@ import (
 // fakeWorkerdRegistry is a hand-rolled WorkerdRegistry for the hook tests.
 type fakeWorkerdRegistry struct {
 	socket string
-	demux  map[string]string // service -> "<project>:<service>:<rev>"
+	demux  map[string]string // service -> "<project>:<service>" (no revision)
 }
 
 func (f *fakeWorkerdRegistry) ResidentSocket() string { return f.socket }
@@ -139,7 +139,7 @@ func TestWorkerdPatchRoute(t *testing.T) {
 	t.Run("re-points and sets demux header for a live workerd route", func(t *testing.T) {
 		withRegistry(t, &fakeWorkerdRegistry{
 			socket: socket,
-			demux:  map[string]string{"echo": "proj-uuid:echo:echo-r1"},
+			demux:  map[string]string{"echo": "proj-uuid:echo"},
 		})
 		route := routeWithAction("http/default/route/rule/0/match/0", "http/default/route/rule/0")
 		irRoute := &ir.HTTPRoute{Name: route.Name, WorkerdService: "echo"}
@@ -153,13 +153,15 @@ func TestWorkerdPatchRoute(t *testing.T) {
 		if !ok {
 			t.Fatalf("missing %s header", workerdServiceHeader)
 		}
-		if v != "proj-uuid:echo:echo-r1" {
-			t.Fatalf("%s = %q, want proj-uuid:echo:echo-r1", workerdServiceHeader, v)
+		// The header carries only the project-qualified service key; the resident
+		// resolves the revision.
+		if v != "proj-uuid:echo" {
+			t.Fatalf("%s = %q, want proj-uuid:echo", workerdServiceHeader, v)
 		}
 	})
 
 	t.Run("non-workerd route is untouched", func(t *testing.T) {
-		withRegistry(t, &fakeWorkerdRegistry{socket: socket, demux: map[string]string{"echo": "proj:echo:echo-r1"}})
+		withRegistry(t, &fakeWorkerdRegistry{socket: socket, demux: map[string]string{"echo": "proj:echo"}})
 		route := routeWithAction("r", "original-cluster")
 		if err := (&workerd{}).patchRoute(route, &ir.HTTPRoute{Name: "r"}); err != nil {
 			t.Fatalf("patchRoute: %v", err)
@@ -187,7 +189,7 @@ func TestWorkerdPatchRoute(t *testing.T) {
 	})
 
 	t.Run("inactive registry is a no-op", func(t *testing.T) {
-		withRegistry(t, &fakeWorkerdRegistry{socket: "", demux: map[string]string{"echo": "proj:echo:echo-r1"}})
+		withRegistry(t, &fakeWorkerdRegistry{socket: "", demux: map[string]string{"echo": "proj:echo"}})
 		route := routeWithAction("r", "placeholder-cluster")
 		if err := (&workerd{}).patchRoute(route, &ir.HTTPRoute{Name: "r", WorkerdService: "echo"}); err != nil {
 			t.Fatalf("patchRoute: %v", err)

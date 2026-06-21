@@ -88,6 +88,63 @@ func TestControlServer_StatusCodes(t *testing.T) {
 	}
 }
 
+// getResolve GETs /resolve?service=<service> and returns status + body.
+func getResolve(t *testing.T, base, service string) (int, string) {
+	t.Helper()
+	u := base + resolvePath
+	if service != "" {
+		u += "?service=" + service
+	}
+	resp, err := http.Get(u)
+	if err != nil {
+		t.Fatalf("GET %s: %v", u, err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(b)
+}
+
+func TestControlServer_Resolve(t *testing.T) {
+	f := &fakeFetcher{manifest: esManifest(), modules: map[string][]byte{"index.js": []byte("x")}}
+	store := storeWith(t, f)
+	// The resident reconciler records the live-revision selection here; the
+	// dispatcher resolves against it instead of reading the revision off the
+	// Envoy header.
+	store.setDemux(map[string]string{"proj:api": "api-abc"})
+	srv := httptest.NewServer(NewControlServer(store).Handler())
+	defer srv.Close()
+
+	t.Run("resolves the live revision id", func(t *testing.T) {
+		status, body := getResolve(t, srv.URL, "proj:api")
+		if status != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", status, body)
+		}
+		var got resolveResponse
+		if err := json.Unmarshal([]byte(body), &got); err != nil {
+			t.Fatalf("body is not valid JSON: %v (%s)", err, body)
+		}
+		// The id is the 3-part demux id the dispatcher feeds straight to /worker.
+		if got.ID != "proj:api:api-abc" {
+			t.Errorf("id = %q, want proj:api:api-abc", got.ID)
+		}
+		if got.Revision != "api-abc" {
+			t.Errorf("revision = %q, want api-abc", got.Revision)
+		}
+	})
+
+	t.Run("missing service is a 400", func(t *testing.T) {
+		if status, _ := getResolve(t, srv.URL, ""); status != http.StatusBadRequest {
+			t.Errorf("status = %d, want 400", status)
+		}
+	})
+
+	t.Run("unknown service is a 404", func(t *testing.T) {
+		if status, _ := getResolve(t, srv.URL, "proj:missing"); status != http.StatusNotFound {
+			t.Errorf("status = %d, want 404", status)
+		}
+	})
+}
+
 func TestStore_CachesAfterWarm(t *testing.T) {
 	f := &fakeFetcher{manifest: esManifest(), modules: map[string][]byte{"index.js": []byte("x")}}
 	store := storeWith(t, f)

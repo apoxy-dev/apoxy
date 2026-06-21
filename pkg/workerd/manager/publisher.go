@@ -30,9 +30,12 @@ type PublishSnapshot struct {
 	// Demux maps a project-qualified service key "<project>:<service>" to the
 	// ServiceRevision THIS node currently serves for it — the newest revision this
 	// node has warmed (honoring an explicit spec.liveRevision pin). The receiver
-	// builds `x-apoxy-service: <project>:<service>:<revision>` from it. Because the
-	// value is sourced from node-local warm state, a node keeps advertising the
-	// PREVIOUS revision until it has pulled the new bundle (make-before-break).
+	// reads only presence-with-a-non-empty-value to gate routing and stamps
+	// `x-apoxy-service: <project>:<service>` (the resident's dispatcher resolves the
+	// revision via /resolve, so it never enters Envoy config). Because the value is
+	// sourced from node-local warm state, a node keeps advertising the PREVIOUS
+	// revision until it has pulled the new bundle (make-before-break), which the
+	// dispatcher's /resolve then reflects.
 	Demux map[string]string `json:"demux"`
 }
 
