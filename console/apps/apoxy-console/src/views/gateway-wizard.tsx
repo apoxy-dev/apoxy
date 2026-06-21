@@ -14,12 +14,13 @@ import {
   TextField,
   SegField,
   FieldRow,
+  ListenerGlyph,
   type WizardProps,
   type WizardStep,
   type WizardCollection,
   type WizardFormProps,
 } from '@apoxy/console-core'
-import { useMemo, type ReactNode } from 'react'
+import { useMemo } from 'react'
 import type { GatewayObject, GatewayListener } from './gateway-routes'
 
 const PROTOCOLS = ['HTTP', 'HTTPS', 'TLS', 'TCP', 'UDP']
@@ -129,8 +130,11 @@ function ListenerFields({ draft, setDraft, index }: Pick<WizardFormProps<Gateway
             mono
             value={l.port != null ? String(l.port) : ''}
             onChange={(v) => {
-              const n = Number(v)
-              update({ port: v && Number.isFinite(n) ? n : undefined })
+              // Require a plain-digit string in 1..65535 so '0', negatives, '443.0',
+              // '1e3', and out-of-range values don't slip through as a bound port.
+              const t = v.trim()
+              const n = Number(t)
+              update({ port: /^\d+$/.test(t) && n > 0 && n <= 65535 ? n : undefined })
             }}
             placeholder="443"
           />
@@ -152,15 +156,5 @@ function ListenerFields({ draft, setDraft, index }: Pick<WizardFormProps<Gateway
         <TextField id={`l-host-${index}`} mono value={l.hostname ?? ''} onChange={(v) => update({ hostname: v || undefined })} placeholder="*.example.com" />
       </Field>
     </>
-  )
-}
-
-function ListenerGlyph(): ReactNode {
-  return (
-    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" aria-hidden="true">
-      <path d="M3 8a5 5 0 0110 0" />
-      <path d="M5 8a3 3 0 016 0" />
-      <circle cx="8" cy="8" r="1" fill="currentColor" />
-    </svg>
   )
 }
