@@ -89,13 +89,12 @@ func TestInitStrInboundRoundtrip(t *testing.T) {
 // loopbackAddr is 127.0.0.1 as a tcpip.Address.
 var loopbackAddr = tcpip.AddrFrom4([4]byte{127, 0, 0, 1})
 
-// newProofStack builds a tcpip.Stack topologically identical to the one a clrk
-// Sentry boots (lo only, no eth0 — the listener binds 127.0.0.1, the most
-// robust target since lo exists even in Phase 1 lo-only mode) and installs the
-// catch-all egress forwarder exactly as an egress installer does. The returned
-// counter records how many TCP SYNs reached the forwarder (i.e. matched no
-// listening endpoint).
-func newProofStack(t *testing.T) (*stack.Stack, *atomic.Int64) {
+// newLoopbackStack builds a tcpip.Stack topologically identical to the one a
+// clrk Sentry boots (lo only, no eth0 — a 127.0.0.1 target is the most robust
+// since lo exists even in Phase 1 lo-only mode). It installs NO transport
+// handler, so each caller layers on whatever forwarder its scenario needs (the
+// inbound proof a RST catch-all; the egress proof a real upstream-splicing one).
+func newLoopbackStack(t *testing.T) *stack.Stack {
 	t.Helper()
 	s := stack.New(stack.Options{
 		NetworkProtocols: []stack.NetworkProtocolFactory{
@@ -127,6 +126,15 @@ func newProofStack(t *testing.T) (*stack.Stack, *atomic.Int64) {
 		t.Fatalf("add lo v4 addr: %v", err)
 	}
 	s.SetRouteTable([]tcpip.Route{{Destination: header.IPv4LoopbackSubnet, NIC: 1}})
+	return s
+}
+
+// newProofStack builds a loopback stack and installs the catch-all egress
+// forwarder exactly as an egress installer does. The returned counter records
+// how many TCP SYNs reached the forwarder (i.e. matched no listening endpoint).
+func newProofStack(t *testing.T) (*stack.Stack, *atomic.Int64) {
+	t.Helper()
+	s := newLoopbackStack(t)
 
 	// Catch-all forwarder, installed exactly as an egress installer does. The
 	// handler records the hit and RSTs — standing in for the egress dial path
