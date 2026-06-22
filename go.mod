@@ -457,8 +457,10 @@ replace gvisor.dev/gvisor => github.com/apoxy-dev/gvisor v0.0.0-20260519215827-5
 
 // clrk's go.mod transitively requires qpack v0.6.0 (via upstream quic-go), but
 // apoxy-cli runs the apoxy-dev/quic-go fork, which is built against the v0.5.x
-// qpack API. Hold qpack at v0.5.1 so the fork's http3 path keeps compiling; the
-// fork redirect below means clrk uses the same quic-go+qpack pair we do.
+// qpack API. Hold qpack at v0.5.1 so the fork's http3 path keeps compiling.
+// NOTE: a replace does not propagate to downstream modules, so every consumer
+// of this fork (apoxy-cloud, etc.) must carry its own identical qpack v0.5.1
+// replace or MVS will float qpack to a version the fork's http3 won't build.
 replace github.com/quic-go/qpack => github.com/quic-go/qpack v0.5.1
 
 // Pin otelgrpc to v0.59.0: v0.60.0+ removed UnaryServerInterceptor/UnaryClientInterceptor
