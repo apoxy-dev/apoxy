@@ -39,20 +39,18 @@ var _ reconcile.Reconciler = &ResidentReconciler{}
 // until it has pulled a new one (make-before-break, the interim promotion model).
 type ResidentReconciler struct {
 	client.Client
-	resident  host.ResidentRuntime
-	store     *Store
-	projectID string
+	resident host.ResidentRuntime
+	store    *Store
 }
 
 // NewResidentReconciler returns a resident reconciler driving resident + store.
 // The demux it computes per reconcile is recorded on the store for the control
 // server's /resolve handler; nothing is pushed off-node.
-func NewResidentReconciler(c client.Client, resident host.ResidentRuntime, store *Store, projectID string) *ResidentReconciler {
+func NewResidentReconciler(c client.Client, resident host.ResidentRuntime, store *Store) *ResidentReconciler {
 	return &ResidentReconciler{
-		Client:    c,
-		resident:  resident,
-		store:     store,
-		projectID: projectID,
+		Client:   c,
+		resident: resident,
+		store:    store,
 	}
 }
 
@@ -73,7 +71,7 @@ func (r *ResidentReconciler) Reconcile(ctx context.Context, req reconcile.Reques
 		return ctrl.Result{}, err
 	}
 
-	id, idErr := serviceRevisionID(r.projectID, rev)
+	id, idErr := serviceRevisionID(rev)
 
 	// Terminating or unroutable (no service label): nothing to warm; just refresh
 	// the published view (which drops the revision from this node's serveable set).
@@ -144,7 +142,7 @@ func (r *ResidentReconciler) refreshDemux(ctx context.Context) error {
 		if svc == "" {
 			continue
 		}
-		valid[demuxID(r.projectID, svc, rev.Name)] = true
+		valid[demuxID(svc, rev.Name)] = true
 		byService[svc] = append(byService[svc], rinfo{name: rev.Name, created: rev.CreationTimestamp.UnixNano()})
 	}
 	r.store.retain(valid)
@@ -152,13 +150,13 @@ func (r *ResidentReconciler) refreshDemux(ctx context.Context) error {
 	demux := make(map[string]string)
 	for svc, list := range byService {
 		sort.SliceStable(list, func(i, j int) bool { return list[i].created > list[j].created })
-		if p, ok := pin[svc]; ok && r.store.cached(demuxID(r.projectID, svc, p)) {
-			demux[serviceDemuxKey(r.projectID, svc)] = p
+		if p, ok := pin[svc]; ok && r.store.cached(demuxID(svc, p)) {
+			demux[svc] = p
 			continue
 		}
 		for _, ri := range list {
-			if r.store.cached(demuxID(r.projectID, svc, ri.name)) {
-				demux[serviceDemuxKey(r.projectID, svc)] = ri.name
+			if r.store.cached(demuxID(svc, ri.name)) {
+				demux[svc] = ri.name
 				break
 			}
 		}

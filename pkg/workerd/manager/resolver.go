@@ -43,41 +43,36 @@ func (ociBundleFetcher) Modules(ctx context.Context, imageRef string) (map[strin
 	return host.FetchBundleModules(ctx, imageRef)
 }
 
-// Resolver turns a dispatcher demux id ("<project>:<service>:<revision>") into
-// the host.WorkerDefinition the WorkerLoader callback consumes: it loads the
+// Resolver turns a dispatcher demux id ("<service>:<revision>") into the
+// host.WorkerDefinition the WorkerLoader callback consumes: it loads the
 // ServiceRevision, pulls its bundle, and reconstructs the WorkerCode payload.
 //
-// The id is project-qualified so the one shared resident's WorkerLoader cache
-// (and the backplane demux) never collide two projects' same-named Services.
+// The resident is per-tenant — the manager's kube client is already scoped to
+// the single project it serves — so the id carries no project qualifier; the
+// service name alone keys the WorkerLoader cache within this resident.
 type Resolver struct {
 	client.Client
-	fetcher   BundleFetcher
-	projectID string
+	fetcher BundleFetcher
 }
 
-// NewResolver returns a Resolver over the production OCI fetcher, scoped to the
-// project the manager serves.
-func NewResolver(c client.Client, projectID string) *Resolver {
-	return &Resolver{Client: c, fetcher: ociBundleFetcher{}, projectID: projectID}
+// NewResolver returns a Resolver over the production OCI fetcher. The client is
+// already scoped to the single project the manager serves.
+func NewResolver(c client.Client) *Resolver {
+	return &Resolver{Client: c, fetcher: ociBundleFetcher{}}
 }
 
 // newResolverWithFetcher injects a fetcher for tests.
-func newResolverWithFetcher(c client.Client, projectID string, f BundleFetcher) *Resolver {
-	return &Resolver{Client: c, fetcher: f, projectID: projectID}
+func newResolverWithFetcher(c client.Client, f BundleFetcher) *Resolver {
+	return &Resolver{Client: c, fetcher: f}
 }
 
 // Resolve builds the WorkerDefinition for a demux id. A missing ServiceRevision
 // is reported as errRevisionNotFound (wrapped) so the control server can answer
 // 404; pull/build failures propagate as-is (a 502 the dispatcher surfaces).
 func (r *Resolver) Resolve(ctx context.Context, id string) (host.WorkerDefinition, error) {
-	project, service, revision, err := splitServiceID(id)
+	service, revision, err := splitServiceID(id)
 	if err != nil {
 		return host.WorkerDefinition{}, err
-	}
-	// Defense in depth: a request for another project's id must never resolve
-	// against this project-scoped manager.
-	if r.projectID != "" && project != r.projectID {
-		return host.WorkerDefinition{}, fmt.Errorf("id %q targets project %q, not %q", id, project, r.projectID)
 	}
 
 	rev := &computev1alpha1.ServiceRevision{}
@@ -119,41 +114,35 @@ func (r *Resolver) Resolve(ctx context.Context, id string) (host.WorkerDefinitio
 	return host.BuildWorkerDefinition(manifest, rev.Spec.ServiceConfigSpec, source)
 }
 
-// splitServiceID parses the dispatcher demux id "<project>:<service>:<revision>".
-// All three are DNS-1123 names (no colon), so two ":" separate them.
-func splitServiceID(id string) (project, service, revision string, err error) {
-	parts := strings.SplitN(id, ":", 3)
-	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
-		return "", "", "", fmt.Errorf("workerd-manager: invalid service id %q (want %q)", id, "<project>:<service>:<revision>")
+// splitServiceID parses the dispatcher demux id "<service>:<revision>". Both are
+// DNS-1123 names (no colon), so a well-formed id has exactly one ":". A stale
+// three-part "<project>:<service>:<revision>" id (e.g. an old dispatcher hitting
+// a new manager mid-rollout) is rejected here rather than mis-parsed — clearer
+// than splitting it into a colon-bearing revision name that then 404s.
+func splitServiceID(id string) (service, revision string, err error) {
+	parts := strings.Split(id, ":")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", fmt.Errorf("workerd-manager: invalid service id %q (want %q)", id, "<service>:<revision>")
 	}
-	return parts[0], parts[1], parts[2], nil
+	return parts[0], parts[1], nil
 }
 
-// serviceRevisionID is the demux id for a ServiceRevision:
-// "<project>:<service>:<name>". The service comes from the serviceLabel the
-// minting reconciler sets; the project scopes the id so the shared resident's
-// isolate cache never collides two projects' same-named services.
-func serviceRevisionID(projectID string, rev *computev1alpha1.ServiceRevision) (string, error) {
+// serviceRevisionID is the demux id for a ServiceRevision: "<service>:<name>".
+// The service comes from the serviceLabel the minting reconciler sets. The
+// resident is per-tenant, so the service name alone keys the isolate cache.
+func serviceRevisionID(rev *computev1alpha1.ServiceRevision) (string, error) {
 	service := rev.Labels[serviceLabel]
 	if service == "" {
 		return "", fmt.Errorf("workerd-manager: revision %q has no %s label", rev.Name, serviceLabel)
 	}
-	if projectID == "" {
-		return "", fmt.Errorf("workerd-manager: no project id configured; cannot build demux id for %q", rev.Name)
-	}
-	return projectID + ":" + service + ":" + rev.Name, nil
+	return service + ":" + rev.Name, nil
 }
 
-// serviceDemuxKey is the per-service demux map key the backplane looks up:
-// "<project>:<service>". The header it builds is this key plus ":<liveRevision>".
-func serviceDemuxKey(projectID, service string) string {
-	return projectID + ":" + service
-}
-
-// demuxID is the dispatcher demux id for a (service, revision) pair on this
-// manager's project: "<project>:<service>:<revision>". It is the string-arg twin
-// of serviceRevisionID (which reads the service off a revision's label) — the
-// publish path knows the service name directly.
-func demuxID(projectID, service, revName string) string {
-	return serviceDemuxKey(projectID, service) + ":" + revName
+// demuxID is the dispatcher demux id for a (service, revision) pair:
+// "<service>:<revision>". It is the string-arg twin of serviceRevisionID (which
+// reads the service off a revision's label) — the publish path knows the service
+// name directly. The demux map itself is keyed on the bare service name (the
+// resolve key the dispatcher sends), which is this id minus the ":<revision>".
+func demuxID(service, revName string) string {
+	return service + ":" + revName
 }

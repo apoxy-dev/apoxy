@@ -13,15 +13,6 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/gateway/xds/types"
 )
 
-// withProjectID installs id as the process-wide static project override for the
-// duration of the test and restores the prior value after.
-func withProjectID(t *testing.T, id string) {
-	t.Helper()
-	prev := workerdProjectID
-	workerdProjectID = id
-	t.Cleanup(func() { workerdProjectID = prev })
-}
-
 func residentClusterCount(tCtx *types.ResourceVersionTable) int {
 	n := 0
 	for _, c := range tCtx.GetXdsResources()[resourcev3.ClusterType] {
@@ -129,10 +120,7 @@ func headerValue(route *routev3.Route, key string) (string, bool) {
 }
 
 func TestWorkerdPatchRoute(t *testing.T) {
-	t.Run("derives project from the route namespace", func(t *testing.T) {
-		// No static override: the project is the route name's namespace component
-		// (the shared-backplane path, where the HTTPRoute namespace is the project).
-		withProjectID(t, "")
+	t.Run("stamps the bare service header and re-points the cluster", func(t *testing.T) {
 		route := routeWithAction("httproute/proj-uuid/echo/rule/0/match/0", "httproute/proj-uuid/echo/rule/0")
 		irRoute := &ir.HTTPRoute{Name: route.Name, WorkerdService: "echo"}
 		if err := (&workerd{}).patchRoute(route, irRoute); err != nil {
@@ -145,29 +133,30 @@ func TestWorkerdPatchRoute(t *testing.T) {
 		if !ok {
 			t.Fatalf("missing %s header", workerdServiceHeader)
 		}
-		// The header carries only the project-qualified service key; the resident
-		// resolves the revision.
-		if v != "proj-uuid:echo" {
-			t.Fatalf("%s = %q, want proj-uuid:echo", workerdServiceHeader, v)
+		// The header carries only the bare service name; the resident is per-tenant,
+		// so it already knows its project and resolves the revision itself.
+		if v != "echo" {
+			t.Fatalf("%s = %q, want echo", workerdServiceHeader, v)
 		}
 	})
 
-	t.Run("static project override wins over the namespace", func(t *testing.T) {
-		// Single-project topologies (apoxy dev, dedicated) set the override because
-		// the HTTPRoute namespace is not the project id.
-		withProjectID(t, "static-proj")
-		route := routeWithAction("httproute/default/echo/rule/0/match/0", "httproute/default/echo/rule/0")
+	t.Run("route name shape does not affect the header", func(t *testing.T) {
+		// The hook no longer parses the route name for a project, so even a
+		// non-httproute name stamps the bare service unchanged.
+		route := routeWithAction("not-an-httproute", "placeholder")
 		irRoute := &ir.HTTPRoute{Name: route.Name, WorkerdService: "echo"}
 		if err := (&workerd{}).patchRoute(route, irRoute); err != nil {
 			t.Fatalf("patchRoute: %v", err)
 		}
-		if v, _ := headerValue(route, workerdServiceHeader); v != "static-proj:echo" {
-			t.Fatalf("%s = %q, want static-proj:echo", workerdServiceHeader, v)
+		if got := route.GetRoute().GetCluster(); got != workerdResidentClusterName {
+			t.Fatalf("route cluster = %q, want %q", got, workerdResidentClusterName)
+		}
+		if v, _ := headerValue(route, workerdServiceHeader); v != "echo" {
+			t.Fatalf("%s = %q, want echo", workerdServiceHeader, v)
 		}
 	})
 
 	t.Run("non-workerd route is untouched", func(t *testing.T) {
-		withProjectID(t, "static-proj")
 		route := routeWithAction("httproute/default/r/rule/0", "original-cluster")
 		if err := (&workerd{}).patchRoute(route, &ir.HTTPRoute{Name: route.Name}); err != nil {
 			t.Fatalf("patchRoute: %v", err)
@@ -180,22 +169,7 @@ func TestWorkerdPatchRoute(t *testing.T) {
 		}
 	})
 
-	t.Run("unparseable route name with no override is a no-op", func(t *testing.T) {
-		withProjectID(t, "")
-		route := routeWithAction("not-an-httproute", "placeholder-cluster")
-		if err := (&workerd{}).patchRoute(route, &ir.HTTPRoute{Name: "r", WorkerdService: "echo"}); err != nil {
-			t.Fatalf("patchRoute: %v", err)
-		}
-		if got := route.GetRoute().GetCluster(); got != "placeholder-cluster" {
-			t.Fatalf("route cluster = %q, want placeholder-cluster", got)
-		}
-		if _, ok := headerValue(route, workerdServiceHeader); ok {
-			t.Fatalf("unexpected %s header when project is unresolved", workerdServiceHeader)
-		}
-	})
-
 	t.Run("redirect route with no action is a no-op", func(t *testing.T) {
-		withProjectID(t, "static-proj")
 		route := &routev3.Route{
 			Name:   "httproute/default/echo/rule/0/match/0",
 			Action: &routev3.Route_Redirect{Redirect: &routev3.RedirectAction{}},

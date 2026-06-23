@@ -36,8 +36,8 @@ func (f *fakeResident) Cleanup(_ context.Context) error { return nil }
 func newResidentReconciler(t *testing.T, resident host.ResidentRuntime, f *fakeFetcher, objs ...client.Object) (*ResidentReconciler, client.Client) {
 	t.Helper()
 	c := newFakeClient(t, objs...)
-	store := NewStore(newResolverWithFetcher(c, "proj", f))
-	return NewResidentReconciler(c, resident, store, "proj"), c
+	store := NewStore(newResolverWithFetcher(c, f))
+	return NewResidentReconciler(c, resident, store), c
 }
 
 // liveRevision is the demux selection the dispatcher's /resolve reads back from
@@ -85,11 +85,11 @@ func TestResidentReconciler_WarmsAndRecordsReadOnly(t *testing.T) {
 		t.Fatalf("Reconcile: %v", err)
 	}
 
-	if !r.store.cached("proj:api:api-abc") {
+	if !r.store.cached("api:api-abc") {
 		t.Fatal("definition should be cached after a successful reconcile")
 	}
-	if got := liveRevision(t, r, "proj:api"); got != "api-abc" {
-		t.Errorf("liveRevision(proj:api) = %q, want api-abc", got)
+	if got := liveRevision(t, r, "api"); got != "api-abc" {
+		t.Errorf("liveRevision(api) = %q, want api-abc", got)
 	}
 
 	rev := getRevision(t, c, "api-abc")
@@ -125,7 +125,7 @@ func TestResidentReconciler_KeepsPreviousUntilNewWarms(t *testing.T) {
 	if _, err := reconcileRevision(t, r, "api-v1"); err != nil {
 		t.Fatalf("v1 reconcile: %v", err)
 	}
-	if got := liveRevision(t, r, "proj:api"); got != "api-v1" {
+	if got := liveRevision(t, r, "api"); got != "api-v1" {
 		t.Fatalf("v1 should be live, liveRevision = %q", got)
 	}
 
@@ -142,7 +142,7 @@ func TestResidentReconciler_KeepsPreviousUntilNewWarms(t *testing.T) {
 	if res.RequeueAfter == 0 {
 		t.Errorf("want a requeue-after for the transient bundle failure, got %+v", res)
 	}
-	if got := liveRevision(t, r, "proj:api"); got != "api-v1" {
+	if got := liveRevision(t, r, "api"); got != "api-v1" {
 		t.Errorf("must keep serving the previous revision; liveRevision = %q, want api-v1", got)
 	}
 }
@@ -161,7 +161,7 @@ func TestResidentReconciler_FlipsToNewRevisionOnceWarmed(t *testing.T) {
 	if _, err := reconcileRevision(t, r, "api-v2"); err != nil {
 		t.Fatalf("v2 reconcile: %v", err)
 	}
-	if got := liveRevision(t, r, "proj:api"); got != "api-v2" {
+	if got := liveRevision(t, r, "api"); got != "api-v2" {
 		t.Errorf("after warming v2, liveRevision = %q, want api-v2 (newest warmed)", got)
 	}
 }
@@ -183,7 +183,7 @@ func TestResidentReconciler_HonorsPin(t *testing.T) {
 	if _, err := reconcileRevision(t, r, "api-v2"); err != nil {
 		t.Fatalf("v2: %v", err)
 	}
-	if got := liveRevision(t, r, "proj:api"); got != "api-v1" {
+	if got := liveRevision(t, r, "api"); got != "api-v1" {
 		t.Errorf("pinned liveRevision should win; liveRevision = %q, want api-v1", got)
 	}
 }
@@ -196,7 +196,7 @@ func TestResidentReconciler_DeletePrunesCacheNoFinalizer(t *testing.T) {
 	if _, err := reconcileRevision(t, r, "api-abc"); err != nil {
 		t.Fatalf("warm reconcile: %v", err)
 	}
-	if !r.store.cached("proj:api:api-abc") {
+	if !r.store.cached("api:api-abc") {
 		t.Fatal("want cached after warm")
 	}
 
@@ -212,10 +212,10 @@ func TestResidentReconciler_DeletePrunesCacheNoFinalizer(t *testing.T) {
 		t.Fatalf("delete reconcile: %v", err)
 	}
 
-	if r.store.cached("proj:api:api-abc") {
+	if r.store.cached("api:api-abc") {
 		t.Error("deleted revision's definition should be pruned from the cache")
 	}
-	if rev, ok := r.store.liveRevision("proj:api"); ok {
+	if rev, ok := r.store.liveRevision("api"); ok {
 		t.Errorf("deleted service must not be served; liveRevision = %q", rev)
 	}
 }
@@ -234,7 +234,7 @@ func TestResidentReconciler_UnroutableSkipped(t *testing.T) {
 	if len(got.Status.Conditions) != 0 || len(got.Finalizers) != 0 {
 		t.Errorf("unroutable revision must be untouched: conds=%+v finalizers=%+v", got.Status.Conditions, got.Finalizers)
 	}
-	if r.store.cached("proj:api:api-abc") {
+	if r.store.cached("api:api-abc") {
 		t.Error("unroutable revision must not be warmed")
 	}
 }

@@ -328,10 +328,6 @@ var devCmd = &cobra.Command{
 				fmt.Sprintf("--ingest-store-dir=%s", filepath.Join(tmpDir, "ingest")),
 			}
 		}
-		// APO-796: the workerd demux header is "<project_id>:<service>"; the dev
-		// apiserver serves a single project whose route namespace is not the project
-		// id, so it must stamp the id explicitly to match the manager's /resolve key.
-		apiserverArgs = append(apiserverArgs, fmt.Sprintf("--project_id=%s", projectID))
 		if _, err := apiDriver.Start(ctx, projectID, proxyName, drivers.WithArgs(apiserverArgs...)); err != nil {
 			log.Errorf("failed to start apiserver: %v", err)
 			return err

@@ -23,7 +23,6 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/apiserver/ingest"
 	"github.com/apoxy-dev/apoxy/pkg/gateway"
 	"github.com/apoxy-dev/apoxy/pkg/gateway/message"
-	xdstranslator "github.com/apoxy-dev/apoxy/pkg/gateway/xds/translator"
 	"github.com/apoxy-dev/apoxy/pkg/log"
 	workerdmanager "github.com/apoxy-dev/apoxy/pkg/workerd/manager"
 )
@@ -39,12 +38,6 @@ var (
 	ingestStoreDir   = flag.String("ingest-store-dir", os.TempDir(), "Path to the ingest store directory.")
 	ingestStorePort  = flag.Int("ingest-store-port", 8081, "Port for the ingest store.")
 	controllerNames  = flag.String("controller-names", "", "Comma-separated list of GatewayClass controller names to watch. Defaults to both standalone and legacy controller names.")
-	// APO-796: the project this apiserver serves. The Gateway→xDS workerd hook
-	// stamps "<project_id>:<service>" into the x-apoxy-service demux header so it
-	// matches the resident manager's /resolve key. This apiserver serves a single
-	// project whose HTTPRoute namespace is not the project id, so the hook needs the
-	// id explicitly; empty falls back to namespace derivation.
-	projectID = flag.String("project_id", "", "Project ID this apiserver serves; sets the workerd demux header project (empty derives it from the route namespace).")
 )
 
 func stopCh(ctx context.Context) <-chan interface{} {
@@ -105,12 +98,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed creating Temporal client: %v", err)
 	}
-
-	// APO-796 workerd data plane: tell the Gateway→xDS workerd hook which project
-	// this apiserver serves, so it stamps "<project_id>:<service>" into the
-	// x-apoxy-service demux header. The resident manager owns revision/liveness
-	// demux via /resolve, so the xDS side needs no runtime routing state.
-	xdstranslator.SetWorkerdProjectID(*projectID)
 
 	gwResources := new(message.ProviderResources)
 	go func() {

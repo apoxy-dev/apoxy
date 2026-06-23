@@ -70,9 +70,9 @@ func TestResolver_Resolve(t *testing.T) {
 	t.Run("happy path maps path to name", func(t *testing.T) {
 		c := newFakeClient(t, revision("api-abc", "api", "sha256:d"))
 		f := &fakeFetcher{manifest: esManifest(), modules: map[string][]byte{"index.js": []byte("export default {}")}}
-		r := newResolverWithFetcher(c, "proj", f)
+		r := newResolverWithFetcher(c, f)
 
-		def, err := r.Resolve(context.Background(), "proj:api:api-abc")
+		def, err := r.Resolve(context.Background(), "api:api-abc")
 		if err != nil {
 			t.Fatalf("Resolve: %v", err)
 		}
@@ -85,35 +85,24 @@ func TestResolver_Resolve(t *testing.T) {
 	})
 
 	t.Run("invalid id", func(t *testing.T) {
-		r := newResolverWithFetcher(newFakeClient(t), "proj", &fakeFetcher{})
+		r := newResolverWithFetcher(newFakeClient(t), &fakeFetcher{})
 		if _, err := r.Resolve(context.Background(), "noseparator"); err == nil {
 			t.Fatal("want error for id without ':'")
 		}
 	})
 
 	t.Run("revision not found", func(t *testing.T) {
-		r := newResolverWithFetcher(newFakeClient(t), "proj", &fakeFetcher{manifest: esManifest()})
-		_, err := r.Resolve(context.Background(), "proj:api:missing")
+		r := newResolverWithFetcher(newFakeClient(t), &fakeFetcher{manifest: esManifest()})
+		_, err := r.Resolve(context.Background(), "api:missing")
 		if !errors.Is(err, errRevisionNotFound) {
 			t.Fatalf("err = %v, want errRevisionNotFound", err)
 		}
 	})
 
-	t.Run("wrong project never resolves", func(t *testing.T) {
-		// Defense in depth: the shared resident must never serve another project's
-		// id even if a revision of that bare name happens to exist locally.
-		c := newFakeClient(t, revision("api-abc", "api", "sha256:d"))
-		r := newResolverWithFetcher(c, "proj", &fakeFetcher{manifest: esManifest()})
-		_, err := r.Resolve(context.Background(), "other:api:api-abc")
-		if err == nil || errors.Is(err, errRevisionNotFound) {
-			t.Fatalf("want a cross-project rejection, got %v", err)
-		}
-	})
-
 	t.Run("service label mismatch is not a 404", func(t *testing.T) {
 		c := newFakeClient(t, revision("api-abc", "other", "sha256:d"))
-		r := newResolverWithFetcher(c, "proj", &fakeFetcher{manifest: esManifest()})
-		_, err := r.Resolve(context.Background(), "proj:api:api-abc")
+		r := newResolverWithFetcher(c, &fakeFetcher{manifest: esManifest()})
+		_, err := r.Resolve(context.Background(), "api:api-abc")
 		if err == nil || errors.Is(err, errRevisionNotFound) {
 			t.Fatalf("want a non-404 mismatch error, got %v", err)
 		}
@@ -121,8 +110,8 @@ func TestResolver_Resolve(t *testing.T) {
 
 	t.Run("fetcher manifest error propagates", func(t *testing.T) {
 		c := newFakeClient(t, revision("api-abc", "api", "sha256:d"))
-		r := newResolverWithFetcher(c, "proj", &fakeFetcher{manifestErr: fmt.Errorf("registry down")})
-		if _, err := r.Resolve(context.Background(), "proj:api:api-abc"); err == nil {
+		r := newResolverWithFetcher(c, &fakeFetcher{manifestErr: fmt.Errorf("registry down")})
+		if _, err := r.Resolve(context.Background(), "api:api-abc"); err == nil {
 			t.Fatal("want error when the registry fetch fails")
 		}
 	})
@@ -131,8 +120,8 @@ func TestResolver_Resolve(t *testing.T) {
 		c := newFakeClient(t, revision("api-abc", "api", "sha256:d"))
 		// Manifest references index.js but Modules returns nothing for it.
 		f := &fakeFetcher{manifest: esManifest(), modules: map[string][]byte{}}
-		r := newResolverWithFetcher(c, "proj", f)
-		_, err := r.Resolve(context.Background(), "proj:api:api-abc")
+		r := newResolverWithFetcher(c, f)
+		_, err := r.Resolve(context.Background(), "api:api-abc")
 		if err == nil {
 			t.Fatal("want error when a manifest module has no bytes")
 		}
@@ -141,24 +130,26 @@ func TestResolver_Resolve(t *testing.T) {
 
 func TestSplitServiceID(t *testing.T) {
 	cases := []struct {
-		in       string
-		wantProj string
-		wantSvc  string
-		wantRev  string
-		wantErr  bool
+		in      string
+		wantSvc string
+		wantRev string
+		wantErr bool
 	}{
-		{"proj:api:api-abc", "proj", "api", "api-abc", false},
-		{"proj:api:api-abc-def", "proj", "api", "api-abc-def", false},
-		{"noseparator", "", "", "", true},
-		{"proj:api", "", "", "", true},
-		{":api:rev", "", "", "", true},
-		{"proj::rev", "", "", "", true},
-		{"proj:api:", "", "", "", true},
-		{"", "", "", "", true},
+		{"api:api-abc", "api", "api-abc", false},
+		{"api:api-abc-def", "api", "api-abc-def", false},
+		{"noseparator", "", "", true},
+		{"api", "", "", true},
+		{":rev", "", "", true},
+		{"api:", "", "", true},
+		{"", "", "", true},
+		// A stale three-part "<project>:<service>:<revision>" id (old dispatcher,
+		// new manager mid-rollout) must be rejected, not loose-parsed.
+		{"proj:api:api-abc", "", "", true},
+		{"svc::rev", "", "", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.in, func(t *testing.T) {
-			proj, svc, rev, err := splitServiceID(tc.in)
+			svc, rev, err := splitServiceID(tc.in)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("want error for %q", tc.in)
@@ -168,9 +159,9 @@ func TestSplitServiceID(t *testing.T) {
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if proj != tc.wantProj || svc != tc.wantSvc || rev != tc.wantRev {
-				t.Errorf("split(%q) = (%q,%q,%q), want (%q,%q,%q)",
-					tc.in, proj, svc, rev, tc.wantProj, tc.wantSvc, tc.wantRev)
+			if svc != tc.wantSvc || rev != tc.wantRev {
+				t.Errorf("split(%q) = (%q,%q), want (%q,%q)",
+					tc.in, svc, rev, tc.wantSvc, tc.wantRev)
 			}
 		})
 	}

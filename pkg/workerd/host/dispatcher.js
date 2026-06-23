@@ -2,11 +2,11 @@
 // workerd config by BuildResidentConfig).
 //
 // This is the single static worker that fronts the one resident workerd. The
-// backplane stamps `x-apoxy-service: <project>:<service>` (project-qualified so
-// two projects' same-named services never share an isolate on the shared
-// resident) and routes here. The dispatcher resolves that service to its live
-// revision id via the manager's /resolve endpoint, then dynamically loads (and
-// caches) that isolate from the manager via the WorkerLoader binding.
+// backplane stamps `x-apoxy-service: <service>` (the resident is per-tenant, so
+// the project never travels through Envoy) and routes here. The dispatcher
+// resolves that service to its live revision id via the manager's /resolve
+// endpoint, then dynamically loads (and caches) that isolate from the manager via
+// the WorkerLoader binding.
 //
 // The revision lives entirely in the resident now — it is never stamped into
 // Envoy config, so a rollout is invisible to xDS. Isolates are still cached by
@@ -15,8 +15,8 @@
 const SERVICE_HEADER = "x-apoxy-service";
 const HEALTH_PATH = "/__apoxy/health";
 
-// resolveCache memoizes "<project>:<service>" -> { id, expiry } so the steady-state
-// hot path makes no extra control round trip: a cached id hits the cached isolate
+// resolveCache memoizes service -> { id, expiry } so the steady-state hot path
+// makes no extra control round trip: a cached id hits the cached isolate
 // directly. The TTL bounds how long a node keeps routing to a just-rolled revision
 // after a flip; both isolates coexist within the window, so a stale read is
 // make-before-break, not an error.
@@ -109,9 +109,9 @@ export default {
       return new Response("apoxy: missing " + SERVICE_HEADER + " header\n", { status: 400 });
     }
 
-    // Resolve the project-qualified service to its live revision id. The backplane
-    // routes here only once a revision is live, so a miss is a brief rollout-edge
-    // window: surface 503 so the client retries rather than caching a bad id.
+    // Resolve the service to its live revision id. The backplane routes here only
+    // once a revision is live, so a miss is a brief rollout-edge window: surface
+    // 503 so the client retries rather than caching a bad id.
     const id = await resolveID(env, service);
     if (!id) {
       return new Response("apoxy: no live revision for " + service + "\n", { status: 503 });

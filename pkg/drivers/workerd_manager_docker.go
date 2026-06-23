@@ -100,7 +100,6 @@ func (d *WorkerdManagerDockerDriver) Start(
 
 	cmd.Args = append(cmd.Args, imageRef)
 	cmd.Args = append(cmd.Args, []string{
-		"--project_id=" + orgID.String(),
 		// Dev kube-auth: an insecure rest.Config to --apiserver_host (supplied by
 		// dev.go, reached over the docker network by name).
 		"--dev=true",

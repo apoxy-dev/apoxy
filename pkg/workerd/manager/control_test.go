@@ -29,12 +29,12 @@ func getWorker(t *testing.T, base, id string) (int, string) {
 	return resp.StatusCode, string(b)
 }
 
-// storeWith builds a Store over a client holding one revision (proj:api:api-abc)
-// and the given fetcher.
+// storeWith builds a Store over a client holding one revision (api:api-abc) and
+// the given fetcher.
 func storeWith(t *testing.T, f *fakeFetcher) *Store {
 	t.Helper()
 	c := newFakeClient(t, revision("api-abc", "api", "sha256:d"))
-	return NewStore(newResolverWithFetcher(c, "proj", f))
+	return NewStore(newResolverWithFetcher(c, f))
 }
 
 func TestControlServer_ServesWorkerCode(t *testing.T) {
@@ -43,7 +43,7 @@ func TestControlServer_ServesWorkerCode(t *testing.T) {
 	srv := httptest.NewServer(NewControlServer(store).Handler())
 	defer srv.Close()
 
-	status, body := getWorker(t, srv.URL, "proj:api:api-abc")
+	status, body := getWorker(t, srv.URL, "api:api-abc")
 	if status != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", status, body)
 	}
@@ -72,8 +72,8 @@ func TestControlServer_StatusCodes(t *testing.T) {
 		want    int
 	}{
 		{"missing id", "", &fakeFetcher{manifest: esManifest(), modules: map[string][]byte{"index.js": {}}}, http.StatusBadRequest},
-		{"unknown revision", "proj:api:missing", &fakeFetcher{manifest: esManifest(), modules: map[string][]byte{"index.js": {}}}, http.StatusNotFound},
-		{"registry failure", "proj:api:api-abc", &fakeFetcher{manifestErr: fmt.Errorf("registry down")}, http.StatusBadGateway},
+		{"unknown revision", "api:missing", &fakeFetcher{manifest: esManifest(), modules: map[string][]byte{"index.js": {}}}, http.StatusNotFound},
+		{"registry failure", "api:api-abc", &fakeFetcher{manifestErr: fmt.Errorf("registry down")}, http.StatusBadGateway},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -110,12 +110,12 @@ func TestControlServer_Resolve(t *testing.T) {
 	// The resident reconciler records the live-revision selection here; the
 	// dispatcher resolves against it instead of reading the revision off the
 	// Envoy header.
-	store.setDemux(map[string]string{"proj:api": "api-abc"})
+	store.setDemux(map[string]string{"api": "api-abc"})
 	srv := httptest.NewServer(NewControlServer(store).Handler())
 	defer srv.Close()
 
 	t.Run("resolves the live revision id", func(t *testing.T) {
-		status, body := getResolve(t, srv.URL, "proj:api")
+		status, body := getResolve(t, srv.URL, "api")
 		if status != http.StatusOK {
 			t.Fatalf("status = %d, body = %s", status, body)
 		}
@@ -123,9 +123,9 @@ func TestControlServer_Resolve(t *testing.T) {
 		if err := json.Unmarshal([]byte(body), &got); err != nil {
 			t.Fatalf("body is not valid JSON: %v (%s)", err, body)
 		}
-		// The id is the 3-part demux id the dispatcher feeds straight to /worker.
-		if got.ID != "proj:api:api-abc" {
-			t.Errorf("id = %q, want proj:api:api-abc", got.ID)
+		// The id is the 2-part demux id the dispatcher feeds straight to /worker.
+		if got.ID != "api:api-abc" {
+			t.Errorf("id = %q, want api:api-abc", got.ID)
 		}
 		if got.Revision != "api-abc" {
 			t.Errorf("revision = %q, want api-abc", got.Revision)
@@ -139,7 +139,7 @@ func TestControlServer_Resolve(t *testing.T) {
 	})
 
 	t.Run("unknown service is a 404", func(t *testing.T) {
-		if status, _ := getResolve(t, srv.URL, "proj:missing"); status != http.StatusNotFound {
+		if status, _ := getResolve(t, srv.URL, "nope"); status != http.StatusNotFound {
 			t.Errorf("status = %d, want 404", status)
 		}
 	})
@@ -149,15 +149,15 @@ func TestStore_CachesAfterWarm(t *testing.T) {
 	f := &fakeFetcher{manifest: esManifest(), modules: map[string][]byte{"index.js": []byte("x")}}
 	store := storeWith(t, f)
 
-	if _, err := store.Warm(context.Background(), "proj:api:api-abc"); err != nil {
+	if _, err := store.Warm(context.Background(), "api:api-abc"); err != nil {
 		t.Fatalf("Warm: %v", err)
 	}
-	if !store.cached("proj:api:api-abc") {
+	if !store.cached("api:api-abc") {
 		t.Fatal("Warm should cache the definition")
 	}
 	callsAfterWarm := f.calls
 	// A subsequent Get is served from cache: the fetcher is not hit again.
-	if _, err := store.Get(context.Background(), "proj:api:api-abc"); err != nil {
+	if _, err := store.Get(context.Background(), "api:api-abc"); err != nil {
 		t.Fatalf("Get: %v", err)
 	}
 	if f.calls != callsAfterWarm {
@@ -165,11 +165,11 @@ func TestStore_CachesAfterWarm(t *testing.T) {
 	}
 
 	// After Invalidate, the next Get resolves again.
-	store.Invalidate("proj:api:api-abc")
-	if store.cached("proj:api:api-abc") {
+	store.Invalidate("api:api-abc")
+	if store.cached("api:api-abc") {
 		t.Fatal("Invalidate should drop the cache entry")
 	}
-	if _, err := store.Get(context.Background(), "proj:api:api-abc"); err != nil {
+	if _, err := store.Get(context.Background(), "api:api-abc"); err != nil {
 		t.Fatalf("Get after invalidate: %v", err)
 	}
 	if f.calls <= callsAfterWarm {

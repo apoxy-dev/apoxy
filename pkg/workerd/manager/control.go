@@ -13,15 +13,15 @@ import (
 )
 
 // workerPath is the control endpoint the dispatcher's WorkerLoader callback
-// fetches worker definitions from: GET /worker?id=<project>:<service>:<revision>.
+// fetches worker definitions from: GET /worker?id=<service>:<revision>.
 // Must match pkg/workerd/host/dispatcher.js.
 const workerPath = "/worker"
 
 // resolvePath is the control endpoint the dispatcher resolves a service to its
-// live revision id through: GET /resolve?service=<project>:<service>. The
-// dispatcher uses the returned id as its WorkerLoader cache key and its /worker
-// argument, so the revision is never stamped into the Envoy demux header and a
-// rollout never re-translates Envoy config. Must match pkg/workerd/host/dispatcher.js.
+// live revision id through: GET /resolve?service=<service>. The dispatcher uses
+// the returned id as its WorkerLoader cache key and its /worker argument, so the
+// revision is never stamped into the Envoy demux header and a rollout never
+// re-translates Envoy config. Must match pkg/workerd/host/dispatcher.js.
 const resolvePath = "/resolve"
 
 // ControlServer is the manager side of the dispatcher control channel: an HTTP
@@ -54,12 +54,11 @@ func (c *ControlServer) Handler() http.Handler {
 	return mux
 }
 
-// handleResolve maps a project-qualified service key "<project>:<service>" to the
-// revision-bearing demux id the resident currently serves for it. The dispatcher
-// resolves here (rather than reading the revision off the Envoy header) so the
-// revision lives entirely in the resident; the backplane routes here only once a
-// revision is live, so a miss is a brief rollout-edge window the dispatcher
-// surfaces as a 503.
+// handleResolve maps a bare service name to the revision-bearing demux id the
+// resident currently serves for it. The dispatcher resolves here (rather than
+// reading the revision off the Envoy header) so the revision lives entirely in
+// the resident; the backplane routes here only once a revision is live, so a
+// miss is a brief rollout-edge window the dispatcher surfaces as a 503.
 func (c *ControlServer) handleResolve(w http.ResponseWriter, req *http.Request) {
 	service := req.URL.Query().Get("service")
 	if service == "" {
