@@ -5,7 +5,6 @@ import (
 	"errors"
 	"flag"
 	"log/slog"
-	"net"
 	"os"
 	goruntime "runtime"
 	"strings"
@@ -24,7 +23,6 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/apiserver/ingest"
 	"github.com/apoxy-dev/apoxy/pkg/gateway"
 	"github.com/apoxy-dev/apoxy/pkg/gateway/message"
-	gatewayworkerd "github.com/apoxy-dev/apoxy/pkg/gateway/workerd"
 	xdstranslator "github.com/apoxy-dev/apoxy/pkg/gateway/xds/translator"
 	"github.com/apoxy-dev/apoxy/pkg/log"
 	workerdmanager "github.com/apoxy-dev/apoxy/pkg/workerd/manager"
@@ -41,13 +39,12 @@ var (
 	ingestStoreDir   = flag.String("ingest-store-dir", os.TempDir(), "Path to the ingest store directory.")
 	ingestStorePort  = flag.Int("ingest-store-port", 8081, "Port for the ingest store.")
 	controllerNames  = flag.String("controller-names", "", "Comma-separated list of GatewayClass controller names to watch. Defaults to both standalone and legacy controller names.")
-	// APO-796: each backplane node's workerd-manager POSTs its per-node routing
-	// snapshot (resident socket + the revision it serves per service) here; the
-	// Gateway→xDS translator injects the resident cluster and x-apoxy-service demux
-	// header from it. Empty disables the receiver (workerd routing stays inert).
-	// Loopback by default; in --dev it binds the docker network (the manager runs
-	// in the backplane's netns and reaches it by name).
-	workerdPublishAddr = flag.String("workerd_publish_addr", "127.0.0.1:2021", "host:port for the private workerd-manager routing publish channel (empty disables).")
+	// APO-796: the project this apiserver serves. The Gateway→xDS workerd hook
+	// stamps "<project_id>:<service>" into the x-apoxy-service demux header so it
+	// matches the resident manager's /resolve key. This apiserver serves a single
+	// project whose HTTPRoute namespace is not the project id, so the hook needs the
+	// id explicitly; empty falls back to namespace derivation.
+	projectID = flag.String("project_id", "", "Project ID this apiserver serves; sets the workerd demux header project (empty derives it from the route namespace).")
 )
 
 func stopCh(ctx context.Context) <-chan interface{} {
@@ -109,35 +106,11 @@ func main() {
 		log.Fatalf("Failed creating Temporal client: %v", err)
 	}
 
-	// APO-796 workerd data plane: install the registry the Gateway→xDS translator
-	// reads to inject the resident workerd cluster + x-apoxy-service demux header,
-	// and serve the private publish channel the co-located workerd-manager pushes
-	// its routing snapshot to. The translator hook is inert until a snapshot lands.
-	if *workerdPublishAddr != "" {
-		workerdRegistry := gatewayworkerd.NewRegistry()
-		xdstranslator.SetWorkerdRegistry(workerdRegistry)
-		srv := gatewayworkerd.NewServer(workerdRegistry)
-		publishAddr := *workerdPublishAddr
-		if *devMode {
-			// Dev reflects the 1:1 backplane↔resident coupling: the workerd-manager
-			// runs in the BACKPLANE's netns, so it reaches this apiserver-hosted
-			// channel over the docker network by name, not loopback. Bind all
-			// interfaces and allow the non-loopback bind (private docker bridge).
-			srv.AllowNonLoopback = true
-			if host, port, err := net.SplitHostPort(publishAddr); err == nil {
-				switch host {
-				case "127.0.0.1", "localhost", "::1", "":
-					publishAddr = ":" + port
-				}
-			}
-		}
-		go func() {
-			if err := srv.Serve(ctx, publishAddr); err != nil {
-				log.Errorf("workerd publish channel exited: %v", err)
-				ctxCancel(&startErr{Err: err})
-			}
-		}()
-	}
+	// APO-796 workerd data plane: tell the Gateway→xDS workerd hook which project
+	// this apiserver serves, so it stamps "<project_id>:<service>" into the
+	// x-apoxy-service demux header. The resident manager owns revision/liveness
+	// demux via /resolve, so the xDS side needs no runtime routing state.
+	xdstranslator.SetWorkerdProjectID(*projectID)
 
 	gwResources := new(message.ProviderResources)
 	go func() {

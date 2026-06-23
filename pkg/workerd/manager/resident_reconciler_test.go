@@ -33,27 +33,19 @@ func (f *fakeResident) EnsureResident(_ context.Context) (*host.ResidentInstance
 func (f *fakeResident) Stop(_ context.Context) error    { return nil }
 func (f *fakeResident) Cleanup(_ context.Context) error { return nil }
 
-// fakePublisher records the last snapshot the read-only reconciler publishes.
-type fakePublisher struct {
-	last  PublishSnapshot
-	calls int
-	err   error
-}
-
-func (f *fakePublisher) Publish(_ context.Context, snap PublishSnapshot) error {
-	f.calls++
-	if f.err != nil {
-		return f.err
-	}
-	f.last = snap
-	return nil
-}
-
-func newResidentReconciler(t *testing.T, resident host.ResidentRuntime, pub Publisher, f *fakeFetcher, objs ...client.Object) (*ResidentReconciler, client.Client) {
+func newResidentReconciler(t *testing.T, resident host.ResidentRuntime, f *fakeFetcher, objs ...client.Object) (*ResidentReconciler, client.Client) {
 	t.Helper()
 	c := newFakeClient(t, objs...)
 	store := NewStore(newResolverWithFetcher(c, "proj", f))
-	return NewResidentReconciler(c, resident, store, pub, "/run/in.sock", "node-a", "proj"), c
+	return NewResidentReconciler(c, resident, store, "proj"), c
+}
+
+// liveRevision is the demux selection the dispatcher's /resolve reads back from
+// the store. The reconciler records it per reconcile; nothing is pushed off-node.
+func liveRevision(t *testing.T, r *ResidentReconciler, key string) string {
+	t.Helper()
+	rev, _ := r.store.liveRevision(key)
+	return rev
 }
 
 func reconcileRevision(t *testing.T, r *ResidentReconciler, name string) (reconcile.Result, error) {
@@ -82,12 +74,12 @@ func okFetcher() *fakeFetcher {
 	return &fakeFetcher{manifest: esManifest(), modules: map[string][]byte{"index.js": []byte("export default {}")}}
 }
 
-// TestResidentReconciler_WarmsAndPublishesReadOnly is the core invariant: a
-// successful reconcile warms the store and publishes THIS node's serveable demux,
-// and writes NOTHING on the API object (no conditions, no finalizers).
-func TestResidentReconciler_WarmsAndPublishesReadOnly(t *testing.T) {
-	pub := &fakePublisher{}
-	r, c := newResidentReconciler(t, &fakeResident{}, pub, okFetcher(), revision("api-abc", "api", "sha256:d"))
+// TestResidentReconciler_WarmsAndRecordsReadOnly is the core invariant: a
+// successful reconcile warms the store and records THIS node's serveable demux
+// for /resolve, and writes NOTHING on the API object (no conditions, no
+// finalizers).
+func TestResidentReconciler_WarmsAndRecordsReadOnly(t *testing.T) {
+	r, c := newResidentReconciler(t, &fakeResident{}, okFetcher(), revision("api-abc", "api", "sha256:d"))
 
 	if _, err := reconcileRevision(t, r, "api-abc"); err != nil {
 		t.Fatalf("Reconcile: %v", err)
@@ -96,11 +88,8 @@ func TestResidentReconciler_WarmsAndPublishesReadOnly(t *testing.T) {
 	if !r.store.cached("proj:api:api-abc") {
 		t.Fatal("definition should be cached after a successful reconcile")
 	}
-	if pub.last.NodeID != "node-a" || pub.last.ResidentSocket != "/run/in.sock" {
-		t.Errorf("published node/socket = %q/%q, want node-a//run/in.sock", pub.last.NodeID, pub.last.ResidentSocket)
-	}
-	if got := pub.last.Demux["proj:api"]; got != "api-abc" {
-		t.Errorf("published demux[proj:api] = %q, want api-abc", got)
+	if got := liveRevision(t, r, "proj:api"); got != "api-abc" {
+		t.Errorf("liveRevision(proj:api) = %q, want api-abc", got)
 	}
 
 	rev := getRevision(t, c, "api-abc")
@@ -115,8 +104,7 @@ func TestResidentReconciler_WarmsAndPublishesReadOnly(t *testing.T) {
 // TestResidentReconciler_ResidentDownErrorsNoWrite: an un-ensurable resident is
 // surfaced as an error (for backoff) and still never writes the API object.
 func TestResidentReconciler_ResidentDownErrorsNoWrite(t *testing.T) {
-	pub := &fakePublisher{}
-	r, c := newResidentReconciler(t, &fakeResident{ensureErr: fmt.Errorf("runsc create failed")}, pub, okFetcher(), revision("api-abc", "api", "sha256:d"))
+	r, c := newResidentReconciler(t, &fakeResident{ensureErr: fmt.Errorf("runsc create failed")}, okFetcher(), revision("api-abc", "api", "sha256:d"))
 
 	if _, err := reconcileRevision(t, r, "api-abc"); err == nil {
 		t.Fatal("want an error when the resident cannot be ensured")
@@ -132,14 +120,13 @@ func TestResidentReconciler_ResidentDownErrorsNoWrite(t *testing.T) {
 // previous revision this node already serves.
 func TestResidentReconciler_KeepsPreviousUntilNewWarms(t *testing.T) {
 	f := okFetcher()
-	pub := &fakePublisher{}
-	r, c := newResidentReconciler(t, &fakeResident{}, pub, f, revisionAt("api-v1", "api", "sha256:1", 100))
+	r, c := newResidentReconciler(t, &fakeResident{}, f, revisionAt("api-v1", "api", "sha256:1", 100))
 
 	if _, err := reconcileRevision(t, r, "api-v1"); err != nil {
 		t.Fatalf("v1 reconcile: %v", err)
 	}
-	if pub.last.Demux["proj:api"] != "api-v1" {
-		t.Fatalf("v1 should be live, demux = %q", pub.last.Demux["proj:api"])
+	if got := liveRevision(t, r, "proj:api"); got != "api-v1" {
+		t.Fatalf("v1 should be live, liveRevision = %q", got)
 	}
 
 	// A newer revision is minted but its bundle won't pull.
@@ -155,16 +142,15 @@ func TestResidentReconciler_KeepsPreviousUntilNewWarms(t *testing.T) {
 	if res.RequeueAfter == 0 {
 		t.Errorf("want a requeue-after for the transient bundle failure, got %+v", res)
 	}
-	if got := pub.last.Demux["proj:api"]; got != "api-v1" {
-		t.Errorf("must keep serving the previous revision; demux = %q, want api-v1", got)
+	if got := liveRevision(t, r, "proj:api"); got != "api-v1" {
+		t.Errorf("must keep serving the previous revision; liveRevision = %q, want api-v1", got)
 	}
 }
 
 // TestResidentReconciler_FlipsToNewRevisionOnceWarmed: once the new revision
-// warms, the node advertises it (make-before-break completes).
+// warms, the node serves it (make-before-break completes).
 func TestResidentReconciler_FlipsToNewRevisionOnceWarmed(t *testing.T) {
-	pub := &fakePublisher{}
-	r, c := newResidentReconciler(t, &fakeResident{}, pub, okFetcher(), revisionAt("api-v1", "api", "sha256:1", 100))
+	r, c := newResidentReconciler(t, &fakeResident{}, okFetcher(), revisionAt("api-v1", "api", "sha256:1", 100))
 
 	if _, err := reconcileRevision(t, r, "api-v1"); err != nil {
 		t.Fatalf("v1 reconcile: %v", err)
@@ -175,20 +161,19 @@ func TestResidentReconciler_FlipsToNewRevisionOnceWarmed(t *testing.T) {
 	if _, err := reconcileRevision(t, r, "api-v2"); err != nil {
 		t.Fatalf("v2 reconcile: %v", err)
 	}
-	if got := pub.last.Demux["proj:api"]; got != "api-v2" {
-		t.Errorf("after warming v2, demux = %q, want api-v2 (newest warmed)", got)
+	if got := liveRevision(t, r, "proj:api"); got != "api-v2" {
+		t.Errorf("after warming v2, liveRevision = %q, want api-v2 (newest warmed)", got)
 	}
 }
 
 // TestResidentReconciler_HonorsPin: an explicit spec.liveRevision pin is served
 // once warmed, even if a newer revision exists.
 func TestResidentReconciler_HonorsPin(t *testing.T) {
-	pub := &fakePublisher{}
 	svc := &computev1alpha1.Service{
 		ObjectMeta: metav1.ObjectMeta{Name: "api"},
 		Spec:       computev1alpha1.ServiceSpec{LiveRevision: "api-v1"},
 	}
-	r, _ := newResidentReconciler(t, &fakeResident{}, pub, okFetcher(),
+	r, _ := newResidentReconciler(t, &fakeResident{}, okFetcher(),
 		svc, revisionAt("api-v1", "api", "sha256:1", 100), revisionAt("api-v2", "api", "sha256:2", 200))
 
 	// Warm both revisions.
@@ -198,16 +183,15 @@ func TestResidentReconciler_HonorsPin(t *testing.T) {
 	if _, err := reconcileRevision(t, r, "api-v2"); err != nil {
 		t.Fatalf("v2: %v", err)
 	}
-	if got := pub.last.Demux["proj:api"]; got != "api-v1" {
-		t.Errorf("pinned liveRevision should win; demux = %q, want api-v1", got)
+	if got := liveRevision(t, r, "proj:api"); got != "api-v1" {
+		t.Errorf("pinned liveRevision should win; liveRevision = %q, want api-v1", got)
 	}
 }
 
 // TestResidentReconciler_DeletePrunesCacheNoFinalizer: deletion drains the node's
-// cache via the watch event, without a finalizer, and stops advertising it.
+// cache via the watch event, without a finalizer, and stops serving it.
 func TestResidentReconciler_DeletePrunesCacheNoFinalizer(t *testing.T) {
-	pub := &fakePublisher{}
-	r, c := newResidentReconciler(t, &fakeResident{}, pub, okFetcher(), revision("api-abc", "api", "sha256:d"))
+	r, c := newResidentReconciler(t, &fakeResident{}, okFetcher(), revision("api-abc", "api", "sha256:d"))
 
 	if _, err := reconcileRevision(t, r, "api-abc"); err != nil {
 		t.Fatalf("warm reconcile: %v", err)
@@ -231,8 +215,8 @@ func TestResidentReconciler_DeletePrunesCacheNoFinalizer(t *testing.T) {
 	if r.store.cached("proj:api:api-abc") {
 		t.Error("deleted revision's definition should be pruned from the cache")
 	}
-	if got := pub.last.Demux["proj:api"]; got != "" {
-		t.Errorf("deleted service must not be advertised; demux = %q", got)
+	if rev, ok := r.store.liveRevision("proj:api"); ok {
+		t.Errorf("deleted service must not be served; liveRevision = %q", rev)
 	}
 }
 
@@ -241,8 +225,7 @@ func TestResidentReconciler_DeletePrunesCacheNoFinalizer(t *testing.T) {
 func TestResidentReconciler_UnroutableSkipped(t *testing.T) {
 	rev := revision("api-abc", "api", "sha256:d")
 	rev.Labels = nil
-	pub := &fakePublisher{}
-	r, c := newResidentReconciler(t, &fakeResident{}, pub, okFetcher(), rev)
+	r, c := newResidentReconciler(t, &fakeResident{}, okFetcher(), rev)
 
 	if _, err := reconcileRevision(t, r, "api-abc"); err != nil {
 		t.Fatalf("reconcile: %v", err)
@@ -253,25 +236,5 @@ func TestResidentReconciler_UnroutableSkipped(t *testing.T) {
 	}
 	if r.store.cached("proj:api:api-abc") {
 		t.Error("unroutable revision must not be warmed")
-	}
-}
-
-// TestResidentReconciler_NilPublisherNoop: with no publisher configured, reconcile
-// still warms AND records the demux selection so /resolve works — the resident
-// serves requests it must resolve even with no backplane to publish to. This
-// guards the hoist of store.setDemux above the publisher!=nil short-circuit.
-func TestResidentReconciler_NilPublisherNoop(t *testing.T) {
-	r, _ := newResidentReconciler(t, &fakeResident{}, nil, okFetcher(), revision("api-abc", "api", "sha256:d"))
-	if _, err := reconcileRevision(t, r, "api-abc"); err != nil {
-		t.Fatalf("reconcile with nil publisher: %v", err)
-	}
-	if !r.store.cached("proj:api:api-abc") {
-		t.Error("definition should still be warmed without a publisher")
-	}
-	// The /resolve seam (control server -> store.liveRevision) must be populated
-	// even with no publisher; otherwise the resident 503s every workerd request in
-	// a no-backplane deployment while the publish-path assertions stay green.
-	if rev, ok := r.store.liveRevision("proj:api"); !ok || rev != "api-abc" {
-		t.Errorf("store.liveRevision(proj:api) = (%q,%v), want (api-abc,true)", rev, ok)
 	}
 }

@@ -45,35 +45,8 @@ func (r *Runner) Name() string {
 func (r *Runner) Start(ctx context.Context) (err error) {
 	r.Logger = log.DefaultLogger.With("runner", r.Name())
 	go r.subscribeAndTranslate(ctx)
-	go r.retranslateOnWorkerdChange(ctx)
 	r.Logger.Info("started")
 	return
-}
-
-// retranslateOnWorkerdChange re-translates the current xDS IR whenever the
-// workerd routing registry changes. A workerd publish (resident socket /
-// per-service live revision) is a side input to translation, not part of the IR
-// message bus, and the bus dedups by value — so without this, a publish that
-// arrives after the initial translation would never inject the resident cluster
-// or the x-apoxy-service header. The re-translated result differs (cluster +
-// header now present), so r.Xds.Store propagates it to the snapshot.
-func (r *Runner) retranslateOnWorkerdChange(ctx context.Context) {
-	notify := translator.WorkerdRegistryNotify()
-	if notify == nil {
-		return
-	}
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-notify:
-			for key, val := range r.XdsIR.LoadAll() {
-				if err := r.translateAndStore(ctx, key, val); err != nil {
-					r.Logger.Error("Failed to re-translate xDS resources after workerd routing change", "key", key, "error", err)
-				}
-			}
-		}
-	}
 }
 
 // translateAndStore runs xDS translation for one IR key and publishes the

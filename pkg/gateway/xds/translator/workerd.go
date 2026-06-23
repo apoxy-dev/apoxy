@@ -3,6 +3,8 @@
 package translator
 
 import (
+	"strings"
+
 	clusterv3 "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
 	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	endpointv3 "github.com/envoyproxy/go-control-plane/envoy/config/endpoint/v3"
@@ -26,60 +28,46 @@ const (
 	// "<project>:<service>". The dispatcher resolves the live revision from this
 	// key itself, so the revision is deliberately NOT in the header.
 	workerdServiceHeader = "x-apoxy-service"
+	// workerdResidentSocketPath is the well-known host AF_UNIX path the resident
+	// workerd dispatcher listens on, one per data-plane node. It is a hard
+	// constant, not a runtime fact: the resident sandbox id is the constant
+	// "apoxy-workerd-resident" (pkg/workerd/host.residentSandboxID), the manager's
+	// --state_dir defaults to /run/workerd-manager/state (pkg/workerd/manager.run),
+	// and the socket is "<state_dir>/<id>.in.sock" (pkg/sandbox.inboundSockPath).
+	// In dev the same path is shared into the backplane's Envoy container via the
+	// /run/workerd-manager volume mount, so Envoy dials it at the identical path.
+	// Overriding --state_dir would break this constant.
+	workerdResidentSocketPath = "/run/workerd-manager/state/apoxy-workerd-resident.in.sock"
 )
 
-// WorkerdRegistry is the read view of the routing snapshot the co-located
-// workerd-manager publishes (resident socket + per-service live revision). The
-// publish receiver (pkg/gateway/workerd.Registry) implements it; tests fake it.
-type WorkerdRegistry interface {
-	// ResidentSocket returns the host AF_UNIX path the resident dispatcher listens
-	// on, or "" if none has been published.
-	ResidentSocket() string
-	// Active reports whether a resident socket has been published.
-	Active() bool
-	// DemuxHeader returns the x-apoxy-service header value ("<project>:<service>")
-	// for a bare compute Service name, or ok=false if the service has no live
-	// revision published. The revision is not included — the resident's dispatcher
-	// resolves it — so a rollout never re-translates xDS.
-	DemuxHeader(service string) (string, bool)
-}
+// workerdProjectID, when non-empty, is the project id stamped into the demux
+// header for every workerd route, overriding the namespace-derived default. It
+// is set once at startup (SetWorkerdProjectID) in single-project topologies —
+// `apoxy dev` and the dedicated backplane — where the HTTPRoute namespace is not
+// the project id. Left empty (the shared backplane), the project is derived from
+// the route's namespace, which there IS the project id. This mirrors the
+// backplane extension's tunnelproxy path (`pid := s.projectID; if pid == ""
+// { pid = routeNamespace }`).
+var workerdProjectID string
 
-// workerdRegistry is the process-wide published routing snapshot the workerd hook
-// reads. It is nil until the apiserver wires the publish channel via
-// SetWorkerdRegistry, in which case the hook is inert (no resident, no demux).
-var workerdRegistry WorkerdRegistry
-
-// SetWorkerdRegistry installs the published-routing registry the workerd
-// translator hook reads. Called once at apiserver startup, before translation
-// runs. A nil registry disables workerd routing.
-func SetWorkerdRegistry(r WorkerdRegistry) {
-	workerdRegistry = r
-}
-
-// workerdNotifier is the optional change-signal a registry exposes so the
-// xds-translator runner can re-translate when a publish lands after the initial
-// translation (the IR bus dedups by value, so it can't carry this signal).
-type workerdNotifier interface{ Notify() <-chan struct{} }
-
-// WorkerdRegistryNotify returns the registry's change channel, or nil if no
-// registry is installed or it has no change signal. The xds-translator runner
-// re-runs translation on each receive so a late publish takes effect.
-func WorkerdRegistryNotify() <-chan struct{} {
-	if n, ok := workerdRegistry.(workerdNotifier); ok {
-		return n.Notify()
-	}
-	return nil
-}
+// SetWorkerdProjectID installs the static project id the workerd translator hook
+// stamps into the demux header, overriding namespace derivation. Call once at
+// startup before translation runs; an empty id keeps namespace derivation.
+func SetWorkerdProjectID(id string) { workerdProjectID = id }
 
 func init() {
 	registerHTTPFilter(&workerd{})
 }
 
-// workerd is the xDS hook for compute.apoxy.dev Service routes (APO-796). When
-// the manager has published a resident socket, it injects the single static
-// resident cluster and re-points every workerd-backed route to it while stamping
-// the x-apoxy-service demux header. It is a no-op when no resident is published
-// or no route is workerd-backed, so it is safe to register unconditionally.
+// workerd is the xDS hook for compute.apoxy.dev Service routes (APO-796). For
+// every route the IR marks as workerd-backed it injects the single static
+// resident cluster and re-points the route to it while stamping the
+// x-apoxy-service demux header "<project>:<service>". It is stateless: the only
+// runtime fact it needs (the resident socket) is a fixed well-known path, and
+// the resident's dispatcher owns all revision and liveness demux via /resolve,
+// so a rollout never re-translates xDS. It is a no-op when no route is
+// workerd-backed, so it is safe to register unconditionally — the shared
+// backplane runs the same in-tree filter chain and picks it up automatically.
 type workerd struct{}
 
 var _ httpFilter = &workerd{}
@@ -90,17 +78,10 @@ func (*workerd) patchHCM(*hcmv3.HttpConnectionManager, *ir.HTTPListener) error {
 	return nil
 }
 
-// patchResources injects the single resident workerd cluster when a resident is
-// published and at least one route on this listener is workerd-backed. Idempotent
-// across listeners and re-translations.
+// patchResources injects the single resident workerd cluster when at least one
+// route on this listener is workerd-backed. Idempotent across listeners and
+// re-translations.
 func (*workerd) patchResources(tCtx *types.ResourceVersionTable, routes []*ir.HTTPRoute) error {
-	if workerdRegistry == nil {
-		return nil
-	}
-	socket := workerdRegistry.ResidentSocket()
-	if socket == "" {
-		return nil
-	}
 	needed := false
 	for _, r := range routes {
 		if r != nil && r.WorkerdService != "" {
@@ -127,7 +108,7 @@ func (*workerd) patchResources(tCtx *types.ResourceVersionTable, routes []*ir.HT
 						Endpoint: &endpointv3.Endpoint{
 							Address: &corev3.Address{
 								Address: &corev3.Address_Pipe{
-									Pipe: &corev3.Pipe{Path: socket},
+									Pipe: &corev3.Pipe{Path: workerdResidentSocketPath},
 								},
 							},
 						},
@@ -139,24 +120,17 @@ func (*workerd) patchResources(tCtx *types.ResourceVersionTable, routes []*ir.HT
 	if err := tCtx.AddXdsResource(resourcev3.ClusterType, cluster); err != nil {
 		return err
 	}
-	log.Infof("Injected workerd resident cluster %s -> %s", workerdResidentClusterName, socket)
+	log.Infof("Injected workerd resident cluster %s -> %s", workerdResidentClusterName, workerdResidentSocketPath)
 	return nil
 }
 
 // patchRoute re-points a workerd-backed route to the resident cluster and sets
 // the x-apoxy-service demux header to "<project>:<service>" (the resident's
-// dispatcher resolves the live revision). It is a no-op for non-workerd routes,
-// or when the Service has no live revision yet (the route then keeps its
-// placeholder destination and the client sees 503).
+// dispatcher resolves the live revision). The project is the static override if
+// set, else the route's namespace. It is a no-op for non-workerd routes and for
+// redirect/direct-response routes (which have no RouteAction to re-point).
 func (*workerd) patchRoute(route *routev3.Route, irRoute *ir.HTTPRoute) error {
 	if irRoute == nil || irRoute.WorkerdService == "" {
-		return nil
-	}
-	if workerdRegistry == nil || !workerdRegistry.Active() {
-		return nil
-	}
-	header, ok := workerdRegistry.DemuxHeader(irRoute.WorkerdService)
-	if !ok {
 		return nil
 	}
 	// A redirect/direct-response route has no RouteAction to re-point.
@@ -164,6 +138,14 @@ func (*workerd) patchRoute(route *routev3.Route, irRoute *ir.HTTPRoute) error {
 	if action == nil {
 		return nil
 	}
+	project := workerdProjectID
+	if project == "" {
+		project = workerdProjectFromRouteName(route.GetName())
+	}
+	if project == "" {
+		return nil
+	}
+	header := project + ":" + irRoute.WorkerdService
 	route.RequestHeadersToAdd = append(route.GetRequestHeadersToAdd(), &corev3.HeaderValueOption{
 		Header:       &corev3.HeaderValue{Key: workerdServiceHeader, Value: header},
 		AppendAction: corev3.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD,
@@ -171,4 +153,16 @@ func (*workerd) patchRoute(route *routev3.Route, irRoute *ir.HTTPRoute) error {
 	action.ClusterSpecifier = &routev3.RouteAction_Cluster{Cluster: workerdResidentClusterName}
 	log.Infof("Demuxed route %s to workerd resident (%s=%s)", route.GetName(), workerdServiceHeader, header)
 	return nil
+}
+
+// workerdProjectFromRouteName extracts the project id from an Envoy route name.
+// IR route names are "httproute/<namespace>/<name>/rule/<idx>/..." (see
+// gatewayapi.irRouteName), and on the shared backplane the HTTPRoute namespace
+// is the project id. Returns "" if the name is not a parseable httproute name.
+func workerdProjectFromRouteName(name string) string {
+	parts := strings.Split(name, "/")
+	if len(parts) < 2 || parts[0] != "httproute" {
+		return ""
+	}
+	return parts[1]
 }

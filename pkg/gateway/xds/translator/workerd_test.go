@@ -13,26 +13,13 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/gateway/xds/types"
 )
 
-// fakeWorkerdRegistry is a hand-rolled WorkerdRegistry for the hook tests.
-type fakeWorkerdRegistry struct {
-	socket string
-	demux  map[string]string // service -> "<project>:<service>" (no revision)
-}
-
-func (f *fakeWorkerdRegistry) ResidentSocket() string { return f.socket }
-func (f *fakeWorkerdRegistry) Active() bool            { return f.socket != "" }
-func (f *fakeWorkerdRegistry) DemuxHeader(service string) (string, bool) {
-	v, ok := f.demux[service]
-	return v, ok
-}
-
-// withRegistry installs reg as the process-wide workerd registry for the duration
-// of the test and restores the prior value after.
-func withRegistry(t *testing.T, reg WorkerdRegistry) {
+// withProjectID installs id as the process-wide static project override for the
+// duration of the test and restores the prior value after.
+func withProjectID(t *testing.T, id string) {
 	t.Helper()
-	prev := workerdRegistry
-	workerdRegistry = reg
-	t.Cleanup(func() { workerdRegistry = prev })
+	prev := workerdProjectID
+	workerdProjectID = id
+	t.Cleanup(func() { workerdProjectID = prev })
 }
 
 func residentClusterCount(tCtx *types.ResourceVersionTable) int {
@@ -51,39 +38,28 @@ func TestWorkerdPatchResources(t *testing.T) {
 
 	cases := []struct {
 		name      string
-		reg       WorkerdRegistry
 		routes    []*ir.HTTPRoute
 		wantCount int
 	}{
 		{
 			name:      "injects resident cluster for a workerd route",
-			reg:       &fakeWorkerdRegistry{socket: "/run/workerd/resident.sock"},
 			routes:    []*ir.HTTPRoute{plainRoute, workerdRoute},
 			wantCount: 1,
 		},
 		{
-			name:      "no resident published is a no-op",
-			reg:       &fakeWorkerdRegistry{socket: ""},
-			routes:    []*ir.HTTPRoute{workerdRoute},
-			wantCount: 0,
-		},
-		{
 			name:      "no workerd route is a no-op",
-			reg:       &fakeWorkerdRegistry{socket: "/run/workerd/resident.sock"},
 			routes:    []*ir.HTTPRoute{plainRoute},
 			wantCount: 0,
 		},
 		{
-			name:      "nil registry is a no-op",
-			reg:       nil,
-			routes:    []*ir.HTTPRoute{workerdRoute},
+			name:      "no routes is a no-op",
+			routes:    nil,
 			wantCount: 0,
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			withRegistry(t, tc.reg)
 			tCtx := new(types.ResourceVersionTable)
 			if err := (&workerd{}).patchResources(tCtx, tc.routes); err != nil {
 				t.Fatalf("patchResources: %v", err)
@@ -95,8 +71,27 @@ func TestWorkerdPatchResources(t *testing.T) {
 	}
 }
 
+func TestWorkerdPatchResourcesInjectsConstSocket(t *testing.T) {
+	tCtx := new(types.ResourceVersionTable)
+	if err := (&workerd{}).patchResources(tCtx, []*ir.HTTPRoute{{Name: "r1", WorkerdService: "echo"}}); err != nil {
+		t.Fatalf("patchResources: %v", err)
+	}
+	var cluster *clusterv3.Cluster
+	for _, c := range tCtx.GetXdsResources()[resourcev3.ClusterType] {
+		if cl, ok := c.(*clusterv3.Cluster); ok && cl.GetName() == workerdResidentClusterName {
+			cluster = cl
+		}
+	}
+	if cluster == nil {
+		t.Fatalf("resident cluster not injected")
+	}
+	got := cluster.GetLoadAssignment().GetEndpoints()[0].GetLbEndpoints()[0].GetEndpoint().GetAddress().GetPipe().GetPath()
+	if got != workerdResidentSocketPath {
+		t.Fatalf("resident cluster pipe path = %q, want %q", got, workerdResidentSocketPath)
+	}
+}
+
 func TestWorkerdPatchResourcesIdempotent(t *testing.T) {
-	withRegistry(t, &fakeWorkerdRegistry{socket: "/run/workerd/resident.sock"})
 	tCtx := new(types.ResourceVersionTable)
 	routes := []*ir.HTTPRoute{{Name: "r1", WorkerdService: "echo"}}
 	// Two listeners with workerd routes call patchResources twice; the cluster
@@ -134,14 +129,11 @@ func headerValue(route *routev3.Route, key string) (string, bool) {
 }
 
 func TestWorkerdPatchRoute(t *testing.T) {
-	const socket = "/run/workerd/resident.sock"
-
-	t.Run("re-points and sets demux header for a live workerd route", func(t *testing.T) {
-		withRegistry(t, &fakeWorkerdRegistry{
-			socket: socket,
-			demux:  map[string]string{"echo": "proj-uuid:echo"},
-		})
-		route := routeWithAction("http/default/route/rule/0/match/0", "http/default/route/rule/0")
+	t.Run("derives project from the route namespace", func(t *testing.T) {
+		// No static override: the project is the route name's namespace component
+		// (the shared-backplane path, where the HTTPRoute namespace is the project).
+		withProjectID(t, "")
+		route := routeWithAction("httproute/proj-uuid/echo/rule/0/match/0", "httproute/proj-uuid/echo/rule/0")
 		irRoute := &ir.HTTPRoute{Name: route.Name, WorkerdService: "echo"}
 		if err := (&workerd{}).patchRoute(route, irRoute); err != nil {
 			t.Fatalf("patchRoute: %v", err)
@@ -160,10 +152,24 @@ func TestWorkerdPatchRoute(t *testing.T) {
 		}
 	})
 
+	t.Run("static project override wins over the namespace", func(t *testing.T) {
+		// Single-project topologies (apoxy dev, dedicated) set the override because
+		// the HTTPRoute namespace is not the project id.
+		withProjectID(t, "static-proj")
+		route := routeWithAction("httproute/default/echo/rule/0/match/0", "httproute/default/echo/rule/0")
+		irRoute := &ir.HTTPRoute{Name: route.Name, WorkerdService: "echo"}
+		if err := (&workerd{}).patchRoute(route, irRoute); err != nil {
+			t.Fatalf("patchRoute: %v", err)
+		}
+		if v, _ := headerValue(route, workerdServiceHeader); v != "static-proj:echo" {
+			t.Fatalf("%s = %q, want static-proj:echo", workerdServiceHeader, v)
+		}
+	})
+
 	t.Run("non-workerd route is untouched", func(t *testing.T) {
-		withRegistry(t, &fakeWorkerdRegistry{socket: socket, demux: map[string]string{"echo": "proj:echo"}})
-		route := routeWithAction("r", "original-cluster")
-		if err := (&workerd{}).patchRoute(route, &ir.HTTPRoute{Name: "r"}); err != nil {
+		withProjectID(t, "static-proj")
+		route := routeWithAction("httproute/default/r/rule/0", "original-cluster")
+		if err := (&workerd{}).patchRoute(route, &ir.HTTPRoute{Name: route.Name}); err != nil {
 			t.Fatalf("patchRoute: %v", err)
 		}
 		if got := route.GetRoute().GetCluster(); got != "original-cluster" {
@@ -174,9 +180,9 @@ func TestWorkerdPatchRoute(t *testing.T) {
 		}
 	})
 
-	t.Run("workerd route with no live revision keeps its placeholder", func(t *testing.T) {
-		withRegistry(t, &fakeWorkerdRegistry{socket: socket, demux: map[string]string{}})
-		route := routeWithAction("r", "placeholder-cluster")
+	t.Run("unparseable route name with no override is a no-op", func(t *testing.T) {
+		withProjectID(t, "")
+		route := routeWithAction("not-an-httproute", "placeholder-cluster")
 		if err := (&workerd{}).patchRoute(route, &ir.HTTPRoute{Name: "r", WorkerdService: "echo"}); err != nil {
 			t.Fatalf("patchRoute: %v", err)
 		}
@@ -184,18 +190,21 @@ func TestWorkerdPatchRoute(t *testing.T) {
 			t.Fatalf("route cluster = %q, want placeholder-cluster", got)
 		}
 		if _, ok := headerValue(route, workerdServiceHeader); ok {
-			t.Fatalf("unexpected %s header when no live revision", workerdServiceHeader)
+			t.Fatalf("unexpected %s header when project is unresolved", workerdServiceHeader)
 		}
 	})
 
-	t.Run("inactive registry is a no-op", func(t *testing.T) {
-		withRegistry(t, &fakeWorkerdRegistry{socket: "", demux: map[string]string{"echo": "proj:echo"}})
-		route := routeWithAction("r", "placeholder-cluster")
-		if err := (&workerd{}).patchRoute(route, &ir.HTTPRoute{Name: "r", WorkerdService: "echo"}); err != nil {
+	t.Run("redirect route with no action is a no-op", func(t *testing.T) {
+		withProjectID(t, "static-proj")
+		route := &routev3.Route{
+			Name:   "httproute/default/echo/rule/0/match/0",
+			Action: &routev3.Route_Redirect{Redirect: &routev3.RedirectAction{}},
+		}
+		if err := (&workerd{}).patchRoute(route, &ir.HTTPRoute{Name: route.Name, WorkerdService: "echo"}); err != nil {
 			t.Fatalf("patchRoute: %v", err)
 		}
-		if got := route.GetRoute().GetCluster(); got != "placeholder-cluster" {
-			t.Fatalf("route cluster = %q, want placeholder-cluster", got)
+		if _, ok := headerValue(route, workerdServiceHeader); ok {
+			t.Fatalf("unexpected %s header on redirect route", workerdServiceHeader)
 		}
 	})
 }

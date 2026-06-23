@@ -23,43 +23,36 @@ var _ reconcile.Reconciler = &ResidentReconciler{}
 // runs inside cmd/workerd-manager next to the runsc host, 1:1 with a backplane
 // node. It watches ServiceRevisions, keeps the single resident workerd up, warms
 // each revision's WorkerDefinition (validating the bundle is pullable and the
-// modules build), and publishes THIS node's serveable routing state to the
-// apiserver/backplane over the private channel.
+// modules build), and records THIS node's serveable revision per service so the
+// resident's dispatcher can resolve it via /resolve.
 //
 // It is strictly READ-ONLY on the Service/ServiceRevision API objects: with
 // dozens-to-hundreds of revisions across N nodes, a data-plane writer on a shared,
 // cluster-scoped object is a last-writer-wins race and write amplification. So
-// readiness is NOT recorded on the Revision; it is reported per-node on the
-// publish channel, where it belongs (this node knows what IT can serve).
+// readiness is NOT recorded on the Revision; the resident resolves what it can
+// serve from this node's local warm state.
 //
 // Request routing is PULL-only in M1: the dispatcher fetches a definition on its
 // first request for a revision. "Readiness" therefore means "the resident is up
-// AND this node has warmed this revision", and the node advertises the newest
+// AND this node has warmed this revision", and the node serves the newest
 // revision it has warmed per service — so it keeps serving the PREVIOUS revision
 // until it has pulled a new one (make-before-break, the interim promotion model).
 type ResidentReconciler struct {
 	client.Client
-	resident       host.ResidentRuntime
-	store          *Store
-	publisher      Publisher
-	residentSocket string
-	nodeID         string
-	projectID      string
+	resident  host.ResidentRuntime
+	store     *Store
+	projectID string
 }
 
-// NewResidentReconciler returns a resident reconciler driving resident + store and
-// publishing this node's serveable routing to publisher (nil disables publishing).
-// nodeID is the backplane/replica identity the receiver keys the published state
-// by; residentSocket is the host UDS the resident dispatcher listens on.
-func NewResidentReconciler(c client.Client, resident host.ResidentRuntime, store *Store, publisher Publisher, residentSocket, nodeID, projectID string) *ResidentReconciler {
+// NewResidentReconciler returns a resident reconciler driving resident + store.
+// The demux it computes per reconcile is recorded on the store for the control
+// server's /resolve handler; nothing is pushed off-node.
+func NewResidentReconciler(c client.Client, resident host.ResidentRuntime, store *Store, projectID string) *ResidentReconciler {
 	return &ResidentReconciler{
-		Client:         c,
-		resident:       resident,
-		store:          store,
-		publisher:      publisher,
-		residentSocket: residentSocket,
-		nodeID:         nodeID,
-		projectID:      projectID,
+		Client:    c,
+		resident:  resident,
+		store:     store,
+		projectID: projectID,
 	}
 }
 
@@ -75,7 +68,7 @@ func (r *ResidentReconciler) Reconcile(ctx context.Context, req reconcile.Reques
 			// stops advertising it; the store is pruned to the surviving set inside
 			// republish (no finalizer needed — the cache is non-authoritative and
 			// the workerd isolate idles out on its own).
-			return ctrl.Result{}, r.republish(ctx)
+			return ctrl.Result{}, r.refreshDemux(ctx)
 		}
 		return ctrl.Result{}, err
 	}
@@ -85,11 +78,11 @@ func (r *ResidentReconciler) Reconcile(ctx context.Context, req reconcile.Reques
 	// Terminating or unroutable (no service label): nothing to warm; just refresh
 	// the published view (which drops the revision from this node's serveable set).
 	if !rev.DeletionTimestamp.IsZero() {
-		return ctrl.Result{}, r.republish(ctx)
+		return ctrl.Result{}, r.refreshDemux(ctx)
 	}
 	if idErr != nil {
 		log.Info("Skipping unroutable revision (no service label)", "error", idErr.Error())
-		return ctrl.Result{}, r.republish(ctx)
+		return ctrl.Result{}, r.refreshDemux(ctx)
 	}
 
 	// Keep the single resident up (idempotent; self-heals if it died).
@@ -103,23 +96,23 @@ func (r *ResidentReconciler) Reconcile(ctx context.Context, req reconcile.Reques
 	// advertising whatever it has already warmed (the previous revision) and retries.
 	if _, err := r.store.Warm(ctx, id); err != nil {
 		log.Error(err, "Worker definition not resolvable; keeping previous revision live")
-		if perr := r.republish(ctx); perr != nil {
+		if perr := r.refreshDemux(ctx); perr != nil {
 			return ctrl.Result{}, perr
 		}
 		return ctrl.Result{RequeueAfter: requeueAwaitBuild}, nil
 	}
 
 	// Warmed: advertise this node's now-current serveable set.
-	return ctrl.Result{}, r.republish(ctx)
+	return ctrl.Result{}, r.refreshDemux(ctx)
 }
 
-// republish computes this node's serveable demux from local warm state, records it
-// for the control server's /resolve handler, and pushes it (with the resident
-// socket) to the receiver. For each service it advertises an explicit
-// spec.liveRevision pin once warmed, else the NEWEST revision this node has
-// warmed — so a node serves the previous revision until it pulls the new one. It
-// also prunes the store to the surviving revision set. No API object is written.
-func (r *ResidentReconciler) republish(ctx context.Context) error {
+// refreshDemux computes this node's serveable demux from local warm state and
+// records it for the control server's /resolve handler. For each service it
+// selects an explicit spec.liveRevision pin once warmed, else the NEWEST revision
+// this node has warmed — so a node serves the previous revision until it pulls the
+// new one. It also prunes the store to the surviving revision set. No API object
+// is written and nothing leaves the node.
+func (r *ResidentReconciler) refreshDemux(ctx context.Context) error {
 	revs := &computev1alpha1.ServiceRevisionList{}
 	if err := r.List(ctx, revs); err != nil {
 		return fmt.Errorf("listing revisions: %w", err)
@@ -172,19 +165,9 @@ func (r *ResidentReconciler) republish(ctx context.Context) error {
 	}
 
 	// Record the selection so the control server's /resolve handler can map a
-	// service to its live revision id for the dispatcher. This is independent of
-	// publishing: even with no backplane to publish to, the resident still serves
-	// requests and must resolve them.
+	// service to its live revision id for the dispatcher.
 	r.store.setDemux(demux)
-
-	if r.publisher == nil {
-		return nil
-	}
-	return r.publisher.Publish(ctx, PublishSnapshot{
-		NodeID:         r.nodeID,
-		ResidentSocket: r.residentSocket,
-		Demux:          demux,
-	})
+	return nil
 }
 
 // SetupWithManager registers the reconciler with the manager.

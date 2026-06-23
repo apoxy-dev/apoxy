@@ -46,9 +46,7 @@ func Run() error {
 		controlAddr   = fs.String("control_addr", "127.0.0.1:2024", "host loopback TCP address the control channel listens on (the Sentry control forwarder dials it; TCP because the plugin seccomp blocks host AF_UNIX)")
 		controlFwd    = fs.String("control_forward_addr", "", "in-sandbox TCP address the dispatcher dials for the control channel (default 127.0.0.2:80)")
 		kubeconfig    = fs.String("kubeconfig", "", "path to the project apiserver kubeconfig (in-cluster config if empty)")
-		backplaneAddr = fs.String("backplane_publish_addr", "", "host:port of the private workerd publish channel this node reports its serveable routing to (the apiserver in dev, the backplane in prod); empty disables publishing")
 		projectID     = fs.String("project_id", "", "the project this manager serves; scopes the demux id so the shared resident never collides two projects' services (required)")
-		nodeID        = fs.String("node_id", "", "this backplane node's identity (its --replica / Proxy replica name); the receiver keys published readiness by node so two backplanes never collide (empty = the singleton node, valid in dedicated/dev)")
 		devMode       = fs.Bool("dev", false, "dev mode: build an insecure apiserver client to --apiserver_host instead of using kubeconfig/in-cluster config")
 		apiserverHost = fs.String("apiserver_host", "localhost:8443", "apiserver host:port for --dev mode (reached over the docker network by name when co-located with the backplane)")
 	)
@@ -133,14 +131,10 @@ func Run() error {
 	}()
 
 	// The resident reconciler is read-only on the API: it keeps the resident up,
-	// warms each revision, and publishes THIS node's serveable routing (resident
-	// socket + the revision it serves per service) over the private channel. A nil
-	// publisher (no --backplane_publish_addr) disables publishing.
-	var publisher Publisher
-	if *backplaneAddr != "" {
-		publisher = NewHTTPPublisher(*backplaneAddr)
-	}
-	if err := NewResidentReconciler(mgr.GetClient(), resident, store, publisher, residentInst.InboundSocket, *nodeID, *projectID).SetupWithManager(ctx, mgr); err != nil {
+	// warms each revision, and records THIS node's serveable revision per service
+	// on the store for the dispatcher's /resolve. Nothing is pushed off-node — the
+	// xDS demux is stateless and the resident owns revision resolution.
+	if err := NewResidentReconciler(mgr.GetClient(), resident, store, *projectID).SetupWithManager(ctx, mgr); err != nil {
 		return fmt.Errorf("setting up resident reconciler: %w", err)
 	}
 

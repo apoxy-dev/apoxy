@@ -90,9 +90,8 @@ func (d *WorkerdManagerDockerDriver) Start(
 		"--privileged",
 		// Join the co-located BACKPLANE's network namespace (1:1 backplane↔resident
 		// coupling): the backplane's Envoy dials the resident UDS, and the manager
-		// reaches the apiserver (kube-API + routing publish) over the docker network
-		// by name. The caller (dev.go) supplies --apiserver_host and
-		// --backplane_publish_addr accordingly.
+		// reaches the apiserver (kube-API) over the docker network by name. The
+		// caller (dev.go) supplies --apiserver_host accordingly.
 		"--network", "container:"+setOpts.NetworkContainer,
 	)
 	if setOpts.WorkerdSocketVolume != "" {
@@ -106,8 +105,8 @@ func (d *WorkerdManagerDockerDriver) Start(
 		// dev.go, reached over the docker network by name).
 		"--dev=true",
 	}...)
-	// The caller supplies --apiserver_host, --backplane_publish_addr, --node_id and
-	// --workerd_image (topology-specific), keeping this driver topology-agnostic.
+	// The caller supplies --apiserver_host and --workerd_image (topology-specific),
+	// keeping this driver topology-agnostic.
 	cmd.Args = append(cmd.Args, setOpts.Args...)
 
 	log.Debugf("Running command: %v", cmd.String())
