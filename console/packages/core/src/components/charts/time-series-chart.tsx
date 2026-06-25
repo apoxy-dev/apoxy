@@ -1,9 +1,9 @@
+import { useState } from 'react'
 import type { MouseEvent as RMouseEvent, TouchEvent as RTouchEvent } from 'react'
 import { Group } from '@visx/group'
 import { ParentSize } from '@visx/responsive'
 import { scaleLinear } from '@visx/scale'
 import { AreaClosed, Bar, Line, LinePath } from '@visx/shape'
-import { useTooltip, useTooltipInPortal } from '@visx/tooltip'
 import { cn } from '../../lib/cn'
 
 export interface ChartSeries {
@@ -41,6 +41,8 @@ const MARGIN = { top: 16, right: 16, bottom: 28, left: 52 }
 // secondary axis gets more, as it's usually a sparse, spiky series (errors).
 const PRIMARY_HEADROOM = 1.12
 const SECONDARY_HEADROOM = 1.4
+// Gap between the cursor and the tooltip box, in chart (user) units.
+const TOOLTIP_GAP = 12
 
 function defaultFormat(n: number): string {
   const abs = Math.abs(n)
@@ -79,9 +81,12 @@ interface HoverMarker {
   value: number
   y: number
 }
-interface HoverDatum {
+interface HoverState {
   index: number
+  /** Crosshair x, in inner-group user units. */
   x: number
+  /** Pointer y, in svg-root user units (clamped to the plot area). */
+  pointerY: number
   markers: HoverMarker[]
 }
 
@@ -119,55 +124,50 @@ function Chart({
     (s.axis ?? 'primary') === 'secondary' ? ySecondary : yPrimary
   const yTicks = [0, 0.25, 0.5, 0.75, 1].map((f) => f * maxPrimary)
 
-  const {
-    tooltipData,
-    tooltipLeft,
-    tooltipTop,
-    tooltipOpen,
-    showTooltip,
-    hideTooltip,
-  } = useTooltip<HoverDatum>()
-  // The tooltip lives in a portal at the document root with bounds detection, so
-  // a high peak can't clip it (it flips near the viewport edge) and its position
-  // is computed off the live container rect, immune to any svg scaling.
-  const { containerRef, TooltipInPortal } = useTooltipInPortal({
-    detectBounds: true,
-    scroll: true,
-  })
+  const [hover, setHover] = useState<HoverState | null>(null)
 
-  // Map the pointer to a bucket explicitly off the svg's client rect, scaling
-  // CSS px -> coordinate units, so the crosshair tracks the cursor even when the
-  // svg's rendered width differs from its `width` (the thing that desyncs it).
+  // Map the pointer to a bucket using the svg's screen CTM, which folds in any
+  // ancestor transform OR CSS `zoom` (a real case here: an app-root `zoom` makes
+  // getBoundingClientRect disagree with the layout box). createSVGPoint +
+  // matrixTransform(inverse) lands us in the svg's own user units regardless.
   const onMove = (
     e: RMouseEvent<SVGRectElement> | RTouchEvent<SVGRectElement>,
   ) => {
     const svg = e.currentTarget.ownerSVGElement
-    if (!svg) return
-    const rect = svg.getBoundingClientRect()
+    const ctm = svg?.getScreenCTM()
+    if (!svg || !ctm) return
     const touch = 'touches' in e ? e.touches[0] : undefined
-    const clientX = touch ? touch.clientX : (e as RMouseEvent).clientX
-    const clientY = touch ? touch.clientY : (e as RMouseEvent).clientY
-    const scaleX = rect.width ? width / rect.width : 1
-    const userX = (clientX - rect.left) * scaleX
-    let idx = Math.round(xScale.invert(userX - m.left))
+    const pt = svg.createSVGPoint()
+    pt.x = touch ? touch.clientX : (e as RMouseEvent).clientX
+    pt.y = touch ? touch.clientY : (e as RMouseEvent).clientY
+    const loc = pt.matrixTransform(ctm.inverse())
+    // `loc` is in svg-root units; the plot is offset by the margin (the Group).
+    let idx = Math.round(xScale.invert(loc.x - m.left))
     if (idx < 0) idx = 0
     else if (idx > n - 1) idx = n - 1
     const markers: HoverMarker[] = series.map((s) => {
       const value = s.values[idx] ?? 0
       return { key: s.key, color: s.color, value, y: yScaleOf(s)(value) }
     })
-    showTooltip({
-      tooltipData: { index: idx, x: xScale(idx), markers },
-      // CSS px relative to the svg container (the portal anchor): the bucket's
-      // x, the cursor's y. Dividing by scaleX converts coordinate units -> px.
-      tooltipLeft: (m.left + xScale(idx)) / scaleX,
-      tooltipTop: clientY - rect.top,
-    })
+    const pointerY = Math.min(Math.max(loc.y, m.top), m.top + innerH)
+    setHover({ index: idx, x: xScale(idx), pointerY, markers })
   }
+  const onLeave = () => setHover(null)
+
+  // Tooltip box position + flip. It lives inside the ParentSize wrapper (same
+  // user-unit space as the svg, no portal, no zoom-boundary crossing), so its
+  // left/top are just the crosshair x and pointer y. Flip it to whichever side
+  // of the cursor has room so a high or right-edge point can't clip it.
+  const anchorLeft = m.left + (hover?.x ?? 0)
+  const anchorTop = hover?.pointerY ?? 0
+  const flipLeft = (hover?.x ?? 0) > innerW / 2
+  const flipUp = (hover ? hover.pointerY - m.top : 0) > innerH / 2
+  const tx = flipLeft ? `calc(-100% - ${TOOLTIP_GAP}px)` : `${TOOLTIP_GAP}px`
+  const ty = flipUp ? `calc(-100% - ${TOOLTIP_GAP}px)` : `${TOOLTIP_GAP}px`
 
   return (
     <>
-      <svg ref={containerRef} width={width} height={height}>
+      <svg width={width} height={height}>
         <Group left={m.left} top={m.top}>
           {yTicks.map((t, i) => (
             <Group key={i}>
@@ -233,21 +233,21 @@ function Chart({
               {lab}
             </text>
           ))}
-          {tooltipOpen && tooltipData && (
+          {hover && (
             <Group>
               <Line
-                from={{ x: tooltipData.x, y: 0 }}
-                to={{ x: tooltipData.x, y: innerH }}
+                from={{ x: hover.x, y: 0 }}
+                to={{ x: hover.x, y: innerH }}
                 stroke="var(--text-muted)"
                 strokeWidth={1}
                 strokeDasharray="3,3"
                 pointerEvents="none"
               />
-              {tooltipData.markers.map((mk, i) =>
+              {hover.markers.map((mk, i) =>
                 i === 0 || mk.value > 0 ? (
                   <circle
                     key={mk.key}
-                    cx={tooltipData.x}
+                    cx={hover.x}
                     cy={mk.y}
                     r={3}
                     fill={mk.color}
@@ -265,24 +265,26 @@ function Chart({
             fill="transparent"
             onMouseMove={onMove}
             onTouchMove={onMove}
-            onMouseLeave={hideTooltip}
-            onTouchEnd={hideTooltip}
+            onMouseLeave={onLeave}
+            onTouchEnd={onLeave}
           />
         </Group>
       </svg>
-      {tooltipOpen && tooltipData && (
-        <TooltipInPortal
-          top={tooltipTop}
-          left={tooltipLeft}
-          unstyled
-          className="pointer-events-none whitespace-nowrap rounded-none border border-[color:var(--border-default)] bg-[var(--apx-white)] px-[10px] py-[8px] text-[11px] leading-[1.6] text-[color:var(--text-primary)] shadow-[0_6px_18px_rgba(0,0,0,0.12)] [font-family:var(--font-mono)]"
+      {hover && (
+        <div
+          className="pointer-events-none absolute z-10 whitespace-nowrap rounded-none border border-[color:var(--border-default)] bg-[var(--apx-white)] px-[10px] py-[8px] text-[11px] leading-[1.6] text-[color:var(--text-primary)] shadow-[0_6px_18px_rgba(0,0,0,0.12)] [font-family:var(--font-mono)]"
+          style={{
+            left: anchorLeft,
+            top: anchorTop,
+            transform: `translate(${tx}, ${ty})`,
+          }}
         >
           {formatPoint && (
             <div className="mb-[4px] text-[color:var(--text-muted)]">
-              {formatPoint(tooltipData.index)}
+              {formatPoint(hover.index)}
             </div>
           )}
-          {tooltipData.markers.map((mk) => (
+          {hover.markers.map((mk) => (
             <div key={mk.key} className="flex items-center gap-[7px]">
               <span
                 className="h-[9px] w-[9px] flex-none rounded-none"
@@ -291,7 +293,7 @@ function Chart({
               {formatValue(mk.value)} {mk.key}
             </div>
           ))}
-        </TooltipInPortal>
+        </div>
       )}
     </>
   )
