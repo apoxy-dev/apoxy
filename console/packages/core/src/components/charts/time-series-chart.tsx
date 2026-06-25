@@ -52,6 +52,22 @@ function defaultFormat(n: number): string {
 }
 
 /**
+ * Cumulative CSS `zoom` from `el` up to the document root. getComputedStyle
+ * reports each element's OWN specified zoom (not the inherited/cumulative value)
+ * in both Blink and WebKit, so the product over the ancestor chain is the true
+ * effective zoom. We need this to undo CSS `zoom` when mapping a pointer into the
+ * chart's user coordinates (see onMove).
+ */
+function cumulativeZoom(el: Element | null): number {
+  let z = 1
+  for (let n: Element | null = el; n; n = n.parentElement) {
+    const cz = parseFloat(getComputedStyle(n).getPropertyValue('zoom'))
+    if (cz && !Number.isNaN(cz)) z *= cz
+  }
+  return z
+}
+
+/**
  * A measured (ParentSize, real-pixel) line/area chart with an optional second
  * y-axis and a hover crosshair + tooltip. Deliberately not a scaled viewBox, so
  * axis text and strokes stay crisp at any width or page zoom. Colors come from
@@ -132,25 +148,41 @@ function Chart({
 
   const [hover, setHover] = useState<HoverState | null>(null)
 
-  // Map the pointer to a bucket using the svg's screen CTM, which folds in any
-  // ancestor transform OR CSS `zoom` (a real case here: an app-root `zoom` makes
-  // getBoundingClientRect disagree with the layout box). createSVGPoint +
-  // matrixTransform(inverse) lands us in the svg's own user units regardless.
+  // Map the pointer to the chart's user coordinates. We deliberately do NOT use
+  // svg.getScreenCTM(): under an ancestor CSS `zoom` (the app shell uses
+  // `zoom: 0.9`) the engines disagree and getScreenCTM is wrong in WebKit. In
+  // Blink, getScreenCTM and getBoundingClientRect both fold the zoom in (painted
+  // space); in WebKit, getScreenCTM.a stays 1 and getBoundingClientRect returns
+  // the UNZOOMED layout box -- yet mouse clientX is always painted viewport px.
+  // Mapping through getScreenCTM therefore lands the crosshair ~zoom% left of the
+  // cursor in Safari, worsening with x. Instead map purely from painted geometry:
+  // the svg has no viewBox, so 1 user unit == 1 layout px and the painted scale is
+  // exactly the cumulative CSS zoom Z (zoom origin is the viewport, since the shell
+  // pins #root to inset:0). Recover the svg's painted top-left from its bounding
+  // rect -- already painted in Blink; scale by Z in WebKit, detected by whether the
+  // rect width still carries the zoom -- then invert: user = (client - painted) / Z.
   const onMove = (
     e: RMouseEvent<SVGRectElement> | RTouchEvent<SVGRectElement>,
   ) => {
     const svg = e.currentTarget.ownerSVGElement
-    const ctm = svg?.getScreenCTM()
-    if (!svg || !ctm) return
+    if (!svg) return
     const touch = 'touches' in e ? e.touches[0] : undefined
-    const pt = svg.createSVGPoint()
-    pt.x = touch ? touch.clientX : (e as RMouseEvent).clientX
-    pt.y = touch ? touch.clientY : (e as RMouseEvent).clientY
-    const loc = pt.matrixTransform(ctm.inverse())
-    // `loc` is in svg-root units; the plot is offset by the margin (the Group).
-    // The crosshair LINE follows the exact cursor x (continuous), clamped to the
-    // plot; the dots + tooltip snap to the nearest bucket `idx`.
-    const localX = loc.x - m.left
+    const clientX = touch ? touch.clientX : (e as RMouseEvent).clientX
+    const clientY = touch ? touch.clientY : (e as RMouseEvent).clientY
+    const rect = svg.getBoundingClientRect()
+    const z = cumulativeZoom(svg) || 1
+    // Is the bounding rect already in painted space (Blink) or the unzoomed layout
+    // box (WebKit)? The rect width is either width*z (painted) or width (unzoomed).
+    const rectIsPainted =
+      Math.abs(rect.width - width * z) <= Math.abs(rect.width - width)
+    const paintedLeft = rectIsPainted ? rect.left : rect.left * z
+    const paintedTop = rectIsPainted ? rect.top : rect.top * z
+    const userX = (clientX - paintedLeft) / z
+    const userY = (clientY - paintedTop) / z
+    // `userX/userY` are in svg-root units; the plot is offset by the margin (the
+    // Group). The crosshair LINE follows the exact cursor x (continuous), clamped
+    // to the plot; the dots + tooltip snap to the nearest bucket `idx`.
+    const localX = userX - m.left
     const lineX = Math.min(Math.max(localX, 0), innerW)
     let idx = Math.round(xScale.invert(localX))
     if (idx < 0) idx = 0
@@ -159,7 +191,7 @@ function Chart({
       const value = s.values[idx] ?? 0
       return { key: s.key, color: s.color, value, y: yScaleOf(s)(value) }
     })
-    const pointerY = Math.min(Math.max(loc.y, m.top), m.top + innerH)
+    const pointerY = Math.min(Math.max(userY, m.top), m.top + innerH)
     setHover({ index: idx, lineX, pointerY, markers })
   }
   const onLeave = () => setHover(null)
