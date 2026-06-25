@@ -82,9 +82,15 @@ interface HoverMarker {
   y: number
 }
 interface HoverState {
+  /** Nearest bucket index — drives the dots and the tooltip values. */
   index: number
-  /** Crosshair x, in inner-group user units. */
-  x: number
+  /**
+   * Crosshair line x, in inner-group user units: the EXACT cursor position, not
+   * the snapped bucket. The line must sit under the cursor (snapping it to the
+   * bucket center is what read as "doesn't align with the cursor"); only the
+   * dots + tooltip snap to the nearest data point.
+   */
+  lineX: number
   /** Pointer y, in svg-root user units (clamped to the plot area). */
   pointerY: number
   markers: HoverMarker[]
@@ -142,7 +148,11 @@ function Chart({
     pt.y = touch ? touch.clientY : (e as RMouseEvent).clientY
     const loc = pt.matrixTransform(ctm.inverse())
     // `loc` is in svg-root units; the plot is offset by the margin (the Group).
-    let idx = Math.round(xScale.invert(loc.x - m.left))
+    // The crosshair LINE follows the exact cursor x (continuous), clamped to the
+    // plot; the dots + tooltip snap to the nearest bucket `idx`.
+    const localX = loc.x - m.left
+    const lineX = Math.min(Math.max(localX, 0), innerW)
+    let idx = Math.round(xScale.invert(localX))
     if (idx < 0) idx = 0
     else if (idx > n - 1) idx = n - 1
     const markers: HoverMarker[] = series.map((s) => {
@@ -150,17 +160,17 @@ function Chart({
       return { key: s.key, color: s.color, value, y: yScaleOf(s)(value) }
     })
     const pointerY = Math.min(Math.max(loc.y, m.top), m.top + innerH)
-    setHover({ index: idx, x: xScale(idx), pointerY, markers })
+    setHover({ index: idx, lineX, pointerY, markers })
   }
   const onLeave = () => setHover(null)
 
   // Tooltip box position + flip. It lives inside the ParentSize wrapper (same
   // user-unit space as the svg, no portal, no zoom-boundary crossing), so its
-  // left/top are just the crosshair x and pointer y. Flip it to whichever side
-  // of the cursor has room so a high or right-edge point can't clip it.
-  const anchorLeft = m.left + (hover?.x ?? 0)
+  // left/top are just the cursor x and pointer y. Flip it to whichever side of
+  // the cursor has room so a high or right-edge point can't clip it.
+  const anchorLeft = m.left + (hover?.lineX ?? 0)
   const anchorTop = hover?.pointerY ?? 0
-  const flipLeft = (hover?.x ?? 0) > innerW / 2
+  const flipLeft = (hover?.lineX ?? 0) > innerW / 2
   const flipUp = (hover ? hover.pointerY - m.top : 0) > innerH / 2
   const tx = flipLeft ? `calc(-100% - ${TOOLTIP_GAP}px)` : `${TOOLTIP_GAP}px`
   const ty = flipUp ? `calc(-100% - ${TOOLTIP_GAP}px)` : `${TOOLTIP_GAP}px`
@@ -236,8 +246,8 @@ function Chart({
           {hover && (
             <Group>
               <Line
-                from={{ x: hover.x, y: 0 }}
-                to={{ x: hover.x, y: innerH }}
+                from={{ x: hover.lineX, y: 0 }}
+                to={{ x: hover.lineX, y: innerH }}
                 stroke="var(--text-muted)"
                 strokeWidth={1}
                 strokeDasharray="3,3"
@@ -247,7 +257,7 @@ function Chart({
                 i === 0 || mk.value > 0 ? (
                   <circle
                     key={mk.key}
-                    cx={hover.x}
+                    cx={xScale(hover.index)}
                     cy={mk.y}
                     r={3}
                     fill={mk.color}
