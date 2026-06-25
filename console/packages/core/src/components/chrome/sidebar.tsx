@@ -14,10 +14,20 @@ import { cn } from '../../lib/cn'
 import { useLink } from './link-context'
 import type { SidebarModel } from '../../registry/nav'
 
+/** A standalone rail link that isn't tied to a resource kind (e.g. an Overview
+ *  / home dashboard), rendered above the grouped resource nav. */
+export interface SidebarLink {
+  to: string
+  label: string
+  icon?: ReactNode
+}
+
 export interface SidebarProps {
   model: SidebarModel
   /** Slug (`/proxies`) of the active item, for highlight + aria-current. */
   activePath?: string
+  /** A standalone link pinned above the grouped nav (e.g. an Overview/home). */
+  home?: SidebarLink
   /** Render the rail in its 68px icon-only state. */
   collapsed?: boolean
   /** Toggle expand/collapse; the toggle button only renders when provided. */
@@ -41,6 +51,7 @@ const DefaultToggleGlyph = (
 export function Sidebar({
   model,
   activePath,
+  home,
   collapsed = false,
   onToggleCollapsed,
   toggleIcon,
@@ -83,6 +94,32 @@ export function Sidebar({
       {header}
 
       <nav aria-label="Primary" className="flex min-h-0 flex-1 flex-col gap-[1px] overflow-y-auto">
+        {home && (
+          <Link
+            to={home.to}
+            aria-current={activePath === home.to ? 'page' : undefined}
+            aria-label={collapsed ? home.label : undefined}
+            title={collapsed ? home.label : undefined}
+            className={cn(
+              'flex items-center gap-[10px] rounded-none py-[8px] text-[length:var(--t-body-sm)] font-medium no-underline transition-colors',
+              'hover:bg-[color:var(--rail-hover)] hover:text-[color:var(--rail-text)]',
+              collapsed ? 'justify-center px-0 py-[9px]' : 'px-[10px]',
+              activePath === home.to
+                ? 'bg-[color:var(--rail-hover)] text-[color:var(--rail-text)]'
+                : 'text-[color:var(--rail-text-muted)]',
+            )}
+          >
+            {home.icon && (
+              <span
+                aria-hidden="true"
+                className="flex h-4 w-4 flex-none items-center justify-center opacity-85"
+              >
+                {home.icon}
+              </span>
+            )}
+            {!collapsed && <span className="min-w-0 truncate">{home.label}</span>}
+          </Link>
+        )}
         {model.groups.map((group, groupIndex) => (
           <div key={group.name} className="flex flex-col gap-[1px]">
             {collapsed ? (

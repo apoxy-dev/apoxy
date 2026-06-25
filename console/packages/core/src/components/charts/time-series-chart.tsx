@@ -1,10 +1,9 @@
 import type { MouseEvent as RMouseEvent, TouchEvent as RTouchEvent } from 'react'
-import { localPoint } from '@visx/event'
 import { Group } from '@visx/group'
 import { ParentSize } from '@visx/responsive'
 import { scaleLinear } from '@visx/scale'
 import { AreaClosed, Bar, Line, LinePath } from '@visx/shape'
-import { useTooltip } from '@visx/tooltip'
+import { useTooltip, useTooltipInPortal } from '@visx/tooltip'
 import { cn } from '../../lib/cn'
 
 export interface ChartSeries {
@@ -128,13 +127,29 @@ function Chart({
     showTooltip,
     hideTooltip,
   } = useTooltip<HoverDatum>()
+  // The tooltip lives in a portal at the document root with bounds detection, so
+  // a high peak can't clip it (it flips near the viewport edge) and its position
+  // is computed off the live container rect, immune to any svg scaling.
+  const { containerRef, TooltipInPortal } = useTooltipInPortal({
+    detectBounds: true,
+    scroll: true,
+  })
 
+  // Map the pointer to a bucket explicitly off the svg's client rect, scaling
+  // CSS px -> coordinate units, so the crosshair tracks the cursor even when the
+  // svg's rendered width differs from its `width` (the thing that desyncs it).
   const onMove = (
     e: RMouseEvent<SVGRectElement> | RTouchEvent<SVGRectElement>,
   ) => {
-    const p = localPoint(e)
-    if (!p) return
-    let idx = Math.round(xScale.invert(p.x - m.left))
+    const svg = e.currentTarget.ownerSVGElement
+    if (!svg) return
+    const rect = svg.getBoundingClientRect()
+    const touch = 'touches' in e ? e.touches[0] : undefined
+    const clientX = touch ? touch.clientX : (e as RMouseEvent).clientX
+    const clientY = touch ? touch.clientY : (e as RMouseEvent).clientY
+    const scaleX = rect.width ? width / rect.width : 1
+    const userX = (clientX - rect.left) * scaleX
+    let idx = Math.round(xScale.invert(userX - m.left))
     if (idx < 0) idx = 0
     else if (idx > n - 1) idx = n - 1
     const markers: HoverMarker[] = series.map((s) => {
@@ -143,14 +158,16 @@ function Chart({
     })
     showTooltip({
       tooltipData: { index: idx, x: xScale(idx), markers },
-      tooltipLeft: m.left + xScale(idx),
-      tooltipTop: m.top + (markers[0]?.y ?? 0),
+      // CSS px relative to the svg container (the portal anchor): the bucket's
+      // x, the cursor's y. Dividing by scaleX converts coordinate units -> px.
+      tooltipLeft: (m.left + xScale(idx)) / scaleX,
+      tooltipTop: clientY - rect.top,
     })
   }
 
   return (
     <>
-      <svg width={width} height={height}>
+      <svg ref={containerRef} width={width} height={height}>
         <Group left={m.left} top={m.top}>
           {yTicks.map((t, i) => (
             <Group key={i}>
@@ -221,7 +238,8 @@ function Chart({
               <Line
                 from={{ x: tooltipData.x, y: 0 }}
                 to={{ x: tooltipData.x, y: innerH }}
-                stroke="var(--border-default)"
+                stroke="var(--text-muted)"
+                strokeWidth={1}
                 strokeDasharray="3,3"
                 pointerEvents="none"
               />
@@ -253,9 +271,11 @@ function Chart({
         </Group>
       </svg>
       {tooltipOpen && tooltipData && (
-        <div
-          className="pointer-events-none absolute z-10 -translate-x-1/2 -translate-y-full whitespace-nowrap rounded-none border border-[color:var(--border-default)] bg-[var(--apx-white)] px-[10px] py-[8px] text-[11px] leading-[1.6] text-[color:var(--text-primary)] shadow-[0_6px_18px_rgba(0,0,0,0.12)] [font-family:var(--font-mono)]"
-          style={{ left: tooltipLeft, top: (tooltipTop ?? 0) - 10 }}
+        <TooltipInPortal
+          top={tooltipTop}
+          left={tooltipLeft}
+          unstyled
+          className="pointer-events-none whitespace-nowrap rounded-none border border-[color:var(--border-default)] bg-[var(--apx-white)] px-[10px] py-[8px] text-[11px] leading-[1.6] text-[color:var(--text-primary)] shadow-[0_6px_18px_rgba(0,0,0,0.12)] [font-family:var(--font-mono)]"
         >
           {formatPoint && (
             <div className="mb-[4px] text-[color:var(--text-muted)]">
@@ -271,7 +291,7 @@ function Chart({
               {formatValue(mk.value)} {mk.key}
             </div>
           ))}
-        </div>
+        </TooltipInPortal>
       )}
     </>
   )
