@@ -1098,7 +1098,14 @@ func (m *ApoxyCli) buildWorkerd(
 
 	workerdBin := dag.Container().
 		From("node:22-bookworm-slim").
-		WithExec([]string{"npm", "install", "--no-save", "--prefix", "/w", npmPkg + "@" + version}).
+		// --force bypasses npm's EBADPLATFORM check so the target-arch
+		// prebuilt installs on a different-arch builder (the arm64 package
+		// on the amd64 runner, which otherwise fails with "Unsupported
+		// platform ... wanted cpu arm64, current x64" and reds every push).
+		// We only extract the binary here, never execute it, so no emulation
+		// is needed; npm's --os/--cpu flags do NOT override this check for a
+		// directly-named package.
+		WithExec([]string{"npm", "install", "--no-save", "--force", "--prefix", "/w", npmPkg + "@" + version}).
 		File("/w/node_modules/" + npmPkg + "/bin/workerd")
 
 	return dag.Container(dagger.ContainerOpts{Platform: p}).
