@@ -44,11 +44,28 @@ describe('BodyBox', () => {
   })
 
   it('copies the active view text to the clipboard', () => {
-    const writeText = vi.fn()
+    const writeText = vi.fn().mockResolvedValue(undefined)
     Object.assign(navigator, { clipboard: { writeText } })
     wrap(<BodyBox title="Request body" views={[{ id: 'b', text: 'payload-xyz' }]} />)
     fireEvent.click(screen.getByRole('button', { name: 'Copy' }))
     expect(writeText).toHaveBeenCalledWith('payload-xyz')
+  })
+
+  it('falls back to execCommand when the async clipboard is unavailable (http context)', () => {
+    Object.assign(navigator, { clipboard: undefined })
+    const exec = vi.fn().mockReturnValue(true)
+    ;(document as unknown as { execCommand: unknown }).execCommand = exec
+    wrap(<BodyBox title="Request body" views={[{ id: 'b', text: 'fallback-payload' }]} />)
+    // No async clipboard, no throw; the execCommand fallback runs the copy.
+    fireEvent.click(screen.getByRole('button', { name: 'Copy' }))
+    expect(exec).toHaveBeenCalledWith('copy')
+  })
+
+  it('rolls a size that rounds up to 1024 KiB over to 1.0 MiB', () => {
+    // The size shows in both the toolbar pill and the footer, so assert on all.
+    wrap(<BodyBox title="Response body" views={[{ id: 'b', text: 'x', bytes: 1024 * 1024 - 200 }]} />)
+    expect(screen.getAllByText(/1\.0 MiB/).length).toBeGreaterThan(0)
+    expect(screen.queryAllByText(/1024 KiB/)).toHaveLength(0)
   })
 
   it('opens fullscreen, closes via the button, and on Escape', () => {

@@ -114,7 +114,9 @@ function tintLine(line: string): Seg[] {
       continue
     }
     if (expectValue) {
-      const m = /^(-?\d+(?:\.\d+)?|true|false|null)\b/.exec(line.slice(i))
+      // Require a value terminator after the literal so a numeric *prefix* of a
+      // larger token (e.g. "2024-06-27", "5xx") is not split-colored.
+      const m = /^(-?\d+(?:\.\d+)?|true|false|null)(?=$|[\s,}\]])/.exec(line.slice(i))
       if (m) {
         push(m[0], 'n')
         i += m[0].length
@@ -131,13 +133,45 @@ function tintLine(line: string): Seg[] {
 
 function fmtBytes(n: number): string {
   if (n < 1024) return `${n} B`
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(n < 10 * 1024 ? 1 : 0)} KiB`
+  if (n < 1024 * 1024) {
+    const kib = n / 1024
+    const s = kib < 10 ? kib.toFixed(1) : kib.toFixed(0)
+    // Roll a value that rounds up to 1024 KiB over to 1.0 MiB.
+    if (s !== '1024') return `${s} KiB`
+  }
   return `${(n / (1024 * 1024)).toFixed(1)} MiB`
 }
 
 const enc = typeof TextEncoder !== 'undefined' ? new TextEncoder() : null
 function utf8Len(s: string): number {
   return enc ? enc.encode(s).length : s.length
+}
+
+// Copy to the clipboard, resolving to whether it actually succeeded. Falls back
+// to execCommand for insecure contexts (clrk-console is served over plain http,
+// where navigator.clipboard is undefined) so the caller never reports a false
+// success and a rejected write is never an unhandled rejection.
+function copyText(text: string): Promise<boolean> {
+  if (navigator.clipboard?.writeText) {
+    return navigator.clipboard.writeText(text).then(() => true, () => execCopy(text))
+  }
+  return Promise.resolve(execCopy(text))
+}
+function execCopy(text: string): boolean {
+  try {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.style.position = 'fixed'
+    ta.style.top = '0'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.select()
+    const ok = document.execCommand('copy')
+    document.body.removeChild(ta)
+    return ok
+  } catch {
+    return false
+  }
 }
 
 // The line table is the expensive part of a large body, so it is memoized on the
@@ -251,15 +285,21 @@ export function BodyBox({ title, contentType, views, maxHeight = 300, className 
 
   const view = views.find((v) => v.id === viewId) ?? views[0] ?? EMPTY_VIEW
   const lines = useMemo(() => view.text.split('\n').map(tintLine), [view.text])
-  const bytes = view.bytes ?? utf8Len(view.text)
+  // `|| utf8Len` (not `??`): a captured-byte count of 0 means "unknown" (the
+  // span attribute was missing/unparseable), not an empty body, so fall back to
+  // the text length rather than rendering "0 B" for a real payload. Memoized so
+  // a large body is not re-encoded on every toolbar interaction.
+  const bytes = useMemo(() => view.bytes || utf8Len(view.text), [view.bytes, view.text])
   const lineCount = lines.length
   const multi = views.length > 1
 
   const copy = () => {
-    navigator.clipboard?.writeText(view.text)
-    setCopied(true)
-    clearTimeout(copyTimer.current)
-    copyTimer.current = setTimeout(() => setCopied(false), 1100)
+    copyText(view.text).then((ok) => {
+      if (!ok) return
+      setCopied(true)
+      clearTimeout(copyTimer.current)
+      copyTimer.current = setTimeout(() => setCopied(false), 1100)
+    })
   }
 
   const foot =
@@ -305,7 +345,9 @@ export function BodyBox({ title, contentType, views, maxHeight = 300, className 
         className={cn('relative overflow-auto', wrap ? 'whitespace-pre-wrap break-words' : 'whitespace-pre')}
         style={{ maxHeight }}
       >
-        <CodeLines lines={lines} />
+        {/* Don't mount a second copy of the (potentially thousands-of-row) line
+            table behind the fullscreen overlay; the overlay renders its own. */}
+        {!full && <CodeLines lines={lines} />}
       </div>
 
       <div className="flex items-center gap-[10px] border-t border-[color:var(--border-subtle)] bg-[var(--apx-bone)] px-[12px] py-[6px] text-[11px] text-[color:var(--text-muted)]">
