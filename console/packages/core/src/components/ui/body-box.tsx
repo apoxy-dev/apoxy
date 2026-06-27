@@ -227,7 +227,7 @@ function ToolBtn({
       aria-pressed={active}
       title={label}
       className={cn(
-        'inline-flex items-center gap-[5px] border border-transparent px-[7px] py-[3px] text-[11px] transition-colors duration-150 [font-family:var(--font-mono)]',
+        'inline-flex cursor-pointer items-center gap-[5px] border border-transparent px-[7px] py-[3px] text-[12px] transition-colors duration-150 [font-family:var(--font-mono)]',
         dark
           ? 'text-[color:var(--apx-stone)] hover:bg-[rgba(255,255,255,0.1)] hover:text-[color:var(--apx-white)]'
           : 'text-[color:var(--text-secondary)] hover:bg-[var(--apx-mist)] hover:text-[color:var(--text-primary)]',
@@ -247,7 +247,7 @@ function Pill({ children, dark }: { children: string; dark?: boolean }) {
   return (
     <span
       className={cn(
-        'inline-flex shrink-0 border px-[5px] py-px text-[10px] tracking-[0.03em]',
+        'inline-flex shrink-0 border px-[5px] py-px text-[12px] tracking-[0.03em]',
         dark
           ? 'border-[color:var(--apx-stone)] text-[color:var(--apx-stone)]'
           : 'border-[color:var(--border-default)] text-[color:var(--text-muted)]',
@@ -311,7 +311,7 @@ export function BodyBox({ title, contentType, views, maxHeight = 300, className 
     <div className={cn('border border-[color:var(--border-default)] bg-[var(--apx-paper)] [font-family:var(--font-mono)]', className)}>
       <div className="flex items-center gap-[10px] border-b border-[color:var(--border-subtle)] bg-[var(--apx-bone)] py-[7px] pl-[12px] pr-[10px]">
         <span className="flex min-w-0 items-center gap-[8px] text-[12px] text-[color:var(--text-secondary)]">
-          <b className="truncate font-medium text-[color:var(--text-primary)]">{title}</b>
+          <b className="truncate text-[16px] font-medium text-[color:var(--text-primary)]">{title}</b>
           {contentType && <Pill>{contentType}</Pill>}
           <Pill>{fmtBytes(bytes)}</Pill>
         </span>
@@ -324,7 +324,7 @@ export function BodyBox({ title, contentType, views, maxHeight = 300, className 
                   type="button"
                   onClick={() => setViewId(v.id)}
                   className={cn(
-                    'px-[9px] py-[3px] text-[11px] transition-colors duration-150 [font-family:var(--font-mono)]',
+                    'cursor-pointer px-[9px] py-[3px] text-[12px] transition-colors duration-150 [font-family:var(--font-mono)]',
                     v.id === view.id
                       ? 'bg-[var(--apx-ink)] text-[color:var(--apx-bone)]'
                       : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)]',
@@ -369,7 +369,7 @@ export function BodyBox({ title, contentType, views, maxHeight = 300, className 
           >
             <div className="flex items-center gap-[10px] border-b border-[color:var(--border-subtle)] bg-[var(--apx-ink)] py-[7px] pl-[12px] pr-[10px]">
               <span className="flex min-w-0 items-center gap-[8px] text-[12px] text-[color:var(--apx-bone)]">
-                <b className="truncate font-medium text-[color:var(--apx-bone)]">
+                <b className="truncate text-[16px] font-medium text-[color:var(--apx-bone)]">
                   {title}
                   {multi && view.label ? ` · ${view.label}` : ''}
                 </b>
