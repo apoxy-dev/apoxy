@@ -10,11 +10,13 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/record"
+
+	"github.com/apoxy-dev/apoxy/pkg/cert/reload"
 )
 
 // CertRenewer auto-renews the upstream client cert by re-calling cosmos's
 // IssueServiceCert endpoint over mTLS with the current live cert. The
-// renewer writes the new Secret; the fsnotify watcher (runCertWatcher) then
+// renewer writes the new Secret; the fsnotify watcher (reload.Watch) then
 // picks up the new files and swaps the live transport in place.
 //
 // CertRenewer implements sigs.k8s.io/controller-runtime/pkg/manager.Runnable
@@ -23,7 +25,7 @@ import (
 // against cosmos from one pod per tick, not all of them.
 type CertRenewer struct {
 	kc        kubernetes.Interface
-	store     *certStore
+	store     *reload.Store
 	opts      *Options
 	recorder  record.EventRecorder
 	deployRef *corev1.ObjectReference
@@ -114,7 +116,7 @@ func (r *CertRenewer) checkAndRenew(ctx context.Context, threshold time.Duration
 		// the renewer can do anything useful.
 		return
 	}
-	remaining := time.Until(cur.notAfter)
+	remaining := time.Until(cur.NotAfter)
 	if remaining > threshold {
 		certRenewSkipped.Inc()
 		return
@@ -122,14 +124,14 @@ func (r *CertRenewer) checkAndRenew(ctx context.Context, threshold time.Duration
 
 	slog.Info("Renewing upstream cert",
 		"remaining", remaining.String(),
-		"fingerprint", cur.fp,
+		"fingerprint", cur.Fingerprint,
 	)
 	next, err := r.issueWithCert(ctx, cur)
 	if err != nil {
 		certRenewals.WithLabelValues(resultFailure).Inc()
 		slog.Warn("Cert auto-renewal failed",
 			"err", err,
-			"fingerprint", cur.fp,
+			"fingerprint", cur.Fingerprint,
 			"remaining", remaining.String(),
 		)
 		r.recordEvent(corev1.EventTypeWarning, EventReasonCertRenewalFailed,
@@ -139,12 +141,12 @@ func (r *CertRenewer) checkAndRenew(ctx context.Context, threshold time.Duration
 
 	certRenewals.WithLabelValues(resultSuccess).Inc()
 	slog.Info("Renewed upstream cert",
-		"fingerprint", next.fp,
-		"not_after", next.notAfter.UTC().Format(time.RFC3339),
+		"fingerprint", next.Fingerprint,
+		"not_after", next.NotAfter.UTC().Format(time.RFC3339),
 	)
 	r.recordEvent(corev1.EventTypeNormal, EventReasonCertRenewed,
 		fmt.Sprintf("Renewed apiz-cert; fingerprint=%s, expires=%s",
-			next.fp, next.notAfter.UTC().Format(time.RFC3339)))
+			next.Fingerprint, next.NotAfter.UTC().Format(time.RFC3339)))
 }
 
 // issueWithCert calls IssueServiceCert authenticated by mTLS with the
@@ -158,7 +160,7 @@ func (r *CertRenewer) checkAndRenew(ctx context.Context, threshold time.Duration
 // ext_authz for service-account cert validation; api does not request a
 // client cert, so the cert would never be sent and ext_authz would 403
 // the request as unauthenticated.
-func (r *CertRenewer) issueWithCert(ctx context.Context, live *certBundle) (*certBundle, error) {
+func (r *CertRenewer) issueWithCert(ctx context.Context, live *reload.Bundle) (*reload.Bundle, error) {
 	transport := buildTransport(live, r.opts.LocalMode)
 	defer transport.CloseIdleConnections()
 	return doIssueCertificate(ctx, &http.Client{Transport: transport}, resolveBaseAPIProxyHost(r.opts.APIHost), map[string]string{

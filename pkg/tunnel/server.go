@@ -38,6 +38,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	"github.com/apoxy-dev/apoxy/pkg/cert/reload"
 	"github.com/apoxy-dev/apoxy/pkg/diag"
 	"github.com/apoxy-dev/apoxy/pkg/diag/protocol"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/bfdl"
@@ -78,7 +79,7 @@ type tunnelServerOptions struct {
 	onDisconnect OnDisconnectFunc
 
 	// BFD options.
-	bfdListenAddr netip.Addr      // If set, enables BFD server.
+	bfdListenAddr netip.Addr       // If set, enables BFD server.
 	onAlive       bfdl.OnAliveFunc // Called on each valid BFD Rx.
 	onDown        bfdl.OnDownFunc  // Called when BFD detect timer expires (Up→Down).
 
@@ -405,13 +406,25 @@ func (t *TunnelServer) Start(ctx context.Context) error {
 	}
 	defer udpConn.Close()
 
-	cert, err := tls.LoadX509KeyPair(t.options.certPath, t.options.keyPath)
+	// Serve the cert via a Reloader so cert-manager rotations are picked up
+	// without restarting the process; otherwise a long-lived listener keeps
+	// serving the leaf it loaded at startup until it expires and every agent
+	// dial fails the handshake.
+	certReloader, err := reload.NewReloader(
+		reload.Paths{Cert: t.options.certPath, Key: t.options.keyPath},
+		"tunnelproxy",
+	)
 	if err != nil {
-		return fmt.Errorf("failed to load TLS certificate: %w", err)
+		return err
 	}
+	go func() {
+		if err := certReloader.Start(ctx); err != nil {
+			slog.Error("Tunnel cert watcher exited", slog.Any("error", err))
+		}
+	}()
 
 	tlsConfig := &tls.Config{
-		Certificates: []tls.Certificate{cert},
+		GetCertificate: certReloader.GetCertificate,
 	}
 	if t.options.keyLogPath != "" {
 		keyLogFile, err := os.Create("quic_keylog.txt")

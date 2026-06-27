@@ -1,4 +1,4 @@
-package apiserviceproxy
+package reload
 
 import (
 	"context"
@@ -14,7 +14,8 @@ import (
 
 // kubeletProjection lays out a tmp dir the way kubelet does for a mounted
 // Secret: a timestamped data dir holds the actual files, and ..data is a
-// symlink to it. Rotating points the symlink at a new data dir.
+// symlink to it. Rotating points the symlink at a new data dir — the same
+// atomic swap a real cert-manager renewal produces.
 type kubeletProjection struct {
 	root string
 	gen  int
@@ -32,43 +33,43 @@ func (p *kubeletProjection) write(t *testing.T, certPEM, keyPEM []byte) {
 	p.gen++
 	gendir := filepath.Join(p.root, "..gen"+strconv.Itoa(p.gen))
 	require.NoError(t, os.Mkdir(gendir, 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(gendir, "tls.crt"), certPEM, 0o400))
-	require.NoError(t, os.WriteFile(filepath.Join(gendir, "tls.key"), keyPEM, 0o400))
-	require.NoError(t, os.WriteFile(filepath.Join(gendir, "ca.crt"), nil, 0o400))
+	require.NoError(t, os.WriteFile(filepath.Join(gendir, SecretCertFile), certPEM, 0o400))
+	require.NoError(t, os.WriteFile(filepath.Join(gendir, SecretKeyFile), keyPEM, 0o400))
+	require.NoError(t, os.WriteFile(filepath.Join(gendir, SecretCAFile), nil, 0o400))
 
 	tmpLink := filepath.Join(p.root, "..data.tmp")
 	_ = os.Remove(tmpLink)
 	require.NoError(t, os.Symlink(gendir, tmpLink))
 	require.NoError(t, os.Rename(tmpLink, filepath.Join(p.root, "..data")))
 
-	for _, name := range []string{"tls.crt", "tls.key", "ca.crt"} {
+	for _, name := range []string{SecretCertFile, SecretKeyFile, SecretCAFile} {
 		target := filepath.Join(p.root, name)
 		_ = os.Remove(target)
 		require.NoError(t, os.Symlink(filepath.Join("..data", name), target))
 	}
 }
 
-func TestCertWatcher_PicksUpRotation(t *testing.T) {
-	certV1, keyV1, fpV1, _ := makeClientCertPEM(t)
-	certV2, keyV2, fpV2, expV2 := makeClientCertPEM(t)
+func TestWatch_PicksUpRotation(t *testing.T) {
+	certV1, keyV1, fpV1, _ := makeCertPEM(t)
+	certV2, keyV2, fpV2, expV2 := makeCertPEM(t)
 	require.NotEqual(t, fpV1, fpV2, "test certs must differ")
 
 	proj := newKubeletProjection(t, certV1, keyV1)
-	store := newCertStore()
+	store := NewStore()
 
-	// Seed the store the same way configureCloudProxy does.
-	boot, err := loadBundleFromDisk(proj.root)
+	// Seed the store the way NewReloader does.
+	boot, err := LoadBundle(FromDir(proj.root))
 	require.NoError(t, err)
 	store.Store(boot)
-	require.Equal(t, fpV1, store.Load().fp)
+	require.Equal(t, fpV1, store.Load().Fingerprint)
 
 	var swapped atomic.Int32
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		done <- runCertWatcher(ctx, proj.root, store, func(*certBundle) {
-			swapped.Add(1)
+		done <- Watch(ctx, FromDir(proj.root), store, WatchOptions{
+			OnSwap: func(*Bundle) { swapped.Add(1) },
 		})
 	}()
 
@@ -77,9 +78,9 @@ func TestCertWatcher_PicksUpRotation(t *testing.T) {
 	proj.write(t, certV2, keyV2)
 
 	require.Eventually(t, func() bool {
-		return store.Load().fp == fpV2
+		return store.Load().Fingerprint == fpV2
 	}, 3*time.Second, 25*time.Millisecond, "watcher never picked up v2")
-	require.True(t, store.Load().notAfter.Equal(expV2))
+	require.True(t, store.Load().NotAfter.Equal(expV2))
 	require.Equal(t, int32(1), swapped.Load(), "onSwap fired exactly once")
 
 	cancel()
@@ -91,22 +92,12 @@ func TestCertWatcher_PicksUpRotation(t *testing.T) {
 	}
 }
 
-func TestCertWatcher_IgnoresMissingDir(t *testing.T) {
-	store := newCertStore()
+func TestWatch_IgnoresMissingDir(t *testing.T) {
+	store := NewStore()
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
-	// Non-existent dir — should return nil immediately (hot-reload
-	// disabled, pod stays up).
-	err := runCertWatcher(ctx, filepath.Join(t.TempDir(), "does-not-exist"), store, nil)
-	require.NoError(t, err)
-}
-
-func TestCertWatcher_IgnoresEmptyDir(t *testing.T) {
-	store := newCertStore()
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	defer cancel()
-	// Empty dir flag — pre-mount-rollout deployments call configureCloudProxy
-	// without WithCertDir. Should be a no-op.
-	err := runCertWatcher(ctx, "", store, nil)
+	// Parent dir doesn't exist — Watch returns nil (hot-reload disabled,
+	// process stays up).
+	err := Watch(ctx, FromDir(filepath.Join(t.TempDir(), "does-not-exist")), store, WatchOptions{})
 	require.NoError(t, err)
 }

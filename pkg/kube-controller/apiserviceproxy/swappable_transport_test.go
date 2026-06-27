@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/apoxy-dev/apoxy/pkg/cert/reload"
 )
 
 // makeServerCert produces a self-signed leaf usable for a TLS test
@@ -64,7 +66,7 @@ func TestSwappableTransport_HandshakePicksUpSwap(t *testing.T) {
 	// Build an initial transport with a trust pool that does NOT contain
 	// the server's leaf — handshake must fail.
 	emptyPool := x509.NewCertPool()
-	emptyBundle := &certBundle{rootCAs: emptyPool}
+	emptyBundle := &reload.Bundle{RootCAs: emptyPool}
 	tr := newSwappableTransport(buildTransport(emptyBundle, false))
 	client := &http.Client{Transport: tr}
 
@@ -75,7 +77,7 @@ func TestSwappableTransport_HandshakePicksUpSwap(t *testing.T) {
 	// confirm the next request succeeds. New TCP dial means new handshake
 	// — exactly the path a kubelet-driven Secret rotation hits.
 	_, serverPool := makeServerCertSame(t, serverCert)
-	goodBundle := &certBundle{rootCAs: serverPool}
+	goodBundle := &reload.Bundle{RootCAs: serverPool}
 	tr.Store(buildTransport(goodBundle, false))
 
 	resp, err := client.Get(srv.URL)

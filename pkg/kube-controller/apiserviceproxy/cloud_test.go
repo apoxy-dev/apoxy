@@ -1,7 +1,6 @@
 package apiserviceproxy
 
 import (
-	"crypto/x509"
 	"net/http/httptest"
 	"net/url"
 	"testing"
@@ -53,28 +52,4 @@ func TestNewCloudReverseProxyRewritesHostHeader(t *testing.T) {
 	require.Equal(t, "apiz-staging.apoxy.dev", req.URL.Host)
 	require.Equal(t, "apiz-staging.apoxy.dev", req.Host)
 	require.Equal(t, "/apis/gateway.apoxy.dev/v1", req.URL.Path)
-}
-
-func TestBuildUpstreamRootCAsPreservesSystemRootsAndAppendsIssuedCA(t *testing.T) {
-	t.Parallel()
-
-	_, _, _, caPEM, err := generateServingCertificate("kube-controller", "apoxy")
-	require.NoError(t, err)
-
-	orig := systemCertPool
-	systemCertPool = func() (*x509.CertPool, error) {
-		return x509.NewCertPool(), nil
-	}
-	t.Cleanup(func() {
-		systemCertPool = orig
-	})
-
-	roots, err := buildUpstreamRootCAs(caPEM)
-	require.NoError(t, err)
-
-	parsed := x509.NewCertPool()
-	require.True(t, parsed.AppendCertsFromPEM(caPEM))
-	subjects := roots.Subjects()
-	require.Len(t, subjects, 1)
-	require.Equal(t, parsed.Subjects()[0], subjects[0])
 }

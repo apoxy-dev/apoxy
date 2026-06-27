@@ -26,6 +26,7 @@ import (
 	"github.com/apoxy-dev/icx"
 
 	corev1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
+	"github.com/apoxy-dev/apoxy/pkg/cert/reload"
 	"github.com/apoxy-dev/apoxy/pkg/cryptoutils"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/batchpc"
@@ -102,8 +103,9 @@ var tunnelRelayCmd = &cobra.Command{
 		}
 
 		var (
-			idHasher *hasher.Hasher
-			cert     tls.Certificate
+			idHasher      *hasher.Hasher
+			cert          tls.Certificate
+			relayReloader *reload.Reloader
 		)
 
 		// Use a self-signed cert and a fixed hasher secret in dev mode.
@@ -134,11 +136,23 @@ var tunnelRelayCmd = &cobra.Command{
 				return fmt.Errorf("failed to load TLS certificate/key pair: %w", err)
 			}
 			cert = c
+
+			// Hot-reload the relay's serving cert so cert-manager rotations
+			// take effect without restarting the relay.
+			relayReloader, err = reload.NewReloader(reload.Paths{Cert: certFile, Key: keyFile}, "tunnel-relay")
+			if err != nil {
+				return fmt.Errorf("failed to set up relay cert reloader: %w", err)
+			}
 		}
 
 		relay := tunnel.NewRelay(relayName, pcQuic, cert, handler, idHasher, rtr)
 
 		g, ctx := errgroup.WithContext(cmd.Context())
+
+		if relayReloader != nil {
+			relay.SetCertProvider(relayReloader.GetCertificate)
+			g.Go(func() error { return relayReloader.Start(ctx) })
+		}
 
 		clientConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
 			clientcmd.NewDefaultClientConfigLoadingRules(),

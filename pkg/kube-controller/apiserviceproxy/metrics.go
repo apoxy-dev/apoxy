@@ -1,8 +1,12 @@
 package apiserviceproxy
 
 import (
+	"time"
+
 	"github.com/prometheus/client_golang/prometheus"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
+
+	"github.com/apoxy-dev/apoxy/pkg/cert/reload"
 )
 
 const (
@@ -61,4 +65,24 @@ var (
 
 func init() {
 	metrics.Registry.MustRegister(certReloads, certExpiry, certRenewals, certRenewSkipped)
+}
+
+// certReloadMetrics adapts the kube-controller cert-reload counters to the
+// shared reload.Metrics interface, so the watcher in pkg/cert/reload keeps
+// emitting the long-standing apoxy_kube_controller_cert_* series that
+// existing dashboards and alerts depend on.
+type certReloadMetrics struct{}
+
+var _ reload.Metrics = certReloadMetrics{}
+
+func (certReloadMetrics) ReloadAttempt(success bool) {
+	result := resultFailure
+	if success {
+		result = resultSuccess
+	}
+	certReloads.WithLabelValues(result).Inc()
+}
+
+func (certReloadMetrics) SetExpiry(t time.Time) {
+	certExpiry.Set(float64(t.Unix()))
 }

@@ -12,6 +12,8 @@ import (
 
 	"github.com/google/uuid"
 	"k8s.io/client-go/kubernetes"
+
+	"github.com/apoxy-dev/apoxy/pkg/cert/reload"
 )
 
 const (
@@ -30,7 +32,7 @@ type APIServiceProxy struct {
 	// certStore holds the current upstream client cert bundle; the
 	// fsnotify watcher refreshes it in place when kubelet projects a
 	// new Secret generation onto the cert-dir mount.
-	certStore *certStore
+	certStore *reload.Store
 	// transport delegates to an inner *http.Transport that swappableTransport
 	// replaces on every successful cert reload.
 	transport *swappableTransport

@@ -4,6 +4,8 @@ import (
 	"crypto/tls"
 	"net/http"
 	"sync/atomic"
+
+	"github.com/apoxy-dev/apoxy/pkg/cert/reload"
 )
 
 // swappableTransport delegates to an inner *http.Transport that can be
@@ -33,11 +35,11 @@ func (s *swappableTransport) Store(t *http.Transport) *http.Transport {
 // buildTransport constructs a fresh *http.Transport for the given cert
 // bundle. Extracted from cloud.go so both the bootstrap path and the
 // reload path produce identical transport configs.
-func buildTransport(b *certBundle, localMode bool) *http.Transport {
+func buildTransport(b *reload.Bundle, localMode bool) *http.Transport {
 	return &http.Transport{
 		TLSClientConfig: &tls.Config{
-			Certificates:       []tls.Certificate{b.cert},
-			RootCAs:            b.rootCAs,
+			Certificates:       []tls.Certificate{b.Cert},
+			RootCAs:            b.RootCAs,
 			MinVersion:         tls.VersionTLS12,
 			InsecureSkipVerify: localMode,
 		},

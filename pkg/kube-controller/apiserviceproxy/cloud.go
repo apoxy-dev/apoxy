@@ -3,7 +3,6 @@ package apiserviceproxy
 import (
 	"context"
 	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,9 +18,9 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
-)
 
-var systemCertPool = x509.SystemCertPool
+	"github.com/apoxy-dev/apoxy/pkg/cert/reload"
+)
 
 const (
 	// Default Cosmos API host.
@@ -83,25 +82,36 @@ func (p *APIServiceProxy) configureCloudProxy(ctx context.Context) error {
 	// On first boot the Secret is created here by issueCertificate and the
 	// kubelet projection lags by up to ~60s; seed from this in-memory
 	// bundle and let the watcher take over once the file lands.
-	p.certStore = newCertStore()
+	p.certStore = reload.NewStore()
 	p.certStore.Store(boot)
-	certExpiry.Set(float64(boot.notAfter.Unix()))
+	certExpiry.Set(float64(boot.NotAfter.Unix()))
 
 	p.transport = newSwappableTransport(buildTransport(boot, p.opts.LocalMode))
 	p.proxy.Transport = p.transport
 
-	go func() {
-		err := runCertWatcher(ctx, p.opts.CertDir, p.certStore, func(b *certBundle) {
-			old := p.transport.Store(buildTransport(b, p.opts.LocalMode))
-			// Drop the old idle-conn pool so we don't leak file
-			// descriptors across rotations. In-flight requests still
-			// finish on their existing TCP connections.
-			old.CloseIdleConnections()
-		})
-		if err != nil {
-			slog.Error("Cert watcher exited with error", "err", err)
-		}
-	}()
+	// Hot-reload is engaged only when the Secret is mounted at CertDir; an
+	// older onboarding manifest that doesn't mount it falls back to the
+	// legacy restart-driven rotation.
+	if p.opts.CertDir != "" {
+		go func() {
+			err := reload.Watch(ctx, reload.FromDir(p.opts.CertDir), p.certStore, reload.WatchOptions{
+				Component: "kube-controller",
+				Metrics:   certReloadMetrics{},
+				OnSwap: func(b *reload.Bundle) {
+					old := p.transport.Store(buildTransport(b, p.opts.LocalMode))
+					// Drop the old idle-conn pool so we don't leak file
+					// descriptors across rotations. In-flight requests still
+					// finish on their existing TCP connections.
+					old.CloseIdleConnections()
+				},
+			})
+			if err != nil {
+				slog.Error("Cert watcher exited with error", "err", err)
+			}
+		}()
+	} else {
+		slog.Info("Upstream cert hot-reload disabled (no cert dir configured)")
+	}
 
 	return nil
 }
@@ -151,24 +161,10 @@ func newCloudReverseProxy(remote *url.URL) *httputil.ReverseProxy {
 	return proxy
 }
 
-func buildUpstreamRootCAs(caPEM []byte) (*x509.CertPool, error) {
-	roots, err := systemCertPool()
-	if err != nil || roots == nil {
-		roots = x509.NewCertPool()
-	}
-	if len(caPEM) == 0 {
-		return roots, nil
-	}
-	if !roots.AppendCertsFromPEM(caPEM) {
-		return nil, fmt.Errorf("failed to append CA certificate to cert pool")
-	}
-	return roots, nil
-}
-
 // loadUpstreamCertificate reads + parses the upstream client cert from the
 // existing apiz-cert Secret. Returns (nil, nil) if the Secret is missing —
 // the caller treats that as "first boot, mint a new one."
-func (p *APIServiceProxy) loadUpstreamCertificate(ctx context.Context) (*certBundle, error) {
+func (p *APIServiceProxy) loadUpstreamCertificate(ctx context.Context) (*reload.Bundle, error) {
 	log.Printf("loading certificate for project %s", p.opts.ProjectID)
 
 	secret, err := p.kC.CoreV1().Secrets(p.opts.Namespace).Get(ctx, apizCertSecretName, metav1.GetOptions{})
@@ -178,7 +174,7 @@ func (p *APIServiceProxy) loadUpstreamCertificate(ctx context.Context) (*certBun
 		}
 		return nil, err
 	}
-	return bundleFromPEM(secret.Data[tlsSecretCert], secret.Data[tlsSecretKey], secret.Data[tlsSecretCA])
+	return reload.BundleFromPEM(secret.Data[tlsSecretCert], secret.Data[tlsSecretKey], secret.Data[tlsSecretCA])
 }
 
 func (p *APIServiceProxy) saveCertificate(ctx context.Context, certPem, keyPem, caPem []byte) error {
@@ -219,7 +215,7 @@ func saveApizCertSecret(ctx context.Context, kc kubernetes.Interface, namespace 
 	return nil
 }
 
-func (p *APIServiceProxy) issueCertificate(ctx context.Context) (*certBundle, error) {
+func (p *APIServiceProxy) issueCertificate(ctx context.Context) (*reload.Bundle, error) {
 	log.Printf("issuing certificate for project %s", p.opts.ProjectID)
 
 	host := p.opts.APIHost
@@ -244,7 +240,7 @@ func (p *APIServiceProxy) issueCertificate(ctx context.Context) (*certBundle, er
 // the returned PEMs, persists them to the apiz-cert Secret, and returns the
 // new bundle. Shared by the bootstrap path (API-key auth, api.* host) and
 // the renewal path (mTLS auth, apiz.* host).
-func doIssueCertificate(ctx context.Context, client *http.Client, host string, headers map[string]string, kc kubernetes.Interface, namespace string) (*certBundle, error) {
+func doIssueCertificate(ctx context.Context, client *http.Client, host string, headers map[string]string, kc kubernetes.Interface, namespace string) (*reload.Bundle, error) {
 	addr := fmt.Sprintf("https://%s/v1/terra/serviceaccount/certificate", host)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, addr, nil)
 	if err != nil {
@@ -277,7 +273,7 @@ func doIssueCertificate(ctx context.Context, client *http.Client, host string, h
 	if err := saveApizCertSecret(ctx, kc, namespace, certPEM, keyPEM, caPEM); err != nil {
 		return nil, fmt.Errorf("save issued cert secret: %w", err)
 	}
-	return bundleFromPEM(certPEM, keyPEM, caPEM)
+	return reload.BundleFromPEM(certPEM, keyPEM, caPEM)
 }
 
 func (p *APIServiceProxy) ensureServingCertificate(ctx context.Context) error {

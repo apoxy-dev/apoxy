@@ -26,6 +26,7 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 
 	"github.com/apoxy-dev/apoxy/pkg/cert"
+	"github.com/apoxy-dev/apoxy/pkg/cert/reload"
 )
 
 // makeClientCertPEMWithExpiry mints a self-signed leaf usable as an mTLS
@@ -130,18 +131,18 @@ func (f *fakeCosmosServer) hostPort() string {
 // struct lets table-driven tests reach into pre-renewal state without
 // re-deriving anything.
 type renewerFixture struct {
-	r          *CertRenewer
-	server     *fakeCosmosServer
-	seedCert   []byte
-	seedKey    []byte
-	seedFP     string
+	r        *CertRenewer
+	server   *fakeCosmosServer
+	seedCert []byte
+	seedKey  []byte
+	seedFP   string
 }
 
 func newRenewerFixture(t *testing.T, liveNotAfter time.Time) *renewerFixture {
 	t.Helper()
 	server := newFakeCosmosServer(t)
 	certPEM, keyPEM, fp := makeClientCertPEMWithExpiry(t, liveNotAfter)
-	bundle, err := bundleFromPEM(certPEM, keyPEM, nil)
+	bundle, err := reload.BundleFromPEM(certPEM, keyPEM, nil)
 	require.NoError(t, err)
 
 	kc := fake.NewSimpleClientset(&corev1.Secret{
@@ -157,7 +158,7 @@ func newRenewerFixture(t *testing.T, liveNotAfter time.Time) *renewerFixture {
 		},
 	})
 
-	store := newCertStore()
+	store := reload.NewStore()
 	store.Store(bundle)
 
 	r := &CertRenewer{
@@ -176,19 +177,19 @@ func newRenewerFixture(t *testing.T, liveNotAfter time.Time) *renewerFixture {
 
 func TestCertRenewer_CheckAndRenew(t *testing.T) {
 	type expect struct {
-		httpCalls      int32
-		skippedDelta   float64
-		successDelta   float64
-		failureDelta   float64
-		secretChanged  bool
-		mTLSAuthUsed   bool // peer cert presented + no API-key header
+		httpCalls     int32
+		skippedDelta  float64
+		successDelta  float64
+		failureDelta  float64
+		secretChanged bool
+		mTLSAuthUsed  bool // peer cert presented + no API-key header
 	}
 	cases := []struct {
-		name           string
-		liveValidity   time.Duration
-		threshold      time.Duration
-		serverStatus   int // 0 → 200 OK
-		expect         expect
+		name         string
+		liveValidity time.Duration
+		threshold    time.Duration
+		serverStatus int // 0 → 200 OK
+		expect       expect
 	}{
 		{
 			name:         "healthy cert above threshold skips",
@@ -244,9 +245,9 @@ func TestCertRenewer_CheckAndRenew(t *testing.T) {
 			cur, err := fx.r.kc.CoreV1().Secrets("apoxy").Get(context.Background(), apizCertSecretName, metav1.GetOptions{})
 			require.NoError(t, err)
 			if tc.expect.secretChanged {
-				newBundle, err := bundleFromPEM(cur.Data[tlsSecretCert], cur.Data[tlsSecretKey], cur.Data[tlsSecretCA])
+				newBundle, err := reload.BundleFromPEM(cur.Data[tlsSecretCert], cur.Data[tlsSecretKey], cur.Data[tlsSecretCA])
 				require.NoError(t, err)
-				require.Equal(t, fx.server.nextFP, newBundle.fp, "Secret must hold the cert cosmos returned")
+				require.Equal(t, fx.server.nextFP, newBundle.Fingerprint, "Secret must hold the cert cosmos returned")
 			} else {
 				require.Equal(t, fx.seedCert, cur.Data[tlsSecretCert], "Secret tls.crt must be untouched")
 			}

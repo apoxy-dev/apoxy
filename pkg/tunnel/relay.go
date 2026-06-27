@@ -41,7 +41,7 @@ type Relay struct {
 	mu            sync.Mutex
 	name          string
 	pc            net.PacketConn
-	cert          tls.Certificate
+	getCert       func(*tls.ClientHelloInfo) (*tls.Certificate, error)
 	handler       *icx.Handler
 	idHasher      *hasher.Hasher
 	router        router.Router
@@ -50,17 +50,17 @@ type Relay struct {
 	relayAddrs    *haxmap.Map[string, []string]    // map[tunnelName][]string
 	conns         *haxmap.Map[string, *connection] // map[connectionID]Connection
 	agents        *haxmap.Map[string, string]      // map[connectionID]agentName
-	onConnect      func(ctx context.Context, tunnelName, agentName string, conn controllers.Connection) error
-	onDisconnect   func(ctx context.Context, agentName, id string) error
-	onShutdown     func(ctx context.Context)
-	metricsStore *metrics.MetricsStore
+	onConnect     func(ctx context.Context, tunnelName, agentName string, conn controllers.Connection) error
+	onDisconnect  func(ctx context.Context, agentName, id string) error
+	onShutdown    func(ctx context.Context)
+	metricsStore  *metrics.MetricsStore
 }
 
 func NewRelay(name string, pc net.PacketConn, cert tls.Certificate, handler *icx.Handler, idHasher *hasher.Hasher, router router.Router) *Relay {
 	return &Relay{
 		name:       name,
 		pc:         pc,
-		cert:       cert,
+		getCert:    staticCert(cert),
 		handler:    handler,
 		idHasher:   idHasher,
 		router:     router,
@@ -69,6 +69,21 @@ func NewRelay(name string, pc net.PacketConn, cert tls.Certificate, handler *icx
 		conns:      haxmap.New[string, *connection](),
 		agents:     haxmap.New[string, string](),
 	}
+}
+
+// staticCert returns a GetCertificate func that always serves cert. Used by
+// dev mode and tests, which supply an in-memory keypair with no file to watch.
+func staticCert(cert tls.Certificate) func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+	return func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return &cert, nil }
+}
+
+// SetCertProvider overrides the source of the relay's TLS server certificate,
+// e.g. to enable hot-reload from disk via pkg/cert/reload. Must be called
+// before Start.
+func (r *Relay) SetCertProvider(getCert func(*tls.ClientHelloInfo) (*tls.Certificate, error)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.getCert = getCert
 }
 
 // Name is the name of the relay.
@@ -141,7 +156,7 @@ func (r *Relay) MetricsStore() *metrics.MetricsStore {
 func (r *Relay) Start(ctx context.Context) error {
 	ln, err := quic.ListenEarly(
 		r.pc,
-		http3.ConfigureTLSConfig(&tls.Config{Certificates: []tls.Certificate{r.cert}}),
+		http3.ConfigureTLSConfig(&tls.Config{GetCertificate: r.getCert}),
 		quicConfig,
 	)
 	if err != nil {
