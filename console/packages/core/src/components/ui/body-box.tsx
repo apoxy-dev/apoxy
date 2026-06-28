@@ -56,7 +56,7 @@ const EMPTY_VIEW: BodyView = { id: '', text: '' }
 const TINT_CLASS: Record<Tint, string> = {
   k: 'text-[color:var(--apx-blue)]',
   s: 'text-[color:var(--apx-leaf)]',
-  n: 'text-[color:var(--apx-amber)]',
+  n: 'text-[color:var(--apx-coral)]',
 }
 
 // Cheap per-line JSON tint: object keys, quoted string values, and bare
@@ -174,21 +174,47 @@ function execCopy(text: string): boolean {
   }
 }
 
+// Shared per-row cell classes. Real rows and the hatched pad rows below differ
+// only in background, so the box geometry (sticky gutter, divider, line height)
+// lives here once.
+const GUT_BASE =
+  'sticky left-0 table-cell w-[1%] select-none whitespace-nowrap border-r border-[color:var(--border-subtle)] px-[12px] text-right align-top text-[12px] leading-[1.55]'
+const CODE_BASE = 'table-cell px-[14px] align-top text-[length:var(--t-caption)] leading-[1.55] [tab-size:2]'
+// Pad-row fills: a faint diagonal hatch on the code cell and a tinted blank
+// gutter, so a short body reads as a framed box rather than a lone cramped line.
+const PAD_GUT = '[background-color:color-mix(in_srgb,var(--apx-bone)_60%,var(--apx-mist))]'
+const PAD_SRC =
+  '[background-image:repeating-linear-gradient(135deg,transparent,transparent_7px,color-mix(in_srgb,var(--apx-mist)_40%,transparent)_7px,color-mix(in_srgb,var(--apx-mist)_40%,transparent)_8px)]'
+// Bodies shorter than this get pad rows (one above, the rest below) to fill out
+// the box. Matches the design's CodeBlock minimum.
+const MIN_LINES = 2
+
+function PadRow() {
+  return (
+    <div aria-hidden="true" className="table-row">
+      <span className={cn(GUT_BASE, PAD_GUT)} />
+      <code className={cn(CODE_BASE, PAD_SRC)}>{' '}</code>
+    </div>
+  )
+}
+
 // The line table is the expensive part of a large body, so it is memoized on the
 // tokenized lines (stable per text). Wrap mode lives on the scroll container and
 // inherits down via white-space, so toggling wrap never re-renders these rows.
 const CodeLines = memo(function CodeLines({ lines }: { lines: Seg[][] }) {
+  const pad = Math.max(0, MIN_LINES - lines.length)
   return (
     <div className="table w-full border-collapse">
+      {pad > 0 && <PadRow />}
       {lines.map((segs, i) => (
         <div key={i} className="group table-row">
           <span
             aria-hidden="true"
-            className="sticky left-0 table-cell w-[1%] select-none whitespace-nowrap border-r border-[color:var(--border-subtle)] bg-[var(--apx-bone)] px-[12px] text-right align-top text-[12px] leading-[1.55] text-[color:var(--text-muted)] group-hover:text-[color:var(--text-secondary)]"
+            className={cn(GUT_BASE, 'bg-[var(--apx-bone)] text-[color:var(--text-muted)] group-hover:text-[color:var(--text-secondary)]')}
           >
             {i + 1}
           </span>
-          <code className="table-cell px-[14px] align-top text-[length:var(--t-caption)] leading-[1.55] text-[color:var(--text-primary)] [tab-size:2] group-hover:bg-[color-mix(in_srgb,var(--apx-mist)_55%,transparent)]">
+          <code className={cn(CODE_BASE, 'text-[color:var(--text-primary)] group-hover:bg-[color-mix(in_srgb,var(--apx-mist)_55%,transparent)]')}>
             {segs.length === 0
               ? ' '
               : segs.map((s, j) =>
@@ -202,6 +228,9 @@ const CodeLines = memo(function CodeLines({ lines }: { lines: Seg[][] }) {
                 )}
           </code>
         </div>
+      ))}
+      {Array.from({ length: pad }, (_, p) => (
+        <PadRow key={`pad-${p}`} />
       ))}
     </div>
   )

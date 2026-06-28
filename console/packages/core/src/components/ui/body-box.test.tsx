@@ -78,6 +78,21 @@ describe('BodyBox', () => {
     expect(screen.queryByRole('dialog')).toBeNull()
   })
 
+  it('pads a short one-line body with two decorative filler rows', () => {
+    const { container } = wrap(<BodyBox title="Body" views={[{ id: 'b', text: 'only one line' }]} />)
+    // One real line + a hatched pad row above and below; the pads are aria-hidden.
+    expect(container.querySelectorAll('.table-row[aria-hidden="true"]')).toHaveLength(2)
+    expect(screen.getByText('only one line')).toBeDefined()
+    expect(screen.getByText('1')).toBeDefined()
+  })
+
+  it('does not pad a body that already meets the minimum line count', () => {
+    const { container } = wrap(
+      <BodyBox title="Body" views={[{ id: 'b', text: 'line one\nline two\nline three' }]} />,
+    )
+    expect(container.querySelectorAll('.table-row[aria-hidden="true"]')).toHaveLength(0)
+  })
+
   it('surfaces a truncated capture and its note in the footer', () => {
     wrap(
       <BodyBox
