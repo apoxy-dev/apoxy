@@ -52,6 +52,7 @@ type options struct {
 	apiServerTLSClientConfig     *tls.Config
 	goPluginDir                  string
 	releaseURL                   string
+	envoyVersion                 string
 	useEnvoyContrib              bool
 	overloadMaxHeapSizeBytes     *uint64
 	overloadMaxActiveConnections *uint64
@@ -101,6 +102,15 @@ func WithURLRelease(url string) Option {
 func WithEnvoyContrib() Option {
 	return func(o *options) {
 		o.useEnvoyContrib = true
+	}
+}
+
+// WithEnvoyVersion pins the Envoy release tag (e.g. "v1.35.13") downloaded
+// from GitHub. An empty version falls back to the latest upstream release —
+// never do that in production builds; see envoy.DefaultVersion for why.
+func WithEnvoyVersion(version string) Option {
+	return func(o *options) {
+		o.envoyVersion = version
 	}
 }
 
@@ -240,9 +250,10 @@ func (r *ProxyReconciler) Reconcile(ctx context.Context, request reconcile.Reque
 			opts = append(opts, envoy.WithRelease(&envoy.URLRelease{
 				URL: r.options.releaseURL,
 			}))
-		} else if r.options.useEnvoyContrib {
+		} else if r.options.useEnvoyContrib || r.options.envoyVersion != "" {
 			opts = append(opts, envoy.WithRelease(&envoy.GitHubRelease{
-				Contrib: true,
+				Version: r.options.envoyVersion,
+				Contrib: r.options.useEnvoyContrib,
 			}))
 		}
 
@@ -335,9 +346,10 @@ func (r *ProxyReconciler) DownloadEnvoy(ctx context.Context) error {
 		opts = append(opts, envoy.WithRelease(&envoy.URLRelease{
 			URL: r.options.releaseURL,
 		}))
-	} else if r.options.useEnvoyContrib {
+	} else if r.options.useEnvoyContrib || r.options.envoyVersion != "" {
 		opts = append(opts, envoy.WithRelease(&envoy.GitHubRelease{
-			Contrib: true,
+			Version: r.options.envoyVersion,
+			Contrib: r.options.useEnvoyContrib,
 		}))
 	}
 
