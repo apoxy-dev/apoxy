@@ -34,6 +34,7 @@ import (
 	"github.com/apoxy-dev/apoxy/client/versioned"
 	"github.com/apoxy-dev/apoxy/pkg/apiserver"
 	bpctrl "github.com/apoxy-dev/apoxy/pkg/backplane/controllers"
+	"github.com/apoxy-dev/apoxy/pkg/backplane/envoy"
 	"github.com/apoxy-dev/apoxy/pkg/backplane/healthchecker"
 	"github.com/apoxy-dev/apoxy/pkg/backplane/kvstore"
 	"github.com/apoxy-dev/apoxy/pkg/backplane/metrics"
@@ -71,6 +72,7 @@ var (
 	proxyName       = flag.String("proxy", "", "Name of the Proxy to manage. Must not be used with --proxy_path.")
 	replicaName     = flag.String("replica", os.Getenv("HOSTNAME"), "Name of the replica to manage.")
 	envoyReleaseURL = flag.String("envoy_release_url", "", "URL to the Envoy release tarball.")
+	envoyVersion    = flag.String("envoy_version", envoy.DefaultVersion, "Envoy release tag to download from GitHub (e.g. v1.35.13). Empty means latest upstream release — never use that in production. Ignored when --envoy_release_url is set.")
 	downloadEnvoy   = flag.Bool("download_envoy_only", false, "Whether to just download Envoy from the release URL and exit.")
 
 	apiServerAddr         = flag.String("apiserver_addr", "host.docker.internal:8443", "APIServer address.")
@@ -313,6 +315,9 @@ func main() {
 	}
 	if *useEnvoyContrib {
 		proxyOpts = append(proxyOpts, bpctrl.WithEnvoyContrib())
+	}
+	if *envoyVersion != "" {
+		proxyOpts = append(proxyOpts, bpctrl.WithEnvoyVersion(*envoyVersion))
 	}
 	if *overloadMaxHeapSizeBytes > 0 {
 		proxyOpts = append(proxyOpts, bpctrl.WithOverloadMaxHeapSizeBytes(*overloadMaxHeapSizeBytes))

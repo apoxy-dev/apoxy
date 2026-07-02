@@ -28,6 +28,16 @@ import (
 const (
 	githubURL = "github.com/envoyproxy/envoy/releases/download"
 
+	// DefaultVersion pins the Envoy release baked into backplane images and
+	// downloaded at runtime. Envoy versions must never float: the 1.35.3 →
+	// 1.38.x jump (picked up implicitly via GetLatestRelease when the
+	// v0.11.22/23 images were built) regressed the golang filter with a
+	// tcmalloc SIGSEGV on the cgo thread-adoption path (x_cgo_getstackbound
+	// → pthread_getattr_np → calloc). 1.35.13 is the same minor as the
+	// last known-good 1.35.3 plus upstream security backports. Bump only
+	// after soak-testing the golang filter under listener-reload churn.
+	DefaultVersion = "v1.35.13"
+
 	accessLogsPath = "/var/log/accesslogs"
 	tapsPath       = "/var/log/taps"
 
