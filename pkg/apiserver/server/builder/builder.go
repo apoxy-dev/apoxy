@@ -470,6 +470,11 @@ type defaultStrategy struct {
 	// bumps it on Spec changes — matching upstream CRD strategy
 	// (k8s.io/apiextensions-apiserver/pkg/registry/customresource).
 	trackGeneration bool
+	// namespaceScoped, when non-nil, forces the scope of the resource
+	// instead of deriving it from Object. The external-type path
+	// (newExternalStorageProvider, used by WithEvents) sets it because its
+	// resource has no builderresource.Object to consult (Object is nil there).
+	namespaceScoped *bool
 }
 
 func (d defaultStrategy) GenerateName(base string) string {
@@ -483,6 +488,9 @@ func (d defaultStrategy) GenerateName(base string) string {
 }
 
 func (d defaultStrategy) NamespaceScoped() bool {
+	if d.namespaceScoped != nil {
+		return *d.namespaceScoped
+	}
 	if d.Object == nil {
 		return true
 	}
