@@ -121,15 +121,11 @@ func (m *ApoxyCli) DarwinBuilderContainer(ctx context.Context, src *dagger.Direc
 func (m *ApoxyCli) PublishBuilderContainer(
 	ctx context.Context,
 	src *dagger.Directory,
-	registryPassword *dagger.Secret,
+	gcrCreds *dagger.Secret,
 ) error {
 	_, err := m.BuilderContainer(ctx, src).
-		WithRegistryAuth(
-			"registry-1.docker.io",
-			"apoxy",
-			registryPassword,
-		).
-		Publish(ctx, "docker.io/apoxy/gobuilder:latest")
+		WithRegistryAuth(GARRegistry, "_json_key", gcrCreds).
+		Publish(ctx, PublicGARRepo+"/gobuilder:latest")
 	return err
 }
 
@@ -549,6 +545,14 @@ const EdgeRuntimeVersion = "v0.1.0"
 
 // GARRegistry is the Google Artifact Registry for internal images.
 const GARRegistry = "us-west1-docker.pkg.dev"
+
+// PublicGARRepo is the public Artifact Registry repo Apoxy's published images
+// live in (anonymous-pullable; same repo clrk publishes to). Replaces Docker Hub.
+// The CLI pulls from this same repo — keep in sync with pkg/drivers.imageRegistry.
+const PublicGARRepo = GARRegistry + "/apoxy-dev/public"
+
+// linuxPlatforms are the OS/arch targets every multi-arch image is built for.
+var linuxPlatforms = []string{"linux/amd64", "linux/arm64"}
 
 func (m *ApoxyCli) BuildEdgeRuntime(
 	ctx context.Context,
@@ -1116,129 +1120,88 @@ func (m *ApoxyCli) buildWorkerd(
 		WithEntrypoint([]string{"/usr/bin/workerd"})
 }
 
+// publishMultiarch publishes a multi-arch image — one OCI manifest spanning the
+// given per-platform variants — to the public GAR repo as <name>:<tag>.
+func publishMultiarch(ctx context.Context, gcrCreds *dagger.Secret, name, tag string, variants []*dagger.Container) error {
+	addr, err := dag.Container().
+		WithRegistryAuth(GARRegistry, "_json_key", gcrCreds).
+		Publish(ctx, PublicGARRepo+"/"+name+":"+tag, dagger.ContainerPublishOpts{
+			PlatformVariants: variants,
+		})
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Published %s image to %s\n", name, addr)
+	return nil
+}
+
 // PublishWorkerd builds the stock workerd image for both linux platforms and
 // publishes it. Separated from PublishImages so the workerd runtime image (which
 // needs no clrk/source build) can be pushed on its own.
 func (m *ApoxyCli) PublishWorkerd(
 	ctx context.Context,
-	registryPassword *dagger.Secret,
+	gcrCreds *dagger.Secret,
 	tag string,
 	// +optional
 	version string,
 ) error {
 	var ctrs []*dagger.Container
-	for _, platform := range []string{"linux/amd64", "linux/arm64"} {
+	for _, platform := range linuxPlatforms {
 		ctrs = append(ctrs, m.buildWorkerd(ctx, platform, version))
 	}
-	addr, err := dag.Container().
-		WithRegistryAuth("registry-1.docker.io", "apoxy", registryPassword).
-		Publish(ctx, "docker.io/apoxy/workerd:"+tag, dagger.ContainerPublishOpts{
-			PlatformVariants: ctrs,
-		})
-	if err != nil {
-		return err
-	}
-	fmt.Println("Workerd images published to", addr)
-	return nil
+	return publishMultiarch(ctx, gcrCreds, "workerd", tag, ctrs)
 }
 
 // PublishImages publishes images to the registry.
 func (m *ApoxyCli) PublishImages(
 	ctx context.Context,
 	src *dagger.Directory,
-	registryPassword *dagger.Secret,
 	tag string,
 	sha string,
 	// +optional
 	sccacheToken *dagger.Secret,
 	// +optional
 	edgeRuntimeTag string,
-	// +optional
+	// gcrCreds authenticates the push to the public GAR repo; required (every
+	// image now publishes through publishMultiarch, which needs it).
 	gcrCreds *dagger.Secret,
 	// +optional
 	githubToken *dagger.Secret,
 ) error {
 	var apiCtrs []*dagger.Container
-	for _, platform := range []string{"linux/amd64", "linux/arm64"} {
+	for _, platform := range linuxPlatforms {
 		apiCtrs = append(apiCtrs, m.BuildAPIServer(ctx, src, platform, sccacheToken, edgeRuntimeTag, gcrCreds))
 	}
-
-	addr, err := dag.Container().
-		WithRegistryAuth(
-			"registry-1.docker.io",
-			"apoxy",
-			registryPassword,
-		).
-		Publish(ctx, "docker.io/apoxy/apiserver:"+tag, dagger.ContainerPublishOpts{
-			PlatformVariants: apiCtrs,
-		})
-	if err != nil {
+	if err := publishMultiarch(ctx, gcrCreds, "apiserver", tag, apiCtrs); err != nil {
 		return err
 	}
-
-	fmt.Println("API server image published to", addr)
 
 	var bCtrs []*dagger.Container
-	for _, platform := range []string{"linux/amd64", "linux/arm64"} {
+	for _, platform := range linuxPlatforms {
 		bCtrs = append(bCtrs, m.BuildBackplane(ctx, src, platform, sccacheToken, edgeRuntimeTag, gcrCreds))
 	}
-
-	addr, err = dag.Container().
-		WithRegistryAuth(
-			"registry-1.docker.io",
-			"apoxy",
-			registryPassword,
-		).
-		Publish(ctx, "docker.io/apoxy/backplane:"+tag, dagger.ContainerPublishOpts{
-			PlatformVariants: bCtrs,
-		})
-	if err != nil {
+	if err := publishMultiarch(ctx, gcrCreds, "backplane", tag, bCtrs); err != nil {
 		return err
 	}
-
-	fmt.Println("Backplane images published to", addr)
 
 	var tpCtrs []*dagger.Container
-	for _, platform := range []string{"linux/amd64", "linux/arm64"} {
+	for _, platform := range linuxPlatforms {
 		tpCtrs = append(tpCtrs, m.BuildTunnelproxy(ctx, src, platform))
 	}
-
-	addr, err = dag.Container().
-		WithRegistryAuth(
-			"registry-1.docker.io",
-			"apoxy",
-			registryPassword,
-		).
-		Publish(ctx, "docker.io/apoxy/tunnelproxy:"+tag, dagger.ContainerPublishOpts{
-			PlatformVariants: tpCtrs,
-		})
-	if err != nil {
+	if err := publishMultiarch(ctx, gcrCreds, "tunnelproxy", tag, tpCtrs); err != nil {
 		return err
 	}
-
-	fmt.Println("Tunnelproxy images published to", addr)
 
 	// The stock workerd runtime image (APO-796). Unlike workerd-host/manager it
 	// builds from the npm prebuilt with no clrk/source dependency, so it always
 	// publishes.
 	var wdCtrs []*dagger.Container
-	for _, platform := range []string{"linux/amd64", "linux/arm64"} {
+	for _, platform := range linuxPlatforms {
 		wdCtrs = append(wdCtrs, m.buildWorkerd(ctx, platform, ""))
 	}
-	addr, err = dag.Container().
-		WithRegistryAuth(
-			"registry-1.docker.io",
-			"apoxy",
-			registryPassword,
-		).
-		Publish(ctx, "docker.io/apoxy/workerd:"+tag, dagger.ContainerPublishOpts{
-			PlatformVariants: wdCtrs,
-		})
-	if err != nil {
+	if err := publishMultiarch(ctx, gcrCreds, "workerd", tag, wdCtrs); err != nil {
 		return err
 	}
-
-	fmt.Println("Workerd images published to", addr)
 
 	// workerd-host depends on the private clrk module, which the default CI
 	// GITHUB_TOKEN cannot fetch (clrk is a separate private repo). Publish it
@@ -1246,85 +1209,46 @@ func (m *ApoxyCli) PublishImages(
 	// keeps working until that secret is wired up.
 	if githubToken != nil {
 		var whCtrs []*dagger.Container
-		for _, platform := range []string{"linux/amd64", "linux/arm64"} {
+		for _, platform := range linuxPlatforms {
 			whCtrs = append(whCtrs, m.BuildWorkerdHost(ctx, src, platform, nil, githubToken))
 		}
-
-		addr, err = dag.Container().
-			WithRegistryAuth(
-				"registry-1.docker.io",
-				"apoxy",
-				registryPassword,
-			).
-			Publish(ctx, "docker.io/apoxy/workerd-host:"+tag, dagger.ContainerPublishOpts{
-				PlatformVariants: whCtrs,
-			})
-		if err != nil {
+		if err := publishMultiarch(ctx, gcrCreds, "workerd-host", tag, whCtrs); err != nil {
 			return err
 		}
-
-		fmt.Println("Workerd-host images published to", addr)
 
 		var wmCtrs []*dagger.Container
-		for _, platform := range []string{"linux/amd64", "linux/arm64"} {
+		for _, platform := range linuxPlatforms {
 			wmCtrs = append(wmCtrs, m.buildWorkerdManager(ctx, src, platform, nil, githubToken))
 		}
-
-		addr, err = dag.Container().
-			WithRegistryAuth(
-				"registry-1.docker.io",
-				"apoxy",
-				registryPassword,
-			).
-			Publish(ctx, "docker.io/apoxy/workerd-manager:"+tag, dagger.ContainerPublishOpts{
-				PlatformVariants: wmCtrs,
-			})
-		if err != nil {
+		if err := publishMultiarch(ctx, gcrCreds, "workerd-manager", tag, wmCtrs); err != nil {
 			return err
 		}
-
-		fmt.Println("Workerd-manager images published to", addr)
 	} else {
 		fmt.Println("Skipping workerd-host/workerd-manager publish: no --github-token for the private clrk module")
 	}
 
 	var cliCtrs []*dagger.Container
-	for _, platform := range []string{"linux/amd64", "linux/arm64"} {
+	for _, platform := range linuxPlatforms {
 		cliCtr := m.BuildCLIRelease(ctx, src, platform, tag, sha)
 		cliCtrs = append(cliCtrs, cliCtr)
 	}
-
-	addr, err = dag.Container().
-		WithRegistryAuth(
-			"registry-1.docker.io",
-			"apoxy",
-			registryPassword,
-		).
-		Publish(ctx, "docker.io/apoxy/apoxy:"+tag, dagger.ContainerPublishOpts{
-			PlatformVariants: cliCtrs,
-		})
-	if err != nil {
-		return err
-	}
-
-	fmt.Println("Tunnelproxy images published to", addr)
-	return nil
+	return publishMultiarch(ctx, gcrCreds, "apoxy", tag, cliCtrs)
 }
 
 // PublishHelmRelease publishes a Helm release.
 func (m *ApoxyCli) PublishHelmRelease(
 	ctx context.Context,
 	src *dagger.Directory,
-	registryPassword *dagger.Secret,
+	gcrCreds *dagger.Secret,
 	tag string,
 ) (string, error) {
 	return dag.Container().
 		From("cgr.dev/chainguard/helm:latest-dev").
 		WithDirectory("/src", src).
 		WithWorkdir("/src").
-		WithSecretVariable("REGISTRY_PASSWORD", registryPassword).
+		WithSecretVariable("REGISTRY_PASSWORD", gcrCreds).
 		WithExec([]string{
-			"sh", "-c", `echo "$REGISTRY_PASSWORD" | helm registry login registry-1.docker.io -u apoxy --password-stdin`,
+			"sh", "-c", fmt.Sprintf(`echo "$REGISTRY_PASSWORD" | helm registry login %s -u _json_key --password-stdin`, GARRegistry),
 		}).
 		WithExec([]string{
 			"helm", "package",
@@ -1336,7 +1260,7 @@ func (m *ApoxyCli) PublishHelmRelease(
 		WithExec([]string{
 			"helm", "push",
 			fmt.Sprintf("/tmp/apoxy-gateway-%s.tgz", tag),
-			"oci://registry-1.docker.io/apoxy",
+			"oci://" + PublicGARRepo,
 		}).
 		Stdout(ctx)
 }

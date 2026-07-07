@@ -11,7 +11,7 @@ dagger call build-apiserver --src=. export --path=dist/images/apiserver.tar
 To import the image into your local Docker daemon:
 
 ```shell
-skopeo copy oci-archive:dist/images/apiserver.tar docker-daemon:docker.io/apoxy/apiserver:latest
+skopeo copy oci-archive:dist/images/apiserver.tar docker-daemon:us-west1-docker.pkg.dev/apoxy-dev/public/apiserver:latest
 ```
 
 ### Apoxy Backplane
@@ -23,5 +23,5 @@ dagger call build-backplane --platform=linux/$(uname -m | sed 's/x86_64/amd64/;s
 To import the image into your local Docker daemon:
 
 ```shell
-skopeo copy oci-archive:dist/images/backplane.tar docker-daemon:docker.io/apoxy/backplane:latest
+skopeo copy oci-archive:dist/images/backplane.tar docker-daemon:us-west1-docker.pkg.dev/apoxy-dev/public/backplane:latest
 ```

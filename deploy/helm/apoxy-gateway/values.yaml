@@ -14,7 +14,7 @@ serviceAccount:
 
 apiserver:
   image:
-    repository: apoxy/apiserver
+    repository: us-west1-docker.pkg.dev/apoxy-dev/public/apiserver
     pullPolicy: IfNotPresent
     # Overrides the image tag whose default is the chart appVersion.
     # tag: "latest"
@@ -46,7 +46,7 @@ apiserver:
 
 backplane:
   image:
-    repository: apoxy/backplane
+    repository: us-west1-docker.pkg.dev/apoxy-dev/public/backplane
     pullPolicy: IfNotPresent
     # Overrides the image tag whose default is the chart appVersion.
     # tag: "latest"

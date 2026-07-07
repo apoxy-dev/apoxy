@@ -9,6 +9,11 @@ import (
 	dockerutils "github.com/apoxy-dev/apoxy/pkg/utils/docker"
 )
 
+// imageRegistry is the public Artifact Registry repo Apoxy's images are pulled
+// from (anonymous-pullable). Replaces the former docker.io/apoxy namespace.
+// Keep in sync with ci's PublicGARRepo (the publish target).
+const imageRegistry = "us-west1-docker.pkg.dev/apoxy-dev/public"
+
 // dockerDriverBase is a wrapper for the Docker driver containing
 // common functionality.
 type dockerDriverBase struct {
@@ -50,7 +55,7 @@ func (db *dockerDriverBase) ImageRef(repo string) string {
 	if build.IsDev() {
 		imgTag = "latest"
 	}
-	return fmt.Sprintf("docker.io/apoxy/%s:%s", repo, imgTag)
+	return fmt.Sprintf("%s/%s:%s", imageRegistry, repo, imgTag)
 }
 
 func (db *dockerDriverBase) PullPolicy() string {
