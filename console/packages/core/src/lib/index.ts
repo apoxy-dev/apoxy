@@ -46,3 +46,6 @@ export type { UseK8sListOptions, UseK8sObjectOptions } from './hooks'
 // Generic CRUD hooks (apply/delete) — never write the cache
 export { useApplyResource, useDeleteResource } from './mutations'
 export type { UseApplyResourceResult, UseDeleteResourceResult } from './mutations'
+
+// PostHog product analytics (router-agnostic; posthog-js loaded lazily)
+export { capturePageview, captureEvent, useAnalyticsPageviews } from './analytics'
