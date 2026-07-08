@@ -23,7 +23,8 @@ const (
 )
 
 // WorkerdManagerDockerDriver runs the APO-796 workerd-manager: a privileged,
-// gVisor-capable sidecar that hosts the one shared resident workerd. It joins the
+// gVisor-capable sidecar that hosts the dev project's resident workerd (the
+// single-project degenerate case of the per-tenant manager). It joins the
 // apiserver's network namespace (so its kube-API and routing-publish traffic
 // reach the apiserver over loopback, with no relaxation of the publish channel's
 // loopback-only guard) and shares a volume with the backplane carrying the

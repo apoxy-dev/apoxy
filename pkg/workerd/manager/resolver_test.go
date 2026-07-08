@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -16,8 +17,10 @@ import (
 )
 
 // fakeFetcher is an in-memory BundleFetcher. It counts Manifest calls so cache
-// behavior is assertable.
+// behavior is assertable. Locked: the resident manager's done-watcher rewarms
+// stores from its own goroutine, concurrently with test-goroutine reconciles.
 type fakeFetcher struct {
+	mu          sync.Mutex
 	manifest    computev1alpha1.BundleManifest
 	modules     map[string][]byte
 	manifestErr error
@@ -26,6 +29,8 @@ type fakeFetcher struct {
 }
 
 func (f *fakeFetcher) Manifest(_ context.Context, _ string) (computev1alpha1.BundleManifest, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.calls++
 	if f.manifestErr != nil {
 		return computev1alpha1.BundleManifest{}, f.manifestErr
@@ -34,10 +39,24 @@ func (f *fakeFetcher) Manifest(_ context.Context, _ string) (computev1alpha1.Bun
 }
 
 func (f *fakeFetcher) Modules(_ context.Context, _ string) (map[string][]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.modulesErr != nil {
 		return nil, f.modulesErr
 	}
 	return f.modules, nil
+}
+
+func (f *fakeFetcher) manifestCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
+func (f *fakeFetcher) setManifestErr(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.manifestErr = err
 }
 
 // esManifest is a single-esModule manifest fixture.

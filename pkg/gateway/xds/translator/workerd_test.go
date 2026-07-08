@@ -3,6 +3,7 @@
 package translator
 
 import (
+	"strings"
 	"testing"
 
 	clusterv3 "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
@@ -13,39 +14,102 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/gateway/xds/types"
 )
 
-func residentClusterCount(tCtx *types.ResourceVersionTable) int {
-	n := 0
+// Canonical lowercase project UUIDs, chosen so projectA sorts before projectB
+// (the hook emits clusters in sorted-tenant order; "" sorts first).
+const (
+	projectA = "0a6856fa-0e56-4e1c-b3f1-1e4a49e0a4dd"
+	projectB = "7ce458d7-e20c-443c-aeeb-dbc5663c1240"
+)
+
+// workerdClusters returns the injected resident clusters in emission order.
+// It matches on the resident stem so it needs no reference to the naming
+// helpers under test.
+func workerdClusters(tCtx *types.ResourceVersionTable) []*clusterv3.Cluster {
+	var out []*clusterv3.Cluster
 	for _, c := range tCtx.GetXdsResources()[resourcev3.ClusterType] {
-		if cl, ok := c.(*clusterv3.Cluster); ok && cl.GetName() == workerdResidentClusterName {
-			n++
+		if cl, ok := c.(*clusterv3.Cluster); ok && strings.HasPrefix(cl.GetName(), "apoxy-workerd-resident") {
+			out = append(out, cl)
 		}
 	}
-	return n
+	return out
+}
+
+func pipePath(c *clusterv3.Cluster) string {
+	return c.GetLoadAssignment().GetEndpoints()[0].GetLbEndpoints()[0].GetEndpoint().GetAddress().GetPipe().GetPath()
 }
 
 func TestWorkerdPatchResources(t *testing.T) {
-	workerdRoute := &ir.HTTPRoute{Name: "r1", WorkerdService: "echo"}
-	plainRoute := &ir.HTTPRoute{Name: "r2"}
+	type wantCluster struct {
+		name   string
+		socket string
+	}
 
 	cases := []struct {
-		name      string
-		routes    []*ir.HTTPRoute
-		wantCount int
+		name   string
+		routes []*ir.HTTPRoute
+		want   []wantCluster
 	}{
 		{
-			name:      "injects resident cluster for a workerd route",
-			routes:    []*ir.HTTPRoute{plainRoute, workerdRoute},
-			wantCount: 1,
+			// The empty project MUST reproduce the pre-tenancy constants
+			// byte-for-byte: single-project topologies already dial these exact
+			// strings, so this is the drift guard — assert literals, not names.*.
+			name:   "legacy single-project byte compatibility",
+			routes: []*ir.HTTPRoute{{Name: "r1", WorkerdService: "echo"}},
+			want: []wantCluster{
+				{
+					name:   "apoxy-workerd-resident",
+					socket: "/run/workerd-manager/state/apoxy-workerd-resident.in.sock",
+				},
+			},
 		},
 		{
-			name:      "no workerd route is a no-op",
-			routes:    []*ir.HTTPRoute{plainRoute},
-			wantCount: 0,
+			name: "one cluster per distinct project in sorted order",
+			routes: []*ir.HTTPRoute{
+				{Name: "rb", WorkerdService: "echo", WorkerdProject: projectB},
+				{Name: "ra", WorkerdService: "echo", WorkerdProject: projectA},
+				{Name: "rl", WorkerdService: "legacy"},
+				{Name: "ra2", WorkerdService: "other", WorkerdProject: projectA},
+				{Name: "plain"},
+			},
+			want: []wantCluster{
+				{
+					name:   "apoxy-workerd-resident",
+					socket: "/run/workerd-manager/state/apoxy-workerd-resident.in.sock",
+				},
+				{
+					name:   "apoxy-workerd-resident/" + projectA,
+					socket: "/run/workerd-manager/state/apoxy-workerd-resident-" + projectA + ".in.sock",
+				},
+				{
+					name:   "apoxy-workerd-resident/" + projectB,
+					socket: "/run/workerd-manager/state/apoxy-workerd-resident-" + projectB + ".in.sock",
+				},
+			},
 		},
 		{
-			name:      "no routes is a no-op",
-			routes:    nil,
-			wantCount: 0,
+			// A malformed tenant fails closed: no cluster is injected for it and
+			// no error is returned, so translation of valid tenants continues.
+			name: "invalid tenant is skipped without error",
+			routes: []*ir.HTTPRoute{
+				{Name: "bad", WorkerdService: "echo", WorkerdProject: "not-a-uuid"},
+				{Name: "good", WorkerdService: "echo", WorkerdProject: projectA},
+			},
+			want: []wantCluster{
+				{
+					name:   "apoxy-workerd-resident/" + projectA,
+					socket: "/run/workerd-manager/state/apoxy-workerd-resident-" + projectA + ".in.sock",
+				},
+			},
+		},
+		{
+			name:   "no workerd route is a no-op",
+			routes: []*ir.HTTPRoute{{Name: "plain"}},
+			want:   nil,
+		},
+		{
+			name:   "no routes is a no-op",
+			routes: nil,
+			want:   nil,
 		},
 	}
 
@@ -55,45 +119,44 @@ func TestWorkerdPatchResources(t *testing.T) {
 			if err := (&workerd{}).patchResources(tCtx, tc.routes); err != nil {
 				t.Fatalf("patchResources: %v", err)
 			}
-			if got := residentClusterCount(tCtx); got != tc.wantCount {
-				t.Fatalf("resident cluster count = %d, want %d", got, tc.wantCount)
+			got := workerdClusters(tCtx)
+			if len(got) != len(tc.want) {
+				t.Fatalf("resident cluster count = %d, want %d", len(got), len(tc.want))
+			}
+			for i, w := range tc.want {
+				if got[i].GetName() != w.name {
+					t.Errorf("cluster[%d] name = %q, want %q", i, got[i].GetName(), w.name)
+				}
+				if la := got[i].GetLoadAssignment().GetClusterName(); la != w.name {
+					t.Errorf("cluster[%d] load assignment name = %q, want %q", i, la, w.name)
+				}
+				if p := pipePath(got[i]); p != w.socket {
+					t.Errorf("cluster[%d] pipe path = %q, want %q", i, p, w.socket)
+				}
 			}
 		})
 	}
 }
 
-func TestWorkerdPatchResourcesInjectsConstSocket(t *testing.T) {
-	tCtx := new(types.ResourceVersionTable)
-	if err := (&workerd{}).patchResources(tCtx, []*ir.HTTPRoute{{Name: "r1", WorkerdService: "echo"}}); err != nil {
-		t.Fatalf("patchResources: %v", err)
-	}
-	var cluster *clusterv3.Cluster
-	for _, c := range tCtx.GetXdsResources()[resourcev3.ClusterType] {
-		if cl, ok := c.(*clusterv3.Cluster); ok && cl.GetName() == workerdResidentClusterName {
-			cluster = cl
-		}
-	}
-	if cluster == nil {
-		t.Fatalf("resident cluster not injected")
-	}
-	got := cluster.GetLoadAssignment().GetEndpoints()[0].GetLbEndpoints()[0].GetEndpoint().GetAddress().GetPipe().GetPath()
-	if got != workerdResidentSocketPath {
-		t.Fatalf("resident cluster pipe path = %q, want %q", got, workerdResidentSocketPath)
-	}
-}
-
 func TestWorkerdPatchResourcesIdempotent(t *testing.T) {
 	tCtx := new(types.ResourceVersionTable)
-	routes := []*ir.HTTPRoute{{Name: "r1", WorkerdService: "echo"}}
-	// Two listeners with workerd routes call patchResources twice; the cluster
-	// must be injected exactly once.
+	routes := []*ir.HTTPRoute{
+		{Name: "r1", WorkerdService: "echo"},
+		{Name: "r2", WorkerdService: "echo", WorkerdProject: projectA},
+	}
+	// Two listeners sharing the same tenants call patchResources twice; each
+	// tenant's cluster must be injected exactly once.
 	for i := 0; i < 2; i++ {
 		if err := (&workerd{}).patchResources(tCtx, routes); err != nil {
 			t.Fatalf("patchResources #%d: %v", i, err)
 		}
 	}
-	if got := residentClusterCount(tCtx); got != 1 {
-		t.Fatalf("resident cluster count = %d, want 1", got)
+	got := workerdClusters(tCtx)
+	if len(got) != 2 {
+		t.Fatalf("resident cluster count = %d, want 2", len(got))
+	}
+	if got[0].GetName() == got[1].GetName() {
+		t.Fatalf("duplicate resident cluster %q", got[0].GetName())
 	}
 }
 
@@ -120,61 +183,76 @@ func headerValue(route *routev3.Route, key string) (string, bool) {
 }
 
 func TestWorkerdPatchRoute(t *testing.T) {
-	t.Run("stamps the bare service header and re-points the cluster", func(t *testing.T) {
-		route := routeWithAction("httproute/proj-uuid/echo/rule/0/match/0", "httproute/proj-uuid/echo/rule/0")
-		irRoute := &ir.HTTPRoute{Name: route.Name, WorkerdService: "echo"}
-		if err := (&workerd{}).patchRoute(route, irRoute); err != nil {
-			t.Fatalf("patchRoute: %v", err)
-		}
-		if got := route.GetRoute().GetCluster(); got != workerdResidentClusterName {
-			t.Fatalf("route cluster = %q, want %q", got, workerdResidentClusterName)
-		}
-		v, ok := headerValue(route, workerdServiceHeader)
-		if !ok {
-			t.Fatalf("missing %s header", workerdServiceHeader)
-		}
-		// The header carries only the bare service name; the resident is per-tenant,
-		// so it already knows its project and resolves the revision itself.
-		if v != "echo" {
-			t.Fatalf("%s = %q, want echo", workerdServiceHeader, v)
-		}
-	})
+	cases := []struct {
+		name        string
+		irRoute     *ir.HTTPRoute
+		wantCluster string
+		wantHeader  string
+	}{
+		{
+			// The legacy single-project cluster name is asserted as a literal;
+			// it is the byte-compat contract with already-deployed topologies.
+			name:        "legacy route re-points to the bare resident cluster",
+			irRoute:     &ir.HTTPRoute{WorkerdService: "echo"},
+			wantCluster: "apoxy-workerd-resident",
+			wantHeader:  "echo",
+		},
+		{
+			// The header stays the bare service name even with a project: the
+			// project is encoded in the cluster (and thus the socket), never in
+			// the header, because each resident already knows its project.
+			name:        "project route re-points to its own tenant's cluster",
+			irRoute:     &ir.HTTPRoute{WorkerdService: "echo", WorkerdProject: projectA},
+			wantCluster: "apoxy-workerd-resident/" + projectA,
+			wantHeader:  "echo",
+		},
+		{
+			// Fail closed: a malformed tenant leaves the route on its
+			// placeholder destination (503) and returns no error.
+			name:    "invalid tenant leaves the route untouched",
+			irRoute: &ir.HTTPRoute{WorkerdService: "echo", WorkerdProject: "not-a-uuid"},
+		},
+		{
+			name:    "non-workerd route is untouched",
+			irRoute: &ir.HTTPRoute{},
+		},
+	}
 
-	t.Run("route name shape does not affect the header", func(t *testing.T) {
-		// The hook no longer parses the route name for a project, so even a
-		// non-httproute name stamps the bare service unchanged.
-		route := routeWithAction("not-an-httproute", "placeholder")
-		irRoute := &ir.HTTPRoute{Name: route.Name, WorkerdService: "echo"}
-		if err := (&workerd{}).patchRoute(route, irRoute); err != nil {
-			t.Fatalf("patchRoute: %v", err)
-		}
-		if got := route.GetRoute().GetCluster(); got != workerdResidentClusterName {
-			t.Fatalf("route cluster = %q, want %q", got, workerdResidentClusterName)
-		}
-		if v, _ := headerValue(route, workerdServiceHeader); v != "echo" {
-			t.Fatalf("%s = %q, want echo", workerdServiceHeader, v)
-		}
-	})
-
-	t.Run("non-workerd route is untouched", func(t *testing.T) {
-		route := routeWithAction("httproute/default/r/rule/0", "original-cluster")
-		if err := (&workerd{}).patchRoute(route, &ir.HTTPRoute{Name: route.Name}); err != nil {
-			t.Fatalf("patchRoute: %v", err)
-		}
-		if got := route.GetRoute().GetCluster(); got != "original-cluster" {
-			t.Fatalf("route cluster = %q, want original-cluster", got)
-		}
-		if _, ok := headerValue(route, workerdServiceHeader); ok {
-			t.Fatalf("unexpected %s header on non-workerd route", workerdServiceHeader)
-		}
-	})
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			route := routeWithAction("httproute/ns/echo/rule/0/match/0", "placeholder-cluster")
+			tc.irRoute.Name = route.Name
+			if err := (&workerd{}).patchRoute(route, tc.irRoute); err != nil {
+				t.Fatalf("patchRoute: %v", err)
+			}
+			if tc.wantCluster == "" {
+				if got := route.GetRoute().GetCluster(); got != "placeholder-cluster" {
+					t.Fatalf("route cluster = %q, want untouched placeholder-cluster", got)
+				}
+				if _, ok := headerValue(route, workerdServiceHeader); ok {
+					t.Fatalf("unexpected %s header on untouched route", workerdServiceHeader)
+				}
+				return
+			}
+			if got := route.GetRoute().GetCluster(); got != tc.wantCluster {
+				t.Fatalf("route cluster = %q, want %q", got, tc.wantCluster)
+			}
+			v, ok := headerValue(route, workerdServiceHeader)
+			if !ok {
+				t.Fatalf("missing %s header", workerdServiceHeader)
+			}
+			if v != tc.wantHeader {
+				t.Fatalf("%s = %q, want %q", workerdServiceHeader, v, tc.wantHeader)
+			}
+		})
+	}
 
 	t.Run("redirect route with no action is a no-op", func(t *testing.T) {
 		route := &routev3.Route{
-			Name:   "httproute/default/echo/rule/0/match/0",
+			Name:   "httproute/ns/echo/rule/0/match/0",
 			Action: &routev3.Route_Redirect{Redirect: &routev3.RedirectAction{}},
 		}
-		if err := (&workerd{}).patchRoute(route, &ir.HTTPRoute{Name: route.Name, WorkerdService: "echo"}); err != nil {
+		if err := (&workerd{}).patchRoute(route, &ir.HTTPRoute{Name: route.Name, WorkerdService: "echo", WorkerdProject: projectA}); err != nil {
 			t.Fatalf("patchRoute: %v", err)
 		}
 		if _, ok := headerValue(route, workerdServiceHeader); ok {

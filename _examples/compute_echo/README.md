@@ -4,8 +4,11 @@ The workerd-runtime analogue of the EdgeFunction example
 (`../httproute_edgefunc.yaml`). An `HTTPRoute` routes to a
 `compute.apoxy.dev` `Service` backendRef; the apiserver mints a
 `ServiceRevision` from `spec.source`, the co-located **workerd-manager** loads
-it into the one shared resident workerd as a V8 isolate, and the backplane
-demuxes inbound requests to it via the `x-apoxy-service` header.
+it into the project's resident workerd as a V8 isolate, and the backplane
+demuxes inbound requests to it via the `x-apoxy-service` header. (A resident
+serves exactly one project: this dev flow runs the one single-project
+resident; a shared multi-project backplane runs one resident per project, each
+behind its own Envoy cluster.)
 
 Files here:
 

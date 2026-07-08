@@ -32,6 +32,10 @@ var (
 type Config struct {
 	ProviderResources *message.ProviderResources
 	XdsIR             *message.XdsIR
+	// WorkerdProjectFromNamespace is threaded into every
+	// gatewayapi.Translator this runner constructs; see the field of the same
+	// name on gatewayapi.Translator for when it may be set. (APO-796)
+	WorkerdProjectFromNamespace bool
 }
 
 // Runner is the gateway-api translator runner.
@@ -96,7 +100,8 @@ func (r *Runner) subscribeAndTranslate(ctx context.Context) {
 					ExtensionGroupKinds:   extensionsGroupKinds,
 					// TODO(dilyevsky): Re-enable support for Endpoint slices.
 					// https://linear.app/apoxy/issue/APO-257/enable-support-for-endpoint-slices
-					EndpointRoutingDisabled: true,
+					EndpointRoutingDisabled:     true,
+					WorkerdProjectFromNamespace: r.WorkerdProjectFromNamespace,
 				}
 
 				log.Debug("Translating resources", "resources", resources)

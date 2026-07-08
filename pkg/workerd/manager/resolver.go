@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -47,23 +48,44 @@ func (ociBundleFetcher) Modules(ctx context.Context, imageRef string) (map[strin
 // host.WorkerDefinition the WorkerLoader callback consumes: it loads the
 // ServiceRevision, pulls its bundle, and reconstructs the WorkerCode payload.
 //
-// The resident is per-tenant — the manager's kube client is already scoped to
-// the single project it serves — so the id carries no project qualifier; the
+// The resident is per-tenant — a Resolver's kube client is scoped to the single
+// project its resident serves — so the id carries no project qualifier; the
 // service name alone keys the WorkerLoader cache within this resident.
+//
+// The client is swappable (setClient): the per-tenant client is handed in on
+// every ReconcileWithClient call, and a re-engaged project may arrive with a
+// fresh client while the tenant's warm state (and this Resolver, reachable
+// from the control server's pull path) lives on.
 type Resolver struct {
-	client.Client
+	mu      sync.RWMutex
+	c       client.Client
 	fetcher BundleFetcher
 }
 
-// NewResolver returns a Resolver over the production OCI fetcher. The client is
-// already scoped to the single project the manager serves.
+// NewResolver returns a Resolver over the production OCI fetcher. The client
+// must be scoped to the single project the resident serves.
 func NewResolver(c client.Client) *Resolver {
-	return &Resolver{Client: c, fetcher: ociBundleFetcher{}}
+	return &Resolver{c: c, fetcher: ociBundleFetcher{}}
 }
 
 // newResolverWithFetcher injects a fetcher for tests.
 func newResolverWithFetcher(c client.Client, f BundleFetcher) *Resolver {
-	return &Resolver{Client: c, fetcher: f}
+	return &Resolver{c: c, fetcher: f}
+}
+
+// setClient rebinds the project client. Safe against concurrent Resolves from
+// the control server's pull path.
+func (r *Resolver) setClient(c client.Client) {
+	r.mu.Lock()
+	r.c = c
+	r.mu.Unlock()
+}
+
+// getClient returns the current project client.
+func (r *Resolver) getClient() client.Client {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.c
 }
 
 // Resolve builds the WorkerDefinition for a demux id. A missing ServiceRevision
@@ -76,7 +98,7 @@ func (r *Resolver) Resolve(ctx context.Context, id string) (host.WorkerDefinitio
 	}
 
 	rev := &computev1alpha1.ServiceRevision{}
-	if err := r.Get(ctx, client.ObjectKey{Name: revision}, rev); err != nil {
+	if err := r.getClient().Get(ctx, client.ObjectKey{Name: revision}, rev); err != nil {
 		if apierrors.IsNotFound(err) {
 			return host.WorkerDefinition{}, fmt.Errorf("%w: %q", errRevisionNotFound, revision)
 		}

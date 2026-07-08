@@ -124,11 +124,18 @@ func workerdEnv(cfg computev1alpha1.ServiceConfigSpec) []string {
 	return nil
 }
 
+// stagingDir is the single owner of the staged-config layout: both the create
+// side (stageConfig) and the teardown side (ResidentHost.Stop) derive the path
+// from it.
+func stagingDir(rootDir string, id sandbox.SandboxID) string {
+	return filepath.Join(rootDir, sanitizeID(id))
+}
+
 // stageConfig writes the generated capnp to a host path that is bind-mounted
 // into the sandbox. The rootfs is read-only and digest-shared, so the config
 // cannot be written into it directly.
 func stageConfig(rootDir string, id sandbox.SandboxID, capnp string) (string, error) {
-	dir := filepath.Join(rootDir, sanitizeID(id))
+	dir := stagingDir(rootDir, id)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("creating config stage dir: %w", err)
 	}

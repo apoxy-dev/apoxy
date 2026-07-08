@@ -485,6 +485,14 @@ type HTTPRoute struct {
 	// x-apoxy-service demux header, instead of using the route's own (placeholder)
 	// destination. (APO-796)
 	WorkerdService string `json:"workerdService,omitempty" yaml:"workerdService,omitempty"`
+	// WorkerdProject, when non-empty, is the project (tenant) whose per-project
+	// resident workerd cluster serves this route. It is stamped from the route's
+	// namespace only when the translation owner opted in via
+	// WorkerdProjectFromNamespace — the shared backplane, where route namespaces
+	// are project UUIDs (the DefaultGatewayReconciler rewrites them to the
+	// multicluster cluster name). It stays empty in dedicated/dev single-project
+	// topologies, which keep the legacy single resident cluster. (APO-796)
+	WorkerdProject string `json:"workerdProject,omitempty" yaml:"workerdProject,omitempty"`
 	// Rewrite to be changed for this route.
 	URLRewrite *URLRewrite `json:"urlRewrite,omitempty" yaml:"urlRewrite,omitempty"`
 	// RateLimit defines the more specific match conditions as well as limits for ratelimiting

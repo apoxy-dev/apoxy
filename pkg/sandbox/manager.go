@@ -256,7 +256,7 @@ func (m *Manager) Start(ctx context.Context, id SandboxID) error {
 	// inbound is disabled, leaving the sandbox egress-only.
 	var inboundFile *os.File
 	if sb.inboundListenAddr != "" {
-		path := inboundSockPath(m.stateDir, id)
+		path := InboundSockPath(m.stateDir, id)
 		f, err := openInboundListener(path)
 		if err != nil {
 			return fmt.Errorf("opening inbound listener: %w", err)
@@ -397,7 +397,7 @@ func (m *Manager) Delete(ctx context.Context, id SandboxID) error {
 	log := slog.With(slog.String("sandbox.id", string(id)))
 
 	m.mu.Lock()
-	sb, ok := m.sandboxes[id]
+	_, ok := m.sandboxes[id]
 	m.mu.Unlock()
 	if !ok {
 		return ErrNotFound
@@ -423,13 +423,24 @@ func (m *Manager) Delete(ctx context.Context, id SandboxID) error {
 	// removeSandboxDebugLog intentionally NOT called — keep per-sandbox
 	// Sentry logs for post-mortem inspection.
 
-	sb.closeStdio()
+	m.deregister(id)
 
+	log.Info("Sandbox deleted")
+	return nil
+}
+
+// deregister removes a sandbox's in-memory registration — the m.sandboxes
+// entry, its Wait watcher, and its stdio sink — freeing the id for a future
+// Create. Both Delete and Purge must release the id: a purge that tears down
+// only on-disk state leaves every stop-then-recreate flow (a crashed resident,
+// a per-tenant disengage/re-engage) permanently wedged on ErrAlreadyExists.
+func (m *Manager) deregister(id SandboxID) {
 	// Collect the waiter cancel + sink under the lock but invoke them
 	// after release: cancelling a context can wake goroutines that need
 	// to reacquire m.mu (e.g. the Wait goroutine itself), and holding the
 	// lock across cancel() risks self-deadlock.
 	m.mu.Lock()
+	sb, hasSandbox := m.sandboxes[id]
 	delete(m.sandboxes, id)
 	cancelWaiter, hasWaiter := m.waiters[id]
 	if hasWaiter {
@@ -438,15 +449,16 @@ func (m *Manager) Delete(ctx context.Context, id SandboxID) error {
 	sink, hasSink := m.stdSinks[id]
 	delete(m.stdSinks, id)
 	m.mu.Unlock()
+
+	if hasSandbox {
+		sb.closeStdio()
+	}
 	if hasWaiter {
 		cancelWaiter()
 	}
 	if hasSink && sink.Close != nil {
 		sink.Close()
 	}
-
-	log.Info("Sandbox deleted")
-	return nil
 }
 
 // Status returns the current Instance for id, or [ErrNotFound]. It
@@ -513,8 +525,9 @@ func (m *Manager) Cleanup(ctx context.Context) error {
 
 // Purge is the best-effort, error-swallowing teardown used on cleanup
 // paths where a hung Delete must not pin the caller. Safe to call before
-// Create against a stale ID; runsc delete is idempotent for not-found
-// containers.
+// Create against a stale ID: runsc delete is idempotent for not-found
+// containers, and the in-memory registration is released so the id is
+// immediately re-creatable (crash self-heal, per-tenant stop-then-recreate).
 func (m *Manager) Purge(ctx context.Context, id SandboxID) {
 	log := slog.With(slog.String("sandbox.id", string(id)))
 
@@ -526,6 +539,7 @@ func (m *Manager) Purge(ctx context.Context, id SandboxID) {
 	}
 	m.removeRunscBundleDir(id)
 	removeInboundSock(m.stateDir, id)
+	m.deregister(id)
 }
 
 func (m *Manager) runscBundleDir(id SandboxID) string {

@@ -30,8 +30,13 @@ const resolvePath = "/resolve"
 // bridges the dispatcher's in-sandbox connections to it (see host.ResidentConfig).
 // It is TCP, not AF_UNIX: the Sentry's plugin seccomp only allows socket() for
 // AF_INET/AF_INET6, so the forwarder cannot dial a host unix socket.
+//
+// One ControlServer serves exactly one tenant's resident: its Store is the
+// isolation boundary, so a dispatcher can only ever resolve services of the
+// project whose control address was sealed into its sandbox spec.
 type ControlServer struct {
 	store *Store
+	ln    net.Listener
 }
 
 // NewControlServer returns a control server backed by store.
@@ -103,14 +108,30 @@ func (c *ControlServer) handleWorker(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
-// ServeTCP listens on the host loopback TCP address addr (e.g. "127.0.0.1:2024")
-// and serves the control API until ctx is cancelled. The address is in the
-// manager's own netns, which the Sentry's control forwarder shares, so a guest
-// dispatcher reaches it through the forwarder's host TCP dial.
-func (c *ControlServer) ServeTCP(ctx context.Context, addr string) error {
+// Listen binds the control listener on the host loopback TCP address addr and
+// returns the concrete bound address. Split from Serve so a per-tenant caller
+// can bind an ephemeral port ("127.0.0.1:0") and learn the real address BEFORE
+// the resident's sandbox spec is sealed (ControlHostAddr is baked in at
+// Create time and cannot change for the sandbox's lifetime).
+func (c *ControlServer) Listen(addr string) (string, error) {
+	if c.ln != nil {
+		return "", fmt.Errorf("control server is already listening on %s", c.ln.Addr())
+	}
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		return fmt.Errorf("listening on control addr %s: %w", addr, err)
+		return "", fmt.Errorf("listening on control addr %s: %w", addr, err)
+	}
+	c.ln = ln
+	return ln.Addr().String(), nil
+}
+
+// Serve serves the control API on the listener bound by Listen until ctx is
+// cancelled. The address is in the manager's own netns, which the Sentry's
+// control forwarder shares, so a guest dispatcher reaches it through the
+// forwarder's host TCP dial.
+func (c *ControlServer) Serve(ctx context.Context) error {
+	if c.ln == nil {
+		return fmt.Errorf("control server has no listener; call Listen first")
 	}
 
 	srv := &http.Server{Handler: c.Handler()}
@@ -120,9 +141,19 @@ func (c *ControlServer) ServeTCP(ctx context.Context, addr string) error {
 	stop := context.AfterFunc(ctx, func() { _ = srv.Close() })
 	defer stop()
 
-	slog.Info("Serving workerd control channel", "addr", addr)
-	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	slog.Info("Serving workerd control channel", "addr", c.ln.Addr().String())
+	if err := srv.Serve(c.ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("serving control channel: %w", err)
 	}
 	return nil
+}
+
+// Close releases the bound listener for a server whose Serve was never
+// started (an assembly-failure path); Serve's own shutdown closes it
+// otherwise.
+func (c *ControlServer) Close() error {
+	if c.ln == nil {
+		return nil
+	}
+	return c.ln.Close()
 }

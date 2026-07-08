@@ -5,6 +5,7 @@ package manager
 import (
 	"context"
 	"fmt"
+	"sync"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -16,13 +17,20 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/workerd/host"
 )
 
-// fakeResident is an in-memory host.ResidentRuntime.
+// fakeResident is an in-memory host.ResidentRuntime. Locked: the manager's
+// done-watcher drives residents from its own goroutine, concurrently with
+// test-goroutine assertions.
 type fakeResident struct {
+	mu          sync.Mutex
 	ensureErr   error
+	stopErr     error
 	ensureCalls int
+	stopCalls   int
 }
 
 func (f *fakeResident) EnsureResident(_ context.Context) (*host.ResidentInstance, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.ensureCalls++
 	if f.ensureErr != nil {
 		return nil, f.ensureErr
@@ -30,8 +38,30 @@ func (f *fakeResident) EnsureResident(_ context.Context) (*host.ResidentInstance
 	return &host.ResidentInstance{SandboxID: "apoxy-workerd-resident", InboundSocket: "/run/in.sock"}, nil
 }
 
-func (f *fakeResident) Stop(_ context.Context) error    { return nil }
-func (f *fakeResident) Cleanup(_ context.Context) error { return nil }
+func (f *fakeResident) Stop(_ context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stopCalls++
+	return f.stopErr
+}
+
+func (f *fakeResident) ensured() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.ensureCalls
+}
+
+func (f *fakeResident) stopped() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.stopCalls
+}
+
+func (f *fakeResident) setStopErr(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stopErr = err
+}
 
 func newResidentReconciler(t *testing.T, resident host.ResidentRuntime, f *fakeFetcher, objs ...client.Object) (*ResidentReconciler, client.Client) {
 	t.Helper()
@@ -133,7 +163,7 @@ func TestResidentReconciler_KeepsPreviousUntilNewWarms(t *testing.T) {
 	if err := c.Create(context.Background(), revisionAt("api-v2", "api", "sha256:2", 200)); err != nil {
 		t.Fatalf("create v2: %v", err)
 	}
-	f.manifestErr = fmt.Errorf("registry down")
+	f.setManifestErr(fmt.Errorf("registry down"))
 
 	res, err := reconcileRevision(t, r, "api-v2")
 	if err != nil {

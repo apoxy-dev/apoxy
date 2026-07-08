@@ -19,11 +19,12 @@ import (
 type ServerOption func(*serverOptions)
 
 type serverOptions struct {
-	extensionEnabled     bool
-	extensionServerAddr  string
-	extensionServerCreds credentials.TransportCredentials
-	extensionFailOpen    bool
-	client               client.Client
+	extensionEnabled         bool
+	extensionServerAddr      string
+	extensionServerCreds     credentials.TransportCredentials
+	extensionFailOpen        bool
+	client                   client.Client
+	workerdProjectNamespaces bool
 }
 
 // WithClient sets the Kubernetes client for status updates.
@@ -32,6 +33,19 @@ type serverOptions struct {
 func WithClient(c client.Client) ServerOption {
 	return func(o *serverOptions) {
 		o.client = c
+	}
+}
+
+// WithWorkerdProjectNamespaces marks route namespaces as project UUIDs for the
+// workerd xDS hook. It is the opt-in for multi-project translation owners —
+// the shared backplane, whose DefaultGatewayReconciler rewrites route
+// namespaces to multicluster cluster names (project UUIDs). With it, the hook
+// emits one per-project resident cluster per project instead of the single
+// legacy cluster. Never set it in dedicated/dev single-project topologies,
+// where namespaces are user namespaces. (APO-796)
+func WithWorkerdProjectNamespaces() ServerOption {
+	return func(o *serverOptions) {
+		o.workerdProjectNamespaces = true
 	}
 }
 
@@ -76,8 +90,9 @@ func RunServer(ctx context.Context, resources *message.ProviderResources, opts .
 	// It subscribes to the provider resources, translates it to xDS IR
 	// and infra IR resources and publishes them.
 	gwRunner := gatewayapirunner.New(&gatewayapirunner.Config{
-		ProviderResources: resources,
-		XdsIR:             xdsIR,
+		ProviderResources:           resources,
+		XdsIR:                       xdsIR,
+		WorkerdProjectFromNamespace: options.workerdProjectNamespaces,
 	})
 	if err := gwRunner.Start(ctx); err != nil {
 		return err

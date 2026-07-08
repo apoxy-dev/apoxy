@@ -19,12 +19,16 @@ import (
 
 var _ reconcile.Reconciler = &ResidentReconciler{}
 
-// ResidentReconciler is the data-plane half of the APO-796 ServiceManager. It
-// runs inside cmd/workerd-manager next to the runsc host, 1:1 with a backplane
-// node. It watches ServiceRevisions, keeps the single resident workerd up, warms
-// each revision's WorkerDefinition (validating the bundle is pullable and the
-// modules build), and records THIS node's serveable revision per service so the
-// resident's dispatcher can resolve it via /resolve.
+// ResidentReconciler is the data-plane half of the APO-796 ServiceManager for
+// ONE tenant: it reconciles that tenant's ServiceRevisions against its
+// resident and store using a project-scoped client. It is constructed per
+// ReconcileWithClient call by ResidentManager (which owns the long-lived
+// per-tenant state), mirroring how tunnelproxy's shard wrapper drives
+// TunnelServer.ReconcileWithClient with the per-cluster client. It keeps the
+// tenant's resident workerd up, warms each revision's WorkerDefinition
+// (validating the bundle is pullable and the modules build), and records THIS
+// node's serveable revision per service so the resident's dispatcher can
+// resolve it via /resolve.
 //
 // It is strictly READ-ONLY on the Service/ServiceRevision API objects: with
 // dozens-to-hundreds of revisions across N nodes, a data-plane writer on a shared,
@@ -83,7 +87,7 @@ func (r *ResidentReconciler) Reconcile(ctx context.Context, req reconcile.Reques
 		return ctrl.Result{}, r.refreshDemux(ctx)
 	}
 
-	// Keep the single resident up (idempotent; self-heals if it died).
+	// Keep the tenant's resident up (idempotent; self-heals if it died).
 	if _, err := r.resident.EnsureResident(ctx); err != nil {
 		// No API write: surface the error so controller-runtime backs off and retries.
 		return ctrl.Result{}, fmt.Errorf("ensuring resident: %w", err)
@@ -166,12 +170,4 @@ func (r *ResidentReconciler) refreshDemux(ctx context.Context) error {
 	// service to its live revision id for the dispatcher.
 	r.store.setDemux(demux)
 	return nil
-}
-
-// SetupWithManager registers the reconciler with the manager.
-func (r *ResidentReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
-		Named("compute-resident").
-		For(&computev1alpha1.ServiceRevision{}).
-		Complete(r)
 }

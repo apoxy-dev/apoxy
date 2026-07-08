@@ -91,6 +91,15 @@ type Translator struct {
 
 	// Namespace is the namespace that Envoy Gateway runs in.
 	Namespace string
+
+	// WorkerdProjectFromNamespace stamps each workerd-backed route's IR with
+	// the route's namespace as its project (ir.HTTPRoute.WorkerdProject). Set
+	// it ONLY when route namespaces are project UUIDs — the shared backplane,
+	// whose DefaultGatewayReconciler rewrites hr.Namespace to the multicluster
+	// cluster name. Never set it in dedicated/dev topologies, where namespaces
+	// are user namespaces and the single legacy resident cluster applies.
+	// (APO-796)
+	WorkerdProjectFromNamespace bool
 }
 
 type TranslateResult struct {

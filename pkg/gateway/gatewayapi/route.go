@@ -230,9 +230,14 @@ func (t *Translator) processHTTPRouteRules(httpRoute *HTTPRouteContext, parentRe
 				route.Destination.Settings = append(route.Destination.Settings, ds)
 				// APO-796: mark a compute.apoxy.dev Service route so the xDS workerd
 				// hook re-points it to the resident cluster and sets the
-				// x-apoxy-service demux header.
+				// x-apoxy-service demux header. When the translation owner opted in
+				// (shared backplane, where route namespaces are project UUIDs), also
+				// record the project so the hook targets that project's resident.
 				if IsComputeServiceBackendRef(backendRef.BackendObjectReference) {
 					route.WorkerdService = string(backendRef.Name)
+					if t.WorkerdProjectFromNamespace {
+						route.WorkerdProject = httpRoute.GetNamespace()
+					}
 				}
 			}
 		}
@@ -832,10 +837,12 @@ func (t *Translator) processHTTPRouteParentRefListener(route RouteContext, route
 					Retry:                 routeRoute.Retry,
 					IsHTTP2:               routeRoute.IsHTTP2,
 					TCPKeepalive:          routeRoute.TCPKeepalive,
-					// APO-796: carry the compute Service marker onto the per-host
-					// route so the xDS workerd hook re-points it to the resident
-					// cluster. Omitting it drops the marker before translation.
+					// APO-796: carry the compute Service marker (and its project)
+					// onto the per-host route so the xDS workerd hook re-points it
+					// to the resident cluster. Omitting either drops the marker
+					// before translation.
 					WorkerdService: routeRoute.WorkerdService,
+					WorkerdProject: routeRoute.WorkerdProject,
 				}
 				perHostRoutes = append(perHostRoutes, hostRoute)
 			}

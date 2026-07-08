@@ -155,13 +155,13 @@ func TestStore_CachesAfterWarm(t *testing.T) {
 	if !store.cached("api:api-abc") {
 		t.Fatal("Warm should cache the definition")
 	}
-	callsAfterWarm := f.calls
+	callsAfterWarm := f.manifestCalls()
 	// A subsequent Get is served from cache: the fetcher is not hit again.
 	if _, err := store.Get(context.Background(), "api:api-abc"); err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if f.calls != callsAfterWarm {
-		t.Errorf("Get should serve from cache; fetcher Manifest calls went %d -> %d", callsAfterWarm, f.calls)
+	if f.manifestCalls() != callsAfterWarm {
+		t.Errorf("Get should serve from cache; fetcher Manifest calls went %d -> %d", callsAfterWarm, f.manifestCalls())
 	}
 
 	// After Invalidate, the next Get resolves again.
@@ -172,7 +172,7 @@ func TestStore_CachesAfterWarm(t *testing.T) {
 	if _, err := store.Get(context.Background(), "api:api-abc"); err != nil {
 		t.Fatalf("Get after invalidate: %v", err)
 	}
-	if f.calls <= callsAfterWarm {
-		t.Errorf("Get after invalidate should re-fetch; calls = %d", f.calls)
+	if f.manifestCalls() <= callsAfterWarm {
+		t.Errorf("Get after invalidate should re-fetch; calls = %d", f.manifestCalls())
 	}
 }

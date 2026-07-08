@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"net"
 	"os"
-	"path/filepath"
 	"time"
 )
 
@@ -19,14 +18,6 @@ import (
 // listener within a few hundred ms of guest start; 5s leaves generous margin
 // without letting a wedged server hang Start indefinitely.
 const inboundReadyTimeout = 5 * time.Second
-
-// inboundSockPath returns the host filesystem path of the AF_UNIX listening
-// socket that fronts a sandbox's resident server. Lives under the runsc state
-// dir alongside the rest of the per-sandbox state. Kept short to stay under
-// the 108-byte sun_path limit.
-func inboundSockPath(stateDir string, id SandboxID) string {
-	return filepath.Join(stateDir, string(id)+".in.sock")
-}
 
 // openInboundListener binds a host AF_UNIX listening socket at path and returns
 // a *os.File for it to donate to the runsc-start subprocess via cmd.ExtraFiles.
@@ -66,7 +57,7 @@ func openInboundListener(path string) (*os.File, error) {
 // path is a sibling of the per-sandbox state dir, not inside it, so the
 // teardown RemoveAll(stateDir/id) doesn't catch it — hence the explicit unlink.
 func removeInboundSock(stateDir string, id SandboxID) {
-	if err := os.Remove(inboundSockPath(stateDir, id)); err != nil && !os.IsNotExist(err) {
+	if err := os.Remove(InboundSockPath(stateDir, id)); err != nil && !os.IsNotExist(err) {
 		slog.Warn("Failed to remove inbound socket",
 			slog.String("sandbox.id", string(id)), slog.Any("error", err))
 	}

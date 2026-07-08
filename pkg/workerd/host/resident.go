@@ -8,23 +8,23 @@ import (
 	"fmt"
 	"log/slog"
 	"net/netip"
+	"os"
 	"sync"
 
 	"github.com/apoxy-dev/apoxy/pkg/sandbox"
+	"github.com/apoxy-dev/apoxy/pkg/workerd/names"
 )
 
-// The resident model (APO-796): ONE long-lived workerd per backplane runs the
-// static dispatcher worker (BuildResidentConfig) and hosts every service/
-// revision as a WorkerLoader isolate. This is distinct from the per-(tenant,
-// revision) Runtime above, which 625's cmd/workerd-host drives — that bakes one
-// customer worker per sandbox; this bakes the dispatcher and loads customers at
-// runtime over the control channel.
+// The resident model (APO-796): ONE long-lived workerd per TENANT (project)
+// runs the static dispatcher worker (BuildResidentConfig) and hosts that
+// tenant's service/revisions as WorkerLoader isolates. Single-project
+// topologies (apoxy dev, dedicated mode) run exactly one resident with the
+// empty tenant; the shared backplane's manager runs one per engaged project.
+// This is distinct from the per-(tenant, revision) Runtime above, which 625's
+// cmd/workerd-host drives — that bakes one customer worker per sandbox; this
+// bakes the dispatcher and loads customers at runtime over the control channel.
 
 const (
-	// residentSandboxID is the stable id of the single resident sandbox. There
-	// is exactly one per backplane, so the id is a constant (not keyed by
-	// tenant/revision like the per-revision Runtime).
-	residentSandboxID sandbox.SandboxID = "apoxy-workerd-resident"
 	// defaultResidentListenAddr is the dispatcher's in-sandbox http socket bind
 	// address when ResidentConfig.ListenAddr is unset. The inbound forwarder
 	// (APO-694) fronts it with a host AF_UNIX socket Envoy dials.
@@ -47,6 +47,12 @@ const (
 
 // ResidentConfig constructs a ResidentHost.
 type ResidentConfig struct {
+	// Tenant is the project UUID this resident serves; empty for the
+	// single-project topologies (apoxy dev, dedicated mode). It keys the
+	// sandbox id and the inbound socket path via pkg/workerd/names, so the
+	// gateway's per-project resident cluster dials the matching socket.
+	Tenant string
+
 	// StateDir is runsc's --root.
 	StateDir string
 	// RootDir is the host staging area for the generated dispatcher config.
@@ -84,48 +90,45 @@ type ResidentInstance struct {
 
 // ResidentRuntime is the surface the ServiceManager resident reconciler drives.
 // ResidentHost implements it over the gVisor core; tests fake it on any platform.
+//
+// The interface deliberately has NO Cleanup: the underlying sandbox core's
+// cleanup purges the entire runsc state dir — every tenant's resident — so it
+// is a process-wide, boot-only operation owned by ResidentFactory
+// (CleanupOrphans), not something a per-tenant driver can be handed.
 type ResidentRuntime interface {
-	// EnsureResident brings the single resident up if it is not already, and is
-	// idempotent: a second call while the resident is up returns the same
+	// EnsureResident brings this tenant's resident up if it is not already, and
+	// is idempotent: a second call while the resident is up returns the same
 	// instance without recreating the sandbox.
 	EnsureResident(ctx context.Context) (*ResidentInstance, error)
-	// Stop drains and tears down the resident.
+	// Stop drains and tears down the resident, including its staged config.
 	Stop(ctx context.Context) error
-	// Cleanup reaps orphan sandboxes from a previous host incarnation.
-	Cleanup(ctx context.Context) error
 }
 
 var _ ResidentRuntime = (*ResidentHost)(nil)
 
-// ResidentHost owns the one resident workerd. It stages the static dispatcher
-// config, runs it in a single sandbox with the inbound forwarder and the manager
-// control socket, and exposes idempotent lifecycle for the resident reconciler.
+// ResidentHost owns one tenant's resident workerd. It stages the static
+// dispatcher config, runs it in a single sandbox with the inbound forwarder and
+// the manager control socket, and exposes idempotent lifecycle for the resident
+// reconciler. Construct via ResidentFactory.NewResident so all residents share
+// one sandbox core.
 type ResidentHost struct {
 	core    sandbox.Runtime
 	cfg     ResidentConfig
+	id      sandbox.SandboxID
 	rootDir string
 
 	mu   sync.Mutex
 	inst *ResidentInstance
+	// staged records that THIS host staged config on disk and has not yet
+	// removed it. It gates Stop's staging-dir removal: the path is
+	// deterministic per tenant, so an unconditional RemoveAll from a stale
+	// duplicate Stop (two repair paths racing on the same dead entry) would
+	// delete a successor resident's freshly staged config.
+	staged bool
 }
 
-// NewResidentHost constructs the resident host over the platform sandbox core.
-func NewResidentHost(cfg ResidentConfig) (*ResidentHost, error) {
-	if cfg.WorkerdImage == "" {
-		return nil, fmt.Errorf("workerd-host: ResidentConfig requires WorkerdImage")
-	}
-	if cfg.ControlHostAddr == "" {
-		return nil, fmt.Errorf("workerd-host: ResidentConfig requires ControlHostAddr")
-	}
-	core, err := newCore(Config{StateDir: cfg.StateDir, RootDir: cfg.RootDir, ImageBaseDir: cfg.ImageBaseDir})
-	if err != nil {
-		return nil, err
-	}
-	return newResidentHostWithCore(core, cfg), nil
-}
-
-// newResidentHostWithCore injects a sandbox core directly, for fake-driven tests
-// on any platform.
+// newResidentHostWithCore injects a sandbox core directly, for the factory and
+// for fake-driven tests on any platform.
 func newResidentHostWithCore(core sandbox.Runtime, cfg ResidentConfig) *ResidentHost {
 	if cfg.ListenAddr == "" {
 		cfg.ListenAddr = defaultResidentListenAddr
@@ -133,7 +136,7 @@ func newResidentHostWithCore(core sandbox.Runtime, cfg ResidentConfig) *Resident
 	if cfg.ControlForwardAddr == "" {
 		cfg.ControlForwardAddr = defaultControlForwardAddr
 	}
-	return &ResidentHost{core: core, cfg: cfg, rootDir: cfg.RootDir}
+	return &ResidentHost{core: core, cfg: cfg, id: names.ResidentID(cfg.Tenant), rootDir: cfg.RootDir}
 }
 
 // EnsureResident implements ResidentRuntime.
@@ -145,7 +148,7 @@ func (h *ResidentHost) EnsureResident(ctx context.Context) (*ResidentInstance, e
 		// from under us (OOM, crash, host reap). Probe the sandbox so the
 		// reconciler's per-reconcile EnsureResident actually self-heals instead of
 		// re-handing-out a dead instance forever.
-		st, err := h.core.Status(ctx, residentSandboxID)
+		st, err := h.core.Status(ctx, h.id)
 		switch {
 		case err == nil && st.Phase == sandbox.SandboxRunning:
 			return h.inst, nil
@@ -156,8 +159,9 @@ func (h *ResidentHost) EnsureResident(ctx context.Context) (*ResidentInstance, e
 			if st != nil {
 				phase = st.Phase
 			}
-			slog.Warn("Resident workerd no longer running; recreating", "phase", phase)
-			h.core.Purge(ctx, residentSandboxID)
+			slog.Warn("Resident workerd no longer running; recreating",
+				"sandbox.id", string(h.id), "phase", phase)
+			h.core.Purge(ctx, h.id)
 			h.inst = nil
 		default:
 			// Transient Status error: assume the resident is still up and let the
@@ -173,22 +177,23 @@ func (h *ResidentHost) EnsureResident(ctx context.Context) (*ResidentInstance, e
 	if err != nil {
 		return nil, fmt.Errorf("building resident config: %w", err)
 	}
-	cfgHostPath, err := stageConfig(h.rootDir, residentSandboxID, capnp)
+	cfgHostPath, err := stageConfig(h.rootDir, h.id, capnp)
 	if err != nil {
 		return nil, fmt.Errorf("staging resident config: %w", err)
 	}
+	h.staged = true
 
-	spec := buildResidentSpec(h.cfg, cfgHostPath)
+	spec := buildResidentSpec(h.id, h.cfg, cfgHostPath)
 	inst, err := h.core.Create(ctx, spec)
 	if err != nil {
 		return nil, fmt.Errorf("creating resident sandbox: %w", err)
 	}
-	if err := h.core.Start(ctx, residentSandboxID); err != nil {
-		h.core.Purge(ctx, residentSandboxID)
+	if err := h.core.Start(ctx, h.id); err != nil {
+		h.core.Purge(ctx, h.id)
 		return nil, fmt.Errorf("starting resident sandbox: %w", err)
 	}
 	h.inst = &ResidentInstance{
-		SandboxID:     residentSandboxID,
+		SandboxID:     h.id,
 		InboundSocket: inst.InboundSocket,
 		SandboxIP:     inst.SandboxIP,
 	}
@@ -199,20 +204,26 @@ func (h *ResidentHost) EnsureResident(ctx context.Context) (*ResidentInstance, e
 func (h *ResidentHost) Stop(ctx context.Context) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.inst == nil {
-		return nil
+	if h.inst != nil {
+		if err := h.core.Stop(ctx, h.id); err != nil && err != sandbox.ErrNotFound {
+			return err
+		}
+		h.core.Purge(ctx, h.id)
+		h.inst = nil
 	}
-	if err := h.core.Stop(ctx, residentSandboxID); err != nil && err != sandbox.ErrNotFound {
-		return err
+	// Remove the staged dispatcher config too: with per-tenant residents a
+	// stopped tenant would otherwise leak its rootDir/<id> staging dir on every
+	// disengage. Only when THIS host staged it — the path is shared with any
+	// successor resident for the same tenant.
+	if h.staged && h.rootDir != "" {
+		if err := os.RemoveAll(stagingDir(h.rootDir, h.id)); err != nil {
+			slog.Warn("Failed to remove staged resident config",
+				"sandbox.id", string(h.id), "error", err)
+		} else {
+			h.staged = false
+		}
 	}
-	h.core.Purge(ctx, residentSandboxID)
-	h.inst = nil
 	return nil
-}
-
-// Cleanup implements ResidentRuntime.
-func (h *ResidentHost) Cleanup(ctx context.Context) error {
-	return h.core.Cleanup(ctx)
 }
 
 // buildResidentSpec maps the resident config to the sandbox.Spec that runs the
@@ -226,9 +237,9 @@ func (h *ResidentHost) Cleanup(ctx context.Context) error {
 // and need no fd donation — the Sentry shares the host net namespace and
 // net.Dial("tcp", ...)s the manager's control listener directly. See
 // docs/workerd-runtime-mvp.md §"control channel".
-func buildResidentSpec(cfg ResidentConfig, cfgHostPath string) sandbox.Spec {
+func buildResidentSpec(id sandbox.SandboxID, cfg ResidentConfig, cfgHostPath string) sandbox.Spec {
 	return sandbox.Spec{
-		ID:    residentSandboxID,
+		ID:    id,
 		Image: cfg.WorkerdImage,
 		// Stock workerd serving the dispatcher config. Absolute path: the sandbox
 		// process env carries no PATH (the image store doesn't propagate the image's

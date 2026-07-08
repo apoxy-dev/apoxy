@@ -9,12 +9,18 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/apoxy-dev/apoxy/pkg/workerd/names"
 )
 
 var errStartBoom = errors.New("boom")
 
+// residentSandboxID is the empty-tenant (single-project) resident id the
+// legacy tests assert against; per-tenant ids are exercised separately.
+var residentSandboxID = names.ResidentID("")
+
 // readStagedResidentConfig reads the dispatcher capnp config EnsureResident
-// staged under rootDir for the single resident sandbox.
+// staged under rootDir for the single-project resident sandbox.
 func readStagedResidentConfig(t *testing.T, rootDir string) string {
 	t.Helper()
 	path := filepath.Join(rootDir, sanitizeID(residentSandboxID), configFileName)
@@ -40,20 +46,107 @@ func newTestResidentHost(t *testing.T, core *fakeCore) *ResidentHost {
 	return newResidentHostWithCore(core, cfg)
 }
 
-func TestNewResidentHost_RequiresImageAndControlAddr(t *testing.T) {
+func TestNewResidentFactory_Validation(t *testing.T) {
+	if _, err := NewResidentFactory(ResidentConfig{}); err == nil {
+		t.Fatal("want error for missing WorkerdImage, got nil")
+	}
+
+	f := newResidentFactoryWithCore(&fakeCore{}, testResidentConfig())
 	cases := []struct {
-		name string
-		cfg  ResidentConfig
+		name        string
+		tenant      string
+		controlAddr string
 	}{
-		{"no image", ResidentConfig{ControlHostAddr: "127.0.0.1:2024"}},
-		{"no control addr", ResidentConfig{WorkerdImage: "img"}},
+		{"no control addr", "", ""},
+		{"non-uuid tenant", "default", "127.0.0.1:2024"},
+		{"path traversal tenant", "../../etc", "127.0.0.1:2024"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := NewResidentHost(tc.cfg); err == nil {
+			if _, err := f.NewResident(tc.tenant, tc.controlAddr); err == nil {
 				t.Fatal("want error, got nil")
 			}
 		})
+	}
+}
+
+// TestResidentFactory_CleanupOrphansIsBootOnly pins the guard that keeps the
+// state-dir-global sandbox cleanup from ever running once residents exist —
+// it would purge every tenant's resident.
+func TestResidentFactory_CleanupOrphansIsBootOnly(t *testing.T) {
+	core := &fakeCore{}
+	f := newResidentFactoryWithCore(core, testResidentConfig())
+
+	if err := f.CleanupOrphans(context.Background()); err != nil {
+		t.Fatalf("boot-time CleanupOrphans: %v", err)
+	}
+	if _, err := f.NewResident("", "127.0.0.1:2024"); err != nil {
+		t.Fatalf("NewResident: %v", err)
+	}
+	if err := f.CleanupOrphans(context.Background()); err == nil {
+		t.Fatal("CleanupOrphans after NewResident must be refused")
+	}
+}
+
+// TestResidentFactory_PerTenantIsolation drives two tenants' residents over
+// ONE shared core and asserts their sandbox ids, staging dirs, and lifecycles
+// never touch: stopping one tenant leaves the other running.
+func TestResidentFactory_PerTenantIsolation(t *testing.T) {
+	const tenantA = "7ce458d7-e20c-443c-aeeb-dbc5663c1240"
+	const tenantB = "11111111-2222-4333-8444-555555555555"
+
+	core := &fakeCore{}
+	base := testResidentConfig()
+	base.RootDir = t.TempDir()
+	f := newResidentFactoryWithCore(core, base)
+	ctx := context.Background()
+
+	ha, err := f.NewResident(tenantA, "127.0.0.1:41001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hb, err := f.NewResident(tenantB, "127.0.0.1:41002")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ia, err := ha.EnsureResident(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ib, err := hb.EnsureResident(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wantA, wantB := names.ResidentID(tenantA), names.ResidentID(tenantB)
+	if ia.SandboxID != wantA || ib.SandboxID != wantB {
+		t.Fatalf("sandbox ids = %q/%q, want %q/%q", ia.SandboxID, ib.SandboxID, wantA, wantB)
+	}
+	for _, id := range []string{string(wantA), string(wantB)} {
+		if _, err := os.Stat(filepath.Join(base.RootDir, id, configFileName)); err != nil {
+			t.Errorf("tenant %s staging dir missing: %v", id, err)
+		}
+	}
+
+	// Stopping tenant A must not touch tenant B's sandbox, and must remove only
+	// A's staging dir.
+	if err := ha.Stop(ctx); err != nil {
+		t.Fatal(err)
+	}
+	wantEvents := []string{
+		"create:" + string(wantA), "start:" + string(wantA),
+		"create:" + string(wantB), "start:" + string(wantB),
+		"stop:" + string(wantA), "purge:" + string(wantA),
+	}
+	if !equalStrs(core.eventLog(), wantEvents) {
+		t.Errorf("events = %v, want %v", core.eventLog(), wantEvents)
+	}
+	if _, err := os.Stat(filepath.Join(base.RootDir, string(wantA))); !os.IsNotExist(err) {
+		t.Errorf("tenant A staging dir should be removed on Stop, stat err = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(base.RootDir, string(wantB), configFileName)); err != nil {
+		t.Errorf("tenant B staging dir must survive A's Stop: %v", err)
 	}
 }
 
