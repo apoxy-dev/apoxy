@@ -40,7 +40,7 @@
     "@visx/shape": "^4.0.0",
     "@visx/tooltip": "^4.0.0",
     "clsx": "^2.1.1",
-    "posthog-js": "1.376.4",
+    "posthog-js": "1.399.0",
     "tailwind-merge": "^2.5.5",
     "yaml": "^2.9.0"
   },
