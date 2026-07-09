@@ -47,10 +47,10 @@ func Run() error {
 		// constant and cannot observe this flag, so overriding --state_dir under
 		// a fronting Envoy is unsupported (every workerd route would 503).
 		stateDir      = fs.String("state_dir", names.DefaultStateDir, "runsc --root state dir (see pkg/workerd/names; overriding under a fronting Envoy is unsupported)")
-		rootDir       = fs.String("root_dir", "/run/workerd-manager/root", "host staging dir for the dispatcher config")
-		imageBaseDir  = fs.String("image_base_dir", "/run/workerd-manager/images", "OCI image extraction dir")
+		rootDir       = fs.String("root_dir", DefaultRootDir, "host staging dir for the dispatcher config")
+		imageBaseDir  = fs.String("image_base_dir", DefaultImageBaseDir, "OCI image extraction dir")
 		workerdImage  = fs.String("workerd_image", "", "stock workerd OCI image the resident runs (required)")
-		listenAddr    = fs.String("listen_addr", "*:8080", "dispatcher http socket bind address")
+		listenAddr    = fs.String("listen_addr", DefaultListenAddr, "dispatcher http socket bind address")
 		controlAddr   = fs.String("control_addr", "127.0.0.1:2024", "host loopback TCP address the control channel listens on (the Sentry control forwarder dials it; TCP because the plugin seccomp blocks host AF_UNIX)")
 		controlFwd    = fs.String("control_forward_addr", "", "in-sandbox TCP address the dispatcher dials for the control channel (default 127.0.0.2:80)")
 		kubeconfig    = fs.String("kubeconfig", "", "path to the project apiserver kubeconfig (in-cluster config if empty)")
@@ -66,40 +66,19 @@ func Run() error {
 	// surface instead of being silently discarded ("log.SetLogger never called").
 	ctrl.SetLogger(logr.FromSlogHandler(slog.Default().Handler()))
 
-	if *workerdImage == "" {
-		return fmt.Errorf("workerd-manager: --workerd_image is required")
-	}
-
-	// The resident's runsc state/staging/image-extraction dirs live under the
-	// shared volume (/run/workerd-manager); only the mount point exists, so create
-	// the subdirs the sandbox core and image store expect before first use.
-	for _, d := range []string{*stateDir, *rootDir, *imageBaseDir} {
-		if err := os.MkdirAll(d, 0o755); err != nil {
-			return fmt.Errorf("creating manager dir %s: %w", d, err)
-		}
-	}
-
-	// PID-1 reaper for the Sentry/gofer orphans (no-op off linux).
-	host.StartChildReaper()
-
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	factory, err := host.NewResidentFactory(host.ResidentConfig{
+	residents, err := SetupResidents(ctx, host.ResidentConfig{
 		StateDir:           *stateDir,
 		RootDir:            *rootDir,
 		ImageBaseDir:       *imageBaseDir,
 		WorkerdImage:       *workerdImage,
 		ListenAddr:         *listenAddr,
 		ControlForwardAddr: *controlFwd,
-	})
+	}, *controlAddr)
 	if err != nil {
-		return fmt.Errorf("constructing resident factory: %w", err)
-	}
-	// Orphan reaping purges the whole shared state dir, so it runs exactly once,
-	// before any resident exists.
-	if err := factory.CleanupOrphans(ctx); err != nil {
-		slog.Warn("Sandbox cleanup reported an error", "error", err)
+		return err
 	}
 
 	cfg, err := restConfig(*devMode, *apiserverHost, *kubeconfig)
@@ -127,7 +106,6 @@ func Run() error {
 	// eagerly — a broken runsc host should fail the process at boot, not on the
 	// first request. (EnsureTenant only touches the sandbox core, so calling it
 	// before mgr.Start is safe: the client is used lazily, on resolve paths.)
-	residents := NewResidentManager(factory, *controlAddr)
 	residentInst, err := residents.EnsureTenant(ctx, "", mgr.GetClient())
 	if err != nil {
 		return fmt.Errorf("starting resident workerd: %w", err)
@@ -177,4 +155,53 @@ func restConfig(dev bool, apiserverHost, kubeconfig string) (*rest.Config, error
 		return clientcmd.BuildConfigFromFlags("", kubeconfig)
 	}
 	return rest.InClusterConfig()
+}
+
+// Default locations for the resident dirs and the dispatcher listener under
+// the shared /run/workerd-manager volume. Exported so multicluster embedders
+// (the apoxy-cloud shared-shard workerd-manager) register flags with the same
+// defaults instead of re-hardcoding the literals.
+const (
+	DefaultRootDir      = "/run/workerd-manager/root"
+	DefaultImageBaseDir = "/run/workerd-manager/images"
+	DefaultListenAddr   = "*:8080"
+)
+
+// SetupResidents prepares the host for resident workerds and returns the
+// ResidentManager over them: it validates the config, creates the state/
+// staging/image dirs, starts the PID-1 child reaper, builds the resident
+// factory, and sweeps orphaned sandboxes (exactly once, before any resident
+// exists). Both Run (single-project) and multicluster embedders call this so
+// the host bootstrap cannot drift between the two topologies. controlAddr is
+// the fixed control bind for the empty tenant; shared shards pass "" (every
+// project tenant gets an ephemeral loopback port).
+func SetupResidents(ctx context.Context, cfg host.ResidentConfig, controlAddr string) (*ResidentManager, error) {
+	if cfg.WorkerdImage == "" {
+		return nil, fmt.Errorf("workerd-manager: --workerd_image is required")
+	}
+
+	// The residents' runsc state/staging/image-extraction dirs live under the
+	// shared volume (/run/workerd-manager); only the mount point exists, so
+	// create the subdirs the sandbox core and image store expect before first
+	// use.
+	for _, d := range []string{cfg.StateDir, cfg.RootDir, cfg.ImageBaseDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			return nil, fmt.Errorf("creating manager dir %s: %w", d, err)
+		}
+	}
+
+	// PID-1 reaper for the Sentry/gofer orphans (no-op off linux).
+	host.StartChildReaper()
+
+	factory, err := host.NewResidentFactory(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("constructing resident factory: %w", err)
+	}
+	// Orphan reaping purges the whole shared state dir, so it runs exactly
+	// once, before any resident exists.
+	if err := factory.CleanupOrphans(ctx); err != nil {
+		slog.Warn("Sandbox cleanup reported an error", "error", err)
+	}
+
+	return NewResidentManager(factory, controlAddr), nil
 }
