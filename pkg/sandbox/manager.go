@@ -502,23 +502,23 @@ func (m *Manager) List() []*Instance {
 
 // Cleanup reconciles on-host runsc state against the in-process instance
 // table, reaping orphans left by a previous host incarnation. Scans the
-// runsc --root dir directly rather than forking `runsc list`.
+// runsc --root dir directly rather than forking `runsc list`, covering both
+// the per-container-directory layout and the flat "<id>_sandbox:<sid>.state"
+// metadata files newer runsc writes into the root — missing the latter left
+// every post-restart `runsc create` failing with "container already exists".
 func (m *Manager) Cleanup(ctx context.Context) error {
 	slog.Info("Cleaning up orphaned sandboxes")
 
-	entries, err := os.ReadDir(m.stateDir)
+	ids, err := scanOrphanIDs(m.stateDir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
 		return fmt.Errorf("listing orphaned sandboxes: %w", err)
 	}
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		slog.Info("Found orphaned sandbox, destroying", "sandbox.id", e.Name())
-		m.Purge(ctx, SandboxID(e.Name()))
+	for _, id := range ids {
+		slog.Info("Found orphaned sandbox, destroying", "sandbox.id", string(id))
+		m.Purge(ctx, id)
 	}
 	return nil
 }
@@ -537,6 +537,7 @@ func (m *Manager) Purge(ctx context.Context, id SandboxID) {
 	if err := os.RemoveAll(filepath.Join(m.stateDir, string(id))); err != nil {
 		log.Error("RemoveAll of state dir failed", "error", err)
 	}
+	removeSandboxMetaFiles(m.stateDir, id)
 	m.removeRunscBundleDir(id)
 	removeInboundSock(m.stateDir, id)
 	m.deregister(id)
