@@ -223,6 +223,14 @@ func TestServiceRevisionValidate(t *testing.T) {
 			want:  []string{"spec.bundle.credentialsRef"},
 			count: 1,
 		},
+		{
+			name: "bundle credentialsRef alone is not supported yet",
+			mut: func(r *ServiceRevision) {
+				r.Spec.Bundle = BundleRef{Repo: "r", Digest: "sha256:a", CredentialsRef: &OCICredentialsRef{}}
+			},
+			want:  []string{"spec.bundle.credentialsRef"},
+			count: 1,
+		},
 
 		// --- bindings (discriminated union: exactly one block, matching type) ---
 		{

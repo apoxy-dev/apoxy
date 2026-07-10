@@ -7,7 +7,6 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"path"
@@ -15,6 +14,7 @@ import (
 
 	ocispecv1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"oras.land/oras-go/v2/content"
+	"oras.land/oras-go/v2/registry/remote"
 
 	computev1alpha1 "github.com/apoxy-dev/apoxy/api/compute/v1alpha1"
 )
@@ -33,25 +33,25 @@ const maxModuleLayerBytes = 64 << 20
 // the manager reads the bytes here and inlines them into the WorkerLoader
 // payload the dispatcher pulls. The returned map is keyed to match
 // BundleManifest.Modules[i].Path; the caller maps Path -> Module.Name.
-func FetchBundleModules(ctx context.Context, imageRef string) (map[string][]byte, error) {
-	repo, err := newBundleRepository(imageRef)
+//
+// Pull credentials are derived from the BundleRef itself; callers that also
+// need the BundleManifest should use FetchBundle, which shares one registry
+// session for both.
+func FetchBundleModules(ctx context.Context, b computev1alpha1.BundleRef) (map[string][]byte, error) {
+	repo, err := bundleRepositoryFor(b)
 	if err != nil {
-		return nil, fmt.Errorf("creating repository: %w", err)
+		return nil, err
 	}
+	manifest, err := fetchOCIManifest(ctx, repo)
+	if err != nil {
+		return nil, err
+	}
+	return modulesFromLayers(ctx, repo, manifest, b.Repo)
+}
 
-	manifestDesc, err := repo.Resolve(ctx, repo.Reference.Reference)
-	if err != nil {
-		return nil, fmt.Errorf("resolving %s: %w", imageRef, err)
-	}
-	manifestBlob, err := content.FetchAll(ctx, repo, manifestDesc)
-	if err != nil {
-		return nil, fmt.Errorf("fetching OCI manifest: %w", err)
-	}
-	var manifest ocispecv1.Manifest
-	if err := json.Unmarshal(manifestBlob, &manifest); err != nil {
-		return nil, fmt.Errorf("unmarshaling OCI manifest: %w", err)
-	}
-
+// modulesFromLayers fetches and extracts every modules layer of an
+// already-resolved OCI manifest. repoName appears in errors only.
+func modulesFromLayers(ctx context.Context, repo *remote.Repository, manifest ocispecv1.Manifest, repoName string) (map[string][]byte, error) {
 	out := make(map[string][]byte)
 	found := false
 	for _, layer := range manifest.Layers {
@@ -69,7 +69,7 @@ func FetchBundleModules(ctx context.Context, imageRef string) (map[string][]byte
 	}
 	if !found {
 		return nil, fmt.Errorf("workerd-host: bundle %s has no modules layer (%s)",
-			imageRef, computev1alpha1.ServiceBundleModuleLayerMediaType)
+			repoName, computev1alpha1.ServiceBundleModuleLayerMediaType)
 	}
 	return out, nil
 }

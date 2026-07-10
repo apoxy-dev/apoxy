@@ -87,7 +87,10 @@ func (s *ImageStore) CachedRefs() []string {
 // EnsureImage pulls and extracts the OCI image if not cached.
 // Returns image info including the path to the extracted rootfs directory.
 // Concurrent calls for the same imageRef are deduplicated via singleflight.
-func (s *ImageStore) EnsureImage(ctx context.Context, imageRef string) (*ImageInfo, error) {
+// cred authenticates the pull against a private registry; the zero value
+// pulls anonymously. It does not key the cache — a ref names the same
+// content regardless of who pulls it.
+func (s *ImageStore) EnsureImage(ctx context.Context, imageRef string, cred auth.Credential) (*ImageInfo, error) {
 	s.mu.Lock()
 	if info, ok := s.images[imageRef]; ok {
 		s.mu.Unlock()
@@ -106,7 +109,7 @@ func (s *ImageStore) EnsureImage(ctx context.Context, imageRef string) (*ImageIn
 		}
 		s.mu.Unlock()
 
-		return s.pullAndExtract(ctx, imageRef)
+		return s.pullAndExtract(ctx, imageRef, cred)
 	})
 	if err != nil {
 		return nil, err
@@ -115,7 +118,7 @@ func (s *ImageStore) EnsureImage(ctx context.Context, imageRef string) (*ImageIn
 }
 
 // pullAndExtract does the actual OCI pull and layer extraction.
-func (s *ImageStore) pullAndExtract(ctx context.Context, imageRef string) (*ImageInfo, error) {
+func (s *ImageStore) pullAndExtract(ctx context.Context, imageRef string, cred auth.Credential) (*ImageInfo, error) {
 	log := s.log.With("image", imageRef)
 	log.Info("Pulling OCI image")
 
@@ -142,13 +145,18 @@ func (s *ImageStore) pullAndExtract(ctx context.Context, imageRef string) (*Imag
 	repo.Client = &auth.Client{
 		Client:     orasretry.DefaultClient,
 		Cache:      auth.NewCache(),
-		Credential: auth.StaticCredential(repo.Reference.Registry, auth.EmptyCredential),
+		Credential: auth.StaticCredential(repo.Reference.Registry, cred),
 	}
 	// dev: pull over plain HTTP when the registry is listed in
 	// CLRK_INSECURE_REGISTRIES (host[:port], comma-separated). Lets a local
 	// `clrk`/`apoxy dev` registry on the docker network serve images without TLS;
 	// unset in production, so every pull stays HTTPS.
 	if isInsecureRegistry(repo.Reference.Registry) {
+		if cred != auth.EmptyCredential {
+			// Deliberate but dangerous: the insecure list is a dev-only escape
+			// hatch, and credentials on this path cross the wire unencrypted.
+			log.Warn("Sending registry credentials over plain HTTP; anyone on the network path can read them")
+		}
 		repo.PlainHTTP = true
 	}
 

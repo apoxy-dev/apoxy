@@ -70,6 +70,36 @@ func TestServiceDefault(t *testing.T) {
 			},
 		},
 		{
+			name: "oci source password scrubbed into passwordData",
+			in: ServiceSpec{Source: ServiceSource{OCI: &BundleRef{
+				Repo: "r", Digest: "sha256:a",
+				Credentials: &OCICredentials{Username: "bob", Password: "hunter2"},
+			}}},
+			want: ServiceSpec{
+				Template: httpBackendTemplate(),
+				Source: ServiceSource{OCI: &BundleRef{
+					Repo: "r", Digest: "sha256:a",
+					Credentials: &OCICredentials{Username: "bob", PasswordData: []byte("hunter2")},
+				}},
+				RevisionHistoryLimit: ptr.To(int32(10)),
+			},
+		},
+		{
+			name: "oci source explicit passwordData wins over password",
+			in: ServiceSpec{Source: ServiceSource{OCI: &BundleRef{
+				Repo: "r", Digest: "sha256:a",
+				Credentials: &OCICredentials{Password: "stale", PasswordData: []byte("hunter2")},
+			}}},
+			want: ServiceSpec{
+				Template: httpBackendTemplate(),
+				Source: ServiceSource{OCI: &BundleRef{
+					Repo: "r", Digest: "sha256:a",
+					Credentials: &OCICredentials{PasswordData: []byte("hunter2")},
+				}},
+				RevisionHistoryLimit: ptr.To(int32(10)),
+			},
+		},
+		{
 			name: "git source defaults production branch and output tag",
 			in:   ServiceSpec{Source: ServiceSource{Git: &GitSource{GitRepo: GitRepo{URL: "https://x/r.git"}, Build: BuildConfig{Output: BundleRef{Repo: "registry/out"}}}}},
 			want: ServiceSpec{

@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"oras.land/oras-go/v2/registry/remote/auth"
 )
 
 // Manager is the tenant-neutral gVisor/runsc sandbox lifecycle runtime —
@@ -86,9 +88,10 @@ func NewManager(cfg ManagerConfig) *Manager {
 // manager's underlying ImageStore. Exposed so an embedder can resolve the
 // extracted rootfs (e.g. to compute rootfs-dependent mounts) before
 // building the [Spec] it hands to Create — the pull is singleflight-cached
-// so the re-pull inside Create is free.
-func (m *Manager) EnsureImage(ctx context.Context, ref string) (*ImageInfo, error) {
-	return m.imageStore.EnsureImage(ctx, ref)
+// so the re-pull inside Create is free. cred authenticates against a private
+// registry; the zero value pulls anonymously.
+func (m *Manager) EnsureImage(ctx context.Context, ref string, cred auth.Credential) (*ImageInfo, error) {
+	return m.imageStore.EnsureImage(ctx, ref, cred)
 }
 
 // ImageStore returns the manager's image store so callers that need the
@@ -109,7 +112,7 @@ func (m *Manager) Create(ctx context.Context, spec Spec) (*Instance, error) {
 	log := slog.With(slog.String("sandbox.id", string(spec.ID)))
 	log.Info("Creating sandbox")
 
-	imgInfo, err := m.imageStore.EnsureImage(ctx, spec.Image)
+	imgInfo, err := m.imageStore.EnsureImage(ctx, spec.Image, spec.ImagePullCredential)
 	if err != nil {
 		return nil, fmt.Errorf("ensuring image: %w", err)
 	}

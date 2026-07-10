@@ -18,11 +18,35 @@ const (
 	ServiceBundleAssetsLayerMediaType = "application/vnd.apoxy.dev.service.assets.v1.tar+gzip"
 )
 
-// OCICredentials are inline registry credentials. Password is write-only.
+// OCICredentials are inline registry credentials, mirroring the docker/oras
+// credential model. Username+password covers basic auth AND the standard
+// registry token-service flow (Docker Hub/GHCR PATs, GAR oauth2accesstoken,
+// ECR authorization tokens — the puller exchanges the pair for a bearer
+// automatically). AccessToken/RefreshToken cover registries that issue tokens
+// directly instead (e.g. ACR identity tokens).
+//
+// Password is write-only: defaulting moves it into PasswordData on admission,
+// so reads never return the plain string field. The other secret fields
+// currently round-trip on reads; prefer short-lived tokens until
+// secret-store-backed credentialsRef lands.
 type OCICredentials struct {
-	Username     string `json:"username,omitempty"`
-	Password     string `json:"password,omitempty"`
+	Username string `json:"username,omitempty"`
+	// Password is the write-only plain-text form; use PasswordData when
+	// authoring programmatically.
+	Password string `json:"password,omitempty"`
+	// PasswordData is the RAW password bytes. NOT base64 of the password
+	// (unlike the extensions API field of the same name) — JSON's []byte
+	// encoding already handles the transport encoding. Takes precedence over
+	// Password when both are set.
 	PasswordData []byte `json:"passwordData,omitempty"`
+	// AccessToken is a registry bearer token sent as-is (Authorization: Bearer),
+	// skipping the token-service exchange.
+	// +optional
+	AccessToken string `json:"accessToken,omitempty"`
+	// RefreshToken is an OAuth2 refresh token (docker's "identity token")
+	// exchanged with the registry's token service for access tokens.
+	// +optional
+	RefreshToken string `json:"refreshToken,omitempty"`
 }
 
 // OCICredentialsRef references a Secret (or equivalent) holding pull

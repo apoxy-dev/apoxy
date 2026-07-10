@@ -67,9 +67,9 @@ type Runtime struct {
 	core    sandbox.Runtime
 	rootDir string
 
-	// fetchManifest resolves a bundle image ref to its BundleManifest (the OCI
+	// fetchManifest resolves a bundle ref to its BundleManifest (the OCI
 	// config blob). A seam so tests inject a manifest without a registry.
-	fetchManifest func(ctx context.Context, imageRef string) (computev1alpha1.BundleManifest, error)
+	fetchManifest func(ctx context.Context, b computev1alpha1.BundleRef) (computev1alpha1.BundleManifest, error)
 
 	mu        sync.Mutex
 	residents map[string]*Resident // keyed by Tenant
@@ -93,7 +93,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 
 // newRuntimeWithCore injects a sandbox core and manifest fetcher directly. Used
 // by tests to exercise the wrapper logic against a fake on any platform.
-func newRuntimeWithCore(core sandbox.Runtime, rootDir string, fetch func(context.Context, string) (computev1alpha1.BundleManifest, error)) *Runtime {
+func newRuntimeWithCore(core sandbox.Runtime, rootDir string, fetch func(context.Context, computev1alpha1.BundleRef) (computev1alpha1.BundleManifest, error)) *Runtime {
 	return &Runtime{
 		core:          core,
 		rootDir:       rootDir,
@@ -139,7 +139,13 @@ func (r *Runtime) startResident(ctx context.Context, want ResidentRef) (*Residen
 	if err != nil {
 		return nil, err
 	}
-	manifest, err := r.fetchManifest(ctx, imageRef)
+	// The sandbox core pulls the same bundle image for the rootfs, so it
+	// needs the same credentials the manifest fetch derives internally.
+	creds, err := BundlePullCredentials(want.Bundle)
+	if err != nil {
+		return nil, err
+	}
+	manifest, err := r.fetchManifest(ctx, want.Bundle)
 	if err != nil {
 		return nil, fmt.Errorf("fetching bundle manifest: %w", err)
 	}
@@ -159,7 +165,7 @@ func (r *Runtime) startResident(ctx context.Context, want ResidentRef) (*Residen
 		return nil, fmt.Errorf("staging workerd config: %w", err)
 	}
 
-	spec := buildSpec(id, imageRef, want, cfgHostPath)
+	spec := buildSpec(id, imageRef, creds, want, cfgHostPath)
 	inst, err := r.core.Create(ctx, spec)
 	if err != nil {
 		return nil, fmt.Errorf("creating sandbox: %w", err)

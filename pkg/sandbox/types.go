@@ -6,6 +6,8 @@ import (
 	"net/netip"
 	"os"
 	"time"
+
+	"oras.land/oras-go/v2/registry/remote/auth"
 )
 
 // SandboxID uniquely identifies a sandbox instance within a host.
@@ -54,6 +56,10 @@ type Spec struct {
 	// into the sandbox rootfs. For workerd this is the bundle image whose
 	// command is `workerd serve`.
 	Image string
+
+	// ImagePullCredential authenticates the Image pull against a private
+	// registry. The zero value pulls anonymously.
+	ImagePullCredential auth.Credential
 
 	// Command overrides the image entrypoint (argv from index 0). Empty uses
 	// the image's own entrypoint. (Adapted from clrkv1alpha1.AgentSandbox.)

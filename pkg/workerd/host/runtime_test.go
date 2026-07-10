@@ -138,8 +138,8 @@ func (f *fakeCore) eventLog() []string {
 
 // fixedManifest returns a manifest fetcher that always yields a single-esModule
 // bundle, ignoring the ref.
-func fixedManifest() func(context.Context, string) (computev1alpha1.BundleManifest, error) {
-	return func(_ context.Context, _ string) (computev1alpha1.BundleManifest, error) {
+func fixedManifest() func(context.Context, computev1alpha1.BundleRef) (computev1alpha1.BundleManifest, error) {
+	return func(_ context.Context, _ computev1alpha1.BundleRef) (computev1alpha1.BundleManifest, error) {
 		return computev1alpha1.BundleManifest{
 			Modules:           []computev1alpha1.Module{{Name: "index.js", Type: computev1alpha1.ESModule, Path: "index.js"}},
 			CompatibilityDate: "2024-01-01",

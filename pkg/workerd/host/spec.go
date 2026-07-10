@@ -69,10 +69,11 @@ func bundleImageRef(b computev1alpha1.BundleRef) (string, error) {
 }
 
 // buildSpec maps a resident request to the sandbox.Spec that runs stock workerd.
-func buildSpec(id sandbox.SandboxID, imageRef string, want ResidentRef, cfgHostPath string) sandbox.Spec {
+func buildSpec(id sandbox.SandboxID, imageRef string, creds PullCredentials, want ResidentRef, cfgHostPath string) sandbox.Spec {
 	return sandbox.Spec{
-		ID:    id,
-		Image: imageRef,
+		ID:                  id,
+		Image:               imageRef,
+		ImagePullCredential: creds,
 		// Stock workerd: serve the reconstructed config. --platform=systrap
 		// because KVM is unavailable inside gVisor.
 		Command: []string{"workerd", "serve", inJailConfigPath(), "--platform=systrap"},

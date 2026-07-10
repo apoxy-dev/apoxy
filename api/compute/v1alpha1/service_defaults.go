@@ -27,6 +27,7 @@ func (w *Service) Default() {
 // defaulted the same way.
 func (r *ServiceRevision) Default() {
 	defaultConfigSpec(&r.Spec.ServiceConfigSpec)
+	defaultBundleRef(&r.Spec.Bundle)
 }
 
 // defaultConfigSpec resolves the runtime-mode union into an explicit, fully
@@ -71,9 +72,17 @@ func defaultSource(src *ServiceSource) {
 }
 
 // defaultBundleRef applies the registry-conventional "latest" tag when a bundle
-// is pinned by neither digest nor tag.
+// is pinned by neither digest nor tag, and enforces the write-only Password
+// contract by moving it into PasswordData (raw bytes — see the OCICredentials
+// doc) so the human-readable string field never round-trips on reads.
 func defaultBundleRef(b *BundleRef) {
 	if b.Digest == "" && b.Tag == "" {
 		b.Tag = "latest"
+	}
+	if c := b.Credentials; c != nil && c.Password != "" {
+		if len(c.PasswordData) == 0 {
+			c.PasswordData = []byte(c.Password)
+		}
+		c.Password = ""
 	}
 }

@@ -21,27 +21,23 @@ import (
 // failure (a 502). Wrapped, so callers use errors.Is.
 var errRevisionNotFound = errors.New("workerd-manager: service revision not found")
 
-// BundleFetcher pulls a bundle's manifest and module bytes from an OCI ref. It
-// is the registry seam: the resident reconciler and control server are
-// fake-testable without a live registry.
+// BundleFetcher pulls a bundle from an OCI registry. It is the registry seam:
+// the resident reconciler and control server are fake-testable without a live
+// registry.
 type BundleFetcher interface {
-	// Manifest returns the bundle's BundleManifest (the OCI config blob).
-	Manifest(ctx context.Context, imageRef string) (computev1alpha1.BundleManifest, error)
-	// Modules returns each module's bytes keyed by cleaned in-layer path
+	// Bundle returns the bundle's BundleManifest (the OCI config blob) and
+	// each module's bytes keyed by cleaned in-layer path
 	// (host.CleanModulePath), matching BundleManifest.Modules[i].Path.
-	Modules(ctx context.Context, imageRef string) (map[string][]byte, error)
+	// Ref resolution and pull credentials both come from the BundleRef.
+	Bundle(ctx context.Context, b computev1alpha1.BundleRef) (computev1alpha1.BundleManifest, map[string][]byte, error)
 }
 
 // ociBundleFetcher is the production fetcher over the host package's oras-go
-// helpers (anonymous pull, M1).
+// helpers.
 type ociBundleFetcher struct{}
 
-func (ociBundleFetcher) Manifest(ctx context.Context, imageRef string) (computev1alpha1.BundleManifest, error) {
-	return host.FetchBundleManifest(ctx, imageRef)
-}
-
-func (ociBundleFetcher) Modules(ctx context.Context, imageRef string) (map[string][]byte, error) {
-	return host.FetchBundleModules(ctx, imageRef)
+func (ociBundleFetcher) Bundle(ctx context.Context, b computev1alpha1.BundleRef) (computev1alpha1.BundleManifest, map[string][]byte, error) {
+	return host.FetchBundle(ctx, b)
 }
 
 // Resolver turns a dispatcher demux id ("<service>:<revision>") into the
@@ -111,17 +107,9 @@ func (r *Resolver) Resolve(ctx context.Context, id string) (host.WorkerDefinitio
 		return host.WorkerDefinition{}, fmt.Errorf("revision %q is owned by service %q, not %q", revision, got, service)
 	}
 
-	imageRef, err := host.BundleImageRef(rev.Spec.Bundle)
+	manifest, modulesByPath, err := r.fetcher.Bundle(ctx, rev.Spec.Bundle)
 	if err != nil {
-		return host.WorkerDefinition{}, err
-	}
-	manifest, err := r.fetcher.Manifest(ctx, imageRef)
-	if err != nil {
-		return host.WorkerDefinition{}, fmt.Errorf("fetching bundle manifest: %w", err)
-	}
-	modulesByPath, err := r.fetcher.Modules(ctx, imageRef)
-	if err != nil {
-		return host.WorkerDefinition{}, fmt.Errorf("fetching bundle modules: %w", err)
+		return host.WorkerDefinition{}, fmt.Errorf("fetching bundle: %w", err)
 	}
 
 	// Map each manifest module's in-layer path to its bytes, keyed by Name (the

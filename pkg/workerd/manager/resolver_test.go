@@ -16,7 +16,7 @@ import (
 	computev1alpha1 "github.com/apoxy-dev/apoxy/api/compute/v1alpha1"
 )
 
-// fakeFetcher is an in-memory BundleFetcher. It counts Manifest calls so cache
+// fakeFetcher is an in-memory BundleFetcher. It counts Bundle calls so cache
 // behavior is assertable. Locked: the resident manager's done-watcher rewarms
 // stores from its own goroutine, concurrently with test-goroutine reconciles.
 type fakeFetcher struct {
@@ -28,23 +28,17 @@ type fakeFetcher struct {
 	calls       int
 }
 
-func (f *fakeFetcher) Manifest(_ context.Context, _ string) (computev1alpha1.BundleManifest, error) {
+func (f *fakeFetcher) Bundle(_ context.Context, _ computev1alpha1.BundleRef) (computev1alpha1.BundleManifest, map[string][]byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
 	if f.manifestErr != nil {
-		return computev1alpha1.BundleManifest{}, f.manifestErr
+		return computev1alpha1.BundleManifest{}, nil, f.manifestErr
 	}
-	return f.manifest, nil
-}
-
-func (f *fakeFetcher) Modules(_ context.Context, _ string) (map[string][]byte, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
 	if f.modulesErr != nil {
-		return nil, f.modulesErr
+		return computev1alpha1.BundleManifest{}, nil, f.modulesErr
 	}
-	return f.modules, nil
+	return f.manifest, f.modules, nil
 }
 
 func (f *fakeFetcher) manifestCalls() int {

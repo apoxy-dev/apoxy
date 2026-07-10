@@ -56,7 +56,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceConfigSpec":                schema_apoxy_api_compute_v1alpha1_ServiceConfigSpec(ref),
 		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceLimits":                    schema_apoxy_api_compute_v1alpha1_ServiceLimits(ref),
 		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceList":                      schema_apoxy_api_compute_v1alpha1_ServiceList(ref),
-		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.BundleManifest":                  schema_apoxy_api_compute_v1alpha1_BundleManifest(ref),
+		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.BundleManifest":                   schema_apoxy_api_compute_v1alpha1_BundleManifest(ref),
 		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceRevision":                  schema_apoxy_api_compute_v1alpha1_ServiceRevision(ref),
 		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceRevisionList":              schema_apoxy_api_compute_v1alpha1_ServiceRevisionList(ref),
 		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceRevisionSpec":              schema_apoxy_api_compute_v1alpha1_ServiceRevisionSpec(ref),
@@ -1228,7 +1228,7 @@ func schema_apoxy_api_compute_v1alpha1_OCICredentials(ref common.ReferenceCallba
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "OCICredentials are inline registry credentials. Password is write-only.",
+				Description: "OCICredentials are inline registry credentials, mirroring the docker/oras credential model. Username+password covers basic auth AND the standard registry token-service flow (Docker Hub/GHCR PATs, GAR oauth2accesstoken, ECR authorization tokens — the puller exchanges the pair for a bearer automatically). AccessToken/RefreshToken cover registries that issue tokens directly instead (e.g. ACR identity tokens).\n\nPassword is write-only: defaulting moves it into PasswordData on admission, so reads never return the plain string field. The other secret fields currently round-trip on reads; prefer short-lived tokens until secret-store-backed credentialsRef lands.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"username": {
@@ -1239,14 +1239,30 @@ func schema_apoxy_api_compute_v1alpha1_OCICredentials(ref common.ReferenceCallba
 					},
 					"password": {
 						SchemaProps: spec.SchemaProps{
-							Type:   []string{"string"},
-							Format: "",
+							Description: "Password is the write-only plain-text form; use PasswordData when authoring programmatically.",
+							Type:        []string{"string"},
+							Format:      "",
 						},
 					},
 					"passwordData": {
 						SchemaProps: spec.SchemaProps{
-							Type:   []string{"string"},
-							Format: "byte",
+							Description: "PasswordData is the RAW password bytes. NOT base64 of the password (unlike the extensions API field of the same name) — JSON's []byte encoding already handles the transport encoding. Takes precedence over Password when both are set.",
+							Type:        []string{"string"},
+							Format:      "byte",
+						},
+					},
+					"accessToken": {
+						SchemaProps: spec.SchemaProps{
+							Description: "AccessToken is a registry bearer token sent as-is (Authorization: Bearer), skipping the token-service exchange.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"refreshToken": {
+						SchemaProps: spec.SchemaProps{
+							Description: "RefreshToken is an OAuth2 refresh token (docker's \"identity token\") exchanged with the registry's token service for access tokens.",
+							Type:        []string{"string"},
+							Format:      "",
 						},
 					},
 				},

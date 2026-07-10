@@ -262,6 +262,13 @@ func validateBundle(b *BundleRef, p *field.Path, minted bool) field.ErrorList {
 	if b.Credentials != nil && b.CredentialsRef != nil {
 		errs = append(errs, field.Forbidden(p.Child("credentialsRef"),
 			"credentials and credentialsRef are mutually exclusive"))
+	} else if b.CredentialsRef != nil {
+		// Reject at admission what the data plane cannot honor: the bundle
+		// fetcher has no secret store to resolve a ref against yet, and letting
+		// the object through would only surface later as per-request 502s with
+		// no signal on the object.
+		errs = append(errs, field.Forbidden(p.Child("credentialsRef"),
+			"credentialsRef is not supported yet; use inline credentials"))
 	}
 	if minted && b.Digest == "" {
 		errs = append(errs, field.Required(p.Child("digest"),
