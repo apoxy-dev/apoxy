@@ -137,10 +137,16 @@ func ParseScope(scope string) (surface, nameGlob string, err error) {
 // ScopeAllows reports whether the store's scopes admit the named consumer on
 // the given surface. An empty scope list admits every consumer.
 func (s *SecretStore) ScopeAllows(surface, name string) bool {
-	if len(s.Spec.Scopes) == 0 {
+	return ScopesAllow(s.Spec.Scopes, surface, name)
+}
+
+// ScopesAllow reports whether a scope list admits the named consumer on the
+// given surface. An empty list admits every consumer.
+func ScopesAllow(scopes []string, surface, name string) bool {
+	if len(scopes) == 0 {
 		return true
 	}
-	for _, sc := range s.Spec.Scopes {
+	for _, sc := range scopes {
 		sf, glob, err := ParseScope(sc)
 		if err != nil || sf != surface {
 			continue
@@ -253,4 +259,12 @@ type SecretStoreValues struct {
 	// Data maps key names to secret values.
 	// +optional
 	Data map[string]string `json:"data,omitempty"`
+
+	// Scopes echoes the parent store's spec.scopes so internal readers can
+	// enforce scope checks from this document alone, without a second (and
+	// potentially cached) read of the main resource. Read-only: values
+	// written here are ignored; scopes change only through the main
+	// resource's spec.
+	// +optional
+	Scopes []string `json:"scopes,omitempty"`
 }

@@ -1136,6 +1136,27 @@ func start(
 					localClientAuth,
 					c.Authentication.Authenticator,
 				)
+				// Secret values stay write-only here too: kube RBAC grants on
+				// the aggregated group are commonly wildcards, so without this
+				// gate any RBAC-admitted identity could read values back.
+				// Default to privileged (loopback) identities only unless the
+				// caller configured a broader allow via WithSecretValuesAuthz.
+				valuesAuthz := opts.secretValuesAuthz
+				if valuesAuthz == nil {
+					valuesAuthz = func(u user.Info) bool {
+						if u == nil {
+							return false
+						}
+						for _, g := range u.GetGroups() {
+							if g == user.SystemPrivilegedGroup {
+								return true
+							}
+						}
+						return false
+					}
+				}
+				c.Authorization.Authorizer = secretstore.NewValuesReadAuthorizer(
+					c.Authorization.Authorizer, valuesAuthz)
 			}
 
 			return c

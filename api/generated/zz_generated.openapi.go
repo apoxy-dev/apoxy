@@ -4095,6 +4095,20 @@ func schema_apoxy_api_core_v1alpha_SecretStoreValues(ref common.ReferenceCallbac
 							},
 						},
 					},
+					"scopes": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Scopes echoes the parent store's spec.scopes so internal readers can enforce scope checks from this document alone, without a second (and potentially cached) read of the main resource. Read-only: values written here are ignored; scopes change only through the main resource's spec.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
 				},
 			},
 		},

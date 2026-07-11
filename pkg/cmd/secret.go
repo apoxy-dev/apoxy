@@ -146,13 +146,20 @@ var secretDeleteCmd = &cobra.Command{
 
 // readSecretValue reads the whole input; on a terminal it prompts and strips
 // one trailing newline so interactive `secret set` behaves as expected.
+// File and pipe input is stored byte-exact — a trailing newline in a PEM
+// file or a piped blob is part of the value.
 func readSecretValue(in io.Reader) (string, error) {
+	interactive := false
 	if f, ok := in.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
+		interactive = true
 		fmt.Fprint(os.Stderr, "Value (end with Ctrl-D): ")
 	}
 	raw, err := io.ReadAll(in)
 	if err != nil {
 		return "", fmt.Errorf("reading secret value: %w", err)
+	}
+	if !interactive {
+		return string(raw), nil
 	}
 	return strings.TrimSuffix(strings.TrimSuffix(string(raw), "\n"), "\r"), nil
 }

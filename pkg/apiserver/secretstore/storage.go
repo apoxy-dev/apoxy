@@ -162,6 +162,7 @@ func valuesView(store *corev1alpha.SecretStore) *corev1alpha.SecretStoreValues {
 			Kind:       "SecretStoreValues",
 		},
 		ObjectMeta: *store.ObjectMeta.DeepCopy(),
+		Scopes:     append([]string(nil), store.Spec.Scopes...),
 	}
 	if len(store.Data) > 0 {
 		vals.Data = make(map[string]string, len(store.Data))

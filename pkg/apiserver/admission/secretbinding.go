@@ -81,19 +81,32 @@ func (p *secretBindingPlugin) Validate(ctx context.Context, a admission.Attribut
 		return nil
 	}
 
+	stores := make(map[string]*corev1alpha.SecretStore)
 	for i := range bindings {
 		b := &bindings[i]
 		if b.Type != computev1alpha1.SecretBindingType || b.Secret == nil {
 			continue
 		}
-		store, err := p.client.CoreV1alpha().SecretStores().Get(ctx, string(b.Secret.Store), metav1.GetOptions{})
-		if apierrors.IsNotFound(err) {
-			return admission.NewForbidden(a, fmt.Errorf(
-				"binding %q references SecretStore %q which does not exist; create the SecretStore first",
-				b.Name, b.Secret.Store))
+		if b.Secret.Store == "" {
+			// Malformed (e.g. an object persisted with a pre-APO-627 binding
+			// shape). Strategy validation rejects it with a precise
+			// "secret.store: Required" error; a store lookup here would only
+			// produce a confusing 'SecretStore "" does not exist'.
+			continue
 		}
-		if err != nil {
-			return fmt.Errorf("checking SecretStore %q for binding %q: %w", b.Secret.Store, b.Name, err)
+		store, ok := stores[string(b.Secret.Store)]
+		if !ok {
+			var err error
+			store, err = p.client.CoreV1alpha().SecretStores().Get(ctx, string(b.Secret.Store), metav1.GetOptions{})
+			if apierrors.IsNotFound(err) {
+				return admission.NewForbidden(a, fmt.Errorf(
+					"binding %q references SecretStore %q which does not exist; create the SecretStore first",
+					b.Name, b.Secret.Store))
+			}
+			if err != nil {
+				return fmt.Errorf("checking SecretStore %q for binding %q: %w", b.Secret.Store, b.Name, err)
+			}
+			stores[string(b.Secret.Store)] = store
 		}
 		if consumer != "" && !store.ScopeAllows("compute", consumer) {
 			return admission.NewForbidden(a, fmt.Errorf(

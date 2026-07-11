@@ -133,12 +133,14 @@ func (r *Resolver) Resolve(ctx context.Context, id string) (host.WorkerDefinitio
 // resolveSecrets fetches the values for the revision's secret bindings from
 // their SecretStores, re-checking scopes at materialization time (admission
 // checked at write time, but stores change independently of revisions).
-// Reads go through the values subresource — a live, cache-bypassing GET the
-// apiserver only serves to internal identities — so rotated values are picked
-// up on the next worker load and are never cached here.
+// Everything is read through the values subresource — a single live,
+// cache-bypassing GET per store that the apiserver only serves to internal
+// identities and that echoes the parent's scopes — so rotated values and
+// scope changes are picked up on the next worker load, nothing is cached
+// here, and no informer is ever started on SecretStore (whose cloud storage
+// serves no watch).
 func (r *Resolver) resolveSecrets(ctx context.Context, service string, cfg computev1alpha1.ServiceConfigSpec) (map[string]string, error) {
 	var out map[string]string
-	stores := make(map[string]*corev1alpha.SecretStore)
 	values := make(map[string]*corev1alpha.SecretStoreValues)
 	for i := range cfg.Bindings {
 		b := &cfg.Bindings[i]
@@ -147,24 +149,16 @@ func (r *Resolver) resolveSecrets(ctx context.Context, service string, cfg compu
 			continue
 		}
 		name := string(b.Secret.Store)
-		store, ok := stores[name]
-		if !ok {
-			store = &corev1alpha.SecretStore{}
-			if err := r.getClient().Get(ctx, client.ObjectKey{Name: name}, store); err != nil {
-				return nil, fmt.Errorf("getting secret store %q for binding %q: %w", name, b.Name, err)
-			}
-			stores[name] = store
-		}
-		if !store.ScopeAllows("compute", service) {
-			return nil, fmt.Errorf("secret store %q scopes %v do not admit compute service %q (binding %q)",
-				name, store.Spec.Scopes, service, b.Name)
-		}
 		vals, ok := values[name]
 		if !ok {
 			vals = &corev1alpha.SecretStoreValues{}
 			parent := &corev1alpha.SecretStore{ObjectMeta: metav1.ObjectMeta{Name: name}}
 			if err := r.getClient().SubResource("values").Get(ctx, parent, vals); err != nil {
 				return nil, fmt.Errorf("reading values of secret store %q for binding %q: %w", name, b.Name, err)
+			}
+			if !corev1alpha.ScopesAllow(vals.Scopes, "compute", service) {
+				return nil, fmt.Errorf("secret store %q scopes %v do not admit compute service %q (binding %q)",
+					name, vals.Scopes, service, b.Name)
 			}
 			values[name] = vals
 		}

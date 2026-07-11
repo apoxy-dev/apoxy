@@ -394,6 +394,9 @@ func secretBindingValue(bd *computev1alpha1.Binding, env map[string]string, secr
 	if bd.Type != computev1alpha1.SecretBindingType {
 		return "", fmt.Errorf("workerd-host: binding %q of type %q is not supported yet (kv/service bindings are APO-874)", bd.Name, bd.Type)
 	}
+	if bd.Secret == nil {
+		return "", fmt.Errorf("workerd-host: secret binding %q has no secret block", bd.Name)
+	}
 	if _, dup := env[bd.Name]; dup {
 		return "", fmt.Errorf("workerd-host: secret binding %q collides with an env var of the same name", bd.Name)
 	}

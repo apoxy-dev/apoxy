@@ -810,6 +810,11 @@ func (in *SecretStoreValues) DeepCopyInto(out *SecretStoreValues) {
 			(*out)[key] = val
 		}
 	}
+	if in.Scopes != nil {
+		in, out := &in.Scopes, &out.Scopes
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	return
 }
 

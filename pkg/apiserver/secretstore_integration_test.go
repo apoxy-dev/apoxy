@@ -78,12 +78,14 @@ func TestAPIServerIntegrationSecretStore(t *testing.T) {
 		Do(ctx).Error()
 	require.True(t, apierrors.IsForbidden(err), "want Forbidden for user values GET, got %v", err)
 
-	// An internal identity can.
+	// An internal identity can, and the document echoes the parent's scopes
+	// so the resolver enforces them without a second (cached) read.
 	vals := &corev1alpha.SecretStoreValues{}
 	require.NoError(t, internal.CoreV1alpha().RESTClient().Get().
 		Resource("secretstores").Name("st").SubResource("values").
 		Do(ctx).Into(vals))
 	require.Equal(t, map[string]string{"a": "1", "b": "2"}, vals.Data)
+	require.Equal(t, []string{"compute:web-*"}, vals.Scopes)
 
 	// merge-patch null deletes a key; new keys merge in.
 	patchValues(t, user, "st", `{"data":{"b":null,"c":"3"}}`)
@@ -110,6 +112,8 @@ func TestAPIServerIntegrationSecretStore(t *testing.T) {
 		Do(ctx).Into(vals))
 	require.Equal(t, map[string]string{"a": "1", "c": "3"}, vals.Data,
 		"main-resource update must not change values")
+	require.Equal(t, []string{"compute:web-*", "compute:api"}, vals.Scopes,
+		"values document must echo updated scopes")
 
 	// Admission: a Service binding an existing key on an in-scope name is
 	// admitted; out-of-scope names, missing keys, and missing stores are not.
