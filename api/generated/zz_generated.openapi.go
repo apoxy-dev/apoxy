@@ -38,6 +38,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.BuildList":                        schema_apoxy_api_compute_v1alpha1_BuildList(ref),
 		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.BuildSpec":                        schema_apoxy_api_compute_v1alpha1_BuildSpec(ref),
 		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.BuildStatus":                      schema_apoxy_api_compute_v1alpha1_BuildStatus(ref),
+		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.BundleManifest":                   schema_apoxy_api_compute_v1alpha1_BundleManifest(ref),
 		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.BundleRef":                        schema_apoxy_api_compute_v1alpha1_BundleRef(ref),
 		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.Capabilities":                     schema_apoxy_api_compute_v1alpha1_Capabilities(ref),
 		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.EnvVar":                           schema_apoxy_api_compute_v1alpha1_EnvVar(ref),
@@ -56,7 +57,6 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceConfigSpec":                schema_apoxy_api_compute_v1alpha1_ServiceConfigSpec(ref),
 		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceLimits":                    schema_apoxy_api_compute_v1alpha1_ServiceLimits(ref),
 		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceList":                      schema_apoxy_api_compute_v1alpha1_ServiceList(ref),
-		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.BundleManifest":                   schema_apoxy_api_compute_v1alpha1_BundleManifest(ref),
 		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceRevision":                  schema_apoxy_api_compute_v1alpha1_ServiceRevision(ref),
 		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceRevisionList":              schema_apoxy_api_compute_v1alpha1_ServiceRevisionList(ref),
 		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceRevisionSpec":              schema_apoxy_api_compute_v1alpha1_ServiceRevisionSpec(ref),
@@ -109,6 +109,12 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.Registrant":                           schema_apoxy_api_core_v1alpha_Registrant(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.RegistrationConfig":                   schema_apoxy_api_core_v1alpha_RegistrationConfig(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.RegistrationStatus":                   schema_apoxy_api_core_v1alpha_RegistrationStatus(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha.SecretKeyStatus":                      schema_apoxy_api_core_v1alpha_SecretKeyStatus(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha.SecretStore":                          schema_apoxy_api_core_v1alpha_SecretStore(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha.SecretStoreList":                      schema_apoxy_api_core_v1alpha_SecretStoreList(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha.SecretStoreSpec":                      schema_apoxy_api_core_v1alpha_SecretStoreSpec(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha.SecretStoreStatus":                    schema_apoxy_api_core_v1alpha_SecretStoreStatus(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha.SecretStoreValues":                    schema_apoxy_api_core_v1alpha_SecretStoreValues(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.TunnelNode":                           schema_apoxy_api_core_v1alpha_TunnelNode(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.TunnelNodeCredentials":                schema_apoxy_api_core_v1alpha_TunnelNodeCredentials(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.TunnelNodeList":                       schema_apoxy_api_core_v1alpha_TunnelNodeList(ref),
@@ -972,6 +978,61 @@ func schema_apoxy_api_compute_v1alpha1_BuildStatus(ref common.ReferenceCallback)
 	}
 }
 
+func schema_apoxy_api_compute_v1alpha1_BundleManifest(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "BundleManifest is the on-disk schema embedded as the OCI config blob. It is NOT a stored API object; the builder emits it and the data plane reads it to reconstruct a workerd config. Kept here so build and serve agree on a schema.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"modules": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.Module"),
+									},
+								},
+							},
+						},
+					},
+					"compatibilityDate": {
+						SchemaProps: spec.SchemaProps{
+							Default: "",
+							Type:    []string{"string"},
+							Format:  "",
+						},
+					},
+					"compatibilityFlags": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"assetsPrefix": {
+						SchemaProps: spec.SchemaProps{
+							Description: "AssetsPrefix, if set, indicates a disk-backed static service mounted here.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"modules", "compatibilityDate"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.Module"},
+	}
+}
+
 func schema_apoxy_api_compute_v1alpha1_BundleRef(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -1346,26 +1407,29 @@ func schema_apoxy_api_compute_v1alpha1_SecretBinding(ref common.ReferenceCallbac
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Type: []string{"object"},
+				Description: "SecretBinding exposes one key of a core.apoxy.dev SecretStore to service code as env.<Binding.Name>. The store's scopes must admit this service (surface \"compute\"). The value is resolved at worker materialization time and never enters the bundle or the revision.",
+				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
-					"ref": {
+					"store": {
 						SchemaProps: spec.SchemaProps{
-							Default: map[string]interface{}{},
-							Ref:     ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.OCICredentialsRef"),
+							Description: "Store names the SecretStore (cluster-scoped, same project).",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
 						},
 					},
 					"key": {
 						SchemaProps: spec.SchemaProps{
-							Type:   []string{"string"},
-							Format: "",
+							Description: "Key within the store's values map.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
 						},
 					},
 				},
-				Required: []string{"ref"},
+				Required: []string{"store", "key"},
 			},
 		},
-		Dependencies: []string{
-			"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.OCICredentialsRef"},
 	}
 }
 
@@ -1590,61 +1654,6 @@ func schema_apoxy_api_compute_v1alpha1_ServiceList(ref common.ReferenceCallback)
 		},
 		Dependencies: []string{
 			"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.Service", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
-	}
-}
-
-func schema_apoxy_api_compute_v1alpha1_BundleManifest(ref common.ReferenceCallback) common.OpenAPIDefinition {
-	return common.OpenAPIDefinition{
-		Schema: spec.Schema{
-			SchemaProps: spec.SchemaProps{
-				Description: "BundleManifest is the on-disk schema embedded as the OCI config blob. It is NOT a stored API object; the builder emits it and the data plane reads it to reconstruct a workerd config. Kept here so build and serve agree on a schema.",
-				Type:        []string{"object"},
-				Properties: map[string]spec.Schema{
-					"modules": {
-						SchemaProps: spec.SchemaProps{
-							Type: []string{"array"},
-							Items: &spec.SchemaOrArray{
-								Schema: &spec.Schema{
-									SchemaProps: spec.SchemaProps{
-										Ref: ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.Module"),
-									},
-								},
-							},
-						},
-					},
-					"compatibilityDate": {
-						SchemaProps: spec.SchemaProps{
-							Default: "",
-							Type:    []string{"string"},
-							Format:  "",
-						},
-					},
-					"compatibilityFlags": {
-						SchemaProps: spec.SchemaProps{
-							Type: []string{"array"},
-							Items: &spec.SchemaOrArray{
-								Schema: &spec.Schema{
-									SchemaProps: spec.SchemaProps{
-										Type:   []string{"string"},
-										Format: "",
-									},
-								},
-							},
-						},
-					},
-					"assetsPrefix": {
-						SchemaProps: spec.SchemaProps{
-							Description: "AssetsPrefix, if set, indicates a disk-backed static service mounted here.",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-				},
-				Required: []string{"modules", "compatibilityDate"},
-			},
-		},
-		Dependencies: []string{
-			"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.Module"},
 	}
 }
 
@@ -3849,6 +3858,248 @@ func schema_apoxy_api_core_v1alpha_RegistrationStatus(ref common.ReferenceCallba
 		},
 		Dependencies: []string{
 			"k8s.io/apimachinery/pkg/apis/meta/v1.Time"},
+	}
+}
+
+func schema_apoxy_api_core_v1alpha_SecretKeyStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "SecretKeyStatus reports one key of the store: its name and a digest of its value, so writers can confirm writes and detect rotation without reading values back.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Default: "",
+							Type:    []string{"string"},
+							Format:  "",
+						},
+					},
+					"digest": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Digest is \"sha256:\" followed by the first 8 hex characters of the SHA-256 of the value.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"name", "digest"},
+			},
+		},
+	}
+}
+
+func schema_apoxy_api_core_v1alpha_SecretStore(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "SecretStore is a named collection of secret values scoped to consumer surfaces. Secret values are write-only: they are set and read through the \"values\" subresource, never through the main resource, and the values subresource only serves reads to internal (data-plane) identities. Users observe key names and value digests via status.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("github.com/apoxy-dev/apoxy/api/core/v1alpha.SecretStoreSpec"),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("github.com/apoxy-dev/apoxy/api/core/v1alpha.SecretStoreStatus"),
+						},
+					},
+					"data": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Data holds the secret values in storage (top-level, mirroring corev1.Secret). It is an internal representation: the REST layer strips it from every main-resource response, and writes to it through the main resource are discarded — the values subresource is the only I/O path.",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/core/v1alpha.SecretStoreSpec", "github.com/apoxy-dev/apoxy/api/core/v1alpha.SecretStoreStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
+	}
+}
+
+func schema_apoxy_api_core_v1alpha_SecretStoreList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "SecretStoreList contains a list of SecretStore objects.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("github.com/apoxy-dev/apoxy/api/core/v1alpha.SecretStore"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/core/v1alpha.SecretStore", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
+	}
+}
+
+func schema_apoxy_api_core_v1alpha_SecretStoreSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"scopes": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Scopes authorize consumer surfaces to bind secrets from this store. Each scope is \"<surface>\" or \"<surface>:<name-glob>\", e.g. \"compute\" or \"compute:frontend-*\". \"compute\" is equivalent to \"compute:*\". An empty list leaves the store open to all consumers in the project; scopes exist to narrow access, not to grant it.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func schema_apoxy_api_core_v1alpha_SecretStoreStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"keys": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Keys lists the store's key names and value digests, sorted by name.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("github.com/apoxy-dev/apoxy/api/core/v1alpha.SecretKeyStatus"),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/core/v1alpha.SecretKeyStatus"},
+	}
+}
+
+func schema_apoxy_api_core_v1alpha_SecretStoreValues(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "SecretStoreValues is the payload of the secretstores/<name>/values subresource — the single path through which secret values enter and leave the API. PUT replaces the whole map; JSON merge-patch sets individual keys and deletes keys via null. GET is restricted to internal identities.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"),
+						},
+					},
+					"data": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Data maps key names to secret values.",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
 	}
 }
 
