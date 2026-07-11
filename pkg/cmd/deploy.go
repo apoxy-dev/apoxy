@@ -57,10 +57,14 @@ Examples:
 			dir = args[0]
 		}
 		manifestPath := deployFile
+		stagingDir := deployDir
 		if !cmd.Flags().Changed("filename") {
-			// The manifest belongs to the project being deployed, not to
-			// whatever directory the command happens to run from.
+			// The manifest and the staged bundle belong to the project being
+			// deployed, not to whatever directory the command runs from.
 			manifestPath = filepath.Join(dir, "service.yaml")
+		}
+		if !cmd.Flags().Changed("dir") {
+			stagingDir = filepath.Join(dir, defaultBuildOutDir)
 		}
 
 		svc, err := loadComputeService(manifestPath)
@@ -81,7 +85,7 @@ Examples:
 			manifest, err := build.Run(build.Options{
 				Dir:                dir,
 				Entry:              deployEntry,
-				OutDir:             deployDir,
+				OutDir:             stagingDir,
 				CompatibilityDate:  deployCompatDate,
 				CompatibilityFlags: deployCompatFlags,
 				Minify:             deployMinify,
@@ -92,7 +96,7 @@ Examples:
 			fmt.Fprintf(cmd.OutOrStdout(), "Built %d module(s)\n", len(manifest.Modules))
 		}
 
-		pushedRepo, dig, err := pushBundleDir(cmd.Context(), pushRef, deployDir, deployUsername, deployPasswordStdin)
+		pushedRepo, dig, err := pushBundleDir(cmd.Context(), pushRef, stagingDir, deployUsername, deployPasswordStdin)
 		if err != nil {
 			return err
 		}
@@ -196,8 +200,8 @@ func init() {
 		"Entrypoint relative to the project dir (auto-detected when empty)")
 	deployCmd.Flags().BoolVar(&deployNoBuild, "no-build", false,
 		"Skip the build step and push the already-staged bundle")
-	deployCmd.Flags().StringVar(&deployDir, "dir", defaultBuildOutDir,
-		"Staging directory for the built bundle")
+	deployCmd.Flags().StringVar(&deployDir, "dir", "",
+		"Staging directory for the built bundle (default <dir>/"+defaultBuildOutDir+")")
 	deployCmd.Flags().StringVar(&deployCompatDate, "compatibility-date", defaultCompatibilityDate,
 		"workerd compatibility date for the bundle")
 	deployCmd.Flags().StringSliceVar(&deployCompatFlags, "compatibility-flags", nil,

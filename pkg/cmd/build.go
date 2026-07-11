@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -48,10 +49,16 @@ Examples:
 		if len(args) == 1 {
 			dir = args[0]
 		}
+		outDir := buildOutDir
+		if !cmd.Flags().Changed("out") {
+			// The staged bundle belongs to the project being built, not to
+			// whatever directory the command happens to run from.
+			outDir = filepath.Join(dir, defaultBuildOutDir)
+		}
 		manifest, err := build.Run(build.Options{
 			Dir:                dir,
 			Entry:              buildEntry,
-			OutDir:             buildOutDir,
+			OutDir:             outDir,
 			CompatibilityDate:  buildCompatDate,
 			CompatibilityFlags: buildCompatFlags,
 			Minify:             buildMinify,
@@ -59,7 +66,7 @@ Examples:
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "Staged %d module(s) in %s\n", len(manifest.Modules), buildOutDir)
+		fmt.Fprintf(cmd.OutOrStdout(), "Staged %d module(s) in %s\n", len(manifest.Modules), outDir)
 		for _, m := range manifest.Modules {
 			fmt.Fprintf(cmd.OutOrStdout(), "  %-14s %s\n", m.Type, m.Path)
 		}
@@ -70,8 +77,8 @@ Examples:
 func init() {
 	buildCmd.Flags().StringVar(&buildEntry, "entry", "",
 		"Entrypoint relative to the project dir (auto-detected when empty)")
-	buildCmd.Flags().StringVar(&buildOutDir, "out", defaultBuildOutDir,
-		"Staging directory for the built bundle")
+	buildCmd.Flags().StringVar(&buildOutDir, "out", "",
+		"Staging directory for the built bundle (default <dir>/"+defaultBuildOutDir+")")
 	buildCmd.Flags().StringVar(&buildCompatDate, "compatibility-date", defaultCompatibilityDate,
 		"workerd compatibility date for the bundle")
 	buildCmd.Flags().StringSliceVar(&buildCompatFlags, "compatibility-flags", nil,

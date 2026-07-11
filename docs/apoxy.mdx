@@ -725,7 +725,7 @@ apoxy build [dir] [flags]
       --entry string                  Entrypoint relative to the project dir (auto-detected when empty)
   -h, --help                          help for build
       --minify                        Minify the bundled entry module
-      --out string                    Staging directory for the built bundle (default ".apoxy/build")
+      --out string                    Staging directory for the built bundle (default <dir>/.apoxy/build)
 ```
 
 ### Options inherited from parent commands
@@ -929,7 +929,7 @@ apoxy deploy [dir] [flags]
 ```
       --compatibility-date string     workerd compatibility date for the bundle (default "2025-01-01")
       --compatibility-flags strings   workerd compatibility flags for the bundle
-      --dir string                    Staging directory for the built bundle (default ".apoxy/build")
+      --dir string                    Staging directory for the built bundle (default <dir>/.apoxy/build)
       --entry string                  Entrypoint relative to the project dir (auto-detected when empty)
       --field-manager string          Name of the field manager for the manifest's server-side apply (default "apoxy-cli")
   -f, --filename string               Compute Service manifest to deploy (default <dir>/service.yaml)
