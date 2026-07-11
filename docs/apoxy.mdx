@@ -35,7 +35,10 @@ Get started at https://apoxy.dev and log in with 'apoxy auth'.
 * [apoxy apply](#apoxy-apply)	 - Apply resources from file(s) or directory
 * [apoxy auth](#apoxy-auth)	 - Authenticate this CLI
 * [apoxy backend](#apoxy-backend)	 - Manage backend objects
+* [apoxy build](#apoxy-build)	 - Build a compute service bundle from a JS/TS project
+* [apoxy bundle](#apoxy-bundle)	 - Manage compute service bundles
 * [apoxy delete](#apoxy-delete)	 - Delete resources by file or type/name
+* [apoxy deploy](#apoxy-deploy)	 - Build, push, and apply a compute Service end to end
 * [apoxy dev](#apoxy-dev)	 - Develop against the Apoxy API locally
 * [apoxy domain](#apoxy-domain)	 - Manage domain record objects
 * [apoxy edgefunction](#apoxy-edgefunction)	 - Manage edge function objects
@@ -690,6 +693,142 @@ apoxy backend list [flags]
 
 
 
+## apoxy build
+
+Build a compute service bundle from a JS/TS project
+
+### Synopsis
+
+Bundles the project with esbuild (ESM output, workerd resolution) into a
+staged service bundle: JS/TS is bundled into a single entry module, while
+.wasm/.txt/.bin/.data imports become separate bundle modules.
+
+The entrypoint is taken from --entry, package.json (module, then main), or
+common locations (src/index.ts, index.js, ...).
+
+Examples:
+  # Build the current directory into .apoxy/build
+  apoxy build
+
+  # Build a specific project and entrypoint
+  apoxy build ./my-worker --entry src/main.ts
+
+```
+apoxy build [dir] [flags]
+```
+
+### Options
+
+```
+      --compatibility-date string     workerd compatibility date for the bundle (default "2025-01-01")
+      --compatibility-flags strings   workerd compatibility flags for the bundle
+      --entry string                  Entrypoint relative to the project dir (auto-detected when empty)
+  -h, --help                          help for build
+      --minify                        Minify the bundled entry module
+      --out string                    Staging directory for the built bundle (default ".apoxy/build")
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy](#apoxy)	 - Open-source edge platform built on Envoy, Kubernetes APIs, and QUIC tunneling.
+
+
+
+## apoxy bundle
+
+Manage compute service bundles
+
+### Synopsis
+
+Bundles are the OCI artifacts compute Services run: JS/Wasm modules plus a
+manifest describing them. Build one with "apoxy build", push it with
+"apoxy bundle push", and reference it from Service.spec.source.oci.
+
+### Options
+
+```
+  -h, --help   help for bundle
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy](#apoxy)	 - Open-source edge platform built on Envoy, Kubernetes APIs, and QUIC tunneling.
+* [apoxy bundle push](#apoxy-bundle-push)	 - Push a built bundle to an OCI registry
+
+
+
+## apoxy bundle push
+
+Push a built bundle to an OCI registry
+
+### Synopsis
+
+Packages the staged build output as an OCI artifact and pushes it, printing
+the immutable digest to pin in Service.spec.source.oci.digest.
+
+Authentication uses the local docker credential store (the same credentials
+"docker push" would use) unless --username is given, in which case the
+password is read from --password-stdin or $APOXY_REGISTRY_PASSWORD.
+
+Examples:
+  # Push the default build output
+  apoxy bundle push registry.example.com/acme/api
+
+  # Push with an explicit tag and a CI token
+  echo "$TOKEN" | apoxy bundle push ghcr.io/acme/api:v3 --username acme-ci --password-stdin
+
+```
+apoxy bundle push <repo>[:tag] [flags]
+```
+
+### Options
+
+```
+      --dir string        Staged bundle directory (the output of "apoxy build") (default ".apoxy/build")
+  -h, --help              help for push
+      --password-stdin    Read the registry password from stdin
+      --username string   Registry username; password comes from --password-stdin or $APOXY_REGISTRY_PASSWORD
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy bundle](#apoxy-bundle)	 - Manage compute service bundles
+
+
+
 ## apoxy delete
 
 Delete resources by file or type/name
@@ -761,6 +900,64 @@ apoxy delete (-f <filename> | <type> <name> [<name>...]) [flags]
 
 
 
+## apoxy deploy
+
+Build, push, and apply a compute Service end to end
+
+### Synopsis
+
+Runs the full push-mode flow: build the project, push the bundle to the
+repository named by the Service manifest's spec.source.oci.repo, write the
+pushed digest into spec.source.oci.digest, and server-side apply the Service.
+The digest is pinned by the CLI so humans never hand-copy it.
+
+The manifest defaults to service.yaml inside the project directory.
+
+Examples:
+  # Build ., push to the repo in ./service.yaml, and apply it
+  apoxy deploy
+
+  # Deploy a project from another directory (uses my-worker/service.yaml)
+  apoxy deploy ./my-worker
+
+```
+apoxy deploy [dir] [flags]
+```
+
+### Options
+
+```
+      --compatibility-date string     workerd compatibility date for the bundle (default "2025-01-01")
+      --compatibility-flags strings   workerd compatibility flags for the bundle
+      --dir string                    Staging directory for the built bundle (default ".apoxy/build")
+      --entry string                  Entrypoint relative to the project dir (auto-detected when empty)
+      --field-manager string          Name of the field manager for the manifest's server-side apply (default "apoxy-cli")
+  -f, --filename string               Compute Service manifest to deploy (default <dir>/service.yaml)
+      --force-conflicts               Force apply even if there are field ownership conflicts
+  -h, --help                          help for deploy
+      --minify                        Minify the bundled entry module
+      --no-build                      Skip the build step and push the already-staged bundle
+      --password-stdin                Read the registry password from stdin
+      --username string               Registry username; password comes from --password-stdin or $APOXY_REGISTRY_PASSWORD
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy](#apoxy)	 - Open-source edge platform built on Envoy, Kubernetes APIs, and QUIC tunneling.
+
+
+
 ## apoxy dev
 
 Develop against the Apoxy API locally
@@ -772,9 +969,10 @@ apoxy dev [path/to/proxy.yaml] [flags]
 ### Options
 
 ```
-      --clickhouse-addr string   ClickHouse address (host only, port 9000 will be used).
-  -h, --help                     help for dev
-      --use-subprocess           Use subprocess for apiserver and backplane.
+      --clickhouse-addr string    ClickHouse address (host only, port 9000 will be used).
+  -h, --help                      help for dev
+      --use-subprocess            Use subprocess for apiserver and backplane.
+      --workerd-image apoxy dev   Stock workerd OCI image to run the APO-796 compute Service runtime. When set, apoxy dev starts the privileged workerd-manager alongside the backplane (docker driver only).
 ```
 
 ### Options inherited from parent commands
@@ -1923,7 +2121,163 @@ Commands that manage Apoxy on Kubernetes
 ### SEE ALSO
 
 * [apoxy](#apoxy)	 - Open-source edge platform built on Envoy, Kubernetes APIs, and QUIC tunneling.
+* [apoxy k8s certs](#apoxy-k8s-certs)	 - Manage the service-account certificate used by the in-cluster controller
 * [apoxy k8s install](#apoxy-k8s-install)	 - Install Apoxy Controller in Kubernetes
+
+
+
+## apoxy k8s certs
+
+Manage the service-account certificate used by the in-cluster controller
+
+### Options
+
+```
+  -h, --help   help for certs
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy k8s](#apoxy-k8s)	 - Commands that manage Apoxy on Kubernetes
+* [apoxy k8s certs list](#apoxy-k8s-certs-list)	 - Show the in-cluster cert and its server-side status
+* [apoxy k8s certs revoke](#apoxy-k8s-certs-revoke)	 - Revoke a service-account cert by SHA1 fingerprint
+* [apoxy k8s certs rotate](#apoxy-k8s-certs-rotate)	 - Rotate the in-cluster cert without dropping the aggregated API
+
+
+
+## apoxy k8s certs list
+
+Show the in-cluster cert and its server-side status
+
+```
+apoxy k8s certs list [flags]
+```
+
+### Options
+
+```
+      --all                 Also list every cert cosmos has for this project (including revoked)
+      --context string      Kubernetes context to use
+  -h, --help                help for list
+      --kubeconfig string   Path to the kubeconfig file
+      --namespace string    Namespace where the controller is installed (default "apoxy")
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy k8s certs](#apoxy-k8s-certs)	 - Manage the service-account certificate used by the in-cluster controller
+
+
+
+## apoxy k8s certs revoke
+
+Revoke a service-account cert by SHA1 fingerprint
+
+```
+apoxy k8s certs revoke <fingerprint> [flags]
+```
+
+### Options
+
+```
+  -h, --help              help for revoke
+      --user-jwt string   User JWT used for revoke; defaults to APOXY_USER_JWT then ~/.config/apoxy/user-jwt
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy k8s certs](#apoxy-k8s-certs)	 - Manage the service-account certificate used by the in-cluster controller
+
+
+
+## apoxy k8s certs rotate
+
+Rotate the in-cluster cert without dropping the aggregated API
+
+### Synopsis
+
+Rotate the service-account certificate held by the kube-controller Deployment.
+
+The flow:
+  1. Issue a new cert from cosmos (the old cert remains valid).
+  2. Update Secret apoxy/apiz-cert with the new cert material.
+  3. Trigger a rolling restart of Deployment apoxy/kube-controller. With 1 replica
+     and the default rolling-update strategy, k8s brings the new pod up Ready
+     before terminating the old one — so traffic never goes through a controller
+     with no cert.
+  4. Optionally revoke the old cert (requires a user JWT; cosmos refuses to
+     accept API-key auth on revoke so a leaked API key can't kill its own cert).
+
+If --revoke is not set, the old cert keeps working until natural expiry; the
+follow-up `apoxy k8s certs revoke` command is printed at the end.
+
+```
+apoxy k8s certs rotate [flags]
+```
+
+### Options
+
+```
+      --allow-disruption        Allow rotate to proceed against multi-replica or Recreate-strategy Deployments
+      --context string          Kubernetes context to use
+  -h, --help                    help for rotate
+      --kubeconfig string       Path to the kubeconfig file
+      --namespace string        Namespace where the controller is installed (default "apoxy")
+      --no-restart              Skip the pod-template restart; rely on the controller's fsnotify hot-reload (requires a controller built with hot-reload support)
+      --reload-wait duration    Maximum wait for the running pod to pick up the new cert when --no-restart is set (default 3m0s)
+      --revoke                  Revoke the old cert after the rollout completes (needs --user-jwt or APOXY_USER_JWT)
+      --user-jwt string         User JWT used for revoke; defaults to APOXY_USER_JWT then ~/.config/apoxy/user-jwt
+      --wait-timeout duration   Maximum wait for the new pod to become Ready (kube-controller startup probe is generous) (default 5m0s)
+  -y, --yes                     Skip the confirmation prompt
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy k8s certs](#apoxy-k8s-certs)	 - Manage the service-account certificate used by the in-cluster controller
 
 
 
@@ -1945,17 +2299,19 @@ apoxy k8s install [flags]
 ### Options
 
 ```
-      --cluster-name string   Cluster name identifier (defaults to kube context name)
-      --context string        Kubernetes context to use from the kubeconfig file
-      --dry-run               If true, only print the YAML that would be applied
-      --force                 If true, forces value overwrites (See: https://v1-28.docs.kubernetes.io/docs/reference/using-api/server-side-apply/#conflicts)
-  -h, --help                  help for install
-      --image string          Controller image override to pass to the onboarding manifest generator
-      --kubeconfig string     Path to the kubeconfig file to use for Kubernetes API access
-      --mirror string         Mirror mode (gateway, ingress, all)
-      --namespace string      The namespace to install the controller into (default "apoxy")
-      --version string        Controller version override (e.g. v0.3.0)
-  -y, --yes                   Skip confirmation and apply changes immediately
+      --cluster-name string     Cluster name identifier (defaults to kube context name)
+      --context string          Kubernetes context to use from the kubeconfig file
+      --dry-run                 If true, only print the YAML that would be applied
+      --force                   If true, forces value overwrites (See: https://v1-28.docs.kubernetes.io/docs/reference/using-api/server-side-apply/#conflicts)
+  -h, --help                    help for install
+      --image string            Controller image override to pass to the onboarding manifest generator
+      --kubeconfig string       Path to the kubeconfig file to use for Kubernetes API access
+      --mirror string           Mirror mode (gateway, ingress, all)
+      --namespace string        The namespace to install the controller into (default "apoxy")
+      --version string          Controller version override (e.g. v0.3.0)
+      --wait                    Wait for Deployments and StatefulSets to become healthy after apply (default true)
+      --wait-timeout duration   Maximum time to wait for workloads to become healthy (default 1m30s)
+  -y, --yes                     Skip confirmation and apply changes immediately
 ```
 
 ### Options inherited from parent commands
@@ -2563,7 +2919,8 @@ apoxy upgrade [flags]
 ### Options
 
 ```
-  -h, --help   help for upgrade
+      --force   Force upgrade even for dev builds.
+  -h, --help    help for upgrade
 ```
 
 ### Options inherited from parent commands

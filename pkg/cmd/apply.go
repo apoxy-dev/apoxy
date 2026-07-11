@@ -21,6 +21,25 @@ var (
 	applyRecursive      bool
 )
 
+// dynamicClients builds the discovery-backed dynamic client and REST mapper
+// for server-side apply against the project apiserver. Shared by apply and
+// deploy.
+func dynamicClients() (dynamic.Interface, *restmapper.DeferredDiscoveryRESTMapper, error) {
+	c, err := config.DefaultAPIClient()
+	if err != nil {
+		return nil, nil, err
+	}
+	dc, err := discovery.NewDiscoveryClientForConfig(c.RESTConfig)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create discovery client: %w", err)
+	}
+	dynClient, err := dynamic.NewForConfig(c.RESTConfig)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create dynamic client: %w", err)
+	}
+	return dynClient, restmapper.NewDeferredDiscoveryRESTMapper(memory.NewMemCacheClient(dc)), nil
+}
+
 // applyCmd is the global apply command for multi-resource operations.
 var applyCmd = &cobra.Command{
 	Use:   "apply -f <filename>",
@@ -49,20 +68,10 @@ Examples:
 
 		cmd.SilenceUsage = true
 
-		c, err := config.DefaultAPIClient()
+		dynClient, mapper, err := dynamicClients()
 		if err != nil {
 			return err
 		}
-
-		dc, err := discovery.NewDiscoveryClientForConfig(c.RESTConfig)
-		if err != nil {
-			return fmt.Errorf("failed to create discovery client: %w", err)
-		}
-		dynClient, err := dynamic.NewForConfig(c.RESTConfig)
-		if err != nil {
-			return fmt.Errorf("failed to create dynamic client: %w", err)
-		}
-		mapper := restmapper.NewDeferredDiscoveryRESTMapper(memory.NewMemCacheClient(dc))
 
 		allData, err := resource.ReadInputs(applyFiles, applyRecursive)
 		if err != nil {

@@ -4,23 +4,18 @@ package host
 
 import (
 	"fmt"
-	"log/slog"
-	"os"
-	"strings"
 
 	"oras.land/oras-go/v2/registry/remote"
 	"oras.land/oras-go/v2/registry/remote/auth"
-	orasretry "oras.land/oras-go/v2/registry/remote/retry"
 
 	computev1alpha1 "github.com/apoxy-dev/apoxy/api/compute/v1alpha1"
+	"github.com/apoxy-dev/apoxy/pkg/workerd/bundle"
 )
 
 // insecureBundleRegistriesEnv lists registries (host[:port], comma-separated)
-// the bundle fetcher talks to over plain HTTP instead of HTTPS. It exists for
-// `apoxy dev`, where the workerd-manager pulls bundles from a local insecure
-// registry on the docker network — mirroring `oras --plain-http` and docker's
-// insecure-registries. Unset in production, so every pull stays HTTPS.
-const insecureBundleRegistriesEnv = "APOXY_INSECURE_BUNDLE_REGISTRIES"
+// the bundle fetcher talks to over plain HTTP instead of HTTPS. See
+// bundle.InsecureRegistriesEnv (shared with the push side).
+const insecureBundleRegistriesEnv = bundle.InsecureRegistriesEnv
 
 // PullCredentials authenticate bundle pulls against a private registry, using
 // the docker/oras credential model directly: Username+Password drive basic
@@ -74,34 +69,8 @@ func bundleRepositoryFor(b computev1alpha1.BundleRef) (*remote.Repository, error
 // newBundleRepository builds the oras remote.Repository the bundle fetchers
 // share, authenticating with creds (anonymous when zero) and with PlainHTTP
 // enabled only when the target registry is listed in
-// APOXY_INSECURE_BUNDLE_REGISTRIES.
+// APOXY_INSECURE_BUNDLE_REGISTRIES. Shared with the CLI's push side via
+// pkg/workerd/bundle so build and serve can never disagree on transport.
 func newBundleRepository(imageRef string, creds PullCredentials) (*remote.Repository, error) {
-	repo, err := remote.NewRepository(imageRef)
-	if err != nil {
-		return nil, err
-	}
-	repo.Client = &auth.Client{
-		Client:     orasretry.DefaultClient,
-		Cache:      auth.NewCache(),
-		Credential: auth.StaticCredential(repo.Reference.Registry, creds),
-	}
-	if isInsecureBundleRegistry(repo.Reference.Registry) {
-		if creds != auth.EmptyCredential {
-			// Deliberate but dangerous: the insecure list is a dev-only escape
-			// hatch, and credentials on this path cross the wire unencrypted.
-			slog.Warn("Sending registry credentials over plain HTTP; anyone on the network path can read them",
-				"registry", repo.Reference.Registry)
-		}
-		repo.PlainHTTP = true
-	}
-	return repo, nil
-}
-
-func isInsecureBundleRegistry(registry string) bool {
-	for _, r := range strings.Split(os.Getenv(insecureBundleRegistriesEnv), ",") {
-		if r = strings.TrimSpace(r); r != "" && r == registry {
-			return true
-		}
-	}
-	return false
+	return bundle.NewRepository(imageRef, bundle.WithCredential(creds))
 }

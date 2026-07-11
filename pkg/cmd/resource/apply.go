@@ -158,6 +158,12 @@ func Apply(
 	return name, kind, nil
 }
 
+// DecodeUnstructured parses a single YAML/JSON document without requiring a
+// registered scheme. See decodeUnstructured.
+func DecodeUnstructured(data []byte) (*unstructured.Unstructured, error) {
+	return decodeUnstructured(data)
+}
+
 // decodeUnstructured parses a single YAML/JSON document. We decode via
 // sigs.k8s.io/yaml (which routes through the JSON path) so this works
 // without registering any scheme — important for callers that bring their

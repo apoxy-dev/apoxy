@@ -88,6 +88,8 @@ GOOS=linux go test ./pkg/tunnel/...
 | `pkg/tunnel` | VPN tunnel infrastructure, routing, IPAM |
 | `pkg/backplane` | Envoy proxy management, WASM extensions |
 | `pkg/cmd` | CLI command implementations (Cobra) |
+| `pkg/workerd/bundle` | Compute service bundle wire format: OCI pack/push, staging dir, registry transport (shared by CLI push and host pull) |
+| `pkg/workerd/build` | `apoxy build`: in-process esbuild bundling with the wasm/text/data module-collector plugin |
 | `pkg/drivers` | Deployment mode drivers (Docker, Supervisor) |
 | `pkg/net/lwtunnel` | Linux lightweight tunnel (Geneve) management |
 
@@ -214,6 +216,8 @@ Build with `GOOS=linux` for these packages on macOS.
 | `gvisor/gvisor` | Userspace network stack |
 | `temporalio/sdk` | Workflow engine |
 | `tetratelabs/wazero` | WebAssembly runtime |
+| `evanw/esbuild` | In-process JS/TS bundler for `apoxy build` |
+| `oras.land/oras-go/v2` | OCI artifact push/pull (service bundles, images) |
 
 ## Deployment Models
 
