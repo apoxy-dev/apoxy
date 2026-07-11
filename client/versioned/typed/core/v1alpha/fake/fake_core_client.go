@@ -39,6 +39,10 @@ func (c *FakeCoreV1alpha) DomainZones() v1alpha.DomainZoneInterface {
 	return newFakeDomainZones(c)
 }
 
+func (c *FakeCoreV1alpha) SecretStores() v1alpha.SecretStoreInterface {
+	return newFakeSecretStores(c)
+}
+
 func (c *FakeCoreV1alpha) TunnelNodes() v1alpha.TunnelNodeInterface {
 	return newFakeTunnelNodes(c)
 }

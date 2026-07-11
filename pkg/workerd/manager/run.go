@@ -21,6 +21,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	computev1alpha1 "github.com/apoxy-dev/apoxy/api/compute/v1alpha1"
+	corev1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
 	"github.com/apoxy-dev/apoxy/pkg/workerd/host"
 	"github.com/apoxy-dev/apoxy/pkg/workerd/names"
 )
@@ -88,6 +89,8 @@ func Run() error {
 
 	scheme := runtime.NewScheme()
 	utilruntime.Must(computev1alpha1.Install(scheme))
+	// SecretStore (secret bindings) lives in the core group.
+	utilruntime.Must(corev1alpha.Install(scheme))
 
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		Scheme:         scheme,

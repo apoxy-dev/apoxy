@@ -140,6 +140,44 @@ func (s *Server) WithResourceAndStorage(obj builderresource.Object, fn StoreFn) 
 	return s
 }
 
+// WithResourceAndStorageProvider registers a kind in the scheme and mounts an
+// arbitrary StorageProvider at its GVR — like WithResourceAndStorage, but the
+// caller supplies the finished provider instead of a StoreFn, and the status
+// subresource is NOT wired (providers that shape responses, e.g. redaction,
+// would otherwise be bypassed by the status route's raw parent reads).
+// Compose the provider from StandardStorageProvider to reuse the default
+// genericregistry.Store construction.
+func (s *Server) WithResourceAndStorageProvider(obj builderresource.Object, sp serverapiserver.StorageProvider) *Server {
+	s.apiSchemeBuilder.Register(builderresource.AddToScheme(obj))
+	s.openapiSchemeBuilder.Register(func(scheme *runtime.Scheme) error {
+		scheme.AddKnownTypes(obj.GetGroupVersionResource().GroupVersion(), obj.New(), obj.NewList())
+		return nil
+	})
+	s.forGroupVersionResource(obj.GetGroupVersionResource(), sp)
+	return s
+}
+
+// StandardStorageProvider returns the same kine/etcd-backed
+// genericregistry.Store provider that WithResourceAndStorage would install,
+// for callers that need to wrap or share it (e.g. a main resource plus a
+// custom subresource over one logical store).
+func StandardStorageProvider(obj builderresource.Object, fn StoreFn, trackGeneration bool) serverapiserver.StorageProvider {
+	return newStorageProvider(obj, fn, trackGeneration)
+}
+
+// WithSchemeKinds registers additional kinds in both the API and OpenAPI
+// schemes — needed for custom subresource payload kinds (a WithStorage
+// subresource whose storage News a type no resource.Object registers).
+func (s *Server) WithSchemeKinds(gv schema.GroupVersion, objs ...runtime.Object) *Server {
+	install := func(scheme *runtime.Scheme) error {
+		scheme.AddKnownTypes(gv, objs...)
+		return nil
+	}
+	s.apiSchemeBuilder.Register(install)
+	s.openapiSchemeBuilder.Register(install)
+	return s
+}
+
 // WithStorage registers a StorageProvider at an arbitrary GVR. If the
 // Resource contains "/", it is mounted as a subresource; otherwise as
 // a top-level resource. The returned rest.Storage's implemented rest.*

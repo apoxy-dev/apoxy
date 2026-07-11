@@ -29,6 +29,10 @@ type CloudMonitoringIntegrationListerExpansion interface{}
 // DomainZoneLister.
 type DomainZoneListerExpansion interface{}
 
+// SecretStoreListerExpansion allows custom methods to be added to
+// SecretStoreLister.
+type SecretStoreListerExpansion interface{}
+
 // TunnelNodeListerExpansion allows custom methods to be added to
 // TunnelNodeLister.
 type TunnelNodeListerExpansion interface{}

@@ -47,6 +47,7 @@ Get started at https://apoxy.dev and log in with 'apoxy auth'.
 * [apoxy logs](#apoxy-logs)	 - View proxy logs
 * [apoxy proxy](#apoxy-proxy)	 - Manage proxy objects
 * [apoxy run](#apoxy-run)	 - Run Apoxy runtime components defined in config
+* [apoxy secret](#apoxy-secret)	 - Manage secret stores and their values
 * [apoxy tunnel](#apoxy-tunnel)	 - Manage tunnels
 * [apoxy upgrade](#apoxy-upgrade)	 - Upgrade Apoxy CLI to the latest version
 * [apoxy version](#apoxy-version)	 - The version of this CLI
@@ -2636,6 +2637,210 @@ apoxy run [flags]
 ### SEE ALSO
 
 * [apoxy](#apoxy)	 - Open-source edge platform built on Envoy, Kubernetes APIs, and QUIC tunneling.
+
+
+
+## apoxy secret
+
+Manage secret stores and their values
+
+### Synopsis
+
+SecretStores hold named secret values that compute Services consume through
+secret bindings. Values are write-only: they can be set here but are never
+returned by the API — confirm writes via the key digests in 'secret list'.
+
+### Options
+
+```
+  -h, --help   help for secret
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy](#apoxy)	 - Open-source edge platform built on Envoy, Kubernetes APIs, and QUIC tunneling.
+* [apoxy secret create](#apoxy-secret-create)	 - Create a secret store
+* [apoxy secret delete](#apoxy-secret-delete)	 - Delete a secret store and all its values
+* [apoxy secret list](#apoxy-secret-list)	 - List secret stores, or one store's keys and value digests
+* [apoxy secret set](#apoxy-secret-set)	 - Set one secret value (from stdin or --from-file)
+* [apoxy secret unset](#apoxy-secret-unset)	 - Delete one key from a secret store
+
+
+
+## apoxy secret create
+
+Create a secret store
+
+```
+apoxy secret create <store> [flags]
+```
+
+### Options
+
+```
+  -h, --help            help for create
+      --scope strings   Consumer scope, "<surface>" or "<surface>:<name-glob>" (e.g. compute:frontend-*); repeatable. Empty = open to all consumers
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy secret](#apoxy-secret)	 - Manage secret stores and their values
+
+
+
+## apoxy secret delete
+
+Delete a secret store and all its values
+
+```
+apoxy secret delete <store> [flags]
+```
+
+### Options
+
+```
+  -h, --help   help for delete
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy secret](#apoxy-secret)	 - Manage secret stores and their values
+
+
+
+## apoxy secret list
+
+List secret stores, or one store's keys and value digests
+
+```
+apoxy secret list [<store>] [flags]
+```
+
+### Options
+
+```
+  -h, --help   help for list
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy secret](#apoxy-secret)	 - Manage secret stores and their values
+
+
+
+## apoxy secret set
+
+Set one secret value (from stdin or --from-file)
+
+### Synopsis
+
+Reads the value from --from-file when given, otherwise from stdin.
+A trailing newline is stripped from terminal input.
+
+Examples:
+  echo -n "$TOKEN" | apoxy secret set my-store api-token
+  apoxy secret set my-store tls-key --from-file key.pem
+
+```
+apoxy secret set <store> <key> [flags]
+```
+
+### Options
+
+```
+      --from-file string   Read the value from a file instead of stdin
+  -h, --help               help for set
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy secret](#apoxy-secret)	 - Manage secret stores and their values
+
+
+
+## apoxy secret unset
+
+Delete one key from a secret store
+
+```
+apoxy secret unset <store> <key> [flags]
+```
+
+### Options
+
+```
+  -h, --help   help for unset
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy secret](#apoxy-secret)	 - Manage secret stores and their values
 
 
 

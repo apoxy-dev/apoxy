@@ -342,6 +342,13 @@ func validateBinding(b *Binding, p *field.Path) field.ErrorList {
 	case SecretBindingType:
 		if b.Secret == nil {
 			errs = append(errs, field.Required(p.Child("secret"), "secret is required when type=secret"))
+		} else {
+			if b.Secret.Store == "" {
+				errs = append(errs, field.Required(p.Child("secret", "store"), "store must name a SecretStore"))
+			}
+			if b.Secret.Key == "" {
+				errs = append(errs, field.Required(p.Child("secret", "key"), "key within the store is required"))
+			}
 		}
 	case KVBindingType:
 		if b.KV == nil {

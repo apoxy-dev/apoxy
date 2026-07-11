@@ -51,6 +51,8 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/apiserver/controllers"
 	extensionscontroller "github.com/apoxy-dev/apoxy/pkg/apiserver/extensions"
 	"github.com/apoxy-dev/apoxy/pkg/apiserver/gateway"
+	"github.com/apoxy-dev/apoxy/pkg/apiserver/secretstore"
+	serverapiserver "github.com/apoxy-dev/apoxy/pkg/apiserver/server/apiserver"
 	builder "github.com/apoxy-dev/apoxy/pkg/apiserver/server/builder"
 	"github.com/apoxy-dev/apoxy/pkg/cryptoutils"
 	"github.com/apoxy-dev/apoxy/pkg/gateway/message"
@@ -252,6 +254,29 @@ type options struct {
 	auditLogMaxAge         int // days
 	auditLogMaxBackups     int
 	auditLogMaxSizeMB      int // megabytes
+	secretStoreMain        serverapiserver.StorageProvider
+	secretStoreValues      serverapiserver.StorageProvider
+	secretValuesAuthz      secretstore.ReadAuthz
+}
+
+// WithSecretStoreStorage overrides the storage backing the SecretStore main
+// resource and its values subresource (e.g. Kubernetes-Secret-backed storage
+// in hosted deployments). By default both are served from the kine store with
+// value redaction on the main resource.
+func WithSecretStoreStorage(main, values serverapiserver.StorageProvider) Option {
+	return func(o *options) {
+		o.secretStoreMain = main
+		o.secretStoreValues = values
+	}
+}
+
+// WithSecretValuesAuthz restricts reads of the secretstores/values
+// subresource to identities accepted by allow. The default permits all reads
+// (single-node deployments are a single-user trust domain).
+func WithSecretValuesAuthz(allow secretstore.ReadAuthz) Option {
+	return func(o *options) {
+		o.secretValuesAuthz = allow
+	}
 }
 
 type admissionPlugin struct {
@@ -522,6 +547,7 @@ func defaultResources() []resource.Object {
 		&corev1alpha.Backend{},
 		&corev1alpha.CloudMonitoringIntegration{},
 		&corev1alpha.DomainZone{},
+		&corev1alpha.SecretStore{},
 		&corev1alpha.TunnelNode{},
 
 		&policyv1alpha1.RateLimit{},
@@ -598,6 +624,14 @@ func defaultOptions(ctx context.Context) (*options, error) {
 		proxyIPAM: proxyIPAM,
 		agentIPAM: agentIPAM,
 		vniPool:   vniPool,
+
+		// Secret-binding validation is always on: it only rejects writes
+		// that would fail at materialization time anyway, with a better
+		// error at apply time.
+		admissionPlugins: []admissionPlugin{{
+			name:    a3yadmission.SecretBindingPluginName,
+			factory: a3yadmission.NewSecretBindingPlugin(),
+		}},
 	}
 
 	// Generate default JWT key pair if not provided
@@ -956,6 +990,27 @@ func start(
 	srvBuilder := builder.NewServerBuilder().
 		WithAdditionalSchemeInstallers(registerCrossVersionConversions, registerFieldLabelConversions)
 	for _, r := range opts.resources {
+		if ss, ok := r.(*corev1alpha.SecretStore); ok {
+			// SecretStore values are write-only: the main resource is served
+			// with value redaction, and the values subresource is the single
+			// value I/O path (reads gated by opts.secretValuesAuthz at the
+			// authorization layer). Hosted deployments substitute both
+			// providers via WithSecretStoreStorage.
+			mainSP := opts.secretStoreMain
+			valuesSP := opts.secretStoreValues
+			if mainSP == nil {
+				base := builder.StandardStorageProvider(ss, kineStore, false)
+				mainSP = secretstore.RedactedProvider(base)
+				valuesSP = secretstore.ValuesProvider(base)
+			}
+			valuesGVR := ss.GetGroupVersionResource()
+			valuesGVR.Resource += "/" + secretstore.ValuesSubResource
+			srvBuilder = srvBuilder.
+				WithResourceAndStorageProvider(ss, mainSP).
+				WithSchemeKinds(corev1alpha.SchemeGroupVersion, &corev1alpha.SecretStoreValues{}).
+				WithStorage(valuesGVR, valuesSP)
+			continue
+		}
 		srvBuilder = srvBuilder.WithResourceAndStorage(r, kineStore)
 	}
 	// Use custom OpenAPI definitions if provided, otherwise use the default.
@@ -1067,9 +1122,12 @@ func start(
 			c.FlowControl = nil
 
 			if opts.enableSimpleAuth {
-				// For simple auth, we use a header authenticator and an always allow authorizer.
+				// For simple auth, we use a header authenticator and an always
+				// allow authorizer — except reads of secret values, which are
+				// restricted per opts.secretValuesAuthz.
 				c.Authentication.Authenticator = auth.NewHeaderAuthenticator()
-				c.Authorization.Authorizer = authorizerfactory.NewAlwaysAllowAuthorizer()
+				c.Authorization.Authorizer = secretstore.NewValuesReadAuthorizer(
+					authorizerfactory.NewAlwaysAllowAuthorizer(), opts.secretValuesAuthz)
 			} else if opts.enableInClusterAuth {
 				// For in-cluster auth, we use the default delegating (to the kube-apiserver)
 				// authenticator and authorizer.

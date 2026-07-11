@@ -45,10 +45,15 @@ type Binding struct {
 	// Future: Queue, DurableObject, R2/S3-style object store.
 }
 
+// SecretBinding exposes one key of a core.apoxy.dev SecretStore to service
+// code as env.<Binding.Name>. The store's scopes must admit this service
+// (surface "compute"). The value is resolved at worker materialization time
+// and never enters the bundle or the revision.
 type SecretBinding struct {
-	Ref OCICredentialsRef `json:"ref"`
-	// +optional
-	Key string `json:"key,omitempty"`
+	// Store names the SecretStore (cluster-scoped, same project).
+	Store corev1alpha.ObjectName `json:"store"`
+	// Key within the store's values map.
+	Key string `json:"key"`
 }
 
 type KVBinding struct {

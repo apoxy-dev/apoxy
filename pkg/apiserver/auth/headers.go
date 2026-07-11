@@ -19,11 +19,14 @@ const (
 // NewHeaderAuthenticator returns a new authenticator.Request that authenticates
 // requests based on the X-Remote-User, X-Remote-Group, and X-Remote-Extra headers.
 func NewHeaderAuthenticator() authenticator.Request {
+	// headerrequest.New's second parameter is UID headers (added in
+	// k8s.io/apiserver v0.34) — passing the group header there silently drops
+	// every identity's groups.
 	rhAuth, _ := headerrequest.New(
 		[]string{UserHeaderKey},
+		nil,
 		[]string{GroupHeaderKey},
 		[]string{ExtraHeaderKey},
-		[]string{},
 	)
 	return union.New(
 		rhAuth,

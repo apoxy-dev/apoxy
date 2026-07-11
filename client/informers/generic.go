@@ -84,6 +84,8 @@ func (f *sharedInformerFactory) ForResource(resource schema.GroupVersionResource
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Core().V1alpha().CloudMonitoringIntegrations().Informer()}, nil
 	case v1alpha.SchemeGroupVersion.WithResource("domainzones"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Core().V1alpha().DomainZones().Informer()}, nil
+	case v1alpha.SchemeGroupVersion.WithResource("secretstores"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Core().V1alpha().SecretStores().Informer()}, nil
 	case v1alpha.SchemeGroupVersion.WithResource("tunnelnodes"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Core().V1alpha().TunnelNodes().Informer()}, nil
 

@@ -236,7 +236,7 @@ func TestServiceRevisionValidate(t *testing.T) {
 		{
 			name: "binding secret ok",
 			mut: func(r *ServiceRevision) {
-				r.Spec.Bindings = []Binding{{Name: "S", Type: SecretBindingType, Secret: &SecretBinding{}}}
+				r.Spec.Bindings = []Binding{{Name: "S", Type: SecretBindingType, Secret: &SecretBinding{Store: "st", Key: "k"}}}
 			},
 		},
 		{
@@ -286,7 +286,7 @@ func TestServiceRevisionValidate(t *testing.T) {
 		{
 			name: "binding secret block declared kv",
 			mut: func(r *ServiceRevision) {
-				r.Spec.Bindings = []Binding{{Name: "X", Type: KVBindingType, Secret: &SecretBinding{}}}
+				r.Spec.Bindings = []Binding{{Name: "X", Type: KVBindingType, Secret: &SecretBinding{Store: "st", Key: "k"}}}
 			},
 			want:  []string{"spec.bindings[0].kv", "spec.bindings[0].secret"},
 			count: 2,
@@ -294,7 +294,7 @@ func TestServiceRevisionValidate(t *testing.T) {
 		{
 			name: "binding two blocks set",
 			mut: func(r *ServiceRevision) {
-				r.Spec.Bindings = []Binding{{Name: "X", Type: SecretBindingType, Secret: &SecretBinding{}, Service: &ServiceBinding{ServiceRef: "w"}}}
+				r.Spec.Bindings = []Binding{{Name: "X", Type: SecretBindingType, Secret: &SecretBinding{Store: "st", Key: "k"}, Service: &ServiceBinding{ServiceRef: "w"}}}
 			},
 			want:  []string{"spec.bindings[0]", "spec.bindings[0].service"},
 			count: 2,
@@ -308,7 +308,7 @@ func TestServiceRevisionValidate(t *testing.T) {
 		{
 			name: "binding missing name",
 			mut: func(r *ServiceRevision) {
-				r.Spec.Bindings = []Binding{{Type: SecretBindingType, Secret: &SecretBinding{}}}
+				r.Spec.Bindings = []Binding{{Type: SecretBindingType, Secret: &SecretBinding{Store: "st", Key: "k"}}}
 			},
 			want:  []string{"spec.bindings[0].name"},
 			count: 1,
@@ -328,8 +328,8 @@ func TestServiceRevisionValidate(t *testing.T) {
 			name: "binding empty names not duplicate",
 			mut: func(r *ServiceRevision) {
 				r.Spec.Bindings = []Binding{
-					{Type: SecretBindingType, Secret: &SecretBinding{}},
-					{Type: SecretBindingType, Secret: &SecretBinding{}},
+					{Type: SecretBindingType, Secret: &SecretBinding{Store: "st", Key: "k"}},
+					{Type: SecretBindingType, Secret: &SecretBinding{Store: "st", Key: "k"}},
 				}
 			},
 			want:  []string{"spec.bindings[0].name", "spec.bindings[1].name"},

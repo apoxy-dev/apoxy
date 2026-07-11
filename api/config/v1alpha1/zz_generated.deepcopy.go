@@ -21,7 +21,7 @@ limitations under the License.
 package v1alpha1
 
 import (
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 )
 
@@ -73,12 +73,12 @@ func (in *KubeAggregationConfig) DeepCopyInto(out *KubeAggregationConfig) {
 	*out = *in
 	if in.CertRenewInterval != nil {
 		in, out := &in.CertRenewInterval, &out.CertRenewInterval
-		*out = new(metav1.Duration)
+		*out = new(v1.Duration)
 		**out = **in
 	}
 	if in.CertRenewThreshold != nil {
 		in, out := &in.CertRenewThreshold, &out.CertRenewThreshold
-		*out = new(metav1.Duration)
+		*out = new(v1.Duration)
 		**out = **in
 	}
 	return
@@ -154,7 +154,7 @@ func (in *RuntimeComponent) DeepCopyInto(out *RuntimeComponent) {
 	if in.KubeAggregation != nil {
 		in, out := &in.KubeAggregation, &out.KubeAggregation
 		*out = new(KubeAggregationConfig)
-		**out = **in
+		(*in).DeepCopyInto(*out)
 	}
 	if in.KubeMirror != nil {
 		in, out := &in.KubeMirror, &out.KubeMirror

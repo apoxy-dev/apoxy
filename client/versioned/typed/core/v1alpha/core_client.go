@@ -30,6 +30,7 @@ type CoreV1alphaInterface interface {
 	BackendsGetter
 	CloudMonitoringIntegrationsGetter
 	DomainZonesGetter
+	SecretStoresGetter
 	TunnelNodesGetter
 }
 
@@ -48,6 +49,10 @@ func (c *CoreV1alphaClient) CloudMonitoringIntegrations() CloudMonitoringIntegra
 
 func (c *CoreV1alphaClient) DomainZones() DomainZoneInterface {
 	return newDomainZones(c)
+}
+
+func (c *CoreV1alphaClient) SecretStores() SecretStoreInterface {
+	return newSecretStores(c)
 }
 
 func (c *CoreV1alphaClient) TunnelNodes() TunnelNodeInterface {

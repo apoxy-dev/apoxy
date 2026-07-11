@@ -66,6 +66,9 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&CloudMonitoringIntegrationList{},
 		&DomainZone{},
 		&DomainZoneList{},
+		&SecretStore{},
+		&SecretStoreList{},
+		&SecretStoreValues{},
 		&TunnelNode{},
 		&TunnelNodeList{},
 	)

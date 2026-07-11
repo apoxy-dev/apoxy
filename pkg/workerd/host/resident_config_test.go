@@ -102,6 +102,7 @@ func TestBuildWorkerDefinition(t *testing.T) {
 		manifest   computev1alpha1.BundleManifest
 		cfg        computev1alpha1.ServiceConfigSpec
 		source     map[string][]byte
+		secrets    map[string]string
 		wantErrSub string
 		assert     func(t *testing.T, def WorkerDefinition)
 	}{
@@ -160,11 +161,55 @@ func TestBuildWorkerDefinition(t *testing.T) {
 			wantErrSub: "no esModule entrypoint",
 		},
 		{
-			name:       "typed binding unsupported",
+			name:       "kv binding unsupported",
 			manifest:   computev1alpha1.BundleManifest{Modules: esOnly, CompatibilityDate: "2024-01-01"},
 			cfg:        computev1alpha1.ServiceConfigSpec{Bindings: []computev1alpha1.Binding{{Name: "DB", Type: computev1alpha1.KVBindingType}}},
 			source:     src("index.js", "x"),
-			wantErrSub: "not supported in M1",
+			wantErrSub: "not supported yet",
+		},
+		{
+			name:     "secret binding resolved into env",
+			manifest: computev1alpha1.BundleManifest{Modules: esOnly, CompatibilityDate: "2024-01-01"},
+			cfg: computev1alpha1.ServiceConfigSpec{
+				Env: []computev1alpha1.EnvVar{{Name: "PLAIN", Value: "v"}},
+				Bindings: []computev1alpha1.Binding{{
+					Name: "API_TOKEN", Type: computev1alpha1.SecretBindingType,
+					Secret: &computev1alpha1.SecretBinding{Store: "st", Key: "token"},
+				}},
+			},
+			source:  src("index.js", "x"),
+			secrets: map[string]string{"API_TOKEN": "s3cr3t"},
+			assert: func(t *testing.T, def WorkerDefinition) {
+				if def.Env["API_TOKEN"] != "s3cr3t" || def.Env["PLAIN"] != "v" {
+					t.Errorf("env = %+v", def.Env)
+				}
+			},
+		},
+		{
+			name:     "secret binding without resolved value",
+			manifest: computev1alpha1.BundleManifest{Modules: esOnly, CompatibilityDate: "2024-01-01"},
+			cfg: computev1alpha1.ServiceConfigSpec{
+				Bindings: []computev1alpha1.Binding{{
+					Name: "API_TOKEN", Type: computev1alpha1.SecretBindingType,
+					Secret: &computev1alpha1.SecretBinding{Store: "st", Key: "token"},
+				}},
+			},
+			source:     src("index.js", "x"),
+			wantErrSub: "no resolved value",
+		},
+		{
+			name:     "secret binding collides with env var",
+			manifest: computev1alpha1.BundleManifest{Modules: esOnly, CompatibilityDate: "2024-01-01"},
+			cfg: computev1alpha1.ServiceConfigSpec{
+				Env: []computev1alpha1.EnvVar{{Name: "API_TOKEN", Value: "plain"}},
+				Bindings: []computev1alpha1.Binding{{
+					Name: "API_TOKEN", Type: computev1alpha1.SecretBindingType,
+					Secret: &computev1alpha1.SecretBinding{Store: "st", Key: "token"},
+				}},
+			},
+			source:     src("index.js", "x"),
+			secrets:    map[string]string{"API_TOKEN": "s3cr3t"},
+			wantErrSub: "collides with an env var",
 		},
 		{
 			name:       "assets unsupported in dispatcher path",
@@ -188,7 +233,7 @@ func TestBuildWorkerDefinition(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			def, err := BuildWorkerDefinition(tc.manifest, tc.cfg, tc.source)
+			def, err := BuildWorkerDefinition(tc.manifest, tc.cfg, tc.source, tc.secrets)
 			if tc.wantErrSub != "" {
 				if err == nil {
 					t.Fatalf("want error containing %q, got nil", tc.wantErrSub)
@@ -221,6 +266,7 @@ func TestBuildWorkerDefinition_EntrypointFirst(t *testing.T) {
 		},
 		computev1alpha1.ServiceConfigSpec{},
 		src("a.txt", "hello", "main.js", "export default {}"),
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("BuildWorkerDefinition: %v", err)
@@ -246,6 +292,7 @@ func TestWorkerDefinition_JSONShape(t *testing.T) {
 		},
 		computev1alpha1.ServiceConfigSpec{Env: []computev1alpha1.EnvVar{{Name: "K", Value: "v"}}},
 		src("index.js", "export default { fetch(){ return new Response('hi') } }"),
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("BuildWorkerDefinition: %v", err)

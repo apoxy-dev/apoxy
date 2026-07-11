@@ -148,7 +148,7 @@ func TestBuildWorkerdConfig(t *testing.T) {
 			absentSub: []string{"disk = (", `service = "assets"`},
 		},
 		{
-			name: "typed binding is unsupported in M1",
+			name: "kv/service bindings are unsupported",
 			in: BuildInput{
 				Manifest: computev1alpha1.BundleManifest{Modules: esOnly, CompatibilityDate: "2024-01-01"},
 				Config: computev1alpha1.ServiceConfigSpec{
@@ -157,7 +157,7 @@ func TestBuildWorkerdConfig(t *testing.T) {
 				Socket: SocketSpec{Kind: HTTPSocket, Addr: "*:8080"},
 			},
 			wantSubs: nil,
-			wantErr:  errSentinelSubstr("not supported in M1"),
+			wantErr:  errSentinelSubstr("not supported yet"),
 		},
 		{
 			name: "unix socket address passes through",

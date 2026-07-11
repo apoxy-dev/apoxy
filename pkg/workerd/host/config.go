@@ -55,6 +55,10 @@ type BuildInput struct {
 	// AssetsDir is the in-jail absolute path the assets layer extracted to.
 	// Used only when Manifest.AssetsPrefix is set.
 	AssetsDir string
+	// Secrets maps binding names (Binding.Name, for bindings of type secret)
+	// to their resolved values. The caller resolves them from the referenced
+	// SecretStores; rendering fails on a secret binding with no entry here.
+	Secrets map[string]string
 }
 
 // BuildWorkerdConfig renders the textual capnp config that `workerd serve`
@@ -85,7 +89,7 @@ func BuildWorkerdConfig(in BuildInput) (string, error) {
 		return "", err
 	}
 
-	bindings, err := buildBindings(in.Config)
+	bindings, err := buildBindings(in.Config, in.Secrets)
 	if err != nil {
 		return "", err
 	}
@@ -298,10 +302,12 @@ var errAssetsUnsupportedInDispatcher = errors.New("workerd-host: static assets a
 // source maps each Module.Name to its raw bytes (read from the extracted bundle
 // by the manager); BuildWorkerDefinition stays pure and filesystem-free so it is
 // table-testable. The first esModule is the entrypoint (mainModule).
+// secrets maps binding names (type=secret) to resolved values; see BuildInput.Secrets.
 func BuildWorkerDefinition(
 	manifest computev1alpha1.BundleManifest,
 	cfg computev1alpha1.ServiceConfigSpec,
 	source map[string][]byte,
+	secrets map[string]string,
 ) (WorkerDefinition, error) {
 	compatDate := manifest.CompatibilityDate
 	if cfg.Runtime != nil && cfg.Runtime.CompatibilityDate != "" {
@@ -319,7 +325,7 @@ func BuildWorkerDefinition(
 		return WorkerDefinition{}, err
 	}
 
-	env, err := buildEnvMap(cfg)
+	env, err := buildEnvMap(cfg, secrets)
 	if err != nil {
 		return WorkerDefinition{}, err
 	}
@@ -360,22 +366,42 @@ func newModuleContent(t computev1alpha1.ModuleType, body []byte) (moduleContent,
 	}
 }
 
-// buildEnvMap materializes env vars into the WorkerCode env object. Typed
-// bindings (secret/kv/service) require external resolution and are deferred to
-// APO-627 — encountering one is an explicit error, never a silent skip.
-func buildEnvMap(cfg computev1alpha1.ServiceConfigSpec) (map[string]string, error) {
-	if len(cfg.Bindings) > 0 {
-		bd := cfg.Bindings[0]
-		return nil, fmt.Errorf("workerd-host: binding %q of type %q is not supported in M1 (deferred to APO-627)", bd.Name, bd.Type)
-	}
-	if len(cfg.Env) == 0 {
+// buildEnvMap materializes env vars and resolved secret bindings into the
+// WorkerCode env object. kv/service bindings are not yet supported (APO-874)
+// — encountering one is an explicit error, never a silent skip.
+func buildEnvMap(cfg computev1alpha1.ServiceConfigSpec, secrets map[string]string) (map[string]string, error) {
+	if len(cfg.Env) == 0 && len(cfg.Bindings) == 0 {
 		return nil, nil
 	}
-	env := make(map[string]string, len(cfg.Env))
+	env := make(map[string]string, len(cfg.Env)+len(cfg.Bindings))
 	for _, e := range cfg.Env {
 		env[e.Name] = e.Value
 	}
+	for i := range cfg.Bindings {
+		value, err := secretBindingValue(&cfg.Bindings[i], env, secrets)
+		if err != nil {
+			return nil, err
+		}
+		env[cfg.Bindings[i].Name] = value
+	}
 	return env, nil
+}
+
+// secretBindingValue resolves one binding to its env value: only secret
+// bindings are supported, the caller must have supplied the resolved value,
+// and the name must not collide with a plain env var.
+func secretBindingValue(bd *computev1alpha1.Binding, env map[string]string, secrets map[string]string) (string, error) {
+	if bd.Type != computev1alpha1.SecretBindingType {
+		return "", fmt.Errorf("workerd-host: binding %q of type %q is not supported yet (kv/service bindings are APO-874)", bd.Name, bd.Type)
+	}
+	if _, dup := env[bd.Name]; dup {
+		return "", fmt.Errorf("workerd-host: secret binding %q collides with an env var of the same name", bd.Name)
+	}
+	value, ok := secrets[bd.Name]
+	if !ok {
+		return "", fmt.Errorf("workerd-host: secret binding %q has no resolved value (store %q key %q)", bd.Name, bd.Secret.Store, bd.Secret.Key)
+	}
+	return value, nil
 }
 
 type bindingKind string
@@ -422,18 +448,24 @@ func orderModules(in []computev1alpha1.Module) ([]computev1alpha1.Module, error)
 	return out, nil
 }
 
-// buildBindings materializes env vars into workerd text bindings. Typed
-// bindings (secret/kv/service) require external resolution (e.g. fetching the
-// referenced Secret) and are deferred to APO-627; encountering one is an
-// explicit error rather than a silent skip, so M1 never mis-serves a worker
-// that asked for a capability it didn't get.
-func buildBindings(cfg computev1alpha1.ServiceConfigSpec) ([]binding, error) {
+// buildBindings materializes env vars and resolved secret bindings into
+// workerd text bindings. kv/service bindings are not yet supported (APO-874);
+// encountering one is an explicit error rather than a silent skip, so a
+// worker is never mis-served after asking for a capability it didn't get.
+func buildBindings(cfg computev1alpha1.ServiceConfigSpec, secrets map[string]string) ([]binding, error) {
 	var out []binding
+	seen := make(map[string]string, len(cfg.Env))
 	for _, e := range cfg.Env {
 		out = append(out, binding{name: e.Name, kind: bindingText, value: e.Value})
+		seen[e.Name] = e.Value
 	}
-	for _, bd := range cfg.Bindings {
-		return nil, fmt.Errorf("workerd-host: binding %q of type %q is not supported in M1 (deferred to APO-627)", bd.Name, bd.Type)
+	for i := range cfg.Bindings {
+		value, err := secretBindingValue(&cfg.Bindings[i], seen, secrets)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, binding{name: cfg.Bindings[i].Name, kind: bindingText, value: value})
+		seen[cfg.Bindings[i].Name] = value
 	}
 	return out, nil
 }

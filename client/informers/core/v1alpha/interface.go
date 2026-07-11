@@ -29,6 +29,8 @@ type Interface interface {
 	CloudMonitoringIntegrations() CloudMonitoringIntegrationInformer
 	// DomainZones returns a DomainZoneInformer.
 	DomainZones() DomainZoneInformer
+	// SecretStores returns a SecretStoreInformer.
+	SecretStores() SecretStoreInformer
 	// TunnelNodes returns a TunnelNodeInformer.
 	TunnelNodes() TunnelNodeInformer
 }
@@ -57,6 +59,11 @@ func (v *version) CloudMonitoringIntegrations() CloudMonitoringIntegrationInform
 // DomainZones returns a DomainZoneInformer.
 func (v *version) DomainZones() DomainZoneInformer {
 	return &domainZoneInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
+}
+
+// SecretStores returns a SecretStoreInformer.
+func (v *version) SecretStores() SecretStoreInformer {
+	return &secretStoreInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
 }
 
 // TunnelNodes returns a TunnelNodeInformer.

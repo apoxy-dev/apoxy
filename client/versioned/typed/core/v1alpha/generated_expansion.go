@@ -23,4 +23,6 @@ type CloudMonitoringIntegrationExpansion interface{}
 
 type DomainZoneExpansion interface{}
 
+type SecretStoreExpansion interface{}
+
 type TunnelNodeExpansion interface{}
