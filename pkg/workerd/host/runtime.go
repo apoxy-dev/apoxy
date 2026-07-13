@@ -77,14 +77,16 @@ type Runtime struct {
 
 // NewRuntime constructs the workerd host runtime. The concrete sandbox core is
 // platform-specific: linux builds the gVisor Manager; other platforms return an
-// unsupported-platform error.
+// unsupported-platform error. The core is wrapped with the recording egress
+// controller (APO-723) so the egress config plane has a sink; the neutral core
+// itself stays egress-free.
 func NewRuntime(cfg Config) (*Runtime, error) {
 	core, err := newCore(cfg)
 	if err != nil {
 		return nil, err
 	}
 	return &Runtime{
-		core:          core,
+		core:          newEgressCore(core),
 		rootDir:       cfg.RootDir,
 		fetchManifest: FetchBundleManifest,
 		residents:     make(map[string]*Resident),

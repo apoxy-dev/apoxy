@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"sync"
 	"time"
 
@@ -55,6 +56,10 @@ type ResidentManager struct {
 	// newResolver builds a tenant's resolver from its project client;
 	// overridden in tests to inject a fake bundle fetcher.
 	newResolver func(client.Client) *Resolver
+	// egressDir, when set, is the directory the per-tenant egress control
+	// sockets (EgressControlServer, APO-723) bind under. Empty disables the
+	// egress config plane.
+	egressDir string
 
 	mu      sync.Mutex
 	tenants map[string]*tenantEntry
@@ -87,6 +92,12 @@ type tenantEntry struct {
 	done        chan struct{}
 	err         error // control serve exit error; read only after done is closed
 
+	// egress is the tenant's egress control server (APO-723); nil when the
+	// manager runs without an egress dir or the resident cannot apply egress.
+	// egressDone is closed when its serve goroutine exits (nil iff egress is).
+	egress     *EgressControlServer
+	egressDone chan struct{}
+
 	// stopping (guarded by ResidentManager.mu) marks a teardown in flight so
 	// reconciles stop using the entry and the done-watcher knows the exit was
 	// deliberate. lifecycle excludes teardown from in-flight reconciles: users
@@ -96,17 +107,32 @@ type tenantEntry struct {
 	lifecycle sync.RWMutex
 }
 
+// ResidentManagerOption customizes a ResidentManager.
+type ResidentManagerOption func(*ResidentManager)
+
+// WithEgressDir enables the egress config plane (APO-723): each tenant gets
+// an EgressConfig gRPC server on a unix domain socket under dir
+// (EgressSocketPath). The directory is created on first use with 0700 —
+// filesystem permissions are the plane's auth boundary.
+func WithEgressDir(dir string) ResidentManagerOption {
+	return func(m *ResidentManager) { m.egressDir = dir }
+}
+
 // NewResidentManager returns a manager over factory. controlAddr is the fixed
 // control address used for the empty tenant; project tenants always bind
 // ephemeral loopback ports.
-func NewResidentManager(factory ResidentBuilder, controlAddr string) *ResidentManager {
-	return &ResidentManager{
+func NewResidentManager(factory ResidentBuilder, controlAddr string, opts ...ResidentManagerOption) *ResidentManager {
+	m := &ResidentManager{
 		factory:     factory,
 		controlAddr: controlAddr,
 		newResolver: NewResolver,
 		tenants:     make(map[string]*tenantEntry),
 		draining:    make(map[string]bool),
 	}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m
 }
 
 // ReconcileWithClient reconciles one tenant's ServiceRevision using the
@@ -248,10 +274,48 @@ func (m *ResidentManager) teardown(ctx context.Context, entry *tenantEntry) erro
 	entry.cancel()
 	<-entry.done
 	slog.Info("Stopped workerd control channel", "tenant", entry.tenant, "addr", entry.controlAddr)
+	if entry.egress != nil {
+		// Join the egress serve goroutine before closing: Close racing an
+		// in-flight Serve would fail the grpc accept loop with a non-Stopped
+		// error and log a false alarm on every clean teardown. Close is
+		// idempotent, so a re-run teardown is harmless.
+		<-entry.egressDone
+		if err := entry.egress.Close(); err != nil {
+			slog.Warn("Failed to close egress control channel", "tenant", entry.tenant, "error", err)
+		}
+	}
 	if err := entry.resident.Stop(ctx); err != nil {
 		return fmt.Errorf("stopping resident: %w", err)
 	}
 	return nil
+}
+
+// newEgressControl assembles the tenant's egress control server: nil when the
+// manager runs without an egress dir (the plane is disabled) or the resident
+// implementation cannot apply egress (fake-driven tests). The socket dir is
+// created lazily with 0700 — its permissions are the plane's auth boundary.
+func (m *ResidentManager) newEgressControl(tenant string, resident host.ResidentRuntime) (*EgressControlServer, error) {
+	if m.egressDir == "" {
+		return nil, nil
+	}
+	applier, ok := resident.(host.EgressApplier)
+	if !ok {
+		slog.Warn("Resident does not support egress control; egress config plane disabled", "tenant", tenant)
+		return nil, nil
+	}
+	if err := os.MkdirAll(m.egressDir, 0o700); err != nil {
+		return nil, fmt.Errorf("creating egress control dir %s: %w", m.egressDir, err)
+	}
+	// MkdirAll does not tighten a pre-existing directory, and the dir's mode
+	// IS the auth boundary — enforce it either way.
+	if err := os.Chmod(m.egressDir, 0o700); err != nil {
+		return nil, fmt.Errorf("restricting egress control dir %s: %w", m.egressDir, err)
+	}
+	egress := NewEgressControlServer(tenant, applier)
+	if err := egress.Listen(EgressSocketPath(m.egressDir, tenant)); err != nil {
+		return nil, err
+	}
+	return egress, nil
 }
 
 // isStopping reads the entry's stopping mark under the manager lock.
@@ -331,6 +395,11 @@ func (m *ResidentManager) tenant(tenant string, c client.Client) (*tenantEntry, 
 		control.Close()
 		return nil, err
 	}
+	egress, err := m.newEgressControl(tenant, resident)
+	if err != nil {
+		control.Close()
+		return nil, err
+	}
 
 	// The serve goroutine outlives any single reconcile, so it runs on the
 	// entry's own context, cancelled by teardown — not on the reconcile ctx.
@@ -343,6 +412,7 @@ func (m *ResidentManager) tenant(tenant string, c client.Client) (*tenantEntry, 
 		controlAddr: bound,
 		cancel:      cancel,
 		done:        make(chan struct{}),
+		egress:      egress,
 	}
 	go func() {
 		err := control.Serve(serveCtx)
@@ -352,6 +422,22 @@ func (m *ResidentManager) tenant(tenant string, c client.Client) (*tenantEntry, 
 		entry.err = err
 		close(entry.done)
 	}()
+	if egress != nil {
+		entry.egressDone = make(chan struct{})
+		go func() {
+			defer close(entry.egressDone)
+			if err := egress.Serve(serveCtx); err != nil {
+				// An unexpected egress serve exit would otherwise leave the
+				// tenant's config plane silently dead forever (nothing else
+				// watches it). Cancel the whole entry: the control channel
+				// exits, and watchEntry runs the full tenant repair. A
+				// deliberate teardown's Serve returns nil, so this never
+				// re-cancels on clean shutdown.
+				slog.Error("Workerd egress control channel exited; repairing tenant", "tenant", tenant, "error", err)
+				cancel()
+			}
+		}()
+	}
 	go m.watchEntry(entry)
 
 	slog.Info("Created workerd tenant", "tenant", tenant, "controlAddr", bound)

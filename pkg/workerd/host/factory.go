@@ -37,7 +37,9 @@ func NewResidentFactory(base ResidentConfig) (*ResidentFactory, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newResidentFactoryWithCore(core, base), nil
+	// The recording egress controller (APO-723) wraps the shared core so every
+	// resident's egress config has a sink; the neutral core stays egress-free.
+	return newResidentFactoryWithCore(newEgressCore(core), base), nil
 }
 
 // newResidentFactoryWithCore injects a sandbox core directly, for fake-driven

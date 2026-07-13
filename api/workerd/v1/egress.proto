@@ -1,0 +1,84 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+//
+// EgressConfig is the worker-side sink of the workerd egress config plane
+// (APO-723). The backplane's ServiceReconciler (APO-726) compiles egress
+// routing/policy per Service and pushes it here over a per-tenant localhost
+// listener (a filesystem-permissioned unix domain socket); the manager fans it
+// out to the sandbox EgressController live setters
+// (SetEgressBackends/SetEgressPolicy/SetInvocationID).
+//
+// This gRPC drives the WORKER bridge's setters only, never the Sentry: there
+// is no general live urpc into the running sandbox. Applies are idempotent and
+// last-writer-wins, ordered by generation.
+
+syntax = "proto3";
+
+package apoxy.workerd.v1;
+
+option go_package = "github.com/apoxy-dev/apoxy/api/workerd/v1;workerdv1";
+
+// EgressConfig applies compiled egress configuration to a tenant's resident.
+service EgressConfig {
+  // ApplyEgress installs the full egress config for one sandbox: the
+  // EgressGateway backend listeners it may dial, its authorization policy,
+  // and the invocation id stamped on egress connections for attribution.
+  // Idempotent; a request whose generation is older than the last applied
+  // one is ignored (the response echoes the retained generation).
+  rpc ApplyEgress(ApplyEgressRequest) returns (ApplyEgressResponse);
+}
+
+// BackendListener mirrors the sandbox.BackendListener seam type: one
+// EgressGateway listener the sandbox may dial.
+message BackendListener {
+  // Name mirrors the EgressListener name from the CRD; used for logs and for
+  // EgressL4Route parentRef.sectionName matching.
+  string name = 1;
+  // Addr is the host:port the sandbox dials. Empty means "listener exists but
+  // its data plane isn't ready yet" — the dialer skips it.
+  string addr = 2;
+  // Shape is the on-the-wire protocol selector ("tls-terminate",
+  // "tls-passthrough", "tcp", "http", "https").
+  string shape = 3;
+  // MatchPort, when non-zero, narrows this listener to the sandbox's
+  // destination port. Zero = catch-all for this shape.
+  int32 match_port = 4;
+  // Priority is the precomputed shape rank used as a tiebreaker when multiple
+  // listeners match the same dst port. Higher wins.
+  int32 priority = 5;
+}
+
+// EgressPolicy is the per-sandbox egress authorization plane. Its
+// per-destination route rules (gateway | direct mode selection) land with
+// APO-722; until then it carries only the default decision.
+message EgressPolicy {
+  // DefaultDeny denies destinations not matched by any route rule. False
+  // (with no rules) is allow-all.
+  bool default_deny = 1;
+
+  // Field 2 is reserved for the APO-722 per-destination route rules.
+  reserved 2;
+}
+
+message ApplyEgressRequest {
+  // SandboxID identifies the target sandbox. It must belong to the tenant
+  // whose socket this request arrived on; a foreign id is rejected.
+  string sandbox_id = 1;
+  // Backends replaces the sandbox's dialable EgressGateway listener set.
+  repeated BackendListener backends = 2;
+  // Policy replaces the sandbox's egress authorization plane. Absent means
+  // allow-all (no enforcement).
+  EgressPolicy policy = 3;
+  // InvocationID is stamped on egress connections (PROXY v2 TLV) dialed
+  // through this sandbox, for attribution.
+  string invocation_id = 4;
+  // Generation orders applies: the reconciler's monotonically increasing
+  // config generation. A stale generation is not applied.
+  uint64 generation = 5;
+}
+
+message ApplyEgressResponse {
+  // AppliedGeneration is the generation now in effect for the sandbox — the
+  // request's generation if it was applied, or the newer retained one if the
+  // request was stale.
+  uint64 applied_generation = 1;
+}

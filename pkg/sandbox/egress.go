@@ -55,9 +55,14 @@ type BackendListener struct {
 }
 
 // Policy is the per-sandbox egress authorization plane an [EgressController]
-// installs. It is a forward-declared seam type in the spine: its concrete
-// shape (route table + default decision) is CRD-coupled in clrk
-// (egress.SandboxPolicy) and is populated by the egress track (APO-722/723)
-// when the egress data path is wired to an external consumer. The core
-// [Runtime] never reads it.
-type Policy struct{}
+// installs. APO-723 gives it the default decision only — enough for the
+// config plane to carry and record; the per-destination route rules (the
+// gateway | direct mode table, mirroring clrk's egress.SandboxPolicy) land
+// with APO-722, and nothing enforces it until the egress data path is wired
+// (the forwarder installer, APO-713). The core [Runtime] never reads it; a
+// nil *Policy means allow-all.
+type Policy struct {
+	// DefaultDeny denies destinations not matched by any route rule. False
+	// (with no rules) is allow-all.
+	DefaultDeny bool
+}

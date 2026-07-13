@@ -53,6 +53,7 @@ func Run() error {
 		workerdImage  = fs.String("workerd_image", "", "stock workerd OCI image the resident runs (required)")
 		listenAddr    = fs.String("listen_addr", DefaultListenAddr, "dispatcher http socket bind address")
 		controlAddr   = fs.String("control_addr", "127.0.0.1:2024", "host loopback TCP address the control channel listens on (the Sentry control forwarder dials it; TCP because the plugin seccomp blocks host AF_UNIX)")
+		egressDir     = fs.String("egress_dir", DefaultEgressDir, "directory for the per-tenant egress control sockets (APO-723); empty disables the egress config plane")
 		controlFwd    = fs.String("control_forward_addr", "", "in-sandbox TCP address the dispatcher dials for the control channel (default 127.0.0.2:80)")
 		kubeconfig    = fs.String("kubeconfig", "", "path to the project apiserver kubeconfig (in-cluster config if empty)")
 		devMode       = fs.Bool("dev", false, "dev mode: build an insecure apiserver client to --apiserver_host instead of using kubeconfig/in-cluster config")
@@ -77,7 +78,7 @@ func Run() error {
 		WorkerdImage:       *workerdImage,
 		ListenAddr:         *listenAddr,
 		ControlForwardAddr: *controlFwd,
-	}, *controlAddr)
+	}, *controlAddr, WithEgressDir(*egressDir))
 	if err != nil {
 		return err
 	}
@@ -168,6 +169,7 @@ const (
 	DefaultRootDir      = "/run/workerd-manager/root"
 	DefaultImageBaseDir = "/run/workerd-manager/images"
 	DefaultListenAddr   = "*:8080"
+	DefaultEgressDir    = "/run/workerd-manager/egress"
 )
 
 // SetupResidents prepares the host for resident workerds and returns the
@@ -178,7 +180,7 @@ const (
 // the host bootstrap cannot drift between the two topologies. controlAddr is
 // the fixed control bind for the empty tenant; shared shards pass "" (every
 // project tenant gets an ephemeral loopback port).
-func SetupResidents(ctx context.Context, cfg host.ResidentConfig, controlAddr string) (*ResidentManager, error) {
+func SetupResidents(ctx context.Context, cfg host.ResidentConfig, controlAddr string, opts ...ResidentManagerOption) (*ResidentManager, error) {
 	if cfg.WorkerdImage == "" {
 		return nil, fmt.Errorf("workerd-manager: --workerd_image is required")
 	}
@@ -206,5 +208,10 @@ func SetupResidents(ctx context.Context, cfg host.ResidentConfig, controlAddr st
 		slog.Warn("Sandbox cleanup reported an error", "error", err)
 	}
 
-	return NewResidentManager(factory, controlAddr), nil
+	// The egress config plane defaults ON here — not in the callers — so the
+	// single-project and shared-shard topologies cannot drift (the whole point
+	// of this shared bootstrap). Callers opt out or relocate via a trailing
+	// WithEgressDir, which wins over the default.
+	opts = append([]ResidentManagerOption{WithEgressDir(DefaultEgressDir)}, opts...)
+	return NewResidentManager(factory, controlAddr, opts...), nil
 }
