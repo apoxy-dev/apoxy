@@ -269,13 +269,14 @@ func (t *Translator) processHTTPRouteRules(httpRoute *HTTPRouteContext, parentRe
 		// If the route has no valid backends then just use a direct response and don't fuss with weighted responses
 		for _, ruleRoute := range ruleRoutes {
 			noValidBackends := ruleRoute.Destination == nil || ruleRoute.Destination.ToBackendWeights().Valid == 0
-			if noValidBackends && ruleRoute.Redirect == nil {
+			// A route that already carries a DirectResponse (e.g. from a
+			// DirectResponse extension filter) legitimately has no backends,
+			// so only complain when we have to inject the 500 fallback.
+			if noValidBackends && ruleRoute.Redirect == nil && ruleRoute.DirectResponse == nil {
 				log.Errorf("No valid HTTP backends for route %s: destination=%v", ruleRoute.Name, ruleRoute.Destination)
-				if ruleRoute.DirectResponse == nil {
-					ruleRoute.DirectResponse = &ir.DirectResponse{
-						StatusCode: 500,
-						Body:       ptr.To("no valid HTTP backends"),
-					}
+				ruleRoute.DirectResponse = &ir.DirectResponse{
+					StatusCode: 500,
+					Body:       ptr.To("no valid HTTP backends"),
 				}
 			}
 			ruleRoute.IsHTTP2 = false

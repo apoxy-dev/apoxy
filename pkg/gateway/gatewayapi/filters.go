@@ -74,7 +74,7 @@ func (t *Translator) ProcessHTTPFilters(parentRef *RouteParentContext,
 	}
 	for i := range filters {
 		filter := filters[i]
-		log.Infof("Processing HTTP filter: %s", filter.Type)
+		log.Debugf("Processing HTTP filter: %s", filter.Type)
 		// If an invalid filter type has been configured then skip processing any more filters
 		if httpFiltersContext.DirectResponse != nil {
 			log.Warnf("Skipping processing of HTTP filters as a DirectResponse has been configured")
