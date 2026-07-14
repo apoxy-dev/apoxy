@@ -7,34 +7,56 @@ import (
 )
 
 func TestOnboardingPath(t *testing.T) {
-	got := onboardingPath("silent-hill", "gateway", "docker.io/apoxy/apoxy:v0.1.6-dev-849f400", "", "")
-	want := "/v1/onboarding/k8s.yaml?cluster_name=silent-hill&image=docker.io%2Fapoxy%2Fapoxy%3Av0.1.6-dev-849f400&mirror=gateway"
-	if got != want {
-		t.Fatalf("onboardingPath() = %q, want %q", got, want)
+	tests := []struct {
+		name          string
+		clusterName   string
+		mirror        string
+		image         string
+		version       string
+		namespace     string
+		singleReplica bool
+		want          string
+	}{
+		{
+			name:        "image",
+			clusterName: "silent-hill",
+			mirror:      "gateway",
+			image:       "docker.io/apoxy/apoxy:v0.1.6-dev-849f400",
+			want:        "/v1/onboarding/k8s.yaml?cluster_name=silent-hill&image=docker.io%2Fapoxy%2Fapoxy%3Av0.1.6-dev-849f400&mirror=gateway",
+		},
+		{
+			name:        "version",
+			clusterName: "silent-hill",
+			mirror:      "gateway",
+			version:     "v0.3.0",
+			want:        "/v1/onboarding/k8s.yaml?cluster_name=silent-hill&mirror=gateway&version=v0.3.0",
+		},
+		{
+			name:        "namespace",
+			clusterName: "silent-hill",
+			mirror:      "gateway",
+			namespace:   "platform",
+			want:        "/v1/onboarding/k8s.yaml?cluster_name=silent-hill&mirror=gateway&namespace=platform",
+		},
+		{
+			name:          "single_replica",
+			clusterName:   "silent-hill",
+			mirror:        "gateway",
+			singleReplica: true,
+			want:          "/v1/onboarding/k8s.yaml?cluster_name=silent-hill&mirror=gateway&single_replica=true",
+		},
+		{
+			name: "no_params",
+			want: "/v1/onboarding/k8s.yaml",
+		},
 	}
-}
-
-func TestOnboardingPathWithVersion(t *testing.T) {
-	got := onboardingPath("silent-hill", "gateway", "", "v0.3.0", "")
-	want := "/v1/onboarding/k8s.yaml?cluster_name=silent-hill&mirror=gateway&version=v0.3.0"
-	if got != want {
-		t.Fatalf("onboardingPath() = %q, want %q", got, want)
-	}
-}
-
-func TestOnboardingPathWithNamespace(t *testing.T) {
-	got := onboardingPath("silent-hill", "gateway", "", "", "platform")
-	want := "/v1/onboarding/k8s.yaml?cluster_name=silent-hill&mirror=gateway&namespace=platform"
-	if got != want {
-		t.Fatalf("onboardingPath() = %q, want %q", got, want)
-	}
-}
-
-func TestOnboardingPathWithoutParams(t *testing.T) {
-	got := onboardingPath("", "", "", "", "")
-	want := "/v1/onboarding/k8s.yaml"
-	if got != want {
-		t.Fatalf("onboardingPath() = %q, want %q", got, want)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := onboardingPath(tt.clusterName, tt.mirror, tt.image, tt.version, tt.namespace, tt.singleReplica)
+			if got != tt.want {
+				t.Fatalf("onboardingPath() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 

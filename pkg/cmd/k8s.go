@@ -48,7 +48,7 @@ var (
 	encoder = runtimejson.NewYAMLSerializer(runtimejson.DefaultMetaFactory, scheme.Scheme, scheme.Scheme)
 )
 
-func onboardingPath(clusterName, mirror, image, version, namespace string) string {
+func onboardingPath(clusterName, mirror, image, version, namespace string, singleReplica bool) string {
 	path := "/v1/onboarding/k8s.yaml"
 	params := url.Values{}
 	if clusterName != "" {
@@ -72,19 +72,24 @@ func onboardingPath(clusterName, mirror, image, version, namespace string) strin
 		// at the wrong namespace.
 		params.Set("namespace", namespace)
 	}
+	if singleReplica {
+		// Opt out of the HA default (2 replicas + anti-affinity + PDB) for
+		// single-node or resource-constrained clusters.
+		params.Set("single_replica", "true")
+	}
 	if len(params) == 0 {
 		return path
 	}
 	return path + "?" + params.Encode()
 }
 
-func getYAML(clusterName, mirror, image, version, namespace string) ([]byte, error) {
+func getYAML(clusterName, mirror, image, version, namespace string, singleReplica bool) ([]byte, error) {
 	c, err := config.DefaultAPIClient()
 	if err != nil {
 		return nil, err
 	}
 
-	resp, err := c.SendRequest(http.MethodGet, onboardingPath(clusterName, mirror, image, version, namespace), nil)
+	resp, err := c.SendRequest(http.MethodGet, onboardingPath(clusterName, mirror, image, version, namespace, singleReplica), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -1084,6 +1089,10 @@ will automatically connect to the Apoxy API and begin managing your in-cluster A
 		if err != nil {
 			return err
 		}
+		singleReplica, err := cmd.Flags().GetBool("single-replica")
+		if err != nil {
+			return err
+		}
 		wait, err := cmd.Flags().GetBool("wait")
 		if err != nil {
 			return err
@@ -1122,7 +1131,7 @@ will automatically connect to the Apoxy API and begin managing your in-cluster A
 			}
 		}
 
-		yamlz, err := getYAML(clusterName, mirror, image, version, namespace)
+		yamlz, err := getYAML(clusterName, mirror, image, version, namespace, singleReplica)
 		if err != nil {
 			return fmt.Errorf("failed to get YAML: %w", err)
 		}
@@ -1536,6 +1545,7 @@ func init() {
 	installK8sCmd.Flags().String("mirror", "", "Mirror mode (gateway, ingress, all)")
 	installK8sCmd.Flags().String("image", "", "Controller image override to pass to the onboarding manifest generator")
 	installK8sCmd.Flags().String("version", "", "Controller version override (e.g. v0.3.0)")
+	installK8sCmd.Flags().Bool("single-replica", false, "Render a single-replica controller manifest without pod anti-affinity or a PodDisruptionBudget (for single-node or resource-constrained clusters)")
 	installK8sCmd.Flags().BoolP("yes", "y", false, "Skip confirmation and apply changes immediately")
 	installK8sCmd.Flags().Bool("wait", true, "Wait for Deployments and StatefulSets to become healthy after apply")
 	installK8sCmd.Flags().Duration("wait-timeout", 90*time.Second, "Maximum time to wait for workloads to become healthy")
