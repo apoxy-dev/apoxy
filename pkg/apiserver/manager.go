@@ -563,6 +563,8 @@ func defaultResources() []resource.Object {
 		&computev1alpha1.Service{},
 		&computev1alpha1.ServiceRevision{},
 		&computev1alpha1.Build{},
+		&computev1alpha1.EgressGateway{},
+		&computev1alpha1.EgressRoute{},
 
 		&gatewayv1.GatewayClass{},
 		&gatewayv1.Gateway{},

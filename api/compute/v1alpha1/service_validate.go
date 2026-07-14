@@ -234,6 +234,22 @@ func validateConfigSpec(s *ServiceConfigSpec, p *field.Path) field.ErrorList {
 		errs = append(errs, validateBinding(b, bp)...)
 	}
 
+	// Egress: an absent block and an empty one both mean "the default
+	// gateway", so nothing is required. disabled is the hard opt-out and
+	// contradicts naming a gateway. Ref existence is checked by the control
+	// plane (EgressReady condition), not at admission — cf. liveRevision.
+	if e := s.Egress; e != nil {
+		if e.Disabled && e.GatewayRef != "" {
+			errs = append(errs, field.Forbidden(p.Child("egress").Child("gatewayRef"),
+				"disabled and gatewayRef are mutually exclusive"))
+		}
+		if e.GatewayRef != "" {
+			for _, msg := range utilvalidation.IsDNS1123Subdomain(string(e.GatewayRef)) {
+				errs = append(errs, field.Invalid(p.Child("egress").Child("gatewayRef"), e.GatewayRef, msg))
+			}
+		}
+	}
+
 	// Env: names must be unique & non-empty.
 	envSeen := map[string]struct{}{}
 	for i := range s.Env {

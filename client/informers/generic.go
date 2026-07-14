@@ -64,6 +64,10 @@ func (f *sharedInformerFactory) ForResource(resource schema.GroupVersionResource
 	// Group=compute.apoxy.dev, Version=v1alpha1
 	case v1alpha1.SchemeGroupVersion.WithResource("builds"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Compute().V1alpha1().Builds().Informer()}, nil
+	case v1alpha1.SchemeGroupVersion.WithResource("egressgateways"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Compute().V1alpha1().EgressGateways().Informer()}, nil
+	case v1alpha1.SchemeGroupVersion.WithResource("egressroutes"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Compute().V1alpha1().EgressRoutes().Informer()}, nil
 	case v1alpha1.SchemeGroupVersion.WithResource("services"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Compute().V1alpha1().Services().Informer()}, nil
 	case v1alpha1.SchemeGroupVersion.WithResource("servicerevisions"):

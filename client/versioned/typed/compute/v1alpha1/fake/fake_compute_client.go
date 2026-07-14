@@ -31,6 +31,14 @@ func (c *FakeComputeV1alpha1) Builds() v1alpha1.BuildInterface {
 	return newFakeBuilds(c)
 }
 
+func (c *FakeComputeV1alpha1) EgressGateways() v1alpha1.EgressGatewayInterface {
+	return newFakeEgressGateways(c)
+}
+
+func (c *FakeComputeV1alpha1) EgressRoutes() v1alpha1.EgressRouteInterface {
+	return newFakeEgressRoutes(c)
+}
+
 func (c *FakeComputeV1alpha1) Services() v1alpha1.ServiceInterface {
 	return newFakeServices(c)
 }

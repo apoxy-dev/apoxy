@@ -25,7 +25,7 @@ export interface components {
             port?: number;
             protocol?: string;
         };
-        /** @description Binding grants a capability to the service. workerd's model is no ambient authority: a service reaches nothing it isn't explicitly bound to. */
+        /** @description Binding grants a platform resource capability to the service (secrets, KV, service-to-service): a service reaches no platform resource it isn't explicitly bound to. Outbound network access is NOT a binding — it is governed by the egress block (see ServiceEgress) and is on by default via the project's default gateway. */
         "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.Binding": {
             kv?: components["schemas"]["com.github.apoxy-dev.apoxy.api.compute.v1alpha1.KVBinding"];
             /**
@@ -125,10 +125,160 @@ export interface components {
             /** @description Tag is resolved to a Digest by the controller if Digest is unset. */
             tag?: string;
         };
-        /** @description Capabilities are coarse gates layered on top of bindings (e.g. egress). */
-        "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.Capabilities": {
-            /** @description FetchAPI permits outbound fetch() to the public internet. Default true. */
-            fetchAPI?: boolean;
+        /**
+         * @description EgressGateway mediates outbound network access for compute Services. Egress is transparent to worker code: there are no bindings and no fetch wrapper — plain fetch() works, and enforcement happens host-side (sandbox netstack + gateway data plane), never inside workerd. A Service selects a gateway via spec.template.spec.egress.gatewayRef; with no egress block it uses the project "default" gateway (see DefaultEgressGatewayName).
+         *
+         *     NOT YET ENFORCED: the egress control/data planes are still landing, and until they do the runtime denies all worker egress regardless of gateway configuration. The API is stable; these semantics take effect when enforcement ships.
+         */
+        "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressGateway": {
+            /** @description APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources */
+            apiVersion?: string;
+            /** @description Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds */
+            kind?: string;
+            /** @default {} */
+            metadata: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta"];
+            /** @default {} */
+            spec: components["schemas"]["com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressGatewaySpec"];
+            /** @default {} */
+            status: components["schemas"]["com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressGatewayStatus"];
+        };
+        "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressGatewayList": {
+            /** @description APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources */
+            apiVersion?: string;
+            items: components["schemas"]["com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressGateway"][];
+            /** @description Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds */
+            kind?: string;
+            /** @default {} */
+            metadata: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.ListMeta"];
+        };
+        /** @description EgressGatewaySpec defines the desired state of an EgressGateway. */
+        "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressGatewaySpec": {
+            /** @description DefaultPolicy applies to traffic that matches no attached route. Defaults to deny-all: an explicitly created gateway fails closed. (The implicit built-in "default" gateway — which exists only when no object named "default" does — is allow-all; see DefaultEgressGatewayName.) */
+            defaultPolicy?: string;
+            /** @description Listeners declare interception capabilities by protocol layer. Routes attach to a specific listener by name via parentRef.sectionName. */
+            listeners: components["schemas"]["com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressListener"][];
+        };
+        /** @description EgressGatewayStatus describes the observed state of an EgressGateway. */
+        "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressGatewayStatus": {
+            conditions?: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Condition"][];
+            listeners?: components["schemas"]["com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressListenerStatus"][];
+        };
+        /** @description EgressListener declares an interception capability by protocol layer. Routes reference a listener via parentRef.sectionName. */
+        "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressListener": {
+            /**
+             * @description Name identifies this listener within the gateway.
+             * @default
+             */
+            name: string;
+            /**
+             * Format: int32
+             * @description Port constrains interception to a single destination port. If unset, all ports are intercepted at this protocol layer.
+             */
+            port?: number;
+            /**
+             * @description Protocol selects the interception layer.
+             * @default
+             */
+            protocol: string;
+            /** @description TLS configures TLS handling. Only meaningful when protocol=TLS (Passthrough vs Terminate); forbidden for TCP/HTTP/HTTPS. */
+            tls?: components["schemas"]["com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressListenerTLS"];
+        };
+        /** @description EgressListenerStatus describes the observed state of a single listener. */
+        "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressListenerStatus": {
+            /**
+             * Format: int32
+             * @description AttachedRoutes counts the EgressRoutes attached to this listener.
+             * @default 0
+             */
+            attachedRoutes: number;
+            /** @description BackendAddress is the host:port the sandbox-side dialer uses to reach this listener's data plane. Empty means the listener exists but its data plane isn't ready yet; the dialer skips it. */
+            backendAddress?: string;
+            conditions?: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Condition"][];
+            /** @default  */
+            name: string;
+            /**
+             * Format: int32
+             * @description Port is the TCP port the gateway data plane listens on for this listener.
+             */
+            port?: number;
+        };
+        /** @description EgressListenerTLS configures TLS handling for a listener. */
+        "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressListenerTLS": {
+            /** @description CACertRef names the SecretStore key holding the PEM-encoded CA certificate + key bundle used for on-the-fly certificate minting. Required when mode=Terminate; forbidden for Passthrough. */
+            caCertRef?: components["schemas"]["com.github.apoxy-dev.apoxy.api.compute.v1alpha1.SecretKeyRef"];
+            /**
+             * @description Mode controls TLS handling.
+             *       Passthrough: SNI-route only, no termination.
+             *       Terminate:   MITM decrypt for L7 inspection, re-encrypt to upstream.
+             */
+            mode?: string;
+        };
+        /** @description EgressPortMatch matches a single port or an inclusive port range. Exactly one of Port or the StartPort/EndPort pair must be set. */
+        "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressPortMatch": {
+            /** Format: int32 */
+            endPort?: number;
+            /**
+             * Format: int32
+             * @description Port matches a single destination port.
+             */
+            port?: number;
+            /**
+             * Format: int32
+             * @description StartPort + EndPort define an inclusive range. Both must be set together. Mutually exclusive with Port.
+             */
+            startPort?: number;
+        };
+        /** @description EgressRoute allows destination hostname/CIDR/port matched egress for the Services attached to its parent EgressGateway(s). Traffic matching no route falls to the gateway's defaultPolicy. */
+        "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressRoute": {
+            /** @description APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources */
+            apiVersion?: string;
+            /** @description Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds */
+            kind?: string;
+            /** @default {} */
+            metadata: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta"];
+            /** @default {} */
+            spec: components["schemas"]["com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressRouteSpec"];
+            /** @default {} */
+            status: components["schemas"]["com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressRouteStatus"];
+        };
+        "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressRouteList": {
+            /** @description APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources */
+            apiVersion?: string;
+            items: components["schemas"]["com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressRoute"][];
+            /** @description Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds */
+            kind?: string;
+            /** @default {} */
+            metadata: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.ListMeta"];
+        };
+        /** @description EgressRouteMatch defines match criteria for outbound traffic. Dimensions are ANDed within a match; matches are ORed within a rule. */
+        "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressRouteMatch": {
+            /** @description DestinationCIDRs matches by IP range. Single IPs as /32 or /128. IPv4 and IPv6 CIDRs are both honored. */
+            destinationCIDRs?: string[];
+            /** @description DestinationHostnames matches by hostname. Exact (`api.openai.com`) and wildcard (`*.openai.com`) forms are accepted (gwapiv1.Hostname semantics — a wildcard matches exactly one prefix label). On TLS-terminated listeners the match runs against SNI. */
+            destinationHostnames?: string[];
+            /** @description Ports restricts to specific destination ports or port ranges. */
+            ports?: components["schemas"]["com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressPortMatch"][];
+            /** @description Protocol selects TCP or UDP. If unset, inherits from the parent listener. UDP is not yet supported. */
+            protocol?: string;
+        };
+        /**
+         * @description EgressRouteRule defines one allow rule within an EgressRoute.
+         *
+         *     A `mode` field (values: gateway | direct, default gateway) is RESERVED here for per-destination egress mode selection: `gateway` transits the EgressGateway data plane; `direct` is policy-checked in the host netstack but dials upstream without gateway transit. It is intentionally not defined yet — its compiled wire slot is the reserved field 2 of apoxy.workerd.v1.EgressPolicy.
+         */
+        "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressRouteRule": {
+            /** @description Matches lists the destinations this rule admits. */
+            matches: components["schemas"]["com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressRouteMatch"][];
+        };
+        /** @description EgressRouteSpec defines the desired state of an EgressRoute. */
+        "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressRouteSpec": {
+            /** @description ParentRefs attaches this route to EgressGateway listeners. Group and kind default to compute.apoxy.dev/EgressGateway and, when set, must be exactly that; namespace must be unset (all compute kinds are cluster-scoped). sectionName selects a single listener by name; absent attaches to every listener. */
+            parentRefs: components["schemas"]["io.k8s.sigs.gateway-api.apis.v1.ParentReference"][];
+            rules: components["schemas"]["com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressRouteRule"][];
+        };
+        /** @description EgressRouteStatus describes the observed state of an EgressRoute. */
+        "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressRouteStatus": {
+            parents?: components["schemas"]["io.k8s.sigs.gateway-api.apis.v1.RouteParentStatus"][];
         };
         "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EnvVar": {
             /** @default  */
@@ -182,11 +332,23 @@ export interface components {
             /** @default  */
             type: string;
         };
-        /** @description OCICredentials are inline registry credentials. Password is write-only. */
+        /**
+         * @description OCICredentials are inline registry credentials, mirroring the docker/oras credential model. Username+password covers basic auth AND the standard registry token-service flow (Docker Hub/GHCR PATs, GAR oauth2accesstoken, ECR authorization tokens — the puller exchanges the pair for a bearer automatically). AccessToken/RefreshToken cover registries that issue tokens directly instead (e.g. ACR identity tokens).
+         *
+         *     Password is write-only: defaulting moves it into PasswordData on admission, so reads never return the plain string field. The other secret fields currently round-trip on reads; prefer short-lived tokens until secret-store-backed credentialsRef lands.
+         */
         "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.OCICredentials": {
+            /** @description AccessToken is a registry bearer token sent as-is (Authorization: Bearer), skipping the token-service exchange. */
+            accessToken?: string;
+            /** @description Password is the write-only plain-text form; use PasswordData when authoring programmatically. */
             password?: string;
-            /** Format: byte */
+            /**
+             * Format: byte
+             * @description PasswordData is the RAW password bytes. NOT base64 of the password (unlike the extensions API field of the same name) — JSON's []byte encoding already handles the transport encoding. Takes precedence over Password when both are set.
+             */
             passwordData?: string;
+            /** @description RefreshToken is an OAuth2 refresh token (docker's "identity token") exchanged with the registry's token service for access tokens. */
+            refreshToken?: string;
             username?: string;
         };
         /** @description OCICredentialsRef references a Secret (or equivalent) holding pull credentials. Namespace is retained here (unlike intra-group refs) because on-prem this points at a real Kubernetes Secret, which may be namespaced even though our own CRDs are cluster-scoped. */
@@ -209,10 +371,31 @@ export interface components {
             /** @description TTL after which idle previews are garbage-collected. */
             ttl?: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Duration"];
         };
+        /** @description SecretBinding exposes one key of a core.apoxy.dev SecretStore to service code as env.<Binding.Name>. The store's scopes must admit this service (surface "compute"). The value is resolved at worker materialization time and never enters the bundle or the revision. */
         "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.SecretBinding": {
-            key?: string;
-            /** @default {} */
-            ref: components["schemas"]["com.github.apoxy-dev.apoxy.api.compute.v1alpha1.OCICredentialsRef"];
+            /**
+             * @description Key within the store's values map.
+             * @default
+             */
+            key: string;
+            /**
+             * @description Store names the SecretStore (cluster-scoped, same project).
+             * @default
+             */
+            store: string;
+        };
+        /** @description SecretKeyRef names one key of a core.apoxy.dev SecretStore (cluster-scoped, same project). The project apiserver has no corev1 Secrets; SecretStore is its only secret primitive, so egress reuses the same store+key addressing as SecretBinding. The store's scopes must admit the "compute" surface; that check happens at resolve time in the control plane, not at admission. */
+        "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.SecretKeyRef": {
+            /**
+             * @description Key within the store's values map.
+             * @default
+             */
+            key: string;
+            /**
+             * @description Store names the SecretStore.
+             * @default
+             */
+            store: string;
         };
         "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.Service": {
             /** @description APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources */
@@ -250,10 +433,25 @@ export interface components {
             /** @description Backend selects backend mode and its settings; this is the default mode when neither member is set. */
             backend?: components["schemas"]["com.github.apoxy-dev.apoxy.api.compute.v1alpha1.BackendConfig"];
             bindings?: components["schemas"]["com.github.apoxy-dev.apoxy.api.compute.v1alpha1.Binding"][];
+            /** @description Egress selects how outbound network traffic is mediated. Absent means the project "default" egress gateway (egress on by default); see ServiceEgress for the full semantics and the disabled opt-out. */
+            egress?: components["schemas"]["com.github.apoxy-dev.apoxy.api.compute.v1alpha1.ServiceEgress"];
             env?: components["schemas"]["com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EnvVar"][];
             /** @description Filter selects filter mode and its settings. */
             filter?: components["schemas"]["com.github.apoxy-dev.apoxy.api.compute.v1alpha1.FilterConfig"];
             runtime?: components["schemas"]["com.github.apoxy-dev.apoxy.api.compute.v1alpha1.ServiceRuntime"];
+        };
+        /**
+         * @description ServiceEgress selects how the service's outbound network traffic ("egress") is mediated. Egress is transparent to worker code: there is no binding and no fetch wrapper — a plain fetch() works, subject to the selected gateway's routes and default policy. Enforcement is host-side (sandbox netstack + egress gateway), never inside workerd.
+         *
+         *     Egress is ON by default: an absent block (or an empty gatewayRef) resolves to the project "default" gateway, which is a built-in allow-all unless an EgressGateway named "default" exists (see DefaultEgressGatewayName). Set disabled: true to hard-deny all egress for this service.
+         *
+         *     NOT YET ENFORCED: the egress control/data planes are still landing, and until they do the runtime denies all worker egress regardless of this block. The API is stable; the described semantics take effect when enforcement ships.
+         */
+        "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.ServiceEgress": {
+            /** @description Disabled hard-denies all egress for this service (globalOutbound is unset in workerd and the sandbox netstack resets any outbound attempt). Mutually exclusive with a non-empty gatewayRef. */
+            disabled?: boolean;
+            /** @description GatewayRef names the compute.apoxy.dev EgressGateway that mediates this service's outbound traffic. Empty means the project "default" gateway. Existence is not validated at admission; a dangling ref surfaces as the EgressReady=False condition on Service status. */
+            gatewayRef?: string;
         };
         "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.ServiceLimits": {
             /** @description CPUTime is the per-request CPU budget (workerd-style), e.g. "50ms". */
@@ -301,13 +499,14 @@ export interface components {
              * @default {}
              */
             bundle: components["schemas"]["com.github.apoxy-dev.apoxy.api.compute.v1alpha1.BundleRef"];
+            /** @description Egress selects how outbound network traffic is mediated. Absent means the project "default" egress gateway (egress on by default); see ServiceEgress for the full semantics and the disabled opt-out. */
+            egress?: components["schemas"]["com.github.apoxy-dev.apoxy.api.compute.v1alpha1.ServiceEgress"];
             env?: components["schemas"]["com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EnvVar"][];
             /** @description Filter selects filter mode and its settings. */
             filter?: components["schemas"]["com.github.apoxy-dev.apoxy.api.compute.v1alpha1.FilterConfig"];
             runtime?: components["schemas"]["com.github.apoxy-dev.apoxy.api.compute.v1alpha1.ServiceRuntime"];
         };
         "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.ServiceRuntime": {
-            capabilities?: components["schemas"]["com.github.apoxy-dev.apoxy.api.compute.v1alpha1.Capabilities"];
             /**
              * @description CompatibilityDate is required by workerd; pinned per revision.
              * @default
@@ -886,6 +1085,66 @@ export interface components {
             registeredAt?: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Time"];
             /** @description RegistrationID is the unique identifier for the registration. */
             registrationID?: string;
+        };
+        /** @description SecretKeyStatus reports one key of the store: its name and a digest of its value, so writers can confirm writes and detect rotation without reading values back. */
+        "com.github.apoxy-dev.apoxy.api.core.v1alpha.SecretKeyStatus": {
+            /**
+             * @description Digest is "sha256:" followed by the first 8 hex characters of the SHA-256 of the value.
+             * @default
+             */
+            digest: string;
+            /** @default  */
+            name: string;
+        };
+        /** @description SecretStore is a named collection of secret values scoped to consumer surfaces. Secret values are write-only: they are set and read through the "values" subresource, never through the main resource, and the values subresource only serves reads to internal (data-plane) identities. Users observe key names and value digests via status. */
+        "com.github.apoxy-dev.apoxy.api.core.v1alpha.SecretStore": {
+            /** @description APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources */
+            apiVersion?: string;
+            /** @description Data holds the secret values in storage (top-level, mirroring corev1.Secret). It is an internal representation: the REST layer strips it from every main-resource response, and writes to it through the main resource are discarded — the values subresource is the only I/O path. */
+            data?: {
+                [key: string]: string;
+            };
+            /** @description Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds */
+            kind?: string;
+            /** @default {} */
+            metadata: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta"];
+            /** @default {} */
+            spec: components["schemas"]["com.github.apoxy-dev.apoxy.api.core.v1alpha.SecretStoreSpec"];
+            /** @default {} */
+            status: components["schemas"]["com.github.apoxy-dev.apoxy.api.core.v1alpha.SecretStoreStatus"];
+        };
+        /** @description SecretStoreList contains a list of SecretStore objects. */
+        "com.github.apoxy-dev.apoxy.api.core.v1alpha.SecretStoreList": {
+            /** @description APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources */
+            apiVersion?: string;
+            items: components["schemas"]["com.github.apoxy-dev.apoxy.api.core.v1alpha.SecretStore"][];
+            /** @description Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds */
+            kind?: string;
+            /** @default {} */
+            metadata: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.ListMeta"];
+        };
+        "com.github.apoxy-dev.apoxy.api.core.v1alpha.SecretStoreSpec": {
+            /** @description Scopes authorize consumer surfaces to bind secrets from this store. Each scope is "<surface>" or "<surface>:<name-glob>", e.g. "compute" or "compute:frontend-*". "compute" is equivalent to "compute:*". An empty list leaves the store open to all consumers in the project; scopes exist to narrow access, not to grant it. */
+            scopes?: string[];
+        };
+        "com.github.apoxy-dev.apoxy.api.core.v1alpha.SecretStoreStatus": {
+            /** @description Keys lists the store's key names and value digests, sorted by name. */
+            keys?: components["schemas"]["com.github.apoxy-dev.apoxy.api.core.v1alpha.SecretKeyStatus"][];
+        };
+        /** @description SecretStoreValues is the payload of the secretstores/<name>/values subresource — the single path through which secret values enter and leave the API. PUT replaces the whole map; JSON merge-patch sets individual keys and deletes keys via null. GET is restricted to internal identities. */
+        "com.github.apoxy-dev.apoxy.api.core.v1alpha.SecretStoreValues": {
+            /** @description APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources */
+            apiVersion?: string;
+            /** @description Data maps key names to secret values. */
+            data?: {
+                [key: string]: string;
+            };
+            /** @description Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds */
+            kind?: string;
+            /** @default {} */
+            metadata: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta"];
+            /** @description Scopes echoes the parent store's spec.scopes so internal readers can enforce scope checks from this document alone, without a second (and potentially cached) read of the main resource. Read-only: values written here are ignored; scopes change only through the main resource's spec. */
+            scopes?: string[];
         };
         /** @description TunnelNode represents a node in the tunnel network. */
         "com.github.apoxy-dev.apoxy.api.core.v1alpha.TunnelNode": {

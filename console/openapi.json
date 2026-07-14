@@ -16,7 +16,7 @@
         }
       },
       "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.Binding": {
-        "description": "Binding grants a capability to the service. workerd's model is no ambient authority: a service reaches nothing it isn't explicitly bound to.",
+        "description": "Binding grants a platform resource capability to the service (secrets, KV, service-to-service): a service reaches no platform resource it isn't explicitly bound to. Outbound network access is NOT a binding — it is governed by the egress block (see ServiceEgress) and is on by default via the project's default gateway.",
         "type": "object",
         "required": [
           "name",
@@ -241,13 +241,327 @@
           }
         }
       },
-      "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.Capabilities": {
-        "description": "Capabilities are coarse gates layered on top of bindings (e.g. egress).",
+      "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressGateway": {
+        "description": "EgressGateway mediates outbound network access for compute Services. Egress is transparent to worker code: there are no bindings and no fetch wrapper — plain fetch() works, and enforcement happens host-side (sandbox netstack + gateway data plane), never inside workerd. A Service selects a gateway via spec.template.spec.egress.gatewayRef; with no egress block it uses the project \"default\" gateway (see DefaultEgressGatewayName).\n\nNOT YET ENFORCED: the egress control/data planes are still landing, and until they do the runtime denies all worker egress regardless of gateway configuration. The API is stable; these semantics take effect when enforcement ships.",
         "type": "object",
         "properties": {
-          "fetchAPI": {
-            "description": "FetchAPI permits outbound fetch() to the public internet. Default true.",
-            "type": "boolean"
+          "apiVersion": {
+            "description": "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+            "type": "string"
+          },
+          "kind": {
+            "description": "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+            "type": "string"
+          },
+          "metadata": {
+            "default": {},
+            "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta"
+          },
+          "spec": {
+            "default": {},
+            "$ref": "#/components/schemas/com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressGatewaySpec"
+          },
+          "status": {
+            "default": {},
+            "$ref": "#/components/schemas/com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressGatewayStatus"
+          }
+        }
+      },
+      "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressGatewayList": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "apiVersion": {
+            "description": "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+            "type": "string"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressGateway"
+            }
+          },
+          "kind": {
+            "description": "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+            "type": "string"
+          },
+          "metadata": {
+            "default": {},
+            "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.ListMeta"
+          }
+        }
+      },
+      "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressGatewaySpec": {
+        "description": "EgressGatewaySpec defines the desired state of an EgressGateway.",
+        "type": "object",
+        "required": [
+          "listeners"
+        ],
+        "properties": {
+          "defaultPolicy": {
+            "description": "DefaultPolicy applies to traffic that matches no attached route. Defaults to deny-all: an explicitly created gateway fails closed. (The implicit built-in \"default\" gateway — which exists only when no object named \"default\" does — is allow-all; see DefaultEgressGatewayName.)",
+            "type": "string"
+          },
+          "listeners": {
+            "description": "Listeners declare interception capabilities by protocol layer. Routes attach to a specific listener by name via parentRef.sectionName.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressListener"
+            }
+          }
+        }
+      },
+      "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressGatewayStatus": {
+        "description": "EgressGatewayStatus describes the observed state of an EgressGateway.",
+        "type": "object",
+        "properties": {
+          "conditions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Condition"
+            }
+          },
+          "listeners": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressListenerStatus"
+            }
+          }
+        }
+      },
+      "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressListener": {
+        "description": "EgressListener declares an interception capability by protocol layer. Routes reference a listener via parentRef.sectionName.",
+        "type": "object",
+        "required": [
+          "name",
+          "protocol"
+        ],
+        "properties": {
+          "name": {
+            "description": "Name identifies this listener within the gateway.",
+            "type": "string",
+            "default": ""
+          },
+          "port": {
+            "description": "Port constrains interception to a single destination port. If unset, all ports are intercepted at this protocol layer.",
+            "type": "integer",
+            "format": "int32"
+          },
+          "protocol": {
+            "description": "Protocol selects the interception layer.",
+            "type": "string",
+            "default": ""
+          },
+          "tls": {
+            "description": "TLS configures TLS handling. Only meaningful when protocol=TLS (Passthrough vs Terminate); forbidden for TCP/HTTP/HTTPS.",
+            "$ref": "#/components/schemas/com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressListenerTLS"
+          }
+        }
+      },
+      "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressListenerStatus": {
+        "description": "EgressListenerStatus describes the observed state of a single listener.",
+        "type": "object",
+        "required": [
+          "name",
+          "attachedRoutes"
+        ],
+        "properties": {
+          "attachedRoutes": {
+            "description": "AttachedRoutes counts the EgressRoutes attached to this listener.",
+            "type": "integer",
+            "format": "int32",
+            "default": 0
+          },
+          "backendAddress": {
+            "description": "BackendAddress is the host:port the sandbox-side dialer uses to reach this listener's data plane. Empty means the listener exists but its data plane isn't ready yet; the dialer skips it.",
+            "type": "string"
+          },
+          "conditions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Condition"
+            }
+          },
+          "name": {
+            "type": "string",
+            "default": ""
+          },
+          "port": {
+            "description": "Port is the TCP port the gateway data plane listens on for this listener.",
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressListenerTLS": {
+        "description": "EgressListenerTLS configures TLS handling for a listener.",
+        "type": "object",
+        "properties": {
+          "caCertRef": {
+            "description": "CACertRef names the SecretStore key holding the PEM-encoded CA certificate + key bundle used for on-the-fly certificate minting. Required when mode=Terminate; forbidden for Passthrough.",
+            "$ref": "#/components/schemas/com.github.apoxy-dev.apoxy.api.compute.v1alpha1.SecretKeyRef"
+          },
+          "mode": {
+            "description": "Mode controls TLS handling.\n  Passthrough: SNI-route only, no termination.\n  Terminate:   MITM decrypt for L7 inspection, re-encrypt to upstream.",
+            "type": "string"
+          }
+        }
+      },
+      "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressPortMatch": {
+        "description": "EgressPortMatch matches a single port or an inclusive port range. Exactly one of Port or the StartPort/EndPort pair must be set.",
+        "type": "object",
+        "properties": {
+          "endPort": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "port": {
+            "description": "Port matches a single destination port.",
+            "type": "integer",
+            "format": "int32"
+          },
+          "startPort": {
+            "description": "StartPort + EndPort define an inclusive range. Both must be set together. Mutually exclusive with Port.",
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressRoute": {
+        "description": "EgressRoute allows destination hostname/CIDR/port matched egress for the Services attached to its parent EgressGateway(s). Traffic matching no route falls to the gateway's defaultPolicy.",
+        "type": "object",
+        "properties": {
+          "apiVersion": {
+            "description": "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+            "type": "string"
+          },
+          "kind": {
+            "description": "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+            "type": "string"
+          },
+          "metadata": {
+            "default": {},
+            "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta"
+          },
+          "spec": {
+            "default": {},
+            "$ref": "#/components/schemas/com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressRouteSpec"
+          },
+          "status": {
+            "default": {},
+            "$ref": "#/components/schemas/com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressRouteStatus"
+          }
+        }
+      },
+      "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressRouteList": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "apiVersion": {
+            "description": "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+            "type": "string"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressRoute"
+            }
+          },
+          "kind": {
+            "description": "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+            "type": "string"
+          },
+          "metadata": {
+            "default": {},
+            "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.ListMeta"
+          }
+        }
+      },
+      "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressRouteMatch": {
+        "description": "EgressRouteMatch defines match criteria for outbound traffic. Dimensions are ANDed within a match; matches are ORed within a rule.",
+        "type": "object",
+        "properties": {
+          "destinationCIDRs": {
+            "description": "DestinationCIDRs matches by IP range. Single IPs as /32 or /128. IPv4 and IPv6 CIDRs are both honored.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "x-kubernetes-list-type": "set"
+          },
+          "destinationHostnames": {
+            "description": "DestinationHostnames matches by hostname. Exact (`api.openai.com`) and wildcard (`*.openai.com`) forms are accepted (gwapiv1.Hostname semantics — a wildcard matches exactly one prefix label). On TLS-terminated listeners the match runs against SNI.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "x-kubernetes-list-type": "set"
+          },
+          "ports": {
+            "description": "Ports restricts to specific destination ports or port ranges.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressPortMatch"
+            }
+          },
+          "protocol": {
+            "description": "Protocol selects TCP or UDP. If unset, inherits from the parent listener. UDP is not yet supported.",
+            "type": "string"
+          }
+        }
+      },
+      "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressRouteRule": {
+        "description": "EgressRouteRule defines one allow rule within an EgressRoute.\n\nA `mode` field (values: gateway | direct, default gateway) is RESERVED here for per-destination egress mode selection: `gateway` transits the EgressGateway data plane; `direct` is policy-checked in the host netstack but dials upstream without gateway transit. It is intentionally not defined yet — its compiled wire slot is the reserved field 2 of apoxy.workerd.v1.EgressPolicy.",
+        "type": "object",
+        "required": [
+          "matches"
+        ],
+        "properties": {
+          "matches": {
+            "description": "Matches lists the destinations this rule admits.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressRouteMatch"
+            }
+          }
+        }
+      },
+      "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressRouteSpec": {
+        "description": "EgressRouteSpec defines the desired state of an EgressRoute.",
+        "type": "object",
+        "required": [
+          "parentRefs",
+          "rules"
+        ],
+        "properties": {
+          "parentRefs": {
+            "description": "ParentRefs attaches this route to EgressGateway listeners. Group and kind default to compute.apoxy.dev/EgressGateway and, when set, must be exactly that; namespace must be unset (all compute kinds are cluster-scoped). sectionName selects a single listener by name; absent attaches to every listener.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/io.k8s.sigs.gateway-api.apis.v1.ParentReference"
+            }
+          },
+          "rules": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressRouteRule"
+            }
+          }
+        }
+      },
+      "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressRouteStatus": {
+        "description": "EgressRouteStatus describes the observed state of an EgressRoute.",
+        "type": "object",
+        "properties": {
+          "parents": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/io.k8s.sigs.gateway-api.apis.v1.RouteParentStatus"
+            }
           }
         }
       },
@@ -364,15 +678,25 @@
         }
       },
       "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.OCICredentials": {
-        "description": "OCICredentials are inline registry credentials. Password is write-only.",
+        "description": "OCICredentials are inline registry credentials, mirroring the docker/oras credential model. Username+password covers basic auth AND the standard registry token-service flow (Docker Hub/GHCR PATs, GAR oauth2accesstoken, ECR authorization tokens — the puller exchanges the pair for a bearer automatically). AccessToken/RefreshToken cover registries that issue tokens directly instead (e.g. ACR identity tokens).\n\nPassword is write-only: defaulting moves it into PasswordData on admission, so reads never return the plain string field. The other secret fields currently round-trip on reads; prefer short-lived tokens until secret-store-backed credentialsRef lands.",
         "type": "object",
         "properties": {
+          "accessToken": {
+            "description": "AccessToken is a registry bearer token sent as-is (Authorization: Bearer), skipping the token-service exchange.",
+            "type": "string"
+          },
           "password": {
+            "description": "Password is the write-only plain-text form; use PasswordData when authoring programmatically.",
             "type": "string"
           },
           "passwordData": {
+            "description": "PasswordData is the RAW password bytes. NOT base64 of the password (unlike the extensions API field of the same name) — JSON's []byte encoding already handles the transport encoding. Takes precedence over Password when both are set.",
             "type": "string",
             "format": "byte"
+          },
+          "refreshToken": {
+            "description": "RefreshToken is an OAuth2 refresh token (docker's \"identity token\") exchanged with the registry's token service for access tokens.",
+            "type": "string"
           },
           "username": {
             "type": "string"
@@ -425,17 +749,42 @@
         }
       },
       "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.SecretBinding": {
+        "description": "SecretBinding exposes one key of a core.apoxy.dev SecretStore to service code as env.\u003cBinding.Name\u003e. The store's scopes must admit this service (surface \"compute\"). The value is resolved at worker materialization time and never enters the bundle or the revision.",
         "type": "object",
         "required": [
-          "ref"
+          "store",
+          "key"
         ],
         "properties": {
           "key": {
-            "type": "string"
+            "description": "Key within the store's values map.",
+            "type": "string",
+            "default": ""
           },
-          "ref": {
-            "default": {},
-            "$ref": "#/components/schemas/com.github.apoxy-dev.apoxy.api.compute.v1alpha1.OCICredentialsRef"
+          "store": {
+            "description": "Store names the SecretStore (cluster-scoped, same project).",
+            "type": "string",
+            "default": ""
+          }
+        }
+      },
+      "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.SecretKeyRef": {
+        "description": "SecretKeyRef names one key of a core.apoxy.dev SecretStore (cluster-scoped, same project). The project apiserver has no corev1 Secrets; SecretStore is its only secret primitive, so egress reuses the same store+key addressing as SecretBinding. The store's scopes must admit the \"compute\" surface; that check happens at resolve time in the control plane, not at admission.",
+        "type": "object",
+        "required": [
+          "store",
+          "key"
+        ],
+        "properties": {
+          "key": {
+            "description": "Key within the store's values map.",
+            "type": "string",
+            "default": ""
+          },
+          "store": {
+            "description": "Store names the SecretStore.",
+            "type": "string",
+            "default": ""
           }
         }
       },
@@ -505,6 +854,10 @@
               "$ref": "#/components/schemas/com.github.apoxy-dev.apoxy.api.compute.v1alpha1.Binding"
             }
           },
+          "egress": {
+            "description": "Egress selects how outbound network traffic is mediated. Absent means the project \"default\" egress gateway (egress on by default); see ServiceEgress for the full semantics and the disabled opt-out.",
+            "$ref": "#/components/schemas/com.github.apoxy-dev.apoxy.api.compute.v1alpha1.ServiceEgress"
+          },
           "env": {
             "type": "array",
             "items": {
@@ -517,6 +870,20 @@
           },
           "runtime": {
             "$ref": "#/components/schemas/com.github.apoxy-dev.apoxy.api.compute.v1alpha1.ServiceRuntime"
+          }
+        }
+      },
+      "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.ServiceEgress": {
+        "description": "ServiceEgress selects how the service's outbound network traffic (\"egress\") is mediated. Egress is transparent to worker code: there is no binding and no fetch wrapper — a plain fetch() works, subject to the selected gateway's routes and default policy. Enforcement is host-side (sandbox netstack + egress gateway), never inside workerd.\n\nEgress is ON by default: an absent block (or an empty gatewayRef) resolves to the project \"default\" gateway, which is a built-in allow-all unless an EgressGateway named \"default\" exists (see DefaultEgressGatewayName). Set disabled: true to hard-deny all egress for this service.\n\nNOT YET ENFORCED: the egress control/data planes are still landing, and until they do the runtime denies all worker egress regardless of this block. The API is stable; the described semantics take effect when enforcement ships.",
+        "type": "object",
+        "properties": {
+          "disabled": {
+            "description": "Disabled hard-denies all egress for this service (globalOutbound is unset in workerd and the sandbox netstack resets any outbound attempt). Mutually exclusive with a non-empty gatewayRef.",
+            "type": "boolean"
+          },
+          "gatewayRef": {
+            "description": "GatewayRef names the compute.apoxy.dev EgressGateway that mediates this service's outbound traffic. Empty means the project \"default\" gateway. Existence is not validated at admission; a dangling ref surfaces as the EgressReady=False condition on Service status.",
+            "type": "string"
           }
         }
       },
@@ -632,6 +999,10 @@
             "default": {},
             "$ref": "#/components/schemas/com.github.apoxy-dev.apoxy.api.compute.v1alpha1.BundleRef"
           },
+          "egress": {
+            "description": "Egress selects how outbound network traffic is mediated. Absent means the project \"default\" egress gateway (egress on by default); see ServiceEgress for the full semantics and the disabled opt-out.",
+            "$ref": "#/components/schemas/com.github.apoxy-dev.apoxy.api.compute.v1alpha1.ServiceEgress"
+          },
           "env": {
             "type": "array",
             "items": {
@@ -653,9 +1024,6 @@
           "compatibilityDate"
         ],
         "properties": {
-          "capabilities": {
-            "$ref": "#/components/schemas/com.github.apoxy-dev.apoxy.api.compute.v1alpha1.Capabilities"
-          },
           "compatibilityDate": {
             "description": "CompatibilityDate is required by workerd; pinned per revision.",
             "type": "string",
@@ -1792,6 +2160,141 @@
           "registrationID": {
             "description": "RegistrationID is the unique identifier for the registration.",
             "type": "string"
+          }
+        }
+      },
+      "com.github.apoxy-dev.apoxy.api.core.v1alpha.SecretKeyStatus": {
+        "description": "SecretKeyStatus reports one key of the store: its name and a digest of its value, so writers can confirm writes and detect rotation without reading values back.",
+        "type": "object",
+        "required": [
+          "name",
+          "digest"
+        ],
+        "properties": {
+          "digest": {
+            "description": "Digest is \"sha256:\" followed by the first 8 hex characters of the SHA-256 of the value.",
+            "type": "string",
+            "default": ""
+          },
+          "name": {
+            "type": "string",
+            "default": ""
+          }
+        }
+      },
+      "com.github.apoxy-dev.apoxy.api.core.v1alpha.SecretStore": {
+        "description": "SecretStore is a named collection of secret values scoped to consumer surfaces. Secret values are write-only: they are set and read through the \"values\" subresource, never through the main resource, and the values subresource only serves reads to internal (data-plane) identities. Users observe key names and value digests via status.",
+        "type": "object",
+        "properties": {
+          "apiVersion": {
+            "description": "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+            "type": "string"
+          },
+          "data": {
+            "description": "Data holds the secret values in storage (top-level, mirroring corev1.Secret). It is an internal representation: the REST layer strips it from every main-resource response, and writes to it through the main resource are discarded — the values subresource is the only I/O path.",
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "kind": {
+            "description": "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+            "type": "string"
+          },
+          "metadata": {
+            "default": {},
+            "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta"
+          },
+          "spec": {
+            "default": {},
+            "$ref": "#/components/schemas/com.github.apoxy-dev.apoxy.api.core.v1alpha.SecretStoreSpec"
+          },
+          "status": {
+            "default": {},
+            "$ref": "#/components/schemas/com.github.apoxy-dev.apoxy.api.core.v1alpha.SecretStoreStatus"
+          }
+        }
+      },
+      "com.github.apoxy-dev.apoxy.api.core.v1alpha.SecretStoreList": {
+        "description": "SecretStoreList contains a list of SecretStore objects.",
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "apiVersion": {
+            "description": "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+            "type": "string"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/com.github.apoxy-dev.apoxy.api.core.v1alpha.SecretStore"
+            }
+          },
+          "kind": {
+            "description": "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+            "type": "string"
+          },
+          "metadata": {
+            "default": {},
+            "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.ListMeta"
+          }
+        }
+      },
+      "com.github.apoxy-dev.apoxy.api.core.v1alpha.SecretStoreSpec": {
+        "type": "object",
+        "properties": {
+          "scopes": {
+            "description": "Scopes authorize consumer surfaces to bind secrets from this store. Each scope is \"\u003csurface\u003e\" or \"\u003csurface\u003e:\u003cname-glob\u003e\", e.g. \"compute\" or \"compute:frontend-*\". \"compute\" is equivalent to \"compute:*\". An empty list leaves the store open to all consumers in the project; scopes exist to narrow access, not to grant it.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "com.github.apoxy-dev.apoxy.api.core.v1alpha.SecretStoreStatus": {
+        "type": "object",
+        "properties": {
+          "keys": {
+            "description": "Keys lists the store's key names and value digests, sorted by name.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/com.github.apoxy-dev.apoxy.api.core.v1alpha.SecretKeyStatus"
+            }
+          }
+        }
+      },
+      "com.github.apoxy-dev.apoxy.api.core.v1alpha.SecretStoreValues": {
+        "description": "SecretStoreValues is the payload of the secretstores/\u003cname\u003e/values subresource — the single path through which secret values enter and leave the API. PUT replaces the whole map; JSON merge-patch sets individual keys and deletes keys via null. GET is restricted to internal identities.",
+        "type": "object",
+        "properties": {
+          "apiVersion": {
+            "description": "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+            "type": "string"
+          },
+          "data": {
+            "description": "Data maps key names to secret values.",
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "kind": {
+            "description": "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+            "type": "string"
+          },
+          "metadata": {
+            "default": {},
+            "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta"
+          },
+          "scopes": {
+            "description": "Scopes echoes the parent store's spec.scopes so internal readers can enforce scope checks from this document alone, without a second (and potentially cached) read of the main resource. Read-only: values written here are ignored; scopes change only through the main resource's spec.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         }
       },

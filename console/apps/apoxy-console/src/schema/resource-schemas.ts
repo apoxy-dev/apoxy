@@ -31,6 +31,191 @@ export const RESOURCE_SCHEMAS: Record<string, JSONSchema> = {
     },
     "type": "object"
   },
+  "compute.apoxy.dev/v1alpha1/EgressGateway": {
+    "$defs": {
+      "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressGatewaySpec": {
+        "properties": {
+          "defaultPolicy": {
+            "type": "string"
+          },
+          "listeners": {
+            "items": {
+              "$ref": "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressListener"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "listeners"
+        ],
+        "type": "object"
+      },
+      "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressListener": {
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "port": {
+            "type": "integer"
+          },
+          "protocol": {
+            "type": "string"
+          },
+          "tls": {
+            "$ref": "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressListenerTLS"
+          }
+        },
+        "required": [
+          "name",
+          "protocol"
+        ],
+        "type": "object"
+      },
+      "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressListenerTLS": {
+        "properties": {
+          "caCertRef": {
+            "$ref": "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.SecretKeyRef"
+          },
+          "mode": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.SecretKeyRef": {
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "store": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "store",
+          "key"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "spec": {
+        "$ref": "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressGatewaySpec"
+      }
+    },
+    "type": "object"
+  },
+  "compute.apoxy.dev/v1alpha1/EgressRoute": {
+    "$defs": {
+      "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressPortMatch": {
+        "properties": {
+          "endPort": {
+            "type": "integer"
+          },
+          "port": {
+            "type": "integer"
+          },
+          "startPort": {
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressRouteMatch": {
+        "properties": {
+          "destinationCIDRs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "destinationHostnames": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "ports": {
+            "items": {
+              "$ref": "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressPortMatch"
+            },
+            "type": "array"
+          },
+          "protocol": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressRouteRule": {
+        "properties": {
+          "matches": {
+            "items": {
+              "$ref": "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressRouteMatch"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "matches"
+        ],
+        "type": "object"
+      },
+      "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressRouteSpec": {
+        "properties": {
+          "parentRefs": {
+            "items": {
+              "$ref": "io.k8s.sigs.gateway-api.apis.v1.ParentReference"
+            },
+            "type": "array"
+          },
+          "rules": {
+            "items": {
+              "$ref": "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressRouteRule"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "parentRefs",
+          "rules"
+        ],
+        "type": "object"
+      },
+      "io.k8s.sigs.gateway-api.apis.v1.ParentReference": {
+        "properties": {
+          "group": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "namespace": {
+            "type": "string"
+          },
+          "port": {
+            "type": "integer"
+          },
+          "sectionName": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "spec": {
+        "$ref": "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressRouteSpec"
+      }
+    },
+    "type": "object"
+  },
   "compute.apoxy.dev/v1alpha1/Service": {
     "$defs": {
       "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.BackendConfig": {
@@ -120,14 +305,6 @@ export const RESOURCE_SCHEMAS: Record<string, JSONSchema> = {
         ],
         "type": "object"
       },
-      "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.Capabilities": {
-        "properties": {
-          "fetchAPI": {
-            "type": "boolean"
-          }
-        },
-        "type": "object"
-      },
       "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EnvVar": {
         "properties": {
           "name": {
@@ -192,10 +369,16 @@ export const RESOURCE_SCHEMAS: Record<string, JSONSchema> = {
       },
       "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.OCICredentials": {
         "properties": {
+          "accessToken": {
+            "type": "string"
+          },
           "password": {
             "type": "string"
           },
           "passwordData": {
+            "type": "string"
+          },
+          "refreshToken": {
             "type": "string"
           },
           "username": {
@@ -246,12 +429,13 @@ export const RESOURCE_SCHEMAS: Record<string, JSONSchema> = {
           "key": {
             "type": "string"
           },
-          "ref": {
-            "$ref": "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.OCICredentialsRef"
+          "store": {
+            "type": "string"
           }
         },
         "required": [
-          "ref"
+          "store",
+          "key"
         ],
         "type": "object"
       },
@@ -277,6 +461,9 @@ export const RESOURCE_SCHEMAS: Record<string, JSONSchema> = {
             },
             "type": "array"
           },
+          "egress": {
+            "$ref": "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.ServiceEgress"
+          },
           "env": {
             "items": {
               "$ref": "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EnvVar"
@@ -288,6 +475,17 @@ export const RESOURCE_SCHEMAS: Record<string, JSONSchema> = {
           },
           "runtime": {
             "$ref": "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.ServiceRuntime"
+          }
+        },
+        "type": "object"
+      },
+      "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.ServiceEgress": {
+        "properties": {
+          "disabled": {
+            "type": "boolean"
+          },
+          "gatewayRef": {
+            "type": "string"
           }
         },
         "type": "object"
@@ -305,9 +503,6 @@ export const RESOURCE_SCHEMAS: Record<string, JSONSchema> = {
       },
       "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.ServiceRuntime": {
         "properties": {
-          "capabilities": {
-            "$ref": "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.Capabilities"
-          },
           "compatibilityDate": {
             "type": "string"
           },
@@ -589,14 +784,6 @@ export const RESOURCE_SCHEMAS: Record<string, JSONSchema> = {
         ],
         "type": "object"
       },
-      "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.Capabilities": {
-        "properties": {
-          "fetchAPI": {
-            "type": "boolean"
-          }
-        },
-        "type": "object"
-      },
       "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EnvVar": {
         "properties": {
           "name": {
@@ -636,10 +823,16 @@ export const RESOURCE_SCHEMAS: Record<string, JSONSchema> = {
       },
       "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.OCICredentials": {
         "properties": {
+          "accessToken": {
+            "type": "string"
+          },
           "password": {
             "type": "string"
           },
           "passwordData": {
+            "type": "string"
+          },
+          "refreshToken": {
             "type": "string"
           },
           "username": {
@@ -676,12 +869,13 @@ export const RESOURCE_SCHEMAS: Record<string, JSONSchema> = {
           "key": {
             "type": "string"
           },
-          "ref": {
-            "$ref": "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.OCICredentialsRef"
+          "store": {
+            "type": "string"
           }
         },
         "required": [
-          "ref"
+          "store",
+          "key"
         ],
         "type": "object"
       },
@@ -694,6 +888,17 @@ export const RESOURCE_SCHEMAS: Record<string, JSONSchema> = {
         "required": [
           "serviceRef"
         ],
+        "type": "object"
+      },
+      "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.ServiceEgress": {
+        "properties": {
+          "disabled": {
+            "type": "boolean"
+          },
+          "gatewayRef": {
+            "type": "string"
+          }
+        },
         "type": "object"
       },
       "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.ServiceLimits": {
@@ -721,6 +926,9 @@ export const RESOURCE_SCHEMAS: Record<string, JSONSchema> = {
           "bundle": {
             "$ref": "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.BundleRef"
           },
+          "egress": {
+            "$ref": "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.ServiceEgress"
+          },
           "env": {
             "items": {
               "$ref": "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EnvVar"
@@ -741,9 +949,6 @@ export const RESOURCE_SCHEMAS: Record<string, JSONSchema> = {
       },
       "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.ServiceRuntime": {
         "properties": {
-          "capabilities": {
-            "$ref": "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.Capabilities"
-          },
           "compatibilityDate": {
             "type": "string"
           },
@@ -1258,6 +1463,30 @@ export const RESOURCE_SCHEMAS: Record<string, JSONSchema> = {
         "$ref": "com.github.apoxy-dev.apoxy.api.core.v1alpha.DomainZoneSpec"
       }
     },
+    "type": "object"
+  },
+  "core.apoxy.dev/v1alpha/SecretStore": {
+    "$defs": {
+      "com.github.apoxy-dev.apoxy.api.core.v1alpha.SecretStoreSpec": {
+        "properties": {
+          "scopes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      }
+    },
+    "properties": {
+      "spec": {
+        "$ref": "com.github.apoxy-dev.apoxy.api.core.v1alpha.SecretStoreSpec"
+      }
+    },
+    "type": "object"
+  },
+  "core.apoxy.dev/v1alpha/SecretStoreValues": {
     "type": "object"
   },
   "core.apoxy.dev/v1alpha/TunnelNode": {

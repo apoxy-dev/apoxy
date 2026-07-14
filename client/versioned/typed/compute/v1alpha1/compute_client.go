@@ -28,6 +28,8 @@ import (
 type ComputeV1alpha1Interface interface {
 	RESTClient() rest.Interface
 	BuildsGetter
+	EgressGatewaysGetter
+	EgressRoutesGetter
 	ServicesGetter
 	ServiceRevisionsGetter
 }
@@ -39,6 +41,14 @@ type ComputeV1alpha1Client struct {
 
 func (c *ComputeV1alpha1Client) Builds() BuildInterface {
 	return newBuilds(c)
+}
+
+func (c *ComputeV1alpha1Client) EgressGateways() EgressGatewayInterface {
+	return newEgressGateways(c)
+}
+
+func (c *ComputeV1alpha1Client) EgressRoutes() EgressRouteInterface {
+	return newEgressRoutes(c)
 }
 
 func (c *ComputeV1alpha1Client) Services() ServiceInterface {

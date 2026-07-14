@@ -21,6 +21,14 @@ package v1alpha1
 // BuildLister.
 type BuildListerExpansion interface{}
 
+// EgressGatewayListerExpansion allows custom methods to be added to
+// EgressGatewayLister.
+type EgressGatewayListerExpansion interface{}
+
+// EgressRouteListerExpansion allows custom methods to be added to
+// EgressRouteLister.
+type EgressRouteListerExpansion interface{}
+
 // ServiceListerExpansion allows custom methods to be added to
 // ServiceLister.
 type ServiceListerExpansion interface{}

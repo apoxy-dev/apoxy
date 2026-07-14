@@ -13,4 +13,14 @@ const (
 	// decision the workerd-manager reports over the private publish channel, so
 	// this is a control-plane summary and is never written by the data plane.
 	ConditionReady = "Ready"
+	// ConditionEgressReady (on Service) reports that the service's egress
+	// config resolves: the selected EgressGateway exists (or is the implicit
+	// built-in "default"), is Ready, and the compiled egress config has been
+	// dispatched to the data plane. Reasons: Applied, GatewayNotFound,
+	// GatewayNotReady, Disabled. GatewayNotFound can only fire for an
+	// explicit ref to a name other than "default" — the "default" name always
+	// resolves, to the built-in allow-all gateway when no object exists (see
+	// DefaultEgressGatewayName). Control-plane-written only, per this file's
+	// contract.
+	ConditionEgressReady = "EgressReady"
 )

@@ -29,8 +29,11 @@ const (
 	ServiceBindingType BindingType = "service"
 )
 
-// Binding grants a capability to the service. workerd's model is no ambient
-// authority: a service reaches nothing it isn't explicitly bound to.
+// Binding grants a platform resource capability to the service (secrets, KV,
+// service-to-service): a service reaches no platform resource it isn't
+// explicitly bound to. Outbound network access is NOT a binding — it is
+// governed by the egress block (see ServiceEgress) and is on by default via
+// the project's default gateway.
 type Binding struct {
 	// Name is the identifier exposed to service code (env.<Name>).
 	Name string      `json:"name"`
@@ -68,13 +71,6 @@ type ServiceBinding struct {
 	ServiceRef corev1alpha.ObjectName `json:"serviceRef"`
 }
 
-// Capabilities are coarse gates layered on top of bindings (e.g. egress).
-type Capabilities struct {
-	// FetchAPI permits outbound fetch() to the public internet. Default true.
-	// +optional
-	FetchAPI *bool `json:"fetchAPI,omitempty"`
-}
-
 type ServiceLimits struct {
 	// CPUTime is the per-request CPU budget (workerd-style), e.g. "50ms".
 	// +optional
@@ -94,8 +90,36 @@ type ServiceRuntime struct {
 	Timeout *metav1.Duration `json:"timeout,omitempty"`
 	// +optional
 	Limits *ServiceLimits `json:"limits,omitempty"`
+}
+
+// ServiceEgress selects how the service's outbound network traffic
+// ("egress") is mediated. Egress is transparent to worker code: there is no
+// binding and no fetch wrapper — a plain fetch() works, subject to the
+// selected gateway's routes and default policy. Enforcement is host-side
+// (sandbox netstack + egress gateway), never inside workerd.
+//
+// Egress is ON by default: an absent block (or an empty gatewayRef) resolves
+// to the project "default" gateway, which is a built-in allow-all unless an
+// EgressGateway named "default" exists (see DefaultEgressGatewayName). Set
+// disabled: true to hard-deny all egress for this service.
+//
+// NOT YET ENFORCED: the egress control/data planes are still landing, and
+// until they do the runtime denies all worker egress regardless of this
+// block. The API is stable; the described semantics take effect when
+// enforcement ships.
+type ServiceEgress struct {
+	// GatewayRef names the compute.apoxy.dev EgressGateway that mediates
+	// this service's outbound traffic. Empty means the project "default"
+	// gateway. Existence is not validated at admission; a dangling ref
+	// surfaces as the EgressReady=False condition on Service status.
 	// +optional
-	Capabilities *Capabilities `json:"capabilities,omitempty"`
+	GatewayRef corev1alpha.ObjectName `json:"gatewayRef,omitempty"`
+
+	// Disabled hard-denies all egress for this service (globalOutbound is
+	// unset in workerd and the sandbox netstack resets any outbound
+	// attempt). Mutually exclusive with a non-empty gatewayRef.
+	// +optional
+	Disabled bool `json:"disabled,omitempty"`
 }
 
 // ServiceMode is the service's effective runtime mode. It is not a spec field:
@@ -226,6 +250,11 @@ type ServiceConfigSpec struct {
 	Bindings []Binding `json:"bindings,omitempty"`
 	// +optional
 	Env []EnvVar `json:"env,omitempty"`
+	// Egress selects how outbound network traffic is mediated. Absent means
+	// the project "default" egress gateway (egress on by default); see
+	// ServiceEgress for the full semantics and the disabled opt-out.
+	// +optional
+	Egress *ServiceEgress `json:"egress,omitempty"`
 }
 
 // ServiceRevisionSpec is a minted, immutable revision: a snapshot of the serving

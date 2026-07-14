@@ -40,7 +40,20 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.BuildStatus":                      schema_apoxy_api_compute_v1alpha1_BuildStatus(ref),
 		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.BundleManifest":                   schema_apoxy_api_compute_v1alpha1_BundleManifest(ref),
 		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.BundleRef":                        schema_apoxy_api_compute_v1alpha1_BundleRef(ref),
-		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.Capabilities":                     schema_apoxy_api_compute_v1alpha1_Capabilities(ref),
+		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.EgressGateway":                    schema_apoxy_api_compute_v1alpha1_EgressGateway(ref),
+		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.EgressGatewayList":                schema_apoxy_api_compute_v1alpha1_EgressGatewayList(ref),
+		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.EgressGatewaySpec":                schema_apoxy_api_compute_v1alpha1_EgressGatewaySpec(ref),
+		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.EgressGatewayStatus":              schema_apoxy_api_compute_v1alpha1_EgressGatewayStatus(ref),
+		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.EgressListener":                   schema_apoxy_api_compute_v1alpha1_EgressListener(ref),
+		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.EgressListenerStatus":             schema_apoxy_api_compute_v1alpha1_EgressListenerStatus(ref),
+		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.EgressListenerTLS":                schema_apoxy_api_compute_v1alpha1_EgressListenerTLS(ref),
+		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.EgressPortMatch":                  schema_apoxy_api_compute_v1alpha1_EgressPortMatch(ref),
+		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.EgressRoute":                      schema_apoxy_api_compute_v1alpha1_EgressRoute(ref),
+		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.EgressRouteList":                  schema_apoxy_api_compute_v1alpha1_EgressRouteList(ref),
+		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.EgressRouteMatch":                 schema_apoxy_api_compute_v1alpha1_EgressRouteMatch(ref),
+		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.EgressRouteRule":                  schema_apoxy_api_compute_v1alpha1_EgressRouteRule(ref),
+		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.EgressRouteSpec":                  schema_apoxy_api_compute_v1alpha1_EgressRouteSpec(ref),
+		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.EgressRouteStatus":                schema_apoxy_api_compute_v1alpha1_EgressRouteStatus(ref),
 		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.EnvVar":                           schema_apoxy_api_compute_v1alpha1_EnvVar(ref),
 		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.FilterConfig":                     schema_apoxy_api_compute_v1alpha1_FilterConfig(ref),
 		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.GitRepo":                          schema_apoxy_api_compute_v1alpha1_GitRepo(ref),
@@ -51,10 +64,12 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.OCICredentialsRef":                schema_apoxy_api_compute_v1alpha1_OCICredentialsRef(ref),
 		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.PreviewPolicy":                    schema_apoxy_api_compute_v1alpha1_PreviewPolicy(ref),
 		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.SecretBinding":                    schema_apoxy_api_compute_v1alpha1_SecretBinding(ref),
+		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.SecretKeyRef":                     schema_apoxy_api_compute_v1alpha1_SecretKeyRef(ref),
 		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.Service":                          schema_apoxy_api_compute_v1alpha1_Service(ref),
 		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceBinding":                   schema_apoxy_api_compute_v1alpha1_ServiceBinding(ref),
 		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceConfig":                    schema_apoxy_api_compute_v1alpha1_ServiceConfig(ref),
 		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceConfigSpec":                schema_apoxy_api_compute_v1alpha1_ServiceConfigSpec(ref),
+		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceEgress":                    schema_apoxy_api_compute_v1alpha1_ServiceEgress(ref),
 		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceLimits":                    schema_apoxy_api_compute_v1alpha1_ServiceLimits(ref),
 		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceList":                      schema_apoxy_api_compute_v1alpha1_ServiceList(ref),
 		"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceRevision":                  schema_apoxy_api_compute_v1alpha1_ServiceRevision(ref),
@@ -688,7 +703,7 @@ func schema_apoxy_api_compute_v1alpha1_Binding(ref common.ReferenceCallback) com
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "Binding grants a capability to the service. workerd's model is no ambient authority: a service reaches nothing it isn't explicitly bound to.",
+				Description: "Binding grants a platform resource capability to the service (secrets, KV, service-to-service): a service reaches no platform resource it isn't explicitly bound to. Outbound network access is NOT a binding — it is governed by the egress block (see ServiceEgress) and is on by default via the project's default gateway.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"name": {
@@ -1082,23 +1097,599 @@ func schema_apoxy_api_compute_v1alpha1_BundleRef(ref common.ReferenceCallback) c
 	}
 }
 
-func schema_apoxy_api_compute_v1alpha1_Capabilities(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_apoxy_api_compute_v1alpha1_EgressGateway(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "Capabilities are coarse gates layered on top of bindings (e.g. egress).",
+				Description: "EgressGateway mediates outbound network access for compute Services. Egress is transparent to worker code: there are no bindings and no fetch wrapper — plain fetch() works, and enforcement happens host-side (sandbox netstack + gateway data plane), never inside workerd. A Service selects a gateway via spec.template.spec.egress.gatewayRef; with no egress block it uses the project \"default\" gateway (see DefaultEgressGatewayName).\n\nNOT YET ENFORCED: the egress control/data planes are still landing, and until they do the runtime denies all worker egress regardless of gateway configuration. The API is stable; these semantics take effect when enforcement ships.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
-					"fetchAPI": {
+					"kind": {
 						SchemaProps: spec.SchemaProps{
-							Description: "FetchAPI permits outbound fetch() to the public internet. Default true.",
-							Type:        []string{"boolean"},
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.EgressGatewaySpec"),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.EgressGatewayStatus"),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.EgressGatewaySpec", "github.com/apoxy-dev/apoxy/api/compute/v1alpha1.EgressGatewayStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
+	}
+}
+
+func schema_apoxy_api_compute_v1alpha1_EgressGatewayList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.EgressGateway"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.EgressGateway", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
+	}
+}
+
+func schema_apoxy_api_compute_v1alpha1_EgressGatewaySpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "EgressGatewaySpec defines the desired state of an EgressGateway.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"defaultPolicy": {
+						SchemaProps: spec.SchemaProps{
+							Description: "DefaultPolicy applies to traffic that matches no attached route. Defaults to deny-all: an explicitly created gateway fails closed. (The implicit built-in \"default\" gateway — which exists only when no object named \"default\" does — is allow-all; see DefaultEgressGatewayName.)",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"listeners": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Listeners declare interception capabilities by protocol layer. Routes attach to a specific listener by name via parentRef.sectionName.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.EgressListener"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"listeners"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.EgressListener"},
+	}
+}
+
+func schema_apoxy_api_compute_v1alpha1_EgressGatewayStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "EgressGatewayStatus describes the observed state of an EgressGateway.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"conditions": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
+									},
+								},
+							},
+						},
+					},
+					"listeners": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.EgressListenerStatus"),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.EgressListenerStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.Condition"},
+	}
+}
+
+func schema_apoxy_api_compute_v1alpha1_EgressListener(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "EgressListener declares an interception capability by protocol layer. Routes reference a listener via parentRef.sectionName.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Name identifies this listener within the gateway.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"protocol": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Protocol selects the interception layer.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"port": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Port constrains interception to a single destination port. If unset, all ports are intercepted at this protocol layer.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"tls": {
+						SchemaProps: spec.SchemaProps{
+							Description: "TLS configures TLS handling. Only meaningful when protocol=TLS (Passthrough vs Terminate); forbidden for TCP/HTTP/HTTPS.",
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.EgressListenerTLS"),
+						},
+					},
+				},
+				Required: []string{"name", "protocol"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.EgressListenerTLS"},
+	}
+}
+
+func schema_apoxy_api_compute_v1alpha1_EgressListenerStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "EgressListenerStatus describes the observed state of a single listener.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Default: "",
+							Type:    []string{"string"},
+							Format:  "",
+						},
+					},
+					"port": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Port is the TCP port the gateway data plane listens on for this listener.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"backendAddress": {
+						SchemaProps: spec.SchemaProps{
+							Description: "BackendAddress is the host:port the sandbox-side dialer uses to reach this listener's data plane. Empty means the listener exists but its data plane isn't ready yet; the dialer skips it.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"attachedRoutes": {
+						SchemaProps: spec.SchemaProps{
+							Description: "AttachedRoutes counts the EgressRoutes attached to this listener.",
+							Default:     0,
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"conditions": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"name", "attachedRoutes"},
+			},
+		},
+		Dependencies: []string{
+			"k8s.io/apimachinery/pkg/apis/meta/v1.Condition"},
+	}
+}
+
+func schema_apoxy_api_compute_v1alpha1_EgressListenerTLS(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "EgressListenerTLS configures TLS handling for a listener.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"mode": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Mode controls TLS handling.\n  Passthrough: SNI-route only, no termination.\n  Terminate:   MITM decrypt for L7 inspection, re-encrypt to upstream.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"caCertRef": {
+						SchemaProps: spec.SchemaProps{
+							Description: "CACertRef names the SecretStore key holding the PEM-encoded CA certificate + key bundle used for on-the-fly certificate minting. Required when mode=Terminate; forbidden for Passthrough.",
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.SecretKeyRef"),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.SecretKeyRef"},
+	}
+}
+
+func schema_apoxy_api_compute_v1alpha1_EgressPortMatch(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "EgressPortMatch matches a single port or an inclusive port range. Exactly one of Port or the StartPort/EndPort pair must be set.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"port": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Port matches a single destination port.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"startPort": {
+						SchemaProps: spec.SchemaProps{
+							Description: "StartPort + EndPort define an inclusive range. Both must be set together. Mutually exclusive with Port.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"endPort": {
+						SchemaProps: spec.SchemaProps{
+							Type:   []string{"integer"},
+							Format: "int32",
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func schema_apoxy_api_compute_v1alpha1_EgressRoute(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "EgressRoute allows destination hostname/CIDR/port matched egress for the Services attached to its parent EgressGateway(s). Traffic matching no route falls to the gateway's defaultPolicy.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.EgressRouteSpec"),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.EgressRouteStatus"),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.EgressRouteSpec", "github.com/apoxy-dev/apoxy/api/compute/v1alpha1.EgressRouteStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
+	}
+}
+
+func schema_apoxy_api_compute_v1alpha1_EgressRouteList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.EgressRoute"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.EgressRoute", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
+	}
+}
+
+func schema_apoxy_api_compute_v1alpha1_EgressRouteMatch(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "EgressRouteMatch defines match criteria for outbound traffic. Dimensions are ANDed within a match; matches are ORed within a rule.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"destinationCIDRs": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "set",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "DestinationCIDRs matches by IP range. Single IPs as /32 or /128. IPv4 and IPv6 CIDRs are both honored.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"destinationHostnames": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "set",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "DestinationHostnames matches by hostname. Exact (`api.openai.com`) and wildcard (`*.openai.com`) forms are accepted (gwapiv1.Hostname semantics — a wildcard matches exactly one prefix label). On TLS-terminated listeners the match runs against SNI.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"ports": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Ports restricts to specific destination ports or port ranges.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.EgressPortMatch"),
+									},
+								},
+							},
+						},
+					},
+					"protocol": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Protocol selects TCP or UDP. If unset, inherits from the parent listener. UDP is not yet supported.",
+							Type:        []string{"string"},
 							Format:      "",
 						},
 					},
 				},
 			},
 		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.EgressPortMatch"},
+	}
+}
+
+func schema_apoxy_api_compute_v1alpha1_EgressRouteRule(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "EgressRouteRule defines one allow rule within an EgressRoute.\n\nA `mode` field (values: gateway | direct, default gateway) is RESERVED here for per-destination egress mode selection: `gateway` transits the EgressGateway data plane; `direct` is policy-checked in the host netstack but dials upstream without gateway transit. It is intentionally not defined yet — its compiled wire slot is the reserved field 2 of apoxy.workerd.v1.EgressPolicy.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"matches": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Matches lists the destinations this rule admits.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.EgressRouteMatch"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"matches"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.EgressRouteMatch"},
+	}
+}
+
+func schema_apoxy_api_compute_v1alpha1_EgressRouteSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "EgressRouteSpec defines the desired state of an EgressRoute.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"parentRefs": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ParentRefs attaches this route to EgressGateway listeners. Group and kind default to compute.apoxy.dev/EgressGateway and, when set, must be exactly that; namespace must be unset (all compute kinds are cluster-scoped). sectionName selects a single listener by name; absent attaches to every listener.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("sigs.k8s.io/gateway-api/apis/v1.ParentReference"),
+									},
+								},
+							},
+						},
+					},
+					"rules": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.EgressRouteRule"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"parentRefs", "rules"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.EgressRouteRule", "sigs.k8s.io/gateway-api/apis/v1.ParentReference"},
+	}
+}
+
+func schema_apoxy_api_compute_v1alpha1_EgressRouteStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "EgressRouteStatus describes the observed state of an EgressRoute.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"parents": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("sigs.k8s.io/gateway-api/apis/v1.RouteParentStatus"),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"sigs.k8s.io/gateway-api/apis/v1.RouteParentStatus"},
 	}
 }
 
@@ -1433,6 +2024,36 @@ func schema_apoxy_api_compute_v1alpha1_SecretBinding(ref common.ReferenceCallbac
 	}
 }
 
+func schema_apoxy_api_compute_v1alpha1_SecretKeyRef(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "SecretKeyRef names one key of a core.apoxy.dev SecretStore (cluster-scoped, same project). The project apiserver has no corev1 Secrets; SecretStore is its only secret primitive, so egress reuses the same store+key addressing as SecretBinding. The store's scopes must admit the \"compute\" surface; that check happens at resolve time in the control plane, not at admission.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"store": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Store names the SecretStore.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"key": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Key within the store's values map.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"store", "key"},
+			},
+		},
+	}
+}
+
 func schema_apoxy_api_compute_v1alpha1_Service(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -1575,11 +2196,44 @@ func schema_apoxy_api_compute_v1alpha1_ServiceConfigSpec(ref common.ReferenceCal
 							},
 						},
 					},
+					"egress": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Egress selects how outbound network traffic is mediated. Absent means the project \"default\" egress gateway (egress on by default); see ServiceEgress for the full semantics and the disabled opt-out.",
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceEgress"),
+						},
+					},
 				},
 			},
 		},
 		Dependencies: []string{
-			"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.BackendConfig", "github.com/apoxy-dev/apoxy/api/compute/v1alpha1.Binding", "github.com/apoxy-dev/apoxy/api/compute/v1alpha1.EnvVar", "github.com/apoxy-dev/apoxy/api/compute/v1alpha1.FilterConfig", "github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceRuntime"},
+			"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.BackendConfig", "github.com/apoxy-dev/apoxy/api/compute/v1alpha1.Binding", "github.com/apoxy-dev/apoxy/api/compute/v1alpha1.EnvVar", "github.com/apoxy-dev/apoxy/api/compute/v1alpha1.FilterConfig", "github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceEgress", "github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceRuntime"},
+	}
+}
+
+func schema_apoxy_api_compute_v1alpha1_ServiceEgress(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ServiceEgress selects how the service's outbound network traffic (\"egress\") is mediated. Egress is transparent to worker code: there is no binding and no fetch wrapper — a plain fetch() works, subject to the selected gateway's routes and default policy. Enforcement is host-side (sandbox netstack + egress gateway), never inside workerd.\n\nEgress is ON by default: an absent block (or an empty gatewayRef) resolves to the project \"default\" gateway, which is a built-in allow-all unless an EgressGateway named \"default\" exists (see DefaultEgressGatewayName). Set disabled: true to hard-deny all egress for this service.\n\nNOT YET ENFORCED: the egress control/data planes are still landing, and until they do the runtime denies all worker egress regardless of this block. The API is stable; the described semantics take effect when enforcement ships.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"gatewayRef": {
+						SchemaProps: spec.SchemaProps{
+							Description: "GatewayRef names the compute.apoxy.dev EgressGateway that mediates this service's outbound traffic. Empty means the project \"default\" gateway. Existence is not validated at admission; a dangling ref surfaces as the EgressReady=False condition on Service status.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"disabled": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Disabled hard-denies all egress for this service (globalOutbound is unset in workerd and the sandbox netstack resets any outbound attempt). Mutually exclusive with a non-empty gatewayRef.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+				},
+			},
+		},
 	}
 }
 
@@ -1798,6 +2452,12 @@ func schema_apoxy_api_compute_v1alpha1_ServiceRevisionSpec(ref common.ReferenceC
 							},
 						},
 					},
+					"egress": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Egress selects how outbound network traffic is mediated. Absent means the project \"default\" egress gateway (egress on by default); see ServiceEgress for the full semantics and the disabled opt-out.",
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceEgress"),
+						},
+					},
 					"bundle": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Bundle is the resolved OCI artifact this revision runs. It is always digest-pinned and is set by the controller when minting the revision from spec.source; it is never user-authored.",
@@ -1810,7 +2470,7 @@ func schema_apoxy_api_compute_v1alpha1_ServiceRevisionSpec(ref common.ReferenceC
 			},
 		},
 		Dependencies: []string{
-			"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.BackendConfig", "github.com/apoxy-dev/apoxy/api/compute/v1alpha1.Binding", "github.com/apoxy-dev/apoxy/api/compute/v1alpha1.BundleRef", "github.com/apoxy-dev/apoxy/api/compute/v1alpha1.EnvVar", "github.com/apoxy-dev/apoxy/api/compute/v1alpha1.FilterConfig", "github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceRuntime"},
+			"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.BackendConfig", "github.com/apoxy-dev/apoxy/api/compute/v1alpha1.Binding", "github.com/apoxy-dev/apoxy/api/compute/v1alpha1.BundleRef", "github.com/apoxy-dev/apoxy/api/compute/v1alpha1.EnvVar", "github.com/apoxy-dev/apoxy/api/compute/v1alpha1.FilterConfig", "github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceEgress", "github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceRuntime"},
 	}
 }
 
@@ -1852,17 +2512,12 @@ func schema_apoxy_api_compute_v1alpha1_ServiceRuntime(ref common.ReferenceCallba
 							Ref: ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceLimits"),
 						},
 					},
-					"capabilities": {
-						SchemaProps: spec.SchemaProps{
-							Ref: ref("github.com/apoxy-dev/apoxy/api/compute/v1alpha1.Capabilities"),
-						},
-					},
 				},
 				Required: []string{"compatibilityDate"},
 			},
 		},
 		Dependencies: []string{
-			"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.Capabilities", "github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceLimits", "k8s.io/apimachinery/pkg/apis/meta/v1.Duration"},
+			"github.com/apoxy-dev/apoxy/api/compute/v1alpha1.ServiceLimits", "k8s.io/apimachinery/pkg/apis/meta/v1.Duration"},
 	}
 }
 

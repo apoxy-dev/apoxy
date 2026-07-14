@@ -19,6 +19,10 @@ package v1alpha1
 
 type BuildExpansion interface{}
 
+type EgressGatewayExpansion interface{}
+
+type EgressRouteExpansion interface{}
+
 type ServiceExpansion interface{}
 
 type ServiceRevisionExpansion interface{}

@@ -52,6 +52,21 @@ func TestServiceDefault(t *testing.T) {
 			want: ServiceSpec{Template: withRuntime("x"), RevisionHistoryLimit: ptr.To(int32(0))},
 		},
 		{
+			// The existing want specs also assert this by omission: no case
+			// ever grows an egress block, because absent means "the default
+			// gateway" and is resolved at compile time, never stored.
+			name: "egress block passes through undefaulted",
+			in: ServiceSpec{Template: ServiceTemplateSpec{Spec: ServiceConfigSpec{
+				Runtime: &ServiceRuntime{CompatibilityDate: "x"},
+				Egress:  &ServiceEgress{Disabled: true},
+			}}},
+			want: func() ServiceSpec {
+				tpl := withRuntime("x")
+				tpl.Spec.Egress = &ServiceEgress{Disabled: true}
+				return ServiceSpec{Template: tpl, RevisionHistoryLimit: ptr.To(int32(10))}
+			}(),
+		},
+		{
 			name: "oci source tag defaults to latest",
 			in:   ServiceSpec{Source: ServiceSource{OCI: &BundleRef{Repo: "r"}}},
 			want: ServiceSpec{

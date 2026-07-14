@@ -25,6 +25,10 @@ import (
 type Interface interface {
 	// Builds returns a BuildInformer.
 	Builds() BuildInformer
+	// EgressGateways returns a EgressGatewayInformer.
+	EgressGateways() EgressGatewayInformer
+	// EgressRoutes returns a EgressRouteInformer.
+	EgressRoutes() EgressRouteInformer
 	// Services returns a ServiceInformer.
 	Services() ServiceInformer
 	// ServiceRevisions returns a ServiceRevisionInformer.
@@ -45,6 +49,16 @@ func New(f internalinterfaces.SharedInformerFactory, namespace string, tweakList
 // Builds returns a BuildInformer.
 func (v *version) Builds() BuildInformer {
 	return &buildInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
+}
+
+// EgressGateways returns a EgressGatewayInformer.
+func (v *version) EgressGateways() EgressGatewayInformer {
+	return &egressGatewayInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
+}
+
+// EgressRoutes returns a EgressRouteInformer.
+func (v *version) EgressRoutes() EgressRouteInformer {
+	return &egressRouteInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
 }
 
 // Services returns a ServiceInformer.

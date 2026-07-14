@@ -365,6 +365,35 @@ func TestServiceRevisionValidate(t *testing.T) {
 				r.Spec.Env = []EnvVar{{Name: "A", Value: "1"}, {Name: "B", Value: "2"}}
 			},
 		},
+		// --- egress (absent/empty = default gateway; disabled XOR gatewayRef) ---
+		{
+			name: "egress empty block ok (means default gateway)",
+			mut:  func(r *ServiceRevision) { r.Spec.Egress = &ServiceEgress{} },
+		},
+		{
+			name: "egress gatewayRef ok",
+			mut:  func(r *ServiceRevision) { r.Spec.Egress = &ServiceEgress{GatewayRef: "locked-down"} },
+		},
+		{
+			name: "egress disabled ok",
+			mut:  func(r *ServiceRevision) { r.Spec.Egress = &ServiceEgress{Disabled: true} },
+		},
+		{
+			name: "egress disabled with gatewayRef forbidden",
+			mut: func(r *ServiceRevision) {
+				r.Spec.Egress = &ServiceEgress{GatewayRef: "eg", Disabled: true}
+			},
+			want:  []string{"spec.egress.gatewayRef"},
+			count: 1,
+		},
+		{
+			name: "egress malformed gatewayRef invalid",
+			mut: func(r *ServiceRevision) {
+				r.Spec.Egress = &ServiceEgress{GatewayRef: "Not_A_Name"}
+			},
+			want:  []string{"spec.egress.gatewayRef"},
+			count: 1,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
