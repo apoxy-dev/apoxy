@@ -7,3 +7,5 @@ apoxy
 dist/
 /main
 *.pcap
+*.test
+.playwright-cli
