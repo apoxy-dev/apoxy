@@ -83,8 +83,11 @@ func TestResidentManager_EgressPlaneWiring(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	resp, err := client.ApplyEgress(ctx, &workerdv1.ApplyEgressRequest{
-		SandboxId:    string(names.ResidentID(tenantA)),
-		Policy:       &workerdv1.EgressPolicy{DefaultDeny: true},
+		SandboxId: string(names.ResidentID(tenantA)),
+		Services: []*workerdv1.ServiceEgressConfig{{
+			Service: "api",
+			Policy:  &workerdv1.EgressPolicy{DefaultDeny: true},
+		}},
 		InvocationId: "inv-1",
 		Generation:   4,
 	})
@@ -95,7 +98,9 @@ func TestResidentManager_EgressPlaneWiring(t *testing.T) {
 		t.Errorf("AppliedGeneration = %d; want 4", resp.AppliedGeneration)
 	}
 	applies := b.built(tenantA).applied()
-	if len(applies) != 1 || applies[0].InvocationID != "inv-1" || applies[0].Policy == nil || !applies[0].Policy.DefaultDeny {
+	if len(applies) != 1 || applies[0].InvocationID != "inv-1" ||
+		len(applies[0].Services) != 1 || applies[0].Services[0].Service != "api" ||
+		applies[0].Services[0].Policy == nil || !applies[0].Services[0].Policy.DefaultDeny {
 		t.Errorf("resident applier saw %+v; want the pushed config", applies)
 	}
 

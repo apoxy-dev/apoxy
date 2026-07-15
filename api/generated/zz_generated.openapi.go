@@ -1600,7 +1600,7 @@ func schema_apoxy_api_compute_v1alpha1_EgressRouteRule(ref common.ReferenceCallb
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "EgressRouteRule defines one allow rule within an EgressRoute.\n\nA `mode` field (values: gateway | direct, default gateway) is RESERVED here for per-destination egress mode selection: `gateway` transits the EgressGateway data plane; `direct` is policy-checked in the host netstack but dials upstream without gateway transit. It is intentionally not defined yet — its compiled wire slot is the reserved field 2 of apoxy.workerd.v1.EgressPolicy.",
+				Description: "EgressRouteRule defines one allow rule within an EgressRoute.\n\nA `mode` field (values: gateway | direct, default gateway) is RESERVED here for per-destination egress mode selection: `gateway` transits the EgressGateway data plane; `direct` is policy-checked in the host netstack but dials upstream without gateway transit. It is intentionally not defined yet — its compiled wire slot is the reserved field 6 of apoxy.workerd.v1.EgressRule.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"matches": {

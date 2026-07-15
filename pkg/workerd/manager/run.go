@@ -127,6 +127,22 @@ func Run() error {
 		return fmt.Errorf("setting up resident reconciler: %w", err)
 	}
 
+	// The egress pusher (APO-726 data-plane half) compiles the project's
+	// egress plan and pushes it to the resident over the egress control
+	// socket. Any egress-relevant event triggers a whole-state push.
+	if *egressDir != "" {
+		pusher := NewEgressPusher(*egressDir)
+		if err := ctrl.NewControllerManagedBy(mgr).
+			Named("compute-egress-pusher").
+			For(&computev1alpha1.Service{}).
+			Watches(&computev1alpha1.ServiceRevision{}, enqueueEgressFullPass()).
+			Watches(&computev1alpha1.EgressGateway{}, enqueueEgressFullPass()).
+			Watches(&computev1alpha1.EgressRoute{}, enqueueEgressFullPass()).
+			Complete(pusher.TenantReconciler("", mgr.GetClient())); err != nil {
+			return fmt.Errorf("setting up egress pusher: %w", err)
+		}
+	}
+
 	slog.Info("Starting workerd-manager")
 	if err := mgr.Start(ctx); err != nil {
 		return fmt.Errorf("running controller manager: %w", err)

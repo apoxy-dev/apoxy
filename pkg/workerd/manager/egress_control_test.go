@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -108,29 +109,57 @@ func TestEgressControlServer_ApplyEgress(t *testing.T) {
 			name: "apply fans out and echoes the generation",
 			req: &workerdv1.ApplyEgressRequest{
 				SandboxId: residentID,
-				Backends: []*workerdv1.BackendListener{
-					{Name: "eg", Addr: "127.0.0.1:8093", Shape: "tcp", MatchPort: 443, Priority: 2},
-				},
-				Policy:       &workerdv1.EgressPolicy{DefaultDeny: true},
+				Services: []*workerdv1.ServiceEgressConfig{{
+					Service: "api",
+					Backends: []*workerdv1.BackendListener{
+						{Name: "eg", Addr: "127.0.0.1:8093", Shape: "tcp", MatchPort: 443, Priority: 2},
+					},
+					Policy: &workerdv1.EgressPolicy{
+						DefaultDeny: true,
+						Rules: []*workerdv1.EgressRule{{
+							DestinationHostnames: []string{"api.openai.com"},
+							DestinationCidrs:     []string{"192.0.2.0/24"},
+							Ports:                []*workerdv1.PortRange{{Start: 443, End: 443}},
+							Protocol:             "TCP",
+							Listeners:            []string{"eg"},
+						}},
+					},
+				}},
 				InvocationId: "inv-1",
 				Generation:   7,
 			},
 			wantGen: 7,
 			wantApply: &host.EgressApply{
-				Backends:     []sandbox.BackendListener{{Name: "eg", Addr: "127.0.0.1:8093", Shape: "tcp", MatchPort: 443, Priority: 2}},
-				Policy:       &sandbox.Policy{DefaultDeny: true},
+				Services: []sandbox.ServiceEgress{{
+					Service:  "api",
+					Backends: []sandbox.BackendListener{{Name: "eg", Addr: "127.0.0.1:8093", Shape: "tcp", MatchPort: 443, Priority: 2}},
+					Policy: &sandbox.Policy{
+						DefaultDeny: true,
+						Rules: []sandbox.Rule{{
+							DestinationHostnames: []string{"api.openai.com"},
+							DestinationCIDRs:     []string{"192.0.2.0/24"},
+							Ports:                []sandbox.PortRange{{Start: 443, End: 443}},
+							Protocol:             "TCP",
+							Listeners:            []string{"eg"},
+						}},
+					},
+				}},
 				InvocationID: "inv-1",
 				Generation:   7,
 			},
 		},
 		{
-			name: "absent policy maps to nil (allow-all)",
+			name: "absent per-service policy maps to nil (allow-all)",
 			req: &workerdv1.ApplyEgressRequest{
 				SandboxId:  residentID,
+				Services:   []*workerdv1.ServiceEgressConfig{{Service: "api"}},
 				Generation: 1,
 			},
-			wantGen:   1,
-			wantApply: &host.EgressApply{Generation: 1},
+			wantGen: 1,
+			wantApply: &host.EgressApply{
+				Services:   []sandbox.ServiceEgress{{Service: "api"}},
+				Generation: 1,
+			},
 		},
 		{
 			name: "foreign sandbox id is rejected",
@@ -185,17 +214,8 @@ func TestEgressControlServer_ApplyEgress(t *testing.T) {
 			if got.InvocationID != tc.wantApply.InvocationID || got.Generation != tc.wantApply.Generation {
 				t.Errorf("apply = %+v; want %+v", got, *tc.wantApply)
 			}
-			if (got.Policy == nil) != (tc.wantApply.Policy == nil) ||
-				(got.Policy != nil && got.Policy.DefaultDeny != tc.wantApply.Policy.DefaultDeny) {
-				t.Errorf("apply policy = %+v; want %+v", got.Policy, tc.wantApply.Policy)
-			}
-			if len(got.Backends) != len(tc.wantApply.Backends) {
-				t.Fatalf("apply backends = %+v; want %+v", got.Backends, tc.wantApply.Backends)
-			}
-			for i, b := range got.Backends {
-				if b != tc.wantApply.Backends[i] {
-					t.Errorf("backend[%d] = %+v; want %+v", i, b, tc.wantApply.Backends[i])
-				}
+			if !reflect.DeepEqual(got.Services, tc.wantApply.Services) {
+				t.Errorf("apply services = %+v; want %+v", got.Services, tc.wantApply.Services)
 			}
 		})
 	}

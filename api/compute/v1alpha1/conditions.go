@@ -24,3 +24,29 @@ const (
 	// contract.
 	ConditionEgressReady = "EgressReady"
 )
+
+// Reasons for ConditionEgressReady.
+const (
+	// EgressReadyReasonApplied: the egress config resolved and was compiled
+	// for the data plane (including the implicit built-in "default" gateway).
+	EgressReadyReasonApplied = "Applied"
+	// EgressReadyReasonGatewayNotFound: an explicit gatewayRef names a gateway
+	// that does not exist. The service's egress fails closed.
+	EgressReadyReasonGatewayNotFound = "GatewayNotFound"
+	// EgressReadyReasonGatewayNotReady: the selected gateway exists but its
+	// data plane is not ready; compiled config is dispatched with no dialable
+	// backend addresses.
+	EgressReadyReasonGatewayNotReady = "GatewayNotReady"
+	// EgressReadyReasonDisabled: the service set egress.disabled — all egress
+	// is hard-denied, as configured.
+	EgressReadyReasonDisabled = "Disabled"
+)
+
+// Reasons for EgressGatewayConditionReady.
+const (
+	// EgressGatewayReasonReady: every listener has a dialable data plane.
+	EgressGatewayReasonReady = "ListenersReady"
+	// EgressGatewayReasonListenersPending: one or more listeners have no data
+	// plane address yet (the gateway data plane has not been provisioned).
+	EgressGatewayReasonListenersPending = "ListenersPending"
+)

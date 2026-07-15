@@ -126,6 +126,12 @@ func main() {
 			apiserver.WithAdditionalController(func(c client.Client) apiserver.Controller {
 				return workerdmanager.NewServiceReconciler(c)
 			}),
+			// APO-726: resolve Service egress selections against
+			// EgressGateways/EgressRoutes and write their statuses. The
+			// data-plane push half runs in cmd/workerd-manager.
+			apiserver.WithAdditionalController(func(c client.Client) apiserver.Controller {
+				return workerdmanager.NewEgressStatusReconciler(c)
+			}),
 		}
 		if *inCluster {
 			if !*insecure {

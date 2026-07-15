@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //
 // EgressConfig is the worker-side sink of the workerd egress config plane
-// (APO-723). The backplane's ServiceReconciler (APO-726) compiles egress
-// routing/policy per Service and pushes it here over a per-tenant localhost
-// listener (a filesystem-permissioned unix domain socket); the manager fans it
-// out to the sandbox EgressController live setters
-// (SetEgressBackends/SetEgressPolicy/SetInvocationID).
+// (APO-723). The backplane's egress reconciler (APO-726) compiles egress
+// routing/policy per compute Service and pushes it here over a per-tenant
+// localhost listener (a filesystem-permissioned unix domain socket); the
+// manager fans it out to the sandbox EgressController live setters.
 //
 // This gRPC drives the WORKER bridge's setters only, never the Sentry: there
 // is no general live urpc into the running sandbox. Applies are idempotent and
@@ -42,10 +41,14 @@ const (
 // EgressConfig applies compiled egress configuration to a tenant's resident.
 type EgressConfigClient interface {
 	// ApplyEgress installs the full egress config for one sandbox: the
-	// EgressGateway backend listeners it may dial, its authorization policy,
-	// and the invocation id stamped on egress connections for attribution.
-	// Idempotent; a request whose generation is older than the last applied
-	// one is ignored (the response echoes the retained generation).
+	// per-Service egress planes (each Service's dialable EgressGateway backend
+	// listeners and its authorization policy) plus the invocation id stamped on
+	// egress connections for attribution. The request carries the WHOLE desired
+	// state for the resident — a Service absent from the request has no egress
+	// plane (its config is dropped), so the reconciler stays level-triggered
+	// and deletions need no tombstones. Idempotent; a request whose generation
+	// is older than the last applied one is ignored (the response echoes the
+	// retained generation).
 	ApplyEgress(ctx context.Context, in *ApplyEgressRequest, opts ...grpc.CallOption) (*ApplyEgressResponse, error)
 }
 
@@ -74,10 +77,14 @@ func (c *egressConfigClient) ApplyEgress(ctx context.Context, in *ApplyEgressReq
 // EgressConfig applies compiled egress configuration to a tenant's resident.
 type EgressConfigServer interface {
 	// ApplyEgress installs the full egress config for one sandbox: the
-	// EgressGateway backend listeners it may dial, its authorization policy,
-	// and the invocation id stamped on egress connections for attribution.
-	// Idempotent; a request whose generation is older than the last applied
-	// one is ignored (the response echoes the retained generation).
+	// per-Service egress planes (each Service's dialable EgressGateway backend
+	// listeners and its authorization policy) plus the invocation id stamped on
+	// egress connections for attribution. The request carries the WHOLE desired
+	// state for the resident — a Service absent from the request has no egress
+	// plane (its config is dropped), so the reconciler stays level-triggered
+	// and deletions need no tombstones. Idempotent; a request whose generation
+	// is older than the last applied one is ignored (the response echoes the
+	// retained generation).
 	ApplyEgress(context.Context, *ApplyEgressRequest) (*ApplyEgressResponse, error)
 	mustEmbedUnimplementedEgressConfigServer()
 }

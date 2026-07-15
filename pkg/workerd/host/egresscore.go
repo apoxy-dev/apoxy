@@ -12,12 +12,12 @@ import (
 // EgressState is the recorded egress configuration of one sandbox — what the
 // config plane (APO-723) has applied, held for the egress data path (the
 // forwarder installer / worker egress bridge, APO-713/APO-722) to consume.
-// It mirrors clrk's worker sandbox EgressState.
+// It mirrors clrk's worker sandbox EgressState, except state is keyed per
+// compute Service: the resident hosts every Service of its project, and each
+// Service selects its egress gateway independently.
 type EgressState struct {
-	// Backends is the set of EgressGateway listeners the sandbox may dial.
-	Backends []sandbox.BackendListener
-	// Policy is the egress authorization plane; nil means allow-all.
-	Policy *sandbox.Policy
+	// Services is the full set of per-Service egress planes for the resident.
+	Services []sandbox.ServiceEgress
 	// InvocationID is stamped on egress connections for attribution.
 	InvocationID string
 	// Generation is the config generation this state was applied at. It lives
@@ -103,29 +103,16 @@ func (c *egressCore) stateLocked(id sandbox.SandboxID) (*EgressState, error) {
 	return st, nil
 }
 
-// SetEgressBackends replaces the sandbox's dialable EgressGateway listener
-// set. Live-swappable, last-writer-wins.
-func (c *egressCore) SetEgressBackends(id sandbox.SandboxID, backends []sandbox.BackendListener) error {
+// SetServiceEgress replaces the sandbox's full set of per-Service egress
+// planes. Live-swappable, last-writer-wins.
+func (c *egressCore) SetServiceEgress(id sandbox.SandboxID, services []sandbox.ServiceEgress) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	st, err := c.stateLocked(id)
 	if err != nil {
 		return err
 	}
-	st.Backends = backends
-	return nil
-}
-
-// SetEgressPolicy replaces the sandbox's egress authorization plane. A nil
-// policy means allow-all.
-func (c *egressCore) SetEgressPolicy(id sandbox.SandboxID, policy *sandbox.Policy) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	st, err := c.stateLocked(id)
-	if err != nil {
-		return err
-	}
-	st.Policy = policy
+	st.Services = services
 	return nil
 }
 
@@ -158,11 +145,10 @@ func (c *egressCore) applyEgress(id sandbox.SandboxID, apply EgressApply) (uint6
 	if apply.Generation < st.Generation {
 		return st.Generation, nil
 	}
-	// Clone the backends so the stored state never aliases caller memory:
-	// LookupEgressState hands out shallow snapshots, and a consumer sorting
-	// its snapshot in place must not race the recorded state.
-	st.Backends = append([]sandbox.BackendListener(nil), apply.Backends...)
-	st.Policy = apply.Policy
+	// Clone the service planes so the stored state never aliases caller
+	// memory: LookupEgressState hands out shallow snapshots, and a consumer
+	// sorting its snapshot in place must not race the recorded state.
+	st.Services = append([]sandbox.ServiceEgress(nil), apply.Services...)
 	st.InvocationID = apply.InvocationID
 	st.Generation = apply.Generation
 	return apply.Generation, nil
@@ -171,7 +157,7 @@ func (c *egressCore) applyEgress(id sandbox.SandboxID, apply EgressApply) (uint6
 // LookupEgressState returns a snapshot of the sandbox's recorded egress
 // config. This is the read seam the egress data path (APO-713's forwarder /
 // bridge port) consumes per connection, mirroring clrk's LookupEgressState.
-// The snapshot's Backends slice aliases the stored one and must be treated
+// The snapshot's Services slice aliases the stored one and must be treated
 // as read-only; applies never mutate it in place (applyEgress swaps in a
 // fresh clone), so a held snapshot stays internally consistent.
 func (c *egressCore) LookupEgressState(id sandbox.SandboxID) (EgressState, bool) {

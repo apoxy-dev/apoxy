@@ -149,10 +149,22 @@ func applyFromProto(req *workerdv1.ApplyEgressRequest) host.EgressApply {
 		InvocationID: req.InvocationId,
 		Generation:   req.Generation,
 	}
-	if len(req.Backends) > 0 {
-		apply.Backends = make([]sandbox.BackendListener, 0, len(req.Backends))
-		for _, b := range req.Backends {
-			apply.Backends = append(apply.Backends, sandbox.BackendListener{
+	if len(req.Services) > 0 {
+		apply.Services = make([]sandbox.ServiceEgress, 0, len(req.Services))
+		for _, s := range req.Services {
+			apply.Services = append(apply.Services, serviceEgressFromProto(s))
+		}
+	}
+	return apply
+}
+
+// serviceEgressFromProto maps one wire per-Service plane to the seam shape.
+func serviceEgressFromProto(s *workerdv1.ServiceEgressConfig) sandbox.ServiceEgress {
+	se := sandbox.ServiceEgress{Service: s.Service}
+	if len(s.Backends) > 0 {
+		se.Backends = make([]sandbox.BackendListener, 0, len(s.Backends))
+		for _, b := range s.Backends {
+			se.Backends = append(se.Backends, sandbox.BackendListener{
 				Name:      b.Name,
 				Addr:      b.Addr,
 				Shape:     b.Shape,
@@ -161,8 +173,21 @@ func applyFromProto(req *workerdv1.ApplyEgressRequest) host.EgressApply {
 			})
 		}
 	}
-	if req.Policy != nil {
-		apply.Policy = &sandbox.Policy{DefaultDeny: req.Policy.DefaultDeny}
+	if s.Policy != nil {
+		p := &sandbox.Policy{DefaultDeny: s.Policy.DefaultDeny}
+		for _, r := range s.Policy.Rules {
+			rule := sandbox.Rule{
+				DestinationCIDRs:     r.DestinationCidrs,
+				DestinationHostnames: r.DestinationHostnames,
+				Protocol:             r.Protocol,
+				Listeners:            r.Listeners,
+			}
+			for _, pr := range r.Ports {
+				rule.Ports = append(rule.Ports, sandbox.PortRange{Start: pr.Start, End: pr.End})
+			}
+			p.Rules = append(p.Rules, rule)
+		}
+		se.Policy = p
 	}
-	return apply
+	return se
 }

@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //
 // EgressConfig is the worker-side sink of the workerd egress config plane
-// (APO-723). The backplane's ServiceReconciler (APO-726) compiles egress
-// routing/policy per Service and pushes it here over a per-tenant localhost
-// listener (a filesystem-permissioned unix domain socket); the manager fans it
-// out to the sandbox EgressController live setters
-// (SetEgressBackends/SetEgressPolicy/SetInvocationID).
+// (APO-723). The backplane's egress reconciler (APO-726) compiles egress
+// routing/policy per compute Service and pushes it here over a per-tenant
+// localhost listener (a filesystem-permissioned unix domain socket); the
+// manager fans it out to the sandbox EgressController live setters.
 //
 // This gRPC drives the WORKER bridge's setters only, never the Sentry: there
 // is no general live urpc into the running sandbox. Applies are idempotent and
@@ -20,10 +19,14 @@ option go_package = "github.com/apoxy-dev/apoxy/api/workerd/v1;workerdv1";
 // EgressConfig applies compiled egress configuration to a tenant's resident.
 service EgressConfig {
   // ApplyEgress installs the full egress config for one sandbox: the
-  // EgressGateway backend listeners it may dial, its authorization policy,
-  // and the invocation id stamped on egress connections for attribution.
-  // Idempotent; a request whose generation is older than the last applied
-  // one is ignored (the response echoes the retained generation).
+  // per-Service egress planes (each Service's dialable EgressGateway backend
+  // listeners and its authorization policy) plus the invocation id stamped on
+  // egress connections for attribution. The request carries the WHOLE desired
+  // state for the resident — a Service absent from the request has no egress
+  // plane (its config is dropped), so the reconciler stays level-triggered
+  // and deletions need no tombstones. Idempotent; a request whose generation
+  // is older than the last applied one is ignored (the response echoes the
+  // retained generation).
   rpc ApplyEgress(ApplyEgressRequest) returns (ApplyEgressResponse);
 }
 
@@ -31,7 +34,7 @@ service EgressConfig {
 // EgressGateway listener the sandbox may dial.
 message BackendListener {
   // Name mirrors the EgressListener name from the CRD; used for logs and for
-  // EgressL4Route parentRef.sectionName matching.
+  // EgressRoute parentRef.sectionName matching.
   string name = 1;
   // Addr is the host:port the sandbox dials. Empty means "listener exists but
   // its data plane isn't ready yet" — the dialer skips it.
@@ -47,33 +50,83 @@ message BackendListener {
   int32 priority = 5;
 }
 
-// EgressPolicy is the per-sandbox egress authorization plane. Its
-// per-destination route rules (gateway | direct mode selection) land with
-// APO-722; until then it carries only the default decision.
+// EgressPolicy is one Service's egress authorization plane: the EgressGateway
+// defaultPolicy paired with the allow rules compiled from the EgressRoutes
+// attached to that gateway. A destination matched by any rule is allowed;
+// otherwise default_deny decides (mirroring clrk's SandboxPolicy.Allow).
 message EgressPolicy {
-  // DefaultDeny denies destinations not matched by any route rule. False
-  // (with no rules) is allow-all.
+  // DefaultDeny denies destinations not matched by any rule. False (with no
+  // rules) is allow-all.
   bool default_deny = 1;
+  // Rules are the compiled per-destination allow rules. Dimensions within a
+  // rule are ANDed; rules are ORed (each rule is one compiled
+  // EgressRouteMatch).
+  repeated EgressRule rules = 2;
+}
 
-  // Field 2 is reserved for the APO-722 per-destination route rules.
-  reserved 2;
+// EgressRule is one compiled EgressRouteMatch: an AND of destination
+// dimensions (each present dimension must match; an absent dimension matches
+// anything).
+message EgressRule {
+  // DestinationCIDRs match the destination IP. Single IPs are /32 or /128.
+  repeated string destination_cidrs = 1;
+  // DestinationHostnames match the DNS-bound destination name; exact or
+  // single-label wildcard ("*.example.com").
+  repeated string destination_hostnames = 2;
+  // Ports match the destination port. Single ports have start == end.
+  repeated PortRange ports = 3;
+  // Protocol is the L4 protocol ("TCP"); empty matches any. UDP is rejected
+  // at admission and never compiled.
+  string protocol = 4;
+  // Listeners are the BackendListener names this rule routes via, from the
+  // route's parentRef.sectionName. Empty = all of the gateway's listeners.
+  repeated string listeners = 5;
+
+  // Field 6 is reserved for the APO-722 per-destination mode selection
+  // (gateway | direct).
+  reserved 6;
+}
+
+// PortRange is an inclusive destination port range.
+message PortRange {
+  int32 start = 1;
+  int32 end = 2;
+}
+
+// ServiceEgressConfig is one compute Service's compiled egress plane within
+// the resident: the gateway listeners its egress may dial and its policy. A
+// resident hosts every Service of its project, and Services select egress
+// gateways independently (spec.template.spec.egress.gatewayRef), so egress
+// state is keyed per Service — this is a deliberate divergence from clrk,
+// where one sandbox hosts exactly one agent workload.
+message ServiceEgressConfig {
+  // Service is the compute Service name this plane belongs to.
+  string service = 1;
+  // Backends replaces the Service's dialable EgressGateway listener set.
+  repeated BackendListener backends = 2;
+  // Policy replaces the Service's egress authorization plane. Absent means
+  // allow-all (no enforcement) — the implicit built-in "default" gateway.
+  EgressPolicy policy = 3;
 }
 
 message ApplyEgressRequest {
   // SandboxID identifies the target sandbox. It must belong to the tenant
   // whose socket this request arrived on; a foreign id is rejected.
   string sandbox_id = 1;
-  // Backends replaces the sandbox's dialable EgressGateway listener set.
-  repeated BackendListener backends = 2;
-  // Policy replaces the sandbox's egress authorization plane. Absent means
-  // allow-all (no enforcement).
-  EgressPolicy policy = 3;
+
+  // Fields 2-3 were the resident-wide backends/policy pair, superseded by the
+  // per-Service planes in services.
+  reserved 2, 3;
+
   // InvocationID is stamped on egress connections (PROXY v2 TLV) dialed
   // through this sandbox, for attribution.
   string invocation_id = 4;
   // Generation orders applies: the reconciler's monotonically increasing
   // config generation. A stale generation is not applied.
   uint64 generation = 5;
+  // Services is the full desired set of per-Service egress planes for the
+  // resident; it replaces the prior set atomically.
+  repeated ServiceEgressConfig services = 6;
 }
 
 message ApplyEgressResponse {

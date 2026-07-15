@@ -36,11 +36,8 @@ func TestEgressCore_StateLifecycle(t *testing.T) {
 		{
 			name: "setters on an uncreated sandbox return ErrNotFound",
 			run: func(t *testing.T, ec *egressCore) {
-				if err := ec.SetEgressBackends(id, nil); !errors.Is(err, sandbox.ErrNotFound) {
-					t.Errorf("SetEgressBackends = %v; want ErrNotFound", err)
-				}
-				if err := ec.SetEgressPolicy(id, nil); !errors.Is(err, sandbox.ErrNotFound) {
-					t.Errorf("SetEgressPolicy = %v; want ErrNotFound", err)
+				if err := ec.SetServiceEgress(id, nil); !errors.Is(err, sandbox.ErrNotFound) {
+					t.Errorf("SetServiceEgress = %v; want ErrNotFound", err)
 				}
 				if err := ec.SetInvocationID(id, "inv"); !errors.Is(err, sandbox.ErrNotFound) {
 					t.Errorf("SetInvocationID = %v; want ErrNotFound", err)
@@ -53,13 +50,13 @@ func TestEgressCore_StateLifecycle(t *testing.T) {
 				if _, err := ec.Create(ctx, spec); err != nil {
 					t.Fatalf("Create: %v", err)
 				}
-				backends := []sandbox.BackendListener{{Name: "eg", Addr: "127.0.0.1:8093"}}
-				pol := &sandbox.Policy{DefaultDeny: true}
-				if err := ec.SetEgressBackends(id, backends); err != nil {
-					t.Fatalf("SetEgressBackends: %v", err)
-				}
-				if err := ec.SetEgressPolicy(id, pol); err != nil {
-					t.Fatalf("SetEgressPolicy: %v", err)
+				services := []sandbox.ServiceEgress{{
+					Service:  "api",
+					Backends: []sandbox.BackendListener{{Name: "eg", Addr: "127.0.0.1:8093"}},
+					Policy:   &sandbox.Policy{DefaultDeny: true},
+				}}
+				if err := ec.SetServiceEgress(id, services); err != nil {
+					t.Fatalf("SetServiceEgress: %v", err)
 				}
 				if err := ec.SetInvocationID(id, "inv-1"); err != nil {
 					t.Fatalf("SetInvocationID: %v", err)
@@ -68,11 +65,12 @@ func TestEgressCore_StateLifecycle(t *testing.T) {
 				if !ok {
 					t.Fatal("LookupEgressState: state missing after setters")
 				}
-				if len(st.Backends) != 1 || st.Backends[0].Name != "eg" {
-					t.Errorf("Backends = %+v; want the applied listener", st.Backends)
+				if len(st.Services) != 1 || st.Services[0].Service != "api" ||
+					len(st.Services[0].Backends) != 1 || st.Services[0].Backends[0].Name != "eg" {
+					t.Errorf("Services = %+v; want the applied plane", st.Services)
 				}
-				if st.Policy == nil || !st.Policy.DefaultDeny {
-					t.Errorf("Policy = %+v; want DefaultDeny", st.Policy)
+				if st.Services[0].Policy == nil || !st.Services[0].Policy.DefaultDeny {
+					t.Errorf("Policy = %+v; want DefaultDeny", st.Services[0].Policy)
 				}
 				if st.InvocationID != "inv-1" {
 					t.Errorf("InvocationID = %q; want %q", st.InvocationID, "inv-1")
@@ -147,7 +145,10 @@ func TestEgressCore_StateLifecycle(t *testing.T) {
 }
 
 func TestResidentHost_ApplyEgress(t *testing.T) {
-	backends := []sandbox.BackendListener{{Name: "eg", Addr: "127.0.0.1:8093", Shape: "tcp"}}
+	services := []sandbox.ServiceEgress{{
+		Service:  "api",
+		Backends: []sandbox.BackendListener{{Name: "eg", Addr: "127.0.0.1:8093", Shape: "tcp"}},
+	}}
 
 	cases := []struct {
 		name string
@@ -156,7 +157,7 @@ func TestResidentHost_ApplyEgress(t *testing.T) {
 		{
 			name: "apply lands in the recorded state and echoes the generation",
 			run: func(t *testing.T, h *ResidentHost, ec *egressCore) {
-				gen, err := h.ApplyEgress(EgressApply{Backends: backends, InvocationID: "inv-1", Generation: 3})
+				gen, err := h.ApplyEgress(EgressApply{Services: services, InvocationID: "inv-1", Generation: 3})
 				if err != nil {
 					t.Fatalf("ApplyEgress: %v", err)
 				}
@@ -167,7 +168,9 @@ func TestResidentHost_ApplyEgress(t *testing.T) {
 				if !ok {
 					t.Fatal("no egress state recorded")
 				}
-				if len(st.Backends) != 1 || st.Backends[0].Name != "eg" || st.InvocationID != "inv-1" {
+				if len(st.Services) != 1 || st.Services[0].Service != "api" ||
+					len(st.Services[0].Backends) != 1 || st.Services[0].Backends[0].Name != "eg" ||
+					st.InvocationID != "inv-1" {
 					t.Errorf("recorded state = %+v; want the applied config", st)
 				}
 			},
@@ -205,16 +208,18 @@ func TestResidentHost_ApplyEgress(t *testing.T) {
 			},
 		},
 		{
-			name: "nil policy records allow-all",
+			name: "nil per-service policy records allow-all",
 			run: func(t *testing.T, h *ResidentHost, ec *egressCore) {
-				if _, err := h.ApplyEgress(EgressApply{Policy: &sandbox.Policy{DefaultDeny: true}, Generation: 1}); err != nil {
+				denied := []sandbox.ServiceEgress{{Service: "api", Policy: &sandbox.Policy{DefaultDeny: true}}}
+				if _, err := h.ApplyEgress(EgressApply{Services: denied, Generation: 1}); err != nil {
 					t.Fatalf("ApplyEgress: %v", err)
 				}
-				if _, err := h.ApplyEgress(EgressApply{Policy: nil, Generation: 2}); err != nil {
+				open := []sandbox.ServiceEgress{{Service: "api"}}
+				if _, err := h.ApplyEgress(EgressApply{Services: open, Generation: 2}); err != nil {
 					t.Fatalf("ApplyEgress(nil policy): %v", err)
 				}
-				if st, _ := ec.LookupEgressState(h.id); st.Policy != nil {
-					t.Errorf("Policy = %+v; want nil (allow-all)", st.Policy)
+				if st, _ := ec.LookupEgressState(h.id); len(st.Services) != 1 || st.Services[0].Policy != nil {
+					t.Errorf("Services = %+v; want one plane with nil policy (allow-all)", st.Services)
 				}
 			},
 		},

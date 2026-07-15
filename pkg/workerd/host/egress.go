@@ -10,12 +10,11 @@ import (
 
 // EgressApply is one compiled egress config push for a sandbox — the Go shape
 // of the EgressConfig/ApplyEgress request (api/workerd/v1) the backplane's
-// ServiceReconciler sends.
+// egress reconciler sends.
 type EgressApply struct {
-	// Backends replaces the sandbox's dialable EgressGateway listener set.
-	Backends []sandbox.BackendListener
-	// Policy replaces the egress authorization plane; nil means allow-all.
-	Policy *sandbox.Policy
+	// Services is the full desired set of per-Service egress planes for the
+	// resident; it replaces the prior set atomically.
+	Services []sandbox.ServiceEgress
 	// InvocationID is stamped on egress connections for attribution.
 	InvocationID string
 	// Generation orders applies; a push older than the last applied one for

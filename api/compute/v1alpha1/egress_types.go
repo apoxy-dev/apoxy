@@ -24,6 +24,10 @@ import (
 // the built-in — e.g. to tighten the project-wide default policy.
 const DefaultEgressGatewayName = "default"
 
+// EgressControllerName identifies the compute egress controller in
+// EgressRoute status.parents entries.
+const EgressControllerName gwapiv1.GatewayController = "compute.apoxy.dev/egress-controller"
+
 // EgressDefaultPolicy controls the action for outbound traffic matching no
 // attached EgressRoute rule.
 // +kubebuilder:validation:Enum=allow-all;deny-all
@@ -290,8 +294,8 @@ type EgressRouteMatch struct {
 // here for per-destination egress mode selection: `gateway` transits the
 // EgressGateway data plane; `direct` is policy-checked in the host netstack
 // but dials upstream without gateway transit. It is intentionally not
-// defined yet — its compiled wire slot is the reserved field 2 of
-// apoxy.workerd.v1.EgressPolicy.
+// defined yet — its compiled wire slot is the reserved field 6 of
+// apoxy.workerd.v1.EgressRule.
 type EgressRouteRule struct {
 	// Matches lists the destinations this rule admits.
 	// +kubebuilder:validation:MinItems=1
