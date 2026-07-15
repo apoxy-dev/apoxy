@@ -125,6 +125,14 @@ type ResidentHost struct {
 	// duplicate Stop (two repair paths racing on the same dead entry) would
 	// delete a successor resident's freshly staged config.
 	staged bool
+
+	// bridge is this resident's host egress data-path endpoint (APO-713): the
+	// loopback TCP listener the in-Sentry forwarder tunnels every outbound flow
+	// to. Its addr is sealed into the sandbox spec as EgressHostAddr, so it must
+	// be up before the resident starts. nil when the sandbox core isn't
+	// egress-capable (fake-driven tests) or before the first boot. Mutated only
+	// under h.mu.
+	bridge *egressBridge
 }
 
 // newResidentHostWithCore injects a sandbox core directly, for the factory and
@@ -143,6 +151,17 @@ func newResidentHostWithCore(core sandbox.Runtime, cfg ResidentConfig) *Resident
 func (h *ResidentHost) EnsureResident(ctx context.Context) (*ResidentInstance, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	// carryEgress preserves the applied egress SERVICES across a self-heal
+	// recreation. A recreated sandbox re-registers empty (deny-all) egress state,
+	// and the config pusher only re-pushes on API events — so without this a
+	// crashed resident comes back with ALL egress denied until an unrelated
+	// egress-relevant event or the controller cache resync (potentially hours).
+	// The recreated sandbox is the same logical resident (same id, same project,
+	// same desired config), so re-applying its last services is correct. The
+	// generation is NOT carried: it resets to 0 with the fresh sandbox so a
+	// subsequent push — even a LOWER generation from a restarted reconciler —
+	// still re-syncs authoritatively (see TestResidentHost_ApplyEgress).
+	var carryEgress *EgressState
 	if h.inst != nil {
 		// Don't trust the cached record blindly: the resident workerd can die out
 		// from under us (OOM, crash, host reap). Probe the sandbox so the
@@ -161,8 +180,21 @@ func (h *ResidentHost) EnsureResident(ctx context.Context) (*ResidentInstance, e
 			}
 			slog.Warn("Resident workerd no longer running; recreating",
 				"sandbox.id", string(h.id), "phase", phase)
+			// Snapshot the applied egress BEFORE Purge drops it, so its services
+			// can be re-applied to the recreated sandbox below. Only worth carrying
+			// when there were service planes — an empty state recreates to the same
+			// deny-all anyway.
+			if ec, ok := h.core.(*egressCore); ok {
+				if saved, had := ec.LookupEgressState(h.id); had && len(saved.Services) > 0 {
+					s := saved
+					carryEgress = &s
+				}
+			}
 			h.core.Purge(ctx, h.id)
 			h.inst = nil
+			// The stale bridge's addr belonged to the dead sandbox's spec; drop
+			// it so startEgress binds a fresh one for the recreated sandbox.
+			h.closeBridge()
 		default:
 			// Transient Status error: assume the resident is still up and let the
 			// next reconcile re-check, rather than churning the sandbox on a blip.
@@ -183,13 +215,43 @@ func (h *ResidentHost) EnsureResident(ctx context.Context) (*ResidentInstance, e
 	}
 	h.staged = true
 
-	spec := buildResidentSpec(h.id, h.cfg, cfgHostPath)
+	// The egress bridge must be listening before the resident starts so the
+	// in-Sentry forwarder's first outbound dial lands. Its addr is sealed into
+	// the spec below as EgressHostAddr.
+	egressInit, err := h.startEgress()
+	if err != nil {
+		return nil, err
+	}
+
+	spec := buildResidentSpec(h.id, h.cfg, cfgHostPath, egressInit)
 	inst, err := h.core.Create(ctx, spec)
 	if err != nil {
+		h.closeBridge()
 		return nil, fmt.Errorf("creating resident sandbox: %w", err)
+	}
+	// Re-apply the preserved egress services before the worker starts, so a
+	// self-healed resident is immediately back to its last-pushed policy instead
+	// of serving under a fresh deny-all until the next config push. Generation is
+	// reset to 0 (the fresh sandbox's baseline) so the reconciler's next push —
+	// whatever its generation — still re-syncs authoritatively.
+	if carryEgress != nil {
+		if ec, ok := h.core.(*egressCore); ok {
+			if _, err := ec.applyEgress(h.id, EgressApply{
+				Services:     carryEgress.Services,
+				InvocationID: carryEgress.InvocationID,
+				Generation:   0,
+			}); err != nil {
+				slog.Warn("Failed to re-apply egress after resident recreation",
+					"sandbox.id", string(h.id), "error", err)
+			} else {
+				slog.Info("Re-applied egress services after resident recreation",
+					"sandbox.id", string(h.id), "services", len(carryEgress.Services))
+			}
+		}
 	}
 	if err := h.core.Start(ctx, h.id); err != nil {
 		h.core.Purge(ctx, h.id)
+		h.closeBridge()
 		return nil, fmt.Errorf("starting resident sandbox: %w", err)
 	}
 	h.inst = &ResidentInstance{
@@ -211,6 +273,9 @@ func (h *ResidentHost) Stop(ctx context.Context) error {
 		h.core.Purge(ctx, h.id)
 		h.inst = nil
 	}
+	// Tear down the egress bridge with the resident so a disengaged tenant
+	// doesn't leak its loopback listener.
+	h.closeBridge()
 	// Remove the staged dispatcher config too: with per-tenant residents a
 	// stopped tenant would otherwise leak its rootDir/<id> staging dir on every
 	// disengage. Only when THIS host staged it — the path is shared with any
@@ -226,6 +291,40 @@ func (h *ResidentHost) Stop(ctx context.Context) error {
 	return nil
 }
 
+// startEgress brings up this resident's host egress bridge and returns the
+// EgressInit to seal into the sandbox spec. It reads the egress core's recorded
+// per-resident state (the same *egressCore ApplyEgress writes to), so the
+// bridge and the config plane share one state. When the core isn't
+// egress-capable (fake-driven tests), egress stays disabled — an empty
+// EgressInit means the in-Sentry forwarder installs nothing, so outbound is
+// fail-closed. Caller holds h.mu.
+func (h *ResidentHost) startEgress() (sandbox.EgressInit, error) {
+	ec, ok := h.core.(*egressCore)
+	if !ok {
+		return sandbox.EgressInit{}, nil
+	}
+	// A prior boot's bridge (if any) is stale — its addr belonged to the old
+	// sandbox spec — so bind a fresh one for this sandbox.
+	h.closeBridge()
+	br, err := startEgressBridge(h.id, ec.LookupEgressState)
+	if err != nil {
+		return sandbox.EgressInit{}, fmt.Errorf("starting egress bridge: %w", err)
+	}
+	h.bridge = br
+	return sandbox.EgressInit{EgressHostAddr: br.addr()}, nil
+}
+
+// closeBridge tears down the resident's egress bridge if one is running.
+// Caller holds h.mu.
+func (h *ResidentHost) closeBridge() {
+	if h.bridge != nil {
+		if err := h.bridge.close(); err != nil {
+			slog.Warn("Failed to close egress bridge", "sandbox.id", string(h.id), "error", err)
+		}
+		h.bridge = nil
+	}
+}
+
 // buildResidentSpec maps the resident config to the sandbox.Spec that runs the
 // stock-workerd dispatcher.
 //
@@ -237,7 +336,7 @@ func (h *ResidentHost) Stop(ctx context.Context) error {
 // and need no fd donation — the Sentry shares the host net namespace and
 // net.Dial("tcp", ...)s the manager's control listener directly. See
 // docs/workerd-runtime-mvp.md §"control channel".
-func buildResidentSpec(id sandbox.SandboxID, cfg ResidentConfig, cfgHostPath string) sandbox.Spec {
+func buildResidentSpec(id sandbox.SandboxID, cfg ResidentConfig, cfgHostPath string, egress sandbox.EgressInit) sandbox.Spec {
 	return sandbox.Spec{
 		ID:    id,
 		Image: cfg.WorkerdImage,
@@ -252,7 +351,7 @@ func buildResidentSpec(id sandbox.SandboxID, cfg ResidentConfig, cfgHostPath str
 			{Source: cfgHostPath, Destination: inJailConfigPath(), Type: "bind", Options: []string{"ro"}},
 		},
 		Stdio:  false,
-		Egress: sandbox.EgressInit{},
+		Egress: egress,
 		// Ingress (APO-694): the dispatcher's http socket has no host route, so
 		// opt into the inbound forwarder; the core surfaces a host AF_UNIX socket
 		// (Instance.InboundSocket) the backplane resident cluster dials.

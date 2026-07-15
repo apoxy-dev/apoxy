@@ -137,8 +137,20 @@ export default {
         mainModule: def.mainModule,
         modules: def.modules,
         env: def.env || {},
-        // M1: customer egress is not yet mediated; deny by default.
-        globalOutbound: null,
+        // Structural egress: every fetch() leaves through the GLOBAL_OUTBOUND
+        // Network service (real getaddrinfo + socket/connect), which the in-Sentry
+        // forwarder catches and the host egress bridge mediates (allow / deny /
+        // SSRF / gateway / direct). It is a Network service, never an external/
+        // unixSocket/loopback one — those would flatten the destination before any
+        // syscall and blind the forwarder. See workerd-egress-encap.mdx §2.8.
+        //
+        // `?? null` is a fail-closed guard: if the binding is ever absent,
+        // env.GLOBAL_OUTBOUND is `undefined`, which workerd treats as its DEFAULT
+        // outbound (fetch egresses directly, bypassing the forwarder + all
+        // mediation). Coalescing to null restores the explicit deny the config
+        // used to carry. BuildResidentConfig's validateGlobalOutbound guards the
+        // emit side; this is defense in depth on the JS side.
+        globalOutbound: env.GLOBAL_OUTBOUND ?? null,
       };
     });
 

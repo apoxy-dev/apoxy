@@ -42,9 +42,11 @@ var _ EgressApplier = (*ResidentHost)(nil)
 // sandbox. The applied generation lives inside the recorded state, so it is
 // dropped with the sandbox: a self-healed (recreated) resident starts from a
 // fresh zero-generation state and the reconciler's next push — whatever its
-// generation — lands the config again. This is the worker-side sink of the
-// egress config plane (APO-723); nothing consumes the recorded state until
-// the egress data path lands (APO-713/APO-722).
+// generation — lands the config again. To avoid a deny-all gap in that window,
+// EnsureResident re-applies the last-known service planes at generation 0 across
+// a recreation (the reset generation preserves the re-land property above). This
+// is the worker-side sink of the egress config plane (APO-723), consumed by the
+// egress data path (APO-713/APO-722).
 func (h *ResidentHost) ApplyEgress(apply EgressApply) (uint64, error) {
 	ec, ok := h.core.(*egressCore)
 	if !ok {

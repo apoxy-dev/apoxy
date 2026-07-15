@@ -46,11 +46,25 @@ func acceptanceWorkerdImage(t *testing.T) string {
 
 func acceptanceFactory(t *testing.T) *host.ResidentFactory {
 	t.Helper()
-	dir := t.TempDir()
+	// A persistent workdir (APOXY_ACC_WORKDIR) keeps the runsc/Sentry debug logs
+	// around after the test for diagnostics; otherwise use an auto-removed temp.
+	dir := os.Getenv("APOXY_ACC_WORKDIR")
+	if dir == "" {
+		dir = t.TempDir()
+	}
+	stateDir, rootDir, imageDir := dir+"/state", dir+"/root", dir+"/images"
+	// Mirror the production manager, which pre-creates these dirs at startup
+	// (pkg/workerd/manager/run.go): the ImageStore only MkdirTemps INSIDE
+	// ImageBaseDir, so the base must already exist before the first pull.
+	for _, d := range []string{stateDir, rootDir, imageDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatalf("creating %s: %v", d, err)
+		}
+	}
 	f, err := host.NewResidentFactory(host.ResidentConfig{
-		StateDir:     dir + "/state",
-		RootDir:      dir + "/root",
-		ImageBaseDir: dir + "/images",
+		StateDir:     stateDir,
+		RootDir:      rootDir,
+		ImageBaseDir: imageDir,
 		WorkerdImage: acceptanceWorkerdImage(t),
 	})
 	if err != nil {

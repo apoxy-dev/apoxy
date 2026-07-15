@@ -46,15 +46,20 @@ const residentServeArg = "clrk-inbound-test-serve"
 // TestMain triages how the process was invoked, in priority order:
 //  1. runsc subcommand re-exec (boot/gofer/start/...) — hand off to gVisor.
 //  2. resident-server re-exec inside the guest — serve HTTP and never return.
-//  3. the normal test run — install the child reaper, then run the tests.
+//  3. egress-probe re-exec inside the guest — dial outbound and never return
+//     (manager_egress_linux_test.go).
+//  4. the normal test run — install the child reaper, then run the tests.
 //
-// Cases 1 and 2 must be checked before the testing framework parses flags
+// Cases 1–3 must be checked before the testing framework parses flags
 // (which happens inside m.Run()), since their argv is not test flags.
 func TestMain(m *testing.M) {
 	DispatchRunsc()
 
 	if len(os.Args) > 2 && os.Args[1] == residentServeArg {
 		runResidentServer(os.Args[2]) // never returns
+	}
+	if len(os.Args) > 2 && os.Args[1] == egressProbeArg {
+		runEgressProbe(os.Args[2]) // never returns
 	}
 
 	// The test process drives runsc subprocesses and re-parents their Sentry/

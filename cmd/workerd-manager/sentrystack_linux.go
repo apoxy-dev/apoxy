@@ -3,9 +3,17 @@
 
 package main
 
-// Blank-import the core sentrystack to register the gVisor PluginStack
-// (lo + eth0) that DispatchRunsc requires before it will hand off to maincli.
-// M1 backend mode needs no egress forwarder. The resident control channel
-// (dispatcher -> host manager) needs the clrk control forwarder, which will be
-// registered here once it lands (mirroring the inbound forwarder import).
-import _ "github.com/apoxy-dev/apoxy/pkg/sandbox/sentrystack"
+import (
+	// Register the gVisor PluginStack (lo + eth0) that DispatchRunsc requires
+	// before it will hand off to maincli.
+	_ "github.com/apoxy-dev/apoxy/pkg/sandbox/sentrystack"
+
+	// Arm customer egress: this registers the ForwarderInstaller that installs
+	// the in-Sentry catch-all TCP forwarder, tunnelling every isolate fetch()
+	// connect() to the host egress bridge (which owns allow/deny/SSRF/gateway/
+	// direct policy). Without this import the installer stays nil and outbound
+	// SYNs are RST in the netstack — egress is dead. It is also pulled in
+	// transitively via pkg/workerd/host, but arming egress is load-bearing, so
+	// wire it explicitly rather than relying on that dependency edge surviving.
+	_ "github.com/apoxy-dev/apoxy/pkg/sandbox/sentrystack/egressfwd"
+)

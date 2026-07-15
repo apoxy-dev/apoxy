@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 
 	computev1alpha1 "github.com/apoxy-dev/apoxy/api/compute/v1alpha1"
@@ -185,7 +186,29 @@ const (
 	dispatcherCompatDate = "2025-06-01"
 	// experimentalFlag is required to enable the workerLoader binding.
 	experimentalFlag = "experimental"
+	// globalOutboundServiceName is the workerd Network service that backs every
+	// isolate's globalOutbound (the dispatcher passes the GLOBAL_OUTBOUND binding
+	// to each WorkerLoader isolate). A `network` service means workerd runs its
+	// own getaddrinfo + socket()/connect() for fetch() — a real, structural egress
+	// the in-Sentry forwarder catches with the true (src,dst) and the host egress
+	// bridge mediates. It must NEVER be an `external` service (one carrying an
+	// address workerd dials directly): that flattens every destination to a single
+	// endpoint before any syscall, blinding the forwarder. See
+	// workerd-egress-encap.mdx §2.8.
+	globalOutboundServiceName = "internet"
+	// globalOutboundBindingName is the dispatcher env binding (env.GLOBAL_OUTBOUND)
+	// the WorkerLoader callback passes as each isolate's globalOutbound.
+	globalOutboundBindingName = "GLOBAL_OUTBOUND"
 )
+
+// globalOutboundAllow is the Network service allow set. It is deliberately broad:
+// the host egress bridge — not workerd's own network filter — is the egress
+// policy authority (allow/deny/SSRF/gateway/direct), and workerd must actually
+// issue the connect() for the in-Sentry forwarder to catch and mediate it.
+// Narrowing this would let workerd pre-empt a syscall the bridge needs to see.
+// This exact set is validated end-to-end against stock workerd by the linux
+// acceptance test (a real fetch() connect() caught by the forwarder).
+var globalOutboundAllow = []string{"public", "private", "local", "network"}
 
 // ResidentConfigInput is the input to BuildResidentConfig.
 type ResidentConfigInput struct {
@@ -219,6 +242,11 @@ func BuildResidentConfig(in ResidentConfigInput) (string, error) {
 	fmt.Fprintf(&b, "    (name = %s, worker = .dispatcher),\n", capnpStr(dispatcherServiceName))
 	fmt.Fprintf(&b, "    (name = %s, external = (address = %s, http = ())),\n",
 		capnpStr(managerServiceName), capnpStr(in.ManagerAddr))
+	// The globalOutbound Network service (see globalOutboundServiceName): real
+	// getaddrinfo + socket/connect for every isolate's fetch(), caught by the
+	// in-Sentry forwarder and mediated by the host egress bridge.
+	fmt.Fprintf(&b, "    (name = %s, network = (allow = [%s])),\n",
+		capnpStr(globalOutboundServiceName), capnpStrList(globalOutboundAllow))
 	b.WriteString("  ],\n")
 	b.WriteString("  sockets = [\n")
 	fmt.Fprintf(&b, "    (name = %s, address = %s, http = (), service = %s),\n",
@@ -235,10 +263,59 @@ func BuildResidentConfig(in ResidentConfigInput) (string, error) {
 	b.WriteString("  bindings = [\n")
 	fmt.Fprintf(&b, "    (name = %s, workerLoader = ()),\n", capnpStr(loaderBindingName))
 	fmt.Fprintf(&b, "    (name = %s, service = %s),\n", capnpStr(managerBindingName), capnpStr(managerServiceName))
+	// env.GLOBAL_OUTBOUND: the dispatcher passes this to each WorkerLoader isolate
+	// as its globalOutbound (see dispatcher.js). It must resolve to the Network
+	// service so egress stays structural.
+	fmt.Fprintf(&b, "    (name = %s, service = %s),\n", capnpStr(globalOutboundBindingName), capnpStr(globalOutboundServiceName))
 	b.WriteString("  ],\n")
 	b.WriteString(");\n")
 
-	return b.String(), nil
+	cfg := b.String()
+	// Self-check: fail loudly if a future edit ever points globalOutbound at an
+	// address-carrying service (the §2.8 foot-gun) instead of the Network service.
+	if err := validateGlobalOutbound(cfg); err != nil {
+		return "", err
+	}
+	return cfg, nil
+}
+
+// globalOutboundBindingRE captures the service the GLOBAL_OUTBOUND env binding
+// resolves to in an emitted resident config.
+var globalOutboundBindingRE = regexp.MustCompile(
+	`\(name = "` + globalOutboundBindingName + `", service = "([^"]+)"\)`)
+
+// validateGlobalOutbound enforces the §2.8 structural-egress invariant on an
+// emitted resident config: the service backing GLOBAL_OUTBOUND — hence every
+// isolate's globalOutbound — must be a workerd `network` service (real
+// getaddrinfo + socket/connect the in-Sentry forwarder catches). It must never
+// be an `external` service, whose address workerd would dial directly, flattening
+// every destination before any syscall and blinding the forwarder. It is run as a
+// self-check on our own output and exercised directly by TestValidateGlobalOutbound.
+func validateGlobalOutbound(cfg string) error {
+	m := globalOutboundBindingRE.FindStringSubmatch(cfg)
+	if m == nil {
+		return fmt.Errorf("workerd-host: resident config has no %s binding; isolate egress would be dead", globalOutboundBindingName)
+	}
+	svc := m[1]
+	kind, ok := serviceKind(cfg, svc)
+	if !ok {
+		return fmt.Errorf("workerd-host: resident config binds %s to undefined service %q", globalOutboundBindingName, svc)
+	}
+	if kind != "network" {
+		return fmt.Errorf("workerd-host: %s must resolve to a `network` service for structural egress, got %q service %q (see workerd-egress-encap.mdx §2.8)", globalOutboundBindingName, kind, svc)
+	}
+	return nil
+}
+
+// serviceKind returns the workerd union field (network/external/worker/disk) of
+// the service named svc in an emitted config, or false if svc is not declared.
+func serviceKind(cfg, svc string) (string, bool) {
+	re := regexp.MustCompile(`\(name = "` + regexp.QuoteMeta(svc) + `", (\w+) = `)
+	m := re.FindStringSubmatch(cfg)
+	if m == nil {
+		return "", false
+	}
+	return m[1], true
 }
 
 // WorkerDefinition is the per-isolate payload the manager serves to the
