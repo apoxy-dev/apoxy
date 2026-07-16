@@ -264,7 +264,7 @@ export interface components {
         /**
          * @description EgressRouteRule defines one allow rule within an EgressRoute.
          *
-         *     A `mode` field (values: gateway | direct, default gateway) is RESERVED here for per-destination egress mode selection: `gateway` transits the EgressGateway data plane; `direct` is policy-checked in the host netstack but dials upstream without gateway transit. It is intentionally not defined yet — its compiled wire slot is the reserved field 2 of apoxy.workerd.v1.EgressPolicy.
+         *     A `mode` field (values: gateway | direct, default gateway) is RESERVED here for per-destination egress mode selection: `gateway` transits the EgressGateway data plane; `direct` is policy-checked in the host netstack but dials upstream without gateway transit. It is intentionally not defined yet — its compiled wire slot is the reserved field 6 of apoxy.workerd.v1.EgressRule.
          */
         "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.EgressRouteRule": {
             /** @description Matches lists the destinations this rule admits. */
@@ -2377,6 +2377,8 @@ export interface components {
             timeout?: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Duration"];
         };
         "com.github.apoxy-dev.apoxy.api.extensions.v1alpha2.EdgeFunctionSpec": {
+            /** @description DynamicPluginConfig is configuration passed to a Go plugin through Envoy's per-route configuration. Updating it does not create a new EdgeFunctionRevision or reload the plugin shared library. The value must be a JSON or YAML object encoded as a string. */
+            dynamicPluginConfig?: string;
             /**
              * Format: int32
              * @description RevisionHistoryLimit is the number of old revisions to keep. Defaults to 10.
