@@ -216,6 +216,13 @@ type EdgeFunctionSpec struct {
 	// Template is the template of the function.
 	Template EdgeFunctionRevisionSpec `json:"template"`
 
+	// DynamicPluginConfig is configuration passed to a Go plugin through Envoy's
+	// per-route configuration. Updating it does not create a new EdgeFunctionRevision
+	// or reload the plugin shared library.
+	// The value must be a JSON or YAML object encoded as a string.
+	// +optional
+	DynamicPluginConfig string `json:"dynamicPluginConfig,omitempty"`
+
 	// RevisionHistoryLimit is the number of old revisions to keep.
 	// Defaults to 10.
 	// +optional
