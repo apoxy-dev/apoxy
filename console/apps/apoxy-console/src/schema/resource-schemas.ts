@@ -3112,6 +3112,9 @@ export const RESOURCE_SCHEMAS: Record<string, JSONSchema> = {
       },
       "com.github.apoxy-dev.apoxy.api.extensions.v1alpha2.EdgeFunctionSpec": {
         "properties": {
+          "dynamicPluginConfig": {
+            "type": "string"
+          },
           "revisionHistoryLimit": {
             "type": "integer"
           },

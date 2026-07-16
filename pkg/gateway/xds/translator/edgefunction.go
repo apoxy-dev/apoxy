@@ -94,24 +94,9 @@ func buildHCMEdgeFuncFilter(un *unstructured.Unstructured, irListener *ir.HTTPLi
 		return nil, errors.New("edge function source is not a Go plugin")
 	}
 
-	pluginConfig := structpb.Struct{}
-	// Parse JSON string into Struct
-	if rev.Spec.Code.GoPluginSource.PluginConfig != "" {
-		// yaml to json
-		var jsonBytes []byte
-		jsonBytes, err := yaml.YAMLToJSON([]byte(rev.Spec.Code.GoPluginSource.PluginConfig))
-		if err != nil {
-			return nil, fmt.Errorf("failed to convert yaml to json: %w", err)
-		}
-
-		// json to struct
-		if err := protojson.Unmarshal(jsonBytes, &pluginConfig); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal plugin config: %w", err)
-		}
-	}
-	pluginAny, err := anypb.New(&pluginConfig)
+	pluginAny, err := buildPluginConfig(rev.Spec.Code.GoPluginSource.PluginConfig)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal plugin config: %w", err)
+		return nil, err
 	}
 
 	pluginName := rev.Name
@@ -125,7 +110,7 @@ func buildHCMEdgeFuncFilter(un *unstructured.Unstructured, irListener *ir.HTTPLi
 			LibraryPath:  fmt.Sprintf("go/%s/func.so", rev.Status.Ref),
 			PluginName:   pluginName,
 			PluginConfig: pluginAny,
-			//MergePolicy: ...
+			MergePolicy:  golangv3alpha.Config_MERGE_VIRTUALHOST_ROUTER_FILTER,
 		}
 		edgeFuncAny, err = anypb.New(msg)
 		if err != nil {
@@ -172,9 +157,94 @@ func (*edgeFunc) patchRoute(route *routev3.Route, irRoute *ir.HTTPRoute) error {
 			continue
 		}
 
-		if err := enableFilterOnRoute(route, edgeFuncFilterName(er.Object)); err != nil {
+		fun := &extensionsv1alpha2.EdgeFunction{}
+		if err := conv.FromUnstructured(er.Object.UnstructuredContent(), fun); err != nil {
+			return err
+		}
+
+		if fun.Spec.DynamicPluginConfig == "" {
+			if err := enableFilterOnRoute(route, edgeFuncFilterName(er.Object)); err != nil {
+				return err
+			}
+			continue
+		}
+
+		if err := enableGoPluginOnRoute(route, edgeFuncFilterName(er.Object), fun); err != nil {
 			return err
 		}
 	}
+	return nil
+}
+
+func buildPluginConfig(config string) (*anypb.Any, error) {
+	pluginConfig := &structpb.Struct{}
+	if config != "" {
+		jsonBytes, err := yaml.YAMLToJSON([]byte(config))
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert plugin config from yaml to json: %w", err)
+		}
+
+		if err := protojson.Unmarshal(jsonBytes, pluginConfig); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal plugin config: %w", err)
+		}
+	}
+
+	pluginAny, err := anypb.New(pluginConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal plugin config: %w", err)
+	}
+	return pluginAny, nil
+}
+
+func enableGoPluginOnRoute(
+	route *routev3.Route,
+	filterName string,
+	fun *extensionsv1alpha2.EdgeFunction,
+) error {
+	if route == nil {
+		return errors.New("xds route is nil")
+	}
+
+	filterCfg := route.GetTypedPerFilterConfig()
+	if _, ok := filterCfg[filterName]; ok {
+		return fmt.Errorf("route already contains filter config: %s, %+v", filterName, route)
+	}
+
+	pluginName := fun.Spec.Template.Code.Name
+	if pluginName == "" {
+		pluginName = fun.Status.LiveRevision
+	}
+	if pluginName == "" {
+		return fmt.Errorf("edge function %s has no live revision or plugin name", fun.Name)
+	}
+
+	pluginConfig, err := buildPluginConfig(fun.Spec.DynamicPluginConfig)
+	if err != nil {
+		return err
+	}
+
+	configsPerRoute, err := anypb.New(&golangv3alpha.ConfigsPerRoute{
+		PluginsConfig: map[string]*golangv3alpha.RouterPlugin{
+			pluginName: {
+				Override: &golangv3alpha.RouterPlugin_Config{
+					Config: pluginConfig,
+				},
+			},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to marshal per-route plugin config: %w", err)
+	}
+
+	routeConfig, err := anypb.New(&routev3.FilterConfig{Config: configsPerRoute})
+	if err != nil {
+		return fmt.Errorf("failed to marshal per-route filter config: %w", err)
+	}
+
+	if filterCfg == nil {
+		route.TypedPerFilterConfig = make(map[string]*anypb.Any)
+	}
+	route.TypedPerFilterConfig[filterName] = routeConfig
+
 	return nil
 }

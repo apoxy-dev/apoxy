@@ -9279,6 +9279,13 @@ func schema_apoxy_api_extensions_v1alpha2_EdgeFunctionSpec(ref common.ReferenceC
 							Ref:         ref("github.com/apoxy-dev/apoxy/api/extensions/v1alpha2.EdgeFunctionRevisionSpec"),
 						},
 					},
+					"dynamicPluginConfig": {
+						SchemaProps: spec.SchemaProps{
+							Description: "DynamicPluginConfig is configuration passed to a Go plugin through Envoy's per-route configuration. Updating it does not create a new EdgeFunctionRevision or reload the plugin shared library. The value must be a JSON or YAML object encoded as a string.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 					"revisionHistoryLimit": {
 						SchemaProps: spec.SchemaProps{
 							Description: "RevisionHistoryLimit is the number of old revisions to keep. Defaults to 10.",
