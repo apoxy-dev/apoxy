@@ -6,6 +6,7 @@ import (
 	"context"
 	"sync"
 
+	"github.com/apoxy-dev/apoxy/pkg/net/dns/vpcdns"
 	"github.com/apoxy-dev/apoxy/pkg/sandbox"
 )
 
@@ -26,6 +27,17 @@ type EgressState struct {
 	// and can never report a generation whose config was dropped with the old
 	// sandbox.
 	Generation uint64
+
+	// DNSZones and DNSBindings are the resident's VPC name plane (the
+	// DNSConfig/ApplyDNS push): the zones its DNS listener answers
+	// authoritatively for and the bindings workers may resolve — whose
+	// Reachable prefixes also back the egress bridge's SSRF carve-out.
+	// DNSGeneration orders name-plane applies independently of Generation:
+	// the two planes have independent pushers (project apiserver vs infra
+	// watch) with independent counters.
+	DNSZones      []string
+	DNSBindings   []vpcdns.Binding
+	DNSGeneration uint64
 }
 
 // egressCore wraps the tenant-neutral sandbox core with the recording
@@ -151,6 +163,28 @@ func (c *egressCore) applyEgress(id sandbox.SandboxID, apply EgressApply) (uint6
 	st.Services = append([]sandbox.ServiceEgress(nil), apply.Services...)
 	st.InvocationID = apply.InvocationID
 	st.Generation = apply.Generation
+	return apply.Generation, nil
+}
+
+// applyDNS atomically installs one whole name-plane push for a live sandbox,
+// mirroring applyEgress: idempotent, last-writer-wins, ordered by the
+// name plane's own DNSGeneration (independent of the egress plane's).
+func (c *egressCore) applyDNS(id sandbox.SandboxID, apply DNSApply) (uint64, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	st, err := c.stateLocked(id)
+	if err != nil {
+		return 0, err
+	}
+	if apply.Generation < st.DNSGeneration {
+		return st.DNSGeneration, nil
+	}
+	// Clone so the stored state never aliases caller memory (same contract as
+	// applyEgress): the DNS listener and the bridge's SSRF carve-out read
+	// snapshots concurrently with applies.
+	st.DNSZones = append([]string(nil), apply.Zones...)
+	st.DNSBindings = append([]vpcdns.Binding(nil), apply.Bindings...)
+	st.DNSGeneration = apply.Generation
 	return apply.Generation, nil
 }
 

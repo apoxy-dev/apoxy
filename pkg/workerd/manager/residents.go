@@ -311,7 +311,10 @@ func (m *ResidentManager) newEgressControl(tenant string, resident host.Resident
 	if err := os.Chmod(m.egressDir, 0o700); err != nil {
 		return nil, fmt.Errorf("restricting egress control dir %s: %w", m.egressDir, err)
 	}
-	egress := NewEgressControlServer(tenant, applier)
+	// The DNS name plane rides the same socket/server; a resident that can't
+	// apply it (older fake) just gets that service's applies rejected.
+	dnsApplier, _ := resident.(host.DNSApplier)
+	egress := NewEgressControlServer(tenant, applier, dnsApplier)
 	if err := egress.Listen(EgressSocketPath(m.egressDir, tenant)); err != nil {
 		return nil, err
 	}

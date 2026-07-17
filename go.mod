@@ -30,6 +30,7 @@ require (
 	github.com/envoyproxy/go-control-plane/envoy v1.37.0
 	github.com/envoyproxy/go-control-plane/ratelimit v0.1.0
 	github.com/envoyproxy/ratelimit v1.4.1-0.20230427142404-e2a87f41d3a7
+	github.com/evanw/esbuild v0.28.1
 	github.com/extism/go-sdk v1.3.0
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/getsavvyinc/upgrade-cli v0.3.0
@@ -60,6 +61,7 @@ require (
 	github.com/miekg/dns v1.1.65
 	github.com/mitchellh/mapstructure v1.5.0
 	github.com/muesli/ansi v0.0.0-20230316100256-276c6243b2f6
+	github.com/opencontainers/go-digest v1.0.0
 	github.com/opencontainers/image-spec v1.1.1
 	github.com/opencontainers/runc v1.2.5
 	github.com/opencontainers/runtime-spec v1.2.1
@@ -198,7 +200,6 @@ require (
 	github.com/erikgeiser/coninput v0.0.0-20211004153227-1c3628e74d0f // indirect
 	github.com/evanphx/json-patch v5.9.11+incompatible // indirect
 	github.com/evanphx/json-patch/v5 v5.9.11 // indirect
-	github.com/evanw/esbuild v0.28.1 // indirect
 	github.com/expr-lang/expr v1.17.6 // indirect
 	github.com/facebookgo/clock v0.0.0-20150410010913-600d898af40a // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
@@ -317,7 +318,6 @@ require (
 	github.com/nxadm/tail v1.4.11 // indirect
 	github.com/olivere/elastic/v7 v7.0.32 // indirect
 	github.com/onsi/ginkgo/v2 v2.22.2 // indirect
-	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/opencontainers/selinux v1.11.1 // indirect
 	github.com/opentracing/opentracing-go v1.2.0 // indirect
 	github.com/packethost/packngo v0.1.1-0.20180711074735-b9cb5096f54c // indirect
@@ -454,7 +454,7 @@ replace github.com/quic-go/quic-go => github.com/apoxy-dev/quic-go v0.0.0-202604
 
 replace github.com/quic-go/connect-ip-go => github.com/apoxy-dev/connect-ip-go v0.0.0-20250530062404-603929a73f45
 
-replace gvisor.dev/gvisor => github.com/apoxy-dev/gvisor v0.0.0-20260519215827-5d6cfb0c0960
+replace gvisor.dev/gvisor => github.com/apoxy-dev/gvisor v0.0.0-20260717065740-69bda9ac252c
 
 // clrk's go.mod transitively requires qpack v0.6.0 (via upstream quic-go), but
 // apoxy-cli runs the apoxy-dev/quic-go fork, which is built against the v0.5.x

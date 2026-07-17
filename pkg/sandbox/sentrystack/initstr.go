@@ -113,14 +113,17 @@ type InitStr struct {
 	IMDSV4 string `json:"imds_v4,omitempty"`
 	IMDSV6 string `json:"imds_v6,omitempty"`
 
-	// DNSResolvers is the list of host-side DNS resolver addrs
-	// ("ip:port") the forwarder dials when an outbound UDP SYN
-	// targets :53. The Sentry never serves DNS itself — it bridges
-	// every query to the host's resolvers and ships the response
-	// back over the same flow. Empty disables DNS interception (UDP
-	// :53 falls through to direct dial, which inside the Sentry
-	// would mean dialing through the host netns — workable but not
-	// the intended path).
+	// DNSResolvers is the list of host-side DNS resolver addrs the
+	// forwarder dials when an outbound UDP SYN targets :53. An entry
+	// is either "ip:port" or "unix://<socket>" — the resident's
+	// per-sandbox unixgram DNS listener, "@"-prefixed for the Linux
+	// abstract namespace so it stays dialable from the chrooted
+	// Sentry. The Sentry never serves DNS itself — it bridges every
+	// query to the host's resolver and ships the response back over
+	// the same flow. Empty disables DNS interception (UDP :53 falls
+	// through to direct dial, which inside the Sentry would mean
+	// dialing through the host netns — workable but not the intended
+	// path).
 	DNSResolvers []string `json:"dns_resolvers,omitempty"`
 
 	// InboundListenAddr is the in-sandbox "ip:port" a RESIDENT server

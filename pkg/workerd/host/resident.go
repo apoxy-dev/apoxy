@@ -11,6 +11,7 @@ import (
 	"os"
 	"sync"
 
+	"github.com/apoxy-dev/apoxy/pkg/net/dns/vpcdns"
 	"github.com/apoxy-dev/apoxy/pkg/sandbox"
 	"github.com/apoxy-dev/apoxy/pkg/workerd/names"
 )
@@ -75,6 +76,7 @@ type ResidentConfig struct {
 	// the control channel; the clrk control forwarder routes it to
 	// ControlHostAddr. Defaults to defaultControlForwardAddr.
 	ControlForwardAddr string
+
 }
 
 // ResidentInstance is the running resident, surfaced to the lifecycle owner.
@@ -133,6 +135,13 @@ type ResidentHost struct {
 	// egress-capable (fake-driven tests) or before the first boot. Mutated only
 	// under h.mu.
 	bridge *egressBridge
+
+	// dns is this resident's DNS listener (the VPC name plane's serving end):
+	// a per-resident unixgram socket the in-Sentry :53 forwarder dials. Same
+	// lifecycle rules as bridge — its address is sealed into the spec, so it
+	// binds before the resident starts and dies with it. Mutated only under
+	// h.mu.
+	dns *residentDNS
 }
 
 // newResidentHostWithCore injects a sandbox core directly, for the factory and
@@ -151,16 +160,17 @@ func newResidentHostWithCore(core sandbox.Runtime, cfg ResidentConfig) *Resident
 func (h *ResidentHost) EnsureResident(ctx context.Context) (*ResidentInstance, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	// carryEgress preserves the applied egress SERVICES across a self-heal
-	// recreation. A recreated sandbox re-registers empty (deny-all) egress state,
-	// and the config pusher only re-pushes on API events — so without this a
-	// crashed resident comes back with ALL egress denied until an unrelated
-	// egress-relevant event or the controller cache resync (potentially hours).
-	// The recreated sandbox is the same logical resident (same id, same project,
-	// same desired config), so re-applying its last services is correct. The
-	// generation is NOT carried: it resets to 0 with the fresh sandbox so a
-	// subsequent push — even a LOWER generation from a restarted reconciler —
-	// still re-syncs authoritatively (see TestResidentHost_ApplyEgress).
+	// carryEgress preserves the applied egress SERVICES and DNS name plane
+	// across a self-heal recreation. A recreated sandbox re-registers empty
+	// (deny-all, no-bindings) state, and the config pushers only re-push on
+	// API events or cache resync — so without this a crashed resident comes
+	// back with ALL egress denied and VPC names unresolvable until an
+	// unrelated event (potentially the resync period). The recreated sandbox
+	// is the same logical resident (same id, same project, same desired
+	// config), so re-applying its last state is correct. Generations are NOT
+	// carried: both reset to 0 with the fresh sandbox so a subsequent push —
+	// even a LOWER generation from a restarted pusher — still re-syncs
+	// authoritatively (see TestResidentHost_ApplyEgress).
 	var carryEgress *EgressState
 	if h.inst != nil {
 		// Don't trust the cached record blindly: the resident workerd can die out
@@ -180,21 +190,24 @@ func (h *ResidentHost) EnsureResident(ctx context.Context) (*ResidentInstance, e
 			}
 			slog.Warn("Resident workerd no longer running; recreating",
 				"sandbox.id", string(h.id), "phase", phase)
-			// Snapshot the applied egress BEFORE Purge drops it, so its services
-			// can be re-applied to the recreated sandbox below. Only worth carrying
-			// when there were service planes — an empty state recreates to the same
-			// deny-all anyway.
+			// Snapshot the applied state BEFORE Purge drops it, so its service
+			// planes and DNS bindings can be re-applied to the recreated sandbox
+			// below. Only worth carrying when either plane holds config — an
+			// empty state recreates to the same deny-all/no-bindings anyway.
 			if ec, ok := h.core.(*egressCore); ok {
-				if saved, had := ec.LookupEgressState(h.id); had && len(saved.Services) > 0 {
+				if saved, had := ec.LookupEgressState(h.id); had &&
+					(len(saved.Services) > 0 || len(saved.DNSBindings) > 0 || len(saved.DNSZones) > 0) {
 					s := saved
 					carryEgress = &s
 				}
 			}
 			h.core.Purge(ctx, h.id)
 			h.inst = nil
-			// The stale bridge's addr belonged to the dead sandbox's spec; drop
-			// it so startEgress binds a fresh one for the recreated sandbox.
+			// The stale bridge's/DNS listener's addrs belonged to the dead
+			// sandbox's spec; drop them so startEgress binds fresh ones for the
+			// recreated sandbox.
 			h.closeBridge()
+			h.closeDNS()
 		default:
 			// Transient Status error: assume the resident is still up and let the
 			// next reconcile re-check, rather than churning the sandbox on a blip.
@@ -227,31 +240,49 @@ func (h *ResidentHost) EnsureResident(ctx context.Context) (*ResidentInstance, e
 	inst, err := h.core.Create(ctx, spec)
 	if err != nil {
 		h.closeBridge()
+		h.closeDNS()
 		return nil, fmt.Errorf("creating resident sandbox: %w", err)
 	}
-	// Re-apply the preserved egress services before the worker starts, so a
-	// self-healed resident is immediately back to its last-pushed policy instead
-	// of serving under a fresh deny-all until the next config push. Generation is
-	// reset to 0 (the fresh sandbox's baseline) so the reconciler's next push —
-	// whatever its generation — still re-syncs authoritatively.
+	// Re-apply the preserved egress services and DNS name plane before the
+	// worker starts, so a self-healed resident is immediately back to its
+	// last-pushed config instead of serving under a fresh deny-all until the
+	// next push. Generations reset to 0 (the fresh sandbox's baseline) so the
+	// pushers' next pushes — whatever their generations — still re-sync
+	// authoritatively.
 	if carryEgress != nil {
 		if ec, ok := h.core.(*egressCore); ok {
-			if _, err := ec.applyEgress(h.id, EgressApply{
-				Services:     carryEgress.Services,
-				InvocationID: carryEgress.InvocationID,
-				Generation:   0,
-			}); err != nil {
-				slog.Warn("Failed to re-apply egress after resident recreation",
-					"sandbox.id", string(h.id), "error", err)
-			} else {
-				slog.Info("Re-applied egress services after resident recreation",
-					"sandbox.id", string(h.id), "services", len(carryEgress.Services))
+			if len(carryEgress.Services) > 0 {
+				if _, err := ec.applyEgress(h.id, EgressApply{
+					Services:     carryEgress.Services,
+					InvocationID: carryEgress.InvocationID,
+					Generation:   0,
+				}); err != nil {
+					slog.Warn("Failed to re-apply egress after resident recreation",
+						"sandbox.id", string(h.id), "error", err)
+				} else {
+					slog.Info("Re-applied egress services after resident recreation",
+						"sandbox.id", string(h.id), "services", len(carryEgress.Services))
+				}
+			}
+			if len(carryEgress.DNSBindings) > 0 || len(carryEgress.DNSZones) > 0 {
+				if _, err := ec.applyDNS(h.id, DNSApply{
+					Zones:      carryEgress.DNSZones,
+					Bindings:   carryEgress.DNSBindings,
+					Generation: 0,
+				}); err != nil {
+					slog.Warn("Failed to re-apply DNS bindings after resident recreation",
+						"sandbox.id", string(h.id), "error", err)
+				} else {
+					slog.Info("Re-applied DNS bindings after resident recreation",
+						"sandbox.id", string(h.id), "bindings", len(carryEgress.DNSBindings))
+				}
 			}
 		}
 	}
 	if err := h.core.Start(ctx, h.id); err != nil {
 		h.core.Purge(ctx, h.id)
 		h.closeBridge()
+		h.closeDNS()
 		return nil, fmt.Errorf("starting resident sandbox: %w", err)
 	}
 	h.inst = &ResidentInstance{
@@ -273,9 +304,10 @@ func (h *ResidentHost) Stop(ctx context.Context) error {
 		h.core.Purge(ctx, h.id)
 		h.inst = nil
 	}
-	// Tear down the egress bridge with the resident so a disengaged tenant
-	// doesn't leak its loopback listener.
+	// Tear down the egress bridge and DNS listener with the resident so a
+	// disengaged tenant doesn't leak its listeners.
 	h.closeBridge()
+	h.closeDNS()
 	// Remove the staged dispatcher config too: with per-tenant residents a
 	// stopped tenant would otherwise leak its rootDir/<id> staging dir on every
 	// disengage. Only when THIS host staged it — the path is shared with any
@@ -303,15 +335,48 @@ func (h *ResidentHost) startEgress() (sandbox.EgressInit, error) {
 	if !ok {
 		return sandbox.EgressInit{}, nil
 	}
-	// A prior boot's bridge (if any) is stale — its addr belonged to the old
-	// sandbox spec — so bind a fresh one for this sandbox.
+	// A prior boot's bridge/DNS listener (if any) is stale — their addrs
+	// belonged to the old sandbox spec — so bind fresh ones for this sandbox.
 	h.closeBridge()
-	br, err := startEgressBridge(h.id, ec.LookupEgressState)
+	h.closeDNS()
+
+	// The SSRF carve-out reads the resident's LIVE pushed name plane: a dst is
+	// admitted iff a binding's Reachable prefix covers it (the project's own
+	// VPC endpoint /96s — never the shared overlay /72, which would admit
+	// other tenants). Reading through LookupEgressState per dial keeps it
+	// current with every ApplyDNS and rebinding-safe (membership in what the
+	// project's bindings actually granted, not in what any DNS answer
+	// claimed). Before the sandbox registers state — or with no bindings
+	// pushed — it admits nothing, so all private/ULA space stays denied.
+	overlayAllow := func(dst netip.Addr) bool {
+		st, ok := ec.LookupEgressState(h.id)
+		if !ok {
+			return false
+		}
+		return vpcdns.Snapshot{Bindings: st.DNSBindings}.Reachable(dst)
+	}
+	br, err := startEgressBridge(h.id, ec.LookupEgressState, overlayAllow)
 	if err != nil {
 		return sandbox.EgressInit{}, fmt.Errorf("starting egress bridge: %w", err)
 	}
 	h.bridge = br
-	return sandbox.EgressInit{EgressHostAddr: br.addr()}, nil
+
+	// The DNS listener serves the same recorded state: authoritative answers
+	// for the pushed bindings, upstream (the pod resolver) for everything
+	// else. With nothing pushed it still resolves external names, so hostname
+	// fetch() works in every topology (dev/dedicated included) without any
+	// per-tenant config.
+	d, err := startResidentDNS(h.id, func() vpcdns.Snapshot {
+		st, _ := ec.LookupEgressState(h.id)
+		return vpcdns.Snapshot{Zones: st.DNSZones, Bindings: st.DNSBindings}
+	})
+	if err != nil {
+		h.closeBridge()
+		return sandbox.EgressInit{}, fmt.Errorf("starting resident DNS listener: %w", err)
+	}
+	h.dns = d
+
+	return sandbox.EgressInit{EgressHostAddr: br.addr(), DNSResolvers: []string{d.target}}, nil
 }
 
 // closeBridge tears down the resident's egress bridge if one is running.
@@ -322,6 +387,17 @@ func (h *ResidentHost) closeBridge() {
 			slog.Warn("Failed to close egress bridge", "sandbox.id", string(h.id), "error", err)
 		}
 		h.bridge = nil
+	}
+}
+
+// closeDNS tears down the resident's DNS listener if one is running.
+// Caller holds h.mu.
+func (h *ResidentHost) closeDNS() {
+	if h.dns != nil {
+		if err := h.dns.close(); err != nil {
+			slog.Warn("Failed to close resident DNS listener", "sandbox.id", string(h.id), "error", err)
+		}
+		h.dns = nil
 	}
 }
 

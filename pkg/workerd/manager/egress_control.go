@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 
@@ -16,7 +17,9 @@ import (
 	"google.golang.org/grpc/status"
 
 	workerdv1 "github.com/apoxy-dev/apoxy/api/workerd/v1"
+	"github.com/apoxy-dev/apoxy/pkg/net/dns/vpcdns"
 	"github.com/apoxy-dev/apoxy/pkg/sandbox"
+	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 	"github.com/apoxy-dev/apoxy/pkg/workerd/host"
 	"github.com/apoxy-dev/apoxy/pkg/workerd/names"
 )
@@ -35,9 +38,14 @@ import (
 // never push config across projects.
 type EgressControlServer struct {
 	workerdv1.UnimplementedEgressConfigServer
+	workerdv1.UnimplementedDNSConfigServer
 
 	tenant  string
 	applier host.EgressApplier
+	// dnsApplier is the resident's VPC name-plane sink; nil when the resident
+	// implementation doesn't support it, in which case ApplyDNS is rejected
+	// (the DNSConfig service shares this socket/server with EgressConfig).
+	dnsApplier host.DNSApplier
 
 	path string
 	ln   net.Listener
@@ -45,9 +53,11 @@ type EgressControlServer struct {
 }
 
 // NewEgressControlServer returns an egress control server for tenant, fanning
-// applies out through applier (the tenant's resident).
-func NewEgressControlServer(tenant string, applier host.EgressApplier) *EgressControlServer {
-	return &EgressControlServer{tenant: tenant, applier: applier}
+// applies out through applier (the tenant's resident). dnsApplier (usually
+// the same resident) receives DNSConfig pushes; nil disables that service's
+// applies.
+func NewEgressControlServer(tenant string, applier host.EgressApplier, dnsApplier host.DNSApplier) *EgressControlServer {
+	return &EgressControlServer{tenant: tenant, applier: applier, dnsApplier: dnsApplier}
 }
 
 // EgressSocketPath is the deterministic per-tenant egress control socket
@@ -92,6 +102,7 @@ func (s *EgressControlServer) Serve(ctx context.Context) error {
 
 	s.srv = grpc.NewServer()
 	workerdv1.RegisterEgressConfigServer(s.srv, s)
+	workerdv1.RegisterDNSConfigServer(s.srv, s)
 	// Stop (not GracefulStop) on cancel, mirroring the control channel: an
 	// in-flight apply during teardown must not wedge shutdown; the reconciler
 	// retries.
@@ -141,6 +152,78 @@ func (s *EgressControlServer) ApplyEgress(ctx context.Context, req *workerdv1.Ap
 		return nil, status.Errorf(codes.Internal, "applying egress config: %v", err)
 	}
 	return &workerdv1.ApplyEgressResponse{AppliedGeneration: gen}, nil
+}
+
+// ApplyDNS implements workerdv1.DNSConfigServer.
+func (s *EgressControlServer) ApplyDNS(ctx context.Context, req *workerdv1.ApplyDNSRequest) (*workerdv1.ApplyDNSResponse, error) {
+	if want := string(names.ResidentID(s.tenant)); req.SandboxId != want {
+		return nil, status.Errorf(codes.PermissionDenied,
+			"sandbox %q is not this tenant's resident", req.SandboxId)
+	}
+	if s.dnsApplier == nil {
+		return nil, status.Error(codes.Unimplemented, "resident does not support DNS control")
+	}
+
+	apply, err := dnsApplyFromProto(req)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid DNS binding: %v", err)
+	}
+
+	gen, err := s.dnsApplier.ApplyDNS(apply)
+	switch {
+	case errors.Is(err, sandbox.ErrNotFound):
+		// The resident isn't up (yet, or anymore): retryable, the next
+		// reconcile re-pushes once it is.
+		return nil, status.Errorf(codes.Unavailable, "resident is not running: %v", err)
+	case err != nil:
+		return nil, status.Errorf(codes.Internal, "applying DNS config: %v", err)
+	}
+	return &workerdv1.ApplyDNSResponse{AppliedGeneration: gen}, nil
+}
+
+// dnsApplyFromProto maps the wire request to the host apply shape, validating
+// addresses and prefixes: a malformed binding is a pusher bug and is rejected
+// whole-request (InvalidArgument) rather than silently dropped — partial
+// applies would leave the name plane inconsistent with what the pusher
+// believes it pushed.
+func dnsApplyFromProto(req *workerdv1.ApplyDNSRequest) (host.DNSApply, error) {
+	apply := host.DNSApply{
+		Zones:      req.AuthoritativeZones,
+		Generation: req.Generation,
+	}
+	for _, b := range req.Bindings {
+		binding := vpcdns.Binding{
+			FQDN:     b.Fqdn,
+			Delegate: b.DelegateSubdomains,
+			TTL:      b.Ttl,
+		}
+		for _, a := range b.Addrs {
+			addr, err := netip.ParseAddr(a)
+			if err != nil {
+				return host.DNSApply{}, fmt.Errorf("binding %q addr %q: %w", b.Fqdn, a, err)
+			}
+			binding.Addrs = append(binding.Addrs, addr)
+		}
+		for _, c := range b.ReachableCidrs {
+			p, err := netip.ParsePrefix(c)
+			if err != nil {
+				return host.DNSApply{}, fmt.Errorf("binding %q reachable cidr %q: %w", b.Fqdn, c, err)
+			}
+			p = p.Masked()
+			// A reachable window is a per-endpoint SSRF carve-out. Enforce at
+			// this trust boundary that it lies inside the Apoxy overlay ULA:
+			// the resident must never be handed a carve-out for loopback,
+			// link-local, or arbitrary space even if a buggy/compromised pusher
+			// sends one. This is the authoritative check; the bridge's deny()
+			// gates on the same prefix as defense in depth.
+			if !tunnet.ULAPrefix().Contains(p.Addr()) {
+				return host.DNSApply{}, fmt.Errorf("binding %q reachable cidr %q is outside the Apoxy overlay %s", b.Fqdn, c, tunnet.ULAPrefix())
+			}
+			binding.Reachable = append(binding.Reachable, p)
+		}
+		apply.Bindings = append(apply.Bindings, binding)
+	}
+	return apply, nil
 }
 
 // applyFromProto maps the wire request to the host apply shape.

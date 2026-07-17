@@ -112,7 +112,7 @@ func startEgressRecorder(t *testing.T) (string, <-chan egressRecord) {
 		}
 		defer conn.Close()
 		r := bufio.NewReader(conn)
-		src, dst, err := egresswire.ReadEgressPreamble(r)
+		src, dst, _, err := egresswire.ReadEgressPreamble(r)
 		if err != nil {
 			out <- egressRecord{err: err}
 			return

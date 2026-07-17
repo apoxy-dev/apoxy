@@ -183,7 +183,7 @@ func (f *scriptedApplier) applied() []host.EgressApply {
 // deterministic socket under dir (the path the pusher will dial).
 func startEgressServerAt(t *testing.T, dir, tenant string, applier host.EgressApplier) {
 	t.Helper()
-	srv := NewEgressControlServer(tenant, applier)
+	srv := NewEgressControlServer(tenant, applier, nil)
 	if err := srv.Listen(EgressSocketPath(dir, tenant)); err != nil {
 		t.Fatalf("Listen: %v", err)
 	}

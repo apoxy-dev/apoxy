@@ -148,7 +148,7 @@ func startWorkerdEgressRecorder(t *testing.T) (string, func() []netip.AddrPort) 
 			}
 			go func() {
 				defer conn.Close()
-				_, dst, err := egresswire.ReadEgressPreamble(bufio.NewReader(conn))
+				_, dst, _, err := egresswire.ReadEgressPreamble(bufio.NewReader(conn))
 				if err != nil {
 					return
 				}

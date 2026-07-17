@@ -36,6 +36,14 @@ func init() {
 	}
 }
 
+// ULAPrefix returns the Apoxy overlay ULA prefix (fd61:706f:7879::/48). Every
+// project overlay /72 and endpoint /96 is carved from within it; callers use it
+// to bound-check addresses that claim to be overlay space (e.g. the resident
+// egress SSRF carve-out, which must only ever relax destinations inside it).
+func ULAPrefix() netip.Prefix {
+	return apoxyULAPrefix
+}
+
 // NetworkID represents a unique identifier for a network.
 type NetworkID [3]byte
 

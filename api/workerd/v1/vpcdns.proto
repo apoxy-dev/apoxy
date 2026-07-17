@@ -1,0 +1,78 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+//
+// DNSConfig is the worker-side sink of the workerd VPC name plane: the
+// manager's per-project infra watch compiles the bindings the project's
+// workers may resolve and reach (tunnel endpoints today, VPC-bound Services
+// later) and pushes them here over the same per-tenant unix domain socket
+// the egress config plane uses. The resident serves the pushed state from
+// its own DNS listener (the abstract unixgram socket sealed into the
+// sandbox's InitStr) and derives the egress SSRF carve-out from the
+// bindings' reachable prefixes.
+//
+// Like EgressConfig, this drives host-resident state only, never the Sentry:
+// the Sentry's :53 forwarder is pointed at the resident's listener once at
+// boot and needs no live channel. Applies are idempotent and
+// last-writer-wins, ordered by generation.
+
+syntax = "proto3";
+
+package apoxy.workerd.v1;
+
+option go_package = "github.com/apoxy-dev/apoxy/api/workerd/v1;workerdv1";
+
+// DNSConfig applies the VPC name plane to a tenant's resident.
+service DNSConfig {
+  // ApplyDNS installs the resident's full VPC name plane: the bindings the
+  // project's workers can resolve and reach, plus the zones the resolver is
+  // authoritative for. The request carries the WHOLE desired state — a
+  // binding absent from the request is deleted, so the pusher stays
+  // level-triggered and deletions need no tombstones. Idempotent; a request
+  // whose generation is older than the last applied one is ignored (the
+  // response echoes the retained generation).
+  rpc ApplyDNS(ApplyDNSRequest) returns (ApplyDNSResponse);
+}
+
+// Binding is one name bound into the project VPC — a tunnel endpoint, a
+// VPC-bound Service, or any future object exposing a name to workers.
+message Binding {
+  // Fqdn is the name this binding answers for, authoritatively (no trailing
+  // dot, e.g. "my-tunnel.tun.apoxy.net").
+  string fqdn = 1;
+  // Addrs are the addresses the name resolves to (answered as A or AAAA by
+  // address family; VPC overlay ULAs today).
+  repeated string addrs = 2;
+  // DelegateSubdomains forwards sub-names (x.<fqdn>) to a resolver at this
+  // binding's addrs instead of answering locally. Tunnel endpoints set this
+  // (recursive tunnel resolution); Services won't.
+  bool delegate_subdomains = 3;
+  // Ttl for answers in seconds; 0 = resolver default.
+  uint32 ttl = 4;
+  // ReachableCidrs are carved out of the egress SSRF backstop for this
+  // binding — explicit rather than derived from addrs, so a binding can
+  // expose a wider window (a tunnel endpoint's whole /96) or none at all (a
+  // Service resolving to a public IP contributes no carve-out).
+  repeated string reachable_cidrs = 5;
+}
+
+message ApplyDNSRequest {
+  // SandboxID identifies the target sandbox. It must belong to the tenant
+  // whose socket this request arrived on; a foreign id is rejected.
+  string sandbox_id = 1;
+  // Generation orders applies: the pusher's monotonically increasing config
+  // generation. A stale generation is not applied.
+  uint64 generation = 2;
+  // AuthoritativeZones get an authoritative NXDOMAIN for unbound names
+  // within them ("tun.apoxy.net" today); names outside every zone fall
+  // through to the resolver's upstream chain.
+  repeated string authoritative_zones = 3;
+  // Bindings is the full desired binding set for the resident; it replaces
+  // the prior set atomically.
+  repeated Binding bindings = 4;
+}
+
+message ApplyDNSResponse {
+  // AppliedGeneration is the generation now in effect for the sandbox — the
+  // request's generation if it was applied, or the newer retained one if the
+  // request was stale.
+  uint64 applied_generation = 1;
+}

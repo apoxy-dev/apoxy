@@ -16,6 +16,7 @@ import (
 
 	"github.com/apoxy-dev/apoxy/pkg/sandbox"
 	"github.com/apoxy-dev/apoxy/pkg/sandbox/sentrystack/egresswire"
+	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 )
 
 // egressDialTimeout bounds a single upstream (direct) dial so a black-holed
@@ -73,7 +74,12 @@ type egressBridge struct {
 // carries as EgressHostAddr; the Sentry (sharing the host net namespace) dials
 // it. The listener MUST be up before the resident starts so the forwarder's
 // first dial lands.
-func startEgressBridge(id sandbox.SandboxID, lookup egressStateLookup) (*egressBridge, error) {
+//
+// overlayAllow, when non-nil, reports whether a dst belongs to the resident's
+// own project overlay endpoints (Apoxy VPC /96s), carving them out of the SSRF
+// backstop so a worker can reach its project's tunnel/VPC endpoints; nil when
+// the resident has no overlay, in which case all private/ULA space stays denied.
+func startEgressBridge(id sandbox.SandboxID, lookup egressStateLookup, overlayAllow func(netip.Addr) bool) (*egressBridge, error) {
 	if lookup == nil {
 		return nil, fmt.Errorf("egress bridge requires a state lookup")
 	}
@@ -86,7 +92,7 @@ func startEgressBridge(id sandbox.SandboxID, lookup egressStateLookup) (*egressB
 		ln:     ln,
 		id:     id,
 		lookup: lookup,
-		filter: newLocalDstFilter(),
+		filter: newLocalDstFilter(overlayAllow),
 		log:    slog.With("component", "egress-bridge", "sandbox.id", string(id)),
 		dial:   dialDirect,
 		ctx:    ctx,
@@ -162,12 +168,15 @@ func (b *egressBridge) handleConn(conn net.Conn) {
 	// The bufio.Reader may buffer guest bytes past the preamble; splice from it
 	// (not conn) so nothing the guest already sent is dropped.
 	r := bufio.NewReader(conn)
-	src, dst, err := egresswire.ReadEgressPreamble(r)
+	src, dst, dstName, err := egresswire.ReadEgressPreamble(r)
 	if err != nil {
 		b.log.Warn("Rejected egress flow with a malformed preamble", "error", err)
 		return
 	}
 	log := b.log.With("src", src.String(), "dst", dst.String())
+	if dstName != "" {
+		log = log.With("dst.name", dstName)
+	}
 
 	// SSRF: the guest must never reach the worker/host itself through the
 	// bridge (loopback, the host's own interface IPs, link-local, etc.).
@@ -183,9 +192,10 @@ func (b *egressBridge) handleConn(conn net.Conn) {
 	}
 	policy, backends := b.resolvePolicy(st)
 
-	// dstName is unbound for the MVP (no DNS forwarder yet), so hostname-only
-	// rules cannot match — CIDR rules and allow-all still work.
-	if !policy.Allow(dst, "TCP", "") {
+	// dstName is the hostname the worker resolved dst from (bound by the Sentry
+	// DNS forwarder), or "" for a literal-IP flow or a DNS-cache miss.
+	// Hostname-based rules match on it; CIDR rules and allow-all match regardless.
+	if !policy.Allow(dst, "TCP", dstName) {
 		log.Warn("Denied egress by policy")
 		return
 	}
@@ -233,34 +243,8 @@ func (b *egressBridge) resolvePolicy(st EgressState) (*sandbox.Policy, []sandbox
 		return b.cachePol, b.cacheBk
 	}
 	pol, bk := mergeResidentEgress(st)
-	if n := countHostnameRules(pol); n > 0 {
-		// Logged once per config generation (this runs only on a cache miss).
-		// Hostname-based egress rules can't be enforced until the DNS resolver
-		// forwarder binds dstName (a follow-up); such rules never match today, so
-		// a flow they were meant to allow fail-closes. Surface it so an operator
-		// sees WHY an allowlisted hostname is denied instead of debugging a silent
-		// drop. CIDR rules and allow-all are unaffected.
-		b.log.Warn("Egress policy has hostname rules that are not yet enforced (no DNS resolver); those flows fail-closed — use DestinationCIDRs for now",
-			"generation", st.Generation, "hostname_rules", n)
-	}
 	b.cacheSet, b.cacheGen, b.cachePol, b.cacheBk = true, st.Generation, pol, bk
 	return pol, bk
-}
-
-// countHostnameRules reports how many of a policy's rules match only on
-// DestinationHostnames-bearing criteria that the MVP data path can't yet
-// evaluate (dstName is unbound). Zero for a nil (allow-all) policy.
-func countHostnameRules(pol *sandbox.Policy) int {
-	if pol == nil {
-		return 0
-	}
-	n := 0
-	for i := range pol.Rules {
-		if len(pol.Rules[i].DestinationHostnames) > 0 {
-			n++
-		}
-	}
-	return n
 }
 
 // mergeResidentEgress collapses a resident's per-Service egress planes into a
@@ -354,20 +338,36 @@ var cgnatPrefix = netip.MustParsePrefix("100.64.0.0/10")
 // endpoint, a follow-up once the gateway data plane exists). The compute
 // forwarder has no IMDS bridge yet, so link-local is blanket-denied here.
 type localDstFilter struct {
-	localIPs map[netip.Addr]struct{}
+	// overlayAllow, when non-nil, reports whether a dst belongs to the resident's
+	// OWN project overlay endpoints (the Apoxy VPC /96s this project's tunnel
+	// endpoints allocate). Such a dst is a legitimate egress target and is
+	// allowed BEFORE the blanket private/ULA deny below, so a worker can reach
+	// its own project's overlay while every other private range stays denied.
+	//
+	// It is a membership predicate rather than a single prefix on purpose: every
+	// project's endpoints share the "default" network /72, so a /72-wide carve-out
+	// would admit other tenants' endpoints. The predicate (supplied per-tenant by
+	// the manager, backed by the project-filtered endpoint index) admits only
+	// this project's actual /96s and is checked live, so it is both tenant-scoped
+	// and rebinding-safe — a ULA that a malicious upstream AAAA claims but that no
+	// endpoint of this project allocates is not admitted. nil when the resident
+	// has no overlay: then all ULA/private space is denied as before.
+	overlayAllow func(netip.Addr) bool
+	localIPs     map[netip.Addr]struct{}
 }
 
-// newLocalDstFilter snapshots the host's interface IPs once. Interface
-// enumeration failure degrades to categorical-only filtering (loopback,
-// link-local, unspecified, multicast) rather than failing the resident: those
-// checks need no enumeration, and losing the own-IP set is safer than taking
-// the whole resident down over a transient netlink error.
-func newLocalDstFilter() *localDstFilter {
+// newLocalDstFilter snapshots the host's interface IPs once and records the
+// resident's overlay carve-out. Interface enumeration failure degrades to
+// categorical-only filtering (loopback, link-local, unspecified, multicast)
+// rather than failing the resident: those checks need no enumeration, and losing
+// the own-IP set is safer than taking the whole resident down over a transient
+// netlink error.
+func newLocalDstFilter(overlayAllow func(netip.Addr) bool) *localDstFilter {
 	ips := make(map[netip.Addr]struct{})
 	ifs, err := net.Interfaces()
 	if err != nil {
 		slog.Warn("Egress SSRF filter: interface enumeration failed; own-IP denial disabled", "error", err)
-		return &localDstFilter{localIPs: ips}
+		return &localDstFilter{overlayAllow: overlayAllow, localIPs: ips}
 	}
 	for _, ifi := range ifs {
 		addrs, err := ifi.Addrs()
@@ -389,7 +389,7 @@ func newLocalDstFilter() *localDstFilter {
 			}
 		}
 	}
-	return &localDstFilter{localIPs: ips}
+	return &localDstFilter{overlayAllow: overlayAllow, localIPs: ips}
 }
 
 // deny returns a non-empty categorical reason when dst is a destination that
@@ -402,26 +402,49 @@ func (f *localDstFilter) deny(dst netip.AddrPort) string {
 		return ""
 	}
 	addr := dst.Addr().Unmap()
+	// First classify the destination. The categorical denies below are
+	// absolute — loopback, link-local (IMDS), the pod's own interface IPs, etc.
+	// must be refused even under an allow-all policy AND even if a bogus
+	// overlay carve-out somehow covered them.
+	reason := ""
 	switch {
 	case addr.IsLoopback():
-		return "loopback" // 127.0.0.0/8, ::1
+		reason = "loopback" // 127.0.0.0/8, ::1
 	case addr.IsUnspecified():
-		return "unspecified" // 0.0.0.0, ::
+		reason = "unspecified" // 0.0.0.0, ::
 	case addr.IsLinkLocalUnicast():
-		return "link-local" // 169.254.0.0/16 (incl. IMDS), fe80::/10
+		reason = "link-local" // 169.254.0.0/16 (incl. IMDS), fe80::/10
 	case addr.IsLinkLocalMulticast():
-		return "link-local-multicast" // 224.0.0.0/24, ff02::/16
+		reason = "link-local-multicast" // 224.0.0.0/24, ff02::/16
 	case addr.IsInterfaceLocalMulticast():
-		return "interface-local-multicast" // ff01::/16
+		reason = "interface-local-multicast" // ff01::/16
 	case addr.IsMulticast():
-		return "multicast" // 224.0.0.0/4, ff00::/8
+		reason = "multicast" // 224.0.0.0/4, ff00::/8
 	case addr.IsPrivate():
-		return "private" // RFC1918 (10/8, 172.16/12, 192.168/16) + IPv6 ULA fc00::/7
+		reason = "private" // RFC1918 (10/8, 172.16/12, 192.168/16) + IPv6 ULA fc00::/7
 	case cgnatPrefix.Contains(addr):
-		return "cgnat" // RFC6598 100.64.0.0/10 (some k8s pod/service CIDRs)
+		reason = "cgnat" // RFC6598 100.64.0.0/10 (some k8s pod/service CIDRs)
+	default:
+		if _, ok := f.localIPs[addr]; ok {
+			reason = "worker-local-interface"
+		}
 	}
-	if _, ok := f.localIPs[addr]; ok {
-		return "worker-local-interface"
+	if reason == "" {
+		return "" // A public destination: allowed regardless of the carve-out.
 	}
-	return ""
+	// The destination would be denied. Consult the overlay carve-out LAST, and
+	// only for addresses inside the Apoxy VPC overlay prefix: the resident's own
+	// project endpoints (VPC /96s) are legitimate targets. overlayAllow admits
+	// only this project's actual endpoint /96s (never the shared /72, never
+	// another tenant's), checked live and rebinding-safe. Gating on the overlay
+	// prefix means the carve-out can only ever relax "private" (ULA) — never
+	// loopback, link-local, or the pod's own interfaces — so a malformed
+	// (non-overlay) reachable window can't punch a hole in the categorical
+	// denies. NOTE: this permits the connect at the policy layer; the direct
+	// dial reaches the endpoint via the Geneve overlay routes the co-located
+	// backplane maintains in the shared pod netns.
+	if tunnet.ULAPrefix().Contains(addr) && f.overlayAllow != nil && f.overlayAllow(addr) {
+		return ""
+	}
+	return reason
 }

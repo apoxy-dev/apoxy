@@ -65,7 +65,7 @@ func shortSockDir(t *testing.T) string {
 // unix socket and returns a connected client.
 func startEgressServer(t *testing.T, tenant string, applier host.EgressApplier) workerdv1.EgressConfigClient {
 	t.Helper()
-	srv := NewEgressControlServer(tenant, applier)
+	srv := NewEgressControlServer(tenant, applier, nil)
 	path := EgressSocketPath(shortSockDir(t), tenant)
 	if err := srv.Listen(path); err != nil {
 		t.Fatalf("Listen: %v", err)
@@ -243,7 +243,7 @@ func TestEgressControlServer_ListenReplacesStaleSocket(t *testing.T) {
 		}
 	}
 
-	srv := NewEgressControlServer("", &fakeApplier{})
+	srv := NewEgressControlServer("", &fakeApplier{}, nil)
 	if err := srv.Listen(path); err != nil {
 		t.Fatalf("Listen over stale socket: %v", err)
 	}
@@ -259,7 +259,7 @@ func TestEgressControlServer_CloseIsIdempotent(t *testing.T) {
 	dir := shortSockDir(t)
 	path := filepath.Join(dir, "egress.sock")
 
-	old := NewEgressControlServer("", &fakeApplier{})
+	old := NewEgressControlServer("", &fakeApplier{}, nil)
 	if err := old.Listen(path); err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
@@ -268,7 +268,7 @@ func TestEgressControlServer_CloseIsIdempotent(t *testing.T) {
 	}
 
 	// A successor binds the same path (the rebuilt tenant).
-	successor := NewEgressControlServer("", &fakeApplier{})
+	successor := NewEgressControlServer("", &fakeApplier{}, nil)
 	if err := successor.Listen(path); err != nil {
 		t.Fatalf("successor Listen: %v", err)
 	}

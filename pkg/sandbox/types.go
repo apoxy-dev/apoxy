@@ -165,8 +165,10 @@ type EgressInit struct {
 	// forwarder matches outbound dst against to route IMDS-vs-direct.
 	IMDSV4 string
 	IMDSV6 string
-	// DNSResolvers is the host-side resolver list ("ip:port") the
-	// forwarder dials for outbound :53.
+	// DNSResolvers is the host-side resolver list the forwarder dials for
+	// outbound :53. An entry is either "ip:port" or "unix://<socket>" — the
+	// resident's per-sandbox unixgram DNS listener, "@"-prefixed for the
+	// Linux abstract namespace so it stays dialable from the chrooted Sentry.
 	DNSResolvers []string
 }
 

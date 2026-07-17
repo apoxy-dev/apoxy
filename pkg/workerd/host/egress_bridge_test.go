@@ -127,7 +127,8 @@ func startEcho(t *testing.T) string {
 }
 
 // newTestBridge builds a bridge with an injected upstream dialer and starts it.
-func newTestBridge(t *testing.T, lookup egressStateLookup, dial func(string, string) (net.Conn, error)) *egressBridge {
+// overlayAllow is the SSRF carve-out membership predicate (nil for none).
+func newTestBridge(t *testing.T, lookup egressStateLookup, overlayAllow func(netip.Addr) bool, dial func(string, string) (net.Conn, error)) *egressBridge {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -138,7 +139,7 @@ func newTestBridge(t *testing.T, lookup egressStateLookup, dial func(string, str
 		ln:     ln,
 		id:     sandbox.SandboxID("test"),
 		lookup: lookup,
-		filter: newLocalDstFilter(),
+		filter: newLocalDstFilter(overlayAllow),
 		log:    slog.Default(),
 		dial:   dial,
 		ctx:    ctx,
@@ -163,7 +164,7 @@ func TestEgressBridge(t *testing.T) {
 
 	t.Run("allow direct splices through", func(t *testing.T) {
 		dialCh := make(chan string, 1)
-		b := newTestBridge(t, allowAllLookup, func(network, addr string) (net.Conn, error) {
+		b := newTestBridge(t, allowAllLookup, nil, func(network, addr string) (net.Conn, error) {
 			dialCh <- addr
 			return net.Dial("tcp", echoAddr)
 		})
@@ -173,7 +174,7 @@ func TestEgressBridge(t *testing.T) {
 			t.Fatalf("dial bridge: %v", err)
 		}
 		defer c.Close()
-		if err := egresswire.WriteEgressPreamble(c, src, netip.MustParseAddrPort(goodDst)); err != nil {
+		if err := egresswire.WriteEgressPreamble(c, src, netip.MustParseAddrPort(goodDst), ""); err != nil {
 			t.Fatalf("write preamble: %v", err)
 		}
 		if _, err := c.Write([]byte("hello")); err != nil {
@@ -252,7 +253,7 @@ func TestEgressBridge(t *testing.T) {
 	for _, tc := range denyCases {
 		t.Run("deny: "+tc.name, func(t *testing.T) {
 			dialCh := make(chan string, 1)
-			b := newTestBridge(t, tc.lookup, func(network, addr string) (net.Conn, error) {
+			b := newTestBridge(t, tc.lookup, nil, func(network, addr string) (net.Conn, error) {
 				dialCh <- addr
 				return net.Dial("tcp", echoAddr)
 			})
@@ -262,7 +263,7 @@ func TestEgressBridge(t *testing.T) {
 				t.Fatalf("dial bridge: %v", err)
 			}
 			defer c.Close()
-			if err := egresswire.WriteEgressPreamble(c, src, netip.MustParseAddrPort(tc.dst)); err != nil {
+			if err := egresswire.WriteEgressPreamble(c, src, netip.MustParseAddrPort(tc.dst), ""); err != nil {
 				t.Fatalf("write preamble: %v", err)
 			}
 			_, _ = c.Write([]byte("hello"))
@@ -359,5 +360,177 @@ func TestLocalDstFilterDeniesOwnInterface(t *testing.T) {
 	// A different public IP is still allowed.
 	if got := f.deny(netip.MustParseAddrPort("198.51.100.8:443")); got != "" {
 		t.Errorf("deny(other public) = %q, want allow", got)
+	}
+}
+
+// overlayAllowPrefixes returns a membership predicate admitting dst addresses
+// within any of the given /96 endpoint prefixes — the test stand-in for the
+// manager's project-filtered endpoint index (backplane/infra's
+// EndpointDNSReconciler.IsProjectOverlayAddr).
+func overlayAllowPrefixes(t *testing.T, cidrs ...string) func(netip.Addr) bool {
+	t.Helper()
+	prefixes := make([]netip.Prefix, len(cidrs))
+	for i, c := range cidrs {
+		prefixes[i] = netip.MustParsePrefix(c)
+	}
+	return func(a netip.Addr) bool {
+		a = a.Unmap()
+		for _, p := range prefixes {
+			if p.Contains(a) {
+				return true
+			}
+		}
+		return false
+	}
+}
+
+// TestLocalDstFilterOverlayCarveOut asserts the SSRF carve-out admits only the
+// resident's OWN project overlay endpoint /96s while every other private range
+// stays denied. The load-bearing case is a DIFFERENT endpoint /96 in the SAME
+// shared "default" network /72: because the carve-out is per-/96 membership (not
+// a /72 prefix), that sibling — potentially another tenant's endpoint — is
+// denied. That is what keeps a worker off other tenants' overlays.
+func TestLocalDstFilterOverlayCarveOut(t *testing.T) {
+	// This project owns exactly one endpoint /96 within the shared /72.
+	f := newLocalDstFilter(overlayAllowPrefixes(t, "fd61:706f:7879:100:0:1::/96"))
+
+	cases := []struct {
+		name       string
+		dst        string
+		wantReason string // "" => allowed
+	}{
+		{name: "own overlay endpoint", dst: "[fd61:706f:7879:100:0:1::5]:443", wantReason: ""},
+		{name: "own overlay deep host bits", dst: "[fd61:706f:7879:100:0:1:abcd:1234]:80", wantReason: ""},
+		{name: "sibling /96 in same /72 denied", dst: "[fd61:706f:7879:100:0:2::5]:443", wantReason: "private"},
+		{name: "other project /72 denied", dst: "[fd61:706f:7879:200:0:1::5]:443", wantReason: "private"},
+		{name: "generic ULA still denied", dst: "[fd00::1]:80", wantReason: "private"},
+		{name: "rfc1918 still denied", dst: "10.96.0.1:443", wantReason: "private"},
+		{name: "imds still denied", dst: "169.254.169.254:80", wantReason: "link-local"},
+		{name: "cgnat still denied", dst: "100.64.0.1:80", wantReason: "cgnat"},
+		{name: "public still allowed", dst: "1.1.1.1:80", wantReason: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := f.deny(netip.MustParseAddrPort(tc.dst)); got != tc.wantReason {
+				t.Errorf("deny(%s) = %q, want %q", tc.dst, got, tc.wantReason)
+			}
+		})
+	}
+
+	// A nil predicate = no carve-out: the same endpoint address is denied.
+	noCarve := newLocalDstFilter(nil)
+	if got := noCarve.deny(netip.MustParseAddrPort("[fd61:706f:7879:100:0:1::5]:443")); got != "private" {
+		t.Errorf("no-overlay deny(overlay addr) = %q, want %q", got, "private")
+	}
+}
+
+// TestEgressBridge_HostnamePolicy drives the full bridge to assert a
+// hostname-based allow rule matches only when the preamble carries the resolved
+// hostname (dstName) — the attribution the DNS forwarder binds. A matching name
+// is proxied; an empty or non-matching name fail-closes.
+func TestEgressBridge_HostnamePolicy(t *testing.T) {
+	echoAddr := startEcho(t)
+	const dst = "203.0.113.5:443" // public, passes the SSRF filter
+	src := netip.MustParseAddrPort("10.200.0.6:40000")
+	// Deny-default policy allowing only the hostname api.example.com.
+	lookup := func(id sandbox.SandboxID) (EgressState, bool) {
+		return EgressState{Services: []sandbox.ServiceEgress{{
+			Policy: &sandbox.Policy{DefaultDeny: true, Rules: []sandbox.Rule{
+				{DestinationHostnames: []string{"api.example.com"}},
+			}},
+		}}}, true
+	}
+
+	cases := []struct {
+		name      string
+		dstName   string
+		wantDial  bool
+	}{
+		{name: "matching hostname allowed", dstName: "api.example.com", wantDial: true},
+		{name: "empty dstName fail-closes", dstName: "", wantDial: false},
+		{name: "non-matching hostname denied", dstName: "evil.example.com", wantDial: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dialCh := make(chan string, 1)
+			b := newTestBridge(t, lookup, nil, func(network, addr string) (net.Conn, error) {
+				dialCh <- addr
+				return net.Dial("tcp", echoAddr)
+			})
+			c, err := net.Dial("tcp", b.addr())
+			if err != nil {
+				t.Fatalf("dial bridge: %v", err)
+			}
+			defer c.Close()
+			if err := egresswire.WriteEgressPreamble(c, src, netip.MustParseAddrPort(dst), tc.dstName); err != nil {
+				t.Fatalf("write preamble: %v", err)
+			}
+			_, _ = c.Write([]byte("hi"))
+
+			if tc.wantDial {
+				select {
+				case <-dialCh:
+				case <-time.After(3 * time.Second):
+					t.Fatal("bridge never dialed upstream for a hostname-allowed flow")
+				}
+				return
+			}
+			select {
+			case got := <-dialCh:
+				t.Fatalf("bridge dialed %q; want fail-closed for dstName=%q", got, tc.dstName)
+			case <-time.After(300 * time.Millisecond):
+			}
+		})
+	}
+}
+
+// TestEgressBridge_OverlayAllowsOwnProject drives the full bridge to assert the
+// overlay carve-out actually admits a flow to one of the resident's own project
+// endpoint /96s (which the SSRF backstop would otherwise deny as ULA), while a
+// sibling /96 in the SAME shared /72 stays denied.
+func TestEgressBridge_OverlayAllowsOwnProject(t *testing.T) {
+	echoAddr := startEcho(t)
+	overlayAllow := overlayAllowPrefixes(t, "fd61:706f:7879:100:0:1::/96")
+	src := netip.MustParseAddrPort("10.200.0.6:40000")
+
+	cases := []struct {
+		name     string
+		dst      string
+		wantDial bool
+	}{
+		{name: "own endpoint is reachable", dst: "[fd61:706f:7879:100:0:1::5]:8080", wantDial: true},
+		{name: "sibling /96 in same /72 is denied", dst: "[fd61:706f:7879:100:0:2::5]:8080", wantDial: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dialCh := make(chan string, 1)
+			b := newTestBridge(t, allowAllLookup, overlayAllow, func(network, addr string) (net.Conn, error) {
+				dialCh <- addr
+				return net.Dial("tcp", echoAddr)
+			})
+			c, err := net.Dial("tcp", b.addr())
+			if err != nil {
+				t.Fatalf("dial bridge: %v", err)
+			}
+			defer c.Close()
+			if err := egresswire.WriteEgressPreamble(c, src, netip.MustParseAddrPort(tc.dst), ""); err != nil {
+				t.Fatalf("write preamble: %v", err)
+			}
+			_, _ = c.Write([]byte("hi"))
+
+			if tc.wantDial {
+				select {
+				case <-dialCh:
+				case <-time.After(3 * time.Second):
+					t.Fatal("bridge never dialed upstream for an overlay-allowed flow")
+				}
+				return
+			}
+			select {
+			case got := <-dialCh:
+				t.Fatalf("bridge dialed %q for a sibling overlay; want denied", got)
+			case <-time.After(300 * time.Millisecond):
+			}
+		})
 	}
 }
