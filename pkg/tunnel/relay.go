@@ -17,6 +17,7 @@ import (
 
 	"github.com/alphadose/haxmap"
 	"github.com/apoxy-dev/icx"
+	"github.com/apoxy-dev/icx/psp"
 	"github.com/avast/retry-go/v4"
 	"github.com/julienschmidt/httprouter"
 	"github.com/quic-go/quic-go"
@@ -295,22 +296,20 @@ func (r *Relay) handleConnect(w http.ResponseWriter, req *http.Request, ps httpr
 		retry.Attempts(10),
 	)
 
-	sendKey, err := randomKey()
+	// One master secret per connection; each rotation advances the epoch under
+	// it and the icx handler derives that epoch's per-direction keys. The first
+	// epoch is 1 (epoch 0 is a reserved SPI counter and the handler rejects it).
+	master, err := randomMasterSecret()
 	if err != nil {
-		http.Error(w, "Failed to generate key", http.StatusInternalServerError)
+		http.Error(w, "Failed to generate master secret", http.StatusInternalServerError)
 		return
 	}
-
-	recvKey, err := randomKey()
-	if err != nil {
-		http.Error(w, "Failed to generate key", http.StatusInternalServerError)
-		return
-	}
+	conn.SetMaster(master)
 
 	keys := api.Keys{
-		Send:      sendKey,
-		Recv:      recvKey,
-		ExpiresAt: time.Now().Add(keyLifespan),
+		Epoch:        conn.IncrementKeyEpoch(),
+		MasterSecret: master,
+		ExpiresAt:    time.Now().Add(keyLifespan),
 	}
 
 	vni := conn.VNI()
@@ -357,8 +356,13 @@ func (r *Relay) handleConnect(w http.ResponseWriter, req *http.Request, ps httpr
 		RelayAddresses: relayAddrs,
 	}
 
-	if err := r.handler.UpdateVirtualNetworkKeys(*vni, keys.Epoch,
-		keys.Send, keys.Recv, keys.ExpiresAt); err != nil {
+	rxSPI, txSPI, err := psp.EpochSPIs(psp.Responder, keys.Epoch)
+	if err != nil {
+		http.Error(w, "Failed to derive SPIs", http.StatusInternalServerError)
+		return
+	}
+	if err := r.handler.UpdateVirtualNetworkSecret(*vni, [32]byte(keys.MasterSecret),
+		rxSPI, txSPI, keys.ExpiresAt); err != nil {
 		http.Error(w, "Failed to update virtual network keys", http.StatusInternalServerError)
 		return
 	}
@@ -439,27 +443,22 @@ func (r *Relay) handleUpdateKeys(w http.ResponseWriter, req *http.Request, ps ht
 		return
 	}
 
-	sendKey, err := randomKey()
-	if err != nil {
-		http.Error(w, "Failed to generate key", http.StatusInternalServerError)
-		return
-	}
-
-	recvKey, err := randomKey()
-	if err != nil {
-		http.Error(w, "Failed to generate key", http.StatusInternalServerError)
-		return
-	}
-
+	// Rotation: advance the epoch under the connection's master. The advanced
+	// SPI is a fresh KDF context, so the handler derives fresh keys without new
+	// key material crossing the wire.
 	keys := api.Keys{
-		Epoch:     conn.IncrementKeyEpoch(),
-		Send:      sendKey,
-		Recv:      recvKey,
-		ExpiresAt: time.Now().Add(keyLifespan),
+		Epoch:        conn.IncrementKeyEpoch(),
+		MasterSecret: conn.Master(),
+		ExpiresAt:    time.Now().Add(keyLifespan),
 	}
 
-	if err := r.handler.UpdateVirtualNetworkKeys(*vni, keys.Epoch,
-		keys.Send, keys.Recv, keys.ExpiresAt); err != nil {
+	rxSPI, txSPI, err := psp.EpochSPIs(psp.Responder, keys.Epoch)
+	if err != nil {
+		http.Error(w, "Failed to derive SPIs", http.StatusInternalServerError)
+		return
+	}
+	if err := r.handler.UpdateVirtualNetworkSecret(*vni, [32]byte(keys.MasterSecret),
+		rxSPI, txSPI, keys.ExpiresAt); err != nil {
 		http.Error(w, "Failed to update virtual network keys", http.StatusInternalServerError)
 		return
 	}
@@ -586,8 +585,8 @@ func (r *Relay) startGC(ctx context.Context, maxSilence, checkInterval time.Dura
 	}
 }
 
-func randomKey() (api.Key, error) {
-	var key api.Key
-	_, err := rand.Read(key[:])
-	return key, err
+func randomMasterSecret() (api.MasterSecret, error) {
+	var m api.MasterSecret
+	_, err := rand.Read(m[:])
+	return m, err
 }

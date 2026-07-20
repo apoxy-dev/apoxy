@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/apoxy-dev/apoxy/pkg/netstack"
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/api"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/controllers"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/router"
 	"github.com/apoxy-dev/icx"
@@ -28,6 +29,9 @@ type connection struct {
 	vni         *uint
 	overlayAddr *netip.Prefix
 	keyEpoch    atomic.Uint32
+	// master is the connection's PSP master secret, minted once at connect;
+	// every epoch's per-direction data keys derive from it (icx handler-side).
+	master api.MasterSecret
 }
 
 // Close tears down the VNI and removes any router state.
@@ -232,6 +236,20 @@ func (c *connection) SetOverlayAddress(addr string) error {
 // IncrementKeyEpoch increments and returns the current key epoch for this connection.
 func (c *connection) IncrementKeyEpoch() uint32 {
 	return c.keyEpoch.Add(1)
+}
+
+// SetMaster records the connection's PSP master secret (set once at connect).
+func (c *connection) SetMaster(m api.MasterSecret) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.master = m
+}
+
+// Master returns the connection's PSP master secret.
+func (c *connection) Master() api.MasterSecret {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.master
 }
 
 // Stats returns a snapshot built from the currently configured VNI (if any).

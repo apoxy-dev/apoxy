@@ -66,12 +66,14 @@ func TestRelay_Connect_UpdateKeys_Disconnect(t *testing.T) {
 	require.WithinDuration(t, time.Now().Add(24*time.Hour), connectResp.Keys.ExpiresAt, time.Minute)
 
 	firstEpoch := connectResp.Keys.Epoch
-	require.EqualValues(t, 0, firstEpoch)
+	require.EqualValues(t, 1, firstEpoch)
+	require.NotEqual(t, api.MasterSecret{}, connectResp.Keys.MasterSecret)
 
 	upd, err := c.UpdateKeys(ctx, connectResp.ID)
 	require.NoError(t, err)
 	require.Equal(t, connectResp.ID, connectResp.ID)
 	require.GreaterOrEqual(t, int(upd.Keys.Epoch), int(firstEpoch+1))
+	require.Equal(t, connectResp.Keys.MasterSecret, upd.Keys.MasterSecret)
 	require.WithinDuration(t, time.Now().Add(24*time.Hour), upd.Keys.ExpiresAt, time.Minute)
 
 	err = c.Disconnect(ctx, connectResp.ID)

@@ -19,6 +19,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/apoxy-dev/icx"
+	"github.com/apoxy-dev/icx/psp"
 
 	"github.com/apoxy-dev/apoxy/pkg/netstack"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/batchpc"
@@ -99,18 +100,20 @@ func TestICXNetwork_Speed(t *testing.T) {
 	err = hB.AddVirtualNetwork(vni, netstack.ToFullAddress(aA), []icx.Route{{Src: route, Dst: route}})
 	require.NoError(t, err)
 
-	// Per-direction keys: each direction needs its own key, and one side's TX key
-	// must equal the other side's RX key. k1 carries A->B, k2 carries B->A.
-	var k1, k2 [16]byte
-	copy(k1[:], []byte("0123456789abcdef"))
-	copy(k2[:], []byte("fedcba9876543210"))
+	// Shared master secret with mirrored roles: each side derives its own
+	// per-direction keys, and A's TX SPI is B's RX SPI (and vice versa).
+	var master [32]byte
+	copy(master[:], []byte("icx-network-test-master-secret-0"))
 
-	// hA: rx from B (B->A = k2), tx to B (A->B = k1).
-	err = hA.UpdateVirtualNetworkKeys(vni, 1, k2, k1, time.Now().Add(time.Hour))
+	rxA, txA, err := psp.EpochSPIs(psp.Initiator, 1)
+	require.NoError(t, err)
+	rxB, txB, err := psp.EpochSPIs(psp.Responder, 1)
 	require.NoError(t, err)
 
-	// hB: rx from A (A->B = k1), tx to A (B->A = k2).
-	err = hB.UpdateVirtualNetworkKeys(vni, 1, k1, k2, time.Now().Add(time.Hour))
+	err = hA.UpdateVirtualNetworkSecret(vni, master, rxA, txA, time.Now().Add(time.Hour))
+	require.NoError(t, err)
+
+	err = hB.UpdateVirtualNetworkSecret(vni, master, rxB, txB, time.Now().Add(time.Hour))
 	require.NoError(t, err)
 
 	t.Cleanup(func() {

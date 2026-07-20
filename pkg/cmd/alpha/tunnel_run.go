@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/apoxy-dev/icx"
+	"github.com/apoxy-dev/icx/psp"
 	"github.com/avast/retry-go/v4"
 	"github.com/dpeckett/network"
 	"github.com/spf13/cobra"
@@ -734,7 +735,12 @@ func manageKeyRotation(
 	initial api.Keys,
 ) error {
 	applyAndSchedule := func(k api.Keys) time.Duration {
-		if err := handler.UpdateVirtualNetworkKeys(vni, k.Epoch, k.Recv, k.Send, k.ExpiresAt); err != nil {
+		// The agent is the Initiator; the relay installs the mirrored Responder
+		// SPIs, so each epoch derives one distinct key per direction.
+		rxSPI, txSPI, err := psp.EpochSPIs(psp.Initiator, k.Epoch)
+		if err != nil {
+			slog.Error("Failed to derive SPIs for epoch", slog.Any("error", err))
+		} else if err := handler.UpdateVirtualNetworkSecret(vni, [32]byte(k.MasterSecret), rxSPI, txSPI, k.ExpiresAt); err != nil {
 			slog.Error("Failed to apply new keys to router", slog.Any("error", err))
 		}
 		remaining := time.Until(k.ExpiresAt)

@@ -46,35 +46,40 @@ type UpdateKeysResponse struct {
 	Keys Keys `json:"keys"`
 }
 
-// Key is a 16-byte symmetric key used for encryption/decryption.
-type Key [16]byte
+// MasterSecret is the 32-byte PSP master secret a connection's per-epoch
+// AES-GCM data keys derive from. The icx handler performs the derivation on
+// each side (psp.DeriveSAKey over the epoch's role-partitioned SPIs), so no
+// finished data key ever crosses the wire or the handler API boundary.
+type MasterSecret [32]byte
 
-func (k Key) MarshalJSON() ([]byte, error) {
-	return []byte(`"` + base64.StdEncoding.EncodeToString(k[:]) + `"`), nil
+func (m MasterSecret) MarshalJSON() ([]byte, error) {
+	return []byte(`"` + base64.StdEncoding.EncodeToString(m[:]) + `"`), nil
 }
 
-func (k *Key) UnmarshalJSON(data []byte) error {
+func (m *MasterSecret) UnmarshalJSON(data []byte) error {
 	if len(data) < 2 || data[0] != '"' || data[len(data)-1] != '"' {
-		return errors.New("invalid key format")
+		return errors.New("invalid master secret format")
 	}
 	decoded, err := base64.StdEncoding.DecodeString(string(data[1 : len(data)-1]))
 	if err != nil {
 		return err
 	}
-	if len(decoded) != 16 {
-		return errors.New("key must be 16 bytes long")
+	if len(decoded) != 32 {
+		return errors.New("master secret must be 32 bytes long")
 	}
-	copy(k[:], decoded)
+	copy(m[:], decoded)
 	return nil
 }
 
 type Keys struct {
-	// Epoch is the epoch number for this set of keys.
+	// Epoch is the key generation for this connection; it starts at 1 and
+	// strictly increases on every rotation. Each side maps it onto mirrored
+	// per-direction SPIs (psp.EpochSPIs: relay = Responder, agent = Initiator)
+	// and the handler derives that epoch's keys from the master secret.
 	Epoch uint32 `json:"epoch"`
-	// Send is the key the agent should use for sending packets (base64-encoded).
-	Send Key `json:"send"`
-	// Recv is the key the agent should use for receiving packets (base64-encoded).
-	Recv Key `json:"recv"`
+	// MasterSecret is the connection's PSP master secret (base64-encoded). It is
+	// minted once per connection; rotations advance Epoch under the same master.
+	MasterSecret MasterSecret `json:"masterSecret"`
 	// ExpiresAt is the expiration time for the keys, when this is exceeded, the agent
 	// should issue an update keys request.
 	ExpiresAt time.Time `json:"expiresAt"`
