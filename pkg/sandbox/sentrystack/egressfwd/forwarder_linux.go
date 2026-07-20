@@ -13,6 +13,7 @@ import (
 	"net/netip"
 	"runtime/debug"
 	"syscall"
+	"time"
 
 	"github.com/dpeckett/contextio"
 	"gvisor.dev/gvisor/pkg/tcpip"
@@ -28,6 +29,11 @@ import (
 // queues before dropping new SYNs. Matches clrk's value: high enough that a
 // burst of concurrent connects from inside the sandbox isn't RSTed pre-handoff.
 const tcpForwarderMaxInFlight = 65535
+
+// verdictTimeout bounds the bridge dial + verdict read that now happens while
+// the guest's SYN is held half-open, so a wedged host bridge can't pin
+// forwarder goroutines (and half-open slots) indefinitely.
+const verdictTimeout = 10 * time.Second
 
 // InstallEgress is the sentrystack.ForwarderInstaller: after the core wires
 // lo+eth0, it registers the outbound forwarders. It arms two independent data
@@ -120,9 +126,11 @@ func (d *bridgeDialer) dial(ctx context.Context, src, dst netip.AddrPort) (net.C
 type dialFunc func(ctx context.Context, src, dst netip.AddrPort) (net.Conn, error)
 
 // tcpHandler is the tcp.NewForwarder callback. Each accepted SYN spawns a
-// goroutine that creates the sandbox-side endpoint and either bridges a
-// DNS-over-TCP fallback to the resident resolver (dst :53) or splices the
-// stream to the host egress bridge (everything else).
+// goroutine that either bridges a DNS-over-TCP fallback to the resident
+// resolver (dst :53) or consults the host egress bridge for a policy verdict
+// and — only when allowed — creates the sandbox-side endpoint and splices the
+// stream. Denied flows are RST while still half-open, before any endpoint
+// exists.
 type tcpHandler struct {
 	dial dialFunc
 	// resolverSock, when set, is the resident's unixgram DNS socket; a dst-:53
@@ -152,19 +160,83 @@ func (h *tcpHandler) handleTCP(req *tcp.ForwarderRequest, src, dst netip.AddrPor
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// DNS-over-TCP fallback: bridge to the resident resolver, never the egress
+	// bridge. A truncated UDP answer makes the stub retry the query over TCP:53;
+	// routing it here keeps it inside the resolver plane.
+	if dst.Port() == dnsPort && h.resolverSock != "" {
+		local, unregister, ok := h.createEndpoint(req, ctx, cancel, logger)
+		if !ok {
+			return
+		}
+		defer local.Close()
+		defer unregister()
+		err := serveDNSOverTCP(local, h.resolverSock, h.cache)
+		logDNSOverTCPExit(logger, err)
+		req.Complete(err != nil && !isBenignClose(err)) // RST only on a real error
+		return
+	}
+
+	// Egress: fetch the bridge's policy verdict BEFORE creating the sandbox-side
+	// endpoint. A denied (or unanswerable — fail closed) flow is refused with an
+	// RST while the SYN is still half-open, so a worker hammering blocked
+	// destinations allocates no netstack endpoints and can't exhaust Sentry
+	// memory; the half-open window is bounded by tcpForwarderMaxInFlight.
+	dialCtx, dialCancel := context.WithTimeout(ctx, verdictTimeout)
+	defer dialCancel()
+	remote, err := h.dial(dialCtx, src, dst)
+	if err != nil {
+		logger.Warn("Failed to dial egress bridge", "error", err)
+		req.Complete(true) // RST
+		return
+	}
+	defer remote.Close()
+	_ = remote.SetReadDeadline(time.Now().Add(verdictTimeout))
+	allow, err := egresswire.ReadEgressVerdict(remote)
+	if err != nil {
+		logger.Warn("Failed to read egress verdict; failing closed", "error", err)
+		req.Complete(true) // RST
+		return
+	}
+	if !allow {
+		logger.Debug("Egress denied by host bridge; refusing SYN")
+		req.Complete(true) // RST, no endpoint ever created
+		return
+	}
+	_ = remote.SetReadDeadline(time.Time{})
+
+	local, unregister, ok := h.createEndpoint(req, ctx, cancel, logger)
+	if !ok {
+		return
+	}
+	defer local.Close()
+	defer unregister()
+
+	if _, err := contextio.SpliceContext(ctx, local, remote, nil); err != nil &&
+		!errors.Is(err, context.Canceled) && !isBenignClose(err) {
+		logger.Warn("Egress splice error", "error", err)
+		req.Complete(true) // RST
+		return
+	}
+	req.Complete(false) // FIN
+}
+
+// createEndpoint completes the guest handshake and wires the HUP watcher that
+// cancels the splice when the sandbox side half-closes. It returns ok=false
+// after RSTing the request when endpoint creation fails. The returned cleanup
+// deregisters the waiter entry.
+func (h *tcpHandler) createEndpoint(req *tcp.ForwarderRequest, ctx context.Context, cancel context.CancelFunc, logger *slog.Logger) (*gonet.TCPConn, func(), bool) {
 	var wq waiter.Queue
 	ep, tcpipErr := req.CreateEndpoint(&wq)
 	if tcpipErr != nil {
 		logger.Warn("Failed to create sandbox endpoint", "error", tcpipErr.String())
 		req.Complete(true) // RST
-		return
+		return nil, nil, false
 	}
 
 	// Cancel the splice on TCP HUP from the sandbox side so we don't hold the
 	// upstream conn open after the worker half-closes.
 	waitEntry, notifyCh := waiter.NewChannelEntry(waiter.EventHUp)
 	wq.EventRegister(&waitEntry)
-	defer wq.EventUnregister(&waitEntry)
 	go func() {
 		select {
 		case <-ctx.Done():
@@ -176,34 +248,7 @@ func (h *tcpHandler) handleTCP(req *tcp.ForwarderRequest, src, dst netip.AddrPor
 	ep.SocketOptions().SetDelayOption(false) // disable Nagle
 	ep.SocketOptions().SetKeepAlive(true)
 
-	local := gonet.NewTCPConn(&wq, ep)
-	defer local.Close()
-
-	// DNS-over-TCP fallback: bridge to the resident resolver, never the egress
-	// bridge. A truncated UDP answer makes the stub retry the query over TCP:53;
-	// routing it here keeps it inside the resolver plane.
-	if dst.Port() == dnsPort && h.resolverSock != "" {
-		err := serveDNSOverTCP(local, h.resolverSock, h.cache)
-		logDNSOverTCPExit(logger, err)
-		req.Complete(err != nil && !isBenignClose(err)) // RST only on a real error
-		return
-	}
-
-	remote, err := h.dial(ctx, src, dst)
-	if err != nil {
-		logger.Warn("Failed to dial egress bridge", "error", err)
-		req.Complete(true) // RST
-		return
-	}
-	defer remote.Close()
-
-	if _, err := contextio.SpliceContext(ctx, local, remote, nil); err != nil &&
-		!errors.Is(err, context.Canceled) && !isBenignClose(err) {
-		logger.Warn("Egress splice error", "error", err)
-		req.Complete(true) // RST
-		return
-	}
-	req.Complete(false) // FIN
+	return gonet.NewTCPConn(&wq, ep), func() { wq.EventUnregister(&waitEntry) }, true
 }
 
 // isBenignClose reports whether err is an ordinary peer-close mid-splice rather

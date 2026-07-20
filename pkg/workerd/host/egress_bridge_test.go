@@ -177,6 +177,10 @@ func TestEgressBridge(t *testing.T) {
 		if err := egresswire.WriteEgressPreamble(c, src, netip.MustParseAddrPort(goodDst), ""); err != nil {
 			t.Fatalf("write preamble: %v", err)
 		}
+		_ = c.SetReadDeadline(time.Now().Add(3 * time.Second))
+		if allow, err := egresswire.ReadEgressVerdict(c); err != nil || !allow {
+			t.Fatalf("verdict for an allowed flow = (%v, %v), want (true, nil)", allow, err)
+		}
 		if _, err := c.Write([]byte("hello")); err != nil {
 			t.Fatalf("write payload: %v", err)
 		}
@@ -266,15 +270,19 @@ func TestEgressBridge(t *testing.T) {
 			if err := egresswire.WriteEgressPreamble(c, src, netip.MustParseAddrPort(tc.dst), ""); err != nil {
 				t.Fatalf("write preamble: %v", err)
 			}
-			_, _ = c.Write([]byte("hello"))
-
-			// A denied flow is closed without proxying: the client read returns
-			// an error (a clean EOF, or an RST when the client's payload was
-			// still unconsumed at close — both mean "not proxied"), never
-			// echoed data, and the fake dialer is never invoked.
+			// A denied flow answers with a deny verdict and is closed without
+			// proxying: the forwarder turns the verdict into an RST at SYN, the
+			// fake dialer is never invoked, and nothing is ever echoed.
 			_ = c.SetReadDeadline(time.Now().Add(3 * time.Second))
+			allow, err := egresswire.ReadEgressVerdict(c)
+			if err != nil {
+				t.Fatalf("reading deny verdict: %v", err)
+			}
+			if allow {
+				t.Fatal("verdict for a denied flow = allow, want deny")
+			}
 			if _, err := io.ReadFull(c, make([]byte, 1)); err == nil {
-				t.Fatal("read after deny succeeded; the flow should have been closed, not proxied")
+				t.Fatal("read after deny verdict succeeded; the flow should have been closed, not proxied")
 			}
 			select {
 			case got := <-dialCh:

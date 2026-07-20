@@ -160,8 +160,10 @@ func (b *egressBridge) serve() {
 }
 
 // handleConn mediates one outbound flow: preamble -> SSRF -> policy -> backend
-// selection -> dial -> splice. Every rejection path closes the conn (fail
-// closed); the guest observes a reset/closed connection.
+// selection -> verdict -> dial -> splice. Every rejection path answers with a
+// deny verdict (or, for a malformed preamble, a bare close — the forwarder
+// fails closed on any verdict read error) so the forwarder can refuse the
+// guest's SYN with an RST without ever allocating a netstack endpoint.
 func (b *egressBridge) handleConn(conn net.Conn) {
 	defer conn.Close()
 
@@ -178,16 +180,20 @@ func (b *egressBridge) handleConn(conn net.Conn) {
 		log = log.With("dst.name", dstName)
 	}
 
+	deny := func() { _ = egresswire.WriteEgressVerdict(conn, false) }
+
 	// SSRF: the guest must never reach the worker/host itself through the
 	// bridge (loopback, the host's own interface IPs, link-local, etc.).
 	if reason := b.filter.deny(dst); reason != "" {
 		log.Warn("Denied egress to a worker-local destination", "reason", reason)
+		deny()
 		return
 	}
 
 	st, ok := b.lookup(b.id)
 	if !ok {
 		log.Warn("Denied egress: no recorded egress state for resident")
+		deny()
 		return
 	}
 	policy, backends := b.resolvePolicy(st)
@@ -197,6 +203,7 @@ func (b *egressBridge) handleConn(conn net.Conn) {
 	// Hostname-based rules match on it; CIDR rules and allow-all match regardless.
 	if !policy.Allow(dst, "TCP", dstName) {
 		log.Warn("Denied egress by policy")
+		deny()
 		return
 	}
 
@@ -206,6 +213,17 @@ func (b *egressBridge) handleConn(conn net.Conn) {
 		// increment. Fail closed rather than dial the gateway without it.
 		log.Warn("Denied egress: gateway routing not yet implemented",
 			"backend", backend.Name, "backend.addr", backend.Addr)
+		deny()
+		return
+	}
+
+	// The verdict is the policy decision, sent before the upstream dial so the
+	// guest's handshake completes without waiting on a (possibly slow) remote
+	// connect. An upstream dial failure after an allow verdict surfaces to the
+	// guest as an established-then-closed connection, same as any upstream
+	// failure mid-flow.
+	if err := egresswire.WriteEgressVerdict(conn, true); err != nil {
+		log.Warn("Failed to write egress allow verdict", "error", err)
 		return
 	}
 

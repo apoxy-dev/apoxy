@@ -25,18 +25,31 @@ import (
 // bridge socket can't learn from its 5-tuple, and to attribute the flow to the
 // qname for hostname-based egress policy.
 //
-// v2 layout: "apoxy-egress/2 <src> <dst> [<dstName>]\n". The trailing dstName is
+// v3 layout: "apoxy-egress/3 <src> <dst> [<dstName>]\n". The trailing dstName is
 // optional — omitted when the flow used a literal IP or the Sentry's DNS-answer
-// cache had no binding — so a v2 line is 3 or 4 whitespace-separated fields. The
-// magic is bumped from v1 (which had no dstName) rather than made
-// backward-compatible: the forwarder (writer) and the host bridge (reader) ship
-// in the same binary and a resident always boots a matching pair, so there is no
-// mixed-version wire on a single connection.
+// cache had no binding — so a v3 line is 3 or 4 whitespace-separated fields.
+// v3 additionally requires the bridge to answer with a one-byte verdict (see
+// WriteEgressVerdict) before any upstream bytes; the forwarder holds the guest
+// SYN half-open until it reads the verdict, so a denied flow is refused with an
+// RST before any netstack endpoint exists. The magic is bumped on every layout
+// change rather than made backward-compatible: the forwarder (writer) and the
+// host bridge (reader) ship in the same binary and a resident always boots a
+// matching pair, so there is no mixed-version wire on a single connection — a
+// mismatched pair fails loudly at the preamble parse instead of deadlocking on
+// a verdict that will never come.
 //
 // A later increment replaces this with a PROXY v2 header carrying identity +
 // InvocationID TLVs, which the per-EG Envoy MITM attributes on — the wire
 // contract the worker egress bridge enriches on the way to the gateway.
-const preambleMagic = "apoxy-egress/2"
+const preambleMagic = "apoxy-egress/3"
+
+// Verdict bytes the host bridge writes back onto the connection immediately
+// after evaluating the preamble against SSRF + policy, before any upstream
+// data. Printable so a stray verdict in a capture is self-describing.
+const (
+	verdictAllow = byte('A')
+	verdictDeny  = byte('D')
+)
 
 // WriteEgressPreamble writes the one-line (src, dst[, dstName]) announcement
 // onto w. Both addresses are the sandbox-visible tuple verbatim, so a v4 dst
@@ -94,4 +107,39 @@ func ReadEgressPreamble(r *bufio.Reader) (src, dst netip.AddrPort, dstName strin
 		dstName = fields[3]
 	}
 	return src, dst, dstName, nil
+}
+
+// WriteEgressVerdict writes the bridge's one-byte policy verdict for the flow
+// announced by the preceding preamble. The forwarder reads it before completing
+// the guest's TCP handshake: deny (or any read failure, which fails closed)
+// refuses the SYN with an RST without allocating a netstack endpoint.
+func WriteEgressVerdict(w io.Writer, allow bool) error {
+	v := verdictDeny
+	if allow {
+		v = verdictAllow
+	}
+	if _, err := w.Write([]byte{v}); err != nil {
+		return fmt.Errorf("writing egress verdict: %w", err)
+	}
+	return nil
+}
+
+// ReadEgressVerdict reads the verdict written by WriteEgressVerdict. On an
+// allow verdict r is positioned at the first upstream byte, so the caller can
+// splice the remainder as the raw stream. Any error — including a short read
+// from a bridge that closed without answering — must be treated as a deny by
+// the caller (fail closed).
+func ReadEgressVerdict(r io.Reader) (allow bool, err error) {
+	var b [1]byte
+	if _, err := io.ReadFull(r, b[:]); err != nil {
+		return false, fmt.Errorf("reading egress verdict: %w", err)
+	}
+	switch b[0] {
+	case verdictAllow:
+		return true, nil
+	case verdictDeny:
+		return false, nil
+	default:
+		return false, fmt.Errorf("malformed egress verdict 0x%02x", b[0])
+	}
 }

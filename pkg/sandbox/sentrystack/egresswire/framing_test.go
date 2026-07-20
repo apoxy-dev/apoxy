@@ -11,6 +11,49 @@ import (
 	"testing"
 )
 
+func TestEgressVerdictRoundTrip(t *testing.T) {
+	cases := []struct {
+		name  string
+		allow bool
+	}{
+		{name: "allow", allow: true},
+		{name: "deny", allow: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			if err := WriteEgressVerdict(&buf, tc.allow); err != nil {
+				t.Fatalf("WriteEgressVerdict: %v", err)
+			}
+			// The reader must consume exactly the verdict byte so the caller can
+			// splice the remaining stream: write a trailing sentinel and assert
+			// it survives untouched.
+			buf.WriteString("PAYLOAD")
+			got, err := ReadEgressVerdict(&buf)
+			if err != nil {
+				t.Fatalf("ReadEgressVerdict: %v", err)
+			}
+			if got != tc.allow {
+				t.Fatalf("verdict = %v, want %v", got, tc.allow)
+			}
+			if rest := buf.String(); rest != "PAYLOAD" {
+				t.Fatalf("stream after verdict = %q, want %q", rest, "PAYLOAD")
+			}
+		})
+	}
+
+	t.Run("EOF fails closed", func(t *testing.T) {
+		if allow, err := ReadEgressVerdict(bytes.NewReader(nil)); err == nil || allow {
+			t.Fatalf("ReadEgressVerdict(empty) = (%v, %v), want (false, error)", allow, err)
+		}
+	})
+	t.Run("unknown byte fails closed", func(t *testing.T) {
+		if allow, err := ReadEgressVerdict(bytes.NewReader([]byte{0x7f})); err == nil || allow {
+			t.Fatalf("ReadEgressVerdict(0x7f) = (%v, %v), want (false, error)", allow, err)
+		}
+	})
+}
+
 func TestEgressPreambleRoundTrip(t *testing.T) {
 	cases := []struct {
 		name    string

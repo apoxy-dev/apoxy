@@ -81,6 +81,45 @@ func runEgressProbe(dst string) {
 	os.Exit(0)
 }
 
+// egressDenyProbeArg is the argv[1] sentinel for the deny-path guest: it dials
+// a destination the fake bridge deny-verdicts (expecting a FAST connection
+// refusal — the forwarder RSTs the SYN pre-endpoint), then reports the observed
+// dial outcome to the host over a second, allowed flow.
+const egressDenyProbeArg = "clrk-egress-test-deny-probe"
+
+// runEgressDenyProbe is the in-guest deny-path workload: dial deniedDst
+// (expecting refusal), then dial reportDst and write a one-line verdict report
+// the host recorder asserts on. Never returns.
+func runEgressDenyProbe(deniedDst, reportDst string) {
+	report := "denied-dial-succeeded" // failure sentinel: the deny didn't deny
+	start := time.Now()
+	conn, err := net.DialTimeout("tcp", deniedDst, 10*time.Second)
+	if err == nil {
+		conn.Close()
+	} else {
+		// The RST must arrive as a prompt refusal, not a timeout: an error
+		// after ~verdict-timeout means the forwarder hung rather than refusing
+		// the SYN. 5s is far above a loopback verdict RTT and far below the
+		// 10s dial timeout.
+		if time.Since(start) < 5*time.Second {
+			report = "denied-fast"
+		} else {
+			report = "denied-slow"
+		}
+	}
+	rconn, rerr := net.DialTimeout("tcp", reportDst, 10*time.Second)
+	if rerr != nil {
+		fmt.Fprintf(os.Stderr, "egress deny probe report dial %s: %v\n", reportDst, rerr)
+		os.Exit(1)
+	}
+	defer rconn.Close()
+	fmt.Fprintf(rconn, "%s\n", report)
+	_ = rconn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	buf := make([]byte, 1)
+	_, _ = rconn.Read(buf)
+	os.Exit(0)
+}
+
 // egressRecord is what the host recorder observed for one bridged flow.
 type egressRecord struct {
 	src     netip.AddrPort
@@ -114,6 +153,13 @@ func startEgressRecorder(t *testing.T) (string, <-chan egressRecord) {
 		r := bufio.NewReader(conn)
 		src, dst, _, err := egresswire.ReadEgressPreamble(r)
 		if err != nil {
+			out <- egressRecord{err: err}
+			return
+		}
+		// v3: the forwarder holds the guest SYN until the bridge answers with a
+		// verdict; allow the flow so the guest connect() completes and the
+		// payload arrives.
+		if err := egresswire.WriteEgressVerdict(conn, true); err != nil {
 			out <- egressRecord{err: err}
 			return
 		}
@@ -190,5 +236,97 @@ func TestEgressRoundtrip(t *testing.T) {
 		t.Logf("egress roundtrip: guest connect()→forwarder→bridge observed dst=%v src=%v payload=%q", rec.dst, rec.src, rec.payload)
 	case <-ctx.Done():
 		t.Fatalf("timed out waiting for the egress forwarder to bridge the guest connect(): %v", ctx.Err())
+	}
+}
+
+// TestEgressDenyVerdictRefusesSYN proves the v3 fail-fast contract on a real
+// Sentry: a deny verdict from the bridge refuses the guest's connect() promptly
+// (RST while the SYN is half-open, before any netstack endpoint exists) rather
+// than establishing and then dropping the flow. The guest reports what its
+// dial observed over a second, allowed flow.
+func TestEgressDenyVerdictRefusesSYN(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("sandbox boot requires linux")
+	}
+	if os.Geteuid() != 0 {
+		t.Skip("sandbox boot requires root (runsc + cgroup v2 delegation)")
+	}
+	cgroupPath, err := InitHostCgroup()
+	if err != nil {
+		t.Skipf("host cgroup v2 unavailable (%v) — needs a delegated cgroup v2 host", err)
+	}
+
+	const imageRef = "test://egress-deny-probe"
+	deniedDst := netip.MustParseAddrPort("203.0.113.6:80")
+	reportDst := netip.MustParseAddrPort("203.0.113.7:80")
+
+	// Fake bridge: deny deniedDst, allow reportDst and capture its payload.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("deny recorder listen: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	reports := make(chan string, 1)
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				r := bufio.NewReader(conn)
+				_, dst, _, err := egresswire.ReadEgressPreamble(r)
+				if err != nil {
+					return
+				}
+				if dst == deniedDst {
+					_ = egresswire.WriteEgressVerdict(conn, false)
+					return
+				}
+				if err := egresswire.WriteEgressVerdict(conn, true); err != nil {
+					return
+				}
+				line, _ := r.ReadString('\n')
+				reports <- strings.TrimSpace(line)
+			}()
+		}
+	}()
+
+	mgr := NewManager(ManagerConfig{
+		StateDir:       t.TempDir(),
+		RootDir:        t.TempDir(),
+		ImageStore:     NewImageStore(t.TempDir()),
+		HostCgroupPath: cgroupPath,
+	})
+	seedResidentImage(t, mgr.ImageStore(), imageRef)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	id := SandboxID("egrdenytest")
+	_, err = mgr.Create(ctx, Spec{
+		ID:      id,
+		Image:   imageRef,
+		Command: []string{"/server", egressDenyProbeArg, deniedDst.String(), reportDst.String()},
+		Egress:  EgressInit{EgressHostAddr: ln.Addr().String()},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	t.Cleanup(func() { _ = mgr.Delete(context.Background(), id) })
+
+	if err := mgr.Start(ctx, id); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	select {
+	case report := <-reports:
+		if report != "denied-fast" {
+			t.Fatalf("guest observed %q for the denied dial, want %q (denied-dial-succeeded = deny not enforced; denied-slow = hung instead of RST)", report, "denied-fast")
+		}
+		t.Logf("deny verdict: guest connect() to %v refused promptly, reported %q via allowed flow", deniedDst, report)
+	case <-ctx.Done():
+		t.Fatalf("timed out waiting for the guest's deny report: %v", ctx.Err())
 	}
 }

@@ -61,6 +61,9 @@ func TestMain(m *testing.M) {
 	if len(os.Args) > 2 && os.Args[1] == egressProbeArg {
 		runEgressProbe(os.Args[2]) // never returns
 	}
+	if len(os.Args) > 3 && os.Args[1] == egressDenyProbeArg {
+		runEgressDenyProbe(os.Args[2], os.Args[3]) // never returns
+	}
 
 	// The test process drives runsc subprocesses and re-parents their Sentry/
 	// gofer children; without reaping, teardown's `runsc wait` hangs ~2min on

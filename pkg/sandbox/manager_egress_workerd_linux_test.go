@@ -152,6 +152,10 @@ func startWorkerdEgressRecorder(t *testing.T) (string, func() []netip.AddrPort) 
 				if err != nil {
 					return
 				}
+				// v3: answer allow so the guest handshake completes; the close
+				// that follows then reads as an ordinary upstream disconnect,
+				// matching this recorder's pre-verdict semantics.
+				_ = egresswire.WriteEgressVerdict(conn, true)
 				mu.Lock()
 				dsts = append(dsts, dst)
 				mu.Unlock()
