@@ -74,6 +74,7 @@ import (
 	gatewayv1alpha2 "github.com/apoxy-dev/apoxy/api/gateway/v1alpha2"
 	apoxyopenapi "github.com/apoxy-dev/apoxy/api/generated"
 	policyv1alpha1 "github.com/apoxy-dev/apoxy/api/policy/v1alpha1"
+	vpcv1alpha1 "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1"
 )
 
 const (
@@ -93,6 +94,7 @@ func init() {
 	utilruntime.Must(extensionsv1alpha2.Install(scheme))
 	utilruntime.Must(gatewayv1.Install(scheme))
 	utilruntime.Must(gatewayv1alpha2.Install(scheme))
+	utilruntime.Must(vpcv1alpha1.Install(scheme))
 
 	gateway.Install(scheme)
 	utilruntime.Must(coordinationv1.AddToScheme(scheme))
@@ -574,6 +576,11 @@ func defaultResources() []resource.Object {
 		&gatewayv1alpha2.TCPRoute{},
 		&gatewayv1alpha2.UDPRoute{},
 		&gatewayv1alpha2.TLSRoute{},
+
+		&vpcv1alpha1.VPCNetwork{},
+		&vpcv1alpha1.VPCService{},
+		&vpcv1alpha1.Relay{},
+		&vpcv1alpha1.Tunnel{},
 
 		&coordinationv1.Lease{},
 	}

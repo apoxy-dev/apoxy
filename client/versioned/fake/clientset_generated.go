@@ -41,6 +41,8 @@ import (
 	fakegatewayv1alpha2 "github.com/apoxy-dev/apoxy/client/versioned/typed/gateway/v1alpha2/fake"
 	policyv1alpha1 "github.com/apoxy-dev/apoxy/client/versioned/typed/policy/v1alpha1"
 	fakepolicyv1alpha1 "github.com/apoxy-dev/apoxy/client/versioned/typed/policy/v1alpha1/fake"
+	vpcv1alpha1 "github.com/apoxy-dev/apoxy/client/versioned/typed/vpc/v1alpha1"
+	fakevpcv1alpha1 "github.com/apoxy-dev/apoxy/client/versioned/typed/vpc/v1alpha1/fake"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/discovery"
@@ -155,4 +157,9 @@ func (c *Clientset) GatewayV1alpha2() gatewayv1alpha2.GatewayV1alpha2Interface {
 // PolicyV1alpha1 retrieves the PolicyV1alpha1Client
 func (c *Clientset) PolicyV1alpha1() policyv1alpha1.PolicyV1alpha1Interface {
 	return &fakepolicyv1alpha1.FakePolicyV1alpha1{Fake: &c.Fake}
+}
+
+// VpcV1alpha1 retrieves the VpcV1alpha1Client
+func (c *Clientset) VpcV1alpha1() vpcv1alpha1.VpcV1alpha1Interface {
+	return &fakevpcv1alpha1.FakeVpcV1alpha1{Fake: &c.Fake}
 }

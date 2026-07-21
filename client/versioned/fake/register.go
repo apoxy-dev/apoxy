@@ -29,6 +29,7 @@ import (
 	gatewayv1 "github.com/apoxy-dev/apoxy/api/gateway/v1"
 	gatewayv1alpha2 "github.com/apoxy-dev/apoxy/api/gateway/v1alpha2"
 	policyv1alpha1 "github.com/apoxy-dev/apoxy/api/policy/v1alpha1"
+	vpcv1alpha1 "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	schema "k8s.io/apimachinery/pkg/runtime/schema"
@@ -51,6 +52,7 @@ var localSchemeBuilder = runtime.SchemeBuilder{
 	gatewayv1.AddToScheme,
 	gatewayv1alpha2.AddToScheme,
 	policyv1alpha1.AddToScheme,
+	vpcv1alpha1.AddToScheme,
 }
 
 // AddToScheme adds all types of this clientset into the given scheme. This allows composition

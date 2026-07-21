@@ -31,6 +31,7 @@ import (
 	gatewayv1 "github.com/apoxy-dev/apoxy/api/gateway/v1"
 	gatewayv1alpha2 "github.com/apoxy-dev/apoxy/api/gateway/v1alpha2"
 	policyv1alpha1 "github.com/apoxy-dev/apoxy/api/policy/v1alpha1"
+	vpcv1alpha1 "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1"
 	schema "k8s.io/apimachinery/pkg/runtime/schema"
 	cache "k8s.io/client-go/tools/cache"
 )
@@ -150,6 +151,16 @@ func (f *sharedInformerFactory) ForResource(resource schema.GroupVersionResource
 		// Group=policy.apoxy.dev, Version=v1alpha1
 	case policyv1alpha1.SchemeGroupVersion.WithResource("ratelimits"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Policy().V1alpha1().RateLimits().Informer()}, nil
+
+		// Group=vpc.apoxy.dev, Version=v1alpha1
+	case vpcv1alpha1.SchemeGroupVersion.WithResource("relays"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Vpc().V1alpha1().Relays().Informer()}, nil
+	case vpcv1alpha1.SchemeGroupVersion.WithResource("tunnels"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Vpc().V1alpha1().Tunnels().Informer()}, nil
+	case vpcv1alpha1.SchemeGroupVersion.WithResource("vpcnetworks"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Vpc().V1alpha1().VPCNetworks().Informer()}, nil
+	case vpcv1alpha1.SchemeGroupVersion.WithResource("vpcservices"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Vpc().V1alpha1().VPCServices().Informer()}, nil
 
 	}
 

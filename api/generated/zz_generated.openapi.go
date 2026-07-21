@@ -286,6 +286,30 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/apoxy-dev/apoxy/api/policy/v1alpha1.RateLimitPolicy":                   schema_apoxy_api_policy_v1alpha1_RateLimitPolicy(ref),
 		"github.com/apoxy-dev/apoxy/api/policy/v1alpha1.RateLimitSpec":                     schema_apoxy_api_policy_v1alpha1_RateLimitSpec(ref),
 		"github.com/apoxy-dev/apoxy/api/policy/v1alpha1.RateLimitStatus":                   schema_apoxy_api_policy_v1alpha1_RateLimitStatus(ref),
+		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.EgressGatewaySpec":                    schema_apoxy_api_vpc_v1alpha1_EgressGatewaySpec(ref),
+		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.Relay":                                schema_apoxy_api_vpc_v1alpha1_Relay(ref),
+		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.RelayList":                            schema_apoxy_api_vpc_v1alpha1_RelayList(ref),
+		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.RelayRef":                             schema_apoxy_api_vpc_v1alpha1_RelayRef(ref),
+		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.RelaySpec":                            schema_apoxy_api_vpc_v1alpha1_RelaySpec(ref),
+		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.RelayStatus":                          schema_apoxy_api_vpc_v1alpha1_RelayStatus(ref),
+		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.Tunnel":                               schema_apoxy_api_vpc_v1alpha1_Tunnel(ref),
+		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.TunnelList":                           schema_apoxy_api_vpc_v1alpha1_TunnelList(ref),
+		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.TunnelRef":                            schema_apoxy_api_vpc_v1alpha1_TunnelRef(ref),
+		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.TunnelSpec":                           schema_apoxy_api_vpc_v1alpha1_TunnelSpec(ref),
+		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.TunnelStatus":                         schema_apoxy_api_vpc_v1alpha1_TunnelStatus(ref),
+		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetwork":                           schema_apoxy_api_vpc_v1alpha1_VPCNetwork(ref),
+		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetworkCredentials":                schema_apoxy_api_vpc_v1alpha1_VPCNetworkCredentials(ref),
+		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetworkDNS":                        schema_apoxy_api_vpc_v1alpha1_VPCNetworkDNS(ref),
+		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetworkList":                       schema_apoxy_api_vpc_v1alpha1_VPCNetworkList(ref),
+		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetworkRef":                        schema_apoxy_api_vpc_v1alpha1_VPCNetworkRef(ref),
+		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetworkSpec":                       schema_apoxy_api_vpc_v1alpha1_VPCNetworkSpec(ref),
+		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetworkStatus":                     schema_apoxy_api_vpc_v1alpha1_VPCNetworkStatus(ref),
+		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCService":                           schema_apoxy_api_vpc_v1alpha1_VPCService(ref),
+		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCServiceEndpoint":                   schema_apoxy_api_vpc_v1alpha1_VPCServiceEndpoint(ref),
+		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCServiceList":                       schema_apoxy_api_vpc_v1alpha1_VPCServiceList(ref),
+		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCServiceRef":                        schema_apoxy_api_vpc_v1alpha1_VPCServiceRef(ref),
+		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCServiceSpec":                       schema_apoxy_api_vpc_v1alpha1_VPCServiceSpec(ref),
+		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCServiceStatus":                     schema_apoxy_api_vpc_v1alpha1_VPCServiceStatus(ref),
 		"k8s.io/api/coordination/v1.Lease":                                                 schema_k8sio_api_coordination_v1_Lease(ref),
 		"k8s.io/api/coordination/v1.LeaseList":                                             schema_k8sio_api_coordination_v1_LeaseList(ref),
 		"k8s.io/api/coordination/v1.LeaseSpec":                                             schema_k8sio_api_coordination_v1_LeaseSpec(ref),
@@ -10932,6 +10956,883 @@ func schema_apoxy_api_policy_v1alpha1_RateLimitStatus(ref common.ReferenceCallba
 				},
 			},
 		},
+	}
+}
+
+func schema_apoxy_api_vpc_v1alpha1_EgressGatewaySpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "EgressGatewaySpec configures per-network egress-gateway (exit-node) semantics: agents may advertise default routes and the relay SNATs strictly within this network's routing domain.\n\nNOTE: the current relay implementation is a relay-global boolean, so this field is not honored until per-network routing-domain semantics land in the relay router (APO-729).",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"enabled": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Whether the egress gateway is enabled. Default is false.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func schema_apoxy_api_vpc_v1alpha1_Relay(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "Relay tracks one relay instance serving tunnel connections.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Spec is the specification of the relay.",
+							Default:     map[string]interface{}{},
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.RelaySpec"),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Status is the status of the relay.",
+							Default:     map[string]interface{}{},
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.RelayStatus"),
+						},
+					},
+				},
+				Required: []string{"spec"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.RelaySpec", "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.RelayStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
+	}
+}
+
+func schema_apoxy_api_vpc_v1alpha1_RelayList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "RelayList contains a list of Relay objects.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.Relay"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.Relay", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
+	}
+}
+
+func schema_apoxy_api_vpc_v1alpha1_RelayRef(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "RelayRef is a reference to a Relay.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Name of the Relay. Required.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"name"},
+			},
+		},
+	}
+}
+
+func schema_apoxy_api_vpc_v1alpha1_RelaySpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "RelaySpec is write-once: created by the relay on start (or selector change), deleted on shutdown, never mutated in steady state. Liveness lives in the relay's Lease, not here.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"addresses": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Underlay host:port endpoints agents dial (QUIC control and Geneve data share the port).",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"networkSelector": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Scopes which networks this relay serves. Empty selects all networks.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.LabelSelector"),
+						},
+					},
+				},
+				Required: []string{"addresses"},
+			},
+		},
+		Dependencies: []string{
+			"k8s.io/apimachinery/pkg/apis/meta/v1.LabelSelector"},
+	}
+}
+
+func schema_apoxy_api_vpc_v1alpha1_RelayStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"ready": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Alive-and-accepting. Flipped by the lease watcher on expiry/renewal transitions (crash) and by the relay itself at drain start. The only liveness signal consumers see; count connections via Tunnels by relayRef.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"conditions": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"k8s.io/apimachinery/pkg/apis/meta/v1.Condition"},
+	}
+}
+
+func schema_apoxy_api_vpc_v1alpha1_Tunnel(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "Tunnel tracks one live connection - the Endpoints analog to VPCService's Service. Created complete by the owning relay at connect, deleted at disconnect, never patched in steady state, and never user-authored. The name is the connection ID; metadata labels carry the agent-declared labels plus the relay-stamped identity labels (LabelNetwork, LabelTunnelName, LabelAgentInstance).",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Spec is the specification of the connection.",
+							Default:     map[string]interface{}{},
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.TunnelSpec"),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Status is the status of the connection.",
+							Default:     map[string]interface{}{},
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.TunnelStatus"),
+						},
+					},
+				},
+				Required: []string{"spec"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.TunnelSpec", "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.TunnelStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
+	}
+}
+
+func schema_apoxy_api_vpc_v1alpha1_TunnelList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "TunnelList contains a list of Tunnel objects.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.Tunnel"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.Tunnel", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
+	}
+}
+
+func schema_apoxy_api_vpc_v1alpha1_TunnelRef(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "TunnelRef is a reference to a Tunnel.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Name of the Tunnel. Required.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"name"},
+			},
+		},
+	}
+}
+
+func schema_apoxy_api_vpc_v1alpha1_TunnelSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "TunnelSpec carries the connection's immutable joins, stamped by the owning relay at create.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"networkRef": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The VPCNetwork the connection belongs to.",
+							Default:     map[string]interface{}{},
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetworkRef"),
+						},
+					},
+					"relayRef": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The relay terminating the connection.",
+							Default:     map[string]interface{}{},
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.RelayRef"),
+						},
+					},
+				},
+				Required: []string{"networkRef", "relayRef"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.RelayRef", "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetworkRef"},
+	}
+}
+
+func schema_apoxy_api_vpc_v1alpha1_TunnelStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"addresses": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Overlay addresses allocated to the connection by the owning relay from its leased blocks. Dual-stack: one IPv6 ULA prefix plus one IPv4 CGNAT address for egress through the connection (ingress never rides v4).",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"advertisedRoutes": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Agent-declared prefixes reachable behind this connection, bounded by credential claims and rejected by the relay when out of bounds.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func schema_apoxy_api_vpc_v1alpha1_VPCNetwork(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "VPCNetwork is a private connectivity domain: the routing and key domain that Tunnels and compute vpc bindings attach to.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Spec is the specification of the network.",
+							Default:     map[string]interface{}{},
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetworkSpec"),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Status is the status of the network.",
+							Default:     map[string]interface{}{},
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetworkStatus"),
+						},
+					},
+				},
+				Required: []string{"spec"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetworkSpec", "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetworkStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
+	}
+}
+
+func schema_apoxy_api_vpc_v1alpha1_VPCNetworkCredentials(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "VPCNetworkCredentials carries the network's connect credential.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"token": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Bearer token for authenticating with the network's relays.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func schema_apoxy_api_vpc_v1alpha1_VPCNetworkDNS(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "VPCNetworkDNS is the DNS configuration pushed to attaching tunnels and vpc-bound sandboxes. Mirrors the wire ConnectResponse.DNS shape.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"servers": {
+						SchemaProps: spec.SchemaProps{
+							Description: "DNS server addresses.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"searchDomains": {
+						SchemaProps: spec.SchemaProps{
+							Description: "DNS search domains.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"ndots": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The ndots resolver option.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func schema_apoxy_api_vpc_v1alpha1_VPCNetworkList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "VPCNetworkList contains a list of VPCNetwork objects.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetwork"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetwork", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
+	}
+}
+
+func schema_apoxy_api_vpc_v1alpha1_VPCNetworkRef(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "VPCNetworkRef is a reference to a VPCNetwork.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Name of the VPCNetwork. Required.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"name"},
+			},
+		},
+	}
+}
+
+func schema_apoxy_api_vpc_v1alpha1_VPCNetworkSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"egressGateway": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Per-network egress-gateway (exit-node) semantics. Not honored until the relay router implements per-network routing domains (APO-729).",
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.EgressGatewaySpec"),
+						},
+					},
+					"dns": {
+						SchemaProps: spec.SchemaProps{
+							Description: "DNS pushed to attaching tunnels and vpc-bound sandboxes.",
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetworkDNS"),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.EgressGatewaySpec", "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetworkDNS"},
+	}
+}
+
+func schema_apoxy_api_vpc_v1alpha1_VPCNetworkStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"credentials": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Credentials for authenticating with the network's relays.",
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetworkCredentials"),
+						},
+					},
+					"overlayCIDR": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The ULA prefix of the network's overlay address space. Relay discovery is a live list of Relay objects, not derived state here.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"conditions": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Conditions: Ready, InfraProvisioned.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetworkCredentials", "k8s.io/apimachinery/pkg/apis/meta/v1.Condition"},
+	}
+}
+
+func schema_apoxy_api_vpc_v1alpha1_VPCService(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "VPCService is service-like addressing over Tunnels, modeled on the Kubernetes Service: a label selector over Tunnel objects (which play Endpoints), a stable DNS name, and the target for DomainRecords and routes. User-authored.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Spec is the specification of the service.",
+							Default:     map[string]interface{}{},
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCServiceSpec"),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Status is the status of the service.",
+							Default:     map[string]interface{}{},
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCServiceStatus"),
+						},
+					},
+				},
+				Required: []string{"spec"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCServiceSpec", "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCServiceStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
+	}
+}
+
+func schema_apoxy_api_vpc_v1alpha1_VPCServiceEndpoint(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "VPCServiceEndpoint is one live member of the service.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"tunnelRef": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The member Tunnel (one connection).",
+							Default:     map[string]interface{}{},
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.TunnelRef"),
+						},
+					},
+					"addresses": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The member's overlay addresses. Plural per member (dual-stack); only the IPv6 ULA is published to the shared DNS zone.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"tunnelRef"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.TunnelRef"},
+	}
+}
+
+func schema_apoxy_api_vpc_v1alpha1_VPCServiceList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "VPCServiceList contains a list of VPCService objects.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCService"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCService", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
+	}
+}
+
+func schema_apoxy_api_vpc_v1alpha1_VPCServiceRef(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "VPCServiceRef is a reference to a VPCService.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Name of the VPCService. Required.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"name"},
+			},
+		},
+	}
+}
+
+func schema_apoxy_api_vpc_v1alpha1_VPCServiceSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"networkRef": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The VPCNetwork this service belongs to. Selection is scoped to Tunnels of this network.",
+							Default:     map[string]interface{}{},
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetworkRef"),
+						},
+					},
+					"selector": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Selects member Tunnels by their labels (agents declare labels at connect; the relay stamps them onto Tunnel metadata labels).",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.LabelSelector"),
+						},
+					},
+				},
+				Required: []string{"networkRef", "selector"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetworkRef", "k8s.io/apimachinery/pkg/apis/meta/v1.LabelSelector"},
+	}
+}
+
+func schema_apoxy_api_vpc_v1alpha1_VPCServiceStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"endpoints": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Live members and their overlay addresses (the \"endpoints view\").",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCServiceEndpoint"),
+									},
+								},
+							},
+						},
+					},
+					"conditions": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCServiceEndpoint", "k8s.io/apimachinery/pkg/apis/meta/v1.Condition"},
 	}
 }
 
