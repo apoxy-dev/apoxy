@@ -399,7 +399,7 @@ func (r *ICXNetlinkRouter) syncDNATChain() error {
 	for i, peer := range peers {
 		slog.Info("Adding DNAT rules for peer", slog.String("peer", peer.RemoteAddr.Addr.String()))
 
-		for _, route := range peer.AllowedRoutes {
+		for _, route := range peer.AllowedRoutes() {
 			if route.Dst.Addr().Is4() { // Skipping IPv4 peers - only IPv6 tunnel ingress is supported.
 				continue
 			}
