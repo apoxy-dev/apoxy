@@ -13,14 +13,15 @@
 package cache
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"hash/fnv"
 	"log/slog"
+	"maps"
 	"math"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -80,10 +81,12 @@ type snapshotCache struct {
 	cachev3.SnapshotCache
 	snapshotVersion int64
 	lastSnapshot    snapshotMap
-	// lastHashes tracks a content hash of the last snapshot per ir key so
-	// that content-identical regenerations skip the version bump and the
-	// redundant push to connected Envoy nodes. Guarded by mu.
-	lastHashes map[string]uint64
+	// lastHashes tracks per-resource content hashes of the last snapshot per
+	// ir key so that content-identical regenerations skip the version bump
+	// and the redundant push to connected Envoy nodes, and so that actual
+	// changes can be logged as a compact per-resource diff instead of a full
+	// resource dump. Guarded by mu.
+	lastHashes map[string]resourceHashes
 
 	mu               sync.Mutex
 	streamIDNodeInfo nodeInfoMap
@@ -97,7 +100,7 @@ type snapshotCache struct {
 func NewSnapshotCache(ads bool, logger *slog.Logger, resources *message.ProviderResources) SnapshotCacheWithCallbacks {
 	l := envoylog.LoggerFuncs{
 		DebugFunc: func(f string, args ...interface{}) {
-			logger.Info(fmt.Sprintf(f, args...))
+			logger.Debug(fmt.Sprintf(f, args...))
 		},
 		InfoFunc: func(f string, args ...interface{}) {
 			logger.Info(fmt.Sprintf(f, args...))
@@ -112,7 +115,7 @@ func NewSnapshotCache(ads bool, logger *slog.Logger, resources *message.Provider
 	return &snapshotCache{
 		SnapshotCache: cachev3.NewSnapshotCache(ads, &Hash, l),
 		lastSnapshot:  make(snapshotMap),
-		lastHashes:    make(map[string]uint64),
+		lastHashes:    make(map[string]resourceHashes),
 
 		streamIDNodeInfo: make(nodeInfoMap),
 		nodeBackoffs:     make(backoffMap),
@@ -142,17 +145,22 @@ func (s *snapshotCache) GenerateNewSnapshot(irKey string, resources types.XdsRes
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	hash, err := hashXdsResources(resources)
-	if err != nil {
+	// hashErr is deliberately distinct from err below: the cleanup at the end
+	// must see the hashing outcome, not the push outcome.
+	hashes, hashErr := hashXdsResources(resources)
+	if hashErr != nil {
 		// Marshal failure means we cannot tell whether the content changed;
-		// fall through and push unconditionally.
-		log.Warnf("Failed to hash xds resources for ir key %s, forcing a snapshot push: %v", irKey, err)
-	} else if last, ok := s.lastHashes[irKey]; ok && last == hash {
-		log.Debugf("Skipping snapshot generation for ir key %s: resources unchanged", irKey)
-		return false, nil
+		// clear the last-known hashes and push unconditionally.
+		log.Warnf("Failed to hash xds resources for ir key %s, forcing a snapshot push: %v", irKey, hashErr)
+		delete(s.lastHashes, irKey)
+	} else {
+		last, ok := s.lastHashes[irKey]
+		if ok && last.equal(hashes) {
+			log.Debugf("Skipping snapshot generation for ir key %s: resources unchanged", irKey)
+			return false, nil
+		}
+		log.Infof("Generating a new snapshot for ir key %s: %s", irKey, diffSummary(last, hashes))
 	}
-
-	log.Infof("Generating a new snapshot for ir key: %s", irKey)
 
 	version := s.newSnapshotVersion()
 
@@ -174,43 +182,125 @@ func (s *snapshotCache) GenerateNewSnapshot(irKey string, resources types.XdsRes
 		}
 	}
 
-	// Record the hash only after every node accepted the snapshot so a failed
-	// push is retried by the next (even content-identical) regeneration.
-	s.lastHashes[irKey] = hash
+	// Record the hashes only after every node accepted the snapshot so a
+	// failed push is retried by the next (even content-identical)
+	// regeneration. After a hashing failure the entry stays cleared for the
+	// same reason.
+	if hashErr == nil {
+		s.lastHashes[irKey] = hashes
+	}
 
 	return true, nil
 }
 
-// hashXdsResources returns a content hash of the resource table. Proto
-// marshaling is not canonical across builds, but it is stable within a
-// process, which is all change detection needs. The translator does not order
-// resources within a type deterministically across runs, so resources are
-// hashed as a sorted set rather than a sequence.
-func hashXdsResources(res types.XdsResources) (uint64, error) {
-	keys := make([]string, 0, len(res))
-	for k := range res {
-		keys = append(keys, k)
-	}
-	slices.Sort(keys)
+// resourceHashes maps resource type URL -> resource name -> content hash.
+type resourceHashes map[string]map[string]uint64
 
-	h := fnv.New64a()
+// hashXdsResources returns per-resource content hashes of the resource table.
+// Proto marshaling is not canonical across builds, but it is stable within a
+// process, which is all change detection needs. Keying by resource name makes
+// the comparison insensitive to the translator's unstable resource ordering
+// and lets changes be reported as a per-resource diff.
+func hashXdsResources(res types.XdsResources) (resourceHashes, error) {
+	out := make(resourceHashes, len(res))
 	mo := proto.MarshalOptions{Deterministic: true}
-	for _, k := range keys {
-		h.Write([]byte(k))
-		marshaled := make([][]byte, 0, len(res[k]))
-		for _, resource := range res[k] {
+	for k, rs := range res {
+		if len(rs) == 0 {
+			continue
+		}
+		m := make(map[string]uint64, len(rs))
+		for _, resource := range rs {
 			b, err := mo.Marshal(resource)
 			if err != nil {
-				return 0, fmt.Errorf("failed to marshal %s resource: %w", k, err)
+				return nil, fmt.Errorf("failed to marshal %s resource: %w", k, err)
 			}
-			marshaled = append(marshaled, b)
-		}
-		slices.SortFunc(marshaled, bytes.Compare)
-		for _, b := range marshaled {
+			h := fnv.New64a()
 			h.Write(b)
+			// Last occurrence wins on duplicate names, mirroring
+			// IndexResourcesByName in go-control-plane so the hash tracks
+			// exactly what NewSnapshot will push.
+			m[cachev3.GetResourceName(resource)] = h.Sum64()
+		}
+		out[k] = m
+	}
+	return out, nil
+}
+
+func (h resourceHashes) equal(o resourceHashes) bool {
+	if len(h) != len(o) {
+		return false
+	}
+	for k, m := range h {
+		if !maps.Equal(m, o[k]) {
+			return false
 		}
 	}
-	return h.Sum64(), nil
+	return true
+}
+
+// diffSummary renders a compact per-type summary of resource names added (+),
+// removed (-), and modified (~) between two hash tables, e.g.
+// "Cluster +1(foo) ~2(bar,baz); RouteConfiguration -1(qux)".
+func diffSummary(oldH, newH resourceHashes) string {
+	typeURLs := slices.Sorted(maps.Keys(newH))
+	for t := range oldH {
+		if _, ok := newH[t]; !ok {
+			typeURLs = append(typeURLs, t)
+		}
+	}
+	slices.Sort(typeURLs)
+
+	var b strings.Builder
+	for _, t := range typeURLs {
+		var added, removed, changed []string
+		for name, h := range newH[t] {
+			if oh, ok := oldH[t][name]; !ok {
+				added = append(added, name)
+			} else if oh != h {
+				changed = append(changed, name)
+			}
+		}
+		for name := range oldH[t] {
+			if _, ok := newH[t][name]; !ok {
+				removed = append(removed, name)
+			}
+		}
+		if len(added)+len(removed)+len(changed) == 0 {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteString("; ")
+		}
+		b.WriteString(t[strings.LastIndexByte(t, '.')+1:])
+		writeDiffNames(&b, "+", added)
+		writeDiffNames(&b, "-", removed)
+		writeDiffNames(&b, "~", changed)
+	}
+	if b.Len() == 0 {
+		return "no per-resource changes"
+	}
+	return b.String()
+}
+
+// maxDiffNames caps how many resource names a diff summary lists per type and
+// kind of change; the count is always exact.
+const maxDiffNames = 8
+
+func writeDiffNames(b *strings.Builder, prefix string, names []string) {
+	if len(names) == 0 {
+		return
+	}
+	slices.Sort(names)
+	b.WriteString(" ")
+	b.WriteString(prefix)
+	b.WriteString(strconv.Itoa(len(names)))
+	b.WriteString("(")
+	n := min(len(names), maxDiffNames)
+	b.WriteString(strings.Join(names[:n], ","))
+	if len(names) > n {
+		b.WriteString(",...")
+	}
+	b.WriteString(")")
 }
 
 // getNodeIDs retrieves the node ids from the node info map whose

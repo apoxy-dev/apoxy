@@ -97,7 +97,7 @@ func (*compressorHTTPFilter) patchHCM(mgr *hcmv3.HttpConnectionManager, irListen
 		if err != nil {
 			return fmt.Errorf("failed to marshal default compressor config: %w", err)
 		}
-		log.Infof("Adding default compressor filter %s", name)
+		log.Debugf("Adding default compressor filter %s", name)
 		mgr.HttpFilters = append(mgr.HttpFilters, &hcmv3.HttpFilter{
 			Name:     name,
 			Disabled: true,

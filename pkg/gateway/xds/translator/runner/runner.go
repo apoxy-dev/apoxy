@@ -45,7 +45,7 @@ func (r *Runner) Name() string {
 func (r *Runner) Start(ctx context.Context) (err error) {
 	r.Logger = log.DefaultLogger.With("runner", r.Name())
 	go r.subscribeAndTranslate(ctx)
-	r.Logger.Info("started")
+	r.Logger.Info("Started")
 	return
 }
 
@@ -78,14 +78,16 @@ func (r *Runner) subscribeAndTranslate(ctx context.Context) {
 			if update.Delete {
 				r.Xds.Delete(key)
 			} else {
-				r.Logger.Info("Translating xds ir", "key", key, "xds", val)
+				// The full IR dump is Debug-only — at Info it is a 100KB+ line
+				// on every bus update.
+				r.Logger.Debug("Translating xds ir", "key", key, "xds", val)
 				if err := r.translateAndStore(ctx, key, val); err != nil {
-					r.Logger.Error("failed to translate xds ir", "error", err)
+					r.Logger.Error("Failed to translate xds ir", "error", err)
 					errChan <- err
 					return
 				}
 			}
 		},
 	)
-	r.Logger.Info("subscriber shutting down")
+	r.Logger.Info("Subscriber shutting down")
 }

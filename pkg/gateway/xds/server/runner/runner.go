@@ -100,7 +100,7 @@ func (r *Runner) Start(ctx context.Context) (err error) {
 
 	// Start message Subscription.
 	go r.subscribeAndTranslate(ctx)
-	r.Logger.Info("started")
+	r.Logger.Info("Started")
 	return
 }
 
@@ -108,13 +108,13 @@ func (r *Runner) serveXdsServer(ctx context.Context) {
 	addr := net.JoinHostPort(XdsServerAddress, strconv.Itoa(bootstrap.DefaultXdsServerPort))
 	l, err := net.Listen("tcp", addr)
 	if err != nil {
-		r.Logger.Error("failed to listen on address", "address", addr, "error", err)
+		r.Logger.Error("Failed to listen on address", "address", addr, "error", err)
 		return
 	}
 
 	go func() {
 		<-ctx.Done()
-		r.Logger.Info("grpc server shutting down")
+		r.Logger.Info("Grpc server shutting down")
 		// We don't use GracefulStop here because envoy
 		// has long-lived hanging xDS requests. There's no
 		// mechanism to make those pending requests fail,
@@ -123,7 +123,7 @@ func (r *Runner) serveXdsServer(ctx context.Context) {
 	}()
 
 	if err = r.grpc.Serve(l); err != nil {
-		r.Logger.Error("failed to start grpc based xds server", "error", err)
+		r.Logger.Error("Failed to start grpc based xds server", "error", err)
 	}
 }
 
@@ -149,7 +149,7 @@ func (r *Runner) subscribeAndTranslate(ctx context.Context) {
 		},
 		r.Xds.Subscribe(ctx),
 		func(update message.Update[string, *xdstypes.ResourceVersionTable], errChan chan error) {
-			r.Logger.Info("received an update", "key", update.Key, "isDelete", update.Delete, "isNil", update.Value == nil)
+			r.Logger.Info("Received an update", "key", update.Key, "isDelete", update.Delete, "isNil", update.Value == nil)
 			key := update.Key
 			val := update.Value
 
@@ -159,30 +159,32 @@ func (r *Runner) subscribeAndTranslate(ctx context.Context) {
 			} else if val != nil && val.XdsResources != nil {
 				if r.cache == nil {
 					err = errors.New("snapshot cache is nil")
-					r.Logger.Error("failed to init snapshot cache", "error", err)
+					r.Logger.Error("Failed to init snapshot cache", "error", err)
 					errChan <- err
 					return
 				}
 
 				// Update snapshot cache. The cache skips the push when the
-				// resources are content-identical to the last snapshot; only
-				// log the (very large) resource dump when it actually changed.
+				// resources are content-identical to the last snapshot and logs
+				// a per-resource diff at Info when they are not. The full
+				// resource dump is Debug-only — at Info it dominates log volume
+				// (150-600KB per line) whenever routes actually churn.
 				var changed bool
 				changed, err = r.cache.GenerateNewSnapshot(key, val.XdsResources)
 				if changed {
-					r.Logger.Info("generated a new snapshot", "key", key, "resources", val.XdsResources)
-				} else {
-					r.Logger.Debug("skipped snapshot generation (resources unchanged)", "key", key)
+					r.Logger.Debug("New snapshot resources", "key", key, "resources", val.XdsResources)
+				} else if err == nil {
+					r.Logger.Debug("Skipped snapshot generation (resources unchanged)", "key", key)
 				}
 			}
 			if err != nil {
-				r.Logger.Error("failed to generate a snapshot", "error", err)
+				r.Logger.Error("Failed to generate a snapshot", "error", err)
 				errChan <- err
 			}
 		},
 	)
 
-	r.Logger.Info("subscriber shutting down")
+	r.Logger.Info("Subscriber shutting down")
 }
 
 func (r *Runner) tlsConfig(cert, key, ca string) *tls.Config {
@@ -213,9 +215,9 @@ func (r *Runner) tlsConfig(cert, key, ca string) *tls.Config {
 
 	// Attempt to load certificates and key to catch configuration errors early.
 	if _, lerr := loadConfig(); lerr != nil {
-		r.Logger.Error("failed to load certificate and key", "error", lerr)
+		r.Logger.Error("Failed to load certificate and key", "error", lerr)
 	}
-	r.Logger.Info("loaded TLS certificate and key")
+	r.Logger.Info("Loaded TLS certificate and key")
 
 	return &tls.Config{
 		MinVersion: tls.VersionTLS13,

@@ -112,7 +112,7 @@ func processExtensionPostListenerHook(
 	if err != nil {
 		return err
 	}
-	log.Info("Processing extension post listener hook", "listener", xdsListener.Name)
+	log.Debug("Processing extension post listener hook", "listener", xdsListener.Name)
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	resp, err := c.PostHTTPListenerModify(ctx,
@@ -166,7 +166,7 @@ func processExtensionPostRouteHook(
 		for vhIdx := range routeCfg.GetVirtualHosts() {
 			vh := routeCfg.VirtualHosts[vhIdx]
 			for i, route := range vh.GetRoutes() {
-				log.Info("Processing extension post route hook", "route", route.GetName())
+				log.Debug("Processing extension post route hook", "route", route.GetName())
 				reqCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 				resp, err := c.PostRouteModify(reqCtx, &extension.PostRouteModifyRequest{
 					Route: route,
@@ -180,7 +180,7 @@ func processExtensionPostRouteHook(
 				}
 			}
 
-			log.Info("Processing extension post virtual host hook", "virtualHost", vh.GetName())
+			log.Debug("Processing extension post virtual host hook", "virtualHost", vh.GetName())
 			vhCtx, vhCancel := context.WithTimeout(ctx, 2*time.Second)
 			vhResp, err := c.PostVirtualHostModify(vhCtx, &extension.PostVirtualHostModifyRequest{
 				VirtualHost: vh,
