@@ -233,7 +233,7 @@ func (h *Handler) serveDNS(ctx context.Context, next plugin.Handler, w dns.Respo
 
 		if upstreams := delegatesFor(snap.Bindings, candidate); len(upstreams) > 0 {
 			h.observeQuery("recursive")
-			slog.Info("Requesting recursive VPC name resolution",
+			slog.Debug("Requesting recursive VPC name resolution",
 				slog.String("qname", qname),
 				slog.String("subName", subName),
 				slog.String("hostname", candidate),

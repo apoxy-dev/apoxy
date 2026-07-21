@@ -231,7 +231,7 @@ func (r *TunnelNodeDNSReconciler) recursiveResolve(
 	defer cancel()
 
 	log := alog.FromContext(ctx)
-	log.Info("Resolving recursively",
+	log.Debug("Resolving recursively",
 		slog.String("qname", name),
 		slog.Any("upstreams", upstreams))
 
@@ -400,7 +400,7 @@ func (r *TunnelNodeDNSReconciler) serveDNS(ctx context.Context, next plugin.Hand
 
 		upstreamAddrs := r.getUpsreamsForSubdomain(alog.IntoContext(ctx, log), name)
 
-		log.Info("Requesting recursive tunnel resolutions",
+		log.Debug("Requesting recursive tunnel resolutions",
 			slog.String("qname", subName),
 			slog.Any("upstreams", upstreamAddrs),
 		)

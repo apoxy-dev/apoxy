@@ -63,12 +63,12 @@ func (t *TunnelServer) handleDiagRPC(w http.ResponseWriter, r *http.Request, con
 		slog.String("tun_uid", tunUID),
 		slog.String("conn_id", connID),
 	)
-	log.Info("Diag session opened")
+	log.Debug("Diag session opened")
 
 	defer func() {
 		t.diagSessions.Unregister(tunUID, sess)
 		sess.Close()
-		log.Info("Diag session closed")
+		log.Debug("Diag session closed")
 	}()
 
 	// Block until either the request context dies (QUIC stream gone)
