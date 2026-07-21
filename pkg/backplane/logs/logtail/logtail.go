@@ -9,7 +9,6 @@ import (
 	"os"
 
 	"github.com/fsnotify/fsnotify"
-	"golang.org/x/sys/unix"
 
 	"github.com/apoxy-dev/apoxy/pkg/log"
 )
@@ -113,12 +112,7 @@ func Tail(ctx context.Context, path string, cb func([]byte) error) error {
 				if err := cb(logLine); err != nil {
 					return fmt.Errorf("callback: %w", err)
 				}
-				if err := unix.Fallocate(
-					int(f.Fd()),
-					unix.FALLOC_FL_PUNCH_HOLE|unix.FALLOC_FL_KEEP_SIZE,
-					int64(consumed),
-					int64(len(logLine)),
-				); err != nil {
+				if err := punchHole(int(f.Fd()), int64(consumed), int64(len(logLine))); err != nil {
 					return fmt.Errorf("punching hole: %w", err)
 				}
 				consumed += len(logLine)
@@ -128,7 +122,7 @@ func Tail(ctx context.Context, path string, cb func([]byte) error) error {
 				// Can only be done on fs block boundaries on most filesystems.
 				if consumed >= trimSize {
 					ts := consumed / blockSize * blockSize // Round down to the nearest block size.
-					if err := unix.Fallocate(int(f.Fd()), unix.FALLOC_FL_COLLAPSE_RANGE, 0, int64(ts)); err != nil {
+					if err := collapseRange(int(f.Fd()), int64(ts)); err != nil {
 						return fmt.Errorf("collapsing file: %w", err)
 					}
 					log.Infof("Collapsed range: [0, %d)", ts)
