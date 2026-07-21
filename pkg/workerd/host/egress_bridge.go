@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/apoxy-dev/apoxy/pkg/sandbox"
@@ -22,6 +23,23 @@ import (
 // egressDialTimeout bounds a single upstream (direct) dial so a black-holed
 // destination can't pin a bridge goroutine indefinitely.
 const egressDialTimeout = 10 * time.Second
+
+// maxConcurrentEgressFlows caps live bridged flows per resident. Every flow
+// past the allow verdict costs a Sentry netstack endpoint plus two host FDs and
+// two splice goroutines, so without a cap a single worker opening connections
+// in a loop exhausts host FDs / Sentry memory for the whole node. 1024 is far
+// above any sane worker's concurrent outbound fan-out while keeping the
+// worst-case per-resident cost bounded (~2k FDs). Over-cap flows are answered
+// with a deny verdict — the guest sees the same fast connection-refused as a
+// policy deny — and are counted from accept to close so the preamble/verdict
+// phase is bounded too.
+const maxConcurrentEgressFlows = 1024
+
+// egressPreambleTimeout bounds the wait for the forwarder's preamble on a
+// freshly accepted bridge conn. The forwarder writes the preamble immediately
+// at dial, so a conn that hasn't produced one within this window is wedged or
+// hostile and must not pin a goroutine + flow slot.
+const egressPreambleTimeout = 10 * time.Second
 
 // egressStateLookup is the read seam the bridge consumes: the egress core's
 // per-sandbox recorded state (what the config plane pushed). *egressCore
@@ -67,6 +85,17 @@ type egressBridge struct {
 	cacheGen uint64
 	cachePol *sandbox.Policy
 	cacheBk  []sandbox.BackendListener
+
+	// flows counts live bridged flows (accept to close) against maxFlows;
+	// maxFlows is a field (defaulting to maxConcurrentEgressFlows) so tests can
+	// exercise the cap without opening a thousand sockets.
+	flows    atomic.Int64
+	maxFlows int64
+
+	// overCapLogAt throttles the over-cap warning to one per second: an
+	// attacker at the cap would otherwise turn the log stream itself into the
+	// next resource to exhaust.
+	overCapLogAt atomic.Int64
 }
 
 // startEgressBridge binds a loopback TCP listener for a resident's egress and
@@ -89,14 +118,15 @@ func startEgressBridge(id sandbox.SandboxID, lookup egressStateLookup, overlayAl
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	b := &egressBridge{
-		ln:     ln,
-		id:     id,
-		lookup: lookup,
-		filter: newLocalDstFilter(overlayAllow),
-		log:    slog.With("component", "egress-bridge", "sandbox.id", string(id)),
-		dial:   dialDirect,
-		ctx:    ctx,
-		cancel: cancel,
+		ln:       ln,
+		id:       id,
+		lookup:   lookup,
+		filter:   newLocalDstFilter(overlayAllow),
+		log:      slog.With("component", "egress-bridge", "sandbox.id", string(id)),
+		dial:     dialDirect,
+		ctx:      ctx,
+		cancel:   cancel,
+		maxFlows: maxConcurrentEgressFlows,
 	}
 	go b.serve()
 	return b, nil
@@ -167,14 +197,30 @@ func (b *egressBridge) serve() {
 func (b *egressBridge) handleConn(conn net.Conn) {
 	defer conn.Close()
 
+	// Flow cap: counted before any read so the preamble phase is bounded too.
+	// The deny verdict is valid without consuming the preamble — the forwarder
+	// only ever reads one verdict byte — so over-cap refusal is O(1).
+	if b.flows.Add(1) > b.maxFlows {
+		b.flows.Add(-1)
+		now := time.Now().Unix()
+		if last := b.overCapLogAt.Load(); last != now && b.overCapLogAt.CompareAndSwap(last, now) {
+			b.log.Warn("Denied egress: resident exceeded the concurrent flow cap", "cap", b.maxFlows)
+		}
+		_ = egresswire.WriteEgressVerdict(conn, false)
+		return
+	}
+	defer b.flows.Add(-1)
+
 	// The bufio.Reader may buffer guest bytes past the preamble; splice from it
 	// (not conn) so nothing the guest already sent is dropped.
+	_ = conn.SetReadDeadline(time.Now().Add(egressPreambleTimeout))
 	r := bufio.NewReader(conn)
 	src, dst, dstName, err := egresswire.ReadEgressPreamble(r)
 	if err != nil {
 		b.log.Warn("Rejected egress flow with a malformed preamble", "error", err)
 		return
 	}
+	_ = conn.SetReadDeadline(time.Time{})
 	log := b.log.With("src", src.String(), "dst", dst.String())
 	if dstName != "" {
 		log = log.With("dst.name", dstName)

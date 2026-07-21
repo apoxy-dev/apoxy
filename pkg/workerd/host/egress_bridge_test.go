@@ -136,14 +136,15 @@ func newTestBridge(t *testing.T, lookup egressStateLookup, overlayAllow func(net
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	b := &egressBridge{
-		ln:     ln,
-		id:     sandbox.SandboxID("test"),
-		lookup: lookup,
-		filter: newLocalDstFilter(overlayAllow),
-		log:    slog.Default(),
-		dial:   dial,
-		ctx:    ctx,
-		cancel: cancel,
+		ln:       ln,
+		id:       sandbox.SandboxID("test"),
+		lookup:   lookup,
+		filter:   newLocalDstFilter(overlayAllow),
+		log:      slog.Default(),
+		dial:     dial,
+		ctx:      ctx,
+		cancel:   cancel,
+		maxFlows: maxConcurrentEgressFlows,
 	}
 	go b.serve()
 	t.Cleanup(func() { _ = b.close() })
@@ -290,6 +291,77 @@ func TestEgressBridge(t *testing.T) {
 			default:
 			}
 		})
+	}
+}
+
+// TestEgressBridge_FlowCap drives the per-resident concurrent-flow cap: flows
+// at the cap are deny-verdicted without reading the preamble, and a slot freed
+// by a closing flow is immediately reusable.
+func TestEgressBridge_FlowCap(t *testing.T) {
+	echoAddr := startEcho(t)
+	const goodDst = "203.0.113.5:80"
+	src := netip.MustParseAddrPort("10.200.0.6:40000")
+
+	b := newTestBridge(t, allowAllLookup, nil, func(network, addr string) (net.Conn, error) {
+		return net.Dial("tcp", echoAddr)
+	})
+	b.maxFlows = 2
+
+	openFlow := func() net.Conn {
+		t.Helper()
+		c, err := net.Dial("tcp", b.addr())
+		if err != nil {
+			t.Fatalf("dial bridge: %v", err)
+		}
+		if err := egresswire.WriteEgressPreamble(c, src, netip.MustParseAddrPort(goodDst), ""); err != nil {
+			t.Fatalf("write preamble: %v", err)
+		}
+		_ = c.SetReadDeadline(time.Now().Add(3 * time.Second))
+		if allow, err := egresswire.ReadEgressVerdict(c); err != nil || !allow {
+			t.Fatalf("verdict under cap = (%v, %v), want (true, nil)", allow, err)
+		}
+		return c
+	}
+
+	c1 := openFlow()
+	defer c1.Close()
+	c2 := openFlow()
+
+	// Cap reached: the next flow must be denied before the preamble is even
+	// consumed (write nothing and still get a verdict).
+	c3, err := net.Dial("tcp", b.addr())
+	if err != nil {
+		t.Fatalf("dial bridge: %v", err)
+	}
+	defer c3.Close()
+	_ = c3.SetReadDeadline(time.Now().Add(3 * time.Second))
+	if allow, err := egresswire.ReadEgressVerdict(c3); err != nil || allow {
+		t.Fatalf("verdict over cap = (%v, %v), want (false, nil)", allow, err)
+	}
+
+	// Freeing a slot readmits: close one held flow and await a fresh admit.
+	// The decrement runs in the bridge goroutine after the splice unwinds, so
+	// poll briefly rather than asserting the first attempt.
+	c2.Close()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		c, err := net.Dial("tcp", b.addr())
+		if err != nil {
+			t.Fatalf("dial bridge: %v", err)
+		}
+		if err := egresswire.WriteEgressPreamble(c, src, netip.MustParseAddrPort(goodDst), ""); err != nil {
+			t.Fatalf("write preamble: %v", err)
+		}
+		_ = c.SetReadDeadline(time.Now().Add(3 * time.Second))
+		allow, err := egresswire.ReadEgressVerdict(c)
+		c.Close()
+		if err == nil && allow {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("flow slot never freed after close: verdict = (%v, %v)", allow, err)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 
