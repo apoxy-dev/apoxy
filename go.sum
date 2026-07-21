@@ -140,6 +140,8 @@ github.com/apoxy-dev/icx v0.17.1-0.20260721004321-0b9cc8b7c588 h1:X411L6hIkGc5cA
 github.com/apoxy-dev/icx v0.17.1-0.20260721004321-0b9cc8b7c588/go.mod h1:B52w7Cs1nsMyE3IwkFMwy06gGQ5Dz0YxPrd1eUWv7g4=
 github.com/apoxy-dev/icx v0.18.0 h1:GObBLYPEOb6sarr+BInPHIZrKTbSBdEyWheq04f/ACY=
 github.com/apoxy-dev/icx v0.18.0/go.mod h1:B52w7Cs1nsMyE3IwkFMwy06gGQ5Dz0YxPrd1eUWv7g4=
+github.com/apoxy-dev/icx v0.19.0 h1:NfjnDoRh/tFmKCDLH82o2KYaO1Smvck87h8zmPDYiIE=
+github.com/apoxy-dev/icx v0.19.0/go.mod h1:B52w7Cs1nsMyE3IwkFMwy06gGQ5Dz0YxPrd1eUWv7g4=
 github.com/apoxy-dev/quic-go v0.0.0-20260402225711-bc93b3ff7555 h1:2UdznQRVujKRGE+SjOmeyvBeBohY17nSilpFwDxb8B0=
 github.com/apoxy-dev/quic-go v0.0.0-20260402225711-bc93b3ff7555/go.mod h1:MFlGGpcpJqRAfmYi6NC2cptDPSxRWTOGNuP4wqrWmzQ=
 github.com/apoxy-dev/upgrade-cli v0.0.0-20240213232412-a56c3a52fa0e h1:FBNxMQD93z2ththupB/BYKLEaMWaEr+G+sJWJqU2wC4=

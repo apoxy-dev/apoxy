@@ -397,7 +397,12 @@ func (r *ICXNetlinkRouter) syncDNATChain() error {
 	slog.Info("Syncing DNAT rules", slog.Int("num_peers", len(peers)))
 
 	for i, peer := range peers {
-		slog.Info("Adding DNAT rules for peer", slog.String("peer", peer.RemoteAddr.Addr.String()))
+		// Under source learning the remote endpoint may not be learned yet.
+		peerAddr := "<unlearned>"
+		if ra := peer.RemoteAddr(); ra != nil {
+			peerAddr = ra.Addr.String()
+		}
+		slog.Info("Adding DNAT rules for peer", slog.String("peer", peerAddr))
 
 		for _, route := range peer.AllowedRoutes() {
 			if route.Dst.Addr().Is4() { // Skipping IPv4 peers - only IPv6 tunnel ingress is supported.
