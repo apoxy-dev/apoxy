@@ -29,8 +29,11 @@ type connection struct {
 	vni         *uint
 	overlayAddr *netip.Prefix
 	keyEpoch    atomic.Uint32
-	// master is the connection's PSP master secret, minted once at connect;
-	// every epoch's per-direction data keys derive from it (icx handler-side).
+	// master is the connection's PSP master secret, minted once when the
+	// connection is constructed and never mutated afterward; every epoch's
+	// per-direction data keys derive from it (icx handler-side). It is set before
+	// the connection is published to the relay's map, so no reader can observe a
+	// zero master.
 	master api.MasterSecret
 }
 
@@ -238,17 +241,9 @@ func (c *connection) IncrementKeyEpoch() uint32 {
 	return c.keyEpoch.Add(1)
 }
 
-// SetMaster records the connection's PSP master secret (set once at connect).
-func (c *connection) SetMaster(m api.MasterSecret) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.master = m
-}
-
-// Master returns the connection's PSP master secret.
+// Master returns the connection's PSP master secret. It is immutable after
+// construction, so no lock is needed.
 func (c *connection) Master() api.MasterSecret {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	return c.master
 }
 

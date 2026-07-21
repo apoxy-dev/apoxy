@@ -734,19 +734,37 @@ func manageKeyRotation(
 	vni uint,
 	initial api.Keys,
 ) error {
-	applyAndSchedule := func(k api.Keys) time.Duration {
-		// The agent is the Initiator; the relay installs the mirrored Responder
-		// SPIs, so each epoch derives one distinct key per direction.
+	// applyKeys installs one epoch's keys, failing closed if the relay handed back
+	// nothing usable. The agent is the Initiator; the relay installs the mirrored
+	// Responder SPIs, so each epoch derives one distinct key per direction.
+	applyKeys := func(k api.Keys) error {
+		if k.MasterSecret == (api.MasterSecret{}) {
+			return errors.New("relay returned an empty master secret")
+		}
 		rxSPI, txSPI, err := psp.EpochSPIs(psp.Initiator, k.Epoch)
 		if err != nil {
-			slog.Error("Failed to derive SPIs for epoch", slog.Any("error", err))
-		} else if err := handler.UpdateVirtualNetworkSecret(vni, [32]byte(k.MasterSecret), rxSPI, txSPI, k.ExpiresAt); err != nil {
-			slog.Error("Failed to apply new keys to router", slog.Any("error", err))
+			return fmt.Errorf("derive SPIs for epoch %d: %w", k.Epoch, err)
+		}
+		if err := handler.UpdateVirtualNetworkSecret(vni, [32]byte(k.MasterSecret), rxSPI, txSPI, k.ExpiresAt); err != nil {
+			return fmt.Errorf("apply keys to router: %w", err)
+		}
+		return nil
+	}
+
+	// retryInterval is how long to wait before re-fetching keys after a failed
+	// apply — short, so a transient failure does not leave the tunnel unkeyed for
+	// half a key lifespan.
+	const retryInterval = 10 * time.Second
+
+	applyAndSchedule := func(k api.Keys) time.Duration {
+		if err := applyKeys(k); err != nil {
+			slog.Error("Failed to apply rotated keys; retrying soon", slog.Any("error", err))
+			return retryInterval
 		}
 		remaining := time.Until(k.ExpiresAt)
 		next := remaining / 2
-		if next < 10*time.Second {
-			next = 10 * time.Second
+		if next < retryInterval {
+			next = retryInterval
 		}
 		return next
 	}

@@ -234,6 +234,29 @@ func (r *Relay) Start(ctx context.Context) error {
 	return nil
 }
 
+// installEpoch advances the connection's key epoch and installs the derived
+// per-direction SAs for that epoch on the relay's handler, returning the Keys to
+// hand back to the agent. The relay is the Responder in the PSP role split; the
+// agent installs the mirrored Initiator SPIs. Both handleConnect and
+// handleUpdateKeys route through here so the role, epoch, and install ordering
+// live in exactly one place.
+func (r *Relay) installEpoch(conn *connection, vni uint) (api.Keys, error) {
+	keys := api.Keys{
+		Epoch:        conn.IncrementKeyEpoch(),
+		MasterSecret: conn.Master(),
+		ExpiresAt:    time.Now().Add(keyLifespan),
+	}
+
+	rxSPI, txSPI, err := psp.EpochSPIs(psp.Responder, keys.Epoch)
+	if err != nil {
+		return api.Keys{}, fmt.Errorf("derive SPIs for epoch %d: %w", keys.Epoch, err)
+	}
+	if err := r.handler.UpdateVirtualNetworkSecret(vni, [32]byte(keys.MasterSecret), rxSPI, txSPI, keys.ExpiresAt); err != nil {
+		return api.Keys{}, fmt.Errorf("install SAs: %w", err)
+	}
+	return keys, nil
+}
+
 func (r *Relay) handleConnect(w http.ResponseWriter, req *http.Request, ps httprouter.Params) {
 	var request api.ConnectRequest
 	if err := json.NewDecoder(req.Body).Decode(&request); err != nil && !errors.Is(err, io.EOF) {
@@ -260,12 +283,23 @@ func (r *Relay) handleConnect(w http.ResponseWriter, req *http.Request, ps httpr
 
 	id := r.idHasher.Hash(localAddr, remoteAddr)
 
+	// One master secret per connection, minted before the connection is published
+	// so no concurrent handleUpdateKeys can ever observe a zero master. Each
+	// rotation advances the epoch under it and the icx handler derives that
+	// epoch's per-direction keys.
+	master, err := randomMasterSecret()
+	if err != nil {
+		http.Error(w, "Failed to generate master secret", http.StatusInternalServerError)
+		return
+	}
+
 	conn := &connection{
 		id:         id,
 		handler:    r.handler,
 		router:     r.router,
 		localAddr:  localAddr,
 		remoteAddr: remoteAddr,
+		master:     master,
 	}
 
 	r.conns.Set(conn.ID(), conn)
@@ -283,7 +317,7 @@ func (r *Relay) handleConnect(w http.ResponseWriter, req *http.Request, ps httpr
 	}
 
 	// Wait until the connection has a VNI and overlay address assigned.
-	err = retry.Do(
+	if err := retry.Do(
 		func() error {
 			if conn.VNI() == nil || conn.OverlayAddress() == "" {
 				return fmt.Errorf("connection not ready")
@@ -294,28 +328,24 @@ func (r *Relay) handleConnect(w http.ResponseWriter, req *http.Request, ps httpr
 		retry.Context(req.Context()),
 		retry.Delay(100*time.Millisecond),
 		retry.Attempts(10),
-	)
-
-	// One master secret per connection; each rotation advances the epoch under
-	// it and the icx handler derives that epoch's per-direction keys. The first
-	// epoch is 1 (epoch 0 is a reserved SPI counter and the handler rejects it).
-	master, err := randomMasterSecret()
-	if err != nil {
-		http.Error(w, "Failed to generate master secret", http.StatusInternalServerError)
+	); err != nil {
+		slog.Warn("Connection did not become ready", slog.String("connID", conn.ID()), slog.Any("error", err))
+		http.Error(w, "Connection is not ready", http.StatusServiceUnavailable)
 		return
-	}
-	conn.SetMaster(master)
-
-	keys := api.Keys{
-		Epoch:        conn.IncrementKeyEpoch(),
-		MasterSecret: master,
-		ExpiresAt:    time.Now().Add(keyLifespan),
 	}
 
 	vni := conn.VNI()
 	if vni == nil {
 		slog.Warn("Connection has no VNI assigned", slog.String("connID", conn.ID()))
 		http.Error(w, "Connection is not ready", http.StatusBadRequest)
+		return
+	}
+
+	// First epoch is 1 (epoch 0 is a reserved SPI counter the handler rejects).
+	keys, err := r.installEpoch(conn, *vni)
+	if err != nil {
+		slog.Error("Failed to install connection keys", slog.String("connID", conn.ID()), slog.Any("error", err))
+		http.Error(w, "Failed to update virtual network keys", http.StatusInternalServerError)
 		return
 	}
 
@@ -354,17 +384,6 @@ func (r *Relay) handleConnect(w http.ResponseWriter, req *http.Request, ps httpr
 		Addresses:      []string{conn.OverlayAddress()},
 		Routes:         routes,
 		RelayAddresses: relayAddrs,
-	}
-
-	rxSPI, txSPI, err := psp.EpochSPIs(psp.Responder, keys.Epoch)
-	if err != nil {
-		http.Error(w, "Failed to derive SPIs", http.StatusInternalServerError)
-		return
-	}
-	if err := r.handler.UpdateVirtualNetworkSecret(*vni, [32]byte(keys.MasterSecret),
-		rxSPI, txSPI, keys.ExpiresAt); err != nil {
-		http.Error(w, "Failed to update virtual network keys", http.StatusInternalServerError)
-		return
 	}
 
 	// Register with metrics store so pushed metrics get the right labels.
@@ -446,19 +465,9 @@ func (r *Relay) handleUpdateKeys(w http.ResponseWriter, req *http.Request, ps ht
 	// Rotation: advance the epoch under the connection's master. The advanced
 	// SPI is a fresh KDF context, so the handler derives fresh keys without new
 	// key material crossing the wire.
-	keys := api.Keys{
-		Epoch:        conn.IncrementKeyEpoch(),
-		MasterSecret: conn.Master(),
-		ExpiresAt:    time.Now().Add(keyLifespan),
-	}
-
-	rxSPI, txSPI, err := psp.EpochSPIs(psp.Responder, keys.Epoch)
+	keys, err := r.installEpoch(conn, *vni)
 	if err != nil {
-		http.Error(w, "Failed to derive SPIs", http.StatusInternalServerError)
-		return
-	}
-	if err := r.handler.UpdateVirtualNetworkSecret(*vni, [32]byte(keys.MasterSecret),
-		rxSPI, txSPI, keys.ExpiresAt); err != nil {
+		slog.Error("Failed to rotate connection keys", slog.String("connID", request.ID), slog.Any("error", err))
 		http.Error(w, "Failed to update virtual network keys", http.StatusInternalServerError)
 		return
 	}
