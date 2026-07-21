@@ -13,10 +13,13 @@
 package cache
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"hash/fnv"
 	"log/slog"
 	"math"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -26,6 +29,7 @@ import (
 	cachev3 "github.com/envoyproxy/go-control-plane/pkg/cache/v3"
 	envoylog "github.com/envoyproxy/go-control-plane/pkg/log"
 	serverv3 "github.com/envoyproxy/go-control-plane/pkg/server/v3"
+	"google.golang.org/protobuf/proto"
 	"k8s.io/apimachinery/pkg/util/wait"
 
 	"github.com/apoxy-dev/apoxy/pkg/gateway/message"
@@ -48,7 +52,11 @@ var Hash = cachev3.IDHash{}
 type SnapshotCacheWithCallbacks interface {
 	cachev3.SnapshotCache
 	serverv3.Callbacks
-	GenerateNewSnapshot(string, types.XdsResources) error
+	// GenerateNewSnapshot updates the snapshot for the given ir key. It
+	// returns true when the resources differed from the last snapshot and a
+	// new version was pushed, and false when the push was skipped because the
+	// content was identical.
+	GenerateNewSnapshot(string, types.XdsResources) (bool, error)
 }
 
 type snapshotMap map[string]*cachev3.Snapshot
@@ -72,6 +80,10 @@ type snapshotCache struct {
 	cachev3.SnapshotCache
 	snapshotVersion int64
 	lastSnapshot    snapshotMap
+	// lastHashes tracks a content hash of the last snapshot per ir key so
+	// that content-identical regenerations skip the version bump and the
+	// redundant push to connected Envoy nodes. Guarded by mu.
+	lastHashes map[string]uint64
 
 	mu               sync.Mutex
 	streamIDNodeInfo nodeInfoMap
@@ -100,6 +112,7 @@ func NewSnapshotCache(ads bool, logger *slog.Logger, resources *message.Provider
 	return &snapshotCache{
 		SnapshotCache: cachev3.NewSnapshotCache(ads, &Hash, l),
 		lastSnapshot:  make(snapshotMap),
+		lastHashes:    make(map[string]uint64),
 
 		streamIDNodeInfo: make(nodeInfoMap),
 		nodeBackoffs:     make(backoffMap),
@@ -121,10 +134,23 @@ func (s *snapshotCache) newSnapshotVersion() string {
 }
 
 // GenerateNewSnapshot takes a table of resources (the output from the IR->xDS
-// translator) and updates the snapshot version.
-func (s *snapshotCache) GenerateNewSnapshot(irKey string, resources types.XdsResources) error {
+// translator) and updates the snapshot version. Content-identical resource
+// tables are a no-op: connected nodes already hold the previous version and
+// new nodes are served from lastSnapshot, so no version is minted and nothing
+// is pushed. Returns whether a new snapshot was generated.
+func (s *snapshotCache) GenerateNewSnapshot(irKey string, resources types.XdsResources) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	hash, err := hashXdsResources(resources)
+	if err != nil {
+		// Marshal failure means we cannot tell whether the content changed;
+		// fall through and push unconditionally.
+		log.Warnf("Failed to hash xds resources for ir key %s, forcing a snapshot push: %v", irKey, err)
+	} else if last, ok := s.lastHashes[irKey]; ok && last == hash {
+		log.Debugf("Skipping snapshot generation for ir key %s: resources unchanged", irKey)
+		return false, nil
+	}
 
 	log.Infof("Generating a new snapshot for ir key: %s", irKey)
 
@@ -136,20 +162,55 @@ func (s *snapshotCache) GenerateNewSnapshot(irKey string, resources types.XdsRes
 		resources,
 	)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	s.lastSnapshot[irKey] = snapshot
 
 	for _, node := range s.getNodeIDs(irKey) {
 		log.Debugf("Generating a snapshot with Node %s", node)
-		err := s.SetSnapshot(context.TODO(), node, snapshot)
-		if err != nil {
-			return err
+		if err := s.SetSnapshot(context.TODO(), node, snapshot); err != nil {
+			return false, err
 		}
 	}
 
-	return nil
+	// Record the hash only after every node accepted the snapshot so a failed
+	// push is retried by the next (even content-identical) regeneration.
+	s.lastHashes[irKey] = hash
+
+	return true, nil
+}
+
+// hashXdsResources returns a content hash of the resource table. Proto
+// marshaling is not canonical across builds, but it is stable within a
+// process, which is all change detection needs. The translator does not order
+// resources within a type deterministically across runs, so resources are
+// hashed as a sorted set rather than a sequence.
+func hashXdsResources(res types.XdsResources) (uint64, error) {
+	keys := make([]string, 0, len(res))
+	for k := range res {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+
+	h := fnv.New64a()
+	mo := proto.MarshalOptions{Deterministic: true}
+	for _, k := range keys {
+		h.Write([]byte(k))
+		marshaled := make([][]byte, 0, len(res[k]))
+		for _, resource := range res[k] {
+			b, err := mo.Marshal(resource)
+			if err != nil {
+				return 0, fmt.Errorf("failed to marshal %s resource: %w", k, err)
+			}
+			marshaled = append(marshaled, b)
+		}
+		slices.SortFunc(marshaled, bytes.Compare)
+		for _, b := range marshaled {
+			h.Write(b)
+		}
+	}
+	return h.Sum64(), nil
 }
 
 // getNodeIDs retrieves the node ids from the node info map whose

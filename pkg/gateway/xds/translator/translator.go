@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -329,8 +330,6 @@ func (t *Translator) processHTTPListenerXdsTranslation(
 
 		// store virtual hosts by domain
 		vHosts := map[string]*routev3.VirtualHost{}
-		// keep track of order by using a list as well as the map
-		var vHostsList []*routev3.VirtualHost
 
 		// Check if an extension is loaded that wants to modify xDS Routes after they have been generated
 		for _, httpRoute := range httpListener.Routes {
@@ -365,7 +364,6 @@ func (t *Translator) processHTTPListenerXdsTranslation(
 					}
 				}
 				vHosts[httpRoute.Hostname] = vHost
-				vHostsList = append(vHostsList, vHost)
 			}
 
 			// 1:1 between IR HTTPRoute and xDS config.route.v3.Route
@@ -405,6 +403,16 @@ func (t *Translator) processHTTPListenerXdsTranslation(
 			}
 		}
 
+		// Emit virtual hosts sorted by name for deterministic output — the IR
+		// route order is not stable across runs, and Envoy's domain matching
+		// does not depend on virtual host list order.
+		vHostsList := make([]*routev3.VirtualHost, 0, len(vHosts))
+		for _, vHost := range vHosts {
+			vHostsList = append(vHostsList, vHost)
+		}
+		slices.SortFunc(vHostsList, func(a, b *routev3.VirtualHost) int {
+			return strings.Compare(a.Name, b.Name)
+		})
 		xdsRouteCfg.VirtualHosts = append(xdsRouteCfg.VirtualHosts, vHostsList...)
 
 		// Add all the other needed resources referenced by this filter to the

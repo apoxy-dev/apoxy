@@ -97,8 +97,11 @@ var (
 			Address: "0.0.0.0",
 			Port:    80,
 		},
-		TLS:         &TLS{Passthrough: &TLSInspectorConfig{SNIs: []string{"example.com"}}},
-		Destination: &happyRouteDestination,
+		Routes: []*TCPRoute{{
+			Name:        "happy",
+			TLS:         &TLS{Passthrough: &TLSInspectorConfig{SNIs: []string{"example.com"}}},
+			Destination: &happyRouteDestination,
+		}},
 	}
 
 	happyTCPListenerTLSTerminate = TCPListener{
@@ -107,13 +110,16 @@ var (
 			Address: "0.0.0.0",
 			Port:    80,
 		},
-		TLS: &TLS{Terminate: &TLSConfig{
-			Certificates: []TLSCertificate{{
-				Name:              "happy",
-				ServerCertificate: []byte("server-cert"),
-				PrivateKey:        []byte("priv-key"),
-			}}}},
-		Destination: &happyRouteDestination,
+		Routes: []*TCPRoute{{
+			Name: "happy",
+			TLS: &TLS{Terminate: &TLSConfig{
+				Certificates: []TLSCertificate{{
+					Name:              "happy",
+					ServerCertificate: []byte("server-cert"),
+					PrivateKey:        []byte("priv-key"),
+				}}}},
+			Destination: &happyRouteDestination,
+		}},
 	}
 
 	emptySNITCPListenerTLSPassthrough = TCPListener{
@@ -122,15 +128,21 @@ var (
 			Address: "0.0.0.0",
 			Port:    80,
 		},
-		Destination: &happyRouteDestination,
+		Routes: []*TCPRoute{{
+			Name:        "empty-sni",
+			Destination: &happyRouteDestination,
+		}},
 	}
 	invalidNameTCPListenerTLSPassthrough = TCPListener{
 		CoreListenerDetails: CoreListenerDetails{
 			Address: "0.0.0.0",
 			Port:    80,
 		},
-		TLS:         &TLS{Passthrough: &TLSInspectorConfig{SNIs: []string{"example.com"}}},
-		Destination: &happyRouteDestination,
+		Routes: []*TCPRoute{{
+			Name:        "invalid-name",
+			TLS:         &TLS{Passthrough: &TLSInspectorConfig{SNIs: []string{"example.com"}}},
+			Destination: &happyRouteDestination,
+		}},
 	}
 	invalidAddrTCPListenerTLSPassthrough = TCPListener{
 		CoreListenerDetails: CoreListenerDetails{
@@ -138,16 +150,22 @@ var (
 			Address: "1.0.0",
 			Port:    80,
 		},
-		TLS:         &TLS{Passthrough: &TLSInspectorConfig{SNIs: []string{"example.com"}}},
-		Destination: &happyRouteDestination,
+		Routes: []*TCPRoute{{
+			Name:        "invalid-addr",
+			TLS:         &TLS{Passthrough: &TLSInspectorConfig{SNIs: []string{"example.com"}}},
+			Destination: &happyRouteDestination,
+		}},
 	}
 	invalidSNITCPListenerTLSPassthrough = TCPListener{
 		CoreListenerDetails: CoreListenerDetails{
 			Address: "0.0.0.0",
 			Port:    80,
 		},
-		TLS:         &TLS{Passthrough: &TLSInspectorConfig{SNIs: []string{}}},
-		Destination: &happyRouteDestination,
+		Routes: []*TCPRoute{{
+			Name:        "invalid-sni",
+			TLS:         &TLS{Passthrough: &TLSInspectorConfig{SNIs: []string{}}},
+			Destination: &happyRouteDestination,
+		}},
 	}
 
 	// UDPListener
@@ -475,7 +493,7 @@ var (
 			Providers: []egv1a1.JWTProvider{
 				{
 					Name: "test1",
-					RemoteJWKS: egv1a1.RemoteJWKS{
+					RemoteJWKS: &egv1a1.RemoteJWKS{
 						URI: "https://test1.local",
 					},
 				},
@@ -655,7 +673,7 @@ func TestValidateTCPListener(t *testing.T) {
 		{
 			name:  "tls passthrough empty SNIs",
 			input: invalidSNITCPListenerTLSPassthrough,
-			want:  []error{ErrTCPListenerSNIsEmpty},
+			want:  []error{ErrTCPRouteSNIsEmpty},
 		},
 	}
 	for _, test := range tests {
@@ -1169,7 +1187,7 @@ func TestValidateJWT(t *testing.T) {
 						Name:      "test",
 						Issuer:    "https://test.local",
 						Audiences: []string{"test1", "test2"},
-						RemoteJWKS: egv1a1.RemoteJWKS{
+						RemoteJWKS: &egv1a1.RemoteJWKS{
 							URI: "https://test.local",
 						},
 					},

@@ -20,11 +20,11 @@ func TestNodeMetadata(t *testing.T) {
 			name: "with all fields",
 			nm: &NodeMetadata{
 				Name:           "proxy-1",
-				PrivateAddress: "10.0.0.1",
+				InternalAddress: "10.0.0.1",
 			},
 			want: map[string]interface{}{
 				"name":            "proxy-1",
-				"private_address": "10.0.0.1",
+				"internal_address": "10.0.0.1",
 			},
 		},
 		{
@@ -39,10 +39,10 @@ func TestNodeMetadata(t *testing.T) {
 		{
 			name: "with private address only",
 			nm: &NodeMetadata{
-				PrivateAddress: "192.168.1.10",
+				InternalAddress: "192.168.1.10",
 			},
 			want: map[string]interface{}{
-				"private_address": "192.168.1.10",
+				"internal_address": "192.168.1.10",
 			},
 		},
 		{
@@ -76,11 +76,11 @@ func TestNodeMetadata_FromMap(t *testing.T) {
 			name: "valid data",
 			data: map[string]interface{}{
 				"name":            "test-proxy",
-				"private_address": "10.1.2.3",
+				"internal_address": "10.1.2.3",
 			},
 			want: &NodeMetadata{
 				Name:           "test-proxy",
-				PrivateAddress: "10.1.2.3",
+				InternalAddress: "10.1.2.3",
 			},
 		},
 		{
@@ -106,13 +106,13 @@ func TestNodeMetadata_FromMap(t *testing.T) {
 			name: "extra fields ignored",
 			data: map[string]interface{}{
 				"name":            "proxy-x",
-				"private_address": "172.16.0.1",
+				"internal_address": "172.16.0.1",
 				"extra_field":     "ignored",
 				"another":         123,
 			},
 			want: &NodeMetadata{
 				Name:           "proxy-x",
-				PrivateAddress: "172.16.0.1",
+				InternalAddress: "172.16.0.1",
 			},
 		},
 	}
@@ -144,7 +144,7 @@ func TestNodeMetadata_ToStruct(t *testing.T) {
 			name: "with data",
 			nm: &NodeMetadata{
 				Name:           "envoy-1",
-				PrivateAddress: "10.0.0.5",
+				InternalAddress: "10.0.0.5",
 			},
 			wantNil: false,
 		},
@@ -177,9 +177,9 @@ func TestNodeMetadata_ToStruct(t *testing.T) {
 								t.Errorf("ToStruct() name = %v, want %v", v.GetStringValue(), tt.nm.Name)
 							}
 						}
-						if tt.nm.PrivateAddress != "" {
-							if v, ok := fields["private_address"]; !ok || v.GetStringValue() != tt.nm.PrivateAddress {
-								t.Errorf("ToStruct() private_address = %v, want %v", v.GetStringValue(), tt.nm.PrivateAddress)
+						if tt.nm.InternalAddress != "" {
+							if v, ok := fields["internal_address"]; !ok || v.GetStringValue() != tt.nm.InternalAddress {
+								t.Errorf("ToStruct() internal_address = %v, want %v", v.GetStringValue(), tt.nm.InternalAddress)
 							}
 						}
 					}
@@ -201,13 +201,13 @@ func TestNodeMetadata_FromStruct(t *testing.T) {
 			struct_: func() *structpb.Struct {
 				s, _ := structpb.NewStruct(map[string]interface{}{
 					"name":            "from-struct",
-					"private_address": "192.168.0.1",
+					"internal_address": "192.168.0.1",
 				})
 				return s
 			}(),
 			want: &NodeMetadata{
 				Name:           "from-struct",
-				PrivateAddress: "192.168.0.1",
+				InternalAddress: "192.168.0.1",
 			},
 		},
 		{
@@ -254,7 +254,7 @@ func TestExtractFromDiscoveryRequest(t *testing.T) {
 			req: func() *discoveryv3.DiscoveryRequest {
 				metadata, _ := structpb.NewStruct(map[string]interface{}{
 					"name":            "discovery-node",
-					"private_address": "172.31.0.1",
+					"internal_address": "172.31.0.1",
 				})
 				return &discoveryv3.DiscoveryRequest{
 					Node: &corev3.Node{
@@ -266,7 +266,7 @@ func TestExtractFromDiscoveryRequest(t *testing.T) {
 			}(),
 			want: &NodeMetadata{
 				Name:           "discovery-node",
-				PrivateAddress: "172.31.0.1",
+				InternalAddress: "172.31.0.1",
 			},
 		},
 		{
@@ -316,7 +316,7 @@ func TestNodeMetadata_Clone(t *testing.T) {
 			name: "with data",
 			nm: &NodeMetadata{
 				Name:           "original",
-				PrivateAddress: "10.20.30.40",
+				InternalAddress: "10.20.30.40",
 			},
 		},
 		{
@@ -370,14 +370,14 @@ func TestNodeMetadata_IsEmpty(t *testing.T) {
 		},
 		{
 			name: "with private address",
-			nm:   &NodeMetadata{PrivateAddress: "10.0.0.1"},
+			nm:   &NodeMetadata{InternalAddress: "10.0.0.1"},
 			want: false,
 		},
 		{
 			name: "with both",
 			nm: &NodeMetadata{
 				Name:           "test",
-				PrivateAddress: "10.0.0.1",
+				InternalAddress: "10.0.0.1",
 			},
 			want: false,
 		},
@@ -404,40 +404,40 @@ func TestNodeMetadata_Merge(t *testing.T) {
 			nm:   &NodeMetadata{},
 			other: &NodeMetadata{
 				Name:           "merged-name",
-				PrivateAddress: "10.1.1.1",
+				InternalAddress: "10.1.1.1",
 			},
 			want: &NodeMetadata{
 				Name:           "merged-name",
-				PrivateAddress: "10.1.1.1",
+				InternalAddress: "10.1.1.1",
 			},
 		},
 		{
 			name: "overwrite existing",
 			nm: &NodeMetadata{
 				Name:           "original",
-				PrivateAddress: "192.168.1.1",
+				InternalAddress: "192.168.1.1",
 			},
 			other: &NodeMetadata{
 				Name:           "updated",
-				PrivateAddress: "192.168.2.2",
+				InternalAddress: "192.168.2.2",
 			},
 			want: &NodeMetadata{
 				Name:           "updated",
-				PrivateAddress: "192.168.2.2",
+				InternalAddress: "192.168.2.2",
 			},
 		},
 		{
 			name: "partial merge",
 			nm: &NodeMetadata{
 				Name:           "keep-this",
-				PrivateAddress: "10.0.0.1",
+				InternalAddress: "10.0.0.1",
 			},
 			other: &NodeMetadata{
-				PrivateAddress: "10.0.0.2",
+				InternalAddress: "10.0.0.2",
 			},
 			want: &NodeMetadata{
 				Name:           "keep-this",
-				PrivateAddress: "10.0.0.2",
+				InternalAddress: "10.0.0.2",
 			},
 		},
 		{
@@ -465,7 +465,7 @@ func TestNodeMetadata_Merge(t *testing.T) {
 func TestNodeMetadata_String(t *testing.T) {
 	nm := &NodeMetadata{
 		Name:           "string-test",
-		PrivateAddress: "10.5.5.5",
+		InternalAddress: "10.5.5.5",
 	}
 
 	got := nm.String()
@@ -480,8 +480,8 @@ func TestNodeMetadata_String(t *testing.T) {
 	if result["name"] != "string-test" {
 		t.Errorf("String() name = %v, want %v", result["name"], "string-test")
 	}
-	if result["private_address"] != "10.5.5.5" {
-		t.Errorf("String() private_address = %v, want %v", result["private_address"], "10.5.5.5")
+	if result["internal_address"] != "10.5.5.5" {
+		t.Errorf("String() internal_address = %v, want %v", result["internal_address"], "10.5.5.5")
 	}
 }
 
@@ -489,7 +489,7 @@ func TestNodeMetadata_Integration(t *testing.T) {
 	// Test a full round-trip: struct -> map -> struct
 	original := &NodeMetadata{
 		Name:           "integration-test",
-		PrivateAddress: "172.16.0.100",
+		InternalAddress: "172.16.0.100",
 	}
 
 	// Convert to map
@@ -530,7 +530,7 @@ func TestNodeMetadata_Integration(t *testing.T) {
 func BenchmarkNodeMetadata_ToMap(b *testing.B) {
 	nm := &NodeMetadata{
 		Name:           "benchmark-node",
-		PrivateAddress: "10.10.10.10",
+		InternalAddress: "10.10.10.10",
 	}
 
 	b.ResetTimer()
@@ -545,7 +545,7 @@ func BenchmarkNodeMetadata_ToMap(b *testing.B) {
 func BenchmarkNodeMetadata_ToStruct(b *testing.B) {
 	nm := &NodeMetadata{
 		Name:           "benchmark-node",
-		PrivateAddress: "10.10.10.10",
+		InternalAddress: "10.10.10.10",
 	}
 
 	b.ResetTimer()

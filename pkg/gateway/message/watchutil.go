@@ -35,7 +35,7 @@ func HandleSubscription[K comparable, V any](
 	errChans := make(chan error, 10)
 	go func() {
 		for err := range errChans {
-			logger.With("runner", meta.Runner).Error(err.Error(), "observed an error")
+			logger.With("runner", meta.Runner).Error("Observed an error", "error", err)
 		}
 	}()
 

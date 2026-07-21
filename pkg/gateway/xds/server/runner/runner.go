@@ -155,7 +155,7 @@ func (r *Runner) subscribeAndTranslate(ctx context.Context) {
 
 			var err error
 			if update.Delete {
-				err = r.cache.GenerateNewSnapshot(key, nil)
+				_, err = r.cache.GenerateNewSnapshot(key, nil)
 			} else if val != nil && val.XdsResources != nil {
 				if r.cache == nil {
 					err = errors.New("snapshot cache is nil")
@@ -164,9 +164,16 @@ func (r *Runner) subscribeAndTranslate(ctx context.Context) {
 					return
 				}
 
-				r.Logger.Info("generating a new snapshot", "key", key, "resources", val.XdsResources)
-				// Update snapshot cache
-				err = r.cache.GenerateNewSnapshot(key, val.XdsResources)
+				// Update snapshot cache. The cache skips the push when the
+				// resources are content-identical to the last snapshot; only
+				// log the (very large) resource dump when it actually changed.
+				var changed bool
+				changed, err = r.cache.GenerateNewSnapshot(key, val.XdsResources)
+				if changed {
+					r.Logger.Info("generated a new snapshot", "key", key, "resources", val.XdsResources)
+				} else {
+					r.Logger.Debug("skipped snapshot generation (resources unchanged)", "key", key)
+				}
 			}
 			if err != nil {
 				r.Logger.Error("failed to generate a snapshot", "error", err)

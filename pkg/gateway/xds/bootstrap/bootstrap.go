@@ -210,6 +210,9 @@ func WithOverloadMaxActiveConnections(count uint64) BootstrapOption {
 func GetRenderedBootstrapConfig(opts ...BootstrapOption) (string, error) {
 	sOpts := defaultBootstrapConfig()
 	for _, opt := range opts {
+		if opt == nil {
+			continue
+		}
 		opt(sOpts)
 	}
 	cfg := &bootstrapConfig{
