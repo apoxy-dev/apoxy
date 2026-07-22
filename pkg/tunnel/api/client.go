@@ -19,13 +19,16 @@ import (
 )
 
 type Client struct {
-	http        *http.Client
-	h3          *http3.Transport
-	baseURL     *url.URL
-	tunnelName  string
-	token       string
-	agent       string
-	metricsPort int
+	http             *http.Client
+	h3               *http3.Transport
+	baseURL          *url.URL
+	tunnelName       string
+	token            string
+	agent            string
+	metricsPort      int
+	labels           map[string]string
+	advertisedRoutes []string
+	agentInstance    string
 }
 
 type ClientOptions struct {
@@ -48,6 +51,12 @@ type ClientOptions struct {
 	// MetricsPort is the port the agent's Prometheus metrics server listens on.
 	// Advertised to the relay so it can scrape metrics through the overlay.
 	MetricsPort int
+	// Labels are agent-declared labels used for service selection.
+	Labels map[string]string
+	// AdvertisedRoutes are CIDRs reachable behind this agent.
+	AdvertisedRoutes []string
+	// AgentInstance is a stable per-process UUID identifying the agent instance.
+	AgentInstance string
 }
 
 func NewClient(opts ClientOptions) (*Client, error) {
@@ -108,13 +117,16 @@ func NewClient(opts ClientOptions) (*Client, error) {
 	}
 
 	return &Client{
-		http:        hc,
-		h3:          t,
-		baseURL:     u,
-		tunnelName:  opts.TunnelName,
-		token:       opts.Token,
-		agent:       opts.Agent,
-		metricsPort: opts.MetricsPort,
+		http:             hc,
+		h3:               t,
+		baseURL:          u,
+		tunnelName:       opts.TunnelName,
+		token:            opts.Token,
+		agent:            opts.Agent,
+		metricsPort:      opts.MetricsPort,
+		labels:           opts.Labels,
+		advertisedRoutes: opts.AdvertisedRoutes,
+		agentInstance:    opts.AgentInstance,
 	}, nil
 }
 
@@ -124,7 +136,13 @@ func (c *Client) Close() error {
 
 // Connect to the relay and establish a new tunnel connection.
 func (c *Client) Connect(ctx context.Context) (*ConnectResponse, error) {
-	reqBody := ConnectRequest{Agent: c.agent, MetricsPort: c.metricsPort}
+	reqBody := ConnectRequest{
+		Agent:            c.agent,
+		MetricsPort:      c.metricsPort,
+		Labels:           c.labels,
+		AdvertisedRoutes: c.advertisedRoutes,
+		AgentInstance:    c.agentInstance,
+	}
 	var resp ConnectResponse
 	if err := c.doJSON(ctx, http.MethodPost, c.path("/v1/tunnel/"+c.tunnelName), reqBody, &resp, http.StatusCreated); err != nil {
 		return nil, err

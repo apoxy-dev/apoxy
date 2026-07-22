@@ -35,6 +35,12 @@ type connection struct {
 	// the connection is published to the relay's map, so no reader can observe a
 	// zero master.
 	master api.MasterSecret
+	// labels, advertisedRoutes, and agentInstance are the agent-declared
+	// connect-request fields, already validated against the credential's
+	// bounds. Immutable after construction, like master.
+	labels           map[string]string
+	advertisedRoutes []netip.Prefix
+	agentInstance    string
 }
 
 // Close tears down the VNI and removes any router state.
@@ -245,6 +251,25 @@ func (c *connection) IncrementKeyEpoch() uint32 {
 // construction, so no lock is needed.
 func (c *connection) Master() api.MasterSecret {
 	return c.master
+}
+
+// Labels returns the agent-declared labels for this connection. Immutable
+// after construction.
+func (c *connection) Labels() map[string]string {
+	return c.labels
+}
+
+// AdvertisedRoutes returns the agent-declared routes for this connection,
+// already validated against the credential's bounds. Immutable after
+// construction.
+func (c *connection) AdvertisedRoutes() []netip.Prefix {
+	return c.advertisedRoutes
+}
+
+// AgentInstance returns the agent's per-process instance UUID, if declared.
+// Immutable after construction.
+func (c *connection) AgentInstance() string {
+	return c.agentInstance
 }
 
 // Stats returns a snapshot built from the currently configured VNI (if any).

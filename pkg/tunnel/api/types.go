@@ -13,12 +13,28 @@ type Request struct {
 	ID string `json:"id"`
 }
 
+// TunnelPathMTU is the assumed underlay path MTU between an agent and a relay.
+// Both sides derive the inner tunnel MTU from it via icx.MTU(TunnelPathMTU),
+// which subtracts the IPv6+UDP+Geneve+AES encapsulation overhead. It must stay
+// large enough that the derived inner MTU is at least the IPv6 minimum link MTU
+// (1280): the overlay is IPv6 ULA, and Linux refuses to run IPv6 on a device
+// below 1280. icx.MTU(1500) = 1392, comfortably above that floor.
+const TunnelPathMTU = 1500
+
 type ConnectRequest struct {
 	// Agent is the name of the agent.
 	Agent string `json:"agent"`
 	// MetricsPort is the port the agent's Prometheus metrics server listens on.
 	// 0 means the agent does not expose metrics.
 	MetricsPort int `json:"metricsPort,omitempty"`
+	// Labels are agent-declared labels used for service selection. The relay
+	// rejects labels outside the credential's allowed label sets.
+	Labels map[string]string `json:"labels,omitempty"`
+	// AdvertisedRoutes are CIDRs reachable behind this connection. The relay
+	// rejects routes outside the credential's allowed CIDRs.
+	AdvertisedRoutes []string `json:"advertisedRoutes,omitempty"`
+	// AgentInstance is a stable per-process UUID identifying the agent instance.
+	AgentInstance string `json:"agentInstance,omitempty"`
 }
 
 type ConnectResponse struct {

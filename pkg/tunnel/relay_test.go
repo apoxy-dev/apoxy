@@ -26,6 +26,7 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/connection"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/controllers"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/hasher"
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/token"
 )
 
 func TestRelay_Connect_UpdateKeys_Disconnect(t *testing.T) {
@@ -37,11 +38,10 @@ func TestRelay_Connect_UpdateKeys_Disconnect(t *testing.T) {
 		return nil
 	}
 
-	var disc api.Request
+	discCh := make(chan api.Request, 1)
 
 	onDisconnect := func(ctx context.Context, agent, id string) error {
-		disc.Agent = agent
-		disc.ID = id
+		discCh <- api.Request{Agent: agent, ID: id}
 		return nil
 	}
 
@@ -60,7 +60,11 @@ func TestRelay_Connect_UpdateKeys_Disconnect(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, connectResp.ID)
 	require.Equal(t, uint(101), connectResp.VNI)
+	// Pin the wire value explicitly (not icx.MTU(api.TunnelPathMTU), which would
+	// track any icx encap-overhead regression instead of catching it). Must stay
+	// >= 1280 so the IPv6 overlay works on the agent's TUN device.
 	require.Equal(t, 1392, connectResp.MTU)
+	require.GreaterOrEqual(t, connectResp.MTU, 1280)
 	require.Len(t, connectResp.Addresses, 1)
 	require.Equal(t, "10.0.0.2/32", connectResp.Addresses[0])
 	require.WithinDuration(t, time.Now().Add(24*time.Hour), connectResp.Keys.ExpiresAt, time.Minute)
@@ -79,8 +83,151 @@ func TestRelay_Connect_UpdateKeys_Disconnect(t *testing.T) {
 	err = c.Disconnect(ctx, connectResp.ID)
 	require.NoError(t, err)
 
-	require.Equal(t, "it-agent", disc.Agent)
-	require.Equal(t, connectResp.ID, disc.ID)
+	select {
+	case disc := <-discCh:
+		require.Equal(t, "it-agent", disc.Agent)
+		require.Equal(t, connectResp.ID, disc.ID)
+	case <-time.After(3 * time.Second):
+		t.Fatal("expected onDisconnect callback to fire")
+	}
+}
+
+func TestRelay_CredentialBounds(t *testing.T) {
+	const goodToken = "bounded-token"
+
+	onConnect := func(ctx context.Context, tunnelName, agentName string, conn controllers.Connection) error {
+		conn.SetVNI(ctx, 303)
+		conn.SetOverlayAddress("10.0.0.4/32")
+		return nil
+	}
+	onDisconnect := func(ctx context.Context, agent, id string) error { return nil }
+
+	r, caCert, stop, _ := startRelay(t, goodToken, onConnect, onDisconnect)
+	t.Cleanup(stop)
+
+	r.SetTokenValidator(&boundedValidator{
+		token: goodToken,
+		authz: &token.AuthzResult{
+			Network:          "test-tunnel",
+			AllowedLabelSets: []map[string]string{{"app": "payments", "env": "prod"}},
+			AllowedRoutes:    []netip.Prefix{netip.MustParsePrefix("10.10.0.0/16")},
+		},
+	})
+
+	cases := []struct {
+		name    string
+		labels  map[string]string
+		routes  []string
+		wantErr string
+	}{
+		{
+			name:   "in bounds",
+			labels: map[string]string{"app": "payments"},
+			routes: []string{"10.10.5.0/24"},
+		},
+		{
+			name:    "out of bounds route",
+			routes:  []string{"192.168.0.0/24"},
+			wantErr: "403",
+		},
+		{
+			name:    "garbage route",
+			routes:  []string{"not-a-cidr"},
+			wantErr: "400",
+		},
+		{
+			name:    "labels outside allowed set",
+			labels:  map[string]string{"app": "payments", "team": "x"},
+			wantErr: "403",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			baseURL := "https://" + r.Address().String()
+			tlsCfg := &tls.Config{
+				RootCAs:    cryptoutils.CertPoolForCertificate(caCert),
+				ServerName: "localhost",
+			}
+
+			c, err := api.NewClient(api.ClientOptions{
+				BaseURL:          baseURL,
+				Agent:            "it-agent",
+				TunnelName:       "test-tunnel",
+				Token:            goodToken,
+				TLSConfig:        tlsCfg,
+				Timeout:          5 * time.Second,
+				Labels:           tc.labels,
+				AdvertisedRoutes: tc.routes,
+				AgentInstance:    "b3b937f2-9e39-4b6f-9a4e-05dd5e2f2f26",
+			})
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, c.Close()) })
+
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			t.Cleanup(cancel)
+
+			connectResp, err := c.Connect(ctx)
+			if tc.wantErr != "" {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			require.NoError(t, c.Disconnect(ctx, connectResp.ID))
+		})
+	}
+}
+
+// boundedValidator is a test TokenValidator returning a fixed authorization.
+type boundedValidator struct {
+	token string
+	authz *token.AuthzResult
+}
+
+func (v *boundedValidator) Validate(_ context.Context, network, tokenStr string) (*token.AuthzResult, error) {
+	if tokenStr != v.token || network != v.authz.Network {
+		return nil, token.ErrUnauthorized
+	}
+	return v.authz, nil
+}
+
+// TestRelay_NilAuthzFailsClosed guards against a validator that authenticates
+// (nil error) but returns no authorization: the relay must reject rather than
+// treat the connection as unbounded.
+func TestRelay_NilAuthzFailsClosed(t *testing.T) {
+	const goodToken = "nil-authz-token"
+
+	onConnect := func(ctx context.Context, tunnelName, agentName string, conn controllers.Connection) error {
+		conn.SetVNI(ctx, 404)
+		conn.SetOverlayAddress("10.0.0.5/32")
+		return nil
+	}
+	onDisconnect := func(ctx context.Context, agent, id string) error { return nil }
+
+	r, caCert, stop, _ := startRelay(t, goodToken, onConnect, onDisconnect)
+	t.Cleanup(stop)
+
+	r.SetTokenValidator(nilAuthzValidator{})
+
+	c := clientForRelay(t, r, caCert, goodToken)
+	t.Cleanup(func() { require.NoError(t, c.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	t.Cleanup(cancel)
+
+	// Before the fix this connected successfully (enforcement skipped); now the
+	// relay rejects the nil authorization at the auth layer.
+	_, err := c.Connect(ctx)
+	require.Error(t, err)
+}
+
+// nilAuthzValidator authenticates every request but returns no authorization,
+// simulating a buggy external validator.
+type nilAuthzValidator struct{}
+
+func (nilAuthzValidator) Validate(_ context.Context, _, _ string) (*token.AuthzResult, error) {
+	return nil, nil
 }
 
 func TestRelay_InvalidAuthClosesQUIC(t *testing.T) {

@@ -3,6 +3,7 @@ package router
 import (
 	"net/netip"
 
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/api"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/batchpc"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/connection"
 	"github.com/apoxy-dev/icx"
@@ -33,7 +34,7 @@ func defaultOptions() *routerOptions {
 	return &routerOptions{
 		extIfaceName:    "eth0",
 		tunIfaceName:    "tun0",
-		tunMTU:          icx.MTU(1500), // Default to a 1500 byte path MTU
+		tunMTU:          icx.MTU(api.TunnelPathMTU),
 		socksListenAddr: "localhost:1080",
 		cksumRecalc:     false,
 	}

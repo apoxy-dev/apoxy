@@ -30,6 +30,7 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/metrics"
 	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/router"
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/token"
 )
 
 const (
@@ -47,8 +48,11 @@ type Relay struct {
 	idHasher      *hasher.Hasher
 	router        router.Router
 	egressGateway bool
-	tokens        *haxmap.Map[string, string]      // map[tunnelName]token
-	relayAddrs    *haxmap.Map[string, []string]    // map[tunnelName][]string
+	// staticTokens is the default token validator, fed by SetCredentials.
+	staticTokens *token.StaticTokenValidator
+	// tokenValidator authenticates connect requests; defaults to staticTokens.
+	tokenValidator token.TokenValidator
+	relayAddrs     *haxmap.Map[string, []string] // map[tunnelName][]string
 	conns         *haxmap.Map[string, *connection] // map[connectionID]Connection
 	agents        *haxmap.Map[string, string]      // map[connectionID]agentName
 	onConnect     func(ctx context.Context, tunnelName, agentName string, conn controllers.Connection) error
@@ -58,17 +62,19 @@ type Relay struct {
 }
 
 func NewRelay(name string, pc net.PacketConn, cert tls.Certificate, handler *icx.Handler, idHasher *hasher.Hasher, router router.Router) *Relay {
+	staticTokens := token.NewStaticTokenValidator()
 	return &Relay{
-		name:       name,
-		pc:         pc,
-		getCert:    staticCert(cert),
-		handler:    handler,
-		idHasher:   idHasher,
-		router:     router,
-		tokens:     haxmap.New[string, string](),
-		relayAddrs: haxmap.New[string, []string](),
-		conns:      haxmap.New[string, *connection](),
-		agents:     haxmap.New[string, string](),
+		name:           name,
+		pc:             pc,
+		getCert:        staticCert(cert),
+		handler:        handler,
+		idHasher:       idHasher,
+		router:         router,
+		staticTokens:   staticTokens,
+		tokenValidator: staticTokens,
+		relayAddrs:     haxmap.New[string, []string](),
+		conns:          haxmap.New[string, *connection](),
+		agents:         haxmap.New[string, string](),
 	}
 }
 
@@ -98,9 +104,19 @@ func (r *Relay) Address() netip.AddrPort {
 	return netip.AddrPortFrom(netip.MustParseAddr(ua.IP.String()), uint16(ua.Port))
 }
 
-// SetCredentials sets the authentication token used by agents to authenticate with the relay.
+// SetCredentials sets the static authentication token used by agents to
+// authenticate with the relay for a tunnel. Only consulted when the default
+// static token validator is in effect (see SetTokenValidator).
 func (r *Relay) SetCredentials(tunnelName, token string) {
-	r.tokens.Set(tunnelName, token)
+	r.staticTokens.SetToken(tunnelName, token)
+}
+
+// SetTokenValidator overrides how agent credentials are authenticated, e.g.
+// with a JWT-backed validator. Must be called before Start.
+func (r *Relay) SetTokenValidator(v token.TokenValidator) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.tokenValidator = v
 }
 
 // SetRelayAddresses sets the list of relay addresses that are serving a tunnel.
@@ -269,6 +285,33 @@ func (r *Relay) handleConnect(w http.ResponseWriter, req *http.Request, ps httpr
 		return
 	}
 
+	// Enforce the credential's bounds on agent-declared labels and routes.
+	// withAuth always attaches a non-nil authorization on success; a missing one
+	// means a validator or wiring bug, so fail closed rather than skip the checks.
+	authz := authzResultFrom(req.Context())
+	if authz == nil {
+		slog.Error("Connect request reached handler without an authorization")
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	advertisedRoutes := make([]netip.Prefix, 0, len(request.AdvertisedRoutes))
+	for _, cidr := range request.AdvertisedRoutes {
+		pfx, err := netip.ParsePrefix(cidr)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Invalid advertised route %q", cidr), http.StatusBadRequest)
+			return
+		}
+		if !authz.PermitsRoute(pfx) {
+			http.Error(w, fmt.Sprintf("Advertised route %q not permitted by credential", cidr), http.StatusForbidden)
+			return
+		}
+		advertisedRoutes = append(advertisedRoutes, pfx)
+	}
+	if !authz.PermitsLabels(request.Labels) {
+		http.Error(w, "Labels not permitted by credential", http.StatusForbidden)
+		return
+	}
+
 	localAddr, err := netip.ParseAddrPort(r.pc.LocalAddr().String())
 	if err != nil {
 		http.Error(w, "Failed to parse local address", http.StatusBadRequest)
@@ -294,12 +337,15 @@ func (r *Relay) handleConnect(w http.ResponseWriter, req *http.Request, ps httpr
 	}
 
 	conn := &connection{
-		id:         id,
-		handler:    r.handler,
-		router:     r.router,
-		localAddr:  localAddr,
-		remoteAddr: remoteAddr,
-		master:     master,
+		id:               id,
+		handler:          r.handler,
+		router:           r.router,
+		localAddr:        localAddr,
+		remoteAddr:       remoteAddr,
+		master:           master,
+		labels:           request.Labels,
+		advertisedRoutes: advertisedRoutes,
+		agentInstance:    request.AgentInstance,
 	}
 
 	r.conns.Set(conn.ID(), conn)
@@ -379,7 +425,7 @@ func (r *Relay) handleConnect(w http.ResponseWriter, req *http.Request, ps httpr
 	resp := api.ConnectResponse{
 		ID:             conn.ID(),
 		VNI:            *vni,
-		MTU:            icx.MTU(1500),
+		MTU:            icx.MTU(api.TunnelPathMTU),
 		Keys:           keys,
 		Addresses:      []string{conn.OverlayAddress()},
 		Routes:         routes,
@@ -504,15 +550,43 @@ func (r *Relay) withAuth(next httprouter.Handle) httprouter.Handle {
 			return
 		}
 
-		if storedToken, ok := r.tokens.Get(tunnelName); !ok || storedToken != tokenStr {
+		r.mu.Lock()
+		validator := r.tokenValidator
+		r.mu.Unlock()
+
+		authz, err := validator.Validate(req.Context(), tunnelName, tokenStr)
+		if err != nil {
+			slog.Warn("Rejected tunnel credential", slog.String("tunnel", tunnelName), slog.Any("error", err))
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			r.closeConn(w, http3.ErrCodeRequestRejected, "unauthorized")
+			return
+		}
+		if authz == nil {
+			// A validator that authenticates but returns no authorization is a
+			// bug; treat it as a rejection rather than silently unbounded access.
+			slog.Error("Token validator returned no authorization", slog.String("tunnel", tunnelName))
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			r.closeConn(w, http3.ErrCodeRequestRejected, "unauthorized")
 			return
 		}
 
-		// Authenticated, call the next handler.
-		next(w, req, ps)
+		// Authenticated, call the next handler with the authorization attached.
+		next(w, req.WithContext(withAuthzResult(req.Context(), authz)), ps)
 	}
+}
+
+// authzResultKey is the context key under which withAuth stores the validated
+// credential's *token.AuthzResult for handlers.
+type authzResultKey struct{}
+
+func withAuthzResult(ctx context.Context, authz *token.AuthzResult) context.Context {
+	return context.WithValue(ctx, authzResultKey{}, authz)
+}
+
+// authzResultFrom returns the authorization attached by withAuth, if any.
+func authzResultFrom(ctx context.Context) *token.AuthzResult {
+	authz, _ := ctx.Value(authzResultKey{}).(*token.AuthzResult)
+	return authz
 }
 
 func (r *Relay) closeConn(w http.ResponseWriter, code http3.ErrCode, msg string) {
