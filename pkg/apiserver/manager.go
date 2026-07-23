@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/k3s-io/kine/pkg/endpoint"
 	"github.com/sirupsen/logrus"
 	tclient "go.temporal.io/sdk/client"
 	"golang.org/x/sync/errgroup"
@@ -51,6 +52,7 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/apiserver/controllers"
 	extensionscontroller "github.com/apoxy-dev/apoxy/pkg/apiserver/extensions"
 	"github.com/apoxy-dev/apoxy/pkg/apiserver/gateway"
+	"github.com/apoxy-dev/apoxy/pkg/apiserver/migration"
 	"github.com/apoxy-dev/apoxy/pkg/apiserver/secretstore"
 	serverapiserver "github.com/apoxy-dev/apoxy/pkg/apiserver/server/apiserver"
 	builder "github.com/apoxy-dev/apoxy/pkg/apiserver/server/builder"
@@ -61,7 +63,6 @@ import (
 	apoxynet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/token"
-	"github.com/apoxy-dev/apoxy/pkg/tunnel/vni"
 
 	computev1alpha1 "github.com/apoxy-dev/apoxy/api/compute/v1alpha1"
 	coordinationv1 "github.com/apoxy-dev/apoxy/api/coordination/v1"
@@ -245,7 +246,6 @@ type options struct {
 	resources              []resource.Object
 	proxyIPAM              tunnet.IPAM
 	agentIPAM              tunnet.IPAM
-	vniPool                *vni.VNIPool
 	tokenValidator         token.Validator
 	tokenIssuer            token.TokenIssuer
 	openAPIDefinitions     common.GetOpenAPIDefinitions
@@ -259,6 +259,9 @@ type options struct {
 	secretStoreMain        serverapiserver.StorageProvider
 	secretStoreValues      serverapiserver.StorageProvider
 	secretValuesAuthz      secretstore.ReadAuthz
+	// kineETCD is the kine backend endpoint, captured in start() so the
+	// startup storage migration can read legacy keys directly.
+	kineETCD endpoint.ETCDConfig
 }
 
 // WithSecretStoreStorage overrides the storage backing the SecretStore main
@@ -463,13 +466,6 @@ func WithAgentIPAM(ipam tunnet.IPAM) Option {
 	}
 }
 
-// WithVNIPool sets the VNI pool for tunnel agents.
-func WithVNIPool(pool *vni.VNIPool) Option {
-	return func(o *options) {
-		o.vniPool = pool
-	}
-}
-
 // WithSkipBuiltinControllers skips the built-in controllers (Proxy, TunnelNode, Gateway, etc.)
 // and the APIService wait. Use this when you only need the apiserver functionality without
 // the full controller set, e.g., for custom apiservers that register their own resource types.
@@ -543,8 +539,6 @@ func defaultResources() []resource.Object {
 		&corev1alpha2.CloudMonitoringIntegration{},
 		&corev1alpha2.DomainZone{},
 		&corev1alpha2.Proxy{},
-		&corev1alpha2.Tunnel{},
-		&corev1alpha2.TunnelAgent{},
 
 		&corev1alpha.Backend{},
 		&corev1alpha.CloudMonitoringIntegration{},
@@ -605,8 +599,6 @@ func defaultOptions(ctx context.Context) (*options, error) {
 		return nil, fmt.Errorf("failed to create proxy IPAM: %w", err)
 	}
 
-	vniPool := vni.NewVNIPool()
-
 	opts := &options{
 		clientConfig: NewClientConfig(),
 
@@ -632,7 +624,6 @@ func defaultOptions(ctx context.Context) (*options, error) {
 
 		proxyIPAM: proxyIPAM,
 		agentIPAM: agentIPAM,
-		vniPool:   vniPool,
 
 		// Secret-binding validation is always on: it only rejects writes
 		// that would fail at materialization time anyway, with a better
@@ -745,6 +736,15 @@ func (m *Manager) Start(
 			return fmt.Errorf("failed to wait for APIService %s: %v", corev1alpha2.GroupVersion.Group, err)
 		}
 
+		// One-shot migration of legacy core/v1alpha2 Tunnel/TunnelAgent objects to
+		// the vpc.apoxy.dev group. Runs before the controllers so the VPCNetwork
+		// provisioner sees migrated networks on its first reconcile. No-op once no
+		// legacy objects remain.
+		log.Infof("Running legacy Tunnel storage migration")
+		if err := migration.Migrate(ctx, dOpts.kineETCD, dOpts.clientConfig); err != nil {
+			return fmt.Errorf("legacy Tunnel storage migration failed: %v", err)
+		}
+
 		// Start the Status Runner to write Gateway API resource statuses back to the API server.
 		// This subscribes to status updates from the gateway translation pipeline and writes
 		// them back to Kubernetes.
@@ -814,22 +814,6 @@ func (m *Manager) Start(
 			}
 			return nil
 		})
-
-		log.Infof("Registering Tunnel controller")
-		tunnelReconciler := controllers.NewTunnelReconciler(m.manager.GetClient())
-		if err := tunnelReconciler.SetupWithManager(m.manager); err != nil {
-			return fmt.Errorf("failed to set up Tunnel controller: %v", err)
-		}
-
-		log.Infof("Registering TunnelAgent controller")
-		tunnelAgentReconciler := controllers.NewTunnelAgentReconciler(
-			m.manager.GetClient(),
-			dOpts.agentIPAM,
-			dOpts.vniPool,
-		)
-		if err := tunnelAgentReconciler.SetupWithManager(ctx, m.manager); err != nil {
-			return fmt.Errorf("failed to set up TunnelAgent controller: %v", err)
-		}
 
 		log.Infof("Registering Relay lease watcher")
 		if err := controllers.NewRelayLeaseWatcher(m.manager.GetClient()).SetupWithManager(m.manager); err != nil {
@@ -1006,10 +990,11 @@ func start(
 			}
 		}
 	}
-	kineStore, err := NewKineStorage(ctx, opts.sqlitePath, opts.sqliteConnArgs, kineLogFormat)
+	kineStore, etcdConfig, err := NewKineStorage(ctx, opts.sqlitePath, opts.sqliteConnArgs, kineLogFormat)
 	if err != nil {
 		return fmt.Errorf("failed to create kine storage: %w", err)
 	}
+	opts.kineETCD = etcdConfig
 
 	srvBuilder := builder.NewServerBuilder().
 		WithAdditionalSchemeInstallers(registerCrossVersionConversions, registerFieldLabelConversions)

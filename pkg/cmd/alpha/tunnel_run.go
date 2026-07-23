@@ -22,6 +22,7 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/tools/clientcmd"
 
@@ -82,21 +83,47 @@ var tunnelRunCmd = &cobra.Command{
 				return fmt.Errorf("creating clientset: %w", err)
 			}
 
-			tunnel, err := clientset.CoreV1alpha2().Tunnels().Get(cmd.Context(), tunnelName, metav1.GetOptions{})
+			// VPCNetwork carries the connect credential; ready Relay objects
+			// carry the dialable underlay addresses. (Phase 7 replaces --name
+			// with --vpc and re-lists relays on connection loss; this is the
+			// minimal discovery port that keeps the OSS agent path working after
+			// the legacy Tunnel kind was removed in phase 6.)
+			network, err := clientset.VpcV1alpha1().VPCNetworks().Get(cmd.Context(), tunnelName, metav1.GetOptions{})
 			if err != nil {
-				return fmt.Errorf("fetching Tunnel %q: %w", tunnelName, err)
+				return fmt.Errorf("fetching VPCNetwork %q: %w", tunnelName, err)
+			}
+			if network.Status.Credentials == nil || network.Status.Credentials.Token == "" {
+				return fmt.Errorf("network %q has no credentials configured", tunnelName)
 			}
 
-			if len(tunnel.Status.Addresses) == 0 {
-				return fmt.Errorf("tunnel %q has no relay addresses configured", tunnelName)
+			relays, err := clientset.VpcV1alpha1().Relays().List(cmd.Context(), metav1.ListOptions{})
+			if err != nil {
+				return fmt.Errorf("listing relays: %w", err)
+			}
+			var addrs []string
+			for i := range relays.Items {
+				relay := &relays.Items[i]
+				if !relay.Status.Ready {
+					continue
+				}
+				// A nil selector serves all networks (per RelaySpec).
+				if relay.Spec.NetworkSelector != nil {
+					sel, err := metav1.LabelSelectorAsSelector(relay.Spec.NetworkSelector)
+					if err != nil {
+						return fmt.Errorf("relay %q has an invalid network selector: %w", relay.Name, err)
+					}
+					if !sel.Matches(labels.Set(network.Labels)) {
+						continue
+					}
+				}
+				addrs = append(addrs, relay.Spec.Addresses...)
+			}
+			if len(addrs) == 0 {
+				return fmt.Errorf("no ready relays serving network %q", tunnelName)
 			}
 
-			if tunnel.Status.Credentials == nil {
-				return fmt.Errorf("tunnel %q has no credentials configured", tunnelName)
-			}
-
-			seedRelayAddr = tunnel.Status.Addresses[rand.IntN(len(tunnel.Status.Addresses))]
-			token = tunnel.Status.Credentials.Token
+			seedRelayAddr = addrs[rand.IntN(len(addrs))]
+			token = network.Status.Credentials.Token
 		}
 
 		g, ctx := errgroup.WithContext(cmd.Context())

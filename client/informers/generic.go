@@ -103,10 +103,6 @@ func (f *sharedInformerFactory) ForResource(resource schema.GroupVersionResource
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Core().V1alpha2().DomainZones().Informer()}, nil
 	case v1alpha2.SchemeGroupVersion.WithResource("proxies"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Core().V1alpha2().Proxies().Informer()}, nil
-	case v1alpha2.SchemeGroupVersion.WithResource("tunnels"):
-		return &genericInformer{resource: resource.GroupResource(), informer: f.Core().V1alpha2().Tunnels().Informer()}, nil
-	case v1alpha2.SchemeGroupVersion.WithResource("tunnelagents"):
-		return &genericInformer{resource: resource.GroupResource(), informer: f.Core().V1alpha2().TunnelAgents().Informer()}, nil
 
 		// Group=core.apoxy.dev, Version=v1alpha3
 	case v1alpha3.SchemeGroupVersion.WithResource("domainrecords"):

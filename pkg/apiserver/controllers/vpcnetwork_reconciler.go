@@ -2,7 +2,10 @@ package controllers
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
+	"io"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -18,6 +21,20 @@ import (
 
 // maxNetworkID is the exclusive upper bound of the 24-bit NetworkID space.
 const maxNetworkID = 1 << 24
+
+// tokenLength is the byte length of a minted connect credential (32 bytes ->
+// 43-char base64 string).
+const tokenLength = 32
+
+// generateBearerToken returns a cryptographically random URL-safe bearer token
+// of n bytes.
+func generateBearerToken(n int) (string, error) {
+	b := make([]byte, n)
+	if _, err := io.ReadFull(rand.Reader, b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
+}
 
 var _ reconcile.Reconciler = &VPCNetworkReconciler{}
 

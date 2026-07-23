@@ -31,10 +31,6 @@ type Interface interface {
 	DomainZones() DomainZoneInformer
 	// Proxies returns a ProxyInformer.
 	Proxies() ProxyInformer
-	// Tunnels returns a TunnelInformer.
-	Tunnels() TunnelInformer
-	// TunnelAgents returns a TunnelAgentInformer.
-	TunnelAgents() TunnelAgentInformer
 }
 
 type version struct {
@@ -66,14 +62,4 @@ func (v *version) DomainZones() DomainZoneInformer {
 // Proxies returns a ProxyInformer.
 func (v *version) Proxies() ProxyInformer {
 	return &proxyInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
-}
-
-// Tunnels returns a TunnelInformer.
-func (v *version) Tunnels() TunnelInformer {
-	return &tunnelInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
-}
-
-// TunnelAgents returns a TunnelAgentInformer.
-func (v *version) TunnelAgents() TunnelAgentInformer {
-	return &tunnelAgentInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
 }

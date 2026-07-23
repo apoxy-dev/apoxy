@@ -32,11 +32,3 @@ type DomainZoneListerExpansion interface{}
 // ProxyListerExpansion allows custom methods to be added to
 // ProxyLister.
 type ProxyListerExpansion interface{}
-
-// TunnelListerExpansion allows custom methods to be added to
-// TunnelLister.
-type TunnelListerExpansion interface{}
-
-// TunnelAgentListerExpansion allows custom methods to be added to
-// TunnelAgentLister.
-type TunnelAgentListerExpansion interface{}

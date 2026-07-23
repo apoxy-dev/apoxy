@@ -31,8 +31,6 @@ type CoreV1alpha2Interface interface {
 	CloudMonitoringIntegrationsGetter
 	DomainZonesGetter
 	ProxiesGetter
-	TunnelsGetter
-	TunnelAgentsGetter
 }
 
 // CoreV1alpha2Client is used to interact with features provided by the core.apoxy.dev group.
@@ -54,14 +52,6 @@ func (c *CoreV1alpha2Client) DomainZones() DomainZoneInterface {
 
 func (c *CoreV1alpha2Client) Proxies() ProxyInterface {
 	return newProxies(c)
-}
-
-func (c *CoreV1alpha2Client) Tunnels() TunnelInterface {
-	return newTunnels(c)
-}
-
-func (c *CoreV1alpha2Client) TunnelAgents() TunnelAgentInterface {
-	return newTunnelAgents(c)
 }
 
 // NewForConfig creates a new CoreV1alpha2Client for the given config.

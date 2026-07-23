@@ -24,7 +24,3 @@ type CloudMonitoringIntegrationExpansion interface{}
 type DomainZoneExpansion interface{}
 
 type ProxyExpansion interface{}
-
-type TunnelExpansion interface{}
-
-type TunnelAgentExpansion interface{}

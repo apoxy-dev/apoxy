@@ -156,12 +156,12 @@ func startIncrementalVacuum(ctx context.Context, path string, interval time.Dura
 // dbPath is the SQLite database file path (or "file::memory:" for in-memory).
 // connArgs are SQLite connection parameters (e.g. {"cache": "shared", "_journal_mode": "WAL"}).
 // logFormat should be "json" for production or "plain" for development.
-func NewKineStorage(ctx context.Context, dbPath string, connArgs map[string]string, logFormat string) (serverbuilder.StoreFn, error) {
+func NewKineStorage(ctx context.Context, dbPath string, connArgs map[string]string, logFormat string) (serverbuilder.StoreFn, endpoint.ETCDConfig, error) {
 	// Skipped for in-memory DBs where there are no file pages to reclaim.
 	if !strings.Contains(dbPath, ":memory:") {
 		// Enable incremental auto_vacuum before kine opens the database.
 		if err := enableAutoVacuum(dbPath); err != nil {
-			return nil, fmt.Errorf("enabling auto_vacuum: %w", err)
+			return nil, endpoint.ETCDConfig{}, fmt.Errorf("enabling auto_vacuum: %w", err)
 		}
 	}
 
@@ -178,7 +178,7 @@ func NewKineStorage(ctx context.Context, dbPath string, connArgs map[string]stri
 	}
 	listenerDir, err := os.MkdirTemp(tmpDir, "apiserver-kine-*")
 	if err != nil {
-		return nil, fmt.Errorf("creating kine listener dir: %w", err)
+		return nil, endpoint.ETCDConfig{}, fmt.Errorf("creating kine listener dir: %w", err)
 	}
 	go func() {
 		<-ctx.Done()
@@ -206,7 +206,7 @@ func NewKineStorage(ctx context.Context, dbPath string, connArgs map[string]stri
 		LogFormat:           logFormat,
 	})
 	if err != nil {
-		return nil, err
+		return nil, endpoint.ETCDConfig{}, err
 	}
 
 	// Start periodic incremental vacuum to reclaim freelist pages.
@@ -222,7 +222,7 @@ func NewKineStorage(ctx context.Context, dbPath string, connArgs map[string]stri
 			groupVersioner: s.StorageVersioner,
 		}
 		options.AttrFunc = customGetAttrs
-	}, nil
+	}, etcdConfig, nil
 }
 
 type kineRESTOptionsGetter struct {
