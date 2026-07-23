@@ -131,9 +131,13 @@ func (w *RelayLeaseWatcher) Reconcile(ctx context.Context, req reconcile.Request
 	var lease apoxycoordv1.Lease
 	err := w.Get(ctx, req.NamespacedName, &lease)
 	if apierrors.IsNotFound(err) {
-		// Lease already gone (e.g. graceful drain deleted it): GC the Relay.
+		// Lease already gone (e.g. graceful drain deleted it): GC the Relay and
+		// its orphaned Tunnels (a crashed relay never deletes its own).
 		log.Info("Relay lease gone, deleting relay", "relay", relayName)
-		return reconcile.Result{}, w.deleteRelay(ctx, relayName)
+		if err := w.deleteRelay(ctx, relayName); err != nil {
+			return reconcile.Result{}, err
+		}
+		return reconcile.Result{}, w.deleteTunnelsForRelay(ctx, relayName)
 	}
 	if err != nil {
 		return reconcile.Result{}, err
@@ -156,6 +160,9 @@ func (w *RelayLeaseWatcher) Reconcile(ctx context.Context, req reconcile.Request
 	if ok && age > w.leaseDuration+w.gracePeriod {
 		log.Info("Relay lease expired past grace, garbage-collecting", "relay", relayName, "age", age.String())
 		if err := w.deleteRelay(ctx, relayName); err != nil {
+			return reconcile.Result{}, err
+		}
+		if err := w.deleteTunnelsForRelay(ctx, relayName); err != nil {
 			return reconcile.Result{}, err
 		}
 		if err := w.Delete(ctx, &lease); err != nil && !apierrors.IsNotFound(err) {
@@ -190,6 +197,14 @@ func (w *RelayLeaseWatcher) deleteRelay(ctx context.Context, relayName string) e
 	relay := &vpcv1alpha1.Relay{}
 	relay.SetName(relayName)
 	return client.IgnoreNotFound(w.Delete(ctx, relay))
+}
+
+// deleteTunnelsForRelay garbage-collects the Tunnels a relay owned once its
+// lease is gone. A crashed relay never deletes its own Tunnels, so expiry - not
+// disconnect - is what reclaims them (§2.4). Tunnels carry the relay's name in
+// the LabelRelay label, stamped by the relay at create.
+func (w *RelayLeaseWatcher) deleteTunnelsForRelay(ctx context.Context, relayName string) error {
+	return w.DeleteAllOf(ctx, &vpcv1alpha1.Tunnel{}, client.MatchingLabels{tunnelctrl.LabelRelay: relayName})
 }
 
 // SetupWithManager wires the watcher to relay Leases only.

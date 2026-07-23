@@ -99,13 +99,23 @@ func TestRelayLeaseWatcherReadinessTransitions(t *testing.T) {
 	}
 }
 
+// relayTunnel builds a Tunnel owned by relay r0 (via the LabelRelay stamp).
+func relayTunnel(name string) *vpcv1alpha1.Tunnel {
+	return &vpcv1alpha1.Tunnel{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   name,
+			Labels: map[string]string{tunnelctrl.LabelRelay: "r0"},
+		},
+	}
+}
+
 func TestRelayLeaseWatcherGCsRelayWhenLeaseGone(t *testing.T) {
 	ctx := context.Background()
-	// Relay exists but its lease does not.
+	// Relay + one of its Tunnels exist, but its lease does not.
 	c := fake.NewClientBuilder().
 		WithScheme(watcherScheme(t)).
 		WithStatusSubresource(&vpcv1alpha1.Relay{}).
-		WithObjects(relayObj(true)).
+		WithObjects(relayObj(true), relayTunnel("conn-1")).
 		Build()
 	w := NewRelayLeaseWatcher(c)
 
@@ -114,6 +124,8 @@ func TestRelayLeaseWatcherGCsRelayWhenLeaseGone(t *testing.T) {
 
 	err = c.Get(ctx, client.ObjectKey{Name: "r0"}, &vpcv1alpha1.Relay{})
 	require.True(t, apierrors.IsNotFound(err), "relay garbage-collected")
+	err = c.Get(ctx, client.ObjectKey{Name: "conn-1"}, &vpcv1alpha1.Tunnel{})
+	require.True(t, apierrors.IsNotFound(err), "orphaned tunnel garbage-collected")
 }
 
 func TestRelayLeaseWatcherIgnoresForeignLease(t *testing.T) {
@@ -174,7 +186,7 @@ func TestRelayLeaseWatcherGCsAfterGrace(t *testing.T) {
 	c := fake.NewClientBuilder().
 		WithScheme(watcherScheme(t)).
 		WithStatusSubresource(&vpcv1alpha1.Relay{}).
-		WithObjects(relayLease(120*time.Second, now), relayObj(true)).
+		WithObjects(relayLease(120*time.Second, now), relayObj(true), relayTunnel("conn-1")).
 		Build()
 	w := NewRelayLeaseWatcher(c)
 	w.now = func() time.Time { return now }
@@ -187,6 +199,8 @@ func TestRelayLeaseWatcherGCsAfterGrace(t *testing.T) {
 	require.True(t, apierrors.IsNotFound(err), "relay garbage-collected")
 	err = c.Get(ctx, client.ObjectKey{Namespace: "default", Name: tunnelctrl.LeaseName("r0")}, &apoxycoordv1.Lease{})
 	require.True(t, apierrors.IsNotFound(err), "stale lease garbage-collected")
+	err = c.Get(ctx, client.ObjectKey{Name: "conn-1"}, &vpcv1alpha1.Tunnel{})
+	require.True(t, apierrors.IsNotFound(err), "orphaned tunnel garbage-collected past grace")
 }
 
 func TestRelayLeaseWatcherIgnoresOtherNamespace(t *testing.T) {

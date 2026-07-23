@@ -15,6 +15,7 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/utils/ptr"
@@ -25,7 +26,8 @@ import (
 
 	"github.com/apoxy-dev/icx"
 
-	corev1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
+	apoxycoordv1 "github.com/apoxy-dev/apoxy/api/coordination/v1"
+	vpcv1alpha1 "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1"
 	"github.com/apoxy-dev/apoxy/pkg/cert/reload"
 	"github.com/apoxy-dev/apoxy/pkg/cryptoutils"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel"
@@ -33,7 +35,9 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/bifurcate"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/controllers"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/hasher"
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/ipalloc"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/router"
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/vni"
 )
 
 var (
@@ -47,9 +51,10 @@ var (
 	certFile             string // path to TLS certificate (PEM) used when not in dev mode
 	keyFile              string // path to TLS private key (PEM) used when not in dev mode
 	idSecretFile         string // path to secret for the ID hasher used when not in dev mode
-	relayMetricsAddr     string // bind address for the metrics endpoint
-	relayHealthAddr      string // bind address for the health/ready probes
-	labelSelector        string // label selector for controllers
+	relayMetricsAddr     string   // bind address for the metrics endpoint
+	relayHealthAddr      string   // bind address for the health/ready probes
+	labelSelector        string   // network selector for the relay's served VPCNetworks
+	relayAddresses       []string // underlay endpoints agents dial (Relay.Spec.Addresses)
 )
 
 var tunnelRelayCmd = &cobra.Command{
@@ -165,8 +170,11 @@ var tunnelRelayCmd = &cobra.Command{
 		}
 
 		scheme := runtime.NewScheme()
-		if err := corev1alpha2.Install(scheme); err != nil {
-			return fmt.Errorf("installing corev1alpha2 scheme: %w", err)
+		if err := vpcv1alpha1.Install(scheme); err != nil {
+			return fmt.Errorf("installing vpc scheme: %w", err)
+		}
+		if err := apoxycoordv1.Install(scheme); err != nil {
+			return fmt.Errorf("installing coordination scheme: %w", err)
 		}
 
 		ctrl.SetLogger(logr.FromSlogHandler(slog.Default().Handler()))
@@ -192,15 +200,46 @@ var tunnelRelayCmd = &cobra.Command{
 			return fmt.Errorf("failed to add readyz check: %w", err)
 		}
 
-		tunnelReconciler := controllers.NewTunnelReconciler(mgr.GetClient(), relay, labelSelector)
-		if err := tunnelReconciler.SetupWithManager(mgr); err != nil {
-			return fmt.Errorf("failed to setup tunnel reconciler: %w", err)
+		// The publisher owns connect/disconnect: it allocates each connection's
+		// addresses in-process from a leased /80 block plus a relay-local VNI,
+		// and writes the single-writer Tunnel object (APO-825 §2.4/§2.8).
+		leaser := ipalloc.NewLocalBlockLeaser(ctx)
+		vnis := vni.NewVNIAllocator()
+		publisher := controllers.NewTunnelPublisher(mgr.GetClient(), relay, leaser, vnis)
+
+		// The VPCNetwork watcher feeds the relay each network's connect credential
+		// and resolves network names to NetworkIDs for the publisher.
+		vpcNetworkReconciler := controllers.NewVPCNetworkReconciler(mgr.GetClient(), relay, publisher)
+		if err := vpcNetworkReconciler.SetupWithManager(mgr); err != nil {
+			return fmt.Errorf("failed to setup VPCNetwork watcher: %w", err)
 		}
 
-		tunnelAgentReconciler := controllers.NewTunnelAgentReconciler(mgr.GetClient(), relay, labelSelector)
-		if err := tunnelAgentReconciler.SetupWithManager(mgr); err != nil {
-			return fmt.Errorf("failed to setup tunnel agent reconciler: %w", err)
+		// A label selector scopes which networks this relay serves (nil = all).
+		var networkSelector *metav1.LabelSelector
+		if labelSelector != "" {
+			networkSelector, err = metav1.ParseToLabelSelector(labelSelector)
+			if err != nil {
+				return fmt.Errorf("failed to parse network selector: %w", err)
+			}
 		}
+
+		// The registrar creates the write-once Relay object and renews its lease
+		// so the apiserver lease watcher can track relay liveness (§2.3).
+		addresses := relayAddresses
+		if len(addresses) == 0 {
+			addresses = []string{listenAddress}
+		}
+		registrar := controllers.NewRelayRegistrar(mgr.GetClient(), mgr.GetClient(), relay, addresses, networkSelector)
+		if err := mgr.Add(registrar); err != nil {
+			return fmt.Errorf("failed to add relay registrar: %w", err)
+		}
+
+		// Drain (§5): deregister the relay and release its leased blocks at
+		// shutdown. SetOnShutdown is single-callback, so compose both here.
+		relay.SetOnShutdown(func(ctx context.Context) {
+			registrar.Drain(ctx)
+			publisher.ReleaseAll(ctx)
+		})
 
 		g.Go(func() error {
 			return mgr.Start(ctx)
@@ -231,7 +270,8 @@ func init() {
 	tunnelRelayCmd.Flags().StringVar(&idSecretFile, "id-secret-file", "", "Path to the secret used for stable ID hashing. Required when not running with --dev.")
 	tunnelRelayCmd.Flags().StringVar(&relayMetricsAddr, "metrics-addr", "127.0.0.1:8081", "Bind address for the metrics endpoint.")
 	tunnelRelayCmd.Flags().StringVar(&relayHealthAddr, "health-addr", "127.0.0.1:8080", "Bind address for the health and readiness probes.")
-	tunnelRelayCmd.Flags().StringVar(&labelSelector, "label-selector", "", "Label selector to filter Tunnel and TunnelAgent objects (e.g. 'app=apoxy').")
+	tunnelRelayCmd.Flags().StringVar(&labelSelector, "label-selector", "", "Label selector scoping which VPCNetworks this relay serves (e.g. 'tier=prod'). Empty serves all.")
+	tunnelRelayCmd.Flags().StringSliceVar(&relayAddresses, "addresses", nil, "Underlay endpoints agents dial to reach this relay (Relay.Spec.Addresses). Defaults to --listen-addr.")
 
 	tunnelCmd.AddCommand(tunnelRelayCmd)
 }

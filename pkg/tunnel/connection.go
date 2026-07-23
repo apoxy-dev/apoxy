@@ -35,12 +35,21 @@ type connection struct {
 	// the connection is published to the relay's map, so no reader can observe a
 	// zero master.
 	master api.MasterSecret
+	// network is the VPCNetwork name the credential authorized this connection
+	// for (from AuthzResult.Network). Immutable after construction. The relay
+	// resolves it to a NetworkID to pick the leased block to allocate from.
+	network string
 	// labels, advertisedRoutes, and agentInstance are the agent-declared
 	// connect-request fields, already validated against the credential's
 	// bounds. Immutable after construction, like master.
 	labels           map[string]string
 	advertisedRoutes []netip.Prefix
 	agentInstance    string
+	// addresses is the full dual-stack overlay address set assigned by the
+	// relay's allocator (IPv6 /96 plus best-effort IPv4 /32). overlayAddr holds
+	// the primary (IPv6) address programmed onto the router; this is the set
+	// reported to the agent and written to the Tunnel object.
+	addresses []string
 }
 
 // Close tears down the VNI and removes any router state.
@@ -100,14 +109,7 @@ func (c *connection) SetVNI(ctx context.Context, vni uint) error {
 
 	var allowedRoutes []icx.Route
 	if c.overlayAddr != nil {
-		// Relays shouldn't have conflicting destinations, so we can use a wildcard src.
-		var src netip.Prefix
-		if c.overlayAddr.Addr().Is4() {
-			src = netip.MustParsePrefix("0.0.0.0/0")
-		} else {
-			src = netip.MustParsePrefix("::/0")
-		}
-		allowedRoutes = []icx.Route{{Src: src, Dst: *c.overlayAddr}}
+		allowedRoutes = allowedRoutesForDst(*c.overlayAddr)
 	}
 
 	fa := netstack.ToFullAddress(c.remoteAddr)
@@ -147,6 +149,17 @@ func (c *connection) SetVNI(ctx context.Context, vni uint) error {
 	}
 
 	return nil
+}
+
+// allowedRoutesForDst returns the icx route permitting traffic to dst from any
+// source. Relays shouldn't have conflicting destinations, so a wildcard src
+// (0.0.0.0/0 or ::/0, matching dst's address family) is safe.
+func allowedRoutesForDst(dst netip.Prefix) []icx.Route {
+	src := netip.MustParsePrefix("::/0")
+	if dst.Addr().Is4() {
+		src = netip.MustParsePrefix("0.0.0.0/0")
+	}
+	return []icx.Route{{Src: src, Dst: dst}}
 }
 
 // OverlayAddress returns the overlay address/cidr assigned to this connection.
@@ -208,14 +221,7 @@ func (c *connection) SetOverlayAddress(addr string) error {
 	// Update in-memory state.
 	c.overlayAddr = &p
 
-	// Relays shouldn't have conflicting destinations, so we can use a wildcard src.
-	var src netip.Prefix
-	if c.overlayAddr.Addr().Is4() {
-		src = netip.MustParsePrefix("0.0.0.0/0")
-	} else {
-		src = netip.MustParsePrefix("::/0")
-	}
-	allowedRoutes := []icx.Route{{Src: src, Dst: p}}
+	allowedRoutes := allowedRoutesForDst(p)
 
 	// 2) If a VNI is active, update its allowed routes in-place.
 	if c.vni != nil {
@@ -253,6 +259,12 @@ func (c *connection) Master() api.MasterSecret {
 	return c.master
 }
 
+// Network returns the VPCNetwork name this connection is bound to. Immutable
+// after construction.
+func (c *connection) Network() string {
+	return c.network
+}
+
 // Labels returns the agent-declared labels for this connection. Immutable
 // after construction.
 func (c *connection) Labels() map[string]string {
@@ -270,6 +282,22 @@ func (c *connection) AdvertisedRoutes() []netip.Prefix {
 // Immutable after construction.
 func (c *connection) AgentInstance() string {
 	return c.agentInstance
+}
+
+// SetAddresses records the dual-stack overlay address set assigned to this
+// connection. It does not program the router (SetOverlayAddress does that for
+// the primary address); it is the set reported to the agent and the Tunnel.
+func (c *connection) SetAddresses(addrs []string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.addresses = addrs
+}
+
+// Addresses returns the dual-stack overlay address set, or nil if unset.
+func (c *connection) Addresses() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.addresses
 }
 
 // Stats returns a snapshot built from the currently configured VNI (if any).

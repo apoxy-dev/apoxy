@@ -70,6 +70,34 @@ func NetworkIDHexToBytes(h string) (NetworkID, error) {
 	return bytes, nil
 }
 
+// NetworkIDFromCIDR extracts the 24-bit NetworkID (ULA bytes 6-8) from a
+// network's overlay /72 prefix in CIDR string form.
+func NetworkIDFromCIDR(cidr string) (NetworkID, error) {
+	pfx, err := netip.ParsePrefix(cidr)
+	if err != nil {
+		return NetworkID{}, fmt.Errorf("failed to parse overlay CIDR %q: %w", cidr, err)
+	}
+	if !pfx.Addr().Is6() {
+		return NetworkID{}, fmt.Errorf("overlay CIDR %q is not IPv6", cidr)
+	}
+	b := pfx.Addr().As16()
+	return NetworkID{b[6], b[7], b[8]}, nil
+}
+
+// NetworkPrefix returns the overlay /72 for a NetworkID. Unlike
+// NewULA(ctx, id).NetPrefix(), it constructs no go-ipam instance — it is pure
+// address arithmetic, safe on hot paths.
+func NetworkPrefix(id NetworkID) netip.Prefix {
+	addr := apoxyULAPrefix.Addr().As16()
+	copy(addr[6:], id[:])
+	return netip.PrefixFrom(netip.AddrFrom16(addr), 72).Masked()
+}
+
+// NetworkPrefixOf returns the overlay /72 containing addr (its network portion).
+func NetworkPrefixOf(addr netip.Addr) netip.Prefix {
+	return netip.PrefixFrom(addr, 72).Masked()
+}
+
 // NetULA represents a ULA prefix for a network.
 type NetULA struct {
 	NetID      NetworkID

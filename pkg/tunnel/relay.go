@@ -18,7 +18,6 @@ import (
 	"github.com/alphadose/haxmap"
 	"github.com/apoxy-dev/icx"
 	"github.com/apoxy-dev/icx/psp"
-	"github.com/avast/retry-go/v4"
 	"github.com/julienschmidt/httprouter"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
@@ -343,6 +342,7 @@ func (r *Relay) handleConnect(w http.ResponseWriter, req *http.Request, ps httpr
 		localAddr:        localAddr,
 		remoteAddr:       remoteAddr,
 		master:           master,
+		network:          authz.Network,
 		labels:           request.Labels,
 		advertisedRoutes: advertisedRoutes,
 		agentInstance:    request.AgentInstance,
@@ -356,41 +356,40 @@ func (r *Relay) handleConnect(w http.ResponseWriter, req *http.Request, ps httpr
 	r.mu.Unlock()
 
 	tunnelName := ps.ByName("name")
+	// onConnect allocates the connection's addresses and VNI in-process and,
+	// on the new path, creates the Tunnel object - all synchronously, so the
+	// connection is fully ready when it returns. There is no apiserver
+	// round-trip and no await-the-reconciler retry loop (the legacy structure,
+	// with its swallowed error, is deleted rather than fixed - APO-825 §2.4).
 	if err := onConnect(req.Context(), tunnelName, request.Agent, conn); err != nil {
-		slog.Error("onConnect callback failed", slog.Any("error", err))
+		slog.Error("Failed to establish connection", slog.String("connID", conn.ID()), slog.Any("error", err))
+		r.teardownConn(req.Context(), conn)
 		http.Error(w, "Failed to handle connection", http.StatusInternalServerError)
 		return
 	}
 
-	// Wait until the connection has a VNI and overlay address assigned.
-	if err := retry.Do(
-		func() error {
-			if conn.VNI() == nil || conn.OverlayAddress() == "" {
-				return fmt.Errorf("connection not ready")
-			}
-
-			return nil
-		},
-		retry.Context(req.Context()),
-		retry.Delay(100*time.Millisecond),
-		retry.Attempts(10),
-	); err != nil {
-		slog.Warn("Connection did not become ready", slog.String("connID", conn.ID()), slog.Any("error", err))
+	vni := conn.VNI()
+	if vni == nil || conn.OverlayAddress() == "" {
+		slog.Warn("Connection was not assigned a VNI and address", slog.String("connID", conn.ID()))
+		r.teardownConn(req.Context(), conn)
 		http.Error(w, "Connection is not ready", http.StatusServiceUnavailable)
 		return
 	}
 
-	vni := conn.VNI()
-	if vni == nil {
-		slog.Warn("Connection has no VNI assigned", slog.String("connID", conn.ID()))
-		http.Error(w, "Connection is not ready", http.StatusBadRequest)
-		return
+	// Reap the connection when its QUIC control session closes (~15s after an
+	// agent dies, via MaxIdleTimeout). Primary, session-close-driven disconnect
+	// path (§2.2); startGC's silence sweep is a slower backstop.
+	if hij, ok := w.(http3.Hijacker); ok {
+		if qconn := hij.Connection(); qconn != nil {
+			go r.watchSessionClose(qconn.Context(), conn.ID())
+		}
 	}
 
 	// First epoch is 1 (epoch 0 is a reserved SPI counter the handler rejects).
 	keys, err := r.installEpoch(conn, *vni)
 	if err != nil {
 		slog.Error("Failed to install connection keys", slog.String("connID", conn.ID()), slog.Any("error", err))
+		r.teardownConn(req.Context(), conn)
 		http.Error(w, "Failed to update virtual network keys", http.StatusInternalServerError)
 		return
 	}
@@ -408,9 +407,7 @@ func (r *Relay) handleConnect(w http.ResponseWriter, req *http.Request, ps httpr
 			// Always include the network prefix so the agent can reach other endpoints
 			// in the same overlay network (e.g. backplane services).
 			if pfx.Addr().Is6() {
-				if ula, err := tunnet.ULAFromPrefix(req.Context(), pfx); err == nil {
-					routes = append(routes, api.Route{Destination: ula.NetPrefix().String()})
-				}
+				routes = append(routes, api.Route{Destination: tunnet.NetworkPrefixOf(pfx.Addr()).String()})
 			}
 		}
 	}
@@ -422,12 +419,20 @@ func (r *Relay) handleConnect(w http.ResponseWriter, req *http.Request, ps httpr
 
 	relayAddrs, _ := r.relayAddrs.Get(tunnelName)
 
+	// Report the full dual-stack address set the allocator assigned; fall back
+	// to the single overlay address when only that was set (e.g. tests, or an
+	// onConnect that assigns just the primary address).
+	addresses := conn.Addresses()
+	if len(addresses) == 0 {
+		addresses = []string{conn.OverlayAddress()}
+	}
+
 	resp := api.ConnectResponse{
 		ID:             conn.ID(),
 		VNI:            *vni,
 		MTU:            icx.MTU(api.TunnelPathMTU),
 		Keys:           keys,
-		Addresses:      []string{conn.OverlayAddress()},
+		Addresses:      addresses,
 		Routes:         routes,
 		RelayAddresses: relayAddrs,
 	}
@@ -449,6 +454,52 @@ func (r *Relay) handleConnect(w http.ResponseWriter, req *http.Request, ps httpr
 	}
 }
 
+// teardownConn removes a connection from the relay's maps and releases every
+// resource onConnect allocated (addresses, VNI, Tunnel object) via the
+// onDisconnect callback. It is used both to abort a connection that failed to
+// finish establishing and to reap one whose QUIC control session has closed. It
+// is idempotent: GetAndDel makes a second call a no-op.
+func (r *Relay) teardownConn(ctx context.Context, conn *connection) {
+	id := conn.ID()
+	if _, ok := r.conns.GetAndDel(id); !ok {
+		return
+	}
+	agentName, _ := r.agents.Get(id)
+	r.agents.Del(id)
+
+	if r.metricsStore != nil {
+		r.metricsStore.Unregister(id)
+	}
+
+	if err := conn.Close(); err != nil {
+		slog.Warn("Failed to close connection during teardown", slog.String("connID", id), slog.Any("error", err))
+	}
+
+	r.mu.Lock()
+	onDisconnect := r.onDisconnect
+	r.mu.Unlock()
+	if onDisconnect != nil {
+		if err := onDisconnect(ctx, agentName, id); err != nil {
+			slog.Warn("onDisconnect callback failed during teardown", slog.String("connID", id), slog.Any("error", err))
+		}
+	}
+}
+
+// watchSessionClose reaps a connection when its QUIC control session closes. The
+// relay's control listener runs KeepAlivePeriod=5s / MaxIdleTimeout=15s on the
+// same 5-tuple as the data path (quic.go), so a dead agent's session closes in
+// ~15s and its Tunnel is deleted then. This is the primary, session-close-driven
+// disconnect path (§2.2); the silence-based startGC remains a slower backstop.
+func (r *Relay) watchSessionClose(sessCtx context.Context, id string) {
+	<-sessCtx.Done()
+	conn, ok := r.conns.Get(id)
+	if !ok {
+		return // already disconnected explicitly or reaped
+	}
+	slog.Info("Agent control session closed, disconnecting", slog.String("connID", id))
+	r.teardownConn(context.Background(), conn)
+}
+
 func (r *Relay) handleDisconnect(w http.ResponseWriter, req *http.Request, ps httprouter.Params) {
 	var request api.Request
 	if err := json.NewDecoder(req.Body).Decode(&request); err != nil && !errors.Is(err, io.EOF) {
@@ -456,36 +507,13 @@ func (r *Relay) handleDisconnect(w http.ResponseWriter, req *http.Request, ps ht
 		return
 	}
 
-	conn, ok := r.conns.GetAndDel(request.ID)
+	conn, ok := r.conns.Get(request.ID)
 	if !ok {
 		http.Error(w, "Connection not found", http.StatusNotFound)
 		return
 	}
-	r.agents.Del(request.ID)
-
-	// Unregister from agent metrics scraper.
-	if r.metricsStore != nil {
-		r.metricsStore.Unregister(request.ID)
-	}
-
-	if err := conn.Close(); err != nil {
-		slog.Warn("Failed to close connection", slog.Any("error", err))
-		http.Error(w, "Failed to close connection", http.StatusInternalServerError)
-		return
-	}
-
-	r.mu.Lock()
-	onDisconnect := r.onDisconnect
-	r.mu.Unlock()
-
-	if err := onDisconnect(req.Context(), request.Agent, request.ID); err != nil {
-		slog.Warn("onDisconnect callback failed", slog.Any("error", err))
-		http.Error(w, "Failed to handle disconnection", http.StatusInternalServerError)
-		return
-	}
-
+	r.teardownConn(req.Context(), conn)
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(""))
 }
 
 func (r *Relay) handleUpdateKeys(w http.ResponseWriter, req *http.Request, ps httprouter.Params) {
@@ -629,38 +657,12 @@ func (r *Relay) startGC(ctx context.Context, maxSilence, checkInterval time.Dura
 
 				if since := now.Sub(lastRx); since > maxSilence {
 					// Connection has been silent for too long — clean it up.
-					if _, ok := r.conns.GetAndDel(id); ok {
-						agentName, _ := r.agents.Get(id)
-						r.agents.Del(id)
-
-						slog.Warn("GC: dropping idle connection",
-							slog.String("id", id),
-							slog.Duration("silence", since),
-							slog.Duration("maxSilence", maxSilence),
-						)
-
-						if err := conn.Close(); err != nil {
-							slog.Warn("GC: failed to close connection",
-								slog.String("id", id),
-								slog.Any("error", err))
-						}
-
-						if r.metricsStore != nil {
-							r.metricsStore.Unregister(id)
-						}
-
-						r.mu.Lock()
-						onDisconnect := r.onDisconnect
-						r.mu.Unlock()
-						if onDisconnect != nil {
-							if err := onDisconnect(ctx, agentName, id); err != nil {
-								slog.Warn("GC: onDisconnect callback failed",
-									slog.String("id", id),
-									slog.String("agent", agentName),
-									slog.Any("error", err))
-							}
-						}
-					}
+					slog.Warn("GC: dropping idle connection",
+						slog.String("id", id),
+						slog.Duration("silence", since),
+						slog.Duration("maxSilence", maxSilence),
+					)
+					r.teardownConn(ctx, conn)
 				}
 				return true
 			})

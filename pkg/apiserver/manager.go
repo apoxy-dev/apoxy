@@ -831,6 +831,21 @@ func (m *Manager) Start(
 			return fmt.Errorf("failed to set up TunnelAgent controller: %v", err)
 		}
 
+		log.Infof("Registering Relay lease watcher")
+		if err := controllers.NewRelayLeaseWatcher(m.manager.GetClient()).SetupWithManager(m.manager); err != nil {
+			return fmt.Errorf("failed to set up Relay lease watcher: %v", err)
+		}
+
+		log.Infof("Registering VPCNetwork controller")
+		if err := controllers.NewVPCNetworkReconciler(m.manager.GetClient()).SetupWithManager(m.manager); err != nil {
+			return fmt.Errorf("failed to set up VPCNetwork controller: %v", err)
+		}
+
+		log.Infof("Registering VPCService controller")
+		if err := controllers.NewVPCServiceReconciler(m.manager.GetClient()).SetupWithManager(m.manager); err != nil {
+			return fmt.Errorf("failed to set up VPCService controller: %v", err)
+		}
+
 		log.Infof("Registering Gateway controller")
 		gwOpts := []gateway.Option{}
 		if dOpts.enableKubeAPI {
