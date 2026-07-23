@@ -8,10 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand"
 	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -88,6 +90,9 @@ type tunnelClientOptions struct {
 	// /diag/rpc stream to tunnelproxy and dispatches incoming commands
 	// against this registry.
 	diagRegistry *diag.Registry
+	// ID of a dead connection this dial replaces. The server excludes it
+	// from the same-server diversity check and evicts it immediately.
+	replacesConnID string
 }
 
 func defaultClientOptions() *tunnelClientOptions {
@@ -178,6 +183,16 @@ func WithPacketObserver(obs tunnelconn.PacketObserver) TunnelClientOption {
 func WithDiagRegistry(r *diag.Registry) TunnelClientOption {
 	return func(o *tunnelClientOptions) {
 		o.diagRegistry = r
+	}
+}
+
+// WithReplacesConnID declares that this dial replaces a dead connection with
+// the given ID. The server excludes that connection from its same-server
+// diversity check (an agent must not be rejected against its own corpse
+// while the server waits out the QUIC idle timeout) and evicts it.
+func WithReplacesConnID(id string) TunnelClientOption {
+	return func(o *tunnelClientOptions) {
+		o.replacesConnID = id
 	}
 }
 
@@ -291,16 +306,6 @@ func (d *TunnelDialer) Dial(
 		tlsConfig.ServerName = saddr
 	}
 
-	qConn, err := quic.DialAddr(
-		ctx,
-		addr,
-		tlsConfig,
-		quicConfig,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to dial QUIC connection: %w", err)
-	}
-
 	addrUrl := &url.URL{
 		Scheme: "https",
 		Host:   "proxy",
@@ -320,24 +325,79 @@ func (d *TunnelDialer) Dial(
 		q.Add("label."+LabelKeyVersion, build.BuildVersion)
 	}
 	q.Add(metrics.QueryParamAgentProcessID, metrics.AgentProcessID())
-	addrUrl.RawQuery = q.Encode()
-
-	tmpl, err := uritemplate.New(addrUrl.String())
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse URI template: %w", err)
+	if options.replacesConnID != "" {
+		q.Add(QueryParamReplacesConnID, options.replacesConnID)
 	}
 
-	tr := &http3.Transport{EnableDatagrams: true}
-	hConn := tr.NewClientConn(qConn)
+	// Dial in a loop so a same-server rejection (the server already holds a
+	// connection from this agent process) gets a fresh QUIC dial — and with
+	// it a fresh UDP 4-tuple, letting the load balancer hash us onto a
+	// different backend. The last attempt is marked final and the server
+	// accepts it unconditionally, so single-replica servers still connect
+	// regardless of version skew in the retry cap.
+	var (
+		conn  *connectip.Conn
+		rsp   *http.Response
+		hConn *http3.ClientConn
+	)
+	for attempt := 0; ; attempt++ {
+		q.Set(QueryParamConnAttempt, strconv.Itoa(attempt))
+		if attempt >= MaxSameServerDialAttempts-1 {
+			q.Set(QueryParamConnFinal, "1")
+		}
+		addrUrl.RawQuery = q.Encode()
 
-	conn, rsp, err := connectip.Dial(ctx, hConn, tmpl)
-	if err != nil {
-		hConn.CloseWithError(ApplicationCodeOK, fmt.Sprintf("failed to dial connect-ip connection: %v", err))
-		return nil, fmt.Errorf("failed to dial connect-ip connection: %w", err)
-	}
-	if rsp.StatusCode != http.StatusOK {
-		hConn.CloseWithError(ApplicationCodeOK, fmt.Sprintf("unexpected status code: %d", rsp.StatusCode))
-		return nil, fmt.Errorf("unexpected status code: %d", rsp.StatusCode)
+		tmpl, err := uritemplate.New(addrUrl.String())
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse URI template: %w", err)
+		}
+
+		qConn, err := quic.DialAddr(
+			ctx,
+			addr,
+			tlsConfig,
+			quicConfig,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to dial QUIC connection: %w", err)
+		}
+
+		tr := &http3.Transport{EnableDatagrams: true}
+		hConn = tr.NewClientConn(qConn)
+
+		conn, rsp, err = connectip.Dial(ctx, hConn, tmpl)
+		// connectip.Dial returns the response alongside a non-nil error for
+		// any non-2xx status, so check for a same-server rejection before
+		// the generic error path.
+		if rsp != nil && rsp.StatusCode == http.StatusConflict &&
+			rsp.Header.Get(HeaderRejectReason) == RejectReasonAgentConnExists &&
+			attempt < MaxSameServerDialAttempts-1 {
+			hConn.CloseWithError(ApplicationCodeOK, "re-dialing for server diversity")
+			// Exponential backoff with up to 50% jitter: later attempts wait
+			// longer so a busy LB has time to shuffle flows, while the jitter
+			// keeps simultaneously-rejected workers from re-dialing in
+			// lockstep onto the same backend again.
+			backoff := sameServerRedialBackoffBase << attempt
+			backoff += time.Duration(rand.Int63n(int64(backoff)/2 + 1))
+			slog.Info("Server already holds a connection from this agent, re-dialing",
+				slog.String("addr", addr), slog.Int("attempt", attempt),
+				slog.Duration("backoff", backoff))
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(backoff):
+			}
+			continue
+		}
+		if err != nil {
+			hConn.CloseWithError(ApplicationCodeOK, fmt.Sprintf("failed to dial connect-ip connection: %v", err))
+			return nil, fmt.Errorf("failed to dial connect-ip connection: %w", err)
+		}
+		if rsp.StatusCode != http.StatusOK {
+			hConn.CloseWithError(ApplicationCodeOK, fmt.Sprintf("unexpected status code: %d", rsp.StatusCode))
+			return nil, fmt.Errorf("unexpected status code: %d", rsp.StatusCode)
+		}
+		break
 	}
 
 	connUUID, err := uuid.Parse(rsp.Header.Get("X-Apoxy-Connection-UUID"))

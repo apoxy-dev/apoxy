@@ -282,6 +282,10 @@ type TunnelServer struct {
 	// conns maps tunnel connection IDs to connection instances.
 	conns *haxmap.Map[string, *conn]
 
+	// agentSlots backs the same-server diversity check; see
+	// server_diversity.go.
+	agentSlots *agentConnSlots
+
 	diagSessions *diag.Sessions
 
 	stopMu        sync.Mutex
@@ -323,6 +327,7 @@ func NewTunnelServer(
 
 		tunnels:      haxmap.New[string, *corev1alpha.TunnelNode](),
 		conns:        haxmap.New[string, *conn](),
+		agentSlots:   newAgentConnSlots(),
 		diagSessions: diag.NewSessions(),
 	}
 
@@ -628,6 +633,23 @@ func (t *TunnelServer) Drain(ctx context.Context) {
 	}
 }
 
+// rejectConnect writes an error status on a /connect request and makes sure
+// it reaches the peer: the handler-wide deferred qConn.CloseWithError fires
+// as soon as the handler returns, and its CONNECTION_CLOSE discards stream
+// data that has not been transmitted yet — without the flush-and-hold the
+// client sees a broken stream instead of the status. Set any response
+// headers before calling.
+func rejectConnect(w http.ResponseWriter, r *http.Request, status int) {
+	w.WriteHeader(status)
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+	select {
+	case <-r.Context().Done():
+	case <-time.After(3 * time.Second):
+	}
+}
+
 // ActiveTCPConns returns the number of active TCP connections being tracked
 // across all tunnels.
 func (t *TunnelServer) ActiveTCPConns() int {
@@ -697,7 +719,7 @@ func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.
 		tunUID, err := uuid.Parse(strings.TrimPrefix(r.URL.Path, "/connect/"))
 		if err != nil {
 			slog.Error("Failed to parse UUID", slog.Any("error", err), slog.String("remote", r.RemoteAddr))
-			w.WriteHeader(http.StatusBadRequest)
+			rejectConnect(w, r, http.StatusBadRequest)
 			return
 		}
 
@@ -705,7 +727,7 @@ func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.
 		clusterClient, err := t.clientGetter.GetClient(ctx, tunUID)
 		if err != nil {
 			slog.Error("Failed to get client for tunnel", slog.Any("error", err), slog.String("tunUID", tunUID.String()))
-			w.WriteHeader(http.StatusInternalServerError)
+			rejectConnect(w, r, http.StatusInternalServerError)
 			return
 		}
 
@@ -716,11 +738,13 @@ func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.
 			slog.String("URI", r.URL.String()),
 			slog.String("remote", r.RemoteAddr))
 
-		authToken := r.URL.Query().Get("token")
+		query := r.URL.Query()
+
+		authToken := query.Get("token")
 		if authToken == "" {
 			logger.Error("Missing token in connection request")
 			metrics.TunnelConnectionFailures.WithLabelValues("missing_token").Inc()
-			w.WriteHeader(http.StatusForbidden)
+			rejectConnect(w, r, http.StatusForbidden)
 			return
 		}
 
@@ -728,7 +752,7 @@ func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.
 		if !ok {
 			logger.Error("Tunnel not found")
 			metrics.TunnelConnectionFailures.WithLabelValues("tunnel_not_found").Inc()
-			w.WriteHeader(http.StatusNotFound)
+			rejectConnect(w, r, http.StatusNotFound)
 			return
 		}
 
@@ -736,7 +760,7 @@ func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.
 		if tn.Status.Credentials == nil || tn.Status.Credentials.Token == "" {
 			logger.Error("Missing credentials for TunnelNode")
 			metrics.TunnelConnectionFailures.WithLabelValues("missing_credentials").Inc()
-			w.WriteHeader(http.StatusForbidden)
+			rejectConnect(w, r, http.StatusForbidden)
 			return
 		}
 
@@ -744,7 +768,7 @@ func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.
 		if err != nil {
 			logger.Error("Failed to validate token", slog.Any("error", err))
 			metrics.TunnelConnectionFailures.WithLabelValues("invalid_token").Inc()
-			w.WriteHeader(http.StatusForbidden)
+			rejectConnect(w, r, http.StatusForbidden)
 			return
 		}
 
@@ -752,7 +776,7 @@ func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.
 		if err != nil {
 			logger.Error("Failed to get subject from token claims", slog.Any("error", err))
 			metrics.TunnelConnectionFailures.WithLabelValues("token_subject_error").Inc()
-			w.WriteHeader(http.StatusForbidden)
+			rejectConnect(w, r, http.StatusForbidden)
 			return
 		}
 
@@ -762,28 +786,52 @@ func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.
 				slog.String("got", tokenSubj),
 			)
 			metrics.TunnelConnectionFailures.WithLabelValues("token_subject_mismatch").Inc()
-			w.WriteHeader(http.StatusForbidden)
+			rejectConnect(w, r, http.StatusForbidden)
 			return
 		}
 
 		logger.Info("Validated token for UUID")
 
+		// Same-server diversity: if this agent process already holds a live
+		// connection here, tell it to re-dial (fresh UDP 4-tuple, so the LB
+		// picks a backend anew) instead of stacking all of its connections
+		// on one replica. The slot is reserved atomically under cid before
+		// the connection is visible anywhere else. See quic.go for the
+		// protocol constants.
+		cid := uuid.NewString()
+		agentProcID := query.Get(metrics.QueryParamAgentProcessID)
+		releaseSlot, admitted := t.agentSlots.tryAcquire(tunUID.String(), agentProcID, cid, query)
+		if !admitted {
+			logger.Info("Rejecting connection: agent already connected to this server",
+				slog.String("agentProcessID", agentProcID),
+				slog.String("attempt", query.Get(QueryParamConnAttempt)))
+			metrics.TunnelConnectionFailures.WithLabelValues("agent_conn_exists").Inc()
+			w.Header().Set(HeaderRejectReason, RejectReasonAgentConnExists)
+			rejectConnect(w, r, http.StatusConflict)
+			return
+		}
+		defer releaseSlot()
+
+		// A re-dial that replaces a dead connection names it so the corpse
+		// does not linger (and reject other dials) until the QUIC idle
+		// timeout.
+		t.evictReplacedConn(query.Get(QueryParamReplacesConnID), tunUID.String(), agentProcID)
+
 		req, err := connectip.ParseRequest(r, connectTmpl)
 		if err != nil {
 			logger.Error("Failed to parse request", slog.Any("error", err))
 			metrics.TunnelConnectionFailures.WithLabelValues("bad_request").Inc()
-			w.WriteHeader(http.StatusBadRequest)
+			rejectConnect(w, r, http.StatusBadRequest)
 			return
 		}
 
 		labels := make(map[string]string)
-		for key, values := range r.URL.Query() {
+		for key, values := range query {
 			if strings.HasPrefix(key, "label.") && len(values) > 0 {
 				labels[strings.TrimPrefix(key, "label.")] = values[0]
 			}
 		}
 
-		cid := uuid.NewString()
 		connID.Store(cid) // Make available to /metrics/push handler.
 		// Sends connection ID information to the client so that it can
 		// track its connection status. This must be done before initializing the proxy.
@@ -799,7 +847,7 @@ func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.
 
 		conn := &conn{
 			connID:         cid,
-			agentProcessID: r.URL.Query().Get(metrics.QueryParamAgentProcessID),
+			agentProcessID: agentProcID,
 			obj:            tn.DeepCopy(),
 			cancel:         connCancel,
 			labels:         labels,
@@ -808,7 +856,7 @@ func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.
 		if conn.Conn, err = p.Proxy(w, req); err != nil {
 			logger.Error("Failed to proxy request", slog.Any("error", err))
 			metrics.TunnelConnectionFailures.WithLabelValues("proxy_error").Inc()
-			w.WriteHeader(http.StatusInternalServerError)
+			rejectConnect(w, r, http.StatusInternalServerError)
 			return
 		}
 		defer conn.Close()

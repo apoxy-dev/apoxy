@@ -529,7 +529,7 @@ func (t *tunnelNodeReconciler) reconcile(ctx context.Context, req ctrl.Request) 
 			log.Info("Cancelling connection", slog.String("id", conn.id.String()))
 			close(conn.stopCh)
 		}
-		t.tunDialerWorkers = t.tunDialerWorkers[:excess]
+		t.tunDialerWorkers = t.tunDialerWorkers[excess:]
 	} else if minConns-n > 0 {
 		log.Info("Not enough connections to this TunnelNode, attempting to establish more",
 			slog.Int("min", minConns), slog.Int("cur", n))
@@ -542,6 +542,19 @@ func (t *tunnelNodeReconciler) reconcile(ctx context.Context, req ctrl.Request) 
 			}
 			t.tunDialerWorkers = append(t.tunDialerWorkers, conn)
 			go func(conn *tunConn, idx int) {
+				// Stagger worker start so earlier workers register on their
+				// server before later ones dial. Simultaneous dials would all
+				// pass the server's same-server diversity check (none of them
+				// is registered yet) and stack onto one replica.
+				if idx > 0 {
+					select {
+					case <-ctx.Done():
+						return
+					case <-conn.stopCh:
+						return
+					case <-time.After(time.Duration(idx) * 500 * time.Millisecond):
+					}
+				}
 				wait.BackoffUntil(func() {
 					// Read dial parameters with read lock
 					t.dialMu.RLock()
@@ -556,6 +569,13 @@ func (t *tunnelNodeReconciler) reconcile(ctx context.Context, req ctrl.Request) 
 					clientOpts := make([]tunnel.TunnelClientOption, len(t.clientOpts))
 					copy(clientOpts, t.clientOpts)
 					t.dialMu.RUnlock()
+
+					// A re-dial replaces this worker's previous (dead)
+					// connection; naming it lets the server skip it in the
+					// diversity check and evict it right away.
+					if conn.conn != nil {
+						clientOpts = append(clientOpts, tunnel.WithReplacesConnID(conn.id.String()))
+					}
 
 					if !t.useTUI {
 						fmt.Printf("[%s] [worker=%d srvAddrs=%v] Connecting to %s...\n",

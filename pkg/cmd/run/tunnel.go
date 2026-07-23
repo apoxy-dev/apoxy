@@ -312,12 +312,25 @@ func (r *runtimeTunnelReconciler) reconcile(ctx context.Context, req ctrl.Reques
 			slog.Int("min", r.minConns), slog.Int("cur", n))
 
 		for i := 0; i < r.minConns-n; i++ {
+			workerIdx := n + i
 			conn := &runtimeTunConn{
 				id:     uuid.New(),
 				stopCh: make(chan struct{}),
 			}
 			r.tunConns = append(r.tunConns, conn)
-			go func(conn *runtimeTunConn) {
+			go func(conn *runtimeTunConn, idx int) {
+				// Stagger worker start so earlier workers register on their
+				// server before later ones dial; simultaneous dials would
+				// otherwise waste a same-server rejection round trip each.
+				if idx > 0 {
+					select {
+					case <-ctx.Done():
+						return
+					case <-conn.stopCh:
+						return
+					case <-time.After(time.Duration(idx) * 500 * time.Millisecond):
+					}
+				}
 				wait.BackoffUntil(func() {
 					r.dialMu.RLock()
 					tunnelUID := r.tunnelUID
@@ -325,6 +338,13 @@ func (r *runtimeTunnelReconciler) reconcile(ctx context.Context, req ctrl.Reques
 					clientOpts := make([]tunnel.TunnelClientOption, len(r.clientOpts))
 					copy(clientOpts, r.clientOpts)
 					r.dialMu.RUnlock()
+
+					// A re-dial replaces this worker's previous (dead)
+					// connection; naming it lets the server skip it in the
+					// diversity check and evict it right away.
+					if conn.conn != nil {
+						clientOpts = append(clientOpts, tunnel.WithReplacesConnID(conn.id.String()))
+					}
 
 					slog.Info("Connecting to tunnel server", slog.String("address", srvAddr))
 
@@ -351,7 +371,7 @@ func (r *runtimeTunnelReconciler) reconcile(ctx context.Context, req ctrl.Reques
 						slog.String("uuid", c.UUID.String()),
 						slog.Any("error", c.Context().Err()))
 				}, tunnelBackoff, false, conn.stopCh)
-			}(conn)
+			}(conn, workerIdx)
 		}
 	} else {
 		l.Info("Matching tunnel connections", slog.Int("min", r.minConns), slog.Int("cur", n))
