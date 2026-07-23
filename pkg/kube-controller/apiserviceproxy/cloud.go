@@ -87,7 +87,7 @@ func (p *APIServiceProxy) configureCloudProxy(ctx context.Context) error {
 	certExpiry.Set(float64(boot.NotAfter.Unix()))
 
 	p.transport = newSwappableTransport(buildTransport(boot, p.opts.LocalMode))
-	p.proxy.Transport = p.transport
+	p.proxy.Transport = newDiscoveryCacheTransport(p.transport, defaultDiscoveryCacheTTL)
 
 	// Hot-reload is engaged only when the Secret is mounted at CertDir; an
 	// older onboarding manifest that doesn't mount it falls back to the
