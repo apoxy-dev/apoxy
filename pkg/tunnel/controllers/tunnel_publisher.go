@@ -121,7 +121,10 @@ func (p *TunnelPublisher) OnConnect(ctx context.Context, tunnelName, agentName s
 	if v4.IsValid() {
 		addresses = append(addresses, v4.String())
 	}
-	conn.SetAddresses(addresses)
+	if err := conn.SetAddresses(addresses); err != nil {
+		p.releaseAll(alloc, v6, v4, vniID)
+		return fmt.Errorf("failed to set overlay addresses: %w", err)
+	}
 
 	if err := p.createTunnel(ctx, conn, networkName, agentName, addresses); err != nil {
 		p.releaseAll(alloc, v6, v4, vniID)

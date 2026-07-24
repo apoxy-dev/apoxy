@@ -51,6 +51,7 @@ Get started at https://apoxy.dev and log in with 'apoxy auth'.
 * [apoxy tunnel](#apoxy-tunnel)	 - Manage tunnels
 * [apoxy upgrade](#apoxy-upgrade)	 - Upgrade Apoxy CLI to the latest version
 * [apoxy version](#apoxy-version)	 - The version of this CLI
+* [apoxy vpc](#apoxy-vpc)	 - Manage VPC networking objects
 
 
 
@@ -357,12 +358,14 @@ apoxy alpha tunnel run [flags]
       --health-addr string     Listen address for health endpoint (e.g. ":8080"). Empty disables. (default "localhost:8080")
   -h, --help                   help for run
       --insecure-skip-verify   Skip TLS certificate verification for relay connections.
-      --min-conns int          Minimum number of relays to maintain connections to (randomly selected from the server-provided list). (default 1)
-  -n, --name string            The logical name of the tunnel to connect to.
+      --label stringToString   Agent-declared label (key=value) for VPCService selection; repeatable. Bounded by the credential's allowed label sets. (default [])
+      --min-conns int          Minimum number of relays to maintain connections to (randomly selected from the discovered relay set). (default 1)
   -p, --pcap string            Path to an optional packet capture file to write.
   -r, --relay-addr string      Seed relay address (host:port), required if not using kubernetes-based discovery.
+      --route stringArray      CIDR reachable behind this agent, advertised to the relay; repeatable. Bounded by the credential's allowed routes.
       --socks-addr string      Listen address for SOCKS proxy. (default "localhost:1080")
   -k, --token string           The token to use for authenticating with the tunnel relays, required if not using kubernetes-based discovery.
+      --vpc string             The VPC network to connect to.
 ```
 
 ### Options inherited from parent commands
@@ -2309,6 +2312,7 @@ apoxy k8s install [flags]
       --kubeconfig string       Path to the kubeconfig file to use for Kubernetes API access
       --mirror string           Mirror mode (gateway, ingress, all)
       --namespace string        The namespace to install the controller into (default "apoxy")
+      --single-replica          Render a single-replica controller manifest without pod anti-affinity or a PodDisruptionBudget (for single-node or resource-constrained clusters)
       --version string          Controller version override (e.g. v0.3.0)
       --wait                    Wait for Deployments and StatefulSets to become healthy after apply (default true)
       --wait-timeout duration   Maximum time to wait for workloads to become healthy (default 1m30s)
@@ -3173,6 +3177,685 @@ apoxy version [flags]
 ### SEE ALSO
 
 * [apoxy](#apoxy)	 - Open-source edge platform built on Envoy, Kubernetes APIs, and QUIC tunneling.
+
+
+
+## apoxy vpc
+
+Manage VPC networking objects
+
+### Synopsis
+
+Manage vpc.apoxy.dev objects: networks, services, relays, and tunnels.
+
+### Options
+
+```
+  -h, --help   help for vpc
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy](#apoxy)	 - Open-source edge platform built on Envoy, Kubernetes APIs, and QUIC tunneling.
+* [apoxy vpc network](#apoxy-vpc-network)	 - Manage VPC networks
+* [apoxy vpc relay](#apoxy-vpc-relay)	 - Inspect relays
+* [apoxy vpc service](#apoxy-vpc-service)	 - Manage VPC services
+* [apoxy vpc tunnel](#apoxy-vpc-tunnel)	 - Inspect tunnels
+
+
+
+## apoxy vpc network
+
+Manage VPC networks
+
+### Synopsis
+
+VPCNetwork is the domain object for a virtual private network on the Apoxy Edge fabric.
+
+```
+apoxy vpc network [flags]
+```
+
+### Options
+
+```
+      --field-selector string   Filter list results by field selectors (e.g. spec.zone=example.com).
+  -h, --help                    help for network
+  -o, --output string           Output format: "json" or "yaml". Default is table.
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy vpc](#apoxy-vpc)	 - Manage VPC networking objects
+* [apoxy vpc network apply](#apoxy-vpc-network-apply)	 - Apply vpcnetwork configuration using server-side apply
+* [apoxy vpc network create](#apoxy-vpc-network-create)	 - Create vpcnetwork objects
+* [apoxy vpc network delete](#apoxy-vpc-network-delete)	 - Delete vpcnetwork objects
+* [apoxy vpc network get](#apoxy-vpc-network-get)	 - Get vpcnetwork objects
+* [apoxy vpc network list](#apoxy-vpc-network-list)	 - List vpcnetwork objects
+
+
+
+## apoxy vpc network apply
+
+Apply vpcnetwork configuration using server-side apply
+
+### Synopsis
+
+Apply vpcnetwork configuration using Kubernetes server-side apply.
+
+This command uses server-side apply to create or update vpcnetwork objects.
+Server-side apply tracks field ownership and allows multiple actors to
+manage different fields of the same object without conflicts.
+
+```
+apoxy vpc network apply [-f filename] [flags]
+```
+
+### Options
+
+```
+      --field-manager string   Name of the field manager for server-side apply. (default "apoxy-cli")
+  -f, --filename string        The file that contains the configuration to apply.
+      --force-conflicts        Force apply even if there are field ownership conflicts.
+  -h, --help                   help for apply
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy vpc network](#apoxy-vpc-network)	 - Manage VPC networks
+
+
+
+## apoxy vpc network create
+
+Create vpcnetwork objects
+
+### Synopsis
+
+Create vpcnetwork objects by providing a configuration as a file or via stdin.
+
+```
+apoxy vpc network create [-f filename] [flags]
+```
+
+### Options
+
+```
+  -f, --filename string   The file that contains the configuration to create.
+  -h, --help              help for create
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy vpc network](#apoxy-vpc-network)	 - Manage VPC networks
+
+
+
+## apoxy vpc network delete
+
+Delete vpcnetwork objects
+
+```
+apoxy vpc network delete [flags]
+```
+
+### Options
+
+```
+  -h, --help   help for delete
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy vpc network](#apoxy-vpc-network)	 - Manage VPC networks
+
+
+
+## apoxy vpc network get
+
+Get vpcnetwork objects
+
+```
+apoxy vpc network get <name> [flags]
+```
+
+### Options
+
+```
+  -h, --help            help for get
+  -o, --output string   Output format: "json" or "yaml". Default is table.
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy vpc network](#apoxy-vpc-network)	 - Manage VPC networks
+
+
+
+## apoxy vpc network list
+
+List vpcnetwork objects
+
+```
+apoxy vpc network list [flags]
+```
+
+### Options
+
+```
+      --field-selector string   Filter list results by field selectors (e.g. spec.zone=example.com).
+  -h, --help                    help for list
+  -o, --output string           Output format: "json" or "yaml". Default is table.
+      --show-labels             Print the vpcnetwork's labels.
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy vpc network](#apoxy-vpc-network)	 - Manage VPC networks
+
+
+
+## apoxy vpc relay
+
+Inspect relays
+
+### Synopsis
+
+Relay objects are registered by tunnel relays and are read-only from the CLI.
+
+```
+apoxy vpc relay [flags]
+```
+
+### Options
+
+```
+      --field-selector string   Filter list results by field selectors (e.g. spec.zone=example.com).
+  -h, --help                    help for relay
+  -o, --output string           Output format: "json" or "yaml". Default is table.
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy vpc](#apoxy-vpc)	 - Manage VPC networking objects
+* [apoxy vpc relay get](#apoxy-vpc-relay-get)	 - Get relay objects
+* [apoxy vpc relay list](#apoxy-vpc-relay-list)	 - List relay objects
+
+
+
+## apoxy vpc relay get
+
+Get relay objects
+
+```
+apoxy vpc relay get <name> [flags]
+```
+
+### Options
+
+```
+  -h, --help            help for get
+  -o, --output string   Output format: "json" or "yaml". Default is table.
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy vpc relay](#apoxy-vpc-relay)	 - Inspect relays
+
+
+
+## apoxy vpc relay list
+
+List relay objects
+
+```
+apoxy vpc relay list [flags]
+```
+
+### Options
+
+```
+      --field-selector string   Filter list results by field selectors (e.g. spec.zone=example.com).
+  -h, --help                    help for list
+  -o, --output string           Output format: "json" or "yaml". Default is table.
+      --show-labels             Print the relay's labels.
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy vpc relay](#apoxy-vpc-relay)	 - Inspect relays
+
+
+
+## apoxy vpc service
+
+Manage VPC services
+
+### Synopsis
+
+VPCService selects tunnels within a VPC network and exposes their endpoints.
+
+```
+apoxy vpc service [flags]
+```
+
+### Options
+
+```
+      --field-selector string   Filter list results by field selectors (e.g. spec.zone=example.com).
+  -h, --help                    help for service
+  -o, --output string           Output format: "json" or "yaml". Default is table.
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy vpc](#apoxy-vpc)	 - Manage VPC networking objects
+* [apoxy vpc service apply](#apoxy-vpc-service-apply)	 - Apply vpcservice configuration using server-side apply
+* [apoxy vpc service create](#apoxy-vpc-service-create)	 - Create vpcservice objects
+* [apoxy vpc service delete](#apoxy-vpc-service-delete)	 - Delete vpcservice objects
+* [apoxy vpc service get](#apoxy-vpc-service-get)	 - Get vpcservice objects
+* [apoxy vpc service list](#apoxy-vpc-service-list)	 - List vpcservice objects
+
+
+
+## apoxy vpc service apply
+
+Apply vpcservice configuration using server-side apply
+
+### Synopsis
+
+Apply vpcservice configuration using Kubernetes server-side apply.
+
+This command uses server-side apply to create or update vpcservice objects.
+Server-side apply tracks field ownership and allows multiple actors to
+manage different fields of the same object without conflicts.
+
+```
+apoxy vpc service apply [-f filename] [flags]
+```
+
+### Options
+
+```
+      --field-manager string   Name of the field manager for server-side apply. (default "apoxy-cli")
+  -f, --filename string        The file that contains the configuration to apply.
+      --force-conflicts        Force apply even if there are field ownership conflicts.
+  -h, --help                   help for apply
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy vpc service](#apoxy-vpc-service)	 - Manage VPC services
+
+
+
+## apoxy vpc service create
+
+Create vpcservice objects
+
+### Synopsis
+
+Create vpcservice objects by providing a configuration as a file or via stdin.
+
+```
+apoxy vpc service create [-f filename] [flags]
+```
+
+### Options
+
+```
+  -f, --filename string   The file that contains the configuration to create.
+  -h, --help              help for create
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy vpc service](#apoxy-vpc-service)	 - Manage VPC services
+
+
+
+## apoxy vpc service delete
+
+Delete vpcservice objects
+
+```
+apoxy vpc service delete [flags]
+```
+
+### Options
+
+```
+  -h, --help   help for delete
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy vpc service](#apoxy-vpc-service)	 - Manage VPC services
+
+
+
+## apoxy vpc service get
+
+Get vpcservice objects
+
+```
+apoxy vpc service get <name> [flags]
+```
+
+### Options
+
+```
+  -h, --help            help for get
+  -o, --output string   Output format: "json" or "yaml". Default is table.
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy vpc service](#apoxy-vpc-service)	 - Manage VPC services
+
+
+
+## apoxy vpc service list
+
+List vpcservice objects
+
+```
+apoxy vpc service list [flags]
+```
+
+### Options
+
+```
+      --field-selector string   Filter list results by field selectors (e.g. spec.zone=example.com).
+  -h, --help                    help for list
+  -o, --output string           Output format: "json" or "yaml". Default is table.
+      --show-labels             Print the vpcservice's labels.
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy vpc service](#apoxy-vpc-service)	 - Manage VPC services
+
+
+
+## apoxy vpc tunnel
+
+Inspect tunnels
+
+### Synopsis
+
+Tunnel objects represent live agent connections and are read-only from the CLI.
+
+```
+apoxy vpc tunnel [flags]
+```
+
+### Options
+
+```
+      --field-selector string   Filter list results by field selectors (e.g. spec.zone=example.com).
+  -h, --help                    help for tunnel
+  -o, --output string           Output format: "json" or "yaml". Default is table.
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy vpc](#apoxy-vpc)	 - Manage VPC networking objects
+* [apoxy vpc tunnel get](#apoxy-vpc-tunnel-get)	 - Get tunnel objects
+* [apoxy vpc tunnel list](#apoxy-vpc-tunnel-list)	 - List tunnel objects
+
+
+
+## apoxy vpc tunnel get
+
+Get tunnel objects
+
+```
+apoxy vpc tunnel get <name> [flags]
+```
+
+### Options
+
+```
+  -h, --help            help for get
+  -o, --output string   Output format: "json" or "yaml". Default is table.
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy vpc tunnel](#apoxy-vpc-tunnel)	 - Inspect tunnels
+
+
+
+## apoxy vpc tunnel list
+
+List tunnel objects
+
+```
+apoxy vpc tunnel list [flags]
+```
+
+### Options
+
+```
+      --field-selector string   Filter list results by field selectors (e.g. spec.zone=example.com).
+  -h, --help                    help for list
+  -o, --output string           Output format: "json" or "yaml". Default is table.
+      --show-labels             Print the tunnel's labels.
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy vpc tunnel](#apoxy-vpc-tunnel)	 - Inspect tunnels
 
 
 

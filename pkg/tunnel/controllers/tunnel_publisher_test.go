@@ -43,7 +43,7 @@ func (c *fakeConn) Network() string                       { return c.network }
 func (c *fakeConn) Labels() map[string]string             { return c.labels }
 func (c *fakeConn) AdvertisedRoutes() []netip.Prefix      { return c.routes }
 func (c *fakeConn) AgentInstance() string                 { return c.agentInstance }
-func (c *fakeConn) SetAddresses(a []string)               { c.addresses = a }
+func (c *fakeConn) SetAddresses(a []string) error         { c.addresses = a; return nil }
 func (c *fakeConn) Addresses() []string                   { return c.addresses }
 
 func publisherScheme(t *testing.T) *runtime.Scheme {

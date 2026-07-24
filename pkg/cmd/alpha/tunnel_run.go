@@ -26,12 +26,15 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/tools/clientcmd"
 
+	vpcv1alpha1 "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1"
 	"github.com/apoxy-dev/apoxy/client/versioned"
+	vpcclient "github.com/apoxy-dev/apoxy/client/versioned/typed/vpc/v1alpha1"
 	"github.com/apoxy-dev/apoxy/pkg/netstack"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/api"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/batchpc"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/bifurcate"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/conntrackpc"
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/metrics"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/randalloc"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/router"
 )
@@ -40,22 +43,42 @@ import (
 const (
 	watchdogMaxSilence = 120 * time.Second
 	watchdogInterval   = 5 * time.Second
+	// relayRefreshInterval is how often the agent re-lists ready relays from the
+	// apiserver to keep its connection pool current.
+	relayRefreshInterval = 30 * time.Second
 )
 
 var (
-	agentName          string // agent identifier
-	tunnelName         string // tunnel identifier
-	seedRelayAddr      string // bootstrap relay (host:port)
-	minConns           int    // min concurrent relay connections
-	token              string // tunnel auth token
-	insecureSkipVerify bool   // skip TLS verification (testing only)
-	socksListenAddr    string // SOCKS listen address
-	pcapPath           string // optional pcap path
-	healthAddr         string // listen address for health endpoint (e.g. ":8080"); empty disables
+	agentName          string            // agent identifier
+	tunnelName         string            // VPC network name (--vpc)
+	seedRelayAddr      string            // bootstrap relay (host:port)
+	minConns           int               // min concurrent relay connections
+	token              string            // tunnel auth token
+	insecureSkipVerify bool              // skip TLS verification (testing only)
+	socksListenAddr    string            // SOCKS listen address
+	pcapPath           string            // optional pcap path
+	healthAddr         string            // listen address for health endpoint (e.g. ":8080"); empty disables
+	agentLabels        map[string]string // agent-declared labels for VPCService selection (--label)
+	advertisedRoutes   []string          // CIDRs reachable behind this agent (--route)
+	agentInstance      string            // stable per-process instance UUID, stamped in RunE
 )
 
 // connectionHealthCounter tracks how many relay sessions are currently live.
 var connectionHealthCounter atomic.Int32
+
+// agentConfig holds the per-agent identity and credential threaded through every
+// relay session. It is built once in RunE from the parsed flags (after discovery
+// fills in the token and the instance UUID is stamped) and passed explicitly to
+// the session lifecycle funcs, so the connect path no longer reads package
+// globals — which keeps the orchestration funcs cleanly unit-testable.
+type agentConfig struct {
+	Agent            string            // agent identifier (--agent)
+	Network          string            // VPC network name (--vpc)
+	Token            string            // tunnel auth token
+	Labels           map[string]string // agent-declared labels (--label)
+	AdvertisedRoutes []string          // CIDRs advertised to the relay (--route)
+	Instance         string            // stable per-process instance UUID
+}
 
 var tunnelRunCmd = &cobra.Command{
 	Use:   "run",
@@ -65,6 +88,24 @@ var tunnelRunCmd = &cobra.Command{
 		if minConns < 1 {
 			return fmt.Errorf("--min-conns must be at least 1")
 		}
+
+		// Validate advertised routes up front so a typo fails fast rather than
+		// being rejected by the relay mid-connect.
+		if _, err := parsePrefixes(advertisedRoutes); err != nil {
+			return fmt.Errorf("invalid --route: %w", err)
+		}
+
+		// The agent-instance UUID is stable for this process's lifetime; the
+		// relay stamps it onto each Tunnel so multiple connections from one
+		// process are attributable to the same instance.
+		agentInstance = metrics.AgentProcessID()
+
+		// relayLister, when set (kubernetes-discovery mode), returns the current
+		// set of ready relay addresses serving the network. It seeds the initial
+		// pool and is polled in the background so relays coming and going are
+		// picked up without a restart. It stays nil in static (--relay-addr) mode.
+		var relayLister func(context.Context) (sets.Set[string], error)
+		var discoveredRelays sets.Set[string]
 
 		// Attempt kubernetes-based discovery if no relayAddr/token provided.
 		if seedRelayAddr == "" || token == "" {
@@ -84,10 +125,9 @@ var tunnelRunCmd = &cobra.Command{
 			}
 
 			// VPCNetwork carries the connect credential; ready Relay objects
-			// carry the dialable underlay addresses. (Phase 7 replaces --name
-			// with --vpc and re-lists relays on connection loss; this is the
-			// minimal discovery port that keeps the OSS agent path working after
-			// the legacy Tunnel kind was removed in phase 6.)
+			// carry the dialable underlay addresses. The relay no longer reports a
+			// peer list in ConnectResponse (§2.3) — the agent discovers and tracks
+			// relays directly from the apiserver.
 			network, err := clientset.VpcV1alpha1().VPCNetworks().Get(cmd.Context(), tunnelName, metav1.GetOptions{})
 			if err != nil {
 				return fmt.Errorf("fetching VPCNetwork %q: %w", tunnelName, err)
@@ -95,35 +135,39 @@ var tunnelRunCmd = &cobra.Command{
 			if network.Status.Credentials == nil || network.Status.Credentials.Token == "" {
 				return fmt.Errorf("network %q has no credentials configured", tunnelName)
 			}
+			token = network.Status.Credentials.Token
 
-			relays, err := clientset.VpcV1alpha1().Relays().List(cmd.Context(), metav1.ListOptions{})
+			// Re-fetch the network on every refresh so relabeling it (which changes
+			// which relay selectors match) is picked up without an agent restart.
+			vpcClient := clientset.VpcV1alpha1()
+			networkName := network.Name
+			relayLister = func(ctx context.Context) (sets.Set[string], error) {
+				net, err := vpcClient.VPCNetworks().Get(ctx, networkName, metav1.GetOptions{})
+				if err != nil {
+					return nil, fmt.Errorf("fetching VPCNetwork %q: %w", networkName, err)
+				}
+				return discoverRelays(ctx, vpcClient, net)
+			}
+
+			discoveredRelays, err = relayLister(cmd.Context())
 			if err != nil {
-				return fmt.Errorf("listing relays: %w", err)
+				return err
 			}
-			var addrs []string
-			for i := range relays.Items {
-				relay := &relays.Items[i]
-				if !relay.Status.Ready {
-					continue
-				}
-				// A nil selector serves all networks (per RelaySpec).
-				if relay.Spec.NetworkSelector != nil {
-					sel, err := metav1.LabelSelectorAsSelector(relay.Spec.NetworkSelector)
-					if err != nil {
-						return fmt.Errorf("relay %q has an invalid network selector: %w", relay.Name, err)
-					}
-					if !sel.Matches(labels.Set(network.Labels)) {
-						continue
-					}
-				}
-				addrs = append(addrs, relay.Spec.Addresses...)
-			}
-			if len(addrs) == 0 {
+			if discoveredRelays.Len() == 0 {
 				return fmt.Errorf("no ready relays serving network %q", tunnelName)
 			}
+			seedRelayAddr = discoveredRelays.UnsortedList()[rand.IntN(discoveredRelays.Len())]
+		}
 
-			seedRelayAddr = addrs[rand.IntN(len(addrs))]
-			token = network.Status.Credentials.Token
+		// Assemble the immutable per-agent config now that discovery (if any) has
+		// populated the token. Threaded explicitly through the session lifecycle.
+		cfg := agentConfig{
+			Agent:            agentName,
+			Network:          tunnelName,
+			Token:            token,
+			Labels:           agentLabels,
+			AdvertisedRoutes: advertisedRoutes,
+			Instance:         agentInstance,
 		}
 
 		g, ctx := errgroup.WithContext(cmd.Context())
@@ -164,7 +208,7 @@ var tunnelRunCmd = &cobra.Command{
 		tlsConf := &tls.Config{InsecureSkipVerify: insecureSkipVerify}
 
 		// Bootstrap against the seed relay to learn MTU/DNS/routes, keys, VNI, and the relay address pool.
-		boot, err := bootstrapSession(ctx, seedRelayAddr, packetPlane.QuicMux, tlsConf)
+		boot, err := bootstrapSession(ctx, cfg, seedRelayAddr, packetPlane.QuicMux, tlsConf)
 		if err != nil {
 			return err
 		}
@@ -185,9 +229,33 @@ var tunnelRunCmd = &cobra.Command{
 		}
 		defer r.Close()
 
-		// Create an relay address pool that ensures we never connect to the same
-		// relay from multiple slots at once.
-		relayAddressPool := randalloc.NewRandAllocator(boot.RelayAddresses)
+		// Create a relay address pool that ensures we never connect to the same
+		// relay from multiple slots at once. In discovery mode it starts from the
+		// ready-relay set; in static mode it holds just the seed relay.
+		poolAddrs := discoveredRelays
+		if poolAddrs == nil {
+			poolAddrs = sets.New[string](seedRelayAddr)
+		}
+		relayAddressPool := randalloc.NewRandAllocator(poolAddrs)
+
+		// A slot can only hold a relay no other slot holds, so a pool smaller than
+		// minConns leaves the surplus slots idle. In discovery mode that self-heals
+		// as relays appear; in static mode (single seed) it never will, so surface
+		// it rather than letting slots block silently.
+		if poolAddrs.Len() < minConns {
+			slog.Warn("Fewer relays available than --min-conns; surplus connection slots will idle until more relays appear",
+				slog.Int("relays", poolAddrs.Len()),
+				slog.Int("minConns", minConns))
+		}
+
+		// Keep the pool fresh from the apiserver (discovery mode only). A slot
+		// whose session dies re-Acquires from the refreshed pool, so relays going
+		// NotReady drop out and newly-Ready relays get picked up automatically.
+		if relayLister != nil {
+			g.Go(func() error {
+				return refreshRelayPool(ctx, relayLister, relayAddressPool, relayRefreshInterval)
+			})
+		}
 
 		// Spawn minConns independent connection slots.
 		// Each slot:
@@ -196,7 +264,7 @@ var tunnelRunCmd = &cobra.Command{
 		//   - when the session ends, releases the relay
 		for i := 0; i < minConns; i++ {
 			g.Go(func() error {
-				return manageConnectionSlot(ctx, packetPlane.QuicMux, handler, r, relayAddressPool, tlsConf)
+				return manageConnectionSlot(ctx, cfg, packetPlane.QuicMux, handler, r, relayAddressPool, tlsConf)
 			})
 		}
 
@@ -206,17 +274,19 @@ var tunnelRunCmd = &cobra.Command{
 
 func init() {
 	tunnelRunCmd.Flags().StringVarP(&agentName, "agent", "a", "", "The name of this agent.")
-	tunnelRunCmd.Flags().StringVarP(&tunnelName, "name", "n", "", "The logical name of the tunnel to connect to.")
+	tunnelRunCmd.Flags().StringVar(&tunnelName, "vpc", "", "The VPC network to connect to.")
 	tunnelRunCmd.Flags().StringVarP(&seedRelayAddr, "relay-addr", "r", "", "Seed relay address (host:port), required if not using kubernetes-based discovery.")
-	tunnelRunCmd.Flags().IntVar(&minConns, "min-conns", 1, "Minimum number of relays to maintain connections to (randomly selected from the server-provided list).")
+	tunnelRunCmd.Flags().IntVar(&minConns, "min-conns", 1, "Minimum number of relays to maintain connections to (randomly selected from the discovered relay set).")
 	tunnelRunCmd.Flags().StringVarP(&token, "token", "k", "", "The token to use for authenticating with the tunnel relays, required if not using kubernetes-based discovery.")
 	tunnelRunCmd.Flags().BoolVar(&insecureSkipVerify, "insecure-skip-verify", false, "Skip TLS certificate verification for relay connections.")
 	tunnelRunCmd.Flags().StringVarP(&pcapPath, "pcap", "p", "", "Path to an optional packet capture file to write.")
 	tunnelRunCmd.Flags().StringVar(&socksListenAddr, "socks-addr", "localhost:1080", "Listen address for SOCKS proxy.")
 	tunnelRunCmd.Flags().StringVar(&healthAddr, "health-addr", "localhost:8080", "Listen address for health endpoint (e.g. \":8080\"). Empty disables.")
+	tunnelRunCmd.Flags().StringToStringVar(&agentLabels, "label", nil, "Agent-declared label (key=value) for VPCService selection; repeatable. Bounded by the credential's allowed label sets.")
+	tunnelRunCmd.Flags().StringArrayVar(&advertisedRoutes, "route", nil, "CIDR reachable behind this agent, advertised to the relay; repeatable. Bounded by the credential's allowed routes.")
 
 	cobra.CheckErr(tunnelRunCmd.MarkFlagRequired("agent"))
-	cobra.CheckErr(tunnelRunCmd.MarkFlagRequired("name"))
+	cobra.CheckErr(tunnelRunCmd.MarkFlagRequired("vpc"))
 
 	tunnelCmd.AddCommand(tunnelRunCmd)
 }
@@ -236,7 +306,13 @@ type packetPlane struct {
 //   - bifurcates into Geneve (data plane) and QUIC (control)
 //   - wraps QUIC side in a conntrack multiplexer
 func newPacketPlane() (*packetPlane, error) {
-	lis, err := net.ListenPacket("udp", ":0")
+	return newPacketPlaneAt(":0")
+}
+
+// newPacketPlaneAt is newPacketPlane with an explicit UDP bind address (tests
+// bind to loopback so the relay advertises a dialable address).
+func newPacketPlaneAt(bindAddr string) (*packetPlane, error) {
+	lis, err := net.ListenPacket("udp", bindAddr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create UDP socket: %w", err)
 	}
@@ -268,14 +344,14 @@ func (pp *packetPlane) Close() {
 }
 
 type bootstrapInfo struct {
-	Connect        *api.ConnectResponse
-	RelayAddresses sets.Set[string]
+	Connect *api.ConnectResponse
 }
 
 // bootstrapSession connects to the seed relay, retrieves tunnel config and
 // the relay address pool, disconnects, and returns that bootstrap data.
 func bootstrapSession(
 	ctx context.Context,
+	cfg agentConfig,
 	seedRelayAddr string,
 	pcQuicMux *conntrackpc.ConntrackPacketConn,
 	tlsConf *tls.Config,
@@ -297,12 +373,15 @@ func bootstrapSession(
 	defer seedPcQuic.Close()
 
 	client, err := api.NewClient(api.ClientOptions{
-		BaseURL:    (&url.URL{Scheme: "https", Host: seedAddr}).String(),
-		Agent:      agentName,
-		TunnelName: tunnelName,
-		Token:      token,
-		TLSConfig:  tlsConf,
-		PacketConn: seedPcQuic,
+		BaseURL:          (&url.URL{Scheme: "https", Host: seedAddr}).String(),
+		Agent:            cfg.Agent,
+		TunnelName:       cfg.Network,
+		Token:            cfg.Token,
+		TLSConfig:        tlsConf,
+		PacketConn:       seedPcQuic,
+		Labels:           cfg.Labels,
+		AdvertisedRoutes: cfg.AdvertisedRoutes,
+		AgentInstance:    cfg.Instance,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create seed API client: %w", err)
@@ -323,24 +402,82 @@ func bootstrapSession(
 			slog.Any("error", err))
 	}
 
-	// Build a deduped set of relay addresses (seed + server-provided).
-	addrSet := sets.New[string]()
+	return &bootstrapInfo{Connect: connectResp}, nil
+}
 
-	trimmedSeed := strings.TrimSpace(seedAddr)
-	if trimmedSeed != "" {
-		addrSet.Insert(trimmedSeed)
+// discoverRelays lists ready relays whose network selector matches the given
+// network and returns their dialable underlay addresses. A relay with a nil
+// selector serves all networks (per RelaySpec).
+func discoverRelays(ctx context.Context, vpc vpcclient.VpcV1alpha1Interface, network *vpcv1alpha1.VPCNetwork) (sets.Set[string], error) {
+	relays, err := vpc.Relays().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("listing relays: %w", err)
 	}
-	for _, a := range connectResp.RelayAddresses {
-		a = strings.TrimSpace(a)
-		if a != "" {
-			addrSet.Insert(a)
+	addrs := sets.New[string]()
+	for i := range relays.Items {
+		relay := &relays.Items[i]
+		if !relay.Status.Ready {
+			continue
+		}
+		if relay.Spec.NetworkSelector != nil {
+			sel, err := metav1.LabelSelectorAsSelector(relay.Spec.NetworkSelector)
+			if err != nil {
+				// One malformed Relay object must not poison discovery for the
+				// whole fleet: failing the list here would freeze every agent's
+				// pool refresh until the bad object is deleted.
+				slog.Warn("Skipping relay with an invalid network selector",
+					slog.String("relay", relay.Name),
+					slog.Any("error", err))
+				continue
+			}
+			if !sel.Matches(labels.Set(network.Labels)) {
+				continue
+			}
+		}
+		for _, a := range relay.Spec.Addresses {
+			if a = strings.TrimSpace(a); a != "" {
+				addrs.Insert(a)
+			}
 		}
 	}
+	return addrs, nil
+}
 
-	return &bootstrapInfo{
-		Connect:        connectResp,
-		RelayAddresses: addrSet,
-	}, nil
+// refreshRelayPool periodically re-lists ready relays and swaps them into the
+// pool. An empty or failed refresh leaves the current pool untouched so a
+// transient apiserver blip never strands the agent.
+func refreshRelayPool(
+	ctx context.Context,
+	lister func(context.Context) (sets.Set[string], error),
+	pool *randalloc.RandAllocator[string],
+	interval time.Duration,
+) error {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	var lastApplied sets.Set[string]
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			addrs, err := lister(ctx)
+			if err != nil {
+				slog.Warn("Failed to refresh relay list; keeping current pool", slog.Any("error", err))
+				continue
+			}
+			if addrs.Len() == 0 {
+				slog.Warn("Relay refresh returned no ready relays; keeping current pool")
+				continue
+			}
+			// Replace wakes every blocked connection slot, so skip the churn
+			// when nothing changed (the common steady state).
+			if lastApplied != nil && lastApplied.Equal(addrs) {
+				continue
+			}
+			pool.Replace(addrs)
+			lastApplied = addrs
+		}
+	}
 }
 
 type routerInitOpts struct {
@@ -412,18 +549,22 @@ func initRouter(
 // into the handler via AddVirtualNetwork.
 func connectAndInitSession(
 	ctx context.Context,
+	cfg agentConfig,
 	pcQuic net.PacketConn,
 	handler *icx.Handler,
 	relayAddr string,
 	tlsConf *tls.Config,
 ) (*api.Client, *api.ConnectResponse, *icx.Handler, error) {
 	client, err := api.NewClient(api.ClientOptions{
-		BaseURL:    (&url.URL{Scheme: "https", Host: relayAddr}).String(),
-		Agent:      agentName,
-		TunnelName: tunnelName,
-		Token:      token,
-		TLSConfig:  tlsConf,
-		PacketConn: pcQuic,
+		BaseURL:          (&url.URL{Scheme: "https", Host: relayAddr}).String(),
+		Agent:            cfg.Agent,
+		TunnelName:       cfg.Network,
+		Token:            cfg.Token,
+		TLSConfig:        tlsConf,
+		PacketConn:       pcQuic,
+		Labels:           cfg.Labels,
+		AdvertisedRoutes: cfg.AdvertisedRoutes,
+		AgentInstance:    cfg.Instance,
 	})
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("create API client: %w", err)
@@ -511,12 +652,12 @@ func closeSession(client *api.Client, connID string) {
 //   - whichever fails first ends the session
 func manageRelayConnectionOnce(
 	ctx context.Context,
+	cfg agentConfig,
 	pcQuic net.PacketConn,
 	handler *icx.Handler,
 	r *router.ICXNetstackRouter,
 	relayAddr string,
 	tlsConf *tls.Config,
-	onConnected func(*api.ConnectResponse),
 ) error {
 	var (
 		currentClient *api.Client
@@ -547,19 +688,13 @@ func manageRelayConnectionOnce(
 	// Keep retrying connect until context canceled.
 	err := retry.Do(
 		func() error {
-			c, cr, _, err := connectAndInitSession(ctx, pcQuic, handler, relayAddr, tlsConf)
+			c, cr, _, err := connectAndInitSession(ctx, cfg, pcQuic, handler, relayAddr, tlsConf)
 			if err != nil {
 				return err
 			}
 			currentClient = c
 			currentConnID = cr.ID
 			connectResp = cr
-
-			// Publish latest info to the caller (e.g., update relay pool).
-			if onConnected != nil {
-				onConnected(cr)
-			}
-
 			return nil
 		},
 		retry.Context(ctx),
@@ -656,6 +791,7 @@ func manageRelayConnectionOnce(
 // same relay address" at any instant.
 func manageConnectionSlot(
 	ctx context.Context,
+	cfg agentConfig,
 	pcQuicMux *conntrackpc.ConntrackPacketConn,
 	handler *icx.Handler,
 	r *router.ICXNetstackRouter,
@@ -700,33 +836,10 @@ func manageConnectionSlot(
 			// Make sure we close the PacketConn when the session ends.
 			defer pcQuic.Close()
 
-			// Updater that refreshes the allocator from the server's latest view.
-			onConnected := func(cr *api.ConnectResponse) {
-				if cr == nil {
-					return
-				}
-				newSet := sets.New[string]()
-				for _, a := range cr.RelayAddresses {
-					a = strings.TrimSpace(a)
-					if a != "" {
-						newSet.Insert(a)
-					}
-				}
-				// Ensure the currently-connected relay remains in the pool so
-				// running sessions aren't stranded. It won't be handed out to
-				// another slot until we Release() this one anyway.
-				if relayAddr != "" {
-					newSet.Insert(strings.TrimSpace(relayAddr))
-				}
-
-				relayAddressPool.Replace(newSet)
-
-				slog.Info("Updated relay address pool from connect response",
-					slog.Int("count", newSet.Len()))
-			}
-
-			// Run the actual session lifecycle (watchdog, key rotation, etc).
-			sessErr := manageRelayConnectionOnce(ctx, pcQuic, handler, r, relayAddr, tlsConf, onConnected)
+			// Run the actual session lifecycle (watchdog, key rotation, etc). The
+			// relay pool is refreshed out-of-band by refreshRelayPool, so no
+			// per-connect pool update is needed here.
+			sessErr := manageRelayConnectionOnce(ctx, cfg, pcQuic, handler, r, relayAddr, tlsConf)
 
 			if ctx.Err() != nil {
 				return ctx.Err()

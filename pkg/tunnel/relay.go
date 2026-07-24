@@ -51,7 +51,6 @@ type Relay struct {
 	staticTokens *token.StaticTokenValidator
 	// tokenValidator authenticates connect requests; defaults to staticTokens.
 	tokenValidator token.TokenValidator
-	relayAddrs     *haxmap.Map[string, []string] // map[tunnelName][]string
 	conns         *haxmap.Map[string, *connection] // map[connectionID]Connection
 	agents        *haxmap.Map[string, string]      // map[connectionID]agentName
 	onConnect     func(ctx context.Context, tunnelName, agentName string, conn controllers.Connection) error
@@ -71,7 +70,6 @@ func NewRelay(name string, pc net.PacketConn, cert tls.Certificate, handler *icx
 		router:         router,
 		staticTokens:   staticTokens,
 		tokenValidator: staticTokens,
-		relayAddrs:     haxmap.New[string, []string](),
 		conns:          haxmap.New[string, *connection](),
 		agents:         haxmap.New[string, string](),
 	}
@@ -116,11 +114,6 @@ func (r *Relay) SetTokenValidator(v token.TokenValidator) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.tokenValidator = v
-}
-
-// SetRelayAddresses sets the list of relay addresses that are serving a tunnel.
-func (r *Relay) SetRelayAddresses(tunnelName string, addresses []string) {
-	r.relayAddrs.Set(tunnelName, addresses)
 }
 
 // SetEgressGateway enables or disables internet egress for the tunnel agents.
@@ -394,21 +387,30 @@ func (r *Relay) handleConnect(w http.ResponseWriter, req *http.Request, ps httpr
 		return
 	}
 
+	// Advertise a single-IP route per assigned address (both families), plus
+	// the IPv6 network prefix so the agent can reach other endpoints in the
+	// same overlay network (e.g. backplane services). IPv4 has no per-network
+	// prefix (the /32s come from a shared range), so v4 in-overlay reach is
+	// limited to the agent's own address; broader v4 reach comes from the
+	// egress default routes below. Addresses() is derived from the programmed
+	// state, so routes and the reported address set always agree; it is
+	// non-empty here because the VNI/overlay check above already passed.
+	addresses := conn.Addresses()
 	var routes []api.Route
-	if oa := conn.OverlayAddress(); oa != "" {
-		if pfx, err := netip.ParsePrefix(oa); err == nil {
-			// We'll only advertise single-IP routes so extend the bitmask to max.
-			if pfx.Addr().Is4() {
-				pfx = netip.PrefixFrom(pfx.Addr(), 32)
-			} else {
-				pfx = netip.PrefixFrom(pfx.Addr(), 128)
-			}
-			routes = append(routes, api.Route{Destination: pfx.String()})
-			// Always include the network prefix so the agent can reach other endpoints
-			// in the same overlay network (e.g. backplane services).
-			if pfx.Addr().Is6() {
-				routes = append(routes, api.Route{Destination: tunnet.NetworkPrefixOf(pfx.Addr()).String()})
-			}
+	for _, a := range addresses {
+		pfx, err := netip.ParsePrefix(a)
+		if err != nil {
+			continue
+		}
+		// We'll only advertise single-IP routes so extend the bitmask to max.
+		if pfx.Addr().Is4() {
+			pfx = netip.PrefixFrom(pfx.Addr(), 32)
+		} else {
+			pfx = netip.PrefixFrom(pfx.Addr(), 128)
+		}
+		routes = append(routes, api.Route{Destination: pfx.String()})
+		if pfx.Addr().Is6() {
+			routes = append(routes, api.Route{Destination: tunnet.NetworkPrefixOf(pfx.Addr()).String()})
 		}
 	}
 	if r.egressGateway {
@@ -417,24 +419,13 @@ func (r *Relay) handleConnect(w http.ResponseWriter, req *http.Request, ps httpr
 			api.Route{Destination: "::/0"})
 	}
 
-	relayAddrs, _ := r.relayAddrs.Get(tunnelName)
-
-	// Report the full dual-stack address set the allocator assigned; fall back
-	// to the single overlay address when only that was set (e.g. tests, or an
-	// onConnect that assigns just the primary address).
-	addresses := conn.Addresses()
-	if len(addresses) == 0 {
-		addresses = []string{conn.OverlayAddress()}
-	}
-
 	resp := api.ConnectResponse{
-		ID:             conn.ID(),
-		VNI:            *vni,
-		MTU:            icx.MTU(api.TunnelPathMTU),
-		Keys:           keys,
-		Addresses:      addresses,
-		Routes:         routes,
-		RelayAddresses: relayAddrs,
+		ID:        conn.ID(),
+		VNI:       *vni,
+		MTU:       icx.MTU(api.TunnelPathMTU),
+		Keys:      keys,
+		Addresses: addresses,
+		Routes:    routes,
 	}
 
 	// Register with metrics store so pushed metrics get the right labels.

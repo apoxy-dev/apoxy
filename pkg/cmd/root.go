@@ -20,6 +20,7 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/cmd/gateway"
 	run "github.com/apoxy-dev/apoxy/pkg/cmd/run"
 	"github.com/apoxy-dev/apoxy/pkg/cmd/tunnel"
+	"github.com/apoxy-dev/apoxy/pkg/cmd/vpc"
 )
 
 // RootCmd represents the base command when called without any subcommands
@@ -72,6 +73,7 @@ func init() {
 	RootCmd.AddCommand(gateway.Cmd())
 	RootCmd.AddCommand(run.Cmd())
 	RootCmd.AddCommand(tunnel.Cmd())
+	RootCmd.AddCommand(vpc.Cmd())
 }
 
 // GenerateDocs generates the docs in the docs folder.

@@ -1391,10 +1391,6 @@ export interface components {
         "com.github.apoxy-dev.apoxy.api.core.v1alpha2.DynamicProxySpec": {
             dnsCacheConfig?: components["schemas"]["com.github.apoxy-dev.apoxy.api.core.v1alpha2.DynamicProxyDnsCacheConfig"];
         };
-        "com.github.apoxy-dev.apoxy.api.core.v1alpha2.EgressGatewaySpec": {
-            /** @description Whether the egress gateway is enabled. Default is false. When enabled, the egress gateway will be used to route traffic from the tunnel agent to the internet. Traffic will be SNAT'ed. */
-            enabled?: boolean;
-        };
         /** @description GrafanaCredentials contains credentials for Grafana Cloud integration. */
         "com.github.apoxy-dev.apoxy.api.core.v1alpha2.GrafanaCredentials": {
             /**
@@ -1631,138 +1627,6 @@ export interface components {
             datadogTraces?: components["schemas"]["com.github.apoxy-dev.apoxy.api.core.v1alpha2.APIKey"];
             /** @description OpenTelemetrySink is the OpenTelemetry sink. */
             openTelemetrySinks?: components["schemas"]["com.github.apoxy-dev.apoxy.api.core.v1alpha2.OpenTelemetrySink"][];
-        };
-        /** @description Tunnel represents a tunnel network. */
-        "com.github.apoxy-dev.apoxy.api.core.v1alpha2.Tunnel": {
-            /** @description APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources */
-            apiVersion?: string;
-            /** @description Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds */
-            kind?: string;
-            /** @default {} */
-            metadata: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta"];
-            /**
-             * @description Spec is the specification of the tunnel.
-             * @default {}
-             */
-            spec: components["schemas"]["com.github.apoxy-dev.apoxy.api.core.v1alpha2.TunnelSpec"];
-            /**
-             * @description Status is the status of the tunnel network.
-             * @default {}
-             */
-            status: components["schemas"]["com.github.apoxy-dev.apoxy.api.core.v1alpha2.TunnelStatus"];
-        };
-        /** @description TunnelAgent represents a tunnel agent. */
-        "com.github.apoxy-dev.apoxy.api.core.v1alpha2.TunnelAgent": {
-            /** @description APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources */
-            apiVersion?: string;
-            /** @description Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds */
-            kind?: string;
-            /** @default {} */
-            metadata: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta"];
-            /**
-             * @description Spec is the specification of the tunnel agent.
-             * @default {}
-             */
-            spec: components["schemas"]["com.github.apoxy-dev.apoxy.api.core.v1alpha2.TunnelAgentSpec"];
-            /**
-             * @description Status is the status of the tunnel agent.
-             * @default {}
-             */
-            status: components["schemas"]["com.github.apoxy-dev.apoxy.api.core.v1alpha2.TunnelAgentStatus"];
-        };
-        /** @description TunnelAgentConnection represents a connection between a tunnel agent and a relay. */
-        "com.github.apoxy-dev.apoxy.api.core.v1alpha2.TunnelAgentConnection": {
-            /** @description Address is the overlay address/cidr of the agent assigned to this connection. */
-            address?: string;
-            /** @description ConnectedAt is the time when the agent was connected to the tunnel node. */
-            connectedAt?: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Time"];
-            /**
-             * @description ID is the unique identifier of the connection.
-             * @default
-             */
-            id: string;
-            /** @description LastRX is the last time a packet was received from the agent on this connection. */
-            lastRx?: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Time"];
-            /** @description RelayAddress is the address of the relay managing this connection. */
-            relayAddress?: string;
-            /**
-             * Format: int64
-             * @description RXBytes is the total number of bytes received from the agent on this connection.
-             */
-            rxBytes?: number;
-            /**
-             * Format: int64
-             * @description TXBytes is the total number of bytes transmitted to the agent on this connection.
-             */
-            txBytes?: number;
-            /**
-             * Format: int32
-             * @description VNI is the 24-bit virtual network identifier used for this connection, if applicable.
-             */
-            vni?: number;
-        };
-        /** @description TunnelAgentList contains a list of TunnelAgent objects. */
-        "com.github.apoxy-dev.apoxy.api.core.v1alpha2.TunnelAgentList": {
-            /** @description APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources */
-            apiVersion?: string;
-            items: components["schemas"]["com.github.apoxy-dev.apoxy.api.core.v1alpha2.TunnelAgent"][];
-            /** @description Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds */
-            kind?: string;
-            /** @default {} */
-            metadata: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.ListMeta"];
-        };
-        /** @description TunnelAgentRef is a reference to a TunnelAgent. */
-        "com.github.apoxy-dev.apoxy.api.core.v1alpha2.TunnelAgentRef": {
-            /**
-             * @description Name of the tunnel agent. Required.
-             * @default
-             */
-            name: string;
-        };
-        /** @description TunnelAgentSpec represents the specification of a tunnel agent. */
-        "com.github.apoxy-dev.apoxy.api.core.v1alpha2.TunnelAgentSpec": {
-            /**
-             * @description Reference to the Tunnel this agent belongs to.
-             * @default {}
-             */
-            tunnelRef: components["schemas"]["com.github.apoxy-dev.apoxy.api.core.v1alpha2.TunnelRef"];
-        };
-        /** @description TunnelAgentStatus represents the status of a tunnel agent. */
-        "com.github.apoxy-dev.apoxy.api.core.v1alpha2.TunnelAgentStatus": {
-            /** @description Connections are active connections between the agent and (potentially multiple) relays. */
-            connections?: components["schemas"]["com.github.apoxy-dev.apoxy.api.core.v1alpha2.TunnelAgentConnection"][];
-        };
-        "com.github.apoxy-dev.apoxy.api.core.v1alpha2.TunnelCredentials": {
-            /** @description Bearer token for authentication with tunnel relays. */
-            token?: string;
-        };
-        /** @description TunnelList contains a list of Tunnel objects. */
-        "com.github.apoxy-dev.apoxy.api.core.v1alpha2.TunnelList": {
-            /** @description APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources */
-            apiVersion?: string;
-            items: components["schemas"]["com.github.apoxy-dev.apoxy.api.core.v1alpha2.Tunnel"][];
-            /** @description Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds */
-            kind?: string;
-            /** @default {} */
-            metadata: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.ListMeta"];
-        };
-        /** @description TunnelRef is a reference to a Tunnel. */
-        "com.github.apoxy-dev.apoxy.api.core.v1alpha2.TunnelRef": {
-            /**
-             * @description Name of the Tunnel. Required.
-             * @default
-             */
-            name: string;
-        };
-        "com.github.apoxy-dev.apoxy.api.core.v1alpha2.TunnelSpec": {
-            /** @description Configures egress gateway mode on the tunnel. In this mode, the tunnel relay acts as a gateway for outbound connections originating from the agent side in addition to its default mode (where the connections arrive in the direction of the agent). */
-            egressGateway?: components["schemas"]["com.github.apoxy-dev.apoxy.api.core.v1alpha2.EgressGatewaySpec"];
-        };
-        "com.github.apoxy-dev.apoxy.api.core.v1alpha2.TunnelStatus": {
-            /** @description A list of public relay hosts for this network. */
-            addresses?: string[];
-            /** @description Credentials for authenticating with tunnel relays. */
-            credentials?: components["schemas"]["com.github.apoxy-dev.apoxy.api.core.v1alpha2.TunnelCredentials"];
         };
         /** @description Address contains postal address information. */
         "com.github.apoxy-dev.apoxy.api.core.v1alpha3.Address": {
@@ -2813,6 +2677,249 @@ export interface components {
              * @description Number of rate limit requests within the limit.
              */
             withinLimit?: number;
+        };
+        /**
+         * @description EgressGatewaySpec configures per-network egress-gateway (exit-node) semantics: agents may advertise default routes and the relay SNATs strictly within this network's routing domain.
+         *
+         *     NOTE: the current relay implementation is a relay-global boolean, so this field is not honored until per-network routing-domain semantics land in the relay router (APO-729).
+         */
+        "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.EgressGatewaySpec": {
+            /** @description Whether the egress gateway is enabled. Default is false. */
+            enabled?: boolean;
+        };
+        /** @description Relay tracks one relay instance serving tunnel connections. */
+        "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.Relay": {
+            /** @description APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources */
+            apiVersion?: string;
+            /** @description Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds */
+            kind?: string;
+            /** @default {} */
+            metadata: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta"];
+            /**
+             * @description Spec is the specification of the relay.
+             * @default {}
+             */
+            spec: components["schemas"]["com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.RelaySpec"];
+            /**
+             * @description Status is the status of the relay.
+             * @default {}
+             */
+            status: components["schemas"]["com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.RelayStatus"];
+        };
+        /** @description RelayList contains a list of Relay objects. */
+        "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.RelayList": {
+            /** @description APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources */
+            apiVersion?: string;
+            items: components["schemas"]["com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.Relay"][];
+            /** @description Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds */
+            kind?: string;
+            /** @default {} */
+            metadata: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.ListMeta"];
+        };
+        /** @description RelayRef is a reference to a Relay. */
+        "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.RelayRef": {
+            /**
+             * @description Name of the Relay. Required.
+             * @default
+             */
+            name: string;
+        };
+        /** @description RelaySpec is write-once: created by the relay on start (or selector change), deleted on shutdown, never mutated in steady state. Liveness lives in the relay's Lease, not here. */
+        "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.RelaySpec": {
+            /** @description Underlay host:port endpoints agents dial (QUIC control and Geneve data share the port). */
+            addresses: string[];
+            /** @description Scopes which networks this relay serves. Empty selects all networks. */
+            networkSelector?: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.LabelSelector"];
+        };
+        "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.RelayStatus": {
+            conditions?: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Condition"][];
+            /** @description Alive-and-accepting. Flipped by the lease watcher on expiry/renewal transitions (crash) and by the relay itself at drain start. The only liveness signal consumers see; count connections via Tunnels by relayRef. */
+            ready?: boolean;
+        };
+        /** @description Tunnel tracks one live connection - the Endpoints analog to VPCService's Service. Created complete by the owning relay at connect, deleted at disconnect, never patched in steady state, and never user-authored. The name is the connection ID; metadata labels carry the agent-declared labels plus the relay-stamped identity labels (LabelNetwork, LabelTunnelName, LabelAgentInstance). */
+        "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.Tunnel": {
+            /** @description APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources */
+            apiVersion?: string;
+            /** @description Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds */
+            kind?: string;
+            /** @default {} */
+            metadata: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta"];
+            /**
+             * @description Spec is the specification of the connection.
+             * @default {}
+             */
+            spec: components["schemas"]["com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.TunnelSpec"];
+            /**
+             * @description Status is the status of the connection.
+             * @default {}
+             */
+            status: components["schemas"]["com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.TunnelStatus"];
+        };
+        /** @description TunnelList contains a list of Tunnel objects. */
+        "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.TunnelList": {
+            /** @description APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources */
+            apiVersion?: string;
+            items: components["schemas"]["com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.Tunnel"][];
+            /** @description Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds */
+            kind?: string;
+            /** @default {} */
+            metadata: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.ListMeta"];
+        };
+        /** @description TunnelRef is a reference to a Tunnel. */
+        "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.TunnelRef": {
+            /**
+             * @description Name of the Tunnel. Required.
+             * @default
+             */
+            name: string;
+        };
+        /** @description TunnelSpec carries the connection's immutable joins, stamped by the owning relay at create. */
+        "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.TunnelSpec": {
+            /**
+             * @description The VPCNetwork the connection belongs to.
+             * @default {}
+             */
+            networkRef: components["schemas"]["com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.VPCNetworkRef"];
+            /**
+             * @description The relay terminating the connection.
+             * @default {}
+             */
+            relayRef: components["schemas"]["com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.RelayRef"];
+        };
+        "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.TunnelStatus": {
+            /** @description Overlay addresses allocated to the connection by the owning relay from its leased blocks. Dual-stack: one IPv6 ULA prefix plus one IPv4 CGNAT address for egress through the connection (ingress never rides v4). */
+            addresses?: string[];
+            /** @description Agent-declared prefixes reachable behind this connection, bounded by credential claims and rejected by the relay when out of bounds. */
+            advertisedRoutes?: string[];
+        };
+        /** @description VPCNetwork is a private connectivity domain: the routing and key domain that Tunnels and compute vpc bindings attach to. */
+        "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.VPCNetwork": {
+            /** @description APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources */
+            apiVersion?: string;
+            /** @description Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds */
+            kind?: string;
+            /** @default {} */
+            metadata: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta"];
+            /**
+             * @description Spec is the specification of the network.
+             * @default {}
+             */
+            spec: components["schemas"]["com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.VPCNetworkSpec"];
+            /**
+             * @description Status is the status of the network.
+             * @default {}
+             */
+            status: components["schemas"]["com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.VPCNetworkStatus"];
+        };
+        /** @description VPCNetworkCredentials carries the network's connect credential. */
+        "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.VPCNetworkCredentials": {
+            /** @description Bearer token for authenticating with the network's relays. */
+            token?: string;
+        };
+        /** @description VPCNetworkDNS is the DNS configuration pushed to attaching tunnels and vpc-bound sandboxes. Mirrors the wire ConnectResponse.DNS shape. */
+        "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.VPCNetworkDNS": {
+            /**
+             * Format: int32
+             * @description The ndots resolver option.
+             */
+            ndots?: number;
+            /** @description DNS search domains. */
+            searchDomains?: string[];
+            /** @description DNS server addresses. */
+            servers?: string[];
+        };
+        /** @description VPCNetworkList contains a list of VPCNetwork objects. */
+        "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.VPCNetworkList": {
+            /** @description APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources */
+            apiVersion?: string;
+            items: components["schemas"]["com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.VPCNetwork"][];
+            /** @description Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds */
+            kind?: string;
+            /** @default {} */
+            metadata: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.ListMeta"];
+        };
+        /** @description VPCNetworkRef is a reference to a VPCNetwork. */
+        "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.VPCNetworkRef": {
+            /**
+             * @description Name of the VPCNetwork. Required.
+             * @default
+             */
+            name: string;
+        };
+        "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.VPCNetworkSpec": {
+            /** @description DNS pushed to attaching tunnels and vpc-bound sandboxes. */
+            dns?: components["schemas"]["com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.VPCNetworkDNS"];
+            /** @description Per-network egress-gateway (exit-node) semantics. Not honored until the relay router implements per-network routing domains (APO-729). */
+            egressGateway?: components["schemas"]["com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.EgressGatewaySpec"];
+        };
+        "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.VPCNetworkStatus": {
+            /** @description Conditions: Ready, InfraProvisioned. */
+            conditions?: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Condition"][];
+            /** @description Credentials for authenticating with the network's relays. */
+            credentials?: components["schemas"]["com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.VPCNetworkCredentials"];
+            /** @description The ULA prefix of the network's overlay address space. Relay discovery is a live list of Relay objects, not derived state here. */
+            overlayCIDR?: string;
+        };
+        /** @description VPCService is service-like addressing over Tunnels, modeled on the Kubernetes Service: a label selector over Tunnel objects (which play Endpoints), a stable DNS name, and the target for DomainRecords and routes. User-authored. */
+        "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.VPCService": {
+            /** @description APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources */
+            apiVersion?: string;
+            /** @description Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds */
+            kind?: string;
+            /** @default {} */
+            metadata: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta"];
+            /**
+             * @description Spec is the specification of the service.
+             * @default {}
+             */
+            spec: components["schemas"]["com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.VPCServiceSpec"];
+            /**
+             * @description Status is the status of the service.
+             * @default {}
+             */
+            status: components["schemas"]["com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.VPCServiceStatus"];
+        };
+        /** @description VPCServiceEndpoint is one live member of the service. */
+        "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.VPCServiceEndpoint": {
+            /** @description The member's overlay addresses. Plural per member (dual-stack); only the IPv6 ULA is published to the shared DNS zone. */
+            addresses?: string[];
+            /**
+             * @description The member Tunnel (one connection).
+             * @default {}
+             */
+            tunnelRef: components["schemas"]["com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.TunnelRef"];
+        };
+        /** @description VPCServiceList contains a list of VPCService objects. */
+        "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.VPCServiceList": {
+            /** @description APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources */
+            apiVersion?: string;
+            items: components["schemas"]["com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.VPCService"][];
+            /** @description Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds */
+            kind?: string;
+            /** @default {} */
+            metadata: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.ListMeta"];
+        };
+        /** @description VPCServiceRef is a reference to a VPCService. */
+        "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.VPCServiceRef": {
+            /**
+             * @description Name of the VPCService. Required.
+             * @default
+             */
+            name: string;
+        };
+        "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.VPCServiceSpec": {
+            /**
+             * @description The VPCNetwork this service belongs to. Selection is scoped to Tunnels of this network.
+             * @default {}
+             */
+            networkRef: components["schemas"]["com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.VPCNetworkRef"];
+            /** @description Selects member Tunnels by their labels (agents declare labels at connect; the relay stamps them onto Tunnel metadata labels). */
+            selector: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.LabelSelector"];
+        };
+        "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.VPCServiceStatus": {
+            conditions?: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Condition"][];
+            /** @description Live members and their overlay addresses (the "endpoints view"). */
+            endpoints?: components["schemas"]["com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.VPCServiceEndpoint"][];
         };
         /** @description Lease defines a lease concept. */
         "io.k8s.api.coordination.v1.Lease": {

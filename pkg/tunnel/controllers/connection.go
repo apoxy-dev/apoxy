@@ -40,11 +40,14 @@ type Connection interface {
 	AdvertisedRoutes() []netip.Prefix
 	// AgentInstance is the agent process's stable instance UUID, if declared.
 	AgentInstance() string
-	// SetAddresses records the full dual-stack overlay address set assigned to
-	// this connection (an IPv6 /96 plus a best-effort IPv4 /32). SetOverlayAddress
-	// programs the router with the primary (IPv6) address; this is the reported
-	// set surfaced in the connect response and the Tunnel object.
-	SetAddresses(addrs []string)
-	// Addresses returns the dual-stack overlay address set, or nil if unset.
+	// SetAddresses reconciles the connection's programmed overlay address set
+	// (an IPv6 /96 plus a best-effort IPv4 /32) against addrs: non-primary
+	// prefixes are programmed onto the router and into the VNI's allowed
+	// routes, and prefixes that fell out of the set are unprogrammed
+	// (SetOverlayAddress covers the primary IPv6 address).
+	SetAddresses(addrs []string) error
+	// Addresses returns the programmed dual-stack overlay address set (primary
+	// first), or nil if nothing is programmed. It is the set surfaced in the
+	// connect response and the Tunnel object.
 	Addresses() []string
 }

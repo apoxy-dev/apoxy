@@ -59,7 +59,7 @@ func TestTunnelRun(t *testing.T) {
 	cmd.SetArgs([]string{
 		"alpha", "tunnel", "run",
 		"--agent", "test-agent",
-		"--name", "test-tunnel",
+		"--vpc", "test-tunnel",
 		"--relay-addr", r.Address().String(),
 		"--token", "letmein",
 		"--insecure-skip-verify",

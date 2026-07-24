@@ -52,9 +52,6 @@ type ConnectResponse struct {
 	Routes []Route `json:"routes,omitempty"`
 	// DNS contains DNS configuration for the connection.
 	DNS *DNS `json:"dns,omitempty"`
-	// RelayAddresses is a list of alternate relay addresses that are serving the
-	// same tunnel. This can be used for establishing redundant routes.
-	RelayAddresses []string `json:"relayAddresses,omitempty"`
 }
 
 type UpdateKeysResponse struct {

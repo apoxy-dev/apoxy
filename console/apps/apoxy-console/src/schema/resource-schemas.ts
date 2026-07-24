@@ -1944,64 +1944,6 @@ export const RESOURCE_SCHEMAS: Record<string, JSONSchema> = {
     },
     "type": "object"
   },
-  "core.apoxy.dev/v1alpha2/Tunnel": {
-    "$defs": {
-      "com.github.apoxy-dev.apoxy.api.core.v1alpha2.EgressGatewaySpec": {
-        "properties": {
-          "enabled": {
-            "type": "boolean"
-          }
-        },
-        "type": "object"
-      },
-      "com.github.apoxy-dev.apoxy.api.core.v1alpha2.TunnelSpec": {
-        "properties": {
-          "egressGateway": {
-            "$ref": "com.github.apoxy-dev.apoxy.api.core.v1alpha2.EgressGatewaySpec"
-          }
-        },
-        "type": "object"
-      }
-    },
-    "properties": {
-      "spec": {
-        "$ref": "com.github.apoxy-dev.apoxy.api.core.v1alpha2.TunnelSpec"
-      }
-    },
-    "type": "object"
-  },
-  "core.apoxy.dev/v1alpha2/TunnelAgent": {
-    "$defs": {
-      "com.github.apoxy-dev.apoxy.api.core.v1alpha2.TunnelAgentSpec": {
-        "properties": {
-          "tunnelRef": {
-            "$ref": "com.github.apoxy-dev.apoxy.api.core.v1alpha2.TunnelRef"
-          }
-        },
-        "required": [
-          "tunnelRef"
-        ],
-        "type": "object"
-      },
-      "com.github.apoxy-dev.apoxy.api.core.v1alpha2.TunnelRef": {
-        "properties": {
-          "name": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "name"
-        ],
-        "type": "object"
-      }
-    },
-    "properties": {
-      "spec": {
-        "$ref": "com.github.apoxy-dev.apoxy.api.core.v1alpha2.TunnelAgentSpec"
-      }
-    },
-    "type": "object"
-  },
   "core.apoxy.dev/v1alpha3/DomainRecord": {
     "$defs": {
       "com.github.apoxy-dev.apoxy.api.core.v1alpha3.DomainRecordSpec": {
@@ -5373,6 +5315,241 @@ export const RESOURCE_SCHEMAS: Record<string, JSONSchema> = {
     "properties": {
       "spec": {
         "$ref": "com.github.apoxy-dev.apoxy.api.policy.v1alpha1.RateLimitSpec"
+      }
+    },
+    "type": "object"
+  },
+  "vpc.apoxy.dev/v1alpha1/Relay": {
+    "$defs": {
+      "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.RelaySpec": {
+        "properties": {
+          "addresses": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "networkSelector": {
+            "$ref": "io.k8s.apimachinery.pkg.apis.meta.v1.LabelSelector"
+          }
+        },
+        "required": [
+          "addresses"
+        ],
+        "type": "object"
+      },
+      "io.k8s.apimachinery.pkg.apis.meta.v1.LabelSelector": {
+        "properties": {
+          "matchExpressions": {
+            "items": {
+              "$ref": "io.k8s.apimachinery.pkg.apis.meta.v1.LabelSelectorRequirement"
+            },
+            "type": "array"
+          },
+          "matchLabels": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      },
+      "io.k8s.apimachinery.pkg.apis.meta.v1.LabelSelectorRequirement": {
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "operator": {
+            "type": "string"
+          },
+          "values": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "key",
+          "operator"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "spec": {
+        "$ref": "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.RelaySpec"
+      }
+    },
+    "type": "object"
+  },
+  "vpc.apoxy.dev/v1alpha1/Tunnel": {
+    "$defs": {
+      "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.RelayRef": {
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.TunnelSpec": {
+        "properties": {
+          "networkRef": {
+            "$ref": "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.VPCNetworkRef"
+          },
+          "relayRef": {
+            "$ref": "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.RelayRef"
+          }
+        },
+        "required": [
+          "networkRef",
+          "relayRef"
+        ],
+        "type": "object"
+      },
+      "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.VPCNetworkRef": {
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "spec": {
+        "$ref": "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.TunnelSpec"
+      }
+    },
+    "type": "object"
+  },
+  "vpc.apoxy.dev/v1alpha1/VPCNetwork": {
+    "$defs": {
+      "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.EgressGatewaySpec": {
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.VPCNetworkDNS": {
+        "properties": {
+          "ndots": {
+            "type": "integer"
+          },
+          "searchDomains": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "servers": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.VPCNetworkSpec": {
+        "properties": {
+          "dns": {
+            "$ref": "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.VPCNetworkDNS"
+          },
+          "egressGateway": {
+            "$ref": "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.EgressGatewaySpec"
+          }
+        },
+        "type": "object"
+      }
+    },
+    "properties": {
+      "spec": {
+        "$ref": "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.VPCNetworkSpec"
+      }
+    },
+    "type": "object"
+  },
+  "vpc.apoxy.dev/v1alpha1/VPCService": {
+    "$defs": {
+      "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.VPCNetworkRef": {
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.VPCServiceSpec": {
+        "properties": {
+          "networkRef": {
+            "$ref": "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.VPCNetworkRef"
+          },
+          "selector": {
+            "$ref": "io.k8s.apimachinery.pkg.apis.meta.v1.LabelSelector"
+          }
+        },
+        "required": [
+          "networkRef",
+          "selector"
+        ],
+        "type": "object"
+      },
+      "io.k8s.apimachinery.pkg.apis.meta.v1.LabelSelector": {
+        "properties": {
+          "matchExpressions": {
+            "items": {
+              "$ref": "io.k8s.apimachinery.pkg.apis.meta.v1.LabelSelectorRequirement"
+            },
+            "type": "array"
+          },
+          "matchLabels": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      },
+      "io.k8s.apimachinery.pkg.apis.meta.v1.LabelSelectorRequirement": {
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "operator": {
+            "type": "string"
+          },
+          "values": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "key",
+          "operator"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "spec": {
+        "$ref": "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.VPCServiceSpec"
       }
     },
     "type": "object"
