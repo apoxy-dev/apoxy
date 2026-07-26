@@ -251,11 +251,89 @@ func (d *DomainRecordTargetDNS) PopulatedFieldCount() int {
 	return count
 }
 
+// DomainRecordPhase is the lifecycle state of a DomainRecord. It is the
+// single field the data plane keys on (via Admitted) and the one customers
+// read for "where is my domain"; conditions remain the per-fact observation
+// log that explains why the record is in a given phase and when it got there.
+//
+// The phase is a function of DNS ownership proof, certificate existence, and
+// cutover — deliberately NOT of backend health. A record with a dead backend
+// is still Active; TargetReady reports the 502s. Folding health into
+// lifecycle state is what caused the 2026-07-24 fleet de-verification.
+//
+// Transitions require affirmative observations: a pass where a probe is
+// indeterminate (DNS resolvers or cosmos unreachable) holds the current
+// phase rather than regressing it.
+type DomainRecordPhase string
+
+const (
+	// DomainRecordPhasePending means no ownership proof has been observed
+	// yet: no main CNAME, no challenge delegation, no owned certificate.
+	DomainRecordPhasePending DomainRecordPhase = "Pending"
+
+	// DomainRecordPhaseIssuing means an ownership proof is in place and a
+	// certificate is being minted (first issuance, or re-issuance after the
+	// stored certificate lapsed). Admitted: the ACME HTTP-01 challenge that
+	// completes issuance is served over plaintext :80 through our gateway,
+	// so the hostname must already be routable.
+	DomainRecordPhaseIssuing DomainRecordPhase = "Issuing"
+
+	// DomainRecordPhaseActive means ownership is proven and (for TLS records)
+	// a certificate is stored: everything on our side is done and traffic
+	// serves the moment it arrives. Whether the customer's main CNAME has
+	// actually been cut over is customer-side DNS state, reported by the
+	// CNAMEConfigured condition — a pre-issued record awaiting cutover is
+	// Active with CNAMEConfigured=False.
+	DomainRecordPhaseActive DomainRecordPhase = "Active"
+
+	// DomainRecordPhaseDetached means every ownership proof has been
+	// affirmatively withdrawn after the record was previously proven: no
+	// live DNS proof and no unexpired certificate. Not admitted — this is
+	// the state that releases the hostname for its next owner.
+	DomainRecordPhaseDetached DomainRecordPhase = "Detached"
+)
+
+// ConditionOwnershipVerified is the DomainRecord status condition recording
+// whether the customer has proven control of the hostname. Like the phase, it
+// is wire contract between the producing apiserver and the consuming
+// backplane: admission falls back to it on records without a phase.
+const ConditionOwnershipVerified = "OwnershipVerified"
+
+// Reasons for ConditionOwnershipVerified. Declared next to the condition so
+// a rename cannot compile clean on one side of the wire contract only.
+const (
+	ReasonOwnershipVerifiedByTLS            = "TLSCertificateIssued"
+	ReasonOwnershipVerifiedByApoxyChallenge = "ApoxyChallengeConfigured"
+	ReasonOwnershipVerifiedByCNAME          = "CNAMEConfigured"
+	ReasonOwnershipVerifiedByZone           = "ZoneOwned"
+	ReasonOwnershipNotVerified              = "OwnershipNotVerified"
+)
+
+// Admitted reports whether a record in this phase belongs in the data plane:
+// HTTPRoute hostname admission, SNI trie membership, and cross-project claim
+// checks all key on exactly this predicate. It lives on the type so producers
+// and consumers — deployed independently — share one definition instead of
+// re-deriving membership from condition strings.
+func (p DomainRecordPhase) Admitted() bool {
+	switch p {
+	case DomainRecordPhaseIssuing, DomainRecordPhaseActive:
+		return true
+	default:
+		return false
+	}
+}
+
 type DomainRecordStatus struct {
 	// Type is the resolved DNS record type (A, AAAA, CNAME, TXT, MX, etc.).
 	// Derived from the populated DNS field or resolved from ref.
 	// +optional
 	Type string `json:"type,omitempty"`
+
+	// Phase is the record's lifecycle state. Empty on records that have not
+	// been reconciled by a phase-aware controller yet; consumers fall back to
+	// conditions in that case.
+	// +optional
+	Phase DomainRecordPhase `json:"phase,omitempty"`
 
 	// Conditions contains domain record conditions.
 	// Standard conditions: Ready, ZoneReady, TargetReady.
@@ -359,6 +437,15 @@ func domainRecordStatusString(r *DomainRecord) string {
 	return "Pending"
 }
 
+// domainRecordPhaseString renders the phase column. Empty means the record
+// predates phase-aware controllers; show a dash rather than implying a state.
+func domainRecordPhaseString(r *DomainRecord) string {
+	if r.Status.Phase == "" {
+		return "-"
+	}
+	return string(r.Status.Phase)
+}
+
 // domainRecordTargetString returns a display string for the record's target value.
 func domainRecordTargetString(r *DomainRecord) string {
 	if r.Spec.Target.Ref != nil {
@@ -457,6 +544,7 @@ func domainRecordToTable(r *DomainRecord, tableOptions runtime.Object) (*metav1.
 			r.Spec.Zone,
 			domainRecordTTL(r),
 			domainRecordTargetString(r),
+			domainRecordPhaseString(r),
 			domainRecordStatusString(r),
 			formatAge(r.CreationTimestamp.Time),
 		},
@@ -483,6 +571,7 @@ func domainRecordListToTable(list *DomainRecordList, tableOptions runtime.Object
 				r.Spec.Zone,
 				domainRecordTTL(r),
 				domainRecordTargetString(r),
+				domainRecordPhaseString(r),
 				domainRecordStatusString(r),
 				formatAge(r.CreationTimestamp.Time),
 			},
@@ -504,6 +593,7 @@ func domainRecordColumnDefinitions() []metav1.TableColumnDefinition {
 		{Name: "Zone", Type: "string", Description: "Zone the record belongs to"},
 		{Name: "TTL", Type: "integer", Description: "Time-to-live in seconds"},
 		{Name: "Target", Type: "string", Description: "Target value"},
+		{Name: "Phase", Type: "string", Description: "Lifecycle phase of the record"},
 		{Name: "Ready", Type: "string", Description: "Whether the record is ready"},
 		{Name: "Age", Type: "string", Description: "Time since creation"},
 	}

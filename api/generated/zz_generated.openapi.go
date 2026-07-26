@@ -6755,6 +6755,13 @@ func schema_apoxy_api_core_v1alpha3_DomainRecordStatus(ref common.ReferenceCallb
 							Format:      "",
 						},
 					},
+					"phase": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Phase is the record's lifecycle state. Empty on records that have not been reconciled by a phase-aware controller yet; consumers fall back to conditions in that case.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 					"conditions": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Conditions contains domain record conditions. Standard conditions: Ready, ZoneReady, TargetReady.",
