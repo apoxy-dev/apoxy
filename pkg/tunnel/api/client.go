@@ -166,6 +166,16 @@ func (c *Client) UpdateKeys(ctx context.Context, id string) (*UpdateKeysResponse
 	return &resp, nil
 }
 
+// Routes fetches the connection's current route set from the relay.
+func (c *Client) Routes(ctx context.Context, id string) (*RoutesResponse, error) {
+	var resp RoutesResponse
+	u := c.path("/v1/tunnel/"+c.tunnelName+"/routes") + "?id=" + url.QueryEscape(id)
+	if err := c.doJSON(ctx, http.MethodGet, u, nil, &resp, http.StatusOK); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
 func (c *Client) path(pth string) string {
 	u := *c.baseURL
 	u.Path = path.Join(c.baseURL.Path, pth)

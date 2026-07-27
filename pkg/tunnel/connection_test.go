@@ -134,6 +134,56 @@ func TestConnectionDualStackProgramming(t *testing.T) {
 	require.False(t, ok, "VNI must be removed on close")
 }
 
+// TestConnectionAdvertisedRoutes asserts that a connection's advertised CIDRs
+// are installed as router routes and VNI allowed routes on SetVNI (the transit
+// path for traffic to endpoints behind the agent), survive a VNI change
+// without double-programming, and are removed on Close.
+func TestConnectionAdvertisedRoutes(t *testing.T) {
+	v6 := netip.MustParsePrefix("fd00:dead::7/96")
+	advertised := netip.MustParsePrefix("10.30.0.0/24")
+
+	h, err := icx.NewHandler(
+		icx.WithLocalAddr(netstack.ToFullAddress(netip.MustParseAddrPort("127.0.0.1:6081"))),
+		icx.WithVirtMAC(tcpip.GetRandMacAddr()),
+	)
+	require.NoError(t, err)
+
+	rtr := &recordingRouter{}
+	conn := &connection{
+		id:               "conn-advertised",
+		handler:          h,
+		router:           rtr,
+		localAddr:        netip.MustParseAddrPort("127.0.0.1:6081"),
+		remoteAddr:       netip.MustParseAddrPort("127.0.0.1:7081"),
+		advertisedRoutes: []netip.Prefix{advertised},
+	}
+
+	require.NoError(t, conn.SetOverlayAddress(v6.String()))
+	require.NoError(t, conn.SetVNI(context.Background(), 88))
+
+	require.Equal(t, 1, countPrefix(rtr.addRoutes, advertised),
+		"advertised CIDR must be installed as a router route")
+	vnet, ok := h.GetVirtualNetwork(88)
+	require.True(t, ok)
+	foundDst := false
+	for _, r := range vnet.AllowedRoutes() {
+		if r.Dst == advertised {
+			foundDst = true
+		}
+	}
+	require.True(t, foundDst, "advertised CIDR must be in the VNI allowed routes")
+
+	// A VNI change re-creates the virtual network (new trie entries) but must
+	// not re-program the VNI-agnostic kernel route.
+	require.NoError(t, conn.SetVNI(context.Background(), 89))
+	require.Equal(t, 1, countPrefix(rtr.addRoutes, advertised),
+		"VNI change must not double-program the advertised route")
+
+	require.NoError(t, conn.Close())
+	require.Equal(t, 1, countPrefix(rtr.delRoutes, advertised),
+		"advertised route must be removed on close")
+}
+
 // TestConnectionPrimaryPromotion asserts SetAddresses and SetOverlayAddress
 // compose in either order: a prefix already programmed as an extra is promoted
 // to primary in place, never programmed twice.

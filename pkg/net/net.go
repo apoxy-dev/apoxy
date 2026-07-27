@@ -13,6 +13,11 @@ const (
 	// TunnelSubdomain is the subdomain used for the Apoxy endpoints serving
 	// customer traffic (both internal and external).
 	TunnelSubdomain = "tun"
+	// VPCSubdomain is the subdomain used for VPCService endpoints reachable
+	// over the VPC relay overlay. Kept distinct from TunnelSubdomain so the
+	// datapath (VTEP netns vs. legacy lwtunnel) can be selected from the
+	// FQDN alone.
+	VPCSubdomain = "vpc"
 )
 
 var (
@@ -23,4 +28,8 @@ var (
 	// TunnelDomain is the domain used for the Apoxy endpoints serving
 	// customer traffic (both internal and external).
 	TunnelDomain = fmt.Sprintf("%s.%s", TunnelSubdomain, ApoxyNetDomainSuffix)
+
+	// VPCDomain is the domain under which VPCService endpoints are published
+	// by the per-project backplane DNS servers.
+	VPCDomain = fmt.Sprintf("%s.%s", VPCSubdomain, ApoxyNetDomainSuffix)
 )

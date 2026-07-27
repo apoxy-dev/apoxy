@@ -9,7 +9,6 @@ import (
 	"net/netip"
 	"strconv"
 	"sync"
-	"time"
 
 	"github.com/apoxy-dev/icx"
 	"github.com/dpeckett/network"
@@ -19,7 +18,6 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/socksproxy"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/connection"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/l2pc"
-	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 )
 
 var (
@@ -50,38 +48,9 @@ func NewICXNetstackRouter(opts ...Option) (*ICXNetstackRouter, error) {
 		return nil, fmt.Errorf("failed to create L2 packet connection phy: %w", err)
 	}
 
-	handlerOpts := []icx.HandlerOption{
-		icx.WithLayer3VirtFrames(),
-		icx.WithKeepAliveInterval(25 * time.Second),
-	}
-	if options.sourcePortHashing {
-		handlerOpts = append(handlerOpts, icx.WithSourcePortHashing())
-	}
-
-	localUDPAddr := options.pc.LocalAddr().(*net.UDPAddr)
-
-	localAddrPort := netip.AddrPortFrom(netip.MustParseAddr(localUDPAddr.IP.String()),
-		uint16(localUDPAddr.Port))
-
-	localAddrPorts := []netip.AddrPort{localAddrPort}
-	if localAddrPort.Addr().IsUnspecified() {
-		localAddrs, err := tunnet.GetAllGlobalUnicastAddresses(true)
-		if err != nil {
-			_ = phy.Close()
-			return nil, fmt.Errorf("failed to get local addresses: %w", err)
-		}
-
-		for _, addr := range localAddrs {
-			localAddrPorts = append(localAddrPorts, netip.AddrPortFrom(addr.Addr(), localAddrPort.Port()))
-		}
-	}
-
-	for _, addr := range localAddrPorts {
-		handlerOpts = append(handlerOpts, icx.WithLocalAddr(netstack.ToFullAddress(addr)))
-	}
-
-	handler, err := icx.NewHandler(handlerOpts...)
+	handler, err := newL3Handler(options.pc, options.sourcePortHashing)
 	if err != nil {
+		_ = phy.Close()
 		return nil, fmt.Errorf("failed to create ICX handler: %w", err)
 	}
 

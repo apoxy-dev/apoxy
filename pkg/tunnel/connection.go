@@ -53,6 +53,10 @@ type connection struct {
 	labels           map[string]string
 	advertisedRoutes []netip.Prefix
 	agentInstance    string
+	// advRoutesProgrammed records whether the advertised routes have been
+	// installed on the router, so a VNI change doesn't double-program the
+	// kernel routes and Close knows to remove them.
+	advRoutesProgrammed bool
 }
 
 // programLocked installs p on the router (address + route), rolling the
@@ -106,6 +110,8 @@ func (c *connection) Close() error {
 	}
 	c.overlayAddr = nil
 	c.extraAddrs = nil
+
+	errs = append(errs, c.unprogramAdvertisedRoutesLocked())
 
 	if c.vni != nil {
 		if err := c.handler.RemoveVirtualNetwork(*c.vni); err != nil {
@@ -176,6 +182,13 @@ func (c *connection) SetVNI(ctx context.Context, vni uint) error {
 		}
 	}
 
+	// Kernel routes for the advertised CIDRs are VNI-agnostic, so they are
+	// installed once and survive a VNI change (the trie entries above were
+	// rebuilt with the new VNI already).
+	if err := c.programAdvertisedRoutesLocked(); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -192,9 +205,13 @@ func allowedRoutesForDst(dst netip.Prefix) []icx.Route {
 
 // allowedRoutesLocked builds the VNI's allowed routes from every overlay
 // prefix programmed on this connection — the primary (IPv6) address plus any
-// extras (the IPv4 /32). The icx RX check validates the inner source against
+// extras (the IPv4 /32) — and from the agent's advertised routes (the CIDRs
+// reachable behind it). The icx RX check validates the inner source against
 // route Dst prefixes per address family, so both families must be present for
-// dual-stack traffic to pass. Callers must hold c.mu.
+// dual-stack traffic to pass, and traffic returning FROM an advertised CIDR
+// needs its prefix as a Dst too. The same Dst set feeds the handler's global
+// route trie, which is what re-encapsulates transit traffic for those CIDRs
+// toward this connection's VNI. Callers must hold c.mu.
 func (c *connection) allowedRoutesLocked() []icx.Route {
 	var routes []icx.Route
 	if c.overlayAddr != nil {
@@ -203,7 +220,49 @@ func (c *connection) allowedRoutesLocked() []icx.Route {
 	for _, a := range c.extraAddrs {
 		routes = append(routes, allowedRoutesForDst(a)...)
 	}
+	for _, rt := range c.advertisedRoutes {
+		routes = append(routes, allowedRoutesForDst(rt)...)
+	}
 	return routes
+}
+
+// programAdvertisedRoutesLocked installs the advertised CIDRs as router routes
+// (kernel routes on the netlink router) so decapped transit traffic for them
+// is routed back into the datapath and re-encapsulated toward this VNI. They
+// are routes only, never addresses: the relay does not own these prefixes, so
+// there is nothing to AddAddr (which would also enroll them in service DNAT).
+// Idempotent via the advRoutesProgrammed guard; on failure every route
+// installed so far is rolled back. Callers must hold c.mu.
+func (c *connection) programAdvertisedRoutesLocked() error {
+	if c.advRoutesProgrammed || c.router == nil || len(c.advertisedRoutes) == 0 {
+		return nil
+	}
+	for i, rt := range c.advertisedRoutes {
+		if err := c.router.AddRoute(rt); err != nil {
+			for _, done := range c.advertisedRoutes[:i] {
+				_ = c.router.DelRoute(done)
+			}
+			return fmt.Errorf("router.AddRoute(%s) failed: %w", rt.String(), err)
+		}
+	}
+	c.advRoutesProgrammed = true
+	return nil
+}
+
+// unprogramAdvertisedRoutesLocked removes the advertised routes from the
+// router, attempting every route even when one fails. Callers must hold c.mu.
+func (c *connection) unprogramAdvertisedRoutesLocked() error {
+	if !c.advRoutesProgrammed || c.router == nil {
+		return nil
+	}
+	var errs []error
+	for _, rt := range c.advertisedRoutes {
+		if err := c.router.DelRoute(rt); err != nil {
+			errs = append(errs, fmt.Errorf("router.DelRoute(%s) failed: %w", rt.String(), err))
+		}
+	}
+	c.advRoutesProgrammed = false
+	return errors.Join(errs...)
 }
 
 // OverlayAddress returns the overlay address/cidr assigned to this connection.

@@ -20,6 +20,7 @@ type routerOptions struct {
 	pcapPath              string
 	extIfaceName          string
 	tunIfaceName          string
+	tunNetnsName          string
 	tunMTU                int
 	socksListenAddr       string
 	cksumRecalc           bool
@@ -81,6 +82,18 @@ func WithExternalInterface(name string) Option {
 func WithTunnelInterface(name string) Option {
 	return func(o *routerOptions) {
 		o.tunIfaceName = name
+	}
+}
+
+// WithTunnelNetns places the TUN device inside the named network namespace
+// (per the /var/run/netns convention). The namespace is created and
+// bind-mounted if it does not exist. The underlay socket is unaffected — it
+// stays in the namespace it was created in — so only overlay traffic entering
+// the TUN is scoped to the namespace. Only valid for the TUN router; Linux
+// only; requires CAP_SYS_ADMIN in addition to the TUN router's NET_ADMIN.
+func WithTunnelNetns(name string) Option {
+	return func(o *routerOptions) {
+		o.tunNetnsName = name
 	}
 }
 

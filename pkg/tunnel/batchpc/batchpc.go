@@ -3,6 +3,7 @@ package batchpc
 import (
 	"fmt"
 	"net"
+	"runtime"
 	"sync"
 
 	"golang.org/x/net/ipv4"
@@ -71,6 +72,21 @@ func newFromUDPConn(network string, pc *net.UDPConn) (BatchPacketConn, error) {
 		// unreachable due to resolveNetwork
 		return nil, fmt.Errorf("batchudp: unknown network %q", nw)
 	}
+}
+
+// v4DstNeedsConnWrite reports whether writes to IPv4-family destinations must
+// bypass x/net and go through the net.UDPConn directly. x/net marshals an
+// AF_INET sockaddr for any v4 or v4-mapped destination, which darwin's
+// dual-stack AF_INET6 sockets reject with EINVAL (linux accepts it). On
+// non-linux x/net has no sendmmsg anyway — batch calls degrade to one syscall
+// per message — so diverting v4-dst messages through the net.UDPConn (whose
+// sockaddr mapping is family-correct) loses no batching.
+var v4DstNeedsConnWrite = runtime.GOOS != "linux"
+
+// isV4Family reports whether addr is an IPv4 or IPv4-mapped UDP address.
+func isV4Family(addr net.Addr) bool {
+	ua, ok := addr.(*net.UDPAddr)
+	return ok && ua != nil && ua.IP.To4() != nil
 }
 
 // IPv4 implementation.
@@ -232,6 +248,13 @@ func (b *batch6) WriteBatch(msgs []Message, flags int) (int, error) {
 	if len(msgs) == 0 {
 		return 0, nil
 	}
+	if v4DstNeedsConnWrite {
+		for i := range msgs {
+			if isV4Family(msgs[i].Addr) {
+				return b.writeMixed(msgs, flags)
+			}
+		}
+	}
 	tmp := b.getTmp(len(msgs))
 	defer b.putTmp(tmp)
 	for i := range msgs {
@@ -253,4 +276,16 @@ func (b *batch6) WriteBatch(msgs []Message, flags int) (int, error) {
 		}
 	}
 	return total, nil
+}
+
+// writeMixed writes a batch containing IPv4-family destinations one message at
+// a time through the net.UDPConn (see v4DstNeedsConnWrite). Only reached on
+// non-linux platforms, where there is no batch syscall to preserve.
+func (b *batch6) writeMixed(msgs []Message, flags int) (int, error) {
+	for i := range msgs {
+		if _, err := b.PacketConn.WriteTo(msgs[i].Buf, msgs[i].Addr); err != nil {
+			return i, err
+		}
+	}
+	return len(msgs), nil
 }

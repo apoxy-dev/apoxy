@@ -5,10 +5,12 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/tls"
+	"fmt"
 	"net"
 	"net/http"
 	"net/netip"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -279,6 +281,106 @@ func TestRelay_InvalidAuthClosesQUIC(t *testing.T) {
 	case <-time.After(750 * time.Millisecond):
 		t.Fatalf("expected QUIC connection to be closed after unauthorized response, but it remained open")
 	}
+}
+
+// TestRelay_AdvertisedRouteTransit covers the transit wiring for CIDRs behind
+// agents: an advertised route lands in the advertiser's VNI allowed routes
+// (the trie entry that re-encapsulates transit traffic toward it), is handed
+// to later-connecting peers in their ConnectResponse routes, conflicts with
+// overlapping advertisements from other connections (first writer wins), is
+// rejected inside the relay-allocated overlay ULA space, and frees its claim
+// on disconnect.
+func TestRelay_AdvertisedRouteTransit(t *testing.T) {
+	const goodToken = "transit-token"
+
+	var vniCounter atomic.Uint32
+	vniCounter.Store(500)
+	onConnect := func(ctx context.Context, tunnelName, agentName string, conn controllers.Connection) error {
+		vni := uint(vniCounter.Add(1))
+		if err := conn.SetVNI(ctx, vni); err != nil {
+			return err
+		}
+		return conn.SetOverlayAddress(fmt.Sprintf("10.0.2.%d/32", vni-500))
+	}
+	onDisconnect := func(ctx context.Context, agent, id string) error { return nil }
+
+	r, caCert, stop, h := startRelay(t, goodToken, onConnect, onDisconnect)
+	t.Cleanup(stop)
+
+	tlsCfg := &tls.Config{
+		RootCAs:    cryptoutils.CertPoolForCertificate(caCert),
+		ServerName: "localhost",
+	}
+	newClient := func(agent string, routes []string) *api.Client {
+		c, err := api.NewClient(api.ClientOptions{
+			BaseURL:          "https://" + r.Address().String(),
+			Agent:            agent,
+			TunnelName:       "test-tunnel",
+			Token:            goodToken,
+			TLSConfig:        tlsCfg,
+			Timeout:          5 * time.Second,
+			AdvertisedRoutes: routes,
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = c.Close() })
+		return c
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	t.Cleanup(cancel)
+
+	advertised := netip.MustParsePrefix("10.20.0.0/24")
+
+	// The advertiser connects; its VNI allowed routes must carry the CIDR so
+	// the RX check admits return traffic from it and the trie re-encaps
+	// transit traffic toward it.
+	cA := newClient("agent-a", []string{advertised.String()})
+	respA, err := cA.Connect(ctx)
+	require.NoError(t, err)
+	vnet, ok := h.GetVirtualNetwork(respA.VNI)
+	require.True(t, ok)
+	found := false
+	for _, rt := range vnet.AllowedRoutes() {
+		if rt.Dst == advertised {
+			found = true
+			break
+		}
+	}
+	require.True(t, found, "advertised route must be installed in the VNI allowed routes")
+
+	// A later peer in the same network is handed the advertised CIDR as a
+	// route, so it can send transit traffic through the relay.
+	cB := newClient("agent-b", nil)
+	respB, err := cB.Connect(ctx)
+	require.NoError(t, err)
+	foundRoute := false
+	for _, rt := range respB.Routes {
+		if rt.Destination == advertised.String() {
+			foundRoute = true
+			break
+		}
+	}
+	require.True(t, foundRoute, "peer connect response must include the advertised route, got %v", respB.Routes)
+
+	// An overlapping advertisement from another connection is refused while
+	// the first holder is live.
+	cC := newClient("agent-c", []string{"10.20.0.128/25"})
+	_, err = cC.Connect(ctx)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "409")
+
+	// The overlay ULA space is never advertisable, bounds or not.
+	cD := newClient("agent-d", []string{"fd61:706f:7879:1::/80"})
+	_, err = cD.Connect(ctx)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "403")
+
+	// Disconnecting the advertiser releases its claim.
+	require.NoError(t, cA.Disconnect(ctx, respA.ID))
+	cE := newClient("agent-e", []string{"10.20.0.128/25"})
+	respE, err := cE.Connect(ctx)
+	require.NoError(t, err)
+	require.NoError(t, cE.Disconnect(ctx, respE.ID))
 }
 
 func TestRelay_GarbageCollector_DropsIdleConnections(t *testing.T) {

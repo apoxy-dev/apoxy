@@ -177,6 +177,7 @@ func (r *Relay) Start(ctx context.Context) error {
 	mux.POST("/v1/tunnel/:name", r.withAuth(r.handleConnect))
 	mux.DELETE("/v1/tunnel/:name", r.withAuth(r.handleDisconnect))
 	mux.PUT("/v1/tunnel/:name/keys", r.withAuth(r.handleUpdateKeys))
+	mux.GET("/v1/tunnel/:name/routes", r.withAuth(r.handleRoutes))
 
 	srv := http3.Server{
 		Handler: mux,
@@ -297,7 +298,37 @@ func (r *Relay) handleConnect(w http.ResponseWriter, req *http.Request, ps httpr
 			http.Error(w, fmt.Sprintf("Advertised route %q not permitted by credential", cidr), http.StatusForbidden)
 			return
 		}
+		// The overlay ULA space is relay-allocated; an advertised route inside
+		// it would shadow other connections' assigned addresses in the route
+		// trie regardless of credential bounds.
+		if pfx.Overlaps(tunnet.ULAPrefix()) {
+			http.Error(w, fmt.Sprintf("Advertised route %q overlaps the overlay address space", cidr), http.StatusForbidden)
+			return
+		}
 		advertisedRoutes = append(advertisedRoutes, pfx)
+	}
+	// Advertised routes install into the handler's route trie, which is shared
+	// across every VNI on this relay (per-network routing domains are a later
+	// step), so an overlap with another live connection's advertised routes
+	// would steal its transit traffic. First writer wins; the loser is told to
+	// go elsewhere.
+	if len(advertisedRoutes) > 0 {
+		var conflict string
+		r.conns.ForEach(func(_ string, other *connection) bool {
+			for _, existing := range other.AdvertisedRoutes() {
+				for _, pfx := range advertisedRoutes {
+					if pfx.Overlaps(existing) {
+						conflict = fmt.Sprintf("advertised route %q overlaps %q held by another connection", pfx, existing)
+						return false
+					}
+				}
+			}
+			return true
+		})
+		if conflict != "" {
+			http.Error(w, conflict, http.StatusConflict)
+			return
+		}
 	}
 	if !authz.PermitsLabels(request.Labels) {
 		http.Error(w, "Labels not permitted by credential", http.StatusForbidden)
@@ -387,37 +418,8 @@ func (r *Relay) handleConnect(w http.ResponseWriter, req *http.Request, ps httpr
 		return
 	}
 
-	// Advertise a single-IP route per assigned address (both families), plus
-	// the IPv6 network prefix so the agent can reach other endpoints in the
-	// same overlay network (e.g. backplane services). IPv4 has no per-network
-	// prefix (the /32s come from a shared range), so v4 in-overlay reach is
-	// limited to the agent's own address; broader v4 reach comes from the
-	// egress default routes below. Addresses() is derived from the programmed
-	// state, so routes and the reported address set always agree; it is
-	// non-empty here because the VNI/overlay check above already passed.
 	addresses := conn.Addresses()
-	var routes []api.Route
-	for _, a := range addresses {
-		pfx, err := netip.ParsePrefix(a)
-		if err != nil {
-			continue
-		}
-		// We'll only advertise single-IP routes so extend the bitmask to max.
-		if pfx.Addr().Is4() {
-			pfx = netip.PrefixFrom(pfx.Addr(), 32)
-		} else {
-			pfx = netip.PrefixFrom(pfx.Addr(), 128)
-		}
-		routes = append(routes, api.Route{Destination: pfx.String()})
-		if pfx.Addr().Is6() {
-			routes = append(routes, api.Route{Destination: tunnet.NetworkPrefixOf(pfx.Addr()).String()})
-		}
-	}
-	if r.egressGateway {
-		routes = append(routes,
-			api.Route{Destination: "0.0.0.0/0"},
-			api.Route{Destination: "::/0"})
-	}
+	routes := r.routesForConn(conn)
 
 	resp := api.ConnectResponse{
 		ID:        conn.ID(),
@@ -505,6 +507,71 @@ func (r *Relay) handleDisconnect(w http.ResponseWriter, req *http.Request, ps ht
 	}
 	r.teardownConn(req.Context(), conn)
 	w.WriteHeader(http.StatusOK)
+}
+
+// routesForConn computes the route set a connected agent should have
+// installed: a single-IP route per assigned address (both families) plus the
+// IPv6 network prefix so the agent can reach other endpoints in the same
+// overlay network (e.g. backplane services); the CIDRs reachable behind other
+// live connections in the same network (so e.g. the backplane's TUN peer
+// reaches a private endpoint behind another agent through the relay); and
+// egress default routes when this relay is an egress gateway. IPv4 has no
+// per-network prefix (the /32s come from a shared range), so v4 in-overlay
+// reach is limited to the agent's own address; broader v4 reach comes from
+// the egress defaults. Addresses() is derived from the programmed state, so
+// routes and the reported address set always agree.
+func (r *Relay) routesForConn(conn *connection) []api.Route {
+	var routes []api.Route
+	for _, a := range conn.Addresses() {
+		pfx, err := netip.ParsePrefix(a)
+		if err != nil {
+			continue
+		}
+		// We'll only advertise single-IP routes so extend the bitmask to max.
+		if pfx.Addr().Is4() {
+			pfx = netip.PrefixFrom(pfx.Addr(), 32)
+		} else {
+			pfx = netip.PrefixFrom(pfx.Addr(), 128)
+		}
+		routes = append(routes, api.Route{Destination: pfx.String()})
+		if pfx.Addr().Is6() {
+			routes = append(routes, api.Route{Destination: tunnet.NetworkPrefixOf(pfx.Addr()).String()})
+		}
+	}
+	r.conns.ForEach(func(_ string, other *connection) bool {
+		if other.ID() == conn.ID() || other.Network() != conn.Network() {
+			return true
+		}
+		for _, rt := range other.AdvertisedRoutes() {
+			routes = append(routes, api.Route{Destination: rt.String()})
+		}
+		return true
+	})
+	if r.egressGateway {
+		routes = append(routes,
+			api.Route{Destination: "0.0.0.0/0"},
+			api.Route{Destination: "::/0"})
+	}
+	return routes
+}
+
+// handleRoutes returns the connection's current route set. Agents poll this
+// to pick up CIDRs advertised by connections established after their own
+// ConnectResponse snapshot (the control plane has no push channel).
+func (r *Relay) handleRoutes(w http.ResponseWriter, req *http.Request, ps httprouter.Params) {
+	conn, ok := r.conns.Get(req.URL.Query().Get("id"))
+	if !ok {
+		http.Error(w, "Connection not found", http.StatusNotFound)
+		return
+	}
+
+	resp := api.RoutesResponse{Routes: r.routesForConn(conn)}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
+		return
+	}
 }
 
 func (r *Relay) handleUpdateKeys(w http.ResponseWriter, req *http.Request, ps httprouter.Params) {

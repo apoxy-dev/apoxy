@@ -59,6 +59,14 @@ type UpdateKeysResponse struct {
 	Keys Keys `json:"keys"`
 }
 
+// RoutesResponse is the connection's current route set. Agents poll this to
+// pick up CIDRs advertised by connections established after their own
+// ConnectResponse snapshot.
+type RoutesResponse struct {
+	// Routes is the full route set the agent should have installed.
+	Routes []Route `json:"routes,omitempty"`
+}
+
 // MasterSecret is the 32-byte PSP master secret a connection's per-epoch
 // AES-GCM data keys derive from. The icx handler performs the derivation on
 // each side (psp.DeriveSAKey over the epoch's role-partitioned SPIs), so no

@@ -1,4 +1,4 @@
-package alpha
+package agent
 
 import (
 	"context"
@@ -78,7 +78,7 @@ func TestDiscoverRelays(t *testing.T) {
 				network.Labels = map[string]string{"tier": tc.networkTier}
 			}
 
-			got, err := discoverRelays(context.Background(), cs.VpcV1alpha1(), network)
+			got, err := DiscoverRelays(context.Background(), cs.VpcV1alpha1(), network)
 			require.NoError(t, err)
 			require.ElementsMatch(t, tc.want, got.UnsortedList())
 		})

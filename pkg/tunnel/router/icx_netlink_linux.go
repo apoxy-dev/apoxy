@@ -10,6 +10,9 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -60,6 +63,10 @@ func NewICXNetlinkRouter(opts ...Option) (*ICXNetlinkRouter, error) {
 		opt(options)
 	}
 
+	if err := ensureIptablesBackend(); err != nil {
+		return nil, fmt.Errorf("failed to select iptables backend: %w", err)
+	}
+
 	extLink, err := netlink.LinkByName(options.extIfaceName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find interface %s: %w", options.extIfaceName, err)
@@ -73,6 +80,17 @@ func NewICXNetlinkRouter(opts ...Option) (*ICXNetlinkRouter, error) {
 	numQueues, err := queues.NumQueues(extLink)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get number of TX queues for interface %s: %w", options.extIfaceName, err)
+	}
+
+	// A previous run that died without cleanup (crash, SIGKILL) leaves the
+	// veth pair behind and veth.Create is not idempotent, so sweep any
+	// leftover link first. Deleting one end of a veth pair removes both.
+	if old, err := netlink.LinkByName(options.tunIfaceName); err == nil {
+		if err := netlink.LinkDel(old); err != nil {
+			return nil, fmt.Errorf("failed to delete leftover interface %q: %w", options.tunIfaceName, err)
+		}
+		slog.Info("Deleted leftover tunnel interface from previous run",
+			slog.String("name", options.tunIfaceName))
 	}
 
 	tunDev, err := veth.Create(options.tunIfaceName, numQueues, options.tunMTU)
@@ -336,12 +354,16 @@ func (r *ICXNetlinkRouter) ResolveMAC(ctx context.Context, peerAddr netip.AddrPo
 }
 
 func (r *ICXNetlinkRouter) setupDNAT() error {
-	exists, err := r.iptV6.EnsureChain(utiliptables.TableNAT, ChainA3yTunRules)
-	if err != nil {
+	// Ensure the chain exists, then (re)ensure every rule unconditionally. Every
+	// rule below is applied through the idempotent EnsureRule (an iptables -C
+	// check precedes the add), so re-running is a no-op when the rules are
+	// already present. We must not early-return on an existing chain: the relay
+	// runs with host networking, so the chain and its rules persist in the node
+	// netns across pod restarts, and a guard keyed on chain existence would skip
+	// any rule added in a newer relay version (e.g. the overlay no-masquerade
+	// RETURN below) forever after the first deploy.
+	if _, err := r.iptV6.EnsureChain(utiliptables.TableNAT, ChainA3yTunRules); err != nil {
 		return fmt.Errorf("failed to ensure %s chain: %w", ChainA3yTunRules, err)
-	}
-	if exists { // Jump and forwarding rules should be already set up.
-		return nil
 	}
 
 	extName := r.extLink.Attrs().Name
@@ -371,6 +393,22 @@ func (r *ICXNetlinkRouter) setupDNAT() error {
 		if _, err := r.iptV6.EnsureRule(utiliptables.Append, utiliptables.TableFilter, utiliptables.ChainForward, ruleSpec...); err != nil {
 			return fmt.Errorf("failed to ensure forwarding rule: %w", err)
 		}
+	}
+
+	// Exclude overlay-bound traffic from source NAT. Decapped transit frames are
+	// re-routed out the tunnel interface so the icx datapath can re-encapsulate
+	// them toward the destination peer; any masquerade on that path — the node's
+	// CNI masq-all-non-cluster rule (the overlay CIDR is not a cluster prefix) or
+	// our own egress rule below — would rewrite the inner source to a node
+	// address, which the destination agent then drops as an invalid tunnel
+	// source. Prepend so it wins over the node's masquerade rules.
+	noMasqRuleSpec := []string{"-o", tunName, "-j", "RETURN"}
+	slog.Info("Setting up no-masquerade rule for overlay traffic", slog.String("tun_iface", tunName))
+	if _, err := r.iptV4.EnsureRule(utiliptables.Prepend, utiliptables.TableNAT, utiliptables.ChainPostrouting, noMasqRuleSpec...); err != nil {
+		return fmt.Errorf("failed to ensure no-masquerade rule: %w", err)
+	}
+	if _, err := r.iptV6.EnsureRule(utiliptables.Prepend, utiliptables.TableNAT, utiliptables.ChainPostrouting, noMasqRuleSpec...); err != nil {
+		return fmt.Errorf("failed to ensure no-masquerade rule: %w", err)
 	}
 
 	// Setup NAT for traffic returning from the tunnel.
@@ -473,6 +511,15 @@ func (r *ICXNetlinkRouter) teardownDNAT() error {
 		firstErr = fmt.Errorf("failed to delete v6 masquerade rule: %w", err)
 	}
 
+	// Remove the POSTROUTING overlay no-masquerade RETURN rule (v4 + v6).
+	noMasqRuleSpec := []string{"-o", tunName, "-j", "RETURN"}
+	if err := r.iptV4.DeleteRule(utiliptables.TableNAT, utiliptables.ChainPostrouting, noMasqRuleSpec...); err != nil && firstErr == nil {
+		firstErr = fmt.Errorf("failed to delete v4 no-masquerade rule: %w", err)
+	}
+	if err := r.iptV6.DeleteRule(utiliptables.TableNAT, utiliptables.ChainPostrouting, noMasqRuleSpec...); err != nil && firstErr == nil {
+		firstErr = fmt.Errorf("failed to delete v6 no-masquerade rule: %w", err)
+	}
+
 	// Flush & delete the apoxy chain.
 	if err := r.iptV6.FlushChain(utiliptables.TableNAT, ChainA3yTunRules); err != nil && firstErr == nil {
 		firstErr = fmt.Errorf("failed to flush chain %s: %w", ChainA3yTunRules, err)
@@ -525,4 +572,147 @@ func getExternalIPPrefixes(extIfaceName string) (extIPv4Prefix, extIPv6Prefix ne
 	}
 
 	return
+}
+
+// xtablesBinaryNames are the binaries utiliptables execs via PATH; a backend
+// shim must cover all of them so every call lands on the same backend.
+var xtablesBinaryNames = []string{
+	"iptables", "iptables-save", "iptables-restore",
+	"ip6tables", "ip6tables-save", "ip6tables-restore",
+}
+
+// iptablesBackendOnce guards the process-global PATH mutation below: routers
+// may be constructed concurrently, and prepending twice is at best redundant.
+var (
+	iptablesBackendOnce sync.Once
+	iptablesBackendErr  error
+)
+
+// ensureIptablesBackend points the iptables binaries that utiliptables execs
+// (resolved via PATH) at the xtables backend the host is actually using.
+// Container images hard-wire the plain binary names to one backend (the envoy
+// base picks legacy), while the host netns this router runs in may be
+// programmed through the other by kube-proxy or the CNI's masquerade agent.
+// Rules never compose across backends — the kernel evaluates the legacy and
+// nft hooks independently — so e.g. our "-o <tun> -j RETURN" no-masquerade
+// exemption written to the legacy table cannot stop an nft MASQUERADE from
+// rewriting overlay transit traffic. Detection mirrors the upstream
+// kubernetes-sigs/iptables-wrappers script: prefer the backend holding
+// kubelet's hint/canary chains, fall back to the one with more rules.
+//
+// A PATH shim is the only redirection utiliptables admits (its New() takes no
+// exec injector and resolves bare binary names per call), and unlike an
+// image-entrypoint fix it also covers `apoxy alpha tunnel relay` on arbitrary
+// hosts. The mutation happens once per process, before any rule is written.
+//
+// Failure policy follows the evidence: when detection has proof of the host's
+// backend (hint chains or programmed rules) and that backend can't be
+// programmed from this image, constructing the router fails — writing rules
+// into the other backend would leave the process looking healthy while its
+// no-masq/DNAT rules are dead. When detection has no evidence (bare host,
+// zero rules in both backends), the plain binaries are kept: they are the
+// host's only backend there and any choice we impose would be a guess.
+func ensureIptablesBackend() error {
+	iptablesBackendOnce.Do(func() { iptablesBackendErr = selectIptablesBackend() })
+	return iptablesBackendErr
+}
+
+func selectIptablesBackend() error {
+	backend, evidence := detectHostIptablesBackend()
+	if !evidence {
+		return nil
+	}
+
+	if out, err := exec.Command("iptables", "--version").CombinedOutput(); err == nil {
+		current := "legacy"
+		if strings.Contains(string(out), "nf_tables") {
+			current = "nft"
+		}
+		if current == backend {
+			return nil
+		}
+	}
+
+	targets := make(map[string]string, len(xtablesBinaryNames))
+	for _, name := range xtablesBinaryNames {
+		variant := xtablesVariantName(name, backend)
+		target, err := exec.LookPath(variant)
+		if err != nil {
+			return fmt.Errorf("host uses the %s iptables backend but %s is not available: %w", backend, variant, err)
+		}
+		targets[name] = target
+	}
+
+	dir := filepath.Join(os.TempDir(), "a3y-xtables-"+backend)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("failed to create xtables shim dir: %w", err)
+	}
+	for name, target := range targets {
+		link := filepath.Join(dir, name)
+		_ = os.Remove(link)
+		if err := os.Symlink(target, link); err != nil {
+			return fmt.Errorf("failed to create %s shim: %w", name, err)
+		}
+	}
+	if err := os.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH")); err != nil {
+		return fmt.Errorf("failed to prepend xtables shim dir to PATH: %w", err)
+	}
+
+	slog.Info("Selected host iptables backend", slog.String("backend", backend))
+	return nil
+}
+
+// xtablesVariantName maps a plain xtables binary name to its backend-specific
+// variant: the backend is inserted after the tool name, before any -save or
+// -restore suffix (e.g. "iptables-save" + "nft" -> "iptables-nft-save").
+func xtablesVariantName(name, backend string) string {
+	tool, suffix, found := strings.Cut(name, "-")
+	if !found {
+		return name + "-" + backend
+	}
+	return tool + "-" + backend + "-" + suffix
+}
+
+// detectHostIptablesBackend returns "legacy" or "nft" depending on which
+// xtables backend the surrounding netns is programmed through, plus whether
+// there was actual evidence for the choice (kubelet hint chains or programmed
+// rules) as opposed to a bare-host default.
+func detectHostIptablesBackend() (string, bool) {
+	// Kubelet stamps a hint chain into the mangle table of the backend the
+	// node's Kubernetes components use; trust it when present.
+	for _, backend := range []string{"nft", "legacy"} {
+		for _, cmd := range []string{"iptables", "ip6tables"} {
+			out, err := exec.Command(cmd+"-"+backend+"-save", "-t", "mangle").CombinedOutput()
+			if err != nil {
+				continue
+			}
+			if bytes.Contains(out, []byte("KUBE-IPTABLES-HINT")) || bytes.Contains(out, []byte("KUBE-KUBELET-CANARY")) {
+				return backend, true
+			}
+		}
+	}
+
+	// No kubelet hint: pick the backend with more programmed rules. Equal
+	// counts (typically a bare host with zero rules anywhere) carry no
+	// evidence at all.
+	count := func(backend string) int {
+		n := 0
+		for _, cmd := range []string{"iptables", "ip6tables"} {
+			out, err := exec.Command(cmd + "-" + backend + "-save").CombinedOutput()
+			if err != nil {
+				continue
+			}
+			for _, line := range strings.Split(string(out), "\n") {
+				if strings.HasPrefix(line, "-") {
+					n++
+				}
+			}
+		}
+		return n
+	}
+	legacy, nft := count("legacy"), count("nft")
+	if legacy > nft {
+		return "legacy", true
+	}
+	return "nft", nft > legacy
 }

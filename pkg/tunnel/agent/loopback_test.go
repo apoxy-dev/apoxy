@@ -1,4 +1,4 @@
-package alpha
+package agent
 
 import (
 	"context"
@@ -95,8 +95,8 @@ func assignVNIOnConnect(vni uint, overlay string) func(context.Context, string, 
 	}
 }
 
-func loopbackConfig() agentConfig {
-	return agentConfig{
+func loopbackConfig() Config {
+	return Config{
 		Agent:    "loopback-agent",
 		Network:  "test-tunnel",
 		Token:    "letmein",
@@ -140,15 +140,15 @@ func TestBootstrapSession(t *testing.T) {
 }
 
 // newAgentRouter builds the agent-side netstack router + handler from a bootstrap
-// response, mirroring the RunE wiring (no SOCKS listener, no pcap).
-func newAgentRouter(t *testing.T, ctx context.Context, g *errgroup.Group, boot *bootstrapInfo, pp *packetPlane) (*router.ICXNetstackRouter, *icx.Handler) {
+// response, mirroring the Run wiring (no SOCKS listener, no pcap).
+func newAgentRouter(t *testing.T, ctx context.Context, g *errgroup.Group, boot *bootstrapInfo, pp *packetPlane) (router.Router, *icx.Handler) {
 	t.Helper()
 	return newAgentRouterWithSocks(t, ctx, g, boot, pp, "")
 }
 
 // newAgentRouterWithSocks is newAgentRouter with an explicit SOCKS listen address,
 // so two agents in one test don't collide on the default localhost:1080.
-func newAgentRouterWithSocks(t *testing.T, ctx context.Context, g *errgroup.Group, boot *bootstrapInfo, pp *packetPlane, socksAddr string) (*router.ICXNetstackRouter, *icx.Handler) {
+func newAgentRouterWithSocks(t *testing.T, ctx context.Context, g *errgroup.Group, boot *bootstrapInfo, pp *packetPlane, socksAddr string) (router.Router, *icx.Handler) {
 	t.Helper()
 	r, handler, err := initRouter(ctx, g, boot.Connect, routerInitOpts{pcGeneve: pp.Geneve, socksListenAddr: socksAddr})
 	require.NoError(t, err)
