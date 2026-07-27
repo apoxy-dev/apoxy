@@ -391,4 +391,78 @@ func TestDefault_RefTargetGetsTLS(t *testing.T) {
 	}
 }
 
+// TestValidate_TLSDisabled covers the opt-out that makes an HTTP-only ref
+// target expressible. Default() writes `tls: {}` for every ref target, so
+// leaving the block off is not a way to decline a certificate — `disabled:
+// true` is. Enabled() is what the controllers branch on, so it must agree with
+// the field in all three shapes.
+func TestValidate_TLSDisabled(t *testing.T) {
+	refTarget := DomainRecordTarget{
+		Ref: &LocalObjectReference{
+			Group: "gateway.networking.k8s.io",
+			Kind:  "Gateway",
+			Name:  "my-gw",
+		},
+	}
+
+	tests := []struct {
+		name        string
+		tls         *DomainTLSSpec
+		wantEnabled bool
+		wantErr     string // Substring of the expected field error; empty means valid.
+	}{
+		{
+			name:        "no TLS block at all",
+			tls:         nil,
+			wantEnabled: false,
+		},
+		{
+			name:        "defaulted empty block means TLS on",
+			tls:         &DomainTLSSpec{},
+			wantEnabled: true,
+		},
+		{
+			name:        "explicitly disabled",
+			tls:         &DomainTLSSpec{Disabled: true},
+			wantEnabled: false,
+		},
+		{
+			name:        "explicit CA with TLS on",
+			tls:         &DomainTLSSpec{CertificateAuthority: "letsencrypt"},
+			wantEnabled: true,
+		},
+		{
+			// Contradictory: naming who should issue while switching issuance
+			// off. Rejected rather than silently honoring one half.
+			name:        "CA named while disabled",
+			tls:         &DomainTLSSpec{CertificateAuthority: "letsencrypt", Disabled: true},
+			wantEnabled: false,
+			wantErr:     "spec.tls.certificateAuthority",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.wantEnabled, tt.tls.Enabled(), "Enabled() must match the field")
+
+			dr := &DomainRecord{
+				ObjectMeta: metav1.ObjectMeta{Name: "example--ref"},
+				Spec: DomainRecordSpec{
+					Name:   "example",
+					Target: refTarget,
+					TLS:    tt.tls,
+				},
+			}
+
+			errs := dr.Validate(context.Background())
+			if tt.wantErr == "" {
+				assert.Empty(t, errs, "expected no validation errors")
+				return
+			}
+			require.Len(t, errs, 1, "expected exactly one validation error")
+			assert.Contains(t, errs[0].Error(), tt.wantErr)
+		})
+	}
+}
+
 func strPtr(s string) *string { return &s }

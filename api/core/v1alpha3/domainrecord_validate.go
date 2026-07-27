@@ -219,6 +219,12 @@ func (r *DomainRecord) validate() field.ErrorList {
 		if ca != "" && ca != "letsencrypt" {
 			errs = append(errs, field.Forbidden(specPath.Child("tls", "certificateAuthority"), "unsupported certificate authority"))
 		}
+		// Naming a CA while disabling issuance is contradictory; reject it
+		// rather than silently honoring one half.
+		if r.Spec.TLS.Disabled && ca != "" {
+			errs = append(errs, field.Forbidden(specPath.Child("tls", "certificateAuthority"),
+				"cannot be set when tls.disabled is true"))
+		}
 	}
 
 	return errs

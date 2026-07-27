@@ -7025,6 +7025,13 @@ func schema_apoxy_api_core_v1alpha3_DomainTLSSpec(ref common.ReferenceCallback) 
 							Format:      "",
 						},
 					},
+					"disabled": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Disabled turns off certificate provisioning for this domain, leaving it served over plain HTTP.\n\nTLS is the default for every ref target — omitting the whole `tls` block gets you a managed certificate — so this field is the only way to ask for an HTTP-only hostname. Use it when traffic must flow before a certificate can exist: during a migration you can prove ownership with the `_apoxy-challenge` delegation, serve HTTP immediately, then clear this field to have the certificate issued.\n\nA domain that already holds a certificate keeps serving it until the certificate is removed; setting this only stops future issuance and renewal.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
 				},
 			},
 		},
