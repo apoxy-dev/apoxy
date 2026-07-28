@@ -11329,6 +11329,13 @@ func schema_apoxy_api_vpc_v1alpha1_VPCServiceSpec(ref common.ReferenceCallback) 
 							Ref:         ref("github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetworkRef"),
 						},
 					},
+					"hostname": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The DNS label under which the service is published in the project's vpc zone: <hostname>.<network>.vpc.apoxy.net. Defaults to the object name. Must be a valid DNS label; unique within the VPCNetwork (enforced at admission).",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 					"selector": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Selects member Tunnels by their labels (agents declare labels at connect; the relay stamps them onto Tunnel metadata labels).",

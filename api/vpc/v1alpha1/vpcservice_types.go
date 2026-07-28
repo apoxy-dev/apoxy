@@ -19,6 +19,13 @@ type VPCServiceSpec struct {
 	// +required
 	NetworkRef VPCNetworkRef `json:"networkRef"`
 
+	// The DNS label under which the service is published in the project's
+	// vpc zone: <hostname>.<network>.vpc.apoxy.net. Defaults to the object
+	// name. Must be a valid DNS label; unique within the VPCNetwork
+	// (enforced at admission).
+	// +optional
+	Hostname string `json:"hostname,omitempty"`
+
 	// Selects member Tunnels by their labels (agents declare labels at
 	// connect; the relay stamps them onto Tunnel metadata labels).
 	// +required
@@ -124,6 +131,15 @@ func (s *VPCService) GetSingularName() string {
 
 func (s *VPCService) GetStatus() resource.StatusSubResource {
 	return &s.Status
+}
+
+// DNSHostname returns the effective DNS label the service is published
+// under: spec.hostname when set, the object name otherwise.
+func (s *VPCService) DNSHostname() string {
+	if s.Spec.Hostname != "" {
+		return s.Spec.Hostname
+	}
+	return s.Name
 }
 
 // getVPCServiceSelector renders the member selector in kubectl's compact form.

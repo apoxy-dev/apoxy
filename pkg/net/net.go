@@ -33,3 +33,10 @@ var (
 	// by the per-project backplane DNS servers.
 	VPCDomain = fmt.Sprintf("%s.%s", VPCSubdomain, ApoxyNetDomainSuffix)
 )
+
+// VPCServiceFQDN returns the vpc-zone FQDN a VPCService is published under:
+// <hostname>.<network>.vpc.apoxy.net. The network label scopes the hostname,
+// which is unique only within its VPCNetwork.
+func VPCServiceFQDN(hostname, network string) string {
+	return fmt.Sprintf("%s.%s.%s", hostname, network, VPCDomain)
+}
