@@ -84,7 +84,12 @@ func refreshRelayPool(
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			addrs, err := lister(ctx)
+			// Bound each poll regardless of the underlying client's own
+			// timeout (the kubeconfig-built clientset has none): a blackholed
+			// apiserver must cost one missed refresh, not a wedged goroutine.
+			listCtx, cancel := context.WithTimeout(ctx, interval)
+			addrs, err := lister(listCtx)
+			cancel()
 			if err != nil {
 				slog.Warn("Failed to refresh relay list; keeping current pool", slog.Any("error", err))
 				continue

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -211,6 +212,12 @@ func Store(cfg *configv1alpha1.Config) error {
 	return nil
 }
 
+// ErrNoCredentials is returned by DefaultAPIClient when the current project
+// exists in the config but carries no API key (the user never logged in, or
+// logged out). Callers with an alternative client path (e.g. kubeconfig
+// discovery) can errors.Is on it to fall back cleanly.
+var ErrNoCredentials = errors.New("no API key for the current project; run `apoxy auth login`")
+
 // DefaultAPIClient returns a new Apoxy API client.
 func DefaultAPIClient() (*rest.APIClient, error) {
 	// In LocalMode, prefer a config-file project's APIBaseURL if one is
@@ -303,6 +310,14 @@ func DefaultAPIClient() (*rest.APIClient, error) {
 		}
 
 		return rest.NewAPIClient(rest.WithK8sConfig(restConfig))
+	}
+
+	// A project without an API key cannot make a single authenticated
+	// request, so returning a client for it only defers the failure to a
+	// confusing 401 at the first call site. Fail here instead so callers can
+	// fall back (or tell the user to log in) at the point of construction.
+	if project.APIKey == "" {
+		return nil, ErrNoCredentials
 	}
 
 	return rest.NewAPIClient(

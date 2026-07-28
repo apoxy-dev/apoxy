@@ -17,6 +17,8 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/apoxy-dev/apoxy/client/versioned"
+	vpcclient "github.com/apoxy-dev/apoxy/client/versioned/typed/vpc/v1alpha1"
+	apoxyconfig "github.com/apoxy-dev/apoxy/config"
 	tunnelagent "github.com/apoxy-dev/apoxy/pkg/tunnel/agent"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/metrics"
 )
@@ -54,35 +56,49 @@ var tunnelRunCmd = &cobra.Command{
 			}
 		}
 
-		// relayLister, when set (kubernetes-discovery mode), returns the current
-		// set of ready relay addresses serving the network. It seeds the initial
+		// relayLister, when set (discovery mode), returns the current set of
+		// ready relay addresses serving the network. It seeds the initial
 		// pool and is polled in the background so relays coming and going are
 		// picked up without a restart. It stays nil in static (--relay-addr) mode.
 		var relayLister func(context.Context) (sets.Set[string], error)
 		var discoveredRelays sets.Set[string]
 
-		// Attempt kubernetes-based discovery if no relayAddr/token provided.
+		// Discover relays and the connect credential from the project
+		// apiserver if no relayAddr/token provided. The CLI's own configured
+		// client (apoxy auth login / config file) is preferred; a kubeconfig
+		// is the fallback for agents running inside a cluster where the
+		// project APIs are aggregated (apoxy k8s install).
 		if seedRelayAddr == "" || token == "" {
-			clientConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
-				clientcmd.NewDefaultClientConfigLoadingRules(),
-				&clientcmd.ConfigOverrides{},
-			)
+			var vpcClient vpcclient.VpcV1alpha1Interface
+			if c, err := apoxyconfig.DefaultAPIClient(); err == nil {
+				vpcClient = c.VpcV1alpha1()
+			} else {
+				// DefaultAPIClient fails when there is no config, no current
+				// project, or no credential (ErrNoCredentials) — all states
+				// where the kubeconfig/in-cluster path is the right answer.
+				slog.Info("No usable apoxy client config, falling back to kubeconfig discovery", slog.Any("reason", err))
+				clientConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
+					clientcmd.NewDefaultClientConfigLoadingRules(),
+					&clientcmd.ConfigOverrides{},
+				)
 
-			config, err := clientConfig.ClientConfig()
-			if err != nil {
-				return fmt.Errorf("loading kubeconfig: %w", err)
-			}
+				config, kerr := clientConfig.ClientConfig()
+				if kerr != nil {
+					return fmt.Errorf("no apoxy config (%w) and loading kubeconfig failed: %w", err, kerr)
+				}
 
-			clientset, err := versioned.NewForConfig(config)
-			if err != nil {
-				return fmt.Errorf("creating clientset: %w", err)
+				clientset, kerr := versioned.NewForConfig(config)
+				if kerr != nil {
+					return fmt.Errorf("creating clientset: %w", kerr)
+				}
+				vpcClient = clientset.VpcV1alpha1()
 			}
 
 			// VPCNetwork carries the connect credential; ready Relay objects
 			// carry the dialable underlay addresses. The relay no longer reports a
 			// peer list in ConnectResponse (§2.3) — the agent discovers and tracks
 			// relays directly from the apiserver.
-			network, err := clientset.VpcV1alpha1().VPCNetworks().Get(cmd.Context(), tunnelName, metav1.GetOptions{})
+			network, err := vpcClient.VPCNetworks().Get(cmd.Context(), tunnelName, metav1.GetOptions{})
 			if err != nil {
 				return fmt.Errorf("fetching VPCNetwork %q: %w", tunnelName, err)
 			}
@@ -91,7 +107,7 @@ var tunnelRunCmd = &cobra.Command{
 			}
 			token = network.Status.Credentials.Token
 
-			relayLister = tunnelagent.NewRelayLister(clientset.VpcV1alpha1(), network.Name)
+			relayLister = tunnelagent.NewRelayLister(vpcClient, network.Name)
 
 			discoveredRelays, err = relayLister(cmd.Context())
 			if err != nil {
