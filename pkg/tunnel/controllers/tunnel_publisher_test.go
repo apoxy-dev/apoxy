@@ -169,3 +169,34 @@ func TestTunnelPublisherOnDisconnectOrphan(t *testing.T) {
 	// No allocation record and no Tunnel object: disconnect is a safe no-op.
 	require.NoError(t, p.OnDisconnect(ctx, "agent-z", "conn-z"))
 }
+
+// TestLabelValue asserts the agent-instance sanitizer: valid values pass
+// through, over-long clean values are truncated to the same 32-char prefix
+// current agents derive at the source (so labels stay greppable against the
+// raw metric label / container ID during version skew), and only otherwise
+// invalid values are hashed.
+func TestLabelValue(t *testing.T) {
+	fullHex := "bf3df5c6a1e2d3c4b5a6978877665544bf3df5c6a1e2d3c4b5a6978877665544" // 64 hex, like a CRI container ID
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "valid passes through", in: "abc-123", want: "abc-123"},
+		{name: "empty passes through", in: "", want: ""},
+		{name: "over-long clean value truncates to the producer prefix", in: fullHex, want: fullHex[:32]},
+		{name: "invalid characters hash", in: "not/a/label!", want: labelValue("not/a/label!")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := labelValue(tc.in)
+			require.Equal(t, tc.want, got)
+			require.LessOrEqual(t, len(got), 63)
+		})
+	}
+	// The hashed form is stable and distinct from the input.
+	h := labelValue("not/a/label!")
+	require.Equal(t, h, labelValue("not/a/label!"))
+	require.Len(t, h, 32)
+	require.NotContains(t, h, "/")
+}

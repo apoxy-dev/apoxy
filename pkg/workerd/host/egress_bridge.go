@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/netip"
@@ -15,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	apoxynetns "github.com/apoxy-dev/apoxy/pkg/netns"
 	"github.com/apoxy-dev/apoxy/pkg/sandbox"
 	"github.com/apoxy-dev/apoxy/pkg/sandbox/sentrystack/egresswire"
 	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
@@ -69,6 +71,13 @@ type egressBridge struct {
 	// fake upstream without a reachable non-local destination. Defaults to
 	// dialDirect.
 	dial func(network, addr string) (net.Conn, error)
+	// dialOverlay opens upstream connections to the resident's own project
+	// VPC-service destinations from inside the project's VPC netns, where the
+	// VTEP TUN and its overlay routes live. VPCService bindings are the only
+	// ones that grant overlay reachability, so every carve-out-admitted ULA
+	// dst is a VPC-service member and routes here. nil when the resident has
+	// no overlay netns configured. Also an injectable seam for tests.
+	dialOverlay func(network, addr string) (net.Conn, error)
 
 	// ctx is cancelled by close() on resident teardown. In-flight splices watch
 	// it so a half-closed-idle flow is reaped promptly instead of pinning its
@@ -105,10 +114,20 @@ type egressBridge struct {
 // first dial lands.
 //
 // overlayAllow, when non-nil, reports whether a dst belongs to the resident's
-// own project overlay endpoints (Apoxy VPC /96s), carving them out of the SSRF
-// backstop so a worker can reach its project's tunnel/VPC endpoints; nil when
-// the resident has no overlay, in which case all private/ULA space stays denied.
-func startEgressBridge(id sandbox.SandboxID, lookup egressStateLookup, overlayAllow func(netip.Addr) bool) (*egressBridge, error) {
+// own project VPCService member endpoints (Apoxy VPC /96s), carving them out
+// of the SSRF backstop so a worker can reach its project's VPC services; nil
+// when the resident has no overlay, in which case all private/ULA space stays
+// denied.
+//
+// overlayNetnsPath, when non-empty, is the bind-mount path of the project's VPC
+// network namespace (where the VTEP TUN and overlay routes live): overlay ULA
+// dsts are dialed from inside it. The namespace is opened lazily per dial — it
+// may lawfully not exist yet (the VTEP creates it when the project's first
+// network session comes up) or never (a cluster that hasn't rolled out netns
+// sharing) — and a missing namespace falls back to the direct dialer, which
+// fails or succeeds on the pod netns's own routes. This is a routing choice,
+// not a policy one: the dst was already admitted by the carve-out either way.
+func startEgressBridge(id sandbox.SandboxID, lookup egressStateLookup, overlayAllow func(netip.Addr) bool, overlayNetnsPath string) (*egressBridge, error) {
 	if lookup == nil {
 		return nil, fmt.Errorf("egress bridge requires a state lookup")
 	}
@@ -127,6 +146,24 @@ func startEgressBridge(id sandbox.SandboxID, lookup egressStateLookup, overlayAl
 		ctx:      ctx,
 		cancel:   cancel,
 		maxFlows: maxConcurrentEgressFlows,
+	}
+	if overlayNetnsPath != "" {
+		b.dialOverlay = func(network, addr string) (net.Conn, error) {
+			conn, err := apoxynetns.DialTimeout(overlayNetnsPath, network, addr, egressDialTimeout)
+			if err != nil && errors.Is(err, fs.ErrNotExist) {
+				// The VPC netns may lawfully not exist (yet): the VTEP creates
+				// it with the project's first network session, and clusters
+				// that haven't rolled out netns sharing never mount it. Fall
+				// back to the pod netns, where legacy overlay routes may still
+				// serve the dst; if none do, the dial fails there with the
+				// same observable outcome and no policy hole (the dst was
+				// admitted by the carve-out before any dialing).
+				b.log.Debug("VPC netns absent; dialing overlay dst from the pod netns",
+					"netns", overlayNetnsPath, "dst", addr)
+				return b.dial(network, addr)
+			}
+			return conn, err
+		}
 	}
 	go b.serve()
 	return b, nil
@@ -273,8 +310,16 @@ func (b *egressBridge) handleConn(conn net.Conn) {
 		return
 	}
 
-	// Direct dial (the default gateway / no selected backend).
-	upstream, err := b.dial("tcp", dst.String())
+	// Direct dial (the default gateway / no selected backend). A dst inside
+	// the Apoxy VPC overlay ULA prefix — necessarily admitted via the overlay
+	// carve-out to get this far, and only VPCService bindings grant that — is
+	// dialed from inside the project's VPC netns when one is configured,
+	// since the VTEP overlay routes live there, not in the pod netns.
+	dial := b.dial
+	if b.dialOverlay != nil && tunnet.ULAPrefix().Contains(dst.Addr().Unmap()) {
+		dial = b.dialOverlay
+	}
+	upstream, err := dial("tcp", dst.String())
 	if err != nil {
 		log.Warn("Egress direct dial failed", "error", err)
 		return
@@ -403,10 +448,10 @@ var cgnatPrefix = netip.MustParsePrefix("100.64.0.0/10")
 // forwarder has no IMDS bridge yet, so link-local is blanket-denied here.
 type localDstFilter struct {
 	// overlayAllow, when non-nil, reports whether a dst belongs to the resident's
-	// OWN project overlay endpoints (the Apoxy VPC /96s this project's tunnel
+	// OWN project VPCService members (the Apoxy VPC /96s the project's service
 	// endpoints allocate). Such a dst is a legitimate egress target and is
 	// allowed BEFORE the blanket private/ULA deny below, so a worker can reach
-	// its own project's overlay while every other private range stays denied.
+	// its own project's VPC services while every other private range stays denied.
 	//
 	// It is a membership predicate rather than a single prefix on purpose: every
 	// project's endpoints share the "default" network /72, so a /72-wide carve-out
@@ -498,15 +543,15 @@ func (f *localDstFilter) deny(dst netip.AddrPort) string {
 	}
 	// The destination would be denied. Consult the overlay carve-out LAST, and
 	// only for addresses inside the Apoxy VPC overlay prefix: the resident's own
-	// project endpoints (VPC /96s) are legitimate targets. overlayAllow admits
-	// only this project's actual endpoint /96s (never the shared /72, never
+	// project VPCService members (VPC /96s) are legitimate targets. overlayAllow
+	// admits only this project's actual member /96s (never the shared /72, never
 	// another tenant's), checked live and rebinding-safe. Gating on the overlay
 	// prefix means the carve-out can only ever relax "private" (ULA) — never
 	// loopback, link-local, or the pod's own interfaces — so a malformed
 	// (non-overlay) reachable window can't punch a hole in the categorical
-	// denies. NOTE: this permits the connect at the policy layer; the direct
-	// dial reaches the endpoint via the Geneve overlay routes the co-located
-	// backplane maintains in the shared pod netns.
+	// denies. NOTE: this permits the connect at the policy layer; the dial
+	// reaches the member via the VTEP overlay routes in the project's VPC netns
+	// (dialOverlay) when one is configured.
 	if tunnet.ULAPrefix().Contains(addr) && f.overlayAllow != nil && f.overlayAllow(addr) {
 		return ""
 	}

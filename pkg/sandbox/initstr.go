@@ -5,6 +5,7 @@ package sandbox
 import (
 	"crypto/sha256"
 	"fmt"
+	"net/netip"
 
 	"github.com/apoxy-dev/apoxy/pkg/sandbox/sentrystack"
 )
@@ -33,9 +34,19 @@ func buildSandboxInitStr(sb *Instance, eg EgressInit) (string, error) {
 	if sb.SandboxIP.IsValid() && sb.SandboxIP.Is4() {
 		is.Eth0V4 = sb.SandboxIP.String()
 		is.Eth0V4PrefixLen = 32
+		// eth0 also gets a guest-scoped IPv6 ULA (fd00:ec2::<v4>, /128) plus —
+		// via wireEth0 — a v6 default route. Without them the netstack has no
+		// source address or route for IPv6 destinations, so a guest connect to
+		// e.g. an Apoxy overlay (VPC) ULA fails before the egress forwarder
+		// ever sees the flow. The value is cosmetic beyond being a valid
+		// non-overlay ULA: loopether short-circuits delivery and the forwarder
+		// intercepts before any neighbor resolution.
+		is.Eth0V6 = sandboxV6(sb.SandboxIP).String()
+		is.Eth0V6PrefixLen = 128
 	}
 	if sb.GatewayIP.IsValid() && sb.GatewayIP.Is4() {
 		is.GatewayV4 = sb.GatewayIP.String()
+		is.GatewayV6 = sandboxV6(sb.GatewayIP).String()
 	}
 	// Inbound (ingress) path: when the caller asked for a resident listener,
 	// tell the Sentry where the server listens and at which fd to find the
@@ -56,6 +67,16 @@ func buildSandboxInitStr(sb *Instance, eg EgressInit) (string, error) {
 		is.ControlHostAddr = sb.controlHostAddr
 	}
 	return is.Encode()
+}
+
+// sandboxV6 derives the sandbox's guest-scoped IPv6 address from its IPv4:
+// fd00:ec2:: with the v4 in the low 32 bits. Stable per sandbox, unique per
+// /30 allocation, and outside the Apoxy overlay ULA (fd61:...), so it can
+// never satisfy an overlay membership check.
+func sandboxV6(v4 netip.Addr) netip.Addr {
+	b := [16]byte{0: 0xfd, 1: 0x00, 2: 0x0e, 3: 0xc2}
+	copy(b[12:], v4.AsSlice())
+	return netip.AddrFrom16(b)
 }
 
 // synthesizeSandboxMAC returns a stable locally-administered MAC for a

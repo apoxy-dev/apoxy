@@ -2,12 +2,10 @@ package router
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/netip"
-	"runtime"
 	"sync"
 
 	icxtun "github.com/apoxy-dev/icx/vtep/tun"
@@ -16,6 +14,7 @@ import (
 	"golang.org/x/sys/unix"
 	wgtun "golang.zx2c4.com/wireguard/tun"
 
+	apoxynetns "github.com/apoxy-dev/apoxy/pkg/netns"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/batchpc"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/connection"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/l2pc"
@@ -122,7 +121,7 @@ func NewICXTunRouter(opts ...Option) (*ICXTunRouter, error) {
 	ns := netns.None()
 	var nl *netlink.Handle
 	if options.tunNetnsName != "" {
-		ns, err = ensureNamedNetns(options.tunNetnsName)
+		ns, err = apoxynetns.EnsureNamed(options.tunNetnsName)
 		if err != nil {
 			_ = phy.Close()
 			return nil, err
@@ -137,7 +136,7 @@ func NewICXTunRouter(opts ...Option) (*ICXTunRouter, error) {
 	}
 
 	var dev wgtun.Device
-	if err := inNetns(ns, func() error {
+	if err := apoxynetns.Do(ns, func() error {
 		var terr error
 		dev, terr = createTunDevice(options.tunIfaceName, options.tunMTU)
 		return terr
@@ -225,60 +224,6 @@ func createTunDevice(name string, mtu int) (wgtun.Device, error) {
 		return nil, fmt.Errorf("failed to disable TUN offload: %w", err)
 	}
 	return dev, nil
-}
-
-// ensureNamedNetns returns a handle to the named network namespace, creating
-// and bind-mounting it (per the /var/run/netns convention) if it does not
-// exist. Requires CAP_SYS_ADMIN to create.
-func ensureNamedNetns(name string) (netns.NsHandle, error) {
-	if ns, err := netns.GetFromName(name); err == nil {
-		return ns, nil
-	}
-	runtime.LockOSThread()
-	orig, err := netns.Get()
-	if err != nil {
-		runtime.UnlockOSThread()
-		return netns.None(), fmt.Errorf("failed to get current netns: %w", err)
-	}
-	defer orig.Close()
-	// NewNamed switches the calling thread into the new namespace.
-	ns, err := netns.NewNamed(name)
-	if err != nil {
-		err = fmt.Errorf("failed to create netns %q: %w", name, err)
-	}
-	if restoreErr := netns.Set(orig); restoreErr != nil {
-		// The thread is stuck in the wrong namespace: keep it locked so the
-		// runtime retires it instead of scheduling other goroutines on it.
-		return netns.None(), errors.Join(err, fmt.Errorf("failed to restore netns: %w", restoreErr))
-	}
-	runtime.UnlockOSThread()
-	return ns, err
-}
-
-// inNetns runs fn with the calling OS thread switched to ns. A closed (None)
-// handle runs fn in place.
-func inNetns(ns netns.NsHandle, fn func() error) error {
-	if !ns.IsOpen() {
-		return fn()
-	}
-	runtime.LockOSThread()
-	orig, err := netns.Get()
-	if err != nil {
-		runtime.UnlockOSThread()
-		return fmt.Errorf("failed to get current netns: %w", err)
-	}
-	defer orig.Close()
-	if err := netns.Set(ns); err != nil {
-		runtime.UnlockOSThread()
-		return fmt.Errorf("failed to enter netns: %w", err)
-	}
-	fnErr := fn()
-	if err := netns.Set(orig); err != nil {
-		// See ensureNamedNetns: retire the thread rather than unlocking it.
-		return errors.Join(fnErr, fmt.Errorf("failed to restore netns: %w", err))
-	}
-	runtime.UnlockOSThread()
-	return fnErr
 }
 
 // Start runs the datapath pumps. It blocks until ctx is canceled or the

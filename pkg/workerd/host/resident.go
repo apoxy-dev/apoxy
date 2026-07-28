@@ -77,6 +77,14 @@ type ResidentConfig struct {
 	// ControlHostAddr. Defaults to defaultControlForwardAddr.
 	ControlForwardAddr string
 
+	// OverlayNetnsPathFunc maps a tenant to the bind-mount path of that
+	// project's VPC network namespace (where the VTEP TUN and overlay routes
+	// live), or "" when the tenant has none. When it yields a path, the egress
+	// bridge dials overlay (Apoxy VPC ULA) destinations from inside that
+	// namespace. The path is opaque to this package — naming conventions
+	// (e.g. /var/run/netns/vpc-<projectID>) belong to the embedder. nil (the
+	// default) keeps the current behavior: all egress dials from the pod netns.
+	OverlayNetnsPathFunc func(tenant string) string
 }
 
 // ResidentInstance is the running resident, surfaced to the lifecycle owner.
@@ -355,7 +363,15 @@ func (h *ResidentHost) startEgress() (sandbox.EgressInit, error) {
 		}
 		return vpcdns.Snapshot{Bindings: st.DNSBindings}.Reachable(dst)
 	}
-	br, err := startEgressBridge(h.id, ec.LookupEgressState, overlayAllow)
+	// The overlay netns path (if the embedder maps this tenant to one) sends
+	// overlay-admitted (VPC-service) dials through the project's VPC netns,
+	// where the VTEP TUN routes live. Resolved here — not cached at
+	// construction — so it is re-evaluated on every self-heal recreation too.
+	var overlayNetnsPath string
+	if h.cfg.OverlayNetnsPathFunc != nil {
+		overlayNetnsPath = h.cfg.OverlayNetnsPathFunc(h.cfg.Tenant)
+	}
+	br, err := startEgressBridge(h.id, ec.LookupEgressState, overlayAllow, overlayNetnsPath)
 	if err != nil {
 		return sandbox.EgressInit{}, fmt.Errorf("starting egress bridge: %w", err)
 	}

@@ -614,3 +614,67 @@ func TestEgressBridge_OverlayAllowsOwnProject(t *testing.T) {
 		})
 	}
 }
+
+// TestEgressBridge_OverlayDialerSelection asserts the bridge routes each
+// allowed flow to the right dialer: overlay (Apoxy VPC ULA) dsts — which only
+// VPCService bindings can admit — go through dialOverlay when the resident
+// has an overlay netns configured, everything else — public dsts, and overlay
+// dsts on a bridge WITHOUT a netns — through the direct dialer.
+func TestEgressBridge_OverlayDialerSelection(t *testing.T) {
+	echoAddr := startEcho(t)
+	overlayAllow := overlayAllowPrefixes(t, "fd61:706f:7879:100:0:1::/96")
+	src := netip.MustParseAddrPort("10.200.0.6:40000")
+
+	cases := []struct {
+		name        string
+		dst         string
+		withOverlay bool
+		wantOverlay bool
+	}{
+		{name: "overlay dst uses the netns dialer", dst: "[fd61:706f:7879:100:0:1::5]:8080", withOverlay: true, wantOverlay: true},
+		{name: "public dst uses the direct dialer", dst: "203.0.113.5:80", withOverlay: true, wantOverlay: false},
+		{name: "overlay dst without a netns falls back to direct", dst: "[fd61:706f:7879:100:0:1::5]:8080", withOverlay: false, wantOverlay: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			directCh := make(chan string, 1)
+			overlayCh := make(chan string, 1)
+			b := newTestBridge(t, allowAllLookup, overlayAllow, func(network, addr string) (net.Conn, error) {
+				directCh <- addr
+				return net.Dial("tcp", echoAddr)
+			})
+			if tc.withOverlay {
+				b.dialOverlay = func(network, addr string) (net.Conn, error) {
+					overlayCh <- addr
+					return net.Dial("tcp", echoAddr)
+				}
+			}
+			c, err := net.Dial("tcp", b.addr())
+			if err != nil {
+				t.Fatalf("dial bridge: %v", err)
+			}
+			defer c.Close()
+			if err := egresswire.WriteEgressPreamble(c, src, netip.MustParseAddrPort(tc.dst), ""); err != nil {
+				t.Fatalf("write preamble: %v", err)
+			}
+			_, _ = c.Write([]byte("hi"))
+
+			want, dontWant, wantName := directCh, overlayCh, "direct"
+			if tc.wantOverlay {
+				want, dontWant, wantName = overlayCh, directCh, "overlay"
+			}
+			select {
+			case got := <-want:
+				// Compare parsed: the preamble round-trip re-canonicalizes the
+				// IPv6 text form.
+				if netip.MustParseAddrPort(got) != netip.MustParseAddrPort(tc.dst) {
+					t.Fatalf("%s dialer got dst %q; want %q", wantName, got, tc.dst)
+				}
+			case got := <-dontWant:
+				t.Fatalf("bridge used the wrong dialer for %q (dialed %q); want the %s dialer", tc.dst, got, wantName)
+			case <-time.After(3 * time.Second):
+				t.Fatal("bridge never dialed upstream")
+			}
+		})
+	}
+}

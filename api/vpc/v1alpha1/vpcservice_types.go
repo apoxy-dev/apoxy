@@ -3,6 +3,7 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
+	"net/netip"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
@@ -140,6 +141,30 @@ func (s *VPCService) DNSHostname() string {
 		return s.Spec.Hostname
 	}
 	return s.Name
+}
+
+// MemberAddrs returns the service's member endpoint addresses from
+// status.endpoints. Members may be recorded as plain addresses or as prefixes
+// (overlay /96s); the base address is returned either way. Entries that parse
+// as neither are returned in skipped so callers can log them with their own
+// context. This is the single parser for every DNS plane publishing
+// VPCService members (backplane/Envoy, workerd resident push) — family
+// filtering, when a plane needs it, is applied on the returned addrs.
+func (s *VPCService) MemberAddrs() (addrs []netip.Addr, skipped []string) {
+	for _, ep := range s.Status.Endpoints {
+		for _, a := range ep.Addresses {
+			if addr, err := netip.ParseAddr(a); err == nil {
+				addrs = append(addrs, addr)
+				continue
+			}
+			if p, err := netip.ParsePrefix(a); err == nil {
+				addrs = append(addrs, p.Addr())
+				continue
+			}
+			skipped = append(skipped, a)
+		}
+	}
+	return addrs, skipped
 }
 
 // getVPCServiceSelector renders the member selector in kubectl's compact form.

@@ -351,3 +351,4 @@ func TestSnapshotReachable(t *testing.T) {
 }
 
 var _ plugin.Handler = (*nextRecorder)(nil)
+

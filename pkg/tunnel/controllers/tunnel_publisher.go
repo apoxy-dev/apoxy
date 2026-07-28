@@ -2,6 +2,8 @@ package controllers
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"net/netip"
@@ -9,6 +11,7 @@ import (
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	vpcv1alpha1 "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1"
@@ -209,9 +212,33 @@ func (p *TunnelPublisher) tunnelLabels(conn Connection, networkName, agentName s
 	labels[vpcv1alpha1.LabelTunnelName] = agentName
 	labels[LabelRelay] = p.relayName
 	if inst := conn.AgentInstance(); inst != "" {
-		labels[vpcv1alpha1.LabelAgentInstance] = inst
+		labels[vpcv1alpha1.LabelAgentInstance] = labelValue(inst)
 	}
 	return labels
+}
+
+// labelValue coerces an agent-declared string into a legal Kubernetes label
+// value. Agents declare their instance ID themselves — a pre-truncation
+// containerized agent reports its full 64-hex container ID, one character
+// over the 63-char label limit — and an invalid value must not fail Tunnel
+// creation (which would refuse the connection entirely). An over-long but
+// otherwise clean value is truncated to 32 chars, the SAME derivation current
+// agents apply at the source (metrics.AgentProcessID), so old and new agents
+// converge on one label form and it stays a greppable prefix of the raw
+// metric label and the container ID. Only a value that is invalid for other
+// reasons (illegal characters) is replaced by a truncated hash: stable per
+// input, so identity is preserved under a derived name.
+func labelValue(v string) string {
+	if len(validation.IsValidLabelValue(v)) == 0 {
+		return v
+	}
+	if len(v) > validation.LabelValueMaxLength {
+		if t := v[:32]; len(validation.IsValidLabelValue(t)) == 0 {
+			return t
+		}
+	}
+	sum := sha256.Sum256([]byte(v))
+	return hex.EncodeToString(sum[:])[:32]
 }
 
 // deleteTunnel deletes the connection's Tunnel object, tolerating a concurrent

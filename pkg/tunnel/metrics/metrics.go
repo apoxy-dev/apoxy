@@ -37,8 +37,14 @@ func initProcessID() string {
 	// Linux-only: on macOS/Windows the read fails and we fall back to a UUID.
 	// Both paths rotate on container/process restart, so cardinality is bounded
 	// by the same restart rate either way.
+	//
+	// The full 64-hex CRI ID is truncated to 32: the ID also travels as a
+	// Kubernetes label value (the relay stamps it on Tunnel objects), where 64
+	// chars is one over the limit, and a 128-bit prefix is ample for identity
+	// (Docker's own short form is 12). Truncation keeps the value greppable
+	// against runtime metadata, unlike hashing.
 	if id := detectContainerID("/proc/self/cgroup"); id != "" {
-		return id
+		return id[:32]
 	}
 	return uuid.NewString()
 }
