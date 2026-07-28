@@ -17,6 +17,12 @@ var ErrUnauthorized = errors.New("unauthorized")
 type AuthzResult struct {
 	// Network is the network (tunnel name) the credential is bound to.
 	Network string
+	// Scope is an opaque tenant scope the credential resolved to (e.g. a
+	// project ID on a relay serving many tenants whose network names may
+	// collide). Empty for single-tenant validators. The relay carries it
+	// onto the connection so multi-tenant callbacks can route by it; it
+	// never appears on the wire.
+	Scope string
 	// AllowedLabelSets bounds the labels an agent may declare. Empty means
 	// unbounded. A declared label map is permitted iff it is a subset of at
 	// least one set.

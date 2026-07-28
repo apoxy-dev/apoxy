@@ -47,6 +47,10 @@ type connection struct {
 	// for (from AuthzResult.Network). Immutable after construction. The relay
 	// resolves it to a NetworkID to pick the leased block to allocate from.
 	network string
+	// scope is the opaque tenant scope the credential resolved to (from
+	// AuthzResult.Scope); empty on single-tenant relays. Immutable after
+	// construction.
+	scope string
 	// labels, advertisedRoutes, and agentInstance are the agent-declared
 	// connect-request fields, already validated against the credential's
 	// bounds. Immutable after construction, like master.
@@ -348,6 +352,12 @@ func (c *connection) Master() api.MasterSecret {
 // after construction.
 func (c *connection) Network() string {
 	return c.network
+}
+
+// Scope returns the opaque tenant scope the connection's credential resolved
+// to (empty on single-tenant relays). Immutable after construction.
+func (c *connection) Scope() string {
+	return c.scope
 }
 
 // Labels returns the agent-declared labels for this connection. Immutable

@@ -367,6 +367,7 @@ func (r *Relay) handleConnect(w http.ResponseWriter, req *http.Request, ps httpr
 		remoteAddr:       remoteAddr,
 		master:           master,
 		network:          authz.Network,
+		scope:            authz.Scope,
 		labels:           request.Labels,
 		advertisedRoutes: advertisedRoutes,
 		agentInstance:    request.AgentInstance,

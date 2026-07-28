@@ -40,6 +40,7 @@ func (c *fakeConn) SetOverlayAddress(a string) error      { c.overlay = a; retur
 func (c *fakeConn) SetVNI(_ context.Context, v uint) error { c.vniID = &v; return nil }
 func (c *fakeConn) Stats() (ConnectionStats, bool)        { return ConnectionStats{}, false }
 func (c *fakeConn) Network() string                       { return c.network }
+func (c *fakeConn) Scope() string                         { return "" }
 func (c *fakeConn) Labels() map[string]string             { return c.labels }
 func (c *fakeConn) AdvertisedRoutes() []netip.Prefix      { return c.routes }
 func (c *fakeConn) AgentInstance() string                 { return c.agentInstance }

@@ -32,6 +32,10 @@ type Connection interface {
 	// Network is the name of the VPCNetwork this connection is bound to (the
 	// credential-authorized network, resolved by the relay at connect).
 	Network() string
+	// Scope is the opaque tenant scope the connection's credential resolved to
+	// (AuthzResult.Scope); empty on single-tenant relays. Multi-tenant relay
+	// operators use it to route per-connection callbacks to the right tenant.
+	Scope() string
 	// Labels are the agent-declared labels, already validated against the
 	// credential's bounds. VPCService selectors match on these.
 	Labels() map[string]string
