@@ -29,17 +29,16 @@ func NewRelayLister(vpc vpcclient.VpcV1alpha1Interface, networkName string) func
 	}
 }
 
-// DiscoverRelays lists ready relays whose network selector matches the given
-// network and returns their dialable underlay addresses. A relay with a nil
-// selector serves all networks (per RelaySpec).
-func DiscoverRelays(ctx context.Context, vpc vpcclient.VpcV1alpha1Interface, network *vpcv1alpha1.VPCNetwork) (sets.Set[string], error) {
-	relays, err := vpc.Relays().List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return nil, fmt.Errorf("listing relays: %w", err)
-	}
-	addrs := sets.New[string]()
-	for i := range relays.Items {
-		relay := &relays.Items[i]
+// MatchingRelays filters relays to the ready ones whose network selector
+// matches the given network. A relay with a nil selector serves all networks
+// (per RelaySpec). This is THE definition of "which relays serve a network" —
+// both agent-side discovery (DiscoverRelays) and in-shard consumers that dial
+// relays by other addresses (e.g. the backplane VTEP resolving underlay
+// endpoints) must go through it so their views never diverge.
+func MatchingRelays(relays []vpcv1alpha1.Relay, network *vpcv1alpha1.VPCNetwork) []*vpcv1alpha1.Relay {
+	var out []*vpcv1alpha1.Relay
+	for i := range relays {
+		relay := &relays[i]
 		if !relay.Status.Ready {
 			continue
 		}
@@ -58,6 +57,20 @@ func DiscoverRelays(ctx context.Context, vpc vpcclient.VpcV1alpha1Interface, net
 				continue
 			}
 		}
+		out = append(out, relay)
+	}
+	return out
+}
+
+// DiscoverRelays lists ready relays whose network selector matches the given
+// network and returns their dialable underlay addresses.
+func DiscoverRelays(ctx context.Context, vpc vpcclient.VpcV1alpha1Interface, network *vpcv1alpha1.VPCNetwork) (sets.Set[string], error) {
+	relays, err := vpc.Relays().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("listing relays: %w", err)
+	}
+	addrs := sets.New[string]()
+	for _, relay := range MatchingRelays(relays.Items, network) {
 		for _, a := range relay.Spec.Addresses {
 			if a = strings.TrimSpace(a); a != "" {
 				addrs.Insert(a)
