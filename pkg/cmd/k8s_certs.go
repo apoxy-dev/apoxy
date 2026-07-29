@@ -452,7 +452,7 @@ func runCertsRotate(cmd *cobra.Command, args []string) error {
 		if !utils.IsInteractive() {
 			return fmt.Errorf("non-interactive mode without --yes; pass --yes to proceed")
 		}
-		if !confirm("Proceed?") {
+		if !confirm(ctx, "Proceed?") {
 			return fmt.Errorf("aborted")
 		}
 	}
@@ -701,12 +701,26 @@ func humanUntil(t time.Time) string {
 	return fmt.Sprintf("in %dd%dh", days, hours)
 }
 
-func confirm(prompt string) bool {
+// confirm prompts for a y/N answer on stdin, treating context cancellation
+// (Ctrl-C) as "no" so an interrupt aborts instead of leaving the process
+// stuck on a read that never observes the signal. The reader goroutine is
+// abandoned on cancel; every caller exits shortly after.
+func confirm(ctx context.Context, prompt string) bool {
 	fmt.Printf("%s [y/N]: ", prompt)
-	r := bufio.NewReader(os.Stdin)
-	line, _ := r.ReadString('\n')
-	line = strings.TrimSpace(strings.ToLower(line))
-	return line == "y" || line == "yes"
+	lines := make(chan string, 1)
+	go func() {
+		r := bufio.NewReader(os.Stdin)
+		line, _ := r.ReadString('\n')
+		lines <- line
+	}()
+	select {
+	case <-ctx.Done():
+		fmt.Println()
+		return false
+	case line := <-lines:
+		line = strings.TrimSpace(strings.ToLower(line))
+		return line == "y" || line == "yes"
+	}
 }
 
 var certsK8sCmd = &cobra.Command{

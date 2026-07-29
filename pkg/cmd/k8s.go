@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math/rand/v2"
 	"net/http"
 	"net/url"
 	"os"
@@ -526,7 +525,7 @@ var (
 )
 
 func randomClusterName() string {
-	return nameAdjs[rand.IntN(len(nameAdjs))] + "-" + nameNouns[rand.IntN(len(nameNouns))]
+	return randomName(nameAdjs, nameNouns)
 }
 
 type clusterNameModel struct {

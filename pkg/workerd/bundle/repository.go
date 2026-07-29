@@ -9,7 +9,9 @@ package bundle
 
 import (
 	"context"
+	"crypto/tls"
 	"log/slog"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -30,8 +32,10 @@ const InsecureRegistriesEnv = "APOXY_INSECURE_BUNDLE_REGISTRIES"
 type RepositoryOption func(*repositoryOptions)
 
 type repositoryOptions struct {
-	credential     auth.Credential
-	credentialFunc auth.CredentialFunc
+	credential      auth.Credential
+	credentialFunc  auth.CredentialFunc
+	clientTLS       *tls.Config
+	preemptiveBasic bool
 }
 
 // WithCredential authenticates with a fixed credential. The zero credential is
@@ -44,6 +48,24 @@ func WithCredential(cred auth.Credential) RepositoryOption {
 // docker credential store). Takes precedence over WithCredential.
 func WithCredentialFunc(fn auth.CredentialFunc) RepositoryOption {
 	return func(o *repositoryOptions) { o.credentialFunc = fn }
+}
+
+// WithClientTLS sets the TLS client configuration for the registry transport —
+// the transport-level counterpart of the credential options, used when the
+// registry authenticates connections with client certificates (e.g. edge
+// services pulling from the platform registry with their shard certs).
+func WithClientTLS(cfg *tls.Config) RepositoryOption {
+	return func(o *repositoryOptions) { o.clientTLS = cfg }
+}
+
+// WithPreemptiveBasicAuth sends the resolved credential as a Basic
+// Authorization header on every request instead of waiting for a 401
+// challenge. The platform registry needs this: its ext_authz maps anonymous
+// reads to a shared read-only pull identity (in dev), so the standard
+// probe-then-authenticate dance never sees a challenge and the client would
+// be stuck with that identity's rights for the whole push.
+func WithPreemptiveBasicAuth() RepositoryOption {
+	return func(o *repositoryOptions) { o.preemptiveBasic = true }
 }
 
 // NewRepository builds the oras remote.Repository both the bundle pusher (CLI)
@@ -71,12 +93,49 @@ func NewRepository(imageRef string, opts ...RepositoryOption) (*remote.Repositor
 		// trains users to ignore the one that matters.
 		credFn = warnPlaintextCredentials(credFn, repo.Reference.Registry)
 	}
+	httpClient := orasretry.DefaultClient
+	if o.clientTLS != nil {
+		base := http.DefaultTransport.(*http.Transport).Clone()
+		base.TLSClientConfig = o.clientTLS
+		httpClient = &http.Client{Transport: orasretry.NewTransport(base)}
+	}
+	if o.preemptiveBasic {
+		base := httpClient.Transport
+		if base == nil {
+			base = http.DefaultTransport
+		}
+		httpClient = &http.Client{Transport: &preemptiveBasicTransport{
+			next: base,
+			cred: credFn,
+			host: repo.Reference.Registry,
+		}}
+	}
 	repo.Client = &auth.Client{
-		Client:     orasretry.DefaultClient,
+		Client:     httpClient,
 		Cache:      auth.NewCache(),
 		Credential: credFn,
 	}
 	return repo, nil
+}
+
+// preemptiveBasicTransport attaches Basic credentials to requests that carry
+// no Authorization header yet, so the first request already authenticates.
+// The wrapping auth.Client still handles any 401 that comes back.
+type preemptiveBasicTransport struct {
+	next http.RoundTripper
+	cred auth.CredentialFunc
+	host string
+}
+
+func (t *preemptiveBasicTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Header.Get("Authorization") == "" {
+		cred, err := t.cred(req.Context(), t.host)
+		if err == nil && cred.Username != "" && cred.Password != "" {
+			req = req.Clone(req.Context())
+			req.SetBasicAuth(cred.Username, cred.Password)
+		}
+	}
+	return t.next.RoundTrip(req)
 }
 
 // warnPlaintextCredentials wraps a credential source so that the first

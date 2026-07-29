@@ -57,6 +57,17 @@ type Project struct {
 	APIBaseHost string `json:"apiBaseHost,omitempty"`
 	// APIKey is the API key for the project.
 	APIKey string `json:"apiKey"`
+	// Name is the human-readable project name, cached from the control
+	// plane so commands can announce a target humans recognize instead of
+	// the project UUID.
+	// +optional
+	Name string `json:"name,omitempty"`
+	// Registry is the platform bundle registry host for this project
+	// (e.g. "registry.apoxy.dev"). When empty it is derived from APIBaseHost
+	// for the well-known hosted environments; a project with neither has no
+	// platform registry and bundle pushes require an explicit repo.
+	// +optional
+	Registry string `json:"registry,omitempty"`
 	// Kubernetes configuration for the project.
 	// If set, overrides APIBaseURL, APIBaseHost, and APIKey.
 	// +optional

@@ -84,7 +84,17 @@ func pushBundleDir(ctx context.Context, refArg, dir, username string, passwordSt
 		return "", "", err
 	}
 	repo = ref.Registry + "/" + ref.Repository
-	dst, err := bundle.NewRepository(repo, bundle.WithCredentialFunc(credFn))
+	opts := []bundle.RepositoryOption{bundle.WithCredentialFunc(credFn)}
+	if pr, ok := currentPlatformRegistry(); ok && ref.Registry == pr.Host {
+		// The API key must ride every request: ext_authz maps anonymous reads
+		// to a read-only pull identity (dev), so waiting for a 401 challenge
+		// would leave the push probing with the wrong identity.
+		opts = append(opts, bundle.WithPreemptiveBasicAuth())
+		if tlsCfg := pr.tlsClientConfig(); tlsCfg != nil {
+			opts = append(opts, bundle.WithClientTLS(tlsCfg))
+		}
+	}
+	dst, err := bundle.NewRepository(repo, opts...)
 	if err != nil {
 		return "", "", fmt.Errorf("creating push repository %q: %w", repo, err)
 	}
@@ -116,6 +126,13 @@ func registryCredentialFunc(reg, username string, passwordStdin bool) (auth.Cred
 	}
 	if passwordStdin {
 		return nil, fmt.Errorf("--password-stdin requires --username")
+	}
+	// The platform registry authenticates with the project API key — the same
+	// credential every other apoxy command uses. No docker login, no separate
+	// registry credential: ext_authz validates the key at the edge and rewrites
+	// it to the registry's internal identity.
+	if pr, ok := currentPlatformRegistry(); ok && reg == pr.Host {
+		return auth.StaticCredential(reg, auth.Credential{Username: "apoxy", Password: pr.APIKey}), nil
 	}
 	credStore, err := credentials.NewStoreFromDocker(credentials.StoreOptions{})
 	if err != nil {

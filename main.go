@@ -48,6 +48,10 @@ func main() {
 	go func() {
 		<-sigs
 		cancel()
+		// A second signal means the graceful path is stuck (e.g. a command
+		// blocked on input that doesn't watch the context) — exit hard.
+		<-sigs
+		os.Exit(130)
 	}()
 
 	if err := cmd.ExecuteContext(ctx); err != nil {
