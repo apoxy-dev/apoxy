@@ -19,7 +19,7 @@ var _ reconcile.Reconciler = &VPCNetworkReconciler{}
 // VPCNetworkReconciler is the relay-side consumer of VPCNetwork objects. It
 // feeds the relay the network's connect credential (for the static token
 // validator), tracks its egress-gateway setting, and resolves the network's
-// name to a NetworkID for the TunnelPublisher's in-process block allocation.
+// name to a NetworkID for the TunnelPublisher's in-process slot allocation.
 // It never writes VPCNetworks - the apiserver-side provisioner owns their
 // identity and credentials.
 type VPCNetworkReconciler struct {
@@ -52,8 +52,11 @@ func (r *VPCNetworkReconciler) Reconcile(ctx context.Context, req reconcile.Requ
 	var network vpcv1alpha1.VPCNetwork
 	if err := r.Get(ctx, req.NamespacedName, &network); err != nil {
 		if apierrors.IsNotFound(err) {
-			// The network is gone: drop its egress intent and recompute the
-			// relay-global toggle so a deleted network stops influencing it.
+			// The network is gone: revoke its connect credential, return its
+			// leased slots, and drop its egress intent so a deleted network
+			// stops accepting agents or influencing the relay.
+			r.relay.RemoveCredentials(req.Name)
+			r.publisher.RemoveNetwork(ctx, req.Name)
 			r.removeEgressIntent(req.Name)
 			return reconcile.Result{}, nil
 		}
@@ -74,7 +77,7 @@ func (r *VPCNetworkReconciler) Reconcile(ctx context.Context, req reconcile.Requ
 	r.setEgressIntent(network.Name, egress)
 
 	// Resolve the network's NetworkID from its overlay /72 so the publisher can
-	// lease blocks for it without an apiserver read on the connect path.
+	// lease slots for it without an apiserver read on the connect path.
 	if network.Status.OverlayCIDR != "" {
 		netID, err := tunnet.NetworkIDFromCIDR(network.Status.OverlayCIDR)
 		if err != nil {

@@ -34,18 +34,18 @@ type fakeConn struct {
 	closed    bool
 }
 
-func (c *fakeConn) ID() string                            { return c.id }
-func (c *fakeConn) Close() error                          { c.closed = true; return nil }
-func (c *fakeConn) SetOverlayAddress(a string) error      { c.overlay = a; return nil }
+func (c *fakeConn) ID() string                             { return c.id }
+func (c *fakeConn) Close() error                           { c.closed = true; return nil }
+func (c *fakeConn) SetOverlayAddress(a string) error       { c.overlay = a; return nil }
 func (c *fakeConn) SetVNI(_ context.Context, v uint) error { c.vniID = &v; return nil }
-func (c *fakeConn) Stats() (ConnectionStats, bool)        { return ConnectionStats{}, false }
-func (c *fakeConn) Network() string                       { return c.network }
-func (c *fakeConn) Scope() string                         { return "" }
-func (c *fakeConn) Labels() map[string]string             { return c.labels }
-func (c *fakeConn) AdvertisedRoutes() []netip.Prefix      { return c.routes }
-func (c *fakeConn) AgentInstance() string                 { return c.agentInstance }
-func (c *fakeConn) SetAddresses(a []string) error         { c.addresses = a; return nil }
-func (c *fakeConn) Addresses() []string                   { return c.addresses }
+func (c *fakeConn) Stats() (ConnectionStats, bool)         { return ConnectionStats{}, false }
+func (c *fakeConn) Network() string                        { return c.network }
+func (c *fakeConn) Scope() string                          { return "" }
+func (c *fakeConn) Labels() map[string]string              { return c.labels }
+func (c *fakeConn) AdvertisedRoutes() []netip.Prefix       { return c.routes }
+func (c *fakeConn) AgentInstance() string                  { return c.agentInstance }
+func (c *fakeConn) SetAddresses(a []string) error          { c.addresses = a; return nil }
+func (c *fakeConn) Addresses() []string                    { return c.addresses }
 
 func publisherScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
@@ -62,7 +62,7 @@ func newPublisher(t *testing.T) (*TunnelPublisher, client.Client, tunnet.Network
 		WithScheme(publisherScheme(t)).
 		WithStatusSubresource(&vpcv1alpha1.Tunnel{}).
 		Build()
-	p := NewTunnelPublisher(c, stubRelay{name: "relay-0"}, ipalloc.NewLocalBlockLeaser(context.Background()), vni.NewVNIAllocator())
+	p := NewTunnelPublisher(c, stubRelay{name: "relay-0"}, ipalloc.NewLocalSlotLeaser(), vni.NewVNIAllocator())
 	netID := tunnet.NetworkID{0x00, 0x00, 0x01}
 	p.SetNetworkID("corp", netID)
 	return p, c, netID
@@ -137,7 +137,7 @@ func TestTunnelPublisherOnDisconnectReleasesDespiteDeleteError(t *testing.T) {
 			},
 		}).
 		Build()
-	p := NewTunnelPublisher(c, stubRelay{name: "relay-0"}, ipalloc.NewLocalBlockLeaser(ctx), vni.NewVNIAllocator())
+	p := NewTunnelPublisher(c, stubRelay{name: "relay-0"}, ipalloc.NewLocalSlotLeaser(), vni.NewVNIAllocator())
 	p.SetNetworkID("corp", tunnet.NetworkID{0x00, 0x00, 0x01})
 
 	conn := &fakeConn{id: "conn-d", network: "corp"}

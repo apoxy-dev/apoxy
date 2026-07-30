@@ -24,6 +24,7 @@ type stubRelay struct{ name string }
 func (s stubRelay) Name() string                                                         { return s.name }
 func (s stubRelay) Address() netip.AddrPort                                              { return netip.AddrPort{} }
 func (s stubRelay) SetCredentials(string, string)                                        {}
+func (s stubRelay) RemoveCredentials(string)                                             {}
 func (s stubRelay) SetEgressGateway(bool)                                                {}
 func (s stubRelay) SetOnConnect(func(context.Context, string, string, Connection) error) {}
 func (s stubRelay) SetOnDisconnect(func(context.Context, string, string) error)          {}

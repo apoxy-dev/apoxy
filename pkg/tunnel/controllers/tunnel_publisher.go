@@ -34,7 +34,7 @@ type vniAllocator interface {
 
 // TunnelPublisher owns the relay side of a connection's control-plane presence.
 // It is wired to Relay.SetOnConnect/SetOnDisconnect and, on connect, allocates
-// the connection's overlay addresses in-process from a leased /80 block (§2.8)
+// the connection's overlay addresses in-process from a leased slot (§2.8)
 // plus a relay-local VNI (§2.5), assigns them onto the connection synchronously,
 // and creates the single-writer Tunnel object (§2.4). On disconnect it deletes
 // the Tunnel and returns the addresses and VNI to their pools. It makes zero
@@ -46,7 +46,7 @@ type vniAllocator interface {
 type TunnelPublisher struct {
 	client    client.Client
 	relayName string
-	blocks    *blockAllocator
+	slots     *slotAllocator
 	vnis      vniAllocator
 
 	mu       sync.Mutex
@@ -64,11 +64,11 @@ type connAlloc struct {
 
 // NewTunnelPublisher creates a TunnelPublisher and wires it to the relay's
 // connect/disconnect callbacks.
-func NewTunnelPublisher(c client.Client, relay Relay, leaser ipalloc.BlockLeaser, vnis vniAllocator) *TunnelPublisher {
+func NewTunnelPublisher(c client.Client, relay Relay, leaser ipalloc.SlotLeaser, vnis vniAllocator) *TunnelPublisher {
 	p := &TunnelPublisher{
 		client:    c,
 		relayName: relay.Name(),
-		blocks:    newBlockAllocator(leaser),
+		slots:     newSlotAllocator(leaser),
 		vnis:      vnis,
 		networks:  make(map[string]tunnet.NetworkID),
 		conns:     make(map[string]*connAlloc),
@@ -86,6 +86,25 @@ func (p *TunnelPublisher) SetNetworkID(name string, id tunnet.NetworkID) {
 	p.networks[name] = id
 }
 
+// RemoveNetwork forgets a deleted VPCNetwork: connects to it fail closed again
+// and every slot leased for it is returned, so its identifiers stop being
+// renewed against a network that no longer exists.
+func (p *TunnelPublisher) RemoveNetwork(ctx context.Context, name string) {
+	p.mu.Lock()
+	id, ok := p.networks[name]
+	delete(p.networks, name)
+	p.mu.Unlock()
+	if ok {
+		p.slots.ReleaseNetwork(ctx, id)
+	}
+}
+
+// InvalidateSlot drops a slot the leaser lost so no new connections allocate
+// from it. Wired to the leaser's slot-lost notification where one exists.
+func (p *TunnelPublisher) InvalidateSlot(s ipalloc.Slot) {
+	p.slots.InvalidateSlot(s)
+}
+
 // OnConnect allocates addresses + a VNI for the connection, assigns them, and
 // creates the Tunnel object. It is called synchronously from handleConnect.
 func (p *TunnelPublisher) OnConnect(ctx context.Context, tunnelName, agentName string, conn Connection) error {
@@ -98,14 +117,14 @@ func (p *TunnelPublisher) OnConnect(ctx context.Context, tunnelName, agentName s
 		return fmt.Errorf("network %q is not provisioned yet", networkName)
 	}
 
-	v6, v4, alloc, err := p.blocks.Allocate(ctx, netID)
+	v6, v4, alloc, err := p.slots.Allocate(ctx, netID)
 	if err != nil {
 		return fmt.Errorf("failed to allocate connection addresses: %w", err)
 	}
 
 	vniID, err := p.vnis.Allocate()
 	if err != nil {
-		p.blocks.Release(alloc, v6, v4)
+		p.slots.Release(alloc, v6, v4)
 		return fmt.Errorf("failed to allocate VNI: %w", err)
 	}
 
@@ -169,7 +188,7 @@ func (p *TunnelPublisher) OnDisconnect(ctx context.Context, agentName, id string
 
 // releaseAll returns a connection's addresses and VNI to their pools.
 func (p *TunnelPublisher) releaseAll(alloc *ipalloc.ConnAllocator, v6, v4 netip.Prefix, vniID uint) {
-	p.blocks.Release(alloc, v6, v4)
+	p.slots.Release(alloc, v6, v4)
 	p.vnis.Release(vniID)
 }
 
@@ -248,9 +267,9 @@ func (p *TunnelPublisher) deleteTunnel(ctx context.Context, id string) error {
 	return client.IgnoreNotFound(p.client.Delete(ctx, t))
 }
 
-// ReleaseAll returns every leased block to the leaser. Called at drain.
+// ReleaseAll returns every leased slot to the leaser. Called at drain.
 func (p *TunnelPublisher) ReleaseAll(ctx context.Context) {
-	p.blocks.ReleaseAll(ctx)
+	p.slots.ReleaseAll(ctx)
 }
 
 // prefixesToStrings renders a slice of prefixes as CIDR strings, returning nil

@@ -204,7 +204,7 @@ var tunnelRelayCmd = &cobra.Command{
 		// The publisher owns connect/disconnect: it allocates each connection's
 		// addresses in-process from a leased /80 block plus a relay-local VNI,
 		// and writes the single-writer Tunnel object (APO-825 §2.4/§2.8).
-		leaser := ipalloc.NewLocalBlockLeaser(ctx)
+		leaser := ipalloc.NewLocalSlotLeaser()
 		vnis := vni.NewVNIAllocator()
 		publisher := controllers.NewTunnelPublisher(mgr.GetClient(), relay, leaser, vnis)
 

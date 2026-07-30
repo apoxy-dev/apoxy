@@ -11,88 +11,124 @@ import (
 	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 )
 
-// blockPrefix builds the expected /80 block prefix for a /72 and an index by
-// writing the index into byte 9; used to check blockIndex round-trips.
-func blockPrefix(net72 netip.Prefix, idx uint8) netip.Prefix {
-	addr := net72.Masked().Addr().As16()
-	addr[9] = idx
-	return netip.PrefixFrom(netip.AddrFrom16(addr), 80)
-}
-
-func TestBlockIndexRoundTrip(t *testing.T) {
+func TestSlotAddressRoundTrip(t *testing.T) {
 	id := tunnet.NetworkID{0x12, 0x34, 0x56}
-	parent := network72(id)
+	net72 := tunnet.NetworkPrefix(id)
 
-	for _, idx := range []uint8{0, 1, 42, 128, 255} {
-		p := blockPrefix(parent, idx)
-		require.Equal(t, 80, p.Bits(), "block is a /80")
-		require.Equal(t, idx, blockIndex(p), "index round-trips through byte 9")
-		require.True(t, parent.Contains(p.Addr()), "block stays within its /72")
+	for _, slotID := range []tunnet.EndpointID{{0x00, 0x00}, {0x00, 0x01}, {0x12, 0x34}, {0xff, 0xff}} {
+		s := Slot{Network: id, ID: slotID}
+		for _, conn := range []uint8{1, 2, 128, 255} {
+			p := ConnPrefix(s, conn)
+			require.Equal(t, 96, p.Bits())
+			require.True(t, net72.Contains(p.Addr()), "connection stays within its network /72")
 
-		// Network bytes (6–8) are preserved; byte 9 carries the index.
-		b := p.Addr().As16()
-		require.Equal(t, id[:], b[6:9], "network id preserved")
-		require.Equal(t, idx, b[9], "index lands in byte 9")
+			gotSlot, gotConn, ok := SlotOf(p)
+			require.True(t, ok, "%s is a connection address", p)
+			require.Equal(t, s, gotSlot, "slot round-trips")
+			require.Equal(t, conn, gotConn, "connection index round-trips")
+
+			b := p.Addr().As16()
+			require.Equal(t, id[:], b[6:9], "network id preserved")
+			require.Equal(t, conn, b[9], "connection index lands in byte 9")
+			require.Equal(t, slotID[:], b[10:12], "slot id lands in bytes 10-11")
+		}
 	}
 }
 
-func TestLocalBlockLeaser(t *testing.T) {
+// TestConnAddressesNeverCollideWithEndpoints pins the invariant the whole byte-9
+// split exists for: an infrastructure endpoint /96 — the shape NetULA hands out,
+// and what every legacy tunnelproxy connection holds — can never equal a relay
+// connection address, whatever slot or endpoint id is involved.
+func TestConnAddressesNeverCollideWithEndpoints(t *testing.T) {
 	ctx := context.Background()
-	l := NewLocalBlockLeaser(ctx)
+	id := tunnet.NetworkID{0x00, 0x00, 0x00} // the legacy "default" network
+
+	endpoints := map[netip.Addr]bool{}
+	for _, epID := range []tunnet.EndpointID{{0x00, 0x00}, {0x00, 0x01}, {0x12, 0x34}, {0xff, 0xff}} {
+		ula, err := tunnet.NewULA(ctx, id).WithEndpoint(ctx, epID)
+		require.NoError(t, err)
+		ep := ula.FullPrefix()
+		require.Equal(t, 96, ep.Bits())
+
+		// An endpoint address is never mistaken for a connection address.
+		_, _, ok := SlotOf(ep)
+		require.False(t, ok, "endpoint %s must not decode as a connection", ep)
+
+		// And it is exactly the slot's own reserved index-0 address.
+		require.Equal(t, ep.Addr(), EndpointPrefix(Slot{Network: id, ID: epID}).Addr())
+		endpoints[ep.Addr()] = true
+	}
+
+	// Nothing a relay allocates can land on one of them: index 0 is held from
+	// the moment the allocator is built.
+	for _, epID := range []tunnet.EndpointID{{0x00, 0x00}, {0x12, 0x34}, {0xff, 0xff}} {
+		a := NewConnAllocator(Slot{Network: id, ID: epID})
+		for i := 0; i < 4; i++ {
+			v6, _, err := a.Allocate()
+			require.NoError(t, err)
+			require.False(t, endpoints[v6.Addr()], "connection %s collided with an endpoint", v6)
+			require.NotEqual(t, byte(0), v6.Addr().As16()[9])
+		}
+	}
+}
+
+func TestLocalSlotLeaser(t *testing.T) {
+	ctx := context.Background()
 	idA := tunnet.NetworkID{0x00, 0x00, 0x01}
 	idB := tunnet.NetworkID{0x00, 0x00, 0x02}
 
-	t.Run("distinct blocks per network", func(t *testing.T) {
-		seen := map[uint8]bool{}
+	t.Run("distinct slots per network", func(t *testing.T) {
+		l := NewLocalSlotLeaser()
+		seen := map[tunnet.EndpointID]bool{}
 		for i := 0; i < 8; i++ {
-			b, err := l.Lease(ctx, idA)
+			s, err := l.Lease(ctx, idA)
 			require.NoError(t, err)
-			require.Equal(t, idA, b.Network)
-			require.False(t, seen[b.Index], "index %d handed out twice", b.Index)
-			seen[b.Index] = true
-			require.Equal(t, b.Index, blockIndex(b.Prefix))
+			require.Equal(t, idA, s.Network)
+			require.False(t, seen[s.ID], "slot %v handed out twice", s.ID)
+			seen[s.ID] = true
 		}
 	})
 
-	t.Run("release returns block to pool", func(t *testing.T) {
-		l := NewLocalBlockLeaser(ctx)
-		b, err := l.Lease(ctx, idA)
+	t.Run("release returns slot to pool", func(t *testing.T) {
+		l := NewLocalSlotLeaser()
+		s, err := l.Lease(ctx, idA)
 		require.NoError(t, err)
-		require.NoError(t, l.Release(ctx, b))
-		b2, err := l.Lease(ctx, idA)
+		require.NoError(t, l.Release(ctx, s))
+		s2, err := l.Lease(ctx, idA)
 		require.NoError(t, err)
-		require.Equal(t, b.Index, b2.Index, "freed block index is reused")
+		require.Equal(t, s.ID, s2.ID, "freed slot id is reused")
 	})
 
-	t.Run("exhaustion after 256 blocks", func(t *testing.T) {
-		l := NewLocalBlockLeaser(ctx)
-		for i := 0; i < 256; i++ {
+	t.Run("exhaustion after every slot", func(t *testing.T) {
+		l := NewLocalSlotLeaser()
+		for i := 0; i < maxSlots; i++ {
 			_, err := l.Lease(ctx, idA)
 			require.NoError(t, err, "lease %d", i)
 		}
 		_, err := l.Lease(ctx, idA)
-		require.ErrorIs(t, err, ErrNoBlocks, "257th lease fails")
+		require.ErrorIs(t, err, ErrNoSlots, "one lease past the end fails")
 	})
 
-	t.Run("networks have independent block spaces", func(t *testing.T) {
-		l := NewLocalBlockLeaser(ctx)
+	t.Run("networks have independent slot spaces", func(t *testing.T) {
+		l := NewLocalSlotLeaser()
 		a, err := l.Lease(ctx, idA)
 		require.NoError(t, err)
 		b, err := l.Lease(ctx, idB)
 		require.NoError(t, err)
-		// Same index (both first blocks) but disjoint /72s.
-		require.Equal(t, a.Index, b.Index)
-		require.False(t, a.Prefix.Overlaps(b.Prefix), "different networks' blocks are disjoint")
+		// Same slot id (both first slots) but disjoint networks.
+		require.Equal(t, a.ID, b.ID)
+		require.NotEqual(t, ConnPrefix(a, 1).Addr(), ConnPrefix(b, 1).Addr(),
+			"different networks' connections are disjoint")
 	})
 }
 
-// newConnAllocator leases a block and returns an allocator over it.
+// newConnAllocator leases a slot and returns an allocator over it.
 func newConnAllocator(t *testing.T, id tunnet.NetworkID) *ConnAllocator {
 	t.Helper()
-	l := NewLocalBlockLeaser(context.Background())
-	b, err := l.Lease(context.Background(), id)
+	l := NewLocalSlotLeaser()
+	s, err := l.Lease(context.Background(), id)
 	require.NoError(t, err)
-	return NewConnAllocator(b)
+	return NewConnAllocator(s)
 }
 
 func TestConnAllocatorV6(t *testing.T) {
@@ -102,7 +138,7 @@ func TestConnAllocatorV6(t *testing.T) {
 	first, _, err := a.Allocate()
 	require.NoError(t, err)
 	require.Equal(t, 96, first.Bits())
-	require.True(t, a.block.Prefix.Contains(first.Addr()), "/96 sits inside the /80 block")
+	require.Equal(t, byte(1), first.Addr().As16()[9], "first connection skips the endpoint index")
 
 	second, _, err := a.Allocate()
 	require.NoError(t, err)
@@ -119,8 +155,8 @@ func TestConnAllocatorV4Derivation(t *testing.T) {
 	id := tunnet.NetworkID{0x00, 0x0b, 0x01}
 	a := newConnAllocator(t, id)
 
-	// The block's whole v4 space is the /18 keyed on block index.
-	wantSlice := netip.PrefixFrom(u32Addr(v4CGNATBase+uint32(a.block.Index)<<connBitsV4), 18)
+	// The slot's whole v4 space is the /24 keyed on slot id.
+	wantSlice := netip.PrefixFrom(u32Addr(a.v4slice), 24)
 	require.True(t, netip.MustParsePrefix("100.64.0.0/10").Overlaps(wantSlice))
 
 	prev := map[netip.Addr]bool{}
@@ -129,21 +165,49 @@ func TestConnAllocatorV4Derivation(t *testing.T) {
 		require.NoError(t, err)
 		require.True(t, v4.IsValid())
 		require.Equal(t, 32, v4.Bits())
-		require.True(t, wantSlice.Contains(v4.Addr()), "/32 falls in the block's /18")
+		require.True(t, wantSlice.Contains(v4.Addr()), "/32 falls in the slot's /24")
 		require.False(t, prev[v4.Addr()], "distinct /32s")
 		prev[v4.Addr()] = true
 	}
+}
+
+// TestConnAllocatorHighSlotV6Only pins the §2.4 degradation: 100.64.0.0/10 runs
+// out of /24s long before the slot id space does, and a slot past that point
+// serves v6 normally with no v4 at all.
+func TestConnAllocatorHighSlotV6Only(t *testing.T) {
+	id := tunnet.NetworkID{0x00, 0x0b, 0x02}
+	high := Slot{Network: id, ID: tunnet.EndpointID{maxV4Slot >> 8, 0x00}}
+	a := NewConnAllocator(high)
+
+	v6, v4, err := a.Allocate()
+	require.NoError(t, err, "a v4-less slot still allocates")
+	require.True(t, v6.IsValid())
+	require.Equal(t, 96, v6.Bits())
+	require.False(t, v4.IsValid(), "no v4 slice exists for this slot")
+
+	// Releasing must not touch the absent v4 bitmap.
+	require.NotPanics(t, func() { a.Release(v6, netip.MustParsePrefix("100.64.0.1/32")) })
+
+	// The highest v4-backed slot is the one just below it.
+	last := NewConnAllocator(Slot{Network: id, ID: tunnet.EndpointID{(maxV4Slot - 1) >> 8, (maxV4Slot - 1) & 0xff}})
+	_, v4last, err := last.Allocate()
+	require.NoError(t, err)
+	require.True(t, v4last.IsValid())
+	require.True(t, netip.MustParsePrefix("100.64.0.0/10").Contains(v4last.Addr()),
+		"the last v4-backed slot stays inside CGNAT space")
 }
 
 func TestConnAllocatorV4ExhaustionV6Only(t *testing.T) {
 	id := tunnet.NetworkID{0x00, 0x0c, 0x01}
 	a := newConnAllocator(t, id)
 
-	// Drain the v4 pool (maxConnV4 addresses).
-	for i := 0; i < maxConnV4; i++ {
-		_, v4, err := a.Allocate()
+	// The v4 pool has one more address than the slot has connections, so drain
+	// it while releasing each v6 index to keep the v6 pool available.
+	for i := 0; i < v4PerSlot; i++ {
+		v6, v4, err := a.Allocate()
 		require.NoError(t, err)
-		require.True(t, v4.IsValid(), "v4 available for the first %d", maxConnV4)
+		require.True(t, v4.IsValid(), "v4 available for the first %d", v4PerSlot)
+		a.Release(v6, netip.Prefix{}) // free v6 only; v4 stays held
 	}
 
 	// Next allocation still yields a v6 /96, but no v4 — and no error.
@@ -159,13 +223,13 @@ func TestConnAllocatorV6Exhaustion(t *testing.T) {
 	a := newConnAllocator(t, id)
 
 	require.False(t, a.Full())
-	for i := 0; i < maxConnV6; i++ {
+	for i := 0; i < ConnsPerSlot; i++ {
 		_, _, err := a.Allocate()
-		require.NoError(t, err)
+		require.NoError(t, err, "connection %d", i)
 	}
-	require.True(t, a.Full(), "block reports full once v6 space is drained")
+	require.True(t, a.Full(), "slot reports full once its 255 connections are taken")
 	_, _, err := a.Allocate()
-	require.ErrorIs(t, err, ErrBlockExhausted)
+	require.ErrorIs(t, err, ErrSlotExhausted)
 }
 
 func TestConnAllocatorReleaseReuse(t *testing.T) {
@@ -181,48 +245,48 @@ func TestConnAllocatorReleaseReuse(t *testing.T) {
 	a.Release(v6a, v4a)
 	v6c, v4c, err := a.Allocate()
 	require.NoError(t, err)
-	require.Equal(t, v6a.Addr(), v6c.Addr(), "v6 slot reused")
-	require.Equal(t, v4a.Addr(), v4c.Addr(), "v4 slot reused")
-	require.NotEqual(t, v6b.Addr(), v6c.Addr(), "still-held slot untouched")
+	require.Equal(t, v6a.Addr(), v6c.Addr(), "v6 index reused")
+	require.Equal(t, v4a.Addr(), v4c.Addr(), "v4 index reused")
+	require.NotEqual(t, v6b.Addr(), v6c.Addr(), "still-held index untouched")
 	require.NotEqual(t, v4b.Addr(), v4c.Addr())
 }
 
 // TestConnAllocatorCrossNetworkV4Overlap pins the intended §2.4 overlap: two
-// distinct networks whose blocks share an index get the *same* v4 /18 (v4 never
+// distinct networks whose slots share an id get the *same* v4 /24 (v4 never
 // leaves its per-network forwarding domain), while their v6 /96s stay disjoint.
 func TestConnAllocatorCrossNetworkV4Overlap(t *testing.T) {
 	ctx := context.Background()
-	l := NewLocalBlockLeaser(ctx)
-	ba, err := l.Lease(ctx, tunnet.NetworkID{0x00, 0x00, 0x01})
+	l := NewLocalSlotLeaser()
+	sa, err := l.Lease(ctx, tunnet.NetworkID{0x00, 0x00, 0x01})
 	require.NoError(t, err)
-	bb, err := l.Lease(ctx, tunnet.NetworkID{0x00, 0x00, 0x02})
+	sb, err := l.Lease(ctx, tunnet.NetworkID{0x00, 0x00, 0x02})
 	require.NoError(t, err)
-	require.Equal(t, ba.Index, bb.Index, "both first blocks share an index")
+	require.Equal(t, sa.ID, sb.ID, "both first slots share an id")
 
-	aa, ab := NewConnAllocator(ba), NewConnAllocator(bb)
+	aa, ab := NewConnAllocator(sa), NewConnAllocator(sb)
 	v6a, v4a, err := aa.Allocate()
 	require.NoError(t, err)
 	v6b, v4b, err := ab.Allocate()
 	require.NoError(t, err)
 
 	require.Equal(t, v4a.Addr(), v4b.Addr(), "v4 intentionally overlaps across networks")
-	require.NotEqual(t, v6a.Addr(), v6b.Addr(), "v6 stays globally unique via disjoint /72s")
+	require.NotEqual(t, v6a.Addr(), v6b.Addr(), "v6 stays globally unique via disjoint networks")
 }
 
-// TestConnAllocatorReleaseForeignBlock pins the §2.8 multi-block guard: a
-// prefix from a different block must be ignored, never panicking (v4 underflow)
-// or freeing a live slot in the wrong block (v6 collision on connection index).
-func TestConnAllocatorReleaseForeignBlock(t *testing.T) {
+// TestConnAllocatorReleaseForeignSlot pins the §2.8 multi-slot guard: a prefix
+// from a different slot must be ignored, never panicking (v4 underflow) or
+// freeing a live index in the wrong slot (v6 collision on connection index).
+func TestConnAllocatorReleaseForeignSlot(t *testing.T) {
 	ctx := context.Background()
-	l := NewLocalBlockLeaser(ctx)
+	l := NewLocalSlotLeaser()
 	id := tunnet.NetworkID{0x00, 0x0f, 0x01}
-	b0, err := l.Lease(ctx, id)
+	s0, err := l.Lease(ctx, id)
 	require.NoError(t, err)
-	b1, err := l.Lease(ctx, id)
+	s1, err := l.Lease(ctx, id)
 	require.NoError(t, err)
-	require.NotEqual(t, b0.Index, b1.Index, "two distinct blocks of one network")
+	require.NotEqual(t, s0.ID, s1.ID, "two distinct slots of one network")
 
-	a0, a1 := NewConnAllocator(b0), NewConnAllocator(b1)
+	a0, a1 := NewConnAllocator(s0), NewConnAllocator(s1)
 
 	// a0's first connection: v4 index 0 sits below a1's v4 slice, so an
 	// unguarded Release on a1 would underflow and index the bitmap OOB.
@@ -230,18 +294,18 @@ func TestConnAllocatorReleaseForeignBlock(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, v4.IsValid())
 
-	// a1 holds its own connection at the same v6 index (0) and same v4 index (0).
+	// a1 holds its own connection at the same v6 index (1) and same v4 index (0).
 	v6a1, v4a1, err := a1.Allocate()
 	require.NoError(t, err)
 
 	// Releasing a0's addresses on a1 must be a safe no-op.
 	require.NotPanics(t, func() { a1.Release(v6, v4) })
 
-	// a1's live slots are untouched: its next alloc advances past index 0.
+	// a1's live indices are untouched: its next alloc advances past them.
 	v6next, v4next, err := a1.Allocate()
 	require.NoError(t, err)
-	require.NotEqual(t, v6a1.Addr(), v6next.Addr(), "a1 v6 slot 0 still held")
-	require.NotEqual(t, v4a1.Addr(), v4next.Addr(), "a1 v4 slot 0 still held")
+	require.NotEqual(t, v6a1.Addr(), v6next.Addr(), "a1 v6 index still held")
+	require.NotEqual(t, v4a1.Addr(), v4next.Addr(), "a1 v4 index still held")
 }
 
 // u32Addr is the inverse of the binary.BigEndian.Uint32 conversion used for v4.

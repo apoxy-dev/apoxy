@@ -118,6 +118,13 @@ func (r *Relay) SetCredentials(tunnelName, token string) {
 	r.staticTokens.SetToken(tunnelName, token)
 }
 
+// RemoveCredentials revokes a tunnel's static authentication token so new
+// connects to it fail closed. Only consulted when the default static token
+// validator is in effect (see SetTokenValidator).
+func (r *Relay) RemoveCredentials(tunnelName string) {
+	r.staticTokens.RemoveToken(tunnelName)
+}
+
 // SetTokenValidator overrides how agent credentials are authenticated, e.g.
 // with a JWT-backed validator. Must be called before Start.
 func (r *Relay) SetTokenValidator(v token.TokenValidator) {

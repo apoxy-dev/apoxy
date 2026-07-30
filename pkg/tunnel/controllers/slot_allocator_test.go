@@ -12,18 +12,18 @@ import (
 	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 )
 
-// countingLeaser wraps a real BlockLeaser to count Lease/Release calls and to
+// countingLeaser wraps a real SlotLeaser to count Lease/Release calls and to
 // optionally inject a lease error.
 type countingLeaser struct {
-	inner    ipalloc.BlockLeaser
+	inner    ipalloc.SlotLeaser
 	leases   int
 	releases int
 	leaseErr error
 }
 
-func (c *countingLeaser) Lease(ctx context.Context, net tunnet.NetworkID) (ipalloc.Block, error) {
+func (c *countingLeaser) Lease(ctx context.Context, net tunnet.NetworkID) (ipalloc.Slot, error) {
 	if c.leaseErr != nil {
-		return ipalloc.Block{}, c.leaseErr
+		return ipalloc.Slot{}, c.leaseErr
 	}
 	b, err := c.inner.Lease(ctx, net)
 	if err == nil {
@@ -32,22 +32,22 @@ func (c *countingLeaser) Lease(ctx context.Context, net tunnet.NetworkID) (ipall
 	return b, err
 }
 
-func (c *countingLeaser) Renew(ctx context.Context, b ipalloc.Block) error {
+func (c *countingLeaser) Renew(ctx context.Context, b ipalloc.Slot) error {
 	return c.inner.Renew(ctx, b)
 }
 
-func (c *countingLeaser) Release(ctx context.Context, b ipalloc.Block) error {
+func (c *countingLeaser) Release(ctx context.Context, b ipalloc.Slot) error {
 	c.releases++
 	return c.inner.Release(ctx, b)
 }
 
-func TestBlockAllocator(t *testing.T) {
+func TestSlotAllocator(t *testing.T) {
 	ctx := context.Background()
 	netA := tunnet.NetworkID{0x00, 0x20, 0x01}
 	netB := tunnet.NetworkID{0x00, 0x20, 0x02}
 
 	t.Run("allocates a dual-stack address and frees it for reuse", func(t *testing.T) {
-		b := newBlockAllocator(ipalloc.NewLocalBlockLeaser(ctx))
+		b := newSlotAllocator(ipalloc.NewLocalSlotLeaser())
 
 		v6a, v4a, alloc, err := b.Allocate(ctx, netA)
 		require.NoError(t, err)
@@ -69,24 +69,24 @@ func TestBlockAllocator(t *testing.T) {
 	})
 
 	t.Run("surfaces a lease failure", func(t *testing.T) {
-		leaser := &countingLeaser{inner: ipalloc.NewLocalBlockLeaser(ctx), leaseErr: errors.New("no blocks")}
-		b := newBlockAllocator(leaser)
+		leaser := &countingLeaser{inner: ipalloc.NewLocalSlotLeaser(), leaseErr: errors.New("no slots")}
+		b := newSlotAllocator(leaser)
 
 		_, _, _, err := b.Allocate(ctx, netA)
 		require.Error(t, err)
-		require.Contains(t, err.Error(), "failed to lease block")
+		require.Contains(t, err.Error(), "failed to lease slot")
 	})
 
 	t.Run("Release tolerates a nil allocator", func(t *testing.T) {
-		b := newBlockAllocator(ipalloc.NewLocalBlockLeaser(ctx))
+		b := newSlotAllocator(ipalloc.NewLocalSlotLeaser())
 		require.NotPanics(t, func() {
 			b.Release(nil, netip.MustParsePrefix("fd00::/96"), netip.MustParsePrefix("10.0.0.0/32"))
 		})
 	})
 
-	t.Run("ReleaseAll drains every leased block exactly once", func(t *testing.T) {
-		leaser := &countingLeaser{inner: ipalloc.NewLocalBlockLeaser(ctx)}
-		b := newBlockAllocator(leaser)
+	t.Run("ReleaseAll drains every leased slot exactly once", func(t *testing.T) {
+		leaser := &countingLeaser{inner: ipalloc.NewLocalSlotLeaser()}
+		b := newSlotAllocator(leaser)
 
 		// First allocation on each network leases one block apiece.
 		_, _, _, err := b.Allocate(ctx, netA)
@@ -96,7 +96,7 @@ func TestBlockAllocator(t *testing.T) {
 		require.Equal(t, 2, leaser.leases)
 
 		b.ReleaseAll(ctx)
-		require.Equal(t, 2, leaser.releases, "every leased block returned")
+		require.Equal(t, 2, leaser.releases, "every leased slot returned")
 
 		// State is cleared: a second drain releases nothing more.
 		b.ReleaseAll(ctx)

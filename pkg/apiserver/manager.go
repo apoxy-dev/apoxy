@@ -246,6 +246,7 @@ type options struct {
 	resources              []resource.Object
 	proxyIPAM              tunnet.IPAM
 	agentIPAM              tunnet.IPAM
+	skipVPCNetworkProv     bool
 	tokenValidator         token.Validator
 	tokenIssuer            token.TokenIssuer
 	openAPIDefinitions     common.GetOpenAPIDefinitions
@@ -481,6 +482,18 @@ func WithSkipBuiltinControllers() Option {
 func WithSkipTunnelNodeIPAM() Option {
 	return func(o *options) {
 		o.agentIPAM = nil
+	}
+}
+
+// WithSkipVPCNetworkProvisioner disables the built-in (OSS/single-tenant)
+// VPCNetwork provisioner. Use this when a VPCNetwork's identity and credential
+// are assigned externally — in cloud the overlay /72 comes from an infra-tier
+// Network object so that NetworkIDs are unique across projects, which a
+// project-local assigner cannot guarantee. Exactly one provisioner must run:
+// both would race to write Status.OverlayCIDR.
+func WithSkipVPCNetworkProvisioner() Option {
+	return func(o *options) {
+		o.skipVPCNetworkProv = true
 	}
 }
 
@@ -820,9 +833,13 @@ func (m *Manager) Start(
 			return fmt.Errorf("failed to set up Relay lease watcher: %v", err)
 		}
 
-		log.Infof("Registering VPCNetwork controller")
-		if err := controllers.NewVPCNetworkReconciler(m.manager.GetClient()).SetupWithManager(m.manager); err != nil {
-			return fmt.Errorf("failed to set up VPCNetwork controller: %v", err)
+		if dOpts.skipVPCNetworkProv {
+			log.Infof("Skipping VPCNetwork provisioner (assigned externally)")
+		} else {
+			log.Infof("Registering VPCNetwork controller")
+			if err := controllers.NewVPCNetworkReconciler(m.manager.GetClient()).SetupWithManager(m.manager); err != nil {
+				return fmt.Errorf("failed to set up VPCNetwork controller: %v", err)
+			}
 		}
 
 		log.Infof("Registering VPCService controller")

@@ -2,83 +2,73 @@ package ipalloc
 
 import (
 	"context"
-	"fmt"
 	"sync"
+
+	"gvisor.dev/gvisor/pkg/bitmap"
 
 	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 )
 
-// LocalBlockLeaser is the OSS/single-tenant BlockLeaser. It leases /80 blocks
-// from the standalone process's own view of each network's /72 ULA — there is
-// no infra tier, so blocks are backed by an in-process go-ipam per network and
-// leases have no TTL (Renew is a no-op). The API is identical to the cloud
-// infra-apiz implementation so the relay wiring is the same in both modes.
-type LocalBlockLeaser struct {
-	ctx context.Context
+// maxSlots is the size of a network's slot id space (16 bits).
+const maxSlots = 1 << 16
 
+// LocalSlotLeaser is the OSS/single-tenant SlotLeaser. It tracks each network's
+// slot ids entirely in process memory — there is no infra tier, so leases have
+// no TTL (Renew is a no-op) and nothing survives a restart. The API is
+// identical to the cloud infra-backed implementation so the relay wiring is the
+// same in both modes.
+//
+// It is correct only while a single process allocates for a network. Two
+// processes each start from an empty bitmap and both hand out the lowest free
+// id, so their connections collide on identical /96s. Any deployment running
+// more than one relay per network must use an infra-backed leaser.
+type LocalSlotLeaser struct {
 	mu   sync.Mutex
-	nets map[tunnet.NetworkID]tunnet.IPAM
+	nets map[tunnet.NetworkID]*bitmap.Bitmap
 }
 
-// NewLocalBlockLeaser returns a LocalBlockLeaser. ctx bounds the lifetime of
-// the per-network go-ipam instances it lazily creates.
-func NewLocalBlockLeaser(ctx context.Context) *LocalBlockLeaser {
-	return &LocalBlockLeaser{
-		ctx:  ctx,
-		nets: make(map[tunnet.NetworkID]tunnet.IPAM),
+// NewLocalSlotLeaser returns a LocalSlotLeaser.
+func NewLocalSlotLeaser() *LocalSlotLeaser {
+	return &LocalSlotLeaser{
+		nets: make(map[tunnet.NetworkID]*bitmap.Bitmap),
 	}
 }
 
-// ipamFor returns the /80-allocating IPAM for a network, creating it on first
-// use. The IPAM is rooted at the network's /72 so it hands out /80 block
-// children. Caller holds mu.
-func (l *LocalBlockLeaser) ipamFor(network tunnet.NetworkID) (tunnet.IPAM, error) {
-	if ipam, ok := l.nets[network]; ok {
-		return ipam, nil
-	}
-
-	ula, err := tunnet.ULAFromPrefix(l.ctx, network72(network))
-	if err != nil {
-		return nil, fmt.Errorf("failed to root ULA at network /72: %w", err)
-	}
-	ipam, err := ula.IPAM(l.ctx, 80)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create block IPAM: %w", err)
-	}
-
-	l.nets[network] = ipam
-	return ipam, nil
-}
-
-// Lease reserves an unused /80 block of the network's /72.
-func (l *LocalBlockLeaser) Lease(_ context.Context, network tunnet.NetworkID) (Block, error) {
+// Lease reserves an unused slot id in the network.
+func (l *LocalSlotLeaser) Lease(_ context.Context, network tunnet.NetworkID) (Slot, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	ipam, err := l.ipamFor(network)
-	if err != nil {
-		return Block{}, err
+	bm, ok := l.nets[network]
+	if !ok {
+		b := bitmap.New(maxSlots)
+		bm = &b
+		l.nets[network] = bm
 	}
-	p, err := ipam.Allocate()
-	if err != nil {
-		return Block{}, fmt.Errorf("%w: %v", ErrNoBlocks, err)
+
+	i, err := bm.FirstZero(0)
+	if err != nil || i >= maxSlots {
+		return Slot{}, ErrNoSlots
 	}
-	return Block{Network: network, Index: blockIndex(p), Prefix: p}, nil
+	bm.Add(i)
+
+	return Slot{Network: network, ID: tunnet.EndpointID{byte(i >> 8), byte(i)}}, nil
 }
 
 // Renew is a no-op: local leases have no TTL.
-func (l *LocalBlockLeaser) Renew(_ context.Context, _ Block) error {
+func (l *LocalSlotLeaser) Renew(_ context.Context, _ Slot) error {
 	return nil
 }
 
-// Release returns a block to the network's pool.
-func (l *LocalBlockLeaser) Release(_ context.Context, b Block) error {
+// Release returns a slot to the network's pool.
+func (l *LocalSlotLeaser) Release(_ context.Context, s Slot) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	ipam, ok := l.nets[b.Network]
+	bm, ok := l.nets[s.Network]
 	if !ok {
 		return nil
 	}
-	return ipam.Release(b.Prefix)
+	bm.Remove(uint32(s.ID[0])<<8 | uint32(s.ID[1]))
+	return nil
 }

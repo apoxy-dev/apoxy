@@ -24,6 +24,7 @@ type recordingRelay struct {
 }
 
 func (r *recordingRelay) SetCredentials(network, token string) { r.creds[network] = token }
+func (r *recordingRelay) RemoveCredentials(network string)     { delete(r.creds, network) }
 func (r *recordingRelay) SetEgressGateway(enabled bool)        { r.egress = enabled }
 
 func TestVPCNetworkReconcilerFeedsCredentialsAndNetworkID(t *testing.T) {
@@ -44,7 +45,7 @@ func TestVPCNetworkReconcilerFeedsCredentialsAndNetworkID(t *testing.T) {
 		Build()
 
 	relay := &recordingRelay{stubRelay: stubRelay{name: "relay-0"}, creds: map[string]string{}}
-	pub := NewTunnelPublisher(c, relay, ipalloc.NewLocalBlockLeaser(ctx), vni.NewVNIAllocator())
+	pub := NewTunnelPublisher(c, relay, ipalloc.NewLocalSlotLeaser(), vni.NewVNIAllocator())
 	r := NewVPCNetworkReconciler(c, relay, pub)
 
 	_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKey{Name: "corp"}})
@@ -75,7 +76,7 @@ func TestVPCNetworkReconcilerEgressIsDeterministicAcrossNetworks(t *testing.T) {
 		WithObjects(net("corp", true), net("guest", false)).
 		Build()
 	relay := &recordingRelay{stubRelay: stubRelay{name: "relay-0"}, creds: map[string]string{}}
-	pub := NewTunnelPublisher(c, relay, ipalloc.NewLocalBlockLeaser(ctx), vni.NewVNIAllocator())
+	pub := NewTunnelPublisher(c, relay, ipalloc.NewLocalSlotLeaser(), vni.NewVNIAllocator())
 	r := NewVPCNetworkReconciler(c, relay, pub)
 
 	reconcile := func(name string) {
@@ -100,11 +101,46 @@ func TestVPCNetworkReconcilerEgressIsDeterministicAcrossNetworks(t *testing.T) {
 	require.True(t, relay.egress, "removing the dissenting network re-enables egress")
 }
 
+func TestVPCNetworkReconcilerDeletionTearsDownNetwork(t *testing.T) {
+	ctx := context.Background()
+
+	network := &vpcv1alpha1.VPCNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "corp"},
+		Status: vpcv1alpha1.VPCNetworkStatus{
+			Credentials: &vpcv1alpha1.VPCNetworkCredentials{Token: "tok-1"},
+			OverlayCIDR: "fd61:706f:7879:0:100::/72",
+		},
+	}
+	c := fake.NewClientBuilder().
+		WithScheme(publisherScheme(t)).
+		WithObjects(network).
+		Build()
+	relay := &recordingRelay{stubRelay: stubRelay{name: "relay-0"}, creds: map[string]string{}}
+	pub := NewTunnelPublisher(c, relay, ipalloc.NewLocalSlotLeaser(), vni.NewVNIAllocator())
+	r := NewVPCNetworkReconciler(c, relay, pub)
+
+	_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKey{Name: "corp"}})
+	require.NoError(t, err)
+	require.Equal(t, "tok-1", relay.creds["corp"])
+
+	// Deleting the network revokes the credential and forgets the NetworkID so
+	// new connects fail closed instead of allocating for a dead network.
+	require.NoError(t, c.Delete(ctx, network))
+	_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKey{Name: "corp"}})
+	require.NoError(t, err)
+
+	require.NotContains(t, relay.creds, "corp", "credential revoked on deletion")
+	pub.mu.Lock()
+	_, ok := pub.networks["corp"]
+	pub.mu.Unlock()
+	require.False(t, ok, "NetworkID mapping dropped on deletion")
+}
+
 func TestVPCNetworkReconcilerIgnoresMissing(t *testing.T) {
 	ctx := context.Background()
 	c := fake.NewClientBuilder().WithScheme(publisherScheme(t)).Build()
 	relay := &recordingRelay{stubRelay: stubRelay{name: "relay-0"}, creds: map[string]string{}}
-	pub := NewTunnelPublisher(c, relay, ipalloc.NewLocalBlockLeaser(ctx), vni.NewVNIAllocator())
+	pub := NewTunnelPublisher(c, relay, ipalloc.NewLocalSlotLeaser(), vni.NewVNIAllocator())
 	r := NewVPCNetworkReconciler(c, relay, pub)
 
 	_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKey{Name: "gone"}})

@@ -13,6 +13,8 @@ type Relay interface {
 	Address() netip.AddrPort
 	// SetCredentials sets the authentication token used by agents to authenticate with the relay.
 	SetCredentials(tunnelName, token string)
+	// RemoveCredentials revokes a tunnel's authentication token so new connects to it fail closed.
+	RemoveCredentials(tunnelName string)
 	// SetEgressGateway enables or disables internet egress for the tunnel agents.
 	SetEgressGateway(enabled bool)
 	// SetOnConnect sets a callback that is invoked when a new connection is established to the relay.
