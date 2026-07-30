@@ -35,7 +35,6 @@ func LookupDefaultName(gvk schema.GroupVersionKind) (func(data []byte) (string, 
 	return fn, ok
 }
 
-
 // Object combines runtime.Object with metav1.Object to allow accessing both
 // Kubernetes object metadata (Name, Labels, etc.) and runtime type information.
 type Object interface {
@@ -92,6 +91,10 @@ type ResourceCommand[T Object, TList runtime.Object] struct {
 	// ListFlags registers custom flags on both the root and list commands.
 	// Returns a function that produces a field selector string from those flags.
 	ListFlags func(cmd *cobra.Command) func() string
+
+	// ListLabelFlags registers custom flags on both the root and list commands.
+	// Returns a function that produces a label selector string from those flags.
+	ListLabelFlags func(cmd *cobra.Command) func() string
 
 	// NameTransform converts a user-facing name argument into the internal
 	// metadata.name used by the API. If nil, the argument is used as-is.
@@ -201,6 +204,7 @@ func (r *ResourceCommand[T, TList]) Build() *cobra.Command {
 
 	// Register ListFlags on root and list commands; hold the closures for runtime.
 	var rootListFlagsFn, listListFlagsFn func() string
+	var rootListLabelFlagsFn, listListLabelFlagsFn func() string
 
 	rootCmd := &cobra.Command{
 		Use:     r.Use,
@@ -223,7 +227,11 @@ func (r *ResourceCommand[T, TList]) Build() *cobra.Command {
 					}
 				}
 			}
-			list, err := r.ClientFunc(c).List(cmd.Context(), metav1.ListOptions{FieldSelector: fs})
+			var ls string
+			if rootListLabelFlagsFn != nil {
+				ls = rootListLabelFlagsFn()
+			}
+			list, err := r.ClientFunc(c).List(cmd.Context(), metav1.ListOptions{FieldSelector: fs, LabelSelector: ls})
 			if err != nil {
 				return err
 			}
@@ -286,7 +294,11 @@ func (r *ResourceCommand[T, TList]) Build() *cobra.Command {
 					}
 				}
 			}
-			list, err := r.ClientFunc(c).List(cmd.Context(), metav1.ListOptions{FieldSelector: fs})
+			var ls string
+			if listListLabelFlagsFn != nil {
+				ls = listListLabelFlagsFn()
+			}
+			list, err := r.ClientFunc(c).List(cmd.Context(), metav1.ListOptions{FieldSelector: fs, LabelSelector: ls})
 			if err != nil {
 				return err
 			}
@@ -457,6 +469,10 @@ manage different fields of the same object without conflicts.`, r.KindName, r.Ki
 	if r.ListFlags != nil {
 		rootListFlagsFn = r.ListFlags(rootCmd)
 		listListFlagsFn = r.ListFlags(listCmd)
+	}
+	if r.ListLabelFlags != nil {
+		rootListLabelFlagsFn = r.ListLabelFlags(rootCmd)
+		listListLabelFlagsFn = r.ListLabelFlags(listCmd)
 	}
 
 	rootCmd.AddCommand(getCmd, listCmd, createCmd, deleteCmd, applyCmd)
