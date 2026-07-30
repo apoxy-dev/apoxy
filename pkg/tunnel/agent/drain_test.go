@@ -191,3 +191,107 @@ func TestManageConnectionSlot_DrainMakeBeforeBreak(t *testing.T) {
 	default:
 	}
 }
+
+// TestManageConnectionSlot_SingleRelayDrainReconnect is the degenerate — and
+// common — case where the pool holds exactly one relay (dev, or a network
+// served by a single relay): there is no replacement to make-before-break
+// onto, and a restarted relay comes back at the SAME address (a hostNetwork
+// pod's node IP). The slot must not deadlock waiting for a replacement while
+// its own draining session holds the pool's only address; once the draining
+// session dies, the slot must release the address and reconnect to it.
+func TestManageConnectionSlot_SingleRelayDrainReconnect(t *testing.T) {
+	origGrace := drainGracePeriod
+	drainGracePeriod = 2 * time.Second
+	t.Cleanup(func() { drainGracePeriod = origGrace })
+
+	orig := connectionHealthCounter.Load()
+	t.Cleanup(func() { connectionHealthCounter.Store(orig) })
+	connectionHealthCounter.Store(0)
+
+	r1, stop1 := startDrainableRelay(t, 500*time.Millisecond, nil, 810, "10.0.0.10/32", nil)
+	relayAddr := r1.Address()
+
+	pp, err := newPacketPlane()
+	require.NoError(t, err)
+	t.Cleanup(pp.Close)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	g, gctx := errgroup.WithContext(ctx)
+
+	cfg := loopbackConfig()
+	tlsConf := &tls.Config{InsecureSkipVerify: true}
+
+	boot, err := bootstrapSession(gctx, cfg, relayAddr.String(), pp.QuicMux, tlsConf)
+	require.NoError(t, err)
+
+	ar, handler, routes := newAgentRouter(t, gctx, g, boot, pp)
+	pool := randalloc.NewRandAllocator(sets.New[string](relayAddr.String()))
+
+	slotErr := make(chan error, 1)
+	go func() { slotErr <- manageConnectionSlot(gctx, cfg, pp.QuicMux, handler, ar, routes, pool, tlsConf) }()
+
+	require.Eventually(t, func() bool {
+		return connectionHealthCounter.Load() == 1
+	}, 10*time.Second, 20*time.Millisecond, "slot should establish a session to the relay")
+
+	// Drain and stop the only relay. stop1 blocks through the lame duck and
+	// then tears the relay down, freeing its address.
+	stopDone := make(chan struct{})
+	go func() {
+		stop1()
+		close(stopDone)
+	}()
+	select {
+	case <-stopDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("relay did not stop")
+	}
+
+	// Bring a replacement up at the SAME address, like a restarted
+	// hostNetwork pod rebinding its node IP.
+	pc, err := net.ListenPacket("udp", relayAddr.String())
+	require.NoError(t, err)
+	relay2Connected := make(chan struct{}, 4)
+	onConnect := func(context.Context, string, string, controllers.Connection) error {
+		select {
+		case relay2Connected <- struct{}{}:
+		default:
+		}
+		return nil
+	}
+	connect := assignVNIOnConnect(811, "10.0.0.11/32")
+	_, stop2 := startRelayHarness(t, "letmein", pc, noopRelayRouter{}, newTestHandler(t),
+		func(ctx context.Context, tn, an string, conn controllers.Connection) error {
+			if err := connect(ctx, tn, an, conn); err != nil {
+				return err
+			}
+			return onConnect(ctx, tn, an, conn)
+		},
+		func(context.Context, string, string) error { return nil })
+	t.Cleanup(stop2)
+
+	// The slot must shed the dead session (releasing the pool's only
+	// address), re-acquire it, and reconnect — instead of deadlocking in the
+	// replacement acquire while the draining session still holds the address.
+	select {
+	case <-relay2Connected:
+	case err := <-slotErr:
+		t.Fatalf("connection slot exited instead of reconnecting: %v", err)
+	case <-time.After(30 * time.Second):
+		t.Fatal("slot never reconnected to the restarted relay at the same address")
+	}
+
+	require.Eventually(t, func() bool {
+		return connectionHealthCounter.Load() == 1
+	}, 10*time.Second, 20*time.Millisecond, "slot should settle on the new session")
+
+	// Tear the slot down synchronously: its deferred health-counter decrement
+	// must land before the next test resets the shared counter.
+	cancel()
+	select {
+	case <-slotErr:
+	case <-time.After(10 * time.Second):
+		t.Fatal("connection slot did not exit after cancel")
+	}
+}

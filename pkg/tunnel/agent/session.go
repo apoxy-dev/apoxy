@@ -185,7 +185,8 @@ func closeSession(client *api.Client, connID string) {
 // announcement while a replacement session is brought up. It must comfortably
 // cover the relay's lame-duck period: once that expires the relay stops
 // forwarding, so holding the session any longer keeps a dead tunnel alive.
-const drainGracePeriod = 45 * time.Second
+// It is a var only so tests can compress the drain timeline.
+var drainGracePeriod = 45 * time.Second
 
 // sessionNotify carries a session's out-of-band signals up to its connection
 // slot. Both callbacks may be invoked at most once and may be nil.
@@ -553,10 +554,51 @@ func manageConnectionSlot(
 		case <-cur.draining:
 			slog.Info("Relay draining; establishing a replacement before hanging up",
 				slog.String("relay", cur.relayAddr))
-			next, err := acquireAndStart()
-			if err != nil {
+			// Acquire in the background: the draining session still holds its
+			// pool address, and in a single-relay pool that is the ONLY
+			// address — a blocking Acquire here would deadlock, because the
+			// address is only released after the session dies, which is
+			// handled below. The background acquire picks the address up the
+			// moment it is released (a restarted relay comes back at the same
+			// address, e.g. a hostNetwork pod's node IP).
+			var (
+				next   *sessionRun
+				acqErr error
+			)
+			acqDone := make(chan struct{})
+			go func() {
+				defer close(acqDone)
+				next, acqErr = acquireAndStart()
+			}()
+			select {
+			case <-acqDone:
+			case sessErr := <-cur.done:
+				// The draining session died (grace expired, or the relay went
+				// dark early) before a replacement was acquired. Releasing its
+				// address is what unblocks the pending acquire when no other
+				// relay is free.
+				finish(cur, sessErr)
+				cur = nil
+				<-acqDone
+			case <-ctx.Done():
 				stop(cur)
-				return err
+				<-acqDone
+				if acqErr == nil {
+					stop(next)
+				}
+				return ctx.Err()
+			}
+			if acqErr != nil {
+				if cur != nil {
+					stop(cur)
+				}
+				return acqErr
+			}
+			if cur == nil {
+				// Nothing left to hand off from; the replacement is the
+				// connection now. The outer loop watches it come up or die.
+				cur = next
+				continue
 			}
 			select {
 			case <-ctx.Done():
