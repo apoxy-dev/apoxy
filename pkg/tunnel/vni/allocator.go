@@ -1,6 +1,7 @@
 package vni
 
 import (
+	"math/rand/v2"
 	"sync"
 	"time"
 )
@@ -36,6 +37,19 @@ type AllocatorOption func(*VNIAllocator)
 // WithQuarantineWindow overrides how long a released VNI is withheld from reuse.
 func WithQuarantineWindow(d time.Duration) AllocatorOption {
 	return func(a *VNIAllocator) { a.window = d }
+}
+
+// WithRandomBase starts the allocation scan at a random point in the 24-bit
+// VNI space instead of 1. Relays allocate VNIs independently, but an agent
+// connected to several relays installs them all in one icx handler keyed
+// globally by VNI — with a common base every relay hands the same agent the
+// same low VNIs and its reconnects collide until backoff walks past every
+// live session. A random per-process base makes cross-relay overlap
+// vanishingly unlikely.
+func WithRandomBase() AllocatorOption {
+	return func(a *VNIAllocator) {
+		a.pool = NewVNIPoolWithBase(1 + rand.Uint32N(maxVNI-1))
+	}
 }
 
 // NewVNIAllocator creates a relay-local quarantine-aware VNI allocator.

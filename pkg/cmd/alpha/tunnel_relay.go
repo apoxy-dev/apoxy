@@ -205,7 +205,7 @@ var tunnelRelayCmd = &cobra.Command{
 		// addresses in-process from a leased /80 block plus a relay-local VNI,
 		// and writes the single-writer Tunnel object (APO-825 §2.4/§2.8).
 		leaser := ipalloc.NewLocalSlotLeaser()
-		vnis := vni.NewVNIAllocator()
+		vnis := vni.NewVNIAllocator(vni.WithRandomBase())
 		publisher := controllers.NewTunnelPublisher(mgr.GetClient(), relay, leaser, vnis)
 
 		// The VPCNetwork watcher feeds the relay each network's connect credential

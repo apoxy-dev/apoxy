@@ -15,11 +15,28 @@ const (
 type VNIPool struct {
 	mu   sync.Mutex
 	pool bitmap.Bitmap
+	// base is where FirstZero scans start. VNIs are unique only per relay, but
+	// an agent holds sessions to many relays in one icx handler keyed globally
+	// by VNI — if every relay allocates from 1 they all hand the same low VNIs
+	// to the same agent and its reconnects collide indefinitely. A per-process
+	// random base makes overlap across relays vanishingly unlikely.
+	base uint32
 }
 
 func NewVNIPool() *VNIPool {
+	return NewVNIPoolWithBase(1)
+}
+
+// NewVNIPoolWithBase creates a pool whose allocation scan starts at base,
+// wrapping around to 1 when the space above base is exhausted. base is clamped
+// into [1, maxVNI).
+func NewVNIPoolWithBase(base uint32) *VNIPool {
+	if base < 1 || base >= maxVNI {
+		base = 1
+	}
 	return &VNIPool{
 		pool: bitmap.New(maxVNI),
+		base: base,
 	}
 }
 
@@ -27,9 +44,13 @@ func (v *VNIPool) Allocate() (uint, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 
-	vni, err := v.pool.FirstZero(1)
+	vni, err := v.pool.FirstZero(v.base)
 	if err != nil || vni >= maxVNI {
-		return 0, fmt.Errorf("no available virtual network IDs")
+		// Space above base exhausted; wrap and scan [1, base).
+		vni, err = v.pool.FirstZero(1)
+		if err != nil || uint32(vni) >= v.base {
+			return 0, fmt.Errorf("no available virtual network IDs")
+		}
 	}
 	v.pool.Add(vni)
 	return uint(vni), nil

@@ -43,6 +43,47 @@ func TestVNIAllocatorQuarantineOnRelease(t *testing.T) {
 	require.Equal(t, v1, v3, "quarantined VNI is reclaimed once its window elapses")
 }
 
+func TestVNIPoolBase(t *testing.T) {
+	cases := []struct {
+		name string
+		base uint32
+		want []uint
+	}{
+		{name: "scan starts at base", base: 100, want: []uint{100, 101, 102}},
+		{name: "invalid base clamps to 1", base: maxVNI, want: []uint{1, 2}},
+		{name: "zero base clamps to 1", base: 0, want: []uint{1, 2}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := NewVNIPoolWithBase(tc.base)
+			for _, want := range tc.want {
+				got, err := p.Allocate()
+				require.NoError(t, err)
+				require.Equal(t, want, got)
+			}
+		})
+	}
+}
+
+func TestVNIPoolBaseWrapsAround(t *testing.T) {
+	p := NewVNIPoolWithBase(maxVNI - 2)
+	got := make([]uint, 0, 3)
+	for range 3 {
+		v, err := p.Allocate()
+		require.NoError(t, err)
+		got = append(got, v)
+	}
+	require.Equal(t, []uint{maxVNI - 2, maxVNI - 1, 1}, got, "exhausting the space above base wraps the scan to 1")
+}
+
+func TestVNIAllocatorRandomBase(t *testing.T) {
+	a := NewVNIAllocator(WithRandomBase())
+	v, err := a.Allocate()
+	require.NoError(t, err)
+	require.NotZero(t, v)
+	require.Less(t, v, uint(maxVNI))
+}
+
 func TestVNIAllocatorReleaseIgnoresReserved(t *testing.T) {
 	a := NewVNIAllocator()
 	require.NotPanics(t, func() { a.Release(0) })
