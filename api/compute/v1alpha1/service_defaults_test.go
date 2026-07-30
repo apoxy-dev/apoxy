@@ -77,23 +77,23 @@ func TestServiceDefault(t *testing.T) {
 		},
 		{
 			name: "oci source digest pinned not tagged",
-			in:   ServiceSpec{Source: ServiceSource{OCI: &BundleRef{Repo: "r", Digest: "sha256:a"}}},
+			in:   ServiceSpec{Source: ServiceSource{OCI: &BundleRef{Repo: "r", Digest: testDigest}}},
 			want: ServiceSpec{
 				Template:             httpBackendTemplate(),
-				Source:               ServiceSource{OCI: &BundleRef{Repo: "r", Digest: "sha256:a"}},
+				Source:               ServiceSource{OCI: &BundleRef{Repo: "r", Digest: testDigest}},
 				RevisionHistoryLimit: ptr.To(int32(10)),
 			},
 		},
 		{
 			name: "oci source password scrubbed into passwordData",
 			in: ServiceSpec{Source: ServiceSource{OCI: &BundleRef{
-				Repo: "r", Digest: "sha256:a",
+				Repo: "r", Digest: testDigest,
 				Credentials: &OCICredentials{Username: "bob", Password: "hunter2"},
 			}}},
 			want: ServiceSpec{
 				Template: httpBackendTemplate(),
 				Source: ServiceSource{OCI: &BundleRef{
-					Repo: "r", Digest: "sha256:a",
+					Repo: "r", Digest: testDigest,
 					Credentials: &OCICredentials{Username: "bob", PasswordData: []byte("hunter2")},
 				}},
 				RevisionHistoryLimit: ptr.To(int32(10)),
@@ -102,13 +102,13 @@ func TestServiceDefault(t *testing.T) {
 		{
 			name: "oci source explicit passwordData wins over password",
 			in: ServiceSpec{Source: ServiceSource{OCI: &BundleRef{
-				Repo: "r", Digest: "sha256:a",
+				Repo: "r", Digest: testDigest,
 				Credentials: &OCICredentials{Password: "stale", PasswordData: []byte("hunter2")},
 			}}},
 			want: ServiceSpec{
 				Template: httpBackendTemplate(),
 				Source: ServiceSource{OCI: &BundleRef{
-					Repo: "r", Digest: "sha256:a",
+					Repo: "r", Digest: testDigest,
 					Credentials: &OCICredentials{PasswordData: []byte("hunter2")},
 				}},
 				RevisionHistoryLimit: ptr.To(int32(10)),
@@ -204,7 +204,7 @@ func TestDefaultThenValidatePipeline(t *testing.T) {
 		{
 			name: "revision: empty config + resolved bundle",
 			obj: &ServiceRevision{Spec: ServiceRevisionSpec{
-				Bundle:            BundleRef{Repo: "r", Digest: "sha256:a"},
+				Bundle:            BundleRef{Repo: "r", Digest: testDigest},
 				ServiceConfigSpec: ServiceConfigSpec{Runtime: &ServiceRuntime{CompatibilityDate: "2024-01-01"}},
 			}},
 		},

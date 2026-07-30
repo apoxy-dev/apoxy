@@ -2,7 +2,9 @@ package v1alpha1
 
 import (
 	"context"
+	"fmt"
 
+	"github.com/opencontainers/go-digest"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
@@ -285,6 +287,17 @@ func validateBundle(b *BundleRef, p *field.Path, minted bool) field.ErrorList {
 		// no signal on the object.
 		errs = append(errs, field.Forbidden(p.Child("credentialsRef"),
 			"credentialsRef is not supported yet; use inline credentials"))
+	}
+	// A digest that is not a well-formed OCI digest can never resolve: the pull
+	// fails for every request, and the only signal is a revision that was minted
+	// and promoted but cannot serve. Reject the shape here, where the caller
+	// still gets a field error, rather than at pull time where nothing is
+	// watching. Parse checks the algorithm is known and the hex length matches.
+	if b.Digest != "" {
+		if _, err := digest.Parse(b.Digest); err != nil {
+			errs = append(errs, field.Invalid(p.Child("digest"), b.Digest,
+				fmt.Sprintf("must be a well-formed OCI digest such as sha256:<64 hex chars>: %v", err)))
+		}
 	}
 	if minted && b.Digest == "" {
 		errs = append(errs, field.Required(p.Child("digest"),

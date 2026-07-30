@@ -12,6 +12,10 @@ import (
 	"github.com/apoxy-dev/apoxy/api/resource/resourcestrategy"
 )
 
+// testDigest is a well-formed sha256 digest. Validation rejects malformed
+// digests, so fixtures that mean "a valid pin" must carry a real 64-hex one.
+const testDigest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
 func hasField(errs field.ErrorList, f string) bool {
 	for _, e := range errs {
 		if e.Field == f {
@@ -57,7 +61,7 @@ func validRevision() *ServiceRevision {
 			ServiceConfig: ServiceConfig{Backend: &BackendConfig{Protocol: HTTP1}},
 			Runtime:       &ServiceRuntime{CompatibilityDate: "2024-01-01"},
 		},
-		Bundle: BundleRef{Repo: "registry/app", Digest: "sha256:abc"},
+		Bundle: BundleRef{Repo: "registry/app", Digest: testDigest},
 	}}
 }
 
@@ -205,7 +209,7 @@ func TestServiceRevisionValidate(t *testing.T) {
 		},
 		{
 			name:  "bundle empty repo",
-			mut:   func(r *ServiceRevision) { r.Spec.Bundle = BundleRef{Digest: "sha256:a"} },
+			mut:   func(r *ServiceRevision) { r.Spec.Bundle = BundleRef{Digest: testDigest} },
 			want:  []string{"spec.bundle.repo"},
 			count: 1,
 		},
@@ -216,9 +220,27 @@ func TestServiceRevisionValidate(t *testing.T) {
 			count: 1,
 		},
 		{
+			name:  "bundle malformed digest",
+			mut:   func(r *ServiceRevision) { r.Spec.Bundle = BundleRef{Repo: "r", Digest: "not-a-digest"} },
+			want:  []string{"spec.bundle.digest"},
+			count: 1,
+		},
+		{
+			name:  "bundle digest wrong hex length",
+			mut:   func(r *ServiceRevision) { r.Spec.Bundle = BundleRef{Repo: "r", Digest: "sha256:abc"} },
+			want:  []string{"spec.bundle.digest"},
+			count: 1,
+		},
+		{
+			name:  "bundle digest unknown algorithm",
+			mut:   func(r *ServiceRevision) { r.Spec.Bundle = BundleRef{Repo: "r", Digest: "md5:0123456789abcdef0123456789abcdef"} },
+			want:  []string{"spec.bundle.digest"},
+			count: 1,
+		},
+		{
 			name: "bundle both credentials",
 			mut: func(r *ServiceRevision) {
-				r.Spec.Bundle = BundleRef{Repo: "r", Digest: "sha256:a", Credentials: &OCICredentials{}, CredentialsRef: &OCICredentialsRef{}}
+				r.Spec.Bundle = BundleRef{Repo: "r", Digest: testDigest, Credentials: &OCICredentials{}, CredentialsRef: &OCICredentialsRef{}}
 			},
 			want:  []string{"spec.bundle.credentialsRef"},
 			count: 1,
@@ -226,7 +248,7 @@ func TestServiceRevisionValidate(t *testing.T) {
 		{
 			name: "bundle credentialsRef alone is not supported yet",
 			mut: func(r *ServiceRevision) {
-				r.Spec.Bundle = BundleRef{Repo: "r", Digest: "sha256:a", CredentialsRef: &OCICredentialsRef{}}
+				r.Spec.Bundle = BundleRef{Repo: "r", Digest: testDigest, CredentialsRef: &OCICredentialsRef{}}
 			},
 			want:  []string{"spec.bundle.credentialsRef"},
 			count: 1,
@@ -449,6 +471,40 @@ func TestServiceValidate(t *testing.T) {
 			name:  "neither oci nor git",
 			mut:   func(w *Service) { w.Spec.Source = ServiceSource{} },
 			want:  []string{"spec.source"},
+			count: 1,
+		},
+
+		// --- source digest shape (a pushed bundle need not be pinned, but a
+		// digest that IS given must be well-formed: an unresolvable digest mints
+		// and promotes a revision that can never serve) ---
+		{
+			name: "oci digest omitted is fine (tag resolved at mint)",
+			mut:  func(w *Service) { w.Spec.Source.OCI = &BundleRef{Repo: "registry/app", Tag: "v1"} },
+		},
+		{
+			name: "oci valid digest",
+			mut:  func(w *Service) { w.Spec.Source.OCI = &BundleRef{Repo: "registry/app", Digest: testDigest} },
+		},
+		{
+			name:  "oci malformed digest rejected",
+			mut:   func(w *Service) { w.Spec.Source.OCI = &BundleRef{Repo: "registry/app", Digest: "not-a-digest"} },
+			want:  []string{"spec.source.oci.digest"},
+			count: 1,
+		},
+		{
+			name:  "oci digest wrong hex length rejected",
+			mut:   func(w *Service) { w.Spec.Source.OCI = &BundleRef{Repo: "registry/app", Digest: "sha256:abc"} },
+			want:  []string{"spec.source.oci.digest"},
+			count: 1,
+		},
+		{
+			name: "git build output malformed digest rejected",
+			mut: func(w *Service) {
+				g := validGitSource()
+				g.Build.Output.Digest = "not-a-digest"
+				w.Spec.Source = ServiceSource{Git: g}
+			},
+			want:  []string{"spec.source.git.build.output.digest"},
 			count: 1,
 		},
 
