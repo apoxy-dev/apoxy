@@ -315,3 +315,66 @@ func TestReplaceSubsetAndReacquireBehavior(t *testing.T) {
 	assert.False(t, got.Has("a"), `"a" was removed by Replace and should not be returned`)
 	assert.False(t, got.Has("c"), `"c" was removed by Replace and should not be returned`)
 }
+
+func TestSetPreferenceOrdersAcquires(t *testing.T) {
+	ra := newAllocator("a", "b", "c")
+	ra.SetPreference([]string{"c", "a", "b"})
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	// Free items come out in preference order, not randomly.
+	for _, want := range []string{"c", "a", "b"} {
+		got, err := ra.Acquire(ctx)
+		require.NoError(t, err)
+		require.Equal(t, want, got)
+	}
+
+	// Releasing out of order re-ranks: the best-ranked free item wins.
+	ra.Release("b")
+	ra.Release("c")
+	got, err := ra.Acquire(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "c", got)
+}
+
+func TestSetPreferenceUnrankedIsFallback(t *testing.T) {
+	ra := newAllocator("ranked", "unranked")
+	// Rankings may cover a subset (probe failures drop out) and may include
+	// items no longer in the pool.
+	ra.SetPreference([]string{"gone", "ranked"})
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	got, err := ra.Acquire(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "ranked", got, "ranked item must win over unranked")
+
+	// With the ranked item taken, the unranked one is still handed out —
+	// a probe blip must not shrink the usable pool.
+	got, err = ra.Acquire(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "unranked", got)
+
+	// A waiter blocked on an exhausted pool wakes when a new preference
+	// lands (it may reorder what "free" means).
+	acquired := make(chan string, 1)
+	go func() {
+		if v, err := ra.Acquire(context.Background()); err == nil {
+			acquired <- v
+		}
+	}()
+	select {
+	case v := <-acquired:
+		t.Fatalf("acquire should block on an exhausted pool, got %q", v)
+	case <-time.After(50 * time.Millisecond):
+	}
+	ra.Release("ranked")
+	select {
+	case v := <-acquired:
+		require.Equal(t, "ranked", v)
+	case <-time.After(time.Second):
+		t.Fatal("blocked acquire did not wake on release")
+	}
+}

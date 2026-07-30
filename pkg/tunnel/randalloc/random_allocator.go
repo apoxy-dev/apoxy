@@ -18,6 +18,9 @@ type RandAllocator[T comparable] struct {
 	mu    sync.Mutex
 	items []T
 	inUse map[T]bool
+	// pref maps an item to its rank (lower is better) for preference-ordered
+	// allocation; empty means pure random selection. See SetPreference.
+	pref map[T]int
 
 	// waitCh is used to notify waiters that something changed
 	// (i.e. an item was released). It's always a non-nil channel.
@@ -107,7 +110,27 @@ func (ra *RandAllocator[T]) Replace(vals sets.Set[T]) {
 	ra.waitCh = make(chan struct{})
 }
 
-// pickFreeLocked picks a currently-free item at random.
+// SetPreference installs a ranked order for future Acquires: free items are
+// handed out in this order, with items absent from the ranking falling back
+// to random selection after the ranked ones. The ranking may contain items
+// not (or no longer) in the candidate set; those entries are ignored. Wakes
+// waiters so a blocked Acquire re-evaluates with the new order.
+func (ra *RandAllocator[T]) SetPreference(order []T) {
+	ra.mu.Lock()
+	defer ra.mu.Unlock()
+
+	ra.pref = make(map[T]int, len(order))
+	for i, item := range order {
+		ra.pref[item] = i
+	}
+
+	close(ra.waitCh)
+	ra.waitCh = make(chan struct{})
+}
+
+// pickFreeLocked picks a currently-free item: the best-ranked one when a
+// preference order is installed, at random otherwise (unranked items are
+// only considered when no ranked item is free).
 // caller must hold ra.mu.
 func (ra *RandAllocator[T]) pickFreeLocked() (T, bool) {
 	var zero T
@@ -117,11 +140,24 @@ func (ra *RandAllocator[T]) pickFreeLocked() (T, bool) {
 		return zero, false
 	}
 
+	best, bestRank, found := zero, 0, false
 	for _, idx := range rand.Perm(n) {
 		item := ra.items[idx]
-		if !ra.inUse[item] {
-			return item, true
+		if ra.inUse[item] {
+			continue
+		}
+		rank, ranked := ra.pref[item]
+		if !ranked {
+			// Unranked free items are the fallback: keep the first one the
+			// random permutation offers, but keep looking for a ranked item.
+			if !found {
+				best, bestRank, found = item, len(ra.pref), true
+			}
+			continue
+		}
+		if !found || rank < bestRank {
+			best, bestRank, found = item, rank, true
 		}
 	}
-	return zero, false
+	return best, found
 }

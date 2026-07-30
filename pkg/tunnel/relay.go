@@ -206,6 +206,17 @@ func (r *Relay) Start(ctx context.Context) error {
 
 	mux := httprouter.New()
 
+	// Unauthenticated latency probe for agent relay selection. A draining
+	// relay answers 503 so probes steer agents toward relays that will
+	// still be there once the session is up.
+	mux.GET("/ping", func(w http.ResponseWriter, _ *http.Request, _ httprouter.Params) {
+		if r.draining.Load() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+
 	mux.POST("/v1/tunnel/:name", r.withAuth(r.handleConnect))
 	mux.DELETE("/v1/tunnel/:name", r.withAuth(r.handleDisconnect))
 	mux.PUT("/v1/tunnel/:name/keys", r.withAuth(r.handleUpdateKeys))

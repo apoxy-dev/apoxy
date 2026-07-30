@@ -35,10 +35,12 @@ import (
 const (
 	watchdogMaxSilence = 120 * time.Second
 	watchdogInterval   = 5 * time.Second
-	// relayRefreshInterval is how often the agent re-lists ready relays from the
-	// apiserver to keep its connection pool current.
-	relayRefreshInterval = 30 * time.Second
 )
+
+// relayRefreshInterval is how often the agent re-lists ready relays from the
+// apiserver to keep its connection pool current. A var only so tests can
+// compress the timeline.
+var relayRefreshInterval = 30 * time.Second
 
 // connectionHealthCounter tracks how many relay sessions are currently live.
 var connectionHealthCounter atomic.Int32
@@ -64,8 +66,13 @@ type Config struct {
 	// coming and going are picked up without a restart. Nil = static pool.
 	RelayLister func(context.Context) (sets.Set[string], error)
 	// MinConns is the number of concurrent relay connection slots. Values
-	// below 1 are treated as 1.
+	// below 1 are treated as 1. Ignored when ConnectAll is set.
 	MinConns int
+	// ConnectAll maintains one session per relay in the pool instead of
+	// MinConns slots, tracking pool refreshes. Relay consumers (backplane
+	// VTEP sessions) need this: relays do not federate routes, so reaching
+	// agents homed on any relay requires a session to every relay.
+	ConnectAll bool
 
 	// TLSConfig is used for the QUIC control sessions. Nil means defaults.
 	TLSConfig *tls.Config
@@ -154,6 +161,17 @@ func Run(ctx context.Context, cfg Config) error {
 	if poolAddrs.Len() == 0 {
 		poolAddrs = sets.New[string](seedRelayAddr)
 	}
+
+	// Consumer policy: one session per relay, tracking the pool. The slot
+	// machinery below (exclusive allocator, probing, MinConns) is the agent
+	// policy and does not apply.
+	if cfg.ConnectAll {
+		g.Go(func() error {
+			return runConnectAll(ctx, cfg, packetPlane.QuicMux, handler, r, routes, poolAddrs, tlsConf)
+		})
+		return g.Wait()
+	}
+
 	relayAddressPool := randalloc.NewRandAllocator(poolAddrs)
 
 	// A slot can only hold a relay no other slot holds, so a pool smaller than
@@ -172,6 +190,22 @@ func Run(ctx context.Context, cfg Config) error {
 	if cfg.RelayLister != nil {
 		g.Go(func() error {
 			return refreshRelayPool(ctx, cfg.RelayLister, relayAddressPool, relayRefreshInterval)
+		})
+	}
+
+	// Rank the pool by measured latency so slots acquire the closest relay
+	// first (the legacy tunnel's endpoint selection, applied to relays). The
+	// initial probe runs synchronously, before the slots spawn, so even the
+	// first acquisition is informed; later probes only influence future
+	// rotations.
+	if poolAddrs.Len() > 1 {
+		if order := probeRelays(ctx, tlsConf, poolAddrs.UnsortedList()); len(order) > 0 {
+			relayAddressPool.SetPreference(order)
+		}
+	}
+	if cfg.RelayLister != nil || poolAddrs.Len() > 1 {
+		g.Go(func() error {
+			return probeRelayPreference(ctx, cfg, relayAddressPool, tlsConf, poolAddrs)
 		})
 	}
 
