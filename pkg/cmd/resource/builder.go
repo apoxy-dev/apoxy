@@ -96,6 +96,12 @@ type ResourceCommand[T Object, TList runtime.Object] struct {
 	// Returns a function that produces a label selector string from those flags.
 	ListLabelFlags func(cmd *cobra.Command) func() string
 
+	// ListArgLabelSelector, if set, allows the root and list commands to
+	// accept an optional single positional argument (typically a parent
+	// resource's name) and turns it into a label selector, mirroring how
+	// `get <name>` takes its name positionally instead of via a flag.
+	ListArgLabelSelector func(arg string) string
+
 	// NameTransform converts a user-facing name argument into the internal
 	// metadata.name used by the API. If nil, the argument is used as-is.
 	NameTransform func(string) (string, error)
@@ -231,6 +237,9 @@ func (r *ResourceCommand[T, TList]) Build() *cobra.Command {
 			if rootListLabelFlagsFn != nil {
 				ls = rootListLabelFlagsFn()
 			}
+			if r.ListArgLabelSelector != nil && len(args) == 1 {
+				ls = r.ListArgLabelSelector(args[0])
+			}
 			list, err := r.ClientFunc(c).List(cmd.Context(), metav1.ListOptions{FieldSelector: fs, LabelSelector: ls})
 			if err != nil {
 				return err
@@ -297,6 +306,9 @@ func (r *ResourceCommand[T, TList]) Build() *cobra.Command {
 			var ls string
 			if listListLabelFlagsFn != nil {
 				ls = listListLabelFlagsFn()
+			}
+			if r.ListArgLabelSelector != nil && len(args) == 1 {
+				ls = r.ListArgLabelSelector(args[0])
 			}
 			list, err := r.ClientFunc(c).List(cmd.Context(), metav1.ListOptions{FieldSelector: fs, LabelSelector: ls})
 			if err != nil {
@@ -473,6 +485,10 @@ manage different fields of the same object without conflicts.`, r.KindName, r.Ki
 	if r.ListLabelFlags != nil {
 		rootListLabelFlagsFn = r.ListLabelFlags(rootCmd)
 		listListLabelFlagsFn = r.ListLabelFlags(listCmd)
+	}
+	if r.ListArgLabelSelector != nil {
+		rootCmd.Args = cobra.MaximumNArgs(1)
+		listCmd.Args = cobra.MaximumNArgs(1)
 	}
 
 	rootCmd.AddCommand(getCmd, listCmd, createCmd, deleteCmd, applyCmd)
