@@ -33,8 +33,9 @@ func TestBuildResidentConfig(t *testing.T) {
 			wantSubs: []string{
 				`(name = "dispatcher", worker = .dispatcher),`,
 				`(name = "manager", external = (address = "unix:/run/control.sock", http = ())),`,
-				// globalOutbound is a Network service (structural egress, §2.8):
-				`(name = "internet", network = (allow = ["public", "private", "local", "network"])),`,
+				// globalOutbound is a Network service (structural egress, §2.8),
+				// carrying tlsOptions so https:// fetch() has a TLS network at all:
+				`(name = "internet", network = (allow = ["public", "private", "local", "network"], tlsOptions = (trustBrowserCas = true))),`,
 				`(name = "http", address = "unix:/run/in.sock", http = (), service = "dispatcher"),`,
 				`compatibilityFlags = ["experimental"],`,
 				`(name = "LOADER", workerLoader = ()),`,
@@ -97,9 +98,15 @@ func TestValidateGlobalOutbound(t *testing.T) {
 			cfg:  realEmitted,
 		},
 		{
-			name: "network service is accepted",
+			name: "network service with tlsOptions is accepted",
+			cfg: `(name = "internet", network = (allow = ["public"], tlsOptions = (trustBrowserCas = true))),` +
+				`(name = "GLOBAL_OUTBOUND", service = "internet"),`,
+		},
+		{
+			name: "network service without tlsOptions has no TLS network",
 			cfg: `(name = "internet", network = (allow = ["public"])),` +
 				`(name = "GLOBAL_OUTBOUND", service = "internet"),`,
+			wantErrSub: "declares no tlsOptions",
 		},
 		{
 			name: "external service is the foot-gun",

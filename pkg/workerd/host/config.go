@@ -210,6 +210,22 @@ const (
 // acceptance test (a real fetch() connect() caught by the forwarder).
 var globalOutboundAllow = []string{"public", "private", "local", "network"}
 
+// globalOutboundTLSOptions is the Network service's tlsOptions. Naming a service
+// "internet" suppresses the implicit one workerd would otherwise synthesize, and
+// that implicit service is the only thing that sets useSystemTrustStore — so a
+// Network service declared without tlsOptions gets no TLS-capable network at all
+// (workerd only wraps one when the config has tlsOptions), and every https://
+// fetch() fails while http:// keeps working. trustBrowserCas maps directly to
+// useSystemTrustStore; the CA bundle it reads ships in the workerd image.
+//
+// This is a plain TLS client config, not interception: on the direct-dial path
+// the bridge splices bytes, so workerd terminates TLS against the real origin
+// and validates the origin's own certificate. If EgressGateway routing (Envoy
+// MITM, see egress_bridge.go) is ever wired up, the gateway's CA has to reach
+// the worker too — as trustedCertificates here, since the MITM leaf will not
+// chain to a browser CA.
+var globalOutboundTLSOptions = "tlsOptions = (trustBrowserCas = true)"
+
 // ResidentConfigInput is the input to BuildResidentConfig.
 type ResidentConfigInput struct {
 	// SocketAddr is the address the dispatcher's http socket binds — where the
@@ -244,9 +260,11 @@ func BuildResidentConfig(in ResidentConfigInput) (string, error) {
 		capnpStr(managerServiceName), capnpStr(in.ManagerAddr))
 	// The globalOutbound Network service (see globalOutboundServiceName): real
 	// getaddrinfo + socket/connect for every isolate's fetch(), caught by the
-	// in-Sentry forwarder and mediated by the host egress bridge.
-	fmt.Fprintf(&b, "    (name = %s, network = (allow = [%s])),\n",
-		capnpStr(globalOutboundServiceName), capnpStrList(globalOutboundAllow))
+	// in-Sentry forwarder and mediated by the host egress bridge. tlsOptions is
+	// what makes https:// fetch() work at all (see globalOutboundTLSOptions).
+	fmt.Fprintf(&b, "    (name = %s, network = (allow = [%s], %s)),\n",
+		capnpStr(globalOutboundServiceName), capnpStrList(globalOutboundAllow),
+		globalOutboundTLSOptions)
 	b.WriteString("  ],\n")
 	b.WriteString("  sockets = [\n")
 	fmt.Fprintf(&b, "    (name = %s, address = %s, http = (), service = %s),\n",
@@ -304,7 +322,18 @@ func validateGlobalOutbound(cfg string) error {
 	if kind != "network" {
 		return fmt.Errorf("workerd-host: %s must resolve to a `network` service for structural egress, got %q service %q (see workerd-egress-encap.mdx §2.8)", globalOutboundBindingName, kind, svc)
 	}
+	if !networkHasTLSOptions(cfg, svc) {
+		return fmt.Errorf("workerd-host: %s service %q declares no tlsOptions; workerd wraps a TLS network only when the config carries them, so every https:// fetch() would fail while http:// kept working (see globalOutboundTLSOptions)", globalOutboundBindingName, svc)
+	}
 	return nil
+}
+
+// networkHasTLSOptions reports whether the network service named svc declares a
+// tlsOptions block. Naming the service suppresses workerd's implicit "internet"
+// service, which is the only one that gets a trust store by default.
+func networkHasTLSOptions(cfg, svc string) bool {
+	re := regexp.MustCompile(`\(name = "` + regexp.QuoteMeta(svc) + `", network = \([^)]*tlsOptions = \(`)
+	return re.MatchString(cfg)
 }
 
 // serviceKind returns the workerd union field (network/external/worker/disk) of
