@@ -243,6 +243,25 @@ func migrateTunnelAgents(ctx context.Context, kv kvStore, vpc vpcclient.VpcV1alp
 		}
 
 		svc := tunnelAgentToVPCService(&a)
+
+		// An orphan agent — one whose legacy Tunnel is long gone, so
+		// migrateTunnels minted no VPCNetwork for it — has nothing to migrate
+		// to, and VPCService admission rejects a dangling networkRef. Detect
+		// that case by name rather than by catching the rejection, so every
+		// other create failure still fails startup loudly: a rejection for any
+		// other reason means a migratable agent would silently never get its
+		// VPCService, and the legacy key is retained, so nothing would create
+		// it on a later boot either.
+		if _, err := vpc.VPCNetworks().Get(ctx, svc.Spec.NetworkRef.Name, metav1.GetOptions{}); err != nil {
+			if !apierrors.IsNotFound(err) {
+				return fmt.Errorf("looking up VPCNetwork %q for legacy TunnelAgent %q: %w",
+					svc.Spec.NetworkRef.Name, a.Metadata.Name, err)
+			}
+			slog.Warn("Skipping legacy TunnelAgent whose network no longer exists",
+				"name", a.Metadata.Name, "network", svc.Spec.NetworkRef.Name)
+			continue
+		}
+
 		if _, err := vpc.VPCServices().Create(ctx, svc, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
 			return fmt.Errorf("creating VPCService %q: %w", svc.Name, err)
 		}

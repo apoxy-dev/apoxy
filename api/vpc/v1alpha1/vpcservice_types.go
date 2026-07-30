@@ -2,10 +2,13 @@ package v1alpha1
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/netip"
 
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apiserver/pkg/registry/rest"
@@ -33,6 +36,34 @@ type VPCServiceSpec struct {
 	Selector *metav1.LabelSelector `json:"selector"`
 }
 
+// MembershipSelector converts spec.selector into the label selector used to
+// pick member Tunnels, and is the single definition of which selectors are
+// usable as a membership rule.
+//
+// It rejects the two degenerate shapes that LabelSelectorAsSelector maps to
+// something silently surprising: nil becomes labels.Nothing() (the service can
+// never have endpoints) and empty becomes labels.Everything() (every Tunnel in
+// the network becomes a member). Neither is distinguishable from a spec whose
+// author left the field out. Validation rejects both at admission, but every
+// caller must re-check: update validation is ratcheted, so an object stored
+// before that rule can still carry either shape, and expanding its empty
+// selector into the whole network would publish unrelated members under its
+// name.
+func (s *VPCServiceSpec) MembershipSelector() (labels.Selector, error) {
+	if s.Selector == nil {
+		return nil, errors.New("no selector is set, so no Tunnel can ever be a member")
+	}
+	if len(s.Selector.MatchLabels) == 0 && len(s.Selector.MatchExpressions) == 0 {
+		return nil, errors.New("the selector is empty, which would make every Tunnel in the network a member; " +
+			"to select the whole network use matchExpressions with an Exists operator on " + LabelNetwork)
+	}
+	sel, err := metav1.LabelSelectorAsSelector(s.Selector)
+	if err != nil {
+		return nil, fmt.Errorf("the selector is not a valid label selector: %w", err)
+	}
+	return sel, nil
+}
+
 // VPCServiceEndpoint is one live member of the service.
 type VPCServiceEndpoint struct {
 	// The member Tunnel (one connection).
@@ -44,11 +75,56 @@ type VPCServiceEndpoint struct {
 	Addresses []string `json:"addresses,omitempty"`
 }
 
+// VPCService condition types. Reconciled and Ready are deliberately separate:
+// a service whose membership was computed correctly and came back empty is
+// fully reconciled but not usable, and collapsing the two makes an
+// unreachable service indistinguishable from a working one.
+const (
+	// VPCServiceConditionReconciled reports whether the endpoints view in
+	// status reflects current membership. It is about the controller having
+	// done its job, not about the service being usable.
+	VPCServiceConditionReconciled = "Reconciled"
+
+	// VPCServiceConditionReady reports whether the service has at least one
+	// usable endpoint, i.e. whether traffic sent to its DNS name can land
+	// anywhere.
+	VPCServiceConditionReady = "Ready"
+)
+
+// VPCService condition reasons.
+const (
+	// VPCServiceReasonEndpointsComputed marks a successful membership
+	// recompute (Reconciled).
+	VPCServiceReasonEndpointsComputed = "EndpointsComputed"
+
+	// VPCServiceReasonEndpointsAvailable marks a service with at least one
+	// usable endpoint (Ready).
+	VPCServiceReasonEndpointsAvailable = "EndpointsAvailable"
+
+	// VPCServiceReasonNoEndpoints marks a reconciled service with no usable
+	// endpoint: no member Tunnel matched, or the ones that did are not
+	// carrying overlay addresses yet.
+	VPCServiceReasonNoEndpoints = "NoEndpoints"
+
+	// VPCServiceReasonNetworkNotFound marks a service whose spec.networkRef
+	// names a VPCNetwork that does not exist. Admission rejects this at
+	// create; it is still reachable by deleting the network afterwards.
+	VPCServiceReasonNetworkNotFound = "NetworkNotFound"
+
+	// VPCServiceReasonInvalidSelector marks a service whose spec.selector is
+	// missing or cannot be converted to a label selector, so membership
+	// cannot be computed at all.
+	VPCServiceReasonInvalidSelector = "InvalidSelector"
+)
+
 type VPCServiceStatus struct {
-	// Live members and their overlay addresses (the "endpoints view").
+	// Live members and their overlay addresses (the "endpoints view"). Only
+	// usable members appear here: a Tunnel with no overlay address yet is
+	// not an endpoint traffic can land on, so it is not counted as one.
 	// +optional
 	Endpoints []VPCServiceEndpoint `json:"endpoints,omitempty,omitzero"`
 
+	// Conditions: Reconciled, Ready.
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty,omitzero"`
 }
@@ -153,18 +229,40 @@ func (s *VPCService) DNSHostname() string {
 func (s *VPCService) MemberAddrs() (addrs []netip.Addr, skipped []string) {
 	for _, ep := range s.Status.Endpoints {
 		for _, a := range ep.Addresses {
-			if addr, err := netip.ParseAddr(a); err == nil {
-				addrs = append(addrs, addr)
+			addr, ok := parseMemberAddr(a)
+			if !ok {
+				skipped = append(skipped, a)
 				continue
 			}
-			if p, err := netip.ParsePrefix(a); err == nil {
-				addrs = append(addrs, p.Addr())
-				continue
-			}
-			skipped = append(skipped, a)
+			addrs = append(addrs, addr)
 		}
 	}
 	return addrs, skipped
+}
+
+// parseMemberAddr parses one recorded member address, accepting both a plain
+// address and an overlay prefix and returning the base address either way.
+func parseMemberAddr(s string) (netip.Addr, bool) {
+	if addr, err := netip.ParseAddr(s); err == nil {
+		return addr, true
+	}
+	if p, err := netip.ParsePrefix(s); err == nil {
+		return p.Addr(), true
+	}
+	return netip.Addr{}, false
+}
+
+// HasUsableAddress reports whether the member carries at least one address
+// traffic can actually be sent to. A member with no addresses — or only
+// garbage ones — resolves to nothing, so counting it as an endpoint would
+// report a service as having members it cannot reach.
+func (e VPCServiceEndpoint) HasUsableAddress() bool {
+	for _, a := range e.Addresses {
+		if _, ok := parseMemberAddr(a); ok {
+			return true
+		}
+	}
+	return false
 }
 
 // getVPCServiceSelector renders the member selector in kubectl's compact form.
@@ -175,23 +273,43 @@ func getVPCServiceSelector(s *VPCService) string {
 	return metav1.FormatLabelSelector(s.Spec.Selector)
 }
 
+// getVPCServiceReady renders the Ready condition's status and, when the
+// service is not ready, the reason. A zero-endpoint service has to be
+// distinguishable from a working one in default output, not just in -o yaml:
+// the endpoint count alone never said whether 0 members was expected.
+func getVPCServiceReady(s *VPCService) (status, reason string) {
+	c := meta.FindStatusCondition(s.Status.Conditions, VPCServiceConditionReady)
+	if c == nil {
+		return "Unknown", ""
+	}
+	if c.Status == metav1.ConditionTrue {
+		return string(c.Status), ""
+	}
+	return string(c.Status), c.Reason
+}
+
 func vpcServiceColumns() []metav1.TableColumnDefinition {
 	return []metav1.TableColumnDefinition{
 		{Name: "Name", Type: "string", Format: "name", Description: "Name of the service"},
 		{Name: "Network", Type: "string", Description: "Owning VPCNetwork"},
 		{Name: "Selector", Type: "string", Description: "Member Tunnel selector"},
-		{Name: "Endpoints", Type: "string", Description: "Live member count"},
+		{Name: "Endpoints", Type: "string", Description: "Usable member count"},
+		{Name: "Ready", Type: "string", Description: "Whether traffic to the service name can land on a member"},
+		{Name: "Reason", Type: "string", Description: "Why the service is not ready"},
 		{Name: "Age", Type: "string", Description: "Time since creation"},
 	}
 }
 
 func vpcServiceRow(s *VPCService) metav1.TableRow {
+	ready, reason := getVPCServiceReady(s)
 	return metav1.TableRow{
 		Cells: []interface{}{
 			s.Name,
 			s.Spec.NetworkRef.Name,
 			getVPCServiceSelector(s),
 			fmt.Sprintf("%d", len(s.Status.Endpoints)),
+			ready,
+			reason,
 			formatAge(s.CreationTimestamp.Time),
 		},
 		Object: runtime.RawExtension{Object: s},

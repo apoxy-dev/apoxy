@@ -58,21 +58,52 @@ func TestConvertToTable(t *testing.T) {
 						{TunnelRef: TunnelRef{Name: "conn-1"}, Addresses: []string{"fd00::1/96"}},
 						{TunnelRef: TunnelRef{Name: "conn-2"}, Addresses: []string{"fd00::2/96"}},
 					},
+					Conditions: []metav1.Condition{{
+						Type:   VPCServiceConditionReady,
+						Status: metav1.ConditionTrue,
+						Reason: VPCServiceReasonEndpointsAvailable,
+					}},
 				},
 			},
-			columns:   []string{"Name", "Network", "Selector", "Endpoints", "Age"},
+			columns:   []string{"Name", "Network", "Selector", "Endpoints", "Ready", "Reason", "Age"},
 			rows:      1,
-			wantCells: []interface{}{"payments", "corp", "app=payments", "2", "5m"},
+			wantCells: []interface{}{"payments", "corp", "app=payments", "2", "True", "", "5m"},
 		},
 		{
+			// The reason is what makes a zero-endpoint service readable in
+			// default output: the count alone never said whether 0 was
+			// expected.
+			name: "vpcservice not ready",
+			obj: &VPCService{
+				ObjectMeta: metav1.ObjectMeta{Name: "payments", CreationTimestamp: created},
+				Spec: VPCServiceSpec{
+					NetworkRef: VPCNetworkRef{Name: "corp"},
+					Selector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"app": "payments"},
+					},
+				},
+				Status: VPCServiceStatus{
+					Conditions: []metav1.Condition{{
+						Type:   VPCServiceConditionReady,
+						Status: metav1.ConditionFalse,
+						Reason: VPCServiceReasonNoEndpoints,
+					}},
+				},
+			},
+			columns:   []string{"Name", "Network", "Selector", "Endpoints", "Ready", "Reason", "Age"},
+			rows:      1,
+			wantCells: []interface{}{"payments", "corp", "app=payments", "0", "False", "NoEndpoints", "5m"},
+		},
+		{
+			// Before the reconciler's first pass there is no condition at all.
 			name: "vpcservice nil selector",
 			obj: &VPCService{
 				ObjectMeta: metav1.ObjectMeta{Name: "payments", CreationTimestamp: created},
 				Spec:       VPCServiceSpec{NetworkRef: VPCNetworkRef{Name: "corp"}},
 			},
-			columns:   []string{"Name", "Network", "Selector", "Endpoints", "Age"},
+			columns:   []string{"Name", "Network", "Selector", "Endpoints", "Ready", "Reason", "Age"},
 			rows:      1,
-			wantCells: []interface{}{"payments", "corp", "<none>", "0", "5m"},
+			wantCells: []interface{}{"payments", "corp", "<none>", "0", "Unknown", "", "5m"},
 		},
 		{
 			name: "relay",
