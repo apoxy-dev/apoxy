@@ -471,6 +471,17 @@ func (r *Relay) handleConnect(w http.ResponseWriter, req *http.Request, ps httpr
 		agentInstance:    request.AgentInstance,
 	}
 
+	// A reconnect from the same 4-tuple hashes to the same connection ID. The
+	// previous session is dead (or dying) but its close watcher may not have
+	// fired yet; tear it down explicitly so its addresses and VNI are released
+	// before the new connection allocates, and so the stale watcher (which
+	// checks identity, not just ID) cannot reap the replacement.
+	if old, ok := r.conns.Get(conn.ID()); ok {
+		slog.Info("Replacing existing connection for reconnect",
+			slog.String("connID", conn.ID()))
+		r.teardownConn(req.Context(), old)
+	}
+
 	r.conns.Set(conn.ID(), conn)
 	r.agents.Set(conn.ID(), request.Agent)
 
@@ -504,7 +515,7 @@ func (r *Relay) handleConnect(w http.ResponseWriter, req *http.Request, ps httpr
 	// path (§2.2); startGC's silence sweep is a slower backstop.
 	if hij, ok := w.(http3.Hijacker); ok {
 		if qconn := hij.Connection(); qconn != nil {
-			go r.watchSessionClose(qconn.Context(), conn.ID())
+			go r.watchSessionClose(qconn.Context(), conn)
 		}
 	}
 
@@ -550,12 +561,17 @@ func (r *Relay) handleConnect(w http.ResponseWriter, req *http.Request, ps httpr
 // resource onConnect allocated (addresses, VNI, Tunnel object) via the
 // onDisconnect callback. It is used both to abort a connection that failed to
 // finish establishing and to reap one whose QUIC control session has closed. It
-// is idempotent: GetAndDel makes a second call a no-op.
+// is idempotent, and identity-aware: if the registry maps the ID to a
+// different *connection (a reconnect from the same 4-tuple replaced this one),
+// the newer connection is left untouched — otherwise a stale session-close
+// watcher would release the replacement's addresses while it is live, and the
+// next connect would be handed a duplicate /96.
 func (r *Relay) teardownConn(ctx context.Context, conn *connection) {
 	id := conn.ID()
-	if _, ok := r.conns.GetAndDel(id); !ok {
+	if cur, ok := r.conns.Get(id); !ok || cur != conn {
 		return
 	}
+	r.conns.Del(id)
 	agentName, _ := r.agents.Get(id)
 	r.agents.Del(id)
 
@@ -582,8 +598,9 @@ func (r *Relay) teardownConn(ctx context.Context, conn *connection) {
 // same 5-tuple as the data path (quic.go), so a dead agent's session closes in
 // ~15s and its Tunnel is deleted then. This is the primary, session-close-driven
 // disconnect path (§2.2); the silence-based startGC remains a slower backstop.
-func (r *Relay) watchSessionClose(sessCtx context.Context, id string) {
+func (r *Relay) watchSessionClose(sessCtx context.Context, conn *connection) {
 	<-sessCtx.Done()
+	id := conn.ID()
 	if r.draining.Load() {
 		// Control sessions close en masse when the drain's GOAWAY goes out,
 		// but the datapath must keep forwarding through the lame duck; final
@@ -592,9 +609,8 @@ func (r *Relay) watchSessionClose(sessCtx context.Context, id string) {
 			slog.String("connID", id))
 		return
 	}
-	conn, ok := r.conns.Get(id)
-	if !ok {
-		return // already disconnected explicitly or reaped
+	if cur, ok := r.conns.Get(id); !ok || cur != conn {
+		return // already disconnected, reaped, or replaced by a reconnect
 	}
 	slog.Info("Agent control session closed, disconnecting", slog.String("connID", id))
 	r.teardownConn(context.Background(), conn)
