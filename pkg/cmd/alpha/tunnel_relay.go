@@ -41,20 +41,21 @@ import (
 )
 
 var (
-	relayDevMode         bool   // whether to run in development mode (testing only)
-	relayName            string // the name for the relay
-	extIfaceName         string // the external interface name
-	listenAddress        string // the address to listen on for incoming connections
-	userMode             bool   // whether to use user-mode routing (no special privileges required)
-	relaySocksListenAddr string // when using user-mode routing, the address to listen on for SOCKS5 connections
-	relayPcapPath        string // optional pcap path
-	certFile             string // path to TLS certificate (PEM) used when not in dev mode
-	keyFile              string // path to TLS private key (PEM) used when not in dev mode
-	idSecretFile         string // path to secret for the ID hasher used when not in dev mode
-	relayMetricsAddr     string   // bind address for the metrics endpoint
-	relayHealthAddr      string   // bind address for the health/ready probes
-	labelSelector        string   // network selector for the relay's served VPCNetworks
-	relayAddresses       []string // underlay endpoints agents dial (Relay.Spec.Addresses)
+	relayDevMode         bool          // whether to run in development mode (testing only)
+	relayName            string        // the name for the relay
+	extIfaceName         string        // the external interface name
+	listenAddress        string        // the address to listen on for incoming connections
+	userMode             bool          // whether to use user-mode routing (no special privileges required)
+	relaySocksListenAddr string        // when using user-mode routing, the address to listen on for SOCKS5 connections
+	relayPcapPath        string        // optional pcap path
+	certFile             string        // path to TLS certificate (PEM) used when not in dev mode
+	keyFile              string        // path to TLS private key (PEM) used when not in dev mode
+	idSecretFile         string        // path to secret for the ID hasher used when not in dev mode
+	relayMetricsAddr     string        // bind address for the metrics endpoint
+	relayHealthAddr      string        // bind address for the health/ready probes
+	labelSelector        string        // network selector for the relay's served VPCNetworks
+	relayAddresses       []string      // underlay endpoints agents dial (Relay.Spec.Addresses)
+	relayLameDuck        time.Duration // how long to keep forwarding after announcing a drain
 )
 
 var tunnelRelayCmd = &cobra.Command{
@@ -234,10 +235,17 @@ var tunnelRelayCmd = &cobra.Command{
 			return fmt.Errorf("failed to add relay registrar: %w", err)
 		}
 
-		// Drain (§5): deregister the relay and release its leased blocks at
-		// shutdown. SetOnShutdown is single-callback, so compose both here.
-		relay.SetOnShutdown(func(ctx context.Context) {
+		// Drain (§5): deregistration happens at drain start — before the
+		// GOAWAY goes out — so discovery stops handing this relay to agents
+		// while its live sessions ride out the lame duck. Leased blocks are
+		// only released once forwarding has actually stopped, so a
+		// replacement relay cannot re-allocate overlay addresses this one is
+		// still carrying traffic for.
+		relay.SetLameDuckPeriod(relayLameDuck)
+		relay.SetOnDraining(func(ctx context.Context) {
 			registrar.Drain(ctx)
+		})
+		relay.SetOnShutdown(func(ctx context.Context) {
 			publisher.ReleaseAll(ctx)
 		})
 
@@ -272,6 +280,7 @@ func init() {
 	tunnelRelayCmd.Flags().StringVar(&relayHealthAddr, "health-addr", "127.0.0.1:8080", "Bind address for the health and readiness probes.")
 	tunnelRelayCmd.Flags().StringVar(&labelSelector, "label-selector", "", "Label selector scoping which VPCNetworks this relay serves (e.g. 'tier=prod'). Empty serves all.")
 	tunnelRelayCmd.Flags().StringSliceVar(&relayAddresses, "addresses", nil, "Underlay endpoints agents dial to reach this relay (Relay.Spec.Addresses). Defaults to --listen-addr.")
+	tunnelRelayCmd.Flags().DurationVar(&relayLameDuck, "lame-duck-period", 30*time.Second, "How long the relay keeps forwarding after announcing a drain (GOAWAY) at shutdown, so agents can move to a replacement first. 0 shuts down immediately. The pod's termination grace period must exceed this.")
 
 	tunnelCmd.AddCommand(tunnelRelayCmd)
 }

@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"net/netip"
 
+	"k8s.io/apimachinery/pkg/util/sets"
+
 	"github.com/apoxy-dev/icx"
 	"github.com/dpeckett/network"
 	"golang.org/x/sync/errgroup"
@@ -35,7 +37,7 @@ func initRouter(
 	g *errgroup.Group,
 	connectResp *api.ConnectResponse,
 	opts routerInitOpts,
-) (router.Router, *icx.Handler, error) {
+) (router.Router, *icx.Handler, *routeReconciler, error) {
 	routerOpts := []router.Option{
 		router.WithPacketConn(opts.pcGeneve),
 		router.WithTunnelMTU(connectResp.MTU),
@@ -50,7 +52,7 @@ func initRouter(
 		// DNS/pcap/SOCKS are netstack facilities; the TUN datapath delegates
 		// name resolution and capture to the host network stack.
 		if opts.pcapPath != "" {
-			return nil, nil, fmt.Errorf("packet capture is not supported with the TUN datapath")
+			return nil, nil, nil, fmt.Errorf("packet capture is not supported with the TUN datapath")
 		}
 		if opts.tunIfaceName != "" {
 			routerOpts = append(routerOpts, router.WithTunnelInterface(opts.tunIfaceName))
@@ -60,7 +62,7 @@ func initRouter(
 		}
 		tr, terr := router.NewICXTunRouter(routerOpts...)
 		if terr != nil {
-			return nil, nil, terr
+			return nil, nil, nil, terr
 		}
 		r, h = tr, tr.Handler
 	} else {
@@ -80,12 +82,14 @@ func initRouter(
 		var nr *router.ICXNetstackRouter
 		nr, err = router.NewICXNetstackRouter(routerOpts...)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		r, h = nr, nr.Handler
 	}
 
-	// Add routes.
+	// Add routes. What lands here is recorded and handed to the reconciler,
+	// which owns the transit table from the first session onward.
+	installed := sets.New[netip.Prefix]()
 	for _, rt := range connectResp.Routes {
 		slog.Info("Adding route", slog.String("destination", rt.Destination))
 
@@ -108,11 +112,21 @@ func initRouter(
 			slog.Warn("Failed to add route",
 				slog.String("prefix", rt.Destination),
 				slog.Any("error", err))
+			continue
 		}
+		installed.Insert(dst)
 	}
 
 	// Start the router.
 	g.Go(func() error { return r.Start(ctx) })
 
-	return r, h, nil
+	return r, h, newRouteReconciler(r, installableRoute(opts.tunMode), installed), nil
+}
+
+// installableRoute reports whether the datapath will carry dst. Default routes
+// are a netstack-only facility: on a kernel TUN device they would shadow the
+// netns default route and pull the embedding process's whole egress into the
+// overlay.
+func installableRoute(tunMode bool) func(netip.Prefix) bool {
+	return func(dst netip.Prefix) bool { return !tunMode || dst.Bits() != 0 }
 }

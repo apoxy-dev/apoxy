@@ -129,7 +129,7 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 
 	// Initialize and start the router.
-	r, handler, err := initRouter(
+	r, handler, routes, err := initRouter(
 		ctx,
 		g,
 		boot.Connect,
@@ -182,7 +182,7 @@ func Run(ctx context.Context, cfg Config) error {
 	//   - when the session ends, releases the relay
 	for i := 0; i < cfg.MinConns; i++ {
 		g.Go(func() error {
-			return manageConnectionSlot(ctx, cfg, packetPlane.QuicMux, handler, r, relayAddressPool, tlsConf)
+			return manageConnectionSlot(ctx, cfg, packetPlane.QuicMux, handler, r, routes, relayAddressPool, tlsConf)
 		})
 	}
 

@@ -130,9 +130,9 @@ func TestDataPlaneRoundTrip(t *testing.T) {
 	socksAddr := socksProbe.Addr().String()
 	require.NoError(t, socksProbe.Close())
 
-	ar, handler := newAgentRouterWithSocks(t, gctx, g, boot, agentPP, socksAddr)
+	ar, handler, routes := newAgentRouterWithSocks(t, gctx, g, boot, agentPP, socksAddr)
 	pool := randalloc.NewRandAllocator(sets.New[string](relayAddr))
-	go func() { _ = manageConnectionSlot(gctx, cfg, agentPP.QuicMux, handler, ar, pool, tlsConf) }()
+	go func() { _ = manageConnectionSlot(gctx, cfg, agentPP.QuicMux, handler, ar, routes, pool, tlsConf) }()
 
 	require.Eventually(t, func() bool {
 		return connectionHealthCounter.Load() == 1

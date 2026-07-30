@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -12,6 +13,9 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/quic-go/quic-go"
@@ -29,6 +33,15 @@ type Client struct {
 	labels           map[string]string
 	advertisedRoutes []string
 	agentInstance    string
+
+	// draining is closed when a control connection to the relay ends with a
+	// graceful close (H3_NO_ERROR) — the relay sent GOAWAY, or closed the
+	// connection cleanly. See Draining.
+	draining  chan struct{}
+	drainOnce sync.Once
+	// closed marks a client-initiated Close so our own transport teardown
+	// (which also closes gracefully) is not mistaken for a relay drain.
+	closed atomic.Bool
 }
 
 type ClientOptions struct {
@@ -92,6 +105,25 @@ func NewClient(opts ClientOptions) (*Client, error) {
 		},
 	}
 
+	hc := &http.Client{
+		Transport: t,
+		Timeout:   opts.Timeout,
+	}
+
+	c := &Client{
+		http:             hc,
+		h3:               t,
+		baseURL:          u,
+		tunnelName:       opts.TunnelName,
+		token:            opts.Token,
+		agent:            opts.Agent,
+		metricsPort:      opts.MetricsPort,
+		labels:           opts.Labels,
+		advertisedRoutes: opts.AdvertisedRoutes,
+		agentInstance:    opts.AgentInstance,
+		draining:         make(chan struct{}),
+	}
+
 	if opts.PacketConn != nil {
 		quicTransport := &quic.Transport{
 			Conn: opts.PacketConn,
@@ -107,30 +139,41 @@ func NewClient(opts ClientOptions) (*Client, error) {
 				return nil, err
 			}
 			slog.Debug("Dialed QUIC", slog.String("addr", addr), slog.String("udp", udpAddr.String()))
+			go c.watchControlConn(qc)
 			return qc, nil
 		}
 	}
 
-	hc := &http.Client{
-		Transport: t,
-		Timeout:   opts.Timeout,
-	}
+	return c, nil
+}
 
-	return &Client{
-		http:             hc,
-		h3:               t,
-		baseURL:          u,
-		tunnelName:       opts.TunnelName,
-		token:            opts.Token,
-		agent:            opts.Agent,
-		metricsPort:      opts.MetricsPort,
-		labels:           opts.Labels,
-		advertisedRoutes: opts.AdvertisedRoutes,
-		agentInstance:    opts.AgentInstance,
-	}, nil
+// Draining is closed when the relay gracefully closes the control connection.
+// The http3 client reacts to a relay GOAWAY on an idle control connection by
+// closing it with H3_NO_ERROR, so from this side a drain announcement is
+// observed as a graceful close — as opposed to an idle timeout, reset, or
+// refused dial, which all mean the relay died. Only connections dialed via a
+// caller-supplied PacketConn are watched (the transport's default dial path
+// offers no hook), which covers every agent session.
+func (c *Client) Draining() <-chan struct{} {
+	return c.draining
+}
+
+// watchControlConn waits for a dialed control connection to end and flags a
+// drain when the close was graceful and not our own doing.
+func (c *Client) watchControlConn(qc quic.EarlyConnection) {
+	<-qc.Context().Done()
+	if c.closed.Load() {
+		return
+	}
+	var appErr *quic.ApplicationError
+	if errors.As(context.Cause(qc.Context()), &appErr) &&
+		appErr.ErrorCode == quic.ApplicationErrorCode(http3.ErrCodeNoError) {
+		c.drainOnce.Do(func() { close(c.draining) })
+	}
 }
 
 func (c *Client) Close() error {
+	c.closed.Store(true)
 	return c.h3.Close()
 }
 
@@ -176,6 +219,67 @@ func (c *Client) Routes(ctx context.Context, id string) (*RoutesResponse, error)
 	return &resp, nil
 }
 
+// StatusError is returned when the relay answers with an unexpected HTTP
+// status. It carries the code so callers can distinguish a definitive
+// rejection (e.g. 404: the relay does not know this connection, which no
+// amount of retrying will fix) from a transient one.
+type StatusError struct {
+	Method string
+	URL    string
+	Code   int
+	Status string
+	Body   string
+}
+
+func (e *StatusError) Error() string {
+	if e.Body == "" {
+		return fmt.Sprintf("%s %s: unexpected status %s", e.Method, e.URL, e.Status)
+	}
+	return fmt.Sprintf("%s %s: unexpected status %s: %s", e.Method, e.URL, e.Status, e.Body)
+}
+
+// IsStatus reports whether err is a *StatusError with the given status code.
+func IsStatus(err error, code int) bool {
+	var se *StatusError
+	return errors.As(err, &se) && se.Code == code
+}
+
+// ConnectionNotFoundMessage is the body the relay sends with 404 when it holds
+// no connection under the requested ID. Callers must match on it rather than on
+// the bare status: the relay's mux answers 404 for unregistered paths too, so a
+// newer client talking to an older relay that lacks an endpoint would otherwise
+// read "this route does not exist" as "my connection is gone".
+const ConnectionNotFoundMessage = "Connection not found"
+
+// IsConnectionUnknown reports whether err is the relay saying it does not know
+// the connection the request named — a definitive rejection: the relay
+// restarted or garbage-collected the connection, and no amount of retrying
+// brings it back. The only remedy is a fresh Connect.
+func IsConnectionUnknown(err error) bool {
+	var se *StatusError
+	if !errors.As(err, &se) || se.Code != http.StatusNotFound {
+		return false
+	}
+	return strings.Contains(se.Body, ConnectionNotFoundMessage)
+}
+
+// IsRelayDraining reports whether err is a request failing because the relay
+// is gracefully shutting down: either the connection closed with H3_NO_ERROR,
+// or the http3 client refused to open a stream past a received GOAWAY (its
+// unexported errGoAway, matched by message as there is no exported value).
+// Such failures are expected while a drain is in progress and carry no signal
+// beyond the drain itself.
+func IsRelayDraining(err error) bool {
+	if err == nil {
+		return false
+	}
+	var appErr *quic.ApplicationError
+	if errors.As(err, &appErr) && appErr.ErrorCode == quic.ApplicationErrorCode(http3.ErrCodeNoError) {
+		return true
+	}
+	return strings.Contains(err.Error(), "connection in graceful shutdown")
+}
+
 func (c *Client) path(pth string) string {
 	u := *c.baseURL
 	u.Path = path.Join(c.baseURL.Path, pth)
@@ -209,10 +313,13 @@ func (c *Client) doJSON(ctx context.Context, method, url string, in any, out any
 	slurp, _ := io.ReadAll(res.Body) // best effort for richer errors
 
 	if res.StatusCode != want {
-		if len(slurp) == 0 {
-			return fmt.Errorf("%s %s: unexpected status %s", method, url, res.Status)
+		return &StatusError{
+			Method: method,
+			URL:    url,
+			Code:   res.StatusCode,
+			Status: res.Status,
+			Body:   string(slurp),
 		}
-		return fmt.Errorf("%s %s: unexpected status %s: %s", method, url, res.Status, string(slurp))
 	}
 
 	if out != nil {

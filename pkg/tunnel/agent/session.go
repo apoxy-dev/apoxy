@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/apoxy-dev/icx"
@@ -161,6 +162,17 @@ func closeSession(client *api.Client, connID string) {
 	disconnectCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := client.Disconnect(disconnectCtx, connID); err != nil {
+		// A relay that does not know the connection has nothing to release,
+		// and this is the ordinary path when the session ended precisely
+		// because the relay forgot us. A draining relay likewise refuses the
+		// request by design. Keep both out of the error stream so error-level
+		// logs still mean something needs attention.
+		if api.IsConnectionUnknown(err) || api.IsRelayDraining(err) {
+			slog.Debug("Relay already released the connection",
+				slog.String("id", connID))
+			_ = client.Close()
+			return
+		}
 		slog.Error("Failed to disconnect from tunnel",
 			slog.String("id", connID),
 			slog.Any("error", err))
@@ -169,20 +181,54 @@ func closeSession(client *api.Client, connID string) {
 	_ = client.Close()
 }
 
+// drainGracePeriod bounds how long a session outlives its relay's drain
+// announcement while a replacement session is brought up. It must comfortably
+// cover the relay's lame-duck period: once that expires the relay stops
+// forwarding, so holding the session any longer keeps a dead tunnel alive.
+const drainGracePeriod = 45 * time.Second
+
+// sessionNotify carries a session's out-of-band signals up to its connection
+// slot. Both callbacks may be invoked at most once and may be nil.
+type sessionNotify struct {
+	// up fires when the session has connected and is carrying traffic.
+	up func()
+	// draining fires when the relay announces a graceful shutdown. The
+	// session stays alive after it — the slot decides when to hang up.
+	draining func()
+}
+
+func (n *sessionNotify) notifyUp() {
+	if n != nil && n.up != nil {
+		n.up()
+	}
+}
+
+func (n *sessionNotify) notifyDraining() {
+	if n != nil && n.draining != nil {
+		n.draining()
+	}
+}
+
 // manageRelayConnectionOnce establishes and maintains a single relay session
 // to the specified relayAddr over pcQuic. It will:
 //
 //   - retry Connect() until it succeeds or ctx is canceled
 //   - once connected, run key rotation and watchdog concurrently
 //   - whichever fails first ends the session
+//
+// A relay drain (GOAWAY) does not end the session: it is reported via notify
+// and the session keeps carrying traffic through the relay's lame duck, for at
+// most drainGracePeriod, so the slot can establish a replacement first.
 func manageRelayConnectionOnce(
 	ctx context.Context,
 	cfg Config,
 	pcQuic net.PacketConn,
 	handler *icx.Handler,
 	r router.Router,
+	routes *routeReconciler,
 	relayAddr string,
 	tlsConf *tls.Config,
+	notify *sessionNotify,
 ) error {
 	var (
 		currentClient *api.Client
@@ -206,6 +252,12 @@ func manageRelayConnectionOnce(
 					slog.Any("error", err))
 			}
 		}
+		// Withdraw this session's transit prefixes. The router outlives the
+		// session, so without this a prefix advertised here and absent from the
+		// next session's route set stays pointed at the tunnel device for the
+		// agent's lifetime, black-holing it. Release only drops prefixes no
+		// other live session claims.
+		routes.Release(routeOwner(relayAddr))
 		// Remove any addrs we attached for this session.
 		for _, a := range sessionAddrs {
 			if err := r.DelAddr(a); err != nil {
@@ -255,6 +307,7 @@ func manageRelayConnectionOnce(
 
 	// Successful session establishment: mark this connection active.
 	connectionHealthCounter.Add(1)
+	notify.notifyUp()
 
 	// Parse and attach the assigned addresses for this live session.
 	if connectResp != nil {
@@ -295,12 +348,12 @@ func manageRelayConnectionOnce(
 			gctx,
 			handler,
 			currentClient,
-			r,
+			routes,
+			routeOwner(relayAddr),
 			currentConnID,
 			connectResp.VNI,
 			sessionAddrs,
 			connectResp.Routes,
-			cfg.TunMode,
 		)
 	})
 	g.Go(func() error {
@@ -311,6 +364,26 @@ func manageRelayConnectionOnce(
 			watchdogMaxSilence,
 			watchdogInterval,
 		)
+	})
+	g.Go(func() error {
+		select {
+		case <-gctx.Done():
+			return gctx.Err()
+		case <-currentClient.Draining():
+		}
+		slog.Info("Relay announced graceful shutdown; holding session through its lame duck",
+			slog.String("relay", relayAddr))
+		notify.notifyDraining()
+		// The relay keeps forwarding for its lame-duck period; hang on so
+		// traffic flows until the slot swaps in a replacement session (which
+		// cancels gctx). If no replacement arrives in time the relay is about
+		// to go dark anyway, so end the session rather than sit on it.
+		select {
+		case <-gctx.Done():
+			return gctx.Err()
+		case <-time.After(drainGracePeriod):
+			return fmt.Errorf("relay %s draining and no replacement session within %s", relayAddr, drainGracePeriod)
+		}
 	})
 
 	// Wait for either goroutine to return an error.
@@ -328,47 +401,54 @@ func manageRelayConnectionOnce(
 	return waitErr
 }
 
-// manageConnectionSlot owns one "connection slot" that we promised to keep
-// active. It repeatedly:
-//
-//   - asks the relay address pool for an exclusive relay address
-//   - opens a PacketConn to that relay
-//   - runs manageRelayConnectionOnce
-//   - when that session ends, releases the relay back to the pool
-//
-// If MinConns > number of relays, extra goroutines will block in Acquire()
-// until another slot releases a relay. This enforces "no two sessions to the
-// same relay address" at any instant.
-func manageConnectionSlot(
+// sessionRun is one in-flight relay session owned by a connection slot.
+type sessionRun struct {
+	relayAddr string
+	cancel    context.CancelFunc
+	// done receives the session's final error exactly once.
+	done chan error
+	// up is closed once the session is connected and carrying traffic.
+	up chan struct{}
+	// draining is closed when the session's relay announces a drain. The
+	// session itself stays alive (see manageRelayConnectionOnce).
+	draining chan struct{}
+}
+
+// startSessionRun launches a session to relayAddr in the background. Resolve
+// and mux-open failures end the run with a nil error, mirroring the old
+// loop-and-reacquire behavior.
+func startSessionRun(
 	ctx context.Context,
 	cfg Config,
 	pcQuicMux *conntrackpc.ConntrackPacketConn,
 	handler *icx.Handler,
 	r router.Router,
-	relayAddressPool *randalloc.RandAllocator[string],
+	routes *routeReconciler,
+	relayAddr string,
 	tlsConf *tls.Config,
-) error {
-	for {
-		// Block here until we get exclusive rights to a relay,
-		// or until ctx is canceled.
-		relayAddr, err := relayAddressPool.Acquire(ctx)
-		if err != nil {
-			return err // ctx canceled, etc.
-		}
-
-		slog.Info("Acquired relay slot",
-			slog.String("relay", relayAddr))
-
-		// We'll run the session in an inner func so we can defer cleanup
-		// (pcQuic.Close) per-session but still always Release() after.
-		err = func() error {
+) *sessionRun {
+	sctx, cancel := context.WithCancel(ctx)
+	run := &sessionRun{
+		relayAddr: relayAddr,
+		cancel:    cancel,
+		done:      make(chan error, 1),
+		up:        make(chan struct{}),
+		draining:  make(chan struct{}),
+	}
+	var upOnce, drainOnce sync.Once
+	notify := &sessionNotify{
+		up:       func() { upOnce.Do(func() { close(run.up) }) },
+		draining: func() { drainOnce.Do(func() { close(run.draining) }) },
+	}
+	go func() {
+		run.done <- func() error {
 			// Resolve relay -> concrete IP:port.
-			relayAddrParsed, err := resolveAddrPort(ctx, relayAddr)
+			relayAddrParsed, err := resolveAddrPort(sctx, relayAddr)
 			if err != nil {
 				slog.Warn("failed to resolve relay, will pick a new relay",
 					slog.String("relay", relayAddr),
 					slog.Any("error", err))
-				return nil // we'll just loop and Acquire again
+				return nil
 			}
 
 			// Open per-relay PacketConn off the shared mux.
@@ -380,37 +460,127 @@ func manageConnectionSlot(
 				slog.Warn("failed to create multiplexed packet conn for relay, will pick a new relay",
 					slog.String("relay", relayAddr),
 					slog.Any("error", err))
-				return nil // loop again
+				return nil
 			}
-
-			// Make sure we close the PacketConn when the session ends.
 			defer pcQuic.Close()
 
 			// Run the actual session lifecycle (watchdog, key rotation, etc). The
 			// relay pool is refreshed out-of-band by refreshRelayPool, so no
 			// per-connect pool update is needed here.
-			sessErr := manageRelayConnectionOnce(ctx, cfg, pcQuic, handler, r, relayAddr, tlsConf)
+			return manageRelayConnectionOnce(sctx, cfg, pcQuic, handler, r, routes, relayAddr, tlsConf, notify)
+		}()
+	}()
+	return run
+}
 
+// manageConnectionSlot owns one "connection slot" that we promised to keep
+// active. It repeatedly:
+//
+//   - asks the relay address pool for an exclusive relay address
+//   - runs a session against it (startSessionRun)
+//   - when that session ends, releases the relay back to the pool
+//
+// If MinConns > number of relays, extra goroutines will block in Acquire()
+// until another slot releases a relay. This enforces "no two sessions to the
+// same relay address" at any instant.
+//
+// When the current relay announces a drain, the slot performs a
+// make-before-break: it acquires a replacement relay (blocking until one is
+// available — a draining relay is removed from the pool, so this is a
+// different one), establishes the replacement session, and only once that
+// session is up hangs up the draining one. The draining relay keeps
+// forwarding through its lame duck, so traffic never drops below the slot's
+// one connection.
+func manageConnectionSlot(
+	ctx context.Context,
+	cfg Config,
+	pcQuicMux *conntrackpc.ConntrackPacketConn,
+	handler *icx.Handler,
+	r router.Router,
+	routes *routeReconciler,
+	relayAddressPool *randalloc.RandAllocator[string],
+	tlsConf *tls.Config,
+) error {
+	// acquireAndStart blocks until the pool hands this slot an exclusive
+	// relay, then launches a session against it.
+	acquireAndStart := func() (*sessionRun, error) {
+		relayAddr, err := relayAddressPool.Acquire(ctx)
+		if err != nil {
+			return nil, err // ctx canceled, etc.
+		}
+		slog.Info("Acquired relay slot", slog.String("relay", relayAddr))
+		return startSessionRun(ctx, cfg, pcQuicMux, handler, r, routes, relayAddr, tlsConf), nil
+	}
+
+	// stop cancels a session, waits for it to unwind, and releases its relay.
+	stop := func(run *sessionRun) {
+		run.cancel()
+		<-run.done
+		relayAddressPool.Release(run.relayAddr)
+	}
+
+	// finish reaps a session that already ended and releases its relay.
+	finish := func(run *sessionRun, sessErr error) {
+		run.cancel()
+		relayAddressPool.Release(run.relayAddr)
+		if sessErr != nil && !errors.Is(sessErr, context.Canceled) {
+			slog.Warn("Connection to relay ended; rotating to a new relay",
+				slog.String("relay", run.relayAddr),
+				slog.Any("error", sessErr))
+		}
+	}
+
+	cur, err := acquireAndStart()
+	if err != nil {
+		return err
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			stop(cur)
+			return ctx.Err()
+
+		case sessErr := <-cur.done:
+			finish(cur, sessErr)
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-
-			if sessErr != nil && !errors.Is(sessErr, context.Canceled) {
-				slog.Warn("Connection to relay ended; rotating to a new relay",
-					slog.String("relay", relayAddr),
-					slog.Any("error", sessErr))
+			// loop: grab a (maybe different) relay next time
+			if cur, err = acquireAndStart(); err != nil {
+				return err
 			}
-			return nil
-		}()
 
-		// Release the relay for other slots before the next loop iteration.
-		relayAddressPool.Release(relayAddr)
-
-		if err != nil {
-			return err
+		case <-cur.draining:
+			slog.Info("Relay draining; establishing a replacement before hanging up",
+				slog.String("relay", cur.relayAddr))
+			next, err := acquireAndStart()
+			if err != nil {
+				stop(cur)
+				return err
+			}
+			select {
+			case <-ctx.Done():
+				stop(next)
+				stop(cur)
+				return ctx.Err()
+			case <-next.up:
+				// Replacement is carrying traffic; hang up the draining
+				// session.
+				stop(cur)
+				cur = next
+			case nextErr := <-next.done:
+				// The replacement died before coming up. cur.draining is
+				// still closed, so the outer loop re-enters this case and
+				// tries again for as long as the draining session survives.
+				finish(next, nextErr)
+			case sessErr := <-cur.done:
+				// The draining session ended first (grace expired, or the
+				// relay went dark early); promote the replacement and let
+				// the outer loop watch its fate.
+				finish(cur, sessErr)
+				cur = next
+			}
 		}
-
-		// loop: grab a (maybe different) relay next time
 	}
 }
 
@@ -474,6 +644,12 @@ func manageKeyRotation(
 				func() error {
 					var err error
 					upd, err = client.UpdateKeys(ctx, connID)
+					if api.IsConnectionUnknown(err) {
+						// The relay no longer knows this connection.
+						// Backing off forever would keep a dead session
+						// alive, so fail it and let the slot re-dial.
+						return retry.Unrecoverable(err)
+					}
 					return err
 				},
 				retry.Context(ctx),
@@ -511,14 +687,18 @@ func manageRouteRefresh(
 	ctx context.Context,
 	handler *icx.Handler,
 	client *api.Client,
-	rt router.Router,
+	routes *routeReconciler,
+	owner routeOwner,
 	connID string,
 	vni uint,
 	overlayAddrs []netip.Prefix,
 	initial []api.Route,
-	tunMode bool,
 ) error {
+	// Claim immediately rather than waiting for the first tick: this session's
+	// set is authoritative from the moment it is up, and claiming now is what
+	// withdraws prefixes a previous session on this slot left behind.
 	current := parseRouteSet(initial)
+	routes.Claim(owner, current)
 
 	ticker := time.NewTicker(routeRefreshInterval)
 	defer ticker.Stop()
@@ -531,6 +711,14 @@ func manageRouteRefresh(
 
 		resp, err := client.Routes(ctx, connID)
 		if err != nil {
+			// A 404 is the relay telling us it has no such connection —
+			// it restarted, or garbage-collected us. Retrying cannot fix
+			// that, and waiting for the RX-silence watchdog to notice
+			// costs up to watchdogMaxSilence of dead tunnel, so end the
+			// session now and let the slot re-dial.
+			if api.IsConnectionUnknown(err) {
+				return fmt.Errorf("relay no longer knows connection %s: %w", connID, err)
+			}
 			slog.Warn("Failed to refresh relay routes", slog.Any("error", err))
 			continue
 		}
@@ -539,27 +727,10 @@ func manageRouteRefresh(
 			continue
 		}
 
-		// Reconcile the datapath routes. Default routes are a netstack-only
-		// facility (see initRouter) and are never installed on a TUN device.
-		installable := func(dst netip.Prefix) bool { return !tunMode || dst.Bits() != 0 }
-		for dst := range desired.Difference(current) {
-			if !installable(dst) {
-				continue
-			}
-			slog.Info("Adding route", slog.String("destination", dst.String()))
-			if err := rt.AddRoute(dst); err != nil {
-				slog.Warn("Failed to add route", slog.String("prefix", dst.String()), slog.Any("error", err))
-			}
-		}
-		for dst := range current.Difference(desired) {
-			if !installable(dst) {
-				continue
-			}
-			slog.Info("Removing route", slog.String("destination", dst.String()))
-			if err := rt.DelRoute(dst); err != nil {
-				slog.Warn("Failed to remove route", slog.String("prefix", dst.String()), slog.Any("error", err))
-			}
-		}
+		// The reconciler owns the datapath table: it drives the router to the
+		// union of every live session's claim, so this session cannot withdraw
+		// a prefix a concurrent session (MinConns > 1) still needs.
+		routes.Claim(owner, desired)
 
 		// Replace the VNI's allowed-route set to match the connect-time
 		// programming.

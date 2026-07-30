@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/alphadose/haxmap"
@@ -51,12 +52,21 @@ type Relay struct {
 	staticTokens *token.StaticTokenValidator
 	// tokenValidator authenticates connect requests; defaults to staticTokens.
 	tokenValidator token.TokenValidator
-	conns         *haxmap.Map[string, *connection] // map[connectionID]Connection
-	agents        *haxmap.Map[string, string]      // map[connectionID]agentName
-	onConnect     func(ctx context.Context, tunnelName, agentName string, conn controllers.Connection) error
-	onDisconnect  func(ctx context.Context, agentName, id string) error
-	onShutdown    func(ctx context.Context)
-	metricsStore  *metrics.MetricsStore
+	conns          *haxmap.Map[string, *connection] // map[connectionID]Connection
+	agents         *haxmap.Map[string, string]      // map[connectionID]agentName
+	onConnect      func(ctx context.Context, tunnelName, agentName string, conn controllers.Connection) error
+	onDisconnect   func(ctx context.Context, agentName, id string) error
+	onDraining     func(ctx context.Context)
+	onShutdown     func(ctx context.Context)
+	metricsStore   *metrics.MetricsStore
+
+	// lameDuck is how long the relay keeps forwarding after announcing a
+	// drain (GOAWAY). Zero means immediate shutdown.
+	lameDuck time.Duration
+	// draining flips once shutdown begins. Control sessions closing during a
+	// drain are expected (agents close them on GOAWAY) and must not tear down
+	// the datapath state that lame-duck forwarding depends on.
+	draining atomic.Bool
 }
 
 func NewRelay(name string, pc net.PacketConn, cert tls.Certificate, handler *icx.Handler, idHasher *hasher.Hasher, router router.Router) *Relay {
@@ -140,12 +150,34 @@ func (r *Relay) SetOnDisconnect(onDisconnect func(ctx context.Context, agentName
 	r.onDisconnect = onDisconnect
 }
 
+// SetOnDraining sets a callback invoked at the start of shutdown, before the
+// GOAWAY goes out and while the relay is still forwarding. Deregistration
+// belongs here: it stops discovery from handing this relay out while its live
+// connections ride out the lame duck.
+func (r *Relay) SetOnDraining(onDraining func(context.Context)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.onDraining = onDraining
+}
+
 // SetOnShutdown sets a callback that is invoked when the relay is shutting down.
 func (r *Relay) SetOnShutdown(onShutdown func(context.Context)) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	r.onShutdown = onShutdown
+}
+
+// SetLameDuckPeriod sets how long the relay keeps forwarding traffic after
+// announcing a drain via GOAWAY, giving agents time to establish replacement
+// sessions before this one goes dark. Zero (the default) shuts down
+// immediately. Must be called before Start.
+func (r *Relay) SetLameDuckPeriod(d time.Duration) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.lameDuck = d
 }
 
 // SetMetricsStore configures the push-based metrics store.
@@ -198,19 +230,67 @@ func (r *Relay) Start(ctx context.Context) error {
 	g.Go(func() error {
 		<-ctx.Done()
 
-		slog.Info("Stopping relay", slog.String("addr", ln.Addr().String()))
+		r.draining.Store(true)
+
+		r.mu.Lock()
+		onDraining := r.onDraining
+		lameDuck := r.lameDuck
+		r.mu.Unlock()
+
+		// Deregister first, while the relay still forwards: discovery must
+		// stop handing this relay out before its connections are asked to
+		// move elsewhere.
+		if onDraining != nil {
+			drainCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			onDraining(drainCtx)
+			cancel()
+		}
+
+		if lameDuck <= 0 {
+			slog.Info("Stopping relay", slog.String("addr", ln.Addr().String()))
+
+			if err := r.router.Close(); err != nil {
+				slog.Error("Failed to close router", slog.Any("error", err))
+			}
+
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			slog.Info("Shutting down server", slog.String("addr", ln.Addr().String()))
+
+			if err := srv.Shutdown(shutdownCtx); err != nil {
+				slog.Error("Failed to shutdown server", slog.Any("error", err))
+			}
+
+			return srv.Close()
+		}
+
+		deadline := time.Now().Add(lameDuck)
+		slog.Info("Relay draining; entering lame duck",
+			slog.String("addr", ln.Addr().String()),
+			slog.Duration("lameDuck", lameDuck))
+
+		// GOAWAY every control session. Shutdown returns when the last
+		// control connection closes — near-instantly, since agents close
+		// their idle control connections on GOAWAY — not when the lame duck
+		// ends, so the datapath hold below is what actually paces shutdown.
+		shutdownCtx, cancel := context.WithDeadline(context.Background(), deadline)
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			slog.Warn("HTTP/3 server shutdown ended early", slog.Any("error", err))
+		}
+		cancel()
+
+		// Keep the router and handler forwarding until the lame duck
+		// expires so agents can bring up replacement sessions while this
+		// relay still carries their traffic.
+		if d := time.Until(deadline); d > 0 {
+			time.Sleep(d)
+		}
+
+		slog.Info("Lame duck over; stopping relay", slog.String("addr", ln.Addr().String()))
 
 		if err := r.router.Close(); err != nil {
 			slog.Error("Failed to close router", slog.Any("error", err))
-		}
-
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		slog.Info("Shutting down server", slog.String("addr", ln.Addr().String()))
-
-		if err := srv.Shutdown(shutdownCtx); err != nil {
-			slog.Error("Failed to shutdown server", slog.Any("error", err))
 		}
 
 		return srv.Close()
@@ -486,6 +566,14 @@ func (r *Relay) teardownConn(ctx context.Context, conn *connection) {
 // disconnect path (§2.2); the silence-based startGC remains a slower backstop.
 func (r *Relay) watchSessionClose(sessCtx context.Context, id string) {
 	<-sessCtx.Done()
+	if r.draining.Load() {
+		// Control sessions close en masse when the drain's GOAWAY goes out,
+		// but the datapath must keep forwarding through the lame duck; final
+		// shutdown owns the cleanup.
+		slog.Debug("Control session closed during drain; keeping connection",
+			slog.String("connID", id))
+		return
+	}
 	conn, ok := r.conns.Get(id)
 	if !ok {
 		return // already disconnected explicitly or reaped
@@ -503,7 +591,7 @@ func (r *Relay) handleDisconnect(w http.ResponseWriter, req *http.Request, ps ht
 
 	conn, ok := r.conns.Get(request.ID)
 	if !ok {
-		http.Error(w, "Connection not found", http.StatusNotFound)
+		http.Error(w, api.ConnectionNotFoundMessage, http.StatusNotFound)
 		return
 	}
 	r.teardownConn(req.Context(), conn)
@@ -562,7 +650,7 @@ func (r *Relay) routesForConn(conn *connection) []api.Route {
 func (r *Relay) handleRoutes(w http.ResponseWriter, req *http.Request, ps httprouter.Params) {
 	conn, ok := r.conns.Get(req.URL.Query().Get("id"))
 	if !ok {
-		http.Error(w, "Connection not found", http.StatusNotFound)
+		http.Error(w, api.ConnectionNotFoundMessage, http.StatusNotFound)
 		return
 	}
 
@@ -584,7 +672,7 @@ func (r *Relay) handleUpdateKeys(w http.ResponseWriter, req *http.Request, ps ht
 
 	conn, ok := r.conns.Get(request.ID)
 	if !ok {
-		http.Error(w, "Connection not found", http.StatusNotFound)
+		http.Error(w, api.ConnectionNotFoundMessage, http.StatusNotFound)
 		return
 	}
 
@@ -696,6 +784,12 @@ func (r *Relay) startGC(ctx context.Context, maxSilence, checkInterval time.Dura
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
+			if r.draining.Load() {
+				// Draining: agents intentionally go quiet on this relay as
+				// they move to replacements; reaping them here would cut the
+				// lame-duck forwarding short.
+				continue
+			}
 			now := time.Now()
 			r.conns.ForEach(func(id string, conn *connection) bool {
 				vni := conn.VNI()
