@@ -123,6 +123,10 @@ func Run() error {
 	if err := ctrl.NewControllerManagedBy(mgr).
 		Named("compute-resident").
 		For(&computev1alpha1.ServiceRevision{}).
+		// Services too: the serving choice reads spec.liveRevision off the
+		// Service, and a rollback repoints at an EXISTING revision, so it
+		// mints nothing and would otherwise never reach this node's demux.
+		Watches(&computev1alpha1.Service{}, EnqueueDemuxRefresh()).
 		Complete(residents.TenantReconciler("", mgr.GetClient())); err != nil {
 		return fmt.Errorf("setting up resident reconciler: %w", err)
 	}

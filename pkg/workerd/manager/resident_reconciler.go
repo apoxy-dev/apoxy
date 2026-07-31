@@ -8,8 +8,10 @@ import (
 	"sort"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	clog "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -18,6 +20,38 @@ import (
 )
 
 var _ reconcile.Reconciler = &ResidentReconciler{}
+
+// DemuxRefreshRequestName is the name of the synthetic singleton request that
+// Service events coalesce into for the resident reconciler. It never names a
+// real ServiceRevision, so it lands in Reconcile's not-found branch and does
+// exactly what a Service change needs: recompute this node's demux without
+// warming anything.
+//
+// It exists because the serving choice reads spec.liveRevision off the SERVICE
+// (see refreshDemux) while this controller is keyed on ServiceRevisions.
+// Without a Service watch feeding this request, repointing spec.liveRevision
+// changed nothing on the data plane until some unrelated ServiceRevision event
+// happened to fire a refresh — and a rollback targets an existing revision by
+// definition, so it mints no revision and fires no event. Pins, un-pins, and
+// digest repoints all silently failed to take while status.liveRevision
+// reported success.
+const DemuxRefreshRequestName = "demux-refresh"
+
+// demuxRefreshRequest is the synthetic singleton request every Service event
+// coalesces into; the apoxy-cloud multicluster shard reuses the name.
+var demuxRefreshRequest = reconcile.Request{NamespacedName: types.NamespacedName{Name: DemuxRefreshRequestName}}
+
+// mapDemuxRefresh coalesces any Service event into the synthetic
+// demux-refresh request.
+func mapDemuxRefresh(context.Context, client.Object) []reconcile.Request {
+	return []reconcile.Request{demuxRefreshRequest}
+}
+
+// EnqueueDemuxRefresh maps any Service event to the synthetic demux-refresh
+// request, so a change to spec.liveRevision reaches this node's demux.
+func EnqueueDemuxRefresh() handler.EventHandler {
+	return handler.EnqueueRequestsFromMapFunc(mapDemuxRefresh)
+}
 
 // ResidentReconciler is the data-plane half of the APO-796 ServiceManager for
 // ONE tenant: it reconciles that tenant's ServiceRevisions against its
