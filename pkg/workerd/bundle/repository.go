@@ -11,7 +11,9 @@ import (
 	"context"
 	"crypto/tls"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -128,7 +130,17 @@ type preemptiveBasicTransport struct {
 }
 
 func (t *preemptiveBasicTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	if req.Header.Get("Authorization") == "" {
+	// Only ever credential the registry itself. A RoundTripper sits *below*
+	// http.Client's redirect handling, so it runs again for every hop the
+	// client follows — and net/http deliberately drops Authorization when a
+	// redirect crosses hosts. Without this check we would put the credential
+	// back on exactly the requests the stdlib just protected: a registry that
+	// serves blobs by redirecting to object storage (the platform registry
+	// redirects to presigned S3 URLs) would receive the project API key at a
+	// third-party host. S3 also rejects a presigned URL that carries an
+	// Authorization header with 400 "Only one auth mechanism allowed", so this
+	// broke any push whose blobs were already present in the destination repo.
+	if req.Header.Get("Authorization") == "" && sameHost(req.URL, t.host) {
 		cred, err := t.cred(req.Context(), t.host)
 		if err == nil && cred.Username != "" && cred.Password != "" {
 			req = req.Clone(req.Context())
@@ -136,6 +148,29 @@ func (t *preemptiveBasicTransport) RoundTrip(req *http.Request) (*http.Response,
 		}
 	}
 	return t.next.RoundTrip(req)
+}
+
+// sameHost reports whether u addresses host (a registry "host[:port]"),
+// treating the scheme's default port as equivalent to no port so that a
+// reference written as "registry.example.com:443" still authenticates.
+func sameHost(u *url.URL, host string) bool {
+	if u == nil {
+		return false
+	}
+	return canonicalHost(u.Host, u.Scheme) == canonicalHost(host, u.Scheme)
+}
+
+func canonicalHost(hostport, scheme string) string {
+	hostport = strings.ToLower(hostport)
+	h, port, err := net.SplitHostPort(hostport)
+	if err != nil {
+		// No port to normalize away.
+		return hostport
+	}
+	if (scheme == "https" && port == "443") || (scheme == "http" && port == "80") {
+		return h
+	}
+	return hostport
 }
 
 // warnPlaintextCredentials wraps a credential source so that the first
