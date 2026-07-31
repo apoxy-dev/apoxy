@@ -4,4 +4,4 @@
 // schema.
 package workerdconfig
 
-//go:generate ./generate.sh
+//go:generate go run ../../../run/workerd-config-gen -out workerd.capnp.go
