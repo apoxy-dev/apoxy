@@ -3,19 +3,52 @@
 package host
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 	"testing"
 
+	"capnproto.org/go/capnp/v3"
 	computev1alpha1 "github.com/apoxy-dev/apoxy/api/compute/v1alpha1"
+	workerdconfig "github.com/apoxy-dev/apoxy/pkg/workerd/config"
 )
+
+func mod(name string, typ computev1alpha1.ModuleType, path string) computev1alpha1.Module {
+	return computev1alpha1.Module{Name: name, Type: typ, Path: path}
+}
+
+func decodeWorkerdConfig(t *testing.T, raw []byte) workerdconfig.Config {
+	t.Helper()
+	msg, err := capnp.Unmarshal(raw)
+	if err != nil {
+		t.Fatalf("unmarshal workerd config: %v", err)
+	}
+	t.Cleanup(msg.Release)
+	cfg, err := workerdconfig.ReadRootConfig(msg)
+	if err != nil {
+		t.Fatalf("read workerd config: %v", err)
+	}
+	return cfg
+}
+
+func textListValues(t *testing.T, list capnp.TextList) []string {
+	t.Helper()
+	out := make([]string, list.Len())
+	for i := range out {
+		value, err := list.At(i)
+		if err != nil {
+			t.Fatalf("read text list item %d: %v", i, err)
+		}
+		out[i] = value
+	}
+	return out
+}
 
 func TestBuildResidentConfig(t *testing.T) {
 	cases := []struct {
-		name     string
-		in       ResidentConfigInput
-		wantErr  bool
-		wantSubs []string
+		name    string
+		in      ResidentConfigInput
+		wantErr bool
 	}{
 		{
 			name:    "missing socket addr",
@@ -30,136 +63,167 @@ func TestBuildResidentConfig(t *testing.T) {
 		{
 			name: "full resident config",
 			in:   ResidentConfigInput{SocketAddr: "unix:/run/in.sock", ManagerAddr: "unix:/run/control.sock"},
-			wantSubs: []string{
-				`(name = "dispatcher", worker = .dispatcher),`,
-				`(name = "manager", external = (address = "unix:/run/control.sock", http = ())),`,
-				// globalOutbound is a Network service (structural egress, §2.8),
-				// carrying tlsOptions so https:// fetch() has a TLS network at all:
-				`(name = "internet", network = (allow = ["public", "private", "local", "network"], tlsOptions = (trustBrowserCas = true))),`,
-				`(name = "http", address = "unix:/run/in.sock", http = (), service = "dispatcher"),`,
-				`compatibilityFlags = ["experimental"],`,
-				`(name = "LOADER", workerLoader = ()),`,
-				`(name = "MANAGER", service = "manager"),`,
-				`(name = "GLOBAL_OUTBOUND", service = "internet"),`,
-				// the dispatcher source is inlined (not embed):
-				`x-apoxy-service`,
-				`env.LOADER.get`,
-			},
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := BuildResidentConfig(tc.in)
+			raw, err := BuildResidentConfig(tc.in)
 			if tc.wantErr {
 				if err == nil {
-					t.Fatalf("want error, got nil (output:\n%s)", got)
+					t.Fatal("want error, got nil")
 				}
 				return
 			}
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			for _, s := range tc.wantSubs {
-				if !strings.Contains(got, s) {
-					t.Errorf("output missing %q:\n%s", s, got)
-				}
-			}
-			// The dispatcher must be inlined, never an embed path (no second file
-			// is staged next to the resident config).
-			if strings.Contains(got, "esModule = embed") {
-				t.Errorf("resident config should inline the dispatcher, not embed it:\n%s", got)
-			}
+			assertResidentConfig(t, decodeWorkerdConfig(t, raw), tc.in)
 		})
 	}
 }
 
-// TestValidateGlobalOutbound is the §2.8 structural-egress guard: the service
-// backing GLOBAL_OUTBOUND (hence every isolate's globalOutbound) must be a
-// `network` service, never an address-carrying `external` one that would flatten
-// every destination before any syscall and blind the in-Sentry forwarder. The
-// real emission is checked by BuildResidentConfig's self-check (below); these
-// hand-crafted configs prove the guard rejects the foot-gun forms.
-func TestValidateGlobalOutbound(t *testing.T) {
-	// realEmitted is the actual output — the guard must accept it.
-	realEmitted, err := BuildResidentConfig(ResidentConfigInput{
-		SocketAddr: "*:8080", ManagerAddr: "unix:/run/control.sock",
-	})
+func assertResidentConfig(t *testing.T, cfg workerdconfig.Config, in ResidentConfigInput) {
+	t.Helper()
+	services, err := cfg.Services()
 	if err != nil {
-		t.Fatalf("BuildResidentConfig: %v", err)
+		t.Fatalf("read services: %v", err)
+	}
+	if services.Len() != 3 {
+		t.Fatalf("services len = %d, want 3", services.Len())
 	}
 
-	cases := []struct {
-		name       string
-		cfg        string
-		wantErrSub string
-	}{
-		{
-			name: "real emitted config passes",
-			cfg:  realEmitted,
-		},
-		{
-			name: "network service with tlsOptions is accepted",
-			cfg: `(name = "internet", network = (allow = ["public"], tlsOptions = (trustBrowserCas = true))),` +
-				`(name = "GLOBAL_OUTBOUND", service = "internet"),`,
-		},
-		{
-			name: "network service without tlsOptions has no TLS network",
-			cfg: `(name = "internet", network = (allow = ["public"])),` +
-				`(name = "GLOBAL_OUTBOUND", service = "internet"),`,
-			wantErrSub: "declares no tlsOptions",
-		},
-		{
-			name: "external service is the foot-gun",
-			cfg: `(name = "internet", external = (address = "10.0.0.1:9999", http = ())),` +
-				`(name = "GLOBAL_OUTBOUND", service = "internet"),`,
-			wantErrSub: "must resolve to a `network` service",
-		},
-		{
-			name: "unix-socket external is the foot-gun",
-			cfg: `(name = "proxy", external = (address = "unix:/run/proxy.sock", http = ())),` +
-				`(name = "GLOBAL_OUTBOUND", service = "proxy"),`,
-			wantErrSub: "must resolve to a `network` service",
-		},
-		{
-			name: "loopback external is the foot-gun",
-			cfg: `(name = "proxy", external = (address = "127.0.0.1:1080", http = ())),` +
-				`(name = "GLOBAL_OUTBOUND", service = "proxy"),`,
-			wantErrSub: "must resolve to a `network` service",
-		},
-		{
-			name: "worker service is not structural egress",
-			cfg: `(name = "sink", worker = .sink),` +
-				`(name = "GLOBAL_OUTBOUND", service = "sink"),`,
-			wantErrSub: "must resolve to a `network` service",
-		},
-		{
-			name:       "missing binding is dead egress",
-			cfg:        `(name = "internet", network = (allow = ["public"])),`,
-			wantErrSub: "has no GLOBAL_OUTBOUND binding",
-		},
-		{
-			name: "binding to undefined service",
-			cfg: `(name = "GLOBAL_OUTBOUND", service = "ghost"),` +
-				`(name = "internet", network = (allow = ["public"])),`,
-			wantErrSub: `undefined service "ghost"`,
-		},
+	dispatcherService := services.At(0)
+	name, _ := dispatcherService.Name()
+	if name != dispatcherServiceName || dispatcherService.Which().String() != "worker" {
+		t.Fatalf("dispatcher service = name %q kind %q", name, dispatcherService.Which())
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			err := validateGlobalOutbound(tc.cfg)
-			if tc.wantErrSub == "" {
-				if err != nil {
-					t.Fatalf("unexpected error: %v", err)
-				}
-				return
-			}
-			if err == nil {
-				t.Fatalf("want error containing %q, got nil", tc.wantErrSub)
-			}
-			if !strings.Contains(err.Error(), tc.wantErrSub) {
-				t.Fatalf("error %q does not contain %q", err.Error(), tc.wantErrSub)
-			}
-		})
+	dispatcher, err := dispatcherService.Worker()
+	if err != nil {
+		t.Fatalf("read dispatcher worker: %v", err)
+	}
+	compatDate, _ := dispatcher.CompatibilityDate()
+	if compatDate != dispatcherCompatDate {
+		t.Errorf("dispatcher compatibility date = %q, want %q", compatDate, dispatcherCompatDate)
+	}
+	flags, err := dispatcher.CompatibilityFlags()
+	if err != nil {
+		t.Fatalf("read dispatcher flags: %v", err)
+	}
+	if got := strings.Join(textListValues(t, flags), ","); got != experimentalFlag {
+		t.Errorf("dispatcher flags = %q, want %q", got, experimentalFlag)
+	}
+	modules, err := dispatcher.Modules()
+	if err != nil {
+		t.Fatalf("read dispatcher modules: %v", err)
+	}
+	if modules.Len() != 1 {
+		t.Fatalf("dispatcher modules len = %d, want 1", modules.Len())
+	}
+	dispatcherModule := modules.At(0)
+	moduleName, _ := dispatcherModule.Name()
+	source, _ := dispatcherModule.EsModule()
+	if moduleName != dispatcherModuleName || dispatcherModule.Which().String() != "esModule" {
+		t.Errorf("dispatcher module = name %q kind %q", moduleName, dispatcherModule.Which())
+	}
+	for _, want := range []string{"x-apoxy-service", "env.LOADER.get"} {
+		if !strings.Contains(source, want) {
+			t.Errorf("dispatcher source missing %q", want)
+		}
+	}
+
+	bindings, err := dispatcher.Bindings()
+	if err != nil {
+		t.Fatalf("read dispatcher bindings: %v", err)
+	}
+	if bindings.Len() != 3 {
+		t.Fatalf("dispatcher bindings len = %d, want 3", bindings.Len())
+	}
+	assertBindingKind(t, bindings.At(0), loaderBindingName, "workerLoader", "")
+	assertBindingKind(t, bindings.At(1), managerBindingName, "service", managerServiceName)
+	assertBindingKind(t, bindings.At(2), globalOutboundBindingName, "service", globalOutboundServiceName)
+
+	managerService := services.At(1)
+	name, _ = managerService.Name()
+	manager, err := managerService.External()
+	if err != nil {
+		t.Fatalf("read manager service: %v", err)
+	}
+	managerAddr, _ := manager.Address()
+	if name != managerServiceName || managerService.Which().String() != "external" ||
+		managerAddr != in.ManagerAddr || manager.Which().String() != "http" {
+		t.Errorf("manager service = name %q kind %q address %q protocol %q",
+			name, managerService.Which(), managerAddr, manager.Which())
+	}
+
+	// GLOBAL_OUTBOUND is structurally tied to a Network service. The generated
+	// union makes the old address-carrying ExternalServer foot-gun impossible
+	// without changing this construction.
+	internetService := services.At(2)
+	name, _ = internetService.Name()
+	internet, err := internetService.Network()
+	if err != nil {
+		t.Fatalf("read global outbound network: %v", err)
+	}
+	allow, err := internet.Allow()
+	if err != nil {
+		t.Fatalf("read global outbound allow list: %v", err)
+	}
+	tls, err := internet.TlsOptions()
+	if err != nil {
+		t.Fatalf("read global outbound TLS options: %v", err)
+	}
+	if name != globalOutboundServiceName || internetService.Which().String() != "network" ||
+		strings.Join(textListValues(t, allow), ",") != strings.Join(globalOutboundAllow, ",") ||
+		!internet.HasTlsOptions() || !tls.TrustBrowserCas() {
+		t.Errorf("global outbound = name %q kind %q allow %v hasTLS %v browserCAs %v",
+			name, internetService.Which(), textListValues(t, allow), internet.HasTlsOptions(), tls.TrustBrowserCas())
+	}
+
+	sockets, err := cfg.Sockets()
+	if err != nil {
+		t.Fatalf("read sockets: %v", err)
+	}
+	if sockets.Len() != 1 {
+		t.Fatalf("sockets len = %d, want 1", sockets.Len())
+	}
+	socket := sockets.At(0)
+	socketName, _ := socket.Name()
+	socketAddr, _ := socket.Address()
+	target, err := socket.Service()
+	if err != nil {
+		t.Fatalf("read socket target: %v", err)
+	}
+	targetName, _ := target.Name()
+	if socketName != httpSocketName || socketAddr != in.SocketAddr ||
+		socket.Which().String() != "http" || targetName != dispatcherServiceName {
+		t.Errorf("socket = name %q address %q kind %q target %q",
+			socketName, socketAddr, socket.Which(), targetName)
+	}
+}
+
+func assertBindingKind(
+	t *testing.T,
+	binding workerdconfig.Worker_Binding,
+	wantName, wantKind, wantService string,
+) {
+	t.Helper()
+	name, err := binding.Name()
+	if err != nil {
+		t.Fatalf("read binding name: %v", err)
+	}
+	if name != wantName || binding.Which().String() != wantKind {
+		t.Errorf("binding = name %q kind %q, want name %q kind %q",
+			name, binding.Which(), wantName, wantKind)
+	}
+	if wantService != "" {
+		service, err := binding.Service()
+		if err != nil {
+			t.Fatalf("read service binding %q: %v", name, err)
+		}
+		serviceName, _ := service.Name()
+		if serviceName != wantService {
+			t.Errorf("binding %q target = %q, want %q", name, serviceName, wantService)
+		}
 	}
 }
 
@@ -174,7 +238,7 @@ func TestBuildResidentConfig_Deterministic(t *testing.T) {
 		if err != nil {
 			t.Fatalf("BuildResidentConfig (run %d): %v", i, err)
 		}
-		if again != first {
+		if !bytes.Equal(again, first) {
 			t.Fatalf("non-deterministic output on run %d", i)
 		}
 	}

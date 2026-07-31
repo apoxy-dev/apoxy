@@ -4,9 +4,8 @@ import "context"
 
 // Runtime is the tenant-neutral gVisor/runsc sandbox lifecycle seam — the
 // spine's load-bearing interface. The production implementation is *Manager;
-// unit tests and the downstream stubs that land first against this interface —
-// ServiceManager (APO-796), workerd-host (APO-625), the egress config sink
-// (APO-723) — implement it with a fake until the real manager arrives.
+// off-platform unit tests use fakes so they can exercise lifecycle policy
+// without Linux-only runsc plumbing.
 //
 // The methods correspond 1:1 to clrk's worker sandbox manager. The interface
 // exists so callers off-platform (darwin) and in tests can name the seam

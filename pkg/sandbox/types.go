@@ -114,9 +114,7 @@ type Spec struct {
 	// resident server, donating its fd so the in-Sentry inbound forwarder
 	// can accept on it. The host socket path is surfaced on
 	// [Instance.InboundSocket]. Unlike [Spec.Egress] this is tenant-neutral
-	// and acted on by the core directly, so a standalone consumer
-	// (workerd-host) gets ingress with no egress installer. Empty keeps the
-	// sandbox egress-only.
+	// and acted on by the core directly. Empty keeps the sandbox egress-only.
 	//
 	// It must be set here, not on the returned Instance: Create seals the
 	// initStr before returning, so a value assigned post-Create never

@@ -21,9 +21,6 @@ import (
 // tenant's service/revisions as WorkerLoader isolates. Single-project
 // topologies (apoxy dev, dedicated mode) run exactly one resident with the
 // empty tenant; the shared backplane's manager runs one per engaged project.
-// This is distinct from the per-(tenant, revision) Runtime above, which 625's
-// cmd/workerd-host drives — that bakes one customer worker per sandbox; this
-// bakes the dispatcher and loads customers at runtime over the control channel.
 
 const (
 	// defaultResidentListenAddr is the dispatcher's in-sandbox http socket bind
@@ -223,14 +220,14 @@ func (h *ResidentHost) EnsureResident(ctx context.Context) (*ResidentInstance, e
 		}
 	}
 
-	capnp, err := BuildResidentConfig(ResidentConfigInput{
+	config, err := BuildResidentConfig(ResidentConfigInput{
 		SocketAddr:  h.cfg.ListenAddr,
 		ManagerAddr: h.cfg.ControlForwardAddr,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("building resident config: %w", err)
 	}
-	cfgHostPath, err := stageConfig(h.rootDir, h.id, capnp)
+	cfgHostPath, err := stageConfig(h.rootDir, h.id, config)
 	if err != nil {
 		return nil, fmt.Errorf("staging resident config: %w", err)
 	}
@@ -437,7 +434,7 @@ func buildResidentSpec(id sandbox.SandboxID, cfg ResidentConfig, cfgHostPath str
 		// Env), so a bare "workerd" won't resolve. --experimental enables the
 		// workerLoader binding. (--platform=systrap is a runsc flag, already set on
 		// the sandbox; workerd has no such option and exits if given it.)
-		Command: []string{"/usr/bin/workerd", "serve", inJailConfigPath(), "--experimental"},
+		Command: []string{"/usr/bin/workerd", "serve", "--binary", inJailConfigPath(), "--experimental"},
 		Mounts: []sandbox.Mount{
 			// The dispatcher config (read-only; rootfs is digest-shared).
 			{Source: cfgHostPath, Destination: inJailConfigPath(), Type: "bind", Options: []string{"ro"}},
@@ -447,7 +444,7 @@ func buildResidentSpec(id sandbox.SandboxID, cfg ResidentConfig, cfgHostPath str
 		// Ingress (APO-694): the dispatcher's http socket has no host route, so
 		// opt into the inbound forwarder; the core surfaces a host AF_UNIX socket
 		// (Instance.InboundSocket) the backplane resident cluster dials.
-		InboundListenAddr: hostInboundAddr(SocketSpec{Kind: HTTPSocket, Addr: cfg.ListenAddr}),
+		InboundListenAddr: hostInboundAddr(cfg.ListenAddr),
 		// Control (dispatcher -> host manager): the clrk control forwarder accepts
 		// the dispatcher's connections to ControlForwardAddr on an in-stack
 		// listener and splices each to ControlHostAddr (the manager's control

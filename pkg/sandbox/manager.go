@@ -23,10 +23,9 @@ import (
 // delete` subprocesses that re-enter the same binary via [DispatchRunsc].
 //
 // It carries no agent-lineage, identity, trust, egress, or Kubernetes
-// coupling: those live on clrk's internal/worker/sandbox wrapper, which
-// embeds this Manager, adapts its CRD CreateRequest down to a [Spec], and
-// re-adds the egress data path + OTLP stdio + persistent-state mounts. An
-// external consumer (workerd-host) embeds this Manager directly.
+// coupling: those live in embedders such as the workerd manager, which adapt
+// their requests down to a [Spec] and add policy-specific behavior around this
+// core.
 type Manager struct {
 	stateDir       string // runsc --root.
 	rootDir        string // Per-sandbox netconfig + caller-supplied mount sources.

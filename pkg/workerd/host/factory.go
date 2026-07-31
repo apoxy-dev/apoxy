@@ -11,6 +11,12 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/workerd/names"
 )
 
+type coreConfig struct {
+	StateDir     string
+	RootDir      string
+	ImageBaseDir string
+}
+
 // ResidentFactory constructs per-tenant ResidentHosts over ONE shared sandbox
 // core. The core must be shared because its state dir (runsc --root), image
 // store, and host cgroup are process-wide; in particular the core's cleanup
@@ -33,7 +39,11 @@ func NewResidentFactory(base ResidentConfig) (*ResidentFactory, error) {
 	if base.WorkerdImage == "" {
 		return nil, fmt.Errorf("workerd-host: ResidentConfig requires WorkerdImage")
 	}
-	core, err := newCore(Config{StateDir: base.StateDir, RootDir: base.RootDir, ImageBaseDir: base.ImageBaseDir})
+	core, err := newCore(coreConfig{
+		StateDir:     base.StateDir,
+		RootDir:      base.RootDir,
+		ImageBaseDir: base.ImageBaseDir,
+	})
 	if err != nil {
 		return nil, err
 	}

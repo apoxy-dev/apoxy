@@ -19,16 +19,16 @@ var errStartBoom = errors.New("boom")
 // legacy tests assert against; per-tenant ids are exercised separately.
 var residentSandboxID = names.ResidentID("")
 
-// readStagedResidentConfig reads the dispatcher capnp config EnsureResident
+// readStagedResidentConfig reads the binary dispatcher config EnsureResident
 // staged under rootDir for the single-project resident sandbox.
-func readStagedResidentConfig(t *testing.T, rootDir string) string {
+func readStagedResidentConfig(t *testing.T, rootDir string) []byte {
 	t.Helper()
 	path := filepath.Join(rootDir, sanitizeID(residentSandboxID), configFileName)
 	b, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("reading staged resident config: %v", err)
 	}
-	return string(b)
+	return b
 }
 
 func testResidentConfig() ResidentConfig {
@@ -180,7 +180,7 @@ func TestEnsureResident_CreatesAndStartsTheDispatcher(t *testing.T) {
 	cmd := strings.Join(spec.Command, " ")
 	// Absolute workerd path (the image store doesn't propagate PATH) and no
 	// --platform flag (that is a runsc flag; workerd exits if handed it).
-	if cmd != "/usr/bin/workerd serve /worker/config.capnp --experimental" {
+	if cmd != "/usr/bin/workerd serve --binary /worker/config.bin --experimental" {
 		t.Errorf("Command = %q", cmd)
 	}
 	// Exactly one mount: the dispatcher config. The control channel is NOT a bind
@@ -188,7 +188,7 @@ func TestEnsureResident_CreatesAndStartsTheDispatcher(t *testing.T) {
 	if len(spec.Mounts) != 1 {
 		t.Fatalf("want 1 mount (config only), got %d: %+v", len(spec.Mounts), spec.Mounts)
 	}
-	if spec.Mounts[0].Destination != "/worker/config.capnp" || !hasOpt(spec.Mounts[0].Options, "ro") {
+	if spec.Mounts[0].Destination != "/worker/config.bin" || !hasOpt(spec.Mounts[0].Options, "ro") {
 		t.Errorf("config mount wrong: %+v", spec.Mounts[0])
 	}
 	if spec.InboundListenAddr != "127.0.0.1:8080" {
@@ -301,19 +301,18 @@ func TestResidentStop_DrainsAndForgets(t *testing.T) {
 func TestHostInboundAddr(t *testing.T) {
 	cases := []struct {
 		name string
-		sock SocketSpec
+		addr string
 		want string
 	}{
-		{"wildcard http", SocketSpec{Kind: HTTPSocket, Addr: "*:8080"}, "127.0.0.1:8080"},
-		{"explicit host http", SocketSpec{Kind: HTTPSocket, Addr: "127.0.0.1:9000"}, "127.0.0.1:9000"},
-		{"unix listener has no tcp ingress", SocketSpec{Kind: HTTPSocket, Addr: "unix:/run/w.sock"}, ""},
-		{"non-http socket", SocketSpec{Kind: FilterSocket, Addr: "*:8080"}, ""},
-		{"unparseable addr", SocketSpec{Kind: HTTPSocket, Addr: "garbage"}, ""},
+		{"wildcard HTTP", "*:8080", "127.0.0.1:8080"},
+		{"explicit host HTTP", "127.0.0.1:9000", "127.0.0.1:9000"},
+		{"Unix listener has no TCP ingress", "unix:/run/w.sock", ""},
+		{"unparseable address", "garbage", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := hostInboundAddr(tc.sock); got != tc.want {
-				t.Errorf("hostInboundAddr(%+v) = %q, want %q", tc.sock, got, tc.want)
+			if got := hostInboundAddr(tc.addr); got != tc.want {
+				t.Errorf("hostInboundAddr(%q) = %q, want %q", tc.addr, got, tc.want)
 			}
 		})
 	}
@@ -329,12 +328,21 @@ func TestEnsureResident_DispatcherConfigDialsControlForwardAddr(t *testing.T) {
 	if _, err := h.EnsureResident(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	// The config is staged at <rootDir>/<sanitized id>/config.capnp.
-	got := readStagedResidentConfig(t, h.rootDir)
-	if !strings.Contains(got, `external = (address = "127.0.0.2:80", http = ())`) {
-		t.Errorf("dispatcher config should dial the control-forward TCP addr:\n%s", got)
+	// The config is staged at <rootDir>/<sanitized id>/config.bin.
+	cfg := decodeWorkerdConfig(t, readStagedResidentConfig(t, h.rootDir))
+	services, err := cfg.Services()
+	if err != nil {
+		t.Fatalf("read services: %v", err)
 	}
-	if strings.Contains(got, "unix:") {
-		t.Errorf("dispatcher config must not use a unix manager address (clrk has no host-UDS):\n%s", got)
+	manager, err := services.At(1).External()
+	if err != nil {
+		t.Fatalf("read manager service: %v", err)
+	}
+	got, err := manager.Address()
+	if err != nil {
+		t.Fatalf("read manager address: %v", err)
+	}
+	if got != "127.0.0.2:80" {
+		t.Errorf("manager address = %q, want control-forward TCP address", got)
 	}
 }

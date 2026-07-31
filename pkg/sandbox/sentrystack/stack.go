@@ -8,12 +8,9 @@
 // This is the tenant- and egress-neutral CORE carved out of clrk's
 // sandbox runtime. It wires addressing only; the egress/IMDS/DNS
 // forwarder data path is layered back on by an embedder through the
-// [ForwarderInstaller] hook (clrk's internal/sentrystack wrapper sets it
-// at package init() via a blank import — the standard Go extension
-// pattern, cf. database/sql drivers and image-format decoders). A
-// standalone consumer that imports only this package (e.g. workerd-host
-// before the egress track lands) leaves the hook nil and gets a sandbox
-// with lo + eth0 and no outbound forwarder.
+// [ForwarderInstaller] hook, installed at package init() through the standard
+// blank-import extension pattern. Leaving the hook nil produces a sandbox with
+// lo + eth0 and no outbound forwarder.
 //
 // Lifecycle:
 //
@@ -274,9 +271,9 @@ func (s *Stack) doInit(args *plugin.InitStackArgs) error {
 	// The dial is demuxed to the resident listener, not any egress catch-all,
 	// because a bound endpoint shadows the global TCP handler (see
 	// inbound_demux_test.go). Unlike egress, inbound is tenant-neutral, so the
-	// core installs it directly — a standalone consumer (workerd-host) that
-	// leaves ForwarderInstaller nil still gets ingress. Skipped entirely when
-	// no inbound fd/addr is configured, leaving the sandbox egress-only.
+	// core installs it directly, independently of ForwarderInstaller. Skipped
+	// entirely when no inbound fd/addr is configured, leaving the sandbox
+	// egress-only.
 	if len(args.FDs) > 0 && init.InboundListenAddr != "" {
 		if err := s.installInboundForwarder(args.FDs[0], init.InboundListenAddr); err != nil {
 			return fmt.Errorf("installing inbound forwarder: %w", err)

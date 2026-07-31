@@ -15,12 +15,12 @@ import (
 
 // StartChildReaper installs a SIGCHLD-driven reaper for orphan child processes.
 //
-// workerd-host runs as PID 1 in its container. When `runsc create` spawns the
-// Sentry+gofer and exits, those processes are re-parented to PID 1 (us) and
-// become zombies when they exit. Without reaping, `runsc wait`'s kill(pid,0)
-// liveness probe sees a zombie as alive for the full 2-minute backoff. To avoid
-// racing the core's own cmd.Wait(), the reaper consults sandbox.ShouldSkipReap
-// and skips PIDs the core is actively waiting on.
+// The workerd manager runs as PID 1 in its container. When `runsc create`
+// spawns the Sentry+gofer and exits, those processes are re-parented to PID 1
+// and become zombies when they exit. Without reaping, `runsc wait`'s
+// kill(pid,0) liveness probe sees a zombie as alive for the full two-minute
+// backoff. To avoid racing the core's own cmd.Wait(), the reaper consults
+// sandbox.ShouldSkipReap and skips PIDs the core is actively waiting on.
 func StartChildReaper() {
 	ch := make(chan os.Signal, 16)
 	signal.Notify(ch, unix.SIGCHLD)

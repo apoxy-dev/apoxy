@@ -9,7 +9,7 @@ import "github.com/apoxy-dev/apoxy/pkg/sandbox"
 // cgroup v2 hierarchy and the OCI image store, then constructs the Manager.
 // This is the only linux-specific, CGO-bound part of the runtime — the rest of
 // the wrapper drives the tenant-neutral sandbox.Runtime interface.
-func newCore(cfg Config) (sandbox.Runtime, error) {
+func newCore(cfg coreConfig) (sandbox.Runtime, error) {
 	hostCgroupPath, err := sandbox.InitHostCgroup()
 	if err != nil {
 		return nil, err

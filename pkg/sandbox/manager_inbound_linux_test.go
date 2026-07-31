@@ -216,9 +216,9 @@ func copyExecutable(src, dst string) error {
 }
 
 // startTestChildReaper installs a SIGCHLD-driven reaper so re-parented Sentry/
-// gofer zombies don't wedge `runsc wait`. Mirrors the consumer-side reaper
-// (cmd/worker, workerd-host): it consults ShouldSkipReap so it never races the
-// core's own cmd.Wait() on the direct runsc subprocesses.
+// gofer zombies don't wedge `runsc wait`. Mirrors the manager-side reaper: it
+// consults ShouldSkipReap so it never races the core's own cmd.Wait() on direct
+// runsc subprocesses.
 func startTestChildReaper() {
 	ch := make(chan os.Signal, 16)
 	signal.Notify(ch, unix.SIGCHLD)

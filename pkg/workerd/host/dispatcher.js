@@ -148,8 +148,8 @@ export default {
         // env.GLOBAL_OUTBOUND is `undefined`, which workerd treats as its DEFAULT
         // outbound (fetch egresses directly, bypassing the forwarder + all
         // mediation). Coalescing to null restores the explicit deny the config
-        // used to carry. BuildResidentConfig's validateGlobalOutbound guards the
-        // emit side; this is defense in depth on the JS side.
+        // used to carry. BuildResidentConfig structurally binds this to a typed
+        // Network service; this is defense in depth on the JS side.
         globalOutbound: env.GLOBAL_OUTBOUND ?? null,
       };
     });

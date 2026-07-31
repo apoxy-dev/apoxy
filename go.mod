@@ -3,6 +3,7 @@ module github.com/apoxy-dev/apoxy
 go 1.25.5
 
 require (
+	capnproto.org/go/capnp/v3 v3.1.0-alpha.2
 	github.com/ClickHouse/clickhouse-go/v2 v2.46.0
 	github.com/MicahParks/jwkset v0.9.6
 	github.com/MicahParks/keyfunc/v3 v3.6.1
@@ -174,6 +175,7 @@ require (
 	github.com/charmbracelet/x/term v0.2.1 // indirect
 	github.com/checkpoint-restore/go-criu/v6 v6.3.0 // indirect
 	github.com/cilium/ebpf v0.18.0 // indirect
+	github.com/colega/zeropool v0.0.0-20230505084239-6fb4a4f75381 // indirect
 	github.com/containerd/console v1.0.4 // indirect
 	github.com/containerd/errdefs v1.0.0 // indirect
 	github.com/containerd/log v0.1.0 // indirect
