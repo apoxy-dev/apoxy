@@ -202,11 +202,7 @@ Examples:
 		}
 		status.Done(pushedRepo + "@" + dig)
 
-		// Pin the exact pushed artifact; the controller mints a revision from it.
-		if err := unstructured.SetNestedField(svc.Object, dig, "spec", "source", "oci", "digest"); err != nil {
-			return fmt.Errorf("setting spec.source.oci.digest: %w", err)
-		}
-		doc, err := json.Marshal(svc.Object)
+		doc, err := manifestApplyDoc(svc)
 		if err != nil {
 			return fmt.Errorf("re-encoding Service manifest: %w", err)
 		}
@@ -258,6 +254,29 @@ func confirmDeployTarget(cmd *cobra.Command) error {
 		return errors.New("deploy aborted")
 	}
 	return nil
+}
+
+// manifestApplyDoc encodes what the manifest field manager applies: the user's
+// Service with spec.source.oci.digest removed, because that field is owned
+// solely by deployFieldManager (see applyDigestPin).
+//
+// Claiming the digest under both managers is what made every re-deploy of
+// changed code fail with a field-ownership conflict. Server-side apply reports
+// a conflict when a manager sets a field another manager owns to a *different*
+// value, so the sequence was: first deploy applies the digest as the manifest
+// manager, the forced pin immediately takes ownership, and the next deploy that
+// pushes new code applies a digest the pin manager now owns with an older value
+// — conflict. Re-deploying identical code never tripped it (same value, so
+// ownership is merely shared), which is why this only surfaced on the second
+// deploy of *changed* code. Leaving the digest to the pin keeps one owner and
+// no conflict at any point.
+//
+// A digest recorded in the file drops out too: superseding it with the freshly
+// pushed artifact is deploy's entire job.
+func manifestApplyDoc(svc *unstructured.Unstructured) ([]byte, error) {
+	applyDoc := svc.DeepCopy()
+	unstructured.RemoveNestedField(applyDoc.Object, "spec", "source", "oci", "digest")
+	return json.Marshal(applyDoc.Object)
 }
 
 // applyDigestPin server-side-applies a minimal patch — identity plus
