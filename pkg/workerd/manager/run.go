@@ -14,17 +14,27 @@ import (
 
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	computev1alpha1 "github.com/apoxy-dev/apoxy/api/compute/v1alpha1"
 	corev1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
 	"github.com/apoxy-dev/apoxy/pkg/workerd/host"
 	"github.com/apoxy-dev/apoxy/pkg/workerd/names"
 )
+
+const residentControllerName = "compute-resident"
+
+func enqueueResidentRefresh(context.Context, client.Object) []reconcile.Request {
+	return []reconcile.Request{{NamespacedName: types.NamespacedName{Name: residentControllerName}}}
+}
 
 // Run is the workerd-manager entry point, invoked after sandbox.DispatchRunsc().
 // It brings up the single-project resident workerd (the empty tenant), serves
@@ -116,17 +126,12 @@ func Run() error {
 	}
 	slog.Info("Resident workerd serving", "listen", *listenAddr, "inboundSocket", residentInst.InboundSocket)
 
-	// The resident reconciler is read-only on the API: it keeps the resident up,
-	// warms each revision, and records THIS node's serveable revision per service
-	// on the store for the dispatcher's /resolve. Nothing is pushed off-node — the
-	// xDS demux is stateless and the resident owns revision resolution.
+	// Both resource types affect the tenant's complete routing state, so they
+	// share one queue key.
 	if err := ctrl.NewControllerManagedBy(mgr).
-		Named("compute-resident").
-		For(&computev1alpha1.ServiceRevision{}).
-		// Services too: the serving choice reads spec.liveRevision off the
-		// Service, and a rollback repoints at an EXISTING revision, so it
-		// mints nothing and would otherwise never reach this node's demux.
-		Watches(&computev1alpha1.Service{}, EnqueueDemuxRefresh()).
+		Named(residentControllerName).
+		Watches(&computev1alpha1.ServiceRevision{}, handler.EnqueueRequestsFromMapFunc(enqueueResidentRefresh)).
+		Watches(&computev1alpha1.Service{}, handler.EnqueueRequestsFromMapFunc(enqueueResidentRefresh)).
 		Complete(residents.TenantReconciler("", mgr.GetClient())); err != nil {
 		return fmt.Errorf("setting up resident reconciler: %w", err)
 	}

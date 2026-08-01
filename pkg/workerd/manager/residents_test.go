@@ -161,6 +161,58 @@ func TestResidentManager_LazyCreation(t *testing.T) {
 	}
 }
 
+func TestResidentManager_EngageRefreshWarmsExistingServices(t *testing.T) {
+	cases := []struct {
+		name string
+		objs []client.Object
+		want map[string]string
+	}{
+		{
+			name: "single existing service",
+			objs: []client.Object{revisionAt("api-v1", "api", "sha256:a", 100)},
+			want: map[string]string{"api": "api-v1"},
+		},
+		{
+			name: "every existing service selects newest",
+			objs: []client.Object{
+				revisionAt("api-v1", "api", "sha256:a1", 100),
+				revisionAt("api-v2", "api", "sha256:a2", 200),
+				revisionAt("web-v1", "web", "sha256:w1", 300),
+			},
+			want: map[string]string{"api": "api-v2", "web": "web-v1"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b := newFakeBuilder()
+			m := newTestResidentManager(b)
+			defer m.Close(context.Background())
+
+			result, err := m.ReconcileWithClient(
+				context.Background(),
+				tenantA,
+				newFakeClient(t, tc.objs...),
+				reconcile.Request{NamespacedName: types.NamespacedName{Name: residentControllerName}},
+			)
+			if err != nil {
+				t.Fatalf("engage demux refresh: %v", err)
+			}
+			if result.RequeueAfter != demuxResyncInterval {
+				t.Errorf("RequeueAfter = %v, want %v", result.RequeueAfter, demuxResyncInterval)
+			}
+			if b.built(tenantA) == nil {
+				t.Fatal("existing revisions did not bootstrap the tenant")
+			}
+			for service, revision := range tc.want {
+				if got := resolveVia(t, b.addr(tenantA), service); got != revision {
+					t.Errorf("resolve(%s) = %q, want %q", service, got, revision)
+				}
+			}
+		})
+	}
+}
+
 func TestResidentManager_RejectsInvalidTenant(t *testing.T) {
 	m := newTestResidentManager(newFakeBuilder())
 	defer m.Close(context.Background())

@@ -26,12 +26,18 @@ type fakeFetcher struct {
 	manifestErr error
 	modulesErr  error
 	calls       int
+	// digestErrs fails only the named digests, so a test can make one
+	// revision of a service unpullable while its siblings still warm.
+	digestErrs map[string]error
 }
 
-func (f *fakeFetcher) Bundle(_ context.Context, _ computev1alpha1.BundleRef) (computev1alpha1.BundleManifest, map[string][]byte, error) {
+func (f *fakeFetcher) Bundle(_ context.Context, ref computev1alpha1.BundleRef) (computev1alpha1.BundleManifest, map[string][]byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
+	if err := f.digestErrs[ref.Digest]; err != nil {
+		return computev1alpha1.BundleManifest{}, nil, err
+	}
 	if f.manifestErr != nil {
 		return computev1alpha1.BundleManifest{}, nil, f.manifestErr
 	}
@@ -51,6 +57,15 @@ func (f *fakeFetcher) setManifestErr(err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.manifestErr = err
+}
+
+func (f *fakeFetcher) failDigest(digest string, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.digestErrs == nil {
+		f.digestErrs = make(map[string]error)
+	}
+	f.digestErrs[digest] = err
 }
 
 // esManifest is a single-esModule manifest fixture.

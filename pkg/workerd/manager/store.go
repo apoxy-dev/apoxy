@@ -94,6 +94,33 @@ func (s *Store) setDemux(demux map[string]string) {
 	s.demuxMu.Unlock()
 }
 
+// publishRoute records one service's live revision, leaving every other
+// service's routing untouched. The resident reconciler publishes each service
+// the moment it warms rather than accumulating a whole catalog and swapping it
+// in at the end: a cold store after a restart would otherwise hold every
+// service in the project unroutable until the slowest registry pull finished.
+func (s *Store) publishRoute(serviceName, revisionName string) {
+	s.demuxMu.Lock()
+	defer s.demuxMu.Unlock()
+	if s.demux == nil {
+		s.demux = make(map[string]string)
+	}
+	s.demux[serviceName] = revisionName
+}
+
+// pruneRoutes drops routing for services absent from keep — deleted services,
+// and services whose every revision failed to warm with nothing previously
+// serving. Paired with publishRoute to complete a reconcile pass.
+func (s *Store) pruneRoutes(keep map[string]struct{}) {
+	s.demuxMu.Lock()
+	defer s.demuxMu.Unlock()
+	for service := range s.demux {
+		if _, ok := keep[service]; !ok {
+			delete(s.demux, service)
+		}
+	}
+}
+
 // liveRevision returns the revision the resident currently serves for the bare
 // service key, and whether one exists. A present-but-empty value reads as "no
 // live revision" so the contract matches the dispatcher's resolve gate
@@ -105,15 +132,23 @@ func (s *Store) liveRevision(serviceKey string) (string, bool) {
 	return rev, rev != ""
 }
 
-// retain drops cached definitions whose id is not in valid, bounding the cache to
-// ids that still correspond to a live ServiceRevision. Called from the read-only
-// reconciler in lieu of a finalizer-gated drain (the cache is non-authoritative;
-// the workerd isolate idles out on its own).
-func (s *Store) retain(valid map[string]bool) {
+// demuxSnapshot returns a copy of the current routing state.
+func (s *Store) demuxSnapshot() map[string]string {
+	s.demuxMu.RLock()
+	defer s.demuxMu.RUnlock()
+	snapshot := make(map[string]string, len(s.demux))
+	for service, revision := range s.demux {
+		snapshot[service] = revision
+	}
+	return snapshot
+}
+
+// retain removes cached definitions not present in keep.
+func (s *Store) retain(keep map[string]struct{}) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for id := range s.defs {
-		if !valid[id] {
+		if _, ok := keep[id]; !ok {
 			delete(s.defs, id)
 		}
 	}

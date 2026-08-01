@@ -5,203 +5,368 @@ package manager
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sort"
+	"sync"
 
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/handler"
-	clog "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	computev1alpha1 "github.com/apoxy-dev/apoxy/api/compute/v1alpha1"
 	"github.com/apoxy-dev/apoxy/pkg/workerd/host"
 )
 
+const (
+	// warmConcurrency bounds simultaneous bundle pulls in one reconcile pass.
+	// The whole catalog is refreshed under a single queue key, so without a
+	// bound a project with a large service count would open one registry
+	// connection per service on every cold start.
+	warmConcurrency = 4
+
+	// warmRetryLimit is how many consecutive fast retries a failing warm gets
+	// before it falls back to the periodic resync. The early attempts cover
+	// make-before-break — a freshly minted revision whose bundle is still
+	// propagating. Past that the failure is not transient, and re-pulling every
+	// requeueAwaitBuild only adds registry load for a revision that is not
+	// going to appear, so it degrades to demuxResyncInterval.
+	warmRetryLimit = 4
+)
+
 var _ reconcile.Reconciler = &ResidentReconciler{}
 
-// DemuxRefreshRequestName is the name of the synthetic singleton request that
-// Service events coalesce into for the resident reconciler. It never names a
-// real ServiceRevision, so it lands in Reconcile's not-found branch and does
-// exactly what a Service change needs: recompute this node's demux without
-// warming anything.
-//
-// It exists because the serving choice reads spec.liveRevision off the SERVICE
-// (see refreshDemux) while this controller is keyed on ServiceRevisions.
-// Without a Service watch feeding this request, repointing spec.liveRevision
-// changed nothing on the data plane until some unrelated ServiceRevision event
-// happened to fire a refresh — and a rollback targets an existing revision by
-// definition, so it mints no revision and fires no event. Pins, un-pins, and
-// digest repoints all silently failed to take while status.liveRevision
-// reported success.
-const DemuxRefreshRequestName = "demux-refresh"
-
-// demuxRefreshRequest is the synthetic singleton request every Service event
-// coalesces into; the apoxy-cloud multicluster shard reuses the name.
-var demuxRefreshRequest = reconcile.Request{NamespacedName: types.NamespacedName{Name: DemuxRefreshRequestName}}
-
-// mapDemuxRefresh coalesces any Service event into the synthetic
-// demux-refresh request.
-func mapDemuxRefresh(context.Context, client.Object) []reconcile.Request {
-	return []reconcile.Request{demuxRefreshRequest}
-}
-
-// EnqueueDemuxRefresh maps any Service event to the synthetic demux-refresh
-// request, so a change to spec.liveRevision reaches this node's demux.
-func EnqueueDemuxRefresh() handler.EventHandler {
-	return handler.EnqueueRequestsFromMapFunc(mapDemuxRefresh)
-}
-
-// ResidentReconciler is the data-plane half of the APO-796 ServiceManager for
-// ONE tenant: it reconciles that tenant's ServiceRevisions against its
-// resident and store using a project-scoped client. It is constructed per
-// ReconcileWithClient call by ResidentManager (which owns the long-lived
-// per-tenant state), mirroring how tunnelproxy's shard wrapper drives
-// TunnelServer.ReconcileWithClient with the per-cluster client. It keeps the
-// tenant's resident workerd up, warms each revision's WorkerDefinition
-// (validating the bundle is pullable and the modules build), and records THIS
-// node's serveable revision per service so the resident's dispatcher can
-// resolve it via /resolve.
-//
-// It is strictly READ-ONLY on the Service/ServiceRevision API objects: with
-// dozens-to-hundreds of revisions across N nodes, a data-plane writer on a shared,
-// cluster-scoped object is a last-writer-wins race and write amplification. So
-// readiness is NOT recorded on the Revision; the resident resolves what it can
-// serve from this node's local warm state.
-//
-// Request routing is PULL-only in M1: the dispatcher fetches a definition on its
-// first request for a revision. "Readiness" therefore means "the resident is up
-// AND this node has warmed this revision", and the node serves the newest
-// revision it has warmed per service — so it keeps serving the PREVIOUS revision
-// until it has pulled a new one (make-before-break, the interim promotion model).
+// ResidentReconciler maintains one tenant's local routes and warmed definitions.
 type ResidentReconciler struct {
 	client.Client
 	resident host.ResidentRuntime
 	store    *Store
+
+	// warmFailures counts consecutive warm failures per definition id. A
+	// revision whose bundle never becomes pullable would otherwise hold the
+	// tenant on the short retry interval for the life of the process.
+	warmMu       sync.Mutex
+	warmFailures map[string]int
+}
+
+type revisionCandidate struct {
+	name      string
+	createdAt int64
+	// terminating marks a revision with a deletionTimestamp. It stays in the
+	// catalog so its definition is not pruned and this node can keep serving
+	// it through the deletion grace window, but it is never newly selected.
+	terminating bool
+}
+
+type serviceRevisionCandidates struct {
+	serviceName    string
+	pinnedRevision string
+	// latestRevision is the Service's status.latestRevision — the revision the
+	// control plane minted most recently. Used only to break creation-time
+	// ties; see ordered().
+	latestRevision string
+	revisions      []revisionCandidate
+}
+
+func (c serviceRevisionCandidates) definitionID(revisionName string) string {
+	return demuxID(c.serviceName, revisionName)
+}
+
+// pinnedCandidate returns the candidate named by spec.liveRevision, if that
+// revision still exists and is not being deleted.
+func (c serviceRevisionCandidates) pinnedCandidate() (revisionCandidate, bool) {
+	if c.pinnedRevision == "" {
+		return revisionCandidate{}, false
+	}
+	for _, revision := range c.revisions {
+		if revision.name == c.pinnedRevision && !revision.terminating {
+			return revision, true
+		}
+	}
+	return revisionCandidate{}, false
+}
+
+// ordered returns the selectable candidates, newest first.
+//
+// metav1.Time serializes at second granularity on both the JSON and protobuf
+// paths, so two revisions minted in the same second decode to identical
+// timestamps — common when a pipeline pushes twice or an edit is immediately
+// corrected. Ties therefore have to be broken on something meaningful:
+// status.latestRevision is what the control plane most recently minted, so it
+// wins. Revision names are a truncated SHA of the template and bundle and
+// carry no ordering at all, so they are only a last resort to keep the sort
+// total and deterministic.
+func (c serviceRevisionCandidates) ordered() []revisionCandidate {
+	ordered := make([]revisionCandidate, 0, len(c.revisions))
+	for _, revision := range c.revisions {
+		if revision.terminating {
+			continue
+		}
+		ordered = append(ordered, revision)
+	}
+
+	sort.Slice(ordered, func(i, j int) bool {
+		left, right := ordered[i], ordered[j]
+		if left.createdAt != right.createdAt {
+			return left.createdAt > right.createdAt
+		}
+		if c.latestRevision != "" && (left.name == c.latestRevision) != (right.name == c.latestRevision) {
+			return left.name == c.latestRevision
+		}
+		return left.name > right.name
+	})
+
+	if c.pinnedRevision == "" {
+		return ordered
+	}
+	for i, revision := range ordered {
+		if revision.name == c.pinnedRevision {
+			copy(ordered[1:i+1], ordered[:i])
+			ordered[0] = revision
+			break
+		}
+	}
+	return ordered
+}
+
+type revisionCatalog struct {
+	services          []serviceRevisionCandidates
+	activeDefinitions map[string]struct{}
+}
+
+func newRevisionCatalog(services []computev1alpha1.Service, revisions []computev1alpha1.ServiceRevision) revisionCatalog {
+	type servicePolicy struct {
+		pinned string
+		latest string
+	}
+	policies := make(map[string]servicePolicy, len(services))
+	for i := range services {
+		policies[services[i].Name] = servicePolicy{
+			pinned: services[i].Spec.LiveRevision,
+			latest: services[i].Status.LatestRevision,
+		}
+	}
+
+	grouped := make(map[string][]revisionCandidate)
+	definitions := make(map[string]struct{}, len(revisions))
+	for i := range revisions {
+		revision := &revisions[i]
+		serviceName := revision.Labels[serviceLabel]
+		if serviceName == "" {
+			continue
+		}
+
+		grouped[serviceName] = append(grouped[serviceName], revisionCandidate{
+			name:        revision.Name,
+			createdAt:   revision.CreationTimestamp.UnixNano(),
+			terminating: !revision.DeletionTimestamp.IsZero(),
+		})
+		// Terminating revisions are kept here too: their definitions must
+		// survive retain() so a node already serving one is not cut off
+		// mid-grace-window.
+		definitions[demuxID(serviceName, revision.Name)] = struct{}{}
+	}
+
+	serviceNames := make([]string, 0, len(grouped))
+	for serviceName := range grouped {
+		serviceNames = append(serviceNames, serviceName)
+	}
+	sort.Strings(serviceNames)
+
+	catalog := revisionCatalog{activeDefinitions: definitions}
+	for _, serviceName := range serviceNames {
+		policy := policies[serviceName]
+		catalog.services = append(catalog.services, serviceRevisionCandidates{
+			serviceName:    serviceName,
+			pinnedRevision: policy.pinned,
+			latestRevision: policy.latest,
+			revisions:      grouped[serviceName],
+		})
+	}
+	return catalog
+}
+
+type revisionSelection struct {
+	revisionName string
+	needsRetry   bool
 }
 
 // NewResidentReconciler returns a resident reconciler driving resident + store.
-// The demux it computes per reconcile is recorded on the store for the control
-// server's /resolve handler; nothing is pushed off-node.
 func NewResidentReconciler(c client.Client, resident host.ResidentRuntime, store *Store) *ResidentReconciler {
 	return &ResidentReconciler{
-		Client:   c,
-		resident: resident,
-		store:    store,
+		Client:       c,
+		resident:     resident,
+		store:        store,
+		warmFailures: make(map[string]int),
 	}
 }
 
-// Reconcile keeps the resident up, warms the revision into the store, and
-// republishes this node's serveable routing state. It never writes the API object.
-func (r *ResidentReconciler) Reconcile(ctx context.Context, req reconcile.Request) (ctrl.Result, error) {
-	log := clog.FromContext(ctx, "revision", req.Name)
-
-	rev := &computev1alpha1.ServiceRevision{}
-	if err := r.Get(ctx, req.NamespacedName, rev); err != nil {
-		if apierrors.IsNotFound(err) {
-			// The revision is gone (GC or cascade delete). Republish so this node
-			// stops advertising it; the store is pruned to the surviving set inside
-			// republish (no finalizer needed — the cache is non-authoritative and
-			// the workerd isolate idles out on its own).
-			return ctrl.Result{}, r.refreshDemux(ctx)
-		}
+// Reconcile refreshes local routing and schedules a periodic resync. It runs
+// under a single queue key covering the whole tenant, so it refreshes every
+// service rather than the one named in the request.
+func (r *ResidentReconciler) Reconcile(ctx context.Context, _ reconcile.Request) (ctrl.Result, error) {
+	catalog, err := r.loadRevisionCatalog(ctx)
+	if err != nil {
 		return ctrl.Result{}, err
 	}
 
-	id, idErr := serviceRevisionID(rev)
-
-	// Terminating or unroutable (no service label): nothing to warm; just refresh
-	// the published view (which drops the revision from this node's serveable set).
-	if !rev.DeletionTimestamp.IsZero() {
-		return ctrl.Result{}, r.refreshDemux(ctx)
-	}
-	if idErr != nil {
-		log.Info("Skipping unroutable revision (no service label)", "error", idErr.Error())
-		return ctrl.Result{}, r.refreshDemux(ctx)
-	}
-
-	// Keep the tenant's resident up (idempotent; self-heals if it died).
-	if _, err := r.resident.EnsureResident(ctx); err != nil {
-		// No API write: surface the error so controller-runtime backs off and retries.
-		return ctrl.Result{}, fmt.Errorf("ensuring resident: %w", err)
-	}
-
-	// Validate the revision resolves (bundle pullable, modules build) and cache it
-	// so the dispatcher's first pull is served warm. On failure the node keeps
-	// advertising whatever it has already warmed (the previous revision) and retries.
-	if _, err := r.store.Warm(ctx, id); err != nil {
-		log.Error(err, "Worker definition not resolvable; keeping previous revision live")
-		if perr := r.refreshDemux(ctx); perr != nil {
-			return ctrl.Result{}, perr
+	if len(catalog.services) > 0 {
+		if _, err := r.resident.EnsureResident(ctx); err != nil {
+			return ctrl.Result{}, fmt.Errorf("ensuring resident: %w", err)
 		}
+	}
+
+	previousRoutes := r.store.demuxSnapshot()
+
+	retained := make(map[string]struct{}, len(catalog.activeDefinitions)+len(catalog.services))
+	for id := range catalog.activeDefinitions {
+		retained[id] = struct{}{}
+	}
+	routed := make(map[string]struct{}, len(catalog.services))
+
+	var (
+		mu         sync.Mutex
+		needsRetry bool
+		wg         sync.WaitGroup
+	)
+	slots := make(chan struct{}, warmConcurrency)
+	for _, service := range catalog.services {
+		wg.Add(1)
+		go func(service serviceRevisionCandidates) {
+			defer wg.Done()
+			slots <- struct{}{}
+			defer func() { <-slots }()
+
+			selection := r.selectRevision(ctx, service, previousRoutes[service.serviceName])
+
+			mu.Lock()
+			defer mu.Unlock()
+			needsRetry = needsRetry || selection.needsRetry
+			if selection.revisionName == "" {
+				return
+			}
+			routed[service.serviceName] = struct{}{}
+			// The selected revision may be one the control plane has already
+			// garbage-collected (holding the previous route through a warm
+			// gap), so it is not necessarily in activeDefinitions.
+			retained[service.definitionID(selection.revisionName)] = struct{}{}
+			r.store.publishRoute(service.serviceName, selection.revisionName)
+		}(service)
+	}
+	wg.Wait()
+
+	r.store.retain(retained)
+	r.store.pruneRoutes(routed)
+
+	if needsRetry {
 		return ctrl.Result{RequeueAfter: requeueAwaitBuild}, nil
 	}
-
-	// Warmed: advertise this node's now-current serveable set.
-	return ctrl.Result{}, r.refreshDemux(ctx)
+	return ctrl.Result{RequeueAfter: demuxResyncInterval}, nil
 }
 
-// refreshDemux computes this node's serveable demux from local warm state and
-// records it for the control server's /resolve handler. For each service it
-// selects an explicit spec.liveRevision pin once warmed, else the NEWEST revision
-// this node has warmed — so a node serves the previous revision until it pulls the
-// new one. It also prunes the store to the surviving revision set. No API object
-// is written and nothing leaves the node.
-func (r *ResidentReconciler) refreshDemux(ctx context.Context) error {
-	revs := &computev1alpha1.ServiceRevisionList{}
-	if err := r.List(ctx, revs); err != nil {
-		return fmt.Errorf("listing revisions: %w", err)
+func (r *ResidentReconciler) loadRevisionCatalog(ctx context.Context) (revisionCatalog, error) {
+	revisions := &computev1alpha1.ServiceRevisionList{}
+	if err := r.List(ctx, revisions); err != nil {
+		return revisionCatalog{}, fmt.Errorf("listing revisions: %w", err)
 	}
-	svcs := &computev1alpha1.ServiceList{}
-	if err := r.List(ctx, svcs); err != nil {
-		return fmt.Errorf("listing services: %w", err)
+	services := &computev1alpha1.ServiceList{}
+	if err := r.List(ctx, services); err != nil {
+		return revisionCatalog{}, fmt.Errorf("listing services: %w", err)
+	}
+	return newRevisionCatalog(services.Items, revisions.Items), nil
+}
+
+func (r *ResidentReconciler) selectRevision(ctx context.Context, service serviceRevisionCandidates, previousRevision string) revisionSelection {
+	selection := revisionSelection{}
+
+	// An explicit spec.liveRevision is a directive, not a preference: it is how
+	// an operator rolls back off a bad revision. Falling through to the next
+	// candidate would serve the newest revision — exactly the one being rolled
+	// away from — so a pin that will not warm holds whatever this node already
+	// serves and retries, rather than promoting something the operator
+	// deselected.
+	if pinned, ok := service.pinnedCandidate(); ok {
+		if err := r.warmRevision(ctx, service, pinned, true); err != nil {
+			selection.needsRetry = r.shouldRetryWarm(service.definitionID(pinned.name))
+			return r.holdPrevious(selection, service, previousRevision)
+		}
+		selection.revisionName = pinned.name
+		return selection
 	}
 
-	// Pinned revision per service (spec.liveRevision), if any.
-	pin := make(map[string]string, len(svcs.Items))
-	for i := range svcs.Items {
-		s := &svcs.Items[i]
-		if s.Spec.LiveRevision != "" {
-			pin[s.Name] = s.Spec.LiveRevision
-		}
-	}
-
-	// Group revisions by service (newest first) and collect the valid id set.
-	type rinfo struct {
-		name    string
-		created int64
-	}
-	byService := make(map[string][]rinfo)
-	valid := make(map[string]bool, len(revs.Items))
-	for i := range revs.Items {
-		rev := &revs.Items[i]
-		svc := rev.Labels[serviceLabel]
-		if svc == "" {
-			continue
-		}
-		valid[demuxID(svc, rev.Name)] = true
-		byService[svc] = append(byService[svc], rinfo{name: rev.Name, created: rev.CreationTimestamp.UnixNano()})
-	}
-	r.store.retain(valid)
-
-	demux := make(map[string]string)
-	for svc, list := range byService {
-		sort.SliceStable(list, func(i, j int) bool { return list[i].created > list[j].created })
-		if p, ok := pin[svc]; ok && r.store.cached(demuxID(svc, p)) {
-			demux[svc] = p
-			continue
-		}
-		for _, ri := range list {
-			if r.store.cached(demuxID(svc, ri.name)) {
-				demux[svc] = ri.name
-				break
+	for priority, revision := range service.ordered() {
+		if err := r.warmRevision(ctx, service, revision, priority == 0); err != nil {
+			// Only the preferred candidate is worth retrying for. An older
+			// fallback that cannot warm is not what this node is trying to
+			// serve, and counting it would hold the whole tenant on the short
+			// retry interval because of a revision nobody is waiting on.
+			if priority == 0 {
+				selection.needsRetry = r.shouldRetryWarm(service.definitionID(revision.name))
 			}
+			continue
 		}
+		selection.revisionName = revision.name
+		return selection
 	}
 
-	// Record the selection so the control server's /resolve handler can map a
-	// service to its live revision id for the dispatcher.
-	r.store.setDemux(demux)
+	return r.holdPrevious(selection, service, previousRevision)
+}
+
+// holdPrevious keeps this node on the revision it already serves when nothing
+// selectable would warm, so a registry blip degrades to "no rollout yet"
+// instead of dropping the service's route entirely.
+func (r *ResidentReconciler) holdPrevious(
+	selection revisionSelection,
+	service serviceRevisionCandidates,
+	previousRevision string,
+) revisionSelection {
+	if previousRevision != "" && r.store.cached(service.definitionID(previousRevision)) {
+		selection.revisionName = previousRevision
+	}
+	return selection
+}
+
+func (r *ResidentReconciler) warmRevision(ctx context.Context, service serviceRevisionCandidates, revision revisionCandidate, preferred bool) error {
+	id := service.definitionID(revision.name)
+	if r.store.cached(id) {
+		r.recordWarmResult(id, nil)
+		return nil
+	}
+
+	if _, err := r.store.Warm(ctx, id); err != nil {
+		r.recordWarmResult(id, err)
+		if preferred {
+			slog.WarnContext(ctx, "Failed to warm selected service revision",
+				"service", service.serviceName, "revision", revision.name, "error", err)
+		} else {
+			slog.DebugContext(ctx, "Failed to warm fallback service revision",
+				"service", service.serviceName, "revision", revision.name, "error", err)
+		}
+		return err
+	}
+	r.recordWarmResult(id, nil)
 	return nil
+}
+
+// recordWarmResult tracks consecutive failures per definition so a permanently
+// unpullable bundle stops driving the short retry interval.
+func (r *ResidentReconciler) recordWarmResult(id string, err error) {
+	r.warmMu.Lock()
+	defer r.warmMu.Unlock()
+	if r.warmFailures == nil {
+		r.warmFailures = make(map[string]int)
+	}
+	if err == nil {
+		delete(r.warmFailures, id)
+		return
+	}
+	r.warmFailures[id]++
+}
+
+// shouldRetryWarm reports whether id has failed few enough times in a row to
+// still be worth the short retry interval. Past the limit the periodic resync
+// keeps retrying, just without hammering the registry.
+func (r *ResidentReconciler) shouldRetryWarm(id string) bool {
+	r.warmMu.Lock()
+	defer r.warmMu.Unlock()
+	return r.warmFailures[id] <= warmRetryLimit
 }

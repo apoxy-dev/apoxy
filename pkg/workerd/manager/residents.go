@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -135,25 +134,19 @@ func NewResidentManager(factory ResidentBuilder, controlAddr string, opts ...Res
 	return m
 }
 
-// ReconcileWithClient reconciles one tenant's ServiceRevision using the
-// provided project-scoped client. This is the seam both the single-project
-// controller (Run) and apoxy-cloud's multicluster wrapper call — mirroring
-// TunnelServer.ReconcileWithClient.
-//
-// The revision is fetched BEFORE any tenant state is created, so a reconcile
-// arriving with a disengaged cluster's client (stopped cache) errors out
-// without resurrecting the tenant, and a deletion event for a tenant with no
-// live entry creates nothing just to drain it.
+// ReconcileWithClient refreshes one tenant using its project-scoped client. It
+// lists revisions before creating tenant state so a stale client cannot
+// resurrect a disengaged tenant.
 func (m *ResidentManager) ReconcileWithClient(ctx context.Context, tenant string, c client.Client, req ctrl.Request) (ctrl.Result, error) {
 	if err := names.ValidateTenant(tenant); err != nil {
 		return ctrl.Result{}, err
 	}
-	rev := &computev1alpha1.ServiceRevision{}
-	if err := c.Get(ctx, req.NamespacedName, rev); err != nil {
-		if !apierrors.IsNotFound(err) {
-			return ctrl.Result{}, fmt.Errorf("fetching service revision: %w", err)
+	if !m.hasTenant(tenant) {
+		revs := &computev1alpha1.ServiceRevisionList{}
+		if err := c.List(ctx, revs); err != nil {
+			return ctrl.Result{}, fmt.Errorf("listing service revisions for resident bootstrap: %w", err)
 		}
-		if !m.hasTenant(tenant) {
+		if len(revs.Items) == 0 {
 			return ctrl.Result{}, nil
 		}
 	}
@@ -480,23 +473,28 @@ func (m *ResidentManager) watchEntry(entry *tenantEntry) {
 }
 
 // repairTenant restores a tenant to full service: entry (re)built, resident
-// running, store rewarmed from a full ServiceRevision re-list. Per-revision
-// rewarm failures are logged and skipped — each will be retried by its own
-// reconcile — so one broken bundle doesn't leave the rest of the tenant cold.
+// running, store rewarmed from a full ServiceRevision re-list.
+//
+// One reconcile call does the whole job. The resident reconciler runs under a
+// single queue key covering the entire tenant and refreshes every service
+// regardless of the request it is handed, so driving it once per
+// ServiceRevision re-walked the whole catalog N times per repair. Its own
+// per-service warm failures are already isolated inside that pass, so one
+// broken bundle still doesn't leave the rest of the tenant cold.
 func (m *ResidentManager) repairTenant(ctx context.Context, tenant string, c client.Client) error {
 	if _, err := m.EnsureTenant(ctx, tenant, c); err != nil {
 		return err
 	}
-	revs := &computev1alpha1.ServiceRevisionList{}
-	if err := c.List(ctx, revs); err != nil {
-		return fmt.Errorf("listing service revisions: %w", err)
+	result, err := m.ReconcileWithClient(ctx, tenant, c, ctrl.Request{})
+	if err != nil {
+		return fmt.Errorf("rewarming tenant: %w", err)
 	}
-	for i := range revs.Items {
-		req := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(&revs.Items[i])}
-		if _, err := m.ReconcileWithClient(ctx, tenant, c, req); err != nil {
-			slog.Warn("Failed to rewarm service revision during tenant repair",
-				"tenant", tenant, "revision", req.Name, "error", err)
-		}
+	if result.RequeueAfter == requeueAwaitBuild {
+		// Some revision's bundle would not pull yet. This call is out of band
+		// with no workqueue behind it, so the retry belongs to the resident
+		// controller's own resync rather than to this goroutine.
+		slog.Info("Repaired workerd tenant still has revisions awaiting their bundles",
+			"tenant", tenant)
 	}
 	return nil
 }
