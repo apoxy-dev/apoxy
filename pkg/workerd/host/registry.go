@@ -74,12 +74,18 @@ func SetPlatformPullTLS(fn PlatformPullTLSFunc) {
 	platformPullTLS.Store(&fn)
 }
 
-// bundleRepositoryFor derives the image ref and pull credentials from b and
+// BundleRepositoryFor derives the image ref and pull credentials from b and
 // builds the repository the fetchers pull over. Single derivation point, so a
 // ref can never be paired with another bundle's credentials. Bundles that
 // carry no credentials of their own additionally get the platform TLS client
 // config when their registry host matches the installed platform source.
-func bundleRepositoryFor(b computev1alpha1.BundleRef) (*remote.Repository, error) {
+//
+// Exported because the control plane resolves tags to digests before minting
+// a revision (pkg/workerd/manager), and it has to reach a platform-registry
+// bundle the same way the data plane does. Anything that opens a bundle
+// repository goes through here — an open-coded bundle.NewRepository silently
+// drops the platform TLS branch and 401s on exactly those bundles.
+func BundleRepositoryFor(b computev1alpha1.BundleRef) (*remote.Repository, error) {
 	imageRef, err := BundleImageRef(b)
 	if err != nil {
 		return nil, err

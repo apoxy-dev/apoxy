@@ -1083,7 +1083,7 @@ func schema_apoxy_api_compute_v1alpha1_BundleRef(ref common.ReferenceCallback) c
 					},
 					"tag": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Tag is resolved to a Digest by the controller if Digest is unset.",
+							Description: "Tag is resolved to a Digest by the controller if Digest is unset.\n\nResolution happens once, when the spec changes, and the resulting digest is what every replica runs. Re-pushing the tag does not roll the service on its own — re-apply the Service to pick up the tag's new target.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -11359,7 +11359,7 @@ func schema_apoxy_api_vpc_v1alpha1_VPCServiceStatus(ref common.ReferenceCallback
 				Properties: map[string]spec.Schema{
 					"endpoints": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Live members and their overlay addresses (the \"endpoints view\").",
+							Description: "Live members and their overlay addresses (the \"endpoints view\"). Only usable members appear here: a Tunnel with no overlay address yet is not an endpoint traffic can land on, so it is not counted as one.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
@@ -11372,7 +11372,8 @@ func schema_apoxy_api_vpc_v1alpha1_VPCServiceStatus(ref common.ReferenceCallback
 					},
 					"conditions": {
 						SchemaProps: spec.SchemaProps{
-							Type: []string{"array"},
+							Description: "Conditions: Reconciled, Ready.",
+							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{

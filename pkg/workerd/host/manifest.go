@@ -23,7 +23,7 @@ import (
 // need the module bytes should use FetchBundle, which shares one registry
 // session for both.
 func FetchBundleManifest(ctx context.Context, b computev1alpha1.BundleRef) (computev1alpha1.BundleManifest, error) {
-	repo, err := bundleRepositoryFor(b)
+	repo, err := BundleRepositoryFor(b)
 	if err != nil {
 		return computev1alpha1.BundleManifest{}, err
 	}
@@ -40,7 +40,7 @@ func FetchBundleManifest(ctx context.Context, b computev1alpha1.BundleRef) (comp
 // (pkg/workerd/manager), which inlines a revision's module bytes into the
 // WorkerLoader payload rather than mounting the bundle rootfs.
 func FetchBundle(ctx context.Context, b computev1alpha1.BundleRef) (computev1alpha1.BundleManifest, map[string][]byte, error) {
-	repo, err := bundleRepositoryFor(b)
+	repo, err := BundleRepositoryFor(b)
 	if err != nil {
 		return computev1alpha1.BundleManifest{}, nil, err
 	}

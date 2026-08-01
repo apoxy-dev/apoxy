@@ -38,7 +38,7 @@ const maxModuleLayerBytes = 64 << 20
 // need the BundleManifest should use FetchBundle, which shares one registry
 // session for both.
 func FetchBundleModules(ctx context.Context, b computev1alpha1.BundleRef) (map[string][]byte, error) {
-	repo, err := bundleRepositoryFor(b)
+	repo, err := BundleRepositoryFor(b)
 	if err != nil {
 		return nil, err
 	}

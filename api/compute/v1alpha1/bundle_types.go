@@ -70,6 +70,10 @@ type BundleRef struct {
 	// +optional
 	Digest string `json:"digest,omitempty"`
 	// Tag is resolved to a Digest by the controller if Digest is unset.
+	//
+	// Resolution happens once, when the spec changes, and the resulting digest
+	// is what every replica runs. Re-pushing the tag does not roll the service
+	// on its own — re-apply the Service to pick up the tag's new target.
 	// +optional
 	// +kubebuilder:default="latest"
 	Tag string `json:"tag,omitempty"`
