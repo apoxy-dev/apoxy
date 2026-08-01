@@ -736,11 +736,16 @@ func manageRouteRefresh(
 	overlayAddrs []netip.Prefix,
 	initial []api.Route,
 ) error {
+	// Traffic to prefixes this relay advertised must leave with this session's
+	// own address on it. Relays do not federate, so a packet sourced from the
+	// address another relay leased has no return path through this one.
+	src := overlaySources(overlayAddrs)
+
 	// Claim immediately rather than waiting for the first tick: this session's
 	// set is authoritative from the moment it is up, and claiming now is what
 	// withdraws prefixes a previous session on this slot left behind.
 	current := parseRouteSet(initial)
-	routes.Claim(owner, current)
+	routes.Claim(owner, src, current)
 
 	ticker := time.NewTicker(routeRefreshInterval)
 	defer ticker.Stop()
@@ -772,7 +777,7 @@ func manageRouteRefresh(
 		// The reconciler owns the datapath table: it drives the router to the
 		// union of every live session's claim, so this session cannot withdraw
 		// a prefix a concurrent session (MinConns > 1) still needs.
-		routes.Claim(owner, desired)
+		routes.Claim(owner, src, desired)
 
 		// Replace the VNI's allowed-route set to match the connect-time
 		// programming.
@@ -782,6 +787,25 @@ func manageRouteRefresh(
 
 		current = desired
 	}
+}
+
+// overlaySources picks the session's own overlay addresses, the ones routes it
+// learned should be sourced from — one per family, since a route is pinned to a
+// source of its own family or not at all. Either may come back as the zero Addr
+// when the session holds no address of that family, which leaves source
+// selection for that family to the datapath.
+func overlaySources(addrs []netip.Prefix) routeSource {
+	var src routeSource
+	for _, p := range addrs {
+		a := p.Addr().Unmap()
+		switch {
+		case a.Is4() && !src.v4.IsValid():
+			src.v4 = a
+		case a.Is6() && !src.v6.IsValid():
+			src.v6 = a
+		}
+	}
+	return src
 }
 
 // parseRouteSet parses API routes into a prefix set, dropping unparseable

@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -27,6 +28,7 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/api"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/controllers"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/hasher"
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/ipalloc"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/metrics"
 	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/router"
@@ -633,16 +635,27 @@ func (r *Relay) handleDisconnect(w http.ResponseWriter, req *http.Request, ps ht
 }
 
 // routesForConn computes the route set a connected agent should have
-// installed: a single-IP route per assigned address (both families) plus the
-// IPv6 network prefix so the agent can reach other endpoints in the same
-// overlay network (e.g. backplane services); the CIDRs reachable behind other
-// live connections in the same network (so e.g. the backplane's TUN peer
-// reaches a private endpoint behind another agent through the relay); and
-// egress default routes when this relay is an egress gateway. IPv4 has no
-// per-network prefix (the /32s come from a shared range), so v4 in-overlay
-// reach is limited to the agent's own address; broader v4 reach comes from
-// the egress defaults. Addresses() is derived from the programmed state, so
-// routes and the reported address set always agree.
+// installed: a single-IP route per assigned address (both families); in-overlay
+// reach to other endpoints homed on THIS relay (e.g. backplane services); the
+// CIDRs reachable behind other live connections in the same network (so e.g.
+// the backplane's TUN peer reaches a private endpoint behind another agent
+// through the relay); and egress default routes when this relay is an egress
+// gateway. IPv4 has no per-network prefix (the /32s come from a shared range),
+// so v4 in-overlay reach is limited to the agent's own address; broader v4
+// reach comes from the egress defaults. Addresses() is derived from the
+// programmed state, so routes and the reported address set always agree.
+//
+// In-overlay reach comes from the /88s of the slots this relay serves the
+// network from. A /88 is per-relay, which is what makes it usable: relays do not
+// federate, so an agent connected to several of them needs each relay's space on
+// that relay's own session, and needs a prefix narrow enough to pin a source
+// address to. The network-wide /72 is the fallback for addresses outside the
+// slot scheme — infrastructure endpoints, or whatever an OnConnect hook assigned
+// itself — which no /88 covers. It is emitted per address and only for addresses
+// that are not slot addresses, so a relay handing out slot addresses (every
+// relay in-tree, cloud and standalone alike) never advertises it: every relay
+// would advertise the same /72, leaving the agent one route it cannot resolve to
+// a single session and the kernel free to source from the wrong relay.
 func (r *Relay) routesForConn(conn *connection) []api.Route {
 	var routes []api.Route
 	for _, a := range conn.Addresses() {
@@ -657,9 +670,14 @@ func (r *Relay) routesForConn(conn *connection) []api.Route {
 			pfx = netip.PrefixFrom(pfx.Addr(), 128)
 		}
 		routes = append(routes, api.Route{Destination: pfx.String()})
-		if pfx.Addr().Is6() {
+		// A slot address is already covered by its own /88 below, so the /72
+		// would add nothing but a prefix every relay advertises identically.
+		if _, _, isSlot := ipalloc.SlotOf(pfx); pfx.Addr().Is6() && !isSlot {
 			routes = append(routes, api.Route{Destination: tunnet.NetworkPrefixOf(pfx.Addr()).String()})
 		}
+	}
+	for _, slot := range r.servedSlots(conn) {
+		routes = append(routes, api.Route{Destination: slot.String()})
 	}
 	r.conns.ForEach(func(_ string, other *connection) bool {
 		if other.ID() == conn.ID() || other.Network() != conn.Network() {
@@ -676,6 +694,51 @@ func (r *Relay) routesForConn(conn *connection) []api.Route {
 			api.Route{Destination: "::/0"})
 	}
 	return routes
+}
+
+// servedSlots returns the /88 of every slot this relay has minted an address
+// from for conn's network, sorted and deduplicated.
+//
+// It is derived from the live connections rather than read off the slot
+// allocator so it needs no plumbing through the connect hook, and so it cannot
+// advertise a slot with nothing behind it: a slot appears here exactly while
+// some connection on this relay holds an address in it, which is also exactly
+// when the relay can forward to it. Addresses that predate slot addressing are
+// skipped — SlotOf rejects them — so a mixed-scheme network degrades to the
+// per-address /128 routes rather than advertising a bogus prefix.
+func (r *Relay) servedSlots(conn *connection) []netip.Prefix {
+	seen := make(map[netip.Prefix]struct{})
+	var slots []netip.Prefix
+	collect := func(c *connection) {
+		for _, a := range c.Addresses() {
+			pfx, err := netip.ParsePrefix(a)
+			if err != nil || !pfx.Addr().Is6() {
+				continue
+			}
+			if _, _, ok := ipalloc.SlotOf(pfx); !ok {
+				continue
+			}
+			slot := ipalloc.SlotPrefixOf(pfx.Addr())
+			if _, dup := seen[slot]; dup {
+				continue
+			}
+			seen[slot] = struct{}{}
+			slots = append(slots, slot)
+		}
+	}
+	// conn is collected explicitly: on the connect path it is not registered in
+	// r.conns yet, and its own slot is the one route it always needs.
+	collect(conn)
+	r.conns.ForEach(func(_ string, other *connection) bool {
+		if other.Network() == conn.Network() {
+			collect(other)
+		}
+		return true
+	})
+	slices.SortFunc(slots, func(a, b netip.Prefix) int {
+		return a.Addr().Compare(b.Addr())
+	})
+	return slots
 }
 
 // handleRoutes returns the connection's current route set. Agents poll this

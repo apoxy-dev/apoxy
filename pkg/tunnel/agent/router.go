@@ -6,8 +6,6 @@ import (
 	"log/slog"
 	"net/netip"
 
-	"k8s.io/apimachinery/pkg/util/sets"
-
 	"github.com/apoxy-dev/icx"
 	"github.com/dpeckett/network"
 	"golang.org/x/sync/errgroup"
@@ -88,8 +86,11 @@ func initRouter(
 	}
 
 	// Add routes. What lands here is recorded and handed to the reconciler,
-	// which owns the transit table from the first session onward.
-	installed := sets.New[netip.Prefix]()
+	// which owns the transit table from the first session onward. They go in
+	// without a pinned source because no session exists yet to own them, and
+	// are recorded with the zero Addr so the first Claim — which does carry a
+	// source — reprograms them instead of treating them as already correct.
+	installed := make(map[netip.Prefix]netip.Addr)
 	for _, rt := range connectResp.Routes {
 		slog.Info("Adding route", slog.String("destination", rt.Destination))
 
@@ -114,7 +115,7 @@ func initRouter(
 				slog.Any("error", err))
 			continue
 		}
-		installed.Insert(dst)
+		installed[dst] = netip.Addr{}
 	}
 
 	// Start the router.

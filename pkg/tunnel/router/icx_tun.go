@@ -34,6 +34,8 @@ func (r *ICXTunRouter) DelAddr(_ netip.Prefix) error { return errTunLinuxOnly }
 
 func (r *ICXTunRouter) AddRoute(_ netip.Prefix) error { return errTunLinuxOnly }
 
+func (r *ICXTunRouter) AddRouteSrc(_ netip.Prefix, _ netip.Addr) error { return errTunLinuxOnly }
+
 func (r *ICXTunRouter) DelRoute(_ netip.Prefix) error { return errTunLinuxOnly }
 
 func (r *ICXTunRouter) Close() error { return nil }

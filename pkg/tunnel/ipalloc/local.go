@@ -46,7 +46,9 @@ func (l *LocalSlotLeaser) Lease(_ context.Context, network tunnet.NetworkID) (Sl
 		l.nets[network] = bm
 	}
 
-	i, err := bm.FirstZero(0)
+	// Scan from MinSlotID: the reserved low ids must never be handed out, and
+	// starting the scan past them is cheaper than allocating and rejecting.
+	i, err := bm.FirstZero(MinSlotID)
 	if err != nil || i >= maxSlots {
 		return Slot{}, ErrNoSlots
 	}

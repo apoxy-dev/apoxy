@@ -274,6 +274,25 @@ func (r *ICXTunRouter) AddRoute(dst netip.Prefix) error {
 	return nil
 }
 
+// AddRouteSrc routes an overlay prefix out the TUN device with src as the
+// route's preferred source address.
+//
+// The device carries one address per relay the agent is connected to, and the
+// kernel would otherwise choose among them by longest matching prefix — which
+// tracks the connection index, not the relay, so it routinely picks an address
+// leased by a relay other than the one this prefix egresses to. Relays do not
+// federate, so such a packet is dropped. Pinning the source takes the choice
+// away from the kernel.
+func (r *ICXTunRouter) AddRouteSrc(dst netip.Prefix, src netip.Addr) error {
+	route := r.nlRoute(dst)
+	route.Src = src.AsSlice()
+	if err := r.nl.RouteReplace(route); err != nil {
+		return fmt.Errorf("failed to add route %s src %s via %q: %w",
+			dst, src, r.link.Attrs().Name, err)
+	}
+	return nil
+}
+
 // DelRoute removes an overlay prefix route from the TUN device.
 func (r *ICXTunRouter) DelRoute(dst netip.Prefix) error {
 	if err := r.nl.RouteDel(r.nlRoute(dst)); err != nil {

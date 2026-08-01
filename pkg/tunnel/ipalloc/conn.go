@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	// connSlots is the size of a slot's connection index space (byte 9). Index
+	// connSlots is the size of a slot's connection index space (byte 11). Index
 	// 0 is the slot's own endpoint address and is permanently marked in use, so
 	// ConnsPerSlot of these are actually allocatable.
 	connSlots = 1 << 8
@@ -105,7 +105,7 @@ func (a *ConnAllocator) Release(v6, v4 netip.Prefix) {
 
 	// A network may hold several slots (§2.8: "lease another block under
 	// pressure"), each with its own allocator. Guard against a prefix from a
-	// foreign slot: for v6 it would free the wrong connection's index (byte 9
+	// foreign slot: for v6 it would free the wrong connection's index (byte 11
 	// encodes only the connection, not the slot), and for v4 the index would
 	// underflow and index the bitmap out of range (a panic).
 	if v6.IsValid() {

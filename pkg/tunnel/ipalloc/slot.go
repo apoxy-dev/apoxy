@@ -4,19 +4,33 @@
 //
 // A relay serving a network holds one or more slots in it. A slot is a 16-bit
 // endpoint identifier — the same identifier the infrastructure endpoint
-// allocator hands out — and it owns the addresses formed by varying byte 9 of
-// the overlay ULA, the byte the layout reserves and nothing else uses:
+// allocator hands out — and it owns the addresses formed by varying byte 11 of
+// the overlay ULA:
 //
-//	fd61:706f:7879:nnnn:nncc:ssss::/96
-//	               ^^^^^^^^ ^^ ^^^^
-//	               network  |  slot (endpoint id)
-//	                        connection index, 1-255
+//	fd61:706f:7879:nnnn:nnss:sscc::/96
+//	               ^^^^^^^^ ^^^^ ^^
+//	               network  |    connection index, 1-255
+//	                        slot (endpoint id)
 //
-// Byte 9 == 0 is the slot's own endpoint /96 — the address the infrastructure
-// allocator assigned — and is never handed to a connection. So "byte 9 != 0"
-// separates relay-allocated connection addresses from every infrastructure
-// endpoint address in one byte, including the legacy tunnelproxy endpoints that
-// share this ULA.
+// The slot sits ABOVE the connection index, so a slot is a single /88 and every
+// address it owns shares 88 bits. Both properties are load-bearing and neither
+// survives the two fields being swapped:
+//
+//   - A slot is advertisable as one route. Relays do not federate, so an agent
+//     must route each relay's addresses over that relay's own session; with the
+//     connection index above the slot a slot is a strided set, not a prefix,
+//     and cannot be expressed as a route at all.
+//   - Source address selection lands on the right relay. An agent connected to
+//     several relays carries one address per relay on one device, so the kernel
+//     picks the source by longest matching prefix (RFC 6724 rule 8). That has
+//     to discriminate on the slot; with the connection index above it, it
+//     discriminates on a per-connection counter instead and sources traffic
+//     from an address the destination's relay never leased.
+//
+// Byte 11 == 0 is the slot's own endpoint /96 — the address the infrastructure
+// allocator assigned — and is never handed to a connection.
+//
+// Slot ids below MinSlotID are reserved: see its doc comment.
 //
 // Conflict-freedom is structural, not lock-based: a slot is held by exactly one
 // relay, so within its own slots a relay is the sole allocator and needs no
@@ -39,9 +53,18 @@ import (
 	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 )
 
-// ConnsPerSlot is how many connections one slot carries: byte 9 takes the
+// ConnsPerSlot is how many connections one slot carries: byte 11 takes the
 // values 1-255, since 0 is the slot's own endpoint /96.
 const ConnsPerSlot = 255
+
+// MinSlotID is the lowest slot id a leaser may hand out. Ids below it have a
+// zero high byte, which puts a zero in ULA byte 9 — and byte 9 is where the
+// pre-slot addressing scheme carried its own fields, so such a connection
+// address is indistinguishable from an address minted under the old scheme.
+// Reserving the low 256 ids keeps the two disjoint for as long as both are on
+// the wire; it costs 0.4% of the slot space. Drop the reservation once the old
+// scheme is gone.
+const MinSlotID = 1 << 8
 
 var (
 	// ErrNoSlots is returned when a network's slots are all leased.
@@ -77,8 +100,28 @@ type SlotLeaser interface {
 	Release(ctx context.Context, s Slot) error
 }
 
-// EndpointPrefix returns the slot's own /96 — the address the infrastructure
-// allocator assigned it (byte 9 == 0). It is never handed to a connection.
+// SlotPrefix returns the slot's /88 — the whole range it owns, its endpoint
+// address and all 255 connection addresses. This is the unit a relay advertises
+// to its agents: one route per slot it holds, so an agent routes each relay's
+// addresses over that relay's own session and no more.
+func SlotPrefix(s Slot) netip.Prefix {
+	return netip.PrefixFrom(connPrefix(s, 0).Addr(), 88)
+}
+
+// SlotPrefixOf returns the /88 containing addr. It is meaningful only for
+// addresses minted by ConnPrefix or EndpointPrefix.
+func SlotPrefixOf(addr netip.Addr) netip.Prefix {
+	return netip.PrefixFrom(addr, 88).Masked()
+}
+
+// EndpointPrefix returns connection index 0 of the slot, which is reserved and
+// never handed to a connection.
+//
+// It is NOT the address the infrastructure allocator assigned the backing
+// Endpoint: infra places an endpoint identifier in ULA bytes 10-11, while a
+// slot places it in bytes 9-10. The identifier is borrowed as an opaque
+// uniqueness token — that is the only property the leaser has to provide — and
+// the address space it names here is derived independently.
 func EndpointPrefix(s Slot) netip.Prefix {
 	return connPrefix(s, 0)
 }
@@ -92,22 +135,23 @@ func ConnPrefix(s Slot, i uint8) netip.Prefix {
 func connPrefix(s Slot, i uint8) netip.Prefix {
 	addr := tunnet.ULAPrefix().Addr().As16()
 	copy(addr[6:9], s.Network[:])
-	addr[9] = i
-	copy(addr[10:12], s.ID[:])
+	copy(addr[9:11], s.ID[:])
+	addr[11] = i
 	return netip.PrefixFrom(netip.AddrFrom16(addr), 96)
 }
 
 // SlotOf decomposes an overlay address into the slot that owns it and the
 // connection index within that slot. ok is false when the address is an
-// infrastructure endpoint address rather than a connection one (byte 9 == 0),
-// which is the test that keeps relay space and endpoint space apart.
+// infrastructure endpoint address rather than a connection one (byte 11 == 0),
+// or when it predates slot addressing (slot id below MinSlotID) — together
+// those are the test that keeps relay space and endpoint space apart.
 func SlotOf(p netip.Prefix) (s Slot, conn uint8, ok bool) {
 	b := p.Addr().As16()
-	if b[9] == 0 {
+	if b[11] == 0 || b[9] == 0 {
 		return Slot{}, 0, false
 	}
 	return Slot{
 		Network: tunnet.NetworkID{b[6], b[7], b[8]},
-		ID:      tunnet.EndpointID{b[10], b[11]},
-	}, b[9], true
+		ID:      tunnet.EndpointID{b[9], b[10]},
+	}, b[11], true
 }

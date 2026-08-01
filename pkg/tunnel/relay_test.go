@@ -383,6 +383,93 @@ func TestRelay_AdvertisedRouteTransit(t *testing.T) {
 	require.NoError(t, cE.Disconnect(ctx, respE.ID))
 }
 
+// TestRelay_InOverlayRouteTiers pins which in-overlay prefix a connect response
+// carries. A slot address gets its relay's /88 and nothing wider: the /72 is the
+// same for every relay in the network, so an agent holding addresses on two of
+// them would collapse both into one route and source from whichever relay the
+// kernel's longest match happened to pick. An address outside the slot scheme
+// has no /88 to fall under, so it keeps the /72 or it is unreachable.
+func TestRelay_InOverlayRouteTiers(t *testing.T) {
+	const relayToken = "route-tier-token"
+
+	cases := []struct {
+		name    string
+		overlay string
+		want    []string
+		notWant []string
+	}{
+		{
+			// Slot 0x0101, connection index 1 — what TunnelPublisher mints.
+			name:    "a slot address advertises its relay's /88 and not the network /72",
+			overlay: "fd61:706f:7879:0:101:1::/96",
+			want: []string{
+				"fd61:706f:7879:0:101:1::/128",
+				"fd61:706f:7879:0:101::/88",
+			},
+			notWant: []string{"fd61:706f:7879:0:100::/72"},
+		},
+		{
+			// Infra endpoints put the id at bytes 10-11 with byte 9 zero, so
+			// they fall outside every relay's /88.
+			name:    "an infra endpoint address keeps the network /72",
+			overlay: "fd61:706f:7879::1:0:0/96",
+			want: []string{
+				"fd61:706f:7879::1:0:0/128",
+				"fd61:706f:7879::/72",
+			},
+		},
+		{
+			// An embedder supplying its own OnConnect allocator is not bound to
+			// the ULA at all; the /72 is the only in-overlay reach it gets.
+			name:    "an address from a foreign allocator keeps the network /72",
+			overlay: "fd00:cafe::2/96",
+			want: []string{
+				"fd00:cafe::2/128",
+				"fd00:cafe::/72",
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var vniCounter atomic.Uint32
+			vniCounter.Store(900)
+			onConnect := func(ctx context.Context, tunnelName, agentName string, conn controllers.Connection) error {
+				if err := conn.SetVNI(ctx, uint(vniCounter.Add(1))); err != nil {
+					return err
+				}
+				return conn.SetOverlayAddress(tc.overlay)
+			}
+			onDisconnect := func(ctx context.Context, agent, id string) error { return nil }
+
+			r, caCert, stop, _ := startRelay(t, relayToken, onConnect, onDisconnect)
+			t.Cleanup(stop)
+
+			c := clientForRelay(t, r, caCert, relayToken)
+			t.Cleanup(func() { require.NoError(t, c.Close()) })
+
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			t.Cleanup(cancel)
+
+			resp, err := c.Connect(ctx)
+			require.NoError(t, err)
+
+			got := make([]string, 0, len(resp.Routes))
+			for _, rt := range resp.Routes {
+				got = append(got, rt.Destination)
+			}
+			for _, want := range tc.want {
+				require.Contains(t, got, want)
+			}
+			for _, notWant := range tc.notWant {
+				require.NotContains(t, got, notWant)
+			}
+
+			require.NoError(t, c.Disconnect(ctx, resp.ID))
+		})
+	}
+}
+
 func TestRelay_GarbageCollector_DropsIdleConnections(t *testing.T) {
 	const token = "gc-token"
 

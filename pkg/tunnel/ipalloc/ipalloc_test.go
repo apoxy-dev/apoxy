@@ -15,12 +15,17 @@ func TestSlotAddressRoundTrip(t *testing.T) {
 	id := tunnet.NetworkID{0x12, 0x34, 0x56}
 	net72 := tunnet.NetworkPrefix(id)
 
-	for _, slotID := range []tunnet.EndpointID{{0x00, 0x00}, {0x00, 0x01}, {0x12, 0x34}, {0xff, 0xff}} {
+	for _, slotID := range []tunnet.EndpointID{{0x01, 0x00}, {0x01, 0x23}, {0x12, 0x34}, {0xff, 0xff}} {
 		s := Slot{Network: id, ID: slotID}
+		slot88 := SlotPrefix(s)
+		require.Equal(t, 88, slot88.Bits())
+
 		for _, conn := range []uint8{1, 2, 128, 255} {
 			p := ConnPrefix(s, conn)
 			require.Equal(t, 96, p.Bits())
 			require.True(t, net72.Contains(p.Addr()), "connection stays within its network /72")
+			require.True(t, slot88.Contains(p.Addr()), "connection stays within its slot /88")
+			require.Equal(t, slot88, SlotPrefixOf(p.Addr()), "slot /88 recovers from any of its addresses")
 
 			gotSlot, gotConn, ok := SlotOf(p)
 			require.True(t, ok, "%s is a connection address", p)
@@ -29,16 +34,59 @@ func TestSlotAddressRoundTrip(t *testing.T) {
 
 			b := p.Addr().As16()
 			require.Equal(t, id[:], b[6:9], "network id preserved")
-			require.Equal(t, conn, b[9], "connection index lands in byte 9")
-			require.Equal(t, slotID[:], b[10:12], "slot id lands in bytes 10-11")
+			require.Equal(t, slotID[:], b[9:11], "slot id lands in bytes 9-10")
+			require.Equal(t, conn, b[11], "connection index lands in byte 11")
 		}
 	}
 }
 
-// TestConnAddressesNeverCollideWithEndpoints pins the invariant the whole byte-9
-// split exists for: an infrastructure endpoint /96 — the shape NetULA hands out,
-// and what every legacy tunnelproxy connection holds — can never equal a relay
-// connection address, whatever slot or endpoint id is involved.
+// TestSlotPrefixDiscriminatesRelays is the property that makes a blanket route
+// safe: an address's slot must be decidable from bits ABOVE the per-connection
+// index. Two relays' addresses must never share more prefix with each other
+// than two addresses of the same relay do, or longest-prefix source selection
+// picks an address the destination's relay never leased — and relays do not
+// federate, so the packet is dropped.
+func TestSlotPrefixDiscriminatesRelays(t *testing.T) {
+	id := tunnet.NetworkID{0x00, 0x00, 0x01}
+	west := Slot{Network: id, ID: tunnet.EndpointID{0x01, 0x09}}
+	east := Slot{Network: id, ID: tunnet.EndpointID{0x01, 0x0a}}
+
+	// Same relay, different connection indices: the addresses an agent and its
+	// peer hold on one relay.
+	ours := ConnPrefix(west, 3)
+	peer := ConnPrefix(west, 4)
+	// A different relay, at the connection index that used to win the match.
+	other := ConnPrefix(east, 4)
+
+	require.Greater(t,
+		commonPrefixBits(ours.Addr(), peer.Addr()),
+		commonPrefixBits(other.Addr(), peer.Addr()),
+		"an address on the peer's own relay must match it more closely than one on another relay")
+	require.Equal(t, SlotPrefix(west), SlotPrefixOf(peer.Addr()))
+	require.NotEqual(t, SlotPrefix(west), SlotPrefixOf(other.Addr()))
+}
+
+// commonPrefixBits is what RFC 6724 rule 8 compares when the kernel picks a
+// source address among several on one device.
+func commonPrefixBits(a, b netip.Addr) int {
+	x, y := a.As16(), b.As16()
+	for i := 0; i < 128; i++ {
+		if (x[i/8]>>(7-i%8))&1 != (y[i/8]>>(7-i%8))&1 {
+			return i
+		}
+	}
+	return 128
+}
+
+// TestConnAddressesNeverCollideWithEndpoints pins the invariant MinSlotID
+// exists for: an infrastructure endpoint /96 — the shape NetULA hands out, and
+// what every legacy tunnelproxy connection holds — can never equal a relay
+// connection address.
+//
+// Infra puts its endpoint identifier in bytes 10-11 and leaves byte 9 zero; a
+// slot puts its identifier in bytes 9-10, so reserving slot ids below 0x0100
+// keeps byte 9 nonzero on every relay-minted address and the two spaces
+// disjoint. That is what SlotOf's byte-9 test decides.
 func TestConnAddressesNeverCollideWithEndpoints(t *testing.T) {
 	ctx := context.Background()
 	id := tunnet.NetworkID{0x00, 0x00, 0x00} // the legacy "default" network
@@ -49,19 +97,18 @@ func TestConnAddressesNeverCollideWithEndpoints(t *testing.T) {
 		require.NoError(t, err)
 		ep := ula.FullPrefix()
 		require.Equal(t, 96, ep.Bits())
+		require.Equal(t, byte(0), ep.Addr().As16()[9],
+			"infra leaves byte 9 zero, which is what makes the reservation work")
 
 		// An endpoint address is never mistaken for a connection address.
 		_, _, ok := SlotOf(ep)
 		require.False(t, ok, "endpoint %s must not decode as a connection", ep)
-
-		// And it is exactly the slot's own reserved index-0 address.
-		require.Equal(t, ep.Addr(), EndpointPrefix(Slot{Network: id, ID: epID}).Addr())
 		endpoints[ep.Addr()] = true
 	}
 
-	// Nothing a relay allocates can land on one of them: index 0 is held from
-	// the moment the allocator is built.
-	for _, epID := range []tunnet.EndpointID{{0x00, 0x00}, {0x12, 0x34}, {0xff, 0xff}} {
+	// Nothing a relay allocates from an id at or above MinSlotID can land on
+	// one of them.
+	for _, epID := range []tunnet.EndpointID{{0x01, 0x00}, {0x12, 0x34}, {0xff, 0xff}} {
 		a := NewConnAllocator(Slot{Network: id, ID: epID})
 		for i := 0; i < 4; i++ {
 			v6, _, err := a.Allocate()
@@ -70,6 +117,11 @@ func TestConnAddressesNeverCollideWithEndpoints(t *testing.T) {
 			require.NotEqual(t, byte(0), v6.Addr().As16()[9])
 		}
 	}
+
+	// A reserved id would break it, which is why no leaser may hand one out.
+	reserved := ConnPrefix(Slot{Network: id, ID: tunnet.EndpointID{0x00, 0x09}}, 4)
+	_, _, ok := SlotOf(reserved)
+	require.False(t, ok, "an address from a reserved slot id must not decode as a connection")
 }
 
 func TestLocalSlotLeaser(t *testing.T) {
@@ -89,6 +141,16 @@ func TestLocalSlotLeaser(t *testing.T) {
 		}
 	})
 
+	t.Run("never leases a reserved slot id", func(t *testing.T) {
+		l := NewLocalSlotLeaser()
+		for i := 0; i < 8; i++ {
+			s, err := l.Lease(ctx, idA)
+			require.NoError(t, err)
+			require.GreaterOrEqual(t, int(s.ID[0])<<8|int(s.ID[1]), MinSlotID,
+				"a reserved id would collide with the pre-slot addressing scheme")
+		}
+	})
+
 	t.Run("release returns slot to pool", func(t *testing.T) {
 		l := NewLocalSlotLeaser()
 		s, err := l.Lease(ctx, idA)
@@ -101,7 +163,9 @@ func TestLocalSlotLeaser(t *testing.T) {
 
 	t.Run("exhaustion after every slot", func(t *testing.T) {
 		l := NewLocalSlotLeaser()
-		for i := 0; i < maxSlots; i++ {
+		// The reserved low ids are not leasable, so the pool is that much
+		// smaller than the raw 16-bit id space.
+		for i := 0; i < maxSlots-MinSlotID; i++ {
 			_, err := l.Lease(ctx, idA)
 			require.NoError(t, err, "lease %d", i)
 		}
