@@ -59,6 +59,12 @@ type Server struct {
 	// compatibility with consumers that registered resources before this
 	// behavior was added.
 	trackGeneration bool
+
+	// generationTracked opts individual resources into the same behavior
+	// without turning it on server-wide. Enabling generation changes what
+	// every generation-reading predicate and observedGeneration comparison
+	// sees, so it is audited and adopted one resource at a time.
+	generationTracked map[schema.GroupVersionResource]struct{}
 }
 
 func NewServerBuilder() *Server {
@@ -127,6 +133,36 @@ func (s *Server) WithGenerationTracking() *Server {
 	return s
 }
 
+// WithGenerationTrackingFor enables the same handling as
+// WithGenerationTracking for just the named resources. Order-independent:
+// the set is consulted when each resource is registered, so this may be
+// called before or after WithResourceAndStorage.
+//
+// Prefer this over the server-wide switch. Turning generation on changes
+// behavior for every consumer of a resource at once — predicates keyed on
+// generation start firing where they were previously inert, and
+// status.observedGeneration comparisons stop being vacuously true — so it
+// wants a per-resource audit rather than a flag day.
+func (s *Server) WithGenerationTrackingFor(objs ...builderresource.Object) *Server {
+	if s.generationTracked == nil {
+		s.generationTracked = make(map[schema.GroupVersionResource]struct{}, len(objs))
+	}
+	for _, obj := range objs {
+		s.generationTracked[obj.GetGroupVersionResource()] = struct{}{}
+	}
+	return s
+}
+
+// tracksGeneration reports whether obj should get generation handling,
+// from either the server-wide switch or the per-resource opt-in.
+func (s *Server) tracksGeneration(obj builderresource.Object) bool {
+	if s.trackGeneration {
+		return true
+	}
+	_, ok := s.generationTracked[obj.GetGroupVersionResource()]
+	return ok
+}
+
 func (s *Server) WithResourceAndStorage(obj builderresource.Object, fn StoreFn) *Server {
 	s.apiSchemeBuilder.Register(builderresource.AddToScheme(obj))
 	s.openapiSchemeBuilder.Register(func(scheme *runtime.Scheme) error {
@@ -134,7 +170,7 @@ func (s *Server) WithResourceAndStorage(obj builderresource.Object, fn StoreFn) 
 		return nil
 	})
 
-	sp := newStorageProvider(obj, fn, s.trackGeneration)
+	sp := newStorageProvider(obj, fn, s.tracksGeneration(obj))
 	s.forGroupVersionResource(obj.GetGroupVersionResource(), sp)
 	s.withStatusSubresource(obj, sp)
 	return s
