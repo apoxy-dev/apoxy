@@ -144,8 +144,23 @@ func (p *TunnelPublisher) OnConnect(ctx context.Context, tunnelName, agentName s
 		addresses = append(addresses, v4.String())
 	}
 	if err := conn.SetAddresses(addresses); err != nil {
-		p.releaseAll(alloc, v6, v4, vniID)
-		return fmt.Errorf("failed to set overlay addresses: %w", err)
+		// The /32 is best-effort (§2.4): drop it and retry v6-only rather than
+		// refuse the tunnel over the weaker family.
+		if !v4.IsValid() {
+			p.releaseAll(alloc, v6, v4, vniID)
+			return fmt.Errorf("failed to set overlay addresses: %w", err)
+		}
+		slog.Warn("Failed to program the IPv4 overlay address, continuing without v4",
+			slog.String("connID", conn.ID()),
+			slog.String("v4", v4.String()),
+			slog.Any("error", err))
+		p.slots.Release(alloc, netip.Prefix{}, v4)
+		v4 = netip.Prefix{}
+		addresses = addresses[:1]
+		if err := conn.SetAddresses(addresses); err != nil {
+			p.releaseAll(alloc, v6, v4, vniID)
+			return fmt.Errorf("failed to set overlay addresses: %w", err)
+		}
 	}
 
 	if err := p.createTunnel(ctx, conn, networkName, agentName, addresses); err != nil {

@@ -18,6 +18,9 @@ import (
 // apiserver or relay state; the TunnelPublisher composes it.
 type slotAllocator struct {
 	leaser ipalloc.SlotLeaser
+	// v4 spans every network: slot ids repeat across them, and the relay routes
+	// them all through one route table.
+	v4 *ipalloc.V4SlicePool
 
 	mu   sync.Mutex
 	nets map[tunnet.NetworkID]*netAllocs
@@ -33,6 +36,7 @@ type netAllocs struct {
 func newSlotAllocator(leaser ipalloc.SlotLeaser) *slotAllocator {
 	return &slotAllocator{
 		leaser: leaser,
+		v4:     ipalloc.NewV4SlicePool(),
 		nets:   make(map[tunnet.NetworkID]*netAllocs),
 	}
 }
@@ -64,7 +68,7 @@ func (b *slotAllocator) Allocate(ctx context.Context, netID tunnet.NetworkID) (v
 	if err != nil {
 		return netip.Prefix{}, netip.Prefix{}, nil, fmt.Errorf("failed to lease slot: %w", err)
 	}
-	a := ipalloc.NewConnAllocator(blk)
+	a := ipalloc.NewConnAllocator(blk, b.v4)
 	na.slots = append(na.slots, blk)
 	na.allocs = append(na.allocs, a)
 
@@ -93,6 +97,9 @@ func (b *slotAllocator) ReleaseNetwork(ctx context.Context, netID tunnet.Network
 	if na == nil {
 		return
 	}
+	for _, a := range na.allocs {
+		a.Close()
+	}
 	for _, blk := range na.slots {
 		if err := b.leaser.Release(ctx, blk); err != nil {
 			slog.Warn("Failed to release slot for deleted network", slog.Any("error", err))
@@ -113,6 +120,7 @@ func (b *slotAllocator) InvalidateSlot(s ipalloc.Slot) {
 	}
 	for i, blk := range na.slots {
 		if blk == s {
+			na.allocs[i].Close()
 			na.slots = append(na.slots[:i], na.slots[i+1:]...)
 			na.allocs = append(na.allocs[:i], na.allocs[i+1:]...)
 			return
@@ -126,6 +134,9 @@ func (b *slotAllocator) ReleaseAll(ctx context.Context) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	for netID, na := range b.nets {
+		for _, a := range na.allocs {
+			a.Close()
+		}
 		for _, blk := range na.slots {
 			if err := b.leaser.Release(ctx, blk); err != nil {
 				slog.Warn("Failed to release slot during drain", slog.Any("error", err))

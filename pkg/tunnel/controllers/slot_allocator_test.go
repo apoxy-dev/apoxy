@@ -77,6 +77,25 @@ func TestSlotAllocator(t *testing.T) {
 		require.Contains(t, err.Error(), "failed to lease slot")
 	})
 
+	t.Run("never repeats a /32 across the networks it serves", func(t *testing.T) {
+		b := newSlotAllocator(ipalloc.NewLocalSlotLeaser())
+
+		// Slot ids are numbered per network, so every network's first slot
+		// carries the same id; one route table means the /32s must still come
+		// out distinct.
+		seen := make(map[netip.Addr]tunnet.NetworkID)
+		for _, netID := range []tunnet.NetworkID{netA, netB, {0x00, 0x20, 0x03}} {
+			for i := 0; i < 3; i++ {
+				_, v4, _, err := b.Allocate(ctx, netID)
+				require.NoError(t, err)
+				require.True(t, v4.IsValid(), "v4 stays available across networks")
+				prev, dup := seen[v4.Addr()]
+				require.False(t, dup, "%s handed to both %v and %v", v4, prev, netID)
+				seen[v4.Addr()] = netID
+			}
+		}
+	})
+
 	t.Run("Release tolerates a nil allocator", func(t *testing.T) {
 		b := newSlotAllocator(ipalloc.NewLocalSlotLeaser())
 		require.NotPanics(t, func() {

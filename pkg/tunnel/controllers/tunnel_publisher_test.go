@@ -28,9 +28,14 @@ type fakeConn struct {
 	routes        []netip.Prefix
 	agentInstance string
 
+	// setAddrsErr, when set, decides each SetAddresses call, so a test can
+	// reject one address family the way a failed route add does.
+	setAddrsErr func([]string) error
+
 	overlay   string
 	vniID     *uint
 	addresses []string
+	setAddrs  [][]string
 	closed    bool
 }
 
@@ -44,8 +49,18 @@ func (c *fakeConn) Scope() string                          { return "" }
 func (c *fakeConn) Labels() map[string]string              { return c.labels }
 func (c *fakeConn) AdvertisedRoutes() []netip.Prefix       { return c.routes }
 func (c *fakeConn) AgentInstance() string                  { return c.agentInstance }
-func (c *fakeConn) SetAddresses(a []string) error          { c.addresses = a; return nil }
 func (c *fakeConn) Addresses() []string                    { return c.addresses }
+
+func (c *fakeConn) SetAddresses(a []string) error {
+	c.setAddrs = append(c.setAddrs, a)
+	if c.setAddrsErr != nil {
+		if err := c.setAddrsErr(a); err != nil {
+			return err
+		}
+	}
+	c.addresses = a
+	return nil
+}
 
 func publisherScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
@@ -100,6 +115,65 @@ func TestTunnelPublisherOnConnectCreatesTunnel(t *testing.T) {
 	require.Equal(t, "agent-a", got.Labels[vpcv1alpha1.LabelTunnelName])
 	require.Equal(t, "relay-0", got.Labels[LabelRelay])
 	require.Equal(t, "uuid-1", got.Labels[vpcv1alpha1.LabelAgentInstance])
+}
+
+// TestTunnelPublisherOnConnectV4Failure pins the §2.4 best-effort contract at
+// the connect path: the /32 is egress-only, so a connection that cannot carry
+// it comes up v6-only instead of being refused.
+func TestTunnelPublisherOnConnectV4Failure(t *testing.T) {
+	ctx := context.Background()
+
+	cases := []struct {
+		name       string
+		failOn     func([]string) error
+		wantErr    bool
+		wantV4     bool
+		wantTunnel bool
+	}{
+		{
+			name: "v4 route rejected degrades to v6-only",
+			failOn: func(a []string) error {
+				if len(a) > 1 {
+					return fmt.Errorf("router.AddRoute(%s) failed: file exists", a[1])
+				}
+				return nil
+			},
+			wantV4:     false,
+			wantTunnel: true,
+		},
+		{
+			name:       "a failure that outlives the /32 still refuses the connect",
+			failOn:     func([]string) error { return fmt.Errorf("virtual network gone") },
+			wantErr:    true,
+			wantTunnel: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p, c, _ := newPublisher(t)
+			conn := &fakeConn{id: "conn-v4", network: "corp", setAddrsErr: tc.failOn}
+
+			err := p.OnConnect(ctx, "agent-v4", "agent-v4", conn)
+			if tc.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+				require.NotEmpty(t, conn.addresses)
+				require.Equal(t, conn.overlay, conn.addresses[0])
+				require.Len(t, conn.addresses, 1, "the connection kept only its /96")
+				require.Len(t, conn.setAddrs, 2, "the /32 was attempted, then dropped")
+			}
+
+			gotErr := c.Get(ctx, client.ObjectKey{Name: "conn-v4"}, &vpcv1alpha1.Tunnel{})
+			require.Equal(t, tc.wantTunnel, gotErr == nil, "Tunnel presence")
+
+			// Either way the /32 went back: the next connection is handed one.
+			next := &fakeConn{id: "conn-next", network: "corp"}
+			require.NoError(t, p.OnConnect(ctx, "agent-next", "agent-next", next))
+			require.Len(t, next.addresses, 2, "the dropped /32 was returned to the slot")
+		})
+	}
 }
 
 func TestTunnelPublisherOnDisconnectDeletesAndReleases(t *testing.T) {

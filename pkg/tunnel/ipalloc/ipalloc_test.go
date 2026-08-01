@@ -108,8 +108,9 @@ func TestConnAddressesNeverCollideWithEndpoints(t *testing.T) {
 
 	// Nothing a relay allocates from an id at or above MinSlotID can land on
 	// one of them.
+	pool := NewV4SlicePool()
 	for _, epID := range []tunnet.EndpointID{{0x01, 0x00}, {0x12, 0x34}, {0xff, 0xff}} {
-		a := NewConnAllocator(Slot{Network: id, ID: epID})
+		a := NewConnAllocator(Slot{Network: id, ID: epID}, pool)
 		for i := 0; i < 4; i++ {
 			v6, _, err := a.Allocate()
 			require.NoError(t, err)
@@ -192,7 +193,7 @@ func newConnAllocator(t *testing.T, id tunnet.NetworkID) *ConnAllocator {
 	l := NewLocalSlotLeaser()
 	s, err := l.Lease(context.Background(), id)
 	require.NoError(t, err)
-	return NewConnAllocator(s)
+	return NewConnAllocator(s, NewV4SlicePool())
 }
 
 func TestConnAllocatorV6(t *testing.T) {
@@ -235,30 +236,54 @@ func TestConnAllocatorV4Derivation(t *testing.T) {
 	}
 }
 
-// TestConnAllocatorHighSlotV6Only pins the §2.4 degradation: 100.64.0.0/10 runs
-// out of /24s long before the slot id space does, and a slot past that point
-// serves v6 normally with no v4 at all.
-func TestConnAllocatorHighSlotV6Only(t *testing.T) {
+// TestConnAllocatorHighSlot covers slot ids past the end of the /24 space: the
+// preferred slice wraps, and every slot still gets one while the pool has any
+// free. The old "high slot ids are v6-only" rule went with the derivation.
+func TestConnAllocatorHighSlot(t *testing.T) {
 	id := tunnet.NetworkID{0x00, 0x0b, 0x02}
-	high := Slot{Network: id, ID: tunnet.EndpointID{maxV4Slot >> 8, 0x00}}
-	a := NewConnAllocator(high)
+	pool := NewV4SlicePool()
 
+	cases := []struct {
+		name string
+		epID tunnet.EndpointID
+	}{
+		{"first wrapped id", tunnet.EndpointID{v4Slices >> 8, 0x00}},
+		{"last id", tunnet.EndpointID{0xff, 0xff}},
+		{"last unwrapped id", tunnet.EndpointID{(v4Slices - 1) >> 8, (v4Slices - 1) & 0xff}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := NewConnAllocator(Slot{Network: id, ID: tc.epID}, pool)
+			v6, v4, err := a.Allocate()
+			require.NoError(t, err)
+			require.Equal(t, 96, v6.Bits())
+			require.True(t, v4.IsValid(), "a slice is still available")
+			require.True(t, netip.MustParsePrefix("100.64.0.0/10").Contains(v4.Addr()),
+				"the slice stays inside CGNAT space")
+		})
+	}
+}
+
+// TestConnAllocatorNoSliceV6Only pins the §2.4 degradation at its new source:
+// a relay whose /24s are all held runs the next slot v6-only rather than
+// failing it.
+func TestConnAllocatorNoSliceV6Only(t *testing.T) {
+	id := tunnet.NetworkID{0x00, 0x0b, 0x03}
+	pool := NewV4SlicePool()
+	for i := uint32(0); i < v4Slices; i++ {
+		_, ok := pool.take(i)
+		require.True(t, ok, "slice %d", i)
+	}
+
+	a := NewConnAllocator(Slot{Network: id, ID: tunnet.EndpointID{0x01, 0x00}}, pool)
 	v6, v4, err := a.Allocate()
 	require.NoError(t, err, "a v4-less slot still allocates")
 	require.True(t, v6.IsValid())
 	require.Equal(t, 96, v6.Bits())
-	require.False(t, v4.IsValid(), "no v4 slice exists for this slot")
+	require.False(t, v4.IsValid(), "no slice was left to back this slot")
 
 	// Releasing must not touch the absent v4 bitmap.
 	require.NotPanics(t, func() { a.Release(v6, netip.MustParsePrefix("100.64.0.1/32")) })
-
-	// The highest v4-backed slot is the one just below it.
-	last := NewConnAllocator(Slot{Network: id, ID: tunnet.EndpointID{(maxV4Slot - 1) >> 8, (maxV4Slot - 1) & 0xff}})
-	_, v4last, err := last.Allocate()
-	require.NoError(t, err)
-	require.True(t, v4last.IsValid())
-	require.True(t, netip.MustParsePrefix("100.64.0.0/10").Contains(v4last.Addr()),
-		"the last v4-backed slot stays inside CGNAT space")
 }
 
 func TestConnAllocatorV4ExhaustionV6Only(t *testing.T) {
@@ -315,10 +340,11 @@ func TestConnAllocatorReleaseReuse(t *testing.T) {
 	require.NotEqual(t, v4b.Addr(), v4c.Addr())
 }
 
-// TestConnAllocatorCrossNetworkV4Overlap pins the intended §2.4 overlap: two
-// distinct networks whose slots share an id get the *same* v4 /24 (v4 never
-// leaves its per-network forwarding domain), while their v6 /96s stay disjoint.
-func TestConnAllocatorCrossNetworkV4Overlap(t *testing.T) {
+// TestConnAllocatorCrossNetworkV4Disjoint pins what the relay's single
+// forwarding domain requires: two networks whose slots share an id — the norm,
+// since the infra IPAM numbers slots per network — must not get the same /32.
+// They once did, and the second network's connect died on an EEXIST route add.
+func TestConnAllocatorCrossNetworkV4Disjoint(t *testing.T) {
 	ctx := context.Background()
 	l := NewLocalSlotLeaser()
 	sa, err := l.Lease(ctx, tunnet.NetworkID{0x00, 0x00, 0x01})
@@ -327,14 +353,46 @@ func TestConnAllocatorCrossNetworkV4Overlap(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, sa.ID, sb.ID, "both first slots share an id")
 
-	aa, ab := NewConnAllocator(sa), NewConnAllocator(sb)
+	pool := NewV4SlicePool()
+	aa, ab := NewConnAllocator(sa, pool), NewConnAllocator(sb, pool)
 	v6a, v4a, err := aa.Allocate()
 	require.NoError(t, err)
 	v6b, v4b, err := ab.Allocate()
 	require.NoError(t, err)
 
-	require.Equal(t, v4a.Addr(), v4b.Addr(), "v4 intentionally overlaps across networks")
+	require.True(t, v4a.IsValid() && v4b.IsValid(), "both networks keep v4")
+	require.NotEqual(t, v4a.Addr(), v4b.Addr(), "one relay never repeats a /32 across networks")
 	require.NotEqual(t, v6a.Addr(), v6b.Addr(), "v6 stays globally unique via disjoint networks")
+
+	require.Equal(t, v4CGNATBase+slotID(sa)<<8, binary.BigEndian.Uint32(v4a.Addr().AsSlice()),
+		"the uncontended slot keeps its derived slice")
+}
+
+// TestV4SlicePoolReuse covers the pool's lifecycle: a retired slot's /24 comes
+// back for another network, but not while connections are still routed on it.
+func TestV4SlicePoolReuse(t *testing.T) {
+	id := tunnet.NetworkID{0x00, 0x00, 0x03}
+	slot := Slot{Network: id, ID: tunnet.EndpointID{0x01, 0x00}}
+	pool := NewV4SlicePool()
+
+	a := NewConnAllocator(slot, pool)
+	v6, v4, err := a.Allocate()
+	require.NoError(t, err)
+	require.True(t, v4.IsValid())
+
+	// Closed with a live connection: the slice stays out.
+	a.Close()
+	other := NewConnAllocator(Slot{Network: tunnet.NetworkID{0x00, 0x00, 0x04}, ID: slot.ID}, pool)
+	_, v4other, err := other.Allocate()
+	require.NoError(t, err)
+	require.NotEqual(t, v4.Addr(), v4other.Addr(), "a live /32 is not re-handed")
+
+	// Once the last connection goes, the slice returns and is reusable.
+	a.Release(v6, v4)
+	reclaimed := NewConnAllocator(slot, pool)
+	_, v4reclaimed, err := reclaimed.Allocate()
+	require.NoError(t, err)
+	require.Equal(t, v4.Addr(), v4reclaimed.Addr(), "the drained slice is back in the pool")
 }
 
 // TestConnAllocatorReleaseForeignSlot pins the §2.8 multi-slot guard: a prefix
@@ -350,7 +408,8 @@ func TestConnAllocatorReleaseForeignSlot(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEqual(t, s0.ID, s1.ID, "two distinct slots of one network")
 
-	a0, a1 := NewConnAllocator(s0), NewConnAllocator(s1)
+	pool := NewV4SlicePool()
+	a0, a1 := NewConnAllocator(s0, pool), NewConnAllocator(s1, pool)
 
 	// a0's first connection: v4 index 0 sits below a1's v4 slice, so an
 	// unguarded Release on a1 would underflow and index the bitmap OOB.
