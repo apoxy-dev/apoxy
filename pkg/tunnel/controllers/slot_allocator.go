@@ -18,8 +18,10 @@ import (
 // apiserver or relay state; the TunnelPublisher composes it.
 type slotAllocator struct {
 	leaser ipalloc.SlotLeaser
-	// v4 spans every network: slot ids repeat across them, and the relay routes
-	// them all through one route table.
+	// v4 spans every network AND every tenant on this relay: slot ids repeat
+	// across both, and the relay routes them all through one route table. It is
+	// owned by the caller precisely so a multi-tenant relay cannot end up with
+	// one pool per publisher, which reinstates the collision a level up.
 	v4 *ipalloc.V4SlicePool
 
 	mu   sync.Mutex
@@ -32,11 +34,12 @@ type netAllocs struct {
 	allocs []*ipalloc.ConnAllocator
 }
 
-// newSlotAllocator creates a slotAllocator over the given leaser.
-func newSlotAllocator(leaser ipalloc.SlotLeaser) *slotAllocator {
+// newSlotAllocator creates a slotAllocator over the given leaser, drawing v4
+// slices from the caller's relay-wide pool.
+func newSlotAllocator(leaser ipalloc.SlotLeaser, v4 *ipalloc.V4SlicePool) *slotAllocator {
 	return &slotAllocator{
 		leaser: leaser,
-		v4:     ipalloc.NewV4SlicePool(),
+		v4:     v4,
 		nets:   make(map[tunnet.NetworkID]*netAllocs),
 	}
 }

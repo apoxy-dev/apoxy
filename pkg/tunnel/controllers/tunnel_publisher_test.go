@@ -77,7 +77,7 @@ func newPublisher(t *testing.T) (*TunnelPublisher, client.Client, tunnet.Network
 		WithScheme(publisherScheme(t)).
 		WithStatusSubresource(&vpcv1alpha1.Tunnel{}).
 		Build()
-	p := NewTunnelPublisher(c, stubRelay{name: "relay-0"}, ipalloc.NewLocalSlotLeaser(), vni.NewVNIAllocator())
+	p := NewTunnelPublisher(c, stubRelay{name: "relay-0"}, ipalloc.NewLocalSlotLeaser(), vni.NewVNIAllocator(), ipalloc.NewV4SlicePool())
 	netID := tunnet.NetworkID{0x00, 0x00, 0x01}
 	p.SetNetworkID("corp", netID)
 	return p, c, netID
@@ -211,7 +211,7 @@ func TestTunnelPublisherOnDisconnectReleasesDespiteDeleteError(t *testing.T) {
 			},
 		}).
 		Build()
-	p := NewTunnelPublisher(c, stubRelay{name: "relay-0"}, ipalloc.NewLocalSlotLeaser(), vni.NewVNIAllocator())
+	p := NewTunnelPublisher(c, stubRelay{name: "relay-0"}, ipalloc.NewLocalSlotLeaser(), vni.NewVNIAllocator(), ipalloc.NewV4SlicePool())
 	p.SetNetworkID("corp", tunnet.NetworkID{0x00, 0x00, 0x01})
 
 	conn := &fakeConn{id: "conn-d", network: "corp"}
@@ -273,4 +273,38 @@ func TestLabelValue(t *testing.T) {
 	require.Equal(t, h, labelValue("not/a/label!"))
 	require.Len(t, h, 32)
 	require.NotContains(t, h, "/")
+}
+
+// TestTunnelPublisherSharedV4Pool covers the multi-tenant relay shape: one
+// publisher per tenant, every publisher on the same relay and so on the same
+// route table. Slot ids restart at the floor for each network, so two tenants'
+// first connections only get different /32s if the publishers draw from one
+// pool.
+func TestTunnelPublisherSharedV4Pool(t *testing.T) {
+	ctx := context.Background()
+	pool := ipalloc.NewV4SlicePool()
+
+	connect := func(netID tunnet.NetworkID, id string) (v6, v4 netip.Prefix) {
+		c := fake.NewClientBuilder().
+			WithScheme(publisherScheme(t)).
+			WithStatusSubresource(&vpcv1alpha1.Tunnel{}).
+			Build()
+		p := NewTunnelPublisher(c, stubRelay{name: "relay-0"}, ipalloc.NewLocalSlotLeaser(), vni.NewVNIAllocator(), pool)
+		p.SetNetworkID("corp", netID)
+		conn := &fakeConn{id: id, network: "corp"}
+		require.NoError(t, p.OnConnect(ctx, id, id, conn))
+		require.Len(t, conn.addresses, 2, "connect must carry both families")
+		return netip.MustParsePrefix(conn.addresses[0]), netip.MustParsePrefix(conn.addresses[1])
+	}
+
+	v6a, v4a := connect(tunnet.NetworkID{0x00, 0x00, 0x01}, "conn-tenant-a")
+	v6b, v4b := connect(tunnet.NetworkID{0x00, 0x00, 0x02}, "conn-tenant-b")
+
+	slotOf := func(p netip.Prefix) uint16 {
+		b := p.Addr().As16()
+		return uint16(b[9])<<8 | uint16(b[10])
+	}
+	require.Equal(t, slotOf(v6a), slotOf(v6b),
+		"precondition: both tenants must hold the same slot id for this to test anything")
+	require.NotEqual(t, v4a.Addr(), v4b.Addr(), "two tenants were handed the same /32")
 }
