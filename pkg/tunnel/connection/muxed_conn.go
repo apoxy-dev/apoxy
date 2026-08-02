@@ -77,7 +77,7 @@ func (m *muxedConn) readFromConn(src netip.Prefix, conn Connection) {
 					slog.Any("error", err))
 				metrics.TunnelPacketsReceivedErrors.WithLabelValues("read_closed").Inc()
 
-				m.Remove(src)
+				m.removeOwned(src, conn)
 				m.packetBufferPool.Put(pkt)
 
 				// Reclaim the async sender goroutine. The underlying is
@@ -159,6 +159,14 @@ func (m *muxedConn) Add(addr netip.Prefix, conn Connection) error {
 	})
 
 	m.mu.Lock()
+	// A prefix can already be present: an agent's reconnect (and its parallel
+	// same-server connections) carries the same address assignment, so the
+	// newest connection takes the prefix over. The displaced connection keeps
+	// running until its own close; its teardown is owner-checked (see
+	// readFromConn) so it cannot evict the connection that replaced it.
+	if _, exists := m.prefixes[addr]; exists {
+		slog.Info("Replacing connection for prefix", slog.String("prefix", addr.String()))
+	}
 	m.conns.Insert(addr, wrapped)
 	m.prefixes[addr] = wrapped
 	m.mu.Unlock()
@@ -201,6 +209,20 @@ func (m *muxedConn) Remove(addr netip.Prefix) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	m.conns.Remove(addr)
+	delete(m.prefixes, addr)
+}
+
+// removeOwned removes addr only while owner still holds it. A connection that
+// was displaced by a reconnect (see Add) must not evict its replacement when
+// its read loop finally notices the close.
+func (m *muxedConn) removeOwned(addr netip.Prefix, owner Connection) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.prefixes[addr] != owner {
+		return
+	}
 	m.conns.Remove(addr)
 	delete(m.prefixes, addr)
 }
