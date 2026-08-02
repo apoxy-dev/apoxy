@@ -45,7 +45,7 @@ func TestVPCNetworkReconcilerFeedsCredentialsAndNetworkID(t *testing.T) {
 		Build()
 
 	relay := &recordingRelay{stubRelay: stubRelay{name: "relay-0"}, creds: map[string]string{}}
-	pub := NewTunnelPublisher(c, relay, ipalloc.NewLocalSlotLeaser(), vni.NewVNIAllocator(), ipalloc.NewV4SlicePool())
+	pub := NewTunnelPublisher(c, relay, ipalloc.NewLocalSlotLeaser(), vni.NewVNIAllocator())
 	r := NewVPCNetworkReconciler(c, relay, pub)
 
 	_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKey{Name: "corp"}})
@@ -76,7 +76,7 @@ func TestVPCNetworkReconcilerEgressIsDeterministicAcrossNetworks(t *testing.T) {
 		WithObjects(net("corp", true), net("guest", false)).
 		Build()
 	relay := &recordingRelay{stubRelay: stubRelay{name: "relay-0"}, creds: map[string]string{}}
-	pub := NewTunnelPublisher(c, relay, ipalloc.NewLocalSlotLeaser(), vni.NewVNIAllocator(), ipalloc.NewV4SlicePool())
+	pub := NewTunnelPublisher(c, relay, ipalloc.NewLocalSlotLeaser(), vni.NewVNIAllocator())
 	r := NewVPCNetworkReconciler(c, relay, pub)
 
 	reconcile := func(name string) {
@@ -116,7 +116,7 @@ func TestVPCNetworkReconcilerDeletionTearsDownNetwork(t *testing.T) {
 		WithObjects(network).
 		Build()
 	relay := &recordingRelay{stubRelay: stubRelay{name: "relay-0"}, creds: map[string]string{}}
-	pub := NewTunnelPublisher(c, relay, ipalloc.NewLocalSlotLeaser(), vni.NewVNIAllocator(), ipalloc.NewV4SlicePool())
+	pub := NewTunnelPublisher(c, relay, ipalloc.NewLocalSlotLeaser(), vni.NewVNIAllocator())
 	r := NewVPCNetworkReconciler(c, relay, pub)
 
 	_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKey{Name: "corp"}})
@@ -140,7 +140,7 @@ func TestVPCNetworkReconcilerIgnoresMissing(t *testing.T) {
 	ctx := context.Background()
 	c := fake.NewClientBuilder().WithScheme(publisherScheme(t)).Build()
 	relay := &recordingRelay{stubRelay: stubRelay{name: "relay-0"}, creds: map[string]string{}}
-	pub := NewTunnelPublisher(c, relay, ipalloc.NewLocalSlotLeaser(), vni.NewVNIAllocator(), ipalloc.NewV4SlicePool())
+	pub := NewTunnelPublisher(c, relay, ipalloc.NewLocalSlotLeaser(), vni.NewVNIAllocator())
 	r := NewVPCNetworkReconciler(c, relay, pub)
 
 	_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKey{Name: "gone"}})

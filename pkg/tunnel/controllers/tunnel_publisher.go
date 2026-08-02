@@ -64,14 +64,11 @@ type connAlloc struct {
 
 // NewTunnelPublisher creates a TunnelPublisher and wires it to the relay's
 // connect/disconnect callbacks.
-// v4 must be the SAME pool for every publisher sharing a relay: a relay serving
-// several tenants runs one publisher each, and per-publisher pools hand the same
-// /32 to two of them.
-func NewTunnelPublisher(c client.Client, relay Relay, leaser ipalloc.SlotLeaser, vnis vniAllocator, v4 *ipalloc.V4SlicePool) *TunnelPublisher {
+func NewTunnelPublisher(c client.Client, relay Relay, leaser ipalloc.SlotLeaser, vnis vniAllocator) *TunnelPublisher {
 	p := &TunnelPublisher{
 		client:    c,
 		relayName: relay.Name(),
-		slots:     newSlotAllocator(leaser, v4),
+		slots:     newSlotAllocator(leaser),
 		vnis:      vnis,
 		networks:  make(map[string]tunnet.NetworkID),
 		conns:     make(map[string]*connAlloc),

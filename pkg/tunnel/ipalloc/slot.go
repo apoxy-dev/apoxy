@@ -81,6 +81,15 @@ type Slot struct {
 	Network tunnet.NetworkID
 	// ID is the 16-bit endpoint identifier, unique within Network.
 	ID tunnet.EndpointID
+	// V4 is the /24 backing the slot's best-effort IPv4, assigned by the
+	// leaser. Its uniqueness domain is wider than the slot id's: the id is
+	// unique per network, but an agent connected to several relays demuxes v4
+	// by bare source address, and a relay routes every network through one
+	// route table — so the /24 must not repeat across relays or networks. The
+	// infra leaser allocates it globally (from 240.0.0.0/4); the local leaser
+	// from its process-wide pool, which is the whole world in OSS. A zero
+	// value runs the slot v6-only (§2.4).
+	V4 netip.Prefix
 }
 
 // SlotLeaser hands out endpoint slots within a network. A relay holds at least

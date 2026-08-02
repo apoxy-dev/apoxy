@@ -2,6 +2,8 @@ package ipalloc
 
 import (
 	"context"
+	"encoding/binary"
+	"net/netip"
 	"sync"
 
 	"gvisor.dev/gvisor/pkg/bitmap"
@@ -25,12 +27,18 @@ const maxSlots = 1 << 16
 type LocalSlotLeaser struct {
 	mu   sync.Mutex
 	nets map[tunnet.NetworkID]*bitmap.Bitmap
+	// v4 backs each leased slot with a /24 of 100.64.0.0/10. The pool spans
+	// every network the process serves: a single process is the whole
+	// deployment here, so process-wide uniqueness is global uniqueness — the
+	// property the infra leaser provides with 240.0.0.0/4 in cloud.
+	v4 *V4SlicePool
 }
 
 // NewLocalSlotLeaser returns a LocalSlotLeaser.
 func NewLocalSlotLeaser() *LocalSlotLeaser {
 	return &LocalSlotLeaser{
 		nets: make(map[tunnet.NetworkID]*bitmap.Bitmap),
+		v4:   NewV4SlicePool(),
 	}
 }
 
@@ -54,7 +62,14 @@ func (l *LocalSlotLeaser) Lease(_ context.Context, network tunnet.NetworkID) (Sl
 	}
 	bm.Add(i)
 
-	return Slot{Network: network, ID: tunnet.EndpointID{byte(i >> 8), byte(i)}}, nil
+	s := Slot{Network: network, ID: tunnet.EndpointID{byte(i >> 8), byte(i)}}
+	// v4 is best-effort (§2.4): an exhausted pool leases the slot v6-only.
+	if base, ok := l.v4.take(i); ok {
+		var b [4]byte
+		binary.BigEndian.PutUint32(b[:], base)
+		s.V4 = netip.PrefixFrom(netip.AddrFrom4(b), 24)
+	}
+	return s, nil
 }
 
 // Renew is a no-op: local leases have no TTL.
@@ -72,5 +87,8 @@ func (l *LocalSlotLeaser) Release(_ context.Context, s Slot) error {
 		return nil
 	}
 	bm.Remove(uint32(s.ID[0])<<8 | uint32(s.ID[1]))
+	if s.V4.IsValid() {
+		l.v4.put(binary.BigEndian.Uint32(s.V4.Masked().Addr().AsSlice()))
+	}
 	return nil
 }

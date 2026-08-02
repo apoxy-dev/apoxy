@@ -14,8 +14,8 @@ const (
 	// ConnsPerSlot of these are actually allocatable.
 	connSlots = 1 << 8
 
-	// v4PerSlot is how many IPv4 addresses a slot gets: a /24 of
-	// 100.64.0.0/10, matching the connection count.
+	// v4PerSlot is how many IPv4 addresses a slot gets: one /24, matching the
+	// connection count.
 	v4PerSlot = 1 << 8
 
 	// v4Slices is how many /24s 100.64.0.0/10 holds: 22 host bits, 8 of them
@@ -24,20 +24,19 @@ const (
 )
 
 // v4CGNATBase is the uint32 of 100.64.0.0, the base of the 100.64.0.0/10 range
-// (§2.4) sliced into a /24 per v4-backed slot.
+// (§2.4) the local leaser slices into a /24 per v4-backed slot.
 var v4CGNATBase = binary.BigEndian.Uint32(netip.MustParseAddr("100.64.0.0").AsSlice())
 
-// V4SlicePool hands out the /24s of 100.64.0.0/10, one per slot. One pool per
-// relay: slot ids repeat across networks, and the relay routes every network
-// through one route table. The slot id is the preferred index; contention
-// probes upward.
+// V4SlicePool hands out the /24s of 100.64.0.0/10, one per slot. It backs
+// LocalSlotLeaser, where one process is the whole deployment; cloud slots get
+// their /24 from the infra endpoint allocator instead, which allocates
+// globally so the same /32 can never reach one agent from two relays.
 type V4SlicePool struct {
 	mu   sync.Mutex
 	used bitmap.Bitmap
 }
 
-// NewV4SlicePool returns an empty pool over 100.64.0.0/10. Create exactly one
-// per relay and pass it to every ConnAllocator the relay builds.
+// NewV4SlicePool returns an empty pool over 100.64.0.0/10.
 func NewV4SlicePool() *V4SlicePool {
 	return &V4SlicePool{used: bitmap.New(v4Slices)}
 }
@@ -75,42 +74,35 @@ func (p *V4SlicePool) put(base uint32) {
 // against concurrent connect/disconnect.
 //
 // Each connection gets a /96 (IPv6, always) and a /32 (IPv4, best-effort). The
-// v4 pool is the weaker of the two by design: v4 is egress-only, so v4
-// exhaustion — or a relay with no free /24 left to back the slot — degrades a
-// connection to v6-only rather than failing it. The /24 comes from V4SlicePool.
+// v4 side is the weaker of the two by design: v4 is egress-only, so v4
+// exhaustion — or a slot leased without a /24 — degrades a connection to
+// v6-only rather than failing it. The /24 is the slot's own (Slot.V4); its
+// lifetime is the lease's, so there is nothing to return here when the slot
+// goes away.
 type ConnAllocator struct {
 	slot    Slot
-	pool    *V4SlicePool
-	hasV4   bool   // false when the relay had no /24 left to back this slot
-	v4slice uint32 // uint32 base of this slot's /24 of 100.64.0.0/10
+	hasV4   bool   // false when the leaser had no /24 to back this slot
+	v4slice uint32 // uint32 base of this slot's /24
 
 	mu sync.Mutex
 	v6 bitmap.Bitmap
 	v4 bitmap.Bitmap
-	// v4live counts /32s handed out and not yet released; a retired allocator
-	// returns its /24 once it hits zero.
-	v4live  int
-	retired bool
 }
 
-// NewConnAllocator returns an allocator over a leased slot, backed for v4 by
-// the relay-wide slice pool. A nil pool runs the slot v6-only.
-func NewConnAllocator(s Slot, v4Pool *V4SlicePool) *ConnAllocator {
+// NewConnAllocator returns an allocator over a leased slot.
+func NewConnAllocator(s Slot) *ConnAllocator {
 	a := &ConnAllocator{
 		slot: s,
-		pool: v4Pool,
 		v6:   bitmap.New(connSlots),
 	}
 	// Connection index 0 is the slot's own endpoint /96: the infrastructure
 	// allocator owns that address, so it is never available to a connection.
 	a.v6.Add(0)
 
-	if v4Pool != nil {
-		if base, ok := v4Pool.take(slotID(s)); ok {
-			a.hasV4 = true
-			a.v4slice = base
-			a.v4 = bitmap.New(v4PerSlot)
-		}
+	if s.V4.IsValid() {
+		a.hasV4 = true
+		a.v4slice = binary.BigEndian.Uint32(s.V4.Masked().Addr().AsSlice())
+		a.v4 = bitmap.New(v4PerSlot)
 	}
 	return a
 }
@@ -131,10 +123,9 @@ func (a *ConnAllocator) Allocate() (v6 netip.Prefix, v4 netip.Prefix, err error)
 	v6 = ConnPrefix(a.slot, uint8(i6))
 
 	// v4 is best-effort: exhaustion degrades to v6-only, not an error.
-	if a.hasV4 && !a.retired {
+	if a.hasV4 {
 		if i4, err4 := a.v4.FirstZero(0); err4 == nil && i4 < v4PerSlot {
 			a.v4.Add(i4)
-			a.v4live++
 			v4 = a.v4PrefixAt(i4)
 		}
 	}
@@ -155,7 +146,7 @@ func (a *ConnAllocator) Release(v6, v4 netip.Prefix) {
 	// encodes only the connection, not the slot), and for v4 the index would
 	// underflow and index the bitmap out of range (a panic).
 	if v6.IsValid() {
-		if s, conn, ok := SlotOf(v6); ok && s == a.slot {
+		if s, conn, ok := SlotOf(v6); ok && s.Network == a.slot.Network && s.ID == a.slot.ID {
 			a.v6.Remove(uint32(conn))
 		}
 	}
@@ -163,30 +154,9 @@ func (a *ConnAllocator) Release(v6, v4 netip.Prefix) {
 		if au := v4.Addr().Unmap(); au.Is4() {
 			if u := binary.BigEndian.Uint32(au.AsSlice()); u >= a.v4slice && u < a.v4slice+v4PerSlot {
 				a.v4.Remove(u - a.v4slice)
-				a.v4live--
-				a.returnSliceLocked()
 			}
 		}
 	}
-}
-
-// Close retires the allocator: its slot is no longer held. The /24 returns to
-// the pool once the last /32 routed on it is released.
-func (a *ConnAllocator) Close() {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.retired = true
-	a.returnSliceLocked()
-}
-
-// returnSliceLocked gives the slot's /24 back once it is retired and idle.
-// Callers must hold a.mu.
-func (a *ConnAllocator) returnSliceLocked() {
-	if !a.retired || !a.hasV4 || a.v4live > 0 {
-		return
-	}
-	a.pool.put(a.v4slice)
-	a.hasV4 = false
 }
 
 // Full reports whether the v6 pool is exhausted, i.e. the caller must lease

@@ -206,7 +206,7 @@ var tunnelRelayCmd = &cobra.Command{
 		// and writes the single-writer Tunnel object (APO-825 §2.4/§2.8).
 		leaser := ipalloc.NewLocalSlotLeaser()
 		vnis := vni.NewVNIAllocator(vni.WithRandomBase())
-		publisher := controllers.NewTunnelPublisher(mgr.GetClient(), relay, leaser, vnis, ipalloc.NewV4SlicePool())
+		publisher := controllers.NewTunnelPublisher(mgr.GetClient(), relay, leaser, vnis)
 
 		// The VPCNetwork watcher feeds the relay each network's connect credential
 		// and resolves network names to NetworkIDs for the publisher.

@@ -18,11 +18,6 @@ import (
 // apiserver or relay state; the TunnelPublisher composes it.
 type slotAllocator struct {
 	leaser ipalloc.SlotLeaser
-	// v4 spans every network AND every tenant on this relay: slot ids repeat
-	// across both, and the relay routes them all through one route table. It is
-	// owned by the caller precisely so a multi-tenant relay cannot end up with
-	// one pool per publisher, which reinstates the collision a level up.
-	v4 *ipalloc.V4SlicePool
 
 	mu   sync.Mutex
 	nets map[tunnet.NetworkID]*netAllocs
@@ -34,12 +29,12 @@ type netAllocs struct {
 	allocs []*ipalloc.ConnAllocator
 }
 
-// newSlotAllocator creates a slotAllocator over the given leaser, drawing v4
-// slices from the caller's relay-wide pool.
-func newSlotAllocator(leaser ipalloc.SlotLeaser, v4 *ipalloc.V4SlicePool) *slotAllocator {
+// newSlotAllocator creates a slotAllocator over the given leaser. A slot's
+// v4 /24 comes with the lease (Slot.V4), so the leaser — not this allocator —
+// is where cross-network and cross-tenant v4 disjointness is established.
+func newSlotAllocator(leaser ipalloc.SlotLeaser) *slotAllocator {
 	return &slotAllocator{
 		leaser: leaser,
-		v4:     v4,
 		nets:   make(map[tunnet.NetworkID]*netAllocs),
 	}
 }
@@ -71,7 +66,7 @@ func (b *slotAllocator) Allocate(ctx context.Context, netID tunnet.NetworkID) (v
 	if err != nil {
 		return netip.Prefix{}, netip.Prefix{}, nil, fmt.Errorf("failed to lease slot: %w", err)
 	}
-	a := ipalloc.NewConnAllocator(blk, b.v4)
+	a := ipalloc.NewConnAllocator(blk)
 	na.slots = append(na.slots, blk)
 	na.allocs = append(na.allocs, a)
 
@@ -100,9 +95,6 @@ func (b *slotAllocator) ReleaseNetwork(ctx context.Context, netID tunnet.Network
 	if na == nil {
 		return
 	}
-	for _, a := range na.allocs {
-		a.Close()
-	}
 	for _, blk := range na.slots {
 		if err := b.leaser.Release(ctx, blk); err != nil {
 			slog.Warn("Failed to release slot for deleted network", slog.Any("error", err))
@@ -122,8 +114,7 @@ func (b *slotAllocator) InvalidateSlot(s ipalloc.Slot) {
 		return
 	}
 	for i, blk := range na.slots {
-		if blk == s {
-			na.allocs[i].Close()
+		if blk.Network == s.Network && blk.ID == s.ID {
 			na.slots = append(na.slots[:i], na.slots[i+1:]...)
 			na.allocs = append(na.allocs[:i], na.allocs[i+1:]...)
 			return
@@ -137,9 +128,6 @@ func (b *slotAllocator) ReleaseAll(ctx context.Context) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	for netID, na := range b.nets {
-		for _, a := range na.allocs {
-			a.Close()
-		}
 		for _, blk := range na.slots {
 			if err := b.leaser.Release(ctx, blk); err != nil {
 				slog.Warn("Failed to release slot during drain", slog.Any("error", err))

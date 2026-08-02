@@ -47,7 +47,7 @@ func TestSlotAllocator(t *testing.T) {
 	netB := tunnet.NetworkID{0x00, 0x20, 0x02}
 
 	t.Run("allocates a dual-stack address and frees it for reuse", func(t *testing.T) {
-		b := newSlotAllocator(ipalloc.NewLocalSlotLeaser(), ipalloc.NewV4SlicePool())
+		b := newSlotAllocator(ipalloc.NewLocalSlotLeaser())
 
 		v6a, v4a, alloc, err := b.Allocate(ctx, netA)
 		require.NoError(t, err)
@@ -70,7 +70,7 @@ func TestSlotAllocator(t *testing.T) {
 
 	t.Run("surfaces a lease failure", func(t *testing.T) {
 		leaser := &countingLeaser{inner: ipalloc.NewLocalSlotLeaser(), leaseErr: errors.New("no slots")}
-		b := newSlotAllocator(leaser, ipalloc.NewV4SlicePool())
+		b := newSlotAllocator(leaser)
 
 		_, _, _, err := b.Allocate(ctx, netA)
 		require.Error(t, err)
@@ -78,7 +78,7 @@ func TestSlotAllocator(t *testing.T) {
 	})
 
 	t.Run("never repeats a /32 across the networks it serves", func(t *testing.T) {
-		b := newSlotAllocator(ipalloc.NewLocalSlotLeaser(), ipalloc.NewV4SlicePool())
+		b := newSlotAllocator(ipalloc.NewLocalSlotLeaser())
 
 		// Slot ids are numbered per network, so every network's first slot
 		// carries the same id; one route table means the /32s must still come
@@ -97,7 +97,7 @@ func TestSlotAllocator(t *testing.T) {
 	})
 
 	t.Run("Release tolerates a nil allocator", func(t *testing.T) {
-		b := newSlotAllocator(ipalloc.NewLocalSlotLeaser(), ipalloc.NewV4SlicePool())
+		b := newSlotAllocator(ipalloc.NewLocalSlotLeaser())
 		require.NotPanics(t, func() {
 			b.Release(nil, netip.MustParsePrefix("fd00::/96"), netip.MustParsePrefix("10.0.0.0/32"))
 		})
@@ -105,7 +105,7 @@ func TestSlotAllocator(t *testing.T) {
 
 	t.Run("ReleaseAll drains every leased slot exactly once", func(t *testing.T) {
 		leaser := &countingLeaser{inner: ipalloc.NewLocalSlotLeaser()}
-		b := newSlotAllocator(leaser, ipalloc.NewV4SlicePool())
+		b := newSlotAllocator(leaser)
 
 		// First allocation on each network leases one block apiece.
 		_, _, _, err := b.Allocate(ctx, netA)

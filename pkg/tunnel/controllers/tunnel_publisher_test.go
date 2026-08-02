@@ -77,7 +77,7 @@ func newPublisher(t *testing.T) (*TunnelPublisher, client.Client, tunnet.Network
 		WithScheme(publisherScheme(t)).
 		WithStatusSubresource(&vpcv1alpha1.Tunnel{}).
 		Build()
-	p := NewTunnelPublisher(c, stubRelay{name: "relay-0"}, ipalloc.NewLocalSlotLeaser(), vni.NewVNIAllocator(), ipalloc.NewV4SlicePool())
+	p := NewTunnelPublisher(c, stubRelay{name: "relay-0"}, ipalloc.NewLocalSlotLeaser(), vni.NewVNIAllocator())
 	netID := tunnet.NetworkID{0x00, 0x00, 0x01}
 	p.SetNetworkID("corp", netID)
 	return p, c, netID
@@ -211,7 +211,7 @@ func TestTunnelPublisherOnDisconnectReleasesDespiteDeleteError(t *testing.T) {
 			},
 		}).
 		Build()
-	p := NewTunnelPublisher(c, stubRelay{name: "relay-0"}, ipalloc.NewLocalSlotLeaser(), vni.NewVNIAllocator(), ipalloc.NewV4SlicePool())
+	p := NewTunnelPublisher(c, stubRelay{name: "relay-0"}, ipalloc.NewLocalSlotLeaser(), vni.NewVNIAllocator())
 	p.SetNetworkID("corp", tunnet.NetworkID{0x00, 0x00, 0x01})
 
 	conn := &fakeConn{id: "conn-d", network: "corp"}
@@ -278,18 +278,18 @@ func TestLabelValue(t *testing.T) {
 // TestTunnelPublisherSharedV4Pool covers the multi-tenant relay shape: one
 // publisher per tenant, every publisher on the same relay and so on the same
 // route table. Slot ids restart at the floor for each network, so two tenants'
-// first connections only get different /32s if the publishers draw from one
-// pool.
+// first connections only get different /32s if the shared leaser hands their
+// slots disjoint /24s.
 func TestTunnelPublisherSharedV4Pool(t *testing.T) {
 	ctx := context.Background()
-	pool := ipalloc.NewV4SlicePool()
+	leaser := ipalloc.NewLocalSlotLeaser()
 
 	connect := func(netID tunnet.NetworkID, id string) (v6, v4 netip.Prefix) {
 		c := fake.NewClientBuilder().
 			WithScheme(publisherScheme(t)).
 			WithStatusSubresource(&vpcv1alpha1.Tunnel{}).
 			Build()
-		p := NewTunnelPublisher(c, stubRelay{name: "relay-0"}, ipalloc.NewLocalSlotLeaser(), vni.NewVNIAllocator(), pool)
+		p := NewTunnelPublisher(c, stubRelay{name: "relay-0"}, leaser, vni.NewVNIAllocator())
 		p.SetNetworkID("corp", netID)
 		conn := &fakeConn{id: id, network: "corp"}
 		require.NoError(t, p.OnConnect(ctx, id, id, conn))
