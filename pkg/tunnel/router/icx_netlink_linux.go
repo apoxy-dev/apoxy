@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -55,6 +56,9 @@ type ICXNetlinkRouter struct {
 	iptV4, iptV6  utiliptables.Interface
 	extAddrs      addrselect.List
 	closeOnce     sync.Once
+
+	dnatMu   sync.Mutex
+	dnatDsts map[netip.Addr]struct{}
 }
 
 func NewICXNetlinkRouter(opts ...Option) (*ICXNetlinkRouter, error) {
@@ -425,6 +429,9 @@ func (r *ICXNetlinkRouter) setupDNAT() error {
 }
 
 func (r *ICXNetlinkRouter) syncDNATChain() error {
+	r.dnatMu.Lock()
+	defer r.dnatMu.Unlock()
+
 	natChains := proxyutil.NewLineBuffer()
 	natChains.Write(utiliptables.MakeChainLine(ChainA3yTunRules))
 
@@ -432,20 +439,20 @@ func (r *ICXNetlinkRouter) syncDNATChain() error {
 
 	peers := r.Handler.ListVirtualNetworks()
 
-	slog.Info("Syncing DNAT rules", slog.Int("num_peers", len(peers)))
-
+	dsts := make(map[netip.Addr]struct{})
 	for i, peer := range peers {
 		// Under source learning the remote endpoint may not be learned yet.
 		peerAddr := "<unlearned>"
 		if ra := peer.RemoteAddr(); ra != nil {
 			peerAddr = ra.Addr.String()
 		}
-		slog.Info("Adding DNAT rules for peer", slog.String("peer", peerAddr))
+		slog.Debug("Adding DNAT rules for peer", slog.String("peer", peerAddr))
 
 		for _, route := range peer.AllowedRoutes() {
 			if route.Dst.Addr().Is4() { // Skipping IPv4 peers - only IPv6 tunnel ingress is supported.
 				continue
 			}
+			dsts[route.Dst.Addr()] = struct{}{}
 			natRules.Write(
 				"-A", string(ChainA3yTunRules),
 				"-m", "statistic",
@@ -455,6 +462,30 @@ func (r *ICXNetlinkRouter) syncDNATChain() error {
 				"--to-destination", route.Dst.Addr().String(),
 			)
 		}
+	}
+
+	// Only surface syncs that actually change the DNAT destination set;
+	// no-op resyncs (e.g. session churn behind the same addresses) stay at Debug.
+	var added, removed []string
+	for d := range dsts {
+		if _, ok := r.dnatDsts[d]; !ok {
+			added = append(added, d.String())
+		}
+	}
+	for d := range r.dnatDsts {
+		if _, ok := dsts[d]; !ok {
+			removed = append(removed, d.String())
+		}
+	}
+	if len(added) > 0 || len(removed) > 0 {
+		sort.Strings(added)
+		sort.Strings(removed)
+		slog.Info("Syncing DNAT rules",
+			slog.Int("num_peers", len(peers)),
+			slog.Any("added", added),
+			slog.Any("removed", removed))
+	} else {
+		slog.Debug("Syncing DNAT rules", slog.Int("num_peers", len(peers)))
 	}
 
 	iptNewData := bytes.NewBuffer(nil)
@@ -471,6 +502,8 @@ func (r *ICXNetlinkRouter) syncDNATChain() error {
 	); err != nil {
 		return fmt.Errorf("failed to execute iptables-restore: %w", err)
 	}
+
+	r.dnatDsts = dsts
 
 	return nil
 }
