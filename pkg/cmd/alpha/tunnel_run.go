@@ -3,7 +3,9 @@ package alpha
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/netip"
@@ -19,6 +21,7 @@ import (
 	"github.com/apoxy-dev/apoxy/client/versioned"
 	vpcclient "github.com/apoxy-dev/apoxy/client/versioned/typed/vpc/v1alpha1"
 	apoxyconfig "github.com/apoxy-dev/apoxy/config"
+	"github.com/apoxy-dev/apoxy/pkg/cmd/utils"
 	tunnelagent "github.com/apoxy-dev/apoxy/pkg/tunnel/agent"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/metrics"
 )
@@ -37,6 +40,7 @@ var (
 	healthAddr         string            // listen address for health endpoint (e.g. ":8080"); empty disables
 	agentLabels        map[string]string // agent-declared labels for VPCService selection (--label)
 	advertisedRoutes   []string          // CIDRs reachable behind this agent (--route)
+	noTUI              bool              // disable the interactive connection display
 )
 
 var tunnelRunCmd = &cobra.Command{
@@ -54,6 +58,19 @@ var tunnelRunCmd = &cobra.Command{
 			if _, err := netip.ParsePrefix(r); err != nil {
 				return fmt.Errorf("invalid --route: %w", err)
 			}
+		}
+		cmd.SilenceUsage = true
+
+		resolvedAgentName, resolvedTunnelName, generatedName := resolveTunnelDefaults(agentName, tunnelName)
+		useTUI := !noTUI && !apoxyconfig.Verbose && utils.IsInteractive()
+		status := newTunnelRunStatus(
+			cmd.OutOrStdout(), resolvedAgentName, resolvedTunnelName, generatedName, minConns, useTUI,
+		)
+		defer status.Close()
+		if useTUI {
+			logger := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
+			defer slog.SetDefault(logger)
 		}
 
 		// relayLister, when set (discovery mode), returns the current set of
@@ -98,12 +115,12 @@ var tunnelRunCmd = &cobra.Command{
 			// carry the dialable underlay addresses. The relay no longer reports a
 			// peer list in ConnectResponse (§2.3) — the agent discovers and tracks
 			// relays directly from the apiserver.
-			network, err := vpcClient.VPCNetworks().Get(cmd.Context(), tunnelName, metav1.GetOptions{})
+			network, err := vpcClient.VPCNetworks().Get(cmd.Context(), resolvedTunnelName, metav1.GetOptions{})
 			if err != nil {
-				return fmt.Errorf("fetching VPCNetwork %q: %w", tunnelName, err)
+				return fmt.Errorf("fetching VPCNetwork %q: %w", resolvedTunnelName, err)
 			}
 			if network.Status.Credentials == nil || network.Status.Credentials.Token == "" {
-				return fmt.Errorf("network %q has no credentials configured", tunnelName)
+				return fmt.Errorf("network %q has no credentials configured", resolvedTunnelName)
 			}
 			token = network.Status.Credentials.Token
 
@@ -114,7 +131,7 @@ var tunnelRunCmd = &cobra.Command{
 				return err
 			}
 			if discoveredRelays.Len() == 0 {
-				return fmt.Errorf("no ready relays serving network %q", tunnelName)
+				return fmt.Errorf("no ready relays serving network %q", resolvedTunnelName)
 			}
 		}
 
@@ -149,8 +166,8 @@ var tunnelRunCmd = &cobra.Command{
 
 		g.Go(func() error {
 			return tunnelagent.Run(ctx, tunnelagent.Config{
-				Agent:            agentName,
-				Network:          tunnelName,
+				Agent:            resolvedAgentName,
+				Network:          resolvedTunnelName,
 				Token:            token,
 				Labels:           agentLabels,
 				AdvertisedRoutes: advertisedRoutes,
@@ -158,26 +175,45 @@ var tunnelRunCmd = &cobra.Command{
 				// lifetime; the relay stamps it onto each Tunnel so multiple
 				// connections from one process are attributable to the same
 				// instance.
-				Instance:        metrics.AgentProcessID(),
-				SeedRelayAddr:   seedRelayAddr,
-				SeedRelays:      discoveredRelays,
-				RelayLister:     relayLister,
-				MinConns:        minConns,
-				TLSConfig:       &tls.Config{InsecureSkipVerify: insecureSkipVerify},
-				SocksListenAddr: socksListenAddr,
-				PcapPath:        pcapPath,
-				TunMode:         tunMode,
-				TunIfaceName:    tunIfaceName,
+				Instance:           metrics.AgentProcessID(),
+				SeedRelayAddr:      seedRelayAddr,
+				SeedRelays:         discoveredRelays,
+				RelayLister:        relayLister,
+				MinConns:           minConns,
+				TLSConfig:          &tls.Config{InsecureSkipVerify: insecureSkipVerify},
+				SocksListenAddr:    socksListenAddr,
+				PcapPath:           pcapPath,
+				TunMode:            tunMode,
+				TunIfaceName:       tunIfaceName,
+				ConnectionObserver: status.Observe,
 			})
 		})
 
-		return g.Wait()
+		if err := g.Wait(); err != nil && !errors.Is(err, context.Canceled) {
+			return err
+		}
+		return nil
 	},
 }
 
+func resolveTunnelDefaults(name, network string) (resolvedName, resolvedNetwork string, generated bool) {
+	resolvedName = strings.TrimSpace(name)
+	if resolvedName == "" {
+		resolvedName = utils.DockerName()
+		generated = true
+	}
+	resolvedNetwork = strings.TrimSpace(network)
+	if resolvedNetwork == "" {
+		resolvedNetwork = "default"
+	}
+	return resolvedName, resolvedNetwork, generated
+}
+
 func init() {
-	tunnelRunCmd.Flags().StringVarP(&agentName, "agent", "a", "", "The name of this agent.")
-	tunnelRunCmd.Flags().StringVar(&tunnelName, "vpc", "", "The VPC network to connect to.")
+	tunnelRunCmd.Flags().StringVarP(&agentName, "name", "n", "", "Tunnel name (default: a random Docker-style name).")
+	tunnelRunCmd.Flags().StringVarP(&agentName, "agent", "a", "", "Deprecated alias for --name.")
+	cobra.CheckErr(tunnelRunCmd.Flags().MarkDeprecated("agent", "use --name instead"))
+	tunnelRunCmd.Flags().StringVar(&tunnelName, "vpc", "default", "The VPC network to connect to.")
 	tunnelRunCmd.Flags().StringVarP(&seedRelayAddr, "relay-addr", "r", "", "Seed relay address (host:port), required if not using kubernetes-based discovery.")
 	tunnelRunCmd.Flags().IntVar(&minConns, "min-conns", 1, "Minimum number of relays to maintain connections to (randomly selected from the discovered relay set).")
 	tunnelRunCmd.Flags().StringVarP(&token, "token", "k", "", "The token to use for authenticating with the tunnel relays, required if not using kubernetes-based discovery.")
@@ -189,9 +225,7 @@ func init() {
 	tunnelRunCmd.Flags().StringVar(&healthAddr, "health-addr", "localhost:8080", "Listen address for health endpoint (e.g. \":8080\"). Empty disables.")
 	tunnelRunCmd.Flags().StringToStringVar(&agentLabels, "label", nil, "Agent-declared label (key=value) for VPCService selection; repeatable. Bounded by the credential's allowed label sets.")
 	tunnelRunCmd.Flags().StringArrayVar(&advertisedRoutes, "route", nil, "CIDR reachable behind this agent, advertised to the relay; repeatable. Bounded by the credential's allowed routes.")
-
-	cobra.CheckErr(tunnelRunCmd.MarkFlagRequired("agent"))
-	cobra.CheckErr(tunnelRunCmd.MarkFlagRequired("vpc"))
+	tunnelRunCmd.Flags().BoolVar(&noTUI, "no-tui", false, "Disable the interactive connection display.")
 
 	tunnelCmd.AddCommand(tunnelRunCmd)
 }

@@ -7,34 +7,12 @@ import (
 	"path/filepath"
 
 	sigyaml "sigs.k8s.io/yaml"
-)
 
-// Docker-style name parts: an adjective and a notable scientist or engineer.
-// Both lists contain only DNS-1123-safe lowercase words so the joined name is
-// always a valid Service name.
-var (
-	serviceNameAdjectives = []string{
-		"agile", "amber", "bold", "brave", "bright", "calm", "clever",
-		"cosmic", "crimson", "curious", "eager", "elegant", "fervent",
-		"gentle", "golden", "happy", "keen", "lively", "lucid", "mellow",
-		"nimble", "noble", "polished", "quiet", "rapid", "serene", "sharp",
-		"silent", "solid", "stellar", "swift", "tidy", "vivid", "warm",
-		"witty", "zesty",
-	}
-	serviceNameNouns = []string{
-		"agnesi", "babbage", "banach", "bassi", "bohr", "boole", "borg",
-		"cerf", "clarke", "curie", "darwin", "dijkstra", "euclid", "euler",
-		"fermat", "feynman", "franklin", "galileo", "gauss", "hamilton",
-		"hopper", "hypatia", "kepler", "knuth", "lamarr", "lamport",
-		"leakey", "lovelace", "mcclintock", "mirzakhani", "newton",
-		"noether", "pasteur", "perlman", "ritchie", "shannon", "tesla",
-		"thompson", "turing", "wozniak",
-	}
+	"github.com/apoxy-dev/apoxy/pkg/cmd/utils"
 )
 
 // randomName returns a random "adjective-noun" pair drawn from the given
-// lists. Shared by every command that mints a friendly identifier so name
-// generation has one mechanism even where the vocabularies differ.
+// lists. Some commands use their own vocabularies instead of Docker names.
 func randomName(adjs, nouns []string) string {
 	return adjs[rand.IntN(len(adjs))] + "-" + nouns[rand.IntN(len(nouns))]
 }
@@ -42,7 +20,7 @@ func randomName(adjs, nouns []string) string {
 // generateServiceName returns a random docker-style adjective-noun pair,
 // e.g. "elegant-turing".
 func generateServiceName() string {
-	return randomName(serviceNameAdjectives, serviceNameNouns)
+	return utils.DockerName()
 }
 
 // bootstrapServiceManifest renders the minimal Service manifest deploy

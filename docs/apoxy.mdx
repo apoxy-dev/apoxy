@@ -357,12 +357,13 @@ apoxy alpha tunnel run [flags]
 ### Options
 
 ```
-  -a, --agent string           The name of this agent.
       --health-addr string     Listen address for health endpoint (e.g. ":8080"). Empty disables. (default "localhost:8080")
   -h, --help                   help for run
       --insecure-skip-verify   Skip TLS certificate verification for relay connections.
       --label stringToString   Agent-declared label (key=value) for VPCService selection; repeatable. Bounded by the credential's allowed label sets. (default [])
       --min-conns int          Minimum number of relays to maintain connections to (randomly selected from the discovered relay set). (default 1)
+  -n, --name string            Tunnel name (default: a random Docker-style name).
+      --no-tui                 Disable the interactive connection display.
   -p, --pcap string            Path to an optional packet capture file to write.
   -r, --relay-addr string      Seed relay address (host:port), required if not using kubernetes-based discovery.
       --route stringArray      CIDR reachable behind this agent, advertised to the relay; repeatable. Bounded by the credential's allowed routes.
@@ -370,7 +371,7 @@ apoxy alpha tunnel run [flags]
   -k, --token string           The token to use for authenticating with the tunnel relays, required if not using kubernetes-based discovery.
       --tun                    Use a kernel TUN device for the overlay datapath instead of the in-process netstack + SOCKS proxy. Any process in the same network namespace can then reach overlay destinations by plain kernel route. Linux only; requires NET_ADMIN and /dev/net/tun.
       --tun-ifname string      Name of the TUN interface created in --tun mode. (default "apoxy0")
-      --vpc string             The VPC network to connect to.
+      --vpc string             The VPC network to connect to. (default "default")
 ```
 
 ### Options inherited from parent commands

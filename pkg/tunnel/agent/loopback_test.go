@@ -176,6 +176,8 @@ func TestManageConnectionSlot_EstablishesAndReleases(t *testing.T) {
 	g, gctx := errgroup.WithContext(ctx)
 
 	cfg := loopbackConfig()
+	statusCh := make(chan ConnectionStatus, 16)
+	cfg.ConnectionObserver = func(status ConnectionStatus) { statusCh <- status }
 	tlsConf := &tls.Config{InsecureSkipVerify: true}
 
 	boot, err := bootstrapSession(gctx, cfg, r.Address().String(), pp.QuicMux, tlsConf)
@@ -191,6 +193,18 @@ func TestManageConnectionSlot_EstablishesAndReleases(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return connectionHealthCounter.Load() == 1
 	}, 5*time.Second, 20*time.Millisecond, "slot should establish one live session")
+	require.Eventually(t, func() bool {
+		for {
+			select {
+			case status := <-statusCh:
+				if status.Slot == 0 && status.State == ConnectionStateConnected && status.Relay == r.Address().String() {
+					return true
+				}
+			default:
+				return false
+			}
+		}
+	}, 5*time.Second, 20*time.Millisecond, "slot should publish its connected state")
 
 	// Cancelling ends the session; the slot releases and returns ctx.Err.
 	cancel()

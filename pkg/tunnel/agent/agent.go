@@ -73,6 +73,10 @@ type Config struct {
 	// VTEP sessions) need this: relays do not federate routes, so reaching
 	// agents homed on any relay requires a session to every relay.
 	ConnectAll bool
+	// ConnectionObserver receives lifecycle and traffic snapshots for each
+	// MinConns slot. It is intended for interactive clients and is unused by
+	// ConnectAll consumers. The callback must return promptly.
+	ConnectionObserver func(ConnectionStatus)
 
 	// TLSConfig is used for the QUIC control sessions. Nil means defaults.
 	TLSConfig *tls.Config
@@ -198,9 +202,11 @@ func Run(ctx context.Context, cfg Config) error {
 	// initial probe runs synchronously, before the slots spawn, so even the
 	// first acquisition is informed; later probes only influence future
 	// rotations.
+	var relayLatencies map[string]time.Duration
 	if poolAddrs.Len() > 1 {
-		if order := probeRelays(ctx, tlsConf, poolAddrs.UnsortedList()); len(order) > 0 {
+		if order, latencies := probeRelaysWithLatency(ctx, tlsConf, poolAddrs.UnsortedList()); len(order) > 0 {
 			relayAddressPool.SetPreference(order)
+			relayLatencies = latencies
 		}
 	}
 	if cfg.RelayLister != nil || poolAddrs.Len() > 1 {
@@ -215,8 +221,9 @@ func Run(ctx context.Context, cfg Config) error {
 	//   - connects & manages that session
 	//   - when the session ends, releases the relay
 	for i := 0; i < cfg.MinConns; i++ {
+		slot := i
 		g.Go(func() error {
-			return manageConnectionSlot(ctx, cfg, packetPlane.QuicMux, handler, r, routes, relayAddressPool, tlsConf)
+			return manageConnectionSlotNumbered(ctx, cfg, packetPlane.QuicMux, handler, r, routes, relayAddressPool, tlsConf, slot, relayLatencies)
 		})
 	}
 

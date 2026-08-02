@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/tls"
-	"errors"
 	"log/slog"
 	"net"
 	"net/netip"
@@ -30,6 +29,9 @@ func TestTunnelRun(t *testing.T) {
 		slog.SetLogLoggerLevel(slog.LevelDebug)
 	}
 
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	t.Cleanup(cancel)
+
 	var connected bool
 
 	// onConnect assigns VNI and overlay address so handleConnect can proceed.
@@ -40,6 +42,7 @@ func TestTunnelRun(t *testing.T) {
 		t.Logf("onConnect called, agent=%s", agentName)
 		if agentName == "test-agent" {
 			connected = true
+			cancel()
 		}
 		return nil
 	}
@@ -52,24 +55,17 @@ func TestTunnelRun(t *testing.T) {
 	r, _, stop := startRelay(t, "letmein", onConnect, onDisconnect)
 	t.Cleanup(stop)
 
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-	t.Cleanup(cancel)
-
 	cmd := cmd.RootCmd
 	cmd.SetArgs([]string{
 		"alpha", "tunnel", "run",
-		"--agent", "test-agent",
+		"--name", "test-agent",
 		"--vpc", "test-tunnel",
 		"--relay-addr", r.Address().String(),
 		"--token", "letmein",
 		"--insecure-skip-verify",
 	})
 	cmd.SilenceUsage = true
-	err := cmd.ExecuteContext(ctx)
-	if err != nil && errors.Is(err, context.DeadlineExceeded) {
-		err = nil // expected on timeout
-	}
-	require.NoError(t, err)
+	require.NoError(t, cmd.ExecuteContext(ctx), "context cancellation should stop the tunnel cleanly")
 
 	require.True(t, connected, "expected to be connected")
 

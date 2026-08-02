@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/apoxy-dev/icx"
@@ -188,6 +189,10 @@ func closeSession(client *api.Client, connID string) {
 // It is a var only so tests can compress the drain timeline.
 var drainGracePeriod = 45 * time.Second
 
+// connectionStatusInterval controls how often a live session publishes its
+// byte counters to an optional observer. A var lets tests shorten the cadence.
+var connectionStatusInterval = time.Second
+
 // sessionNotify carries a session's out-of-band signals up to its connection
 // slot. Both callbacks may be invoked at most once and may be nil.
 type sessionNotify struct {
@@ -230,12 +235,17 @@ func manageRelayConnectionOnce(
 	relayAddr string,
 	tlsConf *tls.Config,
 	notify *sessionNotify,
+	slot int,
+	latency time.Duration,
 ) error {
 	var (
 		currentClient *api.Client
 		currentConnID string
 		connectResp   *api.ConnectResponse
 		sessionAddrs  []netip.Prefix
+		connectedAt   time.Time
+		connectTime   time.Duration
+		draining      atomic.Bool
 	)
 
 	// When this function returns, that relay session is down, so decrement
@@ -278,10 +288,12 @@ func manageRelayConnectionOnce(
 	// Keep retrying connect until context canceled.
 	err := retry.Do(
 		func() error {
+			startedAt := time.Now()
 			c, cr, _, err := connectAndInitSession(ctx, cfg, pcQuic, handler, relayAddr, tlsConf)
 			if err != nil {
 				return err
 			}
+			connectTime = time.Since(startedAt)
 			currentClient = c
 			currentConnID = cr.ID
 			connectResp = cr
@@ -308,6 +320,25 @@ func manageRelayConnectionOnce(
 
 	// Successful session establishment: mark this connection active.
 	connectionHealthCounter.Add(1)
+	connectedAt = time.Now()
+	if latency <= 0 {
+		latency = connectTime
+	}
+	statusSnapshot := func(state ConnectionState) ConnectionStatus {
+		status := ConnectionStatus{
+			Slot:        slot,
+			Relay:       relayAddr,
+			State:       state,
+			Latency:     latency,
+			ConnectedAt: connectedAt,
+		}
+		if vnet, ok := handler.GetVirtualNetwork(connectResp.VNI); ok {
+			status.RXBytes = vnet.Stats.RXBytes.Load()
+			status.TXBytes = vnet.Stats.TXBytes.Load()
+		}
+		return status
+	}
+	cfg.reportConnection(statusSnapshot(ConnectionStateConnected))
 	notify.notifyUp()
 
 	// Parse and attach the assigned addresses for this live session.
@@ -366,6 +397,24 @@ func manageRelayConnectionOnce(
 			watchdogInterval,
 		)
 	})
+	if cfg.ConnectionObserver != nil && slot >= 0 {
+		g.Go(func() error {
+			ticker := time.NewTicker(connectionStatusInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-gctx.Done():
+					return gctx.Err()
+				case <-ticker.C:
+					state := ConnectionStateConnected
+					if draining.Load() {
+						state = ConnectionStateDraining
+					}
+					cfg.reportConnection(statusSnapshot(state))
+				}
+			}
+		})
+	}
 	g.Go(func() error {
 		select {
 		case <-gctx.Done():
@@ -374,6 +423,8 @@ func manageRelayConnectionOnce(
 		}
 		slog.Info("Relay announced graceful shutdown; holding session through its lame duck",
 			slog.String("relay", relayAddr))
+		draining.Store(true)
+		cfg.reportConnection(statusSnapshot(ConnectionStateDraining))
 		notify.notifyDraining()
 		// The relay keeps forwarding for its lame-duck period; hang on so
 		// traffic flows until the slot swaps in a replacement session (which
@@ -428,6 +479,21 @@ func startSessionRun(
 	relayAddr string,
 	tlsConf *tls.Config,
 ) *sessionRun {
+	return startSessionRunForSlot(ctx, cfg, pcQuicMux, handler, r, routes, relayAddr, tlsConf, -1, 0)
+}
+
+func startSessionRunForSlot(
+	ctx context.Context,
+	cfg Config,
+	pcQuicMux *conntrackpc.ConntrackPacketConn,
+	handler *icx.Handler,
+	r router.Router,
+	routes *routeReconciler,
+	relayAddr string,
+	tlsConf *tls.Config,
+	slot int,
+	latency time.Duration,
+) *sessionRun {
 	sctx, cancel := context.WithCancel(ctx)
 	run := &sessionRun{
 		relayAddr: relayAddr,
@@ -468,7 +534,7 @@ func startSessionRun(
 			// Run the actual session lifecycle (watchdog, key rotation, etc). The
 			// relay pool is refreshed out-of-band by refreshRelayPool, so no
 			// per-connect pool update is needed here.
-			return manageRelayConnectionOnce(sctx, cfg, pcQuic, handler, r, routes, relayAddr, tlsConf, notify)
+			return manageRelayConnectionOnce(sctx, cfg, pcQuic, handler, r, routes, relayAddr, tlsConf, notify, slot, latency)
 		}()
 	}()
 	return run
@@ -502,15 +568,38 @@ func manageConnectionSlot(
 	relayAddressPool *randalloc.RandAllocator[string],
 	tlsConf *tls.Config,
 ) error {
+	return manageConnectionSlotNumbered(ctx, cfg, pcQuicMux, handler, r, routes, relayAddressPool, tlsConf, 0, nil)
+}
+
+func manageConnectionSlotNumbered(
+	ctx context.Context,
+	cfg Config,
+	pcQuicMux *conntrackpc.ConntrackPacketConn,
+	handler *icx.Handler,
+	r router.Router,
+	routes *routeReconciler,
+	relayAddressPool *randalloc.RandAllocator[string],
+	tlsConf *tls.Config,
+	slot int,
+	relayLatencies map[string]time.Duration,
+) error {
 	// acquireAndStart blocks until the pool hands this slot an exclusive
 	// relay, then launches a session against it.
 	acquireAndStart := func() (*sessionRun, error) {
+		cfg.reportConnection(ConnectionStatus{Slot: slot, State: ConnectionStateConnecting})
 		relayAddr, err := relayAddressPool.Acquire(ctx)
 		if err != nil {
 			return nil, err // ctx canceled, etc.
 		}
 		slog.Info("Acquired relay slot", slog.String("relay", relayAddr))
-		return startSessionRun(ctx, cfg, pcQuicMux, handler, r, routes, relayAddr, tlsConf), nil
+		latency := relayLatencies[relayAddr]
+		cfg.reportConnection(ConnectionStatus{
+			Slot:    slot,
+			Relay:   relayAddr,
+			State:   ConnectionStateConnecting,
+			Latency: latency,
+		})
+		return startSessionRunForSlot(ctx, cfg, pcQuicMux, handler, r, routes, relayAddr, tlsConf, slot, latency), nil
 	}
 
 	// stop cancels a session, waits for it to unwind, and releases its relay.
@@ -524,6 +613,12 @@ func manageConnectionSlot(
 	finish := func(run *sessionRun, sessErr error) {
 		run.cancel()
 		relayAddressPool.Release(run.relayAddr)
+		cfg.reportConnection(ConnectionStatus{
+			Slot:  slot,
+			Relay: run.relayAddr,
+			State: ConnectionStateEnded,
+			Err:   sessErr,
+		})
 		if sessErr != nil && !errors.Is(sessErr, context.Canceled) {
 			slog.Warn("Connection to relay ended; rotating to a new relay",
 				slog.String("relay", run.relayAddr),

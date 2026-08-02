@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/docker/docker/pkg/namesgenerator"
 	"golang.org/x/term"
 	"gopkg.in/yaml.v3"
 )
@@ -15,6 +16,11 @@ import (
 // IsInteractive reports whether both stdin and stdout are connected to a TTY.
 func IsInteractive() bool {
 	return term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd()))
+}
+
+// DockerName returns a Docker-generated name normalized for DNS-1123 uses.
+func DockerName() string {
+	return strings.ReplaceAll(namesgenerator.GetRandomName(0), "_", "-")
 }
 
 // ReadFileAsString returns a file as a string or an error.

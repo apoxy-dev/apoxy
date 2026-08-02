@@ -22,9 +22,11 @@ func TestProbeRelays_RanksAndSkipsDraining(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	t.Cleanup(cancel)
 
-	order := probeRelays(ctx, tlsConf, []string{addr1, addr2})
+	order, latencies := probeRelaysWithLatency(ctx, tlsConf, []string{addr1, addr2})
 	require.ElementsMatch(t, []string{addr1, addr2}, order,
 		"both live relays must be ranked")
+	require.Positive(t, latencies[addr1])
+	require.Positive(t, latencies[addr2])
 
 	// Drain relay 1; its /ping answers 503 through the lame duck, so probes
 	// must exclude it while sessions on it are still being carried.

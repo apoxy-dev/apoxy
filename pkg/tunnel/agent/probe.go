@@ -25,13 +25,21 @@ var relayProbeInterval = 5 * time.Minute
 // treats unranked items as last-resort fallbacks rather than excluding them,
 // so a probe blip cannot empty the pool.
 func probeRelays(ctx context.Context, tlsConf *tls.Config, addrs []string) []string {
+	order, _ := probeRelaysWithLatency(ctx, tlsConf, addrs)
+	return order
+}
+
+// probeRelaysWithLatency is probeRelays plus the successful measurement for
+// each ranked address. The command UI uses the measurements while the
+// allocator consumes only the order.
+func probeRelaysWithLatency(ctx context.Context, tlsConf *tls.Config, addrs []string) ([]string, map[string]time.Duration) {
 	sel := endpointselect.NewLatencySelector(
 		endpointselect.WithInsecureSkipVerify(tlsConf != nil && tlsConf.InsecureSkipVerify),
 	)
 	_, results, err := sel.SelectWithResults(ctx, addrs)
 	if err != nil {
 		slog.Warn("Relay latency probe failed; keeping current preference", slog.Any("error", err))
-		return nil
+		return nil, nil
 	}
 	ok := results[:0]
 	for _, res := range results {
@@ -41,10 +49,12 @@ func probeRelays(ctx context.Context, tlsConf *tls.Config, addrs []string) []str
 	}
 	sort.Slice(ok, func(i, j int) bool { return ok[i].Latency < ok[j].Latency })
 	order := make([]string, 0, len(ok))
+	latencies := make(map[string]time.Duration, len(ok))
 	for _, res := range ok {
 		order = append(order, res.Addr)
+		latencies[res.Addr] = res.Latency
 	}
-	return order
+	return order, latencies
 }
 
 // probeRelayPreference keeps the pool's preference order current: one probe
