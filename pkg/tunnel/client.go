@@ -556,13 +556,23 @@ func (c *Conn) run(ctx context.Context) {
 			oldAddrs := sets.New[netip.Prefix](c.addrs...)
 			for _, addr := range newAddrs.Difference(oldAddrs).UnsortedList() {
 				log.Info("Adding local prefix", slog.Any("prefix", addr))
-				c.router.AddAddr(addr, &connWrapper{Conn: c.conn, addr: addr})
+				if err := c.router.AddAddr(addr, &connWrapper{Conn: c.conn, addr: addr}); err != nil {
+					// Do not record a prefix that was refused (e.g. already
+					// bound to another relay's connection): recording it would
+					// have this connection's close tear down the owner's
+					// entry. Dropping best-effort v4 is the designed
+					// degradation; a refused v6 leaves the connection unusable
+					// and unmissable in the logs.
+					log.Warn("Failed to add local prefix, dropping it",
+						slog.Any("prefix", addr), slog.Any("error", err))
+					newAddrs.Delete(addr)
+				}
 			}
 			for _, addr := range oldAddrs.Difference(newAddrs).UnsortedList() {
 				log.Info("Removing local prefix", slog.Any("prefix", addr))
 				c.router.DelAddr(addr)
 			}
-			c.addrs = addrs
+			c.addrs = newAddrs.UnsortedList()
 			c.mu.Unlock()
 
 			// Start BFD client after first IPv6 address is assigned.

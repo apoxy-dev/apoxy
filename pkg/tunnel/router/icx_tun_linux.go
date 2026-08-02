@@ -316,10 +316,20 @@ func (r *ICXTunRouter) nlRoute(dst netip.Prefix) *netlink.Route {
 // nlAddr converts a prefix to a netlink address, keeping the host bits (an
 // interface address is 10.0.0.5/24, not 10.0.0.0/24).
 func nlAddr(p netip.Prefix) *netlink.Addr {
-	return &netlink.Addr{
+	a := &netlink.Addr{
 		IPNet: &net.IPNet{
 			IP:   p.Addr().AsSlice(),
 			Mask: net.CIDRMask(p.Bits(), p.Addr().BitLen()),
 		},
 	}
+	// Skip DAD on v6: the TUN is a point-to-point overlay whose addresses are
+	// leased by a single allocator, so there is no peer to duplicate against.
+	// With DAD on, a freshly added address sits tentative for ~1s and a
+	// source-pinned route added against it fails EINVAL — which is exactly
+	// the reconnect path, where the relay may hand the session a different
+	// address than the one it held before.
+	if p.Addr().Is6() {
+		a.Flags = unix.IFA_F_NODAD
+	}
+	return a
 }
