@@ -26,7 +26,7 @@ var secretCmd = &cobra.Command{
 	Short:   "Manage secret stores and their values",
 	Long: `SecretStores hold named secret values that compute Services consume through
 secret bindings. Values are write-only: they can be set here but are never
-returned by the API — confirm writes via the key digests in 'secret list'.`,
+returned by the API; confirm writes via the key digests in 'secret list'.`,
 }
 
 var secretCreateScopes []string

@@ -11,7 +11,7 @@ and QUIC tunneling. Core capabilities include:
   - Edge computing runtime for JS/WASM/Go functions
   - Secure tunneling via QUIC and connect-ip protocols
 
-Apoxy Cloud is the managed offering — it handles DNS registration, instant TLS
+Apoxy Cloud is the managed offering: it handles DNS registration, instant TLS
 certificates, and built-in observability so you focus on routing and logic instead
 of infrastructure.
 
@@ -2769,7 +2769,7 @@ The flow:
   2. Update Secret apoxy/apiz-cert with the new cert material.
   3. Trigger a rolling restart of Deployment apoxy/kube-controller. With 1 replica
      and the default rolling-update strategy, k8s brings the new pod up Ready
-     before terminating the old one — so traffic never goes through a controller
+     before terminating the old one, so traffic never goes through a controller
      with no cert.
   4. Optionally revoke the old cert (requires a user JWT; cosmos refuses to
      accept API-key auth on revoke so a leaked API key can't kill its own cert).
@@ -3181,7 +3181,7 @@ Manage secret stores and their values
 
 SecretStores hold named secret values that compute Services consume through
 secret bindings. Values are write-only: they can be set here but are never
-returned by the API — confirm writes via the key digests in 'secret list'.
+returned by the API; confirm writes via the key digests in 'secret list'.
 
 ### Options
 

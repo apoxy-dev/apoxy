@@ -35,7 +35,7 @@ and QUIC tunneling. Core capabilities include:
   - Edge computing runtime for JS/WASM/Go functions
   - Secure tunneling via QUIC and connect-ip protocols
 
-Apoxy Cloud is the managed offering — it handles DNS registration, instant TLS
+Apoxy Cloud is the managed offering: it handles DNS registration, instant TLS
 certificates, and built-in observability so you focus on routing and logic instead
 of infrastructure.
 

@@ -745,7 +745,7 @@ The flow:
   2. Update Secret apoxy/apiz-cert with the new cert material.
   3. Trigger a rolling restart of Deployment apoxy/kube-controller. With 1 replica
      and the default rolling-update strategy, k8s brings the new pod up Ready
-     before terminating the old one — so traffic never goes through a controller
+     before terminating the old one, so traffic never goes through a controller
      with no cert.
   4. Optionally revoke the old cert (requires a user JWT; cosmos refuses to
      accept API-key auth on revoke so a leaked API key can't kill its own cert).
