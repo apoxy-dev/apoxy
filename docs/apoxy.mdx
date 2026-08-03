@@ -37,20 +37,18 @@ Get started at https://apoxy.dev and log in with 'apoxy auth'.
 * [apoxy backend](#apoxy-backend)	 - Manage backend objects
 * [apoxy build](#apoxy-build)	 - Build a compute service bundle from a JS/TS project
 * [apoxy bundle](#apoxy-bundle)	 - Manage compute service bundles
+* [apoxy compute](#apoxy-compute)	 - Manage compute objects
 * [apoxy delete](#apoxy-delete)	 - Delete resources by file or type/name
 * [apoxy deploy](#apoxy-deploy)	 - Build, push, and apply a compute Service end to end
 * [apoxy dev](#apoxy-dev)	 - Develop against the Apoxy API locally
 * [apoxy domain](#apoxy-domain)	 - Manage domain record objects
 * [apoxy edgefunction](#apoxy-edgefunction)	 - Manage edge function objects
-* [apoxy egressgateway](#apoxy-egressgateway)	 - Manage EgressGateway objects
-* [apoxy egressroute](#apoxy-egressroute)	 - Manage EgressRoute objects
 * [apoxy gateway](#apoxy-gateway)	 - Manage gateway objects
 * [apoxy k8s](#apoxy-k8s)	 - Commands that manage Apoxy on Kubernetes
 * [apoxy logs](#apoxy-logs)	 - View proxy logs
 * [apoxy proxy](#apoxy-proxy)	 - Manage proxy objects
 * [apoxy run](#apoxy-run)	 - Run Apoxy runtime components defined in config
 * [apoxy secret](#apoxy-secret)	 - Manage secret stores and their values
-* [apoxy service](#apoxy-service)	 - Manage compute Service objects
 * [apoxy tunnel](#apoxy-tunnel)	 - Manage tunnels
 * [apoxy upgrade](#apoxy-upgrade)	 - Upgrade Apoxy CLI to the latest version
 * [apoxy version](#apoxy-version)	 - The version of this CLI
@@ -357,7 +355,7 @@ apoxy alpha tunnel run [flags]
 ### Options
 
 ```
-      --health-addr string     Listen address for health endpoint (e.g. ":8080"). Empty disables. (default "localhost:8080")
+      --health-addr string     Listen address for health endpoint (e.g. ":8080"). Empty disables. In interactive sessions the endpoint is off unless this flag is set explicitly. (default "localhost:8080")
   -h, --help                   help for run
       --insecure-skip-verify   Skip TLS certificate verification for relay connections.
       --label stringToString   Agent-declared label (key=value) for VPCService selection; repeatable. Bounded by the credential's allowed label sets. (default [])
@@ -836,6 +834,523 @@ apoxy bundle push <repo>[:tag] [flags]
 ### SEE ALSO
 
 * [apoxy bundle](#apoxy-bundle)	 - Manage compute service bundles
+
+
+
+## apoxy compute
+
+Manage compute objects
+
+### Synopsis
+
+Manage compute.apoxy.dev objects: services and their revisions.
+
+### Options
+
+```
+  -h, --help   help for compute
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy](#apoxy)	 - Open-source edge platform built on Envoy, Kubernetes APIs, and QUIC tunneling.
+* [apoxy compute service](#apoxy-compute-service)	 - Manage compute Service objects
+* [apoxy compute servicerevisions](#apoxy-compute-servicerevisions)	 - List ServiceRevision objects
+
+
+
+## apoxy compute service
+
+Manage compute Service objects
+
+### Synopsis
+
+Service (compute.apoxy.dev/v1alpha1) runs a JS/TS worker bundle on the Apoxy edge.
+
+```
+apoxy compute service [flags]
+```
+
+### Options
+
+```
+      --field-selector string   Filter list results by field selectors (e.g. spec.zone=example.com).
+  -h, --help                    help for service
+  -o, --output string           Output format: "json" or "yaml". Default is table.
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy compute](#apoxy-compute)	 - Manage compute objects
+* [apoxy compute service apply](#apoxy-compute-service-apply)	 - Apply service configuration using server-side apply
+* [apoxy compute service create](#apoxy-compute-service-create)	 - Create service objects
+* [apoxy compute service delete](#apoxy-compute-service-delete)	 - Delete service objects
+* [apoxy compute service get](#apoxy-compute-service-get)	 - Get service objects
+* [apoxy compute service list](#apoxy-compute-service-list)	 - List service objects
+* [apoxy compute service versions](#apoxy-compute-service-versions)	 - List ServiceRevision objects
+
+
+
+## apoxy compute service apply
+
+Apply service configuration using server-side apply
+
+### Synopsis
+
+Apply service configuration using Kubernetes server-side apply.
+
+This command uses server-side apply to create or update service objects.
+Server-side apply tracks field ownership and allows multiple actors to
+manage different fields of the same object without conflicts.
+
+```
+apoxy compute service apply [-f filename] [flags]
+```
+
+### Options
+
+```
+      --field-manager string   Name of the field manager for server-side apply. (default "apoxy-cli")
+  -f, --filename string        The file that contains the configuration to apply.
+      --force-conflicts        Force apply even if there are field ownership conflicts.
+  -h, --help                   help for apply
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy compute service](#apoxy-compute-service)	 - Manage compute Service objects
+
+
+
+## apoxy compute service create
+
+Create service objects
+
+### Synopsis
+
+Create service objects by providing a configuration as a file or via stdin.
+
+```
+apoxy compute service create [-f filename] [flags]
+```
+
+### Options
+
+```
+  -f, --filename string   The file that contains the configuration to create.
+  -h, --help              help for create
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy compute service](#apoxy-compute-service)	 - Manage compute Service objects
+
+
+
+## apoxy compute service delete
+
+Delete service objects
+
+```
+apoxy compute service delete [flags]
+```
+
+### Options
+
+```
+  -h, --help   help for delete
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy compute service](#apoxy-compute-service)	 - Manage compute Service objects
+
+
+
+## apoxy compute service get
+
+Get service objects
+
+```
+apoxy compute service get <name> [flags]
+```
+
+### Options
+
+```
+  -h, --help            help for get
+  -o, --output string   Output format: "json" or "yaml". Default is table.
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy compute service](#apoxy-compute-service)	 - Manage compute Service objects
+
+
+
+## apoxy compute service list
+
+List service objects
+
+```
+apoxy compute service list [flags]
+```
+
+### Options
+
+```
+      --field-selector string   Filter list results by field selectors (e.g. spec.zone=example.com).
+  -h, --help                    help for list
+  -o, --output string           Output format: "json" or "yaml". Default is table.
+      --show-labels             Print the service's labels.
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy compute service](#apoxy-compute-service)	 - Manage compute Service objects
+
+
+
+## apoxy compute service versions
+
+List ServiceRevision objects
+
+### Synopsis
+
+ServiceRevision (compute.apoxy.dev/v1alpha1) is an immutable, digest-pinned snapshot minted by the controller each time a Service's template changes.
+
+The optional [name] argument is the name of the owning Service, not of a
+revision: it restricts the list to that Service's revisions by matching the
+compute.apoxy.dev/service label. Omit it to list every revision in the
+project. A Service name that does not exist is not an error - it simply matches
+nothing and prints an empty table.
+
+Use `apoxy compute service versions get <revision>` to inspect a single revision, whose
+name is the owning Service's name plus a short hash of its template and bundle.
+
+```
+apoxy compute service versions [name] [flags]
+```
+
+### Examples
+
+```
+  # List every revision in the project.
+  apoxy compute service versions
+
+  # List the revisions of the "checkout" Service.
+  apoxy compute service versions checkout
+
+  # Same, but also print each revision's labels (--show-labels is only
+  # available on the list subcommand).
+  apoxy compute service versions list checkout --show-labels
+
+  # Inspect a single revision as YAML.
+  apoxy compute service versions get checkout-3f9a1c7b2d -o yaml
+```
+
+### Options
+
+```
+      --field-selector string   Filter list results by field selectors (e.g. spec.zone=example.com).
+  -h, --help                    help for versions
+  -o, --output string           Output format: "json" or "yaml". Default is table.
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy compute service](#apoxy-compute-service)	 - Manage compute Service objects
+* [apoxy compute service versions get](#apoxy-compute-service-versions-get)	 - Get servicerevision objects
+* [apoxy compute service versions list](#apoxy-compute-service-versions-list)	 - List a Service's revisions
+
+
+
+## apoxy compute service versions get
+
+Get servicerevision objects
+
+```
+apoxy compute service versions get <name> [flags]
+```
+
+### Options
+
+```
+  -h, --help            help for get
+  -o, --output string   Output format: "json" or "yaml". Default is table.
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy compute service versions](#apoxy-compute-service-versions)	 - List ServiceRevision objects
+
+
+
+## apoxy compute service versions list
+
+List a Service's revisions
+
+### Synopsis
+
+ServiceRevision (compute.apoxy.dev/v1alpha1) is an immutable, digest-pinned snapshot minted by the controller each time a Service's template changes.
+
+The optional [name] argument is the name of the owning Service, not of a
+revision: it restricts the list to that Service's revisions by matching the
+compute.apoxy.dev/service label. Omit it to list every revision in the
+project. A Service name that does not exist is not an error - it simply matches
+nothing and prints an empty table.
+
+Use `apoxy compute service versions get <revision>` to inspect a single revision, whose
+name is the owning Service's name plus a short hash of its template and bundle.
+
+```
+apoxy compute service versions list [name] [flags]
+```
+
+### Examples
+
+```
+  # List every revision in the project.
+  apoxy compute service versions
+
+  # List the revisions of the "checkout" Service.
+  apoxy compute service versions checkout
+
+  # Same, but also print each revision's labels (--show-labels is only
+  # available on the list subcommand).
+  apoxy compute service versions list checkout --show-labels
+
+  # Inspect a single revision as YAML.
+  apoxy compute service versions get checkout-3f9a1c7b2d -o yaml
+```
+
+### Options
+
+```
+      --field-selector string   Filter list results by field selectors (e.g. spec.zone=example.com).
+  -h, --help                    help for list
+  -o, --output string           Output format: "json" or "yaml". Default is table.
+      --show-labels             Print the servicerevision's labels.
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy compute service versions](#apoxy-compute-service-versions)	 - List ServiceRevision objects
+
+
+
+## apoxy compute servicerevisions
+
+List ServiceRevision objects
+
+### Synopsis
+
+ServiceRevision (compute.apoxy.dev/v1alpha1) is an immutable, digest-pinned snapshot minted by the controller each time a Service's template changes.
+
+```
+apoxy compute servicerevisions [flags]
+```
+
+### Options
+
+```
+      --field-selector string   Filter list results by field selectors (e.g. spec.zone=example.com).
+  -h, --help                    help for servicerevisions
+  -o, --output string           Output format: "json" or "yaml". Default is table.
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy compute](#apoxy-compute)	 - Manage compute objects
+* [apoxy compute servicerevisions get](#apoxy-compute-servicerevisions-get)	 - Get servicerevision objects
+* [apoxy compute servicerevisions list](#apoxy-compute-servicerevisions-list)	 - List servicerevision objects
+
+
+
+## apoxy compute servicerevisions get
+
+Get servicerevision objects
+
+```
+apoxy compute servicerevisions get <name> [flags]
+```
+
+### Options
+
+```
+  -h, --help            help for get
+  -o, --output string   Output format: "json" or "yaml". Default is table.
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy compute servicerevisions](#apoxy-compute-servicerevisions)	 - List ServiceRevision objects
+
+
+
+## apoxy compute servicerevisions list
+
+List servicerevision objects
+
+```
+apoxy compute servicerevisions list [flags]
+```
+
+### Options
+
+```
+      --field-selector string   Filter list results by field selectors (e.g. spec.zone=example.com).
+  -h, --help                    help for list
+  -o, --output string           Output format: "json" or "yaml". Default is table.
+      --show-labels             Print the servicerevision's labels.
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy compute servicerevisions](#apoxy-compute-servicerevisions)	 - List ServiceRevision objects
 
 
 
@@ -1661,440 +2176,6 @@ apoxy edgefunction list [flags]
 ### SEE ALSO
 
 * [apoxy edgefunction](#apoxy-edgefunction)	 - Manage edge function objects
-
-
-
-## apoxy egressgateway
-
-Manage EgressGateway objects
-
-### Synopsis
-
-EgressGateway (compute.apoxy.dev/v1alpha1) declares egress interception listeners and a default policy for compute Services' outbound traffic.
-
-```
-apoxy egressgateway [flags]
-```
-
-### Options
-
-```
-      --field-selector string   Filter list results by field selectors (e.g. spec.zone=example.com).
-  -h, --help                    help for egressgateway
-  -o, --output string           Output format: "json" or "yaml". Default is table.
-```
-
-### Options inherited from parent commands
-
-```
-      --alsologtostderr   Log to standard error as well as files.
-      --config string     Config file (default is $HOME/.apoxy/config.yaml).
-      --local             Run in local mode.
-      --pprof             Enable pprof HTTP server on :6060.
-      --project string    The project ID to use.
-  -v, --verbose           Enable verbose output.
-```
-
-### SEE ALSO
-
-* [apoxy](#apoxy)	 - Open-source edge platform built on Envoy, Kubernetes APIs, and QUIC tunneling.
-* [apoxy egressgateway apply](#apoxy-egressgateway-apply)	 - Apply egressgateway configuration using server-side apply
-* [apoxy egressgateway create](#apoxy-egressgateway-create)	 - Create egressgateway objects
-* [apoxy egressgateway delete](#apoxy-egressgateway-delete)	 - Delete egressgateway objects
-* [apoxy egressgateway get](#apoxy-egressgateway-get)	 - Get egressgateway objects
-* [apoxy egressgateway list](#apoxy-egressgateway-list)	 - List egressgateway objects
-
-
-
-## apoxy egressgateway apply
-
-Apply egressgateway configuration using server-side apply
-
-### Synopsis
-
-Apply egressgateway configuration using Kubernetes server-side apply.
-
-This command uses server-side apply to create or update egressgateway objects.
-Server-side apply tracks field ownership and allows multiple actors to
-manage different fields of the same object without conflicts.
-
-```
-apoxy egressgateway apply [-f filename] [flags]
-```
-
-### Options
-
-```
-      --field-manager string   Name of the field manager for server-side apply. (default "apoxy-cli")
-  -f, --filename string        The file that contains the configuration to apply.
-      --force-conflicts        Force apply even if there are field ownership conflicts.
-  -h, --help                   help for apply
-```
-
-### Options inherited from parent commands
-
-```
-      --alsologtostderr   Log to standard error as well as files.
-      --config string     Config file (default is $HOME/.apoxy/config.yaml).
-      --local             Run in local mode.
-      --pprof             Enable pprof HTTP server on :6060.
-      --project string    The project ID to use.
-  -v, --verbose           Enable verbose output.
-```
-
-### SEE ALSO
-
-* [apoxy egressgateway](#apoxy-egressgateway)	 - Manage EgressGateway objects
-
-
-
-## apoxy egressgateway create
-
-Create egressgateway objects
-
-### Synopsis
-
-Create egressgateway objects by providing a configuration as a file or via stdin.
-
-```
-apoxy egressgateway create [-f filename] [flags]
-```
-
-### Options
-
-```
-  -f, --filename string   The file that contains the configuration to create.
-  -h, --help              help for create
-```
-
-### Options inherited from parent commands
-
-```
-      --alsologtostderr   Log to standard error as well as files.
-      --config string     Config file (default is $HOME/.apoxy/config.yaml).
-      --local             Run in local mode.
-      --pprof             Enable pprof HTTP server on :6060.
-      --project string    The project ID to use.
-  -v, --verbose           Enable verbose output.
-```
-
-### SEE ALSO
-
-* [apoxy egressgateway](#apoxy-egressgateway)	 - Manage EgressGateway objects
-
-
-
-## apoxy egressgateway delete
-
-Delete egressgateway objects
-
-```
-apoxy egressgateway delete [flags]
-```
-
-### Options
-
-```
-  -h, --help   help for delete
-```
-
-### Options inherited from parent commands
-
-```
-      --alsologtostderr   Log to standard error as well as files.
-      --config string     Config file (default is $HOME/.apoxy/config.yaml).
-      --local             Run in local mode.
-      --pprof             Enable pprof HTTP server on :6060.
-      --project string    The project ID to use.
-  -v, --verbose           Enable verbose output.
-```
-
-### SEE ALSO
-
-* [apoxy egressgateway](#apoxy-egressgateway)	 - Manage EgressGateway objects
-
-
-
-## apoxy egressgateway get
-
-Get egressgateway objects
-
-```
-apoxy egressgateway get <name> [flags]
-```
-
-### Options
-
-```
-  -h, --help            help for get
-  -o, --output string   Output format: "json" or "yaml". Default is table.
-```
-
-### Options inherited from parent commands
-
-```
-      --alsologtostderr   Log to standard error as well as files.
-      --config string     Config file (default is $HOME/.apoxy/config.yaml).
-      --local             Run in local mode.
-      --pprof             Enable pprof HTTP server on :6060.
-      --project string    The project ID to use.
-  -v, --verbose           Enable verbose output.
-```
-
-### SEE ALSO
-
-* [apoxy egressgateway](#apoxy-egressgateway)	 - Manage EgressGateway objects
-
-
-
-## apoxy egressgateway list
-
-List egressgateway objects
-
-```
-apoxy egressgateway list [flags]
-```
-
-### Options
-
-```
-      --field-selector string   Filter list results by field selectors (e.g. spec.zone=example.com).
-  -h, --help                    help for list
-  -o, --output string           Output format: "json" or "yaml". Default is table.
-      --show-labels             Print the egressgateway's labels.
-```
-
-### Options inherited from parent commands
-
-```
-      --alsologtostderr   Log to standard error as well as files.
-      --config string     Config file (default is $HOME/.apoxy/config.yaml).
-      --local             Run in local mode.
-      --pprof             Enable pprof HTTP server on :6060.
-      --project string    The project ID to use.
-  -v, --verbose           Enable verbose output.
-```
-
-### SEE ALSO
-
-* [apoxy egressgateway](#apoxy-egressgateway)	 - Manage EgressGateway objects
-
-
-
-## apoxy egressroute
-
-Manage EgressRoute objects
-
-### Synopsis
-
-EgressRoute (compute.apoxy.dev/v1alpha1) allows destination-matched egress for the compute Services attached to its parent EgressGateway(s).
-
-```
-apoxy egressroute [flags]
-```
-
-### Options
-
-```
-      --field-selector string   Filter list results by field selectors (e.g. spec.zone=example.com).
-  -h, --help                    help for egressroute
-  -o, --output string           Output format: "json" or "yaml". Default is table.
-```
-
-### Options inherited from parent commands
-
-```
-      --alsologtostderr   Log to standard error as well as files.
-      --config string     Config file (default is $HOME/.apoxy/config.yaml).
-      --local             Run in local mode.
-      --pprof             Enable pprof HTTP server on :6060.
-      --project string    The project ID to use.
-  -v, --verbose           Enable verbose output.
-```
-
-### SEE ALSO
-
-* [apoxy](#apoxy)	 - Open-source edge platform built on Envoy, Kubernetes APIs, and QUIC tunneling.
-* [apoxy egressroute apply](#apoxy-egressroute-apply)	 - Apply egressroute configuration using server-side apply
-* [apoxy egressroute create](#apoxy-egressroute-create)	 - Create egressroute objects
-* [apoxy egressroute delete](#apoxy-egressroute-delete)	 - Delete egressroute objects
-* [apoxy egressroute get](#apoxy-egressroute-get)	 - Get egressroute objects
-* [apoxy egressroute list](#apoxy-egressroute-list)	 - List egressroute objects
-
-
-
-## apoxy egressroute apply
-
-Apply egressroute configuration using server-side apply
-
-### Synopsis
-
-Apply egressroute configuration using Kubernetes server-side apply.
-
-This command uses server-side apply to create or update egressroute objects.
-Server-side apply tracks field ownership and allows multiple actors to
-manage different fields of the same object without conflicts.
-
-```
-apoxy egressroute apply [-f filename] [flags]
-```
-
-### Options
-
-```
-      --field-manager string   Name of the field manager for server-side apply. (default "apoxy-cli")
-  -f, --filename string        The file that contains the configuration to apply.
-      --force-conflicts        Force apply even if there are field ownership conflicts.
-  -h, --help                   help for apply
-```
-
-### Options inherited from parent commands
-
-```
-      --alsologtostderr   Log to standard error as well as files.
-      --config string     Config file (default is $HOME/.apoxy/config.yaml).
-      --local             Run in local mode.
-      --pprof             Enable pprof HTTP server on :6060.
-      --project string    The project ID to use.
-  -v, --verbose           Enable verbose output.
-```
-
-### SEE ALSO
-
-* [apoxy egressroute](#apoxy-egressroute)	 - Manage EgressRoute objects
-
-
-
-## apoxy egressroute create
-
-Create egressroute objects
-
-### Synopsis
-
-Create egressroute objects by providing a configuration as a file or via stdin.
-
-```
-apoxy egressroute create [-f filename] [flags]
-```
-
-### Options
-
-```
-  -f, --filename string   The file that contains the configuration to create.
-  -h, --help              help for create
-```
-
-### Options inherited from parent commands
-
-```
-      --alsologtostderr   Log to standard error as well as files.
-      --config string     Config file (default is $HOME/.apoxy/config.yaml).
-      --local             Run in local mode.
-      --pprof             Enable pprof HTTP server on :6060.
-      --project string    The project ID to use.
-  -v, --verbose           Enable verbose output.
-```
-
-### SEE ALSO
-
-* [apoxy egressroute](#apoxy-egressroute)	 - Manage EgressRoute objects
-
-
-
-## apoxy egressroute delete
-
-Delete egressroute objects
-
-```
-apoxy egressroute delete [flags]
-```
-
-### Options
-
-```
-  -h, --help   help for delete
-```
-
-### Options inherited from parent commands
-
-```
-      --alsologtostderr   Log to standard error as well as files.
-      --config string     Config file (default is $HOME/.apoxy/config.yaml).
-      --local             Run in local mode.
-      --pprof             Enable pprof HTTP server on :6060.
-      --project string    The project ID to use.
-  -v, --verbose           Enable verbose output.
-```
-
-### SEE ALSO
-
-* [apoxy egressroute](#apoxy-egressroute)	 - Manage EgressRoute objects
-
-
-
-## apoxy egressroute get
-
-Get egressroute objects
-
-```
-apoxy egressroute get <name> [flags]
-```
-
-### Options
-
-```
-  -h, --help            help for get
-  -o, --output string   Output format: "json" or "yaml". Default is table.
-```
-
-### Options inherited from parent commands
-
-```
-      --alsologtostderr   Log to standard error as well as files.
-      --config string     Config file (default is $HOME/.apoxy/config.yaml).
-      --local             Run in local mode.
-      --pprof             Enable pprof HTTP server on :6060.
-      --project string    The project ID to use.
-  -v, --verbose           Enable verbose output.
-```
-
-### SEE ALSO
-
-* [apoxy egressroute](#apoxy-egressroute)	 - Manage EgressRoute objects
-
-
-
-## apoxy egressroute list
-
-List egressroute objects
-
-```
-apoxy egressroute list [flags]
-```
-
-### Options
-
-```
-      --field-selector string   Filter list results by field selectors (e.g. spec.zone=example.com).
-  -h, --help                    help for list
-  -o, --output string           Output format: "json" or "yaml". Default is table.
-      --show-labels             Print the egressroute's labels.
-```
-
-### Options inherited from parent commands
-
-```
-      --alsologtostderr   Log to standard error as well as files.
-      --config string     Config file (default is $HOME/.apoxy/config.yaml).
-      --local             Run in local mode.
-      --pprof             Enable pprof HTTP server on :6060.
-      --project string    The project ID to use.
-  -v, --verbose           Enable verbose output.
-```
-
-### SEE ALSO
-
-* [apoxy egressroute](#apoxy-egressroute)	 - Manage EgressRoute objects
 
 
 
@@ -3296,385 +3377,6 @@ apoxy secret unset <store> <key> [flags]
 
 
 
-## apoxy service
-
-Manage compute Service objects
-
-### Synopsis
-
-Service (compute.apoxy.dev/v1alpha1) runs a JS/TS worker bundle on the Apoxy edge.
-
-```
-apoxy service [flags]
-```
-
-### Options
-
-```
-      --field-selector string   Filter list results by field selectors (e.g. spec.zone=example.com).
-  -h, --help                    help for service
-  -o, --output string           Output format: "json" or "yaml". Default is table.
-```
-
-### Options inherited from parent commands
-
-```
-      --alsologtostderr   Log to standard error as well as files.
-      --config string     Config file (default is $HOME/.apoxy/config.yaml).
-      --local             Run in local mode.
-      --pprof             Enable pprof HTTP server on :6060.
-      --project string    The project ID to use.
-  -v, --verbose           Enable verbose output.
-```
-
-### SEE ALSO
-
-* [apoxy](#apoxy)	 - Open-source edge platform built on Envoy, Kubernetes APIs, and QUIC tunneling.
-* [apoxy service apply](#apoxy-service-apply)	 - Apply service configuration using server-side apply
-* [apoxy service create](#apoxy-service-create)	 - Create service objects
-* [apoxy service delete](#apoxy-service-delete)	 - Delete service objects
-* [apoxy service get](#apoxy-service-get)	 - Get service objects
-* [apoxy service list](#apoxy-service-list)	 - List service objects
-* [apoxy service versions](#apoxy-service-versions)	 - List ServiceRevision objects
-
-
-
-## apoxy service apply
-
-Apply service configuration using server-side apply
-
-### Synopsis
-
-Apply service configuration using Kubernetes server-side apply.
-
-This command uses server-side apply to create or update service objects.
-Server-side apply tracks field ownership and allows multiple actors to
-manage different fields of the same object without conflicts.
-
-```
-apoxy service apply [-f filename] [flags]
-```
-
-### Options
-
-```
-      --field-manager string   Name of the field manager for server-side apply. (default "apoxy-cli")
-  -f, --filename string        The file that contains the configuration to apply.
-      --force-conflicts        Force apply even if there are field ownership conflicts.
-  -h, --help                   help for apply
-```
-
-### Options inherited from parent commands
-
-```
-      --alsologtostderr   Log to standard error as well as files.
-      --config string     Config file (default is $HOME/.apoxy/config.yaml).
-      --local             Run in local mode.
-      --pprof             Enable pprof HTTP server on :6060.
-      --project string    The project ID to use.
-  -v, --verbose           Enable verbose output.
-```
-
-### SEE ALSO
-
-* [apoxy service](#apoxy-service)	 - Manage compute Service objects
-
-
-
-## apoxy service create
-
-Create service objects
-
-### Synopsis
-
-Create service objects by providing a configuration as a file or via stdin.
-
-```
-apoxy service create [-f filename] [flags]
-```
-
-### Options
-
-```
-  -f, --filename string   The file that contains the configuration to create.
-  -h, --help              help for create
-```
-
-### Options inherited from parent commands
-
-```
-      --alsologtostderr   Log to standard error as well as files.
-      --config string     Config file (default is $HOME/.apoxy/config.yaml).
-      --local             Run in local mode.
-      --pprof             Enable pprof HTTP server on :6060.
-      --project string    The project ID to use.
-  -v, --verbose           Enable verbose output.
-```
-
-### SEE ALSO
-
-* [apoxy service](#apoxy-service)	 - Manage compute Service objects
-
-
-
-## apoxy service delete
-
-Delete service objects
-
-```
-apoxy service delete [flags]
-```
-
-### Options
-
-```
-  -h, --help   help for delete
-```
-
-### Options inherited from parent commands
-
-```
-      --alsologtostderr   Log to standard error as well as files.
-      --config string     Config file (default is $HOME/.apoxy/config.yaml).
-      --local             Run in local mode.
-      --pprof             Enable pprof HTTP server on :6060.
-      --project string    The project ID to use.
-  -v, --verbose           Enable verbose output.
-```
-
-### SEE ALSO
-
-* [apoxy service](#apoxy-service)	 - Manage compute Service objects
-
-
-
-## apoxy service get
-
-Get service objects
-
-```
-apoxy service get <name> [flags]
-```
-
-### Options
-
-```
-  -h, --help            help for get
-  -o, --output string   Output format: "json" or "yaml". Default is table.
-```
-
-### Options inherited from parent commands
-
-```
-      --alsologtostderr   Log to standard error as well as files.
-      --config string     Config file (default is $HOME/.apoxy/config.yaml).
-      --local             Run in local mode.
-      --pprof             Enable pprof HTTP server on :6060.
-      --project string    The project ID to use.
-  -v, --verbose           Enable verbose output.
-```
-
-### SEE ALSO
-
-* [apoxy service](#apoxy-service)	 - Manage compute Service objects
-
-
-
-## apoxy service list
-
-List service objects
-
-```
-apoxy service list [flags]
-```
-
-### Options
-
-```
-      --field-selector string   Filter list results by field selectors (e.g. spec.zone=example.com).
-  -h, --help                    help for list
-  -o, --output string           Output format: "json" or "yaml". Default is table.
-      --show-labels             Print the service's labels.
-```
-
-### Options inherited from parent commands
-
-```
-      --alsologtostderr   Log to standard error as well as files.
-      --config string     Config file (default is $HOME/.apoxy/config.yaml).
-      --local             Run in local mode.
-      --pprof             Enable pprof HTTP server on :6060.
-      --project string    The project ID to use.
-  -v, --verbose           Enable verbose output.
-```
-
-### SEE ALSO
-
-* [apoxy service](#apoxy-service)	 - Manage compute Service objects
-
-
-
-## apoxy service versions
-
-List ServiceRevision objects
-
-### Synopsis
-
-ServiceRevision (compute.apoxy.dev/v1alpha1) is an immutable, digest-pinned snapshot minted by the controller each time a Service's template changes.
-
-The optional [name] argument is the name of the owning Service, not of a
-revision: it restricts the list to that Service's revisions by matching the
-compute.apoxy.dev/service label. Omit it to list every revision in the
-project. A Service name that does not exist is not an error - it simply matches
-nothing and prints an empty table.
-
-Use `apoxy service versions get <revision>` to inspect a single revision, whose
-name is the owning Service's name plus a short hash of its template and bundle.
-
-```
-apoxy service versions [name] [flags]
-```
-
-### Examples
-
-```
-  # List every revision in the project.
-  apoxy service versions
-
-  # List the revisions of the "checkout" Service.
-  apoxy service versions checkout
-
-  # Same, but also print each revision's labels (--show-labels is only
-  # available on the list subcommand).
-  apoxy service versions list checkout --show-labels
-
-  # Inspect a single revision as YAML.
-  apoxy service versions get checkout-3f9a1c7b2d -o yaml
-```
-
-### Options
-
-```
-      --field-selector string   Filter list results by field selectors (e.g. spec.zone=example.com).
-  -h, --help                    help for versions
-  -o, --output string           Output format: "json" or "yaml". Default is table.
-```
-
-### Options inherited from parent commands
-
-```
-      --alsologtostderr   Log to standard error as well as files.
-      --config string     Config file (default is $HOME/.apoxy/config.yaml).
-      --local             Run in local mode.
-      --pprof             Enable pprof HTTP server on :6060.
-      --project string    The project ID to use.
-  -v, --verbose           Enable verbose output.
-```
-
-### SEE ALSO
-
-* [apoxy service](#apoxy-service)	 - Manage compute Service objects
-* [apoxy service versions get](#apoxy-service-versions-get)	 - Get servicerevision objects
-* [apoxy service versions list](#apoxy-service-versions-list)	 - List a Service's revisions
-
-
-
-## apoxy service versions get
-
-Get servicerevision objects
-
-```
-apoxy service versions get <name> [flags]
-```
-
-### Options
-
-```
-  -h, --help            help for get
-  -o, --output string   Output format: "json" or "yaml". Default is table.
-```
-
-### Options inherited from parent commands
-
-```
-      --alsologtostderr   Log to standard error as well as files.
-      --config string     Config file (default is $HOME/.apoxy/config.yaml).
-      --local             Run in local mode.
-      --pprof             Enable pprof HTTP server on :6060.
-      --project string    The project ID to use.
-  -v, --verbose           Enable verbose output.
-```
-
-### SEE ALSO
-
-* [apoxy service versions](#apoxy-service-versions)	 - List ServiceRevision objects
-
-
-
-## apoxy service versions list
-
-List a Service's revisions
-
-### Synopsis
-
-ServiceRevision (compute.apoxy.dev/v1alpha1) is an immutable, digest-pinned snapshot minted by the controller each time a Service's template changes.
-
-The optional [name] argument is the name of the owning Service, not of a
-revision: it restricts the list to that Service's revisions by matching the
-compute.apoxy.dev/service label. Omit it to list every revision in the
-project. A Service name that does not exist is not an error - it simply matches
-nothing and prints an empty table.
-
-Use `apoxy service versions get <revision>` to inspect a single revision, whose
-name is the owning Service's name plus a short hash of its template and bundle.
-
-```
-apoxy service versions list [name] [flags]
-```
-
-### Examples
-
-```
-  # List every revision in the project.
-  apoxy service versions
-
-  # List the revisions of the "checkout" Service.
-  apoxy service versions checkout
-
-  # Same, but also print each revision's labels (--show-labels is only
-  # available on the list subcommand).
-  apoxy service versions list checkout --show-labels
-
-  # Inspect a single revision as YAML.
-  apoxy service versions get checkout-3f9a1c7b2d -o yaml
-```
-
-### Options
-
-```
-      --field-selector string   Filter list results by field selectors (e.g. spec.zone=example.com).
-  -h, --help                    help for list
-  -o, --output string           Output format: "json" or "yaml". Default is table.
-      --show-labels             Print the servicerevision's labels.
-```
-
-### Options inherited from parent commands
-
-```
-      --alsologtostderr   Log to standard error as well as files.
-      --config string     Config file (default is $HOME/.apoxy/config.yaml).
-      --local             Run in local mode.
-      --pprof             Enable pprof HTTP server on :6060.
-      --project string    The project ID to use.
-  -v, --verbose           Enable verbose output.
-```
-
-### SEE ALSO
-
-* [apoxy service versions](#apoxy-service-versions)	 - List ServiceRevision objects
-
-
-
 ## apoxy tunnel
 
 Manage tunnels
@@ -4035,10 +3737,446 @@ Manage vpc.apoxy.dev objects: networks, services, relays, and tunnels.
 ### SEE ALSO
 
 * [apoxy](#apoxy)	 - Open-source edge platform built on Envoy, Kubernetes APIs, and QUIC tunneling.
+* [apoxy vpc egressgateway](#apoxy-vpc-egressgateway)	 - Manage EgressGateway objects
+* [apoxy vpc egressroute](#apoxy-vpc-egressroute)	 - Manage EgressRoute objects
 * [apoxy vpc network](#apoxy-vpc-network)	 - Manage VPC networks
 * [apoxy vpc relay](#apoxy-vpc-relay)	 - Inspect relays
 * [apoxy vpc service](#apoxy-vpc-service)	 - Manage VPC services
 * [apoxy vpc tunnel](#apoxy-vpc-tunnel)	 - Inspect tunnels
+
+
+
+## apoxy vpc egressgateway
+
+Manage EgressGateway objects
+
+### Synopsis
+
+EgressGateway (compute.apoxy.dev/v1alpha1) declares egress interception listeners and a default policy for compute Services' outbound traffic.
+
+```
+apoxy vpc egressgateway [flags]
+```
+
+### Options
+
+```
+      --field-selector string   Filter list results by field selectors (e.g. spec.zone=example.com).
+  -h, --help                    help for egressgateway
+  -o, --output string           Output format: "json" or "yaml". Default is table.
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy vpc](#apoxy-vpc)	 - Manage VPC networking objects
+* [apoxy vpc egressgateway apply](#apoxy-vpc-egressgateway-apply)	 - Apply egressgateway configuration using server-side apply
+* [apoxy vpc egressgateway create](#apoxy-vpc-egressgateway-create)	 - Create egressgateway objects
+* [apoxy vpc egressgateway delete](#apoxy-vpc-egressgateway-delete)	 - Delete egressgateway objects
+* [apoxy vpc egressgateway get](#apoxy-vpc-egressgateway-get)	 - Get egressgateway objects
+* [apoxy vpc egressgateway list](#apoxy-vpc-egressgateway-list)	 - List egressgateway objects
+
+
+
+## apoxy vpc egressgateway apply
+
+Apply egressgateway configuration using server-side apply
+
+### Synopsis
+
+Apply egressgateway configuration using Kubernetes server-side apply.
+
+This command uses server-side apply to create or update egressgateway objects.
+Server-side apply tracks field ownership and allows multiple actors to
+manage different fields of the same object without conflicts.
+
+```
+apoxy vpc egressgateway apply [-f filename] [flags]
+```
+
+### Options
+
+```
+      --field-manager string   Name of the field manager for server-side apply. (default "apoxy-cli")
+  -f, --filename string        The file that contains the configuration to apply.
+      --force-conflicts        Force apply even if there are field ownership conflicts.
+  -h, --help                   help for apply
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy vpc egressgateway](#apoxy-vpc-egressgateway)	 - Manage EgressGateway objects
+
+
+
+## apoxy vpc egressgateway create
+
+Create egressgateway objects
+
+### Synopsis
+
+Create egressgateway objects by providing a configuration as a file or via stdin.
+
+```
+apoxy vpc egressgateway create [-f filename] [flags]
+```
+
+### Options
+
+```
+  -f, --filename string   The file that contains the configuration to create.
+  -h, --help              help for create
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy vpc egressgateway](#apoxy-vpc-egressgateway)	 - Manage EgressGateway objects
+
+
+
+## apoxy vpc egressgateway delete
+
+Delete egressgateway objects
+
+```
+apoxy vpc egressgateway delete [flags]
+```
+
+### Options
+
+```
+  -h, --help   help for delete
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy vpc egressgateway](#apoxy-vpc-egressgateway)	 - Manage EgressGateway objects
+
+
+
+## apoxy vpc egressgateway get
+
+Get egressgateway objects
+
+```
+apoxy vpc egressgateway get <name> [flags]
+```
+
+### Options
+
+```
+  -h, --help            help for get
+  -o, --output string   Output format: "json" or "yaml". Default is table.
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy vpc egressgateway](#apoxy-vpc-egressgateway)	 - Manage EgressGateway objects
+
+
+
+## apoxy vpc egressgateway list
+
+List egressgateway objects
+
+```
+apoxy vpc egressgateway list [flags]
+```
+
+### Options
+
+```
+      --field-selector string   Filter list results by field selectors (e.g. spec.zone=example.com).
+  -h, --help                    help for list
+  -o, --output string           Output format: "json" or "yaml". Default is table.
+      --show-labels             Print the egressgateway's labels.
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy vpc egressgateway](#apoxy-vpc-egressgateway)	 - Manage EgressGateway objects
+
+
+
+## apoxy vpc egressroute
+
+Manage EgressRoute objects
+
+### Synopsis
+
+EgressRoute (compute.apoxy.dev/v1alpha1) allows destination-matched egress for the compute Services attached to its parent EgressGateway(s).
+
+```
+apoxy vpc egressroute [flags]
+```
+
+### Options
+
+```
+      --field-selector string   Filter list results by field selectors (e.g. spec.zone=example.com).
+  -h, --help                    help for egressroute
+  -o, --output string           Output format: "json" or "yaml". Default is table.
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy vpc](#apoxy-vpc)	 - Manage VPC networking objects
+* [apoxy vpc egressroute apply](#apoxy-vpc-egressroute-apply)	 - Apply egressroute configuration using server-side apply
+* [apoxy vpc egressroute create](#apoxy-vpc-egressroute-create)	 - Create egressroute objects
+* [apoxy vpc egressroute delete](#apoxy-vpc-egressroute-delete)	 - Delete egressroute objects
+* [apoxy vpc egressroute get](#apoxy-vpc-egressroute-get)	 - Get egressroute objects
+* [apoxy vpc egressroute list](#apoxy-vpc-egressroute-list)	 - List egressroute objects
+
+
+
+## apoxy vpc egressroute apply
+
+Apply egressroute configuration using server-side apply
+
+### Synopsis
+
+Apply egressroute configuration using Kubernetes server-side apply.
+
+This command uses server-side apply to create or update egressroute objects.
+Server-side apply tracks field ownership and allows multiple actors to
+manage different fields of the same object without conflicts.
+
+```
+apoxy vpc egressroute apply [-f filename] [flags]
+```
+
+### Options
+
+```
+      --field-manager string   Name of the field manager for server-side apply. (default "apoxy-cli")
+  -f, --filename string        The file that contains the configuration to apply.
+      --force-conflicts        Force apply even if there are field ownership conflicts.
+  -h, --help                   help for apply
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy vpc egressroute](#apoxy-vpc-egressroute)	 - Manage EgressRoute objects
+
+
+
+## apoxy vpc egressroute create
+
+Create egressroute objects
+
+### Synopsis
+
+Create egressroute objects by providing a configuration as a file or via stdin.
+
+```
+apoxy vpc egressroute create [-f filename] [flags]
+```
+
+### Options
+
+```
+  -f, --filename string   The file that contains the configuration to create.
+  -h, --help              help for create
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy vpc egressroute](#apoxy-vpc-egressroute)	 - Manage EgressRoute objects
+
+
+
+## apoxy vpc egressroute delete
+
+Delete egressroute objects
+
+```
+apoxy vpc egressroute delete [flags]
+```
+
+### Options
+
+```
+  -h, --help   help for delete
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy vpc egressroute](#apoxy-vpc-egressroute)	 - Manage EgressRoute objects
+
+
+
+## apoxy vpc egressroute get
+
+Get egressroute objects
+
+```
+apoxy vpc egressroute get <name> [flags]
+```
+
+### Options
+
+```
+  -h, --help            help for get
+  -o, --output string   Output format: "json" or "yaml". Default is table.
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy vpc egressroute](#apoxy-vpc-egressroute)	 - Manage EgressRoute objects
+
+
+
+## apoxy vpc egressroute list
+
+List egressroute objects
+
+```
+apoxy vpc egressroute list [flags]
+```
+
+### Options
+
+```
+      --field-selector string   Filter list results by field selectors (e.g. spec.zone=example.com).
+  -h, --help                    help for list
+  -o, --output string           Output format: "json" or "yaml". Default is table.
+      --show-labels             Print the egressroute's labels.
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy vpc egressroute](#apoxy-vpc-egressroute)	 - Manage EgressRoute objects
 
 
 

@@ -16,6 +16,7 @@ import (
 
 	"github.com/apoxy-dev/apoxy/config"
 	"github.com/apoxy-dev/apoxy/pkg/cmd/alpha"
+	"github.com/apoxy-dev/apoxy/pkg/cmd/compute"
 	"github.com/apoxy-dev/apoxy/pkg/cmd/domain"
 	"github.com/apoxy-dev/apoxy/pkg/cmd/gateway"
 	run "github.com/apoxy-dev/apoxy/pkg/cmd/run"
@@ -69,6 +70,7 @@ func init() {
 	RootCmd.PersistentFlags().BoolVar(&config.PprofEnabled, "pprof", false, "Enable pprof HTTP server on :6060.")
 
 	RootCmd.AddCommand(alpha.Cmd())
+	RootCmd.AddCommand(compute.Cmd())
 	RootCmd.AddCommand(domain.Cmd())
 	RootCmd.AddCommand(gateway.Cmd())
 	RootCmd.AddCommand(run.Cmd())

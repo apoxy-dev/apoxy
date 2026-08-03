@@ -83,6 +83,8 @@ func Cmd() *cobra.Command {
 		vpcServiceResource.Build(),
 		readOnly(vpcRelayResource.Build()),
 		readOnly(vpcTunnelResource.Build()),
+		egressGatewayResource.Build(),
+		egressRouteResource.Build(),
 	)
 	return cmd
 }

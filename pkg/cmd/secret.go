@@ -17,6 +17,7 @@ import (
 
 	corev1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
 	"github.com/apoxy-dev/apoxy/config"
+	"github.com/apoxy-dev/apoxy/pkg/cmd/resource"
 )
 
 var secretCmd = &cobra.Command{
@@ -101,28 +102,34 @@ var secretListCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		out := cmd.OutOrStdout()
 		if len(args) == 1 {
 			store, err := c.CoreV1alpha().SecretStores().Get(cmd.Context(), args[0], metav1.GetOptions{})
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(out, "%-24s %s\n", "KEY", "DIGEST")
-			for _, k := range store.Status.Keys {
-				fmt.Fprintf(out, "%-24s %s\n", k.Name, k.Digest)
+			// The key/digest view is not a resource table of its own;
+			// render it through the shared table printer for consistent
+			// alignment with every other list output.
+			table := &metav1.Table{
+				ColumnDefinitions: []metav1.TableColumnDefinition{
+					{Name: "Key", Type: "string"},
+					{Name: "Digest", Type: "string"},
+				},
 			}
-			return nil
+			for _, k := range store.Status.Keys {
+				table.Rows = append(table.Rows, metav1.TableRow{Cells: []interface{}{k.Name, k.Digest}})
+			}
+			return resource.PrintTable(table, false)
 		}
 		stores, err := c.CoreV1alpha().SecretStores().List(cmd.Context(), metav1.ListOptions{})
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(out, "%-24s %-6s %s\n", "NAME", "KEYS", "SCOPES")
-		for i := range stores.Items {
-			s := &stores.Items[i]
-			fmt.Fprintf(out, "%-24s %-6d %s\n", s.Name, len(s.Status.Keys), strings.Join(s.Spec.Scopes, ","))
+		table, err := stores.ConvertToTable(cmd.Context(), &metav1.TableOptions{})
+		if err != nil {
+			return err
 		}
-		return nil
+		return resource.PrintTable(table, false)
 	},
 }
 

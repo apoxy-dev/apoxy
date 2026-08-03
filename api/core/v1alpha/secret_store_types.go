@@ -245,6 +245,61 @@ func (sl *SecretStoreList) GetListMeta() *metav1.ListMeta {
 	return &sl.ListMeta
 }
 
+func secretStoreColumns() []metav1.TableColumnDefinition {
+	return []metav1.TableColumnDefinition{
+		{Name: "Name", Type: "string", Format: "name", Description: "Name of the secret store"},
+		{Name: "Keys", Type: "integer", Description: "Number of keys the store holds"},
+		{Name: "Scopes", Type: "string", Description: "Consumer scopes admitted to bind this store"},
+		{Name: "Age", Type: "string", Description: "Time since creation"},
+	}
+}
+
+func secretStoreRow(s *SecretStore) metav1.TableRow {
+	scopes := strings.Join(s.Spec.Scopes, ",")
+	if scopes == "" {
+		scopes = "<all>"
+	}
+	return metav1.TableRow{
+		Cells: []interface{}{
+			s.Name,
+			len(s.Status.Keys),
+			scopes,
+			formatAge(s.CreationTimestamp.Time),
+		},
+		Object: runtime.RawExtension{Object: s},
+	}
+}
+
+var _ resourcestrategy.TableConverter = &SecretStore{}
+
+// ConvertToTable implements rest.TableConvertor that handles table pretty printing.
+func (s *SecretStore) ConvertToTable(ctx context.Context, tableOptions runtime.Object) (*metav1.Table, error) {
+	table := &metav1.Table{}
+	if opt, ok := tableOptions.(*metav1.TableOptions); !ok || !opt.NoHeaders {
+		table.ColumnDefinitions = secretStoreColumns()
+	}
+	table.Rows = append(table.Rows, secretStoreRow(s))
+	table.ResourceVersion = s.ResourceVersion
+	return table, nil
+}
+
+var _ resourcestrategy.TableConverter = &SecretStoreList{}
+
+// ConvertToTable implements rest.TableConvertor that handles table pretty printing.
+func (sl *SecretStoreList) ConvertToTable(ctx context.Context, tableOptions runtime.Object) (*metav1.Table, error) {
+	table := &metav1.Table{}
+	if opt, ok := tableOptions.(*metav1.TableOptions); !ok || !opt.NoHeaders {
+		table.ColumnDefinitions = secretStoreColumns()
+	}
+	for i := range sl.Items {
+		table.Rows = append(table.Rows, secretStoreRow(&sl.Items[i]))
+	}
+	table.ResourceVersion = sl.ResourceVersion
+	table.Continue = sl.Continue
+	table.RemainingItemCount = sl.RemainingItemCount
+	return table, nil
+}
+
 // +kubebuilder:object:root=true
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
