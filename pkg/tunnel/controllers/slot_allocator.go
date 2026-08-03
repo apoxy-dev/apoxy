@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/netip"
 	"sync"
+	"time"
 
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/ipalloc"
 	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
@@ -27,6 +28,12 @@ type slotAllocator struct {
 type netAllocs struct {
 	slots  []ipalloc.Slot
 	allocs []*ipalloc.ConnAllocator
+
+	// leasing is non-nil while a Lease for this network is in flight; it is
+	// closed (under mu) when that lease settles. Concurrent Allocate calls
+	// wait on it and re-check capacity instead of starting redundant leases —
+	// one slot lease typically covers every waiter queued behind it.
+	leasing chan struct{}
 }
 
 // newSlotAllocator creates a slotAllocator over the given leaser. A slot's
@@ -42,30 +49,79 @@ func newSlotAllocator(leaser ipalloc.SlotLeaser) *slotAllocator {
 // Allocate finds a non-full allocator for the network (leasing a fresh slot
 // under pressure) and sub-allocates a connection's /96 and best-effort /32,
 // returning the owning allocator so Release can free exactly what was taken.
+//
+// The lease itself runs OUTSIDE the mutex: Lease is network I/O with a
+// multi-second worst case, and holding mu across it would serialize every
+// connection on every network behind one slow lease. At most one lease per
+// network is in flight; concurrent callers wait for it and re-check capacity,
+// so a reconnect stampede costs one lease, not one per queued connection.
 func (b *slotAllocator) Allocate(ctx context.Context, netID tunnet.NetworkID) (v6, v4 netip.Prefix, alloc *ipalloc.ConnAllocator, err error) {
 	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	na := b.nets[netID]
-	if na == nil {
-		na = &netAllocs{}
-		b.nets[netID] = na
-	}
-
-	for _, a := range na.allocs {
-		if a.Full() {
-			continue
+	for {
+		na := b.nets[netID]
+		if na == nil {
+			na = &netAllocs{}
+			b.nets[netID] = na
 		}
-		if v6, v4, err = a.Allocate(); err == nil {
-			return v6, v4, a, nil
-		}
-	}
 
-	// Every existing slot is full (or raced to full): lease another.
+		for _, a := range na.allocs {
+			if a.Full() {
+				continue
+			}
+			if v6, v4, err = a.Allocate(); err == nil {
+				b.mu.Unlock()
+				return v6, v4, a, nil
+			}
+		}
+
+		if na.leasing == nil {
+			// Every slot is full and no lease is in flight: this caller
+			// leases the network's next slot.
+			na.leasing = make(chan struct{})
+			b.mu.Unlock()
+			return b.leaseAndAllocate(ctx, netID, na)
+		}
+
+		// Another caller is already leasing: wait for it to settle, then
+		// re-check capacity instead of leasing redundantly.
+		done := na.leasing
+		b.mu.Unlock()
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return netip.Prefix{}, netip.Prefix{}, nil, ctx.Err()
+		}
+		b.mu.Lock()
+	}
+}
+
+// leaseAndAllocate leases a fresh slot and allocates from it. The lease runs
+// outside the mutex — it is network I/O with a multi-second worst case, and
+// holding mu across it would serialize every connection on every network.
+// The caller must have set na.leasing; it is closed here when the lease
+// settles, releasing any waiters queued in Allocate.
+func (b *slotAllocator) leaseAndAllocate(ctx context.Context, netID tunnet.NetworkID, na *netAllocs) (v6, v4 netip.Prefix, alloc *ipalloc.ConnAllocator, err error) {
 	blk, err := b.leaser.Lease(ctx, netID)
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	close(na.leasing)
+	na.leasing = nil
+
 	if err != nil {
 		return netip.Prefix{}, netip.Prefix{}, nil, fmt.Errorf("failed to lease slot: %w", err)
 	}
+	if b.nets[netID] != na {
+		// The network was released while the lease was in flight; hand the
+		// slot straight back so it is not orphaned.
+		relCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		if rerr := b.leaser.Release(relCtx, blk); rerr != nil {
+			slog.Warn("Failed to release slot leased for a deleted network", slog.Any("error", rerr))
+		}
+		return netip.Prefix{}, netip.Prefix{}, nil, fmt.Errorf("network %s released during slot lease", netID)
+	}
+
 	a := ipalloc.NewConnAllocator(blk)
 	na.slots = append(na.slots, blk)
 	na.allocs = append(na.allocs, a)

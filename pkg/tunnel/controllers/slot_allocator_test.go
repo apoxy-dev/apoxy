@@ -4,13 +4,47 @@ import (
 	"context"
 	"errors"
 	"net/netip"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/ipalloc"
 	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 )
+
+const (
+	waitFor = 5 * time.Second
+	tick    = 5 * time.Millisecond
+)
+
+// blockingLeaser counts lease starts and holds every Lease until its gate
+// closes, so a test can pile concurrent allocations behind an in-flight lease.
+type blockingLeaser struct {
+	inner   ipalloc.SlotLeaser
+	gate    <-chan struct{}
+	started atomic.Int64
+}
+
+func (b *blockingLeaser) Lease(ctx context.Context, net tunnet.NetworkID) (ipalloc.Slot, error) {
+	b.started.Add(1)
+	select {
+	case <-b.gate:
+	case <-ctx.Done():
+		return ipalloc.Slot{}, ctx.Err()
+	}
+	return b.inner.Lease(ctx, net)
+}
+
+func (b *blockingLeaser) Renew(ctx context.Context, s ipalloc.Slot) error {
+	return b.inner.Renew(ctx, s)
+}
+
+func (b *blockingLeaser) Release(ctx context.Context, s ipalloc.Slot) error {
+	return b.inner.Release(ctx, s)
+}
 
 // countingLeaser wraps a real SlotLeaser to count Lease/Release calls and to
 // optionally inject a lease error.
@@ -101,6 +135,34 @@ func TestSlotAllocator(t *testing.T) {
 		require.NotPanics(t, func() {
 			b.Release(nil, netip.MustParsePrefix("fd00::/96"), netip.MustParsePrefix("10.0.0.0/32"))
 		})
+	})
+
+	t.Run("concurrent allocations on an empty network share one lease", func(t *testing.T) {
+		release := make(chan struct{})
+		leaser := &blockingLeaser{inner: ipalloc.NewLocalSlotLeaser(), gate: release}
+		b := newSlotAllocator(leaser)
+
+		const conns = 16
+		var wg sync.WaitGroup
+		errs := make([]error, conns)
+		for i := 0; i < conns; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				_, _, _, errs[i] = b.Allocate(ctx, netA)
+			}(i)
+		}
+
+		// Let every goroutine reach Allocate before the first lease returns,
+		// so all of them are queued behind the single in-flight lease.
+		require.Eventually(t, func() bool { return leaser.started.Load() == 1 }, waitFor, tick)
+		close(release)
+		wg.Wait()
+
+		for i, err := range errs {
+			require.NoError(t, err, "connection %d", i)
+		}
+		require.Equal(t, int64(1), leaser.started.Load(), "one lease covers every queued waiter")
 	})
 
 	t.Run("ReleaseAll drains every leased slot exactly once", func(t *testing.T) {
