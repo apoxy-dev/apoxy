@@ -15,7 +15,6 @@ import (
 	"os"
 	"os/exec"
 	"runtime/debug"
-	"runtime/pprof"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -60,12 +59,6 @@ func TestConnectIPDeviceThroughput(t *testing.T) {
 
 	caCert, serverCert, err := cryptoutils.GenerateSelfSignedTLSCert("proxy")
 	require.NoError(t, err)
-
-	f, err := os.Create("cpu.prof")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = f.Close() })
-	pprof.StartCPUProfile(f)
-	t.Cleanup(pprof.StopCPUProfile)
 
 	g, ctx := errgroup.WithContext(t.Context())
 
