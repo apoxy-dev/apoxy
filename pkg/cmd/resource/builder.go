@@ -106,6 +106,12 @@ type ResourceCommand[T Object, TList runtime.Object] struct {
 	// metadata.name used by the API. If nil, the argument is used as-is.
 	NameTransform func(string) (string, error)
 
+	// ResolveName converts a user-facing name argument into the internal
+	// metadata.name, with API access for lookups (e.g. resolving an alias
+	// or a spec field back to the object name). Takes precedence over
+	// NameTransform in get and delete when set.
+	ResolveName func(ctx context.Context, c *rest.APIClient, arg string) (string, error)
+
 	// DefaultName derives metadata.name from the object's spec when
 	// metadata.name is empty. Used by the apply command.
 	// If nil, metadata.name must be provided in the input.
@@ -255,7 +261,7 @@ func (r *ResourceCommand[T, TList]) Build() *cobra.Command {
 		Args:      cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
-			if r.NameTransform != nil {
+			if r.ResolveName == nil && r.NameTransform != nil {
 				var err error
 				name, err = r.NameTransform(name)
 				if err != nil {
@@ -267,9 +273,15 @@ func (r *ResourceCommand[T, TList]) Build() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if r.ResolveName != nil {
+				name, err = r.ResolveName(cmd.Context(), c, args[0])
+				if err != nil {
+					return err
+				}
+			}
 			obj, err := r.ClientFunc(c).Get(cmd.Context(), name, metav1.GetOptions{})
 			if err != nil {
-				if r.NameTransform != nil && apierrors.IsNotFound(err) {
+				if (r.ResolveName != nil || r.NameTransform != nil) && apierrors.IsNotFound(err) {
 					return fmt.Errorf("%s %q not found", r.KindName, args[0])
 				}
 				return err
@@ -358,7 +370,7 @@ func (r *ResourceCommand[T, TList]) Build() *cobra.Command {
 		Use:   "delete",
 		Short: fmt.Sprintf("Delete %s objects", r.KindName),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if r.NameTransform != nil {
+			if r.ResolveName == nil && r.NameTransform != nil {
 				for _, arg := range args {
 					if _, err := r.NameTransform(arg); err != nil {
 						return err
@@ -372,16 +384,25 @@ func (r *ResourceCommand[T, TList]) Build() *cobra.Command {
 				return err
 			}
 
-			for _, arg := range args {
+			// Resolve every name before deleting anything so a bad
+			// argument doesn't leave a multi-delete half done.
+			names := make([]string, len(args))
+			for i, arg := range args {
 				name := arg
-				if r.NameTransform != nil {
+				if r.ResolveName != nil {
+					name, err = r.ResolveName(cmd.Context(), c, arg)
+				} else if r.NameTransform != nil {
 					name, err = r.NameTransform(arg)
-					if err != nil {
-						return err
-					}
 				}
-				if err = r.ClientFunc(c).Delete(cmd.Context(), name, metav1.DeleteOptions{}); err != nil {
-					if r.NameTransform != nil && apierrors.IsNotFound(err) {
+				if err != nil {
+					return err
+				}
+				names[i] = name
+			}
+
+			for i, arg := range args {
+				if err = r.ClientFunc(c).Delete(cmd.Context(), names[i], metav1.DeleteOptions{}); err != nil {
+					if (r.ResolveName != nil || r.NameTransform != nil) && apierrors.IsNotFound(err) {
 						return fmt.Errorf("%s %q not found", r.KindName, arg)
 					}
 					return err

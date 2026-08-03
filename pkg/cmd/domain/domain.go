@@ -3,6 +3,7 @@ package domain
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -54,6 +55,33 @@ func DomainRecordPreApply(ctx context.Context, dr *corev1alpha3.DomainRecord) er
 	return nil
 }
 
+// resolveDomainRecordName maps a user-facing FQDN to the record's internal
+// metadata.name (which carries a "--<type>" suffix so multiple record types
+// can coexist at one name). Full internal names pass through untouched.
+func resolveDomainRecordName(ctx context.Context, c *rest.APIClient, arg string) (string, error) {
+	if strings.Contains(arg, "--") {
+		return arg, nil
+	}
+	list, err := c.CoreV1alpha3().DomainRecords().List(ctx, metav1.ListOptions{
+		FieldSelector: "spec.name=" + arg,
+	})
+	if err != nil {
+		return "", fmt.Errorf("listing records for %s: %w", arg, err)
+	}
+	switch len(list.Items) {
+	case 0:
+		return "", fmt.Errorf("domainrecord %q not found", arg)
+	case 1:
+		return list.Items[0].Name, nil
+	default:
+		names := make([]string, len(list.Items))
+		for i := range list.Items {
+			names[i] = list.Items[i].Name
+		}
+		return "", fmt.Errorf("multiple records exist for %q (%s); use the full record name", arg, strings.Join(names, ", "))
+	}
+}
+
 var domainRecordResource = &resource.ResourceCommand[*corev1alpha3.DomainRecord, *corev1alpha3.DomainRecordList]{
 	Use:      "domain",
 	Aliases:  []string{"d", "domains", "domainrecord", "domainrecords", "dr"},
@@ -67,7 +95,8 @@ var domainRecordResource = &resource.ResourceCommand[*corev1alpha3.DomainRecord,
 		ObjToTable:  func(d *corev1alpha3.DomainRecord) resource.TableConverter { return d },
 		ListToTable: func(l *corev1alpha3.DomainRecordList) resource.TableConverter { return l },
 	},
-	PreApply: DomainRecordPreApply,
+	PreApply:    DomainRecordPreApply,
+	ResolveName: resolveDomainRecordName,
 	ListFlags: func(cmd *cobra.Command) func() string {
 		var zone string
 		cmd.Flags().StringVar(&zone, "zone", "", "Filter domain records by zone name.")

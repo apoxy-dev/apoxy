@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -39,12 +40,16 @@ type fakeList struct {
 func (f *fakeList) DeepCopyObject() runtime.Object { return f }
 func (f *fakeList) GetObjectKind() schema.ObjectKind { return &f.TypeMeta }
 
-// fakeClient captures the ListOptions passed to List.
+// fakeClient captures the ListOptions passed to List and the names passed
+// to Get and Delete.
 type fakeClient struct {
 	lastListOpts metav1.ListOptions
+	lastGetName  string
+	deleted      []string
 }
 
 func (f *fakeClient) Get(_ context.Context, name string, _ metav1.GetOptions) (*fakeObj, error) {
+	f.lastGetName = name
 	return &fakeObj{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
 	}, nil
@@ -64,7 +69,8 @@ func (f *fakeClient) Create(_ context.Context, obj *fakeObj, _ metav1.CreateOpti
 	return obj, nil
 }
 
-func (f *fakeClient) Delete(_ context.Context, _ string, _ metav1.DeleteOptions) error {
+func (f *fakeClient) Delete(_ context.Context, name string, _ metav1.DeleteOptions) error {
+	f.deleted = append(f.deleted, name)
 	return nil
 }
 
@@ -215,6 +221,90 @@ func TestOutputFormatDefaultIsTable(t *testing.T) {
 	// Table output contains the header from CustomPrinter.
 	assert.Contains(t, out, "NAME")
 	assert.False(t, json.Valid([]byte(out)), "default output should not be JSON")
+}
+
+func TestResolveName(t *testing.T) {
+	// A resolver that maps a bare FQDN to its internal suffixed name and
+	// rejects names it doesn't know, mirroring the domain command's resolver.
+	resolver := func(_ context.Context, _ *rest.APIClient, arg string) (string, error) {
+		switch arg {
+		case "cname.example.com":
+			return "cname.example.com--ref", nil
+		case "cname.example.com--ref":
+			return arg, nil
+		default:
+			return "", fmt.Errorf("fake %q not found", arg)
+		}
+	}
+	build := func(fc *fakeClient) *cobra.Command {
+		r := &ResourceCommand[*fakeObj, *fakeList]{
+			Use:      "fake",
+			Short:    "Fake resource",
+			KindName: "fake",
+			ClientFunc: func(_ *rest.APIClient) ResourceClient[*fakeObj, *fakeList] {
+				return fc
+			},
+			CustomPrinter: &CustomPrinterConfig[*fakeObj, *fakeList]{
+				Header:   func(_ bool) pretty.Header { return pretty.Header{"NAME"} },
+				BuildRow: func(_ *fakeObj, _ bool) []interface{} { return []interface{}{"test"} },
+				GetItems: func(l *fakeList) []*fakeObj { return l.Items },
+			},
+			ResolveName: resolver,
+		}
+		return r.Build()
+	}
+
+	cases := []struct {
+		name        string
+		args        []string
+		wantErr     string
+		wantGetName string
+		wantDeleted []string
+	}{
+		{
+			name:        "get resolves bare name",
+			args:        []string{"get", "cname.example.com"},
+			wantGetName: "cname.example.com--ref",
+		},
+		{
+			name:        "delete resolves bare name",
+			args:        []string{"delete", "cname.example.com"},
+			wantDeleted: []string{"cname.example.com--ref"},
+		},
+		{
+			name:        "delete passes through full name",
+			args:        []string{"delete", "cname.example.com--ref"},
+			wantDeleted: []string{"cname.example.com--ref"},
+		},
+		{
+			name:    "get unknown name fails",
+			args:    []string{"get", "nope.example.com"},
+			wantErr: "not found",
+		},
+		{
+			name:    "delete resolves all names before deleting any",
+			args:    []string{"delete", "cname.example.com", "nope.example.com"},
+			wantErr: "not found",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fc := &fakeClient{}
+			cmd := build(fc)
+			var err error
+			captureStdout(t, func() { err = executeCommand(cmd, tc.args...) })
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+			} else {
+				require.NoError(t, err)
+			}
+			if tc.wantGetName != "" {
+				assert.Equal(t, tc.wantGetName, fc.lastGetName)
+			}
+			assert.Equal(t, tc.wantDeleted, fc.deleted)
+		})
+	}
 }
 
 func TestListFlagsMerge(t *testing.T) {
