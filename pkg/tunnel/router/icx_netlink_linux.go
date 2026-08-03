@@ -295,7 +295,11 @@ func (r *ICXNetlinkRouter) AddRoute(dst netip.Prefix) error {
 		},
 		Scope: netlink.SCOPE_LINK,
 	}
-	if err := netlink.RouteAdd(route); err != nil {
+	// Replace, not Add: this router is the sole owner of the device's routes,
+	// and a stale route for the same /96 (leaked by a crashed predecessor on
+	// the persistent veth, or by an aborted connect racing this one) must not
+	// permanently brick the prefix with EEXIST (2026-08-03 incident).
+	if err := netlink.RouteReplace(route); err != nil {
 		return fmt.Errorf("failed to add route: %w", err)
 	}
 

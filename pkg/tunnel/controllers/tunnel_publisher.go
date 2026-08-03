@@ -134,8 +134,14 @@ func (p *TunnelPublisher) OnConnect(ctx context.Context, tunnelName, agentName s
 		p.releaseAll(alloc, v6, v4, vniID)
 		return fmt.Errorf("failed to set overlay address: %w", err)
 	}
+	// From here on the router holds state for v6: failures must NOT release
+	// the allocation directly — a concurrent connect would be handed the same
+	// /96 while its route is still installed and fail with EEXIST (2026-08-03
+	// incident). deferRelease parks the allocation under the connection ID so
+	// the relay's teardown (conn.Close, then OnDisconnect) releases it only
+	// after the router state is gone.
 	if err := conn.SetVNI(ctx, vniID); err != nil {
-		p.releaseAll(alloc, v6, v4, vniID)
+		p.deferRelease(conn.ID(), alloc, v6, v4, vniID)
 		return fmt.Errorf("failed to set VNI: %w", err)
 	}
 
@@ -147,7 +153,7 @@ func (p *TunnelPublisher) OnConnect(ctx context.Context, tunnelName, agentName s
 		// The /32 is best-effort (§2.4): drop it and retry v6-only rather than
 		// refuse the tunnel over the weaker family.
 		if !v4.IsValid() {
-			p.releaseAll(alloc, v6, v4, vniID)
+			p.deferRelease(conn.ID(), alloc, v6, v4, vniID)
 			return fmt.Errorf("failed to set overlay addresses: %w", err)
 		}
 		slog.Warn("Failed to program the IPv4 overlay address, continuing without v4",
@@ -158,13 +164,13 @@ func (p *TunnelPublisher) OnConnect(ctx context.Context, tunnelName, agentName s
 		v4 = netip.Prefix{}
 		addresses = addresses[:1]
 		if err := conn.SetAddresses(addresses); err != nil {
-			p.releaseAll(alloc, v6, v4, vniID)
+			p.deferRelease(conn.ID(), alloc, v6, v4, vniID)
 			return fmt.Errorf("failed to set overlay addresses: %w", err)
 		}
 	}
 
 	if err := p.createTunnel(ctx, conn, networkName, agentName, addresses); err != nil {
-		p.releaseAll(alloc, v6, v4, vniID)
+		p.deferRelease(conn.ID(), alloc, v6, v4, vniID)
 		return fmt.Errorf("failed to create Tunnel object: %w", err)
 	}
 
@@ -205,6 +211,17 @@ func (p *TunnelPublisher) OnDisconnect(ctx context.Context, agentName, id string
 func (p *TunnelPublisher) releaseAll(alloc *ipalloc.ConnAllocator, v6, v4 netip.Prefix, vniID uint) {
 	p.slots.Release(alloc, v6, v4)
 	p.vnis.Release(vniID)
+}
+
+// deferRelease parks a failed connection's allocation under its ID so
+// OnDisconnect — which the relay's teardown runs only after conn.Close has
+// unprogrammed the router — performs the release. Releasing earlier would let
+// a concurrent connect allocate the same /96 while its route is still
+// installed.
+func (p *TunnelPublisher) deferRelease(id string, alloc *ipalloc.ConnAllocator, v6, v4 netip.Prefix, vniID uint) {
+	p.mu.Lock()
+	p.conns[id] = &connAlloc{alloc: alloc, v6: v6, v4: v4, vni: vniID}
+	p.mu.Unlock()
 }
 
 // createTunnel writes the single-writer Tunnel object complete: spec + identity

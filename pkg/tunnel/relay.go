@@ -589,7 +589,13 @@ func (r *Relay) teardownConn(ctx context.Context, conn *connection) {
 	onDisconnect := r.onDisconnect
 	r.mu.Unlock()
 	if onDisconnect != nil {
-		if err := onDisconnect(ctx, agentName, id); err != nil {
+		// Detached from the caller's context: an aborting connect arrives here
+		// with its request context already canceled, and inheriting it
+		// guarantees the cleanup fails — leaking the Tunnel object and the
+		// connection's allocations (2026-08-03 incident).
+		dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		if err := onDisconnect(dctx, agentName, id); err != nil {
 			slog.Warn("onDisconnect callback failed during teardown", slog.String("connID", id), slog.Any("error", err))
 		}
 	}
