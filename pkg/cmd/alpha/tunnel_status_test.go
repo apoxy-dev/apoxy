@@ -126,7 +126,7 @@ func TestTunnelStatusModelFitsTerminalWithoutClippingCells(t *testing.T) {
 			require.Contains(t, view, "us-west-2")
 			require.Contains(t, view, "connected")
 			if width == 100 {
-				require.Less(t, lipgloss.Width(m.connectionTable()), 70, "table should use its natural content width")
+				require.Less(t, lipgloss.Width(m.connectionTable()), 75, "table should use its natural content width")
 			}
 			for _, line := range strings.Split(strings.TrimSuffix(view, "\n"), "\n") {
 				require.Less(t, lipgloss.Width(line), width, "line must not reach the terminal autowrap column: %q", line)

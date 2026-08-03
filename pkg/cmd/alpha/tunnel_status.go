@@ -16,13 +16,17 @@ import (
 	tunnelagent "github.com/apoxy-dev/apoxy/pkg/tunnel/agent"
 )
 
+// Apoxy brand palette (route accents): teal is the tunnels/network line
+// color; green/sand/coral replace the harsh default terminal greens and reds.
+// Lipgloss degrades these to the nearest 256/16-color equivalents.
 var (
-	statusOKStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("82"))
-	statusWarnStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
-	statusErrorStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
-	statusDimStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
+	statusOKStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("#48cd84"))
+	statusWarnStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#bfab84"))
+	statusErrorStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#ea6a4e"))
+	statusAccentStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#5fbfc7"))
+	statusDimStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#ababab"))
 	statusHeadingStyle = lipgloss.NewStyle().Bold(true)
-	statusLabelStyle   = lipgloss.NewStyle().Width(8)
+	statusLabelStyle   = lipgloss.NewStyle().Width(8).Inherit(statusDimStyle)
 )
 
 // tunnelRunStatus renders the immutable tunnel choices once and keeps one
@@ -176,6 +180,7 @@ type tunnelStatusModel struct {
 func newTunnelStatusModel(name, vpc string, generated bool, desired int) tunnelStatusModel {
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
+	sp.Style = statusAccentStyle
 	rows := make([]tunnelagent.ConnectionStatus, desired)
 	for i := range rows {
 		rows[i] = tunnelagent.ConnectionStatus{Slot: i, State: tunnelagent.ConnectionStateConnecting}
@@ -248,11 +253,21 @@ func (m tunnelStatusModel) View() string {
 			connected++
 		}
 	}
-	heading := fmt.Sprintf("Connections %d/%d", connected, len(m.rows))
+	countStyle := statusWarnStyle
+	if connected == len(m.rows) {
+		countStyle = statusOKStyle
+	}
+	heading := lipgloss.JoinHorizontal(
+		lipgloss.Top,
+		statusAccentStyle.Render("▍ "),
+		statusHeadingStyle.Render("Connections"),
+		" ",
+		countStyle.Bold(true).Render(fmt.Sprintf("%d/%d", connected, len(m.rows))),
+	)
 	body := lipgloss.JoinVertical(
 		lipgloss.Left,
 		m.resolutionLine(),
-		statusHeadingStyle.Render(heading),
+		heading,
 		m.connectionTable(),
 	)
 	return lipgloss.JoinVertical(lipgloss.Left, summary, "", body) + "\n"
@@ -261,16 +276,13 @@ func (m tunnelStatusModel) View() string {
 func (m tunnelStatusModel) resolutionLine() string {
 	for _, row := range m.rows {
 		if row.Relay != "" {
-			return lipgloss.JoinHorizontal(
-				lipgloss.Top,
-				statusOKStyle.Render("✓"),
-				" resolved nearest edges",
-			)
+			// Resolution is history once an edge is known; let it recede.
+			return statusDimStyle.Render("✓ resolved nearest edges")
 		}
 	}
 	return lipgloss.JoinHorizontal(
 		lipgloss.Top,
-		statusWarnStyle.Render("→"),
+		statusAccentStyle.Render("→"),
 		" resolving nearest edges",
 	)
 }
@@ -301,7 +313,10 @@ func tunnelStatusHeaders(width int) []string {
 	return headers
 }
 
-var tunnelStatusColumnWidths = [...]int{2, 13, 13, 8, 10, 11, 10}
+// Each width is the longest expected cell content plus a two-space gutter
+// (PaddingRight below), so adjacent columns always keep at least two spaces
+// between them.
+var tunnelStatusColumnWidths = [...]int{3, 14, 14, 9, 10, 11, 9}
 
 func (m tunnelStatusModel) connectionTable() string {
 	headers := tunnelStatusHeaders(m.width)
@@ -322,7 +337,7 @@ func (m tunnelStatusModel) connectionTable() string {
 		BorderRow(false).
 		Wrap(false).
 		StyleFunc(func(row, col int) lipgloss.Style {
-			style := lipgloss.NewStyle().Width(widths[col]).PaddingRight(1)
+			style := lipgloss.NewStyle().Width(widths[col]).PaddingRight(2)
 			if col == len(widths)-1 {
 				style = style.PaddingRight(0)
 			}
@@ -353,7 +368,8 @@ func connectionStateStyle(state tunnelagent.ConnectionState) lipgloss.Style {
 	case tunnelagent.ConnectionStateEnded:
 		return statusErrorStyle
 	default:
-		return statusWarnStyle
+		// Connecting is in-progress, not a warning; use the tunnel route accent.
+		return statusAccentStyle
 	}
 }
 
