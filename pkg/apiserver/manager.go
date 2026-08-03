@@ -260,6 +260,8 @@ type options struct {
 	secretStoreMain        serverapiserver.StorageProvider
 	secretStoreValues      serverapiserver.StorageProvider
 	secretValuesAuthz      secretstore.ReadAuthz
+	maxRequestsInFlight    int
+	maxMutatingInFlight    int
 	// kineETCD is the kine backend endpoint, captured in start() so the
 	// startup storage migration can read legacy keys directly.
 	kineETCD endpoint.ETCDConfig
@@ -288,6 +290,23 @@ func WithSecretValuesAuthz(allow secretstore.ReadAuthz) Option {
 type admissionPlugin struct {
 	name    string
 	factory admission.Factory
+}
+
+// WithMaxRequestsInFlight caps the number of non-mutating and mutating
+// requests served concurrently. Requests over the cap are rejected
+// immediately with 429 + Retry-After instead of queueing into the backend;
+// long-running requests (watches) are exempt. Zero leaves the corresponding
+// generic-apiserver default (400 non-mutating / 200 mutating) in place.
+//
+// This is the load-shedding backstop for kine/SQLite backends: SQLite has a
+// single writer, so admitting more concurrent mutations than the backend can
+// serialize just queues work into request timeouts. A fast 429 is cheaper for
+// the server and tells well-behaved clients to back off.
+func WithMaxRequestsInFlight(nonMutating, mutating int) Option {
+	return func(o *options) {
+		o.maxRequestsInFlight = nonMutating
+		o.maxMutatingInFlight = mutating
+	}
 }
 
 // WithJWTKeys sets the JWT key pair.
@@ -1151,6 +1170,15 @@ func start(
 			// ApplyRecommendedConfigFns pass, since that pass exists only to
 			// re-nil this field.
 			c.FlowControl = nil
+
+			// With FlowControl nil the handler chain falls back to the plain
+			// max-in-flight filter; these caps are what it enforces.
+			if opts.maxRequestsInFlight > 0 {
+				c.MaxRequestsInFlight = opts.maxRequestsInFlight
+			}
+			if opts.maxMutatingInFlight > 0 {
+				c.MaxMutatingRequestsInFlight = opts.maxMutatingInFlight
+			}
 
 			if opts.enableSimpleAuth {
 				// For simple auth, we use a header authenticator and an always
