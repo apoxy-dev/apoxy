@@ -60,6 +60,31 @@ func TestTunnelStatusModelRendersOneRowPerConnection(t *testing.T) {
 	require.NotContains(t, view, "failover")
 }
 
+func TestTunnelStatusRowsOrderedByLatency(t *testing.T) {
+	m := newTunnelStatusModel("swift-hopper", "default", true, 3)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = updated.(tunnelStatusModel)
+	// Slot order deliberately inverts latency order, and slot 2 has no
+	// measurement yet — it must sink below the measured rows.
+	updates := []tunnelagent.ConnectionStatus{
+		{Slot: 0, Relay: "us-east-1.relay.apoxy.net:6081", State: tunnelagent.ConnectionStateConnected, Latency: 71 * time.Millisecond},
+		{Slot: 1, Relay: "us-west-2.relay.apoxy.net:6081", State: tunnelagent.ConnectionStateConnected, Latency: 3 * time.Millisecond},
+		{Slot: 2, State: tunnelagent.ConnectionStateConnecting},
+	}
+	for _, status := range updates {
+		updated, _ := m.Update(tunnelConnectionStatusMsg(status))
+		m = updated.(tunnelStatusModel)
+	}
+
+	table := m.connectionTable()
+	west := strings.Index(table, "us-west-2")
+	east := strings.Index(table, "us-east-1")
+	waiting := strings.Index(table, "connecting")
+	require.True(t, west >= 0 && east >= 0 && waiting >= 0, "all three rows must render: %q", table)
+	require.Less(t, west, east, "nearest relay must render first")
+	require.Less(t, east, waiting, "unmeasured rows must sink to the bottom")
+}
+
 func TestTunnelStatusColumnsStayFixedAcrossUpdates(t *testing.T) {
 	m := newTunnelStatusModel("swift-hopper", "default", true, 1)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})

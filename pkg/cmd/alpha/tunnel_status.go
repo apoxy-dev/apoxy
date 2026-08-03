@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -318,11 +320,27 @@ func tunnelStatusHeaders(width int) []string {
 // between them.
 var tunnelStatusColumnWidths = [...]int{3, 14, 14, 9, 10, 11, 9}
 
+// sortedRows returns the connections ordered nearest-first for display.
+// Rows without a measurement (still resolving) sink to the bottom, and the
+// stable sort keeps slot order for ties so rows don't jitter across refreshes.
+func (m tunnelStatusModel) sortedRows() []tunnelagent.ConnectionStatus {
+	rows := slices.Clone(m.rows)
+	sort.SliceStable(rows, func(i, j int) bool {
+		li, lj := rows[i].Latency, rows[j].Latency
+		if (li > 0) != (lj > 0) {
+			return li > 0
+		}
+		return li < lj
+	})
+	return rows
+}
+
 func (m tunnelStatusModel) connectionTable() string {
 	headers := tunnelStatusHeaders(m.width)
 	widths := tunnelStatusColumnWidths[:len(headers)]
-	rows := make([][]string, 0, len(m.rows))
-	for _, status := range m.rows {
+	display := m.sortedRows()
+	rows := make([][]string, 0, len(display))
+	for _, status := range display {
 		rows = append(rows, m.connectionRow(status, len(headers)))
 	}
 	t := liptable.New().
@@ -344,12 +362,12 @@ func (m tunnelStatusModel) connectionTable() string {
 			if row == liptable.HeaderRow {
 				return style.Inherit(statusDimStyle).Bold(true)
 			}
-			if row < 0 || row >= len(m.rows) {
+			if row < 0 || row >= len(display) {
 				return style
 			}
 			switch col {
 			case 0, 2:
-				return style.Inherit(connectionStateStyle(m.rows[row].State))
+				return style.Inherit(connectionStateStyle(display[row].State))
 			case 3, 4, 5, 6:
 				return style.Inherit(statusDimStyle)
 			default:
