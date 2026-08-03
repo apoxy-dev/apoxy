@@ -66,12 +66,35 @@ type l2Underlay struct {
 	// msgs is reused across WriteFrames calls (single writer: the datapath's
 	// TX pump) to avoid a per-batch allocation.
 	msgs []batchpc.Message
+	// rmsgs is reused across ReadFrames calls (single reader: the datapath's
+	// RX pump) to avoid a per-batch allocation.
+	rmsgs []batchpc.Message
 }
 
 var _ icxtun.Underlay = (*l2Underlay)(nil)
+var _ icxtun.BatchUnderlay = (*l2Underlay)(nil)
 
 func (u *l2Underlay) ReadFrame(buf []byte) (int, error) {
 	return u.phy.ReadFrame(buf)
+}
+
+// ReadFrames reads up to len(bufs) underlay frames in one batched receive
+// (recvmmsg on the shared socket), so the datapath's inbound pump pays one
+// syscall — and one TUN write — per batch instead of per packet.
+func (u *l2Underlay) ReadFrames(bufs [][]byte, sizes []int) (int, error) {
+	if cap(u.rmsgs) < len(bufs) {
+		u.rmsgs = make([]batchpc.Message, len(bufs))
+	}
+	msgs := u.rmsgs[:len(bufs)]
+	for i := range bufs {
+		msgs[i].Buf = bufs[i]
+		msgs[i].Addr = nil
+	}
+	n, err := u.phy.ReadBatchFrames(msgs, 0)
+	for i := 0; i < n; i++ {
+		sizes[i] = len(msgs[i].Buf)
+	}
+	return n, err
 }
 
 func (u *l2Underlay) WriteFrames(frames [][]byte) (int, error) {
@@ -168,6 +191,14 @@ func NewICXTunRouter(opts ...Option) (*ICXTunRouter, error) {
 		_ = phy.Close()
 		return nil, fmt.Errorf("failed to bring up %q: %w", name, err)
 	}
+	// The kernel default TUN qlen (500) absorbs only ~6ms of line-rate bulk
+	// traffic; a burst that outpaces the userspace reader overflows it and the
+	// resulting drops collapse every TCP flow's congestion window. Deep enough
+	// to ride out encap+send scheduling hiccups, and fq_codel on top keeps
+	// standing latency bounded.
+	if err := nl.LinkSetTxQLen(link, 5000); err != nil {
+		slog.Warn("Failed to raise TUN txqueuelen", slog.Any("error", err))
+	}
 	// A freshly created namespace has loopback down; bring it up so sockets
 	// created in the namespace (e.g. Envoy upstream binds) behave normally.
 	if ns.IsOpen() {
@@ -206,22 +237,17 @@ func NewICXTunRouter(opts ...Option) (*ICXTunRouter, error) {
 }
 
 // createTunDevice opens a TUN device in the calling thread's current network
-// namespace and disables kernel GSO/GRO offload so each device read returns a
-// single <= MTU packet the icx encap buffers are sized for, mirroring the icx
-// tun driver's own Open path.
+// namespace with kernel GSO/GRO offloads left enabled (wireguard's CreateTUN
+// turns them on). The kernel then hands the device a single up-to-64KB
+// super-packet per read syscall and the wireguard device splits it into <= MTU
+// segments (computing checksums) before returning, so the datapath still sees
+// only MTU-sized packets but pays one syscall per ~40 instead of one each —
+// without this the outbound pump serializes a read+encrypt+send per packet and
+// caps around 1 Gbps while the TUN txqueue overflows and drops.
 func createTunDevice(name string, mtu int) (wgtun.Device, error) {
 	dev, err := wgtun.CreateTUN(name, mtu)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create TUN device %q: %w", name, err)
-	}
-	f := dev.File()
-	if f == nil {
-		_ = dev.Close()
-		return nil, fmt.Errorf("TUN device exposes no file descriptor; cannot disable offload")
-	}
-	if err := unix.IoctlSetInt(int(f.Fd()), unix.TUNSETOFFLOAD, 0); err != nil {
-		_ = dev.Close()
-		return nil, fmt.Errorf("failed to disable TUN offload: %w", err)
 	}
 	return dev, nil
 }

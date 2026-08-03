@@ -256,6 +256,20 @@ func newPacketPlaneAt(bindAddr string) (*packetPlane, error) {
 		return nil, fmt.Errorf("failed to create UDP socket: %w", err)
 	}
 
+	// This one socket carries the whole Geneve data plane plus QUIC. The
+	// kernel default buffers (~208KB) hold ~2ms of 1 Gbps traffic, so bursts
+	// tail-drop under any scheduling delay; ask for more (clamped to
+	// net.core.{r,w}mem_max without CAP_NET_ADMIN, so best-effort).
+	if uc, ok := lis.(*net.UDPConn); ok {
+		const sockBufSize = 16 << 20
+		if err := uc.SetReadBuffer(sockBufSize); err != nil {
+			slog.Warn("Failed to set UDP receive buffer", slog.Any("error", err))
+		}
+		if err := uc.SetWriteBuffer(sockBufSize); err != nil {
+			slog.Warn("Failed to set UDP send buffer", slog.Any("error", err))
+		}
+	}
+
 	bpc, err := batchpc.New("udp", lis)
 	if err != nil {
 		lis.Close()
