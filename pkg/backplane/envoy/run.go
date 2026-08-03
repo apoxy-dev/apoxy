@@ -430,6 +430,7 @@ func (r *Runtime) Start(ctx context.Context, opts ...Option) error {
 			select {
 			case <-ctx.Done():
 				log.Infof("context done")
+				return
 			case <-r.stopCh:
 				log.Infof("envoy stopped")
 				return
@@ -440,13 +441,16 @@ func (r *Runtime) Start(ctx context.Context, opts ...Option) error {
 				log.Errorf("envoy exited with error: %v", err)
 			}
 
+			// Restart envoy unless we are shutting down. The 1s pause keeps a
+			// persistently failing envoy from busy-looping (and spamming logs).
 			select {
 			case <-ctx.Done():
 				log.Infof("context done")
+				return
 			case <-r.stopCh:
 				log.Infof("envoy stopped")
 				return
-			default: // Restart envoy.
+			case <-time.After(1 * time.Second):
 			}
 		}
 	}()
@@ -526,6 +530,7 @@ func (r *Runtime) Shutdown(ctx context.Context) error {
 		log.Errorf("error initiating graceful drain: %v", err)
 	}
 
+drain:
 	for {
 		conn, err := r.getTotalConnections()
 		if err != nil {
@@ -546,7 +551,7 @@ func (r *Runtime) Shutdown(ctx context.Context) error {
 		case <-time.After(1 * time.Second):
 		case <-ctx.Done():
 			log.Infof("context done while draining")
-			break
+			break drain
 		}
 	}
 
