@@ -85,14 +85,24 @@ func NewLatencySelector(opts ...Option) *LatencySelector {
 	return &LatencySelector{opts: options}
 }
 
-// Select returns the endpoint with the lowest latency.
+// Select returns the endpoint with the lowest latency. It cancels remaining
+// probes as soon as one endpoint responds: only the single winner is consumed,
+// so waiting out unreachable endpoints' timeouts would just delay startup.
 func (s *LatencySelector) Select(ctx context.Context, endpoints []string) (string, error) {
-	addr, _, err := s.SelectWithResults(ctx, endpoints)
+	addr, _, err := s.selectWithResults(ctx, endpoints, true)
 	return addr, err
 }
 
-// SelectWithResults returns the endpoint with the lowest latency along with all probe results.
+// SelectWithResults returns the endpoint with the lowest latency along with all
+// probe results. Unlike Select, every probe runs to completion: callers of this
+// method rank the full endpoint set, and an early cancel would corrupt the
+// losers' measurements (a probe cut off after one ping reports handshake time,
+// and one cut off before any ping drops out of the ranking entirely).
 func (s *LatencySelector) SelectWithResults(ctx context.Context, endpoints []string) (string, []ProbeResult, error) {
+	return s.selectWithResults(ctx, endpoints, false)
+}
+
+func (s *LatencySelector) selectWithResults(ctx context.Context, endpoints []string, cancelOnFirstSuccess bool) (string, []ProbeResult, error) {
 	if len(endpoints) == 0 {
 		return "", nil, errors.New("no endpoints provided")
 	}
@@ -103,7 +113,7 @@ func (s *LatencySelector) SelectWithResults(ctx context.Context, endpoints []str
 		}}, nil
 	}
 
-	results := s.probeAll(ctx, endpoints)
+	results := s.probeAll(ctx, endpoints, cancelOnFirstSuccess)
 
 	// Sort by latency (errors go to the end).
 	sort.Slice(results, func(i, j int) bool {
@@ -134,14 +144,13 @@ func (s *LatencySelector) SelectWithResults(ctx context.Context, endpoints []str
 	return "", results, errors.New("all endpoint probes failed")
 }
 
-// probeAll probes all endpoints concurrently and returns the results.
-// Once at least one probe succeeds, remaining probes are cancelled
-// so unreachable endpoints don't block selection.
-func (s *LatencySelector) probeAll(ctx context.Context, endpoints []string) []ProbeResult {
+// probeAll probes all endpoints concurrently and returns the results. With
+// cancelOnFirstSuccess, remaining probes are cancelled once one succeeds so
+// unreachable endpoints don't block single-winner selection.
+func (s *LatencySelector) probeAll(ctx context.Context, endpoints []string, cancelOnFirstSuccess bool) []ProbeResult {
 	results := make([]ProbeResult, len(endpoints))
 	var wg sync.WaitGroup
 
-	// Cancel remaining probes once we have a successful result.
 	probeCtx, probeCancel := context.WithCancel(ctx)
 	defer probeCancel()
 
@@ -169,7 +178,7 @@ func (s *LatencySelector) probeAll(ctx context.Context, endpoints []string) []Pr
 			}
 
 			results[idx] = s.probe(probeCtx, addr)
-			if results[idx].Error == nil {
+			if cancelOnFirstSuccess && results[idx].Error == nil {
 				// Got a successful probe — cancel the rest.
 				once.Do(probeCancel)
 			}
