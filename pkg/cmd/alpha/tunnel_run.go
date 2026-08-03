@@ -63,6 +63,14 @@ var tunnelRunCmd = &cobra.Command{
 
 		resolvedAgentName, resolvedTunnelName, generatedName := resolveTunnelDefaults(agentName, tunnelName)
 		useTUI := !noTUI && !apoxyconfig.Verbose && utils.IsInteractive()
+
+		// In an interactive session the health endpoint defaults off: several
+		// tunnels commonly run side by side in terminals and would race for
+		// the default port. An explicit --health-addr still binds; daemon-style
+		// runs keep the default so orchestrators can probe liveness.
+		if utils.IsInteractive() && !cmd.Flags().Changed("health-addr") {
+			healthAddr = ""
+		}
 		status := newTunnelRunStatus(
 			cmd.OutOrStdout(), resolvedAgentName, resolvedTunnelName, generatedName, minConns, useTUI,
 		)
@@ -222,7 +230,7 @@ func init() {
 	tunnelRunCmd.Flags().StringVar(&socksListenAddr, "socks-addr", "localhost:1080", "Listen address for SOCKS proxy.")
 	tunnelRunCmd.Flags().BoolVar(&tunMode, "tun", false, "Use a kernel TUN device for the overlay datapath instead of the in-process netstack + SOCKS proxy. Any process in the same network namespace can then reach overlay destinations by plain kernel route. Linux only; requires NET_ADMIN and /dev/net/tun.")
 	tunnelRunCmd.Flags().StringVar(&tunIfaceName, "tun-ifname", "apoxy0", "Name of the TUN interface created in --tun mode.")
-	tunnelRunCmd.Flags().StringVar(&healthAddr, "health-addr", "localhost:8080", "Listen address for health endpoint (e.g. \":8080\"). Empty disables.")
+	tunnelRunCmd.Flags().StringVar(&healthAddr, "health-addr", "localhost:8080", "Listen address for health endpoint (e.g. \":8080\"). Empty disables. In interactive sessions the endpoint is off unless this flag is set explicitly.")
 	tunnelRunCmd.Flags().StringToStringVar(&agentLabels, "label", nil, "Agent-declared label (key=value) for VPCService selection; repeatable. Bounded by the credential's allowed label sets.")
 	tunnelRunCmd.Flags().StringArrayVar(&advertisedRoutes, "route", nil, "CIDR reachable behind this agent, advertised to the relay; repeatable. Bounded by the credential's allowed routes.")
 	tunnelRunCmd.Flags().BoolVar(&noTUI, "no-tui", false, "Disable the interactive connection display.")
