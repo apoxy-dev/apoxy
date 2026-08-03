@@ -9,6 +9,27 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestLatencyTracker pins the sharing contract between the probe loop and
+// live sessions: updates merge (a relay missing from one probe round keeps
+// its last measurement), and a nil tracker reads as zero so probe-less paths
+// need no wiring.
+func TestLatencyTracker(t *testing.T) {
+	tracker := newLatencyTracker()
+	require.Zero(t, tracker.Get("a"), "unknown relay must read as unmeasured")
+
+	tracker.Update(map[string]time.Duration{"a": 10 * time.Millisecond, "b": 20 * time.Millisecond})
+	require.Equal(t, 10*time.Millisecond, tracker.Get("a"))
+
+	// A round that only measured "b" must not erase "a".
+	tracker.Update(map[string]time.Duration{"b": 25 * time.Millisecond})
+	require.Equal(t, 10*time.Millisecond, tracker.Get("a"))
+	require.Equal(t, 25*time.Millisecond, tracker.Get("b"))
+
+	var nilTracker *latencyTracker
+	require.Zero(t, nilTracker.Get("a"))
+	nilTracker.Update(map[string]time.Duration{"a": time.Millisecond}) // must not panic
+}
+
 // TestProbeRelays_RanksAndSkipsDraining pins the probe contract: reachable
 // relays come back ranked, and a draining relay (503 on /ping) drops out of
 // the ranking so future acquisitions steer away from it.

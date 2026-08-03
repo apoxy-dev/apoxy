@@ -17,12 +17,14 @@ import (
 	"github.com/apoxy-dev/icx"
 	"github.com/apoxy-dev/icx/psp"
 	"github.com/avast/retry-go/v4"
+	"github.com/prometheus/client_golang/prometheus"
 	"golang.org/x/sync/errgroup"
 	"k8s.io/apimachinery/pkg/util/sets"
 
 	"github.com/apoxy-dev/apoxy/pkg/netstack"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/api"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/conntrackpc"
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/metrics"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/randalloc"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/router"
 )
@@ -236,7 +238,7 @@ func manageRelayConnectionOnce(
 	tlsConf *tls.Config,
 	notify *sessionNotify,
 	slot int,
-	latency time.Duration,
+	latencies *latencyTracker,
 ) error {
 	var (
 		currentClient *api.Client
@@ -282,6 +284,12 @@ func manageRelayConnectionOnce(
 		if currentConnID != "" {
 			connectionHealthCounter.Add(-1)
 		}
+		// Drop this relay's path series so a dead relay doesn't keep
+		// reporting its last measurements. A reconnect restarts the counters
+		// from zero, which rate() reads as an ordinary counter reset.
+		metrics.TunnelRelayRTTSeconds.DeleteLabelValues(relayAddr)
+		metrics.TunnelRelayPacketsLost.DeletePartialMatch(prometheus.Labels{"relay": relayAddr})
+		metrics.TunnelRelayPTOs.DeleteLabelValues(relayAddr)
 		closeSession(currentClient, currentConnID)
 	}()
 
@@ -321,10 +329,19 @@ func manageRelayConnectionOnce(
 	// Successful session establishment: mark this connection active.
 	connectionHealthCounter.Add(1)
 	connectedAt = time.Now()
-	if latency <= 0 {
-		latency = connectTime
-	}
 	statusSnapshot := func(state ConnectionState) ConnectionStatus {
+		// Latency preference: the smoothed RTT QUIC measures continuously on
+		// the live control connection, then the probe tracker (relays we're
+		// not yet exchanging packets with), then session-establishment time
+		// as the last-resort stand-in.
+		latency := currentClient.RTT()
+		if latency <= 0 {
+			latency = latencies.Get(relayAddr)
+		}
+		if latency <= 0 {
+			latency = connectTime
+		}
+		metrics.TunnelRelayRTTSeconds.WithLabelValues(relayAddr).Set(latency.Seconds())
 		status := ConnectionStatus{
 			Slot:        slot,
 			Relay:       relayAddr,
@@ -397,24 +414,27 @@ func manageRelayConnectionOnce(
 			watchdogInterval,
 		)
 	})
-	if cfg.ConnectionObserver != nil && slot >= 0 {
-		g.Go(func() error {
-			ticker := time.NewTicker(connectionStatusInterval)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-gctx.Done():
-					return gctx.Err()
-				case <-ticker.C:
-					state := ConnectionStateConnected
-					if draining.Load() {
-						state = ConnectionStateDraining
-					}
-					cfg.reportConnection(statusSnapshot(state))
+	g.Go(func() error {
+		// The snapshot also refreshes the per-relay RTT gauge, so this loop
+		// runs even without an observer.
+		ticker := time.NewTicker(connectionStatusInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-gctx.Done():
+				return gctx.Err()
+			case <-ticker.C:
+				state := ConnectionStateConnected
+				if draining.Load() {
+					state = ConnectionStateDraining
+				}
+				status := statusSnapshot(state)
+				if cfg.ConnectionObserver != nil && slot >= 0 {
+					cfg.reportConnection(status)
 				}
 			}
-		})
-	}
+		}
+	})
 	g.Go(func() error {
 		select {
 		case <-gctx.Done():
@@ -479,7 +499,7 @@ func startSessionRun(
 	relayAddr string,
 	tlsConf *tls.Config,
 ) *sessionRun {
-	return startSessionRunForSlot(ctx, cfg, pcQuicMux, handler, r, routes, relayAddr, tlsConf, -1, 0)
+	return startSessionRunForSlot(ctx, cfg, pcQuicMux, handler, r, routes, relayAddr, tlsConf, -1, nil)
 }
 
 func startSessionRunForSlot(
@@ -492,7 +512,7 @@ func startSessionRunForSlot(
 	relayAddr string,
 	tlsConf *tls.Config,
 	slot int,
-	latency time.Duration,
+	latencies *latencyTracker,
 ) *sessionRun {
 	sctx, cancel := context.WithCancel(ctx)
 	run := &sessionRun{
@@ -534,7 +554,7 @@ func startSessionRunForSlot(
 			// Run the actual session lifecycle (watchdog, key rotation, etc). The
 			// relay pool is refreshed out-of-band by refreshRelayPool, so no
 			// per-connect pool update is needed here.
-			return manageRelayConnectionOnce(sctx, cfg, pcQuic, handler, r, routes, relayAddr, tlsConf, notify, slot, latency)
+			return manageRelayConnectionOnce(sctx, cfg, pcQuic, handler, r, routes, relayAddr, tlsConf, notify, slot, latencies)
 		}()
 	}()
 	return run
@@ -581,7 +601,7 @@ func manageConnectionSlotNumbered(
 	relayAddressPool *randalloc.RandAllocator[string],
 	tlsConf *tls.Config,
 	slot int,
-	relayLatencies map[string]time.Duration,
+	relayLatencies *latencyTracker,
 ) error {
 	// acquireAndStart blocks until the pool hands this slot an exclusive
 	// relay, then launches a session against it.
@@ -592,14 +612,13 @@ func manageConnectionSlotNumbered(
 			return nil, err // ctx canceled, etc.
 		}
 		slog.Info("Acquired relay slot", slog.String("relay", relayAddr))
-		latency := relayLatencies[relayAddr]
 		cfg.reportConnection(ConnectionStatus{
 			Slot:    slot,
 			Relay:   relayAddr,
 			State:   ConnectionStateConnecting,
-			Latency: latency,
+			Latency: relayLatencies.Get(relayAddr),
 		})
-		return startSessionRunForSlot(ctx, cfg, pcQuicMux, handler, r, routes, relayAddr, tlsConf, slot, latency), nil
+		return startSessionRunForSlot(ctx, cfg, pcQuicMux, handler, r, routes, relayAddr, tlsConf, slot, relayLatencies), nil
 	}
 
 	// stop cancels a session, waits for it to unwind, and releases its relay.

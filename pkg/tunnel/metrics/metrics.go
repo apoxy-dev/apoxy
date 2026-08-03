@@ -83,6 +83,37 @@ var (
 		},
 		func() float64 { return time.Since(startTime).Seconds() },
 	)
+	// TunnelRelayRTTSeconds reports the latency to each relay the agent holds a
+	// live session with: the smoothed RTT QUIC continuously measures on the
+	// control connection (falling back to probe/connect time before the first
+	// measurement). The series is deleted when the session ends.
+	TunnelRelayRTTSeconds = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "tunnel_relay_rtt_seconds",
+			Help: "Smoothed round-trip time to the connected relay, as measured by QUIC.",
+		},
+		[]string{"relay"},
+	)
+	// TunnelRelayPacketsLost counts packets QUIC declared lost on the control
+	// connection, by relay and loss reason ("timeout", "reordering", "other").
+	// Loss rate is usually a better "tunnel feels slow" signal than RTT.
+	TunnelRelayPacketsLost = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "tunnel_relay_packets_lost_total",
+			Help: "Packets declared lost by QUIC on the relay control connection.",
+		},
+		[]string{"relay", "reason"},
+	)
+	// TunnelRelayPTOs counts QUIC probe timeouts on the control connection —
+	// full stalls where nothing was ACKed for a whole probe interval. A rising
+	// rate means the path to that relay is dying, not just congested.
+	TunnelRelayPTOs = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "tunnel_relay_ptos_total",
+			Help: "QUIC probe timeouts (PTO) on the relay control connection.",
+		},
+		[]string{"relay"},
+	)
 	// TunnelConnectionReconnects counts reconnection attempts across all connections.
 	TunnelConnectionReconnects = prometheus.NewCounter(
 		prometheus.CounterOpts{
@@ -211,6 +242,9 @@ var (
 
 func init() {
 	// Register shared metrics used by both agent and server processes.
+	metrics.Registry.MustRegister(TunnelRelayRTTSeconds)
+	metrics.Registry.MustRegister(TunnelRelayPacketsLost)
+	metrics.Registry.MustRegister(TunnelRelayPTOs)
 	metrics.Registry.MustRegister(TunnelConnectionReconnects)
 	metrics.Registry.MustRegister(TunnelPingRequests)
 	metrics.Registry.MustRegister(TunnelConnectionRequests)

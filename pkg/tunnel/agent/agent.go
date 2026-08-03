@@ -202,16 +202,16 @@ func Run(ctx context.Context, cfg Config) error {
 	// initial probe runs synchronously, before the slots spawn, so even the
 	// first acquisition is informed; later probes only influence future
 	// rotations.
-	var relayLatencies map[string]time.Duration
+	relayLatencies := newLatencyTracker()
 	if poolAddrs.Len() > 1 {
 		if order, latencies := probeRelaysWithLatency(ctx, tlsConf, poolAddrs.UnsortedList()); len(order) > 0 {
 			relayAddressPool.SetPreference(order)
-			relayLatencies = latencies
+			relayLatencies.Update(latencies)
 		}
 	}
 	if cfg.RelayLister != nil || poolAddrs.Len() > 1 {
 		g.Go(func() error {
-			return probeRelayPreference(ctx, cfg, relayAddressPool, tlsConf, poolAddrs)
+			return probeRelayPreference(ctx, cfg, relayAddressPool, tlsConf, poolAddrs, relayLatencies)
 		})
 	}
 

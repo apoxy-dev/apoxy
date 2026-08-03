@@ -42,6 +42,12 @@ type Client struct {
 	// closed marks a client-initiated Close so our own transport teardown
 	// (which also closes gracefully) is not mistaken for a relay drain.
 	closed atomic.Bool
+
+	// rttNanos holds the control connection's latest smoothed RTT in
+	// nanoseconds, recorded by the QUIC tracer on every metrics update. QUIC
+	// measures RTT continuously as part of loss recovery, so this is a free,
+	// always-fresh latency signal for the live session.
+	rttNanos atomic.Int64
 }
 
 type ClientOptions struct {
@@ -98,21 +104,7 @@ func NewClient(opts ClientOptions) (*Client, error) {
 		return nil, fmt.Errorf("BaseURL must be https (got %q)", u.Scheme)
 	}
 
-	t := &http3.Transport{
-		TLSClientConfig: opts.TLSConfig,
-		QUICConfig: &quic.Config{
-			Tracer: newConnectionTracer,
-		},
-	}
-
-	hc := &http.Client{
-		Transport: t,
-		Timeout:   opts.Timeout,
-	}
-
 	c := &Client{
-		http:             hc,
-		h3:               t,
 		baseURL:          u,
 		tunnelName:       opts.TunnelName,
 		token:            opts.Token,
@@ -122,6 +114,18 @@ func NewClient(opts ClientOptions) (*Client, error) {
 		advertisedRoutes: opts.AdvertisedRoutes,
 		agentInstance:    opts.AgentInstance,
 		draining:         make(chan struct{}),
+	}
+
+	t := &http3.Transport{
+		TLSClientConfig: opts.TLSConfig,
+		QUICConfig: &quic.Config{
+			Tracer: c.newTracer,
+		},
+	}
+	c.h3 = t
+	c.http = &http.Client{
+		Transport: t,
+		Timeout:   opts.Timeout,
 	}
 
 	if opts.PacketConn != nil {

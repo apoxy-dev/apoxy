@@ -8,7 +8,64 @@ import (
 	"time"
 
 	"github.com/quic-go/quic-go/logging"
+
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/metrics"
 )
+
+// newTracer is the client-bound QUIC tracer: the debug tracer plus hooks that
+// surface the transport's own path measurements — smoothed RTT (recorded on
+// the client for status display), declared packet losses, and probe timeouts
+// (exported as per-relay Prometheus counters) — all without any probe traffic.
+func (c *Client) newTracer(ctx context.Context, p logging.Perspective, odcid logging.ConnectionID) *logging.ConnectionTracer {
+	relay := c.baseURL.Host
+	tr := newConnectionTracer(ctx, p, odcid)
+
+	debugMetrics := tr.UpdatedMetrics
+	tr.UpdatedMetrics = func(rttStats *logging.RTTStats, cwnd, bytesInFlight logging.ByteCount, packetsInFlight int) {
+		if rtt := rttStats.SmoothedRTT(); rtt > 0 {
+			c.rttNanos.Store(int64(rtt))
+		}
+		debugMetrics(rttStats, cwnd, bytesInFlight, packetsInFlight)
+	}
+
+	debugLost := tr.LostPacket
+	tr.LostPacket = func(encLevel logging.EncryptionLevel, pn logging.PacketNumber, reason logging.PacketLossReason) {
+		metrics.TunnelRelayPacketsLost.WithLabelValues(relay, lossReason(reason)).Inc()
+		debugLost(encLevel, pn, reason)
+	}
+
+	// The transport reports its CURRENT consecutive-PTO count, which resets
+	// to zero once anything is ACKed; count only the increments so the
+	// exported value is a monotonic events-total.
+	var lastPTO uint32
+	debugPTO := tr.UpdatedPTOCount
+	tr.UpdatedPTOCount = func(value uint32) {
+		if value > lastPTO {
+			metrics.TunnelRelayPTOs.WithLabelValues(relay).Add(float64(value - lastPTO))
+		}
+		lastPTO = value
+		debugPTO(value)
+	}
+
+	return tr
+}
+
+func lossReason(reason logging.PacketLossReason) string {
+	switch reason {
+	case logging.PacketLossTimeThreshold:
+		return "timeout"
+	case logging.PacketLossReorderingThreshold:
+		return "reordering"
+	default:
+		return "other"
+	}
+}
+
+// RTT returns the smoothed round-trip time QUIC has measured on the control
+// connection, or 0 before the first measurement.
+func (c *Client) RTT() time.Duration {
+	return time.Duration(c.rttNanos.Load())
+}
 
 func newConnectionTracer(ctx context.Context, p logging.Perspective, odcid logging.ConnectionID) *logging.ConnectionTracer {
 	return &logging.ConnectionTracer{

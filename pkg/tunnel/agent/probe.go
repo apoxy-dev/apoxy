@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"log/slog"
 	"sort"
+	"sync"
 	"time"
 
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -12,6 +13,43 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/endpointselect"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/randalloc"
 )
+
+// latencyTracker shares relay latency measurements between the periodic probe
+// loop (writer) and live sessions (readers), so a session's status snapshots
+// track the freshest probe instead of freezing the acquire-time value.
+type latencyTracker struct {
+	mu        sync.Mutex
+	latencies map[string]time.Duration
+}
+
+func newLatencyTracker() *latencyTracker {
+	return &latencyTracker{latencies: make(map[string]time.Duration)}
+}
+
+// Update merges the given measurements. Relays absent from the map keep their
+// previous value: a failed probe is not evidence the relay got slower.
+func (t *latencyTracker) Update(latencies map[string]time.Duration) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for addr, latency := range latencies {
+		t.latencies[addr] = latency
+	}
+}
+
+// Get returns the last measurement for addr, or 0 when unknown. Nil-safe so
+// paths without probing (static single relay, consumer mode) can skip the
+// tracker entirely.
+func (t *latencyTracker) Get(addr string) time.Duration {
+	if t == nil {
+		return 0
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.latencies[addr]
+}
 
 // relayProbeInterval is how often the agent re-probes relay latency to keep
 // the pool's preference order current. Deliberately slow: the ranking only
@@ -60,14 +98,16 @@ func probeRelaysWithLatency(ctx context.Context, tlsConf *tls.Config, addrs []st
 // probeRelayPreference keeps the pool's preference order current: one probe
 // every relayProbeInterval over the current candidate set (re-listed when
 // discovery is configured). The initial probe is the caller's job (Run does
-// it synchronously before spawning slots). Errors are non-fatal — the pool
-// just stays randomly ordered.
+// it synchronously before spawning slots). Fresh measurements also flow into
+// the shared tracker so live sessions report current latency. Errors are
+// non-fatal — the pool just stays randomly ordered.
 func probeRelayPreference(
 	ctx context.Context,
 	cfg Config,
 	pool *randalloc.RandAllocator[string],
 	tlsConf *tls.Config,
 	static sets.Set[string],
+	tracker *latencyTracker,
 ) error {
 	probe := func() {
 		addrs := static
@@ -82,9 +122,10 @@ func probeRelayPreference(
 		if addrs.Len() <= 1 {
 			return
 		}
-		if order := probeRelays(ctx, tlsConf, addrs.UnsortedList()); len(order) > 0 {
+		if order, latencies := probeRelaysWithLatency(ctx, tlsConf, addrs.UnsortedList()); len(order) > 0 {
 			slog.Debug("Updating relay preference order", slog.Any("order", order))
 			pool.SetPreference(order)
+			tracker.Update(latencies)
 		}
 	}
 
