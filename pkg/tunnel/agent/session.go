@@ -291,6 +291,16 @@ func manageRelayConnectionOnce(
 		metrics.TunnelRelayPacketsLost.DeletePartialMatch(prometheus.Labels{"relay": relayAddr})
 		metrics.TunnelRelayPTOs.DeleteLabelValues(relayAddr)
 		closeSession(currentClient, currentConnID)
+		// Publish the terminal state. Observers that track per-relay
+		// reachability then drop this relay at once. Without this, they
+		// would serve the last snapshot until a timeout. The report also
+		// fires when the session never connected. An unreachable relay is
+		// exactly what observers must not route through.
+		cfg.reportConnection(ConnectionStatus{
+			Slot:  slot,
+			Relay: relayAddr,
+			State: ConnectionStateEnded,
+		})
 	}()
 
 	// Keep retrying connect until context canceled.
@@ -348,6 +358,7 @@ func manageRelayConnectionOnce(
 			State:       state,
 			Latency:     latency,
 			ConnectedAt: connectedAt,
+			Prefixes:    routes.ClaimedPrefixes(routeOwner(relayAddr)),
 		}
 		if vnet, ok := handler.GetVirtualNetwork(connectResp.VNI); ok {
 			status.RXBytes = vnet.Stats.RXBytes.Load()
@@ -428,10 +439,14 @@ func manageRelayConnectionOnce(
 				if draining.Load() {
 					state = ConnectionStateDraining
 				}
-				status := statusSnapshot(state)
-				if cfg.ConnectionObserver != nil && slot >= 0 {
-					cfg.reportConnection(status)
-				}
+				// Retry failed route installs before the report. The
+				// snapshot's prefix set carries only installed routes.
+				// Nothing else re-runs reconciliation while the claim set
+				// stays unchanged.
+				routes.Reconcile()
+				// reportConnection gates each observer itself. Publish
+				// without conditions here.
+				cfg.reportConnection(statusSnapshot(state))
 			}
 		}
 	})

@@ -5,6 +5,7 @@ import (
 	"maps"
 	"net/netip"
 	"slices"
+	"strings"
 	"sync"
 
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -146,6 +147,41 @@ func (rr *routeReconciler) Claim(owner routeOwner, src routeSource, desired sets
 // its transit prefixes do not outlive the tunnel that carried them.
 func (rr *routeReconciler) Release(owner routeOwner) {
 	rr.Claim(owner, routeSource{}, sets.New[netip.Prefix]())
+}
+
+// ClaimedPrefixes returns the owner's claimed prefixes that the router has
+// installed. The result is sorted for stable output. It is nil when the
+// owner holds no claim. Prefixes without an installed route are excluded.
+// These come from a failed AddRoute or from the installable filter.
+// Consumers rank relay reachability by this set. A prefix the kernel cannot
+// route would advertise a path that drops traffic.
+func (rr *routeReconciler) ClaimedPrefixes(owner routeOwner) []netip.Prefix {
+	rr.mu.Lock()
+	defer rr.mu.Unlock()
+	claim, ok := rr.claims[owner]
+	if !ok {
+		return nil
+	}
+	var prefixes []netip.Prefix
+	for p := range claim.prefixes {
+		if _, installed := rr.installed[p]; installed {
+			prefixes = append(prefixes, p)
+		}
+	}
+	slices.SortFunc(prefixes, func(a, b netip.Prefix) int {
+		return strings.Compare(a.String(), b.String())
+	})
+	return prefixes
+}
+
+// Reconcile drives the router toward the union of all claims again. Failed
+// installs retry only when reconciliation runs. Claim updates skip
+// unchanged sets. A periodic caller, the session status ticker, thus gives
+// a failed AddRoute another chance.
+func (rr *routeReconciler) Reconcile() {
+	rr.mu.Lock()
+	defer rr.mu.Unlock()
+	rr.reconcileLocked()
 }
 
 // reconcileLocked drives the router toward the union of all claims.

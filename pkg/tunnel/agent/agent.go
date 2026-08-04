@@ -77,6 +77,15 @@ type Config struct {
 	// MinConns slot. It is intended for interactive clients and is unused by
 	// ConnectAll consumers. The callback must return promptly.
 	ConnectionObserver func(ConnectionStatus)
+	// SessionObserver receives the same snapshots keyed by relay instead of
+	// slot. It fires for every session under every connection policy. This
+	// includes ConnectAll, where ConnectionObserver never fires. Embedding
+	// consumers such as backplane VTEP sessions use it to track per-relay
+	// RTT and installed prefixes. The callback must return promptly. Run
+	// waits for every session goroutine before it returns, so the observer
+	// never fires after Run returns. Consumers rely on this contract to
+	// order callbacks across successive runs.
+	SessionObserver func(ConnectionStatus)
 
 	// TLSConfig is used for the QUIC control sessions. Nil means defaults.
 	TLSConfig *tls.Config

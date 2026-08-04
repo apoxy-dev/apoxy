@@ -526,3 +526,24 @@ func TestOverlaySources(t *testing.T) {
 		})
 	}
 }
+
+func TestRouteReconciler_ClaimedPrefixesOnlyInstalled(t *testing.T) {
+	reconciler, f := rr(t, nil)
+	good := p(t, "fd00:1::/64")
+	bad := p(t, "fd00:2::/64")
+	f.addErr[bad] = fmt.Errorf("netlink: no such device")
+
+	reconciler.Claim("relay-a", routeSource{}, sets.New(good, bad))
+
+	// Only the installed prefix may appear in the report. Consumers rank
+	// relay reachability by this set. A claimed prefix with a failed route
+	// would advertise a path that drops traffic.
+	require.Equal(t, []netip.Prefix{good}, reconciler.ClaimedPrefixes("relay-a"))
+	require.Nil(t, reconciler.ClaimedPrefixes("relay-b"))
+
+	// When the failure clears, a periodic Reconcile from the status ticker
+	// picks the route up. No claim change is necessary.
+	delete(f.addErr, bad)
+	reconciler.Reconcile()
+	require.ElementsMatch(t, []netip.Prefix{good, bad}, reconciler.ClaimedPrefixes("relay-a"))
+}
