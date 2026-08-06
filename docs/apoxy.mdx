@@ -1440,6 +1440,10 @@ The manifest defaults to service.yaml inside the project directory. When the
 project has no service.yaml yet, deploy generates a minimal one with a random
 docker-style name (override with --name) and continues.
 
+A file path deploys a standalone worker rooted in the file's directory. For a
+nested entrypoint in a project or monorepo package, pass the project directory
+and set --entry to the project-relative source path.
+
 Examples:
   # Build ., push to the repo in ./service.yaml, and apply it
   apoxy deploy
@@ -1447,11 +1451,14 @@ Examples:
   # Deploy a project from another directory (uses my-worker/service.yaml)
   apoxy deploy ./my-worker
 
+  # Deploy a nested entrypoint from a monorepo package
+  apoxy deploy ./edge --entry src/worker.js
+
   # Deploy a single-file worker (dir is the file's directory)
   apoxy deploy ./worker.js
 
 ```
-apoxy deploy [dir] [flags]
+apoxy deploy [path] [flags]
 ```
 
 ### Options

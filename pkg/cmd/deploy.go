@@ -43,7 +43,7 @@ var (
 )
 
 var deployCmd = &cobra.Command{
-	Use:   "deploy [dir]",
+	Use:   "deploy [path]",
 	Short: "Build, push, and apply a compute Service end to end",
 	Long: `Runs the full push-mode flow: build the project, push the bundle to the
 repository named by the Service manifest's spec.source.oci.repo, write the
@@ -54,12 +54,19 @@ The manifest defaults to service.yaml inside the project directory. When the
 project has no service.yaml yet, deploy generates a minimal one with a random
 docker-style name (override with --name) and continues.
 
+A file path deploys a standalone worker rooted in the file's directory. For a
+nested entrypoint in a project or monorepo package, pass the project directory
+and set --entry to the project-relative source path.
+
 Examples:
   # Build ., push to the repo in ./service.yaml, and apply it
   apoxy deploy
 
   # Deploy a project from another directory (uses my-worker/service.yaml)
   apoxy deploy ./my-worker
+
+  # Deploy a nested entrypoint from a monorepo package
+  apoxy deploy ./edge --entry src/worker.js
 
   # Deploy a single-file worker (dir is the file's directory)
   apoxy deploy ./worker.js`,
@@ -71,23 +78,13 @@ Examples:
 				return fmt.Errorf("--name %q: %s", deployName, strings.Join(errs, "; "))
 			}
 		}
-		dir := "."
+		arg := ""
 		if len(args) == 1 {
-			arg := args[0]
-			fi, err := os.Stat(arg)
-			if err != nil {
-				return fmt.Errorf("resolving %s: %w", arg, err)
-			}
-			if fi.Mode().IsRegular() {
-				// A file argument means "this is the entry". The project
-				// stays rooted at the current directory so a project-root
-				// service.yaml still governs the deploy.
-				if deployEntry == "" {
-					deployEntry = filepath.Clean(arg)
-				}
-			} else {
-				dir = arg
-			}
+			arg = args[0]
+		}
+		dir, entry, err := resolveDeployInput(arg, deployEntry)
+		if err != nil {
+			return err
 		}
 		manifestPath := deployFile
 		stagingDir := deployDir
@@ -183,7 +180,7 @@ Examples:
 			status.Start("build")
 			manifest, err := build.Run(build.Options{
 				Dir:                dir,
-				Entry:              deployEntry,
+				Entry:              entry,
 				OutDir:             stagingDir,
 				CompatibilityDate:  deployCompatDate,
 				CompatibilityFlags: deployCompatFlags,
@@ -231,6 +228,32 @@ Examples:
 		status.Done(fmt.Sprintf("%s/%s (digest %s)", kind, name, dig))
 		return nil
 	},
+}
+
+// resolveDeployInput identifies the project root and entrypoint for a deploy.
+// A directory path is the project root. A regular file path is standalone
+// shorthand, so its directory becomes the project root and its base name is
+// the default entrypoint. An explicit entrypoint remains relative to that root.
+func resolveDeployInput(arg, entry string) (string, string, error) {
+	if arg == "" {
+		return ".", entry, nil
+	}
+
+	cleanArg := filepath.Clean(arg)
+	fi, err := os.Stat(cleanArg)
+	if err != nil {
+		return "", "", fmt.Errorf("resolving %s: %w", arg, err)
+	}
+	if fi.IsDir() {
+		return cleanArg, entry, nil
+	}
+	if !fi.Mode().IsRegular() {
+		return "", "", fmt.Errorf("resolving %s: path is not a regular file or directory", arg)
+	}
+	if entry == "" {
+		entry = filepath.Base(cleanArg)
+	}
+	return filepath.Dir(cleanArg), entry, nil
 }
 
 // confirmDeployTarget announces which project and API endpoint the deploy
