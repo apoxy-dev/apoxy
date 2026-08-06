@@ -59,21 +59,47 @@ func readyConditionString(conditions []metav1.Condition, condType string) string
 // Service
 // =============================================================================
 
-// serviceStatusString summarizes the Ready condition as a single status word:
-// "Ready" when serving, the condition's reason (falling back to "NotReady")
-// when not, and "Pending" before the controller's first pass.
+const readinessUnknownStatus = "ReadinessUnknown"
+
+// readinessConditionString summarizes a reported Ready condition. An absent
+// condition is not passed to this function because it is not a readiness
+// verdict.
+func readinessConditionString(c *metav1.Condition) string {
+	switch c.Status {
+	case metav1.ConditionTrue:
+		return "Ready"
+	case metav1.ConditionFalse:
+		if c.Reason != "" {
+			return c.Reason
+		}
+		return "NotReady"
+	default:
+		if c.Reason != "" {
+			return c.Reason
+		}
+		return readinessUnknownStatus
+	}
+}
+
+// serviceStatusString reports readiness when a writer supplied it. Until the
+// readiness aggregator is available, Accepted=True means that the controller
+// minted the Service but cannot prove data-plane readiness.
 func serviceStatusString(svc *Service) string {
-	c := meta.FindStatusCondition(svc.Status.Conditions, ConditionReady)
-	if c == nil {
+	if ready := meta.FindStatusCondition(svc.Status.Conditions, ConditionReady); ready != nil {
+		return readinessConditionString(ready)
+	}
+
+	accepted := meta.FindStatusCondition(svc.Status.Conditions, ConditionAccepted)
+	if accepted == nil {
 		return "Pending"
 	}
-	if c.Status == metav1.ConditionTrue {
-		return "Ready"
+	if accepted.Status == metav1.ConditionTrue {
+		return readinessUnknownStatus
 	}
-	if c.Reason != "" {
-		return c.Reason
+	if accepted.Reason != "" {
+		return accepted.Reason
 	}
-	return "NotReady"
+	return "Pending"
 }
 
 func serviceColumns() []metav1.TableColumnDefinition {
@@ -155,9 +181,20 @@ func serviceRevisionColumns() []metav1.TableColumnDefinition {
 		{Name: "Name", Type: "string", Format: "name", Description: "Name of the revision"},
 		{Name: "Service", Type: "string", Description: "Owning Service"},
 		{Name: "Digest", Type: "string", Description: "Resolved bundle digest (or tag when unresolved)"},
-		{Name: "Ready", Type: "string", Description: "Whether the revision is materialized"},
+		{Name: "Status", Type: "string", Description: "Reported data-plane readiness"},
 		{Name: "Age", Type: "string", Description: "Time since creation"},
 	}
+}
+
+// serviceRevisionStatusString reports a readiness verdict only when a writer
+// supplied one. Revision creation alone does not prove that a data-plane node
+// pulled or warmed its bundle.
+func serviceRevisionStatusString(rev *ServiceRevision) string {
+	ready := meta.FindStatusCondition(rev.Status.Conditions, ConditionReady)
+	if ready == nil {
+		return readinessUnknownStatus
+	}
+	return readinessConditionString(ready)
 }
 
 func serviceRevisionRow(rev *ServiceRevision) metav1.TableRow {
@@ -166,7 +203,7 @@ func serviceRevisionRow(rev *ServiceRevision) metav1.TableRow {
 			rev.Name,
 			serviceRevisionOwnerString(rev),
 			serviceRevisionDigestString(rev),
-			readyConditionString(rev.Status.Conditions, ConditionReady),
+			serviceRevisionStatusString(rev),
 			formatAge(rev.CreationTimestamp.Time),
 		},
 		Object: runtime.RawExtension{Object: rev},

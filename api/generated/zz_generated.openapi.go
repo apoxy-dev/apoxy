@@ -2581,7 +2581,7 @@ func schema_apoxy_api_compute_v1alpha1_ServiceSpec(ref common.ReferenceCallback)
 					},
 					"liveRevision": {
 						SchemaProps: spec.SchemaProps{
-							Description: "LiveRevision selects which ServiceRevision serves:\n  - empty: auto — the latest ready revision is served (continuous deploy\n    for push, auto-promote for git). The served name is reported in\n    status.liveRevision; the controller never writes this field.\n  - set: pinned — exactly the named revision is served (rollback, or\n    manual git promotion). New revisions are still minted but do not go\n    live until this is repointed. The target must still be retained\n    (see RevisionHistoryLimit).",
+							Description: "LiveRevision selects the target ServiceRevision:\n  - empty: auto selects the latest minted revision. Each data-plane node\n    attempts it and can keep an earlier warmed revision after a warm failure.\n  - set: pinned selects the named revision for rollback or manual promotion.\n    New revisions are still minted but are not selected until this field\n    changes. The target must still be retained (see RevisionHistoryLimit).\n\nstatus.liveRevision reports the selection. It does not prove that every\ndata-plane node serves the revision. The controller never writes this field.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -2617,14 +2617,14 @@ func schema_apoxy_api_compute_v1alpha1_ServiceStatus(ref common.ReferenceCallbac
 					},
 					"liveRevision": {
 						SchemaProps: spec.SchemaProps{
-							Description: "LiveRevision is the ServiceRevision currently being served. When spec.liveRevision is empty (auto) it tracks LatestRevision; when pinned it echoes the pinned revision once that revision is actually serving.",
+							Description: "LiveRevision is the ServiceRevision selected by the control plane. It can be ahead of a node's local active revision and does not prove that every node serves it.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
 					},
 					"latestRevision": {
 						SchemaProps: spec.SchemaProps{
-							Description: "LatestRevision is the most recently minted ServiceRevision name. A gap between this and LiveRevision means a newer revision exists but is not live (a pending rollout, or a held manual promotion).",
+							Description: "LatestRevision is the most recently minted ServiceRevision name. A gap from LiveRevision usually means that an older revision is pinned. Equality does not prove data-plane readiness.",
 							Type:        []string{"string"},
 							Format:      "",
 						},

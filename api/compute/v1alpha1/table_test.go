@@ -26,38 +26,35 @@ func TestConvertToTable(t *testing.T) {
 		wantCells []interface{}
 	}{
 		{
-			name: "service ready",
+			name: "service accepted without readiness report",
 			obj: &Service{
 				ObjectMeta: metav1.ObjectMeta{Name: "checkout", CreationTimestamp: created},
 				Status: ServiceStatus{
-					Conditions: []metav1.Condition{{
-						Type:   ConditionReady,
-						Status: metav1.ConditionTrue,
-					}},
+					Conditions: []metav1.Condition{{Type: ConditionAccepted, Status: metav1.ConditionTrue}},
 				},
 			},
 			columns:   []string{"Name", "Status", "Age"},
 			rows:      1,
-			wantCells: []interface{}{"checkout", "Ready", "5m"},
+			wantCells: []interface{}{"checkout", "ReadinessUnknown", "5m"},
 		},
 		{
-			name: "service not ready shows reason",
+			name: "service awaiting build shows accepted reason",
 			obj: &Service{
 				ObjectMeta: metav1.ObjectMeta{Name: "checkout", CreationTimestamp: created},
 				Status: ServiceStatus{
 					Conditions: []metav1.Condition{{
-						Type:   ConditionReady,
+						Type:   ConditionAccepted,
 						Status: metav1.ConditionFalse,
-						Reason: "RevisionNotServing",
+						Reason: "AwaitingBuild",
 					}},
 				},
 			},
 			columns:   []string{"Name", "Status", "Age"},
 			rows:      1,
-			wantCells: []interface{}{"checkout", "RevisionNotServing", "5m"},
+			wantCells: []interface{}{"checkout", "AwaitingBuild", "5m"},
 		},
 		{
-			name: "service unreconciled",
+			name: "service unreconciled remains pending",
 			obj: &Service{
 				ObjectMeta: metav1.ObjectMeta{Name: "checkout", CreationTimestamp: created},
 			},
@@ -66,7 +63,7 @@ func TestConvertToTable(t *testing.T) {
 			wantCells: []interface{}{"checkout", "Pending", "5m"},
 		},
 		{
-			name: "servicerevision digest shortened",
+			name: "servicerevision digest shortened without readiness report",
 			obj: &ServiceRevision{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:              "checkout-3f9a1c7b2d",
@@ -76,13 +73,10 @@ func TestConvertToTable(t *testing.T) {
 				Spec: ServiceRevisionSpec{
 					Bundle: BundleRef{Digest: "sha256:0123456789abcdef0123456789abcdef"},
 				},
-				Status: ServiceStatus{
-					Conditions: []metav1.Condition{{Type: ConditionReady, Status: metav1.ConditionTrue}},
-				},
 			},
-			columns:   []string{"Name", "Service", "Digest", "Ready", "Age"},
+			columns:   []string{"Name", "Service", "Digest", "Status", "Age"},
 			rows:      1,
-			wantCells: []interface{}{"checkout-3f9a1c7b2d", "checkout", "sha256:0123456789ab", "True", "5m"},
+			wantCells: []interface{}{"checkout-3f9a1c7b2d", "checkout", "sha256:0123456789ab", "ReadinessUnknown", "5m"},
 		},
 		{
 			name: "servicerevision tag fallback, no owner",
@@ -90,9 +84,9 @@ func TestConvertToTable(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{Name: "orphan", CreationTimestamp: created},
 				Spec:       ServiceRevisionSpec{Bundle: BundleRef{Tag: "v3"}},
 			},
-			columns:   []string{"Name", "Service", "Digest", "Ready", "Age"},
+			columns:   []string{"Name", "Service", "Digest", "Status", "Age"},
 			rows:      1,
-			wantCells: []interface{}{"orphan", "-", "v3", "Unknown", "5m"},
+			wantCells: []interface{}{"orphan", "-", "v3", "ReadinessUnknown", "5m"},
 		},
 		{
 			name: "egressgateway",

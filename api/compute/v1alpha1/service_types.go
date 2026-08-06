@@ -293,14 +293,15 @@ type ServiceSpec struct {
 	// digest always lands in the minted ServiceRevision.spec.bundle.
 	Source ServiceSource `json:"source"`
 
-	// LiveRevision selects which ServiceRevision serves:
-	//   - empty: auto — the latest ready revision is served (continuous deploy
-	//     for push, auto-promote for git). The served name is reported in
-	//     status.liveRevision; the controller never writes this field.
-	//   - set: pinned — exactly the named revision is served (rollback, or
-	//     manual git promotion). New revisions are still minted but do not go
-	//     live until this is repointed. The target must still be retained
-	//     (see RevisionHistoryLimit).
+	// LiveRevision selects the target ServiceRevision:
+	//   - empty: auto selects the latest minted revision. Each data-plane node
+	//     attempts it and can keep an earlier warmed revision after a warm failure.
+	//   - set: pinned selects the named revision for rollback or manual promotion.
+	//     New revisions are still minted but are not selected until this field
+	//     changes. The target must still be retained (see RevisionHistoryLimit).
+	//
+	// status.liveRevision reports the selection. It does not prove that every
+	// data-plane node serves the revision. The controller never writes this field.
 	// +optional
 	LiveRevision string `json:"liveRevision,omitempty"`
 
@@ -314,14 +315,14 @@ type ServiceStatus struct {
 	// reconciled into this status.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
-	// LiveRevision is the ServiceRevision currently being served. When
-	// spec.liveRevision is empty (auto) it tracks LatestRevision; when pinned it
-	// echoes the pinned revision once that revision is actually serving.
+	// LiveRevision is the ServiceRevision selected by the control plane. It can be
+	// ahead of a node's local active revision and does not prove that every node
+	// serves it.
 	// +optional
 	LiveRevision string `json:"liveRevision,omitempty"`
-	// LatestRevision is the most recently minted ServiceRevision name. A gap
-	// between this and LiveRevision means a newer revision exists but is not live
-	// (a pending rollout, or a held manual promotion).
+	// LatestRevision is the most recently minted ServiceRevision name. A gap from
+	// LiveRevision usually means that an older revision is pinned. Equality does
+	// not prove data-plane readiness.
 	// +optional
 	LatestRevision string `json:"latestRevision,omitempty"`
 	// +optional

@@ -16,10 +16,11 @@
 // only on a minted ServiceRevision.spec.bundle — never authored in the template.
 // Both code sources are variants of one field, spec.source: an oci push or a
 // git/CI pipeline (mutually exclusive). The controller resolves the source to a
-// digest, mints a ServiceRevision, and reports liveRevision/latestRevision in
-// status; it never writes spec. spec.liveRevision selects which revision serves
-// (empty = the latest ready revision, set = pinned for rollback or manual
-// promotion).
+// digest, mints a ServiceRevision, and reports the selected and latest revisions
+// in status; it never writes spec. spec.liveRevision selects the target revision
+// (empty = latest minted, set = pinned for rollback or manual promotion).
+// status.liveRevision records this selection. It does not prove that every data-
+// plane node serves the revision.
 //
 // Tenancy: single tenant per account. All kinds are cluster-scoped.
 package v1alpha1 // import "github.com/apoxy-dev/apoxy/api/compute/v1alpha1"
