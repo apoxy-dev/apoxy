@@ -89,16 +89,32 @@ func readInput(path string, recursive bool) ([][]byte, error) {
 }
 
 // SplitYAMLDocuments splits a multi-doc YAML stream on "\n---" boundaries.
-// Empty documents are dropped.
+// Empty documents — including ones holding only comments and document
+// markers — are dropped.
 func SplitYAMLDocuments(data []byte) [][]byte {
 	var out [][]byte
 	for _, doc := range bytes.Split(data, []byte("\n---")) {
-		if len(bytes.TrimSpace(doc)) == 0 {
+		if isEmptyYAMLDocument(doc) {
 			continue
 		}
 		out = append(out, doc)
 	}
 	return out
+}
+
+// isEmptyYAMLDocument reports whether doc would decode to nil: every line is
+// blank, a comment, or a bare "---" document marker.
+func isEmptyYAMLDocument(doc []byte) bool {
+	for _, line := range bytes.Split(doc, []byte("\n")) {
+		trimmed := bytes.TrimSpace(line)
+		if len(trimmed) == 0 ||
+			bytes.HasPrefix(trimmed, []byte("#")) ||
+			bytes.Equal(trimmed, []byte("---")) {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // Apply server-side-applies a single resource document (YAML or JSON) using
