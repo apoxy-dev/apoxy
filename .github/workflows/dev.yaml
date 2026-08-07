@@ -9,7 +9,7 @@ env:
   EDGE_RUNTIME_TAG: "80d07c9"
 jobs:
   build-all:
-    runs-on: blacksmith-4vcpu-ubuntu-2204
+    runs-on: blacksmith-8vcpu-ubuntu-2204
     steps:
       - uses: actions/checkout@v4
       - name: Setup Go
