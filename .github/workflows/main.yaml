@@ -10,7 +10,7 @@ jobs:
         include:
           - runner: depot-ubuntu-22.04-16,dagger=0.19.10
             arch: amd64
-          - runner: depot-ubuntu-22.04-arm-16,dagger=0.19.10
+          - runner: blacksmith-4vcpu-ubuntu-2204-arm
             arch: arm64
     runs-on: ${{ matrix.runner }}
     steps:
@@ -30,7 +30,7 @@ jobs:
 
   publish-edge-runtime-multiarch:
     needs: build-edge-runtime
-    runs-on: depot-ubuntu-22.04,dagger=0.19.10
+    runs-on: blacksmith-4vcpu-ubuntu-2204
     steps:
       - uses: actions/checkout@v4
       - name: Setup Go
@@ -47,7 +47,7 @@ jobs:
 
   publish-images:
     needs: publish-edge-runtime-multiarch
-    runs-on: depot-ubuntu-22.04-32,dagger=0.19.10
+    runs-on: blacksmith-4vcpu-ubuntu-2204
     steps:
       - uses: actions/checkout@v4
       - name: Setup Go

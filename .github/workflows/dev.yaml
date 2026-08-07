@@ -9,7 +9,7 @@ env:
   EDGE_RUNTIME_TAG: "80d07c9"
 jobs:
   build-all:
-    runs-on: depot-ubuntu-22.04-16,dagger=0.19.10
+    runs-on: blacksmith-4vcpu-ubuntu-2204
     steps:
       - uses: actions/checkout@v4
       - name: Setup Go
@@ -34,7 +34,7 @@ jobs:
   # committed OpenAPI/TS codegen is not stale. Same checks as local dev, run
   # hermetically via `dagger call console` (ci/main.go).
   console-check:
-    runs-on: depot-ubuntu-22.04-4,dagger=0.19.10
+    runs-on: blacksmith-4vcpu-ubuntu-2204
     steps:
       - uses: actions/checkout@v4
       - name: Run console checks via Dagger
