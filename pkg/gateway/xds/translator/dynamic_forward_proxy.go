@@ -18,6 +18,7 @@ import (
 	"k8s.io/utils/ptr"
 
 	"github.com/apoxy-dev/apoxy/pkg/gateway/ir"
+	"github.com/apoxy-dev/apoxy/pkg/gateway/xds/tenantmeta"
 	"github.com/apoxy-dev/apoxy/pkg/gateway/xds/types"
 )
 
@@ -167,6 +168,7 @@ func (*dynamicForwardProxy) patchResources(
 			timeout:        r.Timeout,
 			tcpkeepalive:   r.TCPKeepalive,
 			circuitBreaker: r.CircuitBreaker,
+			marker:         destinationMarker(r.Destination),
 		}
 
 		if err := createDynamicForwardProxyCluster(
@@ -213,6 +215,9 @@ func createDynamicForwardProxyCluster(
 			},
 		},
 	}
+
+	// The DFP cluster bypasses buildXdsCluster, so mark it here.
+	tenantmeta.Mark(cluster, args.marker)
 
 	// Apply circuit breaker limits so the dynamic forward proxy cluster is not
 	// silently capped at Envoy's implicit 1024 max_connections / max_requests

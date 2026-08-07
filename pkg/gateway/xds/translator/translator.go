@@ -396,6 +396,7 @@ func (t *Translator) processHTTPListenerXdsTranslation(
 						settings:     mirrorDest.Settings,
 						tSocket:      nil,
 						endpointType: EndpointTypeStatic,
+						marker:       destinationMarker(mirrorDest),
 					}); err != nil && !errors.Is(err, ErrXdsClusterExists) {
 						errs = errors.Join(errs, err)
 					}
@@ -543,6 +544,7 @@ func processTCPListenerXdsTranslation(tCtx *types.ResourceVersionTable, tcpListe
 				settings:     route.Destination.Settings,
 				tSocket:      nil,
 				endpointType: buildEndpointType(route.Destination.Settings),
+				marker:       destinationMarker(route.Destination),
 			}); err != nil && !errors.Is(err, ErrXdsClusterExists) {
 				errs = errors.Join(errs, err)
 			}
@@ -592,6 +594,7 @@ func processUDPListenerXdsTranslation(tCtx *types.ResourceVersionTable, udpListe
 			settings:     udpListener.Destination.Settings,
 			tSocket:      nil,
 			endpointType: buildEndpointType(udpListener.Destination.Settings),
+			marker:       destinationMarker(udpListener.Destination),
 		}); err != nil && !errors.Is(err, ErrXdsClusterExists) {
 			errs = errors.Join(errs, err)
 		}
@@ -696,6 +699,7 @@ func processXdsCluster(tCtx *types.ResourceVersionTable, httpRoute *ir.HTTPRoute
 		http1Settings:  http1Settings,
 		timeout:        httpRoute.Timeout,
 		tcpkeepalive:   httpRoute.TCPKeepalive,
+		marker:         destinationMarker(httpRoute.Destination),
 	}); err != nil && !errors.Is(err, ErrXdsClusterExists) {
 		return err
 	}

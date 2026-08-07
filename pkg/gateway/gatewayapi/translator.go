@@ -100,6 +100,10 @@ type Translator struct {
 	// are user namespaces and the single legacy resident cluster applies.
 	// (APO-796)
 	WorkerdProjectFromNamespace bool
+
+	// TenantKeyFromNamespace derives each destination's tenant key from its
+	// route namespace. Set it only where namespaces are project IDs.
+	TenantKeyFromNamespace bool
 }
 
 type TranslateResult struct {

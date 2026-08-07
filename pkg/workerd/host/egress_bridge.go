@@ -446,6 +446,10 @@ var cgnatPrefix = netip.MustParsePrefix("100.64.0.0/10")
 // (an explicitly-configured EgressGateway is the intended path to a private
 // endpoint, a follow-up once the gateway data plane exists). The compute
 // forwarder has no IMDS bridge yet, so link-local is blanket-denied here.
+//
+// The backplane tenant-netns egress leg enforces the same property with its
+// own prefix lists (apoxy-cloud, backplane/infra/vpc_egress.go). A range
+// added or removed here likely needs the same change there.
 type localDstFilter struct {
 	// overlayAllow, when non-nil, reports whether a dst belongs to the resident's
 	// OWN project VPCService members (the Apoxy VPC /96s the project's service

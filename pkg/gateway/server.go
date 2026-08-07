@@ -25,6 +25,7 @@ type serverOptions struct {
 	extensionFailOpen        bool
 	client                   client.Client
 	workerdProjectNamespaces bool
+	tenantKeyFromNamespace   bool
 	xdsPatch                 XdsPatchFunc
 	retranslator             *Retranslator
 }
@@ -96,6 +97,14 @@ func WithWorkerdProjectNamespaces() ServerOption {
 	}
 }
 
+// WithTenantKeyFromNamespace derives each destination's tenant key from its
+// route namespace. Set it only where namespaces are project IDs.
+func WithTenantKeyFromNamespace() ServerOption {
+	return func(o *serverOptions) {
+		o.tenantKeyFromNamespace = true
+	}
+}
+
 // WithExtensionServer sets the extension server for the server options. If failOpen is true,
 // the server will still translate xDS (unmodified) if the extension server is not available.
 func WithExtensionServer(addr string, creds credentials.TransportCredentials, failOpen bool) ServerOption {
@@ -140,6 +149,7 @@ func RunServer(ctx context.Context, resources *message.ProviderResources, opts .
 		ProviderResources:           resources,
 		XdsIR:                       xdsIR,
 		WorkerdProjectFromNamespace: options.workerdProjectNamespaces,
+		TenantKeyFromNamespace:      options.tenantKeyFromNamespace,
 	})
 	if err := gwRunner.Start(ctx); err != nil {
 		return err

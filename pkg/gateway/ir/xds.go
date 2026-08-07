@@ -852,6 +852,9 @@ type RouteDestination struct {
 	// reused
 	Name     string                `json:"name" yaml:"name"`
 	Settings []*DestinationSetting `json:"settings,omitempty" yaml:"settings,omitempty"`
+	// TenantKey is the tenant the destination serves; empty unless the
+	// translator derives it from the route namespace.
+	TenantKey string `json:"tenantKey,omitempty" yaml:"tenantKey,omitempty"`
 }
 
 // Validate the fields within the RouteDestination structure
@@ -908,6 +911,9 @@ type DestinationSetting struct {
 	Filters *DestinationFilters `json:"filters,omitempty" yaml:"filters,omitempty"`
 	// Dynamic Forward Proxy settings.
 	DynamicForwardProxy *DynamicForwardProxy `json:"dynamicForwardProxy,omitempty" yaml:"dynamicForwardProxy,omitempty"`
+	// InputDerived is true when the setting's endpoints come from user
+	// configuration rather than the translator itself.
+	InputDerived bool `json:"inputDerived,omitempty" yaml:"inputDerived,omitempty"`
 }
 
 // Validate the fields within the RouteDestination structure

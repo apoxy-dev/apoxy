@@ -36,6 +36,8 @@ type Config struct {
 	// gatewayapi.Translator this runner constructs; see the field of the same
 	// name on gatewayapi.Translator for when it may be set. (APO-796)
 	WorkerdProjectFromNamespace bool
+	// TenantKeyFromNamespace mirrors gatewayapi.Translator.TenantKeyFromNamespace.
+	TenantKeyFromNamespace bool
 }
 
 // Runner is the gateway-api translator runner.
@@ -102,6 +104,7 @@ func (r *Runner) subscribeAndTranslate(ctx context.Context) {
 					// https://linear.app/apoxy/issue/APO-257/enable-support-for-endpoint-slices
 					EndpointRoutingDisabled:     true,
 					WorkerdProjectFromNamespace: r.WorkerdProjectFromNamespace,
+					TenantKeyFromNamespace:      r.TenantKeyFromNamespace,
 				}
 
 				log.Debug("Translating resources", "resources", resources)

@@ -224,7 +224,8 @@ func (t *Translator) processHTTPRouteRules(httpRoute *HTTPRouteContext, parentRe
 				if route.Destination == nil {
 					log.Debugf("Creating destination for route %s", route.Name)
 					route.Destination = &ir.RouteDestination{
-						Name: irRouteDestinationName(httpRoute, ruleIdx),
+						Name:      irRouteDestinationName(httpRoute, ruleIdx),
+						TenantKey: t.destinationTenantKey(httpRoute),
 					}
 				}
 				route.Destination.Settings = append(route.Destination.Settings, ds)
@@ -645,7 +646,8 @@ func (t *Translator) processGRPCRouteRules(grpcRoute *GRPCRouteContext, parentRe
 
 				if route.Destination == nil {
 					route.Destination = &ir.RouteDestination{
-						Name: irRouteDestinationName(grpcRoute, ruleIdx),
+						Name:      irRouteDestinationName(grpcRoute, ruleIdx),
+						TenantKey: t.destinationTenantKey(grpcRoute),
 					}
 				}
 				route.Destination.Settings = append(route.Destination.Settings, ds)
@@ -963,8 +965,9 @@ func (t *Translator) processTLSRouteParentRefs(tlsRoute *TLSRouteContext, resour
 					Name: irTCPRouteName(tlsRoute),
 					TLS:  tlsConfig,
 					Destination: &ir.RouteDestination{
-						Name:     irRouteDestinationName(tlsRoute, -1 /*rule index*/),
-						Settings: destSettings,
+						Name:      irRouteDestinationName(tlsRoute, -1 /*rule index*/),
+						Settings:  destSettings,
+						TenantKey: t.destinationTenantKey(tlsRoute),
 					},
 				}
 				irListener.Routes = append(irListener.Routes, irRoute)
@@ -1088,8 +1091,9 @@ func (t *Translator) processUDPRouteParentRefs(udpRoute *UDPRouteContext, resour
 					Port:    uint32(containerPort),
 				},
 				Destination: &ir.RouteDestination{
-					Name:     irRouteDestinationName(udpRoute, -1 /*rule index*/),
-					Settings: destSettings,
+					Name:      irRouteDestinationName(udpRoute, -1 /*rule index*/),
+					Settings:  destSettings,
+					TenantKey: t.destinationTenantKey(udpRoute),
 				},
 			}
 			gwXdsIR := xdsIR[irKey]
@@ -1212,8 +1216,9 @@ func (t *Translator) processTCPRouteParentRefs(tcpRoute *TCPRouteContext, resour
 					Name: irTCPRouteName(tcpRoute),
 					TLS:  &ir.TLS{Terminate: irTLSConfigs(listener)},
 					Destination: &ir.RouteDestination{
-						Name:     irRouteDestinationName(tcpRoute, -1 /*rule index*/),
-						Settings: destSettings,
+						Name:      irRouteDestinationName(tcpRoute, -1 /*rule index*/),
+						Settings:  destSettings,
+						TenantKey: t.destinationTenantKey(tcpRoute),
 					},
 				}
 				irListener.Routes = append(irListener.Routes, irRoute)
@@ -1241,6 +1246,15 @@ func (t *Translator) processTCPRouteParentRefs(tcpRoute *TCPRouteContext, resour
 		}
 
 	}
+}
+
+// destinationTenantKey returns the tenant key for destinations minted from
+// the route.
+func (t *Translator) destinationTenantKey(route RouteContext) string {
+	if t.TenantKeyFromNamespace {
+		return route.GetNamespace()
+	}
+	return ""
 }
 
 // processDestination takes a backendRef and translates it into destination setting or sets error statuses and
@@ -1610,6 +1624,7 @@ func (t *Translator) processBackendDestinationSetting(backendRef gwapiv1.Backend
 	}
 
 	var ds ir.DestinationSetting
+	ds.InputDerived = true
 	if backend.Spec.DynamicProxy != nil {
 		ds.AddressType = ptr.To(ir.DYNAMIC_PROXY)
 		ds.DynamicForwardProxy = &ir.DynamicForwardProxy{

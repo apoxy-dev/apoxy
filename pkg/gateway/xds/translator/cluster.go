@@ -29,6 +29,7 @@ import (
 	"k8s.io/utils/ptr"
 
 	"github.com/apoxy-dev/apoxy/pkg/gateway/ir"
+	"github.com/apoxy-dev/apoxy/pkg/gateway/xds/tenantmeta"
 )
 
 const (
@@ -50,6 +51,26 @@ type xdsClusterArgs struct {
 	http1Settings  *ir.HTTP1Settings
 	timeout        *ir.Timeout
 	tcpkeepalive   *ir.TCPKeepalive
+	// marker is the cluster's tenantmeta marker. Infra cluster call sites
+	// leave it zero and stay unmarked.
+	marker tenantmeta.Marker
+}
+
+// destinationMarker derives the cluster marker from a route destination: the
+// destination's tenant key and the OR of its settings' input-derived flags
+// (weighted rules can mix kinds).
+func destinationMarker(dest *ir.RouteDestination) tenantmeta.Marker {
+	if dest == nil {
+		return tenantmeta.Marker{}
+	}
+	m := tenantmeta.Marker{TenantKey: dest.TenantKey}
+	for _, s := range dest.Settings {
+		if s != nil && s.InputDerived {
+			m.InputDerived = true
+			break
+		}
+	}
+	return m
 }
 
 type EndpointType int
@@ -99,6 +120,8 @@ func buildXdsCluster(args *xdsClusterArgs) *clusterv3.Cluster {
 	}
 
 	cluster.ConnectTimeout = buildConnectTimeout(args.timeout)
+
+	tenantmeta.Mark(cluster, args.marker)
 
 	// Set Proxy Protocol
 	if args.proxyProtocol != nil {
