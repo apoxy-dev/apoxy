@@ -34,15 +34,23 @@ func newChanPacketConn(pc batchpc.BatchPacketConn, closeConnOnce *sync.Once) *ch
 }
 
 func (pc *chanPacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
-	if err := pc.ensurePendingBlocking(); err != nil {
-		return 0, nil, err
+	for {
+		if err := pc.ensurePendingBlocking(); err != nil {
+			return 0, nil, err
+		}
+
+		// Another reader or a concurrent close can drain the pending batch
+		// between the readiness check and the pop. Retry instead of
+		// dereferencing an empty result.
+		msg := pc.popOne()
+		if msg == nil {
+			continue
+		}
+		defer messagePool.Put(msg)
+
+		n := copy(p, msg.Buf)
+		return n, msg.Addr, nil
 	}
-
-	msg := pc.popOne()
-	defer messagePool.Put(msg)
-
-	n := copy(p, msg.Buf)
-	return n, msg.Addr, nil
 }
 
 func (pc *chanPacketConn) WriteTo(p []byte, addr net.Addr) (int, error) {

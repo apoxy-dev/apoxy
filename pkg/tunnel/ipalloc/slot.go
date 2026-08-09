@@ -48,6 +48,7 @@ package ipalloc
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/netip"
 
 	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
@@ -56,6 +57,15 @@ import (
 // ConnsPerSlot is how many connections one slot carries: byte 11 takes the
 // values 1-255, since 0 is the slot's own endpoint /96.
 const ConnsPerSlot = 255
+
+const (
+	// LabelSlot identifies the leased relay slot that owns a Tunnel. Its value
+	// is the slot's network and endpoint identifiers, formatted as NNNNNN-SSSS.
+	LabelSlot = "vpc.apoxy.dev/slot"
+	// LabelSlotGeneration identifies one ownership lifecycle of a relay slot.
+	// A relay increments it before it adopts a surviving slot Endpoint.
+	LabelSlotGeneration = "vpc.apoxy.dev/slot-gen"
+)
 
 // MinSlotID is the lowest slot id a leaser may hand out. Ids below it have a
 // zero high byte, which puts a zero in ULA byte 9 — and byte 9 is where the
@@ -81,6 +91,9 @@ type Slot struct {
 	Network tunnet.NetworkID
 	// ID is the 16-bit endpoint identifier, unique within Network.
 	ID tunnet.EndpointID
+	// Generation identifies one ownership lifecycle of this slot. It starts at
+	// one for a new lease and increases when a surviving lease is adopted.
+	Generation uint64
 	// V4 is the /24 backing the slot's best-effort IPv4, assigned by the
 	// leaser. Its uniqueness domain is wider than the slot id's: the id is
 	// unique per network, but an agent connected to several relays demuxes v4
@@ -90,6 +103,13 @@ type Slot struct {
 	// from its process-wide pool, which is the whole world in OSS. A zero
 	// value runs the slot v6-only (§2.4).
 	V4 netip.Prefix
+}
+
+// SlotLabelValue returns the stable label value for a slot's network and
+// endpoint identifiers. Generation is carried in LabelSlotGeneration.
+func SlotLabelValue(s Slot) string {
+	return fmt.Sprintf("%02x%02x%02x-%02x%02x",
+		s.Network[0], s.Network[1], s.Network[2], s.ID[0], s.ID[1])
 }
 
 // SlotLeaser hands out endpoint slots within a network. A relay holds at least

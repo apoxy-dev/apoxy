@@ -36,9 +36,7 @@ import (
 )
 
 const (
-	keyLifespan     = 24 * time.Hour
-	gcMaxSilence    = 120 * time.Second
-	gcCheckInterval = 5 * time.Second
+	keyLifespan = 24 * time.Hour
 )
 
 type Relay struct {
@@ -242,11 +240,6 @@ func (r *Relay) Start(ctx context.Context) error {
 		return r.router.Start(ctx)
 	})
 
-	// Start the garbage collector.
-	g.Go(func() error {
-		return r.startGC(ctx, gcMaxSilence, gcCheckInterval)
-	})
-
 	g.Go(func() error {
 		<-ctx.Done()
 
@@ -377,6 +370,18 @@ func (r *Relay) handleConnect(w http.ResponseWriter, req *http.Request, ps httpr
 		http.Error(w, "Missing agent name", http.StatusBadRequest)
 		return
 	}
+
+	// A Tunnel must have a connection-lifetime signal before it is published.
+	// Without the HTTP/3 connection context, a killed agent can leave a Tunnel
+	// indefinitely because no request-level context survives the response.
+	hij, ok := w.(http3.Hijacker)
+	if !ok || hij.Connection() == nil {
+		metrics.TunnelConnectionFailures.WithLabelValues("session_tracking").Inc()
+		slog.Error("HTTP/3 connection tracking is unavailable")
+		http.Error(w, "connection tracking is unavailable", http.StatusInternalServerError)
+		return
+	}
+	sessionCtx := hij.Connection().Context()
 
 	// Enforce the credential's bounds on agent-declared labels and routes.
 	// withAuth always attaches a non-nil authorization on success; a missing one
@@ -512,14 +517,9 @@ func (r *Relay) handleConnect(w http.ResponseWriter, req *http.Request, ps httpr
 		return
 	}
 
-	// Reap the connection when its QUIC control session closes (~15s after an
-	// agent dies, via MaxIdleTimeout). Primary, session-close-driven disconnect
-	// path (§2.2); startGC's silence sweep is a slower backstop.
-	if hij, ok := w.(http3.Hijacker); ok {
-		if qconn := hij.Connection(); qconn != nil {
-			go r.watchSessionClose(qconn.Context(), conn)
-		}
-	}
+	// Reap the connection when its QUIC control session closes, about 15
+	// seconds after an agent dies through MaxIdleTimeout.
+	go r.watchSessionClose(sessionCtx, conn)
 
 	// First epoch is 1 (epoch 0 is a reserved SPI counter the handler rejects).
 	keys, err := r.installEpoch(conn, *vni)
@@ -601,11 +601,20 @@ func (r *Relay) teardownConn(ctx context.Context, conn *connection) {
 	}
 }
 
+// DisconnectConnection closes one live connection and runs its control-plane
+// cleanup. It is safe to call after another path has already removed it.
+func (r *Relay) DisconnectConnection(id string) {
+	if conn, ok := r.conns.Get(id); ok {
+		r.teardownConn(context.Background(), conn)
+	}
+}
+
 // watchSessionClose reaps a connection when its QUIC control session closes. The
 // relay's control listener runs KeepAlivePeriod=5s / MaxIdleTimeout=15s on the
 // same 5-tuple as the data path (quic.go), so a dead agent's session closes in
 // ~15s and its Tunnel is deleted then. This is the primary, session-close-driven
-// disconnect path (§2.2); the silence-based startGC remains a slower backstop.
+// disconnect path (§2.2). Data-plane silence is not a liveness signal because
+// a healthy tunnel can be idle for an arbitrary period.
 func (r *Relay) watchSessionClose(sessCtx context.Context, conn *connection) {
 	<-sessCtx.Done()
 	id := conn.ID()
@@ -621,6 +630,7 @@ func (r *Relay) watchSessionClose(sessCtx context.Context, conn *connection) {
 		return // already disconnected, reaped, or replaced by a reconnect
 	}
 	slog.Info("Agent control session closed, disconnecting", slog.String("connID", id))
+	metrics.TunnelSessionClosures.Inc()
 	r.teardownConn(context.Background(), conn)
 }
 
@@ -876,54 +886,6 @@ func (r *Relay) closeConn(w http.ResponseWriter, code http3.ErrCode, msg string)
 
 	h3c := hij.Connection()
 	_ = h3c.CloseWithError(quic.ApplicationErrorCode(code), msg)
-}
-
-func (r *Relay) startGC(ctx context.Context, maxSilence, checkInterval time.Duration) error {
-	ticker := time.NewTicker(checkInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-			if r.draining.Load() {
-				// Draining: agents intentionally go quiet on this relay as
-				// they move to replacements; reaping them here would cut the
-				// lame-duck forwarding short.
-				continue
-			}
-			now := time.Now()
-			r.conns.ForEach(func(id string, conn *connection) bool {
-				vni := conn.VNI()
-				if vni == nil {
-					return true
-				}
-
-				vnet, ok := r.handler.GetVirtualNetwork(*vni)
-				if !ok {
-					return true
-				}
-
-				lastRxNs := vnet.Stats.LastRXUnixNano.Load()
-				lastRx := now
-				if lastRxNs != 0 {
-					lastRx = time.Unix(0, lastRxNs)
-				}
-
-				if since := now.Sub(lastRx); since > maxSilence {
-					// Connection has been silent for too long — clean it up.
-					slog.Warn("GC: dropping idle connection",
-						slog.String("id", id),
-						slog.Duration("silence", since),
-						slog.Duration("maxSilence", maxSilence),
-					)
-					r.teardownConn(ctx, conn)
-				}
-				return true
-			})
-		}
-	}
 }
 
 func randomMasterSecret() (api.MasterSecret, error) {

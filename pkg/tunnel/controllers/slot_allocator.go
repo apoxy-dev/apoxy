@@ -140,6 +140,27 @@ func (b *slotAllocator) Release(alloc *ipalloc.ConnAllocator, v6, v4 netip.Prefi
 	}
 }
 
+// Contains reports whether alloc is still backed by a slot that this
+// allocator holds. Pointer identity distinguishes a lost allocation from a
+// later lease that reuses the same network, slot ID, and generation value.
+func (b *slotAllocator) Contains(alloc *ipalloc.ConnAllocator) bool {
+	if alloc == nil {
+		return false
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	na := b.nets[alloc.Slot().Network]
+	if na == nil {
+		return false
+	}
+	for _, current := range na.allocs {
+		if current == alloc {
+			return true
+		}
+	}
+	return false
+}
+
 // ReleaseNetwork returns every slot leased for one network. Called when the
 // network is deleted, so its identifiers stop being renewed against a network
 // that no longer exists.
@@ -160,8 +181,8 @@ func (b *slotAllocator) ReleaseNetwork(ctx context.Context, netID tunnet.Network
 
 // InvalidateSlot drops a lost slot's allocator so no new connections are
 // assigned addresses from an identifier the leaser no longer holds.
-// Connections already holding addresses in the slot are unaffected: their
-// Release goes directly to the owning ConnAllocator.
+// The publisher closes connections that already hold addresses in the slot;
+// their Release still goes directly to the owning ConnAllocator.
 func (b *slotAllocator) InvalidateSlot(s ipalloc.Slot) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -170,7 +191,7 @@ func (b *slotAllocator) InvalidateSlot(s ipalloc.Slot) {
 		return
 	}
 	for i, blk := range na.slots {
-		if blk.Network == s.Network && blk.ID == s.ID {
+		if blk.Network == s.Network && blk.ID == s.ID && blk.Generation == s.Generation {
 			na.slots = append(na.slots[:i], na.slots[i+1:]...)
 			na.allocs = append(na.allocs[:i], na.allocs[i+1:]...)
 			return

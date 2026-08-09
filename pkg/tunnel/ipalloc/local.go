@@ -62,7 +62,7 @@ func (l *LocalSlotLeaser) Lease(_ context.Context, network tunnet.NetworkID) (Sl
 	}
 	bm.Add(i)
 
-	s := Slot{Network: network, ID: tunnet.EndpointID{byte(i >> 8), byte(i)}}
+	s := Slot{Network: network, ID: tunnet.EndpointID{byte(i >> 8), byte(i)}, Generation: 1}
 	// v4 is best-effort (§2.4): an exhausted pool leases the slot v6-only.
 	if base, ok := l.v4.take(i); ok {
 		var b [4]byte

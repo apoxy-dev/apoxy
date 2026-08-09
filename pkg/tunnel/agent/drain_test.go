@@ -201,7 +201,10 @@ func TestManageConnectionSlot_DrainMakeBeforeBreak(t *testing.T) {
 // session dies, the slot must release the address and reconnect to it.
 func TestManageConnectionSlot_SingleRelayDrainReconnect(t *testing.T) {
 	origGrace := drainGracePeriod
-	drainGracePeriod = 2 * time.Second
+	// Keep the grace well outside the assertion window. The same-address
+	// replacement must be detected by the draining-session check, not by waiting
+	// for the old session's grace period to expire.
+	drainGracePeriod = time.Minute
 	t.Cleanup(func() { drainGracePeriod = origGrace })
 
 	orig := connectionHealthCounter.Load()
@@ -278,7 +281,7 @@ func TestManageConnectionSlot_SingleRelayDrainReconnect(t *testing.T) {
 	case <-relay2Connected:
 	case err := <-slotErr:
 		t.Fatalf("connection slot exited instead of reconnecting: %v", err)
-	case <-time.After(30 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("slot never reconnected to the restarted relay at the same address")
 	}
 

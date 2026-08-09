@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -78,6 +80,11 @@ func newPublisher(t *testing.T) (*TunnelPublisher, client.Client, tunnet.Network
 		WithStatusSubresource(&vpcv1alpha1.Tunnel{}).
 		Build()
 	p := NewTunnelPublisher(c, stubRelay{name: "relay-0"}, ipalloc.NewLocalSlotLeaser(), vni.NewVNIAllocator())
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		p.ReleaseAll(ctx)
+	})
 	netID := tunnet.NetworkID{0x00, 0x00, 0x01}
 	p.SetNetworkID("corp", netID)
 	return p, c, netID
@@ -88,9 +95,14 @@ func TestTunnelPublisherOnConnectCreatesTunnel(t *testing.T) {
 	p, c, _ := newPublisher(t)
 
 	conn := &fakeConn{
-		id:            "conn-a",
-		network:       "corp",
-		labels:        map[string]string{"app": "payments"},
+		id:      "conn-a",
+		network: "corp",
+		labels: map[string]string{
+			"app":                       "payments",
+			LabelRelay:                  "forged-relay",
+			ipalloc.LabelSlot:           "ffffff-ffff",
+			ipalloc.LabelSlotGeneration: "999",
+		},
 		routes:        []netip.Prefix{netip.MustParsePrefix("10.20.0.0/16")},
 		agentInstance: "uuid-1",
 	}
@@ -114,7 +126,106 @@ func TestTunnelPublisherOnConnectCreatesTunnel(t *testing.T) {
 	require.Equal(t, "corp", got.Labels[vpcv1alpha1.LabelNetwork])
 	require.Equal(t, "agent-a", got.Labels[vpcv1alpha1.LabelTunnelName])
 	require.Equal(t, "relay-0", got.Labels[LabelRelay])
+	require.Equal(t, "000001-0100", got.Labels[ipalloc.LabelSlot])
+	require.Equal(t, "1", got.Labels[ipalloc.LabelSlotGeneration])
 	require.Equal(t, "uuid-1", got.Labels[vpcv1alpha1.LabelAgentInstance])
+}
+
+type slotLossRelay struct {
+	stubRelay
+	disconnected []string
+}
+
+func (r *slotLossRelay) DisconnectConnection(id string) {
+	r.disconnected = append(r.disconnected, id)
+}
+
+func TestTunnelPublisherSlotLossDisconnectsExactGeneration(t *testing.T) {
+	ctx := context.Background()
+	c := fake.NewClientBuilder().
+		WithScheme(publisherScheme(t)).
+		WithStatusSubresource(&vpcv1alpha1.Tunnel{}).
+		Build()
+	relay := &slotLossRelay{stubRelay: stubRelay{name: "relay-0"}}
+	p := NewTunnelPublisher(c, relay, ipalloc.NewLocalSlotLeaser(), vni.NewVNIAllocator())
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		p.ReleaseAll(stopCtx)
+	})
+	p.SetNetworkID("corp", tunnet.NetworkID{0, 0, 1})
+
+	first := &fakeConn{id: "conn-slot-a", network: "corp"}
+	require.NoError(t, p.OnConnect(ctx, "agent-a", "agent-a", first))
+	p.mu.Lock()
+	lost := p.conns[first.ID()].slot
+	newGeneration := lost
+	newGeneration.Generation++
+	p.conns["conn-slot-new-generation"] = &connAlloc{slot: newGeneration}
+	p.mu.Unlock()
+	p.InvalidateSlot(lost)
+	require.Equal(t, []string{first.ID()}, relay.disconnected)
+
+	second := &fakeConn{id: "conn-slot-b", network: "corp"}
+	require.NoError(t, p.OnConnect(ctx, "agent-b", "agent-b", second))
+	firstSlot, _, ok := ipalloc.SlotOf(netip.MustParsePrefix(first.overlay))
+	require.True(t, ok)
+	secondSlot, _, ok := ipalloc.SlotOf(netip.MustParsePrefix(second.overlay))
+	require.True(t, ok)
+	require.NotEqual(t, firstSlot.ID, secondSlot.ID, "lost slot accepted a new allocation")
+}
+
+func TestTunnelPublisherRejectsConnectionThatLosesSlotDuringPublish(t *testing.T) {
+	ctx := context.Background()
+	createStarted := make(chan struct{})
+	allowCreate := make(chan struct{})
+	c := fake.NewClientBuilder().
+		WithScheme(publisherScheme(t)).
+		WithStatusSubresource(&vpcv1alpha1.Tunnel{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+				if _, ok := obj.(*vpcv1alpha1.Tunnel); ok {
+					close(createStarted)
+					<-allowCreate
+				}
+				return c.Create(ctx, obj, opts...)
+			},
+		}).
+		Build()
+	relay := &slotLossRelay{stubRelay: stubRelay{name: "relay-0"}}
+	p := NewTunnelPublisher(c, relay, ipalloc.NewLocalSlotLeaser(), vni.NewVNIAllocator())
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		p.ReleaseAll(stopCtx)
+	})
+	netID := tunnet.NetworkID{0, 0, 1}
+	p.SetNetworkID("corp", netID)
+
+	conn := &fakeConn{id: "conn-in-flight", network: "corp"}
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- p.OnConnect(ctx, "agent-in-flight", "agent-in-flight", conn)
+	}()
+	<-createStarted
+	p.InvalidateSlot(ipalloc.Slot{
+		Network:    netID,
+		ID:         tunnet.EndpointID{1, 0},
+		Generation: 1,
+	})
+	close(allowCreate)
+
+	err := <-errCh
+	require.ErrorContains(t, err, "was lost during connection setup")
+	require.Empty(t, relay.disconnected, "in-flight connection was not yet available for a direct disconnect")
+
+	// The relay tears down a connection when OnConnect returns an error. Mirror
+	// that callback here and confirm that the late Tunnel is still removed.
+	require.NoError(t, p.OnDisconnect(ctx, "agent-in-flight", conn.ID()))
+	require.Eventually(t, func() bool {
+		err := c.Get(ctx, client.ObjectKey{Name: conn.ID()}, &vpcv1alpha1.Tunnel{})
+		return apierrors.IsNotFound(err)
+	}, 2*time.Second, 10*time.Millisecond, "Tunnel from the lost slot was not removed")
 }
 
 // TestTunnelPublisherOnConnectV4Failure pins the §2.4 best-effort contract at
@@ -185,9 +296,10 @@ func TestTunnelPublisherOnDisconnectDeletesAndReleases(t *testing.T) {
 	firstOverlay := conn.overlay
 
 	require.NoError(t, p.OnDisconnect(ctx, "agent-b", "conn-b"))
-
-	err := c.Get(ctx, client.ObjectKey{Name: "conn-b"}, &vpcv1alpha1.Tunnel{})
-	require.True(t, apierrors.IsNotFound(err), "Tunnel deleted on disconnect")
+	require.Eventually(t, func() bool {
+		err := c.Get(ctx, client.ObjectKey{Name: "conn-b"}, &vpcv1alpha1.Tunnel{})
+		return apierrors.IsNotFound(err)
+	}, 2*time.Second, 10*time.Millisecond, "Tunnel deleted on disconnect")
 
 	// The released /96 is the lowest free slot, so the next connect reuses it.
 	conn2 := &fakeConn{id: "conn-c", network: "corp"}
@@ -195,36 +307,158 @@ func TestTunnelPublisherOnDisconnectDeletesAndReleases(t *testing.T) {
 	require.Equal(t, firstOverlay, conn2.overlay, "freed /96 is reused")
 }
 
-func TestTunnelPublisherOnDisconnectReleasesDespiteDeleteError(t *testing.T) {
+func TestTunnelPublisherReconnectWaitsForCleanup(t *testing.T) {
 	ctx := context.Background()
-
-	// A client whose Tunnel Delete always fails: the disconnect must still return
-	// the /96 + /32 + VNI to their pools, otherwise a transient apiserver error
-	// permanently strands them (the conns record is already gone, nothing retries).
-	failDelete := fmt.Errorf("apiserver unavailable")
+	deleteStarted := make(chan struct{})
+	allowDelete := make(chan struct{})
+	var blockDelete atomic.Bool
+	blockDelete.Store(true)
 	c := fake.NewClientBuilder().
 		WithScheme(publisherScheme(t)).
 		WithStatusSubresource(&vpcv1alpha1.Tunnel{}).
 		WithInterceptorFuncs(interceptor.Funcs{
-			Delete: func(context.Context, client.WithWatch, client.Object, ...client.DeleteOption) error {
-				return failDelete
+			Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+				if blockDelete.CompareAndSwap(true, false) {
+					close(deleteStarted)
+					<-allowDelete
+				}
+				return c.Delete(ctx, obj, opts...)
 			},
 		}).
 		Build()
 	p := NewTunnelPublisher(c, stubRelay{name: "relay-0"}, ipalloc.NewLocalSlotLeaser(), vni.NewVNIAllocator())
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		p.ReleaseAll(stopCtx)
+	})
+	p.SetNetworkID("corp", tunnet.NetworkID{0x00, 0x00, 0x01})
+
+	oldConn := &fakeConn{id: "conn-reused", network: "corp"}
+	require.NoError(t, p.OnConnect(ctx, "agent-old", "agent-old", oldConn))
+	require.NoError(t, p.OnDisconnect(ctx, "agent-old", oldConn.ID()))
+	<-deleteStarted
+
+	newConn := &fakeConn{id: oldConn.ID(), network: "corp"}
+	connectDone := make(chan error, 1)
+	go func() {
+		connectDone <- p.OnConnect(ctx, "agent-new", "agent-new", newConn)
+	}()
+
+	select {
+	case err := <-connectDone:
+		require.Failf(t, "replacement connection completed early", "OnConnect returned before Tunnel deletion: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(allowDelete)
+	select {
+	case err := <-connectDone:
+		require.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		require.Fail(t, "replacement connection did not resume after Tunnel deletion")
+	}
+	require.Equal(t, oldConn.overlay, newConn.overlay, "replacement reused the released allocation")
+
+	var tunnel vpcv1alpha1.Tunnel
+	require.NoError(t, c.Get(ctx, client.ObjectKey{Name: newConn.ID()}, &tunnel))
+	require.Equal(t, "agent-new", tunnel.Labels[vpcv1alpha1.LabelTunnelName])
+}
+
+func TestTunnelPublisherOnDisconnectQuarantinesUntilDeleteSucceeds(t *testing.T) {
+	ctx := context.Background()
+
+	// A transient delete failure must hold the allocation until a retry confirms
+	// deletion. Reusing it while the stale Tunnel still exists makes the
+	// control plane describe two connections with the same address.
+	failDelete := fmt.Errorf("apiserver unavailable")
+	var failing atomic.Bool
+	failing.Store(true)
+	c := fake.NewClientBuilder().
+		WithScheme(publisherScheme(t)).
+		WithStatusSubresource(&vpcv1alpha1.Tunnel{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+				if failing.Load() {
+					return failDelete
+				}
+				return c.Delete(ctx, obj, opts...)
+			},
+		}).
+		Build()
+	p := NewTunnelPublisher(c, stubRelay{name: "relay-0"}, ipalloc.NewLocalSlotLeaser(), vni.NewVNIAllocator())
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		p.ReleaseAll(stopCtx)
+	})
 	p.SetNetworkID("corp", tunnet.NetworkID{0x00, 0x00, 0x01})
 
 	conn := &fakeConn{id: "conn-d", network: "corp"}
 	require.NoError(t, p.OnConnect(ctx, "agent-d", "agent-d", conn))
 	firstOverlay := conn.overlay
 
-	err := p.OnDisconnect(ctx, "agent-d", "conn-d")
-	require.ErrorIs(t, err, failDelete, "delete error is surfaced")
+	require.NoError(t, p.OnDisconnect(ctx, "agent-d", "conn-d"))
+	require.Eventually(t, func() bool {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		rec := p.conns["conn-d"]
+		return rec != nil && rec.attempts > 0
+	}, 2*time.Second, 10*time.Millisecond, "delete failure was retained for retry")
 
-	// Despite the delete error the /96 was released: the next connect reuses it.
+	// The next connection must not receive the quarantined address.
 	conn2 := &fakeConn{id: "conn-e", network: "corp"}
 	require.NoError(t, p.OnConnect(ctx, "agent-e", "agent-e", conn2))
-	require.Equal(t, firstOverlay, conn2.overlay, "address released despite Tunnel delete failure")
+	require.NotEqual(t, firstOverlay, conn2.overlay, "address reused before Tunnel deletion")
+
+	// Restore the API and force the pending retry due now. Once deletion is
+	// confirmed, the lowest free address is available again.
+	failing.Store(false)
+	p.mu.Lock()
+	p.conns["conn-d"].retryAt = time.Time{}
+	p.mu.Unlock()
+	p.retryPending(ctx)
+
+	conn3 := &fakeConn{id: "conn-f", network: "corp"}
+	require.NoError(t, p.OnConnect(ctx, "agent-f", "agent-f", conn3))
+	require.Equal(t, firstOverlay, conn3.overlay, "address stayed quarantined after deletion")
+}
+
+func TestTunnelPublisherOnDisconnectWaitsForFinalizer(t *testing.T) {
+	ctx := context.Background()
+	p, c, _ := newPublisher(t)
+
+	conn := &fakeConn{id: "conn-finalized", network: "corp"}
+	require.NoError(t, p.OnConnect(ctx, "agent-finalized", "agent-finalized", conn))
+	firstOverlay := conn.overlay
+
+	var tunnel vpcv1alpha1.Tunnel
+	require.NoError(t, c.Get(ctx, client.ObjectKey{Name: conn.ID()}, &tunnel))
+	tunnel.Finalizers = []string{"test.apoxy.dev/hold"}
+	require.NoError(t, c.Update(ctx, &tunnel))
+	require.NoError(t, p.OnDisconnect(ctx, "agent-finalized", conn.ID()))
+	require.Eventually(t, func() bool {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		rec := p.conns[conn.ID()]
+		return rec != nil && rec.attempts > 0
+	}, 2*time.Second, 10*time.Millisecond, "allocation stayed pending while the Tunnel finalizer remained")
+
+	next := &fakeConn{id: "conn-while-finalized", network: "corp"}
+	require.NoError(t, p.OnConnect(ctx, "agent-next", "agent-next", next))
+	require.NotEqual(t, firstOverlay, next.overlay, "address reused while the deleted Tunnel still existed")
+
+	require.NoError(t, c.Get(ctx, client.ObjectKey{Name: conn.ID()}, &tunnel))
+	tunnel.Finalizers = nil
+	require.NoError(t, c.Update(ctx, &tunnel))
+	p.mu.Lock()
+	p.conns[conn.ID()].retryAt = time.Time{}
+	p.mu.Unlock()
+	p.retryPending(ctx)
+
+	reused := &fakeConn{id: "conn-after-finalizer", network: "corp"}
+	require.NoError(t, p.OnConnect(ctx, "agent-reused", "agent-reused", reused))
+	require.Equal(t, firstOverlay, reused.overlay, "address stayed quarantined after Tunnel removal")
 }
 
 func TestTunnelPublisherOnConnectUnresolvedNetwork(t *testing.T) {

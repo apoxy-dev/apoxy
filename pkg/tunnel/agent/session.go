@@ -162,23 +162,35 @@ func closeSession(client *api.Client, connID string) {
 	if client == nil || connID == "" {
 		return
 	}
+	// A lost relay has already reaped the connection. A draining relay owns the
+	// remaining cleanup after its lame-duck period. Do not send a DELETE over a
+	// control transport that has already ended.
+	select {
+	case <-client.Lost():
+		slog.Debug("Relay already lost the control connection", slog.String("id", connID))
+		_ = client.Close()
+		return
+	case <-client.Draining():
+		slog.Debug("Relay is draining the connection", slog.String("id", connID))
+		_ = client.Close()
+		return
+	default:
+	}
 	disconnectCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := client.Disconnect(disconnectCtx, connID); err != nil {
-		// A relay that does not know the connection has nothing to release,
-		// and this is the ordinary path when the session ended precisely
-		// because the relay forgot us. A draining relay likewise refuses the
-		// request by design. Keep both out of the error stream so error-level
-		// logs still mean something needs attention.
+		// Closing the QUIC control session triggers relay-side cleanup even when
+		// this best-effort notification cannot be delivered.
 		if api.IsConnectionUnknown(err) || api.IsRelayDraining(err) {
 			slog.Debug("Relay already released the connection",
 				slog.String("id", connID))
-			_ = client.Close()
-			return
+		} else {
+			slog.Debug("Failed to notify relay of disconnect; relying on session cleanup",
+				slog.String("id", connID),
+				slog.Any("error", err))
 		}
-		slog.Error("Failed to disconnect from tunnel",
-			slog.String("id", connID),
-			slog.Any("error", err))
+		_ = client.Close()
+		return
 	}
 	slog.Info("Disconnected from tunnel", slog.String("id", connID))
 	_ = client.Close()
@@ -470,6 +482,14 @@ func manageRelayConnectionOnce(
 			return gctx.Err()
 		case <-time.After(drainGracePeriod):
 			return fmt.Errorf("relay %s draining and no replacement session within %s", relayAddr, drainGracePeriod)
+		}
+	})
+	g.Go(func() error {
+		select {
+		case <-gctx.Done():
+			return gctx.Err()
+		case <-currentClient.Lost():
+			return fmt.Errorf("relay %s control connection was lost", relayAddr)
 		}
 	})
 
@@ -844,10 +864,16 @@ func manageKeyRotation(
 	}
 }
 
-// routeRefreshInterval paces polling of the relay's route set. Routes only
-// change when agents (dis)connect, so this trades a small steady-state cost
-// for bounded staleness of transit routes on long-lived sessions.
-const routeRefreshInterval = 30 * time.Second
+const (
+	// routeRefreshInterval paces polling of the relay's route set. Routes only
+	// change when agents connect or disconnect, so this trades a small
+	// steady-state cost for bounded staleness on long-lived sessions.
+	routeRefreshInterval = 30 * time.Second
+	// drainingRouteRefreshInterval detects a replacement process at the same
+	// relay address without increasing steady-state API traffic.
+	drainingRouteRefreshInterval = 2 * time.Second
+	drainingRouteRefreshTimeout  = 2 * time.Second
+)
 
 // manageRouteRefresh polls the relay for the connection's current route set
 // and reconciles the local router and the VNI's cryptokey allowed-routes with
@@ -878,14 +904,32 @@ func manageRouteRefresh(
 
 	ticker := time.NewTicker(routeRefreshInterval)
 	defer ticker.Stop()
+	drainCh := client.Draining()
+	draining := false
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-drainCh:
+			// A multi-relay slot normally connects to another relay and cancels
+			// this session. If the same address is the only choice, check it more
+			// often until its replacement answers that the old connection is gone.
+			draining = true
+			drainCh = nil
+			ticker.Reset(drainingRouteRefreshInterval)
+			continue
 		case <-ticker.C:
 		}
 
-		resp, err := client.Routes(ctx, connID)
+		requestCtx := ctx
+		var cancel context.CancelFunc
+		if draining {
+			requestCtx, cancel = context.WithTimeout(ctx, drainingRouteRefreshTimeout)
+		}
+		resp, err := client.Routes(requestCtx, connID)
+		if cancel != nil {
+			cancel()
+		}
 		if err != nil {
 			// A 404 is the relay telling us it has no such connection —
 			// it restarted, or garbage-collected us. Retrying cannot fix
@@ -895,7 +939,11 @@ func manageRouteRefresh(
 			if api.IsConnectionUnknown(err) {
 				return fmt.Errorf("relay no longer knows connection %s: %w", connID, err)
 			}
-			slog.Warn("Failed to refresh relay routes", slog.Any("error", err))
+			if draining {
+				slog.Debug("Failed to check draining relay", slog.Any("error", err))
+			} else {
+				slog.Warn("Failed to refresh relay routes", slog.Any("error", err))
+			}
 			continue
 		}
 		desired := parseRouteSet(resp.Routes)

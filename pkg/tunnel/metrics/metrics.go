@@ -148,6 +148,36 @@ var (
 		},
 		[]string{"reason"},
 	)
+	// TunnelSessionClosures counts connections removed after their QUIC control
+	// session closed. This is the primary per-connection liveness signal.
+	TunnelSessionClosures = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "tunnel_session_closures_total",
+			Help: "Tunnel connections removed after their QUIC control session closed.",
+		},
+	)
+	// TunnelCleanupPending is the number of connection allocations held until
+	// their Tunnel deletion is confirmed.
+	TunnelCleanupPending = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "tunnel_cleanup_pending",
+			Help: "Connection allocations waiting for Tunnel deletion confirmation.",
+		},
+	)
+	// TunnelCleanupRetries counts Tunnel deletion attempts after a failure.
+	TunnelCleanupRetries = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "tunnel_cleanup_retries_total",
+			Help: "Tunnel deletion attempts that failed and were scheduled for retry.",
+		},
+	)
+	// TunnelSlotLosses counts leased slots that lost their backing authority.
+	TunnelSlotLosses = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "tunnel_slot_losses_total",
+			Help: "Leased relay slots that lost their backing lease authority.",
+		},
+	)
 	TunnelNodesManaged = prometheus.NewGauge(
 		prometheus.GaugeOpts{
 			Name: "tunnel_nodes_managed_total",
@@ -250,6 +280,10 @@ func init() {
 	metrics.Registry.MustRegister(TunnelConnectionRequests)
 	metrics.Registry.MustRegister(TunnelConnectionsActive)
 	metrics.Registry.MustRegister(TunnelConnectionFailures)
+	metrics.Registry.MustRegister(TunnelSessionClosures)
+	metrics.Registry.MustRegister(TunnelCleanupPending)
+	metrics.Registry.MustRegister(TunnelCleanupRetries)
+	metrics.Registry.MustRegister(TunnelSlotLosses)
 	metrics.Registry.MustRegister(TunnelNodesManaged)
 	metrics.Registry.MustRegister(TunnelPacketsSent)
 	metrics.Registry.MustRegister(TunnelBytesSent)

@@ -94,6 +94,38 @@ func TestRelay_Connect_UpdateKeys_Disconnect(t *testing.T) {
 	}
 }
 
+func TestRelay_ControlSessionCloseDisconnects(t *testing.T) {
+	const token = "session-close-token"
+
+	onConnect := func(ctx context.Context, tunnelName, agentName string, conn controllers.Connection) error {
+		conn.SetVNI(ctx, 202)
+		conn.SetOverlayAddress("10.0.0.3/32")
+		return nil
+	}
+	disconnected := make(chan string, 1)
+	onDisconnect := func(ctx context.Context, agent, id string) error {
+		disconnected <- id
+		return nil
+	}
+
+	r, caCert, stop, _ := startRelay(t, token, onConnect, onDisconnect)
+	t.Cleanup(stop)
+	c := clientForRelay(t, r, caCert, token)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	connectResp, err := c.Connect(ctx)
+	require.NoError(t, err)
+	require.NoError(t, c.Close())
+
+	select {
+	case id := <-disconnected:
+		require.Equal(t, connectResp.ID, id)
+	case <-ctx.Done():
+		t.Fatal("QUIC session close did not disconnect the relay connection")
+	}
+}
+
 func TestRelay_CredentialBounds(t *testing.T) {
 	const goodToken = "bounded-token"
 
@@ -470,7 +502,7 @@ func TestRelay_InOverlayRouteTiers(t *testing.T) {
 	}
 }
 
-func TestRelay_GarbageCollector_DropsIdleConnections(t *testing.T) {
+func TestRelay_IdleDataPlaneDoesNotDropLiveSession(t *testing.T) {
 	const token = "gc-token"
 
 	discCh := make(chan api.Request, 1)
@@ -506,20 +538,18 @@ func TestRelay_GarbageCollector_DropsIdleConnections(t *testing.T) {
 
 	select {
 	case got := <-discCh:
-		require.Equal(t, connResp.ID, got.ID)
-		require.Equal(t, "it-agent", got.Agent)
-	default:
-		select {
-		case got := <-discCh:
-			require.Equal(t, connResp.ID, got.ID)
-			require.Equal(t, "it-agent", got.Agent)
-		case <-time.After(8 * time.Second):
-			t.Fatalf("expected GC to drop idle connection within a GC interval")
-		}
+		t.Fatalf("idle data plane dropped live session %q", got.ID)
+	case <-time.After(time.Second):
 	}
 
-	err = c.Disconnect(ctx, connResp.ID)
-	require.Error(t, err) // should error as connection already dropped by GC
+	require.NoError(t, c.Disconnect(ctx, connResp.ID))
+	select {
+	case got := <-discCh:
+		require.Equal(t, connResp.ID, got.ID)
+		require.Equal(t, "it-agent", got.Agent)
+	case <-time.After(2 * time.Second):
+		t.Fatal("explicit disconnect did not run cleanup")
+	}
 }
 
 func startRelay(

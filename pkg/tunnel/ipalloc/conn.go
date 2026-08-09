@@ -107,6 +107,11 @@ func NewConnAllocator(s Slot) *ConnAllocator {
 	return a
 }
 
+// Slot returns the immutable leased slot that backs this allocator.
+func (a *ConnAllocator) Slot() Slot {
+	return a.slot
+}
+
 // Allocate returns a connection's /96 and, best-effort, its /32. A zero-value
 // (invalid) v4 prefix means this slot has no v4 space left (or never had any);
 // the caller should run the connection v6-only. ErrSlotExhausted means the v6

@@ -39,6 +39,9 @@ type Client struct {
 	// connection cleanly. See Draining.
 	draining  chan struct{}
 	drainOnce sync.Once
+	// lost is closed when the control connection ends without a graceful drain.
+	lost     chan struct{}
+	lostOnce sync.Once
 	// closed marks a client-initiated Close so our own transport teardown
 	// (which also closes gracefully) is not mistaken for a relay drain.
 	closed atomic.Bool
@@ -114,12 +117,15 @@ func NewClient(opts ClientOptions) (*Client, error) {
 		advertisedRoutes: opts.AdvertisedRoutes,
 		agentInstance:    opts.AgentInstance,
 		draining:         make(chan struct{}),
+		lost:             make(chan struct{}),
 	}
 
 	t := &http3.Transport{
 		TLSClientConfig: opts.TLSConfig,
 		QUICConfig: &quic.Config{
-			Tracer: c.newTracer,
+			Tracer:          c.newTracer,
+			KeepAlivePeriod: 5 * time.Second,
+			MaxIdleTimeout:  15 * time.Second,
 		},
 	}
 	c.h3 = t
@@ -162,18 +168,31 @@ func (c *Client) Draining() <-chan struct{} {
 	return c.draining
 }
 
+// Lost is closed when the relay control connection ends without a graceful
+// drain. The session must reconnect because its data-plane state can no longer
+// be leased by that relay process.
+func (c *Client) Lost() <-chan struct{} {
+	return c.lost
+}
+
 // watchControlConn waits for a dialed control connection to end and flags a
 // drain when the close was graceful and not our own doing.
 func (c *Client) watchControlConn(qc quic.EarlyConnection) {
 	<-qc.Context().Done()
+	c.handleControlClose(context.Cause(qc.Context()))
+}
+
+func (c *Client) handleControlClose(cause error) {
 	if c.closed.Load() {
 		return
 	}
 	var appErr *quic.ApplicationError
-	if errors.As(context.Cause(qc.Context()), &appErr) &&
+	if errors.As(cause, &appErr) &&
 		appErr.ErrorCode == quic.ApplicationErrorCode(http3.ErrCodeNoError) {
 		c.drainOnce.Do(func() { close(c.draining) })
+		return
 	}
+	c.lostOnce.Do(func() { close(c.lost) })
 }
 
 func (c *Client) Close() error {

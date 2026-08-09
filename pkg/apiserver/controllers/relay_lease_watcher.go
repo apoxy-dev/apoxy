@@ -2,15 +2,14 @@ package controllers
 
 import (
 	"context"
+	"log/slog"
 	"strings"
 	"time"
 
-	"github.com/go-logr/logr"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	controllerlog "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -45,8 +44,9 @@ var _ reconcile.Reconciler = &RelayLeaseWatcher{}
 // only (crash -> not ready, recovery -> ready) and garbage-collects the Relay
 // object and its stale lease once the lease has been expired past the grace
 // period (§2.3) — a crashed relay never deletes its own lease, so expiry, not
-// deletion, is the signal that reclaims it. Orphan-Tunnel GC keyed on the
-// vanished relay lands in phase 5, when the connect path first creates Tunnels.
+// deletion, is the signal that reclaims it. Relay-wide Tunnel deletion remains
+// a rollout fallback; slot leases are the authority for Tunnel membership and
+// address lifetime.
 type RelayLeaseWatcher struct {
 	client.Client
 
@@ -121,8 +121,6 @@ func leaseAge(lease *apoxycoordv1.Lease, now time.Time) (age time.Duration, ok b
 // Reconcile flips the owning Relay's readiness to match its lease liveness and
 // garbage-collects the Relay (and stale lease) once expired past the grace.
 func (w *RelayLeaseWatcher) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
-	log := controllerlog.FromContext(ctx).WithValues("lease", req.NamespacedName)
-
 	relayName := relayNameFromLease(req.Name)
 	if relayName == "" || req.Namespace != w.leaseNamespace {
 		return reconcile.Result{}, nil
@@ -133,7 +131,8 @@ func (w *RelayLeaseWatcher) Reconcile(ctx context.Context, req reconcile.Request
 	if apierrors.IsNotFound(err) {
 		// Lease already gone (e.g. graceful drain deleted it): GC the Relay and
 		// its orphaned Tunnels (a crashed relay never deletes its own).
-		log.Info("Relay lease gone, deleting relay", "relay", relayName)
+		slog.Info("Relay lease is gone; deleting Relay",
+			"lease", req.NamespacedName, "relay", relayName)
 		if err := w.deleteRelay(ctx, relayName); err != nil {
 			return reconcile.Result{}, err
 		}
@@ -147,7 +146,7 @@ func (w *RelayLeaseWatcher) Reconcile(ctx context.Context, req reconcile.Request
 	alive := ok && age <= w.leaseDuration
 
 	// Reflect liveness onto the Relay (transitions only).
-	if err := w.setReady(ctx, log, relayName, alive); err != nil {
+	if err := w.setReady(ctx, relayName, alive); err != nil {
 		return reconcile.Result{}, err
 	}
 
@@ -158,7 +157,8 @@ func (w *RelayLeaseWatcher) Reconcile(ctx context.Context, req reconcile.Request
 	// Dead: GC once expired past the grace period; otherwise revisit later. A
 	// missing RenewTime (ok == false) never GCs — it is treated as pending.
 	if ok && age > w.leaseDuration+w.gracePeriod {
-		log.Info("Relay lease expired past grace, garbage-collecting", "relay", relayName, "age", age.String())
+		slog.Info("Relay lease expired past its grace period; removing relay state",
+			"lease", req.NamespacedName, "relay", relayName, "age", age)
 		if err := w.deleteRelay(ctx, relayName); err != nil {
 			return reconcile.Result{}, err
 		}
@@ -175,7 +175,7 @@ func (w *RelayLeaseWatcher) Reconcile(ctx context.Context, req reconcile.Request
 
 // setReady updates the Relay's readiness only when it actually changes. A
 // missing Relay (not created yet, or already GC'd) is not an error.
-func (w *RelayLeaseWatcher) setReady(ctx context.Context, log logr.Logger, relayName string, ready bool) error {
+func (w *RelayLeaseWatcher) setReady(ctx context.Context, relayName string, ready bool) error {
 	var relay vpcv1alpha1.Relay
 	if err := w.Get(ctx, client.ObjectKey{Name: relayName}, &relay); err != nil {
 		return client.IgnoreNotFound(err)
@@ -187,7 +187,7 @@ func (w *RelayLeaseWatcher) setReady(ctx context.Context, log logr.Logger, relay
 	if err := w.Status().Update(ctx, &relay); err != nil {
 		return err
 	}
-	log.Info("Flipped relay readiness", "relay", relayName, "ready", ready)
+	slog.Info("Updated Relay readiness", "relay", relayName, "ready", ready)
 	return nil
 }
 
@@ -199,10 +199,9 @@ func (w *RelayLeaseWatcher) deleteRelay(ctx context.Context, relayName string) e
 	return client.IgnoreNotFound(w.Delete(ctx, relay))
 }
 
-// deleteTunnelsForRelay garbage-collects the Tunnels a relay owned once its
-// lease is gone. A crashed relay never deletes its own Tunnels, so expiry - not
-// disconnect - is what reclaims them (§2.4). Tunnels carry the relay's name in
-// the LabelRelay label, stamped by the relay at create.
+// deleteTunnelsForRelay is a rollout fallback for Tunnels that predate slot
+// generation ownership. Current Tunnels are removed by their slot lease before
+// its address can be reused. Tunnels carry the relay's name in LabelRelay.
 func (w *RelayLeaseWatcher) deleteTunnelsForRelay(ctx context.Context, relayName string) error {
 	return w.DeleteAllOf(ctx, &vpcv1alpha1.Tunnel{}, client.MatchingLabels{tunnelctrl.LabelRelay: relayName})
 }

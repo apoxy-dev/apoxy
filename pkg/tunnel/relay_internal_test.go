@@ -1,10 +1,14 @@
 package tunnel
 
 import (
+	"bytes"
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/alphadose/haxmap"
+	"github.com/julienschmidt/httprouter"
 )
 
 // TestRelayTeardownIsIdentityAware pins the reconnect race: a stale
@@ -43,5 +47,16 @@ func TestRelayTeardownIsIdentityAware(t *testing.T) {
 	r.teardownConn(context.Background(), replacement)
 	if len(disconnects) != 1 {
 		t.Fatalf("onDisconnect fired %d times, want 1", len(disconnects))
+	}
+}
+
+func TestRelayConnectRequiresHTTP3SessionTracking(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/v1/tunnel/default", bytes.NewBufferString(`{"agent":"agent-a"}`))
+	resp := httptest.NewRecorder()
+
+	(&Relay{}).handleConnect(resp, req, httprouter.Params{{Key: "name", Value: "default"}})
+
+	if resp.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", resp.Code, http.StatusInternalServerError)
 	}
 }

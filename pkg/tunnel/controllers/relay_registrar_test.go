@@ -28,6 +28,7 @@ func (s stubRelay) RemoveCredentials(string)                                    
 func (s stubRelay) SetEgressGateway(bool)                                                {}
 func (s stubRelay) SetOnConnect(func(context.Context, string, string, Connection) error) {}
 func (s stubRelay) SetOnDisconnect(func(context.Context, string, string) error)          {}
+func (s stubRelay) DisconnectConnection(string)                                          {}
 func (s stubRelay) SetOnShutdown(func(context.Context))                                  {}
 
 func registrarScheme(t *testing.T) *runtime.Scheme {
