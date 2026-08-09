@@ -231,6 +231,30 @@ type kineRESTOptionsGetter struct {
 	groupVersioner runtime.GroupVersioner
 }
 
+type resourcePrefixRESTOptionsGetter struct {
+	delegate generic.RESTOptionsGetter
+	prefix   string
+}
+
+func (g resourcePrefixRESTOptionsGetter) GetRESTOptions(resource schema.GroupResource, obj runtime.Object) (generic.RESTOptions, error) {
+	opts, err := g.delegate.GetRESTOptions(resource, obj)
+	if err != nil {
+		return generic.RESTOptions{}, err
+	}
+	opts.ResourcePrefix = g.prefix
+	return opts, nil
+}
+
+func withResourceStoragePrefix(base serverbuilder.StoreFn, prefix string) serverbuilder.StoreFn {
+	return func(scheme *runtime.Scheme, store *genericregistry.Store, options *generic.StoreOptions) {
+		base(scheme, store, options)
+		options.RESTOptions = resourcePrefixRESTOptionsGetter{
+			delegate: options.RESTOptions,
+			prefix:   prefix,
+		}
+	}
+}
+
 // GetRESTOptions implements generic.RESTOptionsGetter.
 func (g *kineRESTOptionsGetter) GetRESTOptions(resource schema.GroupResource, _ runtime.Object) (generic.RESTOptions, error) {
 	s := json.NewSerializer(json.DefaultMetaFactory, g.scheme, g.scheme, false)

@@ -7,7 +7,50 @@ import (
 	"testing"
 
 	_ "github.com/mattn/go-sqlite3"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apiserver/pkg/registry/generic"
+	genericregistry "k8s.io/apiserver/pkg/registry/generic/registry"
+
+	serverbuilder "github.com/apoxy-dev/apoxy/pkg/apiserver/server/builder"
 )
+
+type fixedRESTOptionsGetter struct {
+	opts generic.RESTOptions
+}
+
+func (g fixedRESTOptionsGetter) GetRESTOptions(schema.GroupResource, runtime.Object) (generic.RESTOptions, error) {
+	return g.opts, nil
+}
+
+func TestWithResourceStoragePrefix(t *testing.T) {
+	const (
+		defaultPrefix  = "networks.infra.apoxy.dev"
+		isolatedPrefix = "networks-v2.infra.apoxy.dev"
+	)
+
+	base := serverbuilder.StoreFn(func(_ *runtime.Scheme, _ *genericregistry.Store, options *generic.StoreOptions) {
+		options.RESTOptions = fixedRESTOptionsGetter{opts: generic.RESTOptions{
+			ResourcePrefix:          defaultPrefix,
+			EnableGarbageCollection: true,
+		}}
+	})
+	options := &generic.StoreOptions{}
+	withResourceStoragePrefix(base, isolatedPrefix)(runtime.NewScheme(), &genericregistry.Store{}, options)
+
+	got, err := options.RESTOptions.GetRESTOptions(schema.GroupResource{
+		Group: "infra.apoxy.dev", Resource: "networks",
+	}, nil)
+	if err != nil {
+		t.Fatalf("GetRESTOptions() error = %v", err)
+	}
+	if got.ResourcePrefix != isolatedPrefix {
+		t.Errorf("ResourcePrefix = %q, want %q", got.ResourcePrefix, isolatedPrefix)
+	}
+	if !got.EnableGarbageCollection {
+		t.Error("Storage prefix wrapper did not preserve REST options")
+	}
+}
 
 func createBloatedDB(t *testing.T, path string) int64 {
 	t.Helper()

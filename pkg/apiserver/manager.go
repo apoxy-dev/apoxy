@@ -225,43 +225,44 @@ func generateSelfSignedCerts(certDir, pairName string) (certFile, keyFile string
 type Option func(*options)
 
 type options struct {
-	clientConfig           *rest.Config
-	enableSimpleAuth       bool
-	enableInClusterAuth    bool
-	sqlitePath             string
-	sqliteConnArgs         map[string]string
-	certPairName, certDir  string
-	bindAddress            string
-	bindPort               int
-	enableKubeAPI          bool
-	controllerNames        []string
-	additionalControllers  []CreateController
-	skipBuiltinControllers bool
-	gcInterval             time.Duration
-	jwtPublicKey           []byte
-	jwtPrivateKey          []byte
-	jwtRefreshThreshold    time.Duration
-	jwksHost               string
-	jwksPort               int
-	resources              []resource.Object
-	proxyIPAM              tunnet.IPAM
-	agentIPAM              tunnet.IPAM
-	skipVPCNetworkProv     bool
-	tokenValidator         token.Validator
-	tokenIssuer            token.TokenIssuer
-	openAPIDefinitions     common.GetOpenAPIDefinitions
-	addToScheme            func(*runtime.Scheme) error
-	admissionPlugins       []admissionPlugin
-	auditPolicyFile        string
-	auditLogPath           string
-	auditLogMaxAge         int // days
-	auditLogMaxBackups     int
-	auditLogMaxSizeMB      int // megabytes
-	secretStoreMain        serverapiserver.StorageProvider
-	secretStoreValues      serverapiserver.StorageProvider
-	secretValuesAuthz      secretstore.ReadAuthz
-	maxRequestsInFlight    int
-	maxMutatingInFlight    int
+	clientConfig            *rest.Config
+	enableSimpleAuth        bool
+	enableInClusterAuth     bool
+	sqlitePath              string
+	sqliteConnArgs          map[string]string
+	certPairName, certDir   string
+	bindAddress             string
+	bindPort                int
+	enableKubeAPI           bool
+	controllerNames         []string
+	additionalControllers   []CreateController
+	skipBuiltinControllers  bool
+	gcInterval              time.Duration
+	jwtPublicKey            []byte
+	jwtPrivateKey           []byte
+	jwtRefreshThreshold     time.Duration
+	jwksHost                string
+	jwksPort                int
+	resources               []resource.Object
+	resourceStoragePrefixes map[schema.GroupVersionResource]string
+	proxyIPAM               tunnet.IPAM
+	agentIPAM               tunnet.IPAM
+	skipVPCNetworkProv      bool
+	tokenValidator          token.Validator
+	tokenIssuer             token.TokenIssuer
+	openAPIDefinitions      common.GetOpenAPIDefinitions
+	addToScheme             func(*runtime.Scheme) error
+	admissionPlugins        []admissionPlugin
+	auditPolicyFile         string
+	auditLogPath            string
+	auditLogMaxAge          int // days
+	auditLogMaxBackups      int
+	auditLogMaxSizeMB       int // megabytes
+	secretStoreMain         serverapiserver.StorageProvider
+	secretStoreValues       serverapiserver.StorageProvider
+	secretValuesAuthz       secretstore.ReadAuthz
+	maxRequestsInFlight     int
+	maxMutatingInFlight     int
 	// kineETCD is the kine backend endpoint, captured in start() so the
 	// startup storage migration can read legacy keys directly.
 	kineETCD endpoint.ETCDConfig
@@ -459,6 +460,19 @@ func WithGCInterval(interval time.Duration) Option {
 func WithResource(obj resource.Object) Option {
 	return func(o *options) {
 		o.resources = append(o.resources, obj)
+	}
+}
+
+// WithResourceStoragePrefix registers a resource with an internal storage
+// prefix that is independent of its public GroupResource. Use this when a
+// storage-layout change must not read keys from the previous layout.
+func WithResourceStoragePrefix(obj resource.Object, prefix string) Option {
+	return func(o *options) {
+		o.resources = append(o.resources, obj)
+		if o.resourceStoragePrefixes == nil {
+			o.resourceStoragePrefixes = make(map[schema.GroupVersionResource]string)
+		}
+		o.resourceStoragePrefixes[obj.GetGroupVersionResource()] = prefix
 	}
 }
 
@@ -1061,7 +1075,11 @@ func start(
 				WithStorage(valuesGVR, valuesSP)
 			continue
 		}
-		srvBuilder = srvBuilder.WithResourceAndStorage(r, kineStore)
+		store := kineStore
+		if prefix := opts.resourceStoragePrefixes[r.GetGroupVersionResource()]; prefix != "" {
+			store = withResourceStoragePrefix(kineStore, prefix)
+		}
+		srvBuilder = srvBuilder.WithResourceAndStorage(r, store)
 	}
 	// Use custom OpenAPI definitions if provided, otherwise use the default.
 	openAPIGetter := opts.openAPIDefinitions
