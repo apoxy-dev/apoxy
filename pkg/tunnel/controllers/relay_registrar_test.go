@@ -10,6 +10,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -50,6 +51,29 @@ func newRegistrar(t *testing.T, now time.Time, objs ...client.Object) (*RelayReg
 	r := NewRelayRegistrar(c, c, stubRelay{name: "r0"}, []string{"1.2.3.4:6081"}, nil)
 	r.now = func() time.Time { return now }
 	return r, c
+}
+
+type deleteLeaseOnUpdateClient struct {
+	client.Client
+	deleteOnNextUpdate bool
+}
+
+func (c *deleteLeaseOnUpdateClient) Update(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
+	if _, ok := obj.(*apoxycoordv1.Lease); ok && c.deleteOnNextUpdate {
+		c.deleteOnNextUpdate = false
+		lease := &apoxycoordv1.Lease{ObjectMeta: metav1.ObjectMeta{
+			Namespace: obj.GetNamespace(),
+			Name:      obj.GetName(),
+		}}
+		if err := c.Client.Delete(ctx, lease); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+		return apierrors.NewNotFound(schema.GroupResource{
+			Group:    apoxycoordv1.GroupName,
+			Resource: "leases",
+		}, obj.GetName())
+	}
+	return c.Client.Update(ctx, obj, opts...)
 }
 
 func TestRelayRegistrarEnsureRelay(t *testing.T) {
@@ -108,6 +132,52 @@ func TestRelayRegistrarRenewLease(t *testing.T) {
 		require.Equal(t, t1.Unix(), lease.Spec.RenewTime.Unix(), "RenewTime advanced")
 		require.Equal(t, t0.Unix(), lease.Spec.AcquireTime.Unix(), "AcquireTime pinned to first acquire")
 	})
+}
+
+func TestRelayRegistrarRecoversAfterRestoredObjectsDisappear(t *testing.T) {
+	ctx := context.Background()
+	now := time.Unix(1_700_000_000, 0)
+	lease := &apoxycoordv1.Lease{
+		ObjectMeta: metav1.ObjectMeta{Namespace: DefaultLeaseNamespace, Name: LeaseName("r0")},
+	}
+	_, base := newRegistrar(t, now, lease)
+	leaseClient := &deleteLeaseOnUpdateClient{Client: base, deleteOnNextUpdate: true}
+	r := NewRelayRegistrar(leaseClient, base, stubRelay{name: "r0"}, []string{"1.2.3.4:6081"}, nil)
+	r.now = func() time.Time { return now }
+
+	require.NoError(t, r.renewLease(ctx))
+
+	var gotRelay vpcv1alpha1.Relay
+	require.NoError(t, base.Get(ctx, client.ObjectKey{Name: "r0"}, &gotRelay))
+	var gotLease apoxycoordv1.Lease
+	require.NoError(t, base.Get(ctx, client.ObjectKey{
+		Namespace: DefaultLeaseNamespace,
+		Name:      LeaseName("r0"),
+	}, &gotLease))
+	require.Equal(t, now.Unix(), gotLease.Spec.RenewTime.Unix())
+}
+
+func TestRelayRegistrarRecreatesRelayDuringRenewal(t *testing.T) {
+	r, c := newRegistrar(t, time.Unix(1_700_000_000, 0))
+	r.renewInterval = 10 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- r.Start(ctx)
+	}()
+
+	require.Eventually(t, func() bool {
+		return c.Get(context.Background(), client.ObjectKey{Name: "r0"}, &vpcv1alpha1.Relay{}) == nil
+	}, time.Second, 10*time.Millisecond)
+	require.NoError(t, c.Delete(context.Background(), &vpcv1alpha1.Relay{
+		ObjectMeta: metav1.ObjectMeta{Name: "r0"},
+	}))
+	require.Eventually(t, func() bool {
+		return c.Get(context.Background(), client.ObjectKey{Name: "r0"}, &vpcv1alpha1.Relay{}) == nil
+	}, time.Second, 10*time.Millisecond)
+
+	cancel()
+	require.ErrorIs(t, <-done, context.Canceled)
 }
 
 func TestRelayRegistrarSubSecondLeaseDuration(t *testing.T) {

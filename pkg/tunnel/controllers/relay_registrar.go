@@ -139,6 +139,9 @@ func (r *RelayRegistrar) Start(ctx context.Context) error {
 			slog.Info("Relay registrar shutting down", "relay", r.relay.Name())
 			return ctx.Err()
 		case <-ticker.C:
+			if err := r.ensureRelay(ctx); err != nil {
+				slog.Warn("Failed to restore relay registration", "relay", r.relay.Name(), "error", err)
+			}
 			if err := r.renewLease(ctx); err != nil {
 				slog.Warn("Failed to renew relay lease", "relay", r.relay.Name(), "error", err)
 			}
@@ -182,7 +185,10 @@ func (r *RelayRegistrar) ensureRelay(ctx context.Context) error {
 	if !apierrors.IsNotFound(err) {
 		return fmt.Errorf("failed to get relay: %w", err)
 	}
+	return r.createRelay(ctx)
+}
 
+func (r *RelayRegistrar) createRelay(ctx context.Context) error {
 	relay := &vpcv1alpha1.Relay{
 		ObjectMeta: metav1.ObjectMeta{Name: r.relay.Name()},
 		Spec: vpcv1alpha1.RelaySpec{
@@ -208,32 +214,44 @@ func (r *RelayRegistrar) renewLease(ctx context.Context) error {
 	existing := &apoxycoordv1.Lease{}
 	err := r.leaseClient.Get(ctx, key, existing)
 	if apierrors.IsNotFound(err) {
-		lease := &apoxycoordv1.Lease{
-			ObjectMeta: metav1.ObjectMeta{Namespace: r.leaseNamespace, Name: key.Name},
-			Spec: coordinationv1.LeaseSpec{
-				HolderIdentity:       ptr.To(r.relay.Name()),
-				LeaseDurationSeconds: ptr.To(leaseDurationSeconds(r.leaseDuration)),
-				AcquireTime:          &now,
-				RenewTime:            &now,
-			},
-		}
-		if err := r.leaseClient.Create(ctx, lease); err != nil {
-			return fmt.Errorf("failed to create lease: %w", err)
-		}
-		return nil
+		return r.createLease(ctx, now)
 	}
 	if err != nil {
 		return fmt.Errorf("failed to get lease: %w", err)
 	}
 
 	existing.Spec.HolderIdentity = ptr.To(r.relay.Name())
-	existing.Spec.LeaseDurationSeconds = ptr.To(int32(r.leaseDuration.Seconds()))
+	existing.Spec.LeaseDurationSeconds = ptr.To(leaseDurationSeconds(r.leaseDuration))
 	existing.Spec.RenewTime = &now
 	if existing.Spec.AcquireTime == nil {
 		existing.Spec.AcquireTime = &now
 	}
-	if err := r.leaseClient.Update(ctx, existing); err != nil {
+	if err := r.leaseClient.Update(ctx, existing); apierrors.IsNotFound(err) {
+		// A restored API server can lose recent liveness objects while this
+		// process still has them in its informer cache. Restore both objects
+		// from the registrar's authoritative configuration.
+		if err := r.createRelay(ctx); err != nil {
+			return fmt.Errorf("failed to restore relay: %w", err)
+		}
+		return r.createLease(ctx, now)
+	} else if err != nil {
 		return fmt.Errorf("failed to renew lease: %w", err)
+	}
+	return nil
+}
+
+func (r *RelayRegistrar) createLease(ctx context.Context, now metav1.MicroTime) error {
+	lease := &apoxycoordv1.Lease{
+		ObjectMeta: metav1.ObjectMeta{Namespace: r.leaseNamespace, Name: LeaseName(r.relay.Name())},
+		Spec: coordinationv1.LeaseSpec{
+			HolderIdentity:       ptr.To(r.relay.Name()),
+			LeaseDurationSeconds: ptr.To(leaseDurationSeconds(r.leaseDuration)),
+			AcquireTime:          &now,
+			RenewTime:            &now,
+		},
+	}
+	if err := r.leaseClient.Create(ctx, lease); err != nil && !apierrors.IsAlreadyExists(err) {
+		return fmt.Errorf("failed to create lease: %w", err)
 	}
 	return nil
 }
