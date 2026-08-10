@@ -123,6 +123,18 @@ describe('MillerBrowser', () => {
     expect(rowNames('Listeners')).toEqual(['edge'])
   })
 
+  it('shows a clear button while filtering that resets the query', () => {
+    const items = (c: number, _sel: (string | null)[], q: string): MillerItem[] =>
+      c === 0 ? Object.keys(TREE).filter((id) => id.includes(q)).map((id) => ({ id, name: id })) : []
+    render(<MillerBrowser columns={[COLUMNS[0]!]} getItems={items} searchPlaceholder="Filter…" />)
+    expect(screen.queryByLabelText('Clear filter')).toBeNull()
+    fireEvent.change(screen.getByPlaceholderText('Filter…'), { target: { value: 'ed' } })
+    expect(rowNames('Listeners')).toEqual(['edge'])
+    fireEvent.click(screen.getByLabelText('Clear filter'))
+    expect(rowNames('Listeners')).toEqual(['web', 'admin', 'edge'])
+    expect(screen.queryByLabelText('Clear filter')).toBeNull()
+  })
+
   it('focuses the search box on "/"', () => {
     render(<MillerBrowser columns={[COLUMNS[0]!]} getItems={() => []} searchPlaceholder="Filter…" />)
     const input = screen.getByPlaceholderText('Filter…')

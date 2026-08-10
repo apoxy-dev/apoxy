@@ -256,9 +256,23 @@ export function MillerBrowser({
             placeholder={searchPlaceholder}
             className="min-w-0 flex-1 border-0 bg-transparent text-[length:var(--t-body-sm)] text-[color:var(--text-primary)] outline-none placeholder:text-[color:var(--text-muted)]"
           />
-          <kbd className="flex-none font-mono text-[length:var(--t-micro)] text-[color:var(--text-muted)]">
-            /
-          </kbd>
+          {query ? (
+            <button
+              type="button"
+              aria-label="Clear filter"
+              onClick={() => {
+                setQuery("");
+                searchRef.current?.focus();
+              }}
+              className="flex-none cursor-pointer border-0 bg-transparent px-[2px] text-[16px] leading-none text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)]"
+            >
+              ×
+            </button>
+          ) : (
+            <kbd className="flex-none font-mono text-[length:var(--t-micro)] text-[color:var(--text-muted)]">
+              /
+            </kbd>
+          )}
         </label>
       </div>
       {gridEl}
@@ -292,7 +306,9 @@ function MillerCol({
         !last && "border-r border-[color:var(--border-default)]",
       )}
     >
-      <div className="flex items-center justify-between border-b border-[color:var(--border-default)] bg-[var(--apx-mist)] px-[14px] py-[8px]">
+      {/* Fixed head height so a column with a head "+" button lines up with
+          its text-only neighbors instead of pushing its rows down. */}
+      <div className="flex h-[38px] flex-none items-center justify-between border-b border-[color:var(--border-default)] bg-[var(--apx-mist)] px-[14px]">
         <span className="text-[length:var(--t-overline)] font-medium uppercase tracking-[0.14em] text-[color:var(--text-muted)]">
           {def.label}
         </span>
