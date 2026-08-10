@@ -12,7 +12,7 @@ on:
 jobs:
   publish-images:
     if: ${{ github.event_name == 'push' }}
-    runs-on: depot-ubuntu-22.04-32,dagger=0.19.10
+    runs-on: blacksmith-32vcpu-ubuntu-2204
     steps:
       - uses: actions/checkout@v4
         with:
@@ -21,6 +21,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ">=1.24"
+      - uses: ./.github/actions/setup-dagger
       - name: Build and publish all images
         env:
           APOXY_INTERNAL_GAR_CREDENTIALS: ${{ secrets.APOXY_INTERNAL_GAR_CREDENTIALS }}
@@ -32,7 +33,7 @@ jobs:
 
   publish-github-release:
     if: ${{ github.event_name == 'push' }}
-    runs-on: depot-ubuntu-22.04-16,dagger=0.19.10
+    runs-on: blacksmith-16vcpu-ubuntu-2204
     steps:
       - uses: actions/checkout@v4
         with:
@@ -41,6 +42,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ">=1.24"
+      - uses: ./.github/actions/setup-dagger
       - name: Decode Apple P12 certificate
         run: echo "${{ secrets.APPLE_P12_BASE64 }}" | base64 -d > /tmp/apple-developer-id.p12
       - name: Publish GitHub release and Helm chart
@@ -59,7 +61,7 @@ jobs:
   publish-apoxy-cloud-changelog:
     needs: publish-github-release
     if: ${{ github.event_name == 'push' && needs.publish-github-release.result == 'success' }}
-    runs-on: depot-ubuntu-22.04,dagger=0.19.10
+    runs-on: blacksmith-4vcpu-ubuntu-2204
     steps:
       - uses: actions/checkout@v4
         with:
@@ -68,6 +70,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ">=1.24"
+      - uses: ./.github/actions/setup-dagger
       - name: Generate GitHub App token
         uses: actions/create-github-app-token@v1
         id: app-token
@@ -87,7 +90,7 @@ jobs:
   publish-homebrew-formula:
     needs: publish-github-release
     if: ${{ always() && (github.event_name == 'workflow_dispatch' || needs.publish-github-release.result == 'success') }}
-    runs-on: depot-ubuntu-22.04,dagger=0.19.10
+    runs-on: blacksmith-4vcpu-ubuntu-2204
     env:
       RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
     steps:
@@ -98,6 +101,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ">=1.24"
+      - uses: ./.github/actions/setup-dagger
       - name: Generate GitHub App token
         uses: actions/create-github-app-token@v1
         id: app-token

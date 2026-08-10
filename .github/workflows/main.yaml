@@ -8,9 +8,9 @@ jobs:
     strategy:
       matrix:
         include:
-          - runner: depot-ubuntu-22.04-16,dagger=0.19.10
+          - runner: blacksmith-16vcpu-ubuntu-2204
             arch: amd64
-          - runner: depot-ubuntu-22.04-arm-16,dagger=0.19.10
+          - runner: blacksmith-16vcpu-ubuntu-2204-arm
             arch: arm64
     runs-on: ${{ matrix.runner }}
     steps:
@@ -19,6 +19,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ">=1.24"
+      - uses: ./.github/actions/setup-dagger
       - name: Build and publish edge-runtime (${{ matrix.arch }})
         env:
           APOXY_INTERNAL_GAR_CREDENTIALS: ${{ secrets.APOXY_INTERNAL_GAR_CREDENTIALS }}
@@ -30,13 +31,14 @@ jobs:
 
   publish-edge-runtime-multiarch:
     needs: build-edge-runtime
-    runs-on: depot-ubuntu-22.04,dagger=0.19.10
+    runs-on: blacksmith-4vcpu-ubuntu-2204
     steps:
       - uses: actions/checkout@v4
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version: ">=1.24"
+      - uses: ./.github/actions/setup-dagger
       - name: Create edge-runtime multi-arch manifest
         env:
           APOXY_INTERNAL_GAR_CREDENTIALS: ${{ secrets.APOXY_INTERNAL_GAR_CREDENTIALS }}
@@ -47,13 +49,14 @@ jobs:
 
   publish-images:
     needs: publish-edge-runtime-multiarch
-    runs-on: depot-ubuntu-22.04-32,dagger=0.19.10
+    runs-on: blacksmith-32vcpu-ubuntu-2204
     steps:
       - uses: actions/checkout@v4
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version: ">=1.24"
+      - uses: ./.github/actions/setup-dagger
       - name: Build and publish all images
         env:
           APOXY_INTERNAL_GAR_CREDENTIALS: ${{ secrets.APOXY_INTERNAL_GAR_CREDENTIALS }}
