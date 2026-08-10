@@ -3,8 +3,6 @@ package agent
 import (
 	"context"
 	"errors"
-	"net/http"
-	"net/http/httptest"
 	"net/netip"
 	"testing"
 	"time"
@@ -165,30 +163,4 @@ func TestParsePrefixes(t *testing.T) {
 		require.NoError(t, err)
 		require.Empty(t, got)
 	})
-}
-
-func TestHealthHandler(t *testing.T) {
-	orig := connectionHealthCounter.Load()
-	t.Cleanup(func() { connectionHealthCounter.Store(orig) })
-
-	cases := []struct {
-		name       string
-		active     int32
-		wantStatus int
-		wantBody   string
-	}{
-		{name: "no active connections is unhealthy", active: 0, wantStatus: http.StatusServiceUnavailable, wantBody: "UNHEALTHY"},
-		{name: "one active connection is healthy", active: 1, wantStatus: http.StatusOK, wantBody: "1 active"},
-		{name: "multiple active connections are healthy", active: 3, wantStatus: http.StatusOK, wantBody: "3 active"},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			connectionHealthCounter.Store(tc.active)
-			rec := httptest.NewRecorder()
-			HealthHandler(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
-			require.Equal(t, tc.wantStatus, rec.Code)
-			require.Contains(t, rec.Body.String(), tc.wantBody)
-		})
-	}
 }

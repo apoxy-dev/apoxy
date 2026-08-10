@@ -51,9 +51,10 @@ type ICXTunRouter struct {
 	// namespace-bound handle when WithTunnelNetns is set, else a root-ns handle.
 	nl *netlink.Handle
 	// ns is the TUN's network namespace handle; None when in the root netns.
-	ns        netns.NsHandle
-	closeOnce sync.Once
-	closeErr  error
+	ns                 netns.NsHandle
+	overlayDeniedPorts []uint16
+	closeOnce          sync.Once
+	closeErr           error
 }
 
 // l2Underlay adapts the shared Geneve L2PacketConn to the icx tun driver's
@@ -222,17 +223,29 @@ func NewICXTunRouter(opts ...Option) (*ICXTunRouter, error) {
 		return nil, fmt.Errorf("failed to create tun datapath: %w", err)
 	}
 
+	if len(options.overlayDeniedPorts) > 0 {
+		if err := installOverlayPortFilters(ns, name, options.overlayDeniedPorts); err != nil {
+			_ = dp.Close()
+			nl.Close()
+			if ns.IsOpen() {
+				_ = ns.Close()
+			}
+			return nil, fmt.Errorf("failed to protect underlay admin ports: %w", err)
+		}
+	}
+
 	slog.Info("Created TUN overlay device",
 		slog.String("name", name),
 		slog.Int("mtu", options.tunMTU),
 		slog.String("netns", options.tunNetnsName))
 
 	return &ICXTunRouter{
-		Handler: handler,
-		dp:      dp,
-		link:    link,
-		nl:      nl,
-		ns:      ns,
+		Handler:            handler,
+		dp:                 dp,
+		link:               link,
+		nl:                 nl,
+		ns:                 ns,
+		overlayDeniedPorts: options.overlayDeniedPorts,
 	}, nil
 }
 
@@ -264,7 +277,14 @@ func (r *ICXTunRouter) Start(ctx context.Context) error {
 // and a reconnecting session reuses it.
 func (r *ICXTunRouter) Close() error {
 	r.closeOnce.Do(func() {
-		r.closeErr = r.dp.Close()
+		if err := r.dp.Close(); err != nil {
+			r.closeErr = err
+		}
+		if len(r.overlayDeniedPorts) > 0 {
+			if err := removeOverlayPortFilters(r.ns, r.link.Attrs().Name); err != nil && r.closeErr == nil {
+				r.closeErr = err
+			}
+		}
 		r.nl.Close()
 		if r.ns.IsOpen() {
 			_ = r.ns.Close()

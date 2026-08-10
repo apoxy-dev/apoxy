@@ -2,6 +2,7 @@ package router
 
 import (
 	"net/netip"
+	"slices"
 
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/api"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/batchpc"
@@ -29,6 +30,7 @@ type routerOptions struct {
 	pc                    batchpc.BatchPacketConn
 	egressGateway         bool
 	packetObserver        connection.PacketObserver
+	overlayDeniedPorts    []uint16
 }
 
 func defaultOptions() *routerOptions {
@@ -155,5 +157,14 @@ func WithEgressGateway(enable bool) Option {
 func WithPacketObserver(obs connection.PacketObserver) Option {
 	return func(o *routerOptions) {
 		o.packetObserver = obs
+	}
+}
+
+// WithOverlayDeniedPorts prevents TCP traffic that enters through the overlay
+// from reaching the listed local ports. Underlay and loopback traffic remain
+// unaffected.
+func WithOverlayDeniedPorts(ports []uint16) Option {
+	return func(o *routerOptions) {
+		o.overlayDeniedPorts = slices.Clone(ports)
 	}
 }

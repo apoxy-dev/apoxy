@@ -355,7 +355,7 @@ apoxy alpha tunnel run [flags]
 ### Options
 
 ```
-      --health-addr string     Listen address for health endpoint (e.g. ":8080"). Empty disables. In interactive sessions the endpoint is off unless this flag is set explicitly. (default "localhost:8080")
+      --admin-addr string      Listen address for underlay-only /livez, /readyz, and /metrics endpoints. Empty disables.
   -h, --help                   help for run
       --insecure-skip-verify   Skip TLS certificate verification for relay connections.
       --label stringToString   Agent-declared label (key=value) for VPCService selection; repeatable. Bounded by the credential's allowed label sets. (default [])
@@ -4828,6 +4828,5 @@ apoxy vpc tunnel list [flags]
 ### SEE ALSO
 
 * [apoxy vpc tunnel](#apoxy-vpc-tunnel)	 - Inspect tunnels
-
 
 

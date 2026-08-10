@@ -1,10 +1,15 @@
 package alpha
 
 import (
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"regexp"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	tunnelagent "github.com/apoxy-dev/apoxy/pkg/tunnel/agent"
 )
 
 func TestResolveTunnelDefaults(t *testing.T) {
@@ -27,7 +32,73 @@ func TestTunnelRunDefaultFlags(t *testing.T) {
 	require.NotNil(t, tunnelRunCmd.Flags().Lookup("name"))
 	require.Equal(t, "default", tunnelRunCmd.Flags().Lookup("vpc").DefValue)
 	require.NotEmpty(t, tunnelRunCmd.Flags().Lookup("agent").Deprecated)
+	require.Equal(t, "", tunnelRunCmd.Flags().Lookup("admin-addr").DefValue)
+	require.NotEmpty(t, tunnelRunCmd.Flags().Lookup("health-addr").Deprecated)
 	require.NotNil(t, tunnelRunCmd.Flags().Lookup("no-tui"))
+}
+
+func TestResolveAdminAddr(t *testing.T) {
+	cases := []struct {
+		name          string
+		admin         string
+		health        string
+		adminChanged  bool
+		healthChanged bool
+		want          string
+		wantErr       string
+	}{
+		{name: "disabled by default"},
+		{name: "uses explicit admin address", admin: " 127.0.0.1:18080 ", adminChanged: true, want: "127.0.0.1:18080"},
+		{name: "supports deprecated health address", health: "127.0.0.1:8081", healthChanged: true, want: "127.0.0.1:8081"},
+		{
+			name:          "rejects both flags",
+			admin:         "127.0.0.1:18080",
+			health:        "127.0.0.1:8081",
+			adminChanged:  true,
+			healthChanged: true,
+			wantErr:       "cannot be used together",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := resolveAdminAddr(tc.admin, tc.health, tc.adminChanged, tc.healthChanged)
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestTunnelAdminHandler(t *testing.T) {
+	tracker := tunnelagent.NewConnectionTracker(2)
+	handler := newTunnelAdminHandler(tracker)
+
+	request := func(path string) *httptest.ResponseRecorder {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		return rec
+	}
+
+	require.Equal(t, http.StatusOK, request("/livez").Code)
+	require.Equal(t, http.StatusServiceUnavailable, request("/readyz").Code)
+	require.Equal(t, http.StatusServiceUnavailable, request("/healthz").Code)
+
+	tracker.ConnectionOpened()
+	tracker.ConnectionOpened()
+	require.Equal(t, http.StatusOK, request("/readyz").Code)
+
+	metrics := request("/metrics")
+	require.Equal(t, http.StatusOK, metrics.Code)
+	body, err := io.ReadAll(metrics.Result().Body)
+	require.NoError(t, err)
+	require.Contains(t, string(body), "tunnel_agent_connections_active 2")
+	require.Contains(t, string(body), "tunnel_agent_connections_required 2")
+	require.Contains(t, string(body), "tunnel_agent_ready 1")
 }
 
 // TestTunnelRunValidation drives RunE directly with the package flag globals set

@@ -253,13 +253,14 @@ func manageRelayConnectionOnce(
 	latencies *latencyTracker,
 ) error {
 	var (
-		currentClient *api.Client
-		currentConnID string
-		connectResp   *api.ConnectResponse
-		sessionAddrs  []netip.Prefix
-		connectedAt   time.Time
-		connectTime   time.Duration
-		draining      atomic.Bool
+		currentClient    *api.Client
+		currentConnID    string
+		connectResp      *api.ConnectResponse
+		sessionAddrs     []netip.Prefix
+		connectedAt      time.Time
+		connectTime      time.Duration
+		connectionActive bool
+		draining         atomic.Bool
 	)
 
 	// When this function returns, that relay session is down, so decrement
@@ -293,8 +294,8 @@ func manageRelayConnectionOnce(
 				slog.Info("Removed address", slog.String("address", a.String()))
 			}
 		}
-		if currentConnID != "" {
-			connectionHealthCounter.Add(-1)
+		if connectionActive {
+			cfg.ConnectionTracker.ConnectionClosed()
 		}
 		// Drop this relay's path series so a dead relay doesn't keep
 		// reporting its last measurements. A reconnect restarts the counters
@@ -349,7 +350,8 @@ func manageRelayConnectionOnce(
 	}
 
 	// Successful session establishment: mark this connection active.
-	connectionHealthCounter.Add(1)
+	cfg.ConnectionTracker.ConnectionOpened()
+	connectionActive = true
 	connectedAt = time.Now()
 	statusSnapshot := func(state ConnectionState) ConnectionStatus {
 		// Latency preference: the smoothed RTT QUIC measures continuously on

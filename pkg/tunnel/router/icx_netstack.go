@@ -25,12 +25,13 @@ var (
 )
 
 type ICXNetstackRouter struct {
-	Handler       *icx.Handler
-	phy           *l2pc.L2PacketConn
-	net           *netstack.ICXNetwork
-	proxy         *socksproxy.ProxyServer
-	egressGateway bool
-	closeOnce     sync.Once
+	Handler            *icx.Handler
+	phy                *l2pc.L2PacketConn
+	net                *netstack.ICXNetwork
+	proxy              *socksproxy.ProxyServer
+	egressGateway      bool
+	overlayDeniedPorts []uint16
+	closeOnce          sync.Once
 }
 
 func NewICXNetstackRouter(opts ...Option) (*ICXNetstackRouter, error) {
@@ -67,11 +68,12 @@ func NewICXNetstackRouter(opts ...Option) (*ICXNetstackRouter, error) {
 	)
 
 	return &ICXNetstackRouter{
-		Handler:       handler,
-		phy:           phy,
-		net:           net,
-		proxy:         proxy,
-		egressGateway: options.egressGateway,
+		Handler:            handler,
+		phy:                phy,
+		net:                net,
+		proxy:              proxy,
+		egressGateway:      options.egressGateway,
+		overlayDeniedPorts: options.overlayDeniedPorts,
 	}, nil
 }
 
@@ -105,12 +107,14 @@ func (r *ICXNetstackRouter) Start(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to parse SOCKS listen port: %w", err)
 	}
+	deniedPorts := append([]uint16{uint16(socksListenPort)}, r.overlayDeniedPorts...)
 
 	if r.egressGateway {
 		slog.Info("Forwarding inbound traffic to internet")
 
 		if err := r.net.ForwardTo(ctx, network.Filtered(&network.FilteredNetworkConfig{
 			DeniedDestinations: []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8"), netip.MustParsePrefix("::1/128")},
+			DeniedPorts:        deniedPorts,
 			Upstream:           network.Host(),
 		})); err != nil {
 			return fmt.Errorf("failed to forward to internet: %w", err)
@@ -119,7 +123,7 @@ func (r *ICXNetstackRouter) Start(ctx context.Context) error {
 		slog.Info("Forwarding all inbound traffic to loopback interface")
 
 		if err := r.net.ForwardTo(ctx, network.Filtered(&network.FilteredNetworkConfig{
-			DeniedPorts: []uint16{uint16(socksListenPort)},
+			DeniedPorts: deniedPorts,
 			Upstream:    network.Loopback(),
 		})); err != nil {
 			return fmt.Errorf("failed to forward to loopback: %w", err)

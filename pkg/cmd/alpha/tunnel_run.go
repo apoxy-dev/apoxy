@@ -7,16 +7,20 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/netip"
 	"strings"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/tools/clientcmd"
+	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
 	"github.com/apoxy-dev/apoxy/client/versioned"
 	vpcclient "github.com/apoxy-dev/apoxy/client/versioned/typed/vpc/v1alpha1"
@@ -37,7 +41,8 @@ var (
 	pcapPath           string            // optional pcap path
 	tunMode            bool              // kernel TUN datapath instead of netstack+SOCKS (--tun)
 	tunIfaceName       string            // TUN interface name (--tun-ifname)
-	healthAddr         string            // listen address for health endpoint (e.g. ":8080"); empty disables
+	adminAddr          string            // listen address for the underlay-only admin endpoint; empty disables
+	healthAddr         string            // deprecated alias for adminAddr
 	agentLabels        map[string]string // agent-declared labels for VPCService selection (--label)
 	advertisedRoutes   []string          // CIDRs reachable behind this agent (--route)
 	noTUI              bool              // disable the interactive connection display
@@ -51,6 +56,15 @@ var tunnelRunCmd = &cobra.Command{
 		if minConns < 1 {
 			return fmt.Errorf("--min-conns must be at least 1")
 		}
+		resolvedAdminAddr, err := resolveAdminAddr(
+			adminAddr,
+			healthAddr,
+			cmd.Flags().Changed("admin-addr"),
+			cmd.Flags().Changed("health-addr"),
+		)
+		if err != nil {
+			return err
+		}
 
 		// Validate advertised routes up front so a typo fails fast rather than
 		// being rejected by the relay mid-connect.
@@ -63,14 +77,6 @@ var tunnelRunCmd = &cobra.Command{
 
 		resolvedAgentName, resolvedTunnelName, generatedName := resolveTunnelDefaults(agentName, tunnelName)
 		useTUI := !noTUI && !apoxyconfig.Verbose && utils.IsInteractive()
-
-		// In an interactive session the health endpoint defaults off: several
-		// tunnels commonly run side by side in terminals and would race for
-		// the default port. An explicit --health-addr still binds; daemon-style
-		// runs keep the default so orchestrators can probe liveness.
-		if utils.IsInteractive() && !cmd.Flags().Changed("health-addr") {
-			healthAddr = ""
-		}
 		status := newTunnelRunStatus(
 			cmd.OutOrStdout(), resolvedAgentName, resolvedTunnelName, generatedName, minConns, useTUI,
 		)
@@ -143,22 +149,30 @@ var tunnelRunCmd = &cobra.Command{
 			}
 		}
 
+		connectionTracker := tunnelagent.NewConnectionTracker(minConns)
 		g, ctx := errgroup.WithContext(cmd.Context())
 
-		// Start health endpoint server if configured.
-		if strings.TrimSpace(healthAddr) != "" {
-			mux := http.NewServeMux()
-			mux.HandleFunc("/healthz", tunnelagent.HealthHandler)
-
-			healthServer := &http.Server{
-				Addr:    healthAddr,
-				Handler: mux,
+		var adminPort uint16
+		if resolvedAdminAddr != "" {
+			adminListener, err := net.Listen("tcp", resolvedAdminAddr)
+			if err != nil {
+				return fmt.Errorf("failed to bind admin listener %q: %w", resolvedAdminAddr, err)
+			}
+			tcpAddr, ok := adminListener.Addr().(*net.TCPAddr)
+			if !ok || tcpAddr.Port < 1 || tcpAddr.Port > 65535 {
+				_ = adminListener.Close()
+				return fmt.Errorf("admin listener returned invalid TCP address %q", adminListener.Addr())
+			}
+			adminPort = uint16(tcpAddr.Port)
+			adminServer := &http.Server{
+				Handler:           newTunnelAdminHandler(connectionTracker),
+				ReadHeaderTimeout: 5 * time.Second,
 			}
 
 			g.Go(func() error {
-				slog.Info("Starting health endpoint server", slog.String("address", healthAddr))
-				if err := healthServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-					slog.Error("Health server failed", slog.Any("error", err))
+				slog.Info("Starting tunnel admin server", slog.String("address", adminListener.Addr().String()))
+				if err := adminServer.Serve(adminListener); err != nil && err != http.ErrServerClosed {
+					slog.Error("Tunnel admin server failed", slog.Any("error", err))
 					return err
 				}
 				return nil
@@ -168,7 +182,7 @@ var tunnelRunCmd = &cobra.Command{
 				<-ctx.Done()
 				shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
-				return healthServer.Shutdown(shutdownCtx)
+				return adminServer.Shutdown(shutdownCtx)
 			})
 		}
 
@@ -188,11 +202,13 @@ var tunnelRunCmd = &cobra.Command{
 				SeedRelays:         discoveredRelays,
 				RelayLister:        relayLister,
 				MinConns:           minConns,
+				ConnectionTracker:  connectionTracker,
 				TLSConfig:          &tls.Config{InsecureSkipVerify: insecureSkipVerify},
 				SocksListenAddr:    socksListenAddr,
 				PcapPath:           pcapPath,
 				TunMode:            tunMode,
 				TunIfaceName:       tunIfaceName,
+				AdminPort:          adminPort,
 				ConnectionObserver: status.Observe,
 			})
 		})
@@ -202,6 +218,59 @@ var tunnelRunCmd = &cobra.Command{
 		}
 		return nil
 	},
+}
+
+func resolveAdminAddr(admin, health string, adminChanged, healthChanged bool) (string, error) {
+	if adminChanged && healthChanged {
+		return "", fmt.Errorf("--admin-addr and deprecated --health-addr cannot be used together")
+	}
+	if healthChanged {
+		return strings.TrimSpace(health), nil
+	}
+	return strings.TrimSpace(admin), nil
+}
+
+func newTunnelAdminHandler(tracker *tunnelagent.ConnectionTracker) http.Handler {
+	adminRegistry := prometheus.NewRegistry()
+	adminRegistry.MustRegister(
+		prometheus.NewGaugeFunc(
+			prometheus.GaugeOpts{
+				Name: "tunnel_agent_connections_active",
+				Help: "Current number of live relay sessions for this tunnel agent.",
+			},
+			func() float64 { return float64(tracker.ActiveConnections()) },
+		),
+		prometheus.NewGaugeFunc(
+			prometheus.GaugeOpts{
+				Name: "tunnel_agent_connections_required",
+				Help: "Relay sessions required for this tunnel agent to report ready.",
+			},
+			func() float64 { return float64(tracker.RequiredConnections()) },
+		),
+		prometheus.NewGaugeFunc(
+			prometheus.GaugeOpts{
+				Name: "tunnel_agent_ready",
+				Help: "Whether this tunnel agent has its required relay sessions.",
+			},
+			func() float64 {
+				if tracker.Ready() {
+					return 1
+				}
+				return 0
+			},
+		),
+	)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/livez", tunnelagent.LivenessHandler)
+	mux.HandleFunc("/readyz", tracker.ReadinessHandler)
+	// Keep the old path as a readiness alias while callers move to /readyz.
+	mux.HandleFunc("/healthz", tracker.ReadinessHandler)
+	mux.Handle("/metrics", promhttp.HandlerFor(
+		prometheus.Gatherers{ctrlmetrics.Registry, adminRegistry},
+		promhttp.HandlerOpts{},
+	))
+	return mux
 }
 
 func resolveTunnelDefaults(name, network string) (resolvedName, resolvedNetwork string, generated bool) {
@@ -230,7 +299,9 @@ func init() {
 	tunnelRunCmd.Flags().StringVar(&socksListenAddr, "socks-addr", "localhost:1080", "Listen address for SOCKS proxy.")
 	tunnelRunCmd.Flags().BoolVar(&tunMode, "tun", false, "Use a kernel TUN device for the overlay datapath instead of the in-process netstack + SOCKS proxy. Any process in the same network namespace can then reach overlay destinations by plain kernel route. Linux only; requires NET_ADMIN and /dev/net/tun.")
 	tunnelRunCmd.Flags().StringVar(&tunIfaceName, "tun-ifname", "apoxy0", "Name of the TUN interface created in --tun mode.")
-	tunnelRunCmd.Flags().StringVar(&healthAddr, "health-addr", "localhost:8080", "Listen address for health endpoint (e.g. \":8080\"). Empty disables. In interactive sessions the endpoint is off unless this flag is set explicitly.")
+	tunnelRunCmd.Flags().StringVar(&adminAddr, "admin-addr", "", "Listen address for underlay-only /livez, /readyz, and /metrics endpoints. Empty disables.")
+	tunnelRunCmd.Flags().StringVar(&healthAddr, "health-addr", "", "Deprecated alias for --admin-addr.")
+	cobra.CheckErr(tunnelRunCmd.Flags().MarkDeprecated("health-addr", "use --admin-addr instead"))
 	tunnelRunCmd.Flags().StringToStringVar(&agentLabels, "label", nil, "Agent-declared label (key=value) for VPCService selection; repeatable. Bounded by the credential's allowed label sets.")
 	tunnelRunCmd.Flags().StringArrayVar(&advertisedRoutes, "route", nil, "CIDR reachable behind this agent, advertised to the relay; repeatable. Bounded by the credential's allowed routes.")
 	tunnelRunCmd.Flags().BoolVar(&noTUI, "no-tui", false, "Disable the interactive connection display.")

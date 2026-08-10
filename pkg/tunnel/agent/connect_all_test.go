@@ -32,10 +32,6 @@ func TestRunConnectAll_SessionPerRelay(t *testing.T) {
 		relayRefreshInterval = origRefresh
 	})
 
-	orig := connectionHealthCounter.Load()
-	t.Cleanup(func() { connectionHealthCounter.Store(orig) })
-	connectionHealthCounter.Store(0)
-
 	r1, stop1 := startDrainableRelay(t, 0, nil, 820, "10.0.0.20/32", nil)
 	t.Cleanup(stop1)
 	r2, stop2 := startDrainableRelay(t, 500*time.Millisecond, nil, 821, "10.0.0.21/32", nil)
@@ -78,7 +74,7 @@ func TestRunConnectAll_SessionPerRelay(t *testing.T) {
 
 	// One live session per relay.
 	require.Eventually(t, func() bool {
-		return connectionHealthCounter.Load() == 2
+		return cfg.ConnectionTracker.ActiveConnections() == 2
 	}, 10*time.Second, 20*time.Millisecond, "consumer should hold a session to every relay")
 
 	// A relay deregisters and goes away: its runner must stop re-dialing,
@@ -86,7 +82,7 @@ func TestRunConnectAll_SessionPerRelay(t *testing.T) {
 	setRegistered(addr1)
 	stop2()
 	require.Eventually(t, func() bool {
-		return connectionHealthCounter.Load() == 1
+		return cfg.ConnectionTracker.ActiveConnections() == 1
 	}, 30*time.Second, 20*time.Millisecond, "session to the departed relay should end")
 
 	// A replacement registers at the SAME address (restarted hostNetwork pod
@@ -118,10 +114,10 @@ func TestRunConnectAll_SessionPerRelay(t *testing.T) {
 		t.Fatal("consumer never reconnected to the re-registered relay")
 	}
 	require.Eventually(t, func() bool {
-		return connectionHealthCounter.Load() == 2
+		return cfg.ConnectionTracker.ActiveConnections() == 2
 	}, 10*time.Second, 20*time.Millisecond, "consumer should be back to a session per relay")
 
-	// Tear down synchronously so the health-counter unwinding cannot leak
+	// Tear down synchronously so the connection-tracker unwinding cannot leak
 	// into the next test.
 	cancel()
 	select {

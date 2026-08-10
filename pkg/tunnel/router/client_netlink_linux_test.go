@@ -15,11 +15,15 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/utils/vm"
 )
 
-// mockConnection implements connection.Connection for testing
+// mockConnection implements connection.Connection for testing.
 type mockConnection struct {
 	readData  []byte
 	writeData [][]byte
 	closed    bool
+}
+
+func (m *mockConnection) String() string {
+	return "mock-connection"
 }
 
 func newMockConnection(data []byte) *mockConnection {

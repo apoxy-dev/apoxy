@@ -18,8 +18,6 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"net"
-	"net/http"
-	"sync/atomic"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -41,9 +39,6 @@ const (
 // apiserver to keep its connection pool current. A var only so tests can
 // compress the timeline.
 var relayRefreshInterval = 30 * time.Second
-
-// connectionHealthCounter tracks how many relay sessions are currently live.
-var connectionHealthCounter atomic.Int32
 
 // Config holds the agent identity, credential, and datapath configuration for
 // one Run. Agent, Network, Token, and a relay source (SeedRelayAddr or a
@@ -68,6 +63,10 @@ type Config struct {
 	// MinConns is the number of concurrent relay connection slots. Values
 	// below 1 are treated as 1. Ignored when ConnectAll is set.
 	MinConns int
+	// ConnectionTracker receives live-session changes from this agent. Run
+	// creates one when it is nil. Callers that expose readiness must provide a
+	// tracker and use the same value in their admin handlers.
+	ConnectionTracker *ConnectionTracker
 	// ConnectAll maintains one session per relay in the pool instead of
 	// MinConns slots, tracking pool refreshes. Relay consumers (backplane
 	// VTEP sessions) need this: relays do not federate routes, so reaching
@@ -109,6 +108,10 @@ type Config struct {
 	// giving kernel-level isolation between tenants sharing the process.
 	// Requires CAP_SYS_ADMIN. Ignored outside TUN mode.
 	TunNetns string
+	// AdminPort is denied to traffic that enters through the overlay. This
+	// keeps an underlay admin listener private even when it binds a wildcard
+	// address. Zero means that no admin port is reserved.
+	AdminPort uint16
 }
 
 // Run connects the agent to the relay fabric and blocks until ctx is canceled
@@ -118,6 +121,9 @@ type Config struct {
 func Run(ctx context.Context, cfg Config) error {
 	if cfg.MinConns < 1 {
 		cfg.MinConns = 1
+	}
+	if cfg.ConnectionTracker == nil {
+		cfg.ConnectionTracker = NewConnectionTracker(cfg.MinConns)
 	}
 
 	g, ctx := errgroup.WithContext(ctx)
@@ -160,6 +166,7 @@ func Run(ctx context.Context, cfg Config) error {
 			tunMode:         cfg.TunMode,
 			tunIfaceName:    cfg.TunIfaceName,
 			tunNetns:        cfg.TunNetns,
+			adminPort:       cfg.AdminPort,
 		},
 	)
 	if err != nil {
@@ -303,25 +310,4 @@ func (pp *packetPlane) Close() {
 	for _, c := range pp.closers {
 		c()
 	}
-}
-
-// HealthHandler returns 200 OK when at least one tunnel connection is active,
-// 503 otherwise. This is used by external health checks.
-//
-// Response codes:
-//   - 200 OK: At least one tunnel connection is active
-//   - 503 Service Unavailable: No active tunnel connections
-//
-// Body is plain text with a short summary.
-func HealthHandler(w http.ResponseWriter, r *http.Request) {
-	active := connectionHealthCounter.Load()
-
-	if active > 0 {
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, "OK - %d active connection(s)\n", active)
-		return
-	}
-
-	w.WriteHeader(http.StatusServiceUnavailable)
-	fmt.Fprintf(w, "UNHEALTHY - no active connections\n")
 }

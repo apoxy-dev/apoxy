@@ -24,6 +24,7 @@ type routerInitOpts struct {
 	tunMode      bool
 	tunIfaceName string
 	tunNetns     string
+	adminPort    uint16
 }
 
 // initRouter creates and starts the overlay router / icx.Handler using the
@@ -39,6 +40,9 @@ func initRouter(
 	routerOpts := []router.Option{
 		router.WithPacketConn(opts.pcGeneve),
 		router.WithTunnelMTU(connectResp.MTU),
+	}
+	if opts.adminPort != 0 {
+		routerOpts = append(routerOpts, router.WithOverlayDeniedPorts([]uint16{opts.adminPort}))
 	}
 
 	var (
@@ -84,7 +88,6 @@ func initRouter(
 		}
 		r, h = nr, nr.Handler
 	}
-
 	// Add routes. What lands here is recorded and handed to the reconciler,
 	// which owns the transit table from the first session onward. They go in
 	// without a pinned source because no session exists yet to own them, and

@@ -100,10 +100,11 @@ func assignVNIOnConnect(vni uint, overlay string) func(context.Context, string, 
 
 func loopbackConfig() Config {
 	return Config{
-		Agent:    "loopback-agent",
-		Network:  "test-tunnel",
-		Token:    "letmein",
-		Instance: "3f6d9c2a-0000-4000-8000-000000000000",
+		Agent:             "loopback-agent",
+		Network:           "test-tunnel",
+		Token:             "letmein",
+		Instance:          "3f6d9c2a-0000-4000-8000-000000000000",
+		ConnectionTracker: NewConnectionTracker(1),
 	}
 }
 
@@ -160,10 +161,6 @@ func newAgentRouterWithSocks(t *testing.T, ctx context.Context, g *errgroup.Grou
 }
 
 func TestManageConnectionSlot_EstablishesAndReleases(t *testing.T) {
-	orig := connectionHealthCounter.Load()
-	t.Cleanup(func() { connectionHealthCounter.Store(orig) })
-	connectionHealthCounter.Store(0)
-
 	r, stop := startLoopbackRelay(t, "letmein", assignVNIOnConnect(808, "10.0.0.8/32"), func(context.Context, string, string) error { return nil })
 	t.Cleanup(stop)
 
@@ -191,7 +188,7 @@ func TestManageConnectionSlot_EstablishesAndReleases(t *testing.T) {
 
 	// The slot connects and marks itself healthy.
 	require.Eventually(t, func() bool {
-		return connectionHealthCounter.Load() == 1
+		return cfg.ConnectionTracker.ActiveConnections() == 1
 	}, 5*time.Second, 20*time.Millisecond, "slot should establish one live session")
 	require.Eventually(t, func() bool {
 		for {
@@ -215,15 +212,11 @@ func TestManageConnectionSlot_EstablishesAndReleases(t *testing.T) {
 		t.Fatal("manageConnectionSlot did not return after cancel")
 	}
 	require.Eventually(t, func() bool {
-		return connectionHealthCounter.Load() == 0
-	}, 3*time.Second, 20*time.Millisecond, "health counter should return to zero after release")
+		return cfg.ConnectionTracker.ActiveConnections() == 0
+	}, 3*time.Second, 20*time.Millisecond, "connection count should return to zero after release")
 }
 
 func TestManageConnectionSlot_ExclusiveAcquireCapsAtPoolSize(t *testing.T) {
-	orig := connectionHealthCounter.Load()
-	t.Cleanup(func() { connectionHealthCounter.Store(orig) })
-	connectionHealthCounter.Store(0)
-
 	r, stop := startLoopbackRelay(t, "letmein", assignVNIOnConnect(909, "10.0.0.9/32"), func(context.Context, string, string) error { return nil })
 	t.Cleanup(stop)
 
@@ -250,10 +243,10 @@ func TestManageConnectionSlot_ExclusiveAcquireCapsAtPoolSize(t *testing.T) {
 	}
 
 	require.Eventually(t, func() bool {
-		return connectionHealthCounter.Load() == 1
+		return cfg.ConnectionTracker.ActiveConnections() == 1
 	}, 5*time.Second, 20*time.Millisecond, "exactly one slot should connect")
 
 	// Give the second slot ample time to (wrongly) connect, then assert it did not.
 	time.Sleep(300 * time.Millisecond)
-	require.Equal(t, int32(1), connectionHealthCounter.Load(), "second slot must stay blocked on the exclusive pool")
+	require.Equal(t, 1, cfg.ConnectionTracker.ActiveConnections(), "second slot must stay blocked on the exclusive pool")
 }

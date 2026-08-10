@@ -73,13 +73,27 @@ func tcpHandler(ctx context.Context, upstream network.Network) func(req *tcp.For
 			ctx, cancel := context.WithCancel(ctx)
 			defer cancel()
 
+			// Check policy and connect upstream before completing the virtual TCP
+			// handshake. A denied or unavailable destination then resets the SYN
+			// instead of presenting a connection that stalls after it opens.
+			remote, err := upstream.DialContext(ctx, "tcp", dstAddrPort.String())
+			if err != nil {
+				logger.Warn("Failed to dial destination", slog.Any("error", err))
+
+				req.Complete(true) // Send RST.
+				return
+			}
+			defer remote.Close()
+
+			logger.Info("Connected to upstream")
+
 			var wq waiter.Queue
 			ep, tcpipErr := req.CreateEndpoint(&wq)
 			if tcpipErr != nil {
 				logger.Warn("Failed to create local endpoint",
 					slog.String("error", tcpipErr.String()))
 
-				req.Complete(true) // send RST
+				req.Complete(true) // Send RST.
 				return
 			}
 
@@ -105,29 +119,17 @@ func tcpHandler(ctx context.Context, upstream network.Network) func(req *tcp.For
 			local := gonet.NewTCPConn(&wq, ep)
 			defer local.Close()
 
-			// Connect to the destination.
-			remote, err := upstream.DialContext(ctx, "tcp", dstAddrPort.String())
-			if err != nil {
-				logger.Warn("Failed to dial destination", slog.Any("error", err))
-
-				req.Complete(true) // send RST
-				return
-			}
-			defer remote.Close()
-
-			logger.Info("Connected to upstream")
-
 			// Start forwarding.
 			wn, err := contextio.SpliceContext(ctx, local, remote, nil)
 			if err != nil && !errors.Is(err, context.Canceled) {
 				logger.Warn("Failed to forward session", slog.Any("error", err))
 
-				req.Complete(true) // send RST
+				req.Complete(true) // Send RST.
 				return
 			}
 			logger.Info("Connection closed", slog.Int64("bytes_written", wn))
 
-			req.Complete(false) // send FIN
+			req.Complete(false) // Send FIN.
 		}()
 	}
 }

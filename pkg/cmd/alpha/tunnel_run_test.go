@@ -63,9 +63,8 @@ func TestTunnelRun(t *testing.T) {
 		"--relay-addr", r.Address().String(),
 		"--token", "letmein",
 		"--insecure-skip-verify",
-		// An OS-assigned port so the test never collides with a real agent
-		// running on this machine (the flag defaults to localhost:8080).
-		"--health-addr", "localhost:0",
+		// An OS-assigned port so the test never collides with a real agent.
+		"--admin-addr", "localhost:0",
 	})
 	cmd.SilenceUsage = true
 	require.NoError(t, cmd.ExecuteContext(ctx), "context cancellation should stop the tunnel cleanly")

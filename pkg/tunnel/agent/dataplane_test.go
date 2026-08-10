@@ -43,10 +43,6 @@ func TestDataPlaneRoundTrip(t *testing.T) {
 		tunnelToken    = "letmein"
 	)
 
-	orig := connectionHealthCounter.Load()
-	t.Cleanup(func() { connectionHealthCounter.Store(orig) })
-	connectionHealthCounter.Store(0)
-
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	t.Cleanup(cancel)
 
@@ -77,6 +73,25 @@ func TestDataPlaneRoundTrip(t *testing.T) {
 		}
 	}()
 
+	// Keep a real listener on the denied port. Direct underlay connections must
+	// still reach it, while connections that enter through the overlay must not.
+	blockedLn, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = blockedLn.Close() })
+	blockedPort := blockedLn.Addr().(*net.TCPAddr).Port
+	go func() {
+		for {
+			c, err := blockedLn.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				_, _ = io.Copy(c, c)
+			}(c)
+		}
+	}()
+
 	// --- Relay: real ICXNetstackRouter (non-egress → forward to loopback). ---
 	relayPP, err := newPacketPlaneAt("127.0.0.1:0")
 	require.NoError(t, err)
@@ -87,6 +102,7 @@ func TestDataPlaneRoundTrip(t *testing.T) {
 		// The relay-side SOCKS listener is unused; keep it off the default port
 		// so parallel tests don't collide.
 		router.WithSocksListenAddr("127.0.0.1:0"),
+		router.WithOverlayDeniedPorts([]uint16{uint16(blockedPort)}),
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = relayRtr.Close() })
@@ -135,7 +151,7 @@ func TestDataPlaneRoundTrip(t *testing.T) {
 	go func() { _ = manageConnectionSlot(gctx, cfg, agentPP.QuicMux, handler, ar, routes, pool, tlsConf) }()
 
 	require.Eventually(t, func() bool {
-		return connectionHealthCounter.Load() == 1
+		return cfg.ConnectionTracker.ActiveConnections() == 1
 	}, 10*time.Second, 20*time.Millisecond, "agent should establish a live session")
 
 	// --- Send traffic: SOCKS dial to an in-overlay address, expect the echo. ---
@@ -165,4 +181,34 @@ func TestDataPlaneRoundTrip(t *testing.T) {
 	_, err = io.ReadFull(conn, got)
 	require.NoError(t, err)
 	require.Equal(t, payload, got, "payload must round-trip through agent -> relay -> loopback echo server")
+
+	underlayConn, err := net.DialTimeout("tcp", blockedLn.Addr().String(), time.Second)
+	require.NoError(t, err, "underlay connection to the denied overlay port must remain available")
+	require.NoError(t, underlayConn.SetDeadline(time.Now().Add(time.Second)))
+	_, err = underlayConn.Write(payload)
+	require.NoError(t, err)
+	underlayReply := make([]byte, len(payload))
+	_, err = io.ReadFull(underlayConn, underlayReply)
+	require.NoError(t, err)
+	require.Equal(t, payload, underlayReply)
+	require.NoError(t, underlayConn.Close())
+
+	blockedTarget := fmt.Sprintf("[%s]:%d", serviceAddr, blockedPort)
+	startedAt := time.Now()
+	blockedConn, err := dialer.(proxy.ContextDialer).DialContext(ctx, "tcp", blockedTarget)
+	if err != nil {
+		require.Less(t, time.Since(startedAt), 2*time.Second, "overlay connection must be rejected promptly")
+		return
+	}
+	defer blockedConn.Close()
+	require.NoError(t, blockedConn.SetDeadline(time.Now().Add(2*time.Second)))
+	_, err = blockedConn.Write(payload)
+	if err == nil {
+		blockedReply := make([]byte, len(payload))
+		_, err = io.ReadFull(blockedConn, blockedReply)
+		if err == nil {
+			t.Fatalf("overlay connection reached denied local port %d", blockedPort)
+		}
+	}
+	require.Less(t, time.Since(startedAt), 2*time.Second, "overlay connection must be rejected promptly")
 }

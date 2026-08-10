@@ -102,10 +102,6 @@ func TestClientDrainingOnGoaway(t *testing.T) {
 // bring up a session to a replacement relay BEFORE hanging up the draining
 // one, so the slot never drops below one live connection.
 func TestManageConnectionSlot_DrainMakeBeforeBreak(t *testing.T) {
-	orig := connectionHealthCounter.Load()
-	t.Cleanup(func() { connectionHealthCounter.Store(orig) })
-	connectionHealthCounter.Store(0)
-
 	relay2Connected := make(chan struct{}, 4)
 	r1, stop1 := startDrainableRelay(t, 3*time.Second, nil, 808, "10.0.0.8/32", nil)
 	t.Cleanup(stop1)
@@ -140,7 +136,7 @@ func TestManageConnectionSlot_DrainMakeBeforeBreak(t *testing.T) {
 	go func() { slotErr <- manageConnectionSlot(gctx, cfg, pp.QuicMux, handler, ar, routes, pool, tlsConf) }()
 
 	require.Eventually(t, func() bool {
-		return connectionHealthCounter.Load() == 1
+		return cfg.ConnectionTracker.ActiveConnections() == 1
 	}, 10*time.Second, 20*time.Millisecond, "slot should establish a session to relay 1")
 
 	// From here on the slot must never drop to zero live sessions: the whole
@@ -156,7 +152,7 @@ func TestManageConnectionSlot_DrainMakeBeforeBreak(t *testing.T) {
 				return
 			default:
 			}
-			if connectionHealthCounter.Load() == 0 {
+			if cfg.ConnectionTracker.ActiveConnections() == 0 {
 				sawZero.Store(true)
 			}
 			time.Sleep(time.Millisecond)
@@ -177,7 +173,7 @@ func TestManageConnectionSlot_DrainMakeBeforeBreak(t *testing.T) {
 
 	// ...and settles back to exactly one live session (the old one released).
 	require.Eventually(t, func() bool {
-		return connectionHealthCounter.Load() == 1
+		return cfg.ConnectionTracker.ActiveConnections() == 1
 	}, 10*time.Second, 20*time.Millisecond, "slot should settle on the replacement session")
 
 	close(sampleStop)
@@ -207,10 +203,6 @@ func TestManageConnectionSlot_SingleRelayDrainReconnect(t *testing.T) {
 	drainGracePeriod = time.Minute
 	t.Cleanup(func() { drainGracePeriod = origGrace })
 
-	orig := connectionHealthCounter.Load()
-	t.Cleanup(func() { connectionHealthCounter.Store(orig) })
-	connectionHealthCounter.Store(0)
-
 	r1, stop1 := startDrainableRelay(t, 500*time.Millisecond, nil, 810, "10.0.0.10/32", nil)
 	relayAddr := r1.Address()
 
@@ -235,7 +227,7 @@ func TestManageConnectionSlot_SingleRelayDrainReconnect(t *testing.T) {
 	go func() { slotErr <- manageConnectionSlot(gctx, cfg, pp.QuicMux, handler, ar, routes, pool, tlsConf) }()
 
 	require.Eventually(t, func() bool {
-		return connectionHealthCounter.Load() == 1
+		return cfg.ConnectionTracker.ActiveConnections() == 1
 	}, 10*time.Second, 20*time.Millisecond, "slot should establish a session to the relay")
 
 	// Drain and stop the only relay. stop1 blocks through the lame duck and
@@ -286,11 +278,10 @@ func TestManageConnectionSlot_SingleRelayDrainReconnect(t *testing.T) {
 	}
 
 	require.Eventually(t, func() bool {
-		return connectionHealthCounter.Load() == 1
+		return cfg.ConnectionTracker.ActiveConnections() == 1
 	}, 10*time.Second, 20*time.Millisecond, "slot should settle on the new session")
 
-	// Tear the slot down synchronously: its deferred health-counter decrement
-	// must land before the next test resets the shared counter.
+	// Tear the slot down synchronously and verify that the live session exits.
 	cancel()
 	select {
 	case <-slotErr:
