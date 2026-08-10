@@ -7,6 +7,7 @@
 
 import type { RequestDecorator } from './request-decorator'
 import type { GVR, K8sList, K8sObject, Status, WatchEvent } from './k8s-types'
+import type { WatchTransport } from './watch-transport'
 import {
   type ListParams,
   type WatchParams,
@@ -67,6 +68,8 @@ export interface GVRClientOptions {
   decorator: RequestDecorator
   /** Injectable for tests; defaults to the global `fetch`. */
   fetch?: typeof fetch
+  /** Optional multiplexed transport for watch requests. */
+  watchTransport?: WatchTransport
 }
 
 export class GVRClient {
@@ -74,10 +77,12 @@ export class GVRClient {
    *  swap the decorator on a project switch. */
   decorator: RequestDecorator
   private readonly fetchImpl: typeof fetch
+  private readonly watchTransport: WatchTransport | undefined
 
   constructor(opts: GVRClientOptions) {
     this.decorator = opts.decorator
     this.fetchImpl = opts.fetch ?? globalThis.fetch.bind(globalThis)
+    this.watchTransport = opts.watchTransport
   }
 
   /** LIST a collection; returns the decoded `K8sList` (not an HTTP envelope). */
@@ -140,8 +145,19 @@ export class GVRClient {
     params: WatchParams = {},
     signal?: AbortSignal,
   ): AsyncGenerator<WatchEvent<T>> {
-    const res = await this.send('GET', watchUrl(gvr, params), {
-      accept: CONTENT_TYPE_JSON,
+    const headers = new Headers({ Accept: CONTENT_TYPE_JSON })
+    const decorated = this.decorator.decorate({
+      path: watchUrl(gvr, params),
+      method: 'GET',
+      headers,
+    })
+    if (this.watchTransport) {
+      yield* this.watchTransport.watch<T>({ ...decorated, signal })
+      return
+    }
+    const res = await this.fetchResponse(decorated.url, {
+      method: 'GET',
+      headers: decorated.headers,
       signal,
     })
     if (!res.body) return
@@ -201,12 +217,19 @@ export class GVRClient {
     if (init.accept) headers.set('Accept', init.accept)
     if (init.contentType) headers.set('Content-Type', init.contentType)
     const { url, headers: decorated } = this.decorator.decorate({ path, method, headers })
-    const res = await this.fetchImpl(url, {
+    return this.fetchResponse(url, {
       method,
       headers: decorated,
       body: init.body,
       signal: init.signal,
     })
+  }
+
+  private async fetchResponse(
+    url: string,
+    init: RequestInit,
+  ): Promise<Response> {
+    const res = await this.fetchImpl(url, init)
     if (!res.ok) throw await this.toStatusError(res)
     return res
   }

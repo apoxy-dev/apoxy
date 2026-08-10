@@ -7,6 +7,8 @@ import { QueryClient } from '@tanstack/react-query'
 import { GVRClient } from './gvr-client'
 import type { RequestDecorator } from './request-decorator'
 import { WatchManager, type WatchManagerOptions } from './watch-manager'
+import type { WatchTransport } from './watch-transport'
+import { WebSocketWatchTransport } from './websocket-watch-transport'
 
 export interface ConsoleClient {
   queryClient: QueryClient
@@ -21,6 +23,8 @@ export interface CreateConsoleClientOptions {
   /** Bring your own QueryClient (e.g. to share devtools); one is made otherwise. */
   queryClient?: QueryClient
   watch?: WatchManagerOptions
+  /** Use the browser WebSocket multiplexer or supply a custom watch transport. */
+  watchTransport?: 'websocket' | WatchTransport
 }
 
 /**
@@ -43,8 +47,18 @@ function defaultQueryClient(): QueryClient {
   })
 }
 
-export function createConsoleClient(opts: CreateConsoleClientOptions): ConsoleClient {
-  const gvr = new GVRClient({ decorator: opts.decorator, fetch: opts.fetch })
+export function createConsoleClient(
+  opts: CreateConsoleClientOptions,
+): ConsoleClient {
+  const watchTransport =
+    opts.watchTransport === 'websocket'
+      ? new WebSocketWatchTransport()
+      : opts.watchTransport
+  const gvr = new GVRClient({
+    decorator: opts.decorator,
+    fetch: opts.fetch,
+    watchTransport,
+  })
   const queryClient = opts.queryClient ?? defaultQueryClient()
   const watchManager = new WatchManager(gvr, queryClient, opts.watch)
   return { queryClient, gvr, watchManager }

@@ -1,16 +1,17 @@
 package apiserver
 
 import (
-	apimachineryversion "k8s.io/apimachinery/pkg/version"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
+	apimachineryversion "k8s.io/apimachinery/pkg/version"
 	genericapiserver "k8s.io/apiserver/pkg/server"
 	"k8s.io/apiserver/pkg/util/compatibility"
 	basecompatibility "k8s.io/component-base/compatibility"
 
 	"github.com/apoxy-dev/apoxy/build"
+	"github.com/apoxy-dev/apoxy/pkg/apiserver/watchmux"
 )
 
 func NewScheme() *runtime.Scheme {
@@ -131,6 +132,16 @@ func (c completedConfig) New() (*ApoxyServer, error) {
 			return nil, err
 		}
 	}
+
+	watchHandler, err := watchmux.New(watchmux.Config{
+		Delegate:            s.GenericAPIServer.Handler.Director,
+		RequestInfoResolver: c.GenericConfig.RequestInfoResolver,
+		Authorizer:          c.GenericConfig.Authorization.Authorizer,
+	})
+	if err != nil {
+		return nil, err
+	}
+	s.GenericAPIServer.Handler.NonGoRestfulMux.Handle(watchmux.Path, watchHandler)
 
 	return s, nil
 }

@@ -56,6 +56,7 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/apiserver/secretstore"
 	serverapiserver "github.com/apoxy-dev/apoxy/pkg/apiserver/server/apiserver"
 	builder "github.com/apoxy-dev/apoxy/pkg/apiserver/server/builder"
+	"github.com/apoxy-dev/apoxy/pkg/apiserver/watchmux"
 	"github.com/apoxy-dev/apoxy/pkg/cryptoutils"
 	"github.com/apoxy-dev/apoxy/pkg/gateway/message"
 	statusrunner "github.com/apoxy-dev/apoxy/pkg/gateway/status/runner"
@@ -1143,7 +1144,7 @@ func start(
 
 				o.RecommendedOptions.Authorization = apiserveropts.NewDelegatingAuthorizationOptions()
 				o.RecommendedOptions.Authorization.RemoteKubeConfigFileOptional = true
-				o.RecommendedOptions.Authorization.AlwaysAllowPaths = []string{"healthz"}
+				o.RecommendedOptions.Authorization.AlwaysAllowPaths = []string{"healthz", watchmux.Path}
 				o.RecommendedOptions.Authorization.AlwaysAllowGroups = []string{
 					user.SystemPrivilegedGroup,
 				}

@@ -23,6 +23,17 @@ export {
 export { GVRClient, K8sStatusError } from './gvr-client'
 export type { GVRClientOptions, ApplyOptions, MutateOptions } from './gvr-client'
 export type { Selectors, ListParams, WatchParams } from './k8s-paths'
+export type { WatchTransport, WatchTransportRequest } from './watch-transport'
+export {
+  WebSocketWatchTransport,
+  WATCH_MULTIPLEXER_PATH,
+  WATCH_WEBSOCKET_PROTOCOL,
+  WATCH_BEARER_PROTOCOL_PREFIX,
+} from './websocket-watch-transport'
+export type {
+  WebSocketWatchTransportOptions,
+  WatchSocketFactory,
+} from './websocket-watch-transport'
 
 // Cache keys
 export { listKey, gvrKey, scopePrefix, entryKey } from './cache-keys'

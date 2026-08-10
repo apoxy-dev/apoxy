@@ -3,7 +3,8 @@ import { setupServer } from 'msw/node'
 import { MockApiServer } from './testing/mock-apiserver'
 import { GVRClient, K8sStatusError } from './gvr-client'
 import { ProjectRequestDecorator } from './request-decorator'
-import type { GVR, K8sObject } from './k8s-types'
+import type { GVR, K8sObject, WatchEvent } from './k8s-types'
+import type { WatchTransport, WatchTransportRequest } from './watch-transport'
 
 const gvr: GVR = { group: 'core.apoxy.dev', version: 'v1alpha2', resource: 'proxies' }
 const col = 'core.apoxy.dev/v1alpha2/proxies'
@@ -80,6 +81,33 @@ describe('GVRClient', () => {
     expect(rec?.project).toBe('p1')
     ac.abort()
     await pending.catch(() => {})
+  })
+
+  it('routes decorated watch requests through a custom transport', async () => {
+    let captured: WatchTransportRequest | undefined
+    const added: WatchEvent = { type: 'ADDED', object: proxy('through-transport') }
+    const transport: WatchTransport = {
+      async *watch<T extends K8sObject>(request: WatchTransportRequest) {
+        captured = request
+        yield added as WatchEvent<T>
+      },
+    }
+    const gvrClient = new GVRClient({
+      decorator: new ProjectRequestDecorator({
+        baseUrl: mock.baseUrl,
+        projectId: 'p1',
+        dynamicHeaders: () => ({ Authorization: 'Bearer transport-token' }),
+      }),
+      watchTransport: transport,
+    })
+
+    await expect(gvrClient.watch(gvr).next()).resolves.toEqual({
+      done: false,
+      value: added,
+    })
+    expect(captured?.url).toContain('/apis/core.apoxy.dev/v1alpha2/proxies?')
+    expect(captured?.headers.get('Authorization')).toBe('Bearer transport-token')
+    expect(captured?.headers.get('X-Apoxy-Project-Id')).toBe('p1')
   })
 
   it('streams watch events as decoded WatchEvents', async () => {
