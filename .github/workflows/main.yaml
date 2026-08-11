@@ -23,11 +23,10 @@ jobs:
       - name: Build and publish edge-runtime (${{ matrix.arch }})
         env:
           APOXY_INTERNAL_GAR_CREDENTIALS: ${{ secrets.APOXY_INTERNAL_GAR_CREDENTIALS }}
-          SCCACHE_WEBDAV_TOKEN: ${{ secrets.SCCACHE_WEBDAV_TOKEN }}
           SHUTUP: 1
         timeout-minutes: 30
         run: |
-          dagger call -v publish-edge-runtime --sha=${GITHUB_SHA::7} --gcr-creds=env:APOXY_INTERNAL_GAR_CREDENTIALS --sccache-token=env:SCCACHE_WEBDAV_TOKEN
+          dagger call -v publish-edge-runtime --sha=${GITHUB_SHA::7} --gcr-creds=env:APOXY_INTERNAL_GAR_CREDENTIALS
 
   publish-edge-runtime-multiarch:
     needs: build-edge-runtime

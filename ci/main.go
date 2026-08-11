@@ -559,8 +559,6 @@ func (m *ApoxyCli) BuildEdgeRuntime(
 	platform string,
 	// +optional
 	src *dagger.Directory,
-	// +optional
-	sccacheToken *dagger.Secret,
 ) *dagger.Container {
 	if src == nil {
 		src = dag.Git("https://github.com/apoxy-dev/edge-runtime").
@@ -577,7 +575,6 @@ func (m *ApoxyCli) BuildEdgeRuntime(
 		WithExec([]string{"apt-get", "install", "-y", "llvm-dev", "libclang-dev", "gcc", "cmake", "binutils", "clang", "mold", "curl"}).
 		// Install sccache for compilation caching (0.11.0 is compatible with rustc 1.82.0).
 		WithExec([]string{"sh", "-c", "curl -fsSL https://github.com/mozilla/sccache/releases/download/v0.11.0/sccache-v0.11.0-$(uname -m)-unknown-linux-musl.tar.gz | tar xzf - -C /usr/local/bin --strip-components=1 --wildcards '*/sccache'"}).
-		WithEnvVariable("SCCACHE_WEBDAV_ENDPOINT", "https://cache.depot.dev").
 		WithEnvVariable("RUSTC_WRAPPER", "/usr/local/bin/sccache").
 		// Configure mold as linker for faster linking.
 		WithEnvVariable("CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER", "clang").
@@ -590,10 +587,6 @@ func (m *ApoxyCli) BuildEdgeRuntime(
 		WithWorkdir("/src").
 		WithDirectory("/src", src)
 
-	if sccacheToken != nil {
-		builder = builder.WithSecretVariable("SCCACHE_WEBDAV_TOKEN", sccacheToken)
-	}
-
 	return builder.WithExec([]string{"cargo", "build", "--release"})
 }
 
@@ -603,14 +596,12 @@ func (m *ApoxyCli) PublishEdgeRuntime(
 	ctx context.Context,
 	gcrCreds *dagger.Secret,
 	sha string,
-	// +optional
-	sccacheToken *dagger.Secret,
 ) error {
 	platform := hostPlatform()
 	goarch := runtime.GOARCH
 
 	// Build edge-runtime and copy binary out of cache mount.
-	builder := m.BuildEdgeRuntime(ctx, platform, nil, sccacheToken).
+	builder := m.BuildEdgeRuntime(ctx, platform, nil).
 		WithExec([]string{"cp", "/src/target/release/edge-runtime", "/edge-runtime"})
 
 	// Create container with edge-runtime binary.
@@ -667,8 +658,6 @@ func (m *ApoxyCli) PullEdgeRuntime(
 	// +optional
 	apoxyCliSrc *dagger.Directory,
 	// +optional
-	sccacheToken *dagger.Secret,
-	// +optional
 	edgeRuntimeTag string,
 	// +optional
 	gcrCreds *dagger.Secret,
@@ -695,7 +684,6 @@ func (m *ApoxyCli) PullEdgeRuntime(
 			WithExec([]string{"apt-get", "update"}).
 			WithExec([]string{"apt-get", "install", "-y", "llvm-dev", "libclang-dev", "gcc", "cmake", "binutils", "clang", "mold", "curl"}).
 			WithExec([]string{"sh", "-c", "curl -fsSL https://github.com/mozilla/sccache/releases/download/v0.11.0/sccache-v0.11.0-$(uname -m)-unknown-linux-musl.tar.gz | tar xzf - -C /usr/local/bin --strip-components=1 --wildcards '*/sccache'"}).
-			WithEnvVariable("SCCACHE_WEBDAV_ENDPOINT", "https://cache.depot.dev").
 			WithEnvVariable("RUSTC_WRAPPER", "/usr/local/bin/sccache").
 			WithEnvVariable("CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER", "clang").
 			WithEnvVariable("CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS", "-C link-arg=-fuse-ld=mold").
@@ -706,10 +694,6 @@ func (m *ApoxyCli) PullEdgeRuntime(
 			WithMountedCache("/root/.cache/sccache", dag.CacheVolume("sccache-"+targetArch)).
 			WithWorkdir("/src").
 			WithDirectory("/src", edgeRuntimeSrc)
-
-		if sccacheToken != nil {
-			builder = builder.WithSecretVariable("SCCACHE_WEBDAV_TOKEN", sccacheToken)
-		}
 
 		builder = builder.WithExec([]string{"cargo", "build", "--release"})
 		edgeRuntimeBinary = builder.File("/src/target/release/edge-runtime")
@@ -738,8 +722,6 @@ func (m *ApoxyCli) BuildAPIServer(
 	// +optional
 	platform string,
 	// +optional
-	sccacheToken *dagger.Secret,
-	// +optional
 	edgeRuntimeTag string,
 	// +optional
 	gcrCreds *dagger.Secret,
@@ -757,7 +739,7 @@ func (m *ApoxyCli) BuildAPIServer(
 		WithEnvVariable("CC", fmt.Sprintf("zig-wrapper cc --target=%s-linux-musl", canonArchFromGoArch(goarch))).
 		WithExec([]string{"go", "build", "-tags", "sqlite_enable_dbstat_vtab", "-o", "apiserver", "./cmd/apiserver"})
 
-	runtimeCtr := m.PullEdgeRuntime(ctx, p, src, sccacheToken, edgeRuntimeTag, gcrCreds)
+	runtimeCtr := m.PullEdgeRuntime(ctx, p, src, edgeRuntimeTag, gcrCreds)
 
 	return dag.Container(dagger.ContainerOpts{Platform: p}).
 		From("cgr.dev/chainguard/wolfi-base:latest").
@@ -808,8 +790,6 @@ func (m *ApoxyCli) BuildBackplane(
 	// +optional
 	platform string,
 	// +optional
-	sccacheToken *dagger.Secret,
-	// +optional
 	edgeRuntimeTag string,
 	// +optional
 	gcrCreds *dagger.Secret,
@@ -844,7 +824,7 @@ func (m *ApoxyCli) BuildBackplane(
 		WithExec([]string{"go", "build", "-o", "/src/" + otelOut}).
 		WithWorkdir("/src")
 
-	runtimeCtr := m.PullEdgeRuntime(ctx, p, src, sccacheToken, edgeRuntimeTag, gcrCreds)
+	runtimeCtr := m.PullEdgeRuntime(ctx, p, src, edgeRuntimeTag, gcrCreds)
 
 	return dag.Container(dagger.ContainerOpts{Platform: p}).
 		From("cgr.dev/chainguard/wolfi-base:latest").
@@ -1131,8 +1111,6 @@ func (m *ApoxyCli) PublishImages(
 	tag string,
 	sha string,
 	// +optional
-	sccacheToken *dagger.Secret,
-	// +optional
 	edgeRuntimeTag string,
 	// gcrCreds authenticates the push to the public GAR repo; required (every
 	// image now publishes through publishMultiarch, which needs it).
@@ -1142,7 +1120,7 @@ func (m *ApoxyCli) PublishImages(
 ) error {
 	var apiCtrs []*dagger.Container
 	for _, platform := range linuxPlatforms {
-		apiCtrs = append(apiCtrs, m.BuildAPIServer(ctx, src, platform, sccacheToken, edgeRuntimeTag, gcrCreds))
+		apiCtrs = append(apiCtrs, m.BuildAPIServer(ctx, src, platform, edgeRuntimeTag, gcrCreds))
 	}
 	if err := publishMultiarch(ctx, gcrCreds, "apiserver", tag, apiCtrs); err != nil {
 		return err
@@ -1150,7 +1128,7 @@ func (m *ApoxyCli) PublishImages(
 
 	var bCtrs []*dagger.Container
 	for _, platform := range linuxPlatforms {
-		bCtrs = append(bCtrs, m.BuildBackplane(ctx, src, platform, sccacheToken, edgeRuntimeTag, gcrCreds))
+		bCtrs = append(bCtrs, m.BuildBackplane(ctx, src, platform, edgeRuntimeTag, gcrCreds))
 	}
 	if err := publishMultiarch(ctx, gcrCreds, "backplane", tag, bCtrs); err != nil {
 		return err
