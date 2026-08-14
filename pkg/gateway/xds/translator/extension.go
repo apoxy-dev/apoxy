@@ -233,6 +233,11 @@ func processExtensionPostTranslateHook(
 		for i, c := range resp.GetClusters() {
 			newClusters[i] = c
 		}
+		// The resource map is nil when the translation produced no
+		// resources at all. Initialize it before the assignment.
+		if tCtx.XdsResources == nil {
+			tCtx.XdsResources = make(types.XdsResources)
+		}
 		tCtx.XdsResources[resourcev3.ClusterType] = newClusters
 	}
 
