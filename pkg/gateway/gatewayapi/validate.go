@@ -69,7 +69,7 @@ func (t *Translator) validateBackendRef(backendRefContext BackendRefContext, par
 }
 
 func (t *Translator) validateBackendRefGroup(backendRef *gwapiv1a2.BackendRef, parentRef *RouteParentContext, route RouteContext) bool {
-	accepted := []string{GroupApoxyCore, GroupApoxyExtensions, GroupApoxyCompute, GroupMultiClusterService}
+	accepted := []string{GroupApoxyCore, GroupApoxyExtensions, GroupApoxyCompute, GroupApoxyVPC, GroupMultiClusterService}
 	if backendRef.Group != nil &&
 		*backendRef.Group != "" &&
 		!sets.NewString(accepted...).Has(string(*backendRef.Group)) {
@@ -86,7 +86,7 @@ func (t *Translator) validateBackendRefGroup(backendRef *gwapiv1a2.BackendRef, p
 }
 
 func (t *Translator) validateBackendRefKind(backendRef *gwapiv1a2.BackendRef, parentRef *RouteParentContext, route RouteContext) bool {
-	accepted := []string{KindService, KindServiceImport, KindBackend, KindEdgeFunction}
+	accepted := []string{KindService, KindServiceImport, KindBackend, KindEdgeFunction, KindVPCService}
 	if backendRef.Kind != nil && !sets.NewString(accepted...).Has(string(*backendRef.Kind)) {
 		parentRef.SetCondition(route,
 			gwapiv1.RouteConditionResolvedRefs,

@@ -30,6 +30,7 @@ import (
 	v1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
 	extensionsv1alpha2 "github.com/apoxy-dev/apoxy/api/extensions/v1alpha2"
 	agwapiv1a1 "github.com/apoxy-dev/apoxy/api/gateway/v1"
+	vpcv1alpha1 "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1"
 )
 
 const (
@@ -1355,6 +1356,19 @@ func (t *Translator) processDestination(
 			return nil
 		}
 		ds.Filters = t.processDestinationFilters(routeType, backendRefContext, parentRef, route, resources)
+	case KindVPCService:
+		var err error
+		ds, err = t.processVPCServiceDestinationSetting(backendRef.BackendObjectReference, protocol, resources)
+		if err != nil {
+			log.Errorf("failed to process VPCService ref %s: %v", backendRef.Name, err)
+			parentRef.SetCondition(route,
+				gwapiv1.RouteConditionResolvedRefs,
+				metav1.ConditionFalse,
+				gwapiv1a2.RouteReasonResolvedRefs,
+				err.Error())
+			return nil
+		}
+		ds.Filters = t.processDestinationFilters(routeType, backendRefContext, parentRef, route, resources)
 	case KindEdgeFunction:
 		log.DefaultLogger.Debug("Processing edge function backend ref", "name", backendRef.Name)
 
@@ -1700,6 +1714,49 @@ func (t *Translator) processBackendDestinationSetting(backendRef gwapiv1.Backend
 	}
 
 	return &ds, nil
+}
+
+// processVPCServiceDestinationSetting resolves a backendRef of kind
+// VPCService into the service's vpc-zone FQDN
+// (<hostname>.<network>.vpc.apoxy.net). The FQDN is the whole contract: the
+// translator emits a STRICT_DNS cluster for it and the cloud xDS patch layer
+// rewrites vpc-zone clusters to overlay EDS. The service's member endpoints
+// are therefore not read here. The upstream protocol comes from
+// spec.appProtocol (GEP-1911 vocabulary); the port must come from the
+// backendRef because a VPCService carries no port of its own.
+func (t *Translator) processVPCServiceDestinationSetting(
+	backendRef gwapiv1.BackendObjectReference,
+	protocol ir.AppProtocol,
+	resources *Resources,
+) (*ir.DestinationSetting, error) {
+	if backendRef.Port == nil {
+		return nil, errors.New("port is required for VPCService reference")
+	}
+	port := int(*backendRef.Port)
+	if port < 1 || port > 65535 {
+		return nil, fmt.Errorf("invalid port %d", port)
+	}
+	svc := resources.GetVPCService(string(backendRef.Name))
+	if svc == nil {
+		return nil, fmt.Errorf("VPCService %q not found", backendRef.Name)
+	}
+
+	switch svc.Spec.AppProtocol {
+	case vpcv1alpha1.AppProtocolH2C:
+		protocol = ir.HTTP2
+	case vpcv1alpha1.AppProtocolGRPC:
+		protocol = ir.GRPC
+	}
+
+	return &ir.DestinationSetting{
+		InputDerived: true,
+		Protocol:     protocol,
+		AddressType:  ptr.To(ir.FQDN),
+		Endpoints: []*ir.DestinationEndpoint{{
+			Host: apoxynet.VPCServiceFQDN(svc.DNSHostname(), svc.Spec.NetworkRef.Name),
+			Port: uint32(port),
+		}},
+	}, nil
 }
 
 func (t *Translator) processEdgeFunctionDestinationSetting(

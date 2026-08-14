@@ -32,6 +32,7 @@ import (
 	extensionsv1alpha2 "github.com/apoxy-dev/apoxy/api/extensions/v1alpha2"
 	gatewayv1 "github.com/apoxy-dev/apoxy/api/gateway/v1"
 	gatewayv1alpha2 "github.com/apoxy-dev/apoxy/api/gateway/v1alpha2"
+	vpcv1alpha1 "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1"
 )
 
 func Install(scheme *runtime.Scheme) {
@@ -54,6 +55,11 @@ const (
 	serviceTLSRouteIndex  = "serviceTLSRouteIndex"
 	gatewayInfraRefIndex  = "gatewayInfraRefIndex"
 	edgeFunctionLiveIndex = "edgeFunctionLiveIndex"
+
+	vpcServiceHTTPRouteIndex = "vpcServiceHTTPRouteIndex"
+	vpcServiceTCPRouteIndex  = "vpcServiceTCPRouteIndex"
+	vpcServiceUDPRouteIndex  = "vpcServiceUDPRouteIndex"
+	vpcServiceTLSRouteIndex  = "vpcServiceTLSRouteIndex"
 )
 
 var (
@@ -172,6 +178,9 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, request reconcile.Req
 		}
 		if err := r.reconcileBackends(clog.IntoContext(ctx, log), res); err != nil {
 			log.Error(err, "Failed to reconcile BackendRefs for GatewayClass", "name", gwc.Name)
+		}
+		if err := r.reconcileVPCServices(clog.IntoContext(ctx, log), res); err != nil {
+			log.Error(err, "Failed to reconcile VPCServices for GatewayClass", "name", gwc.Name)
 		}
 		if r.watchK8s {
 			if err := r.reconcileServices(clog.IntoContext(ctx, log), res); err != nil {
@@ -616,6 +625,66 @@ func (r *GatewayReconciler) reconcileBackends(
 	return nil
 }
 
+// reconcileVPCServices collects the VPCServices referenced by at least one
+// route into the translation snapshot. The translator only reads the spec
+// (hostname, networkRef, appProtocol) to mint the vpc-zone FQDN; membership
+// changes flow through the endpoint plane and do not pass through here.
+func (r *GatewayReconciler) reconcileVPCServices(
+	ctx context.Context,
+	res *gatewayapi.Resources,
+) error {
+	log := clog.FromContext(ctx)
+
+	var vsl vpcv1alpha1.VPCServiceList
+	if err := r.List(ctx, &vsl); err != nil {
+		return fmt.Errorf("failed to list VPCServices: %w", err)
+	}
+
+	for _, s := range vsl.Items {
+		if !s.DeletionTimestamp.IsZero() {
+			log.Info("VPCService is being deleted", "name", s.Name)
+			continue
+		}
+
+		var hasRouteRef bool
+
+		var hrsl gatewayv1.HTTPRouteList
+		if err := r.List(ctx, &hrsl, client.MatchingFields{vpcServiceHTTPRouteIndex: string(s.Name)}); err != nil {
+			return fmt.Errorf("failed to list HTTPRoutes for VPCService %s: %w", s.Name, err)
+		}
+		hasRouteRef = hasRouteRef || len(hrsl.Items) > 0
+
+		var trsl gatewayv1alpha2.TCPRouteList
+		if err := r.List(ctx, &trsl, client.MatchingFields{vpcServiceTCPRouteIndex: string(s.Name)}); err != nil {
+			return fmt.Errorf("failed to list TCPRoutes for VPCService %s: %w", s.Name, err)
+		}
+		hasRouteRef = hasRouteRef || len(trsl.Items) > 0
+
+		var ursl gatewayv1alpha2.UDPRouteList
+		if err := r.List(ctx, &ursl, client.MatchingFields{vpcServiceUDPRouteIndex: string(s.Name)}); err != nil {
+			return fmt.Errorf("failed to list UDPRoutes for VPCService %s: %w", s.Name, err)
+		}
+		hasRouteRef = hasRouteRef || len(ursl.Items) > 0
+
+		var tlsrsl gatewayv1alpha2.TLSRouteList
+		if err := r.List(ctx, &tlsrsl, client.MatchingFields{vpcServiceTLSRouteIndex: string(s.Name)}); err != nil {
+			return fmt.Errorf("failed to list TLSRoutes for VPCService %s: %w", s.Name, err)
+		}
+		hasRouteRef = hasRouteRef || len(tlsrsl.Items) > 0
+
+		if !hasRouteRef {
+			log.V(1).Info("No matching Route objects found for VPCService", "name", s.Name)
+			continue
+		}
+
+		log.V(1).Info("Reconciling VPCService", "name", s.Name)
+
+		res.VPCServices = append(res.VPCServices, &s)
+	}
+
+	return nil
+}
+
 func (r *GatewayReconciler) reconcileServices(
 	ctx context.Context,
 	res *gatewayapi.Resources,
@@ -845,6 +914,64 @@ func (r *GatewayReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manag
 			return fmt.Errorf("failed to setup field indexer: %w", err)
 		}
 	}
+	// Indexes each route type by the name of the referenced VPCService
+	// object, mirroring the Backend indexes above.
+	if err := mgr.GetFieldIndexer().IndexField(ctx, &gatewayv1.HTTPRoute{}, vpcServiceHTTPRouteIndex, func(obj client.Object) []string {
+		route := obj.(*gatewayv1.HTTPRoute)
+		var services []string
+		for _, rule := range route.Spec.Rules {
+			for _, backend := range rule.BackendRefs {
+				if backend.Kind != nil && *backend.Kind == "VPCService" {
+					services = append(services, string(backend.Name))
+				}
+			}
+		}
+		return services
+	}); err != nil {
+		return fmt.Errorf("failed to setup field indexer: %w", err)
+	}
+	if err := mgr.GetFieldIndexer().IndexField(ctx, &gatewayv1alpha2.TCPRoute{}, vpcServiceTCPRouteIndex, func(obj client.Object) []string {
+		route := obj.(*gatewayv1alpha2.TCPRoute)
+		var services []string
+		for _, rule := range route.Spec.Rules {
+			for _, backend := range rule.BackendRefs {
+				if backend.Kind != nil && *backend.Kind == "VPCService" {
+					services = append(services, string(backend.Name))
+				}
+			}
+		}
+		return services
+	}); err != nil {
+		return fmt.Errorf("failed to setup field indexer: %w", err)
+	}
+	if err := mgr.GetFieldIndexer().IndexField(ctx, &gatewayv1alpha2.UDPRoute{}, vpcServiceUDPRouteIndex, func(obj client.Object) []string {
+		route := obj.(*gatewayv1alpha2.UDPRoute)
+		var services []string
+		for _, rule := range route.Spec.Rules {
+			for _, backend := range rule.BackendRefs {
+				if backend.Kind != nil && *backend.Kind == "VPCService" {
+					services = append(services, string(backend.Name))
+				}
+			}
+		}
+		return services
+	}); err != nil {
+		return fmt.Errorf("failed to setup field indexer: %w", err)
+	}
+	if err := mgr.GetFieldIndexer().IndexField(ctx, &gatewayv1alpha2.TLSRoute{}, vpcServiceTLSRouteIndex, func(obj client.Object) []string {
+		route := obj.(*gatewayv1alpha2.TLSRoute)
+		var services []string
+		for _, rule := range route.Spec.Rules {
+			for _, backend := range rule.BackendRefs {
+				if backend.Kind != nil && *backend.Kind == "VPCService" {
+					services = append(services, string(backend.Name))
+				}
+			}
+		}
+		return services
+	}); err != nil {
+		return fmt.Errorf("failed to setup field indexer: %w", err)
+	}
 	// Index EdgeFunction objects that are ready.
 	if err := mgr.GetFieldIndexer().IndexField(ctx, &extensionsv1alpha2.EdgeFunction{}, edgeFunctionLiveIndex, func(obj client.Object) []string {
 		if obj.(*extensionsv1alpha2.EdgeFunction).Status.LiveRevision != "" {
@@ -902,6 +1029,11 @@ func (r *GatewayReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manag
 		).
 		Watches(
 			&corev1alpha2.Backend{},
+			handler.EnqueueRequestsFromMapFunc(r.enqueueClass),
+			builder.WithPredicates(generationOrDeletion),
+		).
+		Watches(
+			&vpcv1alpha1.VPCService{},
 			handler.EnqueueRequestsFromMapFunc(r.enqueueClass),
 			builder.WithPredicates(generationOrDeletion),
 		).

@@ -22,6 +22,7 @@ import (
 
 	corev1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
 	extensionsv1alpha2 "github.com/apoxy-dev/apoxy/api/extensions/v1alpha2"
+	vpcv1alpha1 "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1"
 )
 
 const (
@@ -63,6 +64,7 @@ type Resources struct {
 	EdgeFunctionBackends  []*extensionsv1alpha2.EdgeFunction         `json:"edgeFunctionBackends,omitempty" yaml:"edgeFunctionBackends,omitempty"`
 	EdgeFunctionRevisions []*extensionsv1alpha2.EdgeFunctionRevision `json:"edgeFunctionFilters,omitempty" yaml:"edgeFunctionFilters,omitempty"`
 	Backends              []*corev1alpha2.Backend                    `json:"backends,omitempty" yaml:"backends,omitempty"`
+	VPCServices           []*vpcv1alpha1.VPCService                  `json:"vpcServices,omitempty" yaml:"vpcServices,omitempty"`
 	Proxies               []*corev1alpha2.Proxy                      `json:"proxies,omitempty" yaml:"proxies,omitempty"`
 	DirectResponses       []*extensionsv1alpha2.DirectResponse       `json:"directResponses,omitempty" yaml:"directResponses,omitempty"`
 }
@@ -166,6 +168,15 @@ func (r *Resources) GetBackend(name string) *corev1alpha2.Backend {
 	for _, backend := range r.Backends {
 		if backend.Name == name {
 			return backend
+		}
+	}
+	return nil
+}
+
+func (r *Resources) GetVPCService(name string) *vpcv1alpha1.VPCService {
+	for _, svc := range r.VPCServices {
+		if svc.Name == name {
+			return svc
 		}
 	}
 	return nil

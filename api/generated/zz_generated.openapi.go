@@ -2581,7 +2581,7 @@ func schema_apoxy_api_compute_v1alpha1_ServiceSpec(ref common.ReferenceCallback)
 					},
 					"liveRevision": {
 						SchemaProps: spec.SchemaProps{
-							Description: "LiveRevision selects the target ServiceRevision:\n  - empty: auto selects the latest minted revision. Each data-plane node\n    attempts it and can keep an earlier warmed revision after a warm failure.\n  - set: pinned selects the named revision for rollback or manual promotion.\n    New revisions are still minted but are not selected until this field\n    changes. The target must still be retained (see RevisionHistoryLimit).\n\nstatus.liveRevision reports the selection. It does not prove that every\ndata-plane node serves the revision. The controller never writes this field.",
+							Description: "LiveRevision selects the target ServiceRevision:\n  - empty: auto selects the latest minted revision. Each data-plane node\n    attempts it and can keep an earlier warmed revision after a warm failure.\n  - set: pinned selects the named revision for rollback or manual promotion.\n    New revisions are still minted but are not selected until this field\n    changes. The target must still be retained (see RevisionHistoryLimit).\n\nstatus.liveRevision reports the selection. It does not prove that every data-plane node serves the revision. The controller never writes this field.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -11340,6 +11340,13 @@ func schema_apoxy_api_vpc_v1alpha1_VPCServiceSpec(ref common.ReferenceCallback) 
 						SchemaProps: spec.SchemaProps{
 							Description: "Selects member Tunnels by their labels (agents declare labels at connect; the relay stamps them onto Tunnel metadata labels).",
 							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.LabelSelector"),
+						},
+					},
+					"appProtocol": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The application protocol the members speak, using the Gateway API (GEP-1911) vocabulary: \"kubernetes.io/h2c\" for cleartext HTTP/2 and \"grpc\" for gRPC (which implies h2c). Empty means HTTP/1.1. Routes that reference this service use it to pick the upstream protocol.",
+							Type:        []string{"string"},
+							Format:      "",
 						},
 					},
 				},

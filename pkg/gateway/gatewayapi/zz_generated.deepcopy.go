@@ -23,6 +23,7 @@ package gatewayapi
 import (
 	corev1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
 	extensionsv1alpha2 "github.com/apoxy-dev/apoxy/api/extensions/v1alpha2"
+	vpcv1alpha1 "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	unstructured "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -219,6 +220,17 @@ func (in *Resources) DeepCopyInto(out *Resources) {
 			if (*in)[i] != nil {
 				in, out := &(*in)[i], &(*out)[i]
 				*out = new(corev1alpha2.Backend)
+				(*in).DeepCopyInto(*out)
+			}
+		}
+	}
+	if in.VPCServices != nil {
+		in, out := &in.VPCServices, &out.VPCServices
+		*out = make([]*vpcv1alpha1.VPCService, len(*in))
+		for i := range *in {
+			if (*in)[i] != nil {
+				in, out := &(*in)[i], &(*out)[i]
+				*out = new(vpcv1alpha1.VPCService)
 				(*in).DeepCopyInto(*out)
 			}
 		}

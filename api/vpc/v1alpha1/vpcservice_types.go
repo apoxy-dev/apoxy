@@ -34,7 +34,23 @@ type VPCServiceSpec struct {
 	// connect; the relay stamps them onto Tunnel metadata labels).
 	// +required
 	Selector *metav1.LabelSelector `json:"selector"`
+
+	// The application protocol the members speak, using the Gateway API
+	// (GEP-1911) vocabulary: "kubernetes.io/h2c" for cleartext HTTP/2 and
+	// "grpc" for gRPC (which implies h2c). Empty means HTTP/1.1. Routes that
+	// reference this service use it to pick the upstream protocol.
+	// +optional
+	AppProtocol string `json:"appProtocol,omitempty"`
 }
+
+// Application protocol values accepted in spec.appProtocol.
+const (
+	// AppProtocolH2C selects cleartext HTTP/2 (GEP-1911 standard value).
+	AppProtocolH2C = "kubernetes.io/h2c"
+
+	// AppProtocolGRPC selects gRPC, which is carried over cleartext HTTP/2.
+	AppProtocolGRPC = "grpc"
+)
 
 // MembershipSelector converts spec.selector into the label selector used to
 // pick member Tunnels, and is the single definition of which selectors are

@@ -87,5 +87,15 @@ func (s *VPCService) validate() field.ErrorList {
 		}
 	}
 
+	// The protocol vocabulary is closed (GEP-1911): a value the route
+	// translator does not know would silently fall back to HTTP/1.1, which
+	// for a gRPC backend is a runtime failure with no admission-time signal.
+	switch s.Spec.AppProtocol {
+	case "", AppProtocolH2C, AppProtocolGRPC:
+	default:
+		errs = append(errs, field.NotSupported(field.NewPath("spec", "appProtocol"),
+			s.Spec.AppProtocol, []string{AppProtocolH2C, AppProtocolGRPC}))
+	}
+
 	return errs
 }
