@@ -13,7 +13,7 @@ import (
 
 var messagePool = sync.Pool{
 	New: func() any {
-		return &batchpc.Message{Buf: make([]byte, 65535)}
+		return &batchpc.Message{Buf: make([]byte, batchpc.MaxDatagramSize)}
 	},
 }
 

@@ -13,6 +13,15 @@ import (
 // MaxBatchSize is the maximum number of packets that can be read/written in a single batch.
 const MaxBatchSize = 64
 
+// MaxDatagramSize bounds a single receive buffer for tunnel underlay sockets.
+// Every tunnel datagram fits in the fixed api.TunnelPathMTU (1500); 9216 gives
+// jumbo-frame headroom on top rather than paying for the 64KiB UDP theoretical
+// max — buffers at this size are held per batch slot for the whole lifetime of
+// a blocked read, per session, so the difference is most of the datapath's
+// steady-state heap. A larger datagram is truncated by the kernel and dropped
+// by decap/QUIC parsing, which is already the fate of anything above path MTU.
+const MaxDatagramSize = 9216
+
 // Message represents a single packet for batched I/O.
 type Message struct {
 	Buf  []byte

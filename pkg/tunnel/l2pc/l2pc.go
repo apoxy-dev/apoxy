@@ -78,7 +78,7 @@ func NewL2PacketConn(pc batchpc.BatchPacketConn) (*L2PacketConn, error) {
 		localMAC:   localMAC,
 		pktPool: sync.Pool{
 			New: func() any {
-				b := make([]byte, 0, 65535)
+				b := make([]byte, 0, batchpc.MaxDatagramSize)
 				return &b
 			},
 		},
