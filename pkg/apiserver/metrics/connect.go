@@ -417,13 +417,20 @@ func setCacheControl(w http.ResponseWriter, c *Cache) {
 // fail logs the unsanitized failure next to the request id and answers with
 // the mapped status. The client message carries the same id, so a report can
 // be traced back to the log record without the error carrying any SQL.
+// A client error (4xx) is a rejected request, not a fault in the server, so
+// it is logged at Info; only a 5xx is an Error.
 func fail(log *slog.Logger, responder registryrest.Responder, r *http.Request, verb string, err error) {
 	id := r.Header.Get("Audit-ID")
-	log.Error("Metrics read failed",
+	code := StatusCode(err)
+	level := slog.LevelError
+	if code < http.StatusInternalServerError {
+		level = slog.LevelInfo
+	}
+	log.Log(r.Context(), level, "Metrics read failed",
 		"verb", verb,
 		"path", r.URL.Path,
 		"requestID", id,
-		"status", StatusCode(err),
+		"status", code,
 		"error", err)
 
 	status := ToStatusError(verb, err)

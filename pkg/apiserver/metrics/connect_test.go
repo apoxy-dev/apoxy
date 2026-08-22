@@ -168,3 +168,45 @@ func statusOf(t *testing.T, err error) int {
 	}
 	return int(statusErr.ErrStatus.Code)
 }
+
+// TestFailLogLevel checks that a rejected request is logged at Info and only
+// a server fault is logged at Error, so client mistakes do not page anyone.
+func TestFailLogLevel(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want slog.Level
+	}{
+		{name: "bad request", err: BadRequest("nope"), want: slog.LevelInfo},
+		{name: "not found", err: NotFound(metricsv1alpha1.Resource("metrics"), "nosuch"), want: slog.LevelInfo},
+		{name: "internal", err: Internal(errors.New("boom")), want: slog.LevelError},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var got slog.Level
+			var seen bool
+			h := slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelDebug})
+			log := slog.New(levelRecorder{Handler: h, got: &got, seen: &seen})
+			req := httptest.NewRequest(http.MethodGet, "/x", nil)
+			fail(log, &recordingResponder{}, req, "series", tc.err)
+			if !seen {
+				t.Fatal("no log record")
+			}
+			if got != tc.want {
+				t.Fatalf("level = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// levelRecorder remembers the level of the last record it handled.
+type levelRecorder struct {
+	slog.Handler
+	got  *slog.Level
+	seen *bool
+}
+
+func (l levelRecorder) Handle(ctx context.Context, r slog.Record) error {
+	*l.got, *l.seen = r.Level, true
+	return l.Handler.Handle(ctx, r)
+}
