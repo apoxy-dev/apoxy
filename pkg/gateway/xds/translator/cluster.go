@@ -29,6 +29,7 @@ import (
 	"k8s.io/utils/ptr"
 
 	"github.com/apoxy-dev/apoxy/pkg/gateway/ir"
+	"github.com/apoxy-dev/apoxy/pkg/gateway/xds/telemeta"
 	"github.com/apoxy-dev/apoxy/pkg/gateway/xds/tenantmeta"
 )
 
@@ -54,6 +55,25 @@ type xdsClusterArgs struct {
 	// marker is the cluster's tenantmeta marker. Infra cluster call sites
 	// leave it zero and stay unmarked.
 	marker tenantmeta.Marker
+	// backend is the cluster's telemetry attribution. Infra cluster call
+	// sites leave it zero and stay unmarked.
+	backend telemeta.Backend
+}
+
+// destinationBackend derives the telemetry attribution from a route
+// destination. A weighted rule can mix backends; the first named one wins,
+// because a cluster carries one attribution and the settings of one
+// destination name the same backend kind in practice.
+func destinationBackend(dest *ir.RouteDestination) telemeta.Backend {
+	if dest == nil {
+		return telemeta.Backend{}
+	}
+	for _, s := range dest.Settings {
+		if s != nil && s.BackendName != "" {
+			return telemeta.Backend{Kind: s.BackendKind, Name: s.BackendName}
+		}
+	}
+	return telemeta.Backend{}
 }
 
 // destinationMarker derives the cluster marker from a route destination: the
@@ -122,6 +142,7 @@ func buildXdsCluster(args *xdsClusterArgs) *clusterv3.Cluster {
 	cluster.ConnectTimeout = buildConnectTimeout(args.timeout)
 
 	tenantmeta.Mark(cluster, args.marker)
+	telemeta.MarkCluster(cluster, args.backend)
 
 	// Set Proxy Protocol
 	if args.proxyProtocol != nil {

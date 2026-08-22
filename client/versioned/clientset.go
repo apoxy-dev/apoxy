@@ -31,6 +31,7 @@ import (
 	extensionsv1alpha2 "github.com/apoxy-dev/apoxy/client/versioned/typed/extensions/v1alpha2"
 	gatewayv1 "github.com/apoxy-dev/apoxy/client/versioned/typed/gateway/v1"
 	gatewayv1alpha2 "github.com/apoxy-dev/apoxy/client/versioned/typed/gateway/v1alpha2"
+	metricsv1alpha1 "github.com/apoxy-dev/apoxy/client/versioned/typed/metrics/v1alpha1"
 	policyv1alpha1 "github.com/apoxy-dev/apoxy/client/versioned/typed/policy/v1alpha1"
 	vpcv1alpha1 "github.com/apoxy-dev/apoxy/client/versioned/typed/vpc/v1alpha1"
 	discovery "k8s.io/client-go/discovery"
@@ -50,6 +51,7 @@ type Interface interface {
 	ExtensionsV1alpha2() extensionsv1alpha2.ExtensionsV1alpha2Interface
 	GatewayV1() gatewayv1.GatewayV1Interface
 	GatewayV1alpha2() gatewayv1alpha2.GatewayV1alpha2Interface
+	MetricsV1alpha1() metricsv1alpha1.MetricsV1alpha1Interface
 	PolicyV1alpha1() policyv1alpha1.PolicyV1alpha1Interface
 	VpcV1alpha1() vpcv1alpha1.VpcV1alpha1Interface
 }
@@ -67,6 +69,7 @@ type Clientset struct {
 	extensionsV1alpha2  *extensionsv1alpha2.ExtensionsV1alpha2Client
 	gatewayV1           *gatewayv1.GatewayV1Client
 	gatewayV1alpha2     *gatewayv1alpha2.GatewayV1alpha2Client
+	metricsV1alpha1     *metricsv1alpha1.MetricsV1alpha1Client
 	policyV1alpha1      *policyv1alpha1.PolicyV1alpha1Client
 	vpcV1alpha1         *vpcv1alpha1.VpcV1alpha1Client
 }
@@ -119,6 +122,11 @@ func (c *Clientset) GatewayV1() gatewayv1.GatewayV1Interface {
 // GatewayV1alpha2 retrieves the GatewayV1alpha2Client
 func (c *Clientset) GatewayV1alpha2() gatewayv1alpha2.GatewayV1alpha2Interface {
 	return c.gatewayV1alpha2
+}
+
+// MetricsV1alpha1 retrieves the MetricsV1alpha1Client
+func (c *Clientset) MetricsV1alpha1() metricsv1alpha1.MetricsV1alpha1Interface {
+	return c.metricsV1alpha1
 }
 
 // PolicyV1alpha1 retrieves the PolicyV1alpha1Client
@@ -215,6 +223,10 @@ func NewForConfigAndClient(c *rest.Config, httpClient *http.Client) (*Clientset,
 	if err != nil {
 		return nil, err
 	}
+	cs.metricsV1alpha1, err = metricsv1alpha1.NewForConfigAndClient(&configShallowCopy, httpClient)
+	if err != nil {
+		return nil, err
+	}
 	cs.policyV1alpha1, err = policyv1alpha1.NewForConfigAndClient(&configShallowCopy, httpClient)
 	if err != nil {
 		return nil, err
@@ -254,6 +266,7 @@ func New(c rest.Interface) *Clientset {
 	cs.extensionsV1alpha2 = extensionsv1alpha2.New(c)
 	cs.gatewayV1 = gatewayv1.New(c)
 	cs.gatewayV1alpha2 = gatewayv1alpha2.New(c)
+	cs.metricsV1alpha1 = metricsv1alpha1.New(c)
 	cs.policyV1alpha1 = policyv1alpha1.New(c)
 	cs.vpcV1alpha1 = vpcv1alpha1.New(c)
 

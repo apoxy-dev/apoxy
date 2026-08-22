@@ -267,6 +267,32 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/apoxy-dev/apoxy/api/gateway/v1alpha2.UDPRoute":                         schema_apoxy_api_gateway_v1alpha2_UDPRoute(ref),
 		"github.com/apoxy-dev/apoxy/api/gateway/v1alpha2.UDPRouteList":                     schema_apoxy_api_gateway_v1alpha2_UDPRouteList(ref),
 		"github.com/apoxy-dev/apoxy/api/gateway/v1alpha2.UDPRouteStatus":                   schema_apoxy_api_gateway_v1alpha2_UDPRouteStatus(ref),
+		"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.BackendMetrics":                   schema_apoxy_api_metrics_v1alpha1_BackendMetrics(ref),
+		"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.GatewayMetrics":                   schema_apoxy_api_metrics_v1alpha1_GatewayMetrics(ref),
+		"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.HTTPRouteMetrics":                 schema_apoxy_api_metrics_v1alpha1_HTTPRouteMetrics(ref),
+		"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.ListenerMetrics":                  schema_apoxy_api_metrics_v1alpha1_ListenerMetrics(ref),
+		"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.Metric":                           schema_apoxy_api_metrics_v1alpha1_Metric(ref),
+		"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.MetricList":                       schema_apoxy_api_metrics_v1alpha1_MetricList(ref),
+		"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.MetricMeasure":                    schema_apoxy_api_metrics_v1alpha1_MetricMeasure(ref),
+		"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.MetricPoint":                      schema_apoxy_api_metrics_v1alpha1_MetricPoint(ref),
+		"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.MetricSeries":                     schema_apoxy_api_metrics_v1alpha1_MetricSeries(ref),
+		"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.MetricSeriesSet":                  schema_apoxy_api_metrics_v1alpha1_MetricSeriesSet(ref),
+		"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.MetricSource":                     schema_apoxy_api_metrics_v1alpha1_MetricSource(ref),
+		"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.MetricSourceField":                schema_apoxy_api_metrics_v1alpha1_MetricSourceField(ref),
+		"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.MetricSourceList":                 schema_apoxy_api_metrics_v1alpha1_MetricSourceList(ref),
+		"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.MetricSourceSpec":                 schema_apoxy_api_metrics_v1alpha1_MetricSourceSpec(ref),
+		"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.MetricSourceStatus":               schema_apoxy_api_metrics_v1alpha1_MetricSourceStatus(ref),
+		"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.MetricSpec":                       schema_apoxy_api_metrics_v1alpha1_MetricSpec(ref),
+		"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.MetricStatus":                     schema_apoxy_api_metrics_v1alpha1_MetricStatus(ref),
+		"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.ProxyMetrics":                     schema_apoxy_api_metrics_v1alpha1_ProxyMetrics(ref),
+		"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.ReplicaGauges":                    schema_apoxy_api_metrics_v1alpha1_ReplicaGauges(ref),
+		"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.RevisionMetrics":                  schema_apoxy_api_metrics_v1alpha1_RevisionMetrics(ref),
+		"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.RouteMetrics":                     schema_apoxy_api_metrics_v1alpha1_RouteMetrics(ref),
+		"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.RuleMetrics":                      schema_apoxy_api_metrics_v1alpha1_RuleMetrics(ref),
+		"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.ServiceMetrics":                   schema_apoxy_api_metrics_v1alpha1_ServiceMetrics(ref),
+		"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.SnapshotMeta":                     schema_apoxy_api_metrics_v1alpha1_SnapshotMeta(ref),
+		"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.VPCNetworkMetrics":                schema_apoxy_api_metrics_v1alpha1_VPCNetworkMetrics(ref),
+		"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.VPCServiceMetrics":                schema_apoxy_api_metrics_v1alpha1_VPCServiceMetrics(ref),
 		"github.com/apoxy-dev/apoxy/api/policy/v1alpha1.RateLimit":                         schema_apoxy_api_policy_v1alpha1_RateLimit(ref),
 		"github.com/apoxy-dev/apoxy/api/policy/v1alpha1.RateLimitDescriptor":               schema_apoxy_api_policy_v1alpha1_RateLimitDescriptor(ref),
 		"github.com/apoxy-dev/apoxy/api/policy/v1alpha1.RateLimitList":                     schema_apoxy_api_policy_v1alpha1_RateLimitList(ref),
@@ -10268,6 +10294,1749 @@ func schema_apoxy_api_gateway_v1alpha2_UDPRouteStatus(ref common.ReferenceCallba
 		},
 		Dependencies: []string{
 			"sigs.k8s.io/gateway-api/apis/v1alpha2.UDPRouteStatus"},
+	}
+}
+
+func schema_apoxy_api_metrics_v1alpha1_BackendMetrics(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "BackendMetrics is one backend's share of an HTTPRoute.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is the backend kind, for example Backend or Service.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Name is the backend name.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metrics": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Metrics is every evaluated recipe for the backend.",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type: []string{"object"},
+										AdditionalProperties: &spec.SchemaOrBool{
+											Allows: true,
+											Schema: &spec.Schema{
+												SchemaProps: spec.SchemaProps{
+													Type:   []string{"number"},
+													Format: "double",
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func schema_apoxy_api_metrics_v1alpha1_GatewayMetrics(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "GatewayMetrics is the snapshot returned by gateways/<name>/metrics.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"),
+						},
+					},
+					"timestamp": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Timestamp is when the snapshot was computed.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+						},
+					},
+					"window": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Window is until minus since.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Duration"),
+						},
+					},
+					"since": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Since and Until are the resolved half-open [since, until) window bounds.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+						},
+					},
+					"until": {
+						SchemaProps: spec.SchemaProps{
+							Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+						},
+					},
+					"dataUpTo": {
+						SchemaProps: spec.SchemaProps{
+							Description: "DataUpTo is the end of the last complete bucket.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+						},
+					},
+					"metrics": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Metrics is the Gateway totals, one entry per evaluated recipe.",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type: []string{"object"},
+										AdditionalProperties: &spec.SchemaOrBool{
+											Allows: true,
+											Schema: &spec.Schema{
+												SchemaProps: spec.SchemaProps{
+													Type:   []string{"number"},
+													Format: "double",
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+					"units": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Units maps a measure name to its display unit, echoed from the catalog.",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"listeners": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Listeners is the first nesting level, always present.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.ListenerMetrics"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"timestamp", "window", "since", "until", "dataUpTo"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.ListenerMetrics", "k8s.io/apimachinery/pkg/apis/meta/v1.Duration", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta", "k8s.io/apimachinery/pkg/apis/meta/v1.Time"},
+	}
+}
+
+func schema_apoxy_api_metrics_v1alpha1_HTTPRouteMetrics(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "HTTPRouteMetrics is the snapshot returned by httproutes/<name>/metrics. It cuts its own leaf lists, so truncated and totalCount sit on it.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"),
+						},
+					},
+					"timestamp": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Timestamp is when the snapshot was computed.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+						},
+					},
+					"window": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Window is until minus since.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Duration"),
+						},
+					},
+					"since": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Since and Until are the resolved half-open [since, until) window bounds.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+						},
+					},
+					"until": {
+						SchemaProps: spec.SchemaProps{
+							Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+						},
+					},
+					"dataUpTo": {
+						SchemaProps: spec.SchemaProps{
+							Description: "DataUpTo is the end of the last complete bucket.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+						},
+					},
+					"metrics": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Metrics is the route totals, one entry per evaluated recipe.",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type: []string{"object"},
+										AdditionalProperties: &spec.SchemaOrBool{
+											Allows: true,
+											Schema: &spec.Schema{
+												SchemaProps: spec.SchemaProps{
+													Type:   []string{"number"},
+													Format: "double",
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+					"units": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Units maps a measure name to its display unit.",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"rules": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Rules is present only with include=rules.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.RuleMetrics"),
+									},
+								},
+							},
+						},
+					},
+					"backends": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Backends is present only with include=backends.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.BackendMetrics"),
+									},
+								},
+							},
+						},
+					},
+					"truncated": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Truncated is set when top cut a leaf list.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"totalCount": {
+						SchemaProps: spec.SchemaProps{
+							Description: "TotalCount is how many leaf rows had traffic in the window.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+				},
+				Required: []string{"timestamp", "window", "since", "until", "dataUpTo"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.BackendMetrics", "github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.RuleMetrics", "k8s.io/apimachinery/pkg/apis/meta/v1.Duration", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta", "k8s.io/apimachinery/pkg/apis/meta/v1.Time"},
+	}
+}
+
+func schema_apoxy_api_metrics_v1alpha1_ListenerMetrics(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ListenerMetrics is one listener's share of a Gateway. It cuts its own route list, so truncated and totalCount sit here rather than on the Gateway.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Name is the listener name.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metrics": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Metrics is every evaluated recipe for the listener.",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type: []string{"object"},
+										AdditionalProperties: &spec.SchemaOrBool{
+											Allows: true,
+											Schema: &spec.Schema{
+												SchemaProps: spec.SchemaProps{
+													Type:   []string{"number"},
+													Format: "double",
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+					"routes": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Routes is present only with include=routes, ranked by orderBy.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.RouteMetrics"),
+									},
+								},
+							},
+						},
+					},
+					"truncated": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Truncated is set when top cut the route list.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"totalCount": {
+						SchemaProps: spec.SchemaProps{
+							Description: "TotalCount is how many routes had traffic in the window.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.RouteMetrics"},
+	}
+}
+
+func schema_apoxy_api_metrics_v1alpha1_Metric(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "Metric is a stored recipe: a PRQL aggregate fragment plus presentation preferences. It is the only typed query surface; there is no ad-hoc typed query endpoint. Its name is the path element of the series subresource.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Spec is the recipe a person writes.",
+							Default:     map[string]interface{}{},
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.MetricSpec"),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Status is what the server derives by compiling the recipe.",
+							Default:     map[string]interface{}{},
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.MetricStatus"),
+						},
+					},
+				},
+				Required: []string{"spec"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.MetricSpec", "github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.MetricStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
+	}
+}
+
+func schema_apoxy_api_metrics_v1alpha1_MetricList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "MetricList is the catalog: every recipe this project can query.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.Metric"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.Metric", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
+	}
+}
+
+func schema_apoxy_api_metrics_v1alpha1_MetricMeasure(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "MetricMeasure is one output column of a compiled recipe.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Name is the measure name, the key it takes in a Measures map.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"type": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Type is the value domain of the measure.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"unit": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Unit is the display unit (\"\" for a plain count, By for bytes, ms for a duration). It is echoed in the units map of every snapshot and series response.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"reaggregate": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Reaggregate reports whether the measure can be summed across buckets. It is false for a percentile, which must be recomputed from the histogram.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"name"},
+			},
+		},
+	}
+}
+
+func schema_apoxy_api_metrics_v1alpha1_MetricPoint(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "MetricPoint is one bucket of one series.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"timestamp": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Timestamp is the bucket start.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+						},
+					},
+					"values": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Values are the recipe's measures for the bucket.",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"number"},
+										Format: "double",
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"timestamp", "values"},
+			},
+		},
+		Dependencies: []string{
+			"k8s.io/apimachinery/pkg/apis/meta/v1.Time"},
+	}
+}
+
+func schema_apoxy_api_metrics_v1alpha1_MetricSeries(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "MetricSeries is one labeled line. A read with no groupBy returns exactly one series with empty labels.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"labels": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Labels is the group key and value, for example {route: api}.",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"points": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Points are the buckets, ordered by timestamp.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.MetricPoint"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"points"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.MetricPoint"},
+	}
+}
+
+func schema_apoxy_api_metrics_v1alpha1_MetricSeriesSet(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "MetricSeriesSet is the result of metrics/<name>/series: one labeled series per group value, each with one point per time bucket. It carries no ObjectMeta, because it is a query result rather than a stored object.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metric": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Metric echoes the queried recipe name.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"scopeKind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ScopeKind and ScopeName echo the resolved scope. ScopeName is empty for a whole-project read.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"scopeName": {
+						SchemaProps: spec.SchemaProps{
+							Type:   []string{"string"},
+							Format: "",
+						},
+					},
+					"since": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Since and Until are the resolved half-open [since, until) window bounds.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+						},
+					},
+					"until": {
+						SchemaProps: spec.SchemaProps{
+							Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+						},
+					},
+					"step": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Step is the applied bucket width, rounded up to the source granularity.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Duration"),
+						},
+					},
+					"dataUpTo": {
+						SchemaProps: spec.SchemaProps{
+							Description: "DataUpTo is the end of the last complete bucket, so a client can tell a partial trailing bucket from a drop in traffic.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+						},
+					},
+					"truncated": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Truncated is set when more groups matched than top returned.",
+							Default:     false,
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"totalCount": {
+						SchemaProps: spec.SchemaProps{
+							Description: "TotalCount is how many groups had data in the window.",
+							Default:     0,
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"units": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Units maps a measure name to its display unit, echoed from the catalog.",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"series": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Series is the labeled lines.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.MetricSeries"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"metric", "since", "until", "step", "dataUpTo", "truncated", "totalCount", "series"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.MetricSeries", "k8s.io/apimachinery/pkg/apis/meta/v1.Duration", "k8s.io/apimachinery/pkg/apis/meta/v1.Time"},
+	}
+}
+
+func schema_apoxy_api_metrics_v1alpha1_MetricSource(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "MetricSource is one entry of the per-project schema registry. It is derived on read and never stored, so a recipe author can see what a source keeps and what it can be grouped by.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Spec is empty.",
+							Default:     map[string]interface{}{},
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.MetricSourceSpec"),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Status is the derived description of the source.",
+							Default:     map[string]interface{}{},
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.MetricSourceStatus"),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.MetricSourceSpec", "github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.MetricSourceStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
+	}
+}
+
+func schema_apoxy_api_metrics_v1alpha1_MetricSourceField(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "MetricSourceField is one column or discovered attribute of a source.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Name is the field name as a recipe writes it.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"type": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Type is the field type: string, integer, float, timestamp, or histogram.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"role": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Role says whether the field is the time bucket, a groupable key, or a measure.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"discovered": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Discovered is true for a field found by sampling log attributes, which can therefore disappear, and false for a table column or a static field, which cannot.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"reaggregate": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Reaggregate reports whether the measure can be summed across buckets. It is false for a percentile.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"name"},
+			},
+		},
+	}
+}
+
+func schema_apoxy_api_metrics_v1alpha1_MetricSourceList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "MetricSourceList is every source this project can read.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.MetricSource"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.MetricSource", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
+	}
+}
+
+func schema_apoxy_api_metrics_v1alpha1_MetricSourceSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "MetricSourceSpec is empty. Granularity, retention, and the field list are facts about the table, not settings, so they live in status.",
+				Type:        []string{"object"},
+			},
+		},
+	}
+}
+
+func schema_apoxy_api_metrics_v1alpha1_MetricSourceStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "MetricSourceStatus is the derived description of one source.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"granularity": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Granularity is the bucket width of the source: row for raw logs, 1m or 1h for a rollup. It is the minimum step a series read can ask for.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"retention": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Retention is how long the source keeps data.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"scopes": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Scopes are the owner kinds a scopeKind parameter accepts for this source.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"fields": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Fields are the columns and discovered attributes of the source.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.MetricSourceField"),
+									},
+								},
+							},
+						},
+					},
+					"metrics": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Metrics are the recipes that read this source.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"discoveredAt": {
+						SchemaProps: spec.SchemaProps{
+							Description: "DiscoveredAt is when the attribute sample last ran.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.MetricSourceField", "k8s.io/apimachinery/pkg/apis/meta/v1.Time"},
+	}
+}
+
+func schema_apoxy_api_metrics_v1alpha1_MetricSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "MetricSpec is what a person writes. Everything derived from the fragment lives in status.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"prql": {
+						SchemaProps: spec.SchemaProps{
+							Description: "PRQL is the aggregate-only recipe fragment: [filter|derive]* aggregate {...}. It states no from, no group, and no time_bucket. The source comes from spec.source, the grouping from the groupBy parameter, the bucket from the step parameter, and the scope from the scope parameters.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"source": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Source is the table the fragment reads. When it is empty the server resolves it on write from the fields the fragment uses.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"type": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Type tells a client how to render the recipe.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"unit": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Unit is the display unit of the recipe as a whole, when every measure shares one. Per-measure units are in status.measures[].unit.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"scopes": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Scopes are the owner kinds this recipe applies to. An empty list means every kind the source supports.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"defaultDimension": {
+						SchemaProps: spec.SchemaProps{
+							Description: "DefaultDimension is the key a client groups by when it has no better choice. It falls back to status.keys[0].",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"defaultColumns": {
+						SchemaProps: spec.SchemaProps{
+							Description: "DefaultColumns are the measures a client shows first. The first entry is also the default orderBy.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"description": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Description is a one-line human summary.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"prql"},
+			},
+		},
+	}
+}
+
+func schema_apoxy_api_metrics_v1alpha1_MetricStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "MetricStatus is what the server derives by compiling the fragment against the schema registry on create and update. A client cannot supply these fields; admission rejects a write that tries.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"source": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Source is the resolved source table.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"measures": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Measures are the output columns of the compiled fragment.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.MetricMeasure"),
+									},
+								},
+							},
+						},
+					},
+					"keys": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Keys are the groupable dimensions: every role: key field of the resolved source. A groupBy that is not in this list is a 400.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"conditions": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Conditions: Compiled.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.Condition"),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.MetricMeasure", "k8s.io/apimachinery/pkg/apis/meta/v1.Condition"},
+	}
+}
+
+func schema_apoxy_api_metrics_v1alpha1_ProxyMetrics(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ProxyMetrics is the snapshot returned by proxies/<name>/metrics. It has no nested table, so it takes no include token.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"),
+						},
+					},
+					"timestamp": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Timestamp is when the snapshot was computed.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+						},
+					},
+					"window": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Window is until minus since.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Duration"),
+						},
+					},
+					"since": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Since and Until are the resolved half-open [since, until) window bounds.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+						},
+					},
+					"until": {
+						SchemaProps: spec.SchemaProps{
+							Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+						},
+					},
+					"dataUpTo": {
+						SchemaProps: spec.SchemaProps{
+							Description: "DataUpTo is the end of the last complete bucket.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+						},
+					},
+					"metrics": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Metrics is the Proxy totals, one entry per evaluated recipe.",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type: []string{"object"},
+										AdditionalProperties: &spec.SchemaOrBool{
+											Allows: true,
+											Schema: &spec.Schema{
+												SchemaProps: spec.SchemaProps{
+													Type:   []string{"number"},
+													Format: "double",
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+					"units": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Units maps a measure name to its display unit.",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"replicas": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Replicas comes from the owner status.",
+							Default:     map[string]interface{}{},
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.ReplicaGauges"),
+						},
+					},
+				},
+				Required: []string{"timestamp", "window", "since", "until", "dataUpTo"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.ReplicaGauges", "k8s.io/apimachinery/pkg/apis/meta/v1.Duration", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta", "k8s.io/apimachinery/pkg/apis/meta/v1.Time"},
+	}
+}
+
+func schema_apoxy_api_metrics_v1alpha1_ReplicaGauges(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ReplicaGauges is the one non-telemetry field of a snapshot: it comes from the owner status, not from the read model.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"desired": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Desired is the requested replica count.",
+							Default:     0,
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"ready": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Ready is how many replicas report ready.",
+							Default:     0,
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"available": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Available is how many replicas serve traffic.",
+							Default:     0,
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+				},
+				Required: []string{"desired", "ready", "available"},
+			},
+		},
+	}
+}
+
+func schema_apoxy_api_metrics_v1alpha1_RevisionMetrics(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "RevisionMetrics is one revision's share of a compute Service.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Name is the revision name.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metrics": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Metrics is every evaluated recipe for the revision.",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type: []string{"object"},
+										AdditionalProperties: &spec.SchemaOrBool{
+											Allows: true,
+											Schema: &spec.Schema{
+												SchemaProps: spec.SchemaProps{
+													Type:   []string{"number"},
+													Format: "double",
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func schema_apoxy_api_metrics_v1alpha1_RouteMetrics(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "RouteMetrics is one route's share of a listener.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is the route kind, for example HTTPRoute.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Name is the route name.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"rule": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Rule is the rule index inside the route, when the telemetry carries one.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"metrics": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Metrics is every evaluated recipe for the route.",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type: []string{"object"},
+										AdditionalProperties: &spec.SchemaOrBool{
+											Allows: true,
+											Schema: &spec.Schema{
+												SchemaProps: spec.SchemaProps{
+													Type:   []string{"number"},
+													Format: "double",
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func schema_apoxy_api_metrics_v1alpha1_RuleMetrics(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "RuleMetrics is one rule's share of an HTTPRoute.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"rule": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Rule is the rule index inside the route.",
+							Default:     0,
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"metrics": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Metrics is every evaluated recipe for the rule.",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type: []string{"object"},
+										AdditionalProperties: &spec.SchemaOrBool{
+											Allows: true,
+											Schema: &spec.Schema{
+												SchemaProps: spec.SchemaProps{
+													Type:   []string{"number"},
+													Format: "double",
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"rule"},
+			},
+		},
+	}
+}
+
+func schema_apoxy_api_metrics_v1alpha1_ServiceMetrics(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ServiceMetrics is the snapshot returned by services/<name>/metrics. It cuts its own revision list, so truncated and totalCount sit on it.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"),
+						},
+					},
+					"timestamp": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Timestamp is when the snapshot was computed.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+						},
+					},
+					"window": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Window is until minus since.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Duration"),
+						},
+					},
+					"since": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Since and Until are the resolved half-open [since, until) window bounds.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+						},
+					},
+					"until": {
+						SchemaProps: spec.SchemaProps{
+							Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+						},
+					},
+					"dataUpTo": {
+						SchemaProps: spec.SchemaProps{
+							Description: "DataUpTo is the end of the last complete bucket.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+						},
+					},
+					"metrics": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Metrics is the Service totals, one entry per evaluated recipe.",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type: []string{"object"},
+										AdditionalProperties: &spec.SchemaOrBool{
+											Allows: true,
+											Schema: &spec.Schema{
+												SchemaProps: spec.SchemaProps{
+													Type:   []string{"number"},
+													Format: "double",
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+					"units": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Units maps a measure name to its display unit.",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"revisions": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Revisions is present only with include=revisions.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.RevisionMetrics"),
+									},
+								},
+							},
+						},
+					},
+					"truncated": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Truncated is set when top cut the revision list.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"totalCount": {
+						SchemaProps: spec.SchemaProps{
+							Description: "TotalCount is how many revisions had traffic in the window.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+				},
+				Required: []string{"timestamp", "window", "since", "until", "dataUpTo"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.RevisionMetrics", "k8s.io/apimachinery/pkg/apis/meta/v1.Duration", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta", "k8s.io/apimachinery/pkg/apis/meta/v1.Time"},
+	}
+}
+
+func schema_apoxy_api_metrics_v1alpha1_SnapshotMeta(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "SnapshotMeta is the window every snapshot kind echoes. It is inlined rather than nested so the wire shape stays flat, as the design states.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"timestamp": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Timestamp is when the snapshot was computed.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+						},
+					},
+					"window": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Window is until minus since.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Duration"),
+						},
+					},
+					"since": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Since and Until are the resolved half-open [since, until) window bounds.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+						},
+					},
+					"until": {
+						SchemaProps: spec.SchemaProps{
+							Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+						},
+					},
+					"dataUpTo": {
+						SchemaProps: spec.SchemaProps{
+							Description: "DataUpTo is the end of the last complete bucket.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+						},
+					},
+				},
+				Required: []string{"timestamp", "window", "since", "until", "dataUpTo"},
+			},
+		},
+		Dependencies: []string{
+			"k8s.io/apimachinery/pkg/apis/meta/v1.Duration", "k8s.io/apimachinery/pkg/apis/meta/v1.Time"},
+	}
+}
+
+func schema_apoxy_api_metrics_v1alpha1_VPCNetworkMetrics(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "VPCNetworkMetrics is the snapshot returned by vpcnetworks/<name>/metrics. It cuts its own service list, so truncated and totalCount sit on it.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"),
+						},
+					},
+					"timestamp": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Timestamp is when the snapshot was computed.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+						},
+					},
+					"window": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Window is until minus since.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Duration"),
+						},
+					},
+					"since": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Since and Until are the resolved half-open [since, until) window bounds.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+						},
+					},
+					"until": {
+						SchemaProps: spec.SchemaProps{
+							Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+						},
+					},
+					"dataUpTo": {
+						SchemaProps: spec.SchemaProps{
+							Description: "DataUpTo is the end of the last complete bucket.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+						},
+					},
+					"metrics": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Metrics is the network totals, one entry per evaluated recipe.",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type: []string{"object"},
+										AdditionalProperties: &spec.SchemaOrBool{
+											Allows: true,
+											Schema: &spec.Schema{
+												SchemaProps: spec.SchemaProps{
+													Type:   []string{"number"},
+													Format: "double",
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+					"units": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Units maps a measure name to its display unit.",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"services": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Services is present only with include=services.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.VPCServiceMetrics"),
+									},
+								},
+							},
+						},
+					},
+					"truncated": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Truncated is set when top cut the service list.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"totalCount": {
+						SchemaProps: spec.SchemaProps{
+							Description: "TotalCount is how many services had traffic in the window.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+				},
+				Required: []string{"timestamp", "window", "since", "until", "dataUpTo"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.VPCServiceMetrics", "k8s.io/apimachinery/pkg/apis/meta/v1.Duration", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta", "k8s.io/apimachinery/pkg/apis/meta/v1.Time"},
+	}
+}
+
+func schema_apoxy_api_metrics_v1alpha1_VPCServiceMetrics(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "VPCServiceMetrics is one VPC service's share of a VPCNetwork.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Name is the VPCService name.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metrics": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Metrics is every evaluated recipe for the service.",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type: []string{"object"},
+										AdditionalProperties: &spec.SchemaOrBool{
+											Allows: true,
+											Schema: &spec.Schema{
+												SchemaProps: spec.SchemaProps{
+													Type:   []string{"number"},
+													Format: "double",
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
 	}
 }
 

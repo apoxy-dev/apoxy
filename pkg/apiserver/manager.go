@@ -75,6 +75,7 @@ import (
 	gatewayv1 "github.com/apoxy-dev/apoxy/api/gateway/v1"
 	gatewayv1alpha2 "github.com/apoxy-dev/apoxy/api/gateway/v1alpha2"
 	apoxyopenapi "github.com/apoxy-dev/apoxy/api/generated"
+	metricsv1alpha1 "github.com/apoxy-dev/apoxy/api/metrics/v1alpha1"
 	policyv1alpha1 "github.com/apoxy-dev/apoxy/api/policy/v1alpha1"
 	vpcv1alpha1 "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1"
 )
@@ -97,6 +98,7 @@ func init() {
 	utilruntime.Must(gatewayv1.Install(scheme))
 	utilruntime.Must(gatewayv1alpha2.Install(scheme))
 	utilruntime.Must(vpcv1alpha1.Install(scheme))
+	utilruntime.Must(metricsv1alpha1.Install(scheme))
 
 	gateway.Install(scheme)
 	utilruntime.Must(coordinationv1.AddToScheme(scheme))
@@ -264,9 +266,29 @@ type options struct {
 	secretValuesAuthz       secretstore.ReadAuthz
 	maxRequestsInFlight     int
 	maxMutatingInFlight     int
+	storage                 []gvrStorage
 	// kineETCD is the kine backend endpoint, captured in start() so the
 	// startup storage migration can read legacy keys directly.
 	kineETCD endpoint.ETCDConfig
+}
+
+// gvrStorage is one custom storage mount: a StorageProvider and the GVR it is
+// served at. Kept as a slice so the mounts install in the order the caller
+// gave, which a subresource that shares a parent's provider depends on.
+type gvrStorage struct {
+	gvr schema.GroupVersionResource
+	sp  serverapiserver.StorageProvider
+}
+
+// WithStorage mounts sp at gvr. A resource name containing "/" is mounted as a
+// subresource. Use it for a group whose storage is not the kine-backed generic
+// store -- the metrics.apoxy.dev catalog and its connect subresources, whose
+// data lives in an external read model. The kind must already be in the
+// apiserver scheme; every metrics.apoxy.dev kind is.
+func WithStorage(gvr schema.GroupVersionResource, sp serverapiserver.StorageProvider) Option {
+	return func(o *options) {
+		o.storage = append(o.storage, gvrStorage{gvr: gvr, sp: sp})
+	}
 }
 
 // WithSecretStoreStorage overrides the storage backing the SecretStore main
@@ -624,6 +646,13 @@ func defaultResources() []resource.Object {
 		&vpcv1alpha1.Tunnel{},
 
 		&coordinationv1.Lease{},
+
+		// The metric catalog is the one stored kind of metrics.apoxy.dev. It
+		// is a plain kine-backed resource so a recipe is watchable and
+		// survives a restart; the rest of the group (sources, series,
+		// snapshots) is derived on read and is mounted with WithStorage by the
+		// deployment that owns the read model.
+		&metricsv1alpha1.Metric{},
 	}
 }
 
@@ -1081,6 +1110,17 @@ func start(
 			store = withResourceStoragePrefix(kineStore, prefix)
 		}
 		srvBuilder = srvBuilder.WithResourceAndStorage(r, store)
+	}
+	// The metrics.apoxy.dev kinds are always known to the apiserver scheme, so
+	// a deployment that owns a ClickHouse read model can mount its own storage
+	// with WithStorage. Only the Metric catalog is kine-backed; the sources and
+	// the series and snapshot connect results are derived on read, so without a
+	// mount the group serves the catalog alone.
+	srvBuilder = srvBuilder.
+		WithAdditionalSchemeInstallers(metricsv1alpha1.Install).
+		WithSchemeKinds(metricsv1alpha1.SchemeGroupVersion, metricsv1alpha1.AllKinds()...)
+	for _, st := range opts.storage {
+		srvBuilder = srvBuilder.WithStorage(st.gvr, st.sp)
 	}
 	// Use custom OpenAPI definitions if provided, otherwise use the default.
 	openAPIGetter := opts.openAPIDefinitions

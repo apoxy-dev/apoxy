@@ -39,6 +39,8 @@ import (
 	fakegatewayv1 "github.com/apoxy-dev/apoxy/client/versioned/typed/gateway/v1/fake"
 	gatewayv1alpha2 "github.com/apoxy-dev/apoxy/client/versioned/typed/gateway/v1alpha2"
 	fakegatewayv1alpha2 "github.com/apoxy-dev/apoxy/client/versioned/typed/gateway/v1alpha2/fake"
+	metricsv1alpha1 "github.com/apoxy-dev/apoxy/client/versioned/typed/metrics/v1alpha1"
+	fakemetricsv1alpha1 "github.com/apoxy-dev/apoxy/client/versioned/typed/metrics/v1alpha1/fake"
 	policyv1alpha1 "github.com/apoxy-dev/apoxy/client/versioned/typed/policy/v1alpha1"
 	fakepolicyv1alpha1 "github.com/apoxy-dev/apoxy/client/versioned/typed/policy/v1alpha1/fake"
 	vpcv1alpha1 "github.com/apoxy-dev/apoxy/client/versioned/typed/vpc/v1alpha1"
@@ -152,6 +154,11 @@ func (c *Clientset) GatewayV1() gatewayv1.GatewayV1Interface {
 // GatewayV1alpha2 retrieves the GatewayV1alpha2Client
 func (c *Clientset) GatewayV1alpha2() gatewayv1alpha2.GatewayV1alpha2Interface {
 	return &fakegatewayv1alpha2.FakeGatewayV1alpha2{Fake: &c.Fake}
+}
+
+// MetricsV1alpha1 retrieves the MetricsV1alpha1Client
+func (c *Clientset) MetricsV1alpha1() metricsv1alpha1.MetricsV1alpha1Interface {
+	return &fakemetricsv1alpha1.FakeMetricsV1alpha1{Fake: &c.Fake}
 }
 
 // PolicyV1alpha1 retrieves the PolicyV1alpha1Client

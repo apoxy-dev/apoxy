@@ -370,7 +370,7 @@ type RouteParentContext struct {
 	// TODO: [v1alpha2-gwapiv1] This can probably be replaced with
 	// a single field pointing to *gwapiv1.RouteStatus.
 	HTTPRoute *gwapiv1.HTTPRoute
-	GRPCRoute *gwapiv1.GRPCRoute
+	GRPCRoute *v1alpha2.GRPCRoute
 	TLSRoute  *v1alpha2.TLSRoute
 	TCPRoute  *v1alpha2.TCPRoute
 	UDPRoute  *v1alpha2.UDPRoute

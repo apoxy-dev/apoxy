@@ -30,6 +30,7 @@ import (
 	extensionsv1alpha2 "github.com/apoxy-dev/apoxy/api/extensions/v1alpha2"
 	gatewayv1 "github.com/apoxy-dev/apoxy/api/gateway/v1"
 	gatewayv1alpha2 "github.com/apoxy-dev/apoxy/api/gateway/v1alpha2"
+	metricsv1alpha1 "github.com/apoxy-dev/apoxy/api/metrics/v1alpha1"
 	policyv1alpha1 "github.com/apoxy-dev/apoxy/api/policy/v1alpha1"
 	vpcv1alpha1 "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1"
 	schema "k8s.io/apimachinery/pkg/runtime/schema"
@@ -143,6 +144,12 @@ func (f *sharedInformerFactory) ForResource(resource schema.GroupVersionResource
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Gateway().V1alpha2().TLSRoutes().Informer()}, nil
 	case gatewayv1alpha2.SchemeGroupVersion.WithResource("udproutes"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Gateway().V1alpha2().UDPRoutes().Informer()}, nil
+
+		// Group=metrics.apoxy.dev, Version=v1alpha1
+	case metricsv1alpha1.SchemeGroupVersion.WithResource("metrics"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Metrics().V1alpha1().Metrics().Informer()}, nil
+	case metricsv1alpha1.SchemeGroupVersion.WithResource("metricsources"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Metrics().V1alpha1().MetricSources().Informer()}, nil
 
 		// Group=policy.apoxy.dev, Version=v1alpha1
 	case policyv1alpha1.SchemeGroupVersion.WithResource("ratelimits"):

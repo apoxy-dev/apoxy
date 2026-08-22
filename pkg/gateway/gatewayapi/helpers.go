@@ -353,7 +353,8 @@ func irStringKey(gatewayNs, gatewayName string) string {
 }
 
 // ListenerName returns the name of the listener in the form
-// of <gateway_namespace>/<gateway_name>/<listener_name>.
+// of <gateway_namespace>/<gateway_name>/<listener_name>. ir.ParseListenerName
+// is the inverse.
 func ListenerName(gwNs, gwName string, listenerName gwapiv1.SectionName) string {
 	return fmt.Sprintf("%s/%s/%s", gwNs, gwName, listenerName)
 }
@@ -376,6 +377,8 @@ func irRoutePrefix(route RouteContext) string {
 	return fmt.Sprintf("%s/%s/%s/", strings.ToLower(string(GetRouteType(route))), route.GetNamespace(), route.GetName())
 }
 
+// irRouteName names an IR route after the object, rule, and match that
+// produced it. ir.ParseRouteName is the inverse.
 func irRouteName(route RouteContext, ruleIdx, matchIdx int) string {
 	return fmt.Sprintf("%srule/%d/match/%d", irRoutePrefix(route), ruleIdx, matchIdx)
 }

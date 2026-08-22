@@ -29,6 +29,7 @@ import (
 	extensions "github.com/apoxy-dev/apoxy/client/informers/extensions"
 	gateway "github.com/apoxy-dev/apoxy/client/informers/gateway"
 	internalinterfaces "github.com/apoxy-dev/apoxy/client/informers/internalinterfaces"
+	metrics "github.com/apoxy-dev/apoxy/client/informers/metrics"
 	policy "github.com/apoxy-dev/apoxy/client/informers/policy"
 	vpc "github.com/apoxy-dev/apoxy/client/informers/vpc"
 	versioned "github.com/apoxy-dev/apoxy/client/versioned"
@@ -266,6 +267,7 @@ type SharedInformerFactory interface {
 	Core() core.Interface
 	Extensions() extensions.Interface
 	Gateway() gateway.Interface
+	Metrics() metrics.Interface
 	Policy() policy.Interface
 	Vpc() vpc.Interface
 }
@@ -292,6 +294,10 @@ func (f *sharedInformerFactory) Extensions() extensions.Interface {
 
 func (f *sharedInformerFactory) Gateway() gateway.Interface {
 	return gateway.New(f, f.namespace, f.tweakListOptions)
+}
+
+func (f *sharedInformerFactory) Metrics() metrics.Interface {
+	return metrics.New(f, f.namespace, f.tweakListOptions)
 }
 
 func (f *sharedInformerFactory) Policy() policy.Interface {

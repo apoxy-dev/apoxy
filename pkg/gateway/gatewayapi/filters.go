@@ -124,7 +124,7 @@ func (t *Translator) ProcessGRPCFilters(parentRef *RouteParentContext,
 		if httpFiltersContext.DirectResponse != nil {
 			break
 		}
-		if err := ValidateGRPCRouteFilter(&filter); err != nil {
+		if err := ValidateGRPCRouteFilter(&filter, t.ExtensionGroupKinds...); err != nil {
 			t.processInvalidHTTPFilter(string(filter.Type), httpFiltersContext, err)
 			break
 		}

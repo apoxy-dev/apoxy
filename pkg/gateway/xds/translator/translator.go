@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,6 +33,7 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/gateway/ir"
 	"github.com/apoxy-dev/apoxy/pkg/gateway/utils"
 	"github.com/apoxy-dev/apoxy/pkg/gateway/utils/protocov"
+	"github.com/apoxy-dev/apoxy/pkg/gateway/xds/telemeta"
 	"github.com/apoxy-dev/apoxy/pkg/gateway/xds/types"
 )
 
@@ -374,6 +376,13 @@ func (t *Translator) processHTTPListenerXdsTranslation(
 				continue
 			}
 
+			// Stamp telemetry attribution before the route leaves the
+			// translator. Gateway and listener identity exist only here; the
+			// route hooks downstream see the route alone. Both come out of
+			// the IR names, which the Gateway API translator builds from the
+			// owning objects.
+			telemeta.MarkRoute(xdsRoute, routeIdentity(httpListener.Name, httpRoute.Name))
+
 			//if enabledHTTP3 {
 			//	http3AltSvcHeader := buildHTTP3AltSvcHeader(int(httpListener.HTTP3.QUICPort))
 			//	if xdsRoute.ResponseHeadersToAdd == nil {
@@ -397,6 +406,7 @@ func (t *Translator) processHTTPListenerXdsTranslation(
 						tSocket:      nil,
 						endpointType: EndpointTypeStatic,
 						marker:       destinationMarker(mirrorDest),
+						backend:      destinationBackend(mirrorDest),
 					}); err != nil && !errors.Is(err, ErrXdsClusterExists) {
 						errs = errors.Join(errs, err)
 					}
@@ -545,6 +555,7 @@ func processTCPListenerXdsTranslation(tCtx *types.ResourceVersionTable, tcpListe
 				tSocket:      nil,
 				endpointType: buildEndpointType(route.Destination.Settings),
 				marker:       destinationMarker(route.Destination),
+				backend:      destinationBackend(route.Destination),
 			}); err != nil && !errors.Is(err, ErrXdsClusterExists) {
 				errs = errors.Join(errs, err)
 			}
@@ -595,6 +606,7 @@ func processUDPListenerXdsTranslation(tCtx *types.ResourceVersionTable, udpListe
 			tSocket:      nil,
 			endpointType: buildEndpointType(udpListener.Destination.Settings),
 			marker:       destinationMarker(udpListener.Destination),
+			backend:      destinationBackend(udpListener.Destination),
 		}); err != nil && !errors.Is(err, ErrXdsClusterExists) {
 			errs = errors.Join(errs, err)
 		}
@@ -700,6 +712,7 @@ func processXdsCluster(tCtx *types.ResourceVersionTable, httpRoute *ir.HTTPRoute
 		timeout:        httpRoute.Timeout,
 		tcpkeepalive:   httpRoute.TCPKeepalive,
 		marker:         destinationMarker(httpRoute.Destination),
+		backend:        destinationBackend(httpRoute.Destination),
 	}); err != nil && !errors.Is(err, ErrXdsClusterExists) {
 		return err
 	}
@@ -899,4 +912,22 @@ func buildXdsUpstreamTLSSocketWthCert(tlsConfig *ir.TLSUpstreamConfig) (*corev3.
 			TypedConfig: tlsCtxAny,
 		},
 	}, nil
+}
+
+// routeIdentity builds the telemetry attribution of one xDS route out of the
+// IR listener and route names. A name that does not have the translator's
+// shape contributes nothing, so a route from another producer stays
+// unattributed rather than misattributed.
+func routeIdentity(listenerName, routeName string) telemeta.Route {
+	var id telemeta.Route
+	if l, ok := ir.ParseListenerName(listenerName); ok {
+		id.Gateway = l.Gateway
+		id.Listener = l.Section
+	}
+	if r, ok := ir.ParseRouteName(routeName); ok {
+		id.RouteKind = r.Kind
+		id.RouteName = r.Name
+		id.RouteRule = strconv.Itoa(r.Rule)
+	}
+	return id
 }

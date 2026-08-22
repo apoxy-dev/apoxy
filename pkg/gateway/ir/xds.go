@@ -914,6 +914,13 @@ type DestinationSetting struct {
 	// InputDerived is true when the setting's endpoints come from user
 	// configuration rather than the translator itself.
 	InputDerived bool `json:"inputDerived,omitempty" yaml:"inputDerived,omitempty"`
+	// BackendKind is the kind of the backendRef object that produced this
+	// setting, such as Backend or VPCService. The xDS translator stamps it
+	// into cluster metadata for telemetry attribution.
+	BackendKind string `json:"backendKind,omitempty" yaml:"backendKind,omitempty"`
+	// BackendName is the name of the backendRef object that produced this
+	// setting.
+	BackendName string `json:"backendName,omitempty" yaml:"backendName,omitempty"`
 }
 
 // Validate the fields within the RouteDestination structure

@@ -658,7 +658,9 @@ func (t *Translator) processGRPCRouteRules(grpcRoute *GRPCRouteContext, parentRe
 		// If the route has no valid backends then just use a direct response and don't fuss with weighted responses
 		for _, ruleRoute := range ruleRoutes {
 			noValidBackends := ruleRoute.Destination == nil || ruleRoute.Destination.ToBackendWeights().Valid == 0
-			if noValidBackends && ruleRoute.Redirect == nil {
+			// A route that already carries a DirectResponse from an
+			// extension filter legitimately has no backends.
+			if noValidBackends && ruleRoute.Redirect == nil && ruleRoute.DirectResponse == nil {
 				ruleRoute.DirectResponse = &ir.DirectResponse{
 					StatusCode: 500,
 					Body:       ptr.To("no valid gRPC backends"),
@@ -1405,7 +1407,19 @@ func (t *Translator) processDestination(
 	}
 
 	ds.Weight = &weight
+	ds.BackendKind = backendKindName(backendRef.BackendObjectReference)
+	ds.BackendName = string(backendRef.Name)
 	return ds
+}
+
+// backendKindName is the telemetry name of a backendRef's kind. A
+// compute.apoxy.dev Service gets its own token so that a compute Service is
+// distinguishable from a core Kubernetes Service, which shares the kind name.
+func backendKindName(backendRef gwapiv1.BackendObjectReference) string {
+	if IsComputeServiceBackendRef(backendRef) {
+		return "ComputeService"
+	}
+	return string(KindDerefOr(backendRef.Kind, KindService))
 }
 
 func inspectAppProtocolByRouteKind(kind gwapiv1.Kind) ir.AppProtocol {
