@@ -125,7 +125,8 @@ type SlotLeaser interface {
 	// Renew extends a held lease. OSS has no lease TTL, so this is a no-op
 	// there; cloud refreshes the backing Endpoint's heartbeat.
 	Renew(ctx context.Context, s Slot) error
-	// Release returns a slot to the pool.
+	// Release returns a slot to the pool. On error the caller still
+	// relinquishes the slot; the leaser owns any retry.
 	Release(ctx context.Context, s Slot) error
 }
 

@@ -509,15 +509,24 @@ func (p *TunnelPublisher) connectionIDsForNetwork(network tunnet.NetworkID) []st
 	return ids
 }
 
-// ReleaseAll returns every leased slot to the leaser. Called at drain.
-func (p *TunnelPublisher) ReleaseAll(ctx context.Context) {
+// ReleaseAll returns every leased slot to the leaser, then makes one more
+// pass over pending Tunnel deletions. Slots go first: a Tunnel delete can
+// block for the whole budget on a project apiserver that is already gone.
+// Callers must have disconnected every connection first; this does not stop
+// traffic. It reports the slots that did not release so the caller can log.
+func (p *TunnelPublisher) ReleaseAll(ctx context.Context) error {
 	p.stopOnce.Do(func() { close(p.cleanupStop) })
+	err := p.slots.ReleaseAll(ctx)
 	select {
 	case <-p.cleanupDone:
 	case <-ctx.Done():
 	}
-	p.retryPending(ctx)
-	p.slots.ReleaseAll(ctx)
+	// A dead ctx would fail every pending delete at once and only inflate
+	// their attempt counters; leave them for the next call.
+	if ctx.Err() == nil {
+		p.retryPending(ctx)
+	}
+	return err
 }
 
 // prefixesToStrings renders a slice of prefixes as CIDR strings, returning nil

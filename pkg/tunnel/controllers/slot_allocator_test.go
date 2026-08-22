@@ -49,10 +49,11 @@ func (b *blockingLeaser) Release(ctx context.Context, s ipalloc.Slot) error {
 // countingLeaser wraps a real SlotLeaser to count Lease/Release calls and to
 // optionally inject a lease error.
 type countingLeaser struct {
-	inner    ipalloc.SlotLeaser
-	leases   int
-	releases int
-	leaseErr error
+	inner      ipalloc.SlotLeaser
+	leases     int
+	releases   int
+	leaseErr   error
+	releaseErr error
 }
 
 func (c *countingLeaser) Lease(ctx context.Context, net tunnet.NetworkID) (ipalloc.Slot, error) {
@@ -72,6 +73,9 @@ func (c *countingLeaser) Renew(ctx context.Context, b ipalloc.Slot) error {
 
 func (c *countingLeaser) Release(ctx context.Context, b ipalloc.Slot) error {
 	c.releases++
+	if c.releaseErr != nil {
+		return c.releaseErr
+	}
 	return c.inner.Release(ctx, b)
 }
 
@@ -176,11 +180,27 @@ func TestSlotAllocator(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, 2, leaser.leases)
 
-		b.ReleaseAll(ctx)
+		require.NoError(t, b.ReleaseAll(ctx))
 		require.Equal(t, 2, leaser.releases, "every leased slot returned")
 
 		// State is cleared: a second drain releases nothing more.
-		b.ReleaseAll(ctx)
+		require.NoError(t, b.ReleaseAll(ctx))
 		require.Equal(t, 2, leaser.releases, "drain is idempotent")
+	})
+
+	t.Run("ReleaseAll reports a failed release and still drops the slot", func(t *testing.T) {
+		leaser := &countingLeaser{inner: ipalloc.NewLocalSlotLeaser()}
+		b := newSlotAllocator(leaser)
+
+		_, _, alloc, err := b.Allocate(ctx, netA)
+		require.NoError(t, err)
+
+		leaser.releaseErr = errors.New("apiserver timeout")
+		require.Error(t, b.ReleaseAll(ctx))
+		require.Equal(t, 1, leaser.releases)
+		require.False(t, b.Contains(alloc), "the leaser owns the retry; the allocator lets go")
+
+		require.NoError(t, b.ReleaseAll(ctx))
+		require.Equal(t, 1, leaser.releases, "nothing left to release")
 	})
 }

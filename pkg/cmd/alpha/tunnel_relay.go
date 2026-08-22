@@ -246,7 +246,9 @@ var tunnelRelayCmd = &cobra.Command{
 			registrar.Drain(ctx)
 		})
 		relay.SetOnShutdown(func(ctx context.Context) {
-			publisher.ReleaseAll(ctx)
+			if err := publisher.ReleaseAll(ctx); err != nil {
+				slog.Warn("Some leased slots were not released at shutdown", slog.Any("error", err))
+			}
 		})
 
 		g.Go(func() error {

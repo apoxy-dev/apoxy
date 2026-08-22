@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/netip"
@@ -199,17 +200,21 @@ func (b *slotAllocator) InvalidateSlot(s ipalloc.Slot) {
 	}
 }
 
-// ReleaseAll returns every leased slot to the leaser. Called at drain; for the
-// local (OSS) leaser this is a cleanliness nicety since process exit frees them.
-func (b *slotAllocator) ReleaseAll(ctx context.Context) {
+// ReleaseAll returns every leased slot to the leaser and reports the slots
+// it could not release. The slots leave this allocator either way, per the
+// SlotLeaser.Release contract. For the local (OSS) leaser this is a
+// cleanliness nicety since process exit frees them.
+func (b *slotAllocator) ReleaseAll(ctx context.Context) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	var errs []error
 	for netID, na := range b.nets {
 		for _, blk := range na.slots {
 			if err := b.leaser.Release(ctx, blk); err != nil {
-				slog.Warn("Failed to release slot during drain", slog.Any("error", err))
+				errs = append(errs, err)
 			}
 		}
 		delete(b.nets, netID)
 	}
+	return errors.Join(errs...)
 }
