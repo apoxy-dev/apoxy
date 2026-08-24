@@ -15,11 +15,18 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"runtime"
+	"syscall"
 	"time"
 
 	"github.com/vishvananda/netns"
 )
+
+// runDir is the named-netns bind-mount directory the vishvananda/netns
+// library hardcodes. It is spelled /run/netns, never /var/run/netns; the two
+// only coincide on images where /var/run symlinks to /run.
+const runDir = "/run/netns/"
 
 // EnsureNamed returns a handle to the named network namespace, creating and
 // bind-mounting it if it does not exist. The bind mount lands in the
@@ -29,7 +36,25 @@ import (
 // CAP_SYS_ADMIN to create. The caller owns the returned handle.
 func EnsureNamed(name string) (netns.NsHandle, error) {
 	if ns, err := netns.GetFromName(name); err == nil {
-		return ns, nil
+		if isLiveNetns(ns) {
+			return ns, nil
+		}
+		// The name resolves to a plain file, not a namespace. This is the
+		// state a node reboot leaves behind when /run/netns lives on a
+		// disk-backed volume: the bind mount is gone, the mount-point file
+		// survived, and setns() on it fails with EINVAL forever. Remove the
+		// stale file and fall through to create a fresh namespace.
+		ns.Close()
+		if err := netns.DeleteNamed(name); err != nil {
+			// EINVAL from the unmount means the path is not a mount point;
+			// only the leftover file remains to remove.
+			if !errors.Is(err, syscall.EINVAL) {
+				return netns.None(), fmt.Errorf("failed to remove stale netns %q: %w", name, err)
+			}
+			if err := os.Remove(runDir + name); err != nil {
+				return netns.None(), fmt.Errorf("failed to remove stale netns file %q: %w", name, err)
+			}
+		}
 	}
 	runtime.LockOSThread()
 	orig, err := netns.Get()

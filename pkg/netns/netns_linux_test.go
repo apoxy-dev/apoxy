@@ -13,6 +13,7 @@ import (
 
 	"github.com/vishvananda/netlink"
 	vnetns "github.com/vishvananda/netns"
+	"golang.org/x/sys/unix"
 )
 
 // TestDialTimeoutInNamespace exercises the real thing: create a named netns,
@@ -86,4 +87,62 @@ func TestDialTimeoutInNamespace(t *testing.T) {
 	if string(buf) != "ok" {
 		t.Fatalf("got %q; want %q", buf, "ok")
 	}
+}
+
+// TestEnsureNamedRecreatesStaleFile reproduces the state a node reboot leaves
+// behind when /run/netns lives on a disk-backed volume: the bind mount is
+// gone but the mount-point file survived. EnsureNamed must detect the corpse
+// and create a fresh namespace instead of returning a handle that fails every
+// setns() with EINVAL.
+func TestEnsureNamedRecreatesStaleFile(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("requires root (CAP_SYS_ADMIN) to create network namespaces")
+	}
+	name := fmt.Sprintf("apoxy-netns-stale-%d", os.Getpid())
+	path := "/run/netns/" + name
+
+	ns, err := EnsureNamed(name)
+	if err != nil {
+		t.Fatalf("EnsureNamed: %v", err)
+	}
+	ns.Close()
+	t.Cleanup(func() {
+		_ = vnetns.DeleteNamed(name)
+		_ = os.Remove(path)
+	})
+
+	// Detach the bind mount; the plain mount-point file stays behind. This
+	// is byte-for-byte the post-reboot state.
+	if err := unix.Unmount(path, unix.MNT_DETACH); err != nil {
+		t.Fatalf("detach netns bind mount: %v", err)
+	}
+
+	// Confirm the corpse reproduces the bug: the file opens, but it is not
+	// a namespace.
+	stale, err := vnetns.GetFromName(name)
+	if err != nil {
+		t.Fatalf("open stale netns file: %v", err)
+	}
+	if isLiveNetns(stale) {
+		stale.Close()
+		t.Fatal("stale plain file unexpectedly passes the nsfs check")
+	}
+	stale.Close()
+
+	// EnsureNamed must replace the corpse with a live namespace.
+	fresh, err := EnsureNamed(name)
+	if err != nil {
+		t.Fatalf("EnsureNamed over stale file: %v", err)
+	}
+	defer fresh.Close()
+	if !isLiveNetns(fresh) {
+		t.Fatal("recreated netns fails the nsfs check")
+	}
+
+	// The exact call that wedged the backplane must now succeed.
+	nl, err := netlink.NewHandleAt(fresh)
+	if err != nil {
+		t.Fatalf("netlink handle in recreated netns: %v", err)
+	}
+	nl.Close()
 }
