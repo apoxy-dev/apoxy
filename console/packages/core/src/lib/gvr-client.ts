@@ -10,9 +10,11 @@ import type { GVR, K8sList, K8sObject, Status, WatchEvent } from './k8s-types'
 import type { WatchTransport } from './watch-transport'
 import {
   type ListParams,
+  type QueryParams,
   type WatchParams,
   listUrl,
   objectPath,
+  subresourceUrl,
   watchUrl,
 } from './k8s-paths'
 
@@ -64,6 +66,18 @@ export interface MutateOptions {
   namespace?: string
 }
 
+export interface SubresourceOptions {
+  namespace?: string
+  /** Aborts the read; a caller passes its own per-query signal here. */
+  signal?: AbortSignal
+  /**
+   * Called before the body is decoded, so a caller can read a header such as
+   * `Cache-Control` to pace its polling. Read headers only — the body is
+   * decoded after this returns and can only be read once.
+   */
+  onResponse?: (res: Response) => void
+}
+
 export interface GVRClientOptions {
   decorator: RequestDecorator
   /** Injectable for tests; defaults to the global `fetch`. */
@@ -100,6 +114,26 @@ export class GVRClient {
     const res = await this.send('GET', objectPath(gvr, name, opts.namespace), {
       accept: CONTENT_TYPE_JSON,
     })
+    return this.readJson<T>(res)
+  }
+
+  /**
+   * GET a subresource of a named object, for example `gateways/g1/metrics`. The
+   * result is not necessarily a `K8sObject`: a subresource can return a query
+   * result that carries no `metadata`.
+   */
+  async subresource<T>(
+    gvr: GVR,
+    name: string,
+    sub: string,
+    params: QueryParams = {},
+    opts: SubresourceOptions = {},
+  ): Promise<T> {
+    const res = await this.send('GET', subresourceUrl(gvr, name, sub, params, opts.namespace), {
+      accept: CONTENT_TYPE_JSON,
+      signal: opts.signal,
+    })
+    opts.onResponse?.(res)
     return this.readJson<T>(res)
   }
 

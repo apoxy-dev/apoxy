@@ -4,7 +4,7 @@
 // per-connect recording (resume resourceVersion, auth/project headers). The
 // MSW-driven tests that drive this ARE the WatchManager's spec.
 
-import { http, HttpResponse, type RequestHandler } from 'msw'
+import { http, HttpResponse, type JsonBodyType, type RequestHandler } from 'msw'
 import type { GVR, K8sList, K8sObject, Status, WatchEvent } from '../k8s-types'
 
 /** Default origin the tests point their RequestDecorator at. */
@@ -22,6 +22,20 @@ export interface WatchConnect {
   project: string | null
 }
 
+/** One recorded subresource GET, with the full URL so a test can assert on the
+ *  query the client built. */
+export interface SubresourceRequest {
+  url: string
+  authorization: string | null
+  project: string | null
+}
+
+/** A scripted subresource body and the headers it is served with. */
+interface SubresourceEntry {
+  body: JsonBodyType
+  headers: Record<string, string>
+}
+
 interface Watcher {
   controller: ReadableStreamDefaultController<Uint8Array>
 }
@@ -30,6 +44,8 @@ export class MockApiServer {
   readonly baseUrl = MOCK_BASE_URL
   /** Recorded watch connects per collection, in arrival order. */
   readonly watchConnects = new Map<string, WatchConnect[]>()
+  /** Recorded subresource GETs, in arrival order. */
+  readonly subresourceRequests: SubresourceRequest[] = []
   /** Count of LIST (non-watch) requests served — asserts no double-LIST. */
   listCount = 0
   /** When true, LIST bodies omit metadata.resourceVersion (degenerate server). */
@@ -38,6 +54,7 @@ export class MockApiServer {
   private rv = 0
   private readonly store = new Map<string, Map<string, K8sObject>>()
   private readonly watchers = new Map<string, Set<Watcher>>()
+  private readonly subresources = new Map<string, SubresourceEntry>()
   private readonly watchFaults = new Map<string, Fault[]>()
   private readonly listFaults = new Map<string, Fault[]>()
   private readonly enc = new TextEncoder()
@@ -59,6 +76,18 @@ export class MockApiServer {
     const m = this.ensure(colKey(gvr))
     m.clear()
     for (const o of objects) m.set(nameOf(o), stampRV(o, String(++this.rv)))
+  }
+
+  /** Script one subresource read (e.g. `gateways/g1/metrics`). An unseeded
+   *  subresource is a 404, like a missing object. */
+  seedSubresource(
+    gvr: GVR,
+    name: string,
+    sub: string,
+    body: JsonBodyType,
+    headers: Record<string, string> = {},
+  ): void {
+    this.subresources.set(subKey(gvr, name, sub), { body, headers })
   }
 
   /** The server's current resourceVersion. */
@@ -133,6 +162,8 @@ export class MockApiServer {
     this.watchFaults.clear()
     this.listFaults.clear()
     this.watchConnects.clear()
+    this.subresources.clear()
+    this.subresourceRequests.length = 0
   }
 
   // --- MSW wiring ----------------------------------------------------------
@@ -140,6 +171,7 @@ export class MockApiServer {
   handlers(): RequestHandler[] {
     const collection = `${MOCK_BASE_URL}/apis/:group/:version/:resource`
     const object = `${MOCK_BASE_URL}/apis/:group/:version/:resource/:name`
+    const subresource = `${MOCK_BASE_URL}/apis/:group/:version/:resource/:name/:sub`
     return [
       http.get(collection, ({ request, params }) => {
         const col = colKey(gvrOf(params))
@@ -171,6 +203,19 @@ export class MockApiServer {
           return HttpResponse.json(statusBody({ code: 404, reason: 'NotFound' }), { status: 404 })
         }
         return HttpResponse.json(obj)
+      }),
+      http.get(subresource, ({ request, params }) => {
+        const key = subKey(gvrOf(params), String(params.name), String(params.sub))
+        this.subresourceRequests.push({
+          url: request.url,
+          authorization: request.headers.get('authorization'),
+          project: request.headers.get('x-apoxy-project-id'),
+        })
+        const entry = this.subresources.get(key)
+        if (!entry) {
+          return HttpResponse.json(statusBody({ code: 404, reason: 'NotFound' }), { status: 404 })
+        }
+        return HttpResponse.json(entry.body, { headers: entry.headers })
       }),
       http.patch(object, async ({ request, params }) => {
         const gvr = gvrOf(params)
@@ -248,6 +293,10 @@ export class MockApiServer {
 
 function colKey(gvr: GVR): string {
   return `${gvr.group}/${gvr.version}/${gvr.resource}`
+}
+
+function subKey(gvr: GVR, name: string, sub: string): string {
+  return `${colKey(gvr)}/${name}/${sub}`
 }
 
 function gvrOf(params: Record<string, string | readonly string[] | undefined>): GVR {

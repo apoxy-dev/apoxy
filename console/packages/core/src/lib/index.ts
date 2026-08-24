@@ -21,8 +21,13 @@ export {
 
 // Generic GVR client
 export { GVRClient, K8sStatusError } from './gvr-client'
-export type { GVRClientOptions, ApplyOptions, MutateOptions } from './gvr-client'
-export type { Selectors, ListParams, WatchParams } from './k8s-paths'
+export type {
+  GVRClientOptions,
+  ApplyOptions,
+  MutateOptions,
+  SubresourceOptions,
+} from './gvr-client'
+export type { Selectors, ListParams, QueryParams, WatchParams } from './k8s-paths'
 export type { WatchTransport, WatchTransportRequest } from './watch-transport'
 export {
   WebSocketWatchTransport,

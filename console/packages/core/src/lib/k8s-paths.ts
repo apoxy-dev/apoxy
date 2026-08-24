@@ -41,13 +41,35 @@ export function objectPath(gvr: GVR, name: string, namespace?: string): string {
   return `${collectionPath(gvr, namespace)}/${encodeURIComponent(name)}`
 }
 
-function appendQuery(path: string, params: Record<string, string | number | boolean | undefined>): string {
+/** Query values a path accepts. An array repeats the key, which is how a
+ *  subresource takes a repeatable parameter. */
+export type QueryParams = Record<string, string | number | boolean | string[] | undefined>
+
+function appendQuery(path: string, params: QueryParams): string {
   const q = new URLSearchParams()
   for (const [k, v] of Object.entries(params)) {
-    if (v !== undefined && v !== '') q.set(k, String(v))
+    if (v === undefined || v === '') continue
+    if (Array.isArray(v)) {
+      for (const item of v) {
+        if (item !== '') q.append(k, item)
+      }
+      continue
+    }
+    q.set(k, String(v))
   }
   const s = q.toString()
   return s ? `${path}?${s}` : path
+}
+
+/** `GET` path for a subresource of one object, e.g. `…/gateways/g1/metrics`. */
+export function subresourceUrl(
+  gvr: GVR,
+  name: string,
+  sub: string,
+  params: QueryParams = {},
+  namespace?: string,
+): string {
+  return appendQuery(`${objectPath(gvr, name, namespace)}/${sub}`, params)
 }
 
 /** `GET` list path with selectors and pagination. */

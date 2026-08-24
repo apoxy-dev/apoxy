@@ -134,4 +134,53 @@ describe('GVRClient', () => {
     const stream = client().watch(gvr, {}, ac.signal)
     await expect(stream.next()).rejects.toBeInstanceOf(K8sStatusError)
   })
+
+  it('reads a subresource that carries no ObjectMeta', async () => {
+    mock.seedSubresource(gvr, 'a', 'metrics', { metric: 'http.requests', series: [] })
+    const set = await client().subresource<{ metric: string; series: unknown[] }>(gvr, 'a', 'metrics')
+    expect(set.metric).toBe('http.requests')
+  })
+
+  it('sends subresource parameters, repeating an array key', async () => {
+    mock.seedSubresource(gvr, 'a', 'metrics', {})
+    await client().subresource(gvr, 'a', 'metrics', {
+      window: '24h',
+      top: 50,
+      metric: ['http.requests', 'http.latency'],
+    })
+    const url = new URL(mock.subresourceRequests[0]?.url ?? '')
+    expect(url.pathname).toBe('/apis/core.apoxy.dev/v1alpha2/proxies/a/metrics')
+    expect(url.searchParams.get('window')).toBe('24h')
+    expect(url.searchParams.get('top')).toBe('50')
+    expect(url.searchParams.getAll('metric')).toEqual(['http.requests', 'http.latency'])
+  })
+
+  it('applies the decorator auth + project headers to a subresource read', async () => {
+    mock.seedSubresource(gvr, 'a', 'metrics', {})
+    await client('sub-token').subresource(gvr, 'a', 'metrics')
+    expect(mock.subresourceRequests[0]?.authorization).toBe('Bearer sub-token')
+    expect(mock.subresourceRequests[0]?.project).toBe('p1')
+  })
+
+  it('exposes the response to onResponse so a caller can read Cache-Control', async () => {
+    mock.seedSubresource(gvr, 'a', 'metrics', {}, { 'Cache-Control': 'max-age=60' })
+    let cacheControl: string | null = null
+    await client().subresource(gvr, 'a', 'metrics', {}, {
+      onResponse: (res) => {
+        cacheControl = res.headers.get('Cache-Control')
+      },
+    })
+    expect(cacheControl).toBe('max-age=60')
+  })
+
+  it('throws a typed K8sStatusError for a subresource the server does not serve', async () => {
+    await expect(client().subresource(gvr, 'a', 'metrics')).rejects.toBeInstanceOf(K8sStatusError)
+  })
+
+  it('aborts a subresource read through the signal', async () => {
+    mock.seedSubresource(gvr, 'a', 'metrics', {})
+    const ac = new AbortController()
+    ac.abort()
+    await expect(client().subresource(gvr, 'a', 'metrics', {}, { signal: ac.signal })).rejects.toThrow()
+  })
 })
