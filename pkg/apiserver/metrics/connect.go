@@ -117,6 +117,12 @@ type SnapshotOptions struct {
 	Source Source
 	// Reader builds the snapshot. A nil Reader makes every read a 501.
 	Reader SnapshotReader
+	// Decorate is optional. When it is set, it runs on a freshly read snapshot
+	// before the snapshot is cached, so a decoration that comes from outside
+	// the read model — such as the replica gauges off the owner status — is
+	// carried by the cached object too and is not recomputed per cache hit. An
+	// error from it fails the read through the same mapper as a backend error.
+	Decorate func(ctx context.Context, req *SnapshotRequest, obj runtime.Object) error
 	// Owners is optional. When it is set, a read over a missing owner is a 404
 	// before the backend is touched.
 	Owners OwnerChecker
@@ -385,6 +391,13 @@ func (h *snapshotHandler) serve(w http.ResponseWriter, r *http.Request) (runtime
 	snap, err := h.opts.Reader.ReadSnapshot(ctx, req)
 	if err != nil {
 		return nil, err
+	}
+	// Decorate before the object is cached, so a cache hit carries the same
+	// decoration as the read that filled it.
+	if h.opts.Decorate != nil {
+		if err := h.opts.Decorate(ctx, req, snap); err != nil {
+			return nil, err
+		}
 	}
 	h.opts.Cache.Put(key, snap)
 	return snap, nil

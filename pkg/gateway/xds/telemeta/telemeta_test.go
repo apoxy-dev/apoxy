@@ -129,3 +129,58 @@ func TestSetAndReadFields(t *testing.T) {
 	SetClusterField(nil, "k", "v") // Must not panic.
 	SetRouteField(nil, "k", "v")   // Must not panic.
 }
+
+// TestMarkRouteBackend pins the route-level backend marker, which a
+// translation uses when it re-points a route away from the cluster its backend
+// built and the destination cluster is shared by many backends.
+func TestMarkRouteBackend(t *testing.T) {
+	cases := []struct {
+		name   string
+		b      Backend
+		wantOK bool
+	}{
+		{name: "full identity", b: Backend{Kind: "ComputeService", Name: "echo"}, wantOK: true},
+		{name: "kind only", b: Backend{Kind: "ComputeService"}, wantOK: true},
+		{name: "name only", b: Backend{Name: "echo"}, wantOK: true},
+		{name: "zero identity writes nothing", b: Backend{}, wantOK: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &routev3.Route{Name: "test"}
+			MarkRouteBackend(r, tc.b)
+			got, ok := RouteBackendFrom(r)
+			if ok != tc.wantOK {
+				t.Fatalf("RouteBackendFrom ok = %v, want %v", ok, tc.wantOK)
+			}
+			if ok && got != tc.b {
+				t.Fatalf("round-trip = %+v, want %+v", got, tc.b)
+			}
+		})
+	}
+	MarkRouteBackend(nil, Backend{Kind: "ComputeService"}) // Must not panic.
+}
+
+// TestMarkRouteBackendSharesTheRouteMarker checks that the backend fields land
+// in the same "apoxy" map as the route identity, so one access log formatter
+// reads both and neither call clobbers the other.
+func TestMarkRouteBackendSharesTheRouteMarker(t *testing.T) {
+	r := &routev3.Route{Name: "test"}
+	id := Route{Gateway: "prod", Listener: "https", RouteKind: "HTTPRoute", RouteName: "api", RouteRule: "0"}
+	b := Backend{Kind: "ComputeService", Name: "echo"}
+
+	MarkRoute(r, id)
+	MarkRouteBackend(r, b)
+
+	gotID, ok := RouteFrom(r)
+	if !ok || gotID != id {
+		t.Fatalf("route identity = %+v (ok=%v), want %+v", gotID, ok, id)
+	}
+	gotBackend, ok := RouteBackendFrom(r)
+	if !ok || gotBackend != b {
+		t.Fatalf("route backend = %+v (ok=%v), want %+v", gotBackend, ok, b)
+	}
+	fields := r.GetMetadata().GetFilterMetadata()[FilterMetadataKey].GetFields()
+	if len(fields) != 7 {
+		t.Errorf("marker holds %d fields, want 7", len(fields))
+	}
+}

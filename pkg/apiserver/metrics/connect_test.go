@@ -210,3 +210,159 @@ func (l levelRecorder) Handle(ctx context.Context, r slog.Record) error {
 	*l.got, *l.seen = r.Level, true
 	return l.Handler.Handle(ctx, r)
 }
+
+// fakeSnapshots stands in for the read model behind a snapshot connecter,
+// counting reads so a cache hit is visible.
+type fakeSnapshots struct {
+	calls int
+	err   error
+}
+
+func (f *fakeSnapshots) ReadSnapshot(context.Context, *SnapshotRequest) (runtime.Object, error) {
+	f.calls++
+	if f.err != nil {
+		return nil, f.err
+	}
+	return &metricsv1alpha1.ProxyMetrics{}, nil
+}
+
+func serveSnapshot(t *testing.T, c *SnapshotConnecter, target string) (*recordingResponder, *httptest.ResponseRecorder) {
+	t.Helper()
+	resp := &recordingResponder{}
+	h, err := c.Connect(context.Background(), "proxy-1", nil, resp)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, target, nil))
+	return resp, w
+}
+
+// connectedOf reads the decorated gauge back off a snapshot response.
+func connectedOf(t *testing.T, obj runtime.Object) int32 {
+	t.Helper()
+	snap, ok := obj.(*metricsv1alpha1.ProxyMetrics)
+	if !ok {
+		t.Fatalf("response is %T, want *ProxyMetrics", obj)
+	}
+	return snap.Replicas.Connected
+}
+
+// TestSnapshotConnecterDecorate checks the decorator seam: it runs on a fresh
+// read, the cached object carries the decoration without a second call, and a
+// decorator failure maps through the same error path as a backend failure.
+func TestSnapshotConnecterDecorate(t *testing.T) {
+	target := "/apis/core.apoxy.dev/v1alpha2/proxies/proxy-1/metrics?window=1h"
+
+	t.Run("a fresh read is decorated", func(t *testing.T) {
+		reader := &fakeSnapshots{}
+		var decorated int
+		c := NewSnapshotConnecter(SnapshotOptions{
+			Kind:   SnapshotProxy,
+			Reader: reader,
+			Decorate: func(_ context.Context, req *SnapshotRequest, obj runtime.Object) error {
+				decorated++
+				if req.Name != "proxy-1" {
+					t.Errorf("decorator saw owner %q, want proxy-1", req.Name)
+				}
+				obj.(*metricsv1alpha1.ProxyMetrics).Replicas.Connected = 3
+				return nil
+			},
+			Owners: fakeOwners{exists: true},
+			Now:    func() time.Time { return now },
+			Log:    quietLogger(),
+		})
+		resp, _ := serveSnapshot(t, c, target)
+		if resp.err != nil {
+			t.Fatalf("read failed: %v", resp.err)
+		}
+		if got := connectedOf(t, resp.obj); got != 3 {
+			t.Errorf("replicas.connected = %d, want 3", got)
+		}
+		if decorated != 1 {
+			t.Errorf("the decorator ran %d times, want 1", decorated)
+		}
+	})
+
+	t.Run("a cached read still carries the decoration", func(t *testing.T) {
+		reader := &fakeSnapshots{}
+		var decorated int
+		c := NewSnapshotConnecter(SnapshotOptions{
+			Kind:   SnapshotProxy,
+			Reader: reader,
+			Decorate: func(_ context.Context, _ *SnapshotRequest, obj runtime.Object) error {
+				decorated++
+				obj.(*metricsv1alpha1.ProxyMetrics).Replicas.Connected = 3
+				return nil
+			},
+			Owners: fakeOwners{exists: true},
+			Cache:  NewCache(DefaultCacheTTL),
+			Now:    func() time.Time { return now },
+			Log:    quietLogger(),
+		})
+		if resp, _ := serveSnapshot(t, c, target); resp.err != nil {
+			t.Fatalf("first read failed: %v", resp.err)
+		}
+		resp, _ := serveSnapshot(t, c, target)
+		if resp.err != nil {
+			t.Fatalf("second read failed: %v", resp.err)
+		}
+		// The decoration is on the cached object, so the second read serves it
+		// without running the decorator again.
+		if got := connectedOf(t, resp.obj); got != 3 {
+			t.Errorf("cached replicas.connected = %d, want 3", got)
+		}
+		if reader.calls != 1 {
+			t.Errorf("the backend was read %d times, want 1", reader.calls)
+		}
+		if decorated != 1 {
+			t.Errorf("the decorator ran %d times, want 1", decorated)
+		}
+	})
+
+	t.Run("a decorator failure is mapped and nothing is cached", func(t *testing.T) {
+		reader := &fakeSnapshots{}
+		cache := NewCache(DefaultCacheTTL)
+		c := NewSnapshotConnecter(SnapshotOptions{
+			Kind:   SnapshotProxy,
+			Reader: reader,
+			Decorate: func(context.Context, *SnapshotRequest, runtime.Object) error {
+				return Unavailable(errors.New("owner status unreadable"))
+			},
+			Owners: fakeOwners{exists: true},
+			Cache:  cache,
+			Now:    func() time.Time { return now },
+			Log:    quietLogger(),
+		})
+		resp, _ := serveSnapshot(t, c, target)
+		if got := statusOf(t, resp.err); got != http.StatusServiceUnavailable {
+			t.Fatalf("code = %d, want 503", got)
+		}
+		if strings.Contains(resp.err.Error(), "owner status unreadable") {
+			t.Errorf("the 503 leaks the decorator message: %v", resp.err)
+		}
+		// A failed decoration must not leave an undecorated object behind, so
+		// the next read goes back to the backend.
+		serveSnapshot(t, c, target)
+		if reader.calls != 2 {
+			t.Errorf("the backend was read %d times, want 2; a failed read was cached", reader.calls)
+		}
+	})
+
+	t.Run("a nil decorator is a no-op", func(t *testing.T) {
+		c := NewSnapshotConnecter(SnapshotOptions{
+			Kind:   SnapshotProxy,
+			Reader: &fakeSnapshots{},
+			Owners: fakeOwners{exists: true},
+			Now:    func() time.Time { return now },
+			Log:    quietLogger(),
+		})
+		resp, _ := serveSnapshot(t, c, target)
+		if resp.err != nil {
+			t.Fatalf("read failed: %v", resp.err)
+		}
+		if got := connectedOf(t, resp.obj); got != 0 {
+			t.Errorf("replicas.connected = %d, want 0", got)
+		}
+	})
+}

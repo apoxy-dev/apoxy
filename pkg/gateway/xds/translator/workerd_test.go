@@ -11,6 +11,7 @@ import (
 	resourcev3 "github.com/envoyproxy/go-control-plane/pkg/resource/v3"
 
 	"github.com/apoxy-dev/apoxy/pkg/gateway/ir"
+	"github.com/apoxy-dev/apoxy/pkg/gateway/xds/telemeta"
 	"github.com/apoxy-dev/apoxy/pkg/gateway/xds/types"
 )
 
@@ -188,6 +189,10 @@ func TestWorkerdPatchRoute(t *testing.T) {
 		irRoute     *ir.HTTPRoute
 		wantCluster string
 		wantHeader  string
+		// wantBackend is the route-level telemetry marker. The resident cluster
+		// is shared by every Service of the project, so this route marker is
+		// the only thing that attributes the request to a Service.
+		wantBackend telemeta.Backend
 	}{
 		{
 			// The legacy single-project cluster name is asserted as a literal;
@@ -196,6 +201,7 @@ func TestWorkerdPatchRoute(t *testing.T) {
 			irRoute:     &ir.HTTPRoute{WorkerdService: "echo"},
 			wantCluster: "apoxy-workerd-resident",
 			wantHeader:  "echo",
+			wantBackend: telemeta.Backend{Kind: "ComputeService", Name: "echo"},
 		},
 		{
 			// The header stays the bare service name even with a project: the
@@ -205,6 +211,7 @@ func TestWorkerdPatchRoute(t *testing.T) {
 			irRoute:     &ir.HTTPRoute{WorkerdService: "echo", WorkerdProject: projectA},
 			wantCluster: "apoxy-workerd-resident/" + projectA,
 			wantHeader:  "echo",
+			wantBackend: telemeta.Backend{Kind: "ComputeService", Name: "echo"},
 		},
 		{
 			// Fail closed: a malformed tenant leaves the route on its
@@ -232,6 +239,11 @@ func TestWorkerdPatchRoute(t *testing.T) {
 				if _, ok := headerValue(route, workerdServiceHeader); ok {
 					t.Fatalf("unexpected %s header on untouched route", workerdServiceHeader)
 				}
+				// An untouched route keeps its placeholder cluster, which still
+				// carries its own marker, so the route must not claim one.
+				if _, ok := telemeta.RouteBackendFrom(route); ok {
+					t.Fatalf("unexpected route backend marker on untouched route")
+				}
 				return
 			}
 			if got := route.GetRoute().GetCluster(); got != tc.wantCluster {
@@ -243,6 +255,13 @@ func TestWorkerdPatchRoute(t *testing.T) {
 			}
 			if v != tc.wantHeader {
 				t.Fatalf("%s = %q, want %q", workerdServiceHeader, v, tc.wantHeader)
+			}
+			gotBackend, ok := telemeta.RouteBackendFrom(route)
+			if !ok {
+				t.Fatalf("missing route backend marker")
+			}
+			if gotBackend != tc.wantBackend {
+				t.Fatalf("route backend = %+v, want %+v", gotBackend, tc.wantBackend)
 			}
 		})
 	}
@@ -257,6 +276,9 @@ func TestWorkerdPatchRoute(t *testing.T) {
 		}
 		if _, ok := headerValue(route, workerdServiceHeader); ok {
 			t.Fatalf("unexpected %s header on redirect route", workerdServiceHeader)
+		}
+		if _, ok := telemeta.RouteBackendFrom(route); ok {
+			t.Fatalf("unexpected route backend marker on redirect route")
 		}
 	})
 }

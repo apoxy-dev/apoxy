@@ -139,6 +139,10 @@ type ReplicaGauges struct {
 	Ready int32 `json:"ready"`
 	// Available is how many replicas serve traffic.
 	Available int32 `json:"available"`
+	// Connected is how many replicas are currently connected, counted from the
+	// owner status. Desired, Ready, and Available stay zero until the Proxy
+	// status carries them.
+	Connected int32 `json:"connected"`
 }
 
 // +kubebuilder:object:root=true

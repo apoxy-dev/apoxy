@@ -13,6 +13,7 @@ import (
 	resourcev3 "github.com/envoyproxy/go-control-plane/pkg/resource/v3"
 
 	"github.com/apoxy-dev/apoxy/pkg/gateway/ir"
+	"github.com/apoxy-dev/apoxy/pkg/gateway/xds/telemeta"
 	"github.com/apoxy-dev/apoxy/pkg/gateway/xds/types"
 	"github.com/apoxy-dev/apoxy/pkg/log"
 	"github.com/apoxy-dev/apoxy/pkg/workerd/names"
@@ -25,6 +26,11 @@ const (
 	// through Envoy, and the dispatcher resolves the live revision from the service
 	// itself — so the revision is deliberately NOT in the header either.
 	workerdServiceHeader = "x-apoxy-service"
+
+	// workerdBackendKind is the telemetry backend kind of a compute Service. It
+	// is stamped on the ROUTE, not on the cluster: every Service of a project
+	// shares one resident cluster, so the cluster cannot name the Service.
+	workerdBackendKind = "ComputeService"
 )
 
 func init() {
@@ -157,6 +163,12 @@ func (*workerd) patchRoute(route *routev3.Route, irRoute *ir.HTTPRoute) error {
 		Header:       &corev3.HeaderValue{Key: workerdServiceHeader, Value: irRoute.WorkerdService},
 		AppendAction: corev3.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD,
 	})
+	// Re-pointing the route abandons the placeholder cluster that carried the
+	// backend marker, and the resident cluster it lands on is shared by every
+	// Service of the project. Put the backend identity on the route, which is
+	// per-Service, so telemetry still attributes compute traffic to the Service
+	// that served it.
+	telemeta.MarkRouteBackend(route, telemeta.Backend{Kind: workerdBackendKind, Name: irRoute.WorkerdService})
 	clusterName := names.ResidentClusterName(irRoute.WorkerdProject)
 	action.ClusterSpecifier = &routev3.RouteAction_Cluster{Cluster: clusterName}
 	log.Infof("Demuxed route %s to workerd resident %s (%s=%s)", route.GetName(), clusterName, workerdServiceHeader, irRoute.WorkerdService)

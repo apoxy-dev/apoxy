@@ -191,13 +191,11 @@ func (t *Translator) addXdsHTTPFilterChain(xdsListener *listenerv3.Listener, irL
 		return err
 	}
 
-	// HTTP filter configuration
-	var statPrefix string
-	if irListener.TLS != nil {
-		statPrefix = "https"
-	} else {
-		statPrefix = "http"
-	}
+	// HTTP filter configuration. The stat prefix names the Gateway listener
+	// that served the request, so a stat can be attributed to one Gateway
+	// rather than only to a scheme shared by every Gateway on the proxy.
+	// irListener.Name is <namespace>/<gateway>/<listener>.
+	statPrefix := "gw/" + irListener.Name
 
 	// Client IP detection
 	var useRemoteAddress = true

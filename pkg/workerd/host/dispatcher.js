@@ -13,11 +13,15 @@
 // the revision-bearing id, so make-before-break is unchanged: a new revision is a
 // new id, a new isolate loads while the old one idles out (workerd auto-evicts).
 const SERVICE_HEADER = "x-apoxy-service";
+// The revision never travels through Envoy, so this response header is the only
+// signal that tells a consumer which revision served a request.
+const REVISION_HEADER = "x-apoxy-revision";
 const HEALTH_PATH = "/__apoxy/health";
 
-// resolveCache memoizes service -> { id, expiry } so the steady-state hot path
-// makes no extra control round trip: a cached id hits the cached isolate
-// directly. The TTL bounds how long a node keeps routing to a just-rolled revision
+// resolveCache memoizes service -> { id, revision, expiry } so the steady-state
+// hot path makes no extra control round trip: a cached id hits the cached isolate
+// directly. The revision is cached beside the id so the response header costs no
+// extra parse. The TTL bounds how long a node keeps routing to a just-rolled revision
 // after a flip; both isolates coexist within the window, so a stale read is
 // make-before-break, not an error.
 const RESOLVE_TTL_MS = 1000;
@@ -32,26 +36,26 @@ const resolveCache = new Map();
 // otherwise stampede the control channel).
 const inflightResolves = new Map();
 
-async function resolveID(env, service) {
+async function resolveEntry(env, service) {
   const hit = resolveCache.get(service);
   if (hit && hit.expiry > Date.now()) {
-    return hit.id;
+    return hit;
   }
   let inflight = inflightResolves.get(service);
   if (!inflight) {
-    inflight = fetchID(env, service, hit).finally(() => inflightResolves.delete(service));
+    inflight = fetchEntry(env, service, hit).finally(() => inflightResolves.delete(service));
     inflightResolves.set(service, inflight);
   }
   return await inflight;
 }
 
-// fetchID resolves a service to its live revision id over the control channel,
+// fetchEntry resolves a service to its live revision id over the control channel,
 // distinguishing the manager's authoritative answers from transient failures:
 //   - a 4xx ("no live revision": last revision deleted/unpinned) is authoritative
 //     — drop any stale entry and return null so the caller surfaces 503;
 //   - a 5xx, a connection-level throw, or a malformed/idless body is transient —
 //     keep serving the last known revision (if any) rather than dropping traffic.
-async function fetchID(env, service, hit) {
+async function fetchEntry(env, service, hit) {
   let res;
   try {
     res = await env.MANAGER.fetch(
@@ -79,8 +83,13 @@ async function fetchID(env, service, hit) {
     // TTL with no re-probe).
     return staleOrNull(service, hit);
   }
-  resolveCache.set(service, { id: body.id, expiry: Date.now() + RESOLVE_TTL_MS });
-  return body.id;
+  const entry = {
+    id: body.id,
+    revision: body.revision || "",
+    expiry: Date.now() + RESOLVE_TTL_MS,
+  };
+  resolveCache.set(service, entry);
+  return entry;
 }
 
 // staleOrNull serves the last-known id on a transient failure, re-arming a short
@@ -90,8 +99,9 @@ function staleOrNull(service, hit) {
   if (!hit) {
     return null;
   }
-  resolveCache.set(service, { id: hit.id, expiry: Date.now() + RESOLVE_FAIL_TTL_MS });
-  return hit.id;
+  const entry = { ...hit, expiry: Date.now() + RESOLVE_FAIL_TTL_MS };
+  resolveCache.set(service, entry);
+  return entry;
 }
 
 export default {
@@ -112,10 +122,11 @@ export default {
     // Resolve the service to its live revision id. The backplane routes here only
     // once a revision is live, so a miss is a brief rollout-edge window: surface
     // 503 so the client retries rather than caching a bad id.
-    const id = await resolveID(env, service);
-    if (!id) {
+    const entry = await resolveEntry(env, service);
+    if (!entry) {
       return new Response("apoxy: no live revision for " + service + "\n", { status: 503 });
     }
+    const id = entry.id;
 
     // WorkerLoader.get caches the isolate by id. On a cache miss the callback runs
     // and fetches the worker definition from the manager over the MANAGER binding
@@ -154,6 +165,24 @@ export default {
       };
     });
 
-    return await worker.getEntrypoint().fetch(req);
+    const out = await worker.getEntrypoint().fetch(req);
+    if (!entry.revision) {
+      return out;
+    }
+    // Stamp the revision that served this request. Mutate in place when the
+    // headers allow it; only an immutable Response pays for the wrap, and
+    // passing the body through keeps the wrapped response streaming.
+    try {
+      out.headers.set(REVISION_HEADER, entry.revision);
+      return out;
+    } catch (_) {
+      const headers = new Headers(out.headers);
+      headers.set(REVISION_HEADER, entry.revision);
+      return new Response(out.body, {
+        status: out.status,
+        statusText: out.statusText,
+        headers,
+      });
+    }
   },
 };

@@ -11540,8 +11540,16 @@ func schema_apoxy_api_metrics_v1alpha1_ReplicaGauges(ref common.ReferenceCallbac
 							Format:      "int32",
 						},
 					},
+					"connected": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Connected is how many replicas are currently connected, counted from the owner status. Desired, Ready, and Available stay zero until the Proxy status carries them.",
+							Default:     0,
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
 				},
-				Required: []string{"desired", "ready", "available"},
+				Required: []string{"desired", "ready", "available", "connected"},
 			},
 		},
 	}

@@ -413,3 +413,66 @@ func TestRoundLatencyMillis(t *testing.T) {
 		})
 	}
 }
+
+// TestLookupSource pins the source registry: every source in the var block is
+// registered under its own name and resolves to its declared caps. A source
+// added to the block but not to the map fails the SourceNames check.
+func TestLookupSource(t *testing.T) {
+	cases := []struct {
+		name   string
+		lookup string
+		wantOK bool
+		want   Source
+	}{
+		{name: "raw logs", lookup: "otel_logs", wantOK: true, want: SourceOTELLogs},
+		{name: "http minute rollup", lookup: "http_1m", wantOK: true, want: SourceHTTP1m},
+		{name: "http hour rollup", lookup: "http_1h", wantOK: true, want: SourceHTTP1h},
+		{name: "envoy minute rollup", lookup: "envoy_1m", wantOK: true, want: SourceEnvoy1m},
+		{name: "unknown source", lookup: "nosuch"},
+		{name: "empty name", lookup: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := LookupSource(tc.lookup)
+			if ok != tc.wantOK {
+				t.Fatalf("LookupSource(%q) ok = %v, want %v", tc.lookup, ok, tc.wantOK)
+			}
+			if !ok {
+				return
+			}
+			if got != tc.want {
+				t.Fatalf("LookupSource(%q) = %+v, want %+v", tc.lookup, got, tc.want)
+			}
+			if got.Name != tc.lookup {
+				t.Errorf("source is registered under %q but names itself %q", tc.lookup, got.Name)
+			}
+		})
+	}
+
+	t.Run("envoy_1m reads minute buckets over 30 days", func(t *testing.T) {
+		if SourceEnvoy1m.Granularity != time.Minute {
+			t.Errorf("granularity = %s, want 1m", SourceEnvoy1m.Granularity)
+		}
+		if SourceEnvoy1m.MaxWindow != 30*24*time.Hour {
+			t.Errorf("max window = %s, want 720h", SourceEnvoy1m.MaxWindow)
+		}
+		// It is a rollup, not a raw-row source, so it takes the bucket caps
+		// rather than the raw-groupBy window cap.
+		if SourceEnvoy1m.Raw {
+			t.Error("envoy_1m is marked raw")
+		}
+	})
+
+	t.Run("SourceNames lists every registered source in order", func(t *testing.T) {
+		want := []string{"envoy_1m", "http_1h", "http_1m", "otel_logs"}
+		got := SourceNames()
+		if len(got) != len(want) {
+			t.Fatalf("SourceNames() = %v, want %v", got, want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("SourceNames() = %v, want %v", got, want)
+			}
+		}
+	})
+}

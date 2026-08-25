@@ -9,8 +9,10 @@ import (
 	// Register embed
 	_ "embed"
 	"fmt"
+	"strconv"
 	"strings"
 	"text/template"
+	"time"
 )
 
 const (
@@ -65,6 +67,10 @@ type bootstrapParameters struct {
 	EnablePrometheus bool
 	// OtelMetricSinks defines the configuration of the OpenTelemetry sinks.
 	OtelMetricSinks []metricSink
+	// StatsFlushInterval is how often Envoy flushes stats to the sinks, already
+	// rendered as a proto duration literal. It is empty when the caller sets
+	// none, which leaves Envoy on its own default.
+	StatsFlushInterval string
 	// EnableStatConfig defines whether to to customize the Envoy proxy stats.
 	EnableStatConfig bool
 	// StatsMatcher is to control creation of custom Envoy stats with prefix,
@@ -145,6 +151,12 @@ type BootstrapConfig struct {
 	OverloadMaxHeapSizeBytes *uint64
 	// OverloadMaxActiveDownstreamConnections defines the maximum number of active downstream connections for the Envoy overload manager.
 	OverloadMaxActiveDownstreamConnections *uint64
+	// OtelMetricSinks are the OpenTelemetry metric sinks Envoy reports stats to.
+	// An empty list leaves the stats sink section out of the bootstrap.
+	OtelMetricSinks []metricSink
+	// StatsFlushInterval is how often Envoy flushes stats to the sinks. A zero
+	// value leaves Envoy on its own default.
+	StatsFlushInterval time.Duration
 }
 
 func defaultBootstrapConfig() *BootstrapConfig {
@@ -206,6 +218,32 @@ func WithOverloadMaxActiveConnections(count uint64) BootstrapOption {
 	}
 }
 
+// WithOtelMetricSink adds an OpenTelemetry metric sink at host:port. Envoy
+// reports its stats to every sink added, each through its own cluster, so
+// calling this more than once fans the stats out rather than replacing a sink.
+func WithOtelMetricSink(host string, port uint32) BootstrapOption {
+	return func(cfg *BootstrapConfig) {
+		cfg.OtelMetricSinks = append(cfg.OtelMetricSinks, metricSink{Address: host, Port: port})
+	}
+}
+
+// WithStatsFlushInterval sets how often Envoy flushes stats to the sinks. A
+// value of zero or less leaves Envoy on its own default.
+func WithStatsFlushInterval(d time.Duration) BootstrapOption {
+	return func(cfg *BootstrapConfig) {
+		if d > 0 {
+			cfg.StatsFlushInterval = d
+		}
+	}
+}
+
+// protoDuration renders d the way a proto duration field is written in YAML:
+// whole seconds with a fractional part, never a Go duration string. Go prints
+// a minute as "1m0s", which Envoy rejects.
+func protoDuration(d time.Duration) string {
+	return strconv.FormatFloat(d.Seconds(), 'f', -1, 64) + "s"
+}
+
 // GetRenderedBootstrapConfig renders the bootstrap YAML string.
 func GetRenderedBootstrapConfig(opts ...BootstrapOption) (string, error) {
 	sOpts := defaultBootstrapConfig()
@@ -235,8 +273,13 @@ func GetRenderedBootstrapConfig(opts ...BootstrapOption) (string, error) {
 				MaxHeapSizeBytes:               sOpts.OverloadMaxHeapSizeBytes,
 				MaxActiveDownstreamConnections: sOpts.OverloadMaxActiveDownstreamConnections,
 			},
-			XdsTLSCAPath: sOpts.XdsTLSCAPath,
+			OtelMetricSinks: sOpts.OtelMetricSinks,
+			XdsTLSCAPath:    sOpts.XdsTLSCAPath,
 		},
+	}
+
+	if sOpts.StatsFlushInterval > 0 {
+		cfg.parameters.StatsFlushInterval = protoDuration(sOpts.StatsFlushInterval)
 	}
 
 	if err := cfg.render(); err != nil {

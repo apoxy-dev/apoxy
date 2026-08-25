@@ -125,7 +125,7 @@ func assertResidentConfig(t *testing.T, cfg workerdconfig.Config, in ResidentCon
 	if moduleName != dispatcherModuleName || dispatcherModule.Which().String() != "esModule" {
 		t.Errorf("dispatcher module = name %q kind %q", moduleName, dispatcherModule.Which())
 	}
-	for _, want := range []string{"x-apoxy-service", "env.LOADER.get"} {
+	for _, want := range []string{"x-apoxy-service", "x-apoxy-revision", "env.LOADER.get"} {
 		if !strings.Contains(source, want) {
 			t.Errorf("dispatcher source missing %q", want)
 		}

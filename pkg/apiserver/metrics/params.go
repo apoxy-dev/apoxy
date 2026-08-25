@@ -60,12 +60,15 @@ var (
 	SourceHTTP1m = Source{Name: "http_1m", Granularity: time.Minute, MaxWindow: 7 * 24 * time.Hour}
 	// SourceHTTP1h is the one-hour rollup.
 	SourceHTTP1h = Source{Name: "http_1h", Granularity: time.Hour, MaxWindow: 400 * 24 * time.Hour}
+	// SourceEnvoy1m is the one-minute Envoy stats rollup.
+	SourceEnvoy1m = Source{Name: "envoy_1m", Granularity: time.Minute, MaxWindow: 30 * 24 * time.Hour}
 )
 
 var sources = map[string]Source{
 	SourceOTELLogs.Name: SourceOTELLogs,
 	SourceHTTP1m.Name:   SourceHTTP1m,
 	SourceHTTP1h.Name:   SourceHTTP1h,
+	SourceEnvoy1m.Name:  SourceEnvoy1m,
 }
 
 // LookupSource resolves a source name.

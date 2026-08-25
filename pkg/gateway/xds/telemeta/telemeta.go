@@ -99,6 +99,40 @@ func RouteFrom(r *routev3.Route) (id Route, ok bool) {
 	}, true
 }
 
+// MarkRouteBackend writes the backend identity into the ROUTE's filter
+// metadata. A translation that re-points a route away from the cluster its
+// backend built — such as the compute demux, where every Service of a project
+// shares one resident cluster — has no per-backend cluster left to mark, so the
+// identity goes on the route, which is per-backend. An access log then reads it
+// with %METADATA(ROUTE:apoxy:backend_name)%. A zero identity writes nothing.
+func MarkRouteBackend(r *routev3.Route, b Backend) {
+	if r == nil || b == (Backend{}) {
+		return
+	}
+	fields := routeFields(r)
+	setIfNotEmpty(fields, FieldBackendKind, b.Kind)
+	setIfNotEmpty(fields, FieldBackendName, b.Name)
+}
+
+// RouteBackendFrom reads the route-level backend identity back. ok is false
+// when the route carries no marker.
+func RouteBackendFrom(r *routev3.Route) (b Backend, ok bool) {
+	return backendFrom(r.GetMetadata().GetFilterMetadata()[FilterMetadataKey])
+}
+
+// backendFrom reads a backend identity out of one marker struct. ok is false
+// when the holder carries no marker.
+func backendFrom(md *structpb.Struct) (b Backend, ok bool) {
+	if md == nil {
+		return Backend{}, false
+	}
+	f := md.GetFields()
+	return Backend{
+		Kind: f[FieldBackendKind].GetStringValue(),
+		Name: f[FieldBackendName].GetStringValue(),
+	}, true
+}
+
 // MarkCluster writes the backend identity into the cluster's filter metadata.
 // A zero identity writes nothing: an absent key is what identifies a cluster
 // that no backend object produced.
@@ -114,15 +148,7 @@ func MarkCluster(c *clusterv3.Cluster, b Backend) {
 // ClusterFrom reads the backend identity back. ok is false when the cluster
 // carries no marker.
 func ClusterFrom(c *clusterv3.Cluster) (b Backend, ok bool) {
-	md := c.GetMetadata().GetFilterMetadata()[FilterMetadataKey]
-	if md == nil {
-		return Backend{}, false
-	}
-	f := md.GetFields()
-	return Backend{
-		Kind: f[FieldBackendKind].GetStringValue(),
-		Name: f[FieldBackendName].GetStringValue(),
-	}, true
+	return backendFrom(c.GetMetadata().GetFilterMetadata()[FilterMetadataKey])
 }
 
 // SetClusterField writes one field into the cluster's marker. Consumers that

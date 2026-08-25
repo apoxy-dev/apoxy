@@ -5,9 +5,13 @@ import (
 	"os"
 	"path"
 	"testing"
+	"time"
 
+	bootstrapv3 "github.com/envoyproxy/go-control-plane/envoy/config/bootstrap/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/apoxy-dev/apoxy/pkg/gateway/utils/proto"
 )
 
 func TestGetRenderedBootstrapConfig(t *testing.T) {
@@ -42,6 +46,14 @@ func TestGetRenderedBootstrapConfig(t *testing.T) {
 				WithOverloadMaxActiveConnections(50000),
 			},
 		},
+		{
+			name: "otel-metrics",
+			overrideOptions: []BootstrapOption{
+				WithOtelMetricSink("otel-collector.monitoring.svc", 4317),
+				WithStatsFlushInterval(15 * time.Second),
+				WithOverloadMaxActiveConnections(50000),
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -59,6 +71,11 @@ func TestGetRenderedBootstrapConfig(t *testing.T) {
 			expected, err := readTestData(tc.name)
 			require.NoError(t, err)
 			assert.Equal(t, expected, got)
+
+			// The golden is compared as a string, so it can drift into YAML
+			// that Envoy rejects without any test noticing. Parse it as a
+			// bootstrap proto to keep the render honest.
+			require.NoError(t, proto.FromYAML([]byte(got), &bootstrapv3.Bootstrap{}))
 		})
 	}
 }

@@ -50,6 +50,9 @@ dynamic_resources:
     ads: {}
     resource_api_version: V3
 
+{{- if .StatsFlushInterval }}
+stats_flush_interval: {{ .StatsFlushInterval }}
+{{- end }}
 {{- if .OtelMetricSinks }}
 stats_sinks:
 {{- range $idx, $sink := .OtelMetricSinks }}
@@ -59,6 +62,9 @@ stats_sinks:
     grpc_service:
       envoy_grpc:
         cluster_name: otel_metric_sink_{{ $idx }}
+    report_counters_as_deltas: true
+    emit_tags_as_attributes: true
+    use_tag_extracted_name: true
 {{- end }}
 {{- end }}
 
