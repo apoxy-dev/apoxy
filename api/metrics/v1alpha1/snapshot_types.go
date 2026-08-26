@@ -201,11 +201,19 @@ type VPCServiceMetrics struct {
 	Metrics MetricsMap `json:"metrics,omitempty"`
 }
 
+// VPCTunnelMetrics is one tunnel's share of a VPCNetwork.
+type VPCTunnelMetrics struct {
+	// Name is the Tunnel name, which is the connection the agent holds.
+	Name string `json:"name,omitempty"`
+	// Metrics is every evaluated recipe for the tunnel.
+	Metrics MetricsMap `json:"metrics,omitempty"`
+}
+
 // +kubebuilder:object:root=true
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // VPCNetworkMetrics is the snapshot returned by vpcnetworks/<name>/metrics. It
-// cuts its own service list, so truncated and totalCount sit on it.
+// cuts its own leaf lists, so truncated and totalCount sit on it.
 type VPCNetworkMetrics struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -217,10 +225,34 @@ type VPCNetworkMetrics struct {
 	Units map[string]string `json:"units,omitempty"`
 	// Services is present only with include=services.
 	Services []VPCServiceMetrics `json:"services,omitempty"`
-	// Truncated is set when top cut the service list.
+	// Tunnels is present only with include=tunnels. A tunnel is one agent
+	// connection, so a reconnect is a new tunnel with a history of its own.
+	Tunnels []VPCTunnelMetrics `json:"tunnels,omitempty"`
+	// Truncated is set when top cut a leaf list.
 	Truncated bool `json:"truncated,omitempty"`
-	// TotalCount is how many services had traffic in the window.
+	// TotalCount is how many leaf rows had traffic in the window, counted
+	// across every list the read asked for.
 	TotalCount int `json:"totalCount,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+
+// TunnelMetrics is the snapshot returned by tunnels/<name>/metrics. It has no
+// nested table, so it takes no include token.
+//
+// A Tunnel is one agent connection to a relay, so the snapshot covers that
+// connection alone: an agent that reconnects gets a new Tunnel, and its
+// history starts over with it.
+type TunnelMetrics struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+	SnapshotMeta      `json:",inline"`
+
+	// Metrics is the tunnel totals, one entry per evaluated recipe.
+	Metrics MetricsMap `json:"metrics,omitempty"`
+	// Units maps a measure name to its display unit.
+	Units map[string]string `json:"units,omitempty"`
 }
 
 var (
@@ -229,6 +261,7 @@ var (
 	_ resourcestrategy.TableConverter = &ProxyMetrics{}
 	_ resourcestrategy.TableConverter = &ServiceMetrics{}
 	_ resourcestrategy.TableConverter = &VPCNetworkMetrics{}
+	_ resourcestrategy.TableConverter = &TunnelMetrics{}
 )
 
 // snapshotColumns are the columns every snapshot kind prints.
@@ -300,5 +333,11 @@ func (s *ServiceMetrics) ConvertToTable(_ context.Context, tableOptions runtime.
 
 // ConvertToTable renders the snapshot for kubectl get and apoxy get.
 func (s *VPCNetworkMetrics) ConvertToTable(_ context.Context, tableOptions runtime.Object) (*metav1.Table, error) {
+	return snapshotTable(tableOptions, s, s.Name, s.SnapshotMeta, s.Metrics), nil
+}
+
+// ConvertToTable renders the snapshot for kubectl get and apoxy get. A tunnel
+// carries no HTTP recipes, so the shared columns print an em dash for them.
+func (s *TunnelMetrics) ConvertToTable(_ context.Context, tableOptions runtime.Object) (*metav1.Table, error) {
 	return snapshotTable(tableOptions, s, s.Name, s.SnapshotMeta, s.Metrics), nil
 }

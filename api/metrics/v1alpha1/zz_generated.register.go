@@ -69,6 +69,7 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&MetricSourceList{},
 		&ProxyMetrics{},
 		&ServiceMetrics{},
+		&TunnelMetrics{},
 		&VPCNetworkMetrics{},
 	)
 	// AddToGroupVersion allows the serialization of client types like ListOptions.

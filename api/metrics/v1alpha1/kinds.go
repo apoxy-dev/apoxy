@@ -20,5 +20,6 @@ func AllKinds() []runtime.Object {
 		&ProxyMetrics{},
 		&ServiceMetrics{},
 		&VPCNetworkMetrics{},
+		&TunnelMetrics{},
 	}
 }

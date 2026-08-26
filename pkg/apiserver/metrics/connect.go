@@ -309,6 +309,8 @@ func NewSnapshotObject(kind SnapshotKind) runtime.Object {
 		return &metricsv1alpha1.ServiceMetrics{}
 	case SnapshotVPCNetwork:
 		return &metricsv1alpha1.VPCNetworkMetrics{}
+	case SnapshotTunnel:
+		return &metricsv1alpha1.TunnelMetrics{}
 	default:
 		return nil
 	}

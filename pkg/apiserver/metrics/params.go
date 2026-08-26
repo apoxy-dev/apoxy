@@ -62,6 +62,9 @@ var (
 	SourceHTTP1h = Source{Name: "http_1h", Granularity: time.Hour, MaxWindow: 400 * 24 * time.Hour}
 	// SourceEnvoy1m is the one-minute Envoy stats rollup.
 	SourceEnvoy1m = Source{Name: "envoy_1m", Granularity: time.Minute, MaxWindow: 30 * 24 * time.Hour}
+	// SourceRelay1m is the one-minute tunnel datapath rollup, written by the
+	// relay.
+	SourceRelay1m = Source{Name: "relay_1m", Granularity: time.Minute, MaxWindow: 30 * 24 * time.Hour}
 )
 
 var sources = map[string]Source{
@@ -69,6 +72,7 @@ var sources = map[string]Source{
 	SourceHTTP1m.Name:   SourceHTTP1m,
 	SourceHTTP1h.Name:   SourceHTTP1h,
 	SourceEnvoy1m.Name:  SourceEnvoy1m,
+	SourceRelay1m.Name:  SourceRelay1m,
 }
 
 // LookupSource resolves a source name.
@@ -104,12 +108,16 @@ const (
 	ScopeService ScopeKind = "Service"
 	// ScopeVPCNetwork scopes to one VPCNetwork.
 	ScopeVPCNetwork ScopeKind = "VPCNetwork"
+	// ScopeTunnel scopes to one Tunnel, which is one agent connection to a
+	// relay.
+	ScopeTunnel ScopeKind = "Tunnel"
 )
 
 // ValidScopeKinds is the list a 400 message prints and MetricSource publishes
 // in status.scopes, so a client does not discover it by trial.
 var ValidScopeKinds = []ScopeKind{
 	ScopeProject, ScopeGateway, ScopeHTTPRoute, ScopeProxy, ScopeService, ScopeVPCNetwork,
+	ScopeTunnel,
 }
 
 func validScopeKind(k ScopeKind) bool {
@@ -204,6 +212,8 @@ const (
 	SnapshotService SnapshotKind = "ServiceMetrics"
 	// SnapshotVPCNetwork is returned by vpcnetworks/<name>/metrics.
 	SnapshotVPCNetwork SnapshotKind = "VPCNetworkMetrics"
+	// SnapshotTunnel is returned by tunnels/<name>/metrics.
+	SnapshotTunnel SnapshotKind = "TunnelMetrics"
 )
 
 // includeTokens enumerates the legal include tokens per kind. An unknown token
@@ -213,7 +223,8 @@ var includeTokens = map[SnapshotKind][]string{
 	SnapshotHTTPRoute:  {"rules", "backends"},
 	SnapshotProxy:      nil,
 	SnapshotService:    {"revisions"},
-	SnapshotVPCNetwork: {"services"},
+	SnapshotVPCNetwork: {"services", "tunnels"},
+	SnapshotTunnel:     nil,
 }
 
 // snapshotScopeKinds maps a snapshot kind to the owner scope it reads with.
@@ -223,6 +234,7 @@ var snapshotScopeKinds = map[SnapshotKind]ScopeKind{
 	SnapshotProxy:      ScopeProxy,
 	SnapshotService:    ScopeService,
 	SnapshotVPCNetwork: ScopeVPCNetwork,
+	SnapshotTunnel:     ScopeTunnel,
 }
 
 // IncludeTokens lists the legal include tokens for a snapshot kind.

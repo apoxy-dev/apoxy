@@ -291,8 +291,10 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.RuleMetrics":                      schema_apoxy_api_metrics_v1alpha1_RuleMetrics(ref),
 		"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.ServiceMetrics":                   schema_apoxy_api_metrics_v1alpha1_ServiceMetrics(ref),
 		"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.SnapshotMeta":                     schema_apoxy_api_metrics_v1alpha1_SnapshotMeta(ref),
+		"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.TunnelMetrics":                    schema_apoxy_api_metrics_v1alpha1_TunnelMetrics(ref),
 		"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.VPCNetworkMetrics":                schema_apoxy_api_metrics_v1alpha1_VPCNetworkMetrics(ref),
 		"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.VPCServiceMetrics":                schema_apoxy_api_metrics_v1alpha1_VPCServiceMetrics(ref),
+		"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.VPCTunnelMetrics":                 schema_apoxy_api_metrics_v1alpha1_VPCTunnelMetrics(ref),
 		"github.com/apoxy-dev/apoxy/api/policy/v1alpha1.RateLimit":                         schema_apoxy_api_policy_v1alpha1_RateLimit(ref),
 		"github.com/apoxy-dev/apoxy/api/policy/v1alpha1.RateLimitDescriptor":               schema_apoxy_api_policy_v1alpha1_RateLimitDescriptor(ref),
 		"github.com/apoxy-dev/apoxy/api/policy/v1alpha1.RateLimitList":                     schema_apoxy_api_policy_v1alpha1_RateLimitList(ref),
@@ -11875,11 +11877,114 @@ func schema_apoxy_api_metrics_v1alpha1_SnapshotMeta(ref common.ReferenceCallback
 	}
 }
 
+func schema_apoxy_api_metrics_v1alpha1_TunnelMetrics(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "TunnelMetrics is the snapshot returned by tunnels/<name>/metrics. It has no nested table, so it takes no include token.\n\nA Tunnel is one agent connection to a relay, so the snapshot covers that connection alone: an agent that reconnects gets a new Tunnel, and its history starts over with it.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"),
+						},
+					},
+					"timestamp": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Timestamp is when the snapshot was computed.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+						},
+					},
+					"window": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Window is until minus since.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Duration"),
+						},
+					},
+					"since": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Since and Until are the resolved half-open [since, until) window bounds.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+						},
+					},
+					"until": {
+						SchemaProps: spec.SchemaProps{
+							Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+						},
+					},
+					"dataUpTo": {
+						SchemaProps: spec.SchemaProps{
+							Description: "DataUpTo is the end of the last complete bucket.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+						},
+					},
+					"metrics": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Metrics is the tunnel totals, one entry per evaluated recipe.",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type: []string{"object"},
+										AdditionalProperties: &spec.SchemaOrBool{
+											Allows: true,
+											Schema: &spec.Schema{
+												SchemaProps: spec.SchemaProps{
+													Type:   []string{"number"},
+													Format: "double",
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+					"units": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Units maps a measure name to its display unit.",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"timestamp", "window", "since", "until", "dataUpTo"},
+			},
+		},
+		Dependencies: []string{
+			"k8s.io/apimachinery/pkg/apis/meta/v1.Duration", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta", "k8s.io/apimachinery/pkg/apis/meta/v1.Time"},
+	}
+}
+
 func schema_apoxy_api_metrics_v1alpha1_VPCNetworkMetrics(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "VPCNetworkMetrics is the snapshot returned by vpcnetworks/<name>/metrics. It cuts its own service list, so truncated and totalCount sit on it.",
+				Description: "VPCNetworkMetrics is the snapshot returned by vpcnetworks/<name>/metrics. It cuts its own leaf lists, so truncated and totalCount sit on it.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"kind": {
@@ -11982,16 +12087,29 @@ func schema_apoxy_api_metrics_v1alpha1_VPCNetworkMetrics(ref common.ReferenceCal
 							},
 						},
 					},
+					"tunnels": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Tunnels is present only with include=tunnels. A tunnel is one agent connection, so a reconnect is a new tunnel with a history of its own.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.VPCTunnelMetrics"),
+									},
+								},
+							},
+						},
+					},
 					"truncated": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Truncated is set when top cut the service list.",
+							Description: "Truncated is set when top cut a leaf list.",
 							Type:        []string{"boolean"},
 							Format:      "",
 						},
 					},
 					"totalCount": {
 						SchemaProps: spec.SchemaProps{
-							Description: "TotalCount is how many services had traffic in the window.",
+							Description: "TotalCount is how many leaf rows had traffic in the window, counted across every list the read asked for.",
 							Type:        []string{"integer"},
 							Format:      "int32",
 						},
@@ -12001,7 +12119,7 @@ func schema_apoxy_api_metrics_v1alpha1_VPCNetworkMetrics(ref common.ReferenceCal
 			},
 		},
 		Dependencies: []string{
-			"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.VPCServiceMetrics", "k8s.io/apimachinery/pkg/apis/meta/v1.Duration", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta", "k8s.io/apimachinery/pkg/apis/meta/v1.Time"},
+			"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.VPCServiceMetrics", "github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.VPCTunnelMetrics", "k8s.io/apimachinery/pkg/apis/meta/v1.Duration", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta", "k8s.io/apimachinery/pkg/apis/meta/v1.Time"},
 	}
 }
 
@@ -12022,6 +12140,49 @@ func schema_apoxy_api_metrics_v1alpha1_VPCServiceMetrics(ref common.ReferenceCal
 					"metrics": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Metrics is every evaluated recipe for the service.",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type: []string{"object"},
+										AdditionalProperties: &spec.SchemaOrBool{
+											Allows: true,
+											Schema: &spec.Schema{
+												SchemaProps: spec.SchemaProps{
+													Type:   []string{"number"},
+													Format: "double",
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func schema_apoxy_api_metrics_v1alpha1_VPCTunnelMetrics(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "VPCTunnelMetrics is one tunnel's share of a VPCNetwork.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Name is the Tunnel name, which is the connection the agent holds.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metrics": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Metrics is every evaluated recipe for the tunnel.",
 							Type:        []string{"object"},
 							AdditionalProperties: &spec.SchemaOrBool{
 								Allows: true,

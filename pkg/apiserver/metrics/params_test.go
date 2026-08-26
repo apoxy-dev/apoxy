@@ -345,6 +345,46 @@ func TestParseSnapshotRequest(t *testing.T) {
 			},
 		},
 		{
+			name:  "a network snapshot takes the tunnel list",
+			kind:  SnapshotVPCNetwork,
+			owner: "default",
+			query: values("include", "tunnels"),
+			check: func(t *testing.T, r *SnapshotRequest) {
+				if !r.Includes("tunnels") || r.Includes("services") {
+					t.Errorf("include = %v, want [tunnels]", r.Include)
+				}
+			},
+		},
+		{
+			name:  "include all on a network covers both lists",
+			kind:  SnapshotVPCNetwork,
+			owner: "default",
+			query: values("include", "all"),
+			check: func(t *testing.T, r *SnapshotRequest) {
+				if len(r.Include) != 2 || r.Include[0] != "services" || r.Include[1] != "tunnels" {
+					t.Errorf("include = %v, want [services tunnels]", r.Include)
+				}
+			},
+		},
+		{
+			name:  "a tunnel snapshot scopes to the tunnel in the path",
+			kind:  SnapshotTunnel,
+			owner: "a1b2c3d4",
+			query: values(),
+			check: func(t *testing.T, r *SnapshotRequest) {
+				if r.Scope.Kind != ScopeTunnel || r.Scope.Name != "a1b2c3d4" {
+					t.Errorf("scope = %+v", r.Scope)
+				}
+			},
+		},
+		{
+			name:    "a tunnel is a leaf and takes no token",
+			kind:    SnapshotTunnel,
+			owner:   "a1b2c3d4",
+			query:   values("include", "services"),
+			wantErr: "takes no include token",
+		},
+		{
 			name:    "unknown include token lists the valid ones",
 			kind:    SnapshotGateway,
 			owner:   "prod",
@@ -428,6 +468,7 @@ func TestLookupSource(t *testing.T) {
 		{name: "http minute rollup", lookup: "http_1m", wantOK: true, want: SourceHTTP1m},
 		{name: "http hour rollup", lookup: "http_1h", wantOK: true, want: SourceHTTP1h},
 		{name: "envoy minute rollup", lookup: "envoy_1m", wantOK: true, want: SourceEnvoy1m},
+		{name: "relay minute rollup", lookup: "relay_1m", wantOK: true, want: SourceRelay1m},
 		{name: "unknown source", lookup: "nosuch"},
 		{name: "empty name", lookup: ""},
 	}
@@ -463,8 +504,20 @@ func TestLookupSource(t *testing.T) {
 		}
 	})
 
+	t.Run("relay_1m reads minute buckets over 30 days", func(t *testing.T) {
+		if SourceRelay1m.Granularity != time.Minute {
+			t.Errorf("granularity = %s, want 1m", SourceRelay1m.Granularity)
+		}
+		if SourceRelay1m.MaxWindow != 30*24*time.Hour {
+			t.Errorf("max window = %s, want 720h", SourceRelay1m.MaxWindow)
+		}
+		if SourceRelay1m.Raw {
+			t.Error("relay_1m is marked raw")
+		}
+	})
+
 	t.Run("SourceNames lists every registered source in order", func(t *testing.T) {
-		want := []string{"envoy_1m", "http_1h", "http_1m", "otel_logs"}
+		want := []string{"envoy_1m", "http_1h", "http_1m", "otel_logs", "relay_1m"}
 		got := SourceNames()
 		if len(got) != len(want) {
 			t.Fatalf("SourceNames() = %v, want %v", got, want)
@@ -475,4 +528,51 @@ func TestLookupSource(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestSnapshotKindsAreFullyWired pins every snapshot kind against the three
+// tables it must appear in. A kind wired into one and forgotten in another
+// serves an owner scope nothing reads, or a response object the connecter
+// cannot build.
+func TestSnapshotKindsAreFullyWired(t *testing.T) {
+	cases := []struct {
+		kind      SnapshotKind
+		scopeKind ScopeKind
+		include   []string
+	}{
+		{kind: SnapshotGateway, scopeKind: ScopeGateway, include: []string{"routes"}},
+		{kind: SnapshotHTTPRoute, scopeKind: ScopeHTTPRoute, include: []string{"rules", "backends"}},
+		{kind: SnapshotProxy, scopeKind: ScopeProxy},
+		{kind: SnapshotService, scopeKind: ScopeService, include: []string{"revisions"}},
+		{kind: SnapshotVPCNetwork, scopeKind: ScopeVPCNetwork, include: []string{"services", "tunnels"}},
+		{kind: SnapshotTunnel, scopeKind: ScopeTunnel},
+	}
+
+	if len(cases) != len(snapshotScopeKinds) {
+		t.Fatalf("%d kinds are covered, but %d are wired", len(cases), len(snapshotScopeKinds))
+	}
+
+	for _, tc := range cases {
+		t.Run(string(tc.kind), func(t *testing.T) {
+			got, ok := snapshotScopeKinds[tc.kind]
+			if !ok || got != tc.scopeKind {
+				t.Errorf("scope kind = %q, want %q", got, tc.scopeKind)
+			}
+			if !validScopeKind(tc.scopeKind) {
+				t.Errorf("%q is not a valid scope kind", tc.scopeKind)
+			}
+			tokens := IncludeTokens(tc.kind)
+			if len(tokens) != len(tc.include) {
+				t.Fatalf("include tokens = %v, want %v", tokens, tc.include)
+			}
+			for i := range tokens {
+				if tokens[i] != tc.include[i] {
+					t.Fatalf("include tokens = %v, want %v", tokens, tc.include)
+				}
+			}
+			if NewSnapshotObject(tc.kind) == nil {
+				t.Errorf("%q has no response object", tc.kind)
+			}
+		})
+	}
 }

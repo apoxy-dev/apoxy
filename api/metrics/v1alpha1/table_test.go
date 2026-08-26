@@ -70,6 +70,16 @@ func TestConvertToTable(t *testing.T) {
 			wantCells: []interface{}{"default", "24h0m0s", "-", "-", "-"},
 		},
 		{
+			name: "tunnel snapshot has no HTTP recipes to print",
+			obj: &TunnelMetrics{
+				ObjectMeta:   metav1.ObjectMeta{Name: "a1b2c3d4"},
+				SnapshotMeta: snapMeta,
+				Metrics:      MetricsMap{"network.bytes": Measures{"total": 4096}},
+			},
+			wantCols:  5,
+			wantCells: []interface{}{"a1b2c3d4", "24h0m0s", "-", "-", "-"},
+		},
+		{
 			name: "vpc network snapshot",
 			obj: &VPCNetworkMetrics{
 				ObjectMeta:   metav1.ObjectMeta{Name: "default"},
