@@ -989,6 +989,8 @@ func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.
 // handleMetricsPush handles POST /metrics/push requests from agents.
 // The agent pushes its Prometheus metrics in text exposition format over the
 // existing HTTP/3 connection, avoiding the need for overlay-based scraping.
+// A body over the shared size cap is answered with 413 so the agent learns its
+// registry is too large.
 func (t *TunnelServer) handleMetricsPush(w http.ResponseWriter, r *http.Request, connIDRef *atomic.Value) {
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -1011,6 +1013,14 @@ func (t *TunnelServer) handleMetricsPush(w http.ResponseWriter, r *http.Request,
 	// size cap as the relay push path.
 	families, err := metrics.DecodePush(w, r)
 	if err != nil {
+		if errors.Is(err, metrics.ErrPushTooLarge) {
+			slog.Warn("Refused a metrics push over the size limit",
+				slog.String("conn_id", id),
+				slog.String("remote", r.RemoteAddr),
+				slog.Int("limit_bytes", metrics.MaxPushBytes))
+			http.Error(w, "request too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		slog.Warn("Failed to parse pushed metrics",
 			slog.String("conn_id", id),
 			slog.Any("error", err))

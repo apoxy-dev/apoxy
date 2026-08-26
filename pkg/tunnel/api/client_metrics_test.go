@@ -9,10 +9,14 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"math/big"
 	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -23,6 +27,8 @@ import (
 	"github.com/quic-go/quic-go/http3"
 	"github.com/stretchr/testify/require"
 	crmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
+
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/metrics"
 )
 
 // pushRecorder is a stand-in relay: it answers the connect and disconnect
@@ -234,4 +240,136 @@ func TestClientPushMetricsReportsRejection(t *testing.T) {
 	err := c.PushMetrics(ctx)
 	require.Error(t, err)
 	require.True(t, IsStatus(err, http.StatusNotFound), "error = %v", err)
+}
+
+// refusingRoundTripper fails the test if a request reaches it.
+type refusingRoundTripper struct {
+	t *testing.T
+}
+
+func (r *refusingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	r.t.Helper()
+	r.t.Errorf("the client sent a request to %s, want no request at all", req.URL)
+	return nil, errors.New("the round tripper must not be reached")
+}
+
+// TestClientPushMetricsRefusesOversizedBody pins that the agent stops an
+// oversized push itself. The relay caps the body it reads, so sending it would
+// only waste the connection and come back as 413, and trimming the families to
+// fit would report a part of the registry as the whole of it. The failure must
+// carry metrics.ErrPushTooLarge so the push loop can report it loudly: a
+// registry this large stays this large on every tick.
+func TestClientPushMetricsRefusesOversizedBody(t *testing.T) {
+	const markerName = "tunnel_api_push_oversize_marker"
+
+	oversize := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: markerName,
+		Help: "Set by the tunnel API client oversize push test.",
+	}, []string{"id"})
+	require.NoError(t, crmetrics.Registry.Register(oversize))
+	t.Cleanup(func() { crmetrics.Registry.Unregister(oversize) })
+
+	// Every series writes a line of about 550 bytes, so this registry encodes
+	// to well over the limit.
+	filler := strings.Repeat("x", 500)
+	for i := 0; i < 2200; i++ {
+		oversize.WithLabelValues(fmt.Sprintf("%s-%04d", filler, i)).Set(1)
+	}
+
+	base, err := url.Parse("https://relay.invalid:6081")
+	require.NoError(t, err)
+	c := &Client{
+		http:       &http.Client{Transport: &refusingRoundTripper{t: t}},
+		baseURL:    base,
+		tunnelName: "default",
+		token:      "token",
+		agent:      "agent-a",
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err = c.PushMetrics(ctx)
+	require.Error(t, err)
+	require.ErrorIs(t, err, metrics.ErrPushTooLarge)
+	require.Contains(t, err.Error(), fmt.Sprintf("the limit is %d", metrics.MaxPushBytes))
+}
+
+// statusRoundTripper answers every request with a canned status and an empty
+// body, so a test can drive the client's handling of a relay answer without a
+// relay behind it.
+type statusRoundTripper struct {
+	status int
+}
+
+func (s *statusRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	// Read the request body so the client's encoder is exercised the way a
+	// real transport exercises it.
+	if req.Body != nil {
+		_, _ = io.Copy(io.Discard, req.Body)
+		_ = req.Body.Close()
+	}
+	return &http.Response{
+		StatusCode: s.status,
+		Status:     fmt.Sprintf("%d %s", s.status, http.StatusText(s.status)),
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader("")),
+		Request:    req,
+	}, nil
+}
+
+// TestClientPushMetricsMapsRejectionStatus pins how a refused push is
+// reported. A relay that answers 413 found the body too large after the local
+// check let it through, which happens when the agent and the relay hold
+// different limits. The cause and the remedy are the same as for the local
+// check, so the failure must carry metrics.ErrPushTooLarge and reach the same
+// loud report. Every other rejection stays a plain status error, which the
+// push loop keeps quiet.
+func TestClientPushMetricsMapsRejectionStatus(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		// wantTooLarge is true when the failure must wrap
+		// metrics.ErrPushTooLarge.
+		wantTooLarge bool
+	}{
+		{
+			name:         "the relay refused the body as too large",
+			status:       http.StatusRequestEntityTooLarge,
+			wantTooLarge: true,
+		},
+		{
+			name:   "the relay does not know the connection",
+			status: http.StatusNotFound,
+		},
+		{
+			name:   "the relay failed",
+			status: http.StatusInternalServerError,
+		},
+	}
+
+	base, err := url.Parse("https://relay.invalid:6081")
+	require.NoError(t, err)
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &Client{
+				http:       &http.Client{Transport: &statusRoundTripper{status: tc.status}},
+				baseURL:    base,
+				tunnelName: "default",
+				token:      "token",
+				agent:      "agent-a",
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			err := c.PushMetrics(ctx)
+			require.Error(t, err)
+			// The status stays readable whichever way the failure is wrapped.
+			require.True(t, IsStatus(err, tc.status), "error = %v", err)
+			require.Equal(t, tc.wantTooLarge, errors.Is(err, metrics.ErrPushTooLarge),
+				"error = %v", err)
+		})
+	}
 }

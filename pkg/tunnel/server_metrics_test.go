@@ -14,9 +14,9 @@ import (
 // TestTunnelServerMetricsPush pins how the legacy server push route answers:
 // the connection ID comes from the connect handler and never from the body, a
 // push that arrives before connect is refused, a server that keeps no store
-// says so, and an oversized body is rejected rather than buffered. The size cap
-// comes from the shared decoder the relay push route uses, so both paths hold
-// the same limit.
+// says so, and an oversized body is refused with 413 rather than buffered. The
+// size cap comes from the shared decoder the relay push route uses, so both
+// paths hold the same limit and give the same answer.
 func TestTunnelServerMetricsPush(t *testing.T) {
 	const (
 		connID      = "conn-legacy-1"
@@ -34,6 +34,8 @@ func TestTunnelServerMetricsPush(t *testing.T) {
 		withConnID bool
 		body       string
 		wantCode   int
+		// wantBody is the response text the handler must write, if any.
+		wantBody string
 		// wantStored is the family name the store must hold afterward.
 		wantStored string
 	}{
@@ -73,11 +75,12 @@ func TestTunnelServerMetricsPush(t *testing.T) {
 			wantCode:   http.StatusBadRequest,
 		},
 		{
-			name:       "a body over the cap is rejected",
+			name:       "a body over the cap is refused as too large",
 			withStore:  true,
 			withConnID: true,
 			body:       strings.Repeat("tunnel_relay_rtt_seconds{relay=\"relay-a\"} 0.012\n", metrics.MaxPushBytes/40),
-			wantCode:   http.StatusBadRequest,
+			wantCode:   http.StatusRequestEntityTooLarge,
+			wantBody:   "request too large",
 		},
 	}
 
@@ -106,6 +109,11 @@ func TestTunnelServerMetricsPush(t *testing.T) {
 
 			if resp.Code != tc.wantCode {
 				t.Fatalf("status = %d, want %d", resp.Code, tc.wantCode)
+			}
+			if tc.wantBody != "" {
+				if got := strings.TrimSpace(resp.Body.String()); got != tc.wantBody {
+					t.Fatalf("body = %q, want %q", got, tc.wantBody)
+				}
 			}
 			if store == nil {
 				return

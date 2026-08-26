@@ -217,7 +217,9 @@ func (r *Relay) MetricsStore() *metrics.MetricsStore {
 // virtual network: they start at zero when the network is installed and go
 // away with it, so a reader must take a decrease as a reset rather than as
 // negative traffic. RXDrops and TXDrops fold every drop reason the datapath
-// counts separately.
+// counts separately. Keep-alive frames carry no payload and are counted apart
+// from the packet and byte counters, so an idle connection that only exchanges
+// keep-alives shows no packets and no bytes.
 type ConnStats struct {
 	// ID is the connection ID, which is also the name of the Tunnel object the
 	// relay creates for it.
@@ -244,6 +246,15 @@ type ConnStats struct {
 	TXPackets uint64
 	RXDrops   uint64
 	TXDrops   uint64
+
+	// RXKeepAlives is the number of keep-alive frames received. A keep-alive
+	// carries no payload, so it is counted here and not in RXPackets or
+	// RXBytes. It still proves the peer is alive.
+	RXKeepAlives uint64
+	// TXKeepAlives is the number of keep-alive frames sent. A keep-alive
+	// carries no payload, so it is counted here and not in TXPackets or
+	// TXBytes.
+	TXKeepAlives uint64
 }
 
 // SetOnConnStatsFinal sets a callback that receives a connection's last
@@ -862,7 +873,8 @@ func (r *Relay) handleDisconnect(w http.ResponseWriter, req *http.Request, ps ht
 // HTTP/3 connection, in Prometheus text exposition format. The connection ID
 // comes from the request 4-tuple, through the same helper the connect handler
 // uses, so the push needs no ID of its own and cannot name another connection.
-// The body is read through metrics.DecodePush, which caps it.
+// The body is read through metrics.DecodePush, which caps it. A body over the
+// cap is answered with 413 so the agent learns its registry is too large.
 func (r *Relay) handleMetricsPush(w http.ResponseWriter, req *http.Request, _ httprouter.Params) {
 	r.mu.Lock()
 	store := r.metricsStore
@@ -894,6 +906,14 @@ func (r *Relay) handleMetricsPush(w http.ResponseWriter, req *http.Request, _ ht
 
 	families, err := metrics.DecodePush(w, req)
 	if err != nil {
+		if errors.Is(err, metrics.ErrPushTooLarge) {
+			slog.Warn("Refused a metrics push over the size limit",
+				slog.String("connID", id),
+				slog.String("remote", req.RemoteAddr),
+				slog.Int("limitBytes", metrics.MaxPushBytes))
+			http.Error(w, "request too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		slog.Warn("Failed to parse pushed metrics",
 			slog.String("connID", id),
 			slog.Any("error", err))

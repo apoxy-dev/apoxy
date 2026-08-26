@@ -23,6 +23,8 @@ import (
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 	crmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
+
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/metrics"
 )
 
 type Client struct {
@@ -380,6 +382,14 @@ func (c *Client) metricsPushLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			if err := c.PushMetrics(ctx); err != nil {
+				// A registry over the size limit stays over it on every tick,
+				// so this is reported loudly. Everything else is a passing
+				// failure of one push and stays quiet.
+				if errors.Is(err, metrics.ErrPushTooLarge) {
+					slog.Warn("Local metrics are too large to push to the relay",
+						slog.Any("error", err))
+					continue
+				}
 				slog.Debug("Failed to push metrics to the relay", slog.Any("error", err))
 			}
 		}
@@ -389,7 +399,10 @@ func (c *Client) metricsPushLoop(ctx context.Context) {
 // PushMetrics gathers the local metrics, encodes them in Prometheus text
 // format, and POSTs them to the relay over the existing HTTP/3 connection. A
 // connected client pushes every 15 seconds on its own; callers use this to
-// force a push.
+// force a push. An encoded body over metrics.MaxPushBytes is not sent at all,
+// and comes back as an error that wraps metrics.ErrPushTooLarge. A relay that
+// refuses the body itself, with 413, comes back the same way, so a caller sees
+// one failure whichever side found the body too large.
 func (c *Client) PushMetrics(ctx context.Context) error {
 	gatherer, ok := crmetrics.Registry.(prometheus.Gatherer)
 	if !ok {
@@ -409,6 +422,14 @@ func (c *Client) PushMetrics(ctx context.Context) error {
 		}
 	}
 
+	// The relay refuses a body over this limit with 413. Stop here instead of
+	// sending it: the agent knows the size before the relay does, and a
+	// trimmed body would report a part of the registry as the whole of it.
+	if buf.Len() > metrics.MaxPushBytes {
+		return fmt.Errorf("%w: encoded %d bytes, the limit is %d",
+			metrics.ErrPushTooLarge, buf.Len(), metrics.MaxPushBytes)
+	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.path(MetricsPushPath), &buf)
 	if err != nil {
 		return fmt.Errorf("new request: %w", err)
@@ -425,12 +446,21 @@ func (c *Client) PushMetrics(ctx context.Context) error {
 	// A relay that keeps no store answers 204, which is a success: the push
 	// was delivered, and there was nothing to keep.
 	if resp.StatusCode/100 != 2 {
-		return &StatusError{
+		statusErr := &StatusError{
 			Method: http.MethodPost,
 			URL:    c.path(MetricsPushPath),
 			Code:   resp.StatusCode,
 			Status: resp.Status,
 		}
+		// The relay read the body and found it over its own limit, which the
+		// local check did not catch: the two limits can differ when the agent
+		// and the relay run different versions. Report it as the same failure
+		// the local check reports, because the cause and the remedy are the
+		// same, and a registry this large stays this large on every tick.
+		if resp.StatusCode == http.StatusRequestEntityTooLarge {
+			return fmt.Errorf("%w: %w", metrics.ErrPushTooLarge, statusErr)
+		}
+		return statusErr
 	}
 	return nil
 }

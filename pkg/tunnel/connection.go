@@ -498,9 +498,9 @@ func (c *connection) Stats() (controllers.ConnectionStats, bool) {
 }
 
 // datapathStats returns the connection's identity together with the packet,
-// byte, and drop counters of its virtual network. It reports false when the
-// connection has no virtual network yet, or the handler no longer holds it,
-// because then there is nothing to count.
+// byte, drop, and keep-alive counters of its virtual network. It reports false
+// when the connection has no virtual network yet, or the handler no longer
+// holds it, because then there is nothing to count.
 func (c *connection) datapathStats() (ConnStats, bool) {
 	c.mu.Lock()
 	vni := c.vni
@@ -529,6 +529,8 @@ func (c *connection) datapathStats() (ConnStats, bool) {
 		TXPackets:     vnet.Stats.TXPackets.Load(),
 		RXDrops:       rxDrops(&vnet.Stats),
 		TXDrops:       txDrops(&vnet.Stats),
+		RXKeepAlives:  vnet.Stats.RXKeepAlives.Load(),
+		TXKeepAlives:  vnet.Stats.TXKeepAlives.Load(),
 	}, true
 }
 

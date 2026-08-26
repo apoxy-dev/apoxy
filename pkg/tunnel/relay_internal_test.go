@@ -135,7 +135,7 @@ func connIDFor(t *testing.T, r *Relay, remoteAddr string) string {
 // TestRelayMetricsPushRoute pins how the push route answers: metrics land
 // under the connection the request 4-tuple resolves to, a push from an unknown
 // 4-tuple is refused, a relay that keeps no store accepts and drops the push,
-// and an oversized body is rejected rather than buffered.
+// and an oversized body is refused with 413 rather than buffered.
 func TestRelayMetricsPushRoute(t *testing.T) {
 	const (
 		remoteAddr  = "127.0.0.1:34567"
@@ -151,6 +151,8 @@ func TestRelayMetricsPushRoute(t *testing.T) {
 		withConn bool
 		body     string
 		wantCode int
+		// wantBody is the response text the handler must write, if any.
+		wantBody string
 		// wantStored is the metric name the store must hold afterward.
 		wantStored string
 	}{
@@ -180,13 +182,15 @@ func TestRelayMetricsPushRoute(t *testing.T) {
 			withConn:  true,
 			body:      "this is not the exposition format\n",
 			wantCode:  http.StatusBadRequest,
+			wantBody:  "Invalid metrics body",
 		},
 		{
-			name:      "a body over the cap is rejected",
+			name:      "a body over the cap is refused as too large",
 			withStore: true,
 			withConn:  true,
 			body:      strings.Repeat("tunnel_relay_rtt_seconds{relay=\"relay-a\"} 0.012\n", metrics.MaxPushBytes/40),
-			wantCode:  http.StatusBadRequest,
+			wantCode:  http.StatusRequestEntityTooLarge,
+			wantBody:  "request too large",
 		},
 	}
 
@@ -214,6 +218,11 @@ func TestRelayMetricsPushRoute(t *testing.T) {
 			if resp.Code != tc.wantCode {
 				t.Fatalf("status = %d, want %d", resp.Code, tc.wantCode)
 			}
+			if tc.wantBody != "" {
+				if got := strings.TrimSpace(resp.Body.String()); got != tc.wantBody {
+					t.Fatalf("body = %q, want %q", got, tc.wantBody)
+				}
+			}
 			if store == nil {
 				return
 			}
@@ -237,8 +246,8 @@ func TestRelayMetricsPushRoute(t *testing.T) {
 
 // TestRelayConnectionStats pins the exported snapshot: identity comes off the
 // connection, counters off its virtual network, every drop reason is folded
-// into one receive and one transmit count, and a connection with no virtual
-// network yet has nothing to report.
+// into one receive and one transmit count, keep-alives get their own two
+// counts, and a connection with no virtual network yet has nothing to report.
 func TestRelayConnectionStats(t *testing.T) {
 	h := testHandler(t)
 	r := testRelay(t)
@@ -268,6 +277,8 @@ func TestRelayConnectionStats(t *testing.T) {
 	vnet.Stats.RXInvalidDst.Store(3)
 	vnet.Stats.TXDropsNoRemote.Store(4)
 	vnet.Stats.TXErrors.Store(5)
+	vnet.Stats.RXKeepAlives.Store(11)
+	vnet.Stats.TXKeepAlives.Store(12)
 
 	live := uint(liveVNI)
 	other := uint(anotherVNI)
@@ -304,6 +315,8 @@ func TestRelayConnectionStats(t *testing.T) {
 		TXPackets:     20,
 		RXDrops:       6,
 		TXDrops:       9,
+		RXKeepAlives:  11,
+		TXKeepAlives:  12,
 	}
 	if got != want {
 		t.Fatalf("stats = %+v, want %+v", got, want)
@@ -702,6 +715,8 @@ func TestDropFolding(t *testing.T) {
 				s.TXBytes.Store(400)
 				s.RXLearnedRemotes.Store(5)
 				s.RXLearnsDamped.Store(6)
+				s.RXKeepAlives.Store(7)
+				s.TXKeepAlives.Store(8)
 			},
 		},
 		{
@@ -735,6 +750,81 @@ func TestDropFolding(t *testing.T) {
 			}
 			if got := txDrops(&s); got != tc.wantTX {
 				t.Errorf("txDrops = %d, want %d", got, tc.wantTX)
+			}
+		})
+	}
+}
+
+// TestConnStatsKeepAliveCounters pins the keep-alive counters on their own: a
+// keep-alive carries no payload, so the datapath counts it apart from the
+// packets and the bytes. A connection that only holds the tunnel open must
+// therefore report keep-alives and no traffic, which is what tells an idle
+// tunnel apart from a broken one.
+func TestConnStatsKeepAliveCounters(t *testing.T) {
+	cases := []struct {
+		name string
+		set  func(*icx.Statistics)
+		want ConnStats
+	}{
+		{
+			name: "no traffic at all",
+			set:  func(*icx.Statistics) {},
+		},
+		{
+			name: "idle tunnel exchanging only keep-alives",
+			set: func(s *icx.Statistics) {
+				s.RXKeepAlives.Store(9)
+				s.TXKeepAlives.Store(10)
+			},
+			want: ConnStats{RXKeepAlives: 9, TXKeepAlives: 10},
+		},
+		{
+			name: "traffic and keep-alives together",
+			set: func(s *icx.Statistics) {
+				s.RXPackets.Store(3)
+				s.RXBytes.Store(300)
+				s.TXPackets.Store(4)
+				s.TXBytes.Store(400)
+				s.RXKeepAlives.Store(5)
+				s.TXKeepAlives.Store(6)
+			},
+			want: ConnStats{
+				RXBytes:      300,
+				TXBytes:      400,
+				RXPackets:    3,
+				TXPackets:    4,
+				RXKeepAlives: 5,
+				TXKeepAlives: 6,
+			},
+		},
+	}
+
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := testHandler(t)
+
+			vni := uint(200 + i)
+			remote := netstack.ToFullAddress(netip.MustParseAddrPort("127.0.0.1:6081"))
+			if err := h.AddVirtualNetwork(vni, remote, nil); err != nil {
+				t.Fatalf("failed to add virtual network: %v", err)
+			}
+			vnet, ok := h.GetVirtualNetwork(vni)
+			if !ok {
+				t.Fatal("virtual network is missing right after it was added")
+			}
+			tc.set(&vnet.Stats)
+
+			conn := &connection{id: "conn-1", handler: h, vni: &vni, network: "prod"}
+			got, ok := conn.datapathStats()
+			if !ok {
+				t.Fatal("the connection reported no counters")
+			}
+
+			want := tc.want
+			want.ID = "conn-1"
+			want.Network = "prod"
+			if got != want {
+				t.Fatalf("stats = %+v, want %+v", got, want)
 			}
 		})
 	}
