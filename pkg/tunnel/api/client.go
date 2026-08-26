@@ -18,8 +18,11 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/common/expfmt"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
+	crmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
 type Client struct {
@@ -29,10 +32,16 @@ type Client struct {
 	tunnelName       string
 	token            string
 	agent            string
-	metricsPort      int
 	labels           map[string]string
 	advertisedRoutes []string
 	agentInstance    string
+
+	// pushMu guards the metrics push loop's lifecycle. pushCancel stops the
+	// loop and pushDone closes when it has exited; both are nil while no loop
+	// is running.
+	pushMu     sync.Mutex
+	pushCancel context.CancelFunc
+	pushDone   chan struct{}
 
 	// draining is closed when a control connection to the relay ends with a
 	// graceful close (H3_NO_ERROR) — the relay sent GOAWAY, or closed the
@@ -70,9 +79,6 @@ type ClientOptions struct {
 	// PacketConn is an optional UDP PacketConn to use for QUIC connections.
 	// If nil, a new UDP socket will be created for each connection.
 	PacketConn net.PacketConn
-	// MetricsPort is the port the agent's Prometheus metrics server listens on.
-	// Advertised to the relay so it can scrape metrics through the overlay.
-	MetricsPort int
 	// Labels are agent-declared labels used for service selection.
 	Labels map[string]string
 	// AdvertisedRoutes are CIDRs reachable behind this agent.
@@ -112,7 +118,6 @@ func NewClient(opts ClientOptions) (*Client, error) {
 		tunnelName:       opts.TunnelName,
 		token:            opts.Token,
 		agent:            opts.Agent,
-		metricsPort:      opts.MetricsPort,
 		labels:           opts.Labels,
 		advertisedRoutes: opts.AdvertisedRoutes,
 		agentInstance:    opts.AgentInstance,
@@ -197,6 +202,7 @@ func (c *Client) handleControlClose(cause error) {
 
 func (c *Client) Close() error {
 	c.closed.Store(true)
+	c.stopMetricsPush()
 	return c.h3.Close()
 }
 
@@ -204,7 +210,6 @@ func (c *Client) Close() error {
 func (c *Client) Connect(ctx context.Context) (*ConnectResponse, error) {
 	reqBody := ConnectRequest{
 		Agent:            c.agent,
-		MetricsPort:      c.metricsPort,
 		Labels:           c.labels,
 		AdvertisedRoutes: c.advertisedRoutes,
 		AgentInstance:    c.agentInstance,
@@ -213,11 +218,15 @@ func (c *Client) Connect(ctx context.Context) (*ConnectResponse, error) {
 	if err := c.doJSON(ctx, http.MethodPost, c.path("/v1/tunnel/"+c.tunnelName), reqBody, &resp, http.StatusCreated); err != nil {
 		return nil, err
 	}
+	// The relay keys pushed metrics by connection, so the loop starts only
+	// once there is a connection to key them by.
+	c.startMetricsPush()
 	return &resp, nil
 }
 
 // Disconnect from the relay and close the tunnel connection.
 func (c *Client) Disconnect(ctx context.Context, id string) error {
+	c.stopMetricsPush()
 	reqBody := Request{Agent: c.agent, ID: id}
 	return c.doJSON(ctx, http.MethodDelete, c.path("/v1/tunnel/"+c.tunnelName), reqBody, nil, http.StatusOK)
 }
@@ -301,6 +310,129 @@ func IsRelayDraining(err error) bool {
 		return true
 	}
 	return strings.Contains(err.Error(), "connection in graceful shutdown")
+}
+
+// Metrics push cadence. They are vars only so tests can compress the timeline.
+var (
+	// metricsPushSettle is how long the loop waits before its first push, to
+	// let the new connection settle.
+	metricsPushSettle = 2 * time.Second
+	// metricsPushInterval is how often the loop pushes after that.
+	metricsPushInterval = 15 * time.Second
+)
+
+// startMetricsPush runs the metrics push loop for the live connection. The
+// loop gets a context of the client's own rather than the connect request's,
+// which is bounded by the request timeout and would end the loop within
+// seconds. It does nothing when a loop is already running.
+func (c *Client) startMetricsPush() {
+	c.pushMu.Lock()
+	defer c.pushMu.Unlock()
+
+	if c.pushCancel != nil {
+		return
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	c.pushCancel, c.pushDone = cancel, done
+
+	go func() {
+		defer close(done)
+		c.metricsPushLoop(ctx)
+	}()
+}
+
+// stopMetricsPush ends the push loop and waits for it to exit, so a closed
+// client leaves no goroutine pushing over a dead transport.
+func (c *Client) stopMetricsPush() {
+	c.pushMu.Lock()
+	cancel, done := c.pushCancel, c.pushDone
+	c.pushCancel, c.pushDone = nil, nil
+	c.pushMu.Unlock()
+
+	if cancel == nil {
+		return
+	}
+	cancel()
+	<-done
+}
+
+// metricsPushLoop pushes the local metrics to the relay every
+// metricsPushInterval until ctx is canceled.
+func (c *Client) metricsPushLoop(ctx context.Context) {
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(metricsPushSettle):
+	}
+
+	if err := c.PushMetrics(ctx); err != nil {
+		slog.Warn("Failed to push the first metrics to the relay", slog.Any("error", err))
+	}
+
+	ticker := time.NewTicker(metricsPushInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := c.PushMetrics(ctx); err != nil {
+				slog.Debug("Failed to push metrics to the relay", slog.Any("error", err))
+			}
+		}
+	}
+}
+
+// PushMetrics gathers the local metrics, encodes them in Prometheus text
+// format, and POSTs them to the relay over the existing HTTP/3 connection. A
+// connected client pushes every 15 seconds on its own; callers use this to
+// force a push.
+func (c *Client) PushMetrics(ctx context.Context) error {
+	gatherer, ok := crmetrics.Registry.(prometheus.Gatherer)
+	if !ok {
+		return fmt.Errorf("metrics registry does not gather")
+	}
+
+	families, err := gatherer.Gather()
+	if err != nil {
+		return fmt.Errorf("gather metrics: %w", err)
+	}
+
+	var buf bytes.Buffer
+	enc := expfmt.NewEncoder(&buf, expfmt.NewFormat(expfmt.TypeTextPlain))
+	for _, mf := range families {
+		if err := enc.Encode(mf); err != nil {
+			return fmt.Errorf("encode metric %s: %w", mf.GetName(), err)
+		}
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.path(MetricsPushPath), &buf)
+	if err != nil {
+		return fmt.Errorf("new request: %w", err)
+	}
+	req.Header.Set("Content-Type", string(expfmt.NewFormat(expfmt.TypeTextPlain)))
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("push metrics: %w", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+
+	// A relay that keeps no store answers 204, which is a success: the push
+	// was delivered, and there was nothing to keep.
+	if resp.StatusCode/100 != 2 {
+		return &StatusError{
+			Method: http.MethodPost,
+			URL:    c.path(MetricsPushPath),
+			Code:   resp.StatusCode,
+			Status: resp.Status,
+		}
+	}
+	return nil
 }
 
 func (c *Client) path(pth string) string {

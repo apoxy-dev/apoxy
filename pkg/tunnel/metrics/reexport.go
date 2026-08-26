@@ -3,6 +3,7 @@ package metrics
 import (
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -19,6 +20,16 @@ const (
 	labelConnID         = "conn_id"
 	labelAgentProcessID = "agent_process_id"
 	labelProjectID      = "project_id"
+
+	// reexportFamilyPrefix limits the re-export to the tunnel metric families.
+	// An agent gathers its whole controller-runtime registry and pushes all of
+	// it — go_*, process_*, client-go, workqueue — and every family the
+	// collector re-emits is multiplied by the number of connections the relay
+	// holds, so re-exporting the rest costs a lot of series and says nothing
+	// about the tunnel. Only the tunnel_* families have readers: dashboards and
+	// tests query apoxy_tunnel_*. The tunnelproxy re-export runs through this
+	// same collector, so it is filtered the same way, on purpose.
+	reexportFamilyPrefix = "tunnel_"
 
 	// connUptimeMetric is the first-party per-connection uptime metric emitted
 	// by the ReexportCollector (computed from StoreResult.RegisteredAt). Unlike
@@ -38,6 +49,12 @@ var targetLabelNames = []string{
 	labelConnID,
 	labelAgentProcessID,
 	labelProjectID,
+}
+
+// ReexportsFamily reports whether a pushed metric family is re-exported. See
+// reexportFamilyPrefix for why the rest of an agent's registry is dropped.
+func ReexportsFamily(name string) bool {
+	return strings.HasPrefix(name, reexportFamilyPrefix)
 }
 
 func targetLabelValues(t StoreTarget) []string {
@@ -94,13 +111,18 @@ func NewReexportCollector(store *MetricsStore, opts ...ReexportOption) *Reexport
 func (c *ReexportCollector) Describe(ch chan<- *prometheus.Desc) {}
 
 // Collect implements prometheus.Collector. It takes a snapshot of the store
-// results (briefly holding RLock), then iterates the snapshot without any lock.
+// results under a short read lock, then converts the snapshot with no lock
+// held: the conversion builds a descriptor per series and can only go as fast
+// as the scraper reads the channel, while an agent push needs the write lock.
+// A slow scrape must not hold pushes off for its whole duration.
 func (c *ReexportCollector) Collect(ch chan<- prometheus.Metric) {
 	now := time.Now()
-	c.store.ForEachResult(func(connID string, result *StoreResult) bool {
+	results := c.store.Snapshot()
+	for i := range results {
+		result := &results[i]
 		values := targetLabelValues(result.Target)
 		// Guard tolerates tests that populate store.results directly, bypassing
-		// Register. In production Register always stamps RegisteredAt.
+		// Register. In production Register always records RegisteredAt.
 		if !result.RegisteredAt.IsZero() {
 			ch <- prometheus.MustNewConstMetric(
 				c.connUptimeDesc,
@@ -110,11 +132,10 @@ func (c *ReexportCollector) Collect(ch chan<- prometheus.Metric) {
 			)
 		}
 		if now.Sub(result.PushedAt) > StaleResultTimeout {
-			return true
+			continue
 		}
 		c.collectResult(ch, result, values)
-		return true
-	})
+	}
 }
 
 func (c *ReexportCollector) collectResult(
@@ -123,6 +144,9 @@ func (c *ReexportCollector) collectResult(
 	targetValues []string,
 ) {
 	for name, family := range result.Families {
+		if !ReexportsFamily(name) {
+			continue
+		}
 		prefixedName := c.prefix + name
 		for _, m := range family.Metric {
 			pm, err := c.toPrometheusMetric(prefixedName, family.GetType(), m, targetValues)

@@ -21,6 +21,11 @@ var startTime = time.Now()
 // and the server handler so a rename can't silently break the wire.
 const QueryParamAgentProcessID = "agent_process_id"
 
+// RelayRTTMetric is the family name of TunnelRelayRTTSeconds. Servers that
+// read the round trip time out of a pushed family look it up by name, so the
+// name is exported here instead of being written out again by each reader.
+const RelayRTTMetric = "tunnel_relay_rtt_seconds"
+
 // processID is stable for the process lifetime so callers can distinguish
 // "same process with multiple conns" from "multiple processes each with one
 // conn". Prefers a CRI container ID (cross-refs kubelet/containerd metadata)
@@ -39,7 +44,7 @@ func initProcessID() string {
 	// by the same restart rate either way.
 	//
 	// The full 64-hex CRI ID is truncated to 32: the ID also travels as a
-	// Kubernetes label value (the relay stamps it on Tunnel objects), where 64
+	// Kubernetes label value (the relay puts it on Tunnel objects), where 64
 	// chars is one over the limit, and a 128-bit prefix is ample for identity
 	// (Docker's own short form is 12). Truncation keeps the value greppable
 	// against runtime metadata, unlike hashing.
@@ -89,7 +94,7 @@ var (
 	// measurement). The series is deleted when the session ends.
 	TunnelRelayRTTSeconds = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "tunnel_relay_rtt_seconds",
+			Name: RelayRTTMetric,
 			Help: "Smoothed round-trip time to the connected relay, as measured by QUIC.",
 		},
 		[]string{"relay"},

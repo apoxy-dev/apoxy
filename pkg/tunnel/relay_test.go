@@ -15,11 +15,13 @@ import (
 	"time"
 
 	"github.com/apoxy-dev/icx"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"gvisor.dev/gvisor/pkg/tcpip"
+	crmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
 	"github.com/apoxy-dev/apoxy/pkg/cryptoutils"
 	"github.com/apoxy-dev/apoxy/pkg/netstack"
@@ -28,6 +30,7 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/connection"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/controllers"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/hasher"
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/metrics"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/token"
 )
 
@@ -124,6 +127,113 @@ func TestRelay_ControlSessionCloseDisconnects(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("QUIC session close did not disconnect the relay connection")
 	}
+}
+
+// TestRelay_ReconnectReportsANewInstance pins how the reported statistics tell
+// two connections apart. A reconnect from the same 4-tuple hashes to the ID of
+// the connection it replaces, so the ID alone cannot say that the counters
+// started again from zero; the instance number is what says it, and the
+// replaced connection reports its own instance with its final counters.
+func TestRelay_ReconnectReportsANewInstance(t *testing.T) {
+	const goodToken = "reconnect-token"
+
+	onConnect := func(ctx context.Context, tunnelName, agentName string, conn controllers.Connection) error {
+		if err := conn.SetVNI(ctx, 707); err != nil {
+			return err
+		}
+		return conn.SetOverlayAddress("10.0.0.11/32")
+	}
+	onDisconnect := func(ctx context.Context, agent, id string) error { return nil }
+
+	r, caCert, stop, _ := startRelay(t, goodToken, onConnect, onDisconnect)
+	t.Cleanup(stop)
+
+	finals := make(chan tunnel.ConnStats, 4)
+	r.SetOnConnStatsFinal(func(s tunnel.ConnStats) { finals <- s })
+
+	c := clientForRelay(t, r, caCert, goodToken)
+	t.Cleanup(func() { require.NoError(t, c.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+
+	first, err := c.Connect(ctx)
+	require.NoError(t, err)
+
+	before := r.ConnectionStats()
+	require.Len(t, before, 1)
+	require.Equal(t, first.ID, before[0].ID)
+	require.NotZero(t, before[0].Instance)
+
+	// The client keeps its QUIC connection, so the second connect arrives on
+	// the same 4-tuple and the relay replaces the connection behind that ID.
+	second, err := c.Connect(ctx)
+	require.NoError(t, err)
+	require.Equal(t, first.ID, second.ID)
+
+	after := r.ConnectionStats()
+	require.Len(t, after, 1)
+	require.Equal(t, first.ID, after[0].ID)
+	require.NotEqual(t, before[0].Instance, after[0].Instance,
+		"the replacement connection reports the instance of the connection it replaced")
+
+	select {
+	case final := <-finals:
+		require.Equal(t, first.ID, final.ID)
+		require.Equal(t, before[0].Instance, final.Instance,
+			"the final counters must carry the instance of the connection that ended")
+	default:
+		t.Fatal("the replaced connection did not report its final counters")
+	}
+}
+
+// TestRelay_MetricsPushReachesStore pins the push path end to end: the agent
+// posts over the connection it already holds, and the relay files the metrics
+// under the same connection ID it answered the connect with. Both sides derive
+// that ID from the 4-tuple on their own, so nothing carries it on the wire.
+func TestRelay_MetricsPushReachesStore(t *testing.T) {
+	const (
+		goodToken  = "push-token"
+		markerName = "tunnel_test_push_marker"
+	)
+
+	marker := prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: markerName,
+		Help: "Set by the relay metrics push test.",
+	})
+	marker.Set(1)
+	require.NoError(t, crmetrics.Registry.Register(marker))
+	t.Cleanup(func() { crmetrics.Registry.Unregister(marker) })
+
+	onConnect := func(ctx context.Context, tunnelName, agentName string, conn controllers.Connection) error {
+		conn.SetVNI(ctx, 606)
+		conn.SetOverlayAddress("10.0.0.9/32")
+		return nil
+	}
+	onDisconnect := func(ctx context.Context, agent, id string) error { return nil }
+
+	r, caCert, stop, _ := startRelay(t, goodToken, onConnect, onDisconnect)
+	t.Cleanup(stop)
+
+	store := metrics.NewMetricsStore()
+	r.SetMetricsStore(store)
+
+	c := clientForRelay(t, r, caCert, goodToken)
+	t.Cleanup(func() { require.NoError(t, c.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+
+	connectResp, err := c.Connect(ctx)
+	require.NoError(t, err)
+
+	require.NoError(t, c.PushMetrics(ctx))
+
+	result, ok := store.Results()[connectResp.ID]
+	require.True(t, ok, "the store holds no result for the connection")
+	require.Contains(t, result.Families, markerName)
+	require.Equal(t, "it-agent", result.Target.AgentName)
+	require.Equal(t, connectResp.ID, result.Target.ConnID)
 }
 
 func TestRelay_CredentialBounds(t *testing.T) {

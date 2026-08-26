@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -157,7 +158,7 @@ func TestReexportCollector_PrefixesMetricNames(t *testing.T) {
 		},
 		RegisteredAt: time.Now(),
 		Families: map[string]*dto.MetricFamily{
-			"test_metric": fakeFamily("test_metric", dto.MetricType_GAUGE, 42),
+			"tunnel_test_metric": fakeFamily("tunnel_test_metric", dto.MetricType_GAUGE, 42),
 		},
 		PushedAt: time.Now(),
 	}
@@ -170,7 +171,7 @@ func TestReexportCollector_PrefixesMetricNames(t *testing.T) {
 
 	sawReexport := false
 	for m := range ch {
-		if strings.Contains(m.Desc().String(), "apoxy_test_metric") {
+		if strings.Contains(m.Desc().String(), "apoxy_tunnel_test_metric") {
 			sawReexport = true
 		}
 	}
@@ -376,4 +377,180 @@ func TestMetricsStore_PushUnknownConnID(t *testing.T) {
 	})
 
 	assert.Empty(t, store.Results())
+}
+
+// TestReexportCollector_FiltersToTunnelFamilies pins which pushed families
+// reach the scrape. An agent gathers its whole registry, so the push carries
+// the Go runtime, process, client-go, and workqueue families as well; every
+// one of them would be multiplied by the number of connections the relay
+// holds, and nothing reads them.
+func TestReexportCollector_FiltersToTunnelFamilies(t *testing.T) {
+	cases := []struct {
+		name string
+		// family is the family name the agent pushed.
+		family string
+		// wantReexported is whether the scrape carries it.
+		wantReexported bool
+	}{
+		{
+			name:           "a tunnel family is re-exported",
+			family:         "tunnel_connections_active",
+			wantReexported: true,
+		},
+		{
+			name:           "the agent info family is re-exported",
+			family:         "tunnel_agent_info",
+			wantReexported: true,
+		},
+		{
+			name:   "the Go runtime families are dropped",
+			family: "go_goroutines",
+		},
+		{
+			name:   "the process families are dropped",
+			family: "process_resident_memory_bytes",
+		},
+		{
+			name:   "the client-go families are dropped",
+			family: "rest_client_requests_total",
+		},
+		{
+			name:   "the workqueue families are dropped",
+			family: "workqueue_depth",
+		},
+		{
+			name:   "the controller-runtime families are dropped",
+			family: "controller_runtime_reconcile_total",
+		},
+		{
+			name:   "a name that only begins with tunnel is dropped",
+			family: "tunnelish_metric",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := NewMetricsStore()
+			store.Register(StoreTarget{ConnID: "conn-1", TunnelNode: "node-1"})
+			store.Push("conn-1", map[string]*dto.MetricFamily{
+				tc.family: fakeFamily(tc.family, dto.MetricType_GAUGE, 1),
+			})
+
+			ch := make(chan prometheus.Metric, 100)
+			NewReexportCollector(store).Collect(ch)
+			close(ch)
+
+			sawFamily, sawUptime := false, false
+			for m := range ch {
+				desc := m.Desc().String()
+				switch {
+				case strings.Contains(desc, "apoxy_"+connUptimeMetric):
+					sawUptime = true
+				case strings.Contains(desc, "apoxy_"+tc.family):
+					sawFamily = true
+				}
+			}
+
+			assert.Equal(t, tc.wantReexported, sawFamily,
+				"re-export of %q", tc.family)
+			assert.True(t, sawUptime,
+				"the first-party conn uptime metric is emitted whatever the agent pushed")
+			assert.Equal(t, tc.wantReexported, ReexportsFamily(tc.family))
+		})
+	}
+}
+
+// TestReexportCollector_PushIsNotBlockedByCollect pins that a scrape does not
+// hold agent pushes off. The collector copies the results out and converts the
+// copy with no lock held, so a consumer that reads the channel slowly stalls
+// only itself. Converting under the read lock made every push on the relay
+// wait for the whole scrape.
+func TestReexportCollector_PushIsNotBlockedByCollect(t *testing.T) {
+	store := NewMetricsStore()
+	store.Register(StoreTarget{ConnID: "conn-1", TunnelNode: "node-1"})
+
+	// Many families, so the collector is still mid-iteration when the push
+	// arrives.
+	families := make(map[string]*dto.MetricFamily, 200)
+	for i := 0; i < 200; i++ {
+		name := fmt.Sprintf("tunnel_family_%d", i)
+		families[name] = fakeFamily(name, dto.MetricType_GAUGE, float64(i))
+	}
+	store.Push("conn-1", families)
+
+	// Unbuffered: every send waits for this test to read.
+	ch := make(chan prometheus.Metric)
+	collectDone := make(chan struct{})
+	go func() {
+		defer close(collectDone)
+		collector := NewReexportCollector(store)
+		collector.Collect(ch)
+		close(ch)
+	}()
+	// Unblock the collector even if an assertion below ends the test early.
+	t.Cleanup(func() {
+		for range ch {
+		}
+		<-collectDone
+	})
+
+	// Take one metric: the collector now waits to send the next one.
+	first := <-ch
+	require.NotNil(t, first)
+
+	pushDone := make(chan struct{})
+	go func() {
+		defer close(pushDone)
+		store.Push("conn-1", map[string]*dto.MetricFamily{
+			"tunnel_late_push": fakeFamily("tunnel_late_push", dto.MetricType_GAUGE, 1),
+		})
+	}()
+
+	select {
+	case <-pushDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("an agent push waited on a scrape that is still mid-iteration")
+	}
+
+	// Draining the rest walks the copy the collector took, so the late push is
+	// not part of this scrape and the collector never reads a map another
+	// goroutine is replacing.
+	sawLatePush := false
+	drained := 1
+	for m := range ch {
+		drained++
+		if strings.Contains(m.Desc().String(), "apoxy_tunnel_late_push") {
+			sawLatePush = true
+		}
+	}
+	<-collectDone
+
+	assert.False(t, sawLatePush, "a push during a scrape must not change the scrape")
+	assert.Equal(t, len(families)+1, drained,
+		"every family in the copy plus the conn uptime metric")
+}
+
+// TestMetricsStore_SnapshotIsNotChangedByPush pins the property the collector
+// depends on: a push replaces the whole family map, so a copy taken earlier
+// keeps reading the map it was given.
+func TestMetricsStore_SnapshotIsNotChangedByPush(t *testing.T) {
+	store := NewMetricsStore()
+	store.Register(StoreTarget{ConnID: "conn-1", TunnelNode: "node-1"})
+	store.Push("conn-1", map[string]*dto.MetricFamily{
+		"tunnel_first": fakeFamily("tunnel_first", dto.MetricType_GAUGE, 1),
+	})
+
+	snapshot := store.Snapshot()
+	require.Len(t, snapshot, 1)
+	require.Equal(t, "conn-1", snapshot[0].Target.ConnID)
+
+	store.Push("conn-1", map[string]*dto.MetricFamily{
+		"tunnel_second": fakeFamily("tunnel_second", dto.MetricType_GAUGE, 2),
+	})
+
+	assert.Contains(t, snapshot[0].Families, "tunnel_first",
+		"a push must replace the map, not write into the one a reader holds")
+	assert.NotContains(t, snapshot[0].Families, "tunnel_second")
+	assert.Contains(t, store.Snapshot()[0].Families, "tunnel_second",
+		"a later copy sees the newer push")
 }

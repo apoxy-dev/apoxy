@@ -118,8 +118,26 @@ func (s *MetricsStore) Results() map[string]*StoreResult {
 	return out
 }
 
+// Snapshot copies every stored result out under a short read lock, so callers
+// can walk the results with no lock held. The copies keep the same Families
+// map the store holds, which stays safe to read after the lock is released:
+// Push replaces the whole map (see Push above) and never writes into a map it
+// already handed out, so the map a caller holds is never changed under it.
+func (s *MetricsStore) Snapshot() []StoreResult {
+	s.resultsMu.RLock()
+	defer s.resultsMu.RUnlock()
+
+	out := make([]StoreResult, 0, len(s.results))
+	for _, v := range s.results {
+		out = append(out, *v)
+	}
+	return out
+}
+
 // ForEachResult iterates over results under a read lock. The callback must
-// not call other MetricsStore methods (deadlock). Keep callbacks short.
+// not call other MetricsStore methods (deadlock). Keep callbacks short: an
+// agent push waits for the read lock to be released. Use Snapshot for work
+// that is more than a copy.
 func (s *MetricsStore) ForEachResult(fn func(connID string, result *StoreResult) bool) {
 	s.resultsMu.RLock()
 	defer s.resultsMu.RUnlock()

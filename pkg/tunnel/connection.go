@@ -22,8 +22,13 @@ var _ controllers.Connection = (*connection)(nil)
 // connection is a connection like abstraction over an icx virtual network.
 // TODO (dpeckett): nuke this at some point and merge the logic into the router.
 type connection struct {
-	mu         sync.Mutex
-	id         string
+	mu sync.Mutex
+	id string
+	// instance is the relay-local number of this connection. The id is derived
+	// from the 4-tuple, so a reconnect from the same address reuses the id of
+	// the connection it replaced; the instance is different for each of them
+	// and is what tells the two apart. Immutable after construction.
+	instance   uint64
 	handler    *icx.Handler
 	router     router.Router
 	localAddr  netip.AddrPort
@@ -61,6 +66,13 @@ type connection struct {
 	// installed on the router, so a VNI change doesn't double-program the
 	// kernel routes and Close knows to remove them.
 	advRoutesProgrammed bool
+	// finalReported becomes true when the last counters of this connection
+	// have gone to the final hook. Teardown and the shutdown flush both must
+	// win the compare-and-swap before they report, so the hook gets each
+	// connection exactly once even when the two paths run at the same time.
+	// The registry check alone cannot promise that: both paths can read the
+	// registry before either one removes the connection from it.
+	finalReported atomic.Bool
 }
 
 // programLocked installs p on the router (address + route), rolling the
@@ -483,4 +495,64 @@ func (c *connection) Stats() (controllers.ConnectionStats, bool) {
 		TXBytes: int64(vnet.Stats.TXBytes.Load()),
 		LastRX:  lastRx,
 	}, true
+}
+
+// datapathStats returns the connection's identity together with the packet,
+// byte, and drop counters of its virtual network. It reports false when the
+// connection has no virtual network yet, or the handler no longer holds it,
+// because then there is nothing to count.
+func (c *connection) datapathStats() (ConnStats, bool) {
+	c.mu.Lock()
+	vni := c.vni
+	handler := c.handler
+	c.mu.Unlock()
+
+	if vni == nil || handler == nil {
+		return ConnStats{}, false
+	}
+
+	vnet, ok := handler.GetVirtualNetwork(*vni)
+	if !ok || vnet == nil {
+		return ConnStats{}, false
+	}
+
+	// Identity fields are immutable after construction, so they need no lock.
+	return ConnStats{
+		ID:            c.id,
+		Instance:      c.instance,
+		Network:       c.network,
+		ProjectID:     c.scope,
+		AgentInstance: c.agentInstance,
+		RXBytes:       vnet.Stats.RXBytes.Load(),
+		TXBytes:       vnet.Stats.TXBytes.Load(),
+		RXPackets:     vnet.Stats.RXPackets.Load(),
+		TXPackets:     vnet.Stats.TXPackets.Load(),
+		RXDrops:       rxDrops(&vnet.Stats),
+		TXDrops:       txDrops(&vnet.Stats),
+	}, true
+}
+
+// rxDrops folds every receive-side drop reason into one count: a packet the
+// datapath refused is a drop whether it failed the key check, the replay
+// check, decryption, the rate limit, or the address checks. Each counter is
+// read once, so the total is a snapshot of counters that move on their own.
+func rxDrops(s *icx.Statistics) uint64 {
+	return s.RXDropsNoKey.Load() +
+		s.RXDropsExpiredKey.Load() +
+		s.RXDropsSPIMismatch.Load() +
+		s.RXDropsBadPeer.Load() +
+		s.RXDecryptErrors.Load() +
+		s.RXReplayDrops.Load() +
+		s.RXRateLimitDrops.Load() +
+		s.RXInvalidSrc.Load() +
+		s.RXInvalidDst.Load()
+}
+
+// txDrops folds every transmit-side drop and error into one count: a frame the
+// datapath could not send is lost whether the key had expired, the remote
+// endpoint was unknown, or the write itself failed.
+func txDrops(s *icx.Statistics) uint64 {
+	return s.TXDropsExpiredKey.Load() +
+		s.TXDropsNoRemote.Load() +
+		s.TXErrors.Load()
 }

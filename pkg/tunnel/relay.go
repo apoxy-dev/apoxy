@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/netip"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -39,6 +40,13 @@ const (
 	keyLifespan = 24 * time.Hour
 )
 
+// connInstances numbers the connections the relay accepts. A connection ID is
+// derived from the 4-tuple, so an agent that reconnects from the same address
+// gets the ID of the connection it replaced; the number this counter gives out
+// is what tells the two apart in the reported statistics. It starts at 1, so a
+// zero instance means the connection did not come from the connect handler.
+var connInstances atomic.Uint64
+
 type Relay struct {
 	mu            sync.Mutex
 	name          string
@@ -58,7 +66,10 @@ type Relay struct {
 	onDisconnect   func(ctx context.Context, agentName, id string) error
 	onDraining     func(ctx context.Context)
 	onShutdown     func(ctx context.Context)
-	metricsStore   *metrics.MetricsStore
+	// onConnStatsFinal receives a connection's last datapath counters at
+	// teardown. See SetOnConnStatsFinal.
+	onConnStatsFinal func(ConnStats)
+	metricsStore     *metrics.MetricsStore
 
 	// lameDuck is how long the relay keeps forwarding after announcing a
 	// drain (GOAWAY). Zero means immediate shutdown.
@@ -200,6 +211,70 @@ func (r *Relay) MetricsStore() *metrics.MetricsStore {
 	return r.metricsStore
 }
 
+// ConnStats is one connection's identity and its datapath counters.
+//
+// The counters are cumulative over the life of the connection's current
+// virtual network: they start at zero when the network is installed and go
+// away with it, so a reader must take a decrease as a reset rather than as
+// negative traffic. RXDrops and TXDrops fold every drop reason the datapath
+// counts separately.
+type ConnStats struct {
+	// ID is the connection ID, which is also the name of the Tunnel object the
+	// relay creates for it.
+	ID string
+	// Instance tells apart the connections that share an ID. The ID comes from
+	// the connection 4-tuple, so an agent that reconnects from the same address
+	// gets the ID of the connection it replaced. Every connection the relay
+	// accepts gets its own instance number, so two ConnStats with the same ID
+	// and a different Instance report different connections, and the counters
+	// of one must not be compared with the counters of the other.
+	Instance uint64
+	// Network is the VPCNetwork name the connection is bound to.
+	Network string
+	// ProjectID is the tenant scope the connection's credential resolved to.
+	// Empty on single-tenant relays.
+	ProjectID string
+	// AgentInstance is the per-process ID of the agent that opened the
+	// connection, if it declared one.
+	AgentInstance string
+
+	RXBytes   uint64
+	TXBytes   uint64
+	RXPackets uint64
+	TXPackets uint64
+	RXDrops   uint64
+	TXDrops   uint64
+}
+
+// SetOnConnStatsFinal sets a callback that receives a connection's last
+// datapath counters when it is torn down, and for every connection still live
+// at shutdown, before the virtual networks are removed and the counters go
+// away. It runs at most once per connection, and under no relay lock, so the
+// callback may call back into the relay.
+func (r *Relay) SetOnConnStatsFinal(fn func(ConnStats)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.onConnStatsFinal = fn
+}
+
+// ConnectionStats returns the datapath counters of every live connection,
+// sorted by connection ID. A connection that has no virtual network yet — one
+// still completing its connect — has no counters to report and is left out.
+func (r *Relay) ConnectionStats() []ConnStats {
+	var out []ConnStats
+	r.conns.ForEach(func(_ string, conn *connection) bool {
+		if stats, ok := conn.datapathStats(); ok {
+			out = append(out, stats)
+		}
+		return true
+	})
+	slices.SortFunc(out, func(a, b ConnStats) int {
+		return strings.Compare(a.ID, b.ID)
+	})
+	return out
+}
+
 // Start starts the relay.
 func (r *Relay) Start(ctx context.Context) error {
 	ln, err := quic.ListenEarly(
@@ -223,6 +298,12 @@ func (r *Relay) Start(ctx context.Context) error {
 		}
 		w.WriteHeader(http.StatusOK)
 	})
+
+	// Agents push their Prometheus metrics over the control connection. It
+	// carries no bearer token: the QUIC connection is already authenticated,
+	// and the connection ID is derived from the 4-tuple, so a caller can only
+	// ever push under its own connection.
+	mux.POST(api.MetricsPushPath, r.handleMetricsPush)
 
 	mux.POST("/v1/tunnel/:name", r.withAuth(r.handleConnect))
 	mux.DELETE("/v1/tunnel/:name", r.withAuth(r.handleDisconnect))
@@ -261,6 +342,10 @@ func (r *Relay) Start(ctx context.Context) error {
 
 		if lameDuck <= 0 {
 			slog.Info("Stopping relay", slog.String("addr", ln.Addr().String()))
+
+			// Last chance to report what the live connections carried: the
+			// router close below removes their virtual networks.
+			r.flushFinalStats()
 
 			if err := r.router.Close(); err != nil {
 				slog.Error("Failed to close router", slog.Any("error", err))
@@ -302,6 +387,10 @@ func (r *Relay) Start(ctx context.Context) error {
 
 		slog.Info("Lame duck over; stopping relay", slog.String("addr", ln.Addr().String()))
 
+		// Last chance to report what the live connections carried: the router
+		// close below removes their virtual networks.
+		r.flushFinalStats()
+
 		if err := r.router.Close(); err != nil {
 			slog.Error("Failed to close router", slog.Any("error", err))
 		}
@@ -336,6 +425,66 @@ func (r *Relay) Start(ctx context.Context) error {
 	return nil
 }
 
+// flushFinalStats delivers the last datapath counters of every live connection
+// to the onConnStatsFinal hook. Shutdown calls it immediately before the router
+// closes: the close removes the virtual networks, and their counters go with
+// them, so this is the last moment the counters can be read.
+//
+// Each connection leaves the registry before its counters are read, with the
+// identity check teardownConn uses, so a reconnect that replaced a connection
+// keeps the replacement. The hard once-guard is the connection's finalReported
+// flag: both this flush and teardown must win a compare-and-swap on it to
+// report, so the hook cannot run twice for one connection even when the two
+// paths run at the same time. The connections are not
+// closed here and onDisconnect does not run: the router close tears the
+// datapath down, and the control-plane cleanup belongs to the drain and
+// adoption path, which must not be replaced by one blocking call per connection
+// while the process exits.
+func (r *Relay) flushFinalStats() {
+	r.mu.Lock()
+	onConnStatsFinal := r.onConnStatsFinal
+	r.mu.Unlock()
+	if onConnStatsFinal == nil {
+		return
+	}
+
+	// Snapshot the connections first. The hook runs under no relay lock and may
+	// call back into the relay, so it must not run inside the map walk.
+	var live []*connection
+	r.conns.ForEach(func(_ string, conn *connection) bool {
+		live = append(live, conn)
+		return true
+	})
+
+	var delivered int
+	for _, conn := range live {
+		id := conn.ID()
+		if cur, ok := r.conns.Get(id); !ok || cur != conn {
+			continue // already torn down, or replaced by a reconnect
+		}
+		r.conns.Del(id)
+		r.agents.Del(id)
+
+		// Read the counters before the compare-and-swap, for the same reason
+		// teardown does: the path that loses the race must not consume the one
+		// report the connection gets.
+		final, ok := conn.datapathStats()
+		if !ok {
+			continue // no virtual network yet, so nothing to count
+		}
+		if !conn.finalReported.CompareAndSwap(false, true) {
+			continue // teardown reported this connection already
+		}
+		onConnStatsFinal(final)
+		delivered++
+	}
+
+	if delivered > 0 {
+		slog.Info("Reported the final counters of the live connections",
+			slog.Int("connections", delivered))
+	}
+}
+
 // installEpoch advances the connection's key epoch and installs the derived
 // per-direction SAs for that epoch on the relay's handler, returning the Keys to
 // hand back to the agent. The relay is the Responder in the PSP role split; the
@@ -357,6 +506,38 @@ func (r *Relay) installEpoch(conn *connection, vni uint) (api.Keys, error) {
 		return api.Keys{}, fmt.Errorf("install SAs: %w", err)
 	}
 	return keys, nil
+}
+
+// connIdentity is the connection a relay request comes from: the address pair
+// of its 4-tuple and the connection ID hashed from that pair.
+type connIdentity struct {
+	id         string
+	localAddr  netip.AddrPort
+	remoteAddr netip.AddrPort
+}
+
+// connIdentityFromRequest derives the connection identity from the request
+// 4-tuple. This derivation is the authorization boundary of every
+// per-connection route: the ID comes from the addresses the transport reports,
+// never from the request body, so a caller can only reach the connection it
+// dialed from. Every handler that needs a connection ID goes through here, so
+// the connect and the metrics push paths cannot drift apart.
+func (r *Relay) connIdentityFromRequest(req *http.Request) (connIdentity, error) {
+	localAddr, err := netip.ParseAddrPort(r.pc.LocalAddr().String())
+	if err != nil {
+		return connIdentity{}, fmt.Errorf("failed to parse the relay listen address %q: %w",
+			r.pc.LocalAddr().String(), err)
+	}
+	remoteAddr, err := netip.ParseAddrPort(req.RemoteAddr)
+	if err != nil {
+		return connIdentity{}, fmt.Errorf("failed to parse the remote address %q: %w",
+			req.RemoteAddr, err)
+	}
+	return connIdentity{
+		id:         r.idHasher.Hash(localAddr, remoteAddr),
+		localAddr:  localAddr,
+		remoteAddr: remoteAddr,
+	}, nil
 }
 
 func (r *Relay) handleConnect(w http.ResponseWriter, req *http.Request, ps httprouter.Params) {
@@ -440,19 +621,13 @@ func (r *Relay) handleConnect(w http.ResponseWriter, req *http.Request, ps httpr
 		return
 	}
 
-	localAddr, err := netip.ParseAddrPort(r.pc.LocalAddr().String())
+	ident, err := r.connIdentityFromRequest(req)
 	if err != nil {
-		http.Error(w, "Failed to parse local address", http.StatusBadRequest)
+		slog.Error("Failed to derive the connection identity", slog.Any("error", err))
+		http.Error(w, "Failed to derive connection identity", http.StatusBadRequest)
 		return
 	}
-
-	remoteAddr, err := netip.ParseAddrPort(req.RemoteAddr)
-	if err != nil {
-		http.Error(w, "Failed to parse remote address", http.StatusBadRequest)
-		return
-	}
-
-	id := r.idHasher.Hash(localAddr, remoteAddr)
+	id, localAddr, remoteAddr := ident.id, ident.localAddr, ident.remoteAddr
 
 	// One master secret per connection, minted before the connection is published
 	// so no concurrent handleUpdateKeys can ever observe a zero master. Each
@@ -466,6 +641,7 @@ func (r *Relay) handleConnect(w http.ResponseWriter, req *http.Request, ps httpr
 
 	conn := &connection{
 		id:               id,
+		instance:         connInstances.Add(1),
 		handler:          r.handler,
 		router:           r.router,
 		localAddr:        localAddr,
@@ -542,12 +718,17 @@ func (r *Relay) handleConnect(w http.ResponseWriter, req *http.Request, ps httpr
 		Routes:    routes,
 	}
 
-	// Register with metrics store so pushed metrics get the right labels.
+	// Register with metrics store so pushed metrics get the right labels. The
+	// agent instance is the agent's per-process ID, so metrics from several
+	// connections of one agent process can be told apart from several
+	// processes.
 	if r.metricsStore != nil {
 		r.metricsStore.Register(metrics.StoreTarget{
-			ConnID:     conn.ID(),
-			TunnelNode: tunnelName,
-			AgentName:  request.Agent,
+			ConnID:         conn.ID(),
+			TunnelNode:     tunnelName,
+			AgentName:      request.Agent,
+			AgentProcessID: conn.AgentInstance(),
+			ProjectID:      conn.Scope(),
 		})
 	}
 
@@ -581,8 +762,33 @@ func (r *Relay) teardownConn(ctx context.Context, conn *connection) {
 		r.metricsStore.Unregister(id)
 	}
 
+	r.mu.Lock()
+	onConnStatsFinal := r.onConnStatsFinal
+	r.mu.Unlock()
+
+	// Read the counters before the close: closing removes the virtual network,
+	// which takes its counters with it, so this is the last chance to report
+	// what the connection carried. The compare-and-swap comes after the read so
+	// that a lost race cannot consume the one report the connection gets, and
+	// it is what makes the report run once when the shutdown flush reaches this
+	// connection at the same time.
+	var (
+		final    ConnStats
+		hasFinal bool
+	)
+	if onConnStatsFinal != nil {
+		final, hasFinal = conn.datapathStats()
+		if hasFinal && !conn.finalReported.CompareAndSwap(false, true) {
+			hasFinal = false
+		}
+	}
+
 	if err := conn.Close(); err != nil {
 		slog.Warn("Failed to close connection during teardown", slog.String("connID", id), slog.Any("error", err))
+	}
+
+	if hasFinal {
+		onConnStatsFinal(final)
 	}
 
 	r.mu.Lock()
@@ -620,8 +826,10 @@ func (r *Relay) watchSessionClose(sessCtx context.Context, conn *connection) {
 	id := conn.ID()
 	if r.draining.Load() {
 		// Control sessions close en masse when the drain's GOAWAY goes out,
-		// but the datapath must keep forwarding through the lame duck; final
-		// shutdown owns the cleanup.
+		// but the datapath must keep forwarding through the lame duck. The
+		// shutdown path reports the final counters once the lame duck ends
+		// (flushFinalStats); the control-plane cleanup of the connections that
+		// moved elsewhere belongs to the drain and adoption path.
 		slog.Debug("Control session closed during drain; keeping connection",
 			slog.String("connID", id))
 		return
@@ -647,6 +855,53 @@ func (r *Relay) handleDisconnect(w http.ResponseWriter, req *http.Request, ps ht
 		return
 	}
 	r.teardownConn(req.Context(), conn)
+	w.WriteHeader(http.StatusOK)
+}
+
+// handleMetricsPush stores the metrics an agent pushed over its existing
+// HTTP/3 connection, in Prometheus text exposition format. The connection ID
+// comes from the request 4-tuple, through the same helper the connect handler
+// uses, so the push needs no ID of its own and cannot name another connection.
+// The body is read through metrics.DecodePush, which caps it.
+func (r *Relay) handleMetricsPush(w http.ResponseWriter, req *http.Request, _ httprouter.Params) {
+	r.mu.Lock()
+	store := r.metricsStore
+	r.mu.Unlock()
+
+	// A relay with no store is a normal deployment. Answer before reading the
+	// body: there is nothing to keep, and an error status would make every
+	// agent report a failure on every push.
+	if store == nil {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	ident, err := r.connIdentityFromRequest(req)
+	if err != nil {
+		slog.Error("Failed to derive the connection identity", slog.Any("error", err))
+		http.Error(w, "Failed to derive connection identity", http.StatusBadRequest)
+		return
+	}
+	id := ident.id
+
+	// The store drops metrics for an unknown ID without a word, so the relay's
+	// own connection map is what makes an unknown connection visible to the
+	// agent.
+	if _, ok := r.conns.Get(id); !ok {
+		http.Error(w, api.ConnectionNotFoundMessage, http.StatusNotFound)
+		return
+	}
+
+	families, err := metrics.DecodePush(w, req)
+	if err != nil {
+		slog.Warn("Failed to parse pushed metrics",
+			slog.String("connID", id),
+			slog.Any("error", err))
+		http.Error(w, "Invalid metrics body", http.StatusBadRequest)
+		return
+	}
+
+	store.Push(id, families)
 	w.WriteHeader(http.StatusOK)
 }
 

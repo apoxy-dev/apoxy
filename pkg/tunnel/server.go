@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -18,8 +17,6 @@ import (
 
 	"github.com/alphadose/haxmap"
 	"github.com/google/uuid"
-	dto "github.com/prometheus/client_model/go"
-	"github.com/prometheus/common/expfmt"
 	connectip "github.com/quic-go/connect-ip-go"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
@@ -1010,21 +1007,15 @@ func (t *TunnelServer) handleMetricsPush(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	families := make(map[string]*dto.MetricFamily)
-	dec := expfmt.NewDecoder(r.Body, expfmt.NewFormat(expfmt.TypeTextPlain))
-	for {
-		mf := new(dto.MetricFamily)
-		if err := dec.Decode(mf); err != nil {
-			if err == io.EOF {
-				break
-			}
-			slog.Warn("Failed to parse pushed metrics",
-				slog.String("conn_id", id),
-				slog.Any("error", err))
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		families[mf.GetName()] = mf
+	// The body goes through the shared decoder, so this path gets the same
+	// size cap as the relay push path.
+	families, err := metrics.DecodePush(w, r)
+	if err != nil {
+		slog.Warn("Failed to parse pushed metrics",
+			slog.String("conn_id", id),
+			slog.Any("error", err))
+		w.WriteHeader(http.StatusBadRequest)
+		return
 	}
 
 	t.options.metricsStore.Push(id, families)

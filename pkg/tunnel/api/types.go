@@ -21,11 +21,21 @@ type Request struct {
 // below 1280. icx.MTU(1500) = 1392, comfortably above that floor.
 const TunnelPathMTU = 1500
 
+// MetricsPushPath is the relay route an agent POSTs its Prometheus metrics to,
+// in text exposition format, over the existing HTTP/3 connection. The relay
+// registers this path and the agent posts to it, so one spelling here keeps a
+// rename from silently breaking the wire.
+const MetricsPushPath = "/metrics/push"
+
 type ConnectRequest struct {
 	// Agent is the name of the agent.
 	Agent string `json:"agent"`
 	// MetricsPort is the port the agent's Prometheus metrics server listens on.
 	// 0 means the agent does not expose metrics.
+	//
+	// Legacy: the relay pulled metrics from this port over the overlay. Agents
+	// now push to MetricsPushPath instead, and nothing reads this field. It
+	// stays on the wire so an older agent that still sends it is accepted.
 	MetricsPort int `json:"metricsPort,omitempty"`
 	// Labels are agent-declared labels used for service selection. The relay
 	// rejects labels outside the credential's allowed label sets.
