@@ -119,6 +119,11 @@ func (o *ApoxyServerOptions) Config() (*serverapiserver.Config, error) {
 	serverConfig = o.ApplyRecommendedConfigFns(serverConfig)
 	serverConfig.RESTOptionsGetter = o
 
+	// Root discovery, error, and status responses negotiate with this
+	// serializer; see serverapiserver.WithJSONAndYAML. Applied last so no
+	// config fn can replace it.
+	serverConfig.Serializer = serverapiserver.WithJSONAndYAML(serverConfig.Serializer)
+
 	return &serverapiserver.Config{
 		GenericConfig: serverConfig,
 		ExtraConfig: serverapiserver.ExtraConfig{

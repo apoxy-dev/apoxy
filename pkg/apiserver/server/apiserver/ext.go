@@ -40,6 +40,11 @@ func buildAPIGroupInfos(scheme *runtime.Scheme,
 			}
 		}
 		apiGroupInfo := pkgserver.NewDefaultAPIGroupInfo(group, scheme, parameterCodec, codecs)
+		// The resource endpoints negotiate with this serializer. Restrict it
+		// after NewDefaultAPIGroupInfo, because it rebuilds the codec factory
+		// from the scheme whenever a serving feature gate is on. The storage
+		// codec is separate and keeps the full factory.
+		apiGroupInfo.NegotiatedSerializer = WithJSONAndYAML(apiGroupInfo.NegotiatedSerializer)
 		apiGroupInfo.VersionedResourcesStorageMap = apis
 		apiGroups = append(apiGroups, &apiGroupInfo)
 	}
