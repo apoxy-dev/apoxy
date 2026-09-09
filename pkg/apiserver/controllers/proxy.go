@@ -260,67 +260,77 @@ func (r *ProxyReconciler) run(ctx context.Context) {
 			}
 
 		case <-time.After(1 * time.Minute):
-			slog.Info("Resyncing connected proxy replicas")
+			r.resyncReplicas(ctx)
+		}
+	}
+}
 
-			// Maps proxies to their connected nodes from the current state.
-			nodeMap := make(map[string][]*xdstypes.NodeMetadata)
-			for nk, meta := range r.resources.EnvoyResources.Nodes.LoadAll() {
-				nodeMap[nk.ClusterName] = append(nodeMap[nk.ClusterName], meta)
+// resyncReplicas matches the replicas in the status of every Proxy against the
+// xDS nodes that are connected now. Proxies without connected nodes are also
+// visited, so their stale replicas are removed too.
+func (r *ProxyReconciler) resyncReplicas(ctx context.Context) {
+	slog.Info("Resyncing connected proxy replicas")
+
+	// Maps proxies to their connected nodes from the current state.
+	nodeMap := make(map[string][]*xdstypes.NodeMetadata)
+	for nk, meta := range r.resources.EnvoyResources.Nodes.LoadAll() {
+		nodeMap[nk.ClusterName] = append(nodeMap[nk.ClusterName], meta)
+	}
+
+	proxies := &corev1alpha2.ProxyList{}
+	if err := r.List(ctx, proxies); err != nil {
+		slog.Error("Failed to list proxies", "error", err)
+		return
+	}
+
+	for i := range proxies.Items {
+		p := &proxies.Items[i]
+		nodes := nodeMap[p.Name]
+
+		slog.Info("Proxy has connected nodes", "proxy", p.Name, "nodes", len(nodes))
+
+		updated := false
+		for _, meta := range nodes {
+			found := false
+			for _, replica := range p.Status.Replicas {
+				if replica.Name == meta.Name {
+					found = true
+					break
+				}
 			}
+			if !found {
+				p.Status.Replicas = append(p.Status.Replicas, &corev1alpha2.ProxyReplicaStatus{
+					Name:        meta.Name,
+					ConnectedAt: meta.ConnectedAt,
+					Addresses:   nodeMetadataToAddresses(meta),
+				})
+				updated = true
+			}
+		}
 
-			for proxyName, nodes := range nodeMap {
-				slog.Info("Proxy has connected nodes", "proxy", proxyName, "nodes", len(nodes))
-
-				p := &corev1alpha2.Proxy{}
-				if err := r.Get(ctx, types.NamespacedName{Name: proxyName}, p); err != nil {
-					slog.Error("Failed to get proxy", "proxy", proxyName, "error", err)
-					continue
+		// Remove replicas that are no longer connected.
+		keep := 0
+		for _, replica := range p.Status.Replicas {
+			found := false
+			for _, meta := range nodes {
+				if replica.Name == meta.Name {
+					found = true
+					break
 				}
+			}
+			if found {
+				p.Status.Replicas[keep] = replica
+				keep++
+			} else {
+				slog.Info("Removing disconnected replica", "proxy", p.Name, "replica", replica.Name)
+				updated = true
+			}
+		}
+		p.Status.Replicas = p.Status.Replicas[:keep]
 
-				updated := false
-				for _, meta := range nodes {
-					found := false
-					for _, replica := range p.Status.Replicas {
-						if replica.Name == meta.Name {
-							found = true
-							break
-						}
-					}
-					if !found {
-						p.Status.Replicas = append(p.Status.Replicas, &corev1alpha2.ProxyReplicaStatus{
-							Name:        meta.Name,
-							ConnectedAt: meta.ConnectedAt,
-							Addresses:   nodeMetadataToAddresses(meta),
-						})
-						updated = true
-					}
-				}
-
-				// Remove replicas that are no longer connected.
-				i := 0
-				for _, replica := range p.Status.Replicas {
-					found := false
-					for _, meta := range nodes {
-						if replica.Name == meta.Name {
-							found = true
-							break
-						}
-					}
-					if found {
-						p.Status.Replicas[i] = replica
-						i++
-					} else {
-						slog.Info("Removing disconnected replica", "proxy", proxyName, "replica", replica.Name)
-						updated = true
-					}
-				}
-				p.Status.Replicas = p.Status.Replicas[:i]
-
-				if updated {
-					if err := r.Status().Update(ctx, p); err != nil {
-						slog.Error("Failed to update proxy status", "proxy", proxyName, "error", err)
-					}
-				}
+		if updated {
+			if err := r.Status().Update(ctx, p); err != nil {
+				slog.Error("Failed to update proxy status", "proxy", p.Name, "error", err)
 			}
 		}
 	}

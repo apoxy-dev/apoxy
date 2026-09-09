@@ -2,6 +2,8 @@ package net
 
 import (
 	"context"
+	"errors"
+	"log/slog"
 	"net/netip"
 
 	goipam "github.com/metal-stack/go-ipam"
@@ -53,9 +55,24 @@ func (r *ipamv4) Allocate() (netip.Prefix, error) {
 }
 
 func (r *ipamv4) Release(p netip.Prefix) error {
-	child := &goipam.Prefix{
-		Cidr:       p.String(),
-		ParentCidr: r.prefix.Cidr,
+	return releaseChildPrefix(r.ipam, r.prefix.Cidr, p)
+}
+
+// releaseChildPrefix releases prefix from its parent. The IPAM keeps its
+// allocations in memory only, so it knows nothing after a process restart. An
+// address it does not hold is already free and must not fail the release.
+func releaseChildPrefix(ipam goipam.Ipamer, parentCidr string, prefix netip.Prefix) error {
+	ctx := context.Background()
+	_, err := ipam.PrefixFrom(ctx, prefix.String())
+	if err == nil {
+		err = ipam.ReleaseChildPrefix(ctx, &goipam.Prefix{
+			Cidr:       prefix.String(),
+			ParentCidr: parentCidr,
+		})
 	}
-	return r.ipam.ReleaseChildPrefix(context.Background(), child)
+	if errors.Is(err, goipam.ErrNotFound) {
+		slog.Debug("Address is already released", "prefix", prefix.String(), "parent", parentCidr)
+		return nil
+	}
+	return err
 }

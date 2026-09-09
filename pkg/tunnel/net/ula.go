@@ -219,9 +219,5 @@ func (u *ulaIPAM) Allocate() (netip.Prefix, error) {
 }
 
 func (u *ulaIPAM) Release(prefix netip.Prefix) error {
-	child := &goipam.Prefix{
-		Cidr:       prefix.String(),
-		ParentCidr: u.parent.Cidr,
-	}
-	return u.ipam.ReleaseChildPrefix(context.Background(), child)
+	return releaseChildPrefix(u.ipam, u.parent.Cidr, prefix)
 }
