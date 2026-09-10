@@ -44,7 +44,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dpeckett/contextio"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
@@ -52,6 +51,8 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 	"gvisor.dev/gvisor/pkg/waiter"
+
+	netsplice "github.com/apoxy-dev/apoxy/pkg/net/splice"
 )
 
 // egressDstAddr is a non-local destination (TEST-NET-3, RFC 5737) — the stand-in
@@ -120,7 +121,7 @@ func dialEgressDst(s *stack.Stack, port uint16) func(ctx context.Context, networ
 // for the egress data path an installer wires (cf. pkg/netstack tcpHandler and
 // sentrystack control_linux.go handleControl): for each forwarded SYN it records
 // the hit, accepts the in-stack endpoint, dials the controlled upstream on the
-// host, and splices the two via contextio.SpliceContext. A waiter.EventHUp entry
+// host, and splices the two via netsplice.Splice. A waiter.EventHUp entry
 // cancels the splice when the in-stack side hangs up, and a test-scoped context
 // bounds every goroutine to the test's lifetime, so nothing leaks past cleanup
 // and the clean-shutdown req.Complete(false) is actually reached. Returns the
@@ -168,7 +169,7 @@ func installProxyEgressForwarder(t *testing.T, s *stack.Stack, upstream string) 
 			}
 			defer up.Close()
 
-			if _, err := contextio.SpliceContext(ctx, guest, up, nil); err != nil && !errors.Is(err, context.Canceled) {
+			if _, err := netsplice.Splice(ctx, guest, up); err != nil && !errors.Is(err, context.Canceled) {
 				req.Complete(true) // RST
 				return
 			}

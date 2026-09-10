@@ -67,6 +67,10 @@ func RunTestInVM(t *testing.T, opts ...Option) bool {
 		return true
 	}
 
+	if testing.Short() {
+		t.Skip("skipping VM test in short mode")
+	}
+
 	// Use an XDG directory for the image
 	imageDir, err := xdg.CacheFile("vmtest")
 	if err != nil {

@@ -60,10 +60,10 @@ func TestUDPForwarder(t *testing.T) {
 	expectedChecksum := hex.EncodeToString(h.Sum(nil))
 
 	// Start a UDP server on the loopback interface
-	udpAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
-	require.NoError(t, err)
-
-	udpServer, err := net.ListenUDP("udp", udpAddr)
+	// Listen on the unspecified address so the echo server is reachable on
+	// both 127.0.0.1 and ::1. The loopback network dials "localhost", and
+	// which family that resolves to first differs between hosts.
+	udpServer, err := net.ListenUDP("udp", &net.UDPAddr{Port: 0})
 	require.NoError(t, err)
 	defer udpServer.Close()
 
@@ -152,10 +152,8 @@ func TestUDPForwarderMultipleSessions(t *testing.T) {
 	ports := make([]int, numServers)
 
 	for i := 0; i < numServers; i++ {
-		udpAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
-		require.NoError(t, err)
-
-		server, err := net.ListenUDP("udp", udpAddr)
+		// Same as above: reachable on both loopback families.
+		server, err := net.ListenUDP("udp", &net.UDPAddr{Port: 0})
 		require.NoError(t, err)
 		defer server.Close()
 
@@ -245,10 +243,10 @@ func TestUDPForwarderTimeout(t *testing.T) {
 	serverStack.SetTransportProtocolHandler(udp.ProtocolNumber, netstack.UDPForwarder(ctx, serverStack.Stack, network.Loopback()))
 
 	// Start a UDP server
-	udpAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
-	require.NoError(t, err)
-
-	udpServer, err := net.ListenUDP("udp", udpAddr)
+	// Listen on the unspecified address so the echo server is reachable on
+	// both 127.0.0.1 and ::1. The loopback network dials "localhost", and
+	// which family that resolves to first differs between hosts.
+	udpServer, err := net.ListenUDP("udp", &net.UDPAddr{Port: 0})
 	require.NoError(t, err)
 	defer udpServer.Close()
 

@@ -10,11 +10,12 @@ import (
 	"net"
 	"runtime/debug"
 
-	"github.com/dpeckett/contextio"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv6"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
+
+	"github.com/apoxy-dev/apoxy/pkg/net/splice"
 )
 
 // installControlForwarder wires the resident → host-manager control path: the
@@ -130,7 +131,7 @@ func (s *Stack) handleControl(guestConn net.Conn, hostAddr string) {
 	defer hostConn.Close()
 
 	logger.Debug("Splicing control")
-	wn, err := contextio.SpliceContext(ctx, guestConn, hostConn, nil)
+	wn, err := splice.Splice(ctx, guestConn, hostConn)
 	if err != nil && !errors.Is(err, context.Canceled) {
 		if isBenignClose(err) {
 			logger.Debug("Peer closed mid-splice", slog.Any("error", err))

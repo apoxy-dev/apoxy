@@ -250,7 +250,9 @@ func TestTunnelNodeDNSServer(t *testing.T) {
 
 		code, err := resolver.serveDNS(context.Background(), nil, rw, msg)
 		require.NoError(t, err)
-		assert.Equal(t, cdns.RcodeNameError, code)
+		// A name with no usable upstream address answers SERVFAIL, not
+		// NXDOMAIN: the name exists in the zone but no address resolves.
+		assert.Equal(t, cdns.RcodeServerFailure, code)
 	})
 
 	t.Run("ServeDNS - empty question", func(t *testing.T) {
@@ -288,7 +290,7 @@ func TestAToAAAA(t *testing.T) {
 
 		v6base := netip.MustParseAddr("fd00::1:0:0")
 
-		aToAAAA(originalReq, v6base, ipv4Response)
+		aToAAAA(v6base, ipv4Response)
 
 		require.NotNil(t, ipv4Response)
 		assert.True(t, ipv4Response.Response)
@@ -335,7 +337,7 @@ func TestAToAAAA(t *testing.T) {
 
 		v6base := netip.MustParseAddr("fd00::1:0:0")
 
-		aToAAAA(originalReq, v6base, ipv4Response)
+		aToAAAA(v6base, ipv4Response)
 
 		require.NotNil(t, ipv4Response)
 		require.Len(t, ipv4Response.Answer, 3)
@@ -396,7 +398,7 @@ func TestAToAAAA(t *testing.T) {
 
 		v6base := netip.MustParseAddr("fd00::1")
 
-		aToAAAA(originalReq, v6base, ipv4Response)
+		aToAAAA(v6base, ipv4Response)
 
 		require.NotNil(t, ipv4Response)
 		require.Len(t, ipv4Response.Answer, 3)
@@ -429,7 +431,7 @@ func TestAToAAAA(t *testing.T) {
 
 		v6base := netip.MustParseAddr("fd00::1:0:0")
 
-		aToAAAA(originalReq, v6base, ipv4Response)
+		aToAAAA(v6base, ipv4Response)
 
 		// Response should remain unchanged
 		assert.Len(t, ipv4Response.Answer, 0)
@@ -471,7 +473,7 @@ func TestAToAAAA(t *testing.T) {
 				ipv4Response.Answer = append(ipv4Response.Answer, aRecord)
 
 				baseIP := netip.MustParseAddr(tc.baseIPv6)
-				aToAAAA(originalReq, baseIP, ipv4Response)
+				aToAAAA(baseIP, ipv4Response)
 
 				require.NotNil(t, ipv4Response)
 				require.Len(t, ipv4Response.Answer, 1)

@@ -23,6 +23,7 @@ jobs:
           SHUTUP: 1
         timeout-minutes: 15
         run: |
+          dagger call -v test --src=.
           dagger call -v build-cli --src=.
           # Make sure we can build for Darwin as well.
           dagger call -v build-cli --src=. --platform=darwin/arm64

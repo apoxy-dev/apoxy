@@ -6,13 +6,14 @@ import (
 	"log/slog"
 	"net/netip"
 
-	"github.com/dpeckett/contextio"
 	"github.com/dpeckett/network"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 	"gvisor.dev/gvisor/pkg/waiter"
+
+	"github.com/apoxy-dev/apoxy/pkg/net/splice"
 )
 
 // ProtocolHandler is a function that handles packets for a specific protocol.
@@ -120,7 +121,7 @@ func tcpHandler(ctx context.Context, upstream network.Network) func(req *tcp.For
 			defer local.Close()
 
 			// Start forwarding.
-			wn, err := contextio.SpliceContext(ctx, local, remote, nil)
+			wn, err := splice.Splice(ctx, local, remote)
 			if err != nil && !errors.Is(err, context.Canceled) {
 				logger.Warn("Failed to forward session", slog.Any("error", err))
 

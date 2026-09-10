@@ -243,3 +243,112 @@ func TestTunDevice_Speed(t *testing.T) {
 			numStreams, totalBytes, totalRead, elapsed, mbpsBytes, mbps, gbps)
 	})
 }
+
+// TestTunDevice_BoundSourceIsPreserved checks that a UDP socket bound to one
+// of the local overlay addresses keeps that address on the wire. The SNAT
+// postrouting rule must not move the socket to a sibling address, and the
+// address set must stay consistent while it is changed concurrently.
+func TestTunDevice_BoundSourceIsPreserved(t *testing.T) {
+	tunA, err := netstack.NewTunDevice("")
+	require.NoError(t, err)
+
+	tunB, err := netstack.NewTunDevice("")
+	require.NoError(t, err)
+
+	// Several addresses on A, so that a random pick has something wrong to
+	// pick.
+	boundA := []netip.Prefix{
+		netip.MustParsePrefix("fd00:1::1/64"),
+		netip.MustParsePrefix("fd00:1::2/64"),
+		netip.MustParsePrefix("fd00:1::3/64"),
+	}
+	// One more address that is added and removed while traffic runs.
+	churnA := netip.MustParsePrefix("fd00:1::4/64")
+	addrB := netip.MustParsePrefix("fd00:1::9/64")
+
+	for _, addr := range boundA {
+		require.NoError(t, tunA.AddAddr(addr))
+	}
+	require.NoError(t, tunB.AddAddr(addrB))
+
+	spliceCtx, spliceCancel := context.WithCancel(context.Background())
+	var spliceWG sync.WaitGroup
+	spliceWG.Add(1)
+	go func() {
+		defer spliceWG.Done()
+		_ = spliceDevices(spliceCtx, tunA, tunB)
+	}()
+	// Close the devices before waiting: the pumps block on a device read and
+	// only a close wakes them.
+	t.Cleanup(func() {
+		spliceCancel()
+		_ = tunA.Close()
+		_ = tunB.Close()
+		spliceWG.Wait()
+	})
+
+	// Change the address set while the sockets send, so that a reader of the
+	// set sees it move under it.
+	churnCtx, churnCancel := context.WithCancel(context.Background())
+	var churnWG sync.WaitGroup
+	churnWG.Add(1)
+	go func() {
+		defer churnWG.Done()
+		for churnCtx.Err() == nil {
+			if err := tunA.AddAddr(churnA); err != nil {
+				return
+			}
+			if err := tunA.DelAddr(churnA); err != nil {
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}()
+	t.Cleanup(func() {
+		churnCancel()
+		churnWG.Wait()
+	})
+
+	for _, addr := range boundA {
+		t.Run(addr.Addr().String(), func(t *testing.T) {
+			// A receiver per case, so that a retried datagram cannot be read
+			// by the next case.
+			recv, err := tunB.ListenPacket(netip.AddrPortFrom(addrB.Addr(), 0))
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = recv.Close() })
+
+			dst := &net.UDPAddr{
+				IP:   addrB.Addr().AsSlice(),
+				Port: recv.LocalAddr().(*net.UDPAddr).Port,
+			}
+
+			send, err := tunA.ListenPacket(netip.AddrPortFrom(addr.Addr(), 0))
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = send.Close() })
+
+			// UDP is lossy, so send until one datagram arrives.
+			buf := make([]byte, 64)
+			var src net.Addr
+			deadline := time.Now().Add(10 * time.Second)
+			for {
+				require.False(t, time.Now().After(deadline), "no datagram arrived on B")
+
+				_, err = send.WriteTo([]byte("ping"), dst)
+				require.NoError(t, err)
+
+				require.NoError(t, recv.SetReadDeadline(time.Now().Add(500*time.Millisecond)))
+				_, src, err = recv.ReadFrom(buf)
+				if err == nil {
+					break
+				}
+				var netErr net.Error
+				require.True(t, errors.As(err, &netErr) && netErr.Timeout(), "read failed: %v", err)
+			}
+
+			gotAddr, ok := netip.AddrFromSlice(src.(*net.UDPAddr).IP)
+			require.True(t, ok, "bad source address %s", src)
+			require.Equal(t, addr.Addr(), gotAddr.Unmap(),
+				"source address was rewritten away from the bound address")
+		})
+	}
+}

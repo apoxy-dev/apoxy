@@ -14,11 +14,12 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/dpeckett/contextio"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv4"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv6"
+
+	"github.com/apoxy-dev/apoxy/pkg/net/splice"
 )
 
 // installInboundForwarder wires the host → resident-server ingress path,
@@ -110,7 +111,7 @@ func (s *Stack) handleInbound(hostConn net.Conn, target tcpip.FullAddress, proto
 	defer guest.Close()
 
 	logger.Debug("Splicing inbound")
-	wn, err := contextio.SpliceContext(ctx, hostConn, guest, nil)
+	wn, err := splice.Splice(ctx, hostConn, guest)
 	if err != nil && !errors.Is(err, context.Canceled) {
 		if isBenignClose(err) {
 			logger.Debug("Peer closed mid-splice", slog.Any("error", err))

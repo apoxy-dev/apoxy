@@ -15,12 +15,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/dpeckett/contextio"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 	"gvisor.dev/gvisor/pkg/waiter"
 
+	"github.com/apoxy-dev/apoxy/pkg/net/splice"
 	sentrystack "github.com/apoxy-dev/apoxy/pkg/sandbox/sentrystack"
 	"github.com/apoxy-dev/apoxy/pkg/sandbox/sentrystack/egresswire"
 )
@@ -211,7 +211,7 @@ func (h *tcpHandler) handleTCP(req *tcp.ForwarderRequest, src, dst netip.AddrPor
 	defer local.Close()
 	defer unregister()
 
-	if _, err := contextio.SpliceContext(ctx, local, remote, nil); err != nil &&
+	if _, err := splice.Splice(ctx, local, remote); err != nil &&
 		!errors.Is(err, context.Canceled) && !isBenignClose(err) {
 		logger.Warn("Egress splice error", "error", err)
 		req.Complete(true) // RST

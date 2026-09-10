@@ -904,6 +904,14 @@ fi
 echo "console: no codegen drift"
 `
 
+// Test runs the tunnel data path unit tests under the race detector.
+func (m *ApoxyCli) Test(ctx context.Context, src *dagger.Directory) (string, error) {
+	return m.BuilderContainer(ctx, src).
+		WithEnvVariable("CGO_ENABLED", "1").
+		WithExec([]string{"go", "test", "-race", "-short", "./pkg/net/...", "./pkg/netstack/...", "./pkg/tunnel/..."}).
+		Stdout(ctx)
+}
+
 // Console installs the console pnpm workspace, type-checks, tests and builds it,
 // then verifies the committed OpenAPI/TS codegen is not stale. The OpenAPI spec
 // is rendered from the Go API types in the Go builder (the codegen source of

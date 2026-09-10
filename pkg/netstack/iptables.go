@@ -3,18 +3,38 @@ package netstack
 import (
 	"log/slog"
 	"math/rand"
+	"slices"
+	"sync"
 
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 )
 
-// randSNATTarget implements stack.Target that performs SNAT using
-// a randomly selected address from Addrs.
+// randSNATTarget implements stack.Target. It rewrites the source address of a
+// packet to a random member of addrs. A packet whose source already is a
+// member keeps it, so a socket bound to one overlay address is not moved to a
+// sibling address.
 type randSNATTarget struct {
-	stack.SNATTarget
+	networkProtocol tcpip.NetworkProtocolNumber
 
-	Addrs []tcpip.Address
+	mu    sync.RWMutex
+	addrs []tcpip.Address
+}
+
+// pick returns the source address the packet must carry, or false if there
+// are no addresses.
+func (t *randSNATTarget) pick(src tcpip.Address) (tcpip.Address, bool) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	if len(t.addrs) == 0 {
+		return tcpip.Address{}, false
+	}
+	if slices.ContainsFunc(t.addrs, src.Equal) {
+		return src, true
+	}
+	return t.addrs[rand.Intn(len(t.addrs))], true
 }
 
 // Action implements stack.Target.
@@ -24,32 +44,41 @@ func (t *randSNATTarget) Action(
 	r *stack.Route,
 	_ stack.AddressableEndpoint,
 ) (stack.RuleVerdict, int) {
-	if len(t.Addrs) == 0 {
-		// No addresses available for SNAT, drop the packet.
+	src := pkt.Network().SourceAddress()
+	addr, ok := t.pick(src)
+	if !ok {
 		slog.Debug("SNAT target has no addresses, dropping packet")
 		return stack.RuleDrop, 0
 	}
-	t.SNATTarget.Addr = t.Addrs[rand.Intn(len(t.Addrs))]
-	slog.Debug("SNAT target selected address", "address", t.SNATTarget.Addr)
-	return t.SNATTarget.Action(pkt, hook, r, nil)
+	if addr.Equal(src) {
+		return stack.RuleAccept, 0
+	}
+
+	slog.Debug("SNAT target selected address", slog.Any("address", addr))
+
+	// A per-packet target: concurrent callers must not share Addr.
+	snat := stack.SNATTarget{
+		NetworkProtocol: t.networkProtocol,
+		Addr:            addr,
+		ChangeAddress:   true,
+	}
+	return snat.Action(pkt, hook, r, nil)
 }
 
 func (t *randSNATTarget) add(addr tcpip.Address) {
-	for _, a := range t.Addrs {
-		if a.Equal(addr) {
-			return
-		}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if !slices.ContainsFunc(t.addrs, addr.Equal) {
+		t.addrs = append(t.addrs, addr)
 	}
-	t.Addrs = append(t.Addrs, addr)
 }
 
 func (t *randSNATTarget) del(addr tcpip.Address) {
-	for i, a := range t.Addrs {
-		if a.Equal(addr) {
-			t.Addrs = append(t.Addrs[:i], t.Addrs[i+1:]...)
-			return
-		}
-	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	t.addrs = slices.DeleteFunc(t.addrs, addr.Equal)
 }
 
 type IPTables struct {
@@ -59,20 +88,8 @@ type IPTables struct {
 
 func newIPTables() *IPTables {
 	return &IPTables{
-		SNATv4: &randSNATTarget{
-			SNATTarget: stack.SNATTarget{
-				NetworkProtocol: header.IPv4ProtocolNumber,
-				ChangeAddress:   true,
-			},
-			Addrs: []tcpip.Address{},
-		},
-		SNATv6: &randSNATTarget{
-			SNATTarget: stack.SNATTarget{
-				NetworkProtocol: header.IPv6ProtocolNumber,
-				ChangeAddress:   true,
-			},
-			Addrs: []tcpip.Address{},
-		},
+		SNATv4: &randSNATTarget{networkProtocol: header.IPv4ProtocolNumber},
+		SNATv6: &randSNATTarget{networkProtocol: header.IPv6ProtocolNumber},
 	}
 }
 
