@@ -1077,11 +1077,12 @@ func start(
 	opts.kineETCD = etcdConfig
 
 	srvBuilder := builder.NewServerBuilder().
-		// compute Service is the only resource whose controller filters on
-		// metadata.generation (the minting reconciler's Service watch). The
-		// rest of the resources here still run with generation permanently
-		// zero; enabling it for them is a separate per-resource audit.
-		WithGenerationTrackingFor(&computev1alpha1.Service{}).
+		// The GatewayClass reconciler filters its watches on
+		// metadata.generation, so every kind it reads must track generation.
+		WithGenerationTrackingFor(append(
+			[]resource.Object{&computev1alpha1.Service{}},
+			gateway.GenerationTrackedObjects()...,
+		)...).
 		WithAdditionalSchemeInstallers(registerCrossVersionConversions, registerFieldLabelConversions)
 	for _, r := range opts.resources {
 		if ss, ok := r.(*corev1alpha.SecretStore); ok {

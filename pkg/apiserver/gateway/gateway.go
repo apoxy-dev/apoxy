@@ -28,11 +28,14 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/gateway/gatewayapi"
 	"github.com/apoxy-dev/apoxy/pkg/gateway/message"
 
+	corev1alpha "github.com/apoxy-dev/apoxy/api/core/v1alpha"
 	corev1alpha2 "github.com/apoxy-dev/apoxy/api/core/v1alpha2"
 	extensionsv1alpha2 "github.com/apoxy-dev/apoxy/api/extensions/v1alpha2"
 	gatewayv1 "github.com/apoxy-dev/apoxy/api/gateway/v1"
 	gatewayv1alpha2 "github.com/apoxy-dev/apoxy/api/gateway/v1alpha2"
 	vpcv1alpha1 "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1"
+
+	"github.com/apoxy-dev/apoxy/api/resource"
 )
 
 func Install(scheme *runtime.Scheme) {
@@ -718,6 +721,60 @@ func (r *GatewayReconciler) reconcileServices(
 	return nil
 }
 
+// trackedObject is a kind that the apiserver serves and that the
+// GatewayClass reconciler reads by metadata.generation.
+type trackedObject interface {
+	resource.Object
+	client.Object
+}
+
+// trackedKind pairs a kind with the predicate that filters its updates.
+type trackedKind struct {
+	obj  trackedObject
+	pred predicate.Predicate
+	// watch is false for a kind that must track generation but that this
+	// reconciler does not read.
+	watch bool
+}
+
+// generationTracked is the one list of kinds whose writes must bump
+// metadata.generation. It feeds both the watches in SetupWithManager and
+// the apiserver's WithGenerationTrackingFor call, so the two cannot drift.
+var generationTracked = []trackedKind{
+	{obj: &gatewayv1.GatewayClass{}, pred: generationOrDeletion, watch: true},
+	{obj: &gatewayv1.Gateway{}, pred: generationOrDeletion, watch: true},
+	{obj: &gatewayv1.HTTPRoute{}, pred: generationOrDeletion, watch: true},
+	// The reconciler never lists GRPCRoutes, so the translator always gets
+	// an empty set. A watch would only queue work that cannot change the
+	// output, but a GRPCRoute write must still bump generation.
+	{obj: &gatewayv1.GRPCRoute{}, pred: generationOrDeletion},
+	{obj: &gatewayv1alpha2.TCPRoute{}, pred: generationOrDeletion, watch: true},
+	{obj: &gatewayv1alpha2.UDPRoute{}, pred: generationOrDeletion, watch: true},
+	{obj: &gatewayv1alpha2.TLSRoute{}, pred: generationOrDeletion, watch: true},
+	{obj: &corev1alpha2.Backend{}, pred: generationOrDeletion, watch: true},
+	// The apiserver gives each served version its own store and strategy,
+	// so a write through v1alpha bumps generation only if v1alpha is listed
+	// here. The controller reads the v1alpha2 storage version, which is
+	// where the bump lands after conversion.
+	{obj: &corev1alpha.Backend{}, pred: generationOrDeletion},
+	{obj: &vpcv1alpha1.VPCService{}, pred: generationOrDeletion, watch: true},
+	{obj: &extensionsv1alpha2.EdgeFunction{}, pred: edgeFunctionRetrigger, watch: true},
+	{obj: &extensionsv1alpha2.DirectResponse{}, pred: generationOrDeletion, watch: true},
+	{obj: &extensionsv1alpha2.HTTPRouteFilter{}, pred: generationOrDeletion, watch: true},
+}
+
+// GenerationTrackedObjects returns the kinds that must track
+// metadata.generation. The apiserver only bumps generation for the kinds it
+// is told about, so pass this list to WithGenerationTrackingFor. Without it
+// a spec edit never re-translates xDS.
+func GenerationTrackedObjects() []resource.Object {
+	objs := make([]resource.Object, 0, len(generationTracked))
+	for _, t := range generationTracked {
+		objs = append(objs, t.obj)
+	}
+	return objs
+}
+
 // SetupWithManager sets up the controller with the Controller Manager.
 func (r *GatewayReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager) error {
 	// Indexes Gateway objects by the name of the referenced GatewayClass object.
@@ -982,76 +1039,24 @@ func (r *GatewayReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manag
 		return fmt.Errorf("failed to setup field indexer: %w", err)
 	}
 
-	// Predicate choice per watched type is load-bearing for the controller's
-	// reconcile rate — see predicates.go for the full reasoning. Summary:
-	//   - generationOrDeletion: spec changes + deletionTimestamp-set updates.
-	//     The default for all Gateway-API spec-driven types. Filters out the
-	//     status writes this controller itself emits, breaking the
-	//     write-amplification loop.
-	//   - edgeFunctionRetrigger: same, plus Status.LiveRevision changes,
-	//     because the field indexer below keys on Status.LiveRevision and
-	//     the translator routes traffic to the published live revision.
-	//   - ResourceVersionChangedPredicate{}: kept only for corev1.Secret —
-	//     Secret has no .spec/.status split (Generation never bumps) and
-	//     the controller does not write Secrets, so there is no
-	//     amplification loop and the broad predicate is fine.
+	// The predicate per watched kind governs the controller's reconcile rate,
+	// see predicates.go. generationOrDeletion is the default and drops the
+	// status writes this controller itself emits. EdgeFunction also reacts
+	// to a new live revision. corev1.Secret keeps the broad predicate: it
+	// has no spec/status split, so its generation never bumps, and the
+	// controller does not write Secrets.
 	b := ctrl.NewControllerManagedBy(mgr).
-		For(&gatewayv1.GatewayClass{}, builder.WithPredicates(generationOrDeletion)).
-		Watches(
-			&gatewayv1.GatewayClass{},
+		For(&gatewayv1.GatewayClass{}, builder.WithPredicates(generationOrDeletion))
+	for _, t := range generationTracked {
+		if !t.watch {
+			continue
+		}
+		b = b.Watches(
+			t.obj,
 			handler.EnqueueRequestsFromMapFunc(r.enqueueClass),
-			builder.WithPredicates(generationOrDeletion),
-		).
-		Watches(
-			&gatewayv1.Gateway{},
-			handler.EnqueueRequestsFromMapFunc(r.enqueueClass),
-			builder.WithPredicates(generationOrDeletion),
-		).
-		Watches(
-			&gatewayv1.HTTPRoute{},
-			handler.EnqueueRequestsFromMapFunc(r.enqueueClass),
-			builder.WithPredicates(generationOrDeletion),
-		).
-		Watches(
-			&gatewayv1alpha2.TCPRoute{},
-			handler.EnqueueRequestsFromMapFunc(r.enqueueClass),
-			builder.WithPredicates(generationOrDeletion),
-		).
-		Watches(
-			&gatewayv1alpha2.UDPRoute{},
-			handler.EnqueueRequestsFromMapFunc(r.enqueueClass),
-			builder.WithPredicates(generationOrDeletion),
-		).
-		Watches(
-			&gatewayv1alpha2.TLSRoute{},
-			handler.EnqueueRequestsFromMapFunc(r.enqueueClass),
-			builder.WithPredicates(generationOrDeletion),
-		).
-		Watches(
-			&corev1alpha2.Backend{},
-			handler.EnqueueRequestsFromMapFunc(r.enqueueClass),
-			builder.WithPredicates(generationOrDeletion),
-		).
-		Watches(
-			&vpcv1alpha1.VPCService{},
-			handler.EnqueueRequestsFromMapFunc(r.enqueueClass),
-			builder.WithPredicates(generationOrDeletion),
-		).
-		Watches(
-			&extensionsv1alpha2.EdgeFunction{},
-			handler.EnqueueRequestsFromMapFunc(r.enqueueClass),
-			builder.WithPredicates(edgeFunctionRetrigger),
-		).
-		Watches(
-			&extensionsv1alpha2.DirectResponse{},
-			handler.EnqueueRequestsFromMapFunc(r.enqueueClass),
-			builder.WithPredicates(generationOrDeletion),
-		).
-		Watches(
-			&extensionsv1alpha2.HTTPRouteFilter{},
-			handler.EnqueueRequestsFromMapFunc(r.enqueueClass),
-			builder.WithPredicates(generationOrDeletion),
+			builder.WithPredicates(t.pred),
 		)
+	}
 
 	if r.watchK8s {
 		b = b.
