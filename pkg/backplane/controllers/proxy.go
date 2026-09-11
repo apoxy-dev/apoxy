@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"net/netip"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
@@ -44,6 +46,11 @@ type ProxyReconciler struct {
 	apiServerHost string
 
 	options *options
+
+	// warnedRelease holds the release that the last "release changed" warning
+	// named. It stops the warning from repeating on each reconcile.
+	warnedMu      sync.Mutex
+	warnedRelease string
 }
 
 type options struct {
@@ -52,6 +59,7 @@ type options struct {
 	apiServerTLSClientConfig     *tls.Config
 	goPluginDir                  string
 	releaseURL                   string
+	envoyVersion                 string
 	useEnvoyContrib              bool
 	overloadMaxHeapSizeBytes     *uint64
 	overloadMaxActiveConnections *uint64
@@ -101,6 +109,16 @@ func WithURLRelease(url string) Option {
 func WithEnvoyContrib() Option {
 	return func(o *options) {
 		o.useEnvoyContrib = true
+	}
+}
+
+// WithEnvoyVersion pins the Envoy release tag, for example "v1.35.13", that is
+// downloaded from GitHub. An empty version selects the latest upstream
+// release, which must not be used in production. The Proxy spec and
+// WithURLRelease take precedence over this version.
+func WithEnvoyVersion(version string) Option {
+	return func(o *options) {
+		o.envoyVersion = version
 	}
 }
 
@@ -163,6 +181,65 @@ func getReplicaAddress(replica *corev1alpha2.ProxyReplicaStatus, addrType corev1
 		}
 	}
 	return ""
+}
+
+// envoyRelease selects the Envoy release for the Proxy, which can be nil. The
+// order of precedence is the --envoy_release_url flag, the Proxy release URL,
+// the Proxy version, and last the --envoy_version flag. A nil result leaves
+// the choice to the runtime, which uses the newest cached release.
+func (r *ProxyReconciler) envoyRelease(p *corev1alpha2.Proxy) envoy.ReleaseDownloader {
+	if r.options.releaseURL != "" {
+		return &envoy.URLRelease{URL: r.options.releaseURL}
+	}
+
+	if p != nil && p.Spec.Envoy != nil {
+		if p.Spec.Envoy.ReleaseURL != "" {
+			return &envoy.URLRelease{URL: p.Spec.Envoy.ReleaseURL}
+		}
+		if v := p.Spec.Envoy.Version; v != "" {
+			if !strings.HasPrefix(v, "v") {
+				v = "v" + v
+			}
+			return &envoy.GitHubRelease{
+				Version: v,
+				Contrib: r.options.useEnvoyContrib,
+			}
+		}
+	}
+
+	if r.options.envoyVersion != "" || r.options.useEnvoyContrib {
+		return &envoy.GitHubRelease{
+			Version: r.options.envoyVersion,
+			Contrib: r.options.useEnvoyContrib,
+		}
+	}
+
+	return nil
+}
+
+// warnOnEnvoyReleaseChange warns when the Proxy selects a release that is not
+// the running one. Envoy starts one time for each backplane process, so the
+// new release needs a restart. The warning repeats only for a new release.
+func (r *ProxyReconciler) warnOnEnvoyReleaseChange(p *corev1alpha2.Proxy, logger *slog.Logger) {
+	sel := r.envoyRelease(p)
+	if sel == nil || r.Runtime.Release == nil {
+		return
+	}
+
+	want := sel.String()
+	running := r.Runtime.Release.String()
+	if want == "" || want == running {
+		return
+	}
+
+	r.warnedMu.Lock()
+	defer r.warnedMu.Unlock()
+	if r.warnedRelease == want {
+		return
+	}
+	r.warnedRelease = want
+
+	logger.Warn("Envoy release changed in Proxy spec; restart the backplane to apply", "old", running, "new", want)
 }
 
 func (r *ProxyReconciler) Reconcile(ctx context.Context, request reconcile.Request) (reconcile.Result, error) {
@@ -236,14 +313,8 @@ func (r *ProxyReconciler) Reconcile(ctx context.Context, request reconcile.Reque
 				InternalAddress: r.privateAddr.String(),
 			}),
 		}
-		if r.options.releaseURL != "" {
-			opts = append(opts, envoy.WithRelease(&envoy.URLRelease{
-				URL: r.options.releaseURL,
-			}))
-		} else if r.options.useEnvoyContrib {
-			opts = append(opts, envoy.WithRelease(&envoy.GitHubRelease{
-				Contrib: true,
-			}))
+		if rel := r.envoyRelease(p); rel != nil {
+			opts = append(opts, envoy.WithRelease(rel))
 		}
 
 		if p.Spec.Telemetry != nil {
@@ -276,6 +347,10 @@ func (r *ProxyReconciler) Reconcile(ctx context.Context, request reconcile.Reque
 		// Requeue after a short delay to check the status of the proxy.
 		return reconcile.Result{RequeueAfter: 2 * time.Second}, nil
 	}
+
+	// Envoy runs already. A new release in the Proxy needs a restart of the
+	// backplane, so only warn about it.
+	r.warnOnEnvoyReleaseChange(p, logger)
 
 	// Find the proxy replica by name.
 	rs, found := findReplicaStatus(p, r.replicaName)
@@ -331,14 +406,8 @@ func (r *ProxyReconciler) DownloadEnvoy(ctx context.Context) error {
 	opts := []envoy.Option{
 		envoy.WithGoPluginDir(r.options.goPluginDir),
 	}
-	if r.options.releaseURL != "" {
-		opts = append(opts, envoy.WithRelease(&envoy.URLRelease{
-			URL: r.options.releaseURL,
-		}))
-	} else if r.options.useEnvoyContrib {
-		opts = append(opts, envoy.WithRelease(&envoy.GitHubRelease{
-			Contrib: true,
-		}))
+	if rel := r.envoyRelease(nil); rel != nil {
+		opts = append(opts, envoy.WithRelease(rel))
 	}
 
 	if err := r.Runtime.Start(ctx, opts...); err != nil {

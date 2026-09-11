@@ -2,6 +2,8 @@ package envoy
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,6 +32,12 @@ import (
 
 const (
 	githubURL = "github.com/envoyproxy/envoy/releases/download"
+
+	// DefaultVersion is the Envoy release that backplane images bake in and
+	// that the runtime downloads. The Envoy version must not float, because a
+	// new minor release can break the Go filter. Bump it only after a soak
+	// test of the new release.
+	DefaultVersion = "v1.35.13"
 
 	accessLogsPath = "/var/log/accesslogs"
 	tapsPath       = "/var/log/taps"
@@ -335,22 +343,55 @@ func (r *Runtime) run(ctx context.Context) error {
 		r.mu.Unlock()
 		return fmt.Errorf("failed to get envoy process create time: %w", err)
 	}
-	r.status.StartedAt = time.Unix(0, ctime*int64(time.Millisecond)).UTC() // Convert from milliseconds to seconds.
+	startedAt := time.Unix(0, ctime*int64(time.Millisecond)).UTC() // Convert from milliseconds to seconds.
+	r.status.StartedAt = startedAt
 	r.status.Running = true
 	r.status.Starting = false
 	r.mu.Unlock()
 
-	// Restart envoy if it exits.
-	if err := r.cmd.Wait(); err != nil {
-		return fmt.Errorf("envoy exited with error: %w", err)
-	}
+	// Always record the exit, also when Wait reports an error. The caller
+	// restarts Envoy.
+	waitErr := r.cmd.Wait()
+	state := r.cmd.ProcessState
+	r.recordExit(state, waitErr)
 
-	r.mu.Lock()
-	r.status.Running = false
-	r.status.ProcState = r.cmd.ProcessState
-	r.mu.Unlock()
+	uptime := time.Since(startedAt).Round(time.Second)
+	if waitErr != nil {
+		log.Errorf("Envoy process exited: state=%q uptime=%s error=%v", procStateString(state), uptime, waitErr)
+		return fmt.Errorf("envoy exited with error: %w", waitErr)
+	}
+	log.Infof("Envoy process exited: state=%q uptime=%s", procStateString(state), uptime)
 
 	return nil
+}
+
+// procStateString describes how the process exited, for example "exit status
+// 1" or "signal: killed".
+func procStateString(state *os.ProcessState) string {
+	if state == nil {
+		return "unknown"
+	}
+	return state.String()
+}
+
+// recordExit records the exit of the Envoy process in the runtime status.
+func (r *Runtime) recordExit(state *os.ProcessState, err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.status.Running = false
+	r.status.ProcState = state
+	r.status.LastExit = &ExitInfo{
+		At:        time.Now().UTC(),
+		ProcState: state,
+		Err:       err,
+	}
+}
+
+// recordRestart counts one more start of the Envoy process.
+func (r *Runtime) recordRestart() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.status.Restarts++
 }
 
 // envoyPath returns the path to the Envoy binary. If EnvoyPath is set, it will
@@ -370,6 +411,16 @@ func (r *Runtime) vendorEnvoyIfNotExists(ctx context.Context) error {
 		return nil
 	}
 
+	// Read the published digest first. Releases that publish no digest give an
+	// empty value and the download is not checked.
+	var want string
+	if cd, ok := r.Release.(ChecksumDownloader); ok {
+		var err error
+		if want, err = cd.DownloadChecksum(ctx); err != nil {
+			return fmt.Errorf("failed to get envoy checksum: %w", err)
+		}
+	}
+
 	// Download the Envoy binary for the release.
 	bin, err := r.Release.DownloadBinary(ctx)
 	if err != nil {
@@ -377,20 +428,46 @@ func (r *Runtime) vendorEnvoyIfNotExists(ctx context.Context) error {
 	}
 	defer bin.Close()
 
-	// Extract the Envoy binary.
-	if err := os.MkdirAll(filepath.Dir(r.envoyPath()), 0755); err != nil {
+	path := r.envoyPath()
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("failed to create envoy directory: %w", err)
 	}
-	w, err := os.OpenFile(r.envoyPath(), os.O_CREATE|os.O_WRONLY, 0755)
+
+	// Write to a temporary file in the same directory and hash the bytes as
+	// they arrive. The final path must never hold an unchecked or partial
+	// binary.
+	tmp, err := os.CreateTemp(dir, ".envoy-*")
 	if err != nil {
-		return fmt.Errorf("failed to open envoy: %w", err)
+		return fmt.Errorf("failed to create temporary envoy file: %w", err)
 	}
-	defer w.Close()
-	if _, err := io.Copy(w, bin); err != nil {
+	tmpPath := tmp.Name()
+	defer func() {
+		tmp.Close()
+		os.Remove(tmpPath) // Does nothing after a successful rename.
+	}()
+
+	h := sha256.New()
+	if _, err := io.Copy(io.MultiWriter(tmp, h), bin); err != nil {
 		return fmt.Errorf("failed to copy envoy: %w", err)
 	}
-	if err := os.Chmod(r.envoyPath(), 0755); err != nil {
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("failed to close envoy: %w", err)
+	}
+
+	got := hex.EncodeToString(h.Sum(nil))
+	if want != "" {
+		if got != want {
+			return fmt.Errorf("envoy checksum mismatch: expected %s, actual %s", want, got)
+		}
+		log.Infof("Verified Envoy download against published checksum %s", got)
+	}
+
+	if err := os.Chmod(tmpPath, 0755); err != nil {
 		return fmt.Errorf("failed to chmod envoy: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("failed to move envoy into place: %w", err)
 	}
 
 	return nil
@@ -426,6 +503,7 @@ func (r *Runtime) Start(ctx context.Context, opts ...Option) error {
 
 	r.stopCh = make(chan struct{})
 	go func() {
+		runs := 0
 		for {
 			select {
 			case <-ctx.Done():
@@ -436,6 +514,11 @@ func (r *Runtime) Start(ctx context.Context, opts ...Option) error {
 				return
 			default:
 			}
+
+			if runs > 0 {
+				r.recordRestart()
+			}
+			runs++
 
 			if err := r.run(ctx); err != nil {
 				log.Errorf("envoy exited with error: %v", err)
@@ -596,11 +679,28 @@ drain:
 	return stopOnce()
 }
 
+// ExitInfo records the last exit of the Envoy process.
+type ExitInfo struct {
+	// At is the time the exit was recorded.
+	At time.Time
+	// ProcState is the state of the exited process. It is nil if the process
+	// never started.
+	ProcState *os.ProcessState
+	// Err is the error returned by the wait on the process, if any.
+	Err error
+}
+
 type RuntimeStatus struct {
 	StartedAt time.Time
 	Starting  bool
 	Running   bool
 	ProcState *os.ProcessState
+	// LastExit is the last recorded exit of the Envoy process. It is nil until
+	// the process exits for the first time.
+	LastExit *ExitInfo
+	// Restarts counts how many times the runtime started Envoy again after an
+	// exit.
+	Restarts int
 }
 
 // RuntimeStatus returns the status of the Envoy process.

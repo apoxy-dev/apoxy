@@ -2,6 +2,7 @@ package envoy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -23,6 +24,72 @@ type ReleaseDownloader interface {
 
 	// DownloadBinary downloads the release binary.
 	DownloadBinary(ctx context.Context) (io.ReadCloser, error)
+}
+
+// ChecksumDownloader is implemented by releases that can publish a ".sha256"
+// sidecar next to the binary.
+type ChecksumDownloader interface {
+	// DownloadChecksum returns the published SHA-256 digest of the binary in
+	// lowercase hex. It returns an empty digest when no checksum is published.
+	DownloadChecksum(ctx context.Context) (string, error)
+}
+
+var (
+	_ ReleaseDownloader  = (*GitHubRelease)(nil)
+	_ ChecksumDownloader = (*GitHubRelease)(nil)
+	_ ReleaseDownloader  = (*URLRelease)(nil)
+	_ ChecksumDownloader = (*URLRelease)(nil)
+)
+
+// sha256HexLen is the length of a SHA-256 digest in hexadecimal.
+const sha256HexLen = 64
+
+// fetchChecksum reads the ".sha256" sidecar of the binary URL. A missing or
+// unreachable sidecar is not an error: the digest is empty and the caller
+// skips the check.
+func fetchChecksum(ctx context.Context, binURL string) (string, error) {
+	sumURL := binURL + ".sha256"
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, sumURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to build checksum request: %w", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		log.Warnf("No checksum published for Envoy release, skipping verification: url=%s error=%v", sumURL, err)
+		return "", nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		log.Warnf("No checksum published for Envoy release, skipping verification: url=%s status=%s", sumURL, resp.Status)
+		return "", nil
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if err != nil {
+		log.Warnf("No checksum published for Envoy release, skipping verification: url=%s error=%v", sumURL, err)
+		return "", nil
+	}
+
+	sum, err := parseChecksum(string(body))
+	if err != nil {
+		return "", fmt.Errorf("bad checksum at %s: %w", sumURL, err)
+	}
+	return sum, nil
+}
+
+// parseChecksum reads the digest from the contents of a ".sha256" file. The
+// file holds the digest first, and can hold the file name after it.
+func parseChecksum(body string) (string, error) {
+	fields := strings.Fields(body)
+	if len(fields) == 0 {
+		return "", errors.New("checksum file is empty")
+	}
+	sum := strings.ToLower(fields[0])
+	if len(sum) != sha256HexLen || strings.TrimLeft(sum, "0123456789abcdef") != "" {
+		return "", fmt.Errorf("%q is not a sha256 digest", fields[0])
+	}
+	return sum, nil
 }
 
 type LatestCachedRelease struct {
@@ -182,36 +249,48 @@ func (r *GitHubRelease) String() string {
 	return fmt.Sprintf("%s@sha256:%s", r.Version, r.Sha)
 }
 
-func (r *GitHubRelease) DownloadBinary(ctx context.Context) (io.ReadCloser, error) {
-	release := r.String()
-	if release == "" {
+// binaryURL returns the download URL of the release binary. It resolves the
+// latest upstream release when no version is set.
+func (r *GitHubRelease) binaryURL(ctx context.Context) (string, error) {
+	if r.String() == "" {
 		c := github.NewClient(nil)
 		latest, _, err := c.Repositories.GetLatestRelease(ctx, "envoyproxy", "envoy")
 		if err != nil {
-			return nil, fmt.Errorf("failed to get latest envoy release: %w", err)
+			return "", fmt.Errorf("failed to get latest envoy release: %w", err)
 		}
 		r.Version = latest.GetTagName()
 	}
-	downloadURL := filepath.Join(
-		githubURL,
-		r.Version,
-		fmt.Sprintf("envoy-%s-%s-%s", r.Version[1:], runtime.GOOS, goArchToPlatform[runtime.GOARCH]),
-	)
+
+	name := fmt.Sprintf("envoy-%s-%s-%s", strings.TrimPrefix(r.Version, "v"), runtime.GOOS, goArchToPlatform[runtime.GOARCH])
 	if r.Contrib {
-		downloadURL = filepath.Join(
-			githubURL,
-			r.Version,
-			fmt.Sprintf("envoy-contrib-%s-%s-%s", r.Version[1:], runtime.GOOS, goArchToPlatform[runtime.GOARCH]),
-		)
+		name = fmt.Sprintf("envoy-contrib-%s-%s-%s", strings.TrimPrefix(r.Version, "v"), runtime.GOOS, goArchToPlatform[runtime.GOARCH])
 	}
 
-	log.Infof("downloading envoy %s from https://%s", r, downloadURL)
+	return "https://" + filepath.Join(githubURL, r.Version, name), nil
+}
 
-	resp, err := http.Get("https://" + downloadURL)
+func (r *GitHubRelease) DownloadBinary(ctx context.Context) (io.ReadCloser, error) {
+	downloadURL, err := r.binaryURL(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	log.Infof("downloading envoy %s from %s", r, downloadURL)
+
+	resp, err := http.Get(downloadURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to download envoy: %w", err)
 	}
 	return resp.Body, nil
+}
+
+// DownloadChecksum returns the digest published next to the release binary.
+func (r *GitHubRelease) DownloadChecksum(ctx context.Context) (string, error) {
+	downloadURL, err := r.binaryURL(ctx)
+	if err != nil {
+		return "", err
+	}
+	return fetchChecksum(ctx, downloadURL)
 }
 
 type URLRelease struct {
@@ -230,4 +309,9 @@ func (r *URLRelease) DownloadBinary(ctx context.Context) (io.ReadCloser, error) 
 		return nil, fmt.Errorf("failed to download envoy: %w", err)
 	}
 	return resp.Body, nil
+}
+
+// DownloadChecksum returns the digest published next to the release binary.
+func (r *URLRelease) DownloadChecksum(ctx context.Context) (string, error) {
+	return fetchChecksum(ctx, r.URL)
 }
