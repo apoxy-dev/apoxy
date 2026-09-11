@@ -15,6 +15,34 @@ spec:
 apiVersion: apiregistration.k8s.io/v1
 kind: APIService
 metadata:
+  name: v1alpha2.core.apoxy.dev
+spec:
+  group: core.apoxy.dev
+  version: v1alpha2
+  groupPriorityMinimum: 1000
+  versionPriority: 16
+  insecureSkipTLSVerify: true
+  service:
+    name: {{ include "apoxy-gateway.fullname" . }}-apiserver
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: apiregistration.k8s.io/v1
+kind: APIService
+metadata:
+  name: v1alpha3.core.apoxy.dev
+spec:
+  group: core.apoxy.dev
+  version: v1alpha3
+  groupPriorityMinimum: 1000
+  versionPriority: 17
+  insecureSkipTLSVerify: true
+  service:
+    name: {{ include "apoxy-gateway.fullname" . }}-apiserver
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: apiregistration.k8s.io/v1
+kind: APIService
+metadata:
   name: v1alpha1.extensions.apoxy.dev
 spec:
   group: extensions.apoxy.dev
@@ -48,6 +76,20 @@ spec:
   group: gateway.apoxy.dev
   version: v1
   groupPriorityMinimum: 1000
+  versionPriority: 16
+  insecureSkipTLSVerify: true
+  service:
+    name: {{ include "apoxy-gateway.fullname" . }}-apiserver
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: apiregistration.k8s.io/v1
+kind: APIService
+metadata:
+  name: v1alpha2.gateway.apoxy.dev
+spec:
+  group: gateway.apoxy.dev
+  version: v1alpha2
+  groupPriorityMinimum: 1000
   versionPriority: 15
   insecureSkipTLSVerify: true
   service:
@@ -57,10 +99,66 @@ spec:
 apiVersion: apiregistration.k8s.io/v1
 kind: APIService
 metadata:
-  name: v1alpha1.controllers.apoxy.dev
+  name: v1alpha1.vpc.apoxy.dev
 spec:
-  group: controllers.apoxy.dev
+  group: vpc.apoxy.dev
   version: v1alpha1
+  groupPriorityMinimum: 1000
+  versionPriority: 15
+  insecureSkipTLSVerify: true
+  service:
+    name: {{ include "apoxy-gateway.fullname" . }}-apiserver
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: apiregistration.k8s.io/v1
+kind: APIService
+metadata:
+  name: v1alpha1.compute.apoxy.dev
+spec:
+  group: compute.apoxy.dev
+  version: v1alpha1
+  groupPriorityMinimum: 1000
+  versionPriority: 15
+  insecureSkipTLSVerify: true
+  service:
+    name: {{ include "apoxy-gateway.fullname" . }}-apiserver
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: apiregistration.k8s.io/v1
+kind: APIService
+metadata:
+  name: v1alpha1.policy.apoxy.dev
+spec:
+  group: policy.apoxy.dev
+  version: v1alpha1
+  groupPriorityMinimum: 1000
+  versionPriority: 15
+  insecureSkipTLSVerify: true
+  service:
+    name: {{ include "apoxy-gateway.fullname" . }}-apiserver
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: apiregistration.k8s.io/v1
+kind: APIService
+metadata:
+  name: v1alpha1.metrics.apoxy.dev
+spec:
+  group: metrics.apoxy.dev
+  version: v1alpha1
+  groupPriorityMinimum: 1000
+  versionPriority: 15
+  insecureSkipTLSVerify: true
+  service:
+    name: {{ include "apoxy-gateway.fullname" . }}-apiserver
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: apiregistration.k8s.io/v1
+kind: APIService
+metadata:
+  name: v1.coordination.apoxy.dev
+spec:
+  group: coordination.apoxy.dev
+  version: v1
   groupPriorityMinimum: 1000
   versionPriority: 15
   insecureSkipTLSVerify: true

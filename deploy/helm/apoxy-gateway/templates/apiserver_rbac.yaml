@@ -8,7 +8,7 @@ rules:
   # Allow the apiserver to read various resources for Gateways.
   - apiGroups: [""]
     resources: ["secrets", "services", "endpoints"]
-    verbs: ["get", "list"]
+    verbs: ["get", "list", "watch"]
   # Allow the apiserver to list pods for kvstore replication
   - apiGroups: [""]
     resources: ["pods"]
@@ -17,8 +17,9 @@ rules:
   - apiGroups: ["core.apoxy.dev"]
     resources: ["*"]
     verbs: ["*"]
-  # controllers.apoxy.dev/v1alpha1 controller.
-  - apiGroups: ["controllers.apoxy.dev"]
+  # vpc, compute, policy, metrics and coordination groups served by the
+  # apiserver and watched by its own controllers.
+  - apiGroups: ["vpc.apoxy.dev", "compute.apoxy.dev", "policy.apoxy.dev", "metrics.apoxy.dev", "coordination.apoxy.dev"]
     resources: ["*"]
     verbs: ["*"]
   # extensions.apoxy.dev/v1alpha1 controller.

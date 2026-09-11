@@ -54,6 +54,17 @@ spec:
             - name: jwks-store
               containerPort: 8444
               protocol: TCP
+          # The apiserver waits for its own APIServices to become reachable
+          # through the kube aggregator before its controllers start, and the
+          # first boot on an existing database can vacuum. Give it minutes,
+          # not seconds, before liveness applies.
+          startupProbe:
+            httpGet:
+              path: /livez
+              port: https
+              scheme: HTTPS
+            periodSeconds: 10
+            failureThreshold: 30
           livenessProbe:
             httpGet:
               path: /livez
