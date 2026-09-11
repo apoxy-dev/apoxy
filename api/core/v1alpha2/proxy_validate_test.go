@@ -5,7 +5,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 )
 
 func defaultedProxy(provider InfraProvider, tel *ProxyTelementry) *Proxy {
@@ -40,10 +43,10 @@ func TestValidate_CloudTelemetryRejected(t *testing.T) {
 			wantErrs: 0,
 		},
 		{
-			name:     "cloud provider with empty telemetry is valid",
-			provider: InfraProviderCloud,
+			name:      "cloud provider with empty telemetry is valid",
+			provider:  InfraProviderCloud,
 			telemetry: &ProxyTelementry{},
-			wantErrs: 0,
+			wantErrs:  0,
 		},
 		{
 			name:     "cloud provider with accessLogs rejected",
@@ -116,7 +119,7 @@ func TestValidate_CloudTelemetryRejected(t *testing.T) {
 			name:     "unmanaged provider with telemetry is valid",
 			provider: InfraProviderUnmanaged,
 			telemetry: &ProxyTelementry{
-				AccessLogs: &ProxyAccessLogs{JSON: map[string]string{"k": "v"}},
+				AccessLogs:          &ProxyAccessLogs{JSON: map[string]string{"k": "v"}},
 				OtelCollectorConfig: &LocalObjectReference{Name: "cfg"},
 			},
 			wantErrs: 0,
@@ -179,5 +182,134 @@ func TestValidate_DrainTimeout(t *testing.T) {
 	}
 	if errs[0].Field != "spec.shutdown.minimumDrainTime" {
 		t.Errorf("Validate() error field = %q, want %q", errs[0].Field, "spec.shutdown.minimumDrainTime")
+	}
+}
+
+func defaultedEnvoyProxy(provider InfraProvider, envoy *EnvoyConfig) *Proxy {
+	p := &Proxy{
+		Spec: ProxySpec{
+			Provider: provider,
+			Envoy:    envoy,
+		},
+	}
+	p.Default()
+	return p
+}
+
+func TestValidate_Envoy(t *testing.T) {
+	type wantErr struct {
+		field string
+		typ   field.ErrorType
+	}
+
+	cases := []struct {
+		name     string
+		provider InfraProvider
+		envoy    *EnvoyConfig
+		want     []wantErr
+	}{
+		{
+			name:     "unmanaged provider without envoy settings",
+			provider: InfraProviderUnmanaged,
+		},
+		{
+			name:     "empty envoy settings are allowed",
+			provider: InfraProviderUnmanaged,
+			envoy:    &EnvoyConfig{},
+		},
+		{
+			name:     "version with a leading v",
+			provider: InfraProviderUnmanaged,
+			envoy:    &EnvoyConfig{Version: "v1.35.13"},
+		},
+		{
+			name:     "version without a leading v",
+			provider: InfraProviderUnmanaged,
+			envoy:    &EnvoyConfig{Version: "1.35.13"},
+		},
+		{
+			name:     "version and release URL together",
+			provider: InfraProviderUnmanaged,
+			envoy: &EnvoyConfig{
+				Version:    "v1.35.13",
+				ReleaseURL: "https://example.com/envoy-static",
+			},
+		},
+		{
+			name:     "kubernetes provider can set envoy settings",
+			provider: InfraProviderKubernetes,
+			envoy:    &EnvoyConfig{Version: "v1.35.13"},
+		},
+		{
+			name:     "version is not a release tag",
+			provider: InfraProviderUnmanaged,
+			envoy:    &EnvoyConfig{Version: "latest"},
+			want:     []wantErr{{"spec.envoy.version", field.ErrorTypeInvalid}},
+		},
+		{
+			name:     "version misses the patch number",
+			provider: InfraProviderUnmanaged,
+			envoy:    &EnvoyConfig{Version: "v1.35"},
+			want:     []wantErr{{"spec.envoy.version", field.ErrorTypeInvalid}},
+		},
+		{
+			name:     "release URL with a different scheme",
+			provider: InfraProviderUnmanaged,
+			envoy:    &EnvoyConfig{ReleaseURL: "ftp://example.com/envoy-static"},
+			want:     []wantErr{{"spec.envoy.releaseURL", field.ErrorTypeInvalid}},
+		},
+		{
+			name:     "release URL without a scheme",
+			provider: InfraProviderUnmanaged,
+			envoy:    &EnvoyConfig{ReleaseURL: "example.com/envoy-static"},
+			want:     []wantErr{{"spec.envoy.releaseURL", field.ErrorTypeInvalid}},
+		},
+		{
+			name:     "release URL without a host",
+			provider: InfraProviderUnmanaged,
+			envoy:    &EnvoyConfig{ReleaseURL: "https:///envoy-static"},
+			want:     []wantErr{{"spec.envoy.releaseURL", field.ErrorTypeInvalid}},
+		},
+		{
+			name:     "release URL that does not parse",
+			provider: InfraProviderUnmanaged,
+			envoy:    &EnvoyConfig{ReleaseURL: "https://exa mple.com/%zz"},
+			want:     []wantErr{{"spec.envoy.releaseURL", field.ErrorTypeInvalid}},
+		},
+		{
+			name:     "cloud provider cannot set envoy settings",
+			provider: InfraProviderCloud,
+			envoy:    &EnvoyConfig{Version: "v1.35.13"},
+			want:     []wantErr{{"spec.envoy", field.ErrorTypeForbidden}},
+		},
+		{
+			name:  "empty provider defaults to cloud",
+			envoy: &EnvoyConfig{},
+			want:  []wantErr{{"spec.envoy", field.ErrorTypeForbidden}},
+		},
+		{
+			name:     "cloud provider with a bad version reports both",
+			provider: InfraProviderCloud,
+			envoy:    &EnvoyConfig{Version: "latest"},
+			want: []wantErr{
+				{"spec.envoy", field.ErrorTypeForbidden},
+				{"spec.envoy.version", field.ErrorTypeInvalid},
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := defaultedEnvoyProxy(tc.provider, tc.envoy)
+			errs := p.Validate(context.Background())
+			require.Len(t, errs, len(tc.want), "errors: %v", errs)
+			for i, w := range tc.want {
+				assert.Equal(t, w.field, errs[i].Field)
+				assert.Equal(t, w.typ, errs[i].Type)
+				if w.typ == field.ErrorTypeForbidden {
+					assert.Equal(t, "envoy settings are not configurable for cloud proxies", errs[i].Detail)
+				}
+			}
+		})
 	}
 }

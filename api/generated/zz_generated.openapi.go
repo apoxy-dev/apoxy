@@ -154,6 +154,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.DomainZoneStatus":                    schema_apoxy_api_core_v1alpha2_DomainZoneStatus(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.DynamicProxyDnsCacheConfig":          schema_apoxy_api_core_v1alpha2_DynamicProxyDnsCacheConfig(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.DynamicProxySpec":                    schema_apoxy_api_core_v1alpha2_DynamicProxySpec(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.EnvoyConfig":                         schema_apoxy_api_core_v1alpha2_EnvoyConfig(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.GrafanaCredentials":                  schema_apoxy_api_core_v1alpha2_GrafanaCredentials(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.LocalObjectReference":                schema_apoxy_api_core_v1alpha2_LocalObjectReference(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.NameserverStatus":                    schema_apoxy_api_core_v1alpha2_NameserverStatus(ref),
@@ -5769,6 +5770,33 @@ func schema_apoxy_api_core_v1alpha2_DynamicProxySpec(ref common.ReferenceCallbac
 	}
 }
 
+func schema_apoxy_api_core_v1alpha2_EnvoyConfig(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "EnvoyConfig selects the Envoy release for a Proxy.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"version": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Version is the Envoy release tag, for example \"v1.35.13\". The backplane downloads the matching GitHub release unless ReleaseURL is set.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"releaseURL": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ReleaseURL is a direct URL of a static Envoy binary. It takes precedence over Version. When \"<ReleaseURL>.sha256\" exists, the backplane checks the download against it.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
 func schema_apoxy_api_core_v1alpha2_GrafanaCredentials(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -6156,11 +6184,17 @@ func schema_apoxy_api_core_v1alpha2_ProxySpec(ref common.ReferenceCallback) comm
 							Ref:         ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.ProxyTelementry"),
 						},
 					},
+					"envoy": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Envoy selects the Envoy binary that unmanaged replicas run. Not configurable for cloud proxies.",
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.EnvoyConfig"),
+						},
+					},
 				},
 			},
 		},
 		Dependencies: []string{
-			"github.com/apoxy-dev/apoxy/api/core/v1alpha2.ProxyTelementry", "github.com/apoxy-dev/apoxy/api/core/v1alpha2.ShutdownConfig"},
+			"github.com/apoxy-dev/apoxy/api/core/v1alpha2.EnvoyConfig", "github.com/apoxy-dev/apoxy/api/core/v1alpha2.ProxyTelementry", "github.com/apoxy-dev/apoxy/api/core/v1alpha2.ShutdownConfig"},
 	}
 }
 

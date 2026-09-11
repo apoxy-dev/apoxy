@@ -166,6 +166,25 @@ type ProxySpec struct {
 	// Telemetry configures telemetry for the Proxy.
 	// +optional
 	Telemetry *ProxyTelementry `json:"telemetry,omitempty"`
+
+	// Envoy selects the Envoy binary that unmanaged replicas run.
+	// Not configurable for cloud proxies.
+	// +optional
+	Envoy *EnvoyConfig `json:"envoy,omitempty"`
+}
+
+// EnvoyConfig selects the Envoy release for a Proxy.
+type EnvoyConfig struct {
+	// Version is the Envoy release tag, for example "v1.35.13". The
+	// backplane downloads the matching GitHub release unless ReleaseURL is set.
+	// +optional
+	Version string `json:"version,omitempty"`
+
+	// ReleaseURL is a direct URL of a static Envoy binary. It takes
+	// precedence over Version. When "<ReleaseURL>.sha256" exists, the
+	// backplane checks the download against it.
+	// +optional
+	ReleaseURL string `json:"releaseURL,omitempty"`
 }
 
 // ReplicaAddressType represents the type of address for a proxy replica.
