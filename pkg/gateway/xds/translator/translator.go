@@ -877,6 +877,8 @@ func buildXdsUpstreamTLSSocketWthCert(tlsConfig *ir.TLSUpstreamConfig) (*corev3.
 				TlsCertificateSdsSecretConfigs: nil,
 				ValidationContextType: &tlsv3.CommonTlsContext_CombinedValidationContext{
 					CombinedValidationContext: &tlsv3.CommonTlsContext_CombinedCertificateValidationContext{
+						// The SNI branch below writes into this context.
+						DefaultValidationContext: &tlsv3.CertificateValidationContext{},
 						ValidationContextSdsSecretConfig: &tlsv3.SdsSecretConfig{
 							Name:      tlsConfig.CACertificate.Name,
 							SdsConfig: makeConfigSource(),
