@@ -7,23 +7,59 @@
     routes:
     - match:
         path: foo
+      metadata:
+        filterMetadata:
+          apoxy:
+            route_kind: HTTPRoute
+            route_name: httproute-1
+            route_rule: "0"
       name: httproute/default/httproute-1/rule/0/match/0/www_example_com
       route:
         cluster: httproute/default/httproute-1/rule/0
         upgradeConfigs:
         - upgradeType: websocket
       typedPerFilterConfig:
-        envoy.filters.http.ext_authz_httproute/default/httproute-1/rule/0/match/0/www_example_com:
+        envoy.filters.http.compressor/default/brotli:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.compressor/default/gzip:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.compressor/default/zstd:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.dynamic_forward_proxy/httproute/default/httproute-1/rule/0/match/0/www_example_com:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.ext_authz/httproute/default/httproute-1/rule/0/match/0/www_example_com:
           '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
           config: {}
     - match:
         path: bar
+      metadata:
+        filterMetadata:
+          apoxy:
+            route_kind: HTTPRoute
+            route_name: httproute-2
+            route_rule: "0"
       name: httproute/default/httproute-2/rule/0/match/0/www_example_com
       route:
         cluster: httproute/default/httproute-2/rule/0
         upgradeConfigs:
         - upgradeType: websocket
       typedPerFilterConfig:
-        envoy.filters.http.ext_authz_httproute/default/httproute-2/rule/0/match/0/www_example_com:
+        envoy.filters.http.compressor/default/brotli:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.compressor/default/gzip:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.compressor/default/zstd:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.dynamic_forward_proxy/httproute/default/httproute-2/rule/0/match/0/www_example_com:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.ext_authz/httproute/default/httproute-2/rule/0/match/0/www_example_com:
           '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
           config: {}

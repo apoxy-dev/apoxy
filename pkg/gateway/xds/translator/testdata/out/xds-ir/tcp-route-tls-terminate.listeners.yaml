@@ -24,4 +24,4 @@
               ads: {}
               resourceApiVersion: V3
   name: tls-terminate
-  perConnectionBufferLimitBytes: 32768
+  perConnectionBufferLimitBytes: 1048576

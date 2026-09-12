@@ -4,10 +4,14 @@
       maxPendingRequests: 1
       maxRequests: 1
       maxRetries: 2
+      trackRemaining: true
   commonLbConfig:
     localityWeightedLbConfig: {}
   connectTimeout: 10s
-  dnsLookupFamily: V4_ONLY
+  dnsResolvers:
+  - socketAddress:
+      address: 127.0.0.1
+      portValue: 8053
   edsClusterConfig:
     edsConfig:
       ads: {}
@@ -16,7 +20,7 @@
   lbPolicy: LEAST_REQUEST
   name: first-route-dest
   outlierDetection: {}
-  perConnectionBufferLimitBytes: 32768
+  perConnectionBufferLimitBytes: 1048576
   type: EDS
   typedExtensionProtocolOptions:
     envoy.extensions.upstreams.http.v3.HttpProtocolOptions:

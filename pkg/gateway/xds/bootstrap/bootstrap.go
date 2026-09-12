@@ -42,6 +42,15 @@ const (
 // defaultEnvoyMaxActiveDownstreamConnections is the default maximum number of active downstream connections.
 var defaultEnvoyMaxActiveDownstreamConnections uint64 = 50000
 
+const (
+	// defaultWatchdogMissTimeout is how long a thread may stay unresponsive
+	// before Envoy counts a watchdog miss. It is Envoy's own default.
+	defaultWatchdogMissTimeout = 200 * time.Millisecond
+	// defaultWatchdogMegamissTimeout is how long a thread may stay unresponsive
+	// before Envoy counts a watchdog megamiss. It is Envoy's own default.
+	defaultWatchdogMegamissTimeout = time.Second
+)
+
 //go:embed bootstrap.yaml.tpl
 var bootstrapTmplStr string
 
@@ -78,8 +87,19 @@ type bootstrapParameters struct {
 	StatsMatcher *StatsMatcherParameters
 	// OverloadManager defines the configuration of the Envoy overload manager.
 	OverloadManager OverloadManagerParameters
+	// Watchdog defines the timeouts of the Envoy thread watchdogs.
+	Watchdog WatchdogParameters
 	// XdsTLSCAPath is the path to the CA certificate for xDS TLS. Empty disables TLS.
 	XdsTLSCAPath string
+}
+
+// WatchdogParameters holds the watchdog timeouts, already rendered as proto
+// duration literals.
+type WatchdogParameters struct {
+	// MissTimeout is the time after which a stalled thread counts as a miss.
+	MissTimeout string
+	// MegamissTimeout is the time after which a stalled thread counts as a megamiss.
+	MegamissTimeout string
 }
 
 type OverloadManagerParameters struct {
@@ -157,6 +177,12 @@ type BootstrapConfig struct {
 	// StatsFlushInterval is how often Envoy flushes stats to the sinks. A zero
 	// value leaves Envoy on its own default.
 	StatsFlushInterval time.Duration
+	// WatchdogMissTimeout is the time after which a stalled Envoy thread counts
+	// as a watchdog miss.
+	WatchdogMissTimeout time.Duration
+	// WatchdogMegamissTimeout is the time after which a stalled Envoy thread
+	// counts as a watchdog megamiss.
+	WatchdogMegamissTimeout time.Duration
 }
 
 func defaultBootstrapConfig() *BootstrapConfig {
@@ -171,6 +197,8 @@ func defaultBootstrapConfig() *BootstrapConfig {
 		XdsServerPort:                          DefaultXdsServerPort,
 		OverloadMaxHeapSizeBytes:               maxHeapSize,
 		OverloadMaxActiveDownstreamConnections: &defaultConnections,
+		WatchdogMissTimeout:                    defaultWatchdogMissTimeout,
+		WatchdogMegamissTimeout:                defaultWatchdogMegamissTimeout,
 	}
 }
 
@@ -237,6 +265,21 @@ func WithStatsFlushInterval(d time.Duration) BootstrapOption {
 	}
 }
 
+// WithWatchdogTimeouts sets the Envoy watchdog miss and megamiss timeouts. A
+// value of zero or less keeps the default for that timeout. The watchdog never
+// kills the process, so these timeouts only change when Envoy counts a stalled
+// thread.
+func WithWatchdogTimeouts(miss, megamiss time.Duration) BootstrapOption {
+	return func(cfg *BootstrapConfig) {
+		if miss > 0 {
+			cfg.WatchdogMissTimeout = miss
+		}
+		if megamiss > 0 {
+			cfg.WatchdogMegamissTimeout = megamiss
+		}
+	}
+}
+
 // protoDuration renders d the way a proto duration field is written in YAML:
 // whole seconds with a fractional part, never a Go duration string. Go prints
 // a minute as "1m0s", which Envoy rejects.
@@ -273,6 +316,10 @@ func GetRenderedBootstrapConfig(opts ...BootstrapOption) (string, error) {
 				MaxHeapSizeBytes:               sOpts.OverloadMaxHeapSizeBytes,
 				MaxActiveDownstreamConnections: sOpts.OverloadMaxActiveDownstreamConnections,
 			},
+			Watchdog: WatchdogParameters{
+				MissTimeout:     protoDuration(sOpts.WatchdogMissTimeout),
+				MegamissTimeout: protoDuration(sOpts.WatchdogMegamissTimeout),
+			},
 			OtelMetricSinks: sOpts.OtelMetricSinks,
 			XdsTLSCAPath:    sOpts.XdsTLSCAPath,
 		},
@@ -287,4 +334,19 @@ func GetRenderedBootstrapConfig(opts ...BootstrapOption) (string, error) {
 	}
 
 	return cfg.rendered, nil
+}
+
+// Resolve returns the effective bootstrap values without rendering the
+// configuration. The backplane publishes the overload manager ceilings as
+// gauges, so a dashboard can draw the limit next to the value Envoy reports.
+func Resolve(opts ...BootstrapOption) *BootstrapConfig {
+	cfg := defaultBootstrapConfig()
+	for _, opt := range opts {
+		if opt == nil {
+			continue
+		}
+		opt(cfg)
+	}
+
+	return cfg
 }

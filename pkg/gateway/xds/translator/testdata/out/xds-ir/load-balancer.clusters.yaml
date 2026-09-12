@@ -1,10 +1,17 @@
 - circuitBreakers:
     thresholds:
-    - maxRetries: 1024
+    - maxConnections: 4294967295
+      maxPendingRequests: 4294967295
+      maxRequests: 4294967295
+      maxRetries: 1024
+      trackRemaining: true
   commonLbConfig:
     localityWeightedLbConfig: {}
   connectTimeout: 10s
-  dnsLookupFamily: V4_ONLY
+  dnsResolvers:
+  - socketAddress:
+      address: 127.0.0.1
+      portValue: 8053
   edsClusterConfig:
     edsConfig:
       ads: {}
@@ -12,15 +19,22 @@
     serviceName: first-route-dest
   name: first-route-dest
   outlierDetection: {}
-  perConnectionBufferLimitBytes: 32768
+  perConnectionBufferLimitBytes: 1048576
   type: EDS
 - circuitBreakers:
     thresholds:
-    - maxRetries: 1024
+    - maxConnections: 4294967295
+      maxPendingRequests: 4294967295
+      maxRequests: 4294967295
+      maxRetries: 1024
+      trackRemaining: true
   commonLbConfig:
     localityWeightedLbConfig: {}
   connectTimeout: 10s
-  dnsLookupFamily: V4_ONLY
+  dnsResolvers:
+  - socketAddress:
+      address: 127.0.0.1
+      portValue: 8053
   edsClusterConfig:
     edsConfig:
       ads: {}
@@ -29,15 +43,22 @@
   lbPolicy: RANDOM
   name: second-route-dest
   outlierDetection: {}
-  perConnectionBufferLimitBytes: 32768
+  perConnectionBufferLimitBytes: 1048576
   type: EDS
 - circuitBreakers:
     thresholds:
-    - maxRetries: 1024
+    - maxConnections: 4294967295
+      maxPendingRequests: 4294967295
+      maxRequests: 4294967295
+      maxRetries: 1024
+      trackRemaining: true
   commonLbConfig:
     localityWeightedLbConfig: {}
   connectTimeout: 10s
-  dnsLookupFamily: V4_ONLY
+  dnsResolvers:
+  - socketAddress:
+      address: 127.0.0.1
+      portValue: 8053
   edsClusterConfig:
     edsConfig:
       ads: {}
@@ -46,15 +67,22 @@
   lbPolicy: LEAST_REQUEST
   name: third-route-dest
   outlierDetection: {}
-  perConnectionBufferLimitBytes: 32768
+  perConnectionBufferLimitBytes: 1048576
   type: EDS
 - circuitBreakers:
     thresholds:
-    - maxRetries: 1024
+    - maxConnections: 4294967295
+      maxPendingRequests: 4294967295
+      maxRequests: 4294967295
+      maxRetries: 1024
+      trackRemaining: true
   commonLbConfig:
     localityWeightedLbConfig: {}
   connectTimeout: 10s
-  dnsLookupFamily: V4_ONLY
+  dnsResolvers:
+  - socketAddress:
+      address: 127.0.0.1
+      portValue: 8053
   edsClusterConfig:
     edsConfig:
       ads: {}
@@ -63,15 +91,22 @@
   lbPolicy: MAGLEV
   name: fourth-route-dest
   outlierDetection: {}
-  perConnectionBufferLimitBytes: 32768
+  perConnectionBufferLimitBytes: 1048576
   type: EDS
 - circuitBreakers:
     thresholds:
-    - maxRetries: 1024
+    - maxConnections: 4294967295
+      maxPendingRequests: 4294967295
+      maxRequests: 4294967295
+      maxRetries: 1024
+      trackRemaining: true
   commonLbConfig:
     localityWeightedLbConfig: {}
   connectTimeout: 10s
-  dnsLookupFamily: V4_ONLY
+  dnsResolvers:
+  - socketAddress:
+      address: 127.0.0.1
+      portValue: 8053
   edsClusterConfig:
     edsConfig:
       ads: {}
@@ -83,15 +118,22 @@
       slowStartWindow: 60s
   name: fifth-route-dest
   outlierDetection: {}
-  perConnectionBufferLimitBytes: 32768
+  perConnectionBufferLimitBytes: 1048576
   type: EDS
 - circuitBreakers:
     thresholds:
-    - maxRetries: 1024
+    - maxConnections: 4294967295
+      maxPendingRequests: 4294967295
+      maxRequests: 4294967295
+      maxRetries: 1024
+      trackRemaining: true
   commonLbConfig:
     localityWeightedLbConfig: {}
   connectTimeout: 10s
-  dnsLookupFamily: V4_ONLY
+  dnsResolvers:
+  - socketAddress:
+      address: 127.0.0.1
+      portValue: 8053
   edsClusterConfig:
     edsConfig:
       ads: {}
@@ -99,7 +141,7 @@
     serviceName: sixth-route-dest
   name: sixth-route-dest
   outlierDetection: {}
-  perConnectionBufferLimitBytes: 32768
+  perConnectionBufferLimitBytes: 1048576
   roundRobinLbConfig:
     slowStartConfig:
       slowStartWindow: 300s

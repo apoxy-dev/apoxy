@@ -25,6 +25,11 @@ import (
 
 const (
 	dynamicForwardProxyFilter = "envoy.filters.http.dynamic_forward_proxy"
+
+	// defaultDNSCacheMaxHosts is the number of hosts a DNS cache holds when the
+	// Backend sets no limit. It is Envoy's own default, written out so that the
+	// value shows in the config dump next to the dns_cache host count.
+	defaultDNSCacheMaxHosts = 1024
 )
 
 func init() {
@@ -110,7 +115,7 @@ func dnsCacheConfig(dfp *ir.DynamicForwardProxy) *dfpconfigv3.DnsCacheConfig {
 	if dfp.HostTTL != nil {
 		hostTTL = durationpb.New(dfp.HostTTL.Duration)
 	}
-	var maxHosts *wrapperspb.UInt32Value
+	maxHosts := wrapperspb.UInt32(defaultDNSCacheMaxHosts)
 	if dfp.MaxHosts != nil {
 		maxHosts = wrapperspb.UInt32(*dfp.MaxHosts)
 	}

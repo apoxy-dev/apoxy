@@ -1,10 +1,17 @@
 - circuitBreakers:
     thresholds:
-    - maxRetries: 1024
+    - maxConnections: 4294967295
+      maxPendingRequests: 4294967295
+      maxRequests: 4294967295
+      maxRetries: 1024
+      trackRemaining: true
   commonLbConfig:
     localityWeightedLbConfig: {}
   connectTimeout: 10s
-  dnsLookupFamily: V4_ONLY
+  dnsResolvers:
+  - socketAddress:
+      address: 127.0.0.1
+      portValue: 8053
   edsClusterConfig:
     edsConfig:
       ads: {}
@@ -13,16 +20,26 @@
   lbPolicy: LEAST_REQUEST
   name: direct-route-dest
   outlierDetection: {}
-  perConnectionBufferLimitBytes: 32768
+  perConnectionBufferLimitBytes: 1048576
   type: EDS
 - circuitBreakers:
     thresholds:
-    - maxRetries: 1024
+    - maxConnections: 4294967295
+      maxPendingRequests: 4294967295
+      maxRequests: 4294967295
+      maxRetries: 1024
+      trackRemaining: true
   commonLbConfig:
     localityWeightedLbConfig: {}
   connectTimeout: 10s
-  dnsLookupFamily: V4_ONLY
-  dnsRefreshRate: 30s
+  dnsFailureRefreshRate:
+    baseInterval: 1s
+    maxInterval: 2s
+  dnsRefreshRate: 2s
+  dnsResolvers:
+  - socketAddress:
+      address: 127.0.0.1
+      portValue: 8053
   lbPolicy: LEAST_REQUEST
   loadAssignment:
     clusterName: accesslog|otel-collector.default.svc.cluster.local|4317
@@ -39,8 +56,7 @@
         region: accesslog|otel-collector.default.svc.cluster.local|4317/backend/0
   name: accesslog|otel-collector.default.svc.cluster.local|4317
   outlierDetection: {}
-  perConnectionBufferLimitBytes: 32768
-  respectDnsTtl: true
+  perConnectionBufferLimitBytes: 1048576
   type: STRICT_DNS
   typedExtensionProtocolOptions:
     envoy.extensions.upstreams.http.v3.HttpProtocolOptions:

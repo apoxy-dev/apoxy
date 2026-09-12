@@ -381,18 +381,24 @@ func buildXdsClusterCircuitBreaker(circuitBreaker *ir.CircuitBreaker) *clusterv3
 		MaxRetries: &wrapperspb.UInt32Value{
 			Value: uint32(1024),
 		},
-		// Envoy applies implicit defaults of 1024 for max_connections and
-		// max_requests whenever any circuit breaker threshold is present. Since we
-		// always emit a threshold (for MaxRetries above), regular HTTP and dynamic
-		// forward proxy clusters would otherwise be silently capped at 1024
-		// connections / parallel requests. Default both to unlimited; callers may
-		// override below.
+		// Envoy applies implicit defaults of 1024 for max_connections,
+		// max_pending_requests and max_requests whenever any circuit breaker
+		// threshold is present. Since we always emit a threshold (for MaxRetries
+		// above), regular HTTP and dynamic forward proxy clusters would otherwise be
+		// silently capped at 1024 connections / queued requests / parallel requests.
+		// Default all three to unlimited; callers may override below.
 		MaxConnections: &wrapperspb.UInt32Value{
+			Value: math.MaxUint32,
+		},
+		MaxPendingRequests: &wrapperspb.UInt32Value{
 			Value: math.MaxUint32,
 		},
 		MaxRequests: &wrapperspb.UInt32Value{
 			Value: math.MaxUint32,
 		},
+		// Envoy emits the circuit_breakers.default.remaining_* gauges only when the
+		// threshold asks for them.
+		TrackRemaining: true,
 	}
 
 	if circuitBreaker != nil {

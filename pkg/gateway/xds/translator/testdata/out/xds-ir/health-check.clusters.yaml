@@ -1,10 +1,17 @@
 - circuitBreakers:
     thresholds:
-    - maxRetries: 1024
+    - maxConnections: 4294967295
+      maxPendingRequests: 4294967295
+      maxRequests: 4294967295
+      maxRetries: 1024
+      trackRemaining: true
   commonLbConfig:
     localityWeightedLbConfig: {}
   connectTimeout: 10s
-  dnsLookupFamily: V4_ONLY
+  dnsResolvers:
+  - socketAddress:
+      address: 127.0.0.1
+      portValue: 8053
   edsClusterConfig:
     edsConfig:
       ads: {}
@@ -34,15 +41,22 @@
     consecutiveLocalOriginFailure: 5
     interval: 2s
     maxEjectionPercent: 100
-  perConnectionBufferLimitBytes: 32768
+  perConnectionBufferLimitBytes: 1048576
   type: EDS
 - circuitBreakers:
     thresholds:
-    - maxRetries: 1024
+    - maxConnections: 4294967295
+      maxPendingRequests: 4294967295
+      maxRequests: 4294967295
+      maxRetries: 1024
+      trackRemaining: true
   commonLbConfig:
     localityWeightedLbConfig: {}
   connectTimeout: 10s
-  dnsLookupFamily: V4_ONLY
+  dnsResolvers:
+  - socketAddress:
+      address: 127.0.0.1
+      portValue: 8053
   edsClusterConfig:
     edsConfig:
       ads: {}
@@ -70,15 +84,22 @@
     consecutiveLocalOriginFailure: 5
     interval: 1s
     maxEjectionPercent: 100
-  perConnectionBufferLimitBytes: 32768
+  perConnectionBufferLimitBytes: 1048576
   type: EDS
 - circuitBreakers:
     thresholds:
-    - maxRetries: 1024
+    - maxConnections: 4294967295
+      maxPendingRequests: 4294967295
+      maxRequests: 4294967295
+      maxRetries: 1024
+      trackRemaining: true
   commonLbConfig:
     localityWeightedLbConfig: {}
   connectTimeout: 10s
-  dnsLookupFamily: V4_ONLY
+  dnsResolvers:
+  - socketAddress:
+      address: 127.0.0.1
+      portValue: 8053
   edsClusterConfig:
     edsConfig:
       ads: {}
@@ -103,15 +124,22 @@
     consecutiveLocalOriginFailure: 5
     interval: 1s
     maxEjectionPercent: 100
-  perConnectionBufferLimitBytes: 32768
+  perConnectionBufferLimitBytes: 1048576
   type: EDS
 - circuitBreakers:
     thresholds:
-    - maxRetries: 1024
+    - maxConnections: 4294967295
+      maxPendingRequests: 4294967295
+      maxRequests: 4294967295
+      maxRetries: 1024
+      trackRemaining: true
   commonLbConfig:
     localityWeightedLbConfig: {}
   connectTimeout: 10s
-  dnsLookupFamily: V4_ONLY
+  dnsResolvers:
+  - socketAddress:
+      address: 127.0.0.1
+      portValue: 8053
   edsClusterConfig:
     edsConfig:
       ads: {}
@@ -137,5 +165,5 @@
     interval: 1s
     maxEjectionPercent: 90
     splitExternalLocalOriginErrors: true
-  perConnectionBufferLimitBytes: 32768
+  perConnectionBufferLimitBytes: 1048576
   type: EDS

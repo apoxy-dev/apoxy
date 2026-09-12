@@ -28,6 +28,9 @@ import (
 const (
 	// EnvoyTextLogFormat is the default log format for Envoy.
 	// See https://www.envoyproxy.io/docs/envoy/latest/configuration/observability/access_log/usage#default-format-string
+	// The last three keys split the time a request spends in the proxy: the
+	// request body receive, the filter chain before the upstream request starts,
+	// and the response send.
 	EnvoyTextLogFormat = "{\"start_time\":\"%START_TIME%\",\"method\":\"%REQ(:METHOD)%\"," +
 		"\"x-envoy-origin-path\":\"%REQ(X-ENVOY-ORIGINAL-PATH?:PATH)%\",\"protocol\":\"%PROTOCOL%\"," +
 		"\"response_code\":\"%RESPONSE_CODE%\",\"response_flags\":\"%RESPONSE_FLAGS%\"," +
@@ -42,7 +45,10 @@ const (
 		"\"upstream_local_address\":\"%UPSTREAM_LOCAL_ADDRESS%\"," +
 		"\"downstream_local_address\":\"%DOWNSTREAM_LOCAL_ADDRESS%\"," +
 		"\"downstream_remote_address\":\"%DOWNSTREAM_REMOTE_ADDRESS%\"," +
-		"\"requested_server_name\":\"%REQUESTED_SERVER_NAME%\",\"route_name\":\"%ROUTE_NAME%\"}\n"
+		"\"requested_server_name\":\"%REQUESTED_SERVER_NAME%\",\"route_name\":\"%ROUTE_NAME%\"," +
+		"\"request_tx_duration\":\"%REQUEST_TX_DURATION%\"," +
+		"\"filter_duration\":\"%COMMON_DURATION(DS_RX_BEG:US_TX_BEG:ms)%\"," +
+		"\"response_duration\":\"%RESPONSE_DURATION%\"}\n"
 
 	otelLogName   = "otel_envoy_accesslog"
 	otelAccessLog = "envoy.access_loggers.open_telemetry"

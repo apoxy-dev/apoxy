@@ -35,4 +35,4 @@
         cluster: tcp-route-simple-4-dest
         statPrefix: tcp
   name: tcp-route-simple
-  perConnectionBufferLimitBytes: 32768
+  perConnectionBufferLimitBytes: 1048576

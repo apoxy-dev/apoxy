@@ -13,6 +13,15 @@
         upgradeConfigs:
         - upgradeType: websocket
       typedPerFilterConfig:
+        envoy.filters.http.compressor/default/brotli:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.compressor/default/gzip:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.compressor/default/zstd:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
         envoy.filters.http.cors:
           '@type': type.googleapis.com/envoy.extensions.filters.http.cors.v3.CorsPolicy
           allowCredentials: true
@@ -24,3 +33,6 @@
           - exact: foo.bar.com
           exposeHeaders: x-header-3, x-header-4
           maxAge: "1000"
+        envoy.filters.http.dynamic_forward_proxy/first-route:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}

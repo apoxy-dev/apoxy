@@ -14,6 +14,19 @@
         prefixRewrite: /redirected
         responseCode: FOUND
         schemeRedirect: https
+      typedPerFilterConfig:
+        envoy.filters.http.compressor/default/brotli:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.compressor/default/gzip:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.compressor/default/zstd:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.dynamic_forward_proxy/redirect-route-1:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
     - match:
         pathSeparatedPrefix: /redirect
       name: redirect-route-2
@@ -22,6 +35,19 @@
           pattern:
             regex: ^/redirect\/*
           substitution: /
+      typedPerFilterConfig:
+        envoy.filters.http.compressor/default/brotli:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.compressor/default/gzip:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.compressor/default/zstd:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.dynamic_forward_proxy/redirect-route-2:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
     - match:
         pathSeparatedPrefix: /redirect
       name: redirect-route-3
@@ -30,3 +56,16 @@
           pattern:
             regex: ^/redirect/\/*
           substitution: /
+      typedPerFilterConfig:
+        envoy.filters.http.compressor/default/brotli:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.compressor/default/gzip:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.compressor/default/zstd:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.dynamic_forward_proxy/redirect-route-3:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}

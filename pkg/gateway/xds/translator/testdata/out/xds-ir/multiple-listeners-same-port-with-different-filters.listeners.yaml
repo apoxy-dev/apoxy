@@ -2,23 +2,20 @@
     socketAddress:
       address: 0.0.0.0
       portValue: 10080
-      protocol: UDP
   defaultFilterChain:
     filters:
     - name: envoy.filters.network.http_connection_manager
       typedConfig:
         '@type': type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
-        codecType: HTTP3
-        commonHttpProtocolOptions:
-          headersWithUnderscoresAction: REJECT_REQUEST
+        commonHttpProtocolOptions: {}
+        generateRequestId: false
         http2ProtocolOptions:
           initialConnectionWindowSize: 1048576
-          initialStreamWindowSize: 65536
+          initialStreamWindowSize: 262144
           maxConcurrentStreams: 100
-        http3ProtocolOptions: {}
         httpFilters:
         - disabled: true
-          name: envoy.filters.http.ext_authz_httproute/default/httproute-2/rule/0/match/0/www_foo_com
+          name: envoy.filters.http.ext_authz/httproute/default/httproute-2/rule/0/match/0/www_foo_com
           typedConfig:
             '@type': type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz
             httpService:
@@ -36,67 +33,7 @@
                 uri: http://http-backend.envoy-gateway:80/auth
             transportApiVersion: V3
         - disabled: true
-          name: envoy.filters.http.basic_auth_httproute/default/httproute-1/rule/0/match/0/www_foo_com
-          typedConfig:
-            '@type': type.googleapis.com/envoy.extensions.filters.http.basic_auth.v3.BasicAuth
-            users:
-              inlineBytes: dXNlcjE6e1NIQX10RVNzQm1FL3lOWTNsYjZhMEw2dlZRRVpOcXc9CnVzZXIyOntTSEF9RUo5TFBGRFhzTjl5blNtYnh2anA3NUJtbHg4PQo=
-        - name: envoy.filters.http.router
-          typedConfig:
-            '@type': type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
-            suppressEnvoyHeaders: true
-        mergeSlashes: true
-        normalizePath: true
-        pathWithEscapedSlashesAction: UNESCAPE_AND_REDIRECT
-        rds:
-          configSource:
-            ads: {}
-            resourceApiVersion: V3
-          routeConfigName: default/gateway-1/http
-        serverHeaderTransformation: PASS_THROUGH
-        statPrefix: http
-        useRemoteAddress: true
-  drainType: MODIFY_ONLY
-  name: default/gateway-1/http-quic
-  udpListenerConfig:
-    downstreamSocketConfig: {}
-    quicOptions: {}
-- address:
-    socketAddress:
-      address: 0.0.0.0
-      portValue: 10080
-  defaultFilterChain:
-    filters:
-    - name: envoy.filters.network.http_connection_manager
-      typedConfig:
-        '@type': type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
-        commonHttpProtocolOptions:
-          headersWithUnderscoresAction: REJECT_REQUEST
-        http2ProtocolOptions:
-          initialConnectionWindowSize: 1048576
-          initialStreamWindowSize: 65536
-          maxConcurrentStreams: 100
-        httpFilters:
-        - disabled: true
-          name: envoy.filters.http.ext_authz_httproute/default/httproute-2/rule/0/match/0/www_foo_com
-          typedConfig:
-            '@type': type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz
-            httpService:
-              authorizationResponse:
-                allowedUpstreamHeaders:
-                  patterns:
-                  - exact: header1
-                    ignoreCase: true
-                  - exact: header2
-                    ignoreCase: true
-              pathPrefix: /auth
-              serverUri:
-                cluster: securitypolicy/default/policy-for-http-route-2/envoy-gateway/http-backend
-                timeout: 10s
-                uri: http://http-backend.envoy-gateway:80/auth
-            transportApiVersion: V3
-        - disabled: true
-          name: envoy.filters.http.basic_auth_httproute/default/httproute-1/rule/0/match/0/www_foo_com
+          name: envoy.filters.http.basic_auth/httproute/default/httproute-1/rule/0/match/0/www_foo_com
           typedConfig:
             '@type': type.googleapis.com/envoy.extensions.filters.http.basic_auth.v3.BasicAuth
             users:
@@ -142,6 +79,39 @@
                 cluster: oauth_foo_com_443
                 timeout: 10s
                 uri: https://oauth.foo.com/token
+        - disabled: true
+          name: envoy.filters.http.compressor/default/gzip
+          typedConfig:
+            '@type': type.googleapis.com/envoy.extensions.filters.http.compressor.v3.Compressor
+            compressorLibrary:
+              name: gzip
+              typedConfig:
+                '@type': type.googleapis.com/envoy.extensions.compression.gzip.compressor.v3.Gzip
+            responseDirectionConfig:
+              commonConfig:
+                minContentLength: 128
+        - disabled: true
+          name: envoy.filters.http.compressor/default/brotli
+          typedConfig:
+            '@type': type.googleapis.com/envoy.extensions.filters.http.compressor.v3.Compressor
+            compressorLibrary:
+              name: brotli
+              typedConfig:
+                '@type': type.googleapis.com/envoy.extensions.compression.brotli.compressor.v3.Brotli
+            responseDirectionConfig:
+              commonConfig:
+                minContentLength: 128
+        - disabled: true
+          name: envoy.filters.http.compressor/default/zstd
+          typedConfig:
+            '@type': type.googleapis.com/envoy.extensions.filters.http.compressor.v3.Compressor
+            compressorLibrary:
+              name: zstd
+              typedConfig:
+                '@type': type.googleapis.com/envoy.extensions.compression.zstd.compressor.v3.Zstd
+            responseDirectionConfig:
+              commonConfig:
+                minContentLength: 128
         - name: envoy.filters.http.router
           typedConfig:
             '@type': type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
@@ -155,8 +125,8 @@
             resourceApiVersion: V3
           routeConfigName: default/gateway-1/http
         serverHeaderTransformation: PASS_THROUGH
-        statPrefix: http
+        statPrefix: gw/default/gateway-1/http
         useRemoteAddress: true
   drainType: MODIFY_ONLY
   name: default/gateway-1/http
-  perConnectionBufferLimitBytes: 32768
+  perConnectionBufferLimitBytes: 1048576

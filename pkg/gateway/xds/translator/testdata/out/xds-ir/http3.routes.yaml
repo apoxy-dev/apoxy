@@ -7,13 +7,29 @@
     routes:
     - match:
         prefix: /
+      metadata:
+        filterMetadata:
+          apoxy:
+            gateway: gateway-1
+            listener: tls
+            route_kind: HTTPRoute
+            route_name: httproute-1
+            route_rule: "0"
       name: httproute/default/httproute-1/rule/0/match/0/*
-      responseHeadersToAdd:
-      - append: true
-        header:
-          key: alt-svc
-          value: h3=":443"; ma=86400
       route:
         cluster: httproute/default/httproute-1/rule/0
         upgradeConfigs:
         - upgradeType: websocket
+      typedPerFilterConfig:
+        envoy.filters.http.compressor/default/brotli:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.compressor/default/gzip:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.compressor/default/zstd:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.dynamic_forward_proxy/httproute/default/httproute-1/rule/0/match/0/*:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}

@@ -31,6 +31,18 @@
         upgradeConfigs:
         - upgradeType: websocket
       typedPerFilterConfig:
+        envoy.filters.http.compressor/default/brotli:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.compressor/default/gzip:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.compressor/default/zstd:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.dynamic_forward_proxy/first-route-ratelimit-single-rule:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
         envoy.filters.http.local_ratelimit:
           '@type': type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
           alwaysConsumeDefaultTokenBucket: false
@@ -100,6 +112,18 @@
         upgradeConfigs:
         - upgradeType: websocket
       typedPerFilterConfig:
+        envoy.filters.http.compressor/default/brotli:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.compressor/default/gzip:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.compressor/default/zstd:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.dynamic_forward_proxy/second-route-ratelimit-multiple-rules:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
         envoy.filters.http.local_ratelimit:
           '@type': type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
           alwaysConsumeDefaultTokenBucket: false
@@ -143,6 +167,18 @@
         upgradeConfigs:
         - upgradeType: websocket
       typedPerFilterConfig:
+        envoy.filters.http.compressor/default/brotli:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.compressor/default/gzip:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.compressor/default/zstd:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.dynamic_forward_proxy/third-route-ratelimit-no-rule:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
         envoy.filters.http.local_ratelimit:
           '@type': type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
           alwaysConsumeDefaultTokenBucket: false

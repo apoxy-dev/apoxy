@@ -7,11 +7,32 @@
     routes:
     - match:
         path: /exact
+      metadata:
+        filterMetadata:
+          apoxy:
+            gateway: gateway-btls
+            listener: http
+            route_kind: HTTPRoute
+            route_name: httproute-btls
+            route_rule: "0"
       name: httproute/envoy-gateway/httproute-btls/rule/0/match/0/*
       route:
         cluster: httproute/envoy-gateway/httproute-btls/rule/0
         upgradeConfigs:
         - upgradeType: websocket
+      typedPerFilterConfig:
+        envoy.filters.http.compressor/default/brotli:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.compressor/default/gzip:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.compressor/default/zstd:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.dynamic_forward_proxy/httproute/envoy-gateway/httproute-btls/rule/0/match/0/*:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
 - ignorePortInHostMatching: true
   name: envoy-gateway/gateway-btls-2/http
   virtualHosts:
@@ -21,8 +42,29 @@
     routes:
     - match:
         path: /exact
+      metadata:
+        filterMetadata:
+          apoxy:
+            gateway: gateway-btls-2
+            listener: http
+            route_kind: HTTPRoute
+            route_name: httproute-btls-2
+            route_rule: "0"
       name: httproute/envoy-gateway/httproute-btls-2/rule/0/match/0/*
       route:
         cluster: httproute/envoy-gateway/httproute-btls-2/rule/0
         upgradeConfigs:
         - upgradeType: websocket
+      typedPerFilterConfig:
+        envoy.filters.http.compressor/default/brotli:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.compressor/default/gzip:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.compressor/default/zstd:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.dynamic_forward_proxy/httproute/envoy-gateway/httproute-btls-2/rule/0/match/0/*:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}

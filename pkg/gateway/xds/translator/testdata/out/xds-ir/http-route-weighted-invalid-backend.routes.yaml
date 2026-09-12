@@ -9,12 +9,19 @@
         prefix: /
       name: first-route
       route:
-        clusterNotFoundResponseCode: INTERNAL_SERVER_ERROR
+        cluster: first-route-dest
         upgradeConfigs:
         - upgradeType: websocket
-        weightedClusters:
-          clusters:
-          - name: invalid-backend-cluster
-            weight: 1
-          - name: first-route-dest
-            weight: 1
+      typedPerFilterConfig:
+        envoy.filters.http.compressor/default/brotli:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.compressor/default/gzip:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.compressor/default/zstd:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.dynamic_forward_proxy/first-route:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}

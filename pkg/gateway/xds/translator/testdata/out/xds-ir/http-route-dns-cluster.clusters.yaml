@@ -1,11 +1,21 @@
 - circuitBreakers:
     thresholds:
-    - maxRetries: 1024
+    - maxConnections: 4294967295
+      maxPendingRequests: 4294967295
+      maxRequests: 4294967295
+      maxRetries: 1024
+      trackRemaining: true
   commonLbConfig:
     localityWeightedLbConfig: {}
   connectTimeout: 10s
-  dnsLookupFamily: V4_ONLY
-  dnsRefreshRate: 30s
+  dnsFailureRefreshRate:
+    baseInterval: 1s
+    maxInterval: 2s
+  dnsRefreshRate: 2s
+  dnsResolvers:
+  - socketAddress:
+      address: 127.0.0.1
+      portValue: 8053
   lbPolicy: LEAST_REQUEST
   loadAssignment:
     clusterName: first-route-dest
@@ -28,6 +38,5 @@
         region: first-route-dest/backend/0
   name: first-route-dest
   outlierDetection: {}
-  perConnectionBufferLimitBytes: 32768
-  respectDnsTtl: true
+  perConnectionBufferLimitBytes: 1048576
   type: STRICT_DNS

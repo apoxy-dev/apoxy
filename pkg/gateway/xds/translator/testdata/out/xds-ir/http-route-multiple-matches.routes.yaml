@@ -2,6 +2,78 @@
   name: first-listener
   virtualHosts:
   - domains:
+    - '*'
+    name: first-listener/*
+    routes:
+    - match:
+        prefix: /
+      name: envoy-gateway/httproute-1/rule/0/match/0/*
+      route:
+        cluster: seventh-route-dest
+        upgradeConfigs:
+        - upgradeType: websocket
+      typedPerFilterConfig:
+        envoy.filters.http.compressor/default/brotli:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.compressor/default/gzip:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.compressor/default/zstd:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.dynamic_forward_proxy/envoy-gateway/httproute-1/rule/0/match/0/*:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+  - domains:
+    - '*.com'
+    name: first-listener/*_com
+    routes:
+    - match:
+        pathSeparatedPrefix: /foo
+      name: envoy-gateway/httproute-1/rule/0/match/0/*.com
+      route:
+        cluster: fifth-route-dest
+        upgradeConfigs:
+        - upgradeType: websocket
+      typedPerFilterConfig:
+        envoy.filters.http.compressor/default/brotli:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.compressor/default/gzip:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.compressor/default/zstd:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.dynamic_forward_proxy/envoy-gateway/httproute-1/rule/0/match/0/*.com:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+  - domains:
+    - '*.net'
+    name: first-listener/*_net
+    routes:
+    - match:
+        pathSeparatedPrefix: /foo
+      name: envoy-gateway/httproute-1/rule/0/match/0/*.net
+      route:
+        cluster: sixth-route-dest
+        upgradeConfigs:
+        - upgradeType: websocket
+      typedPerFilterConfig:
+        envoy.filters.http.compressor/default/brotli:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.compressor/default/gzip:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.compressor/default/zstd:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.dynamic_forward_proxy/envoy-gateway/httproute-1/rule/0/match/0/*.net:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+  - domains:
     - example.com
     name: first-listener/example_com
     routes:
@@ -16,6 +88,19 @@
         cluster: first-route-dest
         upgradeConfigs:
         - upgradeType: websocket
+      typedPerFilterConfig:
+        envoy.filters.http.compressor/default/brotli:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.compressor/default/gzip:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.compressor/default/zstd:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.dynamic_forward_proxy/envoy-gateway/httproute-2/rule/0/match/0/example.com:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
     - match:
         pathSeparatedPrefix: /v1/example
       name: envoy-gateway/httproute-3/rule/0/match/0/example.com
@@ -23,6 +108,19 @@
         cluster: second-route-dest
         upgradeConfigs:
         - upgradeType: websocket
+      typedPerFilterConfig:
+        envoy.filters.http.compressor/default/brotli:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.compressor/default/gzip:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.compressor/default/zstd:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.dynamic_forward_proxy/envoy-gateway/httproute-3/rule/0/match/0/example.com:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
   - domains:
     - example.net
     name: first-listener/example_net
@@ -38,6 +136,19 @@
         cluster: third-route-dest
         upgradeConfigs:
         - upgradeType: websocket
+      typedPerFilterConfig:
+        envoy.filters.http.compressor/default/brotli:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.compressor/default/gzip:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.compressor/default/zstd:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.dynamic_forward_proxy/envoy-gateway/httproute-4/rule/0/match/0/example.net:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
     - match:
         pathSeparatedPrefix: /v1/status
       name: envoy-gateway/httproute-5/rule/0/match/0/example.net
@@ -45,36 +156,16 @@
         cluster: fourth-route-dest
         upgradeConfigs:
         - upgradeType: websocket
-  - domains:
-    - '*.com'
-    name: first-listener/*_com
-    routes:
-    - match:
-        pathSeparatedPrefix: /foo
-      name: envoy-gateway/httproute-1/rule/0/match/0/*.com
-      route:
-        cluster: fifth-route-dest
-        upgradeConfigs:
-        - upgradeType: websocket
-  - domains:
-    - '*.net'
-    name: first-listener/*_net
-    routes:
-    - match:
-        pathSeparatedPrefix: /foo
-      name: envoy-gateway/httproute-1/rule/0/match/0/*.net
-      route:
-        cluster: sixth-route-dest
-        upgradeConfigs:
-        - upgradeType: websocket
-  - domains:
-    - '*'
-    name: first-listener/*
-    routes:
-    - match:
-        prefix: /
-      name: envoy-gateway/httproute-1/rule/0/match/0/*
-      route:
-        cluster: seventh-route-dest
-        upgradeConfigs:
-        - upgradeType: websocket
+      typedPerFilterConfig:
+        envoy.filters.http.compressor/default/brotli:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.compressor/default/gzip:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.compressor/default/zstd:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}
+        envoy.filters.http.dynamic_forward_proxy/envoy-gateway/httproute-5/rule/0/match/0/example.net:
+          '@type': type.googleapis.com/envoy.config.route.v3.FilterConfig
+          config: {}

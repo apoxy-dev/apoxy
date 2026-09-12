@@ -7,13 +7,46 @@
     - name: envoy.filters.network.http_connection_manager
       typedConfig:
         '@type': type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
-        commonHttpProtocolOptions:
-          headersWithUnderscoresAction: REJECT_REQUEST
+        commonHttpProtocolOptions: {}
+        generateRequestId: false
         http2ProtocolOptions:
           initialConnectionWindowSize: 1048576
-          initialStreamWindowSize: 65536
+          initialStreamWindowSize: 262144
           maxConcurrentStreams: 100
         httpFilters:
+        - disabled: true
+          name: envoy.filters.http.compressor/default/gzip
+          typedConfig:
+            '@type': type.googleapis.com/envoy.extensions.filters.http.compressor.v3.Compressor
+            compressorLibrary:
+              name: gzip
+              typedConfig:
+                '@type': type.googleapis.com/envoy.extensions.compression.gzip.compressor.v3.Gzip
+            responseDirectionConfig:
+              commonConfig:
+                minContentLength: 128
+        - disabled: true
+          name: envoy.filters.http.compressor/default/brotli
+          typedConfig:
+            '@type': type.googleapis.com/envoy.extensions.filters.http.compressor.v3.Compressor
+            compressorLibrary:
+              name: brotli
+              typedConfig:
+                '@type': type.googleapis.com/envoy.extensions.compression.brotli.compressor.v3.Brotli
+            responseDirectionConfig:
+              commonConfig:
+                minContentLength: 128
+        - disabled: true
+          name: envoy.filters.http.compressor/default/zstd
+          typedConfig:
+            '@type': type.googleapis.com/envoy.extensions.filters.http.compressor.v3.Compressor
+            compressorLibrary:
+              name: zstd
+              typedConfig:
+                '@type': type.googleapis.com/envoy.extensions.compression.zstd.compressor.v3.Zstd
+            responseDirectionConfig:
+              commonConfig:
+                minContentLength: 128
         - name: envoy.filters.http.router
           typedConfig:
             '@type': type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
@@ -27,11 +60,11 @@
             resourceApiVersion: V3
           routeConfigName: envoy-gateway/gateway-btls/http
         serverHeaderTransformation: PASS_THROUGH
-        statPrefix: http
+        statPrefix: gw/envoy-gateway/gateway-btls/http
         useRemoteAddress: true
   drainType: MODIFY_ONLY
   name: envoy-gateway/gateway-btls/http
-  perConnectionBufferLimitBytes: 32768
+  perConnectionBufferLimitBytes: 1048576
 - address:
     socketAddress:
       address: 0.0.0.0
@@ -41,13 +74,46 @@
     - name: envoy.filters.network.http_connection_manager
       typedConfig:
         '@type': type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
-        commonHttpProtocolOptions:
-          headersWithUnderscoresAction: REJECT_REQUEST
+        commonHttpProtocolOptions: {}
+        generateRequestId: false
         http2ProtocolOptions:
           initialConnectionWindowSize: 1048576
-          initialStreamWindowSize: 65536
+          initialStreamWindowSize: 262144
           maxConcurrentStreams: 100
         httpFilters:
+        - disabled: true
+          name: envoy.filters.http.compressor/default/gzip
+          typedConfig:
+            '@type': type.googleapis.com/envoy.extensions.filters.http.compressor.v3.Compressor
+            compressorLibrary:
+              name: gzip
+              typedConfig:
+                '@type': type.googleapis.com/envoy.extensions.compression.gzip.compressor.v3.Gzip
+            responseDirectionConfig:
+              commonConfig:
+                minContentLength: 128
+        - disabled: true
+          name: envoy.filters.http.compressor/default/brotli
+          typedConfig:
+            '@type': type.googleapis.com/envoy.extensions.filters.http.compressor.v3.Compressor
+            compressorLibrary:
+              name: brotli
+              typedConfig:
+                '@type': type.googleapis.com/envoy.extensions.compression.brotli.compressor.v3.Brotli
+            responseDirectionConfig:
+              commonConfig:
+                minContentLength: 128
+        - disabled: true
+          name: envoy.filters.http.compressor/default/zstd
+          typedConfig:
+            '@type': type.googleapis.com/envoy.extensions.filters.http.compressor.v3.Compressor
+            compressorLibrary:
+              name: zstd
+              typedConfig:
+                '@type': type.googleapis.com/envoy.extensions.compression.zstd.compressor.v3.Zstd
+            responseDirectionConfig:
+              commonConfig:
+                minContentLength: 128
         - name: envoy.filters.http.router
           typedConfig:
             '@type': type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
@@ -61,8 +127,8 @@
             resourceApiVersion: V3
           routeConfigName: envoy-gateway/gateway-btls-2/http
         serverHeaderTransformation: PASS_THROUGH
-        statPrefix: http
+        statPrefix: gw/envoy-gateway/gateway-btls-2/http
         useRemoteAddress: true
   drainType: MODIFY_ONLY
   name: envoy-gateway/gateway-btls-2/http
-  perConnectionBufferLimitBytes: 32768
+  perConnectionBufferLimitBytes: 1048576

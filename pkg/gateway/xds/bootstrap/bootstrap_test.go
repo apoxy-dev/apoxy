@@ -54,6 +54,13 @@ func TestGetRenderedBootstrapConfig(t *testing.T) {
 				WithOverloadMaxActiveConnections(50000),
 			},
 		},
+		{
+			name: "watchdog-custom",
+			overrideOptions: []BootstrapOption{
+				WithWatchdogTimeouts(500*time.Millisecond, 2*time.Second),
+				WithOverloadMaxActiveConnections(50000),
+			},
+		},
 	}
 
 	for _, tc := range cases {

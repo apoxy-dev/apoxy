@@ -34,6 +34,17 @@ layered_runtime:
     static_layer:
       re2.max_program_size.error_level: 4294967295
       re2.max_program_size.warn_level: 1000
+watchdogs:
+  main_thread_watchdog:
+    miss_timeout: {{ .Watchdog.MissTimeout }}
+    megamiss_timeout: {{ .Watchdog.MegamissTimeout }}
+    kill_timeout: 0s
+    multikill_timeout: 0s
+  worker_watchdog:
+    miss_timeout: {{ .Watchdog.MissTimeout }}
+    megamiss_timeout: {{ .Watchdog.MegamissTimeout }}
+    kill_timeout: 0s
+    multikill_timeout: 0s
 dynamic_resources:
   ads_config:
     api_type: GRPC

@@ -161,6 +161,44 @@ func TestCreateDynamicForwardProxyCluster_ProtocolOptions(t *testing.T) {
 	}
 }
 
+// TestDNSCacheConfigMaxHosts checks that the DNS cache size is always written
+// out. Envoy holds 1024 hosts by default, but the value only shows in the config
+// dump, next to the dns_cache host count, when the config carries it.
+func TestDNSCacheConfigMaxHosts(t *testing.T) {
+	cases := []struct {
+		name string
+		dfp  *ir.DynamicForwardProxy
+		want *uint32
+	}{
+		{
+			name: "nil dynamic forward proxy",
+			dfp:  nil,
+		},
+		{
+			name: "backend sets no limit",
+			dfp:  &ir.DynamicForwardProxy{Name: "dynamic-proxy"},
+			want: ptr.To(uint32(defaultDNSCacheMaxHosts)),
+		},
+		{
+			name: "backend sets a limit",
+			dfp:  &ir.DynamicForwardProxy{Name: "dynamic-proxy", MaxHosts: ptr.To(uint32(4096))},
+			want: ptr.To(uint32(4096)),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := dnsCacheConfig(tc.dfp)
+			if tc.want == nil {
+				assert.Nil(t, got)
+				return
+			}
+			require.NotNil(t, got.GetMaxHosts())
+			assert.Equal(t, *tc.want, got.GetMaxHosts().GetValue())
+		})
+	}
+}
+
 // TestBuildTypedExtensionProtocolOptions_NonDFP_NoAutoSNI guards the scope of the
 // fix: only dynamic forward proxy clusters get auto_sni/auto_san_validation forced
 // on. A normal HTTP/2 cluster must be left untouched so its (possibly explicit) SNI

@@ -2,22 +2,52 @@
     socketAddress:
       address: 0.0.0.0
       portValue: 10443
-      protocol: UDP
   drainType: MODIFY_ONLY
   filterChains:
   - filters:
     - name: envoy.filters.network.http_connection_manager
       typedConfig:
         '@type': type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
-        codecType: HTTP3
-        commonHttpProtocolOptions:
-          headersWithUnderscoresAction: REJECT_REQUEST
+        commonHttpProtocolOptions: {}
+        generateRequestId: false
         http2ProtocolOptions:
           initialConnectionWindowSize: 1048576
-          initialStreamWindowSize: 65536
+          initialStreamWindowSize: 262144
           maxConcurrentStreams: 100
-        http3ProtocolOptions: {}
         httpFilters:
+        - disabled: true
+          name: envoy.filters.http.compressor/default/gzip
+          typedConfig:
+            '@type': type.googleapis.com/envoy.extensions.filters.http.compressor.v3.Compressor
+            compressorLibrary:
+              name: gzip
+              typedConfig:
+                '@type': type.googleapis.com/envoy.extensions.compression.gzip.compressor.v3.Gzip
+            responseDirectionConfig:
+              commonConfig:
+                minContentLength: 128
+        - disabled: true
+          name: envoy.filters.http.compressor/default/brotli
+          typedConfig:
+            '@type': type.googleapis.com/envoy.extensions.filters.http.compressor.v3.Compressor
+            compressorLibrary:
+              name: brotli
+              typedConfig:
+                '@type': type.googleapis.com/envoy.extensions.compression.brotli.compressor.v3.Brotli
+            responseDirectionConfig:
+              commonConfig:
+                minContentLength: 128
+        - disabled: true
+          name: envoy.filters.http.compressor/default/zstd
+          typedConfig:
+            '@type': type.googleapis.com/envoy.extensions.filters.http.compressor.v3.Compressor
+            compressorLibrary:
+              name: zstd
+              typedConfig:
+                '@type': type.googleapis.com/envoy.extensions.compression.zstd.compressor.v3.Zstd
+            responseDirectionConfig:
+              commonConfig:
+                minContentLength: 128
         - name: envoy.filters.http.router
           typedConfig:
             '@type': type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
@@ -31,58 +61,7 @@
             resourceApiVersion: V3
           routeConfigName: envoy-gateway/gateway-1/tls
         serverHeaderTransformation: PASS_THROUGH
-        statPrefix: https
-        useRemoteAddress: true
-    transportSocket:
-      name: envoy.transport_sockets.quic
-      typedConfig:
-        '@type': type.googleapis.com/envoy.extensions.transport_sockets.quic.v3.QuicDownstreamTransport
-        downstreamTlsContext:
-          commonTlsContext:
-            alpnProtocols:
-            - h2
-            - http/1.1
-            - h3
-            tlsCertificateSdsSecretConfigs:
-            - name: envoy-gateway-tls-secret-1
-              sdsConfig:
-                ads: {}
-                resourceApiVersion: V3
-  name: envoy-gateway/gateway-1/tls-quic
-  udpListenerConfig:
-    downstreamSocketConfig: {}
-    quicOptions: {}
-- address:
-    socketAddress:
-      address: 0.0.0.0
-      portValue: 10443
-  drainType: MODIFY_ONLY
-  filterChains:
-  - filters:
-    - name: envoy.filters.network.http_connection_manager
-      typedConfig:
-        '@type': type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
-        commonHttpProtocolOptions:
-          headersWithUnderscoresAction: REJECT_REQUEST
-        http2ProtocolOptions:
-          initialConnectionWindowSize: 1048576
-          initialStreamWindowSize: 65536
-          maxConcurrentStreams: 100
-        httpFilters:
-        - name: envoy.filters.http.router
-          typedConfig:
-            '@type': type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
-            suppressEnvoyHeaders: true
-        mergeSlashes: true
-        normalizePath: true
-        pathWithEscapedSlashesAction: UNESCAPE_AND_REDIRECT
-        rds:
-          configSource:
-            ads: {}
-            resourceApiVersion: V3
-          routeConfigName: envoy-gateway/gateway-1/tls
-        serverHeaderTransformation: PASS_THROUGH
-        statPrefix: https
+        statPrefix: gw/envoy-gateway/gateway-1/tls
         useRemoteAddress: true
     transportSocket:
       name: envoy.transport_sockets.tls
@@ -98,4 +77,4 @@
               ads: {}
               resourceApiVersion: V3
   name: envoy-gateway/gateway-1/tls
-  perConnectionBufferLimitBytes: 32768
+  perConnectionBufferLimitBytes: 1048576
