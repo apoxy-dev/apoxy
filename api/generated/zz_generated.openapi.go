@@ -288,6 +288,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.MetricStatus":                     schema_apoxy_api_metrics_v1alpha1_MetricStatus(ref),
 		"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.ProxyMetrics":                     schema_apoxy_api_metrics_v1alpha1_ProxyMetrics(ref),
 		"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.ReplicaGauges":                    schema_apoxy_api_metrics_v1alpha1_ReplicaGauges(ref),
+		"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.ReplicaMetrics":                   schema_apoxy_api_metrics_v1alpha1_ReplicaMetrics(ref),
 		"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.RevisionMetrics":                  schema_apoxy_api_metrics_v1alpha1_RevisionMetrics(ref),
 		"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.RouteMetrics":                     schema_apoxy_api_metrics_v1alpha1_RouteMetrics(ref),
 		"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.RuleMetrics":                      schema_apoxy_api_metrics_v1alpha1_RuleMetrics(ref),
@@ -11587,12 +11588,25 @@ func schema_apoxy_api_metrics_v1alpha1_ProxyMetrics(ref common.ReferenceCallback
 							Ref:         ref("github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.ReplicaGauges"),
 						},
 					},
+					"perReplica": {
+						SchemaProps: spec.SchemaProps{
+							Description: "PerReplica is the same recipes cut by replica. Empty when the metrics carry no replica.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.ReplicaMetrics"),
+									},
+								},
+							},
+						},
+					},
 				},
 				Required: []string{"timestamp", "window", "since", "until", "dataUpTo"},
 			},
 		},
 		Dependencies: []string{
-			"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.ReplicaGauges", "k8s.io/apimachinery/pkg/apis/meta/v1.Duration", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta", "k8s.io/apimachinery/pkg/apis/meta/v1.Time"},
+			"github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.ReplicaGauges", "github.com/apoxy-dev/apoxy/api/metrics/v1alpha1.ReplicaMetrics", "k8s.io/apimachinery/pkg/apis/meta/v1.Duration", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta", "k8s.io/apimachinery/pkg/apis/meta/v1.Time"},
 	}
 }
 
@@ -11637,6 +11651,49 @@ func schema_apoxy_api_metrics_v1alpha1_ReplicaGauges(ref common.ReferenceCallbac
 					},
 				},
 				Required: []string{"desired", "ready", "available", "connected"},
+			},
+		},
+	}
+}
+
+func schema_apoxy_api_metrics_v1alpha1_ReplicaMetrics(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ReplicaMetrics is one replica's share of a Proxy.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Name is the replica name.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metrics": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Metrics is every evaluated recipe for the replica.",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type: []string{"object"},
+										AdditionalProperties: &spec.SchemaOrBool{
+											Allows: true,
+											Schema: &spec.Schema{
+												SchemaProps: spec.SchemaProps{
+													Type:   []string{"number"},
+													Format: "double",
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
 			},
 		},
 	}

@@ -12,11 +12,12 @@ func TestResolve(t *testing.T) {
 	conns := uint64(12345)
 
 	cases := []struct {
-		name      string
-		opts      []BootstrapOption
-		wantHost  string
-		wantHeap  *uint64
-		wantConns uint64
+		name         string
+		opts         []BootstrapOption
+		wantHost     string
+		wantHeap     *uint64
+		wantConns    uint64
+		wantIdentity *MetricSinkIdentity
 	}{
 		{
 			name:      "defaults",
@@ -35,6 +36,15 @@ func TestResolve(t *testing.T) {
 			wantConns: conns,
 		},
 		{
+			name: "the metric sink identity is carried",
+			opts: []BootstrapOption{
+				WithMetricSinkIdentity("my-proxy", "backplane-0", ""),
+			},
+			wantHost:     envoyGatewayXdsServerHost,
+			wantConns:    defaultEnvoyMaxActiveDownstreamConnections,
+			wantIdentity: &MetricSinkIdentity{Proxy: "my-proxy", Replica: "backplane-0"},
+		},
+		{
 			name:      "a nil option is skipped",
 			opts:      []BootstrapOption{nil},
 			wantHost:  envoyGatewayXdsServerHost,
@@ -51,6 +61,7 @@ func TestResolve(t *testing.T) {
 			assert.Equal(t, DefaultXdsServerPort, int(got.XdsServerPort))
 			require.NotNil(t, got.OverloadMaxActiveDownstreamConnections)
 			assert.Equal(t, tc.wantConns, *got.OverloadMaxActiveDownstreamConnections)
+			assert.Equal(t, tc.wantIdentity, got.MetricSinkIdentity)
 			if tc.wantHeap == nil {
 				return
 			}

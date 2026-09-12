@@ -19,6 +19,12 @@ apiserver:
     # Overrides the image tag whose default is the chart appVersion.
     # tag: "latest"
 
+  # Extra command line arguments for the apiserver container.
+  extraArgs: []
+
+  # Extra environment variables for the apiserver container.
+  extraEnv: []
+
   imagePullSecrets: []
   nameOverride: ""
   fullnameOverride: ""

@@ -1,6 +1,8 @@
 package translator
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -12,6 +14,7 @@ import (
 	dfpfilterv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/dynamic_forward_proxy/v3"
 	hcmv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
 	resourcev3 "github.com/envoyproxy/go-control-plane/pkg/resource/v3"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
@@ -30,6 +33,10 @@ const (
 	// Backend sets no limit. It is Envoy's own default, written out so that the
 	// value shows in the config dump next to the dns_cache host count.
 	defaultDNSCacheMaxHosts = 1024
+
+	// dnsCacheNameHashLen is how many hex characters of the settings hash the
+	// DNS cache name carries.
+	dnsCacheNameHashLen = 8
 )
 
 func init() {
@@ -111,6 +118,10 @@ func dnsCacheConfig(dfp *ir.DynamicForwardProxy) *dfpconfigv3.DnsCacheConfig {
 	if dfp.DNSRefreshRate != nil {
 		dnsRefreshRate = durationpb.New(dfp.DNSRefreshRate.Duration)
 	}
+	var dnsMinRefreshRate *durationpb.Duration
+	if dfp.DNSMinRefreshRate != nil {
+		dnsMinRefreshRate = durationpb.New(dfp.DNSMinRefreshRate.Duration)
+	}
 	var hostTTL *durationpb.Duration
 	if dfp.HostTTL != nil {
 		hostTTL = durationpb.New(dfp.HostTTL.Duration)
@@ -118,6 +129,10 @@ func dnsCacheConfig(dfp *ir.DynamicForwardProxy) *dfpconfigv3.DnsCacheConfig {
 	maxHosts := wrapperspb.UInt32(defaultDNSCacheMaxHosts)
 	if dfp.MaxHosts != nil {
 		maxHosts = wrapperspb.UInt32(*dfp.MaxHosts)
+	}
+	var dnsQueryTimeout *durationpb.Duration
+	if dfp.DNSQueryTimeout != nil {
+		dnsQueryTimeout = durationpb.New(dfp.DNSQueryTimeout.Duration)
 	}
 
 	//caresConfig, err := anypb.New(&caresv3.CaresDnsResolverConfig{
@@ -141,17 +156,34 @@ func dnsCacheConfig(dfp *ir.DynamicForwardProxy) *dfpconfigv3.DnsCacheConfig {
 	//	return nil
 	//}
 
-	return &dfpconfigv3.DnsCacheConfig{
-		Name:            dfp.Name,
-		DnsLookupFamily: dnsLookupFamily,
-		DnsRefreshRate:  dnsRefreshRate,
-		HostTtl:         hostTTL,
-		MaxHosts:        maxHosts,
+	cfg := &dfpconfigv3.DnsCacheConfig{
+		DnsLookupFamily:   dnsLookupFamily,
+		DnsRefreshRate:    dnsRefreshRate,
+		DnsMinRefreshRate: dnsMinRefreshRate,
+		HostTtl:           hostTTL,
+		MaxHosts:          maxHosts,
+		DnsQueryTimeout:   dnsQueryTimeout,
 		//TypedDnsResolverConfig: &corev3.TypedExtensionConfig{
 		//	Name: "envoy.extensions.network.dns_resolver.cares",
 		//	TypedConfig: caresConfig,
 		//},
 	}
+	cfg.Name = dfp.Name + "-" + dnsCacheSettingsHash(cfg)
+
+	return cfg
+}
+
+// dnsCacheSettingsHash is a short hash of the settings a DNS cache is built with.
+// The old cache keeps its stats until Envoy restarts; its hosts age out by host_ttl.
+// The first push after an upgrade renames every cache once.
+func dnsCacheSettingsHash(cfg *dfpconfigv3.DnsCacheConfig) string {
+	settings := proto.Clone(cfg).(*dfpconfigv3.DnsCacheConfig)
+	settings.Name = ""
+	// The settings carry no strings, so the marshal cannot fail.
+	b, _ := proto.MarshalOptions{Deterministic: true}.Marshal(settings)
+	sum := sha256.Sum256(b)
+
+	return hex.EncodeToString(sum[:])[:dnsCacheNameHashLen]
 }
 
 func (*dynamicForwardProxy) patchResources(

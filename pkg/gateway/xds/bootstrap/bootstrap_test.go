@@ -55,6 +55,14 @@ func TestGetRenderedBootstrapConfig(t *testing.T) {
 			},
 		},
 		{
+			name: "otel-metrics-identity",
+			overrideOptions: []BootstrapOption{
+				WithOtelMetricSink("otel-collector.monitoring.svc", 4317),
+				WithMetricSinkIdentity("my-proxy", "backplane-0", "3a1b2c4d-0000-0000-0000-000000000000"),
+				WithOverloadMaxActiveConnections(50000),
+			},
+		},
+		{
 			name: "watchdog-custom",
 			overrideOptions: []BootstrapOption{
 				WithWatchdogTimeouts(500*time.Millisecond, 2*time.Second),
@@ -95,4 +103,62 @@ func readTestData(caseName string) (string, error) {
 		return "", err
 	}
 	return string(b), nil
+}
+
+// TestMetricSinkIdentityTags checks the fixed stats tags the identity renders.
+// A self-hosted install has no project, which leaves that tag out.
+func TestMetricSinkIdentityTags(t *testing.T) {
+	cases := []struct {
+		name string
+		opts []BootstrapOption
+		want map[string]string
+	}{
+		{
+			name: "no identity adds no tags",
+			opts: []BootstrapOption{WithOtelMetricSink("otel-collector", 4317)},
+		},
+		{
+			name: "identity with a project",
+			opts: []BootstrapOption{
+				WithOtelMetricSink("otel-collector", 4317),
+				WithMetricSinkIdentity("my-proxy", "backplane-0", "project-1"),
+			},
+			want: map[string]string{
+				"apoxy.proxy":      "my-proxy",
+				"apoxy.replica":    "backplane-0",
+				"apoxy.project_id": "project-1",
+			},
+		},
+		{
+			name: "identity without a project leaves the tag out",
+			opts: []BootstrapOption{
+				WithOtelMetricSink("otel-collector", 4317),
+				WithMetricSinkIdentity("my-proxy", "backplane-0", ""),
+			},
+			want: map[string]string{
+				"apoxy.proxy":   "my-proxy",
+				"apoxy.replica": "backplane-0",
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := GetRenderedBootstrapConfig(tc.opts...)
+			require.NoError(t, err)
+
+			var bs bootstrapv3.Bootstrap
+			require.NoError(t, proto.FromYAML([]byte(got), &bs))
+
+			tags := map[string]string{}
+			for _, tag := range bs.GetStatsConfig().GetStatsTags() {
+				tags[tag.GetTagName()] = tag.GetFixedValue()
+			}
+			if len(tc.want) == 0 {
+				assert.Empty(t, tags)
+				return
+			}
+			assert.Equal(t, tc.want, tags)
+		})
+	}
 }

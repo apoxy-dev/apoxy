@@ -1226,6 +1226,11 @@ const helmTelemetryValues = `--set backplane.prometheusRule.enabled=true ` +
 	`--set 'backplane.autoscaling.podsMetrics[0].name=envoy_http_downstream_cx_active' ` +
 	`--set 'backplane.autoscaling.podsMetrics[0].targetAverageValue=2700'`
 
+// helmPassthroughValues sets the apiserver passthrough values, so the lint
+// covers the extra arguments and the extra environment of the container.
+const helmPassthroughValues = `--set-json 'apiserver.extraArgs=["--otel_collector_host=otel-collector"]' ` +
+	`--set-json 'apiserver.extraEnv=[{"name":"APOXY_LINT_ENV","value":"1"}]'`
+
 // LintHelmChart lints the Helm chart, renders it with the telemetry objects on,
 // and checks the rendered alert rules and the Grafana dashboard. The src
 // directory is deploy/helm, the same directory PublishHelmRelease packages.
@@ -1250,6 +1255,17 @@ func (m *ApoxyCli) LintHelmChart(
 			`fi`,
 			"helm template apoxy-gateway apoxy-gateway " + helmTelemetryValues +
 				" -s templates/backplane_prometheusrule.yaml > /out/prometheusrule.yaml",
+			"helm template apoxy-gateway apoxy-gateway " + helmPassthroughValues +
+				" -s templates/apiserver_statefulset.yaml > /out/apiserver.yaml",
+			// The apiserver container must carry both passthrough values.
+			`if ! grep -q -- '--otel_collector_host=otel-collector' /out/apiserver.yaml; then`,
+			`  echo 'the chart drops apiserver.extraArgs' >&2`,
+			`  exit 1`,
+			`fi`,
+			`if ! grep -q 'APOXY_LINT_ENV' /out/apiserver.yaml; then`,
+			`  echo 'the chart drops apiserver.extraEnv' >&2`,
+			`  exit 1`,
+			`fi`,
 		}, "\n")})
 
 	out, err := render.Stdout(ctx)

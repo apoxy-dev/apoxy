@@ -48,7 +48,9 @@ stats_sinks:
     grpc_service:
       envoy_grpc:
         cluster_name: otel_metric_sink_0
+    prefix: envoy
     report_counters_as_deltas: true
+    report_histograms_as_deltas: true
     emit_tags_as_attributes: true
     use_tag_extracted_name: true
 

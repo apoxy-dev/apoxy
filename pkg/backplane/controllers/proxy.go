@@ -213,7 +213,11 @@ func (r *ProxyReconciler) bootstrapOptions() []bootstrap.BootstrapOption {
 		opts = append(opts, bootstrap.WithOverloadMaxActiveConnections(*r.options.overloadMaxActiveConnections))
 	}
 	if r.options.otelMetricSinkHost != "" {
-		opts = append(opts, bootstrap.WithOtelMetricSink(r.options.otelMetricSinkHost, r.options.otelMetricSinkPort))
+		opts = append(opts,
+			bootstrap.WithOtelMetricSink(r.options.otelMetricSinkHost, r.options.otelMetricSinkPort),
+			// The collector tells the replicas of a proxy apart by these tags.
+			bootstrap.WithMetricSinkIdentity(r.proxyName, r.replicaName, r.options.projectID),
+		)
 	}
 
 	return opts

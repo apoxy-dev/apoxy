@@ -7,10 +7,14 @@ package translator
 
 import (
 	"testing"
+	"time"
 
+	dfpclusterv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/clusters/dynamic_forward_proxy/v3"
+	dfpfilterv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/dynamic_forward_proxy/v3"
 	httpv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/upstreams/http/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 
 	"github.com/apoxy-dev/apoxy/pkg/gateway/ir"
@@ -161,42 +165,184 @@ func TestCreateDynamicForwardProxyCluster_ProtocolOptions(t *testing.T) {
 	}
 }
 
-// TestDNSCacheConfigMaxHosts checks that the DNS cache size is always written
-// out. Envoy holds 1024 hosts by default, but the value only shows in the config
-// dump, next to the dns_cache host count, when the config carries it.
-func TestDNSCacheConfigMaxHosts(t *testing.T) {
+// TestDNSCacheConfigRendersSettings checks the settings the DNS cache carries.
+// The default host limit and the optional durations must all reach the config.
+func TestDNSCacheConfigRendersSettings(t *testing.T) {
 	cases := []struct {
-		name string
-		dfp  *ir.DynamicForwardProxy
-		want *uint32
+		name             string
+		dfp              *ir.DynamicForwardProxy
+		wantNil          bool
+		wantMaxHosts     uint32
+		wantMinRefresh   time.Duration
+		wantQueryTimeout time.Duration
 	}{
 		{
-			name: "nil dynamic forward proxy",
-			dfp:  nil,
+			name:    "nil dynamic forward proxy",
+			dfp:     nil,
+			wantNil: true,
 		},
 		{
-			name: "backend sets no limit",
-			dfp:  &ir.DynamicForwardProxy{Name: "dynamic-proxy"},
-			want: ptr.To(uint32(defaultDNSCacheMaxHosts)),
+			name:         "backend sets no limit",
+			dfp:          &ir.DynamicForwardProxy{Name: "dynamic-proxy"},
+			wantMaxHosts: defaultDNSCacheMaxHosts,
 		},
 		{
-			name: "backend sets a limit",
-			dfp:  &ir.DynamicForwardProxy{Name: "dynamic-proxy", MaxHosts: ptr.To(uint32(4096))},
-			want: ptr.To(uint32(4096)),
+			name:         "backend sets a limit",
+			dfp:          &ir.DynamicForwardProxy{Name: "dynamic-proxy", MaxHosts: ptr.To(uint32(4096))},
+			wantMaxHosts: 4096,
+		},
+		{
+			name: "backend sets the optional durations",
+			dfp: &ir.DynamicForwardProxy{
+				Name:              "dynamic-proxy",
+				DNSMinRefreshRate: &metav1.Duration{Duration: 10 * time.Second},
+				DNSQueryTimeout:   &metav1.Duration{Duration: 3 * time.Second},
+			},
+			wantMaxHosts:     defaultDNSCacheMaxHosts,
+			wantMinRefresh:   10 * time.Second,
+			wantQueryTimeout: 3 * time.Second,
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := dnsCacheConfig(tc.dfp)
-			if tc.want == nil {
+			if tc.wantNil {
 				assert.Nil(t, got)
 				return
 			}
 			require.NotNil(t, got.GetMaxHosts())
-			assert.Equal(t, *tc.want, got.GetMaxHosts().GetValue())
+			assert.Equal(t, tc.wantMaxHosts, got.GetMaxHosts().GetValue())
+
+			if tc.wantMinRefresh == 0 {
+				assert.Nil(t, got.GetDnsMinRefreshRate())
+			} else {
+				assert.Equal(t, tc.wantMinRefresh, got.GetDnsMinRefreshRate().AsDuration())
+			}
+			if tc.wantQueryTimeout == 0 {
+				assert.Nil(t, got.GetDnsQueryTimeout())
+			} else {
+				assert.Equal(t, tc.wantQueryTimeout, got.GetDnsQueryTimeout().AsDuration())
+			}
 		})
 	}
+}
+
+// TestDNSCacheName checks that the cache name carries a hash of the settings.
+// An edited Backend must arrive under a new name.
+func TestDNSCacheName(t *testing.T) {
+	base := func() *ir.DynamicForwardProxy {
+		return &ir.DynamicForwardProxy{
+			Name:              "dfp-backend-0e058897",
+			DNSLookupFamily:   ir.V4Only,
+			DNSRefreshRate:    &metav1.Duration{Duration: 5 * time.Second},
+			DNSMinRefreshRate: &metav1.Duration{Duration: 10 * time.Second},
+			HostTTL:           &metav1.Duration{Duration: time.Minute},
+			MaxHosts:          ptr.To(uint32(2048)),
+			DNSQueryTimeout:   &metav1.Duration{Duration: 3 * time.Second},
+		}
+	}
+
+	cases := []struct {
+		name     string
+		edit     func(*ir.DynamicForwardProxy)
+		wantSame bool
+	}{
+		{
+			name:     "same settings",
+			edit:     func(*ir.DynamicForwardProxy) {},
+			wantSame: true,
+		},
+		{
+			name: "lookup family",
+			edit: func(dfp *ir.DynamicForwardProxy) { dfp.DNSLookupFamily = ir.All },
+		},
+		{
+			name: "refresh rate",
+			edit: func(dfp *ir.DynamicForwardProxy) { dfp.DNSRefreshRate = &metav1.Duration{Duration: 6 * time.Second} },
+		},
+		{
+			name: "minimum refresh rate",
+			edit: func(dfp *ir.DynamicForwardProxy) { dfp.DNSMinRefreshRate = nil },
+		},
+		{
+			name: "host ttl",
+			edit: func(dfp *ir.DynamicForwardProxy) { dfp.HostTTL = &metav1.Duration{Duration: 2 * time.Minute} },
+		},
+		{
+			name: "maximum hosts",
+			edit: func(dfp *ir.DynamicForwardProxy) { dfp.MaxHosts = ptr.To(uint32(4096)) },
+		},
+		{
+			name: "query timeout",
+			edit: func(dfp *ir.DynamicForwardProxy) { dfp.DNSQueryTimeout = &metav1.Duration{Duration: 4 * time.Second} },
+		},
+	}
+
+	want := dnsCacheConfig(base()).GetName()
+	require.Regexp(t, `^dfp-backend-0e058897-[0-9a-f]{8}$`, want)
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dfp := base()
+			tc.edit(dfp)
+			got := dnsCacheConfig(dfp).GetName()
+
+			if tc.wantSame {
+				assert.Equal(t, want, got)
+				return
+			}
+			assert.NotEqual(t, want, got, "an edited setting must rename the cache")
+			assert.Regexp(t, `^dfp-backend-0e058897-[0-9a-f]{8}$`, got)
+		})
+	}
+}
+
+// TestDNSCacheNameFilterAndClusterAgree checks that the http filter and the
+// cluster name the same DNS cache.
+func TestDNSCacheNameFilterAndClusterAgree(t *testing.T) {
+	const clusterName = "dfp-backend-0e058897"
+
+	dfp := &ir.DynamicForwardProxy{
+		Name:            clusterName,
+		DNSLookupFamily: ir.V4Only,
+		HostTTL:         &metav1.Duration{Duration: time.Minute},
+	}
+	route := &ir.HTTPRoute{
+		Name: "first-route",
+		Destination: &ir.RouteDestination{
+			Name: clusterName,
+			Settings: []*ir.DestinationSetting{
+				{
+					Protocol:            ir.HTTP,
+					AddressType:         ptr.To(ir.DYNAMIC_PROXY),
+					DynamicForwardProxy: dfp,
+				},
+			},
+		},
+	}
+
+	filter, err := buildHCMDynamicForwardProxyFilter(route, dfp)
+	require.NoError(t, err)
+	var filterCfg dfpfilterv3.FilterConfig
+	require.NoError(t, filter.GetTypedConfig().UnmarshalTo(&filterCfg))
+
+	tCtx := new(types.ResourceVersionTable)
+	args := &xdsClusterArgs{name: clusterName, settings: route.Destination.Settings}
+	require.NoError(t, createDynamicForwardProxyCluster(args, tCtx))
+
+	cluster := findXdsCluster(tCtx, clusterName)
+	require.NotNil(t, cluster, "expected DFP cluster %q to be created", clusterName)
+	var clusterCfg dfpclusterv3.ClusterConfig
+	require.NoError(t, cluster.GetClusterType().GetTypedConfig().UnmarshalTo(&clusterCfg))
+
+	assert.Equal(t,
+		filterCfg.GetDnsCacheConfig().GetName(),
+		clusterCfg.GetDnsCacheConfig().GetName(),
+		"the filter and the cluster must name the same DNS cache")
+	// The cluster keeps its own name, which routes point at.
+	assert.Equal(t, clusterName, cluster.GetName())
+	assert.NotEqual(t, clusterName, clusterCfg.GetDnsCacheConfig().GetName())
 }
 
 // TestBuildTypedExtensionProtocolOptions_NonDFP_NoAutoSNI guards the scope of the

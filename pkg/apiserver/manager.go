@@ -230,6 +230,7 @@ type Option func(*options)
 type options struct {
 	clientConfig            *rest.Config
 	enableSimpleAuth        bool
+	authenticator           authenticator.Request
 	enableInClusterAuth     bool
 	sqlitePath              string
 	sqliteConnArgs          map[string]string
@@ -396,6 +397,14 @@ func WithAdditionalController(c CreateController) Option {
 func WithSimpleAuth() Option {
 	return func(o *options) {
 		o.enableSimpleAuth = true
+	}
+}
+
+// WithAuthenticator replaces the request authenticator that simple auth
+// installs.
+func WithAuthenticator(a authenticator.Request) Option {
+	return func(o *options) {
+		o.authenticator = a
 	}
 }
 
@@ -1244,7 +1253,11 @@ func start(
 				// For simple auth, we use a header authenticator and an always
 				// allow authorizer — except reads of secret values, which are
 				// restricted per opts.secretValuesAuthz.
-				c.Authentication.Authenticator = auth.NewHeaderAuthenticator()
+				authn := opts.authenticator
+				if authn == nil {
+					authn = auth.NewHeaderAuthenticator()
+				}
+				c.Authentication.Authenticator = authn
 				c.Authorization.Authorizer = secretstore.NewValuesReadAuthorizer(
 					authorizerfactory.NewAlwaysAllowAuthorizer(), opts.secretValuesAuthz)
 			} else if opts.enableInClusterAuth {

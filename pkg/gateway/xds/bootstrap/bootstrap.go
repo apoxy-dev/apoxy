@@ -76,6 +76,9 @@ type bootstrapParameters struct {
 	EnablePrometheus bool
 	// OtelMetricSinks defines the configuration of the OpenTelemetry sinks.
 	OtelMetricSinks []metricSink
+	// MetricSinkTags are the fixed tags Envoy adds to every stat. An empty list
+	// adds none.
+	MetricSinkTags []metricSinkTag
 	// StatsFlushInterval is how often Envoy flushes stats to the sinks, already
 	// rendered as a proto duration literal. It is empty when the caller sets
 	// none, which leaves Envoy on its own default.
@@ -121,6 +124,14 @@ type metricSink struct {
 	Address string
 	// Port is the port of the XDS Server that Envoy is managed by.
 	Port uint32
+}
+
+// metricSinkTag is one fixed tag Envoy adds to every stat.
+type metricSinkTag struct {
+	// Name is the tag name.
+	Name string
+	// Value is the tag value.
+	Value string
 }
 
 type adminServerParameters struct {
@@ -174,6 +185,9 @@ type BootstrapConfig struct {
 	// OtelMetricSinks are the OpenTelemetry metric sinks Envoy reports stats to.
 	// An empty list leaves the stats sink section out of the bootstrap.
 	OtelMetricSinks []metricSink
+	// MetricSinkIdentity names the proxy the stats come from. A nil value adds
+	// no identity tags.
+	MetricSinkIdentity *MetricSinkIdentity
 	// StatsFlushInterval is how often Envoy flushes stats to the sinks. A zero
 	// value leaves Envoy on its own default.
 	StatsFlushInterval time.Duration
@@ -255,6 +269,46 @@ func WithOtelMetricSink(host string, port uint32) BootstrapOption {
 	}
 }
 
+// MetricSinkIdentity names the proxy the Envoy stats come from. Envoy reports
+// it as a fixed tag on every stat.
+type MetricSinkIdentity struct {
+	// Proxy is the name of the Proxy the replica belongs to.
+	Proxy string
+	// Replica is the name of this replica.
+	Replica string
+	// ProjectID is the Apoxy project, which is empty on a self-hosted install.
+	ProjectID string
+}
+
+// WithMetricSinkIdentity names the proxy Envoy reports its stats for.
+func WithMetricSinkIdentity(proxy, replica, projectID string) BootstrapOption {
+	return func(cfg *BootstrapConfig) {
+		cfg.MetricSinkIdentity = &MetricSinkIdentity{
+			Proxy:     proxy,
+			Replica:   replica,
+			ProjectID: projectID,
+		}
+	}
+}
+
+// metricSinkTags renders the identity as fixed stats tags. A self-hosted
+// install has no project, which leaves that tag out.
+func metricSinkTags(id *MetricSinkIdentity) []metricSinkTag {
+	if id == nil {
+		return nil
+	}
+
+	tags := []metricSinkTag{
+		{Name: "apoxy.proxy", Value: id.Proxy},
+		{Name: "apoxy.replica", Value: id.Replica},
+	}
+	if id.ProjectID != "" {
+		tags = append(tags, metricSinkTag{Name: "apoxy.project_id", Value: id.ProjectID})
+	}
+
+	return tags
+}
+
 // WithStatsFlushInterval sets how often Envoy flushes stats to the sinks. A
 // value of zero or less leaves Envoy on its own default.
 func WithStatsFlushInterval(d time.Duration) BootstrapOption {
@@ -321,6 +375,7 @@ func GetRenderedBootstrapConfig(opts ...BootstrapOption) (string, error) {
 				MegamissTimeout: protoDuration(sOpts.WatchdogMegamissTimeout),
 			},
 			OtelMetricSinks: sOpts.OtelMetricSinks,
+			MetricSinkTags:  metricSinkTags(sOpts.MetricSinkIdentity),
 			XdsTLSCAPath:    sOpts.XdsTLSCAPath,
 		},
 	}

@@ -41,6 +41,13 @@ spec:
             - --ingest-store-dir=/var/run/apiserver/
             - --dev
             - --in-cluster=true
+          {{- with .Values.apiserver.extraArgs }}
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.apiserver.extraEnv }}
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           ports:
             - name: https
               containerPort: 8443

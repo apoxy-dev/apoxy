@@ -77,6 +77,9 @@ var (
 	controllerMetricsPort = flag.Int("controller_metrics_port", 8081, "Port for the controller metrics endpoint.")
 	metricsPort           = flag.Int("metrics_port", 8888, "Port for the metrics proxy endpoint.")
 
+	otelCollectorHost = flag.String("otel_collector_host", "", "Host of the OpenTelemetry collector the Envoy stats and the runtime metrics go to. Empty turns the sink off.")
+	otelCollectorPort = flag.Int("otel_collector_port", 4317, "OTLP gRPC port of the OpenTelemetry collector.")
+
 	chAddrs  = flag.String("ch_addrs", "", "Comma-separated list of ClickHouse host:port addresses.")
 	chSecure = flag.Bool("ch_secure", false, "Whether to connect to Clickhouse using TLS.")
 	chDebug  = flag.Bool("ch_debug", false, "Enables debug prints for ClickHouse client.")
@@ -127,6 +130,9 @@ func main() {
 
 	if *proxyName == "" || *replicaName == "" {
 		log.Fatalf("--proxy and --replica must be set")
+	}
+	if *otelCollectorPort < 1 || *otelCollectorPort > 65535 {
+		log.Fatalf("--otel_collector_port must be between 1 and 65535")
 	}
 
 	var chConn chdriver.Conn
@@ -268,6 +274,9 @@ func main() {
 	}
 	if *overloadMaxActiveConnections > 0 {
 		proxyOpts = append(proxyOpts, bpctrl.WithOverloadMaxActiveConnections(*overloadMaxActiveConnections))
+	}
+	if *otelCollectorHost != "" {
+		proxyOpts = append(proxyOpts, bpctrl.WithOtelMetricSink(*otelCollectorHost, uint32(*otelCollectorPort)))
 	}
 	var hc *healthchecker.AggregatedHealthChecker
 	if *readyProbePort != 0 {

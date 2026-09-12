@@ -145,6 +145,14 @@ type ReplicaGauges struct {
 	Connected int32 `json:"connected"`
 }
 
+// ReplicaMetrics is one replica's share of a Proxy.
+type ReplicaMetrics struct {
+	// Name is the replica name.
+	Name string `json:"name,omitempty"`
+	// Metrics is every evaluated recipe for the replica.
+	Metrics MetricsMap `json:"metrics,omitempty"`
+}
+
 // +kubebuilder:object:root=true
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
@@ -161,6 +169,9 @@ type ProxyMetrics struct {
 	Units map[string]string `json:"units,omitempty"`
 	// Replicas comes from the owner status.
 	Replicas ReplicaGauges `json:"replicas,omitempty,omitzero"`
+	// PerReplica is the same recipes cut by replica. Empty when the metrics
+	// carry no replica.
+	PerReplica []ReplicaMetrics `json:"perReplica,omitempty"`
 }
 
 // RevisionMetrics is one revision's share of a compute Service.
