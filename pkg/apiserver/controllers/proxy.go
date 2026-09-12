@@ -5,7 +5,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/netip"
+	"slices"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -89,6 +91,145 @@ func nodeMetadataToAddresses(meta *xdstypes.NodeMetadata) []corev1alpha2.Replica
 		})
 	}
 	return addrs
+}
+
+// envoyExitFromNode converts the Envoy exit record of a node to the API type.
+func envoyExitFromNode(exit *xdstypes.NodeEnvoyExit) *corev1alpha2.EnvoyExit {
+	if exit == nil {
+		return nil
+	}
+	return &corev1alpha2.EnvoyExit{
+		Time:   exit.At,
+		Reason: exit.Reason,
+		Code:   exit.Code,
+	}
+}
+
+// sameEnvoyExit reports whether both records describe the same Envoy exit.
+func sameEnvoyExit(a, b *corev1alpha2.EnvoyExit) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.Time.Equal(&b.Time) && a.Reason == b.Reason && a.Code == b.Code
+}
+
+// replicaFromNodeMetadata builds the status of a replica from node metadata.
+func replicaFromNodeMetadata(meta *xdstypes.NodeMetadata) *corev1alpha2.ProxyReplicaStatus {
+	replica := &corev1alpha2.ProxyReplicaStatus{
+		Name:        meta.Name,
+		ConnectedAt: meta.ConnectedAt,
+		Addresses:   nodeMetadataToAddresses(meta),
+	}
+	applyNodeMetadata(replica, meta)
+	return replica
+}
+
+// applyNodeMetadata copies the Envoy restart count and the last exit of a node
+// into the status of a replica. It returns true when a field changes.
+func applyNodeMetadata(replica *corev1alpha2.ProxyReplicaStatus, meta *xdstypes.NodeMetadata) bool {
+	changed := false
+
+	if replica.EnvoyRestarts != meta.EnvoyRestarts {
+		replica.EnvoyRestarts = meta.EnvoyRestarts
+		changed = true
+	}
+
+	exit := envoyExitFromNode(meta.LastEnvoyExit)
+	if !sameEnvoyExit(replica.LastEnvoyExit, exit) {
+		replica.LastEnvoyExit = exit
+		changed = true
+	}
+
+	return changed
+}
+
+// findReplica returns the status of the named replica of a Proxy, or nil.
+func findReplica(p *corev1alpha2.Proxy, name string) *corev1alpha2.ProxyReplicaStatus {
+	for _, replica := range p.Status.Replicas {
+		if replica.Name == name {
+			return replica
+		}
+	}
+	return nil
+}
+
+// newestNode returns the node that connected last. The node with more Envoy
+// restarts wins when both connected at the same time.
+func newestNode(a, b *xdstypes.NodeMetadata) *xdstypes.NodeMetadata {
+	if a == nil {
+		return b
+	}
+	if b == nil {
+		return a
+	}
+	if b.ConnectedAt.After(a.ConnectedAt.Time) {
+		return b
+	}
+	if a.ConnectedAt.Equal(&b.ConnectedAt) && b.EnvoyRestarts > a.EnvoyRestarts {
+		return b
+	}
+	return a
+}
+
+// nodesByReplica keeps one node per replica name. Every Envoy run gets a new
+// node ID, so while Envoy restarts the cache holds the node of the previous run
+// next to the node of the new one until the old stream closes.
+func nodesByReplica(nodes []*xdstypes.NodeMetadata) map[string]*xdstypes.NodeMetadata {
+	byName := make(map[string]*xdstypes.NodeMetadata, len(nodes))
+	for _, meta := range nodes {
+		byName[meta.Name] = newestNode(byName[meta.Name], meta)
+	}
+	return byName
+}
+
+// liveNode returns the node that still serves a replica of a Proxy, or nil.
+// The node of the closed stream is left out by its node ID.
+func (r *ProxyReconciler) liveNode(proxyName, replicaName, closedNodeID string) *xdstypes.NodeMetadata {
+	var live *xdstypes.NodeMetadata
+	for nk, meta := range r.resources.EnvoyResources.Nodes.LoadAll() {
+		if nk.ClusterName != proxyName || nk.NodeID == closedNodeID || meta.Name != replicaName {
+			continue
+		}
+		live = newestNode(live, meta)
+	}
+	return live
+}
+
+// applyNodeUpdate applies one xDS node update to the status of a Proxy. It
+// returns true when the status changes.
+func (r *ProxyReconciler) applyNodeUpdate(
+	p *corev1alpha2.Proxy,
+	nodeID string,
+	meta *xdstypes.NodeMetadata,
+	deleted bool,
+) bool {
+	if !deleted {
+		// Update the replica when it is known already, otherwise append it.
+		if replica := findReplica(p, meta.Name); replica != nil {
+			return applyNodeMetadata(replica, meta)
+		}
+		p.Status.Replicas = append(p.Status.Replicas, replicaFromNodeMetadata(meta))
+		return true
+	}
+
+	// The stream of the previous Envoy run closes after the new run connects,
+	// so keep the replica while another node of that replica is connected.
+	if live := r.liveNode(p.Name, meta.Name, nodeID); live != nil {
+		if replica := findReplica(p, live.Name); replica != nil {
+			return applyNodeMetadata(replica, live)
+		}
+		p.Status.Replicas = append(p.Status.Replicas, replicaFromNodeMetadata(live))
+		return true
+	}
+
+	for i, replica := range p.Status.Replicas {
+		if replica.Name == meta.Name {
+			p.Status.Replicas = append(p.Status.Replicas[:i], p.Status.Replicas[i+1:]...)
+			return true
+		}
+	}
+
+	return false
 }
 
 func (r *ProxyReconciler) releaseReplica(ctx context.Context, replica *corev1alpha2.ProxyReplicaStatus) error {
@@ -224,35 +365,7 @@ func (r *ProxyReconciler) run(ctx context.Context) {
 					continue
 				}
 
-				updated := false
-				if !update.Delete {
-					// Check if replica already exists before appending.
-					found := false
-					for _, replica := range p.Status.Replicas {
-						if replica.Name == meta.Name {
-							found = true
-							break
-						}
-					}
-					if !found {
-						p.Status.Replicas = append(p.Status.Replicas, &corev1alpha2.ProxyReplicaStatus{
-							Name:        meta.Name,
-							ConnectedAt: meta.ConnectedAt,
-							Addresses:   nodeMetadataToAddresses(meta),
-						})
-						updated = true
-					}
-				} else {
-					for i, replica := range p.Status.Replicas {
-						if replica.Name == meta.Name {
-							p.Status.Replicas = append(p.Status.Replicas[:i], p.Status.Replicas[i+1:]...)
-							updated = true
-							break
-						}
-					}
-				}
-
-				if updated {
+				if r.applyNodeUpdate(p, update.Key.NodeID, meta, update.Delete) {
 					if err := r.Status().Update(ctx, p); err != nil {
 						slog.Error("Failed to update proxy status", "proxy", proxyName, "error", err)
 					}
@@ -285,40 +398,27 @@ func (r *ProxyReconciler) resyncReplicas(ctx context.Context) {
 
 	for i := range proxies.Items {
 		p := &proxies.Items[i]
-		nodes := nodeMap[p.Name]
+		byName := nodesByReplica(nodeMap[p.Name])
 
-		slog.Info("Proxy has connected nodes", "proxy", p.Name, "nodes", len(nodes))
+		slog.Info("Proxy has connected replicas", "proxy", p.Name, "replicas", len(byName))
 
 		updated := false
-		for _, meta := range nodes {
-			found := false
-			for _, replica := range p.Status.Replicas {
-				if replica.Name == meta.Name {
-					found = true
-					break
+		for _, name := range slices.Sorted(maps.Keys(byName)) {
+			meta := byName[name]
+			if replica := findReplica(p, name); replica != nil {
+				if applyNodeMetadata(replica, meta) {
+					updated = true
 				}
+				continue
 			}
-			if !found {
-				p.Status.Replicas = append(p.Status.Replicas, &corev1alpha2.ProxyReplicaStatus{
-					Name:        meta.Name,
-					ConnectedAt: meta.ConnectedAt,
-					Addresses:   nodeMetadataToAddresses(meta),
-				})
-				updated = true
-			}
+			p.Status.Replicas = append(p.Status.Replicas, replicaFromNodeMetadata(meta))
+			updated = true
 		}
 
 		// Remove replicas that are no longer connected.
 		keep := 0
 		for _, replica := range p.Status.Replicas {
-			found := false
-			for _, meta := range nodes {
-				if replica.Name == meta.Name {
-					found = true
-					break
-				}
-			}
-			if found {
+			if _, ok := byName[replica.Name]; ok {
 				p.Status.Replicas[keep] = replica
 				keep++
 			} else {

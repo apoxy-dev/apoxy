@@ -224,6 +224,27 @@ type ProxyReplicaStatus struct {
 	// Addresses is a list of addresses assigned to the replica.
 	// +optional
 	Addresses []ReplicaAddress `json:"addresses,omitempty"`
+
+	// EnvoyRestarts counts Envoy starts after an exit since the backplane started.
+	// +optional
+	EnvoyRestarts int32 `json:"envoyRestarts,omitempty"`
+
+	// LastEnvoyExit describes the last exit of the Envoy process.
+	// +optional
+	LastEnvoyExit *EnvoyExit `json:"lastEnvoyExit,omitempty"`
+}
+
+// EnvoyExit records one exit of the Envoy process.
+type EnvoyExit struct {
+	// Time is when the process exited.
+	Time metav1.Time `json:"time"`
+
+	// Reason is one of exit, signal, oom_kill, start_failed.
+	Reason string `json:"reason"`
+
+	// Code is the exit status for exit, or the signal name for signal and oom_kill.
+	// +optional
+	Code string `json:"code,omitempty"`
 }
 
 // ProxyStatus defines the observed state of Proxy.
@@ -320,6 +341,15 @@ func getProxyStatusSummary(status ProxyStatus) string {
 	return fmt.Sprintf("Ready (%d)", count)
 }
 
+// getProxyRestarts returns the sum of the Envoy restarts of every replica.
+func getProxyRestarts(status ProxyStatus) string {
+	var restarts int32
+	for _, replica := range status.Replicas {
+		restarts += replica.EnvoyRestarts
+	}
+	return fmt.Sprintf("%d", restarts)
+}
+
 func proxyToTable(proxy *Proxy, tableOptions runtime.Object) (*metav1.Table, error) {
 	table := &metav1.Table{}
 
@@ -329,6 +359,7 @@ func proxyToTable(proxy *Proxy, tableOptions runtime.Object) (*metav1.Table, err
 			{Name: "Name", Type: "string", Format: "name", Description: "Name of the proxy"},
 			{Name: "Provider", Type: "string", Description: "Infrastructure provider"},
 			{Name: "Status", Type: "string", Description: "Status of the proxy"},
+			{Name: "Restarts", Type: "string", Description: "Envoy restarts over all replicas"},
 			{Name: "Telemetry", Type: "string", Description: "Telemetry configuration"},
 			{Name: "Age", Type: "string", Description: "Time since creation"},
 		}
@@ -340,6 +371,7 @@ func proxyToTable(proxy *Proxy, tableOptions runtime.Object) (*metav1.Table, err
 			proxy.Name,
 			getProxyProvider(proxy),
 			getProxyStatusSummary(proxy.Status),
+			getProxyRestarts(proxy.Status),
 			getProxyTelemetryInfo(proxy),
 			formatAge(proxy.CreationTimestamp.Time),
 		},
@@ -422,6 +454,7 @@ func proxyListToTable(list *ProxyList, tableOptions runtime.Object) (*metav1.Tab
 			{Name: "Name", Type: "string", Format: "name", Description: "Name of the proxy"},
 			{Name: "Provider", Type: "string", Description: "Infrastructure provider"},
 			{Name: "Status", Type: "string", Description: "Status of the proxy"},
+			{Name: "Restarts", Type: "string", Description: "Envoy restarts over all replicas"},
 			{Name: "Telemetry", Type: "string", Description: "Telemetry configuration"},
 			{Name: "Age", Type: "string", Description: "Time since creation"},
 		}
@@ -435,6 +468,7 @@ func proxyListToTable(list *ProxyList, tableOptions runtime.Object) (*metav1.Tab
 				proxy.Name,
 				getProxyProvider(proxy),
 				getProxyStatusSummary(proxy.Status),
+				getProxyRestarts(proxy.Status),
 				getProxyTelemetryInfo(proxy),
 				formatAge(proxy.CreationTimestamp.Time),
 			},

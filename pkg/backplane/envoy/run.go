@@ -8,17 +8,20 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/shirou/gopsutil/process"
 	"google.golang.org/protobuf/encoding/protojson"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/apoxy-dev/apoxy/config"
 	"github.com/apoxy-dev/apoxy/pkg/backplane/logs"
@@ -43,6 +46,10 @@ const (
 	tapsPath       = "/var/log/taps"
 
 	defaultDrainTimeoutSeconds = 30
+
+	// metricsFlushTimeout bounds the last push of the runtime metrics on
+	// shutdown.
+	metricsFlushTimeout = 5 * time.Second
 )
 
 var (
@@ -90,7 +97,7 @@ func WithRelease(release ReleaseDownloader) Option {
 // WithLogsCollector sets the logs collector.
 func WithLogsCollector(c logs.LogsCollector) Option {
 	return func(r *Runtime) {
-		r.logs = c
+		r.tel.logs = c
 	}
 }
 
@@ -133,17 +140,43 @@ func WithMinDrainTime(timeout *time.Duration) Option {
 // WithOtelCollector sets the OpenTelemetry collector.
 func WithOtelCollector(c *otel.Collector) Option {
 	return func(r *Runtime) {
-		r.otelCollector = c
+		r.tel.otelCollector = c
 	}
 }
 
-// WithLogsDir sets the directory where Envoy logs will be written.
-// If this option is set, logs will be piped to files in the format
-// envoy.<pid>.<pipe>.log in the specified directory.
-func WithLogsDir(dir string) Option {
+// WithIdentity names the Proxy and the replica this runtime belongs to. Every
+// metric datapoint carries the names as attributes. The project ID is empty
+// outside the hosted platform.
+func WithIdentity(proxy, replica, projectID string) Option {
 	return func(r *Runtime) {
-		r.logsDir = dir
+		r.tel.identity = Identity{Proxy: proxy, Replica: replica, ProjectID: projectID}
 	}
+}
+
+// WithLimits sets the configured ceilings of the Envoy process. The runtime
+// publishes them as gauges next to the values Envoy reports.
+func WithLimits(l Limits) Option {
+	return func(r *Runtime) {
+		r.tel.limits = l
+	}
+}
+
+// WithOTLPMetricSink sends the runtime metrics to the OpenTelemetry collector
+// at addr ("host:port"). An empty address leaves the OTLP export off.
+func WithOTLPMetricSink(addr string) Option {
+	return func(r *Runtime) {
+		r.tel.otlpSinkAddr = addr
+	}
+}
+
+// Identity names the Proxy and the replica the Envoy process belongs to.
+type Identity struct {
+	// Proxy is the name of the Proxy object.
+	Proxy string
+	// Replica is the name of the replica.
+	Replica string
+	// ProjectID is the Apoxy project. It is empty outside the hosted platform.
+	ProjectID string
 }
 
 type Runtime struct {
@@ -154,20 +187,35 @@ type Runtime struct {
 	// Args are additional arguments to pass to Envoy.
 	Args []string
 
-	stopCh        chan struct{}
-	cmd           *exec.Cmd
-	logs          logs.LogsCollector
-	envoyLogsDir  string
-	otelCollector *otel.Collector
-	goPluginDir   string
-	adminHost     string
-	drainTimeout  *time.Duration
-	minDrainTime  *time.Duration
-	logsDir       string
-	nodeMetadata  *xdstypes.NodeMetadata
+	stopCh       chan struct{}
+	cmd          *exec.Cmd
+	goPluginDir  string
+	adminHost    string
+	drainTimeout *time.Duration
+	minDrainTime *time.Duration
+	nodeMetadata *xdstypes.NodeMetadata
+
+	// tel holds everything the backplane observes about the process.
+	tel telemetry
 
 	mu     sync.RWMutex
 	status RuntimeStatus
+	// pid is the process ID of the running Envoy process, or zero.
+	pid int
+	// exited is closed when the wait on the Envoy process returns. It is nil
+	// until the first process starts.
+	exited chan struct{}
+}
+
+// Configure applies options to the runtime before it starts. Metrics read the
+// values at collection time, so the caller sets identity and limits once.
+func (r *Runtime) Configure(opts ...Option) {
+	for _, opt := range opts {
+		if opt == nil {
+			continue
+		}
+		opt(r)
+	}
 }
 
 func (r *Runtime) setOptions(opts ...Option) {
@@ -199,9 +247,9 @@ func (r *Runtime) run(ctx context.Context) error {
 		Id:      id,
 		Cluster: r.Cluster,
 	}
-	if r.nodeMetadata != nil && !r.nodeMetadata.IsEmpty() {
+	if meta := r.exitMetadata(); meta != nil && !meta.IsEmpty() {
 		var err error
-		nodeConfig.Metadata, err = r.nodeMetadata.ToStruct()
+		nodeConfig.Metadata, err = meta.ToStruct()
 		if err != nil {
 			return fmt.Errorf("failed to convert node metadata to map: %w", err)
 		}
@@ -216,9 +264,9 @@ func (r *Runtime) run(ctx context.Context) error {
 	log.Infof("envoy YAML config: %s", configYAML)
 
 	// Start OpenTelemetry collector if configured
-	if r.otelCollector != nil {
+	if r.tel.otelCollector != nil {
 		log.Infof("Starting OpenTelemetry collector before Envoy")
-		if err := r.otelCollector.Start(ctx); err != nil {
+		if err := r.tel.otelCollector.Start(ctx); err != nil {
 			return fmt.Errorf("failed to start OpenTelemetry collector: %w", err)
 		}
 	}
@@ -239,16 +287,17 @@ func (r *Runtime) run(ctx context.Context) error {
 	}
 
 	rCtx, cancel := context.WithCancelCause(ctx)
-	if r.logs != nil {
+	defer cancel(nil)
+	if r.tel.logs != nil {
 		go func() {
-			err := r.logs.CollectAccessLogs(ctx, accessLogsPath)
+			err := r.tel.logs.CollectAccessLogs(ctx, accessLogsPath)
 			if err != nil {
 				log.Errorf("failed to collect access logs: %v", err)
 				cancel(fmt.Errorf("access logs collector failed: %v", err))
 			}
 		}()
 		go func() {
-			err := r.logs.CollectTaps(ctx, tapsPath)
+			err := r.tel.logs.CollectTaps(ctx, tapsPath)
 			if err != nil {
 				cancel(fmt.Errorf("taps collector failed: %v", err))
 				log.Errorf("failed to collect taps: %v", err)
@@ -279,61 +328,23 @@ func (r *Runtime) run(ctx context.Context) error {
 	r.cmd = exec.CommandContext(rCtx, r.envoyPath(), args...)
 	r.cmd.Dir = runDir
 
-	if r.envoyLogsDir != "" {
-		// Create logs directory if it doesn't exist
-		if err := os.MkdirAll(r.envoyLogsDir, 0755); err != nil {
-			return fmt.Errorf("failed to create logs directory: %w", err)
-		}
-
-		// Create a temporary file for stdout and stderr
-		// We'll rename these files after the process starts and we have the PID
-		tmpStdoutFile, err := os.CreateTemp(r.envoyLogsDir, "envoy.stdout.*")
-		if err != nil {
-			return fmt.Errorf("failed to create temporary stdout file: %w", err)
-		}
-		tmpStderrFile, err := os.CreateTemp(r.envoyLogsDir, "envoy.stderr.*")
-		if err != nil {
-			tmpStdoutFile.Close()
-			os.Remove(tmpStdoutFile.Name())
-			return fmt.Errorf("failed to create temporary stderr file: %w", err)
-		}
-
-		defer tmpStdoutFile.Close()
-		defer tmpStderrFile.Close()
-		r.cmd.Stdout = io.MultiWriter(os.Stdout, tmpStdoutFile)
-		r.cmd.Stderr = io.MultiWriter(os.Stderr, tmpStderrFile)
-
-		if err := r.cmd.Start(); err != nil {
-			os.Remove(tmpStdoutFile.Name())
-			os.Remove(tmpStderrFile.Name())
-			return fmt.Errorf("failed to start envoy: %w", err)
-		}
-
-		pid := r.cmd.Process.Pid
-		log.Infof("envoy started with PID %d", pid)
-		stdoutLogPath := filepath.Join(r.envoyLogsDir, fmt.Sprintf("envoy.%d.stdout.log", pid))
-		stderrLogPath := filepath.Join(r.envoyLogsDir, fmt.Sprintf("envoy.%d.stderr.log", pid))
-
-		// Rename the temporary files to their final names
-		if err := os.Rename(tmpStdoutFile.Name(), stdoutLogPath); err != nil {
-			log.Errorf("failed to rename stdout log file: %v", err)
-			os.Remove(tmpStdoutFile.Name())
-		}
-		if err := os.Rename(tmpStderrFile.Name(), stderrLogPath); err != nil {
-			log.Errorf("failed to rename stderr log file: %v", err)
-			os.Remove(tmpStderrFile.Name())
-		}
-	} else {
-		// Default behavior: wrap subprocess output in structured log entries.
-		r.cmd.Stdout = log.NewSubprocessWriter("envoy", log.InfoLevel)
-		r.cmd.Stderr = log.NewSubprocessWriter("envoy", log.WarnLevel)
-		if err := r.cmd.Start(); err != nil {
-			return fmt.Errorf("failed to start envoy: %w", err)
-		}
+	// Wrap subprocess output in structured log entries.
+	r.cmd.Stdout = log.NewSubprocessWriter("envoy", log.InfoLevel)
+	r.cmd.Stderr = log.NewSubprocessWriter("envoy", log.WarnLevel)
+	if err := r.cmd.Start(); err != nil {
+		r.recordExit(nil, err, time.Time{})
+		return fmt.Errorf("failed to start envoy: %w", err)
 	}
 
+	pid := r.cmd.Process.Pid
+	log.Infof("envoy started with PID %d", pid)
+	// Read the OOM kill count outside the lock. The next exit compares against
+	// it to tell an OOM kill from any other kill.
+	kills, killsKnown := defaultCgroupReader().oomKills()
+	exited := make(chan struct{})
+
 	r.mu.Lock()
-	p, err := process.NewProcess(int32(r.cmd.Process.Pid))
+	p, err := process.NewProcess(int32(pid))
 	if err != nil {
 		r.mu.Unlock()
 		return fmt.Errorf("failed to find envoy process: %w", err)
@@ -347,22 +358,104 @@ func (r *Runtime) run(ctx context.Context) error {
 	r.status.StartedAt = startedAt
 	r.status.Running = true
 	r.status.Starting = false
+	r.pid = pid
+	r.exited = exited
 	r.mu.Unlock()
 
-	// Always record the exit, also when Wait reports an error. The caller
-	// restarts Envoy.
-	waitErr := r.cmd.Wait()
-	state := r.cmd.ProcessState
-	r.recordExit(state, waitErr)
+	r.tel.startProcess(kills, killsKnown)
 
-	uptime := time.Since(startedAt).Round(time.Second)
+	// The kernel counted the connections it aborted and refused while Envoy
+	// was down. Close that window now that the next process runs.
+	r.closeDownWindow(ctx)
+
+	// The admin interface answers only while the process runs, so the sampler
+	// stops with it.
+	stopSampler := r.startSampler(rCtx)
+
+	// Always record the exit, also when Wait reports an error. The caller
+	// restarts Envoy. Only this goroutine waits on the process, so that the
+	// process state has one reader.
+	waitErr := r.cmd.Wait()
+	stopSampler()
+	state := r.cmd.ProcessState
+	r.recordExit(state, waitErr, startedAt)
+	r.logExit(ctx, pid)
+	close(exited)
+
 	if waitErr != nil {
-		log.Errorf("Envoy process exited: state=%q uptime=%s error=%v", procStateString(state), uptime, waitErr)
 		return fmt.Errorf("envoy exited with error: %w", waitErr)
 	}
-	log.Infof("Envoy process exited: state=%q uptime=%s", procStateString(state), uptime)
 
 	return nil
+}
+
+// exitMetadata returns the node metadata with the restart count and the last
+// exit of the Envoy process. The apiserver copies both into the replica status.
+func (r *Runtime) exitMetadata() *xdstypes.NodeMetadata {
+	if r.nodeMetadata == nil {
+		return nil
+	}
+
+	meta := r.nodeMetadata.Clone()
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	meta.EnvoyRestarts = int32(r.status.Restarts)
+	if e := r.status.LastExit; e != nil {
+		meta.LastEnvoyExit = &xdstypes.NodeEnvoyExit{
+			At:     metav1.NewTime(e.At),
+			Reason: e.Reason,
+			Code:   e.Code,
+		}
+	}
+
+	return meta
+}
+
+// logExit writes one line that describes how Envoy exited.
+func (r *Runtime) logExit(ctx context.Context, pid int) {
+	r.mu.RLock()
+	e := r.status.LastExit
+	restarts := r.status.Restarts
+	r.mu.RUnlock()
+	if e == nil {
+		return
+	}
+
+	release := ""
+	if r.Release != nil {
+		release = r.Release.String()
+	}
+
+	attrs := []slog.Attr{
+		slog.String("reason", e.Reason),
+		slog.String("code", e.Code),
+		slog.Bool("core_dump", coreDump(e.ProcState)),
+		slog.Duration("uptime", e.Uptime),
+		slog.Any("requests_in_flight", int64Value(e.RequestsInFlight)),
+		slog.Any("connections", int64Value(e.Connections)),
+		slog.Duration("sample_age", e.SampleAge),
+		slog.Int64("connections_aborted", e.ConnectionsAborted),
+		slog.Int64("connections_refused", e.ConnectionsRefused),
+		slog.Int("pid", pid),
+		slog.Int("restarts", restarts),
+		slog.String("release", release),
+	}
+
+	level := slog.LevelError
+	if e.Reason == ExitReasonExit && e.Code == "0" {
+		level = slog.LevelInfo
+	}
+	slog.Default().LogAttrs(ctx, level, "Envoy exited", attrs...)
+}
+
+// int64Value returns the value v points to, or nil when v is nil.
+func int64Value(v *int64) any {
+	if v == nil {
+		return nil
+	}
+	return *v
 }
 
 // procStateString describes how the process exited, for example "exit status
@@ -374,17 +467,204 @@ func procStateString(state *os.ProcessState) string {
 	return state.String()
 }
 
+// Exit reasons the runtime records. The code is the decimal exit status for
+// ExitReasonExit, the signal name for ExitReasonSignal and ExitReasonOOMKill,
+// and empty for ExitReasonStartFailed.
+const (
+	ExitReasonExit        = "exit"
+	ExitReasonSignal      = "signal"
+	ExitReasonOOMKill     = "oom_kill"
+	ExitReasonStartFailed = "start_failed"
+)
+
+// signalNames maps the signals Envoy dies from to their name. The names must
+// not come from Signal.String(), which returns a description such as "killed".
+var signalNames = map[syscall.Signal]string{
+	syscall.SIGABRT: "SIGABRT",
+	syscall.SIGALRM: "SIGALRM",
+	syscall.SIGBUS:  "SIGBUS",
+	syscall.SIGFPE:  "SIGFPE",
+	syscall.SIGHUP:  "SIGHUP",
+	syscall.SIGILL:  "SIGILL",
+	syscall.SIGINT:  "SIGINT",
+	syscall.SIGKILL: "SIGKILL",
+	syscall.SIGPIPE: "SIGPIPE",
+	syscall.SIGQUIT: "SIGQUIT",
+	syscall.SIGSEGV: "SIGSEGV",
+	syscall.SIGSYS:  "SIGSYS",
+	syscall.SIGTERM: "SIGTERM",
+	syscall.SIGTRAP: "SIGTRAP",
+	syscall.SIGXCPU: "SIGXCPU",
+	syscall.SIGXFSZ: "SIGXFSZ",
+}
+
+// signalName returns the name of sig, for example "SIGKILL".
+func signalName(sig syscall.Signal) string {
+	if name, ok := signalNames[sig]; ok {
+		return name
+	}
+	return "SIG" + strconv.Itoa(int(sig))
+}
+
+// exitReason describes how the process ended. A nil state means the process
+// never started.
+func exitReason(state *os.ProcessState) (reason, code string) {
+	if state == nil {
+		return ExitReasonStartFailed, ""
+	}
+
+	ws, ok := state.Sys().(syscall.WaitStatus)
+	if !ok {
+		return ExitReasonExit, strconv.Itoa(state.ExitCode())
+	}
+	if ws.Signaled() {
+		return ExitReasonSignal, signalName(ws.Signal())
+	}
+
+	return ExitReasonExit, strconv.Itoa(ws.ExitStatus())
+}
+
+// coreDump reports whether the process wrote a core dump.
+func coreDump(state *os.ProcessState) bool {
+	if state == nil {
+		return false
+	}
+	ws, ok := state.Sys().(syscall.WaitStatus)
+	return ok && ws.CoreDump()
+}
+
 // recordExit records the exit of the Envoy process in the runtime status.
-func (r *Runtime) recordExit(state *os.ProcessState, err error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.status.Running = false
-	r.status.ProcState = state
-	r.status.LastExit = &ExitInfo{
+// startedAt is the start time of the process, or the zero time when the
+// process never started.
+func (r *Runtime) recordExit(state *os.ProcessState, err error, startedAt time.Time) {
+	// Read the counters outside the lock. Both reads open a file.
+	kills, killsKnown := defaultCgroupReader().oomKills()
+	var down *tcpCounters
+	if _, nr := systemReaders(); nr != nil {
+		if c, cerr := nr.TCPCounters(); cerr == nil {
+			down = &c
+		}
+	}
+
+	last, lastTCP, oomKilled := r.tel.exitState(kills, killsKnown)
+
+	reason, code := exitReason(state)
+	// The cgroup OOM killer sends SIGKILL, which looks like any other kill.
+	// Only a higher OOM count tells the two apart.
+	if reason == ExitReasonSignal && code == "SIGKILL" && oomKilled {
+		reason = ExitReasonOOMKill
+	}
+
+	e := &ExitInfo{
 		At:        time.Now().UTC(),
 		ProcState: state,
 		Err:       err,
+		Reason:    reason,
+		Code:      code,
 	}
+	if !startedAt.IsZero() {
+		e.Uptime = e.At.Sub(startedAt)
+	}
+	if last != nil {
+		e.RequestsInFlight = &last.RequestsInFlight
+		e.Connections = &last.Connections
+		e.SampleAge = e.At.Sub(last.At)
+	}
+	// The kernel tears the connections of the process down before the parent
+	// reaps it, so the count runs from the last sample, not from now. This is
+	// a floor. The next start counts the whole window. EstabResets alone
+	// counts one torn down connection one time.
+	if down != nil && lastTCP != nil {
+		e.ConnectionsAborted = delta(down.EstabResets, lastTCP.EstabResets)
+	}
+
+	var w *restartWindow
+	if down != nil {
+		w = &restartWindow{
+			LastSample: lastTCP,
+			AtExit:     *down,
+			At:         e.At,
+		}
+	}
+	r.tel.setWindow(w)
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.status.Running = false
+	r.status.ProcState = state
+	r.status.LastExit = e
+	if r.status.ExitCounts == nil {
+		r.status.ExitCounts = make(map[ExitKey]int64)
+	}
+	r.status.ExitCounts[ExitKey{Reason: reason, Code: code}]++
+
+	r.pid = 0
+}
+
+// restartWindow holds the kernel TCP counters that bound the time the Envoy
+// process was gone.
+type restartWindow struct {
+	// LastSample is the newest read taken while the process still ran. It is
+	// nil when the sampler took no read.
+	LastSample *tcpCounters
+	// AtExit is the read taken when the wait on the process returned.
+	AtExit tcpCounters
+	// At is when the exit was recorded.
+	At time.Time
+}
+
+// closeDownWindow counts the connections the kernel aborted and refused while
+// Envoy was gone into the last exit record. It runs right after the next
+// process starts, which is before Envoy binds its listeners. No connection
+// reaches the established state while Envoy is gone, so every reset in the
+// window belongs to the connections the exit tore down.
+func (r *Runtime) closeDownWindow(ctx context.Context) {
+	_, nr := systemReaders()
+	if nr == nil {
+		return
+	}
+
+	w := r.tel.restartWindow()
+	if w == nil {
+		return
+	}
+
+	now, err := nr.TCPCounters()
+	if err != nil {
+		return
+	}
+	r.tel.clearWindow()
+
+	r.mu.Lock()
+	if r.status.LastExit == nil {
+		r.mu.Unlock()
+		return
+	}
+
+	// Publish a copy. Readers keep the pointer they already took.
+	e := *r.status.LastExit
+	if w.LastSample != nil {
+		e.ConnectionsAborted = delta(now.EstabResets, w.LastSample.EstabResets)
+	}
+	e.ConnectionsRefused = delta(now.OutRsts, w.AtExit.OutRsts)
+	r.status.LastExit = &e
+	r.mu.Unlock()
+
+	slog.Default().LogAttrs(ctx, slog.LevelInfo, "Envoy restart window closed",
+		slog.Int64("connections_aborted", e.ConnectionsAborted),
+		slog.Int64("connections_refused", e.ConnectionsRefused),
+		slog.Duration("down_window", time.Since(w.At)),
+	)
+}
+
+// delta returns the increase of a kernel counter. A counter that wrapped or
+// was reset gives zero.
+func delta(now, before int64) int64 {
+	if now < before {
+		return 0
+	}
+	return now - before
 }
 
 // recordRestart counts one more start of the Envoy process.
@@ -490,17 +770,21 @@ func (r *Runtime) Start(ctx context.Context, opts ...Option) error {
 		return nil
 	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.status.Starting = true
-
 	r.setOptions(opts...)
+	r.mu.Unlock()
 
 	log.Infof("preparing envoy %s", r.Release)
 
+	// The download takes minutes on the first start. A metrics scrape reads
+	// the status through the same lock, so the download must not hold it.
+	// Starting stays true on failure, which keeps the caller from retrying.
 	if err := r.vendorEnvoyIfNotExists(ctx); err != nil {
 		return FatalError{Err: fmt.Errorf("failed to vendor envoy: %w", err)}
 	}
 
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.stopCh = make(chan struct{})
 	go func() {
 		runs := 0
@@ -590,8 +874,6 @@ func (r *Runtime) getTotalConnections() (*int, error) {
 	}
 	c := jsonData.Stats[0].Value
 
-	log.Infof("total connections: %d", c)
-
 	return &c, nil
 }
 
@@ -618,6 +900,8 @@ drain:
 		conn, err := r.getTotalConnections()
 		if err != nil {
 			log.Errorf("error getting total connections: %v", err)
+		} else if conn != nil {
+			log.Infof("draining, total connections: %d", *conn)
 		}
 
 		if time.Since(startDrain) > *r.drainTimeout {
@@ -640,8 +924,18 @@ drain:
 
 	stopOnce := sync.OnceValue(func() error {
 		close(r.stopCh)
-		if r.otelCollector != nil {
-			if err := r.otelCollector.Stop(ctx); err != nil {
+		if m := r.metricsIfStarted(); m != nil {
+			// The caller may shut down with a context that is already done.
+			// The last push of the metrics needs a live one.
+			flushCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), metricsFlushTimeout)
+			err := m.Shutdown(flushCtx)
+			cancel()
+			if err != nil {
+				log.Errorf("error shutting down runtime metrics: %v", err)
+			}
+		}
+		if r.tel.otelCollector != nil {
+			if err := r.tel.otelCollector.Stop(ctx); err != nil {
 				log.Errorf("error shutting down otel collector: %v", err)
 			}
 		}
@@ -650,21 +944,11 @@ drain:
 			log.Errorf("error posting to quitquitquit: %v", err)
 		}
 
-		exitCh := make(chan error)
-		go func() {
-			exitCh <- r.cmd.Wait()
-		}()
-
+		// Only run() waits on the process. This goroutine waits for run() to
+		// report the exit instead, so that the process state has one reader.
 		select {
-		case err := <-exitCh:
-			if err != nil {
-				exitErr, ok := err.(*exec.ExitError)
-				if ok {
-					return fmt.Errorf("envoy process exited with status %d", exitErr.ExitCode())
-				}
-				return err
-			}
-			return nil
+		case <-r.exitedCh():
+			return r.lastExitError()
 		case <-ctx.Done():
 			log.Infof("context done while waiting for envoy process to exit")
 			return ctx.Err()
@@ -679,6 +963,34 @@ drain:
 	return stopOnce()
 }
 
+// exitedCh returns the channel that run() closes when the Envoy process ends.
+// It is nil until the first process starts, which blocks the caller until its
+// own timeout.
+func (r *Runtime) exitedCh() <-chan struct{} {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.exited
+}
+
+// lastExitError describes the last exit of the Envoy process as an error, or
+// nil when the process exited cleanly.
+func (r *Runtime) lastExitError() error {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	if r.status.LastExit == nil || r.status.LastExit.Err == nil {
+		return nil
+	}
+
+	err := r.status.LastExit.Err
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return fmt.Errorf("envoy process exited with status %d", exitErr.ExitCode())
+	}
+
+	return err
+}
+
 // ExitInfo records the last exit of the Envoy process.
 type ExitInfo struct {
 	// At is the time the exit was recorded.
@@ -688,6 +1000,39 @@ type ExitInfo struct {
 	ProcState *os.ProcessState
 	// Err is the error returned by the wait on the process, if any.
 	Err error
+	// Reason is one of exit, signal, oom_kill and start_failed.
+	Reason string
+	// Code is the decimal exit status for an exit, the signal name for a
+	// signal and an OOM kill, and empty for a failed start.
+	Code string
+	// Uptime is how long the process ran.
+	Uptime time.Duration
+	// RequestsInFlight is the last sampled number of active downstream
+	// requests. It is nil when no sample was taken.
+	RequestsInFlight *int64
+	// Connections is the last sampled number of active downstream connections.
+	// It is nil when no sample was taken.
+	Connections *int64
+	// SampleAge is how old the sample was when the process exited.
+	SampleAge time.Duration
+	// ConnectionsAborted counts the established connections the kernel tore
+	// down when the process died. The value at the exit is a floor, because
+	// the kernel resets the sockets after the parent reaps the process. It
+	// becomes final when the next process starts.
+	ConnectionsAborted int64
+	// ConnectionsRefused counts the connection attempts the kernel answered
+	// with a reset while Envoy was gone. It becomes final when the next
+	// process starts.
+	ConnectionsRefused int64
+}
+
+// ExitKey names one kind of exit. The set of keys is bounded by the reason
+// vocabulary and the exit status range.
+type ExitKey struct {
+	// Reason is one of exit, signal, oom_kill and start_failed.
+	Reason string
+	// Code is the exit status or the signal name.
+	Code string
 }
 
 type RuntimeStatus struct {
@@ -701,11 +1046,23 @@ type RuntimeStatus struct {
 	// Restarts counts how many times the runtime started Envoy again after an
 	// exit.
 	Restarts int
+	// ExitCounts counts the exits of each reason and code.
+	ExitCounts map[ExitKey]int64
 }
 
 // RuntimeStatus returns the status of the Envoy process.
 func (r *Runtime) RuntimeStatus() RuntimeStatus {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return r.status
+
+	s := r.status
+	// The caller must not observe later exits through the shared map.
+	if r.status.ExitCounts != nil {
+		s.ExitCounts = make(map[ExitKey]int64, len(r.status.ExitCounts))
+		for k, v := range r.status.ExitCounts {
+			s.ExitCounts[k] = v
+		}
+	}
+
+	return s
 }

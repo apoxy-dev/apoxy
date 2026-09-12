@@ -35,7 +35,7 @@ func TestProxyConvertToTable(t *testing.T) {
 				},
 			},
 			noHeaders:   false,
-			wantColumns: 5,
+			wantColumns: 6,
 			wantRows:    1,
 		},
 		{
@@ -63,7 +63,7 @@ func TestProxyConvertToTable(t *testing.T) {
 				},
 			},
 			noHeaders:   false,
-			wantColumns: 5,
+			wantColumns: 6,
 			wantRows:    1,
 		},
 		{
@@ -104,13 +104,58 @@ func TestProxyConvertToTable(t *testing.T) {
 			}
 
 			// Verify the row contains expected number of cells (cells are always present, even with NoHeaders)
-			if len(table.Rows) > 0 && len(table.Rows[0].Cells) != 5 {
-				t.Errorf("ConvertToTable() cells = %v, want %v", len(table.Rows[0].Cells), 5)
+			if len(table.Rows) > 0 && len(table.Rows[0].Cells) != 6 {
+				t.Errorf("ConvertToTable() cells = %v, want %v", len(table.Rows[0].Cells), 6)
 			}
 
 			// Verify the object is included in the row
 			if len(table.Rows) > 0 && table.Rows[0].Object.Object == nil {
 				t.Error("ConvertToTable() row object is nil")
+			}
+		})
+	}
+}
+
+// TestGetProxyRestarts covers the Restarts column, which sums the Envoy
+// restarts of every replica of a Proxy.
+func TestGetProxyRestarts(t *testing.T) {
+	tests := []struct {
+		name   string
+		status ProxyStatus
+		want   string
+	}{
+		{
+			name:   "proxy without replicas",
+			status: ProxyStatus{},
+			want:   "0",
+		},
+		{
+			name: "replicas without restarts",
+			status: ProxyStatus{
+				Replicas: []*ProxyReplicaStatus{
+					{Name: "replica-1"},
+					{Name: "replica-2"},
+				},
+			},
+			want: "0",
+		},
+		{
+			name: "restarts of every replica are summed",
+			status: ProxyStatus{
+				Replicas: []*ProxyReplicaStatus{
+					{Name: "replica-1", EnvoyRestarts: 2},
+					{Name: "replica-2"},
+					{Name: "replica-3", EnvoyRestarts: 3},
+				},
+			},
+			want: "5",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := getProxyRestarts(tt.status); got != tt.want {
+				t.Errorf("getProxyRestarts() = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -136,7 +181,7 @@ func TestProxyListConvertToTable(t *testing.T) {
 				Items: []Proxy{},
 			},
 			noHeaders:   false,
-			wantColumns: 5,
+			wantColumns: 6,
 			wantRows:    0,
 		},
 		{
@@ -202,7 +247,7 @@ func TestProxyListConvertToTable(t *testing.T) {
 				},
 			},
 			noHeaders:   false,
-			wantColumns: 5,
+			wantColumns: 6,
 			wantRows:    3,
 		},
 		{
@@ -223,7 +268,7 @@ func TestProxyListConvertToTable(t *testing.T) {
 				},
 			},
 			noHeaders:   false,
-			wantColumns: 5,
+			wantColumns: 6,
 			wantRows:    1,
 		},
 	}

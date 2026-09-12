@@ -155,6 +155,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.DynamicProxyDnsCacheConfig":          schema_apoxy_api_core_v1alpha2_DynamicProxyDnsCacheConfig(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.DynamicProxySpec":                    schema_apoxy_api_core_v1alpha2_DynamicProxySpec(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.EnvoyConfig":                         schema_apoxy_api_core_v1alpha2_EnvoyConfig(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.EnvoyExit":                           schema_apoxy_api_core_v1alpha2_EnvoyExit(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.GrafanaCredentials":                  schema_apoxy_api_core_v1alpha2_GrafanaCredentials(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.LocalObjectReference":                schema_apoxy_api_core_v1alpha2_LocalObjectReference(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.NameserverStatus":                    schema_apoxy_api_core_v1alpha2_NameserverStatus(ref),
@@ -5797,6 +5798,43 @@ func schema_apoxy_api_core_v1alpha2_EnvoyConfig(ref common.ReferenceCallback) co
 	}
 }
 
+func schema_apoxy_api_core_v1alpha2_EnvoyExit(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "EnvoyExit records one exit of the Envoy process.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"time": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Time is when the process exited.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+						},
+					},
+					"reason": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Reason is one of exit, signal, oom_kill, start_failed.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"code": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Code is the exit status for exit, or the signal name for signal and oom_kill.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"time", "reason"},
+			},
+		},
+		Dependencies: []string{
+			"k8s.io/apimachinery/pkg/apis/meta/v1.Time"},
+	}
+}
+
 func schema_apoxy_api_core_v1alpha2_GrafanaCredentials(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -6149,12 +6187,25 @@ func schema_apoxy_api_core_v1alpha2_ProxyReplicaStatus(ref common.ReferenceCallb
 							},
 						},
 					},
+					"envoyRestarts": {
+						SchemaProps: spec.SchemaProps{
+							Description: "EnvoyRestarts counts Envoy starts after an exit since the backplane started.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"lastEnvoyExit": {
+						SchemaProps: spec.SchemaProps{
+							Description: "LastEnvoyExit describes the last exit of the Envoy process.",
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.EnvoyExit"),
+						},
+					},
 				},
 				Required: []string{"name", "connectedAt"},
 			},
 		},
 		Dependencies: []string{
-			"github.com/apoxy-dev/apoxy/api/core/v1alpha2.ReplicaAddress", "k8s.io/apimachinery/pkg/apis/meta/v1.Time"},
+			"github.com/apoxy-dev/apoxy/api/core/v1alpha2.EnvoyExit", "github.com/apoxy-dev/apoxy/api/core/v1alpha2.ReplicaAddress", "k8s.io/apimachinery/pkg/apis/meta/v1.Time"},
 	}
 }
 

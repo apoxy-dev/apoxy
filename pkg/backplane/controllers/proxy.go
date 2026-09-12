@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/netip"
 	"strconv"
 	"strings"
@@ -63,6 +64,9 @@ type options struct {
 	useEnvoyContrib              bool
 	overloadMaxHeapSizeBytes     *uint64
 	overloadMaxActiveConnections *uint64
+	projectID                    string
+	otelMetricSinkHost           string
+	otelMetricSinkPort           uint32
 }
 
 // Option is a functional option for ProxyReconciler.
@@ -136,6 +140,23 @@ func WithOverloadMaxActiveConnections(count uint64) Option {
 	}
 }
 
+// WithProjectID names the Apoxy project. The backplane labels its metrics with
+// the project outside of a self-hosted install.
+func WithProjectID(id string) Option {
+	return func(o *options) {
+		o.projectID = id
+	}
+}
+
+// WithOtelMetricSink sends both the Envoy stats and the runtime metrics to the
+// OpenTelemetry collector at host:port.
+func WithOtelMetricSink(host string, port uint32) Option {
+	return func(o *options) {
+		o.otelMetricSinkHost = host
+		o.otelMetricSinkPort = port
+	}
+}
+
 func defaultOptions() *options {
 	return &options{}
 }
@@ -154,7 +175,7 @@ func NewProxyReconciler(
 		opt(sOpts)
 	}
 
-	return &ProxyReconciler{
+	r := &ProxyReconciler{
 		Client:        c,
 		proxyName:     proxyName,
 		replicaName:   replicaName,
@@ -162,6 +183,50 @@ func NewProxyReconciler(
 		apiServerHost: apiServerHost,
 		options:       sOpts,
 	}
+
+	// The metrics carry the identity and the ceilings from the first scrape
+	// on, which happens before the Proxy object arrives.
+	bs := bootstrap.Resolve(r.bootstrapOptions()...)
+	r.Runtime.Configure(
+		envoy.WithIdentity(proxyName, replicaName, sOpts.projectID),
+		envoy.WithLimits(envoy.Limits{
+			MaxActiveDownstreamConnections: bs.OverloadMaxActiveDownstreamConnections,
+			MaxHeapBytes:                   bs.OverloadMaxHeapSizeBytes,
+		}),
+		envoy.WithOTLPMetricSink(r.otelMetricSinkAddr()),
+	)
+
+	return r
+}
+
+// bootstrapOptions returns the options that configure the Envoy bootstrap.
+func (r *ProxyReconciler) bootstrapOptions() []bootstrap.BootstrapOption {
+	opts := []bootstrap.BootstrapOption{
+		bootstrap.WithXdsServerHost(r.apiServerHost),
+		// TODO(dilyevsky): Add TLS config from r.options.apiServerTLSConfig.
+	}
+
+	if r.options.overloadMaxHeapSizeBytes != nil {
+		opts = append(opts, bootstrap.WithOverloadMaxHeapSizeBytes(*r.options.overloadMaxHeapSizeBytes))
+	}
+	if r.options.overloadMaxActiveConnections != nil {
+		opts = append(opts, bootstrap.WithOverloadMaxActiveConnections(*r.options.overloadMaxActiveConnections))
+	}
+	if r.options.otelMetricSinkHost != "" {
+		opts = append(opts, bootstrap.WithOtelMetricSink(r.options.otelMetricSinkHost, r.options.otelMetricSinkPort))
+	}
+
+	return opts
+}
+
+// otelMetricSinkAddr returns the address of the OpenTelemetry collector, or an
+// empty string when none is configured.
+func (r *ProxyReconciler) otelMetricSinkAddr() string {
+	if r.options.otelMetricSinkHost == "" {
+		return ""
+	}
+
+	return net.JoinHostPort(r.options.otelMetricSinkHost, strconv.FormatUint(uint64(r.options.otelMetricSinkPort), 10))
 }
 
 func findReplicaStatus(p *corev1alpha2.Proxy, rname string) (*corev1alpha2.ProxyReplicaStatus, bool) {
@@ -279,18 +344,7 @@ func (r *ProxyReconciler) Reconcile(ctx context.Context, request reconcile.Reque
 	if ps.StartedAt.IsZero() {
 		logger.Info("Starting Proxy runtime")
 
-		bsOpts := []bootstrap.BootstrapOption{
-			bootstrap.WithXdsServerHost(r.apiServerHost),
-			// TODO(dilyevsky): Add TLS config from r.options.apiServerTLSConfig.
-		}
-
-		if r.options.overloadMaxHeapSizeBytes != nil {
-			bsOpts = append(bsOpts, bootstrap.WithOverloadMaxHeapSizeBytes(*r.options.overloadMaxHeapSizeBytes))
-		}
-
-		if r.options.overloadMaxActiveConnections != nil {
-			bsOpts = append(bsOpts, bootstrap.WithOverloadMaxActiveConnections(*r.options.overloadMaxActiveConnections))
-		}
+		bsOpts := r.bootstrapOptions()
 		cfg, err := bootstrap.GetRenderedBootstrapConfig(bsOpts...)
 		if err != nil {
 			// If the config is invalid, we can't start the proxy.
@@ -307,7 +361,6 @@ func (r *ProxyReconciler) Reconcile(ctx context.Context, request reconcile.Reque
 			envoy.WithDrainTimeout(&p.Spec.Shutdown.DrainTimeout.Duration),
 			envoy.WithMinDrainTime(&p.Spec.Shutdown.MinimumDrainTime.Duration),
 			envoy.WithAdminHost(adminHost),
-			envoy.WithLogsDir("/var/log/apoxy"),
 			envoy.WithNodeMetadata(&xdstypes.NodeMetadata{
 				Name:            r.replicaName,
 				InternalAddress: r.privateAddr.String(),

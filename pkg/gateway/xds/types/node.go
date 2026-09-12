@@ -27,6 +27,35 @@ type NodeMetadata struct {
 
 	// ConnectedAt is the timestamp when the node was connected to the control plane.
 	ConnectedAt metav1.Time `json:"connected_at,omitempty"`
+
+	// EnvoyRestarts counts Envoy starts after an exit since the backplane started.
+	EnvoyRestarts int32 `json:"envoy_restarts,omitempty"`
+
+	// LastEnvoyExit describes the last exit of the Envoy process.
+	LastEnvoyExit *NodeEnvoyExit `json:"last_envoy_exit,omitempty"`
+}
+
+// NodeEnvoyExit records one exit of the Envoy process.
+// +k8s:deepcopy-gen=true
+type NodeEnvoyExit struct {
+	// At is when the process exited.
+	At metav1.Time `json:"at"`
+
+	// Reason is one of exit, signal, oom_kill, start_failed.
+	Reason string `json:"reason"`
+
+	// Code is the exit status for exit, or the signal name for signal and oom_kill.
+	Code string `json:"code,omitempty"`
+}
+
+// Clone creates a deep copy of the NodeEnvoyExit.
+func (e *NodeEnvoyExit) Clone() *NodeEnvoyExit {
+	if e == nil {
+		return nil
+	}
+
+	c := *e
+	return &c
 }
 
 // ToMap converts NodeMetadata to a map[string]interface{} for serialization
@@ -147,12 +176,15 @@ func (nm *NodeMetadata) Clone() *NodeMetadata {
 		ExternalAddress: nm.ExternalAddress,
 		InternalAddress: nm.InternalAddress,
 		ConnectedAt:     nm.ConnectedAt,
+		EnvoyRestarts:   nm.EnvoyRestarts,
+		LastEnvoyExit:   nm.LastEnvoyExit.Clone(),
 	}
 }
 
 // IsEmpty returns true if all fields are empty.
 func (nm *NodeMetadata) IsEmpty() bool {
-	return nm.Name == "" && nm.ExternalAddress == "" && nm.InternalAddress == ""
+	return nm.Name == "" && nm.ExternalAddress == "" && nm.InternalAddress == "" &&
+		nm.EnvoyRestarts == 0 && nm.LastEnvoyExit == nil
 }
 
 // Merge merges another NodeMetadata into this one.
@@ -170,5 +202,11 @@ func (nm *NodeMetadata) Merge(other *NodeMetadata) {
 	}
 	if other.InternalAddress != "" {
 		nm.InternalAddress = other.InternalAddress
+	}
+	if other.EnvoyRestarts != 0 {
+		nm.EnvoyRestarts = other.EnvoyRestarts
+	}
+	if other.LastEnvoyExit != nil {
+		nm.LastEnvoyExit = other.LastEnvoyExit.Clone()
 	}
 }

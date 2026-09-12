@@ -18,6 +18,7 @@ import (
 	chdriver "github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/coredns/coredns/plugin"
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"google.golang.org/grpc"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -99,8 +100,8 @@ var (
 	dnsPort  = flag.Int("dns_port", 8053, "Port for the DNS server.")
 	extIface = flag.String("ext_iface", "eth0", "External interface name.")
 
-	useEdgeController    = flag.Bool("use_edge_controller", false, "Use new per-namespace EdgeController instead of legacy per-function runtime.")
-	edgeControllerNS     = flag.String("edge_controller_namespace", "default", "Default namespace for EdgeController.")
+	useEdgeController = flag.Bool("use_edge_controller", false, "Use new per-namespace EdgeController instead of legacy per-function runtime.")
+	edgeControllerNS  = flag.String("edge_controller_namespace", "default", "Default namespace for EdgeController.")
 )
 
 func main() {
@@ -248,6 +249,7 @@ func main() {
 	log.Infof("Setting up controllers...")
 	proxyOpts := []bpctrl.Option{
 		bpctrl.WithGoPluginDir(*goPluginDir),
+		bpctrl.WithProjectID(*projectID),
 	}
 	if chConn != nil {
 		proxyOpts = append(proxyOpts, bpctrl.WithClickHouseConn(chConn), bpctrl.WithClickHouseOptions(chOpts))
@@ -382,7 +384,14 @@ func main() {
 		"/controller/metrics": "127.0.0.1:" + strconv.Itoa(*controllerMetricsPort) + "/metrics",
 		"/envoy/metrics":      "127.0.0.1:19000/stats/prometheus",
 	}
-	metricsHandler := metrics.NewProxyHandler(upstreams)
+	// The runtime metrics ride along with the Envoy stats, so that one scrape
+	// reports the state of the proxy even while Envoy restarts.
+	runtimeMetrics := pctrl.Runtime.Gatherer()
+	metricsHandler := metrics.NewProxyHandler(
+		upstreams,
+		metrics.WithAppendGatherer("/envoy/metrics", runtimeMetrics),
+		metrics.WithHandler("/metrics", promhttp.HandlerFor(runtimeMetrics, promhttp.HandlerOpts{})),
+	)
 	metricsCtx, metricsCancel := context.WithCancel(ctx)
 	defer metricsCancel()
 	if err := metrics.StartServer(metricsCtx, *metricsPort, metricsHandler); err != nil {

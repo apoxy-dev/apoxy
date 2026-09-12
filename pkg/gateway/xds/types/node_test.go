@@ -3,12 +3,19 @@ package types
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	discoveryv3 "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
 	"github.com/google/go-cmp/cmp"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/structpb"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+// testExitAt is the time of the Envoy exit in the tests. It has no fraction of
+// a second, because the metadata carries the time as an RFC3339 string.
+var testExitAt = metav1.Date(2026, 9, 11, 10, 0, 0, 0, time.UTC)
 
 func TestNodeMetadata(t *testing.T) {
 	tests := []struct {
@@ -19,11 +26,11 @@ func TestNodeMetadata(t *testing.T) {
 		{
 			name: "with all fields",
 			nm: &NodeMetadata{
-				Name:           "proxy-1",
+				Name:            "proxy-1",
 				InternalAddress: "10.0.0.1",
 			},
 			want: map[string]interface{}{
-				"name":            "proxy-1",
+				"name":             "proxy-1",
 				"internal_address": "10.0.0.1",
 			},
 		},
@@ -43,6 +50,27 @@ func TestNodeMetadata(t *testing.T) {
 			},
 			want: map[string]interface{}{
 				"internal_address": "192.168.1.10",
+			},
+		},
+		{
+			name: "with envoy exit info",
+			nm: &NodeMetadata{
+				Name:          "proxy-3",
+				EnvoyRestarts: 2,
+				LastEnvoyExit: &NodeEnvoyExit{
+					At:     testExitAt,
+					Reason: "signal",
+					Code:   "SIGKILL",
+				},
+			},
+			want: map[string]interface{}{
+				"name":           "proxy-3",
+				"envoy_restarts": float64(2),
+				"last_envoy_exit": map[string]interface{}{
+					"at":     testExitAt.UTC().Format(time.RFC3339),
+					"reason": "signal",
+					"code":   "SIGKILL",
+				},
 			},
 		},
 		{
@@ -75,11 +103,11 @@ func TestNodeMetadata_FromMap(t *testing.T) {
 		{
 			name: "valid data",
 			data: map[string]interface{}{
-				"name":            "test-proxy",
+				"name":             "test-proxy",
 				"internal_address": "10.1.2.3",
 			},
 			want: &NodeMetadata{
-				Name:           "test-proxy",
+				Name:            "test-proxy",
 				InternalAddress: "10.1.2.3",
 			},
 		},
@@ -103,15 +131,36 @@ func TestNodeMetadata_FromMap(t *testing.T) {
 			want: &NodeMetadata{},
 		},
 		{
-			name: "extra fields ignored",
+			name: "envoy exit info",
 			data: map[string]interface{}{
-				"name":            "proxy-x",
-				"internal_address": "172.16.0.1",
-				"extra_field":     "ignored",
-				"another":         123,
+				"name":           "proxy-e",
+				"envoy_restarts": float64(3),
+				"last_envoy_exit": map[string]interface{}{
+					"at":     testExitAt.UTC().Format(time.RFC3339),
+					"reason": "exit",
+					"code":   "7",
+				},
 			},
 			want: &NodeMetadata{
-				Name:           "proxy-x",
+				Name:          "proxy-e",
+				EnvoyRestarts: 3,
+				LastEnvoyExit: &NodeEnvoyExit{
+					At:     testExitAt,
+					Reason: "exit",
+					Code:   "7",
+				},
+			},
+		},
+		{
+			name: "extra fields ignored",
+			data: map[string]interface{}{
+				"name":             "proxy-x",
+				"internal_address": "172.16.0.1",
+				"extra_field":      "ignored",
+				"another":          123,
+			},
+			want: &NodeMetadata{
+				Name:            "proxy-x",
 				InternalAddress: "172.16.0.1",
 			},
 		},
@@ -143,7 +192,7 @@ func TestNodeMetadata_ToStruct(t *testing.T) {
 		{
 			name: "with data",
 			nm: &NodeMetadata{
-				Name:           "envoy-1",
+				Name:            "envoy-1",
 				InternalAddress: "10.0.0.5",
 			},
 			wantNil: false,
@@ -200,13 +249,13 @@ func TestNodeMetadata_FromStruct(t *testing.T) {
 			name: "valid struct",
 			struct_: func() *structpb.Struct {
 				s, _ := structpb.NewStruct(map[string]interface{}{
-					"name":            "from-struct",
+					"name":             "from-struct",
 					"internal_address": "192.168.0.1",
 				})
 				return s
 			}(),
 			want: &NodeMetadata{
-				Name:           "from-struct",
+				Name:            "from-struct",
 				InternalAddress: "192.168.0.1",
 			},
 		},
@@ -253,7 +302,7 @@ func TestExtractFromDiscoveryRequest(t *testing.T) {
 			name: "valid request with metadata",
 			req: func() *discoveryv3.DiscoveryRequest {
 				metadata, _ := structpb.NewStruct(map[string]interface{}{
-					"name":            "discovery-node",
+					"name":             "discovery-node",
 					"internal_address": "172.31.0.1",
 				})
 				return &discoveryv3.DiscoveryRequest{
@@ -265,7 +314,7 @@ func TestExtractFromDiscoveryRequest(t *testing.T) {
 				}
 			}(),
 			want: &NodeMetadata{
-				Name:           "discovery-node",
+				Name:            "discovery-node",
 				InternalAddress: "172.31.0.1",
 			},
 		},
@@ -315,8 +364,20 @@ func TestNodeMetadata_Clone(t *testing.T) {
 		{
 			name: "with data",
 			nm: &NodeMetadata{
-				Name:           "original",
+				Name:            "original",
 				InternalAddress: "10.20.30.40",
+			},
+		},
+		{
+			name: "with envoy exit info",
+			nm: &NodeMetadata{
+				Name:          "original",
+				EnvoyRestarts: 5,
+				LastEnvoyExit: &NodeEnvoyExit{
+					At:     testExitAt,
+					Reason: "oom_kill",
+					Code:   "SIGKILL",
+				},
 			},
 		},
 		{
@@ -345,6 +406,12 @@ func TestNodeMetadata_Clone(t *testing.T) {
 					got.Name = "modified"
 					if tt.nm.Name == "modified" {
 						t.Error("Clone() did not create a deep copy")
+					}
+				}
+				if got != nil && tt.nm.LastEnvoyExit != nil {
+					got.LastEnvoyExit.Reason = "modified"
+					if tt.nm.LastEnvoyExit.Reason == "modified" {
+						t.Error("Clone() shares the last exit with the original")
 					}
 				}
 			}
@@ -376,8 +443,20 @@ func TestNodeMetadata_IsEmpty(t *testing.T) {
 		{
 			name: "with both",
 			nm: &NodeMetadata{
-				Name:           "test",
+				Name:            "test",
 				InternalAddress: "10.0.0.1",
+			},
+			want: false,
+		},
+		{
+			name: "with envoy restarts",
+			nm:   &NodeMetadata{EnvoyRestarts: 1},
+			want: false,
+		},
+		{
+			name: "with last envoy exit",
+			nm: &NodeMetadata{
+				LastEnvoyExit: &NodeEnvoyExit{At: testExitAt, Reason: "exit", Code: "0"},
 			},
 			want: false,
 		},
@@ -403,41 +482,72 @@ func TestNodeMetadata_Merge(t *testing.T) {
 			name: "merge both fields",
 			nm:   &NodeMetadata{},
 			other: &NodeMetadata{
-				Name:           "merged-name",
+				Name:            "merged-name",
 				InternalAddress: "10.1.1.1",
 			},
 			want: &NodeMetadata{
-				Name:           "merged-name",
+				Name:            "merged-name",
 				InternalAddress: "10.1.1.1",
 			},
 		},
 		{
 			name: "overwrite existing",
 			nm: &NodeMetadata{
-				Name:           "original",
+				Name:            "original",
 				InternalAddress: "192.168.1.1",
 			},
 			other: &NodeMetadata{
-				Name:           "updated",
+				Name:            "updated",
 				InternalAddress: "192.168.2.2",
 			},
 			want: &NodeMetadata{
-				Name:           "updated",
+				Name:            "updated",
 				InternalAddress: "192.168.2.2",
 			},
 		},
 		{
 			name: "partial merge",
 			nm: &NodeMetadata{
-				Name:           "keep-this",
+				Name:            "keep-this",
 				InternalAddress: "10.0.0.1",
 			},
 			other: &NodeMetadata{
 				InternalAddress: "10.0.0.2",
 			},
 			want: &NodeMetadata{
-				Name:           "keep-this",
+				Name:            "keep-this",
 				InternalAddress: "10.0.0.2",
+			},
+		},
+		{
+			name: "merge envoy exit info",
+			nm: &NodeMetadata{
+				Name:          "proxy",
+				EnvoyRestarts: 1,
+				LastEnvoyExit: &NodeEnvoyExit{At: testExitAt, Reason: "exit", Code: "0"},
+			},
+			other: &NodeMetadata{
+				EnvoyRestarts: 2,
+				LastEnvoyExit: &NodeEnvoyExit{At: testExitAt, Reason: "signal", Code: "SIGKILL"},
+			},
+			want: &NodeMetadata{
+				Name:          "proxy",
+				EnvoyRestarts: 2,
+				LastEnvoyExit: &NodeEnvoyExit{At: testExitAt, Reason: "signal", Code: "SIGKILL"},
+			},
+		},
+		{
+			name: "keep envoy exit info when other has none",
+			nm: &NodeMetadata{
+				Name:          "proxy",
+				EnvoyRestarts: 3,
+				LastEnvoyExit: &NodeEnvoyExit{At: testExitAt, Reason: "exit", Code: "7"},
+			},
+			other: &NodeMetadata{Name: "proxy-2"},
+			want: &NodeMetadata{
+				Name:          "proxy-2",
+				EnvoyRestarts: 3,
+				LastEnvoyExit: &NodeEnvoyExit{At: testExitAt, Reason: "exit", Code: "7"},
 			},
 		},
 		{
@@ -462,9 +572,58 @@ func TestNodeMetadata_Merge(t *testing.T) {
 	}
 }
 
+// TestNodeMetadataEnvoyExitRoundTrip checks that the restart count and the last
+// exit survive the protobuf Struct that carries the node metadata to the
+// control plane.
+func TestNodeMetadataEnvoyExitRoundTrip(t *testing.T) {
+	cases := []struct {
+		name string
+		nm   *NodeMetadata
+	}{
+		{
+			name: "without exit info",
+			nm:   &NodeMetadata{Name: "proxy-0"},
+		},
+		{
+			name: "with restarts only",
+			nm:   &NodeMetadata{Name: "proxy-1", EnvoyRestarts: 4},
+		},
+		{
+			name: "with restarts and last exit",
+			nm: &NodeMetadata{
+				Name:          "proxy-2",
+				EnvoyRestarts: 4,
+				LastEnvoyExit: &NodeEnvoyExit{At: testExitAt, Reason: "signal", Code: "SIGSEGV"},
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pb, err := tc.nm.ToStruct()
+			require.NoError(t, err)
+			require.NotNil(t, pb)
+
+			got := &NodeMetadata{}
+			require.NoError(t, got.FromStruct(pb))
+
+			require.Equal(t, tc.nm.EnvoyRestarts, got.EnvoyRestarts)
+			if tc.nm.LastEnvoyExit == nil {
+				require.Nil(t, got.LastEnvoyExit)
+				return
+			}
+			require.NotNil(t, got.LastEnvoyExit)
+			require.True(t, tc.nm.LastEnvoyExit.At.Equal(&got.LastEnvoyExit.At),
+				"exit time %s does not match %s", tc.nm.LastEnvoyExit.At, got.LastEnvoyExit.At)
+			require.Equal(t, tc.nm.LastEnvoyExit.Reason, got.LastEnvoyExit.Reason)
+			require.Equal(t, tc.nm.LastEnvoyExit.Code, got.LastEnvoyExit.Code)
+		})
+	}
+}
+
 func TestNodeMetadata_String(t *testing.T) {
 	nm := &NodeMetadata{
-		Name:           "string-test",
+		Name:            "string-test",
 		InternalAddress: "10.5.5.5",
 	}
 
@@ -488,7 +647,7 @@ func TestNodeMetadata_String(t *testing.T) {
 func TestNodeMetadata_Integration(t *testing.T) {
 	// Test a full round-trip: struct -> map -> struct
 	original := &NodeMetadata{
-		Name:           "integration-test",
+		Name:            "integration-test",
 		InternalAddress: "172.16.0.100",
 	}
 
@@ -529,7 +688,7 @@ func TestNodeMetadata_Integration(t *testing.T) {
 
 func BenchmarkNodeMetadata_ToMap(b *testing.B) {
 	nm := &NodeMetadata{
-		Name:           "benchmark-node",
+		Name:            "benchmark-node",
 		InternalAddress: "10.10.10.10",
 	}
 
@@ -544,7 +703,7 @@ func BenchmarkNodeMetadata_ToMap(b *testing.B) {
 
 func BenchmarkNodeMetadata_ToStruct(b *testing.B) {
 	nm := &NodeMetadata{
-		Name:           "benchmark-node",
+		Name:            "benchmark-node",
 		InternalAddress: "10.10.10.10",
 	}
 
