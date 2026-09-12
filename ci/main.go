@@ -25,6 +25,7 @@ import (
 	"github.com/containerd/platforms"
 
 	"dagger/apoxy-cli/internal/dagger"
+	"dagger/apoxy-cli/internal/helmrules"
 )
 
 const ZigVersion = "0.14.1"
@@ -1211,4 +1212,78 @@ func (m *ApoxyCli) PublishHelmRelease(
 			"oci://" + PublicGARRepo,
 		}).
 		Stdout(ctx)
+}
+
+// PrometheusImage pins the Prometheus release that checks the alert rules.
+const PrometheusImage = "prom/prometheus:v3.5.0"
+
+// helmTelemetryValues turns on the optional telemetry objects of the chart, so
+// the lint covers the PrometheusRule, the dashboard ConfigMap and the pods
+// metric of the autoscaler.
+const helmTelemetryValues = `--set backplane.prometheusRule.enabled=true ` +
+	`--set backplane.grafanaDashboard.enabled=true ` +
+	`--set backplane.autoscaling.enabled=true ` +
+	`--set 'backplane.autoscaling.podsMetrics[0].name=envoy_http_downstream_cx_active' ` +
+	`--set 'backplane.autoscaling.podsMetrics[0].targetAverageValue=2700'`
+
+// LintHelmChart lints the Helm chart, renders it with the telemetry objects on,
+// and checks the rendered alert rules and the Grafana dashboard. The src
+// directory is deploy/helm, the same directory PublishHelmRelease packages.
+func (m *ApoxyCli) LintHelmChart(
+	ctx context.Context,
+	src *dagger.Directory,
+) (string, error) {
+	render := dag.Container().
+		From("cgr.dev/chainguard/helm:latest-dev").
+		WithDirectory("/src", src).
+		WithWorkdir("/src").
+		WithExec([]string{"sh", "-c", strings.Join([]string{
+			"set -e",
+			"mkdir -p /out",
+			"helm lint apoxy-gateway",
+			"helm template apoxy-gateway apoxy-gateway " + helmTelemetryValues + " > /out/all.yaml",
+			"helm template apoxy-gateway apoxy-gateway > /out/default.yaml",
+			// The default values must not render any of the telemetry objects.
+			`if grep -qE '^kind: (PrometheusRule|HorizontalPodAutoscaler)$' /out/default.yaml; then`,
+			`  echo 'the chart renders telemetry objects with the default values' >&2`,
+			`  exit 1`,
+			`fi`,
+			"helm template apoxy-gateway apoxy-gateway " + helmTelemetryValues +
+				" -s templates/backplane_prometheusrule.yaml > /out/prometheusrule.yaml",
+		}, "\n")})
+
+	out, err := render.Stdout(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	// promtool reads a file that starts with the rule groups, so take the
+	// spec out of the rendered PrometheusRule here.
+	manifest, err := render.File("/out/prometheusrule.yaml").Contents(ctx)
+	if err != nil {
+		return "", err
+	}
+	rules, err := helmrules.RulesFromPrometheusRule(manifest)
+	if err != nil {
+		return "", err
+	}
+
+	dashboard, err := src.File("apoxy-gateway/dashboards/backplane-envoy.json").Contents(ctx)
+	if err != nil {
+		return "", err
+	}
+	if err := helmrules.CheckDashboard(dashboard); err != nil {
+		return "", err
+	}
+
+	rulesOut, err := dag.Container().
+		From(PrometheusImage).
+		WithNewFile("/out/rules.yaml", rules).
+		WithExec([]string{"/bin/promtool", "check", "rules", "/out/rules.yaml"}).
+		Stdout(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	return out + rulesOut, nil
 }

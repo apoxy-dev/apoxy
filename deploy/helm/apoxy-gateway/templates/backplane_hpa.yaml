@@ -27,4 +27,14 @@ spec:
         target:
           type: Utilization
           averageUtilization: {{ .Values.backplane.autoscaling.targetMemoryUtilizationPercentage | default 50 }}
+    {{- /* Prometheus Adapter must expose each series as a pods metric. */}}
+    {{- range .Values.backplane.autoscaling.podsMetrics }}
+    - type: Pods
+      pods:
+        metric:
+          name: {{ .name }}
+        target:
+          type: AverageValue
+          averageValue: {{ required "each backplane.autoscaling.podsMetrics entry needs a targetAverageValue" .targetAverageValue | quote }}
+    {{- end }}
 {{ end }}

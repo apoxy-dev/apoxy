@@ -42,3 +42,14 @@ jobs:
       - name: Run console checks via Dagger
         timeout-minutes: 15
         run: dagger call -v console --src=.
+
+  # Daggerized: lint the Helm chart, render it with the telemetry objects on,
+  # and check the alert rules with promtool and the dashboard JSON.
+  helm-check:
+    runs-on: blacksmith-4vcpu-ubuntu-2204
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-dagger
+      - name: Lint the Helm chart via Dagger
+        timeout-minutes: 10
+        run: dagger call -v lint-helm-chart --src=./deploy/helm

@@ -1,0 +1,372 @@
+{{- if .Values.backplane.prometheusRule.enabled }}
+{{- $t := .Values.backplane.prometheusRule.thresholds | default dict }}
+{{- /* Envoy stats carry no proxy and no replica. This join copies them from the
+backplane info metric, which the backplane writes on every scrape. */}}
+{{- $withIdentity := "* on (namespace, pod) group_left (proxy, replica) max by (namespace, pod, proxy, replica) (apoxy_backplane_envoy_info)" }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "apoxy-gateway.fullname" . }}-backplane
+  namespace: {{ include "apoxy-gateway.namespace" . }}
+  labels:
+    {{- include "apoxy-gateway.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backplane
+    {{- with .Values.backplane.prometheusRule.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+  - name: apoxy-gateway.backplane
+    rules:
+
+    # The backplane writes an exits series when the first exit with that reason
+    # and that code occurs, so the series starts at 1 and increase() reads 0 for
+    # it. The first part of the expression finds a series that did not exist 10
+    # minutes ago. The second part finds the later exits.
+    - alert: EnvoyExited
+      expr: >-
+        sum by (namespace, pod, proxy, replica, reason, code)
+        (apoxy_backplane_envoy_exits_total > 0
+        unless apoxy_backplane_envoy_exits_total offset 10m)
+        or
+        sum by (namespace, pod, proxy, replica, reason, code)
+        (increase(apoxy_backplane_envoy_exits_total[10m])) > 0
+      for: 0m
+      labels:
+        severity: warning
+        {{- with .Values.backplane.prometheusRule.additionalLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        summary: Envoy exited in {{`{{ $labels.namespace }}`}}/{{`{{ $labels.pod }}`}}
+        description: >-
+          Envoy of proxy {{`{{ $labels.proxy }}`}} replica {{`{{ $labels.replica }}`}}
+          in pod {{`{{ $labels.namespace }}`}}/{{`{{ $labels.pod }}`}} exited in the
+          last 10 minutes with reason {{`{{ $labels.reason }}`}} and code
+          {{`{{ $labels.code }}`}}. Read the Envoy exit log line of the backplane
+          container.
+
+    # Envoy does not come back. The backplane still answers the scrape.
+    - alert: EnvoyDown
+      expr: apoxy_backplane_envoy_up == 0
+      for: 2m
+      labels:
+        severity: critical
+        {{- with .Values.backplane.prometheusRule.additionalLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        summary: Envoy is down in {{`{{ $labels.namespace }}`}}/{{`{{ $labels.pod }}`}}
+        description: >-
+          Envoy of proxy {{`{{ $labels.proxy }}`}} replica {{`{{ $labels.replica }}`}}
+          in pod {{`{{ $labels.namespace }}`}}/{{`{{ $labels.pod }}`}} did not run for
+          2 minutes. The pod stays Ready because the backplane process lives.
+
+    # The restarts counter starts at 0 on the first scrape, so increase() reads
+    # every restart, the first one included.
+    - alert: EnvoyCrashLoop
+      expr: >-
+        sum by (namespace, pod, proxy, replica)
+        (increase(apoxy_backplane_envoy_restarts_total[30m])) >= 3
+      for: 0m
+      labels:
+        severity: critical
+        {{- with .Values.backplane.prometheusRule.additionalLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        summary: Envoy restarts repeatedly in {{`{{ $labels.namespace }}`}}/{{`{{ $labels.pod }}`}}
+        description: >-
+          The backplane started Envoy {{`{{ $value | printf "%.0f" }}`}} times in 30
+          minutes for proxy {{`{{ $labels.proxy }}`}} replica
+          {{`{{ $labels.replica }}`}}. Read the Envoy exit log lines of the backplane
+          container for the reason and the code.
+
+    # The pending queue of a cluster is full. Requests get a 503. The queue is
+    # unlimited unless a policy sets maxPendingRequests on the route.
+    - alert: EnvoyPendingOverflow
+      expr: >-
+        (
+        sum by (namespace, pod, envoy_cluster_name)
+        (rate(envoy_cluster_upstream_rq_pending_overflow[5m])) > 0
+        )
+        {{ $withIdentity }}
+      for: 2m
+      labels:
+        severity: warning
+        {{- with .Values.backplane.prometheusRule.additionalLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        summary: Pending requests overflow for cluster {{`{{ $labels.envoy_cluster_name }}`}}
+        description: >-
+          Cluster {{`{{ $labels.envoy_cluster_name }}`}} of proxy
+          {{`{{ $labels.proxy }}`}} replica {{`{{ $labels.replica }}`}} rejects
+          {{`{{ $value | printf "%.2f" }}`}} requests per second because the pending
+          queue is full.
+
+    # The queue is unlimited by default, so a long queue does not overflow. It
+    # shows as request time that the upstream time does not explain.
+    - alert: EnvoyPendingQueueHigh
+      expr: >-
+        (
+        sum by (namespace, pod, envoy_cluster_name) (envoy_cluster_upstream_rq_pending_active)
+        > {{ $t.pendingActive | default 512 }}
+        )
+        {{ $withIdentity }}
+      for: 5m
+      labels:
+        severity: warning
+        {{- with .Values.backplane.prometheusRule.additionalLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        summary: Requests wait for cluster {{`{{ $labels.envoy_cluster_name }}`}}
+        description: >-
+          {{`{{ $value | printf "%.0f" }}`}} requests wait for a connection to cluster
+          {{`{{ $labels.envoy_cluster_name }}`}} of proxy {{`{{ $labels.proxy }}`}}
+          replica {{`{{ $labels.replica }}`}}. The wait is part of the request time
+          and no upstream stat shows it.
+
+    # One selector: `or` between the four gauges keeps only the first,
+    # because set matching ignores the metric name.
+    - alert: EnvoyCircuitBreakerOpen
+      expr: >-
+        (
+        max by (namespace, pod, envoy_cluster_name) (
+        {__name__=~"envoy_cluster_circuit_breakers_default_(cx|rq|rq_pending|rq_retry)_open"}
+        ) == 1
+        )
+        {{ $withIdentity }}
+      for: 2m
+      labels:
+        severity: warning
+        {{- with .Values.backplane.prometheusRule.additionalLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        summary: Circuit breaker open for cluster {{`{{ $labels.envoy_cluster_name }}`}}
+        description: >-
+          A circuit breaker of cluster {{`{{ $labels.envoy_cluster_name }}`}} of proxy
+          {{`{{ $labels.proxy }}`}} replica {{`{{ $labels.replica }}`}} is open for 2
+          minutes. Read the remaining_cx, remaining_rq and remaining_pending gauges
+          of the same cluster.
+
+    # Envoy counts the misses of all threads together and once per thread. The
+    # per-thread copies carry a thread label, so read the total only.
+    - alert: EnvoyWatchdogMegaMiss
+      expr: >-
+        sum by (namespace, pod)
+        (increase(envoy_server_watchdog_mega_miss{envoy_thread_name=""}[5m])) > 0
+      for: 0m
+      labels:
+        severity: warning
+        {{- with .Values.backplane.prometheusRule.additionalLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        summary: Envoy watchdog mega miss in {{`{{ $labels.namespace }}`}}/{{`{{ $labels.pod }}`}}
+        description: >-
+          An Envoy thread in pod {{`{{ $labels.namespace }}`}}/{{`{{ $labels.pod }}`}}
+          stopped for longer than the megamiss timeout
+          {{`{{ $value | printf "%.0f" }}`}} times in 5 minutes. Requests on that
+          worker wait for the whole stop.
+
+    - alert: EnvoyOverloadStopAcceptingRequests
+      expr: envoy_overload_envoy_overload_actions_stop_accepting_requests_active == 1
+      for: 1m
+      labels:
+        severity: warning
+        {{- with .Values.backplane.prometheusRule.additionalLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        summary: Envoy refuses requests in {{`{{ $labels.namespace }}`}}/{{`{{ $labels.pod }}`}}
+        description: >-
+          The overload manager in pod {{`{{ $labels.namespace }}`}}/{{`{{ $labels.pod }}`}}
+          refuses new requests because the heap passed the overload threshold.
+
+    # The overload manager writes the pressure as a percent from 0 to 100.
+    - alert: EnvoyDownstreamCxNearLimit
+      expr: >-
+        envoy_overload_envoy_resource_monitors_global_downstream_max_connections_pressure
+        > {{ $t.downstreamCxPressurePercent | default 80 }}
+      for: 5m
+      labels:
+        severity: warning
+        {{- with .Values.backplane.prometheusRule.additionalLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        summary: Downstream connections near the limit in {{`{{ $labels.namespace }}`}}/{{`{{ $labels.pod }}`}}
+        description: >-
+          Pod {{`{{ $labels.namespace }}`}}/{{`{{ $labels.pod }}`}} uses
+          {{`{{ $value | printf "%.0f" }}`}} percent of the configured maximum
+          downstream connections. Envoy refuses new connections at 100. Add
+          replicas or raise backplane.overload.maxActiveConnections.
+
+    - alert: EnvoyFdNearLimit
+      expr: >-
+        apoxy_backplane_envoy_open_fds / apoxy_backplane_envoy_max_fds
+        > {{ $t.fdUsageRatio | default 0.8 }}
+      for: 5m
+      labels:
+        severity: warning
+        {{- with .Values.backplane.prometheusRule.additionalLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        summary: Envoy file descriptors near the limit in {{`{{ $labels.namespace }}`}}/{{`{{ $labels.pod }}`}}
+        description: >-
+          Envoy of proxy {{`{{ $labels.proxy }}`}} replica {{`{{ $labels.replica }}`}}
+          uses {{`{{ $value | printf "%.2f" }}`}} of the file descriptor limit.
+          Every downstream and upstream connection holds one descriptor.
+
+    - alert: EnvoyRssNearLimit
+      expr: >-
+        apoxy_backplane_envoy_rss_bytes / apoxy_backplane_envoy_limit_memory_bytes
+        > {{ $t.rssUsageRatio | default 0.85 }}
+      for: 10m
+      labels:
+        severity: warning
+        {{- with .Values.backplane.prometheusRule.additionalLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        summary: Envoy memory near the container limit in {{`{{ $labels.namespace }}`}}/{{`{{ $labels.pod }}`}}
+        description: >-
+          The Envoy process of proxy {{`{{ $labels.proxy }}`}} replica
+          {{`{{ $labels.replica }}`}} holds {{`{{ $value | printf "%.2f" }}`}} of the
+          container memory limit. The Envoy heap monitor counts the heap only, so
+          plugin memory shows here first. The kernel kills the process at 1.
+
+    # Envoy writes the cache name into the metric name, so build a cache label
+    # from it. The first part compares the hosts against the limit the backplane
+    # reports. The second part finds the hosts that Envoy removed to make room.
+    - alert: DfpDnsCacheNearLimit
+      expr: >-
+        (
+        (
+        max by (namespace, pod, cache) (
+        label_replace(
+        {__name__=~"envoy_dns_cache_.+_num_hosts"},
+        "cache", "$1", "__name__", "envoy_dns_cache_(.+)_num_hosts"
+        )
+        / on (namespace, pod, cache)
+        max by (namespace, pod, cache) (apoxy_backplane_envoy_limit_dns_cache_max_hosts)
+        ) > {{ $t.dnsCacheUsageRatio | default 0.9 }}
+        )
+        or
+        (
+        max by (namespace, pod, cache) (
+        increase(
+        label_replace(
+        {__name__=~"envoy_dns_cache_.+_host_overflow"},
+        "cache", "$1", "__name__", "envoy_dns_cache_(.+)_host_overflow"
+        )[5m:]
+        )
+        ) > 0
+        )
+        )
+        {{ $withIdentity }}
+      for: 2m
+      labels:
+        severity: warning
+        {{- with .Values.backplane.prometheusRule.additionalLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        summary: DNS cache {{`{{ $labels.cache }}`}} near max_hosts in {{`{{ $labels.namespace }}`}}/{{`{{ $labels.pod }}`}}
+        description: >-
+          The DNS cache {{`{{ $labels.cache }}`}} of proxy {{`{{ $labels.proxy }}`}}
+          replica {{`{{ $labels.replica }}`}} is near max_hosts, or it removed hosts
+          to make room. Envoy resolves a removed host again on the next request.
+          Raise maxHosts on the Backend.
+
+    # increase() drops the metric name, so write the origin into a label before
+    # the rate. Without it the three counters merge into one series.
+    - alert: EnvoyConfigRejected
+      expr: >-
+        (
+        sum by (namespace, pod, source) (
+        label_replace(increase(envoy_cluster_manager_cds_update_rejected[10m]), "source", "clusters", "", "")
+        or label_replace(increase(envoy_listener_manager_lds_update_rejected[10m]), "source", "listeners", "", "")
+        or label_replace(increase(envoy_http_rds_update_rejected[10m]), "source", "routes", "", "")
+        ) > 0
+        )
+        {{ $withIdentity }}
+      for: 0m
+      labels:
+        severity: warning
+        {{- with .Values.backplane.prometheusRule.additionalLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        summary: Envoy rejected a {{`{{ $labels.source }}`}} update in {{`{{ $labels.namespace }}`}}/{{`{{ $labels.pod }}`}}
+        description: >-
+          Envoy of proxy {{`{{ $labels.proxy }}`}} replica {{`{{ $labels.replica }}`}}
+          rejected {{`{{ $value | printf "%.0f" }}`}} {{`{{ $labels.source }}`}}
+          updates in 10 minutes. Envoy keeps the last good configuration, so the
+          proxy serves stale routes.
+
+    # Many listener updates while listeners drain. Connections on a draining
+    # listener close before the upstream answers.
+    - alert: EnvoyReloadStorm
+      expr: >-
+        sum by (namespace, pod) (increase(envoy_listener_manager_listener_modified[10m])) > 20
+        and on (namespace, pod)
+        sum by (namespace, pod) (envoy_listener_manager_total_listeners_draining) > 0
+      for: 5m
+      labels:
+        severity: warning
+        {{- with .Values.backplane.prometheusRule.additionalLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        summary: Envoy listeners change repeatedly in {{`{{ $labels.namespace }}`}}/{{`{{ $labels.pod }}`}}
+        description: >-
+          Envoy in pod {{`{{ $labels.namespace }}`}}/{{`{{ $labels.pod }}`}} changed
+          listeners {{`{{ $value | printf "%.0f" }}`}} times in 10 minutes and a
+          listener still drains. Slow upstreams lose their connections at the end
+          of the drain.
+
+    # The kernel drops SYNs when Envoy does not accept fast enough. The
+    # backplane reads the counters of the pod network namespace.
+    - alert: EnvoyListenOverflow
+      expr: increase(apoxy_backplane_net_tcp_listen_overflows_total[5m]) > 0
+      for: 0m
+      labels:
+        severity: warning
+        {{- with .Values.backplane.prometheusRule.additionalLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        summary: Kernel drops connections in {{`{{ $labels.namespace }}`}}/{{`{{ $labels.pod }}`}}
+        description: >-
+          The accept queue of proxy {{`{{ $labels.proxy }}`}} replica
+          {{`{{ $labels.replica }}`}} overflowed {{`{{ $value | printf "%.0f" }}`}}
+          times in 5 minutes. The caller sees a reset or a timeout before Envoy
+          reads the connection.
+
+    - alert: EnvoyUpstreamConnectFailures
+      expr: >-
+        (
+        sum by (namespace, pod, envoy_cluster_name)
+        (rate(envoy_cluster_upstream_cx_connect_fail[5m])) > 1
+        )
+        {{ $withIdentity }}
+      for: 2m
+      labels:
+        severity: warning
+        {{- with .Values.backplane.prometheusRule.additionalLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        summary: Upstream connections fail for cluster {{`{{ $labels.envoy_cluster_name }}`}}
+        description: >-
+          Cluster {{`{{ $labels.envoy_cluster_name }}`}} of proxy
+          {{`{{ $labels.proxy }}`}} replica {{`{{ $labels.replica }}`}} fails to
+          connect {{`{{ $value | printf "%.2f" }}`}} times per second. Read
+          upstream_cx_connect_timeout of the same cluster and the ephemeral port
+          use of the node.
+{{- end }}

@@ -106,6 +106,10 @@ backplane:
     minReplicas: 1
     maxReplicas: 100
     targetCPUUtilizationPercentage: 80
+    # -- Pods metrics added to the HPA. Prometheus Adapter must expose each series
+    # as a pods metric with the same name before the HPA can read it.
+    # Example: [{name: envoy_http_downstream_cx_active, targetAverageValue: "2700"}]
+    podsMetrics: []
 
   nodeSelector: {}
 
@@ -144,3 +148,44 @@ backplane:
     relabelings: []
     # -- Metric relabel configurations
     metricRelabelings: []
+
+  # Alert rules for the Envoy process and the Envoy limits. The Prometheus
+  # Operator must be installed before you enable this.
+  #
+  # EnvoyOverloadStopAcceptingRequests, EnvoyRssNearLimit and the heap panels of
+  # the dashboard stay empty until Envoy knows a heap size and the container has
+  # a memory limit. Set backplane.overload.maxHeapSizeBytes and
+  # backplane.resources.limits.memory to get these signals.
+  prometheusRule:
+    enabled: false
+    # -- Additional labels for the PrometheusRule and for every alert in it.
+    # Set the label your Prometheus instance selects rules with.
+    # Example: release: kube-prometheus-stack
+    additionalLabels: {}
+    thresholds:
+      # -- Alert when the open file descriptors pass this part of the limit.
+      fdUsageRatio: 0.8
+      # -- Alert when the downstream connection pressure passes this percent.
+      # Envoy writes the overload manager pressure as a percent from 0 to 100,
+      # not as a part of 1. Envoy refuses new connections at 100.
+      downstreamCxPressurePercent: 80
+      # -- Alert when the Envoy RSS passes this part of the container limit.
+      rssUsageRatio: 0.85
+      # -- Alert when a dynamic forward proxy DNS cache passes this part of max_hosts.
+      dnsCacheUsageRatio: 0.9
+      # -- Alert when this many requests wait for a connection to one cluster.
+      # The pending queue has no limit unless a policy sets maxPendingRequests,
+      # so a long queue does not overflow. It shows only as request time.
+      pendingActive: 512
+
+  # Grafana dashboard for the Envoy process, the connections, the requests and
+  # the limits. The Grafana dashboard sidecar reads the ConfigMap.
+  grafanaDashboard:
+    enabled: false
+    # -- Labels for the dashboard ConfigMap. The sidecar selects the dashboards
+    # with these labels.
+    labels:
+      grafana_dashboard: "1"
+    # -- Annotations for the dashboard ConfigMap.
+    # Example: grafana_folder: Apoxy
+    annotations: {}

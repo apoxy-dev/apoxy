@@ -1,0 +1,19 @@
+{{ include "apoxy-gateway.fullname" . }} is installed in namespace {{ include "apoxy-gateway.namespace" . }}.
+
+The backplane serves the Envoy stats and the apoxy_backplane_envoy_* metrics on
+container port 8888, path /envoy/metrics. Set backplane.envoyPodMonitor.enabled
+to let the Prometheus Operator scrape them.
+{{- if .Values.backplane.prometheusRule.enabled }}
+
+The Envoy alert rules are in the PrometheusRule
+{{ include "apoxy-gateway.fullname" . }}-backplane. Your Prometheus must select
+this rule. Set backplane.prometheusRule.additionalLabels to the label your
+Prometheus selects rules with.
+{{- end }}
+{{- if .Values.backplane.grafanaDashboard.enabled }}
+
+The Envoy dashboard is in the ConfigMap
+{{ include "apoxy-gateway.fullname" . }}-backplane-envoy-dashboard. Your Grafana
+sidecar must read ConfigMaps with the labels in
+backplane.grafanaDashboard.labels.
+{{- end }}

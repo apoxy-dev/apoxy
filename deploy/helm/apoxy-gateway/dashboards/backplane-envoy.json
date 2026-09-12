@@ -1,0 +1,2208 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "description": "Envoy process, connections, requests and limits of the Apoxy gateway backplane.",
+  "editable": true,
+  "graphTooltip": 1,
+  "links": [],
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "Envoy process",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Envoy up",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 0,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "down",
+                  "color": "red",
+                  "index": 0
+                },
+                "1": {
+                  "text": "up",
+                  "color": "green",
+                  "index": 1
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "min(apoxy_backplane_envoy_up{namespace=\"$namespace\", pod=~\"$pod\", proxy=~\"$proxy\"})",
+          "legendFormat": "up",
+          "instant": true
+        }
+      ],
+      "description": "The backplane answers the scrape while Envoy restarts, so 0 is a real value and not a lost scrape."
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Restarts",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 4,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 3
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max(apoxy_backplane_envoy_restarts_total{namespace=\"$namespace\", pod=~\"$pod\", proxy=~\"$proxy\"})",
+          "legendFormat": "restarts",
+          "instant": true
+        }
+      ],
+      "description": "Envoy starts after an exit, counted since the backplane started."
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Time since start",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 8,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "time() - max(apoxy_backplane_envoy_start_time_seconds{namespace=\"$namespace\", pod=~\"$pod\", proxy=~\"$proxy\"})",
+          "legendFormat": "uptime",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Last exit",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 12,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "dateTimeAsIso",
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max(apoxy_backplane_envoy_last_exit_timestamp_seconds{namespace=\"$namespace\", pod=~\"$pod\", proxy=~\"$proxy\"}) * 1000",
+          "legendFormat": "last exit",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Release",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 18,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "name"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "apoxy_backplane_envoy_info{namespace=\"$namespace\", pod=~\"$pod\", proxy=~\"$proxy\"}",
+          "legendFormat": "{{release}} / envoy {{envoy_version}}",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Envoy admin scrape errors",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 6
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(apoxy_backplane_envoy_admin_scrape_errors_total{namespace=\"$namespace\", pod=~\"$pod\", proxy=~\"$proxy\"}[$__rate_interval])",
+          "legendFormat": "{{pod}}"
+        }
+      ],
+      "description": "The backplane could not read the Envoy admin API. The scrape still answers with the backplane metrics, so the Envoy stats are missing for that scrape."
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Exits by reason and code",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 12
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "bars",
+            "lineWidth": 2,
+            "fillOpacity": 60,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (reason, code) (increase(apoxy_backplane_envoy_exits_total{namespace=\"$namespace\", pod=~\"$pod\", proxy=~\"$proxy\"}[$__rate_interval]))",
+          "legendFormat": "{{reason}} {{code}}"
+        }
+      ],
+      "description": "reason is exit, signal, oom_kill or start_failed. code is the exit status or the signal name."
+    },
+    {
+      "id": 9,
+      "type": "stat",
+      "title": "Last exit facts",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 12
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value_and_name"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max(apoxy_backplane_envoy_last_exit_requests_in_flight{namespace=\"$namespace\", pod=~\"$pod\", proxy=~\"$proxy\"})",
+          "legendFormat": "requests in flight",
+          "instant": true
+        },
+        {
+          "refId": "B",
+          "expr": "max(apoxy_backplane_envoy_last_exit_connections{namespace=\"$namespace\", pod=~\"$pod\", proxy=~\"$proxy\"})",
+          "legendFormat": "connections",
+          "instant": true
+        },
+        {
+          "refId": "C",
+          "expr": "max(apoxy_backplane_envoy_last_exit_connections_aborted{namespace=\"$namespace\", pod=~\"$pod\", proxy=~\"$proxy\"})",
+          "legendFormat": "connections aborted",
+          "instant": true
+        },
+        {
+          "refId": "D",
+          "expr": "max(apoxy_backplane_envoy_last_exit_connections_refused{namespace=\"$namespace\", pod=~\"$pod\", proxy=~\"$proxy\"})",
+          "legendFormat": "connections refused",
+          "instant": true
+        }
+      ],
+      "description": "The requests and the connections come from the last sample before the exit. The aborted and refused counts come from the kernel counters of the pod over the down window."
+    },
+    {
+      "id": 10,
+      "type": "row",
+      "title": "Connections",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 20
+      }
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Downstream connections vs limit",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 21
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "configured maximum"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    10
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (envoy_http_conn_manager_prefix) (envoy_http_downstream_cx_active{namespace=\"$namespace\", pod=~\"$pod\"})",
+          "legendFormat": "{{envoy_http_conn_manager_prefix}}"
+        },
+        {
+          "refId": "B",
+          "expr": "max(apoxy_backplane_envoy_limit_max_active_downstream_connections{namespace=\"$namespace\", pod=~\"$pod\", proxy=~\"$proxy\"})",
+          "legendFormat": "configured maximum"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Downstream connection pressure",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 21
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "max": 100,
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "envoy_overload_envoy_resource_monitors_global_downstream_max_connections_pressure{namespace=\"$namespace\", pod=~\"$pod\"}",
+          "legendFormat": "{{pod}}"
+        }
+      ],
+      "description": "The overload manager writes the pressure as a percent from 0 to 100. Envoy refuses new connections at 100."
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "TCP resets and aborts",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 29
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(apoxy_backplane_net_tcp_out_rsts_total{namespace=\"$namespace\", pod=~\"$pod\", proxy=~\"$proxy\"}[$__rate_interval])",
+          "legendFormat": "out resets"
+        },
+        {
+          "refId": "B",
+          "expr": "rate(apoxy_backplane_net_tcp_estab_resets_total{namespace=\"$namespace\", pod=~\"$pod\", proxy=~\"$proxy\"}[$__rate_interval])",
+          "legendFormat": "established resets"
+        },
+        {
+          "refId": "C",
+          "expr": "rate(apoxy_backplane_net_tcp_abort_on_close_total{namespace=\"$namespace\", pod=~\"$pod\", proxy=~\"$proxy\"}[$__rate_interval])",
+          "legendFormat": "abort on close"
+        },
+        {
+          "refId": "D",
+          "expr": "rate(apoxy_backplane_net_tcp_abort_on_data_total{namespace=\"$namespace\", pod=~\"$pod\", proxy=~\"$proxy\"}[$__rate_interval])",
+          "legendFormat": "abort on data"
+        }
+      ],
+      "description": "Kernel counters of the pod network namespace. A reset reaches the caller through the load balancer."
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "Accept queue overflows and drops",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 29
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(apoxy_backplane_net_tcp_listen_overflows_total{namespace=\"$namespace\", pod=~\"$pod\", proxy=~\"$proxy\"}[$__rate_interval])",
+          "legendFormat": "listen overflows"
+        },
+        {
+          "refId": "B",
+          "expr": "rate(apoxy_backplane_net_tcp_listen_drops_total{namespace=\"$namespace\", pod=~\"$pod\", proxy=~\"$proxy\"}[$__rate_interval])",
+          "legendFormat": "listen drops"
+        }
+      ],
+      "description": "The kernel drops a connection when Envoy does not accept it fast enough. This moves before any Envoy stat."
+    },
+    {
+      "id": 15,
+      "type": "row",
+      "title": "Requests",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 37
+      }
+    },
+    {
+      "id": 16,
+      "type": "timeseries",
+      "title": "Request time",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 38
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(envoy_http_downstream_rq_time_bucket{namespace=\"$namespace\", pod=~\"$pod\"}[$__rate_interval])))",
+          "legendFormat": "downstream p50"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(envoy_http_downstream_rq_time_bucket{namespace=\"$namespace\", pod=~\"$pod\"}[$__rate_interval])))",
+          "legendFormat": "downstream p99"
+        },
+        {
+          "refId": "C",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(envoy_cluster_upstream_rq_time_bucket{namespace=\"$namespace\", pod=~\"$pod\"}[$__rate_interval])))",
+          "legendFormat": "upstream p50"
+        },
+        {
+          "refId": "D",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(envoy_cluster_upstream_rq_time_bucket{namespace=\"$namespace\", pod=~\"$pod\"}[$__rate_interval])))",
+          "legendFormat": "upstream p99"
+        }
+      ]
+    },
+    {
+      "id": 17,
+      "type": "timeseries",
+      "title": "Time inside the proxy, p99",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 38
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(envoy_http_downstream_rq_time_bucket{namespace=\"$namespace\", pod=~\"$pod\"}[$__rate_interval]))) - histogram_quantile(0.99, sum by (le) (rate(envoy_cluster_upstream_rq_time_bucket{namespace=\"$namespace\", pod=~\"$pod\"}[$__rate_interval])))",
+          "legendFormat": "downstream p99 - upstream p99"
+        }
+      ],
+      "description": "The difference holds the filter chain, the connection setup and the wait in the pending queue. Read it with the connect time and the pending panels."
+    },
+    {
+      "id": 18,
+      "type": "timeseries",
+      "title": "Upstream connect time p99",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 46
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.99, sum by (le, envoy_cluster_name) (rate(envoy_cluster_upstream_cx_connect_ms_bucket{namespace=\"$namespace\", pod=~\"$pod\"}[$__rate_interval])))",
+          "legendFormat": "{{envoy_cluster_name}}"
+        }
+      ]
+    },
+    {
+      "id": 19,
+      "type": "timeseries",
+      "title": "Pending requests",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 46
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (envoy_cluster_name) (envoy_cluster_upstream_rq_pending_active{namespace=\"$namespace\", pod=~\"$pod\"})",
+          "legendFormat": "{{envoy_cluster_name}}"
+        }
+      ]
+    },
+    {
+      "id": 20,
+      "type": "timeseries",
+      "title": "Queue and connection overflow",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 46
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (envoy_cluster_name) (rate(envoy_cluster_upstream_rq_pending_overflow{namespace=\"$namespace\", pod=~\"$pod\"}[$__rate_interval]))",
+          "legendFormat": "{{envoy_cluster_name}} pending overflow"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (envoy_cluster_name) (rate(envoy_cluster_upstream_cx_overflow{namespace=\"$namespace\", pod=~\"$pod\"}[$__rate_interval]))",
+          "legendFormat": "{{envoy_cluster_name}} connection overflow"
+        }
+      ],
+      "description": "An overflow is a request that Envoy answers with 503 without an upstream attempt."
+    },
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "Active requests",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 54
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (envoy_http_conn_manager_prefix) (envoy_http_downstream_rq_active{namespace=\"$namespace\", pod=~\"$pod\"})",
+          "legendFormat": "{{envoy_http_conn_manager_prefix}}"
+        }
+      ]
+    },
+    {
+      "id": 22,
+      "type": "timeseries",
+      "title": "Upstream connect failures",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 54
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (envoy_cluster_name) (rate(envoy_cluster_upstream_cx_connect_fail{namespace=\"$namespace\", pod=~\"$pod\"}[$__rate_interval]))",
+          "legendFormat": "{{envoy_cluster_name}} fail"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (envoy_cluster_name) (rate(envoy_cluster_upstream_cx_connect_timeout{namespace=\"$namespace\", pod=~\"$pod\"}[$__rate_interval]))",
+          "legendFormat": "{{envoy_cluster_name}} timeout"
+        }
+      ],
+      "description": "Ephemeral ports of the node and conntrack limits show here first."
+    },
+    {
+      "id": 23,
+      "type": "row",
+      "title": "Circuit breakers",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 62
+      }
+    },
+    {
+      "id": 24,
+      "type": "timeseries",
+      "title": "Open circuit breakers",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 63
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "max": 1,
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by (envoy_cluster_name) (envoy_cluster_circuit_breakers_default_cx_open{namespace=\"$namespace\", pod=~\"$pod\"})",
+          "legendFormat": "{{envoy_cluster_name}} connections"
+        },
+        {
+          "refId": "B",
+          "expr": "max by (envoy_cluster_name) (envoy_cluster_circuit_breakers_default_rq_open{namespace=\"$namespace\", pod=~\"$pod\"})",
+          "legendFormat": "{{envoy_cluster_name}} requests"
+        },
+        {
+          "refId": "C",
+          "expr": "max by (envoy_cluster_name) (envoy_cluster_circuit_breakers_default_rq_pending_open{namespace=\"$namespace\", pod=~\"$pod\"})",
+          "legendFormat": "{{envoy_cluster_name}} pending"
+        },
+        {
+          "refId": "D",
+          "expr": "max by (envoy_cluster_name) (envoy_cluster_circuit_breakers_default_rq_retry_open{namespace=\"$namespace\", pod=~\"$pod\"})",
+          "legendFormat": "{{envoy_cluster_name}} retries"
+        }
+      ],
+      "description": "1 means the breaker is open and Envoy refuses the next request."
+    },
+    {
+      "id": 25,
+      "type": "timeseries",
+      "title": "Remaining budget",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 63
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "min by (envoy_cluster_name) (envoy_cluster_circuit_breakers_default_remaining_cx{namespace=\"$namespace\", pod=~\"$pod\"})",
+          "legendFormat": "{{envoy_cluster_name}} connections"
+        },
+        {
+          "refId": "B",
+          "expr": "min by (envoy_cluster_name) (envoy_cluster_circuit_breakers_default_remaining_rq{namespace=\"$namespace\", pod=~\"$pod\"})",
+          "legendFormat": "{{envoy_cluster_name}} requests"
+        },
+        {
+          "refId": "C",
+          "expr": "min by (envoy_cluster_name) (envoy_cluster_circuit_breakers_default_remaining_pending{namespace=\"$namespace\", pod=~\"$pod\"})",
+          "legendFormat": "{{envoy_cluster_name}} pending"
+        }
+      ],
+      "description": "The gauges exist because the translator sets track_remaining on every cluster."
+    },
+    {
+      "id": 26,
+      "type": "row",
+      "title": "Dynamic forward proxy DNS cache",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 71
+      }
+    },
+    {
+      "id": 27,
+      "type": "timeseries",
+      "title": "Hosts in the cache vs max_hosts",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 72
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "label_replace({__name__=~\"envoy_dns_cache_.+_num_hosts\", namespace=\"$namespace\", pod=~\"$pod\"}, \"cache\", \"$1\", \"__name__\", \"envoy_dns_cache_(.+)_num_hosts\")",
+          "legendFormat": "{{cache}} hosts"
+        },
+        {
+          "refId": "B",
+          "expr": "apoxy_backplane_envoy_limit_dns_cache_max_hosts{namespace=\"$namespace\", pod=~\"$pod\", proxy=~\"$proxy\"}",
+          "legendFormat": "{{cache}} max_hosts"
+        }
+      ],
+      "description": "Envoy writes the cache name into the metric name, so the query builds a cache label from it. The backplane reports the limit with the cache name as a label."
+    },
+    {
+      "id": 28,
+      "type": "timeseries",
+      "title": "Hosts removed to make room",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 12,
+        "y": 72
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (cache) (increase(label_replace({__name__=~\"envoy_dns_cache_.+_host_overflow\", namespace=\"$namespace\", pod=~\"$pod\"}, \"cache\", \"$1\", \"__name__\", \"envoy_dns_cache_(.+)_host_overflow\")[$__rate_interval:]))",
+          "legendFormat": "{{cache}}"
+        }
+      ],
+      "description": "The cache is full. Envoy resolves the removed host again on the next request."
+    },
+    {
+      "id": 29,
+      "type": "timeseries",
+      "title": "DNS query failures and timeouts",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 18,
+        "y": 72
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (cache) (increase(label_replace({__name__=~\"envoy_dns_cache_.+_dns_query_failure\", namespace=\"$namespace\", pod=~\"$pod\"}, \"cache\", \"$1\", \"__name__\", \"envoy_dns_cache_(.+)_dns_query_failure\")[$__rate_interval:]))",
+          "legendFormat": "{{cache}} failure"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (cache) (increase(label_replace({__name__=~\"envoy_dns_cache_.+_dns_query_timeout\", namespace=\"$namespace\", pod=~\"$pod\"}, \"cache\", \"$1\", \"__name__\", \"envoy_dns_cache_(.+)_dns_query_timeout\")[$__rate_interval:]))",
+          "legendFormat": "{{cache}} timeout"
+        }
+      ]
+    },
+    {
+      "id": 30,
+      "type": "row",
+      "title": "Resources",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 80
+      }
+    },
+    {
+      "id": 31,
+      "type": "timeseries",
+      "title": "Heap",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 81
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "max_heap_size_bytes"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    10
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "envoy_server_memory_allocated{namespace=\"$namespace\", pod=~\"$pod\"}",
+          "legendFormat": "allocated"
+        },
+        {
+          "refId": "B",
+          "expr": "envoy_server_memory_heap_size{namespace=\"$namespace\", pod=~\"$pod\"}",
+          "legendFormat": "heap size"
+        },
+        {
+          "refId": "C",
+          "expr": "envoy_server_memory_physical_size{namespace=\"$namespace\", pod=~\"$pod\"}",
+          "legendFormat": "physical size"
+        },
+        {
+          "refId": "D",
+          "expr": "max(apoxy_backplane_envoy_limit_max_heap_bytes{namespace=\"$namespace\", pod=~\"$pod\", proxy=~\"$proxy\"})",
+          "legendFormat": "max_heap_size_bytes"
+        }
+      ]
+    },
+    {
+      "id": 32,
+      "type": "timeseries",
+      "title": "Heap pressure",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 81
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "max": 100,
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "envoy_overload_envoy_resource_monitors_fixed_heap_pressure{namespace=\"$namespace\", pod=~\"$pod\"}",
+          "legendFormat": "{{pod}}"
+        }
+      ],
+      "description": "The overload manager writes the pressure as a percent from 0 to 100. The heap monitor counts the tcmalloc heap only, so plugin memory does not show here."
+    },
+    {
+      "id": 33,
+      "type": "timeseries",
+      "title": "Process memory vs container limit",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 89
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "container limit"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    10
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "apoxy_backplane_envoy_rss_bytes{namespace=\"$namespace\", pod=~\"$pod\", proxy=~\"$proxy\"}",
+          "legendFormat": "resident memory"
+        },
+        {
+          "refId": "B",
+          "expr": "max(apoxy_backplane_envoy_limit_memory_bytes{namespace=\"$namespace\", pod=~\"$pod\", proxy=~\"$proxy\"})",
+          "legendFormat": "container limit"
+        }
+      ],
+      "description": "Resident memory holds the heap, the Go runtime and every loaded plugin. The kernel kills the process at the limit."
+    },
+    {
+      "id": 34,
+      "type": "timeseries",
+      "title": "File descriptors",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 89
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "limit"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    10
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "apoxy_backplane_envoy_open_fds{namespace=\"$namespace\", pod=~\"$pod\", proxy=~\"$proxy\"}",
+          "legendFormat": "open"
+        },
+        {
+          "refId": "B",
+          "expr": "max(apoxy_backplane_envoy_max_fds{namespace=\"$namespace\", pod=~\"$pod\", proxy=~\"$proxy\"})",
+          "legendFormat": "limit"
+        }
+      ],
+      "description": "Every downstream and upstream connection holds one descriptor."
+    },
+    {
+      "id": 35,
+      "type": "timeseries",
+      "title": "Overload actions active",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 97
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "max": 1,
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "envoy_overload_envoy_overload_actions_shrink_heap_active{namespace=\"$namespace\", pod=~\"$pod\"}",
+          "legendFormat": "shrink heap"
+        },
+        {
+          "refId": "B",
+          "expr": "envoy_overload_envoy_overload_actions_stop_accepting_requests_active{namespace=\"$namespace\", pod=~\"$pod\"}",
+          "legendFormat": "stop accepting requests"
+        }
+      ],
+      "description": "1 means the action runs. The action is a flag, not a percent."
+    },
+    {
+      "id": 36,
+      "type": "timeseries",
+      "title": "Watchdog misses",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 97
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "bars",
+            "lineWidth": 2,
+            "fillOpacity": 60,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (pod) (increase(envoy_server_watchdog_miss{envoy_thread_name=\"\", namespace=\"$namespace\", pod=~\"$pod\"}[$__rate_interval]))",
+          "legendFormat": "{{pod}} miss"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (pod) (increase(envoy_server_watchdog_mega_miss{envoy_thread_name=\"\", namespace=\"$namespace\", pod=~\"$pod\"}[$__rate_interval]))",
+          "legendFormat": "{{pod}} mega miss"
+        }
+      ],
+      "description": "A thread did not answer the watchdog. Requests on that worker wait for the whole stop. Envoy counts every thread together and once per thread, so the query reads the total only."
+    },
+    {
+      "id": 37,
+      "type": "timeseries",
+      "title": "Downstream connections on the server",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 97
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "envoy_server_total_connections{namespace=\"$namespace\", pod=~\"$pod\"}",
+          "legendFormat": "{{pod}}"
+        }
+      ],
+      "description": "The connections open now, over every listener."
+    },
+    {
+      "id": 38,
+      "type": "row",
+      "title": "Configuration",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 105
+      }
+    },
+    {
+      "id": 39,
+      "type": "timeseries",
+      "title": "Rejected configuration updates",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 106
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(envoy_cluster_manager_cds_update_rejected{namespace=\"$namespace\", pod=~\"$pod\"}[$__rate_interval])",
+          "legendFormat": "clusters"
+        },
+        {
+          "refId": "B",
+          "expr": "rate(envoy_listener_manager_lds_update_rejected{namespace=\"$namespace\", pod=~\"$pod\"}[$__rate_interval])",
+          "legendFormat": "listeners"
+        },
+        {
+          "refId": "C",
+          "expr": "rate(envoy_http_rds_update_rejected{namespace=\"$namespace\", pod=~\"$pod\"}[$__rate_interval])",
+          "legendFormat": "routes"
+        }
+      ],
+      "description": "Envoy keeps the last good configuration, so the proxy serves stale routes after a rejection."
+    },
+    {
+      "id": 40,
+      "type": "timeseries",
+      "title": "Control plane connected",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 106
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "max": 1,
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "envoy_control_plane_connected_state{namespace=\"$namespace\", pod=~\"$pod\"}",
+          "legendFormat": "{{pod}}"
+        }
+      ]
+    },
+    {
+      "id": 41,
+      "type": "timeseries",
+      "title": "Listener changes and drains",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 106
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(envoy_listener_manager_listener_modified{namespace=\"$namespace\", pod=~\"$pod\"}[$__rate_interval])",
+          "legendFormat": "modified"
+        },
+        {
+          "refId": "B",
+          "expr": "rate(envoy_listener_manager_listener_in_place_updated{namespace=\"$namespace\", pod=~\"$pod\"}[$__rate_interval])",
+          "legendFormat": "updated in place"
+        },
+        {
+          "refId": "C",
+          "expr": "envoy_listener_manager_total_listeners_draining{namespace=\"$namespace\", pod=~\"$pod\"}",
+          "legendFormat": "draining"
+        }
+      ],
+      "description": "A connection on a draining listener closes at the end of the drain, even when the upstream still answers."
+    }
+  ],
+  "refresh": "1m",
+  "schemaVersion": 39,
+  "tags": [
+    "apoxy",
+    "envoy",
+    "backplane"
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "DS_PROMETHEUS",
+        "label": "Data source",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "options": [],
+        "hide": 0,
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false
+      },
+      {
+        "name": "namespace",
+        "label": "Namespace",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
+        "definition": "label_values(apoxy_backplane_envoy_up, namespace)",
+        "query": {
+          "query": "label_values(apoxy_backplane_envoy_up, namespace)",
+          "refId": "StandardVariableQuery"
+        },
+        "refresh": 1,
+        "sort": 1,
+        "includeAll": false,
+        "multi": false,
+        "current": {},
+        "options": []
+      },
+      {
+        "name": "pod",
+        "label": "Pod",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
+        "definition": "label_values(apoxy_backplane_envoy_up{namespace=\"$namespace\"}, pod)",
+        "query": {
+          "query": "label_values(apoxy_backplane_envoy_up{namespace=\"$namespace\"}, pod)",
+          "refId": "StandardVariableQuery"
+        },
+        "refresh": 1,
+        "sort": 1,
+        "includeAll": true,
+        "multi": true,
+        "current": {},
+        "options": []
+      },
+      {
+        "name": "proxy",
+        "label": "Proxy",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
+        "definition": "label_values(apoxy_backplane_envoy_up{namespace=\"$namespace\"}, proxy)",
+        "query": {
+          "query": "label_values(apoxy_backplane_envoy_up{namespace=\"$namespace\"}, proxy)",
+          "refId": "StandardVariableQuery"
+        },
+        "refresh": 1,
+        "sort": 1,
+        "includeAll": true,
+        "multi": true,
+        "current": {},
+        "options": []
+      }
+    ]
+  },
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timezone": "",
+  "title": "Apoxy gateway - Envoy",
+  "uid": "apoxy-backplane-envoy",
+  "version": 1
+}
