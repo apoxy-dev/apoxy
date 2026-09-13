@@ -26,6 +26,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -282,6 +283,8 @@ type TunnelServer struct {
 	// agentSlots backs the same-server diversity check; see
 	// server_diversity.go.
 	agentSlots *agentConnSlots
+	// agentStatusBackoff is the retry schedule for TunnelNode status writes.
+	statusBackoff wait.Backoff
 
 	diagSessions *diag.Sessions
 
@@ -326,6 +329,8 @@ func NewTunnelServer(
 		conns:        haxmap.New[string, *conn](),
 		agentSlots:   newAgentConnSlots(),
 		diagSessions: diag.NewSessions(),
+
+		statusBackoff: defaultAgentStatusBackoff,
 	}
 
 	return s, nil
@@ -542,6 +547,60 @@ func upsertAgentStatus(s *corev1alpha.TunnelNodeStatus, agent *corev1alpha.Agent
 	}
 
 	s.Agents = append(s.Agents, *agent)
+}
+
+// removeAgentStatus takes the named agent out of the TunnelNode status.
+func removeAgentStatus(s *corev1alpha.TunnelNodeStatus, name string) {
+	for i := range s.Agents {
+		if s.Agents[i].Name == name {
+			s.Agents = append(s.Agents[:i], s.Agents[i+1:]...)
+			return
+		}
+	}
+}
+
+// defaultAgentStatusBackoff bounds a TunnelNode status write to about 3.5 seconds.
+var defaultAgentStatusBackoff = wait.Backoff{
+	Steps:    7,
+	Duration: 50 * time.Millisecond,
+	Factor:   2.0,
+	Jitter:   0.1,
+}
+
+// errTunnelNodeNotFound reports that the TunnelNode is gone.
+var errTunnelNodeNotFound = errors.New("tunnel node not found")
+
+// updateAgentStatus reads the TunnelNode, applies fn to its status and writes
+// the status back. It retries all errors but a missing TunnelNode.
+func updateAgentStatus(
+	ctx context.Context,
+	c client.Client,
+	backoff wait.Backoff,
+	name string,
+	fn func(*corev1alpha.TunnelNodeStatus),
+) error {
+	return retry.OnError(
+		backoff,
+		func(err error) bool {
+			// Retry unless the caller went away or the TunnelNode is gone.
+			return ctx.Err() == nil && !errors.Is(err, errTunnelNodeNotFound)
+		},
+		func() error {
+			upd := &corev1alpha.TunnelNode{}
+			if err := c.Get(ctx, types.NamespacedName{Name: name}, upd); apierrors.IsNotFound(err) {
+				return errTunnelNodeNotFound
+			} else if err != nil {
+				return fmt.Errorf("failed to read the tunnel node: %w", err)
+			}
+
+			fn(&upd.Status)
+
+			if err := c.Status().Update(ctx, upd); err != nil {
+				return fmt.Errorf("failed to write the tunnel node status: %w", err)
+			}
+			return nil
+		},
+	)
 }
 
 // BFDServer returns the BFD server instance, or nil if BFD is not enabled.
@@ -836,6 +895,28 @@ func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.
 		logger = logger.With(slog.String("connUUID", cid))
 		logger.Info("Establishing CONNECT-IP connection")
 
+		// Register the agent before the CONNECT response goes out. An agent
+		// that is not in the status never gets an address, so reject instead.
+		logger.Info("Updating agent status")
+
+		agent := &corev1alpha.AgentStatus{
+			Name:        cid,
+			ConnectedAt: ptr.To(metav1.Now()),
+			Labels:      labels,
+		}
+		// TODO(dilyevsky): Support multiple external addresses in the Status.
+		if len(t.options.extAddrs) > 0 && t.options.extAddrs[0].IsValid() {
+			agent.PrivateAddress = t.options.extAddrs[0].Addr().String()
+		}
+		if err := updateAgentStatus(r.Context(), clusterClient, t.statusBackoff, tn.Name, func(s *corev1alpha.TunnelNodeStatus) {
+			upsertAgentStatus(s, agent)
+		}); err != nil {
+			logger.Error("Failed to add the agent to the tunnel node status", slog.Any("error", err))
+			metrics.TunnelConnectionFailures.WithLabelValues("agent_status").Inc()
+			rejectConnect(w, r, http.StatusServiceUnavailable)
+			return
+		}
+
 		// Connection context is independent of the server lifecycle so that
 		// existing connections survive SIGTERM during graceful drain. The
 		// connection is closed explicitly by Drain() calling c.cancel().
@@ -853,43 +934,18 @@ func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.
 		if conn.Conn, err = p.Proxy(w, req); err != nil {
 			logger.Error("Failed to proxy request", slog.Any("error", err))
 			metrics.TunnelConnectionFailures.WithLabelValues("proxy_error").Inc()
+			// The connection never starts, so remove the agent again.
+			if err := updateAgentStatus(context.Background(), clusterClient, t.statusBackoff, tn.Name, func(s *corev1alpha.TunnelNodeStatus) {
+				removeAgentStatus(s, cid)
+			}); err != nil {
+				logger.Error("Failed to remove the agent from the tunnel node status", slog.Any("error", err))
+			}
 			rejectConnect(w, r, http.StatusInternalServerError)
 			return
 		}
 		defer conn.Close()
 
 		t.conns.Set(cid, conn)
-
-		// Register the agent in TunnelNode status before allocating the
-		// endpoint so the InfraEndpointReconciler can find the agent when
-		// it writes the overlay address.
-		logger.Info("Updating agent status")
-
-		agent := &corev1alpha.AgentStatus{
-			Name:        cid,
-			ConnectedAt: ptr.To(metav1.Now()),
-			Labels:      labels,
-		}
-		// TODO(dilyevsky): Support multiple external addresses in the Status.
-		if len(t.options.extAddrs) > 0 && t.options.extAddrs[0].IsValid() {
-			agent.PrivateAddress = t.options.extAddrs[0].Addr().String()
-		}
-		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-			upd := &corev1alpha.TunnelNode{}
-			if err := clusterClient.Get(r.Context(), types.NamespacedName{Name: tn.Name}, upd); apierrors.IsNotFound(err) {
-				logger.Warn("Node not found while adding agent")
-				return errors.New("node not found")
-			} else if err != nil {
-				logger.Error("Failed to get node", slog.Any("error", err))
-				return err
-			}
-
-			upsertAgentStatus(&upd.Status, agent)
-
-			return clusterClient.Status().Update(r.Context(), upd)
-		}); err != nil {
-			logger.Error("Failed to update agent status", slog.Any("error", err))
-		}
 
 		// Invoke onConnect callback if configured.
 		// This triggers endpoint allocation; agent must be in TunnelNode
@@ -956,30 +1012,15 @@ func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.
 
 		t.conns.Del(cid)
 
-		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-			upd := &corev1alpha.TunnelNode{}
-			nn := types.NamespacedName{Name: tn.Name}
-			// Background context because we want this to be executed even if
-			// connection context is canceled.
-			ctx := context.Background()
-			if err := clusterClient.Get(ctx, nn, upd); apierrors.IsNotFound(err) {
-				logger.Warn("Node not found")
-				return errors.New("node not found")
-			} else if err != nil {
-				logger.Error("Failed to get node", slog.Any("error", err))
-				return err
-			}
+		// Free the slot before the status write, which can take seconds.
+		releaseSlot()
 
-			for i, a := range upd.Status.Agents {
-				if a.Name == agent.Name {
-					upd.Status.Agents = append(upd.Status.Agents[:i], upd.Status.Agents[i+1:]...)
-					break
-				}
-			}
-
-			return clusterClient.Status().Update(ctx, upd)
+		// Background context because we want this to be executed even if
+		// connection context is canceled.
+		if err := updateAgentStatus(context.Background(), clusterClient, t.statusBackoff, tn.Name, func(s *corev1alpha.TunnelNodeStatus) {
+			removeAgentStatus(s, agent.Name)
 		}); err != nil {
-			logger.Error("Failed to update agent status", slog.Any("error", err))
+			logger.Error("Failed to remove the agent from the tunnel node status", slog.Any("error", err))
 		}
 
 		logger.Info("Agent disconnected")
