@@ -9,12 +9,16 @@ import { cn } from '../../lib/cn'
 export interface ChartSeries {
   /** Stable key, also the tooltip row label. */
   key: string
-  /** Dense values, one per bucket (index is the x position). */
-  values: number[]
+  /** Dense values, one per bucket (index is the x position). A `null` is a
+   *  bucket with no measurement: the line breaks over it and the tooltip
+   *  shows a dash. */
+  values: (number | null)[]
   /** Line/area color; any CSS color (e.g. a token var). */
   color: string
   /** Fill a faint area under the line. */
   area?: boolean
+  /** Draw the line dashed, e.g. for a limit or a derived series. */
+  dash?: boolean
   /**
    * Y-scale group. Series on different axes are scaled independently so a small
    * series stays legible next to a large one; the `primary` group drives the
@@ -23,16 +27,30 @@ export interface ChartSeries {
   axis?: 'primary' | 'secondary'
 }
 
+export interface ChartMarker {
+  /** Bucket index the marker sits on. */
+  index: number
+  /** Text shown in the marker's `<title>` and in the tooltip header. */
+  label: string
+  /** Line and triangle color; defaults to coral. */
+  color?: string
+}
+
 export interface TimeSeriesChartProps {
   /** One or more dense series; the longest sets the bucket count. */
   series: ChartSeries[]
   height?: number
-  /** Sparse labels spread evenly across the x-axis. */
+  /** Sparse labels spread evenly across the x-axis. The chart drops as many as
+   *  the plot width needs, so a caller may pass more than fit. */
   xTicks?: string[]
-  /** Format the left-axis ticks and the tooltip values. */
-  formatValue?: (n: number) => string
+  /** Format the left-axis ticks and the tooltip values. `decimals` is the
+   *  precision an axis tick needs to differ from its neighbour; it is absent
+   *  for a tooltip value. */
+  formatValue?: (n: number, decimals?: number) => string
   /** Tooltip header for a hovered bucket index (e.g. its timestamp). */
   formatPoint?: (index: number) => string
+  /** Event markers on single buckets; markers outside the buckets are dropped. */
+  markers?: ChartMarker[]
   className?: string
 }
 
@@ -43,12 +61,66 @@ const PRIMARY_HEADROOM = 1.12
 const SECONDARY_HEADROOM = 1.4
 // Gap between the cursor and the tooltip box, in chart (user) units.
 const TOOLTIP_GAP = 12
+// Stroke pattern of a `dash` series.
+const DASH_PATTERN = '4 3'
+// Tooltip row of a bucket with no measurement.
+const NO_VALUE = '—'
+// Marker triangle, in the top margin: svg y 4 (base) to 12 (apex).
+const MARKER_TOP = 4
+const MARKER_SIZE = 8
+// Square hit target centered on the triangle, so the pointer finds an 8px
+// glyph.
+const MARKER_HIT = 16
+// Width one character of an x-axis label takes, at the 11px monospace face.
+// Rounded up from the real advance, which leaves a space between two labels.
+const TICK_CHAR_PX = 7
 
-function defaultFormat(n: number): string {
+function defaultFormat(n: number, decimals = 0): string {
   const abs = Math.abs(n)
   if (abs >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M'
   if (abs >= 1_000) return (n / 1_000).toFixed(1) + 'k'
-  return String(Math.round(n))
+  return n.toFixed(decimals)
+}
+
+/**
+ * Decimals a y-axis tick needs so that no two ticks read the same: none at a
+ * step of 1 or more, one at 0.1 or more, two below that. A "heap pressure"
+ * chart whose peak is under one percent otherwise prints "1% 1% 1% 0% 0%".
+ */
+export function tickDecimals(step: number): number {
+  if (!Number.isFinite(step) || step >= 1) return 0
+  return step >= 0.1 ? 1 : 2
+}
+
+/** One x-axis label, with its place in the list it was picked from. */
+export interface FittedTick {
+  label: string
+  /** Index in the original list, which sets the x of the label. */
+  index: number
+}
+
+/**
+ * The labels that fit `width`, an even subset of the ones given, always with
+ * the first and the last. The count comes from the longest label, so a wide
+ * label ("09-06 23:16") thins the axis further than a short one ("09-06").
+ */
+export function fitTicks(labels: string[], width: number): FittedTick[] {
+  const n = labels.length
+  if (n === 0) return []
+  const all = labels.map((label, index) => ({ label, index }))
+  if (n === 1) return all
+  const chars = Math.max(...labels.map((l) => l.length), 1)
+  const fit = Math.max(2, Math.floor(width / (chars * TICK_CHAR_PX)))
+  if (fit >= n) return all
+  const out: FittedTick[] = []
+  const seen = new Set<number>()
+  for (let k = 0; k < fit; k++) {
+    const index = Math.round((k * (n - 1)) / (fit - 1))
+    if (seen.has(index)) continue
+    seen.add(index)
+    out.push({ label: labels[index]!, index })
+  }
+  return out
 }
 
 /**
@@ -94,7 +166,8 @@ export function TimeSeriesChart({
 interface HoverMarker {
   key: string
   color: string
-  value: number
+  /** `null` when the bucket holds no measurement. */
+  value: number | null
   y: number
 }
 interface HoverState {
@@ -119,6 +192,7 @@ function Chart({
   xTicks = [],
   formatValue = defaultFormat,
   formatPoint,
+  markers = [],
 }: Omit<TimeSeriesChartProps, 'height' | 'className'> & {
   width: number
   height: number
@@ -132,7 +206,7 @@ function Chart({
     let mx = 0
     for (const s of series) {
       if ((s.axis ?? 'primary') !== group) continue
-      for (const v of s.values) if (v > mx) mx = v
+      for (const v of s.values) if (v != null && v > mx) mx = v
     }
     return Math.max(mx * headroom, 1)
   }
@@ -145,8 +219,40 @@ function Chart({
   const yScaleOf = (s: ChartSeries) =>
     (s.axis ?? 'primary') === 'secondary' ? ySecondary : yPrimary
   const yTicks = [0, 0.25, 0.5, 0.75, 1].map((f) => f * maxPrimary)
+  const yDecimals = tickDecimals(maxPrimary / 4)
+  const xLabels = fitTicks(xTicks, innerW)
+  const xSpan = Math.max(xTicks.length, 2) - 1
 
   const [hover, setHover] = useState<HoverState | null>(null)
+  // Bucket of the marker the pointer (or the keyboard focus) is on. The plot
+  // hover wins while it is set, so crossing the plot never leaves a marker
+  // tooltip behind.
+  const [markerAt, setMarkerAt] = useState<number | null>(null)
+
+  const shownMarkers = markers.filter((mk) => mk.index >= 0 && mk.index <= n - 1)
+
+  /** Series values of one bucket, for the tooltip rows and the dots. */
+  const markersAt = (idx: number): HoverMarker[] =>
+    series.map((s) => {
+      const value = s.values[idx] ?? null
+      return { key: s.key, color: s.color, value, y: yScaleOf(s)(value ?? 0) }
+    })
+
+  // A hovered marker reads like a hover of its own bucket, pinned to the
+  // marker x and to the top of the plot.
+  const markerHover: HoverState | null =
+    markerAt == null
+      ? null
+      : {
+          index: markerAt,
+          lineX: xScale(markerAt),
+          pointerY: m.top,
+          markers: markersAt(markerAt),
+        }
+  const active = hover ?? markerHover
+  const activeLabels = active
+    ? shownMarkers.filter((mk) => mk.index === active.index).map((mk) => mk.label)
+    : []
 
   // Map the pointer to the chart's user coordinates. We deliberately do NOT use
   // svg.getScreenCTM(): under an ancestor CSS `zoom` (the app shell uses
@@ -187,23 +293,24 @@ function Chart({
     let idx = Math.round(xScale.invert(localX))
     if (idx < 0) idx = 0
     else if (idx > n - 1) idx = n - 1
-    const markers: HoverMarker[] = series.map((s) => {
-      const value = s.values[idx] ?? 0
-      return { key: s.key, color: s.color, value, y: yScaleOf(s)(value) }
-    })
     const pointerY = Math.min(Math.max(userY, m.top), m.top + innerH)
-    setHover({ index: idx, lineX, pointerY, markers })
+    setHover({ index: idx, lineX, pointerY, markers: markersAt(idx) })
   }
-  const onLeave = () => setHover(null)
+  // Both are cleared: the pointer can only leave the plot for a marker, and the
+  // marker's own enter runs after this leave.
+  const onLeave = () => {
+    setHover(null)
+    setMarkerAt(null)
+  }
 
   // Tooltip box position + flip. It lives inside the ParentSize wrapper (same
   // user-unit space as the svg, no portal, no zoom-boundary crossing), so its
   // left/top are just the cursor x and pointer y. Flip it to whichever side of
   // the cursor has room so a high or right-edge point can't clip it.
-  const anchorLeft = m.left + (hover?.lineX ?? 0)
-  const anchorTop = hover?.pointerY ?? 0
-  const flipLeft = (hover?.lineX ?? 0) > innerW / 2
-  const flipUp = (hover ? hover.pointerY - m.top : 0) > innerH / 2
+  const anchorLeft = m.left + (active?.lineX ?? 0)
+  const anchorTop = active?.pointerY ?? 0
+  const flipLeft = (active?.lineX ?? 0) > innerW / 2
+  const flipUp = (active ? active.pointerY - m.top : 0) > innerH / 2
   const tx = flipLeft ? `calc(-100% - ${TOOLTIP_GAP}px)` : `${TOOLTIP_GAP}px`
   const ty = flipUp ? `calc(-100% - ${TOOLTIP_GAP}px)` : `${TOOLTIP_GAP}px`
 
@@ -226,7 +333,7 @@ function Chart({
                 fontFamily="var(--font-mono)"
                 fill="var(--text-muted)"
               >
-                {formatValue(Math.round(t))}
+                {formatValue(Number(t.toFixed(yDecimals)), yDecimals)}
               </text>
             </Group>
           ))}
@@ -235,14 +342,18 @@ function Chart({
             to={{ x: innerW, y: innerH }}
             stroke="var(--border-default)"
           />
+          {/* `defined` breaks the line and the fill over a null bucket, so a
+              bucket with no measurement is a hole, not a dip to zero. The y
+              accessor is never called for a null. */}
           {series.map((s) =>
             s.area ? (
               <AreaClosed
                 key={s.key + '-area'}
                 data={s.values}
                 x={(_v, i) => xScale(i)}
-                y={(v) => yScaleOf(s)(v)}
+                y={(v) => yScaleOf(s)(v ?? 0)}
                 yScale={yScaleOf(s)}
+                defined={(v) => v != null}
                 fill={s.color}
                 opacity={0.06}
                 stroke="none"
@@ -254,42 +365,80 @@ function Chart({
               key={s.key + '-line'}
               data={s.values}
               x={(_v, i) => xScale(i)}
-              y={(v) => yScaleOf(s)(v)}
+              y={(v) => yScaleOf(s)(v ?? 0)}
+              defined={(v) => v != null}
               stroke={s.color}
               strokeWidth={1.8}
               strokeLinejoin="round"
+              strokeDasharray={s.dash ? DASH_PATTERN : undefined}
             />
           ))}
-          {xTicks.map((lab, i) => (
+          {/* Each label keeps the x of its place in the full list, so dropping
+              one never moves the rest. */}
+          {xLabels.map(({ label, index }) => (
             <text
-              key={i}
-              x={(i / (Math.max(xTicks.length, 2) - 1)) * innerW}
+              key={index}
+              x={(index / xSpan) * innerW}
               y={innerH + 20}
               fontSize={11}
               fontFamily="var(--font-mono)"
               fill="var(--text-muted)"
               textAnchor={
-                i === 0 ? 'start' : i === xTicks.length - 1 ? 'end' : 'middle'
+                index === 0
+                  ? 'start'
+                  : index === xTicks.length - 1
+                    ? 'end'
+                    : 'middle'
               }
             >
-              {lab}
+              {label}
             </text>
           ))}
-          {hover && (
+          {shownMarkers.map((mk, i) => {
+            const x = xScale(mk.index)
+            const color = mk.color ?? 'var(--apx-coral)'
+            // The triangle sits in the top margin (svg y 4..12), so it needs
+            // negative y in this margin-shifted group.
+            const top = MARKER_TOP - m.top
+            return (
+              <Group key={`${mk.index}-${i}`}>
+                <Line
+                  from={{ x, y: 0 }}
+                  to={{ x, y: innerH }}
+                  stroke={color}
+                  strokeWidth={1}
+                  strokeDasharray="4,3"
+                  opacity={0.8}
+                  pointerEvents="none"
+                />
+                <polygon
+                  points={`${x - 4},${top} ${x + 4},${top} ${x},${top + MARKER_SIZE}`}
+                  fill={color}
+                >
+                  <title>{mk.label}</title>
+                </polygon>
+              </Group>
+            )
+          })}
+          {active && (
             <Group>
-              <Line
-                from={{ x: hover.lineX, y: 0 }}
-                to={{ x: hover.lineX, y: innerH }}
-                stroke="var(--text-muted)"
-                strokeWidth={1}
-                strokeDasharray="3,3"
-                pointerEvents="none"
-              />
-              {hover.markers.map((mk, i) =>
-                i === 0 || mk.value > 0 ? (
+              {/* The crosshair follows the pointer only. A hovered marker
+                  already draws its own line at the same x. */}
+              {hover && (
+                <Line
+                  from={{ x: hover.lineX, y: 0 }}
+                  to={{ x: hover.lineX, y: innerH }}
+                  stroke="var(--text-muted)"
+                  strokeWidth={1}
+                  strokeDasharray="3,3"
+                  pointerEvents="none"
+                />
+              )}
+              {active.markers.map((mk, i) =>
+                mk.value != null && (i === 0 || mk.value > 0) ? (
                   <circle
                     key={mk.key}
-                    cx={xScale(hover.index)}
+                    cx={xScale(active.index)}
                     cy={mk.y}
                     r={3}
                     fill={mk.color}
@@ -310,9 +459,36 @@ function Chart({
             onMouseLeave={onLeave}
             onTouchEnd={onLeave}
           />
+          {/* Hit targets of the marker triangles, after the plot rect so the
+              pointer reaches them. They sit in the top margin, clear of the
+              plot, so the two hover sources never fight. */}
+          {shownMarkers.map((mk, i) => {
+            const x = xScale(mk.index)
+            const top = MARKER_TOP - m.top
+            const clear = () => setMarkerAt((at) => (at === mk.index ? null : at))
+            return (
+              <rect
+                key={`hit-${mk.index}-${i}`}
+                x={x - MARKER_HIT / 2}
+                y={top - (MARKER_HIT - MARKER_SIZE) / 2}
+                width={MARKER_HIT}
+                height={MARKER_HIT}
+                fill="transparent"
+                pointerEvents="all"
+                style={{ cursor: 'default' }}
+                tabIndex={0}
+                role="img"
+                aria-label={mk.label}
+                onMouseEnter={() => setMarkerAt(mk.index)}
+                onMouseLeave={clear}
+                onFocus={() => setMarkerAt(mk.index)}
+                onBlur={clear}
+              />
+            )
+          })}
         </Group>
       </svg>
-      {hover && (
+      {active && (
         <div
           className="pointer-events-none absolute z-10 whitespace-nowrap rounded-none border border-[color:var(--border-default)] bg-[var(--apx-white)] px-[10px] py-[8px] text-[11px] leading-[1.6] text-[color:var(--text-primary)] shadow-[0_6px_18px_rgba(0,0,0,0.12)] [font-family:var(--font-mono)]"
           style={{
@@ -321,18 +497,21 @@ function Chart({
             transform: `translate(${tx}, ${ty})`,
           }}
         >
-          {formatPoint && (
+          {(formatPoint || activeLabels.length > 0) && (
             <div className="mb-[4px] text-[color:var(--text-muted)]">
-              {formatPoint(hover.index)}
+              {formatPoint && <div>{formatPoint(active.index)}</div>}
+              {activeLabels.map((lab) => (
+                <div key={lab}>{lab}</div>
+              ))}
             </div>
           )}
-          {hover.markers.map((mk) => (
+          {active.markers.map((mk) => (
             <div key={mk.key} className="flex items-center gap-[7px]">
               <span
                 className="h-[9px] w-[9px] flex-none rounded-none"
                 style={{ background: mk.color }}
               />
-              {formatValue(mk.value)} {mk.key}
+              {mk.value == null ? NO_VALUE : formatValue(mk.value)} {mk.key}
             </div>
           ))}
         </div>
