@@ -744,18 +744,12 @@ var generationTracked = []trackedKind{
 	{obj: &gatewayv1.GatewayClass{}, pred: generationOrDeletion, watch: true},
 	{obj: &gatewayv1.Gateway{}, pred: generationOrDeletion, watch: true},
 	{obj: &gatewayv1.HTTPRoute{}, pred: generationOrDeletion, watch: true},
-	// The reconciler never lists GRPCRoutes, so the translator always gets
-	// an empty set. A watch would only queue work that cannot change the
-	// output, but a GRPCRoute write must still bump generation.
 	{obj: &gatewayv1.GRPCRoute{}, pred: generationOrDeletion},
 	{obj: &gatewayv1alpha2.TCPRoute{}, pred: generationOrDeletion, watch: true},
 	{obj: &gatewayv1alpha2.UDPRoute{}, pred: generationOrDeletion, watch: true},
 	{obj: &gatewayv1alpha2.TLSRoute{}, pred: generationOrDeletion, watch: true},
 	{obj: &corev1alpha2.Backend{}, pred: generationOrDeletion, watch: true},
-	// The apiserver gives each served version its own store and strategy,
-	// so a write through v1alpha bumps generation only if v1alpha is listed
-	// here. The controller reads the v1alpha2 storage version, which is
-	// where the bump lands after conversion.
+	{obj: &corev1alpha2.Proxy{}, pred: generationOrDeletion, watch: true},
 	{obj: &corev1alpha.Backend{}, pred: generationOrDeletion},
 	{obj: &vpcv1alpha1.VPCService{}, pred: generationOrDeletion, watch: true},
 	{obj: &extensionsv1alpha2.EdgeFunction{}, pred: edgeFunctionRetrigger, watch: true},
@@ -777,13 +771,11 @@ func GenerationTrackedObjects() []resource.Object {
 
 // SetupWithManager sets up the controller with the Controller Manager.
 func (r *GatewayReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager) error {
-	// Indexes Gateway objects by the name of the referenced GatewayClass object.
 	if err := mgr.GetFieldIndexer().IndexField(ctx, &gatewayv1.Gateway{}, classGatewayIndex, func(obj client.Object) []string {
 		return []string{string(obj.(*gatewayv1.Gateway).Spec.GatewayClassName)}
 	}); err != nil {
 		return fmt.Errorf("failed to setup field indexer: %w", err)
 	}
-	// Indexes Gateway objects by the name of the referenced Proxy object.
 	if err := mgr.GetFieldIndexer().IndexField(ctx, &gatewayv1.Gateway{}, gatewayInfraRefIndex, func(obj client.Object) []string {
 		var ref *gwapiv1.LocalParametersReference
 		if obj.(*gatewayv1.Gateway).Spec.Infrastructure != nil {
@@ -797,7 +789,6 @@ func (r *GatewayReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manag
 	}); err != nil {
 		return fmt.Errorf("failed to setup field indexer: %w", err)
 	}
-	// Indexes HTTPRoute objects by the name of the referenced Gateway object.
 	if err := mgr.GetFieldIndexer().IndexField(ctx, &gatewayv1.HTTPRoute{}, gatewayHTTPRouteIndex, func(obj client.Object) []string {
 		route := obj.(*gatewayv1.HTTPRoute)
 		var gateways []string
@@ -810,7 +801,6 @@ func (r *GatewayReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manag
 	}); err != nil {
 		return fmt.Errorf("failed to setup field indexer: %w", err)
 	}
-	// Indexes HTTPRoute objects by the name of the referenced Backend object.
 	if err := mgr.GetFieldIndexer().IndexField(ctx, &gatewayv1.HTTPRoute{}, backendHTTPRouteIndex, func(obj client.Object) []string {
 		route := obj.(*gatewayv1.HTTPRoute)
 		var backends []string
@@ -825,7 +815,6 @@ func (r *GatewayReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manag
 	}); err != nil {
 		return fmt.Errorf("failed to setup field indexer: %w", err)
 	}
-	// Indexes TCPRoute objects by the name of the referenced Gateway object.
 	if err := mgr.GetFieldIndexer().IndexField(ctx, &gatewayv1alpha2.TCPRoute{}, gatewayTCPRouteIndex, func(obj client.Object) []string {
 		route := obj.(*gatewayv1alpha2.TCPRoute)
 		var gateways []string
@@ -838,7 +827,6 @@ func (r *GatewayReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manag
 	}); err != nil {
 		return fmt.Errorf("failed to setup field indexer: %w", err)
 	}
-	// Indexes TCPRoute objects by the name of the referenced Backend object.
 	if err := mgr.GetFieldIndexer().IndexField(ctx, &gatewayv1alpha2.TCPRoute{}, backendTCPRouteIndex, func(obj client.Object) []string {
 		route := obj.(*gatewayv1alpha2.TCPRoute)
 		var backends []string
@@ -853,7 +841,6 @@ func (r *GatewayReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manag
 	}); err != nil {
 		return fmt.Errorf("failed to setup field indexer: %w", err)
 	}
-	// Indexes UDPRoute objects by the name of the referenced Gateway object.
 	if err := mgr.GetFieldIndexer().IndexField(ctx, &gatewayv1alpha2.UDPRoute{}, gatewayUDPRouteIndex, func(obj client.Object) []string {
 		route := obj.(*gatewayv1alpha2.UDPRoute)
 		var gateways []string
@@ -866,7 +853,6 @@ func (r *GatewayReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manag
 	}); err != nil {
 		return fmt.Errorf("failed to setup field indexer: %w", err)
 	}
-	// Indexes UDPRoute objects by the name of the referenced Backend object.
 	if err := mgr.GetFieldIndexer().IndexField(ctx, &gatewayv1alpha2.UDPRoute{}, backendUDPRouteIndex, func(obj client.Object) []string {
 		route := obj.(*gatewayv1alpha2.UDPRoute)
 		var backends []string
@@ -881,7 +867,6 @@ func (r *GatewayReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manag
 	}); err != nil {
 		return fmt.Errorf("failed to setup field indexer: %w", err)
 	}
-	// Indexes TLSRoute objects by the name of the referenced Gateway object.
 	if err := mgr.GetFieldIndexer().IndexField(ctx, &gatewayv1alpha2.TLSRoute{}, gatewayTLSRouteIndex, func(obj client.Object) []string {
 		route := obj.(*gatewayv1alpha2.TLSRoute)
 		var gateways []string
@@ -894,7 +879,6 @@ func (r *GatewayReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manag
 	}); err != nil {
 		return fmt.Errorf("failed to setup field indexer: %w", err)
 	}
-	// Indexes TLSRoute objects by the name of the referenced Backend object.
 	if err := mgr.GetFieldIndexer().IndexField(ctx, &gatewayv1alpha2.TLSRoute{}, backendTLSRouteIndex, func(obj client.Object) []string {
 		route := obj.(*gatewayv1alpha2.TLSRoute)
 		var backends []string
@@ -910,7 +894,6 @@ func (r *GatewayReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manag
 		return fmt.Errorf("failed to setup field indexer: %w", err)
 	}
 	if r.watchK8s {
-		// Indexes HTTPRoute objects by the name of the referenced Service object.
 		if err := mgr.GetFieldIndexer().IndexField(ctx, &gatewayv1.HTTPRoute{}, serviceHTTPRouteIndex, func(obj client.Object) []string {
 			route := obj.(*gatewayv1.HTTPRoute)
 			var services []string
@@ -925,7 +908,6 @@ func (r *GatewayReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manag
 		}); err != nil {
 			return fmt.Errorf("failed to setup field indexer: %w", err)
 		}
-		// Indexes TCPRoute objects by the name of the referenced Service object.
 		if err := mgr.GetFieldIndexer().IndexField(ctx, &gatewayv1alpha2.TCPRoute{}, serviceTCPRouteIndex, func(obj client.Object) []string {
 			route := obj.(*gatewayv1alpha2.TCPRoute)
 			var services []string
@@ -940,7 +922,6 @@ func (r *GatewayReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manag
 		}); err != nil {
 			return fmt.Errorf("failed to setup field indexer: %w", err)
 		}
-		// Indexes UDPRoute objects by the name of the referenced Service object.
 		if err := mgr.GetFieldIndexer().IndexField(ctx, &gatewayv1alpha2.UDPRoute{}, serviceUDPRouteIndex, func(obj client.Object) []string {
 			route := obj.(*gatewayv1alpha2.UDPRoute)
 			var services []string
@@ -955,7 +936,6 @@ func (r *GatewayReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manag
 		}); err != nil {
 			return fmt.Errorf("failed to setup field indexer: %w", err)
 		}
-		// Indexes TLSRoute objects by the name of the referenced Service object.
 		if err := mgr.GetFieldIndexer().IndexField(ctx, &gatewayv1alpha2.TLSRoute{}, serviceTLSRouteIndex, func(obj client.Object) []string {
 			route := obj.(*gatewayv1alpha2.TLSRoute)
 			var services []string
@@ -971,8 +951,6 @@ func (r *GatewayReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manag
 			return fmt.Errorf("failed to setup field indexer: %w", err)
 		}
 	}
-	// Indexes each route type by the name of the referenced VPCService
-	// object, mirroring the Backend indexes above.
 	if err := mgr.GetFieldIndexer().IndexField(ctx, &gatewayv1.HTTPRoute{}, vpcServiceHTTPRouteIndex, func(obj client.Object) []string {
 		route := obj.(*gatewayv1.HTTPRoute)
 		var services []string
@@ -1029,7 +1007,6 @@ func (r *GatewayReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manag
 	}); err != nil {
 		return fmt.Errorf("failed to setup field indexer: %w", err)
 	}
-	// Index EdgeFunction objects that are ready.
 	if err := mgr.GetFieldIndexer().IndexField(ctx, &extensionsv1alpha2.EdgeFunction{}, edgeFunctionLiveIndex, func(obj client.Object) []string {
 		if obj.(*extensionsv1alpha2.EdgeFunction).Status.LiveRevision != "" {
 			return []string{"true"}
