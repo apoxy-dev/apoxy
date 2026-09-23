@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	routev3 "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
 	dfpclusterv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/clusters/dynamic_forward_proxy/v3"
 	dfpfilterv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/dynamic_forward_proxy/v3"
 	httpv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/upstreams/http/v3"
@@ -363,4 +364,79 @@ func TestBuildTypedExtensionProtocolOptions_NonDFP_NoAutoSNI(t *testing.T) {
 
 	assert.Nil(t, hpo.GetUpstreamHttpProtocolOptions(),
 		"non-DFP clusters must not have upstream_http_protocol_options forced on")
+}
+
+// TestDynamicForwardProxyPatchRoute checks that a DFP route with a hostname
+// rewrite gives the rewrite to its DFP filter. The filter resolves the Host
+// before the router applies the route's host_rewrite_literal.
+func TestDynamicForwardProxyPatchRoute(t *testing.T) {
+	dfpDestination := &ir.RouteDestination{
+		Name: "dfp-backend",
+		Settings: []*ir.DestinationSetting{{
+			AddressType:         ptr.To(ir.DYNAMIC_PROXY),
+			DynamicForwardProxy: &ir.DynamicForwardProxy{Name: "dfp-backend"},
+		}},
+	}
+	staticDestination := &ir.RouteDestination{
+		Name:     "static-backend",
+		Settings: []*ir.DestinationSetting{{Endpoints: []*ir.DestinationEndpoint{{Host: "httpbin.dev", Port: 443}}}},
+	}
+
+	cases := []struct {
+		name            string
+		destination     *ir.RouteDestination
+		urlRewrite      *ir.URLRewrite
+		wantCluster     string
+		wantHostRewrite string
+	}{
+		{
+			name:            "dfp route with a hostname rewrite",
+			destination:     dfpDestination,
+			urlRewrite:      &ir.URLRewrite{Hostname: ptr.To("httpbin.dev")},
+			wantCluster:     "dfp-backend",
+			wantHostRewrite: "httpbin.dev",
+		},
+		{
+			name:        "dfp route with only a path rewrite",
+			destination: dfpDestination,
+			urlRewrite:  &ir.URLRewrite{Path: &ir.HTTPPathModifier{PrefixMatchReplace: ptr.To("/anything")}},
+			wantCluster: "dfp-backend",
+		},
+		{
+			name:        "dfp route without a rewrite",
+			destination: dfpDestination,
+			wantCluster: "dfp-backend",
+		},
+		{
+			name:        "static route with a hostname rewrite",
+			destination: staticDestination,
+			urlRewrite:  &ir.URLRewrite{Hostname: ptr.To("httpbin.dev")},
+			wantCluster: "static-backend",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			irRoute := &ir.HTTPRoute{Name: "route", Destination: tc.destination, URLRewrite: tc.urlRewrite}
+			route := &routev3.Route{Action: &routev3.Route_Route{Route: &routev3.RouteAction{
+				ClusterSpecifier: &routev3.RouteAction_Cluster{Cluster: tc.destination.Name},
+			}}}
+
+			require.NoError(t, (&dynamicForwardProxy{}).patchRoute(route, irRoute))
+
+			assert.Equal(t, tc.wantCluster, route.GetRoute().GetCluster())
+			filterAny, ok := route.GetTypedPerFilterConfig()[dynamicForwardProxyFilterName(irRoute)]
+			require.True(t, ok, "the route must enable its DFP filter")
+			var filterCfg routev3.FilterConfig
+			require.NoError(t, filterAny.UnmarshalTo(&filterCfg))
+			assert.False(t, filterCfg.GetDisabled())
+
+			if tc.wantHostRewrite == "" {
+				assert.Empty(t, filterCfg.GetConfig().GetTypeUrl(), "no per-route config without a hostname rewrite")
+				return
+			}
+			var perRoute dfpfilterv3.PerRouteConfig
+			require.NoError(t, filterCfg.GetConfig().UnmarshalTo(&perRoute))
+			assert.Equal(t, tc.wantHostRewrite, perRoute.GetHostRewriteLiteral())
+		})
+	}
 }

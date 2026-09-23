@@ -311,9 +311,38 @@ func (*dynamicForwardProxy) patchRoute(route *routev3.Route, irRoute *ir.HTTPRou
 		rr.Route.ClusterSpecifier = &routev3.RouteAction_Cluster{
 			Cluster: irRoute.Destination.Settings[0].DynamicForwardProxy.Name,
 		}
+
+		// The filter resolves the Host before the router applies the route's
+		// host rewrite, so the filter must rewrite it too.
+		if irRoute.URLRewrite != nil && irRoute.URLRewrite.Hostname != nil {
+			return enableDynamicForwardProxyHostRewrite(route, dynamicForwardProxyFilterName(irRoute), *irRoute.URLRewrite.Hostname)
+		}
 	}
 
 	return enableFilterOnRoute(route, dynamicForwardProxyFilterName(irRoute))
+}
+
+// enableDynamicForwardProxyHostRewrite enables the route's DFP filter with a per-route host
+// rewrite.
+func enableDynamicForwardProxyHostRewrite(route *routev3.Route, filterName, host string) error {
+	if _, ok := route.GetTypedPerFilterConfig()[filterName]; ok {
+		return fmt.Errorf("route already contains filter config: %s", filterName)
+	}
+	perRoute, err := anypb.New(&dfpfilterv3.PerRouteConfig{
+		HostRewriteSpecifier: &dfpfilterv3.PerRouteConfig_HostRewriteLiteral{HostRewriteLiteral: host},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to marshal dynamic forward proxy per-route config: %w", err)
+	}
+	filterCfg, err := anypb.New(&routev3.FilterConfig{Config: perRoute})
+	if err != nil {
+		return fmt.Errorf("failed to marshal dynamic forward proxy filter config: %w", err)
+	}
+	if route.TypedPerFilterConfig == nil {
+		route.TypedPerFilterConfig = make(map[string]*anypb.Any)
+	}
+	route.TypedPerFilterConfig[filterName] = filterCfg
+	return nil
 }
 
 func routeContainsDynamicForwardProxy(r *ir.HTTPRoute) bool {
