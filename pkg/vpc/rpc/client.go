@@ -149,7 +149,7 @@ func (cs *ClientStream) RecvMsg(m proto.Message) error {
 	if cs.done.Load() {
 		return cs.final
 	}
-	kind, p, err := cs.fr.readFrame(cs.conn.opts.maxMessageSize)
+	kind, p, err := cs.fr.readFrame(cs.conn.opts.maxMessageSize, cs.conn.opts.maxHeaderSize)
 	switch {
 	case err != nil:
 		if err == io.EOF {

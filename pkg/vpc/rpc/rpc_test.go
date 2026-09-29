@@ -246,6 +246,8 @@ func (s *echoServer) Unary(ctx context.Context, in *testpb.EchoRequest) (*testpb
 		return nil, s.block(ctx, in.Text, nil)
 	case in.Text == "plain error":
 		return nil, errors.New("plain error")
+	case in.Text == "large error":
+		return nil, rpc.Errorf(rpc.Internal, "%s", strings.Repeat("x", 8<<10))
 	case strings.HasPrefix(in.Text, "code "):
 		var c uint32
 		_, _ = fmt.Sscanf(in.Text, "code %d", &c)
@@ -693,6 +695,78 @@ func TestShutdown(t *testing.T) {
 			case <-time.After(5 * time.Second):
 				t.Fatal("Serve did not return")
 			}
+		})
+	}
+}
+
+// TestBlockedStatusWrite checks that the call deadline and Serve shutdown
+// reset a stream whose status write waits for flow control.
+func TestBlockedStatusWrite(t *testing.T) {
+	cases := []struct {
+		name     string
+		timeout  time.Duration
+		wantCode quic.StreamErrorCode
+	}{
+		{"deadline", 200 * time.Millisecond, rpc.StreamDeadlineExceeded},
+		{"serve shutdown", 0, rpc.StreamCanceled},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// The 8 KiB status does not fit in the 1 KiB stream window of the caller.
+			p := newPair(t, pairConfig{quic: &quic.Config{InitialStreamReceiveWindow: 1 << 10, MaxStreamReceiveWindow: 1 << 10}})
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			str, err := p.dq.OpenStreamSync(ctx)
+			require.NoError(t, err)
+			_, err = str.Write(append(rawCallStart(testpb.Echo_Unary_FullMethodName, tc.timeout), rawFrame(0x02, &testpb.EchoRequest{Text: "large error"})...))
+			require.NoError(t, err)
+			require.NoError(t, str.Close())
+
+			time.Sleep(400 * time.Millisecond) // The handler returns and the status write blocks.
+			if tc.timeout == 0 {
+				p.stopListener()
+				select {
+				case <-p.listenerServeDone:
+					p.listenerServeDone <- nil
+				case <-time.After(5 * time.Second):
+					t.Fatal("Serve did not return")
+				}
+			}
+			_, err = io.ReadAll(str)
+			requireStreamError(t, err, tc.wantCode)
+		})
+	}
+}
+
+// TestStatusLimits checks that a status frame gets the header limit, not the
+// message limit.
+func TestStatusLimits(t *testing.T) {
+	cases := []struct {
+		name      string
+		opts      []rpc.Option
+		rawStatus *wirepb.Status // Sent by a raw listener when not nil.
+		want      rpc.Code
+	}{
+		{"small message limit", []rpc.Option{rpc.WithMaxMessageSize(16)}, nil, rpc.Unimplemented},
+		{"status above header limit", []rpc.Option{rpc.WithMaxHeaderSize(64)}, &wirepb.Status{Code: uint32(rpc.Internal), Message: strings.Repeat("x", 100)}, rpc.ResourceExhausted},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := newPair(t, pairConfig{opts: tc.opts, noListenerServer: tc.rawStatus != nil})
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if tc.rawStatus != nil {
+				go func() {
+					str, err := p.lq.AcceptStream(ctx)
+					if err != nil {
+						return
+					}
+					_, _ = str.Write(rawFrame(0x03, tc.rawStatus))
+					_ = str.Close()
+				}()
+			}
+			err := p.dialer.Invoke(ctx, "/x.Y/Z", &testpb.EchoRequest{}, &testpb.EchoResponse{})
+			assert.Equal(t, tc.want, rpc.CodeOf(err), "error: %v", err)
 		})
 	}
 }

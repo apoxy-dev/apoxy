@@ -126,7 +126,7 @@ func (s *ServerStream) Method() string { return s.method }
 // RecvMsg reads the next message into m. It returns io.EOF when the caller
 // stops sending.
 func (s *ServerStream) RecvMsg(m proto.Message) error {
-	kind, p, err := s.fr.readFrame(s.conn.opts.maxMessageSize)
+	kind, p, err := s.fr.readFrame(s.conn.opts.maxMessageSize, s.conn.opts.maxHeaderSize)
 	if err == nil && kind != frameMessage {
 		err, s.fr.bad = errUnexpected, errUnexpected
 	}
@@ -206,13 +206,15 @@ func (c *Conn) serveStream(ctx context.Context, str quic.Stream) {
 	s.ctx = hctx
 	// A STOP_SENDING from the caller cancels the send side context and so
 	// the handler context. When the handler context ends, reset the stream
-	// so that RecvMsg and SendMsg do not block.
+	// so that RecvMsg, SendMsg and the status write do not block.
 	stopPeer := context.AfterFunc(str.Context(), func() { cancel(context.Cause(str.Context())) })
 	stopAbort := context.AfterFunc(hctx, func() { s.abort(ctxStreamCode(hctx)) })
 	err = handler(hctx, s)
-	stopAbort()
+	// Stop stopPeer first: the Close in finish cancels str.Context(). A
+	// STOP_SENDING from the caller still ends a blocked status write.
 	stopPeer()
 	s.finish(hctx, err)
+	stopAbort()
 }
 
 // finish sends the status for err and ends both directions of the stream.

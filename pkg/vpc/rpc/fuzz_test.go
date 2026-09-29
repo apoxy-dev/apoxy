@@ -72,7 +72,7 @@ func FuzzReadFrames(f *testing.F) {
 		defer r.release()
 		total := 0
 		for {
-			kind, p, err := r.readFrame(fuzzMax)
+			kind, p, err := r.readFrame(fuzzMax, fuzzMax)
 			if err != nil {
 				return
 			}
@@ -106,7 +106,7 @@ func FuzzDecodeStatus(f *testing.F) {
 		}
 		r := newReader(appendStatus(nil, e, 1<<20), false)
 		defer r.release()
-		_, p2, rerr := r.readFrame(1 << 20)
+		_, p2, rerr := r.readFrame(1<<20, 1<<20)
 		if rerr != nil {
 			t.Fatal(rerr)
 		}

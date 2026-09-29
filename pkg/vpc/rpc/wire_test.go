@@ -54,12 +54,12 @@ func TestFrameRoundTrip(t *testing.T) {
 				f := newReader(b, oneByte)
 				defer f.release()
 				for _, w := range want {
-					kind, p, err := f.readFrame(1 << 20)
+					kind, p, err := f.readFrame(1<<20, 1<<20)
 					require.NoError(t, err)
 					assert.Equal(t, frameMessage, kind)
 					assert.Equal(t, w, p)
 				}
-				_, _, err := f.readFrame(1 << 20)
+				_, _, err := f.readFrame(1<<20, 1<<20)
 				assert.Equal(t, io.EOF, err)
 				assert.True(t, f.atEOF())
 			})
@@ -88,9 +88,9 @@ func TestReadFrameErrors(t *testing.T) {
 			t.Run(tc.name, func(t *testing.T) {
 				f := newReader(tc.data, oneByte)
 				defer f.release()
-				_, _, err := f.readFrame(tc.max)
+				_, _, err := f.readFrame(tc.max, tc.max)
 				assert.ErrorIs(t, err, tc.want)
-				_, _, err = f.readFrame(tc.max)
+				_, _, err = f.readFrame(tc.max, tc.max)
 				assert.ErrorIs(t, err, tc.want, "second read")
 			})
 		}
@@ -153,7 +153,7 @@ func TestStatusRoundTrip(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newReader(appendStatus(nil, tc.err, 512), false)
 			defer f.release()
-			kind, p, err := f.readFrame(512)
+			kind, p, err := f.readFrame(512, 512)
 			require.NoError(t, err)
 			require.Equal(t, frameStatus, kind)
 			got := decodeStatus(p)

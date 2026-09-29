@@ -136,22 +136,27 @@ func (f *frameReader) need(n int) error {
 	return nil
 }
 
-// readFrame reads one frame. The payload stays valid until the next call.
-// It returns io.EOF only when the stream ends at a frame boundary.
-func (f *frameReader) readFrame(max int) (kind byte, payload []byte, err error) {
+// readFrame reads one frame. A message frame can have msgMax bytes and other
+// frames ctlMax bytes. The payload stays valid until the next call. It
+// returns io.EOF only when the stream ends at a frame boundary.
+func (f *frameReader) readFrame(msgMax, ctlMax int) (kind byte, payload []byte, err error) {
 	if f.bad != nil {
 		return 0, nil, f.bad
 	}
-	kind, payload, err = f.next(max)
+	kind, payload, err = f.next(msgMax, ctlMax)
 	if err != nil && err != io.EOF {
 		f.bad = err
 	}
 	return kind, payload, err
 }
 
-func (f *frameReader) next(max int) (kind byte, payload []byte, err error) {
+func (f *frameReader) next(msgMax, ctlMax int) (kind byte, payload []byte, err error) {
 	if err := f.need(1); err != nil {
 		return 0, nil, err
+	}
+	max := ctlMax
+	if f.b[f.s] == frameMessage {
+		max = msgMax
 	}
 	var l uint64
 	var hl int
@@ -214,7 +219,7 @@ func readCallStart(f *frameReader, max int) (*wirepb.CallHeader, error) {
 		return nil, errUnsupported
 	}
 	f.s += 2
-	kind, p, err := f.readFrame(max)
+	kind, p, err := f.readFrame(max, max)
 	if err != nil {
 		return nil, unexpectedEOF(err)
 	}
