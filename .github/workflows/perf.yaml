@@ -17,9 +17,10 @@ concurrency:
 jobs:
   # netns + netem rig (cmd/perfrig) at 20 ms RTT. cmd/perfrig/baseline.json
   # holds the numbers of this runner type. The compare step fails on a
-  # regression above the baseline tolerance (10%).
+  # regression above the baseline tolerance (10%). A GitHub-hosted runner,
+  # because the Blacksmith kernel (6.6.x) has no sch_netem module.
   netns-rig:
-    runs-on: blacksmith-16vcpu-ubuntu-2204
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
       DURATION: ${{ inputs.duration || '30s' }}
