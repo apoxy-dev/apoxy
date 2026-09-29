@@ -7,7 +7,7 @@ This document provides architecture overview and development instructions for th
 **Apoxy** is an API gateway and proxy management platform built in Go with Kubernetes-native architecture. It provides infrastructure for managing, routing, and controlling API proxies across cloud and on-premises deployments.
 
 - **Module**: `github.com/apoxy-dev/apoxy`
-- **Go Version**: 1.24.3
+- **Go Version**: 1.26.8
 
 ## Build Instructions
 

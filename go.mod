@@ -1,6 +1,6 @@
 module github.com/apoxy-dev/apoxy
 
-go 1.25.5
+go 1.26.8
 
 require (
 	capnproto.org/go/capnp/v3 v3.1.0-alpha.2
