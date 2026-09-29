@@ -1,0 +1,34 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+syntax = "proto3";
+
+package apoxy.vpc.rpc.test.v1;
+
+option go_package = "github.com/apoxy-dev/apoxy/pkg/vpc/rpc/internal/testpb;testpb";
+
+message EchoRequest {
+  string text = 1;
+  // Number of responses for ServerStream.
+  uint32 count = 2;
+  bytes payload = 3;
+}
+
+message EchoResponse {
+  string text = 1;
+  // Name of the side that ran the handler.
+  string served_by = 2;
+  uint32 seq = 3;
+  bytes payload = 4;
+}
+
+// Echo is the test service of the rpc package.
+service Echo {
+  // Unary returns the request text.
+  rpc Unary(EchoRequest) returns (EchoResponse);
+  // ServerStream sends count responses.
+  rpc ServerStream(EchoRequest) returns (stream EchoResponse);
+  // ClientStream returns the request texts joined.
+  rpc ClientStream(stream EchoRequest) returns (EchoResponse);
+  // Bidi returns one response for each request.
+  rpc Bidi(stream EchoRequest) returns (stream EchoResponse);
+}

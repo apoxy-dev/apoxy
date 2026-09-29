@@ -1,0 +1,25 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+syntax = "proto3";
+
+package apoxy.vpc.rpc.v1;
+
+option go_package = "github.com/apoxy-dev/apoxy/pkg/vpc/rpc/internal/wirepb;wirepb";
+
+// CallHeader is the first frame on a call stream.
+message CallHeader {
+  // Full method name, "/package.Service/Method".
+  string method = 1;
+  // Time left before the caller's deadline, in nanoseconds, when the call
+  // starts. Zero means no deadline.
+  int64 timeout_ns = 2;
+  // Call metadata.
+  map<string, string> metadata = 3;
+}
+
+// Status is the last frame that the called side sends.
+message Status {
+  // Status code. The numbers are the same as the gRPC codes.
+  uint32 code = 1;
+  string message = 2;
+}
