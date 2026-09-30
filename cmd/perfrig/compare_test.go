@@ -20,10 +20,16 @@ func result(key string, gbps, clientCPG, serverCPG float64) Result {
 	return r
 }
 
+func pps(r Result, v float64) Result {
+	r.Throughput.PacketsPerSecond = v
+	return r
+}
+
 func TestCompare(t *testing.T) {
 	base := Baseline{Tolerance: 0.10, Entries: map[string]BaselineEntry{
 		"k":     {Gbps: 10, ClientCoresPerGbps: 0.2, ServerCoresPerGbps: 0.4},
 		"gbps":  {Gbps: 10},
+		"pps":   {PacketsPerSecond: 500000},
 		"loose": {Gbps: 10, ClientCoresPerGbps: 0.2, ServerCoresPerGbps: 0.4, Tolerance: 0.25},
 	}}
 	cases := []struct {
@@ -47,6 +53,11 @@ func TestCompare(t *testing.T) {
 			wantOK: true, wantRegressed: []string{"gbps", "client_cores_per_gbps", "server_cores_per_gbps"},
 		},
 		{name: "zero fields not checked", baseline: base, res: result("gbps", 10, 9, 9), wantOK: true},
+		{name: "packet rate same", baseline: base, res: pps(result("pps", 0, 0, 0), 480000), wantOK: true},
+		{
+			name: "packet rate drop", baseline: base, res: pps(result("pps", 0, 0, 0), 250000),
+			wantOK: true, wantRegressed: []string{"packets_per_second"},
+		},
 		{name: "entry tolerance", baseline: base, res: result("loose", 8, 0.24, 0.48), wantOK: true},
 		{
 			name:     "default tolerance",
@@ -70,7 +81,11 @@ func TestCompare(t *testing.T) {
 }
 
 func TestCompareResults(t *testing.T) {
-	base := Baseline{Tolerance: 0.10, Entries: map[string]BaselineEntry{"k": {Gbps: 10, ClientCoresPerGbps: 0.2}}}
+	base := Baseline{Tolerance: 0.10, Entries: map[string]BaselineEntry{
+		"k":     {Gbps: 10, ClientCoresPerGbps: 0.2},
+		"pps":   {PacketsPerSecond: 500000},
+		"empty": {Source: "no numbers"},
+	}}
 	cases := []struct {
 		name     string
 		results  []Result
@@ -80,7 +95,7 @@ func TestCompareResults(t *testing.T) {
 		{
 			name:     "no baseline passes",
 			results:  []Result{result("new", 3, 0.3, 0.3)},
-			wantText: []string{"NO BASELINE new", "gbps=3"},
+			wantText: []string{"NO BASELINE new", "gbps=3", "packets_per_second=0"},
 		},
 		{
 			name:     "pass",
@@ -92,6 +107,18 @@ func TestCompareResults(t *testing.T) {
 			results:  []Result{result("new", 3, 0.3, 0.3), result("k", 5, 0.2, 0.3)},
 			wantErr:  true,
 			wantText: []string{"NO BASELINE new", "FAIL k", "REGRESSION"},
+		},
+		{
+			name:     "packet rate drop fails",
+			results:  []Result{pps(result("pps", 0, 0.3, 0.3), 250000)},
+			wantErr:  true,
+			wantText: []string{"FAIL pps", "packets_per_second", "-50.0%", "REGRESSION"},
+		},
+		{
+			name:     "entry with no metric fails",
+			results:  []Result{result("empty", 3, 0.3, 0.3)},
+			wantErr:  true,
+			wantText: []string{"FAIL empty", "checks no metric"},
 		},
 	}
 	for _, tc := range cases {

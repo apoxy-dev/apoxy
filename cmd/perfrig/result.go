@@ -75,7 +75,8 @@ type CPU struct {
 	Host HostCPU `json:"host"`
 }
 
-// ProcCPU is user+sys time of a process and the children that it waited for.
+// ProcCPU is the user and system time of one side while the client ran. The
+// server can run before and after the client, so its time is a delta of samples.
 type ProcCPU struct {
 	UserS   float64 `json:"user_s"`
 	SystemS float64 `json:"system_s"`
@@ -106,9 +107,9 @@ func newProcCPU(user, system, seconds, gbps float64) ProcCPU {
 }
 
 func resultKey(arch, workload string, s Settings) string {
-	return fmt.Sprintf("%s %s streams=%d duration=%gs delay=%gms jitter=%gms loss=%g%% rate=%s mtu=%d bitrate=%s window=%s",
-		arch, workload, s.Streams, s.DurationS, s.DelayMS, s.JitterMS, s.LossPercent,
-		orNone(s.Rate), s.MTU, orNone(s.Bitrate), orNone(s.Window))
+	return fmt.Sprintf("%s %s streams=%d duration=%gs omit=%gs delay=%gms jitter=%gms loss=%g%% rate=%s queue=%d mtu=%d bitrate=%s window=%s",
+		arch, workload, s.Streams, s.DurationS, s.OmitS, s.DelayMS, s.JitterMS, s.LossPercent,
+		orNone(s.Rate), s.QueueLimit, s.MTU, orNone(s.Bitrate), orNone(s.Window))
 }
 
 func orNone(s string) string {

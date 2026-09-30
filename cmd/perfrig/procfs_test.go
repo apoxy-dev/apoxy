@@ -1,7 +1,11 @@
 package main
 
 import (
+	"os/exec"
+	"runtime"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -41,6 +45,59 @@ func TestParseProcStat(t *testing.T) {
 			assert.InDelta(t, tc.want.IRQ, got.IRQ, 1e-9)
 		})
 	}
+}
+
+func TestParsePIDStat(t *testing.T) {
+	const tail = " 0 -1 4194560 100 0 0 0 250 130 7 3 20 0 1 0 100 0 0\n"
+	cases := []struct {
+		name    string
+		in      string
+		want    pidStat
+		wantErr bool
+	}{
+		{name: "normal", in: "1234 (iperf3) S 1 1234 1234" + tail, want: pidStat{ppid: 1, utime: 250, stime: 130, cutime: 7, cstime: 3}},
+		{name: "comm with spaces and parens", in: "77 (a) b (c)) R 70 70 70" + tail, want: pidStat{ppid: 70, utime: 250, stime: 130, cutime: 7, cstime: 3}},
+		{name: "short", in: "1 (x) S 1 1 1 0\n", wantErr: true},
+		{name: "no comm", in: "1 x S 1 1 1" + tail, wantErr: true},
+		{name: "bad ppid", in: "1 (x) S a 1 1" + tail, wantErr: true},
+		{name: "bad time", in: "1 (x) S 1 1 1 0 -1 0 0 0 0 0 a 0 0 0\n", wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parsePIDStat(tc.in)
+			if tc.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestTreeCPU(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("needs /proc")
+	}
+	// timeout puts the spinning child in a new process group.
+	cmd := exec.Command("sh", "-c", `timeout 2 sh -c 'while :; do :; done'; exec sleep 30`)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	require.NoError(t, cmd.Start())
+	pid := cmd.Process.Pid
+	t.Cleanup(func() {
+		_ = syscall.Kill(-pid, syscall.SIGKILL)
+		_ = cmd.Wait()
+	})
+
+	require.Eventually(t, func() bool {
+		u, s, err := treeCPU(pid)
+		return err == nil && u+s >= 0.3
+	}, 1500*time.Millisecond, 50*time.Millisecond)
+
+	require.NoError(t, syscall.Kill(-pid, syscall.SIGKILL))
+	_ = cmd.Wait()
+	_, _, err := treeCPU(pid)
+	require.ErrorIs(t, err, errNoProcess)
 }
 
 func TestParseSocket(t *testing.T) {

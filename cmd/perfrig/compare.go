@@ -25,6 +25,7 @@ type Baseline struct {
 // BaselineEntry holds the numbers of one result key. A zero field is not checked.
 type BaselineEntry struct {
 	Gbps               float64 `json:"gbps"`
+	PacketsPerSecond   float64 `json:"packets_per_second"`
 	ClientCoresPerGbps float64 `json:"client_cores_per_gbps"`
 	ServerCoresPerGbps float64 `json:"server_cores_per_gbps"`
 	// Tolerance overrides Baseline.Tolerance for this entry.
@@ -69,6 +70,7 @@ func compare(b Baseline, r Result) (checks []Check, ok bool) {
 		checks = append(checks, Check{Metric: metric, Baseline: base, Got: got, Regressed: bad})
 	}
 	add("gbps", e.Gbps, r.Throughput.Gbps, true)
+	add("packets_per_second", e.PacketsPerSecond, r.Throughput.PacketsPerSecond, true)
 	add("client_cores_per_gbps", e.ClientCoresPerGbps, r.CPU.Client.CoresPerGbps, false)
 	add("server_cores_per_gbps", e.ServerCoresPerGbps, r.CPU.Server.CoresPerGbps, false)
 	return checks, true
@@ -78,6 +80,7 @@ func compare(b Baseline, r Result) (checks []Check, ok bool) {
 func entryFor(r Result) BaselineEntry {
 	return BaselineEntry{
 		Gbps:               r.Throughput.Gbps,
+		PacketsPerSecond:   r.Throughput.PacketsPerSecond,
 		ClientCoresPerGbps: r.CPU.Client.CoresPerGbps,
 		ServerCoresPerGbps: r.CPU.Server.CoresPerGbps,
 		Source:             r.StartedAt.Format("2006-01-02") + " " + r.Host.Kernel,
@@ -85,22 +88,30 @@ func entryFor(r Result) BaselineEntry {
 }
 
 // compareResults writes a report to w. It returns errRegression when a result
-// is worse than its baseline entry. A result with no entry passes.
+// is worse than its baseline entry or its entry checks no metric. A result with
+// no entry passes.
 func compareResults(w io.Writer, b Baseline, results []Result) error {
-	regressed := 0
+	failed := 0
 	for _, r := range results {
 		checks, ok := compare(b, r)
 		if !ok {
-			fmt.Fprintf(w, "NO BASELINE %s\n  gbps=%g client_cores_per_gbps=%g server_cores_per_gbps=%g\n",
-				r.Key, r.Throughput.Gbps, r.CPU.Client.CoresPerGbps, r.CPU.Server.CoresPerGbps)
+			fmt.Fprintf(w, "NO BASELINE %s\n  gbps=%g packets_per_second=%g client_cores_per_gbps=%g server_cores_per_gbps=%g\n",
+				r.Key, r.Throughput.Gbps, r.Throughput.PacketsPerSecond, r.CPU.Client.CoresPerGbps, r.CPU.Server.CoresPerGbps)
+			continue
+		}
+		if len(checks) == 0 {
+			fmt.Fprintf(w, "FAIL %s\n  the baseline entry checks no metric\n", r.Key)
+			failed++
 			continue
 		}
 		status := "PASS"
 		for _, c := range checks {
 			if c.Regressed {
 				status = "FAIL"
-				regressed++
 			}
+		}
+		if status == "FAIL" {
+			failed++
 		}
 		fmt.Fprintf(w, "%s %s\n", status, r.Key)
 		for _, c := range checks {
@@ -112,8 +123,8 @@ func compareResults(w io.Writer, b Baseline, results []Result) error {
 				c.Metric, c.Got, c.Baseline, 100*c.Change(), mark)
 		}
 	}
-	if regressed > 0 {
-		return fmt.Errorf("%w: %d metrics are outside the tolerance", errRegression, regressed)
+	if failed > 0 {
+		return fmt.Errorf("%w: %d of %d results failed", errRegression, failed, len(results))
 	}
 	return nil
 }

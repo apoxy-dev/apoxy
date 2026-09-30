@@ -17,13 +17,14 @@ func TestResultKey(t *testing.T) {
 		{
 			name: "defaults",
 			cfg:  config{Duration: 30 * time.Second, Delay: 10 * time.Millisecond, MTU: 1500, Streams: 4},
-			want: "x86_64 w streams=4 duration=30s delay=10ms jitter=0ms loss=0% rate=none mtu=1500 bitrate=none window=none",
+			want: "x86_64 w streams=4 duration=30s omit=0s delay=10ms jitter=0ms loss=0% rate=none queue=0 mtu=1500 bitrate=none window=none",
 		},
 		{
 			name: "all set",
-			cfg: config{Duration: 60 * time.Second, Delay: 10 * time.Millisecond, Jitter: 500 * time.Microsecond,
-				Loss: 0.1, Rate: "10gbit", MTU: 1280, Streams: 1, Bitrate: "2G", Window: "8M"},
-			want: "x86_64 w streams=1 duration=60s delay=10ms jitter=0.5ms loss=0.1% rate=10gbit mtu=1280 bitrate=2G window=8M",
+			cfg: config{Duration: 60 * time.Second, Omit: 5 * time.Second, Delay: 10 * time.Millisecond,
+				Jitter: 500 * time.Microsecond, Loss: 0.1, Rate: "10gbit", QueueLimit: 100000, MTU: 1280, Streams: 1,
+				Bitrate: "2G", Window: "8M"},
+			want: "x86_64 w streams=1 duration=60s omit=5s delay=10ms jitter=0.5ms loss=0.1% rate=10gbit queue=100000 mtu=1280 bitrate=2G window=8M",
 		},
 	}
 	for _, tc := range cases {

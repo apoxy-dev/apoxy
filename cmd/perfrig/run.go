@@ -130,6 +130,7 @@ func execute(ctx context.Context, cfg config, w Workload) (*Result, error) {
 
 	slog.Info("Starting workload", "workload", w.Name, "key", res.Key)
 	hostBefore, hostErr := readCPUTimes()
+	su0, ss0, serverErr := server.cpuNow()
 	start := time.Now()
 	client, err := startProc("client", r.client, w.Client(env), env.vars())
 	if err != nil {
@@ -138,6 +139,7 @@ func execute(ctx context.Context, cfg config, w Workload) (*Result, error) {
 	clientErr := client.wait(ctx, cfg.Duration+cfg.Omit+time.Minute)
 	elapsed := time.Since(start).Seconds()
 	hostAfter, hostErr2 := readCPUTimes()
+	su1, ss1, serverErr2 := server.cpuNow()
 	// Let the server write its report and exit, then stop it.
 	_ = server.wait(ctx, 10*time.Second)
 
@@ -157,13 +159,16 @@ func execute(ctx context.Context, cfg config, w Workload) (*Result, error) {
 	}
 	res.Throughput = tp
 
-	// Rusage includes the warm-up, so divide by the client wall time, not tp.Seconds.
+	// CPU times include the warm-up, so divide by the client wall time, not tp.Seconds.
 	gbps := tp.BitsPerSecond / 1e9
 	cu, cs := client.cpu()
-	su, ss := server.cpu()
 	res.CPU.WallS = round(elapsed, 3)
 	res.CPU.Client = newProcCPU(cu, cs, elapsed, gbps)
-	res.CPU.Server = newProcCPU(su, ss, elapsed, gbps)
+	if err := errors.Join(serverErr, serverErr2); err != nil {
+		slog.Warn("Failed to measure server CPU", "error", err)
+	} else {
+		res.CPU.Server = newProcCPU(su1-su0, ss1-ss0, elapsed, gbps)
+	}
 	if hostErr == nil && hostErr2 == nil {
 		res.CPU.Host = HostCPU{
 			UserS:   round(hostAfter.User-hostBefore.User, 3),
@@ -280,6 +285,25 @@ func (p *proc) cpu() (user, system float64) {
 		return 0, 0
 	}
 	return time.Duration(ru.Utime.Nano()).Seconds(), time.Duration(ru.Stime.Nano()).Seconds()
+}
+
+// cpuNow returns the user and system seconds that the process tree used until
+// now. After the process exits, it returns the rusage of the process.
+func (p *proc) cpuNow() (user, system float64, err error) {
+	if !p.exited() {
+		user, system, err = treeCPU(p.cmd.Process.Pid)
+		if !errors.Is(err, errNoProcess) {
+			return user, system, err
+		}
+		// The process exited after the check. Wait until Wait returns.
+		select {
+		case <-p.done:
+		case <-time.After(time.Second):
+			return 0, 0, err
+		}
+	}
+	user, system = p.cpu()
+	return user, system, nil
 }
 
 func writeOutput(dir string, keep bool, procs ...*proc) {
