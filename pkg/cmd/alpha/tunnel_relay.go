@@ -78,6 +78,13 @@ var tunnelRelayCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("failed to create UDP listener: %w", err)
 		}
+		// Same size as the agent. The kernel clamps it to net.core.{r,w}mem_max.
+		if uc, ok := lis.(*net.UDPConn); ok {
+			const sockBufSize = 16 << 20
+			if err := errors.Join(uc.SetReadBuffer(sockBufSize), uc.SetWriteBuffer(sockBufSize)); err != nil {
+				slog.Warn("Failed to set UDP socket buffers", slog.Any("error", err))
+			}
+		}
 
 		pc, err := batchpc.New("udp", lis)
 		if err != nil {
