@@ -1,0 +1,55 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+syntax = "proto3";
+
+package apoxy.vpc.datapath.v1;
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/empty.proto";
+import "proto/vpc/datapath/v1/types.proto";
+
+option go_package = "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1;datapathv1";
+
+// Mesh is the service of a relay on a mesh session (ALPN apoxy-mesh/1).
+// Both relays serve it and call it.
+service Mesh {
+  // Presence sends the attachments of the caller.
+  rpc Presence(stream PresenceUpdate) returns (google.protobuf.Empty);
+  // SPIRows copies SPI rows to the relay of the receiver.
+  rpc SPIRows(stream SPIRowUpdate) returns (google.protobuf.Empty);
+  // TrunkKeys gives the peer relay trunk SAs for traffic to the caller.
+  rpc TrunkKeys(KeysRequest) returns (KeysResponse);
+}
+
+// Presence tells that an attachment is on the sending relay.
+message Presence {
+  VPCRef vpc = 1;
+  string attachment_id = 2;
+  // Increases at each change of the attachment. The higher generation wins.
+  uint64 generation = 3;
+  // Overlay prefixes of the attachment.
+  repeated string prefixes = 4;
+  // True if the attachment is gone.
+  bool gone = 5;
+}
+
+message PresenceUpdate {
+  repeated Presence entries = 1;
+}
+
+// SPIRow is a forward row that a sender registered on the sending relay.
+message SPIRow {
+  VPCRef vpc = 1;
+  // Trunk tag of the sender on the sending relay.
+  uint32 sender_tag = 2;
+  uint32 spi = 3;
+  // Overlay address of the receiver.
+  string destination = 4;
+  google.protobuf.Duration expires_in = 5;
+  // True if the row is removed.
+  bool removed = 6;
+}
+
+message SPIRowUpdate {
+  repeated SPIRow rows = 1;
+}

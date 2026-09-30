@@ -16,4 +16,5 @@
 // StreamUnsupported and a stream that is not valid with StreamProtocolError.
 //
 // protoc-gen-go-vpcrpc generates typed clients and servers for this package.
+// JSONHandler runs the same handlers with JSON messages for a local debug port.
 package rpc

@@ -1,0 +1,76 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+syntax = "proto3";
+
+package apoxy.vpc.datapath.v1;
+
+import "google/protobuf/empty.proto";
+import "proto/vpc/datapath/v1/types.proto";
+
+option go_package = "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1;datapathv1";
+
+// Peer is the service of an agent on a peer session (ALPN apoxy-peer/1).
+// Both agents serve it and call it.
+service Peer {
+  // Open is the first call on a session. The dialer calls it.
+  rpc Open(OpenRequest) returns (OpenResponse);
+  // Keys gives the peer SAs for traffic to the caller. The receiver calls it.
+  rpc Keys(KeysRequest) returns (KeysResponse);
+  // Paths sends the candidate sets of the caller. Each agent calls it once and
+  // sends a new set when its addresses change.
+  rpc Paths(stream Candidates) returns (google.protobuf.Empty);
+}
+
+message OpenRequest {
+  // Grant of the dialer.
+  AttachmentGrant grant = 1;
+  // Random ID, new at each process start.
+  fixed64 instance = 2;
+  Mode mode = 3;
+  // True if the dialer allows P2P.
+  bool p2p = 4;
+}
+
+message OpenResponse {
+  // Grant of the listener.
+  AttachmentGrant grant = 1;
+  // Random ID, new at each process start.
+  fixed64 instance = 2;
+  Mode mode = 3;
+  // True if the listener allows P2P.
+  bool p2p = 4;
+}
+
+enum CandidateKind {
+  CANDIDATE_KIND_UNSPECIFIED = 0;
+  // Address of a host interface.
+  CANDIDATE_KIND_HOST = 1;
+  // Address that the relay reports in Welcome.
+  CANDIDATE_KIND_REFLEXIVE = 2;
+}
+
+message Candidate {
+  CandidateKind kind = 1;
+  string address = 2;
+  uint32 port = 3;
+}
+
+// Candidates is the candidate set of the caller. A higher round replaces the set.
+message Candidates {
+  uint32 round = 1;
+  // At most 8.
+  repeated Candidate candidates = 2;
+  // Inner MTU of the caller. Full-size PathProbes use it.
+  uint32 mtu = 3;
+}
+
+// PeerCloseCode is the QUIC application error code when an agent closes a
+// peer session.
+enum PeerCloseCode {
+  // Idle or normal close.
+  PEER_CLOSE_CODE_UNSPECIFIED = 0;
+  // Both agents dialed, and this session is not the one to keep.
+  PEER_CLOSE_CODE_DUPLICATE = 1;
+  // The cert or grant check in Open failed.
+  PEER_CLOSE_CODE_BAD_GRANT = 2;
+}

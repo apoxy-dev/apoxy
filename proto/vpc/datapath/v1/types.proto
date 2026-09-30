@@ -1,0 +1,103 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+syntax = "proto3";
+
+package apoxy.vpc.datapath.v1;
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1;datapathv1";
+
+// VPCRef identifies a VPC. The wire never carries the VPC name, because a
+// name is unique only in one project.
+message VPCRef {
+  string project_id = 1;
+  string vpc_uid = 2;
+  // 24-bit network ID of the VPC network.
+  uint32 network_id = 3;
+}
+
+// RelayRef identifies a relay and the addresses where agents reach it.
+message RelayRef {
+  string id = 1;
+  // Addresses in host:port form.
+  repeated string addresses = 2;
+}
+
+// Mode is the data transport of an agent.
+enum Mode {
+  MODE_UNSPECIFIED = 0;
+  // Data in QUIC DATAGRAM frames.
+  MODE_QUIC = 1;
+  // Data in SoftPSP or PSP packets on the same UDP port.
+  MODE_PSP = 2;
+}
+
+// SA is a receive SA that a receiver gives to one sender.
+message SA {
+  // The receiver creates the SPI. Its high bits are random.
+  uint32 spi = 1;
+  // AES-GCM key: 16 bytes, or 32 bytes for AES-GCM-256.
+  bytes key = 2;
+  // VNI that the SA is bound to.
+  uint32 vni = 3;
+  // Time from receipt until the SA expires.
+  google.protobuf.Duration expires_in = 4;
+  // The receiver gives lane i to its RX queue i.
+  uint32 lane = 5;
+}
+
+// OfferSAs gives new SAs to the sender.
+message OfferSAs {
+  repeated SA sas = 1;
+}
+
+// RekeySA replaces the SAs of the same lanes. The receiver keeps the old SAs
+// for a short overlap.
+message RekeySA {
+  repeated SA sas = 1;
+}
+
+// RevokeSA deletes the receive state of the SPIs.
+message RevokeSA {
+  repeated uint32 spis = 1;
+}
+
+// KeysRequest is one key change from a receiver to a sender.
+message KeysRequest {
+  oneof op {
+    OfferSAs offer = 1;
+    RekeySA rekey = 2;
+    RevokeSA revoke = 3;
+  }
+}
+
+// KeysResponse is the answer of the sender.
+message KeysResponse {
+  // SPIs that the sender refuses because it holds them from another
+  // receiver. The receiver offers other SPIs for them.
+  repeated uint32 refused_spis = 1;
+}
+
+// AttachmentGrant is a relay-signed grant of addresses to an attachment.
+// Peers check it in Open.
+message AttachmentGrant {
+  // Encoded GrantClaims. The signature covers these bytes.
+  bytes claims = 1;
+  // Signature of the relay over claims.
+  bytes signature = 2;
+}
+
+// GrantClaims is the signed content of an AttachmentGrant.
+message GrantClaims {
+  VPCRef vpc = 1;
+  string attachment_id = 2;
+  // SPIFFE ID in the certificate of the agent.
+  string subject = 3;
+  // Overlay prefixes of the attachment.
+  repeated string addresses = 4;
+  // Relay that signed the grant.
+  string relay_id = 5;
+  google.protobuf.Timestamp not_after = 6;
+}

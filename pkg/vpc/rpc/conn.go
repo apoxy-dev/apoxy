@@ -118,6 +118,7 @@ type ServerStream struct {
 	fr       frameReader
 	method   string
 	readCode quic.StreamErrorCode
+	json     *jsonCall // Set for a call from JSONHandler.
 }
 
 // Method returns the full method name of the call.
@@ -126,6 +127,9 @@ func (s *ServerStream) Method() string { return s.method }
 // RecvMsg reads the next message into m. It returns io.EOF when the caller
 // stops sending.
 func (s *ServerStream) RecvMsg(m proto.Message) error {
+	if s.json != nil {
+		return s.json.recv(m)
+	}
 	kind, p, err := s.fr.readFrame(s.conn.opts.maxMessageSize, s.conn.opts.maxHeaderSize)
 	if err == nil && kind != frameMessage {
 		err, s.fr.bad = errUnexpected, errUnexpected
@@ -150,6 +154,9 @@ func (s *ServerStream) RecvMsg(m proto.Message) error {
 
 // SendMsg sends m to the caller.
 func (s *ServerStream) SendMsg(m proto.Message) error {
+	if s.json != nil {
+		return s.json.send(m)
+	}
 	buf := getBuf()
 	b, err := appendFrame(*buf, frameMessage, m, s.conn.opts.maxMessageSize)
 	if err == nil {

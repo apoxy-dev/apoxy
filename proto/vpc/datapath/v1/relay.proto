@@ -1,0 +1,180 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+syntax = "proto3";
+
+package apoxy.vpc.datapath.v1;
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/empty.proto";
+import "proto/vpc/datapath/v1/types.proto";
+
+option go_package = "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1;datapathv1";
+
+// Relay is the relay side of a relay session (ALPN apoxy-vpc/2). Agents and
+// VTEPs call it.
+service Relay {
+  // Session starts with Hello and Welcome, then carries Sync. The relay sends
+  // routes, NoRoute, key changes, config and drain. The agent sends Ack and Status.
+  rpc Session(stream SessionRequest) returns (stream SessionResponse);
+  // Attach adds an attachment to the session.
+  rpc Attach(AttachRequest) returns (AttachResponse);
+  // Rekey gives the relay SAs for traffic from the relay to the agent.
+  rpc Rekey(KeysRequest) returns (KeysResponse);
+  // ResolvePeer finds how the relay reaches an address. Errors: NotFound,
+  // PermissionDenied.
+  rpc ResolvePeer(ResolvePeerRequest) returns (ResolvePeerResponse);
+  // RegisterSPI adds forward rows for SPIs that a receiver gave to the caller.
+  rpc RegisterSPI(RegisterSPIRequest) returns (google.protobuf.Empty);
+  // UnregisterSPI removes forward rows of the caller.
+  rpc UnregisterSPI(UnregisterSPIRequest) returns (google.protobuf.Empty);
+}
+
+// SessionRequest is a message from the agent on Session.
+message SessionRequest {
+  oneof msg {
+    // First message.
+    Hello hello = 1;
+    Ack ack = 2;
+    Status status = 3;
+  }
+}
+
+// SessionResponse is a message from the relay on Session.
+message SessionResponse {
+  oneof msg {
+    // First message.
+    Welcome welcome = 1;
+    RouteDelta route_delta = 2;
+    NoRoute no_route = 3;
+    // Key change for traffic from the agent to the relay.
+    KeysRequest rekey = 4;
+    Config config = 5;
+    Drain drain = 6;
+  }
+}
+
+// Hello starts a session.
+message Hello {
+  // Data transport of the agent.
+  Mode mode = 1;
+  // Maximum number of VPCs on this session. In the MVP the cert names one VPC.
+  uint32 max_vpcs_per_session = 2;
+}
+
+// Welcome answers Hello.
+message Welcome {
+  // Source address and port of the agent as the relay sees them.
+  string reflexive_address = 1;
+}
+
+// Route is a prefix in a VPC.
+message Route {
+  VPCRef vpc = 1;
+  string prefix = 2;
+  // Attachment that advertises the prefix.
+  string origin = 3;
+}
+
+// RouteDelta changes the routes of the agent.
+message RouteDelta {
+  // Revision after this delta. It increases with each delta on a session.
+  uint64 rev = 1;
+  repeated Route add = 2;
+  repeated Route remove = 3;
+}
+
+// Ack tells the relay that the agent applied the deltas up to rev.
+message Ack {
+  uint64 rev = 1;
+}
+
+// Status reports agent counters to the relay.
+message Status {
+  // ICV failures of receive SAs since the last Status.
+  repeated ICVFailures icv_failures = 1;
+}
+
+// ICVFailures is the ICV failure count of one receive SA.
+message ICVFailures {
+  uint32 spi = 1;
+  uint64 count = 2;
+}
+
+// NoRoute tells the agent that the relay cannot reach an address. The relay
+// sends at most one each second for each address.
+message NoRoute {
+  VPCRef vpc = 1;
+  string address = 2;
+  // Home relay of the peer. Not set if the peer is gone.
+  RelayRef home_relay = 3;
+}
+
+// Config is the configuration of a VPC for the agent.
+message Config {
+  VPCRef vpc = 1;
+  // Inner MTU.
+  uint32 mtu = 2;
+  repeated string dns_servers = 3;
+  repeated string dns_search_domains = 4;
+}
+
+// Drain tells the agent to move to other relays. The relay closes the
+// session later.
+message Drain {
+  repeated RelayRef alternates = 1;
+}
+
+message AttachRequest {
+  VPCRef vpc = 1;
+  // Attachment name. The CLI uses the host name by default.
+  string name = 2;
+  map<string, string> labels = 3;
+  // Prefixes that the attachment advertises into the VPC.
+  repeated string routes = 4;
+}
+
+message AttachResponse {
+  string attachment_id = 1;
+  // Grant with the addresses of the attachment.
+  AttachmentGrant grant = 2;
+}
+
+// Reach tells how a relay reaches a peer.
+enum Reach {
+  REACH_UNSPECIFIED = 0;
+  // The peer is on this relay.
+  REACH_LOCAL = 1;
+  // The peer is on another relay. This relay sends over the trunk.
+  REACH_TRUNK = 2;
+  // The mesh session to the home relay of the peer is down. Attach to that
+  // relay as a visitor.
+  REACH_VISIT = 3;
+}
+
+message ResolvePeerRequest {
+  VPCRef vpc = 1;
+  // Overlay address of the peer.
+  string address = 2;
+}
+
+message ResolvePeerResponse {
+  Reach reach = 1;
+  // Home relay of the peer. Set for REACH_VISIT.
+  RelayRef home_relay = 2;
+  // True if P2P with the peer is allowed.
+  bool p2p = 3;
+}
+
+message RegisterSPIRequest {
+  VPCRef vpc = 1;
+  // Overlay address of the receiver that created the SPIs.
+  string destination = 2;
+  repeated uint32 spis = 3;
+  // Time until the rows expire.
+  google.protobuf.Duration expires_in = 4;
+}
+
+message UnregisterSPIRequest {
+  VPCRef vpc = 1;
+  repeated uint32 spis = 2;
+}
