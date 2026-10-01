@@ -11,6 +11,7 @@ require (
 	github.com/alphadose/haxmap v1.4.1
 	github.com/anatol/vmtest v0.0.0-20250318022921-2f32244e2f0f
 	github.com/apoxy-dev/icx v0.19.1-0.20260826222334-295d1c74aeae
+	github.com/apoxy-dev/softpsp v0.0.0-20261001021638-daae98faedfd
 	github.com/avast/retry-go/v4 v4.6.1
 	github.com/bramvdbogaerde/go-scp v1.5.0
 	github.com/buraksezer/olric v0.5.6
@@ -210,6 +211,7 @@ require (
 	github.com/flynn/go-shlex v0.0.0-20150515145356-3f9db97f8568 // indirect
 	github.com/francoispqt/gojay v1.2.13 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.0 // indirect
+	github.com/gaissmai/bart v0.30.0 // indirect
 	github.com/go-faster/city v1.0.1 // indirect
 	github.com/go-faster/errors v0.7.1 // indirect
 	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
@@ -455,7 +457,7 @@ require (
 
 replace github.com/getsavvyinc/upgrade-cli => github.com/apoxy-dev/upgrade-cli v0.0.0-20240213232412-a56c3a52fa0e
 
-replace github.com/quic-go/quic-go => github.com/apoxy-dev/quic-go v0.0.0-20260402225711-bc93b3ff7555
+replace github.com/quic-go/quic-go => github.com/apoxy-dev/quic-go v0.0.0-20261001045134-f9e1c7bb4eff
 
 replace github.com/quic-go/connect-ip-go => github.com/apoxy-dev/connect-ip-go v0.0.0-20250530062404-603929a73f45
 

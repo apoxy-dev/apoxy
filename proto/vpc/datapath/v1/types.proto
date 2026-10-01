@@ -87,6 +87,9 @@ message AttachmentGrant {
   bytes claims = 1;
   // Signature of the relay over claims.
   bytes signature = 2;
+  // DER cert chain of the relay, leaf first. The leaf key made the signature
+  // and the leaf names relay_id.
+  repeated bytes relay_chain = 3;
 }
 
 // GrantClaims is the signed content of an AttachmentGrant.

@@ -152,8 +152,10 @@ github.com/apoxy-dev/icx v0.19.1-0.20260816193225-5b452648af86 h1:kumocWrRWcFaEm
 github.com/apoxy-dev/icx v0.19.1-0.20260816193225-5b452648af86/go.mod h1:B52w7Cs1nsMyE3IwkFMwy06gGQ5Dz0YxPrd1eUWv7g4=
 github.com/apoxy-dev/icx v0.19.1-0.20260826222334-295d1c74aeae h1:33rLqcuNfL0KaP2VpORf69jq7i5u0Esxn86W7/Z7G6g=
 github.com/apoxy-dev/icx v0.19.1-0.20260826222334-295d1c74aeae/go.mod h1:B52w7Cs1nsMyE3IwkFMwy06gGQ5Dz0YxPrd1eUWv7g4=
-github.com/apoxy-dev/quic-go v0.0.0-20260402225711-bc93b3ff7555 h1:2UdznQRVujKRGE+SjOmeyvBeBohY17nSilpFwDxb8B0=
-github.com/apoxy-dev/quic-go v0.0.0-20260402225711-bc93b3ff7555/go.mod h1:MFlGGpcpJqRAfmYi6NC2cptDPSxRWTOGNuP4wqrWmzQ=
+github.com/apoxy-dev/quic-go v0.0.0-20261001045134-f9e1c7bb4eff h1:SjnhuCQJ+7VB3pWmdVWtrau6BNvfECdLmaoN2/uM6Oo=
+github.com/apoxy-dev/quic-go v0.0.0-20261001045134-f9e1c7bb4eff/go.mod h1:MFlGGpcpJqRAfmYi6NC2cptDPSxRWTOGNuP4wqrWmzQ=
+github.com/apoxy-dev/softpsp v0.0.0-20261001021638-daae98faedfd h1:yQHTBg5WZCNys5HlL+1yeWex9S1t0MTvSkZ27CpI7R0=
+github.com/apoxy-dev/softpsp v0.0.0-20261001021638-daae98faedfd/go.mod h1:ahrCSgeuIkm0XgY5WmM+QLTg3ZEdTz8hDah6JgeJNbY=
 github.com/apoxy-dev/upgrade-cli v0.0.0-20240213232412-a56c3a52fa0e h1:FBNxMQD93z2ththupB/BYKLEaMWaEr+G+sJWJqU2wC4=
 github.com/apoxy-dev/upgrade-cli v0.0.0-20240213232412-a56c3a52fa0e/go.mod h1:Ert9guX/QneZS/noA8Ud0ggjXPLr1OOXmtxeX66xCwo=
 github.com/apparentlymart/go-cidr v1.1.0 h1:2mAhrMoF+nhXqxTzSZMUzDHkLjmIHC+Zzn4tdgBZjnU=
@@ -427,6 +429,8 @@ github.com/fsnotify/fsnotify v1.9.0 h1:2Ml+OJNzbYCTzsxtv8vKSFD9PbJjmhYF14k/jKC7S
 github.com/fsnotify/fsnotify v1.9.0/go.mod h1:8jBTzvmWwFyi3Pb8djgCCO5IBqzKJ/Jwo8TRcHyHii0=
 github.com/fxamacker/cbor/v2 v2.9.0 h1:NpKPmjDBgUfBms6tr6JZkTHtfFGcMKsw3eGcmD/sapM=
 github.com/fxamacker/cbor/v2 v2.9.0/go.mod h1:vM4b+DJCtHn+zz7h3FFp/hDAI9WNWCsZj23V5ytsSxQ=
+github.com/gaissmai/bart v0.30.0 h1:K1oTSQ6Nf76bhrgxeTqzZa4hE0M9x4xDfL6n6UG67Sc=
+github.com/gaissmai/bart v0.30.0/go.mod h1:GREWQfTLRWz/c5FTOsIw+KkscuFkIV5t8Rp7Nd1Td5c=
 github.com/getsentry/sentry-go v0.26.0 h1:IX3++sF6/4B5JcevhdZfdKIHfyvMmAq/UnqcyT2H6mA=
 github.com/getsentry/sentry-go v0.26.0/go.mod h1:lc76E2QywIyW8WuBnwl8Lc4bkmQH4+w1gwTf25trprY=
 github.com/ghodss/yaml v0.0.0-20150909031657-73d445a93680/go.mod h1:4dBDuWmgqj2HViK6kFavaiC9ZROes6MMH2rRYeMEF04=

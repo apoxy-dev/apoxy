@@ -5,6 +5,7 @@ package relay
 import (
 	"cmp"
 	"context"
+	"crypto/x509"
 	"fmt"
 	"net"
 	"net/netip"
@@ -13,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/quic-go/quic-go"
 	"golang.org/x/time/rate"
 
 	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
@@ -82,7 +84,7 @@ const (
 	DropMeter
 )
 
-// Router holds the routing domains and SPI rows of one relay.
+// Router holds the routing domains, sessions and SPI rows of one relay.
 type Router struct {
 	cfg           Config
 	trust         Trust
@@ -117,18 +119,25 @@ func NewRouter(trust Trust, cfg Config) *Router {
 // Session is the relay side of one authenticated relay session. It is one
 // sender: its rows are keyed on SPI.
 type Session struct {
-	id     Identity
-	conn   *rpc.Conn
-	remote func() netip.AddrPort
+	id           Identity
+	conn         *rpc.Conn
+	remote       func() netip.AddrPort
+	chain        []*x509.Certificate // Agent cert chain, leaf first.
+	notAfter     time.Time           // The session closes at the NotAfter of the leaf.
+	close        func(code dp.RelayCloseCode, msg string)
+	sendDatagram func([]byte) error
+	wake         chan struct{} // Has room for 1: the sync queue changed.
 
 	// Guarded by Router.mu.
-	addr      netip.AddrPort
-	prev      netip.AddrPort // Valid until prevUntil after a migration.
-	prevUntil time.Time
-	rows      map[uint32]*row   // Rows of this sender.
-	inbound   map[*row]struct{} // Rows of senders to this session.
-	routes    []netip.Prefix
-	closed    bool
+	addr        netip.AddrPort
+	prev        netip.AddrPort // Valid until prevUntil after a migration.
+	prevUntil   time.Time
+	rows        map[uint32]*row   // Rows of this sender.
+	inbound     map[*row]struct{} // Rows of senders to this session.
+	routes      []netip.Prefix
+	attachments []*Attachment
+	closed      bool
+	sync        syncState
 
 	dropUnknownSPI, dropMeter atomic.Uint64
 }
@@ -149,17 +158,29 @@ type row struct {
 	packets, bytes, dropMeter, icvFailures atomic.Uint64
 }
 
+// route is one prefix in a domain and the attachment that advertises it.
+type route struct {
+	prefix netip.Prefix
+	origin string
+}
+
 type domain struct {
-	routes map[netip.Prefix]*Session
-	lens   []int // Prefix lengths in use, longest first.
+	routes  map[netip.Prefix]owner
+	lens    []int // Prefix lengths in use, longest first.
+	members map[*Session]struct{}
+}
+
+type owner struct {
+	s      *Session
+	origin string
 }
 
 // lookup returns the session of the longest route to a.
 func (d *domain) lookup(a netip.Addr) *Session {
 	for _, n := range d.lens {
 		if p, err := a.Prefix(n); err == nil {
-			if s := d.routes[p]; s != nil {
-				return s
+			if o, ok := d.routes[p]; ok {
+				return o.s
 			}
 		}
 	}
@@ -190,22 +211,48 @@ func (r *Router) AddSession(conn *rpc.Conn) (*Session, error) {
 	if err != nil {
 		return nil, fmt.Errorf("agent cert rejected: %w", err)
 	}
-	s := r.addSession(conn, Identity{VPC: VPCKey{Project: id.Project, UID: id.VPC}, ID: id.String()},
-		func() netip.AddrPort { return addrPort(qc.RemoteAddr()) }, now)
+	s := newSession(Identity{VPC: VPCKey{Project: id.Project, UID: id.VPC}, ID: id.String()},
+		func() netip.AddrPort { return addrPort(qc.RemoteAddr()) })
+	s.conn = conn
+	s.chain = tc.PeerCertificates
+	s.notAfter = tc.PeerCertificates[0].NotAfter
+	s.close = func(code dp.RelayCloseCode, msg string) {
+		_ = qc.CloseWithError(quic.ApplicationErrorCode(code), msg)
+	}
+	s.sendDatagram = qc.SendDatagram
+	r.addSession(s, now)
 	context.AfterFunc(qc.Context(), func() { r.removeSession(s) })
 	return s, nil
 }
 
-func (r *Router) addSession(conn *rpc.Conn, id Identity, remote func() netip.AddrPort, now time.Time) *Session {
-	s := &Session{id: id, conn: conn, remote: remote, rows: map[uint32]*row{}, inbound: map[*row]struct{}{}}
+func newSession(id Identity, remote func() netip.AddrPort) *Session {
+	return &Session{
+		id:           id,
+		remote:       remote,
+		close:        func(dp.RelayCloseCode, string) {},
+		sendDatagram: func([]byte) error { return errNoDatagrams },
+		wake:         make(chan struct{}, 1),
+		rows:         map[uint32]*row{},
+		inbound:      map[*row]struct{}{},
+		sync:         syncState{routes: map[route]bool{}, noRoute: map[netip.Addr]time.Time{}},
+	}
+}
+
+// addSession adds s to the router and to the domain of its VPC. The
+// routes of the domain go to the sync queue of s.
+func (r *Router) addSession(s *Session, now time.Time) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.sessions[s] = struct{}{}
-	if conn != nil {
-		r.byConn[conn] = s
+	if s.conn != nil {
+		r.byConn[s.conn] = s
 	}
-	r.setAddr(s, remote(), now)
-	return s
+	r.setAddr(s, s.remote(), now)
+	d := r.domain(s.id.VPC)
+	d.members[s] = struct{}{}
+	for p, o := range d.routes {
+		s.queueRoute(route{p, o.origin}, true)
+	}
 }
 
 func (r *Router) removeSession(s *Session) {
@@ -229,8 +276,28 @@ func (r *Router) removeSession(s *Session) {
 			delete(r.bySource, a)
 		}
 	}
+	if d := r.domains[s.id.VPC]; d != nil {
+		delete(d.members, s)
+		r.dropDomain(s.id.VPC, d)
+	}
 	delete(r.sessions, s)
 	delete(r.byConn, s.conn)
+}
+
+// domain returns the domain of vpc and makes it if needed.
+func (r *Router) domain(vpc VPCKey) *domain {
+	d := r.domains[vpc]
+	if d == nil {
+		d = &domain{routes: map[netip.Prefix]owner{}, members: map[*Session]struct{}{}}
+		r.domains[vpc] = d
+	}
+	return d
+}
+
+func (r *Router) dropDomain(vpc VPCKey, d *domain) {
+	if len(d.routes) == 0 && len(d.members) == 0 {
+		delete(r.domains, vpc)
+	}
 }
 
 // setAddr moves s to source address a. The previous address stays valid
@@ -249,35 +316,47 @@ func (r *Router) setAddr(s *Session, a netip.AddrPort, now time.Time) {
 	r.bySource[a] = s
 }
 
-// AddRoute routes prefix p in the VPC of s to s.
-func (r *Router) AddRoute(s *Session, p netip.Prefix) error {
+// Addr returns the current source address of s.
+func (r *Router) Addr(s *Session) netip.AddrPort {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return s.addr
+}
+
+// AddRoute routes prefix p in the VPC of s to s. origin is the attachment
+// that advertises p. The other sessions in the VPC get the route in Sync.
+func (r *Router) AddRoute(s *Session, p netip.Prefix, origin string) error {
 	if !p.IsValid() {
 		return rpc.Errorf(rpc.InvalidArgument, "prefix not valid")
 	}
 	p = p.Masked()
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	return r.addRoute(s, p, origin)
+}
+
+func (r *Router) addRoute(s *Session, p netip.Prefix, origin string) error {
 	if s.closed {
 		return rpc.Errorf(rpc.FailedPrecondition, "session closed")
 	}
-	d := r.domains[s.id.VPC]
-	if d == nil {
-		d = &domain{routes: map[netip.Prefix]*Session{}}
-		r.domains[s.id.VPC] = d
-	}
-	switch d.routes[p] {
-	case s:
-		return nil
-	case nil:
-	default:
+	d := r.domain(s.id.VPC)
+	if o, ok := d.routes[p]; ok {
+		if o.s == s {
+			return nil
+		}
 		return rpc.Errorf(rpc.AlreadyExists, "route %s has another owner", p)
 	}
-	d.routes[p] = s
+	d.routes[p] = owner{s, origin}
 	if !slices.Contains(d.lens, p.Bits()) {
 		d.lens = append(d.lens, p.Bits())
 		slices.SortFunc(d.lens, func(a, b int) int { return cmp.Compare(b, a) })
 	}
 	s.routes = append(s.routes, p)
+	for m := range d.members {
+		if m != s {
+			m.queueRoute(route{p, origin}, true)
+		}
+	}
 	return nil
 }
 
@@ -300,16 +379,23 @@ func (r *Router) RemoveRoute(s *Session, p netip.Prefix) {
 
 func (r *Router) deleteRoute(s *Session, p netip.Prefix) {
 	d := r.domains[s.id.VPC]
-	if d == nil || d.routes[p] != s {
+	if d == nil {
+		return
+	}
+	o, ok := d.routes[p]
+	if !ok || o.s != s {
 		return
 	}
 	delete(d.routes, p)
 	if !d.usesLen(p.Bits()) {
 		d.lens = slices.DeleteFunc(d.lens, func(n int) bool { return n == p.Bits() })
 	}
-	if len(d.routes) == 0 {
-		delete(r.domains, s.id.VPC)
+	for m := range d.members {
+		if m != s {
+			m.queueRoute(route{p, o.origin}, false)
+		}
 	}
+	r.dropDomain(s.id.VPC, d)
 }
 
 func (r *Router) lookup(vpc VPCKey, a netip.Addr) *Session {
@@ -317,6 +403,22 @@ func (r *Router) lookup(vpc VPCKey, a netip.Addr) *Session {
 		return d.lookup(a)
 	}
 	return nil
+}
+
+// Route returns the session for packets from src to dst, if Permit allows.
+// If none, src gets a NoRoute in Sync, at most once a second per address.
+func (r *Router) Route(src *Session, dst netip.Addr, now time.Time) *Session {
+	dst = dst.Unmap()
+	r.mu.RLock()
+	var next *Session
+	if r.permit(src.id.VPC, src.id.ID, src.id.VPC, dst) {
+		next = r.lookup(src.id.VPC, dst)
+	}
+	r.mu.RUnlock()
+	if next == nil {
+		r.noRoute(src, dst, now)
+	}
+	return next
 }
 
 func (r *Router) removeRow(w *row) {
@@ -381,13 +483,16 @@ func (r *Router) ReportStatus(s *Session, st *dp.Status) {
 	}
 }
 
-// Sweep follows migrated connections, ends old source addresses, and
-// removes expired and idle rows.
+// Sweep follows migrated connections, ends old source addresses, removes
+// expired and idle rows, and closes sessions at the NotAfter of their cert.
 func (r *Router) Sweep(now time.Time) {
 	idle := now.Add(-rowIdle).UnixNano()
+	var expired []*Session
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	for s := range r.sessions {
+		if !s.notAfter.IsZero() && !now.Before(s.notAfter) {
+			expired = append(expired, s)
+		}
 		r.setAddr(s, s.remote(), now)
 		if s.prev.IsValid() && now.After(s.prevUntil) {
 			if r.bySource[s.prev] == s {
@@ -400,6 +505,11 @@ func (r *Router) Sweep(now time.Time) {
 				r.removeRow(w)
 			}
 		}
+		s.sweepNoRoute(now)
+	}
+	r.mu.Unlock()
+	for _, s := range expired {
+		s.close(dp.RelayCloseCode_RELAY_CLOSE_CODE_CERT, "agent cert expired")
 	}
 }
 

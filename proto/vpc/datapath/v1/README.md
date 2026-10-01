@@ -16,8 +16,28 @@ service that each side serves:
 | `apoxy-peer/1` | agent and agent          | `Peer`  | both      |
 | `apoxy-mesh/1` | relay and relay          | `Mesh`  | both      |
 
-QUIC datagrams and PathProbe packets on the same socket are not part of this
-document.
+The same UDP socket also carries PSP packets (first byte `0x04` or `0x29`),
+which relays forward by SPI rows without decryption.
+
+### Relay datagrams
+
+QUIC DATAGRAM frames on a relay session carry peer-session packets between
+two agents in one VPC:
+
+```
+agent -> relay:  type (1 B) | dst address (16 B) | src address (16 B) | packet
+relay -> agent:  type (1 B) | src address (16 B) | packet
+type:            0x01 peer-session packet
+```
+
+Addresses are overlay addresses; IPv4 is in the IPv4-mapped form. The relay
+drops a frame if its session does not route the source address (the same
+rule as the PSP source check), if Permit denies the destination, or if no
+session routes the destination. For the last two it sends `NoRoute`.
+
+Peer sessions use 1200 B QUIC packets. Both ends of a relay session use a
+QUIC InitialPacketSize of 1270 B or more, so that each packet fits in one
+frame.
 
 ## Calls
 
@@ -60,6 +80,28 @@ Addresses and prefixes are text (`fd61::1`, `10.0.0.0/8`, `host:port`).
 | `RegisterSPI`   | unary | `{vpc, destination, spis, expires_in}` -> `Empty` |
 | `UnregisterSPI` | unary | `{vpc, spis}` -> `Empty` |
 
+`Attach` returns an `AttachmentGrant`: the claims, the signature of the relay
+TLS key, and the relay cert chain (leaf first). A peer accepts it only if the
+leaf chains through the rest of the chain to the roots that agents dial relays
+with, the leaf names `relay_id` (a DNS name, for example the dial host name of
+the relay), the leaf key made the signature, and `not_after` has not passed.
+`Rekey` is not served yet.
+
+A connection has one `Session` call and lives as long as that call. A relay
+closes a connection with a `RelayCloseCode`: `CERT` (the agent cert failed a
+check; get a new cert before the next dial) or `DRAIN` (move to another
+relay).
+
+The relay accepts an agent cert only if it chains to the agent CA, its SAN is
+an agent ID, and the agent is not revoked in its VPC. It checks in the TLS
+handshake and again for open sessions when the trust data changes, and closes
+a session at the NotAfter of its cert. Each call must name the VPC in the
+cert.
+
+The relay takes the sender of an SPI row from the authenticated session, never
+from packet data. A row ends at `UnregisterSPI`, at expiry, after 5 minutes
+with no traffic, when either session closes, or when Permit stops allowing it.
+
 ### Peer (`apoxy-peer/1`)
 
 | Method  | Kind          | Messages |
@@ -68,8 +110,16 @@ Addresses and prefixes are text (`fd61::1`, `10.0.0.0/8`, `host:port`).
 | `Keys`  | unary         | The receiver sends `KeysRequest`: `OfferSAs`, `RekeySA` or `RevokeSA`. `KeysResponse` lists SPIs that the sender refuses. |
 | `Paths` | client stream | `Candidates{round, candidates, mtu}`; each agent calls it. |
 
-An agent closes a peer session with a `PeerCloseCode`: `DUPLICATE` or
-`BAD_GRANT`.
+Each side accepts the other only if the peer cert chains to the VPC agent CA
+and names the same project and VPC, the grant passes the checks above, is for
+the same VPC, and names the SPIFFE ID of the peer cert, and the mode is `PSP`.
+If not, it closes the session with `BAD_GRANT`. When both agents dial (an
+open session in the other role with the same `instance`), the session that
+the agent with the lower SPIFFE ID dialed stays, and the other closes with
+`DUPLICATE`. A new `instance` replaces the open session.
+
+The agent that receives `Keys` sends with those SAs. It registers their SPIs at
+its relay before it applies them, and unregisters them after a revoke.
 
 ### Mesh (`apoxy-mesh/1`)
 

@@ -14,13 +14,6 @@ import (
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
-// Server serves the SPI and peer calls of the Relay service with r. The
-// other methods return Unimplemented.
-type Server struct {
-	dp.UnimplementedRelayServer
-	R *Router
-}
-
 // caller returns the session of the call. A call with no session, for
 // example from the JSON debug handler or from a connection whose agent cert
 // failed the check, gets Unauthenticated.
@@ -64,12 +57,12 @@ func (s *Session) target(ref *dp.VPCRef, addr string) (VPCKey, netip.Addr, error
 // ResolvePeer tells how the relay reaches an address. Permit runs first, so
 // a denied caller does not learn if the address exists. M1 reaches only
 // peers on this relay.
-func (s Server) ResolvePeer(ctx context.Context, in *dp.ResolvePeerRequest) (*dp.ResolvePeerResponse, error) {
-	c, err := s.R.caller(ctx)
+func (srv *Server) ResolvePeer(ctx context.Context, in *dp.ResolvePeerRequest) (*dp.ResolvePeerResponse, error) {
+	c, err := srv.R.caller(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return s.R.resolvePeer(c, in)
+	return srv.R.resolvePeer(c, in)
 }
 
 func (r *Router) resolvePeer(c *Session, in *dp.ResolvePeerRequest) (*dp.ResolvePeerResponse, error) {
@@ -92,12 +85,12 @@ func (r *Router) resolvePeer(c *Session, in *dp.ResolvePeerRequest) (*dp.Resolve
 // RegisterSPI adds rows from the caller to the receiver of the destination.
 // It installs all SPIs or none. An SPI that the caller holds for another
 // destination gets AlreadyExists.
-func (s Server) RegisterSPI(ctx context.Context, in *dp.RegisterSPIRequest) (*emptypb.Empty, error) {
-	c, err := s.R.caller(ctx)
+func (srv *Server) RegisterSPI(ctx context.Context, in *dp.RegisterSPIRequest) (*emptypb.Empty, error) {
+	c, err := srv.R.caller(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return &emptypb.Empty{}, s.R.registerSPI(c, in, time.Now())
+	return &emptypb.Empty{}, srv.R.registerSPI(c, in, time.Now())
 }
 
 func (r *Router) registerSPI(c *Session, in *dp.RegisterSPIRequest, now time.Time) error {
@@ -152,12 +145,12 @@ func (r *Router) registerSPI(c *Session, in *dp.RegisterSPIRequest, now time.Tim
 }
 
 // UnregisterSPI removes rows of the caller. SPIs with no row are ignored.
-func (s Server) UnregisterSPI(ctx context.Context, in *dp.UnregisterSPIRequest) (*emptypb.Empty, error) {
-	c, err := s.R.caller(ctx)
+func (srv *Server) UnregisterSPI(ctx context.Context, in *dp.UnregisterSPIRequest) (*emptypb.Empty, error) {
+	c, err := srv.R.caller(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return &emptypb.Empty{}, s.R.unregisterSPI(c, in)
+	return &emptypb.Empty{}, srv.R.unregisterSPI(c, in)
 }
 
 func (r *Router) unregisterSPI(c *Session, in *dp.UnregisterSPIRequest) error {

@@ -46,9 +46,10 @@ type testSession struct {
 func addSession(t *testing.T, r *Router, vpc VPCKey, id, addr string, routes ...string) testSession {
 	t.Helper()
 	fa := &fakeAddr{a: netip.MustParseAddrPort(addr)}
-	s := r.addSession(nil, Identity{VPC: vpc, ID: id}, fa.get, t0)
+	s := newSession(Identity{VPC: vpc, ID: id}, fa.get)
+	r.addSession(s, t0)
 	for _, p := range routes {
-		require.NoError(t, r.AddRoute(s, netip.MustParsePrefix(p)))
+		require.NoError(t, r.AddRoute(s, netip.MustParsePrefix(p), "att-"+id))
 	}
 	return testSession{s, fa}
 }
@@ -319,10 +320,11 @@ func TestResolvePeer(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			r := NewRouter(nil, Config{})
 			c := addSession(t, r, vpcA, "caller", "192.0.2.1:1000", "fd00::1/128")
-			peer := r.addSession(nil, Identity{VPC: vpcA, ID: "peer", RelayOnly: tc.relayOnly},
-				func() netip.AddrPort { return netip.MustParseAddrPort("192.0.2.2:2000") }, t0)
-			require.NoError(t, r.AddRoute(peer, netip.MustParsePrefix("fd00::2/128")))
-			require.NoError(t, r.AddRoute(peer, netip.MustParsePrefix("10.1.2.0/24")))
+			peer := newSession(Identity{VPC: vpcA, ID: "peer", RelayOnly: tc.relayOnly},
+				func() netip.AddrPort { return netip.MustParseAddrPort("192.0.2.2:2000") })
+			r.addSession(peer, t0)
+			require.NoError(t, r.AddRoute(peer, netip.MustParsePrefix("fd00::2/128"), "att"))
+			require.NoError(t, r.AddRoute(peer, netip.MustParsePrefix("10.1.2.0/24"), "att"))
 			// A shorter route of another session.
 			addSession(t, r, vpcA, "other", "192.0.2.3:3000", "10.0.0.0/8")
 
@@ -341,17 +343,20 @@ func TestAddRoute(t *testing.T) {
 	a := addSession(t, r, vpcA, "a", "192.0.2.1:1000")
 	b := addSession(t, r, vpcA, "b", "192.0.2.2:1000")
 	p := netip.MustParsePrefix("10.0.0.0/24")
-	require.NoError(t, r.AddRoute(a.Session, p))
-	require.NoError(t, r.AddRoute(a.Session, netip.MustParsePrefix("10.0.0.7/24")), "same masked prefix, same owner")
-	assert.Equal(t, rpc.AlreadyExists, codeOf(r.AddRoute(b.Session, p)))
+	require.NoError(t, r.AddRoute(a.Session, p, "att"))
+	require.NoError(t, r.AddRoute(a.Session, netip.MustParsePrefix("10.0.0.7/24"), "att"), "same masked prefix, same owner")
+	assert.Equal(t, rpc.AlreadyExists, codeOf(r.AddRoute(b.Session, p, "att")))
 	r.RemoveRoute(b.Session, p) // Not the owner: no change.
 	assert.Equal(t, a.Session, r.lookup(vpcA, netip.MustParseAddr("10.0.0.1")))
 	r.RemoveRoute(a.Session, p)
 	assert.Nil(t, r.lookup(vpcA, netip.MustParseAddr("10.0.0.1")))
-	require.NoError(t, r.AddRoute(b.Session, p))
+	require.NoError(t, r.AddRoute(b.Session, p, "att"))
 	r.removeSession(b.Session)
+	assert.Nil(t, r.lookup(vpcA, netip.MustParseAddr("10.0.0.1")))
+	assert.Equal(t, rpc.FailedPrecondition, codeOf(r.AddRoute(b.Session, p, "att")))
+	// The domain ends with its last session.
+	r.removeSession(a.Session)
 	assert.Empty(t, r.domains)
-	assert.Equal(t, rpc.FailedPrecondition, codeOf(r.AddRoute(b.Session, p)))
 }
 
 // TestProjectIsolation puts two projects with a VPC of the same name on one

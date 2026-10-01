@@ -3,13 +3,16 @@
 package relay
 
 import (
+	"crypto/tls"
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	vpcv1alpha1 "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/identity"
+	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
 // Trust is the agent trust data that the relay keeps locally. The cert check
@@ -52,4 +55,44 @@ func (r *Router) checkCert(chain []*x509.Certificate, now time.Time) (identity.I
 		Revoked: revoked,
 		Now:     now,
 	})
+}
+
+// TLSConfig returns a copy of base whose handshake fails for an agent cert
+// that fails the check.
+func (r *Router) TLSConfig(base *tls.Config) *tls.Config {
+	c := base.Clone()
+	c.MinVersion = tls.VersionTLS13
+	c.NextProtos = []string{dp.ALPNRelay}
+	// ClientCAs does not check the SAN or revocations, so the relay checks.
+	c.ClientAuth = tls.RequireAnyClientCert
+	c.VerifyConnection = r.verifyConnection
+	return c
+}
+
+func (r *Router) verifyConnection(cs tls.ConnectionState) error {
+	if cs.NegotiatedProtocol != dp.ALPNRelay {
+		return nil
+	}
+	_, err := r.checkCert(cs.PeerCertificates, time.Now())
+	return err
+}
+
+// Recheck closes the sessions whose agent cert now fails the check. Call it
+// when the agent CA or a revocation list changes.
+func (r *Router) Recheck() {
+	now := time.Now()
+	r.mu.RLock()
+	sessions := make([]*Session, 0, len(r.sessions))
+	for s := range r.sessions {
+		if s.chain != nil {
+			sessions = append(sessions, s)
+		}
+	}
+	r.mu.RUnlock()
+	for _, s := range sessions {
+		if _, err := r.checkCert(s.chain, now); err != nil {
+			slog.Info("Closing relay session after a trust change", "agent", s.id.ID, "error", err)
+			s.close(dp.RelayCloseCode_RELAY_CLOSE_CODE_CERT, "agent cert rejected")
+		}
+	}
 }

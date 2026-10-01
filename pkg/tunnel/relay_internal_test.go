@@ -27,6 +27,7 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/hasher"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/metrics"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/router"
+	vpcrelay "github.com/apoxy-dev/apoxy/pkg/vpc/relay"
 )
 
 // TestRelayTeardownIsIdentityAware pins the reconnect race: a stale
@@ -827,5 +828,11 @@ func TestConnStatsKeepAliveCounters(t *testing.T) {
 				t.Fatalf("stats = %+v, want %+v", got, want)
 			}
 		})
+	}
+}
+
+func TestRelayVPCPacketSize(t *testing.T) {
+	if got := int(quicConfig.InitialPacketSize); got < vpcrelay.MinPacketSize {
+		t.Errorf("InitialPacketSize = %d, want %d or more for VPC relay sessions", got, vpcrelay.MinPacketSize)
 	}
 }

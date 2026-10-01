@@ -29,6 +29,18 @@ service Relay {
   rpc UnregisterSPI(UnregisterSPIRequest) returns (google.protobuf.Empty);
 }
 
+// RelayCloseCode is the QUIC application error code when a relay closes a
+// relay session.
+enum RelayCloseCode {
+  // Normal close.
+  RELAY_CLOSE_CODE_UNSPECIFIED = 0;
+  // The agent cert failed a check. The agent gets a new cert before it dials
+  // again.
+  RELAY_CLOSE_CODE_CERT = 1;
+  // The relay stops. The agent moves to another relay.
+  RELAY_CLOSE_CODE_DRAIN = 2;
+}
+
 // SessionRequest is a message from the agent on Session.
 message SessionRequest {
   oneof msg {

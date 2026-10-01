@@ -1,0 +1,524 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+package relay
+
+import (
+	"context"
+	"crypto"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"net/netip"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/google/go-cmp/cmp"
+	"github.com/quic-go/quic-go"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/testing/protocmp"
+	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
+
+	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
+	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
+)
+
+func attach(t *testing.T, a agent, req *dp.AttachRequest) *dp.AttachResponse {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	res, err := a.c.Attach(ctx, req)
+	require.NoError(t, err)
+	return res
+}
+
+func TestOverQUIC(t *testing.T) {
+	ca := newCA(t)
+	h := newHarness(t, ca)
+	snd := h.mustDial(t, ca.agentCert(t, vpcA, "sender"))
+	rcv := h.mustDial(t, ca.agentCert(t, vpcA, "receiver"))
+	sndSync, welcome, cfg := open(t, snd)
+	assert.Equal(t, snd.src.String(), welcome.ReflexiveAddress)
+	assert.Empty(t, cmp.Diff(&dp.Config{Vpc: ref(vpcA), Mtu: 1280, DnsServers: []string{"fd00::53"}}, cfg, protocmp.Transform()))
+	open(t, rcv)
+
+	res := attach(t, rcv, &dp.AttachRequest{Vpc: ref(vpcA), Name: "receiver.local", Labels: map[string]string{"app": "db"}})
+	claims, err := VerifyGrant(res.Grant, h.relayRoots, time.Now())
+	require.NoError(t, err)
+	assert.Equal(t, res.AttachmentId, claims.AttachmentId)
+	assert.Equal(t, agentID(vpcA, "receiver"), claims.Subject)
+	assert.Equal(t, "relay-1", claims.RelayId)
+	assert.Empty(t, cmp.Diff(ref(vpcA), claims.Vpc, protocmp.Transform()))
+	require.Len(t, claims.Addresses, 1)
+	assert.WithinDuration(t, h.session(t, rcv).notAfter, claims.NotAfter.AsTime(), time.Second, "the grant ends with the cert")
+	addr := netip.MustParsePrefix(claims.Addresses[0]).Addr().Next()
+
+	// The sender learns the route of the receiver in Sync.
+	m := recv(t, sndSync).GetRouteDelta()
+	require.NotNil(t, m)
+	assert.Empty(t, cmp.Diff(&dp.RouteDelta{Rev: 1, Add: []*dp.Route{{Vpc: ref(vpcA), Prefix: claims.Addresses[0], Origin: res.AttachmentId}}}, m, protocmp.Transform()))
+	require.NoError(t, sndSync.Send(&dp.SessionRequest{Msg: &dp.SessionRequest_Ack{Ack: &dp.Ack{Rev: 1}}}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	rp, err := snd.c.ResolvePeer(ctx, &dp.ResolvePeerRequest{Vpc: ref(vpcA), Address: addr.String()})
+	require.NoError(t, err)
+	assert.Equal(t, dp.Reach_REACH_LOCAL, rp.Reach)
+	assert.True(t, rp.P2P)
+
+	_, err = snd.c.RegisterSPI(ctx, register(vpcA, addr.String(), time.Minute, 7))
+	require.NoError(t, err)
+	// The relay takes the sender from the authenticated connection.
+	dst, v := h.r.Forward(snd.src, 7, 1400, time.Now())
+	require.Equal(t, Pass, v)
+	assert.Equal(t, rcv.src, dst)
+	_, v = h.r.Forward(rcv.src, 7, 1400, time.Now())
+	assert.Equal(t, DropUnknownSPI, v)
+	require.Eventually(t, func() bool {
+		return h.r.SyncStats(h.session(t, snd)) == SyncStats{Rev: 1, Acked: 1}
+	}, 5*time.Second, 5*time.Millisecond)
+
+	// When the receiver goes, the sender loses its route and rows, and the
+	// relay frees the addresses and the data peer.
+	require.Equal(t, 1, h.addrs.count())
+	require.NoError(t, rcv.qc.CloseWithError(0, ""))
+	m = recv(t, sndSync).GetRouteDelta()
+	require.NotNil(t, m)
+	assert.Equal(t, uint64(2), m.Rev)
+	assert.Empty(t, m.Add)
+	require.Len(t, m.Remove, 1)
+	assert.Equal(t, claims.Addresses[0], m.Remove[0].Prefix)
+	_, v = h.r.Forward(snd.src, 7, 1400, time.Now())
+	assert.Equal(t, DropUnknownSPI, v)
+	require.Eventually(t, func() bool { return h.addrs.count() == 0 }, 5*time.Second, 5*time.Millisecond)
+
+	// SAs that end at the relay come later.
+	_, err = snd.c.Rekey(ctx, &dp.KeysRequest{Op: &dp.KeysRequest_Revoke{Revoke: &dp.RevokeSA{Spis: []uint32{7}}}})
+	assert.Equal(t, rpc.Unimplemented, rpc.CodeOf(err))
+}
+
+// relayCalls are the unary calls that need the caller identity.
+var relayCalls = []struct {
+	method string
+	json   string // Request from the JSON debug handler.
+	call   func(ctx context.Context, c dp.RelayClient, vpc *dp.VPCRef) error
+}{
+	{dp.Relay_Attach_FullMethodName, `{"vpc":{"projectId":"project-a","vpcUid":"vpc-1"},"name":"laptop"}`,
+		func(ctx context.Context, c dp.RelayClient, vpc *dp.VPCRef) error {
+			_, err := c.Attach(ctx, &dp.AttachRequest{Vpc: vpc, Name: "laptop"})
+			return err
+		}},
+	{dp.Relay_ResolvePeer_FullMethodName, `{"vpc":{"projectId":"project-a","vpcUid":"vpc-1"},"address":"fd00::2"}`,
+		func(ctx context.Context, c dp.RelayClient, vpc *dp.VPCRef) error {
+			_, err := c.ResolvePeer(ctx, &dp.ResolvePeerRequest{Vpc: vpc, Address: "fd00::2"})
+			return err
+		}},
+	{dp.Relay_RegisterSPI_FullMethodName, `{"vpc":{"projectId":"project-a","vpcUid":"vpc-1"},"destination":"fd00::2","spis":[7],"expiresIn":"60s"}`,
+		func(ctx context.Context, c dp.RelayClient, vpc *dp.VPCRef) error {
+			_, err := c.RegisterSPI(ctx, &dp.RegisterSPIRequest{Vpc: vpc, Destination: "fd00::2", Spis: []uint32{7}, ExpiresIn: durationpb.New(time.Minute)})
+			return err
+		}},
+	{dp.Relay_UnregisterSPI_FullMethodName, `{"vpc":{"projectId":"project-a","vpcUid":"vpc-1"},"spis":[7]}`,
+		func(ctx context.Context, c dp.RelayClient, vpc *dp.VPCRef) error {
+			_, err := c.UnregisterSPI(ctx, &dp.UnregisterSPIRequest{Vpc: vpc, Spis: []uint32{7}})
+			return err
+		}},
+}
+
+func shortName(method string) string { return method[strings.LastIndex(method, "/")+1:] }
+
+// TestUnauthenticated checks that calls with no session fail with
+// Unauthenticated, from the JSON debug handler and from a served connection.
+func TestUnauthenticated(t *testing.T) {
+	ca := newCA(t)
+	h := newHarness(t, ca)
+	// A connection that passes the handshake, served with no session.
+	stranger := h.mustDial(t, ca.agentCert(t, vpcA, "stranger"))
+	s := h.session(t, stranger)
+	h.r.removeSession(s)
+	srv := httptest.NewServer(rpc.JSONHandler(h.mux))
+	defer srv.Close()
+
+	for _, tc := range relayCalls {
+		t.Run(shortName(tc.method), func(t *testing.T) {
+			resp, err := http.Post(srv.URL+tc.method, "application/json", strings.NewReader(tc.json))
+			require.NoError(t, err)
+			_ = resp.Body.Close()
+			assert.Equal(t, http.StatusUnauthorized, resp.StatusCode, "JSON debug handler")
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			assert.Equal(t, rpc.Unauthenticated, rpc.CodeOf(tc.call(ctx, stranger.c, ref(vpcA))), "connection with no session")
+		})
+	}
+	t.Run("Session", func(t *testing.T) {
+		st, err := stranger.c.Session(context.Background())
+		require.NoError(t, err)
+		require.NoError(t, st.Send(&dp.SessionRequest{Msg: &dp.SessionRequest_Hello{Hello: &dp.Hello{Mode: dp.Mode_MODE_PSP}}}))
+		_, err = st.Recv()
+		assert.Equal(t, rpc.Unauthenticated, rpc.CodeOf(err))
+	})
+}
+
+// TestCertVPC checks that each call uses only the VPC in the agent cert,
+// also when Permit allows all.
+func TestCertVPC(t *testing.T) {
+	ca := newCA(t)
+	h := newHarness(t, ca)
+	h.r.SetPermit(func(VPCKey, string, VPCKey, netip.Addr) bool { return true })
+	a := h.mustDial(t, ca.agentCert(t, vpcA, "laptop"))
+	open(t, a)
+	peer := h.mustDial(t, ca.agentCert(t, vpcA, "peer"))
+	require.NoError(t, h.r.AddRoute(h.session(t, peer), netip.MustParsePrefix("fd00::2/128"), "att"))
+
+	refs := []struct {
+		name string
+		vpc  *dp.VPCRef
+		code rpc.Code
+	}{
+		{"cert VPC", ref(vpcA), rpc.OK},
+		{"another project", ref(vpcB), rpc.PermissionDenied},
+		{"another VPC", ref(VPCKey{Project: vpcA.Project, UID: "vpc-2"}), rpc.PermissionDenied},
+	}
+	for _, call := range relayCalls {
+		for _, tc := range refs {
+			t.Run(shortName(call.method)+"/"+tc.name, func(t *testing.T) {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				err := call.call(ctx, a.c, tc.vpc)
+				assert.Equal(t, tc.code, rpc.CodeOf(err), "error: %v", err)
+			})
+		}
+	}
+}
+
+func TestSessionErrors(t *testing.T) {
+	cases := []struct {
+		name  string
+		first *dp.SessionRequest
+		code  rpc.Code
+	}{
+		{"not Hello", &dp.SessionRequest{Msg: &dp.SessionRequest_Ack{Ack: &dp.Ack{Rev: 1}}}, rpc.InvalidArgument},
+		{"no mode", &dp.SessionRequest{Msg: &dp.SessionRequest_Hello{Hello: &dp.Hello{}}}, rpc.InvalidArgument},
+		{"QUIC mode", &dp.SessionRequest{Msg: &dp.SessionRequest_Hello{Hello: &dp.Hello{Mode: dp.Mode_MODE_QUIC}}}, rpc.Unimplemented},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ca := newCA(t)
+			h := newHarness(t, ca)
+			a := h.mustDial(t, ca.agentCert(t, vpcA, "laptop"))
+			st, err := a.c.Session(context.Background())
+			require.NoError(t, err)
+			require.NoError(t, st.Send(tc.first))
+			_, err = st.Recv()
+			assert.Equal(t, tc.code, rpc.CodeOf(err), "error: %v", err)
+		})
+	}
+
+	t.Run("second Session call", func(t *testing.T) {
+		ca := newCA(t)
+		h := newHarness(t, ca)
+		a := h.mustDial(t, ca.agentCert(t, vpcA, "laptop"))
+		open(t, a)
+		st, err := a.c.Session(context.Background())
+		require.NoError(t, err)
+		require.NoError(t, st.Send(&dp.SessionRequest{Msg: &dp.SessionRequest_Hello{Hello: &dp.Hello{Mode: dp.Mode_MODE_PSP}}}))
+		_, err = st.Recv()
+		assert.Equal(t, rpc.FailedPrecondition, rpc.CodeOf(err))
+	})
+	t.Run("VPC data too old", func(t *testing.T) {
+		ca := newCA(t)
+		h := newHarness(t, ca)
+		h.nets.failVPC(vpcA)
+		a := h.mustDial(t, ca.agentCert(t, vpcA, "laptop"))
+		st, err := a.c.Session(context.Background())
+		require.NoError(t, err)
+		require.NoError(t, st.Send(&dp.SessionRequest{Msg: &dp.SessionRequest_Hello{Hello: &dp.Hello{Mode: dp.Mode_MODE_PSP}}}))
+		_, err = st.Recv()
+		assert.Equal(t, rpc.Unavailable, rpc.CodeOf(err))
+	})
+	t.Run("end of the Session call closes the session", func(t *testing.T) {
+		ca := newCA(t)
+		h := newHarness(t, ca)
+		a := h.mustDial(t, ca.agentCert(t, vpcA, "laptop"))
+		st, _, _ := open(t, a)
+		require.NoError(t, st.CloseSend())
+		assert.Equal(t, quic.ApplicationErrorCode(dp.RelayCloseCode_RELAY_CLOSE_CODE_UNSPECIFIED), closeCode(t, a.qc))
+	})
+	t.Run("close gives the error of the Session call", func(t *testing.T) {
+		ca := newCA(t)
+		h := newHarness(t, ca)
+		a := h.mustDial(t, ca.agentCert(t, vpcA, "laptop"))
+		st, _, _ := open(t, a)
+		require.NoError(t, st.Send(&dp.SessionRequest{Msg: &dp.SessionRequest_Hello{Hello: &dp.Hello{Mode: dp.Mode_MODE_PSP}}}))
+		assert.Equal(t, quic.ApplicationErrorCode(dp.RelayCloseCode_RELAY_CLOSE_CODE_UNSPECIFIED), closeCode(t, a.qc))
+		var ae *quic.ApplicationError
+		require.ErrorAs(t, context.Cause(a.qc.Context()), &ae)
+		assert.Contains(t, ae.ErrorMessage, "unexpected message")
+	})
+}
+
+// TestSync checks the routes that a session gets: the routes of its VPC
+// when the Session call opens, then each change with the next revision.
+func TestSync(t *testing.T) {
+	ca := newCA(t)
+	h := newHarness(t, ca)
+	other := h.mustDial(t, ca.agentCert(t, vpcA, "other"))
+	res := attach(t, other, &dp.AttachRequest{Vpc: ref(vpcA), Name: "other", Routes: []string{"10.1.0.0/16"}})
+	// A session in another project with the same VPC UID and route.
+	b := h.mustDial(t, ca.agentCert(t, vpcB, "b"))
+	attach(t, b, &dp.AttachRequest{Vpc: ref(vpcB), Name: "b", Routes: []string{"10.1.0.0/16"}})
+
+	a := h.mustDial(t, ca.agentCert(t, vpcA, "laptop"))
+	// Its own attachment does not come back to it in Sync.
+	attach(t, a, &dp.AttachRequest{Vpc: ref(vpcA), Name: "laptop", Routes: []string{"10.2.0.0/16"}})
+	st, _, _ := open(t, a)
+	first := recv(t, st).GetRouteDelta()
+	require.NotNil(t, first)
+	assert.Empty(t, cmp.Diff(&dp.RouteDelta{Rev: 1, Add: []*dp.Route{
+		{Vpc: ref(vpcA), Prefix: "10.1.0.0/16", Origin: res.AttachmentId},
+		{Vpc: ref(vpcA), Prefix: "fd00:1::/96", Origin: res.AttachmentId},
+	}}, first, protocmp.Transform()))
+
+	res2 := attach(t, other, &dp.AttachRequest{Vpc: ref(vpcA), Name: "other-2"})
+	second := recv(t, st).GetRouteDelta()
+	require.NotNil(t, second)
+	assert.Empty(t, cmp.Diff(&dp.RouteDelta{Rev: 2, Add: []*dp.Route{
+		{Vpc: ref(vpcA), Prefix: "fd00:4::/96", Origin: res2.AttachmentId},
+	}}, second, protocmp.Transform()))
+
+	require.NoError(t, other.qc.CloseWithError(0, ""))
+	third := recv(t, st).GetRouteDelta()
+	require.NotNil(t, third)
+	assert.Equal(t, uint64(3), third.Rev)
+	assert.Empty(t, third.Add)
+	assert.Len(t, third.Remove, 3)
+}
+
+func TestQueueRoute(t *testing.T) {
+	r := NewRouter(nil, Config{})
+	s := addSession(t, r, vpcA, "s", "192.0.2.1:1")
+	rt := route{netip.MustParsePrefix("10.0.0.0/8"), "a"}
+	cases := []struct {
+		name string
+		ops  []bool // Changes of rt: true adds, false removes.
+		want *dp.RouteDelta
+	}{
+		{"add", []bool{true}, &dp.RouteDelta{Add: []*dp.Route{{Prefix: "10.0.0.0/8", Origin: "a"}}}},
+		{"add then remove", []bool{true, false}, nil},
+		{"remove then add", []bool{false, true}, nil},
+		{"remove", []bool{false}, &dp.RouteDelta{Remove: []*dp.Route{{Prefix: "10.0.0.0/8", Origin: "a"}}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r.mu.Lock()
+			for _, add := range tc.ops {
+				s.queueRoute(rt, add)
+			}
+			r.mu.Unlock()
+			msgs := r.takeSync(s.Session)
+			if tc.want == nil {
+				assert.Empty(t, msgs)
+				return
+			}
+			require.Len(t, msgs, 1)
+			got := msgs[0].GetRouteDelta()
+			tc.want.Rev = got.Rev
+			assert.Empty(t, cmp.Diff(tc.want, got, protocmp.Transform()))
+		})
+	}
+}
+
+func TestAttach(t *testing.T) {
+	cases := []struct {
+		name  string
+		req   *dp.AttachRequest
+		setup func(h *harness)
+		code  rpc.Code
+	}{
+		{"good", &dp.AttachRequest{Vpc: ref(vpcA), Name: "laptop.example.com", Labels: map[string]string{"apoxy.dev/app": "db"}, Routes: []string{"10.9.0.0/16"}}, nil, rpc.OK},
+		{"bad name", &dp.AttachRequest{Vpc: ref(vpcA), Name: "Laptop_1"}, nil, rpc.InvalidArgument},
+		{"bad label", &dp.AttachRequest{Vpc: ref(vpcA), Name: "laptop", Labels: map[string]string{"a b": "c"}}, nil, rpc.InvalidArgument},
+		{"bad route", &dp.AttachRequest{Vpc: ref(vpcA), Name: "laptop", Routes: []string{"10.9.0.0"}}, nil, rpc.InvalidArgument},
+		{"route of another session", &dp.AttachRequest{Vpc: ref(vpcA), Name: "laptop", Routes: []string{"10.9.0.0/16", "10.8.0.0/16"}}, nil, rpc.AlreadyExists},
+		{"another VPC", &dp.AttachRequest{Vpc: ref(vpcB), Name: "laptop"}, nil, rpc.PermissionDenied},
+		{"VPC data too old", &dp.AttachRequest{Vpc: ref(vpcA), Name: "laptop"}, func(h *harness) { h.nets.failVPC(vpcA) }, rpc.Unavailable},
+		{"no addresses", &dp.AttachRequest{Vpc: ref(vpcA), Name: "laptop"}, func(h *harness) { h.addrs.fail(errors.New("no slot")) }, rpc.Unavailable},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ca := newCA(t)
+			h := newHarness(t, ca)
+			other := h.mustDial(t, ca.agentCert(t, vpcA, "other"))
+			if tc.name == "route of another session" {
+				require.NoError(t, h.r.AddRoute(h.session(t, other), netip.MustParsePrefix("10.8.0.0/16"), "x"))
+			}
+			if tc.setup != nil {
+				tc.setup(h)
+			}
+			a := h.mustDial(t, ca.agentCert(t, vpcA, "laptop"))
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			res, err := a.c.Attach(ctx, tc.req)
+			require.Equal(t, tc.code, rpc.CodeOf(err), "error: %v", err)
+			s := h.session(t, a)
+			h.r.mu.RLock()
+			routes := append([]netip.Prefix{}, s.routes...)
+			h.r.mu.RUnlock()
+			if tc.code != rpc.OK {
+				// A failed attach keeps no route and no address.
+				assert.Empty(t, routes)
+				assert.Zero(t, h.addrs.count())
+				return
+			}
+			claims, err := VerifyGrant(res.Grant, h.relayRoots, time.Now())
+			require.NoError(t, err)
+			assert.ElementsMatch(t, []netip.Prefix{netip.MustParsePrefix(claims.Addresses[0]), netip.MustParsePrefix("10.9.0.0/16")}, routes)
+			assert.Equal(t, 1, h.addrs.count())
+		})
+	}
+}
+
+func TestVerifyGrant(t *testing.T) {
+	_, edKey, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	now := time.Now()
+	claims := &dp.GrantClaims{
+		Vpc: ref(vpcA), AttachmentId: "att-1", Subject: agentID(vpcA, "laptop"),
+		Addresses: []string{"fd00:1::/96"}, RelayId: "relay-1", NotAfter: timestamppb.New(now.Add(time.Hour)),
+	}
+	cases := []struct {
+		name   string
+		key    crypto.Signer
+		claims func(c *dp.GrantClaims)     // Changes the claims before signing.
+		grant  func(g *dp.AttachmentGrant) // Changes the grant after signing.
+		roots  func(own *x509.CertPool) *x509.CertPool
+		chain  bool // Wildcard cert from an intermediate CA.
+		at     time.Time
+		ok     bool
+	}{
+		{name: "ECDSA", key: newKey(t), ok: true},
+		{name: "Ed25519", key: edKey, ok: true},
+		{name: "RSA", key: rsaKey, ok: true},
+		{name: "changed claims", key: newKey(t), grant: func(g *dp.AttachmentGrant) { g.Claims[len(g.Claims)-1] ^= 1 }},
+		{name: "changed signature", key: newKey(t), grant: func(g *dp.AttachmentGrant) { g.Signature[len(g.Signature)-1] ^= 1 }},
+		{name: "other relay cert", key: newKey(t), grant: func(g *dp.AttachmentGrant) {
+			other, _ := relayCert(t, "relay-1", newKey(t))
+			g.RelayChain = other.Certificate
+		}},
+		{name: "no relay cert", key: newKey(t), grant: func(g *dp.AttachmentGrant) { g.RelayChain = nil }},
+		{name: "intermediate and wildcard", key: newKey(t), chain: true, ok: true},
+		{name: "no intermediate", key: newKey(t), chain: true, grant: func(g *dp.AttachmentGrant) { g.RelayChain = g.RelayChain[:1] }},
+		{name: "bad intermediate", key: newKey(t), chain: true, grant: func(g *dp.AttachmentGrant) { g.RelayChain[1] = []byte("x") }},
+		{name: "wildcard does not cover the relay ID", key: newKey(t), chain: true, claims: func(c *dp.GrantClaims) { c.RelayId = "relay-1.other.example.net" }},
+		{name: "relay ID not in the cert", key: newKey(t), claims: func(c *dp.GrantClaims) { c.RelayId = "relay-2" }},
+		{name: "other roots", key: newKey(t), roots: func(*x509.CertPool) *x509.CertPool { return newCA(t).pool() }},
+		{name: "ended", key: newKey(t), at: now.Add(time.Hour)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cert, roots := relayCert(t, "relay-1", tc.key)
+			c := proto.Clone(claims).(*dp.GrantClaims)
+			if tc.chain {
+				cert, roots = relayChain(t, tc.key)
+				c.RelayId = "relay-1.relay.example.net"
+			}
+			if tc.claims != nil {
+				tc.claims(c)
+			}
+			signed, err := SignGrant(cert, c)
+			require.NoError(t, err)
+			if tc.grant != nil {
+				tc.grant(signed)
+			}
+			if tc.roots != nil {
+				roots = tc.roots(roots)
+			}
+			at := now
+			if !tc.at.IsZero() {
+				at = tc.at
+			}
+			got, err := VerifyGrant(signed, roots, at)
+			if !tc.ok {
+				assert.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Empty(t, cmp.Diff(c, got, protocmp.Transform()))
+		})
+	}
+}
+
+func TestNoRoute(t *testing.T) {
+	ca := newCA(t)
+	h := newHarness(t, ca)
+	a := h.mustDial(t, ca.agentCert(t, vpcA, "laptop"))
+	st, _, _ := open(t, a)
+	s := h.session(t, a)
+	peer := h.mustDial(t, ca.agentCert(t, vpcA, "peer"))
+	require.NoError(t, h.r.AddRoute(h.session(t, peer), netip.MustParsePrefix("fd00::2/128"), "att"))
+	recv(t, st) // The route of the peer.
+
+	now := time.Now()
+	assert.Same(t, h.session(t, peer), h.r.Route(s, netip.MustParseAddr("fd00::2"), now))
+	missing := netip.MustParseAddr("fd00::9")
+	assert.Nil(t, h.r.Route(s, missing, now))
+	assert.Nil(t, h.r.Route(s, missing, now.Add(500*time.Millisecond)), "second miss in 1 s")
+	assert.Nil(t, h.r.Route(s, missing, now.Add(time.Second)))
+	for range 2 {
+		m := recv(t, st).GetNoRoute()
+		require.NotNil(t, m)
+		assert.Empty(t, cmp.Diff(&dp.NoRoute{Vpc: ref(vpcA), Address: "fd00::9"}, m, protocmp.Transform()))
+	}
+	// Permit denies: the same as no route.
+	h.r.SetPermit(func(VPCKey, string, VPCKey, netip.Addr) bool { return false })
+	assert.Nil(t, h.r.Route(s, netip.MustParseAddr("fd00::2"), now))
+	assert.Equal(t, "fd00::2", recv(t, st).GetNoRoute().GetAddress())
+}
+
+func TestDrain(t *testing.T) {
+	ca := newCA(t)
+	h := newHarness(t, ca)
+	mover := h.mustDial(t, ca.agentCert(t, vpcA, "mover"))
+	moverSync, _, _ := open(t, mover)
+	stayer := h.mustDial(t, ca.agentCert(t, vpcA, "stayer"))
+	stayerSync, _, _ := open(t, stayer)
+	h.session(t, mover)
+	h.session(t, stayer)
+
+	alternates := []*dp.RelayRef{{Id: "relay-2", Addresses: []string{"192.0.2.2:443"}}}
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		h.srv.Drain(ctx, alternates)
+		close(done)
+	}()
+	for _, st := range []syncStream{moverSync, stayerSync} {
+		m := recv(t, st).GetDrain()
+		require.NotNil(t, m)
+		assert.Empty(t, cmp.Diff(&dp.Drain{Alternates: alternates}, m, protocmp.Transform()))
+	}
+	// The relay refuses new sessions.
+	late, err := h.dial(t, ca.agentCert(t, vpcA, "late"))
+	if err == nil {
+		assert.Equal(t, quic.ApplicationErrorCode(dp.RelayCloseCode_RELAY_CLOSE_CODE_DRAIN), closeCode(t, late.qc))
+	}
+	// One agent moves. The relay closes the other when the drain time ends.
+	require.NoError(t, mover.qc.CloseWithError(0, ""))
+	assert.Equal(t, quic.ApplicationErrorCode(dp.RelayCloseCode_RELAY_CLOSE_CODE_DRAIN), closeCode(t, stayer.qc))
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Drain did not return")
+	}
+}

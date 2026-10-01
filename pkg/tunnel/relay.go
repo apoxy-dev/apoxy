@@ -34,6 +34,8 @@ import (
 	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/router"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/token"
+	vpcrelay "github.com/apoxy-dev/apoxy/pkg/vpc/relay"
+	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
 const (
@@ -78,6 +80,9 @@ type Relay struct {
 	// drain are expected (agents close them on GOAWAY) and must not tear down
 	// the datapath state that lame-duck forwarding depends on.
 	draining atomic.Bool
+
+	// vpc serves VPC relay sessions. It is nil until SetVPC.
+	vpc *vpcrelay.Server
 }
 
 func NewRelay(name string, pc net.PacketConn, cert tls.Certificate, handler *icx.Handler, idHasher *hasher.Hasher, router router.Router) *Relay {
@@ -198,6 +203,56 @@ func (r *Relay) SetLameDuckPeriod(d time.Duration) {
 	r.lameDuck = d
 }
 
+// SetVPC serves VPC relay sessions as relayID, a DNS name that the relay cert
+// covers. Call it before Start.
+func (r *Relay) SetVPC(relayID string, trust vpcrelay.Trust, nets vpcrelay.Networks, addrs vpcrelay.Addresses) *vpcrelay.Router {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	rtr := vpcrelay.NewRouter(trust, vpcrelay.Config{})
+	r.vpc = &vpcrelay.Server{
+		R:         rtr,
+		Networks:  nets,
+		Addresses: addrs,
+		Cert:      func() (*tls.Certificate, error) { return r.getCert(&tls.ClientHelloInfo{ServerName: relayID}) },
+		RelayID:   relayID,
+	}
+	return rtr
+}
+
+// vpcTLSConfig picks the VPC relay config for apoxy-vpc/2, else h3.
+func (r *Relay) vpcTLSConfig(h3 *tls.Config) *tls.Config {
+	vpc := r.vpc.R.TLSConfig(&tls.Config{GetCertificate: r.getCert})
+	return &tls.Config{GetConfigForClient: func(chi *tls.ClientHelloInfo) (*tls.Config, error) {
+		if slices.Contains(chi.SupportedProtos, dp.ALPNRelay) {
+			return vpc, nil
+		}
+		return h3, nil
+	}}
+}
+
+// vpcListener gives apoxy-vpc/2 connections to the VPC server, others to h3.
+type vpcListener struct {
+	*quic.EarlyListener
+	ctx context.Context
+	srv *vpcrelay.Server
+}
+
+func (l *vpcListener) Accept(ctx context.Context) (quic.EarlyConnection, error) {
+	for {
+		qc, err := l.EarlyListener.Accept(ctx)
+		if err != nil || qc.ConnectionState().TLS.NegotiatedProtocol != dp.ALPNRelay {
+			return qc, err
+		}
+		go func() {
+			select {
+			case <-qc.HandshakeComplete():
+				l.srv.ServeConn(l.ctx, qc)
+			case <-qc.Context().Done():
+			}
+		}()
+	}
+}
+
 // SetMetricsStore configures the push-based metrics store.
 func (r *Relay) SetMetricsStore(s *metrics.MetricsStore) {
 	r.mu.Lock()
@@ -288,13 +343,25 @@ func (r *Relay) ConnectionStats() []ConnStats {
 
 // Start starts the relay.
 func (r *Relay) Start(ctx context.Context) error {
-	ln, err := quic.ListenEarly(
-		r.pc,
-		http3.ConfigureTLSConfig(&tls.Config{GetCertificate: r.getCert}),
-		quicConfig,
-	)
+	// HTTP/3, VPC relay sessions and PSP share one QUIC transport.
+	tr := &quic.Transport{Conn: r.pc}
+	defer tr.Close()
+	tlsConf := http3.ConfigureTLSConfig(&tls.Config{GetCertificate: r.getCert})
+	if r.vpc != nil {
+		tlsConf = r.vpcTLSConfig(tlsConf)
+		tr.NonQUICPacketHandler = r.vpc.R.PacketHandler(tr)
+	}
+	quicLn, err := tr.ListenEarly(tlsConf, quicConfig)
 	if err != nil {
 		return fmt.Errorf("failed to create QUIC listener: %w", err)
+	}
+	var ln http3.QUICEarlyListener = quicLn
+	// VPC relay sessions continue after ctx ends, until the drain ends.
+	vpcCtx, vpcCancel := context.WithCancel(context.Background())
+	defer vpcCancel()
+	if r.vpc != nil {
+		ln = &vpcListener{EarlyListener: quicLn, ctx: vpcCtx, srv: r.vpc}
+		go r.vpc.R.Run(vpcCtx)
 	}
 
 	mux := httprouter.New()
@@ -349,6 +416,16 @@ func (r *Relay) Start(ctx context.Context) error {
 			drainCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			onDraining(drainCtx)
 			cancel()
+		}
+
+		// Tell VPC agents to move. The rest close when the lame duck ends.
+		if r.vpc != nil {
+			d := max(lameDuck, 5*time.Second)
+			go func() {
+				drainCtx, cancel := context.WithTimeout(context.Background(), d)
+				defer cancel()
+				r.vpc.Drain(drainCtx, nil)
+			}()
 		}
 
 		if lameDuck <= 0 {
