@@ -21,8 +21,9 @@ type Server struct {
 	R *Router
 }
 
-// caller returns the session of the call. A call with no authenticated
-// session, for example from the JSON debug handler, gets Unauthenticated.
+// caller returns the session of the call. A call with no session, for
+// example from the JSON debug handler or from a connection whose agent cert
+// failed the check, gets Unauthenticated.
 func (r *Router) caller(ctx context.Context) (*Session, error) {
 	if conn := rpc.ConnFromContext(ctx); conn != nil {
 		r.mu.RLock()
@@ -35,8 +36,21 @@ func (r *Router) caller(ctx context.Context) (*Session, error) {
 	return nil, rpc.Errorf(rpc.Unauthenticated, "no authenticated relay session")
 }
 
-func parseTarget(ref *dp.VPCRef, addr string) (VPCKey, netip.Addr, error) {
+// vpc returns the key of ref. ref must name the VPC of the agent cert: one
+// VPC for each cert.
+func (s *Session) vpc(ref *dp.VPCRef) (VPCKey, error) {
 	key, err := KeyOf(ref)
+	if err != nil {
+		return VPCKey{}, err
+	}
+	if key != s.id.VPC {
+		return VPCKey{}, rpc.Errorf(rpc.PermissionDenied, "VPC %s/%s is not the VPC of the agent cert", key.Project, key.UID)
+	}
+	return key, nil
+}
+
+func (s *Session) target(ref *dp.VPCRef, addr string) (VPCKey, netip.Addr, error) {
+	key, err := s.vpc(ref)
 	if err != nil {
 		return VPCKey{}, netip.Addr{}, err
 	}
@@ -59,7 +73,7 @@ func (s Server) ResolvePeer(ctx context.Context, in *dp.ResolvePeerRequest) (*dp
 }
 
 func (r *Router) resolvePeer(c *Session, in *dp.ResolvePeerRequest) (*dp.ResolvePeerResponse, error) {
-	key, dst, err := parseTarget(in.GetVpc(), in.GetAddress())
+	key, dst, err := c.target(in.GetVpc(), in.GetAddress())
 	if err != nil {
 		return nil, err
 	}
@@ -87,7 +101,7 @@ func (s Server) RegisterSPI(ctx context.Context, in *dp.RegisterSPIRequest) (*em
 }
 
 func (r *Router) registerSPI(c *Session, in *dp.RegisterSPIRequest, now time.Time) error {
-	key, dst, err := parseTarget(in.GetVpc(), in.GetDestination())
+	key, dst, err := c.target(in.GetVpc(), in.GetDestination())
 	if err != nil {
 		return err
 	}
@@ -147,7 +161,7 @@ func (s Server) UnregisterSPI(ctx context.Context, in *dp.UnregisterSPIRequest) 
 }
 
 func (r *Router) unregisterSPI(c *Session, in *dp.UnregisterSPIRequest) error {
-	key, err := KeyOf(in.GetVpc())
+	key, err := c.vpc(in.GetVpc())
 	if err != nil {
 		return err
 	}

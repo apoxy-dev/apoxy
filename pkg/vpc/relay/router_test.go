@@ -46,8 +46,7 @@ type testSession struct {
 func addSession(t *testing.T, r *Router, vpc VPCKey, id, addr string, routes ...string) testSession {
 	t.Helper()
 	fa := &fakeAddr{a: netip.MustParseAddrPort(addr)}
-	s, err := r.addSession(nil, Identity{VPC: vpc, ID: id}, fa.get, t0)
-	require.NoError(t, err)
+	s := r.addSession(nil, Identity{VPC: vpc, ID: id}, fa.get, t0)
 	for _, p := range routes {
 		require.NoError(t, r.AddRoute(s, netip.MustParsePrefix(p)))
 	}
@@ -91,15 +90,6 @@ func TestKeyOf(t *testing.T) {
 	}
 }
 
-func TestAddSessionNeedsIdentity(t *testing.T) {
-	r := NewRouter(Config{})
-	addr := func() netip.AddrPort { return netip.MustParseAddrPort("192.0.2.1:1") }
-	for _, id := range []Identity{{}, {VPC: vpcA}, {ID: "agent"}, {VPC: VPCKey{Project: "p"}, ID: "agent"}} {
-		_, err := r.addSession(nil, id, addr, t0)
-		assert.Error(t, err, "identity %+v", id)
-	}
-}
-
 func TestRegisterSPI(t *testing.T) {
 	cases := []struct {
 		name string
@@ -120,7 +110,7 @@ func TestRegisterSPI(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			r := NewRouter(Config{})
+			r := NewRouter(nil, Config{})
 			snd := addSession(t, r, vpcA, "sender", "192.0.2.1:1000", "fd00::1/128")
 			addSession(t, r, vpcA, "r2", "192.0.2.2:1000", "fd00::2/128")
 			addSession(t, r, vpcA, "r3", "192.0.2.3:1000", "fd00::3/128")
@@ -169,7 +159,7 @@ func TestForward(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			r := NewRouter(Config{})
+			r := NewRouter(nil, Config{})
 			snd := addSession(t, r, vpcA, "sender", "192.0.2.1:1000", "fd00::1/128")
 			addSession(t, r, vpcA, "receiver", "192.0.2.2:2000", "fd00::2/128")
 			require.NoError(t, r.registerSPI(snd.Session, register(vpcA, "fd00::2", time.Minute, 1), t0))
@@ -187,7 +177,7 @@ func TestForward(t *testing.T) {
 }
 
 func TestForwardCounters(t *testing.T) {
-	r := NewRouter(Config{LaneRate: 1 << 20, LaneBurst: 64 << 10})
+	r := NewRouter(nil, Config{LaneRate: 1 << 20, LaneBurst: 64 << 10})
 	snd := addSession(t, r, vpcA, "sender", "192.0.2.1:1000", "fd00::1/128")
 	addSession(t, r, vpcA, "receiver", "192.0.2.2:2000", "fd00::2/128")
 	require.NoError(t, r.registerSPI(snd.Session, register(vpcA, "fd00::2", time.Minute, 1, 2), t0))
@@ -225,7 +215,7 @@ func TestForwardCounters(t *testing.T) {
 }
 
 func TestForwardAllocs(t *testing.T) {
-	r := NewRouter(Config{LaneRate: 1 << 30})
+	r := NewRouter(nil, Config{LaneRate: 1 << 30})
 	snd := addSession(t, r, vpcA, "sender", "192.0.2.1:1000", "fd00::1/128")
 	addSession(t, r, vpcA, "receiver", "192.0.2.2:2000", "fd00::2/128")
 	require.NoError(t, r.registerSPI(snd.Session, register(vpcA, "fd00::2", time.Minute, 1), t0))
@@ -247,7 +237,8 @@ func TestRowRemoval(t *testing.T) {
 			require.NoError(t, r.unregisterSPI(snd.Session, &dp.UnregisterSPIRequest{Vpc: ref(vpcA), Spis: []uint32{1}}))
 		}, 0, true},
 		{"unregister in another VPC", func(r *Router, snd, _ testSession) {
-			require.NoError(t, r.unregisterSPI(snd.Session, &dp.UnregisterSPIRequest{Vpc: ref(vpcB), Spis: []uint32{1}}))
+			err := r.unregisterSPI(snd.Session, &dp.UnregisterSPIRequest{Vpc: ref(vpcB), Spis: []uint32{1}})
+			assert.Equal(t, rpc.PermissionDenied, codeOf(err))
 		}, 0, false},
 		{"expiry", func(r *Router, _, _ testSession) { r.Sweep(t0.Add(11 * time.Minute)) }, 0, true},
 		{"idle", func(r *Router, _, _ testSession) { r.Sweep(t0.Add(rowIdle + time.Second)) }, rowIdle + 2*time.Second, true},
@@ -267,7 +258,7 @@ func TestRowRemoval(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			r := NewRouter(Config{})
+			r := NewRouter(nil, Config{})
 			snd := addSession(t, r, vpcA, "sender", "192.0.2.1:1000", "fd00::1/128")
 			recv := addSession(t, r, vpcA, "receiver", "192.0.2.2:2000", "fd00::2/128")
 			require.NoError(t, r.registerSPI(snd.Session, register(vpcA, "fd00::2", 10*time.Minute, 1), t0))
@@ -287,7 +278,7 @@ func TestRowRemoval(t *testing.T) {
 // TestLaneRekey runs the rekey after ICV failures: the receiver reports
 // them, the sender registers the new SPI and unregisters the old one.
 func TestLaneRekey(t *testing.T) {
-	r := NewRouter(Config{})
+	r := NewRouter(nil, Config{})
 	snd := addSession(t, r, vpcA, "sender", "192.0.2.1:1000", "fd00::1/128")
 	recv := addSession(t, r, vpcA, "receiver", "192.0.2.2:2000", "fd00::2/128")
 	require.NoError(t, r.registerSPI(snd.Session, register(vpcA, "fd00::2", time.Minute, 0x1001), t0))
@@ -326,11 +317,10 @@ func TestResolvePeer(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			r := NewRouter(Config{})
+			r := NewRouter(nil, Config{})
 			c := addSession(t, r, vpcA, "caller", "192.0.2.1:1000", "fd00::1/128")
-			peer, err := r.addSession(nil, Identity{VPC: vpcA, ID: "peer", RelayOnly: tc.relayOnly},
+			peer := r.addSession(nil, Identity{VPC: vpcA, ID: "peer", RelayOnly: tc.relayOnly},
 				func() netip.AddrPort { return netip.MustParseAddrPort("192.0.2.2:2000") }, t0)
-			require.NoError(t, err)
 			require.NoError(t, r.AddRoute(peer, netip.MustParsePrefix("fd00::2/128")))
 			require.NoError(t, r.AddRoute(peer, netip.MustParsePrefix("10.1.2.0/24")))
 			// A shorter route of another session.
@@ -347,7 +337,7 @@ func TestResolvePeer(t *testing.T) {
 }
 
 func TestAddRoute(t *testing.T) {
-	r := NewRouter(Config{})
+	r := NewRouter(nil, Config{})
 	a := addSession(t, r, vpcA, "a", "192.0.2.1:1000")
 	b := addSession(t, r, vpcA, "b", "192.0.2.2:1000")
 	p := netip.MustParsePrefix("10.0.0.0/24")
@@ -368,7 +358,7 @@ func TestAddRoute(t *testing.T) {
 // relay. The VPCs also have the same UID, the same network ID and the same
 // addresses: only the project differs. No routes, SPI rows or packets cross.
 func TestProjectIsolation(t *testing.T) {
-	r := NewRouter(Config{})
+	r := NewRouter(nil, Config{})
 	type side struct{ snd, recv testSession }
 	sides := map[VPCKey]side{
 		vpcA: {

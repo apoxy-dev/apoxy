@@ -5,7 +5,7 @@ package relay
 import (
 	"cmp"
 	"context"
-	"errors"
+	"fmt"
 	"net"
 	"net/netip"
 	"slices"
@@ -85,6 +85,7 @@ const (
 // Router holds the routing domains and SPI rows of one relay.
 type Router struct {
 	cfg           Config
+	trust         Trust
 	unknownSource atomic.Uint64
 
 	mu       sync.RWMutex
@@ -95,14 +96,16 @@ type Router struct {
 	bySource map[netip.AddrPort]*Session
 }
 
-// NewRouter returns a Router with the SameVPC Permit rule.
-func NewRouter(cfg Config) *Router {
+// NewRouter returns a Router with the SameVPC Permit rule. New sessions
+// are checked with trust.
+func NewRouter(trust Trust, cfg Config) *Router {
 	if cfg.LaneRate > 0 && cfg.LaneBurst == 0 {
 		cfg.LaneBurst = int(cfg.LaneRate / 10)
 	}
 	cfg.LaneBurst = max(cfg.LaneBurst, minLaneBurst)
 	return &Router{
 		cfg:      cfg,
+		trust:    trust,
 		permit:   SameVPC,
 		domains:  map[VPCKey]*domain{},
 		sessions: map[*Session]struct{}{},
@@ -172,23 +175,28 @@ func (d *domain) usesLen(n int) bool {
 	return false
 }
 
-// AddSession adds an authenticated relay session. The source of its data
-// is the remote address of conn; Sweep follows it when the connection
-// migrates. The session ends when conn closes.
-func (r *Router) AddSession(conn *rpc.Conn, id Identity) (*Session, error) {
+// AddSession checks the agent cert of conn and adds a relay session with
+// the identity in the cert. The source of its data is the remote address of
+// conn; Sweep follows it when the connection migrates. The session ends when
+// conn closes. On error, the caller closes conn.
+func (r *Router) AddSession(conn *rpc.Conn) (*Session, error) {
 	qc := conn.QUIC()
-	s, err := r.addSession(conn, id, func() netip.AddrPort { return addrPort(qc.RemoteAddr()) }, time.Now())
-	if err != nil {
-		return nil, err
+	tc := qc.ConnectionState().TLS
+	if tc.NegotiatedProtocol != dp.ALPNRelay {
+		return nil, fmt.Errorf("ALPN %q is not %s", tc.NegotiatedProtocol, dp.ALPNRelay)
 	}
+	now := time.Now()
+	id, err := r.checkCert(tc.PeerCertificates, now)
+	if err != nil {
+		return nil, fmt.Errorf("agent cert rejected: %w", err)
+	}
+	s := r.addSession(conn, Identity{VPC: VPCKey{Project: id.Project, UID: id.VPC}, ID: id.String()},
+		func() netip.AddrPort { return addrPort(qc.RemoteAddr()) }, now)
 	context.AfterFunc(qc.Context(), func() { r.removeSession(s) })
 	return s, nil
 }
 
-func (r *Router) addSession(conn *rpc.Conn, id Identity, remote func() netip.AddrPort, now time.Time) (*Session, error) {
-	if id.VPC.Project == "" || id.VPC.UID == "" || id.ID == "" {
-		return nil, errors.New("session identity needs a VPC and an ID")
-	}
+func (r *Router) addSession(conn *rpc.Conn, id Identity, remote func() netip.AddrPort, now time.Time) *Session {
 	s := &Session{id: id, conn: conn, remote: remote, rows: map[uint32]*row{}, inbound: map[*row]struct{}{}}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -197,7 +205,7 @@ func (r *Router) addSession(conn *rpc.Conn, id Identity, remote func() netip.Add
 		r.byConn[conn] = s
 	}
 	r.setAddr(s, remote(), now)
-	return s, nil
+	return s
 }
 
 func (r *Router) removeSession(s *Session) {
