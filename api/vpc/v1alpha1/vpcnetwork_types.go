@@ -71,6 +71,10 @@ type VPCNetworkStatus struct {
 	// Conditions: Ready, InfraProvisioned.
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty,omitzero"`
+
+	// Agents whose certs are revoked. Written by the revoke subresource.
+	// +optional
+	RevokedAgents []RevokedAgent `json:"revokedAgents,omitempty,omitzero"`
 }
 
 var _ resource.StatusSubResource = &VPCNetworkStatus{}

@@ -1128,7 +1128,10 @@ func start(
 	// mount the group serves the catalog alone.
 	srvBuilder = srvBuilder.
 		WithAdditionalSchemeInstallers(metricsv1alpha1.Install).
-		WithSchemeKinds(metricsv1alpha1.SchemeGroupVersion, metricsv1alpha1.AllKinds()...)
+		WithSchemeKinds(metricsv1alpha1.SchemeGroupVersion, metricsv1alpha1.AllKinds()...).
+		// Bodies of the vpcnetworks/enroll and /revoke subresources, which a
+		// deployment mounts with WithStorage.
+		WithSchemeKinds(vpcv1alpha1.SchemeGroupVersion, &vpcv1alpha1.AgentEnrollment{}, &vpcv1alpha1.AgentRevocation{})
 	for _, st := range opts.storage {
 		srvBuilder = srvBuilder.WithStorage(st.gvr, st.sp)
 	}

@@ -304,12 +304,19 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/apoxy-dev/apoxy/api/policy/v1alpha1.RateLimitPolicy":                   schema_apoxy_api_policy_v1alpha1_RateLimitPolicy(ref),
 		"github.com/apoxy-dev/apoxy/api/policy/v1alpha1.RateLimitSpec":                     schema_apoxy_api_policy_v1alpha1_RateLimitSpec(ref),
 		"github.com/apoxy-dev/apoxy/api/policy/v1alpha1.RateLimitStatus":                   schema_apoxy_api_policy_v1alpha1_RateLimitStatus(ref),
+		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.AgentEnrollment":                      schema_apoxy_api_vpc_v1alpha1_AgentEnrollment(ref),
+		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.AgentEnrollmentSpec":                  schema_apoxy_api_vpc_v1alpha1_AgentEnrollmentSpec(ref),
+		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.AgentEnrollmentStatus":                schema_apoxy_api_vpc_v1alpha1_AgentEnrollmentStatus(ref),
+		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.AgentRevocation":                      schema_apoxy_api_vpc_v1alpha1_AgentRevocation(ref),
+		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.AgentRevocationSpec":                  schema_apoxy_api_vpc_v1alpha1_AgentRevocationSpec(ref),
+		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.AgentRevocationStatus":                schema_apoxy_api_vpc_v1alpha1_AgentRevocationStatus(ref),
 		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.EgressGatewaySpec":                    schema_apoxy_api_vpc_v1alpha1_EgressGatewaySpec(ref),
 		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.Relay":                                schema_apoxy_api_vpc_v1alpha1_Relay(ref),
 		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.RelayList":                            schema_apoxy_api_vpc_v1alpha1_RelayList(ref),
 		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.RelayRef":                             schema_apoxy_api_vpc_v1alpha1_RelayRef(ref),
 		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.RelaySpec":                            schema_apoxy_api_vpc_v1alpha1_RelaySpec(ref),
 		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.RelayStatus":                          schema_apoxy_api_vpc_v1alpha1_RelayStatus(ref),
+		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.RevokedAgent":                         schema_apoxy_api_vpc_v1alpha1_RevokedAgent(ref),
 		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.Tunnel":                               schema_apoxy_api_vpc_v1alpha1_Tunnel(ref),
 		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.TunnelList":                           schema_apoxy_api_vpc_v1alpha1_TunnelList(ref),
 		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.TunnelRef":                            schema_apoxy_api_vpc_v1alpha1_TunnelRef(ref),
@@ -12586,6 +12593,210 @@ func schema_apoxy_api_policy_v1alpha1_RateLimitStatus(ref common.ReferenceCallba
 	}
 }
 
+func schema_apoxy_api_vpc_v1alpha1_AgentEnrollment(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "AgentEnrollment is the body of POST vpcnetworks/<name>/enroll. It is not stored.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.AgentEnrollmentSpec"),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.AgentEnrollmentStatus"),
+						},
+					},
+				},
+				Required: []string{"spec"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.AgentEnrollmentSpec", "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.AgentEnrollmentStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
+	}
+}
+
+func schema_apoxy_api_vpc_v1alpha1_AgentEnrollmentSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "AgentEnrollmentSpec is the enroll request of one agent.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"agentName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Agent name in the cert SAN. Must be a DNS label.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"csr": {
+						SchemaProps: spec.SchemaProps{
+							Description: "PEM \"CERTIFICATE REQUEST\" signed with a P-256 key. The server uses only its public key.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"agentName", "csr"},
+			},
+		},
+	}
+}
+
+func schema_apoxy_api_vpc_v1alpha1_AgentEnrollmentStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "AgentEnrollmentStatus holds the issued cert.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"certificate": {
+						SchemaProps: spec.SchemaProps{
+							Description: "PEM agent cert with the SAN spiffe://<project>/vpc/<vpc-uid>/agent/<name>.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"caBundle": {
+						SchemaProps: spec.SchemaProps{
+							Description: "PEM CA certs that relays and peers trust for agent certs.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"expiresAt": {
+						SchemaProps: spec.SchemaProps{
+							Description: "NotAfter of the cert.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"k8s.io/apimachinery/pkg/apis/meta/v1.Time"},
+	}
+}
+
+func schema_apoxy_api_vpc_v1alpha1_AgentRevocation(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "AgentRevocation is the body of POST vpcnetworks/<name>/revoke. It is not stored; the server adds the agent to VPCNetwork.status.revokedAgents.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.AgentRevocationSpec"),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.AgentRevocationStatus"),
+						},
+					},
+				},
+				Required: []string{"spec"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.AgentRevocationSpec", "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.AgentRevocationStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
+	}
+}
+
+func schema_apoxy_api_vpc_v1alpha1_AgentRevocationSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "AgentRevocationSpec names the agent to revoke.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"agentName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Agent name in the cert SAN.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"agentName"},
+			},
+		},
+	}
+}
+
+func schema_apoxy_api_vpc_v1alpha1_AgentRevocationStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "AgentRevocationStatus holds the revoke time.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"revokedAt": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Certs of the agent with NotBefore at or before this time are revoked.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"k8s.io/apimachinery/pkg/apis/meta/v1.Time"},
+	}
+}
+
 func schema_apoxy_api_vpc_v1alpha1_EgressGatewaySpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -12792,6 +13003,36 @@ func schema_apoxy_api_vpc_v1alpha1_RelayStatus(ref common.ReferenceCallback) com
 		},
 		Dependencies: []string{
 			"k8s.io/apimachinery/pkg/apis/meta/v1.Condition"},
+	}
+}
+
+func schema_apoxy_api_vpc_v1alpha1_RevokedAgent(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "RevokedAgent is one entry of the VPC revocation list. A cert fails when its SAN names this agent and its NotBefore is at or before RevokedAt. Entries are dropped when all certs they match have expired.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Agent name in the cert SAN.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"revokedAt": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Revoke time.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+						},
+					},
+				},
+				Required: []string{"name", "revokedAt"},
+			},
+		},
+		Dependencies: []string{
+			"k8s.io/apimachinery/pkg/apis/meta/v1.Time"},
 	}
 }
 
@@ -13231,11 +13472,24 @@ func schema_apoxy_api_vpc_v1alpha1_VPCNetworkStatus(ref common.ReferenceCallback
 							},
 						},
 					},
+					"revokedAgents": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Agents whose certs are revoked. Written by the revoke subresource.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.RevokedAgent"),
+									},
+								},
+							},
+						},
+					},
 				},
 			},
 		},
 		Dependencies: []string{
-			"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetworkCredentials", "k8s.io/apimachinery/pkg/apis/meta/v1.Condition"},
+			"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.RevokedAgent", "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetworkCredentials", "k8s.io/apimachinery/pkg/apis/meta/v1.Condition"},
 	}
 }
 
