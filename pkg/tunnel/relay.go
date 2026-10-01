@@ -2,7 +2,9 @@ package tunnel
 
 import (
 	"context"
+	"crypto/hkdf"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -83,6 +85,10 @@ type Relay struct {
 
 	// vpc serves VPC relay sessions. It is nil until SetVPC.
 	vpc *vpcrelay.Server
+
+	// resetKey makes the stateless reset tokens, so a restart of this relay
+	// closes the old connections. Nil sends no resets.
+	resetKey *quic.StatelessResetKey
 }
 
 func NewRelay(name string, pc net.PacketConn, cert tls.Certificate, handler *icx.Handler, idHasher *hasher.Hasher, router router.Router) *Relay {
@@ -201,6 +207,24 @@ func (r *Relay) SetLameDuckPeriod(d time.Duration) {
 	defer r.mu.Unlock()
 
 	r.lameDuck = d
+}
+
+// SetStatelessResetSecret derives the QUIC stateless reset key from secret and
+// the relay name. Call it before Start.
+func (r *Relay) SetStatelessResetSecret(secret []byte) error {
+	if len(secret) == 0 {
+		return errors.New("stateless reset secret is empty")
+	}
+	k, err := hkdf.Key(sha256.New, secret, nil, "apoxy relay quic stateless reset "+r.name, len(quic.StatelessResetKey{}))
+	if err != nil {
+		return fmt.Errorf("failed to derive the stateless reset key: %w", err)
+	}
+	key := quic.StatelessResetKey(k)
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.resetKey = &key
+	return nil
 }
 
 // SetVPC serves VPC relay sessions as relayID, a DNS name that the relay cert
@@ -344,7 +368,7 @@ func (r *Relay) ConnectionStats() []ConnStats {
 // Start starts the relay.
 func (r *Relay) Start(ctx context.Context) error {
 	// HTTP/3, VPC relay sessions and PSP share one QUIC transport.
-	tr := &quic.Transport{Conn: r.pc}
+	tr := &quic.Transport{Conn: r.pc, StatelessResetKey: r.resetKey}
 	defer tr.Close()
 	tlsConf := http3.ConfigureTLSConfig(&tls.Config{GetCertificate: r.getCert})
 	if r.vpc != nil {
