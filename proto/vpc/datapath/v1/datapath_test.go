@@ -68,7 +68,11 @@ func connect(t *testing.T, alpn string, dialerMux, listenerMux *rpc.Mux) (dialer
 		c, _ := ln.Accept(ctx)
 		accepted <- c
 	}()
-	dq, err := quic.DialAddr(ctx, ln.Addr().String(), clientTLS, nil)
+	// Dial from 127.0.0.1. On macOS the wildcard socket of DialAddr can get a
+	// port that a 127.0.0.1 socket holds, and the replies then go to that socket.
+	udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	require.NoError(t, err)
+	dq, err := quic.Dial(ctx, udp, ln.Addr(), clientTLS, nil)
 	require.NoError(t, err)
 	lq := <-accepted
 	require.NotNil(t, lq)
@@ -85,6 +89,7 @@ func connect(t *testing.T, alpn string, dialerMux, listenerMux *rpc.Mux) (dialer
 		_ = lq.CloseWithError(0, "")
 		wg.Wait()
 		_ = ln.Close()
+		_ = udp.Close()
 	})
 	return dialer, listener
 }

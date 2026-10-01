@@ -133,7 +133,11 @@ func newPair(t testing.TB, cfg pairConfig) *pair {
 		}
 		accepted <- c
 	}()
-	dq, err := quic.DialAddr(ctx, ln.Addr().String(), clientTLS, qconf)
+	// Dial from 127.0.0.1. On macOS the wildcard socket of DialAddr can get a
+	// port that a 127.0.0.1 socket holds, and the replies then go to that socket.
+	udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	require.NoError(t, err)
+	dq, err := quic.Dial(ctx, udp, ln.Addr(), clientTLS, qconf)
 	require.NoError(t, err)
 	lq := <-accepted
 	require.NotNil(t, lq)
@@ -166,6 +170,7 @@ func newPair(t testing.TB, cfg pairConfig) *pair {
 		<-dialerDone
 		<-p.listenerServeDone
 		_ = ln.Close()
+		_ = udp.Close()
 	})
 	return p
 }
@@ -604,7 +609,8 @@ func TestCalledSideResets(t *testing.T) {
 			_, err = str.Write(data)
 			require.NoError(t, err)
 			if tc.closeSend {
-				require.NoError(t, str.Close())
+				// The called side can end the stream first with STOP_SENDING.
+				_ = str.Close()
 			}
 			if tc.wantReset != 0 {
 				_, err = io.ReadAll(str)
@@ -994,7 +1000,8 @@ func rawUnsupported(t *testing.T, qc quic.Connection) {
 	require.NoError(t, err)
 	_, err = str.Write([]byte{0x01, 0x09})
 	require.NoError(t, err)
-	require.NoError(t, str.Close())
+	// The called side can reset the stream before this Close.
+	_ = str.Close()
 	_, err = io.ReadAll(str)
 	requireStreamError(t, err, rpc.StreamUnsupported)
 }
