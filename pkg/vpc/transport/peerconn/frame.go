@@ -7,14 +7,13 @@ import (
 	"net/netip"
 )
 
-// Frame types. A frame is one QUIC datagram of a relay session. The first
-// byte is the type.
+// Frame types. A frame is one QUIC datagram, and its first byte is the type.
 const (
 	// TypePeer is a peer-session packet.
 	TypePeer byte = 0x01
 	// TypeProbe is kept for PathProbe frames: [type][dst 16 B][PathProbe].
 	TypeProbe byte = 0x02
-	// TypeData is kept for data frames: [type][VNI word 4 B][inner packet].
+	// TypeData is a data frame, version 0: [type][VNI word 4 B][inner packet].
 	TypeData byte = 0x03
 )
 
@@ -28,7 +27,7 @@ const (
 
 var (
 	ErrShort = errors.New("peerconn: frame is too short")
-	ErrType  = errors.New("peerconn: frame is not a peer frame")
+	ErrType  = errors.New("peerconn: frame has the wrong type")
 )
 
 // EncodeToRelay appends the frame that an agent sends to b.
@@ -43,7 +42,7 @@ func EncodeToRelay(b []byte, dst, src netip.Addr, pkt []byte) []byte {
 // DecodeToRelay returns the parts of a frame that an agent sent. pkt
 // shares memory with b.
 func DecodeToRelay(b []byte) (dst, src netip.Addr, pkt []byte, err error) {
-	if err := check(b, ToRelayLen); err != nil {
+	if err := check(b, ToRelayLen, TypePeer); err != nil {
 		return dst, src, nil, err
 	}
 	dst = netip.AddrFrom16([16]byte(b[1:17])).Unmap()
@@ -62,7 +61,7 @@ func EncodeFromRelay(b []byte, src netip.Addr, pkt []byte) []byte {
 // DecodeFromRelay returns the parts of a frame that a relay delivered. pkt
 // shares memory with b.
 func DecodeFromRelay(b []byte) (src netip.Addr, pkt []byte, err error) {
-	if err := check(b, FromRelayLen); err != nil {
+	if err := check(b, FromRelayLen, TypePeer); err != nil {
 		return src, nil, err
 	}
 	return netip.AddrFrom16([16]byte(b[1:17])).Unmap(), b[FromRelayLen:], nil
@@ -75,11 +74,11 @@ func Forwarded(b []byte) []byte {
 	return b[16:]
 }
 
-func check(b []byte, n int) error {
+func check(b []byte, n int, typ byte) error {
 	if len(b) < n {
 		return ErrShort
 	}
-	if b[0] != TypePeer {
+	if b[0] != typ {
 		return ErrType
 	}
 	return nil

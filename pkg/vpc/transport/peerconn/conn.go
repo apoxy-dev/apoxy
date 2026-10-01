@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Package peerconn carries peer sessions in the QUIC datagrams of the relay session.
-// Conn reads all datagrams of the session; data frames will need one reader for all types.
+// Package peerconn has the frames of the QUIC datagrams on agent sessions. Conn
+// carries peer sessions in them and gives data frames to a handler.
 package peerconn
 
 import (
@@ -37,8 +37,9 @@ type Conn struct {
 	mu     sync.Mutex // Guards closed and session changes.
 	closed bool
 
-	readDrops  atomic.Uint64
-	writeDrops atomic.Uint64
+	data atomic.Pointer[func([]byte)]
+
+	readDrops, writeDrops, otherDrops atomic.Uint64
 }
 
 type session struct {
@@ -57,6 +58,8 @@ type Stats struct {
 	ReadDrops uint64
 	// WriteDrops are packets that the relay session did not take.
 	WriteDrops uint64
+	// OtherDrops are frames that are not peer frames and that no handler took.
+	OtherDrops uint64
 }
 
 // New returns a *Conn on the relay session qc. src is the local overlay
@@ -91,8 +94,18 @@ func (c *Conn) SetConn(qc quic.Connection) {
 	go c.receive(ctx, qc)
 }
 
-// receive moves peer frames from qc to the read queue until ctx ends or qc
-// closes. It drops other frame types.
+// HandleData gives the data frames of the relay session to h. h runs on the
+// reader goroutine and must not block. It owns the frame. Nil stops it.
+func (c *Conn) HandleData(h func(frame []byte)) {
+	if h == nil {
+		c.data.Store(nil)
+		return
+	}
+	c.data.Store(&h)
+}
+
+// receive reads the frames of qc until ctx ends or qc closes. Peer frames go
+// to the read queue, and data frames to the data handler.
 func (c *Conn) receive(ctx context.Context, qc quic.Connection) {
 	var src netip.Addr
 	var addr *net.UDPAddr
@@ -101,8 +114,15 @@ func (c *Conn) receive(ctx context.Context, qc quic.Connection) {
 		if err != nil {
 			return
 		}
+		if len(b) > 0 && b[0] == TypeData {
+			if h := c.data.Load(); h != nil {
+				(*h)(b)
+				continue
+			}
+		}
 		s, pkt, err := DecodeFromRelay(b)
 		if err != nil {
+			c.otherDrops.Add(1)
 			continue
 		}
 		if addr == nil || s != src {
@@ -203,5 +223,5 @@ func (c *Conn) SetWriteBuffer(int) error { return nil }
 
 // Stats returns the drop counters.
 func (c *Conn) Stats() Stats {
-	return Stats{ReadDrops: c.readDrops.Load(), WriteDrops: c.writeDrops.Load()}
+	return Stats{ReadDrops: c.readDrops.Load(), WriteDrops: c.writeDrops.Load(), OtherDrops: c.otherDrops.Load()}
 }

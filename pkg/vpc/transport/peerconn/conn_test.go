@@ -82,8 +82,9 @@ func TestReadFrom(t *testing.T) {
 		{"IPv4", EncodeFromRelay(nil, ip("10.0.0.2"), []byte("hi")), ip("10.0.0.2"), "hi"},
 		{"empty packet", EncodeFromRelay(nil, ip("fd00::2"), nil), ip("fd00::2"), ""},
 		{"probe frame", append([]byte{TypeProbe}, marker[1:]...), netip.Addr{}, ""},
-		{"data frame", append([]byte{TypeData}, marker[1:]...), netip.Addr{}, ""},
+		{"data frame and no handler", EncodeData(nil, testVNI, []byte("hi")), netip.Addr{}, ""},
 		{"short", marker[:FromRelayLen-1], netip.Addr{}, ""},
+		{"empty", []byte{}, netip.Addr{}, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -104,8 +105,42 @@ func TestReadFrom(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, "next", string(buf[:n]))
 			assert.Equal(t, udpAddr("fd00::9"), addr)
+			want := Stats{}
+			if !tc.src.IsValid() {
+				want.OtherDrops = 1
+			}
+			assert.Equal(t, want, c.(*Conn).Stats())
 		})
 	}
+}
+
+// TestHandleData checks that the reader gives data frames to the handler and
+// peer frames to ReadFrom.
+func TestHandleData(t *testing.T) {
+	qc := newFakeQC()
+	c := New(qc, testSrc).(*Conn)
+	defer c.Close()
+	got := make(chan []byte, 4)
+	c.HandleData(func(b []byte) { got <- b })
+	require.NoError(t, c.SetReadDeadline(time.Now().Add(5*time.Second)))
+	data := EncodeData(nil, testVNI, []byte("data"))
+	peer := EncodeFromRelay(nil, netip.MustParseAddr("fd00::2"), []byte("peer"))
+	buf := make([]byte, 100)
+
+	qc.in <- data
+	qc.in <- peer
+	n, _, err := c.ReadFrom(buf)
+	require.NoError(t, err)
+	assert.Equal(t, "peer", string(buf[:n]))
+	assert.Equal(t, data, <-got)
+
+	c.HandleData(nil)
+	qc.in <- data
+	qc.in <- peer
+	_, _, err = c.ReadFrom(buf)
+	require.NoError(t, err)
+	assert.Empty(t, got)
+	assert.Equal(t, Stats{OtherDrops: 1}, c.Stats())
 }
 
 // TestReadEnds checks that Close and deadlines end a blocked ReadFrom.
@@ -230,6 +265,30 @@ func BenchmarkReadFrom(b *testing.B) {
 	for b.Loop() {
 		qc.in <- frame
 		if _, _, err := c.ReadFrom(buf); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkHandleData moves one data frame at a time through the reader to a
+// handler that checks it.
+func BenchmarkHandleData(b *testing.B) {
+	qc := newFakeQC()
+	c := New(qc, testSrc).(*Conn)
+	defer c.Close()
+	src := netip.MustParseAddr("10.0.0.2")
+	sources := func(a netip.Addr) bool { return a == src }
+	got := make(chan error, 1)
+	c.HandleData(func(f []byte) {
+		_, err := OpenData(f, testVNI, sources)
+		got <- err
+	})
+	frame := EncodeData(nil, testVNI, ipPacket(src, 1280))
+	b.SetBytes(1280)
+	b.ReportAllocs()
+	for b.Loop() {
+		qc.in <- frame
+		if err := <-got; err != nil {
 			b.Fatal(err)
 		}
 	}
