@@ -94,13 +94,13 @@ func TestRelayLeaseWatcherReadinessTransitions(t *testing.T) {
 			if tc.wantWrite {
 				require.NotEqual(t, before.ResourceVersion, after.ResourceVersion, "expected a status write")
 			} else {
-				require.Equal(t, before.ResourceVersion, after.ResourceVersion, "transitions-only: no write expected")
+				require.Equal(t, before.ResourceVersion, after.ResourceVersion, "no write expected")
 			}
 		})
 	}
 }
 
-// relayTunnel builds a Tunnel owned by relay r0 (via the LabelRelay stamp).
+// relayTunnel returns a Tunnel of relay r0.
 func relayTunnel(name string) *vpcv1alpha1.Tunnel {
 	return &vpcv1alpha1.Tunnel{
 		ObjectMeta: metav1.ObjectMeta{
@@ -112,7 +112,6 @@ func relayTunnel(name string) *vpcv1alpha1.Tunnel {
 
 func TestRelayLeaseWatcherGCsRelayWhenLeaseGone(t *testing.T) {
 	ctx := context.Background()
-	// Relay + one of its Tunnels exist, but its lease does not.
 	c := fake.NewClientBuilder().
 		WithScheme(watcherScheme(t)).
 		WithStatusSubresource(&vpcv1alpha1.Relay{}).
@@ -124,14 +123,13 @@ func TestRelayLeaseWatcherGCsRelayWhenLeaseGone(t *testing.T) {
 	require.NoError(t, err)
 
 	err = c.Get(ctx, client.ObjectKey{Name: "r0"}, &vpcv1alpha1.Relay{})
-	require.True(t, apierrors.IsNotFound(err), "relay garbage-collected")
+	require.True(t, apierrors.IsNotFound(err), "relay deleted")
 	err = c.Get(ctx, client.ObjectKey{Name: "conn-1"}, &vpcv1alpha1.Tunnel{})
-	require.True(t, apierrors.IsNotFound(err), "orphaned tunnel garbage-collected")
+	require.True(t, apierrors.IsNotFound(err), "tunnel deleted")
 }
 
 func TestRelayLeaseWatcherIgnoresForeignLease(t *testing.T) {
 	ctx := context.Background()
-	// A non-relay lease (no relay- prefix) must be ignored outright.
 	c := fake.NewClientBuilder().WithScheme(watcherScheme(t)).Build()
 	w := NewRelayLeaseWatcher(c)
 
@@ -161,7 +159,7 @@ func TestRelayLeaseWatcherRequeuesLiveLease(t *testing.T) {
 func TestRelayLeaseWatcherKeepsExpiredWithinGrace(t *testing.T) {
 	ctx := context.Background()
 	now := time.Unix(1_700_000_000, 0)
-	// Expired (>40s) but within grace (<40s+60s): mark not-ready, keep object.
+	// 70s is past the 40s lease and inside the 60s grace.
 	c := fake.NewClientBuilder().
 		WithScheme(watcherScheme(t)).
 		WithStatusSubresource(&vpcv1alpha1.Relay{}).
@@ -172,7 +170,7 @@ func TestRelayLeaseWatcherKeepsExpiredWithinGrace(t *testing.T) {
 
 	res, err := w.Reconcile(ctx, leaseReq())
 	require.NoError(t, err)
-	require.Equal(t, w.checkInterval, res.RequeueAfter, "revisit to GC once grace elapses")
+	require.Equal(t, w.checkInterval, res.RequeueAfter, "checked again")
 
 	var relay vpcv1alpha1.Relay
 	require.NoError(t, c.Get(ctx, client.ObjectKey{Name: "r0"}, &relay), "relay kept during grace")
@@ -182,9 +180,7 @@ func TestRelayLeaseWatcherKeepsExpiredWithinGrace(t *testing.T) {
 func TestRelayLeaseWatcherGCsAfterGrace(t *testing.T) {
 	ctx := context.Background()
 	now := time.Unix(1_700_000_000, 0)
-	// Expired past leaseDuration(40s)+grace(60s): a crashed relay never deletes
-	// its own lease, so expiry — not deletion — must reclaim both objects.
-	// Slot-owned Tunnels go too: the slot lease keeps only the addresses.
+	// 120s is past the 40s lease and the 60s grace.
 	slotTunnel := relayTunnel("conn-slot")
 	slotTunnel.Labels[ipalloc.LabelSlot] = "000002-0100"
 	slotTunnel.Labels[ipalloc.LabelSlotGeneration] = "1"
@@ -200,23 +196,22 @@ func TestRelayLeaseWatcherGCsAfterGrace(t *testing.T) {
 
 	res, err := w.Reconcile(ctx, leaseReq())
 	require.NoError(t, err)
-	require.Zero(t, res.RequeueAfter, "terminal: no requeue after GC")
+	require.Zero(t, res.RequeueAfter, "no requeue")
 
 	err = c.Get(ctx, client.ObjectKey{Name: "r0"}, &vpcv1alpha1.Relay{})
-	require.True(t, apierrors.IsNotFound(err), "relay garbage-collected")
+	require.True(t, apierrors.IsNotFound(err), "relay deleted")
 	err = c.Get(ctx, client.ObjectKey{Namespace: "default", Name: tunnelctrl.LeaseName("r0")}, &apoxycoordv1.Lease{})
-	require.True(t, apierrors.IsNotFound(err), "stale lease garbage-collected")
+	require.True(t, apierrors.IsNotFound(err), "lease deleted")
 	err = c.Get(ctx, client.ObjectKey{Name: "conn-1"}, &vpcv1alpha1.Tunnel{})
-	require.True(t, apierrors.IsNotFound(err), "orphaned tunnel garbage-collected past grace")
+	require.True(t, apierrors.IsNotFound(err), "tunnel deleted")
 	err = c.Get(ctx, client.ObjectKey{Name: "conn-slot"}, &vpcv1alpha1.Tunnel{})
-	require.True(t, apierrors.IsNotFound(err), "slot-owned tunnel garbage-collected past grace")
+	require.True(t, apierrors.IsNotFound(err), "slot-owned tunnel deleted")
 	require.NoError(t, c.Get(ctx, client.ObjectKey{Name: "conn-other"}, &vpcv1alpha1.Tunnel{}), "other relay's tunnel kept")
 }
 
 func TestRelayLeaseWatcherIgnoresOtherNamespace(t *testing.T) {
 	ctx := context.Background()
-	// A relay-prefixed lease in a different namespace must not map onto the
-	// cluster-scoped Relay of the same name.
+	// A relay lease in another namespace must not touch the Relay of that name.
 	c := fake.NewClientBuilder().
 		WithScheme(watcherScheme(t)).
 		WithStatusSubresource(&vpcv1alpha1.Relay{}).

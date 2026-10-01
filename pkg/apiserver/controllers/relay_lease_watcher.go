@@ -19,34 +19,23 @@ import (
 )
 
 const (
-	// defaultRelayLeaseDuration is how long a relay lease is considered live
-	// after its last renewal. The watcher is the sole authority on staleness; it
-	// does NOT trust the lease's self-advertised LeaseDurationSeconds, so a buggy
-	// relay cannot widen its own liveness window.
+	// defaultRelayLeaseDuration is how long a lease is live after renewal. The
+	// lease's own LeaseDurationSeconds is ignored.
 	defaultRelayLeaseDuration = 40 * time.Second
 
-	// defaultRelayGracePeriod is how long past expiry a relay is kept (marked
-	// not-ready) before it and its stale lease are garbage-collected. It gives a
-	// crashed relay a window to recover (network blip) before its objects are
-	// reclaimed.
+	// defaultRelayGracePeriod is how long a dead relay is kept before deletion.
 	defaultRelayGracePeriod = 60 * time.Second
 
-	// defaultRelayLeaseCheckInterval bounds how long an expiry goes unnoticed:
-	// the watcher requeues non-terminal leases this often to re-check staleness,
-	// since a lease that simply stops being renewed produces no watch event.
+	// defaultRelayLeaseCheckInterval is how often a lease is checked again. A
+	// lease that stops renewal sends no watch event.
 	defaultRelayLeaseCheckInterval = 10 * time.Second
 )
 
 var _ reconcile.Reconciler = &RelayLeaseWatcher{}
 
-// RelayLeaseWatcher reconciles relay liveness from the coordination.apoxy.dev
-// Lease each relay renews. It flips Relay.Status.Ready on liveness transitions
-// only (crash -> not ready, recovery -> ready) and garbage-collects the Relay
-// object and its stale lease once the lease has been expired past the grace
-// period (§2.3) — a crashed relay never deletes its own lease, so expiry, not
-// deletion, is the signal that reclaims it. It also deletes all Tunnels of a
-// dead relay. Slot leases last much longer than this grace period, so this is
-// how a dead relay's Tunnels go away. Do not remove it.
+// RelayLeaseWatcher sets Relay.Status.Ready from the relay's Lease. When the
+// Lease is gone or expired past the grace period, it deletes the Relay, its
+// Tunnels and the Lease.
 type RelayLeaseWatcher struct {
 	client.Client
 
@@ -60,25 +49,23 @@ type RelayLeaseWatcher struct {
 // RelayLeaseWatcherOption configures a RelayLeaseWatcher.
 type RelayLeaseWatcherOption func(*RelayLeaseWatcher)
 
-// WithRelayLeaseNamespace restricts the watcher to leases in the given
-// namespace — the same namespace the registrar writes to. Relays are
-// cluster-scoped, so without this a relay-prefixed lease deleted in any
-// namespace would map onto (and delete) the like-named Relay.
+// WithRelayLeaseNamespace sets the namespace of relay Leases. Leases in other
+// namespaces are ignored.
 func WithRelayLeaseNamespace(ns string) RelayLeaseWatcherOption {
 	return func(w *RelayLeaseWatcher) { w.leaseNamespace = ns }
 }
 
-// WithRelayLeaseDuration overrides the staleness window.
+// WithRelayLeaseDuration sets how long a lease is live after renewal.
 func WithRelayLeaseDuration(d time.Duration) RelayLeaseWatcherOption {
 	return func(w *RelayLeaseWatcher) { w.leaseDuration = d }
 }
 
-// WithRelayGracePeriod overrides how long past expiry a relay is kept before GC.
+// WithRelayGracePeriod sets how long a dead relay is kept before deletion.
 func WithRelayGracePeriod(d time.Duration) RelayLeaseWatcherOption {
 	return func(w *RelayLeaseWatcher) { w.gracePeriod = d }
 }
 
-// WithRelayLeaseCheckInterval overrides the re-check cadence for pending leases.
+// WithRelayLeaseCheckInterval sets how often a lease is checked again.
 func WithRelayLeaseCheckInterval(d time.Duration) RelayLeaseWatcherOption {
 	return func(w *RelayLeaseWatcher) { w.checkInterval = d }
 }
@@ -99,8 +86,7 @@ func NewRelayLeaseWatcher(c client.Client, opts ...RelayLeaseWatcherOption) *Rel
 	return w
 }
 
-// relayNameFromLease returns the Relay name a lease belongs to, or "" if the
-// lease is not a relay lease.
+// relayNameFromLease returns the Relay name of a lease, or "" for other leases.
 func relayNameFromLease(name string) string {
 	if !strings.HasPrefix(name, tunnelctrl.LeaseNamePrefix) {
 		return ""
@@ -108,9 +94,8 @@ func relayNameFromLease(name string) string {
 	return strings.TrimPrefix(name, tunnelctrl.LeaseNamePrefix)
 }
 
-// leaseAge returns how long ago the lease was last renewed. ok is false when
-// the lease carries no RenewTime (malformed / mid-creation), in which case the
-// caller must not garbage-collect on age.
+// leaseAge returns the time since the last renewal. ok is false when the lease
+// has no RenewTime.
 func leaseAge(lease *apoxycoordv1.Lease, now time.Time) (age time.Duration, ok bool) {
 	if lease.Spec.RenewTime == nil {
 		return 0, false
@@ -118,8 +103,7 @@ func leaseAge(lease *apoxycoordv1.Lease, now time.Time) (age time.Duration, ok b
 	return now.Sub(lease.Spec.RenewTime.Time), true
 }
 
-// Reconcile flips the owning Relay's readiness to match its lease liveness and
-// garbage-collects the Relay (and stale lease) once expired past the grace.
+// Reconcile sets Relay readiness from its Lease and deletes a dead relay.
 func (w *RelayLeaseWatcher) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
 	relayName := relayNameFromLease(req.Name)
 	if relayName == "" || req.Namespace != w.leaseNamespace {
@@ -129,8 +113,6 @@ func (w *RelayLeaseWatcher) Reconcile(ctx context.Context, req reconcile.Request
 	var lease apoxycoordv1.Lease
 	err := w.Get(ctx, req.NamespacedName, &lease)
 	if apierrors.IsNotFound(err) {
-		// Lease already gone (e.g. graceful drain deleted it): GC the Relay and
-		// its orphaned Tunnels (a crashed relay never deletes its own).
 		slog.Info("Relay lease is gone; deleting Relay",
 			"lease", req.NamespacedName, "relay", relayName)
 		if err := w.deleteRelay(ctx, relayName); err != nil {
@@ -145,7 +127,6 @@ func (w *RelayLeaseWatcher) Reconcile(ctx context.Context, req reconcile.Request
 	age, ok := leaseAge(&lease, w.now())
 	alive := ok && age <= w.leaseDuration
 
-	// Reflect liveness onto the Relay (transitions only).
 	if err := w.setReady(ctx, relayName, alive); err != nil {
 		return reconcile.Result{}, err
 	}
@@ -154,8 +135,7 @@ func (w *RelayLeaseWatcher) Reconcile(ctx context.Context, req reconcile.Request
 		return reconcile.Result{RequeueAfter: w.checkInterval}, nil
 	}
 
-	// Dead: GC once expired past the grace period; otherwise revisit later. A
-	// missing RenewTime (ok == false) never GCs — it is treated as pending.
+	// A lease without RenewTime is never deleted.
 	if ok && age > w.leaseDuration+w.gracePeriod {
 		slog.Info("Relay lease expired past its grace period; removing relay state",
 			"lease", req.NamespacedName, "relay", relayName, "age", age)
@@ -173,8 +153,8 @@ func (w *RelayLeaseWatcher) Reconcile(ctx context.Context, req reconcile.Request
 	return reconcile.Result{RequeueAfter: w.checkInterval}, nil
 }
 
-// setReady updates the Relay's readiness only when it actually changes. A
-// missing Relay (not created yet, or already GC'd) is not an error.
+// setReady writes Relay readiness only when it changes. A missing Relay is not
+// an error.
 func (w *RelayLeaseWatcher) setReady(ctx context.Context, relayName string, ready bool) error {
 	var relay vpcv1alpha1.Relay
 	if err := w.Get(ctx, client.ObjectKey{Name: relayName}, &relay); err != nil {
@@ -191,22 +171,19 @@ func (w *RelayLeaseWatcher) setReady(ctx context.Context, relayName string, read
 	return nil
 }
 
-// deleteRelay removes the cluster-scoped Relay object, tolerating a concurrent
-// delete (graceful drain races the watcher).
 func (w *RelayLeaseWatcher) deleteRelay(ctx context.Context, relayName string) error {
 	relay := &vpcv1alpha1.Relay{}
 	relay.SetName(relayName)
 	return client.IgnoreNotFound(w.Delete(ctx, relay))
 }
 
-// deleteTunnelsForRelay deletes all Tunnels of a dead relay, also those that a
-// slot owns. The slot lease keeps only the addresses, for much longer than the
-// grace period. Tunnels carry the relay's name in LabelRelay.
+// deleteTunnelsForRelay deletes all Tunnels labeled with the relay, also the
+// slot-owned ones. A slot lease keeps only the addresses.
 func (w *RelayLeaseWatcher) deleteTunnelsForRelay(ctx context.Context, relayName string) error {
 	return w.DeleteAllOf(ctx, &vpcv1alpha1.Tunnel{}, client.MatchingLabels{tunnelctrl.LabelRelay: relayName})
 }
 
-// SetupWithManager wires the watcher to relay Leases only.
+// SetupWithManager registers the watcher for relay Leases.
 func (w *RelayLeaseWatcher) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("relay-lease-watcher").
@@ -214,8 +191,6 @@ func (w *RelayLeaseWatcher) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(w)
 }
 
-// relayLeasePredicate restricts the watch to relay leases in the watcher's
-// namespace (by name prefix + namespace).
 func (w *RelayLeaseWatcher) relayLeasePredicate() predicate.Predicate {
 	return predicate.NewPredicateFuncs(func(obj client.Object) bool {
 		return relayNameFromLease(obj.GetName()) != "" && obj.GetNamespace() == w.leaseNamespace
