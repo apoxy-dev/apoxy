@@ -18,6 +18,7 @@ import (
 	apoxycoordv1 "github.com/apoxy-dev/apoxy/api/coordination/v1"
 	vpcv1alpha1 "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1"
 	tunnelctrl "github.com/apoxy-dev/apoxy/pkg/tunnel/controllers"
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/ipalloc"
 )
 
 func watcherScheme(t *testing.T) *runtime.Scheme {
@@ -183,10 +184,16 @@ func TestRelayLeaseWatcherGCsAfterGrace(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	// Expired past leaseDuration(40s)+grace(60s): a crashed relay never deletes
 	// its own lease, so expiry — not deletion — must reclaim both objects.
+	// Slot-owned Tunnels go too: the slot lease keeps only the addresses.
+	slotTunnel := relayTunnel("conn-slot")
+	slotTunnel.Labels[ipalloc.LabelSlot] = "000002-0100"
+	slotTunnel.Labels[ipalloc.LabelSlotGeneration] = "1"
+	otherRelay := relayTunnel("conn-other")
+	otherRelay.Labels[tunnelctrl.LabelRelay] = "r1"
 	c := fake.NewClientBuilder().
 		WithScheme(watcherScheme(t)).
 		WithStatusSubresource(&vpcv1alpha1.Relay{}).
-		WithObjects(relayLease(120*time.Second, now), relayObj(true), relayTunnel("conn-1")).
+		WithObjects(relayLease(120*time.Second, now), relayObj(true), relayTunnel("conn-1"), slotTunnel, otherRelay).
 		Build()
 	w := NewRelayLeaseWatcher(c)
 	w.now = func() time.Time { return now }
@@ -201,6 +208,9 @@ func TestRelayLeaseWatcherGCsAfterGrace(t *testing.T) {
 	require.True(t, apierrors.IsNotFound(err), "stale lease garbage-collected")
 	err = c.Get(ctx, client.ObjectKey{Name: "conn-1"}, &vpcv1alpha1.Tunnel{})
 	require.True(t, apierrors.IsNotFound(err), "orphaned tunnel garbage-collected past grace")
+	err = c.Get(ctx, client.ObjectKey{Name: "conn-slot"}, &vpcv1alpha1.Tunnel{})
+	require.True(t, apierrors.IsNotFound(err), "slot-owned tunnel garbage-collected past grace")
+	require.NoError(t, c.Get(ctx, client.ObjectKey{Name: "conn-other"}, &vpcv1alpha1.Tunnel{}), "other relay's tunnel kept")
 }
 
 func TestRelayLeaseWatcherIgnoresOtherNamespace(t *testing.T) {

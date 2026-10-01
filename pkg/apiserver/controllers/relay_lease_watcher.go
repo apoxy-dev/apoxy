@@ -44,9 +44,9 @@ var _ reconcile.Reconciler = &RelayLeaseWatcher{}
 // only (crash -> not ready, recovery -> ready) and garbage-collects the Relay
 // object and its stale lease once the lease has been expired past the grace
 // period (§2.3) — a crashed relay never deletes its own lease, so expiry, not
-// deletion, is the signal that reclaims it. Relay-wide Tunnel deletion remains
-// a rollout fallback; slot leases are the authority for Tunnel membership and
-// address lifetime.
+// deletion, is the signal that reclaims it. It also deletes all Tunnels of a
+// dead relay. Slot leases last much longer than this grace period, so this is
+// how a dead relay's Tunnels go away. Do not remove it.
 type RelayLeaseWatcher struct {
 	client.Client
 
@@ -199,9 +199,9 @@ func (w *RelayLeaseWatcher) deleteRelay(ctx context.Context, relayName string) e
 	return client.IgnoreNotFound(w.Delete(ctx, relay))
 }
 
-// deleteTunnelsForRelay is a rollout fallback for Tunnels that predate slot
-// generation ownership. Current Tunnels are removed by their slot lease before
-// its address can be reused. Tunnels carry the relay's name in LabelRelay.
+// deleteTunnelsForRelay deletes all Tunnels of a dead relay, also those that a
+// slot owns. The slot lease keeps only the addresses, for much longer than the
+// grace period. Tunnels carry the relay's name in LabelRelay.
 func (w *RelayLeaseWatcher) deleteTunnelsForRelay(ctx context.Context, relayName string) error {
 	return w.DeleteAllOf(ctx, &vpcv1alpha1.Tunnel{}, client.MatchingLabels{tunnelctrl.LabelRelay: relayName})
 }
