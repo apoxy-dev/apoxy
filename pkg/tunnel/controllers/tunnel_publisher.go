@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/netip"
@@ -28,8 +29,12 @@ import (
 const LabelRelay = "vpc.apoxy.dev/relay"
 
 const (
-	cleanupScanInterval = time.Second
-	cleanupRetryCap     = 30 * time.Second
+	syncScanInterval = time.Second
+	syncRetryCap     = 30 * time.Second
+	syncTimeout      = 10 * time.Second
+	// syncParallelism is the maximum number of Tunnel writes in flight for one
+	// publisher, so a slow write does not delay the writes of other connections.
+	syncParallelism = 16
 )
 
 // vniAllocator is the subset of the relay-local VNI allocator the publisher
@@ -41,12 +46,12 @@ type vniAllocator interface {
 }
 
 // TunnelPublisher owns the relay side of a connection's control-plane presence.
-// It is wired to Relay.SetOnConnect/SetOnDisconnect and, on connect, allocates
-// the connection's overlay addresses in-process from a leased slot (§2.8)
-// plus a relay-local VNI (§2.5), assigns them onto the connection synchronously,
-// and creates the single-writer Tunnel object (§2.4). On disconnect it deletes
-// the Tunnel and returns the addresses and VNI to their pools. It makes zero
-// apiserver round-trips for addressing; the one write is the Tunnel object.
+// It is wired to Relay.SetOnConnect/SetOnDisconnect. On connect it assigns the
+// connection's overlay addresses from a leased slot (§2.8) and a relay-local
+// VNI (§2.5) with no apiserver call. A background worker then writes the
+// single-writer Tunnel object (§2.4), and after a disconnect deletes it. The
+// addresses and VNI go back to their pools only when no Tunnel can still
+// advertise them.
 //
 // Network name -> NetworkID resolution is fed by the relay-side VPCNetwork
 // watcher via SetNetworkID; a connect to an unresolved network fails until the
@@ -60,15 +65,16 @@ type TunnelPublisher struct {
 
 	mu       sync.Mutex
 	networks map[string]tunnet.NetworkID // VPCNetwork name -> NetworkID
-	conns    map[string]*connAlloc       // connection ID -> allocation record
+	tunnels  map[string]*tunnelState     // Tunnel name (connection ID) -> state
 
-	cleanupWake chan struct{}
-	cleanupStop chan struct{}
-	cleanupDone chan struct{}
-	stopOnce    sync.Once
+	wake       chan struct{}
+	syncSlots  chan struct{} // one token per Tunnel write in flight
+	stopWorker context.CancelFunc
+	workerDone chan struct{}
+	stopOnce   sync.Once
 }
 
-// connAlloc records what a connection was assigned so disconnect can release it.
+// connAlloc records what one connection was assigned.
 type connAlloc struct {
 	alloc *ipalloc.ConnAllocator
 	v6    netip.Prefix
@@ -76,40 +82,65 @@ type connAlloc struct {
 	vni   uint
 	slot  ipalloc.Slot
 
-	pending         bool
-	cleaning        bool
-	attempts        int
-	retryAt         time.Time
-	cleanupComplete chan struct{}
+	// tunnel is the object to publish. It is nil for a connection that
+	// failed setup and only waits for its disconnect.
+	tunnel    *vpcv1alpha1.Tunnel
+	published bool
+}
+
+// tunnelState tracks one Tunnel name. An allocation goes back to the pools
+// only when it is neither live nor written: a Tunnel in the apiserver can
+// advertise the addresses of the written one.
+type tunnelState struct {
+	live    *connAlloc // the connection that now uses this ID
+	written *connAlloc // the connection whose Tunnel can exist in the apiserver
+
+	busy     bool
+	attempts int
+	retryAt  time.Time
+}
+
+// needsDelete reports whether a Tunnel of a closed connection can still exist.
+func (st *tunnelState) needsDelete() bool {
+	return st.written != nil && st.written != st.live
+}
+
+// needsCreate reports whether the live connection has no confirmed Tunnel.
+func (st *tunnelState) needsCreate() bool {
+	return st.live != nil && st.live.tunnel != nil && !st.live.published
 }
 
 // NewTunnelPublisher creates a TunnelPublisher and wires it to the relay's
 // connect/disconnect callbacks.
 func NewTunnelPublisher(c client.Client, relay Relay, leaser ipalloc.SlotLeaser, vnis vniAllocator) *TunnelPublisher {
+	ctx, cancel := context.WithCancel(context.Background())
 	p := &TunnelPublisher{
-		client:      c,
-		relayName:   relay.Name(),
-		relay:       relay,
-		slots:       newSlotAllocator(leaser),
-		vnis:        vnis,
-		networks:    make(map[string]tunnet.NetworkID),
-		conns:       make(map[string]*connAlloc),
-		cleanupWake: make(chan struct{}, 1),
-		cleanupStop: make(chan struct{}),
-		cleanupDone: make(chan struct{}),
+		client:     c,
+		relayName:  relay.Name(),
+		relay:      relay,
+		slots:      newSlotAllocator(leaser),
+		vnis:       vnis,
+		networks:   make(map[string]tunnet.NetworkID),
+		tunnels:    make(map[string]*tunnelState),
+		wake:       make(chan struct{}, 1),
+		syncSlots:  make(chan struct{}, syncParallelism),
+		stopWorker: cancel,
+		workerDone: make(chan struct{}),
 	}
 	relay.SetOnConnect(p.OnConnect)
 	relay.SetOnDisconnect(p.OnDisconnect)
-	go p.cleanupLoop()
+	go p.run(ctx)
 	return p
 }
 
-// SetNetworkID records the NetworkID a VPCNetwork name resolves to. Fed by the
-// relay-side VPCNetwork watcher as networks are observed.
+// SetNetworkID records the NetworkID a VPCNetwork name resolves to and leases
+// a spare slot for it. Fed by the relay-side VPCNetwork watcher as networks
+// are observed.
 func (p *TunnelPublisher) SetNetworkID(name string, id tunnet.NetworkID) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	p.networks[name] = id
+	p.mu.Unlock()
+	p.slots.EnsureSpare(id)
 }
 
 // RemoveNetwork forgets a deleted VPCNetwork: connects to it fail closed again
@@ -134,8 +165,8 @@ func (p *TunnelPublisher) InvalidateSlot(s ipalloc.Slot) {
 	p.mu.Lock()
 	p.slots.InvalidateSlot(s)
 	ids := make([]string, 0)
-	for id, rec := range p.conns {
-		if sameSlotGeneration(rec.slot, s) {
+	for id, st := range p.tunnels {
+		if st.live != nil && sameSlotGeneration(st.live.slot, s) {
 			ids = append(ids, id)
 		}
 	}
@@ -146,16 +177,18 @@ func (p *TunnelPublisher) InvalidateSlot(s ipalloc.Slot) {
 	}
 }
 
-// OnConnect allocates addresses + a VNI for the connection, assigns them, and
-// creates the Tunnel object. It is called synchronously from handleConnect.
+// OnConnect allocates addresses + a VNI for the connection and assigns them.
+// It makes no apiserver call: the Tunnel object is written later by the
+// worker. It is called synchronously from handleConnect.
 func (p *TunnelPublisher) OnConnect(ctx context.Context, tunnelName, agentName string, conn Connection) error {
+	id := conn.ID()
 	networkName := conn.Network()
 
-	if err := p.waitForPreviousCleanup(ctx, conn.ID()); err != nil {
-		return err
-	}
-
 	p.mu.Lock()
+	if st := p.tunnels[id]; st != nil && st.live != nil {
+		p.mu.Unlock()
+		return fmt.Errorf("connection ID %q is already active", id)
+	}
 	netID, ok := p.networks[networkName]
 	p.mu.Unlock()
 	if !ok {
@@ -177,21 +210,22 @@ func (p *TunnelPublisher) OnConnect(ctx context.Context, tunnelName, agentName s
 		p.slots.Release(alloc, v6, v4)
 		return fmt.Errorf("failed to allocate VNI: %w", err)
 	}
+	rec := &connAlloc{alloc: alloc, v6: v6, v4: v4, vni: vniID, slot: slot}
 
 	// Program the router with the primary (IPv6 /96) address, then install the
 	// VNI (which derives its allowed routes from the overlay address).
 	if err := conn.SetOverlayAddress(v6.String()); err != nil {
-		p.releaseAll(alloc, v6, v4, vniID)
+		p.release(rec)
 		return fmt.Errorf("failed to set overlay address: %w", err)
 	}
 	// From here on the router holds state for v6: failures must NOT release
 	// the allocation directly — a concurrent connect would be handed the same
 	// /96 while its route is still installed and fail with EEXIST (2026-08-03
-	// incident). deferRelease parks the allocation under the connection ID so
-	// the relay's teardown (conn.Close, then OnDisconnect) releases it only
-	// after the router state is gone.
+	// incident). setLive records the allocation under the connection ID so the
+	// relay's teardown (conn.Close, then OnDisconnect) releases it only after
+	// the router state is gone.
 	if err := conn.SetVNI(ctx, vniID); err != nil {
-		p.deferRelease(conn.ID(), alloc, v6, v4, vniID)
+		p.setLive(id, rec)
 		return fmt.Errorf("failed to set VNI: %w", err)
 	}
 
@@ -203,121 +237,109 @@ func (p *TunnelPublisher) OnConnect(ctx context.Context, tunnelName, agentName s
 		// The /32 is best-effort (§2.4): drop it and retry v6-only rather than
 		// refuse the tunnel over the weaker family.
 		if !v4.IsValid() {
-			p.deferRelease(conn.ID(), alloc, v6, v4, vniID)
+			p.setLive(id, rec)
 			return fmt.Errorf("failed to set overlay addresses: %w", err)
 		}
 		slog.Warn("Failed to program the IPv4 overlay address, continuing without v4",
-			slog.String("connID", conn.ID()),
+			slog.String("connID", id),
 			slog.String("v4", v4.String()),
 			slog.Any("error", err))
 		p.slots.Release(alloc, netip.Prefix{}, v4)
-		v4 = netip.Prefix{}
+		rec.v4 = netip.Prefix{}
 		addresses = addresses[:1]
 		if err := conn.SetAddresses(addresses); err != nil {
-			p.deferRelease(conn.ID(), alloc, v6, v4, vniID)
+			p.setLive(id, rec)
 			return fmt.Errorf("failed to set overlay addresses: %w", err)
 		}
 	}
 
-	if err := p.createTunnel(ctx, conn, networkName, agentName, addresses, slot); err != nil {
-		p.deferRelease(conn.ID(), alloc, v6, v4, vniID)
-		return fmt.Errorf("failed to create Tunnel object: %w", err)
-	}
-
-	rec := &connAlloc{alloc: alloc, v6: v6, v4: v4, vni: vniID, slot: slot}
+	tunnel := p.newTunnel(conn, networkName, agentName, addresses, slot)
 	p.mu.Lock()
 	slotHeld := p.slots.Contains(alloc)
 	currentNetID, networkExists := p.networks[networkName]
-	p.conns[conn.ID()] = rec
+	current := slotHeld && networkExists && currentNetID == netID
+	if current {
+		rec.tunnel = tunnel
+	}
+	p.state(id).live = rec
 	p.mu.Unlock()
 	if !slotHeld {
 		return fmt.Errorf("overlay slot %s generation %d was lost during connection setup", ipalloc.SlotLabelValue(slot), slot.Generation)
 	}
-	if !networkExists || currentNetID != netID {
+	if !current {
 		return fmt.Errorf("network %q was removed during connection setup", networkName)
 	}
+	p.wakeWorker()
 
-	slog.Info("Published tunnel connection",
-		slog.String("connID", conn.ID()),
+	slog.Info("Accepted tunnel connection",
+		slog.String("connID", id),
 		slog.String("network", networkName),
 		slog.String("agent", agentName),
 		slog.String("v6", v6.String()))
 	return nil
 }
 
-// OnDisconnect deletes the connection's Tunnel object and returns its addresses
-// and VNI only after the deletion is confirmed. It is idempotent: a connection
-// with no allocation record still has its Tunnel object deleted by ID.
-func (p *TunnelPublisher) OnDisconnect(ctx context.Context, agentName, id string) error {
+// OnDisconnect ends the connection's use of its ID. An allocation whose
+// Tunnel was never written goes back to the pools now; otherwise the worker
+// deletes the Tunnel and releases the allocation after the delete is
+// confirmed. It makes no apiserver call.
+func (p *TunnelPublisher) OnDisconnect(_ context.Context, _, id string) error {
 	p.mu.Lock()
-	rec, ok := p.conns[id]
-	if !ok {
-		rec = &connAlloc{}
-		p.conns[id] = rec
+	st := p.tunnels[id]
+	if st == nil || st.live == nil {
+		p.mu.Unlock()
+		return nil
 	}
-	if !rec.pending {
-		rec.pending = true
-		rec.cleanupComplete = make(chan struct{})
-		metrics.TunnelCleanupPending.Inc()
+	rec := st.live
+	st.live = nil
+	st.retryAt = time.Time{}
+	written := st.written == rec
+	if !written {
+		p.release(rec)
+	}
+	if st.written == nil {
+		delete(p.tunnels, id)
 	}
 	p.mu.Unlock()
 
-	// The retry worker owns API I/O. This keeps connection teardown prompt even
-	// when the project apiserver is unavailable and makes retries independent
-	// of the request or QUIC session context that triggered the disconnect.
-	p.wakeCleanup()
+	if written {
+		metrics.TunnelCleanupPending.Inc()
+		p.wakeWorker()
+	}
 	return nil
 }
 
-// waitForPreviousCleanup keeps a replacement connection in the same request
-// until the prior Tunnel with its connection ID is gone. The old allocation
-// stays quarantined until deletion is confirmed.
-func (p *TunnelPublisher) waitForPreviousCleanup(ctx context.Context, id string) error {
-	p.mu.Lock()
-	rec, ok := p.conns[id]
-	if !ok {
-		p.mu.Unlock()
-		return nil
+// state returns the Tunnel state for id, creating it on first use. The caller
+// must hold mu.
+func (p *TunnelPublisher) state(id string) *tunnelState {
+	st := p.tunnels[id]
+	if st == nil {
+		st = &tunnelState{}
+		p.tunnels[id] = st
 	}
-	if !rec.pending {
-		p.mu.Unlock()
-		return fmt.Errorf("connection ID %q is already active", id)
-	}
-	rec.retryAt = time.Time{}
-	cleanupComplete := rec.cleanupComplete
-	p.mu.Unlock()
-
-	p.wakeCleanup()
-	select {
-	case <-cleanupComplete:
-		return nil
-	case <-ctx.Done():
-		return fmt.Errorf("failed to wait for previous connection cleanup: %w", ctx.Err())
-	}
+	return st
 }
 
-// releaseAll returns a connection's addresses and VNI to their pools.
-func (p *TunnelPublisher) releaseAll(alloc *ipalloc.ConnAllocator, v6, v4 netip.Prefix, vniID uint) {
-	p.slots.Release(alloc, v6, v4)
-	p.vnis.Release(vniID)
-}
-
-// deferRelease parks a failed connection's allocation under its ID so
-// OnDisconnect — which the relay's teardown runs only after conn.Close has
-// unprogrammed the router — performs the release. Releasing earlier would let
-// a concurrent connect allocate the same /96 while its route is still
-// installed.
-func (p *TunnelPublisher) deferRelease(id string, alloc *ipalloc.ConnAllocator, v6, v4 netip.Prefix, vniID uint) {
+// setLive records the allocation of a connection that failed setup, so its
+// disconnect releases it.
+func (p *TunnelPublisher) setLive(id string, rec *connAlloc) {
 	p.mu.Lock()
-	p.conns[id] = &connAlloc{alloc: alloc, v6: v6, v4: v4, vni: vniID, slot: alloc.Slot()}
+	p.state(id).live = rec
 	p.mu.Unlock()
 }
 
-// createTunnel writes the single-writer Tunnel object complete: spec + identity
-// labels at create, then addresses + advertised routes via the status
-// subresource. It is never patched in steady state (§2.4).
-func (p *TunnelPublisher) createTunnel(ctx context.Context, conn Connection, networkName, agentName string, addresses []string, slot ipalloc.Slot) error {
-	t := &vpcv1alpha1.Tunnel{
+// release returns a connection's addresses and VNI to their pools. The
+// caller holds mu, or owns rec alone.
+func (p *TunnelPublisher) release(rec *connAlloc) {
+	p.slots.Release(rec.alloc, rec.v6, rec.v4)
+	p.vnis.Release(rec.vni)
+}
+
+// newTunnel builds the single-writer Tunnel object: spec and identity labels,
+// then addresses and advertised routes in status. It is never patched in
+// steady state (§2.4).
+func (p *TunnelPublisher) newTunnel(conn Connection, networkName, agentName string, addresses []string, slot ipalloc.Slot) *vpcv1alpha1.Tunnel {
+	return &vpcv1alpha1.Tunnel{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:   conn.ID(),
 			Labels: p.tunnelLabels(conn, networkName, agentName, slot),
@@ -326,19 +348,46 @@ func (p *TunnelPublisher) createTunnel(ctx context.Context, conn Connection, net
 			NetworkRef: vpcv1alpha1.VPCNetworkRef{Name: networkName},
 			RelayRef:   vpcv1alpha1.RelayRef{Name: p.relayName},
 		},
+		Status: vpcv1alpha1.TunnelStatus{
+			Addresses:        addresses,
+			AdvertisedRoutes: prefixesToStrings(conn.AdvertisedRoutes()),
+		},
 	}
-	if err := p.client.Create(ctx, t); err != nil && !apierrors.IsAlreadyExists(err) {
-		return err
-	}
+}
 
-	t.Status.Addresses = addresses
-	t.Status.AdvertisedRoutes = prefixesToStrings(conn.AdvertisedRoutes())
-	if err := p.client.Status().Update(ctx, t); err != nil {
-		// Roll back the create so a half-written Tunnel does not linger.
-		_ = p.client.Delete(ctx, t)
-		return err
+// createTunnel writes want: the object at create, then its status. A Tunnel
+// that already exists from an earlier attempt for the same connection gets
+// its status written. One from an older connection is deleted, and the next
+// attempt creates want.
+func (p *TunnelPublisher) createTunnel(ctx context.Context, want *vpcv1alpha1.Tunnel) error {
+	t := want.DeepCopy()
+	if err := p.client.Create(ctx, t); err != nil {
+		if !apierrors.IsAlreadyExists(err) {
+			return err
+		}
+		if err := p.client.Get(ctx, client.ObjectKeyFromObject(want), t); err != nil {
+			return err
+		}
+		if !sameConnection(t, want) {
+			if err := p.client.Delete(ctx, t); client.IgnoreNotFound(err) != nil {
+				return err
+			}
+			return fmt.Errorf("tunnel %s of an older connection was still present", want.Name)
+		}
 	}
-	return nil
+	t.Status = *want.Status.DeepCopy()
+	return p.client.Status().Update(ctx, t)
+}
+
+// sameConnection reports whether two Tunnels describe one connection: the
+// same relay, slot and slot generation.
+func sameConnection(a, b *vpcv1alpha1.Tunnel) bool {
+	for _, k := range []string{LabelRelay, ipalloc.LabelSlot, ipalloc.LabelSlotGeneration} {
+		if a.Labels[k] != b.Labels[k] {
+			return false
+		}
+	}
+	return true
 }
 
 // tunnelLabels merges the agent-declared labels with the relay-stamped identity
@@ -383,6 +432,10 @@ func labelValue(v string) string {
 	return hex.EncodeToString(sum[:])[:32]
 }
 
+// errDeletePending means the Tunnel still exists after Delete, usually because
+// its finalizers have not run yet.
+var errDeletePending = errors.New("tunnel deletion is still pending")
+
 // deleteTunnel deletes the connection's Tunnel object, tolerating a concurrent
 // delete (orphan GC or drain may race the disconnect).
 func (p *TunnelPublisher) deleteTunnel(ctx context.Context, id string) error {
@@ -394,102 +447,154 @@ func (p *TunnelPublisher) deleteTunnel(ctx context.Context, id string) error {
 	if err := p.client.Get(ctx, client.ObjectKey{Name: id}, &remaining); err != nil {
 		return client.IgnoreNotFound(err)
 	}
-	return fmt.Errorf("tunnel deletion is still pending")
+	return errDeletePending
 }
 
-// tryCleanup makes one deletion attempt. The allocation stays quarantined on
-// failure and is released exactly once after Delete or NotFound confirms that
-// the stale Tunnel can no longer advertise it.
-func (p *TunnelPublisher) tryCleanup(ctx context.Context, id string) error {
+// syncTunnel makes one apiserver attempt for the Tunnel named id: it deletes
+// the Tunnel of a closed connection, or else creates the live connection's
+// Tunnel when create is true. A written allocation is released exactly once,
+// after Delete or NotFound confirms that its Tunnel can no longer advertise it.
+func (p *TunnelPublisher) syncTunnel(ctx context.Context, id string, create bool) error {
 	p.mu.Lock()
-	rec, ok := p.conns[id]
-	if !ok || !rec.pending || rec.cleaning {
+	st := p.tunnels[id]
+	if st == nil || st.busy {
 		p.mu.Unlock()
 		return nil
 	}
-	rec.cleaning = true
+	var rec *connAlloc
+	switch {
+	case st.needsDelete():
+		rec = st.written
+	case create && st.needsCreate() && p.slots.Contains(st.live.alloc):
+		// Recorded before the call: a create that fails can still exist.
+		rec = st.live
+		st.written = rec
+	default:
+		p.mu.Unlock()
+		return nil
+	}
+	write := rec == st.live
+	st.busy = true
 	p.mu.Unlock()
 
-	err := p.deleteTunnel(ctx, id)
+	var err error
+	if write {
+		err = p.createTunnel(ctx, rec.tunnel)
+	} else {
+		err = p.deleteTunnel(ctx, id)
+	}
 
 	p.mu.Lock()
-	current, stillCurrent := p.conns[id]
-	if !stillCurrent || current != rec {
-		p.mu.Unlock()
-		return err
-	}
+	st.busy = false
 	if err != nil {
-		rec.cleaning = false
-		rec.attempts++
-		rec.retryAt = time.Now().Add(cleanupRetryDelay(rec.attempts))
+		st.attempts++
+		st.retryAt = time.Now().Add(syncRetryDelay(st.attempts))
 		p.mu.Unlock()
-		metrics.TunnelCleanupRetries.Inc()
+		if !write {
+			metrics.TunnelCleanupRetries.Inc()
+		}
 		return err
 	}
-	delete(p.conns, id)
+	st.attempts = 0
+	st.retryAt = time.Time{}
+	if write {
+		rec.published = true
+		p.mu.Unlock()
+		slog.Debug("Published Tunnel", slog.String("connID", id))
+		return nil
+	}
+	st.written = nil
+	p.release(rec)
+	if st.live == nil {
+		delete(p.tunnels, id)
+	}
 	p.mu.Unlock()
 
 	metrics.TunnelCleanupPending.Dec()
-	if rec.alloc != nil {
-		p.releaseAll(rec.alloc, rec.v6, rec.v4, rec.vni)
-	}
-	close(rec.cleanupComplete)
+	// A new connection with this ID can publish now.
+	p.wakeWorker()
 	return nil
 }
 
-func cleanupRetryDelay(attempt int) time.Duration {
+func syncRetryDelay(attempt int) time.Duration {
 	d := time.Second
-	for i := 1; i < attempt && d < cleanupRetryCap; i++ {
+	for i := 1; i < attempt && d < syncRetryCap; i++ {
 		d *= 2
 	}
-	if d > cleanupRetryCap {
-		return cleanupRetryCap
+	if d > syncRetryCap {
+		return syncRetryCap
 	}
 	return d
 }
 
-func (p *TunnelPublisher) wakeCleanup() {
+func (p *TunnelPublisher) wakeWorker() {
 	select {
-	case p.cleanupWake <- struct{}{}:
+	case p.wake <- struct{}{}:
 	default:
 	}
 }
 
-func (p *TunnelPublisher) cleanupLoop() {
-	defer close(p.cleanupDone)
-	ticker := time.NewTicker(cleanupScanInterval)
+// run writes Tunnel changes to the apiserver until ctx is canceled. It returns
+// after the writes in flight end, so no write runs after ReleaseAll releases
+// the slots.
+func (p *TunnelPublisher) run(ctx context.Context) {
+	defer close(p.workerDone)
+	var syncs sync.WaitGroup
+	defer syncs.Wait()
+	ticker := time.NewTicker(syncScanInterval)
 	defer ticker.Stop()
 	for {
 		select {
-		case <-p.cleanupStop:
+		case <-ctx.Done():
 			return
-		case <-p.cleanupWake:
-			p.retryPending(context.Background())
+		case <-p.wake:
 		case <-ticker.C:
-			p.retryPending(context.Background())
 		}
+		p.syncDue(ctx, true, &syncs)
 	}
 }
 
-func (p *TunnelPublisher) retryPending(ctx context.Context) {
+// syncDue starts one attempt for every Tunnel that has work and whose retry
+// time has come, with at most syncParallelism in flight. The busy flag keeps
+// one ID to one attempt at a time. Creates are skipped when create is false.
+// syncs counts the attempts started.
+func (p *TunnelPublisher) syncDue(ctx context.Context, create bool, syncs *sync.WaitGroup) {
 	now := time.Now()
 	p.mu.Lock()
-	ids := make([]string, 0, len(p.conns))
-	for id, rec := range p.conns {
-		if rec.pending && !rec.cleaning && !rec.retryAt.After(now) {
+	ids := make([]string, 0)
+	for id, st := range p.tunnels {
+		if st.busy || st.retryAt.After(now) {
+			continue
+		}
+		if st.needsDelete() || (create && st.needsCreate()) {
 			ids = append(ids, id)
 		}
 	}
 	p.mu.Unlock()
 
 	for _, id := range ids {
-		deleteCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		err := p.tryCleanup(deleteCtx, id)
-		cancel()
-		if err != nil {
-			slog.Warn("Failed to delete Tunnel; retrying",
-				slog.String("connID", id), slog.Any("error", err))
+		select {
+		case p.syncSlots <- struct{}{}:
+		case <-ctx.Done():
+			return
 		}
+		syncs.Add(1)
+		go func() {
+			defer func() {
+				<-p.syncSlots
+				syncs.Done()
+			}()
+			opCtx, cancel := context.WithTimeout(ctx, syncTimeout)
+			defer cancel()
+			switch err := p.syncTunnel(opCtx, id, create); {
+			case err == nil || ctx.Err() != nil:
+			case errors.Is(err, errDeletePending):
+				slog.Debug("Tunnel delete waits for finalizers; retrying", slog.String("connID", id))
+			default:
+				slog.Warn("Failed to write Tunnel; retrying",
+					slog.String("connID", id), slog.Any("error", err))
+			}
+		}()
 	}
 }
 
@@ -501,30 +606,37 @@ func (p *TunnelPublisher) connectionIDsForNetwork(network tunnet.NetworkID) []st
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	var ids []string
-	for id, rec := range p.conns {
-		if rec.slot.Network == network {
+	for id, st := range p.tunnels {
+		if st.live != nil && st.live.slot.Network == network {
 			ids = append(ids, id)
 		}
 	}
 	return ids
 }
 
-// ReleaseAll returns every leased slot to the leaser, then makes one more
-// pass over pending Tunnel deletions. Slots go first: a Tunnel delete can
-// block for the whole budget on a project apiserver that is already gone.
-// Callers must have disconnected every connection first; this does not stop
-// traffic. It reports the slots that did not release so the caller can log.
+// ReleaseAll stops the worker, returns every leased slot to the leaser, then
+// makes one more pass over pending Tunnel deletions. Slots go first: a Tunnel
+// delete can block for the whole budget on a project apiserver that is already
+// gone. Tunnels not yet created are not created. Callers must have
+// disconnected every connection first; this does not stop traffic. It reports
+// the slots that did not release so the caller can log.
 func (p *TunnelPublisher) ReleaseAll(ctx context.Context) error {
-	p.stopOnce.Do(func() { close(p.cleanupStop) })
-	err := p.slots.ReleaseAll(ctx)
+	p.stopOnce.Do(p.stopWorker)
 	select {
-	case <-p.cleanupDone:
+	case <-p.workerDone:
 	case <-ctx.Done():
 	}
-	// A dead ctx would fail every pending delete at once and only inflate
-	// their attempt counters; leave them for the next call.
+	err := p.slots.ReleaseAll(ctx)
+	// A dead ctx would fail every pending delete at once; leave them.
 	if ctx.Err() == nil {
-		p.retryPending(ctx)
+		p.mu.Lock()
+		for _, st := range p.tunnels {
+			st.retryAt = time.Time{}
+		}
+		p.mu.Unlock()
+		var syncs sync.WaitGroup
+		p.syncDue(ctx, false, &syncs)
+		syncs.Wait()
 	}
 	return err
 }

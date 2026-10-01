@@ -13,16 +13,31 @@ import (
 	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 )
 
+const (
+	// slotLeaseTimeout bounds one background slot lease, adoption included.
+	slotLeaseTimeout = time.Minute
+	// spareRetryDelay is the wait before a failed spare lease is tried again.
+	spareRetryDelay = 30 * time.Second
+)
+
+// errAllocatorClosed is returned by Allocate after ReleaseAll.
+var errAllocatorClosed = errors.New("slot allocator is closed")
+
 // slotAllocator sub-allocates connection addresses from per-network leased
-// slots. It leases a fresh slot from the SlotLeaser under exhaustion pressure
-// and hands back best-effort dual-stack (/96 + /32) allocations, returning the
-// owning ConnAllocator so a disconnect frees exactly what it took. It owns no
-// apiserver or relay state; the TunnelPublisher composes it.
+// slots and hands back best-effort dual-stack (/96 + /32) allocations,
+// returning the owning ConnAllocator so a disconnect frees exactly what it
+// took. It keeps at least one empty slot (a spare) leased in each network it
+// serves, so a connect takes addresses from a held slot and does not wait for
+// a lease. It owns no apiserver or relay state; the TunnelPublisher composes it.
 type slotAllocator struct {
 	leaser ipalloc.SlotLeaser
 
-	mu   sync.Mutex
-	nets map[tunnet.NetworkID]*netAllocs
+	mu     sync.Mutex
+	nets   map[tunnet.NetworkID]*netAllocs
+	closed bool
+	// leases counts background leases in flight, so ReleaseAll can wait for
+	// them to hand their slots back.
+	leases sync.WaitGroup
 }
 
 // netAllocs holds a network's leased slots and their in-process allocators.
@@ -30,11 +45,15 @@ type netAllocs struct {
 	slots  []ipalloc.Slot
 	allocs []*ipalloc.ConnAllocator
 
-	// leasing is non-nil while a Lease for this network is in flight; it is
-	// closed (under mu) when that lease settles. Concurrent Allocate calls
-	// wait on it and re-check capacity instead of starting redundant leases —
-	// one slot lease typically covers every waiter queued behind it.
-	leasing chan struct{}
+	// lease is non-nil while a lease for this network is in flight. At most
+	// one runs per network; Allocate calls with no capacity wait for it.
+	lease *slotLease
+}
+
+// slotLease is one background lease. err is set before done is closed.
+type slotLease struct {
+	done chan struct{}
+	err  error
 }
 
 // newSlotAllocator creates a slotAllocator over the given leaser. A slot's
@@ -47,90 +66,159 @@ func newSlotAllocator(leaser ipalloc.SlotLeaser) *slotAllocator {
 	}
 }
 
-// Allocate finds a non-full allocator for the network (leasing a fresh slot
-// under pressure) and sub-allocates a connection's /96 and best-effort /32,
-// returning the owning allocator so Release can free exactly what was taken.
-//
-// The lease itself runs OUTSIDE the mutex: Lease is network I/O with a
-// multi-second worst case, and holding mu across it would serialize every
-// connection on every network behind one slow lease. At most one lease per
-// network is in flight; concurrent callers wait for it and re-check capacity,
-// so a reconnect stampede costs one lease, not one per queued connection.
+// EnsureSpare starts a background lease when the network has no empty slot.
+func (b *slotAllocator) EnsureSpare(netID tunnet.NetworkID) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closed {
+		return
+	}
+	b.ensureSpareLocked(netID, b.network(netID))
+}
+
+// Allocate sub-allocates a connection's /96 and best-effort /32 from a held
+// slot, returning the owning allocator so Release can free exactly what was
+// taken. It waits for a lease only when no held slot has room, which the
+// spare prevents unless leases fail or a burst fills the spare first.
 func (b *slotAllocator) Allocate(ctx context.Context, netID tunnet.NetworkID) (v6, v4 netip.Prefix, alloc *ipalloc.ConnAllocator, err error) {
 	b.mu.Lock()
 	for {
-		na := b.nets[netID]
-		if na == nil {
-			na = &netAllocs{}
-			b.nets[netID] = na
+		if b.closed {
+			b.mu.Unlock()
+			return netip.Prefix{}, netip.Prefix{}, nil, errAllocatorClosed
 		}
-
-		for _, a := range na.allocs {
-			if a.Full() {
-				continue
-			}
+		na := b.network(netID)
+		if a := na.pick(); a != nil {
 			if v6, v4, err = a.Allocate(); err == nil {
+				b.ensureSpareLocked(netID, na)
 				b.mu.Unlock()
 				return v6, v4, a, nil
 			}
 		}
 
-		if na.leasing == nil {
-			// Every slot is full and no lease is in flight: this caller
-			// leases the network's next slot.
-			na.leasing = make(chan struct{})
-			b.mu.Unlock()
-			return b.leaseAndAllocate(ctx, netID, na)
-		}
-
-		// Another caller is already leasing: wait for it to settle, then
-		// re-check capacity instead of leasing redundantly.
-		done := na.leasing
+		// No held slot has room. Wait for the lease in flight (or a new one)
+		// and check capacity again: one lease usually serves every waiter.
+		l := b.startLeaseLocked(netID, na)
 		b.mu.Unlock()
 		select {
-		case <-done:
+		case <-l.done:
 		case <-ctx.Done():
 			return netip.Prefix{}, netip.Prefix{}, nil, ctx.Err()
+		}
+		if l.err != nil {
+			return netip.Prefix{}, netip.Prefix{}, nil, fmt.Errorf("failed to lease slot: %w", l.err)
 		}
 		b.mu.Lock()
 	}
 }
 
-// leaseAndAllocate leases a fresh slot and allocates from it. The lease runs
-// outside the mutex — it is network I/O with a multi-second worst case, and
-// holding mu across it would serialize every connection on every network.
-// The caller must have set na.leasing; it is closed here when the lease
-// settles, releasing any waiters queued in Allocate.
-func (b *slotAllocator) leaseAndAllocate(ctx context.Context, netID tunnet.NetworkID, na *netAllocs) (v6, v4 netip.Prefix, alloc *ipalloc.ConnAllocator, err error) {
-	blk, err := b.leaser.Lease(ctx, netID)
+// network returns the network's entry, creating it on first use. The caller
+// must hold mu.
+func (b *slotAllocator) network(netID tunnet.NetworkID) *netAllocs {
+	na := b.nets[netID]
+	if na == nil {
+		na = &netAllocs{}
+		b.nets[netID] = na
+	}
+	return na
+}
+
+// pick returns the allocator for a new connection: the first partly used slot
+// with room, else an empty slot. Empty slots go last so the spare stays empty.
+func (na *netAllocs) pick() *ipalloc.ConnAllocator {
+	var empty *ipalloc.ConnAllocator
+	for _, a := range na.allocs {
+		switch {
+		case a.Full():
+		case a.Empty():
+			if empty == nil {
+				empty = a
+			}
+		default:
+			return a
+		}
+	}
+	return empty
+}
+
+// hasSpare reports whether the network holds a slot with no connections.
+func (na *netAllocs) hasSpare() bool {
+	for _, a := range na.allocs {
+		if a.Empty() {
+			return true
+		}
+	}
+	return false
+}
+
+// ensureSpareLocked starts a lease when the network has no spare and no lease
+// in flight. The caller must hold mu.
+func (b *slotAllocator) ensureSpareLocked(netID tunnet.NetworkID, na *netAllocs) {
+	if b.closed || na.lease != nil || na.hasSpare() {
+		return
+	}
+	b.startLeaseLocked(netID, na)
+}
+
+// startLeaseLocked returns the network's lease in flight, or starts one. The
+// caller must hold mu and must have checked that the allocator is open.
+func (b *slotAllocator) startLeaseLocked(netID tunnet.NetworkID, na *netAllocs) *slotLease {
+	if na.lease != nil {
+		return na.lease
+	}
+	l := &slotLease{done: make(chan struct{})}
+	na.lease = l
+	b.leases.Add(1)
+	go b.lease(netID, na, l)
+	return l
+}
+
+// lease runs one lease outside mu: it is network I/O with a multi-second worst
+// case, and it must not depend on the context of the connect that started it.
+// A slot leased for a network that was released in the meantime goes back to
+// the leaser; a failed lease is tried again after spareRetryDelay.
+func (b *slotAllocator) lease(netID tunnet.NetworkID, na *netAllocs, l *slotLease) {
+	defer b.leases.Done()
+	ctx, cancel := context.WithTimeout(context.Background(), slotLeaseTimeout)
+	defer cancel()
+	slot, err := b.leaser.Lease(ctx, netID)
 
 	b.mu.Lock()
-	defer b.mu.Unlock()
-	close(na.leasing)
-	na.leasing = nil
-
-	if err != nil {
-		return netip.Prefix{}, netip.Prefix{}, nil, fmt.Errorf("failed to lease slot: %w", err)
+	na.lease = nil
+	current := !b.closed && b.nets[netID] == na
+	l.err = err
+	switch {
+	case err == nil && current:
+		na.slots = append(na.slots, slot)
+		na.allocs = append(na.allocs, ipalloc.NewConnAllocator(slot))
+	case err == nil:
+		l.err = fmt.Errorf("network %x released during slot lease", netID[:])
 	}
-	if b.nets[netID] != na {
-		// The network was released while the lease was in flight; hand the
-		// slot straight back so it is not orphaned.
-		relCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-		defer cancel()
-		if rerr := b.leaser.Release(relCtx, blk); rerr != nil {
-			slog.Warn("Failed to release slot leased for a deleted network", slog.Any("error", rerr))
+	close(l.done)
+	b.mu.Unlock()
+
+	switch {
+	case err != nil && current:
+		slog.Warn("Failed to lease overlay slot; retrying",
+			slog.String("network", fmt.Sprintf("%x", netID[:])), slog.Any("error", err))
+		time.AfterFunc(spareRetryDelay, func() { b.retrySpare(netID, na) })
+	case err == nil && !current:
+		relCtx, relCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer relCancel()
+		if rerr := b.leaser.Release(relCtx, slot); rerr != nil {
+			slog.Warn("Failed to release slot leased for a released network", slog.Any("error", rerr))
 		}
-		return netip.Prefix{}, netip.Prefix{}, nil, fmt.Errorf("network %s released during slot lease", netID)
 	}
+}
 
-	a := ipalloc.NewConnAllocator(blk)
-	na.slots = append(na.slots, blk)
-	na.allocs = append(na.allocs, a)
-
-	if v6, v4, err = a.Allocate(); err != nil {
-		return netip.Prefix{}, netip.Prefix{}, nil, err
+// retrySpare leases a spare again after a failed lease, unless the network or
+// the allocator was released since.
+func (b *slotAllocator) retrySpare(netID tunnet.NetworkID, na *netAllocs) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.nets[netID] == na {
+		b.ensureSpareLocked(netID, na)
 	}
-	return v6, v4, a, nil
 }
 
 // Release returns a connection's addresses to their owning allocator. It is safe
@@ -195,6 +283,8 @@ func (b *slotAllocator) InvalidateSlot(s ipalloc.Slot) {
 		if blk.Network == s.Network && blk.ID == s.ID && blk.Generation == s.Generation {
 			na.slots = append(na.slots[:i], na.slots[i+1:]...)
 			na.allocs = append(na.allocs[:i], na.allocs[i+1:]...)
+			// The lost slot can be the spare.
+			b.ensureSpareLocked(s.Network, na)
 			return
 		}
 	}
@@ -202,19 +292,32 @@ func (b *slotAllocator) InvalidateSlot(s ipalloc.Slot) {
 
 // ReleaseAll returns every leased slot to the leaser and reports the slots
 // it could not release. The slots leave this allocator either way, per the
-// SlotLeaser.Release contract. For the local (OSS) leaser this is a
-// cleanliness nicety since process exit frees them.
+// SlotLeaser.Release contract. The allocator leases nothing after this, and
+// ReleaseAll waits, within ctx, for leases in flight to return their slots.
 func (b *slotAllocator) ReleaseAll(ctx context.Context) error {
 	b.mu.Lock()
-	defer b.mu.Unlock()
+	b.closed = true
+	nets := b.nets
+	b.nets = make(map[tunnet.NetworkID]*netAllocs)
+	b.mu.Unlock()
+
 	var errs []error
-	for netID, na := range b.nets {
+	for _, na := range nets {
 		for _, blk := range na.slots {
 			if err := b.leaser.Release(ctx, blk); err != nil {
 				errs = append(errs, err)
 			}
 		}
-		delete(b.nets, netID)
+	}
+
+	leased := make(chan struct{})
+	go func() {
+		b.leases.Wait()
+		close(leased)
+	}()
+	select {
+	case <-leased:
+	case <-ctx.Done():
 	}
 	return errors.Join(errs...)
 }

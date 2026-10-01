@@ -684,11 +684,9 @@ func (r *Relay) handleConnect(w http.ResponseWriter, req *http.Request, ps httpr
 	r.mu.Unlock()
 
 	tunnelName := ps.ByName("name")
-	// onConnect allocates the connection's addresses and VNI in-process and,
-	// on the new path, creates the Tunnel object - all synchronously, so the
-	// connection is fully ready when it returns. There is no apiserver
-	// round-trip and no await-the-reconciler retry loop (the legacy structure,
-	// with its swallowed error, is deleted rather than fixed - APO-825 §2.4).
+	// onConnect allocates the connection's addresses and VNI in-process, so
+	// the connection is ready when it returns. It makes no apiserver call; the
+	// Tunnel object is written later in the background.
 	if err := onConnect(req.Context(), tunnelName, request.Agent, conn); err != nil {
 		slog.Error("Failed to establish connection", slog.String("connID", conn.ID()), slog.Any("error", err))
 		r.teardownConn(req.Context(), conn)

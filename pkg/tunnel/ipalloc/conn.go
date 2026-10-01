@@ -173,6 +173,15 @@ func (a *ConnAllocator) Full() bool {
 	return err != nil
 }
 
+// Empty reports whether no connection holds an address in the slot.
+func (a *ConnAllocator) Empty() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	// Index 0 is the slot's own endpoint address and is always set.
+	_, err := a.v6.FirstOne(1)
+	return err != nil
+}
+
 // v4PrefixAt returns the /32 for v4 index i within the slot's /24 slice.
 func (a *ConnAllocator) v4PrefixAt(i uint32) netip.Prefix {
 	var b [4]byte
