@@ -3,6 +3,7 @@ package controllers
 import (
 	"context"
 	"net/netip"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -82,7 +83,9 @@ func TestRelayRegistrarEnsureRelay(t *testing.T) {
 
 	t.Run("creates write-once relay when absent", func(t *testing.T) {
 		r, c := newRegistrar(t, now)
-		require.NoError(t, r.ensureRelay(ctx))
+		created, err := r.ensureRelay(ctx)
+		require.NoError(t, err)
+		require.True(t, created)
 
 		var got vpcv1alpha1.Relay
 		require.NoError(t, c.Get(ctx, client.ObjectKey{Name: "r0"}, &got))
@@ -95,7 +98,9 @@ func TestRelayRegistrarEnsureRelay(t *testing.T) {
 			Spec:       vpcv1alpha1.RelaySpec{Addresses: []string{"9.9.9.9:6081"}},
 		}
 		r, c := newRegistrar(t, now, existing)
-		require.NoError(t, r.ensureRelay(ctx))
+		created, err := r.ensureRelay(ctx)
+		require.NoError(t, err)
+		require.False(t, created)
 
 		var got vpcv1alpha1.Relay
 		require.NoError(t, c.Get(ctx, client.ObjectKey{Name: "r0"}, &got))
@@ -109,7 +114,9 @@ func TestRelayRegistrarRenewLease(t *testing.T) {
 
 	t.Run("creates lease on first renew", func(t *testing.T) {
 		r, c := newRegistrar(t, t0)
-		require.NoError(t, r.renewLease(ctx))
+		created, err := r.renewLease(ctx)
+		require.NoError(t, err)
+		require.True(t, created)
 
 		var lease apoxycoordv1.Lease
 		require.NoError(t, c.Get(ctx, client.ObjectKey{Namespace: DefaultLeaseNamespace, Name: LeaseName("r0")}, &lease))
@@ -121,11 +128,14 @@ func TestRelayRegistrarRenewLease(t *testing.T) {
 
 	t.Run("bumps RenewTime on subsequent renew", func(t *testing.T) {
 		r, c := newRegistrar(t, t0)
-		require.NoError(t, r.renewLease(ctx))
+		_, err := r.renewLease(ctx)
+		require.NoError(t, err)
 
 		t1 := t0.Add(20 * time.Second)
 		r.now = func() time.Time { return t1 }
-		require.NoError(t, r.renewLease(ctx))
+		created, err := r.renewLease(ctx)
+		require.NoError(t, err)
+		require.False(t, created)
 
 		var lease apoxycoordv1.Lease
 		require.NoError(t, c.Get(ctx, client.ObjectKey{Namespace: DefaultLeaseNamespace, Name: LeaseName("r0")}, &lease))
@@ -145,7 +155,9 @@ func TestRelayRegistrarRecoversAfterRestoredObjectsDisappear(t *testing.T) {
 	r := NewRelayRegistrar(leaseClient, base, stubRelay{name: "r0"}, []string{"1.2.3.4:6081"}, nil)
 	r.now = func() time.Time { return now }
 
-	require.NoError(t, r.renewLease(ctx))
+	created, err := r.renewLease(ctx)
+	require.NoError(t, err)
+	require.True(t, created, "a lease that the apiserver lost is created again")
 
 	var gotRelay vpcv1alpha1.Relay
 	require.NoError(t, base.Get(ctx, client.ObjectKey{Name: "r0"}, &gotRelay))
@@ -180,11 +192,90 @@ func TestRelayRegistrarRecreatesRelayDuringRenewal(t *testing.T) {
 	require.ErrorIs(t, <-done, context.Canceled)
 }
 
+// failingClient fails every call while fail is set.
+type failingClient struct {
+	client.Client
+	fail *atomic.Bool
+}
+
+func (c failingClient) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if c.fail.Load() {
+		return apierrors.NewServiceUnavailable("apiserver is down")
+	}
+	return c.Client.Get(ctx, key, obj, opts...)
+}
+
+// TestRelayRegistrarOnRenew: restored is set after each event that can lose the
+// Tunnels, and not on a plain renewal.
+func TestRelayRegistrarOnRenew(t *testing.T) {
+	cases := []struct {
+		name string
+		// between runs after the first renewal.
+		between func(t *testing.T, c client.Client, fail *atomic.Bool)
+		want    bool
+	}{
+		{name: "plain renewal", between: func(*testing.T, client.Client, *atomic.Bool) {}},
+		{
+			name: "renewal after an outage",
+			between: func(_ *testing.T, _ client.Client, fail *atomic.Bool) {
+				fail.Store(true)
+				time.Sleep(50 * time.Millisecond)
+				fail.Store(false)
+			},
+			want: true,
+		},
+		{
+			name: "relay lease deleted",
+			between: func(t *testing.T, c client.Client, _ *atomic.Bool) {
+				require.NoError(t, c.Delete(context.Background(), &apoxycoordv1.Lease{
+					ObjectMeta: metav1.ObjectMeta{Namespace: DefaultLeaseNamespace, Name: LeaseName("r0")},
+				}))
+			},
+			want: true,
+		},
+		{
+			name: "relay object deleted",
+			between: func(t *testing.T, c client.Client, _ *atomic.Bool) {
+				require.NoError(t, c.Delete(context.Background(), &vpcv1alpha1.Relay{ObjectMeta: metav1.ObjectMeta{Name: "r0"}}))
+			},
+			want: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, base := newRegistrar(t, time.Unix(1_700_000_000, 0))
+			fail := &atomic.Bool{}
+			c := failingClient{Client: base, fail: fail}
+			calls := make(chan bool, 100)
+			r := NewRelayRegistrar(c, c, stubRelay{name: "r0"}, []string{"1.2.3.4:6081"}, nil,
+				WithRenewInterval(10*time.Millisecond),
+				WithOnRenew(func(restored bool) { calls <- restored }))
+			ctx, cancel := context.WithCancel(context.Background())
+			done := make(chan error, 1)
+			go func() { done <- r.Start(ctx) }()
+			defer func() {
+				cancel()
+				require.ErrorIs(t, <-done, context.Canceled)
+			}()
+
+			require.True(t, <-calls, "the first registration is restored")
+			require.False(t, <-calls, "a renewal with no event is not restored")
+			tc.between(t, base, fail)
+			got := false
+			for range 5 {
+				got = got || <-calls
+			}
+			require.Equal(t, tc.want, got)
+		})
+	}
+}
+
 func TestRelayRegistrarSubSecondLeaseDuration(t *testing.T) {
 	ctx := context.Background()
 	r, c := newRegistrar(t, time.Unix(1_700_000_000, 0))
 	r.leaseDuration = 500 * time.Millisecond
-	require.NoError(t, r.renewLease(ctx))
+	_, err := r.renewLease(ctx)
+	require.NoError(t, err)
 
 	var lease apoxycoordv1.Lease
 	require.NoError(t, c.Get(ctx, client.ObjectKey{Namespace: DefaultLeaseNamespace, Name: LeaseName("r0")}, &lease))

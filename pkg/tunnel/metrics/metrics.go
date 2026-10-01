@@ -16,38 +16,22 @@ import (
 // startTime is the time the process started. Used for uptime calculation.
 var startTime = time.Now()
 
-// QueryParamAgentProcessID is the CONNECT-IP query-string key the agent uses
-// to tell the server its stable per-process ID. Referenced by both the client
-// and the server handler so a rename can't silently break the wire.
+// QueryParamAgentProcessID is the CONNECT-IP query key for the agent process ID.
 const QueryParamAgentProcessID = "agent_process_id"
 
-// RelayRTTMetric is the family name of TunnelRelayRTTSeconds. Servers that
-// read the round trip time out of a pushed family look it up by name, so the
-// name is exported here instead of being written out again by each reader.
+// RelayRTTMetric is the family name of TunnelRelayRTTSeconds.
 const RelayRTTMetric = "tunnel_relay_rtt_seconds"
 
-// processID is stable for the process lifetime so callers can distinguish
-// "same process with multiple conns" from "multiple processes each with one
-// conn". Prefers a CRI container ID (cross-refs kubelet/containerd metadata)
-// and falls back to a UUID when none is detectable.
+// processID is stable for the process lifetime: a CRI container ID, else a
+// UUID.
 var processID = initProcessID()
 
-// containerIDRegex matches the 64-char hex token that CRI runtimes
-// (containerd, cri-o, docker, podman) embed in cgroup paths. Covers both
-// cgroup v1 and v2 layouts and the common systemd-slice wrappers
-// (`cri-containerd-<id>.scope`, `docker-<id>.scope`, etc).
+// containerIDRegex matches the 64-hex CRI container ID in cgroup paths.
 var containerIDRegex = regexp.MustCompile(`[0-9a-f]{64}`)
 
 func initProcessID() string {
-	// Linux-only: on macOS/Windows the read fails and we fall back to a UUID.
-	// Both paths rotate on container/process restart, so cardinality is bounded
-	// by the same restart rate either way.
-	//
-	// The full 64-hex CRI ID is truncated to 32: the ID also travels as a
-	// Kubernetes label value (the relay puts it on Tunnel objects), where 64
-	// chars is one over the limit, and a 128-bit prefix is ample for identity
-	// (Docker's own short form is 12). Truncation keeps the value greppable
-	// against runtime metadata, unlike hashing.
+	// Linux only; elsewhere the read fails and a UUID is used. The ID is cut to 32
+	// chars so it is also a valid label value.
 	if id := detectContainerID("/proc/self/cgroup"); id != "" {
 		return id[:32]
 	}
@@ -88,10 +72,8 @@ var (
 		},
 		func() float64 { return time.Since(startTime).Seconds() },
 	)
-	// TunnelRelayRTTSeconds reports the latency to each relay the agent holds a
-	// live session with: the smoothed RTT QUIC continuously measures on the
-	// control connection (falling back to probe/connect time before the first
-	// measurement). The series is deleted when the session ends.
+	// TunnelRelayRTTSeconds is the smoothed QUIC RTT to each relay with a live
+	// session. The series goes when the session ends.
 	TunnelRelayRTTSeconds = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: RelayRTTMetric,
@@ -100,8 +82,7 @@ var (
 		[]string{"relay"},
 	)
 	// TunnelRelayPacketsLost counts packets QUIC declared lost on the control
-	// connection, by relay and loss reason ("timeout", "reordering", "other").
-	// Loss rate is usually a better "tunnel feels slow" signal than RTT.
+	// connection, by relay and reason.
 	TunnelRelayPacketsLost = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "tunnel_relay_packets_lost_total",
@@ -109,9 +90,8 @@ var (
 		},
 		[]string{"relay", "reason"},
 	)
-	// TunnelRelayPTOs counts QUIC probe timeouts on the control connection —
-	// full stalls where nothing was ACKed for a whole probe interval. A rising
-	// rate means the path to that relay is dying, not just congested.
+	// TunnelRelayPTOs counts QUIC probe timeouts on the control connection. A
+	// rising rate means the path to that relay is failing.
 	TunnelRelayPTOs = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "tunnel_relay_ptos_total",
@@ -175,6 +155,22 @@ var (
 			Name: "tunnel_cleanup_retries_total",
 			Help: "Tunnel deletion attempts that failed and were scheduled for retry.",
 		},
+	)
+	// TunnelCreatesPending is the number of live connections with no Tunnel yet.
+	TunnelCreatesPending = prometheus.NewGaugeFunc(
+		prometheus.GaugeOpts{
+			Name: "tunnel_creates_pending",
+			Help: "Live connections whose Tunnel object is not written yet.",
+		},
+		func() float64 { creates, _ := backlogs.totals(time.Now()); return float64(creates) },
+	)
+	// TunnelOldestPendingWrite is the age of the oldest waiting Tunnel write.
+	TunnelOldestPendingWrite = prometheus.NewGaugeFunc(
+		prometheus.GaugeOpts{
+			Name: "tunnel_oldest_pending_write_seconds",
+			Help: "Age of the oldest Tunnel create or delete that waits. 0 when none waits.",
+		},
+		func() float64 { _, age := backlogs.totals(time.Now()); return age.Seconds() },
 	)
 	// TunnelSlotLosses counts leased slots that lost their backing authority.
 	TunnelSlotLosses = prometheus.NewCounter(
@@ -243,9 +239,8 @@ var (
 		[]string{"reason"},
 	)
 
-	// Per-protocol packet and byte counters.
-	// Protocol values: "tcp", "udp", "icmp", "other".
-	// Direction values: "tx", "rx".
+	// Per-protocol packet and byte counters. Protocol is tcp, udp, icmp or other;
+	// direction is tx or rx.
 	TunnelPacketsByProtocol = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "tunnel_packets_by_protocol_total",
@@ -261,12 +256,8 @@ var (
 		[]string{"protocol", "direction"},
 	)
 
-	// TunnelConnectIPICMPReturned counts ICMP packets that CONNECT-IP
-	// synthesized in response to an outbound-write failure (notably the QUIC
-	// DatagramTooLargeError path that emits an ICMPv6 Packet-Too-Big back at
-	// the sender for PMTUD). Cross-reference with tunnel_icmp6_packet_too_big_*
-	// to detect PTB generation vs. propagation issues.
-	// TODO(APO-543): remove once PMTUD-over-tunnel is verified healthy.
+	// TunnelConnectIPICMPReturned counts ICMP packets that CONNECT-IP made after a
+	// failed write, such as Packet-Too-Big. TODO: remove when PMTUD is verified.
 	TunnelConnectIPICMPReturned = prometheus.NewCounter(
 		prometheus.CounterOpts{
 			Name: "tunnel_connect_ip_icmp_returned_total",
@@ -289,6 +280,8 @@ func init() {
 	metrics.Registry.MustRegister(TunnelCleanupPending)
 	metrics.Registry.MustRegister(TunnelCleanupRetries)
 	metrics.Registry.MustRegister(TunnelSlotLosses)
+	metrics.Registry.MustRegister(TunnelCreatesPending)
+	metrics.Registry.MustRegister(TunnelOldestPendingWrite)
 	metrics.Registry.MustRegister(TunnelNodesManaged)
 	metrics.Registry.MustRegister(TunnelPacketsSent)
 	metrics.Registry.MustRegister(TunnelBytesSent)
@@ -304,10 +297,8 @@ func init() {
 
 var registerAgentOnce sync.Once
 
-// RegisterAgentMetrics registers agent-only metrics (info and uptime) with the
-// controller-runtime metrics registry. This must be called explicitly by agent
-// processes — server processes (tunnelproxy) should NOT call this, as they
-// re-export agent metrics via the AgentScraper/ReexportCollector path instead.
+// RegisterAgentMetrics registers the agent-only metrics. Agents call it; the
+// servers re-export agent metrics instead.
 func RegisterAgentMetrics() {
 	registerAgentOnce.Do(func() {
 		TunnelAgentInfo.WithLabelValues(build.BuildVersion, build.BuildDate, build.CommitHash).Set(1)
@@ -359,4 +350,46 @@ func GetProtocolCounters(proto, direction string) *ProtocolCounters {
 		return nil
 	}
 	return protocolCounters[proto+":"+direction]
+}
+
+// tunnelBacklog holds the Tunnel write backlog of each publisher.
+type tunnelBacklog struct {
+	mu      sync.Mutex
+	byOwner map[any]backlog
+}
+
+type backlog struct {
+	creates int
+	oldest  time.Time
+}
+
+var backlogs = &tunnelBacklog{byOwner: make(map[any]backlog)}
+
+// SetTunnelBacklog records the waiting creates of owner and when its oldest
+// waiting write became due. A zero oldest means nothing waits.
+func SetTunnelBacklog(owner any, creates int, oldest time.Time) {
+	backlogs.mu.Lock()
+	defer backlogs.mu.Unlock()
+	backlogs.byOwner[owner] = backlog{creates: creates, oldest: oldest}
+}
+
+func DeleteTunnelBacklog(owner any) {
+	backlogs.mu.Lock()
+	defer backlogs.mu.Unlock()
+	delete(backlogs.byOwner, owner)
+}
+
+// totals returns the waiting creates and the age of the oldest waiting write.
+func (b *tunnelBacklog) totals(now time.Time) (int, time.Duration) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	creates := 0
+	var age time.Duration
+	for _, l := range b.byOwner {
+		creates += l.creates
+		if !l.oldest.IsZero() {
+			age = max(age, now.Sub(l.oldest))
+		}
+	}
+	return creates, age
 }

@@ -23,9 +23,7 @@ import (
 	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 )
 
-// LabelRelay is stamped by the relay on every Tunnel with its own name, so the
-// relay-lease-gone orphan GC (and `kubectl get tunnels -l vpc.apoxy.dev/relay=x`)
-// can select a relay's connections.
+// LabelRelay is the name of the relay that wrote a Tunnel.
 const LabelRelay = "vpc.apoxy.dev/relay"
 
 const (
@@ -37,25 +35,14 @@ const (
 	syncParallelism = 16
 )
 
-// vniAllocator is the subset of the relay-local VNI allocator the publisher
-// needs; satisfied by *vni.VNIAllocator. Kept as an interface so tests can
-// substitute a deterministic allocator.
+// vniAllocator is the part of *vni.VNIAllocator that the publisher uses.
 type vniAllocator interface {
 	Allocate() (uint, error)
 	Release(vni uint)
 }
 
-// TunnelPublisher owns the relay side of a connection's control-plane presence.
-// It is wired to Relay.SetOnConnect/SetOnDisconnect. On connect it assigns the
-// connection's overlay addresses from a leased slot (§2.8) and a relay-local
-// VNI (§2.5) with no apiserver call. A background worker then writes the
-// single-writer Tunnel object (§2.4), and after a disconnect deletes it. The
-// addresses and VNI go back to their pools only when no Tunnel can still
-// advertise them.
-//
-// Network name -> NetworkID resolution is fed by the relay-side VPCNetwork
-// watcher via SetNetworkID; a connect to an unresolved network fails until the
-// network is provisioned and observed.
+// TunnelPublisher assigns each connection its addresses and VNI with no
+// apiserver call. A worker writes and deletes the Tunnel objects later.
 type TunnelPublisher struct {
 	client    client.Client
 	relayName string
@@ -66,6 +53,12 @@ type TunnelPublisher struct {
 	mu       sync.Mutex
 	networks map[string]tunnet.NetworkID // VPCNetwork name -> NetworkID
 	tunnels  map[string]*tunnelState     // Tunnel name (connection ID) -> state
+
+	// holdCreates stops Tunnel creates while a bulk delete of this relay's Tunnels
+	// runs.
+	holdCreates bool
+	// resyncMu makes Resync calls run one at a time.
+	resyncMu sync.Mutex
 
 	wake       chan struct{}
 	syncSlots  chan struct{} // one token per Tunnel write in flight
@@ -88,9 +81,12 @@ type connAlloc struct {
 	published bool
 }
 
-// tunnelState tracks one Tunnel name. An allocation goes back to the pools
-// only when it is neither live nor written: a Tunnel in the apiserver can
-// advertise the addresses of the written one.
+// staleAlloc records a Tunnel of this relay that no connection here owns. It
+// holds no addresses.
+func staleAlloc() *connAlloc { return &connAlloc{} }
+
+// tunnelState tracks one Tunnel name. An allocation is freed only when it is
+// neither live nor written.
 type tunnelState struct {
 	live    *connAlloc // the connection that now uses this ID
 	written *connAlloc // the connection whose Tunnel can exist in the apiserver
@@ -98,6 +94,16 @@ type tunnelState struct {
 	busy     bool
 	attempts int
 	retryAt  time.Time
+	// pendingSince is when the oldest waiting write became due, or zero.
+	pendingSince time.Time
+}
+
+// markPending records that a write became due at now, unless an older one
+// waits.
+func (st *tunnelState) markPending(now time.Time) {
+	if st.pendingSince.IsZero() {
+		st.pendingSince = now
+	}
 }
 
 // needsDelete reports whether a Tunnel of a closed connection can still exist.
@@ -133,9 +139,8 @@ func NewTunnelPublisher(c client.Client, relay Relay, leaser ipalloc.SlotLeaser,
 	return p
 }
 
-// SetNetworkID records the NetworkID a VPCNetwork name resolves to and leases
-// a spare slot for it. Fed by the relay-side VPCNetwork watcher as networks
-// are observed.
+// SetNetworkID records the NetworkID of a VPCNetwork name and leases a spare
+// slot for it.
 func (p *TunnelPublisher) SetNetworkID(name string, id tunnet.NetworkID) {
 	p.mu.Lock()
 	p.networks[name] = id
@@ -143,9 +148,7 @@ func (p *TunnelPublisher) SetNetworkID(name string, id tunnet.NetworkID) {
 	p.slots.EnsureSpare(id)
 }
 
-// RemoveNetwork forgets a deleted VPCNetwork: connects to it fail closed again
-// and every slot leased for it is returned, so its identifiers stop being
-// renewed against a network that no longer exists.
+// RemoveNetwork forgets a deleted VPCNetwork and returns all of its slots.
 func (p *TunnelPublisher) RemoveNetwork(ctx context.Context, name string) {
 	p.mu.Lock()
 	id, ok := p.networks[name]
@@ -157,6 +160,24 @@ func (p *TunnelPublisher) RemoveNetwork(ctx context.Context, name string) {
 		}
 		p.slots.ReleaseNetwork(ctx, id)
 	}
+}
+
+// AssignAddress takes a /96 from the held slots for a user that is not a
+// connection. It writes no Tunnel. Call release to free the /96.
+func (p *TunnelPublisher) AssignAddress(ctx context.Context, network tunnet.NetworkID) (v6 netip.Prefix, release func(), err error) {
+	v6, v4, alloc, err := p.slots.Allocate(ctx, network)
+	if err != nil {
+		return netip.Prefix{}, nil, fmt.Errorf("failed to allocate an overlay address: %w", err)
+	}
+	// Only the /96 is used.
+	p.slots.Release(alloc, netip.Prefix{}, v4)
+	if !p.slots.Contains(alloc) {
+		p.slots.Release(alloc, v6, netip.Prefix{})
+		slot := alloc.Slot()
+		return netip.Prefix{}, nil, fmt.Errorf("overlay slot %s generation %d is no longer held", ipalloc.SlotLabelValue(slot), slot.Generation)
+	}
+	var once sync.Once
+	return v6, func() { once.Do(func() { p.slots.Release(alloc, v6, netip.Prefix{}) }) }, nil
 }
 
 // InvalidateSlot drops a slot the leaser lost so no new connections allocate
@@ -177,9 +198,8 @@ func (p *TunnelPublisher) InvalidateSlot(s ipalloc.Slot) {
 	}
 }
 
-// OnConnect allocates addresses + a VNI for the connection and assigns them.
-// It makes no apiserver call: the Tunnel object is written later by the
-// worker. It is called synchronously from handleConnect.
+// OnConnect gives the connection its addresses and VNI. It makes no apiserver
+// call.
 func (p *TunnelPublisher) OnConnect(ctx context.Context, tunnelName, agentName string, conn Connection) error {
 	id := conn.ID()
 	networkName := conn.Network()
@@ -218,12 +238,8 @@ func (p *TunnelPublisher) OnConnect(ctx context.Context, tunnelName, agentName s
 		p.release(rec)
 		return fmt.Errorf("failed to set overlay address: %w", err)
 	}
-	// From here on the router holds state for v6: failures must NOT release
-	// the allocation directly — a concurrent connect would be handed the same
-	// /96 while its route is still installed and fail with EEXIST (2026-08-03
-	// incident). setLive records the allocation under the connection ID so the
-	// relay's teardown (conn.Close, then OnDisconnect) releases it only after
-	// the router state is gone.
+	// The router now holds state for v6, so only the relay teardown frees the
+	// allocation. A direct release can give the /96 to another connect (EEXIST).
 	if err := conn.SetVNI(ctx, vniID); err != nil {
 		p.setLive(id, rec)
 		return fmt.Errorf("failed to set VNI: %w", err)
@@ -234,8 +250,7 @@ func (p *TunnelPublisher) OnConnect(ctx context.Context, tunnelName, agentName s
 		addresses = append(addresses, v4.String())
 	}
 	if err := conn.SetAddresses(addresses); err != nil {
-		// The /32 is best-effort (§2.4): drop it and retry v6-only rather than
-		// refuse the tunnel over the weaker family.
+		// The /32 is optional: drop it and use v6 only.
 		if !v4.IsValid() {
 			p.setLive(id, rec)
 			return fmt.Errorf("failed to set overlay addresses: %w", err)
@@ -258,10 +273,12 @@ func (p *TunnelPublisher) OnConnect(ctx context.Context, tunnelName, agentName s
 	slotHeld := p.slots.Contains(alloc)
 	currentNetID, networkExists := p.networks[networkName]
 	current := slotHeld && networkExists && currentNetID == netID
+	st := p.state(id)
 	if current {
 		rec.tunnel = tunnel
+		st.markPending(time.Now())
 	}
-	p.state(id).live = rec
+	st.live = rec
 	p.mu.Unlock()
 	if !slotHeld {
 		return fmt.Errorf("overlay slot %s generation %d was lost during connection setup", ipalloc.SlotLabelValue(slot), slot.Generation)
@@ -279,10 +296,8 @@ func (p *TunnelPublisher) OnConnect(ctx context.Context, tunnelName, agentName s
 	return nil
 }
 
-// OnDisconnect ends the connection's use of its ID. An allocation whose
-// Tunnel was never written goes back to the pools now; otherwise the worker
-// deletes the Tunnel and releases the allocation after the delete is
-// confirmed. It makes no apiserver call.
+// OnDisconnect ends the connection's use of its ID. A written allocation is
+// freed after the worker confirms the Tunnel delete.
 func (p *TunnelPublisher) OnDisconnect(_ context.Context, _, id string) error {
 	p.mu.Lock()
 	st := p.tunnels[id]
@@ -294,7 +309,9 @@ func (p *TunnelPublisher) OnDisconnect(_ context.Context, _, id string) error {
 	st.live = nil
 	st.retryAt = time.Time{}
 	written := st.written == rec
-	if !written {
+	if written {
+		st.markPending(time.Now())
+	} else {
 		p.release(rec)
 	}
 	if st.written == nil {
@@ -331,13 +348,15 @@ func (p *TunnelPublisher) setLive(id string, rec *connAlloc) {
 // release returns a connection's addresses and VNI to their pools. The
 // caller holds mu, or owns rec alone.
 func (p *TunnelPublisher) release(rec *connAlloc) {
+	if rec.alloc == nil {
+		return // A stale Tunnel holds nothing.
+	}
 	p.slots.Release(rec.alloc, rec.v6, rec.v4)
 	p.vnis.Release(rec.vni)
 }
 
-// newTunnel builds the single-writer Tunnel object: spec and identity labels,
-// then addresses and advertised routes in status. It is never patched in
-// steady state (§2.4).
+// newTunnel builds the Tunnel object with addresses and routes in status. It
+// is not patched after create.
 func (p *TunnelPublisher) newTunnel(conn Connection, networkName, agentName string, addresses []string, slot ipalloc.Slot) *vpcv1alpha1.Tunnel {
 	return &vpcv1alpha1.Tunnel{
 		ObjectMeta: metav1.ObjectMeta{
@@ -355,10 +374,8 @@ func (p *TunnelPublisher) newTunnel(conn Connection, networkName, agentName stri
 	}
 }
 
-// createTunnel writes want: the object at create, then its status. A Tunnel
-// that already exists from an earlier attempt for the same connection gets
-// its status written. One from an older connection is deleted, and the next
-// attempt creates want.
+// createTunnel creates want and then writes its status. A Tunnel of an older
+// connection is deleted, and the next attempt creates want.
 func (p *TunnelPublisher) createTunnel(ctx context.Context, want *vpcv1alpha1.Tunnel) error {
 	t := want.DeepCopy()
 	if err := p.client.Create(ctx, t); err != nil {
@@ -390,8 +407,7 @@ func sameConnection(a, b *vpcv1alpha1.Tunnel) bool {
 	return true
 }
 
-// tunnelLabels merges the agent-declared labels with the relay-stamped identity
-// labels used by VPCService selection and orphan GC.
+// tunnelLabels merges the agent labels with the identity labels of the relay.
 func (p *TunnelPublisher) tunnelLabels(conn Connection, networkName, agentName string, slot ipalloc.Slot) map[string]string {
 	labels := make(map[string]string, len(conn.Labels())+6)
 	for k, v := range conn.Labels() {
@@ -408,17 +424,8 @@ func (p *TunnelPublisher) tunnelLabels(conn Connection, networkName, agentName s
 	return labels
 }
 
-// labelValue coerces an agent-declared string into a legal Kubernetes label
-// value. Agents declare their instance ID themselves — a pre-truncation
-// containerized agent reports its full 64-hex container ID, one character
-// over the 63-char label limit — and an invalid value must not fail Tunnel
-// creation (which would refuse the connection entirely). An over-long but
-// otherwise clean value is truncated to 32 chars, the SAME derivation current
-// agents apply at the source (metrics.AgentProcessID), so old and new agents
-// converge on one label form and it stays a greppable prefix of the raw
-// metric label and the container ID. Only a value that is invalid for other
-// reasons (illegal characters) is replaced by a truncated hash: stable per
-// input, so identity is preserved under a derived name.
+// labelValue makes a valid label value from an agent string. A long value is
+// cut to 32 chars; a value with bad characters becomes a hash.
 func labelValue(v string) string {
 	if len(validation.IsValidLabelValue(v)) == 0 {
 		return v
@@ -450,10 +457,8 @@ func (p *TunnelPublisher) deleteTunnel(ctx context.Context, id string) error {
 	return errDeletePending
 }
 
-// syncTunnel makes one apiserver attempt for the Tunnel named id: it deletes
-// the Tunnel of a closed connection, or else creates the live connection's
-// Tunnel when create is true. A written allocation is released exactly once,
-// after Delete or NotFound confirms that its Tunnel can no longer advertise it.
+// syncTunnel makes one apiserver attempt for a Tunnel: delete for a closed
+// connection, else create when create is true.
 func (p *TunnelPublisher) syncTunnel(ctx context.Context, id string, create bool) error {
 	p.mu.Lock()
 	st := p.tunnels[id]
@@ -499,6 +504,9 @@ func (p *TunnelPublisher) syncTunnel(ctx context.Context, id string, create bool
 	st.retryAt = time.Time{}
 	if write {
 		rec.published = true
+		if !st.needsDelete() && !st.needsCreate() {
+			st.pendingSince = time.Time{}
+		}
 		p.mu.Unlock()
 		slog.Debug("Published Tunnel", slog.String("connID", id))
 		return nil
@@ -507,6 +515,8 @@ func (p *TunnelPublisher) syncTunnel(ctx context.Context, id string, create bool
 	p.release(rec)
 	if st.live == nil {
 		delete(p.tunnels, id)
+	} else if !st.needsCreate() {
+		st.pendingSince = time.Time{}
 	}
 	p.mu.Unlock()
 
@@ -534,9 +544,8 @@ func (p *TunnelPublisher) wakeWorker() {
 	}
 }
 
-// run writes Tunnel changes to the apiserver until ctx is canceled. It returns
-// after the writes in flight end, so no write runs after ReleaseAll releases
-// the slots.
+// run writes Tunnel changes until ctx ends. It returns after the writes in
+// flight end.
 func (p *TunnelPublisher) run(ctx context.Context) {
 	defer close(p.workerDone)
 	var syncs sync.WaitGroup
@@ -554,23 +563,37 @@ func (p *TunnelPublisher) run(ctx context.Context) {
 	}
 }
 
-// syncDue starts one attempt for every Tunnel that has work and whose retry
-// time has come, with at most syncParallelism in flight. The busy flag keeps
-// one ID to one attempt at a time. Creates are skipped when create is false.
-// syncs counts the attempts started.
+// syncDue starts one attempt for each due Tunnel, at most syncParallelism at a
+// time, and reports the write backlog. Creates are skipped when create is false.
 func (p *TunnelPublisher) syncDue(ctx context.Context, create bool, syncs *sync.WaitGroup) {
 	now := time.Now()
 	p.mu.Lock()
+	create = create && !p.holdCreates
 	ids := make([]string, 0)
+	creates := 0
+	var oldest time.Time
 	for id, st := range p.tunnels {
+		needsCreate := st.needsCreate()
+		if !st.needsDelete() && !needsCreate {
+			st.pendingSince = time.Time{}
+			continue
+		}
+		if needsCreate {
+			creates++
+		}
+		st.markPending(now)
+		if oldest.IsZero() || st.pendingSince.Before(oldest) {
+			oldest = st.pendingSince
+		}
 		if st.busy || st.retryAt.After(now) {
 			continue
 		}
-		if st.needsDelete() || (create && st.needsCreate()) {
+		if st.needsDelete() || (create && needsCreate) {
 			ids = append(ids, id)
 		}
 	}
 	p.mu.Unlock()
+	metrics.SetTunnelBacklog(p, creates, oldest)
 
 	for _, id := range ids {
 		select {
@@ -614,31 +637,127 @@ func (p *TunnelPublisher) connectionIDsForNetwork(network tunnet.NetworkID) []st
 	return ids
 }
 
-// ReleaseAll stops the worker, returns every leased slot to the leaser, then
-// makes one more pass over pending Tunnel deletions. Slots go first: a Tunnel
-// delete can block for the whole budget on a project apiserver that is already
-// gone. Tunnels not yet created are not created. Callers must have
-// disconnected every connection first; this does not stop traffic. It reports
-// the slots that did not release so the caller can log.
+// ReleaseAll stops the worker, returns all slots, then deletes the pending
+// Tunnels. Callers must disconnect every connection first.
 func (p *TunnelPublisher) ReleaseAll(ctx context.Context) error {
 	p.stopOnce.Do(p.stopWorker)
 	select {
 	case <-p.workerDone:
 	case <-ctx.Done():
 	}
+	defer metrics.DeleteTunnelBacklog(p)
 	err := p.slots.ReleaseAll(ctx)
 	// A dead ctx would fail every pending delete at once; leave them.
-	if ctx.Err() == nil {
+	if ctx.Err() != nil || !p.hasPendingDeletes() {
+		return err
+	}
+	delErr := p.deleteAllTunnels(ctx)
+	if delErr == nil {
 		p.mu.Lock()
-		for _, st := range p.tunnels {
-			st.retryAt = time.Time{}
+		for id, st := range p.tunnels {
+			if st.needsDelete() {
+				p.release(st.written)
+				st.written = nil
+				metrics.TunnelCleanupPending.Dec()
+			}
+			if st.live == nil {
+				delete(p.tunnels, id)
+			}
 		}
 		p.mu.Unlock()
-		var syncs sync.WaitGroup
-		p.syncDue(ctx, false, &syncs)
-		syncs.Wait()
+		return err
 	}
+	slog.Debug("Bulk Tunnel delete failed; deleting one at a time", slog.Any("error", delErr))
+	p.mu.Lock()
+	for _, st := range p.tunnels {
+		st.retryAt = time.Time{}
+	}
+	p.mu.Unlock()
+	var syncs sync.WaitGroup
+	p.syncDue(ctx, false, &syncs)
+	syncs.Wait()
 	return err
+}
+
+func (p *TunnelPublisher) hasPendingDeletes() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, st := range p.tunnels {
+		if st.needsDelete() {
+			return true
+		}
+	}
+	return false
+}
+
+// deleteAllTunnels deletes every Tunnel of this relay in one request.
+func (p *TunnelPublisher) deleteAllTunnels(ctx context.Context) error {
+	return p.client.DeleteAllOf(ctx, &vpcv1alpha1.Tunnel{}, client.MatchingLabels{LabelRelay: p.relayName})
+}
+
+// Resync deletes this relay's Tunnels that no connection uses and creates the
+// missing ones. Call it at boot and when the apiserver is back.
+func (p *TunnelPublisher) Resync(ctx context.Context) error {
+	p.resyncMu.Lock()
+	defer p.resyncMu.Unlock()
+	p.mu.Lock()
+	idle := len(p.tunnels) == 0
+	p.holdCreates = idle
+	p.mu.Unlock()
+	if idle {
+		// No connection here has a Tunnel, so all of this relay's Tunnels go.
+		err := p.deleteAllTunnels(ctx)
+		p.mu.Lock()
+		p.holdCreates = false
+		p.mu.Unlock()
+		p.wakeWorker()
+		if err == nil {
+			return nil
+		}
+		slog.Debug("Bulk Tunnel delete failed; listing Tunnels", slog.Any("error", err))
+	}
+
+	var list vpcv1alpha1.TunnelList
+	if err := p.client.List(ctx, &list, client.MatchingLabels{LabelRelay: p.relayName}); err != nil {
+		return fmt.Errorf("failed to list Tunnels: %w", err)
+	}
+	present := make(map[string]bool, len(list.Items))
+	now := time.Now()
+	stale := 0
+	p.mu.Lock()
+	for i := range list.Items {
+		id := list.Items[i].Name
+		present[id] = true
+		if p.tunnels[id] == nil {
+			p.tunnels[id] = &tunnelState{written: staleAlloc(), pendingSince: now}
+			stale++
+		}
+	}
+	missing, retried := 0, 0
+	for id, st := range p.tunnels {
+		if st.busy {
+			continue
+		}
+		// A create in flight can be missing from the list.
+		if st.live != nil && st.live.published && !present[id] {
+			st.live.published = false
+			st.markPending(now)
+			missing++
+		}
+		// The apiserver answers again, so the writes that wait for a retry go now.
+		if !st.retryAt.IsZero() {
+			st.retryAt, st.attempts = time.Time{}, 0
+			retried++
+		}
+	}
+	p.mu.Unlock()
+	metrics.TunnelCleanupPending.Add(float64(stale))
+	if stale > 0 || missing > 0 || retried > 0 {
+		slog.Info("Syncing Tunnels with the apiserver",
+			slog.Int("stale", stale), slog.Int("missing", missing), slog.Int("retried", retried))
+		p.wakeWorker()
+	}
+	return nil
 }
 
 // prefixesToStrings renders a slice of prefixes as CIDR strings, returning nil

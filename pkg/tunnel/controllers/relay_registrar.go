@@ -17,19 +17,15 @@ import (
 )
 
 const (
-	// LeaseNamePrefix is prepended to a relay's name to form its Lease name.
-	// Relays are cluster-scoped but Leases are namespaced and shared with other
-	// coordination.apoxy.dev consumers (e.g. leader election), so the prefix
-	// keeps relay leases in their own namespace and avoids collisions. The lease
-	// watcher strips it to resolve the owning Relay.
+	// LeaseNamePrefix keeps relay Leases apart from other Leases in the same
+	// namespace. The lease watcher strips it to find the Relay.
 	LeaseNamePrefix = "relay-"
 
 	// DefaultLeaseNamespace is where relay Leases live when none is configured.
 	DefaultLeaseNamespace = "default"
 
-	// defaultRenewInterval is how often the registrar renews its lease. It must
-	// be well under half the lease duration so a single missed renewal does not
-	// expire the lease (mirrors the endpoint registrar's 20s/40s cadence).
+	// defaultRenewInterval is well under half the lease duration, so one missed
+	// renewal does not expire the lease.
 	defaultRenewInterval = 20 * time.Second
 
 	// defaultLeaseDuration is the lease validity window the watcher enforces.
@@ -45,10 +41,7 @@ func LeaseName(relayName string) string {
 	return LeaseNamePrefix + relayName
 }
 
-// leaseDurationSeconds renders a lease duration as whole seconds for the
-// coordination Lease field, rounding to the nearest second and flooring at 1 so
-// a sub-second duration never truncates to 0 (which downstream consumers would
-// read as "already expired").
+// leaseDurationSeconds rounds a lease duration to whole seconds, at least 1.
 func leaseDurationSeconds(d time.Duration) int32 {
 	s := int32(d.Round(time.Second) / time.Second)
 	if s < 1 {
@@ -57,14 +50,8 @@ func leaseDurationSeconds(d time.Duration) int32 {
 	return s
 }
 
-// RelayRegistrar owns a relay's presence in the control plane: it creates the
-// write-once Relay object on start and renews a coordination.apoxy.dev Lease on
-// a fixed cadence so the lease watcher can flip Relay readiness on crash. On
-// drain it flips readiness off and deletes both objects (§2.3/§5).
-//
-// It takes two clients so the same implementation serves OSS (both point at the
-// standalone apiserver) and cloud cmd/relay (leaseClient -> infra-apiz,
-// relayClient -> shard fan-out). This is the cmd/relay seam.
+// RelayRegistrar creates the write-once Relay object and renews its Lease, so
+// the lease watcher can mark a crashed relay not ready.
 type RelayRegistrar struct {
 	leaseClient     client.Client
 	relayClient     client.Client
@@ -76,6 +63,7 @@ type RelayRegistrar struct {
 	renewInterval  time.Duration
 	leaseDuration  time.Duration
 	now            func() time.Time
+	onRenew        func(restored bool)
 }
 
 // RegistrarOption configures a RelayRegistrar.
@@ -91,14 +79,19 @@ func WithRenewInterval(d time.Duration) RegistrarOption {
 	return func(r *RelayRegistrar) { r.renewInterval = d }
 }
 
+// WithOnRenew sets a callback that runs after each registration or renewal.
+// restored is true when the apiserver can have lost this relay's Tunnels.
+func WithOnRenew(fn func(restored bool)) RegistrarOption {
+	return func(r *RelayRegistrar) { r.onRenew = fn }
+}
+
 // WithLeaseDuration overrides the advertised lease duration.
 func WithLeaseDuration(d time.Duration) RegistrarOption {
 	return func(r *RelayRegistrar) { r.leaseDuration = d }
 }
 
-// NewRelayRegistrar creates a RelayRegistrar. addresses are the underlay
-// endpoints agents dial; networkSelector scopes which networks the relay serves
-// (nil selects all).
+// NewRelayRegistrar creates a RelayRegistrar. A nil networkSelector selects all
+// networks.
 func NewRelayRegistrar(
 	leaseClient, relayClient client.Client,
 	relay Relay,
@@ -129,23 +122,37 @@ func (r *RelayRegistrar) Start(ctx context.Context) error {
 	if err := r.registerWithRetry(ctx); err != nil {
 		return err
 	}
+	r.renewed(true)
 
 	ticker := time.NewTicker(r.renewInterval)
 	defer ticker.Stop()
 
+	failed := false
 	for {
 		select {
 		case <-ctx.Done():
 			slog.Info("Relay registrar shutting down", "relay", r.relay.Name())
 			return ctx.Err()
 		case <-ticker.C:
-			if err := r.ensureRelay(ctx); err != nil {
+			relayCreated, err := r.ensureRelay(ctx)
+			if err != nil {
 				slog.Warn("Failed to restore relay registration", "relay", r.relay.Name(), "error", err)
 			}
-			if err := r.renewLease(ctx); err != nil {
-				slog.Warn("Failed to renew relay lease", "relay", r.relay.Name(), "error", err)
+			leaseCreated, leaseErr := r.renewLease(ctx)
+			if leaseErr != nil {
+				slog.Warn("Failed to renew relay lease", "relay", r.relay.Name(), "error", leaseErr)
 			}
+			if err == nil && leaseErr == nil {
+				r.renewed(failed || relayCreated || leaseCreated)
+			}
+			failed = err != nil || leaseErr != nil
 		}
+	}
+}
+
+func (r *RelayRegistrar) renewed(restored bool) {
+	if r.onRenew != nil {
+		r.onRenew(restored)
 	}
 }
 
@@ -154,8 +161,8 @@ func (r *RelayRegistrar) Start(ctx context.Context) error {
 func (r *RelayRegistrar) registerWithRetry(ctx context.Context) error {
 	delay := initialRetryDelay
 	for {
-		if err := r.ensureRelay(ctx); err == nil {
-			if err := r.renewLease(ctx); err == nil {
+		if _, err := r.ensureRelay(ctx); err == nil {
+			if _, err := r.renewLease(ctx); err == nil {
 				slog.Info("Relay registered", "relay", r.relay.Name())
 				return nil
 			} else {
@@ -174,18 +181,18 @@ func (r *RelayRegistrar) registerWithRetry(ctx context.Context) error {
 	}
 }
 
-// ensureRelay creates the write-once Relay object if it does not exist. The
-// spec is never mutated once created: liveness lives in the lease, not here.
-func (r *RelayRegistrar) ensureRelay(ctx context.Context) error {
+// ensureRelay creates the write-once Relay object if it does not exist, and
+// reports whether it did.
+func (r *RelayRegistrar) ensureRelay(ctx context.Context) (bool, error) {
 	existing := &vpcv1alpha1.Relay{}
 	err := r.relayClient.Get(ctx, client.ObjectKey{Name: r.relay.Name()}, existing)
 	if err == nil {
-		return nil
+		return false, nil
 	}
 	if !apierrors.IsNotFound(err) {
-		return fmt.Errorf("failed to get relay: %w", err)
+		return false, fmt.Errorf("failed to get relay: %w", err)
 	}
-	return r.createRelay(ctx)
+	return true, r.createRelay(ctx)
 }
 
 func (r *RelayRegistrar) createRelay(ctx context.Context) error {
@@ -206,18 +213,19 @@ func (r *RelayRegistrar) createRelay(ctx context.Context) error {
 	return nil
 }
 
-// renewLease creates or renews the relay's Lease, stamping a fresh RenewTime.
-func (r *RelayRegistrar) renewLease(ctx context.Context) error {
+// renewLease creates or renews the relay's Lease, and reports whether it
+// created it.
+func (r *RelayRegistrar) renewLease(ctx context.Context) (bool, error) {
 	now := metav1.NewMicroTime(r.now())
 	key := client.ObjectKey{Namespace: r.leaseNamespace, Name: LeaseName(r.relay.Name())}
 
 	existing := &apoxycoordv1.Lease{}
 	err := r.leaseClient.Get(ctx, key, existing)
 	if apierrors.IsNotFound(err) {
-		return r.createLease(ctx, now)
+		return true, r.createLease(ctx, now)
 	}
 	if err != nil {
-		return fmt.Errorf("failed to get lease: %w", err)
+		return false, fmt.Errorf("failed to get lease: %w", err)
 	}
 
 	existing.Spec.HolderIdentity = ptr.To(r.relay.Name())
@@ -227,17 +235,16 @@ func (r *RelayRegistrar) renewLease(ctx context.Context) error {
 		existing.Spec.AcquireTime = &now
 	}
 	if err := r.leaseClient.Update(ctx, existing); apierrors.IsNotFound(err) {
-		// A restored API server can lose recent liveness objects while this
-		// process still has them in its informer cache. Restore both objects
-		// from the registrar's authoritative configuration.
+		// A restored apiserver can lose recent objects that the informer cache still
+		// has, so write both again.
 		if err := r.createRelay(ctx); err != nil {
-			return fmt.Errorf("failed to restore relay: %w", err)
+			return false, fmt.Errorf("failed to restore relay: %w", err)
 		}
-		return r.createLease(ctx, now)
+		return true, r.createLease(ctx, now)
 	} else if err != nil {
-		return fmt.Errorf("failed to renew lease: %w", err)
+		return false, fmt.Errorf("failed to renew lease: %w", err)
 	}
-	return nil
+	return false, nil
 }
 
 func (r *RelayRegistrar) createLease(ctx context.Context, now metav1.MicroTime) error {
@@ -256,12 +263,8 @@ func (r *RelayRegistrar) createLease(ctx context.Context, now metav1.MicroTime) 
 	return nil
 }
 
-// Drain tears down the relay's control-plane presence by deleting its Lease and
-// Relay objects (§5). Deletion is the terminal signal consumers act on; there is
-// no separate ready=false write, since Drain runs synchronously at shutdown with
-// no settle window in which an intermediate not-ready state could be observed.
-// It is meant to be wired to Relay.SetOnShutdown by the caller; it does not stop
-// the renewal loop itself (canceling Start's ctx does that).
+// Drain deletes the relay's Lease and Relay objects. Wire it to
+// Relay.SetOnShutdown; it does not stop the renewal loop.
 func (r *RelayRegistrar) Drain(ctx context.Context) {
 	lease := &apoxycoordv1.Lease{
 		ObjectMeta: metav1.ObjectMeta{Namespace: r.leaseNamespace, Name: LeaseName(r.relay.Name())},

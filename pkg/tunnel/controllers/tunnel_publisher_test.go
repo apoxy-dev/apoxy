@@ -175,7 +175,7 @@ func TestTunnelPublisherOnConnectCreatesTunnel(t *testing.T) {
 	require.Equal(t, conn.addresses, got.Status.Addresses)
 	require.Equal(t, []string{"10.20.0.0/16"}, got.Status.AdvertisedRoutes)
 
-	// Identity labels stamped alongside the agent-declared label.
+	// The relay adds identity labels next to the agent label.
 	require.Equal(t, "payments", got.Labels["app"])
 	require.Equal(t, "corp", got.Labels[vpcv1alpha1.LabelNetwork])
 	require.Equal(t, "agent-a", got.Labels[vpcv1alpha1.LabelTunnelName])
@@ -272,9 +272,8 @@ func TestTunnelPublisherRejectsConnectionThatLosesSlotDuringSetup(t *testing.T) 
 	p.mu.Unlock()
 }
 
-// TestTunnelPublisherOnConnectV4Failure pins the §2.4 best-effort contract at
-// the connect path: the /32 is egress-only, so a connection that cannot carry
-// it comes up v6-only instead of being refused.
+// TestTunnelPublisherOnConnectV4Failure: a connection that cannot get a /32
+// comes up v6-only instead of being refused.
 func TestTunnelPublisherOnConnectV4Failure(t *testing.T) {
 	ctx := context.Background()
 
@@ -351,10 +350,8 @@ func TestTunnelPublisherOnDisconnectDeletesAndReleases(t *testing.T) {
 	require.Equal(t, firstOverlay, conn2.overlay, "freed /96 is reused")
 }
 
-// TestTunnelPublisherReconnectDoesNotWaitForCleanup covers a reconnect with
-// the same connection ID while the old Tunnel delete is still in flight. The
-// connect returns at once with new addresses; the old /96 stays quarantined,
-// and the new Tunnel is written only after the old one is gone.
+// TestTunnelPublisherReconnectDoesNotWaitForCleanup: a reconnect with the same
+// ID gets new addresses at once; its Tunnel waits for the old delete.
 func TestTunnelPublisherReconnectDoesNotWaitForCleanup(t *testing.T) {
 	ctx := context.Background()
 	deleteStarted := make(chan struct{})
@@ -402,10 +399,8 @@ func TestTunnelPublisherReconnectDoesNotWaitForCleanup(t *testing.T) {
 	require.Equal(t, oldConn.overlay, next.overlay, "old /96 was not released after the delete")
 }
 
-// TestTunnelPublisherQuarantinesUntilTunnelIsGone covers a Tunnel delete that
-// does not complete at once. The allocation must stay out of the pool until a
-// retry confirms the Tunnel is gone: reusing it while the stale Tunnel exists
-// makes the control plane describe two connections with the same address.
+// TestTunnelPublisherQuarantinesUntilTunnelIsGone: an allocation stays out of
+// the pool until a retry confirms its Tunnel is gone.
 func TestTunnelPublisherQuarantinesUntilTunnelIsGone(t *testing.T) {
 	ctx := context.Background()
 
@@ -499,9 +494,8 @@ func TestTunnelPublisherOnDisconnectOrphan(t *testing.T) {
 	require.NoError(t, p.OnDisconnect(ctx, "agent-z", "conn-z"))
 }
 
-// TestTunnelPublisherConnectsWhileAPIServerIsDown pins that the connect path
-// makes no apiserver call: every Tunnel call fails, the connect still
-// succeeds, and the Tunnel is written once the apiserver is back.
+// TestTunnelPublisherConnectsWhileAPIServerIsDown: connects work with every
+// Tunnel call failing, and the Tunnel is written when the apiserver is back.
 func TestTunnelPublisherConnectsWhileAPIServerIsDown(t *testing.T) {
 	ctx := context.Background()
 	var down atomic.Bool
@@ -544,9 +538,8 @@ func TestTunnelPublisherConnectsWhileAPIServerIsDown(t *testing.T) {
 	require.Equal(t, conn.addresses, got.Status.Addresses)
 }
 
-// TestTunnelPublisherDisconnectBeforeWrite covers a connection that closes
-// before the worker tried its Tunnel: nothing can advertise its addresses, so
-// they go back at once and no apiserver call is made.
+// TestTunnelPublisherDisconnectBeforeWrite: addresses of a connection closed
+// before its Tunnel write go back at once with no apiserver call.
 func TestTunnelPublisherDisconnectBeforeWrite(t *testing.T) {
 	ctx := context.Background()
 	var calls atomic.Int32
@@ -680,11 +673,8 @@ func TestTunnelPublisherReleaseAll(t *testing.T) {
 	require.ErrorIs(t, err, errAllocatorClosed)
 }
 
-// TestLabelValue asserts the agent-instance sanitizer: valid values pass
-// through, over-long clean values are truncated to the same 32-char prefix
-// current agents derive at the source (so labels stay greppable against the
-// raw metric label / container ID during version skew), and only otherwise
-// invalid values are hashed.
+// TestLabelValue: valid values pass, long clean values are cut to 32 chars, and
+// other bad values are hashed.
 func TestLabelValue(t *testing.T) {
 	fullHex := "bf3df5c6a1e2d3c4b5a6978877665544bf3df5c6a1e2d3c4b5a6978877665544" // 64 hex, like a CRI container ID
 	cases := []struct {
@@ -711,11 +701,8 @@ func TestLabelValue(t *testing.T) {
 	require.NotContains(t, h, "/")
 }
 
-// TestTunnelPublisherSharedV4Pool covers the multi-tenant relay shape: one
-// publisher per tenant, every publisher on the same relay and so on the same
-// route table. Slot ids restart at the floor for each network, so two tenants'
-// first connections only get different /32s if the shared leaser hands their
-// slots disjoint /24s.
+// TestTunnelPublisherSharedV4Pool: tenants on one relay get different /32s
+// because the shared leaser gives their slots different /24s.
 func TestTunnelPublisherSharedV4Pool(t *testing.T) {
 	ctx := context.Background()
 	leaser := ipalloc.NewLocalSlotLeaser()
@@ -750,9 +737,8 @@ func TestTunnelPublisherSharedV4Pool(t *testing.T) {
 	require.NotEqual(t, v4a.Addr(), v4b.Addr(), "two tenants were handed the same /32")
 }
 
-// TestTunnelPublisherSlowWriteDoesNotDelayOthers covers parallel Tunnel
-// writes: a create that hangs for one connection must not hold back the
-// Tunnels of other connections, and its ID must not get a second write.
+// TestTunnelPublisherSlowWriteDoesNotDelayOthers: a hung create does not hold
+// back other connections, and its ID gets no second write.
 func TestTunnelPublisherSlowWriteDoesNotDelayOthers(t *testing.T) {
 	ctx := context.Background()
 	slowStarted := make(chan struct{})
@@ -852,4 +838,48 @@ func TestTunnelPublisherLimitsWritesInFlight(t *testing.T) {
 	for _, id := range ids {
 		require.True(t, tunnelExists(t, c, id), "Tunnel %s was not written", id)
 	}
+}
+
+// TestTunnelPublisherAssignAddress: v2 attachments get one /96 each from the
+// held slots, with no apiserver call and no /32.
+func TestTunnelPublisherAssignAddress(t *testing.T) {
+	ctx := context.Background()
+	c := fake.NewClientBuilder().
+		WithScheme(publisherScheme(t)).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Create: func(context.Context, client.WithWatch, client.Object, ...client.CreateOption) error {
+				return apierrors.NewServiceUnavailable("project apiserver is down")
+			},
+		}).
+		Build()
+	p, netID := newPublisherWithClient(t, c)
+
+	seen := make(map[netip.Prefix]bool)
+	releases := make([]func(), 0, 3)
+	for range 3 {
+		v6, release, err := p.AssignAddress(ctx, netID)
+		require.NoError(t, err)
+		require.Equal(t, 96, v6.Bits())
+		require.True(t, tunnet.NetworkPrefix(netID).Contains(v6.Addr()), "address %s is not in the network", v6)
+		require.False(t, seen[v6], "address %s was given twice", v6)
+		seen[v6] = true
+		releases = append(releases, release)
+	}
+
+	// A v1 connection gets the first /32 of the slot.
+	conn := &fakeConn{id: "conn-a", network: "corp"}
+	require.NoError(t, p.OnConnect(ctx, "agent", "agent", conn))
+	require.Len(t, conn.addresses, 2)
+	require.Equal(t, byte(0), netip.MustParsePrefix(conn.addresses[1]).Addr().As4()[3], "v4 = %s", conn.addresses[1])
+
+	// A second release of one /96 must not free another user's /96.
+	releases[0]()
+	releases[0]()
+	again, _, err := p.AssignAddress(ctx, netID)
+	require.NoError(t, err)
+	require.True(t, seen[again], "a freed /96 was not used again")
+	next, _, err := p.AssignAddress(ctx, netID)
+	require.NoError(t, err)
+	require.NotEqual(t, again, next)
+	require.NotEqual(t, conn.overlay, next.String())
 }
