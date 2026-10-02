@@ -24,6 +24,7 @@ type closeTestConn struct {
 	writes  chan struct{}
 
 	reads     atomic.Int32
+	closes    atomic.Int32
 	againOnce sync.Once
 	closeOnce sync.Once
 }
@@ -60,6 +61,7 @@ func (c *closeTestConn) WritePacket([]byte) ([]byte, error) {
 }
 
 func (c *closeTestConn) Close() error {
+	c.closes.Add(1)
 	c.closeOnce.Do(func() { close(c.closed) })
 	return nil
 }
@@ -134,6 +136,64 @@ func TestMuxedConnClose(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.run(t, newMuxedConn())
+		})
+	}
+}
+
+// packetTo returns an IP header with dst as its destination.
+func packetTo(dst netip.Addr) []byte {
+	if dst.Is4() {
+		p := make([]byte, 20)
+		p[0] = 0x45
+		copy(p[16:20], dst.AsSlice())
+		return p
+	}
+	p := make([]byte, 40)
+	p[0] = 0x60
+	copy(p[24:40], dst.AsSlice())
+	return p
+}
+
+// A conn added under more than one prefix has one reader and one sender, and
+// its close removes all of its prefixes.
+func TestMuxedConnOneWrapperForEachConn(t *testing.T) {
+	v6 := netip.MustParsePrefix("2001:db8::/96")
+	v4 := netip.MustParsePrefix("198.51.100.0/24")
+	cases := []struct {
+		name     string
+		prefixes []netip.Prefix
+		closeMux bool
+	}{
+		{name: "v6 and v4 prefix, conn closes", prefixes: []netip.Prefix{v6, v4}},
+		{name: "v6 and v4 prefix, mux closes", prefixes: []netip.Prefix{v6, v4}, closeMux: true},
+		{name: "same prefix two times, mux closes", prefixes: []netip.Prefix{v6, v6}, closeMux: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewDstMuxedConn()
+			t.Cleanup(func() { _ = m.Close() })
+			c := newCloseTestConn()
+			for _, p := range tc.prefixes {
+				require.NoError(t, m.Add(p, c))
+			}
+
+			waitFor(t, c.again, "read")
+			require.Never(t, func() bool { return c.reads.Load() > 1 }, 100*time.Millisecond, 5*time.Millisecond,
+				"more than one reader reads the conn")
+			for _, p := range tc.prefixes {
+				_, err := m.WritePacket(packetTo(p.Addr().Next()))
+				require.NoError(t, err)
+				waitFor(t, c.writes, "write to "+p.String())
+			}
+
+			if tc.closeMux {
+				require.NoError(t, m.Close())
+				require.EqualValues(t, 1, c.closes.Load(), "the mux closed the conn more than one time")
+				return
+			}
+			require.NoError(t, c.Close())
+			require.Eventually(t, func() bool { return len(m.Prefixes()) == 0 }, 5*time.Second, 5*time.Millisecond,
+				"a prefix of the closed conn stayed in the mux")
 		})
 	}
 }

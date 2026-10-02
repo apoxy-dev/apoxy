@@ -26,6 +26,9 @@ type muxedConn struct {
 	incomingPackets  chan *[]byte
 	packetBufferPool sync.Pool
 
+	// wrapped holds the one wrapper of each added conn. Callers give pointer conns.
+	wrapped map[Connection]*asyncSendConn
+
 	// headroom is the number of bytes reserved before packet data in pooled
 	// buffers. This allows callers using readPacketDirect to receive buffers
 	// with pre-allocated headroom (e.g. for TUN transport headers), avoiding
@@ -48,6 +51,7 @@ func newMuxedConn() *muxedConn {
 	return &muxedConn{
 		conns:           iptrie.NewTrie(),
 		prefixes:        make(map[netip.Prefix]Connection),
+		wrapped:         make(map[Connection]*asyncSendConn),
 		incomingPackets: make(chan *[]byte, 10000),
 		headroom:        headroom,
 		done:            make(chan struct{}),
@@ -60,13 +64,13 @@ func newMuxedConn() *muxedConn {
 	}
 }
 
-func (m *muxedConn) readFromConn(src netip.Prefix, conn Connection) {
+func (m *muxedConn) readFromConn(conn Connection, w *asyncSendConn) {
 	for {
 		pkt := m.packetBufferPool.Get().(*[]byte)
 		// Reset the buffer to its full capacity.
 		*pkt = (*pkt)[:cap(*pkt)]
 
-		n, err := conn.ReadPacket((*pkt)[m.headroom:])
+		n, err := w.ReadPacket((*pkt)[m.headroom:])
 		if err != nil {
 			// If the connection is closed, remove it from the multiplexer and quit
 			// the read loop. Otherwise, treat it as transient error and just log it.
@@ -77,19 +81,17 @@ func (m *muxedConn) readFromConn(src netip.Prefix, conn Connection) {
 
 			if isClosedErr {
 				slog.Info("Connection closed, removing from mux",
-					slog.Any("src", src),
+					slog.String("src", w.addr),
 					slog.Any("error", err))
 				metrics.TunnelPacketsReceivedErrors.WithLabelValues("read_closed").Inc()
 
-				m.removeOwned(src, conn)
+				m.removeOwned(conn, w)
 				m.packetBufferPool.Put(pkt)
 
 				// Reclaim the async sender goroutine. The underlying is
 				// already closed (that's what ReadPacket just told us), so
 				// only the sender needs to stop — we must not double-close.
-				if w, ok := conn.(*asyncSendConn); ok {
-					w.shutdownSender()
-				}
+				w.shutdownSender()
 
 				return
 			}
@@ -144,7 +146,7 @@ func (m *muxedConn) Add(addr netip.Prefix, conn Connection) error {
 
 	slog.Info("Adding connection", slog.String("prefix", addr.String()))
 
-	wrapped := newAsyncSendConn(conn, addr.String(), func(icmp []byte) {
+	onICMP := func(icmp []byte) {
 		// ICMP reply (e.g. DatagramTooLarge → "packet too big") from the
 		// underlying WritePacket must be delivered back up to the TUN.
 		// Reuse the inbound path: push into incomingPackets with the same
@@ -166,7 +168,15 @@ func (m *muxedConn) Add(addr netip.Prefix, conn Connection) error {
 			m.packetBufferPool.Put(buf)
 			metrics.TunnelPacketsDropped.WithLabelValues("icmp_queue_full").Inc()
 		}
-	})
+	}
+	// A conn added under more than one prefix (IPv6 and IPv4) gets one reader
+	// and one sender.
+	w := m.wrapped[conn]
+	if w == nil {
+		w = newAsyncSendConn(conn, addr.String(), onICMP)
+		m.wrapped[conn] = w
+		go m.readFromConn(conn, w)
+	}
 
 	// A prefix can already be present: an agent's reconnect (and its parallel
 	// same-server connections) carries the same address assignment, so the
@@ -176,10 +186,8 @@ func (m *muxedConn) Add(addr netip.Prefix, conn Connection) error {
 	if _, exists := m.prefixes[addr]; exists {
 		slog.Info("Replacing connection for prefix", slog.String("prefix", addr.String()))
 	}
-	m.conns.Insert(addr, wrapped)
-	m.prefixes[addr] = wrapped
-
-	go m.readFromConn(addr, wrapped)
+	m.conns.Insert(addr, w)
+	m.prefixes[addr] = w
 
 	return nil
 }
@@ -221,18 +229,22 @@ func (m *muxedConn) Remove(addr netip.Prefix) {
 	delete(m.prefixes, addr)
 }
 
-// removeOwned removes addr only while owner still holds it. A connection that
-// was displaced by a reconnect (see Add) must not evict its replacement when
-// its read loop finally notices the close.
-func (m *muxedConn) removeOwned(addr netip.Prefix, owner Connection) {
+// removeOwned removes each prefix that w still holds, and the wrapper of conn.
+// A connection that was displaced by a reconnect (see Add) must not evict its
+// replacement when its read loop finally notices the close.
+func (m *muxedConn) removeOwned(conn Connection, w *asyncSendConn) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if m.prefixes[addr] != owner {
-		return
+	for addr, owner := range m.prefixes {
+		if owner == w {
+			m.conns.Remove(addr)
+			delete(m.prefixes, addr)
+		}
 	}
-	m.conns.Remove(addr)
-	delete(m.prefixes, addr)
+	if m.wrapped[conn] == w {
+		delete(m.wrapped, conn)
+	}
 }
 
 func (m *muxedConn) Prefixes() []netip.Prefix {
@@ -253,8 +265,13 @@ func (m *muxedConn) Close() error {
 		m.mu.Lock()
 		// Add checks closed under the same lock, so no connection comes in after this.
 		m.closed.Store(true)
-		// Close all connections in the map.
+		// Close all connections in the map, each one time.
+		closed := make(map[Connection]bool, len(m.prefixes))
 		for prefix, conn := range m.prefixes {
+			if closed[conn] {
+				continue
+			}
+			closed[conn] = true
 			slog.Info("Closing underlying connection", slog.String("prefix", prefix.String()))
 			if err := conn.Close(); err != nil {
 				slog.Warn("Failed to close connection",
@@ -268,6 +285,7 @@ func (m *muxedConn) Close() error {
 		// Clear the maps.
 		m.conns = iptrie.NewTrie()
 		m.prefixes = make(map[netip.Prefix]Connection)
+		m.wrapped = make(map[Connection]*asyncSendConn)
 		m.mu.Unlock()
 
 		close(m.done)
