@@ -244,40 +244,39 @@ func TestFirstPacket(t *testing.T) {
 }
 
 // TestNoPeer checks that packets to a destination that no peer session can
-// get drop, and that the sender gets an ICMP error. gVisor gives ICMPv6 code 1
-// to no socket, so the test counts the ICMP errors. Code 3 stops a TCP dial.
+// get drop, and that the sender gets an ICMP error. A TCP dial stops at the
+// ICMPv6 error: code 3 gives no route to host, and code 1 permission denied.
 func TestNoPeer(t *testing.T) {
 	absent := func(attachEvent) netip.Addr { return netip.MustParseAddr("fd61:706f:7879:12:3400:99::1") }
+	peer := func(eb attachEvent) netip.Addr { return eb.addr }
+	deny := func(relay.VPCKey, string, relay.VPCKey, netip.Addr) bool { return false }
 	cases := []struct {
-		name   string
-		dst    func(eb attachEvent) netip.Addr
-		permit relay.Permit
-		dial   bool // A TCP dial in place of a UDP packet.
+		name    string
+		dst     func(eb attachEvent) netip.Addr
+		permit  relay.Permit
+		dialErr string // Not empty: a TCP dial in place of a UDP packet fails with this error.
 	}{
 		{name: "not found", dst: absent},
-		{name: "TCP dial to an absent peer", dst: absent, dial: true},
+		{name: "TCP dial to an absent peer", dst: absent, dialErr: (&tcpip.ErrHostUnreachable{}).String()},
 		{name: "outside the VPC", dst: func(attachEvent) netip.Addr { return netip.MustParseAddr("fd97::1") }},
-		{
-			name:   "denied",
-			dst:    func(eb attachEvent) netip.Addr { return eb.addr },
-			permit: func(relay.VPCKey, string, relay.VPCKey, netip.Addr) bool { return false },
-		},
+		{name: "denied", dst: peer, permit: deny},
+		{name: "TCP dial denied", dst: peer, permit: deny, dialErr: (&tcpip.ErrPermissionDenied{}).String()},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			w := newWorld(t)
 			r := w.relay(t, "relay-1")
-			a, b := w.agent(t, "a", r, agentOptions{tcp: tc.dial}), w.agent(t, "b", r, agentOptions{})
+			a, b := w.agent(t, "a", r, agentOptions{tcp: tc.dialErr != ""}), w.agent(t, "b", r, agentOptions{})
 			ea, eb := a.attached(t), b.attached(t)
 			if tc.permit != nil {
 				r.r.SetPermit(tc.permit)
 			}
-			if tc.dial {
+			if tc.dialErr != "" {
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
 				start := time.Now()
 				_, err := gonet.DialContextTCP(ctx, a.stack, *fullAddr(tc.dst(eb), 9000), ipv6.ProtocolNumber)
-				require.ErrorContains(t, err, (&tcpip.ErrHostUnreachable{}).String())
+				require.ErrorContains(t, err, tc.dialErr)
 				assert.Less(t, time.Since(start), time.Second, "the dial stops at the ICMP error")
 			} else {
 				send(t, a.stack, ea.addr, tc.dst(eb), 9000, "no peer")
