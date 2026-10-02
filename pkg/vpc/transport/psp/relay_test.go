@@ -199,6 +199,8 @@ func TestRelayRekey(t *testing.T) {
 		}, 20*time.Second, time.Millisecond, "round %d: datagrams lost", round)
 	}
 	for _, n := range []*node{a, b} {
+		// The binding counts a packet after the driver gets it, so the count can be late.
+		require.Eventually(t, func() bool { return n.b.Stats().RxPackets >= rounds*perRound }, time.Second, time.Millisecond)
 		st := n.b.Stats()
 		assert.Zero(t, st.RxDrops)
 		assert.Zero(t, st.TxDrops)
