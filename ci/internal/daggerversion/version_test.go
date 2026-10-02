@@ -1,9 +1,11 @@
-// Package daggerversion checks that the CI install of the Dagger CLI matches dagger.json.
+// Package daggerversion checks that the CI install of the Dagger CLI and the
+// CI modules match dagger.json.
 package daggerversion
 
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -53,5 +55,28 @@ func TestSetupDaggerVersion(t *testing.T) {
 	}
 	if !found {
 		t.Error("setup-dagger has no dagger/dagger-for-github step")
+	}
+
+	mods, err := filepath.Glob("../../modules/*/dagger.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mods) == 0 {
+		t.Error("found no ci/modules/*/dagger.json")
+	}
+	for _, p := range mods {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var sub struct {
+			EngineVersion string `json:"engineVersion"`
+		}
+		if err := json.Unmarshal(data, &sub); err != nil {
+			t.Fatalf("%s: %v", p, err)
+		}
+		if sub.EngineVersion != mod.EngineVersion {
+			t.Errorf("%s has engineVersion %q, but dagger.json has %s: make them the same", p, sub.EngineVersion, mod.EngineVersion)
+		}
 	}
 }

@@ -913,7 +913,12 @@ func (m *ApoxyCli) Test(ctx context.Context, src *dagger.Directory) (string, err
 		WithExec([]string{"go", "test", "-race", "-short", "./pkg/net/...", "./pkg/netstack/...", "./pkg/tunnel/..."}).
 		WithWorkdir("/src/ci").
 		// The version check reads files outside the ci module, which the test cache does not follow.
-		WithExec([]string{"go", "test", "-count=1", "./internal/helmrules/...", "./internal/daggerversion/..."}).
+		WithExec([]string{"go", "test", "-count=1", "./internal/helmrules/...", "./internal/daggerversion/...", "./internal/perfsuite/..."}).
+		// The perf modules are Go modules of their own.
+		WithWorkdir("/src/ci/modules/aws").
+		WithExec([]string{"go", "test", "-count=1", "./awsx/..."}).
+		WithWorkdir("/src/ci/modules/perf").
+		WithExec([]string{"go", "test", "-count=1", "./perfspec/..."}).
 		Stdout(ctx)
 }
 

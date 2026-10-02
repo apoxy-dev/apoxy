@@ -1,15 +1,14 @@
 {
-  "name": "apoxy-cli",
+  "name": "perf",
   "engineVersion": "v0.19.10",
   "sdk": {
     "source": "go"
   },
   "dependencies": [
     {
-      "name": "perf",
-      "source": "ci/modules/perf"
+      "name": "aws",
+      "source": "../aws"
     }
   ],
-  "source": "ci",
   "disableDefaultFunctionCaching": true
 }
