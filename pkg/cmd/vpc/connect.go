@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -24,6 +25,7 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/netstack"
 	"github.com/apoxy-dev/apoxy/pkg/socksproxy"
 	tunnelagent "github.com/apoxy-dev/apoxy/pkg/tunnel/agent"
+	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/agent"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/hostcheck"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/identity"
@@ -164,7 +166,7 @@ func runConnect(ctx context.Context, out io.Writer, vpc string, o *connectOption
 	}
 	list := sets.List(relays)
 	cfg.Relay, cfg.Alternates = list[0], list[1:]
-	uc, err := listenUDP(cfg.Relay)
+	uc, err := listenUDP(list)
 	if err != nil {
 		return err
 	}
@@ -178,10 +180,12 @@ func runConnect(ctx context.Context, out io.Writer, vpc string, o *connectOption
 
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
-	h := &hostDevice{ctx: ctx, fail: cancel, out: out, conn: uc, driver: driver, tunName: o.tunIfname, socksAddr: o.socksAddr}
+	h := &hostDevice{ctx: ctx, fail: cancel, out: out, conn: uc, driver: driver, tunName: o.tunIfname, socksAddr: o.socksAddr, routes: cfg.Routes}
 	cfg.OnAttach = h.attach
+	cfg.OnRoutes = h.route
+	h.agent = agent.New(cfg)
 	fmt.Fprintf(out, "Connecting to VPC %q as %q.\n", vpc, cfg.Name)
-	if err := agent.New(cfg).Run(ctx); err != nil {
+	if err := h.agent.Run(ctx); err != nil {
 		return err
 	}
 	if err := context.Cause(ctx); !errors.Is(err, context.Canceled) {
@@ -190,21 +194,45 @@ func runConnect(ctx context.Context, out io.Writer, vpc string, o *connectOption
 	return nil
 }
 
-// listenUDP opens the agent socket in the address family of the relay.
-func listenUDP(relay string) (*net.UDPConn, error) {
-	ra, err := net.ResolveUDPAddr("udp", relay)
+// listenUDP opens the agent socket in the address family of the relays.
+func listenUDP(relays []string) (*net.UDPConn, error) {
+	family, err := socketFamily(relays)
 	if err != nil {
-		return nil, fmt.Errorf("failed to resolve relay %s: %w", relay, err)
-	}
-	family := "udp6"
-	if ra.IP.To4() != nil {
-		family = "udp4"
+		return nil, err
 	}
 	uc, err := net.ListenUDP(family, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open the agent socket: %w", err)
 	}
 	return uc, nil
+}
+
+// socketFamily returns udp4 or udp6 when the relays that resolve use one
+// address family, and udp, a dual-stack socket, when they use both.
+func socketFamily(relays []string) (string, error) {
+	var has4, has6 bool
+	var errs []error
+	for _, r := range relays {
+		ra, err := net.ResolveUDPAddr("udp", r)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if ra.IP.To4() != nil {
+			has4 = true
+		} else {
+			has6 = true
+		}
+	}
+	switch {
+	case has4 && has6:
+		return "udp", nil
+	case has4:
+		return "udp4", nil
+	case has6:
+		return "udp6", nil
+	}
+	return "", fmt.Errorf("failed to resolve the relays: %w", errors.Join(errs...))
 }
 
 // credentialPath is the disk cache of the agent cert.
@@ -216,6 +244,8 @@ func credentialPath(project uuid.UUID, vpc, name string) string {
 type overlay interface {
 	// setAddr moves the device from the old overlay address to addr.
 	setAddr(old, addr netip.Addr) error
+	// route changes the routes of the prefixes of the other attachments.
+	route(add, remove []netip.Prefix)
 }
 
 // hostDevice starts the driver at the first attach. The agent calls attach
@@ -228,6 +258,8 @@ type hostDevice struct {
 	driver    string
 	tunName   string
 	socksAddr string
+	routes    []netip.Prefix // Advertised by this host.
+	agent     *agent.Agent
 
 	dev  overlay
 	addr netip.Addr
@@ -244,11 +276,12 @@ func (h *hostDevice) attach(b *psp.Binding, addr netip.Addr, _ []netip.Prefix) {
 		}
 		return
 	}
+	servers, search := h.agent.DNS()
 	var err error
 	if h.driver == driverTun {
 		h.dev, err = startTun(h.ctx, h.fail, b, h.tunName, addr)
 	} else {
-		h.dev, err = startNetstack(h.ctx, h.fail, b, addr, h.socksAddr)
+		h.dev, err = h.startNetstack(b, addr, &network.ResolveConfig{Nameservers: servers, SearchDomains: search})
 	}
 	if err != nil {
 		h.fail(err)
@@ -259,6 +292,19 @@ func (h *hostDevice) attach(b *psp.Binding, addr netip.Addr, _ []netip.Prefix) {
 		fmt.Fprintf(h.out, "Warning: %s\n  Fix: %s\n", w.Problem, w.Fix)
 	}
 	fmt.Fprintf(h.out, "Connected with address %s, %s driver, device MTU %d.\n", addr, h.driver, b.DeviceMTU())
+	if h.driver == driverTun && len(servers) > 0 {
+		msg := "VPC DNS servers: " + strings.Join(servers, ", ")
+		if len(search) > 0 {
+			msg += "; search domains: " + strings.Join(search, ", ")
+		}
+		fmt.Fprintf(h.out, "%s. The tun driver does not change the host resolver.\n", msg)
+	}
+}
+
+func (h *hostDevice) route(add, remove []netip.Prefix) {
+	if h.dev != nil {
+		h.dev.route(add, remove)
+	}
 }
 
 // netstackDev is the user-space network of the netstack driver.
@@ -267,11 +313,11 @@ type netstackDev struct {
 }
 
 // startNetstack runs the binding on a user-space network. It forwards
-// connections from the VPC to localhost, and serves SOCKS5 on socksAddr.
-func startNetstack(ctx context.Context, fail context.CancelCauseFunc, b *psp.Binding, addr netip.Addr, socksAddr string) (overlay, error) {
+// connections from the VPC, and serves SOCKS5 with the VPC DNS config.
+func (h *hostDevice) startNetstack(b *psp.Binding, addr netip.Addr, dns *network.ResolveConfig) (overlay, error) {
 	var denied []uint16
-	if socksAddr != "" {
-		_, port, err := net.SplitHostPort(socksAddr)
+	if h.socksAddr != "" {
+		_, port, err := net.SplitHostPort(h.socksAddr)
 		if err != nil {
 			return nil, fmt.Errorf("invalid --socks-addr: %w", err)
 		}
@@ -290,8 +336,8 @@ func startNetstack(ctx context.Context, fail context.CancelCauseFunc, b *psp.Bin
 		ns.Close()
 		return nil, err
 	}
-	// Connections from the VPC go to the same port on localhost, except the SOCKS port.
-	if err := ns.ForwardTo(ctx, network.Filtered(&network.FilteredNetworkConfig{DeniedPorts: denied, Upstream: network.Loopback()})); err != nil {
+	fwd := &forwardNetwork{Network: network.Loopback(), host: network.Host(), routes: h.routes}
+	if err := ns.ForwardTo(h.ctx, network.Filtered(&network.FilteredNetworkConfig{DeniedPorts: denied, Upstream: fwd})); err != nil {
 		ns.Close()
 		return nil, err
 	}
@@ -301,20 +347,51 @@ func startNetstack(ctx context.Context, fail context.CancelCauseFunc, b *psp.Bin
 		return nil, err
 	}
 	go func() {
-		if err := d.Run(ctx); err != nil && ctx.Err() == nil {
-			fail(fmt.Errorf("netstack driver failed: %w", err))
+		if err := d.Run(h.ctx); err != nil && h.ctx.Err() == nil {
+			h.fail(fmt.Errorf("netstack driver failed: %w", err))
 		}
 	}()
-	if socksAddr != "" {
-		proxy := socksproxy.NewServer(socksAddr, ns.Network(nil), network.Host())
+	if h.socksAddr != "" {
+		if len(dns.Nameservers) == 0 {
+			dns = nil
+		}
+		proxy := socksproxy.NewServer(h.socksAddr, ns.Network(dns), network.Host())
 		go func() {
-			if err := proxy.ListenAndServe(ctx); err != nil && ctx.Err() == nil {
-				fail(fmt.Errorf("SOCKS proxy failed: %w", err))
+			if err := proxy.ListenAndServe(h.ctx); err != nil && h.ctx.Err() == nil {
+				h.fail(fmt.Errorf("SOCKS proxy failed: %w", err))
 			}
 		}()
 	}
 	return n, nil
 }
+
+// forwardNetwork dials the connections from the VPC. Connections to the
+// routes that this host advertises go to the host network. Others go to the
+// same port on localhost.
+type forwardNetwork struct {
+	network.Network // Loopback.
+	host            network.Network
+	routes          []netip.Prefix
+}
+
+func (n *forwardNetwork) DialContext(ctx context.Context, nw, addr string) (net.Conn, error) {
+	if ap, err := netip.ParseAddrPort(addr); err == nil && n.routed(ap.Addr()) {
+		return n.host.DialContext(ctx, nw, addr)
+	}
+	return n.Network.DialContext(ctx, nw, addr)
+}
+
+// routed reports whether a route covers addr. Overlay addresses go to localhost.
+func (n *forwardNetwork) routed(addr netip.Addr) bool {
+	addr = addr.Unmap()
+	if tunnet.ULAPrefix().Contains(addr) {
+		return false
+	}
+	return slices.ContainsFunc(n.routes, func(p netip.Prefix) bool { return p.Contains(addr) })
+}
+
+// route does nothing. The netstack sends all packets to the binding.
+func (n *netstackDev) route(_, _ []netip.Prefix) {}
 
 func (n *netstackDev) setAddr(old, addr netip.Addr) error {
 	if old.IsValid() {

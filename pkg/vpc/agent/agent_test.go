@@ -4,6 +4,7 @@ package agent
 
 import (
 	"context"
+	"net"
 	"net/netip"
 	"sync"
 	"testing"
@@ -172,6 +173,42 @@ func TestTransportModes(t *testing.T) {
 			// When b leaves, a closes its peer session.
 			b.stop()
 			require.Eventually(t, func() bool { return peerCount(a.a) == 0 }, 5*time.Second, 10*time.Millisecond)
+		})
+	}
+}
+
+// TestDualStackSocket sends UDP both ways when one agent has a dual-stack
+// socket and the relay is on IPv4.
+func TestDualStackSocket(t *testing.T) {
+	cases := []struct {
+		name string
+		mode TransportMode
+		want dp.Mode
+	}{
+		{name: "PSP", mode: TransportPSP, want: dp.Mode_MODE_PSP},
+		{name: "QUIC", mode: TransportQUIC, want: dp.Mode_MODE_QUIC},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			udp, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv6unspecified})
+			if err != nil {
+				t.Skipf("no dual-stack socket: %v", err)
+			}
+			w := newWorld(t)
+			r := w.relay(t, "relay-1")
+			a, b := w.agent(t, "a", r, agentOptions{mode: tc.mode, udp: udp}), w.agent(t, "b", r, agentOptions{mode: TransportPSP})
+			ea, eb := a.attached(t), b.attached(t)
+			assert.Equal(t, tc.want, a.a.Status().Mode)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			require.NoError(t, a.a.Connect(ctx, eb.addr))
+			require.NoError(t, b.a.Connect(ctx, ea.addr))
+			echo(t, b.stack, eb.addr, 9000)
+			echo(t, a.stack, ea.addr, 9001)
+			ping(t, a.stack, ea.addr, eb.addr, 9000, "from a")
+			ping(t, b.stack, eb.addr, ea.addr, 9001, "from b")
+			assert.Zero(t, a.binding().Stats().TxDrops)
 		})
 	}
 }

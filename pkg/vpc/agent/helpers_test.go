@@ -12,12 +12,14 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"maps"
 	"math/big"
 	"net"
 	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -141,13 +143,16 @@ func (f *fakeTrust) Revoked(string, string) ([]vpcv1alpha1.RevokedAgent, error) 
 	return f.revoked, nil
 }
 
-type fakeNetworks struct{ mtu uint32 }
+type fakeNetworks struct {
+	mtu         uint32
+	dns, search []string
+}
 
 func (f fakeNetworks) Network(project, uid string) (relay.Network, error) {
 	if project != testProject || uid != testVPC {
 		return relay.Network{}, fmt.Errorf("unknown VPC %s/%s", project, uid)
 	}
-	return relay.Network{ID: testVNI, MTU: f.mtu}, nil
+	return relay.Network{ID: testVNI, MTU: f.mtu, DNSServers: f.dns, DNSSearchDomains: f.search}, nil
 }
 
 // fakeAddresses gives each attachment the next fd00:<n>::/96 and counts the
@@ -191,6 +196,7 @@ type world struct {
 	trust            *fakeTrust
 	addrs            *fakeAddresses
 	mtu              uint32 // VPC MTU of the relays.
+	dns, search      []string
 }
 
 // rotateAgentCA makes a new agent CA for enrolls and relays.
@@ -248,7 +254,7 @@ func (w *world) relayOn(t testing.TB, id string, udp *net.UDPConn) *testRelay {
 	ln, err := tr.Listen(r.TLSConfig(&tls.Config{Certificates: []tls.Certificate{*cert}}), &quic.Config{EnableDatagrams: true})
 	require.NoError(t, err)
 	srv := &relay.Server{
-		R: r, Networks: fakeNetworks{mtu: w.mtu}, Addresses: w.addrs, RelayID: id,
+		R: r, Networks: fakeNetworks{mtu: w.mtu, dns: w.dns, search: w.search}, Addresses: w.addrs, RelayID: id,
 		Cert: func() (*tls.Certificate, error) { return cert, nil },
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -281,15 +287,19 @@ type testAgent struct {
 
 	stackOnce sync.Once
 	stack     *stack.Stack
+
+	routesMu sync.Mutex
+	routes   map[netip.Prefix]bool // From OnRoutes.
 }
 
 type agentOptions struct {
-	life time.Duration // Cert life. Zero means 24 hours.
-	mtu  int           // Config.MTU.
-	conn *lossyConn    // Wraps the agent socket if set.
-	mode TransportMode
-	udp  *net.UDPConn // Agent socket. Nil means a new socket on loopback.
-	tcp  bool         // Adds TCP to the netstack.
+	life   time.Duration // Cert life. Zero means 24 hours.
+	mtu    int           // Config.MTU.
+	conn   *lossyConn    // Wraps the agent socket if set.
+	mode   TransportMode
+	udp    *net.UDPConn // Agent socket. Nil means a new socket on loopback.
+	tcp    bool         // Adds TCP to the netstack.
+	routes []netip.Prefix
 
 	first    string // Config.Relay, with the relay as the alternate.
 	noRoots  bool   // No relay roots, so the system roots.
@@ -334,7 +344,7 @@ func (w *world) agent(t *testing.T, name string, r *testRelay, opts agentOptions
 		opts.conn.PacketConn = udp
 		conn = opts.conn
 	}
-	ta := &testAgent{tr: &quic.Transport{Conn: conn}, attach: make(chan attachEvent, 16), done: make(chan struct{})}
+	ta := &testAgent{tr: &quic.Transport{Conn: conn}, attach: make(chan attachEvent, 16), done: make(chan struct{}), routes: map[netip.Prefix]bool{}}
 	enroll := func(context.Context) (*identity.Credential, error) {
 		ta.enrolls.Add(1)
 		return w.enrollCA().credential(t, testProject, testVPC, name, opts.life), nil
@@ -348,10 +358,27 @@ func (w *world) agent(t *testing.T, name string, r *testRelay, opts agentOptions
 		Transport:          ta.tr,
 		TransportMode:      opts.mode,
 		Name:               name,
+		Routes:             opts.routes,
 		MTU:                opts.mtu,
 		OnAttach: func(b *psp.Binding, addr netip.Addr, prefixes []netip.Prefix) {
 			ta.netstack(t, b, addr, opts.tcp)
 			ta.attach <- attachEvent{addr, prefixes}
+		},
+		OnRoutes: func(add, remove []netip.Prefix) {
+			ta.routesMu.Lock()
+			defer ta.routesMu.Unlock()
+			for _, p := range remove {
+				if !ta.routes[p] {
+					t.Errorf("agent %s: OnRoutes removes %s, which it does not have", name, p)
+				}
+				delete(ta.routes, p)
+			}
+			for _, p := range add {
+				if ta.routes[p] {
+					t.Errorf("agent %s: OnRoutes adds %s again", name, p)
+				}
+				ta.routes[p] = true
+			}
 		},
 	}
 	if opts.first != "" {
@@ -394,6 +421,13 @@ func (ta *testAgent) reconnect() {
 	rc := ta.a.rc
 	ta.a.mu.Unlock()
 	_ = rc.qc.CloseWithError(0, "next session")
+}
+
+// routeSet returns the prefixes that OnRoutes gave.
+func (ta *testAgent) routeSet() []netip.Prefix {
+	ta.routesMu.Lock()
+	defer ta.routesMu.Unlock()
+	return slices.Collect(maps.Keys(ta.routes))
 }
 
 // attached waits for the next OnAttach call.

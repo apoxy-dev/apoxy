@@ -103,6 +103,9 @@ type Config struct {
 	// OnAttach gets the binding, the overlay address and the prefixes after
 	// each attach.
 	OnAttach func(b *psp.Binding, addr netip.Addr, prefixes []netip.Prefix)
+	// OnRoutes gets the changes to the prefixes of the other attachments in
+	// the VPC, after OnAttach. The agent calls it from one goroutine at a time.
+	OnRoutes func(add, remove []netip.Prefix)
 	// MTU sets the device MTU, from 1280 to the VPC MTU, with no path probe.
 	// Zero means the VPC MTU if the path to the relay carries it, else 1280.
 	MTU int
@@ -121,6 +124,10 @@ type Agent struct {
 	bind     *psp.Binding
 	peers    map[*rpc.Conn]*peer
 	admitted chan struct{} // Closed and replaced when a peer session opens.
+
+	routeMu  sync.Mutex
+	routesOf *relayConn            // Session that OnRoutes follows.
+	reported map[netip.Prefix]bool // Prefixes that OnRoutes has.
 }
 
 // New returns an agent. Call Run to start it.
@@ -223,6 +230,17 @@ func (a *Agent) use(rc *relayConn) {
 	if a.cfg.OnAttach != nil {
 		a.cfg.OnAttach(b, rc.self, rc.prefixes)
 	}
+	a.useRoutes(rc)
+}
+
+// DNS returns the DNS servers and search domains of the VPC.
+func (a *Agent) DNS() (servers, search []string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.rc == nil {
+		return nil, nil
+	}
+	return a.rc.dnsServers, a.rc.dnsSearch
 }
 
 // Status is the data transport of the current attachment.
@@ -358,6 +376,9 @@ type relayConn struct {
 	claims    *dp.GrantClaims
 	prefixes  []netip.Prefix
 	self      netip.Addr // Overlay address of this agent.
+	routes    routeTable // Guarded by Agent.routeMu.
+
+	dnsServers, dnsSearch []string
 
 	// relay is the relay as a peer of the binding. Packets for QUIC-mode peers
 	// go to it, sealed with the SAs that the relay gives in PSP mode.
@@ -477,6 +498,7 @@ func (rc *relayConn) start(ctx context.Context, begin time.Time) error {
 		return err
 	}
 	rc.ref, rc.mtu = cfg.GetVpc(), cfg.GetMtu()
+	rc.dnsServers, rc.dnsSearch = cfg.GetDnsServers(), cfg.GetDnsSearchDomains()
 	// The path probe runs while the relay attaches. QUIC mode sends no PSP.
 	pathMTU := 0
 	if rc.mode == dp.Mode_MODE_PSP {
@@ -574,6 +596,7 @@ func (rc *relayConn) sync() {
 		}
 		switch m := m.GetMsg().(type) {
 		case *dp.SessionResponse_RouteDelta:
+			rc.a.applyRoutes(rc, m.RouteDelta)
 			rc.a.removeRoutes(rc, m.RouteDelta.GetRemove())
 			if err := rc.st.Send(&dp.SessionRequest{Msg: &dp.SessionRequest_Ack{Ack: &dp.Ack{Rev: m.RouteDelta.GetRev()}}}); err != nil {
 				return

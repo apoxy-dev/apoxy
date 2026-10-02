@@ -14,42 +14,46 @@ import (
 	"gvisor.dev/gvisor/pkg/waiter"
 
 	"github.com/apoxy-dev/apoxy/pkg/net/splice"
+	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 )
 
-// ProtocolHandler is a function that handles packets for a specific protocol.
+// ProtocolHandler handles the packets of one transport protocol.
 type ProtocolHandler func(stack.TransportEndpointID, *stack.PacketBuffer) bool
 
 // TCPForwarder forwards TCP connections to an upstream network.
 func TCPForwarder(ctx context.Context, ipstack *stack.Stack, upstream network.Network) ProtocolHandler {
 	tcpForwarder := tcp.NewForwarder(
 		ipstack,
-		0,     /* rcvWnd (0 - default) */
-		65535, /* maxInFlight */
+		0,     // Receive window. Zero is the default.
+		65535, // Most handshakes in progress.
 		tcpHandler(ctx, upstream),
 	)
 
 	return tcpForwarder.HandlePacket
 }
 
-// Unmap4in6 converts an IPv6 address to an IPv4 address if it is an IPv4-mapped IPv6 address.
-// If the address is not an IPv4-mapped IPv6 address, it is returned unchanged.
-// If the IPv4 address is zero, returns 127.0.0.1.
-// It is following /96 embedding scheme from RFC 6052 (https://datatracker.ietf.org/doc/html/rfc6052#section-2.2).
+var (
+	// nat64Prefix is the well-known prefix of RFC 6052.
+	nat64Prefix = netip.MustParsePrefix("64:ff9b::/96")
+	// attachmentHost is the last 32 bits of a VPC attachment address, ::1 in its /96.
+	attachmentHost = netip.AddrFrom4([4]byte{0, 0, 0, 1})
+)
+
+// Unmap4in6 returns the IPv4 address in an IPv4-mapped address or in a NAT64 or
+// overlay ULA /96 (RFC 6052). It keeps other addresses and VPC attachment addresses.
 func Unmap4in6(addr netip.Addr) netip.Addr {
 	if !addr.Is6() {
 		return addr
 	}
-	b16 := addr.As16()
-	v4addr := netip.AddrFrom4([4]byte{
-		b16[12],
-		b16[13],
-		b16[14],
-		b16[15],
-	})
-	if !v4addr.IsValid() {
-		return netip.AddrFrom4([4]byte{127, 0, 0, 1})
+	b := addr.As16()
+	v4 := netip.AddrFrom4([4]byte(b[12:]))
+	switch {
+	case addr.Is4In6(), nat64Prefix.Contains(addr):
+		return v4
+	case tunnet.ULAPrefix().Contains(addr) && v4 != attachmentHost:
+		return v4
 	}
-	return v4addr
+	return addr
 }
 
 func tcpHandler(ctx context.Context, upstream network.Network) func(req *tcp.ForwarderRequest) {
@@ -74,9 +78,7 @@ func tcpHandler(ctx context.Context, upstream network.Network) func(req *tcp.For
 			ctx, cancel := context.WithCancel(ctx)
 			defer cancel()
 
-			// Check policy and connect upstream before completing the virtual TCP
-			// handshake. A denied or unavailable destination then resets the SYN
-			// instead of presenting a connection that stalls after it opens.
+			// Dial before the handshake completes, so that a failed dial resets the SYN.
 			remote, err := upstream.DialContext(ctx, "tcp", dstAddrPort.String())
 			if err != nil {
 				logger.Warn("Failed to dial destination", slog.Any("error", err))
@@ -114,7 +116,7 @@ func tcpHandler(ctx context.Context, upstream network.Network) func(req *tcp.For
 
 			// Disable Nagle's algorithm.
 			ep.SocketOptions().SetDelayOption(false)
-			// Enable keep-alive to make detecting dead connections easier.
+			// Keep-alive finds dead connections.
 			ep.SocketOptions().SetKeepAlive(true)
 
 			local := gonet.NewTCPConn(&wq, ep)

@@ -3,6 +3,7 @@ package vpc
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/netip"
 	"os"
@@ -28,7 +29,9 @@ func tunAvailable() bool {
 
 // tunDev is the kernel TUN device of the tun driver.
 type tunDev struct {
-	link netlink.Link
+	link   netlink.Link
+	vpc    netip.Prefix          // VPC network, with one route.
+	routes map[netip.Prefix]bool // Kernel routes that route added.
 }
 
 // startTun makes the TUN device with its offloads, routes the VPC network to
@@ -38,7 +41,7 @@ func startTun(ctx context.Context, fail context.CancelCauseFunc, b *psp.Binding,
 	if err != nil {
 		return nil, fmt.Errorf("failed to create TUN device %s: %w", name, err)
 	}
-	t := &tunDev{}
+	t := &tunDev{routes: map[netip.Prefix]bool{}}
 	t.link, err = netlink.LinkByName(name)
 	if err == nil {
 		err = t.setAddr(netip.Addr{}, addr)
@@ -51,7 +54,8 @@ func startTun(ctx context.Context, fail context.CancelCauseFunc, b *psp.Binding,
 		err = netlink.LinkSetUp(t.link)
 	}
 	if err == nil && addr.Is6() {
-		err = netlink.RouteAdd(&netlink.Route{LinkIndex: t.link.Attrs().Index, Dst: ipNet(tunnet.NetworkPrefixOf(addr))})
+		t.vpc = tunnet.NetworkPrefixOf(addr)
+		err = netlink.RouteAdd(&netlink.Route{LinkIndex: t.link.Attrs().Index, Dst: ipNet(t.vpc)})
 	}
 	if err != nil {
 		_ = dev.Close()
@@ -77,6 +81,30 @@ func (t *tunDev) setAddr(old, addr netip.Addr) error {
 		}
 	}
 	return netlink.AddrAdd(t.link, &netlink.Addr{IPNet: ipNet(netip.PrefixFrom(addr, addr.BitLen())), Flags: unix.IFA_F_NODAD})
+}
+
+// route adds and removes the kernel routes of the prefixes of the other
+// attachments. It skips default routes and prefixes in the VPC network.
+func (t *tunDev) route(add, remove []netip.Prefix) {
+	for _, p := range remove {
+		if !t.routes[p] {
+			continue
+		}
+		delete(t.routes, p)
+		if err := netlink.RouteDel(&netlink.Route{LinkIndex: t.link.Attrs().Index, Dst: ipNet(p)}); err != nil {
+			slog.Warn("Failed to remove a VPC route", "prefix", p, "error", err)
+		}
+	}
+	for _, p := range add {
+		if p.Bits() == 0 || t.routes[p] || (t.vpc.IsValid() && t.vpc.Bits() <= p.Bits() && t.vpc.Contains(p.Addr())) {
+			continue
+		}
+		if err := netlink.RouteAdd(&netlink.Route{LinkIndex: t.link.Attrs().Index, Dst: ipNet(p)}); err != nil {
+			slog.Warn("Failed to add a VPC route", "prefix", p, "error", err)
+			continue
+		}
+		t.routes[p] = true
+	}
 }
 
 func ipNet(p netip.Prefix) *net.IPNet {
