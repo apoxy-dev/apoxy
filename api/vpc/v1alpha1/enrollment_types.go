@@ -29,6 +29,24 @@ type AgentEnrollmentStatus struct {
 	// NotAfter of the cert.
 	// +optional
 	ExpiresAt metav1.Time `json:"expiresAt,omitzero"`
+
+	// Ready relays that serve the VPC.
+	// +optional
+	Relays []EnrollmentRelay `json:"relays,omitempty"`
+
+	// PEM CA certs that relay certs and relay grants chain to. Empty means
+	// the system roots.
+	// +optional
+	RelayRoots string `json:"relayRoots,omitempty"`
+}
+
+// EnrollmentRelay is one relay that an agent can dial.
+type EnrollmentRelay struct {
+	// Name in the relay cert. Grants of the relay carry it as the relay ID.
+	ID string `json:"id"`
+
+	// Underlay host:port addresses of the relay.
+	Addresses []string `json:"addresses"`
 }
 
 // +kubebuilder:object:root=true

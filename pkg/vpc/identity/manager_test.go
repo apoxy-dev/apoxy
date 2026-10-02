@@ -25,8 +25,19 @@ func (f *fakeEnroller) enroll(context.Context) (*Credential, error) {
 	if f.fail {
 		return nil, errors.New("apiserver is down")
 	}
-	key := newKey(f.t)
-	return NewCredential(key, certPEM(f.ca.issue(f.t, &key.PublicKey, testID, f.clock())), f.ca.pem)
+	return issueWithRelays(f.t, f.ca, f.clock(), testRelays)
+}
+
+var testRelays = []Relay{{ID: "relay-1.example.com", Addresses: []string{"relay-1.example.com:443"}}}
+
+// issueWithRelays issues a credential with NotBefore notBefore and relays.
+func issueWithRelays(t *testing.T, ca *testCA, notBefore time.Time, relays []Relay) (*Credential, error) {
+	key := newKey(t)
+	c, err := NewCredential(key, certPEM(ca.issue(t, &key.PublicKey, testID, notBefore)), ca.pem)
+	if err != nil {
+		return nil, err
+	}
+	return c, c.SetRelays(relays, ca.pem)
 }
 
 func TestManagerStart(t *testing.T) {
@@ -34,12 +45,20 @@ func TestManagerStart(t *testing.T) {
 	cases := []struct {
 		name       string
 		cachedAt   time.Duration // cert NotBefore relative to now; zero means no cache
+		noRelays   bool          // The cached cert has no relays.
+		down       bool          // Enroll fails.
 		wantEnroll bool
+		wantCached bool // Start keeps the cached cert.
+		wantErr    bool
 	}{
 		{name: "no cache", wantEnroll: true},
-		{name: "fresh cache", cachedAt: -time.Hour},
+		{name: "fresh cache", cachedAt: -time.Hour, wantCached: true},
+		{name: "cache with no relays", cachedAt: -time.Hour, noRelays: true, wantEnroll: true},
 		{name: "cache past renew time", cachedAt: -17 * time.Hour, wantEnroll: true},
 		{name: "expired cache", cachedAt: -25 * time.Hour, wantEnroll: true},
+		{name: "cache past renew time, apiserver down", cachedAt: -17 * time.Hour, down: true, wantEnroll: true, wantCached: true},
+		{name: "expired cache, apiserver down", cachedAt: -25 * time.Hour, down: true, wantEnroll: true, wantErr: true},
+		{name: "no cache, apiserver down", down: true, wantEnroll: true, wantErr: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -47,24 +66,39 @@ func TestManagerStart(t *testing.T) {
 			now := func() time.Time { return testNow }
 			var cached *Credential
 			if tc.cachedAt != 0 {
-				key := newKey(t)
+				relays := testRelays
+				if tc.noRelays {
+					relays = nil
+				}
 				var err error
-				cached, err = NewCredential(key, certPEM(ca.issue(t, &key.PublicKey, testID, testNow.Add(tc.cachedAt))), ca.pem)
+				cached, err = issueWithRelays(t, ca, testNow.Add(tc.cachedAt), relays)
 				require.NoError(t, err)
 				require.NoError(t, SaveCredential(path, cached))
 			}
-			f := &fakeEnroller{t: t, ca: ca, clock: now}
+			f := &fakeEnroller{t: t, ca: ca, clock: now, fail: tc.down}
 			m := NewManager(path, f.enroll, WithClock(now, time.After))
-			require.NoError(t, m.Start(context.Background()))
-
+			err := m.Start(context.Background())
+			if tc.wantEnroll {
+				assert.Equal(t, 1, f.calls)
+			} else {
+				assert.Equal(t, 0, f.calls)
+			}
+			if tc.wantErr {
+				assert.Error(t, err)
+				assert.Nil(t, m.Current())
+				return
+			}
+			require.NoError(t, err)
 			cur := m.Current()
 			require.NotNil(t, cur)
-			if !tc.wantEnroll {
-				assert.Equal(t, 0, f.calls)
+			assert.Equal(t, testRelays, cur.Relays)
+			// A second Start keeps the credential and does not enroll.
+			require.NoError(t, m.Start(context.Background()))
+			assert.Same(t, cur, m.Current())
+			if tc.wantCached {
 				assert.Equal(t, cached.Cert.Raw, cur.Cert.Raw)
 				return
 			}
-			assert.Equal(t, 1, f.calls)
 			onDisk, err := LoadCredential(path)
 			require.NoError(t, err)
 			assert.Equal(t, cur.Cert.Raw, onDisk.Cert.Raw)

@@ -44,7 +44,7 @@ func TestKeepShards(t *testing.T) {
 	require.Eventually(t, live, 10*time.Second, 10*time.Millisecond)
 
 	// A join for another attachment fails.
-	bad := &relayConn{a: rc.a, qc: rc.qc, cred: rc.cred, name: rc.name, claims: &dp.GrantClaims{AttachmentId: "0123"}}
+	bad := &relayConn{a: rc.a, qc: rc.qc, cred: rc.cred, name: rc.name, roots: rc.roots, claims: &dp.GrantClaims{AttachmentId: "0123"}}
 	_, err = bad.dialShard(ctx, 1)
 	assert.Equal(t, rpc.NotFound, rpc.CodeOf(err), "error: %v", err)
 

@@ -29,12 +29,15 @@ func TestSessionMetrics(t *testing.T) {
 		name   string
 		mode   dp.Mode
 		reason dp.FallbackReason
+		spare  bool
 		labels []string // Labels of the session counter.
 	}{
 		{name: "PSP", mode: dp.Mode_MODE_PSP, labels: []string{"psp", "none"}},
 		{name: "QUIC from the config", mode: dp.Mode_MODE_QUIC, reason: dp.FallbackReason_FALLBACK_REASON_CONFIG, labels: []string{"quic", "config"}},
 		{name: "QUIC after a probe timeout", mode: dp.Mode_MODE_QUIC, reason: dp.FallbackReason_FALLBACK_REASON_PROBE_TIMEOUT, labels: []string{"quic", "probe_timeout"}},
 		{name: "unknown reason", mode: dp.Mode_MODE_QUIC, reason: dp.FallbackReason(9), labels: []string{"quic", "unknown"}},
+		{name: "spare in PSP", mode: dp.Mode_MODE_PSP, spare: true, labels: []string{"psp", "spare"}},
+		{name: "spare in QUIC", mode: dp.Mode_MODE_QUIC, reason: dp.FallbackReason_FALLBACK_REASON_PROBE_TIMEOUT, spare: true, labels: []string{"quic", "spare"}},
 	}
 	ca := newCA(t)
 	h := newHarness(t, ca)
@@ -46,7 +49,7 @@ func TestSessionMetrics(t *testing.T) {
 			a := h.mustDial(t, ca.agentCert(t, vpcA, "laptop"))
 			st, err := a.c.Session(context.Background())
 			require.NoError(t, err)
-			require.NoError(t, st.Send(&dp.SessionRequest{Msg: &dp.SessionRequest_Hello{Hello: &dp.Hello{Mode: tc.mode, FallbackReason: tc.reason}}}))
+			require.NoError(t, st.Send(&dp.SessionRequest{Msg: &dp.SessionRequest_Hello{Hello: &dp.Hello{Mode: tc.mode, FallbackReason: tc.reason, Spare: tc.spare}}}))
 			for _, want := range []string{"Welcome", "Config"} {
 				m, err := st.Recv()
 				require.NoError(t, err)

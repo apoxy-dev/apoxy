@@ -8,12 +8,12 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/sets"
 
 	vpcv1alpha1 "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1"
 	vpcclient "github.com/apoxy-dev/apoxy/client/versioned/typed/vpc/v1alpha1"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/randalloc"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/discovery"
 )
 
 // NewRelayLister returns a Config.RelayLister that re-fetches the VPCNetwork
@@ -29,39 +29,6 @@ func NewRelayLister(vpc vpcclient.VpcV1alpha1Interface, networkName string) func
 	}
 }
 
-// MatchingRelays filters relays to the ready ones whose network selector
-// matches the given network. A relay with a nil selector serves all networks
-// (per RelaySpec). This is THE definition of "which relays serve a network" —
-// both agent-side discovery (DiscoverRelays) and in-shard consumers that dial
-// relays by other addresses (e.g. the backplane VTEP resolving underlay
-// endpoints) must go through it so their views never diverge.
-func MatchingRelays(relays []vpcv1alpha1.Relay, network *vpcv1alpha1.VPCNetwork) []*vpcv1alpha1.Relay {
-	var out []*vpcv1alpha1.Relay
-	for i := range relays {
-		relay := &relays[i]
-		if !relay.Status.Ready {
-			continue
-		}
-		if relay.Spec.NetworkSelector != nil {
-			sel, err := metav1.LabelSelectorAsSelector(relay.Spec.NetworkSelector)
-			if err != nil {
-				// One malformed Relay object must not poison discovery for the
-				// whole fleet: failing the list here would freeze every agent's
-				// pool refresh until the bad object is deleted.
-				slog.Warn("Skipping relay with an invalid network selector",
-					slog.String("relay", relay.Name),
-					slog.Any("error", err))
-				continue
-			}
-			if !sel.Matches(labels.Set(network.Labels)) {
-				continue
-			}
-		}
-		out = append(out, relay)
-	}
-	return out
-}
-
 // DiscoverRelays lists ready relays whose network selector matches the given
 // network and returns their dialable underlay addresses.
 func DiscoverRelays(ctx context.Context, vpc vpcclient.VpcV1alpha1Interface, network *vpcv1alpha1.VPCNetwork) (sets.Set[string], error) {
@@ -70,7 +37,7 @@ func DiscoverRelays(ctx context.Context, vpc vpcclient.VpcV1alpha1Interface, net
 		return nil, fmt.Errorf("listing relays: %w", err)
 	}
 	addrs := sets.New[string]()
-	for _, relay := range MatchingRelays(relays.Items, network) {
+	for _, relay := range discovery.MatchingRelays(relays.Items, network) {
 		for _, a := range relay.Spec.Addresses {
 			if a = strings.TrimSpace(a); a != "" {
 				addrs.Insert(a)

@@ -47,6 +47,38 @@ func TestNewCredential(t *testing.T) {
 	}
 }
 
+func TestSetRelays(t *testing.T) {
+	ca := newTestCA(t, "ca")
+	key := newKey(t)
+	leaf := certPEM(ca.issue(t, &key.PublicKey, testID, testNow))
+	cases := []struct {
+		name     string
+		roots    []byte
+		wantPool bool
+		wantErr  bool
+	}{
+		{name: "roots", roots: ca.pem, wantPool: true},
+		{name: "no roots means the system roots"},
+		{name: "roots are a leaf", roots: leaf, wantErr: true},
+		{name: "roots are not PEM", roots: []byte("junk"), wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, err := NewCredential(key, leaf, ca.pem)
+			require.NoError(t, err)
+			err = c.SetRelays(testRelays, tc.roots)
+			if tc.wantErr {
+				assert.Error(t, err)
+				assert.Empty(t, c.Relays)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, testRelays, c.Relays)
+			assert.Equal(t, tc.wantPool, c.RelayPool() != nil)
+		})
+	}
+}
+
 func TestSaveLoadCredential(t *testing.T) {
 	ca := newTestCA(t, "ca")
 	path := filepath.Join(t.TempDir(), "agents", "laptop.json")
@@ -58,6 +90,10 @@ func TestSaveLoadCredential(t *testing.T) {
 		key := newKey(t)
 		c, err := NewCredential(key, certPEM(ca.issue(t, &key.PublicKey, testID, testNow.Add(time.Duration(i)*time.Hour))), ca.pem)
 		require.NoError(t, err)
+		// The second file has no relays and no roots.
+		if i == 0 {
+			require.NoError(t, c.SetRelays(testRelays, ca.pem))
+		}
 		require.NoError(t, SaveCredential(path, c))
 
 		got, err := LoadCredential(path)
@@ -65,6 +101,9 @@ func TestSaveLoadCredential(t *testing.T) {
 		assert.True(t, got.Key.Equal(c.Key))
 		assert.Equal(t, c.Cert.Raw, got.Cert.Raw)
 		assert.Equal(t, c.CABundle, got.CABundle)
+		assert.Equal(t, c.Relays, got.Relays)
+		assert.Equal(t, c.RelayRoots, got.RelayRoots)
+		assert.Equal(t, i == 0, got.RelayPool() != nil)
 
 		st, err := os.Stat(path)
 		require.NoError(t, err)

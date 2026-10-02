@@ -14,9 +14,9 @@ import (
 	vpcv1alpha1 "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1"
 )
 
-// Enroll makes a new P-256 key and gets a cert for agent in the VPCNetwork
-// named vpc. c is the vpc.apoxy.dev REST client of the project apiserver,
-// for example clientset.VpcV1alpha1().RESTClient().
+// Enroll makes a new P-256 key and gets a cert and the relays for agent in
+// the VPCNetwork named vpc. c is the vpc.apoxy.dev REST client of the project
+// apiserver, for example clientset.VpcV1alpha1().RESTClient().
 func Enroll(ctx context.Context, c rest.Interface, vpc, agent string) (*Credential, error) {
 	if err := ValidateAgentName(agent); err != nil {
 		return nil, err
@@ -52,6 +52,13 @@ func Enroll(ctx context.Context, c rest.Interface, vpc, agent string) (*Credenti
 	}
 	if cred.ID.Agent != agent {
 		return nil, fmt.Errorf("enroll returned a cert for agent %q, not %q", cred.ID.Agent, agent)
+	}
+	relays := make([]Relay, 0, len(resp.Status.Relays))
+	for _, r := range resp.Status.Relays {
+		relays = append(relays, Relay{ID: r.ID, Addresses: r.Addresses})
+	}
+	if err := cred.SetRelays(relays, []byte(resp.Status.RelayRoots)); err != nil {
+		return nil, fmt.Errorf("enroll returned bad relay roots: %w", err)
 	}
 	return cred, nil
 }

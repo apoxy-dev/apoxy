@@ -8,12 +8,12 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"hash/maphash"
 	"log/slog"
 	"math/rand/v2"
 	"net"
 	"net/netip"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/apoxy-dev/softpsp/keys"
@@ -76,21 +76,16 @@ const (
 )
 
 type Config struct {
-	// Identity keeps the agent cert. Run starts it.
+	// Identity keeps the agent cert and the relays from enroll. Run starts it.
 	Identity *identity.Manager
-	// Relay is the address of the relay, host:port.
-	Relay string
-	// Alternates are more relay addresses. When an open fails, the agent
-	// dials the next address, and after the last one it dials Relay again.
-	Alternates []string
-	// RelayID is the DNS name of the relay cert. Empty means the host in the
-	// relay address.
-	RelayID string
-	// RelayRoots check relay certs and peer grants. Nil means the system roots.
+	// Relays are the relays to dial, in place of the relays of the agent cert.
+	Relays []identity.Relay
+	// RelayRoots check relay certs and peer grants, in place of the roots of
+	// the agent cert. With neither, the agent uses the system roots.
 	RelayRoots *x509.CertPool
-	// InsecureSkipVerify does not check relay certs, and checks grants with
-	// the cert that the relay shows. Use it only with dev relays.
-	InsecureSkipVerify bool
+	// Sessions is the number of relay sessions to keep, 1 to 3. One holds the
+	// attachment and the others are spares on other relays. Zero means 2.
+	Sessions int
 	// Transport is the agent socket for the relay sessions and PSP. New sets
 	// its NonQUICPacketHandler and NonQUICBatchEnd, so it must not be in use yet.
 	Transport *quic.Transport
@@ -111,18 +106,27 @@ type Config struct {
 	MTU int
 }
 
-// Agent keeps a relay session for one VPC and runs the peer sessions on it.
+// Agent keeps an attached relay session and spare sessions for one VPC, and
+// runs the peer sessions on the attached one.
 type Agent struct {
-	cfg      Config
-	instance uint64
-	mux      *rpc.Mux // Peer service.
-	demux    psp.Demux
-	probing  atomic.Pointer[pathProbe]
-	holds    holds
+	cfg       Config
+	instance  uint64
+	seed      maphash.Seed // Orders the relays of this agent.
+	mux       *rpc.Mux     // Peer service.
+	demux     psp.Demux
+	spareWake chan struct{}
+	holds     holds
+
+	probeMu sync.Mutex
+	probes  map[[8]byte]*pathProbe // Path probes that run, by SID.
 
 	// Lock order: routeMu, then mu. holds.mu is never held with another lock.
 	mu       sync.Mutex
 	rc       *relayConn
+	spares   []*relayConn            // Sessions with no attachment, on other relays.
+	stopped  bool                    // Run ended.
+	conns    map[*relayConn]struct{} // Relay sessions from dialRelay until close.
+	dialing  map[string]int          // Relay dials that run, by relay key.
 	bind     *psp.Binding
 	peers    map[*rpc.Conn]*peer
 	admitted chan struct{} // Closed and replaced when a peer session opens.
@@ -134,7 +138,17 @@ type Agent struct {
 
 // New returns an agent. Call Run to start it.
 func New(cfg Config) *Agent {
-	a := &Agent{cfg: cfg, instance: rand.Uint64(), peers: map[*rpc.Conn]*peer{}, admitted: make(chan struct{})}
+	a := &Agent{
+		cfg:       cfg,
+		instance:  rand.Uint64(),
+		seed:      maphash.MakeSeed(),
+		spareWake: make(chan struct{}, 1),
+		probes:    map[[8]byte]*pathProbe{},
+		peers:     map[*rpc.Conn]*peer{},
+		conns:     map[*relayConn]struct{}{},
+		dialing:   map[string]int{},
+		admitted:  make(chan struct{}),
+	}
 	a.mux = rpc.NewMux()
 	dp.RegisterPeerServer(a.mux, &peerService{a: a})
 	a.demux.Probe = a.onProbe
@@ -145,11 +159,14 @@ func New(cfg Config) *Agent {
 	return a
 }
 
-// Run keeps a relay session until ctx ends. On a cert renew or a drain, it
-// opens the new session before it closes the old one.
+// Run keeps an attached relay session and spare sessions until ctx ends. On
+// a cert renew or a drain, the new session attaches before the old one closes.
 func (a *Agent) Run(ctx context.Context) error {
 	if m := a.cfg.MTU; m != 0 && (m < psp.DefaultMTU || m > psp.MaxMTU) {
 		return fmt.Errorf("MTU must be %d to %d, got %d", psp.DefaultMTU, psp.MaxMTU, m)
+	}
+	if n := a.cfg.Sessions; n < 0 || n > maxSessions {
+		return fmt.Errorf("sessions must be 1 to %d, got %d", maxSessions, n)
 	}
 	if err := a.cfg.Identity.Start(ctx); err != nil {
 		return fmt.Errorf("agent cert: %w", err)
@@ -162,20 +179,30 @@ func (a *Agent) Run(ctx context.Context) error {
 		a.close()
 	}()
 	wg.Go(func() { a.tick(ctx) })
+	wg.Go(func() { a.keepSpares(ctx) })
 
-	relays := append([]string{a.cfg.Relay}, a.cfg.Alternates...)
 	backoff := minBackoff
-	for i := 0; ctx.Err() == nil; {
-		rc, err := a.open(ctx, relays[i], a.cfg.RelayID)
+	next, failed := 0, 0 // The relay to dial next, and the relays that failed in a row.
+	relist := relister{wait: relistMin}
+	for ctx.Err() == nil {
+		rc, tried, err := a.attachRelay(ctx, next)
 		if err != nil {
 			if ctx.Err() != nil {
 				break
 			}
-			slog.Warn("Failed to open relay session", "relay", relays[i], "error", err)
+			slog.Warn("Failed to open relay session", "error", err)
 			if certRefused(err) {
 				a.renew(ctx)
 			}
-			i = (i + 1) % len(relays)
+			next += tried
+			if failed += tried; failed >= len(a.endpoints()) {
+				failed = 0
+				if relist.run(ctx, a) {
+					// Dial the new relays now.
+					backoff = minBackoff
+					continue
+				}
+			}
 			wait := rand.N(backoff) + 1
 			backoff = min(2*backoff, maxBackoff)
 			select {
@@ -184,6 +211,7 @@ func (a *Agent) Run(ctx context.Context) error {
 			}
 			continue
 		}
+		failed = 0
 		start := time.Now()
 		for rc != nil {
 			a.use(rc)
@@ -229,11 +257,12 @@ func (a *Agent) use(rc *relayConn) {
 		old.close()
 	}
 	slog.Info("Attached to the VPC", "relay", rc.addr, "address", rc.self, "prefixes", rc.prefixes,
-		"transport", transportName(rc.mode), "fallback", rc.reason, "connect", rc.connect)
+		"transport", transportName(rc.mode), "fallback", rc.reason, "connect", rc.connect, "setup", rc.setup)
 	if a.cfg.OnAttach != nil {
 		a.cfg.OnAttach(b, rc.self, rc.prefixes)
 	}
 	a.useRoutes(rc)
+	a.wakeSpares()
 }
 
 // DNS returns the DNS servers and search domains of the VPC.
@@ -252,6 +281,11 @@ type Status struct {
 	Reason dp.FallbackReason // Why Mode is QUIC.
 	// Time to connect: from the start of the dial to the first Config.
 	Connect time.Duration
+	// Time from the start of the connect, or of the move to a spare, to the
+	// end of the attach.
+	Setup time.Duration
+	// Spare sessions.
+	Spares int
 }
 
 // Status returns the data transport of the current attachment.
@@ -259,9 +293,9 @@ func (a *Agent) Status() Status {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.rc == nil {
-		return Status{}
+		return Status{Spares: len(a.spares)}
 	}
-	return Status{Mode: a.rc.mode, Reason: a.rc.reason, Connect: a.rc.connect}
+	return Status{Mode: a.rc.mode, Reason: a.rc.reason, Connect: a.rc.connect, Setup: a.rc.setup, Spares: len(a.spares)}
 }
 
 func transportName(m dp.Mode) string {
@@ -309,7 +343,7 @@ func (a *Agent) serve(ctx context.Context, rc *relayConn) *relayConn {
 					continue
 				}
 			}
-			next, err := a.open(ctx, rc.addr, rc.name)
+			next, err := a.open(ctx, rc.ep)
 			if err != nil {
 				slog.Warn("Failed to open a relay session with the new cert", "relay", rc.addr, "error", err)
 				renew.Reset(renewRetry)
@@ -317,14 +351,10 @@ func (a *Agent) serve(ctx context.Context, rc *relayConn) *relayConn {
 			}
 			return next
 		case alts := <-rc.drain:
-			addr, name := rc.addr, rc.name
-			if len(alts) > 0 && len(alts[0].GetAddresses()) > 0 {
-				addr, name = alts[0].GetAddresses()[0], alts[0].GetId()
-			}
-			next, err := a.open(ctx, addr, name)
+			next, err := a.move(ctx, rc, alts)
 			if err != nil {
 				// The relay closes rc when its drain ends. Then Run dials again.
-				slog.Warn("Failed to move to another relay", "relay", addr, "error", err)
+				slog.Warn("Failed to move to another relay", "relay", rc.addr, "error", err)
 				continue
 			}
 			return next
@@ -342,7 +372,7 @@ func (a *Agent) serve(ctx context.Context, rc *relayConn) *relayConn {
 			}
 			// The new session probes again before it picks its mode.
 			slog.Info("PSP probes to the relay pass; opening a PSP session", "relay", rc.addr)
-			next, err := a.open(ctx, rc.addr, rc.name)
+			next, err := a.open(ctx, rc.ep)
 			if err == nil && next.mode == dp.Mode_MODE_PSP {
 				return next
 			}
@@ -367,27 +397,38 @@ type relayConn struct {
 	sendMu sync.Mutex     // Guards sends on st after start.
 	local  netip.AddrPort // Local address at the last check. Only tick changes it after open.
 	cred   *identity.Credential
+	ep     endpoint
 	addr   string         // Relay address as dialed.
 	name   string         // TLS name of the relay.
-	roots  *x509.CertPool // Check grants. Nil means the system roots.
+	roots  *x509.CertPool // Check relay certs and grants. Nil means the system roots.
+	// spareDone closes when the agent takes the session from its spares.
+	spareDone chan struct{}
 
 	relayAddr netip.AddrPort    // Where PSP packets to peers go.
 	mode      dp.Mode           // Data mode of the Session call.
 	reason    dp.FallbackReason // Why mode is QUIC.
 	connect   time.Duration     // Time to connect: from the start of the dial to the first Config.
+	setup     time.Duration     // See Status.Setup.
+	vpcConfig *dp.Config        // The first Config.
 	ref       *dp.VPCRef
 	mtu       uint32
 	grant     *dp.AttachmentGrant
 	claims    *dp.GrantClaims
 	prefixes  []netip.Prefix
 	self      netip.Addr // Overlay address of this agent.
-	routes    routeTable // Guarded by Agent.routeMu.
+	// routes and attachmentID are guarded by Agent.routeMu. The attach also
+	// sets prefixes and self under it, because the sync reads self.
+	routes       routeTable
+	attachmentID string
 
 	dnsServers, dnsSearch []string
 
 	// relay is the relay as a peer of the binding. Packets for QUIC-mode peers
-	// go to it, sealed with the SAs that the relay gives in PSP mode.
-	relay *psp.Peer
+	// go to it, sealed with the SAs that the relay gives in PSP mode. The
+	// attach sets it. Relay SAs that come before it wait in pendingKeys.
+	keyMu       sync.Mutex
+	relay       *psp.Peer
+	pendingKeys []*dp.KeysRequest
 	// bridgeTx closes when the relay SAs first apply. bridgeRx closes when the
 	// relay first takes the SAs of this agent. QUIC pairs wait for both.
 	bridgeTx, bridgeRx chan struct{}
@@ -397,48 +438,79 @@ type relayConn struct {
 	drain  chan []*dp.RelayRef
 }
 
-// open dials the relay at addr with the TLS name name, opens the Session
-// call and attaches. An empty name means the host in addr.
-func (a *Agent) open(ctx context.Context, addr, name string) (*relayConn, error) {
-	host, _, err := net.SplitHostPort(addr)
+// open dials the relay at e and attaches.
+func (a *Agent) open(ctx context.Context, e endpoint) (*relayConn, error) {
+	begin := time.Now()
+	rc, err := a.dialRelay(ctx, e, primaryHello)
 	if err != nil {
 		return nil, err
 	}
+	if err := rc.attach(ctx, begin); err != nil {
+		rc.close()
+		return nil, err
+	}
+	return rc, nil
+}
+
+// dialRelay opens a session to the relay at e: the handshake, the data mode, and
+// the Session call up to Config. spare tells at Hello if the session is a spare.
+// The dial counts in a.dialing, and the session stays in a.conns until close.
+func (a *Agent) dialRelay(ctx context.Context, e endpoint, spare func() bool) (*relayConn, error) {
+	key := e.key()
+	a.mu.Lock()
+	a.dialing[key]++
+	a.mu.Unlock()
+	rc, err := a.dialSession(ctx, e, spare)
+	a.mu.Lock()
+	if a.dialing[key]--; a.dialing[key] == 0 {
+		delete(a.dialing, key)
+	}
+	if err == nil {
+		a.conns[rc] = struct{}{}
+	}
+	a.mu.Unlock()
+	return rc, err
+}
+
+// dialSession opens the session for dialRelay.
+func (a *Agent) dialSession(ctx context.Context, e endpoint, spare func() bool) (*relayConn, error) {
+	host, _, err := net.SplitHostPort(e.addr)
+	if err != nil {
+		return nil, err
+	}
+	name := e.id
 	if name == "" {
 		name = host
 	}
-	ua, err := net.ResolveUDPAddr("udp", addr)
+	ua, err := net.ResolveUDPAddr("udp", e.addr)
 	if err != nil {
 		return nil, err
 	}
 	cred := a.cfg.Identity.Current()
+	roots := a.relayRoots(cred)
 	begin := time.Now()
 	octx, cancel := context.WithTimeout(ctx, openTimeout)
 	defer cancel()
 	qc, err := a.cfg.Transport.Dial(octx, ua, &tls.Config{
-		MinVersion:         tls.VersionTLS13,
-		RootCAs:            a.cfg.RelayRoots,
-		ServerName:         name,
-		NextProtos:         []string{dp.ALPNRelay},
-		Certificates:       []tls.Certificate{*cred.TLSCertificate()},
-		InsecureSkipVerify: a.cfg.InsecureSkipVerify,
+		MinVersion:   tls.VersionTLS13,
+		RootCAs:      roots,
+		ServerName:   name,
+		NextProtos:   []string{dp.ALPNRelay},
+		Certificates: []tls.Certificate{*cred.TLSCertificate()},
 	}, relayQUIC)
 	if err != nil {
 		return nil, err
-	}
-	roots := a.cfg.RelayRoots
-	if a.cfg.InsecureSkipVerify {
-		roots = x509.NewCertPool()
-		roots.AddCert(qc.ConnectionState().TLS.PeerCertificates[0])
 	}
 	rc := &relayConn{
 		a:         a,
 		qc:        qc,
 		c:         dp.NewRelayClient(rpc.NewConn(qc, nil)),
 		cred:      cred,
-		addr:      addr,
+		ep:        e,
+		addr:      e.addr,
 		name:      name,
 		roots:     roots,
+		spareDone: make(chan struct{}),
 		relayAddr: qc.RemoteAddr().(*net.UDPAddr).AddrPort(),
 		drain:     make(chan []*dp.RelayRef, 1),
 		bridgeTx:  make(chan struct{}),
@@ -446,11 +518,11 @@ func (a *Agent) open(ctx context.Context, addr, name string) (*relayConn, error)
 	}
 	rc.ctx, rc.cancel = context.WithCancel(context.Background())
 	rc.local = rc.localAddr()
-	// A relay that does not answer in time ends the open.
+	// A relay that does not answer in time ends the dial.
 	stop := context.AfterFunc(octx, func() { _ = qc.CloseWithError(0, "relay session did not open in time") })
 	defer stop()
 	rc.mode, rc.reason = a.pickMode(octx, rc)
-	if err := rc.start(octx, begin); err != nil {
+	if err := rc.hello(begin, spare()); err != nil {
 		rc.close()
 		if cause := context.Cause(qc.Context()); cause != nil {
 			return nil, fmt.Errorf("%w (connection: %w)", err, cause)
@@ -458,6 +530,15 @@ func (a *Agent) open(ctx context.Context, addr, name string) (*relayConn, error)
 		return nil, err
 	}
 	return rc, nil
+}
+
+// relayRoots returns Config.RelayRoots, else the relay roots of cred. Nil
+// means the system roots.
+func (a *Agent) relayRoots(cred *identity.Credential) *x509.CertPool {
+	if a.cfg.RelayRoots != nil {
+		return a.cfg.RelayRoots
+	}
+	return cred.RelayPool()
 }
 
 // pickMode returns the data mode of rc, and why it is QUIC. In auto mode, it
@@ -474,15 +555,15 @@ func (a *Agent) pickMode(ctx context.Context, rc *relayConn) (dp.Mode, dp.Fallba
 	return dp.Mode_MODE_PSP, dp.FallbackReason_FALLBACK_REASON_UNSPECIFIED
 }
 
-// start runs Hello, Attach and the peer listener of rc. The dial started at begin.
-func (rc *relayConn) start(ctx context.Context, begin time.Time) error {
-	a := rc.a
+// hello runs the Session call of rc up to Config and starts its Sync reader.
+// The dial started at begin.
+func (rc *relayConn) hello(begin time.Time, spare bool) error {
 	st, err := rc.c.Session(rc.ctx)
 	if err != nil {
 		return err
 	}
 	rc.st = st
-	if err := st.Send(&dp.SessionRequest{Msg: &dp.SessionRequest_Hello{Hello: &dp.Hello{Mode: rc.mode, FallbackReason: rc.reason}}}); err != nil {
+	if err := st.Send(&dp.SessionRequest{Msg: &dp.SessionRequest_Hello{Hello: &dp.Hello{Mode: rc.mode, FallbackReason: rc.reason, Spare: spare}}}); err != nil {
 		return err
 	}
 	m, err := st.Recv()
@@ -503,8 +584,21 @@ func (rc *relayConn) start(ctx context.Context, begin time.Time) error {
 	if err := st.Send(&dp.SessionRequest{Msg: &dp.SessionRequest_Status{Status: &dp.Status{ConnectTime: durationpb.New(rc.connect)}}}); err != nil {
 		return err
 	}
-	rc.ref, rc.mtu = cfg.GetVpc(), cfg.GetMtu()
+	rc.vpcConfig, rc.ref, rc.mtu = cfg, cfg.GetVpc(), cfg.GetMtu()
 	rc.dnsServers, rc.dnsSearch = cfg.GetDnsServers(), cfg.GetDnsSearchDomains()
+	go rc.sync()
+	return nil
+}
+
+// attach runs Attach on rc after hello, then makes the binding, the peer
+// listener, and the relay SAs or the QUIC shards. The connect started at begin.
+func (rc *relayConn) attach(ctx context.Context, begin time.Time) error {
+	a := rc.a
+	ctx, cancel := context.WithTimeout(ctx, openTimeout)
+	defer cancel()
+	// A relay that does not answer in time ends the attach.
+	stop := context.AfterFunc(ctx, func() { _ = rc.qc.CloseWithError(0, "relay session did not attach in time") })
+	defer stop()
 	// The path probe runs while the relay attaches. QUIC mode sends no PSP.
 	pathMTU := 0
 	if rc.mode == dp.Mode_MODE_PSP {
@@ -520,27 +614,30 @@ func (rc *relayConn) start(ctx context.Context, begin time.Time) error {
 	}
 	res, err := rc.c.Attach(ctx, &dp.AttachRequest{Vpc: rc.ref, Name: a.cfg.Name, Labels: a.cfg.Labels, Routes: routes})
 	if err != nil {
-		return fmt.Errorf("attach: %w", err)
+		return attachError(rc, fmt.Errorf("attach: %w", err))
 	}
 	// A bad relay cert fails the attach, not each peer session.
 	if rc.claims, err = relay.VerifyGrant(res.GetGrant(), rc.roots, time.Now()); err != nil {
 		return err
 	}
 	rc.grant = res.GetGrant()
-	if rc.prefixes, err = parsePrefixes(rc.claims.GetAddresses()); err != nil {
-		return err
-	}
-	rc.self = overlayAddr(rc.prefixes)
-	if probed != nil && !<-probed {
-		pathMTU = psp.DefaultMTU
-	}
-	b, err := a.binding(cfg, pathMTU)
+	prefixes, err := parsePrefixes(rc.claims.GetAddresses())
 	if err != nil {
 		return err
 	}
-	if rc.relay, err = b.AddPeer(rc.relayAddr); err != nil {
+	a.setAttachment(rc, rc.claims.GetAttachmentId(), prefixes)
+	if probed != nil && !<-probed {
+		pathMTU = psp.DefaultMTU
+	}
+	b, err := a.binding(rc.vpcConfig, pathMTU)
+	if err != nil {
 		return err
 	}
+	p, err := b.AddPeer(rc.relayAddr)
+	if err != nil {
+		return err
+	}
+	rc.setRelayPeer(p)
 	rc.pc = peerconn.New(rc.qc, rc.self)
 	rc.pc.HandleData(b.HandleData)
 	rc.peerTr = &quic.Transport{Conn: rc.pc}
@@ -549,7 +646,6 @@ func (rc *relayConn) start(ctx context.Context, begin time.Time) error {
 		return err
 	}
 	go rc.accept(ln)
-	go rc.sync()
 	if rc.mode == dp.Mode_MODE_QUIC {
 		// Data frames need no SAs.
 		close(rc.bridgeTx)
@@ -558,7 +654,16 @@ func (rc *relayConn) start(ctx context.Context, begin time.Time) error {
 	} else {
 		go rc.giveRelayKeys()
 	}
+	rc.setup = time.Since(begin)
 	return nil
+}
+
+// attachError adds the close cause of rc to err.
+func attachError(rc *relayConn, err error) error {
+	if cause := context.Cause(rc.qc.Context()); cause != nil {
+		return fmt.Errorf("%w (connection: %w)", err, cause)
+	}
+	return err
 }
 
 // binding returns the PSP binding of the VPC. The first attach makes it.
@@ -620,7 +725,7 @@ func (rc *relayConn) sync() {
 			default:
 			}
 		case *dp.SessionResponse_Rekey:
-			rc.applyRelayKeys(m.Rekey)
+			rc.relayKeys(m.Rekey)
 		case *dp.SessionResponse_Config:
 			if m.Config.GetMtu() != rc.mtu {
 				slog.Info("VPC MTU changed; the new MTU applies after the agent restarts", "mtu", m.Config.GetMtu())
@@ -636,7 +741,31 @@ func (rc *relayConn) send(m *dp.SessionRequest) error {
 	return rc.st.Send(m)
 }
 
+// relayKeys applies relay SAs. Before the attach, it keeps them.
+func (rc *relayConn) relayKeys(m *dp.KeysRequest) {
+	rc.keyMu.Lock()
+	defer rc.keyMu.Unlock()
+	if rc.relay == nil {
+		rc.pendingKeys = append(rc.pendingKeys, m)
+		return
+	}
+	rc.applyRelayKeys(m)
+}
+
+// setRelayPeer sets the relay peer and applies the relay SAs that came
+// before the attach.
+func (rc *relayConn) setRelayPeer(p *psp.Peer) {
+	rc.keyMu.Lock()
+	defer rc.keyMu.Unlock()
+	rc.relay = p
+	for _, m := range rc.pendingKeys {
+		rc.applyRelayKeys(m)
+	}
+	rc.pendingKeys = nil
+}
+
 // applyRelayKeys applies the relay SAs to the transmit SAs of the relay peer.
+// rc.keyMu is held.
 func (rc *relayConn) applyRelayKeys(m *dp.KeysRequest) {
 	req, err := keyproto.FromProto(m)
 	if err == nil {
@@ -651,7 +780,7 @@ func (rc *relayConn) applyRelayKeys(m *dp.KeysRequest) {
 		}
 		return
 	}
-	// Only sync calls this, so no other close can come between.
+	// rc.keyMu orders the close.
 	select {
 	case <-rc.bridgeTx:
 	default:
@@ -705,6 +834,9 @@ func (a *Agent) removeRoutes(rc *relayConn, removed []*dp.Route) {
 
 // close ends rc, its peer sessions and its peer transport.
 func (rc *relayConn) close() {
+	rc.a.mu.Lock()
+	delete(rc.a.conns, rc)
+	rc.a.mu.Unlock()
 	rc.a.closePeers(func(p *peer) bool { return p.rc == rc }, "relay session closed")
 	rc.cancel()
 	if rc.relay != nil {
@@ -721,9 +853,12 @@ func (rc *relayConn) close() {
 // close ends the relay session and the binding at the end of Run.
 func (a *Agent) close() {
 	a.mu.Lock()
-	rc, b := a.rc, a.bind
-	a.rc = nil
+	rc, b, spares := a.rc, a.bind, a.spares
+	a.rc, a.spares, a.stopped = nil, nil, true
 	a.mu.Unlock()
+	for _, s := range spares {
+		s.close()
+	}
 	if rc != nil {
 		rc.close()
 	}

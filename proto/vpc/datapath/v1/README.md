@@ -65,6 +65,13 @@ it opens a new session, which probes again. If the new session is in PSP mode,
 the agent moves to it and closes the old one, as at a cert renew. An agent
 with QUIC mode in its config sends `CONFIG` and does not probe.
 
+### Spare sessions
+
+An agent keeps up to two more sessions, each on another relay, with
+`Hello.spare` set. A spare session gets `Config`, routes and `Drain` but
+holds no attachment. When the attached session ends or drains, the agent
+sends `Attach` on a spare, so the move needs no new handshake.
+
 ### QUIC and PSP bridge
 
 The relay connects QUIC-mode and PSP-mode agents. It opens and seals only
@@ -117,7 +124,7 @@ Addresses and prefixes are text (`fd61::1`, `10.0.0.0/8`, `host:port`).
 
 | Method          | Kind  | Messages |
 |-----------------|-------|----------|
-| `Session`       | bidi  | Agent: `Hello{mode, fallback_reason}`, then `Ack{rev}` and `Status` (ICV failures; the first one after `Config` also has the time to connect). Relay: `Welcome` (reflexive address), `Config`, in PSP mode a rekey with relay SAs, then `RouteDelta{rev}`, `NoRoute`, rekey (`KeysRequest`), `Config`, `Drain`. |
+| `Session`       | bidi  | Agent: `Hello{mode, fallback_reason, spare}`, then `Ack{rev}` and `Status` (ICV failures; the first one after `Config` also has the time to connect). Relay: `Welcome` (reflexive address), `Config`, in PSP mode a rekey with relay SAs, then `RouteDelta{rev}`, `NoRoute`, rekey (`KeysRequest`), `Config`, `Drain`. |
 | `Attach`        | unary | `AttachRequest{vpc, name, labels, routes}` -> `AttachResponse{attachment_id, grant}` |
 | `Rekey`         | unary | `KeysRequest` -> `KeysResponse`: SAs for traffic from the relay to the agent. Errors: `FailedPrecondition` (no `Session` call in PSP mode), `InvalidArgument` (an SA VNI is not the network ID). |
 | `ResolvePeer`   | unary | `{vpc, address}` -> `{reach: local, trunk or visit; home_relay; p2p}`. Errors: `NotFound`, `PermissionDenied`. |

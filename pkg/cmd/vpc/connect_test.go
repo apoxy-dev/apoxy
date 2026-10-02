@@ -31,7 +31,7 @@ func TestAgentConfig(t *testing.T) {
 		wantLabels    map[string]string
 		wantSocksAddr string
 		wantTunIfname string
-		wantInsecure  bool
+		wantSessions  int
 	}{
 		{
 			name:          "defaults without NET_ADMIN",
@@ -41,6 +41,7 @@ func TestAgentConfig(t *testing.T) {
 			wantDriver:    driverNetstack,
 			wantSocksAddr: "localhost:1080",
 			wantTunIfname: "apoxy0",
+			wantSessions:  2,
 		},
 		{
 			name:       "auto driver with NET_ADMIN",
@@ -154,12 +155,32 @@ func TestAgentConfig(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name:         "insecure skip verify",
-			args:         []string{"--insecure-skip-verify"},
+			name:         "one relay",
+			args:         []string{"--relays", "1"},
 			host:         "node1",
 			wantName:     "node1",
 			wantDriver:   driverNetstack,
-			wantInsecure: true,
+			wantSessions: 1,
+		},
+		{
+			name:         "three relays",
+			args:         []string{"--relays", "3"},
+			host:         "node1",
+			wantName:     "node1",
+			wantDriver:   driverNetstack,
+			wantSessions: 3,
+		},
+		{
+			name:    "no relays",
+			args:    []string{"--relays", "0"},
+			host:    "node1",
+			wantErr: true,
+		},
+		{
+			name:    "too many relays",
+			args:    []string{"--relays", "4"},
+			host:    "node1",
+			wantErr: true,
 		},
 		{
 			name:          "socks off",
@@ -189,7 +210,9 @@ func TestAgentConfig(t *testing.T) {
 			require.Equal(t, tc.wantMTU, cfg.MTU)
 			require.Equal(t, tc.wantRoutes, cfg.Routes)
 			require.Equal(t, tc.wantLabels, cfg.Labels)
-			require.Equal(t, tc.wantInsecure, cfg.InsecureSkipVerify)
+			if tc.wantSessions != 0 {
+				require.Equal(t, tc.wantSessions, cfg.Sessions)
+			}
 			if tc.wantSocksAddr != "" || cmd.Flags().Changed("socks-addr") {
 				require.Equal(t, tc.wantSocksAddr, o.socksAddr)
 			}

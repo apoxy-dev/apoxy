@@ -78,6 +78,9 @@ message Hello {
   Shard shard = 3;
   // Why the agent is in QUIC mode.
   FallbackReason fallback_reason = 4;
+  // The agent keeps this session as a spare. It attaches on it only when its
+  // attached session ends.
+  bool spare = 5;
 }
 
 // Shard joins a connection to the session of an attachment. The session

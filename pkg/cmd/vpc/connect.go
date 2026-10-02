@@ -18,13 +18,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/quic-go/quic-go"
 	"github.com/spf13/cobra"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/sets"
 
 	apoxyconfig "github.com/apoxy-dev/apoxy/config"
 	"github.com/apoxy-dev/apoxy/pkg/netstack"
 	"github.com/apoxy-dev/apoxy/pkg/socksproxy"
-	tunnelagent "github.com/apoxy-dev/apoxy/pkg/tunnel/agent"
 	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/agent"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/hostcheck"
@@ -53,7 +50,7 @@ type connectOptions struct {
 	socksAddr string
 	tunIfname string
 	mtu       int
-	insecure  bool
+	relays    int
 }
 
 func connectCmd() *cobra.Command {
@@ -95,8 +92,7 @@ func (o *connectOptions) addFlags(cmd *cobra.Command) {
 	f.StringToStringVar(&o.labels, "label", nil, "Attachment label (key=value) for VPCService selection. Repeatable.")
 	f.StringVar(&o.socksAddr, "socks-addr", "localhost:1080", "SOCKS5 listen address of the netstack driver. Empty disables the proxy.")
 	f.StringVar(&o.tunIfname, "tun-ifname", "apoxy0", "Name of the TUN device of the tun driver.")
-	f.BoolVar(&o.insecure, "insecure-skip-verify", false, "Skip TLS certificate verification for relay connections.")
-	cobra.CheckErr(f.MarkHidden("insecure-skip-verify"))
+	f.IntVar(&o.relays, "relays", 2, "Relay sessions to keep, 1 to 3. One carries the traffic. The others are open on other relays and take over when it ends.")
 	f.IntVar(&o.mtu, "mtu", 0, fmt.Sprintf("Device MTU, %d to %d. 0 uses the VPC MTU when the path to the relay carries it, else %d.", psp.DefaultMTU, psp.MaxMTU, psp.DefaultMTU))
 }
 
@@ -143,7 +139,10 @@ func (o *connectOptions) agentConfig(host string, canTun bool) (agent.Config, st
 		cfg.Routes = append(cfg.Routes, p)
 	}
 	cfg.Labels = o.labels
-	cfg.InsecureSkipVerify = o.insecure
+	if o.relays < 1 || o.relays > 3 {
+		return cfg, "", fmt.Errorf("invalid --relays %d: use 1 to 3", o.relays)
+	}
+	cfg.Sessions = o.relays
 	return cfg, driver, nil
 }
 
@@ -153,20 +152,22 @@ func runConnect(ctx context.Context, out io.Writer, vpc string, o *connectOption
 		return err
 	}
 	vc := c.VpcV1alpha1()
-	nw, err := vc.VPCNetworks().Get(ctx, vpc, metav1.GetOptions{})
-	if err != nil {
-		return fmt.Errorf("failed to get VPC %q: %w", vpc, err)
+	cfg.Identity = identity.NewManager(credentialPath(c.ProjectID, vpc, cfg.Name), func(ctx context.Context) (*identity.Credential, error) {
+		return identity.Enroll(ctx, vc.RESTClient(), vpc, cfg.Name)
+	})
+	// Enroll gives the relays. With a cached cert, the agent starts while the
+	// apiserver is down.
+	if err := cfg.Identity.Start(ctx); err != nil {
+		return fmt.Errorf("failed to enroll in VPC %q: %w", vpc, err)
 	}
-	relays, err := tunnelagent.DiscoverRelays(ctx, vc, nw)
-	if err != nil {
-		return err
+	var addrs []string
+	for _, r := range cfg.Identity.Current().Relays {
+		addrs = append(addrs, r.Addresses...)
 	}
-	if relays.Len() == 0 {
+	if len(addrs) == 0 {
 		return fmt.Errorf("no ready relay serves VPC %q", vpc)
 	}
-	list := sets.List(relays)
-	cfg.Relay, cfg.Alternates = list[0], list[1:]
-	uc, err := listenUDP(list)
+	uc, err := listenUDP(addrs)
 	if err != nil {
 		return err
 	}
@@ -174,9 +175,6 @@ func runConnect(ctx context.Context, out io.Writer, vpc string, o *connectOption
 	tr := &quic.Transport{Conn: uc}
 	defer tr.Close()
 	cfg.Transport = tr
-	cfg.Identity = identity.NewManager(credentialPath(c.ProjectID, vpc, cfg.Name), func(ctx context.Context) (*identity.Credential, error) {
-		return identity.Enroll(ctx, vc.RESTClient(), vpc, cfg.Name)
-	})
 
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)

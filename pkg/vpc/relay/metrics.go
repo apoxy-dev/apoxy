@@ -12,7 +12,7 @@ import (
 var (
 	sessionsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "apoxy_vpc_relay_sessions_total",
-		Help: "Agent Session calls, by data mode and the reason for QUIC mode.",
+		Help: "Agent Session calls, by data mode and the reason for QUIC mode. Spare sessions have the reason spare.",
 	}, []string{"mode", "reason"})
 	connectSeconds = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "apoxy_vpc_relay_connect_seconds",
@@ -65,8 +65,11 @@ func modeLabel(m dp.Mode) string {
 	return "unknown"
 }
 
-func reasonLabel(r dp.FallbackReason) string {
-	switch r {
+func reasonLabel(h *dp.Hello) string {
+	if h.GetSpare() {
+		return "spare"
+	}
+	switch h.GetFallbackReason() {
 	case dp.FallbackReason_FALLBACK_REASON_UNSPECIFIED:
 		return "none"
 	case dp.FallbackReason_FALLBACK_REASON_PROBE_TIMEOUT:

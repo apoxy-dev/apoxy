@@ -4,6 +4,7 @@ package agent
 
 import (
 	"log/slog"
+	"maps"
 	"net/netip"
 	"slices"
 
@@ -63,6 +64,11 @@ func (t *routeTable) apply(d *dp.RouteDelta, self string) []routeChange {
 	return out
 }
 
+// drop removes the routes of origin.
+func (t *routeTable) drop(origin string) {
+	maps.DeleteFunc(t.origins, func(_ netip.Prefix, o string) bool { return o == origin })
+}
+
 func parseRoute(r *dp.Route, self string) (netip.Prefix, bool) {
 	p, err := netip.ParsePrefix(r.GetPrefix())
 	if err != nil || r.GetOrigin() == "" || r.GetOrigin() == self {
@@ -99,7 +105,7 @@ func (a *Agent) applyRoutes(rc *relayConn, d *dp.RouteDelta) {
 	a.routeMu.Lock()
 	defer a.routeMu.Unlock()
 	first := !rc.routes.synced
-	changes := rc.routes.apply(d, rc.claims.GetAttachmentId())
+	changes := rc.routes.apply(d, rc.attachmentID)
 	a.bindRoutes(rc, changes)
 	switch {
 	case a.routesOf != rc:
@@ -108,6 +114,15 @@ func (a *Agent) applyRoutes(rc *relayConn, d *dp.RouteDelta) {
 	default:
 		a.report(prefixChanges(changes))
 	}
+}
+
+// setAttachment sets the attachment and the addresses of rc. The routes that
+// came for it before the attach leave the route table of rc.
+func (a *Agent) setAttachment(rc *relayConn, id string, prefixes []netip.Prefix) {
+	a.routeMu.Lock()
+	defer a.routeMu.Unlock()
+	rc.attachmentID, rc.prefixes, rc.self = id, prefixes, overlayAddr(prefixes)
+	rc.routes.drop(id)
 }
 
 // useRoutes makes OnRoutes follow the routes of rc. Until the first RouteDelta

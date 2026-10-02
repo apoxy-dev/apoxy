@@ -311,6 +311,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.AgentRevocationSpec":                  schema_apoxy_api_vpc_v1alpha1_AgentRevocationSpec(ref),
 		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.AgentRevocationStatus":                schema_apoxy_api_vpc_v1alpha1_AgentRevocationStatus(ref),
 		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.EgressGatewaySpec":                    schema_apoxy_api_vpc_v1alpha1_EgressGatewaySpec(ref),
+		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.EnrollmentRelay":                      schema_apoxy_api_vpc_v1alpha1_EnrollmentRelay(ref),
 		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.Relay":                                schema_apoxy_api_vpc_v1alpha1_Relay(ref),
 		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.RelayList":                            schema_apoxy_api_vpc_v1alpha1_RelayList(ref),
 		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.RelayRef":                             schema_apoxy_api_vpc_v1alpha1_RelayRef(ref),
@@ -12698,11 +12699,31 @@ func schema_apoxy_api_vpc_v1alpha1_AgentEnrollmentStatus(ref common.ReferenceCal
 							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
 						},
 					},
+					"relays": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Ready relays that serve the VPC.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.EnrollmentRelay"),
+									},
+								},
+							},
+						},
+					},
+					"relayRoots": {
+						SchemaProps: spec.SchemaProps{
+							Description: "PEM CA certs that relay certs and relay grants chain to. Empty means the system roots.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 				},
 			},
 		},
 		Dependencies: []string{
-			"k8s.io/apimachinery/pkg/apis/meta/v1.Time"},
+			"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.EnrollmentRelay", "k8s.io/apimachinery/pkg/apis/meta/v1.Time"},
 	}
 }
 
@@ -12812,6 +12833,42 @@ func schema_apoxy_api_vpc_v1alpha1_EgressGatewaySpec(ref common.ReferenceCallbac
 						},
 					},
 				},
+			},
+		},
+	}
+}
+
+func schema_apoxy_api_vpc_v1alpha1_EnrollmentRelay(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "EnrollmentRelay is one relay that an agent can dial.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"id": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Name in the relay cert. Grants of the relay carry it as the relay ID.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"addresses": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Underlay host:port addresses of the relay.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"id", "addresses"},
 			},
 		},
 	}

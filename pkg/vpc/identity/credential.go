@@ -13,12 +13,25 @@ import (
 	"time"
 )
 
-// Credential is an agent key, its cert and the CA bundle from enroll.
+// Credential is an agent key, its cert, the CA bundle and the relays from
+// enroll.
 type Credential struct {
 	Key      *ecdsa.PrivateKey
 	Cert     *x509.Certificate
 	CABundle []byte
 	ID       ID
+	// Relays that serve the VPC, and the PEM roots of their certs. Empty
+	// roots mean the system roots.
+	Relays     []Relay
+	RelayRoots []byte
+}
+
+// Relay is one relay that the agent can dial.
+type Relay struct {
+	// ID is the name in the relay cert.
+	ID string `json:"id"`
+	// Addresses are host:port.
+	Addresses []string `json:"addresses"`
 }
 
 // NewCredential joins a key with its PEM cert and PEM CA bundle. The cert
@@ -45,6 +58,28 @@ func NewCredential(key *ecdsa.PrivateKey, certPEM, caBundle []byte) (*Credential
 	return &Credential{Key: key, Cert: cert, CABundle: caBundle, ID: id}, nil
 }
 
+// SetRelays sets the relays and their PEM roots. Empty roots mean the
+// system roots.
+func (c *Credential) SetRelays(relays []Relay, roots []byte) error {
+	if len(roots) == 0 {
+		roots = nil
+	} else if _, err := NewPool(roots); err != nil {
+		return fmt.Errorf("relay roots: %w", err)
+	}
+	c.Relays, c.RelayRoots = relays, roots
+	return nil
+}
+
+// RelayPool returns the relay roots, or nil for the system roots.
+func (c *Credential) RelayPool() *x509.CertPool {
+	if len(c.RelayRoots) == 0 {
+		return nil
+	}
+	// SetRelays checked the roots.
+	pool, _ := NewPool(c.RelayRoots)
+	return pool
+}
+
 // RenewAt is the time at 2/3 of the cert life.
 func (c *Credential) RenewAt() time.Time {
 	life := c.Cert.NotAfter.Sub(c.Cert.NotBefore)
@@ -62,14 +97,16 @@ func (c *Credential) TLSCertificate() *tls.Certificate {
 
 // credentialFile is the disk form of a Credential.
 type credentialFile struct {
-	Key         string `json:"key"`
-	Certificate string `json:"certificate"`
-	CABundle    string `json:"caBundle"`
+	Key         string  `json:"key"`
+	Certificate string  `json:"certificate"`
+	CABundle    string  `json:"caBundle"`
+	Relays      []Relay `json:"relays,omitempty"`
+	RelayRoots  string  `json:"relayRoots,omitempty"`
 }
 
-// SaveCredential writes the key, cert and CA bundle to one file at path with
-// mode 0600. A rename makes the write atomic, so a reader never sees a key
-// without its cert.
+// SaveCredential writes the key, cert, CA bundle and relays to one file at
+// path with mode 0600. A rename makes the write atomic, so a reader never
+// sees a key without its cert.
 func SaveCredential(path string, c *Credential) error {
 	keyDER, err := x509.MarshalPKCS8PrivateKey(c.Key)
 	if err != nil {
@@ -79,6 +116,8 @@ func SaveCredential(path string, c *Credential) error {
 		Key:         string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})),
 		Certificate: string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: c.Cert.Raw})),
 		CABundle:    string(c.CABundle),
+		Relays:      c.Relays,
+		RelayRoots:  string(c.RelayRoots),
 	})
 	if err != nil {
 		return err
@@ -133,5 +172,12 @@ func LoadCredential(path string) (*Credential, error) {
 	if !ok {
 		return nil, errors.New("agent key is not ECDSA")
 	}
-	return NewCredential(key, []byte(f.Certificate), []byte(f.CABundle))
+	c, err := NewCredential(key, []byte(f.Certificate), []byte(f.CABundle))
+	if err != nil {
+		return nil, err
+	}
+	if err := c.SetRelays(f.Relays, []byte(f.RelayRoots)); err != nil {
+		return nil, err
+	}
+	return c, nil
 }

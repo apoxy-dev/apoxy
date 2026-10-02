@@ -20,8 +20,9 @@ import (
 )
 
 // fakeEnrollServer serves vpcnetworks/<vpc>/enroll and /revoke like the
-// project apiserver. mutate changes the issued ID to test bad replies.
-func fakeEnrollServer(t *testing.T, ca *testCA, mutate func(*ID)) rest.Interface {
+// project apiserver. mutate changes the issued ID to test bad replies. roots
+// are the relay roots in the reply.
+func fakeEnrollServer(t *testing.T, ca *testCA, mutate func(*ID), roots []byte) rest.Interface {
 	t.Helper()
 	const prefix = "/apis/vpc.apoxy.dev/v1alpha1/vpcnetworks/"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -46,6 +47,8 @@ func fakeEnrollServer(t *testing.T, ca *testCA, mutate func(*ID)) rest.Interface
 				Certificate: string(certPEM(cert)),
 				CABundle:    string(ca.pem),
 				ExpiresAt:   metav1.NewTime(cert.NotAfter),
+				Relays:      []vpcv1alpha1.EnrollmentRelay{{ID: testRelays[0].ID, Addresses: testRelays[0].Addresses}},
+				RelayRoots:  string(roots),
 			}
 			require.NoError(t, json.NewEncoder(w).Encode(&req))
 		case prefix + "net1/revoke":
@@ -72,16 +75,23 @@ func TestEnroll(t *testing.T) {
 		vpc     string
 		agent   string
 		mutate  func(*ID)
+		roots   []byte // Relay roots. Nil means ca.pem.
 		wantErr bool
 	}{
 		{name: "valid", vpc: "net1", agent: "laptop"},
+		{name: "system relay roots", vpc: "net1", agent: "laptop", roots: []byte{}},
+		{name: "bad relay roots", vpc: "net1", agent: "laptop", roots: []byte("junk"), wantErr: true},
 		{name: "bad agent name", vpc: "net1", agent: "Laptop", wantErr: true},
 		{name: "unknown VPC", vpc: "net2", agent: "laptop", wantErr: true},
 		{name: "cert for another agent", vpc: "net1", agent: "laptop", mutate: func(id *ID) { id.Agent = "other" }, wantErr: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			c := fakeEnrollServer(t, ca, tc.mutate)
+			roots := tc.roots
+			if roots == nil {
+				roots = ca.pem
+			}
+			c := fakeEnrollServer(t, ca, tc.mutate, roots)
 			cred, err := Enroll(context.Background(), c, tc.vpc, tc.agent)
 			if tc.wantErr {
 				assert.Error(t, err)
@@ -91,11 +101,13 @@ func TestEnroll(t *testing.T) {
 			assert.Equal(t, testID, cred.ID)
 			assert.Equal(t, ca.pem, cred.CABundle)
 			assert.True(t, cred.Key.PublicKey.Equal(cred.Cert.PublicKey))
+			assert.Equal(t, testRelays, cred.Relays)
+			assert.Equal(t, len(roots) > 0, cred.RelayPool() != nil)
 		})
 	}
 
 	t.Run("new key each time", func(t *testing.T) {
-		c := fakeEnrollServer(t, ca, nil)
+		c := fakeEnrollServer(t, ca, nil, ca.pem)
 		a, err := Enroll(context.Background(), c, "net1", "laptop")
 		require.NoError(t, err)
 		b, err := Enroll(context.Background(), c, "net1", "laptop")
@@ -105,7 +117,7 @@ func TestEnroll(t *testing.T) {
 }
 
 func TestRevoke(t *testing.T) {
-	c := fakeEnrollServer(t, newTestCA(t, "ca"), nil)
+	c := fakeEnrollServer(t, newTestCA(t, "ca"), nil, nil)
 	got, err := Revoke(context.Background(), c, "net1", "laptop")
 	require.NoError(t, err)
 	assert.Equal(t, "laptop", got.Spec.AgentName)

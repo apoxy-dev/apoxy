@@ -56,19 +56,33 @@ func NewManager(path string, enroll EnrollFunc, opts ...ManagerOption) *Manager 
 }
 
 // Start loads the cached credential, or enrolls when the cache has no cert
-// that is before its renew time.
+// with relays that is before its renew time. When that enroll fails, it uses
+// the cached cert until it expires. After a success, Start does nothing.
 func (m *Manager) Start(ctx context.Context) error {
+	if m.cur.Load() != nil {
+		return nil
+	}
 	c, err := LoadCredential(m.path)
 	switch {
-	case err == nil && m.now().Before(c.RenewAt()):
+	case err != nil:
+		slog.Debug("No usable cached agent cert", "path", m.path, "error", err)
+		return m.Renew(ctx)
+	case len(c.Relays) == 0:
+		slog.Debug("Cached agent cert has no relays", "path", m.path)
+		return m.Renew(ctx)
+	case m.now().Before(c.RenewAt()):
 		m.cur.Store(c)
 		return nil
-	case err == nil:
-		slog.Debug("Cached agent cert is due for renewal", "path", m.path, "renew_at", c.RenewAt())
-	default:
-		slog.Debug("No usable cached agent cert", "path", m.path, "error", err)
 	}
-	return m.Renew(ctx)
+	slog.Debug("Cached agent cert is due for renewal", "path", m.path, "renew_at", c.RenewAt())
+	err = m.Renew(ctx)
+	if err != nil && m.now().Before(c.Cert.NotAfter) {
+		slog.Warn("Failed to renew the cached agent cert; using it until it expires",
+			"path", m.path, "expires_at", c.Cert.NotAfter, "error", err)
+		m.cur.Store(c)
+		return nil
+	}
+	return err
 }
 
 // Renew enrolls again with a new key and writes the cache. Callers also use

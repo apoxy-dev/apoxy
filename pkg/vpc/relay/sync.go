@@ -149,7 +149,7 @@ func (srv *Server) Session(ctx context.Context, st rpc.BidiStreamServer[dp.Sessi
 	if err := srv.R.openSync(s, mode, ref); err != nil {
 		return err
 	}
-	sessionsTotal.WithLabelValues(modeLabel(mode), reasonLabel(hello.GetFallbackReason())).Inc()
+	sessionsTotal.WithLabelValues(modeLabel(mode), reasonLabel(hello)).Inc()
 	// The session ends with the call. The close carries the error.
 	defer func() {
 		msg := "Session call ended"

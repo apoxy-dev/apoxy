@@ -4,8 +4,12 @@ package agent
 
 import (
 	"context"
+	"encoding/pem"
+	"errors"
+	"fmt"
 	"net"
 	"net/netip"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -284,71 +288,325 @@ func TestPSPAfterQUIC(t *testing.T) {
 }
 
 // TestRenew checks that the agent opens a relay session with the renewed
-// cert before it closes the old one.
+// cert before it closes the old one, and replaces spares with the old cert.
 func TestRenew(t *testing.T) {
-	w := newWorld(t)
-	r := w.relay(t, "relay-1")
-	a := w.agent(t, "a", r, agentOptions{life: 3 * time.Second})
-	first := a.attached(t)
-	second := a.attached(t)
-	assert.NotEqual(t, first.addr, second.addr, "each relay session has its own addresses")
-	assert.GreaterOrEqual(t, a.enrolls.Load(), int32(2))
-	id := identity.ID{Project: testProject, VPC: testVPC, Agent: "a"}.String()
-	assert.Equal(t, 2, w.addrs.overlap(id), "the new session attaches before the old one closes")
+	cases := []struct {
+		name  string
+		spare bool // The agent keeps a spare on a second relay.
+	}{
+		{name: "one relay"},
+		{name: "spare on a second relay", spare: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newWorld(t)
+			r := w.relay(t, "relay-1")
+			opts := agentOptions{life: 3 * time.Second}
+			if tc.spare {
+				opts.relays = []identity.Relay{r.ref(), w.relay(t, "relay-2").ref()}
+			}
+			a := w.agent(t, "a", r, opts)
+			first := a.attached(t)
+			second := a.attached(t)
+			assert.NotEqual(t, first.addr, second.addr, "each relay session has its own addresses")
+			assert.GreaterOrEqual(t, a.enrolls.Load(), int32(2))
+			id := identity.ID{Project: testProject, VPC: testVPC, Agent: "a"}.String()
+			assert.Equal(t, 2, w.addrs.overlap(id), "the new session attaches before the old one closes")
+			if tc.spare {
+				require.Eventually(t, func() bool {
+					s := a.spare()
+					return s != nil && s.cred == a.a.cfg.Identity.Current()
+				}, 10*time.Second, 10*time.Millisecond, "the spare gets the new cert")
+			}
+		})
+	}
 }
 
 // TestDrain checks that the agent moves to an alternate relay before the
 // draining relay closes its session.
 func TestDrain(t *testing.T) {
-	w := newWorld(t)
-	r1, r2 := w.relay(t, "relay-1"), w.relay(t, "relay-2")
-	a := w.agent(t, "a", r1, agentOptions{})
-	a.attached(t)
+	cases := []struct {
+		name  string
+		spare bool // The agent knows both relays, so it has a spare on the alternate.
+	}{
+		{name: "new session on the alternate"},
+		{name: "spare on the alternate", spare: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newWorld(t)
+			r1, r2 := w.relay(t, "relay-1"), w.relay(t, "relay-2")
+			opts := agentOptions{}
+			if tc.spare {
+				opts.relays = []identity.Relay{r1.ref(), r2.ref()}
+			}
+			a := w.agent(t, "a", r1, opts)
+			a.attached(t)
+			from, to := r1, r2
+			if a.current().addr == r2.addr {
+				from, to = r2, r1
+			}
+			var spare *relayConn
+			if tc.spare {
+				require.Eventually(t, func() bool { return a.spare() != nil }, 10*time.Second, 10*time.Millisecond)
+				spare = a.spare()
+			}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		r1.srv.Drain(ctx, []*dp.RelayRef{{Id: "relay-2", Addresses: []string{r2.addr}}})
-	}()
-	a.attached(t)
-	a.a.mu.Lock()
-	addr := a.a.rc.addr
-	a.a.mu.Unlock()
-	assert.Equal(t, r2.addr, addr)
-	select {
-	case <-done:
-		assert.NoError(t, ctx.Err(), "the agent closed its session before the drain time ended")
-	case <-time.After(10 * time.Second):
-		t.Fatal("drain did not end")
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				from.srv.Drain(ctx, []*dp.RelayRef{{Id: to.id, Addresses: []string{to.addr}}})
+			}()
+			a.attached(t)
+			assert.Equal(t, to.addr, a.current().addr)
+			if tc.spare {
+				assert.Same(t, spare, a.current(), "the spare takes the attachment")
+			}
+			select {
+			case <-done:
+				assert.NoError(t, ctx.Err(), "the agent closed its session before the drain time ended")
+			case <-time.After(10 * time.Second):
+				t.Fatal("drain did not end")
+			}
+		})
+	}
+}
+
+// TestFirstPacketAfterMove checks that after a spare takes the attachment, the
+// first packet to a peer opens a peer session on the new relay session.
+func TestFirstPacketAfterMove(t *testing.T) {
+	cases := []struct {
+		name  string
+		drain bool // The relay drains, in place of the session end.
+	}{
+		{name: "attached session ends"},
+		{name: "relay drains", drain: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newWorld(t)
+			r1, r2 := w.relay(t, "relay-1"), w.relay(t, "relay-2")
+			a := w.agent(t, "a", nil, agentOptions{relays: []identity.Relay{r1.ref(), r2.ref()}, sessions: 2})
+			a.attached(t)
+			require.Eventually(t, func() bool { return a.spare() != nil }, 10*time.Second, 10*time.Millisecond)
+			from, to := r1, r2
+			if a.current().addr == r2.addr {
+				from, to = r2, r1
+			}
+			spare := a.spare()
+			b := w.agent(t, "b", to, agentOptions{})
+			eb := b.attached(t)
+			echo(t, b.stack, eb.addr, 9000)
+
+			if tc.drain {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				var wg sync.WaitGroup
+				t.Cleanup(func() { cancel(); wg.Wait() })
+				wg.Go(func() { from.srv.Drain(ctx, []*dp.RelayRef{{Id: to.id, Addresses: []string{to.addr}}}) })
+			} else {
+				a.reconnect()
+			}
+			ea := a.attached(t)
+			require.Same(t, spare, a.current(), "the spare takes the attachment")
+			require.NoError(t, sendOnce(a.stack, ea.addr, eb.addr, 9000, "after the move"))
+			assert.Equal(t, 1, peerCount(a.a))
+			assert.Zero(t, a.a.Stats().HoldDrops)
+			assert.Zero(t, unreachableIn(a))
+		})
+	}
+}
+
+// TestMoveAfterPromote checks that after a spare takes the attachment, the
+// agent tells its relay when the local address changes.
+func TestMoveAfterPromote(t *testing.T) {
+	cases := []struct {
+		name      string
+		moveFirst bool // The socket moves while the session is a spare.
+	}{
+		{name: "move after the promote"},
+		{name: "move before the promote", moveFirst: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			next := loopback(t)
+			t.Cleanup(func() { _ = next.Close() })
+			w := newWorld(t)
+			r1, r2 := w.relay(t, "relay-1"), w.relay(t, "relay-2")
+			runRouter(t, r1)
+			runRouter(t, r2)
+			mc := &moveConn{next: next}
+			a := w.agent(t, "a", nil, agentOptions{mode: TransportPSP, move: mc, relays: []identity.Relay{r1.ref(), r2.ref()}, sessions: 2})
+			a.attached(t)
+			require.Eventually(t, func() bool { return a.spare() != nil }, 10*time.Second, 10*time.Millisecond)
+			to := r2
+			if a.current().addr == r2.addr {
+				to = r1
+			}
+			spare := a.spare()
+			b := w.agent(t, "b", to, agentOptions{mode: TransportPSP})
+			eb := b.attached(t)
+			echo(t, b.stack, eb.addr, 7)
+			if tc.moveFirst {
+				mc.move()
+			}
+			a.reconnect()
+			ea := a.attached(t)
+			require.Same(t, spare, a.current(), "the spare takes the attachment")
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			require.NoError(t, a.a.Connect(ctx, eb.addr))
+			if !tc.moveFirst {
+				ping(t, a.stack, ea.addr, eb.addr, 7, "before the move")
+				// With no QUIC packet in flight, quic-go does not move the connection by itself.
+				time.Sleep(1500 * time.Millisecond)
+				mc.move()
+			}
+			t0 := time.Now()
+			at := firstEcho(t, a.stack, ea.addr, eb.addr, 7, 20*time.Millisecond, 1500*time.Millisecond)
+			require.False(t, at.IsZero(), "no data in 1.5 s after the move")
+			t.Logf("Data works after %v", at.Sub(t0))
+		})
+	}
+}
+
+// TestSpares checks that the agent keeps Sessions-1 spares on other relays,
+// moves the attachment to a spare when the attached session ends, and
+// replaces spares that end.
+func TestSpares(t *testing.T) {
+	cases := []struct {
+		name     string
+		sessions int
+		endSpare bool // A spare ends, in place of the attached session.
+	}{
+		{name: "one session", sessions: 1},
+		{name: "attached session ends", sessions: 2},
+		{name: "spare ends", sessions: 2, endSpare: true},
+		{name: "attached session ends with two spares", sessions: 3},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newWorld(t)
+			var relays []identity.Relay
+			for i := range 3 {
+				relays = append(relays, w.relay(t, fmt.Sprintf("relay-%d", i+1)).ref())
+			}
+			a := w.agent(t, "a", nil, agentOptions{relays: relays, sessions: tc.sessions})
+			a.attached(t)
+			spares := func() []*relayConn {
+				a.a.mu.Lock()
+				defer a.a.mu.Unlock()
+				return slices.Clone(a.a.spares)
+			}
+			full := func() bool { return len(spares()) == tc.sessions-1 }
+			require.Eventually(t, full, 10*time.Second, 10*time.Millisecond)
+			if tc.sessions == 1 {
+				require.Never(t, func() bool { return len(spares()) > 0 }, 500*time.Millisecond, 10*time.Millisecond)
+			}
+			used := map[string]bool{a.current().ep.key(): true}
+			for _, s := range spares() {
+				used[s.ep.key()] = true
+			}
+			assert.Len(t, used, tc.sessions, "each session is on its own relay")
+
+			old, cur := spares(), a.current()
+			if tc.endSpare {
+				_ = old[0].qc.CloseWithError(0, "spare ends")
+				require.Eventually(t, func() bool { return full() && !slices.Contains(spares(), old[0]) }, 10*time.Second, 10*time.Millisecond)
+				assert.Same(t, cur, a.current())
+				return
+			}
+			a.reconnect()
+			a.attached(t)
+			if tc.sessions > 1 {
+				assert.True(t, slices.Contains(old, a.current()), "a spare takes the attachment")
+			}
+			t.Logf("Setup after the attached session ended: %v", a.a.Status().Setup)
+			require.Eventually(t, full, 10*time.Second, 10*time.Millisecond)
+		})
+	}
+}
+
+// TestRelist checks that the agent enrolls again for a new relay list when
+// all relays fail, and keeps the cached list while the enroll fails.
+func TestRelist(t *testing.T) {
+	oldMin, oldMax := relistMin, relistMax
+	relistMin, relistMax = 100*time.Millisecond, 400*time.Millisecond
+	t.Cleanup(func() { relistMin, relistMax = oldMin, oldMax })
+	cases := []struct {
+		name  string
+		fails int32 // Enrolls that fail after the first.
+	}{
+		{name: "new list"},
+		{name: "enroll fails", fails: 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newWorld(t)
+			r := w.relay(t, "relay-1")
+			a := w.agent(t, "a", nil, agentOptions{enrolled: func(n int32) ([]identity.Relay, []byte, error) {
+				switch {
+				case n == 1:
+					return []identity.Relay{{ID: "relay-0", Addresses: []string{"no-port"}}}, nil, nil
+				case n <= 1+tc.fails:
+					return nil, nil, errors.New("apiserver is down")
+				}
+				return []identity.Relay{r.ref()}, nil, nil
+			}})
+			a.attached(t)
+			assert.Equal(t, r.addr, a.current().addr)
+			assert.Equal(t, 2+tc.fails, a.enrolls.Load())
+		})
 	}
 }
 
 // TestRelayDial checks how the agent picks and trusts relays.
 func TestRelayDial(t *testing.T) {
 	cases := []struct {
-		name     string
-		opts     agentOptions
-		attaches bool
+		name      string
+		first     string // Address of a relay before the live relay. "dead" drops all packets.
+		noRoots   bool   // No Config.RelayRoots.
+		certRoots bool   // Enroll gives the relay roots.
+		attaches  bool
 	}{
-		{name: "alternate after a failed open", opts: agentOptions{first: "no-port"}, attaches: true},
-		{name: "unknown relay CA", opts: agentOptions{noRoots: true}},
-		{name: "unknown relay CA with insecure skip verify", opts: agentOptions{noRoots: true, insecure: true}, attaches: true},
+		{name: "next relay after a failed dial", first: "no-port", attaches: true},
+		{name: "next relay while the first relay does not answer", first: "dead", attaches: true},
+		{name: "unknown relay CA", noRoots: true},
+		{name: "relay roots from enroll", noRoots: true, certRoots: true, attaches: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			w := newWorld(t)
-			a := w.agent(t, "a", w.relay(t, "relay-1"), tc.opts)
-			if tc.attaches {
-				a.attached(t)
+			r := w.relay(t, "relay-1")
+			relays := []identity.Relay{r.ref()}
+			if tc.first != "" {
+				addr := tc.first
+				if addr == "dead" {
+					addr = deadRelay(t)
+				}
+				relays = append([]identity.Relay{{ID: "relay-0", Addresses: []string{addr}}}, relays...)
+			}
+			opts := agentOptions{relays: relays, noRoots: tc.noRoots}
+			if tc.certRoots {
+				roots := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: w.relayCA.cert.Raw})
+				opts.relays = nil
+				opts.enrolled = func(int32) ([]identity.Relay, []byte, error) { return relays, roots, nil }
+			}
+			a := w.agent(t, "a", r, opts)
+			if !tc.attaches {
+				select {
+				case <-a.attach:
+					t.Fatal("agent attached to a relay that it cannot verify")
+				case <-time.After(time.Second):
+				}
 				return
 			}
-			select {
-			case <-a.attach:
-				t.Fatal("agent attached to a relay that it cannot verify")
-			case <-time.After(time.Second):
-			}
+			a.attached(t)
+			assert.Equal(t, r.addr, a.current().addr)
+			setup := a.a.Status().Setup
+			t.Logf("Setup with %d relays: %v", len(relays), setup)
+			assert.Less(t, setup, 2*time.Second)
 		})
 	}
 }

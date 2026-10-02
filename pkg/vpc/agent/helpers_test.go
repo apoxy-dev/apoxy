@@ -51,6 +51,7 @@ const (
 
 func TestMain(m *testing.M) {
 	_ = os.Setenv("QUIC_GO_DISABLE_RECEIVE_BUFFER_WARNING", "true")
+	shuffleRelays = false
 	os.Exit(m.Run())
 }
 
@@ -230,6 +231,18 @@ type testRelay struct {
 	addr string
 }
 
+func (r *testRelay) ref() identity.Relay {
+	return identity.Relay{ID: r.id, Addresses: []string{r.addr}}
+}
+
+// deadRelay returns the address of a socket that drops all packets.
+func deadRelay(t testing.TB) string {
+	t.Helper()
+	udp := loopback(t)
+	t.Cleanup(func() { _ = udp.Close() })
+	return udp.LocalAddr().String()
+}
+
 // loopback opens a UDP socket on 127.0.0.1.
 func loopback(t testing.TB) *net.UDPConn {
 	t.Helper()
@@ -302,9 +315,12 @@ type agentOptions struct {
 	tcp    bool         // Adds TCP to the netstack.
 	routes []netip.Prefix
 
-	first    string // Config.Relay, with the relay as the alternate.
-	noRoots  bool   // No relay roots, so the system roots.
-	insecure bool   // Config.InsecureSkipVerify.
+	relays   []identity.Relay // Config.Relays. Nil means the relay of the agent.
+	sessions int              // Config.Sessions.
+	noRoots  bool             // No Config.RelayRoots.
+	// enrolled gives the relays and the relay roots of enroll n, from 1. Then
+	// Config.Relays is empty.
+	enrolled func(n int32) ([]identity.Relay, []byte, error)
 }
 
 // lossyConn drops the packets that it sends if they are larger than max.
@@ -351,20 +367,27 @@ func (w *world) agent(t *testing.T, name string, r *testRelay, opts agentOptions
 	}
 	ta := &testAgent{tr: &quic.Transport{Conn: conn}, attach: make(chan attachEvent, 16), done: make(chan struct{}), routes: map[netip.Prefix]bool{}}
 	enroll := func(context.Context) (*identity.Credential, error) {
-		ta.enrolls.Add(1)
-		return w.enrollCA().credential(t, testProject, testVPC, name, opts.life), nil
+		n := ta.enrolls.Add(1)
+		cred := w.enrollCA().credential(t, testProject, testVPC, name, opts.life)
+		if opts.enrolled == nil {
+			return cred, nil
+		}
+		relays, roots, err := opts.enrolled(n)
+		if err != nil {
+			return nil, err
+		}
+		return cred, cred.SetRelays(relays, roots)
 	}
 	cfg := Config{
-		Identity:           identity.NewManager(filepath.Join(t.TempDir(), "cred.json"), enroll),
-		Relay:              r.addr,
-		RelayID:            r.id,
-		RelayRoots:         w.relayCA.pool(),
-		InsecureSkipVerify: opts.insecure,
-		Transport:          ta.tr,
-		TransportMode:      opts.mode,
-		Name:               name,
-		Routes:             opts.routes,
-		MTU:                opts.mtu,
+		Identity:      identity.NewManager(filepath.Join(t.TempDir(), "cred.json"), enroll),
+		Relays:        opts.relays,
+		RelayRoots:    w.relayCA.pool(),
+		Sessions:      opts.sessions,
+		Transport:     ta.tr,
+		TransportMode: opts.mode,
+		Name:          name,
+		Routes:        opts.routes,
+		MTU:           opts.mtu,
 		OnAttach: func(b *psp.Binding, addr netip.Addr, prefixes []netip.Prefix) {
 			ta.netstack(t, b, addr, opts.tcp)
 			ta.attach <- attachEvent{addr, prefixes}
@@ -386,8 +409,8 @@ func (w *world) agent(t *testing.T, name string, r *testRelay, opts agentOptions
 			}
 		},
 	}
-	if opts.first != "" {
-		cfg.Relay, cfg.Alternates = opts.first, []string{r.addr}
+	if cfg.Relays == nil && opts.enrolled == nil {
+		cfg.Relays = []identity.Relay{r.ref()}
 	}
 	if opts.noRoots {
 		cfg.RelayRoots = nil
@@ -426,6 +449,23 @@ func (ta *testAgent) reconnect() {
 	rc := ta.a.rc
 	ta.a.mu.Unlock()
 	_ = rc.qc.CloseWithError(0, "next session")
+}
+
+// current returns the attached session.
+func (ta *testAgent) current() *relayConn {
+	ta.a.mu.Lock()
+	defer ta.a.mu.Unlock()
+	return ta.a.rc
+}
+
+// spare returns the first spare session, or nil.
+func (ta *testAgent) spare() *relayConn {
+	ta.a.mu.Lock()
+	defer ta.a.mu.Unlock()
+	if len(ta.a.spares) == 0 {
+		return nil
+	}
+	return ta.a.spares[0]
 }
 
 // routeSet returns the prefixes that OnRoutes gave.

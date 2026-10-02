@@ -61,9 +61,17 @@ func (rc *relayConn) probe(ctx context.Context, mtu int) <-chan bool {
 	p := &pathProbe{keys: keys, size: mtu + pspwire.Overhead, ok: make(chan struct{})}
 	_, _ = rand.Read(p.txid[:])
 	a := rc.a
-	a.probing.Store(p)
+	a.probeMu.Lock()
+	a.probes[keys.SID] = p
+	a.probeMu.Unlock()
 	go func() {
-		defer a.probing.CompareAndSwap(p, nil)
+		defer func() {
+			a.probeMu.Lock()
+			if a.probes[keys.SID] == p {
+				delete(a.probes, keys.SID)
+			}
+			a.probeMu.Unlock()
+		}()
 		to := net.UDPAddrFromAddrPort(rc.relayAddr)
 		buf := make([]byte, 0, p.size)
 		wait := time.NewTimer(probeWait)
@@ -97,7 +105,14 @@ func (rc *relayConn) probe(ctx context.Context, mtu int) <-chan bool {
 
 // onProbe gets the path probes on the agent socket.
 func (a *Agent) onProbe(pkt []byte, _ net.Addr) {
-	if p := a.probing.Load(); p != nil {
+	sid, ok := p2p.ProbeSID(pkt)
+	if !ok {
+		return
+	}
+	a.probeMu.Lock()
+	p := a.probes[sid]
+	a.probeMu.Unlock()
+	if p != nil {
 		p.reply(pkt)
 	}
 }
