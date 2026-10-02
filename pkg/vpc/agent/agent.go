@@ -92,7 +92,7 @@ type Config struct {
 	// the cert that the relay shows. Use it only with dev relays.
 	InsecureSkipVerify bool
 	// Transport is the agent socket for the relay sessions and PSP. New sets
-	// its NonQUICPacketHandler, so it must not be in use yet.
+	// its NonQUICPacketHandler and NonQUICBatchEnd, so it must not be in use yet.
 	Transport *quic.Transport
 	// TransportMode picks how data goes to peers. The zero value is auto.
 	TransportMode TransportMode
@@ -138,6 +138,7 @@ func New(cfg Config) *Agent {
 	a.demux.Probe = a.onProbe
 	if cfg.Transport != nil {
 		cfg.Transport.NonQUICPacketHandler = a.demux.Handle
+		cfg.Transport.NonQUICBatchEnd = a.demux.BatchEnd
 	}
 	return a
 }

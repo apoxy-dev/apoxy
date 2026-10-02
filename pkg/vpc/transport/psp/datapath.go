@@ -32,6 +32,10 @@ const (
 	maxBatch = 128
 	// tunOffset is the space that the TUN device needs before each packet.
 	tunOffset = 16
+	// rxBatch is the most packets in one TUN write: the recvmmsg batch of quic-go on Linux.
+	rxBatch = 8
+	// rxSlot is the space for one packet of a tunBatch. The device can coalesce up to 64 KiB into it.
+	rxSlot = tunOffset + 1<<16
 )
 
 // driver is the engine and the underlay of a softpsp vtep driver, for sends only. The QUIC
@@ -41,8 +45,10 @@ type driver struct {
 	// deliver gives the inner packet buf[off:] to the netstack or the TUN
 	// device. It returns false when it drops the packet.
 	deliver func(buf []byte, off int) bool
-	done    chan struct{}
-	once    sync.Once
+	// batch collects the PSP packets of one read for the TUN device. It is nil for the netstack.
+	batch *tunBatch
+	done  chan struct{}
+	once  sync.Once
 
 	// Send state. Only the send goroutine of the vtep driver uses it.
 	pc    *ipv4.PacketConn // Nil when the socket cannot send with sendmmsg.
@@ -96,6 +102,7 @@ func (b *Binding) Netstack(ep *channel.Endpoint) (*netstack.Datapath, error) {
 func (b *Binding) Tun(dev tun.Device) (*tun.Datapath, error) {
 	w := &tunWriter{dev: dev, bufs: make([][]byte, 1), scratch: make([]byte, tunOffset+b.mtu)}
 	d := newDriver(b, w.write)
+	d.batch = newTunBatch(w, &b.stats)
 	if !b.drv.CompareAndSwap(nil, d) {
 		return nil, errors.New("psp: binding already has a driver")
 	}
@@ -149,6 +156,51 @@ func (w *tunWriter) write(buf []byte, off int) bool {
 	w.bufs[0] = buf[off-tunOffset:]
 	_, err := w.dev.Write(w.bufs, tunOffset)
 	return err == nil
+}
+
+// tunBatch copies the PSP packets of one read of the QUIC read loop, and writes them to the TUN
+// device in one call, so that the device can coalesce them. Only the QUIC read loop uses it.
+type tunBatch struct {
+	w    *tunWriter
+	st   *counters
+	bufs [][]byte // rxBatch slots of rxSlot bytes.
+	out  [][]byte // The packets in bufs.
+}
+
+func newTunBatch(w *tunWriter, st *counters) *tunBatch {
+	slab := make([]byte, rxBatch*rxSlot)
+	t := &tunBatch{w: w, st: st, bufs: make([][]byte, rxBatch), out: make([][]byte, 0, rxBatch)}
+	for i := range t.bufs {
+		t.bufs[i] = slab[i*rxSlot : (i+1)*rxSlot : (i+1)*rxSlot]
+	}
+	return t
+}
+
+// add copies pkt into the batch. It writes the batch when the batch is full.
+func (t *tunBatch) add(pkt []byte) {
+	b := t.bufs[len(t.out)][:tunOffset+len(pkt)]
+	copy(b[tunOffset:], pkt)
+	t.out = append(t.out, b)
+	if len(t.out) == cap(t.out) {
+		t.flush()
+	}
+}
+
+// flush writes the packets of the batch to the device. A failed write counts all of them as drops.
+func (t *tunBatch) flush() {
+	n := uint64(len(t.out))
+	if n == 0 {
+		return
+	}
+	t.w.mu.Lock()
+	_, err := t.w.dev.Write(t.out, tunOffset)
+	t.w.mu.Unlock()
+	t.out = t.out[:0]
+	if err != nil {
+		t.st.rxDrops.Add(n)
+	} else {
+		t.st.rxPackets.Add(n)
+	}
 }
 
 // VirtToPhy makes the send frame of an inner packet for the peer that routes its destination:

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -87,6 +88,25 @@ func BenchmarkRoundTrip(b *testing.B) {
 			require.Equal(b, uint64(b.N), y.b.Stats().RxPackets)
 		})
 	}
+}
+
+// nopTun is a TUN device that drops the packets that it writes.
+type nopTun struct{ *fakeTun }
+
+func (nopTun) Write(bufs [][]byte, _ int) (int, error) { return len(bufs), nil }
+
+// BenchmarkTunBatch copies 1280 B packets into a TUN batch, and writes each full batch.
+func BenchmarkTunBatch(b *testing.B) {
+	var bd Binding
+	bt := newTunBatch(&tunWriter{dev: nopTun{newFakeTun(1)}}, &bd.stats)
+	pkt := packet(netip.MustParseAddr("10.0.0.1"), netip.MustParseAddr("10.0.0.2"), 6, 1, 2, DefaultMTU)
+	b.SetBytes(int64(len(pkt)))
+	b.ReportAllocs()
+	for b.Loop() {
+		bt.add(pkt)
+	}
+	bt.flush()
+	require.Equal(b, uint64(b.N), bd.Stats().RxPackets)
 }
 
 // BenchmarkHandleData opens one QUIC data frame and gives it to a driver, with the MSS

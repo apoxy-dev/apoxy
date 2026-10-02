@@ -28,7 +28,7 @@ func TestMaxMTU(t *testing.T) {
 
 func TestNew(t *testing.T) {
 	dm, used := &Demux{}, &Demux{}
-	tr := newTransport(t, dm.Handle)
+	tr := demuxTransport(t, dm)
 	b, err := New(Config{Transport: tr, Demux: used})
 	require.NoError(t, err)
 	defer b.Close()
@@ -43,6 +43,7 @@ func TestNew(t *testing.T) {
 		{"no transport", Config{Demux: dm, VNI: 1}, 0, 0},
 		{"no demux", Config{Transport: tr, VNI: 1}, 0, 0},
 		{"transport has no handler", Config{Transport: newTransport(t, nil), Demux: dm}, 0, 0},
+		{"transport has no batch end", Config{Transport: newTransport(t, dm.Handle), Demux: dm}, 0, 0},
 		{"demux has a binding", Config{Transport: tr, Demux: used}, 0, 0},
 		{"VNI too large", Config{Transport: tr, Demux: dm, VNI: pspwire.MaxVNI + 1}, 0, 0},
 		{"MTU too large", Config{Transport: tr, Demux: dm, MTU: MaxMTU + 1}, 0, 0},

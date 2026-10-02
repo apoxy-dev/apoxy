@@ -68,6 +68,13 @@ func newTransport(t testing.TB, h func([]byte, net.Addr)) *quic.Transport {
 	return tr
 }
 
+// demuxTransport returns a transport with dm as its NonQUICPacketHandler and NonQUICBatchEnd.
+func demuxTransport(t testing.TB, dm *Demux) *quic.Transport {
+	tr := newTransport(t, dm.Handle)
+	tr.NonQUICBatchEnd = dm.BatchEnd
+	return tr
+}
+
 func addrOf(tr *quic.Transport) netip.AddrPort {
 	a := tr.Conn.LocalAddr().(*net.UDPAddr).AddrPort()
 	return netip.AddrPortFrom(a.Addr().Unmap(), a.Port())
@@ -101,7 +108,7 @@ func newPairMTU(t testing.TB, mtu int) (*node, *node) {
 	a.other, b.other = b, a
 	for _, n := range []*node{a, b} {
 		dm := &Demux{}
-		n.tr = newTransport(t, dm.Handle)
+		n.tr = demuxTransport(t, dm)
 		var err error
 		n.b, err = New(Config{Transport: n.tr, Demux: dm, VNI: testVNI, MTU: mtu})
 		require.NoError(t, err)
@@ -415,6 +422,7 @@ func quicPair(t testing.TB, x, y *quic.Transport) (quic.Connection, quic.Connect
 // sends the packets to out.
 type fakeTun struct {
 	in, out chan []byte
+	calls   []int // The number of packets in each Write.
 	err     error
 	closed  chan struct{}
 	once    sync.Once
@@ -436,6 +444,7 @@ func (f *fakeTun) Read(bufs [][]byte, sizes []int, off int) (int, error) {
 
 // Write writes over the space before each packet, as the real device does.
 func (f *fakeTun) Write(bufs [][]byte, off int) (int, error) {
+	f.calls = append(f.calls, len(bufs))
 	if f.err != nil {
 		return 0, f.err
 	}

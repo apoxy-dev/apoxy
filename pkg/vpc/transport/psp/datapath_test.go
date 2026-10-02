@@ -109,6 +109,45 @@ func TestTunWriter(t *testing.T) {
 	}
 }
 
+// TestTunBatch writes the packets of a batch in one call, and a full batch at once.
+func TestTunBatch(t *testing.T) {
+	pkt := packet(netip.MustParseAddr("10.0.0.1"), netip.MustParseAddr("10.0.0.2"), 6, 1, 2, DefaultMTU)
+	cases := []struct {
+		name  string
+		n     int
+		err   error
+		calls []int
+		want  Stats
+	}{
+		{"no packets", 0, nil, nil, Stats{}},
+		{"one packet", 1, nil, []int{1}, Stats{RxPackets: 1}},
+		{"full batch", rxBatch, nil, []int{rxBatch}, Stats{RxPackets: rxBatch}},
+		{"more than one batch", rxBatch + 3, nil, []int{rxBatch, 3}, Stats{RxPackets: rxBatch + 3}},
+		{"device error", 3, errors.New("down"), []int{3}, Stats{RxDrops: 3}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dev := newFakeTun(tc.n)
+			dev.err = tc.err
+			var b Binding
+			bt := newTunBatch(&tunWriter{dev: dev}, &b.stats)
+			for _, s := range bt.bufs {
+				require.Equal(t, rxSlot, cap(s), "the device can coalesce into each slot")
+			}
+			for range tc.n {
+				bt.add(pkt)
+			}
+			bt.flush()
+			assert.Equal(t, tc.calls, dev.calls)
+			assert.Equal(t, tc.want, b.Stats())
+			for range tc.want.RxPackets {
+				assert.Equal(t, pkt, <-dev.out)
+			}
+			assert.Empty(t, dev.out)
+		})
+	}
+}
+
 // TestTun sends packets between two tun drivers on TUN devices in memory.
 func TestTun(t *testing.T) {
 	a, b := newPair(t)

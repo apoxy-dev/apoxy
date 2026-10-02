@@ -19,7 +19,7 @@ import (
 // reports twice the size.
 func TestSockBufs(t *testing.T) {
 	dm := &Demux{}
-	tr := newTransport(t, dm.Handle)
+	tr := demuxTransport(t, dm)
 	b, err := New(Config{Transport: tr, Demux: dm})
 	require.NoError(t, err)
 	defer b.Close()

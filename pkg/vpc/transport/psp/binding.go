@@ -42,8 +42,8 @@ const (
 // ErrClosed is the error of calls on a closed binding or a removed peer.
 var ErrClosed = errors.New("psp: binding or peer is closed")
 
-// Demux gives the non-QUIC packets of an agent socket to its binding, and path probes to
-// Probe. Set Handle as the NonQUICPacketHandler, and set Probe, before the transport starts.
+// Demux gives the non-QUIC packets of an agent socket to its binding, and path probes to Probe.
+// Set Handle, BatchEnd and Probe on the transport before it starts.
 type Demux struct {
 	// Probe gets the path probes on the QUIC read loop. It must not block or keep pkt.
 	Probe func(pkt []byte, from net.Addr)
@@ -62,11 +62,20 @@ func (m *Demux) Handle(pkt []byte, from net.Addr) {
 	}
 }
 
+// BatchEnd is the NonQUICBatchEnd of the transport. It writes the packets of one read to the TUN device.
+func (m *Demux) BatchEnd() {
+	if b := m.b.Load(); b != nil {
+		if d := b.drv.Load(); d != nil && d.batch != nil {
+			d.batch.flush()
+		}
+	}
+}
+
 // Config configures a Binding.
 type Config struct {
 	// Transport is the agent socket. The caller owns it.
 	Transport *quic.Transport
-	// Demux is the NonQUICPacketHandler of Transport.
+	// Demux has the NonQUICPacketHandler and the NonQUICBatchEnd of Transport.
 	Demux *Demux
 	// VNI is the network ID of the VPC.
 	VNI uint32
@@ -106,8 +115,9 @@ type Binding struct {
 
 // New returns a binding with a new master key and no peers.
 func New(cfg Config) (*Binding, error) {
-	if cfg.Transport == nil || cfg.Demux == nil || cfg.Transport.NonQUICPacketHandler == nil {
-		return nil, errors.New("psp: no transport, or no demux as its NonQUICPacketHandler")
+	if cfg.Transport == nil || cfg.Demux == nil || cfg.Transport.NonQUICPacketHandler == nil ||
+		cfg.Transport.NonQUICBatchEnd == nil {
+		return nil, errors.New("psp: no transport, or no demux as its NonQUICPacketHandler and NonQUICBatchEnd")
 	}
 	if cfg.VNI > pspwire.MaxVNI {
 		return nil, pspwire.ErrVNI
@@ -381,7 +391,7 @@ func (b *Binding) receive(pkt []byte) {
 		b.stats.rxDrops.Add(1)
 		return
 	}
-	b.deliver(d, pkt[:pspwire.PrefixLen+len(inner)], pspwire.PrefixLen)
+	b.deliver(d, pkt[:pspwire.PrefixLen+len(inner)], pspwire.PrefixLen, true)
 }
 
 // HandleData opens a data frame of the relay session and gives it to the driver. Set it
@@ -397,13 +407,17 @@ func (b *Binding) HandleData(frame []byte) {
 		b.stats.rxDrops.Add(1)
 		return
 	}
-	b.deliver(d, frame, len(frame)-len(inner))
+	b.deliver(d, frame, len(frame)-len(inner), false)
 }
 
 // deliver gives the inner packet buf[off:] of the PSP path or the QUIC path to the driver,
-// after the MSS clamp. Both paths deliver only here.
-func (b *Binding) deliver(d *driver, buf []byte, off int) {
+// after the MSS clamp. Both paths deliver only here. The QUIC read loop sets batch.
+func (b *Binding) deliver(d *driver, buf []byte, off int, batch bool) {
 	b.clampMSS(buf[off:], b.relay.Load() != nil)
+	if batch && d.batch != nil {
+		d.batch.add(buf[off:])
+		return
+	}
 	if d.deliver(buf, off) {
 		b.stats.rxPackets.Add(1)
 	} else {
