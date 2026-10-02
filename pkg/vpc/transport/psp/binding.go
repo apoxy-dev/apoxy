@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Package psp is the SoftPSP binding of an agent. PSP packets share the UDP
+// Package psp is the data path of an agent: SoftPSP by default, and QUIC data
+// frames on the relay session as the fallback. PSP packets share the UDP
 // socket of a quic.Transport; PSP starts with 0x04 or 0x29, QUIC sets bit 0x40.
 package psp
 
@@ -9,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/maphash"
+	"log/slog"
 	"net"
 	"net/netip"
 	"sync"
@@ -21,6 +23,7 @@ import (
 	"github.com/quic-go/quic-go"
 
 	vpcv1alpha1 "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/peerconn"
 )
 
 const (
@@ -28,6 +31,8 @@ const (
 	DefaultMTU = vpcv1alpha1.DefaultMTU
 	// MaxMTU is the largest inner MTU.
 	MaxMTU = vpcv1alpha1.MaxMTU
+	// sockBuf is the send and receive buffer size of the agent socket.
+	sockBuf = 16 << 20
 )
 
 // ErrClosed is the error of calls on a closed binding or a removed peer.
@@ -67,6 +72,10 @@ type Binding struct {
 	send   *keys.Sender
 	routes engine.Routes[*Peer]
 	seed   maphash.Seed
+	relay  atomic.Pointer[peerconn.Conn] // Set when data goes as QUIC data frames.
+
+	// routed reports whether a peer has a route to an address.
+	routed func(netip.Addr) bool
 
 	ctx    context.Context // Ends at Close.
 	cancel context.CancelFunc
@@ -119,9 +128,18 @@ func New(cfg Config) (*Binding, error) {
 		cancel: cancel,
 		peers:  map[*keys.Peer]*Peer{},
 	}
+	b.routed = func(a netip.Addr) bool {
+		_, ok := b.routes.Lookup(a)
+		return ok
+	}
 	if !cfg.Demux.b.CompareAndSwap(nil, b) {
 		cancel()
 		return nil, errors.New("psp: demux already has a binding")
+	}
+	if uc, ok := cfg.Transport.Conn.(*net.UDPConn); ok {
+		if err := setSockBufs(uc, sockBuf); err != nil {
+			slog.Debug("Failed to set the agent socket buffers", "bytes", sockBuf, "error", err)
+		}
 	}
 	if err := cfg.Transport.Start(); err != nil {
 		_ = b.Close()
@@ -258,43 +276,83 @@ func (b *Binding) RemoveRoute(pfx netip.Prefix, p *Peer) bool {
 	return true
 }
 
-// Stats are the packet counters of a binding.
+// Stats are the packet counters of a binding. They count PSP packets and
+// QUIC data frames together.
 type Stats struct {
-	RxPackets uint64 // PSP packets that passed the checks.
-	RxDrops   uint64 // PSP packets that failed a check, for example no SA.
-	RxFull    uint64 // PSP packets dropped: no driver, or no free receive slot.
-	RxOther   uint64 // Non-QUIC packets that are not PSP, for example probes.
-	TxPackets uint64 // PSP packets sent.
-	TxNoRoute uint64 // Inner packets with no route or no transmit SA.
-	TxDrops   uint64 // Inner packets that a size check, a seal or a write dropped.
+	RxPackets  uint64 // Packets that passed the checks and went to the driver.
+	RxDrops    uint64 // Packets that failed a check or the delivery, for example no SA.
+	RxNoDriver uint64 // Packets dropped because no driver runs.
+	RxOther    uint64 // Non-QUIC packets that are not PSP, for example probes.
+	TxPackets  uint64 // Packets sent.
+	TxNoRoute  uint64 // Inner packets with no route or no transmit SA.
+	TxDrops    uint64 // Inner packets that a size check, a seal or a write dropped.
 }
 
 type counters struct {
-	rxPackets, rxDrops, rxFull, rxOther atomic.Uint64
-	txPackets, txNoRoute, txDrops       atomic.Uint64
+	rxPackets, rxDrops, rxNoDriver, rxOther atomic.Uint64
+	txPackets, txNoRoute, txDrops           atomic.Uint64
 }
 
 // Stats returns the packet counters.
 func (b *Binding) Stats() Stats {
 	c := &b.stats
 	return Stats{
-		RxPackets: c.rxPackets.Load(),
-		RxDrops:   c.rxDrops.Load(),
-		RxFull:    c.rxFull.Load(),
-		RxOther:   c.rxOther.Load(),
-		TxPackets: c.txPackets.Load(),
-		TxNoRoute: c.txNoRoute.Load(),
-		TxDrops:   c.txDrops.Load(),
+		RxPackets:  c.rxPackets.Load(),
+		RxDrops:    c.rxDrops.Load(),
+		RxNoDriver: c.rxNoDriver.Load(),
+		RxOther:    c.rxOther.Load(),
+		TxPackets:  c.txPackets.Load(),
+		TxNoRoute:  c.txNoRoute.Load(),
+		TxDrops:    c.txDrops.Load(),
 	}
 }
 
-// receive hands a non-QUIC packet to the driver. Probes come later.
+// UseQUIC sends inner packets as data frames on the relay session of pc in
+// place of PSP packets. Nil sends PSP packets again. Both paths always receive.
+func (b *Binding) UseQUIC(pc *peerconn.Conn) { b.relay.Store(pc) }
+
+// receive opens a non-QUIC packet in place and gives it to the driver. It runs
+// on the QUIC read loop, which reads with recvmmsg. Probes come later.
 func (b *Binding) receive(pkt []byte) {
 	if len(pkt) == 0 || (pkt[0] != pspwire.NextHdrV4 && pkt[0] != pspwire.NextHdrV6) {
 		b.stats.rxOther.Add(1)
 		return
 	}
-	if d := b.drv.Load(); d == nil || !d.push(pkt) {
-		b.stats.rxFull.Add(1)
+	d := b.drv.Load()
+	if d == nil {
+		b.stats.rxNoDriver.Add(1)
+		return
+	}
+	inner, _, err := b.rxq.Receive(pkt)
+	if err != nil {
+		b.stats.rxDrops.Add(1)
+		return
+	}
+	b.deliver(d, pkt[:pspwire.PrefixLen+len(inner)], pspwire.PrefixLen)
+}
+
+// HandleData opens a data frame of the relay session and gives it to the
+// driver. Set it with (*peerconn.Conn).HandleData.
+func (b *Binding) HandleData(frame []byte) {
+	d := b.drv.Load()
+	if d == nil {
+		b.stats.rxNoDriver.Add(1)
+		return
+	}
+	inner, err := peerconn.OpenData(frame, b.vni, b.routed)
+	if err != nil {
+		b.stats.rxDrops.Add(1)
+		return
+	}
+	b.deliver(d, frame, len(frame)-len(inner))
+}
+
+// deliver gives the inner packet buf[off:] of the PSP path or the QUIC path to
+// the driver. It is the one place where both paths deliver.
+func (b *Binding) deliver(d *driver, buf []byte, off int) {
+	if d.deliver(buf, off) {
+		b.stats.rxPackets.Add(1)
+	} else {
+		b.stats.rxDrops.Add(1)
 	}
 }

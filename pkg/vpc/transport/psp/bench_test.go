@@ -14,7 +14,24 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
+	"gvisor.dev/gvisor/pkg/tcpip/link/channel"
+	"gvisor.dev/gvisor/pkg/tcpip/network/ipv4"
+	"gvisor.dev/gvisor/pkg/tcpip/network/ipv6"
+	"gvisor.dev/gvisor/pkg/tcpip/stack"
+
+	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/peerconn"
 )
+
+// nullStack returns the endpoint of a netstack NIC with no addresses.
+func nullStack(b *testing.B) *channel.Endpoint {
+	s := stack.New(stack.Options{NetworkProtocols: []stack.NetworkProtocolFactory{ipv4.NewProtocol, ipv6.NewProtocol}})
+	b.Cleanup(s.Close)
+	ep := channel.New(16, DefaultMTU, "")
+	if err := s.CreateNIC(1, ep); err != nil {
+		b.Fatalf("create NIC: %v", err)
+	}
+	return ep
+}
 
 func BenchmarkVirtToPhy(b *testing.B) {
 	x, y := newPair(b)
@@ -31,41 +48,73 @@ func BenchmarkVirtToPhy(b *testing.B) {
 	}
 }
 
-// BenchmarkRoundTrip seals and opens one packet.
+// BenchmarkRoundTrip seals one packet and gives it to the receive path, which
+// opens it in place.
 func BenchmarkRoundTrip(b *testing.B) {
-	x, y := newPair(b)
-	offer(b, time.Now(), x, y)
-	tx, rx := &driver{b: x.b}, &driver{b: y.b}
-	pkt := packet(x.v4, y.v4, 6, 1, 2, DefaultMTU)
-	phy, virt := make([]byte, 2048), make([]byte, 2048)
-	b.SetBytes(int64(len(pkt)))
-	b.ReportAllocs()
-	for b.Loop() {
-		n, _ := tx.VirtToPhy(pkt, phy)
-		if rx.PhyToVirt(phy[addrLen:n], virt) == 0 {
-			b.Fatal("no packet")
-		}
+	for _, to := range []string{"none", "netstack"} {
+		b.Run("deliver="+to, func(b *testing.B) {
+			x, y := newPair(b)
+			offer(b, time.Now(), x, y)
+			deliver := func([]byte, int) bool { return true }
+			if to == "netstack" {
+				// The netstack drops the packet: it has no address.
+				ep := nullStack(b)
+				deliver = func(buf []byte, off int) bool { return inject(ep, buf[off:]) }
+			}
+			y.b.drv.Store(newDriver(y.b, deliver))
+			tx := &driver{b: x.b}
+			pkt := packet(x.v4, y.v4, 6, 1, 2, DefaultMTU)
+			phy := make([]byte, 2048)
+			b.SetBytes(int64(len(pkt)))
+			b.ReportAllocs()
+			for b.Loop() {
+				n, _ := tx.VirtToPhy(pkt, phy)
+				y.b.receive(phy[addrLen:n])
+			}
+			require.Equal(b, uint64(b.N), y.b.Stats().RxPackets)
+		})
 	}
 }
 
-// BenchmarkWriteFrames sends one PSP packet to a UDP socket.
-func BenchmarkWriteFrames(b *testing.B) {
+// BenchmarkHandleData opens one QUIC data frame and gives it to a driver.
+func BenchmarkHandleData(b *testing.B) {
 	x, y := newPair(b)
-	offer(b, time.Now(), x, y)
-	sink, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
-	require.NoError(b, err)
-	defer sink.Close()
-	x.peer.SetAddr(sink.LocalAddr().(*net.UDPAddr).AddrPort())
-	d := newDriver(x.b)
-	phy := make([]byte, 2048)
-	n, _ := d.VirtToPhy(packet(x.v4, y.v4, 6, 1, 2, DefaultMTU), phy)
-	frames := [][]byte{phy[:n]}
-	b.SetBytes(int64(n - addrLen))
+	y.b.drv.Store(newDriver(y.b, func([]byte, int) bool { return true }))
+	frame := peerconn.EncodeData(nil, testVNI, packet(x.v4, y.v4, 6, 1, 2, DefaultMTU))
+	b.SetBytes(int64(len(frame)))
 	b.ReportAllocs()
 	for b.Loop() {
-		_, _ = d.WriteFrames(frames)
+		y.b.HandleData(frame)
 	}
-	require.Zero(b, x.b.Stats().TxDrops)
+	require.Equal(b, uint64(b.N), y.b.Stats().RxPackets)
+}
+
+// BenchmarkWriteFrames sends 64 PSP packets to a UDP socket, with sendmmsg
+// and with one write for each packet.
+func BenchmarkWriteFrames(b *testing.B) {
+	for _, batch := range []bool{true, false} {
+		b.Run(fmt.Sprintf("sendmmsg=%t", batch), func(b *testing.B) {
+			x, y := newPair(b)
+			offer(b, time.Now(), x, y)
+			sink, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+			require.NoError(b, err)
+			defer sink.Close()
+			x.peer.SetAddr(sink.LocalAddr().(*net.UDPAddr).AddrPort())
+			d := newDriver(x.b, nil)
+			if !batch {
+				d.pc = nil
+			}
+			phy := make([]byte, 2048)
+			n, _ := d.VirtToPhy(packet(x.v4, y.v4, 6, 1, 2, DefaultMTU), phy)
+			frames := repeat(phy[:n], 64)
+			b.SetBytes(int64(len(frames) * (n - addrLen)))
+			b.ReportAllocs()
+			for b.Loop() {
+				_, _ = d.WriteFrames(frames)
+			}
+			require.Zero(b, x.b.Stats().TxDrops)
+		})
+	}
 }
 
 // BenchmarkThroughput sends TCP from one netstack to another, directly or
@@ -117,7 +166,7 @@ func benchThroughput(b *testing.B, viaRelay bool, flows int) {
 
 	const perOp = 1 << 20
 	buf := make([]byte, 64<<10)
-	tx0, rx0, full0 := x.b.Stats().TxPackets, y.b.Stats().RxPackets, y.b.Stats().RxFull
+	tx0, rx0 := x.b.Stats().TxPackets, y.b.Stats().RxPackets
 	b.SetBytes(perOp)
 	b.ResetTimer()
 	start := time.Now()
@@ -150,7 +199,6 @@ func benchThroughput(b *testing.B, viaRelay bool, flows int) {
 	if fr != nil {
 		b.ReportMetric(float64(fr.drops.Load()), "relaydrops")
 	}
-	b.ReportMetric(float64(y.b.Stats().RxFull-full0), "rxfull")
 }
 
 // counter counts the bytes written to it.

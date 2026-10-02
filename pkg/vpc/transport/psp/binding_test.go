@@ -5,7 +5,6 @@ package psp
 import (
 	"bytes"
 	"encoding/binary"
-	"net"
 	"net/netip"
 	"testing"
 	"time"
@@ -65,16 +64,13 @@ func TestNew(t *testing.T) {
 // driver does, and returns the inner packet that arrived.
 func xfer(t *testing.T, from *node, pkt []byte) []byte {
 	t.Helper()
-	phy := make([]byte, 2048)
-	n, _ := (&driver{b: from.b}).VirtToPhy(pkt, phy)
-	if n == 0 {
+	phy := seal(from, pkt)
+	if phy == nil {
 		return nil
 	}
 	dst := netip.AddrPortFrom(netip.AddrFrom16([16]byte(phy[:16])).Unmap(), binary.BigEndian.Uint16(phy[16:addrLen]))
 	require.Equal(t, from.peer.Addr(), dst)
-	virt := make([]byte, 2048)
-	m := (&driver{b: from.other.b}).PhyToVirt(phy[addrLen:n], virt)
-	return virt[:m]
+	return open(from.other.b, phy[addrLen:])
 }
 
 func TestDatapath(t *testing.T) {
@@ -110,74 +106,59 @@ func TestDatapath(t *testing.T) {
 }
 
 func add(x, y Stats) Stats {
-	return Stats{x.RxPackets + y.RxPackets, x.RxDrops + y.RxDrops, x.RxFull + y.RxFull, x.RxOther + y.RxOther,
+	return Stats{x.RxPackets + y.RxPackets, x.RxDrops + y.RxDrops, x.RxNoDriver + y.RxNoDriver, x.RxOther + y.RxOther,
 		x.TxPackets + y.TxPackets, x.TxNoRoute + y.TxNoRoute, x.TxDrops + y.TxDrops}
 }
 
 func sub(x, y Stats) Stats {
-	return Stats{x.RxPackets - y.RxPackets, x.RxDrops - y.RxDrops, x.RxFull - y.RxFull, x.RxOther - y.RxOther,
+	return Stats{x.RxPackets - y.RxPackets, x.RxDrops - y.RxDrops, x.RxNoDriver - y.RxNoDriver, x.RxOther - y.RxOther,
 		x.TxPackets - y.TxPackets, x.TxNoRoute - y.TxNoRoute, x.TxDrops - y.TxDrops}
 }
 
+// TestReceive gives packets to the receive path. It opens them in place and
+// gives the inner packet to the driver.
 func TestReceive(t *testing.T) {
-	a, _ := newPair(t)
-	d := newDriver(a.b)
-	a.b.drv.Store(d)
+	a, b := newPair(t)
+	offer(t, time.Now(), a, b)
+	pkt := packet(a.v4, b.v4, 17, 1, 2, 500)
 	cases := []struct {
-		name string
-		pkt  []byte
-		want Stats
+		name    string
+		pkt     []byte
+		drv     *capture // Nil means no driver.
+		want    Stats
+		deliver bool
 	}{
-		{"PSP in IPv4", []byte{pspwire.NextHdrV4, 1}, Stats{}},
-		{"PSP in IPv6", []byte{pspwire.NextHdrV6, 1}, Stats{}},
-		{"probe", []byte{0x02, 1}, Stats{RxOther: 1}},
-		{"empty", nil, Stats{RxOther: 1}},
+		{"PSP", seal(a, pkt)[addrLen:], &capture{}, Stats{RxPackets: 1}, true},
+		{"no driver", seal(a, pkt)[addrLen:], nil, Stats{RxNoDriver: 1}, false},
+		{"driver drops", seal(a, pkt)[addrLen:], &capture{fail: true}, Stats{RxDrops: 1}, false},
+		{"unknown SA", append([]byte{pspwire.NextHdrV4, 1}, make([]byte, 100)...), &capture{}, Stats{RxDrops: 1}, false},
+		{"PSP in IPv6", []byte{pspwire.NextHdrV6, 1}, &capture{}, Stats{RxDrops: 1}, false},
+		{"probe", []byte{0x02, 1}, &capture{}, Stats{RxOther: 1}, false},
+		{"empty", nil, &capture{}, Stats{RxOther: 1}, false},
 	}
-	buf := make([]byte, 100)
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			before := a.b.Stats()
-			a.b.receive(tc.pkt)
-			assert.Equal(t, tc.want, sub(a.b.Stats(), before))
-			if tc.want.RxOther == 0 {
-				n, err := d.ReadFrame(buf)
-				require.NoError(t, err)
-				assert.Equal(t, tc.pkt, buf[:n])
+			if tc.drv != nil {
+				d := newDriver(b.b, tc.drv.deliver)
+				b.b.drv.Store(d)
+				defer b.b.drv.Store(nil)
 			}
-			assert.Empty(t, d.full)
+			before := b.b.Stats()
+			b.b.demux.Handle(tc.pkt, nil)
+			assert.Equal(t, tc.want, sub(b.b.Stats(), before))
+			if tc.deliver {
+				assert.Equal(t, [][]byte{pkt}, tc.drv.got)
+			} else if tc.drv != nil {
+				assert.Empty(t, tc.drv.got)
+			}
 		})
 	}
-}
 
-// TestReceiveFull fills the receive slots. The packets that find no slot are
-// counted, and the driver ends with the binding.
-func TestReceiveFull(t *testing.T) {
-	a, _ := newPair(t)
-	pkt := []byte{pspwire.NextHdrV4, 1}
-	a.b.receive(pkt)
-	assert.Equal(t, Stats{RxFull: 1}, a.b.Stats(), "no driver")
-
-	d := newDriver(a.b)
-	a.b.drv.Store(d)
-	for range rxSlots + 1 {
-		a.b.receive(pkt)
-	}
-	assert.Equal(t, Stats{RxFull: 2}, a.b.Stats())
-	n, err := d.ReadFrame(make([]byte, 100))
-	require.NoError(t, err)
-	assert.Equal(t, len(pkt), n)
-	a.b.receive(pkt)
-	assert.Equal(t, Stats{RxFull: 2}, a.b.Stats())
-
-	require.NoError(t, a.b.Close())
-	a.b.demux.Handle(pkt, nil) // The demux has no binding now.
-	assert.Equal(t, Stats{RxFull: 2}, a.b.Stats())
-	for range rxSlots + 1 {
-		if _, err = d.ReadFrame(make([]byte, 100)); err != nil {
-			break
-		}
-	}
-	assert.ErrorIs(t, err, net.ErrClosed)
+	// A closed binding leaves the demux.
+	require.NoError(t, b.b.Close())
+	before := b.b.Stats()
+	b.b.demux.Handle(seal(a, pkt)[addrLen:], nil)
+	assert.Equal(t, before, b.b.Stats())
 }
 
 func TestRemovePeer(t *testing.T) {
@@ -325,8 +306,7 @@ func TestRekeyInFlight(t *testing.T) {
 			if i >= perRound {
 				to = a
 			}
-			virt := make([]byte, 2048)
-			require.NotZero(t, (&driver{b: to.b}).PhyToVirt(inFlight[i], virt), "round %d packet %d", round, i)
+			require.NotNil(t, open(to.b, inFlight[i]), "round %d packet %d", round, i)
 		}
 	}
 	for _, n := range []*node{a, b} {

@@ -42,7 +42,7 @@ func TestRelay(t *testing.T) {
 	for i, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			port := uint16(8000 + i)
-			go echo(t, sb, tc.dst, port)
+			echo(t, sb, tc.dst, port)
 			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 			defer cancel()
 			c, err := gonet.DialContextTCP(ctx, sa, fullAddr(tc.dst, port), protoOf(tc.dst))
@@ -109,19 +109,19 @@ func TestDirect(t *testing.T) {
 	}
 }
 
-// echo serves one TCP connection on s that sends back what it reads.
+// echo listens on s, and serves one TCP connection that sends back what it reads.
 func echo(t *testing.T, s *stack.Stack, a netip.Addr, port uint16) {
 	ln, err := gonet.ListenTCP(s, fullAddr(a, port), protoOf(a))
-	if !assert.NoError(t, err) {
-		return
-	}
-	defer ln.Close()
-	c, err := ln.Accept()
-	if !assert.NoError(t, err) {
-		return
-	}
-	defer c.Close()
-	_, _ = io.Copy(c, c)
+	require.NoError(t, err)
+	go func() {
+		defer ln.Close()
+		c, err := ln.Accept()
+		if !assert.NoError(t, err) {
+			return
+		}
+		defer c.Close()
+		_, _ = io.Copy(c, c)
+	}()
 }
 
 // TestRelayRekey rekeys both receivers while datagrams are in flight, and no

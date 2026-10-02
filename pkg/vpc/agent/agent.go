@@ -336,10 +336,12 @@ func (rc *relayConn) start(ctx context.Context) error {
 		return err
 	}
 	rc.self = overlayAddr(rc.prefixes)
-	if err := a.binding(cfg); err != nil {
+	b, err := a.binding(cfg)
+	if err != nil {
 		return err
 	}
 	rc.pc = peerconn.New(rc.qc, rc.self)
+	rc.pc.HandleData(b.HandleData)
 	rc.peerTr = &quic.Transport{Conn: rc.pc}
 	ln, err := rc.peerTr.Listen(a.peerTLS(), peerQUIC)
 	if err != nil {
@@ -350,19 +352,19 @@ func (rc *relayConn) start(ctx context.Context) error {
 	return nil
 }
 
-// binding makes the PSP binding of the VPC at the first attach.
-func (a *Agent) binding(cfg *dp.Config) error {
+// binding returns the PSP binding of the VPC. The first attach makes it.
+func (a *Agent) binding(cfg *dp.Config) (*psp.Binding, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.bind != nil {
-		return nil
+		return a.bind, nil
 	}
 	b, err := psp.New(psp.Config{Transport: a.cfg.Transport, Demux: &a.demux, VNI: cfg.GetVpc().GetNetworkId(), MTU: int(cfg.GetMtu())})
 	if err != nil {
-		return err
+		return nil, err
 	}
 	a.bind = b
-	return nil
+	return b, nil
 }
 
 // sync applies the Sync messages of rc until the Session call ends.

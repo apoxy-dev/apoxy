@@ -18,6 +18,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -168,6 +169,47 @@ func rekey(now time.Time, nodes ...*node) (int, error) {
 	return n, nil
 }
 
+// capture is a deliver function that keeps copies of the inner packets.
+type capture struct {
+	mu   sync.Mutex
+	got  [][]byte
+	fail bool
+}
+
+func (c *capture) deliver(buf []byte, off int) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.fail {
+		return false
+	}
+	c.got = append(c.got, bytes.Clone(buf[off:]))
+	return true
+}
+
+// seal returns the send frame of pkt from n, or nil.
+func seal(n *node, pkt []byte) []byte {
+	phy := make([]byte, 2048)
+	m, _ := (&driver{b: n.b}).VirtToPhy(pkt, phy)
+	if m == 0 {
+		return nil
+	}
+	return phy[:m]
+}
+
+// open gives a PSP packet to the receive path of b, and returns the inner
+// packet or nil. b must have no driver.
+func open(b *Binding, pkt []byte) []byte {
+	c := &capture{}
+	d := newDriver(b, c.deliver)
+	b.drv.Store(d)
+	defer b.drv.Store(nil)
+	b.receive(pkt)
+	if len(c.got) == 0 {
+		return nil
+	}
+	return c.got[0]
+}
+
 // packet returns an IPv4 or IPv6 packet with a UDP-like header.
 func packet(src, dst netip.Addr, proto byte, sport, dport uint16, size int) []byte {
 	if src.Is4() {
@@ -219,18 +261,8 @@ func newFakeRelay(t testing.TB) *fakeRelay {
 		q:        make(chan relayPkt, 1024),
 	}
 	fr.tr = newTransport(t, fr.handle)
-	key := newKey(t)
-	tmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().Add(time.Hour),
-		IPAddresses:  []net.IP{net.IPv4(127, 0, 0, 1)},
-	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
-	require.NoError(t, err)
-	fr.ln, err = fr.tr.Listen(fr.r.TLSConfig(&tls.Config{
-		Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}},
-	}), nil)
+	var err error
+	fr.ln, err = fr.tr.Listen(fr.r.TLSConfig(&tls.Config{Certificates: []tls.Certificate{selfSigned(t)}}), nil)
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -338,6 +370,88 @@ func newRelayPair(t testing.TB) (*node, *node, *fakeRelay) {
 	a.peer.SetAddr(addrOf(fr.tr))
 	b.peer.SetAddr(addrOf(fr.tr))
 	return a, b, fr
+}
+
+// selfSigned returns a cert for 127.0.0.1 that signs itself.
+func selfSigned(t testing.TB) tls.Certificate {
+	t.Helper()
+	key := newKey(t)
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		IPAddresses:  []net.IP{net.IPv4(127, 0, 0, 1)},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	require.NoError(t, err)
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
+}
+
+// quicPair returns a QUIC connection with datagrams from x to y, and its end
+// on y. It has the packet size of relay sessions.
+func quicPair(t testing.TB, x, y *quic.Transport) (quic.Connection, quic.Connection) {
+	t.Helper()
+	conf := &quic.Config{EnableDatagrams: true, InitialPacketSize: 1350}
+	ln, err := y.Listen(&tls.Config{Certificates: []tls.Certificate{selfSigned(t)}, NextProtos: []string{"test"}}, conf)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ln.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	qx, err := x.Dial(ctx, y.Conn.LocalAddr(), &tls.Config{InsecureSkipVerify: true, NextProtos: []string{"test"}}, conf)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = qx.CloseWithError(0, "") })
+	qy, err := ln.Accept(ctx)
+	require.NoError(t, err)
+	return qx, qy
+}
+
+// fakeTun is a TUN device in memory. Read returns the packets of in, and Write
+// sends the packets to out.
+type fakeTun struct {
+	in, out chan []byte
+	err     error
+	closed  chan struct{}
+	once    sync.Once
+}
+
+func newFakeTun(n int) *fakeTun {
+	return &fakeTun{in: make(chan []byte, n), out: make(chan []byte, n), closed: make(chan struct{})}
+}
+
+func (f *fakeTun) Read(bufs [][]byte, sizes []int, off int) (int, error) {
+	select {
+	case p := <-f.in:
+		sizes[0] = copy(bufs[0][off:], p)
+		return 1, nil
+	case <-f.closed:
+		return 0, os.ErrClosed
+	}
+}
+
+// Write writes over the space before each packet, as the real device does.
+func (f *fakeTun) Write(bufs [][]byte, off int) (int, error) {
+	if f.err != nil {
+		return 0, f.err
+	}
+	for _, b := range bufs {
+		if off < tunOffset || len(b) <= off {
+			return 0, errors.New("no space before the packet")
+		}
+		clear(b[:off])
+		select {
+		case f.out <- bytes.Clone(b[off:]):
+		default:
+			return 0, errors.New("out is full")
+		}
+	}
+	return len(bufs), nil
+}
+
+func (f *fakeTun) BatchSize() int { return 4 }
+
+func (f *fakeTun) Close() error {
+	f.once.Do(func() { close(f.closed) })
+	return nil
 }
 
 // testCA signs agent certs.
