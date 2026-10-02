@@ -4,7 +4,7 @@ go 1.26.8
 
 // The default build uses the same quic-go fork and gvisor fork as the apoxy
 // module. stock.mod drops the quic-go replace (build it with -tags stock).
-replace github.com/quic-go/quic-go => github.com/apoxy-dev/quic-go v0.0.0-20261002090033-6900a4bf9a8c
+replace github.com/quic-go/quic-go => github.com/apoxy-dev/quic-go v0.0.0-20261002123340-891424b7ca48
 
 replace gvisor.dev/gvisor => github.com/apoxy-dev/gvisor v0.0.0-20261002130535-66184106020b
 
