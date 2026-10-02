@@ -100,6 +100,7 @@ type Router struct {
 	sessions map[*Session]struct{}
 	byConn   map[*rpc.Conn]*Session
 	bySource map[netip.AddrPort]*Session
+	probes   map[[8]byte]*Session
 }
 
 // NewRouter returns a Router with the SameVPC Permit rule. New sessions
@@ -117,6 +118,7 @@ func NewRouter(trust Trust, cfg Config) *Router {
 		sessions: map[*Session]struct{}{},
 		byConn:   map[*rpc.Conn]*Session{},
 		bySource: map[netip.AddrPort]*Session{},
+		probes:   map[[8]byte]*Session{},
 	}
 }
 
@@ -133,6 +135,7 @@ type Session struct {
 	wake         chan struct{}               // Has room for 1: the sync queue changed.
 	sources      func(netip.Addr) bool       // Allows the inner sources that route to s.
 	udpAddr      atomic.Pointer[net.UDPAddr] // Last address that the bridge sent to.
+	probe        *prober
 
 	// Guarded by Router.mu.
 	addr        netip.AddrPort
@@ -231,6 +234,9 @@ func (r *Router) AddSession(conn *rpc.Conn) (*Session, error) {
 		_ = qc.CloseWithError(quic.ApplicationErrorCode(code), msg)
 	}
 	s.sendDatagram = qc.SendDatagram
+	if s.probe, err = newProber(tc); err != nil {
+		return nil, err
+	}
 	r.addSession(s, now)
 	context.AfterFunc(qc.Context(), func() { r.removeSession(s) })
 	return s, nil
@@ -259,6 +265,7 @@ func (r *Router) addSession(s *Session, now time.Time) {
 		r.byConn[s.conn] = s
 	}
 	r.setAddr(s, s.remote(), now)
+	r.addProber(s)
 	d := r.domain(s.id.VPC)
 	d.members[s] = struct{}{}
 	s.sources = d.fast.Sources(s)
@@ -294,6 +301,7 @@ func (r *Router) removeSession(s *Session) {
 	}
 	delete(r.sessions, s)
 	delete(r.byConn, s.conn)
+	r.removeProber(s)
 }
 
 // domain returns the domain of vpc and makes it if needed.

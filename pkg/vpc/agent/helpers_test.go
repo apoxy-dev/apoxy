@@ -139,13 +139,13 @@ func (f *fakeTrust) Revoked(string, string) ([]vpcv1alpha1.RevokedAgent, error) 
 	return f.revoked, nil
 }
 
-type fakeNetworks struct{}
+type fakeNetworks struct{ mtu uint32 }
 
-func (fakeNetworks) Network(project, uid string) (relay.Network, error) {
+func (f fakeNetworks) Network(project, uid string) (relay.Network, error) {
 	if project != testProject || uid != testVPC {
 		return relay.Network{}, fmt.Errorf("unknown VPC %s/%s", project, uid)
 	}
-	return relay.Network{ID: testVNI}, nil
+	return relay.Network{ID: testVNI, MTU: f.mtu}, nil
 }
 
 // fakeAddresses gives each attachment the next fd00:<n>::/96 and counts the
@@ -188,6 +188,7 @@ type world struct {
 	agentCA, relayCA *testCA
 	trust            *fakeTrust
 	addrs            *fakeAddresses
+	mtu              uint32 // VPC MTU of the relays.
 }
 
 // rotateAgentCA makes a new agent CA for enrolls and relays.
@@ -232,7 +233,7 @@ func (w *world) relay(t testing.TB, id string) *testRelay {
 	ln, err := tr.Listen(r.TLSConfig(&tls.Config{Certificates: []tls.Certificate{*cert}}), &quic.Config{EnableDatagrams: true})
 	require.NoError(t, err)
 	srv := &relay.Server{
-		R: r, Networks: fakeNetworks{}, Addresses: w.addrs, RelayID: id,
+		R: r, Networks: fakeNetworks{mtu: w.mtu}, Addresses: w.addrs, RelayID: id,
 		Cert: func() (*tls.Certificate, error) { return cert, nil },
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -269,6 +270,22 @@ type testAgent struct {
 
 type agentOptions struct {
 	life time.Duration // Cert life. Zero means 24 hours.
+	mtu  int           // Config.MTU.
+	conn *lossyConn    // Wraps the agent socket if set.
+}
+
+// lossyConn drops the packets that it sends if they are larger than max.
+// Zero means no limit.
+type lossyConn struct {
+	net.PacketConn
+	max atomic.Int32
+}
+
+func (c *lossyConn) WriteTo(p []byte, addr net.Addr) (int, error) {
+	if m := int(c.max.Load()); m != 0 && len(p) > m {
+		return len(p), nil
+	}
+	return c.PacketConn.WriteTo(p, addr)
 }
 
 func (w *world) agent(t *testing.T, name string, r *testRelay, opts agentOptions) *testAgent {
@@ -278,7 +295,12 @@ func (w *world) agent(t *testing.T, name string, r *testRelay, opts agentOptions
 	}
 	udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	require.NoError(t, err)
-	ta := &testAgent{tr: &quic.Transport{Conn: udp}, attach: make(chan attachEvent, 16), done: make(chan struct{})}
+	var conn net.PacketConn = udp
+	if opts.conn != nil {
+		opts.conn.PacketConn = udp
+		conn = opts.conn
+	}
+	ta := &testAgent{tr: &quic.Transport{Conn: conn}, attach: make(chan attachEvent, 16), done: make(chan struct{})}
 	enroll := func(context.Context) (*identity.Credential, error) {
 		ta.enrolls.Add(1)
 		return w.enrollCA().credential(t, testProject, testVPC, name, opts.life), nil
@@ -290,6 +312,7 @@ func (w *world) agent(t *testing.T, name string, r *testRelay, opts agentOptions
 		RelayRoots: w.relayCA.pool(),
 		Transport:  ta.tr,
 		Name:       name,
+		MTU:        opts.mtu,
 		OnAttach: func(b *psp.Binding, addr netip.Addr, prefixes []netip.Prefix) {
 			ta.netstack(t, b, addr)
 			ta.attach <- attachEvent{addr, prefixes}

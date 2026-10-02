@@ -90,6 +90,12 @@ type node struct {
 // its peer at the socket of the other. The nodes have no SAs yet.
 func newPair(t testing.TB) (*node, *node) {
 	t.Helper()
+	return newPairMTU(t, 0)
+}
+
+// newPairMTU returns two nodes with the inner MTU mtu.
+func newPairMTU(t testing.TB, mtu int) (*node, *node) {
+	t.Helper()
 	a := &node{v4: netip.MustParseAddr("10.0.0.1"), v6: netip.MustParseAddr("fd00::1")}
 	b := &node{v4: netip.MustParseAddr("10.0.0.2"), v6: netip.MustParseAddr("fd00::2")}
 	a.other, b.other = b, a
@@ -97,7 +103,7 @@ func newPair(t testing.TB) (*node, *node) {
 		dm := &Demux{}
 		n.tr = newTransport(t, dm.Handle)
 		var err error
-		n.b, err = New(Config{Transport: n.tr, Demux: dm, VNI: testVNI})
+		n.b, err = New(Config{Transport: n.tr, Demux: dm, VNI: testVNI, MTU: mtu})
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = n.b.Close() })
 	}

@@ -18,6 +18,7 @@ import (
 
 	"github.com/apoxy-dev/apoxy/pkg/vpc/identity"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/psp"
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
@@ -176,4 +177,6 @@ func TestCertRefused(t *testing.T) {
 
 func TestRelayPacketSize(t *testing.T) {
 	assert.GreaterOrEqual(t, int(relayQUIC.InitialPacketSize), relay.MinPacketSize)
+	// The QUIC path of the binding carries psp.QUICMTU, as MinPacketSize carries 1280.
+	assert.Equal(t, psp.QUICMTU, int(relayQUIC.InitialPacketSize)-(relay.MinPacketSize-psp.DefaultMTU))
 }

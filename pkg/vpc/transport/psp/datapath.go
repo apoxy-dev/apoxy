@@ -34,9 +34,8 @@ const (
 	tunOffset = 16
 )
 
-// driver is the engine and the underlay of a softpsp vtep driver. The vtep
-// driver sends through it. Received packets do not go through the vtep driver:
-// the QUIC read loop and the relay session reader give them to deliver.
+// driver is the engine and the underlay of a softpsp vtep driver, for sends only. The QUIC
+// read loop and the relay session reader give the received packets to deliver.
 type driver struct {
 	b *Binding
 	// deliver gives the inner packet buf[off:] to the netstack or the TUN
@@ -92,9 +91,8 @@ func (b *Binding) Netstack(ep *channel.Endpoint) (*netstack.Datapath, error) {
 	return nd, nil
 }
 
-// Tun returns a tun driver that connects dev to the binding. Open dev with
-// tun.CreateTUN of wireguard-go, which keeps the offloads on. The caller runs
-// the driver, and the driver closes dev. A binding has one driver.
+// Tun connects dev, from wireguard-go tun.CreateTUN with the offloads on, to the binding.
+// The caller runs the driver, and the driver closes dev. A binding has one driver.
 func (b *Binding) Tun(dev tun.Device) (*tun.Datapath, error) {
 	w := &tunWriter{dev: dev, bufs: make([][]byte, 1), scratch: make([]byte, tunOffset+b.mtu)}
 	d := newDriver(b, w.write)
@@ -153,8 +151,8 @@ func (w *tunWriter) write(buf []byte, off int) bool {
 	return err == nil
 }
 
-// VirtToPhy makes the send frame of an inner packet for the peer that routes
-// its destination: a PSP packet, or a QUIC data frame after UseQUIC.
+// VirtToPhy makes the send frame of an inner packet for the peer that routes its destination:
+// a PSP packet, or a QUIC data frame after UseQUIC. It can lower the MSS of a TCP SYN in virt.
 func (d *driver) VirtToPhy(virt, phy []byte) (int, bool) {
 	b := d.b
 	dst, ok := innerDst(virt)
@@ -167,7 +165,9 @@ func (d *driver) VirtToPhy(virt, phy []byte) (int, bool) {
 		b.stats.txNoRoute.Add(1)
 		return 0, false
 	}
-	if b.relay.Load() != nil {
+	quic := b.relay.Load() != nil
+	b.clampMSS(virt, quic)
+	if quic {
 		clear(phy[:addrLen])
 		return addrLen + len(peerconn.EncodeData(phy[addrLen:addrLen], b.vni, virt)), false
 	}

@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Package psp is the data path of an agent: SoftPSP by default, and QUIC data
-// frames on the relay session as the fallback. PSP packets share the UDP
-// socket of a quic.Transport; PSP starts with 0x04 or 0x29, QUIC sets bit 0x40.
+// Package psp is the agent data path: SoftPSP packets, or QUIC data frames on the relay
+// session. PSP (0x04, 0x29), path probes (0x02) and QUIC (bit 0x40) share one UDP socket.
 package psp
 
 import (
@@ -23,6 +22,8 @@ import (
 	"github.com/quic-go/quic-go"
 
 	vpcv1alpha1 "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/p2p"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/mss"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/peerconn"
 )
 
@@ -31,6 +32,9 @@ const (
 	DefaultMTU = vpcv1alpha1.DefaultMTU
 	// MaxMTU is the largest inner MTU.
 	MaxMTU = vpcv1alpha1.MaxMTU
+	// QUICMTU is the largest inner packet in a data frame on a relay session with
+	// InitialPacketSize 1350: quic-go takes 1350 - 37 B, and the frame header is 5 B.
+	QUICMTU = 1308
 	// sockBuf is the send and receive buffer size of the agent socket.
 	sockBuf = 16 << 20
 )
@@ -38,12 +42,21 @@ const (
 // ErrClosed is the error of calls on a closed binding or a removed peer.
 var ErrClosed = errors.New("psp: binding or peer is closed")
 
-// Demux passes the non-QUIC packets of an agent socket to the binding on it.
-// Set Handle as the NonQUICPacketHandler of the transport before its first use.
-type Demux struct{ b atomic.Pointer[Binding] }
+// Demux gives the non-QUIC packets of an agent socket to its binding, and path probes to
+// Probe. Set Handle as the NonQUICPacketHandler, and set Probe, before the transport starts.
+type Demux struct {
+	// Probe gets the path probes on the QUIC read loop. It must not block or keep pkt.
+	Probe func(pkt []byte, from net.Addr)
+
+	b atomic.Pointer[Binding]
+}
 
 // Handle runs on the QUIC read loop. It does not block.
-func (m *Demux) Handle(pkt []byte, _ net.Addr) {
+func (m *Demux) Handle(pkt []byte, from net.Addr) {
+	if len(pkt) > 0 && pkt[0] == p2p.TypeProbe && m.Probe != nil {
+		m.Probe(pkt, from)
+		return
+	}
 	if b := m.b.Load(); b != nil {
 		b.receive(pkt)
 	}
@@ -59,14 +72,18 @@ type Config struct {
 	VNI uint32
 	// MTU is the inner MTU, at most MaxMTU. Zero means DefaultMTU.
 	MTU int
+	// DeviceMTU is the MTU of the device on the binding, at most MTU. Zero means MTU.
+	DeviceMTU int
 }
 
-// Binding is the SoftPSP data path of one VPC on one agent socket.
+// Binding is the data path of one VPC on one agent socket.
 type Binding struct {
 	tr     *quic.Transport
 	demux  *Demux
 	vni    uint32
 	mtu    int
+	devMTU int
+	clamp  atomic.Int32 // MTU for the MSS of TCP SYN packets. Zero means off.
 	rxq    *engine.RxQueue
 	recv   *keys.Receiver
 	send   *keys.Sender
@@ -101,7 +118,13 @@ func New(cfg Config) (*Binding, error) {
 	if cfg.MTU < 0 || cfg.MTU > MaxMTU {
 		return nil, fmt.Errorf("psp: MTU must be 1 to %d, got %d", MaxMTU, cfg.MTU)
 	}
-	// One receive queue: one goroutine reads the PSP packets.
+	if cfg.DeviceMTU == 0 {
+		cfg.DeviceMTU = cfg.MTU
+	}
+	if cfg.DeviceMTU < 0 || cfg.DeviceMTU > cfg.MTU {
+		return nil, fmt.Errorf("psp: device MTU must be 1 to %d, got %d", cfg.MTU, cfg.DeviceMTU)
+	}
+	// One receive queue: the QUIC read loop opens all PSP packets.
 	table, err := engine.NewRxTable(engine.RxConfig{Queues: 1})
 	if err != nil {
 		return nil, err
@@ -120,6 +143,7 @@ func New(cfg Config) (*Binding, error) {
 		demux:  cfg.Demux,
 		vni:    cfg.VNI,
 		mtu:    cfg.MTU,
+		devMTU: cfg.DeviceMTU,
 		rxq:    table.Queue(0),
 		recv:   recv,
 		send:   send,
@@ -160,14 +184,43 @@ func (b *Binding) Close() error {
 	return nil
 }
 
+// DeviceMTU returns the MTU for the device on the binding.
+func (b *Binding) DeviceMTU() int { return b.devMTU }
+
+// SetClampMTU lowers the MSS of TCP SYN packets in both directions to fit mtu. Zero, or
+// DeviceMTU or more, turns it off. It returns the previous MTU.
+func (b *Binding) SetClampMTU(mtu int) (old int) {
+	if mtu >= b.devMTU {
+		mtu = 0
+	} else if mtu != 0 {
+		mtu = max(mtu, DefaultMTU)
+	}
+	return int(b.clamp.Swap(int32(mtu)))
+}
+
+// ClampMTU returns the MTU of the MSS clamp, or 0 when the clamp is off.
+func (b *Binding) ClampMTU() int { return int(b.clamp.Load()) }
+
+// clampMSS lowers the MSS of a TCP SYN in pkt to fit the clamp, and to fit QUICMTU on the
+// QUIC path.
+func (b *Binding) clampMSS(pkt []byte, quic bool) {
+	m := int(b.clamp.Load())
+	if quic && b.devMTU > QUICMTU && (m == 0 || m > QUICMTU) {
+		m = QUICMTU
+	}
+	if m != 0 {
+		mss.Clamp(pkt, m)
+	}
+}
+
 // Update is a key change that Tick made for one peer.
 type Update struct {
 	Peer *Peer
 	keys.Request
 }
 
-// Tick rekeys the due receive SAs and removes expired SAs. Call it about once a
-// second, and send each Update to its peer. Failed lanes are due again.
+// Tick rekeys the due receive SAs and removes expired SAs. Call it each second, and send
+// each Update to its peer. Failed lanes are due again.
 func (b *Binding) Tick(now time.Time) ([]Update, error) {
 	ups, err := b.recv.Tick(now)
 	b.send.Expire(now)
@@ -185,8 +238,8 @@ func (b *Binding) Tick(now time.Time) ([]Update, error) {
 	return out, err
 }
 
-// Rotate starts a new master key. It returns keys.ErrBusy while SAs of the
-// previous key are live.
+// Rotate starts a new master key. It returns keys.ErrBusy while SAs of the previous key
+// are live.
 func (b *Binding) Rotate() error { return b.recv.Rotate() }
 
 // AddPeer adds a remote agent at addr, for example its relay on port 443.
@@ -238,8 +291,8 @@ func (b *Binding) removeLocked(p *Peer) keys.Request {
 	return req
 }
 
-// AddRoute sends inner packets for pfx to p, and lets p send from pfx. A
-// prefix has one peer.
+// AddRoute sends inner packets for pfx to p, and lets p send from pfx. A prefix has one
+// peer.
 func (b *Binding) AddRoute(pfx netip.Prefix, p *Peer) error {
 	pfx = pfx.Masked()
 	b.mu.Lock()
@@ -276,8 +329,8 @@ func (b *Binding) RemoveRoute(pfx netip.Prefix, p *Peer) bool {
 	return true
 }
 
-// Stats are the packet counters of a binding. They count PSP packets and
-// QUIC data frames together.
+// Stats are the packet counters of a binding. They count PSP packets and QUIC data frames
+// together.
 type Stats struct {
 	RxPackets  uint64 // Packets that passed the checks and went to the driver.
 	RxDrops    uint64 // Packets that failed a check or the delivery, for example no SA.
@@ -307,12 +360,12 @@ func (b *Binding) Stats() Stats {
 	}
 }
 
-// UseQUIC sends inner packets as data frames on the relay session of pc in
-// place of PSP packets. Nil sends PSP packets again. Both paths always receive.
+// UseQUIC sends inner packets as data frames on the relay session of pc, not as PSP
+// packets. Nil sends PSP packets again. Both paths always receive.
 func (b *Binding) UseQUIC(pc *peerconn.Conn) { b.relay.Store(pc) }
 
-// receive opens a non-QUIC packet in place and gives it to the driver. It runs
-// on the QUIC read loop, which reads with recvmmsg. Probes come later.
+// receive opens a PSP packet in place and gives it to the driver. It runs on the QUIC
+// read loop.
 func (b *Binding) receive(pkt []byte) {
 	if len(pkt) == 0 || (pkt[0] != pspwire.NextHdrV4 && pkt[0] != pspwire.NextHdrV6) {
 		b.stats.rxOther.Add(1)
@@ -331,8 +384,8 @@ func (b *Binding) receive(pkt []byte) {
 	b.deliver(d, pkt[:pspwire.PrefixLen+len(inner)], pspwire.PrefixLen)
 }
 
-// HandleData opens a data frame of the relay session and gives it to the
-// driver. Set it with (*peerconn.Conn).HandleData.
+// HandleData opens a data frame of the relay session and gives it to the driver. Set it
+// with (*peerconn.Conn).HandleData.
 func (b *Binding) HandleData(frame []byte) {
 	d := b.drv.Load()
 	if d == nil {
@@ -347,9 +400,10 @@ func (b *Binding) HandleData(frame []byte) {
 	b.deliver(d, frame, len(frame)-len(inner))
 }
 
-// deliver gives the inner packet buf[off:] of the PSP path or the QUIC path to
-// the driver. It is the one place where both paths deliver.
+// deliver gives the inner packet buf[off:] of the PSP path or the QUIC path to the driver,
+// after the MSS clamp. Both paths deliver only here.
 func (b *Binding) deliver(d *driver, buf []byte, off int) {
+	b.clampMSS(buf[off:], b.relay.Load() != nil)
 	if d.deliver(buf, off) {
 		b.stats.rxPackets.Add(1)
 	} else {

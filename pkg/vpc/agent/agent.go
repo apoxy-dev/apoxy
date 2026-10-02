@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/quic-go/quic-go"
@@ -64,6 +65,9 @@ type Config struct {
 	// OnAttach gets the binding, the overlay address and the prefixes after
 	// each attach.
 	OnAttach func(b *psp.Binding, addr netip.Addr, prefixes []netip.Prefix)
+	// MTU sets the device MTU, from 1280 to the VPC MTU, with no path probe.
+	// Zero means the VPC MTU if the path to the relay carries it, else 1280.
+	MTU int
 }
 
 // Agent keeps a relay session for one VPC and runs the peer sessions on it.
@@ -72,6 +76,7 @@ type Agent struct {
 	instance uint64
 	mux      *rpc.Mux // Peer service.
 	demux    psp.Demux
+	probing  atomic.Pointer[pathProbe]
 
 	mu       sync.Mutex
 	rc       *relayConn
@@ -85,6 +90,7 @@ func New(cfg Config) *Agent {
 	a := &Agent{cfg: cfg, instance: rand.Uint64(), peers: map[*rpc.Conn]*peer{}, admitted: make(chan struct{})}
 	a.mux = rpc.NewMux()
 	dp.RegisterPeerServer(a.mux, &peerService{a: a})
+	a.demux.Probe = a.onProbe
 	if cfg.Transport != nil {
 		cfg.Transport.NonQUICPacketHandler = a.demux.Handle
 	}
@@ -94,6 +100,9 @@ func New(cfg Config) *Agent {
 // Run keeps a relay session until ctx ends. On a cert renew or a drain, it
 // opens the new session before it closes the old one.
 func (a *Agent) Run(ctx context.Context) error {
+	if m := a.cfg.MTU; m != 0 && (m < psp.DefaultMTU || m > psp.MaxMTU) {
+		return fmt.Errorf("MTU must be %d to %d, got %d", psp.DefaultMTU, psp.MaxMTU, m)
+	}
 	if err := a.cfg.Identity.Start(ctx); err != nil {
 		return fmt.Errorf("agent cert: %w", err)
 	}
@@ -319,6 +328,12 @@ func (rc *relayConn) start(ctx context.Context) error {
 		return fmt.Errorf("relay sent %T before Config", m.GetMsg())
 	}
 	rc.ref, rc.mtu = cfg.GetVpc(), cfg.GetMtu()
+	// The path probe runs while the relay attaches.
+	pathMTU := a.probeMTU(int(rc.mtu))
+	var probed <-chan bool
+	if pathMTU != 0 {
+		probed = rc.probe(ctx, pathMTU)
+	}
 	routes := make([]string, len(a.cfg.Routes))
 	for i, p := range a.cfg.Routes {
 		routes[i] = p.String()
@@ -336,7 +351,10 @@ func (rc *relayConn) start(ctx context.Context) error {
 		return err
 	}
 	rc.self = overlayAddr(rc.prefixes)
-	b, err := a.binding(cfg)
+	if probed != nil && !<-probed {
+		pathMTU = psp.DefaultMTU
+	}
+	b, err := a.binding(cfg, pathMTU)
 	if err != nil {
 		return err
 	}
@@ -353,15 +371,32 @@ func (rc *relayConn) start(ctx context.Context) error {
 }
 
 // binding returns the PSP binding of the VPC. The first attach makes it.
-func (a *Agent) binding(cfg *dp.Config) (*psp.Binding, error) {
+// pathMTU is the MTU that the path probe found, or 0 if no probe ran.
+func (a *Agent) binding(cfg *dp.Config, pathMTU int) (*psp.Binding, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.bind != nil {
+		if pathMTU != 0 {
+			a.setClamp(pathMTU)
+		}
 		return a.bind, nil
 	}
-	b, err := psp.New(psp.Config{Transport: a.cfg.Transport, Demux: &a.demux, VNI: cfg.GetVpc().GetNetworkId(), MTU: int(cfg.GetMtu())})
+	mtu := int(cfg.GetMtu())
+	if mtu == 0 {
+		mtu = psp.DefaultMTU
+	}
+	dev := mtu
+	if a.cfg.MTU != 0 {
+		dev = min(a.cfg.MTU, mtu)
+	} else if pathMTU != 0 {
+		dev = pathMTU
+	}
+	b, err := psp.New(psp.Config{Transport: a.cfg.Transport, Demux: &a.demux, VNI: cfg.GetVpc().GetNetworkId(), MTU: mtu, DeviceMTU: dev})
 	if err != nil {
 		return nil, err
+	}
+	if dev < mtu {
+		slog.Info("Using a device MTU below the VPC MTU", "mtu", mtu, "device_mtu", dev)
 	}
 	a.bind = b
 	return b, nil

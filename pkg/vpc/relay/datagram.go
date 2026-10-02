@@ -11,9 +11,8 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/peerconn"
 )
 
-// Relay sessions need this QUIC InitialPacketSize or more. Until the first
-// ACK, quic-go takes a datagram up to InitialPacketSize - 37 B: a data frame
-// is 1280 B + 5 B.
+// Relay sessions need this QUIC InitialPacketSize or more. Until the first ACK, quic-go
+// takes a datagram up to InitialPacketSize - 37 B, and a data frame is 1280 B + 5 B.
 const MinPacketSize = 1322
 
 var errNoDatagrams = errors.New("relay session has no datagrams")

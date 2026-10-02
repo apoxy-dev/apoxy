@@ -33,18 +33,31 @@ func nullStack(b *testing.B) *channel.Endpoint {
 	return ep
 }
 
+// BenchmarkVirtToPhy makes the send frame of a 1280 B TCP packet, with the MSS clamp off and
+// on, as PSP and as a QUIC data frame.
 func BenchmarkVirtToPhy(b *testing.B) {
-	x, y := newPair(b)
-	offer(b, time.Now(), x, y)
-	d := &driver{b: x.b}
-	pkt := packet(x.v4, y.v4, 6, 1, 2, DefaultMTU)
-	phy := make([]byte, 2048)
-	b.SetBytes(int64(len(pkt)))
-	b.ReportAllocs()
-	for b.Loop() {
-		if n, _ := d.VirtToPhy(pkt, phy); n == 0 {
-			b.Fatal("no packet")
-		}
+	for _, bc := range []struct {
+		clamp int
+		quic  bool
+	}{{0, false}, {DefaultMTU, false}, {0, true}} {
+		b.Run(fmt.Sprintf("clamp=%d/quic=%t", bc.clamp, bc.quic), func(b *testing.B) {
+			x, y := newPairMTU(b, MaxMTU)
+			offer(b, time.Now(), x, y)
+			x.b.SetClampMTU(bc.clamp)
+			if bc.quic {
+				x.b.UseQUIC(&peerconn.Conn{})
+			}
+			d := &driver{b: x.b}
+			pkt := packet(x.v4, y.v4, 6, 1, 2, DefaultMTU)
+			phy := make([]byte, 2048)
+			b.SetBytes(int64(len(pkt)))
+			b.ReportAllocs()
+			for b.Loop() {
+				if n, _ := d.VirtToPhy(pkt, phy); n == 0 {
+					b.Fatal("no packet")
+				}
+			}
+		})
 	}
 }
 
@@ -76,17 +89,23 @@ func BenchmarkRoundTrip(b *testing.B) {
 	}
 }
 
-// BenchmarkHandleData opens one QUIC data frame and gives it to a driver.
+// BenchmarkHandleData opens one QUIC data frame and gives it to a driver, with the MSS
+// clamp off and on.
 func BenchmarkHandleData(b *testing.B) {
-	x, y := newPair(b)
-	y.b.drv.Store(newDriver(y.b, func([]byte, int) bool { return true }))
-	frame := peerconn.EncodeData(nil, testVNI, packet(x.v4, y.v4, 6, 1, 2, DefaultMTU))
-	b.SetBytes(int64(len(frame)))
-	b.ReportAllocs()
-	for b.Loop() {
-		y.b.HandleData(frame)
+	for _, clamp := range []int{0, DefaultMTU} {
+		b.Run(fmt.Sprintf("clamp=%d", clamp), func(b *testing.B) {
+			x, y := newPairMTU(b, MaxMTU)
+			y.b.SetClampMTU(clamp)
+			y.b.drv.Store(newDriver(y.b, func([]byte, int) bool { return true }))
+			frame := peerconn.EncodeData(nil, testVNI, packet(x.v4, y.v4, 6, 1, 2, DefaultMTU))
+			b.SetBytes(int64(len(frame)))
+			b.ReportAllocs()
+			for b.Loop() {
+				y.b.HandleData(frame)
+			}
+			require.Equal(b, uint64(b.N), y.b.Stats().RxPackets)
+		})
 	}
-	require.Equal(b, uint64(b.N), y.b.Stats().RxPackets)
 }
 
 // BenchmarkWriteFrames sends 64 PSP packets to a UDP socket, with sendmmsg

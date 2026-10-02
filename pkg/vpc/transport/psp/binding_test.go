@@ -4,6 +4,7 @@ package psp
 
 import (
 	"encoding/binary"
+	"net"
 	"net/netip"
 	"testing"
 	"time"
@@ -13,6 +14,11 @@ import (
 	pspwire "github.com/apoxy-dev/softpsp/psp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gvisor.dev/gvisor/pkg/tcpip"
+	"gvisor.dev/gvisor/pkg/tcpip/header"
+
+	"github.com/apoxy-dev/apoxy/pkg/vpc/p2p"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/peerconn"
 )
 
 // The largest PSP packet must fit in one quic-go read of 1452 B.
@@ -27,19 +33,22 @@ func TestNew(t *testing.T) {
 	require.NoError(t, err)
 	defer b.Close()
 	cases := []struct {
-		name    string
-		cfg     Config
-		wantMTU int // Zero means New fails.
+		name             string
+		cfg              Config
+		wantMTU, wantDev int // Zero means New fails.
 	}{
-		{"default MTU", Config{Transport: tr, Demux: dm, VNI: 1}, DefaultMTU},
-		{"largest MTU", Config{Transport: tr, Demux: dm, VNI: pspwire.MaxVNI, MTU: MaxMTU}, MaxMTU},
-		{"no transport", Config{Demux: dm, VNI: 1}, 0},
-		{"no demux", Config{Transport: tr, VNI: 1}, 0},
-		{"transport has no handler", Config{Transport: newTransport(t, nil), Demux: dm}, 0},
-		{"demux has a binding", Config{Transport: tr, Demux: used}, 0},
-		{"VNI too large", Config{Transport: tr, Demux: dm, VNI: pspwire.MaxVNI + 1}, 0},
-		{"MTU too large", Config{Transport: tr, Demux: dm, MTU: MaxMTU + 1}, 0},
-		{"negative MTU", Config{Transport: tr, Demux: dm, MTU: -1}, 0},
+		{"default MTU", Config{Transport: tr, Demux: dm, VNI: 1}, DefaultMTU, DefaultMTU},
+		{"largest MTU", Config{Transport: tr, Demux: dm, VNI: pspwire.MaxVNI, MTU: MaxMTU}, MaxMTU, MaxMTU},
+		{"smaller device MTU", Config{Transport: tr, Demux: dm, MTU: 1400, DeviceMTU: DefaultMTU}, 1400, DefaultMTU},
+		{"no transport", Config{Demux: dm, VNI: 1}, 0, 0},
+		{"no demux", Config{Transport: tr, VNI: 1}, 0, 0},
+		{"transport has no handler", Config{Transport: newTransport(t, nil), Demux: dm}, 0, 0},
+		{"demux has a binding", Config{Transport: tr, Demux: used}, 0, 0},
+		{"VNI too large", Config{Transport: tr, Demux: dm, VNI: pspwire.MaxVNI + 1}, 0, 0},
+		{"MTU too large", Config{Transport: tr, Demux: dm, MTU: MaxMTU + 1}, 0, 0},
+		{"negative MTU", Config{Transport: tr, Demux: dm, MTU: -1}, 0, 0},
+		{"device MTU above MTU", Config{Transport: tr, Demux: dm, DeviceMTU: DefaultMTU + 1}, 0, 0},
+		{"negative device MTU", Config{Transport: tr, Demux: dm, DeviceMTU: -1}, 0, 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -50,6 +59,7 @@ func TestNew(t *testing.T) {
 			}
 			require.NoError(t, err)
 			assert.Equal(t, tc.wantMTU, b.mtu)
+			assert.Equal(t, tc.wantDev, b.DeviceMTU())
 			require.NoError(t, b.Close())
 		})
 	}
@@ -154,6 +164,148 @@ func TestReceive(t *testing.T) {
 	before := b.b.Stats()
 	b.b.demux.Handle(seal(a, pkt)[addrLen:], nil)
 	assert.Equal(t, before, b.b.Stats())
+}
+
+func TestDemux(t *testing.T) {
+	a, b := newPair(t)
+	offer(t, time.Now(), a, b)
+	c := &capture{}
+	b.b.drv.Store(newDriver(b.b, c.deliver))
+	var probes [][]byte
+	cases := []struct {
+		name      string
+		probe     bool // The demux has a Probe function.
+		pkt       []byte
+		wantProbe bool
+		want      Stats
+	}{
+		{"probe", true, []byte{p2p.TypeProbe, 1}, true, Stats{}},
+		{"PSP", true, seal(a, packet(a.v4, b.v4, 17, 1, 2, 100))[addrLen:], false, Stats{RxPackets: 1}},
+		{"other", true, []byte{0x01, 1}, false, Stats{RxOther: 1}},
+		{"probe with no Probe function", false, []byte{p2p.TypeProbe, 1}, false, Stats{RxOther: 1}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			probes = nil
+			b.b.demux.Probe = nil
+			if tc.probe {
+				b.b.demux.Probe = func(pkt []byte, _ net.Addr) { probes = append(probes, pkt) }
+			}
+			before := b.b.Stats()
+			b.b.demux.Handle(tc.pkt, nil)
+			assert.Equal(t, tc.want, sub(b.b.Stats(), before))
+			if tc.wantProbe {
+				assert.Equal(t, [][]byte{tc.pkt}, probes)
+			} else {
+				assert.Empty(t, probes)
+			}
+		})
+	}
+}
+
+// tcpSyn returns an IPv4 TCP packet with flags and an MSS option, with a valid checksum.
+func tcpSyn(src, dst netip.Addr, flags header.TCPFlags, mss uint16) []byte {
+	opts := []byte{2, 4, byte(mss >> 8), byte(mss)}
+	pkt := make([]byte, header.IPv4MinimumSize+header.TCPMinimumSize+len(opts))
+	ip := header.IPv4(pkt)
+	ip.Encode(&header.IPv4Fields{
+		TotalLength: uint16(len(pkt)), TTL: 64, Protocol: uint8(header.TCPProtocolNumber),
+		SrcAddr: tcpip.AddrFrom4(src.As4()), DstAddr: tcpip.AddrFrom4(dst.As4()),
+	})
+	tcp := header.TCP(pkt[header.IPv4MinimumSize:])
+	tcp.Encode(&header.TCPFields{SrcPort: 1, DstPort: 2, DataOffset: uint8(len(tcp)), Flags: flags, WindowSize: 1000})
+	copy(tcp.Options(), opts)
+	x := header.PseudoHeaderChecksum(header.TCPProtocolNumber, ip.SourceAddress(), ip.DestinationAddress(), uint16(len(tcp)))
+	tcp.SetChecksum(^tcp.CalculateChecksum(x))
+	return pkt
+}
+
+// xferQUIC sends pkt from one node to the other as a QUIC data frame, and returns the inner
+// packet that arrived.
+func xferQUIC(t *testing.T, from *node, pkt []byte) []byte {
+	t.Helper()
+	f := seal(from, pkt)
+	require.NotNil(t, f)
+	require.Zero(t, binary.BigEndian.Uint16(f[16:addrLen]), "not a data frame")
+	to := from.other.b
+	c := &capture{}
+	to.drv.Store(newDriver(to, c.deliver))
+	defer to.drv.Store(nil)
+	to.HandleData(f[addrLen:])
+	if len(c.got) == 0 {
+		return nil
+	}
+	return c.got[0]
+}
+
+// TestClampMSS sends TCP SYN packets from a to b. The clamp of a lowers the MSS when a
+// sends, and the clamp of b when b receives. The QUIC path also clamps to QUICMTU.
+func TestClampMSS(t *testing.T) {
+	syn, synAck := header.TCPFlagSyn, header.TCPFlagSyn|header.TCPFlagAck
+	cases := []struct {
+		name           string
+		mtu            int
+		clampA, clampB int  // SetClampMTU of a and b.
+		quicA, quicB   bool // UseQUIC of a and b.
+		flags          header.TCPFlags
+		mss, wantMSS   uint16
+	}{
+		{"no clamp", 1400, 0, 0, false, false, syn, 1360, 1360},
+		{"send clamp", 1400, 1280, 0, false, false, syn, 1360, 1240},
+		{"receive clamp", 1400, 0, 1280, false, false, synAck, 1360, 1240},
+		{"lower of two", 1400, 1300, 1280, false, false, syn, 1360, 1240},
+		{"mss below clamp", 1400, 1280, 0, false, false, syn, 1000, 1000},
+		{"clamp at device MTU", 1400, 1400, 1400, false, false, syn, 1360, 1360},
+		{"no SYN", 1400, 1280, 1280, false, false, header.TCPFlagAck, 1360, 1360},
+		{"QUIC send", 1400, 0, 0, true, false, syn, 1360, QUICMTU - 40},
+		{"QUIC receive", 1400, 0, 0, false, true, synAck, 1360, QUICMTU - 40},
+		{"QUIC with a lower clamp", 1400, 1280, 0, true, false, syn, 1360, 1240},
+		{"QUIC with a higher clamp", MaxMTU, 1400, 0, true, false, syn, 1372, QUICMTU - 40},
+		{"QUIC at the default MTU", DefaultMTU, 0, 0, true, true, syn, 1240, 1240},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a, b := newPairMTU(t, tc.mtu)
+			offer(t, time.Now(), a, b)
+			a.b.SetClampMTU(tc.clampA)
+			b.b.SetClampMTU(tc.clampB)
+			for _, x := range []struct {
+				n  *node
+				on bool
+			}{{a, tc.quicA}, {b, tc.quicB}} {
+				if x.on {
+					x.n.b.UseQUIC(&peerconn.Conn{})
+				}
+			}
+			pkt := tcpSyn(a.v4, b.v4, tc.flags, tc.mss)
+			var got []byte
+			if tc.quicA {
+				got = xferQUIC(t, a, pkt)
+			} else {
+				got = xfer(t, a, pkt)
+			}
+			require.NotEmpty(t, got)
+			assert.Equal(t, tcpSyn(a.v4, b.v4, tc.flags, tc.wantMSS), got)
+			tcp := header.TCP(got[header.IPv4MinimumSize:])
+			assert.True(t, tcp.IsChecksumValid(tcpip.AddrFrom4(a.v4.As4()), tcpip.AddrFrom4(b.v4.As4()), 0, 0))
+		})
+	}
+}
+
+func TestSetClampMTU(t *testing.T) {
+	a, _ := newPairMTU(t, 1400)
+	steps := []struct{ set, want, wantOld int }{
+		{1280, 1280, 0},
+		{1300, 1300, 1280},
+		{1000, DefaultMTU, 1300},
+		{1400, 0, DefaultMTU},
+		{1300, 1300, 0},
+		{0, 0, 1300},
+	}
+	for _, s := range steps {
+		assert.Equal(t, s.wantOld, a.b.SetClampMTU(s.set), "set %d", s.set)
+		assert.Equal(t, s.want, a.b.ClampMTU(), "set %d", s.set)
+	}
 }
 
 func TestRemovePeer(t *testing.T) {
