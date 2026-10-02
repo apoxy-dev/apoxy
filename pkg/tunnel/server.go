@@ -87,6 +87,10 @@ type tunnelServerOptions struct {
 	// Metrics store for connected agents (push-based).
 	metricsStore    *metrics.MetricsStore
 	projectIDLookup func(tunnelUID string) string // Optional: resolves tunnel UID to project ID.
+
+	// Stateless reset key inputs. A nil resetSecret sends no resets.
+	resetSecret []byte
+	resetName   string
 }
 
 func defaultServerOptions() *tunnelServerOptions {
@@ -228,6 +232,16 @@ func WithMetricsStore(s *metrics.MetricsStore) TunnelServerOption {
 func WithProjectIDLookup(fn func(tunnelUID string) string) TunnelServerOption {
 	return func(o *tunnelServerOptions) {
 		o.projectIDLookup = fn
+	}
+}
+
+// WithStatelessResetSecret derives the QUIC stateless reset key from secret
+// and name, so a restarted server closes the connections of the old process.
+// Servers that share secret need different names.
+func WithStatelessResetSecret(secret []byte, name string) TunnelServerOption {
+	return func(o *tunnelServerOptions) {
+		o.resetSecret = secret
+		o.resetName = name
 	}
 }
 
@@ -445,13 +459,16 @@ func (t *TunnelServer) Start(ctx context.Context) error {
 	qc := quicConfig
 	qc.Tracer = qlog.DefaultConnectionTracer
 
-	if t.ln, err = quic.ListenEarly(
-		udpConn,
-		http3.ConfigureTLSConfig(tlsConfig),
-		qc,
-	); err != nil {
+	tr := &quic.Transport{Conn: udpConn}
+	if t.options.resetSecret != nil {
+		if tr.StatelessResetKey, err = statelessResetKey(t.options.resetSecret, "tunnelproxy", t.options.resetName); err != nil {
+			return err
+		}
+	}
+	if t.ln, err = tr.ListenEarly(http3.ConfigureTLSConfig(tlsConfig), qc); err != nil {
 		return fmt.Errorf("failed to create QUIC listener: %w", err)
 	}
+	defer tr.Close()
 
 	// Create BFD server if configured.
 	if t.options.bfdListenAddr.IsValid() {

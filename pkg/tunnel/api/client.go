@@ -38,12 +38,12 @@ type Client struct {
 	advertisedRoutes []string
 	agentInstance    string
 
-	// pushMu guards the metrics push loop's lifecycle. pushCancel stops the
-	// loop and pushDone closes when it has exited; both are nil while no loop
-	// is running.
-	pushMu     sync.Mutex
-	pushCancel context.CancelFunc
-	pushDone   chan struct{}
+	// loopMu guards the lifecycle of the ping and metrics push loops.
+	// loopCancel stops them and loopDone closes when both have exited. Both
+	// are nil while no loops run.
+	loopMu     sync.Mutex
+	loopCancel context.CancelFunc
+	loopDone   chan struct{}
 
 	// draining is closed when a control connection to the relay ends with a
 	// graceful close (H3_NO_ERROR) — the relay sent GOAWAY, or closed the
@@ -204,7 +204,7 @@ func (c *Client) handleControlClose(cause error) {
 
 func (c *Client) Close() error {
 	c.closed.Store(true)
-	c.stopMetricsPush()
+	c.stopLoops()
 	return c.h3.Close()
 }
 
@@ -220,15 +220,15 @@ func (c *Client) Connect(ctx context.Context) (*ConnectResponse, error) {
 	if err := c.doJSON(ctx, http.MethodPost, c.path("/v1/tunnel/"+c.tunnelName), reqBody, &resp, http.StatusCreated); err != nil {
 		return nil, err
 	}
-	// The relay keys pushed metrics by connection, so the loop starts only
+	// The relay keys pushed metrics by connection, so the loops start only
 	// once there is a connection to key them by.
-	c.startMetricsPush()
+	c.startLoops()
 	return &resp, nil
 }
 
 // Disconnect from the relay and close the tunnel connection.
 func (c *Client) Disconnect(ctx context.Context, id string) error {
-	c.stopMetricsPush()
+	c.stopLoops()
 	reqBody := Request{Agent: c.agent, ID: id}
 	return c.doJSON(ctx, http.MethodDelete, c.path("/v1/tunnel/"+c.tunnelName), reqBody, nil, http.StatusOK)
 }
@@ -323,41 +323,89 @@ var (
 	metricsPushInterval = 15 * time.Second
 )
 
-// startMetricsPush runs the metrics push loop for the live connection. The
-// loop gets a context of the client's own rather than the connect request's,
-// which is bounded by the request timeout and would end the loop within
-// seconds. It does nothing when a loop is already running.
-func (c *Client) startMetricsPush() {
-	c.pushMu.Lock()
-	defer c.pushMu.Unlock()
+// startLoops runs the ping and metrics push loops for the live connection.
+// The loops get a context of the client's own rather than the connect
+// request's, which is bounded by the request timeout and would end the loops
+// within seconds. It does nothing when the loops already run.
+func (c *Client) startLoops() {
+	c.loopMu.Lock()
+	defer c.loopMu.Unlock()
 
-	if c.pushCancel != nil {
+	if c.loopCancel != nil {
 		return
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
-	c.pushCancel, c.pushDone = cancel, done
+	c.loopCancel, c.loopDone = cancel, done
 
+	var wg sync.WaitGroup
+	wg.Go(func() { c.pingLoop(ctx) })
+	wg.Go(func() { c.metricsPushLoop(ctx) })
 	go func() {
-		defer close(done)
-		c.metricsPushLoop(ctx)
+		wg.Wait()
+		close(done)
 	}()
 }
 
-// stopMetricsPush ends the push loop and waits for it to exit, so a closed
-// client leaves no goroutine pushing over a dead transport.
-func (c *Client) stopMetricsPush() {
-	c.pushMu.Lock()
-	cancel, done := c.pushCancel, c.pushDone
-	c.pushCancel, c.pushDone = nil, nil
-	c.pushMu.Unlock()
+// stopLoops ends the loops and waits for them to exit, so a closed client
+// leaves no goroutine that sends over a dead transport.
+func (c *Client) stopLoops() {
+	c.loopMu.Lock()
+	cancel, done := c.loopCancel, c.loopDone
+	c.loopCancel, c.loopDone = nil, nil
+	c.loopMu.Unlock()
 
 	if cancel == nil {
 		return
 	}
 	cancel()
 	<-done
+}
+
+// pingInterval is the time between pings on the control connection.
+const pingInterval = 5 * time.Second
+
+// pingLoop sends GET /ping every pingInterval while the control connection is
+// up. A ping is larger than 42 bytes, so a restarted relay sends a stateless
+// reset for it and the client sees the loss quickly.
+func (c *Client) pingLoop(ctx context.Context) {
+	ticker := time.NewTicker(pingInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-c.draining:
+			return
+		case <-c.lost:
+			return
+		case <-ticker.C:
+			if err := c.ping(ctx); err != nil {
+				slog.Debug("Failed to ping the relay", slog.Any("error", err))
+			}
+		}
+	}
+}
+
+// ping sends one GET /ping. It stops waiting after pingInterval, so the next
+// ping goes out on time while the relay is down.
+func (c *Client) ping(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, pingInterval)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.path("/ping"), nil)
+	if err != nil {
+		return fmt.Errorf("new request: %w", err)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("ping: %w", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return nil
 }
 
 // metricsPushLoop pushes the local metrics to the relay every
