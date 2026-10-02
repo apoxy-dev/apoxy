@@ -538,6 +538,128 @@ func TestTunnelPublisherConnectsWhileAPIServerIsDown(t *testing.T) {
 	require.Equal(t, conn.addresses, got.Status.Addresses)
 }
 
+// TestTunnelPublisherRecoveredWriteRetriesOthers: when a write that failed
+// succeeds, the other writes that wait for a retry go at once.
+func TestTunnelPublisherRecoveredWriteRetriesOthers(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		name string
+		// published: conn-a has a Tunnel before the outage, and its delete recovers.
+		published bool
+		// firstTry: conn-a connects after the others fail, and its writes do not fail.
+		firstTry    bool
+		wantRetried bool
+	}{
+		{name: "create succeeds after failures", wantRetried: true},
+		{name: "delete succeeds after failures", published: true, wantRetried: true},
+		{name: "first write succeeds", firstTry: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var down atomic.Bool
+			fail := func(name string) error {
+				if down.Load() && !(tc.firstTry && name == "conn-a") {
+					return apierrors.NewServiceUnavailable("apiserver is down")
+				}
+				return nil
+			}
+			c := fake.NewClientBuilder().
+				WithScheme(publisherScheme(t)).
+				WithStatusSubresource(&vpcv1alpha1.Tunnel{}).
+				WithInterceptorFuncs(interceptor.Funcs{
+					Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+						if err := fail(obj.GetName()); err != nil {
+							return err
+						}
+						return c.Create(ctx, obj, opts...)
+					},
+					Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+						if err := fail(obj.GetName()); err != nil {
+							return err
+						}
+						return c.Delete(ctx, obj, opts...)
+					},
+				}).
+				Build()
+			p, _ := newPublisherWithClient(t, c)
+			connA := &fakeConn{id: "conn-a", network: "corp"}
+			others := []string{"conn-b", "conn-c"}
+
+			// held is after the test ends, so no write retries on its own delay.
+			held := time.Now().Add(time.Hour)
+			hold := func(id string) {
+				require.Eventuallyf(t, func() bool {
+					p.mu.Lock()
+					defer p.mu.Unlock()
+					st := p.tunnels[id]
+					if st == nil || st.busy || st.attempts < 1 {
+						return false
+					}
+					st.retryAt = held
+					return true
+				}, 5*time.Second, 5*time.Millisecond, "the write of %s did not fail", id)
+			}
+			retry := func(id string) (int, time.Time) {
+				p.mu.Lock()
+				defer p.mu.Unlock()
+				st := p.tunnels[id]
+				return st.attempts, st.retryAt
+			}
+
+			if tc.published {
+				require.NoError(t, p.OnConnect(ctx, "agent-a", "agent-a", connA))
+				settle(t, p)
+			}
+			down.Store(true)
+			switch {
+			case tc.published:
+				require.NoError(t, p.OnDisconnect(ctx, "agent-a", connA.ID()))
+				hold(connA.ID())
+			case !tc.firstTry:
+				require.NoError(t, p.OnConnect(ctx, "agent-a", "agent-a", connA))
+				hold(connA.ID())
+			}
+			for _, id := range others {
+				require.NoError(t, p.OnConnect(ctx, id, id, &fakeConn{id: id, network: "corp"}))
+				hold(id)
+			}
+			for _, id := range others {
+				attempts, _ := retry(id)
+				require.Equalf(t, 1, attempts, "%s retried on its own delay before conn-a wrote", id)
+			}
+
+			if tc.firstTry {
+				require.NoError(t, p.OnConnect(ctx, "agent-a", "agent-a", connA))
+			} else {
+				down.Store(false)
+				p.mu.Lock()
+				p.tunnels[connA.ID()].retryAt = time.Time{}
+				p.mu.Unlock()
+				p.wakeWorker()
+			}
+
+			if tc.wantRetried {
+				require.Eventually(t, func() bool {
+					return tunnelExists(t, c, "conn-b") && tunnelExists(t, c, "conn-c")
+				}, time.Second, 5*time.Millisecond, "the waiting writes did not go after the write of conn-a succeeded")
+				require.Equal(t, !tc.published, tunnelExists(t, c, connA.ID()))
+				return
+			}
+			require.Eventually(t, func() bool {
+				p.mu.Lock()
+				defer p.mu.Unlock()
+				st := p.tunnels[connA.ID()]
+				return st != nil && st.live != nil && st.live.published
+			}, 5*time.Second, 5*time.Millisecond, "the first write of conn-a did not succeed")
+			for _, id := range others {
+				attempts, retryAt := retry(id)
+				require.Equalf(t, 1, attempts, "%s was retried", id)
+				require.Truef(t, retryAt.Equal(held), "a first write cleared the retry of %s", id)
+			}
+		})
+	}
+}
+
 // TestTunnelPublisherDisconnectBeforeWrite: addresses of a connection closed
 // before its Tunnel write go back at once with no apiserver call.
 func TestTunnelPublisherDisconnectBeforeWrite(t *testing.T) {

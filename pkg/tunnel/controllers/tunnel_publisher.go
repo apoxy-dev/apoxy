@@ -500,6 +500,16 @@ func (p *TunnelPublisher) syncTunnel(ctx context.Context, id string, create bool
 		}
 		return err
 	}
+	if st.attempts > 0 {
+		// The apiserver answers again, so the other writes that wait for a retry go now.
+		if n := p.clearRetries(st); n > 0 {
+			// This runs after the return paths below release mu.
+			defer func() {
+				slog.Info("Retrying waiting Tunnel writes after a write succeeded", slog.Int("retried", n))
+				p.wakeWorker()
+			}()
+		}
+	}
 	st.attempts = 0
 	st.retryAt = time.Time{}
 	if write {
@@ -524,6 +534,20 @@ func (p *TunnelPublisher) syncTunnel(ctx context.Context, id string, create bool
 	// A new connection with this ID can publish now.
 	p.wakeWorker()
 	return nil
+}
+
+// clearRetries makes the other idle retries due now and returns their count. It
+// keeps attempts, so a write that fails again waits longer. The caller holds mu.
+func (p *TunnelPublisher) clearRetries(except *tunnelState) int {
+	n := 0
+	for _, st := range p.tunnels {
+		if st == except || st.busy || st.retryAt.IsZero() {
+			continue
+		}
+		st.retryAt = time.Time{}
+		n++
+	}
+	return n
 }
 
 func syncRetryDelay(attempt int) time.Duration {
