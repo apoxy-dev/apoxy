@@ -1,4 +1,62 @@
 {
   "tolerance": 0.1,
-  "entries": {}
+  "entries": {
+    "x86_64 vpc-netstack-psp-direct streams=4 duration=30s omit=5s delay=10ms jitter=0ms loss=0% rate=none queue=100000 mtu=1500 bitrate=none window=none": {
+      "gbps": 0,
+      "packets_per_second": 0,
+      "client_cores_per_gbps": 0,
+      "server_cores_per_gbps": 0,
+      "info": true,
+      "source": "info row; the calibration run sets the numbers"
+    },
+    "x86_64 vpc-netstack-psp-relay streams=4 duration=30s omit=5s delay=10ms jitter=0ms loss=0% rate=1000mbit queue=2640 mtu=1500 bitrate=none window=none": {
+      "gbps": 0,
+      "packets_per_second": 0,
+      "client_cores_per_gbps": 0,
+      "server_cores_per_gbps": 0,
+      "info": true,
+      "source": "info row; the calibration run sets the numbers"
+    },
+    "x86_64 vpc-netstack-psp-relay streams=4 duration=30s omit=5s delay=10ms jitter=0ms loss=0% rate=none queue=100000 mtu=1500 bitrate=none window=none": {
+      "gbps": 0,
+      "packets_per_second": 0,
+      "client_cores_per_gbps": 0,
+      "server_cores_per_gbps": 0,
+      "min_gbps": 2,
+      "tolerance": 0.1,
+      "source": "gated row; the calibration run sets the numbers"
+    },
+    "x86_64 vpc-netstack-psp-relay streams=4 duration=30s omit=5s delay=10ms jitter=0ms loss=0.1% rate=none queue=100000 mtu=1500 bitrate=none window=none": {
+      "gbps": 0,
+      "packets_per_second": 0,
+      "client_cores_per_gbps": 0,
+      "server_cores_per_gbps": 0,
+      "info": true,
+      "source": "info row; the calibration run sets the numbers"
+    },
+    "x86_64 vpc-netstack-psp-relay-cubic streams=4 duration=30s omit=5s delay=10ms jitter=0ms loss=0% rate=none queue=100000 mtu=1500 bitrate=none window=none": {
+      "gbps": 0,
+      "packets_per_second": 0,
+      "client_cores_per_gbps": 0,
+      "server_cores_per_gbps": 0,
+      "info": true,
+      "source": "info row; the calibration run sets the numbers"
+    },
+    "x86_64 vpc-netstack-quic-relay streams=4 duration=30s omit=5s delay=10ms jitter=0ms loss=0% rate=none queue=100000 mtu=1500 bitrate=none window=none": {
+      "gbps": 0,
+      "packets_per_second": 0,
+      "client_cores_per_gbps": 0,
+      "server_cores_per_gbps": 0,
+      "info": true,
+      "source": "info row; the calibration run sets the numbers"
+    },
+    "x86_64 vpc-tun-psp-relay-cubic streams=4 duration=30s omit=5s delay=10ms jitter=0ms loss=0% rate=none queue=100000 mtu=1500 bitrate=none window=none": {
+      "gbps": 0,
+      "packets_per_second": 0,
+      "client_cores_per_gbps": 0,
+      "server_cores_per_gbps": 0,
+      "info": true,
+      "source": "info row; the calibration run sets the numbers"
+    }
+  }
 }

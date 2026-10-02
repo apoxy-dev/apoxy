@@ -9,6 +9,18 @@ on:
         description: "Measured run length of each workload (the baseline keys include it)"
         type: string
         default: "30s"
+      vpc_gate:
+        description: "Run the VPC gate job"
+        type: boolean
+        default: false
+      vpc_runner:
+        description: "Runner label of the VPC gate job"
+        type: string
+        default: "apoxy-perf-16core"
+      vpc_min_cpus:
+        description: "VPC gate: infra error below this CPU count (lower it only for smoke runs)"
+        type: number
+        default: 8
 permissions:
   contents: read
 concurrency:
@@ -28,17 +40,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-dagger
-      - name: Load sch_netem and raise socket buffer limits
-        run: |
-          uname -a
-          if ! sudo modprobe sch_netem; then
-            sudo apt-get update -q
-            if ! { sudo apt-get install -yq "linux-modules-extra-$(uname -r)" && sudo modprobe sch_netem; }; then
-              echo "::warning::Could not load sch_netem on the host. The rig fails if the kernel has no netem."
-            fi
-          fi
-          # These keys are global on older kernels. Only the host can set them.
-          sudo sysctl -w net.core.rmem_max=134217728 net.core.wmem_max=134217728 net.core.netdev_max_backlog=250000
+      - uses: ./.github/actions/setup-perf-host
       - name: Run the rig
         timeout-minutes: 30
         run: |
@@ -57,3 +59,46 @@ jobs:
       - name: Compare with the baseline
         timeout-minutes: 10
         run: dagger call -v perf-compare --src=. --results=perf
+
+  # VPC data path gate (cmd/vpcbench through the relay, 4 flows, 20 ms RTT) on a larger runner.
+  # Dispatch only, until the baseline has the numbers of this runner.
+  vpc-gate:
+    if: github.event_name == 'workflow_dispatch' && inputs.vpc_gate
+    runs-on: ${{ inputs.vpc_runner || 'apoxy-perf-16core' }}
+    timeout-minutes: 45
+    env:
+      DURATION: ${{ inputs.duration || '30s' }}
+      MIN_CPUS: ${{ inputs.vpc_min_cpus || 8 }}
+      SLACK_PERF_WEBHOOK_URL: ${{ secrets.SLACK_PERF_WEBHOOK_URL }}
+      SHUTUP: 1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-dagger
+      - uses: ./.github/actions/setup-perf-host
+      - name: Run the VPC rows
+        timeout-minutes: 35
+        run: dagger call -v perf-vpc --src=. --duration="$DURATION" --min-cpus="$MIN_CPUS" export --path=perf-vpc
+      - name: Write the job summary
+        if: always()
+        run: cat perf-vpc/summary.md >> "$GITHUB_STEP_SUMMARY" || echo "The VPC rows wrote no summary." >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-vpc-results
+          path: perf-vpc/
+          retention-days: 90
+          if-no-files-found: warn
+      - name: Check the gate
+        run: |
+          code=$(cat perf-vpc/gate-exit)
+          case "$code" in
+            0) echo "The VPC gate passed." ;;
+            3) echo "::error::The VPC gate has an infra error. See the job summary and compare-gate.txt."; exit 1 ;;
+            *) echo "::error::The VPC gate failed (exit $code). See the job summary and compare-gate.txt."; exit 1 ;;
+          esac
+      - name: Send a Slack alert
+        # The step does not run when the secret is not set.
+        if: failure() && env.SLACK_PERF_WEBHOOK_URL != ''
+        continue-on-error: true
+        run: .github/scripts/perf-vpc-slack.sh perf-vpc

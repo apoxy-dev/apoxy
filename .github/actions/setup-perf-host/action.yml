@@ -1,0 +1,18 @@
+name: Set up the perf host
+description: Load sch_netem and raise the socket buffer limits for the netns rig (cmd/perfrig).
+
+runs:
+  using: composite
+  steps:
+    - name: Load sch_netem and raise socket buffer limits
+      shell: bash
+      run: |
+        uname -a
+        if ! sudo modprobe sch_netem; then
+          sudo apt-get update -q
+          if ! { sudo apt-get install -yq "linux-modules-extra-$(uname -r)" && sudo modprobe sch_netem; }; then
+            echo "::warning::Could not load sch_netem on the host. The rig fails if the kernel has no netem."
+          fi
+        fi
+        # These keys are global on older kernels. Only the host can set them.
+        sudo sysctl -w net.core.rmem_max=134217728 net.core.wmem_max=134217728 net.core.netdev_max_backlog=250000
