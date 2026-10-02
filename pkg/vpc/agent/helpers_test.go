@@ -4,19 +4,11 @@ package agent
 
 import (
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"crypto/tls"
-	"crypto/x509"
-	"encoding/pem"
 	"errors"
-	"fmt"
 	"maps"
-	"math/big"
 	"net"
 	"net/netip"
-	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -37,11 +29,11 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
 
-	vpcv1alpha1 "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/identity"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/p2p"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/psp"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/vpctest"
 )
 
 const (
@@ -56,61 +48,20 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-func newKey(t testing.TB) *ecdsa.PrivateKey {
-	t.Helper()
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	require.NoError(t, err)
-	return key
-}
-
-// testCA signs agent certs or relay certs.
-type testCA struct {
-	cert *x509.Certificate
-	key  *ecdsa.PrivateKey
-}
+// testCA is a vpctest.CA whose helpers fail the test on an error.
+type testCA struct{ *vpctest.CA }
 
 func newCA(t testing.TB) *testCA {
 	t.Helper()
-	key := newKey(t)
-	tmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(1), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign,
-		NotBefore: time.Now().Add(-24 * time.Hour), NotAfter: time.Now().Add(24 * time.Hour),
-	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	ca, err := vpctest.NewCA()
 	require.NoError(t, err)
-	cert, err := x509.ParseCertificate(der)
-	require.NoError(t, err)
-	return &testCA{cert: cert, key: key}
-}
-
-func (ca *testCA) pool() *x509.CertPool {
-	p := x509.NewCertPool()
-	p.AddCert(ca.cert)
-	return p
-}
-
-var serial atomic.Int64
-
-func (ca *testCA) sign(t testing.TB, tmpl *x509.Certificate, key *ecdsa.PrivateKey) []byte {
-	t.Helper()
-	tmpl.SerialNumber = big.NewInt(serial.Add(1) + 10)
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca.cert, &key.PublicKey, ca.key)
-	require.NoError(t, err)
-	return der
+	return &testCA{ca}
 }
 
 // credential issues a credential for agent name, valid for life.
 func (ca *testCA) credential(t testing.TB, project, vpc, name string, life time.Duration) *identity.Credential {
 	t.Helper()
-	key := newKey(t)
-	id := identity.ID{Project: project, VPC: vpc, Agent: name}
-	der := ca.sign(t, &x509.Certificate{
-		URIs:      []*url.URL{id.URI()},
-		NotBefore: time.Now().Add(-time.Second), NotAfter: time.Now().Add(life),
-		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
-	}, key)
-	bundle := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ca.cert.Raw})
-	cred, err := identity.NewCredential(key, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), bundle)
+	cred, err := ca.Credential(project, vpc, name, life)
 	require.NoError(t, err)
 	return cred
 }
@@ -118,62 +69,23 @@ func (ca *testCA) credential(t testing.TB, project, vpc, name string, life time.
 // relayCert issues a relay cert that names only id.
 func (ca *testCA) relayCert(t testing.TB, id string) *tls.Certificate {
 	t.Helper()
-	key := newKey(t)
-	der := ca.sign(t, &x509.Certificate{
-		DNSNames:  []string{id},
-		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(24 * time.Hour),
-		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-	}, key)
-	return &tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
+	cert, err := ca.RelayCert(id)
+	require.NoError(t, err)
+	return cert
 }
 
-type fakeTrust struct {
-	mu      sync.Mutex
-	pool    *x509.CertPool
-	revoked []vpcv1alpha1.RevokedAgent
-}
-
-func (f *fakeTrust) AgentCA() (*x509.CertPool, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.pool, nil
-}
-
-func (f *fakeTrust) Revoked(string, string) ([]vpcv1alpha1.RevokedAgent, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.revoked, nil
-}
-
-type fakeNetworks struct {
-	mtu         uint32
-	dns, search []string
-}
-
-func (f fakeNetworks) Network(project, uid string) (relay.Network, error) {
-	if project != testProject || uid != testVPC {
-		return relay.Network{}, fmt.Errorf("unknown VPC %s/%s", project, uid)
-	}
-	return relay.Network{ID: testVNI, MTU: f.mtu, DNSServers: f.dns, DNSSearchDomains: f.search}, nil
-}
-
-// fakeAddresses gives each attachment the next /96 in the VPC network
-// fd61:706f:7879:12:3400::/72, and counts the live attachments of each agent.
+// fakeAddresses is a vpctest.Addresses with a gate. While the gate is open,
+// Assign waits for the attachments with names that start with gateName.
 type fakeAddresses struct {
-	mu      sync.Mutex
-	next    int
-	live    map[string]int // Subject to live attachments.
-	maxLive map[string]int
-	// While gate is open, Assign waits for the attachments with names that
-	// start with gateName. inGate counts them.
+	*vpctest.Addresses
+	mu               sync.Mutex
 	gate             chan struct{}
 	gateName         string
-	inGate, mostGate int
+	inGate, mostGate int // Assign calls that wait now, and the most at once.
 }
 
 func (f *fakeAddresses) Assign(ctx context.Context, a *relay.Attachment) ([]netip.Prefix, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	if gate := f.gate; gate != nil && strings.HasPrefix(a.Name, f.gateName) {
 		f.inGate++
 		f.mostGate = max(f.mostGate, f.inGate)
@@ -185,36 +97,12 @@ func (f *fakeAddresses) Assign(ctx context.Context, a *relay.Attachment) ([]neti
 		f.mu.Lock()
 		f.inGate--
 		if ctx.Err() != nil {
+			f.mu.Unlock()
 			return nil, ctx.Err()
 		}
 	}
-	f.next++
-	if f.live == nil {
-		f.live, f.maxLive = map[string]int{}, map[string]int{}
-	}
-	f.live[a.Subject]++
-	f.maxLive[a.Subject] = max(f.maxLive[a.Subject], f.live[a.Subject])
-	return []netip.Prefix{netip.MustParsePrefix(fmt.Sprintf("fd61:706f:7879:12:3400:%x::/96", f.next))}, nil
-}
-
-func (f *fakeAddresses) Release(a *relay.Attachment) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.live[a.Subject]--
-}
-
-// overlap returns the most attachments of subject that were live at once.
-func (f *fakeAddresses) overlap(subject string) int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.maxLive[subject]
-}
-
-// liveOf returns the live attachments of subject.
-func (f *fakeAddresses) liveOf(subject string) int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.live[subject]
+	f.mu.Unlock()
+	return f.Addresses.Assign(ctx, a)
 }
 
 // hold makes Assign wait for the names with prefix until release runs.
@@ -242,7 +130,7 @@ func (f *fakeAddresses) held() (now, most int) {
 type world struct {
 	mu               sync.Mutex
 	agentCA, relayCA *testCA
-	trust            *fakeTrust
+	trust            *vpctest.Trust
 	addrs            *fakeAddresses
 	mtu              uint32 // VPC MTU of the relays.
 	dns, search      []string
@@ -255,9 +143,7 @@ func (w *world) rotateAgentCA(t testing.TB) {
 	w.mu.Lock()
 	w.agentCA = ca
 	w.mu.Unlock()
-	w.trust.mu.Lock()
-	w.trust.pool = ca.pool()
-	w.trust.mu.Unlock()
+	w.trust.SetCA(ca.CA)
 }
 
 func (w *world) enrollCA() *testCA {
@@ -267,8 +153,8 @@ func (w *world) enrollCA() *testCA {
 }
 
 func newWorld(t testing.TB) *world {
-	w := &world{agentCA: newCA(t), relayCA: newCA(t), addrs: &fakeAddresses{}}
-	w.trust = &fakeTrust{pool: w.agentCA.pool()}
+	w := &world{agentCA: newCA(t), relayCA: newCA(t), addrs: &fakeAddresses{Addresses: &vpctest.Addresses{}}}
+	w.trust = vpctest.NewTrust(w.agentCA.CA)
 	return w
 }
 
@@ -318,7 +204,10 @@ func (w *world) relayOn(t testing.TB, id string, udp net.PacketConn) *testRelay 
 	ln, err := tr.Listen(r.TLSConfig(&tls.Config{Certificates: []tls.Certificate{*cert}}), &quic.Config{EnableDatagrams: true, DisableECN: true, MaxIncomingStreams: 512})
 	require.NoError(t, err)
 	srv := &relay.Server{
-		R: r, Networks: fakeNetworks{mtu: w.mtu, dns: w.dns, search: w.search}, Addresses: w.addrs, RelayID: id,
+		R: r, Addresses: w.addrs, RelayID: id,
+		Networks: vpctest.Networks{Project: testProject, VPC: testVPC, Net: relay.Network{
+			ID: testVNI, MTU: w.mtu, DNSServers: w.dns, DNSSearchDomains: w.search,
+		}},
 		Cert: func() (*tls.Certificate, error) { return cert, nil },
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -440,7 +329,7 @@ func (w *world) agent(t *testing.T, name string, r *testRelay, opts agentOptions
 	cfg := Config{
 		Identity:      identity.NewManager(filepath.Join(t.TempDir(), "cred.json"), enroll),
 		Relays:        opts.relays,
-		RelayRoots:    w.relayCA.pool(),
+		RelayRoots:    w.relayCA.Pool(),
 		Sessions:      opts.sessions,
 		Transport:     ta.tr,
 		TransportMode: opts.mode,

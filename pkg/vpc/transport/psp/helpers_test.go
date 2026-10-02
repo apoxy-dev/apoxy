@@ -16,7 +16,6 @@ import (
 	"math/big"
 	"net"
 	"net/netip"
-	"net/url"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -36,10 +35,10 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
 
-	vpcv1alpha1 "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/identity"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/vpctest"
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
@@ -253,7 +252,7 @@ type fakeRelay struct {
 	r        *relay.Router
 	tr       *quic.Transport
 	ln       *quic.Listener
-	ca       *testCA
+	ca       *vpctest.CA
 	accepted chan *relay.Session
 	q        chan relayPkt
 	drops    atomic.Uint64
@@ -266,15 +265,15 @@ type relayPkt struct {
 
 func newFakeRelay(t testing.TB) *fakeRelay {
 	t.Helper()
-	ca := newCA(t)
+	ca, err := vpctest.NewCA()
+	require.NoError(t, err)
 	fr := &fakeRelay{
-		r:        relay.NewRouter(&fakeTrust{ca}, relay.Config{}),
+		r:        relay.NewRouter(vpctest.NewTrust(ca), relay.Config{}),
 		ca:       ca,
 		accepted: make(chan *relay.Session, 1),
 		q:        make(chan relayPkt, 1024),
 	}
 	fr.tr = newTransport(t, fr.handle)
-	var err error
 	fr.ln, err = fr.tr.Listen(fr.r.TLSConfig(&tls.Config{Certificates: []tls.Certificate{selfSigned(t)}}), nil)
 	require.NoError(t, err)
 
@@ -355,9 +354,10 @@ func (fr *fakeRelay) attach(t testing.TB, n *node, name string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	san := identity.ID{Project: testProject, VPC: testVPC, Agent: name}.String()
+	cred, err := fr.ca.Credential(testProject, testVPC, name, identity.CertLifetime)
+	require.NoError(t, err)
 	qc, err := n.tr.Dial(ctx, net.UDPAddrFromAddrPort(addrOf(fr.tr)), &tls.Config{
-		Certificates:       []tls.Certificate{fr.ca.issue(t, san)},
+		Certificates:       []tls.Certificate{*cred.TLSCertificate()},
 		InsecureSkipVerify: true,
 		NextProtos:         []string{dp.ALPNRelay},
 	}, &quic.Config{KeepAlivePeriod: 5 * time.Second})
@@ -469,67 +469,12 @@ func (f *fakeTun) Close() error {
 	return nil
 }
 
-// testCA signs agent certs.
-type testCA struct {
-	cert *x509.Certificate
-	key  *ecdsa.PrivateKey
-}
-
 func newKey(t testing.TB) *ecdsa.PrivateKey {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
 	return key
 }
-
-func newCA(t testing.TB) *testCA {
-	t.Helper()
-	key := newKey(t)
-	tmpl := &x509.Certificate{
-		SerialNumber:          big.NewInt(1),
-		NotBefore:             time.Now().Add(-time.Hour),
-		NotAfter:              time.Now().Add(time.Hour),
-		IsCA:                  true,
-		BasicConstraintsValid: true,
-		KeyUsage:              x509.KeyUsageCertSign,
-	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
-	require.NoError(t, err)
-	cert, err := x509.ParseCertificate(der)
-	require.NoError(t, err)
-	return &testCA{cert: cert, key: key}
-}
-
-// issue signs an agent cert with the URI SAN san.
-func (ca *testCA) issue(t testing.TB, san string) tls.Certificate {
-	t.Helper()
-	key := newKey(t)
-	u, err := url.Parse(san)
-	require.NoError(t, err)
-	notBefore := time.Now().Add(-time.Minute)
-	tmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(2),
-		NotBefore:    notBefore,
-		NotAfter:     notBefore.Add(identity.CertLifetime),
-		KeyUsage:     x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
-		URIs:         []*url.URL{u},
-	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca.cert, &key.PublicKey, ca.key)
-	require.NoError(t, err)
-	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
-}
-
-// fakeTrust trusts one CA and revokes no agent.
-type fakeTrust struct{ ca *testCA }
-
-func (f *fakeTrust) AgentCA() (*x509.CertPool, error) {
-	p := x509.NewCertPool()
-	p.AddCert(f.ca.cert)
-	return p, nil
-}
-
-func (f *fakeTrust) Revoked(string, string) ([]vpcv1alpha1.RevokedAgent, error) { return nil, nil }
 
 // startNetstack runs a gVisor stack on the binding of n. A zero TCP window
 // gives a UDP-only stack, because gVisor TCP uses all CPUs in race builds.

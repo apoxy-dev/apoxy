@@ -181,10 +181,10 @@ func TestAttachmentsMove(t *testing.T) {
 				assert.Equal(t, want, a.events(name))
 			}
 			id := identity.ID{Project: testProject, VPC: testVPC, Agent: "a"}.String()
-			require.Eventually(t, func() bool { return w.addrs.liveOf(id) == 4 }, 5*time.Second, 10*time.Millisecond,
+			require.Eventually(t, func() bool { return w.addrs.LiveOf(id) == 4 }, 5*time.Second, 10*time.Millisecond,
 				"the relay releases the old addresses")
 			if tc.before {
-				assert.Equal(t, 8, w.addrs.overlap(id), "the new session has all attachments before the old one closes")
+				assert.Equal(t, 8, w.addrs.Overlap(id), "the new session has all attachments before the old one closes")
 			}
 		})
 	}

@@ -63,7 +63,7 @@ func (w *world) stubAgent(t *testing.T, name string) *Agent {
 	udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	require.NoError(t, err)
 	tr := &quic.Transport{Conn: udp}
-	a := New(Config{RelayRoots: w.relayCA.pool(), Transport: tr})
+	a := New(Config{RelayRoots: w.relayCA.Pool(), Transport: tr})
 	b, err := psp.New(psp.Config{Transport: tr, Demux: &a.demux, VNI: testVNI})
 	require.NoError(t, err)
 	t.Cleanup(func() {

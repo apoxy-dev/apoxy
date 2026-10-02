@@ -369,13 +369,13 @@ func TestRenew(t *testing.T) {
 			assert.GreaterOrEqual(t, a.enrolls.Load(), int32(2))
 			id := identity.ID{Project: testProject, VPC: testVPC, Agent: "a"}.String()
 			if tc.route {
-				require.Eventually(t, func() bool { return w.addrs.liveOf(id) == 1 },
+				require.Eventually(t, func() bool { return w.addrs.LiveOf(id) == 1 },
 					5*time.Second, 10*time.Millisecond, "the old session closes")
 				stop()
 				assert.Equal(t, []string{"+" + route.String()}, b.routeEvents(route), "b keeps the route")
 				assert.Empty(t, a.routeEvents(route), "a never gets its own route")
 			}
-			assert.Equal(t, 2, w.addrs.overlap(id), "the new session attaches before the old one closes")
+			assert.Equal(t, 2, w.addrs.Overlap(id), "the new session attaches before the old one closes")
 			if tc.spare {
 				require.Eventually(t, func() bool {
 					s := a.spare()
@@ -653,7 +653,7 @@ func TestRelayDial(t *testing.T) {
 			}
 			opts := agentOptions{relays: relays, noRoots: tc.noRoots}
 			if tc.certRoots {
-				roots := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: w.relayCA.cert.Raw})
+				roots := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: w.relayCA.Cert.Raw})
 				opts.relays = nil
 				opts.enrolled = func(int32) ([]identity.Relay, []byte, error) { return relays, roots, nil }
 			}
