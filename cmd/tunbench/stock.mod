@@ -3,7 +3,7 @@ module github.com/apoxy-dev/apoxy/cmd/tunbench
 go 1.26.8
 
 // Stock quic-go for the control run. Build with -modfile=stock.mod -tags stock.
-replace gvisor.dev/gvisor => github.com/apoxy-dev/gvisor v0.0.0-20261002143230-32fd64c8562c
+replace gvisor.dev/gvisor => github.com/apoxy-dev/gvisor v0.0.0-20261002151751-a9a9a2cd7262
 
 require (
 	github.com/apoxy-dev/icx v0.19.1-0.20260826222334-295d1c74aeae
