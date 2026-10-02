@@ -2,7 +2,6 @@ package connection
 
 import (
 	"log/slog"
-	"sync"
 	"sync/atomic"
 
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/metrics"
@@ -25,12 +24,14 @@ const asyncSendQueueSize = 256
 type asyncSendConn struct {
 	Connection
 
-	sendQ   chan []byte
-	onICMP  func([]byte)
-	addr    string // for logs/metrics
-	closed  atomic.Bool
-	done    chan struct{}
-	closeMu sync.Mutex
+	sendQ  chan []byte
+	onICMP func([]byte)
+	addr   string // for logs/metrics
+	closed atomic.Bool
+	// stop closes at Close or shutdownSender. sendQ stays open, because
+	// WritePacket can still send on it.
+	stop chan struct{}
+	done chan struct{}
 }
 
 // newAsyncSendConn wraps c with a bounded send queue. onICMP, if non-nil, is
@@ -43,6 +44,7 @@ func newAsyncSendConn(c Connection, addr string, onICMP func([]byte)) *asyncSend
 		sendQ:      make(chan []byte, asyncSendQueueSize),
 		onICMP:     onICMP,
 		addr:       addr,
+		stop:       make(chan struct{}),
 		done:       make(chan struct{}),
 	}
 	go a.run()
@@ -51,16 +53,33 @@ func newAsyncSendConn(c Connection, addr string, onICMP func([]byte)) *asyncSend
 
 func (a *asyncSendConn) run() {
 	defer close(a.done)
-	for pkt := range a.sendQ {
-		icmp, err := a.Connection.WritePacket(pkt)
-		if err != nil {
-			slog.Debug("async send: WritePacket failed",
-				slog.String("addr", a.addr), slog.Any("error", err))
-			metrics.TunnelPacketsSentErrors.WithLabelValues("async_write").Inc()
+	for {
+		select {
+		case pkt := <-a.sendQ:
+			a.send(pkt)
+		case <-a.stop:
+			// Send the packets that are still in the queue, then stop.
+			for {
+				select {
+				case pkt := <-a.sendQ:
+					a.send(pkt)
+				default:
+					return
+				}
+			}
 		}
-		if len(icmp) > 0 && a.onICMP != nil {
-			a.onICMP(icmp)
-		}
+	}
+}
+
+func (a *asyncSendConn) send(pkt []byte) {
+	icmp, err := a.Connection.WritePacket(pkt)
+	if err != nil {
+		slog.Debug("async send: WritePacket failed",
+			slog.String("addr", a.addr), slog.Any("error", err))
+		metrics.TunnelPacketsSentErrors.WithLabelValues("async_write").Inc()
+	}
+	if len(icmp) > 0 && a.onICMP != nil {
+		a.onICMP(icmp)
 	}
 }
 
@@ -78,6 +97,8 @@ func (a *asyncSendConn) WritePacket(pkt []byte) ([]byte, error) {
 	select {
 	case a.sendQ <- buf:
 		return nil, nil
+	case <-a.stop:
+		return nil, nil
 	default:
 		metrics.TunnelPacketsDropped.WithLabelValues("async_send_queue_full").Inc()
 		return nil, nil
@@ -87,12 +108,7 @@ func (a *asyncSendConn) WritePacket(pkt []byte) ([]byte, error) {
 // Close stops the sender goroutine (draining any queued packets) and then
 // closes the underlying connection. Safe to call multiple times.
 func (a *asyncSendConn) Close() error {
-	a.closeMu.Lock()
-	if !a.closed.Swap(true) {
-		close(a.sendQ)
-	}
-	a.closeMu.Unlock()
-	<-a.done
+	a.shutdownSender()
 	return a.Connection.Close()
 }
 
@@ -101,10 +117,8 @@ func (a *asyncSendConn) Close() error {
 // readFromConn detecting QUIC closure) — we still need to reclaim the
 // goroutine but must not double-close the underlying.
 func (a *asyncSendConn) shutdownSender() {
-	a.closeMu.Lock()
 	if !a.closed.Swap(true) {
-		close(a.sendQ)
+		close(a.stop)
 	}
-	a.closeMu.Unlock()
 	<-a.done
 }

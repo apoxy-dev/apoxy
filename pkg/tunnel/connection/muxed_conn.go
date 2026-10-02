@@ -34,6 +34,9 @@ type muxedConn struct {
 
 	closeOnce sync.Once
 	closed    atomic.Bool
+	// done closes at Close. incomingPackets stays open, because readers and
+	// ICMP replies can still send on it.
+	done chan struct{}
 }
 
 const defaultMTU = 1500
@@ -47,6 +50,7 @@ func newMuxedConn() *muxedConn {
 		prefixes:        make(map[netip.Prefix]Connection),
 		incomingPackets: make(chan *[]byte, 10000),
 		headroom:        headroom,
+		done:            make(chan struct{}),
 		packetBufferPool: sync.Pool{
 			New: func() interface{} {
 				b := make([]byte, bufSize)
@@ -100,13 +104,11 @@ func (m *muxedConn) readFromConn(src netip.Prefix, conn Connection) {
 		*pkt = (*pkt)[:n+m.headroom]
 		select {
 		case m.incomingPackets <- pkt:
-		default: // Channel is closed or full, return the buffer to the pool
-			if m.closed.Load() {
-				slog.Warn("Muxed connection closed", slog.Any("src", src))
-
-				m.packetBufferPool.Put(pkt)
-				return
-			}
+		case <-m.done:
+			// The mux is closed. The next read gets the close of the connection.
+			m.packetBufferPool.Put(pkt)
+			continue
+		default:
 			slog.Warn("Packet queue full", slog.Int("bytes", n))
 			metrics.TunnelPacketsDropped.WithLabelValues("queue_full").Inc()
 
@@ -134,6 +136,12 @@ func (m *muxedConn) Add(addr netip.Prefix, conn Connection) error {
 		return fmt.Errorf("invalid prefix for connection: %v", addr)
 	}
 
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed.Load() {
+		return net.ErrClosed
+	}
+
 	slog.Info("Adding connection", slog.String("prefix", addr.String()))
 
 	wrapped := newAsyncSendConn(conn, addr.String(), func(icmp []byte) {
@@ -152,13 +160,14 @@ func (m *muxedConn) Add(addr netip.Prefix, conn Connection) error {
 		*buf = (*buf)[:m.headroom+len(icmp)]
 		select {
 		case m.incomingPackets <- buf:
+		case <-m.done:
+			m.packetBufferPool.Put(buf)
 		default:
 			m.packetBufferPool.Put(buf)
 			metrics.TunnelPacketsDropped.WithLabelValues("icmp_queue_full").Inc()
 		}
 	})
 
-	m.mu.Lock()
 	// A prefix can already be present: an agent's reconnect (and its parallel
 	// same-server connections) carries the same address assignment, so the
 	// newest connection takes the prefix over. The displaced connection keeps
@@ -169,7 +178,6 @@ func (m *muxedConn) Add(addr netip.Prefix, conn Connection) error {
 	}
 	m.conns.Insert(addr, wrapped)
 	m.prefixes[addr] = wrapped
-	m.mu.Unlock()
 
 	go m.readFromConn(addr, wrapped)
 
@@ -243,6 +251,8 @@ func (m *muxedConn) Close() error {
 	var firstErr error
 	m.closeOnce.Do(func() {
 		m.mu.Lock()
+		// Add checks closed under the same lock, so no connection comes in after this.
+		m.closed.Store(true)
 		// Close all connections in the map.
 		for prefix, conn := range m.prefixes {
 			slog.Info("Closing underlying connection", slog.String("prefix", prefix.String()))
@@ -260,11 +270,7 @@ func (m *muxedConn) Close() error {
 		m.prefixes = make(map[netip.Prefix]Connection)
 		m.mu.Unlock()
 
-		// Close the incoming packets channel.
-		close(m.incomingPackets)
-
-		// Mark the connection as closed.
-		m.closed.Store(true)
+		close(m.done)
 	})
 
 	return firstErr
@@ -272,13 +278,9 @@ func (m *muxedConn) Close() error {
 
 // ReadPacket reads a packet from multiple underlying Connection pipes.
 func (m *muxedConn) ReadPacket(pkt []byte) (int, error) {
-	if m.closed.Load() {
-		return 0, net.ErrClosed
-	}
-
-	p, ok := <-m.incomingPackets
-	if !ok {
-		return 0, net.ErrClosed
+	p, err := m.readPacketDirect()
+	if err != nil {
+		return 0, err
 	}
 
 	n := copy(pkt, (*p)[m.headroom:])
@@ -296,12 +298,12 @@ func (m *muxedConn) readPacketDirect() (*[]byte, error) {
 		return nil, net.ErrClosed
 	}
 
-	p, ok := <-m.incomingPackets
-	if !ok {
+	select {
+	case p := <-m.incomingPackets:
+		return p, nil
+	case <-m.done:
 		return nil, net.ErrClosed
 	}
-
-	return p, nil
 }
 
 // tryReadPacketDirect attempts a non-blocking read from the incoming packet
@@ -312,10 +314,7 @@ func (m *muxedConn) tryReadPacketDirect() (*[]byte, bool) {
 	}
 
 	select {
-	case p, ok := <-m.incomingPackets:
-		if !ok {
-			return nil, false
-		}
+	case p := <-m.incomingPackets:
 		return p, true
 	default:
 		return nil, false
