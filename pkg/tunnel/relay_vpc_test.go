@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -34,6 +35,7 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/hasher"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/identity"
 	vpcrelay "github.com/apoxy-dev/apoxy/pkg/vpc/relay"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/relay/steer"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/peerconn"
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
@@ -84,9 +86,28 @@ type vpcAgent struct {
 	addr netip.Addr // Overlay address from the grant.
 }
 
-// TestRelay_VPCSharesSocket runs HTTP/3 and VPC relay sessions on one relay
-// socket, and sends PSP packets and peer frames between two VPC agents.
+// TestRelay_VPCSharesSocket runs HTTP/3 and VPC relay sessions on the relay
+// sockets, and sends PSP packets and peer frames between VPC agents.
 func TestRelay_VPCSharesSocket(t *testing.T) {
+	cases := []struct {
+		name  string
+		steer int // Sockets in a steer group. Zero uses one plain socket.
+	}{
+		{name: "one socket"},
+		{name: "steer group of 1", steer: 1},
+		{name: "steer group of 4", steer: 4},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.steer > 1 && runtime.GOOS != "linux" {
+				t.Skip("a steer group of more than one socket needs Linux")
+			}
+			testRelayVPC(t, tc.steer)
+		})
+	}
+}
+
+func testRelayVPC(t *testing.T, steerSockets int) {
 	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
 	caTmpl := &x509.Certificate{
@@ -100,8 +121,15 @@ func TestRelay_VPCSharesSocket(t *testing.T) {
 	agentPool := x509.NewCertPool()
 	agentPool.AddCert(agentCA)
 
-	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
-	require.NoError(t, err)
+	var conns []*net.UDPConn
+	if steerSockets > 0 {
+		conns, err = steer.Listen("udp", "127.0.0.1:0", steerSockets)
+		require.NoError(t, err)
+	} else {
+		pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+		require.NoError(t, err)
+		conns = []*net.UDPConn{pc.(*net.UDPConn)}
+	}
 	relayCA, serverCert, err := cryptoutils.GenerateSelfSignedTLSCert("localhost")
 	require.NoError(t, err)
 	relayRoots := cryptoutils.CertPoolForCertificate(relayCA)
@@ -113,7 +141,11 @@ func TestRelay_VPCSharesSocket(t *testing.T) {
 	rtr := &mockRouter{}
 	rtr.On("Start", mock.Anything).Return(nil)
 	rtr.On("Close").Return(nil)
-	r := tunnel.NewRelay("localhost", pc, serverCert, h, hasher.NewHasher(make([]byte, 32)), rtr)
+	r := tunnel.NewRelay("localhost", conns[0], serverCert, h, hasher.NewHasher(make([]byte, 32)), rtr)
+	if steerSockets > 0 {
+		require.NoError(t, r.SetSteerGroup(conns))
+	}
+	require.NoError(t, r.SetStatelessResetSecret([]byte("secret")))
 	r.SetVPC("localhost", vpcTrust{agentPool}, vpcNetworks{}, &vpcAddresses{})
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -124,7 +156,9 @@ func TestRelay_VPCSharesSocket(t *testing.T) {
 	t.Cleanup(func() {
 		cancel()
 		<-done
-		_ = pc.Close()
+		for _, c := range conns {
+			_ = c.Close()
+		}
 	})
 
 	// HTTP/3 still works.
@@ -154,6 +188,10 @@ func TestRelay_VPCSharesSocket(t *testing.T) {
 		require.NoError(t, err)
 		tr := &quic.Transport{Conn: udp}
 		t.Cleanup(func() { _ = tr.Close(); _ = udp.Close() })
+		// quic-go drops non-QUIC packets until the first ReadNonQUICPacket call.
+		stopped, stop := context.WithCancel(context.Background())
+		stop()
+		_, _, _ = tr.ReadNonQUICPacket(stopped, nil)
 		dctx, dcancel := context.WithTimeout(ctx, 5*time.Second)
 		defer dcancel()
 		qc, err := tr.Dial(dctx, net.UDPAddrFromAddrPort(r.Address()), &tls.Config{
@@ -172,33 +210,41 @@ func TestRelay_VPCSharesSocket(t *testing.T) {
 		a.addr = netip.MustParsePrefix(claims.Addresses[0]).Addr().Next()
 		return a
 	}
-	a, b := dial("a"), dial("b")
-
-	// A peer frame from a to b.
-	require.NoError(t, a.qc.SendDatagram(peerconn.EncodeToRelay(nil, b.addr, a.addr, []byte("hello"))))
-	rctx, rcancel := context.WithTimeout(ctx, 5*time.Second)
-	defer rcancel()
-	got, err := b.qc.ReceiveDatagram(rctx)
-	require.NoError(t, err)
-	assert.Equal(t, peerconn.EncodeFromRelay(nil, a.addr, []byte("hello")), got)
-
-	// A PSP packet from a to b by the SPI row of a, through the packet handler.
-	_, err = a.c.RegisterSPI(rctx, &dp.RegisterSPIRequest{
-		Vpc:         &dp.VPCRef{ProjectId: vpcProject, VpcUid: vpcUID, NetworkId: vpcNetwork},
-		Destination: b.addr.String(), Spis: []uint32{7}, ExpiresIn: durationpb.New(time.Minute),
-	})
-	require.NoError(t, err)
+	// The kernel puts each new connection on a random socket of the group. The
+	// later packets of a connection must reach that socket.
+	agents := make([]vpcAgent, 4)
+	for i := range agents {
+		agents[i] = dial(fmt.Sprintf("agent-%d", i))
+	}
 	aead, err := pspwire.NewAEAD(make([]byte, 16))
 	require.NoError(t, err)
-	inner := make([]byte, 40)
-	inner[0] = 0x60
-	pkt := make([]byte, len(inner)+pspwire.Overhead)
-	n, err := pspwire.Seal(aead, pspwire.Header{SPI: 7, VNI: vpcNetwork}, pkt, inner)
-	require.NoError(t, err)
-	_, err = a.tr.WriteTo(pkt[:n], net.UDPAddrFromAddrPort(r.Address()))
-	require.NoError(t, err)
-	buf := make([]byte, 1500)
-	m, _, err := b.tr.ReadNonQUICPacket(rctx, buf)
-	require.NoError(t, err)
-	assert.Equal(t, pkt[:n], buf[:m])
+	for i, a := range agents {
+		b := agents[(i+1)%len(agents)]
+		rctx, rcancel := context.WithTimeout(ctx, 5*time.Second)
+		defer rcancel()
+
+		// A peer frame from a to b.
+		require.NoError(t, a.qc.SendDatagram(peerconn.EncodeToRelay(nil, b.addr, a.addr, []byte("hello"))))
+		got, err := b.qc.ReceiveDatagram(rctx)
+		require.NoError(t, err)
+		assert.Equal(t, peerconn.EncodeFromRelay(nil, a.addr, []byte("hello")), got)
+
+		// A PSP packet from a to b by the SPI row of a, through the packet handler.
+		_, err = a.c.RegisterSPI(rctx, &dp.RegisterSPIRequest{
+			Vpc:         &dp.VPCRef{ProjectId: vpcProject, VpcUid: vpcUID, NetworkId: vpcNetwork},
+			Destination: b.addr.String(), Spis: []uint32{7}, ExpiresIn: durationpb.New(time.Minute),
+		})
+		require.NoError(t, err)
+		inner := make([]byte, 40)
+		inner[0] = 0x60
+		pkt := make([]byte, len(inner)+pspwire.Overhead)
+		n, err := pspwire.Seal(aead, pspwire.Header{SPI: 7, VNI: vpcNetwork}, pkt, inner)
+		require.NoError(t, err)
+		_, err = a.tr.WriteTo(pkt[:n], net.UDPAddrFromAddrPort(r.Address()))
+		require.NoError(t, err)
+		buf := make([]byte, 1500)
+		m, _, err := b.tr.ReadNonQUICPacket(rctx, buf)
+		require.NoError(t, err)
+		assert.Equal(t, pkt[:n], buf[:m])
+	}
 }

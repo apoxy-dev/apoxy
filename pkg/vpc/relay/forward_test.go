@@ -33,6 +33,17 @@ func pspPacket(t *testing.T, spi uint32, dst netip.Addr) []byte {
 	return out[:n]
 }
 
+// geneve returns a Geneve packet with optWords words of options and an IPv6
+// payload of n bytes.
+func geneve(optWords, n int) []byte {
+	b := make([]byte, 8+4*optWords+n)
+	b[0] = byte(optWords)
+	b[2], b[3] = 0x86, 0xdd
+	b[4], b[5], b[6] = 0x0a, 0x0b, 0x0c
+	b[8+4*optWords] = 0x60
+	return b
+}
+
 // TestPacketHandler checks that the relay forwards PSP packets by the SPI rows
 // of the sender before the handler returns, and drops the others.
 func TestPacketHandler(t *testing.T) {
@@ -59,17 +70,20 @@ func TestPacketHandler(t *testing.T) {
 		wantSent   bool
 		wantDrops  [2]uint64 // DropUnknownSPI of the sender and of the receiver.
 		wantSource uint64    // Drops for an unknown source.
+		wantBad    uint64    // Drops of packets that are not PSP.
 	}{
 		{name: "unknown SPI", from: snd.src, pkt: pspPacket(t, 8, dst), wantDrops: [2]uint64{1, 0}},
 		{name: "SPI of another sender", from: rcv.src, pkt: pspPacket(t, 7, dst), wantDrops: [2]uint64{0, 1}},
 		{name: "unknown source", from: netip.MustParseAddrPort("192.0.2.1:9"), pkt: pspPacket(t, 7, dst), wantSource: 1},
-		{name: "path probe", from: snd.src, pkt: []byte{0x02, 1, 2, 3}},
+		{name: "path probe", from: snd.src, pkt: []byte{0x02, 1, 2, 3}, wantBad: 1},
+		{name: "Geneve", from: snd.src, pkt: geneve(0, 64), wantBad: 1},
+		{name: "Geneve with options", from: snd.src, pkt: geneve(4, 64), wantBad: 1},
 		{name: "good", from: snd.src, pkt: pspPacket(t, 7, dst), wantSent: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			before := [2]uint64{h.r.SenderStats(sndSession).DropUnknownSPI, h.r.SenderStats(rcvSession).DropUnknownSPI}
-			source := h.r.UnknownSourceDrops()
+			source, bad := h.r.UnknownSourceDrops(), h.r.MalformedDrops()
 			b := append([]byte{}, tc.pkt...)
 			handle(b, net.UDPAddrFromAddrPort(tc.from))
 			// The handler must not keep b.
@@ -77,6 +91,7 @@ func TestPacketHandler(t *testing.T) {
 			after := [2]uint64{h.r.SenderStats(sndSession).DropUnknownSPI, h.r.SenderStats(rcvSession).DropUnknownSPI}
 			assert.Equal(t, tc.wantDrops, [2]uint64{after[0] - before[0], after[1] - before[1]})
 			assert.Equal(t, tc.wantSource, h.r.UnknownSourceDrops()-source)
+			assert.Equal(t, tc.wantBad, h.r.MalformedDrops()-bad)
 			if !tc.wantSent {
 				return
 			}

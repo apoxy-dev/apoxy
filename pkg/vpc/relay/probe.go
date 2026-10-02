@@ -45,11 +45,11 @@ func (r *Router) removeProber(s *Session) {
 }
 
 // answerProbe sends a reply of the same size to a path probe that comes from
-// the address of its session. It writes the reply into b.
-func (r *Router) answerProbe(tr *quic.Transport, b []byte, from net.Addr) {
+// the address of its session. It writes the reply into b and reports a reply.
+func (r *Router) answerProbe(tr *quic.Transport, b []byte, from net.Addr) bool {
 	sid, ok := p2p.ProbeSID(b)
 	if !ok {
-		return
+		return false
 	}
 	src, now := addrPort(from), time.Now()
 	r.mu.RLock()
@@ -57,12 +57,13 @@ func (r *Router) answerProbe(tr *quic.Transport, b []byte, from net.Addr) {
 	ok = s != nil && (src == s.addr || (src == s.prev && now.Before(s.prevUntil)))
 	r.mu.RUnlock()
 	if !ok || !s.probe.limit.AllowN(now, 1) {
-		return
+		return false
 	}
 	p, err := p2p.OpenProbe(b, &s.probe.keys.Dialer)
 	if err != nil || p.Reply {
-		return
+		return false
 	}
 	p.Reply, p.Seen = true, src
 	_, _ = tr.WriteTo(p2p.AppendProbe(b[:0], p, len(b), &s.probe.keys.Listener), from)
+	return true
 }

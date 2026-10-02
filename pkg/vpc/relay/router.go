@@ -92,6 +92,7 @@ type Router struct {
 	cfg           Config
 	trust         Trust
 	unknownSource atomic.Uint64
+	malformed     atomic.Uint64
 	bridge        atomic.Pointer[bridge]
 
 	mu       sync.RWMutex
@@ -601,6 +602,10 @@ func (r *Router) SenderStats(s *Session) SenderStats {
 
 // UnknownSourceDrops returns the number of packets from addresses of no sender.
 func (r *Router) UnknownSourceDrops() uint64 { return r.unknownSource.Load() }
+
+// MalformedDrops returns the number of non-QUIC packets that are not PSP and
+// get no probe reply. Geneve packets that the kernel did not take count here.
+func (r *Router) MalformedDrops() uint64 { return r.malformed.Load() }
 
 func addrPort(a net.Addr) netip.AddrPort {
 	u, ok := a.(*net.UDPAddr)

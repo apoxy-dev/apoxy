@@ -22,7 +22,9 @@ func (r *Router) PacketHandler(tr *quic.Transport) func(b []byte, from net.Addr)
 	return func(b []byte, from net.Addr) {
 		h, err := pspwire.ParseHeader(b)
 		if err != nil {
-			r.answerProbe(tr, b, from) // A path probe or a bad packet.
+			if !r.answerProbe(tr, b, from) {
+				r.malformed.Add(1)
+			}
 			return
 		}
 		now := time.Now()

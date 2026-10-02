@@ -37,6 +37,7 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/router"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/token"
 	vpcrelay "github.com/apoxy-dev/apoxy/pkg/vpc/relay"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/relay/steer"
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
@@ -89,6 +90,9 @@ type Relay struct {
 	// resetKey makes the stateless reset tokens, so a restart of this relay
 	// closes the old connections. Nil sends no resets.
 	resetKey *quic.StatelessResetKey
+
+	// steer holds the sockets of a steer group. Empty uses pc only.
+	steer []*net.UDPConn
 }
 
 func NewRelay(name string, pc net.PacketConn, cert tls.Certificate, handler *icx.Handler, idHasher *hasher.Hasher, router router.Router) *Relay {
@@ -243,6 +247,36 @@ func (r *Relay) SetVPC(relayID string, trust vpcrelay.Trust, nets vpcrelay.Netwo
 	return rtr
 }
 
+// SetSteerGroup serves on the sockets of a steer group, in the order that
+// steer.Listen gives them. Call it before Start.
+func (r *Relay) SetSteerGroup(conns []*net.UDPConn) error {
+	if len(conns) == 0 || len(conns) > steer.MaxSockets {
+		return fmt.Errorf("steer group has %d sockets", len(conns))
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.pc = conns[0]
+	r.steer = conns
+	return nil
+}
+
+// transports returns one QUIC transport for each relay socket. The transport
+// of steer socket i issues the connection IDs that the kernel sends to i.
+func (r *Relay) transports() []*quic.Transport {
+	if len(r.steer) == 0 {
+		return []*quic.Transport{{Conn: r.pc, StatelessResetKey: r.resetKey}}
+	}
+	trs := make([]*quic.Transport, len(r.steer))
+	for i, c := range r.steer {
+		trs[i] = &quic.Transport{
+			Conn:                  c,
+			ConnectionIDGenerator: steer.ConnIDs{Index: uint8(i)},
+			StatelessResetKey:     r.resetKey,
+		}
+	}
+	return trs
+}
+
 // vpcTLSConfig picks the VPC relay config for apoxy-vpc/2, else h3.
 func (r *Relay) vpcTLSConfig(h3 *tls.Config) *tls.Config {
 	vpc := r.vpc.R.TLSConfig(&tls.Config{GetCertificate: r.getCert})
@@ -367,26 +401,39 @@ func (r *Relay) ConnectionStats() []ConnStats {
 
 // Start starts the relay.
 func (r *Relay) Start(ctx context.Context) error {
-	// HTTP/3, VPC relay sessions and PSP share one QUIC transport.
-	tr := &quic.Transport{Conn: r.pc, StatelessResetKey: r.resetKey}
-	defer tr.Close()
+	// HTTP/3, VPC relay sessions and PSP share the QUIC transport of each
+	// socket.
+	trs := r.transports()
+	defer func() {
+		for _, tr := range trs {
+			_ = tr.Close()
+		}
+	}()
 	tlsConf := http3.ConfigureTLSConfig(&tls.Config{GetCertificate: r.getCert})
 	if r.vpc != nil {
 		tlsConf = r.vpcTLSConfig(tlsConf)
-		tr.NonQUICPacketHandler = r.vpc.R.PacketHandler(tr)
 	}
-	quicLn, err := tr.ListenEarly(tlsConf, quicConfig)
-	if err != nil {
-		return fmt.Errorf("failed to create QUIC listener: %w", err)
-	}
-	var ln http3.QUICEarlyListener = quicLn
 	// VPC relay sessions continue after ctx ends, until the drain ends.
 	vpcCtx, vpcCancel := context.WithCancel(context.Background())
 	defer vpcCancel()
+	lns := make([]http3.QUICEarlyListener, len(trs))
+	for i, tr := range trs {
+		if r.vpc != nil {
+			tr.NonQUICPacketHandler = r.vpc.R.PacketHandler(tr)
+		}
+		quicLn, err := tr.ListenEarly(tlsConf, quicConfig)
+		if err != nil {
+			return fmt.Errorf("failed to create QUIC listener: %w", err)
+		}
+		lns[i] = quicLn
+		if r.vpc != nil {
+			lns[i] = &vpcListener{EarlyListener: quicLn, ctx: vpcCtx, srv: r.vpc}
+		}
+	}
 	if r.vpc != nil {
-		ln = &vpcListener{EarlyListener: quicLn, ctx: vpcCtx, srv: r.vpc}
 		go r.vpc.R.Run(vpcCtx)
 	}
+	addr := lns[0].Addr().String()
 
 	mux := httprouter.New()
 
@@ -453,7 +500,7 @@ func (r *Relay) Start(ctx context.Context) error {
 		}
 
 		if lameDuck <= 0 {
-			slog.Info("Stopping relay", slog.String("addr", ln.Addr().String()))
+			slog.Info("Stopping relay", slog.String("addr", addr))
 
 			// Last chance to report what the live connections carried: the
 			// router close below removes their virtual networks.
@@ -466,7 +513,7 @@ func (r *Relay) Start(ctx context.Context) error {
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 
-			slog.Info("Shutting down server", slog.String("addr", ln.Addr().String()))
+			slog.Info("Shutting down server", slog.String("addr", addr))
 
 			if err := srv.Shutdown(shutdownCtx); err != nil {
 				slog.Error("Failed to shutdown server", slog.Any("error", err))
@@ -477,7 +524,7 @@ func (r *Relay) Start(ctx context.Context) error {
 
 		deadline := time.Now().Add(lameDuck)
 		slog.Info("Relay draining; entering lame duck",
-			slog.String("addr", ln.Addr().String()),
+			slog.String("addr", addr),
 			slog.Duration("lameDuck", lameDuck))
 
 		// GOAWAY every control session. Shutdown returns when the last
@@ -497,7 +544,7 @@ func (r *Relay) Start(ctx context.Context) error {
 			time.Sleep(d)
 		}
 
-		slog.Info("Lame duck over; stopping relay", slog.String("addr", ln.Addr().String()))
+		slog.Info("Lame duck over; stopping relay", slog.String("addr", addr))
 
 		// Last chance to report what the live connections carried: the router
 		// close below removes their virtual networks.
@@ -510,13 +557,15 @@ func (r *Relay) Start(ctx context.Context) error {
 		return srv.Close()
 	})
 
-	g.Go(func() error {
-		slog.Info("Starting relay", slog.String("addr", ln.Addr().String()))
-		if err := srv.ServeListener(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			return err
-		}
-		return nil
-	})
+	slog.Info("Starting relay", slog.String("addr", addr), slog.Int("sockets", len(lns)))
+	for _, ln := range lns {
+		g.Go(func() error {
+			if err := srv.ServeListener(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				return err
+			}
+			return nil
+		})
+	}
 
 	if err := g.Wait(); err != nil && !errors.Is(err, context.Canceled) {
 		return err
