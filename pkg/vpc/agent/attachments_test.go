@@ -107,12 +107,16 @@ func TestAttachmentsMove(t *testing.T) {
 		wait    time.Duration // moveWait. Zero keeps the default.
 		oldEnds bool          // The relay closes the old session while the agent waits for the extras.
 		before  bool          // The extras attach on the new session before the move.
+		// The drain gives no alternate, and the draining relay stops Accept, as a
+		// relay host in its lame duck. The agent has no spare.
+		lameDuck bool
 	}{
 		{name: "drain", move: "drain", before: true},
 		{name: "cert renew", move: "renew", before: true},
 		{name: "session lost", move: "lost"},
 		{name: "drain with slow extras", move: "drain", slow: true, wait: 200 * time.Millisecond},
 		{name: "old session ends while extras attach", move: "drain", slow: true, wait: 5 * time.Second, oldEnds: true},
+		{name: "old session ends while the draining relay does not serve", move: "drain", oldEnds: true, lameDuck: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -127,8 +131,20 @@ func TestAttachmentsMove(t *testing.T) {
 			if tc.move == "renew" {
 				opts.life = 3 * time.Second
 			}
+			if tc.lameDuck {
+				// With no spare, the move dials the draining relay. Run can dial the other relay.
+				opts.relays, opts.sessions = []identity.Relay{r1.ref(), r2.ref()}, 1
+			}
 			a := w.agent(t, "a", r1, opts)
 			a.attached(t)
+			from, alts := r1, []*dp.RelayRef{{Id: r2.id, Addresses: []string{r2.addr}}}
+			if tc.lameDuck {
+				if a.current().addr == r2.addr {
+					from = r2
+				}
+				alts = nil
+			}
+			prev := a.current()
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			old := map[string]netip.Addr{}
@@ -152,14 +168,27 @@ func TestAttachmentsMove(t *testing.T) {
 					dctx, dcancel = context.WithTimeout(ctx, 300*time.Millisecond)
 					defer dcancel()
 				}
+				if tc.lameDuck {
+					from.stopAccept()
+				}
 				var wg sync.WaitGroup
-				wg.Go(func() { r1.srv.Drain(dctx, []*dp.RelayRef{{Id: r2.id, Addresses: []string{r2.addr}}}) })
+				wg.Go(func() { from.srv.Drain(dctx, alts) })
 				t.Cleanup(wg.Wait)
 			case "lost":
 				a.reconnect()
 			}
+			var ended time.Time
+			if tc.lameDuck {
+				select {
+				case <-prev.qc.Context().Done():
+					ended = time.Now()
+				case <-time.After(5 * time.Second):
+					t.Fatal("the relay did not close the old session")
+				}
+			}
 			a.attached(t)
-			if tc.oldEnds {
+			// In the lame duck, Run dials the other relay only after raceDelay.
+			if tc.oldEnds && !tc.lameDuck {
 				assert.Less(t, time.Since(start), time.Second, "the agent moves when the old session ends, before moveWait")
 			}
 			release()
@@ -174,6 +203,10 @@ func TestAttachmentsMove(t *testing.T) {
 				}
 				return len(now) == 3
 			}, 10*time.Second, 10*time.Millisecond, "the extras attach on the new session, and OnAttachment runs")
+			if tc.lameDuck {
+				t.Logf("Attached again %v after the old session ended", time.Since(ended))
+				assert.Less(t, time.Since(ended), 2*time.Second, "the agent does not wait for the open to the draining relay")
+			}
 			for name, addr := range old {
 				assert.NotEqual(t, addr, now[name], "%s has a new address", name)
 				want := []string{"attach " + name + " " + addr.String()}

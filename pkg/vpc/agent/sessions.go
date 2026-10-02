@@ -184,11 +184,13 @@ func (a *Agent) move(ctx context.Context, rc *relayConn, alts []*dp.RelayRef) (*
 	if next := a.promote(ctx, time.Now(), prefer); next != nil {
 		return next, nil
 	}
-	e := rc.ep
 	if len(alts) > 0 && len(alts[0].GetAddresses()) > 0 {
-		e = endpoint{id: alts[0].GetId(), addr: alts[0].GetAddresses()[0]}
+		// Run can have no endpoint for the alternate, so this open continues when rc ends.
+		return a.open(ctx, endpoint{id: alts[0].GetId(), addr: alts[0].GetAddresses()[0]})
 	}
-	return a.open(ctx, e)
+	// Only a replacement of the draining relay can answer here. Run dials again
+	// when rc ends, so this open stops then.
+	return a.openNext(ctx, rc, rc.ep)
 }
 
 // promote attaches on a spare session and returns it, or nil when no spare

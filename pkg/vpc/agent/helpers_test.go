@@ -164,6 +164,9 @@ type testRelay struct {
 	srv  *relay.Server
 	r    *relay.Router
 	addr string
+	// stopAccept stops the Accept calls, as a relay host in its lame duck. The
+	// listener still completes handshakes, and no session serves them.
+	stopAccept func()
 }
 
 func (r *testRelay) ref() identity.Relay {
@@ -211,8 +214,19 @@ func (w *world) relayOn(t testing.TB, id string, udp net.PacketConn) *testRelay 
 		Cert: func() (*tls.Certificate, error) { return cert, nil },
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	// As Serve, but stopAccept ends only the Accept calls. The end of the ctx
+	// of Serve also closes the sessions.
+	actx, stopAccept := context.WithCancel(ctx)
 	var wg sync.WaitGroup
-	wg.Go(func() { _ = srv.Serve(ctx, ln) })
+	wg.Go(func() {
+		for {
+			qc, err := ln.Accept(actx)
+			if err != nil {
+				return
+			}
+			wg.Go(func() { srv.ServeConn(ctx, qc) })
+		}
+	})
 	t.Cleanup(func() {
 		cancel()
 		_ = ln.Close()
@@ -220,7 +234,7 @@ func (w *world) relayOn(t testing.TB, id string, udp net.PacketConn) *testRelay 
 		_ = tr.Close()
 		_ = udp.Close()
 	})
-	return &testRelay{id: id, srv: srv, r: r, addr: udp.LocalAddr().String()}
+	return &testRelay{id: id, srv: srv, r: r, addr: udp.LocalAddr().String(), stopAccept: stopAccept}
 }
 
 // attachEvent is one OnAttach call.

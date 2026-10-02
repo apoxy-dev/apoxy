@@ -384,9 +384,11 @@ func (a *Agent) serve(ctx context.Context, rc *relayConn) *relayConn {
 					continue
 				}
 			}
-			next, err := a.open(ctx, rc.ep)
+			next, err := a.openNext(ctx, rc, rc.ep)
 			if err != nil {
-				slog.Warn("Failed to open a relay session with the new cert", "relay", rc.addr, "error", err)
+				if rc.qc.Context().Err() == nil {
+					slog.Warn("Failed to open a relay session with the new cert", "relay", rc.addr, "error", err)
+				}
 				renew.Reset(renewRetry)
 				continue
 			}
@@ -395,7 +397,9 @@ func (a *Agent) serve(ctx context.Context, rc *relayConn) *relayConn {
 			next, err := a.move(ctx, rc, alts)
 			if err != nil {
 				// The relay closes rc when its drain ends. Then Run dials again.
-				slog.Warn("Failed to move to another relay", "relay", rc.addr, "error", err)
+				if rc.qc.Context().Err() == nil {
+					slog.Warn("Failed to move to another relay", "relay", rc.addr, "error", err)
+				}
 				continue
 			}
 			return next
@@ -413,12 +417,14 @@ func (a *Agent) serve(ctx context.Context, rc *relayConn) *relayConn {
 			}
 			// The new session probes again before it picks its mode.
 			slog.Info("PSP probes to the relay pass; opening a PSP session", "relay", rc.addr)
-			next, err := a.open(ctx, rc.ep)
+			next, err := a.openNext(ctx, rc, rc.ep)
 			if err == nil && next.mode == dp.Mode_MODE_PSP {
 				return next
 			}
 			if err != nil {
-				slog.Warn("Failed to open a relay session for PSP", "relay", rc.addr, "error", err)
+				if rc.qc.Context().Err() == nil {
+					slog.Warn("Failed to open a relay session for PSP", "relay", rc.addr, "error", err)
+				}
 			} else {
 				next.close()
 			}
@@ -499,6 +505,15 @@ func (a *Agent) open(ctx context.Context, e endpoint) (*relayConn, error) {
 		return nil, err
 	}
 	return rc, nil
+}
+
+// openNext opens the session at e that takes over from rc. The open stops when
+// rc ends, so that Run dials again at once.
+func (a *Agent) openNext(ctx context.Context, rc *relayConn, e endpoint) (*relayConn, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	defer context.AfterFunc(rc.qc.Context(), cancel)()
+	return a.open(ctx, e)
 }
 
 // dialRelay opens a session to the relay at e: the handshake, the data mode, and
