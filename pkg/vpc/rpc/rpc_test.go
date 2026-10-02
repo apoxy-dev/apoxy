@@ -142,7 +142,10 @@ func newPair(t testing.TB, cfg pairConfig) *pair {
 	lq := <-accepted
 	require.NotNil(t, lq)
 
-	p := &pair{dq: dq, lq: lq, dialerSrv: &echoServer{name: "dialer"}, listenerSrv: &echoServer{name: "listener"}}
+	p := &pair{dq: dq, lq: lq,
+		dialerSrv:   &echoServer{name: "dialer", left: make(chan func() error, 1)},
+		listenerSrv: &echoServer{name: "listener", left: make(chan func() error, 1)},
+	}
 	mux := func(srv testpb.EchoServer) *rpc.Mux {
 		m := rpc.NewMux()
 		testpb.RegisterEchoServer(m, srv)
@@ -204,6 +207,7 @@ type echoServer struct {
 	name    string
 	waiters sync.Map // Request text to *waiter.
 	nextKey atomic.Int64
+	left    chan func() error // Recv of a "leave" call after its handler returns.
 }
 
 type waiter struct {
@@ -304,6 +308,14 @@ func (s *echoServer) Bidi(ctx context.Context, st rpc.BidiStreamServer[testpb.Ec
 		case strings.HasPrefix(in.Text, "block"):
 			return s.block(ctx, in.Text, func() error { _, err := st.Recv(); return err })
 		case in.Text == "stop":
+			return nil
+		case in.Text == "leave":
+			s.left <- func() error { _, err := st.Recv(); return err }
+			return nil
+		case in.Text == "leave in Recv":
+			errc := make(chan error, 1)
+			go func() { _, err := st.Recv(); errc <- err }()
+			s.left <- func() error { return <-errc }
 			return nil
 		}
 		if err := st.Send(&testpb.EchoResponse{Text: in.Text, ServedBy: s.name, Seq: seq, Payload: in.Payload}); err != nil {
@@ -648,6 +660,28 @@ func TestHandlerEndsEarly(t *testing.T) {
 	assert.Equal(t, io.EOF, err)
 	_, err = bidi.Recv()
 	assert.Equal(t, io.EOF, err)
+}
+
+// TestRecvAfterHandler checks that a Recv in a handler goroutine fails if the
+// handler returns before or during the Recv.
+func TestRecvAfterHandler(t *testing.T) {
+	for _, text := range []string{"leave", "leave in Recv"} {
+		t.Run(text, func(t *testing.T) {
+			p := newPair(t, pairConfig{})
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			bidi, err := testpb.NewEchoClient(p.dialer).Bidi(ctx)
+			require.NoError(t, err)
+			require.NoError(t, bidi.Send(&testpb.EchoRequest{Text: text}))
+			_, err = bidi.Recv()
+			require.Equal(t, io.EOF, err)
+			recv := <-p.listenerSrv.left
+			// Serve returns after the streams of its handlers are released.
+			p.stopListener()
+			p.listenerServeDone <- <-p.listenerServeDone
+			assert.Error(t, recv())
+		})
+	}
 }
 
 func TestHandlerErrors(t *testing.T) {

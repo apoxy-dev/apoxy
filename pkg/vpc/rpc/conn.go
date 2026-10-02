@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/quic-go/quic-go"
@@ -110,15 +111,21 @@ func (m *Mux) Handle(method string, h HandlerFunc) {
 }
 
 // ServerStream is the called side of one call. One goroutine can call
-// RecvMsg while another calls SendMsg.
+// RecvMsg while another calls SendMsg. RecvMsg fails after the handler returns.
 type ServerStream struct {
-	ctx      context.Context
-	conn     *Conn
-	str      quic.Stream
+	ctx    context.Context
+	conn   *Conn
+	str    quic.Stream
+	method string
+	json   *jsonCall // Set for a call from JSONHandler.
+
+	// A handler goroutine can be in RecvMsg when the handler returns. rmu
+	// keeps fr until that RecvMsg returns.
+	rmu      sync.Mutex
 	fr       frameReader
-	method   string
-	readCode quic.StreamErrorCode
-	json     *jsonCall // Set for a call from JSONHandler.
+	ended    bool          // The call ended and fr is released.
+	readEOF  atomic.Bool   // All data from the caller was read.
+	readCode atomic.Uint64 // The quic.StreamErrorCode for CancelRead.
 }
 
 // Method returns the full method name of the call.
@@ -130,7 +137,13 @@ func (s *ServerStream) RecvMsg(m proto.Message) error {
 	if s.json != nil {
 		return s.json.recv(m)
 	}
+	s.rmu.Lock()
+	defer s.rmu.Unlock()
+	if s.ended {
+		return Errorf(Canceled, "call ended")
+	}
 	kind, p, err := s.fr.readFrame(s.conn.opts.maxMessageSize, s.conn.opts.maxHeaderSize)
+	s.readEOF.Store(s.fr.atEOF())
 	if err == nil && kind != frameMessage {
 		err, s.fr.bad = errUnexpected, errUnexpected
 	}
@@ -142,7 +155,7 @@ func (s *ServerStream) RecvMsg(m proto.Message) error {
 			return ctxError(s.ctx)
 		}
 		if errors.As(err, new(*frameError)) {
-			s.readCode = StreamProtocolError
+			s.readCode.Store(uint64(StreamProtocolError))
 		}
 		return transportError(err)
 	}
@@ -173,12 +186,13 @@ func (s *ServerStream) SendMsg(m proto.Message) error {
 }
 
 func (c *Conn) serveStream(ctx context.Context, str quic.Stream) {
-	s := &ServerStream{ctx: ctx, conn: c, str: str, readCode: StreamNoError}
+	s := &ServerStream{ctx: ctx, conn: c, str: str}
 	s.fr.init(str)
-	defer s.fr.release()
+	defer s.release()
 
 	_ = str.SetReadDeadline(time.Now().Add(c.opts.headerTimeout))
 	h, err := readCallStart(&s.fr, c.opts.maxHeaderSize)
+	s.readEOF.Store(s.fr.atEOF())
 	if err != nil {
 		var fe *frameError
 		if errors.As(err, &fe) && fe.unsupported {
@@ -240,14 +254,23 @@ func (s *ServerStream) finish(ctx context.Context, err error) {
 		return
 	}
 	_ = s.str.Close()
-	if !s.fr.atEOF() {
-		s.str.CancelRead(s.readCode)
+	if !s.readEOF.Load() {
+		s.str.CancelRead(quic.StreamErrorCode(s.readCode.Load()))
 	}
 }
 
 func (s *ServerStream) abort(code quic.StreamErrorCode) {
 	s.str.CancelWrite(code)
 	s.str.CancelRead(code)
+}
+
+// release frees the read buffer after the call ends. finish or abort stopped
+// the read side first, so a RecvMsg that still runs returns soon.
+func (s *ServerStream) release() {
+	s.rmu.Lock()
+	defer s.rmu.Unlock()
+	s.ended = true
+	s.fr.release()
 }
 
 // MD is call metadata.
