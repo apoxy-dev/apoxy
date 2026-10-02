@@ -18,14 +18,20 @@ const MinPacketSize = 1322
 
 var errNoDatagrams = errors.New("relay session has no datagrams")
 
-// serveDatagrams forwards the peer frames of s until its connection closes.
+// serveDatagrams forwards the data frames and peer frames of s until its
+// connection closes.
 func (r *Router) serveDatagrams(s *Session, qc quic.Connection) {
+	buf := make([]byte, maxUDP)
 	for {
 		b, err := qc.ReceiveDatagram(qc.Context())
 		if err != nil {
 			return
 		}
-		r.forwardDatagram(s, b, time.Now())
+		if len(b) > 0 && b[0] == peerconn.TypeData {
+			r.forwardData(s, b, buf, time.Now())
+		} else {
+			r.forwardDatagram(s, b, time.Now())
+		}
 	}
 }
 

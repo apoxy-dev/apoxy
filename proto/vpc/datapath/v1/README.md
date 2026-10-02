@@ -17,7 +17,8 @@ service that each side serves:
 | `apoxy-mesh/1` | relay and relay          | `Mesh`  | both      |
 
 The same UDP socket also carries PSP packets (first byte `0x04` or `0x29`),
-which relays forward by SPI rows without decryption.
+which relays forward by SPI rows without decryption. Only PSP packets to the
+relay itself are opened (see "QUIC and PSP bridge").
 
 ### Relay datagrams
 
@@ -38,6 +39,38 @@ session routes the destination. For the last two it sends `NoRoute`.
 Peer sessions use 1200 B QUIC packets. Both ends of a relay session use a
 QUIC InitialPacketSize of 1270 B or more, so that each packet fits in one
 frame.
+
+In QUIC mode, the same frames carry data:
+
+```
+data:            type (1 B) | VNI word (4 B) | inner IPv4 or IPv6 packet
+type:            0x03 data frame
+```
+
+The VNI word is the first word of the PSP VC: the VNI (24 bits), then 8 flag
+bits. The relay ignores the flags. It drops a data frame if the session is not
+in QUIC mode, if the VNI is not the network ID of the session, if the session
+does not route the inner source, if Permit denies the inner destination, or if
+no session routes it (then it sends `NoRoute`). It sends the frame to a
+QUIC-mode agent with no change, on the shard of its flow.
+
+### QUIC and PSP bridge
+
+The relay connects QUIC-mode and PSP-mode agents. It opens and seals only
+this traffic; packets between two PSP-mode agents keep their end-to-end SA.
+
+- Relay SAs: in PSP mode, the relay sends a rekey (`KeysRequest` with
+  `OfferSAs`) right after `Config`, and a new one before the SAs expire. The
+  agent seals packets for QUIC-mode agents with them and sends them to the
+  relay. The relay checks the VNI, the inner source, the replay window and
+  the SPI row, and sends the inner packet as a data frame. The VNI word of the
+  frame is the VNI word of the PSP packet.
+- Agent SAs: a PSP-mode agent gives the relay its own SAs with `Rekey`. The
+  relay seals the data frames from QUIC-mode agents with them.
+
+A relay SA has an SPI row from the agent to the relay, so the source address
+check and the meter of the row apply. The relay does not offer an SPI that is
+in a row of the agent.
 
 ## Calls
 
@@ -73,9 +106,9 @@ Addresses and prefixes are text (`fd61::1`, `10.0.0.0/8`, `host:port`).
 
 | Method          | Kind  | Messages |
 |-----------------|-------|----------|
-| `Session`       | bidi  | Agent: `Hello`, then `Ack{rev}` and `Status` (ICV failures). Relay: `Welcome` (reflexive address), then `RouteDelta{rev}`, `NoRoute`, rekey (`KeysRequest`), `Config`, `Drain`. |
+| `Session`       | bidi  | Agent: `Hello{mode}`, then `Ack{rev}` and `Status` (ICV failures). Relay: `Welcome` (reflexive address), `Config`, in PSP mode a rekey with relay SAs, then `RouteDelta{rev}`, `NoRoute`, rekey (`KeysRequest`), `Config`, `Drain`. |
 | `Attach`        | unary | `AttachRequest{vpc, name, labels, routes}` -> `AttachResponse{attachment_id, grant}` |
-| `Rekey`         | unary | `KeysRequest` -> `KeysResponse`: SAs for traffic from the relay to the agent. |
+| `Rekey`         | unary | `KeysRequest` -> `KeysResponse`: SAs for traffic from the relay to the agent. Errors: `FailedPrecondition` (no `Session` call in PSP mode), `InvalidArgument` (an SA VNI is not the network ID). |
 | `ResolvePeer`   | unary | `{vpc, address}` -> `{reach: local, trunk or visit; home_relay; p2p}`. Errors: `NotFound`, `PermissionDenied`. |
 | `RegisterSPI`   | unary | `{vpc, destination, spis, expires_in}` -> `Empty` |
 | `UnregisterSPI` | unary | `{vpc, spis}` -> `Empty` |
@@ -85,7 +118,6 @@ TLS key, and the relay cert chain (leaf first). A peer accepts it only if the
 leaf chains through the rest of the chain to the roots that agents dial relays
 with, the leaf names `relay_id` (a DNS name, for example the dial host name of
 the relay), the leaf key made the signature, and `not_after` has not passed.
-`Rekey` is not served yet.
 
 A connection has one `Session` call and lives as long as that call. A relay
 closes a connection with a `RelayCloseCode`: `CERT` (the agent cert failed a

@@ -5,6 +5,7 @@ package relay
 import (
 	"context"
 	"crypto/tls"
+	"io"
 	"testing"
 	"time"
 
@@ -57,10 +58,13 @@ func join(t *testing.T, a agent, att string, index uint32) (syncStream, error) {
 	t.Cleanup(cancel)
 	st, err := a.c.Session(ctx)
 	require.NoError(t, err)
-	require.NoError(t, st.Send(&dp.SessionRequest{Msg: &dp.SessionRequest_Hello{Hello: &dp.Hello{
+	// Send gets io.EOF when the relay refuses the call first. Recv gives the status.
+	if err := st.Send(&dp.SessionRequest{Msg: &dp.SessionRequest_Hello{Hello: &dp.Hello{
 		Mode:  dp.Mode_MODE_QUIC,
 		Shard: &dp.Shard{AttachmentId: att, Index: index},
-	}}}))
+	}}}); err != io.EOF {
+		require.NoError(t, err)
+	}
 	m, err := st.Recv()
 	if err != nil {
 		return nil, err

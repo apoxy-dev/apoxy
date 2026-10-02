@@ -132,6 +132,7 @@ func (srv *Server) ServeConn(ctx context.Context, qc quic.Connection) {
 	_ = conn.Serve(ctx)
 	_ = qc.CloseWithError(quic.ApplicationErrorCode(dp.RelayCloseCode_RELAY_CLOSE_CODE_UNSPECIFIED), "")
 	srv.R.removeSession(s)
+	srv.R.closeBridge(s)
 	srv.R.mu.Lock()
 	atts := s.attachments
 	s.attachments = nil

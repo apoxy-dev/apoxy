@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-package psp
+// Package keyproto converts SoftPSP key changes to and from the datapath
+// messages of the peer session and the relay session.
+package keyproto
 
 import (
 	"errors"
@@ -13,8 +15,8 @@ import (
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
-// KeysToProto returns req as the message of the Keys and Rekey calls.
-func KeysToProto(req keys.Request) *dp.KeysRequest {
+// ToProto returns req as the message of the Keys and Rekey calls.
+func ToProto(req keys.Request) *dp.KeysRequest {
 	switch req.Op {
 	case keys.OpOffer:
 		return &dp.KeysRequest{Op: &dp.KeysRequest_Offer{Offer: &dp.OfferSAs{Sas: sasToProto(req.SAs)}}}
@@ -26,8 +28,8 @@ func KeysToProto(req keys.Request) *dp.KeysRequest {
 	return &dp.KeysRequest{}
 }
 
-// KeysFromProto returns the key change in m.
-func KeysFromProto(m *dp.KeysRequest) (keys.Request, error) {
+// FromProto returns the key change in m.
+func FromProto(m *dp.KeysRequest) (keys.Request, error) {
 	switch op := m.GetOp().(type) {
 	case *dp.KeysRequest_Offer:
 		sas, err := sasFromProto(op.Offer.GetSas())
@@ -38,7 +40,7 @@ func KeysFromProto(m *dp.KeysRequest) (keys.Request, error) {
 	case *dp.KeysRequest_Revoke:
 		return keys.Request{Op: keys.OpRevoke, SPIs: slices.Clone(op.Revoke.GetSpis())}, nil
 	}
-	return keys.Request{}, errors.New("psp: keys request has no op")
+	return keys.Request{}, errors.New("keyproto: keys request has no op")
 }
 
 func sasToProto(sas []keys.SA) []*dp.SA {
@@ -59,10 +61,10 @@ func sasFromProto(sas []*dp.SA) ([]keys.SA, error) {
 	out := make([]keys.SA, len(sas))
 	for i, sa := range sas {
 		if err := sa.GetExpiresIn().CheckValid(); err != nil {
-			return nil, fmt.Errorf("psp: SA %#x: expires_in: %w", sa.GetSpi(), err)
+			return nil, fmt.Errorf("keyproto: SA %#x: expires_in: %w", sa.GetSpi(), err)
 		}
 		if sa.GetLane() >= keys.MaxLanes {
-			return nil, fmt.Errorf("psp: SA %#x: lane %d is not below %d", sa.GetSpi(), sa.GetLane(), keys.MaxLanes)
+			return nil, fmt.Errorf("keyproto: SA %#x: lane %d is not below %d", sa.GetSpi(), sa.GetLane(), keys.MaxLanes)
 		}
 		out[i] = keys.SA{
 			SPI:       sa.GetSpi(),

@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"net/netip"
 	"slices"
 	"time"
@@ -115,8 +116,8 @@ func sortRoutes(rs []*dp.Route) {
 	})
 }
 
-// Session runs the Sync of a relay session: Hello, Welcome, Config, routes,
-// NoRoute and Drain to the agent, and Ack and Status from it.
+// Session runs the Sync of a relay session: Hello, Welcome, Config, relay SAs,
+// routes, NoRoute and Drain to the agent, and Ack and Status from it.
 func (srv *Server) Session(ctx context.Context, st rpc.BidiStreamServer[dp.SessionRequest, dp.SessionResponse]) (err error) {
 	s, err := srv.R.caller(ctx)
 	if err != nil {
@@ -133,11 +134,8 @@ func (srv *Server) Session(ctx context.Context, st rpc.BidiStreamServer[dp.Sessi
 	if sh := hello.GetShard(); sh != nil {
 		return srv.serveShard(ctx, s, sh, st)
 	}
-	switch hello.GetMode() {
-	case dp.Mode_MODE_PSP:
-	case dp.Mode_MODE_QUIC:
-		return rpc.Errorf(rpc.Unimplemented, "QUIC data mode is not supported")
-	default:
+	mode := hello.GetMode()
+	if mode != dp.Mode_MODE_PSP && mode != dp.Mode_MODE_QUIC {
 		return rpc.Errorf(rpc.InvalidArgument, "Hello needs a mode")
 	}
 	n, err := srv.network(s.id.VPC)
@@ -145,7 +143,7 @@ func (srv *Server) Session(ctx context.Context, st rpc.BidiStreamServer[dp.Sessi
 		return err
 	}
 	ref := &dp.VPCRef{ProjectId: s.id.VPC.Project, VpcUid: s.id.VPC.UID, NetworkId: n.ID}
-	if err := srv.R.openSync(s, hello.GetMode(), ref); err != nil {
+	if err := srv.R.openSync(s, mode, ref); err != nil {
 		return err
 	}
 	// The session ends with the call. The close carries the error.
@@ -168,6 +166,16 @@ func (srv *Server) Session(ctx context.Context, st rpc.BidiStreamServer[dp.Sessi
 		DnsSearchDomains: n.DNSSearchDomains,
 	}}}); err != nil {
 		return err
+	}
+	if mode == dp.Mode_MODE_PSP {
+		m, err := srv.R.offer(s, n, time.Now())
+		if err != nil {
+			slog.Warn("Failed to give relay SAs to an agent", "agent", s.id.ID, "error", err)
+		} else if m != nil {
+			if err := st.Send(m); err != nil {
+				return err
+			}
+		}
 	}
 
 	recvDone := make(chan error, 1)

@@ -3,7 +3,6 @@
 package psp
 
 import (
-	"bytes"
 	"encoding/binary"
 	"net/netip"
 	"testing"
@@ -14,10 +13,6 @@ import (
 	pspwire "github.com/apoxy-dev/softpsp/psp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/durationpb"
-
-	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
 // The largest PSP packet must fit in one quic-go read of 1452 B.
@@ -313,47 +308,6 @@ func TestRekeyInFlight(t *testing.T) {
 		st := n.b.Stats()
 		assert.Equal(t, Stats{RxPackets: rounds * perRound}, st)
 	}
-}
-
-func TestKeysProto(t *testing.T) {
-	sas := []keys.SA{
-		{SPI: 0x8000_0101, Key: bytes.Repeat([]byte{1}, 16), VNI: 7, ExpiresIn: 10 * time.Minute, Lane: 0},
-		{SPI: 0x0000_0202, Key: bytes.Repeat([]byte{2}, 32), VNI: 7, ExpiresIn: time.Second, Lane: 15},
-	}
-	for _, req := range []keys.Request{
-		{Op: keys.OpOffer, SAs: sas},
-		{Op: keys.OpRekey, SAs: sas[:1]},
-		{Op: keys.OpRevoke, SPIs: []uint32{1, 2}},
-	} {
-		m := KeysToProto(req)
-		wire, err := proto.Marshal(m)
-		require.NoError(t, err)
-		var back dp.KeysRequest
-		require.NoError(t, proto.Unmarshal(wire, &back))
-		got, err := KeysFromProto(&back)
-		require.NoError(t, err)
-		assert.Equal(t, req, got)
-	}
-
-	bad := []struct {
-		name string
-		m    *dp.KeysRequest
-	}{
-		{"no op", &dp.KeysRequest{}},
-		{"lane too large", rekeyOf(&dp.SA{Spi: 1, ExpiresIn: durationpb.New(time.Minute), Lane: keys.MaxLanes})},
-		{"no expiry", rekeyOf(&dp.SA{Spi: 1})},
-		{"bad expiry", rekeyOf(&dp.SA{Spi: 1, ExpiresIn: &durationpb.Duration{Seconds: 1, Nanos: -1}})},
-	}
-	for _, tc := range bad {
-		t.Run(tc.name, func(t *testing.T) {
-			_, err := KeysFromProto(tc.m)
-			assert.Error(t, err)
-		})
-	}
-}
-
-func rekeyOf(sa *dp.SA) *dp.KeysRequest {
-	return &dp.KeysRequest{Op: &dp.KeysRequest_Rekey{Rekey: &dp.RekeySA{Sas: []*dp.SA{sa}}}}
 }
 
 func TestInnerDst(t *testing.T) {

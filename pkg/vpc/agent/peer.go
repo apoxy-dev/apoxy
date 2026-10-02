@@ -22,6 +22,7 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/psp"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/psp/keyproto"
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
@@ -425,7 +426,7 @@ func (p *peer) sendKeys(req keys.Request) bool {
 	ctx, cancel := context.WithTimeout(p.rc.ctx, keysTimeout)
 	defer cancel()
 	for range maxRefusals {
-		res, err := p.client.Keys(ctx, psp.KeysToProto(req))
+		res, err := p.client.Keys(ctx, keyproto.ToProto(req))
 		if err != nil {
 			if p.qc.Context().Err() == nil {
 				slog.Warn("Failed to send keys to a peer", "peer", p.subject, "error", err)
@@ -549,7 +550,7 @@ func (s *peerService) Keys(ctx context.Context, in *dp.KeysRequest) (*dp.KeysRes
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
-	req, err := psp.KeysFromProto(in)
+	req, err := keyproto.FromProto(in)
 	if err != nil {
 		return nil, rpc.Errorf(rpc.InvalidArgument, "%v", err)
 	}

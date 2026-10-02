@@ -10,6 +10,7 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -98,10 +99,6 @@ func TestOverQUIC(t *testing.T) {
 	_, v = h.r.Forward(snd.src, 7, 1400, time.Now())
 	assert.Equal(t, DropUnknownSPI, v)
 	require.Eventually(t, func() bool { return h.addrs.count() == 0 }, 5*time.Second, 5*time.Millisecond)
-
-	// SAs that end at the relay come later.
-	_, err = snd.c.Rekey(ctx, &dp.KeysRequest{Op: &dp.KeysRequest_Revoke{Revoke: &dp.RevokeSA{Spis: []uint32{7}}}})
-	assert.Equal(t, rpc.Unimplemented, rpc.CodeOf(err))
 }
 
 // relayCalls are the unary calls that need the caller identity.
@@ -161,7 +158,10 @@ func TestUnauthenticated(t *testing.T) {
 	t.Run("Session", func(t *testing.T) {
 		st, err := stranger.c.Session(context.Background())
 		require.NoError(t, err)
-		require.NoError(t, st.Send(&dp.SessionRequest{Msg: &dp.SessionRequest_Hello{Hello: &dp.Hello{Mode: dp.Mode_MODE_PSP}}}))
+		// Send gets io.EOF when the relay refuses the call first. Recv gives the status.
+		if err := st.Send(&dp.SessionRequest{Msg: &dp.SessionRequest_Hello{Hello: &dp.Hello{Mode: dp.Mode_MODE_PSP}}}); err != io.EOF {
+			require.NoError(t, err)
+		}
 		_, err = st.Recv()
 		assert.Equal(t, rpc.Unauthenticated, rpc.CodeOf(err))
 	})
@@ -207,7 +207,6 @@ func TestSessionErrors(t *testing.T) {
 	}{
 		{"not Hello", &dp.SessionRequest{Msg: &dp.SessionRequest_Ack{Ack: &dp.Ack{Rev: 1}}}, rpc.InvalidArgument},
 		{"no mode", &dp.SessionRequest{Msg: &dp.SessionRequest_Hello{Hello: &dp.Hello{}}}, rpc.InvalidArgument},
-		{"QUIC mode", &dp.SessionRequest{Msg: &dp.SessionRequest_Hello{Hello: &dp.Hello{Mode: dp.Mode_MODE_QUIC}}}, rpc.Unimplemented},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

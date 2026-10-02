@@ -100,3 +100,41 @@ func TestPacketHandler(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, good, buf[:n])
 }
+
+// TestAddrCache checks that the cache gives the address of each destination.
+func TestAddrCache(t *testing.T) {
+	var c addrCache
+	cases := []string{"192.0.2.1:1", "192.0.2.1:2", "[fd00::1]:1", "[::ffff:192.0.2.1]:1", "192.0.2.1:1"}
+	for _, a := range cases {
+		ap := netip.MustParseAddrPort(a)
+		u := c.get(ap)
+		assert.Equal(t, ap, u.AddrPort(), a)
+		assert.Same(t, u, c.get(ap), "%s second get", a)
+	}
+}
+
+// BenchmarkPacketHandler measures one PSP packet that the relay forwards by
+// the SPI row of its sender.
+func BenchmarkPacketHandler(b *testing.B) {
+	r, handle := localRouter(b)
+	s := localSession(b, r, "s", "192.0.2.1:1", "fd00:1::/96", dp.Mode_MODE_PSP)
+	localSession(b, r, "d", "192.0.2.2:1", "fd00:2::/96", dp.Mode_MODE_PSP)
+	require.NoError(b, r.registerSPI(s, register(vpcA, "fd00:2::1", time.Hour, 7), time.Now()))
+	aead, err := pspwire.NewAEAD(make([]byte, 16))
+	require.NoError(b, err)
+	inner := ipPacket(netip.MustParseAddr("fd00:1::1"), netip.MustParseAddr("fd00:2::1"), make([]byte, 1200))
+	pkt := make([]byte, len(inner)+pspwire.Overhead)
+	n, err := pspwire.Seal(aead, pspwire.Header{SPI: 7, VNI: testVNI}, pkt, inner)
+	require.NoError(b, err)
+	from := net.UDPAddrFromAddrPort(netip.MustParseAddrPort("192.0.2.1:1"))
+	b.SetBytes(int64(n))
+	b.ReportAllocs()
+	for b.Loop() {
+		handle(pkt[:n], from)
+	}
+	b.StopTimer()
+	st := r.SenderStats(s)
+	require.Len(b, st.Lanes, 1)
+	require.Positive(b, st.Lanes[0].Packets)
+	require.Zero(b, st.DropUnknownSPI)
+}

@@ -326,6 +326,10 @@ func (h *harness) dial(t *testing.T, cert tls.Certificate, alpn ...string) (agen
 	require.NoError(t, err)
 	tr := &quic.Transport{Conn: udp}
 	t.Cleanup(func() { _ = tr.Close() })
+	// quic-go drops non-QUIC packets until the first ReadNonQUICPacket call.
+	done, stop := context.WithCancel(context.Background())
+	stop()
+	_, _, _ = tr.ReadNonQUICPacket(done, nil)
 	protos := []string{dp.ALPNRelay}
 	if len(alpn) > 0 {
 		protos = alpn
@@ -381,19 +385,34 @@ func (h *harness) session(t *testing.T, a agent) *Session {
 // syncStream is the agent side of a Session call.
 type syncStream = rpc.BidiStreamClient[dp.SessionRequest, dp.SessionResponse]
 
-// open starts the Session call of a and returns it after Welcome and Config.
+// open starts the Session call of a in PSP mode and returns it after Welcome,
+// Config and the relay SAs.
 func open(t *testing.T, a agent) (syncStream, *dp.Welcome, *dp.Config) {
+	t.Helper()
+	st, w, c, _ := openMode(t, a, dp.Mode_MODE_PSP)
+	return st, w, c
+}
+
+// openMode starts the Session call of a in mode. In PSP mode, it also returns
+// the relay SAs that come after Config.
+func openMode(t *testing.T, a agent, mode dp.Mode) (syncStream, *dp.Welcome, *dp.Config, *dp.KeysRequest) {
 	t.Helper()
 	st, err := a.c.Session(context.Background())
 	require.NoError(t, err)
-	require.NoError(t, st.Send(&dp.SessionRequest{Msg: &dp.SessionRequest_Hello{Hello: &dp.Hello{Mode: dp.Mode_MODE_PSP}}}))
+	require.NoError(t, st.Send(&dp.SessionRequest{Msg: &dp.SessionRequest_Hello{Hello: &dp.Hello{Mode: mode}}}))
 	w, err := st.Recv()
 	require.NoError(t, err)
 	require.NotNil(t, w.GetWelcome(), "first message: %v", w)
 	c, err := st.Recv()
 	require.NoError(t, err)
 	require.NotNil(t, c.GetConfig(), "second message: %v", c)
-	return st, w.GetWelcome(), c.GetConfig()
+	if mode != dp.Mode_MODE_PSP {
+		return st, w.GetWelcome(), c.GetConfig(), nil
+	}
+	k, err := st.Recv()
+	require.NoError(t, err)
+	require.NotNil(t, k.GetRekey(), "third message: %v", k)
+	return st, w.GetWelcome(), c.GetConfig(), k.GetRekey()
 }
 
 // recv returns the next message of st within 5 s.

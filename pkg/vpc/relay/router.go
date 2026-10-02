@@ -14,6 +14,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/apoxy-dev/softpsp/engine"
+	"github.com/apoxy-dev/softpsp/keys"
 	"github.com/quic-go/quic-go"
 	"golang.org/x/time/rate"
 
@@ -23,7 +25,7 @@ import (
 )
 
 const (
-	// rowIdle is the time with no traffic after which a row is removed (D19).
+	// rowIdle is the time with no traffic after which a row is removed.
 	rowIdle = 5 * time.Minute
 	// rebindOverlap is the time that the previous source address of a sender
 	// stays valid after its connection migrates.
@@ -90,6 +92,7 @@ type Router struct {
 	cfg           Config
 	trust         Trust
 	unknownSource atomic.Uint64
+	bridge        atomic.Pointer[bridge]
 
 	mu       sync.RWMutex
 	permit   Permit
@@ -127,7 +130,9 @@ type Session struct {
 	notAfter     time.Time           // The session closes at the NotAfter of the leaf.
 	close        func(code dp.RelayCloseCode, msg string)
 	sendDatagram func([]byte) error
-	wake         chan struct{} // Has room for 1: the sync queue changed.
+	wake         chan struct{}               // Has room for 1: the sync queue changed.
+	sources      func(netip.Addr) bool       // Allows the inner sources that route to s.
+	udpAddr      atomic.Pointer[net.UDPAddr] // Last address that the bridge sent to.
 
 	// Guarded by Router.mu.
 	addr        netip.AddrPort
@@ -141,8 +146,12 @@ type Session struct {
 	sync        syncState
 	shardOf     *Session                     // The owner session of a shard.
 	shards      [peerconn.MaxShards]*Session // Shards 1 and up of an owner.
+	rx          *keys.Peer                   // Relay SAs for PSP packets from s.
+	tx          *keys.TxPeer                 // SAs of s for PSP packets from the relay.
+	relaySAs    map[uint32]time.Time         // End of each relay SA of s.
 
 	dropUnknownSPI, dropMeter atomic.Uint64
+	dataSent, dataDrops       atomic.Uint64
 }
 
 // Identity returns the identity of s.
@@ -169,7 +178,8 @@ type route struct {
 
 type domain struct {
 	routes  map[netip.Prefix]owner
-	lens    []int // Prefix lengths in use, longest first.
+	lens    []int                   // Prefix lengths in use, longest first.
+	fast    engine.Routes[*Session] // The same routes, for source checks with no lock.
 	members map[*Session]struct{}
 }
 
@@ -199,10 +209,8 @@ func (d *domain) usesLen(n int) bool {
 	return false
 }
 
-// AddSession checks the agent cert of conn and adds a relay session with
-// the identity in the cert. The source of its data is the remote address of
-// conn; Sweep follows it when the connection migrates. The session ends when
-// conn closes. On error, the caller closes conn.
+// AddSession checks the agent cert of conn and adds a relay session with its
+// identity. The session ends when conn closes. On error, the caller closes conn.
 func (r *Router) AddSession(conn *rpc.Conn) (*Session, error) {
 	qc := conn.QUIC()
 	tc := qc.ConnectionState().TLS
@@ -253,6 +261,7 @@ func (r *Router) addSession(s *Session, now time.Time) {
 	r.setAddr(s, s.remote(), now)
 	d := r.domain(s.id.VPC)
 	d.members[s] = struct{}{}
+	s.sources = d.fast.Sources(s)
 	for p, o := range d.routes {
 		s.queueRoute(route{p, o.origin}, true)
 	}
@@ -349,6 +358,9 @@ func (r *Router) addRoute(s *Session, p netip.Prefix, origin string) error {
 		}
 		return rpc.Errorf(rpc.AlreadyExists, "route %s has another owner", p)
 	}
+	if err := d.fast.Add(p, s); err != nil {
+		return rpc.Errorf(rpc.InvalidArgument, "route %s: %v", p, err)
+	}
 	d.routes[p] = owner{s, origin}
 	if !slices.Contains(d.lens, p.Bits()) {
 		d.lens = append(d.lens, p.Bits())
@@ -390,6 +402,7 @@ func (r *Router) deleteRoute(s *Session, p netip.Prefix) {
 		return
 	}
 	delete(d.routes, p)
+	d.fast.Remove(p, s)
 	if !d.usesLen(p.Bits()) {
 		d.lens = slices.DeleteFunc(d.lens, func(n int) bool { return n == p.Bits() })
 	}
@@ -518,7 +531,7 @@ func (r *Router) Sweep(now time.Time) {
 	}
 }
 
-// Run calls Sweep each second until ctx ends.
+// Run sweeps the rows and rekeys the relay SAs each second until ctx ends.
 func (r *Router) Run(ctx context.Context) {
 	t := time.NewTicker(sweepInterval)
 	defer t.Stop()
@@ -528,6 +541,7 @@ func (r *Router) Run(ctx context.Context) {
 			return
 		case now := <-t.C:
 			r.Sweep(now)
+			r.tickBridge(now)
 		}
 	}
 }
@@ -547,11 +561,20 @@ type SenderStats struct {
 	DropUnknownSPI uint64
 	DropMeter      uint64
 	Lanes          []LaneStats // Sorted by SPI.
+	// DataSent and DataDrops count the data frames and the decrypted PSP
+	// packets of the sender that the relay sent on or dropped.
+	DataSent  uint64
+	DataDrops uint64
 }
 
 // SenderStats returns the counters of sender s.
 func (r *Router) SenderStats(s *Session) SenderStats {
-	st := SenderStats{DropUnknownSPI: s.dropUnknownSPI.Load(), DropMeter: s.dropMeter.Load()}
+	st := SenderStats{
+		DropUnknownSPI: s.dropUnknownSPI.Load(),
+		DropMeter:      s.dropMeter.Load(),
+		DataSent:       s.dataSent.Load(),
+		DataDrops:      s.dataDrops.Load(),
+	}
 	r.mu.RLock()
 	for _, w := range s.rows {
 		st.Lanes = append(st.Lanes, LaneStats{
