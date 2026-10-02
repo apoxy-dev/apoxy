@@ -308,23 +308,30 @@ func TestSync(t *testing.T) {
 func TestQueueRoute(t *testing.T) {
 	r := NewRouter(nil, Config{})
 	s := addSession(t, r, vpcA, "s", "192.0.2.1:1")
+	o := addSession(t, r, vpcA, "o", "192.0.2.2:1")
 	rt := route{netip.MustParsePrefix("10.0.0.0/8"), "a"}
 	cases := []struct {
 		name string
 		ops  []bool // Changes of rt: true adds, false removes.
+		own  bool   // The owner of rt has the subject of s.
 		want *dp.RouteDelta
 	}{
-		{"first take with no routes", nil, &dp.RouteDelta{Rev: 1}},
-		{"add", []bool{true}, &dp.RouteDelta{Add: []*dp.Route{{Prefix: "10.0.0.0/8", Origin: "a"}}}},
-		{"add then remove", []bool{true, false}, nil},
-		{"remove then add", []bool{false, true}, nil},
-		{"remove", []bool{false}, &dp.RouteDelta{Remove: []*dp.Route{{Prefix: "10.0.0.0/8", Origin: "a"}}}},
+		{"first take with no routes", nil, false, &dp.RouteDelta{Rev: 1}},
+		{"add", []bool{true}, false, &dp.RouteDelta{Add: []*dp.Route{{Prefix: "10.0.0.0/8", Origin: "a"}}}},
+		{"add then remove", []bool{true, false}, false, nil},
+		{"remove then add", []bool{false, true}, false, nil},
+		{"remove", []bool{false}, false, &dp.RouteDelta{Remove: []*dp.Route{{Prefix: "10.0.0.0/8", Origin: "a"}}}},
+		{"route of its own subject", []bool{true}, true, nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			owner := o.Session
+			if tc.own {
+				owner = addSession(t, r, vpcA, "s", "192.0.2.3:1").Session
+			}
 			r.mu.Lock()
 			for _, add := range tc.ops {
-				s.queueRoute(rt, add)
+				s.queueRoute(rt, owner, add)
 			}
 			r.mu.Unlock()
 			msgs := r.takeSync(s.Session)
@@ -462,6 +469,174 @@ func TestDetach(t *testing.T) {
 				{Vpc: ref(vpcA), Prefix: "10.9.0.0/16", Origin: x.AttachmentId},
 				{Vpc: ref(vpcA), Prefix: claims.Addresses[0], Origin: x.AttachmentId},
 			}, removed, protocmp.Transform()))
+		})
+	}
+}
+
+// takeWorld has sessions old, new and third of one agent, and watcher and
+// other of two other agents. The agent has the attachments x*, and other has y.
+type takeWorld struct {
+	t    *testing.T
+	r    *Router
+	sess map[string]*Session
+	byID map[string]*Session // Session of each attachment.
+	err  error               // Error of the last attach.
+}
+
+func (w *takeWorld) attach(name, id string, routes ...string) {
+	s := w.sess[name]
+	a := &Attachment{ID: id, VPC: vpcA, Subject: s.id.ID}
+	for _, p := range routes {
+		a.Routes = append(a.Routes, netip.MustParsePrefix(p))
+	}
+	if w.err = w.r.attach(s, a); w.err == nil {
+		w.byID[id] = s
+	}
+}
+
+func (w *takeWorld) detach(name, id string) {
+	_, err := w.r.detach(w.sess[name], id)
+	require.NoError(w.t, err)
+}
+
+func (w *takeWorld) close(name string) { w.r.removeSession(w.sess[name]) }
+
+// changes returns the route changes that wait for session name, as
+// "-origin prefix" and "+origin prefix". A session of the agent gets no route
+// of the agent.
+func (w *takeWorld) changes(name string) []string {
+	var out []string
+	for _, m := range w.r.takeSync(w.sess[name]) {
+		for _, rt := range m.GetRouteDelta().GetRemove() {
+			out = append(out, "-"+rt.Origin+" "+rt.Prefix)
+		}
+		for _, rt := range m.GetRouteDelta().GetAdd() {
+			out = append(out, "+"+rt.Origin+" "+rt.Prefix)
+		}
+	}
+	if w.sess[name].id.ID == agentID(vpcA, "laptop") {
+		for _, c := range out {
+			assert.NotEqual(w.t, "x", c[1:2], "session %s gets the route %s of its own agent", name, c)
+		}
+	}
+	return out
+}
+
+func (w *takeWorld) drain() {
+	for name := range w.sess {
+		w.changes(name)
+	}
+}
+
+// TestTakeOver checks that the owner of an advertised route is the newest live
+// attachment of the agent that lists it. Another agent cannot take it.
+func TestTakeOver(t *testing.T) {
+	const p = "10.9.0.0/16"
+	cases := []struct {
+		name  string
+		steps func(w *takeWorld)
+		code  rpc.Code // Of the last attach.
+		owner string   // Attachment that owns p at the end. Empty for no route.
+		delta []string // Changes of the watcher after the last drain.
+	}{
+		{
+			name:  "same agent takes over",
+			steps: func(w *takeWorld) { w.attach("new", "x2", p) },
+			owner: "x2", delta: []string{"-x1 " + p, "+x2 " + p},
+		},
+		{
+			name:  "other agent cannot take over",
+			steps: func(w *takeWorld) { w.attach("other", "y", p) },
+			code:  rpc.AlreadyExists, owner: "x1",
+		},
+		{
+			name:  "close of the old session keeps the route",
+			steps: func(w *takeWorld) { w.attach("new", "x2", p); w.drain(); w.close("old") },
+			owner: "x2",
+		},
+		{
+			name:  "detach of the old attachment keeps the route",
+			steps: func(w *takeWorld) { w.attach("new", "x2", p); w.drain(); w.detach("old", "x1") },
+			owner: "x2",
+		},
+		{
+			name:  "close of the new session gives the route back",
+			steps: func(w *takeWorld) { w.attach("new", "x2", p); w.drain(); w.close("new") },
+			owner: "x1", delta: []string{"-x2 " + p, "+x1 " + p},
+		},
+		{
+			name:  "detach of the new attachment gives the route back",
+			steps: func(w *takeWorld) { w.attach("new", "x2", p); w.drain(); w.detach("new", "x2") },
+			owner: "x1", delta: []string{"-x2 " + p, "+x1 " + p},
+		},
+		{
+			name: "the newest live attachment gets the route",
+			steps: func(w *takeWorld) {
+				w.attach("new", "x2", p)
+				w.attach("third", "x3", p)
+				w.drain()
+				w.close("third")
+			},
+			owner: "x2", delta: []string{"-x3 " + p, "+x2 " + p},
+		},
+		{
+			name:  "newer attachment on the same session",
+			steps: func(w *takeWorld) { w.attach("old", "x1b", p) },
+			owner: "x1b", delta: []string{"-x1 " + p, "+x1b " + p},
+		},
+		{
+			name:  "no live attachment lists the route",
+			steps: func(w *takeWorld) { w.detach("old", "x1") },
+			delta: []string{"-x1 " + p},
+		},
+		{
+			name: "failed attach changes nothing",
+			steps: func(w *takeWorld) {
+				w.attach("other", "y", "10.8.0.0/16")
+				w.drain()
+				w.attach("new", "x2", p, "10.8.0.0/16")
+			},
+			code: rpc.AlreadyExists, owner: "x1",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := NewRouter(nil, Config{})
+			w := &takeWorld{t: t, r: r, sess: map[string]*Session{}, byID: map[string]*Session{}}
+			add := func(name, id, addr string) { w.sess[name] = addSession(t, r, vpcA, id, addr).Session }
+			add("watcher", agentID(vpcA, "watcher"), "192.0.2.1:1")
+			add("other", agentID(vpcA, "other"), "192.0.2.2:1")
+			add("old", agentID(vpcA, "laptop"), "192.0.2.3:1")
+			w.attach("old", "x1", p)
+			require.NoError(t, w.err)
+			// The new sessions get the routes of the VPC when they join.
+			add("new", agentID(vpcA, "laptop"), "192.0.2.3:2")
+			add("third", agentID(vpcA, "laptop"), "192.0.2.3:3")
+			require.NoError(t, r.registerSPI(w.sess["watcher"], register(vpcA, "10.9.0.1", time.Minute, 7), t0))
+			w.drain()
+
+			tc.steps(w)
+			require.Equal(t, tc.code, rpc.CodeOf(w.err), "error: %v", w.err)
+			assert.Equal(t, tc.delta, w.changes("watcher"))
+			w.drain()
+			r.mu.RLock()
+			defer r.mu.RUnlock()
+			o, ok := r.domains[vpcA].routes[netip.MustParsePrefix(p)]
+			row := w.sess["watcher"].rows[7]
+			if tc.owner == "" {
+				assert.False(t, ok, "p has no route")
+				assert.Nil(t, row, "the row to p is removed")
+			} else {
+				assert.Equal(t, tc.owner, o.origin)
+				assert.Same(t, w.byID[tc.owner], o.s)
+				require.NotNil(t, row)
+				assert.Same(t, o.s, row.receiver, "the row to p follows the route")
+			}
+			// Each session of the agent can send from p. Other agents cannot.
+			x := netip.MustParseAddr("10.9.0.1")
+			for name, s := range w.sess {
+				assert.Equal(t, ok && s.id.ID == agentID(vpcA, "laptop"), s.sources(x), name)
+			}
 		})
 	}
 }

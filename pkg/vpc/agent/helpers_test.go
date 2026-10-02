@@ -354,6 +354,7 @@ type testAgent struct {
 
 	routesMu sync.Mutex
 	routes   map[netip.Prefix]bool // From OnRoutes.
+	routeLog []string              // "+prefix" or "-prefix" from OnRoutes, in order.
 
 	extraMu sync.Mutex
 	extras  map[string]netip.Addr // From OnAttachment and OnDetach.
@@ -458,12 +459,14 @@ func (w *world) agent(t *testing.T, name string, r *testRelay, opts agentOptions
 					t.Errorf("agent %s: OnRoutes removes %s, which it does not have", name, p)
 				}
 				delete(ta.routes, p)
+				ta.routeLog = append(ta.routeLog, "-"+p.String())
 			}
 			for _, p := range add {
 				if ta.routes[p] {
 					t.Errorf("agent %s: OnRoutes adds %s again", name, p)
 				}
 				ta.routes[p] = true
+				ta.routeLog = append(ta.routeLog, "+"+p.String())
 			}
 		},
 		OnAttachment: func(at Attachment) {
@@ -580,6 +583,19 @@ func (ta *testAgent) routeSet() []netip.Prefix {
 	ta.routesMu.Lock()
 	defer ta.routesMu.Unlock()
 	return slices.Collect(maps.Keys(ta.routes))
+}
+
+// routeEvents returns the OnRoutes changes of p, in order.
+func (ta *testAgent) routeEvents(p netip.Prefix) []string {
+	ta.routesMu.Lock()
+	defer ta.routesMu.Unlock()
+	var out []string
+	for _, e := range ta.routeLog {
+		if e[1:] == p.String() {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // attached waits for the next OnAttach call.

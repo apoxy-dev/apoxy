@@ -42,6 +42,8 @@ type Attachment struct {
 	Routes []netip.Prefix
 	// Addresses are the prefixes from Addresses.Assign.
 	Addresses []netip.Prefix
+
+	seq uint64 // Attach order in the router.
 }
 
 // Addresses assigns overlay addresses to attachments. The relay host
@@ -159,30 +161,47 @@ func newAttachment(vpc VPCKey, subject string, in *dp.AttachRequest) (*Attachmen
 	return a, nil
 }
 
-// attach adds the routes of a to s. It adds all of them or none.
+// attach adds the routes of a to s. It adds all of them or none. An
+// advertised route of an older attachment of the same subject moves to a.
 func (r *Router) attach(s *Session, a *Attachment) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	var added []netip.Prefix
-	for _, p := range append(append([]netip.Prefix{}, a.Addresses...), a.Routes...) {
+	if s.closed {
+		return rpc.Errorf(rpc.FailedPrecondition, "session closed")
+	}
+	d := r.domain(s.id.VPC)
+	// takes reports whether a gets p: p has no route, or a takes it over.
+	takes := func(p netip.Prefix, advertised bool) bool {
+		o, ok := d.routes[p]
+		return !ok || (advertised && o.advertised && o.s.id.ID == s.id.ID && o.origin != a.ID)
+	}
+	// Check all prefixes first, so that a failed attach changes nothing.
+	for i, p := range slices.Concat(a.Addresses, a.Routes) {
+		if !p.IsValid() {
+			return rpc.Errorf(rpc.InvalidArgument, "prefix not valid")
+		}
 		p = p.Masked()
-		if slices.Contains(s.routes, p) {
-			continue
+		if o, ok := d.routes[p]; ok && o.s != s && !takes(p, i >= len(a.Addresses)) {
+			return rpc.Errorf(rpc.AlreadyExists, "route %s has another owner", p)
 		}
-		if err := r.addRoute(s, p, a.ID); err != nil {
-			for _, q := range added {
-				r.deleteRoute(s, q)
-			}
-			s.routes = s.routes[:len(s.routes)-len(added)]
-			return err
+	}
+	r.attaches++
+	a.seq = r.attaches
+	for _, p := range a.Addresses {
+		if p = p.Masked(); takes(p, false) {
+			r.setOwner(d, p, owner{s: s, origin: a.ID})
 		}
-		added = append(added, p)
+	}
+	for _, p := range a.Routes {
+		if p = p.Masked(); takes(p, true) {
+			r.setOwner(d, p, owner{s, a.ID, true})
+		}
 	}
 	s.attachments = append(s.attachments, a)
 	return nil
 }
 
-// detach removes the attachment id and the routes that it added from s.
+// detach removes the attachment id from s, and drops the routes that it owns.
 func (r *Router) detach(s *Session, id string) (*Attachment, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -201,9 +220,8 @@ func (r *Router) detach(s *Session, id string) (*Attachment, error) {
 		}
 	}
 	for _, p := range gone {
-		r.deleteRoute(s, p)
+		r.dropRoute(s, p)
 	}
-	s.routes = slices.DeleteFunc(s.routes, func(p netip.Prefix) bool { return slices.Contains(gone, p) })
 	for w := range s.inbound {
 		if r.lookup(w.vpc, w.dst) != s {
 			r.removeRow(w)

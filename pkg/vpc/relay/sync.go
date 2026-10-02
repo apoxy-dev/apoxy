@@ -40,9 +40,13 @@ type syncState struct {
 	report *dp.RxReport
 }
 
-// queueRoute adds a route change to the sync queue. A change cancels the
-// opposite change that waits. Router.mu must be held.
-func (s *Session) queueRoute(rt route, add bool) {
+// queueRoute adds a change of the route rt of owner to the sync queue. A
+// session gets no routes of its own subject. A change cancels the opposite
+// change that waits. Router.mu must be held.
+func (s *Session) queueRoute(rt route, owner *Session, add bool) {
+	if owner.id.ID == s.id.ID {
+		return
+	}
 	if was, ok := s.sync.routes[rt]; ok && was != add {
 		delete(s.sync.routes, rt)
 	} else {

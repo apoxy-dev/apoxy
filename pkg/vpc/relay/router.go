@@ -109,6 +109,7 @@ type Router struct {
 	byConn   map[*rpc.Conn]*Session
 	bySource map[netip.AddrPort]*Session
 	probes   map[[8]byte]*Session
+	attaches uint64 // Attach counter for Attachment.seq.
 }
 
 // NewRouter returns a Router with the SameVPC Permit rule. New sessions
@@ -203,6 +204,9 @@ type domain struct {
 type owner struct {
 	s      *Session
 	origin string
+	// advertised is set for a prefix from Attachment.Routes. The newest live
+	// attachment of the subject that lists it owns it.
+	advertised bool
 }
 
 // lookup returns the session of the longest route to a.
@@ -285,9 +289,13 @@ func (r *Router) addSession(s *Session, now time.Time) {
 	r.addProber(s)
 	d := r.domain(s.id.VPC)
 	d.members[s] = struct{}{}
-	s.sources = d.fast.Sources(s)
+	// All sessions of the agent can send from the routes of the agent.
+	s.sources = func(a netip.Addr) bool {
+		o, ok := d.fast.Lookup(a)
+		return ok && (o == s || o.id.ID == s.id.ID)
+	}
 	for p, o := range d.routes {
-		s.queueRoute(route{p, o.origin}, true)
+		s.queueRoute(route{p, o.origin}, o.s, true)
 	}
 }
 
@@ -298,14 +306,15 @@ func (r *Router) removeSession(s *Session) {
 		return
 	}
 	s.closed = true
+	// The routes go first: a route that moves to another session takes its rows.
+	for _, p := range slices.Clone(s.routes) {
+		r.dropRoute(s, p)
+	}
 	for _, w := range s.rows {
 		r.removeRow(w)
 	}
 	for w := range s.inbound {
 		r.removeRow(w)
-	}
-	for _, p := range s.routes {
-		r.deleteRoute(s, p)
 	}
 	for _, a := range []netip.AddrPort{s.addr, s.prev} {
 		if r.bySource[a] == s {
@@ -398,10 +407,6 @@ func (r *Router) AddRoute(s *Session, p netip.Prefix, origin string) error {
 	p = p.Masked()
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.addRoute(s, p, origin)
-}
-
-func (r *Router) addRoute(s *Session, p netip.Prefix, origin string) error {
 	if s.closed {
 		return rpc.Errorf(rpc.FailedPrecondition, "session closed")
 	}
@@ -412,21 +417,77 @@ func (r *Router) addRoute(s *Session, p netip.Prefix, origin string) error {
 		}
 		return rpc.Errorf(rpc.AlreadyExists, "route %s has another owner", p)
 	}
-	if err := d.fast.Add(p, s); err != nil {
-		return rpc.Errorf(rpc.InvalidArgument, "route %s: %v", p, err)
+	r.setOwner(d, p, owner{s: s, origin: origin})
+	return nil
+}
+
+// setOwner routes the valid prefix p to o, and moves the rows to p from the
+// owner before. Router.mu must be held.
+func (r *Router) setOwner(d *domain, p netip.Prefix, o owner) {
+	old, had := d.routes[p]
+	if had {
+		// Lookups with no lock do not find p between this Remove and the Add.
+		d.fast.Remove(p, old.s)
+		old.s.routes = slices.DeleteFunc(old.s.routes, func(q netip.Prefix) bool { return q == p })
+		d.queueRoute(route{p, old.origin}, old.s, false)
 	}
-	d.routes[p] = owner{s, origin}
+	_ = d.fast.Add(p, o.s) // p is valid and has no route now.
+	d.routes[p] = o
 	if !slices.Contains(d.lens, p.Bits()) {
 		d.lens = append(d.lens, p.Bits())
 		slices.SortFunc(d.lens, func(a, b int) int { return cmp.Compare(b, a) })
 	}
-	s.routes = append(s.routes, p)
-	for m := range d.members {
-		if m != s {
-			m.queueRoute(route{p, origin}, true)
+	o.s.routes = append(o.s.routes, p)
+	d.queueRoute(route{p, o.origin}, o.s, true)
+	if had && old.s != o.s {
+		for w := range old.s.inbound {
+			if r.lookup(w.vpc, w.dst) == o.s {
+				delete(old.s.inbound, w)
+				w.receiver = o.s
+				o.s.inbound[w] = struct{}{}
+			}
 		}
 	}
-	return nil
+}
+
+// dropRoute removes the route p of s. An advertised route goes to the newest
+// live attachment of the subject that lists it, if there is one.
+func (r *Router) dropRoute(s *Session, p netip.Prefix) {
+	if d := r.domains[s.id.VPC]; d != nil {
+		if o := d.routes[p]; o.s == s && o.advertised {
+			if hs, ha := d.heir(s.id.ID, p); hs != nil {
+				r.setOwner(d, p, owner{hs, ha.ID, true})
+				return
+			}
+		}
+	}
+	r.deleteRoute(s, p)
+	s.routes = slices.DeleteFunc(s.routes, func(q netip.Prefix) bool { return q == p })
+}
+
+// heir returns the newest attachment of subject on an open session that lists
+// the route p.
+func (d *domain) heir(subject string, p netip.Prefix) (*Session, *Attachment) {
+	var hs *Session
+	var ha *Attachment
+	for m := range d.members {
+		if m.closed || m.id.ID != subject {
+			continue
+		}
+		for _, a := range m.attachments {
+			if (ha == nil || a.seq > ha.seq) && slices.Contains(a.Routes, p) {
+				hs, ha = m, a
+			}
+		}
+	}
+	return hs, ha
+}
+
+// queueRoute gives a change of the route rt of owner to the sessions of d.
+func (d *domain) queueRoute(rt route, owner *Session, add bool) {
+	for m := range d.members {
+		m.queueRoute(rt, owner, add)
+	}
 }
 
 // RemoveRoute removes the route p of s and the rows that it carried.
@@ -460,11 +521,7 @@ func (r *Router) deleteRoute(s *Session, p netip.Prefix) {
 	if !d.usesLen(p.Bits()) {
 		d.lens = slices.DeleteFunc(d.lens, func(n int) bool { return n == p.Bits() })
 	}
-	for m := range d.members {
-		if m != s {
-			m.queueRoute(route{p, o.origin}, false)
-		}
-	}
+	d.queueRoute(route{p, o.origin}, s, false)
 	r.dropDomain(s.id.VPC, d)
 }
 

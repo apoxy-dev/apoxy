@@ -287,15 +287,57 @@ func TestPSPAfterQUIC(t *testing.T) {
 	ping(t, b.stack, eb.addr, ea.addr, 9001, "from b")
 }
 
+// stream sends from src to dst:port until stop or the cleanup runs. stop logs
+// the echoes and the longest time with no echo.
+func stream(t *testing.T, s *stack.Stack, src, dst netip.Addr, port uint16) (stop func()) {
+	c, err := gonet.DialUDP(s, fullAddr(src, 0), fullAddr(dst, port), ipv6.ProtocolNumber)
+	require.NoError(t, err)
+	done := make(chan struct{})
+	var sent, got int
+	var longest time.Duration
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		buf := make([]byte, 64)
+		last := time.Now()
+		defer func() { longest = max(longest, time.Since(last)) }()
+		for {
+			select {
+			case <-done:
+				return
+			default:
+			}
+			if _, err := c.Write([]byte("stream")); err == nil {
+				sent++
+			}
+			_ = c.SetReadDeadline(time.Now().Add(5 * time.Millisecond))
+			if _, err := c.Read(buf); err == nil {
+				got++
+				longest, last = max(longest, time.Since(last)), time.Now()
+			}
+		}
+	})
+	stop = sync.OnceFunc(func() {
+		close(done)
+		wg.Wait()
+		_ = c.Close()
+		t.Logf("Data to %s: %d sent, %d echoes, longest time with no echo %v", dst, sent, got, longest)
+	})
+	t.Cleanup(stop)
+	return stop
+}
+
 // TestRenew checks that the agent opens a relay session with the renewed
 // cert before it closes the old one, and replaces spares with the old cert.
+// The route of the agent moves to the new session with no remove at peers.
 func TestRenew(t *testing.T) {
 	cases := []struct {
 		name  string
 		spare bool // The agent keeps a spare on a second relay.
+		route bool // The agent advertises a route, and agent b sends to it.
 	}{
 		{name: "one relay"},
 		{name: "spare on a second relay", spare: true},
+		{name: "one relay with a route", route: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -305,12 +347,34 @@ func TestRenew(t *testing.T) {
 			if tc.spare {
 				opts.relays = []identity.Relay{r.ref(), w.relay(t, "relay-2").ref()}
 			}
+			route, far := netip.MustParsePrefix("fd99::/64"), netip.MustParseAddr("fd99::5")
+			if tc.route {
+				opts.routes = []netip.Prefix{route}
+			}
 			a := w.agent(t, "a", r, opts)
 			first := a.attached(t)
+			var b *testAgent
+			var stop func()
+			if tc.route {
+				b = w.agent(t, "b", r, agentOptions{})
+				eb := b.attached(t)
+				a.netstack(t, a.binding(), far, false)
+				echo(t, a.stack, far, 9000)
+				require.Eventually(t, func() bool { return slices.Contains(b.routeSet(), route) },
+					5*time.Second, 10*time.Millisecond)
+				stop = stream(t, b.stack, eb.addr, far, 9000)
+			}
 			second := a.attached(t)
 			assert.NotEqual(t, first.addr, second.addr, "each relay session has its own addresses")
 			assert.GreaterOrEqual(t, a.enrolls.Load(), int32(2))
 			id := identity.ID{Project: testProject, VPC: testVPC, Agent: "a"}.String()
+			if tc.route {
+				require.Eventually(t, func() bool { return w.addrs.liveOf(id) == 1 },
+					5*time.Second, 10*time.Millisecond, "the old session closes")
+				stop()
+				assert.Equal(t, []string{"+" + route.String()}, b.routeEvents(route), "b keeps the route")
+				assert.Empty(t, a.routeEvents(route), "a never gets its own route")
+			}
 			assert.Equal(t, 2, w.addrs.overlap(id), "the new session attaches before the old one closes")
 			if tc.spare {
 				require.Eventually(t, func() bool {
