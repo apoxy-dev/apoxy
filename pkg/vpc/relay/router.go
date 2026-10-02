@@ -309,6 +309,7 @@ func (r *Router) removeSession(s *Session) {
 	for _, a := range []netip.AddrPort{s.addr, s.prev} {
 		if r.bySource[a] == s {
 			delete(r.bySource, a)
+			r.passSource(s, a)
 		}
 	}
 	if d := r.domains[s.id.VPC]; d != nil {
@@ -361,6 +362,22 @@ func (r *Router) takeSource(s *Session) {
 	}
 	if s.sync.open || r.bySource[s.addr] == nil {
 		r.bySource[s.addr] = s
+	}
+}
+
+// passSource gives source address a of the closed session s to another
+// session of the VPC at a with a Session call, as takeSource does. A shard
+// dial does not get it. Router.mu must be held.
+func (r *Router) passSource(s *Session, a netip.AddrPort) {
+	d := r.domains[s.id.VPC]
+	if d == nil || !a.IsValid() {
+		return
+	}
+	for o := range d.members {
+		if o != s && !o.closed && o.shardOf == nil && o.sync.open && o.addr == a {
+			r.bySource[a] = o
+			return
+		}
 	}
 }
 

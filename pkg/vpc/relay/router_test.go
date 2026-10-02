@@ -177,6 +177,53 @@ func TestForward(t *testing.T) {
 	}
 }
 
+// TestSourceAfterClose closes the session that has the source address of an
+// agent socket while another session from that socket stays.
+func TestSourceAfterClose(t *testing.T) {
+	const addr = "192.0.2.1:1000"
+	cases := []struct {
+		name  string
+		other string // The session that stays: "session", "shard dial" or "".
+		want  Verdict
+	}{
+		{"an older session with a Session call gets the source", "session", Pass},
+		{"a shard dial does not get the source", "shard dial", DropUnknownSource},
+		{"no other session", "", DropUnknownSource},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := NewRouter(nil, Config{})
+			addSession(t, r, vpcA, "receiver", "192.0.2.2:2000", "fd00::2/128")
+			var other *Session
+			switch tc.other {
+			case "session":
+				other = addSession(t, r, vpcA, "agent", addr, "fd00::1/128").Session
+				require.NoError(t, r.openSync(other, dp.Mode_MODE_PSP, ref(vpcA)))
+				require.NoError(t, r.registerSPI(other, register(vpcA, "fd00::2", time.Minute, 1), t0))
+			case "shard dial":
+				other = addSession(t, r, vpcA, "agent", addr).Session
+			}
+			// A newer session from the same socket takes the source, then closes.
+			newer := addSession(t, r, vpcA, "agent", addr).Session
+			require.NoError(t, r.openSync(newer, dp.Mode_MODE_PSP, ref(vpcA)))
+			require.Same(t, newer, r.bySource[netip.MustParseAddrPort(addr)])
+			r.removeSession(newer)
+
+			got, ok := r.bySource[netip.MustParseAddrPort(addr)]
+			if tc.want == Pass {
+				assert.Same(t, other, got)
+			} else {
+				assert.False(t, ok, "source has %p", got)
+			}
+			dst, v := r.Forward(netip.MustParseAddrPort(addr), 1, 1400, t0)
+			assert.Equal(t, tc.want, v)
+			if tc.want == Pass {
+				assert.Equal(t, "192.0.2.2:2000", dst.String())
+			}
+		})
+	}
+}
+
 func TestForwardCounters(t *testing.T) {
 	r := NewRouter(nil, Config{LaneRate: 1 << 20, LaneBurst: 64 << 10})
 	snd := addSession(t, r, vpcA, "sender", "192.0.2.1:1000", "fd00::1/128")
