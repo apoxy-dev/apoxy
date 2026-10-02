@@ -380,6 +380,7 @@ func TestResolvePeer(t *testing.T) {
 			if tc.want != nil {
 				assert.Equal(t, tc.want.Reach, got.Reach)
 				assert.Equal(t, tc.want.P2P, got.P2P)
+				assert.Equal(t, "peer", got.Subject)
 			}
 		})
 	}

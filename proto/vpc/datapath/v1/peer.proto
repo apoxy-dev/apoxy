@@ -22,6 +22,8 @@ service Peer {
   // Reports sends the receive counters of the SAs that the peer sends with,
   // every 500 ms. The peer gives them to its circuit breaker.
   rpc Reports(stream RxReport) returns (google.protobuf.Empty);
+  // Grants changes the grants of the other attachments of the caller.
+  rpc Grants(GrantsRequest) returns (google.protobuf.Empty);
 }
 
 message OpenRequest {
@@ -32,6 +34,8 @@ message OpenRequest {
   Mode mode = 3;
   // True if the dialer allows P2P.
   bool p2p = 4;
+  // Grants of the other attachments of the dialer on its relay session.
+  repeated AttachmentGrant grants = 5;
 }
 
 message OpenResponse {
@@ -42,6 +46,15 @@ message OpenResponse {
   Mode mode = 3;
   // True if the listener allows P2P.
   bool p2p = 4;
+  // Grants of the other attachments of the listener on its relay session.
+  repeated AttachmentGrant grants = 5;
+}
+
+// GrantsRequest adds and removes grants of the other attachments of the caller.
+message GrantsRequest {
+  repeated AttachmentGrant add = 1;
+  // Attachment IDs. An ID that the receiver does not hold is ignored.
+  repeated string remove = 2;
 }
 
 enum CandidateKind {

@@ -20,6 +20,7 @@ const (
 	Peer_Keys_FullMethodName    = "/apoxy.vpc.datapath.v1.Peer/Keys"
 	Peer_Paths_FullMethodName   = "/apoxy.vpc.datapath.v1.Peer/Paths"
 	Peer_Reports_FullMethodName = "/apoxy.vpc.datapath.v1.Peer/Reports"
+	Peer_Grants_FullMethodName  = "/apoxy.vpc.datapath.v1.Peer/Grants"
 )
 
 // PeerClient is the client API of the Peer service.
@@ -34,6 +35,8 @@ type PeerClient interface {
 	// Reports sends the receive counters of the SAs that the peer sends with,
 	// every 500 ms. The peer gives them to its circuit breaker.
 	Reports(ctx context.Context) (rpc.ClientStreamClient[RxReport, emptypb.Empty], error)
+	// Grants changes the grants of the other attachments of the caller.
+	Grants(ctx context.Context, in *GrantsRequest) (*emptypb.Empty, error)
 }
 
 type peerClient struct{ c rpc.Caller }
@@ -65,6 +68,14 @@ func (c peerClient) Reports(ctx context.Context) (rpc.ClientStreamClient[RxRepor
 	return rpc.OpenClientStream[RxReport, emptypb.Empty](ctx, c.c, Peer_Reports_FullMethodName)
 }
 
+func (c peerClient) Grants(ctx context.Context, in *GrantsRequest) (*emptypb.Empty, error) {
+	out := new(emptypb.Empty)
+	if err := c.c.Invoke(ctx, Peer_Grants_FullMethodName, in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // PeerServer is the server API of the Peer service.
 type PeerServer interface {
 	// Open is the first call on a session. The dialer calls it.
@@ -77,6 +88,8 @@ type PeerServer interface {
 	// Reports sends the receive counters of the SAs that the peer sends with,
 	// every 500 ms. The peer gives them to its circuit breaker.
 	Reports(context.Context, rpc.ClientStreamServer[RxReport]) (*emptypb.Empty, error)
+	// Grants changes the grants of the other attachments of the caller.
+	Grants(context.Context, *GrantsRequest) (*emptypb.Empty, error)
 }
 
 // UnimplementedPeerServer returns Unimplemented for each method. Embed it to add
@@ -99,10 +112,15 @@ func (UnimplementedPeerServer) Reports(context.Context, rpc.ClientStreamServer[R
 	return nil, rpc.Errorf(rpc.Unimplemented, "method Reports not implemented")
 }
 
+func (UnimplementedPeerServer) Grants(context.Context, *GrantsRequest) (*emptypb.Empty, error) {
+	return nil, rpc.Errorf(rpc.Unimplemented, "method Grants not implemented")
+}
+
 // RegisterPeerServer adds the methods of srv to m.
 func RegisterPeerServer(m *rpc.Mux, srv PeerServer) {
 	rpc.HandleUnary(m, Peer_Open_FullMethodName, srv.Open)
 	rpc.HandleUnary(m, Peer_Keys_FullMethodName, srv.Keys)
 	rpc.HandleClientStream(m, Peer_Paths_FullMethodName, srv.Paths)
 	rpc.HandleClientStream(m, Peer_Reports_FullMethodName, srv.Reports)
+	rpc.HandleUnary(m, Peer_Grants_FullMethodName, srv.Grants)
 }

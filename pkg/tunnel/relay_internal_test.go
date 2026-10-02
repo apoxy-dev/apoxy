@@ -838,4 +838,7 @@ func TestRelayVPCPacketSize(t *testing.T) {
 	if !relayQUICConfig.DisableECN {
 		t.Error("relay packets must be Not-ECT")
 	}
+	if got := relayQUICConfig.MaxIncomingStreams; got < 256 {
+		t.Errorf("MaxIncomingStreams = %d, want 256 or more for 128 Attach calls at a time", got)
+	}
 }

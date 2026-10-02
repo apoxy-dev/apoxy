@@ -18,6 +18,7 @@ import (
 const (
 	Relay_Session_FullMethodName       = "/apoxy.vpc.datapath.v1.Relay/Session"
 	Relay_Attach_FullMethodName        = "/apoxy.vpc.datapath.v1.Relay/Attach"
+	Relay_Detach_FullMethodName        = "/apoxy.vpc.datapath.v1.Relay/Detach"
 	Relay_Rekey_FullMethodName         = "/apoxy.vpc.datapath.v1.Relay/Rekey"
 	Relay_ResolvePeer_FullMethodName   = "/apoxy.vpc.datapath.v1.Relay/ResolvePeer"
 	Relay_RegisterSPI_FullMethodName   = "/apoxy.vpc.datapath.v1.Relay/RegisterSPI"
@@ -32,6 +33,9 @@ type RelayClient interface {
 	Session(ctx context.Context) (rpc.BidiStreamClient[SessionRequest, SessionResponse], error)
 	// Attach adds an attachment to the session.
 	Attach(ctx context.Context, in *AttachRequest) (*AttachResponse, error)
+	// Detach removes an attachment of the session: its routes and addresses.
+	// Errors: NotFound.
+	Detach(ctx context.Context, in *DetachRequest) (*emptypb.Empty, error)
 	// Rekey gives the relay SAs for traffic from the relay to the agent.
 	Rekey(ctx context.Context, in *KeysRequest) (*KeysResponse, error)
 	// ResolvePeer finds how the relay reaches an address. Errors: NotFound,
@@ -55,6 +59,14 @@ func (c relayClient) Session(ctx context.Context) (rpc.BidiStreamClient[SessionR
 func (c relayClient) Attach(ctx context.Context, in *AttachRequest) (*AttachResponse, error) {
 	out := new(AttachResponse)
 	if err := c.c.Invoke(ctx, Relay_Attach_FullMethodName, in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c relayClient) Detach(ctx context.Context, in *DetachRequest) (*emptypb.Empty, error) {
+	out := new(emptypb.Empty)
+	if err := c.c.Invoke(ctx, Relay_Detach_FullMethodName, in, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -100,6 +112,9 @@ type RelayServer interface {
 	Session(context.Context, rpc.BidiStreamServer[SessionRequest, SessionResponse]) error
 	// Attach adds an attachment to the session.
 	Attach(context.Context, *AttachRequest) (*AttachResponse, error)
+	// Detach removes an attachment of the session: its routes and addresses.
+	// Errors: NotFound.
+	Detach(context.Context, *DetachRequest) (*emptypb.Empty, error)
 	// Rekey gives the relay SAs for traffic from the relay to the agent.
 	Rekey(context.Context, *KeysRequest) (*KeysResponse, error)
 	// ResolvePeer finds how the relay reaches an address. Errors: NotFound,
@@ -123,6 +138,10 @@ func (UnimplementedRelayServer) Attach(context.Context, *AttachRequest) (*Attach
 	return nil, rpc.Errorf(rpc.Unimplemented, "method Attach not implemented")
 }
 
+func (UnimplementedRelayServer) Detach(context.Context, *DetachRequest) (*emptypb.Empty, error) {
+	return nil, rpc.Errorf(rpc.Unimplemented, "method Detach not implemented")
+}
+
 func (UnimplementedRelayServer) Rekey(context.Context, *KeysRequest) (*KeysResponse, error) {
 	return nil, rpc.Errorf(rpc.Unimplemented, "method Rekey not implemented")
 }
@@ -143,6 +162,7 @@ func (UnimplementedRelayServer) UnregisterSPI(context.Context, *UnregisterSPIReq
 func RegisterRelayServer(m *rpc.Mux, srv RelayServer) {
 	rpc.HandleBidiStream(m, Relay_Session_FullMethodName, srv.Session)
 	rpc.HandleUnary(m, Relay_Attach_FullMethodName, srv.Attach)
+	rpc.HandleUnary(m, Relay_Detach_FullMethodName, srv.Detach)
 	rpc.HandleUnary(m, Relay_Rekey_FullMethodName, srv.Rekey)
 	rpc.HandleUnary(m, Relay_ResolvePeer_FullMethodName, srv.ResolvePeer)
 	rpc.HandleUnary(m, Relay_RegisterSPI_FullMethodName, srv.RegisterSPI)

@@ -19,6 +19,9 @@ service Relay {
   rpc Session(stream SessionRequest) returns (stream SessionResponse);
   // Attach adds an attachment to the session.
   rpc Attach(AttachRequest) returns (AttachResponse);
+  // Detach removes an attachment of the session: its routes and addresses.
+  // Errors: NotFound.
+  rpc Detach(DetachRequest) returns (google.protobuf.Empty);
   // Rekey gives the relay SAs for traffic from the relay to the agent.
   rpc Rekey(KeysRequest) returns (KeysResponse);
   // ResolvePeer finds how the relay reaches an address. Errors: NotFound,
@@ -179,6 +182,10 @@ message AttachResponse {
   AttachmentGrant grant = 2;
 }
 
+message DetachRequest {
+  string attachment_id = 1;
+}
+
 // Reach tells how a relay reaches a peer.
 enum Reach {
   REACH_UNSPECIFIED = 0;
@@ -203,6 +210,8 @@ message ResolvePeerResponse {
   RelayRef home_relay = 2;
   // True if P2P with the peer is allowed.
   bool p2p = 3;
+  // SPIFFE ID of the peer. Set for REACH_LOCAL.
+  string subject = 4;
 }
 
 message RegisterSPIRequest {

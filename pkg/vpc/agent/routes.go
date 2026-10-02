@@ -4,7 +4,6 @@ package agent
 
 import (
 	"log/slog"
-	"maps"
 	"net/netip"
 	"slices"
 
@@ -32,22 +31,22 @@ type routeChange struct {
 	add    bool
 }
 
-// apply applies d, skips the routes of the attachment self, and returns the
-// changes. A prefix that moves to a new origin is a remove and an add.
-func (t *routeTable) apply(d *dp.RouteDelta, self string) []routeChange {
+// apply applies d, skips the routes of the attachments of this agent, and
+// returns the changes. A prefix that moves to a new origin is a remove and an add.
+func (t *routeTable) apply(d *dp.RouteDelta, own func(origin string) bool) []routeChange {
 	if t.origins == nil {
 		t.origins = map[netip.Prefix]string{}
 	}
 	t.synced = true
 	var out []routeChange
 	for _, r := range d.GetRemove() {
-		if p, ok := parseRoute(r, self); ok && t.origins[p] == r.GetOrigin() {
+		if p, ok := parseRoute(r, own); ok && t.origins[p] == r.GetOrigin() {
 			delete(t.origins, p)
 			out = append(out, routeChange{p, r.GetOrigin(), false})
 		}
 	}
 	for _, r := range d.GetAdd() {
-		p, ok := parseRoute(r, self)
+		p, ok := parseRoute(r, own)
 		if !ok {
 			continue
 		}
@@ -64,14 +63,21 @@ func (t *routeTable) apply(d *dp.RouteDelta, self string) []routeChange {
 	return out
 }
 
-// drop removes the routes of origin.
-func (t *routeTable) drop(origin string) {
-	maps.DeleteFunc(t.origins, func(_ netip.Prefix, o string) bool { return o == origin })
+// drop removes the routes of origin and returns their prefixes.
+func (t *routeTable) drop(origin string) []netip.Prefix {
+	var out []netip.Prefix
+	for p, o := range t.origins {
+		if o == origin {
+			delete(t.origins, p)
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
-func parseRoute(r *dp.Route, self string) (netip.Prefix, bool) {
+func parseRoute(r *dp.Route, own func(string) bool) (netip.Prefix, bool) {
 	p, err := netip.ParsePrefix(r.GetPrefix())
-	if err != nil || r.GetOrigin() == "" || r.GetOrigin() == self {
+	if err != nil || r.GetOrigin() == "" || own(r.GetOrigin()) {
 		return netip.Prefix{}, false
 	}
 	return p.Masked(), true
@@ -105,7 +111,7 @@ func (a *Agent) applyRoutes(rc *relayConn, d *dp.RouteDelta) {
 	a.routeMu.Lock()
 	defer a.routeMu.Unlock()
 	first := !rc.routes.synced
-	changes := rc.routes.apply(d, rc.attachmentID)
+	changes := rc.routes.apply(d, rc.ownOrigin)
 	a.bindRoutes(rc, changes)
 	switch {
 	case a.routesOf != rc:
@@ -173,7 +179,7 @@ func (a *Agent) report(add, remove []netip.Prefix) {
 	}
 }
 
-// routeAdvertised routes the prefixes that the attachment of p advertises to p
+// routeAdvertised routes the prefixes that the attachments of p advertise to p
 // in the binding. Call it after p opens.
 func (a *Agent) routeAdvertised(p *peer) {
 	a.routeMu.Lock()
@@ -185,7 +191,7 @@ func (a *Agent) routeAdvertised(p *peer) {
 		return
 	}
 	for pfx, origin := range p.rc.routes.origins {
-		if origin == p.attachmentID() {
+		if p.origin(origin) {
 			a.addAdvertised(p, pfx, vpc)
 		}
 	}
@@ -199,7 +205,7 @@ func (a *Agent) bindRoutes(rc *relayConn, changes []routeChange) {
 	defer a.mu.Unlock()
 	for _, c := range changes {
 		for _, p := range a.peers {
-			if p.rc != rc || p.bp == nil || p.attachmentID() != c.origin {
+			if p.rc != rc || p.bp == nil || !p.origin(c.origin) {
 				continue
 			}
 			if c.add {
@@ -213,7 +219,7 @@ func (a *Agent) bindRoutes(rc *relayConn, changes []routeChange) {
 
 // addAdvertised routes pfx to p if pfx is routable. a.mu must be held.
 func (a *Agent) addAdvertised(p *peer, pfx, vpc netip.Prefix) {
-	if !Routable(pfx, vpc) || slices.Contains(p.advertised, pfx) || slices.Contains(p.prefixes, pfx) {
+	if !Routable(pfx, vpc) || p.has(pfx) {
 		return
 	}
 	if err := a.bind.AddRoute(pfx, p.bp); err != nil {

@@ -84,7 +84,7 @@ func (r *Router) resolvePeer(c *Session, in *dp.ResolvePeerRequest) (*dp.Resolve
 	if peer == nil {
 		return nil, rpc.Errorf(rpc.NotFound, "no route to %s", dst)
 	}
-	return &dp.ResolvePeerResponse{Reach: dp.Reach_REACH_LOCAL, P2P: !c.id.RelayOnly && !peer.id.RelayOnly}, nil
+	return &dp.ResolvePeerResponse{Reach: dp.Reach_REACH_LOCAL, P2P: !c.id.RelayOnly && !peer.id.RelayOnly, Subject: peer.id.ID}, nil
 }
 
 // RegisterSPI adds rows from the caller to the receiver of the destination.

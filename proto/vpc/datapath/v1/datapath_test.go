@@ -199,6 +199,10 @@ func (r *relayStub) Attach(ctx context.Context, in *dp.AttachRequest) (*dp.Attac
 	return answer[*dp.AttachResponse](r.stub, "Attach", in)
 }
 
+func (r *relayStub) Detach(ctx context.Context, in *dp.DetachRequest) (*emptypb.Empty, error) {
+	return answer[*emptypb.Empty](r.stub, "Detach", in)
+}
+
 func (r *relayStub) Rekey(ctx context.Context, in *dp.KeysRequest) (*dp.KeysResponse, error) {
 	return answer[*dp.KeysResponse](r.stub, "Rekey", in)
 }
@@ -231,6 +235,10 @@ func (p peerStub) Paths(ctx context.Context, st rpc.ClientStreamServer[dp.Candid
 
 func (p peerStub) Reports(ctx context.Context, st rpc.ClientStreamServer[dp.RxReport]) (*emptypb.Empty, error) {
 	return recvAll(p.stub, "Reports", st)
+}
+
+func (p peerStub) Grants(ctx context.Context, in *dp.GrantsRequest) (*emptypb.Empty, error) {
+	return answer[*emptypb.Empty](p.stub, "Grants", in)
 }
 
 type meshStub struct{ *stub }
@@ -390,7 +398,12 @@ func TestRelayCalls(t *testing.T) {
 		unary("Attach", c, dp.RelayClient.Attach,
 			&dp.AttachRequest{Vpc: vpc, Name: "laptop", Labels: map[string]string{"env": "dev"}, Routes: []string{"10.1.0.0/16"}},
 			&dp.AttachResponse{AttachmentId: "att-1", Grant: grant}),
+		unary("Detach", c, dp.RelayClient.Detach, &dp.DetachRequest{AttachmentId: "att-1"}, &emptypb.Empty{}),
+		unary("Detach unknown", c, dp.RelayClient.Detach, &dp.DetachRequest{AttachmentId: "att-9"}, rpc.Errorf(rpc.NotFound, "no attachment")),
 		unary("Rekey", c, dp.RelayClient.Rekey, offer, &dp.KeysResponse{}),
+		unary("ResolvePeer local", c, dp.RelayClient.ResolvePeer,
+			&dp.ResolvePeerRequest{Vpc: vpc, Address: "fd61:a0b:c00:2::8"},
+			&dp.ResolvePeerResponse{Reach: dp.Reach_REACH_LOCAL, P2P: true, Subject: "spiffe://project-a/vpc/vpc-1/agent/b"}),
 		unary("ResolvePeer visit", c, dp.RelayClient.ResolvePeer,
 			&dp.ResolvePeerRequest{Vpc: vpc, Address: "fd61:a0b:c00:2::9"},
 			&dp.ResolvePeerResponse{Reach: dp.Reach_REACH_VISIT, HomeRelay: relay, P2P: true}),
@@ -409,8 +422,10 @@ func TestPeerCalls(t *testing.T) {
 	c := dp.NewPeerClient
 	runBothWays(t, dp.ALPNPeer, func(m *rpc.Mux, s *stub) { dp.RegisterPeerServer(m, peerStub{s}) }, []call{
 		unary("Open", c, dp.PeerClient.Open,
-			&dp.OpenRequest{Grant: grant, Instance: 0x0102030405060708, Mode: dp.Mode_MODE_PSP, P2P: true},
-			&dp.OpenResponse{Grant: grant, Instance: 0x1112131415161718, Mode: dp.Mode_MODE_QUIC}),
+			&dp.OpenRequest{Grant: grant, Grants: []*dp.AttachmentGrant{grant}, Instance: 0x0102030405060708, Mode: dp.Mode_MODE_PSP, P2P: true},
+			&dp.OpenResponse{Grant: grant, Grants: []*dp.AttachmentGrant{grant}, Instance: 0x1112131415161718, Mode: dp.Mode_MODE_QUIC}),
+		unary("Grants", c, dp.PeerClient.Grants,
+			&dp.GrantsRequest{Add: []*dp.AttachmentGrant{grant}, Remove: []string{"att-2"}}, &emptypb.Empty{}),
 		unary("Keys offer", c, dp.PeerClient.Keys, offer, &dp.KeysResponse{RefusedSpis: []uint32{sa.Spi}}),
 		unary("Keys rekey", c, dp.PeerClient.Keys, rekey, &dp.KeysResponse{}),
 		unary("Keys revoke", c, dp.PeerClient.Keys, revoke, &dp.KeysResponse{}),

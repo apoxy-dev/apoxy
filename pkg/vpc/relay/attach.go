@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"k8s.io/apimachinery/pkg/util/validation"
 
@@ -111,6 +112,21 @@ func (srv *Server) Attach(ctx context.Context, in *dp.AttachRequest) (*dp.Attach
 	return &dp.AttachResponse{AttachmentId: a.ID, Grant: grant}, nil
 }
 
+// Detach removes an attachment of the session of the caller: its routes, and
+// its addresses.
+func (srv *Server) Detach(ctx context.Context, in *dp.DetachRequest) (*emptypb.Empty, error) {
+	s, err := srv.R.caller(ctx)
+	if err != nil {
+		return nil, err
+	}
+	a, err := srv.R.detach(s, in.GetAttachmentId())
+	if err != nil {
+		return nil, err
+	}
+	srv.Addresses.Release(a)
+	return &emptypb.Empty{}, nil
+}
+
 func newAttachment(vpc VPCKey, subject string, in *dp.AttachRequest) (*Attachment, error) {
 	if errs := validation.IsDNS1123Subdomain(in.GetName()); len(errs) > 0 {
 		return nil, rpc.Errorf(rpc.InvalidArgument, "name %q: %s", in.GetName(), strings.Join(errs, "; "))
@@ -156,6 +172,36 @@ func (r *Router) attach(s *Session, a *Attachment) error {
 	}
 	s.attachments = append(s.attachments, a)
 	return nil
+}
+
+// detach removes the attachment id and the routes that it added from s.
+func (r *Router) detach(s *Session, id string) (*Attachment, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	i := slices.IndexFunc(s.attachments, func(a *Attachment) bool { return a.ID == id })
+	if i < 0 {
+		return nil, rpc.Errorf(rpc.NotFound, "no attachment %q on this session", id)
+	}
+	a := s.attachments[i]
+	s.attachments = slices.Delete(s.attachments, i, i+1)
+	var gone []netip.Prefix
+	if d := r.domains[s.id.VPC]; d != nil {
+		for _, p := range s.routes {
+			if o, ok := d.routes[p]; ok && o.s == s && o.origin == id {
+				gone = append(gone, p)
+			}
+		}
+	}
+	for _, p := range gone {
+		r.deleteRoute(s, p)
+	}
+	s.routes = slices.DeleteFunc(s.routes, func(p netip.Prefix) bool { return slices.Contains(gone, p) })
+	for w := range s.inbound {
+		if r.lookup(w.vpc, w.dst) != s {
+			r.removeRow(w)
+		}
+	}
+	return a, nil
 }
 
 func prefixStrings(ps []netip.Prefix) []string {

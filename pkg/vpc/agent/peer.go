@@ -54,6 +54,7 @@ type peer struct {
 	subject string // SPIFFE ID in the peer cert.
 
 	ready     chan struct{} // Closed when Open passes.
+	granted   chan struct{} // Closed when the grants of Open apply.
 	keyed     chan struct{} // Closed when SAs from the peer first apply.
 	keyedOnce sync.Once
 	offered   chan struct{} // Closed when the peer takes the first offer.
@@ -70,18 +71,50 @@ type peer struct {
 	// advertised is the prefixes that the peer advertises and that route to bp.
 	// Guarded by Agent.mu.
 	advertised []netip.Prefix
+	// extra is the prefixes of the other attachments of the peer, by
+	// attachment ID. Guarded by Agent.mu.
+	extra map[string][]netip.Prefix
 
 	mu   sync.Mutex
 	spis map[uint32]time.Time // SPIs registered at the relay, to their expiry.
+	// Grant changes of this agent that wait to go to the peer.
+	sendAdd    map[string]*dp.AttachmentGrant
+	sendRemove map[string]bool
+	sending    bool
 }
 
-// routes reports whether the grant or the advertised prefixes of p cover addr.
+// routes reports whether the grants or the advertised prefixes of p cover addr.
 func (p *peer) routes(addr netip.Addr) bool {
 	has := func(pfx netip.Prefix) bool { return pfx.Contains(addr) }
-	return slices.ContainsFunc(p.prefixes, has) || slices.ContainsFunc(p.advertised, has)
+	if slices.ContainsFunc(p.prefixes, has) || slices.ContainsFunc(p.advertised, has) {
+		return true
+	}
+	for _, ps := range p.extra {
+		if slices.ContainsFunc(ps, has) {
+			return true
+		}
+	}
+	return false
+}
+
+// has reports whether pfx is a prefix of a grant of p or a prefix that p
+// advertises.
+func (p *peer) has(pfx netip.Prefix) bool {
+	if slices.Contains(p.prefixes, pfx) || slices.Contains(p.advertised, pfx) {
+		return true
+	}
+	for _, ps := range p.extra {
+		if slices.Contains(ps, pfx) {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *peer) attachmentID() string { return p.claims.GetAttachmentId() }
+
+// origin reports whether id is an attachment of p.
+func (p *peer) origin(id string) bool { return id == p.attachmentID() || p.extra[id] != nil }
 
 // peerTLS is the peer session TLS config. Both sides check the agent cert.
 func (a *Agent) peerTLS() *tls.Config {
@@ -132,6 +165,7 @@ func (a *Agent) newPeer(rc *relayConn, qc quic.Connection, dialer bool) (*peer, 
 		dialer:  dialer,
 		subject: id.String(),
 		ready:   make(chan struct{}),
+		granted: make(chan struct{}),
 		keyed:   make(chan struct{}),
 		offered: make(chan struct{}),
 		spis:    map[uint32]time.Time{},
@@ -170,6 +204,9 @@ func (a *Agent) connect(ctx context.Context, rc *relayConn, dst netip.Addr, res 
 			if res, err = rc.resolve(ctx, dst); err != nil {
 				return err
 			}
+		}
+		if p = a.waitGrant(ctx, rc, dst, res.GetSubject()); p != nil {
+			return a.waitKeys(ctx, p, dst)
 		}
 		p, err = a.dial(ctx, rc, dst, res)
 		if errors.Is(err, errDuplicate) {
@@ -292,7 +329,10 @@ func (a *Agent) dial(ctx context.Context, rc *relayConn, dst netip.Addr, res *dp
 		_ = qc.CloseWithError(quic.ApplicationErrorCode(dp.PeerCloseCode_PEER_CLOSE_CODE_BAD_GRANT), err.Error())
 		return nil, err
 	}
-	open, err := p.client.Open(ctx, &dp.OpenRequest{Grant: rc.grant, Instance: a.instance, Mode: rc.mode})
+	a.mu.Lock()
+	grants := a.openGrants(p)
+	a.mu.Unlock()
+	open, err := p.client.Open(ctx, &dp.OpenRequest{Grant: rc.grant, Grants: grants, Instance: a.instance, Mode: rc.mode})
 	if err != nil {
 		if refusedDuplicate(qc, err) {
 			err = errDuplicate
@@ -304,6 +344,7 @@ func (a *Agent) dial(ctx context.Context, rc *relayConn, dst netip.Addr, res *dp
 		_ = qc.CloseWithError(closeCode(err), err.Error())
 		return nil, fmt.Errorf("peer %s: %w", dst, err)
 	}
+	a.grantsOfOpen(p, open.GetGrants())
 	go p.offer()
 	go p.sendReports()
 	return p, nil
@@ -434,7 +475,7 @@ func (a *Agent) unrouteQUIC(p *peer, prefixes []netip.Prefix) {
 	for _, pfx := range prefixes {
 		shared := false
 		for _, q := range a.peers {
-			if q != p && q.quic && q.rc == p.rc && (slices.Contains(q.prefixes, pfx) || slices.Contains(q.advertised, pfx)) {
+			if q != p && q.quic && q.rc == p.rc && q.has(pfx) {
 				shared = true
 				break
 			}
@@ -466,6 +507,9 @@ func (a *Agent) dropPeer(p *peer) {
 	if p.quic {
 		a.unrouteQUIC(p, p.prefixes)
 		a.unrouteQUIC(p, p.advertised)
+		for _, ps := range p.extra {
+			a.unrouteQUIC(p, ps)
+		}
 	} else if bp != nil {
 		// Remove the routes before a new session of the peer can add them.
 		a.bind.RemovePeer(bp)
@@ -659,9 +703,13 @@ func (s *peerService) Open(ctx context.Context, in *dp.OpenRequest) (*dp.OpenRes
 		}
 		return nil, rpc.Errorf(rpc.PermissionDenied, "%v", err)
 	}
+	s.a.grantsOfOpen(p, in.GetGrants())
 	go p.offer()
 	go p.sendReports()
-	return &dp.OpenResponse{Grant: p.rc.grant, Instance: s.a.instance, Mode: p.rc.mode}, nil
+	s.a.mu.Lock()
+	grants := s.a.openGrants(p)
+	s.a.mu.Unlock()
+	return &dp.OpenResponse{Grant: p.rc.grant, Grants: grants, Instance: s.a.instance, Mode: p.rc.mode}, nil
 }
 
 // Keys applies SAs from the peer and registers their SPIs at the relay.

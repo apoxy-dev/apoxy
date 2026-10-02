@@ -13,6 +13,7 @@ import (
 	"math/rand/v2"
 	"net"
 	"net/netip"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -138,7 +139,7 @@ type Agent struct {
 	dialing  map[string]int          // Relay dials that run, by relay key.
 	bind     *psp.Binding
 	peers    map[*rpc.Conn]*peer
-	admitted chan struct{} // Closed and replaced when a peer session opens.
+	admitted chan struct{} // Closed and replaced when a peer session opens or gets grants.
 
 	routeMu  sync.Mutex
 	routesOf *relayConn            // Session that OnRoutes follows.
@@ -431,6 +432,9 @@ type relayConn struct {
 	// sets prefixes and self under it, because the sync reads self.
 	routes       routeTable
 	attachmentID string
+	// extras are the other attachments of this agent on rc, by attachment ID.
+	// Writers hold Agent.routeMu and Agent.mu, so readers hold one of them.
+	extras map[string]*extra
 
 	dnsServers, dnsSearch []string
 
@@ -619,11 +623,7 @@ func (rc *relayConn) attach(ctx context.Context, begin time.Time) error {
 	if pathMTU != 0 {
 		probed = rc.probe(ctx, pathMTU)
 	}
-	routes := make([]string, len(a.cfg.Routes))
-	for i, p := range a.cfg.Routes {
-		routes[i] = p.String()
-	}
-	res, err := rc.c.Attach(ctx, &dp.AttachRequest{Vpc: rc.ref, Name: a.cfg.Name, Labels: a.cfg.Labels, Routes: routes})
+	res, err := rc.c.Attach(ctx, &dp.AttachRequest{Vpc: rc.ref, Name: a.cfg.Name, Labels: a.cfg.Labels, Routes: prefixStrings(a.cfg.Routes)})
 	if err != nil {
 		return attachError(rc, fmt.Errorf("attach: %w", err))
 	}
@@ -848,13 +848,29 @@ func (rc *relayConn) ended() bool {
 	return rc.ctx.Err() != nil || rc.qc.Context().Err() != nil
 }
 
-// removeRoutes closes the peer sessions of attachments that left the VPC.
+// removeRoutes closes the peer sessions of attachments that left the VPC. When
+// another attachment of a peer leaves, only its grant goes.
 func (a *Agent) removeRoutes(rc *relayConn, removed []*dp.Route) {
 	gone := map[string]bool{}
 	for _, r := range removed {
 		gone[r.GetOrigin()] = true
 	}
 	a.closePeers(func(p *peer) bool { return p.rc == rc && gone[p.attachmentID()] }, "peer left the VPC")
+	a.routeMu.Lock()
+	defer a.routeMu.Unlock()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, p := range a.peers {
+		if p.rc != rc || len(p.extra) == 0 {
+			continue
+		}
+		for _, r := range removed {
+			pfx, err := netip.ParsePrefix(r.GetPrefix())
+			if err == nil && slices.Contains(p.extra[r.GetOrigin()], pfx.Masked()) {
+				a.dropGrant(p, r.GetOrigin())
+			}
+		}
+	}
 }
 
 // close ends rc, its peer sessions and its peer transport.

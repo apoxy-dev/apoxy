@@ -224,10 +224,18 @@ func (a *Agent) openHeld(dst netip.Addr) {
 func (a *Agent) reach(ctx context.Context, dst netip.Addr) error {
 	a.mu.Lock()
 	rc := a.rc
-	p := a.peerTo(rc, dst)
+	var p *peer
+	own := false
+	if rc != nil {
+		p, own = a.peerTo(rc, dst), rc.ownAddr(dst)
+	}
 	a.mu.Unlock()
 	if rc == nil {
 		return errNoRelay
+	}
+	if own {
+		// The agent does not open a peer session to itself.
+		return errNoPeer
 	}
 	if p != nil {
 		return a.waitKeys(ctx, p, dst)

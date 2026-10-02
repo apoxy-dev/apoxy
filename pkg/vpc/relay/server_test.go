@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -387,6 +388,80 @@ func TestAttach(t *testing.T) {
 			require.NoError(t, err)
 			assert.ElementsMatch(t, []netip.Prefix{netip.MustParsePrefix(claims.Addresses[0]), netip.MustParsePrefix("10.9.0.0/16")}, routes)
 			assert.Equal(t, 1, h.addrs.count())
+		})
+	}
+}
+
+func TestDetach(t *testing.T) {
+	cases := []struct {
+		name      string
+		id        func(x, other string) string // The ID to detach, from x of a and other of another agent.
+		twice     bool
+		noSession bool
+		code      rpc.Code
+	}{
+		{name: "attachment of the session", id: func(x, _ string) string { return x }, code: rpc.OK},
+		{name: "twice", id: func(x, _ string) string { return x }, twice: true, code: rpc.NotFound},
+		{name: "unknown", id: func(string, string) string { return "unknown" }, code: rpc.NotFound},
+		{name: "attachment of another session", id: func(_, other string) string { return other }, code: rpc.NotFound},
+		{name: "connection with no session", id: func(x, _ string) string { return x }, noSession: true, code: rpc.Unauthenticated},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ca := newCA(t)
+			h := newHarness(t, ca)
+			watcher := h.mustDial(t, ca.agentCert(t, vpcA, "watcher"))
+			st, _, _ := open(t, watcher)
+			other := h.mustDial(t, ca.agentCert(t, vpcA, "other"))
+			otherRes := attach(t, other, &dp.AttachRequest{Vpc: ref(vpcA), Name: "other"})
+			a := h.mustDial(t, ca.agentCert(t, vpcA, "laptop"))
+			base := attach(t, a, &dp.AttachRequest{Vpc: ref(vpcA), Name: "laptop"})
+			x := attach(t, a, &dp.AttachRequest{Vpc: ref(vpcA), Name: "sandbox-1", Routes: []string{"10.9.0.0/16"}})
+			// The watcher has the address of each attachment and the route of x.
+			for added := 0; added < 4; {
+				added += len(recv(t, st).GetRouteDelta().GetAdd())
+			}
+			s := h.session(t, a)
+			if tc.noSession {
+				h.r.removeSession(s)
+			}
+			routes := func() []netip.Prefix {
+				h.r.mu.RLock()
+				defer h.r.mu.RUnlock()
+				return slices.Clone(s.routes)
+			}
+			before, count := routes(), h.addrs.count()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			id := tc.id(x.AttachmentId, otherRes.AttachmentId)
+			_, err := a.c.Detach(ctx, &dp.DetachRequest{AttachmentId: id})
+			if tc.twice {
+				require.NoError(t, err)
+				before, count = routes(), h.addrs.count()
+				_, err = a.c.Detach(ctx, &dp.DetachRequest{AttachmentId: id})
+			}
+			require.Equal(t, tc.code, rpc.CodeOf(err), "error: %v", err)
+			if tc.code != rpc.OK {
+				assert.Equal(t, before, routes(), "no route changes")
+				assert.Equal(t, count, h.addrs.count(), "no address changes")
+				return
+			}
+			claims, err := VerifyGrant(x.Grant, h.relayRoots, time.Now())
+			require.NoError(t, err)
+			baseClaims, err := VerifyGrant(base.Grant, h.relayRoots, time.Now())
+			require.NoError(t, err)
+			assert.Equal(t, []netip.Prefix{netip.MustParsePrefix(baseClaims.Addresses[0])}, routes(), "the other attachment keeps its routes")
+			assert.Equal(t, count-1, h.addrs.count())
+			var removed []*dp.Route
+			for len(removed) < 2 {
+				removed = append(removed, recv(t, st).GetRouteDelta().GetRemove()...)
+			}
+			slices.SortFunc(removed, func(a, b *dp.Route) int { return strings.Compare(a.Prefix, b.Prefix) })
+			assert.Empty(t, cmp.Diff([]*dp.Route{
+				{Vpc: ref(vpcA), Prefix: "10.9.0.0/16", Origin: x.AttachmentId},
+				{Vpc: ref(vpcA), Prefix: claims.Addresses[0], Origin: x.AttachmentId},
+			}, removed, protocmp.Transform()))
 		})
 	}
 }

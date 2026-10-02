@@ -46,6 +46,10 @@ func TestRouteTable(t *testing.T) {
 			{&dp.RouteDelta{Add: []*dp.Route{rt("fd00:1::/96", "self"), rt("10.1.0.0/16", "self")}}, nil},
 			{&dp.RouteDelta{Remove: []*dp.Route{rt("fd00:1::/96", "self")}}, nil},
 		}},
+		{name: "routes of another attachment of self", steps: []step{
+			{&dp.RouteDelta{Add: []*dp.Route{rt("fd00:3::/96", "self-2"), rt("10.2.0.0/16", "self-2"), rt("fd00:2::/96", "b")}}, []routeChange{add("fd00:2::/96", "b")}},
+			{&dp.RouteDelta{Remove: []*dp.Route{rt("fd00:3::/96", "self-2"), rt("fd00:2::/96", "b")}}, []routeChange{rm("fd00:2::/96", "b")}},
+		}},
 		{name: "new origin", steps: []step{
 			{&dp.RouteDelta{Add: []*dp.Route{rt("10.0.0.0/8", "b")}}, []routeChange{add("10.0.0.0/8", "b")}},
 			{&dp.RouteDelta{Add: []*dp.Route{rt("10.0.0.0/8", "c")}}, []routeChange{rm("10.0.0.0/8", "b"), add("10.0.0.0/8", "c")}},
@@ -66,7 +70,8 @@ func TestRouteTable(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var tbl routeTable
 			for i, s := range tc.steps {
-				assert.Equal(t, s.want, tbl.apply(s.delta, "self"), "step %d", i)
+				own := func(origin string) bool { return origin == "self" || origin == "self-2" }
+				assert.Equal(t, s.want, tbl.apply(s.delta, own), "step %d", i)
 			}
 		})
 	}

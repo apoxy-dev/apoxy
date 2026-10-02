@@ -256,9 +256,12 @@ func (r *Relay) SetSteerGroup(conns []*net.UDPConn) error {
 
 // relayQUICConfig is quicConfig with Not-ECT packets. The relay sends tunnel
 // data with no congestion control, so it must not ask the network for ECN marks.
+// VPC agents run up to 128 Attach calls at a time on one session, so the stream
+// limit of each connection, HTTP/3 and VPC, is 512.
 var relayQUICConfig = func() *quic.Config {
 	c := quicConfig.Clone()
 	c.DisableECN = true
+	c.MaxIncomingStreams = 512
 	return c
 }()
 

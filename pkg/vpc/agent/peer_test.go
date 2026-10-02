@@ -96,6 +96,7 @@ func stubPeer(a *Agent, name string, dialer bool) (*peer, *fakeConn) {
 		dialer:  dialer,
 		subject: identity.ID{Project: testProject, VPC: testVPC, Agent: name}.String(),
 		ready:   make(chan struct{}),
+		granted: make(chan struct{}),
 		keyed:   make(chan struct{}),
 		offered: make(chan struct{}),
 		spis:    map[uint32]time.Time{},
