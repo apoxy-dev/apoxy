@@ -61,6 +61,7 @@ func TestConnectIPDeviceThroughput(t *testing.T) {
 	require.NoError(t, err)
 
 	g, ctx := errgroup.WithContext(t.Context())
+	var sentBytes atomic.Int64
 
 	// Server
 	g.Go(func() error {
@@ -185,8 +186,6 @@ func TestConnectIPDeviceThroughput(t *testing.T) {
 
 		g, ctx := errgroup.WithContext(ctx)
 
-		var sentBytes atomic.Int64
-
 		numQueues := 1
 		for i := 0; i < numQueues; i++ {
 			pq, err := dev.NewPacketQueue()
@@ -211,6 +210,7 @@ func TestConnectIPDeviceThroughput(t *testing.T) {
 	if err := g.Wait(); err != nil && !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
 	}
+	require.Positive(t, sentBytes.Load())
 }
 
 func receivePackets(ctx context.Context, pq fasttun.PacketQueue, numQueues int) error {
@@ -246,7 +246,9 @@ func receivePackets(ctx context.Context, pq fasttun.PacketQueue, numQueues int) 
 func sendPackets(ctx context.Context, pq fasttun.PacketQueue, sentBytes *atomic.Int64) error {
 	defer pq.Close()
 
-	payload := make([]byte, 1350)
+	// A 1280-byte IPv6 packet (the IPv6 minimum MTU) fits in a DATAGRAM frame
+	// at the initial QUIC packet size.
+	payload := make([]byte, 1280-40-8)
 	for i := range payload {
 		payload[i] = 'X'
 	}
