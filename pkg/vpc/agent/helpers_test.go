@@ -245,7 +245,7 @@ func (w *world) relay(t testing.TB, id string) *testRelay {
 }
 
 // relayOn starts a relay on udp, and closes udp at the end of the test.
-func (w *world) relayOn(t testing.TB, id string, udp *net.UDPConn) *testRelay {
+func (w *world) relayOn(t testing.TB, id string, udp net.PacketConn) *testRelay {
 	t.Helper()
 	cert := w.relayCA.relayCert(t, id)
 	r := relay.NewRouter(w.trust, relay.Config{})
@@ -296,6 +296,7 @@ type agentOptions struct {
 	life   time.Duration // Cert life. Zero means 24 hours.
 	mtu    int           // Config.MTU.
 	conn   *lossyConn    // Wraps the agent socket if set.
+	move   *moveConn     // Wraps the agent socket if set.
 	mode   TransportMode
 	udp    *net.UDPConn // Agent socket. Nil means a new socket on loopback.
 	tcp    bool         // Adds TCP to the netstack.
@@ -343,6 +344,10 @@ func (w *world) agent(t *testing.T, name string, r *testRelay, opts agentOptions
 	if opts.conn != nil {
 		opts.conn.PacketConn = udp
 		conn = opts.conn
+	}
+	if opts.move != nil {
+		opts.move.PacketConn = udp
+		conn = opts.move
 	}
 	ta := &testAgent{tr: &quic.Transport{Conn: conn}, attach: make(chan attachEvent, 16), done: make(chan struct{}), routes: map[netip.Prefix]bool{}}
 	enroll := func(context.Context) (*identity.Credential, error) {

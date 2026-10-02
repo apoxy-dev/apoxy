@@ -237,6 +237,10 @@ func (r *Router) recvSync(s *Session, st rpc.BidiStreamServer[dp.SessionRequest,
 				r.reportConnect(s, d.AsDuration())
 			}
 			r.ReportStatus(s, m.Status)
+		case *dp.SessionRequest_Moved:
+			r.watchAddr(s)
+		case nil:
+			slog.Debug("Ignoring an unknown message on a Session call", "agent", s.id.ID)
 		default:
 			return rpc.Errorf(rpc.InvalidArgument, "unexpected message on Session")
 		}

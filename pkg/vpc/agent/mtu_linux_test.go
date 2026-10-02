@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"fmt"
 	"io"
 	"net"
 	"net/netip"
@@ -51,7 +52,7 @@ func TestPathMTUNetns(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			relayNS, agentNS := newNetns(t), newNetns(t)
-			link := veth(t, relayNS, agentNS)
+			link := veth(t, relayNS, agentNS, 0)
 			w := newWorld(t)
 			w.mtu = 1400
 			r := w.relayOn(t, "relay-1", listenIn(t, relayNS, relayIP))
@@ -102,17 +103,18 @@ func newNetns(t *testing.T) vnetns.NsHandle {
 	return res.ns
 }
 
-// veth connects relayNS (10.99.0.1) and agentNS (10.99.0.2). The returned
-// func sets the MTU of the relay end.
-func veth(t *testing.T, relayNS, agentNS vnetns.NsHandle) func(mtu int) {
+// veth connects link ri in relayNS (10.<99-i>.0.1) and link ai in agentNS
+// (10.<99-i>.0.2). The returned func sets the MTU of the relay end.
+func veth(t *testing.T, relayNS, agentNS vnetns.NsHandle, i int) func(mtu int) {
 	t.Helper()
 	rh, ah := handle(t, relayNS), handle(t, agentNS)
+	rn, an := fmt.Sprintf("r%d", i), fmt.Sprintf("a%d", i)
 	require.NoError(t, rh.LinkAdd(&netlink.Veth{
-		LinkAttrs: netlink.LinkAttrs{Name: "r0"}, PeerName: "a0", PeerNamespace: netlink.NsFd(agentNS),
+		LinkAttrs: netlink.LinkAttrs{Name: rn}, PeerName: an, PeerNamespace: netlink.NsFd(agentNS),
 	}))
-	r0 := up(t, rh, "r0", relayIP)
-	up(t, ah, "a0", agentIP)
-	return func(mtu int) { require.NoError(t, rh.LinkSetMTU(r0, mtu)) }
+	r := up(t, rh, rn, net.IPv4(10, byte(99-i), 0, 1))
+	up(t, ah, an, net.IPv4(10, byte(99-i), 0, 2))
+	return func(mtu int) { require.NoError(t, rh.LinkSetMTU(r, mtu)) }
 }
 
 func handle(t *testing.T, ns vnetns.NsHandle) *netlink.Handle {

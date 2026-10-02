@@ -149,6 +149,7 @@ type Session struct {
 	udpAddr      atomic.Pointer[net.UDPAddr] // Last address that the bridge sent to.
 	probe        *prober
 	meter        *rate.Limiter // Tunnel limit. Nil means no limit. Shards use the meter of the owner.
+	watching     atomic.Bool   // A watch follows the connection after Moved.
 
 	// Guarded by Router.mu.
 	addr        netip.AddrPort

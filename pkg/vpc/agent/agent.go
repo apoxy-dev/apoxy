@@ -364,6 +364,8 @@ type relayConn struct {
 	qc     quic.Connection
 	c      dp.RelayClient
 	st     rpc.BidiStreamClient[dp.SessionRequest, dp.SessionResponse]
+	sendMu sync.Mutex     // Guards sends on st after start.
+	local  netip.AddrPort // Local address at the last check. Only tick changes it after open.
 	cred   *identity.Credential
 	addr   string         // Relay address as dialed.
 	name   string         // TLS name of the relay.
@@ -443,6 +445,7 @@ func (a *Agent) open(ctx context.Context, addr, name string) (*relayConn, error)
 		bridgeRx:  make(chan struct{}),
 	}
 	rc.ctx, rc.cancel = context.WithCancel(context.Background())
+	rc.local = rc.localAddr()
 	// A relay that does not answer in time ends the open.
 	stop := context.AfterFunc(octx, func() { _ = qc.CloseWithError(0, "relay session did not open in time") })
 	defer stop()
@@ -604,7 +607,7 @@ func (rc *relayConn) sync() {
 		case *dp.SessionResponse_RouteDelta:
 			rc.a.applyRoutes(rc, m.RouteDelta)
 			rc.a.removeRoutes(rc, m.RouteDelta.GetRemove())
-			if err := rc.st.Send(&dp.SessionRequest{Msg: &dp.SessionRequest_Ack{Ack: &dp.Ack{Rev: m.RouteDelta.GetRev()}}}); err != nil {
+			if err := rc.send(&dp.SessionRequest{Msg: &dp.SessionRequest_Ack{Ack: &dp.Ack{Rev: m.RouteDelta.GetRev()}}}); err != nil {
 				return
 			}
 		case *dp.SessionResponse_NoRoute:
@@ -624,6 +627,13 @@ func (rc *relayConn) sync() {
 			}
 		}
 	}
+}
+
+// send sends m on the Session call after start.
+func (rc *relayConn) send(m *dp.SessionRequest) error {
+	rc.sendMu.Lock()
+	defer rc.sendMu.Unlock()
+	return rc.st.Send(m)
 }
 
 // applyRelayKeys applies the relay SAs to the transmit SAs of the relay peer.
@@ -722,7 +732,8 @@ func (a *Agent) close() {
 	}
 }
 
-// tick runs the key timers of the binding and the holds, and refreshes SPI rows.
+// tick runs the key timers of the binding and the holds, checks the local
+// address, and refreshes SPI rows.
 func (a *Agent) tick(ctx context.Context) {
 	t := time.NewTicker(tickInterval)
 	defer t.Stop()
@@ -734,6 +745,7 @@ func (a *Agent) tick(ctx context.Context) {
 			return
 		case now := <-t.C:
 			a.holds.sweep(now)
+			a.checkMoved()
 			a.mu.Lock()
 			b := a.bind
 			a.mu.Unlock()

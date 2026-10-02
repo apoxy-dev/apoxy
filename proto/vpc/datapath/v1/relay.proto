@@ -14,7 +14,8 @@ option go_package = "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1;datapathv1
 // VTEPs call it.
 service Relay {
   // Session starts with Hello and Welcome, then carries Sync. The relay sends
-  // routes, NoRoute, key changes, config and drain. The agent sends Ack and Status.
+  // routes, NoRoute, key changes, config and drain. The agent sends Ack, Status
+  // and Moved.
   rpc Session(stream SessionRequest) returns (stream SessionResponse);
   // Attach adds an attachment to the session.
   rpc Attach(AttachRequest) returns (AttachResponse);
@@ -48,6 +49,7 @@ message SessionRequest {
     Hello hello = 1;
     Ack ack = 2;
     Status status = 3;
+    Moved moved = 4;
   }
 }
 
@@ -86,6 +88,10 @@ message Shard {
   // Index of the shard, from 1 to 3.
   uint32 index = 2;
 }
+
+// Moved tells the relay that the local address of the agent changed. The
+// relay moves the session only when the QUIC connection moves to a new path.
+message Moved {}
 
 // Welcome answers Hello.
 message Welcome {
