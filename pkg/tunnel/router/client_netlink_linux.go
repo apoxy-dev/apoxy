@@ -17,14 +17,12 @@ import (
 	"golang.zx2c4.com/wireguard/tun"
 	utiliptables "k8s.io/kubernetes/pkg/util/iptables"
 
-
 	"github.com/apoxy-dev/apoxy/pkg/netstack"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/connection"
 	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 )
 
 const (
-	defaultRoutePriority = 1000
 	// apoxyRouteTable is a custom routing table ID for Apoxy tunnel routes.
 	// Using a custom table allows us to:
 	// 1. Easily identify and clean up all Apoxy routes
@@ -61,12 +59,6 @@ type ClientNetlinkRouter struct {
 
 	closeOnce sync.Once
 	closed    chan struct{}
-}
-
-// savedDefaultRoute preserves existing system default routes.
-type savedDefaultRoute struct {
-	route   *netlink.Route
-	existed bool
 }
 
 // newClientNetlinkRouter creates a new client-side netlink-based tunnel router.
@@ -320,14 +312,8 @@ func (r *ClientNetlinkRouter) AddRoute(dst netip.Prefix) error {
 
 	isDefault := r.isDefaultRoute(dst)
 	if isDefault {
-		var err error
-		route.Priority, err = r.setDefaultRouteMetric(dst.Addr().Is4())
-		if err != nil {
-			return fmt.Errorf("failed to save existing default route: %w", err)
-		}
-
-		// Adjust priority so that our route has precedence over the existing default route.
-		route.Priority -= 1
+		// The rule for apoxyRouteTable comes before the main table, so the metric
+		// of the main default route does not change the route choice.
 		route.Scope = netlink.SCOPE_UNIVERSE
 
 		gws := r.getGWs(dst.Addr().Is4())
@@ -507,6 +493,10 @@ func (r *ClientNetlinkRouter) ListRoutes() ([]TunnelRoute, error) {
 		if !ok {
 			continue
 		}
+		// netlink gives the 16-byte net.IPv4zero as the Dst of an IPv4 default route.
+		if route.Family == netlink.FAMILY_V4 {
+			ip = ip.Unmap()
+		}
 
 		bits, _ := route.Dst.Mask.Size()
 		prefix := netip.PrefixFrom(ip, bits)
@@ -524,39 +514,6 @@ func (r *ClientNetlinkRouter) ListRoutes() ([]TunnelRoute, error) {
 	}
 
 	return tunnelRoutes, nil
-}
-
-// setDefaultRouteMetric sets the default route metric if not already set.
-// Returns the metrics value.
-func (r *ClientNetlinkRouter) setDefaultRouteMetric(isIPv4 bool) (int, error) {
-	family := netlink.FAMILY_V6
-	if isIPv4 {
-		family = netlink.FAMILY_V4
-	}
-
-	routes, err := netlink.RouteList(nil, family)
-	if err != nil {
-		return 0, fmt.Errorf("failed to list routes: %w", err)
-	}
-
-	for _, route := range routes {
-		if route.Dst == nil ||
-			(isIPv4 && route.Dst.String() == "0.0.0.0/0") ||
-			(!isIPv4 && route.Dst.String() == "::/0") {
-
-			// If metrics doesn't exist, set it to a default value.
-			if route.Priority == 0 {
-				route.Priority = defaultRoutePriority
-				if err := netlink.RouteChange(&route); err != nil {
-					return 0, fmt.Errorf("failed to update default route metric: %w", err)
-				}
-			}
-
-			return route.Priority, nil
-		}
-	}
-
-	return 0, nil
 }
 
 // ListenPacket creates an unconnected UDP PacketConn bound to the given
