@@ -36,7 +36,10 @@ type Result struct {
 
 // Host describes the machine that ran the rig.
 type Host struct {
-	Arch     string `json:"arch"`
+	Arch string `json:"arch"`
+	// Class is the first word of the result key when set, for example an
+	// EC2 instance type. Else the key starts with Arch.
+	Class    string `json:"class,omitempty"`
 	Kernel   string `json:"kernel"`
 	CPUs     int    `json:"cpus"`
 	CPUModel string `json:"cpu_model,omitempty"`
@@ -130,6 +133,14 @@ func resultKey(arch, workload string, s Settings) string {
 	return fmt.Sprintf("%s %s streams=%d duration=%gs omit=%gs delay=%gms jitter=%gms loss=%g%% rate=%s queue=%d mtu=%d bitrate=%s window=%s",
 		arch, workload, s.Streams, s.DurationS, s.OmitS, s.DelayMS, s.JitterMS, s.LossPercent,
 		orNone(s.Rate), s.QueueLimit, s.MTU, orNone(s.Bitrate), orNone(s.Window))
+}
+
+// keyClass returns the first word of the result key.
+func (h Host) keyClass() string {
+	if h.Class != "" {
+		return h.Class
+	}
+	return h.Arch
 }
 
 func orNone(s string) string {

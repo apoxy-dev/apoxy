@@ -36,6 +36,7 @@ type config struct {
 	MinCPUs     int
 	MaxSteal    float64
 	NetnsPrefix string
+	HostClass   string
 	OutDir      string
 
 	// Exec workload flags.
@@ -92,10 +93,10 @@ func execute(ctx context.Context, cfg config, w Workload) (*Result, error) {
 	res := &Result{
 		Workload:  w.Name,
 		StartedAt: time.Now().UTC(),
-		Host:      Host{Arch: hostArch(), Kernel: kernelRelease(), CPUs: runtime.NumCPU(), CPUModel: cpuModel()},
+		Host:      Host{Arch: hostArch(), Class: cfg.HostClass, Kernel: kernelRelease(), CPUs: runtime.NumCPU(), CPUModel: cpuModel()},
 		Settings:  cfg.settings(),
 	}
-	res.Key = resultKey(res.Host.Arch, w.Name, res.Settings)
+	res.Key = resultKey(res.Host.keyClass(), w.Name, res.Settings)
 	var base *Baseline
 	if cfg.Baseline != "" {
 		b, err := loadBaseline(cfg.Baseline, false)

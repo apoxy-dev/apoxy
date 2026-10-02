@@ -90,6 +90,7 @@ func runCmd(ctx context.Context, args []string) error {
 	fs.IntVar(&cfg.MinCPUs, "min-cpus", 0, "infra error when the host has fewer CPUs (0: no check)")
 	fs.Float64Var(&cfg.MaxSteal, "max-steal", -1, "infra error when the CPU steal of a run is above this percent (negative: no check)")
 	fs.StringVar(&cfg.NetnsPrefix, "netns-prefix", "perf", "prefix of the netns names")
+	fs.StringVar(&cfg.HostClass, "host-class", "", "first word of the result key, for example the EC2 instance type (default: the arch)")
 	fs.StringVar(&cfg.OutDir, "out-dir", "", "keep the workload files and raw output in this directory")
 	out := fs.String("out", "", "write the result JSON to this file (default: stdout)")
 	fs.StringVar(&cfg.Name, "name", "", "exec workload: result name")
@@ -101,6 +102,9 @@ func runCmd(ctx context.Context, args []string) error {
 
 	if cfg.Duration < time.Second || cfg.Streams < 1 || cfg.MTU < 68 || cfg.Pings < 1 || cfg.Reps < 1 {
 		return errors.New("bad flags: need -duration >= 1s, -streams >= 1, -mtu >= 68, -pings >= 1 and -reps >= 1")
+	}
+	if strings.ContainsAny(cfg.HostClass, " \t\n") {
+		return fmt.Errorf("bad -host-class %q: it must be one word", cfg.HostClass)
 	}
 	w, err := newWorkload(cfg)
 	if err != nil {

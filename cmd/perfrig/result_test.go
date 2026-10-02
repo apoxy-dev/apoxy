@@ -34,6 +34,22 @@ func TestResultKey(t *testing.T) {
 	}
 }
 
+func TestHostKeyClass(t *testing.T) {
+	cases := []struct {
+		name string
+		host Host
+		want string
+	}{
+		{name: "arch", host: Host{Arch: "x86_64"}, want: "x86_64"},
+		{name: "class", host: Host{Arch: "x86_64", Class: "c7a.8xlarge"}, want: "c7a.8xlarge"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, tc.host.keyClass())
+		})
+	}
+}
+
 func TestNewProcCPU(t *testing.T) {
 	cases := []struct {
 		name                  string

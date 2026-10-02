@@ -1,0 +1,28 @@
+{
+  "run_id": "18200000000-1-vpc",
+  "deadline": "2026-10-02T10:02:00Z",
+  "bins": [
+    {"name": "perfrig", "url": "https://apoxy-perf-bench.s3.us-west-2.amazonaws.com/runs/18200000000-1/bin/perfrig?X-Amz-Signature=x", "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},
+    {"name": "vpcbench", "url": "https://apoxy-perf-bench.s3.us-west-2.amazonaws.com/runs/18200000000-1/bin/vpcbench?X-Amz-Signature=x", "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}
+  ],
+  "files": [
+    {"name": "baseline.json", "url": "https://apoxy-perf-bench.s3.us-west-2.amazonaws.com/runs/18200000000-1/bin/baseline.json?X-Amz-Signature=x", "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}
+  ],
+  "sysctls": {
+    "net.core.netdev_max_backlog": "250000",
+    "net.core.rmem_max": "134217728",
+    "net.core.wmem_max": "134217728"
+  },
+  "modules": ["sch_netem"],
+  "tun": true,
+  "remove": ["*-cred.json", "vpcbench-ca.pem"],
+  "rows": [
+    {"id": "gate", "group": "gate", "args": ["-workload=exec", "-name=vpc-netstack-psp-relay", "-ready=tcp:4433", "-baseline=baseline.json"]},
+    {"id": "netstack-psp-direct", "group": "info", "args": ["-workload=exec", "-name=vpc-netstack-psp-direct", "-ready=tcp:4433"]}
+  ],
+  "upload": {
+    "results": "https://apoxy-perf-bench.s3.us-west-2.amazonaws.com/runs/18200000000-1/vpc/results.tgz?X-Amz-Signature=x",
+    "log": "https://apoxy-perf-bench.s3.us-west-2.amazonaws.com/runs/18200000000-1/vpc/agent.log?X-Amz-Signature=x",
+    "report": "https://apoxy-perf-bench.s3.us-west-2.amazonaws.com/runs/18200000000-1/vpc/agent.json?X-Amz-Signature=x"
+  }
+}
