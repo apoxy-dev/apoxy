@@ -191,7 +191,8 @@ func (c *ConntrackPacketConn) readLoop() {
 
 		c.mu.Lock()
 		v, ok := c.flows.Get(key)
-		if !ok {
+		// A closed flow can stay in the LRU when a touch races its TTL eviction.
+		if !ok || v.isClosed() {
 			if !c.opts.AutoCreate {
 				c.mu.Unlock()
 				slog.Debug("conntrack_packet_conn: packet dropped due to unknown flow", slog.String("from", from.String()), slog.Int("bytes", n))
@@ -209,7 +210,6 @@ func (c *ConntrackPacketConn) readLoop() {
 		// non-blocking deliver; drop if back-pressured
 		select {
 		case v.inbound <- append([]byte(nil), buf[:n]...):
-			v.touch()
 			slog.Debug("conntrack_packet_conn: packet delivered", slog.String("key", key), slog.Int("bytes", n))
 		default:
 			// drop to avoid HOL blocking
@@ -225,6 +225,9 @@ type VirtualPacketConn struct {
 	remote   *net.UDPAddr
 	inbound  chan []byte
 	closedCh chan struct{}
+	// closeOnce: the TTL eviction runs under the LRU lock only, so it can
+	// close v at the same time as Close.
+	closeOnce sync.Once
 
 	rdMu          sync.Mutex
 	rdDeadline    time.Time
@@ -255,25 +258,29 @@ func (v *VirtualPacketConn) isClosed() bool {
 }
 
 func (v *VirtualPacketConn) closeLocked(_ error) error {
-	select {
-	case <-v.closedCh:
-		return nil
-	default:
+	v.closeOnce.Do(func() {
 		close(v.closedCh)
 		// drain inbound
 		for {
 			select {
 			case <-v.inbound:
 			default:
-				return nil
+				return
 			}
 		}
-	}
+	})
+	return nil
 }
 
+// touch refreshes the TTL of v. A replaced flow is closed under c.mu, so it does
+// not go back into the LRU.
 func (v *VirtualPacketConn) touch() {
-	// Refresh TTL by re-adding into the LRU.
-	v.parent.flows.Add(v.key, v)
+	c := v.parent
+	c.mu.RLock()
+	if !v.isClosed() {
+		c.flows.Add(v.key, v)
+	}
+	c.mu.RUnlock()
 }
 
 func (v *VirtualPacketConn) ReadFrom(b []byte) (int, net.Addr, error) {
@@ -318,10 +325,17 @@ func (v *VirtualPacketConn) WriteTo(b []byte, addr net.Addr) (int, error) {
 	return n, err
 }
 
+// Close closes v. It removes the LRU entry only when the entry is v, so a late
+// Close does not close a new flow for the same remote.
 func (v *VirtualPacketConn) Close() error {
-	// Remove from LRU (will trigger OnEvicted -> closeLocked)
-	v.parent.flows.Remove(v.key)
-	return nil
+	c := v.parent
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if cur, ok := c.flows.Peek(v.key); ok && cur == v {
+		c.flows.Remove(v.key) // OnEvicted closes v.
+		return nil
+	}
+	return v.closeLocked(net.ErrClosed)
 }
 
 func (v *VirtualPacketConn) LocalAddr() net.Addr { return v.parent.localAddr }
