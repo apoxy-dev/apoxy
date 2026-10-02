@@ -6,6 +6,7 @@ import (
 	"context"
 	"net"
 	"net/netip"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,11 +16,14 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/utils/vm"
 )
 
-// mockConnection implements connection.Connection for testing.
+// mockConnection implements connection.Connection for testing. ReadPacket
+// returns readData once and then waits for Close.
 type mockConnection struct {
+	mu        sync.Mutex
 	readData  []byte
 	writeData [][]byte
 	closed    bool
+	done      chan struct{}
 }
 
 func (m *mockConnection) String() string {
@@ -33,31 +37,51 @@ func newMockConnection(data []byte) *mockConnection {
 	}
 }
 
+func (m *mockConnection) doneLocked() chan struct{} {
+	if m.done == nil {
+		m.done = make(chan struct{})
+	}
+	return m.done
+}
+
 func (m *mockConnection) ReadPacket(buf []byte) (int, error) {
-	if m.closed {
-		return 0, net.ErrClosed
+	m.mu.Lock()
+	if !m.closed && len(m.readData) > 0 {
+		n := copy(buf, m.readData)
+		m.readData = m.readData[n:]
+		m.mu.Unlock()
+		return n, nil
 	}
-	if len(m.readData) == 0 {
-		// Block to simulate waiting for data
-		time.Sleep(10 * time.Millisecond)
-		return 0, nil
-	}
-	n := copy(buf, m.readData)
-	m.readData = m.readData[n:]
-	return n, nil
+	done := m.doneLocked()
+	m.mu.Unlock()
+	<-done
+	return 0, net.ErrClosed
 }
 
 func (m *mockConnection) WritePacket(data []byte) ([]byte, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.closed {
 		return nil, net.ErrClosed
 	}
 	m.writeData = append(m.writeData, append([]byte(nil), data...))
-	return data, nil
+	return nil, nil
 }
 
 func (m *mockConnection) Close() error {
-	m.closed = true
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.closed {
+		m.closed = true
+		close(m.doneLocked())
+	}
 	return nil
+}
+
+func (m *mockConnection) isClosed() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.closed
 }
 
 func TestNewClientNetlinkRouter(t *testing.T) {
@@ -165,7 +189,7 @@ func TestClientNetlinkRouter_DelRoute(t *testing.T) {
 	assert.Len(t, routes, 0)
 
 	// Verify connection was closed
-	assert.True(t, mockConn.closed)
+	assert.True(t, mockConn.isClosed())
 }
 
 func TestClientNetlinkRouter_StartStop(t *testing.T) {
@@ -282,7 +306,7 @@ func TestClientNetlinkRouter_RouteUpdate(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify old connection was closed and route still exists
-	assert.True(t, mockConn1.closed)
+	assert.True(t, mockConn1.isClosed())
 	routes, err := router.ListRoutes()
 	require.NoError(t, err)
 	assert.Len(t, routes, 1)

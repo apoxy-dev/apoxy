@@ -3,6 +3,7 @@ package connection_test
 import (
 	"net"
 	"net/netip"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -14,11 +15,11 @@ import (
 
 type MockConnection struct {
 	mock.Mock
-	closed bool
+	closed atomic.Bool
 }
 
 func (m *MockConnection) ReadPacket(p []byte) (int, error) {
-	if m.closed {
+	if m.closed.Load() {
 		return 0, net.ErrClosed
 	}
 
@@ -34,8 +35,17 @@ func (m *MockConnection) WritePacket(p []byte) ([]byte, error) {
 }
 
 func (m *MockConnection) Close() error {
-	m.closed = true
+	m.closed.Store(true)
 	return m.Called().Error(0)
+}
+
+// closeAtEnd closes mux at the end of the test, so that the readers of its
+// mock connections stop.
+func closeAtEnd(t *testing.T, mux interface{ Close() error }, conns ...*MockConnection) {
+	for _, c := range conns {
+		c.On("Close").Return(nil).Maybe()
+	}
+	t.Cleanup(func() { _ = mux.Close() })
 }
 
 func TestMuxedConnection(t *testing.T) {
@@ -47,6 +57,8 @@ func TestMuxedConnection(t *testing.T) {
 
 		prefix := netip.MustParsePrefix("2001:db8::/96")
 		mux.Add(prefix, mockConn)
+		// Del does not close the connection, so close it at the end.
+		t.Cleanup(func() { _ = mockConn.Close() })
 		err := mux.Del(prefix)
 		assert.NoError(t, err)
 
@@ -66,6 +78,7 @@ func TestMuxedConnection(t *testing.T) {
 		mux := connection.NewDstMuxedConn()
 		mockConn := new(MockConnection)
 		mockConn.On("ReadPacket", mock.Anything).Return(0, []byte{}, nil).Maybe()
+		closeAtEnd(t, mux, mockConn)
 
 		prefix := netip.MustParsePrefix("2001:db8::/96")
 		mux.Add(prefix, mockConn)
@@ -113,6 +126,7 @@ func TestMuxedConnection(t *testing.T) {
 
 		expected := []byte("hello")
 		mockConn.On("ReadPacket", mock.Anything).Return(len(expected), expected, nil)
+		closeAtEnd(t, mux, mockConn)
 
 		prefix := netip.MustParsePrefix("2001:db8::/96")
 		mux.Add(prefix, mockConn)
@@ -157,6 +171,7 @@ func TestSrcMuxedConnection(t *testing.T) {
 		mux := connection.NewSrcMuxedConn()
 		mockConn := new(MockConnection)
 		mockConn.On("ReadPacket", mock.Anything).Return(0, []byte{}, nil).Maybe()
+		closeAtEnd(t, mux, mockConn)
 
 		prefix := netip.MustParsePrefix("2001:db8::/96")
 		mux.Add(prefix, mockConn)
@@ -184,6 +199,7 @@ func TestSrcMuxedConnection(t *testing.T) {
 		mux := connection.NewSrcMuxedConn()
 		mockConn := new(MockConnection)
 		mockConn.On("ReadPacket", mock.Anything).Return(0, []byte{}, nil).Maybe()
+		closeAtEnd(t, mux, mockConn)
 
 		prefix := netip.MustParsePrefix("192.0.2.0/24")
 		mux.Add(prefix, mockConn)
