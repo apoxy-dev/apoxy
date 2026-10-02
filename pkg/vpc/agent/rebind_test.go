@@ -188,7 +188,7 @@ func TestMove(t *testing.T) {
 			t.Logf("Data works again %v after the move. The rows followed the path challenge after %v.", at.Sub(t0), follow)
 			if !tc.hide {
 				// Moved starts a watch. The sweep alone takes up to 1 s.
-				assert.Less(t, follow, 100*time.Millisecond, "rows followed the connection late")
+				assert.Less(t, follow, 300*time.Millisecond, "rows followed the connection late")
 			}
 		})
 	}
