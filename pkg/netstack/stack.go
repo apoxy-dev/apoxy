@@ -148,9 +148,13 @@ func NewStack(mtu int, pcapPath string) (*Stack, error) {
 	}, nil
 }
 
-// Close removes the NIC and closes the endpoint and the packet capture.
+// Close removes the NIC, stops the stack and waits for its goroutines, and
+// closes the endpoint and the packet capture.
 func (s *Stack) Close() {
+	// Without the NIC, no packet can make a new endpoint that Wait then waits for.
 	s.Stack.RemoveNIC(s.NICID)
+	s.Stack.Close()
+	s.Stack.Wait()
 	s.Endpoint.Close()
 	if s.pcapFile != nil {
 		_ = s.pcapFile.Close()

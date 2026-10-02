@@ -35,8 +35,10 @@ type TunDevice struct {
 	ns             *Stack
 	events         chan tun.Event
 	incomingPacket chan *buffer.View
-	mtu            int
-	closed         atomic.Bool
+	// done is closed by Close. incomingPacket is never closed, so a send can not panic.
+	done   chan struct{}
+	mtu    int
+	closed atomic.Bool
 }
 
 func NewTunDevice(pcapPath string) (*TunDevice, error) {
@@ -48,6 +50,7 @@ func NewTunDevice(pcapPath string) (*TunDevice, error) {
 		ns:             ns,
 		events:         make(chan tun.Event, 1),
 		incomingPacket: make(chan *buffer.View, 1024),
+		done:           make(chan struct{}),
 		mtu:            int(ns.Endpoint.MTU()),
 	}
 	ns.Endpoint.AddNotify(tunDev)
@@ -79,8 +82,10 @@ func (tun *TunDevice) Read(buf [][]byte, sizes []int, offset int) (int, error) {
 		return 0, os.ErrClosed
 	}
 
-	view, ok := <-tun.incomingPacket
-	if !ok {
+	var view *buffer.View
+	select {
+	case view = <-tun.incomingPacket:
+	case <-tun.done:
 		return 0, os.ErrClosed
 	}
 
@@ -131,7 +136,11 @@ func (tun *TunDevice) WriteNotify() {
 	view := pkt.ToView()
 	pkt.DecRef()
 
-	tun.incomingPacket <- view
+	select {
+	case tun.incomingPacket <- view:
+	case <-tun.done:
+		view.Release()
+	}
 }
 
 func (tun *TunDevice) Close() error {
@@ -139,14 +148,12 @@ func (tun *TunDevice) Close() error {
 		return nil
 	}
 
+	// Stop a blocked WriteNotify first. It can hold stack locks that the stack close needs.
+	close(tun.done)
 	tun.ns.Close()
 
 	if tun.events != nil {
 		close(tun.events)
-	}
-
-	if tun.incomingPacket != nil {
-		close(tun.incomingPacket)
 	}
 
 	return nil
