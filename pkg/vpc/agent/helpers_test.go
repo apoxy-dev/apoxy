@@ -198,6 +198,7 @@ type world struct {
 	addrs            *fakeAddresses
 	mtu              uint32 // VPC MTU of the relays.
 	dns, search      []string
+	relayCfg         relay.Config // Meters of the relays.
 }
 
 // rotateAgentCA makes a new agent CA for enrolls and relays.
@@ -261,10 +262,11 @@ func (w *world) relay(t testing.TB, id string) *testRelay {
 func (w *world) relayOn(t testing.TB, id string, udp net.PacketConn) *testRelay {
 	t.Helper()
 	cert := w.relayCA.relayCert(t, id)
-	r := relay.NewRouter(w.trust, relay.Config{})
+	r := relay.NewRouter(w.trust, w.relayCfg)
 	tr := &quic.Transport{Conn: udp}
 	tr.NonQUICPacketHandler = r.PacketHandler(tr)
-	ln, err := tr.Listen(r.TLSConfig(&tls.Config{Certificates: []tls.Certificate{*cert}}), &quic.Config{EnableDatagrams: true})
+	// As at a real relay, the packets are Not-ECT.
+	ln, err := tr.Listen(r.TLSConfig(&tls.Config{Certificates: []tls.Certificate{*cert}}), &quic.Config{EnableDatagrams: true, DisableECN: true})
 	require.NoError(t, err)
 	srv := &relay.Server{
 		R: r, Networks: fakeNetworks{mtu: w.mtu, dns: w.dns, search: w.search}, Addresses: w.addrs, RelayID: id,

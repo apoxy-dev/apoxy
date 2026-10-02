@@ -254,6 +254,14 @@ func (r *Relay) SetSteerGroup(conns []*net.UDPConn) error {
 	return nil
 }
 
+// relayQUICConfig is quicConfig with Not-ECT packets. The relay sends tunnel
+// data with no congestion control, so it must not ask the network for ECN marks.
+var relayQUICConfig = func() *quic.Config {
+	c := quicConfig.Clone()
+	c.DisableECN = true
+	return c
+}()
+
 // transports returns one QUIC transport for each relay socket. The transport
 // of steer socket i issues the connection IDs that the kernel sends to i.
 func (r *Relay) transports() []*quic.Transport {
@@ -415,7 +423,7 @@ func (r *Relay) Start(ctx context.Context) error {
 		if r.vpc != nil {
 			tr.NonQUICPacketHandler = r.vpc.R.PacketHandler(tr)
 		}
-		quicLn, err := tr.ListenEarly(tlsConf, quicConfig)
+		quicLn, err := tr.ListenEarly(tlsConf, relayQUICConfig)
 		if err != nil {
 			return fmt.Errorf("failed to create QUIC listener: %w", err)
 		}

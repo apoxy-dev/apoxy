@@ -90,6 +90,27 @@ A relay SA has an SPI row from the agent to the relay, so the source address
 check and the meter of the row apply. The relay does not offer an SPI that is
 in a row of the agent.
 
+### Circuit breaker
+
+A sender of data has a breaker (RFC 8084) for each PSP receiver, and one for
+its QUIC data frames. A receiver reports the counters of its SAs in `RxReport`:
+the packets that it accepted and the highest sequence number. An agent sends
+them to its peers on `Reports` every 500 ms, and a relay sends them for its
+relay SAs on `Session` each second, both only when they change. The loss of an
+interval of 1 s or more is 1 - (change of packets) / (change of seq), so drops
+at a relay meter count. For data frames, the loss is the lost 1-RTT packets of
+the relay connections divided by the data frames sent.
+
+The breaker trips when the loss is 20% or more in 3 intervals in a row that
+each expect 100 packets or more. It then limits the send rate to half of the
+rate that arrived, at least 1 Mbit/s. A trip while limited halves the limit
+again. The limit ends 30 s after the last trip. The limit does not delay
+packets: it drops a packet when the bytes over the limit are more than 2 ms at
+the limit rate.
+
+Agents and relays send all packets as Not-ECT, also in QUIC mode, so that the
+network drops packets and does not mark them.
+
 ## Calls
 
 Each call uses one bidirectional QUIC stream. Either side can open a stream;
@@ -124,7 +145,7 @@ Addresses and prefixes are text (`fd61::1`, `10.0.0.0/8`, `host:port`).
 
 | Method          | Kind  | Messages |
 |-----------------|-------|----------|
-| `Session`       | bidi  | Agent: `Hello{mode, fallback_reason, spare}`, then `Ack{rev}` and `Status` (ICV failures; the first one after `Config` also has the time to connect). Relay: `Welcome` (reflexive address), `Config`, in PSP mode a rekey with relay SAs, then `RouteDelta{rev}`, `NoRoute`, rekey (`KeysRequest`), `Config`, `Drain`. |
+| `Session`       | bidi  | Agent: `Hello{mode, fallback_reason, spare}`, then `Ack{rev}` and `Status` (ICV failures; the first one after `Config` also has the time to connect). Relay: `Welcome` (reflexive address), `Config`, in PSP mode a rekey with relay SAs, then `RouteDelta{rev}`, `NoRoute`, rekey (`KeysRequest`), `Config`, `Drain`, and in PSP mode `RxReport` (only the last one waits). |
 | `Attach`        | unary | `AttachRequest{vpc, name, labels, routes}` -> `AttachResponse{attachment_id, grant}` |
 | `Rekey`         | unary | `KeysRequest` -> `KeysResponse`: SAs for traffic from the relay to the agent. Errors: `FailedPrecondition` (no `Session` call in PSP mode), `InvalidArgument` (an SA VNI is not the network ID). |
 | `ResolvePeer`   | unary | `{vpc, address}` -> `{reach: local, trunk or visit; home_relay; p2p}`. Errors: `NotFound`, `PermissionDenied`. |
@@ -164,11 +185,12 @@ with no traffic, when either session closes, or when Permit stops allowing it.
 
 ### Peer (`apoxy-peer/1`)
 
-| Method  | Kind          | Messages |
-|---------|---------------|----------|
-| `Open`  | unary         | Dialer and listener each send `{grant, instance, mode, p2p}`. First call on a session. |
-| `Keys`  | unary         | The receiver sends `KeysRequest`: `OfferSAs`, `RekeySA` or `RevokeSA`. `KeysResponse` lists SPIs that the sender refuses. |
-| `Paths` | client stream | `Candidates{round, candidates, mtu}`; each agent calls it. |
+| Method    | Kind          | Messages |
+|-----------|---------------|----------|
+| `Open`    | unary         | Dialer and listener each send `{grant, instance, mode, p2p}`. First call on a session. |
+| `Keys`    | unary         | The receiver sends `KeysRequest`: `OfferSAs`, `RekeySA` or `RevokeSA`. `KeysResponse` lists SPIs that the sender refuses. |
+| `Paths`   | client stream | `Candidates{round, candidates, mtu}`; each agent calls it. |
+| `Reports` | client stream | `RxReport{sas}` every 500 ms when it changes: the receive counters of the SAs that the peer sends with. |
 
 Each side accepts the other only if the peer cert chains to the VPC agent CA
 and names the same project and VPC, the grant passes the checks above, is for

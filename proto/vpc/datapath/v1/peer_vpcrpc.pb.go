@@ -16,9 +16,10 @@ import (
 
 // Full method names of the Peer service.
 const (
-	Peer_Open_FullMethodName  = "/apoxy.vpc.datapath.v1.Peer/Open"
-	Peer_Keys_FullMethodName  = "/apoxy.vpc.datapath.v1.Peer/Keys"
-	Peer_Paths_FullMethodName = "/apoxy.vpc.datapath.v1.Peer/Paths"
+	Peer_Open_FullMethodName    = "/apoxy.vpc.datapath.v1.Peer/Open"
+	Peer_Keys_FullMethodName    = "/apoxy.vpc.datapath.v1.Peer/Keys"
+	Peer_Paths_FullMethodName   = "/apoxy.vpc.datapath.v1.Peer/Paths"
+	Peer_Reports_FullMethodName = "/apoxy.vpc.datapath.v1.Peer/Reports"
 )
 
 // PeerClient is the client API of the Peer service.
@@ -30,6 +31,9 @@ type PeerClient interface {
 	// Paths sends the candidate sets of the caller. Each agent calls it once and
 	// sends a new set when its addresses change.
 	Paths(ctx context.Context) (rpc.ClientStreamClient[Candidates, emptypb.Empty], error)
+	// Reports sends the receive counters of the SAs that the peer sends with,
+	// every 500 ms. The peer gives them to its circuit breaker.
+	Reports(ctx context.Context) (rpc.ClientStreamClient[RxReport, emptypb.Empty], error)
 }
 
 type peerClient struct{ c rpc.Caller }
@@ -57,6 +61,10 @@ func (c peerClient) Paths(ctx context.Context) (rpc.ClientStreamClient[Candidate
 	return rpc.OpenClientStream[Candidates, emptypb.Empty](ctx, c.c, Peer_Paths_FullMethodName)
 }
 
+func (c peerClient) Reports(ctx context.Context) (rpc.ClientStreamClient[RxReport, emptypb.Empty], error) {
+	return rpc.OpenClientStream[RxReport, emptypb.Empty](ctx, c.c, Peer_Reports_FullMethodName)
+}
+
 // PeerServer is the server API of the Peer service.
 type PeerServer interface {
 	// Open is the first call on a session. The dialer calls it.
@@ -66,6 +74,9 @@ type PeerServer interface {
 	// Paths sends the candidate sets of the caller. Each agent calls it once and
 	// sends a new set when its addresses change.
 	Paths(context.Context, rpc.ClientStreamServer[Candidates]) (*emptypb.Empty, error)
+	// Reports sends the receive counters of the SAs that the peer sends with,
+	// every 500 ms. The peer gives them to its circuit breaker.
+	Reports(context.Context, rpc.ClientStreamServer[RxReport]) (*emptypb.Empty, error)
 }
 
 // UnimplementedPeerServer returns Unimplemented for each method. Embed it to add
@@ -84,9 +95,14 @@ func (UnimplementedPeerServer) Paths(context.Context, rpc.ClientStreamServer[Can
 	return nil, rpc.Errorf(rpc.Unimplemented, "method Paths not implemented")
 }
 
+func (UnimplementedPeerServer) Reports(context.Context, rpc.ClientStreamServer[RxReport]) (*emptypb.Empty, error) {
+	return nil, rpc.Errorf(rpc.Unimplemented, "method Reports not implemented")
+}
+
 // RegisterPeerServer adds the methods of srv to m.
 func RegisterPeerServer(m *rpc.Mux, srv PeerServer) {
 	rpc.HandleUnary(m, Peer_Open_FullMethodName, srv.Open)
 	rpc.HandleUnary(m, Peer_Keys_FullMethodName, srv.Keys)
 	rpc.HandleClientStream(m, Peer_Paths_FullMethodName, srv.Paths)
+	rpc.HandleClientStream(m, Peer_Reports_FullMethodName, srv.Reports)
 }

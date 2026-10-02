@@ -229,6 +229,10 @@ func (p peerStub) Paths(ctx context.Context, st rpc.ClientStreamServer[dp.Candid
 	return recvAll(p.stub, "Paths", st)
 }
 
+func (p peerStub) Reports(ctx context.Context, st rpc.ClientStreamServer[dp.RxReport]) (*emptypb.Empty, error) {
+	return recvAll(p.stub, "Reports", st)
+}
+
 type meshStub struct{ *stub }
 
 func (m meshStub) Presence(ctx context.Context, st rpc.ClientStreamServer[dp.PresenceUpdate]) (*emptypb.Empty, error) {
@@ -341,6 +345,7 @@ func TestRelaySession(t *testing.T) {
 		{Msg: &dp.SessionResponse_Rekey{Rekey: rekey}},
 		{Msg: &dp.SessionResponse_Config{Config: &dp.Config{Vpc: vpc, Mtu: 1280, DnsServers: []string{"fd61:a0b:c00::53"}, DnsSearchDomains: []string{"vpc.internal"}}}},
 		{Msg: &dp.SessionResponse_Drain{Drain: &dp.Drain{Alternates: []*dp.RelayRef{relay}}}},
+		{Msg: &dp.SessionResponse_RxReport{RxReport: &dp.RxReport{Sas: []*dp.SAStats{{Spi: 0x80000003, Packets: 70, Seq: 100}}}}},
 	}
 	up := []proto.Message{
 		&dp.SessionRequest{Msg: &dp.SessionRequest_Hello{Hello: &dp.Hello{Mode: dp.Mode_MODE_PSP, MaxVpcsPerSession: 1}}},
@@ -415,6 +420,9 @@ func TestPeerCalls(t *testing.T) {
 				{Kind: dp.CandidateKind_CANDIDATE_KIND_REFLEXIVE, Address: "203.0.113.7", Port: 40000},
 			}},
 			&dp.Candidates{Round: 2, Mtu: 1280}),
+		clientStream("Reports", c, dp.PeerClient.Reports,
+			&dp.RxReport{Sas: []*dp.SAStats{{Spi: 0x80000001, Packets: 990, Seq: 1000}, {Spi: 0x80000002}}},
+			&dp.RxReport{Sas: []*dp.SAStats{{Spi: 0x80000001, Packets: 1990, Seq: 2000}}}),
 	})
 }
 

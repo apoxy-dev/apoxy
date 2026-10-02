@@ -215,6 +215,8 @@ func (d *driver) VirtToPhy(virt, phy []byte) (int, bool) {
 		if b.noRoute != nil {
 			b.noRoute(virt)
 		}
+	case errGate:
+		b.stats.txGateDrops.Add(1)
 	default:
 		b.stats.txDrops.Add(1)
 	}
@@ -222,6 +224,7 @@ func (d *driver) VirtToPhy(virt, phy []byte) (int, bool) {
 }
 
 // frame writes the send frame of the inner packet virt to phy and returns its length.
+// The gate of a tripped breaker can drop the packet with errGate.
 func (b *Binding) frame(virt, phy []byte) (int, error) {
 	dst, ok := innerDst(virt)
 	if !ok || len(virt) > b.mtu || len(phy) < addrLen+pspwire.Overhead+len(virt) {
@@ -234,12 +237,18 @@ func (b *Binding) frame(virt, phy []byte) (int, error) {
 	quic := b.relay.Load() != nil
 	b.clampMSS(virt, quic)
 	if quic {
+		if !b.quic.gate.admit(len(virt)) {
+			return 0, errGate
+		}
 		clear(phy[:addrLen])
 		return addrLen + len(peerconn.EncodeData(phy[addrLen:addrLen], b.vni, virt)), nil
 	}
 	sa := p.txSA(virt)
 	if sa == nil {
 		return 0, ErrNoRoute
+	}
+	if !p.br.gate.admit(len(virt)) {
+		return 0, errGate
 	}
 	n, err := sa.Seal(phy[addrLen:], virt)
 	if err != nil {
@@ -265,6 +274,10 @@ func (b *Binding) Send(pkts [][]byte) (int, error) {
 		n, err := b.frame(pkt, phy)
 		if err == ErrNoRoute {
 			return sent, err
+		}
+		if err == errGate {
+			b.stats.txGateDrops.Add(1)
+			continue
 		}
 		if err == nil {
 			err = b.write(phy[:n], ua)
@@ -372,7 +385,11 @@ func (b *Binding) write(f []byte, ua *net.UDPAddr) error {
 		if pc == nil {
 			return errNoRelay
 		}
-		return pc.SendData(f[addrLen:])
+		if err := pc.SendData(f[addrLen:]); err != nil {
+			return err
+		}
+		b.stats.txFrames.Add(1)
+		return nil
 	}
 	copy(ua.IP, f[:16])
 	ua.Port = int(port)

@@ -302,6 +302,7 @@ func (a *Agent) dial(ctx context.Context, rc *relayConn, dst netip.Addr, res *dp
 		return nil, fmt.Errorf("peer %s: %w", dst, err)
 	}
 	go p.offer()
+	go p.sendReports()
 	return p, nil
 }
 
@@ -654,6 +655,7 @@ func (s *peerService) Open(ctx context.Context, in *dp.OpenRequest) (*dp.OpenRes
 		return nil, rpc.Errorf(rpc.PermissionDenied, "%v", err)
 	}
 	go p.offer()
+	go p.sendReports()
 	return &dp.OpenResponse{Grant: p.rc.grant, Instance: s.a.instance, Mode: p.rc.mode}, nil
 }
 

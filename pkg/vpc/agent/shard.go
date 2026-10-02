@@ -75,7 +75,7 @@ func (rc *relayConn) dialShard(ctx context.Context, i int) (quic.Connection, err
 		ServerName:   rc.name,
 		NextProtos:   []string{dp.ALPNRelay},
 		Certificates: []tls.Certificate{*rc.cred.TLSCertificate()},
-	}, relayQUIC)
+	}, a.quicCfg)
 	if err != nil {
 		return nil, err
 	}

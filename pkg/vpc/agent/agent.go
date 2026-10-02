@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/apoxy-dev/softpsp/keys"
@@ -56,11 +57,13 @@ var (
 )
 
 // relayQUIC is the QUIC config of relay sessions. See relay.MinPacketSize.
+// Data frames are Not-ECT: the breaker, not ECN, reacts to congestion.
 var relayQUIC = &quic.Config{
 	EnableDatagrams:   true,
 	KeepAlivePeriod:   5 * time.Second,
 	MaxIdleTimeout:    15 * time.Second,
 	InitialPacketSize: 1350,
+	DisableECN:        true,
 }
 
 // TransportMode picks how an agent sends data.
@@ -116,6 +119,8 @@ type Agent struct {
 	demux     psp.Demux
 	spareWake chan struct{}
 	holds     holds
+	quicCfg   *quic.Config  // relayQUIC with the loss tracer.
+	quicLost  atomic.Uint64 // 1-RTT packets that relay connections lost.
 
 	probeMu sync.Mutex
 	probes  map[[8]byte]*pathProbe // Path probes that run, by SID.
@@ -152,6 +157,8 @@ func New(cfg Config) *Agent {
 	a.mux = rpc.NewMux()
 	dp.RegisterPeerServer(a.mux, &peerService{a: a})
 	a.demux.Probe = a.onProbe
+	a.quicCfg = relayQUIC.Clone()
+	a.quicCfg.Tracer = a.traceLoss
 	if cfg.Transport != nil {
 		cfg.Transport.NonQUICPacketHandler = a.demux.Handle
 		cfg.Transport.NonQUICBatchEnd = a.demux.BatchEnd
@@ -497,7 +504,7 @@ func (a *Agent) dialSession(ctx context.Context, e endpoint, spare func() bool) 
 		ServerName:   name,
 		NextProtos:   []string{dp.ALPNRelay},
 		Certificates: []tls.Certificate{*cred.TLSCertificate()},
-	}, relayQUIC)
+	}, a.quicCfg)
 	if err != nil {
 		return nil, err
 	}
@@ -690,6 +697,7 @@ func (a *Agent) binding(cfg *dp.Config, pathMTU int) (*psp.Binding, error) {
 	b, err := psp.New(psp.Config{
 		Transport: a.cfg.Transport, Demux: &a.demux, VNI: cfg.GetVpc().GetNetworkId(), MTU: mtu, DeviceMTU: dev,
 		NoRoute: a.onNoRoute,
+		OnTrip:  a.onTrip,
 	})
 	if err != nil {
 		return nil, err
@@ -726,6 +734,8 @@ func (rc *relayConn) sync() {
 			}
 		case *dp.SessionResponse_Rekey:
 			rc.relayKeys(m.Rekey)
+		case *dp.SessionResponse_RxReport:
+			rc.relayReport(m.RxReport)
 		case *dp.SessionResponse_Config:
 			if m.Config.GetMtu() != rc.mtu {
 				slog.Info("VPC MTU changed; the new MTU applies after the agent restarts", "mtu", m.Config.GetMtu())
@@ -750,6 +760,17 @@ func (rc *relayConn) relayKeys(m *dp.KeysRequest) {
 		return
 	}
 	rc.applyRelayKeys(m)
+}
+
+// relayReport gives the receive counters of the relay to the breaker of the
+// relay peer. Before the attach, it drops them.
+func (rc *relayConn) relayReport(m *dp.RxReport) {
+	rc.keyMu.Lock()
+	p := rc.relay
+	rc.keyMu.Unlock()
+	if p != nil {
+		p.Report(time.Now(), fromReport(m))
+	}
 }
 
 // setRelayPeer sets the relay peer and applies the relay SAs that came
@@ -868,16 +889,26 @@ func (a *Agent) close() {
 }
 
 // tick runs the key timers of the binding and the holds, checks the local
-// address, and refreshes SPI rows.
+// address, refreshes SPI rows and gives the QUIC loss to the breaker of the data
+// frames.
 func (a *Agent) tick(ctx context.Context) {
 	t := time.NewTicker(tickInterval)
 	defer t.Stop()
 	refresh := time.NewTicker(spiRefresh)
 	defer refresh.Stop()
+	report := time.NewTicker(reportInterval)
+	defer report.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case now := <-report.C:
+			a.mu.Lock()
+			b := a.bind
+			a.mu.Unlock()
+			if b != nil {
+				b.ReportQUIC(now, a.quicLost.Load())
+			}
 		case now := <-t.C:
 			a.holds.sweep(now)
 			a.checkMoved()

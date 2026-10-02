@@ -312,6 +312,7 @@ type SessionResponse struct {
 	//	*SessionResponse_Rekey
 	//	*SessionResponse_Config
 	//	*SessionResponse_Drain
+	//	*SessionResponse_RxReport
 	Msg isSessionResponse_Msg `protobuf_oneof:"msg"`
 }
 
@@ -394,6 +395,13 @@ func (x *SessionResponse) GetDrain() *Drain {
 	return nil
 }
 
+func (x *SessionResponse) GetRxReport() *RxReport {
+	if x, ok := x.GetMsg().(*SessionResponse_RxReport); ok {
+		return x.RxReport
+	}
+	return nil
+}
+
 type isSessionResponse_Msg interface {
 	isSessionResponse_Msg()
 }
@@ -424,6 +432,11 @@ type SessionResponse_Drain struct {
 	Drain *Drain `protobuf:"bytes,6,opt,name=drain,proto3,oneof"`
 }
 
+type SessionResponse_RxReport struct {
+	// Receive counters of the relay SAs, each second when they change.
+	RxReport *RxReport `protobuf:"bytes,7,opt,name=rx_report,json=rxReport,proto3,oneof"`
+}
+
 func (*SessionResponse_Welcome) isSessionResponse_Msg() {}
 
 func (*SessionResponse_RouteDelta) isSessionResponse_Msg() {}
@@ -435,6 +448,8 @@ func (*SessionResponse_Rekey) isSessionResponse_Msg() {}
 func (*SessionResponse_Config) isSessionResponse_Msg() {}
 
 func (*SessionResponse_Drain) isSessionResponse_Msg() {}
+
+func (*SessionResponse_RxReport) isSessionResponse_Msg() {}
 
 // Hello starts a session.
 type Hello struct {
@@ -1521,7 +1536,7 @@ var file_proto_vpc_datapath_v1_relay_proto_rawDesc = []byte{
 	0x6d, 0x6f, 0x76, 0x65, 0x64, 0x18, 0x04, 0x20, 0x01, 0x28, 0x0b, 0x32, 0x1c, 0x2e, 0x61, 0x70,
 	0x6f, 0x78, 0x79, 0x2e, 0x76, 0x70, 0x63, 0x2e, 0x64, 0x61, 0x74, 0x61, 0x70, 0x61, 0x74, 0x68,
 	0x2e, 0x76, 0x31, 0x2e, 0x4d, 0x6f, 0x76, 0x65, 0x64, 0x48, 0x00, 0x52, 0x05, 0x6d, 0x6f, 0x76,
-	0x65, 0x64, 0x42, 0x05, 0x0a, 0x03, 0x6d, 0x73, 0x67, 0x22, 0x82, 0x03, 0x0a, 0x0f, 0x53, 0x65,
+	0x65, 0x64, 0x42, 0x05, 0x0a, 0x03, 0x6d, 0x73, 0x67, 0x22, 0xc2, 0x03, 0x0a, 0x0f, 0x53, 0x65,
 	0x73, 0x73, 0x69, 0x6f, 0x6e, 0x52, 0x65, 0x73, 0x70, 0x6f, 0x6e, 0x73, 0x65, 0x12, 0x3a, 0x0a,
 	0x07, 0x77, 0x65, 0x6c, 0x63, 0x6f, 0x6d, 0x65, 0x18, 0x01, 0x20, 0x01, 0x28, 0x0b, 0x32, 0x1e,
 	0x2e, 0x61, 0x70, 0x6f, 0x78, 0x79, 0x2e, 0x76, 0x70, 0x63, 0x2e, 0x64, 0x61, 0x74, 0x61, 0x70,
@@ -1545,7 +1560,11 @@ var file_proto_vpc_datapath_v1_relay_proto_rawDesc = []byte{
 	0x67, 0x12, 0x34, 0x0a, 0x05, 0x64, 0x72, 0x61, 0x69, 0x6e, 0x18, 0x06, 0x20, 0x01, 0x28, 0x0b,
 	0x32, 0x1c, 0x2e, 0x61, 0x70, 0x6f, 0x78, 0x79, 0x2e, 0x76, 0x70, 0x63, 0x2e, 0x64, 0x61, 0x74,
 	0x61, 0x70, 0x61, 0x74, 0x68, 0x2e, 0x76, 0x31, 0x2e, 0x44, 0x72, 0x61, 0x69, 0x6e, 0x48, 0x00,
-	0x52, 0x05, 0x64, 0x72, 0x61, 0x69, 0x6e, 0x42, 0x05, 0x0a, 0x03, 0x6d, 0x73, 0x67, 0x22, 0x83,
+	0x52, 0x05, 0x64, 0x72, 0x61, 0x69, 0x6e, 0x12, 0x3e, 0x0a, 0x09, 0x72, 0x78, 0x5f, 0x72, 0x65,
+	0x70, 0x6f, 0x72, 0x74, 0x18, 0x07, 0x20, 0x01, 0x28, 0x0b, 0x32, 0x1f, 0x2e, 0x61, 0x70, 0x6f,
+	0x78, 0x79, 0x2e, 0x76, 0x70, 0x63, 0x2e, 0x64, 0x61, 0x74, 0x61, 0x70, 0x61, 0x74, 0x68, 0x2e,
+	0x76, 0x31, 0x2e, 0x52, 0x78, 0x52, 0x65, 0x70, 0x6f, 0x72, 0x74, 0x48, 0x00, 0x52, 0x08, 0x72,
+	0x78, 0x52, 0x65, 0x70, 0x6f, 0x72, 0x74, 0x42, 0x05, 0x0a, 0x03, 0x6d, 0x73, 0x67, 0x22, 0x83,
 	0x02, 0x0a, 0x05, 0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x12, 0x2f, 0x0a, 0x04, 0x6d, 0x6f, 0x64, 0x65,
 	0x18, 0x01, 0x20, 0x01, 0x28, 0x0e, 0x32, 0x1b, 0x2e, 0x61, 0x70, 0x6f, 0x78, 0x79, 0x2e, 0x76,
 	0x70, 0x63, 0x2e, 0x64, 0x61, 0x74, 0x61, 0x70, 0x61, 0x74, 0x68, 0x2e, 0x76, 0x31, 0x2e, 0x4d,
@@ -1779,13 +1798,14 @@ var file_proto_vpc_datapath_v1_relay_proto_goTypes = []any{
 	(*UnregisterSPIRequest)(nil), // 22: apoxy.vpc.datapath.v1.UnregisterSPIRequest
 	nil,                          // 23: apoxy.vpc.datapath.v1.AttachRequest.LabelsEntry
 	(*KeysRequest)(nil),          // 24: apoxy.vpc.datapath.v1.KeysRequest
-	(Mode)(0),                    // 25: apoxy.vpc.datapath.v1.Mode
-	(*VPCRef)(nil),               // 26: apoxy.vpc.datapath.v1.VPCRef
-	(*durationpb.Duration)(nil),  // 27: google.protobuf.Duration
-	(*RelayRef)(nil),             // 28: apoxy.vpc.datapath.v1.RelayRef
-	(*AttachmentGrant)(nil),      // 29: apoxy.vpc.datapath.v1.AttachmentGrant
-	(*KeysResponse)(nil),         // 30: apoxy.vpc.datapath.v1.KeysResponse
-	(*emptypb.Empty)(nil),        // 31: google.protobuf.Empty
+	(*RxReport)(nil),             // 25: apoxy.vpc.datapath.v1.RxReport
+	(Mode)(0),                    // 26: apoxy.vpc.datapath.v1.Mode
+	(*VPCRef)(nil),               // 27: apoxy.vpc.datapath.v1.VPCRef
+	(*durationpb.Duration)(nil),  // 28: google.protobuf.Duration
+	(*RelayRef)(nil),             // 29: apoxy.vpc.datapath.v1.RelayRef
+	(*AttachmentGrant)(nil),      // 30: apoxy.vpc.datapath.v1.AttachmentGrant
+	(*KeysResponse)(nil),         // 31: apoxy.vpc.datapath.v1.KeysResponse
+	(*emptypb.Empty)(nil),        // 32: google.protobuf.Empty
 }
 var file_proto_vpc_datapath_v1_relay_proto_depIdxs = []int32{
 	5,  // 0: apoxy.vpc.datapath.v1.SessionRequest.hello:type_name -> apoxy.vpc.datapath.v1.Hello
@@ -1798,44 +1818,45 @@ var file_proto_vpc_datapath_v1_relay_proto_depIdxs = []int32{
 	24, // 7: apoxy.vpc.datapath.v1.SessionResponse.rekey:type_name -> apoxy.vpc.datapath.v1.KeysRequest
 	15, // 8: apoxy.vpc.datapath.v1.SessionResponse.config:type_name -> apoxy.vpc.datapath.v1.Config
 	16, // 9: apoxy.vpc.datapath.v1.SessionResponse.drain:type_name -> apoxy.vpc.datapath.v1.Drain
-	25, // 10: apoxy.vpc.datapath.v1.Hello.mode:type_name -> apoxy.vpc.datapath.v1.Mode
-	6,  // 11: apoxy.vpc.datapath.v1.Hello.shard:type_name -> apoxy.vpc.datapath.v1.Shard
-	2,  // 12: apoxy.vpc.datapath.v1.Hello.fallback_reason:type_name -> apoxy.vpc.datapath.v1.FallbackReason
-	26, // 13: apoxy.vpc.datapath.v1.Route.vpc:type_name -> apoxy.vpc.datapath.v1.VPCRef
-	9,  // 14: apoxy.vpc.datapath.v1.RouteDelta.add:type_name -> apoxy.vpc.datapath.v1.Route
-	9,  // 15: apoxy.vpc.datapath.v1.RouteDelta.remove:type_name -> apoxy.vpc.datapath.v1.Route
-	13, // 16: apoxy.vpc.datapath.v1.Status.icv_failures:type_name -> apoxy.vpc.datapath.v1.ICVFailures
-	27, // 17: apoxy.vpc.datapath.v1.Status.connect_time:type_name -> google.protobuf.Duration
-	26, // 18: apoxy.vpc.datapath.v1.NoRoute.vpc:type_name -> apoxy.vpc.datapath.v1.VPCRef
-	28, // 19: apoxy.vpc.datapath.v1.NoRoute.home_relay:type_name -> apoxy.vpc.datapath.v1.RelayRef
-	26, // 20: apoxy.vpc.datapath.v1.Config.vpc:type_name -> apoxy.vpc.datapath.v1.VPCRef
-	28, // 21: apoxy.vpc.datapath.v1.Drain.alternates:type_name -> apoxy.vpc.datapath.v1.RelayRef
-	26, // 22: apoxy.vpc.datapath.v1.AttachRequest.vpc:type_name -> apoxy.vpc.datapath.v1.VPCRef
-	23, // 23: apoxy.vpc.datapath.v1.AttachRequest.labels:type_name -> apoxy.vpc.datapath.v1.AttachRequest.LabelsEntry
-	29, // 24: apoxy.vpc.datapath.v1.AttachResponse.grant:type_name -> apoxy.vpc.datapath.v1.AttachmentGrant
-	26, // 25: apoxy.vpc.datapath.v1.ResolvePeerRequest.vpc:type_name -> apoxy.vpc.datapath.v1.VPCRef
-	1,  // 26: apoxy.vpc.datapath.v1.ResolvePeerResponse.reach:type_name -> apoxy.vpc.datapath.v1.Reach
-	28, // 27: apoxy.vpc.datapath.v1.ResolvePeerResponse.home_relay:type_name -> apoxy.vpc.datapath.v1.RelayRef
-	26, // 28: apoxy.vpc.datapath.v1.RegisterSPIRequest.vpc:type_name -> apoxy.vpc.datapath.v1.VPCRef
-	27, // 29: apoxy.vpc.datapath.v1.RegisterSPIRequest.expires_in:type_name -> google.protobuf.Duration
-	26, // 30: apoxy.vpc.datapath.v1.UnregisterSPIRequest.vpc:type_name -> apoxy.vpc.datapath.v1.VPCRef
-	3,  // 31: apoxy.vpc.datapath.v1.Relay.Session:input_type -> apoxy.vpc.datapath.v1.SessionRequest
-	17, // 32: apoxy.vpc.datapath.v1.Relay.Attach:input_type -> apoxy.vpc.datapath.v1.AttachRequest
-	24, // 33: apoxy.vpc.datapath.v1.Relay.Rekey:input_type -> apoxy.vpc.datapath.v1.KeysRequest
-	19, // 34: apoxy.vpc.datapath.v1.Relay.ResolvePeer:input_type -> apoxy.vpc.datapath.v1.ResolvePeerRequest
-	21, // 35: apoxy.vpc.datapath.v1.Relay.RegisterSPI:input_type -> apoxy.vpc.datapath.v1.RegisterSPIRequest
-	22, // 36: apoxy.vpc.datapath.v1.Relay.UnregisterSPI:input_type -> apoxy.vpc.datapath.v1.UnregisterSPIRequest
-	4,  // 37: apoxy.vpc.datapath.v1.Relay.Session:output_type -> apoxy.vpc.datapath.v1.SessionResponse
-	18, // 38: apoxy.vpc.datapath.v1.Relay.Attach:output_type -> apoxy.vpc.datapath.v1.AttachResponse
-	30, // 39: apoxy.vpc.datapath.v1.Relay.Rekey:output_type -> apoxy.vpc.datapath.v1.KeysResponse
-	20, // 40: apoxy.vpc.datapath.v1.Relay.ResolvePeer:output_type -> apoxy.vpc.datapath.v1.ResolvePeerResponse
-	31, // 41: apoxy.vpc.datapath.v1.Relay.RegisterSPI:output_type -> google.protobuf.Empty
-	31, // 42: apoxy.vpc.datapath.v1.Relay.UnregisterSPI:output_type -> google.protobuf.Empty
-	37, // [37:43] is the sub-list for method output_type
-	31, // [31:37] is the sub-list for method input_type
-	31, // [31:31] is the sub-list for extension type_name
-	31, // [31:31] is the sub-list for extension extendee
-	0,  // [0:31] is the sub-list for field type_name
+	25, // 10: apoxy.vpc.datapath.v1.SessionResponse.rx_report:type_name -> apoxy.vpc.datapath.v1.RxReport
+	26, // 11: apoxy.vpc.datapath.v1.Hello.mode:type_name -> apoxy.vpc.datapath.v1.Mode
+	6,  // 12: apoxy.vpc.datapath.v1.Hello.shard:type_name -> apoxy.vpc.datapath.v1.Shard
+	2,  // 13: apoxy.vpc.datapath.v1.Hello.fallback_reason:type_name -> apoxy.vpc.datapath.v1.FallbackReason
+	27, // 14: apoxy.vpc.datapath.v1.Route.vpc:type_name -> apoxy.vpc.datapath.v1.VPCRef
+	9,  // 15: apoxy.vpc.datapath.v1.RouteDelta.add:type_name -> apoxy.vpc.datapath.v1.Route
+	9,  // 16: apoxy.vpc.datapath.v1.RouteDelta.remove:type_name -> apoxy.vpc.datapath.v1.Route
+	13, // 17: apoxy.vpc.datapath.v1.Status.icv_failures:type_name -> apoxy.vpc.datapath.v1.ICVFailures
+	28, // 18: apoxy.vpc.datapath.v1.Status.connect_time:type_name -> google.protobuf.Duration
+	27, // 19: apoxy.vpc.datapath.v1.NoRoute.vpc:type_name -> apoxy.vpc.datapath.v1.VPCRef
+	29, // 20: apoxy.vpc.datapath.v1.NoRoute.home_relay:type_name -> apoxy.vpc.datapath.v1.RelayRef
+	27, // 21: apoxy.vpc.datapath.v1.Config.vpc:type_name -> apoxy.vpc.datapath.v1.VPCRef
+	29, // 22: apoxy.vpc.datapath.v1.Drain.alternates:type_name -> apoxy.vpc.datapath.v1.RelayRef
+	27, // 23: apoxy.vpc.datapath.v1.AttachRequest.vpc:type_name -> apoxy.vpc.datapath.v1.VPCRef
+	23, // 24: apoxy.vpc.datapath.v1.AttachRequest.labels:type_name -> apoxy.vpc.datapath.v1.AttachRequest.LabelsEntry
+	30, // 25: apoxy.vpc.datapath.v1.AttachResponse.grant:type_name -> apoxy.vpc.datapath.v1.AttachmentGrant
+	27, // 26: apoxy.vpc.datapath.v1.ResolvePeerRequest.vpc:type_name -> apoxy.vpc.datapath.v1.VPCRef
+	1,  // 27: apoxy.vpc.datapath.v1.ResolvePeerResponse.reach:type_name -> apoxy.vpc.datapath.v1.Reach
+	29, // 28: apoxy.vpc.datapath.v1.ResolvePeerResponse.home_relay:type_name -> apoxy.vpc.datapath.v1.RelayRef
+	27, // 29: apoxy.vpc.datapath.v1.RegisterSPIRequest.vpc:type_name -> apoxy.vpc.datapath.v1.VPCRef
+	28, // 30: apoxy.vpc.datapath.v1.RegisterSPIRequest.expires_in:type_name -> google.protobuf.Duration
+	27, // 31: apoxy.vpc.datapath.v1.UnregisterSPIRequest.vpc:type_name -> apoxy.vpc.datapath.v1.VPCRef
+	3,  // 32: apoxy.vpc.datapath.v1.Relay.Session:input_type -> apoxy.vpc.datapath.v1.SessionRequest
+	17, // 33: apoxy.vpc.datapath.v1.Relay.Attach:input_type -> apoxy.vpc.datapath.v1.AttachRequest
+	24, // 34: apoxy.vpc.datapath.v1.Relay.Rekey:input_type -> apoxy.vpc.datapath.v1.KeysRequest
+	19, // 35: apoxy.vpc.datapath.v1.Relay.ResolvePeer:input_type -> apoxy.vpc.datapath.v1.ResolvePeerRequest
+	21, // 36: apoxy.vpc.datapath.v1.Relay.RegisterSPI:input_type -> apoxy.vpc.datapath.v1.RegisterSPIRequest
+	22, // 37: apoxy.vpc.datapath.v1.Relay.UnregisterSPI:input_type -> apoxy.vpc.datapath.v1.UnregisterSPIRequest
+	4,  // 38: apoxy.vpc.datapath.v1.Relay.Session:output_type -> apoxy.vpc.datapath.v1.SessionResponse
+	18, // 39: apoxy.vpc.datapath.v1.Relay.Attach:output_type -> apoxy.vpc.datapath.v1.AttachResponse
+	31, // 40: apoxy.vpc.datapath.v1.Relay.Rekey:output_type -> apoxy.vpc.datapath.v1.KeysResponse
+	20, // 41: apoxy.vpc.datapath.v1.Relay.ResolvePeer:output_type -> apoxy.vpc.datapath.v1.ResolvePeerResponse
+	32, // 42: apoxy.vpc.datapath.v1.Relay.RegisterSPI:output_type -> google.protobuf.Empty
+	32, // 43: apoxy.vpc.datapath.v1.Relay.UnregisterSPI:output_type -> google.protobuf.Empty
+	38, // [38:44] is the sub-list for method output_type
+	32, // [32:38] is the sub-list for method input_type
+	32, // [32:32] is the sub-list for extension type_name
+	32, // [32:32] is the sub-list for extension extendee
+	0,  // [0:32] is the sub-list for field type_name
 }
 
 func init() { file_proto_vpc_datapath_v1_relay_proto_init() }
@@ -1857,6 +1878,7 @@ func file_proto_vpc_datapath_v1_relay_proto_init() {
 		(*SessionResponse_Rekey)(nil),
 		(*SessionResponse_Config)(nil),
 		(*SessionResponse_Drain)(nil),
+		(*SessionResponse_RxReport)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{

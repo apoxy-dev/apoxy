@@ -80,6 +80,21 @@ message KeysResponse {
   repeated uint32 refused_spis = 1;
 }
 
+// SAStats are the receive counters of one SA.
+message SAStats {
+  uint32 spi = 1;
+  // Packets that the receiver accepted.
+  uint64 packets = 2;
+  // Highest sequence number that the receiver accepted.
+  uint32 seq = 3;
+}
+
+// RxReport gives a sender the receive counters of the SAs that it sends with.
+// The sender finds the loss from the changes: 1 - packets / seq.
+message RxReport {
+  repeated SAStats sas = 1;
+}
+
 // AttachmentGrant is a relay-signed grant of addresses to an attachment.
 // Peers check it in Open.
 message AttachmentGrant {

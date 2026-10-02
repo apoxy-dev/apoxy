@@ -15,9 +15,11 @@ import (
 	"github.com/apoxy-dev/softpsp/engine"
 	"github.com/apoxy-dev/softpsp/keys"
 	pspwire "github.com/apoxy-dev/softpsp/psp"
+	"github.com/google/go-cmp/cmp"
 	"github.com/quic-go/quic-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/testing/protocmp"
 
 	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/peerconn"
@@ -491,6 +493,64 @@ func TestRelaySAs(t *testing.T) {
 	assert.Empty(t, br.senders)
 	assert.Empty(t, br.peers)
 	assert.Empty(t, br.local.inbound)
+}
+
+// TestRxReport checks that the relay sends the receive counters of its relay
+// SAs after they change, and that only the last report waits.
+func TestRxReport(t *testing.T) {
+	r, handle := localRouter(t)
+	p := localSession(t, r, "p", "192.0.2.1:1", "fd00:1::/96", dp.Mode_MODE_PSP)
+	localSession(t, r, "q", "192.0.2.2:1", "fd00:2::/96", dp.Mode_MODE_QUIC)
+	// The packet handler uses the wall clock, so the SAs must too.
+	now := time.Now()
+	m, err := r.offer(p, Network{ID: testVNI, MTU: 1280}, now)
+	require.NoError(t, err)
+	spi := spisOf(m)[0]
+	agent := newPSPAgent(t, m.GetRekey(), now)
+	inner := ipPacket(netip.MustParseAddr("fd00:1::1"), netip.MustParseAddr("fd00:2::1"), make([]byte, 100))
+	from := net.UDPAddrFromAddrPort(netip.MustParseAddrPort("192.0.2.1:1"))
+	// send seals n packets and gives the ones that skip does not drop to the relay.
+	send := func(n int, skip func(int) bool) {
+		for i := range n {
+			pkt := agent.seal(t, inner)
+			if !skip(i) {
+				handle(pkt, from)
+			}
+		}
+	}
+	reports := func() []*dp.RxReport {
+		var out []*dp.RxReport
+		for _, m := range r.takeSync(p) {
+			if m.GetRxReport() != nil {
+				out = append(out, m.GetRxReport())
+			}
+		}
+		return out
+	}
+	stats := func(packets uint64, seq uint32) []*dp.RxReport {
+		return []*dp.RxReport{{Sas: []*dp.SAStats{{Spi: spi, Packets: packets, Seq: seq}}}}
+	}
+	none := func(int) bool { return false }
+
+	r.tickBridge(now)
+	assert.Empty(t, reports(), "no report before the first packet")
+
+	send(10, func(i int) bool { return i == 2 || i == 4 || i == 6 })
+	r.tickBridge(now)
+	assert.Empty(t, cmp.Diff(stats(7, 9), reports(), protocmp.Transform()))
+
+	r.tickBridge(now)
+	assert.Empty(t, reports(), "no report when nothing changed")
+
+	send(5, none)
+	r.tickBridge(now)
+	send(5, none)
+	r.tickBridge(now)
+	assert.Empty(t, cmp.Diff(stats(17, 19), reports(), protocmp.Transform()))
+
+	r.removeSession(p)
+	r.closeBridge(p)
+	assert.Empty(t, r.bridge.Load().reported)
 }
 
 // BenchmarkForwardData measures one data frame from a QUIC-mode session:

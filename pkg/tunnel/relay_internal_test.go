@@ -832,7 +832,10 @@ func TestConnStatsKeepAliveCounters(t *testing.T) {
 }
 
 func TestRelayVPCPacketSize(t *testing.T) {
-	if got := int(quicConfig.InitialPacketSize); got < vpcrelay.MinPacketSize {
+	if got := int(relayQUICConfig.InitialPacketSize); got < vpcrelay.MinPacketSize {
 		t.Errorf("InitialPacketSize = %d, want %d or more for VPC relay sessions", got, vpcrelay.MinPacketSize)
+	}
+	if !relayQUICConfig.DisableECN {
+		t.Error("relay packets must be Not-ECT")
 	}
 }

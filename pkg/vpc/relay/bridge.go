@@ -48,14 +48,16 @@ type bridge struct {
 	tr       *quic.Transport // Sends the sealed packets.
 	local    *Session        // Receiver of the rows of relay SAs. It has no address.
 	rxMu     sync.Mutex      // The read loops of all relay sockets share rxq.
+	table    *engine.RxTable
 	rxq      *engine.RxQueue
 	recv     *keys.Receiver
 	send     *keys.Sender
 	lifetime time.Duration
 
 	// Guarded by Router.mu.
-	senders map[uint32]*Session     // Session of each relay SA.
-	peers   map[*keys.Peer]*Session // Session of each receive peer.
+	senders  map[uint32]*Session     // Session of each relay SA.
+	peers    map[*keys.Peer]*Session // Session of each receive peer.
+	reported map[*Session]uint64     // Accepted packets in the last RxReport to each session.
 }
 
 // startBridge returns the bridge of r. The first call makes it, with tr for
@@ -91,12 +93,14 @@ func newBridge(tr *quic.Transport) (*bridge, error) {
 	return &bridge{
 		tr:       tr,
 		local:    newSession(Identity{}, func() netip.AddrPort { return netip.AddrPort{} }),
+		table:    table,
 		rxq:      table.Queue(0),
 		recv:     recv,
 		send:     send,
 		lifetime: table.Lifetime(),
 		senders:  map[uint32]*Session{},
 		peers:    map[*keys.Peer]*Session{},
+		reported: map[*Session]uint64{},
 	}, nil
 }
 
@@ -351,7 +355,7 @@ func (r *Router) keepRows(br *bridge, s *Session, now time.Time) {
 }
 
 // tickBridge rekeys the relay SAs that are due and sends the new SAs to the
-// agents. It removes the SAs that ended.
+// agents. It removes the SAs that ended, and sends the receive counters.
 func (r *Router) tickBridge(now time.Time) {
 	br := r.bridge.Load()
 	if br == nil {
@@ -379,7 +383,34 @@ func (r *Router) tickBridge(now time.Time) {
 	}
 	for _, s := range br.peers {
 		r.keepRows(br, s, now)
+		r.reportRx(br, s)
 	}
+}
+
+// reportRx sends s the receive counters of its relay SAs when they changed.
+// The agent gives them to its breaker. Router.mu must be held.
+func (r *Router) reportRx(br *bridge, s *Session) {
+	if s.closed || !s.sync.open {
+		return
+	}
+	var sum uint64
+	for spi := range s.relaySAs {
+		if st, ok := br.table.Stats(spi); ok {
+			sum += st.Packets
+		}
+	}
+	if sum == br.reported[s] {
+		return
+	}
+	br.reported[s] = sum
+	rep := &dp.RxReport{Sas: make([]*dp.SAStats, 0, len(s.relaySAs))}
+	for spi := range s.relaySAs {
+		if st, ok := br.table.Stats(spi); ok {
+			rep.Sas = append(rep.Sas, &dp.SAStats{Spi: spi, Packets: st.Packets, Seq: st.Seq})
+		}
+	}
+	s.sync.report = rep
+	s.notify()
 }
 
 // closeBridge deletes the SAs between the relay and s after s is removed.
@@ -392,6 +423,7 @@ func (r *Router) closeBridge(s *Session) {
 	rx, tx := s.rx, s.tx
 	s.rx, s.tx = nil, nil
 	delete(br.peers, rx)
+	delete(br.reported, s)
 	for spi := range s.relaySAs {
 		if br.senders[spi] == s {
 			delete(br.senders, spi)

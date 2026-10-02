@@ -19,6 +19,9 @@ service Peer {
   // Paths sends the candidate sets of the caller. Each agent calls it once and
   // sends a new set when its addresses change.
   rpc Paths(stream Candidates) returns (google.protobuf.Empty);
+  // Reports sends the receive counters of the SAs that the peer sends with,
+  // every 500 ms. The peer gives them to its circuit breaker.
+  rpc Reports(stream RxReport) returns (google.protobuf.Empty);
 }
 
 message OpenRequest {

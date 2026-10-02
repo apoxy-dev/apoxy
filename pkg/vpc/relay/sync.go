@@ -36,6 +36,8 @@ type syncState struct {
 	dropped uint64
 	// connected is true after the agent reports its time to connect.
 	connected bool
+	// report is the last receive report of the relay SAs. A new one replaces it.
+	report *dp.RxReport
 }
 
 // queueRoute adds a route change to the sync queue. A change cancels the
@@ -110,6 +112,10 @@ func (r *Router) takeSync(s *Session) []*dp.SessionResponse {
 	}
 	msgs = append(msgs, s.sync.out...)
 	s.sync.out = nil
+	if s.sync.report != nil {
+		msgs = append(msgs, &dp.SessionResponse{Msg: &dp.SessionResponse_RxReport{RxReport: s.sync.report}})
+		s.sync.report = nil
+	}
 	return msgs
 }
 

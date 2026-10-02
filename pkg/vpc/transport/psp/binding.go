@@ -48,6 +48,7 @@ var (
 
 	errDrop    = errors.New("psp: packet is not IP or is too large")
 	errNoRelay = errors.New("psp: no relay session for data frames")
+	errGate    = errors.New("psp: breaker gate drops the packet")
 )
 
 // Demux gives the non-QUIC packets of an agent socket to its binding, and path probes to Probe.
@@ -94,6 +95,9 @@ type Config struct {
 	// NoRoute gets the inner packets that VirtToPhy cannot send for ErrNoRoute. It
 	// runs on the send path of the driver, so it must not block or keep pkt.
 	NoRoute func(pkt []byte)
+	// OnTrip gets each change of a breaker gate. The peer is nil for the QUIC
+	// data path. It must not block.
+	OnTrip func(*Peer, Trip)
 }
 
 // Binding is the data path of one VPC on one agent socket.
@@ -104,13 +108,16 @@ type Binding struct {
 	mtu     int
 	devMTU  int
 	clamp   atomic.Int32 // MTU for the MSS of TCP SYN packets. Zero means off.
+	table   *engine.RxTable
 	rxq     *engine.RxQueue
 	recv    *keys.Receiver
 	send    *keys.Sender
 	routes  engine.Routes[*Peer]
 	seed    maphash.Seed
 	relay   atomic.Pointer[peerconn.Conn] // Set when data goes as QUIC data frames.
+	quic    breaker                       // Breaker of the QUIC data path.
 	noRoute func(pkt []byte)
+	onTrip  func(*Peer, Trip)
 
 	// routed reports whether a peer has a route to an address.
 	routed func(netip.Addr) bool
@@ -166,14 +173,19 @@ func New(cfg Config) (*Binding, error) {
 		vni:     cfg.VNI,
 		mtu:     cfg.MTU,
 		devMTU:  cfg.DeviceMTU,
+		table:   table,
 		rxq:     table.Queue(0),
 		recv:    recv,
 		send:    send,
 		seed:    maphash.MakeSeed(),
 		noRoute: cfg.NoRoute,
+		onTrip:  cfg.OnTrip,
 		ctx:     ctx,
 		cancel:  cancel,
 		peers:   map[*keys.Peer]*Peer{},
+	}
+	if b.onTrip == nil {
+		b.onTrip = func(*Peer, Trip) {}
 	}
 	b.routed = func(a netip.Addr) bool {
 		_, ok := b.routes.Lookup(a)
@@ -242,21 +254,33 @@ type Update struct {
 	keys.Request
 }
 
-// Tick rekeys the due receive SAs and removes expired SAs. Call it each second, and send
-// each Update to its peer. Failed lanes are due again.
+// Tick rekeys the due receive SAs, removes expired SAs and opens the breaker gates whose
+// time ended. Call it each second, and send each Update to its peer. Failed lanes are due
+// again.
 func (b *Binding) Tick(now time.Time) ([]Update, error) {
 	ups, err := b.recv.Tick(now)
 	b.send.Expire(now)
 	b.mu.Lock()
-	defer b.mu.Unlock()
+	var opened []*Peer
 	for _, p := range b.peers {
 		p.updateLanes()
+		if _, ok := p.br.expire(now); ok {
+			opened = append(opened, p)
+		}
 	}
 	out := make([]Update, 0, len(ups))
 	for _, u := range ups {
 		if p := b.peers[u.Peer]; p != nil {
+			p.addRxSAs(u.SAs)
 			out = append(out, Update{Peer: p, Request: u.Request})
 		}
+	}
+	b.mu.Unlock()
+	for _, p := range opened {
+		b.onTrip(p, Trip{})
+	}
+	if _, ok := b.quic.expire(now); ok {
+		b.onTrip(nil, Trip{})
 	}
 	return out, err
 }
@@ -270,7 +294,7 @@ func (b *Binding) AddPeer(addr netip.AddrPort) (*Peer, error) {
 	if !addr.IsValid() {
 		return nil, fmt.Errorf("psp: invalid peer address %v", addr)
 	}
-	p := &Peer{b: b, tx: b.send.NewPeer()}
+	p := &Peer{b: b, tx: b.send.NewPeer(), rxSPIs: map[uint32]struct{}{}}
 	rx, err := b.recv.NewPeer(keys.PeerConfig{VNI: b.vni, MTU: b.mtu, Lanes: 1, Sources: b.routes.Sources(p)})
 	if err != nil {
 		return nil, err
@@ -298,6 +322,7 @@ func (b *Binding) removeLocked(p *Peer) keys.Request {
 		return keys.Request{Op: keys.OpRevoke}
 	}
 	req := p.rx.Revoke()
+	clear(p.rxSPIs)
 	var spis []uint32
 	for i := range keys.MaxLanes {
 		if sa := p.tx.SA(i); sa != nil {
@@ -355,37 +380,52 @@ func (b *Binding) RemoveRoute(pfx netip.Prefix, p *Peer) bool {
 // Stats are the packet counters of a binding. They count PSP packets and QUIC data frames
 // together.
 type Stats struct {
-	RxPackets  uint64 // Packets that passed the checks and went to the driver.
-	RxDrops    uint64 // Packets that failed a check or the delivery, for example no SA.
-	RxNoDriver uint64 // Packets dropped because no driver runs.
-	RxOther    uint64 // Non-QUIC packets that are not PSP, for example probes.
-	TxPackets  uint64 // Packets sent.
-	TxNoRoute  uint64 // Inner packets with no route or no transmit SA.
-	TxDrops    uint64 // Inner packets that a size check, a seal or a write dropped.
+	RxPackets   uint64 // Packets that passed the checks and went to the driver.
+	RxDrops     uint64 // Packets that failed a check or the delivery, for example no SA.
+	RxNoDriver  uint64 // Packets dropped because no driver runs.
+	RxOther     uint64 // Non-QUIC packets that are not PSP, for example probes.
+	TxPackets   uint64 // Packets sent.
+	TxNoRoute   uint64 // Inner packets with no route or no transmit SA.
+	TxDrops     uint64 // Inner packets that a size check, a seal or a write dropped.
+	TxGateDrops uint64 // Inner packets that the gate of a tripped breaker dropped.
 }
 
 type counters struct {
-	rxPackets, rxDrops, rxNoDriver, rxOther atomic.Uint64
-	txPackets, txNoRoute, txDrops           atomic.Uint64
+	rxPackets, rxDrops, rxNoDriver, rxOther    atomic.Uint64
+	txPackets, txNoRoute, txDrops, txGateDrops atomic.Uint64
+	txFrames                                   atomic.Uint64 // Data frames sent.
 }
 
 // Stats returns the packet counters.
 func (b *Binding) Stats() Stats {
 	c := &b.stats
 	return Stats{
-		RxPackets:  c.rxPackets.Load(),
-		RxDrops:    c.rxDrops.Load(),
-		RxNoDriver: c.rxNoDriver.Load(),
-		RxOther:    c.rxOther.Load(),
-		TxPackets:  c.txPackets.Load(),
-		TxNoRoute:  c.txNoRoute.Load(),
-		TxDrops:    c.txDrops.Load(),
+		RxPackets:   c.rxPackets.Load(),
+		RxDrops:     c.rxDrops.Load(),
+		RxNoDriver:  c.rxNoDriver.Load(),
+		RxOther:     c.rxOther.Load(),
+		TxPackets:   c.txPackets.Load(),
+		TxNoRoute:   c.txNoRoute.Load(),
+		TxDrops:     c.txDrops.Load(),
+		TxGateDrops: c.txGateDrops.Load(),
 	}
 }
 
 // UseQUIC sends inner packets as data frames on the relay session of pc, not as PSP
 // packets. Nil sends PSP packets again. Both paths always receive.
 func (b *Binding) UseQUIC(pc *peerconn.Conn) { b.relay.Store(pc) }
+
+// ReportQUIC gives the QUIC packets lost on the relay connections, in total, to the
+// breaker of the data frames. Call it every 500 ms.
+func (b *Binding) ReportQUIC(now time.Time, lost uint64) {
+	if t, ok := b.quic.addQUIC(now, b.stats.txFrames.Load(), lost); ok {
+		b.onTrip(nil, t)
+	}
+}
+
+// QUICLimit returns the send limit of the data frames in bytes per second, or 0
+// when there is none.
+func (b *Binding) QUICLimit() int64 { return b.quic.limit() }
 
 // receive opens a PSP packet in place and gives it to the driver. It runs on the QUIC
 // read loop.
