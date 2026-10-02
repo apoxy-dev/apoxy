@@ -19,13 +19,15 @@ import (
 	"github.com/apoxy-dev/softpsp/keys"
 	pspwire "github.com/apoxy-dev/softpsp/psp"
 	"github.com/quic-go/quic-go"
+
+	vpcv1alpha1 "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1"
 )
 
 const (
 	// DefaultMTU is the inner MTU when Config sets none.
-	DefaultMTU = 1280
-	// MaxMTU is the largest inner MTU: quic-go reads 1452 B, and PSP adds 40 B.
-	MaxMTU = 1452 - pspwire.Overhead
+	DefaultMTU = vpcv1alpha1.DefaultMTU
+	// MaxMTU is the largest inner MTU.
+	MaxMTU = vpcv1alpha1.MaxMTU
 )
 
 // ErrClosed is the error of calls on a closed binding or a removed peer.

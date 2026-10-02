@@ -21,6 +21,11 @@ import (
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
+// The largest PSP packet must fit in one quic-go read of 1452 B.
+func TestMaxMTU(t *testing.T) {
+	assert.Equal(t, 1452, MaxMTU+pspwire.Overhead)
+}
+
 func TestNew(t *testing.T) {
 	dm, used := &Demux{}, &Demux{}
 	tr := newTransport(t, dm.Handle)

@@ -4,13 +4,18 @@ package relay
 
 import (
 	"context"
+	"crypto/tls"
+	"net"
 	"net/netip"
 	"testing"
 	"time"
 
+	"github.com/quic-go/quic-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	vpcv1alpha1 "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/relay/steer"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/peerconn"
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
@@ -92,5 +97,35 @@ func TestDatagrams(t *testing.T) {
 		cancel()
 		require.NoError(t, err)
 		assert.Equal(t, peerconn.EncodeFromRelay(nil, src, []byte("ping")), b)
+	}
+}
+
+// A data frame with a 1280 B packet goes through at MinPacketSize, with the
+// 8 B connection IDs of the relay, before and after the first ACK.
+func TestMinPacketSize(t *testing.T) {
+	cert, _ := relayCert(t, "relay-1", newKey(t))
+	cfg := &quic.Config{EnableDatagrams: true, InitialPacketSize: MinPacketSize, DisablePathMTUDiscovery: true}
+	udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	require.NoError(t, err)
+	tr := &quic.Transport{Conn: udp, ConnectionIDGenerator: steer.ConnIDs{}}
+	defer tr.Close()
+	ln, err := tr.Listen(&tls.Config{Certificates: []tls.Certificate{*cert}, NextProtos: []string{"t"}}, cfg)
+	require.NoError(t, err)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	qc, err := quic.DialAddr(ctx, ln.Addr().String(), &tls.Config{InsecureSkipVerify: true, NextProtos: []string{"t"}}, cfg)
+	require.NoError(t, err)
+	defer qc.CloseWithError(0, "")
+	sc, err := ln.Accept(ctx)
+	require.NoError(t, err)
+
+	frame := peerconn.EncodeData(nil, 1, make([]byte, vpcv1alpha1.DefaultMTU))
+	for range 3 {
+		for _, c := range []struct{ from, to quic.Connection }{{qc, sc}, {sc, qc}} {
+			require.NoError(t, c.from.SendDatagram(frame))
+			b, err := c.to.ReceiveDatagram(ctx)
+			require.NoError(t, err)
+			assert.Equal(t, frame, b)
+		}
 	}
 }

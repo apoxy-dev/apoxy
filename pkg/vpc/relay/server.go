@@ -11,12 +11,10 @@ import (
 
 	"github.com/quic-go/quic-go"
 
+	vpcv1alpha1 "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
-
-// defaultMTU is the inner MTU of a VPC that sets none.
-const defaultMTU = 1280
 
 // Network is the data of one VPC that sessions and attaches need.
 type Network struct {
@@ -66,7 +64,7 @@ func (srv *Server) network(vpc VPCKey) (Network, error) {
 		return Network{}, rpc.Errorf(rpc.Unavailable, "VPC %s/%s: %v", vpc.Project, vpc.UID, err)
 	}
 	if n.MTU == 0 {
-		n.MTU = defaultMTU
+		n.MTU = vpcv1alpha1.DefaultMTU
 	}
 	return n, nil
 }

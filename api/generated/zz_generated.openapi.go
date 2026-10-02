@@ -13432,6 +13432,13 @@ func schema_apoxy_api_vpc_v1alpha1_VPCNetworkSpec(ref common.ReferenceCallback) 
 							Ref:         ref("github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetworkDNS"),
 						},
 					},
+					"mtu": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Inner MTU of the network, from 1280 to 1412. Unset means 1280. An agent whose path to its relay cannot carry a larger MTU uses 1280.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
 				},
 			},
 		},
