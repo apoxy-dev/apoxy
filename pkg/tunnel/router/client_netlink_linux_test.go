@@ -6,6 +6,7 @@ import (
 	"context"
 	"net"
 	"net/netip"
+	"os/exec"
 	"sync"
 	"testing"
 	"time"
@@ -177,10 +178,10 @@ func TestClientNetlinkRouter_DelRoute(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, routes, 1)
 
-	// Delete the route
-	err = router.DelRoute(dstPrefix)
-	require.NoError(t, err)
+	// Delete the address first. DelRoute also removes dst from the mux.
 	err = router.DelAddr(dstPrefix)
+	require.NoError(t, err)
+	err = router.DelRoute(dstPrefix)
 	require.NoError(t, err)
 
 	// Verify route was removed
@@ -188,13 +189,16 @@ func TestClientNetlinkRouter_DelRoute(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, routes, 0)
 
-	// Verify connection was closed
-	assert.True(t, mockConn.isClosed())
+	// The owner of the connection closes it, not DelAddr.
+	assert.False(t, mockConn.isClosed())
 }
 
 func TestClientNetlinkRouter_StartStop(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
+	}
+	if _, err := exec.LookPath("iptables"); err != nil {
+		t.Skip("Start needs iptables")
 	}
 
 	localAddr, err := netip.ParsePrefix("10.0.0.1/24")
@@ -222,7 +226,9 @@ func TestClientNetlinkRouter_StartStop(t *testing.T) {
 	dstPrefix, err := netip.ParsePrefix("192.168.3.0/24")
 	require.NoError(t, err)
 
-	mockConn := newMockConnection([]byte("test packet"))
+	// No read data: the splice writes each read packet to the TUN, and the
+	// kernel refuses a packet that is not IP.
+	mockConn := newMockConnection(nil)
 	err = router.AddAddr(dstPrefix, mockConn)
 	require.NoError(t, err)
 	err = router.AddRoute(dstPrefix)
@@ -300,13 +306,13 @@ func TestClientNetlinkRouter_RouteUpdate(t *testing.T) {
 	err = router.AddRoute(dstPrefix)
 	require.NoError(t, err)
 
-	// Update with new connection - should replace existing
+	// A second connection for the same address is refused, and the first
+	// connection keeps it.
 	mockConn2 := newMockConnection([]byte("test packet 2"))
 	err = router.AddAddr(dstPrefix, mockConn2)
-	require.NoError(t, err)
+	require.Error(t, err)
 
-	// Verify old connection was closed and route still exists
-	assert.True(t, mockConn1.isClosed())
+	assert.False(t, mockConn1.isClosed())
 	routes, err := router.ListRoutes()
 	require.NoError(t, err)
 	assert.Len(t, routes, 1)
@@ -344,7 +350,7 @@ func TestClientNetlinkRouter_DefaultRoutes(t *testing.T) {
 	require.NoError(t, err)
 
 	router, err := NewClientNetlinkRouter(
-		WithTunnelInterface("test-tun-default"),
+		WithTunnelInterface("test-tun7"),
 		WithLocalAddresses([]netip.Prefix{localAddr}),
 	)
 	require.NoError(t, err)
@@ -354,8 +360,9 @@ func TestClientNetlinkRouter_DefaultRoutes(t *testing.T) {
 	defaultIPv4, err := netip.ParsePrefix("0.0.0.0/0")
 	require.NoError(t, err)
 
+	// The gateway of the default route is the local address.
 	mockConn := newMockConnection([]byte("default packet"))
-	err = router.AddAddr(defaultIPv4, mockConn)
+	err = router.AddAddr(localAddr, mockConn)
 	require.NoError(t, err)
 	err = router.AddRoute(defaultIPv4)
 	require.NoError(t, err)
@@ -376,7 +383,7 @@ func TestClientNetlinkRouter_DefaultRoutePreservation(t *testing.T) {
 	require.NoError(t, err)
 
 	router, err := NewClientNetlinkRouter(
-		WithTunnelInterface("test-tun-preserve"),
+		WithTunnelInterface("test-tun8"),
 		WithLocalAddresses([]netip.Prefix{localAddr}),
 	)
 	require.NoError(t, err)
@@ -386,8 +393,9 @@ func TestClientNetlinkRouter_DefaultRoutePreservation(t *testing.T) {
 	defaultRoute, err := netip.ParsePrefix("0.0.0.0/0")
 	require.NoError(t, err)
 
+	// The gateway of the default route is the local address.
 	mockConn := newMockConnection([]byte("default"))
-	err = router.AddAddr(defaultRoute, mockConn)
+	err = router.AddAddr(localAddr, mockConn)
 	require.NoError(t, err)
 	err = router.AddRoute(defaultRoute)
 	require.NoError(t, err)
@@ -401,7 +409,7 @@ func TestClientNetlinkRouter_DefaultRoutePreservation(t *testing.T) {
 	// Remove should work without errors
 	err = router.DelRoute(defaultRoute)
 	require.NoError(t, err)
-	err = router.DelAddr(defaultRoute)
+	err = router.DelAddr(localAddr)
 	require.NoError(t, err)
 }
 
@@ -414,7 +422,7 @@ func TestClientNetlinkRouter_ConnectionWithLocalAddresses(t *testing.T) {
 	require.NoError(t, err)
 
 	router, err := NewClientNetlinkRouter(
-		WithTunnelInterface("test-tun-conn-addr"),
+		WithTunnelInterface("test-tun9"),
 		WithLocalAddresses([]netip.Prefix{localAddr}),
 	)
 	require.NoError(t, err)
@@ -431,7 +439,8 @@ func TestClientNetlinkRouter_ConnectionWithLocalAddresses(t *testing.T) {
 	defaultRoute, err := netip.ParsePrefix("0.0.0.0/0")
 	require.NoError(t, err)
 
-	err = router.AddAddr(defaultRoute, mockConnWithAddrs)
+	// The gateway of the default route is the local address.
+	err = router.AddAddr(localAddr, mockConnWithAddrs)
 	require.NoError(t, err)
 	err = router.AddRoute(defaultRoute)
 	require.NoError(t, err)
