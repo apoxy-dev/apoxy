@@ -212,6 +212,40 @@ func TestPSPRetry(t *testing.T) {
 	assert.Equal(t, dp.FallbackReason_FALLBACK_REASON_UNSPECIFIED, st.Reason)
 }
 
+// TestPSPAfterQUIC sends UDP in a PSP session that follows a QUIC session.
+// The shards of the QUIC session must not dial again while the PSP session opens.
+func TestPSPAfterQUIC(t *testing.T) {
+	w := newWorld(t)
+	w.mtu = 1400
+	r := w.relay(t, "relay-1")
+	conn := &lossyConn{}
+	conn.limitProbes.Store(true)
+	a, b := w.agent(t, "a", r, agentOptions{conn: conn}), w.agent(t, "b", r, agentOptions{})
+	a.attached(t)
+	require.Equal(t, dp.Mode_MODE_QUIC, a.a.Status().Mode)
+	shards := func() bool {
+		a.a.mu.Lock()
+		defer a.a.mu.Unlock()
+		return a.a.rc.pc.Shards() == quicShards
+	}
+	require.Eventually(t, shards, 10*time.Second, 10*time.Millisecond)
+
+	// The path probe of the PSP session fails, so the open takes more than 1 s.
+	conn.limitProbes.Store(false)
+	conn.max.Store(1400)
+	a.reconnect()
+	ea, eb := a.attached(t), b.attached(t)
+	require.Equal(t, dp.Mode_MODE_PSP, a.a.Status().Mode)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	require.NoError(t, a.a.Connect(ctx, eb.addr))
+	echo(t, b.stack, eb.addr, 9000)
+	echo(t, a.stack, ea.addr, 9001)
+	ping(t, a.stack, ea.addr, eb.addr, 9000, "from a")
+	ping(t, b.stack, eb.addr, ea.addr, 9001, "from b")
+}
+
 // TestRenew checks that the agent opens a relay session with the renewed
 // cert before it closes the old one.
 func TestRenew(t *testing.T) {

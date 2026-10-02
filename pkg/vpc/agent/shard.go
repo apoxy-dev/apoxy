@@ -18,23 +18,28 @@ import (
 )
 
 // keepShards keeps shards 1 to n-1 of rc on its packet connection until rc
-// closes. A shard that ends is dialed again.
+// or its connection closes. A shard that ends is dialed again.
 func (rc *relayConn) keepShards(n int) {
+	// A shard dial after the session ends gets no session at the relay.
+	ctx, cancel := context.WithCancel(rc.ctx)
+	defer cancel()
+	stop := context.AfterFunc(rc.qc.Context(), cancel)
+	defer stop()
 	var wg sync.WaitGroup
 	for i := 1; i < n; i++ {
-		wg.Go(func() { rc.keepShard(i) })
+		wg.Go(func() { rc.keepShard(ctx, i) })
 	}
 	wg.Wait()
 }
 
-func (rc *relayConn) keepShard(i int) {
+func (rc *relayConn) keepShard(ctx context.Context, i int) {
 	backoff := minBackoff
-	for rc.ctx.Err() == nil {
-		octx, cancel := context.WithTimeout(rc.ctx, openTimeout)
+	for ctx.Err() == nil {
+		octx, cancel := context.WithTimeout(ctx, openTimeout)
 		qc, err := rc.dialShard(octx, i)
 		cancel()
 		if err != nil {
-			if rc.ctx.Err() != nil {
+			if ctx.Err() != nil {
 				return
 			}
 			slog.Warn("Failed to open a relay shard", "relay", rc.addr, "shard", i, "error", err)
@@ -46,13 +51,13 @@ func (rc *relayConn) keepShard(i int) {
 			}
 			select {
 			case <-qc.Context().Done():
-			case <-rc.ctx.Done():
+			case <-ctx.Done():
 				_ = qc.CloseWithError(0, "")
 				return
 			}
 		}
 		select {
-		case <-rc.ctx.Done():
+		case <-ctx.Done():
 			return
 		case <-time.After(rand.N(backoff) + 1):
 		}
