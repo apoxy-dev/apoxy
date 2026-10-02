@@ -56,8 +56,7 @@ func NewStack(mtu int, pcapPath string) (*Stack, error) {
 	if tcpipErr := ipstack.SetTransportProtocolOption(tcp.ProtocolNumber, &sackEnabledOpt); tcpipErr != nil {
 		return nil, fmt.Errorf("could not enable TCP SACK: %v", tcpipErr)
 	}
-	// gVisor registers only reno and cubic, so it rejects "bbr".
-	tcpCCOpt := tcpip.CongestionControlOption("cubic")
+	tcpCCOpt := tcpip.CongestionControlOption(TCPCongestionControl)
 	if tcpipErr := ipstack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpCCOpt); tcpipErr != nil {
 		return nil, fmt.Errorf("could not set TCP congestion control: %v", tcpipErr)
 	}
@@ -104,8 +103,8 @@ func NewStack(mtu int, pcapPath string) (*Stack, error) {
 	if tcpipErr := ipstack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpLingerTimeout); tcpipErr != nil {
 		return nil, fmt.Errorf("could not set TCP linger timeout: %v", tcpipErr)
 	}
-	// Reduce min RTO to improve latency on retransmits (default 200ms).
-	tcpMinRTO := tcpip.TCPMinRTOOption(100 * time.Millisecond)
+	// The min RTO is 200 ms, as in Linux. The RTT under load can be more than 100 ms.
+	tcpMinRTO := tcpip.TCPMinRTOOption(200 * time.Millisecond)
 	if tcpipErr := ipstack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpMinRTO); tcpipErr != nil {
 		return nil, fmt.Errorf("could not set TCP min RTO: %v", tcpipErr)
 	}
