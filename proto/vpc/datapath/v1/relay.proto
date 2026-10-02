@@ -74,6 +74,8 @@ message Hello {
   // Set on an extra connection of a session in QUIC mode. The connection
   // then carries only data datagrams, and the relay ignores mode.
   Shard shard = 3;
+  // Why the agent is in QUIC mode.
+  FallbackReason fallback_reason = 4;
 }
 
 // Shard joins a connection to the session of an attachment. The session
@@ -116,6 +118,9 @@ message Ack {
 message Status {
   // ICV failures of receive SAs since the last Status.
   repeated ICVFailures icv_failures = 1;
+  // Time to connect: from the start of the dial to the first Config. Only the
+  // first Status of a session has it.
+  google.protobuf.Duration connect_time = 2;
 }
 
 // ICVFailures is the ICV failure count of one receive SA.
@@ -201,4 +206,14 @@ message RegisterSPIRequest {
 message UnregisterSPIRequest {
   VPCRef vpc = 1;
   repeated uint32 spis = 2;
+}
+
+// FallbackReason is why an agent sends data in QUIC mode.
+enum FallbackReason {
+  // No fallback: the agent is in PSP mode.
+  FALLBACK_REASON_UNSPECIFIED = 0;
+  // No PSP probe got a reply before the probe timer ended.
+  FALLBACK_REASON_PROBE_TIMEOUT = 1;
+  // The agent config sets QUIC mode.
+  FALLBACK_REASON_CONFIG = 2;
 }

@@ -54,6 +54,17 @@ does not route the inner source, if Permit denies the inner destination, or if
 no session routes it (then it sends `NoRoute`). It sends the frame to a
 QUIC-mode agent with no change, on the shard of its flow.
 
+### Data mode
+
+`Hello.mode` sets the data mode of a session, and it does not change. An agent
+in auto mode first sends path probes for 1280 B inner packets to the relay,
+from its PSP socket. If no reply comes in 1 s, it opens the session in QUIC
+mode with `fallback_reason` `PROBE_TIMEOUT`. In that mode it probes again with
+backoff (30 s, doubling to 10 min). After two probes in a row pass, 5 s apart,
+it opens a new session, which probes again. If the new session is in PSP mode,
+the agent moves to it and closes the old one, as at a cert renew. An agent
+with QUIC mode in its config sends `CONFIG` and does not probe.
+
 ### QUIC and PSP bridge
 
 The relay connects QUIC-mode and PSP-mode agents. It opens and seals only
@@ -106,7 +117,7 @@ Addresses and prefixes are text (`fd61::1`, `10.0.0.0/8`, `host:port`).
 
 | Method          | Kind  | Messages |
 |-----------------|-------|----------|
-| `Session`       | bidi  | Agent: `Hello{mode}`, then `Ack{rev}` and `Status` (ICV failures). Relay: `Welcome` (reflexive address), `Config`, in PSP mode a rekey with relay SAs, then `RouteDelta{rev}`, `NoRoute`, rekey (`KeysRequest`), `Config`, `Drain`. |
+| `Session`       | bidi  | Agent: `Hello{mode, fallback_reason}`, then `Ack{rev}` and `Status` (ICV failures; the first one after `Config` also has the time to connect). Relay: `Welcome` (reflexive address), `Config`, in PSP mode a rekey with relay SAs, then `RouteDelta{rev}`, `NoRoute`, rekey (`KeysRequest`), `Config`, `Drain`. |
 | `Attach`        | unary | `AttachRequest{vpc, name, labels, routes}` -> `AttachResponse{attachment_id, grant}` |
 | `Rekey`         | unary | `KeysRequest` -> `KeysResponse`: SAs for traffic from the relay to the agent. Errors: `FailedPrecondition` (no `Session` call in PSP mode), `InvalidArgument` (an SA VNI is not the network ID). |
 | `ResolvePeer`   | unary | `{vpc, address}` -> `{reach: local, trunk or visit; home_relay; p2p}`. Errors: `NotFound`, `PermissionDenied`. |
@@ -154,11 +165,15 @@ with no traffic, when either session closes, or when Permit stops allowing it.
 
 Each side accepts the other only if the peer cert chains to the VPC agent CA
 and names the same project and VPC, the grant passes the checks above, is for
-the same VPC, and names the SPIFFE ID of the peer cert, and the mode is `PSP`.
-If not, it closes the session with `BAD_GRANT`. When both agents dial (an
-open session in the other role with the same `instance`), the session that
-the agent with the lower SPIFFE ID dialed stays, and the other closes with
+the same VPC, and names the SPIFFE ID of the peer cert, and the mode is `PSP`
+or `QUIC`. If not, it closes the session with `BAD_GRANT`. When both agents
+dial (an open session in the other role with the same `instance`), the session
+that the agent with the lower SPIFFE ID dialed stays, and the other closes with
 `DUPLICATE`. A new `instance` replaces the open session.
+
+If one of the agents is in `QUIC` mode, data between them goes through the
+relay, which bridges PSP and QUIC data frames. The pair does not call `Keys`,
+and both sessions of a crossed dial stay.
 
 The agent that receives `Keys` sends with those SAs. It registers their SPIs at
 its relay before it applies them, and unregisters them after a revoke.

@@ -64,6 +64,9 @@ type peer struct {
 	prefixes []netip.Prefix
 	addr     netip.Addr // Overlay address of the peer.
 	bp       *psp.Peer
+	// quic is true when one of the agents sends QUIC data frames. Then the
+	// data goes through the relay, and bp is the relay peer.
+	quic bool
 
 	mu   sync.Mutex
 	spis map[uint32]time.Time // SPIs registered at the relay, to their expiry.
@@ -179,7 +182,11 @@ func (a *Agent) waitKeys(ctx context.Context, p *peer, dst netip.Addr) error {
 
 // wait waits until both sides of p have SAs.
 func (p *peer) wait(ctx context.Context) error {
-	for _, ch := range []chan struct{}{p.keyed, p.offered} {
+	chans := []chan struct{}{p.keyed, p.offered}
+	if p.quic {
+		chans = []chan struct{}{p.rc.bridgeTx, p.rc.bridgeRx}
+	}
+	for _, ch := range chans {
 		select {
 		case <-ch:
 		case <-ctx.Done():
@@ -259,7 +266,7 @@ func (a *Agent) dial(ctx context.Context, rc *relayConn, dst netip.Addr) (*peer,
 		_ = qc.CloseWithError(quic.ApplicationErrorCode(dp.PeerCloseCode_PEER_CLOSE_CODE_BAD_GRANT), err.Error())
 		return nil, err
 	}
-	open, err := p.client.Open(ctx, &dp.OpenRequest{Grant: rc.grant, Instance: a.instance, Mode: dp.Mode_MODE_PSP})
+	open, err := p.client.Open(ctx, &dp.OpenRequest{Grant: rc.grant, Instance: a.instance, Mode: rc.mode})
 	if err != nil {
 		if refusedDuplicate(qc, err) {
 			err = errDuplicate
@@ -278,21 +285,13 @@ func (a *Agent) dial(ctx context.Context, rc *relayConn, dst netip.Addr) (*peer,
 // admit checks the Open data of the peer, then adds it to the binding with
 // the prefixes of its grant.
 func (a *Agent) admit(p *peer, g *dp.AttachmentGrant, instance uint64, mode dp.Mode) error {
-	if mode != dp.Mode_MODE_PSP {
+	if mode != dp.Mode_MODE_PSP && mode != dp.Mode_MODE_QUIC {
 		return fmt.Errorf("peer mode %v is not supported", mode)
 	}
-	claims, err := relay.VerifyGrant(g, a.cfg.RelayRoots, time.Now())
-	if err != nil {
-		return err
+	if mode == dp.Mode_MODE_QUIC || p.rc.mode == dp.Mode_MODE_QUIC {
+		return a.admitQUIC(p, g, instance)
 	}
-	ref, vpc := p.rc.ref, claims.GetVpc()
-	if vpc.GetProjectId() != ref.GetProjectId() || vpc.GetVpcUid() != ref.GetVpcUid() || vpc.GetNetworkId() != ref.GetNetworkId() {
-		return errors.New("grant is for another VPC")
-	}
-	if claims.GetSubject() != p.subject {
-		return fmt.Errorf("grant is for %s, not for the peer cert %s", claims.GetSubject(), p.subject)
-	}
-	prefixes, err := parsePrefixes(claims.GetAddresses())
+	claims, prefixes, err := a.checkGrant(p, g)
 	if err != nil {
 		return err
 	}
@@ -336,6 +335,83 @@ func (a *Agent) admit(p *peer, g *dp.AttachmentGrant, instance uint64, mode dp.M
 	return nil
 }
 
+// checkGrant checks the grant of the peer and returns its claims and prefixes.
+func (a *Agent) checkGrant(p *peer, g *dp.AttachmentGrant) (*dp.GrantClaims, []netip.Prefix, error) {
+	claims, err := relay.VerifyGrant(g, a.cfg.RelayRoots, time.Now())
+	if err != nil {
+		return nil, nil, err
+	}
+	ref, vpc := p.rc.ref, claims.GetVpc()
+	if vpc.GetProjectId() != ref.GetProjectId() || vpc.GetVpcUid() != ref.GetVpcUid() || vpc.GetNetworkId() != ref.GetNetworkId() {
+		return nil, nil, errors.New("grant is for another VPC")
+	}
+	if claims.GetSubject() != p.subject {
+		return nil, nil, fmt.Errorf("grant is for %s, not for the peer cert %s", claims.GetSubject(), p.subject)
+	}
+	prefixes, err := parsePrefixes(claims.GetAddresses())
+	if err != nil {
+		return nil, nil, err
+	}
+	return claims, prefixes, nil
+}
+
+// admitQUIC adds a peer session that sends data through the relay. It routes
+// the peer prefixes to the relay peer, which other QUIC pairs share.
+func (a *Agent) admitQUIC(p *peer, g *dp.AttachmentGrant, instance uint64) error {
+	claims, prefixes, err := a.checkGrant(p, g)
+	if err != nil {
+		return err
+	}
+	// A PSP pair with the same peer is from before the peer changed its mode.
+	a.mu.Lock()
+	var old []*peer
+	for _, q := range a.peers {
+		if q != p && q.rc == p.rc && q.bp != nil && !q.quic && q.subject == p.subject {
+			old = append(old, q)
+		}
+	}
+	a.mu.Unlock()
+	for _, q := range old {
+		_ = q.qc.CloseWithError(quic.ApplicationErrorCode(dp.PeerCloseCode_PEER_CLOSE_CODE_DUPLICATE), "new session")
+		a.dropPeer(q)
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.peers[p.conn] != p || p.bp != nil {
+		return errors.New("peer session is closed or already open")
+	}
+	for i, pfx := range prefixes {
+		if err := a.bind.AddRoute(pfx, p.rc.relay); err != nil {
+			a.unrouteQUIC(p, prefixes[:i])
+			return fmt.Errorf("route %s: %w", pfx, err)
+		}
+	}
+	p.instance, p.claims, p.prefixes, p.addr, p.bp, p.quic = instance, claims, prefixes, overlayAddr(prefixes), p.rc.relay, true
+	close(a.admitted)
+	a.admitted = make(chan struct{})
+	close(p.ready)
+	slog.Info("Opened peer session", "peer", p.subject, "address", p.addr, "dialer", p.dialer, "transport", "quic")
+	return nil
+}
+
+// unrouteQUIC removes the routes of prefixes to the relay peer that no other
+// QUIC pair of p.rc has. a.mu must be held.
+func (a *Agent) unrouteQUIC(p *peer, prefixes []netip.Prefix) {
+	for _, pfx := range prefixes {
+		shared := false
+		for _, q := range a.peers {
+			if q != p && q.quic && q.rc == p.rc && slices.Contains(q.prefixes, pfx) {
+				shared = true
+				break
+			}
+		}
+		if !shared {
+			a.bind.RemoveRoute(pfx, p.rc.relay)
+		}
+	}
+}
+
 // closeCode is the peer session close code for an error from admit.
 func closeCode(err error) quic.ApplicationErrorCode {
 	if errors.Is(err, errDuplicate) {
@@ -354,11 +430,16 @@ func (a *Agent) dropPeer(p *peer) {
 	}
 	delete(a.peers, p.conn)
 	bp := p.bp
+	if p.quic {
+		a.unrouteQUIC(p, p.prefixes)
+	}
 	a.mu.Unlock()
 	if bp == nil {
 		return
 	}
-	a.bind.RemovePeer(bp)
+	if !p.quic {
+		a.bind.RemovePeer(bp)
+	}
 	p.mu.Lock()
 	spis := make([]uint32, 0, len(p.spis))
 	for spi := range p.spis {
@@ -401,7 +482,7 @@ func (a *Agent) peerOfBinding(bp *psp.Peer) *peer {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	for _, p := range a.peers {
-		if p.bp == bp {
+		if p.bp == bp && !p.quic {
 			return p
 		}
 	}
@@ -410,6 +491,9 @@ func (a *Agent) peerOfBinding(bp *psp.Peer) *peer {
 
 // offer gives the peer new SAs for traffic to this agent.
 func (p *peer) offer() {
+	if p.quic {
+		return
+	}
 	req, err := p.bp.Offer(time.Now())
 	if err != nil {
 		slog.Warn("Failed to create receive SAs", "peer", p.subject, "error", err)
@@ -420,29 +504,35 @@ func (p *peer) offer() {
 	}
 }
 
-// sendKeys sends a key change to the peer, and offers new SAs for SPIs that
-// the peer refuses. It reports whether the peer took the change.
+// sendKeys sends a key change to the peer. It reports whether the peer took it.
 func (p *peer) sendKeys(req keys.Request) bool {
 	ctx, cancel := context.WithTimeout(p.rc.ctx, keysTimeout)
 	defer cancel()
+	if err := giveKeys(ctx, p.bp, req, p.client.Keys); err != nil {
+		if p.qc.Context().Err() == nil {
+			slog.Warn("Failed to send keys to a peer", "peer", p.subject, "error", err)
+		}
+		return false
+	}
+	return true
+}
+
+// giveKeys sends a key change of bp with send, and offers new SAs for the SPIs
+// that the receiver refuses.
+func giveKeys(ctx context.Context, bp *psp.Peer, req keys.Request, send func(context.Context, *dp.KeysRequest) (*dp.KeysResponse, error)) error {
 	for range maxRefusals {
-		res, err := p.client.Keys(ctx, keyproto.ToProto(req))
+		res, err := send(ctx, keyproto.ToProto(req))
 		if err != nil {
-			if p.qc.Context().Err() == nil {
-				slog.Warn("Failed to send keys to a peer", "peer", p.subject, "error", err)
-			}
-			return false
+			return err
 		}
 		if len(res.GetRefusedSpis()) == 0 {
-			return true
+			return nil
 		}
-		if req, err = p.bp.Refused(res.GetRefusedSpis(), time.Now()); err != nil {
-			slog.Warn("Failed to replace refused SAs", "peer", p.subject, "error", err)
-			return false
+		if req, err = bp.Refused(res.GetRefusedSpis(), time.Now()); err != nil {
+			return fmt.Errorf("replace refused SAs: %w", err)
 		}
 	}
-	slog.Warn("Peer refused the SAs too many times", "peer", p.subject)
-	return false
+	return errors.New("receiver refused the SAs too many times")
 }
 
 // register tells the relay to forward the SPIs of sas to the peer.
@@ -536,7 +626,7 @@ func (s *peerService) Open(ctx context.Context, in *dp.OpenRequest) (*dp.OpenRes
 		return nil, rpc.Errorf(rpc.PermissionDenied, "%v", err)
 	}
 	go p.offer()
-	return &dp.OpenResponse{Grant: p.rc.grant, Instance: s.a.instance, Mode: dp.Mode_MODE_PSP}, nil
+	return &dp.OpenResponse{Grant: p.rc.grant, Instance: s.a.instance, Mode: p.rc.mode}, nil
 }
 
 // Keys applies SAs from the peer and registers their SPIs at the relay.
@@ -549,6 +639,9 @@ func (s *peerService) Keys(ctx context.Context, in *dp.KeysRequest) (*dp.KeysRes
 	case <-p.ready:
 	case <-ctx.Done():
 		return nil, ctx.Err()
+	}
+	if p.quic {
+		return nil, rpc.Errorf(rpc.FailedPrecondition, "data to this peer goes through the relay")
 	}
 	req, err := keyproto.FromProto(in)
 	if err != nil {

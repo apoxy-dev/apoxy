@@ -118,6 +118,100 @@ func TestConnect(t *testing.T) {
 	}
 }
 
+// TestTransportModes sends UDP both ways between agents where one or both
+// send QUIC data frames. The relay bridges a PSP agent and a QUIC agent.
+func TestTransportModes(t *testing.T) {
+	inPSP := Status{Mode: dp.Mode_MODE_PSP}
+	quicConfig := Status{Mode: dp.Mode_MODE_QUIC, Reason: dp.FallbackReason_FALLBACK_REASON_CONFIG}
+	quicTimeout := Status{Mode: dp.Mode_MODE_QUIC, Reason: dp.FallbackReason_FALLBACK_REASON_PROBE_TIMEOUT}
+	cases := []struct {
+		name         string
+		a, b         TransportMode
+		noProbes     bool // The PSP probes of a get no reply.
+		wantA, wantB Status
+	}{
+		{name: "PSP to QUIC", a: TransportPSP, b: TransportQUIC, wantA: inPSP, wantB: quicConfig},
+		{name: "QUIC to PSP", a: TransportQUIC, b: TransportPSP, wantA: quicConfig, wantB: inPSP},
+		{name: "QUIC to QUIC", a: TransportQUIC, b: TransportQUIC, wantA: quicConfig, wantB: quicConfig},
+		{name: "auto to QUIC", b: TransportQUIC, wantA: inPSP, wantB: quicConfig},
+		{name: "auto with no PSP path to auto", noProbes: true, wantA: quicTimeout, wantB: inPSP},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newWorld(t)
+			r := w.relay(t, "relay-1")
+			optsA := agentOptions{mode: tc.a}
+			if tc.noProbes {
+				optsA.conn = &lossyConn{}
+				optsA.conn.limitProbes.Store(true)
+			}
+			a, b := w.agent(t, "a", r, optsA), w.agent(t, "b", r, agentOptions{mode: tc.b})
+			ea, eb := a.attached(t), b.attached(t)
+			for _, x := range []struct {
+				ta   *testAgent
+				want Status
+			}{{a, tc.wantA}, {b, tc.wantB}} {
+				st := x.ta.a.Status()
+				assert.Equal(t, x.want.Mode, st.Mode)
+				assert.Equal(t, x.want.Reason, st.Reason)
+				assert.Positive(t, st.Connect)
+				assert.Less(t, st.Connect, openTimeout)
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			require.NoError(t, a.a.Connect(ctx, eb.addr))
+			require.NoError(t, b.a.Connect(ctx, ea.addr))
+			echo(t, b.stack, eb.addr, 9000)
+			echo(t, a.stack, ea.addr, 9001)
+			ping(t, a.stack, ea.addr, eb.addr, 9000, "from a")
+			ping(t, b.stack, eb.addr, ea.addr, 9001, "from b")
+			assert.Equal(t, 1, peerCount(a.a))
+			assert.Equal(t, 1, peerCount(b.a))
+
+			// When b leaves, a closes its peer session.
+			b.stop()
+			require.Eventually(t, func() bool { return peerCount(a.a) == 0 }, 5*time.Second, 10*time.Millisecond)
+		})
+	}
+}
+
+// TestPSPRetry checks that an agent in QUIC mode after a failed probe moves
+// back to PSP only after two probes in a row pass.
+func TestPSPRetry(t *testing.T) {
+	oldMin, oldMax, oldNext := pspRetryMin, pspRetryMax, pspRetryNext
+	pspRetryMin, pspRetryMax, pspRetryNext = 100*time.Millisecond, 400*time.Millisecond, 300*time.Millisecond
+	t.Cleanup(func() { pspRetryMin, pspRetryMax, pspRetryNext = oldMin, oldMax, oldNext })
+	w := newWorld(t)
+	r := w.relay(t, "relay-1")
+	conn := &lossyConn{}
+	conn.limitProbes.Store(true)
+	a := w.agent(t, "a", r, agentOptions{conn: conn})
+	a.attached(t)
+	st := a.a.Status()
+	assert.Equal(t, dp.Mode_MODE_QUIC, st.Mode)
+	assert.Equal(t, dp.FallbackReason_FALLBACK_REASON_PROBE_TIMEOUT, st.Reason)
+
+	// Two retry probes pass, then the probe of the new session gets no reply.
+	// One pass would open the new session before the budget ends.
+	sent := conn.probes.Load()
+	conn.probeBudget.Store(2)
+	// Each failed probe sends 3 probes. The probe after them is the next retry.
+	require.Eventually(t, func() bool { return conn.probes.Load() >= sent+2+3+1 }, 10*time.Second, 5*time.Millisecond)
+	select {
+	case <-a.attach:
+		t.Fatal("agent moved to PSP after one probe passed")
+	default:
+	}
+	assert.Equal(t, dp.Mode_MODE_QUIC, a.a.Status().Mode)
+
+	conn.limitProbes.Store(false)
+	a.attached(t)
+	st = a.a.Status()
+	assert.Equal(t, dp.Mode_MODE_PSP, st.Mode)
+	assert.Equal(t, dp.FallbackReason_FALLBACK_REASON_UNSPECIFIED, st.Reason)
+}
+
 // TestRenew checks that the agent opens a relay session with the renewed
 // cert before it closes the old one.
 func TestRenew(t *testing.T) {

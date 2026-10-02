@@ -34,6 +34,8 @@ type syncState struct {
 	rev     uint64                   // Revision of the last RouteDelta.
 	acked   uint64
 	dropped uint64
+	// connected is true after the agent reports its time to connect.
+	connected bool
 }
 
 // queueRoute adds a route change to the sync queue. A change cancels the
@@ -146,6 +148,7 @@ func (srv *Server) Session(ctx context.Context, st rpc.BidiStreamServer[dp.Sessi
 	if err := srv.R.openSync(s, mode, ref); err != nil {
 		return err
 	}
+	sessionsTotal.WithLabelValues(modeLabel(mode), reasonLabel(hello.GetFallbackReason())).Inc()
 	// The session ends with the call. The close carries the error.
 	defer func() {
 		msg := "Session call ended"
@@ -228,10 +231,25 @@ func (r *Router) recvSync(s *Session, st rpc.BidiStreamServer[dp.SessionRequest,
 			}
 			r.mu.Unlock()
 		case *dp.SessionRequest_Status:
+			if d := m.Status.GetConnectTime(); d != nil {
+				r.reportConnect(s, d.AsDuration())
+			}
 			r.ReportStatus(s, m.Status)
 		default:
 			return rpc.Errorf(rpc.InvalidArgument, "unexpected message on Session")
 		}
+	}
+}
+
+// reportConnect records the time to connect of s. Only the first one counts.
+func (r *Router) reportConnect(s *Session, d time.Duration) {
+	r.mu.Lock()
+	first := !s.sync.connected
+	s.sync.connected = true
+	mode := s.sync.mode
+	r.mu.Unlock()
+	if first {
+		connectSeconds.WithLabelValues(modeLabel(mode)).Observe(d.Seconds())
 	}
 }
 

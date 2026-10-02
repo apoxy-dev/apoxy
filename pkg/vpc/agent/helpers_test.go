@@ -35,6 +35,7 @@ import (
 
 	vpcv1alpha1 "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/identity"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/p2p"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/psp"
 )
@@ -272,16 +273,27 @@ type agentOptions struct {
 	life time.Duration // Cert life. Zero means 24 hours.
 	mtu  int           // Config.MTU.
 	conn *lossyConn    // Wraps the agent socket if set.
+	mode TransportMode
 }
 
 // lossyConn drops the packets that it sends if they are larger than max.
-// Zero means no limit.
+// Zero means no limit. While limitProbes is set, it sends only probeBudget
+// more path probes.
 type lossyConn struct {
 	net.PacketConn
-	max atomic.Int32
+	max         atomic.Int32
+	limitProbes atomic.Bool
+	probeBudget atomic.Int32
+	probes      atomic.Int32 // Path probes to send, with the dropped ones.
 }
 
 func (c *lossyConn) WriteTo(p []byte, addr net.Addr) (int, error) {
+	if len(p) > 0 && p[0] == p2p.TypeProbe {
+		c.probes.Add(1)
+		if c.limitProbes.Load() && c.probeBudget.Add(-1) < 0 {
+			return len(p), nil
+		}
+	}
 	if m := int(c.max.Load()); m != 0 && len(p) > m {
 		return len(p), nil
 	}
@@ -306,13 +318,14 @@ func (w *world) agent(t *testing.T, name string, r *testRelay, opts agentOptions
 		return w.enrollCA().credential(t, testProject, testVPC, name, opts.life), nil
 	}
 	ta.a = New(Config{
-		Identity:   identity.NewManager(filepath.Join(t.TempDir(), "cred.json"), enroll),
-		Relay:      r.addr,
-		RelayID:    r.id,
-		RelayRoots: w.relayCA.pool(),
-		Transport:  ta.tr,
-		Name:       name,
-		MTU:        opts.mtu,
+		Identity:      identity.NewManager(filepath.Join(t.TempDir(), "cred.json"), enroll),
+		Relay:         r.addr,
+		RelayID:       r.id,
+		RelayRoots:    w.relayCA.pool(),
+		Transport:     ta.tr,
+		TransportMode: opts.mode,
+		Name:          name,
+		MTU:           opts.mtu,
 		OnAttach: func(b *psp.Binding, addr netip.Addr, prefixes []netip.Prefix) {
 			ta.netstack(t, b, addr)
 			ta.attach <- attachEvent{addr, prefixes}
