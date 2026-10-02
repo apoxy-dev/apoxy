@@ -6,7 +6,7 @@ go 1.26.8
 // module. stock.mod drops the quic-go replace (build it with -tags stock).
 replace github.com/quic-go/quic-go => github.com/apoxy-dev/quic-go v0.0.0-20261002090033-6900a4bf9a8c
 
-replace gvisor.dev/gvisor => github.com/apoxy-dev/gvisor v0.0.0-20261002112718-bac0e7fdf8fd
+replace gvisor.dev/gvisor => github.com/apoxy-dev/gvisor v0.0.0-20261002121754-2683a6ffa60c
 
 require (
 	github.com/apoxy-dev/icx v0.19.1-0.20260826222334-295d1c74aeae
