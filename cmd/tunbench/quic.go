@@ -118,6 +118,7 @@ func countDatagrams(ctx context.Context, qc datagramConn, c *counter) error {
 			return fmt.Errorf("receive datagram: %w", err)
 		}
 		c.add(1, uint64(len(b)))
+		releaseDatagram(b)
 	}
 }
 

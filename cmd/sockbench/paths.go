@@ -189,9 +189,11 @@ func acceptDatagrams(ctx context.Context, ln *quic.EarlyListener, received *atom
 			}
 			slog.Info("Accepted connection", "remote", c.RemoteAddr(), "gso_active", c.ConnectionState().GSO)
 			for {
-				if _, err := c.ReceiveDatagram(ctx); err != nil {
+				b, err := c.ReceiveDatagram(ctx)
+				if err != nil {
 					return
 				}
+				quic.ReleaseDatagram(b)
 				received.Add(1)
 			}
 		}()

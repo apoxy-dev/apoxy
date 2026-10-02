@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Package peerconn has the frames of the QUIC datagrams on agent sessions. Conn
-// carries peer sessions in them and carries data frames on the shards of a
-// relay session.
+// Package peerconn has the frames of the QUIC datagrams on agent sessions. Conn carries peer
+// sessions in them, and data frames on the shards of a relay session.
 package peerconn
 
 import (
@@ -72,9 +71,10 @@ type shardTable struct {
 	live  []quic.Connection
 }
 
+// rxPkt is a peer frame that waits for ReadFrom. ReadFrom gives the frame back to quic-go.
 type rxPkt struct {
-	pkt  []byte
-	addr *net.UDPAddr
+	frame []byte
+	addr  *net.UDPAddr
 }
 
 // Stats counts dropped packets.
@@ -105,9 +105,8 @@ func New(qc quic.Connection, src netip.Addr) *Conn {
 	return c
 }
 
-// SetConn moves c to a new relay session, for example after a reconnect.
-// Peer sessions on c continue if they do not time out first. The shards of
-// the old session stop.
+// SetConn moves c to a new relay session, for example after a reconnect. Peer sessions on c
+// continue if they do not time out first, and the shards of the old session stop.
 func (c *Conn) SetConn(qc quic.Connection) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -210,9 +209,8 @@ func (c *Conn) SendData(frame []byte) error {
 // Shards returns the number of live shards, with the session.
 func (c *Conn) Shards() int { return len(c.shards.Load().live) }
 
-// HandleData gives the data frames of the relay session to h. h runs on the
-// reader goroutine of each shard, so calls can run at the same time. h must
-// not block, and it owns the frame. Nil stops it.
+// HandleData gives the data frames of the relay session to h, and nil stops it. h runs on the reader
+// goroutine of each shard and must not block. The frame is valid only until h returns.
 func (c *Conn) HandleData(h func(frame []byte)) {
 	if h == nil {
 		c.data.Store(nil)
@@ -234,12 +232,14 @@ func (c *Conn) receive(ctx context.Context, qc quic.Connection) {
 		if len(b) > 0 && b[0] == TypeData {
 			if h := c.data.Load(); h != nil {
 				(*h)(b)
+				quic.ReleaseDatagram(b)
 				continue
 			}
 		}
-		s, pkt, err := DecodeFromRelay(b)
+		s, _, err := DecodeFromRelay(b)
 		if err != nil {
 			c.otherDrops.Add(1)
+			quic.ReleaseDatagram(b)
 			continue
 		}
 		if addr == nil || s != src {
@@ -247,9 +247,10 @@ func (c *Conn) receive(ctx context.Context, qc quic.Connection) {
 			src, addr = s, net.UDPAddrFromAddrPort(netip.AddrPortFrom(s, 0))
 		}
 		select {
-		case c.rq <- rxPkt{pkt: pkt, addr: addr}:
+		case c.rq <- rxPkt{frame: b, addr: addr}:
 		default:
 			c.readDrops.Add(1)
+			quic.ReleaseDatagram(b)
 		}
 	}
 }
@@ -266,7 +267,9 @@ func (c *Conn) ReadFrom(p []byte) (int, net.Addr, error) {
 	}
 	select {
 	case r := <-c.rq:
-		return copy(p, r.pkt), r.addr, nil
+		n := copy(p, r.frame[FromRelayLen:])
+		quic.ReleaseDatagram(r.frame)
+		return n, r.addr, nil
 	case <-c.done:
 		return 0, nil, net.ErrClosed
 	case <-c.rd.wait():

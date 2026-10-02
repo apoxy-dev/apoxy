@@ -14,6 +14,9 @@ import (
 
 const quicBuild = "fork"
 
+// releaseDatagram gives a received datagram back to quic-go.
+func releaseDatagram(b []byte) { quic.ReleaseDatagram(b) }
+
 // quicConfig returns the QUIC config of the tunnel (pkg/tunnel/quic.go).
 func quicConfig(o options) *quic.Config {
 	c := &quic.Config{

@@ -3,6 +3,7 @@
 package peerconn
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"net"
@@ -121,7 +122,7 @@ func TestHandleData(t *testing.T) {
 	c := New(qc, testSrc)
 	defer c.Close()
 	got := make(chan []byte, 4)
-	c.HandleData(func(b []byte) { got <- b })
+	c.HandleData(func(b []byte) { got <- bytes.Clone(b) })
 	require.NoError(t, c.SetReadDeadline(time.Now().Add(5*time.Second)))
 	data := EncodeData(nil, testVNI, []byte("data"))
 	peer := EncodeFromRelay(nil, netip.MustParseAddr("fd00::2"), []byte("peer"))

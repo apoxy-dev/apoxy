@@ -14,6 +14,9 @@ import (
 
 const quicBuild = "stock"
 
+// releaseDatagram does nothing. Stock quic-go has no buffer pool for datagrams.
+func releaseDatagram([]byte) {}
+
 // quicConfig returns the QUIC config of the tunnel (pkg/tunnel/quic.go).
 // Stock quic-go has no DisableCongestionControl, so its congestion control stays on.
 func quicConfig(o options) *quic.Config {

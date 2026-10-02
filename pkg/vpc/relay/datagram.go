@@ -11,7 +11,7 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/peerconn"
 )
 
-// Relay sessions need this QUIC InitialPacketSize or more. Until the first ACK, quic-go
+// Relay sessions need this QUIC InitialPacketSize or more. Before path MTU discovery, quic-go
 // takes a datagram up to InitialPacketSize - 37 B, and a data frame is 1280 B + 5 B.
 const MinPacketSize = 1322
 
@@ -31,6 +31,8 @@ func (r *Router) serveDatagrams(s *Session, qc quic.Connection) {
 		} else {
 			r.forwardDatagram(s, b, time.Now())
 		}
+		// The forward copies b or seals it into buf, so quic-go can use b again.
+		quic.ReleaseDatagram(b)
 	}
 }
 
