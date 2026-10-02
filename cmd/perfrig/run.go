@@ -32,6 +32,7 @@ type config struct {
 	Window      string
 	Pings       int
 	Reps        int
+	Baseline    string
 	NetnsPrefix string
 	OutDir      string
 
@@ -59,7 +60,8 @@ func (c config) settings() Settings {
 }
 
 // execute builds the rig, runs the workload cfg.Reps times and removes the
-// rig. Each rep has new server and client processes.
+// rig. Each rep has new server and client processes. When the median fails the
+// baseline entry of the key, it runs cfg.Reps more times one time.
 func execute(ctx context.Context, cfg config, w Workload) (*Result, error) {
 	if runtime.GOOS != "linux" {
 		return nil, errors.New("perfrig run needs Linux")
@@ -79,6 +81,14 @@ func execute(ctx context.Context, cfg config, w Workload) (*Result, error) {
 		Settings:  cfg.settings(),
 	}
 	res.Key = resultKey(res.Host.Arch, w.Name, res.Settings)
+	var base *Baseline
+	if cfg.Baseline != "" {
+		b, err := loadBaseline(cfg.Baseline, false)
+		if err != nil {
+			return nil, err
+		}
+		base = &b
+	}
 	if w.Tools != nil {
 		tools, err := w.Tools(ctx)
 		if err != nil {
@@ -123,21 +133,34 @@ func execute(ctx context.Context, cfg config, w Workload) (*Result, error) {
 		Dir:      dir,
 	}
 	slog.Info("Starting workload", "workload", w.Name, "key", res.Key, "reps", cfg.Reps)
-	for rep := 1; rep <= cfg.Reps; rep++ {
-		run, err := runRep(ctx, cfg, w, r, env, rep)
-		if err != nil {
-			return nil, fmt.Errorf("rep %d: %w", rep, err)
+	runReps := func(from, to int) error {
+		for rep := from; rep <= to; rep++ {
+			run, err := runRep(ctx, cfg, w, r, env, rep)
+			if err != nil {
+				return fmt.Errorf("rep %d: %w", rep, err)
+			}
+			res.Runs = append(res.Runs, run)
 		}
-		res.Runs = append(res.Runs, run)
+		res.summarize()
+		return nil
 	}
-	res.summarize()
+	if err := runReps(1, cfg.Reps); err != nil {
+		return nil, err
+	}
+	if base != nil && needsRetry(*base, *res) {
+		slog.Warn("Median failed the baseline, running the reps again", "key", res.Key, "gbps", res.Throughput.Gbps)
+		res.Retried = true
+		if err := runReps(cfg.Reps+1, 2*cfg.Reps); err != nil {
+			return nil, err
+		}
+	}
 	return res, nil
 }
 
-// runRep starts the server and the client one time and measures them. With
-// more than one rep, each rep has its own directory in env.Dir.
+// runRep starts the server and the client one time and measures them. When
+// there can be more than one rep, each rep has its own directory in env.Dir.
 func runRep(ctx context.Context, cfg config, w Workload, r *rig, env Env, rep int) (Run, error) {
-	if cfg.Reps > 1 {
+	if cfg.Reps > 1 || cfg.Baseline != "" {
 		env.Dir = filepath.Join(env.Dir, "rep-"+strconv.Itoa(rep))
 		if err := os.MkdirAll(env.Dir, 0o755); err != nil {
 			return Run{}, err

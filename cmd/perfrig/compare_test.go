@@ -31,6 +31,8 @@ func TestCompare(t *testing.T) {
 		"gbps":  {Gbps: 10},
 		"pps":   {PacketsPerSecond: 500000},
 		"loose": {Gbps: 10, ClientCoresPerGbps: 0.2, ServerCoresPerGbps: 0.4, Tolerance: 0.25},
+		"floor": {MinGbps: 2},
+		"both":  {Gbps: 2.2, MinGbps: 2},
 	}}
 	cases := []struct {
 		name          string
@@ -59,6 +61,14 @@ func TestCompare(t *testing.T) {
 			wantOK: true, wantRegressed: []string{"packets_per_second"},
 		},
 		{name: "entry tolerance", baseline: base, res: result("loose", 8, 0.24, 0.48), wantOK: true},
+		{name: "above the floor", baseline: base, res: result("floor", 2.1, 0, 0), wantOK: true},
+		{name: "at the floor", baseline: base, res: result("floor", 2, 0, 0), wantOK: true},
+		{name: "below the floor", baseline: base, res: result("floor", 1.99, 0, 0), wantOK: true, wantRegressed: []string{"min_gbps"}},
+		{name: "floor and baseline ok", baseline: base, res: result("both", 2.05, 0, 0), wantOK: true},
+		{
+			name: "below the floor and the baseline", baseline: base, res: result("both", 1.95, 0, 0),
+			wantOK: true, wantRegressed: []string{"min_gbps", "gbps"},
+		},
 		{
 			name:     "default tolerance",
 			baseline: Baseline{Entries: map[string]BaselineEntry{"k": {Gbps: 10}}},
@@ -82,9 +92,12 @@ func TestCompare(t *testing.T) {
 
 func TestCompareResults(t *testing.T) {
 	base := Baseline{Tolerance: 0.10, Entries: map[string]BaselineEntry{
-		"k":     {Gbps: 10, ClientCoresPerGbps: 0.2},
-		"pps":   {PacketsPerSecond: 500000},
-		"empty": {Source: "no numbers"},
+		"k":          {Gbps: 10, ClientCoresPerGbps: 0.2},
+		"pps":        {PacketsPerSecond: 500000},
+		"empty":      {Source: "no numbers"},
+		"floor":      {MinGbps: 2},
+		"info":       {Gbps: 1, Info: true},
+		"info-empty": {Info: true},
 	}}
 	cases := []struct {
 		name     string
@@ -120,11 +133,23 @@ func TestCompareResults(t *testing.T) {
 			wantErr:  true,
 			wantText: []string{"FAIL empty", "checks no metric"},
 		},
+		{
+			name:     "below the floor fails",
+			results:  []Result{result("floor", 1.5, 0.3, 0.3)},
+			wantErr:  true,
+			wantText: []string{"FAIL floor", "min_gbps", "-25.0%", "REGRESSION"},
+		},
+		{
+			name:     "info entry regression passes",
+			results:  []Result{result("info", 0.5, 0.3, 0.3), result("info-empty", 1, 0.3, 0.3)},
+			wantText: []string{"WARN info", "-50.0%", "REGRESSION", "WARN info-empty", "checks no metric"},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var out bytes.Buffer
-			err := compareResults(&out, base, tc.results)
+			outcomes, err := compareResults(&out, base, tc.results)
+			assert.Len(t, outcomes, len(tc.results))
 			if tc.wantErr {
 				require.ErrorIs(t, err, errRegression)
 			} else {
@@ -166,4 +191,56 @@ func TestBaselineFiles(t *testing.T) {
 
 	_, err = loadResults([]string{t.TempDir()})
 	require.ErrorContains(t, err, "no result files")
+}
+
+func TestUpdateEntry(t *testing.T) {
+	r := result("k", 2.4, 0.5, 0.6)
+	cases := []struct {
+		name string
+		old  BaselineEntry
+		want BaselineEntry
+	}{
+		{
+			name: "new entry",
+			want: BaselineEntry{Gbps: 2.4, ClientCoresPerGbps: 0.5, ServerCoresPerGbps: 0.6},
+		},
+		{
+			name: "keeps the floor, the tolerance and the info flag",
+			old:  BaselineEntry{Gbps: 2.1, MinGbps: 2, Tolerance: 0.2, Info: true, Source: "old"},
+			want: BaselineEntry{Gbps: 2.4, ClientCoresPerGbps: 0.5, ServerCoresPerGbps: 0.6, MinGbps: 2, Tolerance: 0.2, Info: true},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := updateEntry(tc.old, r)
+			tc.want.Source = got.Source
+			assert.Equal(t, tc.want, got)
+			assert.NotEqual(t, "old", got.Source)
+		})
+	}
+}
+
+func TestNeedsRetry(t *testing.T) {
+	base := Baseline{Tolerance: 0.10, Entries: map[string]BaselineEntry{
+		"gate":  {Gbps: 2.2, MinGbps: 2, ClientCoresPerGbps: 0.5},
+		"info":  {Gbps: 1, Info: true},
+		"empty": {},
+	}}
+	cases := []struct {
+		name string
+		res  Result
+		want bool
+	}{
+		{name: "pass", res: result("gate", 2.3, 0.5, 0), want: false},
+		{name: "below the floor", res: result("gate", 1.9, 0.5, 0), want: true},
+		{name: "cpu rise", res: result("gate", 2.3, 0.6, 0), want: true},
+		{name: "info entry", res: result("info", 0.5, 0, 0), want: false},
+		{name: "entry with no metric", res: result("empty", 1, 0, 0), want: false},
+		{name: "no entry", res: result("other", 0.1, 0, 0), want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, needsRetry(base, tc.res))
+		})
+	}
 }

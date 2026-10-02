@@ -21,7 +21,10 @@ type Result struct {
 	RTT       RTT               `json:"rtt_ms"`
 	// Reps is the number of runs. Throughput, CPU and Info are the medians of
 	// the runs, each field on its own.
-	Reps       int        `json:"reps"`
+	Reps int `json:"reps"`
+	// Retried is true when the median of the first reps failed the baseline
+	// and the reps ran one more time.
+	Retried    bool       `json:"retried,omitempty"`
 	Throughput Throughput `json:"throughput"`
 	CPU        CPU        `json:"cpu"`
 	// Info has the median of each number in the workload results. No check uses it.

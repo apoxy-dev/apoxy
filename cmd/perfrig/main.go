@@ -5,7 +5,7 @@
 // baseline file.
 //
 //	perfrig run -workload iperf3-tcp -streams 4 -duration 30s -reps 3
-//	perfrig compare -baseline cmd/perfrig/baseline.json perf/
+//	perfrig compare -baseline cmd/perfrig/baseline.json -summary "$GITHUB_STEP_SUMMARY" perf/
 //	perfrig compare -baseline cmd/perfrig/baseline.json -update perf/
 package main
 
@@ -70,6 +70,7 @@ func runCmd(ctx context.Context, args []string) error {
 	fs.StringVar(&cfg.Window, "window", "", "socket buffer size (iperf3 -w); iperf3-udp uses 8M when empty")
 	fs.IntVar(&cfg.Pings, "pings", 20, "ping count for the RTT measurement")
 	fs.IntVar(&cfg.Reps, "reps", 1, "runs, each with new server and client processes; the result has the median of each number")
+	fs.StringVar(&cfg.Baseline, "baseline", "", "baseline file: when the median fails the entry of the key, run -reps more runs one time and use the median of all runs")
 	fs.StringVar(&cfg.NetnsPrefix, "netns-prefix", "perf", "prefix of the netns names")
 	fs.StringVar(&cfg.OutDir, "out-dir", "", "keep the workload files and raw output in this directory")
 	out := fs.String("out", "", "write the result JSON to this file (default: stdout)")
@@ -116,9 +117,10 @@ func compareCmd(args []string) error {
 	fs := flag.NewFlagSet("compare", flag.ExitOnError)
 	path := fs.String("baseline", "", "baseline JSON file")
 	update := fs.Bool("update", false, "write the results into the baseline file instead of comparing")
+	summary := fs.String("summary", "", "append a markdown table of the results to this file, for example $GITHUB_STEP_SUMMARY")
 	_ = fs.Parse(args)
 	if *path == "" || fs.NArg() == 0 {
-		return errors.New("usage: perfrig compare -baseline FILE [-update] RESULT_FILE_OR_DIR...")
+		return errors.New("usage: perfrig compare -baseline FILE [-update] [-summary FILE] RESULT_FILE_OR_DIR...")
 	}
 	results, err := loadResults(fs.Args())
 	if err != nil {
@@ -130,15 +132,18 @@ func compareCmd(args []string) error {
 	}
 	if *update {
 		for _, r := range results {
-			e := entryFor(r)
-			e.Tolerance = b.Entries[r.Key].Tolerance
-			b.Entries[r.Key] = e
+			b.Entries[r.Key] = updateEntry(b.Entries[r.Key], r)
 			fmt.Printf("SET %s\n", r.Key)
 		}
 		return saveBaseline(*path, b)
 	}
 	var report bytes.Buffer
-	err = compareResults(&report, b, results)
+	outcomes, err := compareResults(&report, b, results)
+	if *summary != "" {
+		if serr := appendSummary(*summary, outcomes); serr != nil {
+			slog.Warn("Failed to write the summary", "path", *summary, "error", serr)
+		}
+	}
 	os.Stdout.Write(report.Bytes())
 	if err != nil {
 		// A failed Dagger exec can show only stderr, so write the report there too.
