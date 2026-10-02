@@ -55,7 +55,12 @@ func TestRelay_StatelessResetAfterRestart(t *testing.T) {
 				RootCAs:    cryptoutils.CertPoolForCertificate(caCert),
 				ServerName: "localhost",
 				NextProtos: []string{http3.NextProtoH3},
-			}, &quic.Config{MaxIdleTimeout: 2 * time.Second, KeepAlivePeriod: 500 * time.Millisecond})
+			}, &quic.Config{
+				MaxIdleTimeout:  2 * time.Second,
+				KeepAlivePeriod: 500 * time.Millisecond,
+				// A path MTU probe is larger than 42 bytes and gets a reset.
+				DisablePathMTUDiscovery: true,
+			})
 			require.NoError(t, err)
 			defer conn.CloseWithError(0, "")
 			// After the relay control stream, client packets have a short header.

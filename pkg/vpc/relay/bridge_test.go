@@ -337,6 +337,11 @@ func (c *discardConn) SetWriteDeadline(time.Time) error { return nil }
 // localRouter returns a router whose bridge writes to a discardConn, and the
 // PSP packet handler.
 func localRouter(tb testing.TB) (*Router, func([]byte, net.Addr)) {
+	return localRouterConfig(tb, Config{})
+}
+
+// localRouterConfig is localRouter with the meters of cfg.
+func localRouterConfig(tb testing.TB, cfg Config) (*Router, func([]byte, net.Addr)) {
 	tb.Helper()
 	conn := newDiscardConn()
 	tr := &quic.Transport{Conn: conn}
@@ -344,7 +349,7 @@ func localRouter(tb testing.TB) (*Router, func([]byte, net.Addr)) {
 		_ = conn.Close()
 		_ = tr.Close()
 	})
-	r := NewRouter(nil, Config{})
+	r := NewRouter(nil, cfg)
 	return r, r.PacketHandler(tr)
 }
 

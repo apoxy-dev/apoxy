@@ -25,6 +25,36 @@ func init() {
 	metrics.Registry.MustRegister(sessionsTotal, connectSeconds)
 }
 
+// dropReason is a reason that the relay drops a packet.
+type dropReason int
+
+const (
+	dropMalformed dropReason = iota
+	dropUnknownSource
+	dropUnknownSPI
+	dropLaneMeter
+	dropTunnelLimit
+	numDropReasons
+)
+
+// dropLabels are the reason labels of the drop metric.
+var dropLabels = [numDropReasons]string{"malformed", "unknown_source", "unknown_spi", "lane_meter", "tunnel_limit"}
+
+var dropsDesc = prometheus.NewDesc("apoxy_vpc_relay_dropped_packets_total",
+	"Packets that the relay dropped before it forwarded them, by reason.", []string{"reason"}, nil)
+
+var _ prometheus.Collector = (*Router)(nil)
+
+// Describe implements prometheus.Collector.
+func (r *Router) Describe(ch chan<- *prometheus.Desc) { ch <- dropsDesc }
+
+// Collect implements prometheus.Collector. It gives the drop counters.
+func (r *Router) Collect(ch chan<- prometheus.Metric) {
+	for i := range r.drops {
+		ch <- prometheus.MustNewConstMetric(dropsDesc, prometheus.CounterValue, float64(r.drops[i].Load()), dropLabels[i])
+	}
+}
+
 func modeLabel(m dp.Mode) string {
 	switch m {
 	case dp.Mode_MODE_PSP:

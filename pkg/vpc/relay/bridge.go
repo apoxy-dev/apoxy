@@ -160,6 +160,9 @@ func (r *Router) forwardData(s *Session, b, buf []byte, now time.Time) bool {
 		s.dataDrops.Add(1)
 		return false
 	}
+	if !r.allow(s, len(b), now) {
+		return false
+	}
 	return r.deliver(s, h, b, inner, buf, now)
 }
 

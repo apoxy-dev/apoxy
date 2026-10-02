@@ -146,7 +146,7 @@ func testRelayVPC(t *testing.T, steerSockets int) {
 		require.NoError(t, r.SetSteerGroup(conns))
 	}
 	require.NoError(t, r.SetStatelessResetSecret([]byte("secret")))
-	r.SetVPC("localhost", vpcTrust{agentPool}, vpcNetworks{}, &vpcAddresses{})
+	r.SetVPC("localhost", vpcTrust{agentPool}, vpcNetworks{}, &vpcAddresses{}, vpcrelay.Config{})
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {

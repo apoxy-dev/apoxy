@@ -213,6 +213,7 @@ func (r *Router) openSync(s *Session, mode dp.Mode, ref *dp.VPCRef) error {
 		return rpc.Errorf(rpc.FailedPrecondition, "session already has a Session call")
 	}
 	s.sync.open, s.sync.mode, s.sync.ref = true, mode, ref
+	r.takeSource(s)
 	s.notify()
 	return nil
 }

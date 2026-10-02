@@ -31,7 +31,7 @@ const (
 	// stays valid after its connection migrates.
 	rebindOverlap = 5 * time.Second
 	sweepInterval = time.Second
-	minLaneBurst  = 64 << 10
+	minBurst      = 64 << 10
 )
 
 // VPCKey is the key of a routing domain: one VPC of one project. The VPC
@@ -64,13 +64,19 @@ type Permit func(srcVPC VPCKey, srcID string, dstVPC VPCKey, dst netip.Addr) boo
 // SameVPC is the MVP Permit rule: the source and the destination are in one VPC.
 func SameVPC(srcVPC VPCKey, _ string, dstVPC VPCKey, _ netip.Addr) bool { return srcVPC == dstVPC }
 
-// Config sets the meter of each lane (SPI row).
+// Config sets the meter of each lane (SPI row) and the limit of each tunnel.
 type Config struct {
 	// LaneRate is the meter rate in bytes per second. Zero means no limit.
 	LaneRate float64
 	// LaneBurst is the meter burst in bytes. Zero means 100 ms of LaneRate.
 	// It is at least 64 KiB.
 	LaneBurst int
+	// TunnelRate limits all data that one agent session sends through the
+	// relay, in bytes per second. Zero means no limit.
+	TunnelRate float64
+	// TunnelBurst is the burst of the tunnel limit in bytes. Zero means 100 ms
+	// of TunnelRate. It is at least 64 KiB.
+	TunnelBurst int
 }
 
 // Verdict is the result of a forward lookup.
@@ -85,15 +91,16 @@ const (
 	DropUnknownSPI
 	// DropMeter drops a packet above the meter of its lane.
 	DropMeter
+	// DropTunnelLimit drops a packet above the limit of the sender's tunnel.
+	DropTunnelLimit
 )
 
 // Router holds the routing domains, sessions and SPI rows of one relay.
 type Router struct {
-	cfg           Config
-	trust         Trust
-	unknownSource atomic.Uint64
-	malformed     atomic.Uint64
-	bridge        atomic.Pointer[bridge]
+	cfg    Config
+	trust  Trust
+	drops  [numDropReasons]atomic.Uint64
+	bridge atomic.Pointer[bridge]
 
 	mu       sync.RWMutex
 	permit   Permit
@@ -110,7 +117,11 @@ func NewRouter(trust Trust, cfg Config) *Router {
 	if cfg.LaneRate > 0 && cfg.LaneBurst == 0 {
 		cfg.LaneBurst = int(cfg.LaneRate / 10)
 	}
-	cfg.LaneBurst = max(cfg.LaneBurst, minLaneBurst)
+	cfg.LaneBurst = max(cfg.LaneBurst, minBurst)
+	if cfg.TunnelRate > 0 && cfg.TunnelBurst == 0 {
+		cfg.TunnelBurst = int(cfg.TunnelRate / 10)
+	}
+	cfg.TunnelBurst = max(cfg.TunnelBurst, minBurst)
 	return &Router{
 		cfg:      cfg,
 		trust:    trust,
@@ -137,6 +148,7 @@ type Session struct {
 	sources      func(netip.Addr) bool       // Allows the inner sources that route to s.
 	udpAddr      atomic.Pointer[net.UDPAddr] // Last address that the bridge sent to.
 	probe        *prober
+	meter        *rate.Limiter // Tunnel limit. Nil means no limit. Shards use the meter of the owner.
 
 	// Guarded by Router.mu.
 	addr        netip.AddrPort
@@ -154,8 +166,8 @@ type Session struct {
 	tx          *keys.TxPeer                 // SAs of s for PSP packets from the relay.
 	relaySAs    map[uint32]time.Time         // End of each relay SA of s.
 
-	dropUnknownSPI, dropMeter atomic.Uint64
-	dataSent, dataDrops       atomic.Uint64
+	dropUnknownSPI, dropMeter, dropTunnel atomic.Uint64
+	dataSent, dataDrops                   atomic.Uint64
 }
 
 // Identity returns the identity of s.
@@ -262,6 +274,9 @@ func (r *Router) addSession(s *Session, now time.Time) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.sessions[s] = struct{}{}
+	if r.cfg.TunnelRate > 0 {
+		s.meter = rate.NewLimiter(rate.Limit(r.cfg.TunnelRate), r.cfg.TunnelBurst)
+	}
 	if s.conn != nil {
 		r.byConn[s.conn] = s
 	}
@@ -322,7 +337,7 @@ func (r *Router) dropDomain(vpc VPCKey, d *domain) {
 }
 
 // setAddr moves s to source address a. The previous address stays valid
-// for rebindOverlap. The last session that validates an address owns it.
+// for rebindOverlap.
 func (r *Router) setAddr(s *Session, a netip.AddrPort, now time.Time) {
 	if !a.IsValid() || a == s.addr {
 		return
@@ -334,7 +349,19 @@ func (r *Router) setAddr(s *Session, a netip.AddrPort, now time.Time) {
 		s.prev, s.prevUntil = s.addr, now.Add(rebindOverlap)
 	}
 	s.addr = a
-	r.bySource[a] = s
+	r.takeSource(s)
+}
+
+// takeSource gives the source address of s to s. A session with a Session
+// call takes it from other sessions. Before its Hello, a session takes only a
+// free address, because a shard from the same socket must not take it.
+func (r *Router) takeSource(s *Session) {
+	if !s.addr.IsValid() || s.shardOf != nil {
+		return
+	}
+	if s.sync.open || r.bySource[s.addr] == nil {
+		r.bySource[s.addr] = s
+	}
 }
 
 // Addr returns the current source address of s.
@@ -475,23 +502,39 @@ func (r *Router) Forward(src netip.AddrPort, spi uint32, size int, now time.Time
 	defer r.mu.RUnlock()
 	s := r.bySource[src]
 	if s == nil || (src != s.addr && now.After(s.prevUntil)) {
-		r.unknownSource.Add(1)
+		r.drops[dropUnknownSource].Add(1)
 		return netip.AddrPort{}, DropUnknownSource
 	}
 	w := s.rows[spi]
 	if w == nil || now.After(w.expires) {
 		s.dropUnknownSPI.Add(1)
+		r.drops[dropUnknownSPI].Add(1)
 		return netip.AddrPort{}, DropUnknownSPI
 	}
 	if w.meter != nil && !w.meter.AllowN(now, size) {
 		w.dropMeter.Add(1)
 		s.dropMeter.Add(1)
+		r.drops[dropLaneMeter].Add(1)
 		return netip.AddrPort{}, DropMeter
+	}
+	if !r.allow(s, size, now) {
+		return netip.AddrPort{}, DropTunnelLimit
 	}
 	w.lastUsed.Store(now.UnixNano())
 	w.packets.Add(1)
 	w.bytes.Add(uint64(size))
 	return w.receiver.addr, Pass
+}
+
+// allow reports whether the tunnel limit of s lets size bytes through now. It
+// counts the drop if not.
+func (r *Router) allow(s *Session, size int, now time.Time) bool {
+	if s.meter == nil || s.meter.AllowN(now, size) {
+		return true
+	}
+	s.dropTunnel.Add(1)
+	r.drops[dropTunnelLimit].Add(1)
+	return false
 }
 
 // ReportStatus counts the ICV failures that receiver s reports on the
@@ -569,7 +612,10 @@ type LaneStats struct {
 type SenderStats struct {
 	DropUnknownSPI uint64
 	DropMeter      uint64
-	Lanes          []LaneStats // Sorted by SPI.
+	// DropTunnelLimit counts the PSP packets, data frames and peer frames above
+	// the tunnel limit. DataDrops does not count them.
+	DropTunnelLimit uint64
+	Lanes           []LaneStats // Sorted by SPI.
 	// DataSent and DataDrops count the data frames and the decrypted PSP
 	// packets of the sender that the relay sent on or dropped.
 	DataSent  uint64
@@ -579,10 +625,11 @@ type SenderStats struct {
 // SenderStats returns the counters of sender s.
 func (r *Router) SenderStats(s *Session) SenderStats {
 	st := SenderStats{
-		DropUnknownSPI: s.dropUnknownSPI.Load(),
-		DropMeter:      s.dropMeter.Load(),
-		DataSent:       s.dataSent.Load(),
-		DataDrops:      s.dataDrops.Load(),
+		DropUnknownSPI:  s.dropUnknownSPI.Load(),
+		DropMeter:       s.dropMeter.Load(),
+		DropTunnelLimit: s.dropTunnel.Load(),
+		DataSent:        s.dataSent.Load(),
+		DataDrops:       s.dataDrops.Load(),
 	}
 	r.mu.RLock()
 	for _, w := range s.rows {
@@ -601,11 +648,11 @@ func (r *Router) SenderStats(s *Session) SenderStats {
 }
 
 // UnknownSourceDrops returns the number of packets from addresses of no sender.
-func (r *Router) UnknownSourceDrops() uint64 { return r.unknownSource.Load() }
+func (r *Router) UnknownSourceDrops() uint64 { return r.drops[dropUnknownSource].Load() }
 
 // MalformedDrops returns the number of non-QUIC packets that are not PSP and
 // get no probe reply. Geneve packets that the kernel did not take count here.
-func (r *Router) MalformedDrops() uint64 { return r.malformed.Load() }
+func (r *Router) MalformedDrops() uint64 { return r.drops[dropMalformed].Load() }
 
 func addrPort(a net.Addr) netip.AddrPort {
 	u, ok := a.(*net.UDPAddr)

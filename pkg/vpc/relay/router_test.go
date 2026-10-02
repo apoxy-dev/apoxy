@@ -216,7 +216,7 @@ func TestForwardCounters(t *testing.T) {
 }
 
 func TestForwardAllocs(t *testing.T) {
-	r := NewRouter(nil, Config{LaneRate: 1 << 30})
+	r := NewRouter(nil, Config{LaneRate: 1 << 30, TunnelRate: 1 << 30})
 	snd := addSession(t, r, vpcA, "sender", "192.0.2.1:1000", "fd00::1/128")
 	addSession(t, r, vpcA, "receiver", "192.0.2.2:2000", "fd00::2/128")
 	require.NoError(t, r.registerSPI(snd.Session, register(vpcA, "fd00::2", time.Minute, 1), t0))

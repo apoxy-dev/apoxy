@@ -2,9 +2,7 @@ package tunnel
 
 import (
 	"context"
-	"crypto/hkdf"
 	"crypto/rand"
-	"crypto/sha256"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -216,27 +214,23 @@ func (r *Relay) SetLameDuckPeriod(d time.Duration) {
 // SetStatelessResetSecret derives the QUIC stateless reset key from secret and
 // the relay name. Call it before Start.
 func (r *Relay) SetStatelessResetSecret(secret []byte) error {
-	if len(secret) == 0 {
-		return errors.New("stateless reset secret is empty")
-	}
-	k, err := hkdf.Key(sha256.New, secret, nil, "apoxy relay quic stateless reset "+r.name, len(quic.StatelessResetKey{}))
+	key, err := statelessResetKey(secret, "relay", r.name)
 	if err != nil {
-		return fmt.Errorf("failed to derive the stateless reset key: %w", err)
+		return err
 	}
-	key := quic.StatelessResetKey(k)
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.resetKey = &key
+	r.resetKey = key
 	return nil
 }
 
 // SetVPC serves VPC relay sessions as relayID, a DNS name that the relay cert
-// covers. Call it before Start.
-func (r *Relay) SetVPC(relayID string, trust vpcrelay.Trust, nets vpcrelay.Networks, addrs vpcrelay.Addresses) *vpcrelay.Router {
+// covers. cfg sets the meters. Call it before Start.
+func (r *Relay) SetVPC(relayID string, trust vpcrelay.Trust, nets vpcrelay.Networks, addrs vpcrelay.Addresses, cfg vpcrelay.Config) *vpcrelay.Router {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	rtr := vpcrelay.NewRouter(trust, vpcrelay.Config{})
+	rtr := vpcrelay.NewRouter(trust, cfg)
 	r.vpc = &vpcrelay.Server{
 		R:         rtr,
 		Networks:  nets,

@@ -131,25 +131,39 @@ func TestAddrCache(t *testing.T) {
 // BenchmarkPacketHandler measures one PSP packet that the relay forwards by
 // the SPI row of its sender.
 func BenchmarkPacketHandler(b *testing.B) {
-	r, handle := localRouter(b)
-	s := localSession(b, r, "s", "192.0.2.1:1", "fd00:1::/96", dp.Mode_MODE_PSP)
-	localSession(b, r, "d", "192.0.2.2:1", "fd00:2::/96", dp.Mode_MODE_PSP)
-	require.NoError(b, r.registerSPI(s, register(vpcA, "fd00:2::1", time.Hour, 7), time.Now()))
-	aead, err := pspwire.NewAEAD(make([]byte, 16))
-	require.NoError(b, err)
-	inner := ipPacket(netip.MustParseAddr("fd00:1::1"), netip.MustParseAddr("fd00:2::1"), make([]byte, 1200))
-	pkt := make([]byte, len(inner)+pspwire.Overhead)
-	n, err := pspwire.Seal(aead, pspwire.Header{SPI: 7, VNI: testVNI}, pkt, inner)
-	require.NoError(b, err)
-	from := net.UDPAddrFromAddrPort(netip.MustParseAddrPort("192.0.2.1:1"))
-	b.SetBytes(int64(n))
-	b.ReportAllocs()
-	for b.Loop() {
-		handle(pkt[:n], from)
+	cases := []struct {
+		name string
+		cfg  Config
+	}{
+		{name: "no limits"},
+		{name: "lane limit", cfg: Config{LaneRate: 1 << 40}},
+		{name: "tunnel limit", cfg: Config{TunnelRate: 1 << 40}},
+		{name: "lane and tunnel limits", cfg: Config{LaneRate: 1 << 40, TunnelRate: 1 << 40}},
 	}
-	b.StopTimer()
-	st := r.SenderStats(s)
-	require.Len(b, st.Lanes, 1)
-	require.Positive(b, st.Lanes[0].Packets)
-	require.Zero(b, st.DropUnknownSPI)
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			r, handle := localRouterConfig(b, tc.cfg)
+			s := localSession(b, r, "s", "192.0.2.1:1", "fd00:1::/96", dp.Mode_MODE_PSP)
+			localSession(b, r, "d", "192.0.2.2:1", "fd00:2::/96", dp.Mode_MODE_PSP)
+			require.NoError(b, r.registerSPI(s, register(vpcA, "fd00:2::1", time.Hour, 7), time.Now()))
+			aead, err := pspwire.NewAEAD(make([]byte, 16))
+			require.NoError(b, err)
+			inner := ipPacket(netip.MustParseAddr("fd00:1::1"), netip.MustParseAddr("fd00:2::1"), make([]byte, 1200))
+			pkt := make([]byte, len(inner)+pspwire.Overhead)
+			n, err := pspwire.Seal(aead, pspwire.Header{SPI: 7, VNI: testVNI}, pkt, inner)
+			require.NoError(b, err)
+			from := net.UDPAddrFromAddrPort(netip.MustParseAddrPort("192.0.2.1:1"))
+			b.SetBytes(int64(n))
+			b.ReportAllocs()
+			for b.Loop() {
+				handle(pkt[:n], from)
+			}
+			b.StopTimer()
+			st := r.SenderStats(s)
+			require.Len(b, st.Lanes, 1)
+			require.Positive(b, st.Lanes[0].Packets)
+			require.Zero(b, st.DropUnknownSPI)
+			require.Zero(b, st.DropTunnelLimit)
+		})
+	}
 }

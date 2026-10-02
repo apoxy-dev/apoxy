@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/tls"
 	"io"
+	"net/netip"
 	"testing"
 	"time"
 
@@ -230,18 +231,86 @@ func TestShards(t *testing.T) {
 // TestShardSource checks that the owner keeps the source address of its
 // socket when a shard from that socket comes and goes.
 func TestShardSource(t *testing.T) {
-	w := newShardWorld(t)
-	owner := w.h.session(t, w.owner)
-	a := w.dial(t, w.cert)
-	_, err := join(t, a, w.att, 1)
-	require.NoError(t, err)
-	require.NoError(t, a.qc.CloseWithError(0, ""))
-	require.Eventually(t, func() bool {
-		w.h.r.mu.RLock()
-		defer w.h.r.mu.RUnlock()
-		return len(w.h.r.sessions) == 1
-	}, 5*time.Second, 5*time.Millisecond)
-	w.h.r.mu.RLock()
-	defer w.h.r.mu.RUnlock()
-	assert.Same(t, owner, w.h.r.bySource[w.owner.src])
+	cases := []struct {
+		name string
+		att  string // Empty means the attachment of the owner.
+		code rpc.Code
+	}{
+		{name: "join succeeds", code: rpc.OK},
+		{name: "join fails", att: "0123", code: rpc.NotFound},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newShardWorld(t)
+			owner := w.h.session(t, w.owner)
+			att := tc.att
+			if att == "" {
+				att = w.att
+			}
+			a := w.dial(t, w.cert)
+			_, err := join(t, a, att, 1)
+			assert.Equal(t, tc.code, rpc.CodeOf(err), "error: %v", err)
+			require.NoError(t, a.qc.CloseWithError(0, ""))
+			require.Eventually(t, func() bool {
+				w.h.r.mu.RLock()
+				defer w.h.r.mu.RUnlock()
+				return len(w.h.r.sessions) == 1
+			}, 5*time.Second, 5*time.Millisecond)
+			w.h.r.mu.RLock()
+			defer w.h.r.mu.RUnlock()
+			assert.Same(t, owner, w.h.r.bySource[w.owner.src])
+		})
+	}
+}
+
+// TestShardFromOwnerSocket checks that PSP packets from the socket of a live
+// session pass while a shard from that socket connects, joins or fails, and
+// after it ends.
+func TestShardFromOwnerSocket(t *testing.T) {
+	const addr = "192.0.2.1:1000"
+	cases := []struct {
+		name  string
+		id    Identity
+		join  bool // False means the shard sends no Hello.
+		att   string
+		index uint32
+		code  rpc.Code
+	}{
+		{name: "join succeeds", id: Identity{VPC: vpcA, ID: "owner"}, join: true, att: "att-owner", index: 1, code: rpc.OK},
+		{name: "unknown attachment", id: Identity{VPC: vpcA, ID: "owner"}, join: true, att: "att-other", index: 1, code: rpc.NotFound},
+		{name: "other agent identity", id: Identity{VPC: vpcA, ID: "other"}, join: true, att: "att-owner", index: 1, code: rpc.PermissionDenied},
+		{name: "other VPC", id: Identity{VPC: vpcB, ID: "owner"}, join: true, att: "att-owner", index: 1, code: rpc.NotFound},
+		{name: "index 0", id: Identity{VPC: vpcA, ID: "owner"}, join: true, att: "att-owner", index: 0, code: rpc.InvalidArgument},
+		{name: "no Hello", id: Identity{VPC: vpcA, ID: "owner"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := NewRouter(nil, Config{})
+			owner := addSession(t, r, vpcA, "owner", addr, "fd00::1/128")
+			require.NoError(t, r.openSync(owner.Session, dp.Mode_MODE_PSP, ref(vpcA)))
+			require.NoError(t, r.attach(owner.Session, &Attachment{ID: "att-owner"}))
+			addSession(t, r, vpcA, "receiver", "192.0.2.2:2000", "fd00::2/128")
+			require.NoError(t, r.registerSPI(owner.Session, register(vpcA, "fd00::2", time.Minute, 1), t0))
+			src := netip.MustParseAddrPort(addr)
+			forward := func(when string) {
+				t.Helper()
+				dst, v := r.Forward(src, 1, 1400, t0)
+				assert.Equal(t, Pass, v, when)
+				assert.Equal(t, "192.0.2.2:2000", dst.String(), when)
+			}
+
+			sh := newSession(tc.id, func() netip.AddrPort { return src })
+			r.addSession(sh, t0)
+			forward("after the shard connects")
+			if tc.join {
+				_, _, err := r.joinShard(sh, tc.att, tc.index)
+				assert.Equal(t, tc.code, rpc.CodeOf(err), "error: %v", err)
+			}
+			r.Sweep(t0)
+			forward("after the join")
+			r.leaveShard(sh)
+			r.removeSession(sh)
+			forward("after the shard ends")
+		})
+	}
 }

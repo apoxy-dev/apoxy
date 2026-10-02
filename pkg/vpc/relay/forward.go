@@ -23,7 +23,7 @@ func (r *Router) PacketHandler(tr *quic.Transport) func(b []byte, from net.Addr)
 		h, err := pspwire.ParseHeader(b)
 		if err != nil {
 			if !r.answerProbe(tr, b, from) {
-				r.malformed.Add(1)
+				r.drops[dropMalformed].Add(1)
 			}
 			return
 		}

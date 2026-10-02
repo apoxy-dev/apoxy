@@ -46,7 +46,7 @@ func (r *Router) forwardDatagram(s *Session, b []byte, now time.Time) bool {
 	r.mu.RLock()
 	owner := r.lookup(s.id.VPC, src)
 	r.mu.RUnlock()
-	if owner != s {
+	if owner != s || !r.allow(s, len(b), now) {
 		return false
 	}
 	next := r.Route(s, dst, now)
