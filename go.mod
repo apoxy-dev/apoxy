@@ -461,7 +461,7 @@ replace github.com/quic-go/quic-go => github.com/apoxy-dev/quic-go v0.0.0-202610
 
 replace github.com/quic-go/connect-ip-go => github.com/apoxy-dev/connect-ip-go v0.0.0-20250530062404-603929a73f45
 
-replace gvisor.dev/gvisor => github.com/apoxy-dev/gvisor v0.0.0-20261002121754-2683a6ffa60c
+replace gvisor.dev/gvisor => github.com/apoxy-dev/gvisor v0.0.0-20261002124621-b98fed61d605
 
 // clrk's go.mod transitively requires qpack v0.6.0 (via upstream quic-go), but
 // apoxy-cli runs the apoxy-dev/quic-go fork, which is built against the v0.5.x
