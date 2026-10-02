@@ -11,16 +11,22 @@ import (
 // Result is the JSON output of one run.
 type Result struct {
 	// Key names the settings that change the numbers. Baseline entries use it.
-	Key        string            `json:"key"`
-	Workload   string            `json:"workload"`
-	StartedAt  time.Time         `json:"started_at"`
-	Host       Host              `json:"host"`
-	Settings   Settings          `json:"settings"`
-	Tools      map[string]string `json:"tools,omitempty"`
-	Sysctls    map[string]string `json:"sysctls"`
-	RTT        RTT               `json:"rtt_ms"`
-	Throughput Throughput        `json:"throughput"`
-	CPU        CPU               `json:"cpu"`
+	Key       string            `json:"key"`
+	Workload  string            `json:"workload"`
+	StartedAt time.Time         `json:"started_at"`
+	Host      Host              `json:"host"`
+	Settings  Settings          `json:"settings"`
+	Tools     map[string]string `json:"tools,omitempty"`
+	Sysctls   map[string]string `json:"sysctls"`
+	RTT       RTT               `json:"rtt_ms"`
+	// Reps is the number of runs. Throughput, CPU and Info are the medians of
+	// the runs, each field on its own.
+	Reps       int        `json:"reps"`
+	Throughput Throughput `json:"throughput"`
+	CPU        CPU        `json:"cpu"`
+	// Info has the median of each number in the workload results. No check uses it.
+	Info map[string]float64 `json:"info,omitempty"`
+	Runs []Run              `json:"runs"`
 }
 
 // Host describes the machine that ran the rig.
@@ -73,6 +79,14 @@ type CPU struct {
 	Server ProcCPU `json:"server"`
 	// Host includes all load on the host while the client ran, also softirq time.
 	Host HostCPU `json:"host"`
+	// Relay is from the workload result, when it has one. No check uses it.
+	Relay *RelayCPU `json:"relay,omitempty"`
+}
+
+// RelayCPU is the relay CPU in the measured window of the workload.
+type RelayCPU struct {
+	Cores        float64 `json:"cores"`
+	CoresPerGbps float64 `json:"cores_per_gbps"`
 }
 
 // ProcCPU is the user and system time of one side while the client ran. The

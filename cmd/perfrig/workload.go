@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -107,8 +106,7 @@ func newWorkload(cfg config) (Workload, error) {
 // parseJSONLine reads the last non-empty line of the client stdout, for example
 // {"seconds": 30, "bits_per_second": 2.1e9, "packets_per_second": 180000}.
 func parseJSONLine(out []byte) (Throughput, error) {
-	lines := bytes.Split(bytes.TrimSpace(out), []byte("\n"))
-	last := bytes.TrimSpace(lines[len(lines)-1])
+	last := lastLine(out)
 	if len(last) == 0 {
 		return Throughput{}, errors.New("the client printed no result line")
 	}

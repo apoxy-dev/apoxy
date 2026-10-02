@@ -4,7 +4,7 @@
 // with RTT, throughput and CPU. "perfrig compare" checks results against a
 // baseline file.
 //
-//	perfrig run -workload iperf3-tcp -streams 4 -duration 30s
+//	perfrig run -workload iperf3-tcp -streams 4 -duration 30s -reps 3
 //	perfrig compare -baseline cmd/perfrig/baseline.json perf/
 //	perfrig compare -baseline cmd/perfrig/baseline.json -update perf/
 package main
@@ -69,6 +69,7 @@ func runCmd(ctx context.Context, args []string) error {
 	fs.StringVar(&cfg.Bitrate, "bitrate", "", "target bitrate of each flow (iperf3 -b); iperf3-udp uses 2G when empty")
 	fs.StringVar(&cfg.Window, "window", "", "socket buffer size (iperf3 -w); iperf3-udp uses 8M when empty")
 	fs.IntVar(&cfg.Pings, "pings", 20, "ping count for the RTT measurement")
+	fs.IntVar(&cfg.Reps, "reps", 1, "runs, each with new server and client processes; the result has the median of each number")
 	fs.StringVar(&cfg.NetnsPrefix, "netns-prefix", "perf", "prefix of the netns names")
 	fs.StringVar(&cfg.OutDir, "out-dir", "", "keep the workload files and raw output in this directory")
 	out := fs.String("out", "", "write the result JSON to this file (default: stdout)")
@@ -78,8 +79,8 @@ func runCmd(ctx context.Context, args []string) error {
 	fs.StringVar(&cfg.Ready, "ready", "none", "exec workload: socket that the server opens (tcp:PORT, udp:PORT or none)")
 	_ = fs.Parse(args)
 
-	if cfg.Duration < time.Second || cfg.Streams < 1 || cfg.MTU < 68 || cfg.Pings < 1 {
-		return errors.New("bad flags: need -duration >= 1s, -streams >= 1, -mtu >= 68 and -pings >= 1")
+	if cfg.Duration < time.Second || cfg.Streams < 1 || cfg.MTU < 68 || cfg.Pings < 1 || cfg.Reps < 1 {
+		return errors.New("bad flags: need -duration >= 1s, -streams >= 1, -mtu >= 68, -pings >= 1 and -reps >= 1")
 	}
 	w, err := newWorkload(cfg)
 	if err != nil {
@@ -101,7 +102,7 @@ func runCmd(ctx context.Context, args []string) error {
 		return err
 	}
 	data = append(data, '\n')
-	slog.Info("Workload done", "workload", res.Workload, "gbps", res.Throughput.Gbps,
+	slog.Info("Workload done", "workload", res.Workload, "reps", res.Reps, "gbps", res.Throughput.Gbps,
 		"rtt_ms", res.RTT.Avg, "client_cores_per_gbps", res.CPU.Client.CoresPerGbps,
 		"server_cores_per_gbps", res.CPU.Server.CoresPerGbps)
 	if *out == "" {

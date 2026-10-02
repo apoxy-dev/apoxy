@@ -49,6 +49,28 @@ func parseProcStat(data string) (cpuTimes, error) {
 	return cpuTimes{}, errors.New("no cpu line in /proc/stat")
 }
 
+// load1 returns the 1-minute load average of the host, or 0.
+func load1() float64 {
+	data, err := os.ReadFile("/proc/loadavg")
+	if err != nil {
+		return 0
+	}
+	v, err := parseLoadAvg(string(data))
+	if err != nil {
+		return 0
+	}
+	return v
+}
+
+// parseLoadAvg reads the first field of /proc/loadavg.
+func parseLoadAvg(data string) (float64, error) {
+	f := strings.Fields(data)
+	if len(f) == 0 {
+		return 0, errors.New("empty /proc/loadavg")
+	}
+	return strconv.ParseFloat(f[0], 64)
+}
+
 var errNoProcess = errors.New("process not in /proc")
 
 // treeCPU returns the user and system seconds of process root and its live

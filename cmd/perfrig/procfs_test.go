@@ -47,6 +47,30 @@ func TestParseProcStat(t *testing.T) {
 	}
 }
 
+func TestParseLoadAvg(t *testing.T) {
+	cases := []struct {
+		name    string
+		in      string
+		want    float64
+		wantErr bool
+	}{
+		{name: "normal", in: "13.48 15.10 17.43 9/1820 81285\n", want: 13.48},
+		{name: "empty", in: "\n", wantErr: true},
+		{name: "not a number", in: "x 1 2\n", wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseLoadAvg(tc.in)
+			if tc.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
 func TestParsePIDStat(t *testing.T) {
 	const tail = " 0 -1 4194560 100 0 0 0 250 130 7 3 20 0 1 0 100 0 0\n"
 	cases := []struct {

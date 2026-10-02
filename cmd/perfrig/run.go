@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -30,6 +31,7 @@ type config struct {
 	Bitrate     string
 	Window      string
 	Pings       int
+	Reps        int
 	NetnsPrefix string
 	OutDir      string
 
@@ -56,7 +58,8 @@ func (c config) settings() Settings {
 	}
 }
 
-// execute builds the rig, runs the workload once and removes the rig.
+// execute builds the rig, runs the workload cfg.Reps times and removes the
+// rig. Each rep has new server and client processes.
 func execute(ctx context.Context, cfg config, w Workload) (*Result, error) {
 	if runtime.GOOS != "linux" {
 		return nil, errors.New("perfrig run needs Linux")
@@ -119,22 +122,43 @@ func execute(ctx context.Context, cfg config, w Workload) (*Result, error) {
 		Window:   cfg.Window,
 		Dir:      dir,
 	}
+	slog.Info("Starting workload", "workload", w.Name, "key", res.Key, "reps", cfg.Reps)
+	for rep := 1; rep <= cfg.Reps; rep++ {
+		run, err := runRep(ctx, cfg, w, r, env, rep)
+		if err != nil {
+			return nil, fmt.Errorf("rep %d: %w", rep, err)
+		}
+		res.Runs = append(res.Runs, run)
+	}
+	res.summarize()
+	return res, nil
+}
+
+// runRep starts the server and the client one time and measures them. With
+// more than one rep, each rep has its own directory in env.Dir.
+func runRep(ctx context.Context, cfg config, w Workload, r *rig, env Env, rep int) (Run, error) {
+	if cfg.Reps > 1 {
+		env.Dir = filepath.Join(env.Dir, "rep-"+strconv.Itoa(rep))
+		if err := os.MkdirAll(env.Dir, 0o755); err != nil {
+			return Run{}, err
+		}
+	}
+	run := Run{Rep: rep, StartedAt: time.Now().UTC(), Load1Start: load1()}
 	server, err := startProc("server", r.server, w.Server(env), env.vars())
 	if err != nil {
-		return nil, err
+		return Run{}, err
 	}
 	defer server.stop()
 	if err := waitReady(ctx, server, w.Ready, 30*time.Second); err != nil {
-		return nil, err
+		return Run{}, err
 	}
 
-	slog.Info("Starting workload", "workload", w.Name, "key", res.Key)
 	hostBefore, hostErr := readCPUTimes()
 	su0, ss0, serverErr := server.cpuNow()
 	start := time.Now()
 	client, err := startProc("client", r.client, w.Client(env), env.vars())
 	if err != nil {
-		return nil, err
+		return Run{}, err
 	}
 	clientErr := client.wait(ctx, cfg.Duration+cfg.Omit+time.Minute)
 	elapsed := time.Since(start).Seconds()
@@ -143,13 +167,13 @@ func execute(ctx context.Context, cfg config, w Workload) (*Result, error) {
 	// Let the server write its report and exit, then stop it.
 	_ = server.wait(ctx, 10*time.Second)
 
-	writeOutput(dir, cfg.OutDir != "", client, server)
+	writeOutput(env.Dir, cfg.OutDir != "", client, server)
 	if clientErr != nil {
-		return nil, fmt.Errorf("client failed: %w\n%s", clientErr, tail(client.out.String(), 20))
+		return Run{}, fmt.Errorf("client failed: %w\n%s", clientErr, tail(client.out.String(), 20))
 	}
 	tp, err := w.Parse(client.out.Bytes(), server.out.Bytes())
 	if err != nil {
-		return nil, err
+		return Run{}, err
 	}
 	if tp.Seconds <= 0 {
 		tp.Seconds = cfg.Duration.Seconds()
@@ -157,20 +181,20 @@ func execute(ctx context.Context, cfg config, w Workload) (*Result, error) {
 	if tp.BitsPerSecond > 0 {
 		tp.Gbps = round(tp.BitsPerSecond/1e9, 3)
 	}
-	res.Throughput = tp
+	run.Throughput = tp
 
 	// CPU times include the warm-up, so divide by the client wall time, not tp.Seconds.
 	gbps := tp.BitsPerSecond / 1e9
 	cu, cs := client.cpu()
-	res.CPU.WallS = round(elapsed, 3)
-	res.CPU.Client = newProcCPU(cu, cs, elapsed, gbps)
+	run.CPU.WallS = round(elapsed, 3)
+	run.CPU.Client = newProcCPU(cu, cs, elapsed, gbps)
 	if err := errors.Join(serverErr, serverErr2); err != nil {
 		slog.Warn("Failed to measure server CPU", "error", err)
 	} else {
-		res.CPU.Server = newProcCPU(su1-su0, ss1-ss0, elapsed, gbps)
+		run.CPU.Server = newProcCPU(su1-su0, ss1-ss0, elapsed, gbps)
 	}
 	if hostErr == nil && hostErr2 == nil {
-		res.CPU.Host = HostCPU{
+		run.CPU.Host = HostCPU{
 			UserS:   round(hostAfter.User-hostBefore.User, 3),
 			SystemS: round(hostAfter.System-hostBefore.System, 3),
 			IRQS:    round(hostAfter.IRQ-hostBefore.IRQ, 3),
@@ -178,7 +202,11 @@ func execute(ctx context.Context, cfg config, w Workload) (*Result, error) {
 			Cores:   round((hostAfter.total()-hostBefore.total())/elapsed, 3),
 		}
 	}
-	return res, nil
+	run.WorkloadResult = jsonObjectLine(client.out.Bytes())
+	run.CPU.Relay = relayCPU(run.WorkloadResult)
+	run.Load1End = load1()
+	slog.Info("Rep done", "rep", rep, "gbps", tp.Gbps, "load1_start", run.Load1Start, "load1_end", run.Load1End)
+	return run, nil
 }
 
 func waitReady(ctx context.Context, p *proc, s Socket, timeout time.Duration) error {
@@ -209,6 +237,9 @@ func waitReady(ctx context.Context, p *proc, s Socket, timeout time.Duration) er
 	}
 }
 
+// waitDelay is the time that Wait waits for the output pipes after the process exits.
+const waitDelay = 2 * time.Second
+
 // proc is a workload process in a netns. "ip netns exec" replaces itself with
 // the command, so the rusage of proc covers the command and the children that
 // it waited for.
@@ -227,12 +258,19 @@ func startProc(name, ns string, argv, env []string) (*proc, error) {
 	p.cmd.Stdout = &p.out
 	p.cmd.Stderr = os.Stderr
 	p.cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// A background child, for example a relay, can keep stdout open after the
+	// process exits. Wait then closes the pipe after this delay.
+	p.cmd.WaitDelay = waitDelay
 	slog.Debug("Starting process", "side", name, "netns", ns, "argv", argv)
 	if err := p.cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start %s: %w", name, err)
 	}
 	go func() {
 		p.err = p.cmd.Wait()
+		if errors.Is(p.err, exec.ErrWaitDelay) {
+			slog.Warn("A child process kept the output open after the process exited", "side", name)
+			p.err = nil
+		}
 		close(p.done)
 	}()
 	return p, nil
