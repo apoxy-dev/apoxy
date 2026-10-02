@@ -142,9 +142,16 @@ func (c *ConntrackPacketConn) Open(remote *net.UDPAddr) (*VirtualPacketConn, err
 	}
 
 	v := newVirtual(c, key, remote, c.opts.RxBufSize)
-	c.flows.Add(key, v)
+	c.addFlow(key, v)
 	slog.Debug("conntrack_packet_conn: flow opened", slog.String("key", key), slog.String("remote", remote.String()))
 	return v, nil
+}
+
+// addFlow removes the old flow for key first: Add replaces an expired flow
+// that is still in the cache with no evict callback, so it would not close.
+func (c *ConntrackPacketConn) addFlow(key string, v *VirtualPacketConn) {
+	c.flows.Remove(key)
+	c.flows.Add(key, v)
 }
 
 var (
@@ -192,7 +199,7 @@ func (c *ConntrackPacketConn) readLoop() {
 			}
 			udpFrom, _ := from.(*net.UDPAddr)
 			v = newVirtual(c, key, udpFrom, c.opts.RxBufSize)
-			c.flows.Add(key, v) // registers & sets TTL
+			c.addFlow(key, v)
 			slog.Debug("conntrack_packet_conn: flow auto-created", slog.String("key", key), slog.String("remote", udpFrom.String()))
 		} else {
 			// refresh TTL on activity

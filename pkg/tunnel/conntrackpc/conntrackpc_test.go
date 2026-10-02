@@ -127,6 +127,35 @@ func TestTTLExpiryEvictsAndClosesFlow(t *testing.T) {
 	assert.GreaterOrEqual(t, time.Since(opened), ttl, "the flow closed before the TTL")
 }
 
+// A new flow for a remote closes the old flow, also when the old flow expired
+// and the LRU did not evict it yet.
+func TestReopenAfterTTLClosesOldFlow(t *testing.T) {
+	const ttl = 10 * time.Millisecond
+	under, _ := makeUDP(t)
+	ct := conntrackpc.New(under, conntrackpc.Options{
+		TTL:       ttl,
+		MaxFlows:  32,
+		RxBufSize: 8,
+	})
+	t.Cleanup(func() { _ = ct.Close() })
+
+	_, peerAddr := makeUDP(t)
+	v, err := ct.Open(peerAddr)
+	require.NoError(t, err)
+	for i := 0; i < 100; i++ {
+		// Wake at the expiry, at about the time the LRU evicts the flow.
+		time.Sleep(ttl)
+		next, err := ct.Open(peerAddr)
+		require.NoError(t, err)
+		if next == v {
+			continue
+		}
+		_, err = v.WriteTo([]byte{0}, peerAddr)
+		require.ErrorIs(t, err, net.ErrClosed, "round %d: the old flow is still open", i)
+		v = next
+	}
+}
+
 func TestMaxFlowsEvictsOldestAndCloses(t *testing.T) {
 	under, _ := makeUDP(t)
 	ct := conntrackpc.New(under, conntrackpc.Options{
