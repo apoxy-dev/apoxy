@@ -261,8 +261,11 @@ func refusedDuplicate(qc quic.Connection, err error) bool {
 		return true
 	}
 	var ae *quic.ApplicationError
-	return errors.As(context.Cause(qc.Context()), &ae) && ae.Remote &&
-		ae.ErrorCode == quic.ApplicationErrorCode(dp.PeerCloseCode_PEER_CLOSE_CODE_DUPLICATE)
+	// quic-go ends the call streams before it sets the close cause.
+	if !errors.As(err, &ae) && !errors.As(context.Cause(qc.Context()), &ae) {
+		return false
+	}
+	return ae.Remote && ae.ErrorCode == quic.ApplicationErrorCode(dp.PeerCloseCode_PEER_CLOSE_CODE_DUPLICATE)
 }
 
 // resolve asks the relay how it reaches dst.
@@ -309,6 +312,8 @@ func (a *Agent) dial(ctx context.Context, rc *relayConn, dst netip.Addr, res *dp
 // admit checks the Open data of the peer, then adds it to the binding with
 // the prefixes of its grant.
 func (a *Agent) admit(p *peer, g *dp.AttachmentGrant, instance uint64, mode dp.Mode) error {
+	a.admitMu.Lock()
+	defer a.admitMu.Unlock()
 	if mode != dp.Mode_MODE_PSP && mode != dp.Mode_MODE_QUIC {
 		return fmt.Errorf("peer mode %v is not supported", mode)
 	}
@@ -461,13 +466,13 @@ func (a *Agent) dropPeer(p *peer) {
 	if p.quic {
 		a.unrouteQUIC(p, p.prefixes)
 		a.unrouteQUIC(p, p.advertised)
+	} else if bp != nil {
+		// Remove the routes before a new session of the peer can add them.
+		a.bind.RemovePeer(bp)
 	}
 	a.mu.Unlock()
 	if bp == nil {
 		return
-	}
-	if !p.quic {
-		a.bind.RemovePeer(bp)
 	}
 	p.mu.Lock()
 	spis := make([]uint32, 0, len(p.spis))

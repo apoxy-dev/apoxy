@@ -125,7 +125,11 @@ type Agent struct {
 	probeMu sync.Mutex
 	probes  map[[8]byte]*pathProbe // Path probes that run, by SID.
 
-	// Lock order: routeMu, then mu. holds.mu is never held with another lock.
+	// admitMu orders the admits, so that a second session of a peer sees the
+	// first as old.
+	admitMu sync.Mutex
+
+	// Lock order: admitMu, routeMu, then mu. holds.mu is never held with another lock.
 	mu       sync.Mutex
 	rc       *relayConn
 	spares   []*relayConn            // Sessions with no attachment, on other relays.

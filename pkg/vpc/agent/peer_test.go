@@ -14,6 +14,7 @@ import (
 	"net/netip"
 	"path/filepath"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -241,6 +242,47 @@ func TestAdmit(t *testing.T) {
 	}
 }
 
+// TestAdmitCrossed admits both sessions of crossed dials at the same time. The
+// session that a dialed stays, because a has the lower ID.
+func TestAdmitCrossed(t *testing.T) {
+	w := newWorld(t)
+	g, err := relay.SignGrant(w.relayCA.relayCert(t, "relay-1"), &dp.GrantClaims{
+		Vpc:          &dp.VPCRef{ProjectId: testProject, VpcUid: testVPC, NetworkId: testVNI},
+		AttachmentId: "attachment-b",
+		Subject:      identity.ID{Project: testProject, VPC: testVPC, Agent: "b"}.String(),
+		Addresses:    []string{"fd00:b::/96"},
+		RelayId:      "relay-1",
+		NotAfter:     timestamppb.New(time.Now().Add(time.Hour)),
+	})
+	require.NoError(t, err)
+	a := w.stubAgent(t, "a")
+	dup := quic.ApplicationErrorCode(dp.PeerCloseCode_PEER_CLOSE_CODE_DUPLICATE)
+	for round := range 200 {
+		dialed, dialedConn := stubPeer(a, "b", true)
+		accepted, acceptedConn := stubPeer(a, "b", false)
+		var errDialed, errAccepted error
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		wg.Go(func() { <-start; errDialed = a.admit(dialed, g, 7, dp.Mode_MODE_PSP) })
+		wg.Go(func() { <-start; errAccepted = a.admit(accepted, g, 7, dp.Mode_MODE_PSP) })
+		close(start)
+		wg.Wait()
+
+		require.NoError(t, errDialed, "round %d", round)
+		require.NotNil(t, dialed.bp, "round %d", round)
+		require.False(t, dialedConn.closed(), "round %d", round)
+		// Admit refuses the accepted session, or the dialed session closes it.
+		if errAccepted != nil {
+			require.ErrorIs(t, errAccepted, errDuplicate, "round %d", round)
+		} else {
+			require.True(t, acceptedConn.closed(), "round %d", round)
+			require.Equal(t, dup, acceptedConn.code, "round %d", round)
+		}
+		a.dropPeer(dialed)
+		a.dropPeer(accepted)
+	}
+}
+
 func TestVerifyPeer(t *testing.T) {
 	w := newWorld(t)
 	m := identity.NewManager(filepath.Join(t.TempDir(), "cred.json"), func(context.Context) (*identity.Credential, error) {
@@ -286,6 +328,10 @@ func TestRefusedDuplicate(t *testing.T) {
 		{name: "local close DUPLICATE", err: errors.New("stream reset"), close: &quic.ApplicationError{ErrorCode: dup}},
 		{name: "remote close BAD_GRANT", err: errors.New("stream reset"), close: &quic.ApplicationError{Remote: true, ErrorCode: bad}},
 		{name: "status PermissionDenied", err: rpc.Errorf(rpc.PermissionDenied, "bad grant")},
+		// The call can end before the close cause is set.
+		{name: "remote DUPLICATE in the call error", err: rpc.Errorf(rpc.Unavailable, "%w", &quic.ApplicationError{Remote: true, ErrorCode: dup}), want: true},
+		{name: "local DUPLICATE in the call error", err: rpc.Errorf(rpc.Unavailable, "%w", &quic.ApplicationError{ErrorCode: dup})},
+		{name: "remote BAD_GRANT in the call error", err: rpc.Errorf(rpc.Unavailable, "%w", &quic.ApplicationError{Remote: true, ErrorCode: bad})},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
