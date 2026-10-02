@@ -13,6 +13,6 @@ import (
 // tunAvailable is false. The tun driver needs Linux.
 func tunAvailable() bool { return false }
 
-func startTun(context.Context, context.CancelCauseFunc, *psp.Binding, string, netip.Addr) (overlay, error) {
+func startTun(context.Context, context.CancelCauseFunc, *psp.Binding, string, netip.Addr, []netip.Prefix) (overlay, error) {
 	return nil, errors.New("the tun driver needs Linux")
 }

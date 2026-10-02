@@ -318,9 +318,10 @@ func TestForwardNetwork(t *testing.T) {
 	}
 }
 
-// fakeOverlay keeps the overlay addresses of a driver.
+// fakeOverlay keeps the overlay addresses and the own routes of a driver.
 type fakeOverlay struct {
-	addrs []netip.Addr
+	addrs  []netip.Addr
+	routes []netip.Prefix
 }
 
 func (f *fakeOverlay) setAddr(old, addr netip.Addr) error {
@@ -344,6 +345,8 @@ func (f *fakeOverlay) delAddr(addr netip.Addr) error {
 
 func (f *fakeOverlay) route(_, _ []netip.Prefix) {}
 
+func (f *fakeOverlay) own(routes []netip.Prefix) { f.routes = routes }
+
 func TestHostDeviceAttachments(t *testing.T) {
 	addr := netip.MustParseAddr
 	pfx := netip.MustParsePrefix
@@ -353,7 +356,7 @@ func TestHostDeviceAttachments(t *testing.T) {
 		attach    *agent.Attachment
 		detach    string
 		wantAddrs []netip.Addr
-		wantHost  []string // Addresses that forward to the host network.
+		wantHost  []string // Addresses in the own routes. They forward to the host network.
 	}{
 		{
 			name:      "attach x",
@@ -387,7 +390,7 @@ func TestHostDeviceAttachments(t *testing.T) {
 		},
 	}
 	routes := []netip.Prefix{pfx("10.0.0.0/16")}
-	dev := &fakeOverlay{addrs: []netip.Addr{base}}
+	dev := &fakeOverlay{addrs: []netip.Addr{base}, routes: routes}
 	h := &hostDevice{dev: dev, addr: base, routes: routes, fwd: newForwardNetwork(nil, nil, routes)}
 	for _, st := range steps {
 		if st.attach != nil {
@@ -397,7 +400,10 @@ func TestHostDeviceAttachments(t *testing.T) {
 		}
 		require.Equal(t, st.wantAddrs, dev.addrs, st.name)
 		for _, a := range []string{"10.0.0.1", "10.1.0.1"} {
-			require.Equal(t, slices.Contains(st.wantHost, a), h.fwd.routed(addr(a)), "%s: %s", st.name, a)
+			want := slices.Contains(st.wantHost, a)
+			require.Equal(t, want, h.fwd.routed(addr(a)), "%s: %s", st.name, a)
+			own := slices.ContainsFunc(dev.routes, func(p netip.Prefix) bool { return p.Contains(addr(a)) })
+			require.Equal(t, want, own, "%s: own route of %s", st.name, a)
 		}
 	}
 }

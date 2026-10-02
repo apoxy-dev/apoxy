@@ -34,7 +34,7 @@ func fullAddr(a netip.Addr, port uint16) *tcpip.FullAddress {
 // echo answers each UDP packet to addr:port with the same bytes.
 func echo(t *testing.T, s *stack.Stack, addr netip.Addr, port uint16) {
 	t.Helper()
-	c, err := gonet.DialUDP(s, fullAddr(addr, port), nil, ipv6.ProtocolNumber)
+	c, err := gonet.DialUDP(s, fullAddr(addr, port), nil, netProto(addr))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = c.Close() })
 	go func() {

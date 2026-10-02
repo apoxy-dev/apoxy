@@ -92,7 +92,9 @@ func (o *connectOptions) addFlags(cmd *cobra.Command) {
 	f.StringVar(&o.name, "name", "", "Attachment name, a DNS label (default: the host name).")
 	f.StringVar(&o.transport, "transport", "auto", "Data transport: auto, psp or quic. Auto uses psp, and quic when the path to the relay drops psp.")
 	f.StringVar(&o.driver, "driver", "auto", "Data path: auto, netstack or tun. Auto uses tun when the process has NET_ADMIN, else netstack.")
-	f.StringArrayVar(&o.routes, "route", nil, "CIDR that this host advertises into the VPC. Repeatable.")
+	f.StringArrayVar(&o.routes, "route", nil, "CIDR that this host advertises into the VPC. Repeatable. The VPC is IPv6 only. "+
+		"To reach an IPv4 address behind a netstack host, use that host's VPC /96 with the IPv4 address in the last 32 bits. "+
+		"Plain IPv4 works only between tun hosts whose source address is in a CIDR that they advertise.")
 	f.StringToStringVar(&o.labels, "label", nil, "Attachment label (key=value) for VPCService selection. Repeatable.")
 	f.StringVar(&o.socksAddr, "socks-addr", "localhost:1080", "SOCKS5 listen address of the netstack driver. Empty disables the proxy.")
 	f.StringVar(&o.tunIfname, "tun-ifname", "apoxy0", "Name of the TUN device of the tun driver.")
@@ -278,6 +280,8 @@ type overlay interface {
 	delAddr(addr netip.Addr) error
 	// route changes the routes of the prefixes of the other attachments.
 	route(add, remove []netip.Prefix)
+	// own sets the routes that this host advertises for all attachments.
+	own(routes []netip.Prefix)
 }
 
 // hostDevice starts the driver at the first attach. The agent calls attach,
@@ -313,7 +317,7 @@ func (h *hostDevice) attach(b *psp.Binding, addr netip.Addr, _ []netip.Prefix) {
 	servers, search := h.agent.DNS()
 	var err error
 	if h.driver == driverTun {
-		h.dev, err = startTun(h.ctx, h.fail, b, h.tunName, addr)
+		h.dev, err = startTun(h.ctx, h.fail, b, h.tunName, addr, h.ownRoutes())
 	} else {
 		h.dev, err = h.startNetstack(b, addr, &network.ResolveConfig{Nameservers: servers, SearchDomains: search})
 	}
@@ -358,7 +362,7 @@ func (h *hostDevice) attachment(at agent.Attachment) {
 		h.extras = map[string]agent.Attachment{}
 	}
 	h.extras[at.Name] = at
-	h.forwardRoutes()
+	h.ownChanged()
 }
 
 // detach removes the address of an extra attachment from the device.
@@ -371,19 +375,25 @@ func (h *hostDevice) detach(at agent.Attachment) {
 	if err := h.dev.delAddr(old.Address); err != nil {
 		slog.Warn("Failed to remove the address of an attachment", "name", at.Name, "address", old.Address, "error", err)
 	}
-	h.forwardRoutes()
+	h.ownChanged()
 }
 
-// forwardRoutes gives the netstack driver the routes of all attachments.
-func (h *hostDevice) forwardRoutes() {
-	if h.fwd == nil {
-		return
+// ownChanged gives the drivers the routes of all attachments.
+func (h *hostDevice) ownChanged() {
+	routes := h.ownRoutes()
+	h.dev.own(routes)
+	if h.fwd != nil {
+		h.fwd.setRoutes(routes)
 	}
+}
+
+// ownRoutes returns the routes that this host advertises for all attachments.
+func (h *hostDevice) ownRoutes() []netip.Prefix {
 	routes := slices.Clone(h.routes)
 	for _, at := range h.extras {
 		routes = append(routes, at.Routes...)
 	}
-	h.fwd.setRoutes(routes)
+	return routes
 }
 
 // netstackDev is the user-space network of the netstack driver.
@@ -480,6 +490,9 @@ func (n *forwardNetwork) routed(addr netip.Addr) bool {
 
 // route does nothing. The netstack sends all packets to the binding.
 func (n *netstackDev) route(_, _ []netip.Prefix) {}
+
+// own does nothing. The forward network gets the routes from hostDevice.
+func (n *netstackDev) own([]netip.Prefix) {}
 
 func (n *netstackDev) setAddr(old, addr netip.Addr) error {
 	if old.IsValid() {
