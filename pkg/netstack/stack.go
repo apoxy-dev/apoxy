@@ -66,11 +66,12 @@ func NewStack(mtu int, pcapPath string) (*Stack, error) {
 		return nil, fmt.Errorf("could not set TCP delay: %v", tcpipErr)
 	}
 
-	// High-performance TCP buffer settings.
+	// High-performance TCP buffer settings. The window is half the receive
+	// buffer, and out-of-order segments use 1.4x to 2.2x their size in memory.
 	tcpRcvBuf := tcpip.TCPReceiveBufferSizeRangeOption{
 		Min:     64 << 10, // 64 KiB
-		Default: 2 << 20,  // 2 MiB
-		Max:     16 << 20, // 16 MiB
+		Default: 4 << 20,  // 4 MiB
+		Max:     32 << 20, // 32 MiB
 	}
 	if tcpipErr := ipstack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpRcvBuf); tcpipErr != nil {
 		return nil, fmt.Errorf("could not set TCP receive buffer size: %v", tcpipErr)

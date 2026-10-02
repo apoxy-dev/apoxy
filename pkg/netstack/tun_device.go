@@ -205,6 +205,7 @@ func (tun *TunDevice) RegisterTCPStatsMetrics(reg prometheus.Registerer) {
 		{"tunnel_netstack_tcp_fast_recovery_total", "TCP fast recovery events.", func() float64 { return float64(s.FastRecovery.Value()) }},
 		{"tunnel_netstack_tcp_sack_recovery_total", "TCP SACK recovery events.", func() float64 { return float64(s.SACKRecovery.Value()) }},
 		{"tunnel_netstack_tcp_checksum_errors_total", "TCP checksum errors.", func() float64 { return float64(s.ChecksumErrors.Value()) }},
+		{"tunnel_netstack_tcp_out_of_order_drops_total", "TCP out-of-order segments dropped because the receive buffer was full.", func() float64 { return float64(s.OutOfOrderDrop.Value()) }},
 		{"tunnel_netstack_tcp_established", "Current established TCP connections.", func() float64 { return float64(s.CurrentEstablished.Value()) }},
 		{"tunnel_netstack_tcp_resets_sent_total", "TCP resets sent.", func() float64 { return float64(s.ResetsSent.Value()) }},
 		{"tunnel_netstack_tcp_resets_received_total", "TCP resets received.", func() float64 { return float64(s.ResetsReceived.Value()) }},
