@@ -4,8 +4,9 @@
 // that "perfrig run -workload exec" reads. A TCP connection on the same port
 // marks the start and the end of the measurement.
 //
-//	sockbench server -path oob -listen :4433
-//	sockbench client -path oob -addr 10.200.0.2:4433 -duration 30s -omit 2s
+//	perfrig run -workload exec -name sock-oob -ready tcp:4433 -omit 2s -duration 30s \
+//	  -server-argv '["sockbench","server","-path","oob","-listen",":4433"]' \
+//	  -client-argv '["sockbench","client","-path","oob","-addr","$SERVER_IP:4433","-omit","${OMIT_S}s","-duration","${DURATION_S}s"]'
 package main
 
 import (

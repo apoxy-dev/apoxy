@@ -1,7 +1,9 @@
 package main
 
 import (
+	"flag"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -47,7 +49,7 @@ func TestParseJSONLine(t *testing.T) {
 }
 
 func TestNewWorkload(t *testing.T) {
-	execCfg := config{Workload: "exec", Name: "quic", ServerCmd: "srv", ClientCmd: "cli", Ready: "udp:4433"}
+	execCfg := config{Workload: "exec", Name: "quic", ServerArgv: []string{"srv"}, ClientArgv: []string{"cli"}, Ready: "udp:4433"}
 	cases := []struct {
 		name     string
 		cfg      config
@@ -61,7 +63,12 @@ func TestNewWorkload(t *testing.T) {
 		{
 			name:    "exec without commands",
 			cfg:     config{Workload: "exec", Name: "quic"},
-			wantErr: "needs -name, -server-cmd and -client-cmd",
+			wantErr: "needs -name, -server-argv and -client-argv",
+		},
+		{
+			name:    "exec unknown variable",
+			cfg:     func() config { c := execCfg; c.SidecarArgv = []string{"relay", "-listen", "$RELAY_IP:4443"}; return c }(),
+			wantErr: "names $RELAY_IP",
 		},
 		{
 			name:    "exec bad socket",
@@ -81,6 +88,61 @@ func TestNewWorkload(t *testing.T) {
 			assert.NotNil(t, w.Server)
 			assert.NotNil(t, w.Client)
 			assert.NotNil(t, w.Parse)
+		})
+	}
+}
+
+func TestExecWorkloadArgv(t *testing.T) {
+	env := Env{ServerIP: serverIP, ClientIP: clientIP, Duration: 30 * time.Second, Omit: 5 * time.Second, Streams: 4, Dir: "/work"}
+	cases := []struct {
+		name string
+		argv []string
+		want []string
+	}{
+		{name: "no variables", argv: []string{"iperf3", "-s"}, want: []string{"iperf3", "-s"}},
+		{
+			name: "dollar and braces",
+			argv: []string{"vpcbench", "client", "-server", "$SERVER_IP:4433", "-omit", "${OMIT_S}s", "-duration", "${DURATION_S}s", "-streams", "$STREAMS"},
+			want: []string{"vpcbench", "client", "-server", "10.200.0.2:4433", "-omit", "5s", "-duration", "30s", "-streams", "4"},
+		},
+		{name: "no word split", argv: []string{"a b", "$WORK_DIR/x y"}, want: []string{"a b", "/work/x y"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w, err := newWorkload(config{Workload: "exec", Name: "x", ServerArgv: tc.argv, ClientArgv: tc.argv, SidecarArgv: tc.argv})
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, w.Server(env))
+			assert.Equal(t, tc.want, w.Client(env))
+			require.NotNil(t, w.Sidecar)
+			assert.Equal(t, tc.want, w.Sidecar(env))
+		})
+	}
+}
+
+func TestArgvFlag(t *testing.T) {
+	cases := []struct {
+		name    string
+		in      string
+		want    []string
+		wantErr bool
+	}{
+		{name: "list", in: `["tunbench","relay","-transport","quic"]`, want: []string{"tunbench", "relay", "-transport", "quic"}},
+		{name: "spaces in an argument", in: `["sh x", "a b"]`, want: []string{"sh x", "a b"}},
+		{name: "shell string", in: "tunbench relay", wantErr: true},
+		{name: "not strings", in: `[1, 2]`, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var got []string
+			fs := flag.NewFlagSet("t", flag.ContinueOnError)
+			fs.Var((*argvFlag)(&got), "argv", "")
+			err := fs.Parse([]string{"-argv", tc.in})
+			if tc.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
 		})
 	}
 }

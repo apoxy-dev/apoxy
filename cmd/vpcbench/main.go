@@ -3,12 +3,13 @@
 // Command vpcbench measures TCP flows between two VPC agents, through a v2
 // relay or directly. The relay makes a CA in the work dir and serves relay
 // sessions with test fakes, with no apiserver. The client prints one JSON line
-// that "perfrig run -workload exec" reads. The server exits after the client,
-// and the server command then stops the relay:
+// that "perfrig run -workload exec" reads. The relay is the sidecar of the
+// server. perfrig stops it after the server exits:
 //
 //	perfrig run -workload exec -name vpc-netstack-psp -ready tcp:4433 -streams 4 -omit 5s -duration 30s \
-//	  -server-cmd 'vpcbench relay -listen $SERVER_IP:4443 & vpcbench server -relay $SERVER_IP:4443 -listen $SERVER_IP:4433; kill $!; wait' \
-//	  -client-cmd 'vpcbench client -relay $SERVER_IP:4443 -server $SERVER_IP:4433 -cc bbr -streams $STREAMS -omit ${OMIT_S}s -duration ${DURATION_S}s'
+//	  -sidecar-argv '["vpcbench","relay","-listen","$SERVER_IP:4443"]' \
+//	  -server-argv '["vpcbench","server","-relay","$SERVER_IP:4443","-listen","$SERVER_IP:4433"]' \
+//	  -client-argv '["vpcbench","client","-relay","$SERVER_IP:4443","-server","$SERVER_IP:4433","-cc","bbr","-streams","$STREAMS","-omit","${OMIT_S}s","-duration","${DURATION_S}s"]'
 package main
 
 import (

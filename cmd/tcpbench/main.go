@@ -2,8 +2,8 @@
 // The agent prints one JSON line that "perfrig run -workload exec" reads, for example:
 //
 //	perfrig run -workload exec -name netstack-bbr -ready tcp:4433 -delay 10ms -loss 0.1 -omit 5s -duration 30s \
-//	  -server-cmd 'tcpbench relay -listen $SERVER_IP -peer $CLIENT_IP' \
-//	  -client-cmd 'tcpbench agent -relay $SERVER_IP -bind $CLIENT_IP -cc bbr -streams $STREAMS -omit ${OMIT_S}s -duration ${DURATION_S}s'
+//	  -server-argv '["tcpbench","relay","-listen","$SERVER_IP","-peer","$CLIENT_IP"]' \
+//	  -client-argv '["tcpbench","agent","-relay","$SERVER_IP","-bind","$CLIENT_IP","-cc","bbr","-streams","$STREAMS","-omit","${OMIT_S}s","-duration","${DURATION_S}s"]'
 package main
 
 import (

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"os/exec"
 	"runtime"
 	"syscall"
@@ -153,8 +154,8 @@ func TestTreeCPU(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("needs /proc")
 	}
-	// timeout puts the spinning child in a new process group.
-	cmd := exec.Command("sh", "-c", `timeout 2 sh -c 'while :; do :; done'; exec sleep 30`)
+	cmd := exec.Command(os.Args[0], "-test.run=^TestTreeCPUHelper$")
+	cmd.Env = append(os.Environ(), "PERFRIG_TREE_HELPER=parent")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	require.NoError(t, cmd.Start())
 	pid := cmd.Process.Pid
@@ -172,6 +173,24 @@ func TestTreeCPU(t *testing.T) {
 	_ = cmd.Wait()
 	_, _, err := treeCPU(pid)
 	require.ErrorIs(t, err, errNoProcess)
+}
+
+// TestTreeCPUHelper is not a test. For TestTreeCPU, the parent starts a child in
+// a new process group that uses CPU for 2 s, then sleeps.
+func TestTreeCPUHelper(t *testing.T) {
+	switch os.Getenv("PERFRIG_TREE_HELPER") {
+	case "parent":
+		child := exec.Command(os.Args[0], "-test.run=^TestTreeCPUHelper$")
+		child.Env = append(os.Environ(), "PERFRIG_TREE_HELPER=spin")
+		child.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		_ = child.Run()
+		time.Sleep(30 * time.Second)
+		os.Exit(0)
+	case "spin":
+		for end := time.Now().Add(2 * time.Second); time.Now().Before(end); {
+		}
+		os.Exit(0)
+	}
 }
 
 func TestParseSocket(t *testing.T) {

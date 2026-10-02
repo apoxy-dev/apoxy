@@ -39,10 +39,11 @@ type config struct {
 	OutDir      string
 
 	// Exec workload flags.
-	Name      string
-	ServerCmd string
-	ClientCmd string
-	Ready     string
+	Name        string
+	ServerArgv  []string
+	ClientArgv  []string
+	SidecarArgv []string
+	Ready       string
 }
 
 func (c config) settings() Settings {
@@ -193,17 +194,27 @@ func runRep(ctx context.Context, cfg config, w Workload, r *rig, env Env, rep in
 		}
 	}
 	run := Run{Rep: rep, StartedAt: time.Now().UTC(), Load1Start: load1()}
+	var side sideProcs
+	if w.Sidecar != nil {
+		sidecar, err := startProc("sidecar", r.server, w.Sidecar(env), env.vars())
+		if err != nil {
+			return Run{}, err
+		}
+		defer sidecar.stop()
+		side = append(side, sidecar)
+	}
 	server, err := startProc("server", r.server, w.Server(env), env.vars())
 	if err != nil {
 		return Run{}, err
 	}
 	defer server.stop()
+	side = append(side, server)
 	if err := waitReady(ctx, server, w.Ready, 30*time.Second); err != nil {
 		return Run{}, err
 	}
 
 	hostBefore, hostErr := readCPUTimes()
-	su0, ss0, serverErr := server.cpuNow()
+	su0, ss0, serverErr := side.cpuNow()
 	start := time.Now()
 	client, err := startProc("client", r.client, w.Client(env), env.vars())
 	if err != nil {
@@ -212,11 +223,14 @@ func runRep(ctx context.Context, cfg config, w Workload, r *rig, env Env, rep in
 	clientErr := client.wait(ctx, cfg.Duration+cfg.Omit+time.Minute)
 	elapsed := time.Since(start).Seconds()
 	hostAfter, hostErr2 := readCPUTimes()
-	su1, ss1, serverErr2 := server.cpuNow()
-	// Let the server write its report and exit, then stop it.
+	su1, ss1, serverErr2 := side.cpuNow()
+	// Let the server write its report and exit, then stop it and the sidecar.
 	_ = server.wait(ctx, 10*time.Second)
+	for _, p := range side {
+		p.stop()
+	}
 
-	writeOutput(env.Dir, cfg.OutDir != "", client, server)
+	writeOutput(env.Dir, cfg.OutDir != "", append([]*proc{client}, side...)...)
 	if clientErr != nil {
 		return Run{}, fmt.Errorf("client failed: %w\n%s", clientErr, tail(client.out.String(), 20))
 	}
@@ -309,8 +323,8 @@ func startProc(name, ns string, argv, env []string) (*proc, error) {
 	p.cmd.Stdout = &p.out
 	p.cmd.Stderr = os.Stderr
 	p.cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	// A background child, for example a relay, can keep stdout open after the
-	// process exits. Wait then closes the pipe after this delay.
+	// A child of the process can keep stdout open after the process exits.
+	// Wait then closes the pipe after this delay.
 	p.cmd.WaitDelay = waitDelay
 	slog.Debug("Starting process", "side", name, "netns", ns, "argv", argv)
 	if err := p.cmd.Start(); err != nil {
@@ -362,6 +376,18 @@ func (p *proc) stop() {
 		_ = syscall.Kill(-p.cmd.Process.Pid, syscall.SIGKILL)
 		<-p.done
 	}
+}
+
+// sideProcs are the processes in the server netns: the sidecar, if any, and the server.
+type sideProcs []*proc
+
+// cpuNow returns the sum of cpuNow of each process.
+func (ps sideProcs) cpuNow() (user, system float64, err error) {
+	for _, p := range ps {
+		u, s, perr := p.cpuNow()
+		user, system, err = user+u, system+s, errors.Join(err, perr)
+	}
+	return user, system, err
 }
 
 // cpu returns user and system seconds. Call it after the process exits.

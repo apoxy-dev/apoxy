@@ -92,9 +92,7 @@ func (r *rig) setup(ctx context.Context) error {
 func (r *rig) setRPS(ctx context.Context) {
 	mask := cpuMask(runtime.NumCPU())
 	for _, e := range []struct{ ns, dev string }{{r.client, clientDev}, {r.server, serverDev}} {
-		_, err := command(ctx, "ip", "netns", "exec", e.ns, "sh", "-c",
-			`for q in /sys/class/net/"$2"/queues/rx-*; do printf '%s\n' "$1" > "$q/rps_cpus" || exit 1; done`, "sh", mask, e.dev)
-		if err != nil {
+		if err := writeIn(ctx, e.ns, "/sys/class/net/"+e.dev+"/queues/rx-*/rps_cpus", mask); err != nil {
 			slog.Warn("Failed to set RPS on the veth", "netns", e.ns, "dev", e.dev, "error", err)
 		}
 	}
@@ -155,8 +153,7 @@ func (r *rig) tune(ctx context.Context) map[string]string {
 		visible := true
 		for _, ns := range []string{r.client, r.server} {
 			// Exit code 3 tells that the key is not in this netns.
-			_, err := command(ctx, "ip", "netns", "exec", ns, "sh", "-c",
-				`test -e "$2" || exit 3; printf '%s\n' "$1" > "$2"`, "sh", s.value, path)
+			err := writeIn(ctx, ns, path, s.value)
 			var exitErr *exec.ExitError
 			if errors.As(err, &exitErr) && exitErr.ExitCode() == 3 {
 				visible = false

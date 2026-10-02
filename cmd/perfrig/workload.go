@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -13,7 +14,7 @@ import (
 
 // Workload is a server command and a client command. The server runs in the
 // server netns and the client in the client netns. Add a new workload to
-// workloads, or use the exec workload with shell commands.
+// workloads, or use the exec workload with argv lists.
 type Workload struct {
 	Name string
 	// Tools returns the versions of the programs that the workload needs.
@@ -21,6 +22,10 @@ type Workload struct {
 	// Server and Client return the argv for each side.
 	Server func(Env) []string
 	Client func(Env) []string
+	// Sidecar, when set, returns the argv of a process in the server netns, for
+	// example a relay. It starts before the server and stops after the server
+	// exits. Its CPU counts as server CPU.
+	Sidecar func(Env) []string
 	// Ready is the socket that the server opens. The client starts after the
 	// socket is open. A zero Socket means start the client after 1 s.
 	Ready Socket
@@ -73,23 +78,90 @@ func workloadNames() []string {
 	return names
 }
 
-// execWorkload runs shell commands. The last stdout line of the client must be
-// the JSON line that parseJSONLine reads.
+// execWorkload runs the argv lists of the flags, with no shell. perfrig
+// expands $NAME and ${NAME} in each argument from the workload variables (see
+// Env.vars). The last stdout line of the client must be the JSON line that
+// parseJSONLine reads.
 func execWorkload(cfg config) (Workload, error) {
-	if cfg.Name == "" || cfg.ServerCmd == "" || cfg.ClientCmd == "" {
-		return Workload{}, errors.New("the exec workload needs -name, -server-cmd and -client-cmd")
+	if cfg.Name == "" || len(cfg.ServerArgv) == 0 || len(cfg.ClientArgv) == 0 {
+		return Workload{}, errors.New("the exec workload needs -name, -server-argv and -client-argv")
+	}
+	for _, argv := range [][]string{cfg.ServerArgv, cfg.ClientArgv, cfg.SidecarArgv} {
+		if err := checkVars(argv); err != nil {
+			return Workload{}, err
+		}
 	}
 	ready, err := parseSocket(cfg.Ready)
 	if err != nil {
 		return Workload{}, err
 	}
-	return Workload{
+	w := Workload{
 		Name:   cfg.Name,
-		Server: func(Env) []string { return []string{"sh", "-c", cfg.ServerCmd} },
-		Client: func(Env) []string { return []string{"sh", "-c", cfg.ClientCmd} },
+		Server: func(e Env) []string { return e.expand(cfg.ServerArgv) },
+		Client: func(e Env) []string { return e.expand(cfg.ClientArgv) },
 		Ready:  ready,
 		Parse:  func(client, _ []byte) (Throughput, error) { return parseJSONLine(client) },
-	}, nil
+	}
+	if len(cfg.SidecarArgv) > 0 {
+		w.Sidecar = func(e Env) []string { return e.expand(cfg.SidecarArgv) }
+	}
+	return w, nil
+}
+
+// expand replaces $NAME and ${NAME} in each argument with the workload variable.
+func (e Env) expand(argv []string) []string {
+	vars := map[string]string{}
+	for _, kv := range e.vars() {
+		k, v, _ := strings.Cut(kv, "=")
+		vars[k] = v
+	}
+	out := make([]string, len(argv))
+	for i, a := range argv {
+		out[i] = os.Expand(a, func(k string) string { return vars[k] })
+	}
+	return out
+}
+
+// checkVars returns an error when an argument names a variable that Env.vars does not set.
+func checkVars(argv []string) error {
+	known := map[string]bool{}
+	for _, kv := range (Env{}).vars() {
+		k, _, _ := strings.Cut(kv, "=")
+		known[k] = true
+	}
+	for _, a := range argv {
+		var bad string
+		os.Expand(a, func(k string) string {
+			if !known[k] && bad == "" {
+				bad = k
+			}
+			return ""
+		})
+		if bad != "" {
+			return fmt.Errorf("argument %q names $%s, which is not a workload variable", a, bad)
+		}
+	}
+	return nil
+}
+
+// argvFlag is a flag with a JSON list of strings, for example '["iperf3","-s"]'.
+type argvFlag []string
+
+func (f *argvFlag) String() string {
+	if f == nil || *f == nil {
+		return ""
+	}
+	b, _ := json.Marshal([]string(*f))
+	return string(b)
+}
+
+func (f *argvFlag) Set(s string) error {
+	var argv []string
+	if err := json.Unmarshal([]byte(s), &argv); err != nil {
+		return fmt.Errorf("want a JSON list of strings, for example [\"iperf3\",\"-s\"]: %w", err)
+	}
+	*f = argv
+	return nil
 }
 
 func newWorkload(cfg config) (Workload, error) {

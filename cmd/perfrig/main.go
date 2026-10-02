@@ -39,6 +39,8 @@ func main() {
 		err = runCmd(ctx, os.Args[2:])
 	case "compare":
 		err = compareCmd(os.Args[2:])
+	case "write":
+		err = writeCmd(os.Args[2:])
 	default:
 		usage()
 	}
@@ -91,8 +93,9 @@ func runCmd(ctx context.Context, args []string) error {
 	fs.StringVar(&cfg.OutDir, "out-dir", "", "keep the workload files and raw output in this directory")
 	out := fs.String("out", "", "write the result JSON to this file (default: stdout)")
 	fs.StringVar(&cfg.Name, "name", "", "exec workload: result name")
-	fs.StringVar(&cfg.ServerCmd, "server-cmd", "", "exec workload: shell command in the server netns")
-	fs.StringVar(&cfg.ClientCmd, "client-cmd", "", "exec workload: shell command in the client netns")
+	fs.Var((*argvFlag)(&cfg.ServerArgv), "server-argv", `exec workload: JSON argv in the server netns, for example '["iperf3","-s"]'; $NAME and ${NAME} expand from the workload variables`)
+	fs.Var((*argvFlag)(&cfg.ClientArgv), "client-argv", "exec workload: JSON argv in the client netns")
+	fs.Var((*argvFlag)(&cfg.SidecarArgv), "sidecar-argv", "exec workload: JSON argv of a process in the server netns that runs while the server runs, for example a relay")
 	fs.StringVar(&cfg.Ready, "ready", "none", "exec workload: socket that the server opens (tcp:PORT, udp:PORT or none)")
 	_ = fs.Parse(args)
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strconv"
@@ -102,31 +103,34 @@ type vpcRow struct {
 	// direct runs the flows with no relay.
 	direct bool
 	// server and client are more vpcbench flags. args are more perfrig run flags.
-	server, client string
+	server, client []string
 	args           []string
 }
 
 // vpcRows are the gated row and the info rows. Info rows run one time and gate nothing.
 var vpcRows = []vpcRow{
-	{id: "gate", name: "vpc-netstack-psp-relay", gate: true, client: " -cc bbr"},
-	{id: "netstack-quic-relay", name: "vpc-netstack-quic-relay", server: " -transport quic", client: " -transport quic -cc bbr"},
-	{id: "tun-psp-relay-cubic", name: "vpc-tun-psp-relay-cubic", server: " -driver tun", client: " -driver tun -cc cubic"},
-	{id: "netstack-psp-relay-loss0.1", name: "vpc-netstack-psp-relay", client: " -cc bbr", args: []string{"-loss=0.1"}},
-	{id: "netstack-psp-direct", name: "vpc-netstack-psp-direct", direct: true, client: " -cc bbr"},
-	{id: "netstack-psp-relay-cubic", name: "vpc-netstack-psp-relay-cubic", client: " -cc cubic"},
-	{id: "netstack-psp-relay-rate1000mbit", name: "vpc-netstack-psp-relay", client: " -cc bbr", args: []string{"-rate=1000mbit", "-queue-limit=2640"}},
+	{id: "gate", name: "vpc-netstack-psp-relay", gate: true, client: []string{"-cc", "bbr"}},
+	{id: "netstack-quic-relay", name: "vpc-netstack-quic-relay", server: []string{"-transport", "quic"}, client: []string{"-transport", "quic", "-cc", "bbr"}},
+	{id: "tun-psp-relay-cubic", name: "vpc-tun-psp-relay-cubic", server: []string{"-driver", "tun"}, client: []string{"-driver", "tun", "-cc", "cubic"}},
+	{id: "netstack-psp-relay-loss0.1", name: "vpc-netstack-psp-relay", client: []string{"-cc", "bbr"}, args: []string{"-loss=0.1"}},
+	{id: "netstack-psp-direct", name: "vpc-netstack-psp-direct", direct: true, client: []string{"-cc", "bbr"}},
+	{id: "netstack-psp-relay-cubic", name: "vpc-netstack-psp-relay-cubic", client: []string{"-cc", "cubic"}},
+	{id: "netstack-psp-relay-rate1000mbit", name: "vpc-netstack-psp-relay", client: []string{"-cc", "bbr"}, args: []string{"-rate=1000mbit", "-queue-limit=2640"}},
 }
 
 // argv returns the perf-vpc-row command of the row.
 func (r vpcRow) argv(duration string, reps, minCPUs int) []string {
-	// The relay shares the server netns. The server command stops it when the server exits.
-	server := "vpcbench relay -listen $SERVER_IP:4443 & vpcbench server -relay $SERVER_IP:4443 -listen $SERVER_IP:4433" + r.server + "; kill $!; wait"
-	client := "vpcbench client -relay $SERVER_IP:4443 -server $SERVER_IP:4433"
+	// The relay is the sidecar of the server. perfrig stops it after the server exits.
+	sidecar := []string{"vpcbench", "relay", "-listen", "$SERVER_IP:4443"}
+	server := []string{"vpcbench", "server", "-relay", "$SERVER_IP:4443", "-listen", "$SERVER_IP:4433"}
+	client := []string{"vpcbench", "client", "-relay", "$SERVER_IP:4443", "-server", "$SERVER_IP:4433"}
 	if r.direct {
-		server = "vpcbench server -via direct -listen $SERVER_IP:4433" + r.server
-		client = "vpcbench client -via direct -server $SERVER_IP:4433"
+		sidecar = nil
+		server = []string{"vpcbench", "server", "-via", "direct", "-listen", "$SERVER_IP:4433"}
+		client = []string{"vpcbench", "client", "-via", "direct", "-server", "$SERVER_IP:4433"}
 	}
-	client += r.client + " -streams $STREAMS -omit ${OMIT_S}s -duration ${DURATION_S}s"
+	server = append(server, r.server...)
+	client = append(append(client, r.client...), "-streams", "$STREAMS", "-omit", "${OMIT_S}s", "-duration", "${DURATION_S}s")
 	dir, rowReps := "info", 1
 	if r.gate {
 		dir, rowReps = "gate", reps
@@ -136,12 +140,21 @@ func (r vpcRow) argv(duration string, reps, minCPUs int) []string {
 		"-delay=10ms", "-streams=4", "-omit=5s", "-duration=" + duration,
 		"-reps=" + strconv.Itoa(rowReps), "-min-cpus=" + strconv.Itoa(minCPUs), "-max-steal=5",
 		"-out-dir=work/" + r.id, "-out=results/" + dir + "/" + r.id + ".json",
-		"-server-cmd=" + server, "-client-cmd=" + client,
+		"-server-argv=" + jsonArgv(server), "-client-argv=" + jsonArgv(client),
+	}
+	if sidecar != nil {
+		argv = append(argv, "-sidecar-argv="+jsonArgv(sidecar))
 	}
 	if r.gate {
 		argv = append(argv, "-baseline=baseline.json")
 	}
 	return append(argv, r.args...)
+}
+
+// jsonArgv returns argv as a perfrig -server-argv value.
+func jsonArgv(argv []string) string {
+	b, _ := json.Marshal(argv)
+	return string(b)
 }
 
 // perfVPCRowScript runs one row. It keeps the perfrig exit code in codes/ID, so the next rows still run.

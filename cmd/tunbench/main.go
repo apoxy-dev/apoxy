@@ -14,8 +14,8 @@
 // "perfrig run -workload exec" reads:
 //
 //	perfrig run -workload exec -name quic-fork -ready tcp:4433 -omit 5s -duration 60s \
-//	  -server-cmd 'tunbench relay -transport quic' \
-//	  -client-cmd 'tunbench agent -transport quic -relay $SERVER_IP:4433 -omit ${OMIT_S}s -duration ${DURATION_S}s'
+//	  -server-argv '["tunbench","relay","-transport","quic"]' \
+//	  -client-argv '["tunbench","agent","-transport","quic","-relay","$SERVER_IP:4433","-omit","${OMIT_S}s","-duration","${DURATION_S}s"]'
 package main
 
 import (
