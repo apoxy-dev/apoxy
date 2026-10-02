@@ -719,7 +719,7 @@ func clientDirect(ctx context.Context, fail context.CancelCauseFunc, o options, 
 }
 
 // measure runs the probes and the flows, and takes the marks of all sides at
-// the start and at the end of the measured window.
+// the flow start, at the window start and at the window end.
 func measure(ctx context.Context, o options, s *side, peer netip.Addr, srv, relay *ctl, start time.Time) (result, error) {
 	echoConn, err := s.net.DialUDP(netip.AddrPortFrom(peer, echoPort))
 	if err != nil {
@@ -762,23 +762,36 @@ func measure(ctx context.Context, o options, s *side, peer netip.Addr, srv, rela
 		close(done)
 	}()
 
-	var client, server, rel [2]mark
-	var window [2]time.Duration
+	// The marks are at the flow start, at the window start and at the window end.
+	var client, server, rel [3]mark
+	var at [3]time.Duration
+	var wall [3]time.Time
+	takeMarks := func(i int) error {
+		wall[i] = time.Now()
+		at[i] = wall[i].Sub(start)
+		sent, retrans := s.net.TCPCounters()
+		st := s.b.Stats()
+		client[i] = mark{Nanos: at[i].Nanoseconds(), CPU: bench.CPUSeconds(), Segments: sent, Retrans: retrans, Drops: st.TxDrops + st.TxGateDrops}
+		var err error
+		if server[i], err = srv.mark(); err != nil {
+			return err
+		}
+		if relay != nil {
+			if rel[i], err = relay.mark(); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if err := takeMarks(0); err != nil {
+		return result{}, err
+	}
 	for i, wait := range []time.Duration{o.Omit, o.Duration} {
 		if err := bench.Sleep(ctx, wait, done); err != nil {
 			return result{}, err
 		}
-		window[i] = time.Since(start)
-		sent, retrans := s.net.TCPCounters()
-		st := s.b.Stats()
-		client[i] = mark{Nanos: window[i].Nanoseconds(), CPU: bench.CPUSeconds(), Segments: sent, Retrans: retrans, Drops: st.TxDrops + st.TxGateDrops}
-		if server[i], err = srv.mark(); err != nil {
+		if err := takeMarks(i + 1); err != nil {
 			return result{}, err
-		}
-		if relay != nil {
-			if rel[i], err = relay.mark(); err != nil {
-				return result{}, err
-			}
 		}
 	}
 	stopRun()
@@ -791,9 +804,13 @@ func measure(ctx context.Context, o options, s *side, peer netip.Addr, srv, rela
 		return result{}, err
 	}
 
-	res := newResult(client, server, rel)
+	span := func(m [3]mark, i int) [2]mark { return [2]mark{m[i], m[i+1]} }
+	res := newResult(span(client, 1), span(server, 1), span(rel, 1))
 	res.IdleRTT = bench.NewRTTStats(p.Window(0, idleEnd))
-	res.LoadRTT = bench.NewRTTStats(p.Window(window[0], window[1]))
+	res.LoadRTT = bench.NewRTTStats(p.Window(at[1], at[2]))
+	res.Omit = newPeriod(span(client, 0), span(server, 0), span(rel, 0))
+	res.Omit.RTT = bench.NewRTTStats(p.Window(at[0], at[1]))
+	res.FlowStartUnixMS, res.WindowStartUnixMS, res.WindowEndUnixMS = wall[0].UnixMilli(), wall[1].UnixMilli(), wall[2].UnixMilli()
 	res.Driver, res.Transport, res.Via, res.CC = o.Driver, o.Transport, o.Via, s.net.CC()
 	res.Streams, res.DeviceMTU = o.Streams, s.b.DeviceMTU()
 	return res, nil

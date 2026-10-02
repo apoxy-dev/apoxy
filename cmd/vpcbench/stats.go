@@ -69,6 +69,36 @@ type result struct {
 	ServerRxDrops      uint64 `json:"server_rx_drops"`
 	RelayDrops         uint64 `json:"relay_drops"`
 	ServerRcvbufErrors int64  `json:"server_rcvbuf_errors"`
+
+	// Omit is the omit period, from the flow start to the window start.
+	Omit period `json:"omit"`
+	// Wall clock times of the flow start and of the window, in Unix milliseconds.
+	FlowStartUnixMS   int64 `json:"flow_start_unix_ms"`
+	WindowStartUnixMS int64 `json:"window_start_unix_ms"`
+	WindowEndUnixMS   int64 `json:"window_end_unix_ms"`
+}
+
+// period is the rate, the loss and the drops of a part of the run.
+type period struct {
+	Seconds            float64        `json:"seconds"`
+	BitsPerSecond      float64        `json:"bits_per_second"`
+	Retransmits        uint64         `json:"retransmits"`
+	RetransPercent     float64        `json:"retrans_percent"`
+	RTT                bench.RTTStats `json:"rtt_ms"`
+	ClientTxDrops      uint64         `json:"client_tx_drops"`
+	ServerRxDrops      uint64         `json:"server_rx_drops"`
+	RelayDrops         uint64         `json:"relay_drops"`
+	ServerRcvbufErrors int64          `json:"server_rcvbuf_errors"`
+}
+
+// newPeriod computes a period from the marks at its start and at its end.
+func newPeriod(client, server, relay [2]mark) period {
+	r := newResult(client, server, relay)
+	return period{
+		Seconds: r.Seconds, BitsPerSecond: r.BitsPerSecond, Retransmits: r.Retransmits, RetransPercent: r.RetransPercent,
+		ClientTxDrops: r.ClientTxDrops, ServerRxDrops: r.ServerRxDrops, RelayDrops: r.RelayDrops,
+		ServerRcvbufErrors: r.ServerRcvbufErrors,
+	}
 }
 
 // newResult computes the rates from the marks at the start and at the end of

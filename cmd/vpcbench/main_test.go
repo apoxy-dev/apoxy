@@ -125,6 +125,32 @@ func TestNewResult(t *testing.T) {
 	}
 }
 
+func TestNewPeriod(t *testing.T) {
+	sec := int64(time.Second)
+	cases := []struct {
+		name                  string
+		client, server, relay [2]mark
+		want                  period
+	}{
+		{
+			name:   "all sides",
+			client: [2]mark{{Segments: 100}, {Nanos: sec, Segments: 300, Retrans: 4, Drops: 2}},
+			server: [2]mark{{RcvbufErrors: 1}, {Nanos: sec, Bytes: 50e6, Drops: 3, RcvbufErrors: 4}},
+			relay:  [2]mark{{Drops: 1}, {Nanos: sec, Drops: 2}},
+			want: period{
+				Seconds: 1, BitsPerSecond: 400e6, Retransmits: 4, RetransPercent: 2,
+				ClientTxDrops: 2, ServerRxDrops: 3, RelayDrops: 1, ServerRcvbufErrors: 3,
+			},
+		},
+		{name: "no omit", server: [2]mark{{Nanos: sec}, {Nanos: sec}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, newPeriod(tc.client, tc.server, tc.relay))
+		})
+	}
+}
+
 func TestResultJSON(t *testing.T) {
 	var buf bytes.Buffer
 	require.NoError(t, json.NewEncoder(&buf).Encode(result{Seconds: 30, BitsPerSecond: 2e9, PacketsPerSecond: 1e5, Retransmits: 7}))
@@ -150,11 +176,18 @@ func TestResultJSON(t *testing.T) {
 		"client_cores_per_gbps", "server_cores_per_gbps", "relay_cores_per_gbps",
 		"driver", "transport", "via", "cc", "streams", "device_mtu",
 		"client_tx_drops", "server_rx_drops", "relay_drops", "server_rcvbuf_errors",
+		"omit", "flow_start_unix_ms", "window_start_unix_ms", "window_end_unix_ms",
 	} {
 		assert.Contains(t, fields, f)
 	}
 	for _, f := range []string{"probes", "lost", "p50", "p90", "p99", "max"} {
 		assert.Contains(t, fields["load_rtt_ms"], f)
+	}
+	for _, f := range []string{
+		"seconds", "bits_per_second", "retransmits", "retrans_percent", "rtt_ms",
+		"client_tx_drops", "server_rx_drops", "relay_drops", "server_rcvbuf_errors",
+	} {
+		assert.Contains(t, fields["omit"], f)
 	}
 }
 
@@ -272,6 +305,10 @@ func TestLoopback(t *testing.T) {
 			assert.GreaterOrEqual(t, res.Seconds, 0.8)
 			assert.Greater(t, res.LoadRTT.Probes, 0)
 			assert.Less(t, res.LoadRTT.Lost, res.LoadRTT.Probes)
+			assert.GreaterOrEqual(t, res.Omit.Seconds, 0.15)
+			assert.Greater(t, res.Omit.RTT.Probes, 0)
+			assert.LessOrEqual(t, res.FlowStartUnixMS, res.WindowStartUnixMS)
+			assert.GreaterOrEqual(t, res.WindowEndUnixMS-res.WindowStartUnixMS, int64(800))
 			assert.GreaterOrEqual(t, res.RetransPercent, 0.0)
 			assert.Equal(t, tc.via, res.Via)
 			assert.Equal(t, tc.transport, res.Transport)
