@@ -84,49 +84,6 @@ func TestSegCounterIgnoresOtherPackets(t *testing.T) {
 	}
 }
 
-func TestRTTStats(t *testing.T) {
-	ms := func(v ...int) []time.Duration {
-		d := make([]time.Duration, len(v))
-		for i, x := range v {
-			d[i] = time.Duration(x) * time.Millisecond
-		}
-		return d
-	}
-	cases := []struct {
-		name string
-		rtts []time.Duration
-		lost int
-		want rttStats
-	}{
-		{name: "empty", lost: 2, want: rttStats{Probes: 2, Lost: 2}},
-		{name: "one", rtts: ms(20), want: rttStats{Probes: 1, P50: 20, P90: 20, P99: 20, Max: 20}},
-		{
-			name: "ten unsorted",
-			rtts: ms(29, 20, 21, 22, 23, 24, 25, 26, 27, 28),
-			lost: 1,
-			want: rttStats{Probes: 11, Lost: 1, P50: 24, P90: 28, P99: 29, Max: 29},
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := newRTTStats(tc.rtts, tc.lost); got != tc.want {
-				t.Fatalf("got %+v, want %+v", got, tc.want)
-			}
-		})
-	}
-}
-
-func TestProberWindow(t *testing.T) {
-	p := &prober{
-		sent: []time.Duration{0, 10, 20, 30, 40},
-		rtt:  []time.Duration{5, 0, 7, 8, 0},
-	}
-	rtts, lost := p.window(10, 40)
-	if len(rtts) != 2 || rtts[0] != 7 || rtts[1] != 8 || lost != 1 {
-		t.Fatalf("window(10, 40) = %v, %d; want [7 8], 1", rtts, lost)
-	}
-}
-
 // freeUDPPort returns a free local UDP port.
 func freeUDPPort(t *testing.T) uint16 {
 	t.Helper()

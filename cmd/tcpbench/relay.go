@@ -11,7 +11,6 @@ import (
 	"net"
 	"net/netip"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/apoxy-dev/icx/psp"
@@ -26,6 +25,7 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
 
+	"github.com/apoxy-dev/apoxy/cmd/internal/bench"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/batchpc"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/l2pc"
 )
@@ -105,7 +105,7 @@ func (r *relay) mark() mark {
 		Segments: r.seg.segments.Load(),
 		Retrans:  r.seg.retrans.Load(),
 		Nanos:    time.Since(r.start).Nanoseconds(),
-		CPU:      cpuSeconds(),
+		CPU:      bench.CPUSeconds(),
 	}
 }
 
@@ -274,13 +274,4 @@ func (u *underlay) WriteFrames(frames [][]byte) (int, error) {
 		msgs[i] = batchpc.Message{Buf: f}
 	}
 	return u.phy.WriteBatchFrames(msgs, 0)
-}
-
-// cpuSeconds returns the user and system CPU time of this process.
-func cpuSeconds() float64 {
-	var ru syscall.Rusage
-	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &ru); err != nil {
-		return 0
-	}
-	return time.Duration(ru.Utime.Nano() + ru.Stime.Nano()).Seconds()
 }

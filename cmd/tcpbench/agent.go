@@ -3,21 +3,18 @@ package main
 import (
 	"bufio"
 	"context"
-	"encoding/binary"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
-	"math"
 	"net"
 	"net/netip"
-	"slices"
 	"sync"
 	"time"
 
 	"github.com/apoxy-dev/icx/psp"
 
+	"github.com/apoxy-dev/apoxy/cmd/internal/bench"
 	"github.com/apoxy-dev/apoxy/pkg/netstack"
 )
 
@@ -48,37 +45,13 @@ type result struct {
 	// RetransPercent is the part of the received data segments that are retransmissions.
 	RetransPercent float64 `json:"retrans_percent"`
 	// IdleRTT is the probe RTT before the flows start. LoadRTT is the probe RTT in the measured window.
-	IdleRTT rttStats `json:"idle_rtt_ms"`
-	LoadRTT rttStats `json:"load_rtt_ms"`
+	IdleRTT bench.RTTStats `json:"idle_rtt_ms"`
+	LoadRTT bench.RTTStats `json:"load_rtt_ms"`
 	// Cores are CPU seconds per second of each process in the measured window.
 	AgentCores        float64 `json:"agent_cores"`
 	RelayCores        float64 `json:"relay_cores"`
 	AgentCoresPerGbps float64 `json:"agent_cores_per_gbps"`
 	RelayCoresPerGbps float64 `json:"relay_cores_per_gbps"`
-}
-
-// rttStats are the RTT percentiles of the echoed probes, in milliseconds.
-type rttStats struct {
-	Probes int     `json:"probes"`
-	Lost   int     `json:"lost"`
-	P50    float64 `json:"p50"`
-	P90    float64 `json:"p90"`
-	P99    float64 `json:"p99"`
-	Max    float64 `json:"max"`
-}
-
-func newRTTStats(rtts []time.Duration, lost int) rttStats {
-	st := rttStats{Probes: len(rtts) + lost, Lost: lost}
-	if len(rtts) == 0 {
-		return st
-	}
-	slices.Sort(rtts)
-	ms := func(q float64) float64 {
-		i := int(math.Ceil(q*float64(len(rtts)))) - 1
-		return float64(rtts[max(i, 0)]) / float64(time.Millisecond)
-	}
-	st.P50, st.P90, st.P99, st.Max = ms(0.5), ms(0.9), ms(0.99), ms(1)
-	return st
 }
 
 // runAgent runs the flows through the netstack driver and asks the relay for its
@@ -132,10 +105,10 @@ func runAgent(ctx context.Context, o agentOptions) (result, error) {
 	// The flows and the probes stop before the datapath, so late echoes still arrive.
 	runCtx, stopRun := context.WithCancel(ctx)
 	defer stopRun()
-	p := newProber(echo, start, o.ProbeInterval, o.Idle+o.Omit+o.Duration)
-	go p.receive()
-	go p.send(runCtx, o.ProbeInterval)
-	if err := sleep(ctx, o.Idle, nil); err != nil {
+	p := bench.NewProber(echo, start, o.ProbeInterval, o.Idle+o.Omit+o.Duration)
+	go p.Receive()
+	go p.Send(runCtx, o.ProbeInterval)
+	if err := bench.Sleep(ctx, o.Idle, nil); err != nil {
 		return result{}, err
 	}
 	idleEnd := time.Since(start)
@@ -158,11 +131,11 @@ func runAgent(ctx context.Context, o agentOptions) (result, error) {
 	var agent, relay [2]mark
 	var window [2]time.Duration
 	for i, wait := range []time.Duration{o.Omit, o.Duration} {
-		if err := sleep(ctx, wait, done); err != nil {
+		if err := bench.Sleep(ctx, wait, done); err != nil {
 			return result{}, err
 		}
 		window[i] = time.Since(start)
-		agent[i] = mark{Nanos: window[i].Nanoseconds(), CPU: cpuSeconds()}
+		agent[i] = mark{Nanos: window[i].Nanoseconds(), CPU: bench.CPUSeconds()}
 		if relay[i], err = askMark(ctl, r); err != nil {
 			return result{}, err
 		}
@@ -173,13 +146,13 @@ func runAgent(ctx context.Context, o agentOptions) (result, error) {
 			return result{}, err
 		}
 	}
-	if err := sleep(ctx, echoWait, nil); err != nil {
+	if err := bench.Sleep(ctx, echoWait, nil); err != nil {
 		return result{}, err
 	}
 
 	res := newResult(o, agent, relay)
-	res.IdleRTT = newRTTStats(p.window(0, idleEnd))
-	res.LoadRTT = newRTTStats(p.window(window[0], window[1]))
+	res.IdleRTT = bench.NewRTTStats(p.Window(0, idleEnd))
+	res.LoadRTT = bench.NewRTTStats(p.Window(window[0], window[1]))
 	return res, nil
 }
 
@@ -198,21 +171,6 @@ func flow(ctx context.Context, ns *netstack.ICXNetwork, addr string) error {
 			}
 			return fmt.Errorf("write: %w", err)
 		}
-	}
-}
-
-// sleep waits for d. It returns early when ctx ends or a flow stops.
-func sleep(ctx context.Context, d time.Duration, done <-chan error) error {
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case err := <-done:
-		if err == nil {
-			err = errors.New("a flow stopped before the end of the run")
-		}
-		return err
-	case <-time.After(d):
-		return nil
 	}
 }
 
@@ -255,82 +213,4 @@ func newResult(o agentOptions, agent, relay [2]mark) result {
 		r.RelayCoresPerGbps = r.RelayCores / gbps
 	}
 	return r
-}
-
-// prober sends numbered UDP probes through the tunnel and records the RTT of each echo.
-type prober struct {
-	conn  net.Conn
-	start time.Time
-
-	mu   sync.Mutex
-	sent []time.Duration // Send time by sequence number.
-	rtt  []time.Duration // RTT by sequence number, 0 until the echo arrives.
-}
-
-func newProber(conn net.Conn, start time.Time, interval, run time.Duration) *prober {
-	n := int(run/interval) + 64
-	return &prober{conn: conn, start: start, sent: make([]time.Duration, 0, n), rtt: make([]time.Duration, 0, n)}
-}
-
-func (p *prober) send(ctx context.Context, interval time.Duration) {
-	t := time.NewTicker(interval)
-	defer t.Stop()
-	var b [16]byte
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-		}
-		now := time.Since(p.start)
-		p.mu.Lock()
-		seq := len(p.sent)
-		p.sent = append(p.sent, now)
-		p.rtt = append(p.rtt, 0)
-		p.mu.Unlock()
-		binary.BigEndian.PutUint64(b[:8], uint64(seq))
-		binary.BigEndian.PutUint64(b[8:], uint64(now))
-		if _, err := p.conn.Write(b[:]); err != nil && ctx.Err() == nil {
-			slog.Warn("Failed to send RTT probe", "error", err)
-		}
-	}
-}
-
-func (p *prober) receive() {
-	var b [64]byte
-	for {
-		n, err := p.conn.Read(b[:])
-		if err != nil {
-			return
-		}
-		if n < 16 {
-			continue
-		}
-		seq := binary.BigEndian.Uint64(b[:8])
-		rtt := time.Since(p.start) - time.Duration(binary.BigEndian.Uint64(b[8:16]))
-		p.mu.Lock()
-		if seq < uint64(len(p.rtt)) {
-			p.rtt[seq] = rtt
-		}
-		p.mu.Unlock()
-	}
-}
-
-// window returns the RTTs of the probes sent in [from, to) and the number of them with no echo.
-func (p *prober) window(from, to time.Duration) ([]time.Duration, int) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	var rtts []time.Duration
-	lost := 0
-	for i, s := range p.sent {
-		if s < from || s >= to {
-			continue
-		}
-		if p.rtt[i] > 0 {
-			rtts = append(rtts, p.rtt[i])
-		} else {
-			lost++
-		}
-	}
-	return rtts, lost
 }

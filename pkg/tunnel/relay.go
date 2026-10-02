@@ -265,6 +265,9 @@ var relayQUICConfig = func() *quic.Config {
 	return c
 }()
 
+// RelayQUICConfig returns a copy of the QUIC config of the relay listener.
+func RelayQUICConfig() *quic.Config { return relayQUICConfig.Clone() }
+
 // transports returns one QUIC transport for each relay socket. The transport
 // of steer socket i issues the connection IDs that the kernel sends to i.
 func (r *Relay) transports() []*quic.Transport {
