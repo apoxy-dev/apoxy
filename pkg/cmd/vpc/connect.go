@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/netip"
 	"os"
@@ -13,6 +14,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/dpeckett/network"
 	"github.com/google/uuid"
@@ -51,6 +54,7 @@ type connectOptions struct {
 	tunIfname string
 	mtu       int
 	relays    int
+	adminAddr string
 }
 
 func connectCmd() *cobra.Command {
@@ -94,6 +98,7 @@ func (o *connectOptions) addFlags(cmd *cobra.Command) {
 	f.StringVar(&o.tunIfname, "tun-ifname", "apoxy0", "Name of the TUN device of the tun driver.")
 	f.IntVar(&o.relays, "relays", 2, "Relay sessions to keep, 1 to 3. One carries the traffic. The others are open on other relays and take over when it ends.")
 	f.IntVar(&o.mtu, "mtu", 0, fmt.Sprintf("Device MTU, %d to %d. 0 uses the VPC MTU when the path to the relay carries it, else %d.", psp.DefaultMTU, psp.MaxMTU, psp.DefaultMTU))
+	f.StringVar(&o.adminAddr, "admin-addr", "", "Unix socket path of a local HTTP API that adds and removes attachments. Only this user and root can use it. Empty disables the API.")
 }
 
 // agentConfig maps the flags to the agent config and the driver. host is the
@@ -143,7 +148,19 @@ func (o *connectOptions) agentConfig(host string, canTun bool) (agent.Config, st
 		return cfg, "", fmt.Errorf("invalid --relays %d: use 1 to 3", o.relays)
 	}
 	cfg.Sessions = o.relays
+	if o.adminAddr != "" && !isSocketPath(o.adminAddr) {
+		return cfg, "", fmt.Errorf("invalid --admin-addr %q: use a unix socket path", o.adminAddr)
+	}
 	return cfg, driver, nil
+}
+
+// isSocketPath reports whether s is a file path, not a network address.
+func isSocketPath(s string) bool {
+	if strings.Contains(s, "://") {
+		return false
+	}
+	_, _, err := net.SplitHostPort(s)
+	return err != nil || strings.Contains(s, "/")
 }
 
 func runConnect(ctx context.Context, out io.Writer, vpc string, o *connectOptions, cfg agent.Config, driver string) error {
@@ -181,9 +198,23 @@ func runConnect(ctx context.Context, out io.Writer, vpc string, o *connectOption
 	h := &hostDevice{ctx: ctx, fail: cancel, out: out, conn: uc, driver: driver, tunName: o.tunIfname, socksAddr: o.socksAddr, routes: cfg.Routes}
 	cfg.OnAttach = h.attach
 	cfg.OnRoutes = h.route
+	cfg.OnAttachment = h.attachment
+	cfg.OnDetach = h.detach
 	h.agent = agent.New(cfg)
 	fmt.Fprintf(out, "Connecting to VPC %q as %q.\n", vpc, cfg.Name)
-	if err := h.agent.Run(ctx); err != nil {
+	var admin sync.WaitGroup
+	if o.adminAddr != "" {
+		admin.Go(func() {
+			if err := agent.ServeAdmin(ctx, o.adminAddr, h.agent); err != nil {
+				cancel(fmt.Errorf("admin API failed: %w", err))
+			}
+		})
+		fmt.Fprintf(out, "Admin API on unix socket %s.\n", o.adminAddr)
+	}
+	err = h.agent.Run(ctx)
+	cancel(nil)
+	admin.Wait()
+	if err != nil {
 		return err
 	}
 	if err := context.Cause(ctx); !errors.Is(err, context.Canceled) {
@@ -240,14 +271,17 @@ func credentialPath(project uuid.UUID, vpc, name string) string {
 
 // overlay is a running driver.
 type overlay interface {
-	// setAddr moves the device from the old overlay address to addr.
+	// setAddr moves the device from the old overlay address to addr. With no
+	// old address, it adds addr.
 	setAddr(old, addr netip.Addr) error
+	// delAddr removes an overlay address from the device.
+	delAddr(addr netip.Addr) error
 	// route changes the routes of the prefixes of the other attachments.
 	route(add, remove []netip.Prefix)
 }
 
-// hostDevice starts the driver at the first attach. The agent calls attach
-// from one goroutine.
+// hostDevice starts the driver at the first attach. The agent calls attach,
+// attachment and detach one at a time.
 type hostDevice struct {
 	ctx       context.Context
 	fail      context.CancelCauseFunc
@@ -259,8 +293,10 @@ type hostDevice struct {
 	routes    []netip.Prefix // Advertised by this host.
 	agent     *agent.Agent
 
-	dev  overlay
-	addr netip.Addr
+	dev    overlay
+	addr   netip.Addr
+	extras map[string]agent.Attachment // Extra attachments on the device, by name.
+	fwd    *forwardNetwork             // Of the netstack driver.
 }
 
 func (h *hostDevice) attach(b *psp.Binding, addr netip.Addr, _ []netip.Prefix) {
@@ -305,6 +341,51 @@ func (h *hostDevice) route(add, remove []netip.Prefix) {
 	}
 }
 
+// attachment puts the address of an extra attachment on the device. After a
+// move, it replaces the old address.
+func (h *hostDevice) attachment(at agent.Attachment) {
+	if h.dev == nil {
+		return
+	}
+	old := h.extras[at.Name]
+	if old.Address != at.Address {
+		if err := h.dev.setAddr(old.Address, at.Address); err != nil {
+			slog.Warn("Failed to set the address of an attachment", "name", at.Name, "address", at.Address, "error", err)
+			return
+		}
+	}
+	if h.extras == nil {
+		h.extras = map[string]agent.Attachment{}
+	}
+	h.extras[at.Name] = at
+	h.forwardRoutes()
+}
+
+// detach removes the address of an extra attachment from the device.
+func (h *hostDevice) detach(at agent.Attachment) {
+	old, ok := h.extras[at.Name]
+	if !ok {
+		return
+	}
+	delete(h.extras, at.Name)
+	if err := h.dev.delAddr(old.Address); err != nil {
+		slog.Warn("Failed to remove the address of an attachment", "name", at.Name, "address", old.Address, "error", err)
+	}
+	h.forwardRoutes()
+}
+
+// forwardRoutes gives the netstack driver the routes of all attachments.
+func (h *hostDevice) forwardRoutes() {
+	if h.fwd == nil {
+		return
+	}
+	routes := slices.Clone(h.routes)
+	for _, at := range h.extras {
+		routes = append(routes, at.Routes...)
+	}
+	h.fwd.setRoutes(routes)
+}
+
 // netstackDev is the user-space network of the netstack driver.
 type netstackDev struct {
 	ns *netstack.Stack
@@ -334,8 +415,8 @@ func (h *hostDevice) startNetstack(b *psp.Binding, addr netip.Addr, dns *network
 		ns.Close()
 		return nil, err
 	}
-	fwd := &forwardNetwork{Network: network.Loopback(), host: network.Host(), routes: h.routes}
-	if err := ns.ForwardTo(h.ctx, network.Filtered(&network.FilteredNetworkConfig{DeniedPorts: denied, Upstream: fwd})); err != nil {
+	h.fwd = newForwardNetwork(network.Loopback(), network.Host(), h.routes)
+	if err := ns.ForwardTo(h.ctx, network.Filtered(&network.FilteredNetworkConfig{DeniedPorts: denied, Upstream: h.fwd})); err != nil {
 		ns.Close()
 		return nil, err
 	}
@@ -369,8 +450,17 @@ func (h *hostDevice) startNetstack(b *psp.Binding, addr netip.Addr, dns *network
 type forwardNetwork struct {
 	network.Network // Loopback.
 	host            network.Network
-	routes          []netip.Prefix
+	routes          atomic.Pointer[[]netip.Prefix]
 }
+
+func newForwardNetwork(local, host network.Network, routes []netip.Prefix) *forwardNetwork {
+	n := &forwardNetwork{Network: local, host: host}
+	n.setRoutes(routes)
+	return n
+}
+
+// setRoutes sets the routes that this host advertises for all attachments.
+func (n *forwardNetwork) setRoutes(routes []netip.Prefix) { n.routes.Store(&routes) }
 
 func (n *forwardNetwork) DialContext(ctx context.Context, nw, addr string) (net.Conn, error) {
 	if ap, err := netip.ParseAddrPort(addr); err == nil && n.routed(ap.Addr()) {
@@ -385,7 +475,7 @@ func (n *forwardNetwork) routed(addr netip.Addr) bool {
 	if tunnet.ULAPrefix().Contains(addr) {
 		return false
 	}
-	return slices.ContainsFunc(n.routes, func(p netip.Prefix) bool { return p.Contains(addr) })
+	return slices.ContainsFunc(*n.routes.Load(), func(p netip.Prefix) bool { return p.Contains(addr) })
 }
 
 // route does nothing. The netstack sends all packets to the binding.
@@ -398,4 +488,8 @@ func (n *netstackDev) setAddr(old, addr netip.Addr) error {
 		}
 	}
 	return n.ns.AddAddr(netip.PrefixFrom(addr, addr.BitLen()))
+}
+
+func (n *netstackDev) delAddr(addr netip.Addr) error {
+	return n.ns.DelAddr(netip.PrefixFrom(addr, addr.BitLen()))
 }

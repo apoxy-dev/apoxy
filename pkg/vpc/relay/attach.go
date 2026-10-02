@@ -127,15 +127,23 @@ func (srv *Server) Detach(ctx context.Context, in *dp.DetachRequest) (*emptypb.E
 	return &emptypb.Empty{}, nil
 }
 
-func newAttachment(vpc VPCKey, subject string, in *dp.AttachRequest) (*Attachment, error) {
-	if errs := validation.IsDNS1123Subdomain(in.GetName()); len(errs) > 0 {
-		return nil, rpc.Errorf(rpc.InvalidArgument, "name %q: %s", in.GetName(), strings.Join(errs, "; "))
+// ValidateAttachment checks the name and the labels of an attachment.
+func ValidateAttachment(name string, labels map[string]string) error {
+	if errs := validation.IsDNS1123Subdomain(name); len(errs) > 0 {
+		return fmt.Errorf("name %q: %s", name, strings.Join(errs, "; "))
 	}
-	for k, v := range in.GetLabels() {
+	for k, v := range labels {
 		errs := append(validation.IsQualifiedName(k), validation.IsValidLabelValue(v)...)
 		if len(errs) > 0 {
-			return nil, rpc.Errorf(rpc.InvalidArgument, "label %q: %s", k, strings.Join(errs, "; "))
+			return fmt.Errorf("label %q: %s", k, strings.Join(errs, "; "))
 		}
+	}
+	return nil
+}
+
+func newAttachment(vpc VPCKey, subject string, in *dp.AttachRequest) (*Attachment, error) {
+	if err := ValidateAttachment(in.GetName(), in.GetLabels()); err != nil {
+		return nil, rpc.Errorf(rpc.InvalidArgument, "%v", err)
 	}
 	a := &Attachment{VPC: vpc, Name: in.GetName(), Labels: in.GetLabels(), Subject: subject}
 	for _, r := range in.GetRoutes() {

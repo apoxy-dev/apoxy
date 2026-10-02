@@ -74,11 +74,14 @@ func (w *world) stubAgent(t *testing.T, name string) *Agent {
 	a.bind = b
 	a.rc = &relayConn{
 		a:         a,
+		qc:        newFakeConn(),
 		cred:      w.agentCA.credential(t, testProject, testVPC, name, time.Hour),
 		roots:     a.cfg.RelayRoots,
 		ref:       &dp.VPCRef{ProjectId: testProject, VpcUid: testVPC, NetworkId: testVNI},
 		relayAddr: netip.MustParseAddrPort("127.0.0.1:443"),
+		sem:       make(chan struct{}, maxInFlight),
 	}
+	a.conns[a.rc] = struct{}{}
 	a.rc.ctx, a.rc.cancel = context.WithCancel(context.Background())
 	t.Cleanup(a.rc.cancel)
 	a.rc.relay, err = b.AddPeer(a.rc.relayAddr)

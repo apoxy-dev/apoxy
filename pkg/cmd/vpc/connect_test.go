@@ -2,9 +2,11 @@ package vpc
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/netip"
 	"runtime"
+	"slices"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -32,6 +34,7 @@ func TestAgentConfig(t *testing.T) {
 		wantSocksAddr string
 		wantTunIfname string
 		wantSessions  int
+		wantAdminAddr string
 	}{
 		{
 			name:          "defaults without NET_ADMIN",
@@ -183,6 +186,26 @@ func TestAgentConfig(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:          "admin socket",
+			args:          []string{"--admin-addr", "/run/apoxy/agent.sock"},
+			host:          "node1",
+			wantName:      "node1",
+			wantDriver:    driverNetstack,
+			wantAdminAddr: "/run/apoxy/agent.sock",
+		},
+		{
+			name:    "admin TCP address",
+			args:    []string{"--admin-addr", "localhost:8080"},
+			host:    "node1",
+			wantErr: true,
+		},
+		{
+			name:    "admin URL",
+			args:    []string{"--admin-addr", "tcp://127.0.0.1:8080"},
+			host:    "node1",
+			wantErr: true,
+		},
+		{
 			name:          "socks off",
 			args:          []string{"--socks-addr", ""},
 			host:          "node1",
@@ -219,6 +242,7 @@ func TestAgentConfig(t *testing.T) {
 			if tc.wantTunIfname != "" {
 				require.Equal(t, tc.wantTunIfname, o.tunIfname)
 			}
+			require.Equal(t, tc.wantAdminAddr, o.adminAddr)
 		})
 	}
 }
@@ -280,7 +304,7 @@ func TestForwardNetwork(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			local, host := &dialLog{}, &dialLog{}
-			n := &forwardNetwork{Network: local, host: host, routes: tc.routes}
+			n := newForwardNetwork(local, host, tc.routes)
 			_, err := n.DialContext(context.Background(), "tcp", tc.addr)
 			require.NoError(t, err)
 			if tc.wantHost {
@@ -291,5 +315,89 @@ func TestForwardNetwork(t *testing.T) {
 				require.Empty(t, host.dialed)
 			}
 		})
+	}
+}
+
+// fakeOverlay keeps the overlay addresses of a driver.
+type fakeOverlay struct {
+	addrs []netip.Addr
+}
+
+func (f *fakeOverlay) setAddr(old, addr netip.Addr) error {
+	if old.IsValid() {
+		if err := f.delAddr(old); err != nil {
+			return err
+		}
+	}
+	f.addrs = append(f.addrs, addr)
+	return nil
+}
+
+func (f *fakeOverlay) delAddr(addr netip.Addr) error {
+	i := slices.Index(f.addrs, addr)
+	if i < 0 {
+		return errors.New("no such address")
+	}
+	f.addrs = slices.Delete(f.addrs, i, i+1)
+	return nil
+}
+
+func (f *fakeOverlay) route(_, _ []netip.Prefix) {}
+
+func TestHostDeviceAttachments(t *testing.T) {
+	addr := netip.MustParseAddr
+	pfx := netip.MustParsePrefix
+	base := addr("fd00::1")
+	steps := []struct {
+		name      string
+		attach    *agent.Attachment
+		detach    string
+		wantAddrs []netip.Addr
+		wantHost  []string // Addresses that forward to the host network.
+	}{
+		{
+			name:      "attach x",
+			attach:    &agent.Attachment{Name: "x", Address: addr("fd00:1::1"), Routes: []netip.Prefix{pfx("10.1.0.0/16")}},
+			wantAddrs: []netip.Addr{base, addr("fd00:1::1")},
+			wantHost:  []string{"10.0.0.1", "10.1.0.1"},
+		},
+		{
+			name:      "x moves",
+			attach:    &agent.Attachment{Name: "x", Address: addr("fd00:2::1"), Routes: []netip.Prefix{pfx("10.1.0.0/16")}},
+			wantAddrs: []netip.Addr{base, addr("fd00:2::1")},
+			wantHost:  []string{"10.0.0.1", "10.1.0.1"},
+		},
+		{
+			name:      "attach y",
+			attach:    &agent.Attachment{Name: "y", Address: addr("fd00:3::1")},
+			wantAddrs: []netip.Addr{base, addr("fd00:2::1"), addr("fd00:3::1")},
+			wantHost:  []string{"10.0.0.1", "10.1.0.1"},
+		},
+		{
+			name:      "detach x",
+			detach:    "x",
+			wantAddrs: []netip.Addr{base, addr("fd00:3::1")},
+			wantHost:  []string{"10.0.0.1"},
+		},
+		{
+			name:      "detach x again",
+			detach:    "x",
+			wantAddrs: []netip.Addr{base, addr("fd00:3::1")},
+			wantHost:  []string{"10.0.0.1"},
+		},
+	}
+	routes := []netip.Prefix{pfx("10.0.0.0/16")}
+	dev := &fakeOverlay{addrs: []netip.Addr{base}}
+	h := &hostDevice{dev: dev, addr: base, routes: routes, fwd: newForwardNetwork(nil, nil, routes)}
+	for _, st := range steps {
+		if st.attach != nil {
+			h.attachment(*st.attach)
+		} else {
+			h.detach(agent.Attachment{Name: st.detach})
+		}
+		require.Equal(t, st.wantAddrs, dev.addrs, st.name)
+		for _, a := range []string{"10.0.0.1", "10.1.0.1"} {
+			require.Equal(t, slices.Contains(st.wantHost, a), h.fwd.routed(addr(a)), "%s: %s", st.name, a)
+		}
 	}
 }

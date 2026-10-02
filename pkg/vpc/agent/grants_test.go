@@ -297,14 +297,12 @@ func TestExtraAttachments(t *testing.T) {
 
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			rc := a.current()
-			var x *extra
+			var x Attachment
 			attach := func() {
 				var err error
-				x, err = rc.attachExtra(ctx, "a-2", nil, nil)
+				x, err = a.a.Attach(ctx, AttachmentSpec{Name: "a-2"})
 				require.NoError(t, err)
-				a.netstack(t, a.binding(), overlayAddr(x.prefixes), false)
-				echo(t, a.stack, overlayAddr(x.prefixes), 9002)
+				echo(t, a.stack, x.Address, 9002)
 			}
 			if tc.before {
 				attach()
@@ -318,23 +316,22 @@ func TestExtraAttachments(t *testing.T) {
 			if !tc.before {
 				attach()
 			}
-			extraAddr := overlayAddr(x.prefixes)
-			ping(t, b.stack, eb.addr, extraAddr, 9002, "to a-2")
-			ping(t, a.stack, extraAddr, eb.addr, 9001, "from a-2")
+			ping(t, b.stack, eb.addr, x.Address, 9002, "to a-2")
+			ping(t, a.stack, x.Address, eb.addr, 9001, "from a-2")
 			assert.Same(t, pa, onlyPeer(t, a.a), "a keeps its peer session")
 			assert.Same(t, pb, onlyPeer(t, b.a), "b keeps its peer session")
-			assert.Contains(t, b.routeSet(), x.prefixes[0], "OnRoutes of b has the routes of a")
-			assert.NotContains(t, a.routeSet(), x.prefixes[0], "OnRoutes of a has no routes of a")
+			assert.Contains(t, b.routeSet(), x.Prefixes[0], "OnRoutes of b has the routes of a")
+			assert.NotContains(t, a.routeSet(), x.Prefixes[0], "OnRoutes of a has no routes of a")
 
-			// After a removes the extra, b drops its routes and keeps the session.
-			require.NoError(t, rc.detachExtra(ctx, x.id))
-			assert.Nil(t, a.a.removeExtra(rc, x.id))
-			require.Eventually(t, func() bool { return !slices.Contains(b.routeSet(), x.prefixes[0]) },
+			// After a detaches the extra, b drops its routes and keeps the session.
+			require.NoError(t, a.a.Detach(ctx, "a-2"))
+			assert.Equal(t, []string{"attach a-2 " + x.Address.String(), "detach a-2 " + x.Address.String()}, a.events("a-2"))
+			require.Eventually(t, func() bool { return !slices.Contains(b.routeSet(), x.Prefixes[0]) },
 				5*time.Second, 10*time.Millisecond, "the relay removes the route of a-2")
 			require.Eventually(t, func() bool {
 				b.a.mu.Lock()
 				defer b.a.mu.Unlock()
-				return !pb.origin(x.id)
+				return !pb.origin(x.ID)
 			}, 5*time.Second, 10*time.Millisecond, "b removes the grant of a-2")
 			ping(t, b.stack, eb.addr, ea.addr, 9000, "to a again")
 			assert.Same(t, pb, onlyPeer(t, b.a), "b keeps its peer session")

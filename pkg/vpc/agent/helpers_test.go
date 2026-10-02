@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -163,11 +164,30 @@ type fakeAddresses struct {
 	next    int
 	live    map[string]int // Subject to live attachments.
 	maxLive map[string]int
+	// While gate is open, Assign waits for the attachments with names that
+	// start with gateName. inGate counts them.
+	gate             chan struct{}
+	gateName         string
+	inGate, mostGate int
 }
 
-func (f *fakeAddresses) Assign(_ context.Context, a *relay.Attachment) ([]netip.Prefix, error) {
+func (f *fakeAddresses) Assign(ctx context.Context, a *relay.Attachment) ([]netip.Prefix, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if gate := f.gate; gate != nil && strings.HasPrefix(a.Name, f.gateName) {
+		f.inGate++
+		f.mostGate = max(f.mostGate, f.inGate)
+		f.mu.Unlock()
+		select {
+		case <-gate:
+		case <-ctx.Done():
+		}
+		f.mu.Lock()
+		f.inGate--
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+	}
 	f.next++
 	if f.live == nil {
 		f.live, f.maxLive = map[string]int{}, map[string]int{}
@@ -188,6 +208,34 @@ func (f *fakeAddresses) overlap(subject string) int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.maxLive[subject]
+}
+
+// liveOf returns the live attachments of subject.
+func (f *fakeAddresses) liveOf(subject string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.live[subject]
+}
+
+// hold makes Assign wait for the names with prefix until release runs.
+func (f *fakeAddresses) hold(prefix string) (release func()) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	gate := make(chan struct{})
+	f.gate, f.gateName = gate, prefix
+	return func() {
+		f.mu.Lock()
+		f.gate = nil
+		f.mu.Unlock()
+		close(gate)
+	}
+}
+
+// held returns the Assign calls that wait now, and the most that waited at once.
+func (f *fakeAddresses) held() (now, most int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.inGate, f.mostGate
 }
 
 // world is the CAs and the address pool of one test.
@@ -265,8 +313,9 @@ func (w *world) relayOn(t testing.TB, id string, udp net.PacketConn) *testRelay 
 	r := relay.NewRouter(w.trust, w.relayCfg)
 	tr := &quic.Transport{Conn: udp}
 	tr.NonQUICPacketHandler = r.PacketHandler(tr)
-	// As at a real relay, the packets are Not-ECT.
-	ln, err := tr.Listen(r.TLSConfig(&tls.Config{Certificates: []tls.Certificate{*cert}}), &quic.Config{EnableDatagrams: true, DisableECN: true})
+	// As at a real relay, the packets are Not-ECT, and the stream limit takes
+	// the Attach calls of extra attachments.
+	ln, err := tr.Listen(r.TLSConfig(&tls.Config{Certificates: []tls.Certificate{*cert}}), &quic.Config{EnableDatagrams: true, DisableECN: true, MaxIncomingStreams: 512})
 	require.NoError(t, err)
 	srv := &relay.Server{
 		R: r, Networks: fakeNetworks{mtu: w.mtu, dns: w.dns, search: w.search}, Addresses: w.addrs, RelayID: id,
@@ -305,6 +354,10 @@ type testAgent struct {
 
 	routesMu sync.Mutex
 	routes   map[netip.Prefix]bool // From OnRoutes.
+
+	extraMu sync.Mutex
+	extras  map[string]netip.Addr // From OnAttachment and OnDetach.
+	log     []string              // "attach name address" or "detach name address", in order.
 }
 
 type agentOptions struct {
@@ -367,7 +420,10 @@ func (w *world) agent(t *testing.T, name string, r *testRelay, opts agentOptions
 		opts.move.PacketConn = udp
 		conn = opts.move
 	}
-	ta := &testAgent{tr: &quic.Transport{Conn: conn}, attach: make(chan attachEvent, 16), done: make(chan struct{}), routes: map[netip.Prefix]bool{}}
+	ta := &testAgent{
+		tr: &quic.Transport{Conn: conn}, attach: make(chan attachEvent, 16), done: make(chan struct{}),
+		routes: map[netip.Prefix]bool{}, extras: map[string]netip.Addr{},
+	}
 	enroll := func(context.Context) (*identity.Credential, error) {
 		n := ta.enrolls.Add(1)
 		cred := w.enrollCA().credential(t, testProject, testVPC, name, opts.life)
@@ -409,6 +465,25 @@ func (w *world) agent(t *testing.T, name string, r *testRelay, opts agentOptions
 				}
 				ta.routes[p] = true
 			}
+		},
+		OnAttachment: func(at Attachment) {
+			ta.extraMu.Lock()
+			old := ta.extras[at.Name]
+			ta.extras[at.Name] = at.Address
+			ta.log = append(ta.log, "attach "+at.Name+" "+at.Address.String())
+			ta.extraMu.Unlock()
+			if old != at.Address {
+				ta.removeAddr(t, old)
+				ta.netstack(t, ta.binding(), at.Address, opts.tcp)
+			}
+		},
+		OnDetach: func(at Attachment) {
+			ta.extraMu.Lock()
+			old := ta.extras[at.Name]
+			delete(ta.extras, at.Name)
+			ta.log = append(ta.log, "detach "+at.Name+" "+at.Address.String())
+			ta.extraMu.Unlock()
+			ta.removeAddr(t, old)
 		},
 	}
 	if cfg.Relays == nil && opts.enrolled == nil {
@@ -468,6 +543,36 @@ func (ta *testAgent) spare() *relayConn {
 		return nil
 	}
 	return ta.a.spares[0]
+}
+
+// extraAddr returns the address of the extra attachment name from OnAttachment.
+func (ta *testAgent) extraAddr(name string) netip.Addr {
+	ta.extraMu.Lock()
+	defer ta.extraMu.Unlock()
+	return ta.extras[name]
+}
+
+// events returns the OnAttachment and OnDetach calls for name.
+func (ta *testAgent) events(name string) []string {
+	ta.extraMu.Lock()
+	defer ta.extraMu.Unlock()
+	var out []string
+	for _, e := range ta.log {
+		if strings.Fields(e)[1] == name {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// removeAddr removes addr from the netstack, if it is valid.
+func (ta *testAgent) removeAddr(t *testing.T, addr netip.Addr) {
+	if !addr.IsValid() {
+		return
+	}
+	if err := ta.stack.RemoveAddress(1, tcpip.AddrFromSlice(addr.AsSlice())); err != nil {
+		t.Errorf("remove address %s: %v", addr, err)
+	}
 }
 
 // routeSet returns the prefixes that OnRoutes gave.

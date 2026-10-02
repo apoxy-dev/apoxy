@@ -84,6 +84,10 @@ func (t *tunDev) setAddr(old, addr netip.Addr) error {
 	return netlink.AddrAdd(t.link, &netlink.Addr{IPNet: ipNet(netip.PrefixFrom(addr, addr.BitLen())), Flags: unix.IFA_F_NODAD})
 }
 
+func (t *tunDev) delAddr(addr netip.Addr) error {
+	return netlink.AddrDel(t.link, &netlink.Addr{IPNet: ipNet(netip.PrefixFrom(addr, addr.BitLen()))})
+}
+
 // route adds and removes the kernel routes of the prefixes of the other
 // attachments. It skips the prefixes that are not agent.Routable.
 func (t *tunDev) route(add, remove []netip.Prefix) {

@@ -105,6 +105,14 @@ type Config struct {
 	// OnRoutes gets the changes to the prefixes of the other attachments in
 	// the VPC, after OnAttach. The agent calls it from one goroutine at a time.
 	OnRoutes func(add, remove []netip.Prefix)
+	// OnAttachment gets an extra attachment after each attach: after Attach,
+	// and after a move to a new relay session, where its address changes.
+	OnAttachment func(at Attachment)
+	// OnDetach gets an extra attachment after Detach, and after a move to a
+	// relay session that does not have it yet. The agent calls OnAttach,
+	// OnAttachment and OnDetach in order, one at a time. The callbacks must
+	// not call Attach, Detach or Attachments.
+	OnDetach func(at Attachment)
 	// MTU sets the device MTU, from 1280 to the VPC MTU, with no path probe.
 	// Zero means the VPC MTU if the path to the relay carries it, else 1280.
 	MTU int
@@ -130,7 +138,16 @@ type Agent struct {
 	// first as old.
 	admitMu sync.Mutex
 
-	// Lock order: admitMu, routeMu, then mu. holds.mu is never held with another lock.
+	// cbMu runs the callbacks in events one at a time.
+	cbMu sync.Mutex
+	// attMu guards specs and events. The writers of relayConn.extras hold it.
+	attMu      sync.Mutex
+	specs      map[string]*AttachmentSpec // Extra attachments to keep, by name.
+	events     []func()                   // Callbacks that wait to run, in order.
+	attachWake chan struct{}
+
+	// Lock order: cbMu, then attMu or admitMu, then routeMu, then mu.
+	// holds.mu is never held with another lock.
 	mu       sync.Mutex
 	rc       *relayConn
 	spares   []*relayConn            // Sessions with no attachment, on other relays.
@@ -159,6 +176,7 @@ func New(cfg Config) *Agent {
 		dialing:   map[string]int{},
 		admitted:  make(chan struct{}),
 	}
+	a.specs, a.attachWake = map[string]*AttachmentSpec{}, make(chan struct{}, 1)
 	a.mux = rpc.NewMux()
 	dp.RegisterPeerServer(a.mux, &peerService{a: a})
 	a.demux.Probe = a.onProbe
@@ -192,6 +210,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	}()
 	wg.Go(func() { a.tick(ctx) })
 	wg.Go(func() { a.keepSpares(ctx) })
+	wg.Go(func() { a.keepAttachments(ctx) })
 
 	backoff := minBackoff
 	next, failed := 0, 0 // The relay to dial next, and the relays that failed in a row.
@@ -227,7 +246,11 @@ func (a *Agent) Run(ctx context.Context) error {
 		start := time.Now()
 		for rc != nil {
 			a.use(rc)
-			rc = a.serve(ctx, rc)
+			next := a.serve(ctx, rc)
+			if next != nil {
+				a.moveExtras(ctx, rc, next)
+			}
+			rc = next
 		}
 		if time.Since(start) > stableSession {
 			backoff = minBackoff
@@ -255,11 +278,18 @@ func (a *Agent) renew(ctx context.Context) {
 
 // use makes rc the relay session of the agent and closes the one before.
 func (a *Agent) use(rc *relayConn) {
+	a.attMu.Lock()
 	a.mu.Lock()
 	old := a.rc
 	a.rc = rc
 	b := a.bind
 	a.mu.Unlock()
+	if f := a.cfg.OnAttach; f != nil {
+		addr, prefixes := rc.self, rc.prefixes
+		a.events = append(a.events, func() { f(b, addr, prefixes) })
+	}
+	a.queueMove(old, rc)
+	a.attMu.Unlock()
 	if rc.mode == dp.Mode_MODE_QUIC {
 		b.UseQUIC(rc.pc)
 	} else {
@@ -270,11 +300,10 @@ func (a *Agent) use(rc *relayConn) {
 	}
 	slog.Info("Attached to the VPC", "relay", rc.addr, "address", rc.self, "prefixes", rc.prefixes,
 		"transport", transportName(rc.mode), "fallback", rc.reason, "connect", rc.connect, "setup", rc.setup)
-	if a.cfg.OnAttach != nil {
-		a.cfg.OnAttach(b, rc.self, rc.prefixes)
-	}
+	a.deliver()
 	a.useRoutes(rc)
 	a.wakeSpares()
+	a.wakeAttach()
 }
 
 // DNS returns the DNS servers and search domains of the VPC.
@@ -433,8 +462,13 @@ type relayConn struct {
 	routes       routeTable
 	attachmentID string
 	// extras are the other attachments of this agent on rc, by attachment ID.
-	// Writers hold Agent.routeMu and Agent.mu, so readers hold one of them.
+	// Writers hold Agent.attMu, Agent.routeMu and Agent.mu, so readers hold one
+	// of them.
 	extras map[string]*extra
+	// sem limits the Attach calls of extras that run at once. attaching is the
+	// specs that they run for, guarded by Agent.mu.
+	sem       chan struct{}
+	attaching map[*AttachmentSpec]bool
 
 	dnsServers, dnsSearch []string
 
@@ -526,6 +560,7 @@ func (a *Agent) dialSession(ctx context.Context, e endpoint, spare func() bool) 
 		name:      name,
 		roots:     roots,
 		spareDone: make(chan struct{}),
+		sem:       make(chan struct{}, maxInFlight),
 		relayAddr: qc.RemoteAddr().(*net.UDPAddr).AddrPort(),
 		drain:     make(chan []*dp.RelayRef, 1),
 		bridgeTx:  make(chan struct{}),

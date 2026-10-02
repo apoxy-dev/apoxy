@@ -26,16 +26,15 @@ const maxGrants = 256
 // extra is an attachment of this agent on a relay session, other than the
 // attachment of Config.
 type extra struct {
-	name     string
+	spec     *AttachmentSpec
 	id       string
 	grant    *dp.AttachmentGrant
 	prefixes []netip.Prefix
 }
 
-// attachExtra runs Attach on rc for one more attachment of this agent, and
-// gives its grant to the peers on rc.
-func (rc *relayConn) attachExtra(ctx context.Context, name string, labels map[string]string, routes []netip.Prefix) (*extra, error) {
-	res, err := rc.c.Attach(ctx, &dp.AttachRequest{Vpc: rc.ref, Name: name, Labels: labels, Routes: prefixStrings(routes)})
+// attachExtra runs Attach on rc for s and checks the grant.
+func (rc *relayConn) attachExtra(ctx context.Context, s *AttachmentSpec) (*extra, error) {
+	res, err := rc.c.Attach(ctx, &dp.AttachRequest{Vpc: rc.ref, Name: s.Name, Labels: s.Labels, Routes: prefixStrings(s.Routes)})
 	if err != nil {
 		return nil, attachError(rc, fmt.Errorf("attach: %w", err))
 	}
@@ -47,13 +46,11 @@ func (rc *relayConn) attachExtra(ctx context.Context, name string, labels map[st
 	if err != nil {
 		return nil, err
 	}
-	x := &extra{name: name, id: claims.GetAttachmentId(), grant: res.GetGrant(), prefixes: prefixes}
-	rc.a.addExtra(rc, x)
-	return x, nil
+	return &extra{spec: s, id: claims.GetAttachmentId(), grant: res.GetGrant(), prefixes: prefixes}, nil
 }
 
 // addExtra adds x to rc and queues its grant for the peers on rc. Routes of x
-// that came before leave the route table of rc.
+// that came before leave the route table of rc. a.attMu must be held.
 func (a *Agent) addExtra(rc *relayConn, x *extra) {
 	a.routeMu.Lock()
 	defer a.routeMu.Unlock()
@@ -74,17 +71,17 @@ func (a *Agent) addExtra(rc *relayConn, x *extra) {
 	}
 }
 
-// detachExtra removes the attachment id from the relay, then from rc.
+// detachExtra runs Detach on rc for the attachment id. An attachment that the
+// relay does not have is not an error.
 func (rc *relayConn) detachExtra(ctx context.Context, id string) error {
 	if _, err := rc.c.Detach(ctx, &dp.DetachRequest{AttachmentId: id}); err != nil && rpc.CodeOf(err) != rpc.NotFound {
 		return fmt.Errorf("detach: %w", err)
 	}
-	rc.a.removeExtra(rc, id)
 	return nil
 }
 
 // removeExtra removes the attachment id from rc and queues the remove for the
-// peers on rc. It returns nil if rc has no such attachment.
+// peers on rc. It returns nil if rc has no such attachment. a.attMu must be held.
 func (a *Agent) removeExtra(rc *relayConn, id string) *extra {
 	a.routeMu.Lock()
 	defer a.routeMu.Unlock()
