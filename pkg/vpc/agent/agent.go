@@ -237,7 +237,7 @@ type relayConn struct {
 	prefixes  []netip.Prefix
 	self      netip.Addr // Overlay address of this agent.
 
-	pc     net.PacketConn
+	pc     *peerconn.Conn
 	peerTr *quic.Transport
 	drain  chan []*dp.RelayRef
 }

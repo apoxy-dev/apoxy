@@ -5,7 +5,6 @@ package psp
 import (
 	"encoding/binary"
 	"errors"
-	"hash/maphash"
 	"net"
 	"net/netip"
 
@@ -174,33 +173,3 @@ func innerDst(pkt []byte) (netip.Addr, bool) {
 	}
 	return netip.Addr{}, false
 }
-
-// flowHash returns a keyed hash of the addresses, protocol and ports of a packet.
-// Fragments and IPv6 packets with extension headers hash without ports.
-func flowHash(seed maphash.Seed, pkt []byte) uint64 {
-	var k [37]byte
-	n := 0
-	if pkt[0]>>4 == 4 {
-		n = copy(k[:], pkt[12:20])
-		proto := pkt[9]
-		k[n] = proto
-		n++
-		hl := int(pkt[0]&0x0f) * 4
-		frag := binary.BigEndian.Uint16(pkt[6:8]) & 0x3fff // MF and the offset.
-		if hasPorts(proto) && frag == 0 && len(pkt) >= hl+4 {
-			n += copy(k[n:], pkt[hl:hl+4])
-		}
-	} else {
-		n = copy(k[:], pkt[8:40])
-		next := pkt[6]
-		k[n] = next
-		n++
-		if hasPorts(next) && len(pkt) >= 44 {
-			n += copy(k[n:], pkt[40:44])
-		}
-	}
-	return maphash.Bytes(seed, k[:n])
-}
-
-// hasPorts reports whether the protocol is TCP, UDP or SCTP.
-func hasPorts(proto byte) bool { return proto == 6 || proto == 17 || proto == 132 }

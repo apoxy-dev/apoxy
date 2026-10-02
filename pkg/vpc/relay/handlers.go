@@ -16,12 +16,17 @@ import (
 
 // caller returns the session of the call. A call with no session, for
 // example from the JSON debug handler or from a connection whose agent cert
-// failed the check, gets Unauthenticated.
+// failed the check, gets Unauthenticated. A shard connection carries only
+// data, so its calls get FailedPrecondition.
 func (r *Router) caller(ctx context.Context) (*Session, error) {
 	if conn := rpc.ConnFromContext(ctx); conn != nil {
 		r.mu.RLock()
 		s := r.byConn[conn]
+		shard := s != nil && s.shardOf != nil
 		r.mu.RUnlock()
+		if shard {
+			return nil, rpc.Errorf(rpc.FailedPrecondition, "a shard connection carries only data")
+		}
 		if s != nil {
 			return s, nil
 		}

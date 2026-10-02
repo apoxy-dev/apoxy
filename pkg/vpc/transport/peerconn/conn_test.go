@@ -50,7 +50,7 @@ func TestWriteTo(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			qc := newFakeQC()
-			c := New(qc, testSrc).(*Conn)
+			c := New(qc, testSrc)
 			defer c.Close()
 			if tc.prep != nil {
 				tc.prep(c, qc)
@@ -109,7 +109,7 @@ func TestReadFrom(t *testing.T) {
 			if !tc.src.IsValid() {
 				want.OtherDrops = 1
 			}
-			assert.Equal(t, want, c.(*Conn).Stats())
+			assert.Equal(t, want, c.Stats())
 		})
 	}
 }
@@ -118,7 +118,7 @@ func TestReadFrom(t *testing.T) {
 // peer frames to ReadFrom.
 func TestHandleData(t *testing.T) {
 	qc := newFakeQC()
-	c := New(qc, testSrc).(*Conn)
+	c := New(qc, testSrc)
 	defer c.Close()
 	got := make(chan []byte, 4)
 	c.HandleData(func(b []byte) { got <- b })
@@ -157,7 +157,7 @@ func TestReadEnds(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			c := New(newFakeQC(), testSrc).(*Conn)
+			c := New(newFakeQC(), testSrc)
 			defer c.Close()
 			errc := make(chan error, 1)
 			go func() {
@@ -198,7 +198,7 @@ func TestDeadlineReset(t *testing.T) {
 // and keeps the order of the others.
 func TestReadDrops(t *testing.T) {
 	qc := newFakeQC()
-	c := New(qc, testSrc).(*Conn)
+	c := New(qc, testSrc)
 	defer c.Close()
 	const extra = 10
 	for i := range uint32(queueLen + extra) {
@@ -216,7 +216,7 @@ func TestReadDrops(t *testing.T) {
 
 func TestSetConn(t *testing.T) {
 	q1, q2, q3 := newFakeQC(), newFakeQC(), newFakeQC()
-	c := New(q1, testSrc).(*Conn)
+	c := New(q1, testSrc)
 	c.SetConn(q2)
 
 	_, err := c.WriteTo([]byte("hi"), udpAddr("fd00::2"))
@@ -274,7 +274,7 @@ func BenchmarkReadFrom(b *testing.B) {
 // handler that checks it.
 func BenchmarkHandleData(b *testing.B) {
 	qc := newFakeQC()
-	c := New(qc, testSrc).(*Conn)
+	c := New(qc, testSrc)
 	defer c.Close()
 	src := netip.MustParseAddr("10.0.0.2")
 	sources := func(a netip.Addr) bool { return a == src }

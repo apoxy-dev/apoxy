@@ -5,7 +5,6 @@ package psp
 import (
 	"context"
 	"fmt"
-	"hash/maphash"
 	"io"
 	"net"
 	"sync"
@@ -46,16 +45,6 @@ func BenchmarkRoundTrip(b *testing.B) {
 		if rx.PhyToVirt(phy[addrLen:n], virt) == 0 {
 			b.Fatal("no packet")
 		}
-	}
-}
-
-func BenchmarkFlowHash(b *testing.B) {
-	x, y := newPair(b)
-	pkt := packet(x.v6, y.v6, 6, 1, 2, 100)
-	seed := maphash.MakeSeed()
-	b.ReportAllocs()
-	for b.Loop() {
-		flowHash(seed, pkt)
 	}
 }
 

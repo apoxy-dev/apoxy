@@ -92,6 +92,16 @@ closes a connection with a `RelayCloseCode`: `CERT` (the agent cert failed a
 check; get a new cert before the next dial) or `DRAIN` (move to another
 relay).
 
+In QUIC mode an agent can add up to 3 shards: extra connections from the same
+socket that carry data datagrams. Each one sends
+`Hello{shard: {attachment_id, index}}` as its first `Session` message, gets
+`Welcome`, and makes no other call. The relay refuses the join if the index is
+not from 1 to 3 (`InvalidArgument`), if no open session has the attachment
+(`NotFound`), if that session has another agent identity (`PermissionDenied`),
+or if the connection already has a `Session` call, routes or SPI rows
+(`FailedPrecondition`). A new shard with the same index replaces the old one.
+A shard closes when its owner session closes.
+
 The relay accepts an agent cert only if it chains to the agent CA, its SAN is
 an agent ID, and the agent is not revoked in its VPC. It checks in the TLS
 handshake and again for open sessions when the trust data changes, and closes

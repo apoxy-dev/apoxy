@@ -71,6 +71,18 @@ message Hello {
   Mode mode = 1;
   // Maximum number of VPCs on this session. In the MVP the cert names one VPC.
   uint32 max_vpcs_per_session = 2;
+  // Set on an extra connection of a session in QUIC mode. The connection
+  // then carries only data datagrams, and the relay ignores mode.
+  Shard shard = 3;
+}
+
+// Shard joins a connection to the session of an attachment. The session
+// connection is shard 0.
+message Shard {
+  // Attachment of the session. Its agent must have the identity of this cert.
+  string attachment_id = 1;
+  // Index of the shard, from 1 to 3.
+  uint32 index = 2;
 }
 
 // Welcome answers Hello.

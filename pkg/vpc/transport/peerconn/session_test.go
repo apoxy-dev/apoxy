@@ -28,8 +28,8 @@ func TestPeerSession(t *testing.T) {
 	p := newPKI(t)
 	r := newRelay(t, p, relayQUIC)
 	srcA, srcB := netip.MustParseAddr("fd00::a"), netip.MustParseAddr("10.0.0.2")
-	ca := New(r.attach(t, srcA, relayQUIC), srcA).(*Conn)
-	cb := New(r.attach(t, srcB, relayQUIC), srcB).(*Conn)
+	ca := New(r.attach(t, srcA, relayQUIC), srcA)
+	cb := New(r.attach(t, srcB, relayQUIC), srcB)
 	ta, tb := peerTransport(t, ca), peerTransport(t, cb)
 
 	ln, err := tb.Listen(&tls.Config{
@@ -136,9 +136,9 @@ func TestFrameFits(t *testing.T) {
 		t.Run(strconv.Itoa(int(tc.packetSize)), func(t *testing.T) {
 			cfg := &quic.Config{EnableDatagrams: true, InitialPacketSize: tc.packetSize, DisablePathMTUDiscovery: true}
 			r := newRelay(t, p, cfg)
-			ca := New(r.attach(t, srcA, cfg), srcA).(*Conn)
+			ca := New(r.attach(t, srcA, cfg), srcA)
 			defer ca.Close()
-			cb := New(r.attach(t, srcB, cfg), srcB).(*Conn)
+			cb := New(r.attach(t, srcB, cfg), srcB)
 			defer cb.Close()
 			_, err := ca.WriteTo(pkt, udpAddr(srcB.String()))
 			require.NoError(t, err)

@@ -130,6 +130,9 @@ func (srv *Server) Session(ctx context.Context, st rpc.BidiStreamServer[dp.Sessi
 	if hello == nil {
 		return rpc.Errorf(rpc.InvalidArgument, "first message is not Hello")
 	}
+	if sh := hello.GetShard(); sh != nil {
+		return srv.serveShard(ctx, s, sh, st)
+	}
 	switch hello.GetMode() {
 	case dp.Mode_MODE_PSP:
 	case dp.Mode_MODE_QUIC:

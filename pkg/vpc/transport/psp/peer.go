@@ -10,6 +10,8 @@ import (
 
 	"github.com/apoxy-dev/softpsp/engine"
 	"github.com/apoxy-dev/softpsp/keys"
+
+	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/flow"
 )
 
 // Peer is one remote agent of a binding. This agent receives from it with
@@ -100,7 +102,7 @@ func (p *Peer) txSA(inner []byte) *engine.TxSA {
 	}
 	lane := 0
 	if n > 1 {
-		lane = int(flowHash(p.b.seed, inner) % uint64(n))
+		lane = int(flow.Hash(p.b.seed, inner) % uint64(n))
 	}
 	if sa := p.tx.SA(lane); sa != nil {
 		return sa

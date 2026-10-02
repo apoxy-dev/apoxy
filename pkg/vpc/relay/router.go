@@ -18,6 +18,7 @@ import (
 	"golang.org/x/time/rate"
 
 	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/peerconn"
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
@@ -138,6 +139,8 @@ type Session struct {
 	attachments []*Attachment
 	closed      bool
 	sync        syncState
+	shardOf     *Session                     // The owner session of a shard.
+	shards      [peerconn.MaxShards]*Session // Shards 1 and up of an owner.
 
 	dropUnknownSPI, dropMeter atomic.Uint64
 }
@@ -493,7 +496,9 @@ func (r *Router) Sweep(now time.Time) {
 		if !s.notAfter.IsZero() && !now.Before(s.notAfter) {
 			expired = append(expired, s)
 		}
-		r.setAddr(s, s.remote(), now)
+		if s.shardOf == nil {
+			r.setAddr(s, s.remote(), now)
+		}
 		if s.prev.IsValid() && now.After(s.prevUntil) {
 			if r.bySource[s.prev] == s {
 				delete(r.bySource, s.prev)
