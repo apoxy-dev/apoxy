@@ -15,6 +15,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv6"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
@@ -243,15 +244,18 @@ func TestFirstPacket(t *testing.T) {
 }
 
 // TestNoPeer checks that packets to a destination that no peer session can
-// get drop, and that the sender gets an ICMP error. gVisor does not give
-// ICMPv6 codes 3 and 1 to sockets, so the test counts the ICMP errors.
+// get drop, and that the sender gets an ICMP error. gVisor gives ICMPv6 code 1
+// to no socket, so the test counts the ICMP errors. Code 3 stops a TCP dial.
 func TestNoPeer(t *testing.T) {
+	absent := func(attachEvent) netip.Addr { return netip.MustParseAddr("fd61:706f:7879:12:3400:99::1") }
 	cases := []struct {
 		name   string
 		dst    func(eb attachEvent) netip.Addr
 		permit relay.Permit
+		dial   bool // A TCP dial in place of a UDP packet.
 	}{
-		{name: "not found", dst: func(attachEvent) netip.Addr { return netip.MustParseAddr("fd61:706f:7879:12:3400:99::1") }},
+		{name: "not found", dst: absent},
+		{name: "TCP dial to an absent peer", dst: absent, dial: true},
 		{name: "outside the VPC", dst: func(attachEvent) netip.Addr { return netip.MustParseAddr("fd97::1") }},
 		{
 			name:   "denied",
@@ -263,12 +267,21 @@ func TestNoPeer(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			w := newWorld(t)
 			r := w.relay(t, "relay-1")
-			a, b := w.agent(t, "a", r, agentOptions{}), w.agent(t, "b", r, agentOptions{})
+			a, b := w.agent(t, "a", r, agentOptions{tcp: tc.dial}), w.agent(t, "b", r, agentOptions{})
 			ea, eb := a.attached(t), b.attached(t)
 			if tc.permit != nil {
 				r.r.SetPermit(tc.permit)
 			}
-			send(t, a.stack, ea.addr, tc.dst(eb), 9000, "no peer")
+			if tc.dial {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				start := time.Now()
+				_, err := gonet.DialContextTCP(ctx, a.stack, *fullAddr(tc.dst(eb), 9000), ipv6.ProtocolNumber)
+				require.ErrorContains(t, err, (&tcpip.ErrHostUnreachable{}).String())
+				assert.Less(t, time.Since(start), time.Second, "the dial stops at the ICMP error")
+			} else {
+				send(t, a.stack, ea.addr, tc.dst(eb), 9000, "no peer")
+			}
 			require.Eventually(t, func() bool { return unreachableIn(a) == 1 }, 5*time.Second, 10*time.Millisecond)
 			assert.Equal(t, uint64(1), a.a.Stats().HoldDrops)
 			assert.Zero(t, peerCount(a.a))
