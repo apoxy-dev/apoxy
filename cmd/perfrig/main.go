@@ -2,9 +2,10 @@
 // namespaces with a veth pair, adds netem delay, jitter, loss and rate limits
 // on both ends, runs a server and a client workload, and prints a JSON result
 // with RTT, throughput and CPU. "perfrig compare" checks results against a
-// baseline file.
+// baseline file. Exit code 3 is an infra error, for example CPU steal or a rig
+// setup failure, and not a result of the workload.
 //
-//	perfrig run -workload iperf3-tcp -streams 4 -duration 30s -reps 3
+//	perfrig run -workload iperf3-tcp -streams 4 -duration 30s -reps 3 -min-cpus 8 -max-steal 5
 //	perfrig compare -baseline cmd/perfrig/baseline.json -summary "$GITHUB_STEP_SUMMARY" perf/
 //	perfrig compare -baseline cmd/perfrig/baseline.json -update perf/
 package main
@@ -42,9 +43,22 @@ func main() {
 		usage()
 	}
 	if err != nil {
-		slog.Error("Perf rig failed", "error", err)
+		code := exitCode(err)
+		slog.Error("Perf rig failed", "error", err, "exit_code", code)
 		stop()
-		os.Exit(1)
+		os.Exit(code)
+	}
+}
+
+// exitCode is 3 for an infra error with no regression, else 1.
+func exitCode(err error) int {
+	switch {
+	case err == nil:
+		return 0
+	case errors.Is(err, errInfra) && !errors.Is(err, errRegression):
+		return 3
+	default:
+		return 1
 	}
 }
 
@@ -71,6 +85,8 @@ func runCmd(ctx context.Context, args []string) error {
 	fs.IntVar(&cfg.Pings, "pings", 20, "ping count for the RTT measurement")
 	fs.IntVar(&cfg.Reps, "reps", 1, "runs, each with new server and client processes; the result has the median of each number")
 	fs.StringVar(&cfg.Baseline, "baseline", "", "baseline file: when the median fails the entry of the key, run -reps more runs one time and use the median of all runs")
+	fs.IntVar(&cfg.MinCPUs, "min-cpus", 0, "infra error when the host has fewer CPUs (0: no check)")
+	fs.Float64Var(&cfg.MaxSteal, "max-steal", -1, "infra error when the CPU steal of a run is above this percent (negative: no check)")
 	fs.StringVar(&cfg.NetnsPrefix, "netns-prefix", "perf", "prefix of the netns names")
 	fs.StringVar(&cfg.OutDir, "out-dir", "", "keep the workload files and raw output in this directory")
 	out := fs.String("out", "", "write the result JSON to this file (default: stdout)")
@@ -94,9 +110,10 @@ func runCmd(ctx context.Context, args []string) error {
 		cfg.Window = w.DefaultWindow
 	}
 
-	res, err := execute(ctx, cfg, w)
-	if err != nil {
-		return err
+	// After an infra error, execute also returns the result, with infra_error set.
+	res, runErr := execute(ctx, cfg, w)
+	if res == nil {
+		return runErr
 	}
 	data, err := json.MarshalIndent(res, "", "  ")
 	if err != nil {
@@ -105,12 +122,13 @@ func runCmd(ctx context.Context, args []string) error {
 	data = append(data, '\n')
 	slog.Info("Workload done", "workload", res.Workload, "reps", res.Reps, "gbps", res.Throughput.Gbps,
 		"rtt_ms", res.RTT.Avg, "client_cores_per_gbps", res.CPU.Client.CoresPerGbps,
-		"server_cores_per_gbps", res.CPU.Server.CoresPerGbps)
+		"server_cores_per_gbps", res.CPU.Server.CoresPerGbps, "infra_error", res.InfraError)
 	if *out == "" {
 		_, err = os.Stdout.Write(data)
-		return err
+	} else {
+		err = os.WriteFile(*out, data, 0o644)
 	}
-	return os.WriteFile(*out, data, 0o644)
+	return errors.Join(runErr, err)
 }
 
 func compareCmd(args []string) error {
@@ -131,10 +149,7 @@ func compareCmd(args []string) error {
 		return err
 	}
 	if *update {
-		for _, r := range results {
-			b.Entries[r.Key] = updateEntry(b.Entries[r.Key], r)
-			fmt.Printf("SET %s\n", r.Key)
-		}
+		updateBaseline(os.Stdout, b, results)
 		return saveBaseline(*path, b)
 	}
 	var report bytes.Buffer

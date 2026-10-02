@@ -62,6 +62,9 @@ func writeSummary(w io.Writer, outcomes []outcome) {
 	fmt.Fprintln(w)
 	for _, o := range outcomes {
 		fmt.Fprintf(w, "- %s `%s`", o.Status, o.Result.Key)
+		if o.Result.InfraError != "" {
+			fmt.Fprintf(w, "; %s", o.Result.InfraError)
+		}
 		for _, c := range o.Checks {
 			mark := "ok"
 			if c.Regressed {

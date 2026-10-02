@@ -29,7 +29,8 @@ func TestWriteSummary(t *testing.T) {
 	}}
 
 	var buf bytes.Buffer
-	writeSummary(&buf, []outcome{evaluate(base, *gate), evaluate(base, *loss)})
+	bad := infraResult("aarch64 vpc-tun-psp-relay streams=4", "too much CPU steal: 7.10% in rep 2, -max-steal is 5%")
+	writeSummary(&buf, []outcome{evaluate(base, *gate), evaluate(base, *loss), evaluate(base, bad)})
 	out := buf.String()
 
 	rows := map[string]string{}
@@ -45,6 +46,8 @@ func TestWriteSummary(t *testing.T) {
 	assert.Contains(t, out, "| Status | Workload | Gbps |")
 	assert.Contains(t, out, "- FAIL `aarch64 vpc-netstack-psp-relay streams=4`; min_gbps 2.0000 (baseline 2.0000, +0.0%, ok); gbps 2.0000 (baseline 2.3000, -13.0%, REGRESSION)")
 	assert.Contains(t, out, "- NO BASELINE `aarch64 vpc-netstack-psp-relay-loss streams=4`\n")
+	assert.Contains(t, rows, "INFRA")
+	assert.Contains(t, out, "- INFRA `aarch64 vpc-tun-psp-relay streams=4`; too much CPU steal: 7.10% in rep 2, -max-steal is 5%\n")
 }
 
 func TestInfoCells(t *testing.T) {

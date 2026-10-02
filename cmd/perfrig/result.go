@@ -11,14 +11,16 @@ import (
 // Result is the JSON output of one run.
 type Result struct {
 	// Key names the settings that change the numbers. Baseline entries use it.
-	Key       string            `json:"key"`
-	Workload  string            `json:"workload"`
-	StartedAt time.Time         `json:"started_at"`
-	Host      Host              `json:"host"`
-	Settings  Settings          `json:"settings"`
-	Tools     map[string]string `json:"tools,omitempty"`
-	Sysctls   map[string]string `json:"sysctls"`
-	RTT       RTT               `json:"rtt_ms"`
+	Key       string    `json:"key"`
+	Workload  string    `json:"workload"`
+	StartedAt time.Time `json:"started_at"`
+	Host      Host      `json:"host"`
+	Settings  Settings  `json:"settings"`
+	// InfraError tells why the run is not valid, for example CPU steal. Compare does not check the result.
+	InfraError string            `json:"infra_error,omitempty"`
+	Tools      map[string]string `json:"tools,omitempty"`
+	Sysctls    map[string]string `json:"sysctls"`
+	RTT        RTT               `json:"rtt_ms"`
 	// Reps is the number of runs. Throughput, CPU and Info are the medians of
 	// the runs, each field on its own.
 	Reps int `json:"reps"`
@@ -34,9 +36,10 @@ type Result struct {
 
 // Host describes the machine that ran the rig.
 type Host struct {
-	Arch   string `json:"arch"`
-	Kernel string `json:"kernel"`
-	CPUs   int    `json:"cpus"`
+	Arch     string `json:"arch"`
+	Kernel   string `json:"kernel"`
+	CPUs     int    `json:"cpus"`
+	CPUModel string `json:"cpu_model,omitempty"`
 }
 
 // Settings are the rig and workload settings of one run.

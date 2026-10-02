@@ -33,6 +33,8 @@ type config struct {
 	Pings       int
 	Reps        int
 	Baseline    string
+	MinCPUs     int
+	MaxSteal    float64
 	NetnsPrefix string
 	OutDir      string
 
@@ -59,9 +61,21 @@ func (c config) settings() Settings {
 	}
 }
 
+// errSteal is CPU steal above -max-steal in a rep.
+var errSteal = errors.New("too much CPU steal")
+
+// stealErr returns an errSteal error when the steal of run is above max. A negative max is no check.
+func stealErr(run Run, max float64) error {
+	if max < 0 || run.StealPercent <= max {
+		return nil
+	}
+	return fmt.Errorf("%w: %.2f%% in rep %d, -max-steal is %g%%", errSteal, run.StealPercent, run.Rep, max)
+}
+
 // execute builds the rig, runs the workload cfg.Reps times and removes the
 // rig. Each rep has new server and client processes. When the median fails the
-// baseline entry of the key, it runs cfg.Reps more times one time.
+// baseline entry of the key, it runs cfg.Reps more times one time. After an
+// infra error, it returns the result with InfraError set and an errInfra error.
 func execute(ctx context.Context, cfg config, w Workload) (*Result, error) {
 	if runtime.GOOS != "linux" {
 		return nil, errors.New("perfrig run needs Linux")
@@ -77,7 +91,7 @@ func execute(ctx context.Context, cfg config, w Workload) (*Result, error) {
 	res := &Result{
 		Workload:  w.Name,
 		StartedAt: time.Now().UTC(),
-		Host:      Host{Arch: hostArch(), Kernel: kernelRelease(), CPUs: runtime.NumCPU()},
+		Host:      Host{Arch: hostArch(), Kernel: kernelRelease(), CPUs: runtime.NumCPU(), CPUModel: cpuModel()},
 		Settings:  cfg.settings(),
 	}
 	res.Key = resultKey(res.Host.Arch, w.Name, res.Settings)
@@ -88,6 +102,13 @@ func execute(ctx context.Context, cfg config, w Workload) (*Result, error) {
 			return nil, err
 		}
 		base = &b
+	}
+	infra := func(err error) (*Result, error) {
+		res.InfraError = err.Error()
+		return res, fmt.Errorf("%w: %w", errInfra, err)
+	}
+	if cfg.MinCPUs > 0 && res.Host.CPUs < cfg.MinCPUs {
+		return infra(fmt.Errorf("the host has %d CPUs, fewer than -min-cpus %d", res.Host.CPUs, cfg.MinCPUs))
 	}
 	if w.Tools != nil {
 		tools, err := w.Tools(ctx)
@@ -112,12 +133,12 @@ func execute(ctx context.Context, cfg config, w Workload) (*Result, error) {
 	r := newRig(cfg)
 	defer r.teardown()
 	if err := r.setup(ctx); err != nil {
-		return nil, err
+		return infra(fmt.Errorf("rig setup: %w", err))
 	}
 	res.Sysctls = r.tune(ctx)
 	rtt, err := r.ping(ctx, cfg.Pings)
 	if err != nil {
-		return nil, err
+		return infra(err)
 	}
 	res.RTT = rtt
 	slog.Info("Measured RTT", "avg_ms", rtt.Avg, "min_ms", rtt.Min, "max_ms", rtt.Max)
@@ -134,25 +155,30 @@ func execute(ctx context.Context, cfg config, w Workload) (*Result, error) {
 	}
 	slog.Info("Starting workload", "workload", w.Name, "key", res.Key, "reps", cfg.Reps)
 	runReps := func(from, to int) error {
+		defer res.summarize()
 		for rep := from; rep <= to; rep++ {
 			run, err := runRep(ctx, cfg, w, r, env, rep)
 			if err != nil {
 				return fmt.Errorf("rep %d: %w", rep, err)
 			}
 			res.Runs = append(res.Runs, run)
+			if err := stealErr(run, cfg.MaxSteal); err != nil {
+				return err
+			}
 		}
-		res.summarize()
 		return nil
 	}
-	if err := runReps(1, cfg.Reps); err != nil {
-		return nil, err
-	}
-	if base != nil && needsRetry(*base, *res) {
+	repsErr := runReps(1, cfg.Reps)
+	if repsErr == nil && base != nil && needsRetry(*base, *res) {
 		slog.Warn("Median failed the baseline, running the reps again", "key", res.Key, "gbps", res.Throughput.Gbps)
 		res.Retried = true
-		if err := runReps(cfg.Reps+1, 2*cfg.Reps); err != nil {
-			return nil, err
-		}
+		repsErr = runReps(cfg.Reps+1, 2*cfg.Reps)
+	}
+	switch {
+	case errors.Is(repsErr, errSteal):
+		return infra(repsErr)
+	case repsErr != nil:
+		return nil, repsErr
 	}
 	return res, nil
 }
@@ -217,6 +243,7 @@ func runRep(ctx context.Context, cfg config, w Workload, r *rig, env Env, rep in
 		run.CPU.Server = newProcCPU(su1-su0, ss1-ss0, elapsed, gbps)
 	}
 	if hostErr == nil && hostErr2 == nil {
+		run.StealPercent = stealPercent(hostBefore, hostAfter)
 		run.CPU.Host = HostCPU{
 			UserS:   round(hostAfter.User-hostBefore.User, 3),
 			SystemS: round(hostAfter.System-hostBefore.System, 3),
@@ -228,7 +255,8 @@ func runRep(ctx context.Context, cfg config, w Workload, r *rig, env Env, rep in
 	run.WorkloadResult = jsonObjectLine(client.out.Bytes())
 	run.CPU.Relay = relayCPU(run.WorkloadResult)
 	run.Load1End = load1()
-	slog.Info("Rep done", "rep", rep, "gbps", tp.Gbps, "load1_start", run.Load1Start, "load1_end", run.Load1End)
+	slog.Info("Rep done", "rep", rep, "gbps", tp.Gbps, "load1_start", run.Load1Start, "load1_end", run.Load1End,
+		"steal_percent", run.StealPercent)
 	return run, nil
 }
 

@@ -11,12 +11,27 @@ import (
 // userHZ is the /proc/stat tick rate. Linux uses 100 on all supported arches.
 const userHZ = 100
 
-// cpuTimes are busy CPU seconds of all CPUs from the "cpu" line of /proc/stat.
+// cpuTimes are CPU seconds of all CPUs from the "cpu" line of /proc/stat.
 type cpuTimes struct {
 	User, System, IRQ float64
+	// Idle includes iowait. Steal is the time that the hypervisor gave to other guests.
+	Idle, Steal float64
 }
 
+// total is the busy time.
 func (t cpuTimes) total() float64 { return t.User + t.System + t.IRQ }
+
+// all is the busy, idle and steal time.
+func (t cpuTimes) all() float64 { return t.total() + t.Idle + t.Steal }
+
+// stealPercent is the steal from a to b, in percent of all CPU time.
+func stealPercent(a, b cpuTimes) float64 {
+	d := b.all() - a.all()
+	if d <= 0 {
+		return 0
+	}
+	return round((b.Steal-a.Steal)/d*100, 2)
+}
 
 func readCPUTimes() (cpuTimes, error) {
 	data, err := os.ReadFile("/proc/stat")
@@ -26,7 +41,8 @@ func readCPUTimes() (cpuTimes, error) {
 	return parseProcStat(string(data))
 }
 
-// parseProcStat reads "cpu user nice system idle iowait irq softirq ...".
+// parseProcStat reads "cpu user nice system idle iowait irq softirq steal ...".
+// Kernels before 2.6.11 have no steal.
 func parseProcStat(data string) (cpuTimes, error) {
 	for _, line := range strings.Split(data, "\n") {
 		f := strings.Fields(line)
@@ -36,15 +52,15 @@ func parseProcStat(data string) (cpuTimes, error) {
 		if len(f) < 8 {
 			return cpuTimes{}, fmt.Errorf("short cpu line in /proc/stat: %q", line)
 		}
-		var v [7]float64
-		for i := range v {
+		var v [8]float64
+		for i := range min(len(f)-1, len(v)) {
 			n, err := strconv.ParseUint(f[i+1], 10, 64)
 			if err != nil {
 				return cpuTimes{}, fmt.Errorf("bad cpu line in /proc/stat: %q", line)
 			}
 			v[i] = float64(n) / userHZ
 		}
-		return cpuTimes{User: v[0] + v[1], System: v[2], IRQ: v[5] + v[6]}, nil
+		return cpuTimes{User: v[0] + v[1], System: v[2], IRQ: v[5] + v[6], Idle: v[3] + v[4], Steal: v[7]}, nil
 	}
 	return cpuTimes{}, errors.New("no cpu line in /proc/stat")
 }
@@ -69,6 +85,43 @@ func parseLoadAvg(data string) (float64, error) {
 		return 0, errors.New("empty /proc/loadavg")
 	}
 	return strconv.ParseFloat(f[0], 64)
+}
+
+// cpuModel returns the CPU model of the host, or "".
+func cpuModel() string {
+	data, err := os.ReadFile("/proc/cpuinfo")
+	if err != nil {
+		return ""
+	}
+	return parseCPUInfo(string(data))
+}
+
+// parseCPUInfo reads the "model name" of x86, or the implementer and part
+// numbers of arm64, from /proc/cpuinfo.
+func parseCPUInfo(data string) string {
+	var impl, part string
+	for _, line := range strings.Split(data, "\n") {
+		k, v, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		switch strings.TrimSpace(k) {
+		case "model name":
+			return strings.TrimSpace(v)
+		case "CPU implementer":
+			if impl == "" {
+				impl = strings.TrimSpace(v)
+			}
+		case "CPU part":
+			if part == "" {
+				part = strings.TrimSpace(v)
+			}
+		}
+	}
+	if impl == "" && part == "" {
+		return ""
+	}
+	return "implementer " + impl + " part " + part
 }
 
 var errNoProcess = errors.New("process not in /proc")

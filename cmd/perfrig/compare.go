@@ -15,6 +15,9 @@ const defaultTolerance = 0.10
 
 var errRegression = errors.New("performance regression")
 
+// errInfra is a problem of the host or the rig, not of the workload. perfrig exits with code 3.
+var errInfra = errors.New("infra error")
+
 // Baseline holds the expected numbers for each result key.
 type Baseline struct {
 	// Tolerance is a fraction, for example 0.10. Zero means defaultTolerance.
@@ -95,6 +98,19 @@ func entryFor(r Result) BaselineEntry {
 	}
 }
 
+// updateBaseline sets the entries of b from the results. It skips results
+// with an infra error.
+func updateBaseline(w io.Writer, b Baseline, results []Result) {
+	for _, r := range results {
+		if r.InfraError != "" {
+			fmt.Fprintf(w, "SKIP %s: %s\n", r.Key, r.InfraError)
+			continue
+		}
+		b.Entries[r.Key] = updateEntry(b.Entries[r.Key], r)
+		fmt.Fprintf(w, "SET %s\n", r.Key)
+	}
+}
+
 // updateEntry makes a baseline entry from r. It keeps the floor, the
 // tolerance and the info flag of old.
 func updateEntry(old BaselineEntry, r Result) BaselineEntry {
@@ -111,6 +127,8 @@ const (
 	statusWarn = "WARN"
 	// statusNew is a result with no baseline entry. It passes.
 	statusNew = "NO BASELINE"
+	// statusInfra is a result with an infra error. It is not compared.
+	statusInfra = "INFRA"
 )
 
 // outcome is the compare result of one result.
@@ -122,6 +140,9 @@ type outcome struct {
 
 // evaluate compares r with its baseline entry. An entry that checks no metric fails.
 func evaluate(b Baseline, r Result) outcome {
+	if r.InfraError != "" {
+		return outcome{Result: r, Status: statusInfra}
+	}
 	checks, ok := compare(b, r)
 	o := outcome{Result: r, Status: statusPass, Checks: checks}
 	if !ok {
@@ -150,17 +171,24 @@ func needsRetry(b Baseline, r Result) bool {
 
 // compareResults writes a report to w and returns the outcomes. It returns
 // errRegression when a result is worse than its baseline entry or its entry
-// checks no metric. A result with no entry and a failed info entry pass.
+// checks no metric. A result with no entry and a failed info entry pass. With
+// no regression, it returns errInfra when a result has an infra error.
 func compareResults(w io.Writer, b Baseline, results []Result) ([]outcome, error) {
-	failed := 0
+	failed, infra := 0, 0
 	outcomes := make([]outcome, 0, len(results))
 	for _, r := range results {
 		o := evaluate(b, r)
 		outcomes = append(outcomes, o)
-		if o.Status == statusFail {
+		switch o.Status {
+		case statusFail:
 			failed++
+		case statusInfra:
+			infra++
 		}
 		switch {
+		case o.Status == statusInfra:
+			fmt.Fprintf(w, "%s %s\n  %s\n", o.Status, r.Key, r.InfraError)
+			continue
 		case o.Status == statusNew:
 			fmt.Fprintf(w, "%s %s\n  gbps=%g packets_per_second=%g client_cores_per_gbps=%g server_cores_per_gbps=%g\n",
 				o.Status, r.Key, r.Throughput.Gbps, r.Throughput.PacketsPerSecond, r.CPU.Client.CoresPerGbps, r.CPU.Server.CoresPerGbps)
@@ -181,6 +209,9 @@ func compareResults(w io.Writer, b Baseline, results []Result) ([]outcome, error
 	}
 	if failed > 0 {
 		return outcomes, fmt.Errorf("%w: %d of %d results failed", errRegression, failed, len(results))
+	}
+	if infra > 0 {
+		return outcomes, fmt.Errorf("%w: %d of %d results", errInfra, infra, len(results))
 	}
 	return outcomes, nil
 }

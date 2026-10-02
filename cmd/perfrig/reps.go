@@ -14,10 +14,12 @@ type Run struct {
 	Rep       int       `json:"rep"`
 	StartedAt time.Time `json:"started_at"`
 	// Load1 is the 1-minute load average of the host at the start and at the end.
-	Load1Start float64    `json:"load1_start"`
-	Load1End   float64    `json:"load1_end"`
-	Throughput Throughput `json:"throughput"`
-	CPU        CPU        `json:"cpu"`
+	Load1Start float64 `json:"load1_start"`
+	Load1End   float64 `json:"load1_end"`
+	// StealPercent is the CPU steal of the host while the client ran.
+	StealPercent float64    `json:"steal_percent"`
+	Throughput   Throughput `json:"throughput"`
+	CPU          CPU        `json:"cpu"`
 	// WorkloadResult is the last line of the client stdout when it is a JSON object.
 	WorkloadResult json.RawMessage `json:"workload_result,omitempty"`
 }

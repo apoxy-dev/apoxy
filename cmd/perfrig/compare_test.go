@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -17,6 +18,12 @@ func result(key string, gbps, clientCPG, serverCPG float64) Result {
 	r.Throughput.Gbps = gbps
 	r.CPU.Client.CoresPerGbps = clientCPG
 	r.CPU.Server.CoresPerGbps = serverCPG
+	return r
+}
+
+func infraResult(key, why string) Result {
+	r := result(key, 0, 0, 0)
+	r.InfraError = why
 	return r
 }
 
@@ -102,7 +109,7 @@ func TestCompareResults(t *testing.T) {
 	cases := []struct {
 		name     string
 		results  []Result
-		wantErr  bool
+		wantErr  error
 		wantText []string
 	}{
 		{
@@ -118,26 +125,38 @@ func TestCompareResults(t *testing.T) {
 		{
 			name:     "regression fails",
 			results:  []Result{result("new", 3, 0.3, 0.3), result("k", 5, 0.2, 0.3)},
-			wantErr:  true,
+			wantErr:  errRegression,
 			wantText: []string{"NO BASELINE new", "FAIL k", "REGRESSION"},
 		},
 		{
 			name:     "packet rate drop fails",
 			results:  []Result{pps(result("pps", 0, 0.3, 0.3), 250000)},
-			wantErr:  true,
+			wantErr:  errRegression,
 			wantText: []string{"FAIL pps", "packets_per_second", "-50.0%", "REGRESSION"},
 		},
 		{
 			name:     "entry with no metric fails",
 			results:  []Result{result("empty", 3, 0.3, 0.3)},
-			wantErr:  true,
+			wantErr:  errRegression,
 			wantText: []string{"FAIL empty", "checks no metric"},
 		},
 		{
 			name:     "below the floor fails",
 			results:  []Result{result("floor", 1.5, 0.3, 0.3)},
-			wantErr:  true,
+			wantErr:  errRegression,
 			wantText: []string{"FAIL floor", "min_gbps", "-25.0%", "REGRESSION"},
+		},
+		{
+			name:     "infra error",
+			results:  []Result{result("k", 10, 0.2, 0.3), infraResult("k", "too much CPU steal: 7.10% in rep 2")},
+			wantErr:  errInfra,
+			wantText: []string{"PASS k", "INFRA k", "too much CPU steal"},
+		},
+		{
+			name:     "regression and infra error",
+			results:  []Result{result("k", 5, 0.2, 0.3), infraResult("pps", "rig setup: no netem")},
+			wantErr:  errRegression,
+			wantText: []string{"FAIL k", "INFRA pps", "rig setup: no netem"},
 		},
 		{
 			name:     "info entry regression passes",
@@ -150,8 +169,9 @@ func TestCompareResults(t *testing.T) {
 			var out bytes.Buffer
 			outcomes, err := compareResults(&out, base, tc.results)
 			assert.Len(t, outcomes, len(tc.results))
-			if tc.wantErr {
-				require.ErrorIs(t, err, errRegression)
+			if tc.wantErr != nil {
+				require.ErrorIs(t, err, tc.wantErr)
+				assert.Equal(t, tc.wantErr == errInfra, errors.Is(err, errInfra))
 			} else {
 				require.NoError(t, err)
 			}
@@ -237,10 +257,21 @@ func TestNeedsRetry(t *testing.T) {
 		{name: "info entry", res: result("info", 0.5, 0, 0), want: false},
 		{name: "entry with no metric", res: result("empty", 1, 0, 0), want: false},
 		{name: "no entry", res: result("other", 0.1, 0, 0), want: false},
+		{name: "infra error", res: infraResult("gate", "too much CPU steal"), want: false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			assert.Equal(t, tc.want, needsRetry(base, tc.res))
 		})
 	}
+}
+
+func TestUpdateBaseline(t *testing.T) {
+	b := Baseline{Entries: map[string]BaselineEntry{"k": {Gbps: 1, MinGbps: 2}}}
+	var out bytes.Buffer
+	updateBaseline(&out, b, []Result{result("k", 2.5, 0.1, 0.2), infraResult("bad", "rig setup: no netem")})
+	assert.Equal(t, "SET k\nSKIP bad: rig setup: no netem\n", out.String())
+	assert.Equal(t, 2.5, b.Entries["k"].Gbps)
+	assert.Equal(t, 2.0, b.Entries["k"].MinGbps)
+	assert.NotContains(t, b.Entries, "bad")
 }

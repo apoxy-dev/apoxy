@@ -21,12 +21,17 @@ func TestParseProcStat(t *testing.T) {
 		{
 			name: "full line",
 			in:   "cpu  19648 100 21103 623682 74618 50 15809 0 0 0\ncpu0 1 2 3 4 5 6 7 8 9 10\n",
-			want: cpuTimes{User: 197.48, System: 211.03, IRQ: 158.59},
+			want: cpuTimes{User: 197.48, System: 211.03, IRQ: 158.59, Idle: 6983},
+		},
+		{
+			name: "steal",
+			in:   "cpu 100 0 100 650 50 0 0 100 0 0\n",
+			want: cpuTimes{User: 1, System: 1, Idle: 7, Steal: 1},
 		},
 		{
 			name: "old kernel with 7 values",
 			in:   "cpu 100 0 200 300 0 0 50\n",
-			want: cpuTimes{User: 1, System: 2, IRQ: 0.5},
+			want: cpuTimes{User: 1, System: 2, IRQ: 0.5, Idle: 3},
 		},
 		{name: "short line", in: "cpu 1 2 3\n", wantErr: true},
 		{name: "bad number", in: "cpu a 0 0 0 0 0 0 0\n", wantErr: true},
@@ -43,6 +48,51 @@ func TestParseProcStat(t *testing.T) {
 			assert.InDelta(t, tc.want.User, got.User, 1e-9)
 			assert.InDelta(t, tc.want.System, got.System, 1e-9)
 			assert.InDelta(t, tc.want.IRQ, got.IRQ, 1e-9)
+			assert.InDelta(t, tc.want.Idle, got.Idle, 1e-9)
+			assert.InDelta(t, tc.want.Steal, got.Steal, 1e-9)
+		})
+	}
+}
+
+func TestStealPercent(t *testing.T) {
+	start := cpuTimes{User: 10, System: 5, IRQ: 1, Idle: 100, Steal: 2}
+	cases := []struct {
+		name string
+		end  cpuTimes
+		want float64
+	}{
+		{name: "no time", end: start, want: 0},
+		{name: "no steal", end: cpuTimes{User: 20, System: 10, IRQ: 2, Idle: 200, Steal: 2}, want: 0},
+		{name: "steal", end: cpuTimes{User: 14, System: 7, IRQ: 1, Idle: 128, Steal: 8}, want: 15},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.InDelta(t, tc.want, stealPercent(start, tc.end), 1e-9)
+		})
+	}
+}
+
+func TestParseCPUInfo(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "x86",
+			in:   "processor\t: 0\nvendor_id\t: GenuineIntel\nmodel name\t: Intel(R) Xeon(R) Platinum 8370C CPU @ 2.80GHz\nprocessor\t: 1\nmodel name\t: other\n",
+			want: "Intel(R) Xeon(R) Platinum 8370C CPU @ 2.80GHz",
+		},
+		{
+			name: "arm64",
+			in:   "processor\t: 0\nBogoMIPS\t: 48.00\nCPU implementer\t: 0x61\nCPU architecture: 8\nCPU part\t: 0x039\n\nprocessor\t: 1\nCPU implementer\t: 0x41\nCPU part\t: 0xd0c\n",
+			want: "implementer 0x61 part 0x039",
+		},
+		{name: "empty", in: "", want: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, parseCPUInfo(tc.in))
 		})
 	}
 }
