@@ -249,8 +249,6 @@ func BuildClientRouter(opts ...TunnelClientOption) (router.Router, error) {
 	default:
 		return nil, fmt.Errorf("invalid tunnel client mode: %v", options.mode)
 	}
-	//nolint:unreachable
-	panic("unreachable")
 }
 
 // TunnelDialer dials a tunnel connection. Must be started before use.
