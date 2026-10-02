@@ -905,11 +905,15 @@ fi
 echo "console: no codegen drift"
 `
 
-// Test runs the tunnel data path unit tests under the race detector.
+// Test runs the tunnel data path unit tests under the race detector, and the
+// tests of the CI packages that need no generated Dagger code.
 func (m *ApoxyCli) Test(ctx context.Context, src *dagger.Directory) (string, error) {
 	return m.BuilderContainer(ctx, src).
 		WithEnvVariable("CGO_ENABLED", "1").
 		WithExec([]string{"go", "test", "-race", "-short", "./pkg/net/...", "./pkg/netstack/...", "./pkg/tunnel/..."}).
+		WithWorkdir("/src/ci").
+		// The version check reads files outside the ci module, which the test cache does not follow.
+		WithExec([]string{"go", "test", "-count=1", "./internal/helmrules/...", "./internal/daggerversion/..."}).
 		Stdout(ctx)
 }
 

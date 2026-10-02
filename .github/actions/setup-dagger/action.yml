@@ -4,21 +4,9 @@ description: Install the Dagger CLI version declared in dagger.json.
 runs:
   using: composite
   steps:
-    - name: Read Dagger version
-      id: version
-      shell: bash
-      run: |
-        set -euo pipefail
-
-        engine_version="$(jq -r '.engineVersion // empty' dagger.json)"
-        if [[ ! "${engine_version}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-          echo "dagger.json has an invalid engineVersion: ${engine_version:-missing}" >&2
-          exit 1
-        fi
-        echo "version=${engine_version#v}" >> "${GITHUB_OUTPUT}"
-
     - name: Install Dagger CLI
-      # Pin dagger-for-github v8.4.1 to an audited commit.
+      # Pin dagger-for-github v8.4.1 to an audited commit. The version must be the
+      # engineVersion in dagger.json; ci/internal/daggerversion checks it.
       uses: dagger/dagger-for-github@27b130bf0f79a7f6fbbbe0fbca6760dc9bb40a77
       with:
-        version: ${{ steps.version.outputs.version }}
+        version: "0.19.10"
