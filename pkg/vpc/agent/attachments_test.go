@@ -18,6 +18,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/emptypb"
+	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
+	"gvisor.dev/gvisor/pkg/tcpip/network/ipv6"
+	"gvisor.dev/gvisor/pkg/tcpip/stack"
 
 	"github.com/apoxy-dev/apoxy/pkg/vpc/identity"
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
@@ -188,6 +191,63 @@ func TestAttachmentsMove(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestDetachDialedAttachment checks that b reaches a again soon after a
+// detaches the extra attachment that b dialed its peer session to.
+func TestDetachDialedAttachment(t *testing.T) {
+	cases := []struct {
+		name string
+		mode TransportMode
+	}{
+		{name: "PSP", mode: TransportPSP},
+		{name: "QUIC", mode: TransportQUIC},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newWorld(t)
+			r := w.relay(t, "relay-1")
+			a, b := w.agent(t, "a", r, agentOptions{mode: tc.mode}), w.agent(t, "b", r, agentOptions{mode: tc.mode})
+			ea, eb := a.attached(t), b.attached(t)
+			echo(t, a.stack, ea.addr, 9001)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			x1, err := a.a.Attach(ctx, AttachmentSpec{Name: "x-1"})
+			require.NoError(t, err)
+			echo(t, a.stack, x1.Address, 9002)
+			ping(t, b.stack, eb.addr, x1.Address, 9002, "to x-1")
+			require.Equal(t, x1.Address, onlyPeer(t, b.a).dst, "b dialed its peer session to x-1")
+
+			start := time.Now()
+			require.NoError(t, a.a.Detach(ctx, "x-1"))
+			x2, err := a.a.Attach(ctx, AttachmentSpec{Name: "x-2"})
+			require.NoError(t, err)
+			echo(t, a.stack, x2.Address, 9003)
+			deadline := start.Add(2 * time.Second)
+			reachBy(t, b.stack, eb.addr, ea.addr, 9001, deadline)
+			reachBy(t, b.stack, eb.addr, x2.Address, 9003, deadline)
+			t.Logf("b reaches the base of a and x-2 %s after the detach of x-1", time.Since(start).Round(time.Millisecond))
+		})
+	}
+}
+
+// reachBy sends from src to dst:port until the echo comes, and fails the test
+// at deadline.
+func reachBy(t *testing.T, s *stack.Stack, src, dst netip.Addr, port uint16, deadline time.Time) {
+	t.Helper()
+	for time.Now().Before(deadline) {
+		c, err := gonet.DialUDP(s, fullAddr(src, 0), fullAddr(dst, port), ipv6.ProtocolNumber)
+		require.NoError(t, err)
+		_, err = c.Write([]byte("x"))
+		require.NoError(t, err)
+		_ = c.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+		_, err = c.Read(make([]byte, 64))
+		_ = c.Close()
+		if err == nil {
+			return
+		}
+	}
+	t.Fatalf("no answer from %s by the deadline", dst)
 }
 
 // grantRelay answers Attach with grants that it signed before. Each answer is

@@ -210,10 +210,11 @@ func TestAdmin(t *testing.T) {
 	assert.Equal(t, x1, list[1])
 	assert.Equal(t, map[string]string{"app": "web"}, list[2].Labels)
 
-	// b opens a peer session to x-1.
+	// a dials the peer session from x-1, so the session stays after the
+	// detach of x-1.
 	echo(t, a.stack, x1.Address, 9002)
-	ping(t, b.stack, eb.addr, x1.Address, 9002, "to x-1")
 	ping(t, a.stack, x1.Address, eb.addr, 9001, "from x-1")
+	ping(t, b.stack, eb.addr, x1.Address, 9002, "to x-1")
 	pb := onlyPeer(t, b.a)
 
 	assert.Equal(t, 204, adminCall(t, c, "DELETE", "/v1/attachments/x-1", "", nil))

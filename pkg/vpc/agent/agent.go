@@ -883,14 +883,24 @@ func (rc *relayConn) ended() bool {
 	return rc.ctx.Err() != nil || rc.qc.Context().Err() != nil
 }
 
-// removeRoutes closes the peer sessions of attachments that left the VPC. When
-// another attachment of a peer leaves, only its grant goes.
+// removeRoutes closes the peer sessions of attachments that left the VPC, and
+// the sessions that this agent dialed to an address that left. When another
+// attachment of a peer leaves, only its grant goes.
 func (a *Agent) removeRoutes(rc *relayConn, removed []*dp.Route) {
 	gone := map[string]bool{}
+	var prefixes []netip.Prefix
 	for _, r := range removed {
 		gone[r.GetOrigin()] = true
+		if pfx, err := netip.ParsePrefix(r.GetPrefix()); err == nil {
+			prefixes = append(prefixes, pfx.Masked())
+		}
 	}
 	a.closePeers(func(p *peer) bool { return p.rc == rc && gone[p.attachmentID()] }, "peer left the VPC")
+	// The relay drops the packets to an address that left, so the peer gets no
+	// more packets on such a session.
+	a.closePeers(func(p *peer) bool {
+		return p.rc == rc && slices.ContainsFunc(prefixes, func(pfx netip.Prefix) bool { return pfx.Contains(p.dst) })
+	}, "dialed address left the VPC")
 	a.routeMu.Lock()
 	defer a.routeMu.Unlock()
 	a.mu.Lock()

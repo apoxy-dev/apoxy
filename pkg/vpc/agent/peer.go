@@ -50,8 +50,9 @@ type peer struct {
 	qc      quic.Connection
 	conn    *rpc.Conn
 	client  dp.PeerClient
-	dialer  bool   // This agent dialed the session.
-	subject string // SPIFFE ID in the peer cert.
+	dialer  bool       // This agent dialed the session.
+	dst     netip.Addr // Address that this agent dialed. Invalid when the peer dialed.
+	subject string     // SPIFFE ID in the peer cert.
 
 	ready     chan struct{} // Closed when Open passes.
 	granted   chan struct{} // Closed when the grants of Open apply.
@@ -147,14 +148,15 @@ func (rc *relayConn) accept(ln *quic.Listener) {
 		if err != nil {
 			return
 		}
-		if _, err := rc.a.newPeer(rc, qc, false); err != nil {
+		if _, err := rc.a.newPeer(rc, qc, netip.Addr{}); err != nil {
 			_ = qc.CloseWithError(quic.ApplicationErrorCode(dp.PeerCloseCode_PEER_CLOSE_CODE_BAD_GRANT), err.Error())
 		}
 	}
 }
 
 // newPeer serves the Peer service on qc and adds the session to the agent.
-func (a *Agent) newPeer(rc *relayConn, qc quic.Connection, dialer bool) (*peer, error) {
+// dst is the address that this agent dialed, or invalid when the peer dialed.
+func (a *Agent) newPeer(rc *relayConn, qc quic.Connection, dst netip.Addr) (*peer, error) {
 	id, err := identity.IDFromCert(qc.ConnectionState().TLS.PeerCertificates[0])
 	if err != nil {
 		return nil, err
@@ -162,7 +164,8 @@ func (a *Agent) newPeer(rc *relayConn, qc quic.Connection, dialer bool) (*peer, 
 	p := &peer{
 		rc:      rc,
 		qc:      qc,
-		dialer:  dialer,
+		dialer:  dst.IsValid(),
+		dst:     dst.Unmap(),
 		subject: id.String(),
 		ready:   make(chan struct{}),
 		granted: make(chan struct{}),
@@ -324,7 +327,7 @@ func (a *Agent) dial(ctx context.Context, rc *relayConn, dst netip.Addr, res *dp
 	if err != nil {
 		return nil, fmt.Errorf("dial peer %s: %w", dst, err)
 	}
-	p, err := a.newPeer(rc, qc, true)
+	p, err := a.newPeer(rc, qc, dst)
 	if err != nil {
 		_ = qc.CloseWithError(quic.ApplicationErrorCode(dp.PeerCloseCode_PEER_CLOSE_CODE_BAD_GRANT), err.Error())
 		return nil, err
