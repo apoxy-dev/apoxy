@@ -254,6 +254,34 @@ func TestDrain(t *testing.T) {
 	}
 }
 
+// TestRelayDial checks how the agent picks and trusts relays.
+func TestRelayDial(t *testing.T) {
+	cases := []struct {
+		name     string
+		opts     agentOptions
+		attaches bool
+	}{
+		{name: "alternate after a failed open", opts: agentOptions{first: "no-port"}, attaches: true},
+		{name: "unknown relay CA", opts: agentOptions{noRoots: true}},
+		{name: "unknown relay CA with insecure skip verify", opts: agentOptions{noRoots: true, insecure: true}, attaches: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newWorld(t)
+			a := w.agent(t, "a", w.relay(t, "relay-1"), tc.opts)
+			if tc.attaches {
+				a.attached(t)
+				return
+			}
+			select {
+			case <-a.attach:
+				t.Fatal("agent attached to a relay that it cannot verify")
+			case <-time.After(time.Second):
+			}
+		})
+	}
+}
+
 // TestCertRefused checks that the agent gets a new cert and dials again
 // when the relay closes its session after a CA change.
 func TestCertRefused(t *testing.T) {

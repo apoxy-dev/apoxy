@@ -274,6 +274,10 @@ type agentOptions struct {
 	mtu  int           // Config.MTU.
 	conn *lossyConn    // Wraps the agent socket if set.
 	mode TransportMode
+
+	first    string // Config.Relay, with the relay as the alternate.
+	noRoots  bool   // No relay roots, so the system roots.
+	insecure bool   // Config.InsecureSkipVerify.
 }
 
 // lossyConn drops the packets that it sends if they are larger than max.
@@ -317,20 +321,28 @@ func (w *world) agent(t *testing.T, name string, r *testRelay, opts agentOptions
 		ta.enrolls.Add(1)
 		return w.enrollCA().credential(t, testProject, testVPC, name, opts.life), nil
 	}
-	ta.a = New(Config{
-		Identity:      identity.NewManager(filepath.Join(t.TempDir(), "cred.json"), enroll),
-		Relay:         r.addr,
-		RelayID:       r.id,
-		RelayRoots:    w.relayCA.pool(),
-		Transport:     ta.tr,
-		TransportMode: opts.mode,
-		Name:          name,
-		MTU:           opts.mtu,
+	cfg := Config{
+		Identity:           identity.NewManager(filepath.Join(t.TempDir(), "cred.json"), enroll),
+		Relay:              r.addr,
+		RelayID:            r.id,
+		RelayRoots:         w.relayCA.pool(),
+		InsecureSkipVerify: opts.insecure,
+		Transport:          ta.tr,
+		TransportMode:      opts.mode,
+		Name:               name,
+		MTU:                opts.mtu,
 		OnAttach: func(b *psp.Binding, addr netip.Addr, prefixes []netip.Prefix) {
 			ta.netstack(t, b, addr)
 			ta.attach <- attachEvent{addr, prefixes}
 		},
-	})
+	}
+	if opts.first != "" {
+		cfg.Relay, cfg.Alternates = opts.first, []string{r.addr}
+	}
+	if opts.noRoots {
+		cfg.RelayRoots = nil
+	}
+	ta.a = New(cfg)
 	ctx, cancel := context.WithCancel(context.Background())
 	ta.cancel = cancel
 	go func() {

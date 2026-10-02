@@ -80,10 +80,17 @@ type Config struct {
 	Identity *identity.Manager
 	// Relay is the address of the relay, host:port.
 	Relay string
-	// RelayID is the DNS name of the relay cert. Empty means the host in Relay.
+	// Alternates are more relay addresses. When an open fails, the agent
+	// dials the next address, and after the last one it dials Relay again.
+	Alternates []string
+	// RelayID is the DNS name of the relay cert. Empty means the host in the
+	// relay address.
 	RelayID string
 	// RelayRoots check relay certs and peer grants. Nil means the system roots.
 	RelayRoots *x509.CertPool
+	// InsecureSkipVerify does not check relay certs, and checks grants with
+	// the cert that the relay shows. Use it only with dev relays.
+	InsecureSkipVerify bool
 	// Transport is the agent socket for the relay sessions and PSP. New sets
 	// its NonQUICPacketHandler, so it must not be in use yet.
 	Transport *quic.Transport
@@ -146,17 +153,19 @@ func (a *Agent) Run(ctx context.Context) error {
 	}()
 	wg.Go(func() { a.tick(ctx) })
 
+	relays := append([]string{a.cfg.Relay}, a.cfg.Alternates...)
 	backoff := minBackoff
-	for ctx.Err() == nil {
-		rc, err := a.open(ctx, a.cfg.Relay, a.cfg.RelayID)
+	for i := 0; ctx.Err() == nil; {
+		rc, err := a.open(ctx, relays[i], a.cfg.RelayID)
 		if err != nil {
 			if ctx.Err() != nil {
 				break
 			}
-			slog.Warn("Failed to open relay session", "relay", a.cfg.Relay, "error", err)
+			slog.Warn("Failed to open relay session", "relay", relays[i], "error", err)
 			if certRefused(err) {
 				a.renew(ctx)
 			}
+			i = (i + 1) % len(relays)
 			wait := rand.N(backoff) + 1
 			backoff = min(2*backoff, maxBackoff)
 			select {
@@ -335,8 +344,9 @@ type relayConn struct {
 	c      dp.RelayClient
 	st     rpc.BidiStreamClient[dp.SessionRequest, dp.SessionResponse]
 	cred   *identity.Credential
-	addr   string // Relay address as dialed.
-	name   string // TLS name of the relay.
+	addr   string         // Relay address as dialed.
+	name   string         // TLS name of the relay.
+	roots  *x509.CertPool // Check grants. Nil means the system roots.
 
 	relayAddr netip.AddrPort    // Where PSP packets to peers go.
 	mode      dp.Mode           // Data mode of the Session call.
@@ -380,14 +390,20 @@ func (a *Agent) open(ctx context.Context, addr, name string) (*relayConn, error)
 	octx, cancel := context.WithTimeout(ctx, openTimeout)
 	defer cancel()
 	qc, err := a.cfg.Transport.Dial(octx, ua, &tls.Config{
-		MinVersion:   tls.VersionTLS13,
-		RootCAs:      a.cfg.RelayRoots,
-		ServerName:   name,
-		NextProtos:   []string{dp.ALPNRelay},
-		Certificates: []tls.Certificate{*cred.TLSCertificate()},
+		MinVersion:         tls.VersionTLS13,
+		RootCAs:            a.cfg.RelayRoots,
+		ServerName:         name,
+		NextProtos:         []string{dp.ALPNRelay},
+		Certificates:       []tls.Certificate{*cred.TLSCertificate()},
+		InsecureSkipVerify: a.cfg.InsecureSkipVerify,
 	}, relayQUIC)
 	if err != nil {
 		return nil, err
+	}
+	roots := a.cfg.RelayRoots
+	if a.cfg.InsecureSkipVerify {
+		roots = x509.NewCertPool()
+		roots.AddCert(qc.ConnectionState().TLS.PeerCertificates[0])
 	}
 	rc := &relayConn{
 		a:         a,
@@ -396,6 +412,7 @@ func (a *Agent) open(ctx context.Context, addr, name string) (*relayConn, error)
 		cred:      cred,
 		addr:      addr,
 		name:      name,
+		roots:     roots,
 		relayAddr: qc.RemoteAddr().(*net.UDPAddr).AddrPort(),
 		drain:     make(chan []*dp.RelayRef, 1),
 		bridgeTx:  make(chan struct{}),
@@ -478,7 +495,7 @@ func (rc *relayConn) start(ctx context.Context, begin time.Time) error {
 		return fmt.Errorf("attach: %w", err)
 	}
 	// A bad relay cert fails the attach, not each peer session.
-	if rc.claims, err = relay.VerifyGrant(res.GetGrant(), a.cfg.RelayRoots, time.Now()); err != nil {
+	if rc.claims, err = relay.VerifyGrant(res.GetGrant(), rc.roots, time.Now()); err != nil {
 		return err
 	}
 	rc.grant = res.GetGrant()

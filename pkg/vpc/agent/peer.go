@@ -337,7 +337,7 @@ func (a *Agent) admit(p *peer, g *dp.AttachmentGrant, instance uint64, mode dp.M
 
 // checkGrant checks the grant of the peer and returns its claims and prefixes.
 func (a *Agent) checkGrant(p *peer, g *dp.AttachmentGrant) (*dp.GrantClaims, []netip.Prefix, error) {
-	claims, err := relay.VerifyGrant(g, a.cfg.RelayRoots, time.Now())
+	claims, err := relay.VerifyGrant(g, p.rc.roots, time.Now())
 	if err != nil {
 		return nil, nil, err
 	}

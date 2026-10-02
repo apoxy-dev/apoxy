@@ -65,11 +65,12 @@ func (rc *relayConn) keepShard(i int) {
 func (rc *relayConn) dialShard(ctx context.Context, i int) (quic.Connection, error) {
 	a := rc.a
 	qc, err := a.cfg.Transport.Dial(ctx, rc.qc.RemoteAddr(), &tls.Config{
-		MinVersion:   tls.VersionTLS13,
-		RootCAs:      a.cfg.RelayRoots,
-		ServerName:   rc.name,
-		NextProtos:   []string{dp.ALPNRelay},
-		Certificates: []tls.Certificate{*rc.cred.TLSCertificate()},
+		MinVersion:         tls.VersionTLS13,
+		RootCAs:            a.cfg.RelayRoots,
+		ServerName:         rc.name,
+		NextProtos:         []string{dp.ALPNRelay},
+		Certificates:       []tls.Certificate{*rc.cred.TLSCertificate()},
+		InsecureSkipVerify: a.cfg.InsecureSkipVerify,
 	}, relayQUIC)
 	if err != nil {
 		return nil, err

@@ -74,6 +74,7 @@ func (w *world) stubAgent(t *testing.T, name string) *Agent {
 	a.rc = &relayConn{
 		a:         a,
 		cred:      w.agentCA.credential(t, testProject, testVPC, name, time.Hour),
+		roots:     a.cfg.RelayRoots,
 		ref:       &dp.VPCRef{ProjectId: testProject, VpcUid: testVPC, NetworkId: testVNI},
 		relayAddr: netip.MustParseAddrPort("127.0.0.1:443"),
 	}
