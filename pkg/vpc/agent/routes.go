@@ -3,11 +3,19 @@
 package agent
 
 import (
+	"log/slog"
 	"net/netip"
 	"slices"
 
+	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
+
+// Routable reports whether a prefix that another attachment advertises can get a
+// route: it is not a default route and does not overlap the VPC network vpc.
+func Routable(p, vpc netip.Prefix) bool {
+	return p.Bits() > 0 && !p.Overlaps(vpc)
+}
 
 // routeTable is the prefixes of the other attachments on one relay session,
 // to their origin. A prefix has one origin in a VPC.
@@ -16,17 +24,25 @@ type routeTable struct {
 	synced  bool // A RouteDelta came.
 }
 
-// apply applies d and skips the routes of the attachment self. It returns the
-// prefixes that the table gets and the prefixes that it loses.
-func (t *routeTable) apply(d *dp.RouteDelta, self string) (add, remove []netip.Prefix) {
+// routeChange is a prefix that an origin gets or loses.
+type routeChange struct {
+	prefix netip.Prefix
+	origin string
+	add    bool
+}
+
+// apply applies d, skips the routes of the attachment self, and returns the
+// changes. A prefix that moves to a new origin is a remove and an add.
+func (t *routeTable) apply(d *dp.RouteDelta, self string) []routeChange {
 	if t.origins == nil {
 		t.origins = map[netip.Prefix]string{}
 	}
 	t.synced = true
+	var out []routeChange
 	for _, r := range d.GetRemove() {
 		if p, ok := parseRoute(r, self); ok && t.origins[p] == r.GetOrigin() {
 			delete(t.origins, p)
-			remove = append(remove, p)
+			out = append(out, routeChange{p, r.GetOrigin(), false})
 		}
 	}
 	for _, r := range d.GetAdd() {
@@ -34,17 +50,17 @@ func (t *routeTable) apply(d *dp.RouteDelta, self string) (add, remove []netip.P
 		if !ok {
 			continue
 		}
-		if _, ok := t.origins[p]; !ok {
-			// A prefix that moves to a new origin in one delta does not change.
-			if i := slices.Index(remove, p); i >= 0 {
-				remove = slices.Delete(remove, i, i+1)
-			} else {
-				add = append(add, p)
-			}
+		old, had := t.origins[p]
+		if had && old == r.GetOrigin() {
+			continue
+		}
+		if had {
+			out = append(out, routeChange{p, old, false})
 		}
 		t.origins[p] = r.GetOrigin()
+		out = append(out, routeChange{p, r.GetOrigin(), true})
 	}
-	return add, remove
+	return out
 }
 
 func parseRoute(r *dp.Route, self string) (netip.Prefix, bool) {
@@ -55,19 +71,42 @@ func parseRoute(r *dp.Route, self string) (netip.Prefix, bool) {
 	return p.Masked(), true
 }
 
-// applyRoutes applies a route change of rc, and gives OnRoutes the change if
-// OnRoutes has the routes of rc.
+// prefixChanges returns the prefixes that changes add to the table and the
+// prefixes that they remove from it.
+func prefixChanges(changes []routeChange) (add, remove []netip.Prefix) {
+	n := map[netip.Prefix]int{}
+	for _, c := range changes {
+		if c.add {
+			n[c.prefix]++
+		} else {
+			n[c.prefix]--
+		}
+	}
+	for p, v := range n {
+		switch {
+		case v > 0:
+			add = append(add, p)
+		case v < 0:
+			remove = append(remove, p)
+		}
+	}
+	return add, remove
+}
+
+// applyRoutes applies a route change of rc to the binding, and gives OnRoutes
+// the change if OnRoutes has the routes of rc.
 func (a *Agent) applyRoutes(rc *relayConn, d *dp.RouteDelta) {
 	a.routeMu.Lock()
 	defer a.routeMu.Unlock()
 	first := !rc.routes.synced
-	add, remove := rc.routes.apply(d, rc.claims.GetAttachmentId())
+	changes := rc.routes.apply(d, rc.claims.GetAttachmentId())
+	a.bindRoutes(rc, changes)
 	switch {
 	case a.routesOf != rc:
 	case first:
 		a.syncRoutes()
 	default:
-		a.report(add, remove)
+		a.report(prefixChanges(changes))
 	}
 }
 
@@ -117,4 +156,102 @@ func (a *Agent) report(add, remove []netip.Prefix) {
 	if a.cfg.OnRoutes != nil {
 		a.cfg.OnRoutes(add, remove)
 	}
+}
+
+// routeAdvertised routes the prefixes that the attachment of p advertises to p
+// in the binding. Call it after p opens.
+func (a *Agent) routeAdvertised(p *peer) {
+	a.routeMu.Lock()
+	defer a.routeMu.Unlock()
+	vpc := tunnet.NetworkPrefixOf(p.rc.self)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.peers[p.conn] != p || p.bp == nil {
+		return
+	}
+	for pfx, origin := range p.rc.routes.origins {
+		if origin == p.attachmentID() {
+			a.addAdvertised(p, pfx, vpc)
+		}
+	}
+}
+
+// bindRoutes gives route changes of rc to the binding, for the open peers of
+// their origins. a.routeMu must be held.
+func (a *Agent) bindRoutes(rc *relayConn, changes []routeChange) {
+	vpc := tunnet.NetworkPrefixOf(rc.self)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, c := range changes {
+		for _, p := range a.peers {
+			if p.rc != rc || p.bp == nil || p.attachmentID() != c.origin {
+				continue
+			}
+			if c.add {
+				a.addAdvertised(p, c.prefix, vpc)
+			} else {
+				a.removeAdvertised(p, c.prefix)
+			}
+		}
+	}
+}
+
+// addAdvertised routes pfx to p if pfx is routable. a.mu must be held.
+func (a *Agent) addAdvertised(p *peer, pfx, vpc netip.Prefix) {
+	if !Routable(pfx, vpc) || slices.Contains(p.advertised, pfx) || slices.Contains(p.prefixes, pfx) {
+		return
+	}
+	if err := a.bind.AddRoute(pfx, p.bp); err != nil {
+		slog.Warn("Failed to route an advertised prefix to a peer", "peer", p.subject, "prefix", pfx, "error", err)
+		return
+	}
+	p.advertised = append(p.advertised, pfx)
+}
+
+// removeAdvertised removes the route of pfx to p. a.mu must be held.
+func (a *Agent) removeAdvertised(p *peer, pfx netip.Prefix) {
+	i := slices.Index(p.advertised, pfx)
+	if i < 0 {
+		return
+	}
+	p.advertised = slices.Delete(p.advertised, i, i+1)
+	if p.quic {
+		a.unrouteQUIC(p, []netip.Prefix{pfx})
+	} else {
+		a.bind.RemoveRoute(pfx, p.bp)
+	}
+}
+
+// peerAddr returns the overlay address of the attachment that packets to dst
+// go to on rc: the origin of the longest route with dst, or dst in the VPC
+// network. It reports false when no attachment can get packets to dst.
+func (a *Agent) peerAddr(rc *relayConn, dst netip.Addr) (netip.Addr, bool) {
+	a.routeMu.Lock()
+	defer a.routeMu.Unlock()
+	vpc := tunnet.NetworkPrefixOf(rc.self)
+	best := netip.Prefix{}
+	for p := range rc.routes.origins {
+		if p.Contains(dst) && p.Bits() > best.Bits() && (Routable(p, vpc) || inNetwork(p, vpc)) {
+			best = p
+		}
+	}
+	if best.IsValid() {
+		// The lowest prefix of the origin in the VPC network gives its address.
+		origin, own := rc.routes.origins[best], netip.Prefix{}
+		for p, o := range rc.routes.origins {
+			if o == origin && inNetwork(p, vpc) && (!own.IsValid() || p.Addr().Less(own.Addr())) {
+				own = p
+			}
+		}
+		if own.IsValid() {
+			return overlayAddr([]netip.Prefix{own}), true
+		}
+	}
+	return dst, vpc.Contains(dst)
+}
+
+// inNetwork reports whether p is a part of the VPC network vpc, such as the
+// addresses of an attachment.
+func inNetwork(p, vpc netip.Prefix) bool {
+	return p.Bits() > vpc.Bits() && vpc.Contains(p.Addr())
 }

@@ -67,14 +67,18 @@ type peer struct {
 	// quic is true when one of the agents sends QUIC data frames. Then the
 	// data goes through the relay, and bp is the relay peer.
 	quic bool
+	// advertised is the prefixes that the peer advertises and that route to bp.
+	// Guarded by Agent.mu.
+	advertised []netip.Prefix
 
 	mu   sync.Mutex
 	spis map[uint32]time.Time // SPIs registered at the relay, to their expiry.
 }
 
-// routes reports whether the grant of p covers addr.
+// routes reports whether the grant or the advertised prefixes of p cover addr.
 func (p *peer) routes(addr netip.Addr) bool {
-	return slices.ContainsFunc(p.prefixes, func(pfx netip.Prefix) bool { return pfx.Contains(addr) })
+	has := func(pfx netip.Prefix) bool { return pfx.Contains(addr) }
+	return slices.ContainsFunc(p.prefixes, has) || slices.ContainsFunc(p.advertised, has)
 }
 
 func (p *peer) attachmentID() string { return p.claims.GetAttachmentId() }
@@ -147,14 +151,27 @@ func (a *Agent) newPeer(rc *relayConn, qc quic.Connection, dialer bool) (*peer, 
 func (a *Agent) Connect(ctx context.Context, dst netip.Addr) error {
 	a.mu.Lock()
 	rc := a.rc
-	p := a.peerTo(rc, dst)
 	a.mu.Unlock()
 	if rc == nil {
-		return errors.New("no relay session")
+		return errNoRelay
 	}
+	return a.connect(ctx, rc, dst, nil)
+}
+
+// connect opens a peer session on rc to the agent at dst if none covers dst,
+// and waits for its SAs. res is the ResolvePeer answer for dst, or nil.
+func (a *Agent) connect(ctx context.Context, rc *relayConn, dst netip.Addr, res *dp.ResolvePeerResponse) error {
+	a.mu.Lock()
+	p := a.peerTo(rc, dst)
+	a.mu.Unlock()
 	if p == nil {
 		var err error
-		p, err = a.dial(ctx, rc, dst)
+		if res == nil {
+			if res, err = rc.resolve(ctx, dst); err != nil {
+				return err
+			}
+		}
+		p, err = a.dial(ctx, rc, dst, res)
 		if errors.Is(err, errDuplicate) {
 			// Both agents dialed. Use the session that the peer dialed.
 			p, err = a.waitPeer(ctx, rc, dst)
@@ -248,12 +265,18 @@ func refusedDuplicate(qc quic.Connection, err error) bool {
 		ae.ErrorCode == quic.ApplicationErrorCode(dp.PeerCloseCode_PEER_CLOSE_CODE_DUPLICATE)
 }
 
-// dial resolves dst at the relay, dials a peer session to it and opens it.
-func (a *Agent) dial(ctx context.Context, rc *relayConn, dst netip.Addr) (*peer, error) {
+// resolve asks the relay how it reaches dst.
+func (rc *relayConn) resolve(ctx context.Context, dst netip.Addr) (*dp.ResolvePeerResponse, error) {
 	res, err := rc.c.ResolvePeer(ctx, &dp.ResolvePeerRequest{Vpc: rc.ref, Address: dst.String()})
 	if err != nil {
 		return nil, fmt.Errorf("resolve peer %s: %w", dst, err)
 	}
+	return res, nil
+}
+
+// dial dials a peer session to dst, which ResolvePeer answered with res, and
+// opens it.
+func (a *Agent) dial(ctx context.Context, rc *relayConn, dst netip.Addr, res *dp.ResolvePeerResponse) (*peer, error) {
 	if res.GetReach() != dp.Reach_REACH_LOCAL {
 		return nil, fmt.Errorf("peer %s is not on this relay (%v)", dst, res.GetReach())
 	}
@@ -330,6 +353,7 @@ func (a *Agent) admit(p *peer, g *dp.AttachmentGrant, instance uint64, mode dp.M
 	close(a.admitted)
 	a.admitted = make(chan struct{})
 	a.mu.Unlock()
+	a.routeAdvertised(p)
 	close(p.ready)
 	slog.Info("Opened peer session", "peer", p.subject, "address", p.addr, "dialer", p.dialer)
 	return nil
@@ -377,19 +401,22 @@ func (a *Agent) admitQUIC(p *peer, g *dp.AttachmentGrant, instance uint64) error
 	}
 
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	if a.peers[p.conn] != p || p.bp != nil {
+		a.mu.Unlock()
 		return errors.New("peer session is closed or already open")
 	}
 	for i, pfx := range prefixes {
 		if err := a.bind.AddRoute(pfx, p.rc.relay); err != nil {
 			a.unrouteQUIC(p, prefixes[:i])
+			a.mu.Unlock()
 			return fmt.Errorf("route %s: %w", pfx, err)
 		}
 	}
 	p.instance, p.claims, p.prefixes, p.addr, p.bp, p.quic = instance, claims, prefixes, overlayAddr(prefixes), p.rc.relay, true
 	close(a.admitted)
 	a.admitted = make(chan struct{})
+	a.mu.Unlock()
+	a.routeAdvertised(p)
 	close(p.ready)
 	slog.Info("Opened peer session", "peer", p.subject, "address", p.addr, "dialer", p.dialer, "transport", "quic")
 	return nil
@@ -401,7 +428,7 @@ func (a *Agent) unrouteQUIC(p *peer, prefixes []netip.Prefix) {
 	for _, pfx := range prefixes {
 		shared := false
 		for _, q := range a.peers {
-			if q != p && q.quic && q.rc == p.rc && slices.Contains(q.prefixes, pfx) {
+			if q != p && q.quic && q.rc == p.rc && (slices.Contains(q.prefixes, pfx) || slices.Contains(q.advertised, pfx)) {
 				shared = true
 				break
 			}
@@ -432,6 +459,7 @@ func (a *Agent) dropPeer(p *peer) {
 	bp := p.bp
 	if p.quic {
 		a.unrouteQUIC(p, p.prefixes)
+		a.unrouteQUIC(p, p.advertised)
 	}
 	a.mu.Unlock()
 	if bp == nil {

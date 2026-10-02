@@ -61,11 +61,14 @@ func TestOverQUIC(t *testing.T) {
 	assert.WithinDuration(t, h.session(t, rcv).notAfter, claims.NotAfter.AsTime(), time.Second, "the grant ends with the cert")
 	addr := netip.MustParsePrefix(claims.Addresses[0]).Addr().Next()
 
-	// The sender learns the route of the receiver in Sync.
+	// The sender learns the route of the receiver in Sync. The revision is 2
+	// if the empty first RouteDelta came before the attach.
 	m := recv(t, sndSync).GetRouteDelta()
 	require.NotNil(t, m)
-	assert.Empty(t, cmp.Diff(&dp.RouteDelta{Rev: 1, Add: []*dp.Route{{Vpc: ref(vpcA), Prefix: claims.Addresses[0], Origin: res.AttachmentId}}}, m, protocmp.Transform()))
-	require.NoError(t, sndSync.Send(&dp.SessionRequest{Msg: &dp.SessionRequest_Ack{Ack: &dp.Ack{Rev: 1}}}))
+	rev := m.Rev
+	assert.Contains(t, []uint64{1, 2}, rev)
+	assert.Empty(t, cmp.Diff(&dp.RouteDelta{Rev: rev, Add: []*dp.Route{{Vpc: ref(vpcA), Prefix: claims.Addresses[0], Origin: res.AttachmentId}}}, m, protocmp.Transform()))
+	require.NoError(t, sndSync.Send(&dp.SessionRequest{Msg: &dp.SessionRequest_Ack{Ack: &dp.Ack{Rev: rev}}}))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -83,7 +86,7 @@ func TestOverQUIC(t *testing.T) {
 	_, v = h.r.Forward(rcv.src, 7, 1400, time.Now())
 	assert.Equal(t, DropUnknownSPI, v)
 	require.Eventually(t, func() bool {
-		return h.r.SyncStats(h.session(t, snd)) == SyncStats{Rev: 1, Acked: 1}
+		return h.r.SyncStats(h.session(t, snd)) == SyncStats{Rev: rev, Acked: rev}
 	}, 5*time.Second, 5*time.Millisecond)
 
 	// When the receiver goes, the sender loses its route and rows, and the
@@ -92,7 +95,7 @@ func TestOverQUIC(t *testing.T) {
 	require.NoError(t, rcv.qc.CloseWithError(0, ""))
 	m = recv(t, sndSync).GetRouteDelta()
 	require.NotNil(t, m)
-	assert.Equal(t, uint64(2), m.Rev)
+	assert.Equal(t, rev+1, m.Rev)
 	assert.Empty(t, m.Add)
 	require.Len(t, m.Remove, 1)
 	assert.Equal(t, claims.Addresses[0], m.Remove[0].Prefix)
@@ -310,6 +313,7 @@ func TestQueueRoute(t *testing.T) {
 		ops  []bool // Changes of rt: true adds, false removes.
 		want *dp.RouteDelta
 	}{
+		{"first take with no routes", nil, &dp.RouteDelta{Rev: 1}},
 		{"add", []bool{true}, &dp.RouteDelta{Add: []*dp.Route{{Prefix: "10.0.0.0/8", Origin: "a"}}}},
 		{"add then remove", []bool{true, false}, nil},
 		{"remove then add", []bool{false, true}, nil},
@@ -329,7 +333,9 @@ func TestQueueRoute(t *testing.T) {
 			}
 			require.Len(t, msgs, 1)
 			got := msgs[0].GetRouteDelta()
-			tc.want.Rev = got.Rev
+			if tc.want.Rev == 0 {
+				tc.want.Rev = got.Rev
+			}
 			assert.Empty(t, cmp.Diff(tc.want, got, protocmp.Transform()))
 		})
 	}

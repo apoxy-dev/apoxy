@@ -36,14 +36,14 @@ func TestTunRoutes(t *testing.T) {
 		{
 			name: "add",
 			add: pfx("10.9.0.0/16", "fd99::/64", "0.0.0.0/0", "::/0",
-				"fd61:706f:7879:12:3456:7800::/96", "10.7.0.0/16"),
+				"fd61:706f:7879:12:3456:7800::/96", "fd61:706f:7879::/48", "10.7.0.0/16"),
 			want: pfx("10.9.0.0/16", "fd99::/64"),
 		},
 		{name: "add again", add: pfx("10.9.0.0/16"), want: pfx("10.9.0.0/16", "fd99::/64")},
 		{name: "remove", remove: pfx("10.9.0.0/16", "10.7.0.0/16"), want: pfx("fd99::/64")},
 		{name: "remove all", remove: pfx("fd99::/64"), want: nil},
 	}
-	all := pfx("10.9.0.0/16", "fd99::/64", "0.0.0.0/0", "::/0", "fd61:706f:7879:12:3456:7800::/96", "10.7.0.0/16")
+	all := pfx("10.9.0.0/16", "fd99::/64", "0.0.0.0/0", "::/0", "fd61:706f:7879:12:3456:7800::/96", "fd61:706f:7879::/48", "10.7.0.0/16")
 	err := netns.Do(ns, func() error {
 		vpc0, lan0 := upVeth(t, "vpc0"), upVeth(t, "lan0")
 		// A host route that a VPC route must not replace.

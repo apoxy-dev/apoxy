@@ -207,37 +207,83 @@ func (t *tunBatch) flush() {
 // a PSP packet, or a QUIC data frame after UseQUIC. It can lower the MSS of a TCP SYN in virt.
 func (d *driver) VirtToPhy(virt, phy []byte) (int, bool) {
 	b := d.b
+	n, err := b.frame(virt, phy)
+	switch err {
+	case nil:
+	case ErrNoRoute:
+		b.stats.txNoRoute.Add(1)
+		if b.noRoute != nil {
+			b.noRoute(virt)
+		}
+	default:
+		b.stats.txDrops.Add(1)
+	}
+	return n, false
+}
+
+// frame writes the send frame of the inner packet virt to phy and returns its length.
+func (b *Binding) frame(virt, phy []byte) (int, error) {
 	dst, ok := innerDst(virt)
 	if !ok || len(virt) > b.mtu || len(phy) < addrLen+pspwire.Overhead+len(virt) {
-		b.stats.txDrops.Add(1)
-		return 0, false
+		return 0, errDrop
 	}
 	p, ok := b.routes.Lookup(dst)
 	if !ok {
-		b.stats.txNoRoute.Add(1)
-		return 0, false
+		return 0, ErrNoRoute
 	}
 	quic := b.relay.Load() != nil
 	b.clampMSS(virt, quic)
 	if quic {
 		clear(phy[:addrLen])
-		return addrLen + len(peerconn.EncodeData(phy[addrLen:addrLen], b.vni, virt)), false
+		return addrLen + len(peerconn.EncodeData(phy[addrLen:addrLen], b.vni, virt)), nil
 	}
 	sa := p.txSA(virt)
 	if sa == nil {
-		b.stats.txNoRoute.Add(1)
-		return 0, false
+		return 0, ErrNoRoute
 	}
 	n, err := sa.Seal(phy[addrLen:], virt)
 	if err != nil {
-		b.stats.txDrops.Add(1)
-		return 0, false
+		return 0, err
 	}
 	a := p.addr.Load()
 	ip := a.Addr().As16()
 	copy(phy, ip[:])
 	binary.BigEndian.PutUint16(phy[16:addrLen], a.Port())
-	return addrLen + n, false
+	return addrLen + n, nil
+}
+
+// Send sends inner packets outside the driver, for example the packets that waited for a
+// peer session. It stops at the first packet with ErrNoRoute, and returns the number sent.
+func (b *Binding) Send(pkts [][]byte) (int, error) {
+	if b.ctx.Err() != nil {
+		return 0, ErrClosed
+	}
+	phy := make([]byte, addrLen+pspwire.Overhead+b.mtu)
+	ua := &net.UDPAddr{IP: make(net.IP, net.IPv6len)}
+	sent := 0
+	for _, pkt := range pkts {
+		n, err := b.frame(pkt, phy)
+		if err == ErrNoRoute {
+			return sent, err
+		}
+		if err == nil {
+			err = b.write(phy[:n], ua)
+		}
+		if err != nil {
+			b.stats.txDrops.Add(1)
+			continue
+		}
+		b.stats.txPackets.Add(1)
+		sent++
+	}
+	return sent, nil
+}
+
+// Deliver gives an inner packet from the agent, for example an ICMP error, to the driver.
+// It writes at once and not into the TUN batch, so do not call it on the QUIC read loop.
+func (b *Binding) Deliver(pkt []byte) bool {
+	d := b.drv.Load()
+	return d != nil && d.deliver(pkt, 0)
 }
 
 // PhyToVirt opens nothing: ReadFrame gives no frames to the vtep driver.
@@ -285,21 +331,18 @@ func (d *driver) send(frames [][]byte) error {
 	n := 0
 	for _, f := range frames {
 		port := binary.BigEndian.Uint16(f[16:addrLen])
-		if port == 0 {
-			d.sendData(f[addrLen:])
-			continue
-		}
-		a := &d.addrs[n]
-		copy(a.IP, f[:16])
-		a.Port = int(port)
-		if d.pc == nil {
-			if _, err := d.b.tr.WriteTo(f[addrLen:], a); err != nil {
+		if port == 0 || d.pc == nil {
+			// n stays 0 when d.pc is nil, so d.addrs[n] is free.
+			if d.b.write(f, &d.addrs[n]) != nil {
 				st.txDrops.Add(1)
 			} else {
 				st.txPackets.Add(1)
 			}
 			continue
 		}
+		a := &d.addrs[n]
+		copy(a.IP, f[:16])
+		a.Port = int(port)
 		d.msgs[n].Buffers[0] = f[addrLen:]
 		n++
 	}
@@ -320,15 +363,21 @@ func (d *driver) send(frames [][]byte) error {
 	return nil
 }
 
-// sendData sends a data frame on the relay session shard of its flow.
-func (d *driver) sendData(frame []byte) {
-	st := &d.b.stats
-	pc := d.b.relay.Load()
-	if pc == nil || pc.SendData(frame) != nil {
-		st.txDrops.Add(1)
-		return
+// write sends one send frame: a data frame on the relay session shard of its flow, or a
+// PSP packet to the address in the frame. ua must have a 16-byte IP.
+func (b *Binding) write(f []byte, ua *net.UDPAddr) error {
+	port := binary.BigEndian.Uint16(f[16:addrLen])
+	if port == 0 {
+		pc := b.relay.Load()
+		if pc == nil {
+			return errNoRelay
+		}
+		return pc.SendData(f[addrLen:])
 	}
-	st.txPackets.Add(1)
+	copy(ua.IP, f[:16])
+	ua.Port = int(port)
+	_, err := b.tr.WriteTo(f[addrLen:], ua)
+	return err
 }
 
 // innerDst returns the destination address of an IPv4 or IPv6 packet.

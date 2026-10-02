@@ -39,8 +39,16 @@ const (
 	sockBuf = 16 << 20
 )
 
-// ErrClosed is the error of calls on a closed binding or a removed peer.
-var ErrClosed = errors.New("psp: binding or peer is closed")
+var (
+	// ErrClosed is the error of calls on a closed binding or a removed peer.
+	ErrClosed = errors.New("psp: binding or peer is closed")
+	// ErrNoRoute is the error of a packet that no peer routes, or whose peer has no
+	// transmit SA.
+	ErrNoRoute = errors.New("psp: no route or no transmit SA")
+
+	errDrop    = errors.New("psp: packet is not IP or is too large")
+	errNoRelay = errors.New("psp: no relay session for data frames")
+)
 
 // Demux gives the non-QUIC packets of an agent socket to its binding, and path probes to Probe.
 // Set Handle, BatchEnd and Probe on the transport before it starts.
@@ -83,22 +91,26 @@ type Config struct {
 	MTU int
 	// DeviceMTU is the MTU of the device on the binding, at most MTU. Zero means MTU.
 	DeviceMTU int
+	// NoRoute gets the inner packets that VirtToPhy cannot send for ErrNoRoute. It
+	// runs on the send path of the driver, so it must not block or keep pkt.
+	NoRoute func(pkt []byte)
 }
 
 // Binding is the data path of one VPC on one agent socket.
 type Binding struct {
-	tr     *quic.Transport
-	demux  *Demux
-	vni    uint32
-	mtu    int
-	devMTU int
-	clamp  atomic.Int32 // MTU for the MSS of TCP SYN packets. Zero means off.
-	rxq    *engine.RxQueue
-	recv   *keys.Receiver
-	send   *keys.Sender
-	routes engine.Routes[*Peer]
-	seed   maphash.Seed
-	relay  atomic.Pointer[peerconn.Conn] // Set when data goes as QUIC data frames.
+	tr      *quic.Transport
+	demux   *Demux
+	vni     uint32
+	mtu     int
+	devMTU  int
+	clamp   atomic.Int32 // MTU for the MSS of TCP SYN packets. Zero means off.
+	rxq     *engine.RxQueue
+	recv    *keys.Receiver
+	send    *keys.Sender
+	routes  engine.Routes[*Peer]
+	seed    maphash.Seed
+	relay   atomic.Pointer[peerconn.Conn] // Set when data goes as QUIC data frames.
+	noRoute func(pkt []byte)
 
 	// routed reports whether a peer has a route to an address.
 	routed func(netip.Addr) bool
@@ -149,18 +161,19 @@ func New(cfg Config) (*Binding, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	b := &Binding{
-		tr:     cfg.Transport,
-		demux:  cfg.Demux,
-		vni:    cfg.VNI,
-		mtu:    cfg.MTU,
-		devMTU: cfg.DeviceMTU,
-		rxq:    table.Queue(0),
-		recv:   recv,
-		send:   send,
-		seed:   maphash.MakeSeed(),
-		ctx:    ctx,
-		cancel: cancel,
-		peers:  map[*keys.Peer]*Peer{},
+		tr:      cfg.Transport,
+		demux:   cfg.Demux,
+		vni:     cfg.VNI,
+		mtu:     cfg.MTU,
+		devMTU:  cfg.DeviceMTU,
+		rxq:     table.Queue(0),
+		recv:    recv,
+		send:    send,
+		seed:    maphash.MakeSeed(),
+		noRoute: cfg.NoRoute,
+		ctx:     ctx,
+		cancel:  cancel,
+		peers:   map[*keys.Peer]*Peer{},
 	}
 	b.routed = func(a netip.Addr) bool {
 		_, ok := b.routes.Lookup(a)

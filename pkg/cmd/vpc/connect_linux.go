@@ -13,6 +13,7 @@ import (
 	wgtun "golang.zx2c4.com/wireguard/tun"
 
 	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/agent"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/psp"
 )
 
@@ -84,7 +85,7 @@ func (t *tunDev) setAddr(old, addr netip.Addr) error {
 }
 
 // route adds and removes the kernel routes of the prefixes of the other
-// attachments. It skips default routes and prefixes in the VPC network.
+// attachments. It skips the prefixes that are not agent.Routable.
 func (t *tunDev) route(add, remove []netip.Prefix) {
 	for _, p := range remove {
 		if !t.routes[p] {
@@ -96,7 +97,7 @@ func (t *tunDev) route(add, remove []netip.Prefix) {
 		}
 	}
 	for _, p := range add {
-		if p.Bits() == 0 || t.routes[p] || (t.vpc.IsValid() && t.vpc.Bits() <= p.Bits() && t.vpc.Contains(p.Addr())) {
+		if t.routes[p] || !agent.Routable(p, t.vpc) {
 			continue
 		}
 		if err := netlink.RouteAdd(&netlink.Route{LinkIndex: t.link.Attrs().Index, Dst: ipNet(p)}); err != nil {

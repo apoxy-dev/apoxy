@@ -118,7 +118,9 @@ type Agent struct {
 	mux      *rpc.Mux // Peer service.
 	demux    psp.Demux
 	probing  atomic.Pointer[pathProbe]
+	holds    holds
 
+	// Lock order: routeMu, then mu. holds.mu is never held with another lock.
 	mu       sync.Mutex
 	rc       *relayConn
 	bind     *psp.Binding
@@ -577,7 +579,10 @@ func (a *Agent) binding(cfg *dp.Config, pathMTU int) (*psp.Binding, error) {
 	} else if pathMTU != 0 {
 		dev = pathMTU
 	}
-	b, err := psp.New(psp.Config{Transport: a.cfg.Transport, Demux: &a.demux, VNI: cfg.GetVpc().GetNetworkId(), MTU: mtu, DeviceMTU: dev})
+	b, err := psp.New(psp.Config{
+		Transport: a.cfg.Transport, Demux: &a.demux, VNI: cfg.GetVpc().GetNetworkId(), MTU: mtu, DeviceMTU: dev,
+		NoRoute: a.onNoRoute,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -717,7 +722,7 @@ func (a *Agent) close() {
 	}
 }
 
-// tick runs the key timers of the binding and refreshes SPI rows.
+// tick runs the key timers of the binding and the holds, and refreshes SPI rows.
 func (a *Agent) tick(ctx context.Context) {
 	t := time.NewTicker(tickInterval)
 	defer t.Stop()
@@ -728,6 +733,7 @@ func (a *Agent) tick(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case now := <-t.C:
+			a.holds.sweep(now)
 			a.mu.Lock()
 			b := a.bind
 			a.mu.Unlock()

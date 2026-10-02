@@ -229,6 +229,11 @@ func TestQUIC(t *testing.T) {
 		{"no route", true, send(packet(a.v4, far, 17, 1, 2, 100)), Stats{TxNoRoute: 1}, Stats{}, nil},
 		{"other VNI", true, raw(testVNI+1, v4), Stats{}, Stats{RxDrops: 1}, nil},
 		{"source not routed", true, raw(testVNI, packet(far, b.v4, 17, 1, 2, 100)), Stats{}, Stats{RxDrops: 1}, nil},
+		{"Send", true, func() {
+			n, err := a.b.Send([][]byte{v4})
+			require.NoError(t, err)
+			require.Equal(t, 1, n)
+		}, Stats{TxPackets: 1}, Stats{RxPackets: 1}, v4},
 		{"PSP again, no SA", false, send(v4), Stats{TxNoRoute: 1}, Stats{}, nil},
 	}
 	for _, tc := range cases {
@@ -276,4 +281,107 @@ func TestHandleDataConcurrent(t *testing.T) {
 	wg.Wait()
 	assert.Equal(t, Stats{RxPackets: readers * frames}, b.b.Stats())
 	assert.Len(t, dev.out, readers*frames)
+}
+
+// TestNoRoute checks that Config.NoRoute gets the packets with no route or no
+// transmit SA, and no other packets.
+func TestNoRoute(t *testing.T) {
+	a, b := newPair(t)
+	var got [][]byte
+	a.b.noRoute = func(pkt []byte) { got = append(got, bytes.Clone(pkt)) }
+	far := netip.MustParseAddr("10.9.9.9")
+	ok := packet(a.v4, b.v4, 17, 1, 2, 100)
+	// The rows run in order: the SAs come before the second row.
+	cases := []struct {
+		name  string
+		offer bool
+		pkt   []byte
+		hook  bool
+		want  Stats
+	}{
+		{name: "no transmit SA", pkt: ok, hook: true, want: Stats{TxNoRoute: 1}},
+		{name: "no route", offer: true, pkt: packet(a.v4, far, 17, 1, 2, 100), hook: true, want: Stats{TxNoRoute: 1}},
+		{name: "routed", pkt: ok},
+		{name: "too large", pkt: packet(a.v4, b.v4, 17, 1, 2, DefaultMTU+1), want: Stats{TxDrops: 1}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.offer {
+				offer(t, time.Now(), a, b)
+			}
+			got = nil
+			before := a.b.Stats()
+			phy := make([]byte, 2048)
+			n, _ := (&driver{b: a.b}).VirtToPhy(tc.pkt, phy)
+			assert.Equal(t, tc.want, sub(a.b.Stats(), before))
+			if tc.hook {
+				assert.Zero(t, n)
+				assert.Equal(t, [][]byte{tc.pkt}, got)
+			} else {
+				assert.Empty(t, got)
+			}
+		})
+	}
+}
+
+// TestSend sends packets outside the driver to the socket of the other node.
+func TestSend(t *testing.T) {
+	a, b := newPair(t)
+	offer(t, time.Now(), a, b)
+	got := &capture{}
+	b.b.drv.Store(newDriver(b.b, got.deliver))
+	far := netip.MustParseAddr("10.9.9.9")
+	p1, p2 := packet(a.v4, b.v4, 17, 1, 2, 100), packet(a.v6, b.v6, 17, 3, 4, DefaultMTU)
+	cases := []struct {
+		name    string
+		pkts    [][]byte
+		sent    int
+		err     error
+		deliver [][]byte
+	}{
+		{name: "all", pkts: [][]byte{p1, p2}, sent: 2, deliver: [][]byte{p1, p2}},
+		{name: "stops at no route", pkts: [][]byte{p1, packet(a.v4, far, 17, 1, 2, 100), p2}, sent: 1, err: ErrNoRoute, deliver: [][]byte{p1}},
+		{name: "too large", pkts: [][]byte{packet(a.v4, b.v4, 17, 1, 2, DefaultMTU+1), p1}, sent: 1, deliver: [][]byte{p1}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got.mu.Lock()
+			got.got = nil
+			got.mu.Unlock()
+			sent, err := a.b.Send(tc.pkts)
+			assert.Equal(t, tc.sent, sent)
+			assert.Equal(t, tc.err, err)
+			require.Eventually(t, func() bool {
+				got.mu.Lock()
+				defer got.mu.Unlock()
+				return len(got.got) == len(tc.deliver)
+			}, 5*time.Second, time.Millisecond)
+			assert.Equal(t, tc.deliver, got.got)
+		})
+	}
+	require.NoError(t, a.b.Close())
+	_, err := a.b.Send([][]byte{p1})
+	assert.ErrorIs(t, err, ErrClosed)
+}
+
+// TestDeliver gives a packet from the agent to the driver at once, while the
+// TUN batch of a read keeps its packets until the batch ends.
+func TestDeliver(t *testing.T) {
+	a, _ := newPair(t)
+	pkt, read := packet(a.v4, a.v4, 1, 0, 0, 60), packet(a.v4, a.v4, 17, 1, 2, 100)
+	assert.False(t, a.b.Deliver(pkt), "no driver")
+	dev := newFakeTun(2)
+	w := &tunWriter{dev: dev, bufs: make([][]byte, 1), scratch: make([]byte, tunOffset+a.b.mtu)}
+	d := newDriver(a.b, w.write)
+	d.batch = newTunBatch(w, &a.b.stats)
+	a.b.drv.Store(d)
+	d.batch.add(read)
+
+	assert.True(t, a.b.Deliver(pkt))
+	assert.Equal(t, []int{1}, dev.calls)
+	assert.Equal(t, pkt, <-dev.out)
+	assert.Len(t, d.batch.out, 1)
+	assert.Equal(t, Stats{}, a.b.Stats(), "no receive counters")
+	d.batch.flush()
+	assert.Equal(t, read, <-dev.out)
 }

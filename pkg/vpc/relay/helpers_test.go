@@ -415,25 +415,32 @@ func openMode(t *testing.T, a agent, mode dp.Mode) (syncStream, *dp.Welcome, *dp
 	return st, w.GetWelcome(), c.GetConfig(), k.GetRekey()
 }
 
-// recv returns the next message of st within 5 s.
+// recv returns the next message of st within 5 s. It skips a RouteDelta with
+// no routes, such as the first one in a VPC with no routes.
 func recv(t *testing.T, st syncStream) *dp.SessionResponse {
 	t.Helper()
 	type res struct {
 		m   *dp.SessionResponse
 		err error
 	}
-	ch := make(chan res, 1)
-	go func() {
-		m, err := st.Recv()
-		ch <- res{m, err}
-	}()
-	select {
-	case r := <-ch:
-		require.NoError(t, r.err)
-		return r.m
-	case <-time.After(5 * time.Second):
-		t.Fatal("no Sync message in 5 s")
-		return nil
+	timeout := time.After(5 * time.Second)
+	for {
+		ch := make(chan res, 1)
+		go func() {
+			m, err := st.Recv()
+			ch <- res{m, err}
+		}()
+		select {
+		case r := <-ch:
+			require.NoError(t, r.err)
+			if d := r.m.GetRouteDelta(); d != nil && len(d.Add)+len(d.Remove) == 0 {
+				continue
+			}
+			return r.m
+		case <-timeout:
+			t.Fatal("no Sync message in 5 s")
+			return nil
+		}
 	}
 }
 

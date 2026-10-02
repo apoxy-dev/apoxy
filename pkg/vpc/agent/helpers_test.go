@@ -155,8 +155,8 @@ func (f fakeNetworks) Network(project, uid string) (relay.Network, error) {
 	return relay.Network{ID: testVNI, MTU: f.mtu, DNSServers: f.dns, DNSSearchDomains: f.search}, nil
 }
 
-// fakeAddresses gives each attachment the next fd00:<n>::/96 and counts the
-// live attachments of each agent.
+// fakeAddresses gives each attachment the next /96 in the VPC network
+// fd61:706f:7879:12:3400::/72, and counts the live attachments of each agent.
 type fakeAddresses struct {
 	mu      sync.Mutex
 	next    int
@@ -173,7 +173,7 @@ func (f *fakeAddresses) Assign(_ context.Context, a *relay.Attachment) ([]netip.
 	}
 	f.live[a.Subject]++
 	f.maxLive[a.Subject] = max(f.maxLive[a.Subject], f.live[a.Subject])
-	return []netip.Prefix{netip.MustParsePrefix(fmt.Sprintf("fd00:%x::/96", f.next))}, nil
+	return []netip.Prefix{netip.MustParsePrefix(fmt.Sprintf("fd61:706f:7879:12:3400:%x::/96", f.next))}, nil
 }
 
 func (f *fakeAddresses) Release(a *relay.Attachment) {
