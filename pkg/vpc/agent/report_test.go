@@ -4,6 +4,7 @@ package agent
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -83,10 +84,14 @@ func TestBreaker(t *testing.T) {
 		close(stop)
 		<-done
 	}()
+	var sent atomic.Int64
+	begin := time.Now()
 	go func() {
 		defer close(done)
-		// 1000 B each 2 ms: twice the meter rate.
-		tk := time.NewTicker(2 * time.Millisecond)
+		// 1000 B each 2 ms: twice the meter rate. A late wake-up sends the
+		// packets that are due, at most 25, so that the rate stays the same.
+		const each, most = 2 * time.Millisecond, 25
+		tk := time.NewTicker(each)
 		defer tk.Stop()
 		payload := make([]byte, 1000)
 		for {
@@ -94,7 +99,11 @@ func TestBreaker(t *testing.T) {
 			case <-stop:
 				return
 			case <-tk.C:
+			}
+			due := int64(time.Since(begin) / each)
+			for n := min(due-sent.Load(), most); n > 0; n-- {
 				_, _ = c.Write(payload)
+				sent.Add(1)
 			}
 		}
 	}()
@@ -105,10 +114,14 @@ func TestBreaker(t *testing.T) {
 	assert.GreaterOrEqual(t, lossBetween(start, tripped), 0.2, "loss at the relay meter before the trip")
 	assert.LessOrEqual(t, toB.Limit(), int64(meter*3/4), "about half of the rate that arrived")
 
-	require.Eventually(t, func() bool { return rxCountOf(fromA).seq-tripped.seq >= 300 }, 10*time.Second, 50*time.Millisecond)
+	// The packets sent before the gate closed can still meet an empty meter.
+	require.Eventually(t, func() bool { return rxCountOf(fromA).seq-tripped.seq >= 100 }, 10*time.Second, 50*time.Millisecond)
+	settled := rxCountOf(fromA)
+	require.Eventually(t, func() bool { return rxCountOf(fromA).seq-settled.seq >= 300 }, 10*time.Second, 50*time.Millisecond)
 	after := rxCountOf(fromA)
-	assert.Less(t, lossBetween(tripped, after), 0.05, "loss at the relay meter after the trip")
+	assert.Less(t, lossBetween(settled, after), 0.05, "loss at the relay meter after the trip")
 	assert.Greater(t, a.binding().Stats().TxGateDrops, gateDrops, "the gate drops the excess")
-	t.Logf("loss before %.3f, limit %d B/s, loss after %.3f, gate drops %d", lossBetween(start, tripped),
-		toB.Limit(), lossBetween(tripped, after), a.binding().Stats().TxGateDrops-gateDrops)
+	t.Logf("loss before %.3f, limit %d B/s, loss after %.3f, gate drops %d, sent %.0f/s", lossBetween(start, tripped),
+		toB.Limit(), lossBetween(settled, after), a.binding().Stats().TxGateDrops-gateDrops,
+		float64(sent.Load())/time.Since(begin).Seconds())
 }
