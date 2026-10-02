@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strconv"
 	"testing"
 	"time"
 
@@ -40,6 +41,25 @@ func TestNetemArgs(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			assert.Equal(t, tc.want, netemArgs("ns", "eth0", tc.cfg))
+		})
+	}
+}
+
+func TestCPUMask(t *testing.T) {
+	cases := []struct {
+		n    int
+		want string
+	}{
+		{n: 1, want: "1"},
+		{n: 4, want: "f"},
+		{n: 10, want: "3ff"},
+		{n: 32, want: "ffffffff"},
+		{n: 33, want: "1,ffffffff"},
+		{n: 64, want: "ffffffff,ffffffff"},
+	}
+	for _, tc := range cases {
+		t.Run(strconv.Itoa(tc.n), func(t *testing.T) {
+			assert.Equal(t, tc.want, cpuMask(tc.n))
 		})
 	}
 }

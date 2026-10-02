@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -66,6 +67,7 @@ func (r *rig) setup(ctx context.Context) error {
 			return err
 		}
 	}
+	r.setRPS(ctx)
 
 	// The kernel loads sch_netem on demand when modprobe can find it. Try it here
 	// too; a failure is not an error because netem can be built in.
@@ -84,6 +86,27 @@ func (r *rig) setup(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// setRPS lets all CPUs receive on the veths, one CPU per flow. Without RPS, netem on a veth reorders packets.
+func (r *rig) setRPS(ctx context.Context) {
+	mask := cpuMask(runtime.NumCPU())
+	for _, e := range []struct{ ns, dev string }{{r.client, clientDev}, {r.server, serverDev}} {
+		_, err := command(ctx, "ip", "netns", "exec", e.ns, "sh", "-c",
+			`for q in /sys/class/net/"$2"/queues/rx-*; do printf '%s\n' "$1" > "$q/rps_cpus" || exit 1; done`, "sh", mask, e.dev)
+		if err != nil {
+			slog.Warn("Failed to set RPS on the veth", "netns", e.ns, "dev", e.dev, "error", err)
+		}
+	}
+}
+
+// cpuMask returns the rps_cpus mask for n CPUs, in 32-bit hex groups with commas between them.
+func cpuMask(n int) string {
+	var groups []string
+	for ; n > 0; n -= 32 {
+		groups = append([]string{strconv.FormatUint(1<<min(n, 32)-1, 16)}, groups...)
+	}
+	return strings.Join(groups, ",")
 }
 
 // teardown deletes both netns. This also deletes the veth pair.
