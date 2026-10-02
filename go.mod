@@ -459,7 +459,7 @@ replace github.com/getsavvyinc/upgrade-cli => github.com/apoxy-dev/upgrade-cli v
 
 replace github.com/quic-go/quic-go => github.com/apoxy-dev/quic-go v0.0.0-20261002123340-891424b7ca48
 
-replace github.com/quic-go/connect-ip-go => github.com/apoxy-dev/connect-ip-go v0.0.0-20250530062404-603929a73f45
+replace github.com/quic-go/connect-ip-go => github.com/apoxy-dev/connect-ip-go v0.0.0-20261002135041-baadecfb9616
 
 replace gvisor.dev/gvisor => github.com/apoxy-dev/gvisor v0.0.0-20261002130535-66184106020b
 
