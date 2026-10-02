@@ -296,27 +296,44 @@ func (r *Relay) vpcTLSConfig(h3 *tls.Config) *tls.Config {
 	}}
 }
 
-// vpcListener gives apoxy-vpc/2 connections to the VPC server, others to h3.
-type vpcListener struct {
-	*quic.EarlyListener
-	ctx context.Context
-	srv *vpcrelay.Server
+// accept serves the connections of ln until ln closes. It accepts during the
+// drain too, so that new connections get a close and not a silent drop.
+func (r *Relay) accept(ln *quic.EarlyListener, srv *http3.Server, vpcCtx context.Context, wg *sync.WaitGroup) error {
+	for {
+		qc, err := ln.Accept(context.Background())
+		if errors.Is(err, quic.ErrServerClosed) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		wg.Go(func() { r.serveConn(qc, srv, vpcCtx) })
+	}
 }
 
-func (l *vpcListener) Accept(ctx context.Context) (quic.EarlyConnection, error) {
-	for {
-		qc, err := l.EarlyListener.Accept(ctx)
-		if err != nil || qc.ConnectionState().TLS.NegotiatedProtocol != dp.ALPNRelay {
-			return qc, err
+// serveConn gives an apoxy-vpc/2 connection to the VPC server, and others to h3.
+// vpcCtx ends when Start returns.
+func (r *Relay) serveConn(qc quic.EarlyConnection, srv *http3.Server, vpcCtx context.Context) {
+	if r.vpc != nil && qc.ConnectionState().TLS.NegotiatedProtocol == dp.ALPNRelay {
+		select {
+		case <-qc.HandshakeComplete():
+			r.vpc.ServeConn(vpcCtx, qc)
+		case <-qc.Context().Done():
+		case <-vpcCtx.Done():
 		}
-		go func() {
-			select {
-			case <-qc.HandshakeComplete():
-				l.srv.ServeConn(l.ctx, qc)
-			case <-qc.Context().Done():
-			}
-		}()
+		return
 	}
+	// After Shutdown, h3 refuses new connections and does not close them.
+	if err := srv.ServeQUICConn(qc); !errors.Is(err, http.ErrServerClosed) {
+		return
+	}
+	// A close before the end of the handshake hides the error code from the client.
+	select {
+	case <-qc.HandshakeComplete():
+	case <-qc.Context().Done():
+	case <-vpcCtx.Done():
+	}
+	_ = qc.CloseWithError(quic.ApplicationErrorCode(http3.ErrCodeNoError), "relay is draining")
 }
 
 // SetMetricsStore configures the push-based metrics store.
@@ -421,10 +438,13 @@ func (r *Relay) Start(ctx context.Context) error {
 	if r.vpc != nil {
 		tlsConf = r.vpcTLSConfig(tlsConf)
 	}
+	// The connection goroutines end at srv.Close, or at vpcCancel for VPC.
+	var conns sync.WaitGroup
+	defer conns.Wait()
 	// VPC relay sessions continue after ctx ends, until the drain ends.
 	vpcCtx, vpcCancel := context.WithCancel(context.Background())
 	defer vpcCancel()
-	lns := make([]http3.QUICEarlyListener, len(trs))
+	lns := make([]*quic.EarlyListener, len(trs))
 	for i, tr := range trs {
 		if r.vpc != nil {
 			tr.NonQUICPacketHandler = r.vpc.R.PacketHandler(tr)
@@ -434,9 +454,6 @@ func (r *Relay) Start(ctx context.Context) error {
 			return fmt.Errorf("failed to create QUIC listener: %w", err)
 		}
 		lns[i] = quicLn
-		if r.vpc != nil {
-			lns[i] = &vpcListener{EarlyListener: quicLn, ctx: vpcCtx, srv: r.vpc}
-		}
 	}
 	if r.vpc != nil {
 		go r.vpc.R.Run(vpcCtx)
@@ -469,6 +486,14 @@ func (r *Relay) Start(ctx context.Context) error {
 
 	srv := http3.Server{
 		Handler: mux,
+	}
+	// stop closes h3, then the listeners. Close refuses the handshakes in flight.
+	stop := func() error {
+		err := srv.Close()
+		for _, ln := range lns {
+			_ = ln.Close()
+		}
+		return err
 	}
 
 	g, ctx := errgroup.WithContext(ctx)
@@ -527,7 +552,7 @@ func (r *Relay) Start(ctx context.Context) error {
 				slog.Error("Failed to shutdown server", slog.Any("error", err))
 			}
 
-			return srv.Close()
+			return stop()
 		}
 
 		deadline := time.Now().Add(lameDuck)
@@ -562,17 +587,12 @@ func (r *Relay) Start(ctx context.Context) error {
 			slog.Error("Failed to close router", slog.Any("error", err))
 		}
 
-		return srv.Close()
+		return stop()
 	})
 
 	slog.Info("Starting relay", slog.String("addr", addr), slog.Int("sockets", len(lns)))
 	for _, ln := range lns {
-		g.Go(func() error {
-			if err := srv.ServeListener(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				return err
-			}
-			return nil
-		})
+		g.Go(func() error { return r.accept(ln, &srv, vpcCtx, &conns) })
 	}
 
 	if err := g.Wait(); err != nil && !errors.Is(err, context.Canceled) {

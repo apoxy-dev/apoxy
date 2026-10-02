@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"math/big"
 	"net"
@@ -107,7 +108,17 @@ func TestRelay_VPCSharesSocket(t *testing.T) {
 	}
 }
 
-func testRelayVPC(t *testing.T, steerSockets int) {
+// vpcRelay is a started relay with VPC sessions, and the CA of its agents.
+type vpcRelay struct {
+	r      *tunnel.Relay
+	roots  *x509.CertPool // Relay roots.
+	ca     *x509.Certificate
+	caKey  *ecdsa.PrivateKey
+	ctx    context.Context
+	cancel context.CancelFunc // Starts the drain.
+}
+
+func startVPCRelay(t *testing.T, steerSockets int, lameDuck time.Duration) *vpcRelay {
 	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
 	caTmpl := &x509.Certificate{
@@ -132,7 +143,6 @@ func testRelayVPC(t *testing.T, steerSockets int) {
 	}
 	relayCA, serverCert, err := cryptoutils.GenerateSelfSignedTLSCert("localhost")
 	require.NoError(t, err)
-	relayRoots := cryptoutils.CertPoolForCertificate(relayCA)
 	h, err := icx.NewHandler(
 		icx.WithLocalAddr(netstack.ToFullAddress(netip.MustParseAddrPort("127.0.0.1:6081"))),
 		icx.WithVirtMAC(tcpip.GetRandMacAddr()),
@@ -147,6 +157,7 @@ func testRelayVPC(t *testing.T, steerSockets int) {
 	}
 	require.NoError(t, r.SetStatelessResetSecret([]byte("secret")))
 	r.SetVPC("localhost", vpcTrust{agentPool}, vpcNetworks{}, &vpcAddresses{}, vpcrelay.Config{})
+	r.SetLameDuckPeriod(lameDuck)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
@@ -160,6 +171,48 @@ func testRelayVPC(t *testing.T, steerSockets int) {
 			_ = c.Close()
 		}
 	})
+	return &vpcRelay{r: r, roots: cryptoutils.CertPoolForCertificate(relayCA), ca: agentCA, caKey: caKey, ctx: ctx, cancel: cancel}
+}
+
+// agentTLS returns the apoxy-vpc/2 client config of agent name.
+func (v *vpcRelay) agentTLS(t *testing.T, name string) *tls.Config {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	id := identity.ID{Project: vpcProject, VPC: vpcUID, Agent: name}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(2), URIs: []*url.URL{id.URI()},
+		NotBefore: time.Now().Add(-time.Minute), NotAfter: time.Now().Add(time.Hour),
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, v.ca, &key.PublicKey, v.caKey)
+	require.NoError(t, err)
+	return &tls.Config{
+		RootCAs:      v.roots,
+		ServerName:   "localhost",
+		NextProtos:   []string{dp.ALPNRelay},
+		Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}},
+	}
+}
+
+// dial dials the relay with conf from a new socket.
+func (v *vpcRelay) dial(t *testing.T, conf *tls.Config) (*quic.Transport, quic.Connection, error) {
+	udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	require.NoError(t, err)
+	tr := &quic.Transport{Conn: udp}
+	t.Cleanup(func() { _ = tr.Close(); _ = udp.Close() })
+	// quic-go drops non-QUIC packets until the first ReadNonQUICPacket call.
+	stopped, stop := context.WithCancel(context.Background())
+	stop()
+	_, _, _ = tr.ReadNonQUICPacket(stopped, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	qc, err := tr.Dial(ctx, net.UDPAddrFromAddrPort(v.r.Address()), conf, &quic.Config{EnableDatagrams: true})
+	return tr, qc, err
+}
+
+func testRelayVPC(t *testing.T, steerSockets int) {
+	v := startVPCRelay(t, steerSockets, 0)
+	r, ctx, relayRoots := v.r, v.ctx, v.roots
 
 	// HTTP/3 still works.
 	h3 := &http3.Transport{TLSClientConfig: &tls.Config{RootCAs: relayRoots, ServerName: "localhost"}}
@@ -174,33 +227,10 @@ func testRelayVPC(t *testing.T, steerSockets int) {
 	}, 5*time.Second, 50*time.Millisecond)
 
 	dial := func(name string) vpcAgent {
-		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		tr, qc, err := v.dial(t, v.agentTLS(t, name))
 		require.NoError(t, err)
-		id := identity.ID{Project: vpcProject, VPC: vpcUID, Agent: name}
-		tmpl := &x509.Certificate{
-			SerialNumber: big.NewInt(2), URIs: []*url.URL{id.URI()},
-			NotBefore: time.Now().Add(-time.Minute), NotAfter: time.Now().Add(time.Hour),
-			ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
-		}
-		der, err := x509.CreateCertificate(rand.Reader, tmpl, agentCA, &key.PublicKey, caKey)
-		require.NoError(t, err)
-		udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
-		require.NoError(t, err)
-		tr := &quic.Transport{Conn: udp}
-		t.Cleanup(func() { _ = tr.Close(); _ = udp.Close() })
-		// quic-go drops non-QUIC packets until the first ReadNonQUICPacket call.
-		stopped, stop := context.WithCancel(context.Background())
-		stop()
-		_, _, _ = tr.ReadNonQUICPacket(stopped, nil)
 		dctx, dcancel := context.WithTimeout(ctx, 5*time.Second)
 		defer dcancel()
-		qc, err := tr.Dial(dctx, net.UDPAddrFromAddrPort(r.Address()), &tls.Config{
-			RootCAs:      relayRoots,
-			ServerName:   "localhost",
-			NextProtos:   []string{dp.ALPNRelay},
-			Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}},
-		}, &quic.Config{EnableDatagrams: true})
-		require.NoError(t, err)
 		a := vpcAgent{tr: tr, qc: qc, c: dp.NewRelayClient(rpc.NewConn(qc, nil))}
 		res, err := a.c.Attach(dctx, &dp.AttachRequest{Vpc: &dp.VPCRef{ProjectId: vpcProject, VpcUid: vpcUID, NetworkId: vpcNetwork}, Name: name})
 		require.NoError(t, err)
@@ -246,5 +276,68 @@ func testRelayVPC(t *testing.T, steerSockets int) {
 		m, _, err := b.tr.ReadNonQUICPacket(rctx, buf)
 		require.NoError(t, err)
 		assert.Equal(t, pkt[:n], buf[:m])
+	}
+}
+
+// TestRelay_VPCDrain dials the relay during its drain. The new connection gets
+// a close at once, and does not wait for the open timeout of the agent.
+func TestRelay_VPCDrain(t *testing.T) {
+	cases := []struct {
+		name string
+		alpn string
+		code quic.ApplicationErrorCode
+	}{
+		{name: "apoxy-vpc/2", alpn: dp.ALPNRelay, code: quic.ApplicationErrorCode(dp.RelayCloseCode_RELAY_CLOSE_CODE_DRAIN)},
+		{name: "h3", alpn: http3.NextProtoH3, code: quic.ApplicationErrorCode(http3.ErrCodeNoError)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			v := startVPCRelay(t, 0, 2*time.Second)
+			// An agent with a session sees the start of the drain.
+			_, qc, err := v.dial(t, v.agentTLS(t, "stayer"))
+			require.NoError(t, err)
+			st, err := dp.NewRelayClient(rpc.NewConn(qc, nil)).Session(context.Background())
+			require.NoError(t, err)
+			require.NoError(t, st.Send(&dp.SessionRequest{Msg: &dp.SessionRequest_Hello{Hello: &dp.Hello{Mode: dp.Mode_MODE_QUIC}}}))
+			_, err = st.Recv()
+			require.NoError(t, err)
+			v.cancel()
+			for {
+				m, err := st.Recv()
+				require.NoError(t, err)
+				if m.GetDrain() != nil {
+					break
+				}
+			}
+			// Dial after the h3 Shutdown, which stopped the accept loop before.
+			h3 := &http3.Transport{TLSClientConfig: &tls.Config{RootCAs: v.roots, ServerName: "localhost"}}
+			t.Cleanup(func() { _ = h3.Close() })
+			c := &http.Client{Transport: h3, Timeout: 500 * time.Millisecond}
+			require.Eventually(t, func() bool {
+				resp, err := c.Get("https://" + v.r.Address().String() + "/ping")
+				if err == nil {
+					_ = resp.Body.Close()
+				}
+				return err != nil
+			}, 5*time.Second, 20*time.Millisecond, "h3 shuts down")
+
+			conf := v.agentTLS(t, "late")
+			conf.NextProtos = []string{tc.alpn}
+			start := time.Now()
+			_, late, err := v.dial(t, conf)
+			if err == nil {
+				select {
+				case <-late.Context().Done():
+				case <-time.After(time.Second):
+					t.Fatal("the relay did not close the new connection in 1 s")
+				}
+				err = context.Cause(late.Context())
+			}
+			var ae *quic.ApplicationError
+			require.Truef(t, errors.As(err, &ae), "close error %T", err)
+			assert.True(t, ae.Remote)
+			assert.Equal(t, tc.code, ae.ErrorCode)
+			assert.Less(t, time.Since(start), time.Second)
+		})
 	}
 }
