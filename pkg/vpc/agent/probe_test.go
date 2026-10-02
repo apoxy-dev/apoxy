@@ -39,15 +39,10 @@ func TestPathMTU(t *testing.T) {
 			for i, drop := range tc.drop {
 				if i > 0 {
 					conn.max.Store(drop)
-					ta.a.mu.Lock()
-					rc := ta.a.rc
-					ta.a.mu.Unlock()
-					_ = rc.qc.CloseWithError(0, "next session")
+					ta.reconnect()
 				}
 				ta.attached(t)
-				ta.a.mu.Lock()
-				b := ta.a.bind
-				ta.a.mu.Unlock()
+				b := ta.binding()
 				assert.Equal(t, tc.wantDev, b.DeviceMTU(), "session %d", i)
 				assert.Equal(t, tc.wantClamp[i], b.ClampMTU(), "session %d", i)
 			}

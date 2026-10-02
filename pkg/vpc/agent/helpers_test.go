@@ -31,6 +31,7 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv4"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv6"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
+	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
 
 	vpcv1alpha1 "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1"
@@ -215,7 +216,7 @@ func newWorld(t testing.TB) *world {
 	return w
 }
 
-// testRelay is a relay on loopback that forwards PSP packets and peer frames.
+// testRelay is a relay that forwards PSP packets and peer frames.
 type testRelay struct {
 	id   string
 	srv  *relay.Server
@@ -223,12 +224,25 @@ type testRelay struct {
 	addr string
 }
 
+// loopback opens a UDP socket on 127.0.0.1.
+func loopback(t testing.TB) *net.UDPConn {
+	t.Helper()
+	udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	require.NoError(t, err)
+	return udp
+}
+
+// relay starts a relay on loopback.
 func (w *world) relay(t testing.TB, id string) *testRelay {
+	t.Helper()
+	return w.relayOn(t, id, loopback(t))
+}
+
+// relayOn starts a relay on udp, and closes udp at the end of the test.
+func (w *world) relayOn(t testing.TB, id string, udp *net.UDPConn) *testRelay {
 	t.Helper()
 	cert := w.relayCA.relayCert(t, id)
 	r := relay.NewRouter(w.trust, relay.Config{})
-	udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
-	require.NoError(t, err)
 	tr := &quic.Transport{Conn: udp}
 	tr.NonQUICPacketHandler = r.PacketHandler(tr)
 	ln, err := tr.Listen(r.TLSConfig(&tls.Config{Certificates: []tls.Certificate{*cert}}), &quic.Config{EnableDatagrams: true})
@@ -274,6 +288,8 @@ type agentOptions struct {
 	mtu  int           // Config.MTU.
 	conn *lossyConn    // Wraps the agent socket if set.
 	mode TransportMode
+	udp  *net.UDPConn // Agent socket. Nil means a new socket on loopback.
+	tcp  bool         // Adds TCP to the netstack.
 
 	first    string // Config.Relay, with the relay as the alternate.
 	noRoots  bool   // No relay roots, so the system roots.
@@ -309,8 +325,10 @@ func (w *world) agent(t *testing.T, name string, r *testRelay, opts agentOptions
 	if opts.life == 0 {
 		opts.life = 24 * time.Hour
 	}
-	udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
-	require.NoError(t, err)
+	udp := opts.udp
+	if udp == nil {
+		udp = loopback(t)
+	}
 	var conn net.PacketConn = udp
 	if opts.conn != nil {
 		opts.conn.PacketConn = udp
@@ -332,7 +350,7 @@ func (w *world) agent(t *testing.T, name string, r *testRelay, opts agentOptions
 		Name:               name,
 		MTU:                opts.mtu,
 		OnAttach: func(b *psp.Binding, addr netip.Addr, prefixes []netip.Prefix) {
-			ta.netstack(t, b, addr)
+			ta.netstack(t, b, addr, opts.tcp)
 			ta.attach <- attachEvent{addr, prefixes}
 		},
 	}
@@ -364,6 +382,20 @@ func (ta *testAgent) stop() {
 	<-ta.done
 }
 
+func (ta *testAgent) binding() *psp.Binding {
+	ta.a.mu.Lock()
+	defer ta.a.mu.Unlock()
+	return ta.a.bind
+}
+
+// reconnect closes the relay session. The agent then opens a new one.
+func (ta *testAgent) reconnect() {
+	ta.a.mu.Lock()
+	rc := ta.a.rc
+	ta.a.mu.Unlock()
+	_ = rc.qc.CloseWithError(0, "next session")
+}
+
 // attached waits for the next OnAttach call.
 func (ta *testAgent) attached(t *testing.T) attachEvent {
 	t.Helper()
@@ -376,14 +408,20 @@ func (ta *testAgent) attached(t *testing.T) attachEvent {
 	}
 }
 
-// netstack starts a netstack on b at the first attach, and adds addr.
-func (ta *testAgent) netstack(t *testing.T, b *psp.Binding, addr netip.Addr) {
+// netstack starts a netstack with the device MTU on b at the first attach,
+// and adds addr.
+func (ta *testAgent) netstack(t *testing.T, b *psp.Binding, addr netip.Addr, withTCP bool) {
 	ta.stackOnce.Do(func() {
+		protos := []stack.TransportProtocolFactory{udp.NewProtocol}
+		if withTCP {
+			// The idle TCP processors use all CPUs in -race builds.
+			protos = append(protos, tcp.NewProtocol)
+		}
 		s := stack.New(stack.Options{
 			NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol, ipv6.NewProtocol},
-			TransportProtocols: []stack.TransportProtocolFactory{udp.NewProtocol},
+			TransportProtocols: protos,
 		})
-		ep := channel.New(256, psp.DefaultMTU, "")
+		ep := channel.New(256, uint32(b.DeviceMTU()), "")
 		if err := s.CreateNIC(1, ep); err != nil {
 			t.Errorf("create NIC: %v", err)
 			return
