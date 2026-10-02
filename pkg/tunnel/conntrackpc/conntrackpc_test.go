@@ -104,33 +104,27 @@ func TestReadDeadlineTimeout(t *testing.T) {
 }
 
 func TestTTLExpiryEvictsAndClosesFlow(t *testing.T) {
+	const ttl = 80 * time.Millisecond
 	under, _ := makeUDP(t)
 	ct := conntrackpc.New(under, conntrackpc.Options{
 		AutoCreate: false,
-		TTL:        80 * time.Millisecond,
+		TTL:        ttl,
 		MaxFlows:   32,
 		RxBufSize:  8,
 	})
 	t.Cleanup(func() { _ = ct.Close() })
 
 	_, peerAddr := makeUDP(t)
+	opened := time.Now()
 	v, err := ct.Open(peerAddr)
 	require.NoError(t, err)
 
-	// Wait past TTL plus a little. The LRU eviction happens when TTL expires,
-	// driven by cache access/ops; NewLRU with expirable TTL evicts lazily on Ops.
-	// We trigger an op by opening another key to ensure eviction occurs.
-	time.Sleep(120 * time.Millisecond)
-
-	// Touch the cache to provoke TTL cleanup; use a different dummy remote.
-	_, other := makeUDP(t)
-	_, _ = ct.Open(other) // triggers internal add + housekeeping
-
-	// The old vconn should now be closed; a read should return net.ErrClosed quickly.
-	require.NoError(t, v.SetReadDeadline(time.Now().Add(50*time.Millisecond)))
+	// A background goroutine of the LRU evicts the flow after the TTL. It can
+	// be late on a loaded host, so wait for the close with a long deadline.
+	require.NoError(t, v.SetReadDeadline(time.Now().Add(5*time.Second)))
 	_, _, err = v.ReadFrom(make([]byte, 1))
-	require.Error(t, err)
-	assert.True(t, errors.Is(err, net.ErrClosed), "expected net.ErrClosed after TTL eviction")
+	assert.True(t, errors.Is(err, net.ErrClosed), "expected net.ErrClosed after TTL eviction, got %v", err)
+	assert.GreaterOrEqual(t, time.Since(opened), ttl, "the flow closed before the TTL")
 }
 
 func TestMaxFlowsEvictsOldestAndCloses(t *testing.T) {
