@@ -122,7 +122,7 @@ func (m *Perf) Ec2(
 	sessionToken *dagger.Secret,
 	// Time for the rows, from the launch. The presigned URLs expire 10m after
 	// it, or when the session ends.
-	// +default="40m"
+	// +default="25m"
 	deadline string,
 	// +default="ami-04678417fc39d7171"
 	image string,

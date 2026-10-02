@@ -54,6 +54,10 @@ func TestPlan(t *testing.T) {
 			name: "vpc rows", suite: VPC, opts: Options{Duration: "10s", Only: []string{"netstack-psp-direct", "gate"}},
 			wantIDs: []string{"netstack-psp-direct", "gate"}, wantTun: true,
 		},
+		{
+			name: "empty row ID", suite: Netns, opts: Options{Duration: "10s", Only: []string{""}},
+			wantIDs: []string{"iperf3-tcp-p1", "iperf3-tcp-p4", "iperf3-tcp-p4-loss0.1", "iperf3-udp-p1"},
+		},
 		{name: "unknown row", suite: VPC, opts: Options{Duration: "10s", Only: []string{"nope"}}, wantError: `unknown vpc row "nope"`},
 	}
 	for _, tc := range cases {

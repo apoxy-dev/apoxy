@@ -6,81 +6,124 @@ on:
   workflow_dispatch:
     inputs:
       duration:
-        description: "Measured run length of each workload (the baseline keys include it)"
+        description: "Measured run length of each row (the baseline keys include it)"
         type: string
         default: "30s"
+      netns_rig:
+        description: "Run the netns rig job"
+        type: boolean
+        default: true
       vpc_gate:
         description: "Run the VPC gate job"
         type: boolean
         default: false
-      vpc_runner:
-        description: "Runner label of the VPC gate job"
+      vpc_rows:
+        description: "VPC rows to run, comma-separated, for example gate (default: all rows)"
         type: string
-        default: "apoxy-perf-16core"
-      vpc_min_cpus:
-        description: "VPC gate: infra error below this CPU count (lower it only for smoke runs)"
-        type: number
-        default: 8
+        default: ""
 permissions:
   contents: read
 concurrency:
   group: perf
   cancel-in-progress: false
+# Each job runs its rows on a new EC2 instance (c7a.8xlarge) that it launches
+# and terminates. The runner only builds the binaries and waits for the
+# results. The perf environment gives the jobs on main an AWS role with OIDC.
+# cmd/perfrig/baseline.json has the numbers of the instance type. The jobs
+# do not run until the PERF_AWS_ROLE_ARN variable is set.
 jobs:
-  # netns + netem rig (cmd/perfrig) at 20 ms RTT. cmd/perfrig/baseline.json
-  # holds the numbers of this runner type. The compare step fails on a
-  # regression above the baseline tolerance (10%). A GitHub-hosted runner,
-  # because the Blacksmith kernel (6.6.x) has no sch_netem module.
+  # netns + netem rig (cmd/perfrig) with iperf3 at 20 ms RTT. All rows gate.
   netns-rig:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    if: vars.PERF_AWS_ROLE_ARN != '' && (github.event_name == 'schedule' || inputs.netns_rig)
+    runs-on: blacksmith-4vcpu-ubuntu-2204
+    environment: perf
+    permissions:
+      contents: read
+      id-token: write
+    timeout-minutes: 60
     env:
       DURATION: ${{ inputs.duration || '30s' }}
-      SHUTUP: 1
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup-dagger
-      - uses: ./.github/actions/setup-perf-host
-      - name: Run the rig
-        timeout-minutes: 30
-        run: |
-          mkdir -p perf
-          dagger call -v perf --src=. --workload=iperf3-tcp --streams=1 --duration="$DURATION" -o perf/iperf3-tcp-p1.json
-          dagger call -v perf --src=. --workload=iperf3-tcp --streams=4 --duration="$DURATION" -o perf/iperf3-tcp-p4.json
-          dagger call -v perf --src=. --workload=iperf3-tcp --streams=4 --loss=0.1 --duration="$DURATION" -o perf/iperf3-tcp-p4-loss0.1.json
-          dagger call -v perf --src=. --workload=iperf3-udp --streams=1 --duration="$DURATION" -o perf/iperf3-udp-p1.json
-      - name: Upload results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: perf-results
-          path: perf/
-          if-no-files-found: warn
-      - name: Compare with the baseline
-        timeout-minutes: 10
-        run: dagger call -v perf-compare --src=. --results=perf
-
-  # VPC data path gate (cmd/vpcbench through the relay, 4 flows, 20 ms RTT) on a larger runner.
-  # Dispatch only, until the baseline has the numbers of this runner.
-  vpc-gate:
-    if: github.event_name == 'workflow_dispatch' && inputs.vpc_gate
-    runs-on: ${{ inputs.vpc_runner || 'apoxy-perf-16core' }}
-    timeout-minutes: 45
-    env:
-      DURATION: ${{ inputs.duration || '30s' }}
-      MIN_CPUS: ${{ inputs.vpc_min_cpus || 8 }}
+      RUN_TAG: ${{ github.run_id }}-${{ github.run_attempt }}-netns
+      PERF_BUCKET: ${{ vars.PERF_BUCKET }}
+      PERF_AWS_REGION: ${{ vars.PERF_AWS_REGION }}
       SLACK_PERF_WEBHOOK_URL: ${{ secrets.SLACK_PERF_WEBHOOK_URL }}
       SHUTUP: 1
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-dagger
-      - uses: ./.github/actions/setup-perf-host
-      - name: Run the VPC rows
-        timeout-minutes: 35
-        run: dagger call -v perf-vpc --src=. --duration="$DURATION" --min-cpus="$MIN_CPUS" export --path=perf-vpc
+      - name: Get AWS credentials
+        # v6.3.0
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd
+        with:
+          role-to-assume: ${{ vars.PERF_AWS_ROLE_ARN }}
+          aws-region: ${{ vars.PERF_AWS_REGION }}
+      - name: Run the rig
+        timeout-minutes: 55
+        run: >-
+          dagger call -v perf-netns --src=. --where=ec2 --duration="$DURATION"
+          --run-tag="$RUN_TAG" --bucket="$PERF_BUCKET" --region="$PERF_AWS_REGION"
+          --aws-access-key-id=env:AWS_ACCESS_KEY_ID --aws-secret-access-key=env:AWS_SECRET_ACCESS_KEY
+          --aws-session-token=env:AWS_SESSION_TOKEN
+          export --path=perf-netns
       - name: Write the job summary
+        if: always() && hashFiles('perf-netns/summary.md') != ''
+        run: dagger call perf-summary --results=perf-netns export --path="$GITHUB_STEP_SUMMARY"
+      - name: Upload results
         if: always()
-        run: cat perf-vpc/summary.md >> "$GITHUB_STEP_SUMMARY" || echo "The VPC rows wrote no summary." >> "$GITHUB_STEP_SUMMARY"
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-results
+          path: perf-netns/
+          if-no-files-found: warn
+      - name: Check the gate
+        run: dagger call perf-check --results=perf-netns
+      - name: Send a Slack alert
+        # The step does not run when the secret is not set.
+        if: failure() && github.event_name == 'schedule' && env.SLACK_PERF_WEBHOOK_URL != ''
+        continue-on-error: true
+        run: >-
+          dagger call perf-notify --results=perf-netns --suite=netns --webhook=env:SLACK_PERF_WEBHOOK_URL
+          --run-url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --sha="$GITHUB_SHA"
+
+  # VPC data path (cmd/vpcbench through the relay, 4 flows, 20 ms RTT): one
+  # gated row and info rows. Dispatch only, until the baseline has the numbers
+  # of the instance type.
+  vpc-gate:
+    if: vars.PERF_AWS_ROLE_ARN != '' && github.event_name == 'workflow_dispatch' && inputs.vpc_gate
+    runs-on: blacksmith-4vcpu-ubuntu-2204
+    environment: perf
+    permissions:
+      contents: read
+      id-token: write
+    timeout-minutes: 60
+    env:
+      DURATION: ${{ inputs.duration || '30s' }}
+      ROWS: ${{ inputs.vpc_rows }}
+      RUN_TAG: ${{ github.run_id }}-${{ github.run_attempt }}-vpc
+      PERF_BUCKET: ${{ vars.PERF_BUCKET }}
+      PERF_AWS_REGION: ${{ vars.PERF_AWS_REGION }}
+      SLACK_PERF_WEBHOOK_URL: ${{ secrets.SLACK_PERF_WEBHOOK_URL }}
+      SHUTUP: 1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-dagger
+      - name: Get AWS credentials
+        # v6.3.0
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd
+        with:
+          role-to-assume: ${{ vars.PERF_AWS_ROLE_ARN }}
+          aws-region: ${{ vars.PERF_AWS_REGION }}
+      - name: Run the VPC rows
+        timeout-minutes: 55
+        run: >-
+          dagger call -v perf-vpc --src=. --where=ec2 --duration="$DURATION" --rows="$ROWS"
+          --run-tag="$RUN_TAG" --bucket="$PERF_BUCKET" --region="$PERF_AWS_REGION"
+          --aws-access-key-id=env:AWS_ACCESS_KEY_ID --aws-secret-access-key=env:AWS_SECRET_ACCESS_KEY
+          --aws-session-token=env:AWS_SESSION_TOKEN
+          export --path=perf-vpc
+      - name: Write the job summary
+        if: always() && hashFiles('perf-vpc/summary.md') != ''
+        run: dagger call perf-summary --results=perf-vpc export --path="$GITHUB_STEP_SUMMARY"
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4
@@ -90,15 +133,11 @@ jobs:
           retention-days: 90
           if-no-files-found: warn
       - name: Check the gate
-        run: |
-          code=$(cat perf-vpc/gate-exit)
-          case "$code" in
-            0) echo "The VPC gate passed." ;;
-            3) echo "::error::The VPC gate has an infra error. See the job summary and compare-gate.txt."; exit 1 ;;
-            *) echo "::error::The VPC gate failed (exit $code). See the job summary and compare-gate.txt."; exit 1 ;;
-          esac
+        run: dagger call perf-check --results=perf-vpc
       - name: Send a Slack alert
         # The step does not run when the secret is not set.
-        if: failure() && env.SLACK_PERF_WEBHOOK_URL != ''
+        if: failure() && github.event_name == 'schedule' && env.SLACK_PERF_WEBHOOK_URL != ''
         continue-on-error: true
-        run: .github/scripts/perf-vpc-slack.sh perf-vpc
+        run: >-
+          dagger call perf-notify --results=perf-vpc --suite=vpc --webhook=env:SLACK_PERF_WEBHOOK_URL
+          --run-url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --sha="$GITHUB_SHA"

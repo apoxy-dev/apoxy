@@ -33,7 +33,7 @@ type Options struct {
 	// Reps is the reps of each gate row. Info rows run one time.
 	Reps    int
 	MinCPUs int
-	// Only selects rows by ID. Empty: all rows.
+	// Only selects rows by ID. Empty IDs are ignored, and no ID selects all rows.
 	Only []string
 	// Host tells that perfagent sets up the host: an EC2 instance, not a container.
 	Host bool
@@ -62,9 +62,11 @@ var hostSysctls = map[string]string{
 // Plan returns the plan JSON of the suite.
 func (s Suite) Plan(o Options) (string, error) {
 	rows := s.rows(o)
-	if len(o.Only) > 0 {
+	// A workflow input with no rows gives an empty ID.
+	only := slices.DeleteFunc(slices.Clone(o.Only), func(id string) bool { return id == "" })
+	if len(only) > 0 {
 		var picked []Row
-		for _, id := range o.Only {
+		for _, id := range only {
 			i := slices.IndexFunc(rows, func(r Row) bool { return r.ID == id })
 			if i < 0 {
 				return "", fmt.Errorf("unknown %s row %q", s.Name, id)
