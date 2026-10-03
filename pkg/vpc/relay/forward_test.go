@@ -44,8 +44,9 @@ func geneve(optWords, n int) []byte {
 	return b
 }
 
-// TestPacketHandler checks that the relay forwards PSP packets by the SPI rows
-// of the sender before the handler returns, and drops the others.
+// TestPacketHandler sends packets to the relay socket, and checks that the
+// relay forwards PSP packets by the SPI rows of the sender and drops the
+// others. Only the read loop of the relay transport calls the handler.
 func TestPacketHandler(t *testing.T) {
 	ca := newCA(t)
 	h := newHarness(t, ca)
@@ -60,60 +61,60 @@ func TestPacketHandler(t *testing.T) {
 	_, err = snd.c.RegisterSPI(ctx, register(vpcA, dst.String(), time.Minute, 7))
 	require.NoError(t, err)
 	sndSession, rcvSession := h.session(t, snd), h.session(t, rcv)
-	handle := h.tr.NonQUICPacketHandler
-	require.NotNil(t, handle)
+	other, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	require.NoError(t, err)
+	defer other.Close()
 
 	cases := []struct {
 		name       string
-		from       netip.AddrPort
+		from       func(b []byte, addr net.Addr) (int, error)
 		pkt        []byte
 		wantSent   bool
 		wantDrops  [2]uint64 // DropUnknownSPI of the sender and of the receiver.
 		wantSource uint64    // Drops for an unknown source.
 		wantBad    uint64    // Drops of packets that are not PSP.
 	}{
-		{name: "unknown SPI", from: snd.src, pkt: pspPacket(t, 8, dst), wantDrops: [2]uint64{1, 0}},
-		{name: "SPI of another sender", from: rcv.src, pkt: pspPacket(t, 7, dst), wantDrops: [2]uint64{0, 1}},
-		{name: "unknown source", from: netip.MustParseAddrPort("192.0.2.1:9"), pkt: pspPacket(t, 7, dst), wantSource: 1},
-		{name: "path probe", from: snd.src, pkt: []byte{0x02, 1, 2, 3}, wantBad: 1},
-		{name: "Geneve", from: snd.src, pkt: geneve(0, 64), wantBad: 1},
-		{name: "Geneve with options", from: snd.src, pkt: geneve(4, 64), wantBad: 1},
-		{name: "good", from: snd.src, pkt: pspPacket(t, 7, dst), wantSent: true},
+		{name: "unknown SPI", from: snd.tr.WriteTo, pkt: pspPacket(t, 8, dst), wantDrops: [2]uint64{1, 0}},
+		{name: "SPI of another sender", from: rcv.tr.WriteTo, pkt: pspPacket(t, 7, dst), wantDrops: [2]uint64{0, 1}},
+		{name: "unknown source", from: other.WriteTo, pkt: pspPacket(t, 7, dst), wantSource: 1},
+		{name: "path probe", from: snd.tr.WriteTo, pkt: []byte{0x02, 1, 2, 3}, wantBad: 1},
+		{name: "Geneve", from: snd.tr.WriteTo, pkt: geneve(0, 64), wantBad: 1},
+		{name: "Geneve with options", from: snd.tr.WriteTo, pkt: geneve(4, 64), wantBad: 1},
+		{name: "good", from: snd.tr.WriteTo, pkt: pspPacket(t, 7, dst), wantSent: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			before := [2]uint64{h.r.SenderStats(sndSession).DropUnknownSPI, h.r.SenderStats(rcvSession).DropUnknownSPI}
-			source, bad := h.r.UnknownSourceDrops(), h.r.MalformedDrops()
-			b := append([]byte{}, tc.pkt...)
-			handle(b, net.UDPAddrFromAddrPort(tc.from))
-			// The handler must not keep b.
-			clear(b)
-			after := [2]uint64{h.r.SenderStats(sndSession).DropUnknownSPI, h.r.SenderStats(rcvSession).DropUnknownSPI}
-			assert.Equal(t, tc.wantDrops, [2]uint64{after[0] - before[0], after[1] - before[1]})
-			assert.Equal(t, tc.wantSource, h.r.UnknownSourceDrops()-source)
-			assert.Equal(t, tc.wantBad, h.r.MalformedDrops()-bad)
-			if !tc.wantSent {
-				return
+			drops := func() [2]uint64 {
+				return [2]uint64{h.r.SenderStats(sndSession).DropUnknownSPI, h.r.SenderStats(rcvSession).DropUnknownSPI}
 			}
-			buf := make([]byte, 1500)
-			n, from, err := rcv.tr.ReadNonQUICPacket(ctx, buf)
+			before, source, bad := drops(), h.r.UnknownSourceDrops(), h.r.MalformedDrops()
+			changed := func() ([2]uint64, uint64, uint64) {
+				d := drops()
+				return [2]uint64{d[0] - before[0], d[1] - before[1]}, h.r.UnknownSourceDrops() - source, h.r.MalformedDrops() - bad
+			}
+			_, err := tc.from(tc.pkt, h.ln.Addr())
 			require.NoError(t, err)
-			assert.Equal(t, tc.pkt, buf[:n])
-			assert.Equal(t, h.ln.Addr().String(), from.String())
+			if tc.wantSent {
+				buf := make([]byte, 1500)
+				n, from, err := rcv.tr.ReadNonQUICPacket(ctx, buf)
+				require.NoError(t, err)
+				assert.Equal(t, tc.pkt, buf[:n])
+				assert.Equal(t, h.ln.Addr().String(), from.String())
+			} else {
+				require.Eventually(t, func() bool {
+					d, s, b := changed()
+					return d != [2]uint64{} || s != 0 || b != 0
+				}, 5*time.Second, time.Millisecond, "the relay did not count the packet")
+			}
+			d, s, b := changed()
+			assert.Equal(t, tc.wantDrops, d)
+			assert.Equal(t, tc.wantSource, s)
+			assert.Equal(t, tc.wantBad, b)
 		})
 	}
 	st := h.r.SenderStats(sndSession)
 	require.Len(t, st.Lanes, 1)
 	assert.Equal(t, uint64(1), st.Lanes[0].Packets)
-
-	// A packet on the relay socket goes through the same handler.
-	good := pspPacket(t, 7, dst)
-	_, err = snd.tr.WriteTo(good, h.ln.Addr())
-	require.NoError(t, err)
-	buf := make([]byte, 1500)
-	n, _, err := rcv.tr.ReadNonQUICPacket(ctx, buf)
-	require.NoError(t, err)
-	assert.Equal(t, good, buf[:n])
 }
 
 // TestAddrCache checks that the cache gives the address of each destination.

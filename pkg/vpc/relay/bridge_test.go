@@ -352,7 +352,9 @@ func localRouterConfig(tb testing.TB, cfg Config) (*Router, func([]byte, net.Add
 		_ = tr.Close()
 	})
 	r := NewRouter(nil, cfg)
-	return r, r.PacketHandler(tr)
+	// The discard conn is not a UDP socket, so the handler sends at once.
+	handle, _ := r.PacketHandler(tr)
+	return r, handle
 }
 
 // localSession adds a session at addr with prefix and a Session call in mode.

@@ -63,7 +63,7 @@ func runRelay(ctx context.Context, o options, ready func(netip.AddrPort)) error 
 	r := relay.NewRouter(vpctest.NewTrust(ca), relay.Config{})
 	tr := &quic.Transport{Conn: uc}
 	defer tr.Close()
-	tr.NonQUICPacketHandler = r.PacketHandler(tr)
+	tr.NonQUICPacketHandler, tr.NonQUICBatchEnd = r.PacketHandler(tr)
 	ln, err := tr.Listen(r.TLSConfig(&tls.Config{Certificates: []tls.Certificate{*cert}}), tunnel.RelayQUICConfig())
 	if err != nil {
 		return err

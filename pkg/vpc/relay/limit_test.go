@@ -90,7 +90,7 @@ func TestTunnelLimit(t *testing.T) {
 func TestDropMetric(t *testing.T) {
 	// The lane and tunnel bursts are both 104857 B: 74 packets of 1400 B.
 	r := NewRouter(nil, Config{LaneRate: 1 << 20, TunnelRate: 1 << 20})
-	handle := r.PacketHandler(&quic.Transport{Conn: newDiscardConn()})
+	handle, _ := r.PacketHandler(&quic.Transport{Conn: newDiscardConn()})
 	snd := addSession(t, r, vpcA, "sender", "192.0.2.1:1000", "fd00::1/128")
 	addSession(t, r, vpcA, "receiver", "192.0.2.2:2000", "fd00::2/128")
 	require.NoError(t, r.registerSPI(snd.Session, register(vpcA, "fd00::2", time.Minute, 1, 2), t0))

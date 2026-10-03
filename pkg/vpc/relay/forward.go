@@ -13,12 +13,13 @@ import (
 	"github.com/quic-go/quic-go"
 )
 
-// PacketHandler returns the NonQUICPacketHandler of tr. It forwards PSP
-// packets by SPI rows on the read loop, and opens the PSP packets to the
-// relay. Relay sessions must use tr or another transport with this handler.
-func (r *Router) PacketHandler(tr *quic.Transport) func(b []byte, from net.Addr) {
+// PacketHandler returns the NonQUICPacketHandler and the NonQUICBatchEnd of
+// tr. The handler forwards PSP packets by SPI rows, and opens the PSP packets
+// to the relay. The batch end sends the packets that the handler forwarded in
+// one read. Relay sessions must use tr or another transport with these.
+func (r *Router) PacketHandler(tr *quic.Transport) (handle func(b []byte, from net.Addr), batchEnd func()) {
 	br := r.startBridge(tr)
-	addrs := new(addrCache)
+	fwd := newFwdBatch(tr)
 	return func(b []byte, from net.Addr) {
 		h, err := pspwire.ParseHeader(b)
 		if err != nil {
@@ -32,12 +33,12 @@ func (r *Router) PacketHandler(tr *quic.Transport) func(b []byte, from net.Addr)
 		switch {
 		case v != Pass:
 		case dst.IsValid():
-			_, _ = tr.WriteTo(b, addrs.get(dst))
+			fwd.add(b, dst)
 		case br != nil:
 			// A row to the relay has no address.
 			r.receivePSP(br, b, h.SPI, now)
 		}
-	}
+	}, fwd.flush
 }
 
 // addrCache keeps the net.UDPAddr of recent destinations, so that a forward
