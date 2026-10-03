@@ -176,3 +176,31 @@ func TestGroups(t *testing.T) {
 		t.Errorf("netns groups = %v", got)
 	}
 }
+
+func TestSelects(t *testing.T) {
+	cases := []struct {
+		name     string
+		suite    Suite
+		only     []string
+		wantGate bool
+		wantInfo bool
+	}{
+		{name: "all rows", suite: VPC, wantGate: true, wantInfo: true},
+		{name: "empty row ID", suite: VPC, only: []string{""}, wantGate: true, wantInfo: true},
+		{name: "gate only", suite: VPC, only: []string{"gate"}, wantGate: true},
+		{name: "no gated row selected", suite: VPC, only: []string{"netstack-psp-relay-cubic"}, wantInfo: true},
+		{name: "unknown row", suite: VPC, only: []string{"nope"}, wantGate: true, wantInfo: true},
+		{name: "netns", suite: Netns, only: []string{"iperf3-tcp-p1"}, wantGate: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			o := Options{Duration: "10s", Only: tc.only}
+			if got := tc.suite.Selects(o, "gate"); got != tc.wantGate {
+				t.Errorf("Selects(gate) = %v, want %v", got, tc.wantGate)
+			}
+			if got := tc.suite.Selects(o, "info"); got != tc.wantInfo {
+				t.Errorf("Selects(info) = %v, want %v", got, tc.wantInfo)
+			}
+		})
+	}
+}

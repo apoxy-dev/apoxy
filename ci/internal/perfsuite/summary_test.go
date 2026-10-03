@@ -17,6 +17,8 @@ func TestGateExit(t *testing.T) {
 		{name: "result infra error", gate: Compare{Ran: true, Code: 3}, want: 3},
 		{name: "other code", gate: Compare{Ran: true, Code: 2}, want: 1},
 		{name: "no gate result", gate: Compare{}, want: 1},
+		{name: "no gated row selected", gate: Compare{Unselected: true}, want: 0},
+		{name: "infra error with no gated row selected", rep: Report{InfraError: "no capacity"}, gate: Compare{Unselected: true}, want: 3},
 		{name: "agent infra error", rep: Report{InfraError: "no capacity"}, gate: Compare{Ran: true}, want: 3},
 	}
 	for _, tc := range cases {
@@ -63,6 +65,16 @@ func TestSummary(t *testing.T) {
 			compares: []Compare{{Group: "gate"}, {Group: "info"}},
 			console:  "boot\ncloud-init: failed\n",
 			want:     []string{"**Infra error:** the instance is terminated", "cloud-init: failed", "No gate result.", "No info results."},
+		},
+		{
+			name: "no gated row selected",
+			rep:  Report{Rows: []RowResult{{ID: "netstack-psp-relay-cubic", Group: "info"}}},
+			compares: []Compare{
+				{Group: "gate", Unselected: true},
+				{Group: "info", Ran: true, Markdown: "### perfrig results\n\n| NO BASELINE | info |\n"},
+			},
+			want:    []string{"No gated row ran: the selected rows do not gate.", "| NO BASELINE | info |"},
+			notWant: []string{"No gate result."},
 		},
 	}
 	for _, tc := range cases {

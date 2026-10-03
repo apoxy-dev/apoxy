@@ -45,6 +45,8 @@ type Compare struct {
 	Group string
 	// Ran is false when the group has no result.
 	Ran bool
+	// Unselected is true when the run selected no row of the group.
+	Unselected bool
 	// Code is the perfrig exit code: 0 pass, 1 regression, 3 infra error.
 	Code     int
 	Stdout   string
@@ -52,11 +54,14 @@ type Compare struct {
 	Markdown string
 }
 
-// GateExit is 0 (pass), 1 (regression or no gate result) or 3 (infra error).
+// GateExit is 0 (pass or no gated row selected), 1 (regression or no gate
+// result) or 3 (infra error).
 func GateExit(rep Report, gate Compare) int {
 	switch {
 	case rep.InfraError != "":
 		return 3
+	case !gate.Ran && gate.Unselected:
+		return 0
 	case !gate.Ran:
 		return 1
 	case gate.Code == 0 || gate.Code == 3:
@@ -91,6 +96,8 @@ func Summary(s Suite, rep Report, compares []Compare, console string) string {
 			b.WriteString("\n")
 		case c.Ran:
 			fmt.Fprintf(&b, "perfrig compare wrote no table (exit %d): %s\n\n", c.Code, strings.TrimSpace(tail(c.Stderr, 5)))
+		case c.Group == "gate" && c.Unselected:
+			b.WriteString("No gated row ran: the selected rows do not gate.\n\n")
 		case c.Group == "gate":
 			b.WriteString("No gate result. See logs/ in the results.\n\n")
 		default:

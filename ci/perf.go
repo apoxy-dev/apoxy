@@ -83,8 +83,8 @@ func (m *ApoxyCli) PerfNetns(
 
 // PerfVpc runs the VPC rows (cmd/vpcbench through the relay, 4 flows, 20 ms
 // RTT): one gated row and info rows that run one time. It returns the results
-// with summary.md and gate-exit: 0 pass, 1 regression or no gate result, 3
-// infra error. A failed row does not fail it.
+// with summary.md and gate-exit: 0 pass or no gated row selected, 1 regression
+// or no gate result, 3 infra error. A failed row does not fail it.
 func (m *ApoxyCli) PerfVpc(
 	ctx context.Context,
 	src *dagger.Directory,
@@ -190,7 +190,7 @@ func (m *ApoxyCli) perfRun(ctx context.Context, src *dagger.Directory, s perfsui
 			SessionToken: e.token,
 		})
 	}
-	return m.perfSummarize(ctx, src, s, out)
+	return m.perfSummarize(ctx, src, s, o, out)
 }
 
 // perfGo is a Go container with no C toolchain, for the perf binaries and tests.
@@ -219,7 +219,7 @@ func (m *ApoxyCli) perfBins(src *dagger.Directory, goarch string, cmds []string)
 
 // perfSummarize compares each result group with the baseline and adds
 // summary.md, gate-exit and compare-GROUP.txt to the outputs.
-func (m *ApoxyCli) perfSummarize(ctx context.Context, src *dagger.Directory, s perfsuite.Suite, out *dagger.Directory) (*dagger.Directory, error) {
+func (m *ApoxyCli) perfSummarize(ctx context.Context, src *dagger.Directory, s perfsuite.Suite, o perfsuite.Options, out *dagger.Directory) (*dagger.Directory, error) {
 	// The perf module gives an infra error in agent.json. Its own errors fail the call.
 	out, err := out.Sync(ctx)
 	if err != nil {
@@ -250,7 +250,7 @@ func (m *ApoxyCli) perfSummarize(ctx context.Context, src *dagger.Directory, s p
 		WithWorkdir("/perf")
 	var compares []perfsuite.Compare
 	for _, g := range s.Groups() {
-		c := perfsuite.Compare{Group: g}
+		c := perfsuite.Compare{Group: g, Unselected: !s.Selects(o, g)}
 		matches, err := out.Glob(ctx, "results/"+g+"/*.json")
 		if err != nil {
 			return nil, err

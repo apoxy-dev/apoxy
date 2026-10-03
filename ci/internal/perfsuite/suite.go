@@ -63,19 +63,9 @@ var hostSysctls = map[string]string{
 
 // Plan returns the plan JSON of the suite.
 func (s Suite) Plan(o Options) (string, error) {
-	rows := s.rows(o)
-	// A workflow input with no rows gives an empty ID.
-	only := slices.DeleteFunc(slices.Clone(o.Only), func(id string) bool { return id == "" })
-	if len(only) > 0 {
-		var picked []Row
-		for _, id := range only {
-			i := slices.IndexFunc(rows, func(r Row) bool { return r.ID == id })
-			if i < 0 {
-				return "", fmt.Errorf("unknown %s row %q", s.Name, id)
-			}
-			picked = append(picked, rows[i])
-		}
-		rows = picked
+	rows, err := s.selected(o)
+	if err != nil {
+		return "", err
 	}
 	p := Plan{Tun: s.Tun, Remove: s.Remove, Rows: rows}
 	if o.Host {
@@ -84,6 +74,31 @@ func (s Suite) Plan(o Options) (string, error) {
 	}
 	b, err := json.Marshal(p)
 	return string(b), err
+}
+
+// selected returns the rows that o selects.
+func (s Suite) selected(o Options) ([]Row, error) {
+	rows := s.rows(o)
+	// A workflow input with no rows gives an empty ID.
+	only := slices.DeleteFunc(slices.Clone(o.Only), func(id string) bool { return id == "" })
+	if len(only) == 0 {
+		return rows, nil
+	}
+	var picked []Row
+	for _, id := range only {
+		i := slices.IndexFunc(rows, func(r Row) bool { return r.ID == id })
+		if i < 0 {
+			return nil, fmt.Errorf("unknown %s row %q", s.Name, id)
+		}
+		picked = append(picked, rows[i])
+	}
+	return picked, nil
+}
+
+// Selects reports whether o selects a row of group. It is true when o is not valid.
+func (s Suite) Selects(o Options, group string) bool {
+	rows, err := s.selected(o)
+	return err != nil || slices.ContainsFunc(rows, func(r Row) bool { return r.Group == group })
 }
 
 // Groups returns the result groups of the suite, gate first.
