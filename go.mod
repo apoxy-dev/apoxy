@@ -11,7 +11,7 @@ require (
 	github.com/alphadose/haxmap v1.4.1
 	github.com/anatol/vmtest v0.0.0-20250318022921-2f32244e2f0f
 	github.com/apoxy-dev/icx v0.19.1-0.20260826222334-295d1c74aeae
-	github.com/apoxy-dev/softpsp v0.0.0-20261003060305-4bfe4fe862c1
+	github.com/apoxy-dev/softpsp v0.0.0-20261003100158-bf88b00369b8
 	github.com/avast/retry-go/v4 v4.6.1
 	github.com/bramvdbogaerde/go-scp v1.5.0
 	github.com/buraksezer/olric v0.5.6
@@ -461,7 +461,7 @@ replace github.com/quic-go/quic-go => github.com/apoxy-dev/quic-go v0.0.0-202610
 
 replace github.com/quic-go/connect-ip-go => github.com/apoxy-dev/connect-ip-go v0.0.0-20261002135041-baadecfb9616
 
-replace gvisor.dev/gvisor => github.com/apoxy-dev/gvisor v0.0.0-20261003054114-19336912c059
+replace gvisor.dev/gvisor => github.com/apoxy-dev/gvisor v0.0.0-20261003092830-641adc5ef7bc
 
 // clrk's go.mod transitively requires qpack v0.6.0 (via upstream quic-go), but
 // apoxy-cli runs the apoxy-dev/quic-go fork, which is built against the v0.5.x

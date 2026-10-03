@@ -533,7 +533,7 @@ func (ta *testAgent) netstack(t *testing.T, b *psp.Binding, addr netip.Addr, wit
 		var s *stack.Stack
 		var ep *channel.Endpoint
 		if ta.vpcStack {
-			ns, err := netstack.NewStack(b.DeviceMTU(), "", netstack.WithoutIPTables())
+			ns, err := netstack.NewStack(b.DeviceMTU(), "", netstack.WithoutIPTables(), netstack.WithGSO())
 			if err != nil {
 				t.Errorf("new stack: %v", err)
 				return

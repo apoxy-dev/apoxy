@@ -499,7 +499,9 @@ func startNetstack(t testing.TB, n *node, window int) *stack.Stack {
 		}
 	}
 	ep := channel.New(4096, uint32(n.b.mtu), "")
-	if err := s.CreateNIC(1, ep); err != nil {
+	// TCP gives GSO packets to the driver, as in the netstack of the agent.
+	ep.SupportedGSOKind = stack.HostGSOSupported
+	if err := s.CreateNIC(1, gsoLink{ep}); err != nil {
 		t.Fatalf("create NIC: %v", err)
 	}
 	for _, a := range []netip.Addr{n.v4, n.v6} {
@@ -534,6 +536,11 @@ func startNetstack(t testing.TB, n *node, window int) *stack.Stack {
 	})
 	return s
 }
+
+// gsoLink is a channel endpoint that takes TCP segments of up to 64 KiB.
+type gsoLink struct{ *channel.Endpoint }
+
+func (gsoLink) GSOMaxSize() uint32 { return 1<<16 - 1 }
 
 func fullAddr(a netip.Addr, port uint16) tcpip.FullAddress {
 	return tcpip.FullAddress{NIC: 1, Addr: tcpip.AddrFromSlice(a.AsSlice()), Port: port}

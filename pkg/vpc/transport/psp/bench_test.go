@@ -206,6 +206,7 @@ func benchThroughput(b *testing.B, viaRelay bool, flows int) {
 	const perOp = 1 << 20
 	buf := make([]byte, 64<<10)
 	tx0, rx0 := x.b.Stats().TxPackets, y.b.Stats().RxPackets
+	nicTx0, nicRx0 := sx.NICInfo()[1].Stats.Tx.Packets.Value(), sy.NICInfo()[1].Stats.Rx.Packets.Value()
 	b.SetBytes(perOp)
 	b.ResetTimer()
 	start := time.Now()
@@ -234,6 +235,14 @@ func benchThroughput(b *testing.B, viaRelay bool, flows int) {
 	tx, rx := x.b.Stats().TxPackets-tx0, y.b.Stats().RxPackets-rx0
 	if tx > 0 {
 		b.ReportMetric(100*float64(tx-min(tx, rx))/float64(tx), "loss%")
+	}
+	// The packets of the binding for each packet of the NIC: GSO on the
+	// sender, GRO on the receiver.
+	if n := sx.NICInfo()[1].Stats.Tx.Packets.Value() - nicTx0; n > 0 {
+		b.ReportMetric(float64(tx)/float64(n), "tx/gso")
+	}
+	if n := sy.NICInfo()[1].Stats.Rx.Packets.Value() - nicRx0; n > 0 {
+		b.ReportMetric(float64(rx)/float64(n), "rx/gro")
 	}
 	if fr != nil {
 		b.ReportMetric(float64(fr.drops.Load()), "relaydrops")

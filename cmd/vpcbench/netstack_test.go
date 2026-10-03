@@ -27,7 +27,7 @@ func TestNetstackLinkDrops(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			ns, err := netstack.NewStack(1280, "", netstack.WithoutIPTables())
+			ns, err := netstack.NewStack(1280, "", netstack.WithoutIPTables(), netstack.WithGSO())
 			require.NoError(t, err)
 			t.Cleanup(ns.Close)
 			self := netip.MustParseAddr("10.0.0.1")

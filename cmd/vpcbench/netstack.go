@@ -28,7 +28,7 @@ type netstackNet struct {
 // startNetstack runs the netstack driver of b on a new stack with address
 // self until ctx ends. A non-empty cc sets the TCP congestion control.
 func startNetstack(ctx context.Context, fail context.CancelCauseFunc, b *psp.Binding, self netip.Addr, cc string) (overlay, error) {
-	ns, err := netstack.NewStack(b.DeviceMTU(), "", netstack.WithoutIPTables())
+	ns, err := netstack.NewStack(b.DeviceMTU(), "", netstack.WithoutIPTables(), netstack.WithGSO())
 	if err != nil {
 		return nil, err
 	}
@@ -93,7 +93,9 @@ func (n *netstackNet) TCPCounters() (sent, retrans uint64) {
 // get. When its queue is full, the channel endpoint drops a packet, but the
 // NIC can count it as sent. Thus the NIC packets sent, less the packets that
 // the binding counts and the packets in the queue, are dropped. Packets that
-// move while it reads the counters can make it a little low.
+// move while it reads the counters can make it a little low. With GSO, the
+// binding counts more packets than the NIC, so only the drops of a full queue
+// count.
 func (n *netstackNet) LinkDrops() int64 {
 	nic := n.ns.Stack.NICInfo()[n.ns.NICID].Stats
 	tx := int64(nic.Tx.Packets.Value())

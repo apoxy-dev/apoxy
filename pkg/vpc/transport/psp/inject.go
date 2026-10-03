@@ -9,6 +9,7 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/link/channel"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
+	"gvisor.dev/gvisor/pkg/tcpip/stack/gro"
 
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/flow"
 )
@@ -24,23 +25,18 @@ const (
 
 // injectBatch gives the PSP packets of one read of the QUIC read loop to
 // inject workers, which give them to the netstack. All packets of a flow go
-// to one worker, so they stay in order. When the queue of a worker is full,
-// the read loop waits, and the socket buffer keeps the next packets.
+// to one worker, so they stay in order. A worker joins the TCP segments of a
+// flow in a batch with GRO. When the queue of a worker is full, the read loop
+// waits, and the socket buffer keeps the next packets.
 type injectBatch struct {
 	ep     *channel.Endpoint
 	st     *counters
 	seed   maphash.Seed
 	done   <-chan struct{}
 	closed <-chan struct{}
-	in     []chan []inbound // The queue of each worker.
-	pend   [][]inbound      // The packets of this read for each worker.
-	free   chan []inbound   // Empty batches to use again.
-}
-
-// inbound is a packet for the netstack.
-type inbound struct {
-	proto tcpip.NetworkProtocolNumber
-	pkb   *stack.PacketBuffer
+	in     []chan []*stack.PacketBuffer // The queue of each worker.
+	pend   [][]*stack.PacketBuffer      // The packets of this read for each worker.
+	free   chan []*stack.PacketBuffer   // Empty batches to use again.
 }
 
 // newInjectBatch starts n workers. They stop when done or closed closes.
@@ -51,12 +47,12 @@ func newInjectBatch(ep *channel.Endpoint, st *counters, seed maphash.Seed, n int
 		seed:   seed,
 		done:   done,
 		closed: closed,
-		in:     make([]chan []inbound, n),
-		pend:   make([][]inbound, n),
-		free:   make(chan []inbound, n*(injectQueue+1)),
+		in:     make([]chan []*stack.PacketBuffer, n),
+		pend:   make([][]*stack.PacketBuffer, n),
+		free:   make(chan []*stack.PacketBuffer, n*(injectQueue+1)),
 	}
 	for i := range j.in {
-		j.in[i] = make(chan []inbound, injectQueue)
+		j.in[i] = make(chan []*stack.PacketBuffer, injectQueue)
 		go j.run(j.in[i])
 	}
 	return j
@@ -76,7 +72,11 @@ func (j *injectBatch) add(pkt []byte) {
 		j.pend[w] = j.get()
 	}
 	pkb := stack.NewPacketBuffer(stack.PacketBufferOptions{Payload: buffer.MakeWithData(pkt)})
-	j.pend[w] = append(j.pend[w], inbound{proto, pkb})
+	pkb.NetworkProtocolNumber = proto
+	// PSP open authenticated the packet, so GRO and the netstack do not check
+	// its checksums.
+	pkb.RXChecksumValidated = true
+	j.pend[w] = append(j.pend[w], pkb)
 	if len(j.pend[w]) == maxInjectBatch {
 		j.send(w)
 	}
@@ -109,13 +109,16 @@ func (j *injectBatch) send(w int) {
 	j.release(p)
 }
 
-func (j *injectBatch) run(in <-chan []inbound) {
+func (j *injectBatch) run(in <-chan []*stack.PacketBuffer) {
+	g := &gro.GRO{Dispatcher: injector{j.ep}}
+	g.Init(true)
 	for {
 		select {
 		case p := <-in:
-			for _, x := range p {
-				j.ep.InjectInbound(x.proto, x.pkb)
+			for _, pkb := range p {
+				g.Enqueue(pkb)
 			}
+			g.Flush()
 			j.st.rxPackets.Add(uint64(len(p)))
 			j.release(p)
 		case <-j.done:
@@ -141,7 +144,7 @@ func (j *injectBatch) stopped() bool {
 }
 
 // drain drops the batches in the queue in.
-func (j *injectBatch) drain(in <-chan []inbound) {
+func (j *injectBatch) drain(in <-chan []*stack.PacketBuffer) {
 	for {
 		select {
 		case p := <-in:
@@ -154,10 +157,10 @@ func (j *injectBatch) drain(in <-chan []inbound) {
 }
 
 // release frees the packets of p, and keeps p to use again.
-func (j *injectBatch) release(p []inbound) {
+func (j *injectBatch) release(p []*stack.PacketBuffer) {
 	for i := range p {
-		p[i].pkb.DecRef()
-		p[i] = inbound{}
+		p[i].DecRef()
+		p[i] = nil
 	}
 	select {
 	case j.free <- p[:0]:
@@ -165,11 +168,20 @@ func (j *injectBatch) release(p []inbound) {
 	}
 }
 
-func (j *injectBatch) get() []inbound {
+func (j *injectBatch) get() []*stack.PacketBuffer {
 	select {
 	case p := <-j.free:
 		return p
 	default:
-		return make([]inbound, 0, rxBatch)
+		return make([]*stack.PacketBuffer, 0, rxBatch)
 	}
 }
+
+// injector gives the packets of GRO to the netstack of ep.
+type injector struct{ ep *channel.Endpoint }
+
+func (i injector) DeliverNetworkPacket(proto tcpip.NetworkProtocolNumber, pkb *stack.PacketBuffer) {
+	i.ep.InjectInbound(proto, pkb)
+}
+
+func (injector) DeliverLinkPacket(tcpip.NetworkProtocolNumber, *stack.PacketBuffer) {}

@@ -39,6 +39,7 @@ type Option func(*stackOptions)
 
 type stackOptions struct {
 	noIPTables bool
+	gso        bool
 }
 
 // WithoutIPTables makes a stack with no iptables, so that no packet goes
@@ -48,6 +49,19 @@ type stackOptions struct {
 func WithoutIPTables() Option {
 	return func(o *stackOptions) { o.noIPTables = true }
 }
+
+// WithGSO lets TCP send segments of up to 64 KiB to the endpoint, with the GSO
+// options of the packet and a partial checksum. The reader of the endpoint must
+// cut them into packets of the MSS, as the softpsp netstack datapath does.
+func WithGSO() Option {
+	return func(o *stackOptions) { o.gso = true }
+}
+
+// gsoEndpoint is a channel endpoint that takes TCP segments of up to 64 KiB.
+type gsoEndpoint struct{ *channel.Endpoint }
+
+// GSOMaxSize implements stack.GSOEndpoint.
+func (gsoEndpoint) GSOMaxSize() uint32 { return 1<<16 - 1 }
 
 // NewStack makes a stack with the tunnel TCP options and one NIC with the
 // given MTU. The NIC routes all addresses. Set pcapPath to write a packet
@@ -137,10 +151,15 @@ func NewStack(mtu int, pcapPath string, opts ...Option) (*Stack, error) {
 	linkEP := channel.New(4096, uint32(mtu), "")
 	// Each TCP endpoint limits its packets in the queue, as TCP small queues in Linux.
 	linkEP.LinkEPCapabilities |= stack.CapabilityTxNotify
-	var nicEP stack.LinkEndpoint = linkEP
+	var link stack.LinkEndpoint = linkEP
+	if o.gso {
+		linkEP.SupportedGSOKind = stack.HostGSOSupported
+		link = gsoEndpoint{linkEP}
+	}
+	nicEP := link
 	var filter *inFilter
 	if o.noIPTables {
-		filter = newInFilter(linkEP)
+		filter = newInFilter(link)
 		nicEP = filter
 	}
 
@@ -151,7 +170,7 @@ func NewStack(mtu int, pcapPath string, opts ...Option) (*Stack, error) {
 		if err != nil {
 			return nil, fmt.Errorf("could not create pcap file: %w", err)
 		}
-		nicEP, err = sniffer.NewWithWriter(linkEP, pcapFile, linkEP.MTU())
+		nicEP, err = sniffer.NewWithWriter(link, pcapFile, linkEP.MTU())
 		if err != nil {
 			_ = pcapFile.Close()
 			return nil, fmt.Errorf("could not create packet sniffer: %w", err)

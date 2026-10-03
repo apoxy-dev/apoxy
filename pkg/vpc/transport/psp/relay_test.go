@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"net/netip"
 	"sync"
@@ -105,6 +106,46 @@ func TestDirect(t *testing.T) {
 			n, err := recv.Read(buf)
 			require.NoError(t, err)
 			assert.Equal(t, "hello", string(buf[:n]))
+		})
+	}
+}
+
+// TestDirectTCP sends TCP between two bindings with no relay, at the default
+// and the largest MTU. TCP gives GSO packets to the driver, which cuts them.
+func TestDirectTCP(t *testing.T) {
+	for _, mtu := range []int{DefaultMTU, MaxMTU} {
+		t.Run(fmt.Sprintf("mtu=%d", mtu), func(t *testing.T) {
+			a, b := newPairMTU(t, mtu)
+			offer(t, time.Now(), a, b)
+			sa, sb := startNetstack(t, a, testWindow), startNetstack(t, b, testWindow)
+			for i, dst := range []netip.Addr{b.v4, b.v6} {
+				t.Run(dst.String(), func(t *testing.T) {
+					port := uint16(8000 + i)
+					echo(t, sb, dst, port)
+					ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+					defer cancel()
+					c, err := gonet.DialContextTCP(ctx, sa, fullAddr(dst, port), protoOf(dst))
+					require.NoError(t, err)
+					defer c.Close()
+					data := make([]byte, testData)
+					_, _ = rand.Read(data)
+					go func() { _, _ = c.Write(data) }()
+					got := make([]byte, len(data))
+					_, err = io.ReadFull(c, got)
+					require.NoError(t, err)
+					assert.True(t, bytes.Equal(data, got))
+				})
+			}
+			for _, x := range []struct {
+				n *node
+				s *stack.Stack
+			}{{a, sa}, {b, sb}} {
+				st := x.n.b.Stats()
+				assert.Zero(t, st.RxDrops)
+				assert.Zero(t, st.TxDrops)
+				// The binding sends more packets than the NIC, so TCP used GSO.
+				assert.Less(t, x.s.NICInfo()[1].Stats.Tx.Packets.Value(), st.TxPackets)
+			}
 		})
 	}
 }
