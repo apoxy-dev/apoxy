@@ -137,6 +137,37 @@ func TestVPCRowArgs(t *testing.T) {
 	}
 }
 
+func TestVPCProfileArgs(t *testing.T) {
+	cases := []struct {
+		name    string
+		profile bool
+		want    []string
+	}{
+		{name: "off"},
+		{
+			name: "on", profile: true,
+			want: []string{
+				`-sidecar-argv=["vpcbench","relay","-listen","$SERVER_IP:4443","-cpuprofile","$WORK_DIR/relay-cpu.pprof","-blockprofile","$WORK_DIR/relay-block.pprof","-mutexprofile","$WORK_DIR/relay-mutex.pprof"]`,
+				`-server-argv=["vpcbench","server","-relay","$SERVER_IP:4443","-listen","$SERVER_IP:4433","-cpuprofile","$WORK_DIR/server-cpu.pprof","-blockprofile","$WORK_DIR/server-block.pprof","-mutexprofile","$WORK_DIR/server-mutex.pprof"]`,
+				`-client-argv=["vpcbench","client","-relay","$SERVER_IP:4443","-server","$SERVER_IP:4433","-cc","bbr","-streams","$STREAMS","-omit","${OMIT_S}s","-duration","${DURATION_S}s","-cpuprofile","$WORK_DIR/client-cpu.pprof","-blockprofile","$WORK_DIR/client-block.pprof","-mutexprofile","$WORK_DIR/client-mutex.pprof"]`,
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := rowByID(t, parsePlan(t, VPC, Options{Duration: "30s", Reps: 3, MinCPUs: 16, Profile: tc.profile}), "gate")
+			for _, w := range tc.want {
+				if !slices.Contains(r.Args, w) {
+					t.Errorf("args have no %s:\n%s", w, strings.Join(r.Args, "\n"))
+				}
+			}
+			if !tc.profile && slices.ContainsFunc(r.Args, func(a string) bool { return strings.Contains(a, "profile") }) {
+				t.Errorf("args have a profile flag:\n%s", strings.Join(r.Args, "\n"))
+			}
+		})
+	}
+}
+
 func TestGroups(t *testing.T) {
 	if got := VPC.Groups(); !slices.Equal(got, []string{"gate", "info"}) {
 		t.Errorf("VPC groups = %v", got)

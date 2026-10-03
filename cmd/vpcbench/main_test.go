@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/apoxy-dev/apoxy/cmd/internal/bench"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/vpctest"
 )
 
@@ -73,6 +74,12 @@ func TestParseFlags(t *testing.T) {
 		{name: "no duration", cmd: "client", args: []string{"-server", "s:1", "-relay", "r:1", "-duration", "0s"}, wantErr: "-streams and -duration must be positive"},
 		{name: "negative mtu", cmd: "client", args: []string{"-server", "s:1", "-relay", "r:1", "-mtu", "-1"}, wantErr: "-mtu must not be negative"},
 		{name: "extra argument", cmd: "client", args: []string{"-server", "s:1", "-relay", "r:1", "extra"}, wantErr: "unexpected arguments"},
+		{
+			name: "profiles", cmd: "relay", args: []string{"-listen", ":4443", "-cpuprofile", "c.pprof", "-blockprofile", "b.pprof", "-mutexprofile", "m.pprof"},
+			want: func(o options) bool {
+				return o.Profiles == bench.Profiles{CPU: "c.pprof", Block: "b.pprof", Mutex: "m.pprof"}
+			},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -117,8 +117,12 @@ func (m *ApoxyCli) PerfVpc(
 	awsSecretAccessKey *dagger.Secret,
 	// +optional
 	awsSessionToken *dagger.Secret,
+	// Write CPU, block and mutex profiles of each vpcbench process into the
+	// results. It costs some throughput, so do not compare to the baseline.
+	// +optional
+	profile bool,
 ) (*dagger.Directory, error) {
-	o := perfsuite.Options{Duration: duration, Reps: reps, MinCPUs: minCpus, Only: rows}
+	o := perfsuite.Options{Duration: duration, Reps: reps, MinCPUs: minCpus, Only: rows, Profile: profile}
 	e := perfEC2{runTag: runTag, bucket: bucket, region: region, id: awsAccessKeyId, secret: awsSecretAccessKey, token: awsSessionToken}
 	return m.perfRun(ctx, src, perfsuite.VPC, where, o, e)
 }

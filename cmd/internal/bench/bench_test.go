@@ -3,9 +3,12 @@
 package bench
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -144,6 +147,40 @@ func TestSleep(t *testing.T) {
 				assert.EqualError(t, err, tc.wantMsg)
 			default:
 				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestProfiles(t *testing.T) {
+	cases := []struct {
+		name string
+		set  bool
+	}{
+		{name: "no profiles"},
+		{name: "all profiles", set: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			var p Profiles
+			if tc.set {
+				p = Profiles{CPU: filepath.Join(dir, "cpu.pprof"), Block: filepath.Join(dir, "block.pprof"), Mutex: filepath.Join(dir, "mutex.pprof")}
+			}
+			stop, err := p.Start()
+			require.NoError(t, err)
+			require.NoError(t, stop())
+			files, err := os.ReadDir(dir)
+			require.NoError(t, err)
+			if !tc.set {
+				assert.Empty(t, files)
+				return
+			}
+			for _, path := range []string{p.CPU, p.Block, p.Mutex} {
+				b, err := os.ReadFile(path)
+				require.NoError(t, err)
+				// A pprof file is a gzip stream.
+				assert.True(t, bytes.HasPrefix(b, []byte{0x1f, 0x8b}), "%s is not a pprof file", path)
 			}
 		})
 	}

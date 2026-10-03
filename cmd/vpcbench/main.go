@@ -83,6 +83,11 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
+	stopProfiles, err := o.Profiles.Start()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	switch cmd {
@@ -92,6 +97,9 @@ func main() {
 		err = runServer(ctx, o, nil)
 	default:
 		err = runClient(ctx, o, os.Stdout)
+	}
+	if perr := stopProfiles(); perr != nil {
+		slog.Warn("Failed to write the profiles", "error", perr)
 	}
 	if err != nil {
 		slog.Error("Benchmark failed", "error", err)
@@ -107,6 +115,7 @@ type options struct {
 	MTU, Streams                   int
 	Omit, Duration                 time.Duration
 	Idle, ProbeInterval            time.Duration
+	Profiles                       bench.Profiles
 }
 
 // parseFlags reads the flags of cmd and checks them.
@@ -116,6 +125,7 @@ func parseFlags(cmd string, args []string, out io.Writer) (options, error) {
 	fs.SetOutput(out)
 	fs.StringVar(&o.WorkDir, "work-dir", o.WorkDir, "directory of the CA file and the agent certs (default $WORK_DIR)")
 	fs.IntVar(&o.MTU, "mtu", 0, "relay: VPC MTU; agents: device MTU (0 means the default)")
+	o.Profiles.AddFlags(fs)
 	if cmd != "client" {
 		fs.StringVar(&o.Listen, "listen", "", "relay: UDP and TCP control address; server: TCP control address, and UDP with -via direct")
 	}

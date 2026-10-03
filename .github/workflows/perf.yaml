@@ -21,6 +21,10 @@ on:
         description: "VPC rows to run, comma-separated, for example gate (default: all rows)"
         type: string
         default: ""
+      vpc_profile:
+        description: "Write pprof profiles of the VPC rows (slower; do not compare to the baseline)"
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -106,6 +110,7 @@ jobs:
     env:
       DURATION: ${{ inputs.duration || '30s' }}
       ROWS: ${{ inputs.vpc_rows }}
+      PROFILE: ${{ inputs.vpc_profile || false }}
       RUN_TAG: ${{ github.run_id }}-${{ github.run_attempt }}-vpc
       PERF_BUCKET: ${{ vars.PERF_BUCKET }}
       PERF_AWS_REGION: ${{ vars.PERF_AWS_REGION }}
@@ -123,7 +128,7 @@ jobs:
       - name: Run the VPC rows
         timeout-minutes: 55
         run: >-
-          dagger call -v perf-vpc --src=. --where=ec2 --duration="$DURATION" --rows="$ROWS"
+          dagger call -v perf-vpc --src=. --where=ec2 --duration="$DURATION" --rows="$ROWS" --profile="$PROFILE"
           --run-tag="$RUN_TAG" --bucket="$PERF_BUCKET" --region="$PERF_AWS_REGION"
           --aws-access-key-id=env:AWS_ACCESS_KEY_ID --aws-secret-access-key=env:AWS_SECRET_ACCESS_KEY
           --aws-session-token=env:AWS_SESSION_TOKEN

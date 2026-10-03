@@ -37,6 +37,8 @@ type Options struct {
 	Only []string
 	// Host tells that perfagent sets up the host: an EC2 instance, not a container.
 	Host bool
+	// Profile makes the VPC rows write pprof files. It costs some throughput.
+	Profile bool
 }
 
 // Suite is a set of rows with their binaries.
@@ -168,6 +170,13 @@ func (r vpcRow) row(o Options) Row {
 	}
 	server = append(server, r.server...)
 	client = append(append(client, r.client...), "-streams", "$STREAMS", "-omit", "${OMIT_S}s", "-duration", "${DURATION_S}s")
+	if o.Profile {
+		if sidecar != nil {
+			sidecar = append(sidecar, profileArgs("relay")...)
+		}
+		server = append(server, profileArgs("server")...)
+		client = append(client, profileArgs("client")...)
+	}
 	group := "info"
 	if r.gate {
 		group = "gate"
@@ -179,6 +188,16 @@ func (r vpcRow) row(o Options) Row {
 		args = append(args, "-sidecar-argv="+jsonArgv(sidecar))
 	}
 	return Row{ID: r.id, Group: group, Args: append(args, r.args...)}
+}
+
+// profileArgs are the vpcbench flags that write the profiles of role to the
+// work dir of the rep. perfagent uploads them with the results.
+func profileArgs(role string) []string {
+	var args []string
+	for _, kind := range []string{"cpu", "block", "mutex"} {
+		args = append(args, "-"+kind+"profile", "$WORK_DIR/"+role+"-"+kind+".pprof")
+	}
+	return args
 }
 
 // VPC is the VPC data path through the relay, with one gated row and info rows.
