@@ -447,7 +447,7 @@ func (r *Relay) Start(ctx context.Context) error {
 	lns := make([]*quic.EarlyListener, len(trs))
 	for i, tr := range trs {
 		if r.vpc != nil {
-			tr.NonQUICPacketHandler, tr.NonQUICBatchEnd = r.vpc.R.PacketHandler(tr)
+			tr.NonQUICPacketHandler, tr.NonQUICBatchEnd = r.vpc.R.PacketHandler(vpcCtx, tr)
 		}
 		quicLn, err := tr.ListenEarly(tlsConf, relayQUICConfig)
 		if err != nil {

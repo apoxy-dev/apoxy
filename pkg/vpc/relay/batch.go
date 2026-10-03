@@ -16,7 +16,7 @@ const maxFwd = 64
 
 // fwdBatch collects the PSP packets that one read of the QUIC read loop
 // forwards, and sends them at the end of the read with one sendmmsg call.
-// Only the read loop of the transport uses it.
+// Only the read loop of the transport uses it. It is the forwarder with one CPU.
 type fwdBatch struct {
 	tr    *quic.Transport
 	b     *udpbatch.Batch // Nil when the socket cannot send batches.

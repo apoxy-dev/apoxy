@@ -3,9 +3,11 @@
 package relay
 
 import (
+	"context"
 	"encoding/binary"
 	"net"
 	"net/netip"
+	"runtime"
 	"sync/atomic"
 	"time"
 
@@ -17,9 +19,19 @@ import (
 // tr. The handler forwards PSP packets by SPI rows, and opens the PSP packets
 // to the relay. The batch end sends the packets that the handler forwarded in
 // one read. Relay sessions must use tr or another transport with these.
-func (r *Router) PacketHandler(tr *quic.Transport) (handle func(b []byte, from net.Addr), batchEnd func()) {
+//
+// With more than one CPU, a sender goroutine sends the forwarded packets, so the
+// read loop does not wait for the sends. It stops when ctx ends, and then the
+// forwarded packets drop.
+func (r *Router) PacketHandler(ctx context.Context, tr *quic.Transport) (handle func(b []byte, from net.Addr), batchEnd func()) {
 	br := r.startBridge(tr)
-	fwd := newFwdBatch(tr)
+	var fwd forwarder
+	if p := newFwdPipe(tr, ctx.Done(), &r.drops[dropClosed]); p != nil && runtime.GOMAXPROCS(0) > 1 {
+		go p.run()
+		fwd = p
+	} else {
+		fwd = newFwdBatch(tr)
+	}
 	return func(b []byte, from net.Addr) {
 		h, err := pspwire.ParseHeader(b)
 		if err != nil {

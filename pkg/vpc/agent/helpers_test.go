@@ -202,7 +202,7 @@ func (w *world) relayOn(t testing.TB, id string, udp net.PacketConn) *testRelay 
 	cert := w.relayCA.relayCert(t, id)
 	r := relay.NewRouter(w.trust, w.relayCfg)
 	tr := &quic.Transport{Conn: udp}
-	tr.NonQUICPacketHandler, tr.NonQUICBatchEnd = r.PacketHandler(tr)
+	tr.NonQUICPacketHandler, tr.NonQUICBatchEnd = r.PacketHandler(t.Context(), tr)
 	// As at a real relay, the packets are Not-ECT, and the stream limit takes
 	// the Attach calls of extra attachments.
 	ln, err := tr.Listen(r.TLSConfig(&tls.Config{Certificates: []tls.Certificate{*cert}}), &quic.Config{EnableDatagrams: true, DisableECN: true, MaxIncomingStreams: 512})

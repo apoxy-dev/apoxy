@@ -353,7 +353,7 @@ func localRouterConfig(tb testing.TB, cfg Config) (*Router, func([]byte, net.Add
 	})
 	r := NewRouter(nil, cfg)
 	// The discard conn is not a UDP socket, so the handler sends at once.
-	handle, _ := r.PacketHandler(tr)
+	handle, _ := r.PacketHandler(tb.Context(), tr)
 	return r, handle
 }
 

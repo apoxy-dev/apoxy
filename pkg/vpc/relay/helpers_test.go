@@ -295,7 +295,7 @@ func newHarness(t *testing.T, ca *testCA) *harness {
 	udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	require.NoError(t, err)
 	tr := &quic.Transport{Conn: udp}
-	tr.NonQUICPacketHandler, tr.NonQUICBatchEnd = r.PacketHandler(tr)
+	tr.NonQUICPacketHandler, tr.NonQUICBatchEnd = r.PacketHandler(t.Context(), tr)
 	ln, err := tr.Listen(r.TLSConfig(&tls.Config{Certificates: []tls.Certificate{*cert}}), &quic.Config{EnableDatagrams: true})
 	require.NoError(t, err)
 	h := &harness{
