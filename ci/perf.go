@@ -52,7 +52,8 @@ func (m *ApoxyCli) PerfNetns(
 	// Measured run length of each row. The baseline keys include it.
 	// +default="30s"
 	duration string,
-	// +default=1
+	// Reps of each row. The result is the median.
+	// +default=3
 	reps int,
 	// Infra error when the host has fewer CPUs. Lower it only for local smoke runs.
 	// +default=16

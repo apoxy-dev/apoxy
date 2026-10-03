@@ -6,6 +6,7 @@
       "packets_per_second": 0,
       "client_cores_per_gbps": 0.077823,
       "server_cores_per_gbps": 0.020221,
+      "tolerance": 0.2,
       "source": "2026-10-03 7.0.0-1012-aws"
     },
     "c7a.8xlarge iperf3-tcp streams=4 duration=30s omit=2s delay=10ms jitter=0ms loss=0% rate=none queue=100000 mtu=1500 bitrate=none window=none": {
@@ -13,6 +14,7 @@
       "packets_per_second": 0,
       "client_cores_per_gbps": 0.050139,
       "server_cores_per_gbps": 0.022925,
+      "tolerance": 0.2,
       "source": "2026-10-03 7.0.0-1012-aws"
     },
     "c7a.8xlarge iperf3-tcp streams=4 duration=30s omit=2s delay=10ms jitter=0ms loss=0.1% rate=none queue=100000 mtu=1500 bitrate=none window=none": {
@@ -20,6 +22,7 @@
       "packets_per_second": 0,
       "client_cores_per_gbps": 0.040604,
       "server_cores_per_gbps": 0.040403,
+      "tolerance": 0.2,
       "source": "2026-10-03 7.0.0-1012-aws"
     },
     "c7a.8xlarge iperf3-udp streams=1 duration=30s omit=2s delay=10ms jitter=0ms loss=0% rate=none queue=100000 mtu=1500 bitrate=2G window=8M": {
@@ -27,6 +30,7 @@
       "packets_per_second": 153630.2213945784,
       "client_cores_per_gbps": 0.563281,
       "server_cores_per_gbps": 0.541171,
+      "tolerance": 0.2,
       "source": "2026-10-03 7.0.0-1012-aws"
     },
     "c7a.8xlarge vpc-netstack-psp-direct streams=4 duration=30s omit=5s delay=10ms jitter=0ms loss=0% rate=none queue=100000 mtu=1500 bitrate=none window=none": {
