@@ -2,7 +2,7 @@
 
 //go:build !linux
 
-package relay
+package udpbatch
 
 import "net"
 

@@ -18,8 +18,8 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/peerconn"
 )
 
-// TestWriteFrames sends frames to a UDP socket with sendmmsg, and with one
-// write for each packet.
+// TestWriteFrames sends frames to a UDP socket in batches, and with one write
+// for each packet. The socket gets the PSP packets in order.
 func TestWriteFrames(t *testing.T) {
 	a, b := newPair(t)
 	offer(t, time.Now(), a, b)
@@ -30,6 +30,7 @@ func TestWriteFrames(t *testing.T) {
 	a.peer.SetAddr(sink.LocalAddr().(*net.UDPAddr).AddrPort())
 
 	frame := seal(a, packet(a.v4, b.v4, 17, 1, 2, 200))
+	small := seal(a, packet(a.v4, b.v4, 17, 1, 2, 100))
 	bad := bytes.Clone(frame) // An IPv6 address on an IPv4 socket.
 	copy(bad, net.ParseIP("::1"))
 	data := bytes.Clone(frame) // A data frame with no UseQUIC.
@@ -42,28 +43,32 @@ func TestWriteFrames(t *testing.T) {
 	}{
 		{"one", [][]byte{frame}, true, Stats{TxPackets: 1}},
 		{"more than one batch", repeat(frame, maxBatch+3), true, Stats{TxPackets: maxBatch + 3}},
+		{"two sizes", [][]byte{frame, frame, small, frame, small, small}, true, Stats{TxPackets: 6}},
 		{"bad address in the middle", [][]byte{frame, bad, frame}, true, Stats{TxPackets: 2, TxDrops: 1}},
 		{"bad address first", [][]byte{bad, frame, frame}, true, Stats{TxPackets: 2, TxDrops: 1}},
 		{"data frame with no QUIC", [][]byte{data, frame}, true, Stats{TxPackets: 1, TxDrops: 1}},
-		{"one write for each packet", [][]byte{frame, bad, frame}, false, Stats{TxPackets: 2, TxDrops: 1}},
+		{"one write for each packet", [][]byte{frame, bad, small}, false, Stats{TxPackets: 2, TxDrops: 1}},
 	}
 	buf := make([]byte, 2048)
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			d := newDriver(a.b, nil)
 			if !tc.batch {
-				d.pc = nil
+				d.tx = nil
 			}
 			before := a.b.Stats()
 			n, err := d.WriteFrames(tc.frames)
 			require.NoError(t, err)
 			assert.Equal(t, len(tc.frames), n)
 			assert.Equal(t, tc.want, sub(a.b.Stats(), before))
-			for range tc.want.TxPackets {
+			for i, f := range tc.frames {
+				if !bytes.Equal(f[:addrLen], frame[:addrLen]) {
+					continue
+				}
 				require.NoError(t, sink.SetReadDeadline(time.Now().Add(5*time.Second)))
 				m, err := sink.Read(buf)
 				require.NoError(t, err)
-				require.Equal(t, frame[addrLen:], buf[:m])
+				require.Equal(t, f[addrLen:], buf[:m], "frame %d", i)
 			}
 		})
 	}

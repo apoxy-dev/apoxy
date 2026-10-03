@@ -141,7 +141,7 @@ func BenchmarkWriteFrames(b *testing.B) {
 			x.peer.SetAddr(sink.LocalAddr().(*net.UDPAddr).AddrPort())
 			d := newDriver(x.b, nil)
 			if !batch {
-				d.pc = nil
+				d.tx = nil
 			}
 			phy := make([]byte, 2048)
 			n, _ := d.VirtToPhy(packet(x.v4, y.v4, 6, 1, 2, DefaultMTU), phy)

@@ -123,7 +123,8 @@ func TestInjectBatch(t *testing.T) {
 }
 
 // TestInjectBatchFullQueue checks that the read loop waits while the queue of
-// a worker is full, and stops waiting when the driver closes.
+// a worker is full, and stops waiting when the driver closes. Then the worker
+// drops the batches in its queue.
 func TestInjectBatchFullQueue(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -169,6 +170,11 @@ func TestInjectBatchFullQueue(t *testing.T) {
 				closeDone()
 				<-sent
 				assert.Equal(t, Stats{RxDrops: 1}, b.Stats())
+				openGate()
+				require.Eventually(t, func() bool {
+					st := b.Stats()
+					return st.RxPackets+st.RxDrops == 2+injectQueue && len(j.in[0]) == 0
+				}, 5*time.Second, time.Millisecond, "the worker did not drop its queue: %+v", b.Stats())
 				return
 			}
 			openGate()

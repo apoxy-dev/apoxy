@@ -14,7 +14,6 @@ import (
 	"github.com/apoxy-dev/softpsp/vtep"
 	"github.com/apoxy-dev/softpsp/vtep/netstack"
 	"github.com/apoxy-dev/softpsp/vtep/tun"
-	"golang.org/x/net/ipv4"
 	"gvisor.dev/gvisor/pkg/buffer"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
@@ -22,13 +21,14 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/peerconn"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/udpbatch"
 )
 
 const (
 	// A send frame is the destination address (16 B and the port), then the
 	// PSP packet. Port 0 marks a QUIC data frame for the relay session.
 	addrLen = 18
-	// maxBatch is the largest number of packets in one sendmmsg call.
+	// maxBatch is the most packets in one send batch.
 	maxBatch = 128
 	// tunOffset is the space that the TUN device needs before each packet.
 	tunOffset = 16
@@ -51,9 +51,8 @@ type driver struct {
 	once  sync.Once
 
 	// Send state. Only the send goroutine of the vtep driver uses it.
-	pc    *ipv4.PacketConn // Nil when the socket cannot send with sendmmsg.
-	msgs  []ipv4.Message
-	addrs []net.UDPAddr
+	tx *udpbatch.Batch // Nil when the socket cannot send batches.
+	ua net.UDPAddr     // The address of a frame that goes alone.
 }
 
 func newDriver(b *Binding, deliver func([]byte, int) bool) *driver {
@@ -61,17 +60,10 @@ func newDriver(b *Binding, deliver func([]byte, int) bool) *driver {
 		b:       b,
 		deliver: deliver,
 		done:    make(chan struct{}),
-		msgs:    make([]ipv4.Message, maxBatch),
-		addrs:   make([]net.UDPAddr, maxBatch),
+		ua:      net.UDPAddr{IP: make(net.IP, net.IPv6len)},
 	}
-	// x/net sends a batch only on Linux.
-	if uc, ok := b.tr.Conn.(*net.UDPConn); ok && runtime.GOOS == "linux" {
-		d.pc = ipv4.NewPacketConn(uc)
-	}
-	for i := range d.msgs {
-		d.addrs[i].IP = make(net.IP, net.IPv6len)
-		d.msgs[i].Buffers = make([][]byte, 1)
-		d.msgs[i].Addr = &d.addrs[i]
+	if uc, ok := b.tr.Conn.(*net.UDPConn); ok {
+		d.tx = udpbatch.New(uc, maxBatch)
 	}
 	return d
 }
@@ -341,7 +333,7 @@ func (d *driver) Close() error {
 	return nil
 }
 
-// WriteFrames sends the PSP packets with sendmmsg and the data frames on the
+// WriteFrames sends the PSP packets in batches and the data frames on the
 // relay session. It drops and counts a packet that fails.
 func (d *driver) WriteFrames(frames [][]byte) (int, error) {
 	if d.b.ctx.Err() != nil {
@@ -355,42 +347,29 @@ func (d *driver) WriteFrames(frames [][]byte) (int, error) {
 	return len(frames), nil
 }
 
-// send sends at most maxBatch frames.
+// send sends at most maxBatch frames. The PSP packets go in one batch, where
+// the packets to one address with the same size go in one GSO message.
 func (d *driver) send(frames [][]byte) error {
 	st := &d.b.stats
-	n := 0
 	for _, f := range frames {
 		port := binary.BigEndian.Uint16(f[16:addrLen])
-		if port == 0 || d.pc == nil {
-			// n stays 0 when d.pc is nil, so d.addrs[n] is free.
-			if d.b.write(f, &d.addrs[n]) != nil {
+		if port == 0 || d.tx == nil {
+			if d.b.write(f, &d.ua) != nil {
 				st.txDrops.Add(1)
 			} else {
 				st.txPackets.Add(1)
 			}
 			continue
 		}
-		a := &d.addrs[n]
-		copy(a.IP, f[:16])
-		a.Port = int(port)
-		d.msgs[n].Buffers[0] = f[addrLen:]
-		n++
+		d.tx.Add(f[addrLen:], netip.AddrPortFrom(netip.AddrFrom16([16]byte(f[:16])), port))
 	}
-	for msgs := d.msgs[:n]; len(msgs) > 0; {
-		sent, err := d.pc.WriteBatch(msgs, 0)
-		sent = max(sent, 0) // It is -1 when the first message fails.
-		st.txPackets.Add(uint64(sent))
-		msgs = msgs[sent:]
-		if errors.Is(err, net.ErrClosed) {
-			return err
-		}
-		if err != nil && len(msgs) > 0 {
-			// The kernel refused the first message that is left.
-			st.txDrops.Add(1)
-			msgs = msgs[1:]
-		}
+	if d.tx == nil || d.tx.Len() == 0 {
+		return nil
 	}
-	return nil
+	sent, dropped, err := d.tx.Flush()
+	st.txPackets.Add(uint64(sent))
+	st.txDrops.Add(uint64(dropped))
+	return err
 }
 
 // write sends one send frame: a data frame on the relay session shard of its flow, or a

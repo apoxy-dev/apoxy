@@ -97,6 +97,10 @@ func (j *injectBatch) send(w int) {
 	j.pend[w] = nil
 	select {
 	case j.in[w] <- p:
+		// The worker can stop before it gets p.
+		if j.stopped() {
+			j.drain(j.in[w])
+		}
 		return
 	case <-j.done:
 	case <-j.closed:
@@ -115,8 +119,35 @@ func (j *injectBatch) run(in <-chan []inbound) {
 			j.st.rxPackets.Add(uint64(len(p)))
 			j.release(p)
 		case <-j.done:
+			j.drain(in)
 			return
 		case <-j.closed:
+			j.drain(in)
+			return
+		}
+	}
+}
+
+// stopped reports whether the driver or the binding closed.
+func (j *injectBatch) stopped() bool {
+	select {
+	case <-j.done:
+		return true
+	case <-j.closed:
+		return true
+	default:
+		return false
+	}
+}
+
+// drain drops the batches in the queue in.
+func (j *injectBatch) drain(in <-chan []inbound) {
+	for {
+		select {
+		case p := <-in:
+			j.st.rxDrops.Add(uint64(len(p)))
+			j.release(p)
+		default:
 			return
 		}
 	}
