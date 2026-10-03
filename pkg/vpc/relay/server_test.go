@@ -777,3 +777,44 @@ func TestDrain(t *testing.T) {
 		t.Fatal("Drain did not return")
 	}
 }
+
+// TestAttachmentAddressLoss ends the address lease of an attachment. The relay
+// closes the session and removes its routes before the address is freed.
+func TestAttachmentAddressLoss(t *testing.T) {
+	cases := []struct {
+		name         string
+		duringAssign bool
+	}{
+		{"lease ends after the attach", false},
+		{"lease ends during the attach", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ca := newCA(t)
+			h := newHarness(t, ca)
+			h.addrs.loseOnAssign = tc.duringAssign
+			a := h.mustDial(t, ca.agentCert(t, vpcA, "laptop"))
+			open(t, a)
+			s := h.session(t, a)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			res, err := a.c.Attach(ctx, &dp.AttachRequest{Vpc: ref(vpcA), Name: "laptop"})
+			if tc.duringAssign {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+				lost := h.addrs.onLost(res.AttachmentId)
+				require.NotNil(t, lost)
+				lost()
+			}
+			h.r.mu.RLock()
+			_, active := h.r.sessions[s]
+			d := h.r.domains[vpcA]
+			h.r.mu.RUnlock()
+			assert.False(t, active, "the session is still in the router")
+			assert.Nil(t, d, "the routes stay after the lease ended")
+			assert.Equal(t, quic.ApplicationErrorCode(dp.RelayCloseCode_RELAY_CLOSE_CODE_UNSPECIFIED), closeCode(t, a.qc))
+			require.Eventually(t, func() bool { return h.addrs.count() == 0 }, 5*time.Second, 5*time.Millisecond)
+		})
+	}
+}

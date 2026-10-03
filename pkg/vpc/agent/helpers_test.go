@@ -85,7 +85,7 @@ type fakeAddresses struct {
 	inGate, mostGate int // Assign calls that wait now, and the most at once.
 }
 
-func (f *fakeAddresses) Assign(ctx context.Context, a *relay.Attachment) ([]netip.Prefix, error) {
+func (f *fakeAddresses) Assign(ctx context.Context, a *relay.Attachment, onLost func()) ([]netip.Prefix, error) {
 	f.mu.Lock()
 	if gate := f.gate; gate != nil && strings.HasPrefix(a.Name, f.gateName) {
 		f.inGate++
@@ -103,7 +103,7 @@ func (f *fakeAddresses) Assign(ctx context.Context, a *relay.Attachment) ([]neti
 		}
 	}
 	f.mu.Unlock()
-	return f.Addresses.Assign(ctx, a)
+	return f.Addresses.Assign(ctx, a, onLost)
 }
 
 // hold makes Assign wait for the names with prefix until release runs.

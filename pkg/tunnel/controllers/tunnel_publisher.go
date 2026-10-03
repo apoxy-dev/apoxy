@@ -50,9 +50,11 @@ type TunnelPublisher struct {
 	slots     *slotAllocator
 	vnis      vniAllocator
 
-	mu       sync.Mutex
-	networks map[string]tunnet.NetworkID // VPCNetwork name -> NetworkID
-	tunnels  map[string]*tunnelState     // Tunnel name (connection ID) -> state
+	mu        sync.Mutex
+	networks  map[string]tunnet.NetworkID     // VPCNetwork name -> NetworkID
+	tunnels   map[string]*tunnelState         // Tunnel name (connection ID) -> state
+	addresses map[*addressAssignment]struct{} // Live /96s from AssignAddress.
+	stopped   bool                            // ReleaseAll ran.
 
 	// holdCreates stops Tunnel creates while a bulk delete of this relay's Tunnels
 	// runs.
@@ -65,6 +67,13 @@ type TunnelPublisher struct {
 	stopWorker context.CancelFunc
 	workerDone chan struct{}
 	stopOnce   sync.Once
+}
+
+// addressAssignment is a /96 from AssignAddress.
+type addressAssignment struct {
+	slot    ipalloc.Slot
+	release func()
+	lost    func()
 }
 
 // connAlloc records what one connection was assigned.
@@ -128,6 +137,7 @@ func NewTunnelPublisher(c client.Client, relay Relay, leaser ipalloc.SlotLeaser,
 		vnis:       vnis,
 		networks:   make(map[string]tunnet.NetworkID),
 		tunnels:    make(map[string]*tunnelState),
+		addresses:  make(map[*addressAssignment]struct{}),
 		wake:       make(chan struct{}, 1),
 		syncSlots:  make(chan struct{}, syncParallelism),
 		stopWorker: cancel,
@@ -153,8 +163,13 @@ func (p *TunnelPublisher) RemoveNetwork(ctx context.Context, name string) {
 	p.mu.Lock()
 	id, ok := p.networks[name]
 	delete(p.networks, name)
+	var addrs []*addressAssignment
+	if ok {
+		addrs = p.takeAddresses(func(a *addressAssignment) bool { return a.slot.Network == id })
+	}
 	p.mu.Unlock()
 	if ok {
+		endAddresses(addrs)
 		for _, id := range p.connectionIDsForNetwork(id) {
 			p.relay.DisconnectConnection(id)
 		}
@@ -163,21 +178,50 @@ func (p *TunnelPublisher) RemoveNetwork(ctx context.Context, name string) {
 }
 
 // AssignAddress takes a /96 from the held slots for a user that is not a
-// connection. It writes no Tunnel. Call release to free the /96.
-func (p *TunnelPublisher) AssignAddress(ctx context.Context, network tunnet.NetworkID) (v6 netip.Prefix, release func(), err error) {
+// connection. It writes no Tunnel. Call release to free the /96. onLost runs
+// before the /96 is freed when the slot or the network is lost, or at ReleaseAll.
+func (p *TunnelPublisher) AssignAddress(ctx context.Context, network tunnet.NetworkID, onLost func()) (v6 netip.Prefix, release func(), err error) {
+	p.mu.Lock()
+	available := p.hasNetwork(network) && !p.stopped
+	p.mu.Unlock()
+	if !available {
+		return netip.Prefix{}, nil, fmt.Errorf("network %x is not available", network)
+	}
 	v6, v4, alloc, err := p.slots.Allocate(ctx, network)
 	if err != nil {
 		return netip.Prefix{}, nil, fmt.Errorf("failed to allocate an overlay address: %w", err)
 	}
 	// Only the /96 is used.
 	p.slots.Release(alloc, netip.Prefix{}, v4)
-	if !p.slots.Contains(alloc) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.stopped || !p.hasNetwork(network) || !p.slots.Contains(alloc) {
 		p.slots.Release(alloc, v6, netip.Prefix{})
 		slot := alloc.Slot()
 		return netip.Prefix{}, nil, fmt.Errorf("overlay slot %s generation %d is no longer held", ipalloc.SlotLabelValue(slot), slot.Generation)
 	}
+	a := &addressAssignment{slot: alloc.Slot(), lost: onLost}
 	var once sync.Once
-	return v6, func() { once.Do(func() { p.slots.Release(alloc, v6, netip.Prefix{}) }) }, nil
+	a.release = func() {
+		once.Do(func() {
+			p.mu.Lock()
+			delete(p.addresses, a)
+			p.mu.Unlock()
+			p.slots.Release(alloc, v6, netip.Prefix{})
+		})
+	}
+	p.addresses[a] = struct{}{}
+	return v6, a.release, nil
+}
+
+// hasNetwork reports whether the network is known. The caller holds p.mu.
+func (p *TunnelPublisher) hasNetwork(id tunnet.NetworkID) bool {
+	for _, known := range p.networks {
+		if known == id {
+			return true
+		}
+	}
+	return false
 }
 
 // InvalidateSlot drops a slot the leaser lost so no new connections allocate
@@ -185,6 +229,7 @@ func (p *TunnelPublisher) AssignAddress(ctx context.Context, network tunnet.Netw
 func (p *TunnelPublisher) InvalidateSlot(s ipalloc.Slot) {
 	p.mu.Lock()
 	p.slots.InvalidateSlot(s)
+	addrs := p.takeAddresses(func(a *addressAssignment) bool { return sameSlotGeneration(a.slot, s) })
 	ids := make([]string, 0)
 	for id, st := range p.tunnels {
 		if st.live != nil && sameSlotGeneration(st.live.slot, s) {
@@ -192,9 +237,32 @@ func (p *TunnelPublisher) InvalidateSlot(s ipalloc.Slot) {
 		}
 	}
 	p.mu.Unlock()
+	endAddresses(addrs)
 	metrics.TunnelSlotLosses.Inc()
 	for _, id := range ids {
 		p.relay.DisconnectConnection(id)
+	}
+}
+
+// takeAddresses removes the assignments that match. The caller holds p.mu.
+func (p *TunnelPublisher) takeAddresses(match func(*addressAssignment) bool) []*addressAssignment {
+	var out []*addressAssignment
+	for a := range p.addresses {
+		if match(a) {
+			delete(p.addresses, a)
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// endAddresses calls onLost, then frees each /96.
+func endAddresses(addrs []*addressAssignment) {
+	for _, a := range addrs {
+		if a.lost != nil {
+			a.lost()
+		}
+		a.release()
 	}
 }
 
@@ -664,6 +732,11 @@ func (p *TunnelPublisher) connectionIDsForNetwork(network tunnet.NetworkID) []st
 // ReleaseAll stops the worker, returns all slots, then deletes the pending
 // Tunnels. Callers must disconnect every connection first.
 func (p *TunnelPublisher) ReleaseAll(ctx context.Context) error {
+	p.mu.Lock()
+	p.stopped = true
+	addrs := p.takeAddresses(func(*addressAssignment) bool { return true })
+	p.mu.Unlock()
+	endAddresses(addrs)
 	p.stopOnce.Do(p.stopWorker)
 	select {
 	case <-p.workerDone:

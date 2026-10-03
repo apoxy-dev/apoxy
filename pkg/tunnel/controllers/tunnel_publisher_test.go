@@ -979,7 +979,7 @@ func TestTunnelPublisherAssignAddress(t *testing.T) {
 	seen := make(map[netip.Prefix]bool)
 	releases := make([]func(), 0, 3)
 	for range 3 {
-		v6, release, err := p.AssignAddress(ctx, netID)
+		v6, release, err := p.AssignAddress(ctx, netID, nil)
 		require.NoError(t, err)
 		require.Equal(t, 96, v6.Bits())
 		require.True(t, tunnet.NetworkPrefix(netID).Contains(v6.Addr()), "address %s is not in the network", v6)
@@ -997,11 +997,64 @@ func TestTunnelPublisherAssignAddress(t *testing.T) {
 	// A second release of one /96 must not free another user's /96.
 	releases[0]()
 	releases[0]()
-	again, _, err := p.AssignAddress(ctx, netID)
+	again, _, err := p.AssignAddress(ctx, netID, nil)
 	require.NoError(t, err)
 	require.True(t, seen[again], "a freed /96 was not used again")
-	next, _, err := p.AssignAddress(ctx, netID)
+	next, _, err := p.AssignAddress(ctx, netID, nil)
 	require.NoError(t, err)
 	require.NotEqual(t, again, next)
 	require.NotEqual(t, conn.overlay, next.String())
+}
+
+func TestTunnelPublisherAddressLoss(t *testing.T) {
+	cases := []struct {
+		name     string
+		action   string
+		wantLost bool
+	}{
+		{"slot lost", "slot", true},
+		{"other generation", "generation", false},
+		{"network removed", "network", true},
+		{"publisher stopped", "stop", true},
+		{"released address", "released", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			c := fake.NewClientBuilder().WithScheme(publisherScheme(t)).Build()
+			p, netID := newPublisherWithClient(t, c)
+			lost := 0
+			prefix, release, err := p.AssignAddress(ctx, netID, func() { lost++ })
+			require.NoError(t, err)
+			slot, _, ok := ipalloc.SlotOf(prefix)
+			require.True(t, ok)
+			slot.Generation = 1
+			switch tc.action {
+			case "generation":
+				slot.Generation++
+				p.InvalidateSlot(slot)
+			case "network":
+				p.RemoveNetwork(ctx, "corp")
+			case "stop":
+				require.NoError(t, p.ReleaseAll(ctx))
+			case "released":
+				release()
+				p.InvalidateSlot(slot)
+			case "slot":
+				p.InvalidateSlot(slot)
+				p.InvalidateSlot(slot)
+			}
+			want := 0
+			if tc.wantLost {
+				want = 1
+			}
+			require.Equal(t, want, lost)
+			if tc.action == "network" || tc.action == "stop" {
+				_, _, err := p.AssignAddress(ctx, netID, nil)
+				require.Error(t, err)
+			}
+			release()
+			release()
+		})
+	}
 }

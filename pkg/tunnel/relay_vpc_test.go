@@ -70,7 +70,7 @@ type vpcAddresses struct {
 	next int
 }
 
-func (f *vpcAddresses) Assign(context.Context, *vpcrelay.Attachment) ([]netip.Prefix, error) {
+func (f *vpcAddresses) Assign(context.Context, *vpcrelay.Attachment, func()) ([]netip.Prefix, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.next++

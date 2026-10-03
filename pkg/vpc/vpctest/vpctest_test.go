@@ -148,7 +148,7 @@ func TestAddresses(t *testing.T) {
 					a.Release(att)
 					continue
 				}
-				got, err := a.Assign(context.Background(), att)
+				got, err := a.Assign(context.Background(), att, nil)
 				if tc.wantErr && i == len(tc.ops)-1 {
 					require.Error(t, err)
 					continue

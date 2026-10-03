@@ -49,8 +49,9 @@ type Attachment struct {
 // Addresses assigns overlay addresses to attachments. The relay host
 // implements it.
 type Addresses interface {
-	// Assign returns the prefixes of a new attachment.
-	Assign(ctx context.Context, a *Attachment) ([]netip.Prefix, error)
+	// Assign returns the prefixes of a new attachment. It calls onLost when
+	// the lease of the prefixes ends, also before Assign returns.
+	Assign(ctx context.Context, a *Attachment, onLost func()) ([]netip.Prefix, error)
 	// Release frees the prefixes of an attachment that ended.
 	Release(a *Attachment)
 }
@@ -75,7 +76,11 @@ func (srv *Server) Attach(ctx context.Context, in *dp.AttachRequest) (*dp.Attach
 		return nil, err
 	}
 	a.NetworkID = n.ID
-	addrs, err := srv.Addresses.Assign(ctx, a)
+	addrs, err := srv.Addresses.Assign(ctx, a, func() {
+		// Remove forwarding state before the slot can be assigned again.
+		srv.R.removeSession(s)
+		s.close(dp.RelayCloseCode_RELAY_CLOSE_CODE_UNSPECIFIED, "attachment address lease ended")
+	})
 	if err != nil {
 		if rpc.CodeOf(err) == rpc.Unknown {
 			err = rpc.Errorf(rpc.Unavailable, "no addresses: %v", err)

@@ -40,7 +40,7 @@ type Addresses struct {
 
 var _ relay.Addresses = (*Addresses)(nil)
 
-func (a *Addresses) Assign(_ context.Context, att *relay.Attachment) ([]netip.Prefix, error) {
+func (a *Addresses) Assign(_ context.Context, att *relay.Attachment, _ func()) ([]netip.Prefix, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.next >= 0xffff {

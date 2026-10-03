@@ -172,13 +172,15 @@ func (f *fakeNetworks) failVPC(k VPCKey) {
 
 // fakeAddresses gives each attachment the next /96 in fd00:<n>::/96.
 type fakeAddresses struct {
-	mu       sync.Mutex
-	next     int
-	assigned map[string]*Attachment
-	err      error
+	mu           sync.Mutex
+	next         int
+	assigned     map[string]*Attachment
+	lost         map[string]func() // The onLost of each attachment.
+	loseOnAssign bool              // Assign calls onLost before it returns.
+	err          error
 }
 
-func (f *fakeAddresses) Assign(_ context.Context, a *Attachment) ([]netip.Prefix, error) {
+func (f *fakeAddresses) Assign(_ context.Context, a *Attachment, onLost func()) ([]netip.Prefix, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.err != nil {
@@ -186,9 +188,12 @@ func (f *fakeAddresses) Assign(_ context.Context, a *Attachment) ([]netip.Prefix
 	}
 	f.next++
 	if f.assigned == nil {
-		f.assigned = map[string]*Attachment{}
+		f.assigned, f.lost = map[string]*Attachment{}, map[string]func(){}
 	}
-	f.assigned[a.ID] = a
+	f.assigned[a.ID], f.lost[a.ID] = a, onLost
+	if f.loseOnAssign {
+		onLost()
+	}
 	return []netip.Prefix{netip.MustParsePrefix(fmt.Sprintf("fd00:%x::/96", f.next))}, nil
 }
 
@@ -196,6 +201,14 @@ func (f *fakeAddresses) Release(a *Attachment) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	delete(f.assigned, a.ID)
+	delete(f.lost, a.ID)
+}
+
+// onLost returns the onLost of attachment id.
+func (f *fakeAddresses) onLost(id string) func() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lost[id]
 }
 
 func (f *fakeAddresses) fail(err error) {
