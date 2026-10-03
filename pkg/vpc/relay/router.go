@@ -163,6 +163,7 @@ type Session struct {
 	closed      bool
 	sync        syncState
 	shardOf     *Session                     // The owner session of a shard.
+	twin        *Session                     // Older session of the agent socket. Forward also uses its rows.
 	shards      [peerconn.MaxShards]*Session // Shards 1 and up of an owner.
 	rx          *keys.Peer                   // Relay SAs for PSP packets from s.
 	tx          *keys.TxPeer                 // SAs of s for PSP packets from the relay.
@@ -317,11 +318,14 @@ func (r *Router) removeSession(s *Session) {
 		r.removeRow(w)
 	}
 	for _, a := range []netip.AddrPort{s.addr, s.prev} {
-		if r.bySource[a] == s {
+		if o := r.bySource[a]; o == s {
 			delete(r.bySource, a)
 			r.passSource(s, a)
+		} else if o != nil && o.twin == s {
+			o.twin = nil
 		}
 	}
+	s.twin = nil
 	if d := r.domains[s.id.VPC]; d != nil {
 		delete(d.members, s)
 		r.dropDomain(s.id.VPC, d)
@@ -365,14 +369,35 @@ func (r *Router) setAddr(s *Session, a netip.AddrPort, now time.Time) {
 
 // takeSource gives the source address of s to s. A session with a Session
 // call takes it from other sessions. Before its Hello, a session takes only a
-// free address, because a shard from the same socket must not take it.
+// free address, because a shard from the same socket must not take it. An
+// older session of the same agent with a Session call becomes the twin of s.
 func (r *Router) takeSource(s *Session) {
 	if !s.addr.IsValid() || s.shardOf != nil {
 		return
 	}
-	if s.sync.open || r.bySource[s.addr] == nil {
-		r.bySource[s.addr] = s
+	o := r.bySource[s.addr]
+	if o != nil && !s.sync.open {
+		return
 	}
+	if o != nil && o != s && o.id == s.id && o.sync.open {
+		s.twin = o
+	}
+	r.bySource[s.addr] = s
+}
+
+// twinOf returns the other open session of the agent socket of c, or nil.
+// Router.mu must be held.
+func (r *Router) twinOf(c *Session) *Session {
+	o := r.bySource[c.addr]
+	if o == c {
+		o = c.twin
+	} else if o != nil && o.twin != c {
+		o = nil
+	}
+	if o == nil || o.closed || o.addr != c.addr {
+		return nil
+	}
+	return o
 }
 
 // passSource gives source address a of the closed session s to another
@@ -581,6 +606,12 @@ func (r *Router) Forward(src netip.AddrPort, spi uint32, size int, now time.Time
 		return netip.AddrPort{}, DropUnknownSource
 	}
 	w := s.rows[spi]
+	if t := s.twin; (w == nil || now.After(w.expires)) && t != nil && !t.closed {
+		// The older session keeps its rows until it closes.
+		if tw := t.rows[spi]; tw != nil && (src == t.addr || (src == t.prev && !now.After(t.prevUntil))) {
+			s, w = t, tw
+		}
+	}
 	if w == nil || now.After(w.expires) {
 		s.dropUnknownSPI.Add(1)
 		r.drops[dropUnknownSPI].Add(1)

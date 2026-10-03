@@ -224,6 +224,63 @@ func TestSourceAfterClose(t *testing.T) {
 	}
 }
 
+// TestTwinRows opens a second session with a Session call from an agent socket.
+// The older session keeps its rows until it closes, and an SPI that one of them
+// holds is refused to the other.
+func TestTwinRows(t *testing.T) {
+	const addr = "192.0.2.1:1000"
+	cases := []struct {
+		name         string
+		vpc          VPCKey // VPC of the new session.
+		agent        string // Agent of the new session.
+		close        string // "old", "new" or "".
+		want1, want2 Verdict
+	}{
+		{"both sessions open", vpcA, "agent", "", Pass, Pass},
+		{"new session closes", vpcA, "agent", "new", Pass, DropUnknownSPI},
+		{"old session closes", vpcA, "agent", "old", DropUnknownSPI, Pass},
+		{"another agent at the address", vpcB, "other", "", DropUnknownSPI, Pass},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := NewRouter(nil, Config{})
+			addSession(t, r, vpcA, "receiver", "192.0.2.2:2000", "fd00::2/128")
+			addSession(t, r, vpcB, "receiver", "192.0.2.4:2000", "fd00::2/128")
+			old := addSession(t, r, vpcA, "agent", addr).Session
+			require.NoError(t, r.openSync(old, dp.Mode_MODE_PSP, ref(vpcA)))
+			require.NoError(t, r.registerSPI(old, register(vpcA, "fd00::2", time.Minute, 1), t0))
+			next := addSession(t, r, tc.vpc, tc.agent, addr).Session
+			require.NoError(t, r.openSync(next, dp.Mode_MODE_PSP, ref(tc.vpc)))
+			require.Same(t, next, r.bySource[netip.MustParseAddrPort(addr)])
+			if tc.agent == "agent" {
+				assert.Equal(t, rpc.AlreadyExists, codeOf(r.registerSPI(next, register(vpcA, "fd00::2", time.Minute, 1), t0)))
+			}
+			require.NoError(t, r.registerSPI(next, register(tc.vpc, "fd00::2", time.Minute, 2), t0))
+			if tc.agent == "agent" {
+				assert.Equal(t, rpc.AlreadyExists, codeOf(r.registerSPI(old, register(vpcA, "fd00::2", time.Minute, 2), t0)))
+			}
+			switch tc.close {
+			case "old":
+				r.removeSession(old)
+			case "new":
+				r.removeSession(next)
+			}
+
+			src := netip.MustParseAddrPort(addr)
+			dst, v := r.Forward(src, 1, 1400, t0)
+			assert.Equal(t, tc.want1, v, "SPI of the old session")
+			if v == Pass {
+				assert.Equal(t, "192.0.2.2:2000", dst.String())
+			}
+			dst, v = r.Forward(src, 2, 1400, t0)
+			assert.Equal(t, tc.want2, v, "SPI of the new session")
+			if v == Pass {
+				assert.Equal(t, map[VPCKey]string{vpcA: "192.0.2.2:2000", vpcB: "192.0.2.4:2000"}[tc.vpc], dst.String())
+			}
+		})
+	}
+}
+
 func TestForwardCounters(t *testing.T) {
 	r := NewRouter(nil, Config{LaneRate: 1 << 20, LaneBurst: 64 << 10})
 	snd := addSession(t, r, vpcA, "sender", "192.0.2.1:1000", "fd00::1/128")

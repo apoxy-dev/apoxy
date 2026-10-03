@@ -122,9 +122,16 @@ func (r *Router) registerSPI(c *Session, in *dp.RegisterSPIRequest, now time.Tim
 	if recv == nil {
 		return rpc.Errorf(rpc.NotFound, "no route to %s", dst)
 	}
+	twin := r.twinOf(c)
 	for _, spi := range in.GetSpis() {
 		if w := c.rows[spi]; w != nil && (w.vpc != key || w.dst != dst) {
 			return rpc.Errorf(rpc.AlreadyExists, "SPI %#x is held for another destination", spi)
+		}
+		// Forward finds the sender of a packet from its socket and its SPI.
+		if twin != nil {
+			if w := twin.rows[spi]; w != nil && !now.After(w.expires) {
+				return rpc.Errorf(rpc.AlreadyExists, "SPI %#x is held by another session on this socket", spi)
+			}
 		}
 	}
 	for _, spi := range in.GetSpis() {
