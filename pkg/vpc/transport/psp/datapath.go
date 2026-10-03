@@ -32,7 +32,7 @@ const (
 	maxBatch = 128
 	// tunOffset is the space that the TUN device needs before each packet.
 	tunOffset = 16
-	// rxBatch is the most packets in one TUN write: the recvmmsg batch of quic-go on Linux.
+	// rxBatch is the most packets in one TUN write. A full batch is written at once.
 	rxBatch = 8
 	// rxSlot is the space for one packet of a tunBatch. The device can coalesce up to 64 KiB into it.
 	rxSlot = tunOffset + 1<<16
