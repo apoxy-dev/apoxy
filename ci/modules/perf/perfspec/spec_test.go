@@ -125,7 +125,7 @@ func TestCloudInit(t *testing.T) {
 	if err := json.Unmarshal([]byte(body), &cfg); err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(cfg.Bootcmd[0], " "); got != "systemd-run --on-active=60min systemctl poweroff -ff" {
+	if got := strings.Join(cfg.Bootcmd[0], " "); got != "systemd-run --no-block --on-active=60min systemctl poweroff -ff" {
 		t.Errorf("bootcmd = %s", got)
 	}
 	if cfg.WriteFiles[0].Path != "/opt/perf/perfagent" || cfg.WriteFiles[0].Source["uri"] != agent {

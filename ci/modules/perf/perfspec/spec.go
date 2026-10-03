@@ -124,8 +124,10 @@ func CloudInit(agentURL, specURL string, poweroff time.Duration) (string, error)
 		return "", fmt.Errorf("poweroff %s is less than 1m", poweroff)
 	}
 	cfg := map[string]any{
+		// bootcmd runs before sysinit.target, and a timer starts after it, so
+		// systemd-run must not wait for the start.
 		"bootcmd": [][]string{
-			{"systemd-run", fmt.Sprintf("--on-active=%dmin", int(poweroff.Minutes())), "systemctl", "poweroff", "-ff"},
+			{"systemd-run", "--no-block", fmt.Sprintf("--on-active=%dmin", int(poweroff.Minutes())), "systemctl", "poweroff", "-ff"},
 		},
 		"packages": []string{"iperf3"},
 		"write_files": []map[string]any{{
