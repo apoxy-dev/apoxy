@@ -125,14 +125,17 @@ func TestCloudInit(t *testing.T) {
 	if err := json.Unmarshal([]byte(body), &cfg); err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(cfg.Bootcmd[0], " "); got != "systemd-run --no-block --on-active=60min systemctl poweroff -ff" {
-		t.Errorf("bootcmd = %s", got)
+	if len(cfg.Bootcmd) > 0 {
+		t.Errorf("bootcmd = %v, want none", cfg.Bootcmd)
+	}
+	if got := strings.Join(cfg.Runcmd[0], " "); got != "systemd-run --no-block --on-active=60min systemctl poweroff -ff" {
+		t.Errorf("runcmd[0] = %s", got)
 	}
 	if cfg.WriteFiles[0].Path != "/opt/perf/perfagent" || cfg.WriteFiles[0].Source["uri"] != agent {
 		t.Errorf("write_files = %+v", cfg.WriteFiles)
 	}
-	if want := []string{"/opt/perf/perfagent", "-ec2", "-spec", spec}; !reflect.DeepEqual(cfg.Runcmd[0], want) {
-		t.Errorf("runcmd = %v, want %v", cfg.Runcmd[0], want)
+	if want := []string{"/opt/perf/perfagent", "-ec2", "-spec", spec}; !reflect.DeepEqual(cfg.Runcmd[1], want) {
+		t.Errorf("runcmd[1] = %v, want %v", cfg.Runcmd[1], want)
 	}
 	if cfg.PowerState["mode"] != "poweroff" || !reflect.DeepEqual(cfg.Packages, []string{"iperf3"}) {
 		t.Errorf("power_state = %v, packages = %v", cfg.PowerState, cfg.Packages)

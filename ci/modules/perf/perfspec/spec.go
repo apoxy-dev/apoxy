@@ -119,26 +119,23 @@ func Tags(runTag string, expires time.Time) []string {
 	}
 }
 
-// CloudInit returns the user data of a bench instance. A systemd timer powers
-// off the host after poweroff in all cases. cloud-init fetches perfagent and
-// runs it, and then powers off the host, also when perfagent fails.
+// CloudInit returns the user data of a bench instance. cloud-init fetches
+// perfagent, starts a systemd timer that powers off the host after poweroff,
+// runs perfagent, and then powers off the host, also when perfagent fails.
 func CloudInit(agentURL, specURL string, poweroff time.Duration) (string, error) {
 	if poweroff < time.Minute {
 		return "", fmt.Errorf("poweroff %s is less than 1m", poweroff)
 	}
 	cfg := map[string]any{
-		// bootcmd runs before sysinit.target, and a timer starts after it, so
-		// systemd-run must not wait for the start.
-		"bootcmd": [][]string{
-			{"systemd-run", "--no-block", fmt.Sprintf("--on-active=%dmin", int(poweroff.Minutes())), "systemctl", "poweroff", "-ff"},
-		},
 		"packages": []string{"iperf3"},
 		"write_files": []map[string]any{{
 			"path":        "/opt/perf/" + Agent,
 			"permissions": "0755",
 			"source":      map[string]string{"uri": agentURL},
 		}},
+		// systemd-run stops the boot when it runs in bootcmd, so the timer starts here.
 		"runcmd": [][]string{
+			{"systemd-run", "--no-block", fmt.Sprintf("--on-active=%dmin", int(poweroff.Minutes())), "systemctl", "poweroff", "-ff"},
 			{"/opt/perf/" + Agent, "-ec2", "-spec", specURL},
 		},
 		"power_state": map[string]any{"mode": "poweroff", "condition": true, "delay": "now"},
