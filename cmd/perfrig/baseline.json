@@ -23,6 +23,7 @@
       "client_cores_per_gbps": 0.040604,
       "server_cores_per_gbps": 0.040403,
       "tolerance": 0.2,
+      "info": true,
       "source": "2026-10-03 7.0.0-1012-aws"
     },
     "c7a.8xlarge iperf3-udp streams=1 duration=30s omit=2s delay=10ms jitter=0ms loss=0% rate=none queue=100000 mtu=1500 bitrate=2G window=8M": {
