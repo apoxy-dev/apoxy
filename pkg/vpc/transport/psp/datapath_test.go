@@ -373,15 +373,16 @@ func TestDeliver(t *testing.T) {
 	dev := newFakeTun(2)
 	w := &tunWriter{dev: dev, bufs: make([][]byte, 1), scratch: make([]byte, tunOffset+a.b.mtu)}
 	d := newDriver(a.b, w.write)
-	d.batch = newTunBatch(w, &a.b.stats)
+	bt := newTunBatch(w, &a.b.stats)
+	d.batch = bt
 	a.b.drv.Store(d)
-	d.batch.add(read)
+	bt.add(read)
 
 	assert.True(t, a.b.Deliver(pkt))
 	assert.Equal(t, []int{1}, dev.calls)
 	assert.Equal(t, pkt, <-dev.out)
-	assert.Len(t, d.batch.out, 1)
+	assert.Len(t, bt.out, 1)
 	assert.Equal(t, Stats{}, a.b.Stats(), "no receive counters")
-	d.batch.flush()
+	bt.flush()
 	assert.Equal(t, read, <-dev.out)
 }

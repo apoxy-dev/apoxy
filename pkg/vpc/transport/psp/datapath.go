@@ -45,8 +45,8 @@ type driver struct {
 	// deliver gives the inner packet buf[off:] to the netstack or the TUN
 	// device. It returns false when it drops the packet.
 	deliver func(buf []byte, off int) bool
-	// batch collects the PSP packets of one read for the TUN device. It is nil for the netstack.
-	batch *tunBatch
+	// batch collects the PSP packets of one read of the QUIC read loop.
+	batch readBatch
 	done  chan struct{}
 	once  sync.Once
 
@@ -86,12 +86,14 @@ var (
 // with the inner MTU. The caller runs the driver. A binding has one driver.
 func (b *Binding) Netstack(ep *channel.Endpoint) (*netstack.Datapath, error) {
 	d := newDriver(b, func(buf []byte, off int) bool { return inject(ep, buf[off:]) })
+	d.batch = newInjectBatch(ep, &b.stats, b.seed, min(runtime.GOMAXPROCS(0), maxInjectWorkers), d.done, b.ctx.Done())
 	if !b.drv.CompareAndSwap(nil, d) {
+		_ = d.Close()
 		return nil, errors.New("psp: binding already has a driver")
 	}
 	nd, err := netstack.New(netstack.Config{Engine: d, Endpoint: ep, Underlay: d})
 	if err != nil {
-		b.drv.CompareAndSwap(d, nil)
+		_ = d.Close()
 		return nil, err
 	}
 	return nd, nil
@@ -117,19 +119,34 @@ func (b *Binding) Tun(dev tun.Device) (*tun.Datapath, error) {
 
 // inject gives an inner IP packet to the netstack, which copies it.
 func inject(ep *channel.Endpoint, pkt []byte) bool {
-	var proto tcpip.NetworkProtocolNumber
-	switch {
-	case len(pkt) > 0 && pkt[0]>>4 == header.IPv4Version:
-		proto = header.IPv4ProtocolNumber
-	case len(pkt) > 0 && pkt[0]>>4 == header.IPv6Version:
-		proto = header.IPv6ProtocolNumber
-	default:
+	proto, ok := ipProto(pkt)
+	if !ok {
 		return false
 	}
 	pkb := stack.NewPacketBuffer(stack.PacketBufferOptions{Payload: buffer.MakeWithData(pkt)})
 	ep.InjectInbound(proto, pkb)
 	pkb.DecRef()
 	return true
+}
+
+// ipProto returns the network protocol of an IPv4 or IPv6 packet.
+func ipProto(pkt []byte) (tcpip.NetworkProtocolNumber, bool) {
+	switch {
+	case len(pkt) > 0 && pkt[0]>>4 == header.IPv4Version:
+		return header.IPv4ProtocolNumber, true
+	case len(pkt) > 0 && pkt[0]>>4 == header.IPv6Version:
+		return header.IPv6ProtocolNumber, true
+	}
+	return 0, false
+}
+
+// readBatch collects the PSP packets of one read of the QUIC read loop. Only
+// the read loop calls it.
+type readBatch interface {
+	// add copies pkt into the batch.
+	add(pkt []byte)
+	// flush gives the batch to the device or the netstack.
+	flush()
 }
 
 // tunWriter writes received packets to a TUN device. The PSP path and the

@@ -71,7 +71,8 @@ func (m *Demux) Handle(pkt []byte, from net.Addr) {
 	}
 }
 
-// BatchEnd is the NonQUICBatchEnd of the transport. It writes the packets of one read to the TUN device.
+// BatchEnd is the NonQUICBatchEnd of the transport. It gives the packets of one read to
+// the TUN device or the netstack.
 func (m *Demux) BatchEnd() {
 	if b := m.b.Load(); b != nil {
 		if d := b.drv.Load(); d != nil && d.batch != nil {
