@@ -27,7 +27,7 @@ type netstackNet struct {
 // startNetstack runs the netstack driver of b on a new stack with address
 // self until ctx ends. A non-empty cc sets the TCP congestion control.
 func startNetstack(ctx context.Context, fail context.CancelCauseFunc, b *psp.Binding, self netip.Addr, cc string) (overlay, error) {
-	ns, err := netstack.NewStack(b.DeviceMTU(), "")
+	ns, err := netstack.NewStack(b.DeviceMTU(), "", netstack.WithoutIPTables())
 	if err != nil {
 		return nil, err
 	}

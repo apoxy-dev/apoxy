@@ -255,18 +255,21 @@ func TestNoPeer(t *testing.T) {
 		dst     func(eb attachEvent) netip.Addr
 		permit  relay.Permit
 		dialErr string // Not empty: a TCP dial in place of a UDP packet fails with this error.
+		// vpcStack uses the netstack of vpc connect, which must let the ICMPv6 error in.
+		vpcStack bool
 	}{
 		{name: "not found", dst: absent},
 		{name: "TCP dial to an absent peer", dst: absent, dialErr: (&tcpip.ErrHostUnreachable{}).String()},
 		{name: "outside the VPC", dst: func(attachEvent) netip.Addr { return netip.MustParseAddr("fd97::1") }},
 		{name: "denied", dst: peer, permit: deny},
 		{name: "TCP dial denied", dst: peer, permit: deny, dialErr: (&tcpip.ErrPermissionDenied{}).String()},
+		{name: "TCP dial denied, vpc connect stack", dst: peer, permit: deny, vpcStack: true, dialErr: (&tcpip.ErrPermissionDenied{}).String()},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			w := newWorld(t)
 			r := w.relay(t, "relay-1")
-			a, b := w.agent(t, "a", r, agentOptions{tcp: tc.dialErr != ""}), w.agent(t, "b", r, agentOptions{})
+			a, b := w.agent(t, "a", r, agentOptions{tcp: tc.dialErr != "", vpcStack: tc.vpcStack}), w.agent(t, "b", r, agentOptions{})
 			ea, eb := a.attached(t), b.attached(t)
 			if tc.permit != nil {
 				r.r.SetPermit(tc.permit)

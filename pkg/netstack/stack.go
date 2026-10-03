@@ -29,16 +29,35 @@ type Stack struct {
 	Endpoint *channel.Endpoint
 	NICID    tcpip.NICID
 
-	ipt      *IPTables
+	ipt      *IPTables // Nil for a stack without iptables.
+	filter   *inFilter // Nil for a stack with iptables.
 	pcapFile *os.File
+}
+
+// Option configures NewStack.
+type Option func(*stackOptions)
+
+type stackOptions struct {
+	noIPTables bool
+}
+
+// WithoutIPTables makes a stack with no iptables, so that no packet goes
+// through conntrack, and with no SNAT. A filter with no state lets in only
+// TCP, UDP, ICMP errors, and ICMP echo requests to an address of the stack.
+// Use it for a stack with one address.
+func WithoutIPTables() Option {
+	return func(o *stackOptions) { o.noIPTables = true }
 }
 
 // NewStack makes a stack with the tunnel TCP options and one NIC with the
 // given MTU. The NIC routes all addresses. Set pcapPath to write a packet
 // capture of the NIC.
-func NewStack(mtu int, pcapPath string) (*Stack, error) {
-	ipt := newIPTables()
-	ipstack := stack.New(stack.Options{
+func NewStack(mtu int, pcapPath string, opts ...Option) (*Stack, error) {
+	var o stackOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+	sopts := stack.Options{
 		NetworkProtocols: []stack.NetworkProtocolFactory{
 			ipv4.NewProtocol,
 			ipv6.NewProtocol,
@@ -49,8 +68,13 @@ func NewStack(mtu int, pcapPath string) (*Stack, error) {
 			icmp.NewProtocol4,
 			icmp.NewProtocol6,
 		},
-		DefaultIPTables: ipt.defaultIPTables,
-	})
+	}
+	var ipt *IPTables
+	if !o.noIPTables {
+		ipt = newIPTables()
+		sopts.DefaultIPTables = ipt.defaultIPTables
+	}
+	ipstack := stack.New(sopts)
 
 	sackEnabledOpt := tcpip.TCPSACKEnabled(true)
 	if tcpipErr := ipstack.SetTransportProtocolOption(tcp.ProtocolNumber, &sackEnabledOpt); tcpipErr != nil {
@@ -112,6 +136,11 @@ func NewStack(mtu int, pcapPath string) (*Stack, error) {
 	nicID := ipstack.NextNICID()
 	linkEP := channel.New(4096, uint32(mtu), "")
 	var nicEP stack.LinkEndpoint = linkEP
+	var filter *inFilter
+	if o.noIPTables {
+		filter = newInFilter(linkEP)
+		nicEP = filter
+	}
 
 	var pcapFile *os.File
 	if pcapPath != "" {
@@ -144,6 +173,7 @@ func NewStack(mtu int, pcapPath string) (*Stack, error) {
 		Endpoint: linkEP,
 		NICID:    nicID,
 		ipt:      ipt,
+		filter:   filter,
 		pcapFile: pcapFile,
 	}, nil
 }
@@ -161,7 +191,8 @@ func (s *Stack) Close() {
 	}
 }
 
-// AddAddr adds addr to the NIC and to the SNAT source addresses.
+// AddAddr adds addr to the NIC, and to the SNAT source addresses or the
+// local addresses of the filter.
 func (s *Stack) AddAddr(addr netip.Prefix) error {
 	var protoNumber tcpip.NetworkProtocolNumber
 	if addr.Addr().Is4() {
@@ -180,6 +211,11 @@ func (s *Stack) AddAddr(addr netip.Prefix) error {
 		return fmt.Errorf("could not add protocol address: %v", tcpipErr)
 	}
 
+	if s.filter != nil {
+		s.filter.add(protoAddr.AddressWithPrefix.Address)
+		return nil
+	}
+
 	slog.Info("Adding addr to SNAT", slog.String("addr", addr.String()))
 
 	if addr.Addr().Is4() {
@@ -190,7 +226,8 @@ func (s *Stack) AddAddr(addr netip.Prefix) error {
 	return nil
 }
 
-// DelAddr removes addr from the NIC and from the SNAT source addresses.
+// DelAddr removes addr from the NIC, and from the SNAT source addresses or
+// the local addresses of the filter.
 func (s *Stack) DelAddr(addr netip.Prefix) error {
 	var nsAddr tcpip.Address
 	if addr.Addr().Is4() {
@@ -203,6 +240,11 @@ func (s *Stack) DelAddr(addr netip.Prefix) error {
 
 	if err := s.Stack.RemoveAddress(s.NICID, nsAddr); err != nil {
 		return fmt.Errorf("could not remove address: %v", err)
+	}
+
+	if s.filter != nil {
+		s.filter.del(nsAddr)
+		return nil
 	}
 
 	slog.Info("Removing addr from SNAT", slog.String("addr", addr.String()))

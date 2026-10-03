@@ -416,7 +416,7 @@ func (h *hostDevice) startNetstack(b *psp.Binding, addr netip.Addr, dns *network
 		}
 		denied = []uint16{uint16(p)}
 	}
-	ns, err := netstack.NewStack(b.DeviceMTU(), "")
+	ns, err := netstack.NewStack(b.DeviceMTU(), "", netstack.WithoutIPTables())
 	if err != nil {
 		return nil, err
 	}

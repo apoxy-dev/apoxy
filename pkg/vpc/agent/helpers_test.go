@@ -29,6 +29,7 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
 
+	"github.com/apoxy-dev/apoxy/pkg/netstack"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/identity"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/p2p"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay"
@@ -254,6 +255,8 @@ type testAgent struct {
 
 	stackOnce sync.Once
 	stack     *stack.Stack
+	vpcStack  bool
+	ns        *netstack.Stack // Set with vpcStack.
 
 	routesMu sync.Mutex
 	routes   map[netip.Prefix]bool // From OnRoutes.
@@ -280,6 +283,10 @@ type agentOptions struct {
 	// enrolled gives the relays and the relay roots of enroll n, from 1. Then
 	// Config.Relays is empty.
 	enrolled func(n int32) ([]identity.Relay, []byte, error)
+
+	// vpcStack makes the netstack with pkg/netstack.NewStack and its VPC
+	// options, as vpc connect does. It always has TCP.
+	vpcStack bool
 }
 
 // lossyConn drops the packets that it sends if they are larger than max.
@@ -326,7 +333,7 @@ func (w *world) agent(t *testing.T, name string, r *testRelay, opts agentOptions
 	}
 	ta := &testAgent{
 		tr: &quic.Transport{Conn: conn}, attach: make(chan attachEvent, 16), done: make(chan struct{}),
-		routes: map[netip.Prefix]bool{}, extras: map[string]netip.Addr{},
+		routes: map[netip.Prefix]bool{}, extras: map[string]netip.Addr{}, vpcStack: opts.vpcStack,
 	}
 	enroll := func(context.Context) (*identity.Credential, error) {
 		n := ta.enrolls.Add(1)
@@ -476,7 +483,13 @@ func (ta *testAgent) removeAddr(t *testing.T, addr netip.Addr) {
 	if !addr.IsValid() {
 		return
 	}
-	if err := ta.stack.RemoveAddress(1, tcpip.AddrFromSlice(addr.AsSlice())); err != nil {
+	var err error
+	if ta.ns != nil {
+		err = ta.ns.DelAddr(netip.PrefixFrom(addr, addr.BitLen()))
+	} else if terr := ta.stack.RemoveAddress(1, tcpip.AddrFromSlice(addr.AsSlice())); terr != nil {
+		err = errors.New(terr.String())
+	}
+	if err != nil {
 		t.Errorf("remove address %s: %v", addr, err)
 	}
 }
@@ -517,21 +530,32 @@ func (ta *testAgent) attached(t *testing.T) attachEvent {
 // and adds addr.
 func (ta *testAgent) netstack(t *testing.T, b *psp.Binding, addr netip.Addr, withTCP bool) {
 	ta.stackOnce.Do(func() {
-		protos := []stack.TransportProtocolFactory{udp.NewProtocol}
-		if withTCP {
-			// The idle TCP processors use all CPUs in -race builds.
-			protos = append(protos, tcp.NewProtocol)
+		var s *stack.Stack
+		var ep *channel.Endpoint
+		if ta.vpcStack {
+			ns, err := netstack.NewStack(b.DeviceMTU(), "", netstack.WithoutIPTables())
+			if err != nil {
+				t.Errorf("new stack: %v", err)
+				return
+			}
+			ta.ns, s, ep = ns, ns.Stack, ns.Endpoint
+		} else {
+			protos := []stack.TransportProtocolFactory{udp.NewProtocol}
+			if withTCP {
+				// The idle TCP processors use all CPUs in -race builds.
+				protos = append(protos, tcp.NewProtocol)
+			}
+			s = stack.New(stack.Options{
+				NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol, ipv6.NewProtocol},
+				TransportProtocols: protos,
+			})
+			ep = channel.New(256, uint32(b.DeviceMTU()), "")
+			if err := s.CreateNIC(1, ep); err != nil {
+				t.Errorf("create NIC: %v", err)
+				return
+			}
+			s.SetRouteTable([]tcpip.Route{{Destination: header.IPv6EmptySubnet, NIC: 1}})
 		}
-		s := stack.New(stack.Options{
-			NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol, ipv6.NewProtocol},
-			TransportProtocols: protos,
-		})
-		ep := channel.New(256, uint32(b.DeviceMTU()), "")
-		if err := s.CreateNIC(1, ep); err != nil {
-			t.Errorf("create NIC: %v", err)
-			return
-		}
-		s.SetRouteTable([]tcpip.Route{{Destination: header.IPv6EmptySubnet, NIC: 1}})
 		d, err := b.Netstack(ep)
 		if err != nil {
 			t.Errorf("netstack: %v", err)
@@ -550,10 +574,20 @@ func (ta *testAgent) netstack(t *testing.T, b *psp.Binding, addr netip.Addr, wit
 			ta.stop()
 			cancel()
 			<-done
-			s.Close()
+			if ta.ns != nil {
+				ta.ns.Close()
+			} else {
+				s.Close()
+			}
 		})
 		ta.stack = s
 	})
+	if ta.ns != nil {
+		if err := ta.ns.AddAddr(netip.PrefixFrom(addr, addr.BitLen())); err != nil {
+			t.Errorf("add address: %v", err)
+		}
+		return
+	}
 	pa := tcpip.ProtocolAddress{Protocol: ipv6.ProtocolNumber, AddressWithPrefix: tcpip.AddrFromSlice(addr.AsSlice()).WithPrefix()}
 	if err := ta.stack.AddProtocolAddress(1, pa, stack.AddressProperties{}); err != nil {
 		t.Errorf("add address: %v", err)
