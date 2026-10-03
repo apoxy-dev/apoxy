@@ -152,12 +152,12 @@ github.com/apoxy-dev/icx v0.19.1-0.20260816193225-5b452648af86 h1:kumocWrRWcFaEm
 github.com/apoxy-dev/icx v0.19.1-0.20260816193225-5b452648af86/go.mod h1:B52w7Cs1nsMyE3IwkFMwy06gGQ5Dz0YxPrd1eUWv7g4=
 github.com/apoxy-dev/icx v0.19.1-0.20260826222334-295d1c74aeae h1:33rLqcuNfL0KaP2VpORf69jq7i5u0Esxn86W7/Z7G6g=
 github.com/apoxy-dev/icx v0.19.1-0.20260826222334-295d1c74aeae/go.mod h1:B52w7Cs1nsMyE3IwkFMwy06gGQ5Dz0YxPrd1eUWv7g4=
-github.com/apoxy-dev/quic-go v0.0.0-20261003051733-3d64108bda9b h1:pG6Ttc0acwjjZcel7HKyjGOxYFToIDlbqINQKa5dJ80=
-github.com/apoxy-dev/quic-go v0.0.0-20261003051733-3d64108bda9b/go.mod h1:MFlGGpcpJqRAfmYi6NC2cptDPSxRWTOGNuP4wqrWmzQ=
+github.com/apoxy-dev/quic-go v0.0.0-20261003061000-82d62f8f6e95 h1:6SgrLjRGZiapjO2U9nwWEiXQpSj67Q9zpeYbRYTrKnQ=
+github.com/apoxy-dev/quic-go v0.0.0-20261003061000-82d62f8f6e95/go.mod h1:MFlGGpcpJqRAfmYi6NC2cptDPSxRWTOGNuP4wqrWmzQ=
 github.com/apoxy-dev/softpsp v0.0.0-20261001021638-daae98faedfd h1:yQHTBg5WZCNys5HlL+1yeWex9S1t0MTvSkZ27CpI7R0=
 github.com/apoxy-dev/softpsp v0.0.0-20261001021638-daae98faedfd/go.mod h1:ahrCSgeuIkm0XgY5WmM+QLTg3ZEdTz8hDah6JgeJNbY=
-github.com/apoxy-dev/softpsp v0.0.0-20261001213707-6eaae3395a8f h1:vM7GsAIpUNGgqmAFRRTZa0odPTZT+iLfwpHyJIclSIM=
-github.com/apoxy-dev/softpsp v0.0.0-20261001213707-6eaae3395a8f/go.mod h1:ahrCSgeuIkm0XgY5WmM+QLTg3ZEdTz8hDah6JgeJNbY=
+github.com/apoxy-dev/softpsp v0.0.0-20261003060305-4bfe4fe862c1 h1:00w42Hzu6l4rWTIUFJ3/p+8xYP3G3i+H6p3Gq49QMlw=
+github.com/apoxy-dev/softpsp v0.0.0-20261003060305-4bfe4fe862c1/go.mod h1:ahrCSgeuIkm0XgY5WmM+QLTg3ZEdTz8hDah6JgeJNbY=
 github.com/apoxy-dev/upgrade-cli v0.0.0-20240213232412-a56c3a52fa0e h1:FBNxMQD93z2ththupB/BYKLEaMWaEr+G+sJWJqU2wC4=
 github.com/apoxy-dev/upgrade-cli v0.0.0-20240213232412-a56c3a52fa0e/go.mod h1:Ert9guX/QneZS/noA8Ud0ggjXPLr1OOXmtxeX66xCwo=
 github.com/apparentlymart/go-cidr v1.1.0 h1:2mAhrMoF+nhXqxTzSZMUzDHkLjmIHC+Zzn4tdgBZjnU=

@@ -3,6 +3,7 @@
 package psp
 
 import (
+	"bytes"
 	"encoding/binary"
 	"hash/maphash"
 	"net/netip"
@@ -23,9 +24,10 @@ type recorder struct {
 	entered chan struct{}
 	gate    chan struct{}
 
-	mu  sync.Mutex
-	got map[uint16][]uint32
-	n   int
+	mu   sync.Mutex
+	got  map[uint16][]uint32
+	n    int
+	last []byte // A copy of the last packet.
 }
 
 func newRecorder(t *testing.T) (*recorder, *channel.Endpoint) {
@@ -52,6 +54,7 @@ func (r *recorder) DeliverNetworkPacket(_ tcpip.NetworkProtocolNumber, pkb *stac
 	port := binary.BigEndian.Uint16(b[20:])
 	r.got[port] = append(r.got[port], binary.BigEndian.Uint32(b[28:]))
 	r.n++
+	r.last = bytes.Clone(b)
 }
 
 func (r *recorder) DeliverLinkPacket(tcpip.NetworkProtocolNumber, *stack.PacketBuffer) {}

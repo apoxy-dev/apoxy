@@ -60,7 +60,7 @@ type Demux struct {
 	b atomic.Pointer[Binding]
 }
 
-// Handle runs on the QUIC read loop. It does not block.
+// Handle runs on the QUIC read loop. It waits only while the receive pipe is full.
 func (m *Demux) Handle(pkt []byte, from net.Addr) {
 	if len(pkt) > 0 && pkt[0] == p2p.TypeProbe && m.Probe != nil {
 		m.Probe(pkt, from)
@@ -75,7 +75,9 @@ func (m *Demux) Handle(pkt []byte, from net.Addr) {
 // the TUN device or the netstack.
 func (m *Demux) BatchEnd() {
 	if b := m.b.Load(); b != nil {
-		if d := b.drv.Load(); d != nil && d.batch != nil {
+		if d := b.drv.Load(); d != nil && d.pipe != nil {
+			d.pipe.flush()
+		} else if d != nil && d.batch != nil {
 			d.batch.flush()
 		}
 	}
@@ -154,7 +156,7 @@ func New(cfg Config) (*Binding, error) {
 	if cfg.DeviceMTU < 0 || cfg.DeviceMTU > cfg.MTU {
 		return nil, fmt.Errorf("psp: device MTU must be 1 to %d, got %d", cfg.MTU, cfg.DeviceMTU)
 	}
-	// One receive queue: the QUIC read loop opens all PSP packets.
+	// One receive queue: one goroutine opens all PSP packets.
 	table, err := engine.NewRxTable(engine.RxConfig{Queues: 1})
 	if err != nil {
 		return nil, err
@@ -428,8 +430,8 @@ func (b *Binding) ReportQUIC(now time.Time, lost uint64) {
 // when there is none.
 func (b *Binding) QUICLimit() int64 { return b.quic.limit() }
 
-// receive opens a PSP packet in place and gives it to the driver. It runs on the QUIC
-// read loop.
+// receive gives a PSP packet to the driver. It runs on the QUIC read loop. With a receive
+// pipe, it copies the packet into the pipe, else it opens the packet.
 func (b *Binding) receive(pkt []byte) {
 	if len(pkt) == 0 || (pkt[0] != pspwire.NextHdrV4 && pkt[0] != pspwire.NextHdrV6) {
 		b.stats.rxOther.Add(1)
@@ -440,6 +442,16 @@ func (b *Binding) receive(pkt []byte) {
 		b.stats.rxNoDriver.Add(1)
 		return
 	}
+	if d.pipe != nil {
+		d.pipe.add(pkt)
+		return
+	}
+	b.open(d, pkt)
+}
+
+// open opens a PSP packet in place and gives it to the driver. Only one goroutine at a
+// time calls it: the QUIC read loop, or the consumer of the receive pipe.
+func (b *Binding) open(d *driver, pkt []byte) {
 	inner, _, err := b.rxq.Receive(pkt)
 	if err != nil {
 		b.stats.rxDrops.Add(1)
@@ -465,7 +477,7 @@ func (b *Binding) HandleData(frame []byte) {
 }
 
 // deliver gives the inner packet buf[off:] of the PSP path or the QUIC path to the driver,
-// after the MSS clamp. Both paths deliver only here. The QUIC read loop sets batch.
+// after the MSS clamp. Both paths deliver only here. The PSP path sets batch.
 func (b *Binding) deliver(d *driver, buf []byte, off int, batch bool) {
 	b.clampMSS(buf[off:], b.relay.Load() != nil)
 	if batch && d.batch != nil {

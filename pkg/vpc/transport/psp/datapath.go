@@ -49,6 +49,9 @@ type driver struct {
 	batch readBatch
 	done  chan struct{}
 	once  sync.Once
+	// pipe moves the PSP packets from the QUIC read loop to a goroutine that opens them.
+	// Nil when the read loop opens them.
+	pipe *rxPipe
 
 	// Send state. Only the send goroutine of the vtep driver uses it.
 	tx *udpbatch.Batch // Nil when the socket cannot send batches.
@@ -78,7 +81,11 @@ var (
 // with the inner MTU. The caller runs the driver. A binding has one driver.
 func (b *Binding) Netstack(ep *channel.Endpoint) (*netstack.Datapath, error) {
 	d := newDriver(b, func(buf []byte, off int) bool { return inject(ep, buf[off:]) })
-	d.batch = newInjectBatch(ep, &b.stats, b.seed, min(runtime.GOMAXPROCS(0), maxInjectWorkers), d.done, b.ctx.Done())
+	procs := runtime.GOMAXPROCS(0)
+	d.batch = newInjectBatch(ep, &b.stats, b.seed, min(procs, maxInjectWorkers), d.done, b.ctx.Done())
+	if procs > 1 {
+		d.pipe = newRxPipe(d, d.done, b.ctx.Done())
+	}
 	if !b.drv.CompareAndSwap(nil, d) {
 		_ = d.Close()
 		return nil, errors.New("psp: binding already has a driver")
@@ -133,7 +140,7 @@ func ipProto(pkt []byte) (tcpip.NetworkProtocolNumber, bool) {
 }
 
 // readBatch collects the PSP packets of one read of the QUIC read loop. Only
-// the read loop calls it.
+// the goroutine that opens the PSP packets calls it.
 type readBatch interface {
 	// add copies pkt into the batch.
 	add(pkt []byte)
@@ -328,6 +335,10 @@ func (d *driver) ReadFrame([]byte) (int, error) {
 func (d *driver) Close() error {
 	d.once.Do(func() {
 		close(d.done)
+		if d.pipe != nil {
+			// The next driver can open packets only after the consumer stops.
+			<-d.pipe.exited
+		}
 		d.b.drv.CompareAndSwap(d, nil)
 	})
 	return nil

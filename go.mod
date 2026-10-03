@@ -11,7 +11,7 @@ require (
 	github.com/alphadose/haxmap v1.4.1
 	github.com/anatol/vmtest v0.0.0-20250318022921-2f32244e2f0f
 	github.com/apoxy-dev/icx v0.19.1-0.20260826222334-295d1c74aeae
-	github.com/apoxy-dev/softpsp v0.0.0-20261001213707-6eaae3395a8f
+	github.com/apoxy-dev/softpsp v0.0.0-20261003060305-4bfe4fe862c1
 	github.com/avast/retry-go/v4 v4.6.1
 	github.com/bramvdbogaerde/go-scp v1.5.0
 	github.com/buraksezer/olric v0.5.6
@@ -457,7 +457,7 @@ require (
 
 replace github.com/getsavvyinc/upgrade-cli => github.com/apoxy-dev/upgrade-cli v0.0.0-20240213232412-a56c3a52fa0e
 
-replace github.com/quic-go/quic-go => github.com/apoxy-dev/quic-go v0.0.0-20261003051733-3d64108bda9b
+replace github.com/quic-go/quic-go => github.com/apoxy-dev/quic-go v0.0.0-20261003061000-82d62f8f6e95
 
 replace github.com/quic-go/connect-ip-go => github.com/apoxy-dev/connect-ip-go v0.0.0-20261002135041-baadecfb9616
 
