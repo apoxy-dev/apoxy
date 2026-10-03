@@ -44,6 +44,12 @@ var peerQUIC = &quic.Config{
 
 var errDuplicate = errors.New("both agents dialed; this session is not the one to keep")
 
+var (
+	// errAlreadyOpen refuses a second Open on one peer session.
+	errAlreadyOpen = errors.New("peer session is already open")
+	errPeerClosed  = errors.New("peer session closed")
+)
+
 // peer is one peer session with a remote agent of the VPC.
 type peer struct {
 	rc      *relayConn
@@ -262,6 +268,20 @@ func replaced(qc quic.Connection) bool {
 		ae.ErrorCode == quic.ApplicationErrorCode(dp.PeerCloseCode_PEER_CLOSE_CODE_DUPLICATE)
 }
 
+// closedError is the admit error for a closed session. It is errDuplicate when a
+// crossed dial replaced the session, so that connect waits for the kept one.
+func (p *peer) closedError() error {
+	if replaced(p.qc) {
+		return errDuplicate
+	}
+	return errPeerClosed
+}
+
+// gone reports whether p left the agent or its connection closed. a.mu must be held.
+func (a *Agent) gone(p *peer) bool {
+	return a.peers[p.conn] != p || p.qc.Context().Err() != nil
+}
+
 // peerTo returns the open peer session on rc whose grant covers dst. The
 // caller holds a.mu.
 func (a *Agent) peerTo(rc *relayConn, dst netip.Addr) *peer {
@@ -358,6 +378,15 @@ func (a *Agent) dial(ctx context.Context, rc *relayConn, dst netip.Addr, res *dp
 func (a *Agent) admit(p *peer, g *dp.AttachmentGrant, instance uint64, mode dp.Mode) error {
 	a.admitMu.Lock()
 	defer a.admitMu.Unlock()
+	a.mu.Lock()
+	open, gone := p.bp != nil, a.gone(p)
+	a.mu.Unlock()
+	if open {
+		return errAlreadyOpen
+	}
+	if gone {
+		return p.closedError()
+	}
 	if mode != dp.Mode_MODE_PSP && mode != dp.Mode_MODE_QUIC {
 		return fmt.Errorf("peer mode %v is not supported", mode)
 	}
@@ -399,6 +428,12 @@ func (a *Agent) admit(p *peer, g *dp.AttachmentGrant, instance uint64, mode dp.M
 		}
 	}
 	a.mu.Lock()
+	if a.gone(p) {
+		// A dropPeer before this point did not see bp, so remove it here.
+		a.bind.RemovePeer(bp)
+		a.mu.Unlock()
+		return p.closedError()
+	}
 	p.instance, p.claims, p.prefixes, p.addr, p.bp = instance, claims, prefixes, overlayAddr(prefixes), bp
 	close(a.admitted)
 	a.admitted = make(chan struct{})
@@ -698,6 +733,10 @@ func (s *peerService) Open(ctx context.Context, in *dp.OpenRequest) (*dp.OpenRes
 		return nil, rpc.Errorf(rpc.FailedPrecondition, "the dialer calls Open")
 	}
 	if err := s.a.admit(p, in.GetGrant(), in.GetInstance(), in.GetMode()); err != nil {
+		if errors.Is(err, errAlreadyOpen) {
+			// The session stays open for the first Open.
+			return nil, rpc.Errorf(rpc.FailedPrecondition, "%v", err)
+		}
 		slog.Info("Refused peer session", "peer", p.subject, "error", err)
 		// The close can arrive before the call status, so it carries the reason.
 		defer func() { _ = p.qc.CloseWithError(closeCode(err), err.Error()) }()

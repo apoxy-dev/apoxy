@@ -652,3 +652,79 @@ func TestGiveKeys(t *testing.T) {
 		})
 	}
 }
+
+// TestAdmitOnce admits one peer session more than one time, or after it closed.
+func TestAdmitOnce(t *testing.T) {
+	w := newWorld(t)
+	cert := w.relayCA.relayCert(t, "relay-1")
+	grants := make([]*dp.AttachmentGrant, 2)
+	for i, prefix := range []string{"fd00:b::/96", "fd00:c::/96"} {
+		var err error
+		grants[i], err = relay.SignGrant(cert, &dp.GrantClaims{
+			Vpc:          &dp.VPCRef{ProjectId: testProject, VpcUid: testVPC, NetworkId: testVNI},
+			AttachmentId: fmt.Sprintf("attachment-%d", i),
+			Subject:      identity.ID{Project: testProject, VPC: testVPC, Agent: "b"}.String(),
+			Addresses:    []string{prefix},
+			RelayId:      "relay-1",
+			NotAfter:     timestamppb.New(time.Now().Add(time.Hour)),
+		})
+		require.NoError(t, err)
+	}
+	dup := &quic.ApplicationError{Remote: true, ErrorCode: quic.ApplicationErrorCode(dp.PeerCloseCode_PEER_CLOSE_CODE_DUPLICATE)}
+	cases := []struct {
+		name     string
+		admits   int   // Admits of the session, each with another grant.
+		together bool  // The admits run at the same time.
+		closed   error // Close cause of the session before the admits.
+		wantErr  error // Error of each admit after the first one that passes.
+	}{
+		{name: "second admit", admits: 2, wantErr: errAlreadyOpen},
+		{name: "two admits at once", admits: 2, together: true, wantErr: errAlreadyOpen},
+		{name: "closed session", admits: 1, closed: errors.New("gone"), wantErr: errPeerClosed},
+		{name: "session that a crossed dial replaced", admits: 1, closed: dup, wantErr: errDuplicate},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := w.stubAgent(t, "a")
+			p, qc := stubPeer(a, "b", false)
+			if tc.closed != nil {
+				qc.cancel(tc.closed)
+			}
+			errs := make([]error, tc.admits)
+			var wg sync.WaitGroup
+			start := make(chan struct{})
+			for i := range errs {
+				admit := func() { errs[i] = a.admit(p, grants[i], 1, dp.Mode_MODE_PSP) }
+				if tc.together {
+					wg.Go(func() { <-start; admit() })
+				} else {
+					admit()
+				}
+			}
+			close(start)
+			wg.Wait()
+
+			passed := 0
+			for _, err := range errs {
+				if err == nil {
+					passed++
+				} else {
+					assert.ErrorIs(t, err, tc.wantErr)
+				}
+			}
+			if tc.closed != nil {
+				assert.Zero(t, passed)
+				assert.Nil(t, p.bp, "a closed session has a binding peer")
+				return
+			}
+			assert.Equal(t, 1, passed)
+			assert.NotNil(t, p.bp)
+			assert.False(t, qc.closed(), "a second admit closed the session")
+			select {
+			case <-p.ready:
+			default:
+				t.Error("ready is open")
+			}
+		})
+	}
+}
