@@ -2,48 +2,48 @@
   "tolerance": 0.1,
   "entries": {
     "c7a.8xlarge iperf3-tcp streams=1 duration=30s omit=2s delay=10ms jitter=0ms loss=0% rate=none queue=100000 mtu=1500 bitrate=none window=none": {
-      "gbps": 0,
+      "gbps": 12.676,
       "packets_per_second": 0,
-      "client_cores_per_gbps": 0,
-      "server_cores_per_gbps": 0,
-      "source": "gated row; the calibration run sets the numbers"
+      "client_cores_per_gbps": 0.077823,
+      "server_cores_per_gbps": 0.020221,
+      "source": "2026-10-03 7.0.0-1012-aws"
     },
     "c7a.8xlarge iperf3-tcp streams=4 duration=30s omit=2s delay=10ms jitter=0ms loss=0% rate=none queue=100000 mtu=1500 bitrate=none window=none": {
-      "gbps": 0,
+      "gbps": 78.156,
       "packets_per_second": 0,
-      "client_cores_per_gbps": 0,
-      "server_cores_per_gbps": 0,
-      "source": "gated row; the calibration run sets the numbers"
+      "client_cores_per_gbps": 0.050139,
+      "server_cores_per_gbps": 0.022925,
+      "source": "2026-10-03 7.0.0-1012-aws"
     },
     "c7a.8xlarge iperf3-tcp streams=4 duration=30s omit=2s delay=10ms jitter=0ms loss=0.1% rate=none queue=100000 mtu=1500 bitrate=none window=none": {
-      "gbps": 0,
+      "gbps": 0.515,
       "packets_per_second": 0,
-      "client_cores_per_gbps": 0,
-      "server_cores_per_gbps": 0,
-      "source": "gated row; the calibration run sets the numbers"
+      "client_cores_per_gbps": 0.040604,
+      "server_cores_per_gbps": 0.040403,
+      "source": "2026-10-03 7.0.0-1012-aws"
     },
     "c7a.8xlarge iperf3-udp streams=1 duration=30s omit=2s delay=10ms jitter=0ms loss=0% rate=none queue=100000 mtu=1500 bitrate=2G window=8M": {
-      "gbps": 0,
-      "packets_per_second": 0,
-      "client_cores_per_gbps": 0,
-      "server_cores_per_gbps": 0,
-      "source": "gated row; the calibration run sets the numbers"
+      "gbps": 1.78,
+      "packets_per_second": 153630.2213945784,
+      "client_cores_per_gbps": 0.563281,
+      "server_cores_per_gbps": 0.541171,
+      "source": "2026-10-03 7.0.0-1012-aws"
     },
     "c7a.8xlarge vpc-netstack-psp-direct streams=4 duration=30s omit=5s delay=10ms jitter=0ms loss=0% rate=none queue=100000 mtu=1500 bitrate=none window=none": {
-      "gbps": 0,
-      "packets_per_second": 0,
-      "client_cores_per_gbps": 0,
-      "server_cores_per_gbps": 0,
+      "gbps": 1.38,
+      "packets_per_second": 146401.79802974948,
+      "client_cores_per_gbps": 1.874407,
+      "server_cores_per_gbps": 1.398974,
       "info": true,
-      "source": "info row; the calibration run sets the numbers"
+      "source": "2026-10-03 7.0.0-1012-aws"
     },
     "c7a.8xlarge vpc-netstack-psp-relay streams=4 duration=30s omit=5s delay=10ms jitter=0ms loss=0% rate=1000mbit queue=2640 mtu=1500 bitrate=none window=none": {
-      "gbps": 0,
-      "packets_per_second": 0,
-      "client_cores_per_gbps": 0,
-      "server_cores_per_gbps": 0,
+      "gbps": 0.777,
+      "packets_per_second": 82475.84543459986,
+      "client_cores_per_gbps": 2.655092,
+      "server_cores_per_gbps": 3.512879,
       "info": true,
-      "source": "info row; the calibration run sets the numbers"
+      "source": "2026-10-03 7.0.0-1012-aws"
     },
     "c7a.8xlarge vpc-netstack-psp-relay streams=4 duration=30s omit=5s delay=10ms jitter=0ms loss=0% rate=none queue=100000 mtu=1500 bitrate=none window=none": {
       "gbps": 0,
@@ -55,93 +55,36 @@
       "source": "gated row; the calibration run sets the numbers"
     },
     "c7a.8xlarge vpc-netstack-psp-relay streams=4 duration=30s omit=5s delay=10ms jitter=0ms loss=0.1% rate=none queue=100000 mtu=1500 bitrate=none window=none": {
-      "gbps": 0,
-      "packets_per_second": 0,
-      "client_cores_per_gbps": 0,
-      "server_cores_per_gbps": 0,
+      "gbps": 0.655,
+      "packets_per_second": 69504.82300822291,
+      "client_cores_per_gbps": 2.329819,
+      "server_cores_per_gbps": 4.079127,
       "info": true,
-      "source": "info row; the calibration run sets the numbers"
+      "source": "2026-10-03 7.0.0-1012-aws"
     },
     "c7a.8xlarge vpc-netstack-psp-relay-cubic streams=4 duration=30s omit=5s delay=10ms jitter=0ms loss=0% rate=none queue=100000 mtu=1500 bitrate=none window=none": {
-      "gbps": 0,
-      "packets_per_second": 0,
-      "client_cores_per_gbps": 0,
-      "server_cores_per_gbps": 0,
+      "gbps": 0.82,
+      "packets_per_second": 86997.64993941323,
+      "client_cores_per_gbps": 3.511566,
+      "server_cores_per_gbps": 3.619297,
       "info": true,
-      "source": "info row; the calibration run sets the numbers"
+      "source": "2026-10-03 7.0.0-1012-aws"
     },
     "c7a.8xlarge vpc-netstack-quic-relay streams=4 duration=30s omit=5s delay=10ms jitter=0ms loss=0% rate=none queue=100000 mtu=1500 bitrate=none window=none": {
-      "gbps": 0,
-      "packets_per_second": 0,
-      "client_cores_per_gbps": 0,
-      "server_cores_per_gbps": 0,
+      "gbps": 2.516,
+      "packets_per_second": 266816.77177883376,
+      "client_cores_per_gbps": 1.592398,
+      "server_cores_per_gbps": 2.835109,
       "info": true,
-      "source": "info row; the calibration run sets the numbers"
+      "source": "2026-10-03 7.0.0-1012-aws"
     },
     "c7a.8xlarge vpc-tun-psp-relay-cubic streams=4 duration=30s omit=5s delay=10ms jitter=0ms loss=0% rate=none queue=100000 mtu=1500 bitrate=none window=none": {
-      "gbps": 0,
-      "packets_per_second": 0,
-      "client_cores_per_gbps": 0,
-      "server_cores_per_gbps": 0,
+      "gbps": 0.932,
+      "packets_per_second": 96519.80909341307,
+      "client_cores_per_gbps": 0.853372,
+      "server_cores_per_gbps": 3.295646,
       "info": true,
-      "source": "info row; the calibration run sets the numbers"
-    },
-    "x86_64 vpc-netstack-psp-direct streams=4 duration=30s omit=5s delay=10ms jitter=0ms loss=0% rate=none queue=100000 mtu=1500 bitrate=none window=none": {
-      "gbps": 0,
-      "packets_per_second": 0,
-      "client_cores_per_gbps": 0,
-      "server_cores_per_gbps": 0,
-      "info": true,
-      "source": "info row; the calibration run sets the numbers"
-    },
-    "x86_64 vpc-netstack-psp-relay streams=4 duration=30s omit=5s delay=10ms jitter=0ms loss=0% rate=1000mbit queue=2640 mtu=1500 bitrate=none window=none": {
-      "gbps": 0,
-      "packets_per_second": 0,
-      "client_cores_per_gbps": 0,
-      "server_cores_per_gbps": 0,
-      "info": true,
-      "source": "info row; the calibration run sets the numbers"
-    },
-    "x86_64 vpc-netstack-psp-relay streams=4 duration=30s omit=5s delay=10ms jitter=0ms loss=0% rate=none queue=100000 mtu=1500 bitrate=none window=none": {
-      "gbps": 0,
-      "packets_per_second": 0,
-      "client_cores_per_gbps": 0,
-      "server_cores_per_gbps": 0,
-      "min_gbps": 2,
-      "tolerance": 0.1,
-      "source": "gated row; the calibration run sets the numbers"
-    },
-    "x86_64 vpc-netstack-psp-relay streams=4 duration=30s omit=5s delay=10ms jitter=0ms loss=0.1% rate=none queue=100000 mtu=1500 bitrate=none window=none": {
-      "gbps": 0,
-      "packets_per_second": 0,
-      "client_cores_per_gbps": 0,
-      "server_cores_per_gbps": 0,
-      "info": true,
-      "source": "info row; the calibration run sets the numbers"
-    },
-    "x86_64 vpc-netstack-psp-relay-cubic streams=4 duration=30s omit=5s delay=10ms jitter=0ms loss=0% rate=none queue=100000 mtu=1500 bitrate=none window=none": {
-      "gbps": 0,
-      "packets_per_second": 0,
-      "client_cores_per_gbps": 0,
-      "server_cores_per_gbps": 0,
-      "info": true,
-      "source": "info row; the calibration run sets the numbers"
-    },
-    "x86_64 vpc-netstack-quic-relay streams=4 duration=30s omit=5s delay=10ms jitter=0ms loss=0% rate=none queue=100000 mtu=1500 bitrate=none window=none": {
-      "gbps": 0,
-      "packets_per_second": 0,
-      "client_cores_per_gbps": 0,
-      "server_cores_per_gbps": 0,
-      "info": true,
-      "source": "info row; the calibration run sets the numbers"
-    },
-    "x86_64 vpc-tun-psp-relay-cubic streams=4 duration=30s omit=5s delay=10ms jitter=0ms loss=0% rate=none queue=100000 mtu=1500 bitrate=none window=none": {
-      "gbps": 0,
-      "packets_per_second": 0,
-      "client_cores_per_gbps": 0,
-      "server_cores_per_gbps": 0,
-      "info": true,
-      "source": "info row; the calibration run sets the numbers"
+      "source": "2026-10-03 7.0.0-1012-aws"
     }
   }
 }
