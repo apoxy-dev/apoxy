@@ -108,23 +108,29 @@ func TestNewResult(t *testing.T) {
 				{Nanos: 2 * sec, CPU: 1, Segments: 1100, Retrans: 10, Drops: 3, LinkDrops: 9},
 			},
 			server: [2]mark{
-				{Nanos: sec, Retrans: 1, RcvbufErrors: 5},
-				{Nanos: 3 * sec, CPU: 2, Retrans: 3, Bytes: 250e6, RxPackets: 2000, Drops: 6, RcvbufErrors: 7, LinkDrops: 2},
+				{Nanos: sec, Retrans: 1, RcvbufErrors: 5, SockDrops: 1},
+				{Nanos: 3 * sec, CPU: 2, Retrans: 3, Bytes: 250e6, RxPackets: 2000, Drops: 6, RcvbufErrors: 17, SockDrops: 4, LinkDrops: 2},
 			},
-			relay: [2]mark{{Nanos: 0, Drops: 1}, {Nanos: 2 * sec, CPU: 0.5, Drops: 5}},
+			relay: [2]mark{{Nanos: 0, Drops: 1, SockDrops: 2}, {Nanos: 2 * sec, CPU: 0.5, Drops: 5, SockDrops: 9}},
 			want: result{
 				Seconds: 2, BitsPerSecond: 1e9, PacketsPerSecond: 1000, Retransmits: 10, RetransPercent: 1,
 				ServerRetransmits: 2, ClientCores: 0.5, ServerCores: 1, RelayCores: 0.25,
 				ClientCoresPerGbps: 0.5, ServerCoresPerGbps: 1, RelayCoresPerGbps: 0.25,
-				ClientTxDrops: 2, ServerRxDrops: 6, RelayDrops: 4, ServerRcvbufErrors: 2,
+				ClientTxDrops: 2, ServerRxDrops: 6, RelayDrops: 4, RelayRcvbufDrops: 7, ServerRcvbufErrors: 12, ServerSockDrops: 3,
 				ClientLinkDrops: 5, ServerLinkDrops: 2,
 			},
 		},
 		{
-			name:   "no relay, no snmp and no link counters",
+			name:   "no relay and no kernel counters",
 			client: [2]mark{{LinkDrops: -1}, {Nanos: sec, Segments: 0, LinkDrops: -1}},
-			server: [2]mark{{RcvbufErrors: -1, LinkDrops: 3}, {Nanos: sec, Bytes: 125e6, RcvbufErrors: -1, LinkDrops: -1}},
-			want:   result{Seconds: 1, BitsPerSecond: 1e9, ServerRcvbufErrors: -1, ClientLinkDrops: -1, ServerLinkDrops: -1},
+			server: [2]mark{
+				{RcvbufErrors: -1, SockDrops: -1, LinkDrops: 3},
+				{Nanos: sec, Bytes: 125e6, RcvbufErrors: -1, SockDrops: -1, LinkDrops: -1},
+			},
+			want: result{
+				Seconds: 1, BitsPerSecond: 1e9, ServerRcvbufErrors: -1, ServerSockDrops: -1,
+				ClientLinkDrops: -1, ServerLinkDrops: -1,
+			},
 		},
 		{
 			// The netstack link drops are an estimate, which can go down a little.
@@ -156,11 +162,11 @@ func TestNewPeriod(t *testing.T) {
 		{
 			name:   "all sides",
 			client: [2]mark{{Segments: 100, LinkDrops: 1}, {Nanos: sec, Segments: 300, Retrans: 4, Drops: 2, LinkDrops: 6}},
-			server: [2]mark{{RcvbufErrors: 1}, {Nanos: sec, Retrans: 1, Bytes: 50e6, Drops: 3, RcvbufErrors: 4, LinkDrops: 1}},
-			relay:  [2]mark{{Drops: 1}, {Nanos: sec, Drops: 2}},
+			server: [2]mark{{RcvbufErrors: 1}, {Nanos: sec, Retrans: 1, Bytes: 50e6, Drops: 3, RcvbufErrors: 4, SockDrops: 1, LinkDrops: 1}},
+			relay:  [2]mark{{Drops: 1}, {Nanos: sec, Drops: 2, SockDrops: 2}},
 			want: period{
 				Seconds: 1, BitsPerSecond: 400e6, Retransmits: 4, RetransPercent: 2, ServerRetransmits: 1,
-				ClientTxDrops: 2, ServerRxDrops: 3, RelayDrops: 1, ServerRcvbufErrors: 3,
+				ClientTxDrops: 2, ServerRxDrops: 3, RelayDrops: 1, RelayRcvbufDrops: 2, ServerRcvbufErrors: 3, ServerSockDrops: 1,
 				ClientLinkDrops: 5, ServerLinkDrops: 1,
 			},
 		},
@@ -197,8 +203,8 @@ func TestResultJSON(t *testing.T) {
 		"client_cores", "server_cores", "relay_cores",
 		"client_cores_per_gbps", "server_cores_per_gbps", "relay_cores_per_gbps",
 		"driver", "transport", "via", "cc", "streams", "device_mtu",
-		"server_retransmits", "client_tx_drops", "server_rx_drops", "relay_drops", "server_rcvbuf_errors",
-		"client_link_drops", "server_link_drops",
+		"server_retransmits", "client_tx_drops", "server_rx_drops", "relay_drops", "relay_rcvbuf_drops",
+		"server_rcvbuf_errors", "server_sock_drops", "client_link_drops", "server_link_drops",
 		"omit", "flow_start_unix_ms", "window_start_unix_ms", "window_end_unix_ms",
 	} {
 		assert.Contains(t, fields, f)
@@ -208,8 +214,8 @@ func TestResultJSON(t *testing.T) {
 	}
 	for _, f := range []string{
 		"seconds", "bits_per_second", "retransmits", "retrans_percent", "server_retransmits", "rtt_ms",
-		"client_tx_drops", "server_rx_drops", "relay_drops", "server_rcvbuf_errors",
-		"client_link_drops", "server_link_drops",
+		"client_tx_drops", "server_rx_drops", "relay_drops", "relay_rcvbuf_drops",
+		"server_rcvbuf_errors", "server_sock_drops", "client_link_drops", "server_link_drops",
 	} {
 		assert.Contains(t, fields["omit"], f)
 	}

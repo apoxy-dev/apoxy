@@ -59,6 +59,7 @@ func runRelay(ctx context.Context, o options, ready func(netip.AddrPort)) error 
 		slog.Warn("Failed to set the relay socket buffers", "bytes", relaySockBuf, "error", err)
 	}
 	addr := uc.LocalAddr().(*net.UDPAddr).AddrPort()
+	slog.Info("Relay socket is ready", "address", addr, "rcvbuf", sockRcvbuf(uc))
 
 	r := relay.NewRouter(vpctest.NewTrust(ca), relay.Config{})
 	tr := &quic.Transport{Conn: uc}
@@ -100,7 +101,9 @@ func runRelay(ctx context.Context, o options, ready func(netip.AddrPort)) error 
 			if req.Op != "mark" {
 				return reply{}, fmt.Errorf("unknown op %q", req.Op)
 			}
-			return reply{Mark: mark{Nanos: time.Since(start).Nanoseconds(), CPU: bench.CPUSeconds(), Drops: relayDrops(r)}}, nil
+			return reply{Mark: mark{
+				Nanos: time.Since(start).Nanoseconds(), CPU: bench.CPUSeconds(), Drops: relayDrops(r), SockDrops: sockDrops(uc),
+			}}, nil
 		})
 	})
 	err = srv.Serve(ctx, ln)

@@ -109,14 +109,20 @@ func infoCell(info map[string]float64, format string, keys ...string) string {
 }
 
 // dropPlaces are the drop counters of a vpcbench result, in the order of the
-// path from the client to the server.
-var dropPlaces = []struct{ key, name string }{
-	{"client_link_drops", "client link"},
-	{"client_tx_drops", "client tx"},
-	{"relay_drops", "relay"},
-	{"server_rcvbuf_errors", "server rcvbuf"},
-	{"server_rx_drops", "server rx"},
-	{"server_link_drops", "server link"},
+// path from the client to the server. server rcvbuf counts all sockets of the server
+// netns, and the relay runs there, so the sum leaves out the socket counters (part).
+var dropPlaces = []struct {
+	key, name string
+	part      bool
+}{
+	{"client_link_drops", "client link", false},
+	{"client_tx_drops", "client tx", false},
+	{"relay_rcvbuf_drops", "relay socket", true},
+	{"relay_drops", "relay", false},
+	{"server_rcvbuf_errors", "server rcvbuf", false},
+	{"server_sock_drops", "server socket", true},
+	{"server_rx_drops", "server rx", false},
+	{"server_link_drops", "server link", false},
 }
 
 // dropsCell is the sum of the drops of all sides in the omit period and in the window.
@@ -127,7 +133,7 @@ func dropsCell(info map[string]float64) string {
 			v, ok := info[prefix+p.key]
 			found = found || ok
 			// A counter is -1 when the side cannot read it.
-			if v > 0 {
+			if v > 0 && !p.part {
 				total += v
 			}
 		}

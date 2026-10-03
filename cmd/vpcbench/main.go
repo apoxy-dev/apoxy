@@ -199,6 +199,7 @@ type overlay interface {
 // side is one agent: its binding and the overlay on it.
 type side struct {
 	a    *agent.Agent // Nil with -via direct.
+	uc   *net.UDPConn // The agent socket.
 	b    *psp.Binding
 	addr netip.Addr // Overlay address.
 	net  overlay
@@ -214,6 +215,7 @@ func (s *side) close() {
 
 // startNet runs the driver of o on the binding, with a route to dst.
 func (s *side) startNet(ctx context.Context, fail context.CancelCauseFunc, o options, dst netip.Prefix) error {
+	slog.Info("Agent socket is ready", "address", s.uc.LocalAddr().String(), "rcvbuf", sockRcvbuf(s.uc))
 	ctx, cancel := context.WithCancel(ctx)
 	var err error
 	if o.Driver == "tun" {
@@ -245,7 +247,7 @@ func startAgent(ctx context.Context, fail context.CancelCauseFunc, o options, na
 		return nil, err
 	}
 	tr := &quic.Transport{Conn: uc}
-	s := &side{stop: []func(){func() {
+	s := &side{uc: uc, stop: []func(){func() {
 		_ = tr.Close()
 		_ = uc.Close()
 	}}}
@@ -328,7 +330,7 @@ func newDirect(o options, uc *net.UDPConn, self, peer netip.Addr, peerAddr netip
 	if err != nil {
 		return nil, nil, err
 	}
-	s := &side{b: b, addr: self, stop: []func(){func() {
+	s := &side{uc: uc, b: b, addr: self, stop: []func(){func() {
 		_ = b.Close()
 		_ = tr.Close()
 	}}}
@@ -557,7 +559,7 @@ func runServer(parent context.Context, o options, ready func(netip.AddrPort)) er
 			return reply{Mark: mark{
 				Nanos: time.Since(start).Nanoseconds(), CPU: bench.CPUSeconds(), Retrans: retrans,
 				Bytes: got.Load(), RxPackets: st.RxPackets, Drops: st.RxDrops + st.RxNoDriver,
-				RcvbufErrors: snmpCounter("Udp:", "RcvbufErrors"), LinkDrops: s.net.LinkDrops(),
+				RcvbufErrors: snmpCounter("Udp:", "RcvbufErrors"), SockDrops: sockDrops(s.uc), LinkDrops: s.net.LinkDrops(),
 			}}, nil
 		}
 		return reply{}, fmt.Errorf("unknown op %q", req.Op)

@@ -45,7 +45,8 @@ func TestWriteSummary(t *testing.T) {
 		rows["NO BASELINE"])
 	assert.Contains(t, out, "| Status | Workload | Gbps |")
 	assert.Contains(t, out, "- FAIL `aarch64 vpc-netstack-psp-relay streams=4`; min_gbps 2.0000 (baseline 2.0000, +0.0%, ok); gbps 2.0000 (baseline 2.3000, -13.0%, REGRESSION)"+
-		"; drops omit/window: client link 15/2310, client tx 0/0, relay 0/0, server rcvbuf 0/0, server rx 0/0, server link 0/0"+
+		"; drops omit/window: client link 15/2310, client tx 0/0, relay socket 0/0, relay 0/0, server rcvbuf 0/0, server socket 0/0"+
+		", server rx 0/0, server link 0/0"+
 		"; server retx omit/window: 0/0\n")
 	assert.Contains(t, out, "- NO BASELINE `aarch64 vpc-netstack-psp-relay-loss streams=4`\n")
 	assert.Contains(t, rows, "INFRA")
@@ -58,6 +59,7 @@ func TestInfoCells(t *testing.T) {
 		"client_tx_drops": 0, "server_rx_drops": 2, "relay_drops": 10, "server_rcvbuf_errors": -1,
 		"omit.client_tx_drops": 0, "omit.server_rx_drops": 0, "omit.relay_drops": 2462, "omit.server_rcvbuf_errors": 5,
 		"client_link_drops": 7, "omit.client_link_drops": 3, "server_link_drops": -1,
+		"relay_rcvbuf_drops": 40, "omit.relay_rcvbuf_drops": 30, "server_sock_drops": 6, "omit.server_sock_drops": -1,
 		"server_retransmits": 1, "omit.server_retransmits": 0,
 	}
 	cases := []struct {
@@ -68,12 +70,13 @@ func TestInfoCells(t *testing.T) {
 		{name: "two values", got: infoCell(info, "%.1f", "load_rtt_ms.p50", "load_rtt_ms.p99"), want: "20.0, 58.7"},
 		{name: "missing key", got: infoCell(info, "%.1f", "load_rtt_ms.p50", "omit.rtt_ms.p90"), want: "-"},
 		{name: "no info", got: infoCell(nil, "%.2f", "retrans_percent"), want: "-"},
-		{name: "drops with no rcvbuf and server link counters", got: dropsCell(info), want: "2470, 19"},
+		{name: "drops with no rcvbuf and server link counters, and no socket drops", got: dropsCell(info), want: "2470, 19"},
 		{name: "no drops", got: dropsCell(map[string]float64{"relay_drops": 1}), want: "-"},
 		{
 			name: "drops of each place",
 			got:  dropsDetail(info),
-			want: "drops omit/window: client link 3/7, client tx 0/0, relay 2462/10, server rcvbuf 5/-, server rx 0/2, server link -/-" +
+			want: "drops omit/window: client link 3/7, client tx 0/0, relay socket 30/40, relay 2462/10, server rcvbuf 5/-" +
+				", server socket -/6, server rx 0/2, server link -/-" +
 				"; server retx omit/window: 0/1",
 		},
 		{name: "no drop counters", got: dropsDetail(map[string]float64{"server_retransmits": 1}), want: ""},

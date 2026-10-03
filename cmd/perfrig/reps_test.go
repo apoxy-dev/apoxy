@@ -107,6 +107,7 @@ func TestWorkloadNumbers(t *testing.T) {
 	for _, k := range []string{
 		"retrans_percent", "load_rtt_ms.p50", "load_rtt_ms.p99", "idle_rtt_ms.p50",
 		"client_cores_per_gbps", "relay_cores_per_gbps", "relay_drops", "server_rcvbuf_errors",
+		"relay_rcvbuf_drops", "server_sock_drops", "omit.server_sock_drops",
 		"omit.bits_per_second", "omit.retransmits", "omit.relay_drops", "omit.rtt_ms.p90", "omit.rtt_ms.max",
 	} {
 		assert.Contains(t, got, k)
