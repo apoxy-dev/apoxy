@@ -65,6 +65,13 @@ jobs:
           --aws-access-key-id=env:AWS_ACCESS_KEY_ID --aws-secret-access-key=env:AWS_SECRET_ACCESS_KEY
           --aws-session-token=env:AWS_SESSION_TOKEN
           export --path=perf-netns
+      - name: Clean up the bench instance
+        # A cancel stops the run step before its own cleanup. Only always() steps run after a cancel.
+        if: always()
+        run: >-
+          dagger call perf-cleanup --run-tag="$RUN_TAG" --bucket="$PERF_BUCKET" --region="$PERF_AWS_REGION"
+          --aws-access-key-id=env:AWS_ACCESS_KEY_ID --aws-secret-access-key=env:AWS_SECRET_ACCESS_KEY
+          --aws-session-token=env:AWS_SESSION_TOKEN
       - name: Write the job summary
         if: always() && hashFiles('perf-netns/summary.md') != ''
         run: dagger call perf-summary --results=perf-netns export --path="$GITHUB_STEP_SUMMARY"
@@ -121,6 +128,13 @@ jobs:
           --aws-access-key-id=env:AWS_ACCESS_KEY_ID --aws-secret-access-key=env:AWS_SECRET_ACCESS_KEY
           --aws-session-token=env:AWS_SESSION_TOKEN
           export --path=perf-vpc
+      - name: Clean up the bench instance
+        # A cancel stops the run step before its own cleanup. Only always() steps run after a cancel.
+        if: always()
+        run: >-
+          dagger call perf-cleanup --run-tag="$RUN_TAG" --bucket="$PERF_BUCKET" --region="$PERF_AWS_REGION"
+          --aws-access-key-id=env:AWS_ACCESS_KEY_ID --aws-secret-access-key=env:AWS_SECRET_ACCESS_KEY
+          --aws-session-token=env:AWS_SESSION_TOKEN
       - name: Write the job summary
         if: always() && hashFiles('perf-vpc/summary.md') != ''
         run: dagger call perf-summary --results=perf-vpc export --path="$GITHUB_STEP_SUMMARY"

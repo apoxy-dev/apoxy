@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -84,38 +85,58 @@ func TestFakeAWS(t *testing.T) {
 			t.Fatalf("Get after presigned PUT = %q", got)
 		}
 
-		n, err := c.DeletePrefix(ctx, bucket, RunsPrefix+"1-1-vpc/")
-		if err != nil || n != 2 {
-			t.Fatalf("DeletePrefix = %d, %v, want 2", n, err)
+		for _, want := range []int{2, 0} {
+			n, err := c.DeletePrefix(ctx, bucket, RunsPrefix+"1-1-vpc/")
+			if err != nil || n != want {
+				t.Fatalf("DeletePrefix = %d, %v, want %d", n, err, want)
+			}
 		}
 	})
 
 	t.Run("ec2", func(t *testing.T) {
-		in := LaunchInput{
-			Image: "ami-12c6146b", InstanceType: "c7a.8xlarge", UserData: "#cloud-config\n",
-			Tags: map[string]string{
-				"apoxy-perf":         "true",
-				"apoxy-perf-run":     "1-1-vpc",
-				"apoxy-perf-expires": time.Now().Add(-time.Minute).UTC().Format(time.RFC3339),
-			},
-			SubnetTag: "apoxy-perf=true",
+		launch := func(run string, expires time.Time) string {
+			t.Helper()
+			id, err := c.Launch(ctx, LaunchInput{
+				Image: "ami-12c6146b", InstanceType: "c7a.8xlarge", UserData: "#cloud-config\n",
+				Tags: map[string]string{
+					"apoxy-perf":         "true",
+					"apoxy-perf-run":     run,
+					"apoxy-perf-expires": expires.UTC().Format(time.RFC3339),
+				},
+				SubnetTag: "apoxy-perf=true",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return id
+		}
+		state := func(id string, want ...string) {
+			t.Helper()
+			st, err := c.State(ctx, id)
+			if err != nil || !slices.Contains(want, st) {
+				t.Fatalf("State of %s = %q, %v, want one of %v", id, st, err, want)
+			}
+		}
+		reap := func(tag string, all bool, want ...string) {
+			t.Helper()
+			got, err := c.Reap(ctx, tag, "apoxy-perf-expires", time.Now(), all)
+			if err != nil || !slices.Equal(got, want) {
+				t.Fatalf("Reap(%s, all=%v) = %v, %v, want %v", tag, all, got, err, want)
+			}
 		}
 		// No subnet has the tag, so Launch uses the default VPC.
-		id, err := c.Launch(ctx, in)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if st, err := c.State(ctx, id); err != nil || st != "running" && st != "pending" {
-			t.Fatalf("State = %q, %v", st, err)
-		}
-		reaped, err := c.Reap(ctx, "apoxy-perf=true", "apoxy-perf-expires", time.Now())
-		if err != nil || len(reaped) != 1 || reaped[0] != id {
-			t.Fatalf("Reap = %v, %v, want [%s]", reaped, err, id)
-		}
-		if st, err := c.State(ctx, id); err != nil || st != "terminated" && st != "shutting-down" {
-			t.Fatalf("State after Reap = %q, %v", st, err)
-		}
-		if err := c.Terminate(ctx, id); err != nil {
+		expired := launch("1-1-vpc", time.Now().Add(-time.Minute))
+		live := launch("2-1-vpc", time.Now().Add(time.Hour))
+		state(expired, "running", "pending")
+		reap("apoxy-perf=true", false, expired)
+		state(expired, "terminated", "shutting-down")
+		state(live, "running", "pending")
+
+		// The cleanup of a cancelled run terminates its live instance, then finds nothing.
+		reap("apoxy-perf-run=2-1-vpc", true, live)
+		state(live, "terminated", "shutting-down")
+		reap("apoxy-perf-run=2-1-vpc", true)
+		if err := c.Terminate(ctx, expired); err != nil {
 			t.Fatal(err)
 		}
 	})

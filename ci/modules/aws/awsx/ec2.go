@@ -234,9 +234,10 @@ func (c *Client) Terminate(ctx context.Context, ids ...string) error {
 }
 
 // Reap terminates the live instances with the tag KEY=VALUE whose expiry
-// (RFC 3339 in the expiry tag) is before now. With no valid expiry tag, an
-// instance expires one hour after its launch. Reap returns the terminated IDs.
-func (c *Client) Reap(ctx context.Context, tag, expiryKey string, now time.Time) ([]string, error) {
+// (RFC 3339 in the expiry tag) is before now, or all of them when all is set.
+// With no valid expiry tag, an instance expires one hour after its launch.
+// Reap returns the terminated IDs.
+func (c *Client) Reap(ctx context.Context, tag, expiryKey string, now time.Time, all bool) ([]string, error) {
 	k, v, ok := strings.Cut(tag, "=")
 	if !ok || k == "" {
 		return nil, fmt.Errorf("bad tag %q: want KEY=VALUE", tag)
@@ -254,7 +255,7 @@ func (c *Client) Reap(ctx context.Context, tag, expiryKey string, now time.Time)
 		}
 		for _, r := range page.Reservations {
 			for _, i := range r.Instances {
-				if expiry(i, expiryKey).Before(now) {
+				if all || expiry(i, expiryKey).Before(now) {
 					expired = append(expired, aws.ToString(i.InstanceId))
 				}
 			}

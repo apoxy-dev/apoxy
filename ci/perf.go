@@ -122,6 +122,29 @@ func (m *ApoxyCli) PerfVpc(
 	return m.perfRun(ctx, src, perfsuite.VPC, where, o, e)
 }
 
+// PerfCleanup terminates the instances of a PerfNetns or PerfVpc run on EC2
+// and deletes its inputs in S3. Run it after the run step in all cases: a
+// cancel stops the run before its own cleanup. With nothing left, it does
+// nothing.
+func (m *ApoxyCli) PerfCleanup(
+	ctx context.Context,
+	// The run tag of the run.
+	runTag string,
+	// The bench bucket.
+	bucket string,
+	// +default="us-west-2"
+	region string,
+	awsAccessKeyId *dagger.Secret,
+	awsSecretAccessKey *dagger.Secret,
+	// +optional
+	awsSessionToken *dagger.Secret,
+) (string, error) {
+	return dag.Perf().Ec2Cleanup(ctx, runTag, bucket, awsAccessKeyId, awsSecretAccessKey, dagger.PerfEc2CleanupOpts{
+		Region:       region,
+		SessionToken: awsSessionToken,
+	})
+}
+
 // perfEC2 has the EC2 arguments of a perf run.
 type perfEC2 struct {
 	runTag, bucket, region string

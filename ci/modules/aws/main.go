@@ -272,7 +272,7 @@ func (m *Aws) Instance(instanceId string) *Instance {
 }
 
 // Reap terminates the live instances with the tag whose expiry tag (RFC 3339)
-// is in the past, and returns their IDs.
+// is in the past, or all of them with all set, and returns their IDs.
 // +cache="never"
 func (m *Aws) Reap(
 	ctx context.Context,
@@ -280,12 +280,15 @@ func (m *Aws) Reap(
 	tag string,
 	// +default="apoxy-perf-expires"
 	expiryTag string,
+	// Terminate the instances that did not expire too.
+	// +optional
+	all bool,
 ) ([]string, error) {
 	c, err := m.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return c.Reap(ctx, tag, expiryTag, time.Now())
+	return c.Reap(ctx, tag, expiryTag, time.Now(), all)
 }
 
 // Instance is an EC2 instance.

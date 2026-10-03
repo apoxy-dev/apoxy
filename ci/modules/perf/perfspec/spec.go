@@ -106,12 +106,15 @@ func (k Keys) File(name string) string   { return k.Inputs() + "files/" + name }
 func (k Keys) Spec() string              { return k.Inputs() + "spec.json" }
 func (k Keys) Output(name string) string { return k.Prefix + "out/" + name }
 
+// RunTag is the KEY=VALUE instance tag of one run.
+func RunTag(runTag string) string { return "apoxy-perf-run=" + runTag }
+
 // Tags returns the instance tags. The reaper terminates the instance after expires.
 func Tags(runTag string, expires time.Time) []string {
 	return []string{
 		"Name=apoxy-perf-" + runTag,
 		"apoxy-perf=true",
-		"apoxy-perf-run=" + runTag,
+		RunTag(runTag),
 		"apoxy-perf-expires=" + expires.UTC().Format(time.RFC3339),
 	}
 }

@@ -21,6 +21,7 @@ type fakeEC2 struct {
 	// full lists the subnets that answer InsufficientInstanceCapacity.
 	full      map[string]bool
 	runs      []*ec2.RunInstancesInput
+	filters   []types.Filter
 	instances []types.Instance
 	ended     []string
 }
@@ -60,6 +61,7 @@ func (f *fakeEC2) DescribeInstances(_ context.Context, in *ec2.DescribeInstances
 	if len(in.InstanceIds) > 0 && in.InstanceIds[0] == "i-gone" {
 		return nil, &smithy.GenericAPIError{Code: "InvalidInstanceID.NotFound"}
 	}
+	f.filters = in.Filters
 	return &ec2.DescribeInstancesOutput{Reservations: []types.Reservation{{Instances: f.instances}}}, nil
 }
 
@@ -201,20 +203,37 @@ func TestReap(t *testing.T) {
 		}
 		return i
 	}
-	f := &fakeEC2{instances: []types.Instance{
+	instances := []types.Instance{
 		inst("i-expired", "2026-10-02T11:59:00Z", now.Add(-time.Hour)),
 		inst("i-live", "2026-10-02T12:30:00Z", now.Add(-30*time.Minute)),
 		inst("i-old-no-tag", "", now.Add(-61*time.Minute)),
 		inst("i-new-bad-tag", "soon", now.Add(-10*time.Minute)),
-	}}
-	c := &Client{ec2: f}
-	got, err := c.Reap(context.Background(), "apoxy-perf=true", "apoxy-perf-expires", now)
-	if err != nil {
-		t.Fatal(err)
 	}
-	want := "i-expired,i-old-no-tag"
-	if strings.Join(got, ",") != want || strings.Join(f.ended, ",") != want {
-		t.Fatalf("reaped %v, terminated %v, want %s", got, f.ended, want)
+	cases := []struct {
+		name      string
+		instances []types.Instance
+		all       bool
+		want      string
+	}{
+		{name: "expired", instances: instances, want: "i-expired,i-old-no-tag"},
+		{name: "all", instances: instances, all: true, want: "i-expired,i-live,i-old-no-tag,i-new-bad-tag"},
+		{name: "none left", all: true, want: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &fakeEC2{instances: tc.instances}
+			c := &Client{ec2: f}
+			got, err := c.Reap(context.Background(), "apoxy-perf-run=1-1-vpc", "apoxy-perf-expires", now, tc.all)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Join(got, ",") != tc.want || strings.Join(f.ended, ",") != tc.want {
+				t.Fatalf("reaped %v, terminated %v, want %s", got, f.ended, tc.want)
+			}
+			if tag := f.filters[0]; aws.ToString(tag.Name) != "tag:apoxy-perf-run" || tag.Values[0] != "1-1-vpc" {
+				t.Errorf("tag filter = %s %v", aws.ToString(tag.Name), tag.Values)
+			}
+		})
 	}
 }
 

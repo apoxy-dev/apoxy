@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -202,6 +203,44 @@ func (m *Perf) Ec2(
 		return infra(runTag, fmt.Errorf("get the outputs: %w", err)), nil
 	}
 	return dir, nil
+}
+
+// Ec2Cleanup terminates the live instances of a run and deletes its inputs in
+// S3. A cancelled job runs it, because a cancel stops Ec2 before its own
+// cleanup. With nothing left, it does nothing.
+func (m *Perf) Ec2Cleanup(
+	ctx context.Context,
+	// The run tag of the Ec2 call.
+	runTag string,
+	bucket string,
+	// +default="us-west-2"
+	region string,
+	accessKeyId *dagger.Secret,
+	secretAccessKey *dagger.Secret,
+	// +optional
+	sessionToken *dagger.Secret,
+	// Replaces the AWS endpoints, for example with a local AWS fake.
+	// +optional
+	endpoint string,
+) (string, error) {
+	keys, err := perfspec.NewKeys(runTag)
+	if err != nil {
+		return "", err
+	}
+	a := dag.Aws(dagger.AwsOpts{
+		Region:          region,
+		AccessKeyID:     accessKeyId,
+		SecretAccessKey: secretAccessKey,
+		SessionToken:    sessionToken,
+		Endpoint:        endpoint,
+	})
+	// Do the S3 delete also when the terminate fails.
+	ids, terr := a.Reap(ctx, dagger.AwsReapOpts{Tag: perfspec.RunTag(runTag), All: true})
+	n, derr := a.Bucket(bucket).Delete(ctx, keys.Inputs())
+	if err := errors.Join(terr, derr); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Terminated %d instances %v and deleted %d input objects of run %s.", len(ids), ids, n, runTag), nil
 }
 
 // ec2Run is the state of one Ec2 call.
