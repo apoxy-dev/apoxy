@@ -135,6 +135,8 @@ func NewStack(mtu int, pcapPath string, opts ...Option) (*Stack, error) {
 
 	nicID := ipstack.NextNICID()
 	linkEP := channel.New(4096, uint32(mtu), "")
+	// Each TCP endpoint limits its packets in the queue, as TCP small queues in Linux.
+	linkEP.LinkEPCapabilities |= stack.CapabilityTxNotify
 	var nicEP stack.LinkEndpoint = linkEP
 	var filter *inFilter
 	if o.noIPTables {
