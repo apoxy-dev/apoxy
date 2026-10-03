@@ -72,6 +72,9 @@ func writeSummary(w io.Writer, outcomes []outcome) {
 			}
 			fmt.Fprintf(w, "; %s %.4f (baseline %.4f, %+.1f%%, %s)", c.Metric, c.Got, c.Baseline, 100*c.Change(), mark)
 		}
+		if d := dropsDetail(o.Result.Info); d != "" {
+			fmt.Fprintf(w, "; %s", d)
+		}
 		fmt.Fprintln(w)
 	}
 	fmt.Fprintln(w)
@@ -105,14 +108,25 @@ func infoCell(info map[string]float64, format string, keys ...string) string {
 	return strings.Join(vals, ", ")
 }
 
+// dropPlaces are the drop counters of a vpcbench result, in the order of the
+// path from the client to the server.
+var dropPlaces = []struct{ key, name string }{
+	{"client_link_drops", "client link"},
+	{"client_tx_drops", "client tx"},
+	{"relay_drops", "relay"},
+	{"server_rcvbuf_errors", "server rcvbuf"},
+	{"server_rx_drops", "server rx"},
+	{"server_link_drops", "server link"},
+}
+
 // dropsCell is the sum of the drops of all sides in the omit period and in the window.
 func dropsCell(info map[string]float64) string {
 	sum := func(prefix string) (float64, bool) {
 		total, found := 0.0, false
-		for _, k := range []string{"client_tx_drops", "server_rx_drops", "relay_drops", "server_rcvbuf_errors"} {
-			v, ok := info[prefix+k]
+		for _, p := range dropPlaces {
+			v, ok := info[prefix+p.key]
 			found = found || ok
-			// server_rcvbuf_errors is -1 when the server cannot read it.
+			// A counter is -1 when the side cannot read it.
 			if v > 0 {
 				total += v
 			}
@@ -125,4 +139,31 @@ func dropsCell(info map[string]float64) string {
 		return "-"
 	}
 	return fmt.Sprintf("%.0f, %.0f", omit, window)
+}
+
+// dropsDetail lists the drops of each place, and the TCP retransmits of the
+// server, in the omit period and in the window. It is empty when the result
+// has no drop counters.
+func dropsDetail(info map[string]float64) string {
+	value := func(k string) string {
+		v, ok := info[k]
+		if !ok || v < 0 {
+			return "-"
+		}
+		return fmt.Sprintf("%.0f", v)
+	}
+	var parts []string
+	for _, p := range dropPlaces {
+		if _, ok := info[p.key]; ok {
+			parts = append(parts, fmt.Sprintf("%s %s/%s", p.name, value("omit."+p.key), value(p.key)))
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	d := "drops omit/window: " + strings.Join(parts, ", ")
+	if _, ok := info["server_retransmits"]; ok {
+		d += fmt.Sprintf("; server retx omit/window: %s/%s", value("omit.server_retransmits"), value("server_retransmits"))
+	}
+	return d
 }

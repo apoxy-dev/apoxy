@@ -22,6 +22,7 @@ import (
 // stack settings of vpc connect.
 type netstackNet struct {
 	ns *netstack.Stack
+	b  *psp.Binding
 }
 
 // startNetstack runs the netstack driver of b on a new stack with address
@@ -52,7 +53,7 @@ func startNetstack(ctx context.Context, fail context.CancelCauseFunc, b *psp.Bin
 			fail(fmt.Errorf("netstack driver failed: %w", err))
 		}
 	}()
-	return &netstackNet{ns: ns}, nil
+	return &netstackNet{ns: ns, b: b}, nil
 }
 
 func (n *netstackNet) fullAddr(a netip.AddrPort) (tcpip.FullAddress, tcpip.NetworkProtocolNumber) {
@@ -86,6 +87,20 @@ func (n *netstackNet) DialUDP(dst netip.AddrPort) (net.Conn, error) {
 func (n *netstackNet) TCPCounters() (sent, retrans uint64) {
 	tcpStats := n.ns.Stack.Stats().TCP
 	return tcpStats.SegmentsSent.Value(), tcpStats.Retransmits.Value()
+}
+
+// LinkDrops returns the packets that the NIC sent and that the driver did not
+// get. When its queue is full, the channel endpoint drops a packet, but the
+// NIC can count it as sent. Thus the NIC packets sent, less the packets that
+// the binding counts and the packets in the queue, are dropped. Packets that
+// move while it reads the counters can make it a little low.
+func (n *netstackNet) LinkDrops() int64 {
+	nic := n.ns.Stack.NICInfo()[n.ns.NICID].Stats
+	tx := int64(nic.Tx.Packets.Value())
+	queued := int64(n.ns.Endpoint.NumQueued())
+	st := n.b.Stats()
+	got := int64(st.TxPackets + st.TxNoRoute + st.TxDrops + st.TxGateDrops)
+	return int64(nic.TxPacketsDroppedNoBufferSpace.Value()) + max(tx-queued-got, 0)
 }
 
 func (n *netstackNet) CC() string {

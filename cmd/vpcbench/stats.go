@@ -16,7 +16,7 @@ import (
 type mark struct {
 	Nanos int64   `json:"nanos"` // Time since the side started.
 	CPU   float64 `json:"cpu_s"`
-	// Client: TCP segments sent and retransmitted, and binding send drops.
+	// TCP segments sent (client) and retransmitted (client and server).
 	Segments uint64 `json:"segments,omitempty"`
 	Retrans  uint64 `json:"retrans,omitempty"`
 	// Server: bytes that the sink got, and PSP packets that the binding got.
@@ -27,6 +27,9 @@ type mark struct {
 	Drops uint64 `json:"drops,omitempty"`
 	// RcvbufErrors is the UDP RcvbufErrors counter of the server netns, or -1.
 	RcvbufErrors int64 `json:"rcvbuf_errors,omitempty"`
+	// LinkDrops are the packets that the overlay of the client or the server
+	// dropped before its driver got them, or -1.
+	LinkDrops int64 `json:"link_drops,omitempty"`
 }
 
 // cores returns the CPU seconds per second from m0 to m1.
@@ -46,6 +49,8 @@ type result struct {
 	Retransmits      uint64  `json:"retransmits"`
 	// RetransPercent is the part of the TCP segments of the client that are retransmissions.
 	RetransPercent float64 `json:"retrans_percent"`
+	// ServerRetransmits are the TCP retransmits of the server, which sends ACKs.
+	ServerRetransmits uint64 `json:"server_retransmits"`
 	// IdleRTT is the probe RTT before the flows start. LoadRTT is the probe RTT in the measured window.
 	IdleRTT bench.RTTStats `json:"idle_rtt_ms"`
 	LoadRTT bench.RTTStats `json:"load_rtt_ms"`
@@ -64,11 +69,13 @@ type result struct {
 	Streams   int    `json:"streams"`
 	DeviceMTU int    `json:"device_mtu"`
 
-	// Drops in the measured window.
+	// Drops in the measured window. The link drops are -1 when the side cannot read them.
 	ClientTxDrops      uint64 `json:"client_tx_drops"`
 	ServerRxDrops      uint64 `json:"server_rx_drops"`
 	RelayDrops         uint64 `json:"relay_drops"`
 	ServerRcvbufErrors int64  `json:"server_rcvbuf_errors"`
+	ClientLinkDrops    int64  `json:"client_link_drops"`
+	ServerLinkDrops    int64  `json:"server_link_drops"`
 
 	// Omit is the omit period, from the flow start to the window start.
 	Omit period `json:"omit"`
@@ -84,11 +91,14 @@ type period struct {
 	BitsPerSecond      float64        `json:"bits_per_second"`
 	Retransmits        uint64         `json:"retransmits"`
 	RetransPercent     float64        `json:"retrans_percent"`
+	ServerRetransmits  uint64         `json:"server_retransmits"`
 	RTT                bench.RTTStats `json:"rtt_ms"`
 	ClientTxDrops      uint64         `json:"client_tx_drops"`
 	ServerRxDrops      uint64         `json:"server_rx_drops"`
 	RelayDrops         uint64         `json:"relay_drops"`
 	ServerRcvbufErrors int64          `json:"server_rcvbuf_errors"`
+	ClientLinkDrops    int64          `json:"client_link_drops"`
+	ServerLinkDrops    int64          `json:"server_link_drops"`
 }
 
 // newPeriod computes a period from the marks at its start and at its end.
@@ -96,8 +106,9 @@ func newPeriod(client, server, relay [2]mark) period {
 	r := newResult(client, server, relay)
 	return period{
 		Seconds: r.Seconds, BitsPerSecond: r.BitsPerSecond, Retransmits: r.Retransmits, RetransPercent: r.RetransPercent,
-		ClientTxDrops: r.ClientTxDrops, ServerRxDrops: r.ServerRxDrops, RelayDrops: r.RelayDrops,
-		ServerRcvbufErrors: r.ServerRcvbufErrors,
+		ServerRetransmits: r.ServerRetransmits, ClientTxDrops: r.ClientTxDrops, ServerRxDrops: r.ServerRxDrops,
+		RelayDrops: r.RelayDrops, ServerRcvbufErrors: r.ServerRcvbufErrors,
+		ClientLinkDrops: r.ClientLinkDrops, ServerLinkDrops: r.ServerLinkDrops,
 	}
 }
 
@@ -113,6 +124,7 @@ func newResult(client, server, relay [2]mark) result {
 	r.BitsPerSecond = float64(server[1].Bytes-server[0].Bytes) * 8 / s
 	r.PacketsPerSecond = float64(server[1].RxPackets-server[0].RxPackets) / s
 	r.Retransmits = client[1].Retrans - client[0].Retrans
+	r.ServerRetransmits = server[1].Retrans - server[0].Retrans
 	if segs := client[1].Segments - client[0].Segments; segs > 0 {
 		r.RetransPercent = float64(r.Retransmits) * 100 / float64(segs)
 	}
@@ -125,11 +137,19 @@ func newResult(client, server, relay [2]mark) result {
 	r.ClientTxDrops = client[1].Drops - client[0].Drops
 	r.ServerRxDrops = server[1].Drops - server[0].Drops
 	r.RelayDrops = relay[1].Drops - relay[0].Drops
-	r.ServerRcvbufErrors = -1
-	if server[0].RcvbufErrors >= 0 && server[1].RcvbufErrors >= 0 {
-		r.ServerRcvbufErrors = server[1].RcvbufErrors - server[0].RcvbufErrors
-	}
+	r.ServerRcvbufErrors = delta(server[0].RcvbufErrors, server[1].RcvbufErrors)
+	r.ClientLinkDrops = delta(client[0].LinkDrops, client[1].LinkDrops)
+	r.ServerLinkDrops = delta(server[0].LinkDrops, server[1].LinkDrops)
 	return r
+}
+
+// delta returns the increase of a counter from v0 to v1, or -1 when a value
+// is -1 (not known).
+func delta(v0, v1 int64) int64 {
+	if v0 < 0 || v1 < 0 {
+		return -1
+	}
+	return max(v1-v0, 0)
 }
 
 // echo sends each UDP probe back to its sender until pc closes.

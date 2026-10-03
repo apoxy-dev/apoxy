@@ -104,6 +104,16 @@ func (n *tunNet) TCPCounters() (sent, retrans uint64) {
 	return uint64(max(snmpCounter("Tcp:", "OutSegs"), 0)), uint64(max(snmpCounter("Tcp:", "RetransSegs"), 0))
 }
 
+// LinkDrops returns the TxDropped counter of the TUN device: the packets
+// that the kernel dropped because the queue of the device was full.
+func (n *tunNet) LinkDrops() int64 {
+	link, err := netlink.LinkByName(tunName)
+	if err != nil || link.Attrs().Statistics == nil {
+		return -1
+	}
+	return int64(link.Attrs().Statistics.TxDropped)
+}
+
 func (n *tunNet) CC() string {
 	if n.cc != "" {
 		return n.cc

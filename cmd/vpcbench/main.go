@@ -189,6 +189,9 @@ type overlay interface {
 	DialUDP(dst netip.AddrPort) (net.Conn, error)
 	// TCPCounters returns the TCP segments sent and retransmitted.
 	TCPCounters() (sent, retrans uint64)
+	// LinkDrops returns the packets that the overlay dropped before the
+	// driver got them, or -1.
+	LinkDrops() int64
 	CC() string
 	Close()
 }
@@ -550,10 +553,11 @@ func runServer(parent context.Context, o options, ready func(netip.AddrPort)) er
 				return reply{}, errors.New("mark before hello")
 			}
 			st := s.b.Stats()
+			_, retrans := s.net.TCPCounters()
 			return reply{Mark: mark{
-				Nanos: time.Since(start).Nanoseconds(), CPU: bench.CPUSeconds(),
+				Nanos: time.Since(start).Nanoseconds(), CPU: bench.CPUSeconds(), Retrans: retrans,
 				Bytes: got.Load(), RxPackets: st.RxPackets, Drops: st.RxDrops + st.RxNoDriver,
-				RcvbufErrors: snmpCounter("Udp:", "RcvbufErrors"),
+				RcvbufErrors: snmpCounter("Udp:", "RcvbufErrors"), LinkDrops: s.net.LinkDrops(),
 			}}, nil
 		}
 		return reply{}, fmt.Errorf("unknown op %q", req.Op)
@@ -782,7 +786,10 @@ func measure(ctx context.Context, o options, s *side, peer netip.Addr, srv, rela
 		at[i] = wall[i].Sub(start)
 		sent, retrans := s.net.TCPCounters()
 		st := s.b.Stats()
-		client[i] = mark{Nanos: at[i].Nanoseconds(), CPU: bench.CPUSeconds(), Segments: sent, Retrans: retrans, Drops: st.TxDrops + st.TxGateDrops}
+		client[i] = mark{
+			Nanos: at[i].Nanoseconds(), CPU: bench.CPUSeconds(), Segments: sent, Retrans: retrans,
+			Drops: st.TxDrops + st.TxGateDrops, LinkDrops: s.net.LinkDrops(),
+		}
 		var err error
 		if server[i], err = srv.mark(); err != nil {
 			return err
