@@ -58,28 +58,46 @@ func newInjectBatch(ep *channel.Endpoint, st *counters, seed maphash.Seed, n int
 	return j
 }
 
-func (j *injectBatch) add(pkt []byte) {
+// make returns the packet buffer of the inner packet pkt for the netstack, and the
+// index of its inject worker. It returns nil when pkt is not an IP packet. Many
+// goroutines can call it.
+func (j *injectBatch) make(pkt []byte) (*stack.PacketBuffer, int) {
 	proto, ok := ipProto(pkt)
 	if !ok {
-		j.st.rxDrops.Add(1)
-		return
+		return nil, 0
 	}
 	w := 0
 	if len(j.in) > 1 {
 		w = int(flow.Hash(j.seed, pkt) % uint64(len(j.in)))
-	}
-	if j.pend[w] == nil {
-		j.pend[w] = j.get()
 	}
 	pkb := stack.NewPacketBuffer(stack.PacketBufferOptions{Payload: buffer.MakeWithData(pkt)})
 	pkb.NetworkProtocolNumber = proto
 	// PSP open authenticated the packet, so GRO and the netstack do not check
 	// its checksums.
 	pkb.RXChecksumValidated = true
+	return pkb, w
+}
+
+// push adds pkb to the batch of worker w, and sends the batch when it is full. Only
+// the goroutine that gives the packets to the workers calls it.
+func (j *injectBatch) push(pkb *stack.PacketBuffer, w int) {
+	if j.pend[w] == nil {
+		j.pend[w] = j.get()
+	}
 	j.pend[w] = append(j.pend[w], pkb)
 	if len(j.pend[w]) == maxInjectBatch {
 		j.send(w)
 	}
+}
+
+// add makes the packet buffer of pkt and pushes it.
+func (j *injectBatch) add(pkt []byte) {
+	pkb, w := j.make(pkt)
+	if pkb == nil {
+		j.st.rxDrops.Add(1)
+		return
+	}
+	j.push(pkb, w)
 }
 
 func (j *injectBatch) flush() {

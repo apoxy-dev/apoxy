@@ -82,9 +82,10 @@ var (
 func (b *Binding) Netstack(ep *channel.Endpoint) (*netstack.Datapath, error) {
 	d := newDriver(b, func(buf []byte, off int) bool { return inject(ep, buf[off:]) })
 	procs := runtime.GOMAXPROCS(0)
-	d.batch = newInjectBatch(ep, &b.stats, b.seed, min(procs, maxInjectWorkers), d.done, b.ctx.Done())
+	j := newInjectBatch(ep, &b.stats, b.seed, min(procs, maxInjectWorkers), d.done, b.ctx.Done())
+	d.batch = j
 	if procs > 1 {
-		d.pipe = newRxPipe(d, openWorkers(procs), d.done, b.ctx.Done())
+		d.pipe = newRxPipe(d, j, openWorkers(procs), d.done, b.ctx.Done())
 	}
 	if !b.drv.CompareAndSwap(nil, d) {
 		_ = d.Close()

@@ -26,9 +26,10 @@ const noPipe = -1
 func useNetstack(t testing.TB, n *node, ep *channel.Endpoint, workers, opens int) *driver {
 	t.Helper()
 	d := newDriver(n.b, func(buf []byte, off int) bool { return inject(ep, buf[off:]) })
-	d.batch = newInjectBatch(ep, &n.b.stats, n.b.seed, workers, d.done, n.b.ctx.Done())
+	j := newInjectBatch(ep, &n.b.stats, n.b.seed, workers, d.done, n.b.ctx.Done())
+	d.batch = j
 	if opens >= 0 {
-		d.pipe = newRxPipe(d, opens, d.done, n.b.ctx.Done())
+		d.pipe = newRxPipe(d, j, opens, d.done, n.b.ctx.Done())
 	}
 	require.True(t, n.b.drv.CompareAndSwap(nil, d))
 	t.Cleanup(func() { _ = d.Close() })
@@ -334,12 +335,67 @@ func TestPipeFull(t *testing.T) {
 	}
 }
 
-// TestPipeCloseWhileOpen gives the consumer sets that no worker opens, so the consumer
-// waits for the first one. Close must stop the pipe and count the packets of all sets.
+// openSlot opens the PSP packet in slot i of s as an open worker does, and returns the
+// result with a packet buffer that the test also references.
+func openSlot(t *testing.T, b *Binding, j *injectBatch, s *rxSet, i int) openResult {
+	t.Helper()
+	inner, o, err := b.rxq.Open(s.slots[i])
+	require.NoError(t, err)
+	pkb, w := j.make(inner)
+	require.NotNil(t, pkb)
+	pkb.IncRef()
+	return openResult{o: o, pkb: pkb, w: w}
+}
+
+// released waits until the pipe released the packet buffers of res, so that only the
+// reference of the test is left, and gives that reference back.
+func released(t *testing.T, res []openResult) {
+	t.Helper()
+	for _, r := range res {
+		require.Eventually(t, func() bool { return r.pkb.ReadRefs() == 1 }, 5*time.Second, time.Millisecond,
+			"the pipe did not release the packet buffer")
+		r.pkb.DecRef()
+	}
+}
+
+// TestPipeAcceptDrop gives the consumer a set with two results of the same packet. The
+// replay window drops the second one, and the pipe must release its packet buffer.
+func TestPipeAcceptDrop(t *testing.T) {
+	a, b := newPair(t)
+	offer(t, time.Now(), a, b)
+	r, ep := newRecorder(t)
+	d := useNetstack(t, b, ep, 1, 1)
+	s := <-d.pipe.free
+	pkt := seal(a, flowPacket(1, 7))[addrLen:]
+	var mine []openResult
+	for i := range 2 {
+		s.slots[i] = append(s.slots[i][:0], pkt...)
+		s.res[i] = openSlot(t, b.b, d.pipe.j, s, i)
+		mine = append(mine, s.res[i])
+	}
+	s.n = 2
+	// The test is the open worker of the set.
+	s.opened <- struct{}{}
+	d.pipe.full <- s
+	require.Eventually(t, func() bool {
+		st := b.b.Stats()
+		return st.RxPackets+st.RxDrops == 2
+	}, 5*time.Second, time.Millisecond)
+	assert.Equal(t, Stats{RxPackets: 1, RxDrops: 1}, b.b.Stats())
+	released(t, mine)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	assert.Equal(t, []uint32{7}, r.got[1])
+}
+
+// TestPipeCloseWhileOpen gives the consumer sets that are in no work channel, so the
+// consumer waits for the first one. Close must stop the pipe and wait for the token of
+// each set, which the test sends as a slow open worker after Close started. The packets
+// of all sets count as drops, and the pipe releases the packet buffers of the first set.
 func TestPipeCloseWhileOpen(t *testing.T) {
 	cases := []struct {
 		name string
-		sets []int // Packets in each set.
+		sets []int // Packets in each set. The first set has packet buffers.
 	}{
 		{"one set", []int{5}},
 		{"sets wait after it", []int{5, pipeSlots, 1}},
@@ -350,16 +406,23 @@ func TestPipeCloseWhileOpen(t *testing.T) {
 			offer(t, time.Now(), a, b)
 			_, ep := newRecorder(t)
 			d := useNetstack(t, b, ep, 1, 2)
-			pkt := seal(a, flowPacket(1, 0))[addrLen:]
+			var sets []*rxSet
+			var mine []openResult
 			total := 0
-			for _, n := range tc.sets {
+			for si, n := range tc.sets {
 				s := <-d.pipe.free
 				for i := range n {
+					pkt := seal(a, flowPacket(1, uint32(total+i)))[addrLen:]
 					s.slots[i] = append(s.slots[i][:0], pkt...)
+					s.res[i] = openResult{}
+					if si == 0 {
+						s.res[i] = openSlot(t, b.b, d.pipe.j, s, i)
+						mine = append(mine, s.res[i])
+					}
 				}
 				s.n = n
 				total += n
-				// Only the consumer gets the set.
+				sets = append(sets, s)
 				d.pipe.full <- s
 			}
 			require.Eventually(t, func() bool { return len(d.pipe.full) == len(tc.sets)-1 },
@@ -369,12 +432,22 @@ func TestPipeCloseWhileOpen(t *testing.T) {
 				defer close(closed)
 				_ = d.Close()
 			}()
+			// The consumer stops waiting for the first set, then closes the work channel.
+			require.Eventually(t, func() bool {
+				d.pipe.mu.Lock()
+				defer d.pipe.mu.Unlock()
+				return d.pipe.closing
+			}, 5*time.Second, time.Millisecond, "the consumer did not stop")
+			for _, s := range sets {
+				s.opened <- struct{}{}
+			}
 			select {
 			case <-closed:
 			case <-time.After(5 * time.Second):
 				t.Fatal("Close waits for the open workers.")
 			}
 			assert.Equal(t, Stats{RxDrops: uint64(total)}, b.b.Stats())
+			released(t, mine)
 		})
 	}
 }

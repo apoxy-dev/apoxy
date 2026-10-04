@@ -461,17 +461,6 @@ func (b *Binding) open(d *driver, pkt []byte) {
 	b.deliver(d, pkt[:pspwire.PrefixLen+len(inner)], pspwire.PrefixLen, true)
 }
 
-// accept checks the replay window for the PSP packet pkt, which Open opened in place
-// into an inner packet of n bytes, and gives it to the driver. Only the consumer of the
-// receive pipe calls it.
-func (b *Binding) accept(d *driver, pkt []byte, o engine.Opened, n int) {
-	if err := b.rxq.Accept(o); err != nil {
-		b.stats.rxDrops.Add(1)
-		return
-	}
-	b.deliver(d, pkt[:pspwire.PrefixLen+n], pspwire.PrefixLen, true)
-}
-
 // HandleData opens a data frame of the relay session and gives it to the driver. Set it
 // with (*peerconn.Conn).HandleData.
 func (b *Binding) HandleData(frame []byte) {

@@ -7,6 +7,7 @@ import (
 
 	"github.com/apoxy-dev/softpsp/engine"
 	pspwire "github.com/apoxy-dev/softpsp/psp"
+	"gvisor.dev/gvisor/pkg/tcpip/stack"
 )
 
 const (
@@ -30,13 +31,15 @@ func openWorkers(procs int) int {
 
 // rxPipe moves the PSP packets of the netstack driver from the QUIC read loop to a
 // consumer goroutine. The read loop only copies the packets of each read into a set.
-// Open workers decrypt the sets, each worker one set at a time. The consumer takes the
-// sets in read order, waits until a worker opened each one, checks the replay window and
-// gives the packets to the inject workers. Thus the packets of a flow stay in order, and
-// only the consumer writes the replay window. When all sets wait, the read loop waits,
-// and the socket buffer keeps the next packets.
+// Open workers decrypt the sets, each worker one set at a time, and make the packet
+// buffer of each packet. The consumer takes the sets in read order, waits until a worker
+// finished each one, checks the replay window and gives the packet buffers to the inject
+// workers. Thus the packets of a flow stay in order, and only the consumer writes the
+// replay window. When all sets wait, the read loop waits, and the socket buffer keeps
+// the next packets.
 type rxPipe struct {
 	d      *driver
+	j      *injectBatch
 	cur    *rxSet      // The set of this read. Nil until the read loop adds a packet.
 	work   chan *rxSet // Sets for the open workers. Nil when the consumer opens the sets.
 	full   chan *rxSet // Sets for the consumer, in read order.
@@ -44,6 +47,9 @@ type rxPipe struct {
 	done   <-chan struct{}
 	closed <-chan struct{}
 	exited chan struct{} // Closes when the consumer and the open workers stop.
+
+	mu      sync.Mutex // Guards closing and the sends of flush.
+	closing bool       // Set when the consumer stops. Then flush drops the sets.
 }
 
 // rxSet is the PSP packets of one read. The first n slots hold packets.
@@ -54,18 +60,21 @@ type rxSet struct {
 	opened chan struct{} // Gets one token when an open worker finished the set.
 }
 
-// openResult is the result of Open for one packet.
+// openResult is the result of Open for one packet: the packet buffer for the netstack and
+// the index of its inject worker. The buffer is nil when the packet dropped.
 type openResult struct {
-	o engine.Opened
-	n int // The length of the inner packet, or -1 when Open failed.
+	o   engine.Opened
+	pkb *stack.PacketBuffer
+	w   int
 }
 
-// newRxPipe starts the consumer of d and workers open workers. They stop when done or
-// closed closes.
-func newRxPipe(d *driver, workers int, done, closed <-chan struct{}) *rxPipe {
+// newRxPipe starts the consumer of d and workers open workers. They give the packets to
+// j. They stop when done or closed closes.
+func newRxPipe(d *driver, j *injectBatch, workers int, done, closed <-chan struct{}) *rxPipe {
 	sets := pipeSets + 2*workers
 	p := &rxPipe{
 		d:      d,
+		j:      j,
 		full:   make(chan *rxSet, sets),
 		free:   make(chan *rxSet, sets),
 		done:   done,
@@ -129,50 +138,54 @@ func (p *rxPipe) get() *rxSet {
 	return nil
 }
 
-// flush gives the set of this read to the open workers and the consumer. Only the read
-// loop calls it.
+// flush gives the set of this read to the open workers and the consumer, or drops it
+// when the consumer stopped. Only the read loop calls it.
 func (p *rxPipe) flush() {
 	s := p.cur
 	if s == nil {
 		return
 	}
 	p.cur = nil
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closing {
+		p.d.b.stats.rxDrops.Add(uint64(s.n))
+		return
+	}
 	// The channels hold all sets, so these sends do not wait.
 	if p.work != nil {
 		p.work <- s
 	}
 	p.full <- s
-	// The consumer can stop before it gets s.
-	if p.stopped() {
-		p.drain()
-	}
 }
 
-// open opens the sets of the work channel until the pipe stops. Each open worker runs it.
+// open opens the sets of the work channel until the consumer closes it. Each open worker
+// runs it. After the pipe stops, it gives each set back with no results.
 func (p *rxPipe) open() {
-	for {
-		select {
-		case s := <-p.work:
+	for s := range p.work {
+		if p.stopped() {
+			clear(s.res[:s.n])
+		} else {
 			p.openSet(s)
-			s.opened <- struct{}{}
-		case <-p.done:
-			return
-		case <-p.closed:
-			return
 		}
+		s.opened <- struct{}{}
 	}
 }
 
-// openSet opens the packets of s in place and keeps the result of each one in s.
+// openSet opens the packets of s in place, and makes the packet buffer of each packet
+// that passed. It keeps the result of each one in s.
 func (p *rxPipe) openSet(s *rxSet) {
-	q := p.d.b.rxq
+	b := p.d.b
+	quic := b.relay.Load() != nil
 	for i, pkt := range s.slots[:s.n] {
-		inner, o, err := q.Open(pkt)
+		inner, o, err := b.rxq.Open(pkt)
 		if err != nil {
-			s.res[i] = openResult{n: -1}
+			s.res[i] = openResult{}
 			continue
 		}
-		s.res[i] = openResult{o: o, n: len(inner)}
+		b.clampMSS(inner, quic)
+		pkb, w := p.j.make(inner)
+		s.res[i] = openResult{o: o, pkb: pkb, w: w}
 	}
 }
 
@@ -189,18 +202,23 @@ func (p *rxPipe) run() {
 				p.stop(s)
 				return
 			}
-			for i, pkt := range s.slots[:s.n] {
-				if r := s.res[i]; r.n < 0 {
+			for _, r := range s.res[:s.n] {
+				if r.pkb == nil {
+					b.stats.rxDrops.Add(1)
+				} else if err := b.rxq.Accept(r.o); err != nil {
+					r.pkb.DecRef()
 					b.stats.rxDrops.Add(1)
 				} else {
-					b.accept(p.d, pkt, r.o, r.n)
+					p.j.push(r.pkb, r.w)
 				}
 			}
+			// A free set must hold no packet buffer, because release drops all it holds.
+			clear(s.res[:s.n])
 			s.n = 0
 			p.free <- s
 			// When more sets wait, their packets go in the same inject batches.
 			if len(p.full) == 0 {
-				p.d.batch.flush()
+				p.j.flush()
 			}
 		case <-p.done:
 			p.stop(nil)
@@ -212,7 +230,7 @@ func (p *rxPipe) run() {
 	}
 }
 
-// wait waits until an open worker opened s. It returns false when the pipe stops first.
+// wait waits until an open worker finished s. It returns false when the pipe stops first.
 func (p *rxPipe) wait(s *rxSet) bool {
 	select {
 	case <-s.opened:
@@ -223,13 +241,43 @@ func (p *rxPipe) wait(s *rxSet) bool {
 	return false
 }
 
-// stop drops the packets in the inject batches, in s and in the sets that wait.
+// stop closes the work channel, so that the open workers finish the sets in it and exit.
+// Then it drops the packets in the inject batches, in s and in the sets that wait.
 func (p *rxPipe) stop(s *rxSet) {
-	p.d.batch.flush()
-	if s != nil {
-		p.d.b.stats.rxDrops.Add(uint64(s.n))
+	p.mu.Lock()
+	p.closing = true
+	if p.work != nil {
+		close(p.work)
 	}
-	p.drain()
+	p.mu.Unlock()
+	p.j.flush()
+	if s != nil {
+		p.release(s)
+	}
+	// After closing is set, flush adds no set, so this loop drops all sets that wait.
+	for {
+		select {
+		case s := <-p.full:
+			p.release(s)
+		default:
+			return
+		}
+	}
+}
+
+// release waits until an open worker finished s, and drops the packets of s. The open
+// workers finish every set of the work channel, so the wait ends.
+func (p *rxPipe) release(s *rxSet) {
+	if p.work != nil {
+		<-s.opened
+	}
+	for i := range s.res[:s.n] {
+		if pkb := s.res[i].pkb; pkb != nil {
+			pkb.DecRef()
+			s.res[i].pkb = nil
+		}
+	}
+	p.d.b.stats.rxDrops.Add(uint64(s.n))
 }
 
 // stopped reports whether the driver or the binding closed.
@@ -241,18 +289,5 @@ func (p *rxPipe) stopped() bool {
 		return true
 	default:
 		return false
-	}
-}
-
-// drain drops the sets that wait for the consumer. It does not change them, because an
-// open worker can still read them.
-func (p *rxPipe) drain() {
-	for {
-		select {
-		case s := <-p.full:
-			p.d.b.stats.rxDrops.Add(uint64(s.n))
-		default:
-			return
-		}
 	}
 }
