@@ -95,7 +95,7 @@ func TestControlForwarderSplice(t *testing.T) {
 					return
 				}
 				defer hostConn.Close()
-				splice(guestConn, hostConn)
+				copyConns(guestConn, hostConn)
 			}()
 		}
 	}()
@@ -172,9 +172,9 @@ func TestInitStrControlRoundtrip(t *testing.T) {
 	}
 }
 
-// splice copies bytes bidirectionally between a and b until either side closes,
-// propagating a half-close so an HTTP peer sees EOF on the request body.
-func splice(a, b net.Conn) {
+// copyConns copies bytes in both directions between a and b until a side closes.
+// It passes on a half-close, so an HTTP peer sees EOF on the request body.
+func copyConns(a, b net.Conn) {
 	var wg sync.WaitGroup
 	wg.Add(2)
 	cp := func(dst, src net.Conn) {
