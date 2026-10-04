@@ -10,39 +10,53 @@ import (
 	"testing"
 	"time"
 
+	pspwire "github.com/apoxy-dev/softpsp/psp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
 	"gvisor.dev/gvisor/pkg/tcpip/link/channel"
 )
 
+// noPipe is the opens of useNetstack for a driver with no receive pipe.
+const noPipe = -1
+
 // useNetstack gives the binding of n a netstack driver on ep with the inject workers,
-// and with a receive pipe when pipe is set.
-func useNetstack(t testing.TB, n *node, ep *channel.Endpoint, workers int, pipe bool) *driver {
+// and with a receive pipe of opens open workers. Zero opens means that the consumer
+// opens the packets, and noPipe means no pipe.
+func useNetstack(t testing.TB, n *node, ep *channel.Endpoint, workers, opens int) *driver {
 	t.Helper()
 	d := newDriver(n.b, func(buf []byte, off int) bool { return inject(ep, buf[off:]) })
 	d.batch = newInjectBatch(ep, &n.b.stats, n.b.seed, workers, d.done, n.b.ctx.Done())
-	if pipe {
-		d.pipe = newRxPipe(d, d.done, n.b.ctx.Done())
+	if opens >= 0 {
+		d.pipe = newRxPipe(d, opens, d.done, n.b.ctx.Done())
 	}
 	require.True(t, n.b.drv.CompareAndSwap(nil, d))
 	t.Cleanup(func() { _ = d.Close() })
 	return d
 }
 
+func TestOpenWorkers(t *testing.T) {
+	for procs, want := range map[int]int{1: 0, 2: 0, 3: 0, 4: 2, 5: 2, 6: 3, 8: 4, 64: 4} {
+		assert.Equal(t, want, openWorkers(procs), "procs %d", procs)
+	}
+}
+
 // TestPipe gives reads of PSP packets of many flows to the demux, as the QUIC read loop
-// does. The netstack must get the packets of each flow once and in order, also when one
-// read fills more than one set. Forged packets and copies drop.
+// does. The netstack must get the packets of each flow once and in order, also when the
+// open workers finish the sets in another order and when one read fills more than one
+// set. Forged packets fail Open and copies fail the replay window in Accept.
 func TestPipe(t *testing.T) {
 	cases := []struct {
-		name string
-		pipe bool
-		read int // Packets in one read.
+		name  string
+		opens int // Open workers, or noPipe.
+		read  int // Packets in one read.
 	}{
-		{"no pipe", false, 32},
-		{"full sets", true, pipeSlots},
-		{"small reads", true, 5},
-		{"read larger than a set", true, 3*pipeSlots + 5},
+		{"no pipe", noPipe, 32},
+		{"consumer opens full sets", 0, pipeSlots},
+		{"one worker small reads", 1, 5},
+		{"two workers reads of one", 2, 1},
+		{"four workers small reads", 4, 5},
+		{"four workers read larger than a set", 4, 3*pipeSlots + 5},
 	}
 	const flows, perFlow = 8, 120
 	for _, tc := range cases {
@@ -50,7 +64,7 @@ func TestPipe(t *testing.T) {
 			a, b := newPair(t)
 			offer(t, time.Now(), a, b)
 			r, ep := newRecorder(t)
-			useNetstack(t, b, ep, 4, tc.pipe)
+			useNetstack(t, b, ep, 4, tc.opens)
 			var pkts [][]byte
 			drops := 0
 			for i := range flows * perFlow {
@@ -64,6 +78,10 @@ func TestPipe(t *testing.T) {
 					drops++
 				case 23:
 					pkts = append(pkts, bytes.Clone(pkt))
+					drops++
+				case 31:
+					// A copy of an older packet, which is in another set.
+					pkts = append(pkts, bytes.Clone(pkts[len(pkts)-20]))
 					drops++
 				}
 			}
@@ -87,13 +105,130 @@ func TestPipe(t *testing.T) {
 	}
 }
 
+// TestPipeOrder gives the consumer two sets in read order, and the one open worker the
+// same sets in another order. The netstack must get the packets in read order.
+func TestPipeOrder(t *testing.T) {
+	cases := []struct {
+		name string
+		work []int // The order of the sets for the open worker.
+	}{
+		{"opened in read order", []int{0, 1}},
+		{"opened in reverse order", []int{1, 0}},
+	}
+	const perSet = 5
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a, b := newPair(t)
+			offer(t, time.Now(), a, b)
+			r, ep := newRecorder(t)
+			d := useNetstack(t, b, ep, 1, 1)
+			sets := make([]*rxSet, 2)
+			for i := range sets {
+				s := <-d.pipe.free
+				for j := range perSet {
+					pkt := seal(a, flowPacket(1, uint32(i*perSet+j)))[addrLen:]
+					s.slots[j] = append(s.slots[j][:0], pkt...)
+				}
+				s.n = perSet
+				sets[i] = s
+			}
+			for _, i := range tc.work {
+				d.pipe.work <- sets[i]
+			}
+			for _, s := range sets {
+				d.pipe.full <- s
+			}
+			require.Eventually(t, func() bool { return r.count() == 2*perSet }, 5*time.Second, time.Millisecond)
+			assert.Equal(t, Stats{RxPackets: 2 * perSet}, b.b.Stats())
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			assert.Equal(t, seqs(2*perSet), r.got[1])
+		})
+	}
+}
+
+// TestPipeSet gives one read of 9 packets with a bad packet in the middle. Open drops a
+// forged packet or a packet with no SA, and Accept drops a copy. The packets after the
+// bad one must arrive.
+func TestPipeSet(t *testing.T) {
+	cases := []struct {
+		name    string
+		bad     func(pkts [][]byte) []byte // The packet at index 4.
+		icv     uint64                     // Packets that fail to authenticate.
+		replays uint64                     // Packets that the replay window drops.
+	}{
+		{name: "all good"},
+		{
+			name: "forged",
+			bad: func(pkts [][]byte) []byte {
+				p := bytes.Clone(pkts[4])
+				p[len(p)-1] ^= 1
+				return p
+			},
+			icv: 1,
+		},
+		{
+			name: "unknown SA",
+			bad: func(pkts [][]byte) []byte {
+				p := bytes.Clone(pkts[4])
+				p[4] ^= 0xff
+				return p
+			},
+		},
+		{
+			name:    "copy",
+			bad:     func(pkts [][]byte) []byte { return bytes.Clone(pkts[2]) },
+			replays: 1,
+		},
+	}
+	for _, opens := range []int{0, 1, 3} {
+		for _, tc := range cases {
+			t.Run(fmt.Sprintf("opens=%d/%s", opens, tc.name), func(t *testing.T) {
+				a, b := newPair(t)
+				offer(t, time.Now(), a, b)
+				r, ep := newRecorder(t)
+				useNetstack(t, b, ep, 2, opens)
+				var pkts [][]byte
+				for i := range 9 {
+					pkts = append(pkts, seal(a, flowPacket(1, uint32(i)))[addrLen:])
+				}
+				h, err := pspwire.ParseHeader(pkts[0])
+				require.NoError(t, err)
+				want := seqs(9)
+				drops := uint64(0)
+				if tc.bad != nil {
+					pkts[4] = tc.bad(pkts)
+					want = append(want[:4:4], want[5:]...)
+					drops = 1
+				}
+				for _, pkt := range pkts {
+					b.b.demux.Handle(pkt, nil)
+				}
+				b.b.demux.BatchEnd()
+				require.Eventually(t, func() bool {
+					st := b.b.Stats()
+					return st.RxPackets+st.RxDrops == 9
+				}, 5*time.Second, time.Millisecond)
+				assert.Equal(t, Stats{RxPackets: 9 - drops, RxDrops: drops}, b.b.Stats())
+				sa, ok := b.b.table.Stats(h.SPI)
+				require.True(t, ok)
+				assert.Equal(t, tc.icv, sa.ICVFailures)
+				assert.Equal(t, tc.replays, sa.Replays)
+				r.mu.Lock()
+				defer r.mu.Unlock()
+				assert.Equal(t, want, r.got[1])
+			})
+		}
+	}
+}
+
 // TestPipeClampMSS checks that the consumer of the pipe lowers the MSS of TCP SYN packets.
 func TestPipeClampMSS(t *testing.T) {
 	a, b := newPairMTU(t, 1400)
 	offer(t, time.Now(), a, b)
 	b.b.SetClampMTU(1280)
 	r, ep := newRecorder(t)
-	useNetstack(t, b, ep, 2, true)
+	useNetstack(t, b, ep, 2, 1)
 	b.b.demux.Handle(seal(a, tcpSyn(a.v4, b.v4, header.TCPFlagSyn, 1360))[addrLen:], nil)
 	b.b.demux.BatchEnd()
 	require.Eventually(t, func() bool { return r.count() == 1 }, 5*time.Second, time.Millisecond)
@@ -108,10 +243,14 @@ func TestPipeClampMSS(t *testing.T) {
 func TestPipeFull(t *testing.T) {
 	cases := []struct {
 		name  string
+		opens int
 		close bool // The driver closes while the read loop waits.
 	}{
-		{name: "netstack catches up"},
-		{name: "driver closes", close: true},
+		{name: "netstack catches up", opens: 0},
+		{name: "netstack catches up with one worker", opens: 1},
+		{name: "netstack catches up with three workers", opens: 3},
+		{name: "driver closes", opens: 0, close: true},
+		{name: "driver closes with three workers", opens: 3, close: true},
 	}
 	// More packets than the inject queue and the sets can hold.
 	const total = 2 * (injectQueue + 2) * maxInjectBatch
@@ -124,7 +263,7 @@ func TestPipeFull(t *testing.T) {
 			r.gate = gate
 			openGate := sync.OnceFunc(func() { close(gate) })
 			defer openGate()
-			d := useNetstack(t, b, ep, 1, true)
+			d := useNetstack(t, b, ep, 1, tc.opens)
 			pkts := make([][]byte, total)
 			for i := range pkts {
 				pkts[i] = seal(a, flowPacket(1, uint32(i)))[addrLen:]
@@ -155,7 +294,7 @@ func TestPipeFull(t *testing.T) {
 			}, 5*time.Second, 100*time.Millisecond, "the read loop did not wait")
 			require.Less(t, last, int64(total), "the read loop did not wait for the pipe")
 			// The consumer can hold one set.
-			assert.GreaterOrEqual(t, len(d.pipe.full), pipeSets-1, "sets that wait for the consumer")
+			assert.GreaterOrEqual(t, len(d.pipe.full), cap(d.pipe.full)-1, "sets that wait for the consumer")
 
 			if !tc.close {
 				openGate()
@@ -195,15 +334,64 @@ func TestPipeFull(t *testing.T) {
 	}
 }
 
+// TestPipeCloseWhileOpen gives the consumer sets that no worker opens, so the consumer
+// waits for the first one. Close must stop the pipe and count the packets of all sets.
+func TestPipeCloseWhileOpen(t *testing.T) {
+	cases := []struct {
+		name string
+		sets []int // Packets in each set.
+	}{
+		{"one set", []int{5}},
+		{"sets wait after it", []int{5, pipeSlots, 1}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a, b := newPair(t)
+			offer(t, time.Now(), a, b)
+			_, ep := newRecorder(t)
+			d := useNetstack(t, b, ep, 1, 2)
+			pkt := seal(a, flowPacket(1, 0))[addrLen:]
+			total := 0
+			for _, n := range tc.sets {
+				s := <-d.pipe.free
+				for i := range n {
+					s.slots[i] = append(s.slots[i][:0], pkt...)
+				}
+				s.n = n
+				total += n
+				// Only the consumer gets the set.
+				d.pipe.full <- s
+			}
+			require.Eventually(t, func() bool { return len(d.pipe.full) == len(tc.sets)-1 },
+				5*time.Second, time.Millisecond, "the consumer did not take the first set")
+			closed := make(chan struct{})
+			go func() {
+				defer close(closed)
+				_ = d.Close()
+			}()
+			select {
+			case <-closed:
+			case <-time.After(5 * time.Second):
+				t.Fatal("Close waits for the open workers.")
+			}
+			assert.Equal(t, Stats{RxDrops: uint64(total)}, b.b.Stats())
+		})
+	}
+}
+
 // BenchmarkPipe gives reads of 64 PSP packets of 1280 B in 16 flows to the demux, as the
 // QUIC read loop does, and measures the time of each packet. The inject workers give the
 // packets to an endpoint with no netstack, which drops them at once.
 func BenchmarkPipe(b *testing.B) {
-	for _, pipe := range []bool{false, true} {
-		b.Run(fmt.Sprintf("pipe=%t", pipe), func(b *testing.B) {
+	for _, opens := range []int{noPipe, 0, 1, 2, 4} {
+		name := fmt.Sprintf("opens=%d", opens)
+		if opens == noPipe {
+			name = "no pipe"
+		}
+		b.Run(name, func(b *testing.B) {
 			x, y := newPair(b)
 			offer(b, time.Now(), x, y)
-			useNetstack(b, y, channel.New(16, DefaultMTU, ""), 4, pipe)
+			useNetstack(b, y, channel.New(16, DefaultMTU, ""), 4, opens)
 			inner := make([][]byte, 16)
 			for f := range inner {
 				inner[f] = packet(x.v4, y.v4, 17, uint16(1+f), 2, DefaultMTU)

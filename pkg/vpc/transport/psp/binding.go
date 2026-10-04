@@ -156,7 +156,8 @@ func New(cfg Config) (*Binding, error) {
 	if cfg.DeviceMTU < 0 || cfg.DeviceMTU > cfg.MTU {
 		return nil, fmt.Errorf("psp: device MTU must be 1 to %d, got %d", cfg.MTU, cfg.DeviceMTU)
 	}
-	// One receive queue: one goroutine opens all PSP packets.
+	// One receive queue. Many goroutines can open packets on it, and one checks the
+	// replay window.
 	table, err := engine.NewRxTable(engine.RxConfig{Queues: 1})
 	if err != nil {
 		return nil, err
@@ -449,8 +450,8 @@ func (b *Binding) receive(pkt []byte) {
 	b.open(d, pkt)
 }
 
-// open opens a PSP packet in place and gives it to the driver. Only one goroutine at a
-// time calls it: the QUIC read loop, or the consumer of the receive pipe.
+// open opens a PSP packet in place and gives it to the driver. Only the QUIC read loop
+// calls it, when the driver has no receive pipe.
 func (b *Binding) open(d *driver, pkt []byte) {
 	inner, _, err := b.rxq.Receive(pkt)
 	if err != nil {
@@ -458,6 +459,17 @@ func (b *Binding) open(d *driver, pkt []byte) {
 		return
 	}
 	b.deliver(d, pkt[:pspwire.PrefixLen+len(inner)], pspwire.PrefixLen, true)
+}
+
+// accept checks the replay window for the PSP packet pkt, which Open opened in place
+// into an inner packet of n bytes, and gives it to the driver. Only the consumer of the
+// receive pipe calls it.
+func (b *Binding) accept(d *driver, pkt []byte, o engine.Opened, n int) {
+	if err := b.rxq.Accept(o); err != nil {
+		b.stats.rxDrops.Add(1)
+		return
+	}
+	b.deliver(d, pkt[:pspwire.PrefixLen+n], pspwire.PrefixLen, true)
 }
 
 // HandleData opens a data frame of the relay session and gives it to the driver. Set it

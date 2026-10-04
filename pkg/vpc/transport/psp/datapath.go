@@ -84,7 +84,7 @@ func (b *Binding) Netstack(ep *channel.Endpoint) (*netstack.Datapath, error) {
 	procs := runtime.GOMAXPROCS(0)
 	d.batch = newInjectBatch(ep, &b.stats, b.seed, min(procs, maxInjectWorkers), d.done, b.ctx.Done())
 	if procs > 1 {
-		d.pipe = newRxPipe(d, d.done, b.ctx.Done())
+		d.pipe = newRxPipe(d, openWorkers(procs), d.done, b.ctx.Done())
 	}
 	if !b.drv.CompareAndSwap(nil, d) {
 		_ = d.Close()
@@ -336,7 +336,7 @@ func (d *driver) Close() error {
 	d.once.Do(func() {
 		close(d.done)
 		if d.pipe != nil {
-			// The next driver can open packets only after the consumer stops.
+			// The next driver can open packets only after the pipe stops.
 			<-d.pipe.exited
 		}
 		d.b.drv.CompareAndSwap(d, nil)
