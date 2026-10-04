@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"time"
 )
 
@@ -27,9 +28,24 @@ type RowResult struct {
 var rowStopDelay = 30 * time.Second
 
 // rowArgs returns the perfrig argv of a row. The agent flags come last, so
-// they replace the same flags in the row args.
-func rowArgs(r Row, hostClass string) []string {
-	args := append([]string{"run"}, r.Args...)
+// they replace the same flags in the row args. A node row gets the other
+// hosts as -node flags.
+func rowArgs(r Row, hostClass string, nodes map[string]string) []string {
+	cmd := r.Cmd
+	if cmd == "" {
+		cmd = "run"
+	}
+	args := append([]string{cmd}, r.Args...)
+	if cmd == "node" {
+		roles := make([]string, 0, len(nodes))
+		for role := range nodes {
+			roles = append(roles, role)
+		}
+		sort.Strings(roles)
+		for _, role := range roles {
+			args = append(args, "-node="+role+"="+nodes[role])
+		}
+	}
 	if hostClass != "" {
 		args = append(args, "-host-class="+hostClass)
 	}
@@ -39,17 +55,17 @@ func rowArgs(r Row, hostClass string) []string {
 }
 
 // runRows runs the rows one at a time in runDir, until ctx ends.
-func runRows(ctx context.Context, perfrig, binDir, runDir, hostClass string, rows []Row) []RowResult {
+func runRows(ctx context.Context, perfrig, binDir, runDir, hostClass string, nodes map[string]string, rows []Row) []RowResult {
 	var out []RowResult
 	for _, r := range rows {
-		res := runRow(ctx, perfrig, binDir, runDir, hostClass, r)
+		res := runRow(ctx, perfrig, binDir, runDir, hostClass, nodes, r)
 		slog.Info("Row done", "row", r.ID, "exit_code", res.ExitCode, "seconds", res.Seconds, "error", res.Error)
 		out = append(out, res)
 	}
 	return out
 }
 
-func runRow(ctx context.Context, perfrig, binDir, runDir, hostClass string, r Row) RowResult {
+func runRow(ctx context.Context, perfrig, binDir, runDir, hostClass string, nodes map[string]string, r Row) RowResult {
 	res := RowResult{ID: r.ID, Group: r.Group, ExitCode: -1}
 	if err := ctx.Err(); err != nil {
 		res.Error = "not run: " + err.Error()
@@ -69,7 +85,7 @@ func runRow(ctx context.Context, perfrig, binDir, runDir, hostClass string, r Ro
 	defer logf.Close()
 
 	start := time.Now()
-	cmd := exec.CommandContext(ctx, perfrig, rowArgs(r, hostClass)...)
+	cmd := exec.CommandContext(ctx, perfrig, rowArgs(r, hostClass, nodes)...)
 	cmd.Dir = runDir
 	// The rows find the fetched tools first. In Env, the last PATH wins.
 	cmd.Env = append(os.Environ(), "PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"))

@@ -70,8 +70,9 @@ func TestInfoCells(t *testing.T) {
 		{name: "two values", got: infoCell(info, "%.1f", "load_rtt_ms.p50", "load_rtt_ms.p99"), want: "20.0, 58.7"},
 		{name: "missing key", got: infoCell(info, "%.1f", "load_rtt_ms.p50", "omit.rtt_ms.p90"), want: "-"},
 		{name: "no info", got: infoCell(nil, "%.2f", "retrans_percent"), want: "-"},
-		{name: "drops with no rcvbuf and server link counters, and no socket drops", got: dropsCell(info), want: "2470, 19"},
-		{name: "no drops", got: dropsCell(map[string]float64{"relay_drops": 1}), want: "-"},
+		{name: "drops with no rcvbuf and server link counters, and no socket drops", got: dropsCell(info, false), want: "2470, 19"},
+		{name: "node drops with the relay socket", got: dropsCell(info, true), want: "2500, 59"},
+		{name: "no drops", got: dropsCell(map[string]float64{"relay_drops": 1}, false), want: "-"},
 		{
 			name: "drops of each place",
 			got:  dropsDetail(info),

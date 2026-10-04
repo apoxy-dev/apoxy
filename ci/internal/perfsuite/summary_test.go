@@ -1,6 +1,7 @@
 package perfsuite
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -128,6 +129,56 @@ func TestSlackText(t *testing.T) {
 			got := SlackText(VPC, tc.floorExit, tc.rep, tc.floor, compareFail, "apoxy@abc1234", "https://run")
 			if got != tc.want {
 				t.Fatalf("SlackText =\n%s\nwant\n%s", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestNodes(t *testing.T) {
+	client := `{"workload": "vpc-netstack-psp-relay-3node", "role": "client", "host": {"class": "c7a.8xlarge", "cpus": 32, "kernel": "7.0.0-aws",
+		"nic": {"dev": "ens5", "driver": "ena", "version": "7.0.0-aws", "mtu": 9001, "rx_queues": 8, "xdp_features": ["basic", "redirect"]}},
+		"rtt_ms": {"avg": 0.061}, "relay_rtt_ms": {"avg": 0.058},
+		"throughput": {"gbps": 4}, "info": {"client_cores_per_gbps": 0.25, "client_host_cores": 2, "server_cores_per_gbps": 0.5, "server_host_cores": 3, "relay_host_cores": -1},
+		"nic_counters": {"bw_in_allowance_exceeded": 0, "pps_allowance_exceeded": 12, "rx_dropped": 1, "tx_dropped": 0, "rx_top_queue_pct": 99}}`
+	server := `{"workload": "vpc-netstack-psp-relay-3node", "role": "server", "host": {"class": "c7a.8xlarge", "cpus": 32, "kernel": "7.0.0-aws"}}`
+	relay := `{"workload": "vpc-netstack-psp-relay-3node", "role": "relay", "host": {"class": "c7a.8xlarge", "cpus": 32, "kernel": "7.0.0-aws"}}`
+	rig := `{"workload": "vpc-netstack-psp-relay", "host": {"class": "c7a.8xlarge"}}`
+	cases := []struct {
+		name    string
+		results []string
+		want    []string
+		empty   bool
+	}{
+		{name: "netns rig results", results: []string{rig, "not json"}, empty: true},
+		{
+			name: "hosts in role order", results: []string{relay, server, rig, client},
+			want: []string{
+				"### Hosts of the node rows",
+				"| vpc-netstack-psp-relay-3node | client | c7a.8xlarge, 32 CPUs, 7.0.0-aws | ens5 ena 7.0.0-aws, mtu 9001 | 8 | basic redirect | 0.061, 0.058 | 0.250 | 2.00 | 0.500 | 0 | - | 12 | - | 1 | 0 | 99 |",
+				"| vpc-netstack-psp-relay-3node | server | c7a.8xlarge, 32 CPUs, 7.0.0-aws | - | - | - | - | 0.500 | 3.00 | 0.750 | - | - | - | - | - | - | - |",
+				"| vpc-netstack-psp-relay-3node | relay | c7a.8xlarge, 32 CPUs, 7.0.0-aws | - | - | - | - | - | - | - | - | - | - | - | - | - | - |",
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Nodes(tc.results)
+			if tc.empty {
+				if got != "" {
+					t.Fatalf("Nodes = %q, want empty", got)
+				}
+				return
+			}
+			lines := strings.Split(got, "\n")
+			last := -1
+			for i, w := range tc.want {
+				at := slices.Index(lines, w)
+				if at < 0 {
+					t.Errorf("line %d missing: %s\n%s", i, w, got)
+				} else if at < last {
+					t.Errorf("line %d is not in role order:\n%s", i, got)
+				}
+				last = max(last, at)
 			}
 		})
 	}

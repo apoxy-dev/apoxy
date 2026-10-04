@@ -55,7 +55,7 @@ func writeSummary(w io.Writer, outcomes []outcome) {
 			infoCell(r.Info, "%.2f", "retrans_percent"),
 			infoCell(r.Info, "%.1f", "load_rtt_ms.p50", "load_rtt_ms.p99"),
 			infoCell(r.Info, "%.1f", "omit.rtt_ms.p90", "load_rtt_ms.p90"),
-			dropsCell(r.Info))
+			dropsCell(r.Info, r.Role != ""))
 	}
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "<details><summary>Keys and checks</summary>")
@@ -73,6 +73,9 @@ func writeSummary(w io.Writer, outcomes []outcome) {
 			fmt.Fprintf(w, "; %s %.4f (baseline %.4f, %+.1f%%, %s)", c.Metric, c.Got, c.Baseline, 100*c.Change(), mark)
 		}
 		if d := dropsDetail(o.Result.Info); d != "" {
+			fmt.Fprintf(w, "; %s", d)
+		}
+		if d := nicDetail(o.Result.Host.NIC, o.Result.NIC); d != "" {
 			fmt.Fprintf(w, "; %s", d)
 		}
 		fmt.Fprintln(w)
@@ -125,15 +128,17 @@ var dropPlaces = []struct {
 	{"server_link_drops", "server link", false},
 }
 
-// dropsCell is the sum of the drops of all sides in the omit period and in the window.
-func dropsCell(info map[string]float64) string {
+// dropsCell is the sum of the drops of all sides in the omit period and in the
+// window. In a node result, the relay socket is on its own host, so the sum has it.
+func dropsCell(info map[string]float64, node bool) string {
 	sum := func(prefix string) (float64, bool) {
 		total, found := 0.0, false
 		for _, p := range dropPlaces {
 			v, ok := info[prefix+p.key]
 			found = found || ok
+			part := p.part && !(node && p.key == "relay_rcvbuf_drops")
 			// A counter is -1 when the side cannot read it.
-			if v > 0 && !p.part {
+			if v > 0 && !part {
 				total += v
 			}
 		}
@@ -170,6 +175,25 @@ func dropsDetail(info map[string]float64) string {
 	d := "drops omit/window: " + strings.Join(parts, ", ")
 	if _, ok := info["server_retransmits"]; ok {
 		d += fmt.Sprintf("; server retx omit/window: %s/%s", value("omit.server_retransmits"), value("server_retransmits"))
+	}
+	return d
+}
+
+// nicDetail describes the NIC of a node result and its drop counters in the
+// window, in the order of nicCounterNames. It is empty with no NIC.
+func nicDetail(nic *NIC, counters map[string]int64) string {
+	if nic == nil {
+		return ""
+	}
+	d := fmt.Sprintf("nic %s %s %s, %d rx queues, xdp %s", nic.Dev, nic.Driver, nic.Version, nic.RxQueues, orNone(strings.Join(nic.XDPFeatures, " ")))
+	var parts []string
+	for _, k := range nicCounterNames {
+		if v, ok := counters[k]; ok {
+			parts = append(parts, fmt.Sprintf("%s %d", k, v))
+		}
+	}
+	if len(parts) > 0 {
+		d += "; nic counters: " + strings.Join(parts, ", ")
 	}
 	return d
 }

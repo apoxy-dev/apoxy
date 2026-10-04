@@ -53,6 +53,7 @@ func TestParsePlan(t *testing.T) {
 		{name: "no rows", in: `{"tun": true}`, wantErr: "no rows"},
 		{name: "sets bins", in: `{"rows": [{"id": "a", "group": "a"}], "bins": [{"name": "perfrig", "sha256": "x"}]}`, wantErr: "the module sets them"},
 		{name: "sets upload", in: `{"rows": [{"id": "a", "group": "a"}], "upload": {"report": "https://x"}}`, wantErr: "the module sets them"},
+		{name: "sets nodes", in: `{"rows": [{"id": "a", "group": "a", "cmd": "node"}], "nodes": {"server": "10.0.1.5"}}`, wantErr: "the module sets them"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -65,6 +66,38 @@ func TestParsePlan(t *testing.T) {
 			}
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("err = %v, want %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestParseNodePlans(t *testing.T) {
+	row := `{"rows": [{"id": "a", "group": "info", "cmd": "node", "args": ["-role=client"]}]}`
+	cases := []struct {
+		name      string
+		in        string
+		wantRoles int
+		wantErr   string
+	}{
+		{name: "client and server", in: `{"client": ` + row + `, "server": ` + row + `}`, wantRoles: 2},
+		{name: "with a relay", in: `{"client": ` + row + `, "server": ` + row + `, "relay": ` + row + `}`, wantRoles: 3},
+		{name: "no server", in: `{"client": ` + row + `}`, wantErr: "no server"},
+		{name: "no client", in: `{"server": ` + row + `}`, wantErr: "no client"},
+		{name: "unknown role", in: `{"client": ` + row + `, "server": ` + row + `, "proxy": ` + row + `}`, wantErr: "unknown node role"},
+		{name: "bad plan", in: `{"client": {"rows": []}, "server": ` + row + `}`, wantErr: "client: the plan has no rows"},
+		{name: "not an object", in: `[]`, wantErr: "parse the node plans"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			plans, err := ParseNodePlans(tc.in)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("err = %v, want %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil || len(plans) != tc.wantRoles {
+				t.Fatalf("plans = %v, %v, want %d roles", plans, err, tc.wantRoles)
 			}
 		})
 	}
@@ -95,6 +128,12 @@ func TestNewKeys(t *testing.T) {
 	k, _ := NewKeys("1-1-vpc")
 	if k.Output("agent.json") != "runs/1-1-vpc/out/agent.json" || !strings.HasPrefix(k.Spec(), k.Inputs()) {
 		t.Fatalf("keys = %s, %s", k.Output("agent.json"), k.Spec())
+	}
+	if k.NodeOutput("server", "agent.json") != "runs/1-1-vpc/out/server/agent.json" || !strings.HasPrefix(k.NodeSpec("server"), k.Inputs()) {
+		t.Fatalf("node keys = %s, %s", k.NodeOutput("server", "agent.json"), k.NodeSpec("server"))
+	}
+	if GroupName("1-1-vpc") != "apoxy-perf-1-1-vpc" {
+		t.Fatalf("group = %s", GroupName("1-1-vpc"))
 	}
 }
 

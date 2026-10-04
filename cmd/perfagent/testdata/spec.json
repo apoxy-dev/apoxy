@@ -15,10 +15,12 @@
   },
   "modules": ["sch_netem"],
   "tun": true,
-  "remove": ["*-cred.json", "vpcbench-ca.pem"],
+  "remove": ["*-cred.json"],
+  "nodes": {"server": "10.0.1.5", "relay": "10.0.1.6"},
   "rows": [
     {"id": "netstack-psp-relay", "group": "floor", "args": ["-workload=exec", "-name=vpc-netstack-psp-relay", "-ready=tcp:4433", "-baseline=baseline.json"]},
-    {"id": "netstack-psp-direct", "group": "info", "args": ["-workload=exec", "-name=vpc-netstack-psp-direct", "-ready=tcp:4433"]}
+    {"id": "netstack-psp-direct", "group": "info", "args": ["-workload=exec", "-name=vpc-netstack-psp-direct", "-ready=tcp:4433"]},
+    {"id": "netstack-psp-direct-2node", "group": "info", "cmd": "node", "args": ["-role=client", "-name=vpc-netstack-psp-direct-2node"]}
   ],
   "upload": {
     "results": "https://apoxy-perf-bench.s3.us-west-2.amazonaws.com/runs/18200000000-1/vpc/results.tgz?X-Amz-Signature=x",

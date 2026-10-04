@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os/exec"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -300,16 +301,39 @@ func (r *rig) tune(ctx context.Context) map[string]string {
 
 // ping measures the RTT from the client netns to the server.
 func (r *rig) ping(ctx context.Context, count int) (RTT, error) {
+	return pingRTT(ctx, []string{"ip", "netns", "exec", r.client}, serverIP, count)
+}
+
+// pingRTT measures the RTT to ip with count pings, run with the command prefix.
+func pingRTT(ctx context.Context, prefix []string, ip string, count int) (RTT, error) {
 	// The first packet waits for neighbor resolution. Do not count it.
-	_, _ = command(ctx, "ip", "netns", "exec", r.client, "ping", "-c", "1", "-W", "2", serverIP)
-	out, err := command(ctx, "ip", "netns", "exec", r.client, "ping", "-q",
-		"-c", strconv.Itoa(count), "-i", "0.1", "-W", "2", serverIP)
+	_, _ = command(ctx, append(slices.Clone(prefix), "ping", "-c", "1", "-W", "2", ip)...)
+	out, err := command(ctx, append(slices.Clone(prefix), "ping", "-q",
+		"-c", strconv.Itoa(count), "-i", "0.1", "-W", "2", ip)...)
 	// ping exits with an error when replies are lost. The summary is still valid.
 	rtt, perr := parsePing(out)
 	if perr != nil {
-		return RTT{}, fmt.Errorf("measure RTT: %w (ping: %v)", perr, err)
+		return RTT{}, fmt.Errorf("measure RTT to %s: %w (ping: %v)", ip, perr, err)
 	}
 	return rtt, nil
+}
+
+// waitPing waits until ip answers a ping, at most until timeout ends.
+func waitPing(ctx context.Context, ip string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		if _, err := command(ctx, "ping", "-c", "1", "-W", "2", ip); err == nil {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("%s did not answer a ping in %s", ip, timeout)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Second):
+		}
+	}
 }
 
 // parsePing reads the summary of iputils ping or busybox ping.

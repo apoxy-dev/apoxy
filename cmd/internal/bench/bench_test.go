@@ -185,3 +185,21 @@ func TestProfiles(t *testing.T) {
 		})
 	}
 }
+
+func TestHostBusy(t *testing.T) {
+	cases := []struct {
+		name string
+		stat string
+		want float64
+	}{
+		{name: "busy fields", stat: "cpu  100 20 30 5000 40 5 45 7 0 0\ncpu0 1 2 3 4 5 6 7 8 0 0\n", want: 2},
+		{name: "no cpu line", stat: "intr 1 2 3\n", want: -1},
+		{name: "short line", stat: "cpu 1 2 3 4\n", want: -1},
+		{name: "bad number", stat: "cpu 1 x 3 4 5 6 7 8\n", want: -1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.InDelta(t, tc.want, hostBusy(tc.stat), 1e-9)
+		})
+	}
+}

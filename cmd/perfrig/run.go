@@ -285,7 +285,7 @@ func runRep(ctx context.Context, cfg config, w Workload, r *rig, env Env, rep in
 		}
 	}
 	run.WorkloadResult = jsonObjectLine(client.out.Bytes())
-	run.CPU.Relay = relayCPU(run.WorkloadResult)
+	run.CPU.Relay = markCPU(run.WorkloadResult, "relay")
 	run.Load1End = load1()
 	slog.Info("Rep done", "rep", rep, "gbps", tp.Gbps, "load1_start", run.Load1Start, "load1_end", run.Load1End,
 		"steal_percent", run.StealPercent)
@@ -323,9 +323,9 @@ func waitReady(ctx context.Context, p *proc, s Socket, timeout time.Duration) er
 // waitDelay is the time that Wait waits for the output pipes after the process exits.
 const waitDelay = 2 * time.Second
 
-// proc is a workload process in a netns. "ip netns exec" replaces itself with
-// the command, so the rusage of proc covers the command and the children that
-// it waited for.
+// proc is a workload process, in a netns when it has one. "ip netns exec"
+// replaces itself with the command, so the rusage of proc covers the command
+// and the children that it waited for.
 type proc struct {
 	name string
 	cmd  *exec.Cmd
@@ -334,9 +334,14 @@ type proc struct {
 	err  error
 }
 
+// startProc starts argv in the netns ns, or on the host when ns is empty.
 func startProc(name, ns string, argv, env, prefix []string) (*proc, error) {
 	p := &proc{name: name, done: make(chan struct{})}
-	full := append(append(append([]string{}, prefix...), "ip", "netns", "exec", ns), argv...)
+	full := append([]string{}, prefix...)
+	if ns != "" {
+		full = append(full, "ip", "netns", "exec", ns)
+	}
+	full = append(full, argv...)
 	p.cmd = exec.Command(full[0], full[1:]...)
 	p.cmd.Env = append(os.Environ(), env...)
 	p.cmd.Stdout = &p.out

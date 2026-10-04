@@ -22,6 +22,8 @@ type Run struct {
 	CPU          CPU        `json:"cpu"`
 	// WorkloadResult is the last line of the client stdout when it is a JSON object.
 	WorkloadResult json.RawMessage `json:"workload_result,omitempty"`
+	// NIC has the increase of the NIC drop counters while the workload ran, in "perfrig node".
+	NIC map[string]int64 `json:"nic_counters,omitempty"`
 }
 
 // throughputFields are the workload result fields that Throughput has.
@@ -62,6 +64,25 @@ func (res *Result) summarize() {
 		Relay: medianRelayCPU(runs),
 	}
 	res.Info = medianInfo(runs)
+	res.NIC = medianNIC(runs)
+}
+
+// medianNIC returns the median of each NIC counter over the runs that have it, or nil.
+func medianNIC(runs []Run) map[string]int64 {
+	values := map[string][]float64{}
+	for _, r := range runs {
+		for k, v := range r.NIC {
+			values[k] = append(values[k], float64(v))
+		}
+	}
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]int64, len(values))
+	for k, v := range values {
+		out[k] = int64(math.Round(median(v)))
+	}
+	return out
 }
 
 func medianProcCPU(runs []Run, f func(Run) ProcCPU) ProcCPU {
@@ -138,17 +159,19 @@ func workloadNumbers(line json.RawMessage) map[string]float64 {
 	return out
 }
 
-// relayCPU reads the relay CPU of the measured window from a workload result.
-// It returns nil when the result has no relay CPU.
-func relayCPU(line json.RawMessage) *RelayCPU {
-	var v struct {
-		Cores        float64 `json:"relay_cores"`
-		CoresPerGbps float64 `json:"relay_cores_per_gbps"`
-	}
-	if len(line) == 0 || json.Unmarshal(line, &v) != nil || v.Cores <= 0 {
+// markCPU reads the CPU of a role (relay or server) in the measured window from
+// a workload result. It returns nil when the result has no CPU of the role.
+func markCPU(line json.RawMessage, role string) *RelayCPU {
+	var v map[string]any
+	if len(line) == 0 || json.Unmarshal(line, &v) != nil {
 		return nil
 	}
-	return &RelayCPU{Cores: round(v.Cores, 4), CoresPerGbps: round(v.CoresPerGbps, 6)}
+	cores, _ := v[role+"_cores"].(float64)
+	if cores <= 0 {
+		return nil
+	}
+	perGbps, _ := v[role+"_cores_per_gbps"].(float64)
+	return &RelayCPU{Cores: round(cores, 4), CoresPerGbps: round(perGbps, 6)}
 }
 
 // jsonObjectLine returns the last non-empty line of out when it is a JSON object.

@@ -85,7 +85,8 @@ func (m *ApoxyCli) PerfNetns(
 // PerfVpc runs the VPC rows (cmd/vpcbench through the relay, 4 flows, 20 ms
 // RTT): one floor row and info rows that run one time. It returns the results
 // with summary.md and floor-exit: 0 pass or no floor row selected, 1 regression
-// or no floor result, 3 infra error. A failed row does not fail it.
+// or no floor result, 3 infra error. A failed row does not fail it. The node
+// rows (-2node, -3node) run on their own EC2 hosts only when rows names them.
 func (m *ApoxyCli) PerfVpc(
 	ctx context.Context,
 	src *dagger.Directory,
@@ -101,7 +102,8 @@ func (m *ApoxyCli) PerfVpc(
 	// Infra error when the host has fewer CPUs. Lower it only for local smoke runs.
 	// +default=16
 	minCpus int,
-	// Run only these row IDs, for example netstack-psp-relay (default: all rows).
+	// Run only these row IDs, for example netstack-psp-relay (default: all
+	// rows of the netns rig, with no node rows).
 	// +optional
 	rows []string,
 	// ec2: names the run in S3 and the tags, for example RUN_ID-ATTEMPT-JOB.
@@ -122,16 +124,19 @@ func (m *ApoxyCli) PerfVpc(
 	// results. It costs some throughput, so do not compare to the baseline.
 	// +optional
 	profile bool,
+	// ec2: the instance type of the hosts. The baseline has c7a.8xlarge only.
+	// +default="c7a.8xlarge"
+	instanceType string,
 ) (*dagger.Directory, error) {
 	o := perfsuite.Options{Duration: duration, Reps: reps, MinCPUs: minCpus, Only: rows, Profile: profile}
-	e := perfEC2{runTag: runTag, bucket: bucket, region: region, id: awsAccessKeyId, secret: awsSecretAccessKey, token: awsSessionToken}
+	e := perfEC2{runTag: runTag, bucket: bucket, region: region, instanceType: instanceType, id: awsAccessKeyId, secret: awsSecretAccessKey, token: awsSessionToken}
 	return m.perfRun(ctx, src, perfsuite.VPC, where, o, e)
 }
 
 // PerfCleanup terminates the instances of a PerfNetns or PerfVpc run on EC2
-// and deletes its inputs in S3. Run it after the run step in all cases: a
-// cancel stops the run before its own cleanup. With nothing left, it does
-// nothing.
+// and deletes its placement group and its inputs in S3. Run it after the run
+// step in all cases: a cancel stops the run before its own cleanup. With
+// nothing left, it does nothing.
 func (m *ApoxyCli) PerfCleanup(
 	ctx context.Context,
 	// The run tag of the run.
@@ -153,8 +158,8 @@ func (m *ApoxyCli) PerfCleanup(
 
 // perfEC2 has the EC2 arguments of a perf run.
 type perfEC2 struct {
-	runTag, bucket, region string
-	id, secret, token      *dagger.Secret
+	runTag, bucket, region, instanceType string
+	id, secret, token                    *dagger.Secret
 }
 
 func (m *ApoxyCli) perfRun(ctx context.Context, src *dagger.Directory, s perfsuite.Suite, where string, o perfsuite.Options, e perfEC2) (*dagger.Directory, error) {
@@ -179,16 +184,35 @@ func (m *ApoxyCli) perfRun(ctx context.Context, src *dagger.Directory, s perfsui
 	if err != nil {
 		return nil, err
 	}
+	nodePlans, err := s.NodePlans(o)
+	if err != nil {
+		return nil, err
+	}
+	switch {
+	case nodePlans != "" && where != "ec2":
+		return nil, errors.New("the node rows run on EC2 only: use --where=ec2")
+	case nodePlans != "" && plan != "":
+		return nil, errors.New("the node rows and the netns rig rows run in separate calls: select one kind with --rows")
+	}
 	bins := m.perfBins(src, goarch, append([]string{"perfagent", "perfrig"}, s.Bins...))
 	files := dag.Directory().WithFile("baseline.json", src.File(perfBaseline))
 	var out *dagger.Directory
-	if where == "local" {
+	switch {
+	case where == "local":
 		out = dag.Perf().Local(bins, plan, dagger.PerfLocalOpts{Files: files})
-	} else {
+	case nodePlans != "":
+		out = dag.Perf().Ec2Nodes(bins, nodePlans, e.runTag, e.bucket, e.id, e.secret, dagger.PerfEc2NodesOpts{
+			Files:        files,
+			Region:       e.region,
+			SessionToken: e.token,
+			InstanceType: e.instanceType,
+		})
+	default:
 		out = dag.Perf().Ec2(bins, plan, e.runTag, e.bucket, e.id, e.secret, dagger.PerfEc2Opts{
 			Files:        files,
 			Region:       e.region,
 			SessionToken: e.token,
+			InstanceType: e.instanceType,
 		})
 	}
 	return m.perfSummarize(ctx, src, s, o, out)
@@ -272,8 +296,25 @@ func (m *ApoxyCli) perfSummarize(ctx context.Context, src *dagger.Directory, s p
 		compares = append(compares, c)
 	}
 	exit := perfsuite.FloorExit(rep, compares[0])
+	summary := perfsuite.Summary(s, rep, compares, console)
+	// The hosts of a multi-node run: the client host results at the top and the others under nodes/.
+	var nodes []string
+	for _, pattern := range []string{"results/*/*.json", "nodes/*/results/*/*.json"} {
+		names, err := out.Glob(ctx, pattern)
+		if err != nil {
+			return nil, err
+		}
+		for _, n := range names {
+			data, err := out.File(n).Contents(ctx)
+			if err != nil {
+				return nil, err
+			}
+			nodes = append(nodes, data)
+		}
+	}
+	summary += perfsuite.Nodes(nodes)
 	return out.
-		WithNewFile("summary.md", perfsuite.Summary(s, rep, compares, console)).
+		WithNewFile("summary.md", summary).
 		WithNewFile("floor-exit", strconv.Itoa(exit)+"\n"), nil
 }
 

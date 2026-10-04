@@ -2,11 +2,14 @@
 // namespaces with a veth pair, adds netem delay, jitter, loss and rate limits
 // on both ends, runs a server and a client workload, and prints a JSON result
 // with RTT, throughput and CPU. With -relay-netns, the sidecar runs in a
-// third netns, and a bridge joins the three. "perfrig compare" checks results
-// against a baseline file. Exit code 3 is an infra error, for example CPU
-// steal or a rig setup failure, and not a result of the workload.
+// third netns, and a bridge joins the three. "perfrig node" runs one role of an
+// exec workload on its own host and measures the host and its NIC. "perfrig
+// compare" checks results against a baseline file. Exit code 3 is an infra
+// error, for example CPU steal or a rig setup failure, and not a result of the
+// workload.
 //
 //	perfrig run -workload iperf3-tcp -streams 4 -duration 30s -reps 3 -min-cpus 8 -max-steal 5
+//	perfrig node -role client -node server=10.0.1.5 -node relay=10.0.1.6 -name vpc -client-argv '[...]' -server-argv '[...]'
 //	perfrig compare -baseline cmd/perfrig/baseline.json -summary "$GITHUB_STEP_SUMMARY" perf/
 //	perfrig compare -baseline cmd/perfrig/baseline.json -update perf/
 package main
@@ -38,6 +41,8 @@ func main() {
 	switch os.Args[1] {
 	case "run":
 		err = runCmd(ctx, os.Args[2:])
+	case "node":
+		err = nodeCmd(ctx, os.Args[2:])
 	case "compare":
 		err = compareCmd(os.Args[2:])
 	case "write":
@@ -66,7 +71,7 @@ func exitCode(err error) int {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: perfrig run [flags] | perfrig compare -baseline FILE [-update] RESULT...")
+	fmt.Fprintln(os.Stderr, "usage: perfrig run [flags] | perfrig node -role ROLE [flags] | perfrig compare -baseline FILE [-update] RESULT...")
 	os.Exit(2)
 }
 
@@ -129,6 +134,11 @@ func runCmd(ctx context.Context, args []string) error {
 	if res == nil {
 		return runErr
 	}
+	return errors.Join(runErr, writeResult(res, *out))
+}
+
+// writeResult writes the result JSON to the file at out, or to stdout.
+func writeResult(res *Result, out string) error {
 	data, err := json.MarshalIndent(res, "", "  ")
 	if err != nil {
 		return err
@@ -137,12 +147,12 @@ func runCmd(ctx context.Context, args []string) error {
 	slog.Info("Workload done", "workload", res.Workload, "reps", res.Reps, "gbps", res.Throughput.Gbps,
 		"rtt_ms", res.RTT.Avg, "client_cores_per_gbps", res.CPU.Client.CoresPerGbps,
 		"server_cores_per_gbps", res.CPU.Server.CoresPerGbps, "infra_error", res.InfraError)
-	if *out == "" {
+	if out == "" {
 		_, err = os.Stdout.Write(data)
 	} else {
-		err = os.WriteFile(*out, data, 0o644)
+		err = os.WriteFile(out, data, 0o644)
 	}
-	return errors.Join(runErr, err)
+	return err
 }
 
 func compareCmd(args []string) error {

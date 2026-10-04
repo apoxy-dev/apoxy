@@ -12,8 +12,6 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -28,15 +26,12 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/vpc/vpctest"
 )
 
-// caFile is the name of the CA file in the work dir. It has the CA cert and
-// its key, and it signs the relay cert and the agent certs.
-const caFile = "vpcbench-ca.pem"
-
 // relaySockBuf is the socket buffer size of the relay socket, as in the relay.
 const relaySockBuf = 16 << 20
 
 // runRelay serves relay sessions of one VPC with the vpctest fakes until ctx
-// ends. It writes the CA file before it opens the control port.
+// ends or a client sends stop. The CA signs the relay cert and the agent
+// certs; the control port gives it to the server and the client.
 func runRelay(ctx context.Context, o options, ready func(netip.AddrPort)) error {
 	start := time.Now()
 	ca, err := vpctest.NewCA()
@@ -96,9 +91,7 @@ func runRelay(ctx context.Context, o options, ready func(netip.AddrPort)) error 
 		RelayID:   relayID,
 	}
 
-	if err := writeCA(o.WorkDir, ca); err != nil {
-		return err
-	}
+	caPEM := encodeCA(ca)
 	cl, err := net.Listen("tcp", addr.String())
 	if err != nil {
 		return err
@@ -116,14 +109,21 @@ func runRelay(ctx context.Context, o options, ready func(netip.AddrPort)) error 
 	wg.Go(func() { r.Run(ctx) })
 	wg.Go(func() {
 		serveMarks(ctx, cl, func(req request) (reply, error) {
-			if req.Op != "mark" {
-				return reply{}, fmt.Errorf("unknown op %q", req.Op)
+			switch req.Op {
+			case "ca":
+				return reply{CA: caPEM}, nil
+			case "mark":
+				drops, xdp := relayCounters(r)
+				return reply{Mark: mark{
+					Nanos: time.Since(start).Nanoseconds(), CPU: bench.CPUSeconds() + xdpCPU(), HostCPU: bench.HostCPUSeconds(),
+					Drops: drops, SockDrops: sockDrops(uc), XDPPackets: xdp,
+				}}, nil
+			case "stop":
+				slog.Info("A client stopped the relay")
+				cancel()
+				return reply{}, nil
 			}
-			drops, xdp := relayCounters(r)
-			return reply{Mark: mark{
-				Nanos: time.Since(start).Nanoseconds(), CPU: bench.CPUSeconds() + xdpCPU(),
-				Drops: drops, SockDrops: sockDrops(uc), XDPPackets: xdp,
-			}}, nil
+			return reply{}, fmt.Errorf("unknown op %q", req.Op)
 		})
 	})
 	err = srv.Serve(ctx, ln)
@@ -186,41 +186,20 @@ func forwarded(d *dto.Metric) bool {
 	return false
 }
 
-// writeCA writes the CA cert and key to the CA file in dir. The rename makes
-// the change in one step.
-func writeCA(dir string, ca *vpctest.CA) error {
+// encodeCA returns the CA cert and key in PEM.
+func encodeCA(ca *vpctest.CA) []byte {
 	key, err := x509.MarshalECPrivateKey(ca.Key)
 	if err != nil {
-		return err
+		return nil
 	}
 	b := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ca.Cert.Raw})
-	b = append(b, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: key})...)
-	f, err := os.CreateTemp(dir, caFile+".*")
-	if err != nil {
-		return err
-	}
-	_, err = f.Write(b)
-	if cerr := f.Close(); err == nil {
-		err = cerr
-	}
-	if err == nil {
-		err = os.Rename(f.Name(), filepath.Join(dir, caFile))
-	}
-	if err != nil {
-		_ = os.Remove(f.Name())
-		return fmt.Errorf("write the CA file: %w", err)
-	}
-	return nil
+	return append(b, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: key})...)
 }
 
-// loadCA reads the CA file in dir.
-func loadCA(dir string) (*vpctest.CA, error) {
-	path := filepath.Join(dir, caFile)
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
+// decodeCA reads the CA cert and key from PEM.
+func decodeCA(b []byte) (*vpctest.CA, error) {
 	ca := &vpctest.CA{}
+	var err error
 	for {
 		var blk *pem.Block
 		if blk, b = pem.Decode(b); blk == nil {
@@ -233,11 +212,11 @@ func loadCA(dir string) (*vpctest.CA, error) {
 			ca.Key, err = x509.ParseECPrivateKey(blk.Bytes)
 		}
 		if err != nil {
-			return nil, fmt.Errorf("parse %s: %w", path, err)
+			return nil, fmt.Errorf("parse the CA: %w", err)
 		}
 	}
 	if ca.Cert == nil || ca.Key == nil {
-		return nil, fmt.Errorf("%s has no CA cert and key", path)
+		return nil, errors.New("the relay sent no CA cert and key")
 	}
 	return ca, nil
 }

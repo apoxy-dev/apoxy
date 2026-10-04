@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -37,6 +38,9 @@ type Spec struct {
 	// Remove are base name patterns of files that the agent deletes from the
 	// run directory before it packs it, for example keys.
 	Remove []string `json:"remove,omitempty"`
+	// Nodes are the private IPs of the other hosts of a multi-node run, by
+	// role. The agent gives them to the node rows as -node flags.
+	Nodes map[string]string `json:"nodes,omitempty"`
 	// Rows run one at a time, in this order.
 	Rows []Row `json:"rows"`
 	// Upload has the presigned PUT URLs. With -out, the agent does not use them.
@@ -51,12 +55,15 @@ type File struct {
 	SHA256 string `json:"sha256"`
 }
 
-// Row is one "perfrig run". The agent adds -out, -out-dir and -host-class.
+// Row is one "perfrig run" or "perfrig node". The agent adds -out, -out-dir
+// and -host-class, and the -node flags to a node row.
 type Row struct {
 	ID string `json:"id"`
 	// Group is the results subdirectory, for example floor or info.
-	Group string   `json:"group"`
-	Args  []string `json:"args"`
+	Group string `json:"group"`
+	// Cmd is the perfrig command: run (the default) or node.
+	Cmd  string   `json:"cmd,omitempty"`
+	Args []string `json:"args"`
 }
 
 // Upload has a presigned PUT URL for each output.
@@ -107,12 +114,17 @@ func (s Spec) validate(upload bool) error {
 		_, err := filepath.Match(p, "x")
 		check(err == nil && !strings.Contains(p, "/"), "bad remove pattern %q", p)
 	}
+	for role, ip := range s.Nodes {
+		_, err := netip.ParseAddr(ip)
+		check(namePattern.MatchString(role) && err == nil, "bad node %q=%q", role, ip)
+	}
 	check(len(s.Rows) > 0, "no rows")
 	ids := map[string]bool{}
 	for _, r := range s.Rows {
 		check(namePattern.MatchString(r.ID), "bad row id %q", r.ID)
 		check(!ids[r.ID], "two rows with the id %q", r.ID)
 		check(namePattern.MatchString(r.Group), "bad group %q of row %q", r.Group, r.ID)
+		check(r.Cmd == "" || r.Cmd == "run" || r.Cmd == "node", "bad cmd %q of row %q", r.Cmd, r.ID)
 		ids[r.ID] = true
 	}
 	if upload {

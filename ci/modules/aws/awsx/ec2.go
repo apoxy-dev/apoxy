@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -21,6 +22,9 @@ var ErrNoCapacity = errors.New("no subnet has capacity for the instance type")
 // expiryDefault is the life of an instance with no valid expiry tag, from its launch.
 const expiryDefault = time.Hour
 
+// deleteGroupRetry is the time between tries to delete a placement group with instances.
+var deleteGroupRetry = 10 * time.Second
+
 // LaunchInput describes one instance.
 type LaunchInput struct {
 	Image        string
@@ -33,6 +37,11 @@ type LaunchInput struct {
 	// with this tag. When no subnet has it, Launch uses the default subnets of
 	// the default VPC and its default security group.
 	SubnetTag string
+	// Subnet, when set, is the only subnet to use. The hosts of one placement
+	// group must be in one subnet.
+	Subnet string
+	// PlacementGroup is the cluster placement group of the instance, or empty.
+	PlacementGroup string
 }
 
 // Launch starts one instance and returns its ID. It tries the next subnet when
@@ -41,6 +50,13 @@ func (c *Client) Launch(ctx context.Context, in LaunchInput) (string, error) {
 	subnets, sg, err := c.placement(ctx, in.SubnetTag)
 	if err != nil {
 		return "", err
+	}
+	if in.Subnet != "" {
+		i := slices.IndexFunc(subnets, func(s subnet) bool { return s.id == in.Subnet })
+		if i < 0 {
+			return "", fmt.Errorf("subnet %s is not a bench subnet", in.Subnet)
+		}
+		subnets = subnets[i : i+1]
 	}
 	var errs []error
 	for _, s := range subnets {
@@ -146,6 +162,9 @@ func (c *Client) runInstance(ctx context.Context, in LaunchInput, s subnet, sg s
 	if sg != "" {
 		run.SecurityGroupIds = []string{sg}
 	}
+	if in.PlacementGroup != "" {
+		run.Placement = &types.Placement{GroupName: aws.String(in.PlacementGroup)}
+	}
 	out, err := c.ec2.RunInstances(ctx, run)
 	if err != nil {
 		return "", err
@@ -202,6 +221,135 @@ func (c *Client) State(ctx context.Context, id string) (string, error) {
 		}
 	}
 	return "not-found", nil
+}
+
+// InstanceFacts are the facts of a launched instance.
+type InstanceFacts struct {
+	State     string
+	PrivateIP string
+	SubnetID  string
+	AZ        string
+}
+
+// Facts returns the state, private IP, subnet and AZ of the instance. It tries
+// again while EC2 does not know a new instance.
+func (c *Client) Facts(ctx context.Context, id string) (InstanceFacts, error) {
+	var out *ec2.DescribeInstancesOutput
+	var err error
+	for i := range 6 {
+		out, err = c.ec2.DescribeInstances(ctx, &ec2.DescribeInstancesInput{InstanceIds: []string{id}})
+		if apiCode(err) != "InvalidInstanceID.NotFound" {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return InstanceFacts{}, ctx.Err()
+		case <-time.After(time.Duration(i+1) * 2 * time.Second):
+		}
+	}
+	if err != nil {
+		return InstanceFacts{}, fmt.Errorf("describe instance %s: %w", id, err)
+	}
+	for _, r := range out.Reservations {
+		for _, i := range r.Instances {
+			f := InstanceFacts{PrivateIP: aws.ToString(i.PrivateIpAddress), SubnetID: aws.ToString(i.SubnetId)}
+			if i.State != nil {
+				f.State = string(i.State.Name)
+			}
+			if i.Placement != nil {
+				f.AZ = aws.ToString(i.Placement.AvailabilityZone)
+			}
+			return f, nil
+		}
+	}
+	return InstanceFacts{}, fmt.Errorf("instance %s not found", id)
+}
+
+// CreatePlacementGroup makes a cluster placement group with the tags. A group
+// with the name that exists is not an error.
+func (c *Client) CreatePlacementGroup(ctx context.Context, name string, tags map[string]string) error {
+	_, err := c.ec2.CreatePlacementGroup(ctx, &ec2.CreatePlacementGroupInput{
+		GroupName:         aws.String(name),
+		Strategy:          types.PlacementStrategyCluster,
+		TagSpecifications: []types.TagSpecification{{ResourceType: types.ResourceTypePlacementGroup, Tags: ec2Tags(tags)}},
+	})
+	if err != nil && apiCode(err) != "InvalidPlacementGroup.Duplicate" {
+		return fmt.Errorf("create placement group %s: %w", name, err)
+	}
+	return nil
+}
+
+// DeletePlacementGroup deletes the group. A group that EC2 does not know is
+// not an error. While the group has instances, it tries again until wait ends.
+func (c *Client) DeletePlacementGroup(ctx context.Context, name string, wait time.Duration) error {
+	deadline := time.Now().Add(wait)
+	for {
+		_, err := c.ec2.DeletePlacementGroup(ctx, &ec2.DeletePlacementGroupInput{GroupName: aws.String(name)})
+		switch apiCode(err) {
+		case "InvalidPlacementGroup.Unknown":
+			return nil
+		case "InvalidPlacementGroup.InUse":
+			if time.Now().After(deadline) {
+				return fmt.Errorf("delete placement group %s: %w", name, err)
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(deleteGroupRetry):
+			}
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("delete placement group %s: %w", name, err)
+		}
+		return nil
+	}
+}
+
+// ReapPlacementGroups deletes the empty placement groups with the tag KEY=VALUE
+// whose RFC 3339 expiry tag is before now or not valid, and returns their names.
+func (c *Client) ReapPlacementGroups(ctx context.Context, tag, expiryKey string, now time.Time) ([]string, error) {
+	k, v, ok := strings.Cut(tag, "=")
+	if !ok || k == "" {
+		return nil, fmt.Errorf("bad tag %q: want KEY=VALUE", tag)
+	}
+	out, err := c.ec2.DescribePlacementGroups(ctx, &ec2.DescribePlacementGroupsInput{
+		Filters: []types.Filter{{Name: aws.String("tag:" + k), Values: []string{v}}},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("describe placement groups: %w", err)
+	}
+	var deleted []string
+	var errs []error
+	for _, g := range out.PlacementGroups {
+		if groupExpiry(g, expiryKey).After(now) {
+			continue
+		}
+		name := aws.ToString(g.GroupName)
+		_, err := c.ec2.DeletePlacementGroup(ctx, &ec2.DeletePlacementGroupInput{GroupName: aws.String(name)})
+		switch apiCode(err) {
+		case "InvalidPlacementGroup.InUse", "InvalidPlacementGroup.Unknown":
+			continue
+		}
+		if err != nil {
+			errs = append(errs, fmt.Errorf("delete placement group %s: %w", name, err))
+			continue
+		}
+		deleted = append(deleted, name)
+	}
+	return deleted, errors.Join(errs...)
+}
+
+// groupExpiry returns the time in the expiry tag of the group, or the zero time.
+func groupExpiry(g types.PlacementGroup, key string) time.Time {
+	for _, t := range g.Tags {
+		if aws.ToString(t.Key) == key {
+			if at, err := time.Parse(time.RFC3339, aws.ToString(t.Value)); err == nil {
+				return at
+			}
+		}
+	}
+	return time.Time{}
 }
 
 // Console returns the serial console output of the instance.

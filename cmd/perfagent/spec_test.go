@@ -24,8 +24,9 @@ func validSpec() Spec {
 		Files:    []File{{Name: "baseline.json", URL: "https://b.example/baseline.json", SHA256: testSHA}},
 		Sysctls:  map[string]string{"net.core.rmem_max": "134217728"},
 		Modules:  []string{"sch_netem"},
-		Remove:   []string{"*-cred.json", "vpcbench-ca.pem"},
-		Rows:     []Row{{ID: "netstack-psp-relay", Group: "floor", Args: []string{"-workload=exec"}}, {ID: "netstack-psp-relay-loss0.1", Group: "info"}},
+		Remove:   []string{"*-cred.json"},
+		Nodes:    map[string]string{"server": "10.0.1.5"},
+		Rows:     []Row{{ID: "netstack-psp-relay", Group: "floor", Args: []string{"-workload=exec"}}, {ID: "netstack-psp-relay-loss0.1", Group: "info", Cmd: "node"}},
 		Upload:   Upload{Results: "https://b.example/r", Log: "https://b.example/l", Report: "https://b.example/a"},
 	}
 }
@@ -54,6 +55,9 @@ func TestSpecValidate(t *testing.T) {
 		{name: "no rows", edit: func(s *Spec) { s.Rows = nil }, wantErr: "no rows"},
 		{name: "two rows with one id", edit: func(s *Spec) { s.Rows[1].ID = "netstack-psp-relay" }, wantErr: "two rows"},
 		{name: "bad group", edit: func(s *Spec) { s.Rows[0].Group = "" }, wantErr: "bad group"},
+		{name: "bad cmd", edit: func(s *Spec) { s.Rows[0].Cmd = "compare" }, wantErr: "bad cmd"},
+		{name: "bad node address", edit: func(s *Spec) { s.Nodes = map[string]string{"server": "host"} }, wantErr: "bad node"},
+		{name: "bad node role", edit: func(s *Spec) { s.Nodes = map[string]string{"Server": "10.0.1.5"} }, wantErr: "bad node"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

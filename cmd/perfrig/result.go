@@ -11,8 +11,10 @@ import (
 // Result is the JSON output of one run.
 type Result struct {
 	// Key names the settings that change the numbers. Baseline entries use it.
-	Key       string    `json:"key"`
-	Workload  string    `json:"workload"`
+	Key      string `json:"key"`
+	Workload string `json:"workload"`
+	// Role is the role of this host in "perfrig node": client, server or relay.
+	Role      string    `json:"role,omitempty"`
 	StartedAt time.Time `json:"started_at"`
 	Host      Host      `json:"host"`
 	Settings  Settings  `json:"settings"`
@@ -21,6 +23,8 @@ type Result struct {
 	Tools      map[string]string `json:"tools,omitempty"`
 	Sysctls    map[string]string `json:"sysctls"`
 	RTT        RTT               `json:"rtt_ms"`
+	// RelayRTT is the ping RTT from the client host to the relay host, in "perfrig node".
+	RelayRTT *RTT `json:"relay_rtt_ms,omitempty"`
 	// Reps is the number of runs. Throughput, CPU and Info are the medians of
 	// the runs, each field on its own.
 	Reps int `json:"reps"`
@@ -31,7 +35,9 @@ type Result struct {
 	CPU        CPU        `json:"cpu"`
 	// Info has the median of each number in the workload results. No check uses it.
 	Info map[string]float64 `json:"info,omitempty"`
-	Runs []Run              `json:"runs"`
+	// NIC has the median increase of each NIC drop counter, in "perfrig node".
+	NIC  map[string]int64 `json:"nic_counters,omitempty"`
+	Runs []Run            `json:"runs"`
 }
 
 // Host describes the machine that ran the rig.
@@ -43,6 +49,23 @@ type Host struct {
 	Kernel   string `json:"kernel"`
 	CPUs     int    `json:"cpus"`
 	CPUModel string `json:"cpu_model,omitempty"`
+	// NIC is the network device of the host in "perfrig node".
+	NIC *NIC `json:"nic,omitempty"`
+}
+
+// NIC describes the network device of a host.
+type NIC struct {
+	Dev      string `json:"dev"`
+	Driver   string `json:"driver,omitempty"`
+	Version  string `json:"version,omitempty"`
+	Firmware string `json:"firmware,omitempty"`
+	MTU      int    `json:"mtu"`
+	RxQueues int    `json:"rx_queues"`
+	// XDPFeatures are the XDP features that the driver reports, for example
+	// basic, redirect and xsk-zerocopy. Empty when the kernel has no netdev API.
+	XDPFeatures []string `json:"xdp_features,omitempty"`
+	// XDPZCMaxSegs is the segment limit of zero-copy AF_XDP, when the driver has it.
+	XDPZCMaxSegs uint32 `json:"xdp_zc_max_segs,omitempty"`
 }
 
 // Settings are the rig and workload settings of one run.

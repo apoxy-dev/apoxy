@@ -246,6 +246,12 @@ func (m *Aws) Launch(
 	// KEY=VALUE tag of the subnets and the security group.
 	// +default="apoxy-perf=true"
 	subnetTag string,
+	// The only subnet to use, for the hosts of one placement group.
+	// +optional
+	subnet string,
+	// The cluster placement group of the instance.
+	// +optional
+	placementGroup string,
 ) (string, error) {
 	c, err := m.client(ctx)
 	if err != nil {
@@ -255,13 +261,13 @@ func (m *Aws) Launch(
 	if err != nil {
 		return "", err
 	}
-	in := awsx.LaunchInput{Image: image, InstanceType: instanceType, UserData: ud, Tags: map[string]string{}, SubnetTag: subnetTag}
-	for _, t := range tags {
-		k, v, ok := strings.Cut(t, "=")
-		if !ok || k == "" {
-			return "", fmt.Errorf("bad tag %q: want KEY=VALUE", t)
-		}
-		in.Tags[k] = v
+	t, err := parseTags(tags)
+	if err != nil {
+		return "", err
+	}
+	in := awsx.LaunchInput{
+		Image: image, InstanceType: instanceType, UserData: ud, Tags: t,
+		SubnetTag: subnetTag, Subnet: subnet, PlacementGroup: placementGroup,
 	}
 	return c.Launch(ctx, in)
 }
@@ -269,6 +275,77 @@ func (m *Aws) Launch(
 // Instance returns an EC2 instance. It makes no AWS call.
 func (m *Aws) Instance(instanceId string) *Instance {
 	return &Instance{Aws: m, InstanceId: instanceId}
+}
+
+// CreatePlacementGroup makes a cluster placement group with the tags. A group
+// with the name that exists is not an error.
+// +cache="never"
+func (m *Aws) CreatePlacementGroup(
+	ctx context.Context,
+	name string,
+	// KEY=VALUE tags of the group.
+	tags []string,
+) error {
+	c, err := m.client(ctx)
+	if err != nil {
+		return err
+	}
+	t, err := parseTags(tags)
+	if err != nil {
+		return err
+	}
+	return c.CreatePlacementGroup(ctx, name, t)
+}
+
+// DeletePlacementGroup deletes the group. A group that EC2 does not know is
+// not an error. While the group has instances, it tries again until wait ends.
+// +cache="never"
+func (m *Aws) DeletePlacementGroup(
+	ctx context.Context,
+	name string,
+	// Time to wait for the instances of the group to terminate, for example 3m.
+	// +default="0s"
+	wait string,
+) error {
+	d, err := time.ParseDuration(wait)
+	if err != nil {
+		return fmt.Errorf("bad wait %q: %w", wait, err)
+	}
+	c, err := m.client(ctx)
+	if err != nil {
+		return err
+	}
+	return c.DeletePlacementGroup(ctx, name, d)
+}
+
+// ReapPlacementGroups deletes the empty placement groups with the tag whose
+// expiry tag (RFC 3339) is in the past, and returns their names.
+// +cache="never"
+func (m *Aws) ReapPlacementGroups(
+	ctx context.Context,
+	// +default="apoxy-perf=true"
+	tag string,
+	// +default="apoxy-perf-expires"
+	expiryTag string,
+) ([]string, error) {
+	c, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return c.ReapPlacementGroups(ctx, tag, expiryTag, time.Now())
+}
+
+// parseTags reads KEY=VALUE tags.
+func parseTags(tags []string) (map[string]string, error) {
+	out := map[string]string{}
+	for _, t := range tags {
+		k, v, ok := strings.Cut(t, "=")
+		if !ok || k == "" {
+			return nil, fmt.Errorf("bad tag %q: want KEY=VALUE", t)
+		}
+		out[k] = v
+	}
+	return out, nil
 }
 
 // Reap terminates the live instances with the tag whose expiry tag (RFC 3339)
@@ -306,6 +383,28 @@ func (i *Instance) State(ctx context.Context) (string, error) {
 		return "", err
 	}
 	return c.State(ctx, i.InstanceId)
+}
+
+// InstanceFacts are the facts of a launched instance.
+type InstanceFacts struct {
+	State     string
+	PrivateIp string
+	SubnetId  string
+	Az        string
+}
+
+// Facts returns the state, the private IP, the subnet and the AZ of the instance.
+// +cache="never"
+func (i *Instance) Facts(ctx context.Context) (*InstanceFacts, error) {
+	c, err := i.Aws.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	f, err := c.Facts(ctx, i.InstanceId)
+	if err != nil {
+		return nil, err
+	}
+	return &InstanceFacts{State: f.State, PrivateIp: f.PrivateIP, SubnetId: f.SubnetID, Az: f.AZ}, nil
 }
 
 // Console returns the serial console output.

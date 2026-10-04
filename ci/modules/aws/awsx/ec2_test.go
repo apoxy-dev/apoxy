@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -24,6 +25,14 @@ type fakeEC2 struct {
 	filters   []types.Filter
 	instances []types.Instance
 	ended     []string
+	// placements are the placement groups, groupTags their tags, and inUse
+	// answers InUse for a name n times.
+	placements []string
+	groupTags  map[string][]types.Tag
+	inUse      map[string]int
+	created    []*ec2.CreatePlacementGroupInput
+	// notFound answers NotFound to DescribeInstances this many times.
+	notFound int
 }
 
 func (f *fakeEC2) DescribeSubnets(_ context.Context, in *ec2.DescribeSubnetsInput, _ ...func(*ec2.Options)) (*ec2.DescribeSubnetsOutput, error) {
@@ -61,6 +70,10 @@ func (f *fakeEC2) DescribeInstances(_ context.Context, in *ec2.DescribeInstances
 	if len(in.InstanceIds) > 0 && in.InstanceIds[0] == "i-gone" {
 		return nil, &smithy.GenericAPIError{Code: "InvalidInstanceID.NotFound"}
 	}
+	if f.notFound > 0 {
+		f.notFound--
+		return nil, &smithy.GenericAPIError{Code: "InvalidInstanceID.NotFound"}
+	}
 	f.filters = in.Filters
 	return &ec2.DescribeInstancesOutput{Reservations: []types.Reservation{{Instances: f.instances}}}, nil
 }
@@ -72,6 +85,42 @@ func (f *fakeEC2) TerminateInstances(_ context.Context, in *ec2.TerminateInstanc
 
 func (f *fakeEC2) GetConsoleOutput(context.Context, *ec2.GetConsoleOutputInput, ...func(*ec2.Options)) (*ec2.GetConsoleOutputOutput, error) {
 	return &ec2.GetConsoleOutputOutput{Output: aws.String(base64.StdEncoding.EncodeToString([]byte("boot log")))}, nil
+}
+
+func (f *fakeEC2) CreatePlacementGroup(_ context.Context, in *ec2.CreatePlacementGroupInput, _ ...func(*ec2.Options)) (*ec2.CreatePlacementGroupOutput, error) {
+	f.created = append(f.created, in)
+	if slices.Contains(f.placements, aws.ToString(in.GroupName)) {
+		return nil, &smithy.GenericAPIError{Code: "InvalidPlacementGroup.Duplicate"}
+	}
+	f.placements = append(f.placements, aws.ToString(in.GroupName))
+	if f.groupTags == nil {
+		f.groupTags = map[string][]types.Tag{}
+	}
+	for _, ts := range in.TagSpecifications {
+		f.groupTags[aws.ToString(in.GroupName)] = append(f.groupTags[aws.ToString(in.GroupName)], ts.Tags...)
+	}
+	return &ec2.CreatePlacementGroupOutput{}, nil
+}
+
+func (f *fakeEC2) DeletePlacementGroup(_ context.Context, in *ec2.DeletePlacementGroupInput, _ ...func(*ec2.Options)) (*ec2.DeletePlacementGroupOutput, error) {
+	name := aws.ToString(in.GroupName)
+	if !slices.Contains(f.placements, name) {
+		return nil, &smithy.GenericAPIError{Code: "InvalidPlacementGroup.Unknown"}
+	}
+	if f.inUse[name] > 0 {
+		f.inUse[name]--
+		return nil, &smithy.GenericAPIError{Code: "InvalidPlacementGroup.InUse"}
+	}
+	f.placements = slices.DeleteFunc(f.placements, func(g string) bool { return g == name })
+	return &ec2.DeletePlacementGroupOutput{}, nil
+}
+
+func (f *fakeEC2) DescribePlacementGroups(context.Context, *ec2.DescribePlacementGroupsInput, ...func(*ec2.Options)) (*ec2.DescribePlacementGroupsOutput, error) {
+	var out ec2.DescribePlacementGroupsOutput
+	for _, g := range f.placements {
+		out.PlacementGroups = append(out.PlacementGroups, types.PlacementGroup{GroupName: aws.String(g), Tags: f.groupTags[g]})
+	}
+	return &out, nil
 }
 
 func sn(id, az string) types.Subnet {
@@ -139,11 +188,35 @@ func TestLaunch(t *testing.T) {
 			fake:    fakeEC2{},
 			wantErr: "no default subnets",
 		},
+		{
+			name:     "fixed subnet in a placement group",
+			fake:     fakeEC2{tagged: []types.Subnet{sn("s-a", "us-west-2a"), sn("s-b", "us-west-2b")}},
+			subnetTo: "s-b",
+			wantID:   "i-s-b",
+			wantRuns: 1,
+		},
+		{
+			name:     "fixed subnet with no capacity",
+			fake:     fakeEC2{tagged: []types.Subnet{sn("s-a", "us-west-2a"), sn("s-b", "us-west-2b")}, full: map[string]bool{"s-b": true}},
+			subnetTo: "s-b",
+			wantRuns: 1,
+			wantErr:  ErrNoCapacity.Error(),
+		},
+		{
+			name:     "fixed subnet that is not a bench subnet",
+			fake:     fakeEC2{tagged: []types.Subnet{sn("s-a", "us-west-2a")}},
+			subnetTo: "s-x",
+			wantErr:  "not a bench subnet",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			f := tc.fake
 			c := &Client{ec2: &f}
+			in := in
+			if tc.subnetTo != "" {
+				in.Subnet, in.PlacementGroup = tc.subnetTo, "apoxy-perf-1-1-vpc"
+			}
 			id, err := c.Launch(context.Background(), in)
 			if len(f.runs) != tc.wantRuns {
 				t.Fatalf("RunInstances calls = %d, want %d", len(f.runs), tc.wantRuns)
@@ -163,6 +236,12 @@ func TestLaunch(t *testing.T) {
 			run := f.runs[len(f.runs)-1]
 			if strings.Join(run.SecurityGroupIds, ",") != strings.Join(tc.wantSG, ",") {
 				t.Errorf("security groups = %v, want %v", run.SecurityGroupIds, tc.wantSG)
+			}
+			if tc.subnetTo != "" && (run.Placement == nil || aws.ToString(run.Placement.GroupName) != in.PlacementGroup) {
+				t.Errorf("placement = %+v, want group %s", run.Placement, in.PlacementGroup)
+			}
+			if tc.subnetTo == "" && run.Placement != nil {
+				t.Errorf("placement = %+v, want none", run.Placement)
 			}
 			checkRun(t, run)
 		})
@@ -275,5 +354,73 @@ func TestCapacityError(t *testing.T) {
 				t.Fatalf("capacityError = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestFacts(t *testing.T) {
+	f := &fakeEC2{notFound: 2, instances: []types.Instance{{
+		InstanceId: aws.String("i-1"), PrivateIpAddress: aws.String("10.0.1.5"), SubnetId: aws.String("s-a"),
+		State: &types.InstanceState{Name: types.InstanceStateNamePending}, Placement: &types.Placement{AvailabilityZone: aws.String("us-west-2a")},
+	}}}
+	c := &Client{ec2: f}
+	got, err := c.Facts(context.Background(), "i-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := InstanceFacts{State: "pending", PrivateIP: "10.0.1.5", SubnetID: "s-a", AZ: "us-west-2a"}
+	if got != want {
+		t.Fatalf("Facts = %+v, want %+v", got, want)
+	}
+	if _, err := c.Facts(context.Background(), "i-gone"); err == nil {
+		t.Fatal("Facts of an unknown instance passed")
+	}
+}
+
+func TestPlacementGroups(t *testing.T) {
+	defer func(d time.Duration) { deleteGroupRetry = d }(deleteGroupRetry)
+	deleteGroupRetry = time.Millisecond
+	ctx := context.Background()
+	f := &fakeEC2{inUse: map[string]int{"pg-busy": 1}}
+	c := &Client{ec2: f}
+	now := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
+	tags := map[string]string{"apoxy-perf": "true", "apoxy-perf-run": "1-1-vpc", "apoxy-perf-expires": "2026-10-03T11:00:00Z"}
+	if err := c.CreatePlacementGroup(ctx, "pg-a", tags); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.CreatePlacementGroup(ctx, "pg-a", tags); err != nil {
+		t.Fatalf("a second create of the same group failed: %v", err)
+	}
+	if ts := f.created[0].TagSpecifications; f.created[0].Strategy != types.PlacementStrategyCluster || len(ts) != 1 || ts[0].ResourceType != types.ResourceTypePlacementGroup || len(ts[0].Tags) != 3 {
+		t.Errorf("create = %+v", f.created[0])
+	}
+	if err := c.CreatePlacementGroup(ctx, "pg-busy", tags); err != nil {
+		t.Fatal(err)
+	}
+	// The busy group answers InUse one time, then the delete passes.
+	if err := c.DeletePlacementGroup(ctx, "pg-busy", 0); err == nil || !strings.Contains(err.Error(), "InUse") {
+		t.Fatalf("delete of a busy group with no wait = %v, want InUse", err)
+	}
+	if err := c.DeletePlacementGroup(ctx, "pg-busy", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.DeletePlacementGroup(ctx, "pg-unknown", 0); err != nil {
+		t.Fatalf("delete of an unknown group = %v", err)
+	}
+	// pg-a is in use, pg-new did not expire, pg-free and pg-untagged are free.
+	f.inUse["pg-a"] = 1
+	for name, expires := range map[string]string{"pg-free": "2026-10-03T11:00:00Z", "pg-new": "2026-10-03T13:00:00Z", "pg-untagged": ""} {
+		tg := map[string]string{"apoxy-perf": "true"}
+		if expires != "" {
+			tg["apoxy-perf-expires"] = expires
+		}
+		if err := c.CreatePlacementGroup(ctx, name, tg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := c.ReapPlacementGroups(ctx, "apoxy-perf=true", "apoxy-perf-expires", now)
+	slices.Sort(got)
+	slices.Sort(f.placements)
+	if err != nil || !slices.Equal(got, []string{"pg-free", "pg-untagged"}) || !slices.Equal(f.placements, []string{"pg-a", "pg-new"}) {
+		t.Fatalf("reap = %v, %v, groups left %v", got, err, f.placements)
 	}
 }

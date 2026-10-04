@@ -11,12 +11,21 @@ import (
 	"strconv"
 )
 
-// Row is one "perfrig run" of a suite. perfagent adds -out and -out-dir.
+// Row is one "perfrig run" or "perfrig node" of a suite. perfagent adds -out
+// and -out-dir.
 type Row struct {
-	ID    string   `json:"id"`
-	Group string   `json:"group"`
-	Args  []string `json:"args"`
+	ID    string `json:"id"`
+	Group string `json:"group"`
+	// Cmd is the perfrig command: run (the default) or node.
+	Cmd  string   `json:"cmd,omitempty"`
+	Args []string `json:"args"`
+	// hosts is the number of hosts of a node row: 2 with no relay, 3 with one.
+	// It is 0 for a row of the netns rig.
+	hosts int
 }
+
+// Hosts returns the number of hosts of a node row, or 0 for a row of the netns rig.
+func (r Row) Hosts() int { return r.hosts }
 
 // Plan is the perfagent spec without the parts that the perf module sets.
 type Plan struct {
@@ -61,11 +70,16 @@ var hostSysctls = map[string]string{
 	"net.core.netdev_max_backlog": "250000",
 }
 
-// Plan returns the plan JSON of the suite.
+// Plan returns the plan JSON of the selected rows of the netns rig. It is
+// empty when o selects only node rows.
 func (s Suite) Plan(o Options) (string, error) {
 	rows, err := s.selected(o)
 	if err != nil {
 		return "", err
+	}
+	rows = slices.DeleteFunc(rows, func(r Row) bool { return r.hosts > 0 })
+	if len(rows) == 0 {
+		return "", nil
 	}
 	p := Plan{Tun: s.Tun, Remove: s.Remove, Rows: rows}
 	if o.Host {
@@ -76,13 +90,48 @@ func (s Suite) Plan(o Options) (string, error) {
 	return string(b), err
 }
 
-// selected returns the rows that o selects.
+// NodePlans returns a JSON object with a plan for each host role of the selected
+// node rows, with -role set in each row. It is empty when o selects no node row.
+func (s Suite) NodePlans(o Options) (string, error) {
+	rows, err := s.selected(o)
+	if err != nil {
+		return "", err
+	}
+	rows = slices.DeleteFunc(rows, func(r Row) bool { return r.hosts == 0 })
+	if len(rows) == 0 {
+		return "", nil
+	}
+	plans := map[string]Plan{}
+	for _, role := range []string{"client", "server", "relay"} {
+		var picked []Row
+		for _, r := range rows {
+			if role == "relay" && r.hosts < 3 {
+				continue
+			}
+			r.Args = append(slices.Clone(r.Args), "-role="+role)
+			picked = append(picked, r)
+		}
+		if len(picked) == 0 {
+			continue
+		}
+		p := Plan{Tun: s.Tun, Remove: s.Remove, Rows: picked}
+		if o.Host {
+			p.Sysctls = hostSysctls
+		}
+		plans[role] = p
+	}
+	b, err := json.Marshal(plans)
+	return string(b), err
+}
+
+// selected returns the rows that o selects. With no row IDs, it selects all
+// rows of the netns rig: the node rows run only when o names them.
 func (s Suite) selected(o Options) ([]Row, error) {
 	rows := s.rows(o)
 	// A workflow input with no rows gives an empty ID.
 	only := slices.DeleteFunc(slices.Clone(o.Only), func(id string) bool { return id == "" })
 	if len(only) == 0 {
-		return rows, nil
+		return slices.DeleteFunc(rows, func(r Row) bool { return r.hosts > 0 }), nil
 	}
 	var picked []Row
 	for _, id := range only {
@@ -160,6 +209,9 @@ type vpcRow struct {
 	// relayNetns runs the relay in its own netns, so that it sends the
 	// packets to the server on a link. xdp forwards them in XDP there.
 	relayNetns, xdp bool
+	// nodes runs each role on its own EC2 host, with no netem: 2 hosts with no
+	// relay, 3 with one. 0 runs the row in the netns rig.
+	nodes int
 	// server and client are more vpcbench flags. args are more perfrig run flags.
 	server, client []string
 	args           []string
@@ -176,21 +228,28 @@ var vpcRows = []vpcRow{
 	{id: "netstack-psp-relay-rate1000mbit", name: "vpc-netstack-psp-relay", client: []string{"-cc", "bbr"}, args: []string{"-rate=1000mbit", "-queue-limit=2640"}},
 	{id: "netstack-psp-relay-netns", name: "vpc-netstack-psp-relay-netns", relayNetns: true, client: []string{"-cc", "bbr"}},
 	{id: "netstack-psp-relay-xdp", name: "vpc-netstack-psp-relay-xdp", relayNetns: true, xdp: true, client: []string{"-cc", "bbr"}},
+	{id: "netstack-psp-direct-2node", name: "vpc-netstack-psp-direct-2node", direct: true, nodes: 2, client: []string{"-cc", "bbr"}},
+	{id: "netstack-psp-relay-3node", name: "vpc-netstack-psp-relay-3node", nodes: 3, client: []string{"-cc", "bbr"}},
 }
 
-func (r vpcRow) row(o Options) Row {
-	// The relay is the sidecar of the server. perfrig stops it after the server exits.
+// nodeStartTimeout is the time that vpcbench on one host waits for the hosts
+// of the other roles. The hosts boot at the same time, but not in step.
+const nodeStartTimeout = "5m"
+
+// argv returns the vpcbench commands of the roles. The relay is the sidecar of
+// the server, in the server netns, in its own netns or on its own host.
+func (r vpcRow) argv(o Options) (sidecar, server, client []string) {
 	relay := "$SERVER_IP:4443"
-	if r.relayNetns {
+	if r.relayNetns || r.nodes > 0 {
 		relay = "$RELAY_IP:4443"
 	}
-	sidecar := []string{"vpcbench", "relay", "-listen", relay}
+	sidecar = []string{"vpcbench", "relay", "-listen", relay}
 	if r.xdp {
 		// perf-r is the link of the perfrig relay netns.
 		sidecar = append(sidecar, "-xdp", "perf-r")
 	}
-	server := []string{"vpcbench", "server", "-relay", relay, "-listen", "$SERVER_IP:4433"}
-	client := []string{"vpcbench", "client", "-relay", relay, "-server", "$SERVER_IP:4433"}
+	server = []string{"vpcbench", "server", "-relay", relay, "-listen", "$SERVER_IP:4433"}
+	client = []string{"vpcbench", "client", "-relay", relay, "-server", "$SERVER_IP:4433"}
 	if r.direct {
 		sidecar = nil
 		server = []string{"vpcbench", "server", "-via", "direct", "-listen", "$SERVER_IP:4433"}
@@ -198,6 +257,13 @@ func (r vpcRow) row(o Options) Row {
 	}
 	server = append(server, r.server...)
 	client = append(append(client, r.client...), "-streams", "$STREAMS", "-omit", "${OMIT_S}s", "-duration", "${DURATION_S}s")
+	if r.nodes > 0 {
+		server = append(server, "-start-timeout", nodeStartTimeout)
+		client = append(client, "-start-timeout", nodeStartTimeout)
+		if !r.direct {
+			client = append(client, "-stop-relay")
+		}
+	}
 	if o.Profile {
 		if sidecar != nil {
 			sidecar = append(sidecar, profileArgs("relay")...)
@@ -205,12 +271,23 @@ func (r vpcRow) row(o Options) Row {
 		server = append(server, profileArgs("server")...)
 		client = append(client, profileArgs("client")...)
 	}
+	return sidecar, server, client
+}
+
+func (r vpcRow) row(o Options) Row {
+	sidecar, server, client := r.argv(o)
 	group := "info"
 	if r.floor {
 		group = "floor"
 	}
-	args := []string{"-workload=exec", "-name=" + r.name, "-netns-prefix=perf", "-ready=tcp:4433", "-streams=4", "-omit=5s"}
-	args = append(args, common(o, group)...)
+	var args []string
+	if r.nodes > 0 {
+		args = []string{"-name=" + r.name, "-streams=4", "-omit=5s", "-duration=" + o.Duration,
+			"-min-cpus=" + strconv.Itoa(o.MinCPUs), "-max-steal=5"}
+	} else {
+		args = []string{"-workload=exec", "-name=" + r.name, "-netns-prefix=perf", "-ready=tcp:4433", "-streams=4", "-omit=5s"}
+		args = append(args, common(o, group)...)
+	}
 	args = append(args, "-server-argv="+jsonArgv(server), "-client-argv="+jsonArgv(client))
 	if sidecar != nil {
 		args = append(args, "-sidecar-argv="+jsonArgv(sidecar))
@@ -218,7 +295,11 @@ func (r vpcRow) row(o Options) Row {
 	if r.relayNetns {
 		args = append(args, "-relay-netns")
 	}
-	return Row{ID: r.id, Group: group, Args: append(args, r.args...)}
+	row := Row{ID: r.id, Group: group, Args: append(args, r.args...), hosts: r.nodes}
+	if r.nodes > 0 {
+		row.Cmd = "node"
+	}
+	return row
 }
 
 // profileArgs are the vpcbench flags that write the profiles of role to the
@@ -231,14 +312,15 @@ func profileArgs(role string) []string {
 	return args
 }
 
-// VPC is the VPC data path through the relay, with one floor row and info rows.
+// VPC is the VPC data path through the relay, with one floor row and info
+// rows. The node rows run on 2 or 3 EC2 hosts.
 var VPC = Suite{
 	Name:  "vpc",
 	Title: "VPC perf",
 	Bins:  []string{"vpcbench"},
 	Tun:   true,
-	// The work dirs have the throwaway CA and agent keys of each run.
-	Remove: []string{"*-cred.json", "vpcbench-ca.pem"},
+	// The work dirs have the throwaway agent keys of each run.
+	Remove: []string{"*-cred.json"},
 	rows: func(o Options) []Row {
 		rows := make([]Row, 0, len(vpcRows))
 		for _, r := range vpcRows {

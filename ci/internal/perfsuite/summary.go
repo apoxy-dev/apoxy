@@ -3,6 +3,8 @@ package perfsuite
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -116,6 +118,122 @@ func Summary(s Suite, rep Report, compares []Compare, console string) string {
 	if len(errs) > 0 {
 		fmt.Fprintf(&b, "### perfrig errors\n\n%s\n\n", strings.Join(errs, "\n"))
 	}
+	return b.String()
+}
+
+// NodeResult is the part of a perfrig result of one host of a multi-node run
+// that the summary uses. Role is empty in a result of the netns rig.
+type NodeResult struct {
+	Workload string `json:"workload"`
+	Role     string `json:"role"`
+	Host     struct {
+		Class  string `json:"class"`
+		CPUs   int    `json:"cpus"`
+		Kernel string `json:"kernel"`
+		NIC    *struct {
+			Dev         string   `json:"dev"`
+			Driver      string   `json:"driver"`
+			Version     string   `json:"version"`
+			MTU         int      `json:"mtu"`
+			RxQueues    int      `json:"rx_queues"`
+			XDPFeatures []string `json:"xdp_features"`
+		} `json:"nic"`
+	} `json:"host"`
+	RTT struct {
+		Avg float64 `json:"avg"`
+	} `json:"rtt_ms"`
+	RelayRTT *struct {
+		Avg float64 `json:"avg"`
+	} `json:"relay_rtt_ms"`
+	// Info and Throughput of the client have the window numbers of all roles.
+	Info       map[string]float64 `json:"info"`
+	Throughput struct {
+		Gbps float64 `json:"gbps"`
+	} `json:"throughput"`
+	NIC map[string]int64 `json:"nic_counters"`
+}
+
+// nodeCounters are the NIC counters of the hosts table, in order.
+var nodeCounters = []string{
+	"bw_in_allowance_exceeded", "bw_out_allowance_exceeded", "pps_allowance_exceeded", "conntrack_allowance_exceeded",
+	"rx_dropped", "tx_dropped", "rx_top_queue_pct",
+}
+
+// Nodes returns a table with one line for each host of the node rows, from the
+// perfrig result JSON files. It is empty when no result has a role.
+func Nodes(results []string) string {
+	var nodes []NodeResult
+	clients := map[string]NodeResult{}
+	for _, data := range results {
+		var n NodeResult
+		if err := json.Unmarshal([]byte(data), &n); err != nil || n.Role == "" {
+			continue
+		}
+		nodes = append(nodes, n)
+		if n.Role == "client" {
+			clients[n.Workload] = n
+		}
+	}
+	if len(nodes) == 0 {
+		return ""
+	}
+	order := map[string]int{"client": 0, "server": 1, "relay": 2}
+	sort.SliceStable(nodes, func(i, j int) bool {
+		if nodes[i].Workload != nodes[j].Workload {
+			return nodes[i].Workload < nodes[j].Workload
+		}
+		return order[nodes[i].Role] < order[nodes[j].Role]
+	})
+	var b strings.Builder
+	b.WriteString("### Hosts of the node rows\n\n")
+	b.WriteString("Cores/Gbps is the CPU of the vpcbench process. Host cores is the busy CPU of the host, also the kernel work. " +
+		"Both are in the measured window. The NIC counters are the increase while the role ran. The allowance counters are the EC2 network limits. " +
+		"Top queue is the percent of the RX packets that the busiest RX queue got.\n\n")
+	b.WriteString("| Workload | Role | Host | NIC | RX queues | XDP | RTT ms server, relay | Cores/Gbps | Host cores | Host cores/Gbps " +
+		"| bw_in | bw_out | pps | conntrack | rx_dropped | tx_dropped | Top queue % |\n")
+	b.WriteString("|---|---|---|---|--:|---|---|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|\n")
+	for _, n := range nodes {
+		nic, queues, xdp := "-", "-", "-"
+		if h := n.Host.NIC; h != nil {
+			nic = strings.TrimSpace(h.Dev + " " + h.Driver + " " + h.Version)
+			if h.MTU > 0 {
+				nic += fmt.Sprintf(", mtu %d", h.MTU)
+			}
+			queues = strconv.Itoa(h.RxQueues)
+			if len(h.XDPFeatures) > 0 {
+				xdp = strings.Join(h.XDPFeatures, " ")
+			}
+		}
+		rtt := "-"
+		if n.Role == "client" {
+			rtt = fmt.Sprintf("%.3f", n.RTT.Avg)
+			if n.RelayRTT != nil {
+				rtt += fmt.Sprintf(", %.3f", n.RelayRTT.Avg)
+			}
+		}
+		c := clients[n.Workload]
+		perGbps, hostCores, hostPerGbps := "-", "-", "-"
+		if v, ok := c.Info[n.Role+"_cores_per_gbps"]; ok {
+			perGbps = fmt.Sprintf("%.3f", v)
+		}
+		if v, ok := c.Info[n.Role+"_host_cores"]; ok && v >= 0 {
+			hostCores = fmt.Sprintf("%.2f", v)
+			if c.Throughput.Gbps > 0 {
+				hostPerGbps = fmt.Sprintf("%.3f", v/c.Throughput.Gbps)
+			}
+		}
+		fmt.Fprintf(&b, "| %s | %s | %s, %d CPUs, %s | %s | %s | %s | %s | %s | %s | %s |",
+			n.Workload, n.Role, n.Host.Class, n.Host.CPUs, n.Host.Kernel, nic, queues, xdp, rtt, perGbps, hostCores, hostPerGbps)
+		for _, k := range nodeCounters {
+			if v, ok := n.NIC[k]; ok {
+				fmt.Fprintf(&b, " %d |", v)
+			} else {
+				b.WriteString(" - |")
+			}
+		}
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
 	return b.String()
 }
 

@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 )
@@ -28,8 +29,10 @@ type Spec struct {
 	Modules  []string          `json:"modules,omitempty"`
 	Tun      bool              `json:"tun,omitempty"`
 	Remove   []string          `json:"remove,omitempty"`
-	Rows     []Row             `json:"rows"`
-	Upload   Upload            `json:"upload"`
+	// Nodes are the private IPs of the other hosts of a multi-node run, by role.
+	Nodes  map[string]string `json:"nodes,omitempty"`
+	Rows   []Row             `json:"rows"`
+	Upload Upload            `json:"upload"`
 }
 
 // File is a file that perfagent fetches, or finds in place when URL is empty.
@@ -39,10 +42,11 @@ type File struct {
 	SHA256 string `json:"sha256"`
 }
 
-// Row is one "perfrig run".
+// Row is one "perfrig run" or "perfrig node".
 type Row struct {
 	ID    string   `json:"id"`
 	Group string   `json:"group"`
+	Cmd   string   `json:"cmd,omitempty"`
 	Args  []string `json:"args"`
 }
 
@@ -65,13 +69,45 @@ func ParsePlan(data string) (Spec, error) {
 	if err := dec.Decode(&s); err != nil {
 		return Spec{}, fmt.Errorf("parse the plan: %w", err)
 	}
-	if s.RunID != "" || !s.Deadline.IsZero() || len(s.Bins) > 0 || len(s.Files) > 0 || s.Upload != (Upload{}) {
-		return Spec{}, errors.New("the plan sets run_id, deadline, bins, files or upload; the module sets them")
+	if s.RunID != "" || !s.Deadline.IsZero() || len(s.Bins) > 0 || len(s.Files) > 0 || len(s.Nodes) > 0 || s.Upload != (Upload{}) {
+		return Spec{}, errors.New("the plan sets run_id, deadline, bins, files, nodes or upload; the module sets them")
 	}
 	if len(s.Rows) == 0 {
 		return Spec{}, errors.New("the plan has no rows")
 	}
 	return s, nil
+}
+
+// NodeRoles are the hosts of a multi-node run, in launch order. The relay is
+// optional. The client runs last, because it needs the addresses of the others.
+var NodeRoles = []string{"relay", "server", "client"}
+
+// ParseNodePlans reads the plans of a multi-node run: a JSON object with one
+// plan for each role. It needs a client and a server plan.
+func ParseNodePlans(data string) (map[string]Spec, error) {
+	var raw map[string]json.RawMessage
+	dec := json.NewDecoder(strings.NewReader(data))
+	if err := dec.Decode(&raw); err != nil {
+		return nil, fmt.Errorf("parse the node plans: %w", err)
+	}
+	plans := map[string]Spec{}
+	for role, p := range raw {
+		if !slices.Contains(NodeRoles, role) {
+			return nil, fmt.Errorf("unknown node role %q", role)
+		}
+		s, err := ParsePlan(string(p))
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", role, err)
+		}
+		plans[role] = s
+	}
+	if _, ok := plans["client"]; !ok {
+		return nil, errors.New("the node plans have no client")
+	}
+	if _, ok := plans["server"]; !ok {
+		return nil, errors.New("the node plans have no server")
+	}
+	return plans, nil
 }
 
 // JSON returns the spec as perfagent reads it.
@@ -106,8 +142,15 @@ func (k Keys) File(name string) string   { return k.Inputs() + "files/" + name }
 func (k Keys) Spec() string              { return k.Inputs() + "spec.json" }
 func (k Keys) Output(name string) string { return k.Prefix + "out/" + name }
 
+// NodeSpec and NodeOutput are the spec and the outputs of one host of a multi-node run.
+func (k Keys) NodeSpec(role string) string         { return k.Inputs() + "spec-" + role + ".json" }
+func (k Keys) NodeOutput(role, name string) string { return k.Prefix + "out/" + role + "/" + name }
+
 // RunTag is the KEY=VALUE instance tag of one run.
 func RunTag(runTag string) string { return "apoxy-perf-run=" + runTag }
+
+// GroupName is the placement group of a multi-node run.
+func GroupName(runTag string) string { return "apoxy-perf-" + runTag }
 
 // Tags returns the instance tags. The reaper terminates the instance after expires.
 func Tags(runTag string, expires time.Time) []string {
@@ -119,9 +162,9 @@ func Tags(runTag string, expires time.Time) []string {
 	}
 }
 
-// CloudInit returns the user data of a bench instance. cloud-init fetches
-// perfagent, starts a systemd timer that powers off the host after poweroff,
-// runs perfagent, and then powers off the host, also when perfagent fails.
+// CloudInit returns the user data of a bench instance. cloud-init installs
+// iperf3 and ethtool, fetches perfagent, starts a systemd timer that powers
+// off the host after poweroff, runs perfagent, and then powers off the host.
 func CloudInit(agentURL, specURL string, poweroff time.Duration) (string, error) {
 	if poweroff < time.Minute {
 		return "", fmt.Errorf("poweroff %s is less than 1m", poweroff)

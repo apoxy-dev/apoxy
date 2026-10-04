@@ -18,9 +18,13 @@ on:
         type: boolean
         default: false
       vpc_rows:
-        description: "VPC rows to run, comma-separated, for example netstack-psp-relay (default: all rows)"
+        description: "VPC rows to run, comma-separated, for example netstack-psp-relay (default: all rows of the netns rig). Name the node rows (-2node, -3node) to run them, in a run of their own"
         type: string
         default: ""
+      vpc_instance_type:
+        description: "EC2 instance type of the VPC hosts (the baseline has c7a.8xlarge only)"
+        type: string
+        default: "c7a.8xlarge"
       vpc_profile:
         description: "Write pprof profiles of the VPC rows (slower; do not compare to the baseline)"
         type: boolean
@@ -111,6 +115,7 @@ jobs:
       DURATION: ${{ inputs.duration || '30s' }}
       ROWS: ${{ inputs.vpc_rows }}
       PROFILE: ${{ inputs.vpc_profile || false }}
+      INSTANCE_TYPE: ${{ inputs.vpc_instance_type || 'c7a.8xlarge' }}
       RUN_TAG: ${{ github.run_id }}-${{ github.run_attempt }}-vpc
       PERF_BUCKET: ${{ vars.PERF_BUCKET }}
       PERF_AWS_REGION: ${{ vars.PERF_AWS_REGION }}
@@ -129,11 +134,12 @@ jobs:
         timeout-minutes: 55
         run: >-
           dagger call -v perf-vpc --src=. --where=ec2 --duration="$DURATION" --rows="$ROWS" --profile="$PROFILE"
+          --instance-type="$INSTANCE_TYPE"
           --run-tag="$RUN_TAG" --bucket="$PERF_BUCKET" --region="$PERF_AWS_REGION"
           --aws-access-key-id=env:AWS_ACCESS_KEY_ID --aws-secret-access-key=env:AWS_SECRET_ACCESS_KEY
           --aws-session-token=env:AWS_SESSION_TOKEN
           export --path=perf-vpc
-      - name: Clean up the bench instance
+      - name: Clean up the bench instances
         # A cancel stops the run step before its own cleanup. Only always() steps run after a cancel.
         if: always()
         run: >-

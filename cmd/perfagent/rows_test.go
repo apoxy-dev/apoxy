@@ -56,8 +56,21 @@ func TestRowArgs(t *testing.T) {
 		name      string
 		row       Row
 		hostClass string
+		nodes     map[string]string
 		want      []string
 	}{
+		{
+			name:  "node row with the other hosts",
+			row:   Row{ID: "direct-2node", Group: "info", Cmd: "node", Args: []string{"-role=client"}},
+			nodes: map[string]string{"server": "10.0.1.5", "relay": "10.0.1.6"},
+			want:  []string{"node", "-role=client", "-node=relay=10.0.1.6", "-node=server=10.0.1.5", "-out=results/info/direct-2node.json", "-out-dir=work/direct-2node"},
+		},
+		{
+			name:  "run row gets no node flags",
+			row:   Row{ID: "a", Group: "info", Cmd: "run", Args: []string{"-loss=0.1"}},
+			nodes: map[string]string{"server": "10.0.1.5"},
+			want:  []string{"run", "-loss=0.1", "-out=results/info/a.json", "-out-dir=work/a"},
+		},
 		{
 			name: "no host class",
 			row:  Row{ID: "netstack-psp-relay", Group: "floor", Args: []string{"-workload=exec"}},
@@ -72,7 +85,7 @@ func TestRowArgs(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, rowArgs(tc.row, tc.hostClass))
+			assert.Equal(t, tc.want, rowArgs(tc.row, tc.hostClass, tc.nodes))
 		})
 	}
 }
@@ -83,7 +96,7 @@ func TestRunRows(t *testing.T) {
 	runDir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(runDir, "logs"), 0o755))
 	run := func(ctx context.Context, rows ...Row) []RowResult {
-		return runRows(ctx, os.Args[0], t.TempDir(), runDir, "c7a.8xlarge", rows)
+		return runRows(ctx, os.Args[0], t.TempDir(), runDir, "c7a.8xlarge", nil, rows)
 	}
 
 	got := run(context.Background(),

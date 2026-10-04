@@ -1,15 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 // Command vpcbench measures TCP flows between two VPC agents, through a v2
-// relay or directly. The relay makes a CA in the work dir and serves relay
-// sessions with test fakes, with no apiserver. The client prints one JSON line
-// that "perfrig run -workload exec" reads. The relay is the sidecar of the
-// server. perfrig stops it after the server exits:
+// relay or directly. The relay makes a CA and serves relay sessions with test
+// fakes, with no apiserver. The server and the client get the CA on the
+// control port of the relay. The client prints one JSON line that "perfrig run
+// -workload exec" reads. The relay is the sidecar of the server. perfrig stops
+// it after the server exits:
 //
 //	perfrig run -workload exec -name vpc-netstack-psp -ready tcp:4433 -streams 4 -omit 5s -duration 30s \
-//	  -sidecar-argv '["vpcbench","relay","-listen","$SERVER_IP:4443"]' \
-//	  -server-argv '["vpcbench","server","-relay","$SERVER_IP:4443","-listen","$SERVER_IP:4433"]' \
-//	  -client-argv '["vpcbench","client","-relay","$SERVER_IP:4443","-server","$SERVER_IP:4433","-cc","bbr","-streams","$STREAMS","-omit","${OMIT_S}s","-duration","${DURATION_S}s"]'
+//	  -sidecar-argv '["vpcbench","relay","-listen","$RELAY_IP:4443"]' \
+//	  -server-argv '["vpcbench","server","-relay","$RELAY_IP:4443","-listen","$SERVER_IP:4433"]' \
+//	  -client-argv '["vpcbench","client","-relay","$RELAY_IP:4443","-server","$SERVER_IP:4433","-cc","bbr","-streams","$STREAMS","-omit","${OMIT_S}s","-duration","${DURATION_S}s"]'
+//
+// With -stop-relay, the client stops the relay at the end. "perfrig node" uses
+// it when the relay runs on its own host.
 package main
 
 import (
@@ -52,8 +56,6 @@ const (
 	vni      = 0x7662
 	sinkPort = 5201
 	echoPort = 7
-	// startTimeout limits each wait for the relay, an attach or a peer session.
-	startTimeout = 30 * time.Second
 	// callTimeout limits each control call.
 	callTimeout = 30 * time.Second
 	// echoWait is how long the client waits for the last probe echoes.
@@ -116,7 +118,11 @@ type options struct {
 	MTU, Streams                   int
 	Omit, Duration                 time.Duration
 	Idle, ProbeInterval            time.Duration
-	Profiles                       bench.Profiles
+	// StartTimeout limits each wait for the relay, an attach or a peer session.
+	StartTimeout time.Duration
+	// StopRelay makes the client stop the relay at the end.
+	StopRelay bool
+	Profiles  bench.Profiles
 }
 
 // parseFlags reads the flags of cmd and checks them.
@@ -138,6 +144,7 @@ func parseFlags(cmd string, args []string, out io.Writer) (options, error) {
 		fs.StringVar(&o.Driver, "driver", "netstack", "data path driver: netstack or tun")
 		fs.StringVar(&o.Transport, "transport", "psp", "data transport through the relay: psp or quic")
 		fs.StringVar(&o.Via, "via", "relay", "data path: relay, or direct with no relay and no agent")
+		fs.DurationVar(&o.StartTimeout, "start-timeout", 30*time.Second, "time limit of each wait for the relay, the server, an attach or a peer session")
 	}
 	if cmd == "client" {
 		fs.StringVar(&o.Server, "server", "", "server control address host:port")
@@ -147,6 +154,7 @@ func parseFlags(cmd string, args []string, out io.Writer) (options, error) {
 		fs.DurationVar(&o.Duration, "duration", 30*time.Second, "measured time")
 		fs.DurationVar(&o.Idle, "idle", time.Second, "RTT probe time before the flows start")
 		fs.DurationVar(&o.ProbeInterval, "probe-interval", 10*time.Millisecond, "RTT probe interval")
+		fs.BoolVar(&o.StopRelay, "stop-relay", false, "stop the relay at the end of the run")
 	}
 	if err := fs.Parse(args); err != nil {
 		return o, err
@@ -174,8 +182,10 @@ func (o options) check(cmd string) error {
 		return errors.New("-server is required")
 	case o.Via == "relay" && o.Relay == "":
 		return errors.New("-relay is required with -via relay")
-	case (cmd == "relay" || o.Via == "relay") && o.WorkDir == "":
+	case agentCmd && o.Via == "relay" && o.WorkDir == "":
 		return errors.New("set -work-dir or WORK_DIR")
+	case agentCmd && o.StartTimeout <= 0:
+		return errors.New("-start-timeout must be positive")
 	case o.MTU < 0:
 		return errors.New("-mtu must not be negative")
 	case cmd == "client" && (o.Streams < 1 || o.Duration <= 0 || o.Omit < 0 || o.Idle < 0 || o.ProbeInterval <= 0):
@@ -301,9 +311,9 @@ func startAgent(ctx context.Context, fail context.CancelCauseFunc, o options, na
 	case <-ctx.Done():
 		s.close()
 		return nil, context.Cause(ctx)
-	case <-time.After(startTimeout):
+	case <-time.After(o.StartTimeout):
 		s.close()
-		return nil, fmt.Errorf("agent %s did not attach in %s", name, startTimeout)
+		return nil, fmt.Errorf("agent %s did not attach in %s", name, o.StartTimeout)
 	}
 	if err := s.startNet(ctx, fail, o, tunnet.NetworkPrefixOf(s.addr)); err != nil {
 		s.close()
@@ -370,7 +380,7 @@ func applyKeys(p *psp.Peer, b []byte) error {
 	return err
 }
 
-// request is one control message: hello or mark.
+// request is one control message: ca, hello, mark or stop.
 type request struct {
 	Op   string `json:"op"`
 	Port int    `json:"port,omitempty"` // Hello with -via direct: UDP port of the client.
@@ -379,6 +389,7 @@ type request struct {
 
 // reply answers a request.
 type reply struct {
+	CA    []byte `json:"ca,omitempty"`   // Ca: the CA cert and key in PEM.
 	Addr  string `json:"addr,omitempty"` // Hello: overlay address of the server.
 	Keys  []byte `json:"keys,omitempty"`
 	Mark  mark   `json:"mark"`
@@ -397,9 +408,9 @@ func newCtl(c net.Conn) *ctl {
 }
 
 // dialCtl connects to the control port at addr. It tries again until the
-// port opens or startTimeout ends.
-func dialCtl(ctx context.Context, addr string) (*ctl, error) {
-	ctx, cancel := context.WithTimeout(ctx, startTimeout)
+// port opens or timeout ends.
+func dialCtl(ctx context.Context, addr string, timeout time.Duration) (*ctl, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	var d net.Dialer
 	for {
@@ -456,14 +467,18 @@ func serveCtl(c net.Conn, handle func(request) (reply, error)) error {
 	}
 }
 
-// relayCA waits until the relay of o serves its control port, then loads the
-// CA that it wrote before.
+// relayCA waits until the relay of o serves its control port, then gets the
+// CA from it.
 func relayCA(ctx context.Context, o options) (*vpctest.CA, *ctl, error) {
-	c, err := dialCtl(ctx, o.Relay)
+	c, err := dialCtl(ctx, o.Relay, o.StartTimeout)
 	if err != nil {
 		return nil, nil, err
 	}
-	ca, err := loadCA(o.WorkDir)
+	rep, err := c.call(request{Op: "ca"})
+	var ca *vpctest.CA
+	if err == nil {
+		ca, err = decodeCA(rep.CA)
+	}
 	if err != nil {
 		_ = c.c.Close()
 		return nil, nil, err
@@ -561,7 +576,7 @@ func runServer(parent context.Context, o options, ready func(netip.AddrPort)) er
 			st := s.b.Stats()
 			_, retrans := s.net.TCPCounters()
 			return reply{Mark: mark{
-				Nanos: time.Since(start).Nanoseconds(), CPU: bench.CPUSeconds(), Retrans: retrans,
+				Nanos: time.Since(start).Nanoseconds(), CPU: bench.CPUSeconds(), HostCPU: bench.HostCPUSeconds(), Retrans: retrans,
 				Bytes: got.Load(), RxPackets: st.RxPackets, Drops: st.RxDrops + st.RxNoDriver,
 				RcvbufErrors: snmpCounter("Udp:", "RcvbufErrors"), SockDrops: sockDrops(s.uc), LinkDrops: s.net.LinkDrops(),
 			}}, nil
@@ -651,6 +666,11 @@ func runClient(parent context.Context, o options, out io.Writer) error {
 			s.close()
 		}
 		if relay != nil {
+			if o.StopRelay {
+				if _, err := relay.call(request{Op: "stop"}); err != nil {
+					slog.Warn("Failed to stop the relay", "error", err)
+				}
+			}
 			_ = relay.c.Close()
 		}
 	}()
@@ -664,7 +684,7 @@ func runClient(parent context.Context, o options, out io.Writer) error {
 			return runErr(ctx, err)
 		}
 	}
-	srv, err := dialCtl(ctx, o.Server)
+	srv, err := dialCtl(ctx, o.Server, o.StartTimeout)
 	if err != nil {
 		return err
 	}
@@ -678,7 +698,7 @@ func runClient(parent context.Context, o options, out io.Writer) error {
 		if peer, err = netip.ParseAddr(rep.Addr); err != nil {
 			return fmt.Errorf("server overlay address: %w", err)
 		}
-		cctx, cancel := context.WithTimeout(ctx, startTimeout)
+		cctx, cancel := context.WithTimeout(ctx, o.StartTimeout)
 		err = s.a.Connect(cctx, peer)
 		cancel()
 		if err != nil {
@@ -795,7 +815,7 @@ func measure(ctx context.Context, o options, s *side, peer netip.Addr, srv, rela
 		// With GSO, the TCP segments sent are not packets, so the packets of the binding
 		// are the base of the retransmit percent.
 		client[i] = mark{
-			Nanos: at[i].Nanoseconds(), CPU: bench.CPUSeconds(), Segments: st.TxPackets, Retrans: retrans,
+			Nanos: at[i].Nanoseconds(), CPU: bench.CPUSeconds(), HostCPU: bench.HostCPUSeconds(), Segments: st.TxPackets, Retrans: retrans,
 			Drops: st.TxDrops + st.TxLimitDrops, LinkDrops: s.net.LinkDrops(),
 		}
 		var err error

@@ -167,7 +167,7 @@ func (a *agent) run(ctx context.Context, spec Spec, rep *Report) error {
 			return err
 		}
 	}
-	rep.Rows = runRows(ctx, filepath.Join(binDir, "perfrig"), binDir, runDir, hostClass, spec.Rows)
+	rep.Rows = runRows(ctx, filepath.Join(binDir, "perfrig"), binDir, runDir, hostClass, spec.Nodes, spec.Rows)
 	if err := ctx.Err(); errors.Is(err, context.DeadlineExceeded) {
 		return fmt.Errorf("the rows did not end before the deadline %s: %w", spec.Deadline.Format(time.RFC3339), err)
 	} else if err != nil {

@@ -1,5 +1,5 @@
-// Module perf runs perf rows with perfagent (cmd/perfagent), on a new EC2
-// instance or in a privileged container on the engine host. Both return the
+// Module perf runs perf rows with perfagent (cmd/perfagent), on new EC2
+// instances or in a privileged container on the engine host. All return the
 // same directory: agent.json, agent.log, results/, logs/ and work/, and
 // console.txt when the instance failed. An infra failure is not an error of
 // the function: agent.json then has infra_error.
@@ -13,7 +13,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -34,6 +36,11 @@ const (
 	// uploadSlack is the time after the deadline for the uploads of perfagent.
 	uploadSlack = 8 * time.Minute
 	pollEvery   = 20 * time.Second
+	// nodeGrace is the time that the server and the relay hosts get to put their
+	// outputs after the client host is done.
+	nodeGrace = 3 * time.Minute
+	// groupDeleteWait is the time to wait for the instances of a placement group to terminate.
+	groupDeleteWait = "4m"
 )
 
 type Perf struct{}
@@ -150,64 +157,174 @@ func (m *Perf) Ec2(
 		return nil, fmt.Errorf("deadline %s plus %s is not less than the instance life %s", d, uploadSlack, poweroff)
 	}
 	spec.RunID = runTag
-	a := dag.Aws(dagger.AwsOpts{
-		Region:          region,
-		AccessKeyID:     accessKeyId,
-		SecretAccessKey: secretAccessKey,
-		SessionToken:    sessionToken,
-		Endpoint:        endpoint,
-	})
-	r := &ec2Run{aws: a, bucket: a.Bucket(bucket), keys: keys, expires: (d + 10*time.Minute).String()}
+	r := newEC2Run(region, accessKeyId, secretAccessKey, sessionToken, endpoint, bucket, runTag, keys, d)
 	r.reap(ctx)
 	defer r.reap(context.WithoutCancel(ctx))
 	// The inputs have presigned URLs. Delete them in all cases.
 	defer r.cleanup(context.WithoutCancel(ctx))
 
 	agentURL, err := r.inputs(ctx, &spec, bins, files)
+	if err == nil {
+		err = r.uploads(ctx, &spec, keys.Output)
+	}
 	if err != nil {
 		return infra(runTag, err), nil
 	}
 	launched := time.Now()
 	spec.Deadline = launched.Add(d).UTC()
-	id, err := r.launch(ctx, spec, agentURL, image, instanceType, subnetTag, launched)
+	id, err := r.launch(ctx, spec, keys.Spec(), agentURL, launchOpts{image: image, instanceType: instanceType, subnetTag: subnetTag}, launched)
 	if err != nil {
 		return infra(runTag, err), nil
 	}
-	inst := a.Instance(id)
-	defer func() {
-		if err := inst.Terminate(context.WithoutCancel(ctx)); err != nil {
-			slog.Warn("Failed to terminate the instance", "instance", id, "error", err)
-		}
-	}()
+	inst := r.aws.Instance(id)
+	defer r.terminate(context.WithoutCancel(ctx), inst, id)
 	slog.Info("Launched the bench instance", "instance", id, "deadline", spec.Deadline)
 
-	if err := r.wait(ctx, inst, spec.Deadline.Add(uploadSlack)); err != nil {
-		console, cerr := inst.Console(context.WithoutCancel(ctx))
-		dir := infra(runTag, err)
-		if cerr == nil {
-			dir = dir.WithNewFile("console.txt", console)
-		}
-		return dir, nil
+	if err := r.wait(ctx, inst, keys.Output("agent.json"), spec.Deadline.Add(uploadSlack)); err != nil {
+		return r.failed(ctx, inst, err), nil
 	}
-	b := r.bucket
-	var results *dagger.File
-	if ok, err := b.Exists(ctx, keys.Output("results.tgz")); err == nil && ok {
-		results = b.Download(keys.Output("results.tgz"))
-	}
-	var agentLog *dagger.File
-	if ok, err := b.Exists(ctx, keys.Output("agent.log")); err == nil && ok {
-		agentLog = b.Download(keys.Output("agent.log"))
-	}
-	dir, err := collect(ctx, b.Download(keys.Output("agent.json")), agentLog, results)
+	dir, err := r.collect(ctx, keys.Output)
 	if err != nil {
 		return infra(runTag, fmt.Errorf("get the outputs: %w", err)), nil
 	}
 	return dir, nil
 }
 
-// Ec2Cleanup terminates the live instances of a run and deletes its inputs in
-// S3. A cancelled job runs it, because a cancel stops Ec2 before its own
-// cleanup. With nothing left, it does nothing.
+// Ec2Nodes runs the plan of each role on its own host in one cluster placement
+// group. The client host outputs are at the top, the others under nodes/ROLE/.
+func (m *Perf) Ec2Nodes(
+	ctx context.Context,
+	// perfagent and the binaries of the rows, for linux/amd64.
+	bins *dagger.Directory,
+	// Files for the run directory, for example baseline.json.
+	// +optional
+	files *dagger.Directory,
+	// A JSON object with a plan for each role: client, server and relay (optional).
+	plans string,
+	// Names the run in the S3 keys, the tags and the placement group.
+	runTag string,
+	bucket string,
+	// +default="us-west-2"
+	region string,
+	accessKeyId *dagger.Secret,
+	secretAccessKey *dagger.Secret,
+	// +optional
+	sessionToken *dagger.Secret,
+	// Time for the rows, from the launch of the first host.
+	// +default="25m"
+	deadline string,
+	// +default="ami-04678417fc39d7171"
+	image string,
+	// +default="c7a.8xlarge"
+	instanceType string,
+	// KEY=VALUE tag of the subnets and the security group.
+	// +default="apoxy-perf=true"
+	subnetTag string,
+	// Replaces the AWS endpoints, for example with a local AWS fake.
+	// +optional
+	endpoint string,
+) (*dagger.Directory, error) {
+	specs, err := perfspec.ParseNodePlans(plans)
+	if err != nil {
+		return nil, err
+	}
+	d, err := time.ParseDuration(deadline)
+	if err != nil || d <= 0 {
+		return nil, fmt.Errorf("bad deadline %q", deadline)
+	}
+	keys, err := perfspec.NewKeys(runTag)
+	if err != nil {
+		return nil, err
+	}
+	if d+uploadSlack >= poweroff {
+		return nil, fmt.Errorf("deadline %s plus %s is not less than the instance life %s", d, uploadSlack, poweroff)
+	}
+	r := newEC2Run(region, accessKeyId, secretAccessKey, sessionToken, endpoint, bucket, runTag, keys, d)
+	r.reap(ctx)
+	defer r.reap(context.WithoutCancel(ctx))
+	defer r.cleanup(context.WithoutCancel(ctx))
+	group := perfspec.GroupName(runTag)
+	// The deferred terminates run first, so the group is free when this runs.
+	defer r.deleteGroup(context.WithoutCancel(ctx), group)
+
+	// The bins and the files are the same for all hosts.
+	var shared perfspec.Spec
+	agentURL, err := r.inputs(ctx, &shared, bins, files)
+	if err != nil {
+		return infra(runTag, err), nil
+	}
+	launched := time.Now()
+	deadlineAt := launched.Add(d).UTC()
+	if err := r.aws.CreatePlacementGroup(ctx, group, perfspec.Tags(runTag, launched.Add(poweroff))); err != nil {
+		return infra(runTag, err), nil
+	}
+	ips := map[string]string{}
+	insts := map[string]*dagger.AwsInstance{}
+	subnet := ""
+	for _, role := range perfspec.NodeRoles {
+		spec, ok := specs[role]
+		if !ok {
+			continue
+		}
+		spec.RunID, spec.Deadline, spec.Bins, spec.Files = runTag, deadlineAt, shared.Bins, shared.Files
+		spec.Nodes = maps.Clone(ips)
+		if err := r.uploads(ctx, &spec, func(name string) string { return keys.NodeOutput(role, name) }); err != nil {
+			return infra(runTag, err), nil
+		}
+		opts := launchOpts{image: image, instanceType: instanceType, subnetTag: subnetTag, subnet: subnet, group: group}
+		id, err := r.launch(ctx, spec, keys.NodeSpec(role), agentURL, opts, launched)
+		if err != nil {
+			return infra(runTag, fmt.Errorf("launch the %s host: %w", role, err)), nil
+		}
+		inst := r.aws.Instance(id)
+		insts[role] = inst
+		defer r.terminate(context.WithoutCancel(ctx), inst, id)
+		facts := inst.Facts()
+		ip, err := facts.PrivateIP(ctx)
+		if err == nil {
+			subnet, err = facts.SubnetID(ctx)
+		}
+		if err != nil {
+			return infra(runTag, fmt.Errorf("read the facts of the %s host: %w", role, err)), nil
+		}
+		ips[role] = ip
+		slog.Info("Launched a bench host", "role", role, "instance", id, "ip", ip, "subnet", subnet, "group", group, "deadline", deadlineAt)
+	}
+
+	until := deadlineAt.Add(uploadSlack)
+	client := insts["client"]
+	if err := r.wait(ctx, client, keys.NodeOutput("client", "agent.json"), until); err != nil {
+		return r.failed(ctx, client, err), nil
+	}
+	dir, err := r.collect(ctx, func(name string) string { return keys.NodeOutput("client", name) })
+	if err != nil {
+		return infra(runTag, fmt.Errorf("get the outputs of the client host: %w", err)), nil
+	}
+	// The other hosts end soon after the client. They get a short time to put their outputs.
+	grace := time.Now().Add(nodeGrace)
+	if grace.Before(until) {
+		until = grace
+	}
+	for _, role := range []string{"server", "relay"} {
+		inst, ok := insts[role]
+		if !ok {
+			continue
+		}
+		keyOf := func(name string) string { return keys.NodeOutput(role, name) }
+		var node *dagger.Directory
+		if err := r.wait(ctx, inst, keyOf("agent.json"), until); err != nil {
+			node = r.failed(ctx, inst, fmt.Errorf("%s host: %w", role, err))
+		} else if node, err = r.collect(ctx, keyOf); err != nil {
+			node = infra(runTag, fmt.Errorf("get the outputs of the %s host: %w", role, err))
+		}
+		dir = dir.WithDirectory("nodes/"+role, node)
+	}
+	return dir, nil
+}
+
+// Ec2Cleanup terminates the live instances of a run and deletes its placement
+// group and its inputs in S3. A cancelled job runs it, because a cancel stops
+// Ec2 and Ec2Nodes before their own cleanup. With nothing left, it does nothing.
 func (m *Perf) Ec2Cleanup(
 	ctx context.Context,
 	// The run tag of the Ec2 call.
@@ -237,29 +354,92 @@ func (m *Perf) Ec2Cleanup(
 	// Do the S3 delete also when the terminate fails.
 	ids, terr := a.Reap(ctx, dagger.AwsReapOpts{Tag: perfspec.RunTag(runTag), All: true})
 	n, derr := a.Bucket(bucket).Delete(ctx, keys.Inputs())
-	if err := errors.Join(terr, derr); err != nil {
+	// The group is free when its instances have terminated.
+	group := perfspec.GroupName(runTag)
+	gerr := a.DeletePlacementGroup(ctx, group, dagger.AwsDeletePlacementGroupOpts{Wait: groupDeleteWait})
+	if err := errors.Join(terr, derr, gerr); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("Terminated %d instances %v and deleted %d input objects of run %s.", len(ids), ids, n, runTag), nil
+	return fmt.Sprintf("Terminated %d instances %v, deleted %d input objects and the placement group %s of run %s.", len(ids), ids, n, group, runTag), nil
 }
 
-// ec2Run is the state of one Ec2 call.
+// ec2Run is the state of one Ec2 or Ec2Nodes call.
 type ec2Run struct {
 	aws     *dagger.Aws
 	bucket  *dagger.AwsBucket
+	runTag  string
 	keys    perfspec.Keys
 	expires string
 }
 
+func newEC2Run(region string, accessKeyId, secretAccessKey, sessionToken *dagger.Secret, endpoint, bucket, runTag string, keys perfspec.Keys, d time.Duration) *ec2Run {
+	a := dag.Aws(dagger.AwsOpts{
+		Region:          region,
+		AccessKeyID:     accessKeyId,
+		SecretAccessKey: secretAccessKey,
+		SessionToken:    sessionToken,
+		Endpoint:        endpoint,
+	})
+	return &ec2Run{aws: a, bucket: a.Bucket(bucket), runTag: runTag, keys: keys, expires: (d + 10*time.Minute).String()}
+}
+
+// launchOpts are the EC2 settings of one host.
+type launchOpts struct {
+	image, instanceType, subnetTag string
+	// subnet and group are set for the hosts of a multi-node run.
+	subnet, group string
+}
+
+// reap terminates the expired bench instances and deletes the placement
+// groups with no instances.
 func (r *ec2Run) reap(ctx context.Context) {
 	ids, err := r.aws.Reap(ctx)
 	if err != nil {
 		slog.Warn("Failed to terminate expired bench instances", "error", err)
-		return
-	}
-	if len(ids) > 0 {
+	} else if len(ids) > 0 {
 		slog.Info("Terminated expired bench instances", "instances", ids)
 	}
+	groups, err := r.aws.ReapPlacementGroups(ctx)
+	if err != nil {
+		slog.Warn("Failed to delete empty bench placement groups", "error", err)
+	} else if len(groups) > 0 {
+		slog.Info("Deleted empty bench placement groups", "groups", groups)
+	}
+}
+
+func (r *ec2Run) terminate(ctx context.Context, inst *dagger.AwsInstance, id string) {
+	if err := inst.Terminate(ctx); err != nil {
+		slog.Warn("Failed to terminate the instance", "instance", id, "error", err)
+	}
+}
+
+func (r *ec2Run) deleteGroup(ctx context.Context, group string) {
+	if err := r.aws.DeletePlacementGroup(ctx, group, dagger.AwsDeletePlacementGroupOpts{Wait: groupDeleteWait}); err != nil {
+		slog.Warn("Failed to delete the placement group", "group", group, "error", err)
+		return
+	}
+	slog.Info("Deleted the placement group", "group", group)
+}
+
+// failed returns the infra error of a host, with its console output when it is readable.
+func (r *ec2Run) failed(ctx context.Context, inst *dagger.AwsInstance, err error) *dagger.Directory {
+	dir := infra(r.runTag, err)
+	if console, cerr := inst.Console(context.WithoutCancel(ctx)); cerr == nil {
+		dir = dir.WithNewFile("console.txt", console)
+	}
+	return dir
+}
+
+// collect downloads the outputs of a host with the keys of keyOf.
+func (r *ec2Run) collect(ctx context.Context, keyOf func(string) string) (*dagger.Directory, error) {
+	var results, agentLog *dagger.File
+	if ok, err := r.bucket.Exists(ctx, keyOf("results.tgz")); err == nil && ok {
+		results = r.bucket.Download(keyOf("results.tgz"))
+	}
+	if ok, err := r.bucket.Exists(ctx, keyOf("agent.log")); err == nil && ok {
+		agentLog = r.bucket.Download(keyOf("agent.log"))
+	}
+	return collect(ctx, r.bucket.Download(keyOf("agent.json")), agentLog, results)
 }
 
 func (r *ec2Run) cleanup(ctx context.Context) {
@@ -275,8 +455,8 @@ func (r *ec2Run) presign(ctx context.Context, key, method string) (string, error
 	return r.bucket.Presign(key, dagger.AwsBucketPresignOpts{Method: method, Expires: r.expires}).Plaintext(ctx)
 }
 
-// inputs puts the binaries and files in S3, fills the spec with their URLs and
-// the upload URLs, and returns the URL of perfagent.
+// inputs puts the binaries and files in S3, fills the spec with their URLs,
+// and returns the URL of perfagent.
 func (r *ec2Run) inputs(ctx context.Context, spec *perfspec.Spec, bins, files *dagger.Directory) (string, error) {
 	put := func(dir *dagger.Directory, key func(string) string, skipAgent bool) ([]perfspec.File, string, error) {
 		names, err := fileNames(ctx, dir)
@@ -315,6 +495,11 @@ func (r *ec2Run) inputs(ctx context.Context, spec *perfspec.Spec, bins, files *d
 			return "", err
 		}
 	}
+	return agentURL, nil
+}
+
+// uploads fills the spec with the upload URLs of the outputs with the keys of keyOf.
+func (r *ec2Run) uploads(ctx context.Context, spec *perfspec.Spec, keyOf func(string) string) error {
 	for _, o := range []struct {
 		name string
 		dst  *string
@@ -323,23 +508,24 @@ func (r *ec2Run) inputs(ctx context.Context, spec *perfspec.Spec, bins, files *d
 		{"agent.log", &spec.Upload.Log},
 		{"agent.json", &spec.Upload.Report},
 	} {
-		if *o.dst, err = r.presign(ctx, r.keys.Output(o.name), "PUT"); err != nil {
-			return "", err
+		var err error
+		if *o.dst, err = r.presign(ctx, keyOf(o.name), "PUT"); err != nil {
+			return err
 		}
 	}
-	return agentURL, nil
+	return nil
 }
 
-// launch puts the spec in S3 and launches the instance.
-func (r *ec2Run) launch(ctx context.Context, spec perfspec.Spec, agentURL, image, instanceType, subnetTag string, at time.Time) (string, error) {
+// launch puts the spec in S3 at specKey and launches the instance.
+func (r *ec2Run) launch(ctx context.Context, spec perfspec.Spec, specKey, agentURL string, o launchOpts, at time.Time) (string, error) {
 	js, err := spec.JSON()
 	if err != nil {
 		return "", err
 	}
-	if err := r.bucket.PutSecret(ctx, r.keys.Spec(), dag.SetSecret("perf-spec-"+spec.RunID, js)); err != nil {
+	if err := r.bucket.PutSecret(ctx, specKey, dag.SetSecret("perf-spec-"+path.Base(specKey)+"-"+spec.RunID, js)); err != nil {
 		return "", err
 	}
-	specURL, err := r.presign(ctx, r.keys.Spec(), "GET")
+	specURL, err := r.presign(ctx, specKey, "GET")
 	if err != nil {
 		return "", err
 	}
@@ -347,13 +533,12 @@ func (r *ec2Run) launch(ctx context.Context, spec perfspec.Spec, agentURL, image
 	if err != nil {
 		return "", err
 	}
-	return r.aws.Launch(ctx, image, instanceType, dag.SetSecret("perf-user-data-"+spec.RunID, ud),
-		perfspec.Tags(spec.RunID, at.Add(poweroff)), dagger.AwsLaunchOpts{SubnetTag: subnetTag})
+	return r.aws.Launch(ctx, o.image, o.instanceType, dag.SetSecret("perf-user-data-"+path.Base(specKey)+"-"+spec.RunID, ud),
+		perfspec.Tags(spec.RunID, at.Add(poweroff)), dagger.AwsLaunchOpts{SubnetTag: o.subnetTag, Subnet: o.subnet, PlacementGroup: o.group})
 }
 
-// wait waits for agent.json until the time. It fails early when the instance stops.
-func (r *ec2Run) wait(ctx context.Context, inst *dagger.AwsInstance, until time.Time) error {
-	key := r.keys.Output("agent.json")
+// wait waits for the key until the time. It fails early when the instance stops.
+func (r *ec2Run) wait(ctx context.Context, inst *dagger.AwsInstance, key string, until time.Time) error {
 	done := func() bool {
 		ok, err := r.bucket.Exists(ctx, key)
 		if err != nil {

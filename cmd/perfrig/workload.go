@@ -42,7 +42,8 @@ type Workload struct {
 type Env struct {
 	ServerIP string
 	ClientIP string
-	// RelayIP is the address of the relay netns, or ServerIP without one.
+	// RelayIP is the address of the relay netns, or ServerIP without one. In
+	// "perfrig node", it is the relay host.
 	RelayIP  string
 	Duration time.Duration
 	Omit     time.Duration

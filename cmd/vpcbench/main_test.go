@@ -8,8 +8,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/netip"
-	"os"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -35,7 +33,12 @@ func TestParseFlags(t *testing.T) {
 			want: func(o options) bool { return o.Listen == ":4443" && o.WorkDir == "/work" && o.MTU == 0 },
 		},
 		{name: "relay with no listen", cmd: "relay", wantErr: "-listen is required"},
-		{name: "relay with no work dir", cmd: "relay", args: []string{"-listen", ":4443", "-work-dir", ""}, wantErr: "set -work-dir or WORK_DIR"},
+		{
+			name: "relay needs no work dir", cmd: "relay", args: []string{"-listen", ":4443", "-work-dir", ""},
+			want: func(o options) bool { return o.WorkDir == "" },
+		},
+		{name: "server with no work dir", cmd: "server", args: []string{"-listen", ":4433", "-relay", "r:1", "-work-dir", ""}, wantErr: "set -work-dir or WORK_DIR"},
+		{name: "no start timeout", cmd: "server", args: []string{"-listen", ":4433", "-relay", "r:1", "-start-timeout", "0s"}, wantErr: "-start-timeout must be positive"},
 		{name: "relay has no driver", cmd: "relay", args: []string{"-listen", ":4443", "-driver", "tun"}, wantErr: "flag provided but not defined: -driver"},
 		{
 			name: "server defaults", cmd: "server", args: []string{"-listen", ":4433", "-relay", "10.0.0.1:4443"},
@@ -57,15 +60,15 @@ func TestParseFlags(t *testing.T) {
 			name: "client defaults", cmd: "client", args: []string{"-server", "10.0.0.2:4433", "-relay", "10.0.0.2:4443"},
 			want: func(o options) bool {
 				return o.Streams == 4 && o.Omit == 5*time.Second && o.Duration == 30*time.Second && o.CC == "" &&
-					o.Idle == time.Second && o.ProbeInterval == 10*time.Millisecond
+					o.Idle == time.Second && o.ProbeInterval == 10*time.Millisecond && o.StartTimeout == 30*time.Second && !o.StopRelay
 			},
 		},
 		{
 			name: "client flags", cmd: "client",
-			args: []string{"-server", "s:1", "-relay", "r:1", "-cc", "bbr", "-streams", "8", "-omit", "1s", "-duration", "2s", "-driver", "tun", "-transport", "quic", "-mtu", "1400"},
+			args: []string{"-server", "s:1", "-relay", "r:1", "-cc", "bbr", "-streams", "8", "-omit", "1s", "-duration", "2s", "-driver", "tun", "-transport", "quic", "-mtu", "1400", "-start-timeout", "5m", "-stop-relay"},
 			want: func(o options) bool {
 				return o.CC == "bbr" && o.Streams == 8 && o.Omit == time.Second && o.Duration == 2*time.Second &&
-					o.Driver == "tun" && o.Transport == "quic" && o.MTU == 1400
+					o.Driver == "tun" && o.Transport == "quic" && o.MTU == 1400 && o.StartTimeout == 5*time.Minute && o.StopRelay
 			},
 		},
 		{name: "client with no server", cmd: "client", args: []string{"-relay", "r:1"}, wantErr: "-server is required"},
@@ -104,31 +107,33 @@ func TestNewResult(t *testing.T) {
 		{
 			name: "all sides",
 			client: [2]mark{
-				{Nanos: 0, Segments: 100, Drops: 1, LinkDrops: 4},
-				{Nanos: 2 * sec, CPU: 1, Segments: 1100, Retrans: 10, Drops: 3, LinkDrops: 9},
+				{Nanos: 0, HostCPU: 10, Segments: 100, Drops: 1, LinkDrops: 4},
+				{Nanos: 2 * sec, CPU: 1, HostCPU: 16, Segments: 1100, Retrans: 10, Drops: 3, LinkDrops: 9},
 			},
 			server: [2]mark{
-				{Nanos: sec, Retrans: 1, RcvbufErrors: 5, SockDrops: 1},
-				{Nanos: 3 * sec, CPU: 2, Retrans: 3, Bytes: 250e6, RxPackets: 2000, Drops: 6, RcvbufErrors: 17, SockDrops: 4, LinkDrops: 2},
+				{Nanos: sec, HostCPU: 20, Retrans: 1, RcvbufErrors: 5, SockDrops: 1},
+				{Nanos: 3 * sec, CPU: 2, HostCPU: 28, Retrans: 3, Bytes: 250e6, RxPackets: 2000, Drops: 6, RcvbufErrors: 17, SockDrops: 4, LinkDrops: 2},
 			},
-			relay: [2]mark{{Nanos: 0, Drops: 1, SockDrops: 2, XDPPackets: 10}, {Nanos: 2 * sec, CPU: 0.5, Drops: 5, SockDrops: 9, XDPPackets: 30}},
+			relay: [2]mark{{Nanos: 0, HostCPU: 5, Drops: 1, SockDrops: 2, XDPPackets: 10}, {Nanos: 2 * sec, CPU: 0.5, HostCPU: 7, Drops: 5, SockDrops: 9, XDPPackets: 30}},
 			want: result{
 				Seconds: 2, BitsPerSecond: 1e9, PacketsPerSecond: 1000, Retransmits: 10, RetransPercent: 1,
 				ServerRetransmits: 2, ClientCores: 0.5, ServerCores: 1, RelayCores: 0.25,
 				ClientCoresPerGbps: 0.5, ServerCoresPerGbps: 1, RelayCoresPerGbps: 0.25,
+				ClientHostCores: 3, ServerHostCores: 4, RelayHostCores: 1,
 				ClientTxDrops: 2, ServerRxDrops: 6, RelayDrops: 4, RelayRcvbufDrops: 7, ServerRcvbufErrors: 12, ServerSockDrops: 3,
 				ClientLinkDrops: 5, ServerLinkDrops: 2, RelayXDPPackets: 20,
 			},
 		},
 		{
 			name:   "no relay and no kernel counters",
-			client: [2]mark{{LinkDrops: -1}, {Nanos: sec, Segments: 0, LinkDrops: -1}},
+			client: [2]mark{{HostCPU: -1, LinkDrops: -1}, {Nanos: sec, HostCPU: -1, Segments: 0, LinkDrops: -1}},
 			server: [2]mark{
-				{RcvbufErrors: -1, SockDrops: -1, LinkDrops: 3},
-				{Nanos: sec, Bytes: 125e6, RcvbufErrors: -1, SockDrops: -1, LinkDrops: -1},
+				{HostCPU: -1, RcvbufErrors: -1, SockDrops: -1, LinkDrops: 3},
+				{Nanos: sec, HostCPU: -1, Bytes: 125e6, RcvbufErrors: -1, SockDrops: -1, LinkDrops: -1},
 			},
 			want: result{
 				Seconds: 1, BitsPerSecond: 1e9, ServerRcvbufErrors: -1, ServerSockDrops: -1,
+				ClientHostCores: -1, ServerHostCores: -1,
 				ClientLinkDrops: -1, ServerLinkDrops: -1,
 			},
 		},
@@ -202,6 +207,7 @@ func TestResultJSON(t *testing.T) {
 		"retrans_percent", "idle_rtt_ms", "load_rtt_ms",
 		"client_cores", "server_cores", "relay_cores",
 		"client_cores_per_gbps", "server_cores_per_gbps", "relay_cores_per_gbps",
+		"client_host_cores", "server_host_cores", "relay_host_cores",
 		"driver", "transport", "via", "cc", "streams", "device_mtu",
 		"server_retransmits", "client_tx_drops", "server_rx_drops", "relay_drops", "relay_rcvbuf_drops",
 		"server_rcvbuf_errors", "server_sock_drops", "client_link_drops", "server_link_drops", "relay_xdp_packets",
@@ -240,27 +246,21 @@ func TestSnmpValue(t *testing.T) {
 	}
 }
 
-func TestCAFile(t *testing.T) {
+func TestCAEncoding(t *testing.T) {
 	ca, err := vpctest.NewCA()
 	require.NoError(t, err)
 	cases := []struct {
 		name    string
-		write   func(dir string) error
+		in      []byte
 		wantErr string
 	}{
-		{name: "written by the relay", write: func(dir string) error { return writeCA(dir, ca) }},
-		{name: "no file", write: func(string) error { return nil }, wantErr: "no such file"},
-		{
-			name:    "no key",
-			write:   func(dir string) error { return os.WriteFile(filepath.Join(dir, caFile), []byte("not PEM"), 0o600) },
-			wantErr: "has no CA cert and key",
-		},
+		{name: "from the relay", in: encodeCA(ca)},
+		{name: "not PEM", in: []byte("not PEM"), wantErr: "no CA cert and key"},
+		{name: "cert only", in: encodeCA(ca)[:bytes.Index(encodeCA(ca), []byte("-----BEGIN EC"))], wantErr: "no CA cert and key"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			dir := t.TempDir()
-			require.NoError(t, tc.write(dir))
-			got, err := loadCA(dir)
+			got, err := decodeCA(tc.in)
 			if tc.wantErr != "" {
 				require.ErrorContains(t, err, tc.wantErr)
 				return
@@ -290,7 +290,7 @@ func TestLoopback(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 			defer cancel()
 
-			o := options{WorkDir: t.TempDir(), Driver: "netstack", Transport: tc.transport, Via: tc.via}
+			o := options{WorkDir: t.TempDir(), Driver: "netstack", Transport: tc.transport, Via: tc.via, StartTimeout: 30 * time.Second}
 			if tc.via == "relay" {
 				ro := o
 				ro.Listen = "127.0.0.1:0"
@@ -320,6 +320,8 @@ func TestLoopback(t *testing.T) {
 			}
 			co.Streams, co.Omit, co.Duration = 2, 200*time.Millisecond, time.Second
 			co.Idle, co.ProbeInterval = 200*time.Millisecond, 10*time.Millisecond
+			// The client stops the relay, as "perfrig node" does.
+			co.StopRelay = tc.via == "relay"
 
 			var out bytes.Buffer
 			require.NoError(t, runClient(ctx, co, &out))

@@ -60,6 +60,10 @@ func TestPlan(t *testing.T) {
 			wantIDs: []string{"iperf3-tcp-p1", "iperf3-tcp-p4", "iperf3-tcp-p4-loss0.1", "iperf3-udp-p1"},
 		},
 		{name: "unknown row", suite: VPC, opts: Options{Duration: "10s", Only: []string{"nope"}}, wantError: `unknown vpc row "nope"`},
+		{
+			name: "node rows and a rig row", suite: VPC, opts: Options{Duration: "10s", Only: []string{"netstack-psp-direct-2node", "netstack-psp-direct"}},
+			wantIDs: []string{"netstack-psp-direct"}, wantTun: true,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -149,6 +153,96 @@ func TestVPCRowArgs(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestNodePlans(t *testing.T) {
+	o := Options{Duration: "30s", Reps: 3, MinCPUs: 16, Host: true}
+	cases := []struct {
+		name      string
+		only      []string
+		wantRoles map[string][]string
+		wantEmpty bool
+	}{
+		{name: "rig rows only", only: []string{"netstack-psp-relay"}, wantEmpty: true},
+		{name: "no rows named", wantEmpty: true},
+		{
+			name: "direct row", only: []string{"netstack-psp-direct-2node"},
+			wantRoles: map[string][]string{"client": {"netstack-psp-direct-2node"}, "server": {"netstack-psp-direct-2node"}},
+		},
+		{
+			name: "both node rows", only: []string{"netstack-psp-direct-2node", "netstack-psp-relay-3node"},
+			wantRoles: map[string][]string{
+				"client": {"netstack-psp-direct-2node", "netstack-psp-relay-3node"},
+				"server": {"netstack-psp-direct-2node", "netstack-psp-relay-3node"},
+				"relay":  {"netstack-psp-relay-3node"},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			o.Only = tc.only
+			data, err := VPC.NodePlans(o)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantEmpty {
+				if data != "" {
+					t.Fatalf("plans = %s, want none", data)
+				}
+				return
+			}
+			var plans map[string]Plan
+			if err := json.Unmarshal([]byte(data), &plans); err != nil {
+				t.Fatal(err)
+			}
+			if len(plans) != len(tc.wantRoles) {
+				t.Fatalf("roles = %v, want %v", plans, tc.wantRoles)
+			}
+			for role, wantIDs := range tc.wantRoles {
+				p := plans[role]
+				var ids []string
+				for _, r := range p.Rows {
+					ids = append(ids, r.ID)
+					if r.Cmd != "node" || !slices.Contains(r.Args, "-role="+role) {
+						t.Errorf("%s row %s: cmd %q, args %v", role, r.ID, r.Cmd, r.Args)
+					}
+					if slices.ContainsFunc(r.Args, func(a string) bool {
+						return strings.HasPrefix(a, "-delay") || strings.HasPrefix(a, "-reps") || strings.HasPrefix(a, "-workload")
+					}) {
+						t.Errorf("%s row %s has a netns rig flag: %v", role, r.ID, r.Args)
+					}
+				}
+				if !slices.Equal(ids, wantIDs) {
+					t.Errorf("%s rows = %v, want %v", role, ids, wantIDs)
+				}
+				if p.Sysctls == nil || len(p.Modules) > 0 || !p.Tun {
+					t.Errorf("%s plan: sysctls %v, modules %v, tun %v", role, p.Sysctls, p.Modules, p.Tun)
+				}
+			}
+		})
+	}
+	// The row is an info row with no floor. The node argv waits for the other
+	// hosts and stops the relay at the end.
+	rows := VPC.rows(o)
+	i := slices.IndexFunc(rows, func(r Row) bool { return r.ID == "netstack-psp-relay-3node" })
+	r := rows[i]
+	if r.Group != "info" || r.Hosts() != 3 || r.Cmd != "node" {
+		t.Errorf("row = %+v", r)
+	}
+	for _, w := range []string{
+		"-name=vpc-netstack-psp-relay-3node", "-duration=30s", "-min-cpus=16",
+		`-sidecar-argv=["vpcbench","relay","-listen","$RELAY_IP:4443"]`,
+		`-server-argv=["vpcbench","server","-relay","$RELAY_IP:4443","-listen","$SERVER_IP:4433","-start-timeout","5m"]`,
+		`-client-argv=["vpcbench","client","-relay","$RELAY_IP:4443","-server","$SERVER_IP:4433","-cc","bbr","-streams","$STREAMS","-omit","${OMIT_S}s","-duration","${DURATION_S}s","-start-timeout","5m","-stop-relay"]`,
+	} {
+		if !slices.Contains(r.Args, w) {
+			t.Errorf("args have no %s:\n%s", w, strings.Join(r.Args, "\n"))
+		}
+	}
+	i = slices.IndexFunc(rows, func(r Row) bool { return r.ID == "netstack-psp-direct-2node" })
+	if r := rows[i]; r.Hosts() != 2 || slices.ContainsFunc(r.Args, func(a string) bool { return strings.Contains(a, "stop-relay") || strings.HasPrefix(a, "-sidecar") }) {
+		t.Errorf("direct row = %+v", r)
 	}
 }
 

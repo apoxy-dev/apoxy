@@ -32,6 +32,9 @@ type ec2API interface {
 	DescribeInstances(context.Context, *ec2.DescribeInstancesInput, ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error)
 	TerminateInstances(context.Context, *ec2.TerminateInstancesInput, ...func(*ec2.Options)) (*ec2.TerminateInstancesOutput, error)
 	GetConsoleOutput(context.Context, *ec2.GetConsoleOutputInput, ...func(*ec2.Options)) (*ec2.GetConsoleOutputOutput, error)
+	CreatePlacementGroup(context.Context, *ec2.CreatePlacementGroupInput, ...func(*ec2.Options)) (*ec2.CreatePlacementGroupOutput, error)
+	DeletePlacementGroup(context.Context, *ec2.DeletePlacementGroupInput, ...func(*ec2.Options)) (*ec2.DeletePlacementGroupOutput, error)
+	DescribePlacementGroups(context.Context, *ec2.DescribePlacementGroupsInput, ...func(*ec2.Options)) (*ec2.DescribePlacementGroupsOutput, error)
 }
 
 // Client calls EC2 and S3 in one region.

@@ -18,6 +18,8 @@ type mark struct {
 	// CPU is the CPU time of the process, and of the relay XDP program. The
 	// kernel work around the program is not in it.
 	CPU float64 `json:"cpu_s"`
+	// HostCPU is the busy CPU time of the host of the side, or -1.
+	HostCPU float64 `json:"host_cpu_s,omitempty"`
 	// Packets that the client sent, and TCP segments retransmitted (client and
 	// server). With GSO, a retransmit is one packet of up to one MSS.
 	Segments uint64 `json:"segments,omitempty"`
@@ -49,6 +51,18 @@ func cores(m0, m1 mark) float64 {
 	return (m1.CPU - m0.CPU) / s
 }
 
+// hostCores returns the busy host CPU seconds per second from m0 to m1, or -1.
+func hostCores(m0, m1 mark) float64 {
+	s := time.Duration(m1.Nanos - m0.Nanos).Seconds()
+	if m0.HostCPU < 0 || m1.HostCPU < 0 {
+		return -1
+	}
+	if s <= 0 {
+		return 0
+	}
+	return (m1.HostCPU - m0.HostCPU) / s
+}
+
 // result is the client JSON line. perfrig reads the first four fields.
 type result struct {
 	Seconds          float64 `json:"seconds"`
@@ -70,6 +84,11 @@ type result struct {
 	ClientCoresPerGbps float64 `json:"client_cores_per_gbps"`
 	ServerCoresPerGbps float64 `json:"server_cores_per_gbps"`
 	RelayCoresPerGbps  float64 `json:"relay_cores_per_gbps"`
+	// HostCores are the busy CPU seconds per second of the host of each side,
+	// with the kernel work. The sides of the netns rig have one host. -1 is not known.
+	ClientHostCores float64 `json:"client_host_cores"`
+	ServerHostCores float64 `json:"server_host_cores"`
+	RelayHostCores  float64 `json:"relay_host_cores"`
 
 	Driver    string `json:"driver"`
 	Transport string `json:"transport"`
@@ -148,6 +167,7 @@ func newResult(client, server, relay [2]mark) result {
 		r.RetransPercent = float64(r.Retransmits) * 100 / float64(segs)
 	}
 	r.ClientCores, r.ServerCores, r.RelayCores = cores(client[0], client[1]), cores(server[0], server[1]), cores(relay[0], relay[1])
+	r.ClientHostCores, r.ServerHostCores, r.RelayHostCores = hostCores(client[0], client[1]), hostCores(server[0], server[1]), hostCores(relay[0], relay[1])
 	if gbps := r.BitsPerSecond / 1e9; gbps > 0 {
 		r.ClientCoresPerGbps = r.ClientCores / gbps
 		r.ServerCoresPerGbps = r.ServerCores / gbps

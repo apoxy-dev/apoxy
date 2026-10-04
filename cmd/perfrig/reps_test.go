@@ -39,7 +39,7 @@ func testRun(gbps, clientCPG, serverCPG float64, line string) Run {
 	r.CPU.Server = ProcCPU{Cores: serverCPG * gbps, CoresPerGbps: serverCPG}
 	if line != "" {
 		r.WorkloadResult = json.RawMessage(line)
-		r.CPU.Relay = relayCPU(r.WorkloadResult)
+		r.CPU.Relay = markCPU(r.WorkloadResult, "relay")
 	}
 	return r
 }
@@ -124,20 +124,26 @@ func TestWorkloadNumbers(t *testing.T) {
 	assert.Nil(t, workloadNumbers(json.RawMessage("[1, 2]")))
 }
 
-func TestRelayCPU(t *testing.T) {
+func TestMarkCPU(t *testing.T) {
 	cases := []struct {
 		name string
 		line string
+		role string
 		want *RelayCPU
 	}{
-		{name: "relay", line: `{"relay_cores": 1.23456, "relay_cores_per_gbps": 0.6172839}`, want: &RelayCPU{Cores: 1.2346, CoresPerGbps: 0.617284}},
-		{name: "direct has no relay", line: `{"relay_cores": 0, "relay_cores_per_gbps": 0}`},
-		{name: "no relay fields", line: `{"bits_per_second": 1e9}`},
-		{name: "no line"},
+		{name: "relay", line: `{"relay_cores": 1.23456, "relay_cores_per_gbps": 0.6172839}`, role: "relay", want: &RelayCPU{Cores: 1.2346, CoresPerGbps: 0.617284}},
+		{name: "server", line: `{"server_cores": 0.5, "server_cores_per_gbps": 0.25, "relay_cores": 0}`, role: "server", want: &RelayCPU{Cores: 0.5, CoresPerGbps: 0.25}},
+		{
+			name: "vpcbench line with text and objects", role: "client", want: &RelayCPU{Cores: 1.5, CoresPerGbps: 0.3},
+			line: `{"driver": "netstack", "load_rtt_ms": {"p50": 1}, "client_cores": 1.5, "client_cores_per_gbps": 0.3}`,
+		},
+		{name: "direct has no relay", line: `{"relay_cores": 0, "relay_cores_per_gbps": 0}`, role: "relay"},
+		{name: "no relay fields", line: `{"bits_per_second": 1e9}`, role: "relay"},
+		{name: "no line", role: "relay"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, relayCPU(json.RawMessage(tc.line)))
+			assert.Equal(t, tc.want, markCPU(json.RawMessage(tc.line), tc.role))
 		})
 	}
 }
