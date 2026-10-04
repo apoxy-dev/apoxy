@@ -240,6 +240,7 @@ var vpcRows = []vpcRow{
 	{id: "netstack-psp-direct-1flow", name: "vpc-netstack-psp-direct", direct: true, streams: 1, client: []string{"-cc", "bbr"}},
 	{id: "netstack-psp-direct-2node", name: "vpc-netstack-psp-direct-2node", direct: true, nodes: 2, client: []string{"-cc", "bbr"}},
 	{id: "netstack-psp-direct-2node-1flow", name: "vpc-netstack-psp-direct-2node", direct: true, nodes: 2, streams: 1, client: []string{"-cc", "bbr"}},
+	{id: "netstack-psp-direct-2node-p16", name: "vpc-netstack-psp-direct-2node", direct: true, nodes: 2, streams: 16, client: []string{"-cc", "bbr"}},
 	// Netem on the egress of each host gives 20 ms RTT, as in the netns rig.
 	{id: "netstack-psp-direct-2node-20ms", name: "vpc-netstack-psp-direct-2node", direct: true, nodes: 2, client: []string{"-cc", "bbr"}, args: []string{"-delay=10ms"}},
 	{id: "netstack-psp-direct-2node-1flow-20ms", name: "vpc-netstack-psp-direct-2node", direct: true, nodes: 2, streams: 1, client: []string{"-cc", "bbr"}, args: []string{"-delay=10ms"}},
