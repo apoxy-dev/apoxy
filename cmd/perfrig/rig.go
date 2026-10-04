@@ -85,13 +85,7 @@ func (r *rig) setup(ctx context.Context) error {
 		}
 	}
 
-	// The kernel loads sch_netem on demand when modprobe can find it. Try it here
-	// too; a failure is not an error because netem can be built in.
-	if _, err := exec.LookPath("modprobe"); err == nil {
-		if _, err := command(ctx, "modprobe", "sch_netem"); err != nil {
-			slog.Debug("modprobe sch_netem failed", "error", err)
-		}
-	}
+	loadNetem(ctx)
 	for _, e := range []struct{ ns, dev string }{{r.client, clientDev}, {r.server, serverDev}} {
 		out, err := command(ctx, netemArgs(e.ns, e.dev, r.cfg)...)
 		if err != nil {
@@ -102,6 +96,16 @@ func (r *rig) setup(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// loadNetem loads sch_netem. The kernel also loads it on demand, and it can be
+// built in, so a failure is not an error.
+func loadNetem(ctx context.Context) {
+	if _, err := exec.LookPath("modprobe"); err == nil {
+		if _, err := command(ctx, "modprobe", "sch_netem"); err != nil {
+			slog.Debug("Failed to load sch_netem", "error", err)
+		}
+	}
 }
 
 // links returns the commands that add the netns and the links.

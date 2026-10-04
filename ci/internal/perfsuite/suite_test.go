@@ -168,12 +168,29 @@ func TestNodePlans(t *testing.T) {
 		only      []string
 		wantRoles map[string][]string
 		wantEmpty bool
+		// wantNetem tells that the rows add a netem delay on each host.
+		wantNetem bool
 	}{
 		{name: "rig rows only", only: []string{"netstack-psp-relay"}, wantEmpty: true},
 		{name: "no rows named", wantEmpty: true},
 		{
 			name: "direct row", only: []string{"netstack-psp-direct-2node"},
 			wantRoles: map[string][]string{"client": {"netstack-psp-direct-2node"}, "server": {"netstack-psp-direct-2node"}},
+		},
+		{
+			name: "direct rows with one flow", only: []string{"netstack-psp-direct-2node-1flow", "netstack-psp-direct-2node"},
+			wantRoles: map[string][]string{
+				"client": {"netstack-psp-direct-2node-1flow", "netstack-psp-direct-2node"},
+				"server": {"netstack-psp-direct-2node-1flow", "netstack-psp-direct-2node"},
+			},
+		},
+		{
+			name: "direct rows with netem", only: []string{"netstack-psp-direct-2node-20ms", "netstack-psp-direct-2node-1flow-20ms"},
+			wantRoles: map[string][]string{
+				"client": {"netstack-psp-direct-2node-20ms", "netstack-psp-direct-2node-1flow-20ms"},
+				"server": {"netstack-psp-direct-2node-20ms", "netstack-psp-direct-2node-1flow-20ms"},
+			},
+			wantNetem: true,
 		},
 		{
 			name: "both node rows", only: []string{"netstack-psp-direct-2node", "netstack-psp-relay-3node"},
@@ -213,15 +230,18 @@ func TestNodePlans(t *testing.T) {
 						t.Errorf("%s row %s: cmd %q, args %v", role, r.ID, r.Cmd, r.Args)
 					}
 					if slices.ContainsFunc(r.Args, func(a string) bool {
-						return strings.HasPrefix(a, "-delay") || strings.HasPrefix(a, "-reps") || strings.HasPrefix(a, "-workload")
+						return strings.HasPrefix(a, "-reps") || strings.HasPrefix(a, "-workload")
 					}) {
 						t.Errorf("%s row %s has a netns rig flag: %v", role, r.ID, r.Args)
+					}
+					if slices.Contains(r.Args, "-delay=10ms") != tc.wantNetem {
+						t.Errorf("%s row %s: args %v, want netem %v", role, r.ID, r.Args, tc.wantNetem)
 					}
 				}
 				if !slices.Equal(ids, wantIDs) {
 					t.Errorf("%s rows = %v, want %v", role, ids, wantIDs)
 				}
-				if p.Sysctls == nil || len(p.Modules) > 0 || !p.Tun {
+				if p.Sysctls == nil || slices.Contains(p.Modules, "sch_netem") != tc.wantNetem || !p.Tun {
 					t.Errorf("%s plan: sysctls %v, modules %v, tun %v", role, p.Sysctls, p.Modules, p.Tun)
 				}
 			}
@@ -248,6 +268,10 @@ func TestNodePlans(t *testing.T) {
 	i = slices.IndexFunc(rows, func(r Row) bool { return r.ID == "netstack-psp-direct-2node" })
 	if r := rows[i]; r.Hosts() != 2 || slices.ContainsFunc(r.Args, func(a string) bool { return strings.Contains(a, "stop-relay") || strings.HasPrefix(a, "-sidecar") }) {
 		t.Errorf("direct row = %+v", r)
+	}
+	i = slices.IndexFunc(rows, func(r Row) bool { return r.ID == "netstack-psp-direct-2node-1flow" })
+	if r := rows[i]; r.Hosts() != 2 || r.Group != "info" || !slices.Contains(r.Args, "-streams=1") || !slices.Contains(r.Args, "-name=vpc-netstack-psp-direct-2node") {
+		t.Errorf("direct row with one flow = %+v", r)
 	}
 	// A row with no lanes gives the relay its flags.
 	i = slices.IndexFunc(rows, func(r Row) bool { return r.ID == "netstack-psp-relay-3node-p16-nolanes" })

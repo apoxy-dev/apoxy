@@ -9,8 +9,10 @@ import (
 	"math"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -54,6 +56,8 @@ func nodeCmd(ctx context.Context, args []string) error {
 	fs.StringVar(&cfg.Bitrate, "bitrate", "", "target bitrate of each flow")
 	fs.StringVar(&cfg.Window, "window", "", "socket buffer size")
 	fs.IntVar(&cfg.Pings, "pings", 20, "ping count for the RTT measurement")
+	fs.DurationVar(&cfg.Delay, "delay", 0, "netem delay on the egress of this host; 10ms on each host gives 20 ms RTT (0: no netem)")
+	fs.IntVar(&cfg.QueueLimit, "queue-limit", 100000, "netem queue limit of each TX queue in packets, with -delay")
 	fs.IntVar(&cfg.MinCPUs, "min-cpus", 0, "infra error when the host has fewer CPUs (0: no check)")
 	fs.Float64Var(&cfg.MaxSteal, "max-steal", -1, "infra error when the CPU steal of the run is above this percent (negative: no check)")
 	fs.StringVar(&cfg.HostClass, "host-class", "", "first word of the result key, for example the EC2 instance type (default: the arch)")
@@ -71,6 +75,9 @@ func nodeCmd(ctx context.Context, args []string) error {
 	}
 	if cfg.Duration < time.Second || cfg.Streams < 1 || cfg.Pings < 1 {
 		return errors.New("bad flags: need -duration >= 1s, -streams >= 1 and -pings >= 1")
+	}
+	if cfg.Delay < 0 || (cfg.Delay > 0 && cfg.QueueLimit < 1) {
+		return errors.New("bad flags: need -delay >= 0, and -queue-limit >= 1 with -delay")
 	}
 	if strings.ContainsAny(cfg.HostClass, " \t\n") {
 		return fmt.Errorf("bad -host-class %q: it must be one word", cfg.HostClass)
@@ -116,6 +123,9 @@ func executeNode(ctx context.Context, cfg config, w Workload, role string, nodes
 		Settings:  Settings{DurationS: cfg.Duration.Seconds(), OmitS: cfg.Omit.Seconds(), MTU: nic.MTU, Streams: cfg.Streams, Bitrate: cfg.Bitrate, Window: cfg.Window},
 		Sysctls:   readSysctls(),
 	}
+	if cfg.Delay > 0 {
+		res.Settings.DelayMS, res.Settings.QueueLimit = float64(cfg.Delay)/float64(time.Millisecond), cfg.QueueLimit
+	}
 	res.Key = resultKey(res.Host.keyClass(), w.Name, res.Settings)
 	infra := func(err error) (*Result, error) {
 		res.InfraError = err.Error()
@@ -123,6 +133,12 @@ func executeNode(ctx context.Context, cfg config, w Workload, role string, nodes
 	}
 	if cfg.MinCPUs > 0 && res.Host.CPUs < cfg.MinCPUs {
 		return infra(fmt.Errorf("the host has %d CPUs, fewer than -min-cpus %d", res.Host.CPUs, cfg.MinCPUs))
+	}
+	if cfg.Delay > 0 {
+		if err := setNodeNetem(ctx, dev, cfg); err != nil {
+			return nil, err
+		}
+		defer clearNodeNetem(dev)
 	}
 	slog.Info("Host facts", "role", role, "ip", ip, "dev", dev, "driver", nic.Driver, "version", nic.Version,
 		"rx_queues", nic.RxQueues, "xdp_features", nic.XDPFeatures, "nodes", nodes.String())
@@ -291,6 +307,50 @@ func nodeRep(ctx context.Context, cfg config, w Workload, role string, env Env, 
 	slog.Info("Rep done", "role", role, "gbps", run.Throughput.Gbps, "seconds", run.CPU.WallS,
 		"steal_percent", run.StealPercent, "nic_counters", run.NIC)
 	return run, nil
+}
+
+// nodeNetemSteps returns the tc commands that delay the egress of dev with netem.
+// A device with more than one TX queue gets one netem for each queue, so that
+// the queues send in parallel as they do with no netem.
+func nodeNetemSteps(dev string, txQueues int, cfg config) [][]string {
+	netem := []string{"netem", "limit", strconv.Itoa(cfg.QueueLimit), "delay", formatMS(cfg.Delay)}
+	if txQueues <= 1 {
+		return [][]string{append([]string{"tc", "qdisc", "replace", "dev", dev, "root"}, netem...)}
+	}
+	steps := [][]string{{"tc", "qdisc", "replace", "dev", dev, "root", "handle", "1:", "mq"}}
+	for q := 1; q <= txQueues; q++ {
+		// The class of TX queue q-1 is 1:q in hex.
+		parent := "1:" + strconv.FormatInt(int64(q), 16)
+		steps = append(steps, append([]string{"tc", "qdisc", "replace", "dev", dev, "parent", parent}, netem...))
+	}
+	return steps
+}
+
+// setNodeNetem adds the netem delay of cfg to the egress of dev.
+func setNodeNetem(ctx context.Context, dev string, cfg config) error {
+	loadNetem(ctx)
+	queues, _ := filepath.Glob("/sys/class/net/" + dev + "/queues/tx-*")
+	for _, s := range nodeNetemSteps(dev, len(queues), cfg) {
+		if out, err := command(ctx, s...); err != nil {
+			clearNodeNetem(dev)
+			if netemMissing(out) {
+				return errNetemMissing
+			}
+			return err
+		}
+	}
+	slog.Info("Added netem to the egress of the host", "dev", dev, "tx_queues", len(queues), "delay", cfg.Delay, "limit", cfg.QueueLimit)
+	return nil
+}
+
+// clearNodeNetem gives dev its default qdisc again. It runs also after the row
+// ends and stops the process, so it does not use the context of the row.
+func clearNodeNetem(dev string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := command(ctx, "tc", "qdisc", "del", "dev", dev, "root"); err != nil {
+		slog.Warn("Failed to remove netem from the host", "dev", dev, "error", err)
+	}
 }
 
 // readSysctls returns the host values of the rig sysctls and the congestion control.

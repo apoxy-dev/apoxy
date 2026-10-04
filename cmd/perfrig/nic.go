@@ -28,6 +28,16 @@ var ethtoolCounters = []string{
 // sysfsCounters are the drop counters in /sys/class/net/DEV/statistics.
 var sysfsCounters = []string{"rx_dropped", "tx_dropped", "rx_over_errors", "rx_missed_errors"}
 
+// udpCounters are the Udp counters of /proc/net/snmp of the host, by result
+// name. A UDP GSO message and a UDP GRO message count as one datagram.
+var udpCounters = map[string]string{
+	"InDatagrams":  "udp_in_datagrams",
+	"OutDatagrams": "udp_out_datagrams",
+	"InErrors":     "udp_in_errors",
+	"RcvbufErrors": "udp_rcvbuf_errors",
+	"SndbufErrors": "udp_sndbuf_errors",
+}
+
 // topQueueKey is the percent of the RX packets that the busiest RX queue got.
 const topQueueKey = "rx_top_queue_pct"
 
@@ -121,9 +131,13 @@ func parseEthtoolInfo(out string) (driver, version, firmware string) {
 }
 
 // nicCounters returns the ethtool counters, the RX packets of each queue and
-// the sysfs drop counters of dev. It returns nil when it can read none of them.
+// the sysfs drop counters of dev, and the UDP counters of the host. It returns
+// nil when it can read none of them.
 func nicCounters(ctx context.Context, dev string) map[string]int64 {
 	got := map[string]int64{}
+	if b, err := os.ReadFile("/proc/net/snmp"); err == nil {
+		maps.Copy(got, parseSNMP(string(b), "Udp", udpCounters))
+	}
 	if _, err := exec.LookPath("ethtool"); err == nil {
 		if out, err := command(ctx, "ethtool", "-S", dev); err == nil {
 			maps.Copy(got, parseEthtoolStats(out, ethtoolCounters))
@@ -166,6 +180,34 @@ func parseEthtoolStats(out string, names []string) map[string]int64 {
 			got = map[string]int64{}
 		}
 		got[k] = n
+	}
+	return got
+}
+
+// parseSNMP reads the counters of one group of /proc/net/snmp that names has,
+// under their result names. Each group has a line of names and then a line of values.
+func parseSNMP(data, group string, names map[string]string) map[string]int64 {
+	got := map[string]int64{}
+	var head []string
+	for _, line := range strings.Split(data, "\n") {
+		f := strings.Fields(line)
+		if len(f) == 0 || f[0] != group+":" {
+			continue
+		}
+		if head == nil {
+			head = f
+			continue
+		}
+		for i, v := range f[:min(len(f), len(head))] {
+			key, ok := names[head[i]]
+			if !ok {
+				continue
+			}
+			if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+				got[key] = n
+			}
+		}
+		break
 	}
 	return got
 }

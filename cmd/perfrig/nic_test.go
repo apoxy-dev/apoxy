@@ -2,6 +2,7 @@ package main
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -27,6 +28,62 @@ func TestParseEthtool(t *testing.T) {
 	got := parseEthtoolStats(stats, ethtoolCounters)
 	assert.Equal(t, map[string]int64{"bw_out_allowance_exceeded": 0, "bw_in_allowance_exceeded": 3, "queue_0_rx_cnt": 99, "queue_12_rx_cnt": 1, "queue_3_tx_cnt": 5, "queue_3_tx_queue_stop": 2}, got)
 	assert.Nil(t, parseEthtoolStats("NIC statistics:\n     tx_timeout: 0\n", ethtoolCounters))
+}
+
+func TestParseSNMP(t *testing.T) {
+	const snmp = "Tcp: RtoAlgorithm RtoMin InErrs\nTcp: 1 200 7\n" +
+		"Udp: InDatagrams NoPorts InErrors OutDatagrams RcvbufErrors SndbufErrors InCsumErrors\n" +
+		"Udp: 900 3 5 700 4 2 1\n" +
+		"UdpLite: InDatagrams NoPorts InErrors OutDatagrams RcvbufErrors SndbufErrors\nUdpLite: 9 9 9 9 9 9\n"
+	cases := []struct {
+		name  string
+		data  string
+		group string
+		want  map[string]int64
+	}{
+		{
+			name: "udp", data: snmp, group: "Udp",
+			want: map[string]int64{"udp_in_datagrams": 900, "udp_in_errors": 5, "udp_out_datagrams": 700, "udp_rcvbuf_errors": 4, "udp_sndbuf_errors": 2},
+		},
+		{name: "no group", data: snmp, group: "Icmp", want: map[string]int64{}},
+		{name: "names with no values", data: "Udp: InDatagrams OutDatagrams\n", group: "Udp", want: map[string]int64{}},
+		{name: "short values", data: "Udp: InDatagrams NoPorts InErrors\nUdp: 8 x\n", group: "Udp", want: map[string]int64{"udp_in_datagrams": 8}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, parseSNMP(tc.data, tc.group, udpCounters))
+		})
+	}
+}
+
+func TestNodeNetemSteps(t *testing.T) {
+	cfg := config{Delay: 10 * time.Millisecond, QueueLimit: 5000}
+	netem := []string{"netem", "limit", "5000", "delay", "10ms"}
+	queue := func(parent string) []string {
+		return append([]string{"tc", "qdisc", "replace", "dev", "ens5", "parent", parent}, netem...)
+	}
+	cases := []struct {
+		name     string
+		txQueues int
+		want     [][]string
+	}{
+		{name: "one queue", txQueues: 1, want: [][]string{append([]string{"tc", "qdisc", "replace", "dev", "ens5", "root"}, netem...)}},
+		{name: "queue count not known", txQueues: 0, want: [][]string{append([]string{"tc", "qdisc", "replace", "dev", "ens5", "root"}, netem...)}},
+		{
+			name: "two queues", txQueues: 2,
+			want: [][]string{{"tc", "qdisc", "replace", "dev", "ens5", "root", "handle", "1:", "mq"}, queue("1:1"), queue("1:2")},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, nodeNetemSteps("ens5", tc.txQueues, cfg))
+		})
+	}
+	// The class of a queue is in hex.
+	steps := nodeNetemSteps("ens5", 16, cfg)
+	require.Len(t, steps, 17)
+	assert.Equal(t, queue("1:a"), steps[10])
+	assert.Equal(t, queue("1:10"), steps[16])
 }
 
 func TestCounterDeltas(t *testing.T) {

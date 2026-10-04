@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
+	"strings"
 )
 
 // Row is one "perfrig run" or "perfrig node" of a suite. perfagent adds -out
@@ -22,6 +23,8 @@ type Row struct {
 	// hosts is the number of hosts of a node row: 2 with no relay, 3 with one.
 	// It is 0 for a row of the netns rig.
 	hosts int
+	// netem tells that a node row adds a netem delay on each host.
+	netem bool
 }
 
 // Hosts returns the number of hosts of a node row, or 0 for a row of the netns rig.
@@ -117,6 +120,9 @@ func (s Suite) NodePlans(o Options) (string, error) {
 		p := Plan{Tun: s.Tun, Remove: s.Remove, Rows: picked}
 		if o.Host {
 			p.Sysctls = hostSysctls
+			if slices.ContainsFunc(picked, func(r Row) bool { return r.netem }) {
+				p.Modules = []string{"sch_netem"}
+			}
 		}
 		plans[role] = p
 	}
@@ -214,7 +220,8 @@ type vpcRow struct {
 	nodes int
 	// streams is the flow count. 0 gives 4 flows.
 	streams int
-	// relay, server and client are more vpcbench flags. args are more perfrig run flags.
+	// relay, server and client are more vpcbench flags. args are more perfrig flags.
+	// A node row takes -delay, the netem delay on the egress of each host.
 	relay, server, client []string
 	args                  []string
 }
@@ -232,6 +239,10 @@ var vpcRows = []vpcRow{
 	{id: "netstack-psp-relay-xdp", name: "vpc-netstack-psp-relay-xdp", relayNetns: true, xdp: true, client: []string{"-cc", "bbr"}},
 	{id: "netstack-psp-direct-1flow", name: "vpc-netstack-psp-direct", direct: true, streams: 1, client: []string{"-cc", "bbr"}},
 	{id: "netstack-psp-direct-2node", name: "vpc-netstack-psp-direct-2node", direct: true, nodes: 2, client: []string{"-cc", "bbr"}},
+	{id: "netstack-psp-direct-2node-1flow", name: "vpc-netstack-psp-direct-2node", direct: true, nodes: 2, streams: 1, client: []string{"-cc", "bbr"}},
+	// Netem on the egress of each host gives 20 ms RTT, as in the netns rig.
+	{id: "netstack-psp-direct-2node-20ms", name: "vpc-netstack-psp-direct-2node", direct: true, nodes: 2, client: []string{"-cc", "bbr"}, args: []string{"-delay=10ms"}},
+	{id: "netstack-psp-direct-2node-1flow-20ms", name: "vpc-netstack-psp-direct-2node", direct: true, nodes: 2, streams: 1, client: []string{"-cc", "bbr"}, args: []string{"-delay=10ms"}},
 	{id: "netstack-psp-relay-3node", name: "vpc-netstack-psp-relay-3node", nodes: 3, client: []string{"-cc", "bbr"}},
 	{id: "netstack-psp-relay-3node-p16", name: "vpc-netstack-psp-relay-3node", nodes: 3, streams: 16, client: []string{"-cc", "bbr"}},
 	// The relay takes no lane ports, so each agent sends and receives on one port.
@@ -310,6 +321,7 @@ func (r vpcRow) row(o Options) Row {
 	row := Row{ID: r.id, Group: group, Args: append(args, r.args...), hosts: r.nodes}
 	if r.nodes > 0 {
 		row.Cmd = "node"
+		row.netem = slices.ContainsFunc(r.args, func(a string) bool { return strings.HasPrefix(a, "-delay=") })
 	}
 	return row
 }
