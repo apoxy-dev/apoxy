@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/apoxy-dev/apoxy/cmd/internal/bench"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/relay"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/vpctest"
 )
 
@@ -30,8 +31,15 @@ func TestParseFlags(t *testing.T) {
 	}{
 		{
 			name: "relay", cmd: "relay", args: []string{"-listen", ":4443"},
-			want: func(o options) bool { return o.Listen == ":4443" && o.WorkDir == "/work" && o.MTU == 0 },
+			want: func(o options) bool {
+				return o.Listen == ":4443" && o.WorkDir == "/work" && o.MTU == 0 && o.Lanes == relay.MaxLaneSources
+			},
 		},
+		{
+			name: "relay with no lanes", cmd: "relay", args: []string{"-listen", ":4443", "-lanes", "0"},
+			want: func(o options) bool { return o.Lanes == 0 },
+		},
+		{name: "relay with too many lanes", cmd: "relay", args: []string{"-listen", ":4443", "-lanes", "16"}, wantErr: "-lanes must be 0 to 15"},
 		{name: "relay with no listen", cmd: "relay", wantErr: "-listen is required"},
 		{
 			name: "relay needs no work dir", cmd: "relay", args: []string{"-listen", ":4443", "-work-dir", ""},

@@ -102,7 +102,7 @@ func stubPeer(a *Agent, name string, dialer bool) (*peer, *fakeConn) {
 		granted: make(chan struct{}),
 		keyed:   make(chan struct{}),
 		offered: make(chan struct{}),
-		spis:    map[uint32]time.Time{},
+		spis:    map[uint32]spiRow{},
 	}
 	a.mu.Lock()
 	a.peers[p.conn] = p
@@ -203,7 +203,7 @@ func TestAdmit(t *testing.T) {
 			if tc.old != nil {
 				op, qc := stubPeer(a, "b", tc.old.dialer)
 				mode := cmp.Or(tc.old.mode, dp.Mode_MODE_PSP)
-				require.NoError(t, a.admit(op, grant(t, relayCert, nil), tc.old.instance, mode))
+				require.NoError(t, a.admit(op, grant(t, relayCert, nil), tc.old.instance, mode, 1))
 				oldConn = qc
 			}
 			cert := tc.cert
@@ -213,7 +213,7 @@ func TestAdmit(t *testing.T) {
 			mode := cmp.Or(tc.mode, dp.Mode_MODE_PSP)
 			p, _ := stubPeer(a, "b", tc.dialer)
 
-			err := a.admit(p, grant(t, cert, tc.claims), tc.instance, mode)
+			err := a.admit(p, grant(t, cert, tc.claims), tc.instance, mode, 1)
 			switch {
 			case tc.wantErr != nil:
 				require.ErrorIs(t, err, tc.wantErr)
@@ -267,8 +267,8 @@ func TestAdmitCrossed(t *testing.T) {
 		var errDialed, errAccepted error
 		var wg sync.WaitGroup
 		start := make(chan struct{})
-		wg.Go(func() { <-start; errDialed = a.admit(dialed, g, 7, dp.Mode_MODE_PSP) })
-		wg.Go(func() { <-start; errAccepted = a.admit(accepted, g, 7, dp.Mode_MODE_PSP) })
+		wg.Go(func() { <-start; errDialed = a.admit(dialed, g, 7, dp.Mode_MODE_PSP, 1) })
+		wg.Go(func() { <-start; errAccepted = a.admit(accepted, g, 7, dp.Mode_MODE_PSP, 1) })
 		close(start)
 		wg.Wait()
 
@@ -585,7 +585,7 @@ func TestQUICRoutes(t *testing.T) {
 	}
 	admit := func(name string, dialer bool, prefix string) *peer {
 		p, _ := stubPeer(a, name, dialer)
-		require.NoError(t, a.admit(p, signGrant(t, cert, name, prefix), 7, dp.Mode_MODE_QUIC))
+		require.NoError(t, a.admit(p, signGrant(t, cert, name, prefix), 7, dp.Mode_MODE_QUIC, 1))
 		return p
 	}
 	// Crossed dials with b leave two sessions.
@@ -694,7 +694,7 @@ func TestAdmitOnce(t *testing.T) {
 			var wg sync.WaitGroup
 			start := make(chan struct{})
 			for i := range errs {
-				admit := func() { errs[i] = a.admit(p, grants[i], 1, dp.Mode_MODE_PSP) }
+				admit := func() { errs[i] = a.admit(p, grants[i], 1, dp.Mode_MODE_PSP, 1) }
 				if tc.together {
 					wg.Go(func() { <-start; admit() })
 				} else {

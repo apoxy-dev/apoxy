@@ -145,12 +145,13 @@ Addresses and prefixes are text (`fd61::1`, `10.0.0.0/8`, `host:port`).
 
 | Method          | Kind  | Messages |
 |-----------------|-------|----------|
-| `Session`       | bidi  | Agent: `Hello{mode, fallback_reason, spare}`, then `Ack{rev}` and `Status` (ICV failures; the first one after `Config` also has the time to connect). Relay: `Welcome` (reflexive address), `Config`, in PSP mode a rekey with relay SAs, then `RouteDelta{rev}`, `NoRoute`, rekey (`KeysRequest`), `Config`, `Drain`, and in PSP mode `RxReport` (only the last one waits). |
+| `Session`       | bidi  | Agent: `Hello{mode, fallback_reason, spare}`, then `Ack{rev}` and `Status` (ICV failures; the first one after `Config` also has the time to connect). Relay: `Welcome` (reflexive address, lane port limit), `Config`, in PSP mode a rekey with relay SAs, then `RouteDelta{rev}`, `NoRoute`, rekey (`KeysRequest`), `Config`, `Drain`, and in PSP mode `RxReport` (only the last one waits). |
 | `Attach`        | unary | `AttachRequest{vpc, name, labels, routes}` -> `AttachResponse{attachment_id, grant}` |
 | `Rekey`         | unary | `KeysRequest` -> `KeysResponse`: SAs for traffic from the relay to the agent. Errors: `FailedPrecondition` (no `Session` call in PSP mode), `InvalidArgument` (an SA VNI is not the network ID). |
 | `ResolvePeer`   | unary | `{vpc, address}` -> `{reach: local, trunk or visit; home_relay; p2p}`. Errors: `NotFound`, `PermissionDenied`. |
-| `RegisterSPI`   | unary | `{vpc, destination, spis, expires_in}` -> `Empty` |
+| `RegisterSPI`   | unary | `{vpc, destination, spis, expires_in, lanes}` -> `Empty`. `lanes` gives the source of each SPI: 0 is the session address, i is port i of `RegisterLanes`. |
 | `UnregisterSPI` | unary | `{vpc, spis}` -> `Empty` |
+| `RegisterLanes` | unary | `{ports}` -> `Empty`: replaces the lane ports of the session. Errors: `InvalidArgument` (more ports than `Welcome.max_lanes`, port 0, the session port, a repeated port), `AlreadyExists` (a port is a source of another agent), `FailedPrecondition`. |
 
 `Attach` returns an `AttachmentGrant`: the claims, the signature of the relay
 TLS key, and the relay cert chain (leaf first). A peer accepts it only if the
@@ -183,11 +184,19 @@ The relay takes the sender of an SPI row from the authenticated session, never
 from packet data. A row ends at `UnregisterSPI`, at expiry, after 5 minutes
 with no traffic, when either session closes, or when Permit stops allowing it.
 
+An agent sends each SA lane from its own UDP port, so that the lanes use more
+NIC queues. The relay forwards PSP packets from the lane ports of a session as
+from the session. A lane port is at the IP address of the session, and it is
+free or a lane port of another session of the same agent. The lane ports go
+away when the session closes, moves to a new address or joins as a shard. An
+agent registers lane ports only when `Welcome.max_lanes` is not 0 and the
+reflexive port is its local port.
+
 ### Peer (`apoxy-peer/1`)
 
 | Method    | Kind          | Messages |
 |-----------|---------------|----------|
-| `Open`    | unary         | Dialer and listener each send `{grant, instance, mode, p2p}`. First call on a session. |
+| `Open`    | unary         | Dialer and listener each send `{grant, instance, mode, p2p, lanes}`. First call on a session. `lanes` is the send lanes of the caller: the other agent offers it that many SAs. |
 | `Keys`    | unary         | The receiver sends `KeysRequest`: `OfferSAs`, `RekeySA` or `RevokeSA`. `KeysResponse` lists SPIs that the sender refuses. |
 | `Paths`   | client stream | `Candidates{round, candidates, mtu}`; each agent calls it. |
 | `Reports` | client stream | `RxReport{sas}` every 500 ms when it changes: the receive counters of the SAs that the peer sends with. |

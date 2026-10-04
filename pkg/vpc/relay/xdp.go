@@ -159,7 +159,7 @@ func (r *Router) markXDP(s *Session) {
 	if r.xdp == nil || s == nil {
 		return
 	}
-	for _, a := range []netip.AddrPort{s.addr, s.prev} {
+	for _, a := range s.srcAddrs() {
 		if a.IsValid() {
 			r.xdp.dirty[a] = struct{}{}
 		}
@@ -250,19 +250,19 @@ func (r *Router) wantXDP(a netip.AddrPort, now time.Time) map[uint32]xdpEntry {
 	if s == nil || s.closed {
 		return nil
 	}
-	until, ok := sourceEnd(s, a, now)
+	until, lane, ok := sourceEnd(s, a, now)
 	if !ok {
 		return nil
 	}
 	want := map[uint32]xdpEntry{}
-	addWant(want, a, s, until, now)
+	addWant(want, a, s, lane, until, now)
 	// Forward also uses the rows of the older session of the socket.
 	if t := s.twin; t != nil && !t.closed {
-		if tu, ok := sourceEnd(t, a, now); ok {
+		if tu, tl, ok := sourceEnd(t, a, now); ok {
 			if until.IsZero() || (!tu.IsZero() && tu.Before(until)) {
 				until = tu
 			}
-			addWant(want, a, t, until, now)
+			addWant(want, a, t, tl, until, now)
 		}
 	}
 	for spi, e := range want {
@@ -273,23 +273,26 @@ func (r *Router) wantXDP(a netip.AddrPort, now time.Time) map[uint32]xdpEntry {
 	return want
 }
 
-// sourceEnd returns the time until which a is a source address of s. The zero
-// time is no end.
-func sourceEnd(s *Session, a netip.AddrPort, now time.Time) (time.Time, bool) {
-	switch {
-	case a == s.addr:
-		return time.Time{}, true
-	case a == s.prev && !now.After(s.prevUntil):
-		return s.prevUntil, true
+// sourceEnd returns the time until which a is a source address of s, and its
+// lane. The zero time is no end.
+func sourceEnd(s *Session, a netip.AddrPort, now time.Time) (time.Time, int, bool) {
+	lane, ok := s.laneOf(a, now)
+	if ok && a != s.addr && lane == 0 {
+		return s.prevUntil, 0, true
 	}
-	return time.Time{}, false
+	return time.Time{}, lane, ok
 }
 
-// addWant adds the live rows of s to want for the SPIs that want does not have.
-// A row that stays on the socket path gets no next hop.
-func addWant(want map[uint32]xdpEntry, a netip.AddrPort, s *Session, until, now time.Time) {
+// addWant adds the live rows of s on lane to want for the SPIs that want does
+// not have. A row of a lane with no port is on lane 0. A row that stays on the
+// socket path gets no next hop.
+func addWant(want map[uint32]xdpEntry, a netip.AddrPort, s *Session, lane int, until, now time.Time) {
 	for spi, w := range s.rows {
-		if _, ok := want[spi]; ok || now.After(w.expires) {
+		l := w.lane
+		if l > len(s.lanes) {
+			l = 0
+		}
+		if _, ok := want[spi]; ok || l != lane || now.After(w.expires) {
 			continue
 		}
 		e := xdpEntry{xdpRow{expires: w.expires}, w}
@@ -381,7 +384,7 @@ func (r *Router) xdpCountersOf(w *row) xdpCounters {
 		return sum
 	}
 	// The rows of s are at the source addresses of s, also as a twin.
-	for _, a := range []netip.AddrPort{w.sender.addr, w.sender.prev} {
+	for _, a := range w.sender.srcAddrs() {
 		if e, ok := x.rows[a][w.spi]; ok && e.w == w {
 			c, err := x.t.counters(xdpKey{a, w.spi})
 			if err != nil {

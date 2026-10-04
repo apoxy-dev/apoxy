@@ -23,6 +23,7 @@ const (
 	Relay_ResolvePeer_FullMethodName   = "/apoxy.vpc.datapath.v1.Relay/ResolvePeer"
 	Relay_RegisterSPI_FullMethodName   = "/apoxy.vpc.datapath.v1.Relay/RegisterSPI"
 	Relay_UnregisterSPI_FullMethodName = "/apoxy.vpc.datapath.v1.Relay/UnregisterSPI"
+	Relay_RegisterLanes_FullMethodName = "/apoxy.vpc.datapath.v1.Relay/RegisterLanes"
 )
 
 // RelayClient is the client API of the Relay service.
@@ -45,6 +46,9 @@ type RelayClient interface {
 	RegisterSPI(ctx context.Context, in *RegisterSPIRequest) (*emptypb.Empty, error)
 	// UnregisterSPI removes forward rows of the caller.
 	UnregisterSPI(ctx context.Context, in *UnregisterSPIRequest) (*emptypb.Empty, error)
+	// RegisterLanes sets the lane ports of the caller. Errors: InvalidArgument,
+	// AlreadyExists (a port is a source of another agent), FailedPrecondition.
+	RegisterLanes(ctx context.Context, in *RegisterLanesRequest) (*emptypb.Empty, error)
 }
 
 type relayClient struct{ c rpc.Caller }
@@ -104,6 +108,14 @@ func (c relayClient) UnregisterSPI(ctx context.Context, in *UnregisterSPIRequest
 	return out, nil
 }
 
+func (c relayClient) RegisterLanes(ctx context.Context, in *RegisterLanesRequest) (*emptypb.Empty, error) {
+	out := new(emptypb.Empty)
+	if err := c.c.Invoke(ctx, Relay_RegisterLanes_FullMethodName, in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // RelayServer is the server API of the Relay service.
 type RelayServer interface {
 	// Session starts with Hello and Welcome, then carries Sync. The relay sends
@@ -124,6 +136,9 @@ type RelayServer interface {
 	RegisterSPI(context.Context, *RegisterSPIRequest) (*emptypb.Empty, error)
 	// UnregisterSPI removes forward rows of the caller.
 	UnregisterSPI(context.Context, *UnregisterSPIRequest) (*emptypb.Empty, error)
+	// RegisterLanes sets the lane ports of the caller. Errors: InvalidArgument,
+	// AlreadyExists (a port is a source of another agent), FailedPrecondition.
+	RegisterLanes(context.Context, *RegisterLanesRequest) (*emptypb.Empty, error)
 }
 
 // UnimplementedRelayServer returns Unimplemented for each method. Embed it to add
@@ -158,6 +173,10 @@ func (UnimplementedRelayServer) UnregisterSPI(context.Context, *UnregisterSPIReq
 	return nil, rpc.Errorf(rpc.Unimplemented, "method UnregisterSPI not implemented")
 }
 
+func (UnimplementedRelayServer) RegisterLanes(context.Context, *RegisterLanesRequest) (*emptypb.Empty, error) {
+	return nil, rpc.Errorf(rpc.Unimplemented, "method RegisterLanes not implemented")
+}
+
 // RegisterRelayServer adds the methods of srv to m.
 func RegisterRelayServer(m *rpc.Mux, srv RelayServer) {
 	rpc.HandleBidiStream(m, Relay_Session_FullMethodName, srv.Session)
@@ -167,4 +186,5 @@ func RegisterRelayServer(m *rpc.Mux, srv RelayServer) {
 	rpc.HandleUnary(m, Relay_ResolvePeer_FullMethodName, srv.ResolvePeer)
 	rpc.HandleUnary(m, Relay_RegisterSPI_FullMethodName, srv.RegisterSPI)
 	rpc.HandleUnary(m, Relay_UnregisterSPI_FullMethodName, srv.UnregisterSPI)
+	rpc.HandleUnary(m, Relay_RegisterLanes_FullMethodName, srv.RegisterLanes)
 }

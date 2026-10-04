@@ -57,7 +57,7 @@ func runRelay(ctx context.Context, o options, ready func(netip.AddrPort)) error 
 	addr := uc.LocalAddr().(*net.UDPAddr).AddrPort()
 	slog.Info("Relay socket is ready", "address", addr, "rcvbuf", sockRcvbuf(uc))
 
-	r := relay.NewRouter(vpctest.NewTrust(ca), relay.Config{})
+	r := relay.NewRouter(vpctest.NewTrust(ca), relay.Config{LaneSources: o.Lanes})
 	xdpCPU := func() float64 { return 0 }
 	if o.XDP != "" {
 		x, mode, err := r.StartXDP(relay.XDPConfig{Port: addr.Port(), Iface: o.XDP, Generic: true})

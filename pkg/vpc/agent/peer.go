@@ -83,11 +83,17 @@ type peer struct {
 	extra map[string][]netip.Prefix
 
 	mu   sync.Mutex
-	spis map[uint32]time.Time // SPIs registered at the relay, to their expiry.
+	spis map[uint32]spiRow // SPIs registered at the relay.
 	// Grant changes of this agent that wait to go to the peer.
 	sendAdd    map[string]*dp.AttachmentGrant
 	sendRemove map[string]bool
 	sending    bool
+}
+
+// spiRow is an SPI that the relay forwards to the peer.
+type spiRow struct {
+	expires time.Time
+	lane    int // Lane of the SA.
 }
 
 // routes reports whether the grants or the advertised prefixes of p cover addr.
@@ -177,7 +183,7 @@ func (a *Agent) newPeer(rc *relayConn, qc quic.Connection, dst netip.Addr) (*pee
 		granted: make(chan struct{}),
 		keyed:   make(chan struct{}),
 		offered: make(chan struct{}),
-		spis:    map[uint32]time.Time{},
+		spis:    map[uint32]spiRow{},
 	}
 	p.conn = rpc.NewConn(qc, a.mux)
 	p.client = dp.NewPeerClient(p.conn)
@@ -355,7 +361,7 @@ func (a *Agent) dial(ctx context.Context, rc *relayConn, dst netip.Addr, res *dp
 	a.mu.Lock()
 	grants := a.openGrants(p)
 	a.mu.Unlock()
-	open, err := p.client.Open(ctx, &dp.OpenRequest{Grant: rc.grant, Grants: grants, Instance: a.instance, Mode: rc.mode})
+	open, err := p.client.Open(ctx, &dp.OpenRequest{Grant: rc.grant, Grants: grants, Instance: a.instance, Mode: rc.mode, Lanes: rc.sendLanes()})
 	if err != nil {
 		if refusedDuplicate(qc, err) {
 			err = errDuplicate
@@ -363,7 +369,7 @@ func (a *Agent) dial(ctx context.Context, rc *relayConn, dst netip.Addr, res *dp
 		_ = qc.CloseWithError(0, "")
 		return nil, fmt.Errorf("open peer session to %s: %w", dst, err)
 	}
-	if err := a.admit(p, open.GetGrant(), open.GetInstance(), open.GetMode()); err != nil {
+	if err := a.admit(p, open.GetGrant(), open.GetInstance(), open.GetMode(), open.GetLanes()); err != nil {
 		_ = qc.CloseWithError(closeCode(err), err.Error())
 		return nil, fmt.Errorf("peer %s: %w", dst, err)
 	}
@@ -374,8 +380,8 @@ func (a *Agent) dial(ctx context.Context, rc *relayConn, dst netip.Addr, res *dp
 }
 
 // admit checks the Open data of the peer, then adds it to the binding with
-// the prefixes of its grant.
-func (a *Agent) admit(p *peer, g *dp.AttachmentGrant, instance uint64, mode dp.Mode) error {
+// the prefixes of its grant. The peer gets SAs for its send lanes.
+func (a *Agent) admit(p *peer, g *dp.AttachmentGrant, instance uint64, mode dp.Mode, lanes uint32) error {
 	a.admitMu.Lock()
 	defer a.admitMu.Unlock()
 	a.mu.Lock()
@@ -417,7 +423,7 @@ func (a *Agent) admit(p *peer, g *dp.AttachmentGrant, instance uint64, mode dp.M
 		a.dropPeer(old)
 	}
 
-	bp, err := a.bind.AddPeer(p.rc.relayAddr)
+	bp, err := a.bind.AddPeerLanes(p.rc.relayAddr, int(min(max(lanes, 1), keys.MaxLanes)))
 	if err != nil {
 		return err
 	}
@@ -435,6 +441,8 @@ func (a *Agent) admit(p *peer, g *dp.AttachmentGrant, instance uint64, mode dp.M
 		return p.closedError()
 	}
 	p.instance, p.claims, p.prefixes, p.addr, p.bp = instance, claims, prefixes, overlayAddr(prefixes), bp
+	// Under a.mu, so that a move of the agent also sees bp.
+	bp.SetLaneSockets(int(p.rc.sendLanes()))
 	close(a.admitted)
 	a.admitted = make(chan struct{})
 	a.mu.Unlock()
@@ -660,19 +668,34 @@ func (p *peer) register(ctx context.Context, sas []keys.SA) error {
 	for _, sa := range sas {
 		ttl = max(ttl, sa.ExpiresIn)
 	}
-	spis := spisOf(sas)
-	if _, err := p.rc.c.RegisterSPI(ctx, &dp.RegisterSPIRequest{
-		Vpc: p.rc.ref, Destination: p.addr.String(), Spis: spis, ExpiresIn: durationpb.New(ttl),
-	}); err != nil {
+	spis, lanes := spisOf(sas), make([]int, len(sas))
+	for i, sa := range sas {
+		lanes[i] = sa.Lane
+	}
+	if _, err := p.rc.c.RegisterSPI(ctx, p.registerRequest(spis, lanes, ttl)); err != nil {
 		return err
 	}
 	expires := time.Now().Add(ttl)
 	p.mu.Lock()
-	for _, spi := range spis {
-		p.spis[spi] = expires
+	for i, spi := range spis {
+		p.spis[spi] = spiRow{expires, lanes[i]}
 	}
 	p.mu.Unlock()
 	return nil
+}
+
+// registerRequest returns the RegisterSPI request for the SPIs of SA lanes.
+// The relay gets the socket lane of each SPI, or no lanes when all are 0.
+func (p *peer) registerRequest(spis []uint32, lanes []int, ttl time.Duration) *dp.RegisterSPIRequest {
+	req := &dp.RegisterSPIRequest{Vpc: p.rc.ref, Destination: p.addr.String(), Spis: spis, ExpiresIn: durationpb.New(ttl)}
+	sock := make([]uint32, len(lanes))
+	for i, l := range lanes {
+		sock[i] = uint32(p.bp.SendLane(l))
+	}
+	if slices.ContainsFunc(sock, func(l uint32) bool { return l != 0 }) {
+		req.Lanes = sock
+	}
+	return req
 }
 
 // unregister tells the relay to stop forwarding the SPIs.
@@ -696,23 +719,30 @@ func spisOf(sas []keys.SA) []uint32 {
 
 // refreshSPIs registers the live SPIs again, so that idle rows stay.
 func (p *peer) refreshSPIs() {
+	type group struct {
+		spis  []uint32
+		lanes []int
+	}
 	now := time.Now()
-	byExpiry := map[time.Time][]uint32{}
+	byExpiry := map[time.Time]*group{}
 	p.mu.Lock()
-	for spi, exp := range p.spis {
-		if exp.After(now) {
-			byExpiry[exp] = append(byExpiry[exp], spi)
-		} else {
+	for spi, w := range p.spis {
+		if !w.expires.After(now) {
 			delete(p.spis, spi)
+			continue
 		}
+		g := byExpiry[w.expires]
+		if g == nil {
+			g = &group{}
+			byExpiry[w.expires] = g
+		}
+		g.spis, g.lanes = append(g.spis, spi), append(g.lanes, w.lane)
 	}
 	p.mu.Unlock()
 	ctx, cancel := context.WithTimeout(p.rc.ctx, keysTimeout)
 	defer cancel()
-	for exp, spis := range byExpiry {
-		if _, err := p.rc.c.RegisterSPI(ctx, &dp.RegisterSPIRequest{
-			Vpc: p.rc.ref, Destination: p.addr.String(), Spis: spis, ExpiresIn: durationpb.New(exp.Sub(now)),
-		}); err != nil {
+	for exp, g := range byExpiry {
+		if _, err := p.rc.c.RegisterSPI(ctx, p.registerRequest(g.spis, g.lanes, exp.Sub(now))); err != nil {
 			slog.Warn("Failed to refresh SPI rows at the relay", "peer", p.subject, "error", err)
 		}
 	}
@@ -732,7 +762,7 @@ func (s *peerService) Open(ctx context.Context, in *dp.OpenRequest) (*dp.OpenRes
 	if p.dialer {
 		return nil, rpc.Errorf(rpc.FailedPrecondition, "the dialer calls Open")
 	}
-	if err := s.a.admit(p, in.GetGrant(), in.GetInstance(), in.GetMode()); err != nil {
+	if err := s.a.admit(p, in.GetGrant(), in.GetInstance(), in.GetMode(), in.GetLanes()); err != nil {
 		if errors.Is(err, errAlreadyOpen) {
 			// The session stays open for the first Open.
 			return nil, rpc.Errorf(rpc.FailedPrecondition, "%v", err)
@@ -751,7 +781,7 @@ func (s *peerService) Open(ctx context.Context, in *dp.OpenRequest) (*dp.OpenRes
 	s.a.mu.Lock()
 	grants := s.a.openGrants(p)
 	s.a.mu.Unlock()
-	return &dp.OpenResponse{Grant: p.rc.grant, Grants: grants, Instance: s.a.instance, Mode: p.rc.mode}, nil
+	return &dp.OpenResponse{Grant: p.rc.grant, Grants: grants, Instance: s.a.instance, Mode: p.rc.mode, Lanes: p.rc.sendLanes()}, nil
 }
 
 // Keys applies SAs from the peer and registers their SPIs at the relay.

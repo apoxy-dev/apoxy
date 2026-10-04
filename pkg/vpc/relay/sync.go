@@ -170,6 +170,7 @@ func (srv *Server) Session(ctx context.Context, st rpc.BidiStreamServer[dp.Sessi
 	}()
 	if err := st.Send(&dp.SessionResponse{Msg: &dp.SessionResponse_Welcome{Welcome: &dp.Welcome{
 		ReflexiveAddress: srv.R.Addr(s).String(),
+		MaxLanes:         srv.R.maxLanes(mode),
 	}}}); err != nil {
 		return err
 	}

@@ -36,6 +36,9 @@ message OpenRequest {
   bool p2p = 4;
   // Grants of the other attachments of the dialer on its relay session.
   repeated AttachmentGrant grants = 5;
+  // Send lanes of the dialer: the most SAs that the listener offers to it.
+  // Zero means 1.
+  uint32 lanes = 6;
 }
 
 message OpenResponse {
@@ -48,6 +51,9 @@ message OpenResponse {
   bool p2p = 4;
   // Grants of the other attachments of the listener on its relay session.
   repeated AttachmentGrant grants = 5;
+  // Send lanes of the listener: the most SAs that the dialer offers to it.
+  // Zero means 1.
+  uint32 lanes = 6;
 }
 
 // GrantsRequest adds and removes grants of the other attachments of the caller.

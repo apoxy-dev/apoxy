@@ -133,7 +133,7 @@ func TestAddGrants(t *testing.T) {
 			if tc.mode != dp.Mode_MODE_UNSPECIFIED {
 				mode = tc.mode
 			}
-			require.NoError(t, a.admit(p, signGrant(t, cert, "b", "fd00:b::/96"), 7, mode))
+			require.NoError(t, a.admit(p, signGrant(t, cert, "b", "fd00:b::/96"), 7, mode, 1))
 
 			err := a.addGrants(p, tc.grants(t))
 			if tc.wantText != "" {
@@ -179,7 +179,7 @@ func TestWaitGrant(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			a := w.stubAgent(t, "a")
 			p, _ := stubPeer(a, "b", true)
-			require.NoError(t, a.admit(p, signGrant(t, cert, "b", "fd00:b::/96"), 7, dp.Mode_MODE_PSP))
+			require.NoError(t, a.admit(p, signGrant(t, cert, "b", "fd00:b::/96"), 7, dp.Mode_MODE_PSP, 1))
 			if tc.grant {
 				g := extraGrant(t, cert, "b", "b-2", "fd00:b2::/96", nil)
 				added := make(chan error, 1)
@@ -256,7 +256,7 @@ func TestRemoveRoutesOfExtra(t *testing.T) {
 	cert := w.relayCA.relayCert(t, "relay-1")
 	a := w.stubAgent(t, "a")
 	p, qc := stubPeer(a, "b", true)
-	require.NoError(t, a.admit(p, signGrant(t, cert, "b", "fd00:b::/96"), 7, dp.Mode_MODE_PSP))
+	require.NoError(t, a.admit(p, signGrant(t, cert, "b", "fd00:b::/96"), 7, dp.Mode_MODE_PSP, 1))
 	require.NoError(t, a.addGrants(p, []*dp.AttachmentGrant{extraGrant(t, cert, "b", "b-2", "fd00:b2::/96", nil)}))
 
 	// Another origin that takes a prefix does not end the grant.

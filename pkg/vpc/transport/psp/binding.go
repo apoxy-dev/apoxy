@@ -35,8 +35,12 @@ const (
 	// QUICMTU is the largest inner packet in a data frame on a relay session with
 	// InitialPacketSize 1350: quic-go takes 1350 - 37 B, and the frame header is 5 B.
 	QUICMTU = 1308
-	// sockBuf is the send and receive buffer size of the agent socket.
+	// sockBuf is the send and receive buffer size of the agent socket, and the
+	// send buffer size of a lane socket.
 	sockBuf = 16 << 20
+	// laneRcvBuf is the receive buffer size of a lane socket. Lane sockets only
+	// send, so packets to them stay in this buffer.
+	laneRcvBuf = 4 << 10
 )
 
 var (
@@ -203,7 +207,7 @@ func New(cfg Config) (*Binding, error) {
 		return nil, errors.New("psp: demux already has a binding")
 	}
 	if uc, ok := cfg.Transport.Conn.(*net.UDPConn); ok {
-		if err := setSockBufs(uc, sockBuf); err != nil {
+		if err := setSockBufs(uc, sockBuf, sockBuf); err != nil {
 			slog.Debug("Failed to set the agent socket buffers", "bytes", sockBuf, "error", err)
 		}
 	}
@@ -312,6 +316,7 @@ func (b *Binding) AddPeerLanes(addr netip.AddrPort, lanes int) (*Peer, error) {
 		return nil, fmt.Errorf("psp: invalid peer address %v", addr)
 	}
 	p := &Peer{b: b, tx: b.send.NewPeer(), rxSPIs: map[uint32]struct{}{}}
+	p.sockets.Store(keys.MaxLanes)
 	rx, err := b.recv.NewPeer(keys.PeerConfig{VNI: b.vni, MTU: b.mtu, Lanes: lanes, Sources: b.routes.Sources(p)})
 	if err != nil {
 		return nil, err
@@ -363,7 +368,7 @@ func (b *Binding) openLanes(n int) {
 	if !ok || b.ctx.Err() != nil {
 		return
 	}
-	for i := 1; i < n; i++ {
+	for i := 1; i < min(n, len(b.laneConns)); i++ {
 		if b.laneConns[i].Load() != nil {
 			continue
 		}
@@ -390,10 +395,30 @@ func listenLane(uc *net.UDPConn) (*net.UDPConn, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := setSockBufs(c, sockBuf); err != nil {
-		slog.Debug("Failed to set the lane socket buffers", "bytes", sockBuf, "error", err)
+	if err := setSockBufs(c, laneRcvBuf, sockBuf); err != nil {
+		slog.Debug("Failed to set the lane socket buffers", "rcvBytes", laneRcvBuf, "sndBytes", sockBuf, "error", err)
 	}
 	return c, nil
+}
+
+// OpenLanes opens the sockets of send lanes 1 to n-1 and returns their ports
+// in lane order. It stops at the first lane with no socket.
+func (b *Binding) OpenLanes(n int) []uint16 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.ctx.Err() != nil {
+		return nil
+	}
+	b.openLanes(n)
+	var ports []uint16
+	for i := 1; i < min(n, len(b.laneConns)); i++ {
+		c := b.laneConns[i].Load()
+		if c == nil {
+			break
+		}
+		ports = append(ports, uint16(c.LocalAddr().(*net.UDPAddr).Port))
+	}
+	return ports
 }
 
 // LaneConns returns the open sockets of send lanes 1 and up.

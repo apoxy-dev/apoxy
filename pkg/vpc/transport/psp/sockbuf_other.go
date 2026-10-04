@@ -9,7 +9,8 @@ import (
 	"net"
 )
 
-// setSockBufs sets the send and receive buffers of c to n bytes.
-func setSockBufs(c *net.UDPConn, n int) error {
-	return errors.Join(c.SetReadBuffer(n), c.SetWriteBuffer(n))
+// setSockBufs sets the receive buffer of c to rcv bytes and the send buffer to
+// snd bytes.
+func setSockBufs(c *net.UDPConn, rcv, snd int) error {
+	return errors.Join(c.SetReadBuffer(rcv), c.SetWriteBuffer(snd))
 }

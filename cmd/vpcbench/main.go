@@ -43,6 +43,7 @@ import (
 	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/agent"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/identity"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/relay"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/psp"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/psp/keyproto"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/vpctest"
@@ -115,7 +116,7 @@ type options struct {
 	Listen, Relay, Server, WorkDir string
 	Driver, Transport, Via, CC     string
 	XDP                            string
-	MTU, Streams                   int
+	MTU, Streams, Lanes            int
 	Omit, Duration                 time.Duration
 	Idle, ProbeInterval            time.Duration
 	// StartTimeout limits each wait for the relay, an attach or a peer session.
@@ -138,6 +139,7 @@ func parseFlags(cmd string, args []string, out io.Writer) (options, error) {
 	}
 	if cmd == "relay" {
 		fs.StringVar(&o.XDP, "xdp", "", "link on which XDP forwards the PSP packets in generic mode, as on ENA; the relay CPU then includes the program run time (empty: the socket forwards them)")
+		fs.IntVar(&o.Lanes, "lanes", relay.MaxLaneSources, "most lane ports that the relay takes from a session; 0 makes agents send on one port")
 	}
 	if cmd != "relay" {
 		fs.StringVar(&o.Relay, "relay", "", "relay address host:port")
@@ -188,6 +190,8 @@ func (o options) check(cmd string) error {
 		return errors.New("-start-timeout must be positive")
 	case o.MTU < 0:
 		return errors.New("-mtu must not be negative")
+	case o.Lanes < 0 || o.Lanes > relay.MaxLaneSources:
+		return fmt.Errorf("-lanes must be 0 to %d", relay.MaxLaneSources)
 	case cmd == "client" && (o.Streams < 1 || o.Duration <= 0 || o.Omit < 0 || o.Idle < 0 || o.ProbeInterval <= 0):
 		return errors.New("-streams and -duration must be positive, -omit and -idle must not be negative, and -probe-interval must be positive")
 	}

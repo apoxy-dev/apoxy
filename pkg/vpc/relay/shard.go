@@ -91,6 +91,7 @@ func (r *Router) joinShard(s *Session, attachment string, index uint32) (owner, 
 			delete(r.bySource, a)
 		}
 	}
+	r.dropLanes(s)
 	s.addr, s.prev = netip.AddrPort{}, netip.AddrPort{}
 	for _, a := range []netip.AddrPort{owner.addr, owner.prev} {
 		if a.IsValid() && r.bySource[a] == nil {

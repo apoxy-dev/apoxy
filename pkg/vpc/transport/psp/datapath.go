@@ -313,7 +313,7 @@ func (b *Binding) prepare(virt []byte, f *netstack.TxFrame) error {
 	if err != nil {
 		return err
 	}
-	*f = netstack.TxFrame{SA: sa, Seq: seq, Dst: *p.addr.Load(), Lane: lane}
+	*f = netstack.TxFrame{SA: sa, Seq: seq, Dst: *p.addr.Load(), Lane: p.SendLane(lane)}
 	return nil
 }
 

@@ -434,6 +434,61 @@ func TestLanes(t *testing.T) {
 	assert.ErrorContains(t, err, "VNI")
 }
 
+func TestOpenLanes(t *testing.T) {
+	cases := []struct {
+		name string
+		n    int
+		want int
+	}{
+		{"one lane", 1, 0},
+		{"4 lanes", 4, 3},
+		{"all lanes", keys.MaxLanes, keys.MaxLanes - 1},
+		{"above the most lanes", keys.MaxLanes + 4, keys.MaxLanes - 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a, _ := newPair(t)
+			ports := a.b.OpenLanes(tc.n)
+			require.Len(t, ports, tc.want)
+			for i, p := range ports {
+				c := a.b.laneConn(byte(i + 1))
+				require.NotNil(t, c, "lane %d", i+1)
+				assert.Equal(t, uint16(c.LocalAddr().(*net.UDPAddr).Port), p, "lane %d", i+1)
+				assert.NotEqual(t, addrOf(a.tr).Port(), p)
+			}
+			assert.Equal(t, ports, a.b.OpenLanes(tc.n), "a second call opens no new sockets")
+			require.NoError(t, a.b.Close())
+			assert.Empty(t, a.b.OpenLanes(tc.n), "no lanes after Close")
+		})
+	}
+}
+
+func TestSendLane(t *testing.T) {
+	cases := []struct {
+		name    string
+		sockets int // Zero keeps the count of a new peer.
+		lane    int
+		want    int
+	}{
+		{"new peer uses all lane sockets", 0, keys.MaxLanes - 1, keys.MaxLanes - 1},
+		{"lane 0", 1, 0, 0},
+		{"no lane sockets", 1, 3, 0},
+		{"lane with a socket", 4, 3, 3},
+		{"lane above the sockets", 4, 4, 0},
+		{"count below 1", -1, 1, 0},
+		{"count above the most lanes", keys.MaxLanes + 1, keys.MaxLanes - 1, keys.MaxLanes - 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a, _ := newPair(t)
+			if tc.sockets != 0 {
+				a.peer.SetLaneSockets(tc.sockets)
+			}
+			assert.Equal(t, tc.want, a.peer.SendLane(tc.lane))
+		})
+	}
+}
+
 // TestRekeyInFlight seals packets before each rekey and opens them after
 // it, in reverse order. No packet is lost.
 func TestRekeyInFlight(t *testing.T) {

@@ -32,6 +32,8 @@ const (
 	rebindOverlap = 5 * time.Second
 	sweepInterval = time.Second
 	minBurst      = 64 << 10
+	// MaxLaneSources is the most lane ports of a session: lanes 1 and up.
+	MaxLaneSources = keys.MaxLanes - 1
 )
 
 // VPCKey is the key of a routing domain: one VPC of one project. The VPC
@@ -64,7 +66,8 @@ type Permit func(srcVPC VPCKey, srcID string, dstVPC VPCKey, dst netip.Addr) boo
 // SameVPC is the MVP Permit rule: the source and the destination are in one VPC.
 func SameVPC(srcVPC VPCKey, _ string, dstVPC VPCKey, _ netip.Addr) bool { return srcVPC == dstVPC }
 
-// Config sets the meter of each lane (SPI row) and the limit of each tunnel.
+// Config sets the meter of each lane (SPI row), the limit of each tunnel and
+// the lane ports.
 type Config struct {
 	// LaneRate is the meter rate in bytes per second. Zero means no limit.
 	LaneRate float64
@@ -77,6 +80,10 @@ type Config struct {
 	// TunnelBurst is the burst of the tunnel limit in bytes. Zero means 100 ms
 	// of TunnelRate. It is at least 64 KiB.
 	TunnelBurst int
+	// LaneSources is the most lane ports that a session can register, at most
+	// MaxLaneSources. Zero turns lane ports off. Set it only when all flows
+	// from an agent address come to this relay.
+	LaneSources int
 }
 
 // Verdict is the result of a forward lookup.
@@ -127,6 +134,7 @@ func NewRouter(trust Trust, cfg Config) *Router {
 		cfg.TunnelBurst = int(cfg.TunnelRate / 10)
 	}
 	cfg.TunnelBurst = max(cfg.TunnelBurst, minBurst)
+	cfg.LaneSources = min(max(cfg.LaneSources, 0), MaxLaneSources)
 	return &Router{
 		cfg:      cfg,
 		trust:    trust,
@@ -161,6 +169,7 @@ type Session struct {
 	addr        netip.AddrPort
 	prev        netip.AddrPort // Valid until prevUntil after a migration.
 	prevUntil   time.Time
+	lanes       []netip.AddrPort  // Lane sources: lane i sends from lanes[i-1].
 	rows        map[uint32]*row   // Rows of this sender.
 	inbound     map[*row]struct{} // Rows of senders to this session.
 	routes      []netip.Prefix
@@ -187,6 +196,7 @@ type row struct {
 	spi              uint32
 	vpc              VPCKey
 	dst              netip.Addr
+	lane             int       // Source of the sender: 0 is its address. Guarded by Router.mu.
 	expires          time.Time // Guarded by Router.mu.
 	meter            *rate.Limiter
 	lastUsed         atomic.Int64 // Unix nanoseconds.
@@ -332,6 +342,7 @@ func (r *Router) removeSession(s *Session) {
 			o.twin = nil
 		}
 	}
+	r.dropLanes(s)
 	s.twin = nil
 	if d := r.domains[s.id.VPC]; d != nil {
 		delete(d.members, s)
@@ -376,6 +387,8 @@ func (r *Router) setAddr(s *Session, a netip.AddrPort, now time.Time) {
 		s.prev, s.prevUntil = s.addr, now.Add(rebindOverlap)
 	}
 	s.addr = a
+	// The lane ports were at the old address.
+	r.dropLanes(s)
 	r.takeSource(s)
 }
 
@@ -617,14 +630,14 @@ func (r *Router) Forward(src netip.AddrPort, spi uint32, size int, now time.Time
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	s := r.bySource[src]
-	if s == nil || (src != s.addr && now.After(s.prevUntil)) {
+	if s == nil || !s.from(src, now) {
 		r.drops[dropUnknownSource].Add(1)
 		return netip.AddrPort{}, DropUnknownSource
 	}
 	w := s.rows[spi]
 	if t := s.twin; (w == nil || now.After(w.expires)) && t != nil && !t.closed {
 		// The older session keeps its rows until it closes.
-		if tw := t.rows[spi]; tw != nil && (src == t.addr || (src == t.prev && !now.After(t.prevUntil))) {
+		if tw := t.rows[spi]; tw != nil && t.from(src, now) {
 			s, w = t, tw
 		}
 	}

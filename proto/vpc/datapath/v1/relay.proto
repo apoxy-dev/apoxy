@@ -31,6 +31,9 @@ service Relay {
   rpc RegisterSPI(RegisterSPIRequest) returns (google.protobuf.Empty);
   // UnregisterSPI removes forward rows of the caller.
   rpc UnregisterSPI(UnregisterSPIRequest) returns (google.protobuf.Empty);
+  // RegisterLanes sets the lane ports of the caller. Errors: InvalidArgument,
+  // AlreadyExists (a port is a source of another agent), FailedPrecondition.
+  rpc RegisterLanes(RegisterLanesRequest) returns (google.protobuf.Empty);
 }
 
 // RelayCloseCode is the QUIC application error code when a relay closes a
@@ -105,6 +108,9 @@ message Moved {}
 message Welcome {
   // Source address and port of the agent as the relay sees them.
   string reflexive_address = 1;
+  // Most ports that RegisterLanes takes. Zero means that the relay takes no
+  // lane ports.
+  uint32 max_lanes = 2;
 }
 
 // Route is a prefix in a VPC.
@@ -221,11 +227,21 @@ message RegisterSPIRequest {
   repeated uint32 spis = 3;
   // Time until the rows expire.
   google.protobuf.Duration expires_in = 4;
+  // Lane of each SPI, in the order of spis: 0 is the session address, and i
+  // is port i of RegisterLanes. Empty means lane 0 for all.
+  repeated uint32 lanes = 5;
 }
 
 message UnregisterSPIRequest {
   VPCRef vpc = 1;
   repeated uint32 spis = 2;
+}
+
+// RegisterLanesRequest replaces the lane ports of the caller. Each port is a
+// UDP port at the IP address of the session, from which the agent sends PSP
+// packets. Empty removes them.
+message RegisterLanesRequest {
+  repeated uint32 ports = 1;
 }
 
 // FallbackReason is why an agent sends data in QUIC mode.

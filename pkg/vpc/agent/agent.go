@@ -55,6 +55,8 @@ var (
 	pspRetryMin  = 30 * time.Second
 	pspRetryMax  = 10 * time.Minute
 	pspRetryNext = 5 * time.Second // From a probe that passes to the next probe.
+	// txLanes returns the send lanes to a relay address.
+	txLanes = psp.TxLanes
 )
 
 // relayQUIC is the QUIC config of relay sessions. See relay.MinPacketSize.
@@ -455,6 +457,9 @@ type relayConn struct {
 	spareDone chan struct{}
 
 	relayAddr netip.AddrPort    // Where PSP packets to peers go.
+	reflexive netip.AddrPort    // Address of the agent socket as the relay sees it.
+	maxLanes  uint32            // Most lane ports that the relay takes.
+	lanes     atomic.Int32      // Send lanes: the lane ports that the relay took, plus 1.
 	mode      dp.Mode           // Data mode of the Session call.
 	reason    dp.FallbackReason // Why mode is QUIC.
 	connect   time.Duration     // Time to connect: from the start of the dial to the first Config.
@@ -638,9 +643,12 @@ func (rc *relayConn) hello(begin time.Time, spare bool) error {
 	if err != nil {
 		return err
 	}
-	if m.GetWelcome() == nil {
+	w := m.GetWelcome()
+	if w == nil {
 		return fmt.Errorf("relay sent %T before Welcome", m.GetMsg())
 	}
+	rc.reflexive, _ = netip.ParseAddrPort(w.GetReflexiveAddress())
+	rc.maxLanes = w.GetMaxLanes()
 	if m, err = st.Recv(); err != nil {
 		return err
 	}
@@ -697,6 +705,9 @@ func (rc *relayConn) attach(ctx context.Context, begin time.Time) error {
 	if err != nil {
 		return err
 	}
+	if rc.mode == dp.Mode_MODE_PSP {
+		rc.registerLanes(ctx, b)
+	}
 	p, err := b.AddPeer(rc.relayAddr)
 	if err != nil {
 		return err
@@ -720,6 +731,36 @@ func (rc *relayConn) attach(ctx context.Context, begin time.Time) error {
 	}
 	rc.setup = time.Since(begin)
 	return nil
+}
+
+// registerLanes opens the lane sockets of b and registers their ports at the
+// relay, so that peers send each lane from its own port. It does nothing when
+// the relay takes no lane ports, or when it sees another port than the local
+// port of the agent socket.
+func (rc *relayConn) registerLanes(ctx context.Context, b *psp.Binding) {
+	n := min(int(rc.maxLanes)+1, txLanes(rc.relayAddr.Addr().Unmap()))
+	if n < 2 || rc.reflexive.Port() != rc.local.Port() {
+		return
+	}
+	ports := b.OpenLanes(n)
+	if len(ports) == 0 {
+		return
+	}
+	req := &dp.RegisterLanesRequest{Ports: make([]uint32, len(ports))}
+	for i, p := range ports {
+		req.Ports[i] = uint32(p)
+	}
+	if _, err := rc.c.RegisterLanes(ctx, req); err != nil {
+		slog.Info("Relay refused the lane ports; peers send on one port", "relay", rc.addr, "error", err)
+		return
+	}
+	rc.lanes.Store(int32(len(ports) + 1))
+	slog.Debug("Relay took the lane ports", "relay", rc.addr, "ports", ports)
+}
+
+// sendLanes returns the send lanes of rc: 1 when the relay took no lane ports.
+func (rc *relayConn) sendLanes() uint32 {
+	return uint32(max(rc.lanes.Load(), 1))
 }
 
 // attachError adds the close cause of rc to err.

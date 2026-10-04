@@ -144,9 +144,9 @@ func offer(t testing.TB, now time.Time, nodes ...*node) {
 // SPIs first, so that the relay knows each SPI before its first packet.
 func give(sender *node, req keys.Request, now time.Time) error {
 	if sender.rc != nil && len(req.SAs) > 0 {
-		spis := make([]uint32, len(req.SAs))
+		spis, lanes := make([]uint32, len(req.SAs)), make([]uint32, len(req.SAs))
 		for i, sa := range req.SAs {
-			spis[i] = sa.SPI
+			spis[i], lanes[i] = sa.SPI, uint32(sender.peer.SendLane(sa.Lane))
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -155,6 +155,7 @@ func give(sender *node, req keys.Request, now time.Time) error {
 			Destination: sender.other.v4.String(),
 			Spis:        spis,
 			ExpiresIn:   durationpb.New(req.SAs[0].ExpiresIn),
+			Lanes:       lanes,
 		})
 		if err != nil {
 			return err
@@ -272,10 +273,17 @@ type relayPkt struct {
 
 func newFakeRelay(t testing.TB) *fakeRelay {
 	t.Helper()
+	return newFakeRelayLanes(t, 0)
+}
+
+// newFakeRelayLanes returns a fake relay that takes up to lanes lane ports
+// from each session.
+func newFakeRelayLanes(t testing.TB, lanes int) *fakeRelay {
+	t.Helper()
 	ca, err := vpctest.NewCA()
 	require.NoError(t, err)
 	fr := &fakeRelay{
-		r:        relay.NewRouter(vpctest.NewTrust(ca), relay.Config{}),
+		r:        relay.NewRouter(vpctest.NewTrust(ca), relay.Config{LaneSources: lanes}),
 		ca:       ca,
 		accepted: make(chan *relay.Session, 1),
 		q:        make(chan relayPkt, 1024),
@@ -383,12 +391,40 @@ func (fr *fakeRelay) attach(t testing.TB, n *node, name string) {
 // newRelayPair returns two nodes whose peers are at the relay.
 func newRelayPair(t testing.TB) (*node, *node, *fakeRelay) {
 	t.Helper()
-	fr := newFakeRelay(t)
-	a, b := newPair(t)
-	fr.attach(t, a, "a")
-	fr.attach(t, b, "b")
-	a.peer.SetAddr(addrOf(fr.tr))
-	b.peer.SetAddr(addrOf(fr.tr))
+	return newRelayPairLanes(t, 1, 0)
+}
+
+// newRelayPairLanes returns two nodes whose peers are at a relay that takes
+// up to relayLanes lane ports. Each node receives on lanes SAs. As the agent
+// does, a node sends from its lane sockets only when the relay takes their
+// ports.
+func newRelayPairLanes(t testing.TB, lanes, relayLanes int) (*node, *node, *fakeRelay) {
+	t.Helper()
+	fr := newFakeRelayLanes(t, relayLanes)
+	a, b := newPairLanes(t, 0, lanes)
+	for _, n := range []*node{a, b} {
+		name := "a"
+		if n == b {
+			name = "b"
+		}
+		fr.attach(t, n, name)
+		n.peer.SetAddr(addrOf(fr.tr))
+		n.peer.SetLaneSockets(1)
+		ports := n.b.OpenLanes(lanes)
+		if len(ports) == 0 {
+			continue
+		}
+		req := &dp.RegisterLanesRequest{}
+		for _, p := range ports {
+			req.Ports = append(req.Ports, uint32(p))
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_, err := n.rc.RegisterLanes(ctx, req)
+		cancel()
+		if err == nil {
+			n.peer.SetLaneSockets(len(ports) + 1)
+		}
+	}
 	return a, b, fr
 }
 

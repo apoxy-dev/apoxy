@@ -14,7 +14,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// TestSockBufs checks that New sets 16 MiB buffers on the agent socket. With
+// TestSockBufs checks that New sets 16 MiB buffers on the agent socket, and
+// that a lane socket gets a 16 MiB send buffer and a small receive buffer. With
 // no CAP_NET_ADMIN the kernel limits them to rmem_max and wmem_max. The kernel
 // reports twice the size.
 func TestSockBufs(t *testing.T) {
@@ -23,19 +24,39 @@ func TestSockBufs(t *testing.T) {
 	b, err := New(Config{Transport: tr, Demux: dm})
 	require.NoError(t, err)
 	defer b.Close()
-	rc, err := tr.Conn.(*net.UDPConn).SyscallConn()
+	agent := tr.Conn.(*net.UDPConn)
+	lane, err := listenLane(agent)
 	require.NoError(t, err)
+	defer lane.Close()
 	admin := netAdmin(t)
-	for opt, limit := range map[int]string{unix.SO_RCVBUF: "rmem_max", unix.SO_SNDBUF: "wmem_max"} {
-		want := sockBuf
-		if !admin {
-			want = min(want, sysctl(t, "/proc/sys/net/core/"+limit))
-		}
-		var got int
-		var gerr error
-		require.NoError(t, rc.Control(func(fd uintptr) { got, gerr = unix.GetsockoptInt(int(fd), unix.SOL_SOCKET, opt) }))
-		require.NoError(t, gerr)
-		assert.Equal(t, 2*want, got, "%s, CAP_NET_ADMIN %t", limit, admin)
+	cases := []struct {
+		name     string
+		c        *net.UDPConn
+		rcv, snd int
+	}{
+		{"agent socket", agent, sockBuf, sockBuf},
+		{"lane socket", lane, laneRcvBuf, sockBuf},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rc, err := tc.c.SyscallConn()
+			require.NoError(t, err)
+			for _, o := range []struct {
+				opt   int
+				limit string
+				want  int
+			}{{unix.SO_RCVBUF, "rmem_max", tc.rcv}, {unix.SO_SNDBUF, "wmem_max", tc.snd}} {
+				want := o.want
+				if !admin {
+					want = min(want, sysctl(t, "/proc/sys/net/core/"+o.limit))
+				}
+				var got int
+				var gerr error
+				require.NoError(t, rc.Control(func(fd uintptr) { got, gerr = unix.GetsockoptInt(int(fd), unix.SOL_SOCKET, o.opt) }))
+				require.NoError(t, gerr)
+				assert.Equal(t, 2*want, got, "%s, CAP_NET_ADMIN %t", o.limit, admin)
+			}
+		})
 	}
 }
 

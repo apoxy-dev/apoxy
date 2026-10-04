@@ -86,6 +86,7 @@ func TestSendLanes(t *testing.T) {
 	cases := []struct {
 		name     string
 		lanes    int
+		sockets  int // Lane sockets of the peer. Zero is all.
 		batch    bool
 		noSocket int // A lane whose socket closes before the send. Zero is none.
 		ports    int
@@ -94,11 +95,20 @@ func TestSendLanes(t *testing.T) {
 		{name: "4 lanes", lanes: 4, batch: true, ports: 4},
 		{name: "4 lanes, one write for each packet", lanes: 4, ports: 4},
 		{name: "lane with no socket sends on lane 0", lanes: 4, batch: true, noSocket: 2, ports: 3},
+		{name: "peer with no lane sockets", lanes: 4, sockets: 1, batch: true, ports: 1},
+		{name: "peer with 2 lane sockets", lanes: 4, sockets: 2, batch: true, ports: 2},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			a, b := newPairLanes(t, 0, tc.lanes)
+			sent := tc.lanes
+			if tc.sockets > 0 {
+				a.peer.SetLaneSockets(tc.sockets)
+				sent = tc.sockets
+			}
 			offer(t, time.Now(), a, b)
+			// Apply opens only the sockets that the peer uses.
+			assert.Len(t, a.b.LaneConns(), sent-1)
 			sink, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 			require.NoError(t, err)
 			defer sink.Close()
@@ -131,7 +141,7 @@ func TestSendLanes(t *testing.T) {
 			}
 			assert.Len(t, ports, tc.ports)
 			lanes := a.b.LanePackets()
-			require.Len(t, lanes, tc.lanes)
+			require.Len(t, lanes, sent)
 			assert.Equal(t, lanes[0], ports[addrOf(a.tr).Port()], "lane 0 sends on the agent socket")
 			if tc.noSocket > 0 {
 				assert.Zero(t, lanes[tc.noSocket])

@@ -22,7 +22,10 @@ type Peer struct {
 	tx    *keys.TxPeer
 	addr  atomic.Pointer[netip.AddrPort]
 	lanes atomic.Int32 // Highest lane with a transmit SA, plus one.
-	br    breaker
+	// sockets is the lane count that sends from lane sockets. The other
+	// lanes send from the agent socket.
+	sockets atomic.Int32
+	br      breaker
 
 	// Guarded by b.mu.
 	routes  []netip.Prefix
@@ -120,8 +123,24 @@ func (p *Peer) Apply(req keys.Request, now time.Time) ([]uint32, error) {
 	}
 	refused, err := p.tx.Apply(req, now)
 	p.updateLanes()
-	p.b.openLanes(int(p.lanes.Load()))
+	p.b.openLanes(min(int(p.lanes.Load()), int(p.sockets.Load())))
 	return refused, err
+}
+
+// SetLaneSockets lets lanes 1 to n-1 send to the peer from their own socket.
+// The other lanes send from the agent socket. A new peer uses the sockets of
+// all lanes.
+func (p *Peer) SetLaneSockets(n int) {
+	p.sockets.Store(int32(min(max(n, 1), keys.MaxLanes)))
+}
+
+// SendLane returns the socket lane of the SA lane: the lane, or 0 for the
+// agent socket.
+func (p *Peer) SendLane(lane int) int {
+	if lane >= int(p.sockets.Load()) {
+		return 0
+	}
+	return lane
 }
 
 // updateLanes sets the lane count from the transmit SAs. b.mu must be held,

@@ -219,6 +219,10 @@ func (r *relayStub) UnregisterSPI(ctx context.Context, in *dp.UnregisterSPIReque
 	return answer[*emptypb.Empty](r.stub, "UnregisterSPI", in)
 }
 
+func (r *relayStub) RegisterLanes(ctx context.Context, in *dp.RegisterLanesRequest) (*emptypb.Empty, error) {
+	return answer[*emptypb.Empty](r.stub, "RegisterLanes", in)
+}
+
 type peerStub struct{ *stub }
 
 func (p peerStub) Open(ctx context.Context, in *dp.OpenRequest) (*dp.OpenResponse, error) {
@@ -342,7 +346,7 @@ func runBothWays(t *testing.T, alpn string, register func(*rpc.Mux, *stub), call
 }
 
 func TestRelaySession(t *testing.T) {
-	welcome := &dp.SessionResponse{Msg: &dp.SessionResponse_Welcome{Welcome: &dp.Welcome{ReflexiveAddress: "203.0.113.7:40000"}}}
+	welcome := &dp.SessionResponse{Msg: &dp.SessionResponse_Welcome{Welcome: &dp.Welcome{ReflexiveAddress: "203.0.113.7:40000", MaxLanes: 15}}}
 	pushes := []*dp.SessionResponse{
 		{Msg: &dp.SessionResponse_RouteDelta{RouteDelta: &dp.RouteDelta{
 			Rev:    1,
@@ -413,6 +417,12 @@ func TestRelayCalls(t *testing.T) {
 		unary("RegisterSPI", c, dp.RelayClient.RegisterSPI,
 			&dp.RegisterSPIRequest{Vpc: vpc, Destination: "fd61:a0b:c00:2::9", Spis: []uint32{sa.Spi}, ExpiresIn: durationpb.New(5 * time.Minute)},
 			&emptypb.Empty{}),
+		unary("RegisterSPI with lanes", c, dp.RelayClient.RegisterSPI,
+			&dp.RegisterSPIRequest{Vpc: vpc, Destination: "fd61:a0b:c00:2::9", Spis: []uint32{sa.Spi, 0x80000002}, ExpiresIn: durationpb.New(5 * time.Minute), Lanes: []uint32{0, 1}},
+			&emptypb.Empty{}),
+		unary("RegisterLanes", c, dp.RelayClient.RegisterLanes, &dp.RegisterLanesRequest{Ports: []uint32{40001, 40002}}, &emptypb.Empty{}),
+		unary("RegisterLanes taken", c, dp.RelayClient.RegisterLanes, &dp.RegisterLanesRequest{Ports: []uint32{40003}},
+			rpc.Errorf(rpc.AlreadyExists, "port 40003 is a source of another session")),
 		unary("UnregisterSPI", c, dp.RelayClient.UnregisterSPI,
 			&dp.UnregisterSPIRequest{Vpc: vpc, Spis: []uint32{sa.Spi}}, &emptypb.Empty{}),
 	})
@@ -422,8 +432,8 @@ func TestPeerCalls(t *testing.T) {
 	c := dp.NewPeerClient
 	runBothWays(t, dp.ALPNPeer, func(m *rpc.Mux, s *stub) { dp.RegisterPeerServer(m, peerStub{s}) }, []call{
 		unary("Open", c, dp.PeerClient.Open,
-			&dp.OpenRequest{Grant: grant, Grants: []*dp.AttachmentGrant{grant}, Instance: 0x0102030405060708, Mode: dp.Mode_MODE_PSP, P2P: true},
-			&dp.OpenResponse{Grant: grant, Grants: []*dp.AttachmentGrant{grant}, Instance: 0x1112131415161718, Mode: dp.Mode_MODE_QUIC}),
+			&dp.OpenRequest{Grant: grant, Grants: []*dp.AttachmentGrant{grant}, Instance: 0x0102030405060708, Mode: dp.Mode_MODE_PSP, P2P: true, Lanes: 8},
+			&dp.OpenResponse{Grant: grant, Grants: []*dp.AttachmentGrant{grant}, Instance: 0x1112131415161718, Mode: dp.Mode_MODE_QUIC, Lanes: 1}),
 		unary("Grants", c, dp.PeerClient.Grants,
 			&dp.GrantsRequest{Add: []*dp.AttachmentGrant{grant}, Remove: []string{"att-2"}}, &emptypb.Empty{}),
 		unary("Keys offer", c, dp.PeerClient.Keys, offer, &dp.KeysResponse{RefusedSpis: []uint32{sa.Spi}}),

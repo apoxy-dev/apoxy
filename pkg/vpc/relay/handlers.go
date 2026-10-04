@@ -89,7 +89,8 @@ func (r *Router) resolvePeer(c *Session, in *dp.ResolvePeerRequest) (*dp.Resolve
 
 // RegisterSPI adds rows from the caller to the receiver of the destination.
 // It installs all SPIs or none. An SPI that the caller holds for another
-// destination gets AlreadyExists.
+// destination gets AlreadyExists. The lane of an SPI sets only the source of
+// its XDP row: Forward takes the SPI from all sources of the caller.
 func (srv *Server) RegisterSPI(ctx context.Context, in *dp.RegisterSPIRequest) (*emptypb.Empty, error) {
 	c, err := srv.R.caller(ctx)
 	if err != nil {
@@ -109,6 +110,15 @@ func (r *Router) registerSPI(c *Session, in *dp.RegisterSPIRequest, now time.Tim
 	ttl := in.GetExpiresIn().AsDuration()
 	if in.GetExpiresIn().CheckValid() != nil || ttl <= 0 {
 		return rpc.Errorf(rpc.InvalidArgument, "expires_in must be positive")
+	}
+	lanes := in.GetLanes()
+	if len(lanes) != 0 && len(lanes) != len(in.GetSpis()) {
+		return rpc.Errorf(rpc.InvalidArgument, "%d lanes for %d SPIs", len(lanes), len(in.GetSpis()))
+	}
+	for _, l := range lanes {
+		if l > MaxLaneSources {
+			return rpc.Errorf(rpc.InvalidArgument, "lane %d is above %d", l, MaxLaneSources)
+		}
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -134,7 +144,7 @@ func (r *Router) registerSPI(c *Session, in *dp.RegisterSPIRequest, now time.Tim
 			}
 		}
 	}
-	for _, spi := range in.GetSpis() {
+	for i, spi := range in.GetSpis() {
 		w := c.rows[spi]
 		if w == nil {
 			w = &row{sender: c, spi: spi, vpc: key, dst: dst}
@@ -149,6 +159,10 @@ func (r *Router) registerSPI(c *Session, in *dp.RegisterSPIRequest, now time.Tim
 			}
 			w.receiver = recv
 			recv.inbound[w] = struct{}{}
+		}
+		w.lane = 0
+		if len(lanes) > 0 {
+			w.lane = int(lanes[i])
 		}
 		w.expires = now.Add(ttl)
 		w.lastUsed.Store(now.UnixNano())

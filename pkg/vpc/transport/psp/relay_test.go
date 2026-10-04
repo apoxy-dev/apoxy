@@ -20,6 +20,7 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 
+	"github.com/apoxy-dev/apoxy/pkg/vpc/relay"
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
@@ -80,6 +81,48 @@ func TestRelay(t *testing.T) {
 		assert.Zero(t, st.TxDrops)
 	}
 	assert.Zero(t, fr.drops.Load())
+}
+
+// TestRelayLanes sends UDP flows through the relay from the lane sockets whose
+// ports the relay took, or from the agent socket when it took none.
+func TestRelayLanes(t *testing.T) {
+	const flows = 32
+	cases := []struct {
+		name       string
+		lanes      int // SAs that each node offers.
+		relayLanes int // Lane port limit of the relay.
+		wantLanes  bool
+	}{
+		{"one lane", 1, relay.MaxLaneSources, false},
+		{"4 lanes", 4, relay.MaxLaneSources, true},
+		{"relay takes no lane ports", 4, 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a, b, fr := newRelayPairLanes(t, tc.lanes, tc.relayLanes)
+			offer(t, time.Now(), a, b)
+			sa, sb := startNetstack(t, a, 0), startNetstack(t, b, 0)
+			recv, err := gonet.DialUDP(sb, ptr(fullAddr(b.v4, 9)), nil, protoOf(b.v4))
+			require.NoError(t, err)
+			defer recv.Close()
+			for range flows {
+				send, err := gonet.DialUDP(sa, ptr(fullAddr(a.v4, 0)), ptr(fullAddr(b.v4, 9)), protoOf(b.v4))
+				require.NoError(t, err)
+				defer send.Close()
+				_, err = send.Write([]byte("hello"))
+				require.NoError(t, err)
+			}
+			buf := make([]byte, 100)
+			for i := range flows {
+				require.NoError(t, recv.SetReadDeadline(time.Now().Add(10*time.Second)))
+				_, err := recv.Read(buf)
+				require.NoError(t, err, "datagram %d", i)
+			}
+			lanes := a.b.LanePackets()
+			assert.Equal(t, tc.wantLanes, len(lanes) > 1, "packets of each lane: %v", lanes)
+			assert.Zero(t, fr.drops.Load())
+		})
+	}
 }
 
 // TestDirect sends UDP between two bindings with no QUIC session on their sockets.
