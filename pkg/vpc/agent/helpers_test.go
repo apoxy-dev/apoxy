@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -289,9 +290,8 @@ type agentOptions struct {
 	vpcStack bool
 }
 
-// lossyConn drops the packets that it sends if they are larger than max.
-// Zero means no limit. While limitProbes is set, it sends only probeBudget
-// more path probes.
+// lossyConn drops the sent packets that are larger than a max that is not zero.
+// While limitProbes is set, it sends only probeBudget more path probes.
 type lossyConn struct {
 	net.PacketConn
 	max         atomic.Int32
@@ -521,9 +521,25 @@ func (ta *testAgent) attached(t *testing.T) attachEvent {
 	case ev := <-ta.attach:
 		return ev
 	case <-time.After(10 * time.Second):
+		t.Log(vpcStacks())
 		t.Fatal("agent did not attach in 10 s")
 		return attachEvent{}
 	}
+}
+
+// vpcStacks returns the stacks of the goroutines that are in the agent, the
+// relay or rpc.
+func vpcStacks() string {
+	buf := make([]byte, 64<<20)
+	buf = buf[:runtime.Stack(buf, true)]
+	var b strings.Builder
+	for g := range strings.SplitSeq(string(buf), "\n\n") {
+		if strings.Contains(g, "/pkg/vpc/agent.") || strings.Contains(g, "/pkg/vpc/relay.") || strings.Contains(g, "/pkg/vpc/rpc.") {
+			b.WriteString(g)
+			b.WriteString("\n\n")
+		}
+	}
+	return b.String()
 }
 
 // netstack starts a netstack with the device MTU on b at the first attach,

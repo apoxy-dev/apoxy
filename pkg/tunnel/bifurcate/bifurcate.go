@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net"
 	"sync"
+	"sync/atomic"
 
 	"gvisor.dev/gvisor/pkg/tcpip/header"
 
@@ -17,26 +18,28 @@ var messagePool = sync.Pool{
 	},
 }
 
-// Bifurcate splits incoming packets from `pc` into geneve and other channels.
+// Bifurcate splits the packets of pc into a Geneve side and a side for all other
+// packets. A read deadline applies to one side. pc closes when both sides close.
 func Bifurcate(pc batchpc.BatchPacketConn) (batchpc.BatchPacketConn, batchpc.BatchPacketConn) {
-	var closeConnOnce sync.Once
-	geneveConn := newChanPacketConn(pc, &closeConnOnce)
-	otherConn := newChanPacketConn(pc, &closeConnOnce)
+	open := new(atomic.Int32)
+	open.Store(2)
+	geneveConn := newChanPacketConn(pc, open)
+	otherConn := newChanPacketConn(pc, open)
 
-	// Local copies we can nil out when a side is closed.
+	// Local copies that become nil when a side closes.
 	geneveCh := geneveConn.ch
 	otherCh := otherConn.ch
 	var geneveClosed <-chan struct{} = geneveConn.closed
 	var otherClosed <-chan struct{} = otherConn.closed
 
 	go func() {
-		// Reusable read batch (values) for kernel I/O.
+		// The read batch for the kernel. It is used again for each read.
 		msgs := make([]batchpc.Message, batchpc.MaxBatchSize)
-		// Shadow array of pooled message pointers we own & recycle.
+		// The pooled messages that this goroutine owns.
 		pm := make([]*batchpc.Message, batchpc.MaxBatchSize)
 
 		for {
-			// If both sides are gone, stop.
+			// Stop when both sides are closed.
 			if geneveCh == nil && otherCh == nil {
 				return
 			}
@@ -46,7 +49,7 @@ func Bifurcate(pc batchpc.BatchPacketConn) (batchpc.BatchPacketConn, batchpc.Bat
 				if pm[i] == nil {
 					pm[i] = messagePool.Get().(*batchpc.Message)
 				}
-				// Reset/expand the buffer we hand to the kernel.
+				// Give the full buffer to the kernel.
 				pm[i].Buf = pm[i].Buf[:cap(pm[i].Buf)]
 				pm[i].Addr = nil
 
@@ -56,7 +59,7 @@ func Bifurcate(pc batchpc.BatchPacketConn) (batchpc.BatchPacketConn, batchpc.Bat
 
 			n, err := pc.ReadBatch(msgs, 0)
 			if err != nil {
-				// Recycle any pooled messages we haven't handed off.
+				// Put back the pooled messages that no receiver has.
 				for i := 0; i < len(pm); i++ {
 					if pm[i] != nil {
 						messagePool.Put(pm[i])
@@ -64,11 +67,11 @@ func Bifurcate(pc batchpc.BatchPacketConn) (batchpc.BatchPacketConn, batchpc.Bat
 					}
 				}
 
-				// Bubble the error up to each chanPacketConn.
+				// Send the error to each side.
 				geneveConn.setErr(err)
 				otherConn.setErr(err)
 
-				// Only close+exit if this is a permanent close.
+				// Stop only when pc is closed.
 				if errors.Is(err, net.ErrClosed) {
 					_ = geneveConn.Close()
 					_ = otherConn.Close()
@@ -77,7 +80,7 @@ func Bifurcate(pc batchpc.BatchPacketConn) (batchpc.BatchPacketConn, batchpc.Bat
 
 				slog.Warn("Error reading batch from underlying connection", slog.Any("error", err))
 
-				// Transient error: keep the bifurcator alive.
+				// Continue after a temporary error.
 				continue
 			}
 
@@ -85,19 +88,13 @@ func Bifurcate(pc batchpc.BatchPacketConn) (batchpc.BatchPacketConn, batchpc.Bat
 				continue
 			}
 
-			// Classify into destination batches. These slices are handed to the
-			// receiver over a channel by reference, and the receiver may not have
-			// drained the previous batch yet (the channel is buffered). Allocating
-			// fresh slices each iteration is mandatory: reusing a backing array and
-			// re-filling it via [:0]+append would overwrite the message pointers a
-			// receiver is still reading, delivering a different message's buffer and
-			// nil/wrong source address. Allocate per iteration, never reuse.
+			// A receiver can still read the last batch, so each batch gets new slices.
 			gBatch := make([]*batchpc.Message, 0, batchpc.MaxBatchSize)
 			oBatch := make([]*batchpc.Message, 0, batchpc.MaxBatchSize)
 
 			for i := 0; i < n; i++ {
 				m := pm[i]
-				// msgs[i].Buf may have been resized by underlying BatchPacketConn ReadBatch.
+				// ReadBatch can change the length of msgs[i].Buf.
 				m.Buf = msgs[i].Buf
 				m.Addr = msgs[i].Addr
 
@@ -107,20 +104,19 @@ func Bifurcate(pc batchpc.BatchPacketConn) (batchpc.BatchPacketConn, batchpc.Bat
 					oBatch = append(oBatch, m)
 				}
 
-				// Detach so we don't double-put on error paths.
+				// The batch owns m now, so an error does not put it back two times.
 				pm[i] = nil
 			}
 
-			// Helper to send a batch or recycle if receiver closed.
+			// sendBatch sends a batch, or puts its messages back when the side is closed.
 			sendBatch := func(ch chan []*batchpc.Message, closed <-chan struct{}, batch []*batchpc.Message) (chan []*batchpc.Message, <-chan struct{}) {
 				if ch == nil || len(batch) == 0 {
 					return ch, closed
 				}
 				select {
 				case ch <- batch:
-					// Delivered; ownership of messages transfers to receiver.
+					// The receiver owns the messages now.
 				case <-closed:
-					// Receiver closed: recycle messages.
 					for _, m := range batch {
 						messagePool.Put(m)
 					}
@@ -139,22 +135,15 @@ func Bifurcate(pc batchpc.BatchPacketConn) (batchpc.BatchPacketConn, batchpc.Bat
 	return geneveConn, otherConn
 }
 
-// isGeneve performs a fast inline check of the Geneve header without full
-// deserialization. The fixed Geneve header is 8 bytes:
-//
-//	byte 0: version (2 bits) | opt len (6 bits)
-//	byte 1: flags (8 bits)
-//	byte 2-3: protocol type (big-endian)
-//	byte 4-7: VNI (24 bits) | reserved (8 bits)
+// isGeneve checks the fixed 8-byte Geneve header: version 0 and a protocol type
+// of IPv4, IPv6 or 0.
 func isGeneve(b []byte) bool {
 	if len(b) < 8 {
 		return false
 	}
-	// Only Geneve version 0 is defined.
 	if b[0]>>6 != 0 {
 		return false
 	}
-	// Check for valid protocol types (IPv4 or IPv6) or EtherType 0 (mgmt / oob).
 	proto := uint16(b[2])<<8 | uint16(b[3])
 	return proto == uint16(header.IPv4ProtocolNumber) ||
 		proto == uint16(header.IPv6ProtocolNumber) ||

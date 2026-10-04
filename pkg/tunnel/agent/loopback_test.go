@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"net"
 	"net/netip"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,8 +24,8 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/router"
 )
 
-// noopRelayRouter is a no-op router.Router for the relay side of the loopback
-// harness — the relay's overlay routing is irrelevant to agent-side tests.
+// noopRelayRouter is a router.Router that does nothing. The agent tests do not
+// use the overlay routes of the relay.
 type noopRelayRouter struct{}
 
 func (noopRelayRouter) Start(context.Context) error                       { return nil }
@@ -34,9 +35,8 @@ func (noopRelayRouter) AddRoute(netip.Prefix) error                       { retu
 func (noopRelayRouter) DelRoute(netip.Prefix) error                       { return nil }
 func (noopRelayRouter) Close() error                                      { return nil }
 
-// startRelayHarness starts a real in-process QUIC relay on pc with the given
-// router and icx handler, and returns it plus a stop func. It is the single
-// relay bring-up used by the loopback and data-plane tests.
+// startRelayHarness starts an in-process QUIC relay on pc and returns it with a
+// stop func. The test cleanup also calls stop.
 func startRelayHarness(t *testing.T, token string, pc net.PacketConn, rtr router.Router, h *icx.Handler, onConnect func(context.Context, string, string, controllers.Connection) error, onDisconnect func(context.Context, string, string) error, configure ...func(*tunnel.Relay)) (*tunnel.Relay, func()) {
 	t.Helper()
 
@@ -56,29 +56,29 @@ func startRelayHarness(t *testing.T, token string, pc net.PacketConn, rtr router
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		if err := r.Start(ctx); err != nil {
-			t.Logf("Relay stopped: %v", err)
-		}
-		close(done)
-	}()
+	errc := make(chan error, 1)
+	go func() { errc <- r.Start(ctx) }()
 
-	time.Sleep(150 * time.Millisecond) // let the server bind and serve
+	time.Sleep(150 * time.Millisecond) // Let the server bind and serve.
 
-	stop := func() {
+	stop := sync.OnceFunc(func() {
 		cancel()
 		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
+		case err := <-errc:
+			if err != nil {
+				t.Logf("Relay stopped: %v", err)
+			}
+		case <-time.After(15 * time.Second):
+			t.Error("relay did not stop in 15 s")
 		}
 		_ = pc.Close()
-	}
+	})
+	t.Cleanup(stop)
 	return r, stop
 }
 
-// startLoopbackRelay is startRelayHarness on a fresh loopback UDP socket with
-// a no-op router — the control-plane-only variant.
+// startLoopbackRelay is startRelayHarness on a new loopback UDP socket with a
+// router that does nothing.
 func startLoopbackRelay(t *testing.T, token string, onConnect func(context.Context, string, string, controllers.Connection) error, onDisconnect func(context.Context, string, string) error) (*tunnel.Relay, func()) {
 	t.Helper()
 
@@ -88,8 +88,8 @@ func startLoopbackRelay(t *testing.T, token string, onConnect func(context.Conte
 	return startRelayHarness(t, token, pc, noopRelayRouter{}, newTestHandler(t), onConnect, onDisconnect)
 }
 
-// assignVNIOnConnect is the standard onConnect for these tests: it hands the
-// connection a deterministic VNI and overlay address so handleConnect completes.
+// assignVNIOnConnect gives the connection a known VNI and overlay address, so
+// handleConnect completes.
 func assignVNIOnConnect(vni uint, overlay string) func(context.Context, string, string, controllers.Connection) error {
 	return func(ctx context.Context, _, _ string, conn controllers.Connection) error {
 		conn.SetVNI(ctx, vni)
@@ -135,7 +135,7 @@ func TestBootstrapSession(t *testing.T) {
 	require.Equal(t, uint(707), boot.Connect.VNI)
 	require.Equal(t, []string{"10.0.0.7/32"}, boot.Connect.Addresses)
 
-	// Bootstrap disconnects its throwaway session gracefully.
+	// Bootstrap disconnects its temporary session.
 	select {
 	case <-discCh:
 	case <-time.After(2 * time.Second):
@@ -143,15 +143,15 @@ func TestBootstrapSession(t *testing.T) {
 	}
 }
 
-// newAgentRouter builds the agent-side netstack router + handler from a bootstrap
-// response, mirroring the Run wiring (no SOCKS listener, no pcap).
+// newAgentRouter makes the agent netstack router and handler from a bootstrap
+// response, as Run does, without SOCKS or pcap.
 func newAgentRouter(t *testing.T, ctx context.Context, g *errgroup.Group, boot *bootstrapInfo, pp *packetPlane) (router.Router, *icx.Handler, *routeReconciler) {
 	t.Helper()
 	return newAgentRouterWithSocks(t, ctx, g, boot, pp, "")
 }
 
-// newAgentRouterWithSocks is newAgentRouter with an explicit SOCKS listen address,
-// so two agents in one test don't collide on the default localhost:1080.
+// newAgentRouterWithSocks is newAgentRouter with a SOCKS listen address, so two
+// agents in one test use different addresses.
 func newAgentRouterWithSocks(t *testing.T, ctx context.Context, g *errgroup.Group, boot *bootstrapInfo, pp *packetPlane, socksAddr string) (router.Router, *icx.Handler, *routeReconciler) {
 	t.Helper()
 	r, handler, routes, err := initRouter(ctx, g, boot.Connect, routerInitOpts{pcGeneve: pp.Geneve, socksListenAddr: socksAddr})
@@ -203,7 +203,7 @@ func TestManageConnectionSlot_EstablishesAndReleases(t *testing.T) {
 		}
 	}, 5*time.Second, 20*time.Millisecond, "slot should publish its connected state")
 
-	// Cancelling ends the session; the slot releases and returns ctx.Err.
+	// A cancel ends the session. The slot releases the relay and returns ctx.Err.
 	cancel()
 	select {
 	case err := <-slotErr:
@@ -235,8 +235,8 @@ func TestManageConnectionSlot_ExclusiveAcquireCapsAtPoolSize(t *testing.T) {
 	require.NoError(t, err)
 	ar, handler, routes := newAgentRouter(t, gctx, g, boot, pp)
 
-	// One relay in the pool, two slots. Because a slot holds a relay exclusively,
-	// only one slot can be connected at a time; the surplus blocks in Acquire.
+	// One relay and two slots. A slot holds its relay alone, so the second slot
+	// waits in Acquire.
 	pool := randalloc.NewRandAllocator(sets.New[string](r.Address().String()))
 	for i := 0; i < 2; i++ {
 		go func() { _ = manageConnectionSlot(gctx, cfg, pp.QuicMux, handler, ar, routes, pool, tlsConf) }()
@@ -246,7 +246,7 @@ func TestManageConnectionSlot_ExclusiveAcquireCapsAtPoolSize(t *testing.T) {
 		return cfg.ConnectionTracker.ActiveConnections() == 1
 	}, 5*time.Second, 20*time.Millisecond, "exactly one slot should connect")
 
-	// Give the second slot ample time to (wrongly) connect, then assert it did not.
+	// Give the second slot time to connect, then make sure that it did not.
 	time.Sleep(300 * time.Millisecond)
 	require.Equal(t, 1, cfg.ConnectionTracker.ActiveConnections(), "second slot must stay blocked on the exclusive pool")
 }

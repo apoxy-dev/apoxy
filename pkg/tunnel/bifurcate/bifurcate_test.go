@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"net"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -182,6 +183,126 @@ func TestBifurcate_ClosesBothOnUnderlyingClose(t *testing.T) {
 	require.ErrorIs(t, err, net.ErrClosed)
 }
 
+func TestBifurcate_CloseSide(t *testing.T) {
+	dst := &net.UDPAddr{IP: net.IPv4(203, 0, 113, 1), Port: 9999}
+	cases := []struct {
+		name        string
+		closeGeneve bool
+		closeOther  bool
+	}{
+		{name: "geneve side", closeGeneve: true},
+		{name: "other side", closeOther: true},
+		{name: "both sides", closeGeneve: true, closeOther: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mockConn := newMockBatchPacketConn()
+			geneveConn, otherConn := bifurcate.Bifurcate(mockConn)
+			t.Cleanup(func() {
+				_ = geneveConn.Close()
+				_ = otherConn.Close()
+			})
+			sides := []struct {
+				conn   batchpc.BatchPacketConn
+				closed bool
+				pkt    []byte
+			}{
+				{conn: geneveConn, closed: tc.closeGeneve, pkt: createGenevePacket(t)},
+				{conn: otherConn, closed: tc.closeOther, pkt: createNonGenevePacket()},
+			}
+			for _, s := range sides {
+				if s.closed {
+					require.NoError(t, s.conn.Close())
+				} else {
+					mockConn.enqueue(s.pkt, dst)
+				}
+			}
+
+			buf := make([]byte, 1024)
+			for _, s := range sides {
+				_, werr := s.conn.WriteTo(s.pkt, dst)
+				_, berr := s.conn.WriteBatch([]batchpc.Message{{Buf: s.pkt, Addr: dst}}, 0)
+				n, _, rerr := s.conn.ReadFrom(buf)
+				if s.closed {
+					require.ErrorIs(t, werr, net.ErrClosed)
+					require.ErrorIs(t, berr, net.ErrClosed)
+					require.ErrorIs(t, rerr, net.ErrClosed)
+					continue
+				}
+				require.NoError(t, werr)
+				require.NoError(t, berr)
+				require.NoError(t, rerr)
+				require.Equal(t, s.pkt, buf[:n])
+			}
+			mockConn.mu.Lock()
+			defer mockConn.mu.Unlock()
+			require.Equal(t, tc.closeGeneve && tc.closeOther, mockConn.closed)
+		})
+	}
+}
+
+func TestBifurcate_ReadDeadline(t *testing.T) {
+	src := &net.UDPAddr{IP: net.IPv4(10, 1, 1, 1), Port: 9999}
+	cases := []struct {
+		name    string
+		offset  time.Duration
+		waiting bool
+		clear   bool
+	}{
+		{name: "deadline in the past", offset: -time.Second},
+		{name: "deadline that ends while the read waits", offset: 50 * time.Millisecond},
+		{name: "deadline set while the read waits", offset: -time.Second, waiting: true},
+		{name: "deadline cleared", offset: -time.Second, clear: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mockConn := newMockBatchPacketConn()
+			geneveConn, otherConn := bifurcate.Bifurcate(mockConn)
+			t.Cleanup(func() {
+				_ = geneveConn.Close()
+				_ = otherConn.Close()
+			})
+			if !tc.waiting {
+				require.NoError(t, geneveConn.SetReadDeadline(time.Now().Add(tc.offset)))
+			}
+			if tc.clear {
+				require.NoError(t, geneveConn.SetReadDeadline(time.Time{}))
+				mockConn.enqueue(createGenevePacket(t), src)
+			}
+
+			errc := make(chan error, 1)
+			go func() {
+				_, _, err := geneveConn.ReadFrom(make([]byte, 1024))
+				errc <- err
+			}()
+			if tc.waiting {
+				time.Sleep(50 * time.Millisecond)
+				require.NoError(t, geneveConn.SetReadDeadline(time.Now().Add(tc.offset)))
+			}
+			select {
+			case err := <-errc:
+				if tc.clear {
+					require.NoError(t, err)
+				} else {
+					require.ErrorIs(t, err, os.ErrDeadlineExceeded)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("read did not return")
+			}
+
+			pkt := createNonGenevePacket()
+			mockConn.enqueue(pkt, src)
+			buf := make([]byte, 1024)
+			n, _, err := otherConn.ReadFrom(buf)
+			require.NoError(t, err)
+			require.Equal(t, pkt, buf[:n])
+			mockConn.mu.Lock()
+			defer mockConn.mu.Unlock()
+			require.Zero(t, mockConn.readDeadlines)
+		})
+	}
+}
+
 func TestBifurcate_BubblesTransientErrorAndContinues(t *testing.T) {
 	t.Helper()
 
@@ -303,6 +424,7 @@ type mockBatchPacketConn struct {
 
 	mu               sync.Mutex
 	closed           bool
+	readDeadlines    int
 	writeToCalls     int
 	lastWriteToBuf   []byte
 	lastWriteToAddr  net.Addr
@@ -352,10 +474,13 @@ func (pc *mockBatchPacketConn) LocalAddr() net.Addr {
 }
 
 func (pc *mockBatchPacketConn) SetDeadline(t time.Time) error {
-	return nil
+	return pc.SetReadDeadline(t)
 }
 
 func (pc *mockBatchPacketConn) SetReadDeadline(t time.Time) error {
+	pc.mu.Lock()
+	pc.readDeadlines++
+	pc.mu.Unlock()
 	return nil
 }
 

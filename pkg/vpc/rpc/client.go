@@ -102,11 +102,12 @@ func (c *Conn) newStream(ctx context.Context, method string, first proto.Message
 	return cs, nil
 }
 
-// cancel resets both directions when the call context ends.
+// cancel resets both directions when the call context ends. The receive side
+// stops first, so RecvMsg reads nothing that the called side sends after the reset.
 func (cs *ClientStream) cancel() {
 	code := ctxStreamCode(cs.ctx)
-	cs.str.CancelWrite(code)
 	cs.str.CancelRead(code)
+	cs.str.CancelWrite(code)
 }
 
 // SendMsg sends m. It returns io.EOF if the called side ended the call;

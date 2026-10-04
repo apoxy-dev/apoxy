@@ -116,6 +116,12 @@ func TestConnect(t *testing.T) {
 				// When b leaves, a closes its peer session.
 				b.stop()
 				require.Eventually(t, func() bool { return peerCount(a.a) == 0 }, 5*time.Second, 10*time.Millisecond)
+				// The relay can remove the session of b after that. Until it does, a dial
+				// to b waits 5 s.
+				require.Eventually(t, func() bool {
+					_, err := a.current().resolve(ctx, eb.addr)
+					return err != nil
+				}, 5*time.Second, 10*time.Millisecond)
 				assert.Error(t, a.a.Connect(ctx, eb.addr))
 				a.stop()
 			}
@@ -326,9 +332,8 @@ func stream(t *testing.T, s *stack.Stack, src, dst netip.Addr, port uint16) (sto
 	return stop
 }
 
-// TestRenew checks that the agent opens a relay session with the renewed
-// cert before it closes the old one, and replaces spares with the old cert.
-// The route of the agent moves to the new session with no remove at peers.
+// TestRenew checks that the agent opens a session with the renewed cert before
+// it closes the old one, and that the route moves with no remove at peers.
 func TestRenew(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -536,8 +541,7 @@ func TestMoveAfterPromote(t *testing.T) {
 }
 
 // TestSpares checks that the agent keeps Sessions-1 spares on other relays,
-// moves the attachment to a spare when the attached session ends, and
-// replaces spares that end.
+// moves to a spare when the attached session ends, and replaces spares.
 func TestSpares(t *testing.T) {
 	cases := []struct {
 		name     string

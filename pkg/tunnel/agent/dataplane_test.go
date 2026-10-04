@@ -14,6 +14,8 @@ import (
 	"golang.org/x/sync/errgroup"
 	"k8s.io/apimachinery/pkg/util/sets"
 
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/batchpc"
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/bifurcate"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/controllers"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/randalloc"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/router"
@@ -93,12 +95,18 @@ func TestDataPlaneRoundTrip(t *testing.T) {
 	}()
 
 	// --- Relay: real ICXNetstackRouter (non-egress → forward to loopback). ---
-	relayPP, err := newPacketPlaneAt("127.0.0.1:0")
+	relayUDP, err := net.ListenPacket("udp", "127.0.0.1:0")
 	require.NoError(t, err)
-	t.Cleanup(relayPP.Close)
+	relayBPC, err := batchpc.New("udp", relayUDP)
+	require.NoError(t, err)
+	relayGeneve, relayQuic := bifurcate.Bifurcate(relayBPC)
+	t.Cleanup(func() {
+		_ = relayGeneve.Close()
+		_ = relayQuic.Close()
+	})
 
 	relayRtr, err := router.NewICXNetstackRouter(
-		router.WithPacketConn(relayPP.Geneve),
+		router.WithPacketConn(relayGeneve),
 		// The relay-side SOCKS listener is unused; keep it off the default port
 		// so parallel tests don't collide.
 		router.WithSocksListenAddr("127.0.0.1:0"),
@@ -119,7 +127,7 @@ func TestDataPlaneRoundTrip(t *testing.T) {
 		}
 		return conn.SetAddresses([]string{agentOverlay, agentOverlayV4})
 	}
-	r, stopRelay := startRelayHarness(t, tunnelToken, relayPP.QuicMux, relayRtr, relayRtr.Handler, onConnect,
+	r, stopRelay := startRelayHarness(t, tunnelToken, relayQuic, relayRtr, relayRtr.Handler, onConnect,
 		func(context.Context, string, string) error { return nil })
 	t.Cleanup(stopRelay)
 
@@ -148,7 +156,15 @@ func TestDataPlaneRoundTrip(t *testing.T) {
 
 	ar, handler, routes := newAgentRouterWithSocks(t, gctx, g, boot, agentPP, socksAddr)
 	pool := randalloc.NewRandAllocator(sets.New[string](relayAddr))
-	go func() { _ = manageConnectionSlot(gctx, cfg, agentPP.QuicMux, handler, ar, routes, pool, tlsConf) }()
+	slotDone := make(chan struct{})
+	go func() {
+		defer close(slotDone)
+		_ = manageConnectionSlot(gctx, cfg, agentPP.QuicMux, handler, ar, routes, pool, tlsConf)
+	}()
+	t.Cleanup(func() {
+		agentCancel()
+		<-slotDone
+	})
 
 	require.Eventually(t, func() bool {
 		return cfg.ConnectionTracker.ActiveConnections() == 1

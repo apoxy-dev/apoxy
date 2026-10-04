@@ -46,6 +46,7 @@ func TestICXNetwork_Speed(t *testing.T) {
 
 	pcA, err := batchpc.New("udp4", connA)
 	require.NoError(t, err)
+	t.Cleanup(func() { _ = pcA.Close() })
 
 	pcAGeneve, _ := bifurcate.Bifurcate(pcA)
 
@@ -54,6 +55,7 @@ func TestICXNetwork_Speed(t *testing.T) {
 
 	pcB, err := batchpc.New("udp4", connB)
 	require.NoError(t, err)
+	t.Cleanup(func() { _ = pcB.Close() })
 
 	pcBGeneve, _ := bifurcate.Bifurcate(pcB)
 

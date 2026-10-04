@@ -20,18 +20,17 @@ const (
 	tick    = 5 * time.Millisecond
 )
 
-// blockingLeaser counts lease starts and holds every Lease until its gate
-// closes, so a test can pile concurrent allocations behind an in-flight lease.
+// blockingLeaser counts lease starts and holds each Lease until release closes.
 type blockingLeaser struct {
 	inner   ipalloc.SlotLeaser
-	gate    <-chan struct{}
+	release <-chan struct{}
 	started atomic.Int64
 }
 
 func (b *blockingLeaser) Lease(ctx context.Context, net tunnet.NetworkID) (ipalloc.Slot, error) {
 	b.started.Add(1)
 	select {
-	case <-b.gate:
+	case <-b.release:
 	case <-ctx.Done():
 		return ipalloc.Slot{}, ctx.Err()
 	}
@@ -178,9 +177,8 @@ func TestSlotAllocator(t *testing.T) {
 	t.Run("never repeats a /32 across the networks it serves", func(t *testing.T) {
 		b := newTestAllocator(t, ipalloc.NewLocalSlotLeaser())
 
-		// Slot ids are numbered per network, so every network's first slot
-		// carries the same id; one route table means the /32s must still come
-		// out distinct.
+		// Slot ids are per network, so the first slots have the same id. The
+		// /32s must still be different, as they share one route table.
 		seen := make(map[netip.Addr]tunnet.NetworkID)
 		for _, netID := range []tunnet.NetworkID{netA, netB, {0x00, 0x20, 0x03}} {
 			for i := 0; i < 3; i++ {
@@ -203,7 +201,7 @@ func TestSlotAllocator(t *testing.T) {
 
 	t.Run("concurrent allocations on an empty network share one lease", func(t *testing.T) {
 		release := make(chan struct{})
-		leaser := &blockingLeaser{inner: ipalloc.NewLocalSlotLeaser(), gate: release}
+		leaser := &blockingLeaser{inner: ipalloc.NewLocalSlotLeaser(), release: release}
 		b := newTestAllocator(t, leaser)
 
 		const conns = 16
@@ -248,10 +246,14 @@ func TestSlotAllocator(t *testing.T) {
 		b := newTestAllocator(t, leaser)
 		b.EnsureSpare(netA)
 		require.Eventually(t, func() bool { return leaseSettled(b, netA) }, waitFor, tick)
+		b.mu.Lock()
+		spare := b.nets[netA].allocs[0]
+		b.mu.Unlock()
 
+		// Allocate starts the lease of the next spare, which can end before Allocate returns.
 		_, _, first, err := b.Allocate(ctx, netA)
 		require.NoError(t, err)
-		require.Equal(t, 1, leaser.leaseCount(), "the connect did not use the spare")
+		require.Same(t, spare, first, "the connect did not use the spare")
 		require.Eventually(t, func() bool { return leaseSettled(b, netA) }, waitFor, tick)
 		require.Equal(t, []bool{false, true}, slotStates(b, netA))
 
@@ -308,13 +310,13 @@ func TestSlotAllocator(t *testing.T) {
 	})
 
 	t.Run("hands back a slot leased for a released network", func(t *testing.T) {
-		gate := make(chan struct{})
+		release := make(chan struct{})
 		counting := &countingLeaser{inner: ipalloc.NewLocalSlotLeaser()}
-		b := newTestAllocator(t, &blockingLeaser{inner: counting, gate: gate})
+		b := newTestAllocator(t, &blockingLeaser{inner: counting, release: release})
 
 		b.EnsureSpare(netA)
 		b.ReleaseNetwork(ctx, netA)
-		close(gate)
+		close(release)
 		require.Eventually(t, func() bool { return counting.releaseCount() == 1 }, waitFor, tick)
 		require.Equal(t, 1, counting.leaseCount())
 		require.Empty(t, slotStates(b, netA))
@@ -341,9 +343,9 @@ func TestSlotAllocator(t *testing.T) {
 	})
 
 	t.Run("ReleaseAll waits for a lease in flight and stops leasing", func(t *testing.T) {
-		gate := make(chan struct{})
+		release := make(chan struct{})
 		counting := &countingLeaser{inner: ipalloc.NewLocalSlotLeaser()}
-		b := newTestAllocator(t, &blockingLeaser{inner: counting, gate: gate})
+		b := newTestAllocator(t, &blockingLeaser{inner: counting, release: release})
 
 		b.EnsureSpare(netA)
 		released := make(chan error, 1)
@@ -353,7 +355,7 @@ func TestSlotAllocator(t *testing.T) {
 			defer b.mu.Unlock()
 			return b.closed
 		}, waitFor, tick)
-		close(gate)
+		close(release)
 		require.NoError(t, <-released)
 		require.Equal(t, 1, counting.leaseCount())
 		require.Equal(t, 1, counting.releaseCount(), "the slot of the lease in flight was not released")

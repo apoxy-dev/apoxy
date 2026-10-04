@@ -5,8 +5,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -18,7 +16,6 @@ import (
 	"time"
 
 	"github.com/dpeckett/network"
-	"github.com/dpeckett/network/nettest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gvisor.dev/gvisor/pkg/tcpip/link/channel"
@@ -29,36 +26,21 @@ import (
 )
 
 func TestTCPForwarder(t *testing.T) {
-	var serverPcapPath, clientPcapPath string
-	if testing.Verbose() {
-		serverPcapPath = "server.pcap"
-		clientPcapPath = "client.pcap"
-	}
-
-	serverStack, err := nettest.NewStack(netip.MustParseAddr("10.0.0.1"), serverPcapPath)
-	require.NoError(t, err)
-	t.Cleanup(serverStack.Close)
-
-	clientStack, err := nettest.NewStack(netip.MustParseAddr("10.0.0.2"), clientPcapPath)
-	require.NoError(t, err)
-	t.Cleanup(clientStack.Close)
+	serverStack := newStack(t, "10.0.0.1/32")
+	clientStack := newStack(t, "10.0.0.2/32")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
 	// Move packets between the two stacks.
-	go func() {
-		if err := nettest.SplicePackets(ctx, serverStack, clientStack); err != nil && !errors.Is(err, context.Canceled) {
-			panic(fmt.Errorf("packet splicing failed: %w", err))
-		}
-	}()
+	spliceStacks(t, serverStack, clientStack)
 
 	// The server stack forwards TCP connections to the host loopback.
-	serverStack.SetTransportProtocolHandler(tcp.ProtocolNumber, netstack.TCPForwarder(ctx, serverStack.Stack, network.Loopback()))
+	serverStack.Stack.SetTransportProtocolHandler(tcp.ProtocolNumber, netstack.TCPForwarder(ctx, serverStack.Stack, network.Loopback()))
 
 	// Make 1 MiB of random data for the client.
 	blob := make([]byte, 1<<20)
-	_, err = rand.Reader.Read(blob)
+	_, err := rand.Reader.Read(blob)
 	require.NoError(t, err)
 
 	// Get the checksum of the data.

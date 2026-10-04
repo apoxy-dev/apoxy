@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"net"
+	"net/http"
 	"net/netip"
 	"sync/atomic"
 	"testing"
@@ -63,9 +64,14 @@ func TestRelay_StatelessResetAfterRestart(t *testing.T) {
 			})
 			require.NoError(t, err)
 			defer conn.CloseWithError(0, "")
-			// After the relay control stream, client packets have a short header.
-			_, err = conn.AcceptUniStream(ctx)
+			// After a reply, the client sends only short header packets. The relay
+			// sends no reset for a long header packet.
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://localhost/ping", nil)
 			require.NoError(t, err)
+			resp, err := (&http3.Transport{}).NewClientConn(conn).RoundTrip(req)
+			require.NoError(t, err)
+			_ = resp.Body.Close()
+			require.Equal(t, http.StatusOK, resp.StatusCode)
 
 			old.crash()
 			pc2, err := net.ListenPacket("udp", pc.LocalAddr().String())

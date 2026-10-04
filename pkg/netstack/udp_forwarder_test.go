@@ -8,12 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"net/netip"
 	"testing"
 	"time"
 
 	"github.com/dpeckett/network"
-	"github.com/dpeckett/network/nettest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
@@ -22,54 +20,37 @@ import (
 )
 
 func TestUDPForwarder(t *testing.T) {
-	var serverPcapPath, clientPcapPath string
-	if testing.Verbose() {
-		serverPcapPath = "server_udp.pcap"
-		clientPcapPath = "client_udp.pcap"
-	}
-
-	serverStack, err := nettest.NewStack(netip.MustParseAddr("10.0.0.1"), serverPcapPath)
-	require.NoError(t, err)
-	t.Cleanup(serverStack.Close)
-
-	clientStack, err := nettest.NewStack(netip.MustParseAddr("10.0.0.2"), clientPcapPath)
-	require.NoError(t, err)
-	t.Cleanup(clientStack.Close)
+	serverStack := newStack(t, "10.0.0.1/32")
+	clientStack := newStack(t, "10.0.0.2/32")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	// Splice packets between the two stacks
-	go func() {
-		if err := nettest.SplicePackets(ctx, serverStack, clientStack); err != nil && !errors.Is(err, context.Canceled) {
-			panic(fmt.Errorf("packet splicing failed: %w", err))
-		}
-	}()
+	// Move packets between the two stacks.
+	spliceStacks(t, serverStack, clientStack)
 
-	// Setup the server stack to forward UDP packets to the hosts loopback interface.
-	serverStack.SetTransportProtocolHandler(udp.ProtocolNumber, netstack.UDPForwarder(ctx, serverStack.Stack, network.Loopback()))
+	// The server stack forwards UDP packets to the host loopback.
+	serverStack.Stack.SetTransportProtocolHandler(udp.ProtocolNumber, netstack.UDPForwarder(ctx, serverStack.Stack, network.Loopback()))
 
-	// Generate test data
+	// Make the test data.
 	testData := make([]byte, 1024)
-	_, err = rand.Reader.Read(testData)
+	_, err := rand.Reader.Read(testData)
 	require.NoError(t, err)
 
-	// Calculate the checksum of the test data
+	// Get the checksum of the test data.
 	h := sha256.New()
 	_, _ = h.Write(testData)
 	expectedChecksum := hex.EncodeToString(h.Sum(nil))
 
-	// Start a UDP server on the loopback interface
-	// Listen on the unspecified address so the echo server is reachable on
-	// both 127.0.0.1 and ::1. The loopback network dials "localhost", and
-	// which family that resolves to first differs between hosts.
+	// The echo server listens on all addresses, so 127.0.0.1 and ::1 both reach
+	// it. The loopback network dials "localhost", which can resolve to either.
 	udpServer, err := net.ListenUDP("udp", &net.UDPAddr{Port: 0})
 	require.NoError(t, err)
 	defer udpServer.Close()
 
 	serverPort := udpServer.LocalAddr().(*net.UDPAddr).Port
 
-	// Echo server that responds with the same data
+	// The echo server sends back the same data.
 	go func() {
 		buf := make([]byte, 65535)
 		for {
@@ -90,69 +71,54 @@ func TestUDPForwarder(t *testing.T) {
 		}
 	}()
 
-	// Create a UDP client from the client stack
+	// Make a UDP client on the client stack.
 	clientNetwork := network.Netstack(clientStack.Stack, clientStack.NICID, nil)
 
-	// Connect and send data
+	// Connect and send the data.
 	conn, err := clientNetwork.DialContext(ctx, "udp", fmt.Sprintf("10.0.0.1:%d", serverPort))
 	require.NoError(t, err)
 	defer conn.Close()
 
-	// Send test data
+	// Send the test data.
 	_, err = conn.Write(testData)
 	require.NoError(t, err)
 
-	// Read response
+	// Read the response.
 	response := make([]byte, len(testData))
 	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	n, err := conn.Read(response)
 	require.NoError(t, err)
 	require.Equal(t, len(testData), n)
 
-	// Calculate checksum of response
+	// Get the checksum of the response.
 	h = sha256.New()
 	_, _ = h.Write(response[:n])
 	responseChecksum := hex.EncodeToString(h.Sum(nil))
 
-	// Compare checksums
+	// Compare the checksums.
 	assert.Equal(t, expectedChecksum, responseChecksum)
 }
 
 func TestUDPForwarderMultipleSessions(t *testing.T) {
-	var serverPcapPath, clientPcapPath string
-	if testing.Verbose() {
-		serverPcapPath = "server_udp_multi.pcap"
-		clientPcapPath = "client_udp_multi.pcap"
-	}
-
-	serverStack, err := nettest.NewStack(netip.MustParseAddr("10.0.0.1"), serverPcapPath)
-	require.NoError(t, err)
-	t.Cleanup(serverStack.Close)
-
-	clientStack, err := nettest.NewStack(netip.MustParseAddr("10.0.0.2"), clientPcapPath)
-	require.NoError(t, err)
-	t.Cleanup(clientStack.Close)
+	serverStack := newStack(t, "10.0.0.1/32")
+	clientStack := newStack(t, "10.0.0.2/32")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	// Splice packets between the two stacks
-	go func() {
-		if err := nettest.SplicePackets(ctx, serverStack, clientStack); err != nil && !errors.Is(err, context.Canceled) {
-			panic(fmt.Errorf("packet splicing failed: %w", err))
-		}
-	}()
+	// Move packets between the two stacks.
+	spliceStacks(t, serverStack, clientStack)
 
-	// Setup the server stack to forward UDP packets
-	serverStack.SetTransportProtocolHandler(udp.ProtocolNumber, netstack.UDPForwarder(ctx, serverStack.Stack, network.Loopback()))
+	// The server stack forwards UDP packets to the host loopback.
+	serverStack.Stack.SetTransportProtocolHandler(udp.ProtocolNumber, netstack.UDPForwarder(ctx, serverStack.Stack, network.Loopback()))
 
-	// Start multiple UDP servers on different ports
+	// Start UDP servers on different ports.
 	numServers := 3
 	servers := make([]*net.UDPConn, numServers)
 	ports := make([]int, numServers)
 
 	for i := 0; i < numServers; i++ {
-		// Same as above: reachable on both loopback families.
+		// Listen on all addresses, as above.
 		server, err := net.ListenUDP("udp", &net.UDPAddr{Port: 0})
 		require.NoError(t, err)
 		defer server.Close()
@@ -160,7 +126,7 @@ func TestUDPForwarderMultipleSessions(t *testing.T) {
 		servers[i] = server
 		ports[i] = server.LocalAddr().(*net.UDPAddr).Port
 
-		// Echo server with unique prefix
+		// Each echo server adds its own prefix.
 		go func(srv *net.UDPConn, prefix byte) {
 			buf := make([]byte, 65535)
 			for {
@@ -172,7 +138,7 @@ func TestUDPForwarderMultipleSessions(t *testing.T) {
 					return
 				}
 
-				// Add prefix to response
+				// Add the prefix to the response.
 				response := make([]byte, n+1)
 				response[0] = prefix
 				copy(response[1:], buf[:n])
@@ -188,28 +154,28 @@ func TestUDPForwarderMultipleSessions(t *testing.T) {
 		}(server, byte(i))
 	}
 
-	// Create UDP clients and test concurrent sessions
+	// Make UDP clients and test the sessions.
 	clientNetwork := network.Netstack(clientStack.Stack, clientStack.NICID, nil)
 
 	for i := 0; i < numServers; i++ {
 		t.Run(fmt.Sprintf("Server%d", i), func(t *testing.T) {
-			// Connect to specific server
+			// Connect to one server.
 			conn, err := clientNetwork.DialContext(ctx, "udp", fmt.Sprintf("10.0.0.1:%d", ports[i]))
 			require.NoError(t, err)
 			defer conn.Close()
 
-			// Send test data
+			// Send the test data.
 			testData := []byte(fmt.Sprintf("test_data_%d", i))
 			_, err = conn.Write(testData)
 			require.NoError(t, err)
 
-			// Read response
+			// Read the response.
 			response := make([]byte, 256)
 			conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 			n, err := conn.Read(response)
 			require.NoError(t, err)
 
-			// Verify response has correct prefix and data
+			// Make sure that the response has the correct prefix and data.
 			assert.Equal(t, byte(i), response[0])
 			assert.Equal(t, testData, response[1:n])
 		})
@@ -221,38 +187,27 @@ func TestUDPForwarderTimeout(t *testing.T) {
 		t.Skip("Skipping timeout test in non-verbose mode")
 	}
 
-	serverStack, err := nettest.NewStack(netip.MustParseAddr("10.0.0.1"), "")
-	require.NoError(t, err)
-	t.Cleanup(serverStack.Close)
-
-	clientStack, err := nettest.NewStack(netip.MustParseAddr("10.0.0.2"), "")
-	require.NoError(t, err)
-	t.Cleanup(clientStack.Close)
+	serverStack := newStack(t, "10.0.0.1/32")
+	clientStack := newStack(t, "10.0.0.2/32")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	// Splice packets between the two stacks
-	go func() {
-		if err := nettest.SplicePackets(ctx, serverStack, clientStack); err != nil && !errors.Is(err, context.Canceled) {
-			panic(fmt.Errorf("packet splicing failed: %w", err))
-		}
-	}()
+	// Move packets between the two stacks.
+	spliceStacks(t, serverStack, clientStack)
 
-	// Setup the server stack to forward UDP packets
-	serverStack.SetTransportProtocolHandler(udp.ProtocolNumber, netstack.UDPForwarder(ctx, serverStack.Stack, network.Loopback()))
+	// The server stack forwards UDP packets to the host loopback.
+	serverStack.Stack.SetTransportProtocolHandler(udp.ProtocolNumber, netstack.UDPForwarder(ctx, serverStack.Stack, network.Loopback()))
 
-	// Start a UDP server
-	// Listen on the unspecified address so the echo server is reachable on
-	// both 127.0.0.1 and ::1. The loopback network dials "localhost", and
-	// which family that resolves to first differs between hosts.
+	// The echo server listens on all addresses, so 127.0.0.1 and ::1 both reach
+	// it. The loopback network dials "localhost", which can resolve to either.
 	udpServer, err := net.ListenUDP("udp", &net.UDPAddr{Port: 0})
 	require.NoError(t, err)
 	defer udpServer.Close()
 
 	serverPort := udpServer.LocalAddr().(*net.UDPAddr).Port
 
-	// Simple echo server
+	// Start the echo server.
 	go func() {
 		buf := make([]byte, 65535)
 		for {
@@ -264,12 +219,12 @@ func TestUDPForwarderTimeout(t *testing.T) {
 		}
 	}()
 
-	// Create client and send initial packet
+	// Make a client and send the first packet.
 	clientNetwork := network.Netstack(clientStack.Stack, clientStack.NICID, nil)
 	conn, err := clientNetwork.DialContext(ctx, "udp", fmt.Sprintf("10.0.0.1:%d", serverPort))
 	require.NoError(t, err)
 
-	// Send and receive to establish session
+	// Send and receive to start the session.
 	_, err = conn.Write([]byte("ping"))
 	require.NoError(t, err)
 
@@ -279,10 +234,9 @@ func TestUDPForwarderTimeout(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "ping", string(response[:n]))
 
-	// Close connection and let session timeout
+	// Close the connection. The session ends after a time with no traffic.
 	conn.Close()
 
-	// Note: Session timeout is set to 2 minutes in the implementation
-	// In a real test, we'd need to wait or mock the timeout
+	// The session timeout is 2 minutes, so the test does not wait for it.
 	t.Log("Session created and will timeout after inactivity")
 }

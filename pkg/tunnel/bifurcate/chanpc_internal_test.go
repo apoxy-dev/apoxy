@@ -3,7 +3,9 @@ package bifurcate
 import (
 	"bytes"
 	"net"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -11,10 +13,7 @@ import (
 )
 
 func TestReadFromSkipsEmptyPendingBatch(t *testing.T) {
-	pc := &chanPacketConn{
-		ch:     make(chan []*batchpc.Message, 2),
-		closed: make(chan struct{}),
-	}
+	pc := newChanPacketConn(nil, new(atomic.Int32))
 	want := []byte("next packet")
 	buf := make([]byte, len(want), 65535)
 	copy(buf, want)
@@ -27,4 +26,32 @@ func TestReadFromSkipsEmptyPendingBatch(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, bytes.Equal(want, got[:n]))
 	require.Equal(t, wantAddr, addr)
+}
+
+func BenchmarkReadFrom(b *testing.B) {
+	cases := []struct {
+		name     string
+		deadline time.Time
+	}{
+		{name: "no deadline"},
+		{name: "deadline", deadline: time.Now().Add(time.Hour)},
+	}
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			pc := newChanPacketConn(nil, new(atomic.Int32))
+			if !tc.deadline.IsZero() {
+				_ = pc.SetReadDeadline(tc.deadline)
+			}
+			batch := make([]*batchpc.Message, 1)
+			buf := make([]byte, 1500)
+			b.ReportAllocs()
+			for b.Loop() {
+				batch[0] = messagePool.Get().(*batchpc.Message)
+				pc.ch <- batch
+				if _, _, err := pc.ReadFrom(buf); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
 }
