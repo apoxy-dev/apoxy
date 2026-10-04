@@ -44,16 +44,42 @@ var dropLabels = [numDropReasons]string{"malformed", "unknown_source", "unknown_
 var dropsDesc = prometheus.NewDesc("apoxy_vpc_relay_dropped_packets_total",
 	"Packets that the relay dropped before it forwarded them, by reason.", []string{"reason"}, nil)
 
+var (
+	xdpPacketsDesc = prometheus.NewDesc("apoxy_vpc_relay_xdp_packets_total",
+		"PSP packets that the XDP program forwarded, or gave to the socket path, by result.", []string{"result"}, nil)
+	xdpBytesDesc = prometheus.NewDesc("apoxy_vpc_relay_xdp_forwarded_bytes_total",
+		"UDP payload bytes that the XDP program forwarded.", nil, nil)
+)
+
 var _ prometheus.Collector = (*Router)(nil)
 
 // Describe implements prometheus.Collector.
-func (r *Router) Describe(ch chan<- *prometheus.Desc) { ch <- dropsDesc }
+func (r *Router) Describe(ch chan<- *prometheus.Desc) {
+	ch <- dropsDesc
+	ch <- xdpPacketsDesc
+	ch <- xdpBytesDesc
+}
 
-// Collect implements prometheus.Collector. It gives the drop counters.
+// Collect implements prometheus.Collector. It gives the drop counters of the
+// socket path and of the XDP program, and the XDP counters.
 func (r *Router) Collect(ch chan<- prometheus.Metric) {
+	x := r.xdpStatsNow()
+	var drops [numDropReasons]uint64
 	for i := range r.drops {
-		ch <- prometheus.MustNewConstMetric(dropsDesc, prometheus.CounterValue, float64(r.drops[i].Load()), dropLabels[i])
+		drops[i] = r.drops[i].Load()
 	}
+	drops[dropLaneMeter] += x.laneDrops
+	drops[dropTunnelLimit] += x.tunnelDrops
+	for i, n := range drops {
+		ch <- prometheus.MustNewConstMetric(dropsDesc, prometheus.CounterValue, float64(n), dropLabels[i])
+	}
+	for _, c := range []struct {
+		result string
+		n      uint64
+	}{{"forwarded", x.packets}, {"no_row", x.noRow}, {"expired", x.expired}, {"no_route", x.noRoute}, {"malformed", x.malformed}, {"too_long", x.tooLong}} {
+		ch <- prometheus.MustNewConstMetric(xdpPacketsDesc, prometheus.CounterValue, float64(c.n), c.result)
+	}
+	ch <- prometheus.MustNewConstMetric(xdpBytesDesc, prometheus.CounterValue, float64(x.bytes))
 }
 
 func modeLabel(m dp.Mode) string {

@@ -127,7 +127,7 @@ func CloudInit(agentURL, specURL string, poweroff time.Duration) (string, error)
 		return "", fmt.Errorf("poweroff %s is less than 1m", poweroff)
 	}
 	cfg := map[string]any{
-		"packages": []string{"iperf3"},
+		"packages": []string{"iperf3", "ethtool"},
 		"write_files": []map[string]any{{
 			"path":        "/opt/perf/" + Agent,
 			"permissions": "0755",

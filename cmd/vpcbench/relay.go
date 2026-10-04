@@ -14,6 +14,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -62,8 +63,24 @@ func runRelay(ctx context.Context, o options, ready func(netip.AddrPort)) error 
 	slog.Info("Relay socket is ready", "address", addr, "rcvbuf", sockRcvbuf(uc))
 
 	r := relay.NewRouter(vpctest.NewTrust(ca), relay.Config{})
-	// The relay socket has no XDP program, so GRO is safe.
-	tr := &quic.Transport{Conn: uc, EnableGRO: true}
+	xdpCPU := func() float64 { return 0 }
+	if o.XDP != "" {
+		x, mode, err := r.StartXDP(relay.XDPConfig{Port: addr.Port(), Iface: o.XDP, Generic: true})
+		if err != nil {
+			return err
+		}
+		defer x.Close()
+		slog.Info("Relay forwards PSP packets in XDP", "iface", o.XDP, "mode", mode)
+		sec, stop, err := xdpSeconds(o.XDP)
+		if err != nil {
+			return fmt.Errorf("read the XDP run time: %w", err)
+		}
+		defer stop()
+		xdpCPU = sec
+	}
+	// The kernel joins the datagrams of a socket with UDP GRO before generic
+	// XDP runs, so the relay socket has GRO only without XDP.
+	tr := &quic.Transport{Conn: uc, EnableGRO: o.XDP == ""}
 	defer tr.Close()
 	tr.NonQUICPacketHandler, tr.NonQUICBatchEnd = r.PacketHandler(ctx, tr)
 	ln, err := tr.Listen(r.TLSConfig(&tls.Config{Certificates: []tls.Certificate{*cert}}), tunnel.RelayQUICConfig())
@@ -102,8 +119,10 @@ func runRelay(ctx context.Context, o options, ready func(netip.AddrPort)) error 
 			if req.Op != "mark" {
 				return reply{}, fmt.Errorf("unknown op %q", req.Op)
 			}
+			drops, xdp := relayCounters(r)
 			return reply{Mark: mark{
-				Nanos: time.Since(start).Nanoseconds(), CPU: bench.CPUSeconds(), Drops: relayDrops(r), SockDrops: sockDrops(uc),
+				Nanos: time.Since(start).Nanoseconds(), CPU: bench.CPUSeconds() + xdpCPU(),
+				Drops: drops, SockDrops: sockDrops(uc), XDPPackets: xdp,
 			}}, nil
 		})
 	})
@@ -134,21 +153,37 @@ func serveMarks(ctx context.Context, ln net.Listener, handle func(request) (repl
 	}
 }
 
-// relayDrops returns the sum of the drop counters of r.
-func relayDrops(r *relay.Router) uint64 {
+// relayCounters returns the sum of the drop counters of r and the packets
+// that its XDP program forwarded.
+func relayCounters(r *relay.Router) (drops, xdp uint64) {
 	ch := make(chan prometheus.Metric, 8)
 	go func() {
 		r.Collect(ch)
 		close(ch)
 	}()
-	var n uint64
 	for m := range ch {
 		var d dto.Metric
-		if m.Write(&d) == nil {
-			n += uint64(d.GetCounter().GetValue())
+		if m.Write(&d) != nil {
+			continue
+		}
+		n := uint64(d.GetCounter().GetValue())
+		switch desc := m.Desc().String(); {
+		case strings.Contains(desc, `"apoxy_vpc_relay_dropped_packets_total"`):
+			drops += n
+		case strings.Contains(desc, `"apoxy_vpc_relay_xdp_packets_total"`) && forwarded(&d):
+			xdp += n
 		}
 	}
-	return n
+	return drops, xdp
+}
+
+func forwarded(d *dto.Metric) bool {
+	for _, l := range d.GetLabel() {
+		if l.GetName() == "result" {
+			return l.GetValue() == "forwarded"
+		}
+	}
+	return false
 }
 
 // writeCA writes the CA cert and key to the CA file in dir. The rename makes

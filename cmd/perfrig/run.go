@@ -36,6 +36,7 @@ type config struct {
 	MinCPUs     int
 	MaxSteal    float64
 	NetnsPrefix string
+	RelayNetns  bool
 	HostClass   string
 	OutDir      string
 	// AppCPUs pins the workload processes to these CPUs (taskset -c). Empty: no pin.
@@ -89,9 +90,13 @@ func execute(ctx context.Context, cfg config, w Workload) (*Result, error) {
 	if os.Geteuid() != 0 {
 		return nil, errors.New("perfrig run needs root: run it in a privileged container or with sudo")
 	}
-	for _, bin := range []string{"ip", "tc", "ping"} {
+	bins := []string{"ip", "tc", "ping"}
+	if cfg.RelayNetns {
+		bins = append(bins, "ethtool")
+	}
+	for _, bin := range bins {
 		if _, err := exec.LookPath(bin); err != nil {
-			return nil, fmt.Errorf("perfrig run needs %s (iproute2 and ping): %w", bin, err)
+			return nil, fmt.Errorf("perfrig run needs %s (iproute2, ping and, with -relay-netns, ethtool): %w", bin, err)
 		}
 	}
 	res := &Result{
@@ -152,12 +157,16 @@ func execute(ctx context.Context, cfg config, w Workload) (*Result, error) {
 	env := Env{
 		ServerIP: serverIP,
 		ClientIP: clientIP,
+		RelayIP:  serverIP,
 		Duration: cfg.Duration,
 		Omit:     cfg.Omit,
 		Streams:  cfg.Streams,
 		Bitrate:  cfg.Bitrate,
 		Window:   cfg.Window,
 		Dir:      dir,
+	}
+	if cfg.RelayNetns {
+		env.RelayIP = relayIP
 	}
 	slog.Info("Starting workload", "workload", w.Name, "key", res.Key, "reps", cfg.Reps)
 	runReps := func(from, to int) error {
@@ -205,7 +214,7 @@ func runRep(ctx context.Context, cfg config, w Workload, r *rig, env Env, rep in
 		prefix = []string{"taskset", "-c", cfg.AppCPUs}
 	}
 	if w.Sidecar != nil {
-		sidecar, err := startProc("sidecar", r.server, w.Sidecar(env), env.vars(), prefix)
+		sidecar, err := startProc("sidecar", r.sidecarNetns(), w.Sidecar(env), env.vars(), prefix)
 		if err != nil {
 			return Run{}, err
 		}
@@ -388,7 +397,7 @@ func (p *proc) stop() {
 	}
 }
 
-// sideProcs are the processes in the server netns: the sidecar, if any, and the server.
+// sideProcs are the server and its sidecar, if any.
 type sideProcs []*proc
 
 // cpuNow returns the sum of cpuNow of each process.

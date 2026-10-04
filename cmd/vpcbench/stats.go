@@ -14,8 +14,10 @@ import (
 
 // mark is the counters of one side at one time. Each side sets its fields.
 type mark struct {
-	Nanos int64   `json:"nanos"` // Time since the side started.
-	CPU   float64 `json:"cpu_s"`
+	Nanos int64 `json:"nanos"` // Time since the side started.
+	// CPU is the CPU time of the process, and of the relay XDP program. The
+	// kernel work around the program is not in it.
+	CPU float64 `json:"cpu_s"`
 	// Packets that the client sent, and TCP segments retransmitted (client and
 	// server). With GSO, a retransmit is one packet of up to one MSS.
 	Segments uint64 `json:"segments,omitempty"`
@@ -34,6 +36,8 @@ type mark struct {
 	// LinkDrops are the packets that the overlay of the client or the server
 	// dropped before its driver got them, or -1.
 	LinkDrops int64 `json:"link_drops,omitempty"`
+	// XDPPackets are the PSP packets that the relay forwarded in XDP.
+	XDPPackets uint64 `json:"xdp_packets,omitempty"`
 }
 
 // cores returns the CPU seconds per second from m0 to m1.
@@ -85,6 +89,9 @@ type result struct {
 	ServerSockDrops    int64  `json:"server_sock_drops"`
 	ClientLinkDrops    int64  `json:"client_link_drops"`
 	ServerLinkDrops    int64  `json:"server_link_drops"`
+	// RelayXDPPackets are the PSP packets that the relay forwarded in XDP in
+	// the measured window.
+	RelayXDPPackets uint64 `json:"relay_xdp_packets"`
 
 	// Omit is the omit period, from the flow start to the window start.
 	Omit period `json:"omit"`
@@ -154,6 +161,7 @@ func newResult(client, server, relay [2]mark) result {
 	r.ServerSockDrops = delta(server[0].SockDrops, server[1].SockDrops)
 	r.ClientLinkDrops = delta(client[0].LinkDrops, client[1].LinkDrops)
 	r.ServerLinkDrops = delta(server[0].LinkDrops, server[1].LinkDrops)
+	r.RelayXDPPackets = relay[1].XDPPackets - relay[0].XDPPackets
 	return r
 }
 

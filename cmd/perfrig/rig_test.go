@@ -45,6 +45,67 @@ func TestNetemArgs(t *testing.T) {
 	}
 }
 
+func TestRigLinks(t *testing.T) {
+	cases := []struct {
+		name        string
+		cfg         config
+		want        [][]string
+		wantSidecar string
+	}{
+		{
+			name: "veth pair",
+			cfg:  config{NetnsPrefix: "p", MTU: 1500},
+			want: [][]string{
+				{"ip", "netns", "add", "p-client"},
+				{"ip", "netns", "add", "p-server"},
+				{"ip", "link", "add", "perf-c", "netns", "p-client", "type", "veth", "peer", "name", "perf-s", "netns", "p-server"},
+				{"ip", "-n", "p-client", "addr", "add", "10.200.0.1/24", "dev", "perf-c"},
+				{"ip", "-n", "p-server", "addr", "add", "10.200.0.2/24", "dev", "perf-s"},
+				{"ip", "-n", "p-client", "link", "set", "dev", "perf-c", "mtu", "1500", "up"},
+				{"ip", "-n", "p-server", "link", "set", "dev", "perf-s", "mtu", "1500", "up"},
+				{"ip", "-n", "p-client", "link", "set", "dev", "lo", "up"},
+				{"ip", "-n", "p-server", "link", "set", "dev", "lo", "up"},
+			},
+			wantSidecar: "p-server",
+		},
+		{
+			name: "relay netns",
+			cfg:  config{NetnsPrefix: "p", MTU: 9000, RelayNetns: true},
+			want: [][]string{
+				{"ip", "netns", "add", "p-bridge"},
+				{"ip", "-n", "p-bridge", "link", "add", "perf-br", "mtu", "9000", "type", "bridge"},
+				{"ip", "-n", "p-bridge", "link", "set", "dev", "perf-br", "up"},
+				{"ip", "netns", "add", "p-client"},
+				{"ip", "-n", "p-bridge", "link", "add", "perf-c", "mtu", "9000", "type", "veth", "peer", "name", "perf-c", "netns", "p-client"},
+				{"ip", "-n", "p-bridge", "link", "set", "dev", "perf-c", "master", "perf-br", "up"},
+				{"ip", "netns", "add", "p-server"},
+				{"ip", "-n", "p-bridge", "link", "add", "perf-s", "mtu", "9000", "type", "veth", "peer", "name", "perf-s", "netns", "p-server"},
+				{"ip", "-n", "p-bridge", "link", "set", "dev", "perf-s", "master", "perf-br", "up"},
+				{"ip", "netns", "add", "p-relay"},
+				{"ip", "-n", "p-bridge", "link", "add", "perf-r", "mtu", "9000", "type", "veth", "peer", "name", "perf-r", "netns", "p-relay"},
+				{"ip", "-n", "p-bridge", "link", "set", "dev", "perf-r", "master", "perf-br", "up"},
+				{"ip", "-n", "p-client", "addr", "add", "10.200.0.1/24", "dev", "perf-c"},
+				{"ip", "-n", "p-server", "addr", "add", "10.200.0.2/24", "dev", "perf-s"},
+				{"ip", "-n", "p-relay", "addr", "add", "10.200.0.3/24", "dev", "perf-r"},
+				{"ip", "-n", "p-client", "link", "set", "dev", "perf-c", "mtu", "9000", "up"},
+				{"ip", "-n", "p-server", "link", "set", "dev", "perf-s", "mtu", "9000", "up"},
+				{"ip", "-n", "p-relay", "link", "set", "dev", "perf-r", "mtu", "9000", "up"},
+				{"ip", "-n", "p-client", "link", "set", "dev", "lo", "up"},
+				{"ip", "-n", "p-server", "link", "set", "dev", "lo", "up"},
+				{"ip", "-n", "p-relay", "link", "set", "dev", "lo", "up"},
+			},
+			wantSidecar: "p-relay",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRig(tc.cfg)
+			assert.Equal(t, tc.want, r.links())
+			assert.Equal(t, tc.wantSidecar, r.sidecarNetns())
+		})
+	}
+}
+
 func TestCPUMask(t *testing.T) {
 	cases := []struct {
 		n    int

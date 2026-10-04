@@ -22,9 +22,10 @@ type Workload struct {
 	// Server and Client return the argv for each side.
 	Server func(Env) []string
 	Client func(Env) []string
-	// Sidecar, when set, returns the argv of a process in the server netns, for
-	// example a relay. It starts before the server and stops after the server
-	// exits. Its CPU counts as server CPU.
+	// Sidecar, when set, returns the argv of a process in the server netns, or
+	// in the relay netns with -relay-netns, for example a relay. It starts
+	// before the server and stops after the server exits. Its CPU counts as
+	// server CPU.
 	Sidecar func(Env) []string
 	// Ready is the socket that the server opens. The client starts after the
 	// socket is open. A zero Socket means start the client after 1 s.
@@ -41,6 +42,8 @@ type Workload struct {
 type Env struct {
 	ServerIP string
 	ClientIP string
+	// RelayIP is the address of the relay netns, or ServerIP without one.
+	RelayIP  string
 	Duration time.Duration
 	Omit     time.Duration
 	Streams  int
@@ -54,6 +57,7 @@ func (e Env) vars() []string {
 	return []string{
 		"SERVER_IP=" + e.ServerIP,
 		"CLIENT_IP=" + e.ClientIP,
+		"RELAY_IP=" + e.RelayIP,
 		"DURATION_S=" + strconv.Itoa(seconds(e.Duration)),
 		"OMIT_S=" + strconv.Itoa(seconds(e.Omit)),
 		"STREAMS=" + strconv.Itoa(e.Streams),

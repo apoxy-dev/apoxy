@@ -115,7 +115,7 @@ apoxy_vpc_relay_dropped_packets_total{reason="tunnel_limit"} 1
 apoxy_vpc_relay_dropped_packets_total{reason="unknown_source"} 1
 apoxy_vpc_relay_dropped_packets_total{reason="unknown_spi"} 1
 `
-	assert.NoError(t, testutil.CollectAndCompare(r, strings.NewReader(want)))
+	assert.NoError(t, testutil.CollectAndCompare(r, strings.NewReader(want), "apoxy_vpc_relay_dropped_packets_total"))
 	assert.Equal(t, uint64(1), r.MalformedDrops())
 	assert.Equal(t, uint64(1), r.UnknownSourceDrops())
 }

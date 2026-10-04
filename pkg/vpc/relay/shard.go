@@ -83,6 +83,7 @@ func (r *Router) joinShard(s *Session, attachment string, index uint32) (owner, 
 		return nil, nil, rpc.Errorf(rpc.PermissionDenied, "attachment %q has another agent identity", attachment)
 	}
 	// The shard leaves the domain and gives its source address to the owner.
+	r.markXDP(s)
 	delete(d.members, s)
 	clear(s.sync.routes)
 	for _, a := range []netip.AddrPort{s.addr, s.prev} {
@@ -96,6 +97,7 @@ func (r *Router) joinShard(s *Session, attachment string, index uint32) (owner, 
 			r.bySource[a] = owner
 		}
 	}
+	r.markXDP(owner)
 	s.sync.open = true
 	s.shardOf = owner
 	old = owner.shards[index]

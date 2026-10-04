@@ -15,8 +15,11 @@ import (
 const (
 	clientIP  = "10.200.0.1"
 	serverIP  = "10.200.0.2"
+	relayIP   = "10.200.0.3"
 	clientDev = "perf-c"
 	serverDev = "perf-s"
+	relayDev  = "perf-r"
+	bridgeDev = "perf-br"
 
 	// bufMax is the socket buffer limit: 128 MiB holds 20 ms of data at 50 Gbps.
 	bufMax = "134217728"
@@ -39,35 +42,43 @@ var rigSysctls = []struct{ key, value string }{
 }
 
 // rig is two network namespaces joined by a veth pair, with netem on both ends.
+// With -relay-netns, the sidecar runs in a relay netns, and a bridge in a
+// fourth netns joins the client, the server and the relay.
 type rig struct {
 	client, server string
+	relay, bridge  string // Empty without -relay-netns.
 	cfg            config
 }
 
 func newRig(cfg config) *rig {
-	return &rig{client: cfg.NetnsPrefix + "-client", server: cfg.NetnsPrefix + "-server", cfg: cfg}
+	r := &rig{client: cfg.NetnsPrefix + "-client", server: cfg.NetnsPrefix + "-server", cfg: cfg}
+	if cfg.RelayNetns {
+		r.relay, r.bridge = cfg.NetnsPrefix+"-relay", cfg.NetnsPrefix+"-bridge"
+	}
+	return r
+}
+
+// sidecarNetns is the netns of the sidecar.
+func (r *rig) sidecarNetns() string {
+	if r.relay != "" {
+		return r.relay
+	}
+	return r.server
 }
 
 func (r *rig) setup(ctx context.Context) error {
 	r.teardown()
-	mtu := strconv.Itoa(r.cfg.MTU)
-	steps := [][]string{
-		{"ip", "netns", "add", r.client},
-		{"ip", "netns", "add", r.server},
-		{"ip", "link", "add", clientDev, "netns", r.client, "type", "veth", "peer", "name", serverDev, "netns", r.server},
-		{"ip", "-n", r.client, "addr", "add", clientIP + "/24", "dev", clientDev},
-		{"ip", "-n", r.server, "addr", "add", serverIP + "/24", "dev", serverDev},
-		{"ip", "-n", r.client, "link", "set", "dev", clientDev, "mtu", mtu, "up"},
-		{"ip", "-n", r.server, "link", "set", "dev", serverDev, "mtu", mtu, "up"},
-		{"ip", "-n", r.client, "link", "set", "dev", "lo", "up"},
-		{"ip", "-n", r.server, "link", "set", "dev", "lo", "up"},
-	}
-	for _, s := range steps {
+	for _, s := range r.links() {
 		if _, err := command(ctx, s...); err != nil {
 			return err
 		}
 	}
 	r.setRPS(ctx)
+	if r.relay != "" {
+		if err := r.tuneRelay(ctx); err != nil {
+			return err
+		}
+	}
 
 	// The kernel loads sch_netem on demand when modprobe can find it. Try it here
 	// too; a failure is not an error because netem can be built in.
@@ -88,8 +99,66 @@ func (r *rig) setup(ctx context.Context) error {
 	return nil
 }
 
+// links returns the commands that add the netns and the links.
+func (r *rig) links() [][]string {
+	mtu := strconv.Itoa(r.cfg.MTU)
+	ends := []struct{ ns, dev, ip string }{{r.client, clientDev, clientIP}, {r.server, serverDev, serverIP}}
+	var steps [][]string
+	if r.relay == "" {
+		steps = [][]string{
+			{"ip", "netns", "add", r.client},
+			{"ip", "netns", "add", r.server},
+			{"ip", "link", "add", clientDev, "netns", r.client, "type", "veth", "peer", "name", serverDev, "netns", r.server},
+		}
+	} else {
+		ends = append(ends, struct{ ns, dev, ip string }{r.relay, relayDev, relayIP})
+		steps = [][]string{
+			{"ip", "netns", "add", r.bridge},
+			{"ip", "-n", r.bridge, "link", "add", bridgeDev, "mtu", mtu, "type", "bridge"},
+			{"ip", "-n", r.bridge, "link", "set", "dev", bridgeDev, "up"},
+		}
+		// The bridge port of each veth has the same name as its peer.
+		for _, e := range ends {
+			steps = append(steps,
+				[]string{"ip", "netns", "add", e.ns},
+				[]string{"ip", "-n", r.bridge, "link", "add", e.dev, "mtu", mtu, "type", "veth", "peer", "name", e.dev, "netns", e.ns},
+				[]string{"ip", "-n", r.bridge, "link", "set", "dev", e.dev, "master", bridgeDev, "up"})
+		}
+	}
+	for _, e := range ends {
+		steps = append(steps, []string{"ip", "-n", e.ns, "addr", "add", e.ip + "/24", "dev", e.dev})
+	}
+	for _, e := range ends {
+		steps = append(steps, []string{"ip", "-n", e.ns, "link", "set", "dev", e.dev, "mtu", mtu, "up"})
+	}
+	for _, e := range ends {
+		steps = append(steps, []string{"ip", "-n", e.ns, "link", "set", "dev", "lo", "up"})
+	}
+	return steps
+}
+
+// tuneRelay makes the relay link like a NIC link. The relay netns forwards, so
+// that XDP can send packets on. The bridge port sends single packets with a
+// checksum, as a wire does, and the relay link segments the UDP GSO packets of
+// the relay.
+func (r *rig) tuneRelay(ctx context.Context) error {
+	if err := writeIn(ctx, r.relay, "/proc/sys/net/ipv4/ip_forward", "1"); err != nil {
+		return err
+	}
+	for _, s := range [][]string{
+		{"ip", "netns", "exec", r.bridge, "ethtool", "-K", relayDev, "tx", "off"},
+		{"ip", "netns", "exec", r.relay, "ethtool", "-K", relayDev, "tx-udp-segmentation", "off"},
+	} {
+		if _, err := command(ctx, s...); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // setRPS lets the RPS CPUs, by default all CPUs, receive on the veths, one CPU
-// per flow. Without RPS, netem on a veth reorders packets.
+// per flow. Without RPS, netem on a veth reorders packets, and the bridge of
+// the relay rig forwards each flow on the CPU that sent it.
 func (r *rig) setRPS(ctx context.Context) {
 	mask := cpuMask(runtime.NumCPU())
 	if r.cfg.RPSCPUs != "" {
@@ -100,7 +169,12 @@ func (r *rig) setRPS(ctx context.Context) {
 			mask = m
 		}
 	}
-	for _, e := range []struct{ ns, dev string }{{r.client, clientDev}, {r.server, serverDev}} {
+	ends := []struct{ ns, dev string }{{r.client, clientDev}, {r.server, serverDev}}
+	if r.relay != "" {
+		ends = append(ends, struct{ ns, dev string }{r.relay, relayDev},
+			struct{ ns, dev string }{r.bridge, clientDev}, struct{ ns, dev string }{r.bridge, serverDev}, struct{ ns, dev string }{r.bridge, relayDev})
+	}
+	for _, e := range ends {
 		if err := writeIn(ctx, e.ns, "/sys/class/net/"+e.dev+"/queues/rx-*/rps_cpus", mask); err != nil {
 			slog.Warn("Failed to set RPS on the veth", "netns", e.ns, "dev", e.dev, "error", err)
 		}
@@ -148,12 +222,14 @@ func cpuListMask(list string) (string, error) {
 	return strings.Join(groups, ","), nil
 }
 
-// teardown deletes both netns. This also deletes the veth pair.
+// teardown deletes the netns. This also deletes the links.
 func (r *rig) teardown() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	for _, ns := range []string{r.client, r.server} {
-		_, _ = command(ctx, "ip", "netns", "del", ns)
+	for _, ns := range []string{r.client, r.server, r.relay, r.bridge} {
+		if ns != "" {
+			_, _ = command(ctx, "ip", "netns", "del", ns)
+		}
 	}
 }
 

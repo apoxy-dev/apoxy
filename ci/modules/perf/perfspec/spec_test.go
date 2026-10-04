@@ -137,7 +137,7 @@ func TestCloudInit(t *testing.T) {
 	if want := []string{"/opt/perf/perfagent", "-ec2", "-spec", spec}; !reflect.DeepEqual(cfg.Runcmd[1], want) {
 		t.Errorf("runcmd[1] = %v, want %v", cfg.Runcmd[1], want)
 	}
-	if cfg.PowerState["mode"] != "poweroff" || !reflect.DeepEqual(cfg.Packages, []string{"iperf3"}) {
+	if cfg.PowerState["mode"] != "poweroff" || !reflect.DeepEqual(cfg.Packages, []string{"iperf3", "ethtool"}) {
 		t.Errorf("power_state = %v, packages = %v", cfg.PowerState, cfg.Packages)
 	}
 	if _, err := CloudInit(agent, spec, time.Second); err == nil {

@@ -26,7 +26,7 @@ import (
 const (
 	// Ubuntu 24.04 amd64 server, 20260904, us-west-2 (Canonical).
 	defaultImage = "ami-04678417fc39d7171"
-	// rigImage has iperf3 3.19 (perfrig needs 3.16 or later), iproute2 and iputils ping.
+	// rigImage has iperf3 3.19 (perfrig needs 3.16 or later), iproute2, iputils ping and ethtool.
 	rigImage = "alpine:3.22"
 	// poweroff is the life of an instance. A systemd timer powers it off and
 	// the reaper terminates it after this time.
@@ -72,7 +72,7 @@ func (m *Perf) Local(
 		return nil, err
 	}
 	ctr := dag.Container().From(rigImage).
-		WithExec([]string{"apk", "add", "--no-cache", "iperf3", "iproute2", "iputils-ping"}).
+		WithExec([]string{"apk", "add", "--no-cache", "iperf3", "iproute2", "iputils-ping", "ethtool"}).
 		WithDirectory("/perf/bin", bins).
 		WithNewFile("/perf/spec.json", js)
 	if files != nil {

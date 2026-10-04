@@ -24,6 +24,7 @@ import (
 	"github.com/apoxy-dev/icx/mac"
 	"github.com/apoxy-dev/icx/queues"
 	"github.com/apoxy-dev/icx/veth"
+	"github.com/cilium/ebpf"
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcapgo"
 	"github.com/vishvananda/netlink"
@@ -233,6 +234,12 @@ func (r *ICXNetlinkRouter) Close() error {
 		}
 	})
 	return firstErr
+}
+
+// ChainXDP runs next on the packets that the XDP program of the external
+// link passes to the kernel. A nil next stops it.
+func (r *ICXNetlinkRouter) ChainXDP(next *ebpf.Program) error {
+	return r.ingressFilter.Chain(next)
 }
 
 // Start initializes the router and starts forwarding traffic.

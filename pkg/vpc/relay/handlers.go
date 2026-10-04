@@ -153,6 +153,7 @@ func (r *Router) registerSPI(c *Session, in *dp.RegisterSPIRequest, now time.Tim
 		w.expires = now.Add(ttl)
 		w.lastUsed.Store(now.UnixNano())
 	}
+	r.markXDP(c)
 	return nil
 }
 

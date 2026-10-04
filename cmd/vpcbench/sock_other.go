@@ -4,8 +4,15 @@
 
 package main
 
-import "syscall"
+import (
+	"errors"
+	"syscall"
+)
 
 func sockRcvbuf(syscall.Conn) int64 { return -1 }
 
 func sockDrops(syscall.Conn) int64 { return -1 }
+
+func xdpSeconds(string) (func() float64, func(), error) {
+	return nil, nil, errors.New("XDP needs Linux")
+}

@@ -346,6 +346,8 @@ func (r *Router) keepRows(br *bridge, s *Session, now time.Time) {
 			}
 			s.rows[spi] = w
 			br.local.inbound[w] = struct{}{}
+			// The row hides a row of the twin with the same SPI.
+			r.markXDP(s)
 		}
 		if w.receiver == br.local {
 			w.expires = end

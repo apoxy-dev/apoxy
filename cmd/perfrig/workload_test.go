@@ -67,8 +67,8 @@ func TestNewWorkload(t *testing.T) {
 		},
 		{
 			name:    "exec unknown variable",
-			cfg:     func() config { c := execCfg; c.SidecarArgv = []string{"relay", "-listen", "$RELAY_IP:4443"}; return c }(),
-			wantErr: "names $RELAY_IP",
+			cfg:     func() config { c := execCfg; c.SidecarArgv = []string{"relay", "-listen", "$PEER_IP:4443"}; return c }(),
+			wantErr: "names $PEER_IP",
 		},
 		{
 			name:    "exec bad socket",
@@ -93,7 +93,7 @@ func TestNewWorkload(t *testing.T) {
 }
 
 func TestExecWorkloadArgv(t *testing.T) {
-	env := Env{ServerIP: serverIP, ClientIP: clientIP, Duration: 30 * time.Second, Omit: 5 * time.Second, Streams: 4, Dir: "/work"}
+	env := Env{ServerIP: serverIP, ClientIP: clientIP, RelayIP: relayIP, Duration: 30 * time.Second, Omit: 5 * time.Second, Streams: 4, Dir: "/work"}
 	cases := []struct {
 		name string
 		argv []string
@@ -105,6 +105,7 @@ func TestExecWorkloadArgv(t *testing.T) {
 			argv: []string{"vpcbench", "client", "-server", "$SERVER_IP:4433", "-omit", "${OMIT_S}s", "-duration", "${DURATION_S}s", "-streams", "$STREAMS"},
 			want: []string{"vpcbench", "client", "-server", "10.200.0.2:4433", "-omit", "5s", "-duration", "30s", "-streams", "4"},
 		},
+		{name: "relay", argv: []string{"vpcbench", "relay", "-listen", "$RELAY_IP:4443"}, want: []string{"vpcbench", "relay", "-listen", "10.200.0.3:4443"}},
 		{name: "no word split", argv: []string{"a b", "$WORK_DIR/x y"}, want: []string{"a b", "/work/x y"}},
 	}
 	for _, tc := range cases {

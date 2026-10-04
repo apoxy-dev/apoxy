@@ -110,6 +110,9 @@ type Router struct {
 	bySource map[netip.AddrPort]*Session
 	probes   map[[8]byte]*Session
 	attaches uint64 // Attach counter for Attachment.seq.
+	xdp      *xdpSync
+	xdpBase  xdpStats      // Counters of the XDP programs that stopped.
+	xdpWake  chan struct{} // Has room for 1: XDP rows are marked.
 }
 
 // NewRouter returns a Router with the SameVPC Permit rule. New sessions
@@ -132,6 +135,7 @@ func NewRouter(trust Trust, cfg Config) *Router {
 		byConn:   map[*rpc.Conn]*Session{},
 		bySource: map[netip.AddrPort]*Session{},
 		probes:   map[[8]byte]*Session{},
+		xdpWake:  make(chan struct{}, 1),
 	}
 }
 
@@ -307,6 +311,7 @@ func (r *Router) removeSession(s *Session) {
 		return
 	}
 	s.closed = true
+	r.markXDP(s)
 	// The routes go first: a route that moves to another session takes its rows.
 	for _, p := range slices.Clone(s.routes) {
 		r.dropRoute(s, p)
@@ -357,6 +362,11 @@ func (r *Router) setAddr(s *Session, a netip.AddrPort, now time.Time) {
 	if !a.IsValid() || a == s.addr {
 		return
 	}
+	// The rows to s get a new next hop.
+	r.markXDP(s)
+	for w := range s.inbound {
+		r.markXDP(w.sender)
+	}
 	if s.prev.IsValid() && r.bySource[s.prev] == s {
 		delete(r.bySource, s.prev)
 	}
@@ -383,6 +393,7 @@ func (r *Router) takeSource(s *Session) {
 		s.twin = o
 	}
 	r.bySource[s.addr] = s
+	r.markXDP(s)
 }
 
 // twinOf returns the other open session of the agent socket of c, or nil.
@@ -411,6 +422,7 @@ func (r *Router) passSource(s *Session, a netip.AddrPort) {
 	for o := range d.members {
 		if o != s && !o.closed && o.shardOf == nil && o.sync.open && o.addr == a {
 			r.bySource[a] = o
+			r.markXDP(o)
 			return
 		}
 	}
@@ -470,6 +482,7 @@ func (r *Router) setOwner(d *domain, p netip.Prefix, o owner) {
 				delete(old.s.inbound, w)
 				w.receiver = o.s
 				o.s.inbound[w] = struct{}{}
+				r.markXDP(w.sender)
 			}
 		}
 	}
@@ -578,6 +591,7 @@ func (r *Router) removeRow(w *row) {
 		delete(w.sender.rows, w.spi)
 	}
 	delete(w.receiver.inbound, w)
+	r.markXDP(w.sender)
 }
 
 // SetPermit replaces the Permit rule and removes the rows that it denies.
@@ -677,12 +691,16 @@ func (r *Router) Sweep(now time.Time) {
 			s.prev = netip.AddrPort{}
 		}
 		for _, w := range s.rows {
+			if w.lastUsed.Load() < idle {
+				r.refreshUsedXDP(w)
+			}
 			if now.After(w.expires) || w.lastUsed.Load() < idle {
 				r.removeRow(w)
 			}
 		}
 		s.sweepNoRoute(now)
 	}
+	r.syncAllXDP(now)
 	r.mu.Unlock()
 	for _, s := range expired {
 		s.close(dp.RelayCloseCode_RELAY_CLOSE_CODE_CERT, "agent cert expired")
@@ -700,6 +718,10 @@ func (r *Router) Run(ctx context.Context) {
 		case now := <-t.C:
 			r.Sweep(now)
 			r.tickBridge(now)
+		case <-r.xdpWake:
+			r.mu.Lock()
+			r.syncXDP(time.Now())
+			r.mu.Unlock()
 		}
 	}
 }
@@ -739,15 +761,18 @@ func (r *Router) SenderStats(s *Session) SenderStats {
 	}
 	r.mu.RLock()
 	for _, w := range s.rows {
+		x := r.xdpCountersOf(w)
+		st.DropMeter += x.drops
 		st.Lanes = append(st.Lanes, LaneStats{
 			SPI:         w.spi,
 			Destination: w.dst,
-			Packets:     w.packets.Load(),
-			Bytes:       w.bytes.Load(),
-			DropMeter:   w.dropMeter.Load(),
+			Packets:     w.packets.Load() + x.packets,
+			Bytes:       w.bytes.Load() + x.bytes,
+			DropMeter:   w.dropMeter.Load() + x.drops,
 			ICVFailures: w.icvFailures.Load(),
 		})
 	}
+	st.DropTunnelLimit += r.xdpTunnelDrops(s)
 	r.mu.RUnlock()
 	slices.SortFunc(st.Lanes, func(a, b LaneStats) int { return cmp.Compare(a.SPI, b.SPI) })
 	return st

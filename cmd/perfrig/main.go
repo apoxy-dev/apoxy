@@ -1,9 +1,10 @@
 // Command perfrig is a network performance rig. "perfrig run" joins two network
 // namespaces with a veth pair, adds netem delay, jitter, loss and rate limits
 // on both ends, runs a server and a client workload, and prints a JSON result
-// with RTT, throughput and CPU. "perfrig compare" checks results against a
-// baseline file. Exit code 3 is an infra error, for example CPU steal or a rig
-// setup failure, and not a result of the workload.
+// with RTT, throughput and CPU. With -relay-netns, the sidecar runs in a
+// third netns, and a bridge joins the three. "perfrig compare" checks results
+// against a baseline file. Exit code 3 is an infra error, for example CPU
+// steal or a rig setup failure, and not a result of the workload.
 //
 //	perfrig run -workload iperf3-tcp -streams 4 -duration 30s -reps 3 -min-cpus 8 -max-steal 5
 //	perfrig compare -baseline cmd/perfrig/baseline.json -summary "$GITHUB_STEP_SUMMARY" perf/
@@ -90,6 +91,7 @@ func runCmd(ctx context.Context, args []string) error {
 	fs.IntVar(&cfg.MinCPUs, "min-cpus", 0, "infra error when the host has fewer CPUs (0: no check)")
 	fs.Float64Var(&cfg.MaxSteal, "max-steal", -1, "infra error when the CPU steal of a run is above this percent (negative: no check)")
 	fs.StringVar(&cfg.NetnsPrefix, "netns-prefix", "perf", "prefix of the netns names")
+	fs.BoolVar(&cfg.RelayNetns, "relay-netns", false, "run the sidecar in a relay netns ($RELAY_IP), with a bridge that joins it to the client and the server")
 	fs.StringVar(&cfg.HostClass, "host-class", "", "first word of the result key, for example the EC2 instance type (default: the arch)")
 	fs.StringVar(&cfg.OutDir, "out-dir", "", "keep the workload files and raw output in this directory")
 	fs.StringVar(&cfg.AppCPUs, "app-cpus", "", "pin the workload processes to this CPU list, for example 16-31 (empty: no pin)")
@@ -111,6 +113,9 @@ func runCmd(ctx context.Context, args []string) error {
 	w, err := newWorkload(cfg)
 	if err != nil {
 		return err
+	}
+	if cfg.RelayNetns && w.Sidecar == nil {
+		return errors.New("-relay-netns needs -sidecar-argv")
 	}
 	if cfg.Bitrate == "" {
 		cfg.Bitrate = w.DefaultBitrate

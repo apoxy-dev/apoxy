@@ -47,7 +47,8 @@ func TestPlan(t *testing.T) {
 		{
 			name: "vpc on a host", suite: VPC, opts: Options{Duration: "30s", Reps: 3, MinCPUs: 16, Host: true},
 			wantIDs: []string{"netstack-psp-relay", "netstack-quic-relay", "tun-psp-relay-cubic", "netstack-psp-relay-loss0.1",
-				"netstack-psp-direct", "netstack-psp-relay-cubic", "netstack-psp-relay-rate1000mbit"},
+				"netstack-psp-direct", "netstack-psp-relay-cubic", "netstack-psp-relay-rate1000mbit",
+				"netstack-psp-relay-netns", "netstack-psp-relay-xdp"},
 			wantHost: true, wantTun: true,
 		},
 		{
@@ -106,15 +107,29 @@ func TestVPCRowArgs(t *testing.T) {
 				`-server-argv=["vpcbench","server","-relay","$SERVER_IP:4443","-listen","$SERVER_IP:4433"]`,
 				`-client-argv=["vpcbench","client","-relay","$SERVER_IP:4443","-server","$SERVER_IP:4433","-cc","bbr","-streams","$STREAMS","-omit","${OMIT_S}s","-duration","${DURATION_S}s"]`,
 			},
+			notWant: []string{"-relay-netns"},
 		},
 		{
 			id: "netstack-psp-direct", wantGroup: "info",
 			want:    []string{"-reps=1", `-server-argv=["vpcbench","server","-via","direct","-listen","$SERVER_IP:4433"]`},
-			notWant: []string{"-sidecar-argv", "-baseline"},
+			notWant: []string{"-sidecar-argv", "-baseline", "-relay-netns"},
 		},
 		{
 			id: "netstack-psp-relay-rate1000mbit", wantGroup: "info",
 			want: []string{"-rate=1000mbit", "-queue-limit=2640"},
+		},
+		{
+			id: "netstack-psp-relay-netns", wantGroup: "info",
+			want: []string{
+				"-relay-netns",
+				`-sidecar-argv=["vpcbench","relay","-listen","$RELAY_IP:4443"]`,
+				`-server-argv=["vpcbench","server","-relay","$RELAY_IP:4443","-listen","$SERVER_IP:4433"]`,
+				`-client-argv=["vpcbench","client","-relay","$RELAY_IP:4443","-server","$SERVER_IP:4433","-cc","bbr","-streams","$STREAMS","-omit","${OMIT_S}s","-duration","${DURATION_S}s"]`,
+			},
+		},
+		{
+			id: "netstack-psp-relay-xdp", wantGroup: "info",
+			want: []string{"-name=vpc-netstack-psp-relay-xdp", "-relay-netns", `-sidecar-argv=["vpcbench","relay","-listen","$RELAY_IP:4443","-xdp","perf-r"]`},
 		},
 	}
 	for _, tc := range cases {

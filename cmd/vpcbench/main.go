@@ -112,6 +112,7 @@ func main() {
 type options struct {
 	Listen, Relay, Server, WorkDir string
 	Driver, Transport, Via, CC     string
+	XDP                            string
 	MTU, Streams                   int
 	Omit, Duration                 time.Duration
 	Idle, ProbeInterval            time.Duration
@@ -128,6 +129,9 @@ func parseFlags(cmd string, args []string, out io.Writer) (options, error) {
 	o.Profiles.AddFlags(fs)
 	if cmd != "client" {
 		fs.StringVar(&o.Listen, "listen", "", "relay: UDP and TCP control address; server: TCP control address, and UDP with -via direct")
+	}
+	if cmd == "relay" {
+		fs.StringVar(&o.XDP, "xdp", "", "link on which XDP forwards the PSP packets in generic mode, as on ENA; the relay CPU then includes the program run time (empty: the socket forwards them)")
 	}
 	if cmd != "relay" {
 		fs.StringVar(&o.Relay, "relay", "", "relay address host:port")

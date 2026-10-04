@@ -157,6 +157,9 @@ type vpcRow struct {
 	floor    bool
 	// direct runs the flows with no relay.
 	direct bool
+	// relayNetns runs the relay in its own netns, so that it sends the
+	// packets to the server on a link. xdp forwards them in XDP there.
+	relayNetns, xdp bool
 	// server and client are more vpcbench flags. args are more perfrig run flags.
 	server, client []string
 	args           []string
@@ -171,13 +174,23 @@ var vpcRows = []vpcRow{
 	{id: "netstack-psp-direct", name: "vpc-netstack-psp-direct", direct: true, client: []string{"-cc", "bbr"}},
 	{id: "netstack-psp-relay-cubic", name: "vpc-netstack-psp-relay-cubic", client: []string{"-cc", "cubic"}},
 	{id: "netstack-psp-relay-rate1000mbit", name: "vpc-netstack-psp-relay", client: []string{"-cc", "bbr"}, args: []string{"-rate=1000mbit", "-queue-limit=2640"}},
+	{id: "netstack-psp-relay-netns", name: "vpc-netstack-psp-relay-netns", relayNetns: true, client: []string{"-cc", "bbr"}},
+	{id: "netstack-psp-relay-xdp", name: "vpc-netstack-psp-relay-xdp", relayNetns: true, xdp: true, client: []string{"-cc", "bbr"}},
 }
 
 func (r vpcRow) row(o Options) Row {
 	// The relay is the sidecar of the server. perfrig stops it after the server exits.
-	sidecar := []string{"vpcbench", "relay", "-listen", "$SERVER_IP:4443"}
-	server := []string{"vpcbench", "server", "-relay", "$SERVER_IP:4443", "-listen", "$SERVER_IP:4433"}
-	client := []string{"vpcbench", "client", "-relay", "$SERVER_IP:4443", "-server", "$SERVER_IP:4433"}
+	relay := "$SERVER_IP:4443"
+	if r.relayNetns {
+		relay = "$RELAY_IP:4443"
+	}
+	sidecar := []string{"vpcbench", "relay", "-listen", relay}
+	if r.xdp {
+		// perf-r is the link of the perfrig relay netns.
+		sidecar = append(sidecar, "-xdp", "perf-r")
+	}
+	server := []string{"vpcbench", "server", "-relay", relay, "-listen", "$SERVER_IP:4433"}
+	client := []string{"vpcbench", "client", "-relay", relay, "-server", "$SERVER_IP:4433"}
 	if r.direct {
 		sidecar = nil
 		server = []string{"vpcbench", "server", "-via", "direct", "-listen", "$SERVER_IP:4433"}
@@ -201,6 +214,9 @@ func (r vpcRow) row(o Options) Row {
 	args = append(args, "-server-argv="+jsonArgv(server), "-client-argv="+jsonArgv(client))
 	if sidecar != nil {
 		args = append(args, "-sidecar-argv="+jsonArgv(sidecar))
+	}
+	if r.relayNetns {
+		args = append(args, "-relay-netns")
 	}
 	return Row{ID: r.id, Group: group, Args: append(args, r.args...)}
 }

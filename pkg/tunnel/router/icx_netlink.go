@@ -9,6 +9,7 @@ import (
 	"net/netip"
 
 	"github.com/apoxy-dev/icx"
+	"github.com/cilium/ebpf"
 	"gvisor.dev/gvisor/pkg/tcpip"
 
 	"github.com/apoxy-dev/apoxy/pkg/netstack"
@@ -27,6 +28,10 @@ func NewICXNetlinkRouter(_ ...Option) (*ICXNetlinkRouter, error) {
 
 type ICXNetlinkRouter struct {
 	Handler *icx.Handler
+}
+
+func (r *ICXNetlinkRouter) ChainXDP(_ *ebpf.Program) error {
+	return errors.New("not implemented")
 }
 
 func (r *ICXNetlinkRouter) Start(ctx context.Context) error {
