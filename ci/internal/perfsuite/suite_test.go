@@ -48,7 +48,7 @@ func TestPlan(t *testing.T) {
 			name: "vpc on a host", suite: VPC, opts: Options{Duration: "30s", Reps: 3, MinCPUs: 16, Host: true},
 			wantIDs: []string{"netstack-psp-relay", "netstack-quic-relay", "tun-psp-relay-cubic", "netstack-psp-relay-loss0.1",
 				"netstack-psp-direct", "netstack-psp-relay-cubic", "netstack-psp-relay-rate1000mbit",
-				"netstack-psp-relay-netns", "netstack-psp-relay-xdp"},
+				"netstack-psp-relay-netns", "netstack-psp-relay-xdp", "netstack-psp-direct-1flow"},
 			wantHost: true, wantTun: true,
 		},
 		{
@@ -115,8 +115,13 @@ func TestVPCRowArgs(t *testing.T) {
 		},
 		{
 			id: "netstack-psp-direct", wantGroup: "info",
-			want:    []string{"-reps=1", `-server-argv=["vpcbench","server","-via","direct","-listen","$SERVER_IP:4433"]`},
+			want:    []string{"-reps=1", "-streams=4", `-server-argv=["vpcbench","server","-via","direct","-listen","$SERVER_IP:4433"]`},
 			notWant: []string{"-sidecar-argv", "-baseline", "-relay-netns"},
+		},
+		{
+			id: "netstack-psp-direct-1flow", wantGroup: "info",
+			want:    []string{"-name=vpc-netstack-psp-direct", "-streams=1", `-server-argv=["vpcbench","server","-via","direct","-listen","$SERVER_IP:4433"]`},
+			notWant: []string{"-streams=4", "-sidecar-argv"},
 		},
 		{
 			id: "netstack-psp-relay-rate1000mbit", wantGroup: "info",

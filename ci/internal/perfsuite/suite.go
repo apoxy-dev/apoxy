@@ -212,6 +212,8 @@ type vpcRow struct {
 	// nodes runs each role on its own EC2 host, with no netem: 2 hosts with no
 	// relay, 3 with one. 0 runs the row in the netns rig.
 	nodes int
+	// streams is the flow count. 0 gives 4 flows.
+	streams int
 	// server and client are more vpcbench flags. args are more perfrig run flags.
 	server, client []string
 	args           []string
@@ -228,6 +230,7 @@ var vpcRows = []vpcRow{
 	{id: "netstack-psp-relay-rate1000mbit", name: "vpc-netstack-psp-relay", client: []string{"-cc", "bbr"}, args: []string{"-rate=1000mbit", "-queue-limit=2640"}},
 	{id: "netstack-psp-relay-netns", name: "vpc-netstack-psp-relay-netns", relayNetns: true, client: []string{"-cc", "bbr"}},
 	{id: "netstack-psp-relay-xdp", name: "vpc-netstack-psp-relay-xdp", relayNetns: true, xdp: true, client: []string{"-cc", "bbr"}},
+	{id: "netstack-psp-direct-1flow", name: "vpc-netstack-psp-direct", direct: true, streams: 1, client: []string{"-cc", "bbr"}},
 	{id: "netstack-psp-direct-2node", name: "vpc-netstack-psp-direct-2node", direct: true, nodes: 2, client: []string{"-cc", "bbr"}},
 	{id: "netstack-psp-relay-3node", name: "vpc-netstack-psp-relay-3node", nodes: 3, client: []string{"-cc", "bbr"}},
 }
@@ -280,12 +283,16 @@ func (r vpcRow) row(o Options) Row {
 	if r.floor {
 		group = "floor"
 	}
+	streams := "-streams=4"
+	if r.streams > 0 {
+		streams = "-streams=" + strconv.Itoa(r.streams)
+	}
 	var args []string
 	if r.nodes > 0 {
-		args = []string{"-name=" + r.name, "-streams=4", "-omit=5s", "-duration=" + o.Duration,
+		args = []string{"-name=" + r.name, streams, "-omit=5s", "-duration=" + o.Duration,
 			"-min-cpus=" + strconv.Itoa(o.MinCPUs), "-max-steal=5"}
 	} else {
-		args = []string{"-workload=exec", "-name=" + r.name, "-netns-prefix=perf", "-ready=tcp:4433", "-streams=4", "-omit=5s"}
+		args = []string{"-workload=exec", "-name=" + r.name, "-netns-prefix=perf", "-ready=tcp:4433", streams, "-omit=5s"}
 		args = append(args, common(o, group)...)
 	}
 	args = append(args, "-server-argv="+jsonArgv(server), "-client-argv="+jsonArgv(client))
