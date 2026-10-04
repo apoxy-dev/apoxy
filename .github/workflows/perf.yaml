@@ -101,10 +101,9 @@ jobs:
           --run-url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --sha="$GITHUB_SHA"
 
   # VPC data path (cmd/vpcbench through the relay, 4 flows, 20 ms RTT): one
-  # floor row and info rows. Dispatch only, until the baseline has the numbers
-  # of the instance type.
+  # floor row and info rows. The nightly run has the rows of the netns rig.
   vpc-perf:
-    if: vars.PERF_AWS_ROLE_ARN != '' && github.event_name == 'workflow_dispatch' && inputs.vpc_perf
+    if: vars.PERF_AWS_ROLE_ARN != '' && (github.event_name == 'schedule' || inputs.vpc_perf)
     runs-on: blacksmith-4vcpu-ubuntu-2204
     environment: perf
     permissions:
