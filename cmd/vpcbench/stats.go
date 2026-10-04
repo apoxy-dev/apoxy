@@ -3,10 +3,16 @@
 package main
 
 import (
+	"cmp"
+	"context"
+	"math"
 	"net"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/apoxy-dev/apoxy/cmd/internal/bench"
@@ -40,7 +46,111 @@ type mark struct {
 	LinkDrops int64 `json:"link_drops,omitempty"`
 	// XDPPackets are the PSP packets that the relay forwarded in XDP.
 	XDPPackets uint64 `json:"xdp_packets,omitempty"`
+	// CPUs are the ticks of each CPU of the host of the side.
+	CPUs []bench.CPUTicks `json:"cpus,omitempty"`
+	// Queue is the bytes in the queues of the agent socket since the last mark.
+	Queue *sockQueue `json:"queue,omitempty"`
 }
+
+// sockQueue is the mean and the most bytes in the receive queue of a socket,
+// and in its send path before the NIC completes the packets.
+type sockQueue struct {
+	RxMean int64 `json:"rx_mean"`
+	RxMax  int64 `json:"rx_max"`
+	TxMean int64 `json:"tx_mean"`
+	TxMax  int64 `json:"tx_max"`
+}
+
+// queueSampler reads the queues of a socket each queueInterval.
+type queueSampler struct {
+	mu           sync.Mutex
+	rx, tx, n    int64 // Sums and the sample count since the last take.
+	rxMax, txMax int64
+}
+
+const queueInterval = 5 * time.Millisecond
+
+// sampleQueues samples the queues of c until ctx ends. It returns nil when it
+// cannot read them.
+func sampleQueues(ctx context.Context, c syscall.Conn) *queueSampler {
+	if rx, _ := sockMem(c); rx < 0 {
+		return nil
+	}
+	q := &queueSampler{}
+	go func() {
+		t := time.NewTicker(queueInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+			}
+			rx, tx := sockMem(c)
+			q.mu.Lock()
+			q.rx, q.tx, q.n = q.rx+rx, q.tx+tx, q.n+1
+			q.rxMax, q.txMax = max(q.rxMax, rx), max(q.txMax, tx)
+			q.mu.Unlock()
+		}
+	}()
+	return q
+}
+
+// take returns the queues since the last take, and starts again. It returns
+// nil for a nil sampler or no samples.
+func (q *queueSampler) take() *sockQueue {
+	if q == nil {
+		return nil
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.n == 0 {
+		return nil
+	}
+	out := &sockQueue{RxMean: q.rx / q.n, RxMax: q.rxMax, TxMean: q.tx / q.n, TxMax: q.txMax}
+	q.rx, q.tx, q.n, q.rxMax, q.txMax = 0, 0, 0, 0, 0
+	return out
+}
+
+// topCPUs is the number of CPUs of each host in the result.
+const topCPUs = 4
+
+// cpuUse is the busy time of one CPU in percent, and its NET_RX and NET_TX
+// softirq runs.
+type cpuUse struct {
+	CPU    int     `json:"cpu"`
+	User   float64 `json:"user"`
+	System float64 `json:"system"`
+	IRQ    float64 `json:"irq"`
+	NetRX  uint64  `json:"net_rx"`
+	NetTX  uint64  `json:"net_tx"`
+}
+
+func (u cpuUse) busy() float64 { return u.User + u.System + u.IRQ }
+
+// busiestCPUs returns the n busiest CPUs of the host from m0 to m1, the
+// busiest first.
+func busiestCPUs(m0, m1 mark, n int) []cpuUse {
+	if len(m0.CPUs) == 0 || len(m0.CPUs) != len(m1.CPUs) {
+		return nil
+	}
+	use := make([]cpuUse, 0, len(m1.CPUs))
+	for i, b := range m1.CPUs {
+		a := m0.CPUs[i]
+		user, sys, irq := float64(b.User-a.User), float64(b.System-a.System), float64(b.IRQ-a.IRQ)
+		all := user + sys + irq + float64(b.Idle-a.Idle)
+		if all <= 0 {
+			continue
+		}
+		use = append(use, cpuUse{CPU: i, User: pct(user, all), System: pct(sys, all), IRQ: pct(irq, all),
+			NetRX: b.NetRX - a.NetRX, NetTX: b.NetTX - a.NetTX})
+	}
+	slices.SortStableFunc(use, func(a, b cpuUse) int { return cmp.Compare(b.busy(), a.busy()) })
+	return use[:min(n, len(use))]
+}
+
+// pct returns v in percent of all, with one decimal.
+func pct(v, all float64) float64 { return math.Round(v*1000/all) / 10 }
 
 // cores returns the CPU seconds per second from m0 to m1.
 func cores(m0, m1 mark) float64 {
@@ -89,6 +199,13 @@ type result struct {
 	ClientHostCores float64 `json:"client_host_cores"`
 	ServerHostCores float64 `json:"server_host_cores"`
 	RelayHostCores  float64 `json:"relay_host_cores"`
+	// The busiest CPUs of the host of each side in the measured window.
+	ClientTopCPUs []cpuUse `json:"client_top_cpus,omitempty"`
+	ServerTopCPUs []cpuUse `json:"server_top_cpus,omitempty"`
+	RelayTopCPUs  []cpuUse `json:"relay_top_cpus,omitempty"`
+	// The queues of the agent sockets in the measured window.
+	ClientQueue *sockQueue `json:"client_queue,omitempty"`
+	ServerQueue *sockQueue `json:"server_queue,omitempty"`
 
 	Driver    string `json:"driver"`
 	Transport string `json:"transport"`
@@ -168,6 +285,10 @@ func newResult(client, server, relay [2]mark) result {
 	}
 	r.ClientCores, r.ServerCores, r.RelayCores = cores(client[0], client[1]), cores(server[0], server[1]), cores(relay[0], relay[1])
 	r.ClientHostCores, r.ServerHostCores, r.RelayHostCores = hostCores(client[0], client[1]), hostCores(server[0], server[1]), hostCores(relay[0], relay[1])
+	r.ClientTopCPUs = busiestCPUs(client[0], client[1], topCPUs)
+	r.ServerTopCPUs = busiestCPUs(server[0], server[1], topCPUs)
+	r.RelayTopCPUs = busiestCPUs(relay[0], relay[1], topCPUs)
+	r.ClientQueue, r.ServerQueue = client[1].Queue, server[1].Queue
 	if gbps := r.BitsPerSecond / 1e9; gbps > 0 {
 		r.ClientCoresPerGbps = r.ClientCores / gbps
 		r.ServerCoresPerGbps = r.ServerCores / gbps

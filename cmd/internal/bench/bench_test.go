@@ -203,3 +203,45 @@ func TestHostBusy(t *testing.T) {
 		})
 	}
 }
+
+func TestPerCPU(t *testing.T) {
+	cases := []struct {
+		name string
+		stat string
+		want []CPUTicks
+	}{
+		{
+			name: "two CPUs",
+			stat: "cpu  9 9 9 9 9 9 9 9 0 0\ncpu0 1 2 3 4 5 6 7 8 0 0\ncpu1 10 0 20 30 0 0 40 0 0 0\nintr 1 2\n",
+			want: []CPUTicks{{User: 3, System: 3, IRQ: 13, Idle: 17}, {User: 10, System: 20, IRQ: 40, Idle: 30}},
+		},
+		{name: "no CPU lines", stat: "cpu  1 2 3 4 5 6 7 8\nintr 1 2 3\n"},
+		{name: "short line", stat: "cpu0 1 2 3 4\n"},
+		{name: "bad number", stat: "cpu0 1 x 3 4 5 6 7 8\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, perCPU(tc.stat))
+		})
+	}
+}
+
+func TestAddSoftIRQs(t *testing.T) {
+	const softirqs = "                    CPU0       CPU1\n          HI:          1          2\n      NET_TX:          3          4\n      NET_RX:        500        600\n"
+	cases := []struct {
+		name string
+		cpus int
+		want []CPUTicks
+	}{
+		{name: "same CPUs", cpus: 2, want: []CPUTicks{{NetRX: 500, NetTX: 3}, {NetRX: 600, NetTX: 4}}},
+		{name: "fewer CPUs", cpus: 1, want: []CPUTicks{{NetRX: 500, NetTX: 3}}},
+		{name: "more CPUs", cpus: 3, want: []CPUTicks{{NetRX: 500, NetTX: 3}, {NetRX: 600, NetTX: 4}, {}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cpus := make([]CPUTicks, tc.cpus)
+			addSoftIRQs(cpus, softirqs)
+			assert.Equal(t, tc.want, cpus)
+		})
+	}
+}

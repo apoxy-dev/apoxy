@@ -35,7 +35,12 @@ const topQueueKey = "rx_top_queue_pct"
 var nicCounterNames = append(append(slices.Clone(ethtoolCounters), sysfsCounters...), topQueueKey)
 
 // rxQueuePackets matches the RX packet counter of one queue in "ethtool -S".
-var rxQueuePackets = regexp.MustCompile(`^queue_\d+_rx_cnt$`)
+// txQueueCounters matches the TX packet counter of one queue, and how often
+// its ring was full and the driver stopped it.
+var (
+	rxQueuePackets  = regexp.MustCompile(`^queue_\d+_rx_cnt$`)
+	txQueueCounters = regexp.MustCompile(`^queue_\d+_tx_(cnt|queue_stop|queue_wakeup)$`)
+)
 
 // defaultDev returns the device of the default IPv4 route.
 func defaultDev() (string, error) {
@@ -140,7 +145,7 @@ func nicCounters(ctx context.Context, dev string) map[string]int64 {
 }
 
 // parseEthtoolStats reads the "name: value" lines of "ethtool -S" whose name
-// is in names or is the RX packet counter of a queue. It returns nil when none is there.
+// is in names or is a packet counter of a queue. It returns nil when none is there.
 func parseEthtoolStats(out string, names []string) map[string]int64 {
 	want := map[string]bool{}
 	for _, n := range names {
@@ -150,7 +155,7 @@ func parseEthtoolStats(out string, names []string) map[string]int64 {
 	for _, line := range strings.Split(out, "\n") {
 		k, v, ok := strings.Cut(line, ":")
 		k = strings.TrimSpace(k)
-		if !ok || !(want[k] || rxQueuePackets.MatchString(k)) {
+		if !ok || !(want[k] || rxQueuePackets.MatchString(k) || txQueueCounters.MatchString(k)) {
 			continue
 		}
 		n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)

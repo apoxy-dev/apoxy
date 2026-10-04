@@ -157,6 +157,66 @@ func TestNewResult(t *testing.T) {
 	}
 }
 
+func TestBusiestCPUs(t *testing.T) {
+	m0 := mark{CPUs: []bench.CPUTicks{{}, {}, {}}}
+	cases := []struct {
+		name   string
+		m0, m1 mark
+		n      int
+		want   []cpuUse
+	}{
+		{
+			name: "busiest first",
+			m0:   m0,
+			m1: mark{CPUs: []bench.CPUTicks{
+				{User: 10, Idle: 90},
+				{User: 5, System: 15, IRQ: 80, NetRX: 7, NetTX: 2},
+				{System: 30, IRQ: 10, Idle: 60},
+			}},
+			n:    2,
+			want: []cpuUse{{CPU: 1, User: 5, System: 15, IRQ: 80, NetRX: 7, NetTX: 2}, {CPU: 2, System: 30, IRQ: 10}},
+		},
+		{
+			name: "idle CPU in the window",
+			m0:   m0,
+			m1:   mark{CPUs: []bench.CPUTicks{{User: 1, Idle: 2}, {}, {}}},
+			n:    4,
+			want: []cpuUse{{CPU: 0, User: 33.3}},
+		},
+		{name: "no ticks", m1: mark{CPUs: []bench.CPUTicks{{User: 1}}}, n: 4},
+		{name: "CPU count changed", m0: m0, m1: mark{CPUs: []bench.CPUTicks{{User: 1}}}, n: 4},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, busiestCPUs(tc.m0, tc.m1, tc.n))
+		})
+	}
+}
+
+func TestQueueSamplerTake(t *testing.T) {
+	cases := []struct {
+		name string
+		q    *queueSampler
+		want *sockQueue
+	}{
+		{name: "nil sampler"},
+		{name: "no samples", q: &queueSampler{}},
+		{
+			name: "mean and most",
+			q:    &queueSampler{rx: 30, tx: 3000, n: 3, rxMax: 20, txMax: 1500},
+			want: &sockQueue{RxMean: 10, RxMax: 20, TxMean: 1000, TxMax: 1500},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, tc.q.take())
+			if tc.q != nil {
+				assert.Nil(t, tc.q.take(), "take starts again")
+			}
+		})
+	}
+}
+
 func TestNewPeriod(t *testing.T) {
 	sec := int64(time.Second)
 	cases := []struct {

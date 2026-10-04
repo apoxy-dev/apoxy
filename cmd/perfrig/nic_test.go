@@ -23,9 +23,9 @@ func TestParseEthtool(t *testing.T) {
 	assert.Equal(t, []string{"ena", "7.0.0-1012-aws", ""}, []string{driver, version, fw})
 
 	const stats = "NIC statistics:\n     tx_timeout: 0\n     bw_out_allowance_exceeded: 0\n     bw_in_allowance_exceeded: 3\n" +
-		"     pps_allowance_exceeded: x\n     queue_0_rx_cnt: 99\n     queue_0_rx_bytes: 9900\n     queue_12_rx_cnt: 1\n"
+		"     pps_allowance_exceeded: x\n     queue_0_rx_cnt: 99\n     queue_0_rx_bytes: 9900\n     queue_12_rx_cnt: 1\n     queue_3_tx_cnt: 5\n     queue_3_tx_queue_stop: 2\n     queue_3_tx_dma_mapping_err: 1\n"
 	got := parseEthtoolStats(stats, ethtoolCounters)
-	assert.Equal(t, map[string]int64{"bw_out_allowance_exceeded": 0, "bw_in_allowance_exceeded": 3, "queue_0_rx_cnt": 99, "queue_12_rx_cnt": 1}, got)
+	assert.Equal(t, map[string]int64{"bw_out_allowance_exceeded": 0, "bw_in_allowance_exceeded": 3, "queue_0_rx_cnt": 99, "queue_12_rx_cnt": 1, "queue_3_tx_cnt": 5, "queue_3_tx_queue_stop": 2}, got)
 	assert.Nil(t, parseEthtoolStats("NIC statistics:\n     tx_timeout: 0\n", ethtoolCounters))
 }
 

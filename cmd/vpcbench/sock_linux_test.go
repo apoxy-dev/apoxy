@@ -19,6 +19,8 @@ func TestSockDrops(t *testing.T) {
 	require.NoError(t, rx.SetReadBuffer(4096))
 	assert.Positive(t, sockRcvbuf(rx))
 	assert.Zero(t, sockDrops(rx))
+	q, _ := sockMem(rx)
+	assert.Zero(t, q)
 
 	tx, err := net.DialUDP("udp4", nil, rx.LocalAddr().(*net.UDPAddr))
 	require.NoError(t, err)
@@ -29,6 +31,8 @@ func TestSockDrops(t *testing.T) {
 		_, err := tx.Write(pkt)
 		require.NoError(t, err)
 	}
+	q, _ = sockMem(rx)
+	assert.Positive(t, q, "the receive queue holds packets")
 	drops := sockDrops(rx)
 	assert.Positive(t, drops, "a 4 KiB buffer holds only some packets")
 	assert.Less(t, drops, int64(sent))

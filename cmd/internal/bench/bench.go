@@ -69,3 +69,75 @@ func hostBusy(stat string) float64 {
 	}
 	return float64(busy) / userHZ
 }
+
+// CPUTicks are the clock ticks of one CPU in /proc/stat, and its NET_RX and
+// NET_TX softirq runs in /proc/softirqs.
+type CPUTicks struct {
+	User   uint64 `json:"user"` // User and nice.
+	System uint64 `json:"system"`
+	IRQ    uint64 `json:"irq"`  // IRQ and softirq.
+	Idle   uint64 `json:"idle"` // Idle, iowait and steal.
+	NetRX  uint64 `json:"net_rx,omitempty"`
+	NetTX  uint64 `json:"net_tx,omitempty"`
+}
+
+// PerCPU returns the ticks of each CPU of the host, or nil when it cannot
+// read /proc/stat.
+func PerCPU() []CPUTicks {
+	b, err := os.ReadFile("/proc/stat")
+	if err != nil {
+		return nil
+	}
+	cpus := perCPU(string(b))
+	if b, err := os.ReadFile("/proc/softirqs"); err == nil {
+		addSoftIRQs(cpus, string(b))
+	}
+	return cpus
+}
+
+// addSoftIRQs adds the NET_RX and NET_TX rows of /proc/softirqs to cpus. The
+// columns are the CPUs in order.
+func addSoftIRQs(cpus []CPUTicks, softirqs string) {
+	for line := range strings.Lines(softirqs) {
+		f := strings.Fields(line)
+		if len(f) < 2 || (f[0] != "NET_RX:" && f[0] != "NET_TX:") {
+			continue
+		}
+		for i, v := range f[1:min(len(f), len(cpus)+1)] {
+			n, err := strconv.ParseUint(v, 10, 64)
+			if err != nil {
+				break
+			}
+			if f[0] == "NET_RX:" {
+				cpus[i].NetRX = n
+			} else {
+				cpus[i].NetTX = n
+			}
+		}
+	}
+}
+
+// perCPU reads the "cpuN" lines of /proc/stat, in CPU order. It returns nil
+// for a bad line.
+func perCPU(stat string) []CPUTicks {
+	var out []CPUTicks
+	for line := range strings.Lines(stat) {
+		f := strings.Fields(line)
+		if len(f) == 0 || len(f[0]) < 4 || !strings.HasPrefix(f[0], "cpu") {
+			continue
+		}
+		if len(f) < 9 {
+			return nil
+		}
+		var v [8]uint64
+		for i := range v {
+			n, err := strconv.ParseUint(f[i+1], 10, 64)
+			if err != nil {
+				return nil
+			}
+			v[i] = n
+		}
+		out = append(out, CPUTicks{User: v[0] + v[1], System: v[2], IRQ: v[5] + v[6], Idle: v[3] + v[4] + v[7]})
+	}
+	return out
+}

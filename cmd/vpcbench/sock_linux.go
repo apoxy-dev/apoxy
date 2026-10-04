@@ -40,6 +40,22 @@ func sockDrops(c syscall.Conn) int64 {
 	return v
 }
 
+// sockMem returns the bytes in the receive queue of the socket of c, and the
+// bytes that it sent and the NIC did not complete, or -1 for both.
+func sockMem(c syscall.Conn) (rx, tx int64) {
+	rx, tx = -1, -1
+	control(c, func(fd int) {
+		var mi [unix.SK_MEMINFO_VARS]uint32
+		n := uint32(unsafe.Sizeof(mi))
+		_, _, errno := unix.Syscall6(unix.SYS_GETSOCKOPT, uintptr(fd), unix.SOL_SOCKET, unix.SO_MEMINFO,
+			uintptr(unsafe.Pointer(&mi[0])), uintptr(unsafe.Pointer(&n)), 0)
+		if errno == 0 && n > unix.SK_MEMINFO_WMEM_ALLOC*4 {
+			rx, tx = int64(mi[unix.SK_MEMINFO_RMEM_ALLOC]), int64(mi[unix.SK_MEMINFO_WMEM_ALLOC])
+		}
+	})
+	return rx, tx
+}
+
 // control runs f with the file descriptor of c.
 func control(c syscall.Conn, f func(fd int)) {
 	if rc, err := c.SyscallConn(); err == nil {
