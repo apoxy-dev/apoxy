@@ -42,17 +42,14 @@ type stackOptions struct {
 	gso        bool
 }
 
-// WithoutIPTables makes a stack with no iptables, so that no packet goes
-// through conntrack, and with no SNAT. A filter with no state lets in only
-// TCP, UDP, ICMP errors, and ICMP echo requests to an address of the stack.
-// Use it for a stack with one address.
+// WithoutIPTables makes a stack for one address with no iptables, conntrack or SNAT.
+// Its filter lets in only TCP, UDP, ICMP errors and ICMP echo requests to the address.
 func WithoutIPTables() Option {
 	return func(o *stackOptions) { o.noIPTables = true }
 }
 
-// WithGSO lets TCP send segments of up to 64 KiB to the endpoint, with the GSO
-// options of the packet and a partial checksum. The reader of the endpoint must
-// cut them into packets of the MSS, as the softpsp netstack datapath does.
+// WithGSO lets TCP send segments of up to 64 KiB with GSO options and a partial
+// checksum. The reader of the endpoint must cut them into packets of the MSS.
 func WithGSO() Option {
 	return func(o *stackOptions) { o.gso = true }
 }
@@ -63,9 +60,12 @@ type gsoEndpoint struct{ *channel.Endpoint }
 // GSOMaxSize implements stack.GSOEndpoint.
 func (gsoEndpoint) GSOMaxSize() uint32 { return 1<<16 - 1 }
 
-// NewStack makes a stack with the tunnel TCP options and one NIC with the
-// given MTU. The NIC routes all addresses. Set pcapPath to write a packet
-// capture of the NIC.
+// tcpBufferMax is the largest TCP send and receive buffer. Half of it holds
+// the bytes in flight of one flow at 10 Gbps and 25 ms RTT.
+const tcpBufferMax = 64 << 20
+
+// NewStack makes a stack with the tunnel TCP options and one NIC with mtu that
+// routes all addresses. A pcapPath that is not empty writes a capture of the NIC.
 func NewStack(mtu int, pcapPath string, opts ...Option) (*Stack, error) {
 	var o stackOptions
 	for _, opt := range opts {
@@ -103,40 +103,32 @@ func NewStack(mtu int, pcapPath string, opts ...Option) (*Stack, error) {
 		return nil, fmt.Errorf("could not set TCP delay: %v", tcpipErr)
 	}
 
-	// High-performance TCP buffer settings. The window is half the receive
-	// buffer, and out-of-order segments use 1.4x to 2.2x their size in memory.
-	tcpRcvBuf := tcpip.TCPReceiveBufferSizeRangeOption{
-		Min:     64 << 10, // 64 KiB
-		Default: 4 << 20,  // 4 MiB
-		Max:     32 << 20, // 32 MiB
-	}
+	// The window is half of the receive buffer. A writer waits until the send
+	// buffer is half empty, so half of the send buffer limits the bytes in flight.
+	tcpRcvBuf := tcpip.TCPReceiveBufferSizeRangeOption{Min: 64 << 10, Default: 4 << 20, Max: tcpBufferMax}
 	if tcpipErr := ipstack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpRcvBuf); tcpipErr != nil {
 		return nil, fmt.Errorf("could not set TCP receive buffer size: %v", tcpipErr)
 	}
-	tcpSndBuf := tcpip.TCPSendBufferSizeRangeOption{
-		Min:     64 << 10, // 64 KiB
-		Default: 2 << 20,  // 2 MiB
-		Max:     16 << 20, // 16 MiB
-	}
+	tcpSndBuf := tcpip.TCPSendBufferSizeRangeOption{Min: 64 << 10, Default: 2 << 20, Max: tcpBufferMax}
 	if tcpipErr := ipstack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpSndBuf); tcpipErr != nil {
 		return nil, fmt.Errorf("could not set TCP send buffer size: %v", tcpipErr)
 	}
-	// Let the stack auto-tune receive buffer based on RTT and throughput.
+	// The stack sets the receive buffer from the rate and the RTT of the flow.
 	tcpModBuf := tcpip.TCPModerateReceiveBufferOption(true)
 	if tcpipErr := ipstack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpModBuf); tcpipErr != nil {
 		return nil, fmt.Errorf("could not enable TCP moderate receive buffer: %v", tcpipErr)
 	}
-	// Allow reusing sockets in TIME_WAIT for new connections (like tcp_tw_reuse).
+	// New connections can use the ports of sockets in TIME_WAIT, as tcp_tw_reuse in Linux.
 	tcpTWReuse := tcpip.TCPTimeWaitReuseOption(tcpip.TCPTimeWaitReuseGlobal)
 	if tcpipErr := ipstack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpTWReuse); tcpipErr != nil {
 		return nil, fmt.Errorf("could not set TCP TIME_WAIT reuse: %v", tcpipErr)
 	}
-	// Shorten TIME_WAIT from the default 60s.
+	// TIME_WAIT is 10 s, not the default 60 s.
 	tcpTWTimeout := tcpip.TCPTimeWaitTimeoutOption(10 * time.Second)
 	if tcpipErr := ipstack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpTWTimeout); tcpipErr != nil {
 		return nil, fmt.Errorf("could not set TCP TIME_WAIT timeout: %v", tcpipErr)
 	}
-	// Shorten FIN_WAIT_2 linger from the default 60s.
+	// FIN_WAIT_2 is 10 s, not the default 60 s.
 	tcpLingerTimeout := tcpip.TCPLingerTimeoutOption(10 * time.Second)
 	if tcpipErr := ipstack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpLingerTimeout); tcpipErr != nil {
 		return nil, fmt.Errorf("could not set TCP linger timeout: %v", tcpipErr)
