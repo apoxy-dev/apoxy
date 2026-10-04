@@ -19,24 +19,38 @@ const (
 	maxInjectWorkers = 8
 	// injectQueue is the most batches that wait for one inject worker.
 	injectQueue = 32
-	// maxInjectBatch is the most packets in one batch for one worker.
+	// maxInjectBatch is the most PSP packets in one batch for one worker. A packet that
+	// holds more of them can go above it.
 	maxInjectBatch = 64
 )
 
-// injectBatch gives the PSP packets of one read of the QUIC read loop to
-// inject workers, which give them to the netstack. All packets of a flow go
-// to one worker, so they stay in order. A worker joins the TCP segments of a
-// flow in a batch with GRO. When the queue of a worker is full, the read loop
-// waits, and the socket buffer keeps the next packets.
+// injectBatch gives packets to inject workers, which give them to the netstack with GRO.
+// A flow uses one worker, and the caller waits while the queue of the worker is full.
 type injectBatch struct {
 	ep     *channel.Endpoint
 	st     *counters
 	seed   maphash.Seed
 	done   <-chan struct{}
 	closed <-chan struct{}
-	in     []chan []*stack.PacketBuffer // The queue of each worker.
-	pend   [][]*stack.PacketBuffer      // The packets of this read for each worker.
-	free   chan []*stack.PacketBuffer   // Empty batches to use again.
+	in     []chan []injected // The queue of each worker.
+	pend   [][]injected      // The packets of this read for each worker.
+	npend  []int             // The PSP packets in pend for each worker.
+	free   chan []injected   // Empty batches to use again.
+}
+
+// injected is a packet buffer for the netstack and the number of PSP packets in it.
+type injected struct {
+	pkb *stack.PacketBuffer
+	n   int
+}
+
+// pspPackets returns the number of PSP packets in p.
+func pspPackets(p []injected) uint64 {
+	n := 0
+	for _, it := range p {
+		n += it.n
+	}
+	return uint64(n)
 }
 
 // newInjectBatch starts n workers. They stop when done or closed closes.
@@ -47,30 +61,36 @@ func newInjectBatch(ep *channel.Endpoint, st *counters, seed maphash.Seed, n int
 		seed:   seed,
 		done:   done,
 		closed: closed,
-		in:     make([]chan []*stack.PacketBuffer, n),
-		pend:   make([][]*stack.PacketBuffer, n),
-		free:   make(chan []*stack.PacketBuffer, n*(injectQueue+1)),
+		in:     make([]chan []injected, n),
+		pend:   make([][]injected, n),
+		npend:  make([]int, n),
+		free:   make(chan []injected, n*(injectQueue+1)),
 	}
 	for i := range j.in {
-		j.in[i] = make(chan []*stack.PacketBuffer, injectQueue)
+		j.in[i] = make(chan []injected, injectQueue)
 		go j.run(j.in[i])
 	}
 	return j
 }
 
-// make returns the packet buffer of the inner packet pkt for the netstack, and the
-// index of its inject worker. It returns nil when pkt is not an IP packet. Many
-// goroutines can call it.
+// make returns the packet buffer of the inner packet pkt and the index of its inject
+// worker, or nil when pkt is not IP. Many goroutines can call it.
 func (j *injectBatch) make(pkt []byte) (*stack.PacketBuffer, int) {
 	proto, ok := ipProto(pkt)
 	if !ok {
 		return nil, 0
 	}
+	return j.wrap(buffer.MakeWithData(pkt), proto, pkt)
+}
+
+// wrap returns the packet buffer of buf, which holds the IP packet pkt, and the index of
+// its inject worker.
+func (j *injectBatch) wrap(buf buffer.Buffer, proto tcpip.NetworkProtocolNumber, pkt []byte) (*stack.PacketBuffer, int) {
 	w := 0
 	if len(j.in) > 1 {
 		w = int(flow.Hash(j.seed, pkt) % uint64(len(j.in)))
 	}
-	pkb := stack.NewPacketBuffer(stack.PacketBufferOptions{Payload: buffer.MakeWithData(pkt)})
+	pkb := stack.NewPacketBuffer(stack.PacketBufferOptions{Payload: buf})
 	pkb.NetworkProtocolNumber = proto
 	// PSP open authenticated the packet, so GRO and the netstack do not check
 	// its checksums.
@@ -78,14 +98,14 @@ func (j *injectBatch) make(pkt []byte) (*stack.PacketBuffer, int) {
 	return pkb, w
 }
 
-// push adds pkb to the batch of worker w, and sends the batch when it is full. Only
-// the goroutine that gives the packets to the workers calls it.
-func (j *injectBatch) push(pkb *stack.PacketBuffer, w int) {
+// push adds pkb, which holds n PSP packets, to the batch of worker w, and sends a full
+// batch. Only the goroutine that gives the packets to the workers calls it.
+func (j *injectBatch) push(pkb *stack.PacketBuffer, w, n int) {
 	if j.pend[w] == nil {
 		j.pend[w] = j.get()
 	}
-	j.pend[w] = append(j.pend[w], pkb)
-	if len(j.pend[w]) == maxInjectBatch {
+	j.pend[w] = append(j.pend[w], injected{pkb: pkb, n: n})
+	if j.npend[w] += n; j.npend[w] >= maxInjectBatch {
 		j.send(w)
 	}
 }
@@ -97,7 +117,7 @@ func (j *injectBatch) add(pkt []byte) {
 		j.st.rxDrops.Add(1)
 		return
 	}
-	j.push(pkb, w)
+	j.push(pkb, w, 1)
 }
 
 func (j *injectBatch) flush() {
@@ -112,7 +132,7 @@ func (j *injectBatch) flush() {
 // is full, and drops the packets when the driver closes.
 func (j *injectBatch) send(w int) {
 	p := j.pend[w]
-	j.pend[w] = nil
+	j.pend[w], j.npend[w] = nil, 0
 	select {
 	case j.in[w] <- p:
 		// The worker can stop before it gets p.
@@ -123,21 +143,21 @@ func (j *injectBatch) send(w int) {
 	case <-j.done:
 	case <-j.closed:
 	}
-	j.st.rxDrops.Add(uint64(len(p)))
+	j.st.rxDrops.Add(pspPackets(p))
 	j.release(p)
 }
 
-func (j *injectBatch) run(in <-chan []*stack.PacketBuffer) {
+func (j *injectBatch) run(in <-chan []injected) {
 	g := &gro.GRO{Dispatcher: injector{j.ep}}
 	g.Init(true)
 	for {
 		select {
 		case p := <-in:
-			for _, pkb := range p {
-				g.Enqueue(pkb)
+			for _, it := range p {
+				g.Enqueue(it.pkb)
 			}
 			g.Flush()
-			j.st.rxPackets.Add(uint64(len(p)))
+			j.st.rxPackets.Add(pspPackets(p))
 			j.release(p)
 		case <-j.done:
 			j.drain(in)
@@ -162,11 +182,11 @@ func (j *injectBatch) stopped() bool {
 }
 
 // drain drops the batches in the queue in.
-func (j *injectBatch) drain(in <-chan []*stack.PacketBuffer) {
+func (j *injectBatch) drain(in <-chan []injected) {
 	for {
 		select {
 		case p := <-in:
-			j.st.rxDrops.Add(uint64(len(p)))
+			j.st.rxDrops.Add(pspPackets(p))
 			j.release(p)
 		default:
 			return
@@ -175,10 +195,10 @@ func (j *injectBatch) drain(in <-chan []*stack.PacketBuffer) {
 }
 
 // release frees the packets of p, and keeps p to use again.
-func (j *injectBatch) release(p []*stack.PacketBuffer) {
+func (j *injectBatch) release(p []injected) {
 	for i := range p {
-		p[i].DecRef()
-		p[i] = nil
+		p[i].pkb.DecRef()
+		p[i] = injected{}
 	}
 	select {
 	case j.free <- p[:0]:
@@ -186,12 +206,12 @@ func (j *injectBatch) release(p []*stack.PacketBuffer) {
 	}
 }
 
-func (j *injectBatch) get() []*stack.PacketBuffer {
+func (j *injectBatch) get() []injected {
 	select {
 	case p := <-j.free:
 		return p
 	default:
-		return make([]*stack.PacketBuffer, 0, rxBatch)
+		return make([]injected, 0, rxBatch)
 	}
 }
 

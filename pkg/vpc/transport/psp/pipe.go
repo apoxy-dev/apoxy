@@ -7,7 +7,6 @@ import (
 
 	"github.com/apoxy-dev/softpsp/engine"
 	pspwire "github.com/apoxy-dev/softpsp/psp"
-	"gvisor.dev/gvisor/pkg/tcpip/stack"
 )
 
 const (
@@ -30,14 +29,8 @@ func openWorkers(procs int) int {
 	return min(procs/2, maxOpenWorkers)
 }
 
-// rxPipe moves the PSP packets of the netstack driver from the QUIC read loop to a
-// consumer goroutine. The read loop only copies the packets of each read into sets.
-// Open workers decrypt the sets, each worker one set at a time, and make the packet
-// buffer of each packet. The consumer takes the sets in read order, waits until a worker
-// finished each one, checks the replay window and gives the packet buffers to the inject
-// workers. Thus the packets of a flow stay in order, and only the consumer writes the
-// replay window. When all sets wait, the read loop waits, and the socket buffer keeps
-// the next packets.
+// rxPipe copies the PSP packets of each read into a set. Open workers open and join the
+// sets, and one consumer checks the replay window and injects the sets in read order.
 type rxPipe struct {
 	d      *driver
 	j      *injectBatch
@@ -57,16 +50,17 @@ type rxPipe struct {
 type rxSet struct {
 	slots  [][]byte
 	n      int
-	res    []openResult  // The result of Open for each slot.
+	res    []openResult // The result of Open for each slot.
+	out    []rxPacket   // The packets for the netstack, in slot order. The first nout are set.
+	nout   int
 	opened chan struct{} // Gets one token when an open worker finished the set.
 }
 
-// openResult is the result of Open for one packet: the packet buffer for the netstack and
-// the index of its inject worker. The buffer is nil when the packet dropped.
+// openResult is the result of Open for one slot. ok is false when Open failed.
 type openResult struct {
-	o   engine.Opened
-	pkb *stack.PacketBuffer
-	w   int
+	o     engine.Opened
+	inner []byte // The inner packet, in the slot.
+	ok    bool
 }
 
 // newRxPipe starts the consumer of d and workers open workers. They give the packets to
@@ -88,7 +82,7 @@ func newRxPipe(d *driver, j *injectBatch, workers int, done, closed <-chan struc
 	size := pspwire.Overhead + d.b.mtu
 	slab := make([]byte, sets*pipeSlots*size)
 	for range sets {
-		s := &rxSet{slots: make([][]byte, pipeSlots), res: make([]openResult, pipeSlots)}
+		s := &rxSet{slots: make([][]byte, pipeSlots), res: make([]openResult, pipeSlots), out: make([]rxPacket, pipeSlots)}
 		if workers > 0 {
 			s.opened = make(chan struct{}, 1)
 		}
@@ -161,11 +155,11 @@ func (p *rxPipe) flush() {
 }
 
 // open opens the sets of the work channel until the consumer closes it. Each open worker
-// runs it. After the pipe stops, it gives each set back with no results.
+// runs it. After the pipe stops, it gives each set back with no packets.
 func (p *rxPipe) open() {
 	for s := range p.work {
 		if p.stopped() {
-			clear(s.res[:s.n])
+			s.nout = 0
 		} else {
 			p.openSet(s)
 		}
@@ -173,8 +167,8 @@ func (p *rxPipe) open() {
 	}
 }
 
-// openSet opens the packets of s in place, and makes the packet buffer of each packet
-// that passed. It keeps the result of each one in s.
+// openSet opens the packets of s in place, and makes the packets for the netstack from
+// the ones that passed. It keeps the result of each slot and the packets in s.
 func (p *rxPipe) openSet(s *rxSet) {
 	b := p.d.b
 	quic := b.relay.Load() != nil
@@ -185,9 +179,9 @@ func (p *rxPipe) openSet(s *rxSet) {
 			continue
 		}
 		b.clampMSS(inner, quic)
-		pkb, w := p.j.make(inner)
-		s.res[i] = openResult{o: o, pkb: pkb, w: w}
+		s.res[i] = openResult{o: o, inner: inner, ok: true}
 	}
+	s.nout = p.j.join(s.res[:s.n], s.out)
 }
 
 // run gives the sets to the netstack in read order until the pipe stops. Then it drops
@@ -203,19 +197,21 @@ func (p *rxPipe) run() {
 				p.stop(s)
 				return
 			}
-			for _, r := range s.res[:s.n] {
-				if r.pkb == nil {
-					b.stats.rxDrops.Add(1)
-				} else if err := b.rxq.Accept(r.o); err != nil {
-					r.pkb.DecRef()
-					b.stats.rxDrops.Add(1)
+			drops := s.n
+			for _, r := range s.out[:s.nout] {
+				if p.accept(s.res[r.first : r.first+r.n]) {
+					p.j.push(r.pkb, r.w, r.n)
+					drops -= r.n
 				} else {
-					p.j.push(r.pkb, r.w)
+					r.pkb.DecRef()
 				}
 			}
+			if drops > 0 {
+				b.stats.rxDrops.Add(uint64(drops))
+			}
 			// A free set must hold no packet buffer, because release drops all it holds.
-			clear(s.res[:s.n])
-			s.n = 0
+			clear(s.out[:s.nout])
+			s.n, s.nout = 0, 0
 			p.free <- s
 			// When more sets wait, their packets go in the same inject batches.
 			if len(p.full) == 0 {
@@ -229,6 +225,18 @@ func (p *rxPipe) run() {
 			return
 		}
 	}
+}
+
+// accept gives the PSP packets of one packet for the netstack to the replay window, in
+// order. The packet drops when the window drops one of them.
+func (p *rxPipe) accept(res []openResult) bool {
+	ok := true
+	for i := range res {
+		if p.d.b.rxq.Accept(res[i].o) != nil {
+			ok = false
+		}
+	}
+	return ok
 }
 
 // wait waits until an open worker finished s. It returns false when the pipe stops first.
@@ -272,12 +280,11 @@ func (p *rxPipe) release(s *rxSet) {
 	if p.work != nil {
 		<-s.opened
 	}
-	for i := range s.res[:s.n] {
-		if pkb := s.res[i].pkb; pkb != nil {
-			pkb.DecRef()
-			s.res[i].pkb = nil
-		}
+	for _, r := range s.out[:s.nout] {
+		r.pkb.DecRef()
 	}
+	clear(s.out[:s.nout])
+	s.nout = 0
 	p.d.b.stats.rxDrops.Add(uint64(s.n))
 }
 

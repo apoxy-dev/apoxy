@@ -5,6 +5,7 @@ package psp
 import (
 	"bytes"
 	"fmt"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -20,9 +21,8 @@ import (
 // noPipe is the opens of useNetstack for a driver with no receive pipe.
 const noPipe = -1
 
-// useNetstack gives the binding of n a netstack driver on ep with the inject workers,
-// and with a receive pipe of opens open workers. Zero opens means that the consumer
-// opens the packets, and noPipe means no pipe.
+// useNetstack gives n a netstack driver on ep with workers inject workers and opens open
+// workers. With zero opens the consumer opens the packets, and noPipe means no pipe.
 func useNetstack(t testing.TB, n *node, ep *channel.Endpoint, workers, opens int) *driver {
 	t.Helper()
 	d := newDriver(n.b, func(buf []byte, off int) bool { return inject(ep, buf[off:]) })
@@ -42,10 +42,8 @@ func TestOpenWorkers(t *testing.T) {
 	}
 }
 
-// TestPipe gives reads of PSP packets of many flows to the demux, as the QUIC read loop
-// does. The netstack must get the packets of each flow once and in order, also when the
-// open workers finish the sets in another order and when one read fills more than one
-// set. Forged packets fail Open and copies fail the replay window in Accept.
+// TestPipe gives reads of PSP packets of many flows, with forged packets and copies, to the
+// demux. The netstack must get the packets of each flow once and in order.
 func TestPipe(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -148,9 +146,8 @@ func TestPipeOrder(t *testing.T) {
 	}
 }
 
-// TestPipeSet gives one read of 9 packets with a bad packet in the middle. Open drops a
-// forged packet or a packet with no SA, and Accept drops a copy. The packets after the
-// bad one must arrive.
+// TestPipeSet gives one read of 9 packets with a bad packet in the middle. Only the bad
+// packet must drop.
 func TestPipeSet(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -238,9 +235,8 @@ func TestPipeClampMSS(t *testing.T) {
 	assert.Equal(t, tcpSyn(a.v4, b.v4, header.TCPFlagSyn, 1240), r.last)
 }
 
-// TestPipeFull stops the netstack, so the inject queue and then all sets of the pipe
-// fill. The read loop must wait and drop nothing. When the driver closes, the read loop
-// stops waiting, and the packets in the pipe and in the queue drop.
+// TestPipeFull stops the netstack until all queues fill. The read loop must wait and drop
+// nothing, and when the driver closes, it must stop waiting.
 func TestPipeFull(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -335,30 +331,35 @@ func TestPipeFull(t *testing.T) {
 	}
 }
 
-// openSlot opens the PSP packet in slot i of s as an open worker does, and returns the
-// result with a packet buffer that the test also references.
-func openSlot(t *testing.T, b *Binding, j *injectBatch, s *rxSet, i int) openResult {
+// openSlots opens the PSP packets of s and makes their packets for the netstack as an open
+// worker does. It returns the packets, with a reference of the test on each packet buffer.
+func openSlots(t *testing.T, b *Binding, j *injectBatch, s *rxSet) []rxPacket {
 	t.Helper()
-	inner, o, err := b.rxq.Open(s.slots[i])
-	require.NoError(t, err)
-	pkb, w := j.make(inner)
-	require.NotNil(t, pkb)
-	pkb.IncRef()
-	return openResult{o: o, pkb: pkb, w: w}
+	for i, pkt := range s.slots[:s.n] {
+		inner, o, err := b.rxq.Open(pkt)
+		require.NoError(t, err)
+		s.res[i] = openResult{o: o, inner: inner, ok: true}
+	}
+	s.nout = j.join(s.res[:s.n], s.out)
+	mine := slices.Clone(s.out[:s.nout])
+	for _, r := range mine {
+		r.pkb.IncRef()
+	}
+	return mine
 }
 
-// released waits until the pipe released the packet buffers of res, so that only the
+// released waits until the pipe released the packet buffers of pkts, so that only the
 // reference of the test is left, and gives that reference back.
-func released(t *testing.T, res []openResult) {
+func released(t *testing.T, pkts []rxPacket) {
 	t.Helper()
-	for _, r := range res {
+	for _, r := range pkts {
 		require.Eventually(t, func() bool { return r.pkb.ReadRefs() == 1 }, 5*time.Second, time.Millisecond,
 			"the pipe did not release the packet buffer")
 		r.pkb.DecRef()
 	}
 }
 
-// TestPipeAcceptDrop gives the consumer a set with two results of the same packet. The
+// TestPipeAcceptDrop gives the consumer a set with two copies of the same packet. The
 // replay window drops the second one, and the pipe must release its packet buffer.
 func TestPipeAcceptDrop(t *testing.T) {
 	a, b := newPair(t)
@@ -367,13 +368,12 @@ func TestPipeAcceptDrop(t *testing.T) {
 	d := useNetstack(t, b, ep, 1, 1)
 	s := <-d.pipe.free
 	pkt := seal(a, flowPacket(1, 7))[addrLen:]
-	var mine []openResult
 	for i := range 2 {
 		s.slots[i] = append(s.slots[i][:0], pkt...)
-		s.res[i] = openSlot(t, b.b, d.pipe.j, s, i)
-		mine = append(mine, s.res[i])
 	}
 	s.n = 2
+	mine := openSlots(t, b.b, d.pipe.j, s)
+	require.Len(t, mine, 2)
 	// The test is the open worker of the set.
 	s.opened <- struct{}{}
 	d.pipe.full <- s
@@ -388,10 +388,8 @@ func TestPipeAcceptDrop(t *testing.T) {
 	assert.Equal(t, []uint32{7}, r.got[1])
 }
 
-// TestPipeCloseWhileOpen gives the consumer sets that are in no work channel, so the
-// consumer waits for the first one. Close must stop the pipe and wait for the token of
-// each set, which the test sends as a slow open worker after Close started. The packets
-// of all sets count as drops, and the pipe releases the packet buffers of the first set.
+// TestPipeCloseWhileOpen closes the driver while the consumer waits for a slow open worker.
+// Close must wait for the worker, and all packets must drop and release their buffers.
 func TestPipeCloseWhileOpen(t *testing.T) {
 	cases := []struct {
 		name string
@@ -407,20 +405,18 @@ func TestPipeCloseWhileOpen(t *testing.T) {
 			_, ep := newRecorder(t)
 			d := useNetstack(t, b, ep, 1, 2)
 			var sets []*rxSet
-			var mine []openResult
+			var mine []rxPacket
 			total := 0
 			for si, n := range tc.sets {
 				s := <-d.pipe.free
 				for i := range n {
 					pkt := seal(a, flowPacket(1, uint32(total+i)))[addrLen:]
 					s.slots[i] = append(s.slots[i][:0], pkt...)
-					s.res[i] = openResult{}
-					if si == 0 {
-						s.res[i] = openSlot(t, b.b, d.pipe.j, s, i)
-						mine = append(mine, s.res[i])
-					}
 				}
 				s.n = n
+				if si == 0 {
+					mine = openSlots(t, b.b, d.pipe.j, s)
+				}
 				total += n
 				sets = append(sets, s)
 				d.pipe.full <- s
@@ -452,49 +448,57 @@ func TestPipeCloseWhileOpen(t *testing.T) {
 	}
 }
 
-// BenchmarkPipe gives reads of 64 PSP packets of 1280 B in 16 flows to the demux, as the
-// QUIC read loop does, and measures the time of each packet. The inject workers give the
-// packets to an endpoint with no netstack, which drops them at once.
+// BenchmarkPipe gives reads of 64 PSP packets of 1280 B, UDP of 16 flows or TCP of 4 flows
+// in runs of 16, to the demux. An endpoint with no netstack drops the packets.
 func BenchmarkPipe(b *testing.B) {
-	for _, opens := range []int{noPipe, 0, 1, 2, 4} {
-		name := fmt.Sprintf("opens=%d", opens)
-		if opens == noPipe {
-			name = "no pipe"
+	for _, tcp := range []bool{false, true} {
+		for _, opens := range []int{noPipe, 0, 1, 2, 4} {
+			name := fmt.Sprintf("tcp=%t/opens=%d", tcp, opens)
+			if opens == noPipe {
+				name = fmt.Sprintf("tcp=%t/no pipe", tcp)
+			}
+			b.Run(name, func(b *testing.B) {
+				x, y := newPair(b)
+				offer(b, time.Now(), x, y)
+				useNetstack(b, y, channel.New(16, DefaultMTU, ""), 4, opens)
+				const mss, perRun = DefaultMTU - header.IPv4MinimumSize - header.TCPMinimumSize - tcpOpts, 16
+				data := pattern(perRun * mss)
+				inner := make([][]byte, 64)
+				for i := range inner {
+					if tcp {
+						off := i % perRun * mss
+						inner[i] = tcpPacket(x.v4, y.v4, uint16(1+i/perRun), uint32(off), 7, header.TCPFlagAck, data[off:off+mss])
+					} else {
+						inner[i] = packet(x.v4, y.v4, 17, uint16(1+i%16), 2, DefaultMTU)
+					}
+				}
+				// Without the pipe the read loop opens the packets in place, so the packets
+				// are sealed again after each use, with new sequence numbers.
+				pkts := make([][]byte, 64*pipeSlots)
+				sealAll := func() {
+					for i := range pkts {
+						pkts[i] = seal(x, inner[i%len(inner)])[addrLen:]
+					}
+				}
+				sealAll()
+				b.SetBytes(pipeSlots * DefaultMTU)
+				b.ReportAllocs()
+				i := 0
+				for b.Loop() {
+					if i == len(pkts) {
+						b.StopTimer()
+						sealAll()
+						i = 0
+						b.StartTimer()
+					}
+					for _, p := range pkts[i : i+pipeSlots] {
+						y.b.demux.Handle(p, nil)
+					}
+					y.b.demux.BatchEnd()
+					i += pipeSlots
+				}
+				b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N*pipeSlots), "ns/pkt")
+			})
 		}
-		b.Run(name, func(b *testing.B) {
-			x, y := newPair(b)
-			offer(b, time.Now(), x, y)
-			useNetstack(b, y, channel.New(16, DefaultMTU, ""), 4, opens)
-			inner := make([][]byte, 16)
-			for f := range inner {
-				inner[f] = packet(x.v4, y.v4, 17, uint16(1+f), 2, DefaultMTU)
-			}
-			// Without the pipe the read loop opens the packets in place, so the packets
-			// are sealed again after each use, with new sequence numbers.
-			pkts := make([][]byte, 64*pipeSlots)
-			sealAll := func() {
-				for i := range pkts {
-					pkts[i] = seal(x, inner[i%len(inner)])[addrLen:]
-				}
-			}
-			sealAll()
-			b.SetBytes(pipeSlots * DefaultMTU)
-			b.ReportAllocs()
-			i := 0
-			for b.Loop() {
-				if i == len(pkts) {
-					b.StopTimer()
-					sealAll()
-					i = 0
-					b.StartTimer()
-				}
-				for _, p := range pkts[i : i+pipeSlots] {
-					y.b.demux.Handle(p, nil)
-				}
-				y.b.demux.BatchEnd()
-				i += pipeSlots
-			}
-			b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N*pipeSlots), "ns/pkt")
-		})
 	}
 }
