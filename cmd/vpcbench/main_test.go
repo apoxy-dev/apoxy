@@ -107,12 +107,12 @@ func TestNewResult(t *testing.T) {
 		{
 			name: "all sides",
 			client: [2]mark{
-				{Nanos: 0, HostCPU: 10, Segments: 100, Drops: 1, LinkDrops: 4},
-				{Nanos: 2 * sec, CPU: 1, HostCPU: 16, Segments: 1100, Retrans: 10, Drops: 3, LinkDrops: 9},
+				{Nanos: 0, HostCPU: 10, Segments: 100, Drops: 1, LinkDrops: 4, Lanes: []uint64{60, 40}},
+				{Nanos: 2 * sec, CPU: 1, HostCPU: 16, Segments: 1100, Retrans: 10, Drops: 3, LinkDrops: 9, Lanes: []uint64{560, 440, 100}},
 			},
 			server: [2]mark{
 				{Nanos: sec, HostCPU: 20, Retrans: 1, RcvbufErrors: 5, SockDrops: 1},
-				{Nanos: 3 * sec, CPU: 2, HostCPU: 28, Retrans: 3, Bytes: 250e6, RxPackets: 2000, Drops: 6, RcvbufErrors: 17, SockDrops: 4, LinkDrops: 2},
+				{Nanos: 3 * sec, CPU: 2, HostCPU: 28, Retrans: 3, Bytes: 250e6, RxPackets: 2000, Drops: 6, RcvbufErrors: 17, SockDrops: 4, LinkDrops: 2, Lanes: []uint64{30}},
 			},
 			relay: [2]mark{{Nanos: 0, HostCPU: 5, Drops: 1, SockDrops: 2, XDPPackets: 10}, {Nanos: 2 * sec, CPU: 0.5, HostCPU: 7, Drops: 5, SockDrops: 9, XDPPackets: 30}},
 			want: result{
@@ -122,6 +122,7 @@ func TestNewResult(t *testing.T) {
 				ClientHostCores: 3, ServerHostCores: 4, RelayHostCores: 1,
 				ClientTxDrops: 2, ServerRxDrops: 6, RelayDrops: 4, RelayRcvbufDrops: 7, ServerRcvbufErrors: 12, ServerSockDrops: 3,
 				ClientLinkDrops: 5, ServerLinkDrops: 2, RelayXDPPackets: 20,
+				ClientLanePackets: []uint64{500, 400, 100}, ServerLanePackets: []uint64{30},
 			},
 		},
 		{

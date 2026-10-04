@@ -74,7 +74,7 @@ func xfer(t *testing.T, from *node, pkt []byte) []byte {
 	if phy == nil {
 		return nil
 	}
-	dst := netip.AddrPortFrom(netip.AddrFrom16([16]byte(phy[:16])).Unmap(), binary.BigEndian.Uint16(phy[16:addrLen]))
+	dst := netip.AddrPortFrom(netip.AddrFrom16([16]byte(phy[:16])).Unmap(), binary.BigEndian.Uint16(phy[16:laneOff]))
 	require.Equal(t, from.peer.Addr(), dst)
 	return open(from.other.b, phy[addrLen:])
 }
@@ -227,7 +227,7 @@ func xferQUIC(t *testing.T, from *node, pkt []byte) []byte {
 	t.Helper()
 	f := seal(from, pkt)
 	require.NotNil(t, f)
-	require.Zero(t, binary.BigEndian.Uint16(f[16:addrLen]), "not a data frame")
+	require.Zero(t, binary.BigEndian.Uint16(f[16:laneOff]), "not a data frame")
 	to := from.other.b
 	c := &capture{}
 	to.drv.Store(newDriver(to, c.deliver))
@@ -398,15 +398,21 @@ func TestLanes(t *testing.T) {
 		used := map[int]int{}
 		for port := range uint16(256) {
 			pkt := packet(a.v4, b.v4, 6, port, 443, 100)
-			sa := a.peer.txSA(pkt)
+			sa, l := a.peer.txSA(pkt)
 			require.NotNil(t, sa)
-			require.Equal(t, sa, a.peer.txSA(pkt), "one flow uses one lane")
-			used[lane[sa.SPI()]]++
+			require.Equal(t, lane[sa.SPI()], l, "lane of the SA")
+			again, _ := a.peer.txSA(pkt)
+			require.Equal(t, sa, again, "one flow uses one lane")
+			used[l]++
 		}
 		return used
 	}
 	assert.Len(t, flows(), 4)
 	assert.Equal(t, int32(4), a.peer.lanes.Load())
+	for l := range byte(keys.MaxLanes) {
+		assert.Equal(t, l > 0 && l < 4, a.b.laneConn(l) != nil, "socket of lane %d", l)
+	}
+	assert.Len(t, a.b.LaneConns(), 3)
 
 	// The flows of a lane with no SA use another lane.
 	revoke := func(l int) {

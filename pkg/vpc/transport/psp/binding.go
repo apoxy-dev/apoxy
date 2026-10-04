@@ -128,6 +128,9 @@ type Binding struct {
 	ctx    context.Context // Ends at Close.
 	cancel context.CancelFunc
 	drv    atomic.Pointer[driver]
+	// laneConns are the sockets of send lanes 1 and up. Lane 0 sends on the
+	// agent socket. Set under mu, closed at Close.
+	laneConns [keys.MaxLanes]atomic.Pointer[net.UDPConn]
 
 	mu    sync.Mutex
 	peers map[*keys.Peer]*Peer
@@ -220,6 +223,11 @@ func (b *Binding) Close() error {
 	for _, p := range b.peers {
 		b.removeLocked(p)
 	}
+	for i := range b.laneConns {
+		if c := b.laneConns[i].Load(); c != nil {
+			_ = c.Close()
+		}
+	}
 	return nil
 }
 
@@ -294,12 +302,17 @@ func (b *Binding) Tick(now time.Time) ([]Update, error) {
 func (b *Binding) Rotate() error { return b.recv.Rotate() }
 
 // AddPeer adds a remote agent at addr, for example its relay on port 443.
-func (b *Binding) AddPeer(addr netip.AddrPort) (*Peer, error) {
+func (b *Binding) AddPeer(addr netip.AddrPort) (*Peer, error) { return b.AddPeerLanes(addr, 1) }
+
+// AddPeerLanes adds a remote agent at addr that sends to this agent on lanes
+// SAs. The peer sends each lane from its own UDP port, so use more than one
+// lane only on a direct path with no NAT.
+func (b *Binding) AddPeerLanes(addr netip.AddrPort, lanes int) (*Peer, error) {
 	if !addr.IsValid() {
 		return nil, fmt.Errorf("psp: invalid peer address %v", addr)
 	}
 	p := &Peer{b: b, tx: b.send.NewPeer(), rxSPIs: map[uint32]struct{}{}}
-	rx, err := b.recv.NewPeer(keys.PeerConfig{VNI: b.vni, MTU: b.mtu, Lanes: 1, Sources: b.routes.Sources(p)})
+	rx, err := b.recv.NewPeer(keys.PeerConfig{VNI: b.vni, MTU: b.mtu, Lanes: lanes, Sources: b.routes.Sources(p)})
 	if err != nil {
 		return nil, err
 	}
@@ -341,6 +354,66 @@ func (b *Binding) removeLocked(p *Peer) keys.Request {
 	p.routes, p.removed = nil, true
 	delete(b.peers, p.rx)
 	return req
+}
+
+// openLanes opens the sockets of send lanes 1 to n-1. A lane with no socket
+// sends on the agent socket. b.mu must be held.
+func (b *Binding) openLanes(n int) {
+	uc, ok := b.tr.Conn.(*net.UDPConn)
+	if !ok || b.ctx.Err() != nil {
+		return
+	}
+	for i := 1; i < n; i++ {
+		if b.laneConns[i].Load() != nil {
+			continue
+		}
+		c, err := listenLane(uc)
+		if err != nil {
+			slog.Warn("Failed to open a send lane socket", "lane", i, "error", err)
+			return
+		}
+		b.laneConns[i].Store(c)
+	}
+}
+
+// listenLane opens a UDP socket on the address of uc, with a new port.
+func listenLane(uc *net.UDPConn) (*net.UDPConn, error) {
+	la, ok := uc.LocalAddr().(*net.UDPAddr)
+	if !ok {
+		return nil, errors.New("agent socket has no UDP address")
+	}
+	network, ip := "udp", la.IP
+	if ip4 := ip.To4(); ip4 != nil {
+		network, ip = "udp4", ip4
+	}
+	c, err := net.ListenUDP(network, &net.UDPAddr{IP: ip, Zone: la.Zone})
+	if err != nil {
+		return nil, err
+	}
+	if err := setSockBufs(c, sockBuf); err != nil {
+		slog.Debug("Failed to set the lane socket buffers", "bytes", sockBuf, "error", err)
+	}
+	return c, nil
+}
+
+// LaneConns returns the open sockets of send lanes 1 and up.
+func (b *Binding) LaneConns() []*net.UDPConn {
+	var out []*net.UDPConn
+	for i := range b.laneConns {
+		if c := b.laneConns[i].Load(); c != nil {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// laneConn returns the socket of a send lane, or nil for lane 0 and for a
+// lane with no socket.
+func (b *Binding) laneConn(lane byte) *net.UDPConn {
+	if lane == 0 || int(lane) >= len(b.laneConns) {
+		return nil
+	}
+	return b.laneConns[lane].Load()
 }
 
 // AddRoute sends inner packets for pfx to p, and lets p send from pfx. A prefix has one
@@ -398,6 +471,7 @@ type counters struct {
 	rxPackets, rxDrops, rxNoDriver, rxOther     atomic.Uint64
 	txPackets, txNoRoute, txDrops, txLimitDrops atomic.Uint64
 	txFrames                                    atomic.Uint64 // Data frames sent.
+	txLanes                                     [keys.MaxLanes]atomic.Uint64
 }
 
 // Stats returns the packet counters.
@@ -413,6 +487,19 @@ func (b *Binding) Stats() Stats {
 		TxDrops:      c.txDrops.Load(),
 		TxLimitDrops: c.txLimitDrops.Load(),
 	}
+}
+
+// LanePackets returns the PSP packets sent on each send lane, up to the last
+// lane that sent a packet.
+func (b *Binding) LanePackets() []uint64 {
+	out := make([]uint64, len(b.stats.txLanes))
+	n := 0
+	for i := range out {
+		if out[i] = b.stats.txLanes[i].Load(); out[i] > 0 {
+			n = i + 1
+		}
+	}
+	return out[:n]
 }
 
 // UseQUIC sends inner packets as data frames on the relay session of pc, not as PSP

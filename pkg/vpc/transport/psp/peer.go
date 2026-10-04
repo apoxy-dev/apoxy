@@ -120,6 +120,7 @@ func (p *Peer) Apply(req keys.Request, now time.Time) ([]uint32, error) {
 	}
 	refused, err := p.tx.Apply(req, now)
 	p.updateLanes()
+	p.b.openLanes(int(p.lanes.Load()))
 	return refused, err
 }
 
@@ -135,24 +136,24 @@ func (p *Peer) updateLanes() {
 	p.lanes.Store(int32(n))
 }
 
-// txSA returns the transmit SA for the inner packet: the lane of its flow, or
-// another lane if that one has no SA.
-func (p *Peer) txSA(inner []byte) *engine.TxSA {
+// txSA returns the transmit SA for the inner packet and its lane: the lane of
+// its flow, or another lane if that one has no SA.
+func (p *Peer) txSA(inner []byte) (*engine.TxSA, int) {
 	n := int(p.lanes.Load())
 	if n == 0 {
-		return nil
+		return nil, 0
 	}
 	lane := 0
 	if n > 1 {
 		lane = int(flow.Hash(p.b.seed, inner) % uint64(n))
 	}
 	if sa := p.tx.SA(lane); sa != nil {
-		return sa
+		return sa, lane
 	}
 	for i := range n {
 		if sa := p.tx.SA(i); sa != nil {
-			return sa
+			return sa, i
 		}
 	}
-	return nil
+	return nil, 0
 }

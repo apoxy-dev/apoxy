@@ -78,6 +78,96 @@ func TestWriteFrames(t *testing.T) {
 	assert.ErrorIs(t, err, net.ErrClosed)
 }
 
+// TestSendLanes sends 64 flows to a peer that receives on some lanes. Each
+// lane sends from its own UDP port, and the peer opens the packets of all
+// lanes.
+func TestSendLanes(t *testing.T) {
+	const flows = 64
+	cases := []struct {
+		name     string
+		lanes    int
+		batch    bool
+		noSocket int // A lane whose socket closes before the send. Zero is none.
+		ports    int
+	}{
+		{name: "one lane", lanes: 1, batch: true, ports: 1},
+		{name: "4 lanes", lanes: 4, batch: true, ports: 4},
+		{name: "4 lanes, one write for each packet", lanes: 4, ports: 4},
+		{name: "lane with no socket sends on lane 0", lanes: 4, batch: true, noSocket: 2, ports: 3},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a, b := newPairLanes(t, 0, tc.lanes)
+			offer(t, time.Now(), a, b)
+			sink, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+			require.NoError(t, err)
+			defer sink.Close()
+			_ = sink.SetReadBuffer(1 << 20)
+			a.peer.SetAddr(sink.LocalAddr().(*net.UDPAddr).AddrPort())
+			if tc.noSocket > 0 {
+				require.NoError(t, a.b.laneConns[tc.noSocket].Swap(nil).Close())
+			}
+			d := newDriver(a.b, nil)
+			if !tc.batch {
+				d.tx = nil
+			}
+			frames := make([][]byte, flows)
+			for i := range frames {
+				frames[i] = seal(a, packet(a.v4, b.v4, 17, uint16(1000+i), 9, 200))
+			}
+			n, err := d.WriteFrames(frames)
+			require.NoError(t, err)
+			require.Equal(t, flows, n)
+
+			ports := map[uint16]uint64{}
+			buf := make([]byte, 2048)
+			for range flows {
+				require.NoError(t, sink.SetReadDeadline(time.Now().Add(5*time.Second)))
+				m, from, err := sink.ReadFromUDPAddrPort(buf)
+				require.NoError(t, err)
+				require.Equal(t, addrOf(a.tr).Addr(), from.Addr().Unmap())
+				ports[from.Port()]++
+				require.NotNil(t, open(b.b, buf[:m]), "the peer opens the packets of each lane")
+			}
+			assert.Len(t, ports, tc.ports)
+			lanes := a.b.LanePackets()
+			require.Len(t, lanes, tc.lanes)
+			assert.Equal(t, lanes[0], ports[addrOf(a.tr).Port()], "lane 0 sends on the agent socket")
+			if tc.noSocket > 0 {
+				assert.Zero(t, lanes[tc.noSocket])
+			}
+			sum := uint64(0)
+			for _, c := range lanes {
+				sum += c
+			}
+			assert.Equal(t, uint64(flows), sum)
+		})
+	}
+
+	// Close stops the lane senders and closes the lane sockets.
+	a, b := newPairLanes(t, 0, 2)
+	offer(t, time.Now(), a, b)
+	frames := make([][]byte, 16)
+	for i := range frames {
+		frames[i] = seal(a, packet(a.v4, b.v4, 17, uint16(1000+i), 9, 200))
+	}
+	d := newDriver(a.b, nil)
+	_, err := d.WriteFrames(frames)
+	require.NoError(t, err)
+	l, c := d.lanes[1], a.b.laneConn(1)
+	require.NotNil(t, l, "16 flows use lane 1")
+	require.NoError(t, a.b.Close())
+	select {
+	case <-l.exited:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the lane sender did not stop")
+	}
+	_, err = d.WriteFrames(frames)
+	assert.ErrorIs(t, err, net.ErrClosed)
+	_, err = c.WriteToUDPAddrPort([]byte{1}, addrOf(b.tr))
+	assert.ErrorIs(t, err, net.ErrClosed)
+}
+
 func repeat(f []byte, n int) [][]byte {
 	out := make([][]byte, n)
 	for i := range out {

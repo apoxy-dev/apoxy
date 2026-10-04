@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"sync"
 
+	"github.com/apoxy-dev/softpsp/keys"
 	pspwire "github.com/apoxy-dev/softpsp/psp"
 	"github.com/apoxy-dev/softpsp/vtep"
 	"github.com/apoxy-dev/softpsp/vtep/netstack"
@@ -25,9 +26,11 @@ import (
 )
 
 const (
-	// A send frame is the destination address (16 B and the port), then the
-	// PSP packet. Port 0 marks a QUIC data frame for the relay session.
-	addrLen = 18
+	// A send frame is the destination address (16 B and the port), the send
+	// lane (1 B), then the PSP packet. Port 0 marks a QUIC data frame for the
+	// relay session.
+	laneOff = 18
+	addrLen = 19
 	// maxBatch is the most packets in one send batch.
 	maxBatch = 128
 	// tunOffset is the space that the TUN device needs before each packet.
@@ -54,8 +57,9 @@ type driver struct {
 	pipe *rxPipe
 
 	// Send state. Only the send goroutine of the vtep driver uses it.
-	tx *udpbatch.Batch // Nil when the socket cannot send batches.
-	ua net.UDPAddr     // The address of a frame that goes alone.
+	tx    *udpbatch.Batch            // Nil when the socket cannot send batches.
+	lanes [keys.MaxLanes]*laneSender // Senders of lanes 1 and up, made at the first frame of the lane.
+	ua    net.UDPAddr                // The address of a frame that goes alone.
 }
 
 func newDriver(b *Binding, deliver func([]byte, int) bool) *driver {
@@ -298,7 +302,7 @@ func (b *Binding) prepare(virt []byte, f *netstack.TxFrame) error {
 		*f = netstack.TxFrame{}
 		return nil
 	}
-	sa := p.txSA(virt)
+	sa, lane := p.txSA(virt)
 	if sa == nil {
 		return ErrNoRoute
 	}
@@ -309,7 +313,7 @@ func (b *Binding) prepare(virt []byte, f *netstack.TxFrame) error {
 	if err != nil {
 		return err
 	}
-	*f = netstack.TxFrame{SA: sa, Seq: seq, Dst: *p.addr.Load()}
+	*f = netstack.TxFrame{SA: sa, Seq: seq, Dst: *p.addr.Load(), Lane: lane}
 	return nil
 }
 
@@ -331,7 +335,8 @@ func (b *Binding) seal(f *netstack.TxFrame, virt, phy []byte) (int, error) {
 	}
 	ip := f.Dst.Addr().As16()
 	copy(phy, ip[:])
-	binary.BigEndian.PutUint16(phy[16:addrLen], f.Dst.Port())
+	binary.BigEndian.PutUint16(phy[16:laneOff], f.Dst.Port())
+	phy[laneOff] = byte(f.Lane)
 	return addrLen + n, nil
 }
 
@@ -405,7 +410,7 @@ func (d *driver) Close() error {
 // WriteFrames sends the PSP packets in batches and the data frames on the
 // relay session. It drops and counts a packet that fails.
 func (d *driver) WriteFrames(frames [][]byte) (int, error) {
-	if d.b.ctx.Err() != nil {
+	if d.closed() {
 		return 0, net.ErrClosed
 	}
 	for i := 0; i < len(frames); i += maxBatch {
@@ -416,12 +421,14 @@ func (d *driver) WriteFrames(frames [][]byte) (int, error) {
 	return len(frames), nil
 }
 
-// send sends at most maxBatch frames. The PSP packets go in one batch, where
-// the packets to one address with the same size go in one GSO message.
+// send sends at most maxBatch frames. The PSP packets go in one batch for
+// each lane, where the packets to one address with the same size go in one
+// GSO message. The senders of lanes 1 and up send in parallel with lane 0,
+// and send returns when all lanes sent the frames.
 func (d *driver) send(frames [][]byte) error {
 	st := &d.b.stats
 	for _, f := range frames {
-		port := binary.BigEndian.Uint16(f[16:addrLen])
+		port := binary.BigEndian.Uint16(f[16:laneOff])
 		if port == 0 || d.tx == nil {
 			if d.b.write(f, &d.ua) != nil {
 				st.txDrops.Add(1)
@@ -430,21 +437,127 @@ func (d *driver) send(frames [][]byte) error {
 			}
 			continue
 		}
-		d.tx.Add(f[addrLen:], netip.AddrPortFrom(netip.AddrFrom16([16]byte(f[:16])), port))
+		if l := d.lane(f[laneOff]); l != nil {
+			l.frames = append(l.frames, f)
+			continue
+		}
+		d.tx.Add(f[addrLen:], frameDst(f))
 	}
-	if d.tx == nil || d.tx.Len() == 0 {
+	for _, l := range d.lanes {
+		if l != nil && len(l.frames) > 0 {
+			select {
+			case l.work <- struct{}{}:
+			default: // The sender stopped.
+			}
+		}
+	}
+	err := d.b.flush(d.tx, 0)
+	for _, l := range d.lanes {
+		if l == nil || len(l.frames) == 0 {
+			continue
+		}
+		select {
+		case e := <-l.done:
+			if e != nil {
+				err = e
+			}
+		case <-l.exited:
+			err = net.ErrClosed
+		}
+		l.frames = l.frames[:0]
+	}
+	return err
+}
+
+// closed reports whether the driver or the binding closed. Then the lane
+// senders stop.
+func (d *driver) closed() bool {
+	select {
+	case <-d.done:
+		return true
+	default:
+		return d.b.ctx.Err() != nil
+	}
+}
+
+// frameDst returns the destination address of a send frame.
+func frameDst(f []byte) netip.AddrPort {
+	return netip.AddrPortFrom(netip.AddrFrom16([16]byte(f[:16])), binary.BigEndian.Uint16(f[16:laneOff]))
+}
+
+// lane returns the sender of a send lane, or nil for lane 0 and for a lane
+// with no socket. It starts the sender at the first frame of the lane.
+func (d *driver) lane(lane byte) *laneSender {
+	if lane == 0 || int(lane) >= len(d.lanes) {
 		return nil
 	}
-	sent, dropped, err := d.tx.Flush()
-	st.txPackets.Add(uint64(sent))
-	st.txDrops.Add(uint64(dropped))
+	if l := d.lanes[lane]; l != nil {
+		return l
+	}
+	uc := d.b.laneConn(lane)
+	if uc == nil {
+		return nil
+	}
+	tx := udpbatch.New(uc, maxBatch)
+	if tx == nil {
+		return nil
+	}
+	l := &laneSender{
+		b: d.b, lane: int(lane), tx: tx, frames: make([][]byte, 0, maxBatch),
+		work: make(chan struct{}, 1), done: make(chan error, 1), exited: make(chan struct{}),
+	}
+	d.lanes[lane] = l
+	go l.run(d.done)
+	return l
+}
+
+// laneSender sends the frames of one send lane on its own goroutine, so that
+// the kernel send work of each lane runs on its own CPU.
+type laneSender struct {
+	b      *Binding
+	lane   int
+	tx     *udpbatch.Batch
+	frames [][]byte      // The frames to send. The driver sets them before work.
+	work   chan struct{} // The driver gives the frames.
+	done   chan error    // The lane sent the frames.
+	exited chan struct{} // Closed when run returns.
+}
+
+// run sends the frames of each work until the driver or the binding closes.
+func (l *laneSender) run(stop <-chan struct{}) {
+	defer close(l.exited)
+	for {
+		select {
+		case <-l.work:
+		case <-stop:
+			return
+		case <-l.b.ctx.Done():
+			return
+		}
+		for _, f := range l.frames {
+			l.tx.Add(f[addrLen:], frameDst(f))
+		}
+		l.done <- l.b.flush(l.tx, l.lane)
+	}
+}
+
+// flush sends the batch of a lane and counts its packets.
+func (b *Binding) flush(tx *udpbatch.Batch, lane int) error {
+	if tx == nil || tx.Len() == 0 {
+		return nil
+	}
+	sent, dropped, err := tx.Flush()
+	b.stats.txPackets.Add(uint64(sent))
+	b.stats.txLanes[lane].Add(uint64(sent))
+	b.stats.txDrops.Add(uint64(dropped))
 	return err
 }
 
 // write sends one send frame: a data frame on the relay session shard of its flow, or a
-// PSP packet to the address in the frame. ua must have a 16-byte IP.
+// PSP packet to the address in the frame from the socket of its lane. ua must have a
+// 16-byte IP.
 func (b *Binding) write(f []byte, ua *net.UDPAddr) error {
-	port := binary.BigEndian.Uint16(f[16:addrLen])
+	port := binary.BigEndian.Uint16(f[16:laneOff])
 	if port == 0 {
 		pc := b.relay.Load()
 		if pc == nil {
@@ -458,7 +571,17 @@ func (b *Binding) write(f []byte, ua *net.UDPAddr) error {
 	}
 	copy(ua.IP, f[:16])
 	ua.Port = int(port)
-	_, err := b.tr.WriteTo(f[addrLen:], ua)
+	lane := f[laneOff]
+	var err error
+	if c := b.laneConn(lane); c != nil {
+		_, err = c.WriteTo(f[addrLen:], ua)
+	} else {
+		lane = 0
+		_, err = b.tr.WriteTo(f[addrLen:], ua)
+	}
+	if err == nil {
+		b.stats.txLanes[lane].Add(1)
+	}
 	return err
 }
 

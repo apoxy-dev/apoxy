@@ -102,6 +102,13 @@ func newPair(t testing.TB) (*node, *node) {
 // newPairMTU returns two nodes with the inner MTU mtu.
 func newPairMTU(t testing.TB, mtu int) (*node, *node) {
 	t.Helper()
+	return newPairLanes(t, mtu, 1)
+}
+
+// newPairLanes returns two nodes with the inner MTU mtu. Each node receives
+// from the other on lanes SAs.
+func newPairLanes(t testing.TB, mtu, lanes int) (*node, *node) {
+	t.Helper()
 	a := &node{v4: netip.MustParseAddr("10.0.0.1"), v6: netip.MustParseAddr("fd00::1")}
 	b := &node{v4: netip.MustParseAddr("10.0.0.2"), v6: netip.MustParseAddr("fd00::2")}
 	a.other, b.other = b, a
@@ -115,7 +122,7 @@ func newPairMTU(t testing.TB, mtu int) (*node, *node) {
 	}
 	for _, n := range []*node{a, b} {
 		var err error
-		n.peer, err = n.b.AddPeer(addrOf(n.other.tr))
+		n.peer, err = n.b.AddPeerLanes(addrOf(n.other.tr), lanes)
 		require.NoError(t, err)
 		require.NoError(t, n.b.AddRoute(netip.PrefixFrom(n.other.v4, 32), n.peer))
 		require.NoError(t, n.b.AddRoute(netip.PrefixFrom(n.other.v6, 128), n.peer))

@@ -232,7 +232,7 @@ func (s *side) close() {
 func (s *side) startNet(ctx context.Context, fail context.CancelCauseFunc, o options, dst netip.Prefix) error {
 	slog.Info("Agent socket is ready", "address", s.uc.LocalAddr().String(), "rcvbuf", sockRcvbuf(s.uc))
 	ctx, cancel := context.WithCancel(ctx)
-	s.q = sampleQueues(ctx, s.uc)
+	s.q = sampleQueues(ctx, s.uc, s.b.LaneConns)
 	var err error
 	if o.Driver == "tun" {
 		s.net, err = startTun(ctx, fail, s.b, s.addr, dst, o.CC)
@@ -338,7 +338,8 @@ func listenUDPFor(addr string) (*net.UDPConn, error) {
 }
 
 // newDirect makes a binding on uc with one peer at peerAddr that routes the
-// overlay address peer. It is the -via direct side, with no agent.
+// overlay address peer. It is the -via direct side, with no agent. The peer
+// sends on one lane for each RX queue of the link to it.
 func newDirect(o options, uc *net.UDPConn, self, peer netip.Addr, peerAddr netip.AddrPort) (*side, *psp.Peer, error) {
 	dm := &psp.Demux{}
 	tr := &quic.Transport{Conn: uc, EnableGRO: true, NonQUICPacketHandler: dm.Handle, NonQUICBatchEnd: dm.BatchEnd}
@@ -350,7 +351,9 @@ func newDirect(o options, uc *net.UDPConn, self, peer netip.Addr, peerAddr netip
 		_ = b.Close()
 		_ = tr.Close()
 	}}}
-	p, err := b.AddPeer(peerAddr)
+	lanes := psp.RxLanes(peerAddr.Addr())
+	slog.Info("Adding the direct peer", "addr", peerAddr, "rx_lanes", lanes)
+	p, err := b.AddPeerLanes(peerAddr, lanes)
 	if err == nil {
 		err = b.AddRoute(netip.PrefixFrom(peer, peer.BitLen()), p)
 	}
@@ -581,7 +584,7 @@ func runServer(parent context.Context, o options, ready func(netip.AddrPort)) er
 				Nanos: time.Since(start).Nanoseconds(), CPU: bench.CPUSeconds(), HostCPU: bench.HostCPUSeconds(), Retrans: retrans,
 				Bytes: got.Load(), RxPackets: st.RxPackets, Drops: st.RxDrops + st.RxNoDriver,
 				RcvbufErrors: snmpCounter("Udp:", "RcvbufErrors"), SockDrops: sockDrops(s.uc), LinkDrops: s.net.LinkDrops(),
-				CPUs: bench.PerCPU(), Queue: s.q.take(),
+				CPUs: bench.PerCPU(), Queue: s.q.take(), Lanes: s.b.LanePackets(),
 			}}, nil
 		}
 		return reply{}, fmt.Errorf("unknown op %q", req.Op)
@@ -820,6 +823,7 @@ func measure(ctx context.Context, o options, s *side, peer netip.Addr, srv, rela
 		client[i] = mark{
 			Nanos: at[i].Nanoseconds(), CPU: bench.CPUSeconds(), HostCPU: bench.HostCPUSeconds(), Segments: st.TxPackets, Retrans: retrans,
 			Drops: st.TxDrops + st.TxLimitDrops, LinkDrops: s.net.LinkDrops(), CPUs: bench.PerCPU(), Queue: s.q.take(),
+			Lanes: s.b.LanePackets(),
 		}
 		var err error
 		if server[i], err = srv.mark(); err != nil {

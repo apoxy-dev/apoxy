@@ -48,8 +48,11 @@ type mark struct {
 	XDPPackets uint64 `json:"xdp_packets,omitempty"`
 	// CPUs are the ticks of each CPU of the host of the side.
 	CPUs []bench.CPUTicks `json:"cpus,omitempty"`
-	// Queue is the bytes in the queues of the agent socket since the last mark.
+	// Queue is the bytes in the queues of the agent socket and the lane sockets
+	// since the last mark.
 	Queue *sockQueue `json:"queue,omitempty"`
+	// Lanes are the PSP packets that the side sent on each send lane.
+	Lanes []uint64 `json:"lanes,omitempty"`
 }
 
 // sockQueue is the mean and the most bytes in the receive queue of a socket,
@@ -61,7 +64,7 @@ type sockQueue struct {
 	TxMax  int64 `json:"tx_max"`
 }
 
-// queueSampler reads the queues of a socket each queueInterval.
+// queueSampler reads the queues of the sockets of a side each queueInterval.
 type queueSampler struct {
 	mu           sync.Mutex
 	rx, tx, n    int64 // Sums and the sample count since the last take.
@@ -70,9 +73,10 @@ type queueSampler struct {
 
 const queueInterval = 5 * time.Millisecond
 
-// sampleQueues samples the queues of c until ctx ends. It returns nil when it
-// cannot read them.
-func sampleQueues(ctx context.Context, c syscall.Conn) *queueSampler {
+// sampleQueues samples the queues of c and of the sockets of lanes until ctx
+// ends. A sample is the sum of all sockets. It returns nil when it cannot read
+// the queues of c.
+func sampleQueues(ctx context.Context, c syscall.Conn, lanes func() []*net.UDPConn) *queueSampler {
 	if rx, _ := sockMem(c); rx < 0 {
 		return nil
 	}
@@ -87,6 +91,11 @@ func sampleQueues(ctx context.Context, c syscall.Conn) *queueSampler {
 			case <-t.C:
 			}
 			rx, tx := sockMem(c)
+			for _, lc := range lanes() {
+				if lrx, ltx := sockMem(lc); lrx >= 0 {
+					rx, tx = rx+lrx, tx+ltx
+				}
+			}
 			q.mu.Lock()
 			q.rx, q.tx, q.n = q.rx+rx, q.tx+tx, q.n+1
 			q.rxMax, q.txMax = max(q.rxMax, rx), max(q.txMax, tx)
@@ -203,9 +212,12 @@ type result struct {
 	ClientTopCPUs []cpuUse `json:"client_top_cpus,omitempty"`
 	ServerTopCPUs []cpuUse `json:"server_top_cpus,omitempty"`
 	RelayTopCPUs  []cpuUse `json:"relay_top_cpus,omitempty"`
-	// The queues of the agent sockets in the measured window.
+	// The queues of the agent and lane sockets in the measured window.
 	ClientQueue *sockQueue `json:"client_queue,omitempty"`
 	ServerQueue *sockQueue `json:"server_queue,omitempty"`
+	// The PSP packets that each side sent on each send lane in the measured window.
+	ClientLanePackets []uint64 `json:"client_lane_packets,omitempty"`
+	ServerLanePackets []uint64 `json:"server_lane_packets,omitempty"`
 
 	Driver    string `json:"driver"`
 	Transport string `json:"transport"`
@@ -289,6 +301,7 @@ func newResult(client, server, relay [2]mark) result {
 	r.ServerTopCPUs = busiestCPUs(server[0], server[1], topCPUs)
 	r.RelayTopCPUs = busiestCPUs(relay[0], relay[1], topCPUs)
 	r.ClientQueue, r.ServerQueue = client[1].Queue, server[1].Queue
+	r.ClientLanePackets, r.ServerLanePackets = laneDelta(client[0].Lanes, client[1].Lanes), laneDelta(server[0].Lanes, server[1].Lanes)
 	if gbps := r.BitsPerSecond / 1e9; gbps > 0 {
 		r.ClientCoresPerGbps = r.ClientCores / gbps
 		r.ServerCoresPerGbps = r.ServerCores / gbps
@@ -304,6 +317,21 @@ func newResult(client, server, relay [2]mark) result {
 	r.ServerLinkDrops = delta(server[0].LinkDrops, server[1].LinkDrops)
 	r.RelayXDPPackets = relay[1].XDPPackets - relay[0].XDPPackets
 	return r
+}
+
+// laneDelta returns the increase of the packets of each lane from v0 to v1.
+func laneDelta(v0, v1 []uint64) []uint64 {
+	if len(v1) == 0 {
+		return nil
+	}
+	out := make([]uint64, len(v1))
+	for i, n := range v1 {
+		out[i] = n
+		if i < len(v0) {
+			out[i] -= min(v0[i], n)
+		}
+	}
+	return out
 }
 
 // delta returns the increase of a counter from v0 to v1, or -1 when a value

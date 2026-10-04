@@ -35,14 +35,15 @@ func nullStack(b *testing.B) *channel.Endpoint {
 }
 
 // BenchmarkVirtToPhy makes the send frame of a 1280 B TCP packet, with the MSS clamp off and
-// on, as PSP and as a QUIC data frame.
+// on, as PSP on 1 and 4 lanes and as a QUIC data frame.
 func BenchmarkVirtToPhy(b *testing.B) {
 	for _, bc := range []struct {
 		clamp int
 		quic  bool
-	}{{0, false}, {DefaultMTU, false}, {0, true}} {
-		b.Run(fmt.Sprintf("clamp=%d/quic=%t", bc.clamp, bc.quic), func(b *testing.B) {
-			x, y := newPairMTU(b, MaxMTU)
+		lanes int
+	}{{0, false, 1}, {DefaultMTU, false, 1}, {0, true, 1}, {0, false, 4}} {
+		b.Run(fmt.Sprintf("clamp=%d/quic=%t/lanes=%d", bc.clamp, bc.quic, bc.lanes), func(b *testing.B) {
+			x, y := newPairLanes(b, MaxMTU, bc.lanes)
 			offer(b, time.Now(), x, y)
 			x.b.SetClampMTU(bc.clamp)
 			if bc.quic {
@@ -128,30 +129,37 @@ func BenchmarkHandleData(b *testing.B) {
 	}
 }
 
-// BenchmarkWriteFrames sends 64 PSP packets to a UDP socket, with sendmmsg
-// and with one write for each packet.
+// BenchmarkWriteFrames sends the PSP packets of 64 flows to a UDP socket, with
+// sendmmsg and with one write for each packet, on 1 and 4 lanes.
 func BenchmarkWriteFrames(b *testing.B) {
-	for _, batch := range []bool{true, false} {
-		b.Run(fmt.Sprintf("sendmmsg=%t", batch), func(b *testing.B) {
-			x, y := newPair(b)
+	for _, bc := range []struct {
+		batch bool
+		lanes int
+	}{{true, 1}, {true, 4}, {false, 1}, {false, 4}} {
+		b.Run(fmt.Sprintf("sendmmsg=%t/lanes=%d", bc.batch, bc.lanes), func(b *testing.B) {
+			x, y := newPairLanes(b, 0, bc.lanes)
 			offer(b, time.Now(), x, y)
 			sink, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 			require.NoError(b, err)
 			defer sink.Close()
 			x.peer.SetAddr(sink.LocalAddr().(*net.UDPAddr).AddrPort())
 			d := newDriver(x.b, nil)
-			if !batch {
+			if !bc.batch {
 				d.tx = nil
 			}
-			phy := make([]byte, 2048)
-			n, _ := d.VirtToPhy(packet(x.v4, y.v4, 6, 1, 2, DefaultMTU), phy)
-			frames := repeat(phy[:n], 64)
-			b.SetBytes(int64(len(frames) * (n - addrLen)))
+			frames := make([][]byte, 64)
+			for i := range frames {
+				frames[i] = make([]byte, 2048)
+				n, _ := d.VirtToPhy(packet(x.v4, y.v4, 6, uint16(1000+i), 2, DefaultMTU), frames[i])
+				frames[i] = frames[i][:n]
+			}
+			b.SetBytes(int64(len(frames) * (len(frames[0]) - addrLen)))
 			b.ReportAllocs()
 			for b.Loop() {
 				_, _ = d.WriteFrames(frames)
 			}
 			require.Zero(b, x.b.Stats().TxDrops)
+			require.Len(b, x.b.LanePackets(), bc.lanes)
 		})
 	}
 }
