@@ -76,7 +76,7 @@ func TestAgentUpload(t *testing.T) {
 		Bins:     []File{{Name: "perfrig", URL: srv.URL + "/bin/perfrig?X-Amz-Signature=s", SHA256: sha256Hex(perfrig)}},
 		Files:    []File{{Name: "baseline.json", URL: srv.URL + "/baseline.json", SHA256: sha256Hex(baseline)}},
 		Rows: []Row{
-			{ID: "pass", Group: "gate", Args: []string{"-fake=pass"}},
+			{ID: "pass", Group: "floor", Args: []string{"-fake=pass"}},
 			{ID: "fail", Group: "info", Args: []string{"-fake=fail"}},
 		},
 		Upload: Upload{Results: srv.URL + "/up/results", Log: srv.URL + "/up/log", Report: srv.URL + "/up/report"},
@@ -94,7 +94,7 @@ func TestAgentUpload(t *testing.T) {
 	assert.Equal(t, sha256Hex(puts["results"]), rep.ResultsSHA256)
 	assert.Equal(t, "log\n", string(puts["log"]))
 	files := untar(t, puts["results"])
-	assert.Contains(t, files, "results/gate/pass.json")
+	assert.Contains(t, files, "results/floor/pass.json")
 	assert.Contains(t, files, "results/info/fail.json")
 	assert.Contains(t, files, "logs/pass.log")
 	assert.Equal(t, string(baseline), files["baseline.json"])
@@ -108,7 +108,7 @@ func TestAgentLocal(t *testing.T) {
 		RunID:    "local",
 		Deadline: time.Now().Add(time.Minute),
 		Bins:     []File{{Name: "perfrig", SHA256: sha256Hex(perfrig)}},
-		Rows:     []Row{{ID: "pass", Group: "gate", Args: []string{"-fake=pass"}}},
+		Rows:     []Row{{ID: "pass", Group: "floor", Args: []string{"-fake=pass"}}},
 	}
 	cases := []struct {
 		name      string

@@ -28,10 +28,10 @@ import (
 )
 
 // recorder is the netstack of a NIC. It keeps the sequence numbers of the
-// packets of each source port. When gate is set, it waits on gate.
+// packets of each source port. When hold is set, it waits on hold.
 type recorder struct {
 	entered chan struct{}
-	gate    chan struct{}
+	hold    chan struct{}
 
 	mu   sync.Mutex
 	got  map[uint16][]uint32
@@ -52,8 +52,8 @@ func (r *recorder) DeliverNetworkPacket(_ tcpip.NetworkProtocolNumber, pkb *stac
 	case r.entered <- struct{}{}:
 	default:
 	}
-	if r.gate != nil {
-		<-r.gate
+	if r.hold != nil {
+		<-r.hold
 	}
 	v := pkb.ToView()
 	defer v.Release()
@@ -148,14 +148,14 @@ func TestInjectBatchFullQueue(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			r, ep := newRecorder(t)
-			gate := make(chan struct{})
-			r.gate = gate
-			openGate := sync.OnceFunc(func() { close(gate) })
+			hold := make(chan struct{})
+			r.hold = hold
+			release := sync.OnceFunc(func() { close(hold) })
 			var b Binding
 			done := make(chan struct{})
 			closeDone := sync.OnceFunc(func() { close(done) })
 			defer closeDone()
-			defer openGate()
+			defer release()
 			j := newInjectBatch(ep, &b.stats, maphash.MakeSeed(), 1, done, nil)
 
 			// The worker takes the first batch and waits in the netstack. The
@@ -182,14 +182,14 @@ func TestInjectBatchFullQueue(t *testing.T) {
 				closeDone()
 				<-sent
 				assert.Equal(t, Stats{RxDrops: 1}, b.Stats())
-				openGate()
+				release()
 				require.Eventually(t, func() bool {
 					st := b.Stats()
 					return st.RxPackets+st.RxDrops == 2+injectQueue && len(j.in[0]) == 0
 				}, 5*time.Second, time.Millisecond, "the worker did not drop its queue: %+v", b.Stats())
 				return
 			}
-			openGate()
+			release()
 			<-sent
 			require.Eventually(t, func() bool { return b.Stats().RxPackets == 2+injectQueue }, 5*time.Second, time.Millisecond)
 			assert.Equal(t, Stats{RxPackets: 2 + injectQueue}, b.Stats())

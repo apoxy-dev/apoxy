@@ -60,8 +60,8 @@ func TestRowArgs(t *testing.T) {
 	}{
 		{
 			name: "no host class",
-			row:  Row{ID: "gate", Group: "gate", Args: []string{"-workload=exec"}},
-			want: []string{"run", "-workload=exec", "-out=results/gate/gate.json", "-out-dir=work/gate"},
+			row:  Row{ID: "netstack-psp-relay", Group: "floor", Args: []string{"-workload=exec"}},
+			want: []string{"run", "-workload=exec", "-out=results/floor/netstack-psp-relay.json", "-out-dir=work/netstack-psp-relay"},
 		},
 		{
 			name:      "host class after the row args",
@@ -87,7 +87,7 @@ func TestRunRows(t *testing.T) {
 	}
 
 	got := run(context.Background(),
-		Row{ID: "pass", Group: "gate", Args: []string{"-fake=pass"}},
+		Row{ID: "pass", Group: "floor", Args: []string{"-fake=pass"}},
 		Row{ID: "fail", Group: "info", Args: []string{"-fake=fail"}},
 		Row{ID: "infra", Group: "info", Args: []string{"-fake=infra"}},
 	)
@@ -109,7 +109,7 @@ func TestRunRows(t *testing.T) {
 	assert.Contains(t, got[3].Error, "stopped")
 	assert.Contains(t, got[4].Error, "not run")
 
-	out, err := os.ReadFile(filepath.Join(runDir, "results", "gate", "pass.json"))
+	out, err := os.ReadFile(filepath.Join(runDir, "results", "floor", "pass.json"))
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"key": "c7a.8xlarge"}`, string(out))
 	log, err := os.ReadFile(filepath.Join(runDir, "logs", "pass.log"))

@@ -30,7 +30,7 @@ type Plan struct {
 // Options set the rows of a run.
 type Options struct {
 	Duration string
-	// Reps is the reps of each gate row. Info rows run one time.
+	// Reps is the reps of each floor row. Info rows run one time.
 	Reps    int
 	MinCPUs int
 	// Only selects rows by ID. Empty IDs are ignored, and no ID selects all rows.
@@ -101,7 +101,7 @@ func (s Suite) Selects(o Options, group string) bool {
 	return err != nil || slices.ContainsFunc(rows, func(r Row) bool { return r.Group == group })
 }
 
-// Groups returns the result groups of the suite, gate first.
+// Groups returns the result groups of the suite, floor first.
 func (s Suite) Groups() []string {
 	var groups []string
 	for _, r := range s.rows(Options{}) {
@@ -110,10 +110,10 @@ func (s Suite) Groups() []string {
 		}
 	}
 	slices.SortStableFunc(groups, func(a, b string) int {
-		if a == "gate" {
+		if a == "floor" {
 			return -1
 		}
-		if b == "gate" {
+		if b == "floor" {
 			return 1
 		}
 		return 0
@@ -121,25 +121,25 @@ func (s Suite) Groups() []string {
 	return groups
 }
 
-// common are the perfrig flags of all rows. A gate row with a failed median
+// common are the perfrig flags of all rows. A floor row with a failed median
 // runs its reps one more time (perfrig -baseline).
 func common(o Options, group string) []string {
 	reps := 1
 	args := []string{"-delay=10ms", "-duration=" + o.Duration, "-min-cpus=" + strconv.Itoa(o.MinCPUs), "-max-steal=5"}
-	if group == "gate" {
+	if group == "floor" {
 		reps = max(o.Reps, 1)
 		args = append(args, "-baseline=baseline.json")
 	}
 	return append(args, "-reps="+strconv.Itoa(reps))
 }
 
-// Netns is the netns + netem rig with iperf3. All rows gate.
+// Netns is the netns + netem rig with iperf3. All rows are floor rows.
 var Netns = Suite{
 	Name:  "netns",
 	Title: "netns rig",
 	rows: func(o Options) []Row {
 		row := func(id string, args ...string) Row {
-			return Row{ID: id, Group: "gate", Args: append(args, common(o, "gate")...)}
+			return Row{ID: id, Group: "floor", Args: append(args, common(o, "floor")...)}
 		}
 		return []Row{
 			row("iperf3-tcp-p1", "-workload=iperf3-tcp", "-streams=1"),
@@ -154,7 +154,7 @@ var Netns = Suite{
 // so the name holds them.
 type vpcRow struct {
 	id, name string
-	gate     bool
+	floor    bool
 	// direct runs the flows with no relay.
 	direct bool
 	// server and client are more vpcbench flags. args are more perfrig run flags.
@@ -162,9 +162,9 @@ type vpcRow struct {
 	args           []string
 }
 
-// vpcRows are the gated row and the info rows.
+// vpcRows are the floor row and the info rows.
 var vpcRows = []vpcRow{
-	{id: "gate", name: "vpc-netstack-psp-relay", gate: true, client: []string{"-cc", "bbr"}},
+	{id: "netstack-psp-relay", name: "vpc-netstack-psp-relay", floor: true, client: []string{"-cc", "bbr"}},
 	{id: "netstack-quic-relay", name: "vpc-netstack-quic-relay", server: []string{"-transport", "quic"}, client: []string{"-transport", "quic", "-cc", "bbr"}},
 	{id: "tun-psp-relay-cubic", name: "vpc-tun-psp-relay-cubic", server: []string{"-driver", "tun"}, client: []string{"-driver", "tun", "-cc", "cubic"}},
 	{id: "netstack-psp-relay-loss0.1", name: "vpc-netstack-psp-relay", client: []string{"-cc", "bbr"}, args: []string{"-loss=0.1"}},
@@ -193,8 +193,8 @@ func (r vpcRow) row(o Options) Row {
 		client = append(client, profileArgs("client")...)
 	}
 	group := "info"
-	if r.gate {
-		group = "gate"
+	if r.floor {
+		group = "floor"
 	}
 	args := []string{"-workload=exec", "-name=" + r.name, "-netns-prefix=perf", "-ready=tcp:4433", "-streams=4", "-omit=5s"}
 	args = append(args, common(o, group)...)
@@ -215,10 +215,10 @@ func profileArgs(role string) []string {
 	return args
 }
 
-// VPC is the VPC data path through the relay, with one gated row and info rows.
+// VPC is the VPC data path through the relay, with one floor row and info rows.
 var VPC = Suite{
 	Name:  "vpc",
-	Title: "VPC gate",
+	Title: "VPC perf",
 	Bins:  []string{"vpcbench"},
 	Tun:   true,
 	// The work dirs have the throwaway CA and agent keys of each run.

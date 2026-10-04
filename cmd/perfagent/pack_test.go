@@ -36,12 +36,12 @@ func untar(t *testing.T, data []byte) map[string]string {
 func TestRemoveFilesAndPack(t *testing.T) {
 	dir := t.TempDir()
 	files := map[string]string{
-		"results/gate/gate.json":              `{"key": "x"}`,
-		"logs/gate.log":                       "log",
-		"work/gate/rep-1/client.out":          "out",
-		"work/gate/rep-1/server-cred.json":    "key",
-		"work/gate/rep-1/vpcbench-ca.pem":     "ca",
-		"work/netstack-psp-direct/client.out": "direct",
+		"results/floor/netstack-psp-relay.json":          `{"key": "x"}`,
+		"logs/netstack-psp-relay.log":                    "log",
+		"work/netstack-psp-relay/rep-1/client.out":       "out",
+		"work/netstack-psp-relay/rep-1/server-cred.json": "key",
+		"work/netstack-psp-relay/rep-1/vpcbench-ca.pem":  "ca",
+		"work/netstack-psp-direct/client.out":            "direct",
 	}
 	for name, content := range files {
 		p := filepath.Join(dir, name)
@@ -63,10 +63,10 @@ func TestRemoveFilesAndPack(t *testing.T) {
 	}
 	sort.Strings(names)
 	assert.Equal(t, []string{
-		"logs/", "logs/gate.log",
-		"results/", "results/gate/", "results/gate/gate.json",
-		"work/", "work/gate/", "work/gate/rep-1/", "work/gate/rep-1/client.out",
-		"work/netstack-psp-direct/", "work/netstack-psp-direct/client.out",
+		"logs/", "logs/netstack-psp-relay.log",
+		"results/", "results/floor/", "results/floor/netstack-psp-relay.json",
+		"work/", "work/netstack-psp-direct/", "work/netstack-psp-direct/client.out",
+		"work/netstack-psp-relay/", "work/netstack-psp-relay/rep-1/", "work/netstack-psp-relay/rep-1/client.out",
 	}, names)
-	assert.Equal(t, `{"key": "x"}`, got["results/gate/gate.json"])
+	assert.Equal(t, `{"key": "x"}`, got["results/floor/netstack-psp-relay.json"])
 }

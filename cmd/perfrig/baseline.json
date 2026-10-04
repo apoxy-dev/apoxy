@@ -57,7 +57,7 @@
       "server_cores_per_gbps": 0,
       "min_gbps": 2,
       "tolerance": 0.1,
-      "source": "gated row; the calibration run sets the numbers"
+      "source": "floor row; the calibration run sets the numbers"
     },
     "c7a.8xlarge vpc-netstack-psp-relay streams=4 duration=30s omit=5s delay=10ms jitter=0ms loss=0.1% rate=none queue=100000 mtu=1500 bitrate=none window=none": {
       "gbps": 0.655,

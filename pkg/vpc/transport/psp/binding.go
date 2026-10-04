@@ -48,7 +48,7 @@ var (
 
 	errDrop    = errors.New("psp: packet is not IP or is too large")
 	errNoRelay = errors.New("psp: no relay session for data frames")
-	errGate    = errors.New("psp: breaker gate drops the packet")
+	errLimit   = errors.New("psp: breaker limit drops the packet")
 )
 
 // Demux gives the non-QUIC packets of an agent socket to its binding, and path probes to Probe.
@@ -98,7 +98,7 @@ type Config struct {
 	// NoRoute gets the inner packets that VirtToPhy cannot send for ErrNoRoute. It
 	// runs on the send path of the driver, so it must not block or keep pkt.
 	NoRoute func(pkt []byte)
-	// OnTrip gets each change of a breaker gate. The peer is nil for the QUIC
+	// OnTrip gets each change of a breaker limit. The peer is nil for the QUIC
 	// data path. It must not block.
 	OnTrip func(*Peer, Trip)
 }
@@ -258,7 +258,7 @@ type Update struct {
 	keys.Request
 }
 
-// Tick rekeys the due receive SAs, removes expired SAs and opens the breaker gates whose
+// Tick rekeys the due receive SAs, removes expired SAs and the breaker limits whose
 // time ended. Call it each second, and send each Update to its peer. Failed lanes are due
 // again.
 func (b *Binding) Tick(now time.Time) ([]Update, error) {
@@ -384,34 +384,34 @@ func (b *Binding) RemoveRoute(pfx netip.Prefix, p *Peer) bool {
 // Stats are the packet counters of a binding. They count PSP packets and QUIC data frames
 // together.
 type Stats struct {
-	RxPackets   uint64 // Packets that passed the checks and went to the driver.
-	RxDrops     uint64 // Packets that failed a check or the delivery, for example no SA.
-	RxNoDriver  uint64 // Packets dropped because no driver runs.
-	RxOther     uint64 // Non-QUIC packets that are not PSP, for example probes.
-	TxPackets   uint64 // Packets sent.
-	TxNoRoute   uint64 // Inner packets with no route or no transmit SA.
-	TxDrops     uint64 // Inner packets that a size check, a seal or a write dropped.
-	TxGateDrops uint64 // Inner packets that the gate of a tripped breaker dropped.
+	RxPackets    uint64 // Packets that passed the checks and went to the driver.
+	RxDrops      uint64 // Packets that failed a check or the delivery, for example no SA.
+	RxNoDriver   uint64 // Packets dropped because no driver runs.
+	RxOther      uint64 // Non-QUIC packets that are not PSP, for example probes.
+	TxPackets    uint64 // Packets sent.
+	TxNoRoute    uint64 // Inner packets with no route or no transmit SA.
+	TxDrops      uint64 // Inner packets that a size check, a seal or a write dropped.
+	TxLimitDrops uint64 // Inner packets that the limiter of a tripped breaker dropped.
 }
 
 type counters struct {
-	rxPackets, rxDrops, rxNoDriver, rxOther    atomic.Uint64
-	txPackets, txNoRoute, txDrops, txGateDrops atomic.Uint64
-	txFrames                                   atomic.Uint64 // Data frames sent.
+	rxPackets, rxDrops, rxNoDriver, rxOther     atomic.Uint64
+	txPackets, txNoRoute, txDrops, txLimitDrops atomic.Uint64
+	txFrames                                    atomic.Uint64 // Data frames sent.
 }
 
 // Stats returns the packet counters.
 func (b *Binding) Stats() Stats {
 	c := &b.stats
 	return Stats{
-		RxPackets:   c.rxPackets.Load(),
-		RxDrops:     c.rxDrops.Load(),
-		RxNoDriver:  c.rxNoDriver.Load(),
-		RxOther:     c.rxOther.Load(),
-		TxPackets:   c.txPackets.Load(),
-		TxNoRoute:   c.txNoRoute.Load(),
-		TxDrops:     c.txDrops.Load(),
-		TxGateDrops: c.txGateDrops.Load(),
+		RxPackets:    c.rxPackets.Load(),
+		RxDrops:      c.rxDrops.Load(),
+		RxNoDriver:   c.rxNoDriver.Load(),
+		RxOther:      c.rxOther.Load(),
+		TxPackets:    c.txPackets.Load(),
+		TxNoRoute:    c.txNoRoute.Load(),
+		TxDrops:      c.txDrops.Load(),
+		TxLimitDrops: c.txLimitDrops.Load(),
 	}
 }
 

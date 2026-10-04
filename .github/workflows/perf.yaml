@@ -13,12 +13,12 @@ on:
         description: "Run the netns rig job"
         type: boolean
         default: true
-      vpc_gate:
-        description: "Run the VPC gate job"
+      vpc_perf:
+        description: "Run the VPC perf job"
         type: boolean
         default: false
       vpc_rows:
-        description: "VPC rows to run, comma-separated, for example gate (default: all rows)"
+        description: "VPC rows to run, comma-separated, for example netstack-psp-relay (default: all rows)"
         type: string
         default: ""
       vpc_profile:
@@ -36,7 +36,7 @@ concurrency:
 # cmd/perfrig/baseline.json has the numbers of the instance type. The jobs
 # do not run until the PERF_AWS_ROLE_ARN variable is set.
 jobs:
-  # netns + netem rig (cmd/perfrig) with iperf3 at 20 ms RTT. All rows gate.
+  # netns + netem rig (cmd/perfrig) with iperf3 at 20 ms RTT. All rows are floor rows.
   netns-rig:
     if: vars.PERF_AWS_ROLE_ARN != '' && (github.event_name == 'schedule' || inputs.netns_rig)
     runs-on: blacksmith-4vcpu-ubuntu-2204
@@ -86,7 +86,7 @@ jobs:
           name: perf-results
           path: perf-netns/
           if-no-files-found: warn
-      - name: Check the gate
+      - name: Check the floor
         run: dagger call perf-check --results=perf-netns
       - name: Send a Slack alert
         # The step does not run when the secret is not set.
@@ -97,10 +97,10 @@ jobs:
           --run-url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --sha="$GITHUB_SHA"
 
   # VPC data path (cmd/vpcbench through the relay, 4 flows, 20 ms RTT): one
-  # gated row and info rows. Dispatch only, until the baseline has the numbers
+  # floor row and info rows. Dispatch only, until the baseline has the numbers
   # of the instance type.
-  vpc-gate:
-    if: vars.PERF_AWS_ROLE_ARN != '' && github.event_name == 'workflow_dispatch' && inputs.vpc_gate
+  vpc-perf:
+    if: vars.PERF_AWS_ROLE_ARN != '' && github.event_name == 'workflow_dispatch' && inputs.vpc_perf
     runs-on: blacksmith-4vcpu-ubuntu-2204
     environment: perf
     permissions:
@@ -151,7 +151,7 @@ jobs:
           path: perf-vpc/
           retention-days: 90
           if-no-files-found: warn
-      - name: Check the gate
+      - name: Check the floor
         run: dagger call perf-check --results=perf-vpc
       - name: Send a Slack alert
         # The step does not run when the secret is not set.

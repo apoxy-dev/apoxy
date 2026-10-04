@@ -242,7 +242,7 @@ func TestUpdateEntry(t *testing.T) {
 
 func TestNeedsRetry(t *testing.T) {
 	base := Baseline{Tolerance: 0.10, Entries: map[string]BaselineEntry{
-		"gate":  {Gbps: 2.2, MinGbps: 2, ClientCoresPerGbps: 0.5},
+		"floor": {Gbps: 2.2, MinGbps: 2, ClientCoresPerGbps: 0.5},
 		"info":  {Gbps: 1, Info: true},
 		"empty": {},
 	}}
@@ -251,13 +251,13 @@ func TestNeedsRetry(t *testing.T) {
 		res  Result
 		want bool
 	}{
-		{name: "pass", res: result("gate", 2.3, 0.5, 0), want: false},
-		{name: "below the floor", res: result("gate", 1.9, 0.5, 0), want: true},
-		{name: "cpu rise", res: result("gate", 2.3, 0.6, 0), want: true},
+		{name: "pass", res: result("floor", 2.3, 0.5, 0), want: false},
+		{name: "below the floor", res: result("floor", 1.9, 0.5, 0), want: true},
+		{name: "cpu rise", res: result("floor", 2.3, 0.6, 0), want: true},
 		{name: "info entry", res: result("info", 0.5, 0, 0), want: false},
 		{name: "entry with no metric", res: result("empty", 1, 0, 0), want: false},
 		{name: "no entry", res: result("other", 0.1, 0, 0), want: false},
-		{name: "infra error", res: infraResult("gate", "too much CPU steal"), want: false},
+		{name: "infra error", res: infraResult("floor", "too much CPU steal"), want: false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

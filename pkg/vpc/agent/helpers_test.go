@@ -75,28 +75,28 @@ func (ca *testCA) relayCert(t testing.TB, id string) *tls.Certificate {
 	return cert
 }
 
-// fakeAddresses is a vpctest.Addresses with a gate. While the gate is open,
-// Assign waits for the attachments with names that start with gateName.
+// fakeAddresses is a vpctest.Addresses with a hold. While the hold is set,
+// Assign waits for the attachments with names that start with holdName.
 type fakeAddresses struct {
 	*vpctest.Addresses
 	mu               sync.Mutex
-	gate             chan struct{}
-	gateName         string
-	inGate, mostGate int // Assign calls that wait now, and the most at once.
+	holdDone         chan struct{}
+	holdName         string
+	inHold, mostHold int // Assign calls that wait now, and the most at once.
 }
 
 func (f *fakeAddresses) Assign(ctx context.Context, a *relay.Attachment, onLost func()) ([]netip.Prefix, error) {
 	f.mu.Lock()
-	if gate := f.gate; gate != nil && strings.HasPrefix(a.Name, f.gateName) {
-		f.inGate++
-		f.mostGate = max(f.mostGate, f.inGate)
+	if done := f.holdDone; done != nil && strings.HasPrefix(a.Name, f.holdName) {
+		f.inHold++
+		f.mostHold = max(f.mostHold, f.inHold)
 		f.mu.Unlock()
 		select {
-		case <-gate:
+		case <-done:
 		case <-ctx.Done():
 		}
 		f.mu.Lock()
-		f.inGate--
+		f.inHold--
 		if ctx.Err() != nil {
 			f.mu.Unlock()
 			return nil, ctx.Err()
@@ -110,13 +110,13 @@ func (f *fakeAddresses) Assign(ctx context.Context, a *relay.Attachment, onLost 
 func (f *fakeAddresses) hold(prefix string) (release func()) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	gate := make(chan struct{})
-	f.gate, f.gateName = gate, prefix
+	done := make(chan struct{})
+	f.holdDone, f.holdName = done, prefix
 	return func() {
 		f.mu.Lock()
-		f.gate = nil
+		f.holdDone = nil
 		f.mu.Unlock()
-		close(gate)
+		close(done)
 	}
 }
 
@@ -124,7 +124,7 @@ func (f *fakeAddresses) hold(prefix string) (release func()) {
 func (f *fakeAddresses) held() (now, most int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.inGate, f.mostGate
+	return f.inHold, f.mostHold
 }
 
 // world is the CAs and the address pool of one test.

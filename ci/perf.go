@@ -41,8 +41,9 @@ func (m *ApoxyCli) PerfCompare(
 }
 
 // PerfNetns runs the netns + netem rig rows with iperf3 (cmd/perfrig), all of
-// which gate. It returns the results with summary.md and gate-exit: 0 pass, 1
-// regression or no result, 3 infra error. A failed row does not fail it.
+// which are floor rows. It returns the results with summary.md and
+// floor-exit: 0 pass, 1 regression or no result, 3 infra error. A failed row
+// does not fail it.
 func (m *ApoxyCli) PerfNetns(
 	ctx context.Context,
 	src *dagger.Directory,
@@ -82,9 +83,9 @@ func (m *ApoxyCli) PerfNetns(
 }
 
 // PerfVpc runs the VPC rows (cmd/vpcbench through the relay, 4 flows, 20 ms
-// RTT): one gated row and info rows that run one time. It returns the results
-// with summary.md and gate-exit: 0 pass or no gated row selected, 1 regression
-// or no gate result, 3 infra error. A failed row does not fail it.
+// RTT): one floor row and info rows that run one time. It returns the results
+// with summary.md and floor-exit: 0 pass or no floor row selected, 1 regression
+// or no floor result, 3 infra error. A failed row does not fail it.
 func (m *ApoxyCli) PerfVpc(
 	ctx context.Context,
 	src *dagger.Directory,
@@ -94,13 +95,13 @@ func (m *ApoxyCli) PerfVpc(
 	// Measured run length of each row. The baseline keys include it.
 	// +default="30s"
 	duration string,
-	// Reps of the gated row.
+	// Reps of the floor row.
 	// +default=3
 	reps int,
 	// Infra error when the host has fewer CPUs. Lower it only for local smoke runs.
 	// +default=16
 	minCpus int,
-	// Run only these row IDs, for example gate (default: all rows).
+	// Run only these row IDs, for example netstack-psp-relay (default: all rows).
 	// +optional
 	rows []string,
 	// ec2: names the run in S3 and the tags, for example RUN_ID-ATTEMPT-JOB.
@@ -218,7 +219,7 @@ func (m *ApoxyCli) perfBins(src *dagger.Directory, goarch string, cmds []string)
 }
 
 // perfSummarize compares each result group with the baseline and adds
-// summary.md, gate-exit and compare-GROUP.txt to the outputs.
+// summary.md, floor-exit and compare-GROUP.txt to the outputs.
 func (m *ApoxyCli) perfSummarize(ctx context.Context, src *dagger.Directory, s perfsuite.Suite, o perfsuite.Options, out *dagger.Directory) (*dagger.Directory, error) {
 	// The perf module gives an infra error in agent.json. Its own errors fail the call.
 	out, err := out.Sync(ctx)
@@ -270,10 +271,10 @@ func (m *ApoxyCli) perfSummarize(ctx context.Context, src *dagger.Directory, s p
 		}
 		compares = append(compares, c)
 	}
-	exit := perfsuite.GateExit(rep, compares[0])
+	exit := perfsuite.FloorExit(rep, compares[0])
 	return out.
 		WithNewFile("summary.md", perfsuite.Summary(s, rep, compares, console)).
-		WithNewFile("gate-exit", strconv.Itoa(exit)+"\n"), nil
+		WithNewFile("floor-exit", strconv.Itoa(exit)+"\n"), nil
 }
 
 // PerfSummary returns summary.md of PerfNetns or PerfVpc results, for $GITHUB_STEP_SUMMARY.
@@ -281,23 +282,23 @@ func (m *ApoxyCli) PerfSummary(results *dagger.Directory) *dagger.File {
 	return results.File("summary.md")
 }
 
-// PerfCheck fails when the gate of PerfNetns or PerfVpc results did not pass.
+// PerfCheck fails when the floor check of PerfNetns or PerfVpc results did not pass.
 func (m *ApoxyCli) PerfCheck(ctx context.Context, results *dagger.Directory) (string, error) {
-	code, err := results.File("gate-exit").Contents(ctx)
+	code, err := results.File("floor-exit").Contents(ctx)
 	if err != nil {
-		return "", fmt.Errorf("the results have no gate-exit: %w", err)
+		return "", fmt.Errorf("the results have no floor-exit: %w", err)
 	}
 	switch strings.TrimSpace(code) {
 	case "0":
-		return "The gate passed.", nil
+		return "The floor check passed.", nil
 	case "3":
-		return "", errors.New("the gate has an infra error: see the job summary")
+		return "", errors.New("the floor check has an infra error: see the job summary")
 	default:
-		return "", fmt.Errorf("the gate failed (exit %s): see the job summary and compare-gate.txt", strings.TrimSpace(code))
+		return "", fmt.Errorf("the floor check failed (exit %s): see the job summary and compare-floor.txt", strings.TrimSpace(code))
 	}
 }
 
-// PerfNotify posts one Slack line about a failed gate job of PerfNetns or PerfVpc results.
+// PerfNotify posts one Slack line about a failed perf job of PerfNetns or PerfVpc results.
 func (m *ApoxyCli) PerfNotify(
 	ctx context.Context,
 	results *dagger.Directory,
@@ -319,7 +320,7 @@ func (m *ApoxyCli) PerfNotify(
 		return "", fmt.Errorf("bad suite %q: want netns or vpc", suite)
 	}
 	exit := -1
-	if code, err := results.File("gate-exit").Contents(ctx); err == nil {
+	if code, err := results.File("floor-exit").Contents(ctx); err == nil {
 		if n, err := strconv.Atoi(strings.TrimSpace(code)); err == nil {
 			exit = n
 		}
@@ -328,8 +329,8 @@ func (m *ApoxyCli) PerfNotify(
 	if data, err := results.File("agent.json").Contents(ctx); err == nil {
 		rep, _ = perfsuite.ParseReport(data)
 	}
-	var gate []perfsuite.Result
-	names, err := results.Glob(ctx, "results/gate/*.json")
+	var floor []perfsuite.Result
+	names, err := results.Glob(ctx, "results/floor/*.json")
 	if err != nil {
 		return "", err
 	}
@@ -342,13 +343,13 @@ func (m *ApoxyCli) PerfNotify(
 		if err := json.Unmarshal([]byte(data), &r); err != nil {
 			return "", fmt.Errorf("parse %s: %w", n, err)
 		}
-		gate = append(gate, r)
+		floor = append(floor, r)
 	}
-	compareGate := ""
-	if names, _ := results.Glob(ctx, "compare-gate.txt"); len(names) > 0 {
-		compareGate, _ = results.File("compare-gate.txt").Contents(ctx)
+	compareFloor := ""
+	if names, _ := results.Glob(ctx, "compare-floor.txt"); len(names) > 0 {
+		compareFloor, _ = results.File("compare-floor.txt").Contents(ctx)
 	}
-	text := perfsuite.SlackText(s, exit, rep, gate, compareGate, "apoxy@"+sha[:min(len(sha), 7)], runUrl)
+	text := perfsuite.SlackText(s, exit, rep, floor, compareFloor, "apoxy@"+sha[:min(len(sha), 7)], runUrl)
 	url, err := webhook.Plaintext(ctx)
 	if err != nil {
 		return "", err

@@ -49,7 +49,7 @@ func lossBetween(x, y rxCount) float64 {
 }
 
 // TestBreaker sends UDP from a to b at twice the meter rate of the relay. The
-// breaker of a trips on the receive reports of b, and its gate drops the
+// breaker of a trips on the receive reports of b, and its limiter drops the
 // excess at a, so that the relay meter stops dropping.
 func TestBreaker(t *testing.T) {
 	const meter = 250_000 // Bytes per second.
@@ -110,18 +110,18 @@ func TestBreaker(t *testing.T) {
 
 	start := rxCountOf(fromA)
 	require.Eventually(t, func() bool { return toB.Limit() > 0 }, 20*time.Second, 50*time.Millisecond, "breaker did not trip")
-	tripped, gateDrops := rxCountOf(fromA), a.binding().Stats().TxGateDrops
+	tripped, limitDrops := rxCountOf(fromA), a.binding().Stats().TxLimitDrops
 	assert.GreaterOrEqual(t, lossBetween(start, tripped), 0.2, "loss at the relay meter before the trip")
 	assert.LessOrEqual(t, toB.Limit(), int64(meter*3/4), "about half of the rate that arrived")
 
-	// The packets sent before the gate closed can still meet an empty meter.
+	// The packets sent before the limit was set can still meet an empty meter.
 	require.Eventually(t, func() bool { return rxCountOf(fromA).seq-tripped.seq >= 100 }, 10*time.Second, 50*time.Millisecond)
 	settled := rxCountOf(fromA)
 	require.Eventually(t, func() bool { return rxCountOf(fromA).seq-settled.seq >= 300 }, 10*time.Second, 50*time.Millisecond)
 	after := rxCountOf(fromA)
 	assert.Less(t, lossBetween(settled, after), 0.05, "loss at the relay meter after the trip")
-	assert.Greater(t, a.binding().Stats().TxGateDrops, gateDrops, "the gate drops the excess")
-	t.Logf("loss before %.3f, limit %d B/s, loss after %.3f, gate drops %d, sent %.0f/s", lossBetween(start, tripped),
-		toB.Limit(), lossBetween(settled, after), a.binding().Stats().TxGateDrops-gateDrops,
+	assert.Greater(t, a.binding().Stats().TxLimitDrops, limitDrops, "the limiter drops the excess")
+	t.Logf("loss before %.3f, limit %d B/s, loss after %.3f, limit drops %d, sent %.0f/s", lossBetween(start, tripped),
+		toB.Limit(), lossBetween(settled, after), a.binding().Stats().TxLimitDrops-limitDrops,
 		float64(sent.Load())/time.Since(begin).Seconds())
 }

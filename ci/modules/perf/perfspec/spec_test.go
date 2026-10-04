@@ -48,7 +48,7 @@ func TestParsePlan(t *testing.T) {
 		in      string
 		wantErr string
 	}{
-		{name: "rows and host setup", in: `{"rows": [{"id": "gate", "group": "gate", "args": ["-workload=exec"]}], "tun": true, "modules": ["sch_netem"]}`},
+		{name: "rows and host setup", in: `{"rows": [{"id": "netstack-psp-relay", "group": "floor", "args": ["-workload=exec"]}], "tun": true, "modules": ["sch_netem"]}`},
 		{name: "unknown field", in: `{"rows": [], "row": []}`, wantErr: "unknown field"},
 		{name: "no rows", in: `{"tun": true}`, wantErr: "no rows"},
 		{name: "sets bins", in: `{"rows": [{"id": "a", "group": "a"}], "bins": [{"name": "perfrig", "sha256": "x"}]}`, wantErr: "the module sets them"},
@@ -174,7 +174,7 @@ func TestUntar(t *testing.T) {
 		entries map[string]string
 		wantErr bool
 	}{
-		{name: "results", entries: map[string]string{"results/": "", "results/gate/gate.json": "{}", "logs/gate.log": "log"}},
+		{name: "results", entries: map[string]string{"results/": "", "results/floor/netstack-psp-relay.json": "{}", "logs/netstack-psp-relay.log": "log"}},
 		{name: "parent path", entries: map[string]string{"../x": "x"}, wantErr: true},
 		{name: "absolute path", entries: map[string]string{"/etc/x": "x"}, wantErr: true},
 	}

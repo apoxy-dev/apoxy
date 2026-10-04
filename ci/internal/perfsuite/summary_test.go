@@ -5,26 +5,26 @@ import (
 	"testing"
 )
 
-func TestGateExit(t *testing.T) {
+func TestFloorExit(t *testing.T) {
 	cases := []struct {
-		name string
-		rep  Report
-		gate Compare
-		want int
+		name  string
+		rep   Report
+		floor Compare
+		want  int
 	}{
-		{name: "pass", gate: Compare{Ran: true, Code: 0}, want: 0},
-		{name: "regression", gate: Compare{Ran: true, Code: 1}, want: 1},
-		{name: "result infra error", gate: Compare{Ran: true, Code: 3}, want: 3},
-		{name: "other code", gate: Compare{Ran: true, Code: 2}, want: 1},
-		{name: "no gate result", gate: Compare{}, want: 1},
-		{name: "no gated row selected", gate: Compare{Unselected: true}, want: 0},
-		{name: "infra error with no gated row selected", rep: Report{InfraError: "no capacity"}, gate: Compare{Unselected: true}, want: 3},
-		{name: "agent infra error", rep: Report{InfraError: "no capacity"}, gate: Compare{Ran: true}, want: 3},
+		{name: "pass", floor: Compare{Ran: true, Code: 0}, want: 0},
+		{name: "regression", floor: Compare{Ran: true, Code: 1}, want: 1},
+		{name: "result infra error", floor: Compare{Ran: true, Code: 3}, want: 3},
+		{name: "other code", floor: Compare{Ran: true, Code: 2}, want: 1},
+		{name: "no floor result", floor: Compare{}, want: 1},
+		{name: "no floor row selected", floor: Compare{Unselected: true}, want: 0},
+		{name: "infra error with no floor row selected", rep: Report{InfraError: "no capacity"}, floor: Compare{Unselected: true}, want: 3},
+		{name: "agent infra error", rep: Report{InfraError: "no capacity"}, floor: Compare{Ran: true}, want: 3},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := GateExit(tc.rep, tc.gate); got != tc.want {
-				t.Fatalf("GateExit = %d, want %d", got, tc.want)
+			if got := FloorExit(tc.rep, tc.floor); got != tc.want {
+				t.Fatalf("FloorExit = %d, want %d", got, tc.want)
 			}
 		})
 	}
@@ -32,7 +32,7 @@ func TestGateExit(t *testing.T) {
 
 func TestSummary(t *testing.T) {
 	rep := Report{Rows: []RowResult{
-		{ID: "gate", Group: "gate", ExitCode: 0},
+		{ID: "netstack-psp-relay", Group: "floor", ExitCode: 0},
 		{ID: "tun-psp-relay-cubic", Group: "info", ExitCode: 3},
 		{ID: "late", Group: "info", ExitCode: -1, Error: "not run: context deadline exceeded"},
 	}}
@@ -49,32 +49,32 @@ func TestSummary(t *testing.T) {
 			name: "results",
 			rep:  rep,
 			compares: []Compare{
-				{Group: "gate", Ran: true, Markdown: "### perfrig results\n\n| PASS | gate |\n"},
+				{Group: "floor", Ran: true, Markdown: "### perfrig results\n\n| PASS | floor |\n"},
 				{Group: "info", Ran: true, Markdown: "### perfrig results\n\n| NO BASELINE | info |\n"},
 			},
 			want: []string{
-				"## VPC gate", "kernel 6.14.0-1012-aws", "| PASS | gate |", "### Rows: info", "These rows do not gate.",
+				"## VPC perf", "kernel 6.14.0-1012-aws", "| PASS | floor |", "### Rows: info", "These rows have no floor.",
 				"- tun-psp-relay-cubic: perfrig exit 3, see logs/tun-psp-relay-cubic.log",
 				"- late: not run: context deadline exceeded (exit -1)",
 			},
-			notWant: []string{"Infra error", "- gate:"},
+			notWant: []string{"Infra error", "- netstack-psp-relay:"},
 		},
 		{
 			name:     "infra",
 			rep:      Report{InfraError: "the instance is terminated and perfagent put no agent.json"},
-			compares: []Compare{{Group: "gate"}, {Group: "info"}},
+			compares: []Compare{{Group: "floor"}, {Group: "info"}},
 			console:  "boot\ncloud-init: failed\n",
-			want:     []string{"**Infra error:** the instance is terminated", "cloud-init: failed", "No gate result.", "No info results."},
+			want:     []string{"**Infra error:** the instance is terminated", "cloud-init: failed", "No floor result.", "No info results."},
 		},
 		{
-			name: "no gated row selected",
+			name: "no floor row selected",
 			rep:  Report{Rows: []RowResult{{ID: "netstack-psp-relay-cubic", Group: "info"}}},
 			compares: []Compare{
-				{Group: "gate", Unselected: true},
+				{Group: "floor", Unselected: true},
 				{Group: "info", Ran: true, Markdown: "### perfrig results\n\n| NO BASELINE | info |\n"},
 			},
-			want:    []string{"No gated row ran: the selected rows do not gate.", "| NO BASELINE | info |"},
-			notWant: []string{"No gate result."},
+			want:    []string{"No floor row ran: the selected rows have no floor.", "| NO BASELINE | info |"},
+			notWant: []string{"No floor result."},
 		},
 	}
 	for _, tc := range cases {
@@ -107,25 +107,25 @@ func TestSlackText(t *testing.T) {
 		Runs: []Run{{Throughput: Throughput{Gbps: 2}}, {Throughput: Throughput{Gbps: 2.2}}},
 	}
 	cases := []struct {
-		name     string
-		gateExit int
-		rep      Report
-		gate     []Result
-		want     string
+		name      string
+		floorExit int
+		rep       Report
+		floor     []Result
+		want      string
 	}{
 		{
-			name: "fail", gateExit: 1, gate: []Result{fail},
-			want: "VPC gate FAIL on apoxy@abc1234: vpc-netstack-psp-relay median 2.1 Gbps, runs 2 2.2, retried; " +
+			name: "fail", floorExit: 1, floor: []Result{fail},
+			want: "VPC perf FAIL on apoxy@abc1234: vpc-netstack-psp-relay median 2.1 Gbps, runs 2 2.2, retried; " +
 				"vpc-netstack-psp-relay gbps 2.1000 (baseline 2.5000, -16.0%). <https://run|Run>",
 		},
-		{name: "agent infra", gateExit: 3, rep: Report{InfraError: "no subnet has capacity."}, want: "VPC gate INFRA on apoxy@abc1234: no subnet has capacity. <https://run|Run>"},
-		{name: "result infra", gateExit: 3, gate: []Result{{InfraError: "steal 9%"}}, want: "VPC gate INFRA on apoxy@abc1234: steal 9%. <https://run|Run>"},
-		{name: "no result", gateExit: 1, want: "VPC gate ERROR on apoxy@abc1234: no gate result. <https://run|Run>"},
-		{name: "later step", gateExit: 0, gate: []Result{fail}, want: "VPC gate ERROR on apoxy@abc1234: the gate passed, but a later step failed. <https://run|Run>"},
+		{name: "agent infra", floorExit: 3, rep: Report{InfraError: "no subnet has capacity."}, want: "VPC perf INFRA on apoxy@abc1234: no subnet has capacity. <https://run|Run>"},
+		{name: "result infra", floorExit: 3, floor: []Result{{InfraError: "steal 9%"}}, want: "VPC perf INFRA on apoxy@abc1234: steal 9%. <https://run|Run>"},
+		{name: "no result", floorExit: 1, want: "VPC perf ERROR on apoxy@abc1234: no floor result. <https://run|Run>"},
+		{name: "later step", floorExit: 0, floor: []Result{fail}, want: "VPC perf ERROR on apoxy@abc1234: the floor check passed, but a later step failed. <https://run|Run>"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := SlackText(VPC, tc.gateExit, tc.rep, tc.gate, compareFail, "apoxy@abc1234", "https://run")
+			got := SlackText(VPC, tc.floorExit, tc.rep, tc.floor, compareFail, "apoxy@abc1234", "https://run")
 			if got != tc.want {
 				t.Fatalf("SlackText =\n%s\nwant\n%s", got, tc.want)
 			}

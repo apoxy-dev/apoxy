@@ -101,7 +101,7 @@ func (n *netstackNet) LinkDrops() int64 {
 	tx := int64(nic.Tx.Packets.Value())
 	queued := int64(n.ns.Endpoint.NumQueued())
 	st := n.b.Stats()
-	got := int64(st.TxPackets + st.TxNoRoute + st.TxDrops + st.TxGateDrops)
+	got := int64(st.TxPackets + st.TxNoRoute + st.TxDrops + st.TxLimitDrops)
 	return int64(nic.TxPacketsDroppedNoBufferSpace.Value()) + max(tx-queued-got, 0)
 }
 

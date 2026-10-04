@@ -260,10 +260,10 @@ func TestPipeFull(t *testing.T) {
 			a, b := newPair(t)
 			offer(t, time.Now(), a, b)
 			r, ep := newRecorder(t)
-			gate := make(chan struct{})
-			r.gate = gate
-			openGate := sync.OnceFunc(func() { close(gate) })
-			defer openGate()
+			hold := make(chan struct{})
+			r.hold = hold
+			release := sync.OnceFunc(func() { close(hold) })
+			defer release()
 			d := useNetstack(t, b, ep, 1, tc.opens)
 			pkts := make([][]byte, total)
 			for i := range pkts {
@@ -298,7 +298,7 @@ func TestPipeFull(t *testing.T) {
 			assert.GreaterOrEqual(t, len(d.pipe.full), cap(d.pipe.full)-1, "sets that wait for the consumer")
 
 			if !tc.close {
-				openGate()
+				release()
 				<-loop
 				require.Eventually(t, func() bool { return b.b.Stats().RxPackets == total },
 					5*time.Second, time.Millisecond, "%d of %d packets", r.count(), total)
@@ -321,7 +321,7 @@ func TestPipeFull(t *testing.T) {
 			}
 			<-loop
 			assert.Empty(t, d.pipe.full, "sets that wait for the consumer")
-			openGate()
+			release()
 			n := uint64(reads.Load())
 			require.Eventually(t, func() bool {
 				st := b.b.Stats()

@@ -792,7 +792,7 @@ func measure(ctx context.Context, o options, s *side, peer netip.Addr, srv, rela
 		// are the base of the retransmit percent.
 		client[i] = mark{
 			Nanos: at[i].Nanoseconds(), CPU: bench.CPUSeconds(), Segments: st.TxPackets, Retrans: retrans,
-			Drops: st.TxDrops + st.TxGateDrops, LinkDrops: s.net.LinkDrops(),
+			Drops: st.TxDrops + st.TxLimitDrops, LinkDrops: s.net.LinkDrops(),
 		}
 		var err error
 		if server[i], err = srv.mark(); err != nil {

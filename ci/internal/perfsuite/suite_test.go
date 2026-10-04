@@ -46,13 +46,13 @@ func TestPlan(t *testing.T) {
 		},
 		{
 			name: "vpc on a host", suite: VPC, opts: Options{Duration: "30s", Reps: 3, MinCPUs: 16, Host: true},
-			wantIDs: []string{"gate", "netstack-quic-relay", "tun-psp-relay-cubic", "netstack-psp-relay-loss0.1",
+			wantIDs: []string{"netstack-psp-relay", "netstack-quic-relay", "tun-psp-relay-cubic", "netstack-psp-relay-loss0.1",
 				"netstack-psp-direct", "netstack-psp-relay-cubic", "netstack-psp-relay-rate1000mbit"},
 			wantHost: true, wantTun: true,
 		},
 		{
-			name: "vpc rows", suite: VPC, opts: Options{Duration: "10s", Only: []string{"netstack-psp-direct", "gate"}},
-			wantIDs: []string{"netstack-psp-direct", "gate"}, wantTun: true,
+			name: "vpc rows", suite: VPC, opts: Options{Duration: "10s", Only: []string{"netstack-psp-direct", "netstack-psp-relay"}},
+			wantIDs: []string{"netstack-psp-direct", "netstack-psp-relay"}, wantTun: true,
 		},
 		{
 			name: "empty row ID", suite: Netns, opts: Options{Duration: "10s", Only: []string{""}},
@@ -99,7 +99,7 @@ func TestVPCRowArgs(t *testing.T) {
 		notWant   []string
 	}{
 		{
-			id: "gate", wantGroup: "gate",
+			id: "netstack-psp-relay", wantGroup: "floor",
 			want: []string{
 				"-name=vpc-netstack-psp-relay", "-reps=3", "-baseline=baseline.json", "-min-cpus=16", "-duration=30s",
 				`-sidecar-argv=["vpcbench","relay","-listen","$SERVER_IP:4443"]`,
@@ -155,7 +155,7 @@ func TestVPCProfileArgs(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			r := rowByID(t, parsePlan(t, VPC, Options{Duration: "30s", Reps: 3, MinCPUs: 16, Profile: tc.profile}), "gate")
+			r := rowByID(t, parsePlan(t, VPC, Options{Duration: "30s", Reps: 3, MinCPUs: 16, Profile: tc.profile}), "netstack-psp-relay")
 			for _, w := range tc.want {
 				if !slices.Contains(r.Args, w) {
 					t.Errorf("args have no %s:\n%s", w, strings.Join(r.Args, "\n"))
@@ -169,34 +169,34 @@ func TestVPCProfileArgs(t *testing.T) {
 }
 
 func TestGroups(t *testing.T) {
-	if got := VPC.Groups(); !slices.Equal(got, []string{"gate", "info"}) {
+	if got := VPC.Groups(); !slices.Equal(got, []string{"floor", "info"}) {
 		t.Errorf("VPC groups = %v", got)
 	}
-	if got := Netns.Groups(); !slices.Equal(got, []string{"gate"}) {
+	if got := Netns.Groups(); !slices.Equal(got, []string{"floor"}) {
 		t.Errorf("netns groups = %v", got)
 	}
 }
 
 func TestSelects(t *testing.T) {
 	cases := []struct {
-		name     string
-		suite    Suite
-		only     []string
-		wantGate bool
-		wantInfo bool
+		name      string
+		suite     Suite
+		only      []string
+		wantFloor bool
+		wantInfo  bool
 	}{
-		{name: "all rows", suite: VPC, wantGate: true, wantInfo: true},
-		{name: "empty row ID", suite: VPC, only: []string{""}, wantGate: true, wantInfo: true},
-		{name: "gate only", suite: VPC, only: []string{"gate"}, wantGate: true},
-		{name: "no gated row selected", suite: VPC, only: []string{"netstack-psp-relay-cubic"}, wantInfo: true},
-		{name: "unknown row", suite: VPC, only: []string{"nope"}, wantGate: true, wantInfo: true},
-		{name: "netns", suite: Netns, only: []string{"iperf3-tcp-p1"}, wantGate: true},
+		{name: "all rows", suite: VPC, wantFloor: true, wantInfo: true},
+		{name: "empty row ID", suite: VPC, only: []string{""}, wantFloor: true, wantInfo: true},
+		{name: "floor row only", suite: VPC, only: []string{"netstack-psp-relay"}, wantFloor: true},
+		{name: "no floor row selected", suite: VPC, only: []string{"netstack-psp-relay-cubic"}, wantInfo: true},
+		{name: "unknown row", suite: VPC, only: []string{"nope"}, wantFloor: true, wantInfo: true},
+		{name: "netns", suite: Netns, only: []string{"iperf3-tcp-p1"}, wantFloor: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			o := Options{Duration: "10s", Only: tc.only}
-			if got := tc.suite.Selects(o, "gate"); got != tc.wantGate {
-				t.Errorf("Selects(gate) = %v, want %v", got, tc.wantGate)
+			if got := tc.suite.Selects(o, "floor"); got != tc.wantFloor {
+				t.Errorf("Selects(floor) = %v, want %v", got, tc.wantFloor)
 			}
 			if got := tc.suite.Selects(o, "info"); got != tc.wantInfo {
 				t.Errorf("Selects(info) = %v, want %v", got, tc.wantInfo)

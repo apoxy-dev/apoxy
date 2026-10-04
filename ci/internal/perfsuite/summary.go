@@ -54,18 +54,18 @@ type Compare struct {
 	Markdown string
 }
 
-// GateExit is 0 (pass or no gated row selected), 1 (regression or no gate
+// FloorExit is 0 (pass or no floor row selected), 1 (regression or no floor
 // result) or 3 (infra error).
-func GateExit(rep Report, gate Compare) int {
+func FloorExit(rep Report, floor Compare) int {
 	switch {
 	case rep.InfraError != "":
 		return 3
-	case !gate.Ran && gate.Unselected:
+	case !floor.Ran && floor.Unselected:
 		return 0
-	case !gate.Ran:
+	case !floor.Ran:
 		return 1
-	case gate.Code == 0 || gate.Code == 3:
-		return gate.Code
+	case floor.Code == 0 || floor.Code == 3:
+		return floor.Code
 	default:
 		return 1
 	}
@@ -87,8 +87,8 @@ func Summary(s Suite, rep Report, compares []Compare, console string) string {
 		}
 	}
 	for _, c := range compares {
-		if c.Group != "gate" {
-			fmt.Fprintf(&b, "### Rows: %s\n\nThese rows do not gate.\n\n", c.Group)
+		if c.Group != "floor" {
+			fmt.Fprintf(&b, "### Rows: %s\n\nThese rows have no floor.\n\n", c.Group)
 		}
 		switch {
 		case c.Ran && c.Markdown != "":
@@ -96,10 +96,10 @@ func Summary(s Suite, rep Report, compares []Compare, console string) string {
 			b.WriteString("\n")
 		case c.Ran:
 			fmt.Fprintf(&b, "perfrig compare wrote no table (exit %d): %s\n\n", c.Code, strings.TrimSpace(tail(c.Stderr, 5)))
-		case c.Group == "gate" && c.Unselected:
-			b.WriteString("No gated row ran: the selected rows do not gate.\n\n")
-		case c.Group == "gate":
-			b.WriteString("No gate result. See logs/ in the results.\n\n")
+		case c.Group == "floor" && c.Unselected:
+			b.WriteString("No floor row ran: the selected rows have no floor.\n\n")
+		case c.Group == "floor":
+			b.WriteString("No floor result. See logs/ in the results.\n\n")
 		default:
 			fmt.Fprintf(&b, "No %s results.\n\n", c.Group)
 		}
@@ -138,27 +138,27 @@ type Throughput struct {
 	Gbps float64 `json:"gbps"`
 }
 
-// SlackText returns the line about a failed gate job. at names the commit and
+// SlackText returns the line about a failed perf job. at names the commit and
 // runURL is the link to the workflow run.
-func SlackText(s Suite, gateExit int, rep Report, gate []Result, compareGate, at, runURL string) string {
+func SlackText(s Suite, floorExit int, rep Report, floor []Result, compareFloor, at, runURL string) string {
 	name := s.Title
 	var text string
 	switch {
-	case gateExit == 3:
+	case floorExit == 3:
 		msg := rep.InfraError
-		for _, r := range gate {
+		for _, r := range floor {
 			if msg == "" && r.InfraError != "" {
 				msg = r.InfraError
 			}
 		}
 		text = fmt.Sprintf("%s INFRA on %s: %s.", name, at, strings.TrimSuffix(msg, "."))
-	case len(gate) == 0:
-		text = fmt.Sprintf("%s ERROR on %s: no gate result.", name, at)
-	case gateExit == 0:
-		text = fmt.Sprintf("%s ERROR on %s: the gate passed, but a later step failed.", name, at)
+	case len(floor) == 0:
+		text = fmt.Sprintf("%s ERROR on %s: no floor result.", name, at)
+	case floorExit == 0:
+		text = fmt.Sprintf("%s ERROR on %s: the floor check passed, but a later step failed.", name, at)
 	default:
 		var parts []string
-		for _, r := range gate {
+		for _, r := range floor {
 			runs := make([]string, len(r.Runs))
 			for i, run := range r.Runs {
 				runs[i] = fmt.Sprintf("%g", run.Throughput.Gbps)
@@ -169,7 +169,7 @@ func SlackText(s Suite, gateExit int, rep Report, gate []Result, compareGate, at
 			}
 			parts = append(parts, p)
 		}
-		parts = append(parts, regressions(compareGate)...)
+		parts = append(parts, regressions(compareFloor)...)
 		text = fmt.Sprintf("%s FAIL on %s: %s.", name, at, strings.Join(parts, "; "))
 	}
 	return text + " <" + runURL + "|Run>"

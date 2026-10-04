@@ -13,11 +13,11 @@ import (
 )
 
 // TestBreaker gives the breaker one QUIC report at the end of each interval and
-// checks the gate rate after it.
+// checks the limit after it.
 func TestBreaker(t *testing.T) {
 	type iv struct {
 		pkts, lost uint64 // Packets sent and lost in the interval.
-		bytes      uint64 // Bytes through the gate in the interval.
+		bytes      uint64 // Bytes through the limiter in the interval.
 		wait       time.Duration
 	}
 	lossy := iv{pkts: 1000, lost: 500, bytes: 1_000_000} // 50% loss; 500 kB/s arrive.
@@ -25,7 +25,7 @@ func TestBreaker(t *testing.T) {
 	cases := []struct {
 		name  string
 		ivs   []iv
-		rates []int64 // Gate rate after each interval.
+		rates []int64 // Limit after each interval.
 	}{
 		{"loss below 20% does not trip",
 			[]iv{clean, clean, clean, {pkts: 1000, lost: 199, bytes: 1_000_000}},
@@ -65,7 +65,7 @@ func TestBreaker(t *testing.T) {
 			assert.False(t, changed)
 			for i, x := range tc.ivs {
 				now = now.Add(cmpOr(x.wait, time.Second))
-				br.gate.sent.Add(x.bytes)
+				br.limiter.sent.Add(x.bytes)
 				sent, lost = sent+x.pkts, lost+x.lost
 				before := br.limit()
 				trip, changed := br.addQUIC(now, sent, lost)
@@ -88,11 +88,11 @@ func cmpOr(d, def time.Duration) time.Duration {
 	return d
 }
 
-// TestBreakerExpire opens the gate 30 s after the last trip, also with no reports.
+// TestBreakerExpire removes the limit 30 s after the last trip, also with no reports.
 func TestBreakerExpire(t *testing.T) {
 	var br breaker
 	now := time.Unix(1000, 0)
-	br.gate.rate.Store(250_000)
+	br.limiter.rate.Store(250_000)
 	br.tripped = now
 	_, changed := br.expire(now.Add(breakReset - time.Millisecond))
 	assert.False(t, changed)

@@ -54,7 +54,7 @@ type File struct {
 // Row is one "perfrig run". The agent adds -out, -out-dir and -host-class.
 type Row struct {
 	ID string `json:"id"`
-	// Group is the results subdirectory, for example gate or info.
+	// Group is the results subdirectory, for example floor or info.
 	Group string   `json:"group"`
 	Args  []string `json:"args"`
 }

@@ -28,7 +28,7 @@ import (
 )
 
 // TestICXNetwork_Speed drives real HTTP traffic through the ICX netstack
-// datapath. It is -v-gated. NOTE: single-stream throughput currently collapses
+// datapath. It runs only with -v. NOTE: single-stream throughput currently collapses
 // under a pre-existing l2pc/bifurcate underlay issue (the harness discards
 // bifurcate's non-geneve half, producing a flood of nil-addr reads) — verified
 // to reproduce identically on the pre-extraction code, so it is NOT a regression

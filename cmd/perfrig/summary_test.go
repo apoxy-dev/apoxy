@@ -15,22 +15,22 @@ func TestWriteSummary(t *testing.T) {
 	line, err := os.ReadFile("testdata/vpcbench.json")
 	require.NoError(t, err)
 
-	gate := &Result{Key: "aarch64 vpc-netstack-psp-relay streams=4", Workload: "vpc-netstack-psp-relay", Retried: true,
+	floor := &Result{Key: "aarch64 vpc-netstack-psp-relay streams=4", Workload: "vpc-netstack-psp-relay", Retried: true,
 		Runs: []Run{testRun(1.9, 0.8, 1.1, string(line)), testRun(2.1, 0.8, 1.1, string(line))}}
-	gate.Settings.Streams = 4
-	gate.summarize()
+	floor.Settings.Streams = 4
+	floor.summarize()
 	loss := &Result{Key: "aarch64 vpc-netstack-psp-relay-loss streams=4", Workload: "vpc-netstack-psp-relay-loss",
 		Runs: []Run{testRun(0.8, 0.9, 1.2, "")}}
 	loss.Settings.Streams, loss.Settings.LossPercent, loss.Settings.Rate = 4, 0.1, "1000mbit"
 	loss.summarize()
 	base := Baseline{Tolerance: 0.10, Entries: map[string]BaselineEntry{
-		gate.Key: {Gbps: 2.3, MinGbps: 2.0},
-		"info":   {Gbps: 1, Info: true},
+		floor.Key: {Gbps: 2.3, MinGbps: 2.0},
+		"info":    {Gbps: 1, Info: true},
 	}}
 
 	var buf bytes.Buffer
 	bad := infraResult("aarch64 vpc-tun-psp-relay streams=4", "too much CPU steal: 7.10% in rep 2, -max-steal is 5%")
-	writeSummary(&buf, []outcome{evaluate(base, *gate), evaluate(base, *loss), evaluate(base, bad)})
+	writeSummary(&buf, []outcome{evaluate(base, *floor), evaluate(base, *loss), evaluate(base, bad)})
 	out := buf.String()
 
 	rows := map[string]string{}

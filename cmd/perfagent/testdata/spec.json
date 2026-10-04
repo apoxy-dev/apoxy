@@ -17,7 +17,7 @@
   "tun": true,
   "remove": ["*-cred.json", "vpcbench-ca.pem"],
   "rows": [
-    {"id": "gate", "group": "gate", "args": ["-workload=exec", "-name=vpc-netstack-psp-relay", "-ready=tcp:4433", "-baseline=baseline.json"]},
+    {"id": "netstack-psp-relay", "group": "floor", "args": ["-workload=exec", "-name=vpc-netstack-psp-relay", "-ready=tcp:4433", "-baseline=baseline.json"]},
     {"id": "netstack-psp-direct", "group": "info", "args": ["-workload=exec", "-name=vpc-netstack-psp-direct", "-ready=tcp:4433"]}
   ],
   "upload": {

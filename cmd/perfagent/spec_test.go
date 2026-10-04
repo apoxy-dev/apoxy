@@ -25,7 +25,7 @@ func validSpec() Spec {
 		Sysctls:  map[string]string{"net.core.rmem_max": "134217728"},
 		Modules:  []string{"sch_netem"},
 		Remove:   []string{"*-cred.json", "vpcbench-ca.pem"},
-		Rows:     []Row{{ID: "gate", Group: "gate", Args: []string{"-workload=exec"}}, {ID: "netstack-psp-relay-loss0.1", Group: "info"}},
+		Rows:     []Row{{ID: "netstack-psp-relay", Group: "floor", Args: []string{"-workload=exec"}}, {ID: "netstack-psp-relay-loss0.1", Group: "info"}},
 		Upload:   Upload{Results: "https://b.example/r", Log: "https://b.example/l", Report: "https://b.example/a"},
 	}
 }
@@ -52,7 +52,7 @@ func TestSpecValidate(t *testing.T) {
 		{name: "remove pattern with a slash", edit: func(s *Spec) { s.Remove = []string{"work/*"} }, wantErr: "bad remove pattern"},
 		{name: "bad remove pattern", edit: func(s *Spec) { s.Remove = []string{"["} }, wantErr: "bad remove pattern"},
 		{name: "no rows", edit: func(s *Spec) { s.Rows = nil }, wantErr: "no rows"},
-		{name: "two rows with one id", edit: func(s *Spec) { s.Rows[1].ID = "gate" }, wantErr: "two rows"},
+		{name: "two rows with one id", edit: func(s *Spec) { s.Rows[1].ID = "netstack-psp-relay" }, wantErr: "two rows"},
 		{name: "bad group", edit: func(s *Spec) { s.Rows[0].Group = "" }, wantErr: "bad group"},
 	}
 	for _, tc := range cases {

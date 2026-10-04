@@ -122,7 +122,7 @@ func (a *Agent) traceLoss(context.Context, logging.Perspective, quic.ConnectionI
 	}
 }
 
-// onTrip logs a change of a breaker gate. bp is nil for the data frames.
+// onTrip logs a change of a breaker limit. bp is nil for the data frames.
 func (a *Agent) onTrip(bp *psp.Peer, t psp.Trip) {
 	to := "relay"
 	if bp == nil {

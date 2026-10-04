@@ -163,7 +163,7 @@ func evaluate(b Baseline, r Result) outcome {
 }
 
 // needsRetry reports whether a run of r must run its reps again: one or more
-// checks of a gated entry failed.
+// checks of a floor entry failed.
 func needsRetry(b Baseline, r Result) bool {
 	o := evaluate(b, r)
 	return o.Status == statusFail && len(o.Checks) > 0

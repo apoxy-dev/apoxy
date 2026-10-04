@@ -30,28 +30,28 @@ type SACount struct {
 	Seq     uint32 // Highest accepted sequence number.
 }
 
-// Trip is a change of a breaker gate.
+// Trip is a change of a breaker limit.
 type Trip struct {
-	Rate int64 // Gate rate in bytes per second. Zero means the gate opened.
+	Rate int64 // Limit in bytes per second. Zero means the limit was removed.
 	Loss int   // Loss percent of the last interval.
 }
 
 // breaker trips when the loss to one peer stays high, and then limits the
-// send rate with its gate: half of the rate that arrived, and half again at
-// each new trip. The send path reads only the gate.
+// send rate with its limiter: half of the rate that arrived, and half again at
+// each new trip. The send path reads only the limiter.
 type breaker struct {
-	gate gate
+	limiter limiter
 
 	mu       sync.Mutex
 	sas      map[uint32]SACount // Last counters of each SA, from the reports.
 	quicSent uint64             // Counters at the last QUIC report.
 	quicLost uint64
 	start    time.Time // Start of the interval. Zero before the first report.
-	sent     uint64    // gate.sent at start.
+	sent     uint64    // limiter.sent at start.
 	expected uint64    // Packets in the interval.
 	lost     int64     // Lost packets in the interval. Late packets subtract.
 	run      int       // Lossy intervals in a row.
-	tripped  time.Time // Last trip. Zero while the gate is open.
+	tripped  time.Time // Last trip. Zero while there is no limit.
 }
 
 // sent returns the number of sequence numbers up to the highest one that
@@ -128,7 +128,7 @@ func (br *breaker) step(now time.Time) (Trip, bool) {
 	}
 	exp := br.expected
 	lost := uint64(min(max(br.lost, 0), int64(exp)))
-	sent := br.gate.sent.Load() - br.sent
+	sent := br.limiter.sent.Load() - br.sent
 	br.begin(now)
 	if exp < breakMinPackets {
 		return br.reset(now)
@@ -142,37 +142,37 @@ func (br *breaker) step(now time.Time) (Trip, bool) {
 		return Trip{}, false
 	}
 	br.run = 0
-	r := br.gate.rate.Load() / 2
+	r := br.limiter.rate.Load() / 2
 	if r == 0 {
 		// Half of the bytes that arrived.
 		r = int64(float64(sent) * float64(exp-lost) / float64(exp) / dt.Seconds() / 2)
 	}
 	r = max(r, breakFloor)
-	br.gate.rate.Store(r)
+	br.limiter.rate.Store(r)
 	br.tripped = now
 	return Trip{Rate: r, Loss: loss}, true
 }
 
 func (br *breaker) begin(now time.Time) {
-	br.start, br.sent, br.expected, br.lost = now, br.gate.sent.Load(), 0, 0
+	br.start, br.sent, br.expected, br.lost = now, br.limiter.sent.Load(), 0, 0
 }
 
-// reset opens the gate breakReset after the last trip. br.mu must be held.
+// reset removes the limit breakReset after the last trip. br.mu must be held.
 func (br *breaker) reset(now time.Time) (Trip, bool) {
 	if br.tripped.IsZero() || now.Sub(br.tripped) < breakReset {
 		return Trip{}, false
 	}
 	br.tripped = time.Time{}
-	br.gate.rate.Store(0)
+	br.limiter.rate.Store(0)
 	return Trip{}, true
 }
 
-// expire opens the gate if no trip came for breakReset, also when no reports come.
+// expire removes the limit if no trip came for breakReset, also when no reports come.
 func (br *breaker) expire(now time.Time) (Trip, bool) {
 	br.mu.Lock()
 	defer br.mu.Unlock()
 	return br.reset(now)
 }
 
-// limit returns the gate rate in bytes per second, or 0 when the gate is open.
-func (br *breaker) limit() int64 { return br.gate.rate.Load() }
+// limit returns the limit in bytes per second, or 0 when there is no limit.
+func (br *breaker) limit() int64 { return br.limiter.rate.Load() }

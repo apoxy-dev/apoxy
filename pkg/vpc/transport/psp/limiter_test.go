@@ -13,7 +13,7 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/peerconn"
 )
 
-func TestGate(t *testing.T) {
+func TestLimiter(t *testing.T) {
 	const ms = int64(time.Millisecond)
 	t0 := int64(time.Second)
 	type step struct {
@@ -26,7 +26,7 @@ func TestGate(t *testing.T) {
 		rate  int64 // Bytes per second.
 		steps []step
 	}{
-		{"open", 0, []step{{1000, t0, true}, {1000, t0, true}, {1000, t0, true}}},
+		{"no limit", 0, []step{{1000, t0, true}, {1000, t0, true}, {1000, t0, true}}},
 		{"a burst passes up to 2 ms of queue, then drops", 1_000_000, []step{
 			{1000, t0, true},
 			{1000, t0, true},
@@ -48,7 +48,7 @@ func TestGate(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			var g gate
+			var g limiter
 			g.rate.Store(tc.rate)
 			var sent uint64
 			for i, s := range tc.steps {
@@ -63,9 +63,9 @@ func TestGate(t *testing.T) {
 	}
 }
 
-// TestGateDatapath checks that a closed gate drops the excess of a burst in
+// TestLimiterDatapath checks that a limiter with a rate drops the excess of a burst in
 // VirtToPhy and in Send, and that the packets that pass arrive.
-func TestGateDatapath(t *testing.T) {
+func TestLimiterDatapath(t *testing.T) {
 	cases := []struct {
 		name string
 		quic bool
@@ -82,14 +82,14 @@ func TestGateDatapath(t *testing.T) {
 			offer(t, time.Now(), a, b)
 			got := &capture{}
 			b.b.drv.Store(newDriver(b.b, got.deliver))
-			g := &a.peer.br.gate
+			g := &a.peer.br.limiter
 			if tc.quic {
 				qa, qb := quicPair(t, a.tr, b.tr)
 				pa, pb := peerconn.New(qa, a.v4), peerconn.New(qb, b.v4)
 				t.Cleanup(func() { _ = pa.Close(); _ = pb.Close() })
 				pb.HandleData(b.b.HandleData)
 				a.b.UseQUIC(pa)
-				g = &a.b.quic.gate
+				g = &a.b.quic.limiter
 			}
 			// 10 ms for each packet: the first packet of the burst passes, and the
 			// next one only after 8 ms.
@@ -116,7 +116,7 @@ func TestGateDatapath(t *testing.T) {
 			}
 			require.GreaterOrEqual(t, sent, 1)
 			require.LessOrEqual(t, sent, 2)
-			want := Stats{TxPackets: uint64(sent), TxGateDrops: uint64(len(pkts) - sent)}
+			want := Stats{TxPackets: uint64(sent), TxLimitDrops: uint64(len(pkts) - sent)}
 			assert.Equal(t, want, sub(a.b.Stats(), before))
 			if tc.quic {
 				assert.Equal(t, uint64(sent), a.b.stats.txFrames.Load()-frames)
@@ -130,11 +130,11 @@ func TestGateDatapath(t *testing.T) {
 	}
 }
 
-// BenchmarkGate measures admit at an open gate and at a closed gate.
-func BenchmarkGate(b *testing.B) {
+// BenchmarkLimiter measures admit with no limit and with a limit.
+func BenchmarkLimiter(b *testing.B) {
 	for _, rate := range []int64{0, 1 << 30} {
-		b.Run(map[bool]string{true: "open", false: "closed"}[rate == 0], func(b *testing.B) {
-			var g gate
+		b.Run(map[bool]string{true: "no limit", false: "limit"}[rate == 0], func(b *testing.B) {
+			var g limiter
 			g.rate.Store(rate)
 			b.ReportAllocs()
 			for b.Loop() {
