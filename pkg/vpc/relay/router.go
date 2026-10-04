@@ -100,6 +100,7 @@ type Router struct {
 	cfg    Config
 	trust  Trust
 	drops  [numDropReasons]atomic.Uint64
+	early  earlyList
 	bridge atomic.Pointer[bridge]
 
 	mu       sync.RWMutex
@@ -261,6 +262,7 @@ func (r *Router) AddSession(conn *rpc.Conn) (*Session, error) {
 		return nil, err
 	}
 	r.addSession(s, now)
+	r.answerEarly(s)
 	context.AfterFunc(qc.Context(), func() { r.removeSession(s) })
 	return s, nil
 }
