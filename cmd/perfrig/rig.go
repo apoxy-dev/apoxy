@@ -147,18 +147,26 @@ func (r *rig) links() [][]string {
 	return steps
 }
 
-// tuneRelay makes the relay link like a NIC link. The relay netns forwards, so
-// that XDP can send packets on. The bridge port sends single packets with a
-// checksum, as a wire does, and the relay link segments the UDP GSO packets of
-// the relay.
+// tuneRelay makes the links of the relay rig like NIC links. The relay netns
+// forwards, so that XDP can send packets on. The bridge port of the relay sends
+// single packets with a checksum, as a wire does, and the relay link segments
+// the UDP GSO packets of the relay. Each end receives with GRO, as a NIC does.
 func (r *rig) tuneRelay(ctx context.Context) error {
 	if err := writeIn(ctx, r.relay, "/proc/sys/net/ipv4/ip_forward", "1"); err != nil {
 		return err
 	}
-	for _, s := range [][]string{
+	steps := [][]string{
 		{"ip", "netns", "exec", r.bridge, "ethtool", "-K", relayDev, "tx", "off"},
 		{"ip", "netns", "exec", r.relay, "ethtool", "-K", relayDev, "tx-udp-segmentation", "off"},
-	} {
+		{"ip", "netns", "exec", r.relay, "ethtool", "-K", relayDev, "gro", "on"},
+	}
+	// A veth receives forwarded packets with GRO only when its peer has TSO off.
+	for _, e := range []struct{ ns, dev string }{{r.client, clientDev}, {r.server, serverDev}} {
+		steps = append(steps,
+			[]string{"ip", "netns", "exec", r.bridge, "ethtool", "-K", e.dev, "tso", "off"},
+			[]string{"ip", "netns", "exec", e.ns, "ethtool", "-K", e.dev, "gro", "on"})
+	}
+	for _, s := range steps {
 		if _, err := command(ctx, s...); err != nil {
 			return err
 		}
