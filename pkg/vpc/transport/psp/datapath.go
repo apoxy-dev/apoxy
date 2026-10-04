@@ -73,6 +73,7 @@ func newDriver(b *Binding, deliver func([]byte, int) bool) *driver {
 
 var (
 	_ vtep.EngineXfrm   = (*driver)(nil)
+	_ netstack.Sealer   = (*driver)(nil)
 	_ netstack.Underlay = (*driver)(nil)
 	_ tun.Underlay      = (*driver)(nil)
 )
@@ -223,10 +224,40 @@ func (t *tunBatch) flush() {
 // VirtToPhy makes the send frame of an inner packet for the peer that routes its destination:
 // a PSP packet, or a QUIC data frame after UseQUIC. It can lower the MSS of a TCP SYN in virt.
 func (d *driver) VirtToPhy(virt, phy []byte) (int, bool) {
+	n, err := d.b.frame(virt, phy)
+	if err != nil {
+		d.countTx(virt, err)
+	}
+	return n, false
+}
+
+// Overhead returns the bytes that a send frame adds to the inner packet.
+func (d *driver) Overhead() int { return addrLen + pspwire.Overhead }
+
+// Prepare reserves the send frame of an inner packet: the transmit SA and its next sequence
+// number, and the address of the peer that routes the destination. The send pump calls it in
+// send order, so that the peer gets the sequence numbers in order.
+func (d *driver) Prepare(virt []byte, f *netstack.TxFrame) bool {
+	err := d.b.prepare(virt, f)
+	if err != nil {
+		d.countTx(virt, err)
+	}
+	return err == nil
+}
+
+// Seal writes the send frame that Prepare reserved to phy. Many goroutines can call it at once.
+func (d *driver) Seal(f *netstack.TxFrame, virt, phy []byte) int {
+	n, err := d.b.seal(f, virt, phy)
+	if err != nil {
+		d.b.stats.txDrops.Add(1)
+	}
+	return n
+}
+
+// countTx counts a send frame of virt that failed with err.
+func (d *driver) countTx(virt []byte, err error) {
 	b := d.b
-	n, err := b.frame(virt, phy)
 	switch err {
-	case nil:
 	case ErrNoRoute:
 		b.stats.txNoRoute.Add(1)
 		if b.noRoute != nil {
@@ -237,44 +268,70 @@ func (d *driver) VirtToPhy(virt, phy []byte) (int, bool) {
 	default:
 		b.stats.txDrops.Add(1)
 	}
-	return n, false
 }
 
 // frame writes the send frame of the inner packet virt to phy and returns its length.
 // The limiter of a tripped breaker can drop the packet with errLimit.
 func (b *Binding) frame(virt, phy []byte) (int, error) {
+	var f netstack.TxFrame
+	if err := b.prepare(virt, &f); err != nil {
+		return 0, err
+	}
+	return b.seal(&f, virt, phy)
+}
+
+// prepare reserves the send frame of virt in f: the transmit SA with its next sequence
+// number and the address of the peer, or no SA for a QUIC data frame after UseQUIC.
+func (b *Binding) prepare(virt []byte, f *netstack.TxFrame) error {
 	dst, ok := innerDst(virt)
-	if !ok || len(virt) > b.mtu || len(phy) < addrLen+pspwire.Overhead+len(virt) {
-		return 0, errDrop
+	if !ok || len(virt) > b.mtu {
+		return errDrop
 	}
 	p, ok := b.routes.Lookup(dst)
 	if !ok {
-		return 0, ErrNoRoute
+		return ErrNoRoute
 	}
-	quic := b.relay.Load() != nil
-	b.clampMSS(virt, quic)
-	if quic {
+	if b.relay.Load() != nil {
 		if !b.quic.limiter.admit(len(virt)) {
-			return 0, errLimit
+			return errLimit
 		}
-		clear(phy[:addrLen])
-		return addrLen + len(peerconn.EncodeData(phy[addrLen:addrLen], b.vni, virt)), nil
+		*f = netstack.TxFrame{}
+		return nil
 	}
 	sa := p.txSA(virt)
 	if sa == nil {
-		return 0, ErrNoRoute
+		return ErrNoRoute
 	}
 	if !p.br.limiter.admit(len(virt)) {
-		return 0, errLimit
+		return errLimit
 	}
-	n, err := sa.Seal(phy[addrLen:], virt)
+	seq, err := sa.Reserve()
+	if err != nil {
+		return err
+	}
+	*f = netstack.TxFrame{SA: sa, Seq: seq, Dst: *p.addr.Load()}
+	return nil
+}
+
+// seal writes the send frame that prepare reserved in f to phy and returns its length. It
+// can lower the MSS of a TCP SYN in virt.
+func (b *Binding) seal(f *netstack.TxFrame, virt, phy []byte) (int, error) {
+	if len(phy) < addrLen+pspwire.Overhead+len(virt) {
+		return 0, errDrop
+	}
+	quic := f.SA == nil
+	b.clampMSS(virt, quic)
+	if quic {
+		clear(phy[:addrLen])
+		return addrLen + len(peerconn.EncodeData(phy[addrLen:addrLen], b.vni, virt)), nil
+	}
+	n, err := f.SA.SealSeq(f.Seq, phy[addrLen:], virt)
 	if err != nil {
 		return 0, err
 	}
-	a := p.addr.Load()
-	ip := a.Addr().As16()
+	ip := f.Dst.Addr().As16()
 	copy(phy, ip[:])
-	binary.BigEndian.PutUint16(phy[16:addrLen], a.Port())
+	binary.BigEndian.PutUint16(phy[16:addrLen], f.Dst.Port())
 	return addrLen + n, nil
 }
 
