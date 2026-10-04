@@ -64,6 +64,35 @@ func TestCPUMask(t *testing.T) {
 	}
 }
 
+func TestCPUListMask(t *testing.T) {
+	cases := []struct {
+		list    string
+		want    string
+		wantErr bool
+	}{
+		{list: "0", want: "1"},
+		{list: "0-3", want: "f"},
+		{list: "0-15", want: "ffff"},
+		{list: "16-31", want: "ffff0000"},
+		{list: "0-15,20", want: "10ffff"},
+		{list: "32,0", want: "1,1"},
+		{list: "", wantErr: true},
+		{list: "3-1", wantErr: true},
+		{list: "a", wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.list, func(t *testing.T) {
+			got, err := cpuListMask(tc.list)
+			if tc.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			assert.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
 func TestNetemMissing(t *testing.T) {
 	cases := []struct {
 		out  string

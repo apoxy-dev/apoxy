@@ -16,7 +16,8 @@ import (
 type mark struct {
 	Nanos int64   `json:"nanos"` // Time since the side started.
 	CPU   float64 `json:"cpu_s"`
-	// TCP segments sent (client) and retransmitted (client and server).
+	// Packets that the client sent, and TCP segments retransmitted (client and
+	// server). With GSO, a retransmit is one packet of up to one MSS.
 	Segments uint64 `json:"segments,omitempty"`
 	Retrans  uint64 `json:"retrans,omitempty"`
 	// Server: bytes that the sink got, and PSP packets that the binding got.
@@ -50,7 +51,8 @@ type result struct {
 	BitsPerSecond    float64 `json:"bits_per_second"`
 	PacketsPerSecond float64 `json:"packets_per_second"`
 	Retransmits      uint64  `json:"retransmits"`
-	// RetransPercent is the part of the TCP segments of the client that are retransmissions.
+	// RetransPercent is the part of the packets that the client sent that are
+	// retransmissions.
 	RetransPercent float64 `json:"retrans_percent"`
 	// ServerRetransmits are the TCP retransmits of the server, which sends ACKs.
 	ServerRetransmits uint64 `json:"server_retransmits"`

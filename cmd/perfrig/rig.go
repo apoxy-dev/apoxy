@@ -88,9 +88,18 @@ func (r *rig) setup(ctx context.Context) error {
 	return nil
 }
 
-// setRPS lets all CPUs receive on the veths, one CPU per flow. Without RPS, netem on a veth reorders packets.
+// setRPS lets the RPS CPUs, by default all CPUs, receive on the veths, one CPU
+// per flow. Without RPS, netem on a veth reorders packets.
 func (r *rig) setRPS(ctx context.Context) {
 	mask := cpuMask(runtime.NumCPU())
+	if r.cfg.RPSCPUs != "" {
+		m, err := cpuListMask(r.cfg.RPSCPUs)
+		if err != nil {
+			slog.Warn("Bad RPS CPU list", "list", r.cfg.RPSCPUs, "error", err)
+		} else {
+			mask = m
+		}
+	}
 	for _, e := range []struct{ ns, dev string }{{r.client, clientDev}, {r.server, serverDev}} {
 		if err := writeIn(ctx, e.ns, "/sys/class/net/"+e.dev+"/queues/rx-*/rps_cpus", mask); err != nil {
 			slog.Warn("Failed to set RPS on the veth", "netns", e.ns, "dev", e.dev, "error", err)
@@ -105,6 +114,38 @@ func cpuMask(n int) string {
 		groups = append([]string{strconv.FormatUint(1<<min(n, 32)-1, 16)}, groups...)
 	}
 	return strings.Join(groups, ",")
+}
+
+// cpuListMask returns the rps_cpus mask of a CPU list such as "0-15,20".
+func cpuListMask(list string) (string, error) {
+	var bits []uint32
+	set := func(n int) {
+		for n/32 >= len(bits) {
+			bits = append(bits, 0)
+		}
+		bits[n/32] |= 1 << (n % 32)
+	}
+	for _, part := range strings.Split(list, ",") {
+		lo, hi, ok := strings.Cut(strings.TrimSpace(part), "-")
+		a, err := strconv.Atoi(lo)
+		if err != nil || a < 0 {
+			return "", fmt.Errorf("bad CPU %q", part)
+		}
+		b := a
+		if ok {
+			if b, err = strconv.Atoi(hi); err != nil || b < a {
+				return "", fmt.Errorf("bad CPU range %q", part)
+			}
+		}
+		for n := a; n <= b; n++ {
+			set(n)
+		}
+	}
+	groups := make([]string, 0, len(bits))
+	for i := len(bits) - 1; i >= 0; i-- {
+		groups = append(groups, strconv.FormatUint(uint64(bits[i]), 16))
+	}
+	return strings.Join(groups, ","), nil
 }
 
 // teardown deletes both netns. This also deletes the veth pair.

@@ -786,10 +786,12 @@ func measure(ctx context.Context, o options, s *side, peer netip.Addr, srv, rela
 	takeMarks := func(i int) error {
 		wall[i] = time.Now()
 		at[i] = wall[i].Sub(start)
-		sent, retrans := s.net.TCPCounters()
+		_, retrans := s.net.TCPCounters()
 		st := s.b.Stats()
+		// With GSO, the TCP segments sent are not packets, so the packets of the binding
+		// are the base of the retransmit percent.
 		client[i] = mark{
-			Nanos: at[i].Nanoseconds(), CPU: bench.CPUSeconds(), Segments: sent, Retrans: retrans,
+			Nanos: at[i].Nanoseconds(), CPU: bench.CPUSeconds(), Segments: st.TxPackets, Retrans: retrans,
 			Drops: st.TxDrops + st.TxGateDrops, LinkDrops: s.net.LinkDrops(),
 		}
 		var err error

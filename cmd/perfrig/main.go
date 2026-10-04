@@ -92,6 +92,8 @@ func runCmd(ctx context.Context, args []string) error {
 	fs.StringVar(&cfg.NetnsPrefix, "netns-prefix", "perf", "prefix of the netns names")
 	fs.StringVar(&cfg.HostClass, "host-class", "", "first word of the result key, for example the EC2 instance type (default: the arch)")
 	fs.StringVar(&cfg.OutDir, "out-dir", "", "keep the workload files and raw output in this directory")
+	fs.StringVar(&cfg.AppCPUs, "app-cpus", "", "pin the workload processes to this CPU list, for example 16-31 (empty: no pin)")
+	fs.StringVar(&cfg.RPSCPUs, "rps-cpus", "", "CPU list that receives on the veths, for example 0-15 (empty: all CPUs)")
 	out := fs.String("out", "", "write the result JSON to this file (default: stdout)")
 	fs.StringVar(&cfg.Name, "name", "", "exec workload: result name")
 	fs.Var((*argvFlag)(&cfg.ServerArgv), "server-argv", `exec workload: JSON argv in the server netns, for example '["iperf3","-s"]'; $NAME and ${NAME} expand from the workload variables`)

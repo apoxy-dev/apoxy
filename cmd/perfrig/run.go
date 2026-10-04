@@ -38,6 +38,10 @@ type config struct {
 	NetnsPrefix string
 	HostClass   string
 	OutDir      string
+	// AppCPUs pins the workload processes to these CPUs (taskset -c). Empty: no pin.
+	AppCPUs string
+	// RPSCPUs are the CPUs that receive on the veths. Empty: all CPUs.
+	RPSCPUs string
 
 	// Exec workload flags.
 	Name        string
@@ -196,15 +200,19 @@ func runRep(ctx context.Context, cfg config, w Workload, r *rig, env Env, rep in
 	}
 	run := Run{Rep: rep, StartedAt: time.Now().UTC(), Load1Start: load1()}
 	var side sideProcs
+	var prefix []string
+	if cfg.AppCPUs != "" {
+		prefix = []string{"taskset", "-c", cfg.AppCPUs}
+	}
 	if w.Sidecar != nil {
-		sidecar, err := startProc("sidecar", r.server, w.Sidecar(env), env.vars())
+		sidecar, err := startProc("sidecar", r.server, w.Sidecar(env), env.vars(), prefix)
 		if err != nil {
 			return Run{}, err
 		}
 		defer sidecar.stop()
 		side = append(side, sidecar)
 	}
-	server, err := startProc("server", r.server, w.Server(env), env.vars())
+	server, err := startProc("server", r.server, w.Server(env), env.vars(), prefix)
 	if err != nil {
 		return Run{}, err
 	}
@@ -217,7 +225,7 @@ func runRep(ctx context.Context, cfg config, w Workload, r *rig, env Env, rep in
 	hostBefore, hostErr := readCPUTimes()
 	su0, ss0, serverErr := side.cpuNow()
 	start := time.Now()
-	client, err := startProc("client", r.client, w.Client(env), env.vars())
+	client, err := startProc("client", r.client, w.Client(env), env.vars(), prefix)
 	if err != nil {
 		return Run{}, err
 	}
@@ -317,9 +325,10 @@ type proc struct {
 	err  error
 }
 
-func startProc(name, ns string, argv, env []string) (*proc, error) {
+func startProc(name, ns string, argv, env, prefix []string) (*proc, error) {
 	p := &proc{name: name, done: make(chan struct{})}
-	p.cmd = exec.Command("ip", append([]string{"netns", "exec", ns}, argv...)...)
+	full := append(append(append([]string{}, prefix...), "ip", "netns", "exec", ns), argv...)
+	p.cmd = exec.Command(full[0], full[1:]...)
 	p.cmd.Env = append(os.Environ(), env...)
 	p.cmd.Stdout = &p.out
 	p.cmd.Stderr = os.Stderr
