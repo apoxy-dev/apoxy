@@ -35,7 +35,7 @@ func (r *Router) PacketHandler(ctx context.Context, tr *quic.Transport) (handle 
 	return func(b []byte, from net.Addr) {
 		h, err := pspwire.ParseHeader(b)
 		if err != nil {
-			if !r.answerProbe(tr, b, from) {
+			if !r.Keepalive(b, addrPort(from)) && !r.answerProbe(tr, b, from) {
 				r.drops[dropMalformed].Add(1)
 			}
 			return

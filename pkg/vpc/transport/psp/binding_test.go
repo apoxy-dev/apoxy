@@ -463,6 +463,59 @@ func TestOpenLanes(t *testing.T) {
 	}
 }
 
+// TestReadLanes reads PSP packets on the lane sockets, and sends a keepalive from
+// each lane socket.
+func TestReadLanes(t *testing.T) {
+	a, b := newPair(t)
+	offer(t, time.Now(), a, b)
+	r, ep := newRecorder(t)
+	useNetstack(t, a, ep, 1, noPipe)
+	ports := a.b.OpenLanes(4)
+	require.Len(t, ports, 3)
+	require.NoError(t, a.b.ReadLanes())
+	readers := a.b.readers
+	require.NoError(t, a.b.ReadLanes())
+	assert.Equal(t, readers, a.b.readers, "a second call starts no read loops")
+
+	f := seal(b, packet(b.v4, a.v4, 17, 1, 2, 100))
+	require.NotNil(t, f)
+	for i, p := range ports {
+		dst := net.UDPAddrFromAddrPort(netip.AddrPortFrom(addrOf(a.tr).Addr(), p))
+		for range i + 1 {
+			_, err := b.tr.WriteTo(f[addrLen:], dst)
+			require.NoError(t, err)
+		}
+	}
+	// The replay window drops the copies.
+	require.Eventually(t, func() bool { return a.b.Stats().RxPackets+a.b.Stats().RxDrops == 6 },
+		5*time.Second, time.Millisecond)
+	assert.Equal(t, []uint64{0, 1, 2, 3}, a.b.RxLanePackets())
+	assert.Eventually(t, func() bool { return r.count() == 1 }, 5*time.Second, time.Millisecond)
+
+	ka := newTransport(t, nil)
+	got := make(chan netip.AddrPort, 3)
+	ka.NonQUICPacketHandler = func(pkt []byte, from net.Addr) {
+		if assert.Equal(t, []byte{p2p.TypeKeepalive}, pkt) {
+			got <- from.(*net.UDPAddr).AddrPort()
+		}
+	}
+	require.NoError(t, ka.Start())
+	a.b.KeepLanes(addrOf(ka))
+	var from []uint16
+	for range ports {
+		select {
+		case p := <-got:
+			from = append(from, p.Port())
+		case <-time.After(5 * time.Second):
+			t.Fatalf("keepalives from %v of %v", from, ports)
+		}
+	}
+	assert.ElementsMatch(t, ports, from)
+
+	require.NoError(t, a.b.Close())
+	assert.ErrorIs(t, a.b.ReadLanes(), ErrClosed)
+}
+
 func TestSendLane(t *testing.T) {
 	cases := []struct {
 		name    string

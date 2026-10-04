@@ -84,22 +84,34 @@ func TestRelay(t *testing.T) {
 }
 
 // TestRelayLanes sends UDP flows through the relay from the lane sockets whose
-// ports the relay took, or from the agent socket when it took none.
+// ports the relay took, or from the agent socket when it took none. With
+// receive, the relay sends SA lane i to lane socket i mod (ports+1).
 func TestRelayLanes(t *testing.T) {
 	const flows = 32
 	cases := []struct {
 		name       string
 		lanes      int // SAs that each node offers.
 		relayLanes int // Lane port limit of the relay.
+		ports      int // Lane ports of each node.
+		receive    bool
 		wantLanes  bool
+		wantRx     bool
 	}{
-		{"one lane", 1, relay.MaxLaneSources, false},
-		{"4 lanes", 4, relay.MaxLaneSources, true},
-		{"relay takes no lane ports", 4, 0, false},
+		{"one lane", 1, relay.MaxLaneSources, 0, false, false, false},
+		{"4 lanes", 4, relay.MaxLaneSources, 3, false, true, false},
+		{"relay takes no lane ports", 4, 0, 3, false, false, false},
+		{"4 lanes, receive", 4, relay.MaxLaneSources, 3, true, true, true},
+		{"4 lanes, 2 lane ports, receive", 4, relay.MaxLaneSources, 2, true, true, true},
+		{"relay takes no lane ports, receive", 4, 0, 3, true, false, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			a, b, fr := newRelayPairLanes(t, tc.lanes, tc.relayLanes)
+			a, b, fr := newRelayPairRecv(t, tc.lanes, tc.relayLanes, tc.ports, tc.receive)
+			if tc.wantRx {
+				// The relay uses a lane port after its first keepalive.
+				require.Eventually(t, func() bool { return fr.keepalives.Load() >= uint64(2*tc.ports) },
+					5*time.Second, time.Millisecond)
+			}
 			offer(t, time.Now(), a, b)
 			sa, sb := startNetstack(t, a, 0), startNetstack(t, b, 0)
 			recv, err := gonet.DialUDP(sb, ptr(fullAddr(b.v4, 9)), nil, protoOf(b.v4))
@@ -120,6 +132,9 @@ func TestRelayLanes(t *testing.T) {
 			}
 			lanes := a.b.LanePackets()
 			assert.Equal(t, tc.wantLanes, len(lanes) > 1, "packets of each lane: %v", lanes)
+			rx := b.b.RxLanePackets()
+			assert.Equal(t, tc.wantRx, len(rx) > 1, "packets of each receive socket: %v", rx)
+			assert.LessOrEqual(t, len(rx), tc.ports+1)
 			assert.Zero(t, fr.drops.Load())
 		})
 	}

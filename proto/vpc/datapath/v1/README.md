@@ -149,9 +149,9 @@ Addresses and prefixes are text (`fd61::1`, `10.0.0.0/8`, `host:port`).
 | `Attach`        | unary | `AttachRequest{vpc, name, labels, routes}` -> `AttachResponse{attachment_id, grant}` |
 | `Rekey`         | unary | `KeysRequest` -> `KeysResponse`: SAs for traffic from the relay to the agent. Errors: `FailedPrecondition` (no `Session` call in PSP mode), `InvalidArgument` (an SA VNI is not the network ID). |
 | `ResolvePeer`   | unary | `{vpc, address}` -> `{reach: local, trunk or visit; home_relay; p2p}`. Errors: `NotFound`, `PermissionDenied`. |
-| `RegisterSPI`   | unary | `{vpc, destination, spis, expires_in, lanes}` -> `Empty`. `lanes` gives the source of each SPI: 0 is the session address, i is port i of `RegisterLanes`. |
+| `RegisterSPI`   | unary | `{vpc, destination, spis, expires_in, lanes, sa_lanes}` -> `Empty`. `lanes` gives the source of each SPI: 0 is the session address, i is port i of `RegisterLanes`. `sa_lanes` gives the SA lane of each SPI at the receiver. |
 | `UnregisterSPI` | unary | `{vpc, spis}` -> `Empty` |
-| `RegisterLanes` | unary | `{ports}` -> `Empty`: replaces the lane ports of the session. Errors: `InvalidArgument` (more ports than `Welcome.max_lanes`, port 0, the session port, a repeated port), `AlreadyExists` (a port is a source of another agent), `FailedPrecondition`. |
+| `RegisterLanes` | unary | `{ports, receive}` -> `Empty`: replaces the lane ports of the session. `receive` tells that the agent reads them. Errors: `InvalidArgument` (more ports than `Welcome.max_lanes`, port 0, the session port, a repeated port), `AlreadyExists` (a port is a source of another agent), `FailedPrecondition`. |
 
 `Attach` returns an `AttachmentGrant`: the claims, the signature of the relay
 TLS key, and the relay cert chain (leaf first). A peer accepts it only if the
@@ -191,6 +191,14 @@ free or a lane port of another session of the same agent. The lane ports go
 away when the session closes, moves to a new address or joins as a shard. An
 agent registers lane ports only when `Welcome.max_lanes` is not 0 and the
 reflexive port is its local port.
+
+When a receiver registers its lane ports with `receive`, the relay sends the
+PSP packets of SA lane i to lane port i mod (n + 1) of the receiver, where n is
+its lane port count and 0 is the session address. The relay sends from its own
+port. It uses a lane port only after a keepalive from that port: the agent sends
+the one byte 0x03 from each lane port to the relay after `RegisterLanes`, then
+every 5 s. The relay forwards no keepalive. Until the first keepalive, and for
+a receiver with no `receive`, all SA lanes go to the session address.
 
 ### Peer (`apoxy-peer/1`)
 

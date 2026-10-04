@@ -53,6 +53,9 @@ type mark struct {
 	Queue *sockQueue `json:"queue,omitempty"`
 	// Lanes are the PSP packets that the side sent on each send lane.
 	Lanes []uint64 `json:"lanes,omitempty"`
+	// RxLanes are the PSP packets that the side read on the agent socket and on
+	// each lane socket.
+	RxLanes []uint64 `json:"rx_lanes,omitempty"`
 }
 
 // sockQueue is the mean and the most bytes in the receive queue of a socket,
@@ -218,6 +221,9 @@ type result struct {
 	// The PSP packets that each side sent on each send lane in the measured window.
 	ClientLanePackets []uint64 `json:"client_lane_packets,omitempty"`
 	ServerLanePackets []uint64 `json:"server_lane_packets,omitempty"`
+	// The PSP packets that the server read on the agent socket and on each lane
+	// socket in the measured window.
+	ServerRxLanePackets []uint64 `json:"server_rx_lane_packets,omitempty"`
 
 	Driver    string `json:"driver"`
 	Transport string `json:"transport"`
@@ -302,6 +308,7 @@ func newResult(client, server, relay [2]mark) result {
 	r.RelayTopCPUs = busiestCPUs(relay[0], relay[1], topCPUs)
 	r.ClientQueue, r.ServerQueue = client[1].Queue, server[1].Queue
 	r.ClientLanePackets, r.ServerLanePackets = laneDelta(client[0].Lanes, client[1].Lanes), laneDelta(server[0].Lanes, server[1].Lanes)
+	r.ServerRxLanePackets = laneDelta(server[0].RxLanes, server[1].RxLanes)
 	if gbps := r.BitsPerSecond / 1e9; gbps > 0 {
 		r.ClientCoresPerGbps = r.ClientCores / gbps
 		r.ServerCoresPerGbps = r.ServerCores / gbps

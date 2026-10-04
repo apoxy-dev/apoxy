@@ -18,6 +18,7 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv6"
 
+	"github.com/apoxy-dev/apoxy/pkg/vpc/p2p"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
@@ -28,15 +29,17 @@ type laneRelay struct {
 	dp.RelayClient
 	err error // Result of RegisterLanes.
 
-	mu    sync.Mutex
-	lanes [][]uint32 // Ports of each RegisterLanes call.
-	spis  []*dp.RegisterSPIRequest
+	mu      sync.Mutex
+	lanes   [][]uint32 // Ports of each RegisterLanes call.
+	receive []bool     // Receive of each RegisterLanes call.
+	spis    []*dp.RegisterSPIRequest
 }
 
 func (r *laneRelay) RegisterLanes(_ context.Context, in *dp.RegisterLanesRequest) (*emptypb.Empty, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.lanes = append(r.lanes, in.GetPorts())
+	r.receive = append(r.receive, in.GetReceive())
 	return &emptypb.Empty{}, r.err
 }
 
@@ -104,6 +107,10 @@ func TestRegisterLanes(t *testing.T) {
 			rc := a.rc
 			r := &laneRelay{err: tc.err}
 			rc.c, rc.maxLanes = r, tc.maxLanes
+			ka, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+			require.NoError(t, err)
+			defer ka.Close()
+			rc.relayAddr = ka.LocalAddr().(*net.UDPAddr).AddrPort()
 			rc.local = rc.localAddr()
 			rc.reflexive = rc.local
 			if tc.reflexive != nil {
@@ -119,11 +126,29 @@ func TestRegisterLanes(t *testing.T) {
 			}
 			require.Len(t, calls, 1)
 			require.Len(t, calls[0], tc.wantPorts)
+			assert.Equal(t, []bool{true}, r.receive, "the agent reads its lane ports")
 			// The ports are the lane sockets of the binding, in lane order.
 			conns := a.bind.LaneConns()
 			require.GreaterOrEqual(t, len(conns), tc.wantPorts)
 			for i, p := range calls[0] {
 				assert.Equal(t, uint32(conns[i].LocalAddr().(*net.UDPAddr).Port), p, "lane %d", i+1)
+			}
+			// A keepalive comes from each lane port that the relay took.
+			var from []uint32
+			buf := make([]byte, 16)
+			for {
+				require.NoError(t, ka.SetReadDeadline(time.Now().Add(200*time.Millisecond)))
+				n, src, err := ka.ReadFromUDPAddrPort(buf)
+				if err != nil {
+					break
+				}
+				assert.Equal(t, []byte{p2p.TypeKeepalive}, buf[:n])
+				from = append(from, uint32(src.Port()))
+			}
+			if tc.err != nil {
+				assert.Empty(t, from)
+			} else {
+				assert.ElementsMatch(t, calls[0], from)
 			}
 		})
 	}
@@ -141,12 +166,13 @@ func TestPeerLanes(t *testing.T) {
 		wantSAs   int
 		saLanes   []int    // Lanes of the SAs from the peer.
 		wantSPI   []uint32 // Lanes of RegisterSPI. Nil means none.
+		wantSA    []uint32 // SA lanes of RegisterSPI. Nil means none.
 	}{
 		{name: "old peer", peerLanes: 0, ourLanes: 1, wantSAs: 1, saLanes: []int{0}},
 		{name: "peer with one lane", peerLanes: 1, ourLanes: 1, wantSAs: 1, saLanes: []int{0}},
-		{name: "peer with 4 lanes", peerLanes: 4, ourLanes: 4, wantSAs: 4, saLanes: []int{0, 1, 2, 3}, wantSPI: []uint32{0, 1, 2, 3}},
-		{name: "more lanes than SAs", peerLanes: 40, ourLanes: 1, wantSAs: keys.MaxLanes, saLanes: []int{0, 1}},
-		{name: "lanes above our lane ports", peerLanes: 2, ourLanes: 2, wantSAs: 2, saLanes: []int{0, 1, 2, 3}, wantSPI: []uint32{0, 1, 0, 0}},
+		{name: "peer with 4 lanes", peerLanes: 4, ourLanes: 4, wantSAs: 4, saLanes: []int{0, 1, 2, 3}, wantSPI: []uint32{0, 1, 2, 3}, wantSA: []uint32{0, 1, 2, 3}},
+		{name: "more lanes than SAs", peerLanes: 40, ourLanes: 1, wantSAs: keys.MaxLanes, saLanes: []int{0, 1}, wantSA: []uint32{0, 1}},
+		{name: "lanes above our lane ports", peerLanes: 2, ourLanes: 2, wantSAs: 2, saLanes: []int{0, 1, 2, 3}, wantSPI: []uint32{0, 1, 0, 0}, wantSA: []uint32{0, 1, 2, 3}},
 	}
 	for i, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -167,6 +193,7 @@ func TestPeerLanes(t *testing.T) {
 			require.NoError(t, p.register(context.Background(), sas))
 			require.Len(t, r.spis, 1)
 			assert.Equal(t, tc.wantSPI, r.spis[0].GetLanes())
+			assert.Equal(t, tc.wantSA, r.spis[0].GetSaLanes())
 
 			// A refresh registers the same lanes.
 			p.refreshSPIs()
@@ -225,7 +252,7 @@ func TestMovedLanes(t *testing.T) {
 }
 
 // TestLanes sends UDP flows between two agents through a relay. When the relay
-// takes lane ports, the flows use more than one lane socket.
+// takes lane ports, the flows use more than one lane socket on each side.
 func TestLanes(t *testing.T) {
 	const flows = 32
 	cases := []struct {
@@ -272,7 +299,10 @@ func TestLanes(t *testing.T) {
 			}
 			lanes := a.binding().LanePackets()
 			assert.Equal(t, tc.wantLanes > 1, len(lanes) > 1, "packets of each lane: %v", lanes)
+			rx := b.binding().RxLanePackets()
+			assert.Equal(t, tc.wantLanes > 1, len(rx) > 1, "packets of each receive socket: %v", rx)
 			assert.Zero(t, r.r.UnknownSourceDrops())
+			assert.Zero(t, r.r.MalformedDrops(), "the relay takes the lane keepalives")
 		})
 	}
 }

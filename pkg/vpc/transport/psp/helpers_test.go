@@ -144,9 +144,9 @@ func offer(t testing.TB, now time.Time, nodes ...*node) {
 // SPIs first, so that the relay knows each SPI before its first packet.
 func give(sender *node, req keys.Request, now time.Time) error {
 	if sender.rc != nil && len(req.SAs) > 0 {
-		spis, lanes := make([]uint32, len(req.SAs)), make([]uint32, len(req.SAs))
+		spis, lanes, saLanes := make([]uint32, len(req.SAs)), make([]uint32, len(req.SAs)), make([]uint32, len(req.SAs))
 		for i, sa := range req.SAs {
-			spis[i], lanes[i] = sa.SPI, uint32(sender.peer.SendLane(sa.Lane))
+			spis[i], lanes[i], saLanes[i] = sa.SPI, uint32(sender.peer.SendLane(sa.Lane)), uint32(sa.Lane)
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -156,6 +156,7 @@ func give(sender *node, req keys.Request, now time.Time) error {
 			Spis:        spis,
 			ExpiresIn:   durationpb.New(req.SAs[0].ExpiresIn),
 			Lanes:       lanes,
+			SaLanes:     saLanes,
 		})
 		if err != nil {
 			return err
@@ -223,7 +224,7 @@ func open(b *Binding, pkt []byte) []byte {
 	d := newDriver(b, c.deliver)
 	b.drv.Store(d)
 	defer b.drv.Store(nil)
-	b.receive(pkt)
+	b.receive(0, pkt)
 	if len(c.got) == 0 {
 		return nil
 	}
@@ -264,6 +265,8 @@ type fakeRelay struct {
 	accepted chan *relay.Session
 	q        chan relayPkt
 	drops    atomic.Uint64
+
+	keepalives atomic.Uint64
 }
 
 type relayPkt struct {
@@ -348,6 +351,10 @@ func (fr *fakeRelay) forward(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		}
+		if fr.r.Keepalive(p.b, p.from) {
+			fr.keepalives.Add(1)
+			continue
+		}
 		if len(p.b) < 8 {
 			fr.drops.Add(1)
 			continue
@@ -400,6 +407,14 @@ func newRelayPair(t testing.TB) (*node, *node, *fakeRelay) {
 // ports.
 func newRelayPairLanes(t testing.TB, lanes, relayLanes int) (*node, *node, *fakeRelay) {
 	t.Helper()
+	return newRelayPairRecv(t, lanes, relayLanes, lanes-1, false)
+}
+
+// newRelayPairRecv is newRelayPairLanes with nports lane ports on each node.
+// With receive, each node also reads its lane sockets, and sends keepalives
+// from them to the relay.
+func newRelayPairRecv(t testing.TB, lanes, relayLanes, nports int, receive bool) (*node, *node, *fakeRelay) {
+	t.Helper()
 	fr := newFakeRelayLanes(t, relayLanes)
 	a, b := newPairLanes(t, 0, lanes)
 	for _, n := range []*node{a, b} {
@@ -410,19 +425,25 @@ func newRelayPairLanes(t testing.TB, lanes, relayLanes int) (*node, *node, *fake
 		fr.attach(t, n, name)
 		n.peer.SetAddr(addrOf(fr.tr))
 		n.peer.SetLaneSockets(1)
-		ports := n.b.OpenLanes(lanes)
+		ports := n.b.OpenLanes(nports + 1)
 		if len(ports) == 0 {
 			continue
 		}
-		req := &dp.RegisterLanesRequest{}
+		req := &dp.RegisterLanesRequest{Receive: receive}
 		for _, p := range ports {
 			req.Ports = append(req.Ports, uint32(p))
+		}
+		if receive {
+			require.NoError(t, n.b.ReadLanes())
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		_, err := n.rc.RegisterLanes(ctx, req)
 		cancel()
 		if err == nil {
 			n.peer.SetLaneSockets(len(ports) + 1)
+			if receive {
+				n.b.KeepLanes(addrOf(fr.tr))
+			}
 		}
 	}
 	return a, b, fr

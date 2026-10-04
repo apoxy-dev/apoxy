@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 // Package psp is the agent data path: SoftPSP packets, or QUIC data frames on the relay
-// session. PSP (0x04, 0x29), path probes (0x02) and QUIC (bit 0x40) share one UDP socket.
+// session. PSP (0x04, 0x29), path probes (0x02) and QUIC (bit 0x40) share the agent
+// socket. Lane sockets send PSP packets and lane keepalives (0x03), and read PSP packets.
 package psp
 
 import (
@@ -35,13 +36,16 @@ const (
 	// QUICMTU is the largest inner packet in a data frame on a relay session with
 	// InitialPacketSize 1350: quic-go takes 1350 - 37 B, and the frame header is 5 B.
 	QUICMTU = 1308
-	// sockBuf is the send and receive buffer size of the agent socket, and the
-	// send buffer size of a lane socket.
+	// sockBuf is the send and receive buffer size of the agent socket, and of a
+	// lane socket that reads.
 	sockBuf = 16 << 20
-	// laneRcvBuf is the receive buffer size of a lane socket. Lane sockets only
-	// send, so packets to them stay in this buffer.
+	// laneRcvBuf is the receive buffer size of a lane socket that only sends.
+	// Packets to it stay in this buffer.
 	laneRcvBuf = 4 << 10
 )
+
+// laneKeepalive is the packet that keeps the path from the relay to a lane socket open.
+var laneKeepalive = []byte{p2p.TypeKeepalive}
 
 var (
 	// ErrClosed is the error of calls on a closed binding or a removed peer.
@@ -71,7 +75,7 @@ func (m *Demux) Handle(pkt []byte, from net.Addr) {
 		return
 	}
 	if b := m.b.Load(); b != nil {
-		b.receive(pkt)
+		b.receive(0, pkt)
 	}
 }
 
@@ -79,11 +83,7 @@ func (m *Demux) Handle(pkt []byte, from net.Addr) {
 // the TUN device or the netstack.
 func (m *Demux) BatchEnd() {
 	if b := m.b.Load(); b != nil {
-		if d := b.drv.Load(); d != nil && d.pipe != nil {
-			d.pipe.flush()
-		} else if d != nil && d.batch != nil {
-			d.batch.flush()
-		}
+		b.batchEnd(0)
 	}
 }
 
@@ -135,9 +135,13 @@ type Binding struct {
 	// laneConns are the sockets of send lanes 1 and up. Lane 0 sends on the
 	// agent socket. Set under mu, closed at Close.
 	laneConns [keys.MaxLanes]atomic.Pointer[net.UDPConn]
+	// rxMu guards the receive queue and the read batch of a driver with no receive
+	// pipe, because lane sockets can read too.
+	rxMu sync.Mutex
 
-	mu    sync.Mutex
-	peers map[*keys.Peer]*Peer
+	mu      sync.Mutex
+	peers   map[*keys.Peer]*Peer
+	readers [keys.MaxLanes]*quic.Transport // The read loops of lane sockets 1 and up.
 
 	stats counters
 }
@@ -223,9 +227,17 @@ func (b *Binding) Close() error {
 	b.demux.b.CompareAndSwap(b, nil)
 	b.cancel()
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	for _, p := range b.peers {
 		b.removeLocked(p)
+	}
+	readers := b.readers
+	b.readers = [keys.MaxLanes]*quic.Transport{}
+	b.mu.Unlock()
+	// Close waits for the read loop, so b.mu is not held.
+	for _, tr := range readers {
+		if tr != nil {
+			_ = tr.Close()
+		}
 	}
 	for i := range b.laneConns {
 		if c := b.laneConns[i].Load(); c != nil {
@@ -421,6 +433,47 @@ func (b *Binding) OpenLanes(n int) []uint16 {
 	return ports
 }
 
+// ReadLanes starts a read loop on each open lane socket, which gives its PSP
+// packets to the driver as the agent socket does.
+func (b *Binding) ReadLanes() error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.ctx.Err() != nil {
+		return ErrClosed
+	}
+	for i := 1; i < len(b.laneConns); i++ {
+		c := b.laneConns[i].Load()
+		if c == nil || b.readers[i] != nil {
+			continue
+		}
+		if err := setSockBufs(c, sockBuf, sockBuf); err != nil {
+			slog.Debug("Failed to set the lane socket buffers", "bytes", sockBuf, "error", err)
+		}
+		tr := &quic.Transport{
+			Conn:                 c,
+			EnableGRO:            b.tr.EnableGRO,
+			NonQUICPacketHandler: func(pkt []byte, _ net.Addr) { b.receive(i, pkt) },
+			NonQUICBatchEnd:      func() { b.batchEnd(i) },
+		}
+		if err := tr.Start(); err != nil {
+			return fmt.Errorf("psp: start the read loop of lane %d: %w", i, err)
+		}
+		b.readers[i] = tr
+	}
+	return nil
+}
+
+// KeepLanes sends a lane keepalive from each lane socket to dst, so that the
+// path back from dst stays open.
+func (b *Binding) KeepLanes(dst netip.AddrPort) {
+	ua := net.UDPAddrFromAddrPort(dst)
+	for i := range b.laneConns {
+		if c := b.laneConns[i].Load(); c != nil {
+			_, _ = c.WriteToUDP(laneKeepalive, ua)
+		}
+	}
+}
+
 // LaneConns returns the open sockets of send lanes 1 and up.
 func (b *Binding) LaneConns() []*net.UDPConn {
 	var out []*net.UDPConn
@@ -497,6 +550,7 @@ type counters struct {
 	txPackets, txNoRoute, txDrops, txLimitDrops atomic.Uint64
 	txFrames                                    atomic.Uint64 // Data frames sent.
 	txLanes                                     [keys.MaxLanes]atomic.Uint64
+	rxLanes                                     [keys.MaxLanes]atomic.Uint64 // PSP packets read on each socket.
 }
 
 // Stats returns the packet counters.
@@ -516,11 +570,17 @@ func (b *Binding) Stats() Stats {
 
 // LanePackets returns the PSP packets sent on each send lane, up to the last
 // lane that sent a packet.
-func (b *Binding) LanePackets() []uint64 {
-	out := make([]uint64, len(b.stats.txLanes))
+func (b *Binding) LanePackets() []uint64 { return lanePackets(&b.stats.txLanes) }
+
+// RxLanePackets returns the PSP packets read on the agent socket and on each
+// lane socket, up to the last socket that read a packet.
+func (b *Binding) RxLanePackets() []uint64 { return lanePackets(&b.stats.rxLanes) }
+
+func lanePackets(c *[keys.MaxLanes]atomic.Uint64) []uint64 {
+	out := make([]uint64, len(c))
 	n := 0
 	for i := range out {
-		if out[i] = b.stats.txLanes[i].Load(); out[i] > 0 {
+		if out[i] = c[i].Load(); out[i] > 0 {
 			n = i + 1
 		}
 	}
@@ -543,9 +603,10 @@ func (b *Binding) ReportQUIC(now time.Time, lost uint64) {
 // when there is none.
 func (b *Binding) QUICLimit() int64 { return b.quic.limit() }
 
-// receive gives a PSP packet to the driver. It runs on the QUIC read loop. With a receive
-// pipe, it copies the packet into the pipe, else it opens the packet.
-func (b *Binding) receive(pkt []byte) {
+// receive gives a PSP packet from the socket of lane to the driver. It runs on the read
+// loop of that socket. With a receive pipe, it copies the packet into the pipe, else it
+// opens the packet.
+func (b *Binding) receive(lane int, pkt []byte) {
 	if len(pkt) == 0 || (pkt[0] != pspwire.NextHdrV4 && pkt[0] != pspwire.NextHdrV6) {
 		b.stats.rxOther.Add(1)
 		return
@@ -556,14 +617,31 @@ func (b *Binding) receive(pkt []byte) {
 		return
 	}
 	if d.pipe != nil {
-		d.pipe.add(pkt)
+		d.pipe.add(lane, pkt)
 		return
 	}
+	b.rxMu.Lock()
+	b.stats.rxLanes[lane].Add(1)
 	b.open(d, pkt)
+	b.rxMu.Unlock()
 }
 
-// open opens a PSP packet in place and gives it to the driver. Only the QUIC read loop
-// calls it, when the driver has no receive pipe.
+// batchEnd gives the packets of one read of the socket of lane to the driver.
+func (b *Binding) batchEnd(lane int) {
+	d := b.drv.Load()
+	switch {
+	case d == nil:
+	case d.pipe != nil:
+		d.pipe.flush(lane)
+	case d.batch != nil:
+		b.rxMu.Lock()
+		d.batch.flush()
+		b.rxMu.Unlock()
+	}
+}
+
+// open opens a PSP packet in place and gives it to the driver, with b.rxMu held. Only the
+// read loops call it, when the driver has no receive pipe.
 func (b *Binding) open(d *driver, pkt []byte) {
 	inner, _, err := b.rxq.Receive(pkt)
 	if err != nil {

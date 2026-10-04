@@ -734,9 +734,10 @@ func (rc *relayConn) attach(ctx context.Context, begin time.Time) error {
 }
 
 // registerLanes opens the lane sockets of b and registers their ports at the
-// relay, so that peers send each lane from its own port. It does nothing when
-// the relay takes no lane ports, or when it sees another port than the local
-// port of the agent socket.
+// relay, so that peers send each lane from its own port, and the relay sends
+// the SA lanes of this agent to these ports. It does nothing when the relay
+// takes no lane ports, or when it sees another port than the local port of the
+// agent socket.
 func (rc *relayConn) registerLanes(ctx context.Context, b *psp.Binding) {
 	n := min(int(rc.maxLanes)+1, txLanes(rc.relayAddr.Addr().Unmap()))
 	if n < 2 || rc.reflexive.Port() != rc.local.Port() {
@@ -746,16 +747,44 @@ func (rc *relayConn) registerLanes(ctx context.Context, b *psp.Binding) {
 	if len(ports) == 0 {
 		return
 	}
-	req := &dp.RegisterLanesRequest{Ports: make([]uint32, len(ports))}
+	req := &dp.RegisterLanesRequest{Ports: make([]uint32, len(ports)), Receive: true}
 	for i, p := range ports {
 		req.Ports[i] = uint32(p)
+	}
+	if err := b.ReadLanes(); err != nil {
+		slog.Warn("Failed to read the lane sockets; the relay sends on one port", "relay", rc.addr, "error", err)
+		req.Receive = false
 	}
 	if _, err := rc.c.RegisterLanes(ctx, req); err != nil {
 		slog.Info("Relay refused the lane ports; peers send on one port", "relay", rc.addr, "error", err)
 		return
 	}
 	rc.lanes.Store(int32(len(ports) + 1))
-	slog.Debug("Relay took the lane ports", "relay", rc.addr, "ports", ports)
+	slog.Debug("Relay took the lane ports", "relay", rc.addr, "ports", ports, "receive", req.Receive)
+	if req.Receive {
+		b.KeepLanes(rc.relayAddr)
+		go rc.keepLanes(b)
+	}
+}
+
+// keepLanes sends lane keepalives to the relay at the keepalive period of the
+// relay session, until rc ends or stops its lanes.
+func (rc *relayConn) keepLanes(b *psp.Binding) {
+	t := time.NewTicker(relayQUIC.KeepAlivePeriod)
+	defer t.Stop()
+	for {
+		select {
+		case <-rc.ctx.Done():
+			return
+		case <-rc.qc.Context().Done():
+			return
+		case <-t.C:
+			if rc.lanes.Load() < 2 {
+				return
+			}
+			b.KeepLanes(rc.relayAddr)
+		}
+	}
 }
 
 // sendLanes returns the send lanes of rc: 1 when the relay took no lane ports.

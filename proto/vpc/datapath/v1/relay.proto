@@ -230,6 +230,9 @@ message RegisterSPIRequest {
   // Lane of each SPI, in the order of spis: 0 is the session address, and i
   // is port i of RegisterLanes. Empty means lane 0 for all.
   repeated uint32 lanes = 5;
+  // SA lane of each SPI at the receiver, in the order of spis. Empty means
+  // SA lane 0 for all.
+  repeated uint32 sa_lanes = 6;
 }
 
 message UnregisterSPIRequest {
@@ -242,6 +245,9 @@ message UnregisterSPIRequest {
 // packets. Empty removes them.
 message RegisterLanesRequest {
   repeated uint32 ports = 1;
+  // The agent reads the lane ports. The relay then sends the PSP packets of SA
+  // lane i to lane port i mod (ports + 1), where 0 is the session address.
+  bool receive = 2;
 }
 
 // FallbackReason is why an agent sends data in QUIC mode.

@@ -18,6 +18,10 @@ import (
 // TypeProbe is the first byte of a path probe.
 const TypeProbe = 0x02
 
+// TypeKeepalive is the one byte of a lane keepalive, which an agent sends from
+// each lane port to its relay. The relay forwards no keepalive.
+const TypeKeepalive = 0x03
+
 const (
 	probeVersion = 1
 	flagReply    = 1

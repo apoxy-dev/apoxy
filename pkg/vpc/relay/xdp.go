@@ -296,7 +296,7 @@ func addWant(want map[uint32]xdpEntry, a netip.AddrPort, s *Session, lane int, u
 			continue
 		}
 		e := xdpEntry{xdpRow{expires: w.expires}, w}
-		if next := w.receiver.addr; next.IsValid() && next.Addr().Is4() == a.Addr().Is4() {
+		if next := w.receiver.dst(w.saLane); next.IsValid() && next.Addr().Is4() == a.Addr().Is4() {
 			e.next = next
 		}
 		if !until.IsZero() && until.Before(e.expires) {

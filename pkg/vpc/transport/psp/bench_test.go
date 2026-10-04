@@ -84,7 +84,7 @@ func BenchmarkRoundTrip(b *testing.B) {
 			b.ReportAllocs()
 			for b.Loop() {
 				n, _ := tx.VirtToPhy(pkt, phy)
-				y.b.receive(phy[addrLen:n])
+				y.b.receive(0, phy[addrLen:n])
 			}
 			require.Equal(b, uint64(b.N), y.b.Stats().RxPackets)
 		})

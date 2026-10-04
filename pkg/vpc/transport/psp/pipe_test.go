@@ -104,6 +104,73 @@ func TestPipe(t *testing.T) {
 	}
 }
 
+// TestPipeReaders gives the PSP packets of each SA lane to the read loop of that lane, as
+// the relay does with lane ports. The read loops run at the same time. The netstack must
+// get the packets of each flow once and in order.
+func TestPipeReaders(t *testing.T) {
+	cases := []struct {
+		name  string
+		opens int // Open workers, or noPipe.
+	}{
+		{"no pipe", noPipe},
+		{"consumer opens", 0},
+		{"four workers", 4},
+	}
+	const lanes, flows, perFlow, read = 4, 16, 100, 7
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a, b := newPairLanes(t, 0, lanes)
+			offer(t, time.Now(), a, b)
+			a.peer.SetLaneSockets(lanes)
+			r, ep := newRecorder(t)
+			useNetstack(t, b, ep, 4, tc.opens)
+			var byLane [lanes][][]byte
+			for i := range flows * perFlow {
+				f := seal(a, flowPacket(uint16(1+i%flows), uint32(i/flows)))
+				require.NotNil(t, f)
+				byLane[f[laneOff]] = append(byLane[f[laneOff]], f[addrLen:])
+			}
+			used := 0
+			for _, pkts := range byLane {
+				if len(pkts) > 0 {
+					used++
+				}
+			}
+			require.Greater(t, used, 1, "the flows use one SA lane")
+
+			var readers sync.WaitGroup
+			for lane, pkts := range byLane {
+				readers.Go(func() {
+					for i, pkt := range pkts {
+						b.b.receive(lane, pkt)
+						if (i+1)%read == 0 {
+							b.b.batchEnd(lane)
+						}
+					}
+					b.b.batchEnd(lane)
+				})
+			}
+			readers.Wait()
+			want := Stats{RxPackets: flows * perFlow}
+			require.Eventually(t, func() bool { return b.b.Stats() == want },
+				5*time.Second, time.Millisecond, "%d of %d packets", r.count(), want.RxPackets)
+			rx := b.b.RxLanePackets()
+			for lane, pkts := range byLane {
+				got := uint64(0)
+				if lane < len(rx) {
+					got = rx[lane]
+				}
+				assert.Equal(t, uint64(len(pkts)), got, "lane %d", lane)
+			}
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			for f := range flows {
+				assert.Equal(t, seqs(perFlow), r.got[uint16(1+f)], "flow %d", 1+f)
+			}
+		})
+	}
+}
+
 // TestPipeOrder gives the consumer two sets in read order, and the one open worker the
 // same sets in another order. The netstack must get the packets in read order.
 func TestPipeOrder(t *testing.T) {

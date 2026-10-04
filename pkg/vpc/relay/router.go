@@ -170,6 +170,8 @@ type Session struct {
 	prev        netip.AddrPort // Valid until prevUntil after a migration.
 	prevUntil   time.Time
 	lanes       []netip.AddrPort  // Lane sources: lane i sends from lanes[i-1].
+	receive     bool              // The agent reads its lane ports.
+	laneSeen    uint32            // Bit i-1 is set after a keepalive from lanes[i-1].
 	rows        map[uint32]*row   // Rows of this sender.
 	inbound     map[*row]struct{} // Rows of senders to this session.
 	routes      []netip.Prefix
@@ -197,6 +199,7 @@ type row struct {
 	vpc              VPCKey
 	dst              netip.Addr
 	lane             int       // Source of the sender: 0 is its address. Guarded by Router.mu.
+	saLane           int       // SA lane at the receiver. Guarded by Router.mu.
 	expires          time.Time // Guarded by Router.mu.
 	meter            *rate.Limiter
 	lastUsed         atomic.Int64 // Unix nanoseconds.
@@ -658,7 +661,7 @@ func (r *Router) Forward(src netip.AddrPort, spi uint32, size int, now time.Time
 	w.lastUsed.Store(now.UnixNano())
 	w.packets.Add(1)
 	w.bytes.Add(uint64(size))
-	return w.receiver.addr, Pass
+	return w.receiver.dst(w.saLane), Pass
 }
 
 // allow reports whether the tunnel limit of s lets size bytes through now. It

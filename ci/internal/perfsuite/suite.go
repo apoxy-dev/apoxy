@@ -214,9 +214,9 @@ type vpcRow struct {
 	nodes int
 	// streams is the flow count. 0 gives 4 flows.
 	streams int
-	// server and client are more vpcbench flags. args are more perfrig run flags.
-	server, client []string
-	args           []string
+	// relay, server and client are more vpcbench flags. args are more perfrig run flags.
+	relay, server, client []string
+	args                  []string
 }
 
 // vpcRows are the floor row and the info rows.
@@ -233,6 +233,10 @@ var vpcRows = []vpcRow{
 	{id: "netstack-psp-direct-1flow", name: "vpc-netstack-psp-direct", direct: true, streams: 1, client: []string{"-cc", "bbr"}},
 	{id: "netstack-psp-direct-2node", name: "vpc-netstack-psp-direct-2node", direct: true, nodes: 2, client: []string{"-cc", "bbr"}},
 	{id: "netstack-psp-relay-3node", name: "vpc-netstack-psp-relay-3node", nodes: 3, client: []string{"-cc", "bbr"}},
+	{id: "netstack-psp-relay-3node-p16", name: "vpc-netstack-psp-relay-3node", nodes: 3, streams: 16, client: []string{"-cc", "bbr"}},
+	// The relay takes no lane ports, so each agent sends and receives on one port.
+	{id: "netstack-psp-relay-3node-nolanes", name: "vpc-netstack-psp-relay-3node-nolanes", nodes: 3, relay: []string{"-lanes", "0"}, client: []string{"-cc", "bbr"}},
+	{id: "netstack-psp-relay-3node-p16-nolanes", name: "vpc-netstack-psp-relay-3node-nolanes", nodes: 3, streams: 16, relay: []string{"-lanes", "0"}, client: []string{"-cc", "bbr"}},
 }
 
 // nodeStartTimeout is the time that vpcbench on one host waits for the hosts
@@ -251,6 +255,7 @@ func (r vpcRow) argv(o Options) (sidecar, server, client []string) {
 		// perf-r is the link of the perfrig relay netns.
 		sidecar = append(sidecar, "-xdp", "perf-r")
 	}
+	sidecar = append(sidecar, r.relay...)
 	server = []string{"vpcbench", "server", "-relay", relay, "-listen", "$SERVER_IP:4433"}
 	client = []string{"vpcbench", "client", "-relay", relay, "-server", "$SERVER_IP:4433"}
 	if r.direct {

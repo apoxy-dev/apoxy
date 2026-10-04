@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/apoxy-dev/softpsp/engine"
+	"github.com/apoxy-dev/softpsp/keys"
 	pspwire "github.com/apoxy-dev/softpsp/psp"
 )
 
@@ -31,10 +32,13 @@ func openWorkers(procs int) int {
 
 // rxPipe copies the PSP packets of each read into a set. Open workers open and join the
 // sets, and one consumer checks the replay window and injects the sets in read order.
+// The read loop of the agent socket and of each lane socket has its own set.
 type rxPipe struct {
-	d      *driver
-	j      *injectBatch
-	cur    *rxSet      // The set of this read. Nil until the read loop adds a packet.
+	d *driver
+	j *injectBatch
+	// cur is the set of this read of each socket, by lane. Nil until the read loop
+	// adds a packet.
+	cur    [keys.MaxLanes]*rxSet
 	work   chan *rxSet // Sets for the open workers. Nil when the consumer opens the sets.
 	full   chan *rxSet // Sets for the consumer, in read order.
 	free   chan *rxSet // Empty sets for the read loop.
@@ -103,19 +107,19 @@ func newRxPipe(d *driver, j *injectBatch, workers int, done, closed <-chan struc
 	return p
 }
 
-// add copies the PSP packet pkt into the set of this read. It drops pkt when the pipe
-// stops. Only the read loop calls it.
-func (p *rxPipe) add(pkt []byte) {
-	if p.cur == nil {
-		if p.cur = p.get(); p.cur == nil {
+// add copies the PSP packet pkt into the set of this read of the socket of lane. It drops
+// pkt when the pipe stops. Only the read loop of that socket calls it.
+func (p *rxPipe) add(lane int, pkt []byte) {
+	if p.cur[lane] == nil {
+		if p.cur[lane] = p.get(); p.cur[lane] == nil {
 			p.d.b.stats.rxDrops.Add(1)
 			return
 		}
 	}
-	s := p.cur
+	s := p.cur[lane]
 	s.slots[s.n] = append(s.slots[s.n][:0], pkt...)
 	if s.n++; s.n == len(s.slots) {
-		p.flush()
+		p.flush(lane)
 	}
 }
 
@@ -133,14 +137,16 @@ func (p *rxPipe) get() *rxSet {
 	return nil
 }
 
-// flush gives the set of this read to the open workers and the consumer, or drops it
-// when the consumer stopped. Only the read loop calls it.
-func (p *rxPipe) flush() {
-	s := p.cur
+// flush gives the set of this read of the socket of lane to the open workers and the
+// consumer, or drops it when the consumer stopped. Only the read loop of that socket
+// calls it.
+func (p *rxPipe) flush(lane int) {
+	s := p.cur[lane]
 	if s == nil {
 		return
 	}
-	p.cur = nil
+	p.cur[lane] = nil
+	p.d.b.stats.rxLanes[lane].Add(uint64(s.n))
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.closing {

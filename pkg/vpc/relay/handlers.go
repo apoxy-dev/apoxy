@@ -90,7 +90,8 @@ func (r *Router) resolvePeer(c *Session, in *dp.ResolvePeerRequest) (*dp.Resolve
 // RegisterSPI adds rows from the caller to the receiver of the destination.
 // It installs all SPIs or none. An SPI that the caller holds for another
 // destination gets AlreadyExists. The lane of an SPI sets only the source of
-// its XDP row: Forward takes the SPI from all sources of the caller.
+// its XDP row: Forward takes the SPI from all sources of the caller. The SA
+// lane sets the lane port of the receiver.
 func (srv *Server) RegisterSPI(ctx context.Context, in *dp.RegisterSPIRequest) (*emptypb.Empty, error) {
 	c, err := srv.R.caller(ctx)
 	if err != nil {
@@ -111,14 +112,12 @@ func (r *Router) registerSPI(c *Session, in *dp.RegisterSPIRequest, now time.Tim
 	if in.GetExpiresIn().CheckValid() != nil || ttl <= 0 {
 		return rpc.Errorf(rpc.InvalidArgument, "expires_in must be positive")
 	}
-	lanes := in.GetLanes()
-	if len(lanes) != 0 && len(lanes) != len(in.GetSpis()) {
-		return rpc.Errorf(rpc.InvalidArgument, "%d lanes for %d SPIs", len(lanes), len(in.GetSpis()))
+	lanes, saLanes := in.GetLanes(), in.GetSaLanes()
+	if err := checkLanes("lanes", lanes, len(in.GetSpis())); err != nil {
+		return err
 	}
-	for _, l := range lanes {
-		if l > MaxLaneSources {
-			return rpc.Errorf(rpc.InvalidArgument, "lane %d is above %d", l, MaxLaneSources)
-		}
+	if err := checkLanes("SA lanes", saLanes, len(in.GetSpis())); err != nil {
+		return err
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -160,15 +159,34 @@ func (r *Router) registerSPI(c *Session, in *dp.RegisterSPIRequest, now time.Tim
 			w.receiver = recv
 			recv.inbound[w] = struct{}{}
 		}
-		w.lane = 0
-		if len(lanes) > 0 {
-			w.lane = int(lanes[i])
-		}
+		w.lane, w.saLane = laneAt(lanes, i), laneAt(saLanes, i)
 		w.expires = now.Add(ttl)
 		w.lastUsed.Store(now.UnixNano())
 	}
 	r.markXDP(c)
 	return nil
+}
+
+// checkLanes checks a lane list of RegisterSPI: empty, or one lane of at most
+// MaxLaneSources for each of n SPIs.
+func checkLanes(name string, lanes []uint32, n int) error {
+	if len(lanes) != 0 && len(lanes) != n {
+		return rpc.Errorf(rpc.InvalidArgument, "%d %s for %d SPIs", len(lanes), name, n)
+	}
+	for _, l := range lanes {
+		if l > MaxLaneSources {
+			return rpc.Errorf(rpc.InvalidArgument, "%s %d is above %d", name, l, MaxLaneSources)
+		}
+	}
+	return nil
+}
+
+// laneAt returns lane i of a checked lane list, or 0 when it is empty.
+func laneAt(lanes []uint32, i int) int {
+	if len(lanes) == 0 {
+		return 0
+	}
+	return int(lanes[i])
 }
 
 // UnregisterSPI removes rows of the caller. SPIs with no row are ignored.

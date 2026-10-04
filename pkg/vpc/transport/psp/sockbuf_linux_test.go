@@ -14,28 +14,28 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// TestSockBufs checks that New sets 16 MiB buffers on the agent socket, and
-// that a lane socket gets a 16 MiB send buffer and a small receive buffer. With
-// no CAP_NET_ADMIN the kernel limits them to rmem_max and wmem_max. The kernel
-// reports twice the size.
+// TestSockBufs checks that New sets 16 MiB buffers on the agent socket, that
+// ReadLanes sets them on the lane sockets, and that a lane socket that only
+// sends gets a small receive buffer. With no CAP_NET_ADMIN the kernel limits
+// them to rmem_max and wmem_max. The kernel reports twice the size.
 func TestSockBufs(t *testing.T) {
 	dm := &Demux{}
 	tr := demuxTransport(t, dm)
 	b, err := New(Config{Transport: tr, Demux: dm})
 	require.NoError(t, err)
 	defer b.Close()
-	agent := tr.Conn.(*net.UDPConn)
-	lane, err := listenLane(agent)
-	require.NoError(t, err)
-	defer lane.Close()
+	require.Len(t, b.OpenLanes(2), 1)
+	require.NoError(t, b.ReadLanes())
+	require.Len(t, b.OpenLanes(3), 2)
 	admin := netAdmin(t)
 	cases := []struct {
 		name     string
 		c        *net.UDPConn
 		rcv, snd int
 	}{
-		{"agent socket", agent, sockBuf, sockBuf},
-		{"lane socket", lane, laneRcvBuf, sockBuf},
+		{"agent socket", tr.Conn.(*net.UDPConn), sockBuf, sockBuf},
+		{"lane socket that reads", b.laneConns[1].Load(), sockBuf, sockBuf},
+		{"lane socket that only sends", b.laneConns[2].Load(), laneRcvBuf, sockBuf},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

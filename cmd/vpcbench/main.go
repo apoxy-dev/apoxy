@@ -588,7 +588,7 @@ func runServer(parent context.Context, o options, ready func(netip.AddrPort)) er
 				Nanos: time.Since(start).Nanoseconds(), CPU: bench.CPUSeconds(), HostCPU: bench.HostCPUSeconds(), Retrans: retrans,
 				Bytes: got.Load(), RxPackets: st.RxPackets, Drops: st.RxDrops + st.RxNoDriver,
 				RcvbufErrors: snmpCounter("Udp:", "RcvbufErrors"), SockDrops: sockDrops(s.uc), LinkDrops: s.net.LinkDrops(),
-				CPUs: bench.PerCPU(), Queue: s.q.take(), Lanes: s.b.LanePackets(),
+				CPUs: bench.PerCPU(), Queue: s.q.take(), Lanes: s.b.LanePackets(), RxLanes: s.b.RxLanePackets(),
 			}}, nil
 		}
 		return reply{}, fmt.Errorf("unknown op %q", req.Op)

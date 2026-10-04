@@ -685,15 +685,20 @@ func (p *peer) register(ctx context.Context, sas []keys.SA) error {
 }
 
 // registerRequest returns the RegisterSPI request for the SPIs of SA lanes.
-// The relay gets the socket lane of each SPI, or no lanes when all are 0.
+// The relay gets the socket lane and the SA lane of each SPI, or no lanes when
+// all are 0.
 func (p *peer) registerRequest(spis []uint32, lanes []int, ttl time.Duration) *dp.RegisterSPIRequest {
 	req := &dp.RegisterSPIRequest{Vpc: p.rc.ref, Destination: p.addr.String(), Spis: spis, ExpiresIn: durationpb.New(ttl)}
-	sock := make([]uint32, len(lanes))
+	sock, sa := make([]uint32, len(lanes)), make([]uint32, len(lanes))
 	for i, l := range lanes {
-		sock[i] = uint32(p.bp.SendLane(l))
+		sock[i], sa[i] = uint32(p.bp.SendLane(l)), uint32(l)
 	}
-	if slices.ContainsFunc(sock, func(l uint32) bool { return l != 0 }) {
+	nonZero := func(l uint32) bool { return l != 0 }
+	if slices.ContainsFunc(sock, nonZero) {
 		req.Lanes = sock
+	}
+	if slices.ContainsFunc(sa, nonZero) {
+		req.SaLanes = sa
 	}
 	return req
 }

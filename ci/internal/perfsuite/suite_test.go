@@ -249,6 +249,16 @@ func TestNodePlans(t *testing.T) {
 	if r := rows[i]; r.Hosts() != 2 || slices.ContainsFunc(r.Args, func(a string) bool { return strings.Contains(a, "stop-relay") || strings.HasPrefix(a, "-sidecar") }) {
 		t.Errorf("direct row = %+v", r)
 	}
+	// A row with no lanes gives the relay its flags.
+	i = slices.IndexFunc(rows, func(r Row) bool { return r.ID == "netstack-psp-relay-3node-p16-nolanes" })
+	for _, w := range []string{
+		"-name=vpc-netstack-psp-relay-3node-nolanes", "-streams=16",
+		`-sidecar-argv=["vpcbench","relay","-listen","$RELAY_IP:4443","-lanes","0"]`,
+	} {
+		if !slices.Contains(rows[i].Args, w) {
+			t.Errorf("args have no %s:\n%s", w, strings.Join(rows[i].Args, "\n"))
+		}
+	}
 }
 
 func TestVPCProfileArgs(t *testing.T) {
