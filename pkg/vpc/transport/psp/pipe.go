@@ -14,7 +14,8 @@ const (
 	// pipeSets is the number of packet sets in a receive pipe with no open workers.
 	// Each open worker adds two sets.
 	pipeSets = 8
-	// pipeSlots is the most PSP packets in one set, as in one read of quic-go.
+	// pipeSlots is the most PSP packets in one set. A read of quic-go with GRO can fill
+	// many sets.
 	pipeSlots = 64
 	// maxOpenWorkers is the most open workers of a receive pipe.
 	maxOpenWorkers = 4
@@ -30,7 +31,7 @@ func openWorkers(procs int) int {
 }
 
 // rxPipe moves the PSP packets of the netstack driver from the QUIC read loop to a
-// consumer goroutine. The read loop only copies the packets of each read into a set.
+// consumer goroutine. The read loop only copies the packets of each read into sets.
 // Open workers decrypt the sets, each worker one set at a time, and make the packet
 // buffer of each packet. The consumer takes the sets in read order, waits until a worker
 // finished each one, checks the replay window and gives the packet buffers to the inject
