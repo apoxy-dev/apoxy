@@ -85,7 +85,6 @@ func Cmd() *cobra.Command {
 		readOnly(vpcTunnelResource.Build()),
 		egressGatewayResource.Build(),
 		egressRouteResource.Build(),
-		connectCmd(),
 	)
 	return cmd
 }

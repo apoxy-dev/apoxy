@@ -57,7 +57,8 @@ type connectOptions struct {
 	adminAddr string
 }
 
-func connectCmd() *cobra.Command {
+// ConnectCmd returns the connect command. It is in the alpha command tree.
+func ConnectCmd() *cobra.Command {
 	var o connectOptions
 	cmd := &cobra.Command{
 		Use:   "connect [VPC]",
@@ -67,8 +68,7 @@ func connectCmd() *cobra.Command {
 The tun driver makes a kernel TUN device, so all processes on the host can
 reach the VPC. The netstack driver needs no privileges. It gives a SOCKS5
 proxy, and it forwards connections from the VPC to localhost.`,
-		Args:   cobra.MaximumNArgs(1),
-		Hidden: true,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			vpc := "default"
 			if len(args) == 1 {

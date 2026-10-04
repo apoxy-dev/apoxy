@@ -86,6 +86,7 @@ apoxy alpha [flags]
 * [apoxy](#apoxy)	 - Open-source edge platform built on Envoy, Kubernetes APIs, and QUIC tunneling.
 * [apoxy alpha domains](#apoxy-alpha-domains)	 - Manage domain record objects
 * [apoxy alpha tunnel](#apoxy-alpha-tunnel)	 - Manage tunnels
+* [apoxy alpha vpc](#apoxy-alpha-vpc)	 - Connect hosts to VPC networks
 
 
 
@@ -386,6 +387,83 @@ apoxy alpha tunnel run [flags]
 ### SEE ALSO
 
 * [apoxy alpha tunnel](#apoxy-alpha-tunnel)	 - Manage tunnels
+
+
+
+## apoxy alpha vpc
+
+Connect hosts to VPC networks
+
+### Options
+
+```
+  -h, --help   help for vpc
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy alpha](#apoxy-alpha)	 - Alpha features that are still under development
+* [apoxy alpha vpc connect](#apoxy-alpha-vpc-connect)	 - Connect this host to a VPC network
+
+
+
+## apoxy alpha vpc connect
+
+Connect this host to a VPC network
+
+### Synopsis
+
+Connect this host to a VPC network. The default network is "default".
+
+The tun driver makes a kernel TUN device, so all processes on the host can
+reach the VPC. The netstack driver needs no privileges. It gives a SOCKS5
+proxy, and it forwards connections from the VPC to localhost.
+
+```
+apoxy alpha vpc connect [VPC] [flags]
+```
+
+### Options
+
+```
+      --admin-addr string      Unix socket path of a local HTTP API that adds and removes attachments. Only this user and root can use it. Empty disables the API.
+      --driver string          Data path: auto, netstack or tun. Auto uses tun when the process has NET_ADMIN, else netstack. (default "auto")
+  -h, --help                   help for connect
+      --label stringToString   Attachment label (key=value) for VPCService selection. Repeatable. (default [])
+      --mtu int                Device MTU, 1280 to 1412. 0 uses the VPC MTU when the path to the relay carries it, else 1280.
+      --name string            Attachment name, a DNS label (default: the host name).
+      --relays int             Relay sessions to keep, 1 to 3. One carries the traffic. The others are open on other relays and take over when it ends. (default 2)
+      --route stringArray      CIDR that this host advertises into the VPC. Repeatable. The VPC is IPv6 only. To reach an IPv4 address behind a netstack host, use that host's VPC /96 with the IPv4 address in the last 32 bits. Plain IPv4 works only between tun hosts whose source address is in a CIDR that they advertise.
+      --socks-addr string      SOCKS5 listen address of the netstack driver. Empty disables the proxy. (default "localhost:1080")
+      --transport string       Data transport: auto, psp or quic. Auto uses psp, and quic when the path to the relay drops psp. (default "auto")
+      --tun-ifname string      Name of the TUN device of the tun driver. (default "apoxy0")
+```
+
+### Options inherited from parent commands
+
+```
+      --alsologtostderr   Log to standard error as well as files.
+      --config string     Config file (default is $HOME/.apoxy/config.yaml).
+      --local             Run in local mode.
+      --pprof             Enable pprof HTTP server on :6060.
+      --project string    The project ID to use.
+  -v, --verbose           Enable verbose output.
+```
+
+### SEE ALSO
+
+* [apoxy alpha vpc](#apoxy-alpha-vpc)	 - Connect hosts to VPC networks
 
 
 
@@ -4828,5 +4906,6 @@ apoxy vpc tunnel list [flags]
 ### SEE ALSO
 
 * [apoxy vpc tunnel](#apoxy-vpc-tunnel)	 - Inspect tunnels
+
 
 
