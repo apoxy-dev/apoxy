@@ -457,7 +457,7 @@ require (
 
 replace github.com/getsavvyinc/upgrade-cli => github.com/apoxy-dev/upgrade-cli v0.0.0-20240213232412-a56c3a52fa0e
 
-replace github.com/quic-go/quic-go => github.com/apoxy-dev/quic-go v0.0.0-20261004022948-e159f5d8949c
+replace github.com/quic-go/quic-go => github.com/apoxy-dev/quic-go v0.0.0-20261004030113-784d1d7a9e67
 
 replace github.com/quic-go/connect-ip-go => github.com/apoxy-dev/connect-ip-go v0.0.0-20261002135041-baadecfb9616
 

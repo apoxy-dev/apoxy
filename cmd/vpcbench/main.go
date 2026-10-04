@@ -325,7 +325,7 @@ func listenUDPFor(addr string) (*net.UDPConn, error) {
 // overlay address peer. It is the -via direct side, with no agent.
 func newDirect(o options, uc *net.UDPConn, self, peer netip.Addr, peerAddr netip.AddrPort) (*side, *psp.Peer, error) {
 	dm := &psp.Demux{}
-	tr := &quic.Transport{Conn: uc, NonQUICPacketHandler: dm.Handle, NonQUICBatchEnd: dm.BatchEnd}
+	tr := &quic.Transport{Conn: uc, EnableGRO: true, NonQUICPacketHandler: dm.Handle, NonQUICBatchEnd: dm.BatchEnd}
 	b, err := psp.New(psp.Config{Transport: tr, Demux: dm, VNI: vni, MTU: o.MTU})
 	if err != nil {
 		return nil, nil, err

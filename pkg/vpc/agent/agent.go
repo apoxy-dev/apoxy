@@ -90,8 +90,9 @@ type Config struct {
 	// Sessions is the number of relay sessions to keep, 1 to 3. One holds the
 	// attachment and the others are spares on other relays. Zero means 2.
 	Sessions int
-	// Transport is the agent socket for the relay sessions and PSP. New sets
-	// its NonQUICPacketHandler and NonQUICBatchEnd, so it must not be in use yet.
+	// Transport is the agent socket for the relay sessions and PSP. New sets its
+	// NonQUICPacketHandler, NonQUICBatchEnd and EnableGRO, so it must not be in use
+	// yet. The socket must not share its port with an XDP program.
 	Transport *quic.Transport
 	// TransportMode picks how data goes to peers. The zero value is auto.
 	TransportMode TransportMode
@@ -185,6 +186,8 @@ func New(cfg Config) *Agent {
 	if cfg.Transport != nil {
 		cfg.Transport.NonQUICPacketHandler = a.demux.Handle
 		cfg.Transport.NonQUICBatchEnd = a.demux.BatchEnd
+		// GRO joins the PSP packets of one read, so the read loop makes fewer syscalls.
+		cfg.Transport.EnableGRO = true
 	}
 	return a
 }

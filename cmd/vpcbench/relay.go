@@ -62,7 +62,8 @@ func runRelay(ctx context.Context, o options, ready func(netip.AddrPort)) error 
 	slog.Info("Relay socket is ready", "address", addr, "rcvbuf", sockRcvbuf(uc))
 
 	r := relay.NewRouter(vpctest.NewTrust(ca), relay.Config{})
-	tr := &quic.Transport{Conn: uc}
+	// The relay socket has no XDP program, so GRO is safe.
+	tr := &quic.Transport{Conn: uc, EnableGRO: true}
 	defer tr.Close()
 	tr.NonQUICPacketHandler, tr.NonQUICBatchEnd = r.PacketHandler(ctx, tr)
 	ln, err := tr.Listen(r.TLSConfig(&tls.Config{Certificates: []tls.Certificate{*cert}}), tunnel.RelayQUICConfig())
