@@ -80,6 +80,7 @@ func TestRelayLeaseWatcherReadinessTransitions(t *testing.T) {
 				Build()
 			w := NewRelayLeaseWatcher(c)
 			w.now = func() time.Time { return now }
+			w.startedAt = now.Add(-time.Hour)
 
 			var before vpcv1alpha1.Relay
 			require.NoError(t, c.Get(ctx, client.ObjectKey{Name: "r0"}, &before))
@@ -150,6 +151,7 @@ func TestRelayLeaseWatcherRequeuesLiveLease(t *testing.T) {
 		Build()
 	w := NewRelayLeaseWatcher(c)
 	w.now = func() time.Time { return now }
+	w.startedAt = now.Add(-time.Hour)
 
 	res, err := w.Reconcile(ctx, leaseReq())
 	require.NoError(t, err)
@@ -167,6 +169,7 @@ func TestRelayLeaseWatcherKeepsExpiredWithinGrace(t *testing.T) {
 		Build()
 	w := NewRelayLeaseWatcher(c)
 	w.now = func() time.Time { return now }
+	w.startedAt = now.Add(-time.Hour)
 
 	res, err := w.Reconcile(ctx, leaseReq())
 	require.NoError(t, err)
@@ -193,6 +196,7 @@ func TestRelayLeaseWatcherGCsAfterGrace(t *testing.T) {
 		Build()
 	w := NewRelayLeaseWatcher(c)
 	w.now = func() time.Time { return now }
+	w.startedAt = now.Add(-time.Hour)
 
 	res, err := w.Reconcile(ctx, leaseReq())
 	require.NoError(t, err)
@@ -207,6 +211,55 @@ func TestRelayLeaseWatcherGCsAfterGrace(t *testing.T) {
 	err = c.Get(ctx, client.ObjectKey{Name: "conn-slot"}, &vpcv1alpha1.Tunnel{})
 	require.True(t, apierrors.IsNotFound(err), "slot-owned tunnel deleted")
 	require.NoError(t, c.Get(ctx, client.ObjectKey{Name: "conn-other"}, &vpcv1alpha1.Tunnel{}), "other relay's tunnel kept")
+}
+
+// A relay cannot renew its lease while the apiserver is down. That time must
+// not make a live relay not-ready or delete it.
+func TestRelayLeaseWatcherDoesNotCountDowntime(t *testing.T) {
+	ctx := context.Background()
+	now := time.Unix(1_700_000_000, 0)
+
+	cases := []struct {
+		name string
+		// uptime is how long ago this apiserver started.
+		uptime      time.Duration
+		renewAgo    time.Duration
+		wantReady   bool
+		wantDeleted bool
+	}{
+		{name: "old lease right after a long outage stays ready", uptime: 5 * time.Second, renewAgo: time.Hour, wantReady: true},
+		{name: "no renewal for the lease duration after the start is not ready", uptime: 41 * time.Second, renewAgo: time.Hour, wantReady: false},
+		{name: "no renewal within the grace period after the start is kept", uptime: 100 * time.Second, renewAgo: time.Hour, wantReady: false},
+		{name: "no renewal past the grace period after the start is deleted", uptime: 101 * time.Second, renewAgo: time.Hour, wantDeleted: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := fake.NewClientBuilder().
+				WithScheme(watcherScheme(t)).
+				WithStatusSubresource(&vpcv1alpha1.Relay{}).
+				WithObjects(relayLease(tc.renewAgo, now), relayObj(true), relayTunnel("conn-1")).
+				Build()
+			w := NewRelayLeaseWatcher(c)
+			w.now = func() time.Time { return now }
+			w.startedAt = now.Add(-tc.uptime)
+
+			_, err := w.Reconcile(ctx, leaseReq())
+			require.NoError(t, err)
+
+			var relay vpcv1alpha1.Relay
+			err = c.Get(ctx, client.ObjectKey{Name: "r0"}, &relay)
+			tunnelErr := c.Get(ctx, client.ObjectKey{Name: "conn-1"}, &vpcv1alpha1.Tunnel{})
+			if tc.wantDeleted {
+				require.True(t, apierrors.IsNotFound(err), "relay deleted")
+				require.True(t, apierrors.IsNotFound(tunnelErr), "tunnel deleted")
+				return
+			}
+			require.NoError(t, err, "relay kept")
+			require.NoError(t, tunnelErr, "tunnel kept")
+			require.Equal(t, tc.wantReady, relay.Status.Ready)
+		})
+	}
 }
 
 func TestRelayLeaseWatcherIgnoresOtherNamespace(t *testing.T) {

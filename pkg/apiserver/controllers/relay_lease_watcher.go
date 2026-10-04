@@ -44,6 +44,9 @@ type RelayLeaseWatcher struct {
 	gracePeriod    time.Duration
 	checkInterval  time.Duration
 	now            func() time.Time
+	// startedAt is when this apiserver started. A relay cannot renew its lease
+	// before it, so that time does not count as lease age.
+	startedAt time.Time
 }
 
 // RelayLeaseWatcherOption configures a RelayLeaseWatcher.
@@ -79,6 +82,7 @@ func NewRelayLeaseWatcher(c client.Client, opts ...RelayLeaseWatcherOption) *Rel
 		gracePeriod:    defaultRelayGracePeriod,
 		checkInterval:  defaultRelayLeaseCheckInterval,
 		now:            time.Now,
+		startedAt:      time.Now(),
 	}
 	for _, opt := range opts {
 		opt(w)
@@ -94,13 +98,17 @@ func relayNameFromLease(name string) string {
 	return strings.TrimPrefix(name, tunnelctrl.LeaseNamePrefix)
 }
 
-// leaseAge returns the time since the last renewal. ok is false when the lease
-// has no RenewTime.
-func leaseAge(lease *apoxycoordv1.Lease, now time.Time) (age time.Duration, ok bool) {
+// leaseAge returns the time since the last renewal, without the time before
+// since. ok is false when the lease has no RenewTime.
+func leaseAge(lease *apoxycoordv1.Lease, since, now time.Time) (age time.Duration, ok bool) {
 	if lease.Spec.RenewTime == nil {
 		return 0, false
 	}
-	return now.Sub(lease.Spec.RenewTime.Time), true
+	renewed := lease.Spec.RenewTime.Time
+	if renewed.Before(since) {
+		renewed = since
+	}
+	return now.Sub(renewed), true
 }
 
 // Reconcile sets Relay readiness from its Lease and deletes a dead relay.
@@ -124,7 +132,7 @@ func (w *RelayLeaseWatcher) Reconcile(ctx context.Context, req reconcile.Request
 		return reconcile.Result{}, err
 	}
 
-	age, ok := leaseAge(&lease, w.now())
+	age, ok := leaseAge(&lease, w.startedAt, w.now())
 	alive := ok && age <= w.leaseDuration
 
 	if err := w.setReady(ctx, relayName, alive); err != nil {
