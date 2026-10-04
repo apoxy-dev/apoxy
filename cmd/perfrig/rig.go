@@ -24,6 +24,10 @@ const (
 
 	// bufMax is the socket buffer limit: 128 MiB holds 20 ms of data at 50 Gbps.
 	bufMax = "134217728"
+
+	// vethQueues is the queue count of each veth of the relay rig, as the NIC
+	// of the bench host has. With one queue, agents use one lane.
+	vethQueues = "8"
 )
 
 var errNetemMissing = errors.New("the kernel has no netem qdisc (sch_netem): " +
@@ -122,7 +126,8 @@ func (r *rig) links() [][]string {
 		for _, e := range ends {
 			steps = append(steps,
 				[]string{"ip", "netns", "add", e.ns},
-				[]string{"ip", "-n", r.bridge, "link", "add", e.dev, "mtu", mtu, "type", "veth", "peer", "name", e.dev, "netns", e.ns},
+				[]string{"ip", "-n", r.bridge, "link", "add", e.dev, "mtu", mtu, "numtxqueues", vethQueues, "numrxqueues", vethQueues,
+					"type", "veth", "peer", "name", e.dev, "numtxqueues", vethQueues, "numrxqueues", vethQueues, "netns", e.ns},
 				[]string{"ip", "-n", r.bridge, "link", "set", "dev", e.dev, "master", bridgeDev, "up"})
 		}
 	}
