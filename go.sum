@@ -140,6 +140,8 @@ github.com/apoxy-dev/gvisor v0.0.0-20261003054114-19336912c059 h1:YdcNZYseWw5X4O
 github.com/apoxy-dev/gvisor v0.0.0-20261003054114-19336912c059/go.mod h1:QkHjoMIBaYtpVufgwv3keYAbln78mBoCuShZrPrer1Q=
 github.com/apoxy-dev/gvisor v0.0.0-20261003092830-641adc5ef7bc h1:zIOmmHvdDgGM9bt8vnD1+tH0YfXxK/SCztu5AuYkjZo=
 github.com/apoxy-dev/gvisor v0.0.0-20261003092830-641adc5ef7bc/go.mod h1:QkHjoMIBaYtpVufgwv3keYAbln78mBoCuShZrPrer1Q=
+github.com/apoxy-dev/gvisor v0.0.0-20261004063644-6465c506e4e6 h1:pVKAkq1y4PvppYj1koZIgPuyW2Q7aYPtVS4dCMZHphk=
+github.com/apoxy-dev/gvisor v0.0.0-20261004063644-6465c506e4e6/go.mod h1:QkHjoMIBaYtpVufgwv3keYAbln78mBoCuShZrPrer1Q=
 github.com/apoxy-dev/icx v0.17.1-0.20260721004321-0b9cc8b7c588 h1:X411L6hIkGc5cAQ1k5bd8IdeU2NvwP9ulFjw6V3CCWg=
 github.com/apoxy-dev/icx v0.17.1-0.20260721004321-0b9cc8b7c588/go.mod h1:B52w7Cs1nsMyE3IwkFMwy06gGQ5Dz0YxPrd1eUWv7g4=
 github.com/apoxy-dev/icx v0.18.0 h1:GObBLYPEOb6sarr+BInPHIZrKTbSBdEyWheq04f/ACY=
