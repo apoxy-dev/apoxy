@@ -115,10 +115,18 @@ func (f *fakeEC2) DeletePlacementGroup(_ context.Context, in *ec2.DeletePlacemen
 	return &ec2.DeletePlacementGroupOutput{}, nil
 }
 
-func (f *fakeEC2) DescribePlacementGroups(context.Context, *ec2.DescribePlacementGroupsInput, ...func(*ec2.Options)) (*ec2.DescribePlacementGroupsOutput, error) {
+// DescribePlacementGroups returns the groups that have each tag of the filters.
+func (f *fakeEC2) DescribePlacementGroups(_ context.Context, in *ec2.DescribePlacementGroupsInput, _ ...func(*ec2.Options)) (*ec2.DescribePlacementGroupsOutput, error) {
 	var out ec2.DescribePlacementGroupsOutput
 	for _, g := range f.placements {
-		out.PlacementGroups = append(out.PlacementGroups, types.PlacementGroup{GroupName: aws.String(g), Tags: f.groupTags[g]})
+		match := func(fl types.Filter) bool {
+			return slices.ContainsFunc(f.groupTags[g], func(t types.Tag) bool {
+				return "tag:"+aws.ToString(t.Key) == aws.ToString(fl.Name) && slices.Contains(fl.Values, aws.ToString(t.Value))
+			})
+		}
+		if !slices.ContainsFunc(in.Filters, func(fl types.Filter) bool { return !match(fl) }) {
+			out.PlacementGroups = append(out.PlacementGroups, types.PlacementGroup{GroupName: aws.String(g), State: types.PlacementGroupStateAvailable, Tags: f.groupTags[g]})
+		}
 	}
 	return &out, nil
 }
@@ -416,6 +424,21 @@ func TestPlacementGroups(t *testing.T) {
 		if err := c.CreatePlacementGroup(ctx, name, tg); err != nil {
 			t.Fatal(err)
 		}
+	}
+	for _, tc := range []struct {
+		tag  string
+		want []string
+	}{
+		{"apoxy-perf-run=1-1-vpc", []string{"pg-a available"}},
+		{"apoxy-perf=true", []string{"pg-a available", "pg-free available", "pg-new available", "pg-untagged available"}},
+		{"apoxy-perf-run=other", []string{}},
+	} {
+		if got, err := c.PlacementGroups(ctx, tc.tag); err != nil || !slices.Equal(got, tc.want) {
+			t.Errorf("groups with %s = %v, %v, want %v", tc.tag, got, err, tc.want)
+		}
+	}
+	if _, err := c.PlacementGroups(ctx, "no-value"); err == nil {
+		t.Error("a tag with no value passed")
 	}
 	got, err := c.ReapPlacementGroups(ctx, "apoxy-perf=true", "apoxy-perf-expires", now)
 	slices.Sort(got)

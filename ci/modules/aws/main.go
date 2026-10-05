@@ -318,6 +318,21 @@ func (m *Aws) DeletePlacementGroup(
 	return c.DeletePlacementGroup(ctx, name, d)
 }
 
+// PlacementGroups returns the placement groups with the tag, each as its name
+// and its state. A check after a run uses it with the tag of the run.
+// +cache="never"
+func (m *Aws) PlacementGroups(
+	ctx context.Context,
+	// +default="apoxy-perf=true"
+	tag string,
+) ([]string, error) {
+	c, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return c.PlacementGroups(ctx, tag)
+}
+
 // ReapPlacementGroups deletes the empty placement groups with the tag whose
 // expiry tag (RFC 3339) is in the past, and returns their names.
 // +cache="never"

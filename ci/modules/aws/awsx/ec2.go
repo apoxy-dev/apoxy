@@ -306,9 +306,8 @@ func (c *Client) DeletePlacementGroup(ctx context.Context, name string, wait tim
 	}
 }
 
-// ReapPlacementGroups deletes the empty placement groups with the tag KEY=VALUE
-// whose RFC 3339 expiry tag is before now or not valid, and returns their names.
-func (c *Client) ReapPlacementGroups(ctx context.Context, tag, expiryKey string, now time.Time) ([]string, error) {
+// groups returns the placement groups with the tag KEY=VALUE.
+func (c *Client) groups(ctx context.Context, tag string) ([]types.PlacementGroup, error) {
 	k, v, ok := strings.Cut(tag, "=")
 	if !ok || k == "" {
 		return nil, fmt.Errorf("bad tag %q: want KEY=VALUE", tag)
@@ -319,9 +318,34 @@ func (c *Client) ReapPlacementGroups(ctx context.Context, tag, expiryKey string,
 	if err != nil {
 		return nil, fmt.Errorf("describe placement groups: %w", err)
 	}
+	return out.PlacementGroups, nil
+}
+
+// PlacementGroups returns the placement groups with the tag KEY=VALUE, each as
+// its name and its state.
+func (c *Client) PlacementGroups(ctx context.Context, tag string) ([]string, error) {
+	groups, err := c.groups(ctx, tag)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(groups))
+	for _, g := range groups {
+		names = append(names, aws.ToString(g.GroupName)+" "+string(g.State))
+	}
+	slices.Sort(names)
+	return names, nil
+}
+
+// ReapPlacementGroups deletes the empty placement groups with the tag KEY=VALUE
+// whose RFC 3339 expiry tag is before now or not valid, and returns their names.
+func (c *Client) ReapPlacementGroups(ctx context.Context, tag, expiryKey string, now time.Time) ([]string, error) {
+	groups, err := c.groups(ctx, tag)
+	if err != nil {
+		return nil, err
+	}
 	var deleted []string
 	var errs []error
-	for _, g := range out.PlacementGroups {
+	for _, g := range groups {
 		if groupExpiry(g, expiryKey).After(now) {
 			continue
 		}
