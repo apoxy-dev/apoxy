@@ -155,12 +155,51 @@ func BenchmarkWriteFrames(b *testing.B) {
 			}
 			b.SetBytes(int64(len(frames) * (len(frames[0]) - addrLen)))
 			b.ReportAllocs()
+			sent := uint64(0)
 			for b.Loop() {
 				_, _ = d.WriteFrames(frames)
+				sent += uint64(len(frames))
 			}
+			// The lane senders send after WriteFrames returns.
+			require.Len(b, lanePacketsAt(b, x.b, sent), bc.lanes)
 			require.Zero(b, x.b.Stats().TxDrops)
-			require.Len(b, x.b.LanePackets(), bc.lanes)
 		})
+	}
+}
+
+// BenchmarkLaneQueue copies the 1280 B packets of one set into the queue of a
+// lane and gives them to the sender. The sender only frees the batches.
+func BenchmarkLaneQueue(b *testing.B) {
+	x, y := newPair(b)
+	offer(b, time.Now(), x, y)
+	d := newDriver(x.b, nil)
+	defer d.Close()
+	frames := make([][]byte, laneFrames)
+	for i := range frames {
+		frames[i] = seal(x, packet(x.v4, y.v4, 6, 1, 2, DefaultMTU))
+	}
+	l := d.newLane(1, nil)
+	d.lanes[1] = l
+	go func() {
+		for {
+			select {
+			case q := <-l.work:
+				q.frames = q.frames[:0]
+				l.free <- q
+			case <-d.done:
+				return
+			}
+		}
+	}()
+	b.SetBytes(int64(len(frames) * (len(frames[0]) - addrLen)))
+	b.ReportAllocs()
+	for b.Loop() {
+		for _, f := range frames {
+			if err := d.queue(l, f); err != nil {
+				b.Fatal(err)
+			}
+		}
+		d.push()
 	}
 }
 
