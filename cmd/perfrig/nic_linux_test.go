@@ -70,7 +70,7 @@ func TestPrepareXDP(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, linkConf{channels: old.channels, mtu: 9001, forwarding: "0"}, old)
 
-	undo, err := prepareXDP(t.Context(), dev, ip, 20*time.Millisecond)
+	undo, err := prepareXDP(t.Context(), dev, ip, 0, 20*time.Millisecond)
 	require.NoError(t, err)
 	got, _, err := readLink(dev)
 	require.NoError(t, err)
@@ -81,6 +81,6 @@ func TestPrepareXDP(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, old, got)
 
-	_, err = prepareXDP(t.Context(), "perf-none", ip, 20*time.Millisecond)
+	_, err = prepareXDP(t.Context(), "perf-none", ip, 0, 20*time.Millisecond)
 	assert.Error(t, err)
 }

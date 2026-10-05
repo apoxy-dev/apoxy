@@ -167,14 +167,15 @@ func waitAddr(ctx context.Context, dev, ip string, hold, timeout time.Duration) 
 	}
 }
 
-// prepareXDP gives dev the settings that an XDP program in driver mode needs. The
-// returned function sets the old settings again.
-func prepareXDP(ctx context.Context, dev, ip string, settle time.Duration) (func(), error) {
+// prepareXDP gives dev the settings that an XDP program in driver mode needs, with
+// at most channels channels if channels is above 0. The returned function sets
+// the old settings again.
+func prepareXDP(ctx context.Context, dev, ip string, channels uint32, settle time.Duration) (func(), error) {
 	old, maxChannels, err := readLink(dev)
 	if err != nil {
 		return nil, err
 	}
-	want := xdpConf(old, maxChannels)
+	want := xdpConf(old, maxChannels, channels)
 	undo := func() {
 		// The context of the row can be done here.
 		ctx, cancel := context.WithTimeout(context.Background(), 2*linkSettleTimeout)

@@ -315,6 +315,10 @@ func TestNodePlans(t *testing.T) {
 			id:   "netstack-psp-relay-3node-p32-xdp",
 			want: []string{"-name=vpc-netstack-psp-relay-3node-xdp", "-streams=32", "-relay-xdp"},
 		},
+		{
+			id:   "netstack-psp-relay-3node-p16-xdp-q1",
+			want: []string{"-name=vpc-netstack-psp-relay-3node-xdp-q1", "-streams=16", "-relay-xdp", "-relay-channels=1"},
+		},
 	}
 	for _, tc := range wantArgs {
 		i = slices.IndexFunc(rows, func(r Row) bool { return r.ID == tc.id })

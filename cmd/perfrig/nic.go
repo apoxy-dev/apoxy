@@ -303,8 +303,12 @@ type linkConf struct {
 
 // xdpConf returns c with the settings for XDP in driver mode on ENA: at most half of
 // maxChannels, a small MTU, and forwarding for the next hop lookup of the program.
-func xdpConf(c linkConf, maxChannels uint32) linkConf {
+// A limit above 0 is the most channels.
+func xdpConf(c linkConf, maxChannels, limit uint32) linkConf {
 	c.channels = min(c.channels, max(maxChannels/2, 1))
+	if limit > 0 {
+		c.channels = min(c.channels, limit)
+	}
 	c.mtu = min(c.mtu, xdpMaxMTU)
 	c.forwarding = "1"
 	return c

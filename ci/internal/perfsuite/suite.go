@@ -256,6 +256,8 @@ var vpcRows = []vpcRow{
 	{id: "netstack-psp-relay-3node-p16-xdp", name: "vpc-netstack-psp-relay-3node-xdp", nodes: 3, streams: 16, xdp: true, client: []string{"-cc", "bbr"}},
 	{id: "netstack-psp-relay-3node-p8-xdp", name: "vpc-netstack-psp-relay-3node-xdp", nodes: 3, streams: 8, xdp: true, client: []string{"-cc", "bbr"}},
 	{id: "netstack-psp-relay-3node-p32-xdp", name: "vpc-netstack-psp-relay-3node-xdp", nodes: 3, streams: 32, xdp: true, client: []string{"-cc", "bbr"}},
+	// One relay RX queue gets all packets, so the row gives the most packets that one CPU forwards.
+	{id: "netstack-psp-relay-3node-p16-xdp-q1", name: "vpc-netstack-psp-relay-3node-xdp-q1", nodes: 3, streams: 16, xdp: true, client: []string{"-cc", "bbr"}, args: []string{"-relay-channels=1"}},
 }
 
 // nodeStartTimeout is the time that vpcbench on one host waits for the hosts

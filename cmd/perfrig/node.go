@@ -64,6 +64,7 @@ func nodeCmd(ctx context.Context, args []string) error {
 	fs.StringVar(&cfg.OutDir, "out-dir", "", "keep the workload files and raw output in this directory")
 	fs.StringVar(&cfg.AppCPUs, "app-cpus", "", "pin the workload process to this CPU list (empty: no pin)")
 	fs.BoolVar(&cfg.RelayXDP, "relay-xdp", false, "the relay host sets its link for XDP in driver mode during the row: at most half of the channels, MTU at most 3498 and IPv4 forwarding")
+	fs.IntVar(&cfg.RelayChannels, "relay-channels", 0, "with -relay-xdp: the most channels of the relay link, so that few CPUs receive all packets (0: no limit)")
 	out := fs.String("out", "", "write the result JSON to this file (default: stdout)")
 	fs.StringVar(&cfg.Name, "name", "", "result name")
 	fs.Var((*argvFlag)(&cfg.ServerArgv), "server-argv", "JSON argv of the server role; $SERVER_IP, $RELAY_IP and $CLIENT_IP expand to the host addresses, and $DEV to the network device of this host")
@@ -79,6 +80,9 @@ func nodeCmd(ctx context.Context, args []string) error {
 	}
 	if cfg.Delay < 0 || (cfg.Delay > 0 && cfg.QueueLimit < 1) {
 		return errors.New("bad flags: need -delay >= 0, and -queue-limit >= 1 with -delay")
+	}
+	if cfg.RelayChannels < 0 || (cfg.RelayChannels > 0 && !cfg.RelayXDP) {
+		return errors.New("bad flags: need -relay-channels >= 0, and -relay-xdp with -relay-channels")
 	}
 	if strings.ContainsAny(cfg.HostClass, " \t\n") {
 		return fmt.Errorf("bad -host-class %q: it must be one word", cfg.HostClass)
@@ -116,7 +120,7 @@ func executeNode(ctx context.Context, cfg config, w Workload, role string, nodes
 		return nil, err
 	}
 	if role == "relay" && cfg.RelayXDP {
-		undo, err := prepareXDP(ctx, dev, ip, linkSettle)
+		undo, err := prepareXDP(ctx, dev, ip, uint32(cfg.RelayChannels), linkSettle)
 		if err != nil {
 			return nil, fmt.Errorf("set %s for XDP: %w", dev, err)
 		}

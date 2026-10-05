@@ -45,6 +45,8 @@ type config struct {
 	RPSCPUs string
 	// RelayXDP makes the relay host of "perfrig node" set its link for XDP in driver mode.
 	RelayXDP bool
+	// RelayChannels is the most channels of the relay link with RelayXDP. 0: no limit.
+	RelayChannels int
 
 	// Exec workload flags.
 	Name        string
