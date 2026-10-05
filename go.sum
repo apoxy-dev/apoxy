@@ -160,6 +160,8 @@ github.com/apoxy-dev/icx v0.19.1-0.20261004055557-234cdee8b032 h1:QAudmf9pGVPL/s
 github.com/apoxy-dev/icx v0.19.1-0.20261004055557-234cdee8b032/go.mod h1:B52w7Cs1nsMyE3IwkFMwy06gGQ5Dz0YxPrd1eUWv7g4=
 github.com/apoxy-dev/icx v0.19.1-0.20261005102829-85034a581eba h1:FRlJIYsGsQbDiFmlJSsBcxrIWdXb61TNMbEr1N5uEFE=
 github.com/apoxy-dev/icx v0.19.1-0.20261005102829-85034a581eba/go.mod h1:B52w7Cs1nsMyE3IwkFMwy06gGQ5Dz0YxPrd1eUWv7g4=
+github.com/apoxy-dev/icx v0.19.1-0.20261005151533-09544bab0a70 h1:zAGrVM6QFfU1F2zhLCyUc9bLMdjhg7jg5hqfQP95xcs=
+github.com/apoxy-dev/icx v0.19.1-0.20261005151533-09544bab0a70/go.mod h1:B52w7Cs1nsMyE3IwkFMwy06gGQ5Dz0YxPrd1eUWv7g4=
 github.com/apoxy-dev/quic-go v0.0.0-20261003061000-82d62f8f6e95 h1:6SgrLjRGZiapjO2U9nwWEiXQpSj67Q9zpeYbRYTrKnQ=
 github.com/apoxy-dev/quic-go v0.0.0-20261003061000-82d62f8f6e95/go.mod h1:MFlGGpcpJqRAfmYi6NC2cptDPSxRWTOGNuP4wqrWmzQ=
 github.com/apoxy-dev/quic-go v0.0.0-20261004022948-e159f5d8949c h1:CS7bhF4EDGh2K6pLlFq0L0BIf0NXon2pwAA4WYD/dTw=
