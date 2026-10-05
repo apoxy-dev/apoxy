@@ -109,6 +109,24 @@ func TestRigLinks(t *testing.T) {
 	}
 }
 
+func TestRelaySteps(t *testing.T) {
+	in := func(ns string, args ...string) []string {
+		return append([]string{"ip", "netns", "exec", ns, "ethtool", "-K"}, args...)
+	}
+	want := [][]string{
+		in("p-bridge", "perf-r", "tx", "off"),
+		in("p-relay", "perf-r", "tx-udp-segmentation", "off"),
+		in("p-relay", "perf-r", "gro", "on"),
+		in("p-bridge", "perf-c", "tso", "off"),
+		in("p-client", "perf-c", "tx-udp-segmentation", "off"),
+		in("p-client", "perf-c", "gro", "on"),
+		in("p-bridge", "perf-s", "tso", "off"),
+		in("p-server", "perf-s", "tx-udp-segmentation", "off"),
+		in("p-server", "perf-s", "gro", "on"),
+	}
+	assert.Equal(t, want, newRig(config{NetnsPrefix: "p", RelayNetns: true}).relaySteps())
+}
+
 func TestCPUMask(t *testing.T) {
 	cases := []struct {
 		n    int
@@ -131,6 +149,7 @@ func TestCPUMask(t *testing.T) {
 func TestCPUListMask(t *testing.T) {
 	cases := []struct {
 		list    string
+		limit   int
 		want    string
 		wantErr bool
 	}{
@@ -140,19 +159,61 @@ func TestCPUListMask(t *testing.T) {
 		{list: "16-31", want: "ffff0000"},
 		{list: "0-15,20", want: "10ffff"},
 		{list: "32,0", want: "1,1"},
+		{list: "16-31", limit: 8, want: "ff0000"},
+		{list: "40,0-3,2", limit: 3, want: "7"},
+		{list: "0-3", limit: 8, want: "f"},
 		{list: "", wantErr: true},
 		{list: "3-1", wantErr: true},
 		{list: "a", wantErr: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.list, func(t *testing.T) {
-			got, err := cpuListMask(tc.list)
+			got, err := cpuListMask(tc.list, tc.limit)
 			if tc.wantErr {
 				assert.Error(t, err)
 				return
 			}
 			assert.NoError(t, err)
 			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestSteering(t *testing.T) {
+	rx := func(dev string) string { return "/sys/class/net/" + dev + "/queues/rx-*/rps_cpus" }
+	tx := func(dev string) string { return "/sys/class/net/" + dev + "/queues/tx-0/xps_cpus" }
+	relayRig := func(rps, ring, all string) []sysfsWrite {
+		return []sysfsWrite{
+			{"p-client", rx("perf-c"), rps}, {"p-client", tx("perf-c"), all},
+			{"p-server", rx("perf-s"), rps}, {"p-server", tx("perf-s"), all},
+			{"p-relay", rx("perf-r"), rps}, {"p-relay", tx("perf-r"), all},
+			{"p-bridge", rx("perf-c"), ring}, {"p-bridge", rx("perf-s"), ring}, {"p-bridge", rx("perf-r"), ring},
+		}
+	}
+	cases := []struct {
+		name string
+		cfg  config
+		cpus int
+		want []sysfsWrite
+	}{
+		{
+			name: "veth pair", cfg: config{NetnsPrefix: "p"}, cpus: 32,
+			want: []sysfsWrite{{"p-client", rx("perf-c"), "ffffffff"}, {"p-server", rx("perf-s"), "ffffffff"}},
+		},
+		{name: "relay rig", cfg: config{NetnsPrefix: "p", RelayNetns: true}, cpus: 32, want: relayRig("ffffffff", "ff", "ffffffff")},
+		{name: "relay rig with fewer CPUs than queues", cfg: config{NetnsPrefix: "p", RelayNetns: true}, cpus: 4, want: relayRig("f", "f", "f")},
+		{
+			name: "relay rig with an RPS CPU list", cfg: config{NetnsPrefix: "p", RelayNetns: true, RPSCPUs: "16-31"}, cpus: 32,
+			want: relayRig("ffff0000", "ff0000", "ffffffff"),
+		},
+		{
+			name: "bad RPS CPU list", cfg: config{NetnsPrefix: "p", RPSCPUs: "x"}, cpus: 4,
+			want: []sysfsWrite{{"p-client", rx("perf-c"), "f"}, {"p-server", rx("perf-s"), "f"}},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, newRig(tc.cfg).steering(tc.cpus))
 		})
 	}
 }

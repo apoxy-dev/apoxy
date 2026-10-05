@@ -24,6 +24,8 @@ type Run struct {
 	WorkloadResult json.RawMessage `json:"workload_result,omitempty"`
 	// NIC has the increase of the NIC drop counters while the workload ran, in "perfrig node".
 	NIC map[string]int64 `json:"nic_counters,omitempty"`
+	// Rig has the rig counters that increased while the client ran, and their increase.
+	Rig map[string]int64 `json:"rig_counters,omitempty"`
 }
 
 // throughputFields are the workload result fields that Throughput has.

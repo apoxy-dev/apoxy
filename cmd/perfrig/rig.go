@@ -27,7 +27,7 @@ const (
 
 	// vethQueues is the queue count of each veth of the relay rig, as the NIC
 	// of the bench host has. With one queue, agents use one lane.
-	vethQueues = "8"
+	vethQueues = 8
 )
 
 var errNetemMissing = errors.New("the kernel has no netem qdisc (sch_netem): " +
@@ -110,7 +110,7 @@ func loadNetem(ctx context.Context) {
 
 // links returns the commands that add the netns and the links.
 func (r *rig) links() [][]string {
-	mtu := strconv.Itoa(r.cfg.MTU)
+	mtu, queues := strconv.Itoa(r.cfg.MTU), strconv.Itoa(vethQueues)
 	ends := []struct{ ns, dev, ip string }{{r.client, clientDev, clientIP}, {r.server, serverDev, serverIP}}
 	var steps [][]string
 	if r.relay == "" {
@@ -130,8 +130,8 @@ func (r *rig) links() [][]string {
 		for _, e := range ends {
 			steps = append(steps,
 				[]string{"ip", "netns", "add", e.ns},
-				[]string{"ip", "-n", r.bridge, "link", "add", e.dev, "mtu", mtu, "numtxqueues", vethQueues, "numrxqueues", vethQueues,
-					"type", "veth", "peer", "name", e.dev, "numtxqueues", vethQueues, "numrxqueues", vethQueues, "netns", e.ns},
+				[]string{"ip", "-n", r.bridge, "link", "add", e.dev, "mtu", mtu, "numtxqueues", queues, "numrxqueues", queues,
+					"type", "veth", "peer", "name", e.dev, "numtxqueues", queues, "numrxqueues", queues, "netns", e.ns},
 				[]string{"ip", "-n", r.bridge, "link", "set", "dev", e.dev, "master", bridgeDev, "up"})
 		}
 	}
@@ -148,25 +148,12 @@ func (r *rig) links() [][]string {
 }
 
 // tuneRelay makes the links of the relay rig like NIC links. The relay netns
-// forwards, so that XDP can send packets on. The bridge port of the relay sends
-// single packets with a checksum, as a wire does, and the relay link segments
-// the UDP GSO packets of the relay. Each end receives with GRO, as a NIC does.
+// forwards, so that XDP can send packets on.
 func (r *rig) tuneRelay(ctx context.Context) error {
 	if err := writeIn(ctx, r.relay, "/proc/sys/net/ipv4/ip_forward", "1"); err != nil {
 		return err
 	}
-	steps := [][]string{
-		{"ip", "netns", "exec", r.bridge, "ethtool", "-K", relayDev, "tx", "off"},
-		{"ip", "netns", "exec", r.relay, "ethtool", "-K", relayDev, "tx-udp-segmentation", "off"},
-		{"ip", "netns", "exec", r.relay, "ethtool", "-K", relayDev, "gro", "on"},
-	}
-	// A veth receives forwarded packets with GRO only when its peer has TSO off.
-	for _, e := range []struct{ ns, dev string }{{r.client, clientDev}, {r.server, serverDev}} {
-		steps = append(steps,
-			[]string{"ip", "netns", "exec", r.bridge, "ethtool", "-K", e.dev, "tso", "off"},
-			[]string{"ip", "netns", "exec", e.ns, "ethtool", "-K", e.dev, "gro", "on"})
-	}
-	for _, s := range steps {
+	for _, s := range r.relaySteps() {
 		if _, err := command(ctx, s...); err != nil {
 			return err
 		}
@@ -174,29 +161,79 @@ func (r *rig) tuneRelay(ctx context.Context) error {
 	return nil
 }
 
-// setRPS lets the RPS CPUs, by default all CPUs, receive on the veths, one CPU
-// per flow. Without RPS, netem on a veth reorders packets, and the bridge of
-// the relay rig forwards each flow on the CPU that sent it.
+// relaySteps returns the offload settings of the relay rig. The bridge port of the relay
+// sends single packets with a checksum, as a wire does. Each end receives with GRO, as a NIC does.
+func (r *rig) relaySteps() [][]string {
+	steps := [][]string{{"ip", "netns", "exec", r.bridge, "ethtool", "-K", relayDev, "tx", "off"}}
+	for _, e := range []rigLink{{r.relay, relayDev}, {r.client, clientDev}, {r.server, serverDev}} {
+		if e.dev != relayDev {
+			// A veth receives forwarded packets with GRO only when its peer has TSO off.
+			steps = append(steps, []string{"ip", "netns", "exec", r.bridge, "ethtool", "-K", e.dev, "tso", "off"})
+		}
+		// Each end segments its UDP GSO packets, as ENA does. A packet that a bridge port
+		// segments is one burst into the veth ring of 256 packets, and a full ring drops.
+		steps = append(steps,
+			[]string{"ip", "netns", "exec", e.ns, "ethtool", "-K", e.dev, "tx-udp-segmentation", "off"},
+			[]string{"ip", "netns", "exec", e.ns, "ethtool", "-K", e.dev, "gro", "on"})
+	}
+	return steps
+}
+
+// setRPS sets the RPS and XPS masks of the veths.
 func (r *rig) setRPS(ctx context.Context) {
-	mask := cpuMask(runtime.NumCPU())
+	for _, w := range r.steering(runtime.NumCPU()) {
+		if err := writeIn(ctx, w.ns, w.pattern, w.value); err != nil {
+			slog.Warn("Failed to set packet steering on the veth", "netns", w.ns, "files", w.pattern, "error", err)
+		}
+	}
+}
+
+// sysfsWrite is a value for the sysfs files of pattern in a netns.
+type sysfsWrite struct{ ns, pattern, value string }
+
+// steering returns the RPS and XPS masks of the veths on a host with cpus CPUs. The RPS CPUs,
+// by default all CPUs, receive one flow each. Without RPS, netem on a veth reorders packets.
+func (r *rig) steering(cpus int) []sysfsWrite {
+	rps, ring := cpuMask(cpus), cpuMask(min(vethQueues, cpus))
 	if r.cfg.RPSCPUs != "" {
-		m, err := cpuListMask(r.cfg.RPSCPUs)
+		m, err := cpuListMask(r.cfg.RPSCPUs, 0)
 		if err != nil {
 			slog.Warn("Bad RPS CPU list", "list", r.cfg.RPSCPUs, "error", err)
 		} else {
-			mask = m
+			rps = m
+			ring, _ = cpuListMask(r.cfg.RPSCPUs, vethQueues)
 		}
 	}
-	ends := []struct{ ns, dev string }{{r.client, clientDev}, {r.server, serverDev}}
+	var writes []sysfsWrite
+	for _, e := range r.veths() {
+		queues := "/sys/class/net/" + e.dev + "/queues/"
+		switch {
+		case r.relay == "":
+			writes = append(writes, sysfsWrite{e.ns, queues + "rx-*/rps_cpus", rps})
+		case e.ns == r.bridge:
+			// A port has one CPU for each TX queue, and the flow hash selects the two, so one
+			// CPU sends into each veth ring. More CPUs fill the ring of 256 packets, and it drops.
+			writes = append(writes, sysfsWrite{e.ns, queues + "rx-*/rps_cpus", ring})
+		default:
+			// The end in a netns sends on queue 0. A port selects its TX queue from the
+			// queue of the sender, and not from the flow hash, when that queue is not 0.
+			writes = append(writes, sysfsWrite{e.ns, queues + "rx-*/rps_cpus", rps},
+				sysfsWrite{e.ns, queues + "tx-0/xps_cpus", cpuMask(cpus)})
+		}
+	}
+	return writes
+}
+
+// rigLink is one link of the rig in its netns.
+type rigLink struct{ ns, dev string }
+
+// veths returns each end of the veth pairs of the rig.
+func (r *rig) veths() []rigLink {
+	ends := []rigLink{{r.client, clientDev}, {r.server, serverDev}}
 	if r.relay != "" {
-		ends = append(ends, struct{ ns, dev string }{r.relay, relayDev},
-			struct{ ns, dev string }{r.bridge, clientDev}, struct{ ns, dev string }{r.bridge, serverDev}, struct{ ns, dev string }{r.bridge, relayDev})
+		ends = append(ends, rigLink{r.relay, relayDev}, rigLink{r.bridge, clientDev}, rigLink{r.bridge, serverDev}, rigLink{r.bridge, relayDev})
 	}
-	for _, e := range ends {
-		if err := writeIn(ctx, e.ns, "/sys/class/net/"+e.dev+"/queues/rx-*/rps_cpus", mask); err != nil {
-			slog.Warn("Failed to set RPS on the veth", "netns", e.ns, "dev", e.dev, "error", err)
-		}
-	}
+	return ends
 }
 
 // cpuMask returns the rps_cpus mask for n CPUs, in 32-bit hex groups with commas between them.
@@ -208,15 +245,10 @@ func cpuMask(n int) string {
 	return strings.Join(groups, ",")
 }
 
-// cpuListMask returns the rps_cpus mask of a CPU list such as "0-15,20".
-func cpuListMask(list string) (string, error) {
-	var bits []uint32
-	set := func(n int) {
-		for n/32 >= len(bits) {
-			bits = append(bits, 0)
-		}
-		bits[n/32] |= 1 << (n % 32)
-	}
+// cpuListMask returns the rps_cpus mask of a CPU list such as "0-15,20". A limit
+// above 0 keeps only the first limit CPUs.
+func cpuListMask(list string, limit int) (string, error) {
+	var cpus []int
 	for _, part := range strings.Split(list, ",") {
 		lo, hi, ok := strings.Cut(strings.TrimSpace(part), "-")
 		a, err := strconv.Atoi(lo)
@@ -230,8 +262,16 @@ func cpuListMask(list string) (string, error) {
 			}
 		}
 		for n := a; n <= b; n++ {
-			set(n)
+			cpus = append(cpus, n)
 		}
+	}
+	slices.Sort(cpus)
+	if cpus = slices.Compact(cpus); limit > 0 {
+		cpus = cpus[:min(limit, len(cpus))]
+	}
+	bits := make([]uint32, cpus[len(cpus)-1]/32+1)
+	for _, n := range cpus {
+		bits[n/32] |= 1 << (n % 32)
 	}
 	groups := make([]string, 0, len(bits))
 	for i := len(bits) - 1; i >= 0; i-- {

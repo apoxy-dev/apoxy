@@ -3,7 +3,10 @@ package main
 import (
 	"fmt"
 	"io"
+	"maps"
 	"os"
+	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -76,6 +79,9 @@ func writeSummary(w io.Writer, outcomes []outcome) {
 			fmt.Fprintf(w, "; %s", d)
 		}
 		if d := nicDetail(o.Result.Host.NIC, o.Result.NIC); d != "" {
+			fmt.Fprintf(w, "; %s", d)
+		}
+		if d := rigDetail(o.Result.Runs); d != "" {
 			fmt.Fprintf(w, "; %s", d)
 		}
 		fmt.Fprintln(w)
@@ -196,4 +202,29 @@ func nicDetail(nic *NIC, counters map[string]int64) string {
 		d += "; nic counters: " + strings.Join(parts, ", ")
 	}
 	return d
+}
+
+// rigDetail lists the rig counters that increased, but not the packets of the
+// queues, with the increase in each run.
+func rigDetail(runs []Run) string {
+	keys := map[string]bool{}
+	for _, r := range runs {
+		for k := range r.Rig {
+			if !strings.HasSuffix(k, "_packets") {
+				keys[k] = true
+			}
+		}
+	}
+	var parts []string
+	for _, k := range slices.Sorted(maps.Keys(keys)) {
+		part := k
+		for _, r := range runs {
+			part += " " + strconv.FormatInt(r.Rig[k], 10)
+		}
+		parts = append(parts, part)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "rig counters by run: " + strings.Join(parts, ", ")
 }

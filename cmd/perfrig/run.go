@@ -233,6 +233,7 @@ func runRep(ctx context.Context, cfg config, w Workload, r *rig, env Env, rep in
 		return Run{}, err
 	}
 
+	rig0 := r.counters(ctx)
 	hostBefore, hostErr := readCPUTimes()
 	su0, ss0, serverErr := side.cpuNow()
 	start := time.Now()
@@ -244,6 +245,7 @@ func runRep(ctx context.Context, cfg config, w Workload, r *rig, env Env, rep in
 	elapsed := time.Since(start).Seconds()
 	hostAfter, hostErr2 := readCPUTimes()
 	su1, ss1, serverErr2 := side.cpuNow()
+	run.Rig = increases(rig0, r.counters(ctx))
 	// Let the server write its report and exit, then stop it and the sidecar.
 	_ = server.wait(ctx, 10*time.Second)
 	for _, p := range side {
@@ -290,7 +292,7 @@ func runRep(ctx context.Context, cfg config, w Workload, r *rig, env Env, rep in
 	run.CPU.Relay = markCPU(run.WorkloadResult, "relay")
 	run.Load1End = load1()
 	slog.Info("Rep done", "rep", rep, "gbps", tp.Gbps, "load1_start", run.Load1Start, "load1_end", run.Load1End,
-		"steal_percent", run.StealPercent)
+		"steal_percent", run.StealPercent, "rig_counters", run.Rig)
 	return run, nil
 }
 
