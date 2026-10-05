@@ -86,7 +86,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
-	stopProfiles, err := o.Profiles.Start()
+	o.prof, err = o.Profiles.Start()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -101,7 +101,7 @@ func main() {
 	default:
 		err = runClient(ctx, o, os.Stdout)
 	}
-	if perr := stopProfiles(); perr != nil {
+	if perr := o.prof.Stop(); perr != nil {
 		slog.Warn("Failed to write the profiles", "error", perr)
 	}
 	if err != nil {
@@ -124,6 +124,15 @@ type options struct {
 	// StopRelay makes the client stop the relay at the end.
 	StopRelay bool
 	Profiles  bench.Profiles
+	// prof are the profiles that main started. Nil: the run has no profiles.
+	prof *bench.Running
+}
+
+// marked tells the profiles that the run took mark i of a measured window with the length window.
+func (o options) marked(i int, window time.Duration) {
+	if err := o.prof.Mark(i, window); err != nil {
+		slog.Warn("Failed to start or write a part of the profiles", "mark", i, "error", err)
+	}
 }
 
 // parseFlags reads the flags of cmd and checks them.
@@ -397,6 +406,10 @@ type request struct {
 	Op   string `json:"op"`
 	Port int    `json:"port,omitempty"` // Hello with -via direct: UDP port of the client.
 	Keys []byte `json:"keys,omitempty"` // Hello with -via direct: a dp.KeysRequest.
+	// Index is the number of a mark: 1 at the start of the measured window, 2 at its end.
+	// Window is the length of the measured window.
+	Index  int           `json:"index,omitempty"`
+	Window time.Duration `json:"window,omitempty"`
 }
 
 // reply answers a request.
@@ -453,8 +466,9 @@ func (c *ctl) call(req request) (reply, error) {
 	return rep, nil
 }
 
-func (c *ctl) mark() (mark, error) {
-	rep, err := c.call(request{Op: "mark"})
+// mark gets mark i of the other side. window is the length of the measured window.
+func (c *ctl) mark(i int, window time.Duration) (mark, error) {
+	rep, err := c.call(request{Op: "mark", Index: i, Window: window})
 	return rep.Mark, err
 }
 
@@ -587,12 +601,14 @@ func runServer(parent context.Context, o options, ready func(netip.AddrPort)) er
 			}
 			st := s.b.Stats()
 			_, retrans := s.net.TCPCounters()
-			return reply{Mark: mark{
+			m := mark{
 				Nanos: time.Since(start).Nanoseconds(), CPU: bench.CPUSeconds(), HostCPU: bench.HostCPUSeconds(), Retrans: retrans,
 				Bytes: got.Load(), RxPackets: st.RxPackets, Drops: st.RxDrops + st.RxNoDriver,
 				RcvbufErrors: snmpCounter("Udp:", "RcvbufErrors"), SockDrops: sockDrops(s.uc), LinkDrops: s.net.LinkDrops(),
 				CPUs: bench.PerCPU(), Queue: s.q.take(), Lanes: s.b.LanePackets(), RxLanes: s.b.RxLanePackets(),
-			}}, nil
+			}
+			o.marked(req.Index, req.Window)
+			return reply{Mark: m}, nil
 		}
 		return reply{}, fmt.Errorf("unknown op %q", req.Op)
 	})
@@ -833,14 +849,15 @@ func measure(ctx context.Context, o options, s *side, peer netip.Addr, srv, rela
 			Lanes: s.b.LanePackets(),
 		}
 		var err error
-		if server[i], err = srv.mark(); err != nil {
+		if server[i], err = srv.mark(i, o.Duration); err != nil {
 			return err
 		}
 		if relay != nil {
-			if rel[i], err = relay.mark(); err != nil {
+			if rel[i], err = relay.mark(i, o.Duration); err != nil {
 				return err
 			}
 		}
+		o.marked(i, o.Duration)
 		return nil
 	}
 	if err := takeMarks(0); err != nil {

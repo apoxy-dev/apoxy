@@ -307,6 +307,14 @@ func TestNodePlans(t *testing.T) {
 			id:   "netstack-psp-relay-3node-p16-xdp",
 			want: []string{"-name=vpc-netstack-psp-relay-3node-xdp", "-streams=16", "-relay-xdp"},
 		},
+		{
+			id:   "netstack-psp-relay-3node-p8-xdp",
+			want: []string{"-name=vpc-netstack-psp-relay-3node-xdp", "-streams=8", "-relay-xdp"},
+		},
+		{
+			id:   "netstack-psp-relay-3node-p32-xdp",
+			want: []string{"-name=vpc-netstack-psp-relay-3node-xdp", "-streams=32", "-relay-xdp"},
+		},
 	}
 	for _, tc := range wantArgs {
 		i = slices.IndexFunc(rows, func(r Row) bool { return r.ID == tc.id })
@@ -337,9 +345,9 @@ func TestVPCProfileArgs(t *testing.T) {
 		{
 			name: "on", profile: true,
 			want: []string{
-				`-sidecar-argv=["vpcbench","relay","-listen","$SERVER_IP:4443","-cpuprofile","$WORK_DIR/relay-cpu.pprof","-blockprofile","$WORK_DIR/relay-block.pprof","-mutexprofile","$WORK_DIR/relay-mutex.pprof"]`,
-				`-server-argv=["vpcbench","server","-relay","$SERVER_IP:4443","-listen","$SERVER_IP:4433","-cpuprofile","$WORK_DIR/server-cpu.pprof","-blockprofile","$WORK_DIR/server-block.pprof","-mutexprofile","$WORK_DIR/server-mutex.pprof"]`,
-				`-client-argv=["vpcbench","client","-relay","$SERVER_IP:4443","-server","$SERVER_IP:4433","-cc","bbr","-streams","$STREAMS","-omit","${OMIT_S}s","-duration","${DURATION_S}s","-cpuprofile","$WORK_DIR/client-cpu.pprof","-blockprofile","$WORK_DIR/client-block.pprof","-mutexprofile","$WORK_DIR/client-mutex.pprof"]`,
+				`-sidecar-argv=["vpcbench","relay","-listen","$SERVER_IP:4443","-cpuprofile","$WORK_DIR/relay-cpu.pprof","-blockprofile","$WORK_DIR/relay-block.pprof","-mutexprofile","$WORK_DIR/relay-mutex.pprof","-trace","$WORK_DIR/relay.trace","-kernel","$WORK_DIR/relay-kernel"]`,
+				`-server-argv=["vpcbench","server","-relay","$SERVER_IP:4443","-listen","$SERVER_IP:4433","-cpuprofile","$WORK_DIR/server-cpu.pprof","-blockprofile","$WORK_DIR/server-block.pprof","-mutexprofile","$WORK_DIR/server-mutex.pprof","-trace","$WORK_DIR/server.trace","-kernel","$WORK_DIR/server-kernel"]`,
+				`-client-argv=["vpcbench","client","-relay","$SERVER_IP:4443","-server","$SERVER_IP:4433","-cc","bbr","-streams","$STREAMS","-omit","${OMIT_S}s","-duration","${DURATION_S}s","-cpuprofile","$WORK_DIR/client-cpu.pprof","-blockprofile","$WORK_DIR/client-block.pprof","-mutexprofile","$WORK_DIR/client-mutex.pprof","-trace","$WORK_DIR/client.trace","-kernel","$WORK_DIR/client-kernel"]`,
 			},
 		},
 	}

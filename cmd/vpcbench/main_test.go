@@ -93,9 +93,9 @@ func TestParseFlags(t *testing.T) {
 		{name: "negative mtu", cmd: "client", args: []string{"-server", "s:1", "-relay", "r:1", "-mtu", "-1"}, wantErr: "-mtu must not be negative"},
 		{name: "extra argument", cmd: "client", args: []string{"-server", "s:1", "-relay", "r:1", "extra"}, wantErr: "unexpected arguments"},
 		{
-			name: "profiles", cmd: "relay", args: []string{"-listen", ":4443", "-cpuprofile", "c.pprof", "-blockprofile", "b.pprof", "-mutexprofile", "m.pprof"},
+			name: "profiles", cmd: "relay", args: []string{"-listen", ":4443", "-cpuprofile", "c.pprof", "-blockprofile", "b.pprof", "-mutexprofile", "m.pprof", "-trace", "r.trace", "-kernel", "k"},
 			want: func(o options) bool {
-				return o.Profiles == bench.Profiles{CPU: "c.pprof", Block: "b.pprof", Mutex: "m.pprof"}
+				return o.Profiles == bench.Profiles{CPU: "c.pprof", Block: "b.pprof", Mutex: "m.pprof", Trace: "r.trace", TraceTime: 3 * time.Second, Kernel: "k"}
 			},
 		},
 	}

@@ -119,11 +119,13 @@ func runRelay(ctx context.Context, o options, ready func(netip.AddrPort)) error 
 			case "mark":
 				drops, xdp, passed := relayCounters(r)
 				xdpS := xdpCPU()
-				return reply{Mark: mark{
+				m := mark{
 					Nanos: time.Since(start).Nanoseconds(), CPU: bench.CPUSeconds() + xdpS, HostCPU: bench.HostCPUSeconds(),
 					Drops: drops, SockDrops: sockDrops(uc), XDPPackets: xdp, XDPPassed: passed, XDPSeconds: xdpS, XDPMode: xdpMode,
 					Sends: r.ForwardStats(), CPUs: bench.PerCPU(),
-				}}, nil
+				}
+				o.marked(req.Index, req.Window)
+				return reply{Mark: m}, nil
 			case "stop":
 				slog.Info("A client stopped the relay")
 				cancel()

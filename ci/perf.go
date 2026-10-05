@@ -120,8 +120,9 @@ func (m *ApoxyCli) PerfVpc(
 	awsSecretAccessKey *dagger.Secret,
 	// +optional
 	awsSessionToken *dagger.Secret,
-	// Write CPU, block and mutex profiles of each vpcbench process into the
-	// results. It costs some throughput, so do not compare to the baseline.
+	// Write CPU, block and mutex profiles, a short runtime trace and the kernel
+	// counters of each vpcbench process into the results. It costs some
+	// throughput, so do not compare to the baseline.
 	// +optional
 	profile bool,
 	// ec2: the instance type of the hosts. The baseline has c7a.8xlarge only.

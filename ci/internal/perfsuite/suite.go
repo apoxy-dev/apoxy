@@ -49,7 +49,8 @@ type Options struct {
 	Only []string
 	// Host tells that perfagent sets up the host: an EC2 instance, not a container.
 	Host bool
-	// Profile makes the VPC rows write pprof files. It costs some throughput.
+	// Profile makes the VPC rows write pprof files, a short runtime trace and the
+	// kernel counters. It costs some throughput.
 	Profile bool
 }
 
@@ -253,6 +254,8 @@ var vpcRows = []vpcRow{
 	// The relay forwards in XDP on its NIC, in driver mode when the driver takes the program.
 	{id: "netstack-psp-relay-3node-xdp", name: "vpc-netstack-psp-relay-3node-xdp", nodes: 3, xdp: true, client: []string{"-cc", "bbr"}},
 	{id: "netstack-psp-relay-3node-p16-xdp", name: "vpc-netstack-psp-relay-3node-xdp", nodes: 3, streams: 16, xdp: true, client: []string{"-cc", "bbr"}},
+	{id: "netstack-psp-relay-3node-p8-xdp", name: "vpc-netstack-psp-relay-3node-xdp", nodes: 3, streams: 8, xdp: true, client: []string{"-cc", "bbr"}},
+	{id: "netstack-psp-relay-3node-p32-xdp", name: "vpc-netstack-psp-relay-3node-xdp", nodes: 3, streams: 32, xdp: true, client: []string{"-cc", "bbr"}},
 }
 
 // nodeStartTimeout is the time that vpcbench on one host waits for the hosts
@@ -337,14 +340,15 @@ func (r vpcRow) row(o Options) Row {
 	return row
 }
 
-// profileArgs are the vpcbench flags that write the profiles of role to the
-// work dir of the rep. perfagent uploads them with the results.
+// profileArgs are the vpcbench flags that write the profiles, the runtime trace
+// and the kernel counters of role to the work dir of the rep. perfagent uploads
+// them with the results.
 func profileArgs(role string) []string {
 	var args []string
 	for _, kind := range []string{"cpu", "block", "mutex"} {
 		args = append(args, "-"+kind+"profile", "$WORK_DIR/"+role+"-"+kind+".pprof")
 	}
-	return args
+	return append(args, "-trace", "$WORK_DIR/"+role+".trace", "-kernel", "$WORK_DIR/"+role+"-kernel")
 }
 
 // VPC is the VPC data path through the relay, with one floor row and info

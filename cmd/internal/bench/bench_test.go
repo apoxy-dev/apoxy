@@ -165,11 +165,20 @@ func TestProfiles(t *testing.T) {
 			dir := t.TempDir()
 			var p Profiles
 			if tc.set {
-				p = Profiles{CPU: filepath.Join(dir, "cpu.pprof"), Block: filepath.Join(dir, "block.pprof"), Mutex: filepath.Join(dir, "mutex.pprof")}
+				p = Profiles{
+					CPU: filepath.Join(dir, "cpu.pprof"), Block: filepath.Join(dir, "block.pprof"), Mutex: filepath.Join(dir, "mutex.pprof"),
+					Trace: filepath.Join(dir, "run.trace"), TraceTime: 20 * time.Millisecond,
+				}
 			}
-			stop, err := p.Start()
+			r, err := p.Start()
 			require.NoError(t, err)
-			require.NoError(t, stop())
+			// Only the first call for a mark starts a trace.
+			require.NoError(t, r.Mark(0, 0))
+			require.NoError(t, r.Mark(1, 0))
+			require.NoError(t, r.Mark(1, 0))
+			time.Sleep(60 * time.Millisecond)
+			require.NoError(t, r.Mark(2, 0))
+			require.NoError(t, r.Stop())
 			files, err := os.ReadDir(dir)
 			require.NoError(t, err)
 			if !tc.set {
@@ -182,8 +191,27 @@ func TestProfiles(t *testing.T) {
 				// A pprof file is a gzip stream.
 				assert.True(t, bytes.HasPrefix(b, []byte{0x1f, 0x8b}), "%s is not a pprof file", path)
 			}
+			b, err := os.ReadFile(p.Trace)
+			require.NoError(t, err)
+			assert.True(t, bytes.HasPrefix(b, []byte("go 1.")), "%s is not a runtime trace", p.Trace)
 		})
 	}
+}
+
+// TestProfilesStopInTrace stops the profiles while the trace runs. A nil Running does nothing.
+func TestProfilesStopInTrace(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "run.trace")
+	r, err := Profiles{Trace: path, TraceTime: time.Hour}.Start()
+	require.NoError(t, err)
+	require.NoError(t, r.Mark(1, 0))
+	require.NoError(t, r.Stop())
+	b, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.True(t, bytes.HasPrefix(b, []byte("go 1.")))
+
+	var none *Running
+	assert.NoError(t, none.Mark(1, 0))
+	assert.NoError(t, none.Stop())
 }
 
 func TestHostBusy(t *testing.T) {
