@@ -144,6 +144,7 @@ type Binding struct {
 	readers [keys.MaxLanes]*quic.Transport // The read loops of lane sockets 1 and up.
 
 	stats counters
+	load  laneLoad
 }
 
 // New returns a binding with a new master key and no peers.
@@ -283,11 +284,12 @@ type Update struct {
 }
 
 // Tick rekeys the due receive SAs, removes expired SAs and the breaker limits whose
-// time ended. Call it each second, and send each Update to its peer. Failed lanes are due
-// again.
+// time ended, and moves the clock of the send lanes. Call it each second, and send each
+// Update to its peer. Failed lanes are due again.
 func (b *Binding) Tick(now time.Time) ([]Update, error) {
 	ups, err := b.recv.Tick(now)
 	b.send.Expire(now)
+	b.load.advance(now, &b.stats.txLanes)
 	b.mu.Lock()
 	var opened []*Peer
 	for _, p := range b.peers {

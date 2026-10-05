@@ -26,6 +26,8 @@ type Peer struct {
 	// lanes send from the agent socket.
 	sockets atomic.Int32
 	br      breaker
+	// flows has the lane of each flow slot. txSA reads and writes it.
+	flows [flowSlots]atomic.Uint32
 
 	// Guarded by b.mu.
 	routes  []netip.Prefix
@@ -155,24 +157,29 @@ func (p *Peer) updateLanes() {
 	p.lanes.Store(int32(n))
 }
 
-// txSA returns the transmit SA for the inner packet and its lane: the lane of
-// its flow, or another lane if that one has no SA.
+// txSA returns the transmit SA for the inner packet and its lane. A flow keeps
+// its lane while it sends, and a new flow gets the lane with the lowest load.
 func (p *Peer) txSA(inner []byte) (*engine.TxSA, int) {
 	n := int(p.lanes.Load())
-	if n == 0 {
-		return nil, 0
+	if n <= 1 {
+		if n == 0 {
+			return nil, 0
+		}
+		return p.tx.SA(0), 0
 	}
-	lane := 0
-	if n > 1 {
-		lane = int(flow.Hash(p.b.seed, inner) % uint64(n))
-	}
-	if sa := p.tx.SA(lane); sa != nil {
-		return sa, lane
-	}
-	for i := range n {
-		if sa := p.tx.SA(i); sa != nil {
-			return sa, i
+	s := &p.flows[flow.Hash(p.b.seed, inner)&(flowSlots-1)]
+	v := s.Load()
+	// The interval is read after the slot, so it is not older than the slot.
+	now := p.b.load.tick.Load() & slotTick
+	if lane := int(v&slotLane) - 1; lane >= 0 && lane < n {
+		if age := (now - v>>8) & slotTick; age <= flowIdle {
+			if sa := p.tx.SA(lane); sa != nil {
+				if age != 0 {
+					s.CompareAndSwap(v, v&slotLane|now<<8)
+				}
+				return sa, lane
+			}
 		}
 	}
-	return nil, 0
+	return p.newLane(s, n)
 }
