@@ -316,10 +316,17 @@ func (ns *blockNS) do(fn func()) {
 	<-done
 }
 
+// laneWrites is the writes of the goroutine of blockedLane.
+type laneWrites struct {
+	err    error        // The error that stopped the writes.
+	writes []*keptWrite // The WriteKept calls.
+}
+
 // blockedLane opens a binding with lane 1 in a new netns, and sends on the lane
 // until its sender waits in the kernel for send buffer space. It returns the
-// binding, its driver, and a channel that gets the error that stops the driver.
-func blockedLane(t *testing.T) (*Binding, *driver, <-chan error) {
+// binding, its driver, and a channel that gets the writes when an error stops
+// them. With kept, the driver gets the frames with WriteKept.
+func blockedLane(t *testing.T, kept bool) (*Binding, *driver, <-chan laneWrites) {
 	t.Helper()
 	ns := newBlockNS(t)
 	dm := &Demux{}
@@ -362,12 +369,15 @@ func blockedLane(t *testing.T) (*Binding, *driver, <-chan error) {
 	require.NotNil(t, d.lanes[1], "lane 1 has a sender")
 
 	var calls atomic.Int64
-	stopped := make(chan error, 1)
+	stopped := make(chan laneWrites, 1)
 	go func() {
 		frames := repeat(frame, laneFrames)
+		var writes []*keptWrite
 		for {
-			if _, err := d.WriteFrames(frames); err != nil {
-				stopped <- err
+			w, _, err := write(d, frames, kept)
+			writes = append(writes, w)
+			if err != nil {
+				stopped <- laneWrites{err, writes}
 				return
 			}
 			calls.Add(1)
@@ -398,7 +408,7 @@ func TestLaneSendQueue(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var b *Binding
 			if tc.waits {
-				b, _, _ = blockedLane(t)
+				b, _, _ = blockedLane(t, false)
 			} else {
 				a, _ := newPairLanes(t, 0, 3)
 				b = a.b
@@ -422,37 +432,47 @@ func TestLaneSendQueue(t *testing.T) {
 }
 
 // TestCloseBlockedLane closes a binding while the sender of lane 1 waits in the
-// kernel for send buffer space. Close must return at once, and the senders stop.
+// kernel for send buffer space, and its queue is full. Close must return at
+// once, the senders stop, and the driver keeps no frame.
 func TestCloseBlockedLane(t *testing.T) {
-	b, d, stopped := blockedLane(t)
-	senders := []*laneSender{d.lanes[0], d.lanes[1]}
-	select {
-	case <-senders[1].exited:
-		t.Fatal("The sender of lane 1 stopped before the close.")
-	default:
-	}
+	for _, kept := range []bool{false, true} {
+		t.Run("kept="+strconv.FormatBool(kept), func(t *testing.T) {
+			b, d, stopped := blockedLane(t, kept)
+			senders := []*laneSender{d.lanes[0], d.lanes[1]}
+			select {
+			case <-senders[1].exited:
+				t.Fatal("The sender of lane 1 stopped before the close.")
+			default:
+			}
 
-	start := time.Now()
-	closed := make(chan error, 1)
-	go func() { closed <- b.Close() }()
-	select {
-	case err := <-closed:
-		require.NoError(t, err)
-		assert.Less(t, time.Since(start), time.Second, "the time of Close")
-	case <-time.After(5 * time.Second):
-		t.Fatal("Close waits for the sender of lane 1.")
-	}
-	for i, l := range senders {
-		select {
-		case <-l.exited:
-		case <-time.After(5 * time.Second):
-			t.Fatalf("The sender of lane %d did not stop.", i)
-		}
-	}
-	select {
-	case err := <-stopped:
-		assert.ErrorIs(t, err, net.ErrClosed)
-	case <-time.After(5 * time.Second):
-		t.Fatal("The driver did not stop.")
+			start := time.Now()
+			closed := make(chan error, 1)
+			go func() { closed <- b.Close() }()
+			select {
+			case err := <-closed:
+				require.NoError(t, err)
+				assert.Less(t, time.Since(start), time.Second, "the time of Close")
+			case <-time.After(5 * time.Second):
+				t.Fatal("Close waits for the sender of lane 1.")
+			}
+			for i, l := range senders {
+				select {
+				case <-l.exited:
+				case <-time.After(5 * time.Second):
+					t.Fatalf("The sender of lane %d did not stop.", i)
+				}
+			}
+			select {
+			case r := <-stopped:
+				assert.ErrorIs(t, r.err, net.ErrClosed)
+				if kept {
+					// The first frame of the lane can be in a batch too.
+					assert.GreaterOrEqual(t, len(r.writes), laneBatches, "the queue of lane 1 was full")
+				}
+				allReleased(t, r.writes...)
+			case <-time.After(5 * time.Second):
+				t.Fatal("The driver did not stop.")
+			}
+		})
 	}
 }

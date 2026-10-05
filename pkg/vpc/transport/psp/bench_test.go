@@ -3,6 +3,7 @@
 package psp
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/apoxy-dev/softpsp/vtep/netstack"
 	"github.com/stretchr/testify/require"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
 	"gvisor.dev/gvisor/pkg/tcpip/link/channel"
@@ -167,39 +169,97 @@ func BenchmarkWriteFrames(b *testing.B) {
 	}
 }
 
-// BenchmarkLaneQueue copies the 1280 B packets of one set into the queue of a
-// lane and gives them to the sender. The sender only frees the batches.
+// benchSet is the frames of one set of BenchmarkLaneQueue.
+type benchSet struct {
+	frames [][]byte
+	k      *netstack.Kept
+}
+
+// BenchmarkLaneQueue gives the 1280 B packets of one set to the queue of a
+// lane, as the sender of a send pipe does: the driver copies them, or keeps
+// them. The lane sender only frees the batches. With cold, another goroutine
+// writes each packet before the write, as a seal worker does. ns/packet is
+// the time in the write.
 func BenchmarkLaneQueue(b *testing.B) {
-	x, y := newPair(b)
-	offer(b, time.Now(), x, y)
-	d := newDriver(x.b, nil)
-	defer d.Close()
-	frames := make([][]byte, laneFrames)
-	for i := range frames {
-		frames[i] = seal(x, packet(x.v4, y.v4, 6, 1, 2, DefaultMTU))
-	}
-	l := d.newLane(1, nil)
-	d.lanes[1] = l
-	go func() {
-		for {
-			select {
-			case q := <-l.work:
-				q.frames = q.frames[:0]
-				l.free <- q
-			case <-d.done:
-				return
+	for _, bc := range []struct{ kept, cold bool }{{false, false}, {true, false}, {false, true}, {true, true}} {
+		b.Run(fmt.Sprintf("kept=%t/cold=%t", bc.kept, bc.cold), func(b *testing.B) {
+			x, y := newPair(b)
+			offer(b, time.Now(), x, y)
+			d := newDriver(x.b, nil)
+			defer d.Close()
+			l := d.newLane(0, nil)
+			d.lanes[0] = l
+			go func() {
+				for {
+					select {
+					case q := <-l.work:
+						q.done()
+						l.free <- q
+					case <-d.done:
+						return
+					}
+				}
+			}()
+			// A warm set stays in the cache of the sender. Cold sets go around
+			// as the sets of a pipe do.
+			sets := 1
+			if bc.cold {
+				sets = 32
 			}
-		}
-	}()
-	b.SetBytes(int64(len(frames) * (len(frames[0]) - addrLen)))
-	b.ReportAllocs()
-	for b.Loop() {
-		for _, f := range frames {
-			if err := d.queue(l, f); err != nil {
-				b.Fatal(err)
+			free := make(chan *benchSet, sets)
+			full := free
+			frame := seal(x, packet(x.v4, y.v4, 6, 1, 2, DefaultMTU))
+			for range sets {
+				s := &benchSet{frames: make([][]byte, laneFrames)}
+				for i := range s.frames {
+					s.frames[i] = bytes.Clone(frame)
+				}
+				s.k = netstack.NewKept(func() { free <- s })
+				free <- s
 			}
-		}
-		d.push()
+			if bc.cold {
+				full = make(chan *benchSet, sets)
+				go func() {
+					for {
+						select {
+						case s := <-free:
+							for _, f := range s.frames {
+								for i := addrLen; i < len(f); i += 64 {
+									f[i]++
+								}
+							}
+							full <- s
+						case <-d.done:
+							return
+						}
+					}
+				}()
+			}
+			b.SetBytes(int64(laneFrames * (len(frame) - addrLen)))
+			b.ReportAllocs()
+			var spent time.Duration
+			for b.Loop() {
+				s := <-full
+				start := time.Now()
+				var err error
+				if bc.kept {
+					// The sender is a user of the frames until the write returns.
+					s.k.Keep()
+					_, err = d.WriteKept(s.frames, s.k)
+					s.k.Release()
+				} else {
+					_, err = d.WriteFrames(s.frames)
+				}
+				spent += time.Since(start)
+				if err != nil {
+					b.Fatal(err)
+				}
+				if !bc.kept {
+					free <- s
+				}
+			}
+			b.ReportMetric(float64(spent.Nanoseconds())/float64(b.N*laneFrames), "ns/packet")
+		})
 	}
 }
 

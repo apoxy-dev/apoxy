@@ -85,6 +85,7 @@ var (
 	_ vtep.EngineXfrm   = (*driver)(nil)
 	_ netstack.Sealer   = (*driver)(nil)
 	_ netstack.Underlay = (*driver)(nil)
+	_ netstack.Keeper   = (*driver)(nil)
 	_ tun.Underlay      = (*driver)(nil)
 )
 
@@ -454,11 +455,17 @@ func (d *driver) Close() error {
 // WriteFrames sends the PSP packets in batches and the data frames on the
 // relay session. It drops and counts a packet that fails.
 func (d *driver) WriteFrames(frames [][]byte) (int, error) {
+	return d.WriteKept(frames, nil)
+}
+
+// WriteKept is WriteFrames for frames that do not change while k has a user.
+// The lane senders send these frames with no copy, and then release k.
+func (d *driver) WriteKept(frames [][]byte, k *netstack.Kept) (int, error) {
 	if d.closed() {
 		return 0, net.ErrClosed
 	}
 	for i := 0; i < len(frames); i += maxBatch {
-		if err := d.send(frames[i:min(i+maxBatch, len(frames))]); err != nil {
+		if err := d.send(frames[i:min(i+maxBatch, len(frames))], k); err != nil {
 			return i, err
 		}
 	}
@@ -466,9 +473,10 @@ func (d *driver) WriteFrames(frames [][]byte) (int, error) {
 }
 
 // send sends at most maxBatch frames. While no lane has a sender, the caller
-// sends the PSP packets in one batch. After that, send copies each PSP packet
-// into the queue of its lane, and the lane senders send them in parallel.
-func (d *driver) send(frames [][]byte) error {
+// sends the PSP packets in one batch. After that, send adds each PSP packet to
+// the queue of its lane, and the lane senders send them in parallel. The queue
+// gets the packet itself when k keeps it, or a copy.
+func (d *driver) send(frames [][]byte, k *netstack.Kept) error {
 	st := &d.b.stats
 	for _, f := range frames {
 		port := binary.BigEndian.Uint16(f[16:laneOff])
@@ -485,7 +493,8 @@ func (d *driver) send(frames [][]byte) error {
 			d.tx.Add(f[addrLen:], frameDst(f))
 			continue
 		}
-		if err := d.queue(l, f); err != nil {
+		if err := d.queue(l, f, k); err != nil {
+			d.drop()
 			return err
 		}
 	}
@@ -496,9 +505,10 @@ func (d *driver) send(frames [][]byte) error {
 	return nil
 }
 
-// queue copies the frame f into the queue of a lane. It waits while the queue
-// is full, and returns net.ErrClosed when the sender stopped.
-func (d *driver) queue(l *laneSender, f []byte) error {
+// queue adds the frame f to the queue of a lane: f itself when k keeps it, or
+// a copy. It waits while the queue is full, and returns net.ErrClosed when the
+// sender stopped.
+func (d *driver) queue(l *laneSender, f []byte, k *netstack.Kept) error {
 	if len(f) > l.slot {
 		d.b.stats.txDrops.Add(1)
 		return nil
@@ -523,21 +533,44 @@ func (d *driver) queue(l *laneSender, f []byte) error {
 			}
 		}
 		l.cur = q
+		if k != nil {
+			// The batch is one user of the frames of this write.
+			k.Keep()
+			q.kept = k
+		}
 	}
-	i := len(q.frames) * l.slot
-	q.frames = append(q.frames, q.buf[i:i+copy(q.buf[i:], f)])
+	if k != nil {
+		q.frames = append(q.frames, f)
+	} else {
+		if q.buf == nil {
+			q.buf = make([]byte, laneFrames*l.slot)
+		}
+		i := len(q.frames) * l.slot
+		q.frames = append(q.frames, q.buf[i:i+copy(q.buf[i:], f)])
+	}
 	if len(q.frames) == laneFrames {
-		l.work <- q
-		l.cur = nil
+		l.give()
 	}
 	return nil
 }
 
-// push gives the frames that queue copied to the lane senders.
+// push gives the frames that queue added to the lane senders.
 func (d *driver) push() {
 	for _, l := range d.lanes {
 		if l != nil && l.cur != nil {
-			l.work <- l.cur
+			l.give()
+		}
+	}
+}
+
+// drop drops the frames that queue added and no sender got, after a send that
+// failed.
+func (d *driver) drop() {
+	for _, l := range d.lanes {
+		if l != nil && l.cur != nil {
+			d.b.stats.txDrops.Add(uint64(len(l.cur.frames)))
+			l.cur.done()
+			l.free <- l.cur
 			l.cur = nil
 		}
 	}
@@ -601,17 +634,16 @@ func (d *driver) newLane(lane int, tx *udpbatch.Batch) *laneSender {
 		free: make(chan *laneBatch, laneBatches), work: make(chan *laneBatch, laneBatches),
 		exited: make(chan struct{}),
 	}
-	size := laneFrames * l.slot
-	buf := make([]byte, laneBatches*size)
-	for i := range laneBatches {
-		l.free <- &laneBatch{buf: buf[i*size : (i+1)*size], frames: make([][]byte, 0, laneFrames)}
+	for range laneBatches {
+		l.free <- &laneBatch{frames: make([][]byte, 0, laneFrames)}
 	}
 	return l
 }
 
 // laneSender sends the frames of one send lane on its own goroutine, so that
 // the kernel send work of each lane runs on its own CPU. Its queue has
-// laneBatches batches: each one is in free, in cur, in work or with run.
+// laneBatches batches: each one is in free, in cur, in work or with run. A
+// batch in free keeps no frames.
 type laneSender struct {
 	b      *Binding
 	lane   int
@@ -623,10 +655,50 @@ type laneSender struct {
 	exited chan struct{}   // Closed when run returns.
 }
 
-// laneBatch holds copies of at most laneFrames send frames of one lane.
+// laneBatch holds at most laneFrames send frames of one lane: copies in buf,
+// or frames of one write that kept keeps.
 type laneBatch struct {
-	buf    []byte   // laneFrames slots.
-	frames [][]byte // The frames in buf, in send order.
+	buf    []byte         // laneFrames slots for copies. Nil until the first copy.
+	frames [][]byte       // The frames, in send order.
+	kept   *netstack.Kept // Not nil while the batch is a user of kept frames.
+}
+
+// done empties q after its frames went out or dropped, and releases the
+// frames that it kept.
+func (q *laneBatch) done() {
+	q.frames = q.frames[:0]
+	if q.kept != nil {
+		q.kept.Release()
+		q.kept = nil
+	}
+}
+
+// give gives the batch that the driver filled to the sender. A sender that
+// stopped takes no batch, so the driver drops the batches that wait.
+func (l *laneSender) give() {
+	l.work <- l.cur
+	l.cur = nil
+	select {
+	case <-l.exited:
+		l.drain()
+	default:
+	}
+}
+
+// drain drops the batches that wait for the sender, which stopped, and counts
+// their frames as drops. The sender and the driver can call it at one time.
+func (l *laneSender) drain() {
+	n := 0
+	for {
+		select {
+		case q := <-l.work:
+			n += len(q.frames)
+			q.done()
+		default:
+			l.b.stats.txDrops.Add(uint64(n))
+			return
+		}
+	}
 }
 
 // run sends the batches of the lane in order until the driver or the binding
@@ -635,15 +707,14 @@ type laneBatch struct {
 func (l *laneSender) run(stop <-chan struct{}) {
 	var next *laneBatch // A batch that did not fit in the last send.
 	defer func() {
-		n := 0
 		if next != nil {
-			n = len(next.frames)
+			l.b.stats.txDrops.Add(uint64(len(next.frames)))
+			next.done()
 		}
-		for len(l.work) > 0 {
-			n += len((<-l.work).frames)
-		}
-		l.b.stats.txDrops.Add(uint64(n))
+		l.drain()
+		// The driver can give a batch until it sees the close, so drain again.
 		close(l.exited)
+		l.drain()
 	}()
 	var held [laneBatches]*laneBatch
 	for {
@@ -683,7 +754,7 @@ func (l *laneSender) run(stop <-chan struct{}) {
 		}
 		err := l.b.flush(l.tx, l.lane)
 		for _, q := range held[:n] {
-			q.frames = q.frames[:0]
+			q.done()
 			l.free <- q
 		}
 		if err != nil {
