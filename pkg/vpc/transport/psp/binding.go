@@ -26,6 +26,7 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/vpc/p2p"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/mss"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/peerconn"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/udpbatch"
 )
 
 const (
@@ -135,6 +136,11 @@ type Binding struct {
 	// laneConns are the sockets of send lanes 1 and up. Lane 0 sends on the
 	// agent socket. Set under mu, closed at Close.
 	laneConns [keys.MaxLanes]atomic.Pointer[net.UDPConn]
+	// laneSends are the send sockets of the lanes in laneConns. A lane with none
+	// sends on its laneConns socket. Set under mu before laneConns, closed at Close.
+	laneSends [keys.MaxLanes]atomic.Pointer[udpbatch.SendSocket]
+	// sendWarn logs one time that a lane has no send socket.
+	sendWarn sync.Once
 	// rxMu guards the receive queue and the read batch of a driver with no receive
 	// pipe, because lane sockets can read too.
 	rxMu sync.Mutex
@@ -234,6 +240,12 @@ func (b *Binding) Close() error {
 	readers := b.readers
 	b.readers = [keys.MaxLanes]*quic.Transport{}
 	b.mu.Unlock()
+	// A lane sender that waits in a send returns when its send socket closes.
+	for i := range b.laneSends {
+		if s := b.laneSends[i].Load(); s != nil {
+			_ = s.Close()
+		}
+	}
 	// Close waits for the read loop, so b.mu is not held.
 	for _, tr := range readers {
 		if tr != nil {
@@ -386,33 +398,55 @@ func (b *Binding) openLanes(n int) {
 		if b.laneConns[i].Load() != nil {
 			continue
 		}
-		c, err := listenLane(uc)
+		c, s, err := b.listenLane(uc)
 		if err != nil {
 			slog.Warn("Failed to open a send lane socket", "lane", i, "error", err)
 			return
 		}
+		// A driver that finds the socket of a lane must find its send socket too.
+		b.laneSends[i].Store(s)
 		b.laneConns[i].Store(c)
 	}
 }
 
-// listenLane opens a UDP socket on the address of uc, with a new port.
-func listenLane(uc *net.UDPConn) (*net.UDPConn, error) {
+// listenLane opens a UDP socket on the address of uc, with a new port, and its
+// send socket. The send socket is nil when the system cannot open one.
+func (b *Binding) listenLane(uc *net.UDPConn) (*net.UDPConn, *udpbatch.SendSocket, error) {
 	la, ok := uc.LocalAddr().(*net.UDPAddr)
 	if !ok {
-		return nil, errors.New("agent socket has no UDP address")
+		return nil, nil, errors.New("agent socket has no UDP address")
 	}
 	network, ip := "udp", la.IP
 	if ip4 := ip.To4(); ip4 != nil {
 		network, ip = "udp4", ip4
 	}
-	c, err := net.ListenUDP(network, &net.UDPAddr{IP: ip, Zone: la.Zone})
+	laddr := &net.UDPAddr{IP: ip, Zone: la.Zone}
+	c, s, err := udpbatch.Listen(network, laddr)
 	if err != nil {
-		return nil, err
+		cause := err
+		if c, err = net.ListenUDP(network, laddr); err != nil {
+			return nil, nil, err
+		}
+		b.sendWarn.Do(func() {
+			slog.Warn("Failed to open a send socket for a lane, so the lane sends on its read socket", "error", cause)
+		})
 	}
 	if err := setSockBufs(c, laneRcvBuf, sockBuf); err != nil {
 		slog.Debug("Failed to set the lane socket buffers", "rcvBytes", laneRcvBuf, "sndBytes", sockBuf, "error", err)
 	}
-	return c, nil
+	syncSend(s)
+	return c, s, nil
+}
+
+// syncSend copies the options of a lane socket to its send socket s. It does
+// nothing for a lane with no send socket.
+func syncSend(s *udpbatch.SendSocket) {
+	if s == nil {
+		return
+	}
+	if err := s.Sync(); err != nil {
+		slog.Debug("Failed to copy the lane socket options to the send socket", "error", err)
+	}
 }
 
 // OpenLanes opens the sockets of send lanes 1 to n-1 and returns their ports
@@ -460,6 +494,8 @@ func (b *Binding) ReadLanes() error {
 		if err := tr.Start(); err != nil {
 			return fmt.Errorf("psp: start the read loop of lane %d: %w", i, err)
 		}
+		// The transport set options on the socket, for example UDP GRO.
+		syncSend(b.laneSends[i].Load())
 		b.readers[i] = tr
 	}
 	return nil

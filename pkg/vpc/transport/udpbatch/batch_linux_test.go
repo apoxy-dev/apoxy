@@ -38,6 +38,9 @@ func TestBatch(t *testing.T) {
 		pkts     []pkt
 		msgs     []msg // The messages before the last flush.
 		gsoAfter bool
+		// open returns the descriptor that sends and the function that makes its
+		// batch. The test sets it.
+		open func(t *testing.T) (int, func(size int) *Batch)
 	}{
 		{
 			name:     "same size",
@@ -115,7 +118,28 @@ func TestBatch(t *testing.T) {
 			gsoAfter: true,
 		},
 	}
-	for _, tc := range cases {
+	// Each case runs on a socket of the Go poller and on a send socket.
+	senders := []struct {
+		name string
+		open func(t *testing.T) (int, func(size int) *Batch)
+	}{
+		{"socket of the Go poller", func(t *testing.T) (int, func(int) *Batch) {
+			uc := listenLoopback(t)
+			return rawFD(t, uc), func(size int) *Batch { return New(uc, size) }
+		}},
+		{"send socket", func(t *testing.T) (int, func(int) *Batch) {
+			_, s := listen(t, "udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+			return s.fd, func(size int) *Batch { return NewSend(s, size) }
+		}},
+	}
+	all := cases[:0:0]
+	for _, sd := range senders {
+		for _, tc := range cases {
+			tc.name, tc.open = sd.name+"/"+tc.name, sd.open
+			all = append(all, tc)
+		}
+	}
+	for _, tc := range all {
 		t.Run(tc.name, func(t *testing.T) {
 			var dsts []netip.AddrPort
 			var rx []chan []byte
@@ -124,18 +148,12 @@ func TestBatch(t *testing.T) {
 				dsts, rx = append(dsts, addr), append(rx, ch)
 			}
 			dsts = append(dsts, netip.MustParseAddrPort("127.0.0.1:0"), netip.MustParseAddrPort("[::1]:9"))
-			uc := listenLoopback(t)
+			fd, batch := tc.open(t)
 			if tc.noCheck {
-				rc, err := uc.SyscallConn()
-				require.NoError(t, err)
-				var serr error
-				require.NoError(t, rc.Control(func(fd uintptr) {
-					serr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_NO_CHECK, 1)
-				}))
-				require.NoError(t, serr)
+				require.NoError(t, unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_NO_CHECK, 1))
 			}
 			size := cmp.Or(tc.size, 64)
-			bt := New(uc, size)
+			bt := batch(size)
 			if !bt.gso && !tc.noGSO {
 				t.Skip("The kernel cannot send with UDP_SEGMENT.")
 			}
@@ -198,7 +216,7 @@ func TestBatch(t *testing.T) {
 	}
 }
 
-func listenLoopback(t *testing.T) *net.UDPConn {
+func listenLoopback(t testing.TB) *net.UDPConn {
 	uc, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = uc.Close() })
@@ -220,17 +238,34 @@ func nonQUICReceiver(t *testing.T) (netip.AddrPort, chan []byte) {
 // TestBatchClosed checks that Flush stops with net.ErrClosed when the socket
 // is closed, and empties the batch.
 func TestBatchClosed(t *testing.T) {
-	dst, _ := nonQUICReceiver(t)
-	uc := listenLoopback(t)
-	bt := New(uc, 8)
-	bt.Add(make([]byte, 100), dst)
-	bt.Add(make([]byte, 100), dst)
-	require.NoError(t, uc.Close())
-	sent, dropped, err := bt.Flush()
-	assert.ErrorIs(t, err, net.ErrClosed)
-	assert.Zero(t, sent)
-	assert.Zero(t, dropped)
-	assert.Zero(t, bt.Len())
+	cases := []struct {
+		name string
+		// open returns a batch and the function that closes its socket.
+		open func(t *testing.T) (*Batch, func() error)
+	}{
+		{"socket of the Go poller", func(t *testing.T) (*Batch, func() error) {
+			uc := listenLoopback(t)
+			return New(uc, 8), uc.Close
+		}},
+		{"send socket", func(t *testing.T) (*Batch, func() error) {
+			_, s := listen(t, "udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+			return NewSend(s, 8), s.Close
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dst, _ := nonQUICReceiver(t)
+			bt, closeSocket := tc.open(t)
+			bt.Add(make([]byte, 100), dst)
+			bt.Add(make([]byte, 100), dst)
+			require.NoError(t, closeSocket())
+			sent, dropped, err := bt.Flush()
+			assert.ErrorIs(t, err, net.ErrClosed)
+			assert.Zero(t, sent)
+			assert.Zero(t, dropped)
+			assert.Zero(t, bt.Len())
+		})
+	}
 }
 
 // TestBatchShared holds the write lock of the socket, as a write that waits does.

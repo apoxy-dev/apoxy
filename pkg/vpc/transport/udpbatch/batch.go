@@ -24,13 +24,19 @@ const (
 // shorter packet ends the message. The packets to one address stay in
 // order. One goroutine at a time can use a Batch.
 type Batch struct {
-	pc    *ipv4.PacketConn
+	w     writer
 	gso   bool // False after the socket refuses UDP_SEGMENT.
 	pend  []msg
 	msgs  []ipv4.Message
 	addrs []net.UDPAddr
 	oob   [][]byte
 	n     int // Packets in the batch.
+}
+
+// writer sends messages with one sendmmsg call, as (*ipv4.PacketConn).WriteBatch
+// does.
+type writer interface {
+	WriteBatch(ms []ipv4.Message, flags int) (int, error)
 }
 
 // msg is one message of a batch: packets to dst. All have the size seg, but
@@ -56,9 +62,14 @@ func newBatch(uc *net.UDPConn, pc net.PacketConn, size int) *Batch {
 	if !batchWrites {
 		return nil
 	}
+	return batchOf(ipv4.NewPacketConn(pc), gsoSupported(uc), size)
+}
+
+// batchOf returns a batch that sends with w.
+func batchOf(w writer, gso bool, size int) *Batch {
 	b := &Batch{
-		pc:    ipv4.NewPacketConn(pc),
-		gso:   gsoSupported(uc),
+		w:     w,
+		gso:   gso,
 		pend:  make([]msg, 0, size),
 		msgs:  make([]ipv4.Message, 0, size),
 		addrs: make([]net.UDPAddr, size),
@@ -119,7 +130,7 @@ func (b *Batch) Flush() (sent, dropped int, err error) {
 		msgs = append(msgs, msg)
 	}
 	for len(msgs) > 0 {
-		n, werr := b.pc.WriteBatch(msgs, 0)
+		n, werr := b.w.WriteBatch(msgs, 0)
 		n = max(n, 0) // It is -1 when the first message fails.
 		for _, m := range msgs[:n] {
 			sent += len(m.Buffers)
@@ -136,7 +147,7 @@ func (b *Batch) Flush() (sent, dropped int, err error) {
 			// Send the rest one packet at a time. If the first packet goes, the
 			// socket refuses GSO, so do not use GSO on it again.
 			msgs = splitGSO(msgs)
-			if n, _ := b.pc.WriteBatch(msgs[:1], 0); n == 1 {
+			if n, _ := b.w.WriteBatch(msgs[:1], 0); n == 1 {
 				b.gso = false
 				sent++
 				msgs = msgs[1:]

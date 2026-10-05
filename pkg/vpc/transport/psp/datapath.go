@@ -534,7 +534,13 @@ func (d *driver) lane(lane byte) *laneSender {
 	if uc == nil {
 		return d.lanes[0]
 	}
-	tx := udpbatch.New(uc, maxBatch)
+	var tx *udpbatch.Batch
+	if s := d.b.laneSends[lane].Load(); s != nil {
+		// The kernel wakes no waiter for the packets that a send socket sent.
+		tx = udpbatch.NewSend(s, maxBatch)
+	} else {
+		tx = udpbatch.New(uc, maxBatch)
+	}
 	if tx == nil {
 		return d.lanes[0]
 	}
