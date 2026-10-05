@@ -81,6 +81,16 @@ func TestInfoCells(t *testing.T) {
 				"; server retx omit/window: 0/1",
 		},
 		{name: "no drop counters", got: dropsDetail(map[string]float64{"server_retransmits": 1}), want: ""},
+		{
+			name: "relay drops by reason",
+			got: dropsDetail(map[string]float64{
+				"relay_drops": 12, "omit.relay_drops": 40,
+				"relay_drop_reasons.send_queue": 10, "omit.relay_drop_reasons.send_queue": 33,
+				"relay_drop_reasons.unknown_spi": 2, "omit.relay_drop_reasons.malformed": 7, "relay_drop_reasons.closed": 0,
+			}),
+			want: "drops omit/window: relay 40/12 (malformed 7/0, send_queue 33/10, unknown_spi 0/2)",
+		},
+		{name: "relay drops with no reasons", got: dropsDetail(map[string]float64{"relay_drops": 0, "omit.relay_drops": 0}), want: "drops omit/window: relay 0/0"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -5,13 +5,16 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"io"
+	"net"
 	"net/netip"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/quic-go/quic-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -132,12 +135,14 @@ func TestNewResult(t *testing.T) {
 			relay: [2]mark{
 				{
 					Nanos: 0, HostCPU: 5, Drops: 1, SockDrops: 2, XDPPackets: 10, XDPSeconds: 0.5, XDPMode: "driver",
-					XDPPassed: map[string]uint64{"no_row": 3, "expired": 1}, Sends: relay.ForwardStats{Calls: 1, Messages: 2, Packets: 30},
+					DropReasons: map[string]uint64{"malformed": 1},
+					XDPPassed:   map[string]uint64{"no_row": 3, "expired": 1}, Sends: relay.ForwardStats{Calls: 1, Messages: 2, Packets: 30},
 					CPUs: []bench.CPUTicks{{User: 10, Idle: 90}, {Idle: 100}},
 				},
 				{
 					Nanos: 2 * sec, CPU: 0.5, HostCPU: 7, Drops: 5, SockDrops: 9, XDPPackets: 30, XDPSeconds: 0.75, XDPMode: "driver",
-					XDPPassed: map[string]uint64{"no_row": 8, "expired": 1, "no_route": 2}, Sends: relay.ForwardStats{Calls: 11, Messages: 42, Packets: 930},
+					DropReasons: map[string]uint64{"malformed": 1, "send_queue": 3, "unknown_spi": 1},
+					XDPPassed:   map[string]uint64{"no_row": 8, "expired": 1, "no_route": 2}, Sends: relay.ForwardStats{Calls: 11, Messages: 42, Packets: 930},
 					CPUs: []bench.CPUTicks{{User: 30, System: 40, Idle: 230}, {IRQ: 150, Idle: 150}},
 				},
 			},
@@ -148,7 +153,8 @@ func TestNewResult(t *testing.T) {
 				ClientHostCores: 3, ServerHostCores: 4, RelayHostCores: 1,
 				ClientTxDrops: 2, ServerRxDrops: 6, RelayDrops: 4, RelayRcvbufDrops: 7, ServerRcvbufErrors: 12, ServerSockDrops: 3,
 				ClientLinkDrops: 5, ServerLinkDrops: 2, RelayXDPPackets: 20,
-				RelayXDPPassed: map[string]uint64{"no_row": 5, "no_route": 2}, RelayXDPSeconds: 0.25, RelayXDPMode: "driver",
+				RelayDropReasons: map[string]uint64{"send_queue": 3, "unknown_spi": 1},
+				RelayXDPPassed:   map[string]uint64{"no_row": 5, "no_route": 2}, RelayXDPSeconds: 0.25, RelayXDPMode: "driver",
 				RelayHostCPU: &cpuKinds{User: 0.1, System: 0.2, IRQ: 0.75}, RelayTopCPUs: []cpuUse{{CPU: 1, IRQ: 75}, {CPU: 0, User: 10, System: 20}},
 				RelaySendCalls: 10, RelaySendMessages: 40, RelaySendPackets: 900,
 				ClientLanePackets: []uint64{500, 400, 100}, ServerLanePackets: []uint64{30},
@@ -248,7 +254,7 @@ func TestHostKinds(t *testing.T) {
 	}
 }
 
-func TestPassedDelta(t *testing.T) {
+func TestCounterDelta(t *testing.T) {
 	cases := []struct {
 		name   string
 		v0, v1 map[string]uint64
@@ -264,7 +270,50 @@ func TestPassedDelta(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, passedDelta(tc.v0, tc.v1))
+			assert.Equal(t, tc.want, counterDelta(tc.v0, tc.v1))
+		})
+	}
+}
+
+func TestRelayCounters(t *testing.T) {
+	// A PSP packet from a source that has no session.
+	psp := make([]byte, 64)
+	psp[0], psp[1], psp[2], psp[3] = 4, 2, 2, 0x03
+	binary.BigEndian.PutUint32(psp[4:8], 7)
+	cases := []struct {
+		name    string
+		packets [][]byte
+		drops   uint64
+		reasons map[string]uint64
+	}{
+		{name: "no drops"},
+		{name: "one reason", packets: [][]byte{{1, 2, 3}, {9, 9}}, drops: 2, reasons: map[string]uint64{"malformed": 2}},
+		{
+			name: "two reasons", packets: [][]byte{psp, {1, 2, 3}, psp, psp}, drops: 4,
+			reasons: map[string]uint64{"malformed": 1, "unknown_source": 3},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ca, err := vpctest.NewCA()
+			require.NoError(t, err)
+			r := relay.NewRouter(vpctest.NewTrust(ca), relay.Config{})
+			uc, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+			require.NoError(t, err)
+			tr := &quic.Transport{Conn: uc}
+			t.Cleanup(func() {
+				_ = tr.Close()
+				_ = uc.Close()
+			})
+			handle, _ := r.PacketHandler(t.Context(), tr)
+			for _, p := range tc.packets {
+				handle(p, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 4000})
+			}
+			drops, reasons, xdp, passed := relayCounters(r)
+			assert.Equal(t, tc.drops, drops)
+			assert.Equal(t, tc.reasons, reasons)
+			assert.Zero(t, xdp)
+			assert.Nil(t, passed)
 		})
 	}
 }
@@ -304,11 +353,14 @@ func TestNewPeriod(t *testing.T) {
 			name:   "all sides",
 			client: [2]mark{{Segments: 100, LinkDrops: 1}, {Nanos: sec, Segments: 300, Retrans: 4, Drops: 2, LinkDrops: 6}},
 			server: [2]mark{{RcvbufErrors: 1}, {Nanos: sec, Retrans: 1, Bytes: 50e6, Drops: 3, RcvbufErrors: 4, SockDrops: 1, LinkDrops: 1}},
-			relay:  [2]mark{{Drops: 1}, {Nanos: sec, Drops: 2, SockDrops: 2}},
+			relay: [2]mark{
+				{Drops: 1, DropReasons: map[string]uint64{"closed": 1}},
+				{Nanos: sec, Drops: 2, SockDrops: 2, DropReasons: map[string]uint64{"closed": 1, "send_queue": 1}},
+			},
 			want: period{
 				Seconds: 1, BitsPerSecond: 400e6, Retransmits: 4, RetransPercent: 2, ServerRetransmits: 1,
 				ClientTxDrops: 2, ServerRxDrops: 3, RelayDrops: 1, RelayRcvbufDrops: 2, ServerRcvbufErrors: 3, ServerSockDrops: 1,
-				ClientLinkDrops: 5, ServerLinkDrops: 1,
+				ClientLinkDrops: 5, ServerLinkDrops: 1, RelayDropReasons: map[string]uint64{"send_queue": 1},
 			},
 		},
 		{name: "no omit", server: [2]mark{{Nanos: sec}, {Nanos: sec}}},

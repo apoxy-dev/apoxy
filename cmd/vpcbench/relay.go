@@ -117,11 +117,12 @@ func runRelay(ctx context.Context, o options, ready func(netip.AddrPort)) error 
 			case "ca":
 				return reply{CA: caPEM}, nil
 			case "mark":
-				drops, xdp, passed := relayCounters(r)
+				drops, reasons, xdp, passed := relayCounters(r)
 				xdpS := xdpCPU()
 				m := mark{
 					Nanos: time.Since(start).Nanoseconds(), CPU: bench.CPUSeconds() + xdpS, HostCPU: bench.HostCPUSeconds(),
-					Drops: drops, SockDrops: sockDrops(uc), XDPPackets: xdp, XDPPassed: passed, XDPSeconds: xdpS, XDPMode: xdpMode,
+					Drops: drops, DropReasons: reasons, SockDrops: sockDrops(uc),
+					XDPPackets: xdp, XDPPassed: passed, XDPSeconds: xdpS, XDPMode: xdpMode,
 					Sends: r.ForwardStats(), CPUs: bench.PerCPU(),
 				}
 				o.marked(req.Index, req.Window)
@@ -161,9 +162,10 @@ func serveMarks(ctx context.Context, ln net.Listener, handle func(request) (repl
 	}
 }
 
-// relayCounters returns the sum of the drop counters of r, the packets that its
-// XDP program forwarded, and the packets that it gave to the socket path, by result.
-func relayCounters(r *relay.Router) (drops, xdp uint64, passed map[string]uint64) {
+// relayCounters returns the sum of the drop counters of r and the drops by
+// reason, the packets that its XDP program forwarded, and the packets that it
+// gave to the socket path, by result. The maps have only the counters that are not 0.
+func relayCounters(r *relay.Router) (drops uint64, reasons map[string]uint64, xdp uint64, passed map[string]uint64) {
 	ch := make(chan prometheus.Metric, 8)
 	go func() {
 		r.Collect(ch)
@@ -178,23 +180,29 @@ func relayCounters(r *relay.Router) (drops, xdp uint64, passed map[string]uint64
 		switch desc := m.Desc().String(); {
 		case strings.Contains(desc, `"apoxy_vpc_relay_dropped_packets_total"`):
 			drops += n
+			if n > 0 {
+				if reasons == nil {
+					reasons = map[string]uint64{}
+				}
+				reasons[label(&d, "reason")] += n
+			}
 		case !strings.Contains(desc, `"apoxy_vpc_relay_xdp_packets_total"`):
-		case resultLabel(&d) == "forwarded":
+		case label(&d, "result") == "forwarded":
 			xdp += n
 		case n > 0:
 			if passed == nil {
 				passed = map[string]uint64{}
 			}
-			passed[resultLabel(&d)] += n
+			passed[label(&d, "result")] += n
 		}
 	}
-	return drops, xdp, passed
+	return drops, reasons, xdp, passed
 }
 
-// resultLabel returns the result label of an XDP packet counter.
-func resultLabel(d *dto.Metric) string {
+// label returns the value of the label name of a counter.
+func label(d *dto.Metric, name string) string {
 	for _, l := range d.GetLabel() {
-		if l.GetName() == "result" {
+		if l.GetName() == name {
 			return l.GetValue()
 		}
 	}

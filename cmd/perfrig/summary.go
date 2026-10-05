@@ -158,9 +158,9 @@ func dropsCell(info map[string]float64, node bool) string {
 	return fmt.Sprintf("%.0f, %.0f", omit, window)
 }
 
-// dropsDetail lists the drops of each place, and the TCP retransmits of the
-// server, in the omit period and in the window. It is empty when the result
-// has no drop counters.
+// dropsDetail lists the drops of each place, the drops of the relay by reason,
+// and the TCP retransmits of the server, in the omit period and in the window.
+// It is empty when the result has no drop counters.
 func dropsDetail(info map[string]float64) string {
 	value := func(k string) string {
 		v, ok := info[k]
@@ -172,7 +172,11 @@ func dropsDetail(info map[string]float64) string {
 	var parts []string
 	for _, p := range dropPlaces {
 		if _, ok := info[p.key]; ok {
-			parts = append(parts, fmt.Sprintf("%s %s/%s", p.name, value("omit."+p.key), value(p.key)))
+			part := fmt.Sprintf("%s %s/%s", p.name, value("omit."+p.key), value(p.key))
+			if p.key == "relay_drops" {
+				part += relayReasons(info)
+			}
+			parts = append(parts, part)
 		}
 	}
 	if len(parts) == 0 {
@@ -183,6 +187,26 @@ func dropsDetail(info map[string]float64) string {
 		d += fmt.Sprintf("; server retx omit/window: %s/%s", value("omit.server_retransmits"), value("server_retransmits"))
 	}
 	return d
+}
+
+// relayReasons lists the drop reasons of the relay that are not 0 in the omit
+// period or in the window, in brackets. It is empty when the relay has none.
+func relayReasons(info map[string]float64) string {
+	const prefix = "relay_drop_reasons."
+	reasons := map[string]bool{}
+	for k, v := range info {
+		if name, ok := strings.CutPrefix(strings.TrimPrefix(k, "omit."), prefix); ok && v > 0 {
+			reasons[name] = true
+		}
+	}
+	if len(reasons) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(reasons))
+	for _, name := range slices.Sorted(maps.Keys(reasons)) {
+		parts = append(parts, fmt.Sprintf("%s %.0f/%.0f", name, info["omit."+prefix+name], info[prefix+name]))
+	}
+	return " (" + strings.Join(parts, ", ") + ")"
 }
 
 // nicDetail describes the NIC of a node result and its drop counters in the

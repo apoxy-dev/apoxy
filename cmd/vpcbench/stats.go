@@ -37,6 +37,8 @@ type mark struct {
 	// Drops are the send drops of the client, the receive drops of the server
 	// and all drops of the relay.
 	Drops uint64 `json:"drops,omitempty"`
+	// DropReasons are the drops of the relay that are not 0, by reason.
+	DropReasons map[string]uint64 `json:"drop_reasons,omitempty"`
 	// RcvbufErrors is the UDP RcvbufErrors counter of the server netns, or -1.
 	RcvbufErrors int64 `json:"rcvbuf_errors,omitempty"`
 	// SockDrops are the drops of the agent socket of the server or of the relay
@@ -290,6 +292,9 @@ type result struct {
 	ServerSockDrops    int64  `json:"server_sock_drops"`
 	ClientLinkDrops    int64  `json:"client_link_drops"`
 	ServerLinkDrops    int64  `json:"server_link_drops"`
+	// RelayDropReasons are the drops of the relay in the measured window that
+	// are not 0, by reason. RelayDrops is their sum.
+	RelayDropReasons map[string]uint64 `json:"relay_drop_reasons,omitempty"`
 	// RelayXDPPackets are the PSP packets that the relay forwarded in XDP in
 	// the measured window.
 	RelayXDPPackets uint64 `json:"relay_xdp_packets"`
@@ -330,6 +335,8 @@ type period struct {
 	ServerSockDrops    int64          `json:"server_sock_drops"`
 	ClientLinkDrops    int64          `json:"client_link_drops"`
 	ServerLinkDrops    int64          `json:"server_link_drops"`
+	// RelayDropReasons are the drops of the relay that are not 0, by reason.
+	RelayDropReasons map[string]uint64 `json:"relay_drop_reasons,omitempty"`
 }
 
 // newPeriod computes a period from the marks at its start and at its end.
@@ -341,6 +348,7 @@ func newPeriod(client, server, relay [2]mark) period {
 		RelayDrops: r.RelayDrops, RelayRcvbufDrops: r.RelayRcvbufDrops,
 		ServerRcvbufErrors: r.ServerRcvbufErrors, ServerSockDrops: r.ServerSockDrops,
 		ClientLinkDrops: r.ClientLinkDrops, ServerLinkDrops: r.ServerLinkDrops,
+		RelayDropReasons: r.RelayDropReasons,
 	}
 }
 
@@ -377,13 +385,14 @@ func newResult(client, server, relay [2]mark) result {
 	r.ClientTxDrops = client[1].Drops - client[0].Drops
 	r.ServerRxDrops = server[1].Drops - server[0].Drops
 	r.RelayDrops = relay[1].Drops - relay[0].Drops
+	r.RelayDropReasons = counterDelta(relay[0].DropReasons, relay[1].DropReasons)
 	r.RelayRcvbufDrops = delta(relay[0].SockDrops, relay[1].SockDrops)
 	r.ServerRcvbufErrors = delta(server[0].RcvbufErrors, server[1].RcvbufErrors)
 	r.ServerSockDrops = delta(server[0].SockDrops, server[1].SockDrops)
 	r.ClientLinkDrops = delta(client[0].LinkDrops, client[1].LinkDrops)
 	r.ServerLinkDrops = delta(server[0].LinkDrops, server[1].LinkDrops)
 	r.RelayXDPPackets = relay[1].XDPPackets - relay[0].XDPPackets
-	r.RelayXDPPassed = passedDelta(relay[0].XDPPassed, relay[1].XDPPassed)
+	r.RelayXDPPassed = counterDelta(relay[0].XDPPassed, relay[1].XDPPassed)
 	r.RelayXDPSeconds, r.RelayXDPMode = relay[1].XDPSeconds-relay[0].XDPSeconds, relay[1].XDPMode
 	r.RelaySendCalls = relay[1].Sends.Calls - relay[0].Sends.Calls
 	r.RelaySendMessages = relay[1].Sends.Messages - relay[0].Sends.Messages
@@ -406,9 +415,9 @@ func laneDelta(v0, v1 []uint64) []uint64 {
 	return out
 }
 
-// passedDelta returns the increase of each counter from v0 to v1, or nil when
+// counterDelta returns the increase of each counter from v0 to v1, or nil when
 // none increased.
-func passedDelta(v0, v1 map[string]uint64) map[string]uint64 {
+func counterDelta(v0, v1 map[string]uint64) map[string]uint64 {
 	var out map[string]uint64
 	for k, n := range v1 {
 		if n <= v0[k] {
