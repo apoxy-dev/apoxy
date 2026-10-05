@@ -217,6 +217,9 @@ type vpcRow struct {
 	// packets to the server on a link. xdp forwards them in XDP there, or on
 	// the NIC of the relay host of a node row.
 	relayNetns, xdp bool
+	// generic attaches the XDP program of a node row in generic mode. The
+	// relay host then keeps its channels and its MTU.
+	generic bool
 	// nodes runs each role on its own EC2 host, with no netem: 2 hosts with no
 	// relay, 3 with one. 0 runs the row in the netns rig.
 	nodes int
@@ -258,6 +261,8 @@ var vpcRows = []vpcRow{
 	{id: "netstack-psp-relay-3node-p32-xdp", name: "vpc-netstack-psp-relay-3node-xdp", nodes: 3, streams: 32, xdp: true, client: []string{"-cc", "bbr"}},
 	// One relay RX queue gets all packets, so the row gives the most packets that one CPU forwards.
 	{id: "netstack-psp-relay-3node-p16-xdp-q1", name: "vpc-netstack-psp-relay-3node-xdp-q1", nodes: 3, streams: 16, xdp: true, client: []string{"-cc", "bbr"}, args: []string{"-relay-channels=1"}},
+	// ENA takes the program in driver mode only with a small MTU. A link with MTU 9001 runs it in generic mode.
+	{id: "netstack-psp-relay-3node-p16-xdp-generic", name: "vpc-netstack-psp-relay-3node-xdp-generic", nodes: 3, streams: 16, xdp: true, generic: true, client: []string{"-cc", "bbr"}},
 }
 
 // nodeStartTimeout is the time that vpcbench on one host waits for the hosts
@@ -273,6 +278,8 @@ func (r vpcRow) argv(o Options) (sidecar, server, client []string) {
 	}
 	sidecar = []string{"vpcbench", "relay", "-listen", relay}
 	switch {
+	case r.xdp && r.generic:
+		sidecar = append(sidecar, "-xdp", "$DEV", "-xdp-mode", "generic")
 	case r.xdp && r.nodes > 0:
 		sidecar = append(sidecar, "-xdp", "$DEV", "-xdp-mode", "driver")
 	case r.xdp:
@@ -322,6 +329,9 @@ func (r vpcRow) row(o Options) Row {
 			"-min-cpus=" + strconv.Itoa(o.MinCPUs), "-max-steal=5"}
 		if r.xdp {
 			args = append(args, "-relay-xdp")
+		}
+		if r.generic {
+			args = append(args, "-relay-xdp-generic")
 		}
 	} else {
 		args = []string{"-workload=exec", "-name=" + r.name, "-netns-prefix=perf", "-ready=tcp:4433", streams, "-omit=5s"}

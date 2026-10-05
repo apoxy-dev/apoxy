@@ -281,8 +281,8 @@ func TestNodePlans(t *testing.T) {
 	if r := rows[i]; r.Hosts() != 2 || r.Group != "info" || !slices.Contains(r.Args, "-streams=1") || !slices.Contains(r.Args, "-name=vpc-netstack-psp-direct-2node") {
 		t.Errorf("direct row with one flow = %+v", r)
 	}
-	// A row with no lanes gives the relay its flags. The XDP row sets the NIC of the
-	// relay host, and only that row does.
+	// A row with no lanes gives the relay its flags. Only the XDP rows set the
+	// NIC of the relay host.
 	wantArgs := []struct {
 		id      string
 		want    []string
@@ -318,6 +318,13 @@ func TestNodePlans(t *testing.T) {
 		{
 			id:   "netstack-psp-relay-3node-p16-xdp-q1",
 			want: []string{"-name=vpc-netstack-psp-relay-3node-xdp-q1", "-streams=16", "-relay-xdp", "-relay-channels=1"},
+		},
+		{
+			id: "netstack-psp-relay-3node-p16-xdp-generic",
+			want: []string{
+				"-name=vpc-netstack-psp-relay-3node-xdp-generic", "-streams=16", "-relay-xdp", "-relay-xdp-generic",
+				`-sidecar-argv=["vpcbench","relay","-listen","$RELAY_IP:4443","-xdp","$DEV","-xdp-mode","generic"]`,
+			},
 		},
 	}
 	for _, tc := range wantArgs {

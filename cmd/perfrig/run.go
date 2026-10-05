@@ -47,6 +47,8 @@ type config struct {
 	RelayXDP bool
 	// RelayChannels is the most channels of the relay link with RelayXDP. 0: no limit.
 	RelayChannels int
+	// RelayXDPGeneric is for a program in generic mode: RelayXDP sets only the forwarding.
+	RelayXDPGeneric bool
 
 	// Exec workload flags.
 	Name        string

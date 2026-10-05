@@ -65,6 +65,7 @@ func nodeCmd(ctx context.Context, args []string) error {
 	fs.StringVar(&cfg.AppCPUs, "app-cpus", "", "pin the workload process to this CPU list (empty: no pin)")
 	fs.BoolVar(&cfg.RelayXDP, "relay-xdp", false, "the relay host sets its link for XDP in driver mode during the row: at most half of the channels, MTU at most 3498 and IPv4 forwarding")
 	fs.IntVar(&cfg.RelayChannels, "relay-channels", 0, "with -relay-xdp: the most channels of the relay link, so that few CPUs receive all packets (0: no limit)")
+	fs.BoolVar(&cfg.RelayXDPGeneric, "relay-xdp-generic", false, "with -relay-xdp: the program runs in generic mode, so the relay host keeps its channels and MTU and sets only IPv4 forwarding")
 	out := fs.String("out", "", "write the result JSON to this file (default: stdout)")
 	fs.StringVar(&cfg.Name, "name", "", "result name")
 	fs.Var((*argvFlag)(&cfg.ServerArgv), "server-argv", "JSON argv of the server role; $SERVER_IP, $RELAY_IP and $CLIENT_IP expand to the host addresses, and $DEV to the network device of this host")
@@ -83,6 +84,9 @@ func nodeCmd(ctx context.Context, args []string) error {
 	}
 	if cfg.RelayChannels < 0 || (cfg.RelayChannels > 0 && !cfg.RelayXDP) {
 		return errors.New("bad flags: need -relay-channels >= 0, and -relay-xdp with -relay-channels")
+	}
+	if cfg.RelayXDPGeneric && (!cfg.RelayXDP || cfg.RelayChannels > 0) {
+		return errors.New("bad flags: need -relay-xdp and no -relay-channels with -relay-xdp-generic")
 	}
 	if strings.ContainsAny(cfg.HostClass, " \t\n") {
 		return fmt.Errorf("bad -host-class %q: it must be one word", cfg.HostClass)
@@ -120,7 +124,7 @@ func executeNode(ctx context.Context, cfg config, w Workload, role string, nodes
 		return nil, err
 	}
 	if role == "relay" && cfg.RelayXDP {
-		undo, err := prepareXDP(ctx, dev, ip, uint32(cfg.RelayChannels), linkSettle)
+		undo, err := prepareXDP(ctx, dev, ip, uint32(cfg.RelayChannels), cfg.RelayXDPGeneric, linkSettle)
 		if err != nil {
 			return nil, fmt.Errorf("set %s for XDP: %w", dev, err)
 		}

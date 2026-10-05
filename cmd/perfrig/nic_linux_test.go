@@ -70,17 +70,29 @@ func TestPrepareXDP(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, linkConf{channels: old.channels, mtu: 9001, forwarding: "0"}, old)
 
-	undo, err := prepareXDP(t.Context(), dev, ip, 0, 20*time.Millisecond)
-	require.NoError(t, err)
-	got, _, err := readLink(dev)
-	require.NoError(t, err)
-	assert.Equal(t, linkConf{channels: old.channels, mtu: xdpMaxMTU, forwarding: "1"}, got)
+	cases := []struct {
+		name    string
+		generic bool
+		want    linkConf
+	}{
+		{name: "driver mode", want: linkConf{channels: old.channels, mtu: xdpMaxMTU, forwarding: "1"}},
+		{name: "generic mode", generic: true, want: linkConf{channels: old.channels, mtu: 9001, forwarding: "1"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			undo, err := prepareXDP(t.Context(), dev, ip, 0, tc.generic, 20*time.Millisecond)
+			require.NoError(t, err)
+			got, _, err := readLink(dev)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
 
-	undo()
-	got, _, err = readLink(dev)
-	require.NoError(t, err)
-	assert.Equal(t, old, got)
+			undo()
+			got, _, err = readLink(dev)
+			require.NoError(t, err)
+			assert.Equal(t, old, got)
+		})
+	}
 
-	_, err = prepareXDP(t.Context(), "perf-none", ip, 0, 20*time.Millisecond)
+	_, err = prepareXDP(t.Context(), "perf-none", ip, 0, false, 20*time.Millisecond)
 	assert.Error(t, err)
 }

@@ -154,6 +154,7 @@ func TestXDPConf(t *testing.T) {
 		in          linkConf
 		maxChannels uint32
 		limit       uint32
+		generic     bool
 		want        linkConf
 	}{
 		{name: "all channels in use", in: linkConf{channels: 8, mtu: 9001, forwarding: "0"}, maxChannels: 8, want: linkConf{channels: 4, mtu: xdpMaxMTU, forwarding: "1"}},
@@ -163,10 +164,11 @@ func TestXDPConf(t *testing.T) {
 		{name: "one channel", in: linkConf{channels: 1, mtu: 3499, forwarding: "0"}, maxChannels: 1, want: linkConf{channels: 1, mtu: xdpMaxMTU, forwarding: "1"}},
 		{name: "limit below half", in: linkConf{channels: 8, mtu: 9001, forwarding: "0"}, maxChannels: 16, limit: 1, want: linkConf{channels: 1, mtu: xdpMaxMTU, forwarding: "1"}},
 		{name: "limit above half", in: linkConf{channels: 8, mtu: 9001, forwarding: "0"}, maxChannels: 8, limit: 6, want: linkConf{channels: 4, mtu: xdpMaxMTU, forwarding: "1"}},
+		{name: "generic mode", in: linkConf{channels: 8, mtu: 9001, forwarding: "0"}, maxChannels: 8, generic: true, want: linkConf{channels: 8, mtu: 9001, forwarding: "1"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, xdpConf(tc.in, tc.maxChannels, tc.limit))
+			assert.Equal(t, tc.want, xdpConf(tc.in, tc.maxChannels, tc.limit, tc.generic))
 		})
 	}
 }

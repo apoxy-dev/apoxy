@@ -167,15 +167,15 @@ func waitAddr(ctx context.Context, dev, ip string, hold, timeout time.Duration) 
 	}
 }
 
-// prepareXDP gives dev the settings that an XDP program in driver mode needs, with
-// at most channels channels if channels is above 0. The returned function sets
-// the old settings again.
-func prepareXDP(ctx context.Context, dev, ip string, channels uint32, settle time.Duration) (func(), error) {
+// prepareXDP gives dev the settings that an XDP program needs: in driver mode with
+// at most channels channels if channels is above 0, or in generic mode. The
+// returned function sets the old settings again.
+func prepareXDP(ctx context.Context, dev, ip string, channels uint32, generic bool, settle time.Duration) (func(), error) {
 	old, maxChannels, err := readLink(dev)
 	if err != nil {
 		return nil, err
 	}
-	want := xdpConf(old, maxChannels, channels)
+	want := xdpConf(old, maxChannels, channels, generic)
 	undo := func() {
 		// The context of the row can be done here.
 		ctx, cancel := context.WithTimeout(context.Background(), 2*linkSettleTimeout)
@@ -188,7 +188,7 @@ func prepareXDP(ctx context.Context, dev, ip string, channels uint32, settle tim
 		undo()
 		return nil, err
 	}
-	slog.Info("Made the link ready for XDP in driver mode", "dev", dev, "channels", want.channels, "old_channels", old.channels,
+	slog.Info("Made the link ready for XDP", "dev", dev, "generic", generic, "channels", want.channels, "old_channels", old.channels,
 		"max_channels", maxChannels, "mtu", want.mtu, "old_mtu", old.mtu)
 	return undo, nil
 }
