@@ -180,6 +180,21 @@ func (s *SendSocket) Close() error {
 	return unix.Close(s.fd)
 }
 
+// Queued returns the bytes that the socket sent and the NIC did not complete.
+// It returns 0 after Close.
+func (s *SendSocket) Queued() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.closed.Load() {
+		return 0
+	}
+	n, err := unix.IoctlGetInt(s.fd, unix.SIOCOUTQ)
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
 // sendmmsg sends hs with one call, and returns the count of messages that the
 // kernel took. The call waits in the kernel while the send buffer is full.
 func (s *SendSocket) sendmmsg(hs []mmsghdr) (int, error) {

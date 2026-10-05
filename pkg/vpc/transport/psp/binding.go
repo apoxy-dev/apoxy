@@ -523,6 +523,18 @@ func (b *Binding) LaneConns() []*net.UDPConn {
 	return out
 }
 
+// LaneSendQueue returns the bytes that the lane send sockets sent and the NIC
+// did not complete. The sockets of LaneConns do not have these bytes.
+func (b *Binding) LaneSendQueue() int {
+	var n int
+	for i := range b.laneSends {
+		if s := b.laneSends[i].Load(); s != nil {
+			n += s.Queued()
+		}
+	}
+	return n
+}
+
 // laneConn returns the socket of a send lane, or nil for lane 0 and for a
 // lane with no socket.
 func (b *Binding) laneConn(lane byte) *net.UDPConn {

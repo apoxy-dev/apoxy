@@ -84,10 +84,10 @@ type queueSampler struct {
 
 const queueInterval = 5 * time.Millisecond
 
-// sampleQueues samples the queues of c and of the sockets of lanes until ctx
-// ends. A sample is the sum of all sockets. It returns nil when it cannot read
-// the queues of c.
-func sampleQueues(ctx context.Context, c syscall.Conn, lanes func() []*net.UDPConn) *queueSampler {
+// sampleQueues samples the queues of c and of the sockets of lanes, and the send
+// queue sent of the lane send sockets, until ctx ends. A sample is the sum of
+// all sockets. It returns nil when it cannot read the queues of c.
+func sampleQueues(ctx context.Context, c syscall.Conn, lanes func() []*net.UDPConn, sent func() int) *queueSampler {
 	if rx, _ := sockMem(c); rx < 0 {
 		return nil
 	}
@@ -101,12 +101,7 @@ func sampleQueues(ctx context.Context, c syscall.Conn, lanes func() []*net.UDPCo
 				return
 			case <-t.C:
 			}
-			rx, tx := sockMem(c)
-			for _, lc := range lanes() {
-				if lrx, ltx := sockMem(lc); lrx >= 0 {
-					rx, tx = rx+lrx, tx+ltx
-				}
-			}
+			rx, tx := sockQueues(c, lanes(), sent())
 			q.mu.Lock()
 			q.rx, q.tx, q.n = q.rx+rx, q.tx+tx, q.n+1
 			q.rxMax, q.txMax = max(q.rxMax, rx), max(q.txMax, tx)
@@ -114,6 +109,18 @@ func sampleQueues(ctx context.Context, c syscall.Conn, lanes func() []*net.UDPCo
 		}
 	}()
 	return q
+}
+
+// sockQueues returns the sum of the queues of c and of the sockets of lanes.
+// sent is the send queue of the lane send sockets, which have no receive queue.
+func sockQueues(c syscall.Conn, lanes []*net.UDPConn, sent int) (rx, tx int64) {
+	rx, tx = sockMem(c)
+	for _, lc := range lanes {
+		if lrx, ltx := sockMem(lc); lrx >= 0 {
+			rx, tx = rx+lrx, tx+ltx
+		}
+	}
+	return rx, tx + int64(sent)
 }
 
 // take returns the queues since the last take, and starts again. It returns

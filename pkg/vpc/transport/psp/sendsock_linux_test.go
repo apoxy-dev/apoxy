@@ -316,9 +316,11 @@ func (ns *blockNS) do(fn func()) {
 	<-done
 }
 
-// TestCloseBlockedLane closes a binding while the sender of lane 1 waits in the
-// kernel for send buffer space. Close must return at once, and the senders stop.
-func TestCloseBlockedLane(t *testing.T) {
+// blockedLane opens a binding with lane 1 in a new netns, and sends on the lane
+// until its sender waits in the kernel for send buffer space. It returns the
+// binding, its driver, and a channel that gets the error that stops the driver.
+func blockedLane(t *testing.T) (*Binding, *driver, <-chan error) {
+	t.Helper()
 	ns := newBlockNS(t)
 	dm := &Demux{}
 	var uc *net.UDPConn
@@ -336,9 +338,11 @@ func TestCloseBlockedLane(t *testing.T) {
 		}
 	})
 	require.NoError(t, err)
-	defer uc.Close()
-	defer tr.Close()
-	defer b.Close()
+	t.Cleanup(func() {
+		_ = b.Close()
+		_ = tr.Close()
+		_ = uc.Close()
+	})
 	require.Len(t, ports, 1)
 	s := b.laneSends[1].Load()
 	require.NotNil(t, s)
@@ -355,8 +359,7 @@ func TestCloseBlockedLane(t *testing.T) {
 	d := newDriver(b, nil)
 	_, err = d.WriteFrames([][]byte{frame})
 	require.NoError(t, err)
-	senders := []*laneSender{d.lanes[0], d.lanes[1]}
-	require.NotNil(t, senders[1], "lane 1 has a sender")
+	require.NotNil(t, d.lanes[1], "lane 1 has a sender")
 
 	var calls atomic.Int64
 	stopped := make(chan error, 1)
@@ -377,6 +380,52 @@ func TestCloseBlockedLane(t *testing.T) {
 		require.True(t, time.Now().Before(deadline), "the driver does not wait")
 		last = calls.Load()
 	}
+	return b, d, stopped
+}
+
+// TestLaneSendQueue checks that the send queue of a binding has the bytes of its
+// lane send sockets, and that it is 0 after Close.
+func TestLaneSendQueue(t *testing.T) {
+	cases := []struct {
+		name string
+		// waits is true when the sender of lane 1 waits for send buffer space.
+		waits bool
+	}{
+		{name: "lanes that sent nothing"},
+		{name: "lane with a sender that waits for send buffer space", waits: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var b *Binding
+			if tc.waits {
+				b, _, _ = blockedLane(t)
+			} else {
+				a, _ := newPairLanes(t, 0, 3)
+				b = a.b
+				require.Len(t, b.OpenLanes(3), 2)
+			}
+			s := b.laneSends[1].Load()
+			require.NotNil(t, s)
+			q := b.LaneSendQueue()
+			if tc.waits {
+				// A sender waits only when the send memory is the send buffer size or more.
+				sfd := sendFD(t, b.laneConn(1))
+				assert.GreaterOrEqual(t, q, sockopt(sfd, unix.SOL_SOCKET, unix.SO_SNDBUF))
+				assert.Equal(t, s.Queued(), q, "only lane 1 has packets")
+			} else {
+				assert.Zero(t, q)
+			}
+			require.NoError(t, b.Close())
+			assert.Zero(t, b.LaneSendQueue(), "after Close")
+		})
+	}
+}
+
+// TestCloseBlockedLane closes a binding while the sender of lane 1 waits in the
+// kernel for send buffer space. Close must return at once, and the senders stop.
+func TestCloseBlockedLane(t *testing.T) {
+	b, d, stopped := blockedLane(t)
+	senders := []*laneSender{d.lanes[0], d.lanes[1]}
 	select {
 	case <-senders[1].exited:
 		t.Fatal("The sender of lane 1 stopped before the close.")

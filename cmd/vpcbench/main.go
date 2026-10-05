@@ -248,7 +248,7 @@ func (s *side) close() {
 func (s *side) startNet(ctx context.Context, fail context.CancelCauseFunc, o options, dst netip.Prefix) error {
 	slog.Info("Agent socket is ready", "address", s.uc.LocalAddr().String(), "rcvbuf", sockRcvbuf(s.uc))
 	ctx, cancel := context.WithCancel(ctx)
-	s.q = sampleQueues(ctx, s.uc, s.b.LaneConns)
+	s.q = sampleQueues(ctx, s.uc, s.b.LaneConns, s.b.LaneSendQueue)
 	var err error
 	if o.Driver == "tun" {
 		s.net, err = startTun(ctx, fail, s.b, s.addr, dst, o.CC)

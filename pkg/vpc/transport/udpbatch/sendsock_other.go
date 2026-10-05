@@ -24,3 +24,6 @@ func (*SendSocket) Sync() error { return nil }
 
 // Close does nothing.
 func (*SendSocket) Close() error { return nil }
+
+// Queued returns 0.
+func (*SendSocket) Queued() int { return 0 }

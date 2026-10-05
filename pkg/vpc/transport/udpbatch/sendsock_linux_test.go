@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -562,6 +563,95 @@ func stalls(t *testing.T, count *atomic.Int64) {
 	}
 }
 
+// listenBlocked opens the two sockets of Listen in a new netns, with the smallest
+// send buffer. It returns the send socket and an address that keeps its packets.
+func listenBlocked(t *testing.T) (*SendSocket, netip.AddrPort) {
+	t.Helper()
+	var uc *net.UDPConn
+	var s *SendSocket
+	var err error
+	ns := newBlockNS(t)
+	ns.do(func() { uc, s, err = Listen("udp4", &net.UDPAddr{IP: net.IPv4(10, 99, 0, 1)}) })
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_ = s.Close()
+		_ = uc.Close()
+	})
+	// The smallest send buffer has space for one message.
+	require.NoError(t, uc.SetWriteBuffer(1))
+	require.NoError(t, s.Sync())
+	return s, netip.MustParseAddrPort("10.99.0.2:9")
+}
+
+// startSender sends messages of 16 packets on s to dst until a send fails. It
+// returns the count of the sends, and a channel that gets the error.
+func startSender(s *SendSocket, dst netip.AddrPort) (*atomic.Int64, <-chan error) {
+	bt := NewSend(s, 64)
+	flushes := &atomic.Int64{}
+	stopped := make(chan error, 1)
+	go func() {
+		pkt := make([]byte, 1200)
+		for {
+			for range 16 {
+				bt.Add(pkt, dst)
+			}
+			if _, _, err := bt.Flush(); err != nil {
+				stopped <- err
+				return
+			}
+			flushes.Add(1)
+		}
+	}()
+	return flushes, stopped
+}
+
+// wmem returns the send memory of fd as SO_MEMINFO gives it.
+func wmem(t *testing.T, fd int) int {
+	t.Helper()
+	var mi [unix.SK_MEMINFO_VARS]uint32
+	n := uint32(unsafe.Sizeof(mi))
+	_, _, errno := unix.Syscall6(unix.SYS_GETSOCKOPT, uintptr(fd), unix.SOL_SOCKET, unix.SO_MEMINFO,
+		uintptr(unsafe.Pointer(&mi[0])), uintptr(unsafe.Pointer(&n)), 0)
+	require.Zero(t, errno)
+	return int(mi[unix.SK_MEMINFO_WMEM_ALLOC])
+}
+
+// TestQueued checks the bytes that a send socket reports for its send path. They
+// are the send memory of the socket, and 0 after Close.
+func TestQueued(t *testing.T) {
+	cases := []struct {
+		name string
+		// waits is true when a sender waits in the kernel for send buffer space.
+		waits bool
+	}{
+		{"socket that sent nothing", false},
+		{"socket with a sender that waits for send buffer space", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var s *SendSocket
+			if tc.waits {
+				var dst netip.AddrPort
+				s, dst = listenBlocked(t)
+				flushes, _ := startSender(s, dst)
+				stalls(t, flushes)
+			} else {
+				_, s = listen(t, "udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+			}
+			q := s.Queued()
+			assert.Equal(t, wmem(t, s.fd), q, "the send memory of the socket")
+			if tc.waits {
+				// A sender waits only when the send memory is the send buffer size or more.
+				assert.GreaterOrEqual(t, q, sockopt(s.fd, unix.SOL_SOCKET, unix.SO_SNDBUF))
+			} else {
+				assert.Zero(t, q)
+			}
+			require.NoError(t, s.Close())
+			assert.Zero(t, s.Queued(), "after Close")
+		})
+	}
+}
+
 // TestCloseSender closes a send socket while a goroutine sends on it. Close must
 // return at once, and the sender must stop with net.ErrClosed.
 func TestCloseSender(t *testing.T) {
@@ -575,42 +665,17 @@ func TestCloseSender(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			var uc *net.UDPConn
 			var s *SendSocket
 			var dst netip.AddrPort
 			if tc.waits {
-				var err error
-				ns := newBlockNS(t)
-				ns.do(func() { uc, s, err = Listen("udp4", &net.UDPAddr{IP: net.IPv4(10, 99, 0, 1)}) })
-				require.NoError(t, err)
-				defer uc.Close()
-				defer s.Close()
-				dst = netip.MustParseAddrPort("10.99.0.2:9")
-				// The smallest send buffer has space for one message.
-				require.NoError(t, uc.SetWriteBuffer(1))
-				require.NoError(t, s.Sync())
+				s, dst = listenBlocked(t)
 			} else {
-				uc, s = listen(t, "udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+				_, s = listen(t, "udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 				dst = listenLoopback(t).LocalAddr().(*net.UDPAddr).AddrPort()
 			}
-			bt := NewSend(s, 64)
-			var flushes atomic.Int64
-			stopped := make(chan error, 1)
-			go func() {
-				pkt := make([]byte, 1200)
-				for {
-					for range 16 {
-						bt.Add(pkt, dst)
-					}
-					if _, _, err := bt.Flush(); err != nil {
-						stopped <- err
-						return
-					}
-					flushes.Add(1)
-				}
-			}()
+			flushes, stopped := startSender(s, dst)
 			if tc.waits {
-				stalls(t, &flushes)
+				stalls(t, flushes)
 			} else {
 				require.Eventually(t, func() bool { return flushes.Load() > 100 }, 5*time.Second, time.Millisecond)
 			}
