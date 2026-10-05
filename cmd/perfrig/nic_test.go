@@ -173,6 +173,82 @@ func TestXDPConf(t *testing.T) {
 	}
 }
 
+func TestXDPLink(t *testing.T) {
+	cases := []struct {
+		name         string
+		cfg          config
+		role         string
+		wantOn       bool
+		wantChannels uint32
+		wantGeneric  bool
+	}{
+		{name: "no XDP", cfg: config{}, role: "relay"},
+		{name: "relay in driver mode", cfg: config{RelayXDP: true}, role: "relay", wantOn: true},
+		{name: "relay with one channel", cfg: config{RelayXDP: true, RelayChannels: 1}, role: "relay", wantOn: true, wantChannels: 1},
+		{name: "relay in generic mode", cfg: config{RelayXDP: true, RelayXDPGeneric: true}, role: "relay", wantOn: true, wantGeneric: true},
+		{name: "server of a relay XDP row", cfg: config{RelayXDP: true, RelayChannels: 1}, role: "server"},
+		{name: "server in driver mode", cfg: config{RelayXDP: true, RelayXDPGeneric: true, ServerXDP: true}, role: "server", wantOn: true},
+		{name: "relay of a server XDP row", cfg: config{ServerXDP: true}, role: "relay"},
+		{name: "client", cfg: config{RelayXDP: true, ServerXDP: true}, role: "client"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			on, channels, generic := tc.cfg.xdpLink(tc.role)
+			assert.Equal(t, tc.wantOn, on)
+			assert.Equal(t, tc.wantChannels, channels)
+			assert.Equal(t, tc.wantGeneric, generic)
+		})
+	}
+}
+
+func TestPollsNIC(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  config
+		role string
+		want bool
+	}{
+		{name: "relay with XDP", cfg: config{RelayXDP: true}, role: "relay", want: true},
+		{name: "server with XDP", cfg: config{ServerXDP: true}, role: "server", want: true},
+		{name: "relay with no XDP", cfg: config{ServerXDP: true}, role: "relay"},
+		{name: "client", cfg: config{RelayXDP: true, ServerXDP: true}, role: "client"},
+		{name: "relay with no poll", cfg: config{RelayXDP: true, NoNICPoll: true}, role: "relay"},
+		{name: "server with no poll", cfg: config{ServerXDP: true, NoNICPoll: true}, role: "server"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, tc.cfg.pollsNIC(tc.role))
+		})
+	}
+}
+
+func TestNodeEnv(t *testing.T) {
+	nodes := nodeFlag{"client": "10.0.0.1", "server": "10.0.0.2", "relay": "10.0.0.3"}
+	cases := []struct {
+		name  string
+		role  string
+		nodes nodeFlag
+		relay bool
+		want  Env
+	}{
+		{name: "client of a row with a relay", role: "client", nodes: nodes, relay: true,
+			want: Env{ClientIP: "10.0.0.9", ServerIP: "10.0.0.2", RelayIP: "10.0.0.3"}},
+		{name: "relay", role: "relay", nodes: nodes, relay: true,
+			want: Env{ClientIP: "10.0.0.1", ServerIP: "10.0.0.2", RelayIP: "10.0.0.9"}},
+		{name: "client of a row with no relay in a run with a relay host", role: "client", nodes: nodes,
+			want: Env{ClientIP: "10.0.0.9", ServerIP: "10.0.0.2"}},
+		{name: "server of a row with no relay in a run with a relay host", role: "server", nodes: nodes,
+			want: Env{ClientIP: "10.0.0.1", ServerIP: "10.0.0.9"}},
+		{name: "server with no other host", role: "server", nodes: nodeFlag{}, want: Env{ServerIP: "10.0.0.9"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.want.Dev, tc.want.Streams = "eth0", 4
+			assert.Equal(t, tc.want, nodeEnv(config{Streams: 4}, tc.role, "10.0.0.9", "eth0", tc.nodes, tc.relay))
+		})
+	}
+}
+
 func TestXDPFeatureList(t *testing.T) {
 	cases := []struct {
 		mask uint64

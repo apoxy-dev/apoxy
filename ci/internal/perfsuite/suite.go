@@ -364,7 +364,8 @@ func profileArgs(role string) []string {
 }
 
 // VPC is the VPC data path through the relay, with one floor row and info
-// rows. The node rows run on 2 or 3 EC2 hosts.
+// rows. The node rows run on 2 or 3 EC2 hosts. The flood rows are node rows
+// that measure the XDP forward of the relay with no agent.
 var VPC = Suite{
 	Name:  "vpc",
 	Title: "VPC perf",
@@ -373,8 +374,11 @@ var VPC = Suite{
 	// The work dirs have the throwaway agent keys of each run.
 	Remove: []string{"*-cred.json"},
 	rows: func(o Options) []Row {
-		rows := make([]Row, 0, len(vpcRows))
+		rows := make([]Row, 0, len(vpcRows)+len(floodRows))
 		for _, r := range vpcRows {
+			rows = append(rows, r.row(o))
+		}
+		for _, r := range floodRows {
 			rows = append(rows, r.row(o))
 		}
 		return rows

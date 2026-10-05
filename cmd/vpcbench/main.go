@@ -71,10 +71,16 @@ var (
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	if len(os.Args) >= 2 && isFloodCmd(os.Args[1]) {
+		os.Exit(floodMain(os.Args[1], os.Args[2:]))
+	}
 	if len(os.Args) < 2 || (os.Args[1] != "relay" && os.Args[1] != "server" && os.Args[1] != "client") {
 		fmt.Fprintln(os.Stderr, "usage: vpcbench relay -listen HOST:PORT [flags]\n"+
 			"       vpcbench server -listen HOST:PORT -relay HOST:PORT [flags]\n"+
-			"       vpcbench client -server HOST:PORT -relay HOST:PORT [flags]")
+			"       vpcbench client -server HOST:PORT -relay HOST:PORT [flags]\n"+
+			"       vpcbench flood-relay -id ROW -listen HOST:PORT -xdp LINK [flags]\n"+
+			"       vpcbench flood-counter -id ROW -listen HOST:PORT -xdp LINK [flags]\n"+
+			"       vpcbench flood-source -id ROW -server HOST:PORT [-relay HOST:PORT] [flags]")
 		os.Exit(2)
 	}
 	cmd := os.Args[1]
@@ -414,6 +420,8 @@ type request struct {
 	// Window is the length of the measured window.
 	Index  int           `json:"index,omitempty"`
 	Window time.Duration `json:"window,omitempty"`
+	// Flood is the row of a flood command, and in a hello its flows.
+	Flood *floodHello `json:"flood,omitempty"`
 }
 
 // reply answers a request.
@@ -423,6 +431,8 @@ type reply struct {
 	Keys  []byte `json:"keys,omitempty"`
 	Mark  mark   `json:"mark"`
 	Error string `json:"error,omitempty"`
+	// Flood is the mark of a flood relay or counter.
+	Flood *floodMark `json:"flood,omitempty"`
 }
 
 // ctl is a control connection, with one JSON line each way for each call.

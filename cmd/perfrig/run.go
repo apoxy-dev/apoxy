@@ -49,6 +49,11 @@ type config struct {
 	RelayChannels int
 	// RelayXDPGeneric is for a program in generic mode: RelayXDP sets only the forwarding.
 	RelayXDPGeneric bool
+	// ServerXDP makes the server host of "perfrig node" set its link for XDP in driver mode.
+	ServerXDP bool
+	// NoNICPoll stops the read of the NIC counters of an XDP link during the row.
+	// The workload then reads the counters when it sends no packets.
+	NoNICPoll bool
 
 	// Exec workload flags.
 	Name        string

@@ -66,6 +66,8 @@ func nodeCmd(ctx context.Context, args []string) error {
 	fs.BoolVar(&cfg.RelayXDP, "relay-xdp", false, "the relay host sets its link for XDP in driver mode during the row: at most half of the channels, MTU at most 3498 and IPv4 forwarding")
 	fs.IntVar(&cfg.RelayChannels, "relay-channels", 0, "with -relay-xdp: the most channels of the relay link, so that few CPUs receive all packets (0: no limit)")
 	fs.BoolVar(&cfg.RelayXDPGeneric, "relay-xdp-generic", false, "with -relay-xdp: the program runs in generic mode, so the relay host keeps its channels and MTU and sets only IPv4 forwarding")
+	fs.BoolVar(&cfg.ServerXDP, "server-xdp", false, "the server host sets its link for XDP in driver mode during the row, as -relay-xdp does on the relay host")
+	fs.BoolVar(&cfg.NoNICPoll, "no-nic-poll", false, "a host with an XDP link does not read its NIC counters during the row; the ENA driver resets a link with full RX queues when the device does not answer a read")
 	out := fs.String("out", "", "write the result JSON to this file (default: stdout)")
 	fs.StringVar(&cfg.Name, "name", "", "result name")
 	fs.Var((*argvFlag)(&cfg.ServerArgv), "server-argv", "JSON argv of the server role; $SERVER_IP, $RELAY_IP and $CLIENT_IP expand to the host addresses, and $DEV to the network device of this host")
@@ -106,6 +108,47 @@ func nodeCmd(ctx context.Context, args []string) error {
 	return errors.Join(runErr, writeResult(res, *out))
 }
 
+// xdpLink reports whether the host of role sets its link for XDP during the row,
+// with the most channels (0: no limit) and the mode of the program.
+func (c config) xdpLink(role string) (on bool, channels uint32, generic bool) {
+	switch role {
+	case "relay":
+		return c.RelayXDP, uint32(c.RelayChannels), c.RelayXDPGeneric
+	case "server":
+		return c.ServerXDP, 0, false
+	}
+	return false, 0, false
+}
+
+// pollsNIC reports whether the host of role reads its NIC counters during the row.
+func (c config) pollsNIC(role string) bool {
+	on, _, _ := c.xdpLink(role)
+	return on && !c.NoNICPoll
+}
+
+// nodeEnv returns the workload environment of the host of role with the
+// address ip. relay tells that the row has a relay. A row with no relay does
+// not use the relay host, which can be off after its last row.
+func nodeEnv(cfg config, role, ip, dev string, nodes nodeFlag, relay bool) Env {
+	env := Env{
+		ServerIP: nodes["server"], ClientIP: nodes["client"], RelayIP: nodes["relay"],
+		Duration: cfg.Duration, Omit: cfg.Omit, Streams: cfg.Streams, Bitrate: cfg.Bitrate, Window: cfg.Window,
+		Dir: cfg.OutDir, Dev: dev,
+	}
+	switch role {
+	case "client":
+		env.ClientIP = ip
+	case "server":
+		env.ServerIP = ip
+	case "relay":
+		env.RelayIP = ip
+	}
+	if !relay {
+		env.RelayIP = ""
+	}
+	return env
+}
+
 // executeNode waits for the other hosts, runs the role one time and measures
 // the host. After an infra error, the result has InfraError.
 func executeNode(ctx context.Context, cfg config, w Workload, role string, nodes nodeFlag, wait time.Duration) (*Result, error) {
@@ -123,8 +166,8 @@ func executeNode(ctx context.Context, cfg config, w Workload, role string, nodes
 	if err != nil {
 		return nil, err
 	}
-	if role == "relay" && cfg.RelayXDP {
-		undo, err := prepareXDP(ctx, dev, ip, uint32(cfg.RelayChannels), cfg.RelayXDPGeneric, linkSettle)
+	if on, channels, generic := cfg.xdpLink(role); on {
+		undo, err := prepareXDP(ctx, dev, ip, channels, generic, linkSettle)
 		if err != nil {
 			return nil, fmt.Errorf("set %s for XDP: %w", dev, err)
 		}
@@ -159,19 +202,7 @@ func executeNode(ctx context.Context, cfg config, w Workload, role string, nodes
 	slog.Info("Host facts", "role", role, "ip", ip, "dev", dev, "driver", nic.Driver, "version", nic.Version,
 		"rx_queues", nic.RxQueues, "xdp_features", nic.XDPFeatures, "nodes", nodes.String())
 
-	env := Env{
-		ServerIP: nodes["server"], ClientIP: nodes["client"], RelayIP: nodes["relay"],
-		Duration: cfg.Duration, Omit: cfg.Omit, Streams: cfg.Streams, Bitrate: cfg.Bitrate, Window: cfg.Window,
-		Dir: cfg.OutDir, Dev: dev,
-	}
-	switch role {
-	case "client":
-		env.ClientIP = ip
-	case "server":
-		env.ServerIP = ip
-	case "relay":
-		env.RelayIP = ip
-	}
+	env := nodeEnv(cfg, role, ip, dev, nodes, w.Sidecar != nil)
 	if env.Dir == "" {
 		tmp, err := os.MkdirTemp("", "perfrig-")
 		if err != nil {
@@ -202,6 +233,12 @@ func executeNode(ctx context.Context, cfg config, w Workload, role string, nodes
 	}
 	if role == "client" {
 		rtt, err := pingRTT(ctx, nil, env.ServerIP, cfg.Pings)
+		if err != nil && cfg.ServerXDP {
+			// The link of the server host stops for a short time when the host sets it for XDP.
+			if err = waitPing(ctx, env.ServerIP, wait); err == nil {
+				rtt, err = pingRTT(ctx, nil, env.ServerIP, cfg.Pings)
+			}
+		}
 		if err != nil {
 			return infra(err)
 		}
@@ -253,9 +290,9 @@ func nodeRep(ctx context.Context, cfg config, w Workload, role string, env Env, 
 	}
 	run := Run{Rep: 1, StartedAt: time.Now().UTC(), Load1Start: load1()}
 	nic0 := nicCounters(ctx, dev)
-	// A read after the row finds no queue packets on the relay host of an XDP row.
+	// A read after the row finds no queue packets on a host that had an XDP program.
 	peak := func() map[string]int64 { return nil }
-	if role == "relay" && cfg.RelayXDP {
+	if cfg.pollsNIC(role) {
 		peak = peakCounters(ctx, dev, time.Second)
 	}
 	host0, hostErr := readCPUTimes()
