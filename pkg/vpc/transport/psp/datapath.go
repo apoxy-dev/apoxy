@@ -255,6 +255,12 @@ func (d *driver) Prepare(virt []byte, f *netstack.TxFrame) bool {
 	return err == nil
 }
 
+// PrepareSegs reserves the send frames of the n packets of one TCP packet in one call: one lane
+// and n sequence numbers in a row. It returns false and reserves nothing when Prepare must run.
+func (d *driver) PrepareSegs(hdr []byte, n, size, total int, f *netstack.TxFrame) bool {
+	return d.b.prepareSegs(hdr, n, size, total, f)
+}
+
 // Seal writes the send frame that Prepare reserved to phy. Many goroutines can call it at once.
 func (d *driver) Seal(f *netstack.TxFrame, virt, phy []byte) int {
 	n, err := d.b.seal(f, virt, phy)
@@ -321,6 +327,38 @@ func (b *Binding) prepare(virt []byte, f *netstack.TxFrame) error {
 	}
 	*f = netstack.TxFrame{SA: sa, Seq: seq, Dst: *p.addr.Load(), Lane: p.SendLane(lane)}
 	return nil
+}
+
+// prepareSegs is prepare for n packets with the headers hdr. It refuses the packets that prepare
+// can drop: no route, no SA, a breaker limit, or too few sequence numbers.
+func (b *Binding) prepareSegs(hdr []byte, n, size, total int, f *netstack.TxFrame) bool {
+	dst, ok := innerDst(hdr)
+	if !ok || size > b.mtu {
+		return false
+	}
+	p, ok := b.routes.Lookup(dst)
+	if !ok {
+		return false
+	}
+	if b.relay.Load() != nil {
+		if b.quic.limiter.rate.Load() != 0 {
+			return false
+		}
+		b.quic.limiter.sent.Add(uint64(total))
+		*f = netstack.TxFrame{}
+		return true
+	}
+	sa, lane := p.txSA(hdr)
+	if sa == nil || p.br.limiter.rate.Load() != 0 {
+		return false
+	}
+	seq, err := sa.ReserveN(n)
+	if err != nil {
+		return false
+	}
+	p.br.limiter.sent.Add(uint64(total))
+	*f = netstack.TxFrame{SA: sa, Seq: seq, Dst: *p.addr.Load(), Lane: p.SendLane(lane)}
+	return true
 }
 
 // seal writes the send frame that prepare reserved in f to phy and returns its length. It

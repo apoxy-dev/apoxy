@@ -194,6 +194,46 @@ func TestFlowLaneLife(t *testing.T) {
 	}
 }
 
+// TestPrepareSegsLanes checks that a flow gets the same lane and SA from prepareSegs and from
+// prepare, and that one TCP packet in each interval keeps the lane of the flow.
+func TestPrepareSegsLanes(t *testing.T) {
+	const lanes, n, size = 8, 44, 1200
+	b := laneBinding(t)
+	p := lanePeer(t, b, 1, lanes)
+	m := newFlowMaker(b)
+	used := map[int]bool{}
+	var pkts [lanes][]byte
+	for i := range pkts {
+		pkts[i] = m.next(1)
+		var f, one netstack.TxFrame
+		require.True(t, b.prepareSegs(pkts[i][:40], n, size, n*size, &f))
+		require.NoError(t, b.prepare(pkts[i], &one))
+		assert.Same(t, f.SA, one.SA)
+		assert.Equal(t, f.Lane, one.Lane)
+		assert.Equal(t, laneSPI(1, f.Lane), f.SA.SPI(), "lane of the SA")
+		assert.Zero(t, f.Seq)
+		assert.Equal(t, uint64(n), one.Seq)
+		assert.Equal(t, p.Addr(), f.Dst)
+		used[f.Lane] = true
+	}
+	assert.Len(t, used, lanes, "each flow has its own lane")
+
+	var f netstack.TxFrame
+	require.True(t, b.prepareSegs(pkts[2][:40], n, size, n*size, &f))
+	lane := f.Lane
+	for range 4 {
+		// The lane has the highest load, so a new choice gives another lane.
+		laneTicks(b, flowIdle)
+		b.stats.txLanes[lane].Add(10000)
+		require.True(t, b.prepareSegs(pkts[2][:40], n, size, n*size, &f))
+		require.Equal(t, lane, f.Lane)
+	}
+	laneTicks(b, flowIdle+1)
+	b.stats.txLanes[lane].Add(10000)
+	require.True(t, b.prepareSegs(pkts[2][:40], n, size, n*size, &f))
+	assert.NotEqual(t, lane, f.Lane, "after a pause longer than the time-out")
+}
+
 // TestFlowLaneLoad starts flows together on lanes that have load. sent has the
 // packets that each lane socket sent, and ticks the intervals that start after that.
 func TestFlowLaneLoad(t *testing.T) {
@@ -425,4 +465,39 @@ func BenchmarkTxSA(b *testing.B) {
 			}
 		}
 	})
+}
+
+// BenchmarkPrepare reserves the send frames of the 44 packets of one TCP packet: with one
+// Prepare call for each packet, and with one PrepareSegs call for all of them.
+func BenchmarkPrepare(b *testing.B) {
+	const n, size = 44, 1200
+	pkt := packet(netip.AddrFrom4([4]byte{10, 0, 0, 1}), laneDst(1), 6, 1024, 443, size)
+	for _, segs := range []bool{false, true} {
+		b.Run(fmt.Sprintf("segs=%t", segs), func(b *testing.B) {
+			var d *driver
+			var f netstack.TxFrame
+			b.ReportAllocs()
+			for i := 0; b.Loop(); i++ {
+				if i%(1<<20) == 0 {
+					// New SAs, before the present ones have no sequence numbers left.
+					b.StopTimer()
+					d = &driver{b: laneBinding(b)}
+					lanePeer(b, d.b, 1, 8)
+					b.StartTimer()
+				}
+				if segs {
+					if !d.PrepareSegs(pkt[:40], n, size, n*size, &f) {
+						b.Fatal("refused")
+					}
+					continue
+				}
+				for range n {
+					if !d.Prepare(pkt, &f) {
+						b.Fatal("dropped")
+					}
+				}
+			}
+			b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N*n), "ns/packet")
+		})
+	}
 }
