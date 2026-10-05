@@ -34,12 +34,13 @@ const (
 	dropUnknownSPI
 	dropLaneMeter
 	dropTunnelLimit
-	dropClosed // The forward goroutine stopped.
+	dropClosed    // The forward goroutines stopped.
+	dropSendQueue // The forward goroutine of the destination is too slow.
 	numDropReasons
 )
 
 // dropLabels are the reason labels of the drop metric.
-var dropLabels = [numDropReasons]string{"malformed", "unknown_source", "unknown_spi", "lane_meter", "tunnel_limit", "closed"}
+var dropLabels = [numDropReasons]string{"malformed", "unknown_source", "unknown_spi", "lane_meter", "tunnel_limit", "closed", "send_queue"}
 
 var dropsDesc = prometheus.NewDesc("apoxy_vpc_relay_dropped_packets_total",
 	"Packets that the relay dropped before it forwarded them, by reason.", []string{"reason"}, nil)

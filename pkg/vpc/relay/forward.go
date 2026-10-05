@@ -20,17 +20,21 @@ import (
 // to the relay. The batch end sends the packets that the handler forwarded in
 // one read. Relay sessions must use tr or another transport with these.
 //
-// With more than one CPU, a sender goroutine sends the forwarded packets, so the
-// read loop does not wait for the sends. It stops when ctx ends, and then the
-// forwarded packets drop.
+// With more than one CPU, sender goroutines send the forwarded packets, so the
+// read loop does not wait for the sends. A packet for a sender that is too slow
+// drops. The senders stop when ctx ends, and then the forwarded packets drop.
 func (r *Router) PacketHandler(ctx context.Context, tr *quic.Transport) (handle func(b []byte, from net.Addr), batchEnd func()) {
 	br := r.startBridge(tr)
 	var fwd forwarder
-	if p := newFwdPipe(tr, ctx.Done(), &r.drops[dropClosed]); p != nil && runtime.GOMAXPROCS(0) > 1 {
-		go p.run()
-		fwd = p
-	} else {
-		fwd = newFwdBatch(tr)
+	if procs := runtime.GOMAXPROCS(0); procs > 1 {
+		c := fwdCounters{closed: &r.drops[dropClosed], queue: &r.drops[dropSendQueue], sends: &r.sends}
+		if p := newFwdPipe(tr, fwdSenders(procs), ctx.Done(), c); p != nil {
+			p.start()
+			fwd = p
+		}
+	}
+	if fwd == nil {
+		fwd = newFwdBatch(tr, &r.sends)
 	}
 	return func(b []byte, from net.Addr) {
 		h, err := pspwire.ParseHeader(b)
@@ -53,14 +57,22 @@ func (r *Router) PacketHandler(ctx context.Context, tr *quic.Transport) (handle 
 	}, fwd.flush
 }
 
-// addrCache keeps the net.UDPAddr of recent destinations, so that a forward
-// does not allocate one. Two destinations can use the same slot.
-type addrCache [1024]atomic.Pointer[net.UDPAddr]
+// addrSlotBits is the number of hash bits that select a slot of a destination table.
+const addrSlotBits = 10
 
-func (c *addrCache) get(a netip.AddrPort) *net.UDPAddr {
+// addrSlot returns the slot of the destination a in a table of 1<<addrSlotBits slots.
+func addrSlot(a netip.AddrPort) uint64 {
 	b := a.Addr().As16()
 	h := (binary.LittleEndian.Uint64(b[:8]) ^ binary.LittleEndian.Uint64(b[8:]) ^ uint64(a.Port())) * 0x9e3779b97f4a7c15
-	slot := &c[h>>54]
+	return h >> (64 - addrSlotBits)
+}
+
+// addrCache keeps the net.UDPAddr of recent destinations, so that a forward
+// does not allocate one. Two destinations can use the same slot.
+type addrCache [1 << addrSlotBits]atomic.Pointer[net.UDPAddr]
+
+func (c *addrCache) get(a netip.AddrPort) *net.UDPAddr {
+	slot := &c[addrSlot(a)]
 	if u := slot.Load(); u != nil && u.AddrPort() == a {
 		return u
 	}

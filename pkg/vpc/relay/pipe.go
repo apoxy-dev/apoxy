@@ -5,6 +5,7 @@ package relay
 import (
 	"net"
 	"net/netip"
+	"sync"
 	"sync/atomic"
 
 	"github.com/quic-go/quic-go"
@@ -12,142 +13,243 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/udpbatch"
 )
 
-// fwdSets is the number of packet sets in a forward pipe.
-const fwdSets = 8
+const (
+	// fwdSets is the most packet sets of each sender of a forward pipe. They hold
+	// two reads of the largest size: 64 GRO messages of 64 packets.
+	fwdSets = 128
+	// maxSend is the most packets in one sendmmsg call of a sender.
+	maxSend = 4 * maxFwd
+	// maxFwdSenders is the most senders of a forward pipe.
+	maxFwdSenders = 4
+)
+
+// fwdSenders returns the number of senders of a forward pipe for procs CPUs: at
+// most half of the CPUs, and at most maxFwdSenders, because one read loop feeds them.
+func fwdSenders(procs int) int {
+	if procs < 4 {
+		return 1
+	}
+	return min(procs/2, maxFwdSenders)
+}
 
 // forwarder sends the PSP packets that one read of the QUIC read loop forwards.
 // Only the read loop calls it.
 type forwarder interface {
 	// add copies b to dst into the forwarder.
 	add(b []byte, dst netip.AddrPort)
-	// flush sends the packets of the read, or gives them to the sender.
+	// flush sends the packets of the read, or gives them to the senders.
 	flush()
 }
 
-// fwdPipe moves the PSP packets that the read loop forwards to a sender goroutine.
-// The loop only copies the packets of each read into a set. The sender sends the
-// sets in order, each with one sendmmsg call, so the packets to each destination
-// stay in order. When all sets wait for the sender, the loop waits, and the socket
-// buffer keeps the next packets.
+// fwdPipe moves the PSP packets that the read loop forwards to sender goroutines.
+// A destination always has the same sender, so its packets stay in order. The read
+// loop does not wait: a packet for a sender with no free set drops.
 type fwdPipe struct {
-	tr    *quic.Transport
-	b     *udpbatch.Batch // Only the sender uses it.
-	addrs addrCache
-	cur   *fwdSet      // The set of this read. Nil until the loop adds a packet.
-	full  chan *fwdSet // Sets for the sender, in order.
-	free  chan *fwdSet // Empty sets for the loop.
+	tr      *quic.Transport
+	addrs   addrCache
+	senders []*fwdSender
+	// slots holds 1 plus the sender index of each hash slot, or 0. Only the read
+	// loop uses slots and next.
+	slots [1 << addrSlotBits]uint8
+	next  int
 	done  <-chan struct{}
-	drops *atomic.Uint64 // Packets that drop because the pipe stopped.
+	c     fwdCounters
 }
 
-// fwdSet is the forwarded packets of one read. The first n slots hold packets.
+// fwdCounters are the counters of a forward pipe.
+type fwdCounters struct {
+	closed *atomic.Uint64 // Packets that drop because the pipe stopped.
+	queue  *atomic.Uint64 // Packets that drop because their sender has no free set.
+	sends  *sendStats
+}
+
+// fwdSender sends the packets of its destinations with one socket batch.
+type fwdSender struct {
+	b    *udpbatch.Batch // Only the sender goroutine uses it.
+	cur  *fwdSet         // The set of this read. Only the read loop uses it.
+	full chan *fwdSet    // Sets for the sender goroutine, in order.
+	made int             // The sets of the sender. Only the read loop uses it.
+
+	mu   sync.Mutex
+	free []*fwdSet // Empty sets. The last one was in use most recently.
+}
+
+// fwdSet is the forwarded packets of one read for one sender. The first n slots
+// hold packets.
 type fwdSet struct {
 	pkts [][]byte
 	dsts []netip.AddrPort
 	n    int
 }
 
-// newFwdPipe returns a pipe for tr that stops when done closes, or nil when the
-// socket of tr cannot send batches. The caller runs run.
-func newFwdPipe(tr *quic.Transport, done <-chan struct{}, drops *atomic.Uint64) *fwdPipe {
+// newFwdPipe returns a pipe for tr with n senders that stops when done closes, or
+// nil when the socket of tr cannot send batches. The caller calls start.
+func newFwdPipe(tr *quic.Transport, n int, done <-chan struct{}, c fwdCounters) *fwdPipe {
 	uc, ok := tr.Conn.(*net.UDPConn)
 	if !ok {
 		return nil
 	}
-	b := udpbatch.New(uc, maxFwd)
-	if b == nil {
-		return nil
-	}
-	p := &fwdPipe{
-		tr:    tr,
-		b:     b,
-		full:  make(chan *fwdSet, fwdSets),
-		free:  make(chan *fwdSet, fwdSets),
-		done:  done,
-		drops: drops,
-	}
-	slab := make([]byte, fwdSets*maxFwd*maxUDP)
-	for range fwdSets {
-		s := &fwdSet{pkts: make([][]byte, maxFwd), dsts: make([]netip.AddrPort, maxFwd)}
-		for i := range s.pkts {
-			s.pkts[i], slab = slab[:0:maxUDP], slab[maxUDP:]
+	p := &fwdPipe{tr: tr, done: done, c: c}
+	for range n {
+		// The senders send at the same time, so a send must not wait for the others.
+		b := udpbatch.NewShared(uc, maxSend)
+		if b == nil {
+			return nil
 		}
-		p.free <- s
+		sd := &fwdSender{b: b, full: make(chan *fwdSet, fwdSets), free: make([]*fwdSet, 0, fwdSets)}
+		p.senders = append(p.senders, sd)
 	}
 	return p
 }
 
-// add copies b to dst into the set of this read. It drops b when the pipe stops.
+// newFwdSet returns an empty set with room for maxFwd packets.
+func newFwdSet() *fwdSet {
+	s := &fwdSet{pkts: make([][]byte, maxFwd), dsts: make([]netip.AddrPort, maxFwd)}
+	slab := make([]byte, maxFwd*maxUDP)
+	for i := range s.pkts {
+		s.pkts[i], slab = slab[:0:maxUDP], slab[maxUDP:]
+	}
+	return s
+}
+
+// start runs the sender goroutines.
+func (p *fwdPipe) start() {
+	for _, sd := range p.senders {
+		go p.run(sd)
+	}
+}
+
+// senderOf returns the sender of the destination dst. The first packet to a hash
+// slot gives the slot the next sender in turn, and the slot keeps that sender.
+func (p *fwdPipe) senderOf(dst netip.AddrPort) *fwdSender {
+	if len(p.senders) == 1 {
+		return p.senders[0]
+	}
+	slot := &p.slots[addrSlot(dst)]
+	if *slot == 0 {
+		p.next = p.next%len(p.senders) + 1
+		*slot = uint8(p.next)
+	}
+	return p.senders[*slot-1]
+}
+
+// add copies b to dst into the set of this read for the sender of dst. It drops b
+// when that sender has no free set, or when the pipe stopped.
 func (p *fwdPipe) add(b []byte, dst netip.AddrPort) {
 	if len(b) > maxUDP {
 		_, _ = p.tr.WriteTo(b, p.addrs.get(dst))
 		return
 	}
-	if p.cur == nil {
-		if p.cur = p.get(); p.cur == nil {
-			p.drops.Add(1)
+	sd := p.senderOf(dst)
+	s := sd.cur
+	if s == nil {
+		if s = sd.take(); s == nil {
+			if p.stopped() {
+				p.c.closed.Add(1)
+			} else {
+				p.c.queue.Add(1)
+			}
 			return
 		}
+		sd.cur = s
 	}
-	s := p.cur
 	s.pkts[s.n] = append(s.pkts[s.n][:0], b...)
 	s.dsts[s.n] = dst
 	if s.n++; s.n == len(s.pkts) {
-		p.flush()
+		p.give(sd)
 	}
 }
 
-// get returns a free set. It waits while no set is free, and returns nil when the pipe
-// stops.
-func (p *fwdPipe) get() *fwdSet {
-	select {
-	case s := <-p.free:
-		if !p.stopped() {
-			return s
-		}
-	case <-p.done:
+// take returns the free set of sd that was in use most recently. With no free set
+// it makes a set, so an idle sender holds no memory. With fwdSets sets it returns nil.
+func (sd *fwdSender) take() *fwdSet {
+	sd.mu.Lock()
+	if n := len(sd.free); n > 0 {
+		s := sd.free[n-1]
+		sd.free = sd.free[:n-1]
+		sd.mu.Unlock()
+		return s
 	}
-	return nil
+	sd.mu.Unlock()
+	if sd.made == fwdSets {
+		return nil
+	}
+	sd.made++
+	return newFwdSet()
 }
 
-// flush gives the set of this read to the sender.
+// put empties the sets and makes them free.
+func (sd *fwdSender) put(sets []*fwdSet) {
+	sd.mu.Lock()
+	defer sd.mu.Unlock()
+	for _, s := range sets {
+		s.n = 0
+		sd.free = append(sd.free, s)
+	}
+}
+
+// flush gives the sets of this read to the senders.
 func (p *fwdPipe) flush() {
-	s := p.cur
-	if s == nil {
-		return
-	}
-	p.cur = nil
-	// There are fwdSets sets, so this does not wait.
-	p.full <- s
-	// The sender can stop before it gets s.
-	if p.stopped() {
-		p.drain()
+	for _, sd := range p.senders {
+		if sd.cur != nil {
+			p.give(sd)
+		}
 	}
 }
 
-// run sends the sets in order until the pipe stops. Then it drops the sets that wait.
-func (p *fwdPipe) run() {
+// give gives the set of this read of sd to its sender goroutine.
+func (p *fwdPipe) give(sd *fwdSender) {
+	s := sd.cur
+	sd.cur = nil
+	// The sender has fwdSets sets, so this does not wait.
+	sd.full <- s
+	// The sender goroutine can stop before it gets s.
+	if p.stopped() {
+		p.drain(sd)
+	}
+}
+
+// run sends the sets of sd in order until the pipe stops. Then it drops the sets
+// that wait. One sendmmsg call sends the sets that wait, up to maxSend packets.
+func (p *fwdPipe) run(sd *fwdSender) {
+	held := make([]*fwdSet, 0, fwdSets)
 	for {
 		var s *fwdSet
 		select {
-		case s = <-p.full:
+		case s = <-sd.full:
 		case <-p.done:
 		}
 		if p.stopped() {
 			if s != nil {
 				p.drop(s)
 			}
-			p.drain()
+			p.drain(sd)
 			return
 		}
-		for i := range s.n {
-			p.b.Add(s.pkts[i], s.dsts[i])
+		for s != nil {
+			if sd.b.Len()+s.n > maxSend {
+				held = p.send(sd, held)
+			}
+			for i := range s.n {
+				sd.b.Add(s.pkts[i], s.dsts[i])
+			}
+			held = append(held, s)
+			select {
+			case s = <-sd.full:
+			default:
+				s = nil
+			}
 		}
-		// A packet that the socket refuses drops, as in fwdBatch.
-		_, _, _ = p.b.Flush()
-		s.n = 0
-		p.free <- s
+		held = p.send(sd, held)
 	}
+}
+
+// send sends the batch of sd and makes its sets free. It returns held with no sets.
+func (p *fwdPipe) send(sd *fwdSender, held []*fwdSet) []*fwdSet {
+	p.c.sends.flush(sd.b)
+	sd.put(held)
+	clear(held)
+	return held[:0]
 }
 
 // stopped reports whether the pipe stopped.
@@ -160,11 +262,11 @@ func (p *fwdPipe) stopped() bool {
 	}
 }
 
-// drain drops the sets that wait for the sender.
-func (p *fwdPipe) drain() {
+// drain drops the sets that wait for the sender goroutine of sd.
+func (p *fwdPipe) drain(sd *fwdSender) {
 	for {
 		select {
-		case s := <-p.full:
+		case s := <-sd.full:
 			p.drop(s)
 		default:
 			return
@@ -174,6 +276,6 @@ func (p *fwdPipe) drain() {
 
 // drop counts the packets of s as drops and empties s.
 func (p *fwdPipe) drop(s *fwdSet) {
-	p.drops.Add(uint64(s.n))
+	p.c.closed.Add(uint64(s.n))
 	s.n = 0
 }

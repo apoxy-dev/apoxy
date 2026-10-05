@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/apoxy-dev/apoxy/cmd/internal/bench"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/relay"
 )
 
 // mark is the counters of one side at one time. Each side sets its fields.
@@ -46,6 +47,8 @@ type mark struct {
 	LinkDrops int64 `json:"link_drops,omitempty"`
 	// XDPPackets are the PSP packets that the relay forwarded in XDP.
 	XDPPackets uint64 `json:"xdp_packets,omitempty"`
+	// Sends are the sendmmsg counters of the relay socket path.
+	Sends relay.ForwardStats `json:"sends,omitzero"`
 	// CPUs are the ticks of each CPU of the host of the side.
 	CPUs []bench.CPUTicks `json:"cpus,omitempty"`
 	// Queue is the bytes in the queues of the agent socket and the lane sockets
@@ -246,6 +249,11 @@ type result struct {
 	// RelayXDPPackets are the PSP packets that the relay forwarded in XDP in
 	// the measured window.
 	RelayXDPPackets uint64 `json:"relay_xdp_packets"`
+	// The sendmmsg calls of the relay socket path in the measured window, their
+	// messages and their packets. A message is one packet or one GSO message.
+	RelaySendCalls    uint64 `json:"relay_send_calls"`
+	RelaySendMessages uint64 `json:"relay_send_messages"`
+	RelaySendPackets  uint64 `json:"relay_send_packets"`
 
 	// Omit is the omit period, from the flow start to the window start.
 	Omit period `json:"omit"`
@@ -323,6 +331,9 @@ func newResult(client, server, relay [2]mark) result {
 	r.ClientLinkDrops = delta(client[0].LinkDrops, client[1].LinkDrops)
 	r.ServerLinkDrops = delta(server[0].LinkDrops, server[1].LinkDrops)
 	r.RelayXDPPackets = relay[1].XDPPackets - relay[0].XDPPackets
+	r.RelaySendCalls = relay[1].Sends.Calls - relay[0].Sends.Calls
+	r.RelaySendMessages = relay[1].Sends.Messages - relay[0].Sends.Messages
+	r.RelaySendPackets = relay[1].Sends.Packets - relay[0].Sends.Packets
 	return r
 }
 

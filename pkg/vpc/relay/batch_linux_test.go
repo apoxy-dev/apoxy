@@ -32,7 +32,7 @@ func TestFwdBatch(t *testing.T) {
 			require.NoError(t, err)
 			defer uc.Close()
 			tr := &quic.Transport{Conn: uc}
-			f := newFwdBatch(tr)
+			f := newFwdBatch(tr, &sendStats{})
 			dst := rcv.LocalAddr().(*net.UDPAddr).AddrPort()
 
 			var want [][]byte

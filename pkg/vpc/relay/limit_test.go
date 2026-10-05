@@ -111,6 +111,7 @@ func TestDropMetric(t *testing.T) {
 apoxy_vpc_relay_dropped_packets_total{reason="closed"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="lane_meter"} 1
 apoxy_vpc_relay_dropped_packets_total{reason="malformed"} 1
+apoxy_vpc_relay_dropped_packets_total{reason="send_queue"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="tunnel_limit"} 1
 apoxy_vpc_relay_dropped_packets_total{reason="unknown_source"} 1
 apoxy_vpc_relay_dropped_packets_total{reason="unknown_spi"} 1

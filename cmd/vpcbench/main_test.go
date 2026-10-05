@@ -122,7 +122,10 @@ func TestNewResult(t *testing.T) {
 				{Nanos: sec, HostCPU: 20, Retrans: 1, RcvbufErrors: 5, SockDrops: 1, RxLanes: []uint64{100}},
 				{Nanos: 3 * sec, CPU: 2, HostCPU: 28, Retrans: 3, Bytes: 250e6, RxPackets: 2000, Drops: 6, RcvbufErrors: 17, SockDrops: 4, LinkDrops: 2, Lanes: []uint64{30}, RxLanes: []uint64{1100, 0, 1000}},
 			},
-			relay: [2]mark{{Nanos: 0, HostCPU: 5, Drops: 1, SockDrops: 2, XDPPackets: 10}, {Nanos: 2 * sec, CPU: 0.5, HostCPU: 7, Drops: 5, SockDrops: 9, XDPPackets: 30}},
+			relay: [2]mark{
+				{Nanos: 0, HostCPU: 5, Drops: 1, SockDrops: 2, XDPPackets: 10, Sends: relay.ForwardStats{Calls: 1, Messages: 2, Packets: 30}},
+				{Nanos: 2 * sec, CPU: 0.5, HostCPU: 7, Drops: 5, SockDrops: 9, XDPPackets: 30, Sends: relay.ForwardStats{Calls: 11, Messages: 42, Packets: 930}},
+			},
 			want: result{
 				Seconds: 2, BitsPerSecond: 1e9, PacketsPerSecond: 1000, Retransmits: 10, RetransPercent: 1,
 				ServerRetransmits: 2, ClientCores: 0.5, ServerCores: 1, RelayCores: 0.25,
@@ -130,6 +133,7 @@ func TestNewResult(t *testing.T) {
 				ClientHostCores: 3, ServerHostCores: 4, RelayHostCores: 1,
 				ClientTxDrops: 2, ServerRxDrops: 6, RelayDrops: 4, RelayRcvbufDrops: 7, ServerRcvbufErrors: 12, ServerSockDrops: 3,
 				ClientLinkDrops: 5, ServerLinkDrops: 2, RelayXDPPackets: 20,
+				RelaySendCalls: 10, RelaySendMessages: 40, RelaySendPackets: 900,
 				ClientLanePackets: []uint64{500, 400, 100}, ServerLanePackets: []uint64{30},
 				ServerRxLanePackets: []uint64{1000, 0, 1000},
 			},
@@ -281,6 +285,7 @@ func TestResultJSON(t *testing.T) {
 		"driver", "transport", "via", "cc", "streams", "device_mtu",
 		"server_retransmits", "client_tx_drops", "server_rx_drops", "relay_drops", "relay_rcvbuf_drops",
 		"server_rcvbuf_errors", "server_sock_drops", "client_link_drops", "server_link_drops", "relay_xdp_packets",
+		"relay_send_calls", "relay_send_messages", "relay_send_packets",
 		"omit", "flow_start_unix_ms", "window_start_unix_ms", "window_end_unix_ms",
 	} {
 		assert.Contains(t, fields, f)

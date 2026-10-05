@@ -45,12 +45,19 @@ type msg struct {
 
 // New returns a batch of at most size packets for uc. It returns nil when
 // the system cannot send a batch with one call.
-func New(uc *net.UDPConn, size int) *Batch {
+func New(uc *net.UDPConn, size int) *Batch { return newBatch(uc, uc, size) }
+
+// NewShared is New for a socket that more than one goroutine sends on. The Go
+// runtime lets only one write at a time use a socket. Flush does not wait for it.
+func NewShared(uc *net.UDPConn, size int) *Batch { return newBatch(uc, sharedConn{uc}, size) }
+
+// newBatch returns a batch for uc that sends with pc.
+func newBatch(uc *net.UDPConn, pc net.PacketConn, size int) *Batch {
 	if !batchWrites {
 		return nil
 	}
 	b := &Batch{
-		pc:    ipv4.NewPacketConn(uc),
+		pc:    ipv4.NewPacketConn(pc),
 		gso:   gsoSupported(uc),
 		pend:  make([]msg, 0, size),
 		msgs:  make([]ipv4.Message, 0, size),
@@ -66,6 +73,9 @@ func New(uc *net.UDPConn, size int) *Batch {
 // Len returns the number of packets in the batch. Flush the batch before it
 // has more than size packets.
 func (b *Batch) Len() int { return b.n }
+
+// Messages returns the number of sendmmsg messages in the batch.
+func (b *Batch) Messages() int { return len(b.pend) }
 
 // Add adds the packet p to dst. The batch keeps p until Flush returns.
 func (b *Batch) Add(p []byte, dst netip.AddrPort) {

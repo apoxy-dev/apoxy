@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/netip"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -230,4 +231,110 @@ func TestBatchClosed(t *testing.T) {
 	assert.Zero(t, sent)
 	assert.Zero(t, dropped)
 	assert.Zero(t, bt.Len())
+}
+
+// TestBatchShared holds the write lock of the socket, as a write that waits does.
+// A batch from NewShared must send while the lock is held, and a batch from New
+// must wait for the lock.
+func TestBatchShared(t *testing.T) {
+	cases := []struct {
+		name  string
+		batch func(*net.UDPConn, int) *Batch
+		waits bool
+	}{
+		{"shared", NewShared, false},
+		{"not shared", New, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dst, rx := nonQUICReceiver(t)
+			uc := listenLoopback(t)
+			rc, err := uc.SyscallConn()
+			require.NoError(t, err)
+			held, release, unlocked := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			go func() {
+				defer close(unlocked)
+				_ = rc.Write(func(uintptr) bool {
+					close(held)
+					<-release
+					return true
+				})
+			}()
+			<-held
+
+			bt := tc.batch(uc, 8)
+			pkt := []byte{0x01, 7}
+			bt.Add(pkt, dst)
+			sent := make(chan int, 1)
+			go func() {
+				n, _, _ := bt.Flush()
+				sent <- n
+			}()
+			if tc.waits {
+				select {
+				case <-sent:
+					t.Fatal("The batch did not wait for the write lock.")
+				case <-time.After(50 * time.Millisecond):
+				}
+				close(release)
+			}
+			select {
+			case n := <-sent:
+				assert.Equal(t, 1, n)
+			case <-time.After(5 * time.Second):
+				t.Fatal("The batch waits for the write lock.")
+			}
+			select {
+			case b := <-rx:
+				assert.Equal(t, pkt, b)
+			case <-time.After(2 * time.Second):
+				t.Fatal("The receiver did not get the packet.")
+			}
+			if !tc.waits {
+				close(release)
+			}
+			<-unlocked
+		})
+	}
+}
+
+// TestBatchSharedParallel sends from 4 goroutines on one socket, each with its own
+// batch. The receiver must get each packet once.
+func TestBatchSharedParallel(t *testing.T) {
+	const senders, flushes, perFlush = 4, 20, 8
+	dst, rx := nonQUICReceiver(t)
+	uc := listenLoopback(t)
+	var wg sync.WaitGroup
+	for s := range senders {
+		bt := NewShared(uc, perFlush)
+		require.NotNil(t, bt)
+		wg.Go(func() {
+			for f := range flushes {
+				for i := range perFlush {
+					// A first byte of 0x01 is not a QUIC packet.
+					bt.Add([]byte{0x01, byte(s), byte(f), byte(i)}, dst)
+				}
+				sent, dropped, err := bt.Flush()
+				assert.NoError(t, err)
+				assert.Equal(t, [2]int{perFlush, 0}, [2]int{sent, dropped}, "sent and dropped")
+				// The receiver keeps at most 256 packets.
+				time.Sleep(time.Millisecond)
+			}
+		})
+	}
+	got := map[[3]byte]int{}
+	for range senders * flushes * perFlush {
+		select {
+		case b := <-rx:
+			require.Len(t, b, 4)
+			got[[3]byte(b[1:])]++
+		case <-time.After(5 * time.Second):
+			t.Fatalf("The receiver got %d packets.", len(got))
+		}
+	}
+	wg.Wait()
+	assert.Len(t, got, senders*flushes*perFlush)
+	for k, n := range got {
+		assert.Equal(t, 1, n, "packet %v", k)
+	}
 }

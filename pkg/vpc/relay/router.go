@@ -107,6 +107,7 @@ type Router struct {
 	cfg    Config
 	trust  Trust
 	drops  [numDropReasons]atomic.Uint64
+	sends  sendStats
 	early  earlyList
 	bridge atomic.Pointer[bridge]
 
@@ -802,6 +803,17 @@ func (r *Router) UnknownSourceDrops() uint64 { return r.drops[dropUnknownSource]
 // MalformedDrops returns the number of non-QUIC packets that are not PSP and
 // get no probe reply. Geneve packets that the kernel did not take count here.
 func (r *Router) MalformedDrops() uint64 { return r.drops[dropMalformed].Load() }
+
+// ForwardStats are the sendmmsg calls of the socket path, their messages, and
+// the packets that the socket took. A message is one packet or one GSO message.
+type ForwardStats struct {
+	Calls, Messages, Packets uint64
+}
+
+// ForwardStats returns the send counters of the socket path.
+func (r *Router) ForwardStats() ForwardStats {
+	return ForwardStats{r.sends.calls.Load(), r.sends.messages.Load(), r.sends.packets.Load()}
+}
 
 func addrPort(a net.Addr) netip.AddrPort {
 	u, ok := a.(*net.UDPAddr)
