@@ -115,7 +115,7 @@ func main() {
 type options struct {
 	Listen, Relay, Server, WorkDir string
 	Driver, Transport, Via, CC     string
-	XDP                            string
+	XDP, XDPMode                   string
 	MTU, Streams, Lanes            int
 	Omit, Duration                 time.Duration
 	Idle, ProbeInterval            time.Duration
@@ -138,7 +138,8 @@ func parseFlags(cmd string, args []string, out io.Writer) (options, error) {
 		fs.StringVar(&o.Listen, "listen", "", "relay: UDP and TCP control address; server: TCP control address, and UDP with -via direct")
 	}
 	if cmd == "relay" {
-		fs.StringVar(&o.XDP, "xdp", "", "link on which XDP forwards the PSP packets in generic mode, as on ENA; the relay CPU then includes the program run time (empty: the socket forwards them)")
+		fs.StringVar(&o.XDP, "xdp", "", "link on which XDP forwards the PSP packets; the relay CPU then includes the program run time (empty: the socket forwards them)")
+		fs.StringVar(&o.XDPMode, "xdp-mode", "generic", "XDP attach mode: generic, or driver, which uses generic mode when the driver refuses the program")
 		fs.IntVar(&o.Lanes, "lanes", relay.MaxLaneSources, "most lane ports that the relay takes from a session; 0 makes agents send on one port")
 	}
 	if cmd != "relay" {
@@ -190,6 +191,8 @@ func (o options) check(cmd string) error {
 		return errors.New("-start-timeout must be positive")
 	case o.MTU < 0:
 		return errors.New("-mtu must not be negative")
+	case cmd == "relay" && o.XDPMode != "generic" && o.XDPMode != "driver":
+		return fmt.Errorf("unknown -xdp-mode %q: want generic or driver", o.XDPMode)
 	case o.Lanes < 0 || o.Lanes > relay.MaxLaneSources:
 		return fmt.Errorf("-lanes must be 0 to %d", relay.MaxLaneSources)
 	case cmd == "client" && (o.Streams < 1 || o.Duration <= 0 || o.Omit < 0 || o.Idle < 0 || o.ProbeInterval <= 0):

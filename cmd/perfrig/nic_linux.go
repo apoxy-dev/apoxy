@@ -1,9 +1,15 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"log/slog"
 	"net"
+	"os"
+	"strings"
+	"time"
 
+	"github.com/safchain/ethtool"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netlink/nl"
 	"golang.org/x/sys/unix"
@@ -66,4 +72,122 @@ func xdpFeatures(dev string) ([]string, uint32) {
 		}
 	}
 	return xdpFeatureList(mask), segs
+}
+
+// linkSettleTimeout is the longest wait for the address of a link after a change.
+const linkSettleTimeout = time.Minute
+
+// readLink returns the settings of dev that prepareXDP changes, and the most
+// combined channels of dev.
+func readLink(dev string) (linkConf, uint32, error) {
+	e, err := ethtool.NewEthtool()
+	if err != nil {
+		return linkConf{}, 0, err
+	}
+	defer e.Close()
+	ch, err := e.GetChannels(dev)
+	if err != nil {
+		return linkConf{}, 0, fmt.Errorf("read the channels of %s: %w", dev, err)
+	}
+	ifi, err := net.InterfaceByName(dev)
+	if err != nil {
+		return linkConf{}, 0, err
+	}
+	fwd, err := os.ReadFile(forwardingPath(dev))
+	if err != nil {
+		return linkConf{}, 0, err
+	}
+	return linkConf{channels: ch.CombinedCount, mtu: ifi.MTU, forwarding: strings.TrimSpace(string(fwd))}, ch.MaxCombined, nil
+}
+
+// forwardingPath is the file of the IPv4 forwarding of dev.
+func forwardingPath(dev string) string {
+	return "/proc/sys/net/ipv4/conf/" + dev + "/forwarding"
+}
+
+// setLink gives dev the settings c. The driver stops the link when the channels
+// change, so setLink then waits until ip stays on dev for the time settle.
+func setLink(ctx context.Context, dev, ip string, c linkConf, settle time.Duration) error {
+	e, err := ethtool.NewEthtool()
+	if err != nil {
+		return err
+	}
+	defer e.Close()
+	ch, err := e.GetChannels(dev)
+	if err != nil {
+		return fmt.Errorf("read the channels of %s: %w", dev, err)
+	}
+	if ch.CombinedCount != c.channels {
+		ch.CombinedCount = c.channels
+		if _, err := e.SetChannels(dev, ch); err != nil {
+			return fmt.Errorf("set %d channels on %s: %w", c.channels, dev, err)
+		}
+	}
+	// A DHCP client can set the MTU of its lease again when the link comes back.
+	if err := waitAddr(ctx, dev, ip, settle, linkSettleTimeout); err != nil {
+		return err
+	}
+	l, err := netlink.LinkByName(dev)
+	if err != nil {
+		return err
+	}
+	if l.Attrs().MTU != c.mtu {
+		if err := netlink.LinkSetMTU(l, c.mtu); err != nil {
+			return fmt.Errorf("set the MTU %d on %s: %w", c.mtu, dev, err)
+		}
+	}
+	return os.WriteFile(forwardingPath(dev), []byte(c.forwarding), 0o644)
+}
+
+// waitAddr waits until dev is up and has the address ip for the time hold. After
+// the link stops, the host can take the address off and get it again with DHCP.
+func waitAddr(ctx context.Context, dev, ip string, hold, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	var since time.Time
+	for {
+		now := time.Now()
+		ifi, err := net.InterfaceByName(dev)
+		got, aerr := devIPv4(dev)
+		switch {
+		case err != nil || aerr != nil || got != ip || ifi.Flags&net.FlagRunning == 0:
+			since = time.Time{}
+		case since.IsZero():
+			since = now
+		case now.Sub(since) >= hold:
+			return nil
+		}
+		if now.After(deadline) {
+			return fmt.Errorf("%s did not keep the address %s for %s in %s", dev, ip, hold, timeout)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(min(hold, 100*time.Millisecond)):
+		}
+	}
+}
+
+// prepareXDP gives dev the settings that an XDP program in driver mode needs. The
+// returned function sets the old settings again.
+func prepareXDP(ctx context.Context, dev, ip string, settle time.Duration) (func(), error) {
+	old, maxChannels, err := readLink(dev)
+	if err != nil {
+		return nil, err
+	}
+	want := xdpConf(old, maxChannels)
+	undo := func() {
+		// The context of the row can be done here.
+		ctx, cancel := context.WithTimeout(context.Background(), 2*linkSettleTimeout)
+		defer cancel()
+		if err := setLink(ctx, dev, ip, old, settle); err != nil {
+			slog.Warn("Failed to set the old link settings again", "dev", dev, "error", err)
+		}
+	}
+	if err := setLink(ctx, dev, ip, want, settle); err != nil {
+		undo()
+		return nil, err
+	}
+	slog.Info("Made the link ready for XDP in driver mode", "dev", dev, "channels", want.channels, "old_channels", old.channels,
+		"max_channels", maxChannels, "mtu", want.mtu, "old_mtu", old.mtu)
+	return undo, nil
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"testing"
 	"time"
 
@@ -112,6 +113,57 @@ func TestCounterDeltas(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			assert.Equal(t, tc.want, counterDeltas(tc.a, tc.b))
+		})
+	}
+}
+
+func TestMaxCounters(t *testing.T) {
+	cases := []struct {
+		name       string
+		a, b, want map[string]int64
+	}{
+		{name: "no counters"},
+		{name: "no first read", b: map[string]int64{"queue_0_rx_cnt": 4}, want: map[string]int64{"queue_0_rx_cnt": 4}},
+		{name: "no second read", a: map[string]int64{"queue_0_rx_cnt": 4}, want: map[string]int64{"queue_0_rx_cnt": 4}},
+		{
+			name: "a queue counter is 0 again",
+			a:    map[string]int64{"queue_0_rx_cnt": 900, "rx_dropped": 3},
+			b:    map[string]int64{"queue_0_rx_cnt": 2, "rx_dropped": 5, "queue_1_rx_cnt": 0},
+			want: map[string]int64{"queue_0_rx_cnt": 900, "rx_dropped": 5, "queue_1_rx_cnt": 0},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, maxCounters(tc.a, tc.b))
+		})
+	}
+}
+
+func TestPeakCounters(t *testing.T) {
+	if _, err := os.Stat("/proc/net/snmp"); err != nil {
+		t.Skip("needs /proc/net/snmp")
+	}
+	stop := peakCounters(t.Context(), "lo", 5*time.Millisecond)
+	time.Sleep(30 * time.Millisecond)
+	assert.Contains(t, stop(), "udp_in_datagrams")
+}
+
+func TestXDPConf(t *testing.T) {
+	cases := []struct {
+		name        string
+		in          linkConf
+		maxChannels uint32
+		want        linkConf
+	}{
+		{name: "all channels in use", in: linkConf{channels: 8, mtu: 9001, forwarding: "0"}, maxChannels: 8, want: linkConf{channels: 4, mtu: xdpMaxMTU, forwarding: "1"}},
+		{name: "half of the channels", in: linkConf{channels: 4, mtu: 9001, forwarding: "0"}, maxChannels: 8, want: linkConf{channels: 4, mtu: xdpMaxMTU, forwarding: "1"}},
+		{name: "few channels and a small MTU", in: linkConf{channels: 2, mtu: 1500, forwarding: "1"}, maxChannels: 32, want: linkConf{channels: 2, mtu: 1500, forwarding: "1"}},
+		{name: "odd maximum", in: linkConf{channels: 5, mtu: 3498, forwarding: "0"}, maxChannels: 5, want: linkConf{channels: 2, mtu: 3498, forwarding: "1"}},
+		{name: "one channel", in: linkConf{channels: 1, mtu: 3499, forwarding: "0"}, maxChannels: 1, want: linkConf{channels: 1, mtu: xdpMaxMTU, forwarding: "1"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, xdpConf(tc.in, tc.maxChannels))
 		})
 	}
 }

@@ -93,7 +93,7 @@ func TestNewWorkload(t *testing.T) {
 }
 
 func TestExecWorkloadArgv(t *testing.T) {
-	env := Env{ServerIP: serverIP, ClientIP: clientIP, RelayIP: relayIP, Duration: 30 * time.Second, Omit: 5 * time.Second, Streams: 4, Dir: "/work"}
+	env := Env{ServerIP: serverIP, ClientIP: clientIP, RelayIP: relayIP, Duration: 30 * time.Second, Omit: 5 * time.Second, Streams: 4, Dir: "/work", Dev: "ens5"}
 	cases := []struct {
 		name string
 		argv []string
@@ -107,6 +107,7 @@ func TestExecWorkloadArgv(t *testing.T) {
 		},
 		{name: "relay", argv: []string{"vpcbench", "relay", "-listen", "$RELAY_IP:4443"}, want: []string{"vpcbench", "relay", "-listen", "10.200.0.3:4443"}},
 		{name: "no word split", argv: []string{"a b", "$WORK_DIR/x y"}, want: []string{"a b", "/work/x y"}},
+		{name: "device", argv: []string{"vpcbench", "relay", "-xdp", "$DEV"}, want: []string{"vpcbench", "relay", "-xdp", "ens5"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

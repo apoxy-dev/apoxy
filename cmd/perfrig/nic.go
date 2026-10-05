@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // ethtoolCounters are the "ethtool -S" counters that the node result keeps.
@@ -244,6 +245,69 @@ func topQueuePercent(d map[string]int64) int64 {
 		return -1
 	}
 	return top * 100 / total
+}
+
+// maxCounters returns the larger value of each counter of a and b.
+func maxCounters(a, b map[string]int64) map[string]int64 {
+	if a == nil {
+		return b
+	}
+	out := maps.Clone(a)
+	for k, v := range b {
+		if old, ok := out[k]; !ok || v > old {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// peakCounters reads the counters of dev each interval. The returned function stops
+// the reads and returns the largest value of each counter. ENA sets the counters of
+// its queues to 0 when an XDP program goes off the link.
+func peakCounters(ctx context.Context, dev string, interval time.Duration) func() map[string]int64 {
+	ctx, cancel := context.WithCancel(ctx)
+	done := make(chan map[string]int64, 1)
+	go func() {
+		var peak map[string]int64
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				done <- peak
+				return
+			case <-t.C:
+				peak = maxCounters(peak, nicCounters(ctx, dev))
+			}
+		}
+	}()
+	return func() map[string]int64 {
+		cancel()
+		return <-done
+	}
+}
+
+const (
+	// xdpMaxMTU is the largest MTU with which the ENA driver takes an XDP program.
+	xdpMaxMTU = 3498
+	// linkSettle is the time that the address must stay on a link after a change.
+	linkSettle = 2 * time.Second
+)
+
+// linkConf is the settings of a link that an XDP program in driver mode needs.
+type linkConf struct {
+	channels   uint32 // Combined channels. With XDP, ENA needs one more TX queue for each.
+	mtu        int
+	forwarding string // IPv4 forwarding of the link: "0" or "1".
+}
+
+// xdpConf returns c with the settings for XDP in driver mode on ENA: at most half of
+// maxChannels, a small MTU, and forwarding for the next hop lookup of the program.
+func xdpConf(c linkConf, maxChannels uint32) linkConf {
+	c.channels = min(c.channels, max(maxChannels/2, 1))
+	c.mtu = min(c.mtu, xdpMaxMTU)
+	c.forwarding = "1"
+	return c
 }
 
 // xdpFeatureNames are the NETDEV_XDP_ACT_* bits of the netdev API, by bit position.

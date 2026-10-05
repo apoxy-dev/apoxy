@@ -47,6 +47,11 @@ type mark struct {
 	LinkDrops int64 `json:"link_drops,omitempty"`
 	// XDPPackets are the PSP packets that the relay forwarded in XDP.
 	XDPPackets uint64 `json:"xdp_packets,omitempty"`
+	// XDPPassed are the PSP packets that the XDP program gave to the socket path, by result.
+	XDPPassed map[string]uint64 `json:"xdp_passed,omitempty"`
+	// XDPSeconds is the run time of the XDP program, and XDPMode its attach mode.
+	XDPSeconds float64 `json:"xdp_s,omitempty"`
+	XDPMode    string  `json:"xdp_mode,omitempty"`
 	// Sends are the sendmmsg counters of the relay socket path.
 	Sends relay.ForwardStats `json:"sends,omitzero"`
 	// CPUs are the ticks of each CPU of the host of the side.
@@ -167,6 +172,34 @@ func busiestCPUs(m0, m1 mark, n int) []cpuUse {
 // pct returns v in percent of all, with one decimal.
 func pct(v, all float64) float64 { return math.Round(v*1000/all) / 10 }
 
+// cpuKinds is the busy time of a host in cores: user, system, and IRQ with softirq.
+type cpuKinds struct {
+	User   float64 `json:"user"`
+	System float64 `json:"system"`
+	IRQ    float64 `json:"irq"`
+}
+
+// hostKinds returns the busy cores of the host from m0 to m1 by kind, or nil
+// when the marks do not have the ticks of the same CPUs.
+func hostKinds(m0, m1 mark) *cpuKinds {
+	if len(m0.CPUs) == 0 || len(m0.CPUs) != len(m1.CPUs) {
+		return nil
+	}
+	var user, sys, irq, all float64
+	for i, b := range m1.CPUs {
+		a := m0.CPUs[i]
+		u, s, q := float64(b.User-a.User), float64(b.System-a.System), float64(b.IRQ-a.IRQ)
+		user, sys, irq = user+u, sys+s, irq+q
+		all += u + s + q + float64(b.Idle-a.Idle)
+	}
+	if all <= 0 {
+		return nil
+	}
+	// All ticks of one CPU are one core.
+	cores := func(ticks float64) float64 { return math.Round(ticks*float64(len(m1.CPUs))*1000/all) / 1000 }
+	return &cpuKinds{User: cores(user), System: cores(sys), IRQ: cores(irq)}
+}
+
 // cores returns the CPU seconds per second from m0 to m1.
 func cores(m0, m1 mark) float64 {
 	s := time.Duration(m1.Nanos - m0.Nanos).Seconds()
@@ -218,6 +251,10 @@ type result struct {
 	ClientTopCPUs []cpuUse `json:"client_top_cpus,omitempty"`
 	ServerTopCPUs []cpuUse `json:"server_top_cpus,omitempty"`
 	RelayTopCPUs  []cpuUse `json:"relay_top_cpus,omitempty"`
+	// The busy cores of the host of each side in the measured window, by kind.
+	ClientHostCPU *cpuKinds `json:"client_host_cpu,omitempty"`
+	ServerHostCPU *cpuKinds `json:"server_host_cpu,omitempty"`
+	RelayHostCPU  *cpuKinds `json:"relay_host_cpu,omitempty"`
 	// The queues of the agent and lane sockets in the measured window.
 	ClientQueue *sockQueue `json:"client_queue,omitempty"`
 	ServerQueue *sockQueue `json:"server_queue,omitempty"`
@@ -249,6 +286,13 @@ type result struct {
 	// RelayXDPPackets are the PSP packets that the relay forwarded in XDP in
 	// the measured window.
 	RelayXDPPackets uint64 `json:"relay_xdp_packets"`
+	// RelayXDPPassed are the PSP packets that the XDP program gave to the socket
+	// path in the measured window, by result.
+	RelayXDPPassed map[string]uint64 `json:"relay_xdp_passed,omitempty"`
+	// RelayXDPSeconds is the run time of the XDP program in the measured window.
+	// RelayCores includes it. RelayXDPMode is the attach mode: driver or generic.
+	RelayXDPSeconds float64 `json:"relay_xdp_seconds"`
+	RelayXDPMode    string  `json:"relay_xdp_mode,omitempty"`
 	// The sendmmsg calls of the relay socket path in the measured window, their
 	// messages and their packets. A message is one packet or one GSO message.
 	RelaySendCalls    uint64 `json:"relay_send_calls"`
@@ -314,6 +358,7 @@ func newResult(client, server, relay [2]mark) result {
 	r.ClientTopCPUs = busiestCPUs(client[0], client[1], topCPUs)
 	r.ServerTopCPUs = busiestCPUs(server[0], server[1], topCPUs)
 	r.RelayTopCPUs = busiestCPUs(relay[0], relay[1], topCPUs)
+	r.ClientHostCPU, r.ServerHostCPU, r.RelayHostCPU = hostKinds(client[0], client[1]), hostKinds(server[0], server[1]), hostKinds(relay[0], relay[1])
 	r.ClientQueue, r.ServerQueue = client[1].Queue, server[1].Queue
 	r.ClientLanePackets, r.ServerLanePackets = laneDelta(client[0].Lanes, client[1].Lanes), laneDelta(server[0].Lanes, server[1].Lanes)
 	r.ServerRxLanePackets = laneDelta(server[0].RxLanes, server[1].RxLanes)
@@ -331,6 +376,8 @@ func newResult(client, server, relay [2]mark) result {
 	r.ClientLinkDrops = delta(client[0].LinkDrops, client[1].LinkDrops)
 	r.ServerLinkDrops = delta(server[0].LinkDrops, server[1].LinkDrops)
 	r.RelayXDPPackets = relay[1].XDPPackets - relay[0].XDPPackets
+	r.RelayXDPPassed = passedDelta(relay[0].XDPPassed, relay[1].XDPPassed)
+	r.RelayXDPSeconds, r.RelayXDPMode = relay[1].XDPSeconds-relay[0].XDPSeconds, relay[1].XDPMode
 	r.RelaySendCalls = relay[1].Sends.Calls - relay[0].Sends.Calls
 	r.RelaySendMessages = relay[1].Sends.Messages - relay[0].Sends.Messages
 	r.RelaySendPackets = relay[1].Sends.Packets - relay[0].Sends.Packets
@@ -348,6 +395,22 @@ func laneDelta(v0, v1 []uint64) []uint64 {
 		if i < len(v0) {
 			out[i] -= min(v0[i], n)
 		}
+	}
+	return out
+}
+
+// passedDelta returns the increase of each counter from v0 to v1, or nil when
+// none increased.
+func passedDelta(v0, v1 map[string]uint64) map[string]uint64 {
+	var out map[string]uint64
+	for k, n := range v1 {
+		if n <= v0[k] {
+			continue
+		}
+		if out == nil {
+			out = map[string]uint64{}
+		}
+		out[k] = n - v0[k]
 	}
 	return out
 }

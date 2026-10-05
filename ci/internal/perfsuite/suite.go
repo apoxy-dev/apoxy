@@ -213,7 +213,8 @@ type vpcRow struct {
 	// direct runs the flows with no relay.
 	direct bool
 	// relayNetns runs the relay in its own netns, so that it sends the
-	// packets to the server on a link. xdp forwards them in XDP there.
+	// packets to the server on a link. xdp forwards them in XDP there, or on
+	// the NIC of the relay host of a node row.
 	relayNetns, xdp bool
 	// nodes runs each role on its own EC2 host, with no netem: 2 hosts with no
 	// relay, 3 with one. 0 runs the row in the netns rig.
@@ -249,6 +250,9 @@ var vpcRows = []vpcRow{
 	// The relay takes no lane ports, so each agent sends and receives on one port.
 	{id: "netstack-psp-relay-3node-nolanes", name: "vpc-netstack-psp-relay-3node-nolanes", nodes: 3, relay: []string{"-lanes", "0"}, client: []string{"-cc", "bbr"}},
 	{id: "netstack-psp-relay-3node-p16-nolanes", name: "vpc-netstack-psp-relay-3node-nolanes", nodes: 3, streams: 16, relay: []string{"-lanes", "0"}, client: []string{"-cc", "bbr"}},
+	// The relay forwards in XDP on its NIC, in driver mode when the driver takes the program.
+	{id: "netstack-psp-relay-3node-xdp", name: "vpc-netstack-psp-relay-3node-xdp", nodes: 3, xdp: true, client: []string{"-cc", "bbr"}},
+	{id: "netstack-psp-relay-3node-p16-xdp", name: "vpc-netstack-psp-relay-3node-xdp", nodes: 3, streams: 16, xdp: true, client: []string{"-cc", "bbr"}},
 }
 
 // nodeStartTimeout is the time that vpcbench on one host waits for the hosts
@@ -263,7 +267,10 @@ func (r vpcRow) argv(o Options) (sidecar, server, client []string) {
 		relay = "$RELAY_IP:4443"
 	}
 	sidecar = []string{"vpcbench", "relay", "-listen", relay}
-	if r.xdp {
+	switch {
+	case r.xdp && r.nodes > 0:
+		sidecar = append(sidecar, "-xdp", "$DEV", "-xdp-mode", "driver")
+	case r.xdp:
 		// perf-r is the link of the perfrig relay netns.
 		sidecar = append(sidecar, "-xdp", "perf-r")
 	}
@@ -308,6 +315,9 @@ func (r vpcRow) row(o Options) Row {
 	if r.nodes > 0 {
 		args = []string{"-name=" + r.name, streams, "-omit=5s", "-duration=" + o.Duration,
 			"-min-cpus=" + strconv.Itoa(o.MinCPUs), "-max-steal=5"}
+		if r.xdp {
+			args = append(args, "-relay-xdp")
+		}
 	} else {
 		args = []string{"-workload=exec", "-name=" + r.name, "-netns-prefix=perf", "-ready=tcp:4433", streams, "-omit=5s"}
 		args = append(args, common(o, group)...)

@@ -32,9 +32,16 @@ func TestParseFlags(t *testing.T) {
 		{
 			name: "relay", cmd: "relay", args: []string{"-listen", ":4443"},
 			want: func(o options) bool {
-				return o.Listen == ":4443" && o.WorkDir == "/work" && o.MTU == 0 && o.Lanes == relay.MaxLaneSources
+				return o.Listen == ":4443" && o.WorkDir == "/work" && o.MTU == 0 && o.Lanes == relay.MaxLaneSources &&
+					o.XDP == "" && o.XDPMode == "generic"
 			},
 		},
+		{
+			name: "relay with XDP in driver mode", cmd: "relay", args: []string{"-listen", ":4443", "-xdp", "ens5", "-xdp-mode", "driver"},
+			want: func(o options) bool { return o.XDP == "ens5" && o.XDPMode == "driver" },
+		},
+		{name: "relay with an unknown XDP mode", cmd: "relay", args: []string{"-listen", ":4443", "-xdp-mode", "native"}, wantErr: `unknown -xdp-mode "native"`},
+		{name: "server has no XDP mode", cmd: "server", args: []string{"-listen", ":4433", "-relay", "r:1", "-xdp-mode", "driver"}, wantErr: "flag provided but not defined: -xdp-mode"},
 		{
 			name: "relay with no lanes", cmd: "relay", args: []string{"-listen", ":4443", "-lanes", "0"},
 			want: func(o options) bool { return o.Lanes == 0 },
@@ -123,8 +130,16 @@ func TestNewResult(t *testing.T) {
 				{Nanos: 3 * sec, CPU: 2, HostCPU: 28, Retrans: 3, Bytes: 250e6, RxPackets: 2000, Drops: 6, RcvbufErrors: 17, SockDrops: 4, LinkDrops: 2, Lanes: []uint64{30}, RxLanes: []uint64{1100, 0, 1000}},
 			},
 			relay: [2]mark{
-				{Nanos: 0, HostCPU: 5, Drops: 1, SockDrops: 2, XDPPackets: 10, Sends: relay.ForwardStats{Calls: 1, Messages: 2, Packets: 30}},
-				{Nanos: 2 * sec, CPU: 0.5, HostCPU: 7, Drops: 5, SockDrops: 9, XDPPackets: 30, Sends: relay.ForwardStats{Calls: 11, Messages: 42, Packets: 930}},
+				{
+					Nanos: 0, HostCPU: 5, Drops: 1, SockDrops: 2, XDPPackets: 10, XDPSeconds: 0.5, XDPMode: "driver",
+					XDPPassed: map[string]uint64{"no_row": 3, "expired": 1}, Sends: relay.ForwardStats{Calls: 1, Messages: 2, Packets: 30},
+					CPUs: []bench.CPUTicks{{User: 10, Idle: 90}, {Idle: 100}},
+				},
+				{
+					Nanos: 2 * sec, CPU: 0.5, HostCPU: 7, Drops: 5, SockDrops: 9, XDPPackets: 30, XDPSeconds: 0.75, XDPMode: "driver",
+					XDPPassed: map[string]uint64{"no_row": 8, "expired": 1, "no_route": 2}, Sends: relay.ForwardStats{Calls: 11, Messages: 42, Packets: 930},
+					CPUs: []bench.CPUTicks{{User: 30, System: 40, Idle: 230}, {IRQ: 150, Idle: 150}},
+				},
 			},
 			want: result{
 				Seconds: 2, BitsPerSecond: 1e9, PacketsPerSecond: 1000, Retransmits: 10, RetransPercent: 1,
@@ -133,6 +148,8 @@ func TestNewResult(t *testing.T) {
 				ClientHostCores: 3, ServerHostCores: 4, RelayHostCores: 1,
 				ClientTxDrops: 2, ServerRxDrops: 6, RelayDrops: 4, RelayRcvbufDrops: 7, ServerRcvbufErrors: 12, ServerSockDrops: 3,
 				ClientLinkDrops: 5, ServerLinkDrops: 2, RelayXDPPackets: 20,
+				RelayXDPPassed: map[string]uint64{"no_row": 5, "no_route": 2}, RelayXDPSeconds: 0.25, RelayXDPMode: "driver",
+				RelayHostCPU: &cpuKinds{User: 0.1, System: 0.2, IRQ: 0.75}, RelayTopCPUs: []cpuUse{{CPU: 1, IRQ: 75}, {CPU: 0, User: 10, System: 20}},
 				RelaySendCalls: 10, RelaySendMessages: 40, RelaySendPackets: 900,
 				ClientLanePackets: []uint64{500, 400, 100}, ServerLanePackets: []uint64{30},
 				ServerRxLanePackets: []uint64{1000, 0, 1000},
@@ -203,6 +220,51 @@ func TestBusiestCPUs(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			assert.Equal(t, tc.want, busiestCPUs(tc.m0, tc.m1, tc.n))
+		})
+	}
+}
+
+func TestHostKinds(t *testing.T) {
+	m0 := mark{CPUs: []bench.CPUTicks{{User: 100, System: 50, IRQ: 10, Idle: 1000}, {Idle: 500}}}
+	cases := []struct {
+		name   string
+		m0, m1 mark
+		want   *cpuKinds
+	}{
+		{
+			name: "two CPUs",
+			m0:   m0,
+			m1:   mark{CPUs: []bench.CPUTicks{{User: 150, System: 150, IRQ: 60, Idle: 1800}, {IRQ: 1000, Idle: 500}}},
+			want: &cpuKinds{User: 0.05, System: 0.1, IRQ: 1.05},
+		},
+		{name: "no ticks in the window", m0: m0, m1: m0},
+		{name: "no CPUs", m0: mark{}, m1: mark{}},
+		{name: "CPU count changed", m0: m0, m1: mark{CPUs: []bench.CPUTicks{{User: 1}}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, hostKinds(tc.m0, tc.m1))
+		})
+	}
+}
+
+func TestPassedDelta(t *testing.T) {
+	cases := []struct {
+		name   string
+		v0, v1 map[string]uint64
+		want   map[string]uint64
+	}{
+		{name: "no counters"},
+		{name: "no increase", v0: map[string]uint64{"no_row": 4}, v1: map[string]uint64{"no_row": 4}},
+		{name: "new result", v1: map[string]uint64{"no_route": 3}, want: map[string]uint64{"no_route": 3}},
+		{
+			name: "one increase", v0: map[string]uint64{"no_row": 4, "expired": 2}, v1: map[string]uint64{"no_row": 9, "expired": 2},
+			want: map[string]uint64{"no_row": 5},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, passedDelta(tc.v0, tc.v1))
 		})
 	}
 }
@@ -285,7 +347,7 @@ func TestResultJSON(t *testing.T) {
 		"driver", "transport", "via", "cc", "streams", "device_mtu",
 		"server_retransmits", "client_tx_drops", "server_rx_drops", "relay_drops", "relay_rcvbuf_drops",
 		"server_rcvbuf_errors", "server_sock_drops", "client_link_drops", "server_link_drops", "relay_xdp_packets",
-		"relay_send_calls", "relay_send_messages", "relay_send_packets",
+		"relay_xdp_seconds", "relay_send_calls", "relay_send_messages", "relay_send_packets",
 		"omit", "flow_start_unix_ms", "window_start_unix_ms", "window_end_unix_ms",
 	} {
 		assert.Contains(t, fields, f)

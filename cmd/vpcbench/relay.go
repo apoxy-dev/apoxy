@@ -57,10 +57,19 @@ func runRelay(ctx context.Context, o options, ready func(netip.AddrPort)) error 
 	addr := uc.LocalAddr().(*net.UDPAddr).AddrPort()
 	slog.Info("Relay socket is ready", "address", addr, "rcvbuf", sockRcvbuf(uc))
 
+	// A driver can stop the link when it gets the XDP program, and the host can then
+	// take the address off for a short time. So the control port opens first.
+	cl, err := net.Listen("tcp", addr.String())
+	if err != nil {
+		return err
+	}
+	defer cl.Close()
+
 	r := relay.NewRouter(vpctest.NewTrust(ca), relay.Config{LaneSources: o.Lanes})
 	xdpCPU := func() float64 { return 0 }
+	var xdpMode string
 	if o.XDP != "" {
-		x, mode, err := r.StartXDP(relay.XDPConfig{Port: addr.Port(), Iface: o.XDP, Generic: true})
+		x, mode, err := r.StartXDP(relay.XDPConfig{Port: addr.Port(), Iface: o.XDP, Generic: o.XDPMode != "driver"})
 		if err != nil {
 			return err
 		}
@@ -71,11 +80,11 @@ func runRelay(ctx context.Context, o options, ready func(netip.AddrPort)) error 
 			return fmt.Errorf("read the XDP run time: %w", err)
 		}
 		defer stop()
-		xdpCPU = sec
+		xdpCPU, xdpMode = sec, mode
 	}
 	// The kernel joins the datagrams of a socket with UDP GRO before generic
-	// XDP runs, so the relay socket has GRO only without XDP.
-	tr := &quic.Transport{Conn: uc, EnableGRO: o.XDP == ""}
+	// XDP runs, so the relay socket has no GRO with XDP in generic mode.
+	tr := &quic.Transport{Conn: uc, EnableGRO: xdpMode != "generic"}
 	defer tr.Close()
 	tr.NonQUICPacketHandler, tr.NonQUICBatchEnd = r.PacketHandler(ctx, tr)
 	ln, err := tr.Listen(r.TLSConfig(&tls.Config{Certificates: []tls.Certificate{*cert}}), tunnel.RelayQUICConfig())
@@ -92,11 +101,6 @@ func runRelay(ctx context.Context, o options, ready func(netip.AddrPort)) error 
 	}
 
 	caPEM := encodeCA(ca)
-	cl, err := net.Listen("tcp", addr.String())
-	if err != nil {
-		return err
-	}
-	defer cl.Close()
 	if ready != nil {
 		ready(addr)
 	}
@@ -113,10 +117,12 @@ func runRelay(ctx context.Context, o options, ready func(netip.AddrPort)) error 
 			case "ca":
 				return reply{CA: caPEM}, nil
 			case "mark":
-				drops, xdp := relayCounters(r)
+				drops, xdp, passed := relayCounters(r)
+				xdpS := xdpCPU()
 				return reply{Mark: mark{
-					Nanos: time.Since(start).Nanoseconds(), CPU: bench.CPUSeconds() + xdpCPU(), HostCPU: bench.HostCPUSeconds(),
-					Drops: drops, SockDrops: sockDrops(uc), XDPPackets: xdp, Sends: r.ForwardStats(), CPUs: bench.PerCPU(),
+					Nanos: time.Since(start).Nanoseconds(), CPU: bench.CPUSeconds() + xdpS, HostCPU: bench.HostCPUSeconds(),
+					Drops: drops, SockDrops: sockDrops(uc), XDPPackets: xdp, XDPPassed: passed, XDPSeconds: xdpS, XDPMode: xdpMode,
+					Sends: r.ForwardStats(), CPUs: bench.PerCPU(),
 				}}, nil
 			case "stop":
 				slog.Info("A client stopped the relay")
@@ -153,9 +159,9 @@ func serveMarks(ctx context.Context, ln net.Listener, handle func(request) (repl
 	}
 }
 
-// relayCounters returns the sum of the drop counters of r and the packets
-// that its XDP program forwarded.
-func relayCounters(r *relay.Router) (drops, xdp uint64) {
+// relayCounters returns the sum of the drop counters of r, the packets that its
+// XDP program forwarded, and the packets that it gave to the socket path, by result.
+func relayCounters(r *relay.Router) (drops, xdp uint64, passed map[string]uint64) {
 	ch := make(chan prometheus.Metric, 8)
 	go func() {
 		r.Collect(ch)
@@ -170,20 +176,27 @@ func relayCounters(r *relay.Router) (drops, xdp uint64) {
 		switch desc := m.Desc().String(); {
 		case strings.Contains(desc, `"apoxy_vpc_relay_dropped_packets_total"`):
 			drops += n
-		case strings.Contains(desc, `"apoxy_vpc_relay_xdp_packets_total"`) && forwarded(&d):
+		case !strings.Contains(desc, `"apoxy_vpc_relay_xdp_packets_total"`):
+		case resultLabel(&d) == "forwarded":
 			xdp += n
+		case n > 0:
+			if passed == nil {
+				passed = map[string]uint64{}
+			}
+			passed[resultLabel(&d)] += n
 		}
 	}
-	return drops, xdp
+	return drops, xdp, passed
 }
 
-func forwarded(d *dto.Metric) bool {
+// resultLabel returns the result label of an XDP packet counter.
+func resultLabel(d *dto.Metric) string {
 	for _, l := range d.GetLabel() {
 		if l.GetName() == "result" {
-			return l.GetValue() == "forwarded"
+			return l.GetValue()
 		}
 	}
-	return false
+	return ""
 }
 
 // encodeCA returns the CA cert and key in PEM.

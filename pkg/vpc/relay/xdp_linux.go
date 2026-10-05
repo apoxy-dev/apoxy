@@ -113,8 +113,12 @@ func (x *XDP) attach(cfg XDPConfig, ifc *net.Interface) (string, bool, error) {
 		}
 		return "chain", generic, cfg.Chain(x.prog.Program())
 	}
-	if !cfg.Generic && x.prog.Attach(ifc.Index, link.XDPDriverMode) == nil {
-		return "driver", false, nil
+	if !cfg.Generic {
+		err := x.prog.Attach(ifc.Index, link.XDPDriverMode)
+		if err == nil {
+			return "driver", false, nil
+		}
+		slog.Warn("The driver of the relay link refused the XDP program; trying generic mode", "iface", ifc.Name, "error", err)
 	}
 	if err := checkGRO(ifc.Name); err != nil {
 		return "", false, err

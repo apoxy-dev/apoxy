@@ -200,6 +200,14 @@ func TestNodePlans(t *testing.T) {
 				"relay":  {"netstack-psp-relay-3node"},
 			},
 		},
+		{
+			name: "relay rows with and without XDP", only: []string{"netstack-psp-relay-3node", "netstack-psp-relay-3node-xdp"},
+			wantRoles: map[string][]string{
+				"client": {"netstack-psp-relay-3node", "netstack-psp-relay-3node-xdp"},
+				"server": {"netstack-psp-relay-3node", "netstack-psp-relay-3node-xdp"},
+				"relay":  {"netstack-psp-relay-3node", "netstack-psp-relay-3node-xdp"},
+			},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -273,14 +281,48 @@ func TestNodePlans(t *testing.T) {
 	if r := rows[i]; r.Hosts() != 2 || r.Group != "info" || !slices.Contains(r.Args, "-streams=1") || !slices.Contains(r.Args, "-name=vpc-netstack-psp-direct-2node") {
 		t.Errorf("direct row with one flow = %+v", r)
 	}
-	// A row with no lanes gives the relay its flags.
-	i = slices.IndexFunc(rows, func(r Row) bool { return r.ID == "netstack-psp-relay-3node-p16-nolanes" })
-	for _, w := range []string{
-		"-name=vpc-netstack-psp-relay-3node-nolanes", "-streams=16",
-		`-sidecar-argv=["vpcbench","relay","-listen","$RELAY_IP:4443","-lanes","0"]`,
-	} {
-		if !slices.Contains(rows[i].Args, w) {
-			t.Errorf("args have no %s:\n%s", w, strings.Join(rows[i].Args, "\n"))
+	// A row with no lanes gives the relay its flags. The XDP row sets the NIC of the
+	// relay host, and only that row does.
+	wantArgs := []struct {
+		id      string
+		want    []string
+		notWant string
+	}{
+		{
+			id: "netstack-psp-relay-3node-p16-nolanes",
+			want: []string{
+				"-name=vpc-netstack-psp-relay-3node-nolanes", "-streams=16",
+				`-sidecar-argv=["vpcbench","relay","-listen","$RELAY_IP:4443","-lanes","0"]`,
+			},
+			notWant: "-relay-xdp",
+		},
+		{
+			id: "netstack-psp-relay-3node-xdp",
+			want: []string{
+				"-name=vpc-netstack-psp-relay-3node-xdp", "-streams=4", "-relay-xdp",
+				`-sidecar-argv=["vpcbench","relay","-listen","$RELAY_IP:4443","-xdp","$DEV","-xdp-mode","driver"]`,
+			},
+		},
+		{
+			id:   "netstack-psp-relay-3node-p16-xdp",
+			want: []string{"-name=vpc-netstack-psp-relay-3node-xdp", "-streams=16", "-relay-xdp"},
+		},
+	}
+	for _, tc := range wantArgs {
+		i = slices.IndexFunc(rows, func(r Row) bool { return r.ID == tc.id })
+		if i < 0 {
+			t.Fatalf("no row %s", tc.id)
+		}
+		if rows[i].Hosts() != 3 {
+			t.Errorf("%s: hosts = %d, want 3", tc.id, rows[i].Hosts())
+		}
+		for _, w := range tc.want {
+			if !slices.Contains(rows[i].Args, w) {
+				t.Errorf("%s: args have no %s:\n%s", tc.id, w, strings.Join(rows[i].Args, "\n"))
+			}
+		}
+		if tc.notWant != "" && slices.Contains(rows[i].Args, tc.notWant) {
+			t.Errorf("%s: args have %s", tc.id, tc.notWant)
 		}
 	}
 }

@@ -52,6 +52,8 @@ type Env struct {
 	Window   string
 	// Dir is a directory for workload files, for example qlogs.
 	Dir string
+	// Dev is the network device of this host in "perfrig node". It is empty in the netns rig.
+	Dev string
 }
 
 func (e Env) vars() []string {
@@ -65,6 +67,7 @@ func (e Env) vars() []string {
 		"BITRATE=" + e.Bitrate,
 		"WINDOW=" + e.Window,
 		"WORK_DIR=" + e.Dir,
+		"DEV=" + e.Dev,
 	}
 }
 

@@ -43,6 +43,8 @@ type config struct {
 	AppCPUs string
 	// RPSCPUs are the CPUs that receive on the veths. Empty: all CPUs.
 	RPSCPUs string
+	// RelayXDP makes the relay host of "perfrig node" set its link for XDP in driver mode.
+	RelayXDP bool
 
 	// Exec workload flags.
 	Name        string
