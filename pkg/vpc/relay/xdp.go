@@ -25,6 +25,10 @@ type XDPConfig struct {
 	// Addrs are the addresses of the relay on Iface. The program forwards
 	// only packets to one of them. Empty means all addresses of Iface.
 	Addrs []netip.Addr
+	// NextHopCache is the time that the program keeps the next hop of a row
+	// after a route lookup. A change of a route or of a neighbor takes effect
+	// after this time at most. Zero does a lookup for each packet.
+	NextHopCache time.Duration
 }
 
 // xdpKey is the key of an XDP row: a sender address and an SPI.

@@ -29,8 +29,9 @@ import (
 
 // XDP actions.
 const (
-	xdpPASS uint32 = 2
-	xdpTX   uint32 = 3
+	xdpPASS     uint32 = 2
+	xdpTX       uint32 = 3
+	xdpREDIRECT uint32 = 4
 )
 
 const (
@@ -191,11 +192,17 @@ func TestXDPForward(t *testing.T) {
 		snd, rcv   string
 		relay      string
 		size       int // PSP packet size. Default 200.
+		hop        time.Duration
+		redirect   bool
 		unregister bool
 		want       uint32
 	}{
 		{name: "IPv4", snd: "192.0.2.1:1000", rcv: "10.9.0.2:2000", relay: "10.9.0.1", want: xdpTX},
 		{name: "IPv6", snd: "[2001:db8::7]:1000", rcv: "[fd09::2]:2000", relay: "fd09::1", want: xdpTX},
+		{name: "IPv4 with a kept next hop", snd: "192.0.2.1:1000", rcv: "10.9.0.2:2000", relay: "10.9.0.1", hop: time.Minute, want: xdpTX},
+		{name: "IPv6 with a kept next hop", snd: "[2001:db8::7]:1000", rcv: "[fd09::2]:2000", relay: "fd09::1", hop: time.Minute, want: xdpTX},
+		{name: "IPv4 with a redirect", snd: "192.0.2.1:1000", rcv: "10.9.0.2:2000", relay: "10.9.0.1", redirect: true, want: xdpREDIRECT},
+		{name: "IPv6 with a redirect and a kept next hop", snd: "[2001:db8::7]:1000", rcv: "[fd09::2]:2000", relay: "fd09::1", hop: time.Minute, redirect: true, want: xdpREDIRECT},
 		{name: "unregistered SPI", snd: "192.0.2.1:1000", rcv: "10.9.0.2:2000", relay: "10.9.0.1", unregister: true, want: xdpPASS},
 		{name: "no neighbor", snd: "192.0.2.1:1000", rcv: "10.9.0.77:2000", relay: "10.9.0.1", want: xdpPASS},
 		{name: "not a relay address", snd: "192.0.2.1:1000", rcv: "10.9.0.2:2000", relay: "10.9.0.9", want: xdpPASS},
@@ -208,7 +215,7 @@ func TestXDPForward(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			r := NewRouter(nil, Config{LaneRate: 1e9, TunnelRate: 1e9})
-			prog, err := r.newXDPProgram(xdpPort, testMaxLen)
+			prog, err := r.newXDPProgram(XDPConfig{Port: xdpPort, NextHopCache: tc.hop}, testMaxLen, tc.redirect)
 			if errors.Is(err, unix.EPERM) {
 				t.Skipf("cannot load BPF programs: %v", err)
 			}
@@ -232,7 +239,7 @@ func TestXDPForward(t *testing.T) {
 			}
 			ret, out := ns.run(t, prog.Program(), pspFrame(t, src, relay, size, 7))
 			require.Equal(t, tc.want, ret)
-			if ret != xdpTX {
+			if ret == xdpPASS {
 				return
 			}
 			pkt := gopacket.NewPacket(out, layers.LayerTypeEthernet, gopacket.Default)
@@ -254,6 +261,25 @@ func TestXDPForward(t *testing.T) {
 			require.Len(t, lanes, 1)
 			assert.Equal(t, uint64(1), lanes[0].Packets)
 			assert.Equal(t, uint64(200), lanes[0].Bytes)
+		})
+	}
+}
+
+// TestFlushesEachTX checks which drivers get a program that sends with a redirect.
+func TestFlushesEachTX(t *testing.T) {
+	cases := []struct {
+		name   string
+		driver string
+		want   bool
+	}{
+		{name: "ena", driver: "ena", want: true},
+		{name: "veth", driver: "veth"},
+		{name: "mlx5", driver: "mlx5_core"},
+		{name: "no driver name"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, flushesEachTX(tc.driver))
 		})
 	}
 }

@@ -69,7 +69,7 @@ func runRelay(ctx context.Context, o options, ready func(netip.AddrPort)) error 
 	xdpCPU := func() float64 { return 0 }
 	var xdpMode string
 	if o.XDP != "" {
-		x, mode, err := r.StartXDP(relay.XDPConfig{Port: addr.Port(), Iface: o.XDP, Generic: o.XDPMode != "driver"})
+		x, mode, err := r.StartXDP(relay.XDPConfig{Port: addr.Port(), Iface: o.XDP, Generic: o.XDPMode != "driver", NextHopCache: o.XDPHop})
 		if err != nil {
 			return err
 		}

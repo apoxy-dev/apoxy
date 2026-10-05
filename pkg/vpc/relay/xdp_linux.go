@@ -66,9 +66,13 @@ func (r *Router) StartXDP(cfg XDPConfig) (*XDP, string, error) {
 			return nil, "", fmt.Errorf("failed to read the addresses of %s: %w", cfg.Iface, err)
 		}
 	}
-	prog, err := r.newXDPProgram(cfg.Port, min(uint32(ifc.MTU), xdpMaxLen))
+	driver := linkDriver(ifc.Name)
+	prog, err := r.newXDPProgram(cfg, min(uint32(ifc.MTU), xdpMaxLen), flushesEachTX(driver))
 	if err != nil {
 		return nil, "", err
+	}
+	if flushesEachTX(driver) {
+		slog.Info("Relay XDP program sends with a redirect", "iface", ifc.Name, "driver", driver)
 	}
 	if err := prog.SetAddrs(addrs); err != nil {
 		_ = prog.Close()
@@ -163,9 +167,10 @@ func (x *XDP) recheck(now time.Time) {
 }
 
 // newXDPProgram loads the XDP program with the meters of r. maxLen is the
-// largest IP length of a PSP datagram.
-func (r *Router) newXDPProgram(port uint16, maxLen uint32) (*filter.Relay, error) {
-	rc := filter.RelayConfig{Port: port, MaxLen: maxLen}
+// largest IP length of a PSP datagram. redirect makes the program send with a
+// redirect to the link.
+func (r *Router) newXDPProgram(cfg XDPConfig, maxLen uint32, redirect bool) (*filter.Relay, error) {
+	rc := filter.RelayConfig{Port: cfg.Port, MaxLen: maxLen, NextHopCache: cfg.NextHopCache, Redirect: redirect}
 	if r.cfg.LaneRate > 0 {
 		rc.LaneRate, rc.LaneBurst = uint64(r.cfg.LaneRate), uint64(r.cfg.LaneBurst)
 	}
@@ -173,6 +178,25 @@ func (r *Router) newXDPProgram(port uint16, maxLen uint32) (*filter.Relay, error
 		rc.TunnelRate, rc.TunnelBurst = uint64(r.cfg.TunnelRate), uint64(r.cfg.TunnelBurst)
 	}
 	return filter.NewRelay(rc)
+}
+
+// flushesEachTX reports whether the driver tells its device of each XDP_TX
+// packet. It tells the device of a group of redirected packets at one time,
+// so the program sends with a redirect on such a link.
+func flushesEachTX(driver string) bool { return driver == "ena" }
+
+// linkDriver returns the name of the driver of the link, or "".
+func linkDriver(name string) string {
+	e, err := ethtool.NewEthtool()
+	if err != nil {
+		return ""
+	}
+	defer e.Close()
+	d, err := e.DriverName(name)
+	if err != nil {
+		return ""
+	}
+	return d
 }
 
 // linkAddrs returns the unicast addresses of the link, without the IPv6

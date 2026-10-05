@@ -36,7 +36,7 @@ func TestParseFlags(t *testing.T) {
 			name: "relay", cmd: "relay", args: []string{"-listen", ":4443"},
 			want: func(o options) bool {
 				return o.Listen == ":4443" && o.WorkDir == "/work" && o.MTU == 0 && o.Lanes == relay.MaxLaneSources &&
-					o.XDP == "" && o.XDPMode == "generic"
+					o.XDP == "" && o.XDPMode == "generic" && o.XDPHop == 0
 			},
 		},
 		{
@@ -45,6 +45,11 @@ func TestParseFlags(t *testing.T) {
 		},
 		{name: "relay with an unknown XDP mode", cmd: "relay", args: []string{"-listen", ":4443", "-xdp-mode", "native"}, wantErr: `unknown -xdp-mode "native"`},
 		{name: "server has no XDP mode", cmd: "server", args: []string{"-listen", ":4433", "-relay", "r:1", "-xdp-mode", "driver"}, wantErr: "flag provided but not defined: -xdp-mode"},
+		{
+			name: "relay with a next hop cache", cmd: "relay", args: []string{"-listen", ":4443", "-xdp", "ens5", "-xdp-hop", "1s"},
+			want: func(o options) bool { return o.XDPHop == time.Second },
+		},
+		{name: "relay with a negative next hop cache", cmd: "relay", args: []string{"-listen", ":4443", "-xdp-hop", "-1s"}, wantErr: "-xdp-hop must not be negative"},
 		{
 			name: "relay with no lanes", cmd: "relay", args: []string{"-listen", ":4443", "-lanes", "0"},
 			want: func(o options) bool { return o.Lanes == 0 },
