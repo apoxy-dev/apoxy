@@ -232,7 +232,7 @@ func TestListenError(t *testing.T) {
 		// socket does not.
 		oneFD bool
 	}{
-		{name: "address that is not local", laddr: &net.UDPAddr{IP: net.IPv4(192, 0, 2, 1)}},
+		{name: "address that is not local", laddr: &net.UDPAddr{IP: net.IPv4(198, 51, 100, 1)}},
 		{name: "no descriptor for the send socket", laddr: &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)}, oneFD: true},
 	}
 	for _, tc := range cases {
