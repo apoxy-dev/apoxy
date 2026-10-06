@@ -24,6 +24,9 @@ const (
 	raceDelay = 150 * time.Millisecond
 	// spareCheck is the interval of the spare session check.
 	spareCheck = 5 * time.Second
+	// upgradeRetry is the wait for the next spare dial after a relay refused the
+	// agent as too old. Only a change of the relays makes that dial pass.
+	upgradeRetry = 10 * time.Minute
 )
 
 // Tests change these values.
@@ -336,6 +339,11 @@ func (a *Agent) keepSpares(ctx context.Context) {
 		}
 		changed, err := a.fillSpare(ctx, &next)
 		switch {
+		case errors.Is(err, ErrUpgrade):
+			// The attached session stays. The spare dials continue at a low rate, so
+			// that the spares come back after a relay rollback.
+			slog.Warn("Failed to open a spare relay session: the relay needs a newer agent; upgrade this agent", "error", err)
+			retryAt = time.Now().Add(upgradeRetry)
 		case err != nil:
 			if ctx.Err() != nil {
 				return

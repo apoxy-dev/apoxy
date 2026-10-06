@@ -85,8 +85,9 @@ func (rc *relayConn) dialShard(ctx context.Context, i int) (quic.Connection, err
 	st, err := dp.NewRelayClient(rpc.NewConn(qc, nil)).Session(context.Background())
 	if err == nil {
 		err = st.Send(&dp.SessionRequest{Msg: &dp.SessionRequest_Hello{Hello: &dp.Hello{
-			Mode:  dp.Mode_MODE_QUIC,
-			Shard: &dp.Shard{AttachmentId: rc.claims.GetAttachmentId(), Index: uint32(i)},
+			Mode:    dp.Mode_MODE_QUIC,
+			Shard:   &dp.Shard{AttachmentId: rc.claims.GetAttachmentId(), Index: uint32(i)},
+			Version: a.ver,
 		}}})
 	}
 	var m *dp.SessionResponse

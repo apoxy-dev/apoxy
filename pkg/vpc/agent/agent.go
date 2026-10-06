@@ -22,6 +22,7 @@ import (
 	"github.com/quic-go/quic-go"
 	"google.golang.org/protobuf/types/known/durationpb"
 
+	"github.com/apoxy-dev/apoxy/build"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/identity"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
@@ -125,6 +126,7 @@ type Config struct {
 // runs the peer sessions on the attached one.
 type Agent struct {
 	cfg       Config
+	ver       *dp.Version // Protocol version of the agent. Nil is revision 0. Tests change it.
 	instance  uint64
 	seed      maphash.Seed // Orders the relays of this agent.
 	mux       *rpc.Mux     // Peer service.
@@ -170,6 +172,7 @@ type Agent struct {
 func New(cfg Config) *Agent {
 	a := &Agent{
 		cfg:       cfg,
+		ver:       dp.LocalVersion(build.BuildVersion),
 		instance:  rand.Uint64(),
 		seed:      maphash.MakeSeed(),
 		spareWake: make(chan struct{}, 1),
@@ -196,6 +199,8 @@ func New(cfg Config) *Agent {
 
 // Run keeps an attached relay session and spare sessions until ctx ends. On
 // a cert renew or a drain, the new session attaches before the old one closes.
+// It returns an ErrUpgrade when a relay refuses the agent as too old and no
+// other relay takes it.
 func (a *Agent) Run(ctx context.Context) error {
 	if m := a.cfg.MTU; m != 0 && (m < psp.DefaultMTU || m > psp.MaxMTU) {
 		return fmt.Errorf("MTU must be %d to %d, got %d", psp.DefaultMTU, psp.MaxMTU, m)
@@ -218,7 +223,8 @@ func (a *Agent) Run(ctx context.Context) error {
 	wg.Go(func() { a.keepAttachments(ctx) })
 
 	backoff := minBackoff
-	next, failed := 0, 0 // The relay to dial next, and the relays that failed in a row.
+	next, failed := 0, 0      // The relay to dial next, and the relays that failed in a row.
+	var refused *upgradeError // A relay refused the agent as too old since the last session.
 	relist := relister{wait: relistMin}
 	for ctx.Err() == nil {
 		rc, tried, err := a.attachRelay(ctx, next)
@@ -227,11 +233,19 @@ func (a *Agent) Run(ctx context.Context) error {
 				break
 			}
 			slog.Warn("Failed to open relay session", "error", err)
+			if ue := (*upgradeError)(nil); errors.As(err, &ue) {
+				refused = ue
+			}
 			if certRefused(err) {
 				a.renew(ctx)
 			}
 			next += tried
 			if failed += tried; failed >= len(a.endpoints()) {
+				// No relay takes the agent, and one needs a newer agent. More dials
+				// do not help, so Run stops.
+				if refused != nil {
+					return refused
+				}
 				failed = 0
 				if relist.run(ctx, a) {
 					// Dial the new relays now.
@@ -247,7 +261,7 @@ func (a *Agent) Run(ctx context.Context) error {
 			}
 			continue
 		}
-		failed = 0
+		failed, refused = 0, nil
 		start := time.Now()
 		for rc != nil {
 			a.use(rc)
@@ -457,6 +471,7 @@ type relayConn struct {
 	spareDone chan struct{}
 
 	relayAddr netip.AddrPort    // Where PSP packets to peers go.
+	version   *dp.Version       // Version of the relay, from Welcome. Nil is revision 0.
 	reflexive netip.AddrPort    // Address of the agent socket as the relay sees it.
 	maxLanes  uint32            // Most lane ports that the relay takes.
 	lanes     atomic.Int32      // Send lanes: the lane ports that the relay took, plus 1.
@@ -598,9 +613,9 @@ func (a *Agent) dialSession(ctx context.Context, e endpoint, spare func() bool) 
 	if err := rc.hello(begin, spare()); err != nil {
 		rc.close()
 		if cause := context.Cause(qc.Context()); cause != nil {
-			return nil, fmt.Errorf("%w (connection: %w)", err, cause)
+			err = fmt.Errorf("%w (connection: %w)", err, cause)
 		}
-		return nil, err
+		return nil, relayUpgrade(e.addr, err)
 	}
 	return rc, nil
 }
@@ -636,7 +651,9 @@ func (rc *relayConn) hello(begin time.Time, spare bool) error {
 		return err
 	}
 	rc.st = st
-	if err := st.Send(&dp.SessionRequest{Msg: &dp.SessionRequest_Hello{Hello: &dp.Hello{Mode: rc.mode, FallbackReason: rc.reason, Spare: spare}}}); err != nil {
+	if err := st.Send(&dp.SessionRequest{Msg: &dp.SessionRequest_Hello{Hello: &dp.Hello{
+		Mode: rc.mode, FallbackReason: rc.reason, Spare: spare, Version: rc.a.ver,
+	}}}); err != nil {
 		return err
 	}
 	m, err := st.Recv()
@@ -649,6 +666,11 @@ func (rc *relayConn) hello(begin time.Time, spare bool) error {
 	}
 	rc.reflexive, _ = netip.ParseAddrPort(w.GetReflexiveAddress())
 	rc.maxLanes = w.GetMaxLanes()
+	rc.version = w.GetVersion()
+	// The dial fails for a relay that is too old, so the agent dials the next relay.
+	if got, least := rc.version.GetRevision(), rc.a.ver.GetMinRevision(); got < least {
+		return fmt.Errorf("relay revision %d is below the agent minimum %d", got, least)
+	}
 	if m, err = st.Recv(); err != nil {
 		return err
 	}
@@ -690,7 +712,7 @@ func (rc *relayConn) attach(ctx context.Context, begin time.Time) error {
 	}
 	// A bad relay cert fails the attach, not each peer session.
 	if rc.claims, err = relay.VerifyGrant(res.GetGrant(), rc.roots, time.Now()); err != nil {
-		return err
+		return relayUpgrade(rc.addr, err)
 	}
 	rc.grant = res.GetGrant()
 	prefixes, err := parsePrefixes(rc.claims.GetAddresses())

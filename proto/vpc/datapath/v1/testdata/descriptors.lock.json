@@ -1,0 +1,1550 @@
+{
+  "file": [
+    {
+      "name": "proto/vpc/datapath/v1/mesh.proto",
+      "package": "apoxy.vpc.datapath.v1",
+      "dependency": [
+        "google/protobuf/duration.proto",
+        "google/protobuf/empty.proto",
+        "proto/vpc/datapath/v1/types.proto"
+      ],
+      "messageType": [
+        {
+          "name": "Presence",
+          "field": [
+            {
+              "name": "vpc",
+              "number": 1,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.VPCRef",
+              "jsonName": "vpc"
+            },
+            {
+              "name": "attachment_id",
+              "number": 2,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_STRING",
+              "jsonName": "attachmentId"
+            },
+            {
+              "name": "generation",
+              "number": 3,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_UINT64",
+              "jsonName": "generation"
+            },
+            {
+              "name": "prefixes",
+              "number": 4,
+              "label": "LABEL_REPEATED",
+              "type": "TYPE_STRING",
+              "jsonName": "prefixes"
+            },
+            {
+              "name": "gone",
+              "number": 5,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_BOOL",
+              "jsonName": "gone"
+            }
+          ]
+        },
+        {
+          "name": "PresenceUpdate",
+          "field": [
+            {
+              "name": "entries",
+              "number": 1,
+              "label": "LABEL_REPEATED",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.Presence",
+              "jsonName": "entries"
+            }
+          ]
+        },
+        {
+          "name": "SPIRow",
+          "field": [
+            {
+              "name": "vpc",
+              "number": 1,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.VPCRef",
+              "jsonName": "vpc"
+            },
+            {
+              "name": "sender_tag",
+              "number": 2,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_UINT32",
+              "jsonName": "senderTag"
+            },
+            {
+              "name": "spi",
+              "number": 3,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_UINT32",
+              "jsonName": "spi"
+            },
+            {
+              "name": "destination",
+              "number": 4,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_STRING",
+              "jsonName": "destination"
+            },
+            {
+              "name": "expires_in",
+              "number": 5,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".google.protobuf.Duration",
+              "jsonName": "expiresIn"
+            },
+            {
+              "name": "removed",
+              "number": 6,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_BOOL",
+              "jsonName": "removed"
+            }
+          ]
+        },
+        {
+          "name": "SPIRowUpdate",
+          "field": [
+            {
+              "name": "rows",
+              "number": 1,
+              "label": "LABEL_REPEATED",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.SPIRow",
+              "jsonName": "rows"
+            }
+          ]
+        }
+      ],
+      "service": [
+        {
+          "name": "Mesh",
+          "method": [
+            {
+              "name": "Presence",
+              "inputType": ".apoxy.vpc.datapath.v1.PresenceUpdate",
+              "outputType": ".google.protobuf.Empty",
+              "clientStreaming": true
+            },
+            {
+              "name": "SPIRows",
+              "inputType": ".apoxy.vpc.datapath.v1.SPIRowUpdate",
+              "outputType": ".google.protobuf.Empty",
+              "clientStreaming": true
+            },
+            {
+              "name": "TrunkKeys",
+              "inputType": ".apoxy.vpc.datapath.v1.KeysRequest",
+              "outputType": ".apoxy.vpc.datapath.v1.KeysResponse"
+            }
+          ]
+        }
+      ],
+      "options": {
+        "goPackage": "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1;datapathv1"
+      },
+      "syntax": "proto3"
+    },
+    {
+      "name": "proto/vpc/datapath/v1/peer.proto",
+      "package": "apoxy.vpc.datapath.v1",
+      "dependency": [
+        "google/protobuf/empty.proto",
+        "proto/vpc/datapath/v1/types.proto"
+      ],
+      "messageType": [
+        {
+          "name": "OpenRequest",
+          "field": [
+            {
+              "name": "grant",
+              "number": 1,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.AttachmentGrant",
+              "jsonName": "grant"
+            },
+            {
+              "name": "instance",
+              "number": 2,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_FIXED64",
+              "jsonName": "instance"
+            },
+            {
+              "name": "mode",
+              "number": 3,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_ENUM",
+              "typeName": ".apoxy.vpc.datapath.v1.Mode",
+              "jsonName": "mode"
+            },
+            {
+              "name": "p2p",
+              "number": 4,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_BOOL",
+              "jsonName": "p2p"
+            },
+            {
+              "name": "grants",
+              "number": 5,
+              "label": "LABEL_REPEATED",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.AttachmentGrant",
+              "jsonName": "grants"
+            },
+            {
+              "name": "lanes",
+              "number": 6,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_UINT32",
+              "jsonName": "lanes"
+            },
+            {
+              "name": "version",
+              "number": 7,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.Version",
+              "jsonName": "version"
+            }
+          ]
+        },
+        {
+          "name": "OpenResponse",
+          "field": [
+            {
+              "name": "grant",
+              "number": 1,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.AttachmentGrant",
+              "jsonName": "grant"
+            },
+            {
+              "name": "instance",
+              "number": 2,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_FIXED64",
+              "jsonName": "instance"
+            },
+            {
+              "name": "mode",
+              "number": 3,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_ENUM",
+              "typeName": ".apoxy.vpc.datapath.v1.Mode",
+              "jsonName": "mode"
+            },
+            {
+              "name": "p2p",
+              "number": 4,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_BOOL",
+              "jsonName": "p2p"
+            },
+            {
+              "name": "grants",
+              "number": 5,
+              "label": "LABEL_REPEATED",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.AttachmentGrant",
+              "jsonName": "grants"
+            },
+            {
+              "name": "lanes",
+              "number": 6,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_UINT32",
+              "jsonName": "lanes"
+            },
+            {
+              "name": "version",
+              "number": 7,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.Version",
+              "jsonName": "version"
+            }
+          ]
+        },
+        {
+          "name": "GrantsRequest",
+          "field": [
+            {
+              "name": "add",
+              "number": 1,
+              "label": "LABEL_REPEATED",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.AttachmentGrant",
+              "jsonName": "add"
+            },
+            {
+              "name": "remove",
+              "number": 2,
+              "label": "LABEL_REPEATED",
+              "type": "TYPE_STRING",
+              "jsonName": "remove"
+            }
+          ]
+        },
+        {
+          "name": "Candidate",
+          "field": [
+            {
+              "name": "kind",
+              "number": 1,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_ENUM",
+              "typeName": ".apoxy.vpc.datapath.v1.CandidateKind",
+              "jsonName": "kind"
+            },
+            {
+              "name": "address",
+              "number": 2,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_STRING",
+              "jsonName": "address"
+            },
+            {
+              "name": "port",
+              "number": 3,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_UINT32",
+              "jsonName": "port"
+            }
+          ]
+        },
+        {
+          "name": "Candidates",
+          "field": [
+            {
+              "name": "round",
+              "number": 1,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_UINT32",
+              "jsonName": "round"
+            },
+            {
+              "name": "candidates",
+              "number": 2,
+              "label": "LABEL_REPEATED",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.Candidate",
+              "jsonName": "candidates"
+            },
+            {
+              "name": "mtu",
+              "number": 3,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_UINT32",
+              "jsonName": "mtu"
+            }
+          ]
+        }
+      ],
+      "enumType": [
+        {
+          "name": "CandidateKind",
+          "value": [
+            {
+              "name": "CANDIDATE_KIND_UNSPECIFIED",
+              "number": 0
+            },
+            {
+              "name": "CANDIDATE_KIND_HOST",
+              "number": 1
+            },
+            {
+              "name": "CANDIDATE_KIND_REFLEXIVE",
+              "number": 2
+            }
+          ]
+        },
+        {
+          "name": "PeerCloseCode",
+          "value": [
+            {
+              "name": "PEER_CLOSE_CODE_UNSPECIFIED",
+              "number": 0
+            },
+            {
+              "name": "PEER_CLOSE_CODE_DUPLICATE",
+              "number": 1
+            },
+            {
+              "name": "PEER_CLOSE_CODE_BAD_GRANT",
+              "number": 2
+            },
+            {
+              "name": "PEER_CLOSE_CODE_UPGRADE",
+              "number": 3
+            }
+          ]
+        }
+      ],
+      "service": [
+        {
+          "name": "Peer",
+          "method": [
+            {
+              "name": "Open",
+              "inputType": ".apoxy.vpc.datapath.v1.OpenRequest",
+              "outputType": ".apoxy.vpc.datapath.v1.OpenResponse"
+            },
+            {
+              "name": "Keys",
+              "inputType": ".apoxy.vpc.datapath.v1.KeysRequest",
+              "outputType": ".apoxy.vpc.datapath.v1.KeysResponse"
+            },
+            {
+              "name": "Paths",
+              "inputType": ".apoxy.vpc.datapath.v1.Candidates",
+              "outputType": ".google.protobuf.Empty",
+              "clientStreaming": true
+            },
+            {
+              "name": "Reports",
+              "inputType": ".apoxy.vpc.datapath.v1.RxReport",
+              "outputType": ".google.protobuf.Empty",
+              "clientStreaming": true
+            },
+            {
+              "name": "Grants",
+              "inputType": ".apoxy.vpc.datapath.v1.GrantsRequest",
+              "outputType": ".google.protobuf.Empty"
+            }
+          ]
+        }
+      ],
+      "options": {
+        "goPackage": "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1;datapathv1"
+      },
+      "syntax": "proto3"
+    },
+    {
+      "name": "proto/vpc/datapath/v1/relay.proto",
+      "package": "apoxy.vpc.datapath.v1",
+      "dependency": [
+        "google/protobuf/duration.proto",
+        "google/protobuf/empty.proto",
+        "proto/vpc/datapath/v1/types.proto"
+      ],
+      "messageType": [
+        {
+          "name": "SessionRequest",
+          "field": [
+            {
+              "name": "hello",
+              "number": 1,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.Hello",
+              "oneofIndex": 0,
+              "jsonName": "hello"
+            },
+            {
+              "name": "ack",
+              "number": 2,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.Ack",
+              "oneofIndex": 0,
+              "jsonName": "ack"
+            },
+            {
+              "name": "status",
+              "number": 3,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.Status",
+              "oneofIndex": 0,
+              "jsonName": "status"
+            },
+            {
+              "name": "moved",
+              "number": 4,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.Moved",
+              "oneofIndex": 0,
+              "jsonName": "moved"
+            }
+          ],
+          "oneofDecl": [
+            {
+              "name": "msg"
+            }
+          ]
+        },
+        {
+          "name": "SessionResponse",
+          "field": [
+            {
+              "name": "welcome",
+              "number": 1,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.Welcome",
+              "oneofIndex": 0,
+              "jsonName": "welcome"
+            },
+            {
+              "name": "route_delta",
+              "number": 2,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.RouteDelta",
+              "oneofIndex": 0,
+              "jsonName": "routeDelta"
+            },
+            {
+              "name": "no_route",
+              "number": 3,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.NoRoute",
+              "oneofIndex": 0,
+              "jsonName": "noRoute"
+            },
+            {
+              "name": "rekey",
+              "number": 4,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.KeysRequest",
+              "oneofIndex": 0,
+              "jsonName": "rekey"
+            },
+            {
+              "name": "config",
+              "number": 5,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.Config",
+              "oneofIndex": 0,
+              "jsonName": "config"
+            },
+            {
+              "name": "drain",
+              "number": 6,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.Drain",
+              "oneofIndex": 0,
+              "jsonName": "drain"
+            },
+            {
+              "name": "rx_report",
+              "number": 7,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.RxReport",
+              "oneofIndex": 0,
+              "jsonName": "rxReport"
+            }
+          ],
+          "oneofDecl": [
+            {
+              "name": "msg"
+            }
+          ]
+        },
+        {
+          "name": "Hello",
+          "field": [
+            {
+              "name": "mode",
+              "number": 1,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_ENUM",
+              "typeName": ".apoxy.vpc.datapath.v1.Mode",
+              "jsonName": "mode"
+            },
+            {
+              "name": "max_vpcs_per_session",
+              "number": 2,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_UINT32",
+              "jsonName": "maxVpcsPerSession"
+            },
+            {
+              "name": "shard",
+              "number": 3,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.Shard",
+              "jsonName": "shard"
+            },
+            {
+              "name": "fallback_reason",
+              "number": 4,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_ENUM",
+              "typeName": ".apoxy.vpc.datapath.v1.FallbackReason",
+              "jsonName": "fallbackReason"
+            },
+            {
+              "name": "spare",
+              "number": 5,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_BOOL",
+              "jsonName": "spare"
+            },
+            {
+              "name": "version",
+              "number": 6,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.Version",
+              "jsonName": "version"
+            }
+          ]
+        },
+        {
+          "name": "Shard",
+          "field": [
+            {
+              "name": "attachment_id",
+              "number": 1,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_STRING",
+              "jsonName": "attachmentId"
+            },
+            {
+              "name": "index",
+              "number": 2,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_UINT32",
+              "jsonName": "index"
+            }
+          ]
+        },
+        {
+          "name": "Moved"
+        },
+        {
+          "name": "Welcome",
+          "field": [
+            {
+              "name": "reflexive_address",
+              "number": 1,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_STRING",
+              "jsonName": "reflexiveAddress"
+            },
+            {
+              "name": "max_lanes",
+              "number": 2,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_UINT32",
+              "jsonName": "maxLanes"
+            },
+            {
+              "name": "version",
+              "number": 3,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.Version",
+              "jsonName": "version"
+            }
+          ]
+        },
+        {
+          "name": "Route",
+          "field": [
+            {
+              "name": "vpc",
+              "number": 1,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.VPCRef",
+              "jsonName": "vpc"
+            },
+            {
+              "name": "prefix",
+              "number": 2,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_STRING",
+              "jsonName": "prefix"
+            },
+            {
+              "name": "origin",
+              "number": 3,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_STRING",
+              "jsonName": "origin"
+            }
+          ]
+        },
+        {
+          "name": "RouteDelta",
+          "field": [
+            {
+              "name": "rev",
+              "number": 1,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_UINT64",
+              "jsonName": "rev"
+            },
+            {
+              "name": "add",
+              "number": 2,
+              "label": "LABEL_REPEATED",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.Route",
+              "jsonName": "add"
+            },
+            {
+              "name": "remove",
+              "number": 3,
+              "label": "LABEL_REPEATED",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.Route",
+              "jsonName": "remove"
+            }
+          ]
+        },
+        {
+          "name": "Ack",
+          "field": [
+            {
+              "name": "rev",
+              "number": 1,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_UINT64",
+              "jsonName": "rev"
+            }
+          ]
+        },
+        {
+          "name": "Status",
+          "field": [
+            {
+              "name": "icv_failures",
+              "number": 1,
+              "label": "LABEL_REPEATED",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.ICVFailures",
+              "jsonName": "icvFailures"
+            },
+            {
+              "name": "connect_time",
+              "number": 2,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".google.protobuf.Duration",
+              "jsonName": "connectTime"
+            }
+          ]
+        },
+        {
+          "name": "ICVFailures",
+          "field": [
+            {
+              "name": "spi",
+              "number": 1,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_UINT32",
+              "jsonName": "spi"
+            },
+            {
+              "name": "count",
+              "number": 2,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_UINT64",
+              "jsonName": "count"
+            }
+          ]
+        },
+        {
+          "name": "NoRoute",
+          "field": [
+            {
+              "name": "vpc",
+              "number": 1,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.VPCRef",
+              "jsonName": "vpc"
+            },
+            {
+              "name": "address",
+              "number": 2,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_STRING",
+              "jsonName": "address"
+            },
+            {
+              "name": "home_relay",
+              "number": 3,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.RelayRef",
+              "jsonName": "homeRelay"
+            }
+          ]
+        },
+        {
+          "name": "Config",
+          "field": [
+            {
+              "name": "vpc",
+              "number": 1,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.VPCRef",
+              "jsonName": "vpc"
+            },
+            {
+              "name": "mtu",
+              "number": 2,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_UINT32",
+              "jsonName": "mtu"
+            },
+            {
+              "name": "dns_servers",
+              "number": 3,
+              "label": "LABEL_REPEATED",
+              "type": "TYPE_STRING",
+              "jsonName": "dnsServers"
+            },
+            {
+              "name": "dns_search_domains",
+              "number": 4,
+              "label": "LABEL_REPEATED",
+              "type": "TYPE_STRING",
+              "jsonName": "dnsSearchDomains"
+            }
+          ]
+        },
+        {
+          "name": "Drain",
+          "field": [
+            {
+              "name": "alternates",
+              "number": 1,
+              "label": "LABEL_REPEATED",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.RelayRef",
+              "jsonName": "alternates"
+            }
+          ]
+        },
+        {
+          "name": "AttachRequest",
+          "field": [
+            {
+              "name": "vpc",
+              "number": 1,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.VPCRef",
+              "jsonName": "vpc"
+            },
+            {
+              "name": "name",
+              "number": 2,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_STRING",
+              "jsonName": "name"
+            },
+            {
+              "name": "labels",
+              "number": 3,
+              "label": "LABEL_REPEATED",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.AttachRequest.LabelsEntry",
+              "jsonName": "labels"
+            },
+            {
+              "name": "routes",
+              "number": 4,
+              "label": "LABEL_REPEATED",
+              "type": "TYPE_STRING",
+              "jsonName": "routes"
+            }
+          ],
+          "nestedType": [
+            {
+              "name": "LabelsEntry",
+              "field": [
+                {
+                  "name": "key",
+                  "number": 1,
+                  "label": "LABEL_OPTIONAL",
+                  "type": "TYPE_STRING",
+                  "jsonName": "key"
+                },
+                {
+                  "name": "value",
+                  "number": 2,
+                  "label": "LABEL_OPTIONAL",
+                  "type": "TYPE_STRING",
+                  "jsonName": "value"
+                }
+              ],
+              "options": {
+                "mapEntry": true
+              }
+            }
+          ]
+        },
+        {
+          "name": "AttachResponse",
+          "field": [
+            {
+              "name": "attachment_id",
+              "number": 1,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_STRING",
+              "jsonName": "attachmentId"
+            },
+            {
+              "name": "grant",
+              "number": 2,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.AttachmentGrant",
+              "jsonName": "grant"
+            }
+          ]
+        },
+        {
+          "name": "DetachRequest",
+          "field": [
+            {
+              "name": "attachment_id",
+              "number": 1,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_STRING",
+              "jsonName": "attachmentId"
+            }
+          ]
+        },
+        {
+          "name": "ResolvePeerRequest",
+          "field": [
+            {
+              "name": "vpc",
+              "number": 1,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.VPCRef",
+              "jsonName": "vpc"
+            },
+            {
+              "name": "address",
+              "number": 2,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_STRING",
+              "jsonName": "address"
+            }
+          ]
+        },
+        {
+          "name": "ResolvePeerResponse",
+          "field": [
+            {
+              "name": "reach",
+              "number": 1,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_ENUM",
+              "typeName": ".apoxy.vpc.datapath.v1.Reach",
+              "jsonName": "reach"
+            },
+            {
+              "name": "home_relay",
+              "number": 2,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.RelayRef",
+              "jsonName": "homeRelay"
+            },
+            {
+              "name": "p2p",
+              "number": 3,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_BOOL",
+              "jsonName": "p2p"
+            },
+            {
+              "name": "subject",
+              "number": 4,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_STRING",
+              "jsonName": "subject"
+            }
+          ]
+        },
+        {
+          "name": "RegisterSPIRequest",
+          "field": [
+            {
+              "name": "vpc",
+              "number": 1,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.VPCRef",
+              "jsonName": "vpc"
+            },
+            {
+              "name": "destination",
+              "number": 2,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_STRING",
+              "jsonName": "destination"
+            },
+            {
+              "name": "spis",
+              "number": 3,
+              "label": "LABEL_REPEATED",
+              "type": "TYPE_UINT32",
+              "jsonName": "spis"
+            },
+            {
+              "name": "expires_in",
+              "number": 4,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".google.protobuf.Duration",
+              "jsonName": "expiresIn"
+            },
+            {
+              "name": "lanes",
+              "number": 5,
+              "label": "LABEL_REPEATED",
+              "type": "TYPE_UINT32",
+              "jsonName": "lanes"
+            },
+            {
+              "name": "sa_lanes",
+              "number": 6,
+              "label": "LABEL_REPEATED",
+              "type": "TYPE_UINT32",
+              "jsonName": "saLanes"
+            }
+          ]
+        },
+        {
+          "name": "UnregisterSPIRequest",
+          "field": [
+            {
+              "name": "vpc",
+              "number": 1,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.VPCRef",
+              "jsonName": "vpc"
+            },
+            {
+              "name": "spis",
+              "number": 2,
+              "label": "LABEL_REPEATED",
+              "type": "TYPE_UINT32",
+              "jsonName": "spis"
+            }
+          ]
+        },
+        {
+          "name": "RegisterLanesRequest",
+          "field": [
+            {
+              "name": "ports",
+              "number": 1,
+              "label": "LABEL_REPEATED",
+              "type": "TYPE_UINT32",
+              "jsonName": "ports"
+            },
+            {
+              "name": "receive",
+              "number": 2,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_BOOL",
+              "jsonName": "receive"
+            }
+          ]
+        }
+      ],
+      "enumType": [
+        {
+          "name": "RelayCloseCode",
+          "value": [
+            {
+              "name": "RELAY_CLOSE_CODE_UNSPECIFIED",
+              "number": 0
+            },
+            {
+              "name": "RELAY_CLOSE_CODE_CERT",
+              "number": 1
+            },
+            {
+              "name": "RELAY_CLOSE_CODE_DRAIN",
+              "number": 2
+            },
+            {
+              "name": "RELAY_CLOSE_CODE_UPGRADE",
+              "number": 3
+            }
+          ]
+        },
+        {
+          "name": "Reach",
+          "value": [
+            {
+              "name": "REACH_UNSPECIFIED",
+              "number": 0
+            },
+            {
+              "name": "REACH_LOCAL",
+              "number": 1
+            },
+            {
+              "name": "REACH_TRUNK",
+              "number": 2
+            },
+            {
+              "name": "REACH_VISIT",
+              "number": 3
+            }
+          ]
+        },
+        {
+          "name": "FallbackReason",
+          "value": [
+            {
+              "name": "FALLBACK_REASON_UNSPECIFIED",
+              "number": 0
+            },
+            {
+              "name": "FALLBACK_REASON_PROBE_TIMEOUT",
+              "number": 1
+            },
+            {
+              "name": "FALLBACK_REASON_CONFIG",
+              "number": 2
+            }
+          ]
+        }
+      ],
+      "service": [
+        {
+          "name": "Relay",
+          "method": [
+            {
+              "name": "Session",
+              "inputType": ".apoxy.vpc.datapath.v1.SessionRequest",
+              "outputType": ".apoxy.vpc.datapath.v1.SessionResponse",
+              "clientStreaming": true,
+              "serverStreaming": true
+            },
+            {
+              "name": "Attach",
+              "inputType": ".apoxy.vpc.datapath.v1.AttachRequest",
+              "outputType": ".apoxy.vpc.datapath.v1.AttachResponse"
+            },
+            {
+              "name": "Detach",
+              "inputType": ".apoxy.vpc.datapath.v1.DetachRequest",
+              "outputType": ".google.protobuf.Empty"
+            },
+            {
+              "name": "Rekey",
+              "inputType": ".apoxy.vpc.datapath.v1.KeysRequest",
+              "outputType": ".apoxy.vpc.datapath.v1.KeysResponse"
+            },
+            {
+              "name": "ResolvePeer",
+              "inputType": ".apoxy.vpc.datapath.v1.ResolvePeerRequest",
+              "outputType": ".apoxy.vpc.datapath.v1.ResolvePeerResponse"
+            },
+            {
+              "name": "RegisterSPI",
+              "inputType": ".apoxy.vpc.datapath.v1.RegisterSPIRequest",
+              "outputType": ".google.protobuf.Empty"
+            },
+            {
+              "name": "UnregisterSPI",
+              "inputType": ".apoxy.vpc.datapath.v1.UnregisterSPIRequest",
+              "outputType": ".google.protobuf.Empty"
+            },
+            {
+              "name": "RegisterLanes",
+              "inputType": ".apoxy.vpc.datapath.v1.RegisterLanesRequest",
+              "outputType": ".google.protobuf.Empty"
+            }
+          ]
+        }
+      ],
+      "options": {
+        "goPackage": "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1;datapathv1"
+      },
+      "syntax": "proto3"
+    },
+    {
+      "name": "proto/vpc/datapath/v1/types.proto",
+      "package": "apoxy.vpc.datapath.v1",
+      "dependency": [
+        "google/protobuf/duration.proto",
+        "google/protobuf/timestamp.proto"
+      ],
+      "messageType": [
+        {
+          "name": "VPCRef",
+          "field": [
+            {
+              "name": "project_id",
+              "number": 1,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_STRING",
+              "jsonName": "projectId"
+            },
+            {
+              "name": "vpc_uid",
+              "number": 2,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_STRING",
+              "jsonName": "vpcUid"
+            },
+            {
+              "name": "network_id",
+              "number": 3,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_UINT32",
+              "jsonName": "networkId"
+            }
+          ]
+        },
+        {
+          "name": "RelayRef",
+          "field": [
+            {
+              "name": "id",
+              "number": 1,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_STRING",
+              "jsonName": "id"
+            },
+            {
+              "name": "addresses",
+              "number": 2,
+              "label": "LABEL_REPEATED",
+              "type": "TYPE_STRING",
+              "jsonName": "addresses"
+            }
+          ]
+        },
+        {
+          "name": "Version",
+          "field": [
+            {
+              "name": "revision",
+              "number": 1,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_UINT32",
+              "jsonName": "revision"
+            },
+            {
+              "name": "min_revision",
+              "number": 2,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_UINT32",
+              "jsonName": "minRevision"
+            },
+            {
+              "name": "build",
+              "number": 3,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_STRING",
+              "jsonName": "build"
+            }
+          ]
+        },
+        {
+          "name": "SA",
+          "field": [
+            {
+              "name": "spi",
+              "number": 1,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_UINT32",
+              "jsonName": "spi"
+            },
+            {
+              "name": "key",
+              "number": 2,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_BYTES",
+              "jsonName": "key"
+            },
+            {
+              "name": "vni",
+              "number": 3,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_UINT32",
+              "jsonName": "vni"
+            },
+            {
+              "name": "expires_in",
+              "number": 4,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".google.protobuf.Duration",
+              "jsonName": "expiresIn"
+            },
+            {
+              "name": "lane",
+              "number": 5,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_UINT32",
+              "jsonName": "lane"
+            }
+          ]
+        },
+        {
+          "name": "OfferSAs",
+          "field": [
+            {
+              "name": "sas",
+              "number": 1,
+              "label": "LABEL_REPEATED",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.SA",
+              "jsonName": "sas"
+            }
+          ]
+        },
+        {
+          "name": "RekeySA",
+          "field": [
+            {
+              "name": "sas",
+              "number": 1,
+              "label": "LABEL_REPEATED",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.SA",
+              "jsonName": "sas"
+            }
+          ]
+        },
+        {
+          "name": "RevokeSA",
+          "field": [
+            {
+              "name": "spis",
+              "number": 1,
+              "label": "LABEL_REPEATED",
+              "type": "TYPE_UINT32",
+              "jsonName": "spis"
+            }
+          ]
+        },
+        {
+          "name": "KeysRequest",
+          "field": [
+            {
+              "name": "offer",
+              "number": 1,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.OfferSAs",
+              "oneofIndex": 0,
+              "jsonName": "offer"
+            },
+            {
+              "name": "rekey",
+              "number": 2,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.RekeySA",
+              "oneofIndex": 0,
+              "jsonName": "rekey"
+            },
+            {
+              "name": "revoke",
+              "number": 3,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.RevokeSA",
+              "oneofIndex": 0,
+              "jsonName": "revoke"
+            }
+          ],
+          "oneofDecl": [
+            {
+              "name": "op"
+            }
+          ]
+        },
+        {
+          "name": "KeysResponse",
+          "field": [
+            {
+              "name": "refused_spis",
+              "number": 1,
+              "label": "LABEL_REPEATED",
+              "type": "TYPE_UINT32",
+              "jsonName": "refusedSpis"
+            }
+          ]
+        },
+        {
+          "name": "SAStats",
+          "field": [
+            {
+              "name": "spi",
+              "number": 1,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_UINT32",
+              "jsonName": "spi"
+            },
+            {
+              "name": "packets",
+              "number": 2,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_UINT64",
+              "jsonName": "packets"
+            },
+            {
+              "name": "seq",
+              "number": 3,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_UINT32",
+              "jsonName": "seq"
+            }
+          ]
+        },
+        {
+          "name": "RxReport",
+          "field": [
+            {
+              "name": "sas",
+              "number": 1,
+              "label": "LABEL_REPEATED",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.SAStats",
+              "jsonName": "sas"
+            }
+          ]
+        },
+        {
+          "name": "AttachmentGrant",
+          "field": [
+            {
+              "name": "claims",
+              "number": 1,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_BYTES",
+              "jsonName": "claims"
+            },
+            {
+              "name": "signature",
+              "number": 2,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_BYTES",
+              "jsonName": "signature"
+            },
+            {
+              "name": "relay_chain",
+              "number": 3,
+              "label": "LABEL_REPEATED",
+              "type": "TYPE_BYTES",
+              "jsonName": "relayChain"
+            }
+          ]
+        },
+        {
+          "name": "GrantClaims",
+          "field": [
+            {
+              "name": "vpc",
+              "number": 1,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.VPCRef",
+              "jsonName": "vpc"
+            },
+            {
+              "name": "attachment_id",
+              "number": 2,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_STRING",
+              "jsonName": "attachmentId"
+            },
+            {
+              "name": "subject",
+              "number": 3,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_STRING",
+              "jsonName": "subject"
+            },
+            {
+              "name": "addresses",
+              "number": 4,
+              "label": "LABEL_REPEATED",
+              "type": "TYPE_STRING",
+              "jsonName": "addresses"
+            },
+            {
+              "name": "relay_id",
+              "number": 5,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_STRING",
+              "jsonName": "relayId"
+            },
+            {
+              "name": "not_after",
+              "number": 6,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".google.protobuf.Timestamp",
+              "jsonName": "notAfter"
+            },
+            {
+              "name": "min_revision",
+              "number": 7,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_UINT32",
+              "jsonName": "minRevision"
+            }
+          ]
+        }
+      ],
+      "enumType": [
+        {
+          "name": "Mode",
+          "value": [
+            {
+              "name": "MODE_UNSPECIFIED",
+              "number": 0
+            },
+            {
+              "name": "MODE_QUIC",
+              "number": 1
+            },
+            {
+              "name": "MODE_PSP",
+              "number": 2
+            }
+          ]
+        }
+      ],
+      "options": {
+        "goPackage": "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1;datapathv1"
+      },
+      "syntax": "proto3"
+    }
+  ]
+}

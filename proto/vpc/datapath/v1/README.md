@@ -145,7 +145,7 @@ Addresses and prefixes are text (`fd61::1`, `10.0.0.0/8`, `host:port`).
 
 | Method          | Kind  | Messages |
 |-----------------|-------|----------|
-| `Session`       | bidi  | Agent: `Hello{mode, fallback_reason, spare}`, then `Ack{rev}` and `Status` (ICV failures; the first one after `Config` also has the time to connect). Relay: `Welcome` (reflexive address, lane port limit), `Config`, in PSP mode a rekey with relay SAs, then `RouteDelta{rev}`, `NoRoute`, rekey (`KeysRequest`), `Config`, `Drain`, and in PSP mode `RxReport` (only the last one waits). |
+| `Session`       | bidi  | Agent: `Hello{mode, fallback_reason, spare, version}`, then `Ack{rev}` and `Status` (ICV failures; the first one after `Config` also has the time to connect). Relay: `Welcome` (reflexive address, lane port limit, version), `Config`, in PSP mode a rekey with relay SAs, then `RouteDelta{rev}`, `NoRoute`, rekey (`KeysRequest`), `Config`, `Drain`, and in PSP mode `RxReport` (only the last one waits). |
 | `Attach`        | unary | `AttachRequest{vpc, name, labels, routes}` -> `AttachResponse{attachment_id, grant}` |
 | `Rekey`         | unary | `KeysRequest` -> `KeysResponse`: SAs for traffic from the relay to the agent. Errors: `FailedPrecondition` (no `Session` call in PSP mode), `InvalidArgument` (an SA VNI is not the network ID). |
 | `ResolvePeer`   | unary | `{vpc, address}` -> `{reach: local, trunk or visit; home_relay; p2p}`. Errors: `NotFound`, `PermissionDenied`. |
@@ -157,21 +157,24 @@ Addresses and prefixes are text (`fd61::1`, `10.0.0.0/8`, `host:port`).
 TLS key, and the relay cert chain (leaf first). A peer accepts it only if the
 leaf chains through the rest of the chain to the roots that agents dial relays
 with, the leaf names `relay_id` (a DNS name, for example the dial host name of
-the relay), the leaf key made the signature, and `not_after` has not passed.
+the relay), the leaf key made the signature, `min_revision` is not above the
+revision of the peer, and `not_after` has not passed.
 
 A connection has one `Session` call and lives as long as that call. A relay
 closes a connection with a `RelayCloseCode`: `CERT` (the agent cert failed a
-check; get a new cert before the next dial) or `DRAIN` (move to another
-relay).
+check; get a new cert before the next dial), `DRAIN` (move to another relay)
+or `UPGRADE` (the agent revision is below the minimum of the relay; see
+"Revisions").
 
 In QUIC mode an agent can add up to 3 shards: extra connections from the same
 socket that carry data datagrams. Each one sends
-`Hello{shard: {attachment_id, index}}` as its first `Session` message, gets
-`Welcome`, and makes no other call. The relay refuses the join if the index is
-not from 1 to 3 (`InvalidArgument`), if no open session has the attachment
-(`NotFound`), if that session has another agent identity (`PermissionDenied`),
-or if the connection already has a `Session` call, routes or SPI rows
-(`FailedPrecondition`). A new shard with the same index replaces the old one.
+`Hello{shard: {attachment_id, index}, version}` as its first `Session`
+message, gets `Welcome`, and makes no other call. The relay refuses the join
+if the index is not from 1 to 3 (`InvalidArgument`), if no open session has
+the attachment (`NotFound`), if that session has another agent identity
+(`PermissionDenied`), or if the connection already has a `Session` call,
+routes or SPI rows (`FailedPrecondition`). A new shard with the same index
+replaces the old one.
 A shard closes when its owner session closes.
 
 The relay accepts an agent cert only if it chains to the agent CA, its SAN is
@@ -204,7 +207,7 @@ a receiver with no `receive`, all SA lanes go to the session address.
 
 | Method    | Kind          | Messages |
 |-----------|---------------|----------|
-| `Open`    | unary         | Dialer and listener each send `{grant, instance, mode, p2p, lanes}`. First call on a session. `lanes` is the send lanes of the caller: the other agent offers it that many SAs. |
+| `Open`    | unary         | Dialer and listener each send `{grant, instance, mode, p2p, lanes, version}`. First call on a session. `lanes` is the send lanes of the caller: the other agent offers it that many SAs. |
 | `Keys`    | unary         | The receiver sends `KeysRequest`: `OfferSAs`, `RekeySA` or `RevokeSA`. `KeysResponse` lists SPIs that the sender refuses. |
 | `Paths`   | client stream | `Candidates{round, candidates, mtu}`; each agent calls it. |
 | `Reports` | client stream | `RxReport{sas}` every 500 ms when it changes: the receive counters of the SAs that the peer sends with. |
@@ -212,7 +215,9 @@ a receiver with no `receive`, all SA lanes go to the session address.
 Each side accepts the other only if the peer cert chains to the VPC agent CA
 and names the same project and VPC, the grant passes the checks above, is for
 the same VPC, and names the SPIFFE ID of the peer cert, and the mode is `PSP`
-or `QUIC`. If not, it closes the session with `BAD_GRANT`. When both agents
+or `QUIC`. If not, it closes the session with `BAD_GRANT`. If the revision of
+the other agent is below its minimum, it closes the session with `UPGRADE`
+(see "Revisions"). When both agents
 dial (an open session in the other role with the same `instance`), the session
 that the agent with the lower SPIFFE ID dialed stays, and the other closes with
 `DUPLICATE`. A new `instance` replaces the open session.
@@ -231,6 +236,103 @@ its relay before it applies them, and unregisters them after a revoke.
 | `Presence`  | client stream | `PresenceUpdate` of the attachments of the caller. |
 | `SPIRows`   | client stream | `SPIRowUpdate`: SPI rows for receivers on the called relay. |
 | `TrunkKeys` | unary         | `KeysRequest` -> `KeysResponse` for the trunk SA. |
+
+## Revisions
+
+Agents run on customer hosts for months, and relays change more often, so the
+two sides of a session have different ages. One number, the protocol revision,
+covers the `Relay`, `Peer` and `Mesh` services and the packet formats. The Go
+constants `Revision` and `MinRevision` are in `version.go`.
+
+The first message of a session and its answer carry a
+`Version{revision, min_revision, build}`: `Hello` and `Welcome` on a relay
+session, `OpenRequest` and `OpenResponse` on a peer session. A build from
+before revisions sends no `Version`, and that reads as revision 0. `build` is
+only for logs and metrics. The first `Mesh` call gets the `Version` when the
+mesh is implemented.
+
+| Revision | Change | Agent | VTEP | Relay |
+|----------|--------|-------|------|-------|
+| 0 | The protocol before revisions. | Sends no `Version`. | Sends no `Version`. | Sends no `Version`. |
+| 1 | `Version` in `Hello`, `Welcome` and `Open`. `GrantClaims.min_revision`. The `UPGRADE` close codes. | Sends its `Version` in `Hello` and in `Open`. Stops the dial loop when a relay closes with `UPGRADE` and no other relay takes it, and tells the user to upgrade. Dials the next relay when a relay is below its minimum. Closes a peer session below its minimum with `UPGRADE`. Refuses a grant with a `min_revision` above its revision. Keeps the session when a call returns `Unimplemented`. | The duties of the agent on the relay session. | Sends its `Version` in `Welcome`. Closes a session below its minimum with `UPGRADE`. Counts the sessions by revision and build. |
+
+### Minimum revision
+
+Each side has a minimum for the revision of the other side. It is 0 now.
+
+- A relay closes a session below its minimum with the `RelayCloseCode`
+  `UPGRADE`, and the close reason gives the minimum. When no other relay takes
+  the agent, the agent stops its dial loop and returns an error that tells the
+  user to upgrade.
+- An agent that finds a relay below its minimum closes the session and dials
+  the next relay.
+- On a peer session, the agent that finds the other agent below its minimum
+  closes the session with the `PeerCloseCode` `UPGRADE`. The relay sessions
+  stay.
+- A verifier refuses a grant with a `min_revision` above its own revision,
+  because it does not know all the claims that limit the grant.
+- A build from before revision 1 does not know `UPGRADE`. It sees a normal
+  close and dials again with backoff.
+- The relay counts the sessions by revision and build of the agent
+  (`apoxy_vpc_relay_session_versions_total`). The counts show how many
+  sessions a higher minimum closes.
+
+### Rules for a change
+
+- A change only adds: new fields, oneof cases, messages, methods and enum
+  values. No number, type or name changes. A removed field or enum value
+  becomes `reserved`, by number and by name. The zero value of a new field
+  means the old behavior.
+- Each change to the proto files or to a packet format adds 1 to `Revision`
+  and one line to the table: the number, the change and the duty of each role.
+  A role with no duty for a revision has nothing to implement. It only must
+  not break on the new messages.
+- The revision is cumulative: a side at revision N obeys each duty of its role
+  up to N.
+- A side uses a new behavior only when the revision of the other side shows
+  it. A packet carries no negotiation, so a side sends a new packet format
+  only after the control channel shows that the other side reads it.
+- The first message offers, and the answer selects. `Hello` has only values
+  that the oldest supported relay accepts. A new choice is a new field of
+  `Hello`, never a new value of an old field.
+- A caller that gets `Unimplemented` treats the call as not supported and
+  keeps the session.
+- The revision tells what the code can do, not what is turned on. An option
+  that depends on the config or on the host keeps a typed field, such as
+  `Welcome.max_lanes`, and its zero value means off.
+- A new ALPN name is only for a change that these rules cannot express: new
+  stream framing, a new first exchange or a new datagram header.
+- Relays deploy before an agent release. A relay rollback is safe: the agent
+  sees the lower revision in the next `Welcome` and stops the newer behavior.
+- When the minimum passes revision N, the code for the revisions below N goes
+  away in one change, and the fields that only they used become `reserved`.
+
+The steps for one change:
+
+1. Add the fields, messages or methods. Add the line to the table, and add 1
+   to `Revision`.
+2. Use the new behavior only after a check of the revision of the other side.
+3. Add test cases for the other side at the old revision and at the new one.
+4. Deploy the relays, and then release the agents.
+5. After the minimum passes the revision, remove the old path and reserve its
+   fields.
+
+### Descriptor lock
+
+`TestDescriptorLock` compares the descriptors of the proto files with
+`testdata/descriptors.lock.json`, the copy from the last release. It fails
+when a field changes its number, type, name or cardinality (singular,
+optional, repeated or in a oneof), when a field or an enum value goes away
+without `reserved` for its number and its name, when an enum value changes its
+number or name, when a message, an enum, a service or a method goes away, and
+when a method changes its input, its output or its streaming. A change that
+only adds passes.
+
+At each release, after the test passes, update the locked copy:
+
+```
+go test ./proto/vpc/datapath/v1 -run TestDescriptorLock -update
+```
 
 ## JSON debug handler
 

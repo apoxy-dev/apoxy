@@ -68,6 +68,7 @@ type peer struct {
 
 	// Set before ready closes, under Agent.mu.
 	instance uint64
+	version  *dp.Version // Version of the peer, from Open. Nil is revision 0.
 	claims   *dp.GrantClaims
 	prefixes []netip.Prefix
 	addr     netip.Addr // Overlay address of the peer.
@@ -88,6 +89,7 @@ type peer struct {
 	sendAdd    map[string]*dp.AttachmentGrant
 	sendRemove map[string]bool
 	sending    bool
+	noGrants   bool // The peer does not serve Grants.
 }
 
 // spiRow is an SPI that the relay forwards to the peer.
@@ -361,15 +363,19 @@ func (a *Agent) dial(ctx context.Context, rc *relayConn, dst netip.Addr, res *dp
 	a.mu.Lock()
 	grants := a.openGrants(p)
 	a.mu.Unlock()
-	open, err := p.client.Open(ctx, &dp.OpenRequest{Grant: rc.grant, Grants: grants, Instance: a.instance, Mode: rc.mode, Lanes: rc.sendLanes()})
+	open, err := p.client.Open(ctx, &dp.OpenRequest{
+		Grant: rc.grant, Grants: grants, Instance: a.instance, Mode: rc.mode, Lanes: rc.sendLanes(), Version: a.ver,
+	})
 	if err != nil {
 		if refusedDuplicate(qc, err) {
 			err = errDuplicate
+		} else if reason, ok := refusedUpgrade(qc, err); ok {
+			err = fmt.Errorf("%w: peer closed the session: %s", ErrUpgrade, reason)
 		}
 		_ = qc.CloseWithError(0, "")
 		return nil, fmt.Errorf("open peer session to %s: %w", dst, err)
 	}
-	if err := a.admit(p, open.GetGrant(), open.GetInstance(), open.GetMode(), open.GetLanes()); err != nil {
+	if err := a.admit(p, open.GetVersion(), open.GetGrant(), open.GetInstance(), open.GetMode(), open.GetLanes()); err != nil {
 		_ = qc.CloseWithError(closeCode(err), err.Error())
 		return nil, fmt.Errorf("peer %s: %w", dst, err)
 	}
@@ -381,7 +387,7 @@ func (a *Agent) dial(ctx context.Context, rc *relayConn, dst netip.Addr, res *dp
 
 // admit checks the Open data of the peer, then adds it to the binding with
 // the prefixes of its grant. The peer gets SAs for its send lanes.
-func (a *Agent) admit(p *peer, g *dp.AttachmentGrant, instance uint64, mode dp.Mode, lanes uint32) error {
+func (a *Agent) admit(p *peer, v *dp.Version, g *dp.AttachmentGrant, instance uint64, mode dp.Mode, lanes uint32) error {
 	a.admitMu.Lock()
 	defer a.admitMu.Unlock()
 	a.mu.Lock()
@@ -393,11 +399,14 @@ func (a *Agent) admit(p *peer, g *dp.AttachmentGrant, instance uint64, mode dp.M
 	if gone {
 		return p.closedError()
 	}
+	if err := a.checkRevision(p, v); err != nil {
+		return err
+	}
 	if mode != dp.Mode_MODE_PSP && mode != dp.Mode_MODE_QUIC {
 		return fmt.Errorf("peer mode %v is not supported", mode)
 	}
 	if mode == dp.Mode_MODE_QUIC || p.rc.mode == dp.Mode_MODE_QUIC {
-		return a.admitQUIC(p, g, instance)
+		return a.admitQUIC(p, v, g, instance)
 	}
 	claims, prefixes, err := a.checkGrant(p, g)
 	if err != nil {
@@ -440,7 +449,7 @@ func (a *Agent) admit(p *peer, g *dp.AttachmentGrant, instance uint64, mode dp.M
 		a.mu.Unlock()
 		return p.closedError()
 	}
-	p.instance, p.claims, p.prefixes, p.addr, p.bp = instance, claims, prefixes, overlayAddr(prefixes), bp
+	p.instance, p.version, p.claims, p.prefixes, p.addr, p.bp = instance, v, claims, prefixes, overlayAddr(prefixes), bp
 	// Under a.mu, so that a move of the agent also sees bp.
 	bp.SetLaneSockets(int(p.rc.sendLanes()))
 	close(a.admitted)
@@ -455,6 +464,10 @@ func (a *Agent) admit(p *peer, g *dp.AttachmentGrant, instance uint64, mode dp.M
 // checkGrant checks the grant of the peer and returns its claims and prefixes.
 func (a *Agent) checkGrant(p *peer, g *dp.AttachmentGrant) (*dp.GrantClaims, []netip.Prefix, error) {
 	claims, err := relay.VerifyGrant(g, p.rc.roots, time.Now())
+	if errors.Is(err, relay.ErrGrantRevision) {
+		// This agent is the verifier, so this agent is too old.
+		return nil, nil, fmt.Errorf("%w: %w", ErrUpgrade, err)
+	}
 	if err != nil {
 		return nil, nil, err
 	}
@@ -474,7 +487,7 @@ func (a *Agent) checkGrant(p *peer, g *dp.AttachmentGrant) (*dp.GrantClaims, []n
 
 // admitQUIC adds a peer session that sends data through the relay. It routes
 // the peer prefixes to the relay peer, which other QUIC pairs share.
-func (a *Agent) admitQUIC(p *peer, g *dp.AttachmentGrant, instance uint64) error {
+func (a *Agent) admitQUIC(p *peer, v *dp.Version, g *dp.AttachmentGrant, instance uint64) error {
 	claims, prefixes, err := a.checkGrant(p, g)
 	if err != nil {
 		return err
@@ -505,7 +518,7 @@ func (a *Agent) admitQUIC(p *peer, g *dp.AttachmentGrant, instance uint64) error
 			return fmt.Errorf("route %s: %w", pfx, err)
 		}
 	}
-	p.instance, p.claims, p.prefixes, p.addr, p.bp, p.quic = instance, claims, prefixes, overlayAddr(prefixes), p.rc.relay, true
+	p.instance, p.version, p.claims, p.prefixes, p.addr, p.bp, p.quic = instance, v, claims, prefixes, overlayAddr(prefixes), p.rc.relay, true
 	close(a.admitted)
 	a.admitted = make(chan struct{})
 	a.mu.Unlock()
@@ -534,8 +547,11 @@ func (a *Agent) unrouteQUIC(p *peer, prefixes []netip.Prefix) {
 
 // closeCode is the peer session close code for an error from admit.
 func closeCode(err error) quic.ApplicationErrorCode {
-	if errors.Is(err, errDuplicate) {
+	switch {
+	case errors.Is(err, errDuplicate):
 		return quic.ApplicationErrorCode(dp.PeerCloseCode_PEER_CLOSE_CODE_DUPLICATE)
+	case errors.Is(err, errRevision):
+		return quic.ApplicationErrorCode(dp.PeerCloseCode_PEER_CLOSE_CODE_UPGRADE)
 	}
 	return quic.ApplicationErrorCode(dp.PeerCloseCode_PEER_CLOSE_CODE_BAD_GRANT)
 }
@@ -576,6 +592,10 @@ func (a *Agent) dropPeer(p *peer) {
 			defer cancel()
 			_, _ = p.rc.c.UnregisterSPI(ctx, &dp.UnregisterSPIRequest{Vpc: p.rc.ref, Spis: spis})
 		}()
+	}
+	if reason, ok := refusedUpgrade(p.qc, nil); ok {
+		slog.Warn("Peer closed the session: it needs a newer agent; upgrade this agent", "peer", p.subject, "reason", reason)
+		return
 	}
 	slog.Info("Closed peer session", "peer", p.subject, "reason", context.Cause(p.qc.Context()))
 }
@@ -767,7 +787,7 @@ func (s *peerService) Open(ctx context.Context, in *dp.OpenRequest) (*dp.OpenRes
 	if p.dialer {
 		return nil, rpc.Errorf(rpc.FailedPrecondition, "the dialer calls Open")
 	}
-	if err := s.a.admit(p, in.GetGrant(), in.GetInstance(), in.GetMode(), in.GetLanes()); err != nil {
+	if err := s.a.admit(p, in.GetVersion(), in.GetGrant(), in.GetInstance(), in.GetMode(), in.GetLanes()); err != nil {
 		if errors.Is(err, errAlreadyOpen) {
 			// The session stays open for the first Open.
 			return nil, rpc.Errorf(rpc.FailedPrecondition, "%v", err)
@@ -775,8 +795,11 @@ func (s *peerService) Open(ctx context.Context, in *dp.OpenRequest) (*dp.OpenRes
 		slog.Info("Refused peer session", "peer", p.subject, "error", err)
 		// The close can arrive before the call status, so it carries the reason.
 		defer func() { _ = p.qc.CloseWithError(closeCode(err), err.Error()) }()
-		if errors.Is(err, errDuplicate) {
+		switch {
+		case errors.Is(err, errDuplicate):
 			return nil, rpc.Errorf(rpc.AlreadyExists, "%v", err)
+		case errors.Is(err, errRevision):
+			return nil, rpc.Errorf(rpc.FailedPrecondition, "%v", err)
 		}
 		return nil, rpc.Errorf(rpc.PermissionDenied, "%v", err)
 	}
@@ -786,7 +809,9 @@ func (s *peerService) Open(ctx context.Context, in *dp.OpenRequest) (*dp.OpenRes
 	s.a.mu.Lock()
 	grants := s.a.openGrants(p)
 	s.a.mu.Unlock()
-	return &dp.OpenResponse{Grant: p.rc.grant, Grants: grants, Instance: s.a.instance, Mode: p.rc.mode, Lanes: p.rc.sendLanes()}, nil
+	return &dp.OpenResponse{
+		Grant: p.rc.grant, Grants: grants, Instance: s.a.instance, Mode: p.rc.mode, Lanes: p.rc.sendLanes(), Version: s.a.ver,
+	}, nil
 }
 
 // Keys applies SAs from the peer and registers their SPIs at the relay.

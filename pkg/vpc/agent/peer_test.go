@@ -147,7 +147,9 @@ func TestAdmit(t *testing.T) {
 		instance uint64
 		dialer   bool // This agent dialed the new session.
 		old      *old
-		taken    bool // Another peer routes fd00:b::/96.
+		taken    bool        // Another peer routes fd00:b::/96.
+		version  *dp.Version // Version of the peer. Nil is a peer from before revisions.
+		minimum  uint32      // Minimum revision of this agent.
 		wantErr  error
 		wantText string
 		keepOld  bool
@@ -183,6 +185,16 @@ func TestAdmit(t *testing.T) {
 		{name: "peer dials again", old: &old{instance: 7}, instance: 7},
 		{name: "peer dials a higher ID again", self: "c", old: &old{instance: 7}, instance: 7},
 		{name: "peer restarted", old: &old{dialer: true, instance: 6}, instance: 7},
+		{name: "peer of this revision", version: dp.LocalVersion("b")},
+		{name: "peer of a later revision", version: &dp.Version{Revision: dp.Revision + 1}},
+		{name: "peer at the minimum", version: &dp.Version{Revision: 1}, minimum: 1},
+		{name: "peer below the minimum", version: &dp.Version{Revision: 1}, minimum: 2, wantErr: errRevision, wantText: "listener minimum 2"},
+		{name: "dialed peer below the minimum", dialer: true, minimum: 1, wantErr: errRevision, wantText: "dialer minimum 1"},
+		{name: "QUIC pair with a peer below the minimum", mode: dp.Mode_MODE_QUIC, minimum: 1, wantErr: errRevision},
+		{name: "QUIC pair with a peer at the minimum", mode: dp.Mode_MODE_QUIC, version: &dp.Version{Revision: 1}, minimum: 1, wantQUIC: true},
+		{name: "grant of this revision", claims: func(c *dp.GrantClaims) { c.MinRevision = dp.Revision }},
+		{name: "grant needs a newer revision", claims: func(c *dp.GrantClaims) { c.MinRevision = dp.Revision + 1 }, wantErr: ErrUpgrade},
+		{name: "QUIC pair, grant needs a newer revision", mode: dp.Mode_MODE_QUIC, claims: func(c *dp.GrantClaims) { c.MinRevision = dp.Revision + 1 }, wantErr: ErrUpgrade},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -203,7 +215,7 @@ func TestAdmit(t *testing.T) {
 			if tc.old != nil {
 				op, qc := stubPeer(a, "b", tc.old.dialer)
 				mode := cmp.Or(tc.old.mode, dp.Mode_MODE_PSP)
-				require.NoError(t, a.admit(op, grant(t, relayCert, nil), tc.old.instance, mode, 1))
+				require.NoError(t, a.admit(op, nil, grant(t, relayCert, nil), tc.old.instance, mode, 1))
 				oldConn = qc
 			}
 			cert := tc.cert
@@ -212,11 +224,17 @@ func TestAdmit(t *testing.T) {
 			}
 			mode := cmp.Or(tc.mode, dp.Mode_MODE_PSP)
 			p, _ := stubPeer(a, "b", tc.dialer)
+			if tc.minimum != 0 {
+				a.ver = &dp.Version{Revision: max(dp.Revision, tc.minimum), MinRevision: tc.minimum}
+			}
+			assert.False(t, p.atLeast(1), "the revision is 0 before Open")
 
-			err := a.admit(p, grant(t, cert, tc.claims), tc.instance, mode, 1)
+			err := a.admit(p, tc.version, grant(t, cert, tc.claims), tc.instance, mode, 1)
 			switch {
 			case tc.wantErr != nil:
 				require.ErrorIs(t, err, tc.wantErr)
+				assert.ErrorContains(t, err, tc.wantText)
+				assert.False(t, p.atLeast(1), "a refused peer stays at revision 0")
 			case tc.wantText != "":
 				require.ErrorContains(t, err, tc.wantText)
 			default:
@@ -230,6 +248,9 @@ func TestAdmit(t *testing.T) {
 				case <-p.ready:
 				default:
 					t.Error("ready is open")
+				}
+				for n := range tc.version.GetRevision() + 2 {
+					assert.Equal(t, tc.version.GetRevision() >= n, p.atLeast(n), "peer at revision %d or later", n)
 				}
 			}
 			if oldConn == nil {
@@ -267,8 +288,8 @@ func TestAdmitCrossed(t *testing.T) {
 		var errDialed, errAccepted error
 		var wg sync.WaitGroup
 		start := make(chan struct{})
-		wg.Go(func() { <-start; errDialed = a.admit(dialed, g, 7, dp.Mode_MODE_PSP, 1) })
-		wg.Go(func() { <-start; errAccepted = a.admit(accepted, g, 7, dp.Mode_MODE_PSP, 1) })
+		wg.Go(func() { <-start; errDialed = a.admit(dialed, nil, g, 7, dp.Mode_MODE_PSP, 1) })
+		wg.Go(func() { <-start; errAccepted = a.admit(accepted, nil, g, 7, dp.Mode_MODE_PSP, 1) })
 		close(start)
 		wg.Wait()
 
@@ -585,7 +606,7 @@ func TestQUICRoutes(t *testing.T) {
 	}
 	admit := func(name string, dialer bool, prefix string) *peer {
 		p, _ := stubPeer(a, name, dialer)
-		require.NoError(t, a.admit(p, signGrant(t, cert, name, prefix), 7, dp.Mode_MODE_QUIC, 1))
+		require.NoError(t, a.admit(p, nil, signGrant(t, cert, name, prefix), 7, dp.Mode_MODE_QUIC, 1))
 		return p
 	}
 	// Crossed dials with b leave two sessions.
@@ -694,7 +715,7 @@ func TestAdmitOnce(t *testing.T) {
 			var wg sync.WaitGroup
 			start := make(chan struct{})
 			for i := range errs {
-				admit := func() { errs[i] = a.admit(p, grants[i], 1, dp.Mode_MODE_PSP, 1) }
+				admit := func() { errs[i] = a.admit(p, nil, grants[i], 1, dp.Mode_MODE_PSP, 1) }
 				if tc.together {
 					wg.Go(func() { <-start; admit() })
 				} else {

@@ -25,6 +25,18 @@ message RelayRef {
   repeated string addresses = 2;
 }
 
+// Version is the protocol revision of the sender. The first message of a
+// session and its answer carry it. README.md has the revision table.
+message Version {
+  // The sender obeys the duties of its role for all revisions up to this
+  // one. Zero means a build from before revisions.
+  uint32 revision = 1;
+  // Oldest revision of the other side that the sender works with.
+  uint32 min_revision = 2;
+  // Build of the sender. Only logs and metrics use it.
+  string build = 3;
+}
+
 // Mode is the data transport of an agent.
 enum Mode {
   MODE_UNSPECIFIED = 0;
@@ -118,4 +130,7 @@ message GrantClaims {
   // Relay that signed the grant.
   string relay_id = 5;
   google.protobuf.Timestamp not_after = 6;
+  // Oldest revision that can check the grant. A verifier with a lower
+  // revision refuses the grant.
+  uint32 min_revision = 7;
 }

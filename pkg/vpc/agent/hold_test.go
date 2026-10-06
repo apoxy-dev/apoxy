@@ -5,6 +5,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/netip"
 	"slices"
 	"sync"
@@ -85,6 +86,8 @@ func TestHoldWait(t *testing.T) {
 		{name: "other errors to the limit", errs: slices.Repeat([]error{other}, 8), wait: maxRetry},
 		{name: "success resets", errs: []error{other, other, nil, other}, wait: minRetry},
 		{name: "denied after not found", errs: []error{notFound, denied}, wait: deniedWait, denied: true},
+		{name: "this agent is too old", errs: []error{fmt.Errorf("open: %w", ErrUpgrade)}, wait: maxRetry},
+		{name: "peer is too old", errs: []error{fmt.Errorf("peer: %w", errRevision)}, wait: maxRetry},
 	}
 	dst := netip.MustParseAddr("fd61:706f:7879:12:3400:2::1")
 	pkt := make([]byte, 100)

@@ -148,6 +148,9 @@ func (a *Agent) openGrants(p *peer) []*dp.AttachmentGrant {
 func (p *peer) queueGrants(add *extra, remove string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.noGrants {
+		return
+	}
 	if p.sendAdd == nil {
 		p.sendAdd, p.sendRemove = map[string]*dp.AttachmentGrant{}, map[string]bool{}
 	}
@@ -166,7 +169,8 @@ func (p *peer) queueGrants(add *extra, remove string) {
 }
 
 // sendGrants sends the queued grant changes to the peer, one call at a time,
-// until the queue is empty. On an error it closes the peer session.
+// until the queue is empty. On an error it closes the peer session. A peer
+// that does not serve Grants keeps its session and gets no more changes.
 func (p *peer) sendGrants() {
 	select {
 	case <-p.ready:
@@ -196,6 +200,13 @@ func (p *peer) sendGrants() {
 		ctx, cancel := context.WithTimeout(p.rc.ctx, keysTimeout)
 		_, err := p.client.Grants(ctx, req)
 		cancel()
+		if rpc.CodeOf(err) == rpc.Unimplemented {
+			p.mu.Lock()
+			p.noGrants, p.sending, p.sendAdd, p.sendRemove = true, false, nil, nil
+			p.mu.Unlock()
+			slog.Info("Peer does not serve grant changes; it gets only the grants of Open", "peer", p.subject)
+			return
+		}
 		if err != nil {
 			if p.qc.Context().Err() == nil {
 				slog.Warn("Failed to send grants to a peer; closing the peer session", "peer", p.subject, "error", err)

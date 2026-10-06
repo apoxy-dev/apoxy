@@ -22,6 +22,7 @@ import (
 	"github.com/quic-go/quic-go"
 	"github.com/spf13/cobra"
 
+	"github.com/apoxy-dev/apoxy/build"
 	apoxyconfig "github.com/apoxy-dev/apoxy/config"
 	"github.com/apoxy-dev/apoxy/pkg/netstack"
 	"github.com/apoxy-dev/apoxy/pkg/socksproxy"
@@ -217,12 +218,21 @@ func runConnect(ctx context.Context, out io.Writer, vpc string, o *connectOption
 	cancel(nil)
 	admin.Wait()
 	if err != nil {
-		return err
+		return connectError(err)
 	}
 	if err := context.Cause(ctx); !errors.Is(err, context.Canceled) {
 		return err
 	}
 	return nil
+}
+
+// connectError returns the error of the agent for the user. When the relays
+// need a newer agent, it tells the user how to upgrade.
+func connectError(err error) error {
+	if errors.Is(err, agent.ErrUpgrade) {
+		return fmt.Errorf("this version of the Apoxy CLI (%s) is too old for the VPC: %w; run \"apoxy upgrade\" and connect again", build.BuildVersion, err)
+	}
+	return err
 }
 
 // listenUDP opens the agent socket in the address family of the relays.

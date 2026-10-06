@@ -660,6 +660,7 @@ func TestVerifyGrant(t *testing.T) {
 		chain  bool // Wildcard cert from an intermediate CA.
 		at     time.Time
 		ok     bool
+		is     error // The error is this one. Nil means any error.
 	}{
 		{name: "ECDSA", key: newKey(t), ok: true},
 		{name: "Ed25519", key: edKey, ok: true},
@@ -678,6 +679,8 @@ func TestVerifyGrant(t *testing.T) {
 		{name: "relay ID not in the cert", key: newKey(t), claims: func(c *dp.GrantClaims) { c.RelayId = "relay-2" }},
 		{name: "other roots", key: newKey(t), roots: func(*x509.CertPool) *x509.CertPool { return newCA(t).pool() }},
 		{name: "ended", key: newKey(t), at: now.Add(time.Hour)},
+		{name: "minimum revision of this build", key: newKey(t), claims: func(c *dp.GrantClaims) { c.MinRevision = dp.Revision }, ok: true},
+		{name: "minimum revision above this build", key: newKey(t), claims: func(c *dp.GrantClaims) { c.MinRevision = dp.Revision + 1 }, is: ErrGrantRevision},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -705,6 +708,9 @@ func TestVerifyGrant(t *testing.T) {
 			got, err := VerifyGrant(signed, roots, at)
 			if !tc.ok {
 				assert.Error(t, err)
+				if tc.is != nil {
+					assert.ErrorIs(t, err, tc.is)
+				}
 				return
 			}
 			require.NoError(t, err)

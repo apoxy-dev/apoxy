@@ -39,6 +39,8 @@ message OpenRequest {
   // Send lanes of the dialer: the most SAs that the listener offers to it.
   // Zero means 1.
   uint32 lanes = 6;
+  // Revision of the dialer. Not set by a build from before revisions.
+  Version version = 7;
 }
 
 message OpenResponse {
@@ -54,6 +56,8 @@ message OpenResponse {
   // Send lanes of the listener: the most SAs that the dialer offers to it.
   // Zero means 1.
   uint32 lanes = 6;
+  // Revision of the listener. Not set by a build from before revisions.
+  Version version = 7;
 }
 
 // GrantsRequest adds and removes grants of the other attachments of the caller.
@@ -95,4 +99,7 @@ enum PeerCloseCode {
   PEER_CLOSE_CODE_DUPLICATE = 1;
   // The cert or grant check in Open failed.
   PEER_CLOSE_CODE_BAD_GRANT = 2;
+  // The revision of the other agent is below the minimum of the agent that
+  // closes. The reason gives the minimum.
+  PEER_CLOSE_CODE_UPGRADE = 3;
 }

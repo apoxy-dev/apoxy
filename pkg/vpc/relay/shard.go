@@ -30,6 +30,7 @@ func (srv *Server) serveShard(ctx context.Context, s *Session, sh *dp.Shard, st 
 	}()
 	if err := st.Send(&dp.SessionResponse{Msg: &dp.SessionResponse_Welcome{Welcome: &dp.Welcome{
 		ReflexiveAddress: s.remote().String(),
+		Version:          srv.R.ver,
 	}}}); err != nil {
 		return err
 	}

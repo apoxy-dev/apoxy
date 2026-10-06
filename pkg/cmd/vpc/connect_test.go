@@ -3,6 +3,7 @@ package vpc
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/netip"
 	"runtime"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/dpeckett/network"
 
+	"github.com/apoxy-dev/apoxy/build"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/agent"
 )
 
@@ -405,5 +407,33 @@ func TestHostDeviceAttachments(t *testing.T) {
 			own := slices.ContainsFunc(dev.routes, func(p netip.Prefix) bool { return p.Contains(addr(a)) })
 			require.Equal(t, want, own, "%s: own route of %s", st.name, a)
 		}
+	}
+}
+
+func TestConnectError(t *testing.T) {
+	other := errors.New("relay session closed")
+	cases := []struct {
+		name     string
+		err      error
+		wantText string // Empty means that the error does not change.
+	}{
+		{name: "other error", err: other},
+		{
+			name:     "relays need a newer agent",
+			err:      fmt.Errorf("%w: relay 192.0.2.1:443: agent revision 1 is below the relay minimum 2", agent.ErrUpgrade),
+			wantText: `this version of the Apoxy CLI (` + build.BuildVersion + `) is too old for the VPC: agent needs an upgrade: relay 192.0.2.1:443: agent revision 1 is below the relay minimum 2; run "apoxy upgrade" and connect again`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := connectError(tc.err)
+			require.ErrorIs(t, err, tc.err)
+			if tc.wantText == "" {
+				require.Equal(t, tc.err, err)
+				return
+			}
+			require.ErrorIs(t, err, agent.ErrUpgrade)
+			require.EqualError(t, err, tc.wantText)
+		})
 	}
 }

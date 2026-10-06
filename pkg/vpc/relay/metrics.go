@@ -3,6 +3,9 @@
 package relay
 
 import (
+	"strconv"
+	"sync"
+
 	"github.com/prometheus/client_golang/prometheus"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
 
@@ -14,6 +17,10 @@ var (
 		Name: "apoxy_vpc_relay_sessions_total",
 		Help: "Agent Session calls, by data mode and the reason for QUIC mode. Spare sessions have the reason spare.",
 	}, []string{"mode", "reason"})
+	sessionVersions = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "apoxy_vpc_relay_session_versions_total",
+		Help: "Agent Session calls, by protocol revision and build of the agent. A build from before revisions has revision 0 and the build unknown.",
+	}, []string{"revision", "build"})
 	connectSeconds = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "apoxy_vpc_relay_connect_seconds",
 		Help:    "Time to connect: from the start of the dial to the first Config, as the agent reports it.",
@@ -22,7 +29,68 @@ var (
 )
 
 func init() {
-	metrics.Registry.MustRegister(sessionsTotal, connectSeconds)
+	metrics.Registry.MustRegister(sessionsTotal, sessionVersions, connectSeconds)
+}
+
+const (
+	// maxBuildLabel is the most characters of a build label.
+	maxBuildLabel = 40
+	// maxVersionLabels is the most pairs of revision and build that the session
+	// metric keeps. The other pairs count with the build otherLabel.
+	maxVersionLabels = 64
+	otherLabel       = "other"
+	unknownLabel     = "unknown"
+)
+
+// versionLabelSet limits the label values of sessionVersions. The agent sets
+// the revision and the build, so the relay keeps a fixed number of pairs.
+type versionLabelSet struct {
+	mu   sync.Mutex
+	seen map[[2]string]struct{}
+}
+
+var versionLabels versionLabelSet
+
+// of returns the revision and build labels of the agent version v. Nil is
+// revision 0.
+func (l *versionLabelSet) of(v *dp.Version) []string {
+	pair := [2]string{strconv.FormatUint(uint64(v.GetRevision()), 10), buildLabel(v.GetBuild())}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if _, ok := l.seen[pair]; ok {
+		return pair[:]
+	}
+	if len(l.seen) < maxVersionLabels {
+		if l.seen == nil {
+			l.seen = map[[2]string]struct{}{}
+		}
+		l.seen[pair] = struct{}{}
+		return pair[:]
+	}
+	// The revisions that this relay knows are few, so they keep their label.
+	if v.GetRevision() > dp.Revision {
+		pair[0] = otherLabel
+	}
+	pair[1] = otherLabel
+	return pair[:]
+}
+
+// buildLabel returns the build string of an agent as a label value. It keeps
+// maxBuildLabel characters, and only letters, digits and "._+-" stay as they are.
+func buildLabel(build string) string {
+	if build == "" {
+		return unknownLabel
+	}
+	b := []byte(build[:min(len(build), maxBuildLabel)])
+	for i, c := range b {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		case c == '.', c == '_', c == '+', c == '-':
+		default:
+			b[i] = '_'
+		}
+	}
+	return string(b)
 }
 
 // dropReason is a reason that the relay drops a packet.

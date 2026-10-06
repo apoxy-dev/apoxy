@@ -181,7 +181,7 @@ func TestPeerLanes(t *testing.T) {
 			a.rc.c = r
 			a.rc.lanes.Store(tc.ourLanes)
 			p, _ := stubPeer(a, "b", false)
-			require.NoError(t, a.admit(p, signGrant(t, cert, "b", fmt.Sprintf("fd00:b%d::/96", i)), 7, dp.Mode_MODE_PSP, tc.peerLanes))
+			require.NoError(t, a.admit(p, nil, signGrant(t, cert, "b", fmt.Sprintf("fd00:b%d::/96", i)), 7, dp.Mode_MODE_PSP, tc.peerLanes))
 			req, err := p.bp.Offer(time.Now())
 			require.NoError(t, err)
 			assert.Len(t, req.SAs, tc.wantSAs)
@@ -233,7 +233,7 @@ func TestMovedLanes(t *testing.T) {
 			a.rc.c, a.rc.st = r, st
 			a.rc.lanes.Store(tc.lanes)
 			p, _ := stubPeer(a, "b", false)
-			require.NoError(t, a.admit(p, signGrant(t, cert, "b", "fd00:b::/96"), 7, dp.Mode_MODE_PSP, 4))
+			require.NoError(t, a.admit(p, nil, signGrant(t, cert, "b", "fd00:b::/96"), 7, dp.Mode_MODE_PSP, 4))
 			require.Equal(t, int(tc.lanes)-1, p.bp.SendLane(int(tc.lanes)-1))
 
 			a.checkMoved()

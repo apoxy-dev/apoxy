@@ -133,7 +133,7 @@ func TestAddGrants(t *testing.T) {
 			if tc.mode != dp.Mode_MODE_UNSPECIFIED {
 				mode = tc.mode
 			}
-			require.NoError(t, a.admit(p, signGrant(t, cert, "b", "fd00:b::/96"), 7, mode, 1))
+			require.NoError(t, a.admit(p, nil, signGrant(t, cert, "b", "fd00:b::/96"), 7, mode, 1))
 
 			err := a.addGrants(p, tc.grants(t))
 			if tc.wantText != "" {
@@ -179,7 +179,7 @@ func TestWaitGrant(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			a := w.stubAgent(t, "a")
 			p, _ := stubPeer(a, "b", true)
-			require.NoError(t, a.admit(p, signGrant(t, cert, "b", "fd00:b::/96"), 7, dp.Mode_MODE_PSP, 1))
+			require.NoError(t, a.admit(p, nil, signGrant(t, cert, "b", "fd00:b::/96"), 7, dp.Mode_MODE_PSP, 1))
 			if tc.grant {
 				g := extraGrant(t, cert, "b", "b-2", "fd00:b2::/96", nil)
 				added := make(chan error, 1)
@@ -216,6 +216,7 @@ func TestQueueGrants(t *testing.T) {
 	}
 	cases := []struct {
 		name       string
+		noGrants   bool // The peer does not serve Grants.
 		ops        []op
 		wantAdd    []string
 		wantRemove []string
@@ -225,10 +226,11 @@ func TestQueueGrants(t *testing.T) {
 		// The peer can have x from Open.
 		{name: "add then remove", ops: []op{{add: "x"}, {remove: "x"}}, wantRemove: []string{"x"}},
 		{name: "remove then add", ops: []op{{remove: "x"}, {add: "x"}}, wantAdd: []string{"x"}},
+		{name: "peer with no Grants call", noGrants: true, ops: []op{{add: "x"}, {remove: "y"}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			p := &peer{sending: true} // No sender starts.
+			p := &peer{sending: true, noGrants: tc.noGrants} // No sender starts.
 			for _, o := range tc.ops {
 				if o.add != "" {
 					p.queueGrants(x(o.add), "")
@@ -256,7 +258,7 @@ func TestRemoveRoutesOfExtra(t *testing.T) {
 	cert := w.relayCA.relayCert(t, "relay-1")
 	a := w.stubAgent(t, "a")
 	p, qc := stubPeer(a, "b", true)
-	require.NoError(t, a.admit(p, signGrant(t, cert, "b", "fd00:b::/96"), 7, dp.Mode_MODE_PSP, 1))
+	require.NoError(t, a.admit(p, nil, signGrant(t, cert, "b", "fd00:b::/96"), 7, dp.Mode_MODE_PSP, 1))
 	require.NoError(t, a.addGrants(p, []*dp.AttachmentGrant{extraGrant(t, cert, "b", "b-2", "fd00:b2::/96", nil)}))
 
 	// Another origin that takes a prefix does not end the grant.

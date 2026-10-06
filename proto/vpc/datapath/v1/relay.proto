@@ -46,6 +46,9 @@ enum RelayCloseCode {
   RELAY_CLOSE_CODE_CERT = 1;
   // The relay stops. The agent moves to another relay.
   RELAY_CLOSE_CODE_DRAIN = 2;
+  // The agent revision is below the minimum of the relay. The reason gives
+  // the minimum. The agent stops, and its user upgrades it.
+  RELAY_CLOSE_CODE_UPGRADE = 3;
 }
 
 // SessionRequest is a message from the agent on Session.
@@ -89,6 +92,8 @@ message Hello {
   // The agent keeps this session as a spare. It attaches on it only when its
   // attached session ends.
   bool spare = 5;
+  // Revision of the agent. Not set by a build from before revisions.
+  Version version = 6;
 }
 
 // Shard joins a connection to the session of an attachment. The session
@@ -111,6 +116,8 @@ message Welcome {
   // Most ports that RegisterLanes takes. Zero means that the relay takes no
   // lane ports.
   uint32 max_lanes = 2;
+  // Revision of the relay. Not set by a build from before revisions.
+  Version version = 3;
 }
 
 // Route is a prefix in a VPC.

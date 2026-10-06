@@ -19,6 +19,7 @@ import (
 	"github.com/quic-go/quic-go"
 	"golang.org/x/time/rate"
 
+	"github.com/apoxy-dev/apoxy/build"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/peerconn"
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
@@ -106,6 +107,7 @@ const (
 type Router struct {
 	cfg    Config
 	trust  Trust
+	ver    *dp.Version // Protocol version of the relay. Nil is revision 0.
 	drops  [numDropReasons]atomic.Uint64
 	sends  sendStats
 	early  earlyList
@@ -139,6 +141,7 @@ func NewRouter(trust Trust, cfg Config) *Router {
 	return &Router{
 		cfg:      cfg,
 		trust:    trust,
+		ver:      dp.LocalVersion(build.BuildVersion),
 		permit:   SameVPC,
 		domains:  map[VPCKey]*domain{},
 		sessions: map[*Session]struct{}{},
@@ -178,6 +181,7 @@ type Session struct {
 	routes      []netip.Prefix
 	attachments []*Attachment
 	closed      bool
+	version     *dp.Version // Version of the agent, from Hello. Nil is revision 0.
 	sync        syncState
 	shardOf     *Session                     // The owner session of a shard.
 	twin        *Session                     // Older session of the agent socket. Forward also uses its rows.

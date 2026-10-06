@@ -144,6 +144,9 @@ func (srv *Server) Session(ctx context.Context, st rpc.BidiStreamServer[dp.Sessi
 	if hello == nil {
 		return rpc.Errorf(rpc.InvalidArgument, "first message is not Hello")
 	}
+	if err := srv.R.checkRevision(s, hello.GetVersion()); err != nil {
+		return err
+	}
 	if sh := hello.GetShard(); sh != nil {
 		return srv.serveShard(ctx, s, sh, st)
 	}
@@ -160,6 +163,7 @@ func (srv *Server) Session(ctx context.Context, st rpc.BidiStreamServer[dp.Sessi
 		return err
 	}
 	sessionsTotal.WithLabelValues(modeLabel(mode), reasonLabel(hello)).Inc()
+	sessionVersions.WithLabelValues(versionLabels.of(hello.GetVersion())...).Inc()
 	// The session ends with the call. The close carries the error.
 	defer func() {
 		msg := "Session call ended"
@@ -171,6 +175,7 @@ func (srv *Server) Session(ctx context.Context, st rpc.BidiStreamServer[dp.Sessi
 	if err := st.Send(&dp.SessionResponse{Msg: &dp.SessionResponse_Welcome{Welcome: &dp.Welcome{
 		ReflexiveAddress: srv.R.Addr(s).String(),
 		MaxLanes:         srv.R.maxLanes(mode),
+		Version:          srv.R.ver,
 	}}}); err != nil {
 		return err
 	}

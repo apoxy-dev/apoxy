@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"net/netip"
 	"sync"
 	"sync/atomic"
@@ -124,6 +125,9 @@ func (h *holds) fail(dst netip.Addr, err error, now time.Time) bool {
 		f.wait = notFoundWait
 	case rpc.CodeOf(err) == rpc.PermissionDenied:
 		f.wait, f.denied = deniedWait, true
+	case errors.Is(err, ErrUpgrade), errors.Is(err, errRevision):
+		// A new dial passes only after an upgrade of one of the agents.
+		f.wait = maxRetry
 	default:
 		// The wait doubles for each failure in a row, from minRetry to maxRetry.
 		f.wait = min(max(2*f.wait, minRetry), maxRetry)
@@ -199,6 +203,9 @@ func (a *Agent) openHeld(dst netip.Addr) {
 	ctx, cancel := context.WithTimeout(context.Background(), holdTime)
 	defer cancel()
 	err := a.reach(ctx, dst)
+	if errors.Is(err, ErrUpgrade) {
+		slog.Warn("Failed to reach a peer that needs a newer agent; upgrade this agent", "destination", dst, "error", err)
+	}
 	pkts, denied := a.holds.done(dst, err, time.Now())
 	if err == nil {
 		a.mu.Lock()

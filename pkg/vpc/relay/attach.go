@@ -286,6 +286,10 @@ func SignGrant(cert *tls.Certificate, claims *dp.GrantClaims) (*dp.AttachmentGra
 	return &dp.AttachmentGrant{Claims: b, Signature: sig, RelayChain: cert.Certificate}, nil
 }
 
+// ErrGrantRevision is the error of VerifyGrant for a grant that needs a newer
+// protocol revision than this build has.
+var ErrGrantRevision = errors.New("grant needs a newer protocol revision")
+
 // grantAlgorithm is the signature algorithm of SignGrant for a key type.
 var grantAlgorithm = map[x509.PublicKeyAlgorithm]x509.SignatureAlgorithm{
 	x509.Ed25519: x509.PureEd25519,
@@ -293,8 +297,8 @@ var grantAlgorithm = map[x509.PublicKeyAlgorithm]x509.SignatureAlgorithm{
 	x509.RSA:     x509.SHA256WithRSAPSS,
 }
 
-// VerifyGrant checks the relay chain, relay ID, signature and end of g, and
-// returns its claims. The caller checks the VPC and the subject.
+// VerifyGrant checks the relay chain, relay ID, signature, minimum revision and
+// end of g, and returns its claims. The caller checks the VPC and the subject.
 func VerifyGrant(g *dp.AttachmentGrant, roots *x509.CertPool, now time.Time) (*dp.GrantClaims, error) {
 	chain := g.GetRelayChain()
 	if len(chain) == 0 {
@@ -329,6 +333,10 @@ func VerifyGrant(g *dp.AttachmentGrant, roots *x509.CertPool, now time.Time) (*d
 	}
 	if err := leaf.VerifyHostname(c.GetRelayId()); err != nil {
 		return nil, fmt.Errorf("grant relay cert does not name relay %q", c.GetRelayId())
+	}
+	// A build of a lower revision does not know all claims that limit the grant.
+	if need := c.GetMinRevision(); need > dp.Revision {
+		return nil, fmt.Errorf("%w: the grant needs revision %d, and the verifier has revision %d", ErrGrantRevision, need, dp.Revision)
 	}
 	if !now.Before(c.GetNotAfter().AsTime()) {
 		return nil, errors.New("grant has ended")

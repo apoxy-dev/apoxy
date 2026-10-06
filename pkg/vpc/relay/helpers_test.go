@@ -287,11 +287,15 @@ func relayChain(t *testing.T, key crypto.Signer) (*tls.Certificate, *x509.CertPo
 	return &tls.Certificate{Certificate: [][]byte{der, ider}, PrivateKey: key}, root.pool()
 }
 
-func newHarness(t *testing.T, ca *testCA) *harness {
+// newHarness starts a relay. The options change its router before it serves.
+func newHarness(t *testing.T, ca *testCA, opts ...func(*Router)) *harness {
 	t.Helper()
 	cert, roots := relayCert(t, "relay-1", newKey(t))
 	trust := &fakeTrust{ca: ca}
 	r := NewRouter(trust, Config{})
+	for _, opt := range opts {
+		opt(r)
+	}
 	udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	require.NoError(t, err)
 	tr := &quic.Transport{Conn: udp}

@@ -195,6 +195,73 @@ func (x *RelayRef) GetAddresses() []string {
 	return nil
 }
 
+// Version is the protocol revision of the sender. The first message of a
+// session and its answer carry it. README.md has the revision table.
+type Version struct {
+	state         protoimpl.MessageState
+	sizeCache     protoimpl.SizeCache
+	unknownFields protoimpl.UnknownFields
+
+	// The sender obeys the duties of its role for all revisions up to this
+	// one. Zero means a build from before revisions.
+	Revision uint32 `protobuf:"varint,1,opt,name=revision,proto3" json:"revision,omitempty"`
+	// Oldest revision of the other side that the sender works with.
+	MinRevision uint32 `protobuf:"varint,2,opt,name=min_revision,json=minRevision,proto3" json:"min_revision,omitempty"`
+	// Build of the sender. Only logs and metrics use it.
+	Build string `protobuf:"bytes,3,opt,name=build,proto3" json:"build,omitempty"`
+}
+
+func (x *Version) Reset() {
+	*x = Version{}
+	mi := &file_proto_vpc_datapath_v1_types_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Version) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Version) ProtoMessage() {}
+
+func (x *Version) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_vpc_datapath_v1_types_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Version.ProtoReflect.Descriptor instead.
+func (*Version) Descriptor() ([]byte, []int) {
+	return file_proto_vpc_datapath_v1_types_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *Version) GetRevision() uint32 {
+	if x != nil {
+		return x.Revision
+	}
+	return 0
+}
+
+func (x *Version) GetMinRevision() uint32 {
+	if x != nil {
+		return x.MinRevision
+	}
+	return 0
+}
+
+func (x *Version) GetBuild() string {
+	if x != nil {
+		return x.Build
+	}
+	return ""
+}
+
 // SA is a receive SA that a receiver gives to one sender.
 type SA struct {
 	state         protoimpl.MessageState
@@ -215,7 +282,7 @@ type SA struct {
 
 func (x *SA) Reset() {
 	*x = SA{}
-	mi := &file_proto_vpc_datapath_v1_types_proto_msgTypes[2]
+	mi := &file_proto_vpc_datapath_v1_types_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -227,7 +294,7 @@ func (x *SA) String() string {
 func (*SA) ProtoMessage() {}
 
 func (x *SA) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_vpc_datapath_v1_types_proto_msgTypes[2]
+	mi := &file_proto_vpc_datapath_v1_types_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -240,7 +307,7 @@ func (x *SA) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SA.ProtoReflect.Descriptor instead.
 func (*SA) Descriptor() ([]byte, []int) {
-	return file_proto_vpc_datapath_v1_types_proto_rawDescGZIP(), []int{2}
+	return file_proto_vpc_datapath_v1_types_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *SA) GetSpi() uint32 {
@@ -289,7 +356,7 @@ type OfferSAs struct {
 
 func (x *OfferSAs) Reset() {
 	*x = OfferSAs{}
-	mi := &file_proto_vpc_datapath_v1_types_proto_msgTypes[3]
+	mi := &file_proto_vpc_datapath_v1_types_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -301,7 +368,7 @@ func (x *OfferSAs) String() string {
 func (*OfferSAs) ProtoMessage() {}
 
 func (x *OfferSAs) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_vpc_datapath_v1_types_proto_msgTypes[3]
+	mi := &file_proto_vpc_datapath_v1_types_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -314,7 +381,7 @@ func (x *OfferSAs) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OfferSAs.ProtoReflect.Descriptor instead.
 func (*OfferSAs) Descriptor() ([]byte, []int) {
-	return file_proto_vpc_datapath_v1_types_proto_rawDescGZIP(), []int{3}
+	return file_proto_vpc_datapath_v1_types_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *OfferSAs) GetSas() []*SA {
@@ -336,7 +403,7 @@ type RekeySA struct {
 
 func (x *RekeySA) Reset() {
 	*x = RekeySA{}
-	mi := &file_proto_vpc_datapath_v1_types_proto_msgTypes[4]
+	mi := &file_proto_vpc_datapath_v1_types_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -348,7 +415,7 @@ func (x *RekeySA) String() string {
 func (*RekeySA) ProtoMessage() {}
 
 func (x *RekeySA) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_vpc_datapath_v1_types_proto_msgTypes[4]
+	mi := &file_proto_vpc_datapath_v1_types_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -361,7 +428,7 @@ func (x *RekeySA) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RekeySA.ProtoReflect.Descriptor instead.
 func (*RekeySA) Descriptor() ([]byte, []int) {
-	return file_proto_vpc_datapath_v1_types_proto_rawDescGZIP(), []int{4}
+	return file_proto_vpc_datapath_v1_types_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *RekeySA) GetSas() []*SA {
@@ -382,7 +449,7 @@ type RevokeSA struct {
 
 func (x *RevokeSA) Reset() {
 	*x = RevokeSA{}
-	mi := &file_proto_vpc_datapath_v1_types_proto_msgTypes[5]
+	mi := &file_proto_vpc_datapath_v1_types_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -394,7 +461,7 @@ func (x *RevokeSA) String() string {
 func (*RevokeSA) ProtoMessage() {}
 
 func (x *RevokeSA) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_vpc_datapath_v1_types_proto_msgTypes[5]
+	mi := &file_proto_vpc_datapath_v1_types_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -407,7 +474,7 @@ func (x *RevokeSA) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RevokeSA.ProtoReflect.Descriptor instead.
 func (*RevokeSA) Descriptor() ([]byte, []int) {
-	return file_proto_vpc_datapath_v1_types_proto_rawDescGZIP(), []int{5}
+	return file_proto_vpc_datapath_v1_types_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *RevokeSA) GetSpis() []uint32 {
@@ -433,7 +500,7 @@ type KeysRequest struct {
 
 func (x *KeysRequest) Reset() {
 	*x = KeysRequest{}
-	mi := &file_proto_vpc_datapath_v1_types_proto_msgTypes[6]
+	mi := &file_proto_vpc_datapath_v1_types_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -445,7 +512,7 @@ func (x *KeysRequest) String() string {
 func (*KeysRequest) ProtoMessage() {}
 
 func (x *KeysRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_vpc_datapath_v1_types_proto_msgTypes[6]
+	mi := &file_proto_vpc_datapath_v1_types_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -458,7 +525,7 @@ func (x *KeysRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use KeysRequest.ProtoReflect.Descriptor instead.
 func (*KeysRequest) Descriptor() ([]byte, []int) {
-	return file_proto_vpc_datapath_v1_types_proto_rawDescGZIP(), []int{6}
+	return file_proto_vpc_datapath_v1_types_proto_rawDescGZIP(), []int{7}
 }
 
 func (m *KeysRequest) GetOp() isKeysRequest_Op {
@@ -524,7 +591,7 @@ type KeysResponse struct {
 
 func (x *KeysResponse) Reset() {
 	*x = KeysResponse{}
-	mi := &file_proto_vpc_datapath_v1_types_proto_msgTypes[7]
+	mi := &file_proto_vpc_datapath_v1_types_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -536,7 +603,7 @@ func (x *KeysResponse) String() string {
 func (*KeysResponse) ProtoMessage() {}
 
 func (x *KeysResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_vpc_datapath_v1_types_proto_msgTypes[7]
+	mi := &file_proto_vpc_datapath_v1_types_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -549,7 +616,7 @@ func (x *KeysResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use KeysResponse.ProtoReflect.Descriptor instead.
 func (*KeysResponse) Descriptor() ([]byte, []int) {
-	return file_proto_vpc_datapath_v1_types_proto_rawDescGZIP(), []int{7}
+	return file_proto_vpc_datapath_v1_types_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *KeysResponse) GetRefusedSpis() []uint32 {
@@ -574,7 +641,7 @@ type SAStats struct {
 
 func (x *SAStats) Reset() {
 	*x = SAStats{}
-	mi := &file_proto_vpc_datapath_v1_types_proto_msgTypes[8]
+	mi := &file_proto_vpc_datapath_v1_types_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -586,7 +653,7 @@ func (x *SAStats) String() string {
 func (*SAStats) ProtoMessage() {}
 
 func (x *SAStats) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_vpc_datapath_v1_types_proto_msgTypes[8]
+	mi := &file_proto_vpc_datapath_v1_types_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -599,7 +666,7 @@ func (x *SAStats) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SAStats.ProtoReflect.Descriptor instead.
 func (*SAStats) Descriptor() ([]byte, []int) {
-	return file_proto_vpc_datapath_v1_types_proto_rawDescGZIP(), []int{8}
+	return file_proto_vpc_datapath_v1_types_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *SAStats) GetSpi() uint32 {
@@ -635,7 +702,7 @@ type RxReport struct {
 
 func (x *RxReport) Reset() {
 	*x = RxReport{}
-	mi := &file_proto_vpc_datapath_v1_types_proto_msgTypes[9]
+	mi := &file_proto_vpc_datapath_v1_types_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -647,7 +714,7 @@ func (x *RxReport) String() string {
 func (*RxReport) ProtoMessage() {}
 
 func (x *RxReport) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_vpc_datapath_v1_types_proto_msgTypes[9]
+	mi := &file_proto_vpc_datapath_v1_types_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -660,7 +727,7 @@ func (x *RxReport) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RxReport.ProtoReflect.Descriptor instead.
 func (*RxReport) Descriptor() ([]byte, []int) {
-	return file_proto_vpc_datapath_v1_types_proto_rawDescGZIP(), []int{9}
+	return file_proto_vpc_datapath_v1_types_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *RxReport) GetSas() []*SAStats {
@@ -688,7 +755,7 @@ type AttachmentGrant struct {
 
 func (x *AttachmentGrant) Reset() {
 	*x = AttachmentGrant{}
-	mi := &file_proto_vpc_datapath_v1_types_proto_msgTypes[10]
+	mi := &file_proto_vpc_datapath_v1_types_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -700,7 +767,7 @@ func (x *AttachmentGrant) String() string {
 func (*AttachmentGrant) ProtoMessage() {}
 
 func (x *AttachmentGrant) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_vpc_datapath_v1_types_proto_msgTypes[10]
+	mi := &file_proto_vpc_datapath_v1_types_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -713,7 +780,7 @@ func (x *AttachmentGrant) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AttachmentGrant.ProtoReflect.Descriptor instead.
 func (*AttachmentGrant) Descriptor() ([]byte, []int) {
-	return file_proto_vpc_datapath_v1_types_proto_rawDescGZIP(), []int{10}
+	return file_proto_vpc_datapath_v1_types_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *AttachmentGrant) GetClaims() []byte {
@@ -752,11 +819,14 @@ type GrantClaims struct {
 	// Relay that signed the grant.
 	RelayId  string                 `protobuf:"bytes,5,opt,name=relay_id,json=relayId,proto3" json:"relay_id,omitempty"`
 	NotAfter *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=not_after,json=notAfter,proto3" json:"not_after,omitempty"`
+	// Oldest revision that can check the grant. A verifier with a lower
+	// revision refuses the grant.
+	MinRevision uint32 `protobuf:"varint,7,opt,name=min_revision,json=minRevision,proto3" json:"min_revision,omitempty"`
 }
 
 func (x *GrantClaims) Reset() {
 	*x = GrantClaims{}
-	mi := &file_proto_vpc_datapath_v1_types_proto_msgTypes[11]
+	mi := &file_proto_vpc_datapath_v1_types_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -768,7 +838,7 @@ func (x *GrantClaims) String() string {
 func (*GrantClaims) ProtoMessage() {}
 
 func (x *GrantClaims) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_vpc_datapath_v1_types_proto_msgTypes[11]
+	mi := &file_proto_vpc_datapath_v1_types_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -781,7 +851,7 @@ func (x *GrantClaims) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GrantClaims.ProtoReflect.Descriptor instead.
 func (*GrantClaims) Descriptor() ([]byte, []int) {
-	return file_proto_vpc_datapath_v1_types_proto_rawDescGZIP(), []int{11}
+	return file_proto_vpc_datapath_v1_types_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *GrantClaims) GetVpc() *VPCRef {
@@ -826,6 +896,13 @@ func (x *GrantClaims) GetNotAfter() *timestamppb.Timestamp {
 	return nil
 }
 
+func (x *GrantClaims) GetMinRevision() uint32 {
+	if x != nil {
+		return x.MinRevision
+	}
+	return 0
+}
+
 var File_proto_vpc_datapath_v1_types_proto protoreflect.FileDescriptor
 
 var file_proto_vpc_datapath_v1_types_proto_rawDesc = []byte{
@@ -846,7 +923,13 @@ var file_proto_vpc_datapath_v1_types_proto_rawDesc = []byte{
 	0x52, 0x65, 0x6c, 0x61, 0x79, 0x52, 0x65, 0x66, 0x12, 0x0e, 0x0a, 0x02, 0x69, 0x64, 0x18, 0x01,
 	0x20, 0x01, 0x28, 0x09, 0x52, 0x02, 0x69, 0x64, 0x12, 0x1c, 0x0a, 0x09, 0x61, 0x64, 0x64, 0x72,
 	0x65, 0x73, 0x73, 0x65, 0x73, 0x18, 0x02, 0x20, 0x03, 0x28, 0x09, 0x52, 0x09, 0x61, 0x64, 0x64,
-	0x72, 0x65, 0x73, 0x73, 0x65, 0x73, 0x22, 0x88, 0x01, 0x0a, 0x02, 0x53, 0x41, 0x12, 0x10, 0x0a,
+	0x72, 0x65, 0x73, 0x73, 0x65, 0x73, 0x22, 0x5e, 0x0a, 0x07, 0x56, 0x65, 0x72, 0x73, 0x69, 0x6f,
+	0x6e, 0x12, 0x1a, 0x0a, 0x08, 0x72, 0x65, 0x76, 0x69, 0x73, 0x69, 0x6f, 0x6e, 0x18, 0x01, 0x20,
+	0x01, 0x28, 0x0d, 0x52, 0x08, 0x72, 0x65, 0x76, 0x69, 0x73, 0x69, 0x6f, 0x6e, 0x12, 0x21, 0x0a,
+	0x0c, 0x6d, 0x69, 0x6e, 0x5f, 0x72, 0x65, 0x76, 0x69, 0x73, 0x69, 0x6f, 0x6e, 0x18, 0x02, 0x20,
+	0x01, 0x28, 0x0d, 0x52, 0x0b, 0x6d, 0x69, 0x6e, 0x52, 0x65, 0x76, 0x69, 0x73, 0x69, 0x6f, 0x6e,
+	0x12, 0x14, 0x0a, 0x05, 0x62, 0x75, 0x69, 0x6c, 0x64, 0x18, 0x03, 0x20, 0x01, 0x28, 0x09, 0x52,
+	0x05, 0x62, 0x75, 0x69, 0x6c, 0x64, 0x22, 0x88, 0x01, 0x0a, 0x02, 0x53, 0x41, 0x12, 0x10, 0x0a,
 	0x03, 0x73, 0x70, 0x69, 0x18, 0x01, 0x20, 0x01, 0x28, 0x0d, 0x52, 0x03, 0x73, 0x70, 0x69, 0x12,
 	0x10, 0x0a, 0x03, 0x6b, 0x65, 0x79, 0x18, 0x02, 0x20, 0x01, 0x28, 0x0c, 0x52, 0x03, 0x6b, 0x65,
 	0x79, 0x12, 0x10, 0x0a, 0x03, 0x76, 0x6e, 0x69, 0x18, 0x03, 0x20, 0x01, 0x28, 0x0d, 0x52, 0x03,
@@ -894,7 +977,7 @@ var file_proto_vpc_datapath_v1_types_proto_rawDesc = []byte{
 	0x6e, 0x61, 0x74, 0x75, 0x72, 0x65, 0x18, 0x02, 0x20, 0x01, 0x28, 0x0c, 0x52, 0x09, 0x73, 0x69,
 	0x67, 0x6e, 0x61, 0x74, 0x75, 0x72, 0x65, 0x12, 0x1f, 0x0a, 0x0b, 0x72, 0x65, 0x6c, 0x61, 0x79,
 	0x5f, 0x63, 0x68, 0x61, 0x69, 0x6e, 0x18, 0x03, 0x20, 0x03, 0x28, 0x0c, 0x52, 0x0a, 0x72, 0x65,
-	0x6c, 0x61, 0x79, 0x43, 0x68, 0x61, 0x69, 0x6e, 0x22, 0xef, 0x01, 0x0a, 0x0b, 0x47, 0x72, 0x61,
+	0x6c, 0x61, 0x79, 0x43, 0x68, 0x61, 0x69, 0x6e, 0x22, 0x92, 0x02, 0x0a, 0x0b, 0x47, 0x72, 0x61,
 	0x6e, 0x74, 0x43, 0x6c, 0x61, 0x69, 0x6d, 0x73, 0x12, 0x2f, 0x0a, 0x03, 0x76, 0x70, 0x63, 0x18,
 	0x01, 0x20, 0x01, 0x28, 0x0b, 0x32, 0x1d, 0x2e, 0x61, 0x70, 0x6f, 0x78, 0x79, 0x2e, 0x76, 0x70,
 	0x63, 0x2e, 0x64, 0x61, 0x74, 0x61, 0x70, 0x61, 0x74, 0x68, 0x2e, 0x76, 0x31, 0x2e, 0x56, 0x50,
@@ -909,15 +992,17 @@ var file_proto_vpc_datapath_v1_types_proto_rawDesc = []byte{
 	0x64, 0x12, 0x37, 0x0a, 0x09, 0x6e, 0x6f, 0x74, 0x5f, 0x61, 0x66, 0x74, 0x65, 0x72, 0x18, 0x06,
 	0x20, 0x01, 0x28, 0x0b, 0x32, 0x1a, 0x2e, 0x67, 0x6f, 0x6f, 0x67, 0x6c, 0x65, 0x2e, 0x70, 0x72,
 	0x6f, 0x74, 0x6f, 0x62, 0x75, 0x66, 0x2e, 0x54, 0x69, 0x6d, 0x65, 0x73, 0x74, 0x61, 0x6d, 0x70,
-	0x52, 0x08, 0x6e, 0x6f, 0x74, 0x41, 0x66, 0x74, 0x65, 0x72, 0x2a, 0x39, 0x0a, 0x04, 0x4d, 0x6f,
-	0x64, 0x65, 0x12, 0x14, 0x0a, 0x10, 0x4d, 0x4f, 0x44, 0x45, 0x5f, 0x55, 0x4e, 0x53, 0x50, 0x45,
-	0x43, 0x49, 0x46, 0x49, 0x45, 0x44, 0x10, 0x00, 0x12, 0x0d, 0x0a, 0x09, 0x4d, 0x4f, 0x44, 0x45,
-	0x5f, 0x51, 0x55, 0x49, 0x43, 0x10, 0x01, 0x12, 0x0c, 0x0a, 0x08, 0x4d, 0x4f, 0x44, 0x45, 0x5f,
-	0x50, 0x53, 0x50, 0x10, 0x02, 0x42, 0x3d, 0x5a, 0x3b, 0x67, 0x69, 0x74, 0x68, 0x75, 0x62, 0x2e,
-	0x63, 0x6f, 0x6d, 0x2f, 0x61, 0x70, 0x6f, 0x78, 0x79, 0x2d, 0x64, 0x65, 0x76, 0x2f, 0x61, 0x70,
-	0x6f, 0x78, 0x79, 0x2f, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x2f, 0x76, 0x70, 0x63, 0x2f, 0x64, 0x61,
-	0x74, 0x61, 0x70, 0x61, 0x74, 0x68, 0x2f, 0x76, 0x31, 0x3b, 0x64, 0x61, 0x74, 0x61, 0x70, 0x61,
-	0x74, 0x68, 0x76, 0x31, 0x62, 0x06, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x33,
+	0x52, 0x08, 0x6e, 0x6f, 0x74, 0x41, 0x66, 0x74, 0x65, 0x72, 0x12, 0x21, 0x0a, 0x0c, 0x6d, 0x69,
+	0x6e, 0x5f, 0x72, 0x65, 0x76, 0x69, 0x73, 0x69, 0x6f, 0x6e, 0x18, 0x07, 0x20, 0x01, 0x28, 0x0d,
+	0x52, 0x0b, 0x6d, 0x69, 0x6e, 0x52, 0x65, 0x76, 0x69, 0x73, 0x69, 0x6f, 0x6e, 0x2a, 0x39, 0x0a,
+	0x04, 0x4d, 0x6f, 0x64, 0x65, 0x12, 0x14, 0x0a, 0x10, 0x4d, 0x4f, 0x44, 0x45, 0x5f, 0x55, 0x4e,
+	0x53, 0x50, 0x45, 0x43, 0x49, 0x46, 0x49, 0x45, 0x44, 0x10, 0x00, 0x12, 0x0d, 0x0a, 0x09, 0x4d,
+	0x4f, 0x44, 0x45, 0x5f, 0x51, 0x55, 0x49, 0x43, 0x10, 0x01, 0x12, 0x0c, 0x0a, 0x08, 0x4d, 0x4f,
+	0x44, 0x45, 0x5f, 0x50, 0x53, 0x50, 0x10, 0x02, 0x42, 0x3d, 0x5a, 0x3b, 0x67, 0x69, 0x74, 0x68,
+	0x75, 0x62, 0x2e, 0x63, 0x6f, 0x6d, 0x2f, 0x61, 0x70, 0x6f, 0x78, 0x79, 0x2d, 0x64, 0x65, 0x76,
+	0x2f, 0x61, 0x70, 0x6f, 0x78, 0x79, 0x2f, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x2f, 0x76, 0x70, 0x63,
+	0x2f, 0x64, 0x61, 0x74, 0x61, 0x70, 0x61, 0x74, 0x68, 0x2f, 0x76, 0x31, 0x3b, 0x64, 0x61, 0x74,
+	0x61, 0x70, 0x61, 0x74, 0x68, 0x76, 0x31, 0x62, 0x06, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x33,
 }
 
 var (
@@ -933,34 +1018,35 @@ func file_proto_vpc_datapath_v1_types_proto_rawDescGZIP() []byte {
 }
 
 var file_proto_vpc_datapath_v1_types_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_proto_vpc_datapath_v1_types_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
+var file_proto_vpc_datapath_v1_types_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
 var file_proto_vpc_datapath_v1_types_proto_goTypes = []any{
 	(Mode)(0),                     // 0: apoxy.vpc.datapath.v1.Mode
 	(*VPCRef)(nil),                // 1: apoxy.vpc.datapath.v1.VPCRef
 	(*RelayRef)(nil),              // 2: apoxy.vpc.datapath.v1.RelayRef
-	(*SA)(nil),                    // 3: apoxy.vpc.datapath.v1.SA
-	(*OfferSAs)(nil),              // 4: apoxy.vpc.datapath.v1.OfferSAs
-	(*RekeySA)(nil),               // 5: apoxy.vpc.datapath.v1.RekeySA
-	(*RevokeSA)(nil),              // 6: apoxy.vpc.datapath.v1.RevokeSA
-	(*KeysRequest)(nil),           // 7: apoxy.vpc.datapath.v1.KeysRequest
-	(*KeysResponse)(nil),          // 8: apoxy.vpc.datapath.v1.KeysResponse
-	(*SAStats)(nil),               // 9: apoxy.vpc.datapath.v1.SAStats
-	(*RxReport)(nil),              // 10: apoxy.vpc.datapath.v1.RxReport
-	(*AttachmentGrant)(nil),       // 11: apoxy.vpc.datapath.v1.AttachmentGrant
-	(*GrantClaims)(nil),           // 12: apoxy.vpc.datapath.v1.GrantClaims
-	(*durationpb.Duration)(nil),   // 13: google.protobuf.Duration
-	(*timestamppb.Timestamp)(nil), // 14: google.protobuf.Timestamp
+	(*Version)(nil),               // 3: apoxy.vpc.datapath.v1.Version
+	(*SA)(nil),                    // 4: apoxy.vpc.datapath.v1.SA
+	(*OfferSAs)(nil),              // 5: apoxy.vpc.datapath.v1.OfferSAs
+	(*RekeySA)(nil),               // 6: apoxy.vpc.datapath.v1.RekeySA
+	(*RevokeSA)(nil),              // 7: apoxy.vpc.datapath.v1.RevokeSA
+	(*KeysRequest)(nil),           // 8: apoxy.vpc.datapath.v1.KeysRequest
+	(*KeysResponse)(nil),          // 9: apoxy.vpc.datapath.v1.KeysResponse
+	(*SAStats)(nil),               // 10: apoxy.vpc.datapath.v1.SAStats
+	(*RxReport)(nil),              // 11: apoxy.vpc.datapath.v1.RxReport
+	(*AttachmentGrant)(nil),       // 12: apoxy.vpc.datapath.v1.AttachmentGrant
+	(*GrantClaims)(nil),           // 13: apoxy.vpc.datapath.v1.GrantClaims
+	(*durationpb.Duration)(nil),   // 14: google.protobuf.Duration
+	(*timestamppb.Timestamp)(nil), // 15: google.protobuf.Timestamp
 }
 var file_proto_vpc_datapath_v1_types_proto_depIdxs = []int32{
-	13, // 0: apoxy.vpc.datapath.v1.SA.expires_in:type_name -> google.protobuf.Duration
-	3,  // 1: apoxy.vpc.datapath.v1.OfferSAs.sas:type_name -> apoxy.vpc.datapath.v1.SA
-	3,  // 2: apoxy.vpc.datapath.v1.RekeySA.sas:type_name -> apoxy.vpc.datapath.v1.SA
-	4,  // 3: apoxy.vpc.datapath.v1.KeysRequest.offer:type_name -> apoxy.vpc.datapath.v1.OfferSAs
-	5,  // 4: apoxy.vpc.datapath.v1.KeysRequest.rekey:type_name -> apoxy.vpc.datapath.v1.RekeySA
-	6,  // 5: apoxy.vpc.datapath.v1.KeysRequest.revoke:type_name -> apoxy.vpc.datapath.v1.RevokeSA
-	9,  // 6: apoxy.vpc.datapath.v1.RxReport.sas:type_name -> apoxy.vpc.datapath.v1.SAStats
+	14, // 0: apoxy.vpc.datapath.v1.SA.expires_in:type_name -> google.protobuf.Duration
+	4,  // 1: apoxy.vpc.datapath.v1.OfferSAs.sas:type_name -> apoxy.vpc.datapath.v1.SA
+	4,  // 2: apoxy.vpc.datapath.v1.RekeySA.sas:type_name -> apoxy.vpc.datapath.v1.SA
+	5,  // 3: apoxy.vpc.datapath.v1.KeysRequest.offer:type_name -> apoxy.vpc.datapath.v1.OfferSAs
+	6,  // 4: apoxy.vpc.datapath.v1.KeysRequest.rekey:type_name -> apoxy.vpc.datapath.v1.RekeySA
+	7,  // 5: apoxy.vpc.datapath.v1.KeysRequest.revoke:type_name -> apoxy.vpc.datapath.v1.RevokeSA
+	10, // 6: apoxy.vpc.datapath.v1.RxReport.sas:type_name -> apoxy.vpc.datapath.v1.SAStats
 	1,  // 7: apoxy.vpc.datapath.v1.GrantClaims.vpc:type_name -> apoxy.vpc.datapath.v1.VPCRef
-	14, // 8: apoxy.vpc.datapath.v1.GrantClaims.not_after:type_name -> google.protobuf.Timestamp
+	15, // 8: apoxy.vpc.datapath.v1.GrantClaims.not_after:type_name -> google.protobuf.Timestamp
 	9,  // [9:9] is the sub-list for method output_type
 	9,  // [9:9] is the sub-list for method input_type
 	9,  // [9:9] is the sub-list for extension type_name
@@ -973,7 +1059,7 @@ func file_proto_vpc_datapath_v1_types_proto_init() {
 	if File_proto_vpc_datapath_v1_types_proto != nil {
 		return
 	}
-	file_proto_vpc_datapath_v1_types_proto_msgTypes[6].OneofWrappers = []any{
+	file_proto_vpc_datapath_v1_types_proto_msgTypes[7].OneofWrappers = []any{
 		(*KeysRequest_Offer)(nil),
 		(*KeysRequest_Rekey)(nil),
 		(*KeysRequest_Revoke)(nil),
@@ -984,7 +1070,7 @@ func file_proto_vpc_datapath_v1_types_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: file_proto_vpc_datapath_v1_types_proto_rawDesc,
 			NumEnums:      1,
-			NumMessages:   12,
+			NumMessages:   13,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

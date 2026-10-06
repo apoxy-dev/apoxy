@@ -21,6 +21,7 @@ import (
 
 	"github.com/quic-go/quic-go"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/types/known/emptypb"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
 	"gvisor.dev/gvisor/pkg/tcpip/link/channel"
@@ -34,8 +35,10 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/vpc/identity"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/p2p"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/psp"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/vpctest"
+	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
 const (
@@ -137,6 +140,9 @@ type world struct {
 	mtu              uint32 // VPC MTU of the relays.
 	dns, search      []string
 	relayCfg         relay.Config // Meters of the relays.
+	// refuse gives the close reason of each relay that refuses all agents as
+	// too old, by the relay ID. Such a relay opens no session.
+	refuse map[string]string
 }
 
 // rotateAgentCA makes a new agent CA for enrolls and relays.
@@ -169,6 +175,18 @@ type testRelay struct {
 	// stopAccept stops the Accept calls, as a relay host in its lame duck. The
 	// listener still completes handshakes, and no session serves them.
 	stopAccept func()
+	refused    atomic.Int32 // Connections that the relay refused as too old.
+}
+
+// refuse closes qc with UPGRADE and reason, as a relay that needs a newer
+// agent. It waits for the first stream, so that the Session call is open.
+func (r *testRelay) refuse(ctx context.Context, qc quic.Connection, reason string) {
+	if _, err := qc.AcceptStream(ctx); err != nil {
+		_ = qc.CloseWithError(0, "")
+		return
+	}
+	r.refused.Add(1)
+	_ = qc.CloseWithError(quic.ApplicationErrorCode(dp.RelayCloseCode_RELAY_CLOSE_CODE_UPGRADE), reason)
 }
 
 func (r *testRelay) ref() identity.Relay {
@@ -219,12 +237,18 @@ func (w *world) relayOn(t testing.TB, id string, udp net.PacketConn) *testRelay 
 	// As Serve, but stopAccept ends only the Accept calls. The end of the ctx
 	// of Serve also closes the sessions.
 	actx, stopAccept := context.WithCancel(ctx)
+	out := &testRelay{id: id, srv: srv, r: r, addr: udp.LocalAddr().String(), stopAccept: stopAccept}
+	reason, refuse := w.refuse[id]
 	var wg sync.WaitGroup
 	wg.Go(func() {
 		for {
 			qc, err := ln.Accept(actx)
 			if err != nil {
 				return
+			}
+			if refuse {
+				wg.Go(func() { out.refuse(ctx, qc, reason) })
+				continue
 			}
 			wg.Go(func() { srv.ServeConn(ctx, qc) })
 		}
@@ -236,7 +260,7 @@ func (w *world) relayOn(t testing.TB, id string, udp net.PacketConn) *testRelay 
 		_ = tr.Close()
 		_ = udp.Close()
 	})
-	return &testRelay{id: id, srv: srv, r: r, addr: udp.LocalAddr().String(), stopAccept: stopAccept}
+	return out
 }
 
 // attachEvent is one OnAttach call.
@@ -288,6 +312,24 @@ type agentOptions struct {
 	// vpcStack makes the netstack with pkg/netstack.NewStack and its VPC
 	// options, as vpc connect does. It always has TCP.
 	vpcStack bool
+
+	// version gives the protocol version of the agent. Nil means the version
+	// of this build. A nil result is an agent from before revisions.
+	version func() *dp.Version
+	// runErr gets the result of Run. Nil means that an error of Run fails the test.
+	runErr chan error
+	// noGrants removes the Grants call from the peer service, as in a build
+	// from before that call.
+	noGrants bool
+}
+
+// noGrantsService is a peer service that does not have the Grants call.
+type noGrantsService struct {
+	dp.PeerServer
+}
+
+func (noGrantsService) Grants(ctx context.Context, in *dp.GrantsRequest) (*emptypb.Empty, error) {
+	return dp.UnimplementedPeerServer{}.Grants(ctx, in)
 }
 
 // lossyConn drops the sent packets that are larger than a max that is not zero.
@@ -406,11 +448,21 @@ func (w *world) agent(t *testing.T, name string, r *testRelay, opts agentOptions
 		cfg.RelayRoots = nil
 	}
 	ta.a = New(cfg)
+	if opts.version != nil {
+		ta.a.ver = opts.version()
+	}
+	if opts.noGrants {
+		ta.a.mux = rpc.NewMux()
+		dp.RegisterPeerServer(ta.a.mux, noGrantsService{&peerService{a: ta.a}})
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	ta.cancel = cancel
 	go func() {
 		defer close(ta.done)
-		if err := ta.a.Run(ctx); err != nil {
+		err := ta.a.Run(ctx)
+		if opts.runErr != nil {
+			opts.runErr <- err
+		} else if err != nil {
 			t.Errorf("agent %s: %v", name, err)
 		}
 	}()
