@@ -27,7 +27,9 @@ import (
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 	"k8s.io/apiserver/pkg/authentication/request/union"
 	"k8s.io/apiserver/pkg/authentication/user"
+	"k8s.io/apiserver/pkg/authorization/authorizer"
 	"k8s.io/apiserver/pkg/authorization/authorizerfactory"
+	authzunion "k8s.io/apiserver/pkg/authorization/union"
 	apiserver "k8s.io/apiserver/pkg/server"
 	"k8s.io/apiserver/pkg/server/dynamiccertificates"
 	apiserveropts "k8s.io/apiserver/pkg/server/options"
@@ -231,6 +233,7 @@ type options struct {
 	clientConfig            *rest.Config
 	enableSimpleAuth        bool
 	authenticator           authenticator.Request
+	authorizer              authorizer.Authorizer
 	enableInClusterAuth     bool
 	sqlitePath              string
 	sqliteConnArgs          map[string]string
@@ -406,6 +409,24 @@ func WithAuthenticator(a authenticator.Request) Option {
 	return func(o *options) {
 		o.authenticator = a
 	}
+}
+
+// WithAuthorizer puts a in front of the allow-all authorizer of simple auth.
+// A Deny from a is final. NoOpinion allows the request.
+func WithAuthorizer(a authorizer.Authorizer) Option {
+	return func(o *options) {
+		o.authorizer = a
+	}
+}
+
+// simpleAuthAuthorizer returns the authorizer of simple auth: a, if set, then
+// allow-all.
+func simpleAuthAuthorizer(a authorizer.Authorizer) authorizer.Authorizer {
+	allowAll := authorizerfactory.NewAlwaysAllowAuthorizer()
+	if a == nil {
+		return allowAll
+	}
+	return authzunion.New(a, allowAll)
 }
 
 // WithInClusterAuth enables in-cluster authentication.
@@ -1255,14 +1276,15 @@ func start(
 			if opts.enableSimpleAuth {
 				// For simple auth, we use a header authenticator and an always
 				// allow authorizer — except reads of secret values, which are
-				// restricted per opts.secretValuesAuthz.
+				// restricted per opts.secretValuesAuthz, and requests that
+				// opts.authorizer denies.
 				authn := opts.authenticator
 				if authn == nil {
 					authn = auth.NewHeaderAuthenticator()
 				}
 				c.Authentication.Authenticator = authn
 				c.Authorization.Authorizer = secretstore.NewValuesReadAuthorizer(
-					authorizerfactory.NewAlwaysAllowAuthorizer(), opts.secretValuesAuthz)
+					simpleAuthAuthorizer(opts.authorizer), opts.secretValuesAuthz)
 			} else if opts.enableInClusterAuth {
 				// For in-cluster auth, we use the default delegating (to the kube-apiserver)
 				// authenticator and authorizer.
