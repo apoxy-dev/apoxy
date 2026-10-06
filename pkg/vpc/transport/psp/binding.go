@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 // Package psp is the agent data path: SoftPSP packets, or QUIC data frames on the relay
-// session. PSP (0x04, 0x29), path probes (0x02) and QUIC (bit 0x40) share the agent
+// session. PSP (0x04, 0x29), path probes (0x02) and QUIC (0x40 and up) share the agent
 // socket. Lane sockets send PSP packets and lane keepalives (0x03), and read PSP packets.
 package psp
 

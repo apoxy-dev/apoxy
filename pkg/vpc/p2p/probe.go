@@ -23,6 +23,8 @@ const TypeProbe = 0x02
 const TypeKeepalive = 0x03
 
 const (
+	// probeVersion must have a bit in its low 6 bits. A relay port also has the XDP
+	// filter of Geneve tunnels, and that bit keeps the probes out of it.
 	probeVersion = 1
 	flagReply    = 1
 	tagLen       = 16
