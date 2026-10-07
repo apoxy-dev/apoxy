@@ -3,6 +3,7 @@
 package agent
 
 import (
+	"cmp"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -302,6 +303,10 @@ type agentOptions struct {
 	tcp    bool         // Adds TCP to the netstack.
 	routes []netip.Prefix
 
+	// identity is the name in the agent cert. Empty means the agent name. The
+	// attachment always has the agent name.
+	identity string
+
 	relays   []identity.Relay // Config.Relays. Nil means the relay of the agent.
 	sessions int              // Config.Sessions.
 	noRoots  bool             // No Config.RelayRoots.
@@ -379,7 +384,7 @@ func (w *world) agent(t *testing.T, name string, r *testRelay, opts agentOptions
 	}
 	enroll := func(context.Context) (*identity.Credential, error) {
 		n := ta.enrolls.Add(1)
-		cred := w.enrollCA().credential(t, testProject, testVPC, name, opts.life)
+		cred := w.enrollCA().credential(t, testProject, testVPC, cmp.Or(opts.identity, name), opts.life)
 		if opts.enrolled == nil {
 			return cred, nil
 		}

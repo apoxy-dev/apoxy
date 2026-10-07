@@ -346,6 +346,8 @@ type Status struct {
 	Setup time.Duration
 	// Spare sessions.
 	Spares int
+	// Open peer sessions of the current attachment.
+	Peers int
 }
 
 // Status returns the data transport of the current attachment.
@@ -355,7 +357,13 @@ func (a *Agent) Status() Status {
 	if a.rc == nil {
 		return Status{Spares: len(a.spares)}
 	}
-	return Status{Mode: a.rc.mode, Reason: a.rc.reason, Connect: a.rc.connect, Setup: a.rc.setup, Spares: len(a.spares)}
+	st := Status{Mode: a.rc.mode, Reason: a.rc.reason, Connect: a.rc.connect, Setup: a.rc.setup, Spares: len(a.spares)}
+	for _, p := range a.peers {
+		if p.rc == a.rc && p.bp != nil && p.qc.Context().Err() == nil {
+			st.Peers++
+		}
+	}
+	return st
 }
 
 func transportName(m dp.Mode) string {

@@ -218,9 +218,15 @@ the same VPC, and names the SPIFFE ID of the peer cert, and the mode is `PSP`
 or `QUIC`. If not, it closes the session with `BAD_GRANT`. If the revision of
 the other agent is below its minimum, it closes the session with `UPGRADE`
 (see "Revisions"). When both agents
-dial (an open session in the other role with the same `instance`), the session
-that the agent with the lower SPIFFE ID dialed stays, and the other closes with
-`DUPLICATE`. A new `instance` replaces the open session.
+dial (an open session in the other role with the same SPIFFE ID and the same
+`instance`), the session that the first agent dialed stays, and the other
+closes with `DUPLICATE`. The first agent has the lower SPIFFE ID, or the lower
+`instance` when the two agents have one SPIFFE ID.
+
+Many agents can have one SPIFFE ID, so an agent keeps one session for each
+`instance` of a SPIFFE ID. A new session replaces an open session of the same
+SPIFFE ID with another `instance` only when its grant has an address of that
+session.
 
 If one of the agents is in `QUIC` mode, data between them goes through the
 relay, which bridges PSP and QUIC data frames. The pair does not call `Keys`,

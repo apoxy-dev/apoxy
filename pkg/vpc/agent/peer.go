@@ -126,6 +126,13 @@ func (p *peer) has(pfx netip.Prefix) bool {
 	return false
 }
 
+// sameAgent reports whether p is a session with the agent that has subject
+// and instance. Many agents can have one subject. A session of the subject
+// with one of prefixes is from before that agent got the address.
+func (p *peer) sameAgent(subject string, instance uint64, prefixes []netip.Prefix) bool {
+	return p.subject == subject && (p.instance == instance || slices.ContainsFunc(prefixes, p.has))
+}
+
 func (p *peer) attachmentID() string { return p.claims.GetAttachmentId() }
 
 // origin reports whether id is an attachment of p.
@@ -416,13 +423,12 @@ func (a *Agent) admit(p *peer, v *dp.Version, g *dp.AttachmentGrant, instance ui
 	a.mu.Lock()
 	var old *peer
 	for _, q := range a.peers {
-		if q != p && q.rc == p.rc && q.bp != nil && q.subject == p.subject {
+		if q != p && q.rc == p.rc && q.bp != nil && q.sameAgent(p.subject, instance, prefixes) {
 			old = q
 		}
 	}
-	// When both agents dial, the session that the agent with the lower ID
-	// dialed stays.
-	if old != nil && old.instance == instance && old.dialer != p.dialer && old.dialer == (p.rc.cred.ID.String() < p.subject) {
+	// When both agents dial, the session that the first agent dialed stays.
+	if old != nil && old.instance == instance && old.dialer != p.dialer && old.dialer == a.first(p.rc, p.subject, instance) {
 		a.mu.Unlock()
 		return errDuplicate
 	}
@@ -461,6 +467,15 @@ func (a *Agent) admit(p *peer, v *dp.Version, g *dp.AttachmentGrant, instance ui
 	return nil
 }
 
+// first reports whether this agent is before the agent with subject and
+// instance: the lower subject, or the lower instance when they have one subject.
+func (a *Agent) first(rc *relayConn, subject string, instance uint64) bool {
+	if own := rc.cred.ID.String(); own != subject {
+		return own < subject
+	}
+	return a.instance < instance
+}
+
 // checkGrant checks the grant of the peer and returns its claims and prefixes.
 func (a *Agent) checkGrant(p *peer, g *dp.AttachmentGrant) (*dp.GrantClaims, []netip.Prefix, error) {
 	claims, err := relay.VerifyGrant(g, p.rc.roots, time.Now())
@@ -492,11 +507,11 @@ func (a *Agent) admitQUIC(p *peer, v *dp.Version, g *dp.AttachmentGrant, instanc
 	if err != nil {
 		return err
 	}
-	// A PSP pair with the same peer is from before the peer changed its mode.
+	// A PSP pair with the same agent is from before the agent changed its mode.
 	a.mu.Lock()
 	var old []*peer
 	for _, q := range a.peers {
-		if q != p && q.rc == p.rc && q.bp != nil && !q.quic && q.subject == p.subject {
+		if q != p && q.rc == p.rc && q.bp != nil && !q.quic && q.sameAgent(p.subject, instance, prefixes) {
 			old = append(old, q)
 		}
 	}

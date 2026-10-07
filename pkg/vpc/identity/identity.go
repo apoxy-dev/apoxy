@@ -16,14 +16,14 @@ import (
 // CertLifetime is the life of an agent cert.
 const CertLifetime = 24 * time.Hour
 
-// ID names one agent in one VPC of one project. Its URI form is
-// spiffe://<project>/vpc/<vpc-uid>/agent/<name>.
+// ID names an agent identity in one VPC of one project. Many agents can use
+// one identity. Its URI form is spiffe://<project>/vpc/<vpc-uid>/agent/<name>.
 type ID struct {
 	// Project ID. It is the SPIFFE trust domain.
 	Project string
 	// UID of the VPCNetwork.
 	VPC string
-	// Agent name, a DNS label.
+	// Identity name, a DNS label.
 	Agent string
 }
 

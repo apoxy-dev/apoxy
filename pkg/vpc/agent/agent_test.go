@@ -129,6 +129,63 @@ func TestConnect(t *testing.T) {
 	}
 }
 
+// TestSharedIdentity runs agents a1 and a2 with one cert name and their own
+// attachment names. Agent c, a1 and a2 keep a peer session for each agent.
+func TestSharedIdentity(t *testing.T) {
+	cases := []struct {
+		name string
+		mode TransportMode // Mode of a2.
+	}{
+		{name: "PSP"},
+		{name: "one agent in QUIC mode", mode: TransportQUIC},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newWorld(t)
+			r := w.relay(t, "relay-1")
+			a1 := w.agent(t, "a1", r, agentOptions{identity: "shared"})
+			a2 := w.agent(t, "a2", r, agentOptions{identity: "shared", mode: tc.mode})
+			c := w.agent(t, "c", r, agentOptions{})
+			e1, e2, ec := a1.attached(t), a2.attached(t), c.attached(t)
+			echo(t, a1.stack, e1.addr, 9001)
+			echo(t, a2.stack, e2.addr, 9002)
+			echo(t, c.stack, ec.addr, 9000)
+
+			// a1 dials c, then a2 dials c. The session of a2 does not replace
+			// the session of a1.
+			ping(t, a1.stack, e1.addr, ec.addr, 9000, "a1 to c")
+			p1 := onlyPeer(t, a1.a)
+			ping(t, a2.stack, e2.addr, ec.addr, 9000, "a2 to c")
+			for range 2 {
+				ping(t, c.stack, ec.addr, e1.addr, 9001, "c to a1")
+				ping(t, c.stack, ec.addr, e2.addr, 9002, "c to a2")
+			}
+			assert.Equal(t, 2, c.a.Status().Peers, "c has a peer session for each agent")
+			assert.Same(t, p1, onlyPeer(t, a1.a), "a1 keeps its peer session")
+			assert.NoError(t, p1.qc.Context().Err(), "the peer session of a1 is open")
+
+			// a1 and a2 dial each other at the same time.
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			var err1, err2 error
+			var wg sync.WaitGroup
+			wg.Go(func() { err1 = a1.a.Connect(ctx, e2.addr) })
+			wg.Go(func() { err2 = a2.a.Connect(ctx, e1.addr) })
+			wg.Wait()
+			require.NoError(t, err1)
+			require.NoError(t, err2)
+			ping(t, a1.stack, e1.addr, e2.addr, 9002, "a1 to a2")
+			ping(t, a2.stack, e2.addr, e1.addr, 9001, "a2 to a1")
+			if tc.mode == TransportQUIC {
+				// A QUIC pair keeps the two sessions of crossed dials.
+				return
+			}
+			require.Eventually(t, func() bool { return peerCount(a1.a) == 2 && peerCount(a2.a) == 2 },
+				5*time.Second, 10*time.Millisecond, "one session between a1 and a2 stays")
+		})
+	}
+}
+
 // TestTransportModes sends UDP both ways between agents where one or both
 // send QUIC data frames. The relay bridges a PSP agent and a QUIC agent.
 func TestTransportModes(t *testing.T) {

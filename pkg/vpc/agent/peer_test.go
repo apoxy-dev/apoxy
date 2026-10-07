@@ -114,7 +114,7 @@ func TestAdmit(t *testing.T) {
 	w := newWorld(t)
 	relayCert := w.relayCA.relayCert(t, "relay-1")
 	otherRelayCert := newCA(t).relayCert(t, "relay-1")
-	grant := func(t *testing.T, cert *tls.Certificate, change func(*dp.GrantClaims)) *dp.AttachmentGrant {
+	grant := func(t *testing.T, cert *tls.Certificate, change func(*dp.GrantClaims)) (*dp.AttachmentGrant, *dp.GrantClaims) {
 		c := &dp.GrantClaims{
 			Vpc:          &dp.VPCRef{ProjectId: testProject, VpcUid: testVPC, NetworkId: testVNI},
 			AttachmentId: "attachment-b",
@@ -128,8 +128,10 @@ func TestAdmit(t *testing.T) {
 		}
 		g, err := relay.SignGrant(cert, c)
 		require.NoError(t, err)
-		return g
+		return g, c
 	}
+	// second makes the grant of another attachment, with its own address.
+	second := func(c *dp.GrantClaims) { c.AttachmentId, c.Addresses = "attachment-b2", []string{"fd00:b2::/96"} }
 
 	// old is an open peer session with agent b before the new one.
 	type old struct {
@@ -140,6 +142,7 @@ func TestAdmit(t *testing.T) {
 	cases := []struct {
 		name     string
 		self     string // Name of this agent. Empty means "a".
+		own      uint64 // Instance of this agent. Zero means a random one.
 		cert     *tls.Certificate
 		claims   func(*dp.GrantClaims)
 		mode     dp.Mode
@@ -184,7 +187,18 @@ func TestAdmit(t *testing.T) {
 		{name: "higher ID dials over the session of the peer", self: "c", old: &old{instance: 7}, dialer: true, instance: 7, wantErr: errDuplicate, keepOld: true},
 		{name: "peer dials again", old: &old{instance: 7}, instance: 7},
 		{name: "peer dials a higher ID again", self: "c", old: &old{instance: 7}, instance: 7},
+		// A restart gives a new instance. Here the relay gives the address again.
 		{name: "peer restarted", old: &old{dialer: true, instance: 6}, instance: 7},
+		{name: "peer restarted in QUIC mode", mode: dp.Mode_MODE_QUIC, old: &old{instance: 6}, instance: 7, wantQUIC: true},
+		// Another agent with the subject of b has its own instance and address.
+		{name: "second agent of the subject dials", old: &old{instance: 6}, instance: 7, claims: second, keepOld: true},
+		{name: "dial to a second agent of the subject", old: &old{dialer: true, instance: 6}, dialer: true, instance: 7, claims: second, keepOld: true},
+		{name: "second agent of the subject in QUIC mode", mode: dp.Mode_MODE_QUIC, old: &old{instance: 6}, instance: 7, claims: second, keepOld: true, wantQUIC: true},
+		// This agent has the subject of the peer. The lower instance is first.
+		{name: "one subject, peer dials over the session of a lower instance", self: "b", own: 5, old: &old{dialer: true, instance: 7}, instance: 7, wantErr: errDuplicate, keepOld: true},
+		{name: "one subject, peer dials over the session of a higher instance", self: "b", own: 9, old: &old{dialer: true, instance: 7}, instance: 7},
+		{name: "one subject, lower instance dials over the session of the peer", self: "b", own: 5, old: &old{instance: 7}, dialer: true, instance: 7},
+		{name: "one subject, higher instance dials over the session of the peer", self: "b", own: 9, old: &old{instance: 7}, dialer: true, instance: 7, wantErr: errDuplicate, keepOld: true},
 		{name: "peer of this revision", version: dp.LocalVersion("b")},
 		{name: "peer of a later revision", version: &dp.Version{Revision: dp.Revision + 1}},
 		{name: "peer at the minimum", version: &dp.Version{Revision: 1}, minimum: 1},
@@ -203,6 +217,9 @@ func TestAdmit(t *testing.T) {
 				self = "a"
 			}
 			a := w.stubAgent(t, self)
+			if tc.own != 0 {
+				a.instance = tc.own
+			}
 			if tc.selfQUIC {
 				a.rc.mode = dp.Mode_MODE_QUIC
 			}
@@ -215,7 +232,8 @@ func TestAdmit(t *testing.T) {
 			if tc.old != nil {
 				op, qc := stubPeer(a, "b", tc.old.dialer)
 				mode := cmp.Or(tc.old.mode, dp.Mode_MODE_PSP)
-				require.NoError(t, a.admit(op, nil, grant(t, relayCert, nil), tc.old.instance, mode, 1))
+				g, _ := grant(t, relayCert, nil)
+				require.NoError(t, a.admit(op, nil, g, tc.old.instance, mode, 1))
 				oldConn = qc
 			}
 			cert := tc.cert
@@ -229,7 +247,8 @@ func TestAdmit(t *testing.T) {
 			}
 			assert.False(t, p.atLeast(1), "the revision is 0 before Open")
 
-			err := a.admit(p, tc.version, grant(t, cert, tc.claims), tc.instance, mode, 1)
+			g, claims := grant(t, cert, tc.claims)
+			err := a.admit(p, tc.version, g, tc.instance, mode, 1)
 			switch {
 			case tc.wantErr != nil:
 				require.ErrorIs(t, err, tc.wantErr)
@@ -242,8 +261,8 @@ func TestAdmit(t *testing.T) {
 				assert.NotNil(t, p.bp)
 				assert.Equal(t, tc.wantQUIC, p.quic)
 				assert.Equal(t, tc.wantQUIC, p.bp == a.rc.relay, "QUIC pairs use the relay peer")
-				assert.Equal(t, netip.MustParseAddr("fd00:b::1"), p.addr)
-				assert.Equal(t, "attachment-b", p.attachmentID())
+				assert.Equal(t, relay.OverlayAddr(netip.MustParsePrefix(claims.GetAddresses()[0])), p.addr)
+				assert.Equal(t, claims.GetAttachmentId(), p.attachmentID())
 				select {
 				case <-p.ready:
 				default:
@@ -267,8 +286,8 @@ func TestAdmit(t *testing.T) {
 	}
 }
 
-// TestAdmitCrossed admits both sessions of crossed dials at the same time. The
-// session that a dialed stays, because a has the lower ID.
+// TestAdmitCrossed admits both sessions of crossed dials with agent b at the
+// same time. The session that the first agent dialed stays.
 func TestAdmitCrossed(t *testing.T) {
 	w := newWorld(t)
 	g, err := relay.SignGrant(w.relayCA.relayCert(t, "relay-1"), &dp.GrantClaims{
@@ -280,32 +299,97 @@ func TestAdmitCrossed(t *testing.T) {
 		NotAfter:     timestamppb.New(time.Now().Add(time.Hour)),
 	})
 	require.NoError(t, err)
-	a := w.stubAgent(t, "a")
 	dup := quic.ApplicationErrorCode(dp.PeerCloseCode_PEER_CLOSE_CODE_DUPLICATE)
-	for round := range 200 {
-		dialed, dialedConn := stubPeer(a, "b", true)
-		accepted, acceptedConn := stubPeer(a, "b", false)
-		var errDialed, errAccepted error
-		var wg sync.WaitGroup
-		start := make(chan struct{})
-		wg.Go(func() { <-start; errDialed = a.admit(dialed, nil, g, 7, dp.Mode_MODE_PSP, 1) })
-		wg.Go(func() { <-start; errAccepted = a.admit(accepted, nil, g, 7, dp.Mode_MODE_PSP, 1) })
-		close(start)
-		wg.Wait()
-
-		require.NoError(t, errDialed, "round %d", round)
-		require.NotNil(t, dialed.bp, "round %d", round)
-		require.False(t, dialedConn.closed(), "round %d", round)
-		// Admit refuses the accepted session, or the dialed session closes it.
-		if errAccepted != nil {
-			require.ErrorIs(t, errAccepted, errDuplicate, "round %d", round)
-		} else {
-			require.True(t, acceptedConn.closed(), "round %d", round)
-			require.Equal(t, dup, acceptedConn.code, "round %d", round)
-		}
-		a.dropPeer(dialed)
-		a.dropPeer(accepted)
+	// The instance of b is 7.
+	cases := []struct {
+		name       string
+		self       string // Name of this agent.
+		own        uint64 // Instance of this agent. Zero means a random one.
+		wantDialed bool   // The session that this agent dialed stays.
+	}{
+		{name: "lower subject", self: "a", wantDialed: true},
+		{name: "higher subject", self: "c"},
+		// The two agents of one subject keep the same session.
+		{name: "one subject, lower instance", self: "b", own: 5, wantDialed: true},
+		{name: "one subject, higher instance", self: "b", own: 9},
 	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := w.stubAgent(t, tc.self)
+			if tc.own != 0 {
+				a.instance = tc.own
+			}
+			for round := range 100 {
+				dialed, dialedConn := stubPeer(a, "b", true)
+				accepted, acceptedConn := stubPeer(a, "b", false)
+				var errDialed, errAccepted error
+				var wg sync.WaitGroup
+				start := make(chan struct{})
+				wg.Go(func() { <-start; errDialed = a.admit(dialed, nil, g, 7, dp.Mode_MODE_PSP, 1) })
+				wg.Go(func() { <-start; errAccepted = a.admit(accepted, nil, g, 7, dp.Mode_MODE_PSP, 1) })
+				close(start)
+				wg.Wait()
+
+				kept, keptConn, errKept := accepted, acceptedConn, errAccepted
+				lostConn, errLost := dialedConn, errDialed
+				if tc.wantDialed {
+					kept, keptConn, errKept = dialed, dialedConn, errDialed
+					lostConn, errLost = acceptedConn, errAccepted
+				}
+				require.NoError(t, errKept, "round %d", round)
+				require.NotNil(t, kept.bp, "round %d", round)
+				require.False(t, keptConn.closed(), "round %d", round)
+				// Admit refuses the other session, or the kept session closes it.
+				if errLost != nil {
+					require.ErrorIs(t, errLost, errDuplicate, "round %d", round)
+				} else {
+					require.True(t, lostConn.closed(), "round %d", round)
+					require.Equal(t, dup, lostConn.code, "round %d", round)
+				}
+				a.dropPeer(dialed)
+				a.dropPeer(accepted)
+			}
+		})
+	}
+}
+
+// TestRestartedPeer admits the session of a peer that started again, with a
+// new instance and a new address, while its old session is open. The new
+// address and the advertised route go to the new session.
+func TestRestartedPeer(t *testing.T) {
+	w := newWorld(t)
+	cert := w.relayCA.relayCert(t, "relay-1")
+	a := w.stubAgent(t, "a")
+	route := func(prefix, origin string) *dp.Route { return &dp.Route{Prefix: prefix, Origin: origin} }
+	// to returns the open peer session that gets the packets to addr.
+	to := func(addr string) *peer {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		return a.peerTo(a.rc, netip.MustParseAddr(addr))
+	}
+	a.applyRoutes(a.rc, &dp.RouteDelta{Add: []*dp.Route{route("fd00:b::/96", "attachment-b"), route("10.0.0.0/24", "attachment-b")}})
+	old, oldConn := stubPeer(a, "b", true)
+	require.NoError(t, a.admit(old, nil, signGrant(t, cert, "b", "fd00:b::/96"), 6, dp.Mode_MODE_PSP, 1))
+	require.Same(t, old, to("10.0.0.1"))
+
+	// The new session opens before the relay tells that the old attachment left.
+	next, _ := stubPeer(a, "b", false)
+	require.NoError(t, a.admit(next, nil, extraGrant(t, cert, "b", "b-2", "fd00:b2::/96", nil), 7, dp.Mode_MODE_PSP, 1))
+	assert.False(t, oldConn.closed(), "the old session stays until its attachment leaves")
+	assert.Same(t, next, to("fd00:b2::1"))
+
+	// The relay moves the advertised route to the new attachment.
+	a.applyRoutes(a.rc, &dp.RouteDelta{Add: []*dp.Route{route("fd00:b2::/96", "b-2"), route("10.0.0.0/24", "b-2")}})
+	assert.Same(t, next, to("10.0.0.1"))
+
+	// The old attachment leaves.
+	removed := []*dp.Route{route("fd00:b::/96", "attachment-b")}
+	a.applyRoutes(a.rc, &dp.RouteDelta{Remove: removed})
+	a.removeRoutes(a.rc, removed)
+	assert.True(t, oldConn.closed())
+	assert.Equal(t, 1, peerCount(a))
+	assert.Same(t, next, to("10.0.0.1"))
+	assert.Nil(t, to("fd00:b::1"))
 }
 
 func TestVerifyPeer(t *testing.T) {
