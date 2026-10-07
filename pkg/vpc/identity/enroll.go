@@ -63,6 +63,23 @@ func Enroll(ctx context.Context, c rest.Interface, vpc, agent string) (*Credenti
 	return cred, nil
 }
 
+// EnrollFile enrolls as Enroll does and writes the credential to the file at
+// path, as SaveCredential does. With no relays in the answer it writes no
+// file, because an agent cannot connect with such a file.
+func EnrollFile(ctx context.Context, c rest.Interface, vpc, agent, path string) (*Credential, error) {
+	cred, err := Enroll(ctx, c, vpc, agent)
+	if err != nil {
+		return nil, err
+	}
+	if len(cred.Relays) == 0 {
+		return nil, fmt.Errorf("no ready relay serves VPC %q", vpc)
+	}
+	if err := SaveCredential(path, cred); err != nil {
+		return nil, err
+	}
+	return cred, nil
+}
+
 // Revoke revokes all current certs of agent in the VPCNetwork named vpc.
 func Revoke(ctx context.Context, c rest.Interface, vpc, agent string) (*vpcv1alpha1.AgentRevocation, error) {
 	if err := ValidateAgentName(agent); err != nil {

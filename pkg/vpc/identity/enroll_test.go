@@ -7,6 +7,8 @@ import (
 	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -21,8 +23,8 @@ import (
 
 // fakeEnrollServer serves vpcnetworks/<vpc>/enroll and /revoke like the
 // project apiserver. mutate changes the issued ID to test bad replies. roots
-// are the relay roots in the reply.
-func fakeEnrollServer(t *testing.T, ca *testCA, mutate func(*ID), roots []byte) rest.Interface {
+// and relays are the relay roots and the relays in the reply.
+func fakeEnrollServer(t *testing.T, ca *testCA, mutate func(*ID), roots []byte, relays []Relay) rest.Interface {
 	t.Helper()
 	const prefix = "/apis/vpc.apoxy.dev/v1alpha1/vpcnetworks/"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -47,8 +49,10 @@ func fakeEnrollServer(t *testing.T, ca *testCA, mutate func(*ID), roots []byte) 
 				Certificate: string(certPEM(cert)),
 				CABundle:    string(ca.pem),
 				ExpiresAt:   metav1.NewTime(cert.NotAfter),
-				Relays:      []vpcv1alpha1.EnrollmentRelay{{ID: testRelays[0].ID, Addresses: testRelays[0].Addresses}},
 				RelayRoots:  string(roots),
+			}
+			for _, r := range relays {
+				req.Status.Relays = append(req.Status.Relays, vpcv1alpha1.EnrollmentRelay{ID: r.ID, Addresses: r.Addresses})
 			}
 			require.NoError(t, json.NewEncoder(w).Encode(&req))
 		case prefix + "net1/revoke":
@@ -91,7 +95,7 @@ func TestEnroll(t *testing.T) {
 			if roots == nil {
 				roots = ca.pem
 			}
-			c := fakeEnrollServer(t, ca, tc.mutate, roots)
+			c := fakeEnrollServer(t, ca, tc.mutate, roots, testRelays)
 			cred, err := Enroll(context.Background(), c, tc.vpc, tc.agent)
 			if tc.wantErr {
 				assert.Error(t, err)
@@ -107,7 +111,7 @@ func TestEnroll(t *testing.T) {
 	}
 
 	t.Run("new key each time", func(t *testing.T) {
-		c := fakeEnrollServer(t, ca, nil, ca.pem)
+		c := fakeEnrollServer(t, ca, nil, ca.pem, testRelays)
 		a, err := Enroll(context.Background(), c, "net1", "laptop")
 		require.NoError(t, err)
 		b, err := Enroll(context.Background(), c, "net1", "laptop")
@@ -116,8 +120,63 @@ func TestEnroll(t *testing.T) {
 	})
 }
 
+func TestEnrollFile(t *testing.T) {
+	ca := newTestCA(t, "ca")
+	cases := []struct {
+		name     string
+		vpc      string
+		agent    string
+		relays   []Relay
+		existing bool   // A file with a wide mode is at the path before the call.
+		wantErr  string // A part of the error. Empty means no error.
+	}{
+		{name: "new file", vpc: "net1", agent: "fleet", relays: testRelays},
+		{name: "replaces a file", vpc: "net1", agent: "fleet", relays: testRelays, existing: true},
+		{name: "bad name", vpc: "net1", agent: "Fleet", relays: testRelays, wantErr: "invalid agent name"},
+		{name: "no relays", vpc: "net1", agent: "fleet", wantErr: `no ready relay serves VPC "net1"`},
+		{name: "apiserver error", vpc: "net2", agent: "fleet", relays: testRelays, wantErr: `VPC "net2"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			c := fakeEnrollServer(t, ca, nil, ca.pem, tc.relays)
+			path := filepath.Join(t.TempDir(), "ids", "fleet.json")
+			var old *Credential
+			if tc.existing {
+				var err error
+				old, err = EnrollFile(ctx, c, "net1", "fleet", path)
+				require.NoError(t, err)
+				require.NoError(t, os.Chmod(path, 0o644))
+			}
+			cred, err := EnrollFile(ctx, c, tc.vpc, tc.agent, path)
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+				assert.NotContains(t, err.Error(), "PRIVATE KEY")
+				assert.NoFileExists(t, path)
+				return
+			}
+			require.NoError(t, err)
+			fi, err := os.Stat(path)
+			require.NoError(t, err)
+			assert.Equal(t, os.FileMode(0o600), fi.Mode().Perm())
+			got, err := LoadCredential(path)
+			require.NoError(t, err)
+			assert.Equal(t, ID{Project: testID.Project, VPC: testID.VPC, Agent: "fleet"}, got.ID)
+			assert.True(t, got.Key.Equal(cred.Key), "the file has the key of the enroll")
+			assert.Equal(t, tc.relays, got.Relays)
+			assert.Equal(t, ca.pem, got.RelayRoots)
+			if old != nil {
+				assert.False(t, got.Key.Equal(old.Key), "the file has the key of the second enroll")
+			}
+			entries, err := os.ReadDir(filepath.Dir(path))
+			require.NoError(t, err)
+			assert.Len(t, entries, 1, "no temporary file stays")
+		})
+	}
+}
+
 func TestRevoke(t *testing.T) {
-	c := fakeEnrollServer(t, newTestCA(t, "ca"), nil, nil)
+	c := fakeEnrollServer(t, newTestCA(t, "ca"), nil, nil, testRelays)
 	got, err := Revoke(context.Background(), c, "net1", "laptop")
 	require.NoError(t, err)
 	assert.Equal(t, "laptop", got.Spec.AgentName)
