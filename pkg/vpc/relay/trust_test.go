@@ -33,6 +33,18 @@ func TestCheckCert(t *testing.T) {
 	}{
 		{"good", ca.issue(t, laptop, issued), nil, t0, nil},
 		{"wrong CA", other.issue(t, laptop, issued), nil, t0, errAny},
+		{"CA of the project", other.issue(t, laptop, issued), func(f *fakeTrust) {
+			f.projectCA = map[string]*testCA{vpcA.Project: other}
+		}, t0, nil},
+		{"CA of another project", other.issue(t, laptop, issued), func(f *fakeTrust) {
+			f.projectCA = map[string]*testCA{vpcA.Project: ca, vpcB.Project: other}
+		}, t0, errAny},
+		{"CA that the project had before", ca.issue(t, laptop, issued), func(f *fakeTrust) {
+			f.projectCA = map[string]*testCA{vpcA.Project: other}
+		}, t0, errAny},
+		{"project with no CA", ca.issue(t, laptop, issued), func(f *fakeTrust) {
+			f.projectCA = map[string]*testCA{vpcA.Project: nil}
+		}, t0, errAny},
 		{"expired", ca.issue(t, laptop, issued), nil, issued.Add(identity.CertLifetime + time.Second), errAny},
 		{"not yet valid", ca.issue(t, laptop, issued), nil, issued.Add(-time.Second), errAny},
 		{"revoked", ca.issue(t, laptop, issued), func(f *fakeTrust) { f.revoke(vpcA, "laptop", t0) }, t0, identity.ErrRevoked},

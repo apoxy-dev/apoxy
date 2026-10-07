@@ -108,18 +108,27 @@ func agentID(k VPCKey, name string) string {
 	return identity.ID{Project: k.Project, VPC: k.UID, Agent: name}.String()
 }
 
-// fakeTrust is the trust data of a test relay.
+// fakeTrust is the trust data of a test relay. A project in projectCA has
+// that CA, or no CA for nil. Each other project has ca.
 type fakeTrust struct {
-	mu      sync.Mutex
-	ca      *testCA
-	revoked map[VPCKey][]vpcv1alpha1.RevokedAgent
-	err     error
+	mu        sync.Mutex
+	ca        *testCA
+	projectCA map[string]*testCA
+	revoked   map[VPCKey][]vpcv1alpha1.RevokedAgent
+	err       error
 }
 
-func (f *fakeTrust) AgentCA() (*x509.CertPool, error) {
+func (f *fakeTrust) AgentCA(project string) (*x509.CertPool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.ca.pool(), nil
+	ca, ok := f.projectCA[project]
+	if !ok {
+		ca = f.ca
+	}
+	if ca == nil {
+		return nil, errors.New("project has no agent CA")
+	}
+	return ca.pool(), nil
 }
 
 func (f *fakeTrust) Revoked(project, vpcUID string) ([]vpcv1alpha1.RevokedAgent, error) {

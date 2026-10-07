@@ -49,7 +49,7 @@ func TestCredential(t *testing.T) {
 			if tc.setCA != nil {
 				trust.SetCA(tc.setCA)
 			}
-			roots, err := trust.AgentCA()
+			roots, err := trust.AgentCA("project-a")
 			require.NoError(t, err)
 			// The relay checks agent certs with identity.Verify.
 			id, err := identity.Verify([]*x509.Certificate{cred.Cert}, identity.VerifyOptions{

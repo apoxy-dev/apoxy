@@ -10,7 +10,8 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay"
 )
 
-// Trust is a relay.Trust that trusts one agent CA and revokes no agent.
+// Trust is a relay.Trust that trusts one agent CA for all projects and
+// revokes no agent.
 type Trust struct {
 	mu   sync.Mutex
 	pool *x509.CertPool
@@ -28,7 +29,7 @@ func (t *Trust) SetCA(ca *CA) {
 	t.pool = ca.Pool()
 }
 
-func (t *Trust) AgentCA() (*x509.CertPool, error) {
+func (t *Trust) AgentCA(string) (*x509.CertPool, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.pool, nil

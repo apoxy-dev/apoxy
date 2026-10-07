@@ -50,7 +50,7 @@ const (
 
 type vpcTrust struct{ pool *x509.CertPool }
 
-func (f vpcTrust) AgentCA() (*x509.CertPool, error) { return f.pool, nil }
+func (f vpcTrust) AgentCA(string) (*x509.CertPool, error) { return f.pool, nil }
 func (vpcTrust) Revoked(string, string) ([]vpcv1alpha1.RevokedAgent, error) {
 	return nil, nil
 }
