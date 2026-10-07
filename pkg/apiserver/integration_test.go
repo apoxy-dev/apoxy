@@ -17,12 +17,14 @@ import (
 	"github.com/stretchr/testify/require"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/apiserver/pkg/admission"
 	kuser "k8s.io/apiserver/pkg/authentication/user"
 	"k8s.io/utils/ptr"
 
 	"github.com/apoxy-dev/apoxy/api/resource"
 
+	coordinationv1 "github.com/apoxy-dev/apoxy/api/coordination/v1"
 	corev1alpha3 "github.com/apoxy-dev/apoxy/api/core/v1alpha3"
 	a3yclient "github.com/apoxy-dev/apoxy/client/versioned"
 	"github.com/apoxy-dev/apoxy/pkg/apiserver/auth"
@@ -222,6 +224,42 @@ func TestAPIServerIntegrationDomainRecordDefaultingAndValidation(t *testing.T) {
 	_, err = records.Update(context.Background(), invalid, metav1.UpdateOptions{})
 	require.True(t, apierrors.IsInvalid(err), "expected immutable-field update to be invalid, got %v", err)
 	require.Contains(t, err.Error(), "field is immutable after creation")
+}
+
+func TestAPIServerIntegrationNamespaceWatch(t *testing.T) {
+	srv := startTestServer(t, WithResource(&coordinationv1.Lease{}))
+	t.Cleanup(srv.cancel)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
+	client := newClientset(t, srv.addr)
+
+	w, err := client.CoordinationV1().Leases("ns-a").Watch(ctx, metav1.ListOptions{})
+	require.NoError(t, err)
+	t.Cleanup(w.Stop)
+
+	// The watch is open before the writes, so each event is a live event.
+	for _, ns := range []string{"ns-b", "ns-a"} {
+		_, err := client.CoordinationV1().Leases(ns).Create(ctx, &coordinationv1.Lease{
+			ObjectMeta: metav1.ObjectMeta{Name: "lease", Namespace: ns},
+		}, metav1.CreateOptions{})
+		require.NoError(t, err)
+	}
+
+	select {
+	case ev := <-w.ResultChan():
+		require.Equal(t, watch.Added, ev.Type)
+		require.Equal(t, "ns-a", ev.Object.(*coordinationv1.Lease).Namespace)
+	case <-time.After(10 * time.Second):
+		t.Fatal("the namespace watch got no event for a new object")
+	}
+
+	list, err := client.CoordinationV1().Leases(metav1.NamespaceAll).List(ctx, metav1.ListOptions{
+		FieldSelector: "metadata.namespace=ns-a",
+	})
+	require.NoError(t, err)
+	require.Len(t, list.Items, 1)
+	require.Equal(t, "ns-a", list.Items[0].Namespace)
 }
 
 func startTestServer(t *testing.T, opts ...Option) *testServer {

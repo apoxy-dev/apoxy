@@ -16,14 +16,15 @@ import (
 )
 
 // customGetAttrs returns labels and fields for field selector filtering.
-// It extends the default metadata.name with per-type custom fields.
+// It extends the default metadata fields with per-type custom fields.
 func customGetAttrs(obj runtime.Object) (labels.Set, fields.Set, error) {
 	provider, ok := obj.(resource.Object)
 	if !ok {
 		return nil, nil, fmt.Errorf("object of type %T does not implement resource.Object", obj)
 	}
 	om := provider.GetObjectMeta()
-	fs := generic.ObjectMetaFieldsSet(om, false) // non-namespaced
+	// The watch cache uses metadata.namespace to find the watchers of one namespace.
+	fs := generic.ObjectMetaFieldsSet(om, provider.NamespaceScoped())
 
 	switch o := obj.(type) {
 	case *corev1alpha2.DomainZone:
