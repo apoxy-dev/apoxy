@@ -52,8 +52,17 @@ type Addresses interface {
 	// Assign returns the prefixes of a new attachment. It calls onLost when
 	// the lease of the prefixes ends, also before Assign returns.
 	Assign(ctx context.Context, a *Attachment, onLost func()) ([]netip.Prefix, error)
+	// Attached tells the host that the attach of a is complete. It must not
+	// block. Release can come first when the session ends during the attach.
+	Attached(a *Attachment)
 	// Release frees the prefixes of an attachment that ended.
 	Release(a *Attachment)
+}
+
+// OverlayAddr returns the address that an agent uses in a prefix from
+// Addresses.Assign: the first address after the base.
+func OverlayAddr(p netip.Prefix) netip.Addr {
+	return p.Addr().Next()
 }
 
 // Attach adds an attachment to the session of the caller: addresses from
@@ -116,6 +125,7 @@ func (srv *Server) Attach(ctx context.Context, in *dp.AttachRequest) (*dp.Attach
 		}
 		return nil, err
 	}
+	srv.Addresses.Attached(a)
 	return &dp.AttachResponse{AttachmentId: a.ID, Grant: grant}, nil
 }
 

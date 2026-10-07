@@ -18,6 +18,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -175,6 +176,7 @@ type fakeAddresses struct {
 	mu           sync.Mutex
 	next         int
 	assigned     map[string]*Attachment
+	attached     []attachedCall    // The Attached calls, in order.
 	lost         map[string]func() // The onLost of each attachment.
 	loseOnAssign bool              // Assign calls onLost before it returns.
 	err          error
@@ -195,6 +197,24 @@ func (f *fakeAddresses) Assign(_ context.Context, a *Attachment, onLost func()) 
 		onLost()
 	}
 	return []netip.Prefix{netip.MustParsePrefix(fmt.Sprintf("fd00:%x::/96", f.next))}, nil
+}
+
+// attachedCall is one Attached call: the attachment ID and its addresses then.
+type attachedCall struct {
+	id    string
+	addrs []netip.Prefix
+}
+
+func (f *fakeAddresses) Attached(a *Attachment) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.attached = append(f.attached, attachedCall{a.ID, slices.Clone(a.Addresses)})
+}
+
+func (f *fakeAddresses) attachedCalls() []attachedCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.attached)
 }
 
 func (f *fakeAddresses) Release(a *Attachment) {

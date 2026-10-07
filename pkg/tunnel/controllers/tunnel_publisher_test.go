@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -962,8 +963,8 @@ func TestTunnelPublisherLimitsWritesInFlight(t *testing.T) {
 	}
 }
 
-// TestTunnelPublisherAssignAddress: v2 attachments get one /96 each from the
-// held slots, with no apiserver call and no /32.
+// TestTunnelPublisherAssignAddress: attachments get one /96 each from the held
+// slots, with no apiserver call and no /32.
 func TestTunnelPublisherAssignAddress(t *testing.T) {
 	ctx := context.Background()
 	c := fake.NewClientBuilder().
@@ -977,16 +978,16 @@ func TestTunnelPublisherAssignAddress(t *testing.T) {
 	p, netID := newPublisherWithClient(t, c)
 
 	seen := make(map[netip.Prefix]bool)
-	releases := make([]func(), 0, 3)
-	for range 3 {
-		v6, release, err := p.AssignAddress(ctx, netID, nil)
+	for i := range 3 {
+		v6, err := p.AssignAddress(ctx, fmt.Sprintf("att-%d", i), netID, nil)
 		require.NoError(t, err)
 		require.Equal(t, 96, v6.Bits())
 		require.True(t, tunnet.NetworkPrefix(netID).Contains(v6.Addr()), "address %s is not in the network", v6)
 		require.False(t, seen[v6], "address %s was given twice", v6)
 		seen[v6] = true
-		releases = append(releases, release)
 	}
+	_, err := p.AssignAddress(ctx, "att-0", netID, nil)
+	require.Error(t, err, "a live attachment ID got a second address")
 
 	// A v1 connection gets the first /32 of the slot.
 	conn := &fakeConn{id: "conn-a", network: "corp"}
@@ -995,66 +996,245 @@ func TestTunnelPublisherAssignAddress(t *testing.T) {
 	require.Equal(t, byte(0), netip.MustParsePrefix(conn.addresses[1]).Addr().As4()[3], "v4 = %s", conn.addresses[1])
 
 	// A second release of one /96 must not free another user's /96.
-	releases[0]()
-	releases[0]()
-	again, _, err := p.AssignAddress(ctx, netID, nil)
+	p.ReleaseAddress("att-0")
+	p.ReleaseAddress("att-0")
+	again, err := p.AssignAddress(ctx, "att-3", netID, nil)
 	require.NoError(t, err)
 	require.True(t, seen[again], "a freed /96 was not used again")
-	next, _, err := p.AssignAddress(ctx, netID, nil)
+	next, err := p.AssignAddress(ctx, "att-4", netID, nil)
 	require.NoError(t, err)
 	require.NotEqual(t, again, next)
 	require.NotEqual(t, conn.overlay, next.String())
 }
 
-func TestTunnelPublisherAddressLoss(t *testing.T) {
+// TestTunnelPublisherPublishAddress covers the Tunnel of an attachment: its
+// name is the attachment ID, and the relay labels win over the agent labels.
+func TestTunnelPublisherPublishAddress(t *testing.T) {
+	const id = "0123456789abcdef0123456789abcdef"
+	longName := "agent." + strings.Repeat("a", 70) + ".example"
 	cases := []struct {
-		name     string
-		action   string
-		wantLost bool
+		name       string
+		info       TunnelInfo
+		wantLabels map[string]string
+		wantRoutes []string
 	}{
-		{"slot lost", "slot", true},
-		{"other generation", "generation", false},
-		{"network removed", "network", true},
-		{"publisher stopped", "stop", true},
-		{"released address", "released", false},
+		{
+			name: "name only",
+			info: TunnelInfo{Name: "agent-a", Addresses: []string{"fd61::1/96"}},
+		},
+		{
+			name: "agent labels and routes",
+			info: TunnelInfo{
+				Name:      "agent-a",
+				Labels:    map[string]string{"app": "payments", "tier": "db"},
+				Addresses: []string{"fd61::1/96"},
+				Routes:    []netip.Prefix{netip.MustParsePrefix("10.20.0.0/16"), netip.MustParsePrefix("fd00:1::/64")},
+			},
+			wantLabels: map[string]string{"app": "payments", "tier": "db"},
+			wantRoutes: []string{"10.20.0.0/16", "fd00:1::/64"},
+		},
+		{
+			name: "agent labels with relay label keys",
+			info: TunnelInfo{
+				Name: "agent-a",
+				Labels: map[string]string{
+					"app":                       "payments",
+					LabelRelay:                  "forged-relay",
+					vpcv1alpha1.LabelNetwork:    "forged-network",
+					vpcv1alpha1.LabelTunnelName: "forged-name",
+					ipalloc.LabelSlot:           "ffffff-ffff",
+					ipalloc.LabelSlotGeneration: "999",
+				},
+				Addresses: []string{"fd61::1/96"},
+			},
+			wantLabels: map[string]string{"app": "payments"},
+		},
+		{
+			name:       "name longer than a label value",
+			info:       TunnelInfo{Name: longName, Addresses: []string{"fd61::1/96"}},
+			wantLabels: map[string]string{vpcv1alpha1.LabelTunnelName: longName[:32]},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
-			c := fake.NewClientBuilder().WithScheme(publisherScheme(t)).Build()
-			p, netID := newPublisherWithClient(t, c)
-			lost := 0
-			prefix, release, err := p.AssignAddress(ctx, netID, func() { lost++ })
+			p, c, netID := newPublisher(t)
+			_, err := p.AssignAddress(ctx, id, netID, nil)
 			require.NoError(t, err)
-			slot, _, ok := ipalloc.SlotOf(prefix)
+			p.PublishAddress(id, tc.info)
+			settle(t, p)
+
+			var got vpcv1alpha1.Tunnel
+			require.NoError(t, c.Get(ctx, client.ObjectKey{Name: id}, &got))
+			require.Equal(t, "corp", got.Spec.NetworkRef.Name)
+			require.Equal(t, "relay-0", got.Spec.RelayRef.Name)
+			require.Equal(t, tc.info.Addresses, got.Status.Addresses)
+			require.Equal(t, tc.wantRoutes, got.Status.AdvertisedRoutes)
+
+			want := map[string]string{
+				vpcv1alpha1.LabelNetwork:    "corp",
+				vpcv1alpha1.LabelTunnelName: tc.info.Name,
+				LabelRelay:                  "relay-0",
+				ipalloc.LabelSlot:           "000001-0100",
+				ipalloc.LabelSlotGeneration: "1",
+			}
+			for k, v := range tc.wantLabels {
+				want[k] = v
+			}
+			require.Equal(t, want, got.Labels)
+		})
+	}
+}
+
+// TestTunnelPublisherAttachment runs the steps of each case on one attachment
+// and checks its Tunnel, its onLost calls, and its /96 at the end.
+func TestTunnelPublisherAttachment(t *testing.T) {
+	const id = "0123456789abcdef0123456789abcdef"
+	cases := []struct {
+		name  string
+		steps []string
+		// wantTunnel is whether the Tunnel is in the apiserver at the end.
+		wantTunnel bool
+		wantLost   int
+		// wantNext is what a new attachment gets at the end: "same" is the /96
+		// of the first one, "other" is a different /96, "error" is no address.
+		wantNext string
+	}{
+		{name: "assigned only", steps: []string{"settle"}, wantNext: "other"},
+		{name: "published", steps: []string{"publish", "settle"}, wantTunnel: true, wantNext: "other"},
+		{name: "published two times", steps: []string{"publish", "settle", "publish", "settle"}, wantTunnel: true, wantNext: "other"},
+		{name: "released", steps: []string{"publish", "settle", "release", "settle"}, wantNext: "same"},
+		{name: "released two times", steps: []string{"publish", "settle", "release", "release", "settle"}, wantNext: "same"},
+		{name: "released before the publish", steps: []string{"release", "publish", "settle"}, wantNext: "same"},
+		{
+			name:       "published while the apiserver is down",
+			steps:      []string{"api down", "publish", "tried", "api up", "settle"},
+			wantTunnel: true,
+			wantNext:   "other",
+		},
+		{
+			name:     "released before the write worked",
+			steps:    []string{"api down", "publish", "tried", "release", "api up", "settle"},
+			wantNext: "same",
+		},
+		{
+			name:       "address is held while the delete fails",
+			steps:      []string{"publish", "settle", "api down", "release", "tried"},
+			wantTunnel: true,
+			wantNext:   "other",
+		},
+		{
+			name:       "resync writes a Tunnel that another writer deleted",
+			steps:      []string{"publish", "settle", "delete object", "resync", "settle"},
+			wantTunnel: true,
+			wantNext:   "other",
+		},
+		{name: "slot lost", steps: []string{"publish", "settle", "lose slot", "lose slot", "settle"}, wantLost: 1, wantNext: "other"},
+		{name: "slot lost before the publish", steps: []string{"lose slot", "publish", "settle"}, wantLost: 1, wantNext: "other"},
+		{
+			name:       "other slot generation lost",
+			steps:      []string{"publish", "settle", "lose other generation", "settle"},
+			wantTunnel: true,
+			wantNext:   "other",
+		},
+		{name: "released, then slot lost", steps: []string{"publish", "settle", "release", "lose slot", "settle"}, wantNext: "other"},
+		{name: "network removed", steps: []string{"publish", "settle", "remove network", "settle"}, wantLost: 1, wantNext: "error"},
+		{name: "publisher stopped", steps: []string{"publish", "settle", "stop"}, wantLost: 1, wantNext: "error"},
+		{name: "publisher stopped before the publish", steps: []string{"stop", "publish"}, wantLost: 1, wantNext: "error"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			var down atomic.Bool
+			unavailable := func() error {
+				if down.Load() {
+					return apierrors.NewServiceUnavailable("project apiserver is down")
+				}
+				return nil
+			}
+			// store is the apiserver state. The publisher reaches it through c.
+			store := fake.NewClientBuilder().
+				WithScheme(publisherScheme(t)).
+				WithStatusSubresource(&vpcv1alpha1.Tunnel{}).
+				Build()
+			c := interceptor.NewClient(store, interceptor.Funcs{
+				Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+					if err := unavailable(); err != nil {
+						return err
+					}
+					return c.Create(ctx, obj, opts...)
+				},
+				Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+					if err := unavailable(); err != nil {
+						return err
+					}
+					return c.Delete(ctx, obj, opts...)
+				},
+			})
+			p, netID := newPublisherWithClient(t, c)
+
+			lost := 0
+			first, err := p.AssignAddress(ctx, id, netID, func() { lost++ })
+			require.NoError(t, err)
+			slot, _, ok := ipalloc.SlotOf(first)
 			require.True(t, ok)
 			slot.Generation = 1
-			switch tc.action {
-			case "generation":
-				slot.Generation++
-				p.InvalidateSlot(slot)
-			case "network":
-				p.RemoveNetwork(ctx, "corp")
-			case "stop":
-				require.NoError(t, p.ReleaseAll(ctx))
-			case "released":
-				release()
-				p.InvalidateSlot(slot)
-			case "slot":
-				p.InvalidateSlot(slot)
-				p.InvalidateSlot(slot)
+			info := TunnelInfo{Name: "agent-a", Addresses: []string{first.String()}}
+
+			for _, step := range tc.steps {
+				switch step {
+				case "publish":
+					p.PublishAddress(id, info)
+				case "release":
+					p.ReleaseAddress(id)
+				case "settle":
+					settle(t, p)
+				case "api down":
+					down.Store(true)
+				case "api up":
+					down.Store(false)
+					retryNow(p)
+				case "tried":
+					require.Eventually(t, func() bool {
+						p.mu.Lock()
+						defer p.mu.Unlock()
+						st := p.tunnels[id]
+						return st != nil && st.attempts > 0
+					}, 2*time.Second, 5*time.Millisecond, "the Tunnel write was not tried")
+				case "delete object":
+					require.NoError(t, store.Delete(ctx, &vpcv1alpha1.Tunnel{ObjectMeta: metav1.ObjectMeta{Name: id}}))
+				case "resync":
+					require.NoError(t, p.Resync(ctx))
+				case "lose slot":
+					p.InvalidateSlot(slot)
+				case "lose other generation":
+					other := slot
+					other.Generation++
+					p.InvalidateSlot(other)
+				case "remove network":
+					p.RemoveNetwork(ctx, "corp")
+				case "stop":
+					require.NoError(t, p.ReleaseAll(ctx))
+				default:
+					t.Fatalf("unknown step %q", step)
+				}
 			}
-			want := 0
-			if tc.wantLost {
-				want = 1
-			}
-			require.Equal(t, want, lost)
-			if tc.action == "network" || tc.action == "stop" {
-				_, _, err := p.AssignAddress(ctx, netID, nil)
+
+			require.Equal(t, tc.wantTunnel, tunnelExists(t, store, id), "Tunnel in the apiserver")
+			require.Equal(t, tc.wantLost, lost, "onLost calls")
+			next, err := p.AssignAddress(ctx, "next", netID, nil)
+			switch tc.wantNext {
+			case "same":
+				require.NoError(t, err)
+				require.Equal(t, first, next, "the /96 was not freed")
+			case "other":
+				require.NoError(t, err)
+				require.NotEqual(t, first, next, "the /96 was given to a second attachment")
+			case "error":
 				require.Error(t, err)
+			default:
+				t.Fatalf("unknown wantNext %q", tc.wantNext)
 			}
-			release()
-			release()
 		})
 	}
 }

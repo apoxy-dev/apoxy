@@ -114,7 +114,9 @@ func TestVPCServiceReconciler(t *testing.T) {
 		name    string
 		objects []client.Object
 
-		wantEndpoints   []string
+		wantEndpoints []string
+		// wantAddrs are the member addresses. Nil skips the check.
+		wantAddrs       []string
 		wantReady       metav1.ConditionStatus
 		wantReadyReason string
 		wantReconciled  metav1.ConditionStatus
@@ -129,6 +131,22 @@ func TestVPCServiceReconciler(t *testing.T) {
 				tunnelWith("t-foreign", "other", "payments", "fd61::d/96"), // wrong network
 			},
 			wantEndpoints:   []string{"t-a", "t-b"},
+			wantReady:       metav1.ConditionTrue,
+			wantReadyReason: vpcv1alpha1.VPCServiceReasonEndpointsAvailable,
+			wantReconciled:  metav1.ConditionTrue,
+		},
+		{
+			// The Tunnel of an attachment has the attachment ID as its name and
+			// the address of the agent in its /96.
+			name: "attachment is an endpoint with the address of its agent",
+			objects: []client.Object{
+				corpNetwork(), paymentsService(),
+				tunnelWith("0123456789abcdef0123456789abcdef", "corp", "payments", "fd61::b00:1/96"),
+				tunnelWith("t-a", "corp", "payments", "fd61::a00:0/96", "100.64.0.1/32"),
+				tunnelWith("fedcba9876543210fedcba9876543210", "corp", "web", "fd61::c00:1/96"), // wrong selector
+			},
+			wantEndpoints:   []string{"0123456789abcdef0123456789abcdef", "t-a"},
+			wantAddrs:       []string{"fd61::b00:1", "fd61::a00:0", "100.64.0.1"},
 			wantReady:       metav1.ConditionTrue,
 			wantReadyReason: vpcv1alpha1.VPCServiceReasonEndpointsAvailable,
 			wantReconciled:  metav1.ConditionTrue,
@@ -230,6 +248,15 @@ func TestVPCServiceReconciler(t *testing.T) {
 			}
 			// Deterministically sorted by TunnelRef.Name.
 			assert.Equal(t, tc.wantEndpoints, nilIfEmpty(names))
+			if tc.wantAddrs != nil {
+				addrs, skipped := got.MemberAddrs()
+				assert.Empty(t, skipped)
+				gotAddrs := make([]string, len(addrs))
+				for i, a := range addrs {
+					gotAddrs[i] = a.String()
+				}
+				assert.Equal(t, tc.wantAddrs, gotAddrs)
+			}
 
 			ready := condition(t, &got, vpcv1alpha1.VPCServiceConditionReady)
 			assert.Equal(t, tc.wantReady, ready.Status)

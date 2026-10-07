@@ -10,6 +10,7 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -389,12 +390,66 @@ func TestAttach(t *testing.T) {
 				// A failed attach keeps no route and no address.
 				assert.Empty(t, routes)
 				assert.Zero(t, h.addrs.count())
+				assert.Empty(t, h.addrs.attachedCalls(), "the host got a failed attach as complete")
 				return
 			}
 			claims, err := VerifyGrant(res.Grant, h.relayRoots, time.Now())
 			require.NoError(t, err)
 			assert.ElementsMatch(t, []netip.Prefix{netip.MustParsePrefix(claims.Addresses[0]), netip.MustParsePrefix("10.9.0.0/16")}, routes)
 			assert.Equal(t, 1, h.addrs.count())
+		})
+	}
+}
+
+// TestAttachedCalls checks what the host gets for the attachments of one
+// session: one Attached call for each, and a Release when each one ends.
+func TestAttachedCalls(t *testing.T) {
+	cases := []struct {
+		name     string
+		attaches int
+		// end is how attachments end: "detach" is a Detach of the first one,
+		// "close" is the end of the session, "" is no end.
+		end      string
+		wantHeld int // Attachments that the host holds at the end.
+	}{
+		{"one attachment", 1, "", 1},
+		{"two attachments of one session", 2, "", 2},
+		{"detach of one of two", 2, "detach", 1},
+		{"session ends", 2, "close", 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ca := newCA(t)
+			h := newHarness(t, ca)
+			a := h.mustDial(t, ca.agentCert(t, vpcA, "laptop"))
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			seen := map[string]bool{}
+			for i := range tc.attaches {
+				res := attach(t, a, &dp.AttachRequest{Vpc: ref(vpcA), Name: fmt.Sprintf("agent-%d", i)})
+				claims, err := VerifyGrant(res.Grant, h.relayRoots, time.Now())
+				require.NoError(t, err)
+				// The call comes before the reply, with the addresses of the grant.
+				calls := h.addrs.attachedCalls()
+				require.Len(t, calls, i+1)
+				assert.Equal(t, res.AttachmentId, calls[i].id)
+				assert.Equal(t, claims.Addresses, prefixStrings(calls[i].addrs))
+				assert.False(t, seen[claims.Addresses[0]], "two attachments got the address %s", claims.Addresses[0])
+				seen[claims.Addresses[0]] = true
+			}
+			first := h.addrs.attachedCalls()[0].id
+
+			switch tc.end {
+			case "detach":
+				_, err := a.c.Detach(ctx, &dp.DetachRequest{AttachmentId: first})
+				require.NoError(t, err)
+			case "close":
+				require.NoError(t, a.qc.CloseWithError(0, ""))
+			}
+			require.Eventually(t, func() bool { return h.addrs.count() == tc.wantHeld }, 5*time.Second, 5*time.Millisecond,
+				"the host holds %d attachments, want %d", h.addrs.count(), tc.wantHeld)
+			assert.Len(t, h.addrs.attachedCalls(), tc.attaches)
 		})
 	}
 }
@@ -807,6 +862,7 @@ func TestAttachmentAddressLoss(t *testing.T) {
 			res, err := a.c.Attach(ctx, &dp.AttachRequest{Vpc: ref(vpcA), Name: "laptop"})
 			if tc.duringAssign {
 				require.Error(t, err)
+				assert.Empty(t, h.addrs.attachedCalls(), "the host got a failed attach as complete")
 			} else {
 				require.NoError(t, err)
 				lost := h.addrs.onLost(res.AttachmentId)

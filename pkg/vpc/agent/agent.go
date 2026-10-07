@@ -1143,7 +1143,7 @@ func parsePrefixes(ss []string) ([]netip.Prefix, error) {
 	return out, nil
 }
 
-// overlayAddr is the first address after the base of the first prefix.
+// overlayAddr is the address of the agent in the first prefix.
 func overlayAddr(prefixes []netip.Prefix) netip.Addr {
-	return prefixes[0].Addr().Next()
+	return relay.OverlayAddr(prefixes[0])
 }

@@ -77,6 +77,8 @@ func (f *vpcAddresses) Assign(context.Context, *vpcrelay.Attachment, func()) ([]
 	return []netip.Prefix{netip.MustParsePrefix(fmt.Sprintf("fd00:%x::/96", f.next))}, nil
 }
 
+func (f *vpcAddresses) Attached(*vpcrelay.Attachment) {}
+
 func (f *vpcAddresses) Release(*vpcrelay.Attachment) {}
 
 // vpcAgent is an agent connection to the relay on its own socket.

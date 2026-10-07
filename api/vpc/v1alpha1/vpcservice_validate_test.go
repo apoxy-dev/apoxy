@@ -194,3 +194,33 @@ func TestVPCServiceEndpointHasUsableAddress(t *testing.T) {
 		})
 	}
 }
+
+func TestVPCServiceMemberAddrs(t *testing.T) {
+	cases := []struct {
+		name        string
+		addrs       []string
+		want        []string
+		wantSkipped []string
+	}{
+		{name: "no addresses"},
+		{name: "prefix of a connection", addrs: []string{"fd61::a00:0/96", "100.64.0.1/32"}, want: []string{"fd61::a00:0", "100.64.0.1"}},
+		{name: "agent address of an attachment", addrs: []string{"fd61::a00:1/96"}, want: []string{"fd61::a00:1"}},
+		{name: "plain address", addrs: []string{"fd61::a"}, want: []string{"fd61::a"}},
+		{name: "garbage is skipped", addrs: []string{"nope", "fd61::1/96", ""}, want: []string{"fd61::1"}, wantSkipped: []string{"nope", ""}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := svc(func(s *VPCService) {
+				s.Status.Endpoints = []VPCServiceEndpoint{{TunnelRef: TunnelRef{Name: "t-a"}, Addresses: tc.addrs}}
+			})
+			addrs, skipped := s.MemberAddrs()
+			var got []string
+			for _, a := range addrs {
+				got = append(got, a.String())
+			}
+			assert.Equal(t, tc.want, got)
+			assert.Equal(t, tc.wantSkipped, skipped)
+		})
+	}
+}

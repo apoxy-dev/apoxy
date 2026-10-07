@@ -237,7 +237,8 @@ func (s *VPCService) DNSHostname() string {
 
 // MemberAddrs returns the service's member endpoint addresses from
 // status.endpoints. Members may be recorded as plain addresses or as prefixes
-// (overlay /96s); the base address is returned either way. Entries that parse
+// (overlay /96s). A prefix gives its address with the host bits: the base for
+// a connection, the agent address for an attachment. Entries that parse
 // as neither are returned in skipped so callers can log them with their own
 // context. This is the single parser for every DNS plane publishing
 // VPCService members (backplane/Envoy, workerd resident push) — family
@@ -256,8 +257,8 @@ func (s *VPCService) MemberAddrs() (addrs []netip.Addr, skipped []string) {
 	return addrs, skipped
 }
 
-// parseMemberAddr parses one recorded member address, accepting both a plain
-// address and an overlay prefix and returning the base address either way.
+// parseMemberAddr parses one recorded member address: a plain address, or an
+// overlay prefix, which gives its address with the host bits.
 func parseMemberAddr(s string) (netip.Addr, bool) {
 	if addr, err := netip.ParseAddr(s); err == nil {
 		return addr, true

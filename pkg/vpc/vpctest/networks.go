@@ -55,6 +55,8 @@ func (a *Addresses) Assign(_ context.Context, att *relay.Attachment, _ func()) (
 	return []netip.Prefix{netip.MustParsePrefix(fmt.Sprintf("fd61:706f:7879:12:3400:%x::/96", a.next))}, nil
 }
 
+func (a *Addresses) Attached(*relay.Attachment) {}
+
 func (a *Addresses) Release(att *relay.Attachment) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
