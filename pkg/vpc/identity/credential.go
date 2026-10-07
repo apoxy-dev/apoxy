@@ -8,6 +8,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"time"
@@ -24,6 +25,8 @@ type Credential struct {
 	// roots mean the system roots.
 	Relays     []Relay
 	RelayRoots []byte
+
+	renewAt time.Time
 }
 
 // Relay is one relay that the agent can dial.
@@ -55,7 +58,21 @@ func NewCredential(key *ecdsa.PrivateKey, certPEM, caBundle []byte) (*Credential
 	if _, err := NewPool(caBundle); err != nil {
 		return nil, err
 	}
-	return &Credential{Key: key, Cert: cert, CABundle: caBundle, ID: id}, nil
+	return &Credential{Key: key, Cert: cert, CABundle: caBundle, ID: id, renewAt: renewTime(cert)}, nil
+}
+
+// renewJitter returns a random duration from 0 to n, without n. Tests replace it.
+var renewJitter = rand.N[time.Duration]
+
+// renewTime returns a random time from 1/2 to 5/6 of the life of cert. Agents
+// that enroll at the same time then renew at different times.
+func renewTime(cert *x509.Certificate) time.Time {
+	life := cert.NotAfter.Sub(cert.NotBefore)
+	at := life / 2
+	if spread := life / 3; spread > 0 {
+		at += renewJitter(spread)
+	}
+	return cert.NotBefore.Add(at)
 }
 
 // SetRelays sets the relays and their PEM roots. Empty roots mean the
@@ -80,11 +97,9 @@ func (c *Credential) RelayPool() *x509.CertPool {
 	return pool
 }
 
-// RenewAt is the time at 2/3 of the cert life.
-func (c *Credential) RenewAt() time.Time {
-	life := c.Cert.NotAfter.Sub(c.Cert.NotBefore)
-	return c.Cert.NotBefore.Add(life * 2 / 3)
-}
+// RenewAt is the time to renew the cert: a random time from 1/2 to 5/6 of the
+// cert life. NewCredential sets it one time. The credential file does not have it.
+func (c *Credential) RenewAt() time.Time { return c.renewAt }
 
 // TLSCertificate returns the key and cert for a tls.Config.
 func (c *Credential) TLSCertificate() *tls.Certificate {

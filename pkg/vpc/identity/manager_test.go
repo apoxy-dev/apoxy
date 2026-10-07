@@ -1,6 +1,7 @@
 package identity
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"path/filepath"
@@ -45,6 +46,7 @@ func TestManagerStart(t *testing.T) {
 	cases := []struct {
 		name       string
 		cachedAt   time.Duration // cert NotBefore relative to now; zero means no cache
+		renewAt    time.Duration // Renew time of the cached cert after its NotBefore. Zero means 16 h.
 		noRelays   bool          // The cached cert has no relays.
 		down       bool          // Enroll fails.
 		wantEnroll bool
@@ -55,6 +57,10 @@ func TestManagerStart(t *testing.T) {
 		{name: "fresh cache", cachedAt: -time.Hour, wantCached: true},
 		{name: "cache with no relays", cachedAt: -time.Hour, noRelays: true, wantEnroll: true},
 		{name: "cache past renew time", cachedAt: -17 * time.Hour, wantEnroll: true},
+		{name: "cache before a late renew time", cachedAt: -17 * time.Hour, renewAt: 20*time.Hour - 1, wantCached: true},
+		{name: "cache past an early renew time", cachedAt: -13 * time.Hour, renewAt: 12 * time.Hour, wantEnroll: true},
+		{name: "cache before the earliest renew time", cachedAt: -11 * time.Hour, renewAt: 12 * time.Hour, wantCached: true},
+		{name: "cache past the latest renew time", cachedAt: -20 * time.Hour, renewAt: 20*time.Hour - 1, wantEnroll: true},
 		{name: "expired cache", cachedAt: -25 * time.Hour, wantEnroll: true},
 		{name: "cache past renew time, apiserver down", cachedAt: -17 * time.Hour, down: true, wantEnroll: true, wantCached: true},
 		{name: "expired cache, apiserver down", cachedAt: -25 * time.Hour, down: true, wantEnroll: true, wantErr: true},
@@ -64,6 +70,7 @@ func TestManagerStart(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "cred.json")
 			now := func() time.Time { return testNow }
+			renewAfter(t, cmp.Or(tc.renewAt, 16*time.Hour))
 			var cached *Credential
 			if tc.cachedAt != 0 {
 				relays := testRelays
@@ -111,6 +118,7 @@ func TestManagerStart(t *testing.T) {
 }
 
 func TestManagerRun(t *testing.T) {
+	renewAfter(t, 14*time.Hour)
 	ca := newTestCA(t, "ca")
 	path := filepath.Join(t.TempDir(), "cred.json")
 	now := testNow
@@ -130,9 +138,9 @@ func TestManagerRun(t *testing.T) {
 	done := make(chan error)
 	go func() { done <- m.Run(ctx) }()
 
-	// The first wait ends at 2/3 of the cert life.
-	assert.Equal(t, 16*time.Hour, <-waits)
-	now = now.Add(16 * time.Hour)
+	// The first wait ends at the renew time of the cert.
+	assert.Equal(t, 14*time.Hour, <-waits)
+	now = now.Add(14 * time.Hour)
 	f.fail = true
 	fire <- now
 
@@ -142,8 +150,8 @@ func TestManagerRun(t *testing.T) {
 	now = now.Add(time.Minute)
 	fire <- now
 
-	// After a renew the next wait is 2/3 of the new cert life.
-	assert.Equal(t, 16*time.Hour, <-waits)
+	// After a renew the next wait ends at the renew time of the new cert.
+	assert.Equal(t, 14*time.Hour, <-waits)
 	second := m.Current()
 	assert.False(t, second.Key.Equal(first.Key))
 	assert.True(t, second.Cert.NotBefore.Equal(now))

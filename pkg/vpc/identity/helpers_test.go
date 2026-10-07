@@ -73,6 +73,15 @@ func (ca *testCA) issue(t *testing.T, pub crypto.PublicKey, id ID, notBefore tim
 	return cert
 }
 
+// renewAfter makes the new credentials of the test renew at d after
+// NotBefore. For a cert of CertLifetime, d is from 12 h to 20 h.
+func renewAfter(t *testing.T, d time.Duration) {
+	t.Helper()
+	old := renewJitter
+	renewJitter = func(time.Duration) time.Duration { return d - CertLifetime/2 }
+	t.Cleanup(func() { renewJitter = old })
+}
+
 func newKey(t *testing.T) *ecdsa.PrivateKey {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)

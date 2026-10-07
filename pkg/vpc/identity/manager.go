@@ -13,8 +13,8 @@ import (
 type EnrollFunc func(ctx context.Context) (*Credential, error)
 
 // Manager keeps a valid agent credential. It uses the disk cache when the
-// cached cert is before its renew time, and renews with a new key at 2/3 of
-// the cert life.
+// cached cert is before its renew time, and renews with a new key at the
+// renew time of the cert.
 type Manager struct {
 	path       string
 	enroll     EnrollFunc
