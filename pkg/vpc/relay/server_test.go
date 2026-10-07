@@ -311,18 +311,27 @@ func TestQueueRoute(t *testing.T) {
 	s := addSession(t, r, vpcA, "s", "192.0.2.1:1")
 	o := addSession(t, r, vpcA, "o", "192.0.2.2:1")
 	rt := route{netip.MustParsePrefix("10.0.0.0/8"), "a"}
+	added := &dp.RouteDelta{Add: []*dp.Route{{Prefix: "10.0.0.0/8", Origin: "a"}}}
 	cases := []struct {
 		name string
 		ops  []bool // Changes of rt: true adds, false removes.
 		own  bool   // The owner of rt has the subject of s.
 		want *dp.RouteDelta
+		// Agent names of s and of the owner, from Hello. An agent from before
+		// revision 2 has no name.
+		self, owner string
 	}{
-		{"first take with no routes", nil, false, &dp.RouteDelta{Rev: 1}},
-		{"add", []bool{true}, false, &dp.RouteDelta{Add: []*dp.Route{{Prefix: "10.0.0.0/8", Origin: "a"}}}},
-		{"add then remove", []bool{true, false}, false, nil},
-		{"remove then add", []bool{false, true}, false, nil},
-		{"remove", []bool{false}, false, &dp.RouteDelta{Remove: []*dp.Route{{Prefix: "10.0.0.0/8", Origin: "a"}}}},
-		{"route of its own subject", []bool{true}, true, nil},
+		{"first take with no routes", nil, false, &dp.RouteDelta{Rev: 1}, "", ""},
+		{"add", []bool{true}, false, added, "", ""},
+		{"add then remove", []bool{true, false}, false, nil, "", ""},
+		{"remove then add", []bool{false, true}, false, nil, "", ""},
+		{"remove", []bool{false}, false, &dp.RouteDelta{Remove: []*dp.Route{{Prefix: "10.0.0.0/8", Origin: "a"}}}, "", ""},
+		{"route of its own subject", []bool{true}, true, nil, "", ""},
+		{"route of its own agent", []bool{true}, true, nil, "x", "x"},
+		{"route of another agent of its subject", []bool{true}, true, added, "x", "y"},
+		{"route of its subject, owner with no name", []bool{true}, true, nil, "x", ""},
+		{"route of its subject, session with no name", []bool{true}, true, nil, "", "y"},
+		{"other subject with the same name", []bool{true}, false, added, "x", "x"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -331,6 +340,7 @@ func TestQueueRoute(t *testing.T) {
 				owner = addSession(t, r, vpcA, "s", "192.0.2.3:1").Session
 			}
 			r.mu.Lock()
+			s.name, owner.name = tc.self, tc.owner
 			for _, add := range tc.ops {
 				s.queueRoute(rt, owner, add)
 			}
@@ -342,10 +352,11 @@ func TestQueueRoute(t *testing.T) {
 			}
 			require.Len(t, msgs, 1)
 			got := msgs[0].GetRouteDelta()
-			if tc.want.Rev == 0 {
-				tc.want.Rev = got.Rev
+			want := proto.Clone(tc.want).(*dp.RouteDelta)
+			if want.Rev == 0 {
+				want.Rev = got.Rev
 			}
-			assert.Empty(t, cmp.Diff(tc.want, got, protocmp.Transform()))
+			assert.Empty(t, cmp.Diff(want, got, protocmp.Transform()))
 		})
 	}
 }
@@ -556,6 +567,13 @@ func (w *takeWorld) detach(name, id string) {
 
 func (w *takeWorld) close(name string) { w.r.removeSession(w.sess[name]) }
 
+// rename gives session name the agent name of a Hello.
+func (w *takeWorld) rename(name, agent string) {
+	w.r.mu.Lock()
+	defer w.r.mu.Unlock()
+	w.sess[name].name = agent
+}
+
 // changes returns the route changes that wait for session name, as
 // "-origin prefix" and "+origin prefix". A session of the agent gets no route
 // of the agent.
@@ -603,6 +621,26 @@ func TestTakeOver(t *testing.T) {
 			name:  "other agent cannot take over",
 			steps: func(w *takeWorld) { w.attach("other", "y", p) },
 			code:  rpc.AlreadyExists, owner: "x1",
+		},
+		{
+			name:  "same agent name takes over",
+			steps: func(w *takeWorld) { w.rename("old", "a"); w.rename("new", "a"); w.attach("new", "x2", p) },
+			owner: "x2", delta: []string{"-x1 " + p, "+x2 " + p},
+		},
+		{
+			name:  "other agent name of the subject cannot take over",
+			steps: func(w *takeWorld) { w.rename("old", "a"); w.rename("new", "b"); w.attach("new", "x2", p) },
+			code:  rpc.AlreadyExists, owner: "x1",
+		},
+		{
+			name:  "session with no agent name takes over",
+			steps: func(w *takeWorld) { w.rename("old", "a"); w.attach("new", "x2", p) },
+			owner: "x2", delta: []string{"-x1 " + p, "+x2 " + p},
+		},
+		{
+			name:  "session with an agent name takes over from a session with no name",
+			steps: func(w *takeWorld) { w.rename("new", "b"); w.attach("new", "x2", p) },
+			owner: "x2", delta: []string{"-x1 " + p, "+x2 " + p},
 		},
 		{
 			name:  "close of the old session keeps the route",

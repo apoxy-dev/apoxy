@@ -3,6 +3,7 @@
 package relay
 
 import (
+	"fmt"
 	"net/netip"
 	"sync"
 	"testing"
@@ -198,14 +199,14 @@ func TestSourceAfterClose(t *testing.T) {
 			switch tc.other {
 			case "session":
 				other = addSession(t, r, vpcA, "agent", addr, "fd00::1/128").Session
-				require.NoError(t, r.openSync(other, dp.Mode_MODE_PSP, ref(vpcA)))
+				require.NoError(t, r.openSync(other, dp.Mode_MODE_PSP, ref(vpcA), ""))
 				require.NoError(t, r.registerSPI(other, register(vpcA, "fd00::2", time.Minute, 1), t0))
 			case "shard dial":
 				other = addSession(t, r, vpcA, "agent", addr).Session
 			}
 			// A newer session from the same socket takes the source, then closes.
 			newer := addSession(t, r, vpcA, "agent", addr).Session
-			require.NoError(t, r.openSync(newer, dp.Mode_MODE_PSP, ref(vpcA)))
+			require.NoError(t, r.openSync(newer, dp.Mode_MODE_PSP, ref(vpcA), ""))
 			require.Same(t, newer, r.bySource[netip.MustParseAddrPort(addr)])
 			r.removeSession(newer)
 
@@ -247,10 +248,10 @@ func TestTwinRows(t *testing.T) {
 			addSession(t, r, vpcA, "receiver", "192.0.2.2:2000", "fd00::2/128")
 			addSession(t, r, vpcB, "receiver", "192.0.2.4:2000", "fd00::2/128")
 			old := addSession(t, r, vpcA, "agent", addr).Session
-			require.NoError(t, r.openSync(old, dp.Mode_MODE_PSP, ref(vpcA)))
+			require.NoError(t, r.openSync(old, dp.Mode_MODE_PSP, ref(vpcA), ""))
 			require.NoError(t, r.registerSPI(old, register(vpcA, "fd00::2", time.Minute, 1), t0))
 			next := addSession(t, r, tc.vpc, tc.agent, addr).Session
-			require.NoError(t, r.openSync(next, dp.Mode_MODE_PSP, ref(tc.vpc)))
+			require.NoError(t, r.openSync(next, dp.Mode_MODE_PSP, ref(tc.vpc), ""))
 			require.Same(t, next, r.bySource[netip.MustParseAddrPort(addr)])
 			if tc.agent == "agent" {
 				assert.Equal(t, rpc.AlreadyExists, codeOf(r.registerSPI(next, register(vpcA, "fd00::2", time.Minute, 1), t0)))
@@ -429,6 +430,9 @@ func TestResolvePeer(t *testing.T) {
 			r.addSession(peer, t0)
 			require.NoError(t, r.AddRoute(peer, netip.MustParsePrefix("fd00::2/128"), "att"))
 			require.NoError(t, r.AddRoute(peer, netip.MustParsePrefix("10.1.2.0/24"), "att"))
+			r.mu.Lock()
+			peer.attachments = []*Attachment{{ID: "att"}, {ID: "att-2"}}
+			r.mu.Unlock()
 			// A shorter route of another session.
 			addSession(t, r, vpcA, "other", "192.0.2.3:3000", "10.0.0.0/8")
 
@@ -438,7 +442,69 @@ func TestResolvePeer(t *testing.T) {
 				assert.Equal(t, tc.want.Reach, got.Reach)
 				assert.Equal(t, tc.want.P2P, got.P2P)
 				assert.Equal(t, "peer", got.Subject)
+				assert.Equal(t, []string{"att", "att-2"}, got.AttachmentIds, "all attachments of the session of the peer")
 			}
+		})
+	}
+}
+
+// TestHeir checks which attachment gets an advertised route when its owner
+// goes: the newest one that lists the route, on an open session of the agent.
+func TestHeir(t *testing.T) {
+	p := netip.MustParsePrefix("10.9.0.0/16")
+	// member is a session with one attachment.
+	type member struct {
+		subject, name string
+		seq           uint64 // Attach order.
+		closed        bool
+		noRoute       bool // The attachment does not list p.
+	}
+	cases := []struct {
+		name   string
+		owner  string // Agent name of the session that loses p. Its subject is "laptop".
+		others []member
+		want   int // Index of the heir in others. -1 means no heir.
+	}{
+		{name: "newest attachment of the agent", owner: "a", others: []member{{subject: "laptop", name: "a", seq: 1}, {subject: "laptop", name: "a", seq: 2}}, want: 1},
+		{name: "other agent of the subject is newer", owner: "a", others: []member{{subject: "laptop", name: "a", seq: 1}, {subject: "laptop", name: "b", seq: 2}}, want: 0},
+		{name: "only another agent of the subject", owner: "a", others: []member{{subject: "laptop", name: "b", seq: 1}}, want: -1},
+		{name: "same name in another subject", owner: "a", others: []member{{subject: "desktop", name: "a", seq: 1}}, want: -1},
+		// A session with no name is of the same agent as each session of its subject.
+		{name: "owner with no name", others: []member{{subject: "laptop", name: "a", seq: 1}, {subject: "laptop", name: "b", seq: 2}}, want: 1},
+		{name: "session with no name", owner: "a", others: []member{{subject: "laptop", name: "a", seq: 1}, {subject: "laptop", seq: 2}}, want: 1},
+		{name: "no names", others: []member{{subject: "laptop", seq: 2}, {subject: "laptop", seq: 1}, {subject: "desktop", seq: 3}}, want: 0},
+		{name: "closed session", owner: "a", others: []member{{subject: "laptop", name: "a", seq: 1, closed: true}}, want: -1},
+		{name: "attachment without the route", owner: "a", others: []member{{subject: "laptop", name: "a", seq: 1, noRoute: true}}, want: -1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			session := func(subject, name string) *Session {
+				s := newSession(Identity{VPC: vpcA, ID: agentID(vpcA, subject)}, func() netip.AddrPort { return netip.AddrPort{} })
+				s.name = name
+				return s
+			}
+			d := &domain{members: map[*Session]struct{}{}}
+			var others []*Session
+			for i, m := range tc.others {
+				s := session(m.subject, m.name)
+				s.closed = m.closed
+				a := &Attachment{ID: fmt.Sprintf("x%d", i), seq: m.seq}
+				if !m.noRoute {
+					a.Routes = []netip.Prefix{p}
+				}
+				s.attachments = []*Attachment{a}
+				d.members[s] = struct{}{}
+				others = append(others, s)
+			}
+			hs, ha := d.heir(session("laptop", tc.owner), p)
+			if tc.want < 0 {
+				assert.Nil(t, hs)
+				assert.Nil(t, ha)
+				return
+			}
+			assert.Same(t, others[tc.want], hs)
+			require.NotNil(t, ha)
+			assert.Equal(t, fmt.Sprintf("x%d", tc.want), ha.ID)
 		})
 	}
 }

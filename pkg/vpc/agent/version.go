@@ -17,6 +17,11 @@ import (
 // grant. Run returns it when a relay refuses the agent: the user must upgrade.
 var ErrUpgrade = errors.New("agent needs an upgrade")
 
+// agentNames is the first revision in which a relay knows the agents of one
+// subject by the name in Hello, and gives the attachments of a peer in
+// ResolvePeer.
+const agentNames = 2
+
 // errRevision is the admit error for a peer whose revision is below the
 // minimum of this agent.
 var errRevision = errors.New("revision is too old")

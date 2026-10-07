@@ -177,7 +177,7 @@ func newAttachment(vpc VPCKey, subject string, in *dp.AttachRequest) (*Attachmen
 }
 
 // attach adds the routes of a to s. It adds all of them or none. An
-// advertised route of an older attachment of the same subject moves to a.
+// advertised route of an older attachment of the same agent moves to a.
 func (r *Router) attach(s *Session, a *Attachment) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -188,7 +188,7 @@ func (r *Router) attach(s *Session, a *Attachment) error {
 	// takes reports whether a gets p: p has no route, or a takes it over.
 	takes := func(p netip.Prefix, advertised bool) bool {
 		o, ok := d.routes[p]
-		return !ok || (advertised && o.advertised && o.s.id.ID == s.id.ID && o.origin != a.ID)
+		return !ok || (advertised && o.advertised && o.s.sameAgent(s) && o.origin != a.ID)
 	}
 	// Check all prefixes first, so that a failed attach changes nothing.
 	for i, p := range slices.Concat(a.Addresses, a.Routes) {

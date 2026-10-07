@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/netip"
 	"testing"
 	"time"
 
@@ -103,6 +104,7 @@ func TestSessionRevision(t *testing.T) {
 		upgrade string          // Reason of the UPGRADE close. Empty means that the session opens.
 	}{
 		{name: "agent from before revisions", welcome: this},
+		{name: "agent of revision 1", agent: &dp.Version{Revision: 1, Build: "revision-1"}, welcome: this},
 		{name: "agent of this revision", agent: this, welcome: this},
 		{name: "agent of a later revision", agent: &dp.Version{Revision: dp.Revision + 1, Build: "later"}, welcome: this},
 		{name: "relay from before revisions", relay: []func(*Router){withVersion(nil)}, agent: this},
@@ -155,6 +157,93 @@ func TestSessionRevision(t *testing.T) {
 			res := attach(t, a, &dp.AttachRequest{Vpc: ref(vpcA), Name: "laptop"})
 			_, err = VerifyGrant(res.GetGrant(), h.relayRoots, time.Now())
 			assert.NoError(t, err)
+		})
+	}
+}
+
+// TestAgentNames opens two sessions with one cert name. From revision 2 an
+// agent sends its name in Hello, and two names are two agents. With no name
+// in one of the sessions, the two sessions are one agent, as before revision 2.
+func TestAgentNames(t *testing.T) {
+	const advertised = "10.9.0.0/16"
+	this := dp.LocalVersion(build.BuildVersion)
+	one := &dp.Version{Revision: 1, Build: "revision-1"}
+	cases := []struct {
+		name          string
+		first, second *dp.Hello
+		two           bool // The relay has the two sessions as two agents.
+	}{
+		{name: "two sessions of revision 1", first: &dp.Hello{Version: one}, second: &dp.Hello{Version: one}},
+		{name: "two sessions from before revisions", first: &dp.Hello{}, second: &dp.Hello{}},
+		{name: "revision 1, then a name", first: &dp.Hello{Version: one}, second: &dp.Hello{Version: this, Name: "b"}},
+		{name: "a name, then revision 1", first: &dp.Hello{Version: this, Name: "a"}, second: &dp.Hello{Version: one}},
+		{name: "one name", first: &dp.Hello{Version: this, Name: "a"}, second: &dp.Hello{Version: this, Name: "a"}},
+		{name: "two names", first: &dp.Hello{Version: this, Name: "a"}, second: &dp.Hello{Version: this, Name: "b"}, two: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ca := newCA(t)
+			h := newHarness(t, ca)
+			// start opens a session in QUIC mode, where the first RouteDelta comes after Config.
+			start := func(first *dp.Hello) (agent, syncStream) {
+				a := h.mustDial(t, ca.agentCert(t, vpcA, "shared"))
+				first.Mode = dp.Mode_MODE_QUIC
+				st := hello(t, a, first)
+				m, err := st.Recv()
+				require.NoError(t, err)
+				require.NotNil(t, m.GetWelcome(), "first message: %v", m)
+				m, err = st.Recv()
+				require.NoError(t, err)
+				require.NotNil(t, m.GetConfig(), "second message: %v", m)
+				return a, st
+			}
+			routes := func(d *dp.RouteDelta) []string {
+				var out []string
+				for _, rt := range d.GetAdd() {
+					out = append(out, rt.GetOrigin()+" "+rt.GetPrefix())
+				}
+				return out
+			}
+			a, stA := start(tc.first)
+			resA := attach(t, a, &dp.AttachRequest{Vpc: ref(vpcA), Name: "a", Routes: []string{advertised}})
+			claimsA, err := VerifyGrant(resA.GetGrant(), h.relayRoots, time.Now())
+			require.NoError(t, err)
+
+			// The first RouteDelta of the second session has the routes of the
+			// first session only when they are two agents.
+			b, stB := start(tc.second)
+			m, err := stB.Recv()
+			require.NoError(t, err)
+			require.NotNil(t, m.GetRouteDelta(), "third message: %v", m)
+			var want []string
+			if tc.two {
+				want = []string{resA.GetAttachmentId() + " " + advertised, resA.GetAttachmentId() + " " + claimsA.GetAddresses()[0]}
+			}
+			assert.Equal(t, want, routes(m.GetRouteDelta()))
+
+			// The address route of the second session goes to the first session
+			// only when they are two agents.
+			resB := attach(t, b, &dp.AttachRequest{Vpc: ref(vpcA), Name: "b"})
+			claimsB, err := VerifyGrant(resB.GetGrant(), h.relayRoots, time.Now())
+			require.NoError(t, err)
+			if tc.two {
+				assert.Equal(t, []string{resB.GetAttachmentId() + " " + claimsB.GetAddresses()[0]}, routes(recv(t, stA).GetRouteDelta()))
+			}
+
+			// One agent moves its advertised route to its new attachment. Another
+			// agent of the subject cannot take it.
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_, err = b.c.Attach(ctx, &dp.AttachRequest{Vpc: ref(vpcA), Name: "b-2", Routes: []string{advertised}})
+			if tc.two {
+				assert.Equal(t, rpc.AlreadyExists, rpc.CodeOf(err), "error: %v", err)
+			} else {
+				assert.NoError(t, err)
+			}
+			h.r.mu.RLock()
+			owner := h.r.domains[vpcA].routes[netip.MustParsePrefix(advertised)]
+			h.r.mu.RUnlock()
+			assert.Equal(t, tc.two, owner.origin == resA.GetAttachmentId(), "the first attachment keeps the route")
 		})
 	}
 }

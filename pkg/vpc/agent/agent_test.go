@@ -164,9 +164,25 @@ func TestSharedIdentity(t *testing.T) {
 			assert.Same(t, p1, onlyPeer(t, a1.a), "a1 keeps its peer session")
 			assert.NoError(t, p1.qc.Context().Err(), "the peer session of a1 is open")
 
-			// a1 and a2 dial each other at the same time.
+			// d dials a1, then a2. The address of a2 is not a second attachment
+			// of a1, so d does not wait for a grant from a1.
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
+			d := w.agent(t, "d", r, agentOptions{})
+			d.attached(t)
+			require.NoError(t, d.a.Connect(ctx, e1.addr))
+			start := time.Now()
+			require.NoError(t, d.a.Connect(ctx, e2.addr))
+			assert.Less(t, time.Since(start), duplicateWait/2, "first connect to a second agent of the subject")
+			assert.Equal(t, 2, d.a.Status().Peers, "d has a peer session for each agent")
+
+			// Each agent of the subject gets the address route of the other.
+			require.Eventually(t, func() bool {
+				return slices.Contains(a1.routeSet(), e2.prefixes[0]) && slices.Contains(a2.routeSet(), e1.prefixes[0])
+			}, 5*time.Second, 10*time.Millisecond, "a1 and a2 get the address route of each other")
+
+			// a1 and a2 dial each other at the same time.
+			n1, n2 := peerCount(a1.a), peerCount(a2.a)
 			var err1, err2 error
 			var wg sync.WaitGroup
 			wg.Go(func() { err1 = a1.a.Connect(ctx, e2.addr) })
@@ -180,7 +196,7 @@ func TestSharedIdentity(t *testing.T) {
 				// A QUIC pair keeps the two sessions of crossed dials.
 				return
 			}
-			require.Eventually(t, func() bool { return peerCount(a1.a) == 2 && peerCount(a2.a) == 2 },
+			require.Eventually(t, func() bool { return peerCount(a1.a) == n1+1 && peerCount(a2.a) == n2+1 },
 				5*time.Second, 10*time.Millisecond, "one session between a1 and a2 stays")
 		})
 	}

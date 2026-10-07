@@ -134,7 +134,7 @@ func TestLanePortsEnd(t *testing.T) {
 		{
 			name: "session joins as a shard",
 			run: func(t *testing.T, e env) (*Session, string) {
-				require.NoError(t, e.r.openSync(e.snd.Session, dp.Mode_MODE_QUIC, ref(vpcA)))
+				require.NoError(t, e.r.openSync(e.snd.Session, dp.Mode_MODE_QUIC, ref(vpcA), ""))
 				require.NoError(t, e.r.attach(e.snd.Session, &Attachment{ID: "att-sender"}))
 				sh := newSession(e.snd.id, e.snd.remote)
 				e.r.addSession(sh, t0)
@@ -173,13 +173,13 @@ func TestLaneTwin(t *testing.T) {
 	const addr, lane = "192.0.2.1:1000", "192.0.2.1:2001"
 	r := NewRouter(nil, Config{LaneSources: MaxLaneSources})
 	old := addSession(t, r, vpcA, "sender", addr, "fd00::1/128")
-	require.NoError(t, r.openSync(old.Session, dp.Mode_MODE_PSP, ref(vpcA)))
+	require.NoError(t, r.openSync(old.Session, dp.Mode_MODE_PSP, ref(vpcA), ""))
 	rcv := addSession(t, r, vpcA, "receiver", "192.0.2.2:2000", "fd00::2/128")
 	require.NoError(t, r.registerLanes(old.Session, []uint32{2001}, false))
 	require.NoError(t, r.registerSPI(old.Session, registerLanes(vpcA, "fd00::2", []uint32{1}, []uint32{1}), t0))
 
 	next := addSession(t, r, vpcA, "sender", addr)
-	require.NoError(t, r.openSync(next.Session, dp.Mode_MODE_PSP, ref(vpcA)))
+	require.NoError(t, r.openSync(next.Session, dp.Mode_MODE_PSP, ref(vpcA), ""))
 	require.NoError(t, r.registerLanes(next.Session, []uint32{2001}, false))
 	owner := func() *Session {
 		r.mu.RLock()

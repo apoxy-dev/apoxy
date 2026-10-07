@@ -94,6 +94,10 @@ message Hello {
   bool spare = 5;
   // Revision of the agent. Not set by a build from before revisions.
   Version version = 6;
+  // Name of the base attachment of the agent. Many agents can have one SPIFFE
+  // ID. Two sessions with one SPIFFE ID are one agent when their names are
+  // equal, or when one of them has no name.
+  string name = 7;
 }
 
 // Shard joins a connection to the session of an attachment. The session
@@ -225,6 +229,8 @@ message ResolvePeerResponse {
   bool p2p = 3;
   // SPIFFE ID of the peer. Set for REACH_LOCAL.
   string subject = 4;
+  // Attachments of the session that has the address. Set for REACH_LOCAL.
+  repeated string attachment_ids = 5;
 }
 
 message RegisterSPIRequest {

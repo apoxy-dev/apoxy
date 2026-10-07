@@ -660,7 +660,7 @@ func (rc *relayConn) hello(begin time.Time, spare bool) error {
 	}
 	rc.st = st
 	if err := st.Send(&dp.SessionRequest{Msg: &dp.SessionRequest_Hello{Hello: &dp.Hello{
-		Mode: rc.mode, FallbackReason: rc.reason, Spare: spare, Version: rc.a.ver,
+		Mode: rc.mode, FallbackReason: rc.reason, Spare: spare, Version: rc.a.ver, Name: rc.a.cfg.Name,
 	}}}); err != nil {
 		return err
 	}

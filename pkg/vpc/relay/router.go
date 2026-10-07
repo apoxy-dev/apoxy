@@ -182,6 +182,7 @@ type Session struct {
 	attachments []*Attachment
 	closed      bool
 	version     *dp.Version // Version of the agent, from Hello. Nil is revision 0.
+	name        string      // Name of the agent, from Hello. Empty before revision 2.
 	sync        syncState
 	shardOf     *Session                     // The owner session of a shard.
 	twin        *Session                     // Older session of the agent socket. Forward also uses its rows.
@@ -196,6 +197,13 @@ type Session struct {
 
 // Identity returns the identity of s.
 func (s *Session) Identity() Identity { return s.id }
+
+// sameAgent reports whether s and o are sessions of one agent. Many agents
+// can have one subject, each with its own name. A session with no name is of
+// the same agent as each session of its subject. Router.mu must be held.
+func (s *Session) sameAgent(o *Session) bool {
+	return s.id.ID == o.id.ID && (s.name == o.name || s.name == "" || o.name == "")
+}
 
 // row forwards the packets of one sender lane (SPI) to one receiver.
 type row struct {
@@ -229,7 +237,7 @@ type owner struct {
 	s      *Session
 	origin string
 	// advertised is set for a prefix from Attachment.Routes. The newest live
-	// attachment of the subject that lists it owns it.
+	// attachment of the agent that lists it owns it.
 	advertised bool
 }
 
@@ -314,7 +322,7 @@ func (r *Router) addSession(s *Session, now time.Time) {
 	r.addProber(s)
 	d := r.domain(s.id.VPC)
 	d.members[s] = struct{}{}
-	// All sessions of the agent can send from the routes of the agent.
+	// All sessions of the subject can send from the routes of the subject.
 	s.sources = func(a netip.Addr) bool {
 		o, ok := d.fast.Lookup(a)
 		return ok && (o == s || o.id.ID == s.id.ID)
@@ -512,11 +520,11 @@ func (r *Router) setOwner(d *domain, p netip.Prefix, o owner) {
 }
 
 // dropRoute removes the route p of s. An advertised route goes to the newest
-// live attachment of the subject that lists it, if there is one.
+// live attachment of the agent that lists it, if there is one.
 func (r *Router) dropRoute(s *Session, p netip.Prefix) {
 	if d := r.domains[s.id.VPC]; d != nil {
 		if o := d.routes[p]; o.s == s && o.advertised {
-			if hs, ha := d.heir(s.id.ID, p); hs != nil {
+			if hs, ha := d.heir(s, p); hs != nil {
 				r.setOwner(d, p, owner{hs, ha.ID, true})
 				return
 			}
@@ -526,13 +534,13 @@ func (r *Router) dropRoute(s *Session, p netip.Prefix) {
 	s.routes = slices.DeleteFunc(s.routes, func(q netip.Prefix) bool { return q == p })
 }
 
-// heir returns the newest attachment of subject on an open session that lists
-// the route p.
-func (d *domain) heir(subject string, p netip.Prefix) (*Session, *Attachment) {
+// heir returns the newest attachment that lists the route p, on an open
+// session of the agent of s.
+func (d *domain) heir(s *Session, p netip.Prefix) (*Session, *Attachment) {
 	var hs *Session
 	var ha *Attachment
 	for m := range d.members {
-		if m.closed || m.id.ID != subject {
+		if m.closed || !m.sameAgent(s) {
 			continue
 		}
 		for _, a := range m.attachments {

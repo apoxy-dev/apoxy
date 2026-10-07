@@ -229,7 +229,7 @@ func (a *Agent) connect(ctx context.Context, rc *relayConn, dst netip.Addr, res 
 				return err
 			}
 		}
-		if p = a.waitGrant(ctx, rc, dst, res.GetSubject()); p != nil {
+		if p = a.waitGrant(ctx, rc, dst, res); p != nil {
 			return a.waitKeys(ctx, p, dst)
 		}
 		p, err = a.dial(ctx, rc, dst, res)

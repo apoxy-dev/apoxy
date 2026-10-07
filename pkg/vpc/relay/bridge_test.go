@@ -366,7 +366,7 @@ func localSession(tb testing.TB, r *Router, name, addr, prefix string, mode dp.M
 	s.sendDatagram = func([]byte) error { return nil }
 	r.addSession(s, t0)
 	require.NoError(tb, r.AddRoute(s, netip.MustParsePrefix(prefix), "att-"+name))
-	require.NoError(tb, r.openSync(s, mode, ref(vpcA)))
+	require.NoError(tb, r.openSync(s, mode, ref(vpcA), ""))
 	return s
 }
 

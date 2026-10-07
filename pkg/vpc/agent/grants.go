@@ -268,11 +268,12 @@ func (a *Agent) addGrants(p *peer, gs []*dp.AttachmentGrant) error {
 	return errors.Join(errs...)
 }
 
-// waitGrant returns the peer session on rc that covers dst. When dst is another
-// attachment of an open peer with subject, its grant can come after its route,
-// so waitGrant waits for it up to duplicateWait. Else it returns nil.
-func (a *Agent) waitGrant(ctx context.Context, rc *relayConn, dst netip.Addr, subject string) *peer {
-	if subject == "" {
+// waitGrant returns the peer session on rc that covers dst. res is the
+// ResolvePeer answer for dst. When dst is another attachment of an open peer,
+// its grant can come after its route, so waitGrant waits for it up to
+// duplicateWait. Else it returns nil.
+func (a *Agent) waitGrant(ctx context.Context, rc *relayConn, dst netip.Addr, res *dp.ResolvePeerResponse) *peer {
+	if res.GetSubject() == "" {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, duplicateWait)
@@ -282,7 +283,7 @@ func (a *Agent) waitGrant(ctx context.Context, rc *relayConn, dst netip.Addr, su
 		p, admitted := a.peerTo(rc, dst), a.admitted
 		open := false
 		for _, q := range a.peers {
-			if q.rc == rc && q.subject == subject && q.bp != nil && q.qc.Context().Err() == nil {
+			if q.rc == rc && q.bp != nil && q.qc.Context().Err() == nil && q.matches(res) {
 				open = true
 				break
 			}
@@ -299,6 +300,16 @@ func (a *Agent) waitGrant(ctx context.Context, rc *relayConn, dst netip.Addr, su
 			return nil
 		}
 	}
+}
+
+// matches reports whether the ResolvePeer answer res is for the agent of p. A
+// relay before agentNames gives only the subject, which many agents can have.
+// a.mu must be held.
+func (p *peer) matches(res *dp.ResolvePeerResponse) bool {
+	if !p.rc.relayAtLeast(agentNames) {
+		return p.subject == res.GetSubject()
+	}
+	return slices.ContainsFunc(res.GetAttachmentIds(), p.origin)
 }
 
 // routeGrant routes prefixes to p. It routes all of them or none. a.mu must

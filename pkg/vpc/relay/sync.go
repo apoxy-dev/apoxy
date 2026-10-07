@@ -41,10 +41,10 @@ type syncState struct {
 }
 
 // queueRoute adds a change of the route rt of owner to the sync queue. A
-// session gets no routes of its own subject. A change cancels the opposite
+// session gets no routes of its own agent. A change cancels the opposite
 // change that waits. Router.mu must be held.
 func (s *Session) queueRoute(rt route, owner *Session, add bool) {
-	if owner.id.ID == s.id.ID {
+	if owner.sameAgent(s) {
 		return
 	}
 	if was, ok := s.sync.routes[rt]; ok && was != add {
@@ -159,7 +159,7 @@ func (srv *Server) Session(ctx context.Context, st rpc.BidiStreamServer[dp.Sessi
 		return err
 	}
 	ref := &dp.VPCRef{ProjectId: s.id.VPC.Project, VpcUid: s.id.VPC.UID, NetworkId: n.ID}
-	if err := srv.R.openSync(s, mode, ref); err != nil {
+	if err := srv.R.openSync(s, mode, ref, hello.GetName()); err != nil {
 		return err
 	}
 	sessionsTotal.WithLabelValues(modeLabel(mode), reasonLabel(hello)).Inc()
@@ -219,8 +219,9 @@ func (srv *Server) Session(ctx context.Context, st rpc.BidiStreamServer[dp.Sessi
 	}
 }
 
-// openSync marks the Session call of s as open. A session has at most one.
-func (r *Router) openSync(s *Session, mode dp.Mode, ref *dp.VPCRef) error {
+// openSync marks the Session call of s as open, and gives s the agent name
+// of its Hello. A session has at most one Session call.
+func (r *Router) openSync(s *Session, mode dp.Mode, ref *dp.VPCRef, name string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if s.closed {
@@ -230,9 +231,31 @@ func (r *Router) openSync(s *Session, mode dp.Mode, ref *dp.VPCRef) error {
 		return rpc.Errorf(rpc.FailedPrecondition, "session already has a Session call")
 	}
 	s.sync.open, s.sync.mode, s.sync.ref = true, mode, ref
+	r.setName(s, name)
 	r.takeSource(s)
 	s.notify()
 	return nil
+}
+
+// setName gives s the agent name of its Hello. Before this, s had no name and
+// got no routes of its subject, so the routes of the other agents of the
+// subject go to its sync queue now. Router.mu must be held.
+func (r *Router) setName(s *Session, name string) {
+	// A session that attached before its Hello keeps no name, because the
+	// other sessions already have or do not have its routes by that rule.
+	if name == "" || len(s.attachments) > 0 {
+		return
+	}
+	s.name = name
+	d := r.domains[s.id.VPC]
+	if d == nil {
+		return
+	}
+	for p, o := range d.routes {
+		if o.s.id.ID == s.id.ID && !o.s.sameAgent(s) {
+			s.sync.routes[route{p, o.origin}] = true
+		}
+	}
 }
 
 func (r *Router) recvSync(s *Session, st rpc.BidiStreamServer[dp.SessionRequest, dp.SessionResponse]) error {

@@ -27,6 +27,9 @@ import (
 // no Version.
 func beforeRevisions() *dp.Version { return nil }
 
+// revision1 is the version of a build of revision 1: it has no agent names.
+func revision1() *dp.Version { return &dp.Version{Revision: 1, Build: "revision-1"} }
+
 // needsThis is the version of a build of this revision that does not work
 // with an older revision.
 func needsThis() *dp.Version {
@@ -58,6 +61,7 @@ func TestRevisionSkew(t *testing.T) {
 	}{
 		{name: "all of this revision"},
 		{name: "agent from before revisions", a: beforeRevisions},
+		{name: "agent of revision 1", a: revision1},
 		{name: "agent from before revisions in QUIC mode", a: beforeRevisions, mode: TransportQUIC},
 		{name: "both agents from before revisions", a: beforeRevisions, b: beforeRevisions},
 	}

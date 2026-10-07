@@ -164,20 +164,35 @@ func TestWaitGrant(t *testing.T) {
 	w := newWorld(t)
 	cert := w.relayCA.relayCert(t, "relay-1")
 	dst := netip.MustParseAddr("fd00:b2::1")
+	// The open session with b has the attachment "attachment-b".
 	cases := []struct {
 		name    string
-		subject string // From ResolvePeer.
-		grant   bool   // The grant of b-2 comes after 50 ms.
-		want    bool   // waitGrant returns the session with b.
+		relay   func() *dp.Version // Nil means a relay of this build.
+		subject string             // From ResolvePeer.
+		ids     []string           // Attachment IDs from ResolvePeer. A relay of revision 1 gives none.
+		grant   bool               // The grant of b-2 comes after 50 ms.
+		want    bool               // waitGrant returns the session with b.
 	}{
-		{name: "grant comes late", subject: "b", grant: true, want: true},
-		{name: "grant does not come", subject: "b"},
-		{name: "no session with the subject", subject: "c", grant: true},
+		{name: "grant comes late", subject: "b", ids: []string{"attachment-b", "b-2"}, grant: true, want: true},
+		{name: "grant does not come", subject: "b", ids: []string{"attachment-b", "b-2"}},
+		{name: "no session with the subject", subject: "c", ids: []string{"attachment-c"}, grant: true},
 		{name: "no subject", grant: true},
+		// Another agent with the subject of b has the address. Its grant never comes on the session with b.
+		{name: "other agent of the subject", subject: "b", ids: []string{"attachment-b9"}, grant: true},
+		{name: "no attachments in the answer", subject: "b", grant: true},
+		// A relay of revision 1 gives only the subject, so the agent waits as before.
+		{name: "relay of revision 1, grant comes late", relay: revision1, subject: "b", grant: true, want: true},
+		{name: "relay of revision 1, grant does not come", relay: revision1, subject: "b"},
+		{name: "relay of revision 1, no session with the subject", relay: revision1, subject: "c", grant: true},
+		{name: "relay from before revisions, grant comes late", relay: beforeRevisions, subject: "b", grant: true, want: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			a := w.stubAgent(t, "a")
+			a.rc.version = dp.LocalVersion("relay")
+			if tc.relay != nil {
+				a.rc.version = tc.relay()
+			}
 			p, _ := stubPeer(a, "b", true)
 			require.NoError(t, a.admit(p, nil, signGrant(t, cert, "b", "fd00:b::/96"), 7, dp.Mode_MODE_PSP, 1))
 			if tc.grant {
@@ -186,15 +201,15 @@ func TestWaitGrant(t *testing.T) {
 				time.AfterFunc(50*time.Millisecond, func() { added <- a.addGrants(p, []*dp.AttachmentGrant{g}) })
 				t.Cleanup(func() { assert.NoError(t, <-added) })
 			}
-			subject := ""
+			res := &dp.ResolvePeerResponse{Reach: dp.Reach_REACH_LOCAL, AttachmentIds: tc.ids}
 			if tc.subject != "" {
-				subject = identity.ID{Project: testProject, VPC: testVPC, Agent: tc.subject}.String()
+				res.Subject = identity.ID{Project: testProject, VPC: testVPC, Agent: tc.subject}.String()
 			}
 			// The context ends the wait of the case with no grant before duplicateWait.
 			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 			defer cancel()
 			start := time.Now()
-			got := a.waitGrant(ctx, a.rc, dst, subject)
+			got := a.waitGrant(ctx, a.rc, dst, res)
 			if tc.want {
 				assert.Same(t, p, got)
 			} else {
