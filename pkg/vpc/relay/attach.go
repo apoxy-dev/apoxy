@@ -34,8 +34,10 @@ type Attachment struct {
 	ID        string
 	VPC       VPCKey
 	NetworkID uint32
-	Name      string
-	Labels    map[string]string
+	// Network is the name of the VPC network object, from Networks.
+	Network string
+	Name    string
+	Labels  map[string]string
 	// Subject is the SPIFFE ID of the agent.
 	Subject string
 	// Routes are the prefixes that the attachment advertises.
@@ -43,7 +45,9 @@ type Attachment struct {
 	// Addresses are the prefixes from Addresses.Assign.
 	Addresses []netip.Prefix
 
-	seq uint64 // Attach order in the router.
+	seq   uint64    // Attach order in the router.
+	since time.Time // Time of the attach.
+	count *attCount // Counts of the packets to the attachment. Set at the attach.
 }
 
 // Addresses assigns overlay addresses to attachments. The relay host
@@ -84,7 +88,7 @@ func (srv *Server) Attach(ctx context.Context, in *dp.AttachRequest) (*dp.Attach
 	if err != nil {
 		return nil, err
 	}
-	a.NetworkID = n.ID
+	a.NetworkID, a.Network = n.ID, n.Name
 	addrs, err := srv.Addresses.Assign(ctx, a, func() {
 		// Remove forwarding state before the slot can be assigned again.
 		srv.R.removeSession(s)
@@ -136,10 +140,11 @@ func (srv *Server) Detach(ctx context.Context, in *dp.DetachRequest) (*emptypb.E
 	if err != nil {
 		return nil, err
 	}
-	a, err := srv.R.detach(s, in.GetAttachmentId())
+	a, last, err := srv.R.detach(s, in.GetAttachmentId())
 	if err != nil {
 		return nil, err
 	}
+	srv.R.ended(last)
 	srv.Addresses.Release(a)
 	return &emptypb.Empty{}, nil
 }
@@ -201,15 +206,19 @@ func (r *Router) attach(s *Session, a *Attachment) error {
 		}
 	}
 	r.attaches++
-	a.seq = r.attaches
+	a.seq, a.since, a.count = r.attaches, time.Now(), &attCount{}
+	if len(s.attachments) == 0 {
+		// The first attachment does not get what s sent before it.
+		s.rxBase = r.rxOf(s, nil)
+	}
 	for _, p := range a.Addresses {
 		if p = p.Masked(); takes(p, false) {
-			r.setOwner(d, p, owner{s: s, origin: a.ID})
+			r.setOwner(d, p, owner{s: s, origin: a.ID, att: a})
 		}
 	}
 	for _, p := range a.Routes {
 		if p = p.Masked(); takes(p, true) {
-			r.setOwner(d, p, owner{s, a.ID, true})
+			r.setOwner(d, p, owner{s, a.ID, true, a})
 		}
 	}
 	s.attachments = append(s.attachments, a)
@@ -217,12 +226,13 @@ func (r *Router) attach(s *Session, a *Attachment) error {
 }
 
 // detach removes the attachment id from s, and drops the routes that it owns.
-func (r *Router) detach(s *Session, id string) (*Attachment, error) {
+// It returns the attachment and its last counters.
+func (r *Router) detach(s *Session, id string) (*Attachment, AttachmentStats, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	i := slices.IndexFunc(s.attachments, func(a *Attachment) bool { return a.ID == id })
 	if i < 0 {
-		return nil, rpc.Errorf(rpc.NotFound, "no attachment %q on this session", id)
+		return nil, AttachmentStats{}, rpc.Errorf(rpc.NotFound, "no attachment %q on this session", id)
 	}
 	a := s.attachments[i]
 	s.attachments = slices.Delete(s.attachments, i, i+1)
@@ -237,12 +247,10 @@ func (r *Router) detach(s *Session, id string) (*Attachment, error) {
 	for _, p := range gone {
 		r.dropRoute(s, p)
 	}
-	for w := range s.inbound {
-		if r.lookup(w.vpc, w.dst) != s {
-			r.removeRow(w)
-		}
-	}
-	return a, nil
+	r.dropInbound(s)
+	// The sync adds the last XDP counts of the removed rows to the totals.
+	r.syncXDP(time.Now())
+	return a, r.last(s, a, i == 0), nil
 }
 
 func prefixStrings(ps []netip.Prefix) []string {

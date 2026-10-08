@@ -331,6 +331,10 @@ func (r *Router) removeXDP(k xdpKey, e xdpEntry) {
 	if u := c.used.UnixNano(); !c.used.IsZero() && u > e.w.lastUsed.Load() {
 		e.w.lastUsed.Store(u)
 	}
+	if e.w.removed {
+		// The row ended before, so its totals get these counts now.
+		r.fold(e.w)
+	}
 }
 
 // tunnelXDP returns the tunnel limit of the rows of s, or 0 for none. A

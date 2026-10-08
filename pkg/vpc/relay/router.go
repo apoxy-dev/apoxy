@@ -110,6 +110,7 @@ type Router struct {
 	sends  sendStats
 	early  earlyList
 	bridge atomic.Pointer[bridge]
+	onEnd  atomic.Pointer[func(AttachmentStats)]
 
 	mu       sync.RWMutex
 	permit   Permit
@@ -122,6 +123,9 @@ type Router struct {
 	xdp      *xdpSync
 	xdpBase  xdpStats      // Counters of the XDP programs that stopped.
 	xdpWake  chan struct{} // Has room for 1: XDP rows are marked.
+
+	// statsMu guards attCount.last. Take it after mu.
+	statsMu sync.Mutex
 }
 
 // NewRouter returns a Router with the SameVPC Permit rule. New sessions
@@ -166,6 +170,7 @@ type Session struct {
 	probe        *prober
 	meter        *rate.Limiter // Tunnel limit. Nil means no limit. Shards use the meter of the owner.
 	watching     atomic.Bool   // A watch follows the connection after Moved.
+	rtt          *atomic.Int64 // Smoothed RTT of the connection in nanoseconds. Nil with no trace.
 
 	// Guarded by Router.mu.
 	addr        netip.AddrPort
@@ -188,9 +193,14 @@ type Session struct {
 	rx          *keys.Peer                   // Relay SAs for PSP packets from s.
 	tx          *keys.TxPeer                 // SAs of s for PSP packets from the relay.
 	relaySAs    map[uint32]time.Time         // End of each relay SA of s.
+	rxRows      tally                        // Counts of the rows of s that ended.
+	rxBase      counts                       // RX of s that its oldest attachment does not get.
 
 	dropUnknownSPI, dropMeter, dropTunnel atomic.Uint64
 	dataSent, dataDrops                   atomic.Uint64
+	// framePackets and frameBytes count the inner packets of the data frames
+	// of s that the relay sent on.
+	framePackets, frameBytes atomic.Uint64
 }
 
 // Identity returns the identity of s.
@@ -214,6 +224,9 @@ type row struct {
 	expires          time.Time // Guarded by Router.mu.
 	meter            *rate.Limiter
 	lastUsed         atomic.Int64 // Unix nanoseconds.
+	att              *Attachment  // Attachment of dst at the receiver, or nil. Guarded by Router.mu.
+	done             tally        // Counts that the totals of the sender and of att have. Guarded by Router.mu.
+	removed          bool         // The row ended. Guarded by Router.mu.
 
 	packets, bytes, dropMeter, icvFailures atomic.Uint64
 }
@@ -237,19 +250,24 @@ type owner struct {
 	// advertised is set for a prefix from Attachment.Routes. The newest live
 	// attachment of the agent that lists it owns it.
 	advertised bool
+	// att is the attachment of the prefix. It is nil for a route from AddRoute.
+	att *Attachment
 }
 
-// lookup returns the session of the longest route to a.
-func (d *domain) lookup(a netip.Addr) *Session {
+// ownerOf returns the owner of the longest route to a, or the zero owner.
+func (d *domain) ownerOf(a netip.Addr) owner {
 	for _, n := range d.lens {
 		if p, err := a.Prefix(n); err == nil {
 			if o, ok := d.routes[p]; ok {
-				return o.s
+				return o
 			}
 		}
 	}
-	return nil
+	return owner{}
 }
+
+// lookup returns the session of the longest route to a.
+func (d *domain) lookup(a netip.Addr) *Session { return d.ownerOf(a).s }
 
 func (d *domain) usesLen(n int) bool {
 	for p := range d.routes {
@@ -282,6 +300,7 @@ func (r *Router) AddSession(conn *rpc.Conn) (*Session, error) {
 		_ = qc.CloseWithError(quic.ApplicationErrorCode(code), msg)
 	}
 	s.sendDatagram = qc.SendDatagram
+	s.rtt = rttOf(qc.Context())
 	if s.probe, err = newProber(tc); err != nil {
 		return nil, err
 	}
@@ -505,13 +524,11 @@ func (r *Router) setOwner(d *domain, p netip.Prefix, o owner) {
 	}
 	o.s.routes = append(o.s.routes, p)
 	d.queueRoute(route{p, o.origin}, o.s, true)
-	if had && old.s != o.s {
+	if had {
+		// The rows to p go to the new session, or to its attachment.
 		for w := range old.s.inbound {
-			if r.lookup(w.vpc, w.dst) == o.s {
-				delete(old.s.inbound, w)
-				w.receiver = o.s
-				o.s.inbound[w] = struct{}{}
-				r.markXDP(w.sender)
+			if to := r.ownerOf(w.vpc, w.dst); to.s == o.s && (w.receiver != to.s || w.att != to.att) {
+				r.retarget(w, to)
 			}
 		}
 	}
@@ -523,7 +540,7 @@ func (r *Router) dropRoute(s *Session, p netip.Prefix) {
 	if d := r.domains[s.id.VPC]; d != nil {
 		if o := d.routes[p]; o.s == s && o.advertised {
 			if hs, ha := d.heir(s, p); hs != nil {
-				r.setOwner(d, p, owner{hs, ha.ID, true})
+				r.setOwner(d, p, owner{hs, ha.ID, true, ha})
 				return
 			}
 		}
@@ -567,9 +584,18 @@ func (r *Router) RemoveRoute(s *Session, p netip.Prefix) {
 	}
 	r.deleteRoute(s, p)
 	s.routes = slices.DeleteFunc(s.routes, func(q netip.Prefix) bool { return q == p })
+	r.dropInbound(s)
+}
+
+// dropInbound removes the rows to s that s has no route for. A row whose
+// route has another attachment of s now goes to that attachment. Router.mu
+// must be held.
+func (r *Router) dropInbound(s *Session) {
 	for w := range s.inbound {
-		if r.lookup(w.vpc, w.dst) != s {
+		if to := r.ownerOf(w.vpc, w.dst); to.s != s {
 			r.removeRow(w)
+		} else if to.att != w.att {
+			r.retarget(w, to)
 		}
 	}
 }
@@ -592,11 +618,15 @@ func (r *Router) deleteRoute(s *Session, p netip.Prefix) {
 	r.dropDomain(s.id.VPC, d)
 }
 
-func (r *Router) lookup(vpc VPCKey, a netip.Addr) *Session {
+func (r *Router) lookup(vpc VPCKey, a netip.Addr) *Session { return r.ownerOf(vpc, a).s }
+
+// ownerOf returns the owner of the longest route to a in vpc, or the zero
+// owner. Router.mu must be held.
+func (r *Router) ownerOf(vpc VPCKey, a netip.Addr) owner {
 	if d := r.domains[vpc]; d != nil {
-		return d.lookup(a)
+		return d.ownerOf(a)
 	}
-	return nil
+	return owner{}
 }
 
 // Route returns the session for packets from src to dst, if Permit allows.
@@ -615,7 +645,11 @@ func (r *Router) Route(src *Session, dst netip.Addr, now time.Time) *Session {
 	return next
 }
 
+// removeRow removes w. Its counts go to the totals of its sender and of its
+// attachment. Router.mu must be held.
 func (r *Router) removeRow(w *row) {
+	r.fold(w)
+	w.removed = true
 	if w.sender.rows[w.spi] == w {
 		delete(w.sender.rows, w.spi)
 	}

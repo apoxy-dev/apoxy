@@ -132,8 +132,8 @@ func (r *Router) registerSPI(c *Session, in *dp.RegisterSPIRequest, now time.Tim
 	if !r.permit(c.id.VPC, c.id.ID, key, dst) {
 		return rpc.Errorf(rpc.PermissionDenied, "permit denies %s", dst)
 	}
-	recv := r.lookup(key, dst)
-	if recv == nil {
+	to := r.ownerOf(key, dst)
+	if to.s == nil {
 		return rpc.Errorf(rpc.NotFound, "no route to %s", dst)
 	}
 	twin := r.twinOf(c)
@@ -157,12 +157,8 @@ func (r *Router) registerSPI(c *Session, in *dp.RegisterSPIRequest, now time.Tim
 			}
 			c.rows[spi] = w
 		}
-		if w.receiver != recv {
-			if w.receiver != nil {
-				delete(w.receiver.inbound, w)
-			}
-			w.receiver = recv
-			recv.inbound[w] = struct{}{}
+		if w.receiver != to.s || w.att != to.att {
+			r.retarget(w, to)
 		}
 		w.lane, w.saLane = laneAt(lanes, i), laneAt(saLanes, i)
 		w.expires = now.Add(ttl)

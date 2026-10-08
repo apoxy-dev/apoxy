@@ -271,18 +271,34 @@ func RelayQUICConfig() *quic.Config { return relayQUICConfig.Clone() }
 // transports returns one QUIC transport for each relay socket. The transport
 // of steer socket i issues the connection IDs that the kernel sends to i.
 func (r *Relay) transports() []*quic.Transport {
-	if len(r.steer) == 0 {
-		return []*quic.Transport{{Conn: r.pc, StatelessResetKey: r.resetKey}}
+	trs := []*quic.Transport{{Conn: r.pc, StatelessResetKey: r.resetKey}}
+	if len(r.steer) > 0 {
+		trs = make([]*quic.Transport, len(r.steer))
+		for i, c := range r.steer {
+			trs[i] = &quic.Transport{
+				Conn:                  c,
+				ConnectionIDGenerator: steer.ConnIDs{Index: uint8(i)},
+				StatelessResetKey:     r.resetKey,
+			}
+		}
 	}
-	trs := make([]*quic.Transport, len(r.steer))
-	for i, c := range r.steer {
-		trs[i] = &quic.Transport{
-			Conn:                  c,
-			ConnectionIDGenerator: steer.ConnIDs{Index: uint8(i)},
-			StatelessResetKey:     r.resetKey,
+	if r.vpc != nil {
+		for _, tr := range trs {
+			tr.ConnContext = vpcrelay.TraceContext
 		}
 	}
 	return trs
+}
+
+// listenConfig returns the QUIC config of the relay listeners. With VPC relay
+// sessions, it keeps the RTT of each connection.
+func (r *Relay) listenConfig() *quic.Config {
+	if r.vpc == nil {
+		return relayQUICConfig
+	}
+	c := relayQUICConfig.Clone()
+	c.Tracer = vpcrelay.TraceRTT
+	return c
 }
 
 // vpcTLSConfig picks the VPC relay config for apoxy-vpc/2, else h3.
@@ -445,11 +461,12 @@ func (r *Relay) Start(ctx context.Context) error {
 	vpcCtx, vpcCancel := context.WithCancel(context.Background())
 	defer vpcCancel()
 	lns := make([]*quic.EarlyListener, len(trs))
+	quicConf := r.listenConfig()
 	for i, tr := range trs {
 		if r.vpc != nil {
 			tr.NonQUICPacketHandler, tr.NonQUICBatchEnd = r.vpc.R.PacketHandler(vpcCtx, tr)
 		}
-		quicLn, err := tr.ListenEarly(tlsConf, relayQUICConfig)
+		quicLn, err := tr.ListenEarly(tlsConf, quicConf)
 		if err != nil {
 			return fmt.Errorf("failed to create QUIC listener: %w", err)
 		}

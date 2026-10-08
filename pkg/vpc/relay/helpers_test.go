@@ -167,7 +167,7 @@ func (f *fakeNetworks) Network(project, vpcUID string) (Network, error) {
 	}
 	switch k {
 	case vpcA:
-		return Network{ID: 0x0a0b0c, DNSServers: []string{"fd00::53"}}, nil
+		return Network{ID: 0x0a0b0c, Name: "net-a", DNSServers: []string{"fd00::53"}}, nil
 	case vpcB:
 		return Network{ID: 0x0d0e0f, MTU: 1400}, nil
 	}
@@ -327,9 +327,10 @@ func newHarness(t *testing.T, ca *testCA, opts ...func(*Router)) *harness {
 	}
 	udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	require.NoError(t, err)
-	tr := &quic.Transport{Conn: udp}
+	// The relay keeps the RTT of each session, as a relay host does.
+	tr := &quic.Transport{Conn: udp, ConnContext: TraceContext}
 	tr.NonQUICPacketHandler, tr.NonQUICBatchEnd = r.PacketHandler(t.Context(), tr)
-	ln, err := tr.Listen(r.TLSConfig(&tls.Config{Certificates: []tls.Certificate{*cert}}), &quic.Config{EnableDatagrams: true})
+	ln, err := tr.Listen(r.TLSConfig(&tls.Config{Certificates: []tls.Certificate{*cert}}), &quic.Config{EnableDatagrams: true, Tracer: TraceRTT})
 	require.NoError(t, err)
 	h := &harness{
 		r: r, trust: trust, nets: &fakeNetworks{}, addrs: &fakeAddresses{},

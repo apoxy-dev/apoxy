@@ -561,7 +561,7 @@ func (w *takeWorld) attach(name, id string, routes ...string) {
 }
 
 func (w *takeWorld) detach(name, id string) {
-	_, err := w.r.detach(w.sess[name], id)
+	_, _, err := w.r.detach(w.sess[name], id)
 	require.NoError(w.t, err)
 }
 

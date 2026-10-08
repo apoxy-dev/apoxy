@@ -19,7 +19,10 @@ import (
 // Network is the data of one VPC that sessions and attaches need.
 type Network struct {
 	// ID is the 24-bit network ID, the VNI on the wire.
-	ID               uint32
+	ID uint32
+	// Name is the name of the VPC network object. The stats of an attachment
+	// have it.
+	Name             string
 	MTU              uint32 // Zero means 1280.
 	DNSServers       []string
 	DNSSearchDomains []string
@@ -133,11 +136,9 @@ func (srv *Server) ServeConn(ctx context.Context, qc quic.Connection) {
 	_ = qc.CloseWithError(quic.ApplicationErrorCode(dp.RelayCloseCode_RELAY_CLOSE_CODE_UNSPECIFIED), "")
 	srv.R.removeSession(s)
 	srv.R.closeBridge(s)
-	srv.R.mu.Lock()
-	atts := s.attachments
-	s.attachments = nil
-	srv.R.mu.Unlock()
-	for _, a := range atts {
+	atts, last := srv.R.endAttachments(s)
+	for i, a := range atts {
+		srv.R.ended(last[i])
 		srv.Addresses.Release(a)
 	}
 }

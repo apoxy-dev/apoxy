@@ -108,6 +108,7 @@ func newBridge(tr *quic.Transport) (*bridge, error) {
 type hop struct {
 	dst  netip.Addr     // Inner destination.
 	next *Session       // Nil if there is no route.
+	att  *Attachment    // Attachment of dst at next, or nil.
 	out  *Session       // Connection of next for data frames: next or a shard.
 	mode dp.Mode        // Mode of next.
 	addr netip.AddrPort // Address of next.
@@ -124,7 +125,8 @@ func (r *Router) nextHop(src *Session, inner []byte) hop {
 	if !r.permit(src.id.VPC, src.id.ID, src.id.VPC, dst) {
 		return h
 	}
-	if h.next = r.lookup(src.id.VPC, dst); h.next != nil {
+	to := r.ownerOf(src.id.VPC, dst)
+	if h.next, h.att = to.s, to.att; h.next != nil {
 		h.out, h.mode, h.addr = h.next, h.next.sync.mode, h.next.addr
 		n := 1
 		for i, sh := range h.next.shards {
@@ -164,10 +166,12 @@ func (r *Router) forwardData(s *Session, b, buf []byte, now time.Time) bool {
 		s.dataDrops.Add(1)
 		return false
 	}
-	if !r.allow(s, len(b), now) {
+	if !r.allow(s, len(b), now) || !r.deliver(s, h, b, inner, buf, now) {
 		return false
 	}
-	return r.deliver(s, h, b, inner, buf, now)
+	s.framePackets.Add(1)
+	s.frameBytes.Add(uint64(len(inner)))
+	return true
 }
 
 // receivePSP opens a PSP packet to the relay in place and sends its inner
@@ -220,6 +224,10 @@ func (r *Router) deliver(src *Session, h hop, frame, inner, buf []byte, now time
 		return false
 	}
 	src.dataSent.Add(1)
+	if h.att != nil {
+		h.att.count.packets.Add(1)
+		h.att.count.bytes.Add(uint64(len(inner)))
+	}
 	return true
 }
 
