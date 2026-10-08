@@ -337,7 +337,10 @@ func TestExtraAttachments(t *testing.T) {
 			ping(t, a.stack, x.Address, eb.addr, 9001, "from a-2")
 			assert.Same(t, pa, onlyPeer(t, a.a), "a keeps its peer session")
 			assert.Same(t, pb, onlyPeer(t, b.a), "b keeps its peer session")
-			assert.Contains(t, b.routeSet(), x.Prefixes[0], "OnRoutes of b has the routes of a")
+			// b can send to a-2 with the grant from a. The route of a-2 comes
+			// from the relay and can come later.
+			require.Eventually(t, func() bool { return slices.Contains(b.routeSet(), x.Prefixes[0]) },
+				5*time.Second, 10*time.Millisecond, "OnRoutes of b has the routes of a")
 			assert.NotContains(t, a.routeSet(), x.Prefixes[0], "OnRoutes of a has no routes of a")
 
 			// After a detaches the extra, b drops its routes and keeps the session.

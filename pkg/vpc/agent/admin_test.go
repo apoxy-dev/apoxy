@@ -227,7 +227,9 @@ func TestAdmin(t *testing.T) {
 		defer b.a.mu.Unlock()
 		return !pb.origin(x1.ID)
 	}, 5*time.Second, 10*time.Millisecond, "b removes the grant of x-1")
-	assert.Contains(t, b.routeSet(), x2.Prefixes[0])
+	// The x-1 check above also passes before a route came from the relay.
+	require.Eventually(t, func() bool { return slices.Contains(b.routeSet(), x2.Prefixes[0]) },
+		5*time.Second, 10*time.Millisecond, "b has the route of x-2")
 
 	cases := []struct {
 		method, path, body string
