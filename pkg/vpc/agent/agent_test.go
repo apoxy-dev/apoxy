@@ -297,6 +297,42 @@ func TestDualStackSocket(t *testing.T) {
 	}
 }
 
+// TestStatusRTT checks that Status gives the RTT of the attached relay
+// session, and no RTT after that session ends.
+func TestStatusRTT(t *testing.T) {
+	cases := []struct {
+		name   string
+		attach bool
+		mode   TransportMode
+		end    bool // The relay session ends and the relay takes no new one.
+	}{
+		{name: "no session"},
+		{name: "PSP session", attach: true, mode: TransportPSP},
+		{name: "QUIC session", attach: true, mode: TransportQUIC},
+		{name: "ended session", attach: true, mode: TransportQUIC, end: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if !tc.attach {
+				assert.Zero(t, New(Config{}).Status().RTT)
+				return
+			}
+			w := newWorld(t)
+			r := w.relay(t, "relay-1")
+			a := w.agent(t, "a", r, agentOptions{mode: tc.mode})
+			a.attached(t)
+			require.Eventually(t, func() bool { return a.a.Status().RTT > 0 }, 5*time.Second, 10*time.Millisecond)
+			assert.Less(t, a.a.Status().RTT, openTimeout)
+			if !tc.end {
+				return
+			}
+			r.stopAccept()
+			_ = a.a.current().qc.CloseWithError(0, "test ends the session")
+			require.Eventually(t, func() bool { return a.a.Status().RTT == 0 }, 5*time.Second, 10*time.Millisecond)
+		})
+	}
+}
+
 // TestPSPRetry checks that an agent in QUIC mode after a failed probe moves
 // back to PSP only after two probes in a row pass.
 func TestPSPRetry(t *testing.T) {

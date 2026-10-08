@@ -360,6 +360,9 @@ type Status struct {
 	Spares int
 	// Open peer sessions of the current attachment.
 	Peers int
+	// Smoothed round-trip time to the relay. Zero before the first sample
+	// and after the relay session ends.
+	RTT time.Duration
 }
 
 // Status returns the data transport of the current attachment.
@@ -374,6 +377,9 @@ func (a *Agent) Status() Status {
 		if p.rc == a.rc && p.bp != nil && p.qc.Context().Err() == nil {
 			st.Peers++
 		}
+	}
+	if !a.rc.ended() {
+		st.RTT = time.Duration(a.rc.rtt.Load())
 	}
 	return st
 }
@@ -511,6 +517,7 @@ type relayConn struct {
 	mode      dp.Mode           // Data mode of the Session call.
 	reason    dp.FallbackReason // Why mode is QUIC.
 	connect   time.Duration     // Time to connect: from the start of the dial to the first Config.
+	rtt       *atomic.Int64     // Smoothed RTT of qc in nanoseconds.
 	setup     time.Duration     // See Status.Setup.
 	vpcConfig *dp.Config        // The first Config.
 	ref       *dp.VPCRef
@@ -611,19 +618,23 @@ func (a *Agent) dialSession(ctx context.Context, e endpoint, spare func() bool) 
 	begin := time.Now()
 	octx, cancel := context.WithTimeout(ctx, openTimeout)
 	defer cancel()
+	rtt := new(atomic.Int64)
+	quicCfg := a.quicCfg.Clone()
+	quicCfg.Tracer = a.traceSession(rtt)
 	qc, err := a.cfg.Transport.Dial(octx, ua, &tls.Config{
 		MinVersion:   tls.VersionTLS13,
 		RootCAs:      roots,
 		ServerName:   name,
 		NextProtos:   []string{dp.ALPNRelay},
 		Certificates: []tls.Certificate{*cred.TLSCertificate()},
-	}, a.quicCfg)
+	}, quicCfg)
 	if err != nil {
 		return nil, err
 	}
 	rc := &relayConn{
 		a:         a,
 		qc:        qc,
+		rtt:       rtt,
 		c:         dp.NewRelayClient(rpc.NewConn(qc, nil)),
 		cred:      cred,
 		ep:        e,

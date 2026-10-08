@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/dpeckett/network"
 	"github.com/google/uuid"
@@ -384,7 +385,8 @@ func (h *hostDevice) attach(b *psp.Binding, addr netip.Addr, _ []netip.Prefix) {
 	for _, w := range hostcheck.Check(h.conn, h.driver == driverTun) {
 		fmt.Fprintf(h.out, "Warning: %s\n  Fix: %s\n", w.Problem, w.Fix)
 	}
-	fmt.Fprintf(h.out, "Connected with address %s, %s driver, device MTU %d.\n", addr, h.driver, b.DeviceMTU())
+	fmt.Fprintf(h.out, "Connected with address %s, %s driver, device MTU %d, relay RTT %s.\n",
+		addr, h.driver, b.DeviceMTU(), h.agent.Status().RTT.Round(100*time.Microsecond))
 	if h.driver == driverTun && len(servers) > 0 {
 		msg := "VPC DNS servers: " + strings.Join(servers, ", ")
 		if len(search) > 0 {

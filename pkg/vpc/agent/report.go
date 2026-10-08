@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"github.com/quic-go/quic-go"
@@ -119,6 +120,18 @@ func (a *Agent) traceLoss(context.Context, logging.Perspective, quic.ConnectionI
 				a.quicLost.Add(1)
 			}
 		},
+	}
+}
+
+// traceSession is traceLoss for a relay session. It also keeps the smoothed
+// RTT of the session in rtt.
+func (a *Agent) traceSession(rtt *atomic.Int64) func(context.Context, logging.Perspective, quic.ConnectionID) *logging.ConnectionTracer {
+	return func(ctx context.Context, p logging.Perspective, id quic.ConnectionID) *logging.ConnectionTracer {
+		t := a.traceLoss(ctx, p, id)
+		t.UpdatedMetrics = func(s *logging.RTTStats, _, _ logging.ByteCount, _ int) {
+			rtt.Store(int64(s.SmoothedRTT()))
+		}
+		return t
 	}
 }
 
