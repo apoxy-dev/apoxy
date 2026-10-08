@@ -32,10 +32,6 @@ type DomainZoneSpec struct {
 	// RegistrationConfig contains configuration for domain registration.
 	// +optional
 	RegistrationConfig *RegistrationConfig `json:"registrationConfig,omitempty"`
-
-	// Deprecated: Apoxy ignores this field. The zone nameservers are in status.nameservers.required.
-	// +optional
-	Nameservers []string `json:"nameservers,omitempty"`
 }
 
 // RegistrationConfig contains configuration for domain registration.
@@ -260,7 +256,6 @@ func (a *DomainZone) ConvertToStorageVersion(storageObj runtime.Object) error {
 	obj.ObjectMeta = *a.ObjectMeta.DeepCopy()
 
 	// Convert Spec
-	obj.Spec.Nameservers = a.Spec.Nameservers
 	if a.Spec.RegistrationConfig != nil {
 		obj.Spec.RegistrationConfig = &v1alpha3.RegistrationConfig{
 			AutoRenew:               a.Spec.RegistrationConfig.AutoRenew,
@@ -320,7 +315,6 @@ func (a *DomainZone) ConvertFromStorageVersion(storageObj runtime.Object) error 
 	a.ObjectMeta = *obj.ObjectMeta.DeepCopy()
 
 	// Convert Spec
-	a.Spec.Nameservers = obj.Spec.Nameservers
 	if obj.Spec.RegistrationConfig != nil {
 		a.Spec.RegistrationConfig = &RegistrationConfig{
 			AutoRenew:               obj.Spec.RegistrationConfig.AutoRenew,

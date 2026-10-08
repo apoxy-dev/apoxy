@@ -966,8 +966,6 @@ export interface components {
             metadata: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.ListMeta"];
         };
         "com.github.apoxy-dev.apoxy.api.core.v1alpha.DomainZoneSpec": {
-            /** @description Deprecated: Apoxy ignores this field. The zone nameservers are in status.nameservers.required. */
-            nameservers?: string[];
             /** @description RegistrationConfig contains configuration for domain registration. */
             registrationConfig?: components["schemas"]["com.github.apoxy-dev.apoxy.api.core.v1alpha.RegistrationConfig"];
         };
@@ -1362,8 +1360,6 @@ export interface components {
             metadata: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.ListMeta"];
         };
         "com.github.apoxy-dev.apoxy.api.core.v1alpha2.DomainZoneSpec": {
-            /** @description Deprecated: Apoxy ignores this field. The zone nameservers are in status.nameservers.required. */
-            nameservers?: string[];
             /** @description RegistrationConfig contains configuration for domain registration. */
             registrationConfig?: components["schemas"]["com.github.apoxy-dev.apoxy.api.core.v1alpha2.RegistrationConfig"];
         };
@@ -1803,8 +1799,6 @@ export interface components {
             metadata: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.ListMeta"];
         };
         "com.github.apoxy-dev.apoxy.api.core.v1alpha3.DomainZoneSpec": {
-            /** @description Deprecated: Apoxy ignores this field. The zone nameservers are in status.nameservers.required. */
-            nameservers?: string[];
             /** @description RegistrationConfig contains configuration for domain registration. */
             registrationConfig?: components["schemas"]["com.github.apoxy-dev.apoxy.api.core.v1alpha3.RegistrationConfig"];
         };

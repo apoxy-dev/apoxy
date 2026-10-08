@@ -4145,20 +4145,6 @@ func schema_apoxy_api_core_v1alpha_DomainZoneSpec(ref common.ReferenceCallback) 
 							Ref:         ref("github.com/apoxy-dev/apoxy/api/core/v1alpha.RegistrationConfig"),
 						},
 					},
-					"nameservers": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Deprecated: Apoxy ignores this field. The zone nameservers are in status.nameservers.required.",
-							Type:        []string{"array"},
-							Items: &spec.SchemaOrArray{
-								Schema: &spec.Schema{
-									SchemaProps: spec.SchemaProps{
-										Type:   []string{"string"},
-										Format: "",
-									},
-								},
-							},
-						},
-					},
 				},
 			},
 		},
@@ -5653,20 +5639,6 @@ func schema_apoxy_api_core_v1alpha2_DomainZoneSpec(ref common.ReferenceCallback)
 						SchemaProps: spec.SchemaProps{
 							Description: "RegistrationConfig contains configuration for domain registration.",
 							Ref:         ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.RegistrationConfig"),
-						},
-					},
-					"nameservers": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Deprecated: Apoxy ignores this field. The zone nameservers are in status.nameservers.required.",
-							Type:        []string{"array"},
-							Items: &spec.SchemaOrArray{
-								Schema: &spec.Schema{
-									SchemaProps: spec.SchemaProps{
-										Type:   []string{"string"},
-										Format: "",
-									},
-								},
-							},
 						},
 					},
 				},
@@ -7292,20 +7264,6 @@ func schema_apoxy_api_core_v1alpha3_DomainZoneSpec(ref common.ReferenceCallback)
 						SchemaProps: spec.SchemaProps{
 							Description: "RegistrationConfig contains configuration for domain registration.",
 							Ref:         ref("github.com/apoxy-dev/apoxy/api/core/v1alpha3.RegistrationConfig"),
-						},
-					},
-					"nameservers": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Deprecated: Apoxy ignores this field. The zone nameservers are in status.nameservers.required.",
-							Type:        []string{"array"},
-							Items: &spec.SchemaOrArray{
-								Schema: &spec.Schema{
-									SchemaProps: spec.SchemaProps{
-										Type:   []string{"string"},
-										Format: "",
-									},
-								},
-							},
 						},
 					},
 				},

@@ -349,11 +349,6 @@ func (in *DomainZoneSpec) DeepCopyInto(out *DomainZoneSpec) {
 		*out = new(RegistrationConfig)
 		(*in).DeepCopyInto(*out)
 	}
-	if in.Nameservers != nil {
-		in, out := &in.Nameservers, &out.Nameservers
-		*out = make([]string, len(*in))
-		copy(*out, *in)
-	}
 	return
 }
 

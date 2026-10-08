@@ -1928,13 +1928,6 @@
       "com.github.apoxy-dev.apoxy.api.core.v1alpha.DomainZoneSpec": {
         "type": "object",
         "properties": {
-          "nameservers": {
-            "description": "Deprecated: Apoxy ignores this field. The zone nameservers are in status.nameservers.required.",
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
           "registrationConfig": {
             "description": "RegistrationConfig contains configuration for domain registration.",
             "$ref": "#/components/schemas/com.github.apoxy-dev.apoxy.api.core.v1alpha.RegistrationConfig"
@@ -2753,13 +2746,6 @@
       "com.github.apoxy-dev.apoxy.api.core.v1alpha2.DomainZoneSpec": {
         "type": "object",
         "properties": {
-          "nameservers": {
-            "description": "Deprecated: Apoxy ignores this field. The zone nameservers are in status.nameservers.required.",
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
           "registrationConfig": {
             "description": "RegistrationConfig contains configuration for domain registration.",
             "$ref": "#/components/schemas/com.github.apoxy-dev.apoxy.api.core.v1alpha2.RegistrationConfig"
@@ -3656,13 +3642,6 @@
       "com.github.apoxy-dev.apoxy.api.core.v1alpha3.DomainZoneSpec": {
         "type": "object",
         "properties": {
-          "nameservers": {
-            "description": "Deprecated: Apoxy ignores this field. The zone nameservers are in status.nameservers.required.",
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
           "registrationConfig": {
             "description": "RegistrationConfig contains configuration for domain registration.",
             "$ref": "#/components/schemas/com.github.apoxy-dev.apoxy.api.core.v1alpha3.RegistrationConfig"

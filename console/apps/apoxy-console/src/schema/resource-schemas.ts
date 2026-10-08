@@ -1408,12 +1408,6 @@ export const RESOURCE_SCHEMAS: Record<string, JSONSchema> = {
       },
       "com.github.apoxy-dev.apoxy.api.core.v1alpha.DomainZoneSpec": {
         "properties": {
-          "nameservers": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
           "registrationConfig": {
             "$ref": "com.github.apoxy-dev.apoxy.api.core.v1alpha.RegistrationConfig"
           }
@@ -1698,12 +1692,6 @@ export const RESOURCE_SCHEMAS: Record<string, JSONSchema> = {
       },
       "com.github.apoxy-dev.apoxy.api.core.v1alpha2.DomainZoneSpec": {
         "properties": {
-          "nameservers": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
           "registrationConfig": {
             "$ref": "com.github.apoxy-dev.apoxy.api.core.v1alpha2.RegistrationConfig"
           }
@@ -2140,12 +2128,6 @@ export const RESOURCE_SCHEMAS: Record<string, JSONSchema> = {
       },
       "com.github.apoxy-dev.apoxy.api.core.v1alpha3.DomainZoneSpec": {
         "properties": {
-          "nameservers": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
           "registrationConfig": {
             "$ref": "com.github.apoxy-dev.apoxy.api.core.v1alpha3.RegistrationConfig"
           }

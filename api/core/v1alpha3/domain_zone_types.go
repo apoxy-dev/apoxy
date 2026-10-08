@@ -32,10 +32,6 @@ type DomainZoneSpec struct {
 	// RegistrationConfig contains configuration for domain registration.
 	// +optional
 	RegistrationConfig *RegistrationConfig `json:"registrationConfig,omitempty"`
-
-	// Deprecated: Apoxy ignores this field. The zone nameservers are in status.nameservers.required.
-	// +optional
-	Nameservers []string `json:"nameservers,omitempty"`
 }
 
 // RegistrationConfig contains configuration for domain registration.
