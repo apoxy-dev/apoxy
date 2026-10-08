@@ -56,7 +56,15 @@ type connectOptions struct {
 	mtu       int
 	relays    int
 	adminAddr string
+	identity  string
 }
+
+// apiClient makes the API client of the CLI config. Tests replace it.
+var apiClient = apoxyconfig.DefaultAPIClient
+
+// loadConfig loads the CLI config, which sets up the log of the CLI. Tests
+// replace it.
+var loadConfig = apoxyconfig.Load
 
 // ConnectCmd returns the connect command. It is in the alpha command tree.
 func ConnectCmd() *cobra.Command {
@@ -68,11 +76,19 @@ func ConnectCmd() *cobra.Command {
 
 The tun driver makes a kernel TUN device, so all processes on the host can
 reach the VPC. The netstack driver needs no privileges. It gives a SOCKS5
-proxy, and it forwards connections from the VPC to localhost.`,
+proxy, and it forwards connections from the VPC to localhost.
+
+With --identity, the host connects with the certificate of an identity file
+from "apoxy alpha vpc enroll". It makes no API call and needs no API key. The
+file names the network, so the command takes no VPC argument. When the file
+gets a new certificate, the host uses it with no restart.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			vpc := "default"
 			if len(args) == 1 {
+				if o.identity != "" {
+					return errors.New("the identity file of --identity names the VPC; remove the VPC argument")
+				}
 				vpc = args[0]
 			}
 			host, _ := os.Hostname()
@@ -102,6 +118,7 @@ func (o *connectOptions) addFlags(cmd *cobra.Command) {
 	f.IntVar(&o.relays, "relays", 2, "Relay sessions to keep, 1 to 3. One carries the traffic. The others are open on other relays and take over when it ends.")
 	f.IntVar(&o.mtu, "mtu", 0, fmt.Sprintf("Device MTU, %d to %d. 0 uses the VPC MTU when the path to the relay carries it, else %d.", psp.DefaultMTU, psp.MaxMTU, psp.DefaultMTU))
 	f.StringVar(&o.adminAddr, "admin-addr", "", "Unix socket path of a local HTTP API that adds and removes attachments. Only this user and root can use it. Empty disables the API.")
+	f.StringVar(&o.identity, "identity", "", "Path of an identity file from \"apoxy alpha vpc enroll\". The host connects with its certificate and makes no API call. Many hosts can use one file, each with its own --name.")
 }
 
 // agentConfig maps the flags to the agent config and the driver. host is the
@@ -166,26 +183,50 @@ func isSocketPath(s string) bool {
 	return err != nil || strings.Contains(s, "/")
 }
 
+// identityManager returns the source of the agent cert: the identity file of
+// --identity, or else an enroll with the API client of the CLI config.
+func (o *connectOptions) identityManager(vpc, name string) (*identity.Manager, error) {
+	if o.identity != "" {
+		// The other path sets up the log when it makes the API client.
+		if _, err := loadConfig(); err != nil {
+			return nil, fmt.Errorf("failed to load the CLI config: %w", err)
+		}
+		return identity.NewFileManager(o.identity), nil
+	}
+	c, err := apiClient()
+	if err != nil {
+		return nil, err
+	}
+	vc := c.VpcV1alpha1()
+	return identity.NewManager(credentialPath(c.ProjectID, vpc, name), func(ctx context.Context) (*identity.Credential, error) {
+		return identity.Enroll(ctx, vc.RESTClient(), vpc, name)
+	}), nil
+}
+
 func runConnect(ctx context.Context, out io.Writer, vpc string, o *connectOptions, cfg agent.Config, driver string) error {
-	c, err := apoxyconfig.DefaultAPIClient()
+	ids, err := o.identityManager(vpc, cfg.Name)
 	if err != nil {
 		return err
 	}
-	vc := c.VpcV1alpha1()
-	cfg.Identity = identity.NewManager(credentialPath(c.ProjectID, vpc, cfg.Name), func(ctx context.Context) (*identity.Credential, error) {
-		return identity.Enroll(ctx, vc.RESTClient(), vpc, cfg.Name)
-	})
+	cfg.Identity = ids
 	// Enroll gives the relays. With a cached cert, the agent starts while the
-	// apiserver is down.
-	if err := cfg.Identity.Start(ctx); err != nil {
+	// apiserver is down. An identity file has the relays.
+	target := fmt.Sprintf("VPC %q", vpc)
+	if err := ids.Start(ctx); err != nil {
+		if ids.FromFile() {
+			return connectError(err)
+		}
 		return fmt.Errorf("failed to enroll in VPC %q: %w", vpc, err)
 	}
+	if ids.FromFile() {
+		target = "the VPC of identity " + ids.Current().ID.String()
+	}
 	var addrs []string
-	for _, r := range cfg.Identity.Current().Relays {
+	for _, r := range ids.Current().Relays {
 		addrs = append(addrs, r.Addresses...)
 	}
 	if len(addrs) == 0 {
-		return fmt.Errorf("no ready relay serves VPC %q", vpc)
+		return fmt.Errorf("no ready relay serves %s", target)
 	}
 	uc, err := listenUDP(addrs)
 	if err != nil {
@@ -204,7 +245,7 @@ func runConnect(ctx context.Context, out io.Writer, vpc string, o *connectOption
 	cfg.OnAttachment = h.attachment
 	cfg.OnDetach = h.detach
 	h.agent = agent.New(cfg)
-	fmt.Fprintf(out, "Connecting to VPC %q as %q.\n", vpc, cfg.Name)
+	fmt.Fprintf(out, "Connecting to %s as %q.\n", target, cfg.Name)
 	var admin sync.WaitGroup
 	if o.adminAddr != "" {
 		admin.Go(func() {
@@ -227,10 +268,14 @@ func runConnect(ctx context.Context, out io.Writer, vpc string, o *connectOption
 }
 
 // connectError returns the error of the agent for the user. When the relays
-// need a newer agent, it tells the user how to upgrade.
+// need a newer agent, it tells the user how to upgrade. When the cert of the
+// identity file expired, it tells the user how to get a new file.
 func connectError(err error) error {
 	if errors.Is(err, agent.ErrUpgrade) {
 		return fmt.Errorf("this version of the Apoxy CLI (%s) is too old for the VPC: %w; run \"apoxy upgrade\" and connect again", build.BuildVersion, err)
+	}
+	if expired := (*identity.ExpiredError)(nil); errors.As(err, &expired) {
+		return fmt.Errorf("%w; run \"apoxy alpha vpc enroll\" again and replace the file", err)
 	}
 	return err
 }

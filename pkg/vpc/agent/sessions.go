@@ -435,7 +435,8 @@ func (a *Agent) spareEndpoint(next *int) (endpoint, bool) {
 	return endpoint{}, false
 }
 
-// relister enrolls again for a new relay list after all relays failed.
+// relister enrolls again for a new relay list after all relays failed. With
+// an identity file, it reads the file again.
 type relister struct {
 	at   time.Time     // No enroll before this time.
 	wait time.Duration // Doubles after a failed enroll.
@@ -446,16 +447,20 @@ func (l *relister) run(ctx context.Context, a *Agent) bool {
 	if len(a.cfg.Relays) > 0 || time.Now().Before(l.at) {
 		return false
 	}
+	old := a.cfg.Identity.Current()
 	rctx, cancel := context.WithTimeout(ctx, openTimeout)
 	err := a.cfg.Identity.Renew(rctx)
 	cancel()
-	if err != nil {
+	// An identity file that did not change gives no error and no new list.
+	got := err == nil && a.cfg.Identity.Current() != old
+	switch {
+	case err != nil:
 		l.wait = min(2*l.wait, relistMax)
 		slog.Warn("Failed to get a new relay list; keeping the cached list", "error", err)
-	} else {
+	case got:
 		l.wait = relistMin
 		slog.Info("Got a new relay list after all relays failed", "relays", len(a.cfg.Identity.Current().Relays))
 	}
 	l.at = time.Now().Add(l.wait + rand.N(l.wait/2+1))
-	return err == nil
+	return got
 }

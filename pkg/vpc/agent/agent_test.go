@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"path/filepath"
 	"slices"
 	"sync"
 	"testing"
@@ -406,22 +407,31 @@ func stream(t *testing.T, s *stack.Stack, src, dst netip.Addr, port uint16) (sto
 }
 
 // TestRenew checks that the agent opens a session with the renewed cert before
-// it closes the old one, and that the route moves with no remove at peers.
+// it closes the old one, and that the route moves with no remove at peers. An
+// agent with an identity file does the same when the file has a new cert, and
+// it does not enroll.
 func TestRenew(t *testing.T) {
 	cases := []struct {
 		name  string
 		spare bool // The agent keeps a spare on a second relay.
 		route bool // The agent advertises a route, and agent b sends to it.
+		file  bool // The agent has an identity file. The test replaces the file.
 	}{
 		{name: "one relay"},
 		{name: "spare on a second relay", spare: true},
 		{name: "one relay with a route", route: true},
+		{name: "identity file", file: true},
+		{name: "identity file, spare on a second relay", file: true, spare: true},
+		{name: "identity file, one relay with a route", file: true, route: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			w := newWorld(t)
 			r := w.relay(t, "relay-1")
 			opts := agentOptions{life: 3 * time.Second}
+			if tc.file {
+				opts = agentOptions{identityFile: true}
+			}
 			if tc.spare {
 				opts.relays = []identity.Relay{r.ref(), w.relay(t, "relay-2").ref()}
 			}
@@ -442,9 +452,22 @@ func TestRenew(t *testing.T) {
 					5*time.Second, 10*time.Millisecond)
 				stop = stream(t, b.stack, eb.addr, far, 9000)
 			}
+			old := a.current().cred
+			if tc.file {
+				if tc.spare {
+					require.Eventually(t, func() bool { return a.spare() != nil }, 10*time.Second, 10*time.Millisecond)
+				}
+				// The new cert must expire later than the cert in use.
+				a.writeIdentity(25 * time.Hour)
+			}
 			second := a.attached(t)
 			assert.NotEqual(t, first.addr, second.addr, "each relay session has its own addresses")
-			assert.GreaterOrEqual(t, a.enrolls.Load(), int32(2))
+			assert.NotSame(t, old, a.current().cred, "the new session has the new cert")
+			if tc.file {
+				assert.Zero(t, a.enrolls.Load(), "an agent with an identity file does not enroll")
+			} else {
+				assert.GreaterOrEqual(t, a.enrolls.Load(), int32(2))
+			}
 			id := identity.ID{Project: testProject, VPC: testVPC, Agent: "a"}.String()
 			if tc.route {
 				require.Eventually(t, func() bool { return w.addrs.LiveOf(id) == 1 },
@@ -462,6 +485,65 @@ func TestRenew(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestSharedIdentityFile runs two agents with one identity file: one cert and
+// one key, and a name for each agent. A new file moves the two agents.
+func TestSharedIdentityFile(t *testing.T) {
+	w := newWorld(t)
+	r := w.relay(t, "relay-1")
+	opts := agentOptions{identity: "shared", identityFile: true, identityPath: filepath.Join(t.TempDir(), "identity.json")}
+	a1 := w.agent(t, "a1", r, opts)
+	a2 := w.agent(t, "a2", r, opts)
+	c := w.agent(t, "c", r, agentOptions{})
+	ec := c.attached(t)
+	echo(t, c.stack, ec.addr, 9000)
+
+	// traffic waits for the next attach of a1 and a2, and sends data between
+	// each two of the three agents.
+	traffic := func() {
+		t.Helper()
+		e1, e2 := a1.attached(t), a2.attached(t)
+		echo(t, a1.stack, e1.addr, 9001)
+		echo(t, a2.stack, e2.addr, 9002)
+		ping(t, a1.stack, e1.addr, e2.addr, 9002, "a1 to a2")
+		ping(t, a2.stack, e2.addr, e1.addr, 9001, "a2 to a1")
+		ping(t, a1.stack, e1.addr, ec.addr, 9000, "a1 to c")
+		ping(t, a2.stack, e2.addr, ec.addr, 9000, "a2 to c")
+		ping(t, c.stack, ec.addr, e1.addr, 9001, "c to a1")
+		ping(t, c.stack, ec.addr, e2.addr, 9002, "c to a2")
+	}
+	traffic()
+	first := a1.current().cred.Cert
+	require.True(t, first.Equal(a2.current().cred.Cert), "a1 and a2 have one cert")
+
+	a1.writeIdentity(25 * time.Hour)
+	traffic()
+	second := a1.current().cred.Cert
+	assert.False(t, first.Equal(second), "a1 has the cert of the new file")
+	assert.True(t, second.Equal(a2.current().cred.Cert), "a2 has the cert of the new file")
+	assert.Zero(t, a1.enrolls.Load()+a2.enrolls.Load(), "an agent with an identity file does not enroll")
+}
+
+// TestIdentityFileExpires checks that an agent with an identity file stops
+// with an error when the cert of the file expires and the file has no new cert.
+func TestIdentityFileExpires(t *testing.T) {
+	w := newWorld(t)
+	r := w.relay(t, "relay-1")
+	runErr := make(chan error, 1)
+	a := w.agent(t, "a", r, agentOptions{identityFile: true, life: 2 * time.Second, runErr: runErr})
+	a.attached(t)
+	want := a.a.cfg.Identity.Current().Cert.NotAfter
+	select {
+	case err := <-runErr:
+		var expired *identity.ExpiredError
+		require.ErrorAs(t, err, &expired)
+		assert.True(t, expired.At.Equal(want), "the error has the expiry time of the cert")
+		assert.False(t, time.Now().Before(want), "Run stops at the expiry time, not before it")
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not stop after the cert of the identity file expired")
+	}
+	assert.Zero(t, a.enrolls.Load(), "an agent with an identity file does not enroll")
 }
 
 // TestDrain checks that the agent moves to an alternate relay before the

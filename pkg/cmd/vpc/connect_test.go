@@ -9,14 +9,18 @@ import (
 	"runtime"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 
 	"github.com/dpeckett/network"
 
+	configv1alpha1 "github.com/apoxy-dev/apoxy/api/config/v1alpha1"
 	"github.com/apoxy-dev/apoxy/build"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/agent"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/identity"
+	"github.com/apoxy-dev/apoxy/rest"
 )
 
 func TestAgentConfig(t *testing.T) {
@@ -249,6 +253,63 @@ func TestAgentConfig(t *testing.T) {
 	}
 }
 
+// TestConnectIdentity checks that the command makes an API client only when
+// it has no identity file. With an identity file it loads the CLI config, so
+// that the log of the CLI is set up as in the other path.
+func TestConnectIdentity(t *testing.T) {
+	cases := []struct {
+		name     string
+		args     []string
+		loadErr  error // Result of the config load.
+		wantFile bool  // The cert comes from an identity file.
+		wantAPI  int   // API clients that the command makes.
+		wantLoad int   // Config loads that the command makes.
+		wantErr  string
+	}{
+		{name: "identity file", args: []string{"--identity", "/etc/apoxy/identity.json"}, wantFile: true, wantLoad: 1},
+		{
+			name: "identity file and a CLI config that does not load", args: []string{"--identity", "/etc/apoxy/identity.json"},
+			loadErr: errors.New("bad YAML"), wantLoad: 1, wantErr: "failed to load the CLI config: bad YAML",
+		},
+		{name: "no identity file", wantAPI: 1, wantErr: "no CLI config"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			calls, loads, oldAPI, oldLoad := 0, 0, apiClient, loadConfig
+			apiClient = func() (*rest.APIClient, error) {
+				calls++
+				return nil, errors.New("no CLI config")
+			}
+			loadConfig = func() (*configv1alpha1.Config, error) {
+				loads++
+				return nil, tc.loadErr
+			}
+			t.Cleanup(func() { apiClient, loadConfig = oldAPI, oldLoad })
+			var o connectOptions
+			cmd := &cobra.Command{}
+			o.addFlags(cmd)
+			require.NoError(t, cmd.ParseFlags(tc.args))
+
+			m, err := o.identityManager("default", "node1")
+			require.Equal(t, tc.wantAPI, calls)
+			require.Equal(t, tc.wantLoad, loads)
+			if tc.wantErr != "" {
+				require.EqualError(t, err, tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tc.wantFile, m.FromFile())
+		})
+	}
+
+	t.Run("identity file with a VPC argument", func(t *testing.T) {
+		cmd := ConnectCmd()
+		cmd.SetArgs([]string{"net1", "--identity", "/etc/apoxy/identity.json"})
+		cmd.SilenceErrors, cmd.SilenceUsage = true, true
+		require.ErrorContains(t, cmd.Execute(), "remove the VPC argument")
+	})
+}
+
 func TestSocketFamily(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -423,6 +484,11 @@ func TestConnectError(t *testing.T) {
 			err:      fmt.Errorf("%w: relay 192.0.2.1:443: agent revision 1 is below the relay minimum 2", agent.ErrUpgrade),
 			wantText: `this version of the Apoxy CLI (` + build.BuildVersion + `) is too old for the VPC: agent needs an upgrade: relay 192.0.2.1:443: agent revision 1 is below the relay minimum 2; run "apoxy upgrade" and connect again`,
 		},
+		{
+			name:     "cert of the identity file expired",
+			err:      &identity.ExpiredError{Path: "/etc/apoxy/identity.json", At: time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)},
+			wantText: `the certificate in identity file /etc/apoxy/identity.json expired at 2026-10-08T12:00:00Z; run "apoxy alpha vpc enroll" again and replace the file`,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -432,7 +498,6 @@ func TestConnectError(t *testing.T) {
 				require.Equal(t, tc.err, err)
 				return
 			}
-			require.ErrorIs(t, err, agent.ErrUpgrade)
 			require.EqualError(t, err, tc.wantText)
 		})
 	}

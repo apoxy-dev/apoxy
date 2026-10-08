@@ -200,7 +200,8 @@ func New(cfg Config) *Agent {
 // Run keeps an attached relay session and spare sessions until ctx ends. On
 // a cert renew or a drain, the new session attaches before the old one closes.
 // It returns an ErrUpgrade when a relay refuses the agent as too old and no
-// other relay takes it.
+// other relay takes it. With an identity file, it returns an
+// identity.ExpiredError when the cert of the file expires.
 func (a *Agent) Run(ctx context.Context) error {
 	if m := a.cfg.MTU; m != 0 && (m < psp.DefaultMTU || m > psp.MaxMTU) {
 		return fmt.Errorf("MTU must be %d to %d, got %d", psp.DefaultMTU, psp.MaxMTU, m)
@@ -211,16 +212,24 @@ func (a *Agent) Run(ctx context.Context) error {
 	if err := a.cfg.Identity.Start(ctx); err != nil {
 		return fmt.Errorf("agent cert: %w", err)
 	}
-	ctx, cancel := context.WithCancel(ctx)
+	ctx, cancel := context.WithCancelCause(ctx)
 	var wg sync.WaitGroup
 	defer func() {
-		cancel()
+		cancel(nil)
 		wg.Wait()
 		a.close()
 	}()
 	wg.Go(func() { a.tick(ctx) })
 	wg.Go(func() { a.keepSpares(ctx) })
 	wg.Go(func() { a.keepAttachments(ctx) })
+	if a.cfg.Identity.FromFile() {
+		// The agent cannot get a new cert. It stops when the cert of the file expires.
+		wg.Go(func() {
+			if err := a.cfg.Identity.Run(ctx); err != nil && ctx.Err() == nil {
+				cancel(err)
+			}
+		})
+	}
 
 	backoff := minBackoff
 	next, failed := 0, 0      // The relay to dial next, and the relays that failed in a row.
@@ -274,6 +283,9 @@ func (a *Agent) Run(ctx context.Context) error {
 		if time.Since(start) > stableSession {
 			backoff = minBackoff
 		}
+	}
+	if expired := (*identity.ExpiredError)(nil); errors.As(context.Cause(ctx), &expired) {
+		return expired
 	}
 	return nil
 }
@@ -381,6 +393,14 @@ func transportName(m dp.Mode) string {
 func (a *Agent) serve(ctx context.Context, rc *relayConn) *relayConn {
 	renew := time.NewTimer(time.Until(rc.cred.RenewAt()))
 	defer renew.Stop()
+	if a.cfg.Identity.FromFile() {
+		// The agent does not renew the cert of an identity file. It moves to a
+		// new session when the file has a new cert.
+		renew.Stop()
+		if a.cfg.Identity.Current() != rc.cred {
+			renew.Reset(0)
+		}
+	}
 	retry := time.NewTimer(pspRetryMin)
 	defer retry.Stop()
 	if rc.reason != dp.FallbackReason_FALLBACK_REASON_PROBE_TIMEOUT {
@@ -403,6 +423,11 @@ func (a *Agent) serve(ctx context.Context, rc *relayConn) *relayConn {
 				a.renew(ctx)
 			}
 			return nil
+		case <-a.cfg.Identity.Changed():
+			// A value can be from the identity file that rc already uses.
+			if a.cfg.Identity.Current() != rc.cred {
+				renew.Reset(0)
+			}
 		case <-renew.C:
 			if a.cfg.Identity.Current() == rc.cred {
 				if err := a.cfg.Identity.Renew(ctx); err != nil {

@@ -44,15 +44,31 @@ func TestEnrollFlags(t *testing.T) {
 func TestEnrollSummary(t *testing.T) {
 	ca, err := vpctest.NewCA()
 	require.NoError(t, err)
-	cred, err := ca.Credential("project-a", "vpc-1", "fleet", time.Hour)
-	require.NoError(t, err)
-	require.NoError(t, cred.SetRelays([]identity.Relay{{ID: "r1", Addresses: []string{"192.0.2.1:6081"}}, {ID: "r2", Addresses: []string{"192.0.2.2:6081"}}}, nil))
+	cases := []struct {
+		name   string
+		relays []identity.Relay
+		want   string // The relay count in the line.
+	}{
+		{name: "one relay", relays: []identity.Relay{{ID: "r1", Addresses: []string{"192.0.2.1:6081"}}}, want: "1 relay"},
+		{
+			name:   "two relays",
+			relays: []identity.Relay{{ID: "r1", Addresses: []string{"192.0.2.1:6081"}}, {ID: "r2", Addresses: []string{"192.0.2.2:6081"}}},
+			want:   "2 relays",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cred, err := ca.Credential("project-a", "vpc-1", "fleet", time.Hour)
+			require.NoError(t, err)
+			require.NoError(t, cred.SetRelays(tc.relays, nil))
 
-	got := enrollSummary(cred, "/etc/apoxy/fleet.json")
-	require.Equal(t, "Wrote identity file /etc/apoxy/fleet.json: identity spiffe://project-a/vpc/vpc-1/agent/fleet, 2 relays, certificate expires at "+
-		cred.Cert.NotAfter.UTC().Format(time.RFC3339)+".", got)
-	der, err := x509.MarshalPKCS8PrivateKey(cred.Key)
-	require.NoError(t, err)
-	require.NotContains(t, got, "PRIVATE KEY")
-	require.NotContains(t, got, base64.StdEncoding.EncodeToString(der)[:32])
+			got := enrollSummary(cred, "/etc/apoxy/fleet.json")
+			require.Equal(t, "Wrote identity file /etc/apoxy/fleet.json: identity spiffe://project-a/vpc/vpc-1/agent/fleet, "+tc.want+
+				", certificate expires at "+cred.Cert.NotAfter.UTC().Format(time.RFC3339)+".", got)
+			der, err := x509.MarshalPKCS8PrivateKey(cred.Key)
+			require.NoError(t, err)
+			require.NotContains(t, got, "PRIVATE KEY")
+			require.NotContains(t, got, base64.StdEncoding.EncodeToString(der)[:32])
+		})
+	}
 }

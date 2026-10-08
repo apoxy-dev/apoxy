@@ -26,9 +26,10 @@ func EnrollCmd() *cobra.Command {
 		Long: `Get a certificate for a VPC network and write it to an identity file. The
 default network is "default".
 
-Many hosts can connect with one identity file, and they need no API key. The
-certificate is valid for 24 hours. Run this command again before that time and
-replace the file.
+Give the file to each host and run "apoxy alpha vpc connect --identity <file>"
+there. Many hosts can connect with one identity file, and they need no API
+key. The certificate is valid for 24 hours. Run this command again before that
+time and replace the file on each host.
 
 The identity file has a private key. Keep it secret.`,
 		Args: cobra.MaximumNArgs(1),
@@ -80,6 +81,10 @@ func (o *enrollOptions) validate() error {
 
 // enrollSummary is the output line of enroll. It never has the private key.
 func enrollSummary(cred *identity.Credential, path string) string {
-	return fmt.Sprintf("Wrote identity file %s: identity %s, %d relays, certificate expires at %s.",
-		path, cred.ID, len(cred.Relays), cred.Cert.NotAfter.UTC().Format(time.RFC3339))
+	relays := fmt.Sprintf("%d relays", len(cred.Relays))
+	if len(cred.Relays) == 1 {
+		relays = "1 relay"
+	}
+	return fmt.Sprintf("Wrote identity file %s: identity %s, %s, certificate expires at %s.",
+		path, cred.ID, relays, cred.Cert.NotAfter.UTC().Format(time.RFC3339))
 }

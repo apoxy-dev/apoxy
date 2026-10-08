@@ -171,6 +171,10 @@ func TestEnrollFile(t *testing.T) {
 			entries, err := os.ReadDir(filepath.Dir(path))
 			require.NoError(t, err)
 			assert.Len(t, entries, 1, "no temporary file stays")
+			// An agent starts from the file with no enroll.
+			m := NewFileManager(path)
+			require.NoError(t, m.Start(ctx))
+			assert.Equal(t, cred.Cert.Raw, m.Current().Cert.Raw)
 		})
 	}
 }

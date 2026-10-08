@@ -6,6 +6,7 @@ import (
 	"cmp"
 	"context"
 	"crypto/tls"
+	"encoding/pem"
 	"errors"
 	"maps"
 	"net"
@@ -46,6 +47,8 @@ const (
 	testProject = "project-a"
 	testVPC     = "vpc-1"
 	testVNI     = 0x0a0b0c
+	// filePoll is the time between two reads of an identity file.
+	filePoll = 50 * time.Millisecond
 )
 
 func TestMain(m *testing.M) {
@@ -275,9 +278,12 @@ type testAgent struct {
 	a       *Agent
 	tr      *quic.Transport
 	enrolls atomic.Int32
-	attach  chan attachEvent
-	cancel  context.CancelFunc
-	done    chan struct{}
+	// writeIdentity replaces the identity file with a new cert that is valid
+	// for life. Nil without agentOptions.identityFile.
+	writeIdentity func(life time.Duration)
+	attach        chan attachEvent
+	cancel        context.CancelFunc
+	done          chan struct{}
 
 	stackOnce sync.Once
 	stack     *stack.Stack
@@ -306,6 +312,12 @@ type agentOptions struct {
 	// identity is the name in the agent cert. Empty means the agent name. The
 	// attachment always has the agent name.
 	identity string
+	// identityFile gives the agent an identity file in place of an enroll
+	// function. The file has the relays and the relay roots, and Config has none.
+	identityFile bool
+	// identityPath is the path of the identity file. Empty means a new file
+	// for the agent. A file that is there stays, so agents can have one file.
+	identityPath string
 
 	relays   []identity.Relay // Config.Relays. Nil means the relay of the agent.
 	sessions int              // Config.Sessions.
@@ -394,8 +406,27 @@ func (w *world) agent(t *testing.T, name string, r *testRelay, opts agentOptions
 		}
 		return cred, cred.SetRelays(relays, roots)
 	}
+	ids := identity.NewManager(filepath.Join(t.TempDir(), "cred.json"), enroll)
+	if opts.identityFile {
+		path := cmp.Or(opts.identityPath, filepath.Join(t.TempDir(), "identity.json"))
+		relays := opts.relays
+		if relays == nil {
+			relays = []identity.Relay{r.ref()}
+		}
+		roots := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: w.relayCA.Cert.Raw})
+		ta.writeIdentity = func(life time.Duration) {
+			cred := w.enrollCA().credential(t, testProject, testVPC, cmp.Or(opts.identity, name), life)
+			require.NoError(t, cred.SetRelays(relays, roots))
+			require.NoError(t, identity.SaveCredential(path, cred))
+		}
+		if _, err := os.Stat(path); err != nil {
+			ta.writeIdentity(opts.life)
+		}
+		ids = identity.NewFileManager(path, identity.WithPollInterval(filePoll))
+		opts.relays, opts.noRoots = nil, true
+	}
 	cfg := Config{
-		Identity:      identity.NewManager(filepath.Join(t.TempDir(), "cred.json"), enroll),
+		Identity:      ids,
 		Relays:        opts.relays,
 		RelayRoots:    w.relayCA.Pool(),
 		Sessions:      opts.sessions,
@@ -446,7 +477,7 @@ func (w *world) agent(t *testing.T, name string, r *testRelay, opts agentOptions
 			ta.removeAddr(t, old)
 		},
 	}
-	if cfg.Relays == nil && opts.enrolled == nil {
+	if cfg.Relays == nil && opts.enrolled == nil && !opts.identityFile {
 		cfg.Relays = []identity.Relay{r.ref()}
 	}
 	if opts.noRoots {
