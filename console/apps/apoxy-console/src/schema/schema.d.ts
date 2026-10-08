@@ -122,7 +122,11 @@ export interface components {
              * @default
              */
             repo: string;
-            /** @description Tag is resolved to a Digest by the controller if Digest is unset. */
+            /**
+             * @description Tag is resolved to a Digest by the controller if Digest is unset.
+             *
+             *     Resolution happens once, when the spec changes, and the resulting digest is what every replica runs. Re-pushing the tag does not roll the service on its own — re-apply the Service to pick up the tag's new target.
+             */
             tag?: string;
         };
         /**
@@ -526,14 +530,14 @@ export interface components {
         };
         "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.ServiceSpec": {
             /**
-             * @description LiveRevision selects which ServiceRevision serves:
-             *       - empty: auto — the latest ready revision is served (continuous deploy
-             *         for push, auto-promote for git). The served name is reported in
-             *         status.liveRevision; the controller never writes this field.
-             *       - set: pinned — exactly the named revision is served (rollback, or
-             *         manual git promotion). New revisions are still minted but do not go
-             *         live until this is repointed. The target must still be retained
-             *         (see RevisionHistoryLimit).
+             * @description LiveRevision selects the target ServiceRevision:
+             *       - empty: auto selects the latest minted revision. Each data-plane node
+             *         attempts it and can keep an earlier warmed revision after a warm failure.
+             *       - set: pinned selects the named revision for rollback or manual promotion.
+             *         New revisions are still minted but are not selected until this field
+             *         changes. The target must still be retained (see RevisionHistoryLimit).
+             *
+             *     status.liveRevision reports the selection. It does not prove that every data-plane node serves the revision. The controller never writes this field.
              */
             liveRevision?: string;
             /**
@@ -554,9 +558,9 @@ export interface components {
         };
         "com.github.apoxy-dev.apoxy.api.compute.v1alpha1.ServiceStatus": {
             conditions?: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Condition"][];
-            /** @description LatestRevision is the most recently minted ServiceRevision name. A gap between this and LiveRevision means a newer revision exists but is not live (a pending rollout, or a held manual promotion). */
+            /** @description LatestRevision is the most recently minted ServiceRevision name. A gap from LiveRevision usually means that an older revision is pinned. Equality does not prove data-plane readiness. */
             latestRevision?: string;
-            /** @description LiveRevision is the ServiceRevision currently being served. When spec.liveRevision is empty (auto) it tracks LatestRevision; when pinned it echoes the pinned revision once that revision is actually serving. */
+            /** @description LiveRevision is the ServiceRevision selected by the control plane. It can be ahead of a node's local active revision and does not prove that every node serves it. */
             liveRevision?: string;
             /**
              * Format: int64
@@ -962,7 +966,7 @@ export interface components {
             metadata: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.ListMeta"];
         };
         "com.github.apoxy-dev.apoxy.api.core.v1alpha.DomainZoneSpec": {
-            /** @description Nameservers to use for this domain zone. If not specified, defaults to Apoxy's nameservers. */
+            /** @description Deprecated: Apoxy ignores this field. The zone nameservers are in status.nameservers.required. */
             nameservers?: string[];
             /** @description RegistrationConfig contains configuration for domain registration. */
             registrationConfig?: components["schemas"]["com.github.apoxy-dev.apoxy.api.core.v1alpha.RegistrationConfig"];
@@ -1043,6 +1047,8 @@ export interface components {
             current?: string[];
             /** @description Required nameservers that should be configured. */
             required?: string[];
+            /** @description Sets are the nameserver sets that serve the zone. The last one is the set that the delegation should use. */
+            sets?: string[];
         };
         /** @description Registrant contains contact information for domain registration. */
         "com.github.apoxy-dev.apoxy.api.core.v1alpha.Registrant": {
@@ -1356,7 +1362,7 @@ export interface components {
             metadata: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.ListMeta"];
         };
         "com.github.apoxy-dev.apoxy.api.core.v1alpha2.DomainZoneSpec": {
-            /** @description Nameservers to use for this domain zone. If not specified, defaults to Apoxy's nameservers. */
+            /** @description Deprecated: Apoxy ignores this field. The zone nameservers are in status.nameservers.required. */
             nameservers?: string[];
             /** @description RegistrationConfig contains configuration for domain registration. */
             registrationConfig?: components["schemas"]["com.github.apoxy-dev.apoxy.api.core.v1alpha2.RegistrationConfig"];
@@ -1390,6 +1396,25 @@ export interface components {
         };
         "com.github.apoxy-dev.apoxy.api.core.v1alpha2.DynamicProxySpec": {
             dnsCacheConfig?: components["schemas"]["com.github.apoxy-dev.apoxy.api.core.v1alpha2.DynamicProxyDnsCacheConfig"];
+        };
+        /** @description EnvoyConfig selects the Envoy release for a Proxy. */
+        "com.github.apoxy-dev.apoxy.api.core.v1alpha2.EnvoyConfig": {
+            /** @description ReleaseURL is a direct URL of a static Envoy binary. It takes precedence over Version. When "<ReleaseURL>.sha256" exists, the backplane checks the download against it. */
+            releaseURL?: string;
+            /** @description Version is the Envoy release tag, for example "v1.35.13". The backplane downloads the matching GitHub release unless ReleaseURL is set. */
+            version?: string;
+        };
+        /** @description EnvoyExit records one exit of the Envoy process. */
+        "com.github.apoxy-dev.apoxy.api.core.v1alpha2.EnvoyExit": {
+            /** @description Code is the exit status for exit, or the signal name for signal and oom_kill. */
+            code?: string;
+            /**
+             * @description Reason is one of exit, signal, oom_kill, start_failed.
+             * @default
+             */
+            reason: string;
+            /** @description Time is when the process exited. */
+            time: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Time"];
         };
         /** @description GrafanaCredentials contains credentials for Grafana Cloud integration. */
         "com.github.apoxy-dev.apoxy.api.core.v1alpha2.GrafanaCredentials": {
@@ -1433,6 +1458,8 @@ export interface components {
             current?: string[];
             /** @description Required nameservers that should be configured. */
             required?: string[];
+            /** @description Sets are the nameserver sets that serve the zone. The last one is the set that the delegation should use. */
+            sets?: string[];
         };
         /** @description OpenTelemetrySink defines the OpenTelemetry sink. This uses oltphttp */
         "com.github.apoxy-dev.apoxy.api.core.v1alpha2.OpenTelemetrySink": {
@@ -1494,6 +1521,13 @@ export interface components {
             addresses?: components["schemas"]["com.github.apoxy-dev.apoxy.api.core.v1alpha2.ReplicaAddress"][];
             /** @description Timestamp when the replica connected to the management server. */
             connectedAt: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Time"];
+            /**
+             * Format: int32
+             * @description EnvoyRestarts counts Envoy starts after an exit since the backplane started.
+             */
+            envoyRestarts?: number;
+            /** @description LastEnvoyExit describes the last exit of the Envoy process. */
+            lastEnvoyExit?: components["schemas"]["com.github.apoxy-dev.apoxy.api.core.v1alpha2.EnvoyExit"];
             /** @description Locality specifies the location of the replica. */
             locality?: string;
             /**
@@ -1504,6 +1538,8 @@ export interface components {
         };
         /** @description ProxySpec defines the desired specification of a Proxy. */
         "com.github.apoxy-dev.apoxy.api.core.v1alpha2.ProxySpec": {
+            /** @description Envoy selects the Envoy binary that unmanaged replicas run. Not configurable for cloud proxies. */
+            envoy?: components["schemas"]["com.github.apoxy-dev.apoxy.api.core.v1alpha2.EnvoyConfig"];
             /** @description Provider is the infrastructure provider where the proxy will be deployed. Defaults to "cloud" provider. */
             provider?: string;
             /** @description Shutdown configuration for the proxy. */
@@ -1689,6 +1725,8 @@ export interface components {
         "com.github.apoxy-dev.apoxy.api.core.v1alpha3.DomainRecordStatus": {
             /** @description Conditions contains domain record conditions. Standard conditions: Ready, ZoneReady, TargetReady. */
             conditions?: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Condition"][];
+            /** @description Phase is the record's lifecycle state. Empty on records that have not been reconciled by a phase-aware controller yet; consumers fall back to conditions in that case. */
+            phase?: string;
             /** @description ResolvedValues contains the actual DNS values configured. Populated by the controller when target.ref is used. */
             resolvedValues?: string[];
             /** @description Type is the resolved DNS record type (A, AAAA, CNAME, TXT, MX, etc.). Derived from the populated DNS field or resolved from ref. */
@@ -1733,6 +1771,14 @@ export interface components {
         "com.github.apoxy-dev.apoxy.api.core.v1alpha3.DomainTLSSpec": {
             /** @description The Certificate Authority used to issue the TLS certificate. Currently supports "letsencrypt". */
             certificateAuthority?: string;
+            /**
+             * @description Disabled turns off certificate provisioning for this domain, leaving it served over plain HTTP.
+             *
+             *     TLS is the default for every ref target — omitting the whole `tls` block gets you a managed certificate — so this field is the only way to ask for an HTTP-only hostname. Use it when traffic must flow before a certificate can exist: during a migration you can prove ownership with the `_apoxy-challenge` delegation, serve HTTP immediately, then clear this field to have the certificate issued.
+             *
+             *     A domain that already holds a certificate keeps serving it until the certificate is removed; setting this only stops future issuance and renewal.
+             */
+            disabled?: boolean;
         };
         "com.github.apoxy-dev.apoxy.api.core.v1alpha3.DomainZone": {
             /** @description APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources */
@@ -1757,7 +1803,7 @@ export interface components {
             metadata: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.ListMeta"];
         };
         "com.github.apoxy-dev.apoxy.api.core.v1alpha3.DomainZoneSpec": {
-            /** @description Nameservers to use for this domain zone. If not specified, defaults to Apoxy's nameservers. */
+            /** @description Deprecated: Apoxy ignores this field. The zone nameservers are in status.nameservers.required. */
             nameservers?: string[];
             /** @description RegistrationConfig contains configuration for domain registration. */
             registrationConfig?: components["schemas"]["com.github.apoxy-dev.apoxy.api.core.v1alpha3.RegistrationConfig"];
@@ -1796,6 +1842,8 @@ export interface components {
             current?: string[];
             /** @description Required nameservers that should be configured. */
             required?: string[];
+            /** @description Sets are the nameserver sets that serve the zone. The last one is the set that the delegation should use. */
+            sets?: string[];
         };
         /** @description Registrant contains contact information for domain registration. */
         "com.github.apoxy-dev.apoxy.api.core.v1alpha3.Registrant": {
@@ -2612,6 +2660,562 @@ export interface components {
             /** @default {} */
             UDPRouteStatus: components["schemas"]["io.k8s.sigs.gateway-api.apis.v1alpha2.UDPRouteStatus"];
         };
+        /** @description BackendMetrics is one backend's share of an HTTPRoute. */
+        "com.github.apoxy-dev.apoxy.api.metrics.v1alpha1.BackendMetrics": {
+            /** @description Kind is the backend kind, for example Backend or Service. */
+            kind?: string;
+            /** @description Metrics is every evaluated recipe for the backend. */
+            metrics?: {
+                [key: string]: {
+                    [key: string]: number;
+                };
+            };
+            /** @description Name is the backend name. */
+            name?: string;
+        };
+        /** @description GatewayMetrics is the snapshot returned by gateways/<name>/metrics. */
+        "com.github.apoxy-dev.apoxy.api.metrics.v1alpha1.GatewayMetrics": {
+            /** @description APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources */
+            apiVersion?: string;
+            /** @description DataUpTo is the end of the last complete bucket. */
+            dataUpTo: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Time"];
+            /** @description Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds */
+            kind?: string;
+            /** @description Listeners is the first nesting level, always present. */
+            listeners?: components["schemas"]["com.github.apoxy-dev.apoxy.api.metrics.v1alpha1.ListenerMetrics"][];
+            /** @default {} */
+            metadata: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta"];
+            /** @description Metrics is the Gateway totals, one entry per evaluated recipe. */
+            metrics?: {
+                [key: string]: {
+                    [key: string]: number;
+                };
+            };
+            /** @description Since and Until are the resolved half-open [since, until) window bounds. */
+            since: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Time"];
+            /** @description Timestamp is when the snapshot was computed. */
+            timestamp: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Time"];
+            /** @description Units maps a measure name to its display unit, echoed from the catalog. */
+            units?: {
+                [key: string]: string;
+            };
+            until: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Time"];
+            /** @description Window is until minus since. */
+            window: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Duration"];
+        };
+        /** @description HTTPRouteMetrics is the snapshot returned by httproutes/<name>/metrics. It cuts its own leaf lists, so truncated and totalCount sit on it. */
+        "com.github.apoxy-dev.apoxy.api.metrics.v1alpha1.HTTPRouteMetrics": {
+            /** @description APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources */
+            apiVersion?: string;
+            /** @description Backends is present only with include=backends. */
+            backends?: components["schemas"]["com.github.apoxy-dev.apoxy.api.metrics.v1alpha1.BackendMetrics"][];
+            /** @description DataUpTo is the end of the last complete bucket. */
+            dataUpTo: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Time"];
+            /** @description Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds */
+            kind?: string;
+            /** @default {} */
+            metadata: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta"];
+            /** @description Metrics is the route totals, one entry per evaluated recipe. */
+            metrics?: {
+                [key: string]: {
+                    [key: string]: number;
+                };
+            };
+            /** @description Rules is present only with include=rules. */
+            rules?: components["schemas"]["com.github.apoxy-dev.apoxy.api.metrics.v1alpha1.RuleMetrics"][];
+            /** @description Since and Until are the resolved half-open [since, until) window bounds. */
+            since: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Time"];
+            /** @description Timestamp is when the snapshot was computed. */
+            timestamp: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Time"];
+            /**
+             * Format: int32
+             * @description TotalCount is how many leaf rows had traffic in the window.
+             */
+            totalCount?: number;
+            /** @description Truncated is set when top cut a leaf list. */
+            truncated?: boolean;
+            /** @description Units maps a measure name to its display unit. */
+            units?: {
+                [key: string]: string;
+            };
+            until: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Time"];
+            /** @description Window is until minus since. */
+            window: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Duration"];
+        };
+        /** @description ListenerMetrics is one listener's share of a Gateway. It cuts its own route list, so truncated and totalCount sit here rather than on the Gateway. */
+        "com.github.apoxy-dev.apoxy.api.metrics.v1alpha1.ListenerMetrics": {
+            /** @description Metrics is every evaluated recipe for the listener. */
+            metrics?: {
+                [key: string]: {
+                    [key: string]: number;
+                };
+            };
+            /** @description Name is the listener name. */
+            name?: string;
+            /** @description Routes is present only with include=routes, ranked by orderBy. */
+            routes?: components["schemas"]["com.github.apoxy-dev.apoxy.api.metrics.v1alpha1.RouteMetrics"][];
+            /**
+             * Format: int32
+             * @description TotalCount is how many routes had traffic in the window.
+             */
+            totalCount?: number;
+            /** @description Truncated is set when top cut the route list. */
+            truncated?: boolean;
+        };
+        /** @description Metric is a stored recipe: a PRQL aggregate fragment plus presentation preferences. It is the only typed query surface; there is no ad-hoc typed query endpoint. Its name is the path element of the series subresource. */
+        "com.github.apoxy-dev.apoxy.api.metrics.v1alpha1.Metric": {
+            /** @description APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources */
+            apiVersion?: string;
+            /** @description Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds */
+            kind?: string;
+            /** @default {} */
+            metadata: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta"];
+            /**
+             * @description Spec is the recipe a person writes.
+             * @default {}
+             */
+            spec: components["schemas"]["com.github.apoxy-dev.apoxy.api.metrics.v1alpha1.MetricSpec"];
+            /**
+             * @description Status is what the server derives by compiling the recipe.
+             * @default {}
+             */
+            status: components["schemas"]["com.github.apoxy-dev.apoxy.api.metrics.v1alpha1.MetricStatus"];
+        };
+        /** @description MetricList is the catalog: every recipe this project can query. */
+        "com.github.apoxy-dev.apoxy.api.metrics.v1alpha1.MetricList": {
+            /** @description APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources */
+            apiVersion?: string;
+            items: components["schemas"]["com.github.apoxy-dev.apoxy.api.metrics.v1alpha1.Metric"][];
+            /** @description Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds */
+            kind?: string;
+            /** @default {} */
+            metadata: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.ListMeta"];
+        };
+        /** @description MetricMeasure is one output column of a compiled recipe. */
+        "com.github.apoxy-dev.apoxy.api.metrics.v1alpha1.MetricMeasure": {
+            /**
+             * @description Name is the measure name, the key it takes in a Measures map.
+             * @default
+             */
+            name: string;
+            /** @description Reaggregate reports whether the measure can be summed across buckets. It is false for a percentile, which must be recomputed from the histogram. */
+            reaggregate?: boolean;
+            /** @description Type is the value domain of the measure. */
+            type?: string;
+            /** @description Unit is the display unit ("" for a plain count, By for bytes, ms for a duration). It is echoed in the units map of every snapshot and series response. */
+            unit?: string;
+        };
+        /** @description MetricPoint is one bucket of one series. */
+        "com.github.apoxy-dev.apoxy.api.metrics.v1alpha1.MetricPoint": {
+            /** @description Timestamp is the bucket start. */
+            timestamp: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Time"];
+            /** @description Values are the recipe's measures for the bucket. */
+            values: {
+                [key: string]: number;
+            };
+        };
+        /** @description MetricSeries is one labeled line. A read with no groupBy returns exactly one series with empty labels. */
+        "com.github.apoxy-dev.apoxy.api.metrics.v1alpha1.MetricSeries": {
+            /** @description Labels is the group key and value, for example {route: api}. */
+            labels?: {
+                [key: string]: string;
+            };
+            /** @description Points are the buckets, ordered by timestamp. */
+            points: components["schemas"]["com.github.apoxy-dev.apoxy.api.metrics.v1alpha1.MetricPoint"][];
+        };
+        /** @description MetricSeriesSet is the result of metrics/<name>/series: one labeled series per group value, each with one point per time bucket. It carries no ObjectMeta, because it is a query result rather than a stored object. */
+        "com.github.apoxy-dev.apoxy.api.metrics.v1alpha1.MetricSeriesSet": {
+            /** @description APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources */
+            apiVersion?: string;
+            /** @description DataUpTo is the end of the last complete bucket, so a client can tell a partial trailing bucket from a drop in traffic. */
+            dataUpTo: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Time"];
+            /** @description Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds */
+            kind?: string;
+            /**
+             * @description Metric echoes the queried recipe name.
+             * @default
+             */
+            metric: string;
+            /** @description ScopeKind and ScopeName echo the resolved scope. ScopeName is empty for a whole-project read. */
+            scopeKind?: string;
+            scopeName?: string;
+            /** @description Series is the labeled lines. */
+            series: components["schemas"]["com.github.apoxy-dev.apoxy.api.metrics.v1alpha1.MetricSeries"][];
+            /** @description Since and Until are the resolved half-open [since, until) window bounds. */
+            since: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Time"];
+            /** @description Step is the applied bucket width, rounded up to the source granularity. */
+            step: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Duration"];
+            /**
+             * Format: int32
+             * @description TotalCount is how many groups had data in the window.
+             * @default 0
+             */
+            totalCount: number;
+            /**
+             * @description Truncated is set when more groups matched than top returned.
+             * @default false
+             */
+            truncated: boolean;
+            /** @description Units maps a measure name to its display unit, echoed from the catalog. */
+            units?: {
+                [key: string]: string;
+            };
+            until: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Time"];
+        };
+        /** @description MetricSource is one entry of the per-project schema registry. It is derived on read and never stored, so a recipe author can see what a source keeps and what it can be grouped by. */
+        "com.github.apoxy-dev.apoxy.api.metrics.v1alpha1.MetricSource": {
+            /** @description APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources */
+            apiVersion?: string;
+            /** @description Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds */
+            kind?: string;
+            /** @default {} */
+            metadata: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta"];
+            /**
+             * @description Spec is empty.
+             * @default {}
+             */
+            spec: components["schemas"]["com.github.apoxy-dev.apoxy.api.metrics.v1alpha1.MetricSourceSpec"];
+            /**
+             * @description Status is the derived description of the source.
+             * @default {}
+             */
+            status: components["schemas"]["com.github.apoxy-dev.apoxy.api.metrics.v1alpha1.MetricSourceStatus"];
+        };
+        /** @description MetricSourceField is one column or discovered attribute of a source. */
+        "com.github.apoxy-dev.apoxy.api.metrics.v1alpha1.MetricSourceField": {
+            /** @description Discovered is true for a field found by sampling log attributes, which can therefore disappear, and false for a table column or a static field, which cannot. */
+            discovered?: boolean;
+            /**
+             * @description Name is the field name as a recipe writes it.
+             * @default
+             */
+            name: string;
+            /** @description Reaggregate reports whether the measure can be summed across buckets. It is false for a percentile. */
+            reaggregate?: boolean;
+            /** @description Role says whether the field is the time bucket, a groupable key, or a measure. */
+            role?: string;
+            /** @description Type is the field type: string, integer, float, timestamp, or histogram. */
+            type?: string;
+        };
+        /** @description MetricSourceList is every source this project can read. */
+        "com.github.apoxy-dev.apoxy.api.metrics.v1alpha1.MetricSourceList": {
+            /** @description APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources */
+            apiVersion?: string;
+            items: components["schemas"]["com.github.apoxy-dev.apoxy.api.metrics.v1alpha1.MetricSource"][];
+            /** @description Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds */
+            kind?: string;
+            /** @default {} */
+            metadata: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.ListMeta"];
+        };
+        /** @description MetricSourceSpec is empty. Granularity, retention, and the field list are facts about the table, not settings, so they live in status. */
+        "com.github.apoxy-dev.apoxy.api.metrics.v1alpha1.MetricSourceSpec": Record<string, never>;
+        /** @description MetricSourceStatus is the derived description of one source. */
+        "com.github.apoxy-dev.apoxy.api.metrics.v1alpha1.MetricSourceStatus": {
+            /** @description DiscoveredAt is when the attribute sample last ran. */
+            discoveredAt?: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Time"];
+            /** @description Fields are the columns and discovered attributes of the source. */
+            fields?: components["schemas"]["com.github.apoxy-dev.apoxy.api.metrics.v1alpha1.MetricSourceField"][];
+            /** @description Granularity is the bucket width of the source: row for raw logs, 1m or 1h for a rollup. It is the minimum step a series read can ask for. */
+            granularity?: string;
+            /** @description Metrics are the recipes that read this source. */
+            metrics?: string[];
+            /** @description Retention is how long the source keeps data. */
+            retention?: string;
+            /** @description Scopes are the owner kinds a scopeKind parameter accepts for this source. */
+            scopes?: string[];
+        };
+        /** @description MetricSpec is what a person writes. Everything derived from the fragment lives in status. */
+        "com.github.apoxy-dev.apoxy.api.metrics.v1alpha1.MetricSpec": {
+            /** @description DefaultColumns are the measures a client shows first. The first entry is also the default orderBy. */
+            defaultColumns?: string[];
+            /** @description DefaultDimension is the key a client groups by when it has no better choice. It falls back to status.keys[0]. */
+            defaultDimension?: string;
+            /** @description Description is a one-line human summary. */
+            description?: string;
+            /**
+             * @description PRQL is the aggregate-only recipe fragment: [filter|derive]* aggregate {...}. It states no from, no group, and no time_bucket. The source comes from spec.source, the grouping from the groupBy parameter, the bucket from the step parameter, and the scope from the scope parameters.
+             * @default
+             */
+            prql: string;
+            /** @description Scopes are the owner kinds this recipe applies to. An empty list means every kind the source supports. */
+            scopes?: string[];
+            /** @description Source is the table the fragment reads. When it is empty the server resolves it on write from the fields the fragment uses. */
+            source?: string;
+            /** @description Type tells a client how to render the recipe. */
+            type?: string;
+            /** @description Unit is the display unit of the recipe as a whole, when every measure shares one. Per-measure units are in status.measures[].unit. */
+            unit?: string;
+        };
+        /** @description MetricStatus is what the server derives by compiling the fragment against the schema registry on create and update. A client cannot supply these fields; admission rejects a write that tries. */
+        "com.github.apoxy-dev.apoxy.api.metrics.v1alpha1.MetricStatus": {
+            /** @description Conditions: Compiled. */
+            conditions?: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Condition"][];
+            /** @description Keys are the groupable dimensions: every role: key field of the resolved source. A groupBy that is not in this list is a 400. */
+            keys?: string[];
+            /** @description Measures are the output columns of the compiled fragment. */
+            measures?: components["schemas"]["com.github.apoxy-dev.apoxy.api.metrics.v1alpha1.MetricMeasure"][];
+            /** @description Source is the resolved source table. */
+            source?: string;
+        };
+        /** @description ProxyMetrics is the snapshot returned by proxies/<name>/metrics. It has no nested table, so it takes no include token. */
+        "com.github.apoxy-dev.apoxy.api.metrics.v1alpha1.ProxyMetrics": {
+            /** @description APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources */
+            apiVersion?: string;
+            /** @description DataUpTo is the end of the last complete bucket. */
+            dataUpTo: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Time"];
+            /** @description Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds */
+            kind?: string;
+            /** @default {} */
+            metadata: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta"];
+            /** @description Metrics is the Proxy totals, one entry per evaluated recipe. */
+            metrics?: {
+                [key: string]: {
+                    [key: string]: number;
+                };
+            };
+            /** @description PerReplica is the same recipes cut by replica. Empty when the metrics carry no replica. */
+            perReplica?: components["schemas"]["com.github.apoxy-dev.apoxy.api.metrics.v1alpha1.ReplicaMetrics"][];
+            /**
+             * @description Replicas comes from the owner status.
+             * @default {}
+             */
+            replicas: components["schemas"]["com.github.apoxy-dev.apoxy.api.metrics.v1alpha1.ReplicaGauges"];
+            /** @description Since and Until are the resolved half-open [since, until) window bounds. */
+            since: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Time"];
+            /** @description Timestamp is when the snapshot was computed. */
+            timestamp: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Time"];
+            /** @description Units maps a measure name to its display unit. */
+            units?: {
+                [key: string]: string;
+            };
+            until: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Time"];
+            /** @description Window is until minus since. */
+            window: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Duration"];
+        };
+        /** @description ReplicaGauges is the one non-telemetry field of a snapshot: it comes from the owner status, not from the read model. */
+        "com.github.apoxy-dev.apoxy.api.metrics.v1alpha1.ReplicaGauges": {
+            /**
+             * Format: int32
+             * @description Available is how many replicas serve traffic.
+             * @default 0
+             */
+            available: number;
+            /**
+             * Format: int32
+             * @description Connected is how many replicas are currently connected, counted from the owner status. Desired, Ready, and Available stay zero until the Proxy status carries them.
+             * @default 0
+             */
+            connected: number;
+            /**
+             * Format: int32
+             * @description Desired is the requested replica count.
+             * @default 0
+             */
+            desired: number;
+            /**
+             * Format: int32
+             * @description Ready is how many replicas report ready.
+             * @default 0
+             */
+            ready: number;
+        };
+        /** @description ReplicaMetrics is one replica's share of a Proxy. */
+        "com.github.apoxy-dev.apoxy.api.metrics.v1alpha1.ReplicaMetrics": {
+            /** @description Metrics is every evaluated recipe for the replica. */
+            metrics?: {
+                [key: string]: {
+                    [key: string]: number;
+                };
+            };
+            /** @description Name is the replica name. */
+            name?: string;
+        };
+        /** @description RevisionMetrics is one revision's share of a compute Service. */
+        "com.github.apoxy-dev.apoxy.api.metrics.v1alpha1.RevisionMetrics": {
+            /** @description Metrics is every evaluated recipe for the revision. */
+            metrics?: {
+                [key: string]: {
+                    [key: string]: number;
+                };
+            };
+            /** @description Name is the revision name. */
+            name?: string;
+        };
+        /** @description RouteMetrics is one route's share of a listener. */
+        "com.github.apoxy-dev.apoxy.api.metrics.v1alpha1.RouteMetrics": {
+            /** @description Kind is the route kind, for example HTTPRoute. */
+            kind?: string;
+            /** @description Metrics is every evaluated recipe for the route. */
+            metrics?: {
+                [key: string]: {
+                    [key: string]: number;
+                };
+            };
+            /** @description Name is the route name. */
+            name?: string;
+            /**
+             * Format: int32
+             * @description Rule is the rule index inside the route, when the telemetry carries one.
+             */
+            rule?: number;
+        };
+        /** @description RuleMetrics is one rule's share of an HTTPRoute. */
+        "com.github.apoxy-dev.apoxy.api.metrics.v1alpha1.RuleMetrics": {
+            /** @description Metrics is every evaluated recipe for the rule. */
+            metrics?: {
+                [key: string]: {
+                    [key: string]: number;
+                };
+            };
+            /**
+             * Format: int32
+             * @description Rule is the rule index inside the route.
+             * @default 0
+             */
+            rule: number;
+        };
+        /** @description ServiceMetrics is the snapshot returned by services/<name>/metrics. It cuts its own revision list, so truncated and totalCount sit on it. */
+        "com.github.apoxy-dev.apoxy.api.metrics.v1alpha1.ServiceMetrics": {
+            /** @description APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources */
+            apiVersion?: string;
+            /** @description DataUpTo is the end of the last complete bucket. */
+            dataUpTo: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Time"];
+            /** @description Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds */
+            kind?: string;
+            /** @default {} */
+            metadata: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta"];
+            /** @description Metrics is the Service totals, one entry per evaluated recipe. */
+            metrics?: {
+                [key: string]: {
+                    [key: string]: number;
+                };
+            };
+            /** @description Revisions is present only with include=revisions. */
+            revisions?: components["schemas"]["com.github.apoxy-dev.apoxy.api.metrics.v1alpha1.RevisionMetrics"][];
+            /** @description Since and Until are the resolved half-open [since, until) window bounds. */
+            since: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Time"];
+            /** @description Timestamp is when the snapshot was computed. */
+            timestamp: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Time"];
+            /**
+             * Format: int32
+             * @description TotalCount is how many revisions had traffic in the window.
+             */
+            totalCount?: number;
+            /** @description Truncated is set when top cut the revision list. */
+            truncated?: boolean;
+            /** @description Units maps a measure name to its display unit. */
+            units?: {
+                [key: string]: string;
+            };
+            until: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Time"];
+            /** @description Window is until minus since. */
+            window: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Duration"];
+        };
+        /** @description SnapshotMeta is the window every snapshot kind echoes. It is inlined rather than nested so the wire shape stays flat, as the design states. */
+        "com.github.apoxy-dev.apoxy.api.metrics.v1alpha1.SnapshotMeta": {
+            /** @description DataUpTo is the end of the last complete bucket. */
+            dataUpTo: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Time"];
+            /** @description Since and Until are the resolved half-open [since, until) window bounds. */
+            since: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Time"];
+            /** @description Timestamp is when the snapshot was computed. */
+            timestamp: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Time"];
+            until: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Time"];
+            /** @description Window is until minus since. */
+            window: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Duration"];
+        };
+        /**
+         * @description TunnelMetrics is the snapshot returned by tunnels/<name>/metrics. It has no nested table, so it takes no include token.
+         *
+         *     A Tunnel is one agent connection to a relay, so the snapshot covers that connection alone: an agent that reconnects gets a new Tunnel, and its history starts over with it.
+         */
+        "com.github.apoxy-dev.apoxy.api.metrics.v1alpha1.TunnelMetrics": {
+            /** @description APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources */
+            apiVersion?: string;
+            /** @description DataUpTo is the end of the last complete bucket. */
+            dataUpTo: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Time"];
+            /** @description Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds */
+            kind?: string;
+            /** @default {} */
+            metadata: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta"];
+            /** @description Metrics is the tunnel totals, one entry per evaluated recipe. */
+            metrics?: {
+                [key: string]: {
+                    [key: string]: number;
+                };
+            };
+            /** @description Since and Until are the resolved half-open [since, until) window bounds. */
+            since: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Time"];
+            /** @description Timestamp is when the snapshot was computed. */
+            timestamp: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Time"];
+            /** @description Units maps a measure name to its display unit. */
+            units?: {
+                [key: string]: string;
+            };
+            until: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Time"];
+            /** @description Window is until minus since. */
+            window: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Duration"];
+        };
+        /** @description VPCNetworkMetrics is the snapshot returned by vpcnetworks/<name>/metrics. It cuts its own leaf lists, so truncated and totalCount sit on it. */
+        "com.github.apoxy-dev.apoxy.api.metrics.v1alpha1.VPCNetworkMetrics": {
+            /** @description APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources */
+            apiVersion?: string;
+            /** @description DataUpTo is the end of the last complete bucket. */
+            dataUpTo: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Time"];
+            /** @description Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds */
+            kind?: string;
+            /** @default {} */
+            metadata: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta"];
+            /** @description Metrics is the network totals, one entry per evaluated recipe. */
+            metrics?: {
+                [key: string]: {
+                    [key: string]: number;
+                };
+            };
+            /** @description Services is present only with include=services. */
+            services?: components["schemas"]["com.github.apoxy-dev.apoxy.api.metrics.v1alpha1.VPCServiceMetrics"][];
+            /** @description Since and Until are the resolved half-open [since, until) window bounds. */
+            since: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Time"];
+            /** @description Timestamp is when the snapshot was computed. */
+            timestamp: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Time"];
+            /**
+             * Format: int32
+             * @description TotalCount is how many leaf rows had traffic in the window, counted across every list the read asked for.
+             */
+            totalCount?: number;
+            /** @description Truncated is set when top cut a leaf list. */
+            truncated?: boolean;
+            /** @description Tunnels is present only with include=tunnels. A tunnel is one agent connection, so a reconnect is a new tunnel with a history of its own. */
+            tunnels?: components["schemas"]["com.github.apoxy-dev.apoxy.api.metrics.v1alpha1.VPCTunnelMetrics"][];
+            /** @description Units maps a measure name to its display unit. */
+            units?: {
+                [key: string]: string;
+            };
+            until: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Time"];
+            /** @description Window is until minus since. */
+            window: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Duration"];
+        };
+        /** @description VPCServiceMetrics is one VPC service's share of a VPCNetwork. */
+        "com.github.apoxy-dev.apoxy.api.metrics.v1alpha1.VPCServiceMetrics": {
+            /** @description Metrics is every evaluated recipe for the service. */
+            metrics?: {
+                [key: string]: {
+                    [key: string]: number;
+                };
+            };
+            /** @description Name is the VPCService name. */
+            name?: string;
+        };
+        /** @description VPCTunnelMetrics is one tunnel's share of a VPCNetwork. */
+        "com.github.apoxy-dev.apoxy.api.metrics.v1alpha1.VPCTunnelMetrics": {
+            /** @description Metrics is every evaluated recipe for the tunnel. */
+            metrics?: {
+                [key: string]: {
+                    [key: string]: number;
+                };
+            };
+            /** @description Name is the Tunnel name, which is the connection the agent holds. */
+            name?: string;
+        };
         "com.github.apoxy-dev.apoxy.api.policy.v1alpha1.RateLimit": {
             /** @description APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources */
             apiVersion?: string;
@@ -2678,6 +3282,71 @@ export interface components {
              */
             withinLimit?: number;
         };
+        /** @description AgentEnrollment is the body of POST vpcnetworks/<name>/enroll. It is not stored. */
+        "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.AgentEnrollment": {
+            /** @description APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources */
+            apiVersion?: string;
+            /** @description Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds */
+            kind?: string;
+            /** @default {} */
+            metadata: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta"];
+            /** @default {} */
+            spec: components["schemas"]["com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.AgentEnrollmentSpec"];
+            /** @default {} */
+            status: components["schemas"]["com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.AgentEnrollmentStatus"];
+        };
+        /** @description AgentEnrollmentSpec is the enroll request of one agent. */
+        "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.AgentEnrollmentSpec": {
+            /**
+             * @description Agent name in the cert SAN. Must be a DNS label.
+             * @default
+             */
+            agentName: string;
+            /**
+             * @description PEM "CERTIFICATE REQUEST" signed with a P-256 key. The server uses only its public key.
+             * @default
+             */
+            csr: string;
+        };
+        /** @description AgentEnrollmentStatus holds the issued cert. */
+        "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.AgentEnrollmentStatus": {
+            /** @description PEM CA certs that relays and peers trust for agent certs. */
+            caBundle?: string;
+            /** @description PEM agent cert with the SAN spiffe://<project>/vpc/<vpc-uid>/agent/<name>. */
+            certificate?: string;
+            /** @description NotAfter of the cert. */
+            expiresAt?: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Time"];
+            /** @description PEM CA certs that relay certs and relay grants chain to. Empty means the system roots. */
+            relayRoots?: string;
+            /** @description Ready relays that serve the VPC. */
+            relays?: components["schemas"]["com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.EnrollmentRelay"][];
+        };
+        /** @description AgentRevocation is the body of POST vpcnetworks/<name>/revoke. It is not stored; the server adds the agent to VPCNetwork.status.revokedAgents. */
+        "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.AgentRevocation": {
+            /** @description APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources */
+            apiVersion?: string;
+            /** @description Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds */
+            kind?: string;
+            /** @default {} */
+            metadata: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta"];
+            /** @default {} */
+            spec: components["schemas"]["com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.AgentRevocationSpec"];
+            /** @default {} */
+            status: components["schemas"]["com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.AgentRevocationStatus"];
+        };
+        /** @description AgentRevocationSpec names the agent to revoke. */
+        "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.AgentRevocationSpec": {
+            /**
+             * @description Agent name in the cert SAN.
+             * @default
+             */
+            agentName: string;
+        };
+        /** @description AgentRevocationStatus holds the revoke time. */
+        "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.AgentRevocationStatus": {
+            /** @description Certs of the agent with NotBefore at or before this time are revoked. */
+            revokedAt?: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Time"];
+        };
         /**
          * @description EgressGatewaySpec configures per-network egress-gateway (exit-node) semantics: agents may advertise default routes and the relay SNATs strictly within this network's routing domain.
          *
@@ -2686,6 +3355,16 @@ export interface components {
         "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.EgressGatewaySpec": {
             /** @description Whether the egress gateway is enabled. Default is false. */
             enabled?: boolean;
+        };
+        /** @description EnrollmentRelay is one relay that an agent can dial. */
+        "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.EnrollmentRelay": {
+            /** @description Underlay host:port addresses of the relay. */
+            addresses: string[];
+            /**
+             * @description Name in the relay cert. Grants of the relay carry it as the relay ID.
+             * @default
+             */
+            id: string;
         };
         /** @description Relay tracks one relay instance serving tunnel connections. */
         "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.Relay": {
@@ -2735,6 +3414,16 @@ export interface components {
             conditions?: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Condition"][];
             /** @description Alive-and-accepting. Flipped by the lease watcher on expiry/renewal transitions (crash) and by the relay itself at drain start. The only liveness signal consumers see; count connections via Tunnels by relayRef. */
             ready?: boolean;
+        };
+        /** @description RevokedAgent is one entry of the VPC revocation list. A cert fails when its SAN names this agent and its NotBefore is at or before RevokedAt. Entries are dropped when all certs they match have expired. */
+        "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.RevokedAgent": {
+            /**
+             * @description Agent name in the cert SAN.
+             * @default
+             */
+            name: string;
+            /** @description Revoke time. */
+            revokedAt: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Time"];
         };
         /** @description Tunnel tracks one live connection - the Endpoints analog to VPCService's Service. Created complete by the owning relay at connect, deleted at disconnect, never patched in steady state, and never user-authored. The name is the connection ID; metadata labels carry the agent-declared labels plus the relay-stamped identity labels (LabelNetwork, LabelTunnelName, LabelAgentInstance). */
         "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.Tunnel": {
@@ -2851,6 +3540,11 @@ export interface components {
             dns?: components["schemas"]["com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.VPCNetworkDNS"];
             /** @description Per-network egress-gateway (exit-node) semantics. Not honored until the relay router implements per-network routing domains (APO-729). */
             egressGateway?: components["schemas"]["com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.EgressGatewaySpec"];
+            /**
+             * Format: int32
+             * @description Inner MTU of the network, from 1280 to 1412. Unset means 1280. An agent whose path to its relay cannot carry a larger MTU uses 1280.
+             */
+            mtu?: number;
         };
         "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.VPCNetworkStatus": {
             /** @description Conditions: Ready, InfraProvisioned. */
@@ -2859,6 +3553,8 @@ export interface components {
             credentials?: components["schemas"]["com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.VPCNetworkCredentials"];
             /** @description The ULA prefix of the network's overlay address space. Relay discovery is a live list of Relay objects, not derived state here. */
             overlayCIDR?: string;
+            /** @description Agents whose certs are revoked. Written by the revoke subresource. */
+            revokedAgents?: components["schemas"]["com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.RevokedAgent"][];
         };
         /** @description VPCService is service-like addressing over Tunnels, modeled on the Kubernetes Service: a label selector over Tunnel objects (which play Endpoints), a stable DNS name, and the target for DomainRecords and routes. User-authored. */
         "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.VPCService": {
@@ -2908,6 +3604,10 @@ export interface components {
             name: string;
         };
         "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.VPCServiceSpec": {
+            /** @description The application protocol the members speak, using the Gateway API (GEP-1911) vocabulary: "kubernetes.io/h2c" for cleartext HTTP/2 and "grpc" for gRPC (which implies h2c). Empty means HTTP/1.1. Routes that reference this service use it to pick the upstream protocol. */
+            appProtocol?: string;
+            /** @description The DNS label under which the service is published in the project's vpc zone: <hostname>.<network>.vpc.apoxy.net. Defaults to the object name. Must be a valid DNS label; unique within the VPCNetwork (enforced at admission). */
+            hostname?: string;
             /**
              * @description The VPCNetwork this service belongs to. Selection is scoped to Tunnels of this network.
              * @default {}
@@ -2917,8 +3617,9 @@ export interface components {
             selector: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.LabelSelector"];
         };
         "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.VPCServiceStatus": {
+            /** @description Conditions: Reconciled, Ready. */
             conditions?: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Condition"][];
-            /** @description Live members and their overlay addresses (the "endpoints view"). */
+            /** @description Live members and their overlay addresses (the "endpoints view"). Only usable members appear here: a Tunnel with no overlay address yet is not an endpoint traffic can land on, so it is not counted as one. */
             endpoints?: components["schemas"]["com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.VPCServiceEndpoint"][];
         };
         /** @description Lease defines a lease concept. */

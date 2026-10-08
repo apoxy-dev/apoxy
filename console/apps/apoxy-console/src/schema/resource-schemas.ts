@@ -1768,6 +1768,17 @@ export const RESOURCE_SCHEMAS: Record<string, JSONSchema> = {
         },
         "type": "object"
       },
+      "com.github.apoxy-dev.apoxy.api.core.v1alpha2.EnvoyConfig": {
+        "properties": {
+          "releaseURL": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "com.github.apoxy-dev.apoxy.api.core.v1alpha2.LocalObjectReference": {
         "properties": {
           "group": {
@@ -1835,6 +1846,9 @@ export const RESOURCE_SCHEMAS: Record<string, JSONSchema> = {
       },
       "com.github.apoxy-dev.apoxy.api.core.v1alpha2.ProxySpec": {
         "properties": {
+          "envoy": {
+            "$ref": "com.github.apoxy-dev.apoxy.api.core.v1alpha2.EnvoyConfig"
+          },
           "provider": {
             "type": "string"
           },
@@ -2065,6 +2079,9 @@ export const RESOURCE_SCHEMAS: Record<string, JSONSchema> = {
         "properties": {
           "certificateAuthority": {
             "type": "string"
+          },
+          "disabled": {
+            "type": "boolean"
           }
         },
         "type": "object"
@@ -5267,6 +5284,85 @@ export const RESOURCE_SCHEMAS: Record<string, JSONSchema> = {
     },
     "type": "object"
   },
+  "metrics.apoxy.dev/v1alpha1/GatewayMetrics": {
+    "type": "object"
+  },
+  "metrics.apoxy.dev/v1alpha1/HTTPRouteMetrics": {
+    "type": "object"
+  },
+  "metrics.apoxy.dev/v1alpha1/Metric": {
+    "$defs": {
+      "com.github.apoxy-dev.apoxy.api.metrics.v1alpha1.MetricSpec": {
+        "properties": {
+          "defaultColumns": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "defaultDimension": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "prql": {
+            "type": "string"
+          },
+          "scopes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "source": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "unit": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "prql"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "spec": {
+        "$ref": "com.github.apoxy-dev.apoxy.api.metrics.v1alpha1.MetricSpec"
+      }
+    },
+    "type": "object"
+  },
+  "metrics.apoxy.dev/v1alpha1/MetricSource": {
+    "$defs": {
+      "com.github.apoxy-dev.apoxy.api.metrics.v1alpha1.MetricSourceSpec": {
+        "type": "object"
+      }
+    },
+    "properties": {
+      "spec": {
+        "$ref": "com.github.apoxy-dev.apoxy.api.metrics.v1alpha1.MetricSourceSpec"
+      }
+    },
+    "type": "object"
+  },
+  "metrics.apoxy.dev/v1alpha1/ProxyMetrics": {
+    "type": "object"
+  },
+  "metrics.apoxy.dev/v1alpha1/ServiceMetrics": {
+    "type": "object"
+  },
+  "metrics.apoxy.dev/v1alpha1/TunnelMetrics": {
+    "type": "object"
+  },
+  "metrics.apoxy.dev/v1alpha1/VPCNetworkMetrics": {
+    "type": "object"
+  },
   "policy.apoxy.dev/v1alpha1/RateLimit": {
     "$defs": {
       "com.github.apoxy-dev.apoxy.api.policy.v1alpha1.RateLimitDescriptor": {
@@ -5315,6 +5411,52 @@ export const RESOURCE_SCHEMAS: Record<string, JSONSchema> = {
     "properties": {
       "spec": {
         "$ref": "com.github.apoxy-dev.apoxy.api.policy.v1alpha1.RateLimitSpec"
+      }
+    },
+    "type": "object"
+  },
+  "vpc.apoxy.dev/v1alpha1/AgentEnrollment": {
+    "$defs": {
+      "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.AgentEnrollmentSpec": {
+        "properties": {
+          "agentName": {
+            "type": "string"
+          },
+          "csr": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "agentName",
+          "csr"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "spec": {
+        "$ref": "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.AgentEnrollmentSpec"
+      }
+    },
+    "type": "object"
+  },
+  "vpc.apoxy.dev/v1alpha1/AgentRevocation": {
+    "$defs": {
+      "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.AgentRevocationSpec": {
+        "properties": {
+          "agentName": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "agentName"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "spec": {
+        "$ref": "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.AgentRevocationSpec"
       }
     },
     "type": "object"
@@ -5468,6 +5610,9 @@ export const RESOURCE_SCHEMAS: Record<string, JSONSchema> = {
           },
           "egressGateway": {
             "$ref": "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.EgressGatewaySpec"
+          },
+          "mtu": {
+            "type": "integer"
           }
         },
         "type": "object"
@@ -5495,6 +5640,12 @@ export const RESOURCE_SCHEMAS: Record<string, JSONSchema> = {
       },
       "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.VPCServiceSpec": {
         "properties": {
+          "appProtocol": {
+            "type": "string"
+          },
+          "hostname": {
+            "type": "string"
+          },
           "networkRef": {
             "$ref": "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.VPCNetworkRef"
           },

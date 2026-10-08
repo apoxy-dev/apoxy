@@ -599,6 +599,11 @@ func (in *NameserverStatus) DeepCopyInto(out *NameserverStatus) {
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}
+	if in.Sets != nil {
+		in, out := &in.Sets, &out.Sets
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	return
 }
 

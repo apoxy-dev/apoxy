@@ -4147,7 +4147,7 @@ func schema_apoxy_api_core_v1alpha_DomainZoneSpec(ref common.ReferenceCallback) 
 					},
 					"nameservers": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Nameservers to use for this domain zone. If not specified, defaults to Apoxy's nameservers.",
+							Description: "Deprecated: Apoxy ignores this field. The zone nameservers are in status.nameservers.required.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
@@ -4403,6 +4403,20 @@ func schema_apoxy_api_core_v1alpha_NameserverStatus(ref common.ReferenceCallback
 					"current": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Current nameservers that are actually configured.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"sets": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Sets are the nameserver sets that serve the zone. The last one is the set that the delegation should use.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
@@ -5643,7 +5657,7 @@ func schema_apoxy_api_core_v1alpha2_DomainZoneSpec(ref common.ReferenceCallback)
 					},
 					"nameservers": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Nameservers to use for this domain zone. If not specified, defaults to Apoxy's nameservers.",
+							Description: "Deprecated: Apoxy ignores this field. The zone nameservers are in status.nameservers.required.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
@@ -5944,6 +5958,20 @@ func schema_apoxy_api_core_v1alpha2_NameserverStatus(ref common.ReferenceCallbac
 					"current": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Current nameservers that are actually configured.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"sets": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Sets are the nameserver sets that serve the zone. The last one is the set that the delegation should use.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
@@ -7268,7 +7296,7 @@ func schema_apoxy_api_core_v1alpha3_DomainZoneSpec(ref common.ReferenceCallback)
 					},
 					"nameservers": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Nameservers to use for this domain zone. If not specified, defaults to Apoxy's nameservers.",
+							Description: "Deprecated: Apoxy ignores this field. The zone nameservers are in status.nameservers.required.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
@@ -7396,6 +7424,20 @@ func schema_apoxy_api_core_v1alpha3_NameserverStatus(ref common.ReferenceCallbac
 					"current": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Current nameservers that are actually configured.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"sets": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Sets are the nameserver sets that serve the zone. The last one is the set that the delegation should use.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{

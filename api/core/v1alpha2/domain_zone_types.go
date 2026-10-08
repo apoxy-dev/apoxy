@@ -36,8 +36,7 @@ type DomainZoneSpec struct {
 	// +optional
 	RegistrationConfig *RegistrationConfig `json:"registrationConfig,omitempty"`
 
-	// Nameservers to use for this domain zone.
-	// If not specified, defaults to Apoxy's nameservers.
+	// Deprecated: Apoxy ignores this field. The zone nameservers are in status.nameservers.required.
 	// +optional
 	Nameservers []string `json:"nameservers,omitempty"`
 }
@@ -188,6 +187,11 @@ type NameserverStatus struct {
 	// Current nameservers that are actually configured.
 	// +optional
 	Current []string `json:"current,omitempty"`
+
+	// Sets are the nameserver sets that serve the zone. The last one is the
+	// set that the delegation should use.
+	// +optional
+	Sets []string `json:"sets,omitempty"`
 }
 
 var _ resource.StatusSubResource = &DomainZoneStatus{}
@@ -306,6 +310,7 @@ func (a *DomainZone) ConvertToStorageVersion(storageObj runtime.Object) error {
 		obj.Status.Nameservers = &v1alpha3.NameserverStatus{
 			Required: a.Status.Nameservers.Required,
 			Current:  a.Status.Nameservers.Current,
+			Sets:     a.Status.Nameservers.Sets,
 		}
 	}
 
@@ -365,6 +370,7 @@ func (a *DomainZone) ConvertFromStorageVersion(storageObj runtime.Object) error 
 		a.Status.Nameservers = &NameserverStatus{
 			Required: obj.Status.Nameservers.Required,
 			Current:  obj.Status.Nameservers.Current,
+			Sets:     obj.Status.Nameservers.Sets,
 		}
 	}
 

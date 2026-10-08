@@ -33,8 +33,7 @@ type DomainZoneSpec struct {
 	// +optional
 	RegistrationConfig *RegistrationConfig `json:"registrationConfig,omitempty"`
 
-	// Nameservers to use for this domain zone.
-	// If not specified, defaults to Apoxy's nameservers.
+	// Deprecated: Apoxy ignores this field. The zone nameservers are in status.nameservers.required.
 	// +optional
 	Nameservers []string `json:"nameservers,omitempty"`
 }
@@ -185,6 +184,11 @@ type NameserverStatus struct {
 	// Current nameservers that are actually configured.
 	// +optional
 	Current []string `json:"current,omitempty"`
+
+	// Sets are the nameserver sets that serve the zone. The last one is the
+	// set that the delegation should use.
+	// +optional
+	Sets []string `json:"sets,omitempty"`
 }
 
 var _ resource.StatusSubResource = &DomainZoneStatus{}
