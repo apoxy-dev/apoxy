@@ -84,7 +84,7 @@ func (r *Router) resolvePeer(c *Session, in *dp.ResolvePeerRequest) (*dp.Resolve
 	if peer == nil {
 		return nil, rpc.Errorf(rpc.NotFound, "no route to %s", dst)
 	}
-	res := &dp.ResolvePeerResponse{Reach: dp.Reach_REACH_LOCAL, P2P: !c.id.RelayOnly && !peer.id.RelayOnly, Subject: peer.id.ID}
+	res := &dp.ResolvePeerResponse{Reach: dp.Reach_REACH_LOCAL, P2P: true, Subject: peer.id.ID}
 	// Many agents can have the subject. The attachments tell which agent has dst.
 	for _, a := range peer.attachments {
 		res.AttachmentIds = append(res.AttachmentIds, a.ID)

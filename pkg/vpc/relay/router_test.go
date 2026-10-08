@@ -406,26 +406,24 @@ func TestLaneRekey(t *testing.T) {
 
 func TestResolvePeer(t *testing.T) {
 	cases := []struct {
-		name      string
-		vpc       VPCKey
-		addr      string
-		relayOnly bool // Identity of the peer.
-		want      *dp.ResolvePeerResponse
-		code      rpc.Code
+		name string
+		vpc  VPCKey
+		addr string
+		want *dp.ResolvePeerResponse
+		code rpc.Code
 	}{
-		{"local", vpcA, "fd00::2", false, &dp.ResolvePeerResponse{Reach: dp.Reach_REACH_LOCAL, P2P: true}, rpc.OK},
-		{"longest prefix", vpcA, "10.1.2.3", false, &dp.ResolvePeerResponse{Reach: dp.Reach_REACH_LOCAL, P2P: true}, rpc.OK},
-		{"relay-only peer", vpcA, "fd00::2", true, &dp.ResolvePeerResponse{Reach: dp.Reach_REACH_LOCAL}, rpc.OK},
-		{"IPv4-mapped", vpcA, "::ffff:10.1.2.3", false, &dp.ResolvePeerResponse{Reach: dp.Reach_REACH_LOCAL, P2P: true}, rpc.OK},
-		{"not found", vpcA, "fd00::99", false, nil, rpc.NotFound},
-		{"other VPC", vpcB, "fd00::2", false, nil, rpc.PermissionDenied},
-		{"bad address", vpcA, "nope", false, nil, rpc.InvalidArgument},
+		{"local", vpcA, "fd00::2", &dp.ResolvePeerResponse{Reach: dp.Reach_REACH_LOCAL, P2P: true}, rpc.OK},
+		{"longest prefix", vpcA, "10.1.2.3", &dp.ResolvePeerResponse{Reach: dp.Reach_REACH_LOCAL, P2P: true}, rpc.OK},
+		{"IPv4-mapped", vpcA, "::ffff:10.1.2.3", &dp.ResolvePeerResponse{Reach: dp.Reach_REACH_LOCAL, P2P: true}, rpc.OK},
+		{"not found", vpcA, "fd00::99", nil, rpc.NotFound},
+		{"other VPC", vpcB, "fd00::2", nil, rpc.PermissionDenied},
+		{"bad address", vpcA, "nope", nil, rpc.InvalidArgument},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			r := NewRouter(nil, Config{})
 			c := addSession(t, r, vpcA, "caller", "192.0.2.1:1000", "fd00::1/128")
-			peer := newSession(Identity{VPC: vpcA, ID: "peer", RelayOnly: tc.relayOnly},
+			peer := newSession(Identity{VPC: vpcA, ID: "peer"},
 				func() netip.AddrPort { return netip.MustParseAddrPort("192.0.2.2:2000") })
 			r.addSession(peer, t0)
 			require.NoError(t, r.AddRoute(peer, netip.MustParsePrefix("fd00::2/128"), "att"))

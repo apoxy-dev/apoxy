@@ -57,8 +57,6 @@ type Identity struct {
 	VPC VPCKey
 	// ID is the SPIFFE ID in the agent certificate.
 	ID string
-	// RelayOnly is set for a join-token identity, which gets no P2P.
-	RelayOnly bool
 }
 
 // Permit tells if a sender in srcVPC with identity srcID can reach dst in dstVPC.
