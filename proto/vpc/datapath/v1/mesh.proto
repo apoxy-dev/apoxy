@@ -13,12 +13,49 @@ option go_package = "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1;datapathv1
 // Mesh is the service of a relay on a mesh session (ALPN apoxy-mesh/1).
 // Both relays serve it and call it.
 service Mesh {
+  // Open is the first call on a session. The relay that dialed calls it.
+  rpc Open(MeshOpenRequest) returns (MeshOpenResponse);
   // Presence sends the attachments of the caller.
   rpc Presence(stream PresenceUpdate) returns (google.protobuf.Empty);
   // SPIRows copies SPI rows to the relay of the receiver.
   rpc SPIRows(stream SPIRowUpdate) returns (google.protobuf.Empty);
   // TrunkKeys gives the peer relay trunk SAs for traffic to the caller.
   rpc TrunkKeys(KeysRequest) returns (KeysResponse);
+}
+
+// MeshCloseCode is the QUIC application error code when a relay closes a
+// mesh session.
+enum MeshCloseCode {
+  // Normal close, or a new session of the two relays replaced this one.
+  MESH_CLOSE_CODE_UNSPECIFIED = 0;
+  // The relay stops on purpose. Its attachments are gone.
+  MESH_CLOSE_CODE_RESTART = 1;
+  // The revision of the other relay is below the minimum of the relay that
+  // closes. The reason gives the minimum.
+  MESH_CLOSE_CODE_UPGRADE = 2;
+  // The relay that closes does not have the other relay as a member: its name
+  // is not in the member set, or its certificate failed the check.
+  MESH_CLOSE_CODE_NOT_MEMBER = 3;
+}
+
+// MeshOpenRequest is the first message of the relay that dialed.
+message MeshOpenRequest {
+  // Revision of the dialer.
+  Version version = 1;
+  // Relay name of the dialer. Each relay process has its own name.
+  string name = 2;
+  // ID and agent addresses of the dialer. Many relays can have one ID.
+  RelayRef relay = 3;
+}
+
+// MeshOpenResponse is the answer of the relay that accepted.
+message MeshOpenResponse {
+  // Revision of the listener.
+  Version version = 1;
+  // Relay name of the listener.
+  string name = 2;
+  // ID and agent addresses of the listener.
+  RelayRef relay = 3;
 }
 
 // Presence tells that an attachment is on the sending relay.

@@ -16,6 +16,7 @@ import (
 
 // Full method names of the Mesh service.
 const (
+	Mesh_Open_FullMethodName      = "/apoxy.vpc.datapath.v1.Mesh/Open"
 	Mesh_Presence_FullMethodName  = "/apoxy.vpc.datapath.v1.Mesh/Presence"
 	Mesh_SPIRows_FullMethodName   = "/apoxy.vpc.datapath.v1.Mesh/SPIRows"
 	Mesh_TrunkKeys_FullMethodName = "/apoxy.vpc.datapath.v1.Mesh/TrunkKeys"
@@ -23,6 +24,8 @@ const (
 
 // MeshClient is the client API of the Mesh service.
 type MeshClient interface {
+	// Open is the first call on a session. The relay that dialed calls it.
+	Open(ctx context.Context, in *MeshOpenRequest) (*MeshOpenResponse, error)
 	// Presence sends the attachments of the caller.
 	Presence(ctx context.Context) (rpc.ClientStreamClient[PresenceUpdate, emptypb.Empty], error)
 	// SPIRows copies SPI rows to the relay of the receiver.
@@ -35,6 +38,14 @@ type meshClient struct{ c rpc.Caller }
 
 // NewMeshClient returns a client of the Mesh service that makes calls with c.
 func NewMeshClient(c rpc.Caller) MeshClient { return meshClient{c} }
+
+func (c meshClient) Open(ctx context.Context, in *MeshOpenRequest) (*MeshOpenResponse, error) {
+	out := new(MeshOpenResponse)
+	if err := c.c.Invoke(ctx, Mesh_Open_FullMethodName, in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
 
 func (c meshClient) Presence(ctx context.Context) (rpc.ClientStreamClient[PresenceUpdate, emptypb.Empty], error) {
 	return rpc.OpenClientStream[PresenceUpdate, emptypb.Empty](ctx, c.c, Mesh_Presence_FullMethodName)
@@ -54,6 +65,8 @@ func (c meshClient) TrunkKeys(ctx context.Context, in *KeysRequest) (*KeysRespon
 
 // MeshServer is the server API of the Mesh service.
 type MeshServer interface {
+	// Open is the first call on a session. The relay that dialed calls it.
+	Open(context.Context, *MeshOpenRequest) (*MeshOpenResponse, error)
 	// Presence sends the attachments of the caller.
 	Presence(context.Context, rpc.ClientStreamServer[PresenceUpdate]) (*emptypb.Empty, error)
 	// SPIRows copies SPI rows to the relay of the receiver.
@@ -65,6 +78,10 @@ type MeshServer interface {
 // UnimplementedMeshServer returns Unimplemented for each method. Embed it to add
 // methods to the service without a build failure.
 type UnimplementedMeshServer struct{}
+
+func (UnimplementedMeshServer) Open(context.Context, *MeshOpenRequest) (*MeshOpenResponse, error) {
+	return nil, rpc.Errorf(rpc.Unimplemented, "method Open not implemented")
+}
 
 func (UnimplementedMeshServer) Presence(context.Context, rpc.ClientStreamServer[PresenceUpdate]) (*emptypb.Empty, error) {
 	return nil, rpc.Errorf(rpc.Unimplemented, "method Presence not implemented")
@@ -80,6 +97,7 @@ func (UnimplementedMeshServer) TrunkKeys(context.Context, *KeysRequest) (*KeysRe
 
 // RegisterMeshServer adds the methods of srv to m.
 func RegisterMeshServer(m *rpc.Mux, srv MeshServer) {
+	rpc.HandleUnary(m, Mesh_Open_FullMethodName, srv.Open)
 	rpc.HandleClientStream(m, Mesh_Presence_FullMethodName, srv.Presence)
 	rpc.HandleClientStream(m, Mesh_SPIRows_FullMethodName, srv.SPIRows)
 	rpc.HandleUnary(m, Mesh_TrunkKeys_FullMethodName, srv.TrunkKeys)

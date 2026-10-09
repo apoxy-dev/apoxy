@@ -85,6 +85,9 @@ type Relay struct {
 	// vpc serves VPC relay sessions. It is nil until SetVPC.
 	vpc *vpcrelay.Server
 
+	// mesh keeps the sessions with the other relays. It is nil until SetMesh.
+	mesh *vpcrelay.Mesh
+
 	// resetKey makes the stateless reset tokens, so a restart of this relay
 	// closes the old connections. Nil sends no resets.
 	resetKey *quic.StatelessResetKey
@@ -241,6 +244,19 @@ func (r *Relay) SetVPC(relayID string, trust vpcrelay.Trust, nets vpcrelay.Netwo
 	return rtr
 }
 
+// SetMesh keeps a mesh session with each member of the returned Mesh. The
+// name of the relay is its name in the mesh. Call SetMesh before Start.
+func (r *Relay) SetMesh(cfg vpcrelay.MeshConfig) (*vpcrelay.Mesh, error) {
+	m, err := vpcrelay.NewMesh(r.name, cfg)
+	if err != nil {
+		return nil, err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.mesh = m
+	return m, nil
+}
+
 // SetSteerGroup serves on the sockets of a steer group, in the order that
 // steer.Listen gives them. Call it before Start.
 func (r *Relay) SetSteerGroup(conns []*net.UDPConn) error {
@@ -290,23 +306,36 @@ func (r *Relay) transports() []*quic.Transport {
 	return trs
 }
 
-// listenConfig returns the QUIC config of the relay listeners. With VPC relay
-// sessions, it keeps the RTT of each connection.
+// listenConfig returns the QUIC config of the relay listeners. It keeps the RTT
+// for VPC relay sessions and gives a mesh member the timers of a mesh session.
 func (r *Relay) listenConfig() *quic.Config {
-	if r.vpc == nil {
-		return relayQUICConfig
+	c := relayQUICConfig
+	if r.vpc != nil {
+		c = relayQUICConfig.Clone()
+		c.Tracer = vpcrelay.TraceRTT
 	}
-	c := relayQUICConfig.Clone()
-	c.Tracer = vpcrelay.TraceRTT
+	if r.mesh != nil {
+		c = r.mesh.ListenConfig(c)
+	}
 	return c
 }
 
-// vpcTLSConfig picks the VPC relay config for apoxy-vpc/2, else h3.
+// vpcTLSConfig picks the VPC relay config for apoxy-vpc/2 and the mesh config
+// for apoxy-mesh/1, else h3.
 func (r *Relay) vpcTLSConfig(h3 *tls.Config) *tls.Config {
-	vpc := r.vpc.R.TLSConfig(&tls.Config{GetCertificate: r.getCert})
+	var vpc, mesh *tls.Config
+	if r.vpc != nil {
+		vpc = r.vpc.R.TLSConfig(&tls.Config{GetCertificate: r.getCert})
+	}
+	if r.mesh != nil {
+		mesh = r.mesh.TLSConfig()
+	}
 	return &tls.Config{GetConfigForClient: func(chi *tls.ClientHelloInfo) (*tls.Config, error) {
-		if slices.Contains(chi.SupportedProtos, dp.ALPNRelay) {
+		switch {
+		case vpc != nil && slices.Contains(chi.SupportedProtos, dp.ALPNRelay):
 			return vpc, nil
+		case mesh != nil && slices.Contains(chi.SupportedProtos, dp.ALPNMesh):
+			return mesh, nil
 		}
 		return h3, nil
 	}}
@@ -327,13 +356,25 @@ func (r *Relay) accept(ln *quic.EarlyListener, srv *http3.Server, vpcCtx context
 	}
 }
 
-// serveConn gives an apoxy-vpc/2 connection to the VPC server, and others to h3.
-// vpcCtx ends when Start returns.
+// serveConn gives an apoxy-vpc/2 connection to the VPC server, an apoxy-mesh/1
+// connection to the mesh, and others to h3. vpcCtx ends when Start returns.
 func (r *Relay) serveConn(qc quic.EarlyConnection, srv *http3.Server, vpcCtx context.Context) {
-	if r.vpc != nil && qc.ConnectionState().TLS.NegotiatedProtocol == dp.ALPNRelay {
+	alpn := qc.ConnectionState().TLS.NegotiatedProtocol
+	if r.vpc != nil && alpn == dp.ALPNRelay {
 		select {
 		case <-qc.HandshakeComplete():
 			r.vpc.ServeConn(vpcCtx, qc)
+		case <-qc.Context().Done():
+		case <-vpcCtx.Done():
+		}
+		return
+	}
+	if r.mesh != nil && alpn == dp.ALPNMesh {
+		// The mesh checks the certificate of the other relay, which the
+		// handshake gives at its end.
+		select {
+		case <-qc.HandshakeComplete():
+			r.mesh.ServeConn(vpcCtx, qc)
 		case <-qc.Context().Done():
 		case <-vpcCtx.Done():
 		}
@@ -451,7 +492,7 @@ func (r *Relay) Start(ctx context.Context) error {
 		}
 	}()
 	tlsConf := http3.ConfigureTLSConfig(&tls.Config{GetCertificate: r.getCert})
-	if r.vpc != nil {
+	if r.vpc != nil || r.mesh != nil {
 		tlsConf = r.vpcTLSConfig(tlsConf)
 	}
 	// The connection goroutines end at srv.Close, or at vpcCancel for VPC.
@@ -474,6 +515,11 @@ func (r *Relay) Start(ctx context.Context) error {
 	}
 	if r.vpc != nil {
 		go r.vpc.R.Run(vpcCtx)
+	}
+	if r.mesh != nil {
+		// The mesh dials from a relay socket, so that the other relays see the
+		// address of this relay. Start waits, so that Run tells them of the stop.
+		conns.Go(func() { r.mesh.Run(vpcCtx, trs[0], relayQUICConfig) })
 	}
 	addr := lns[0].Addr().String()
 

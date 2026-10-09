@@ -118,9 +118,27 @@ type vpcRelay struct {
 	caKey  *ecdsa.PrivateKey
 	ctx    context.Context
 	cancel context.CancelFunc // Starts the drain.
+	done   <-chan struct{}    // Closed when Start returns.
+}
+
+// relayOpts are the options of startRelayWith.
+type relayOpts struct {
+	name         string // Relay name. Empty is "localhost".
+	steerSockets int
+	lameDuck     time.Duration
+	noVPC        bool                // The relay serves no VPC relay sessions.
+	setup        func(*tunnel.Relay) // Runs before Start.
 }
 
 func startVPCRelay(t *testing.T, steerSockets int, lameDuck time.Duration) *vpcRelay {
+	return startRelayWith(t, relayOpts{steerSockets: steerSockets, lameDuck: lameDuck})
+}
+
+func startRelayWith(t *testing.T, o relayOpts) *vpcRelay {
+	steerSockets, lameDuck := o.steerSockets, o.lameDuck
+	if o.name == "" {
+		o.name = "localhost"
+	}
 	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
 	caTmpl := &x509.Certificate{
@@ -153,13 +171,18 @@ func startVPCRelay(t *testing.T, steerSockets int, lameDuck time.Duration) *vpcR
 	rtr := &mockRouter{}
 	rtr.On("Start", mock.Anything).Return(nil)
 	rtr.On("Close").Return(nil)
-	r := tunnel.NewRelay("localhost", conns[0], serverCert, h, hasher.NewHasher(make([]byte, 32)), rtr)
+	r := tunnel.NewRelay(o.name, conns[0], serverCert, h, hasher.NewHasher(make([]byte, 32)), rtr)
 	if steerSockets > 0 {
 		require.NoError(t, r.SetSteerGroup(conns))
 	}
 	require.NoError(t, r.SetStatelessResetSecret([]byte("secret")))
-	r.SetVPC("localhost", vpcTrust{agentPool}, vpcNetworks{}, &vpcAddresses{}, vpcrelay.Config{})
+	if !o.noVPC {
+		r.SetVPC("localhost", vpcTrust{agentPool}, vpcNetworks{}, &vpcAddresses{}, vpcrelay.Config{})
+	}
 	r.SetLameDuckPeriod(lameDuck)
+	if o.setup != nil {
+		o.setup(r)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
@@ -173,7 +196,7 @@ func startVPCRelay(t *testing.T, steerSockets int, lameDuck time.Duration) *vpcR
 			_ = c.Close()
 		}
 	})
-	return &vpcRelay{r: r, roots: cryptoutils.CertPoolForCertificate(relayCA), ca: agentCA, caKey: caKey, ctx: ctx, cancel: cancel}
+	return &vpcRelay{r: r, roots: cryptoutils.CertPoolForCertificate(relayCA), ca: agentCA, caKey: caKey, ctx: ctx, cancel: cancel, done: done}
 }
 
 // agentTLS returns the apoxy-vpc/2 client config of agent name.

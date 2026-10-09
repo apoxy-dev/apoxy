@@ -255,9 +255,32 @@ its relay before it applies them, and unregisters them after a revoke.
 
 | Method      | Kind          | Messages |
 |-------------|---------------|----------|
+| `Open`      | unary         | Dialer and listener each send `{version, name, relay}`. First call on a session. |
 | `Presence`  | client stream | `PresenceUpdate` of the attachments of the caller. |
 | `SPIRows`   | client stream | `SPIRowUpdate`: SPI rows for receivers on the called relay. |
 | `TrunkKeys` | unary         | `KeysRequest` -> `KeysResponse` for the trunk SA. |
+
+A member of a mesh is one relay process, and its relay name identifies it.
+Many relays can have one relay ID, so the mesh does not use the ID to tell
+members apart. Two members have one session. The relay with the lower name
+dials, from its listening socket, and calls `Open`. The other relay refuses a
+session that the relay with the higher name dialed. A new session of the two
+relays replaces the session before it. The other calls of a session are valid
+only after `Open` passes.
+
+A relay closes a session with a `MeshCloseCode`: `NOT_MEMBER` (the name of the
+other relay is not in its member set, is not the name that it dialed, or the
+certificate failed the check of the relay host), `UPGRADE` (the revision of the
+other relay is below its minimum, or below 3, the first revision with `Open`;
+see "Revisions") or `RESTART` (the relay stops on purpose, and its attachments
+are gone).
+
+Both relays send a QUIC keep-alive each second and use an idle timeout of 5 s,
+so a relay sees a lost path 5 s to 6 s after the last packet of the other
+relay. After a session ends, the relay that dials waits 200 ms and dials
+again. The wait doubles after each failed dial, up to 10 s, and each wait gets
+up to 50% more at random. A relay has the other relay as down 3 s after the
+session ended, if no new session opened. After `RESTART` it is down at once.
 
 ## Revisions
 
@@ -270,14 +293,15 @@ The first message of a session and its answer carry a
 `Version{revision, min_revision, build}`: `Hello` and `Welcome` on a relay
 session, `OpenRequest` and `OpenResponse` on a peer session. A build from
 before revisions sends no `Version`, and that reads as revision 0. `build` is
-only for logs and metrics. The first `Mesh` call gets the `Version` when the
-mesh is implemented.
+only for logs and metrics. On a mesh session, `MeshOpenRequest` and
+`MeshOpenResponse` carry it.
 
 | Revision | Change | Agent | VTEP | Relay |
 |----------|--------|-------|------|-------|
 | 0 | The protocol before revisions. | Sends no `Version`. | Sends no `Version`. | Sends no `Version`. |
 | 1 | `Version` in `Hello`, `Welcome` and `Open`. `GrantClaims.min_revision`. The `UPGRADE` close codes. | Sends its `Version` in `Hello` and in `Open`. Stops the dial loop when a relay closes with `UPGRADE` and no other relay takes it, and tells the user to upgrade. Dials the next relay when a relay is below its minimum. Closes a peer session below its minimum with `UPGRADE`. Refuses a grant with a `min_revision` above its revision. Keeps the session when a call returns `Unimplemented`. | The duties of the agent on the relay session. | Sends its `Version` in `Welcome`. Closes a session below its minimum with `UPGRADE`. Counts the sessions by revision and build. |
 | 2 | `Hello.name`. `ResolvePeerResponse.attachment_ids`. | Sends the name of its base attachment in `Hello`. With a relay at revision 2, waits for the grant of an address only when `attachment_ids` has an attachment of an open peer session. With an older relay, waits when the subject is that of an open peer session. | The duties of the agent on the relay session. | Has two sessions with one SPIFFE ID as one agent only when their names are equal or one has no name. Sends `attachment_ids` in `ResolvePeer`. |
+| 3 | `Mesh.Open` with the `Version`, the relay name and the `RelayRef` of each relay. The `MeshCloseCode` values. | No duty. | No duty. | Calls `Open` first on a mesh session that it dialed, and answers it on a session that it accepted. Closes a mesh session with a relay below its minimum with `UPGRADE`, and with a relay that is not a member with `NOT_MEMBER`. Closes its mesh sessions with `RESTART` when it stops. |
 
 ### Minimum revision
 

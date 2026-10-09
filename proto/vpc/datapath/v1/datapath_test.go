@@ -247,6 +247,10 @@ func (p peerStub) Grants(ctx context.Context, in *dp.GrantsRequest) (*emptypb.Em
 
 type meshStub struct{ *stub }
 
+func (m meshStub) Open(ctx context.Context, in *dp.MeshOpenRequest) (*dp.MeshOpenResponse, error) {
+	return answer[*dp.MeshOpenResponse](m.stub, "Open", in)
+}
+
 func (m meshStub) Presence(ctx context.Context, st rpc.ClientStreamServer[dp.PresenceUpdate]) (*emptypb.Empty, error) {
 	return recvAll(m.stub, "Presence", st)
 }
@@ -454,6 +458,12 @@ func TestPeerCalls(t *testing.T) {
 func TestMeshCalls(t *testing.T) {
 	c := dp.NewMeshClient
 	runBothWays(t, dp.ALPNMesh, func(m *rpc.Mux, s *stub) { dp.RegisterMeshServer(m, meshStub{s}) }, []call{
+		unary("Open", c, dp.MeshClient.Open,
+			&dp.MeshOpenRequest{Version: dp.LocalVersion("build-a"), Name: "relay-a-0", Relay: &dp.RelayRef{Id: "relay-a", Addresses: []string{"198.51.100.1:443"}}},
+			&dp.MeshOpenResponse{Version: dp.LocalVersion("build-b"), Name: "relay-b-0", Relay: relay}),
+		unary("Open not a member", c, dp.MeshClient.Open,
+			&dp.MeshOpenRequest{Version: dp.LocalVersion("build-a"), Name: "relay-c-0"},
+			rpc.Errorf(rpc.PermissionDenied, "relay relay-c-0 is not a member")),
 		clientStream("Presence", c, dp.MeshClient.Presence,
 			&dp.PresenceUpdate{Entries: []*dp.Presence{{Vpc: vpc, AttachmentId: "att-1", Generation: 1, Prefixes: []string{"fd61:a0b:c00:1::/96"}}}},
 			&dp.PresenceUpdate{Entries: []*dp.Presence{{Vpc: vpc, AttachmentId: "att-1", Generation: 2, Gone: true}}}),
