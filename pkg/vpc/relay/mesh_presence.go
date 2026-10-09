@@ -140,8 +140,8 @@ func newPresence(m *Mesh) *presence {
 	return &presence{m: m, outs: map[*presenceOut]struct{}{}, in: map[string]*presenceIn{}}
 }
 
-// SetRouter makes the mesh send the attachments of r to each member at
-// revision 4 or later, on each new session. Call it before Run.
+// SetRouter makes the mesh send the attachments of r to each member, and
+// exchange trunk keys with it. Call it after PacketHandler of r and before Run.
 func (m *Mesh) SetRouter(r *Router) {
 	p := m.pres
 	p.mu.Lock()
@@ -150,6 +150,7 @@ func (m *Mesh) SetRouter(r *Router) {
 	r.mu.Lock()
 	r.presence = p.changed
 	r.mu.Unlock()
+	m.setTrunk(r)
 }
 
 // opened starts the Presence call on the new session s. A member from before

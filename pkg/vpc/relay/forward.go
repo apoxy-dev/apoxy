@@ -17,8 +17,9 @@ import (
 
 // PacketHandler returns the NonQUICPacketHandler and the NonQUICBatchEnd of
 // tr. The handler forwards PSP packets by SPI rows, and opens the PSP packets
-// to the relay. The batch end sends the packets that the handler forwarded in
-// one read. Relay sessions must use tr or another transport with these.
+// to the relay and the trunk packets of the mesh members. The batch end sends
+// the packets that the handler forwarded in one read. Relay sessions must use
+// tr or another transport with these.
 //
 // With more than one CPU, sender goroutines send the forwarded packets, so the
 // read loop does not wait for the sends. A packet for a sender that is too slow
@@ -37,6 +38,15 @@ func (r *Router) PacketHandler(ctx context.Context, tr *quic.Transport) (handle 
 		fwd = newFwdBatch(tr, &r.sends)
 	}
 	return func(b []byte, from net.Addr) {
+		if t := r.trunk.Load(); t != nil {
+			// A mesh member sends only trunk packets, which have their own header check.
+			if p := t.from(addrPort(from)); p != nil {
+				if !t.receive(br, p, b) {
+					r.drops[dropMalformed].Add(1)
+				}
+				return
+			}
+		}
 		h, err := pspwire.ParseHeader(b)
 		if err != nil {
 			if !r.Keepalive(b, addrPort(from)) && !r.answerProbe(tr, b, from) {

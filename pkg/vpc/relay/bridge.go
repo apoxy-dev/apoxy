@@ -29,7 +29,8 @@ import (
 const (
 	// maxUDP is the largest UDP payload that quic-go reads.
 	maxUDP = 1452
-	// maxClashes limits the new offers when relay SPIs are in rows of the agent.
+	// maxClashes limits the new offers when relay SPIs are in rows of the agent,
+	// or when a mesh member holds them from another receiver.
 	maxClashes = 4
 )
 
@@ -376,6 +377,10 @@ func (r *Router) tickBridge(now time.Time) {
 		slog.Warn("Failed to rekey relay SAs", "error", err)
 	}
 	br.send.Expire(now)
+	if t := r.trunk.Load(); t != nil {
+		// The trunk SAs are in the same receiver, and their rekeys go to the mesh.
+		ups = t.rekeyed(br, ups)
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, u := range ups {
@@ -445,14 +450,20 @@ func (r *Router) closeBridge(s *Session) {
 		rx.Revoke()
 	}
 	if tx != nil {
-		var spis []uint32
-		for i := range keys.MaxLanes {
-			if sa := tx.SA(i); sa != nil {
-				spis = append(spis, sa.SPI())
-			}
-		}
-		_, _ = tx.Apply(keys.Request{Op: keys.OpRevoke, SPIs: spis}, time.Time{})
+		revokeTx(tx)
 	}
+}
+
+// revokeTx deletes the SAs of tx, so that the sender of the bridge can hold
+// their SPIs from another receiver.
+func revokeTx(tx *keys.TxPeer) {
+	var spis []uint32
+	for i := range keys.MaxLanes {
+		if sa := tx.SA(i); sa != nil {
+			spis = append(spis, sa.SPI())
+		}
+	}
+	_, _ = tx.Apply(keys.Request{Op: keys.OpRevoke, SPIs: spis}, time.Time{})
 }
 
 // Rekey applies a key change from a PSP-mode agent to the SAs that the relay

@@ -11,7 +11,7 @@ require (
 	github.com/alphadose/haxmap v1.4.1
 	github.com/anatol/vmtest v0.0.0-20250318022921-2f32244e2f0f
 	github.com/apoxy-dev/icx v0.19.1-0.20261006074019-0b857f6d1fb8
-	github.com/apoxy-dev/softpsp v0.0.0-20261005131421-c5956b96f2ae
+	github.com/apoxy-dev/softpsp v0.0.0-20261009090059-658b3a1f1c27
 	github.com/avast/retry-go/v4 v4.6.1
 	github.com/bramvdbogaerde/go-scp v1.5.0
 	github.com/buraksezer/olric v0.5.6

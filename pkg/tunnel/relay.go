@@ -518,7 +518,7 @@ func (r *Relay) Start(ctx context.Context) error {
 	}
 	if r.mesh != nil {
 		if r.vpc != nil {
-			// The other relays get the attachments of this relay.
+			// The other relays get the attachments of this relay, and trunk keys.
 			r.mesh.SetRouter(r.vpc.R)
 		}
 		// The mesh dials from a relay socket, so that the other relays see the

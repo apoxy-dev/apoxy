@@ -70,14 +70,16 @@ func meshTLS(cert tls.Certificate) *tls.Config {
 	return &tls.Config{Certificates: []tls.Certificate{cert}, InsecureSkipVerify: true}
 }
 
-// cutConn is a UDP socket that can lose all its packets, as a dead path does.
+// cutConn is a UDP socket that can lose all its packets, as a dead path does,
+// or the packets that it sends above a size, as a path with a low MTU does.
 type cutConn struct {
 	net.PacketConn
 	cut atomic.Bool
+	max atomic.Int64 // Longest packet that WriteTo sends. Zero is no limit.
 }
 
 func (c *cutConn) WriteTo(b []byte, to net.Addr) (int, error) {
-	if c.cut.Load() {
+	if max := c.max.Load(); c.cut.Load() || max > 0 && int64(len(b)) > max {
 		return len(b), nil
 	}
 	return c.PacketConn.WriteTo(b, to)
@@ -262,11 +264,26 @@ func meshPair(t *testing.T, cutB bool) (a, b *meshNode, sa, sb *MeshSession) {
 	return a, b, a.session(t), b.session(t)
 }
 
+// one reports whether n keeps one connection and it is an open session. A
+// refused connection stays for a short time after its close.
+func (n *meshNode) one() bool {
+	n.m.mu.Lock()
+	defer n.m.mu.Unlock()
+	for _, s := range n.m.sessions {
+		select {
+		case <-s.ready:
+			return len(n.m.sessions) == 1
+		default:
+		}
+	}
+	return false
+}
+
 // stays checks that each node keeps one connection for a short time.
 func stays(t *testing.T, nodes ...*meshNode) {
 	t.Helper()
 	for _, n := range nodes {
-		require.Eventually(t, func() bool { return n.count() == 1 }, 10*time.Second, 10*time.Millisecond, "%s keeps one session", n.name)
+		require.Eventually(t, n.one, 10*time.Second, 10*time.Millisecond, "%s keeps one session", n.name)
 	}
 	for _, n := range nodes {
 		assert.Never(t, func() bool { return n.count() != 1 }, 500*time.Millisecond, 10*time.Millisecond, "%s keeps one session", n.name)
@@ -314,7 +331,7 @@ func TestMeshSession(t *testing.T) {
 		out := &dp.MeshOpenResponse{}
 		require.NoError(t, tc.s.conn.Invoke(ctx, whoMethod, &dp.MeshOpenRequest{}, out))
 		assert.Equal(t, tc.from.name, out.GetName())
-		// A method of the Mesh service with no handler yet is not a session error.
+		// A relay with no router has no trunk, and that answer is not a session error.
 		_, err := tc.s.Client().TrunkKeys(ctx, &dp.KeysRequest{})
 		assert.Equal(t, rpc.Unimplemented, rpc.CodeOf(err))
 		// A second Open does not change the session.

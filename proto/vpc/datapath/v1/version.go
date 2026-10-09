@@ -7,7 +7,7 @@ package datapathv1
 const (
 	// Revision is the protocol revision of this build. Each change to the proto
 	// files or to a packet format adds 1.
-	Revision uint32 = 4
+	Revision uint32 = 5
 	// MinRevision is the oldest revision of the other side that this build
 	// works with.
 	MinRevision uint32 = 0

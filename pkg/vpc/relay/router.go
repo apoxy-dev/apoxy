@@ -110,6 +110,7 @@ type Router struct {
 	sends  sendStats
 	early  earlyList
 	bridge atomic.Pointer[bridge]
+	trunk  atomic.Pointer[trunk] // Trunk keys of the mesh members. Nil with no mesh.
 	onEnd  atomic.Pointer[func(AttachmentStats)]
 
 	mu       sync.RWMutex
@@ -860,7 +861,8 @@ func (r *Router) SenderStats(s *Session) SenderStats {
 func (r *Router) UnknownSourceDrops() uint64 { return r.drops[dropUnknownSource].Load() }
 
 // MalformedDrops returns the number of non-QUIC packets that are not PSP and
-// get no probe reply. Geneve packets that the kernel did not take count here.
+// get no probe reply. Geneve packets that the kernel did not take count here,
+// and also the packets of a mesh member that the trunk does not accept.
 func (r *Router) MalformedDrops() uint64 { return r.drops[dropMalformed].Load() }
 
 // ForwardStats are the sendmmsg calls of the socket path, their messages, and

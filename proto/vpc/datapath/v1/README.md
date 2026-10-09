@@ -18,7 +18,8 @@ service that each side serves:
 
 The same UDP socket also carries PSP packets (first byte `0x04` or `0x29`),
 which relays forward by SPI rows without decryption. Only PSP packets to the
-relay itself are opened (see "QUIC and PSP bridge").
+relay itself are opened (see "QUIC and PSP bridge"). A relay socket also
+carries the trunk packets of the other relays of its mesh (see "Trunk").
 
 ### Relay datagrams
 
@@ -110,6 +111,47 @@ the limit rate.
 
 Agents and relays send all packets as Not-ECT, also in QUIC mode, so that the
 network drops packets and does not mark them.
+
+### Trunk
+
+Two relays of a mesh have trunk SAs for the packets between them. A trunk SA
+is a PSP SA with VNI 0, and the VNI field of its packets carries a tag. Each
+relay makes the SAs for the packets that it receives, and gives them to the
+other relay with `TrunkKeys`. A trunk has two SA lanes. Lane 0 has no replay
+window and accepts only a payload that is a whole PSP packet. Lane 1 has a
+replay window.
+
+```
+trunk packet:    PSP header and VC, with the tag (24 bits) in the VNI field | payload
+tag 0:           a message of the relay itself, on lane 1
+message:         type (1 B) | run ID (8 B) | zero padding
+type:            0x01 full-size probe, 0x02 answer
+```
+
+A trunk packet whose payload is a PSP packet or a message has the next header
+value 63, so its first byte is `0x3f`. A relay drops a trunk packet with
+another tag. A relay accepts a trunk packet only from the address of its mesh
+session with the other relay, and only with an SA that it gave to that relay.
+
+On each new session with a relay at revision 5 or later, a relay offers new
+SAs for the two lanes (`OfferSAs`). It sends new SAs before they expire
+(`RekeySA`), as for the relay SAs of an agent. The called relay returns in
+`refused_spis` the SPIs that it holds from another receiver, and the caller
+offers new SAs for their lanes. After a call that failed, the caller waits as
+before a dial (200 ms, doubling to 10 s, each with up to 50% more) and offers
+new SAs for the two lanes. `Unimplemented` tells that the called relay has no
+trunk, and the caller makes no more calls on that session. The SAs stay while
+the other relay is up, so also in the 3 s after the session ended. When the
+other relay is down, a relay deletes the SAs of the two directions.
+
+When each relay gave its SAs on a session, each relay sends a full-size probe:
+a message of 1412 B, so that the UDP payload is 1452 B, the largest that a
+relay reads. The other relay answers with a message of the same size and run
+ID. It answers at most 10 probes each second. A probe run sends up to 3
+packets 300 ms apart. If no answer comes in 1 s, the relay has the trunk as
+limited to an inner MTU of 1280, and it starts a new run each 30 s until one
+passes. After a run that passes, the trunk carries a PSP packet with an inner
+MTU of 1372. Before the first result, the limit of 1280 applies.
 
 ## Calls
 
@@ -258,7 +300,7 @@ its relay before it applies them, and unregisters them after a revoke.
 | `Open`      | unary         | Dialer and listener each send `{version, name, relay}`. First call on a session. |
 | `Presence`  | client stream | `PresenceUpdate`: the full set of the attachments of the caller, then each change. One call on a session. |
 | `SPIRows`   | client stream | `SPIRowUpdate`: SPI rows for receivers on the called relay. |
-| `TrunkKeys` | unary         | `KeysRequest` -> `KeysResponse` for the trunk SA. |
+| `TrunkKeys` | unary         | `KeysRequest` -> `KeysResponse`: trunk SAs for packets from the called relay to the caller (see "Trunk"). Errors: `Unimplemented` (the called relay serves no VPC relay sessions), `FailedPrecondition` (the caller is below revision 5, or the session is not the open session of a member), `InvalidArgument` (an SA VNI is not 0, or an SA lane is not 0 or 1). |
 
 A member of a mesh is one relay process, and its relay name identifies it.
 Many relays can have one relay ID, so the mesh does not use the ID to tell
@@ -335,6 +377,7 @@ only for logs and metrics. On a mesh session, `MeshOpenRequest` and
 | 2 | `Hello.name`. `ResolvePeerResponse.attachment_ids`. | Sends the name of its base attachment in `Hello`. With a relay at revision 2, waits for the grant of an address only when `attachment_ids` has an attachment of an open peer session. With an older relay, waits when the subject is that of an open peer session. | The duties of the agent on the relay session. | Has two sessions with one SPIFFE ID as one agent only when their names are equal or one has no name. Sends `attachment_ids` in `ResolvePeer`. |
 | 3 | `Mesh.Open` with the `Version`, the relay name and the `RelayRef` of each relay. The `MeshCloseCode` values. | No duty. | No duty. | Calls `Open` first on a mesh session that it dialed, and answers it on a session that it accepted. Closes a mesh session with a relay below its minimum with `UPGRADE`, and with a relay that is not a member with `NOT_MEMBER`. Closes its mesh sessions with `RESTART` when it stops. |
 | 4 | `Presence.subject`, `agent_name` and `sender_tag`. `PresenceUpdate.end_of_full_set`. | No duty. | No duty. | Opens one `Presence` call on each mesh session with a relay at revision 4 or later: the full set of its attachments with the end mark, then each change. Opens none with a relay at revision 3, and keeps that session. Keeps the entries that each member sends, and drops them when the member closes with `RESTART` or leaves the member set. |
+| 5 | `Mesh.TrunkKeys` and the trunk SAs. The trunk packet with tag 0: the full-size probe and its answer. | No duty. | No duty. | With a relay at revision 5 or later: offers trunk SAs on each new mesh session and before they expire, applies the trunk SAs of the other relay, probes the path at full size, and answers the probes of the other relay. Makes no `TrunkKeys` call to a relay below revision 5, refuses its call with `FailedPrecondition`, and keeps that session. Deletes the trunk SAs of a relay that is down. |
 
 ### Minimum revision
 

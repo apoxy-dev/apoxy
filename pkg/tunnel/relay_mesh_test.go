@@ -196,9 +196,14 @@ func TestRelay_Mesh(t *testing.T) {
 			for _, d := range []struct{ from, to *meshRelay }{{a, b}, {b, a}} {
 				s := d.from.mesh.Session(d.to.name)
 				require.NotNil(t, s, "%s has a session with %s", d.from.name, d.to.name)
-				// The other relay answers a call. This method has no handler yet.
+				// The other relay answers a call. Only a relay with VPC relay
+				// sessions has a trunk, and it refuses a request with no key change.
+				want := rpc.InvalidArgument
+				if tc.noVPC {
+					want = rpc.Unimplemented
+				}
 				_, err := s.Client().TrunkKeys(ctx, &dp.KeysRequest{})
-				assert.Equal(t, rpc.Unimplemented, rpc.CodeOf(err), "call from %s: %v", d.from.name, err)
+				assert.Equal(t, want, rpc.CodeOf(err), "call from %s: %v", d.from.name, err)
 				// The relay serves HTTP/3 on the sockets of the mesh session.
 				d.from.ping(t)
 			}

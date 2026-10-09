@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/quic-go/quic-go"
@@ -113,6 +114,8 @@ type Mesh struct {
 	tls  *tls.Config
 	ver  *dp.Version // Protocol version of the relay.
 	mux  *rpc.Mux
+	// trunk has the trunk keys of the members. It is nil before SetRouter.
+	trunk atomic.Pointer[trunk]
 
 	mu       sync.Mutex
 	members  map[string]*meshMember
