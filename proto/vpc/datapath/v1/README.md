@@ -235,9 +235,9 @@ fails:
 1. The datagram has the full header and the type `0x01`.
 2. An entry of the other relay has the sender tag. The other relay sent the
    entry, or sent it again, in the `Presence` call of the session of the
-   datagram, and no later session of that relay has a `Presence` call. An
-   entry from an older session does not count, because the other relay can
-   have given its tag to another agent.
+   datagram, that session is open, and no later session of that relay has a
+   `Presence` call. An entry from an older session does not count, because
+   the other relay can have given its tag to another agent.
 3. The route of the source address in the VPC of that entry is from that
    entry. This is the source check of "Relay datagrams" on the entries.
 4. Permit allows the destination for the VPC and the SPIFFE ID of the entry.
@@ -449,11 +449,25 @@ generation below the one that it has for the attachment ID, and a `gone` entry
 for an attachment that it does not have. It refuses an entry with no
 attachment ID, with an ID of more than 128 bytes or with no generation. It
 also refuses an entry without `gone` that has no VPC, a network ID above 24
-bits, a subject that is not an agent ID of that VPC, a tag out of range or a
-prefix that does not parse. A refused entry does not end the call. A second
-`Presence` call on a session gets `FailedPrecondition`. The entries of a
-member stay after its session ends. The relay drops them when the member
-closes with `RESTART` or leaves the member set.
+bits, a subject that is not an agent ID of that VPC, a tag out of range, a
+prefix that does not parse or more than 64 prefixes. A refused entry does not
+end the call. A second `Presence` call on a session gets `FailedPrecondition`.
+
+The relay keeps at most 65536 entries of one member, and it refuses each new
+entry above that number. Before it refuses one, it drops the entries of that
+member that the session of the call did not send.
+
+The entries of a member stay after its session ends, with their routes and
+with no time limit. The relay drops them at once when the member closes with
+`RESTART` or leaves the member set, also when the member was down before it
+left. A member whose address changes leaves the member set and comes back.
+When the member has a new session, the relay keeps each entry of an older
+session until the new session sends it again (the same attachment ID and
+generation) or replaces it with a higher generation. At `end_of_full_set` it
+drops the entries that the new session did not send. It also drops them 10 s
+after the new session opened, if no `end_of_full_set` came in that time, with
+or without a `Presence` call. If the new session ends first, the entries stay,
+and the 10 s start again when the next session opens.
 
 A relay makes routes from the entries that it keeps. An entry gives a route
 for each of its prefixes in its VPC, with the attachment ID as the origin,
@@ -474,7 +488,10 @@ session at revision 6 or later whose `Hello` has no `local_routes_only`. A
 session gets no route of an attachment of its own agent on another relay: the
 rule of `Hello.name` applies to the SPIFFE ID and the agent name of the entry.
 The route goes away with its entry: at a `gone` entry, and when the relay
-drops the entries of a member.
+drops the entry for one of the reasons above. The route of an entry stays
+while the relay of the entry has no session. A peer frame for the route then
+drops (see "Mesh datagrams"), and the PSP packets of an SPI row to that relay
+drop when it is down (see below).
 
 A relay tells each other relay at revision 8 or later of the SPI rows that it
 has for receivers on that relay (see "Trunk"). It opens one `SPIRows` call on a

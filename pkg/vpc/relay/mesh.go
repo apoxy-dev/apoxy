@@ -79,7 +79,8 @@ const (
 	MeshLost MeshDown = iota + 1
 	// MeshRestart tells that the member stops on purpose. Its attachments are gone.
 	MeshRestart
-	// MeshRemoved tells that the member left the member set.
+	// MeshRemoved tells that the member left the member set. A member that was
+	// down before it left gets this change too.
 	MeshRemoved
 )
 
@@ -443,7 +444,8 @@ func (m *Mesh) deliver() {
 
 // down makes mem down for reason. Mesh.mu must be held.
 func (m *Mesh) down(mem *meshMember, reason MeshDown) {
-	if !mem.up {
+	// The hooks keep data of a member that was up before, until it leaves the set.
+	if !mem.up && (reason != MeshRemoved || mem.ends == 0) {
 		return
 	}
 	mem.up = false

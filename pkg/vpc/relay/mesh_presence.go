@@ -30,6 +30,13 @@ const (
 	maxPresenceEntries = 256
 	// maxAttachmentID is the most bytes of an attachment ID from a member.
 	maxAttachmentID = 128
+	// maxMemberEntries is the most entries that the relay keeps of one member.
+	maxMemberEntries = 1 << 16
+	// maxEntryPrefixes is the most prefixes of one entry of a member.
+	maxEntryPrefixes = 64
+	// presenceFullSetTime is the time that a new session of a member has for its
+	// full set. Then the entries that it did not send again go.
+	presenceFullSetTime = 10 * time.Second
 )
 
 // newTag returns a trunk tag that no session has, or 0 if none is free. A tag
@@ -123,9 +130,10 @@ type presenceIn struct {
 	full    bool                        // The full set of sess is complete.
 	entries map[string]*presenceEntry   // By attachment ID.
 	tags    map[uint32][]*presenceEntry // The same entries, by sender tag.
+	stale   int                         // Entries that sess did not send.
 }
 
-// add keeps the entry e. presence.mu must be held.
+// add keeps the entry e, which sess sent. presence.mu must be held.
 func (in *presenceIn) add(e *presenceEntry) {
 	in.entries[e.id] = e
 	in.tags[e.tag] = append(in.tags[e.tag], e)
@@ -133,6 +141,9 @@ func (in *presenceIn) add(e *presenceEntry) {
 
 // remove forgets the entry e. presence.mu must be held.
 func (in *presenceIn) remove(e *presenceEntry) {
+	if e.sess != in.sess {
+		in.stale--
+	}
 	delete(in.entries, e.id)
 	left := slices.DeleteFunc(in.tags[e.tag], func(o *presenceEntry) bool { return o == e })
 	if len(left) == 0 {
@@ -140,6 +151,29 @@ func (in *presenceIn) remove(e *presenceEntry) {
 	} else {
 		in.tags[e.tag] = left
 	}
+}
+
+// drop forgets each entry that the session s did not send, and returns them.
+// With no s it forgets all the entries. presence.mu must be held.
+func (in *presenceIn) drop(s *MeshSession) []*presenceEntry {
+	if in.sess == s && in.stale == 0 {
+		return nil
+	}
+	var gone []*presenceEntry
+	for id, e := range in.entries {
+		if e.sess != s {
+			delete(in.entries, id)
+			gone = append(gone, e)
+		}
+	}
+	// One pass makes the entries by tag again: a tag can have many entries.
+	clear(in.tags)
+	for _, e := range in.entries {
+		in.tags[e.tag] = append(in.tags[e.tag], e)
+	}
+	// Only the session of the last call has entries that stay.
+	in.stale = 0
+	return gone
 }
 
 // presenceEntry is one attachment of a member.
@@ -180,9 +214,10 @@ func (p *presence) router() *Router {
 	return p.r
 }
 
-// opened starts the Presence call on the new session s. A member from before
-// the call gets none, and its session stays.
+// opened starts the Presence call on the new session s, and the time limit of
+// the full set of its member. A member from before the call gets no call.
 func (p *presence) opened(s *MeshSession) {
+	time.AfterFunc(presenceFullSetTime, func() { p.expire(s) })
 	r := p.router()
 	if r == nil || s.Version().GetRevision() < presenceRevision {
 		return
@@ -301,7 +336,7 @@ func (m *Mesh) Presence(ctx context.Context, st rpc.ClientStreamServer[dp.Presen
 }
 
 // accept makes s the session whose Presence call changes the entries of its
-// member. The entries of the sessions before stay.
+// member. The entries of the sessions before stay until its full set ends.
 func (p *presence) accept(s *MeshSession) error {
 	p.m.mu.Lock()
 	defer p.m.mu.Unlock()
@@ -318,7 +353,7 @@ func (p *presence) accept(s *MeshSession) error {
 	if in.sess == s {
 		return rpc.Errorf(rpc.FailedPrecondition, "session already has a Presence call")
 	}
-	in.sess, in.full = s, false
+	in.sess, in.full, in.stale = s, false, len(in.entries)
 	if p.r != nil {
 		// The entries of the sessions before name no sender from now.
 		p.r.epoch.Add(1)
@@ -381,7 +416,10 @@ func (p *presence) keep(s *MeshSession, changes []presenceChange, full bool, ref
 			continue
 		case old != nil && !c.gone && c.gen == old.gen:
 			// The member sent the entry again in the full set of a new session.
-			old.sess = s
+			if old.sess != s {
+				old.sess = s
+				in.stale--
+			}
 			continue
 		}
 		if old != nil {
@@ -393,6 +431,11 @@ func (p *presence) keep(s *MeshSession, changes []presenceChange, full bool, ref
 		if c.gone {
 			continue
 		}
+		// At the limit, the entries of older sessions make room for those of s.
+		if len(in.entries) >= maxMemberEntries && p.sweep(r, in, s, "limit of attachments") == 0 {
+			refuse(c.id, fmt.Errorf("the member has %d attachments, which is the limit", maxMemberEntries))
+			continue
+		}
 		in.add(c.presenceEntry)
 		if r != nil {
 			if err := r.claim(c.presenceEntry); err != nil {
@@ -402,11 +445,56 @@ func (p *presence) keep(s *MeshSession, changes []presenceChange, full bool, ref
 	}
 	if full {
 		in.full = true
+		p.sweep(r, in, s, "end of the full set")
 	}
 	if r != nil {
 		r.epoch.Add(1)
 	}
 	return nil
+}
+
+// sweep removes the entries of in, and their routes, that the session s of the
+// member did not send. Router.mu, if r is not nil, and presence.mu must be held.
+func (p *presence) sweep(r *Router, in *presenceIn, s *MeshSession, reason string) int {
+	gone := in.drop(s)
+	for _, e := range gone {
+		if r != nil {
+			r.unclaim(e)
+		}
+	}
+	if len(gone) > 0 {
+		slog.Info("Removed attachments of a mesh member", "relay", gone[0].sess.Name(), "count", len(gone), "reason", reason)
+	}
+	return len(gone)
+}
+
+// expire removes the entries that s did not send, if s is still the session of
+// its member. It runs when the time for the full set of s ends.
+func (p *presence) expire(s *MeshSession) {
+	r := p.router()
+	p.m.mu.Lock()
+	defer p.m.mu.Unlock()
+	if mem := p.m.members[s.name]; mem == nil || mem.sess != s {
+		return
+	}
+	if r != nil {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	in := p.in[s.name]
+	if in == nil {
+		return
+	}
+	p.sweep(r, in, s, "no full set in time")
+	// With no Presence call on s, nothing of the call before is left.
+	if in.sess != s {
+		delete(p.in, s.name)
+	}
+	if r != nil {
+		r.epoch.Add(1)
+	}
 }
 
 // checkPresence checks the form of one entry of a member and returns its
@@ -420,6 +508,8 @@ func checkPresence(e *dp.Presence) (*presenceEntry, error) {
 		return nil, errors.New("no generation")
 	case e.GetGone():
 		return pe, nil
+	case len(e.GetPrefixes()) > maxEntryPrefixes:
+		return nil, fmt.Errorf("%d prefixes, which is more than the limit %d", len(e.GetPrefixes()), maxEntryPrefixes)
 	}
 	var err error
 	if pe.vpc, err = KeyOf(e.GetVpc()); err != nil {
@@ -450,8 +540,8 @@ func checkPresence(e *dp.Presence) (*presenceEntry, error) {
 	return pe, nil
 }
 
-// down drops the entries and the routes of a member that stopped on purpose
-// or left the member set. The entries of the session that it has now stay.
+// down drops the entries and the routes of a member that stopped on purpose or
+// left the member set. A lost member and the session that it has now keep theirs.
 func (p *presence) down(c MeshChange) {
 	if c.Down != MeshRestart && c.Down != MeshRemoved {
 		return
@@ -474,18 +564,12 @@ func (p *presence) down(c MeshChange) {
 	if in == nil {
 		return
 	}
-	all := cur == nil || in.sess != cur
-	for _, e := range in.entries {
-		if all || e.sess != cur {
-			in.remove(e)
-			if r != nil {
-				r.unclaim(e)
-			}
-		}
-	}
-	if all {
+	// A session with no Presence call has no entries, so all of them go.
+	if cur == nil || in.sess != cur {
+		cur = nil
 		delete(p.in, c.Name)
 	}
+	p.sweep(r, in, cur, c.Down.String())
 	if r != nil {
 		r.epoch.Add(1)
 	}

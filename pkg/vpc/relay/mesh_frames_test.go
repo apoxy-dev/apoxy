@@ -108,6 +108,12 @@ func (w *frameWorld) entries(member string, gen uint64) {
 		atGen(liveEntry("p", agentID(vpcA, "phone"), "base", phoneTag, "fd00:d::/96"), gen))
 }
 
+// cut ends the session of member with an idle timeout, as a lost path does.
+func (w *frameWorld) cut(member string) {
+	w.conns[member].cancel(&quic.IdleTimeoutError{})
+	synctest.Wait()
+}
+
 // stop ends the session of member with RESTART, and drops its entries as the
 // change of the member does.
 func (w *frameWorld) stop(member string) {
@@ -276,7 +282,7 @@ func TestMeshPeerFrameReceive(t *testing.T) {
 		{
 			name:  "member that stopped",
 			setup: func(w *frameWorld) { w.stop("relay-a") },
-			tag:   laptopTag, dst: serverAddr, src: laptopAddr, pkt: "hi", drop: "mesh_unknown_tag",
+			tag:   laptopTag, dst: serverAddr, src: laptopAddr, pkt: "hi", drop: "mesh_old_session",
 		},
 		{
 			name:  "tag of an older session of the member",
@@ -312,6 +318,84 @@ func TestMeshPeerFrameReceive(t *testing.T) {
 				w.send("relay-a", atGen(liveEntry("x", laptop, "base", laptopTag, prefixA, prefixR), 10))
 			},
 			tag: laptopTag, dst: serverAddr, src: "fd00:a2::1", pkt: "hi", drop: "mesh_source",
+		},
+		{
+			name: "full set of the new session of the member has the entry",
+			setup: func(w *frameWorld) {
+				w.openAt("relay-a", dp.Revision)
+				w.entries("relay-a", 10)
+				w.full("relay-a")
+			},
+			tag: laptopTag, dst: serverAddr, src: laptopAddr, pkt: "hi", to: "server",
+		},
+		{
+			name: "datagram on an older session after the full set of the new session",
+			setup: func(w *frameWorld) {
+				w.openAt("relay-a", dp.Revision)
+				w.entries("relay-a", 10)
+				w.full("relay-a")
+			},
+			old: true,
+			tag: laptopTag, dst: serverAddr, src: laptopAddr, pkt: "hi", drop: "mesh_old_session",
+		},
+		{
+			name: "full set of the new session of the member does not have the entry",
+			setup: func(w *frameWorld) {
+				w.openAt("relay-a", dp.Revision)
+				w.full("relay-a", atGen(liveEntry("p", agentID(vpcA, "phone"), "base", phoneTag, "fd00:d::/96"), 10))
+			},
+			tag: laptopTag, dst: serverAddr, src: laptopAddr, pkt: "hi", drop: "mesh_unknown_tag",
+		},
+		{
+			name: "other entry that the full set of the new session has",
+			setup: func(w *frameWorld) {
+				w.openAt("relay-a", dp.Revision)
+				w.full("relay-a", atGen(liveEntry("p", agentID(vpcA, "phone"), "base", phoneTag, "fd00:d::/96"), 10))
+			},
+			tag: phoneTag, dst: serverAddr, src: phoneAddr, pkt: "hi", to: "server",
+		},
+		// The relay keeps the entries of a session that ended, and they give no sender.
+		{
+			name:  "session of the member ended",
+			setup: func(w *frameWorld) { w.cut("relay-a") },
+			tag:   laptopTag, dst: serverAddr, src: laptopAddr, pkt: "hi", drop: "mesh_old_session",
+		},
+		{
+			name:  "member that is down",
+			setup: func(w *frameWorld) { w.cut("relay-a"); time.Sleep(24 * time.Hour); synctest.Wait() },
+			tag:   laptopTag, dst: serverAddr, src: laptopAddr, pkt: "hi", drop: "mesh_old_session",
+		},
+		{
+			name: "new session of the member ended after it sent the entries again",
+			setup: func(w *frameWorld) {
+				w.cut("relay-a")
+				w.openAt("relay-a", dp.Revision)
+				w.entries("relay-a", 10)
+				w.full("relay-a")
+				w.cut("relay-a")
+			},
+			tag: laptopTag, dst: serverAddr, src: laptopAddr, pkt: "hi", drop: "mesh_old_session",
+		},
+		{
+			name: "new session of a member that was down, before it sends the entry again",
+			setup: func(w *frameWorld) {
+				w.cut("relay-a")
+				time.Sleep(time.Hour)
+				synctest.Wait()
+				w.openAt("relay-a", dp.Revision)
+			},
+			tag: laptopTag, dst: serverAddr, src: laptopAddr, pkt: "hi", drop: "mesh_old_session",
+		},
+		{
+			name: "new session of a member that was down sent the entries again",
+			setup: func(w *frameWorld) {
+				w.cut("relay-a")
+				time.Sleep(time.Hour)
+				synctest.Wait()
+				w.openAt("relay-a", dp.Revision)
+				w.entries("relay-a", 10)
+			},
+			tag: laptopTag, dst: serverAddr, src: laptopAddr, pkt: "hi", to: "server",
 		},
 		{
 			// The member started again, and its tag is now of an agent of vpcB
@@ -381,10 +465,7 @@ func TestMeshPeerFrameReceive(t *testing.T) {
 func TestMeshPeerFrameSend(t *testing.T) {
 	const serverTag = 0x0a0b0c
 	deny := func(VPCKey, string, VPCKey, netip.Addr) bool { return false }
-	lose := func(w *frameWorld) {
-		w.conns["relay-a"].cancel(&quic.IdleTimeoutError{})
-		synctest.Wait()
-	}
+	lose := func(w *frameWorld) { w.cut("relay-a") }
 	hello := memberFrame(serverTag, laptopAddr, serverAddr, "hello")
 	cases := []struct {
 		name     string
@@ -434,9 +515,39 @@ func TestMeshPeerFrameSend(t *testing.T) {
 		},
 		{name: "member with no session", setup: lose, dst: laptopAddr, src: serverAddr, pkt: "hello", drop: "mesh_no_session"},
 		{
+			// The route of a member that is down stays, so the sender gets no NoRoute.
 			name:  "member that is down",
-			setup: func(w *frameWorld) { lose(w); time.Sleep(time.Minute); synctest.Wait() },
+			setup: func(w *frameWorld) { lose(w); time.Sleep(24 * time.Hour); synctest.Wait() },
 			dst:   laptopAddr, src: serverAddr, pkt: "hello", drop: "mesh_no_session",
+		},
+		{
+			name: "new session of a member that was down, before it sends the entry again",
+			setup: func(w *frameWorld) {
+				lose(w)
+				time.Sleep(time.Hour)
+				synctest.Wait()
+				w.openAt("relay-a", dp.Revision)
+			},
+			dst: laptopAddr, src: serverAddr, pkt: "hello", to: "relay-a",
+		},
+		{
+			name: "full set of the new session of the member has the entry",
+			setup: func(w *frameWorld) {
+				lose(w)
+				w.openAt("relay-a", dp.Revision)
+				w.entries("relay-a", 10)
+				w.full("relay-a")
+			},
+			dst: laptopAddr, src: serverAddr, pkt: "hello", to: "relay-a",
+		},
+		{
+			name: "full set of the new session of the member does not have the entry",
+			setup: func(w *frameWorld) {
+				lose(w)
+				w.openAt("relay-a", dp.Revision)
+				w.full("relay-a")
+			},
+			dst: laptopAddr, src: serverAddr, pkt: "hello", noRoute: []string{laptopAddr},
 		},
 		{
 			name:  "mesh session that takes no datagram",
@@ -506,7 +617,12 @@ func TestMeshPeerFrameChanges(t *testing.T) {
 			default:
 			}
 			w.openAt("relay-b", dp.Revision)
-			w.send("relay-b", atGen(liveEntry("t", agentID(vpcA, "tablet"), "base", tabletTag, "fd00:e::/96"), gen))
+			// Each fourth session is too late with its full set. The entry of tablet
+			// has another attachment ID on each session, so the entry before goes.
+			if gen%4 == 0 {
+				w.m.pres.expire(w.mesh["relay-b"])
+			}
+			w.full("relay-b", atGen(liveEntry([]string{"t", "t2"}[gen%2], agentID(vpcA, "tablet"), "base", tabletTag, "fd00:e::/96"), gen))
 			w.r.SetPermit(SameVPC)
 		}
 	})
@@ -521,8 +637,11 @@ func TestMeshPeerFrameChanges(t *testing.T) {
 	assert.Len(t, w.got["server"], frames, "frames of server")
 	assert.Len(t, w.sent()["relay-a"], frames, "datagrams to relay-a")
 	drops := dropCounts(w.r)
-	assert.Equal(t, uint64(frames), drops["mesh_old_session"]+uint64(len(w.got["neighbor"])), "frames of relay-b that came or dropped")
+	// For a short time after a late full set, no entry of relay-b has the tag.
+	late := drops["mesh_old_session"] + drops["mesh_unknown_tag"]
+	assert.Equal(t, uint64(frames), late+uint64(len(w.got["neighbor"])), "frames of relay-b that came or dropped")
 	delete(drops, "mesh_old_session")
+	delete(drops, "mesh_unknown_tag")
 	assert.Empty(t, drops, "other drop counters")
 	w.check()
 }

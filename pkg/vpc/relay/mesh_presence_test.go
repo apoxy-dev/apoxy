@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -845,6 +846,16 @@ func TestPresenceEntries(t *testing.T) {
 		return map[string]presenceEntry{e.id: e}
 	}
 	longID := strings.Repeat("a", 128)
+	// nets returns n prefixes, as a member sends them and as the relay keeps them.
+	nets := func(n int) (sent []string, kept []netip.Prefix) {
+		for i := range n {
+			p := netip.MustParsePrefix(fmt.Sprintf("fd00:%x::/96", i+1))
+			sent, kept = append(sent, p.String()), append(kept, p)
+		}
+		return sent, kept
+	}
+	most, mostKept := nets(64)
+	tooMany, _ := nets(65)
 	cases := []struct {
 		name string
 		// msgs are the messages of one Presence call. A message with no entry
@@ -873,6 +884,11 @@ func TestPresenceEntries(t *testing.T) {
 			want: kept(func(e *presenceEntry) { e.networkID = 1<<24 - 1 }),
 		},
 		{name: "longest attachment ID", msgs: [][]*dp.Presence{with(func(e *dp.Presence) { e.AttachmentId = longID })}, want: kept(func(e *presenceEntry) { e.id = longID })},
+		{
+			name: "most prefixes",
+			msgs: [][]*dp.Presence{with(func(e *dp.Presence) { e.Prefixes = most })},
+			want: kept(func(e *presenceEntry) { e.prefixes = mostKept }),
+		},
 
 		{name: "no attachment ID", msgs: [][]*dp.Presence{with(func(e *dp.Presence) { e.AttachmentId = "" })}},
 		{name: "attachment ID too long", msgs: [][]*dp.Presence{with(func(e *dp.Presence) { e.AttachmentId = longID + "a" })}},
@@ -892,6 +908,12 @@ func TestPresenceEntries(t *testing.T) {
 		{name: "tag above 24 bits", msgs: [][]*dp.Presence{with(func(e *dp.Presence) { e.SenderTag = 1 << 24 })}},
 		{name: "prefix with no length", msgs: [][]*dp.Presence{with(func(e *dp.Presence) { e.Prefixes = []string{"fd00:1::"} })}},
 		{name: "one bad prefix of two", msgs: [][]*dp.Presence{with(func(e *dp.Presence) { e.Prefixes = []string{"fd00:1::/96", "10.0.0.0/33"} })}},
+		{name: "one prefix too many", msgs: [][]*dp.Presence{with(func(e *dp.Presence) { e.Prefixes = tooMany })}},
+		{
+			name: "entry with too many prefixes does not replace the entry that the relay has",
+			msgs: [][]*dp.Presence{{memberEntry("x", 10)}, with(func(e *dp.Presence) { e.Generation, e.Prefixes = 11, tooMany })},
+			want: kept(func(*presenceEntry) {}),
+		},
 		{
 			name: "bad entry between good entries",
 			msgs: [][]*dp.Presence{{memberEntry("w", 9), with(func(e *dp.Presence) { e.SenderTag = 0 })[0], memberEntry("y", 11)}, {memberEntry("z", 12)}},
@@ -924,6 +946,11 @@ func TestPresenceEntries(t *testing.T) {
 		},
 		{name: "gone with a higher generation", msgs: [][]*dp.Presence{{memberEntry("x", 10)}, {{AttachmentId: "x", Generation: 11, Gone: true}}}},
 		{name: "gone with the same generation", msgs: [][]*dp.Presence{{memberEntry("x", 10)}, {{AttachmentId: "x", Generation: 10, Gone: true}}}},
+		{
+			// A gone entry has only the attachment ID and the generation.
+			name: "gone with too many prefixes",
+			msgs: [][]*dp.Presence{{memberEntry("x", 10)}, {{AttachmentId: "x", Generation: 11, Gone: true, Prefixes: tooMany}}},
+		},
 		{
 			name: "gone with a lower generation is ignored",
 			msgs: [][]*dp.Presence{{memberEntry("x", 10)}, {{AttachmentId: "x", Generation: 9, Gone: true}}},
@@ -959,6 +986,112 @@ func TestPresenceEntries(t *testing.T) {
 			}
 			assert.Equal(t, tc.want, got)
 			assert.Equal(t, tc.full, full, "the full set is complete")
+		})
+	}
+}
+
+// TestPresenceMemberLimit gives a relay the most entries that it keeps of one
+// member. Then it refuses a new entry, after it drops those of older sessions.
+func TestPresenceMemberLimit(t *testing.T) {
+	t.Parallel()
+	// The number of the protocol. The test does not read it from the code.
+	const limit = 65536
+	full := "the member has 65536 attachments, which is the limit"
+	cases := []struct {
+		name string
+		have int  // Entries "e0", "e1", ... at generation 1 that the relay has of relay-a.
+		next bool // send comes on a new session of relay-a.
+		send []*dp.Presence
+		// refused are the entries that the relay refuses, as "<ID>: <reason>".
+		refused []string
+		count   int               // Entries of relay-a after send.
+		want    map[string]uint64 // Generation of some entries after send. 0 is no entry.
+	}{
+		{
+			name: "one below the limit", have: limit - 1, send: []*dp.Presence{memberEntry("n", 2)},
+			count: limit, want: map[string]uint64{"n": 2, "e0": 1},
+		},
+		{
+			name: "at the limit", have: limit, send: []*dp.Presence{memberEntry("n", 2)},
+			refused: []string{"n: " + full}, count: limit, want: map[string]uint64{"n": 0, "e0": 1},
+		},
+		{
+			name: "room for one of two", have: limit - 1, send: []*dp.Presence{memberEntry("n", 2), memberEntry("o", 3)},
+			refused: []string{"o: " + full}, count: limit, want: map[string]uint64{"n": 2, "o": 0},
+		},
+		{
+			name: "end of an attachment gives room", have: limit, send: []*dp.Presence{goneAt("e0", 2), memberEntry("n", 3)},
+			count: limit, want: map[string]uint64{"e0": 0, "n": 3},
+		},
+		{
+			name: "end of an attachment after the new entry", have: limit, send: []*dp.Presence{memberEntry("n", 2), goneAt("e0", 3)},
+			refused: []string{"n: " + full}, count: limit - 1, want: map[string]uint64{"e0": 0, "n": 0},
+		},
+		{
+			name: "new generation of an attachment", have: limit, send: []*dp.Presence{memberEntry("e0", 2)},
+			count: limit, want: map[string]uint64{"e0": 2, "e1": 1},
+		},
+		{
+			name: "same entry again", have: limit, send: []*dp.Presence{memberEntry("e0", 1)},
+			count: limit, want: map[string]uint64{"e0": 1},
+		},
+		{
+			name: "new session sends entries again", have: limit, next: true,
+			send:  []*dp.Presence{memberEntry("e0", 1), memberEntry("e1", 1)},
+			count: limit, want: map[string]uint64{"e0": 1, "e1": 1, "e2": 1},
+		},
+		{
+			// The entries that the new session did not send go: e1 comes after that.
+			name: "new session sends a new entry", have: limit, next: true,
+			send:  []*dp.Presence{memberEntry("e0", 1), memberEntry("n", 2), memberEntry("e1", 1)},
+			count: 3, want: map[string]uint64{"e0": 1, "n": 2, "e1": 1, "e2": 0},
+		},
+		{
+			name: "new session sends only new entries", have: limit, next: true,
+			send:  []*dp.Presence{memberEntry("n", 2), memberEntry("o", 3)},
+			count: 2, want: map[string]uint64{"n": 2, "o": 3, "e0": 0},
+		},
+		{
+			name: "new session below the limit sends a new entry", have: limit - 1, next: true,
+			send:  []*dp.Presence{memberEntry("n", 2)},
+			count: limit, want: map[string]uint64{"n": 2, "e0": 1},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			m := stubMesh(t)
+			s, _ := openStub(t, m)
+			require.NoError(t, m.pres.accept(s))
+			m.pres.mu.Lock()
+			in := m.pres.in["relay-a"]
+			for i := range tc.have {
+				// Each entry has its own tag, as the entries of different agents have.
+				in.add(&presenceEntry{vpc: vpcA, networkID: testVNI, id: fmt.Sprintf("e%d", i), gen: 1, subject: laptop, tag: uint32(i + 1), sess: s})
+			}
+			m.pres.mu.Unlock()
+			if tc.next {
+				s, _ = openStub(t, m)
+				require.NoError(t, m.pres.accept(s))
+			}
+
+			var refused []string
+			var changes []presenceChange
+			for _, e := range tc.send {
+				pe, err := checkPresence(e)
+				require.NoError(t, err)
+				pe.sess = s
+				changes = append(changes, presenceChange{pe, e.GetGone()})
+			}
+			require.NoError(t, m.pres.keep(s, changes, false, func(id string, err error) { refused = append(refused, id+": "+err.Error()) }))
+
+			assert.Equal(t, tc.refused, refused)
+			got, _ := presenceEntries(m, "relay-a")
+			assert.Len(t, got, tc.count)
+			for id, gen := range tc.want {
+				assert.Equal(t, gen, got[id].gen, "generation of %s", id)
+			}
+			checkEntries(t, m)
 		})
 	}
 }
@@ -1070,7 +1203,8 @@ func TestPresenceOldSession(t *testing.T) {
 		call bool     // The old session has a Presence call with a complete full set.
 		want []string // Attachments of relay-a that the relay has at the end.
 	}{
-		{name: "old session with a call", call: true, want: []string{"x", "y"}},
+		// y, which only the old session sent, goes at the end of the new full set.
+		{name: "old session with a call", call: true, want: []string{"x"}},
 		{name: "old session with no call", want: []string{"x"}},
 	}
 	for _, tc := range cases {
@@ -1095,7 +1229,10 @@ func TestPresenceOldSession(t *testing.T) {
 			ended(t, m.pres.apply(old, &dp.PresenceUpdate{Entries: []*dp.Presence{memberEntry("z", 12)}, EndOfFullSet: true}))
 			assert.False(t, isFull(m), "the old session cannot end the full set")
 
-			// The entries of the old session stay, and the new call ends its full set.
+			// The entries of the old session stay until the new call ends its full set.
+			if tc.call {
+				require.Equal(t, []string{"x", "y"}, presenceIDs(m, "relay-a"))
+			}
 			require.NoError(t, m.pres.apply(next, &dp.PresenceUpdate{Entries: []*dp.Presence{memberEntry("x", 10)}, EndOfFullSet: true}))
 			assert.Equal(t, tc.want, presenceIDs(m, "relay-a"))
 			assert.True(t, isFull(m))
@@ -1103,12 +1240,42 @@ func TestPresenceOldSession(t *testing.T) {
 	}
 }
 
+// checkEntries checks the data that m keeps with the entries of each member:
+// the entries by tag, and the count of the entries of older sessions.
+func checkEntries(t *testing.T, m *Mesh) {
+	t.Helper()
+	m.pres.mu.Lock()
+	defer m.pres.mu.Unlock()
+	for member, in := range m.pres.in {
+		stale := 0
+		for _, e := range in.entries {
+			if e.sess != in.sess {
+				stale++
+			}
+		}
+		assert.Equal(t, stale, in.stale, "entries of older sessions of %s", member)
+		// Each entry is one time in the list of its tag.
+		seen := map[*presenceEntry]bool{}
+		for tag, entries := range in.tags {
+			assert.NotEmpty(t, entries, "list of the tag %d of %s", tag, member)
+			for _, e := range entries {
+				if seen[e] || e.tag != tag || in.entries[e.id] != e {
+					t.Errorf("%s: the list of the tag %d has %q, which has the tag %d, is not an entry or is there two times", member, tag, e.id, e.tag)
+				}
+				seen[e] = true
+			}
+		}
+		assert.Len(t, seen, len(in.entries), "entries of %s by tag", member)
+	}
+}
+
 // TestPresenceDown ends the session of a member in different ways. The relay
-// drops its attachments when it stops on purpose or leaves the member set.
+// keeps its attachments until a new full set, a stop or a leave of the member.
 func TestPresenceDown(t *testing.T) {
+	const fullSetTime = 10 * time.Second
 	type step struct {
 		// act is "open", an end of the session ("lose", "restart", "close"), a
-		// member set change ("remove", "add"), or "send <ids>" on the last session.
+		// member set change ("remove", "add", "move"), or "send <ids>" on the last session.
 		act  string
 		wait time.Duration // Time that passes after act.
 		// hold keeps the changes of the mesh from the hooks until a later step,
@@ -1117,41 +1284,111 @@ func TestPresenceDown(t *testing.T) {
 		want []string // Attachments of relay-a that the relay has after the step.
 		full bool     // The relay has a complete full set of relay-a after the step.
 	}
-	ab := []string{"a", "b"}
+	ab, bc, abc := []string{"a", "b"}, []string{"b", "c"}, []string{"a", "b", "c"}
 	cases := []struct {
 		name  string
 		steps []step
 	}{
 		{"session lost", []step{
 			{act: "open"}, {act: "send a b", want: ab},
-			// The attachments stay for the rules of a lost session.
-			{act: "lose", wait: time.Minute, want: ab},
+			// The attachments stay while the member has no new session.
+			{act: "lose", wait: 24 * time.Hour, want: ab},
 		}},
 		{"member closes with the normal code", []step{
 			{act: "open"}, {act: "send a b", want: ab},
-			{act: "close", wait: time.Minute, want: ab},
+			{act: "close", wait: 24 * time.Hour, want: ab},
 		}},
-		{"new session in the down time", []step{
+		{"new session ends its full set", []step{
+			{act: "open"}, {act: "send a b end", want: ab, full: true},
+			{act: "lose", wait: time.Minute, want: ab, full: true},
+			{act: "open", want: ab, full: true},
+			// The attachments of the session before stay until the end of the full set.
+			{act: "send b", want: ab},
+			{act: "send c", wait: fullSetTime - time.Nanosecond, want: abc},
+			{act: "send end", want: bc, full: true},
+			{act: "", wait: time.Minute, want: bc, full: true},
+		}},
+		{"new session in the down time ends its full set", []step{
 			{act: "open"}, {act: "send a b", want: ab},
 			{act: "lose", wait: time.Second, want: ab},
 			{act: "open", want: ab},
-			{act: "send b c", wait: time.Minute, want: []string{"a", "b", "c"}},
+			{act: "send b c end", want: bc, full: true},
 		}},
-		{"new session after the member was lost", []step{
+		{"new session sends an attachment that ended", []step{
 			{act: "open"}, {act: "send a b", want: ab},
 			{act: "lose", wait: time.Minute, want: ab},
 			{act: "open", want: ab},
 			{act: "send b -a", want: []string{"b"}},
+			{act: "send end", want: []string{"b"}, full: true},
+		}},
+		{"full set with no attachment", []step{
+			{act: "open"}, {act: "send a b end", want: ab, full: true},
+			{act: "lose", wait: time.Minute, want: ab, full: true},
+			{act: "open", want: ab, full: true},
+			{act: "send end", full: true},
+		}},
+		{"full set does not end in time", []step{
+			{act: "open"}, {act: "send a b", want: ab},
+			{act: "lose", wait: time.Second, want: ab},
+			{act: "open", want: ab},
+			{act: "send b c", wait: fullSetTime - time.Nanosecond, want: abc},
+			// Only the attachments that the new session sent stay.
+			{act: "", wait: time.Nanosecond, want: bc},
+			// The full set can end later, and the new session can send a again.
+			{act: "send a end", want: abc, full: true},
+		}},
+		{"new session with no Presence call", []step{
+			{act: "open"}, {act: "send a b end", want: ab, full: true},
+			{act: "lose", wait: time.Minute, want: ab, full: true},
+			{act: "open", want: ab, full: true},
+			{act: "", wait: fullSetTime - time.Nanosecond, want: ab, full: true},
+			{act: "", wait: time.Nanosecond},
+			{act: "send c", wait: time.Minute, want: []string{"c"}},
 		}},
 		{"new session replaces an open session", []step{
 			{act: "open"}, {act: "send a b", want: ab},
 			{act: "open", want: ab},
-			{act: "send c", wait: time.Minute, want: []string{"a", "b", "c"}},
+			{act: "send c", wait: fullSetTime - time.Nanosecond, want: abc},
+			{act: "", wait: time.Nanosecond, want: []string{"c"}},
+		}},
+		{"new session ends before its full set", []step{
+			{act: "open"}, {act: "send a b end", want: ab, full: true},
+			{act: "lose", wait: time.Second, want: ab, full: true},
+			{act: "open", want: ab, full: true},
+			{act: "send b c", wait: 5 * time.Second, want: abc},
+			// The attachments stay, also after the time for the full set of that session.
+			{act: "lose", wait: time.Hour, want: abc},
+			{act: "open", want: abc},
+			// For the next session, the attachments of each session before can go.
+			{act: "send a end", want: []string{"a"}, full: true},
+		}},
+		{"time for the full set starts again at the next session", []step{
+			{act: "open"}, {act: "send a b end", want: ab, full: true},
+			{act: "lose", wait: time.Second, want: ab, full: true},
+			{act: "open", want: ab, full: true},
+			{act: "", wait: 4 * time.Second, want: ab, full: true},
+			{act: "lose", wait: time.Second, want: ab, full: true},
+			{act: "open", want: ab, full: true},
+			// The time of the session that ended is over now, and it removes nothing.
+			{act: "", wait: 5 * time.Second, want: ab, full: true},
+			{act: "", wait: 5*time.Second - time.Nanosecond, want: ab, full: true},
+			{act: "", wait: time.Nanosecond},
+		}},
+		{"full set ends two times", []step{
+			{act: "open"}, {act: "send a b end", want: ab, full: true},
+			{act: "send c end", wait: time.Minute, want: abc, full: true},
 		}},
 		{"member stops", []step{
 			{act: "open"}, {act: "send a b", want: ab},
 			{act: "restart"},
 			{act: "", wait: time.Minute},
+		}},
+		{"member stops with attachments of two sessions", []step{
+			{act: "open"}, {act: "send a b", want: ab},
+			{act: "lose", wait: time.Second, want: ab},
+			{act: "open", want: ab},
+			{act: "send b c", want: abc},
+			{act: "restart"},
 		}},
 		{"member leaves the set", []step{
 			{act: "open"}, {act: "send a b", want: ab},
@@ -1162,6 +1399,39 @@ func TestPresenceDown(t *testing.T) {
 			{act: "open"}, {act: "send a b", want: ab},
 			{act: "lose", wait: time.Second, want: ab},
 			{act: "remove"},
+		}},
+		{"member leaves the set after it was lost", []step{
+			{act: "open"}, {act: "send a b", want: ab},
+			{act: "lose", wait: time.Minute, want: ab},
+			{act: "remove"},
+			{act: "add", wait: time.Minute},
+		}},
+		{"member gets a new address after it was lost", []step{
+			{act: "open"}, {act: "send a b", want: ab},
+			{act: "lose", wait: time.Minute, want: ab},
+			// A new address is a new relay process, which has none of the attachments.
+			{act: "move", wait: time.Minute},
+		}},
+		{"member leaves the set after it was lost, and the two changes come later", []step{
+			{act: "open"}, {act: "send a b", want: ab},
+			{act: "lose", wait: time.Minute, hold: true, want: ab},
+			{act: "remove", hold: true, want: ab},
+			{act: ""},
+		}},
+		{"member leaves the set with attachments of two sessions", []step{
+			{act: "open"}, {act: "send a b", want: ab},
+			{act: "lose", wait: time.Second, want: ab},
+			{act: "open", want: ab},
+			{act: "send b c", want: abc},
+			{act: "remove"},
+		}},
+		{"member comes back after it left the set", []step{
+			{act: "open"}, {act: "send a b", want: ab},
+			{act: "lose", wait: time.Minute, want: ab},
+			{act: "remove"},
+			{act: "add"},
+			{act: "open"},
+			{act: "send b end", wait: time.Minute, want: []string{"b"}, full: true},
 		}},
 		{"member stops and comes back", []step{
 			{act: "open"}, {act: "send a b", want: ab},
@@ -1192,7 +1462,7 @@ func TestPresenceDown(t *testing.T) {
 			{act: "remove", hold: true, want: ab},
 			{act: "add", hold: true, want: ab},
 			{act: "open", hold: true, want: ab},
-			{act: "send c", hold: true, want: []string{"a", "b", "c"}},
+			{act: "send c", hold: true, want: abc},
 			{act: "", want: []string{"c"}},
 		}},
 		{"member leaves the set, and its new session sends an attachment again before the change", []step{
@@ -1200,9 +1470,9 @@ func TestPresenceDown(t *testing.T) {
 			{act: "remove", hold: true, want: ab, full: true},
 			{act: "add", hold: true, want: ab, full: true},
 			{act: "open", hold: true, want: ab, full: true},
-			{act: "send b c end", hold: true, want: []string{"a", "b", "c"}, full: true},
+			{act: "send b c", hold: true, want: abc},
 			// The new session sent b again, so b stays.
-			{act: "", want: []string{"b", "c"}, full: true},
+			{act: "", want: bc},
 		}},
 	}
 	member := []MeshMember{{Name: "relay-a", Addr: netip.MustParseAddrPort("192.0.2.1:6081")}}
@@ -1254,6 +1524,8 @@ func TestPresenceDown(t *testing.T) {
 						m.SetMembers(nil)
 					case "add":
 						m.SetMembers(member)
+					case "move":
+						m.SetMembers([]MeshMember{{Name: "relay-a", Addr: netip.MustParseAddrPort("192.0.2.7:6081")}})
 					}
 					time.Sleep(st.wait)
 					synctest.Wait()
@@ -1266,9 +1538,33 @@ func TestPresenceDown(t *testing.T) {
 					assert.Equal(t, st.want, presenceIDs(m, "relay-a"), "step %d (%s)", i, st.act)
 					_, full := presenceEntries(m, "relay-a")
 					assert.Equal(t, st.full, full, "full set at step %d (%s)", i, st.act)
+					checkEntries(t, m)
 				}
 			})
 		})
+	}
+}
+
+// TestPresenceTimeLimitChanges ends the time for the full set of a session
+// while its Presence call sends entries. The entries of that session stay.
+func TestPresenceTimeLimitChanges(t *testing.T) {
+	const rounds, entries = 50, 20
+	m := stubMesh(t)
+	var wg sync.WaitGroup
+	for round := range rounds {
+		// The entries of the session before are of an older session now.
+		s, _ := openStub(t, m)
+		require.NoError(t, m.pres.accept(s))
+		wg.Go(func() { m.pres.expire(s) })
+		var want []string
+		for i := range entries {
+			id := fmt.Sprintf("x%02d", i)
+			want = append(want, id)
+			require.NoError(t, m.pres.apply(s, &dp.PresenceUpdate{Entries: []*dp.Presence{memberEntry(id, uint64(round*entries+i+1))}}))
+		}
+		wg.Wait()
+		require.Equal(t, want, presenceIDs(m, "relay-a"), "round %d", round)
+		checkEntries(t, m)
 	}
 }
 

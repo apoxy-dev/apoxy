@@ -82,11 +82,17 @@ func (w *routeWorld) open(member string) {
 // openAt is open for a member at revision rev.
 func (w *routeWorld) openAt(member string, rev uint32) {
 	w.t.Helper()
+	w.dial(member, rev)
+	require.NoError(w.t, w.m.pres.accept(w.mesh[member]))
+}
+
+// dial opens a new mesh session of member at revision rev, with no Presence call.
+func (w *routeWorld) dial(member string, rev uint32) {
+	w.t.Helper()
 	conn := newStubConn()
 	s := w.m.newSession(conn, false)
 	require.True(w.t, w.m.track(s))
 	require.NoError(w.t, w.m.admit(s, member, nil, &dp.Version{Revision: rev}, nil))
-	require.NoError(w.t, w.m.pres.accept(s))
 	w.mesh[member], w.conns[member] = s, conn
 }
 
@@ -94,6 +100,20 @@ func (w *routeWorld) openAt(member string, rev uint32) {
 func (w *routeWorld) send(member string, entries ...*dp.Presence) {
 	w.t.Helper()
 	require.NoError(w.t, w.m.pres.apply(w.mesh[member], &dp.PresenceUpdate{Entries: entries}))
+}
+
+// full is send for the last message of the full set of member.
+func (w *routeWorld) full(member string, entries ...*dp.Presence) {
+	w.t.Helper()
+	require.NoError(w.t, w.m.pres.apply(w.mesh[member], &dp.PresenceUpdate{Entries: entries, EndOfFullSet: true}))
+}
+
+// pass lets d pass on the fake clock, with the hooks of the mesh as Run calls them.
+func (w *routeWorld) pass(d time.Duration) {
+	w.m.deliver()
+	time.Sleep(d)
+	synctest.Wait()
+	w.m.deliver()
 }
 
 // restart closes the session of member with RESTART, as when the member stops.
@@ -238,19 +258,7 @@ func (w *routeWorld) check() {
 		assert.ElementsMatch(w.t, prefixes, s.routes, "routes of the record of %s on %s", s.id.ID, s.home)
 		assert.NotContains(w.t, w.r.sessions, s, "the record is a session of this relay")
 	}
-	// The entries of each member by tag are the entries by attachment ID.
-	w.m.pres.mu.Lock()
-	defer w.m.pres.mu.Unlock()
-	for member, in := range w.m.pres.in {
-		byTag := map[uint32][]*presenceEntry{}
-		for _, e := range in.entries {
-			byTag[e.tag] = append(byTag[e.tag], e)
-		}
-		assert.Len(w.t, in.tags, len(byTag), "tags of the entries of %s", member)
-		for tag, entries := range byTag {
-			assert.ElementsMatch(w.t, entries, in.tags[tag], "entries of %s with the tag %d", member, tag)
-		}
-	}
+	checkEntries(w.t, w.m)
 }
 
 // TestMeshRoutes gives the entries of two other relays to a relay. Each prefix
@@ -545,14 +553,127 @@ func TestMeshRoutes(t *testing.T) {
 			delta:  []string{"-x " + prefixA, "+z " + prefixB}, records: 1,
 		},
 		{
-			// The rules for a lost session are not in the relay yet.
+			// The routes stay while the member is in the member set.
 			name: "session of a member is lost",
 			steps: func(w *routeWorld) {
 				w.send("relay-a", remoteEntry("x", 10, prefixA))
 				w.drain()
 				w.lose("relay-a")
+				w.pass(24 * time.Hour)
 			},
 			routes: map[string]string{prefixA: "x@relay-a"}, records: 1,
+		},
+		{
+			name: "lost member leaves the member set",
+			steps: func(w *routeWorld) {
+				w.send("relay-a", remoteEntry("x", 10, prefixA, prefixR))
+				w.send("relay-b", remoteEntry("y", 11, prefixB))
+				w.drain()
+				w.lose("relay-a")
+				w.leave("relay-a")
+			},
+			routes: map[string]string{prefixB: "y@relay-b"},
+			delta:  []string{"-x " + prefixR, "-x " + prefixA}, records: 1,
+		},
+		{
+			name: "attachment comes on another relay while its first relay is lost",
+			steps: func(w *routeWorld) {
+				w.send("relay-a", remoteEntry("x", 10, prefixA))
+				w.drain()
+				w.lose("relay-a")
+				w.send("relay-b", remoteEntry("y", 20, prefixA))
+			},
+			routes: map[string]string{prefixA: "y@relay-b"},
+			delta:  []string{"-x " + prefixA, "+y " + prefixA}, records: 1,
+		},
+		{
+			name: "new session of a lost member: the routes stay before the end of the full set",
+			steps: func(w *routeWorld) {
+				w.send("relay-a", remoteEntry("x", 10, prefixA), remoteEntry("x2", 11, prefixB))
+				w.drain()
+				w.lose("relay-a")
+				w.open("relay-a")
+				w.send("relay-a", remoteEntry("x2", 11, prefixB))
+				w.pass(10*time.Second - time.Nanosecond)
+			},
+			routes: map[string]string{prefixA: "x@relay-a", prefixB: "x2@relay-a"}, records: 1,
+		},
+		{
+			name: "new session of a lost member ends its full set",
+			steps: func(w *routeWorld) {
+				w.send("relay-a", remoteEntry("x", 10, prefixA, prefixR), remoteEntry("x2", 11, prefixB))
+				w.drain()
+				w.lose("relay-a")
+				w.open("relay-a")
+				w.full("relay-a", remoteEntry("x2", 11, prefixB))
+			},
+			routes: map[string]string{prefixB: "x2@relay-a"},
+			delta:  []string{"-x " + prefixR, "-x " + prefixA}, records: 1,
+		},
+		{
+			name: "new session of a lost member has the same attachments",
+			steps: func(w *routeWorld) {
+				w.send("relay-a", remoteEntry("x", 10, prefixA, prefixR), remoteEntry("x2", 11, prefixB))
+				w.drain()
+				w.lose("relay-a")
+				w.open("relay-a")
+				w.full("relay-a", remoteEntry("x", 10, prefixA, prefixR), remoteEntry("x2", 11, prefixB))
+				w.pass(time.Minute)
+			},
+			routes: map[string]string{prefixA: "x@relay-a", prefixR: "x@relay-a", prefixB: "x2@relay-a"}, records: 1,
+		},
+		{
+			name: "new session of a lost member has no full set in time",
+			steps: func(w *routeWorld) {
+				w.send("relay-a", remoteEntry("x", 10, prefixA, prefixR), remoteEntry("x2", 11, prefixB))
+				w.drain()
+				w.lose("relay-a")
+				w.open("relay-a")
+				w.send("relay-a", remoteEntry("x2", 11, prefixB))
+				w.pass(10 * time.Second)
+			},
+			routes: map[string]string{prefixB: "x2@relay-a"},
+			delta:  []string{"-x " + prefixR, "-x " + prefixA}, records: 1,
+		},
+		{
+			name: "new session of a lost member has no Presence call in time",
+			steps: func(w *routeWorld) {
+				w.send("relay-a", remoteEntry("x", 10, prefixA, prefixR))
+				w.send("relay-b", remoteEntry("y", 11, prefixB))
+				w.drain()
+				w.lose("relay-a")
+				w.dial("relay-a", 3)
+				w.pass(10 * time.Second)
+			},
+			routes: map[string]string{prefixB: "y@relay-b"},
+			delta:  []string{"-x " + prefixR, "-x " + prefixA}, records: 1,
+		},
+		{
+			name: "new session of a lost member ends before its full set",
+			steps: func(w *routeWorld) {
+				w.send("relay-a", remoteEntry("x", 10, prefixA), remoteEntry("x2", 11, prefixB))
+				w.drain()
+				w.lose("relay-a")
+				w.open("relay-a")
+				w.send("relay-a", remoteEntry("x2", 11, prefixB))
+				w.pass(5 * time.Second)
+				w.lose("relay-a")
+				w.pass(time.Hour)
+			},
+			routes: map[string]string{prefixA: "x@relay-a", prefixB: "x2@relay-a"}, records: 1,
+		},
+		{
+			name: "full set of a new session with no attachment: the other relay gets the prefix",
+			steps: func(w *routeWorld) {
+				w.send("relay-a", remoteEntry("x", 20, prefixR))
+				w.send("relay-b", remoteEntry("y", 10, prefixR))
+				w.drain()
+				w.lose("relay-a")
+				w.open("relay-a")
+				w.full("relay-a")
+			},
+			routes: map[string]string{prefixR: "y@relay-b"},
+			delta:  []string{"-x " + prefixR, "+y " + prefixR}, records: 1,
 		},
 	}
 	for _, tc := range cases {
@@ -595,6 +716,15 @@ func TestMeshRouteSameOwner(t *testing.T) {
 			step: func(w *routeWorld) {
 				w.open("relay-a")
 				w.send("relay-a", remoteEntry("x", 20, prefixA))
+			},
+		},
+		{
+			name: "entry comes again in the full set of a new session of its member",
+			step: func(w *routeWorld) {
+				w.lose("relay-a")
+				w.open("relay-a")
+				w.full("relay-a", remoteEntry("x", 20, prefixA))
+				w.pass(time.Minute)
 			},
 		},
 		{
@@ -794,6 +924,15 @@ func TestMeshRouteRefused(t *testing.T) {
 			name: "VPC of another project with the subject of this one", known: true,
 			entry:   with(func(e *dp.Presence) { e.Vpc = ref(vpcB) }),
 			refused: "is not in VPC project-b/vpc-1",
+		},
+		{
+			name: "more prefixes than the limit", known: true,
+			entry: with(func(e *dp.Presence) {
+				for i := range 64 {
+					e.Prefixes = append(e.Prefixes, fmt.Sprintf("fd00:f:%x::/96", i))
+				}
+			}),
+			refused: "65 prefixes, which is more than the limit 64",
 		},
 	}
 	for _, tc := range cases {
@@ -1340,4 +1479,176 @@ func TestMeshRoutesConverge(t *testing.T) {
 		// A session that opens now gets each route in its first RouteDelta.
 		rr.has(t, rr.session(t, "late", fmt.Sprintf("192.0.%d.250:1000", 2+i), thisRevision()), all...)
 	}
+}
+
+// TestMeshRouteRowsNewSession gives relay-a a new session while an SPI row goes
+// to its agent. The row stays only if the attachment comes again in time.
+func TestMeshRouteRowsNewSession(t *testing.T) {
+	const fullSetTime = 10 * time.Second
+	cases := []struct {
+		name  string
+		call  bool          // The new session has a Presence call.
+		again bool          // It sends the attachment of the receiver again.
+		end   bool          // It ends its full set.
+		wait  time.Duration // Time after the new session opened.
+		stays bool          // The relay has the row at the end.
+	}{
+		{name: "full set has the attachment", call: true, again: true, end: true, wait: time.Minute, stays: true},
+		{name: "attachment comes again, and the full set does not end", call: true, again: true, wait: time.Minute, stays: true},
+		{name: "full set does not have the attachment", call: true, end: true},
+		{name: "full set does not end: before the time limit", call: true, wait: fullSetTime - time.Nanosecond, stays: true},
+		{name: "full set does not end in time", call: true, wait: fullSetTime},
+		{name: "no Presence call: before the time limit", wait: fullSetTime - time.Nanosecond, stays: true},
+		{name: "no Presence call in time", wait: fullSetTime},
+	}
+	cfg := trunkRigConfig(t)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				g := newRowRig(t, cfg)
+				defer g.stop()
+				g.start()
+				require.NoError(t, g.register(rowDst, rowTTL, 5))
+
+				// The next session opens before relay-a is down, so its keys stay.
+				g.end(g.sess, &quic.IdleTimeoutError{})
+				time.Sleep(time.Second)
+				if tc.call {
+					g.join(trunkRowsRevision)
+				} else {
+					g.sess = g.open(trunkRowsRevision)
+					g.deliver()
+				}
+				g.a.take()
+				_, v := g.verdict(5)
+				require.Equal(t, Pass, v, "the row works before the full set of the new session")
+
+				if tc.again {
+					g.announce(entryOf("x", server, 7, 10))
+				}
+				if tc.end {
+					require.NoError(t, g.m.pres.apply(g.sess, &dp.PresenceUpdate{EndOfFullSet: true}))
+				}
+				time.Sleep(tc.wait)
+				synctest.Wait()
+
+				_, ok := g.row(5)
+				_, v = g.verdict(5)
+				var told [][]*dp.SPIRow
+				if tc.stays {
+					assert.True(t, ok, "row")
+					assert.Equal(t, Pass, v)
+					assert.Equal(t, 1, g.inbound(), "rows to the sessions of other relays")
+				} else {
+					assert.False(t, ok, "row")
+					assert.Equal(t, DropUnknownSPI, v)
+					assert.Zero(t, g.inbound(), "rows to the sessions of other relays")
+					told = [][]*dp.SPIRow{{goneRow(5)}}
+				}
+				assert.Empty(t, diffRows(told, g.a.take()), "rows that relay-a gets")
+			})
+		})
+	}
+}
+
+// TestMeshLostMemberLeaves changes the member set after relay-a was lost. The
+// relay drops the attachments of relay-a and the SPI rows that relay-a gave.
+func TestMeshLostMemberLeaves(t *testing.T) {
+	cases := []struct {
+		name    string
+		members []MeshMember // Member set after the loss.
+	}{
+		{name: "member leaves the member set"},
+		{name: "member gets a new address", members: []MeshMember{{Name: "relay-a", Addr: netip.MustParseAddrPort("198.51.100.7:6081")}}},
+	}
+	cfg := trunkRigConfig(t)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				g := newRowRig(t, cfg)
+				defer g.stop()
+				g.serve()
+				g.give(serverRow(5, inTTL))
+				g.passes(5, rowSrc, "packet before the loss")
+
+				// A lost member keeps its attachments and its rows.
+				g.end(g.sess, meshLost)
+				time.Sleep(10 * time.Second)
+				g.deliver()
+				rows, _ := g.kept()
+				require.Equal(t, 1, rows, "rows of relay-a")
+				require.Equal(t, []string{"x"}, presenceIDs(g.m, "relay-a"))
+				require.Equal(t, "x@relay-a", routeTable(g.r, vpcA)[prefixA])
+
+				g.m.SetMembers(tc.members)
+				g.deliver()
+				_, ok := g.kept()
+				assert.False(t, ok, "the relay keeps a row set of relay-a")
+				assert.Empty(t, presenceIDs(g.m, "relay-a"))
+				assert.NotContains(t, routeTable(g.r, vpcA), prefixA)
+				checkEntries(t, g.m)
+			})
+		})
+	}
+}
+
+// TestMeshRowSenderFullSetTime checks a row of the session before, when the
+// time for the full set of a new session ends and no route changes.
+func TestMeshRowSenderFullSetTime(t *testing.T) {
+	cfg := trunkRigConfig(t)
+	synctest.Test(t, func(t *testing.T) {
+		g := newRowRig(t, cfg)
+		defer g.stop()
+		g.connect()
+		require.NoError(t, g.tk.rowsFrom(g.sess))
+		// The entry of the sender has no prefix, so it gives no route.
+		g.announce(atGen(liveEntry("x", server, "", inTag), 10))
+		g.give(serverRow(5, inTTL))
+		g.end(g.sess, meshLost)
+		// The hooks of the new session do not run, so the row and the keys stay.
+		s := g.open(trunkRowsRevision)
+		g.passes(5, rowSrc, "packet before the time limit")
+		g.m.pres.expire(s)
+		g.drops(5, "trunk_sender", "packet after the time limit")
+		assert.Empty(t, presenceIDs(g.m, "relay-a"))
+	})
+}
+
+// TestMeshRoutesAfterLoss ends the mesh session of two relays that run. The
+// routes stay, and the next full set removes those of attachments that ended.
+func TestMeshRoutesAfterLoss(t *testing.T) {
+	t.Parallel()
+	ca := newCA(t)
+	a, b := newRouteRelay(t, ca, "relay-a"), newRouteRelay(t, ca, "relay-b")
+	sa := a.session(t, "laptop", "192.0.2.1:1000", thisRevision())
+	sb := b.session(t, "server", "192.0.2.2:1000", thisRevision())
+	require.NoError(t, a.r.attach(sa, attachment("x", "fd00:1::/96")))
+	require.NoError(t, a.r.attach(sa, attachment("x2", "fd00:2::/96")))
+	a.n.m.SetMembers([]MeshMember{b.n.member()})
+	b.n.m.SetMembers([]MeshMember{a.n.member()})
+	b.n.start(t)
+	a.n.start(t)
+	require.Equal(t, MeshChange{Name: "relay-a", Up: true}, b.n.change(t, 10*time.Second))
+	b.has(t, sb, "x fd00:1::/96", "x2 fd00:2::/96")
+
+	// relay-a closes the session and does not dial: it has no member now.
+	// relay-b has relay-a as down 3 s later.
+	a.n.m.SetMembers(nil)
+	require.Equal(t, MeshChange{Name: "relay-a", Down: MeshLost}, b.n.change(t, 10*time.Second))
+	assert.Empty(t, routeChanges(b.r, sb), "route changes for a relay that is down")
+	assert.Equal(t, map[string]string{"fd00:1::/96": "x@relay-a", "fd00:2::/96": "x2@relay-a"}, routeTable(b.r, vpcA))
+
+	// One attachment of relay-a ends and one comes while it has no session.
+	_, _, err := a.r.detach(sa, "x2")
+	require.NoError(t, err)
+	require.NoError(t, a.r.attach(sa, attachment("x3", "fd00:3::/96")))
+	a.n.m.SetMembers([]MeshMember{b.n.member()})
+	want := map[string]string{"fd00:1::/96": "x@relay-a", "fd00:3::/96": "x3@relay-a"}
+	require.Eventually(t, func() bool { return maps.Equal(want, routeTable(b.r, vpcA)) }, 10*time.Second, 5*time.Millisecond)
+	// The route of x did not go and come again.
+	assert.ElementsMatch(t, []string{"+x3 fd00:3::/96", "-x2 fd00:2::/96"}, routeChanges(b.r, sb))
+	entries, full := presenceEntries(b.n.m, "relay-a")
+	assert.True(t, full, "the full set of the new session is complete")
+	assert.Len(t, entries, 2)
+	checkEntries(t, b.n.m)
 }

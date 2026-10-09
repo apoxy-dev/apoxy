@@ -109,6 +109,10 @@ func (p *presence) receiver(r *Router, s *MeshSession, b []byte) (*Session, drop
 // sender returns the entry with tag from the Presence call of s that has the
 // route of src, or the reason that there is none. Router.mu must be held.
 func (p *presence) sender(r *Router, s *MeshSession, tag uint32, src netip.Addr) (*presenceEntry, dropReason) {
+	// The entries that the relay keeps of a session that ended give no sender.
+	if s.Context().Err() != nil {
+		return nil, dropMeshOldSession
+	}
 	return p.tagged(s, tag, dropMeshSource, func(e *presenceEntry) bool {
 		o := r.ownerOf(e.vpc, src)
 		return o.s != nil && o.s.home == s.name && o.origin == e.id

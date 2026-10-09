@@ -1082,6 +1082,28 @@ func TestMeshDownTime(t *testing.T) {
 			{"add", time.Minute, nil, false},
 			{"open", 0, up, true},
 		}},
+		{"the member leaves the set after it was lost", []step{
+			{"open", 0, up, true},
+			{"lose", downAfter, down(MeshLost), false},
+			// The hooks keep data of a lost member, so they get the second change.
+			{"remove", 0, down(MeshRemoved), false},
+			{"", time.Minute, nil, false},
+		}},
+		{"the member leaves the set after it stopped", []step{
+			{"open", 0, up, true},
+			{"restart", 0, down(MeshRestart), false},
+			{"remove", time.Minute, down(MeshRemoved), false},
+		}},
+		{"a member that had no session leaves the set", []step{
+			{"remove", time.Minute, nil, false},
+		}},
+		{"the member leaves the set two times", []step{
+			{"open", 0, up, true},
+			{"remove", 0, down(MeshRemoved), false},
+			// The member that came back had no session.
+			{"add", 0, nil, false},
+			{"remove", time.Minute, nil, false},
+		}},
 	}
 	ca := newCA(t)
 	cfg := MeshConfig{TLS: meshTLS(ca.meshCert(t, "relay-m")), Verify: ca.verifyName}

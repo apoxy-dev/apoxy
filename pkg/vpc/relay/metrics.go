@@ -112,7 +112,7 @@ const (
 	dropMeshTooLarge   // The frame does not fit in a datagram of the mesh session.
 	dropMeshMalformed  // The datagram of a member is short or has an unknown type.
 	dropMeshUnknownTag // No entry of the member has the sender tag.
-	dropMeshOldSession // Only entries from an older session of the member have the tag.
+	dropMeshOldSession // The session of the datagram ended, or only an older session sent the tag.
 	dropMeshSource     // The sender does not have the route of the source address.
 	dropMeshPermit     // Permit denies the destination.
 	dropMeshNotLocal   // No session of this relay has the route of the destination.
