@@ -172,7 +172,7 @@ type Agent struct {
 	// Intervals of the visits. Tests change them before Run.
 	visitCheck, visitAsk, visitWait time.Duration
 	// Band and wait of the relay choice. Tests change them before Run.
-	rttBand, rttWindow time.Duration
+	rttBand, rttWaitMin, rttWaitMax time.Duration
 
 	routeMu  sync.Mutex
 	routesOf *relayConn            // Session that OnRoutes follows.
@@ -196,7 +196,7 @@ func New(cfg Config) *Agent {
 	}
 	a.specs, a.attachWake = map[string]*AttachmentSpec{}, make(chan struct{}, 1)
 	a.visitCheck, a.visitAsk, a.visitWait = visitCheck, visitAsk, visitWait
-	a.rttBand, a.rttWindow = rttBand, rttWindow
+	a.rttBand, a.rttWaitMin, a.rttWaitMax = rttBand, rttWaitMin, rttWaitMax
 	a.mux = rpc.NewMux()
 	dp.RegisterPeerServer(a.mux, &peerService{a: a})
 	a.demux.Probe = a.onProbe

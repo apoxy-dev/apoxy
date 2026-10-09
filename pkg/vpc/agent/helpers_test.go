@@ -660,7 +660,7 @@ func (w *world) agent(t *testing.T, name string, r *testRelay, opts agentOptions
 		ta.a.visitWait = opts.visitWait
 	}
 	if !opts.rttChoice {
-		ta.a.rttBand, ta.a.rttWindow = time.Hour, testWindow
+		ta.a.rttBand, ta.a.rttWaitMin, ta.a.rttWaitMax = time.Hour, testWindow, testWindow
 	}
 	if opts.noGrants {
 		ta.a.mux = rpc.NewMux()

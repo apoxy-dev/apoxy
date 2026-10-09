@@ -22,9 +22,14 @@ const (
 	// rttBand is the difference of two round-trip times that counts as equal. It
 	// is above the error of one handshake sample and below the time between regions.
 	rttBand = 10 * time.Millisecond
-	// rttWindow is the wait for the other relays after the first relay answered. A
-	// relay in rttBand answers at most two times rttBand later, plus 20 ms of noise.
-	rttWindow = 40 * time.Millisecond
+	// rttWaitMin is the shortest wait for the other relays after the first answer. A
+	// relay in rttBand answers at most two times rttBand later.
+	rttWaitMin = 20 * time.Millisecond
+	// rttWaitMax is the longest wait. A relay that answers later than two times
+	// rttBand plus 20 ms of noise cannot change the choice.
+	rttWaitMax = 40 * time.Millisecond
+	// rttRounds is the number of round trips of the first relay in the wait.
+	rttRounds = 2
 	// spareCheck is the interval of the spare session check.
 	spareCheck = 5 * time.Second
 	// upgradeRetry is the wait for the next spare dial after a relay refused the
@@ -187,8 +192,8 @@ func (a *Agent) choose(ctx context.Context, eps []endpoint, dial dialFunc) (won 
 		cands[r.i].done = true
 		errs = append(errs, fmt.Errorf("relay %s: %w", cands[r.i].ep.addr, r.err))
 	}
-	// The choice is made when each relay answered or failed, or rttWindow after
-	// the first answer: a relay that answers later is not in rttBand.
+	// The choice is made when each relay answered or failed, or after a wait that
+	// starts at the first answer.
 	var timer <-chan time.Time
 wait:
 	for answered := 0; answered+len(errs) < len(cands); {
@@ -197,7 +202,12 @@ wait:
 			cands[i].ready = true
 			answered++
 			if timer == nil {
-				t := time.NewTimer(a.rttWindow)
+				// A time that is not known uses the longest wait.
+				wait := a.rttWaitMax
+				if rtt := cands[i].rtt; rtt > 0 {
+					wait = min(max(rttRounds*rtt, a.rttWaitMin), a.rttWaitMax)
+				}
+				t := time.NewTimer(wait)
 				defer t.Stop()
 				timer = t.C
 			}

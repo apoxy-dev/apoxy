@@ -64,21 +64,33 @@ func TestChoose(t *testing.T) {
 		failed int
 	}{
 		{name: "lowest time wins", relays: []fakeRelay{{ready: 60 * ms, rtt: 60 * ms}, {ready: 5 * ms, rtt: 5 * ms}},
-			won: 1, spares: []int{0}, at: 5*ms + rttWindow},
+			won: 1, spares: []int{0}, at: 5*ms + rttWaitMin},
 		{name: "times in the band use the order of the list", relays: []fakeRelay{{ready: 12 * ms, rtt: 12 * ms}, {ready: 5 * ms, rtt: 5 * ms}},
 			won: 0, spares: []int{1}, at: 12 * ms},
 		{name: "time above the band", relays: []fakeRelay{{ready: 16 * ms, rtt: 16 * ms}, {ready: 5 * ms, rtt: 5 * ms}},
 			won: 1, spares: []int{0}, at: 16 * ms},
-		{name: "relays at 12 ms, 5 ms and 150 ms", relays: []fakeRelay{{ready: 12 * ms, rtt: 12 * ms}, {ready: 5 * ms, rtt: 5 * ms}, {ready: 150 * ms, rtt: 150 * ms}},
-			won: 0, spares: []int{1, 2}, at: 5*ms + rttWindow},
-		{name: "spare is the second lowest", relays: []fakeRelay{{ready: 44 * ms, rtt: 44 * ms}, {ready: 5 * ms, rtt: 5 * ms}, {ready: 30 * ms, rtt: 30 * ms}},
-			won: 1, spares: []int{2, 0}, at: 44 * ms},
-		{name: "spares in the band use the order of the list", relays: []fakeRelay{{ready: 5 * ms, rtt: 5 * ms}, {ready: 30 * ms, rtt: 30 * ms}, {ready: 24 * ms, rtt: 24 * ms}},
-			won: 0, spares: []int{1, 2}, at: 30 * ms},
-		{name: "late session opens before the session of the choice", relays: []fakeRelay{{ready: 5 * ms, rtt: 60 * ms}, {ready: 50 * ms, rtt: 2 * ms}, {ready: 6 * ms, rtt: 80 * ms}},
-			won: 0, spares: []int{2, 1}, at: 5*ms + rttWindow},
-		{name: "relay that does not answer", relays: []fakeRelay{{silent: true}, {ready: 5 * ms, rtt: 5 * ms}},
-			won: 1, at: 5*ms + rttWindow},
+		{name: "first relay at 1 ms, the other relay does not answer", relays: []fakeRelay{{silent: true}, {ready: 1 * ms, rtt: 1 * ms}},
+			won: 1, at: 1*ms + rttWaitMin},
+		{name: "first relay at 5 ms, relays at 12 ms and 150 ms", relays: []fakeRelay{{ready: 12 * ms, rtt: 12 * ms}, {ready: 5 * ms, rtt: 5 * ms}, {ready: 150 * ms, rtt: 150 * ms}},
+			won: 0, spares: []int{1, 2}, at: 5*ms + rttWaitMin},
+		{name: "first relay at 15 ms, the other relay does not answer", relays: []fakeRelay{{silent: true}, {ready: 15 * ms, rtt: 15 * ms}},
+			won: 1, at: 15*ms + 30*ms},
+		{name: "first relay at 15 ms, a relay that answers after rttWaitMin is in the wait", relays: []fakeRelay{{ready: 15 * ms, rtt: 15 * ms}, {ready: 40 * ms, rtt: 2 * ms}, {silent: true}},
+			won: 1, spares: []int{0}, at: 15*ms + 30*ms},
+		{name: "first relay at 30 ms, the other relay does not answer", relays: []fakeRelay{{silent: true}, {ready: 30 * ms, rtt: 30 * ms}},
+			won: 1, at: 30*ms + rttWaitMax},
+		{name: "first relay at 150 ms, the other relay does not answer", relays: []fakeRelay{{silent: true}, {ready: 150 * ms, rtt: 150 * ms}},
+			won: 1, at: 150*ms + rttWaitMax},
+		{name: "first relay with no known time, the other relay does not answer", relays: []fakeRelay{{silent: true}, {ready: 5 * ms}},
+			won: 1, at: 5*ms + rttWaitMax},
+		{name: "time not known is last", relays: []fakeRelay{{ready: 5 * ms}, {ready: 8 * ms, rtt: 30 * ms}},
+			won: 1, spares: []int{0}, at: 8 * ms},
+		{name: "spare is the second lowest", relays: []fakeRelay{{ready: 58 * ms, rtt: 58 * ms}, {ready: 20 * ms, rtt: 20 * ms}, {ready: 45 * ms, rtt: 45 * ms}},
+			won: 1, spares: []int{2, 0}, at: 58 * ms},
+		{name: "spares in the band use the order of the list", relays: []fakeRelay{{ready: 20 * ms, rtt: 20 * ms}, {ready: 50 * ms, rtt: 50 * ms}, {ready: 44 * ms, rtt: 44 * ms}},
+			won: 0, spares: []int{1, 2}, at: 50 * ms},
+		{name: "late session opens before the session of the choice", relays: []fakeRelay{{ready: 5 * ms, rtt: 20 * ms}, {ready: 60 * ms, rtt: 2 * ms}, {ready: 6 * ms, rtt: 30 * ms}},
+			won: 0, spares: []int{2, 1}, at: 5*ms + rttWaitMax},
 		{name: "relay that fails", relays: []fakeRelay{{ready: 3 * ms, fails: true}, {ready: 5 * ms, rtt: 5 * ms}},
 			won: 1, at: 5 * ms, failed: 1},
 		{name: "all relays fail", relays: []fakeRelay{{ready: 3 * ms, fails: true}, {ready: 5 * ms, fails: true}},
@@ -86,16 +98,14 @@ func TestChoose(t *testing.T) {
 		{name: "Hello fails on the relay of the choice", relays: []fakeRelay{{ready: 5 * ms, rtt: 5 * ms, noHello: true}, {ready: 8 * ms, rtt: 8 * ms}},
 			won: 1, at: 8 * ms, failed: 1},
 		{name: "Hello fails, and the other relay answers late", relays: []fakeRelay{{ready: 5 * ms, rtt: 5 * ms, noHello: true}, {ready: 90 * ms, rtt: 90 * ms}},
-			won: 1, at: 5*ms + rttWindow, failed: 1},
-		{name: "time not known is last", relays: []fakeRelay{{ready: 5 * ms}, {ready: 8 * ms, rtt: 30 * ms}},
-			won: 1, spares: []int{0}, at: 8 * ms},
+			won: 1, at: 5*ms + rttWaitMin, failed: 1},
 		{name: "two entries with one name are one relay", relays: []fakeRelay{{ready: 5 * ms, rtt: 5 * ms}, {sameName: true}, {ready: 8 * ms, rtt: 8 * ms}},
 			won: 0, spares: []int{2}, at: 8 * ms},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				a := &Agent{rttBand: rttBand, rttWindow: rttWindow}
+				a := &Agent{rttBand: rttBand, rttWaitMin: rttWaitMin, rttWaitMax: rttWaitMax}
 				var eps []endpoint
 				index := map[string]int{}
 				for i := range tc.relays {
