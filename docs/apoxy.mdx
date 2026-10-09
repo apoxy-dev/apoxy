@@ -441,7 +441,7 @@ apoxy alpha vpc connect [VPC] [flags]
       --driver string          Data path: auto, netstack or tun. Auto uses tun when the process has NET_ADMIN, else netstack. (default "auto")
   -h, --help                   help for connect
       --label stringToString   Attachment label (key=value) for VPCService selection. Repeatable. (default [])
-      --mtu int                Device MTU, 1280 to 1412. 0 uses the VPC MTU when the path to the relay carries it, else 1280.
+      --mtu int                Device MTU, 1280 to 1372. 0 uses the VPC MTU when the path to the relay carries it, else 1280.
       --name string            Attachment name, a DNS label (default: the host name).
       --relays int             Relay sessions to keep, 1 to 3. One carries the traffic. The others are open on other relays and take over when it ends. (default 2)
       --route stringArray      CIDR that this host advertises into the VPC. Repeatable. The VPC is IPv6 only. To reach an IPv4 address behind a netstack host, use that host's VPC /96 with the IPv4 address in the last 32 bits. Plain IPv4 works only between tun hosts whose source address is in a CIDR that they advertise.

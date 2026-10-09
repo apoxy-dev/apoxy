@@ -88,10 +88,10 @@ func TestParseFlags(t *testing.T) {
 		},
 		{
 			name: "client flags", cmd: "client",
-			args: []string{"-server", "s:1", "-relay", "r:1", "-cc", "bbr", "-streams", "8", "-omit", "1s", "-duration", "2s", "-driver", "tun", "-transport", "quic", "-mtu", "1400", "-start-timeout", "5m", "-stop-relay"},
+			args: []string{"-server", "s:1", "-relay", "r:1", "-cc", "bbr", "-streams", "8", "-omit", "1s", "-duration", "2s", "-driver", "tun", "-transport", "quic", "-mtu", "1360", "-start-timeout", "5m", "-stop-relay"},
 			want: func(o options) bool {
 				return o.CC == "bbr" && o.Streams == 8 && o.Omit == time.Second && o.Duration == 2*time.Second &&
-					o.Driver == "tun" && o.Transport == "quic" && o.MTU == 1400 && o.StartTimeout == 5*time.Minute && o.StopRelay
+					o.Driver == "tun" && o.Transport == "quic" && o.MTU == 1360 && o.StartTimeout == 5*time.Minute && o.StopRelay
 			},
 		},
 		{name: "client with no server", cmd: "client", args: []string{"-relay", "r:1"}, wantErr: "-server is required"},

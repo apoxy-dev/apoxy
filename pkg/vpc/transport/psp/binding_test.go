@@ -21,9 +21,11 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/peerconn"
 )
 
-// The largest PSP packet must fit in one quic-go read of 1452 B.
+// The largest PSP packet of an agent must fit in a packet between two relays, and that
+// packet in one quic-go read of 1452 B.
 func TestMaxMTU(t *testing.T) {
-	assert.Equal(t, 1452, MaxMTU+pspwire.Overhead)
+	assert.Equal(t, 1372, MaxMTU)
+	assert.Equal(t, 1452, MaxMTU+2*pspwire.Overhead)
 }
 
 func TestNew(t *testing.T) {
@@ -39,7 +41,7 @@ func TestNew(t *testing.T) {
 	}{
 		{"default MTU", Config{Transport: tr, Demux: dm, VNI: 1}, DefaultMTU, DefaultMTU},
 		{"largest MTU", Config{Transport: tr, Demux: dm, VNI: pspwire.MaxVNI, MTU: MaxMTU}, MaxMTU, MaxMTU},
-		{"smaller device MTU", Config{Transport: tr, Demux: dm, MTU: 1400, DeviceMTU: DefaultMTU}, 1400, DefaultMTU},
+		{"smaller device MTU", Config{Transport: tr, Demux: dm, MTU: 1360, DeviceMTU: DefaultMTU}, 1360, DefaultMTU},
 		{"no transport", Config{Demux: dm, VNI: 1}, 0, 0},
 		{"no demux", Config{Transport: tr, VNI: 1}, 0, 0},
 		{"transport has no handler", Config{Transport: newTransport(t, nil), Demux: dm}, 0, 0},
@@ -251,17 +253,17 @@ func TestClampMSS(t *testing.T) {
 		flags          header.TCPFlags
 		mss, wantMSS   uint16
 	}{
-		{"no clamp", 1400, 0, 0, false, false, syn, 1360, 1360},
-		{"send clamp", 1400, 1280, 0, false, false, syn, 1360, 1240},
-		{"receive clamp", 1400, 0, 1280, false, false, synAck, 1360, 1240},
-		{"lower of two", 1400, 1300, 1280, false, false, syn, 1360, 1240},
-		{"mss below clamp", 1400, 1280, 0, false, false, syn, 1000, 1000},
-		{"clamp at device MTU", 1400, 1400, 1400, false, false, syn, 1360, 1360},
-		{"no SYN", 1400, 1280, 1280, false, false, header.TCPFlagAck, 1360, 1360},
-		{"QUIC send", 1400, 0, 0, true, false, syn, 1360, QUICMTU - 40},
-		{"QUIC receive", 1400, 0, 0, false, true, synAck, 1360, QUICMTU - 40},
-		{"QUIC with a lower clamp", 1400, 1280, 0, true, false, syn, 1360, 1240},
-		{"QUIC with a higher clamp", MaxMTU, 1400, 0, true, false, syn, 1372, QUICMTU - 40},
+		{"no clamp", MaxMTU, 0, 0, false, false, syn, 1360, 1360},
+		{"send clamp", MaxMTU, 1280, 0, false, false, syn, 1360, 1240},
+		{"receive clamp", MaxMTU, 0, 1280, false, false, synAck, 1360, 1240},
+		{"lower of two", MaxMTU, 1300, 1280, false, false, syn, 1360, 1240},
+		{"mss below clamp", MaxMTU, 1280, 0, false, false, syn, 1000, 1000},
+		{"clamp at device MTU", MaxMTU, MaxMTU, MaxMTU, false, false, syn, 1360, 1360},
+		{"no SYN", MaxMTU, 1280, 1280, false, false, header.TCPFlagAck, 1360, 1360},
+		{"QUIC send", MaxMTU, 0, 0, true, false, syn, 1360, QUICMTU - 40},
+		{"QUIC receive", MaxMTU, 0, 0, false, true, synAck, 1360, QUICMTU - 40},
+		{"QUIC with a lower clamp", MaxMTU, 1280, 0, true, false, syn, 1360, 1240},
+		{"QUIC with a higher clamp", MaxMTU, 1340, 0, true, false, syn, 1332, QUICMTU - 40},
 		{"QUIC at the default MTU", DefaultMTU, 0, 0, true, true, syn, 1240, 1240},
 	}
 	for _, tc := range cases {
@@ -294,12 +296,12 @@ func TestClampMSS(t *testing.T) {
 }
 
 func TestSetClampMTU(t *testing.T) {
-	a, _ := newPairMTU(t, 1400)
+	a, _ := newPairMTU(t, MaxMTU)
 	steps := []struct{ set, want, wantOld int }{
 		{1280, 1280, 0},
 		{1300, 1300, 1280},
 		{1000, DefaultMTU, 1300},
-		{1400, 0, DefaultMTU},
+		{MaxMTU, 0, DefaultMTU},
 		{1300, 1300, 0},
 		{0, 0, 1300},
 	}

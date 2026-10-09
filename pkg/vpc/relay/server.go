@@ -69,6 +69,8 @@ func (srv *Server) network(vpc VPCKey) (Network, error) {
 	if n.MTU == 0 {
 		n.MTU = vpcv1alpha1.DefaultMTU
 	}
+	// The API server checks the MTU only when the spec changes, so a network can have more.
+	n.MTU = min(n.MTU, vpcv1alpha1.MaxMTU)
 	return n, nil
 }
 

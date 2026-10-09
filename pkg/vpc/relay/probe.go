@@ -9,11 +9,9 @@ import (
 	"sync"
 	"time"
 
-	pspwire "github.com/apoxy-dev/softpsp/psp"
 	"github.com/quic-go/quic-go"
 	"golang.org/x/time/rate"
 
-	vpcv1alpha1 "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/p2p"
 )
 
@@ -24,8 +22,8 @@ const (
 	// The first probe of an agent comes before the relay adds its session.
 	earlyProbes   = 16
 	earlyProbeAge = time.Second
-	// earlyProbeLen is the largest probe that an agent sends.
-	earlyProbeLen = vpcv1alpha1.MaxMTU + pspwire.Overhead
+	// earlyProbeLen is the largest probe that the relay reads.
+	earlyProbeLen = maxUDP
 )
 
 // prober answers the path probes of one session.

@@ -113,11 +113,11 @@ func TestAgentConfig(t *testing.T) {
 		},
 		{
 			name:       "highest mtu",
-			args:       []string{"--mtu", "1412"},
+			args:       []string{"--mtu", "1372"},
 			host:       "node1",
 			wantName:   "node1",
 			wantDriver: driverNetstack,
-			wantMTU:    1412,
+			wantMTU:    1372,
 		},
 		{
 			name:    "mtu too low",
@@ -127,7 +127,7 @@ func TestAgentConfig(t *testing.T) {
 		},
 		{
 			name:    "mtu too high",
-			args:    []string{"--mtu", "1413"},
+			args:    []string{"--mtu", "1373"},
 			host:    "node1",
 			wantErr: true,
 		},

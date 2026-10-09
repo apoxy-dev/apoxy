@@ -177,7 +177,7 @@ func (f *fakeNetworks) Network(project, vpcUID string) (Network, error) {
 	case vpcA:
 		return Network{ID: 0x0a0b0c, Name: "net-a", DNSServers: []string{"fd00::53"}}, nil
 	case vpcB:
-		return Network{ID: 0x0d0e0f, MTU: 1400}, nil
+		return Network{ID: 0x0d0e0f, MTU: 1360}, nil
 	}
 	return Network{}, errors.New("unknown VPC")
 }

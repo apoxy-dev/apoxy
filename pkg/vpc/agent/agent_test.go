@@ -376,7 +376,7 @@ func TestPSPRetry(t *testing.T) {
 // The shards of the QUIC session must not dial again while the PSP session opens.
 func TestPSPAfterQUIC(t *testing.T) {
 	w := newWorld(t)
-	w.mtu = 1400
+	w.mtu = 1372
 	r := w.relay(t, "relay-1")
 	conn := &lossyConn{}
 	conn.limitProbes.Store(true)

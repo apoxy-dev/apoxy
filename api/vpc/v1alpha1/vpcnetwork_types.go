@@ -51,7 +51,7 @@ type VPCNetworkSpec struct {
 	// +optional
 	DNS *VPCNetworkDNS `json:"dns,omitempty"`
 
-	// Inner MTU of the network, from 1280 to 1412. Unset means 1280. An agent
+	// Inner MTU of the network, from 1280 to 1372. Unset means 1280. An agent
 	// whose path to its relay cannot carry a larger MTU uses 1280.
 	// +optional
 	MTU int32 `json:"mtu,omitempty"`
@@ -60,8 +60,9 @@ type VPCNetworkSpec struct {
 const (
 	// DefaultMTU is the inner MTU of a network that sets none.
 	DefaultMTU = 1280
-	// MaxMTU is the largest inner MTU: agents read at most 1452 B, and SoftPSP adds 40 B.
-	MaxMTU = 1412
+	// MaxMTU is the largest inner MTU: a relay reads at most 1452 B, and a packet
+	// between two relays has the 40 B of SoftPSP two times.
+	MaxMTU = 1372
 )
 
 // VPCNetworkCredentials carries the network's connect credential.

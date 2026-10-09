@@ -39,6 +39,13 @@ const (
 	testMaxLen = 1500
 )
 
+// A packet of another relay with the largest inner packet must not be too long
+// for the XDP program.
+func TestXDPMaxLen(t *testing.T) {
+	assert.Equal(t, testMaxLen, xdpMaxLen)
+	assert.Equal(t, 40+8+2*40+1372, xdpMaxLen)
+}
+
 var (
 	xdpRelayMAC = net.HardwareAddr{0x02, 0, 0, 0, 0, 0x01}
 	xdpPeerMAC  = net.HardwareAddr{0x02, 0, 0, 0, 0, 0x02}

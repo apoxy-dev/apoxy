@@ -3536,7 +3536,7 @@ export interface components {
             egressGateway?: components["schemas"]["com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.EgressGatewaySpec"];
             /**
              * Format: int32
-             * @description Inner MTU of the network, from 1280 to 1412. Unset means 1280. An agent whose path to its relay cannot carry a larger MTU uses 1280.
+             * @description Inner MTU of the network, from 1280 to 1372. Unset means 1280. An agent whose path to its relay cannot carry a larger MTU uses 1280.
              */
             mtu?: number;
         };

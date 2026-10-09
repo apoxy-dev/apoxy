@@ -15,20 +15,17 @@ import (
 	"time"
 
 	"github.com/apoxy-dev/icx/filter"
-	pspwire "github.com/apoxy-dev/softpsp/psp"
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 	"github.com/safchain/ethtool"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netlink/nl"
-
-	vpcv1alpha1 "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1"
 )
 
 const (
 	// xdpMaxLen is the largest IP length of a PSP datagram: the IPv6 and UDP
-	// headers, the PSP overhead and the largest VPC MTU.
-	xdpMaxLen = 40 + 8 + pspwire.Overhead + vpcv1alpha1.MaxMTU
+	// headers, and the largest UDP payload, which a packet from another relay can have.
+	xdpMaxLen = 40 + 8 + maxUDP
 	// recheckInterval is the time between two reads of the link features in
 	// generic mode.
 	recheckInterval = 10 * time.Second

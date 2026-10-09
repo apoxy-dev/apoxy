@@ -50,8 +50,9 @@ const (
 	// floodMinSize is the smallest IP length that the relay program forwards: the
 	// IPv4 and UDP headers, and a PSP packet with an empty inner packet.
 	floodMinSize = ipv4Len + udpLen + pspwire.Overhead
-	// floodMaxLen is the largest IP length of a PSP datagram, as in the relay.
-	floodMaxLen = 40 + udpLen + pspwire.Overhead + vpcv1alpha1.MaxMTU
+	// floodMaxLen is the largest IP length of a PSP datagram, as in the relay: a
+	// packet between two relays has the PSP overhead two times.
+	floodMaxLen = 40 + udpLen + 2*pspwire.Overhead + vpcv1alpha1.MaxMTU
 	// floodSPI is the SPI of the first sender. The low 31 bits must not be 0.
 	floodSPI = 0x100
 	// floodLanes is the most UDP ports of one agent session: its socket and its

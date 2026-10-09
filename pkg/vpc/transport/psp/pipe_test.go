@@ -550,7 +550,7 @@ func TestPipeSet(t *testing.T) {
 
 // TestPipeClampMSS checks that the consumer of the pipe lowers the MSS of TCP SYN packets.
 func TestPipeClampMSS(t *testing.T) {
-	a, b := newPairMTU(t, 1400)
+	a, b := newPairMTU(t, MaxMTU)
 	offer(t, time.Now(), a, b)
 	b.b.SetClampMTU(1280)
 	r, ep := newRecorder(t)

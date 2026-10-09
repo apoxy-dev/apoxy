@@ -20,13 +20,13 @@ func TestPathMTU(t *testing.T) {
 		wantClamp []int // Per session.
 	}{
 		{"default MTU", 0, 0, []int32{1400}, 1280, []int{0}},
-		{"probe passes", 1400, 0, []int32{0}, 1400, []int{0}},
-		{"largest MTU", 1412, 0, []int32{0}, 1412, []int{0}},
-		{"probe fails", 1400, 0, []int32{1400}, 1280, []int{0}},
-		{"override", 1400, 1300, []int32{1400}, 1300, []int{0}},
-		{"override above the VPC MTU", 1300, 1400, []int32{0}, 1300, []int{0}},
-		{"later probes fail and pass", 1400, 0, []int32{0, 1400, 0}, 1400, []int{0, 1280, 0}},
-		{"first probe fails", 1400, 0, []int32{1400, 0}, 1280, []int{0, 0}},
+		{"probe passes", 1360, 0, []int32{0}, 1360, []int{0}},
+		{"largest MTU", 1372, 0, []int32{0}, 1372, []int{0}},
+		{"probe fails", 1372, 0, []int32{1400}, 1280, []int{0}},
+		{"override", 1372, 1300, []int32{1400}, 1300, []int{0}},
+		{"override above the VPC MTU", 1300, 1372, []int32{0}, 1300, []int{0}},
+		{"later probes fail and pass", 1372, 0, []int32{0, 1400, 0}, 1372, []int{0, 1280, 0}},
+		{"first probe fails", 1372, 0, []int32{1400, 0}, 1280, []int{0, 0}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

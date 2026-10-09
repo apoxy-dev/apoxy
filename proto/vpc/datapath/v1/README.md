@@ -165,6 +165,11 @@ limited to an inner MTU of 1280, and it starts a new run each 30 s until one
 passes. After a run that passes, the trunk carries a PSP packet with an inner
 MTU of 1372. Before the first result, the limit of 1280 applies.
 
+The largest MTU of a VPC network is also 1372, so each PSP packet of an agent
+fits in a trunk packet on a path that carries full-size packets. A relay gives
+an agent at most 1372 as the MTU of the network, also for a network object
+with a larger number from before a check of its spec.
+
 A relay sends the PSP packets of an agent to a receiver on another relay in
 trunk packets. `RegisterSPI` for an address of a route of another relay makes
 a row to the trunk of that relay. The session of the caller needs a sender
