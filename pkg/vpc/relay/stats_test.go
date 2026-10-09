@@ -377,7 +377,7 @@ func dataSession(t *testing.T, r *Router, id, addr, prefix string, mode dp.Mode)
 	s.sendDatagram = func([]byte) error { return nil }
 	r.addSession(s, t0)
 	require.NoError(t, r.attach(s, attachment(id, prefix)))
-	require.NoError(t, r.openSync(s, mode, ref(vpcA), ""))
+	require.NoError(t, r.openSync(s, mode, ref(vpcA), nil))
 	return s
 }
 

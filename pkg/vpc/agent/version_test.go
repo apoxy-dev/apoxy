@@ -30,6 +30,10 @@ func beforeRevisions() *dp.Version { return nil }
 // revision1 is the version of a build of revision 1: it has no agent names.
 func revision1() *dp.Version { return &dp.Version{Revision: 1, Build: "revision-1"} }
 
+// revision5 is the version of a build of revision 5: it gets no routes of the
+// attachments of other relays.
+func revision5() *dp.Version { return &dp.Version{Revision: 5, Build: "revision-5"} }
+
 // needsThis is the version of a build of this revision that does not work
 // with an older revision.
 func needsThis() *dp.Version {

@@ -125,11 +125,13 @@ type Router struct {
 	xdpBase  xdpStats      // Counters of the XDP programs that stopped.
 	xdpWake  chan struct{} // Has room for 1: XDP rows are marked.
 
-	// What the mesh gets of the attachments. mu guards these fields.
-	gen      uint64              // Last presence generation.
-	tag      uint32              // Last trunk tag that a session got.
-	tags     map[uint32]struct{} // Trunk tags of the sessions.
-	presence func(*dp.Presence)  // Gets each new and each gone attachment.
+	// What the mesh gets of the attachments, and what it gives. mu guards
+	// these fields.
+	gen      uint64                 // Last presence generation.
+	tag      uint32                 // Last trunk tag that a session got.
+	tags     map[uint32]struct{}    // Trunk tags of the sessions.
+	presence func(*dp.Presence)     // Gets each new and each gone attachment.
+	remotes  map[remoteKey]*Session // Records of the sessions of other relays that have routes.
 
 	// statsMu guards attCount.last. Take it after mu.
 	statsMu sync.Mutex
@@ -158,6 +160,7 @@ func NewRouter(trust Trust, cfg Config) *Router {
 		bySource: map[netip.AddrPort]*Session{},
 		probes:   map[[8]byte]*Session{},
 		tags:     map[uint32]struct{}{},
+		remotes:  map[remoteKey]*Session{},
 		xdpWake:  make(chan struct{}, 1),
 	}
 }
@@ -195,6 +198,7 @@ type Session struct {
 	version     *dp.Version // Version of the agent, from Hello. Nil is revision 0.
 	name        string      // Name of the agent, from Hello. Empty before revision 2.
 	tag         uint32      // Trunk tag, from the first attach to the removal. Zero is no tag.
+	home        string      // Relay name of the mesh member that has the session. Empty for a session of this relay.
 	sync        syncState
 	shardOf     *Session                     // The owner session of a shard.
 	twin        *Session                     // Older session of the agent socket. Forward also uses its rows.
@@ -251,6 +255,12 @@ type domain struct {
 	lens    []int                   // Prefix lengths in use, longest first.
 	fast    engine.Routes[*Session] // The same routes, for source checks with no lock.
 	members map[*Session]struct{}
+	// claims has the attachments of other relays that list each prefix.
+	claims map[netip.Prefix][]*presenceEntry
+	// networkID is the network ID of the VPC, from a Session call on this
+	// relay. It is valid when known is true.
+	networkID uint32
+	known     bool
 }
 
 type owner struct {
@@ -406,14 +416,18 @@ func (r *Router) removeSession(s *Session) {
 func (r *Router) domain(vpc VPCKey) *domain {
 	d := r.domains[vpc]
 	if d == nil {
-		d = &domain{routes: map[netip.Prefix]owner{}, members: map[*Session]struct{}{}}
+		d = &domain{
+			routes:  map[netip.Prefix]owner{},
+			members: map[*Session]struct{}{},
+			claims:  map[netip.Prefix][]*presenceEntry{},
+		}
 		r.domains[vpc] = d
 	}
 	return d
 }
 
 func (r *Router) dropDomain(vpc VPCKey, d *domain) {
-	if len(d.routes) == 0 && len(d.members) == 0 {
+	if len(d.routes) == 0 && len(d.members) == 0 && len(d.claims) == 0 {
 		delete(r.domains, vpc)
 	}
 }
@@ -512,7 +526,8 @@ func (r *Router) AddRoute(s *Session, p netip.Prefix, origin string) error {
 		return rpc.Errorf(rpc.FailedPrecondition, "session closed")
 	}
 	d := r.domain(s.id.VPC)
-	if o, ok := d.routes[p]; ok {
+	// A session of this relay takes p from a session of another relay.
+	if o, ok := d.routes[p]; ok && o.s.home == "" {
 		if o.s == s {
 			return nil
 		}
@@ -547,6 +562,7 @@ func (r *Router) setOwner(d *domain, p netip.Prefix, o owner) {
 				r.retarget(w, to)
 			}
 		}
+		r.release(old.s)
 	}
 }
 
@@ -631,6 +647,10 @@ func (r *Router) deleteRoute(s *Session, p netip.Prefix) {
 		d.lens = slices.DeleteFunc(d.lens, func(n int) bool { return n == p.Bits() })
 	}
 	d.queueRoute(route{p, o.origin}, s, false)
+	if s.home == "" {
+		// An attachment of another relay that lists p gets it now.
+		r.elect(d, p)
+	}
 	r.dropDomain(s.id.VPC, d)
 }
 
@@ -645,6 +665,15 @@ func (r *Router) ownerOf(vpc VPCKey, a netip.Addr) owner {
 	return owner{}
 }
 
+// localOwner is ownerOf for the sessions of this relay: the relay has no path
+// to a session of another relay. Router.mu must be held.
+func (r *Router) localOwner(vpc VPCKey, a netip.Addr) owner {
+	if o := r.ownerOf(vpc, a); o.s != nil && o.s.home == "" {
+		return o
+	}
+	return owner{}
+}
+
 // Route returns the session for packets from src to dst, if Permit allows.
 // If none, src gets a NoRoute in Sync, at most once a second per address.
 func (r *Router) Route(src *Session, dst netip.Addr, now time.Time) *Session {
@@ -652,7 +681,7 @@ func (r *Router) Route(src *Session, dst netip.Addr, now time.Time) *Session {
 	r.mu.RLock()
 	var next *Session
 	if r.permit(src.id.VPC, src.id.ID, src.id.VPC, dst) {
-		next = r.lookup(src.id.VPC, dst)
+		next = r.localOwner(src.id.VPC, dst).s
 	}
 	r.mu.RUnlock()
 	if next == nil {

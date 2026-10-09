@@ -126,7 +126,7 @@ func (r *Router) nextHop(src *Session, inner []byte) hop {
 	if !r.permit(src.id.VPC, src.id.ID, src.id.VPC, dst) {
 		return h
 	}
-	to := r.ownerOf(src.id.VPC, dst)
+	to := r.localOwner(src.id.VPC, dst)
 	if h.next, h.att = to.s, to.att; h.next != nil {
 		h.out, h.mode, h.addr = h.next, h.next.sync.mode, h.next.addr
 		n := 1

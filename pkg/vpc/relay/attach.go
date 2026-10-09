@@ -191,10 +191,11 @@ func (r *Router) attach(s *Session, a *Attachment) error {
 		return rpc.Errorf(rpc.FailedPrecondition, "session closed")
 	}
 	d := r.domain(s.id.VPC)
-	// takes reports whether a gets p: p has no route, or a takes it over.
+	// takes reports whether a gets p: p has no route, a session of another
+	// relay has it, or a takes it over.
 	takes := func(p netip.Prefix, advertised bool) bool {
 		o, ok := d.routes[p]
-		return !ok || (advertised && o.advertised && o.s.sameAgent(s) && o.origin != a.ID)
+		return !ok || o.s.home != "" || (advertised && o.advertised && o.s.sameAgent(s) && o.origin != a.ID)
 	}
 	// Check all prefixes first, so that a failed attach changes nothing.
 	for i, p := range slices.Concat(a.Addresses, a.Routes) {

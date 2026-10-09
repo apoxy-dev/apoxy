@@ -38,13 +38,16 @@ type syncState struct {
 	connected bool
 	// report is the last receive report of the relay SAs. A new one replaces it.
 	report *dp.RxReport
+	// meshRoutes is true when the agent gets the routes of the attachments of
+	// other relays: its revision has them, and its Hello did not refuse them.
+	meshRoutes bool
 }
 
 // queueRoute adds a change of the route rt of owner to the sync queue. A
-// session gets no routes of its own agent. A change cancels the opposite
-// change that waits. Router.mu must be held.
+// session gets no routes of its own agent, and those of other relays only with
+// meshRoutes. A change cancels the opposite change. Router.mu must be held.
 func (s *Session) queueRoute(rt route, owner *Session, add bool) {
-	if owner.sameAgent(s) {
+	if owner.sameAgent(s) || (owner.home != "" && !s.sync.meshRoutes) {
 		return
 	}
 	if was, ok := s.sync.routes[rt]; ok && was != add {
@@ -159,7 +162,7 @@ func (srv *Server) Session(ctx context.Context, st rpc.BidiStreamServer[dp.Sessi
 		return err
 	}
 	ref := &dp.VPCRef{ProjectId: s.id.VPC.Project, VpcUid: s.id.VPC.UID, NetworkId: n.ID}
-	if err := srv.R.openSync(s, mode, ref, hello.GetName()); err != nil {
+	if err := srv.R.openSync(s, mode, ref, hello); err != nil {
 		return err
 	}
 	sessionsTotal.WithLabelValues(modeLabel(mode), reasonLabel(hello)).Inc()
@@ -221,20 +224,42 @@ func (srv *Server) Session(ctx context.Context, st rpc.BidiStreamServer[dp.Sessi
 
 // openSync marks the Session call of s as open, and gives s the agent name
 // of its Hello. A session has at most one Session call.
-func (r *Router) openSync(s *Session, mode dp.Mode, ref *dp.VPCRef, name string) error {
+func (r *Router) openSync(s *Session, mode dp.Mode, ref *dp.VPCRef, hello *dp.Hello) error {
+	refused, err := r.startSync(s, mode, ref, hello)
+	if refused > 0 {
+		slog.Warn("Refused attachments of other relays with another network ID", "project", s.id.VPC.Project,
+			"vpc", s.id.VPC.UID, "network_id", ref.GetNetworkId(), "count", refused)
+	}
+	return err
+}
+
+// startSync does the work of openSync. It returns the number of attachments
+// of other relays that have another network ID than ref.
+func (r *Router) startSync(s *Session, mode dp.Mode, ref *dp.VPCRef, hello *dp.Hello) (int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if s.closed {
-		return rpc.Errorf(rpc.Unauthenticated, "relay session closed")
+		return 0, rpc.Errorf(rpc.Unauthenticated, "relay session closed")
 	}
 	if s.sync.open {
-		return rpc.Errorf(rpc.FailedPrecondition, "session already has a Session call")
+		return 0, rpc.Errorf(rpc.FailedPrecondition, "session already has a Session call")
 	}
 	s.sync.open, s.sync.mode, s.sync.ref = true, mode, ref
-	r.setName(s, name)
+	r.setName(s, hello.GetName())
+	d := r.domain(s.id.VPC)
+	// The relay knows the network ID of the VPC from here on.
+	refused := r.know(d, ref.GetNetworkId())
+	if s.version.GetRevision() >= meshRoutesRevision && !hello.GetLocalRoutesOnly() {
+		s.sync.meshRoutes = true
+		for p, o := range d.routes {
+			if o.s.home != "" {
+				s.queueRoute(route{p, o.origin}, o.s, true)
+			}
+		}
+	}
 	r.takeSource(s)
 	s.notify()
-	return nil
+	return refused, nil
 }
 
 // setName gives s the agent name of its Hello. Before this, s had no name and
@@ -252,7 +277,8 @@ func (r *Router) setName(s *Session, name string) {
 		return
 	}
 	for p, o := range d.routes {
-		if o.s.id.ID == s.id.ID && !o.s.sameAgent(s) {
+		// The routes of other relays wait for the check of the Hello.
+		if o.s.home == "" && o.s.id.ID == s.id.ID && !o.s.sameAgent(s) {
 			s.sync.routes[route{p, o.origin}] = true
 		}
 	}

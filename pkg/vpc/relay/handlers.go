@@ -80,7 +80,7 @@ func (r *Router) resolvePeer(c *Session, in *dp.ResolvePeerRequest) (*dp.Resolve
 	if !r.permit(c.id.VPC, c.id.ID, key, dst) {
 		return nil, rpc.Errorf(rpc.PermissionDenied, "permit denies %s", dst)
 	}
-	peer := r.lookup(key, dst)
+	peer := r.localOwner(key, dst).s
 	if peer == nil {
 		return nil, rpc.Errorf(rpc.NotFound, "no route to %s", dst)
 	}
@@ -132,7 +132,7 @@ func (r *Router) registerSPI(c *Session, in *dp.RegisterSPIRequest, now time.Tim
 	if !r.permit(c.id.VPC, c.id.ID, key, dst) {
 		return rpc.Errorf(rpc.PermissionDenied, "permit denies %s", dst)
 	}
-	to := r.ownerOf(key, dst)
+	to := r.localOwner(key, dst)
 	if to.s == nil {
 		return rpc.Errorf(rpc.NotFound, "no route to %s", dst)
 	}

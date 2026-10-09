@@ -197,3 +197,63 @@ func TestDNS(t *testing.T) {
 	assert.Equal(t, w.dns, servers)
 	assert.Equal(t, w.search, search)
 }
+
+// TestRoutesOfOtherRelays checks which agents get the routes of an attachment
+// on another relay of a mesh, and that a packet to it gets an ICMP error.
+func TestRoutesOfOtherRelays(t *testing.T) {
+	cases := []struct {
+		name      string
+		localOnly bool
+		version   func() *dp.Version // Nil means an agent of this build.
+		gets      bool
+	}{
+		{name: "agent of this build", gets: true},
+		{name: "local routes only", localOnly: true},
+		{name: "agent of revision 5", version: revision5},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newWorld(t)
+			w.mesh = true
+			r1, r2 := w.relay(t, "relay-1"), w.relay(t, "relay-2")
+			joinMesh(t, r1, r2)
+			far := netip.MustParsePrefix("fd99::/64")
+			has := func(ta *testAgent, want ...netip.Prefix) {
+				t.Helper()
+				require.Eventually(t, func() bool {
+					got := ta.routeSet()
+					return len(got) == len(want) && !slices.ContainsFunc(want, func(p netip.Prefix) bool { return !slices.Contains(got, p) })
+				}, 5*time.Second, 10*time.Millisecond, "routes of the agent: %v, want %v", ta.routeSet(), want)
+			}
+			a := w.agent(t, "a", r1, agentOptions{localRoutesOnly: tc.localOnly, version: tc.version})
+			ea := a.attached(t)
+			watcher := w.agent(t, "watcher", r1, agentOptions{})
+			ew := watcher.attached(t)
+			b := w.agent(t, "b", r2, agentOptions{routes: []netip.Prefix{far}})
+			eb := b.attached(t)
+			// The watcher has the routes of b, so relay-1 sent them to each agent
+			// that gets them. The route of c comes after them.
+			has(watcher, ea.prefixes[0], eb.prefixes[0], far)
+			c := w.agent(t, "c", r1, agentOptions{})
+			ec := c.attached(t)
+			if tc.gets {
+				has(a, ew.prefixes[0], ec.prefixes[0], eb.prefixes[0], far)
+			} else {
+				has(a, ew.prefixes[0], ec.prefixes[0])
+			}
+
+			// The address of b, and an address in its route.
+			for i, dst := range []netip.Addr{eb.addr, netip.MustParseAddr("fd99::5")} {
+				send(t, a.stack, ea.addr, dst, 9000, "to another relay")
+				require.Eventually(t, func() bool { return unreachableIn(a) == uint64(i+1) }, 5*time.Second, 10*time.Millisecond)
+				assert.Equal(t, uint64(i+1), a.a.Stats().HoldDrops)
+			}
+			assert.Zero(t, peerCount(a.a))
+			assert.NoError(t, a.current().qc.Context().Err(), "relay session of a")
+
+			b.stop()
+			has(watcher, ea.prefixes[0], ec.prefixes[0])
+			has(a, ew.prefixes[0], ec.prefixes[0])
+		})
+	}
+}

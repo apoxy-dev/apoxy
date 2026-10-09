@@ -97,13 +97,14 @@ func presenceOf(s *Session, a *Attachment) *dp.Presence {
 }
 
 // presence sends the attachments of a router to the members of a mesh, and
-// keeps the attachments that the members send.
+// gives the router the attachments that the members send.
 type presence struct {
 	m *Mesh
 
 	// mu guards the fields below. Take it after Router.mu and after Mesh.mu.
+	// A path that needs Mesh.mu and Router.mu takes Mesh.mu first.
 	mu   sync.Mutex
-	r    *Router // Router of SetRouter. Nil sends nothing.
+	r    *Router // Router of SetRouter. Nil sends nothing and makes no routes.
 	outs map[*presenceOut]struct{}
 	in   map[string]*presenceIn // By relay name of the member.
 }
@@ -140,8 +141,8 @@ func newPresence(m *Mesh) *presence {
 	return &presence{m: m, outs: map[*presenceOut]struct{}{}, in: map[string]*presenceIn{}}
 }
 
-// SetRouter makes the mesh send the attachments of r to each member, and
-// exchange trunk keys with it. Call it after PacketHandler of r and before Run.
+// SetRouter makes the mesh send the attachments of r, give r the routes of the
+// members, and exchange trunk keys. Call it after r.PacketHandler, before Run.
 func (m *Mesh) SetRouter(r *Router) {
 	p := m.pres
 	p.mu.Lock()
@@ -153,12 +154,17 @@ func (m *Mesh) SetRouter(r *Router) {
 	m.setTrunk(r)
 }
 
+// router returns the router of SetRouter, or nil.
+func (p *presence) router() *Router {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.r
+}
+
 // opened starts the Presence call on the new session s. A member from before
 // the call gets none, and its session stays.
 func (p *presence) opened(s *MeshSession) {
-	p.mu.Lock()
-	r := p.r
-	p.mu.Unlock()
+	r := p.router()
 	if r == nil || s.Version().GetRevision() < presenceRevision {
 		return
 	}
@@ -297,29 +303,47 @@ func (p *presence) accept(s *MeshSession) error {
 	return nil
 }
 
-// apply puts the entries of u, from the Presence call of s, in the entries of
-// the member. For one attachment, the entry with the higher generation wins.
+// presenceChange is one checked entry of a member.
+type presenceChange struct {
+	*presenceEntry
+	gone bool
+}
+
+// apply checks the entries of u, from the Presence call of s, and keeps them.
+// The refused entries of u get one warning.
 func (p *presence) apply(s *MeshSession, u *dp.PresenceUpdate) error {
-	type change struct {
-		*presenceEntry
-		gone bool
-	}
-	changes := make([]change, 0, len(u.GetEntries()))
+	changes := make([]presenceChange, 0, len(u.GetEntries()))
 	var refused int
 	var reason error
+	refuse := func(id string, err error) {
+		if refused++; reason == nil {
+			reason = fmt.Errorf("attachment %.64q: %w", id, err)
+		}
+	}
 	for _, e := range u.GetEntries() {
 		pe, err := checkPresence(e)
 		if err != nil {
-			if refused++; reason == nil {
-				reason = fmt.Errorf("attachment %.64q: %w", e.GetAttachmentId(), err)
-			}
+			refuse(e.GetAttachmentId(), err)
 			continue
 		}
 		pe.sess = s
-		changes = append(changes, change{pe, e.GetGone()})
+		changes = append(changes, presenceChange{pe, e.GetGone()})
 	}
+	err := p.keep(s, changes, u.GetEndOfFullSet(), refuse)
 	if refused > 0 {
 		slog.Warn("Refused attachments of a mesh member", "relay", s.Name(), "count", refused, "reason", reason)
+	}
+	return err
+}
+
+// keep applies the checked changes of the Presence call of s, where the higher
+// generation of an attachment wins. refuse gets each entry with no routes.
+func (p *presence) keep(s *MeshSession, changes []presenceChange, full bool, refuse func(id string, err error)) error {
+	// The router lock keeps the routes in the order of the entries.
+	r := p.router()
+	if r != nil {
+		r.mu.Lock()
+		defer r.mu.Unlock()
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -331,16 +355,29 @@ func (p *presence) apply(s *MeshSession, u *dp.PresenceUpdate) error {
 		old := in.entries[c.id]
 		switch {
 		case old != nil && c.gen < old.gen:
-		case c.gone:
-			delete(in.entries, c.id)
-		case old != nil && c.gen == old.gen:
+			continue
+		case old != nil && !c.gone && c.gen == old.gen:
 			// The member sent the entry again in the full set of a new session.
 			old.sess = s
-		default:
-			in.entries[c.id] = c.presenceEntry
+			continue
+		}
+		if old != nil {
+			delete(in.entries, c.id)
+			if r != nil {
+				r.unclaim(old)
+			}
+		}
+		if c.gone {
+			continue
+		}
+		in.entries[c.id] = c.presenceEntry
+		if r != nil {
+			if err := r.claim(c.presenceEntry); err != nil {
+				refuse(c.id, err)
+			}
 		}
 	}
-	if u.GetEndOfFullSet() {
+	if full {
 		in.full = true
 	}
 	return nil
@@ -387,12 +424,13 @@ func checkPresence(e *dp.Presence) (*presenceEntry, error) {
 	return pe, nil
 }
 
-// down drops the entries of a member that stopped on purpose or left the
-// member set. The entries of the session that the member has now stay.
+// down drops the entries and the routes of a member that stopped on purpose
+// or left the member set. The entries of the session that it has now stay.
 func (p *presence) down(c MeshChange) {
 	if c.Down != MeshRestart && c.Down != MeshRemoved {
 		return
 	}
+	r := p.router()
 	// Mesh.mu keeps a new session out until the entries are dropped.
 	p.m.mu.Lock()
 	defer p.m.mu.Unlock()
@@ -400,14 +438,26 @@ func (p *presence) down(c MeshChange) {
 	if mem := p.m.members[c.Name]; mem != nil {
 		cur = mem.sess
 	}
+	if r != nil {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	in := p.in[c.Name]
-	switch {
-	case in == nil:
-	case cur == nil || in.sess != cur:
+	if in == nil {
+		return
+	}
+	all := cur == nil || in.sess != cur
+	for id, e := range in.entries {
+		if all || e.sess != cur {
+			delete(in.entries, id)
+			if r != nil {
+				r.unclaim(e)
+			}
+		}
+	}
+	if all {
 		delete(p.in, c.Name)
-	default:
-		maps.DeleteFunc(in.entries, func(_ string, e *presenceEntry) bool { return e.sess != cur })
 	}
 }

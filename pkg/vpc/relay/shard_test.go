@@ -287,7 +287,7 @@ func TestShardFromOwnerSocket(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			r := NewRouter(nil, Config{})
 			owner := addSession(t, r, vpcA, "owner", addr, "fd00::1/128")
-			require.NoError(t, r.openSync(owner.Session, dp.Mode_MODE_PSP, ref(vpcA), ""))
+			require.NoError(t, r.openSync(owner.Session, dp.Mode_MODE_PSP, ref(vpcA), nil))
 			require.NoError(t, r.attach(owner.Session, &Attachment{ID: "att-owner"}))
 			addSession(t, r, vpcA, "receiver", "192.0.2.2:2000", "fd00::2/128")
 			require.NoError(t, r.registerSPI(owner.Session, register(vpcA, "fd00::2", time.Minute, 1), t0))

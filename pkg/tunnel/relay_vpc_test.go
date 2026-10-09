@@ -64,7 +64,7 @@ func (vpcNetworks) Network(project, uid string) (vpcrelay.Network, error) {
 	return vpcrelay.Network{ID: vpcNetwork}, nil
 }
 
-// vpcAddresses gives each attachment the next fd00:<n>::/96.
+// vpcAddresses gives each attachment the next fd00:<n>::/96, from next + 1.
 type vpcAddresses struct {
 	mu   sync.Mutex
 	next int
@@ -127,6 +127,7 @@ type relayOpts struct {
 	steerSockets int
 	lameDuck     time.Duration
 	noVPC        bool                // The relay serves no VPC relay sessions.
+	addrs        *vpcAddresses       // Addresses of the attachments. Nil starts at fd00:1::/96.
 	setup        func(*tunnel.Relay) // Runs before Start.
 }
 
@@ -176,8 +177,11 @@ func startRelayWith(t *testing.T, o relayOpts) *vpcRelay {
 		require.NoError(t, r.SetSteerGroup(conns))
 	}
 	require.NoError(t, r.SetStatelessResetSecret([]byte("secret")))
+	if o.addrs == nil {
+		o.addrs = &vpcAddresses{}
+	}
 	if !o.noVPC {
-		r.SetVPC("localhost", vpcTrust{agentPool}, vpcNetworks{}, &vpcAddresses{}, vpcrelay.Config{})
+		r.SetVPC("localhost", vpcTrust{agentPool}, vpcNetworks{}, o.addrs, vpcrelay.Config{})
 	}
 	r.SetLameDuckPeriod(lameDuck)
 	if o.setup != nil {

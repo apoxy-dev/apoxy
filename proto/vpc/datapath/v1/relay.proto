@@ -98,6 +98,9 @@ message Hello {
   // ID. Two sessions with one SPIFFE ID are one agent when their names are
   // equal, or when one of them has no name.
   string name = 7;
+  // The agent takes only the routes of the attachments on this relay. If not
+  // set, the relay sends also the routes of the attachments on other relays.
+  bool local_routes_only = 8;
 }
 
 // Shard joins a connection to the session of an attachment. The session

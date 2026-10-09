@@ -187,7 +187,7 @@ Addresses and prefixes are text (`fd61::1`, `10.0.0.0/8`, `host:port`).
 
 | Method          | Kind  | Messages |
 |-----------------|-------|----------|
-| `Session`       | bidi  | Agent: `Hello{mode, fallback_reason, spare, version, name}`, then `Ack{rev}` and `Status` (ICV failures; the first one after `Config` also has the time to connect). Relay: `Welcome` (reflexive address, lane port limit, version), `Config`, in PSP mode a rekey with relay SAs, then `RouteDelta{rev}`, `NoRoute`, rekey (`KeysRequest`), `Config`, `Drain`, and in PSP mode `RxReport` (only the last one waits). |
+| `Session`       | bidi  | Agent: `Hello{mode, fallback_reason, spare, version, name, local_routes_only}`, then `Ack{rev}` and `Status` (ICV failures; the first one after `Config` also has the time to connect). Relay: `Welcome` (reflexive address, lane port limit, version), `Config`, in PSP mode a rekey with relay SAs, then `RouteDelta{rev}`, `NoRoute`, rekey (`KeysRequest`), `Config`, `Drain`, and in PSP mode `RxReport` (only the last one waits). |
 | `Attach`        | unary | `AttachRequest{vpc, name, labels, routes}` -> `AttachResponse{attachment_id, grant}` |
 | `Rekey`         | unary | `KeysRequest` -> `KeysResponse`: SAs for traffic from the relay to the agent. Errors: `FailedPrecondition` (no `Session` call in PSP mode), `InvalidArgument` (an SA VNI is not the network ID). |
 | `ResolvePeer`   | unary | `{vpc, address}` -> `{reach: local, trunk or visit; home_relay; p2p; subject; attachment_ids}`. Errors: `NotFound`, `PermissionDenied`. |
@@ -356,6 +356,32 @@ prefix that does not parse. A refused entry does not end the call. A second
 member stay after its session ends. The relay drops them when the member
 closes with `RESTART` or leaves the member set.
 
+A relay makes routes from the entries that it keeps. An entry gives a route
+for each of its prefixes in its VPC, with the attachment ID as the origin,
+when two conditions are true: an agent of the VPC has sent `Hello` to this
+relay, and the network ID of the entry is the network ID of the VPC on this
+relay. An entry with another network ID gets one warning and no route. The
+rules for one prefix are:
+
+- An attachment of this relay keeps the prefix, and it takes the prefix from
+  an entry.
+- When more than one entry lists the prefix, the entry with the highest
+  generation gets it. For equal generations, the entry of the relay with the
+  lower name gets it, then the entry with the lower attachment ID.
+- When the attachment that has the prefix ends, the next entry gets it.
+
+The relay sends these routes in `RouteDelta`, as it sends its own, to each
+session at revision 6 or later whose `Hello` has no `local_routes_only`. A
+session gets no route of an attachment of its own agent on another relay: the
+rule of `Hello.name` applies to the SPIFFE ID and the agent name of the entry.
+The route goes away with its entry: at a `gone` entry, and when the relay
+drops the entries of a member.
+
+At this revision a relay sends no agent data to another relay. For an
+address of such a route, `ResolvePeer` and `RegisterSPI` return `NotFound`.
+The relay drops a data frame, a peer frame or a PSP packet that it opens
+for such an address, and sends `NoRoute`.
+
 ## Revisions
 
 Agents run on customer hosts for months, and relays change more often, so the
@@ -378,6 +404,7 @@ only for logs and metrics. On a mesh session, `MeshOpenRequest` and
 | 3 | `Mesh.Open` with the `Version`, the relay name and the `RelayRef` of each relay. The `MeshCloseCode` values. | No duty. | No duty. | Calls `Open` first on a mesh session that it dialed, and answers it on a session that it accepted. Closes a mesh session with a relay below its minimum with `UPGRADE`, and with a relay that is not a member with `NOT_MEMBER`. Closes its mesh sessions with `RESTART` when it stops. |
 | 4 | `Presence.subject`, `agent_name` and `sender_tag`. `PresenceUpdate.end_of_full_set`. | No duty. | No duty. | Opens one `Presence` call on each mesh session with a relay at revision 4 or later: the full set of its attachments with the end mark, then each change. Opens none with a relay at revision 3, and keeps that session. Keeps the entries that each member sends, and drops them when the member closes with `RESTART` or leaves the member set. |
 | 5 | `Mesh.TrunkKeys` and the trunk SAs. The trunk packet with tag 0: the full-size probe and its answer. | No duty. | No duty. | With a relay at revision 5 or later: offers trunk SAs on each new mesh session and before they expire, applies the trunk SAs of the other relay, probes the path at full size, and answers the probes of the other relay. Makes no `TrunkKeys` call to a relay below revision 5, refuses its call with `FailedPrecondition`, and keeps that session. Deletes the trunk SAs of a relay that is down. |
+| 6 | `Hello.local_routes_only`. Routes of the attachments of other relays in `RouteDelta`. | Sends `local_routes_only` when its config has the option. Without it, gets the routes of the attachments of other relays from a relay at revision 6 or later. | Sends `local_routes_only`, because it has one session for each relay. | Makes a route for each prefix of the entries of the other relays. Sends these routes to a session at revision 6 or later that did not set `local_routes_only`, and to no other session. Answers `NotFound` to `ResolvePeer` and `RegisterSPI` for an address of such a route, and sends `NoRoute` for a packet to it that it opens. |
 
 ### Minimum revision
 

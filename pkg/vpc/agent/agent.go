@@ -120,6 +120,9 @@ type Config struct {
 	// MTU sets the device MTU, from 1280 to the VPC MTU, with no path probe.
 	// Zero means the VPC MTU if the path to the relay carries it, else 1280.
 	MTU int
+	// LocalRoutesOnly asks each relay for the routes of its own attachments
+	// only. A host with one agent for each relay sets it.
+	LocalRoutesOnly bool
 }
 
 // Agent keeps an attached relay session and spare sessions for one VPC, and
@@ -697,6 +700,7 @@ func (rc *relayConn) hello(begin time.Time, spare bool) error {
 	rc.st = st
 	if err := st.Send(&dp.SessionRequest{Msg: &dp.SessionRequest_Hello{Hello: &dp.Hello{
 		Mode: rc.mode, FallbackReason: rc.reason, Spare: spare, Version: rc.a.ver, Name: rc.a.cfg.Name,
+		LocalRoutesOnly: rc.a.cfg.LocalRoutesOnly,
 	}}}); err != nil {
 		return err
 	}

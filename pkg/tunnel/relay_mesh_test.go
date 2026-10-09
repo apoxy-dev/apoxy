@@ -112,10 +112,12 @@ type meshRelay struct {
 	checks  chan meshCheck
 }
 
-func startMeshRelay(t *testing.T, ca *meshCA, name string, steerSockets int, noVPC bool) *meshRelay {
+// startMeshRelay starts the relay name with a mesh. The first attachment of
+// the relay gets the address fd00:<firstAddr>::/96, or fd00:1::/96 with none.
+func startMeshRelay(t *testing.T, ca *meshCA, name string, steerSockets int, noVPC bool, firstAddr ...int) *meshRelay {
 	t.Helper()
 	m := &meshRelay{name: name, changes: make(chan vpcrelay.MeshChange, 64), checks: make(chan meshCheck, 64)}
-	m.vpcRelay = startRelayWith(t, relayOpts{name: name, steerSockets: steerSockets, noVPC: noVPC, setup: func(r *tunnel.Relay) {
+	opts := relayOpts{name: name, steerSockets: steerSockets, noVPC: noVPC, setup: func(r *tunnel.Relay) {
 		mesh, err := r.SetMesh(vpcrelay.MeshConfig{
 			Relay:  &dp.RelayRef{Id: "localhost"},
 			TLS:    ca.tls(t, name),
@@ -124,7 +126,11 @@ func startMeshRelay(t *testing.T, ca *meshCA, name string, steerSockets int, noV
 		require.NoError(t, err)
 		mesh.OnChange(func(c vpcrelay.MeshChange) { m.changes <- c })
 		m.mesh = mesh
-	}})
+	}}
+	if len(firstAddr) > 0 {
+		opts.addrs = &vpcAddresses{next: firstAddr[0] - 1}
+	}
+	m.vpcRelay = startRelayWith(t, opts)
 	return m
 }
 
@@ -448,4 +454,125 @@ func TestRelay_MeshPresence(t *testing.T) {
 	assert.Equal(t, res.GetAttachmentId(), g.GetAttachmentId())
 	assert.True(t, g.GetGone())
 	assert.Greater(t, g.GetGeneration(), e.GetGeneration())
+}
+
+// routeAgent is an agent session on a relay that keeps the route changes of
+// its Session call.
+type routeAgent struct {
+	qc     quic.Connection
+	c      dp.RelayClient
+	deltas chan *dp.RouteDelta
+}
+
+// openRouteAgent dials v as agent name and sends hello in QUIC mode. It
+// returns after Welcome and Config.
+func openRouteAgent(t *testing.T, ctx context.Context, v *vpcRelay, name string, hello *dp.Hello) *routeAgent {
+	t.Helper()
+	_, qc, err := v.dial(t, v.agentTLS(t, name))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = qc.CloseWithError(0, "") })
+	a := &routeAgent{qc: qc, c: dp.NewRelayClient(rpc.NewConn(qc, nil)), deltas: make(chan *dp.RouteDelta, 64)}
+	st, err := a.c.Session(ctx)
+	require.NoError(t, err)
+	hello.Mode = dp.Mode_MODE_QUIC
+	require.NoError(t, st.Send(&dp.SessionRequest{Msg: &dp.SessionRequest_Hello{Hello: hello}}))
+	m, err := st.Recv()
+	require.NoError(t, err)
+	require.NotNil(t, m.GetWelcome(), "first message: %v", m)
+	m, err = st.Recv()
+	require.NoError(t, err)
+	require.NotNil(t, m.GetConfig(), "second message: %v", m)
+	go func() {
+		for {
+			m, err := st.Recv()
+			if err != nil {
+				return
+			}
+			if d := m.GetRouteDelta(); d != nil {
+				a.deltas <- d
+			}
+		}
+	}()
+	return a
+}
+
+// next returns the next RouteDelta with a route, as "+origin prefix" and
+// "-origin prefix". The first RouteDelta of a session can have no route.
+func (a *routeAgent) next(t *testing.T, ctx context.Context) []string {
+	t.Helper()
+	for {
+		select {
+		case d := <-a.deltas:
+			var out []string
+			for _, rt := range d.GetRemove() {
+				out = append(out, "-"+rt.GetOrigin()+" "+rt.GetPrefix())
+			}
+			for _, rt := range d.GetAdd() {
+				assert.Equal(t, vpcProject, rt.GetVpc().GetProjectId())
+				assert.Equal(t, vpcUID, rt.GetVpc().GetVpcUid())
+				assert.Equal(t, uint32(vpcNetwork), rt.GetVpc().GetNetworkId())
+				out = append(out, "+"+rt.GetOrigin()+" "+rt.GetPrefix())
+			}
+			if len(out) > 0 {
+				return out
+			}
+		case <-ctx.Done():
+			t.Fatal("no route change from the relay")
+			return nil
+		}
+	}
+}
+
+// TestRelay_MeshRoutes checks that an agent gets and loses the route of an
+// attachment on another relay, and which agents get no such route.
+func TestRelay_MeshRoutes(t *testing.T) {
+	ca := newMeshCA(t)
+	a := startMeshRelay(t, ca, "relay-a", 0, false)
+	b := startMeshRelay(t, ca, "relay-b", 0, false, 0x100)
+	b.mesh.SetMembers([]vpcrelay.MeshMember{a.member()})
+	a.mesh.SetMembers([]vpcrelay.MeshMember{b.member()})
+	require.Equal(t, vpcrelay.MeshChange{Name: "relay-b", Up: true}, a.change(t))
+	require.Equal(t, vpcrelay.MeshChange{Name: "relay-a", Up: true}, b.change(t))
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	vpc := &dp.VPCRef{ProjectId: vpcProject, VpcUid: vpcUID, NetworkId: vpcNetwork}
+	this := dp.LocalVersion("test")
+
+	laptop := openRouteAgent(t, ctx, a.vpcRelay, "laptop", &dp.Hello{Version: this, Name: "base"})
+	server := openRouteAgent(t, ctx, b.vpcRelay, "server", &dp.Hello{Version: this, Name: "base"})
+	localOnly := openRouteAgent(t, ctx, a.vpcRelay, "vtep", &dp.Hello{Version: this, Name: "base", LocalRoutesOnly: true})
+	old := openRouteAgent(t, ctx, a.vpcRelay, "old", &dp.Hello{Version: &dp.Version{Revision: 5}, Name: "base"})
+
+	// The attachment of server on relay-b becomes a route on relay-a.
+	onB, err := server.c.Attach(ctx, &dp.AttachRequest{Vpc: vpc, Name: "server"})
+	require.NoError(t, err)
+	routeB := "+" + onB.GetAttachmentId() + " fd00:100::/96"
+	assert.Equal(t, []string{routeB}, laptop.next(t, ctx))
+
+	// The relay has no path to the other relay yet.
+	_, err = laptop.c.ResolvePeer(ctx, &dp.ResolvePeerRequest{Vpc: vpc, Address: "fd00:100::1"})
+	assert.Equal(t, rpc.NotFound, rpc.CodeOf(err), "ResolvePeer: %v", err)
+
+	// The other agents of relay-a get the route of laptop as their first
+	// route: they did not get the route of relay-b.
+	onA, err := laptop.c.Attach(ctx, &dp.AttachRequest{Vpc: vpc, Name: "laptop"})
+	require.NoError(t, err)
+	routeA := "+" + onA.GetAttachmentId() + " fd00:1::/96"
+	assert.Equal(t, []string{routeA}, server.next(t, ctx))
+	assert.Equal(t, []string{routeA}, localOnly.next(t, ctx))
+	assert.Equal(t, []string{routeA}, old.next(t, ctx))
+
+	// A new session on relay-a gets the two routes in its first RouteDelta.
+	late := openRouteAgent(t, ctx, a.vpcRelay, "late", &dp.Hello{Version: this, Name: "base"})
+	assert.ElementsMatch(t, []string{routeA, routeB}, late.next(t, ctx))
+
+	// The routes go with their attachments: at the detach, and at the end of
+	// the session.
+	_, err = server.c.Detach(ctx, &dp.DetachRequest{AttachmentId: onB.GetAttachmentId()})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"-" + routeB[1:]}, laptop.next(t, ctx))
+	assert.Equal(t, []string{"-" + routeB[1:]}, late.next(t, ctx))
+	require.NoError(t, laptop.qc.CloseWithError(0, ""))
+	assert.Equal(t, []string{"-" + routeA[1:]}, server.next(t, ctx))
+	assert.Equal(t, []string{"-" + routeA[1:]}, localOnly.next(t, ctx))
 }

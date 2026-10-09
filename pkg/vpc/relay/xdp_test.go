@@ -319,10 +319,10 @@ func TestXDPSyncTwin(t *testing.T) {
 			r.setXDP(f, t0)
 			addSession(t, r, vpcA, "receiver", "192.0.2.2:2000", "fd00::2/128")
 			old := addSession(t, r, vpcA, "agent", addr).Session
-			require.NoError(t, r.openSync(old, dp.Mode_MODE_PSP, ref(vpcA), ""))
+			require.NoError(t, r.openSync(old, dp.Mode_MODE_PSP, ref(vpcA), nil))
 			require.NoError(t, r.registerSPI(old, register(vpcA, "fd00::2", time.Minute, 1), t0))
 			next := addSession(t, r, vpcA, "agent", addr).Session
-			require.NoError(t, r.openSync(next, dp.Mode_MODE_PSP, ref(vpcA), ""))
+			require.NoError(t, r.openSync(next, dp.Mode_MODE_PSP, ref(vpcA), nil))
 			require.NoError(t, r.registerSPI(next, register(vpcA, "fd00::2", time.Minute, 2), t0))
 			if tc.local {
 				local := newSession(Identity{}, func() netip.AddrPort { return netip.AddrPort{} })

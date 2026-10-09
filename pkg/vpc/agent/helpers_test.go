@@ -6,6 +6,7 @@ import (
 	"cmp"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/pem"
 	"errors"
 	"maps"
@@ -144,6 +145,7 @@ type world struct {
 	mtu              uint32 // VPC MTU of the relays.
 	dns, search      []string
 	relayCfg         relay.Config // Meters of the relays.
+	mesh             bool         // Each relay has a mesh. joinMesh makes the members.
 	// refuse gives the close reason of each relay that refuses all agents as
 	// too old, by the relay ID. Such a relay opens no session.
 	refuse map[string]string
@@ -175,6 +177,7 @@ type testRelay struct {
 	id   string
 	srv  *relay.Server
 	r    *relay.Router
+	mesh *relay.Mesh // Nil without world.mesh.
 	addr string
 	// stopAccept stops the Accept calls, as a relay host in its lame duck. The
 	// listener still completes handshakes, and no session serves them.
@@ -228,7 +231,30 @@ func (w *world) relayOn(t testing.TB, id string, udp net.PacketConn) *testRelay 
 	tr.NonQUICPacketHandler, tr.NonQUICBatchEnd = r.PacketHandler(t.Context(), tr)
 	// As at a real relay, the packets are Not-ECT, and the stream limit takes
 	// the Attach calls of extra attachments.
-	ln, err := tr.Listen(r.TLSConfig(&tls.Config{Certificates: []tls.Certificate{*cert}}), &quic.Config{EnableDatagrams: true, DisableECN: true, MaxIncomingStreams: 512})
+	tlsConf := r.TLSConfig(&tls.Config{Certificates: []tls.Certificate{*cert}})
+	quicConf := &quic.Config{EnableDatagrams: true, DisableECN: true, MaxIncomingStreams: 512}
+	listenConf := quicConf
+	var mesh *relay.Mesh
+	if w.mesh {
+		// As at a real relay, the mesh sessions use the socket of the agents.
+		var err error
+		mesh, err = relay.NewMesh(id, relay.MeshConfig{
+			Relay:  &dp.RelayRef{Id: id},
+			TLS:    &tls.Config{Certificates: []tls.Certificate{*cert}, InsecureSkipVerify: true},
+			Verify: func([]*x509.Certificate, string, netip.AddrPort) error { return nil },
+		})
+		require.NoError(t, err)
+		mesh.SetRouter(r)
+		agents, members := tlsConf, mesh.TLSConfig()
+		tlsConf = &tls.Config{GetConfigForClient: func(h *tls.ClientHelloInfo) (*tls.Config, error) {
+			if slices.Contains(h.SupportedProtos, dp.ALPNMesh) {
+				return members, nil
+			}
+			return agents, nil
+		}}
+		listenConf = mesh.ListenConfig(quicConf)
+	}
+	ln, err := tr.Listen(tlsConf, listenConf)
 	require.NoError(t, err)
 	srv := &relay.Server{
 		R: r, Addresses: w.addrs, RelayID: id,
@@ -241,14 +267,21 @@ func (w *world) relayOn(t testing.TB, id string, udp net.PacketConn) *testRelay 
 	// As Serve, but stopAccept ends only the Accept calls. The end of the ctx
 	// of Serve also closes the sessions.
 	actx, stopAccept := context.WithCancel(ctx)
-	out := &testRelay{id: id, srv: srv, r: r, addr: udp.LocalAddr().String(), stopAccept: stopAccept}
+	out := &testRelay{id: id, srv: srv, r: r, mesh: mesh, addr: udp.LocalAddr().String(), stopAccept: stopAccept}
 	reason, refuse := w.refuse[id]
 	var wg sync.WaitGroup
+	if mesh != nil {
+		wg.Go(func() { mesh.Run(ctx, tr, quicConf) })
+	}
 	wg.Go(func() {
 		for {
 			qc, err := ln.Accept(actx)
 			if err != nil {
 				return
+			}
+			if mesh != nil && qc.ConnectionState().TLS.NegotiatedProtocol == dp.ALPNMesh {
+				wg.Go(func() { mesh.ServeConn(ctx, qc) })
+				continue
 			}
 			if refuse {
 				wg.Go(func() { out.refuse(ctx, qc, reason) })
@@ -265,6 +298,31 @@ func (w *world) relayOn(t testing.TB, id string, udp net.PacketConn) *testRelay 
 		_ = udp.Close()
 	})
 	return out
+}
+
+// joinMesh makes each relay a member of the mesh of the others, and waits for
+// their sessions. The relays are from a world with mesh.
+func joinMesh(t *testing.T, relays ...*testRelay) {
+	t.Helper()
+	for _, r := range relays {
+		var members []relay.MeshMember
+		for _, o := range relays {
+			if o != r {
+				members = append(members, relay.MeshMember{Name: o.id, Addr: netip.MustParseAddrPort(o.addr)})
+			}
+		}
+		r.mesh.SetMembers(members)
+	}
+	require.Eventually(t, func() bool {
+		for _, r := range relays {
+			for _, o := range relays {
+				if o != r && !r.mesh.Up(o.id) {
+					return false
+				}
+			}
+		}
+		return true
+	}, 10*time.Second, 10*time.Millisecond, "mesh sessions")
 }
 
 // attachEvent is one OnAttach call.
@@ -338,6 +396,8 @@ type agentOptions struct {
 	// noGrants removes the Grants call from the peer service, as in a build
 	// from before that call.
 	noGrants bool
+	// localRoutesOnly sets Config.LocalRoutesOnly.
+	localRoutesOnly bool
 }
 
 // noGrantsService is a peer service that does not have the Grants call.
@@ -435,6 +495,8 @@ func (w *world) agent(t *testing.T, name string, r *testRelay, opts agentOptions
 		Name:          name,
 		Routes:        opts.routes,
 		MTU:           opts.mtu,
+
+		LocalRoutesOnly: opts.localRoutesOnly,
 		OnAttach: func(b *psp.Binding, addr netip.Addr, prefixes []netip.Prefix) {
 			ta.netstack(t, b, addr, opts.tcp)
 			ta.attach <- attachEvent{addr, prefixes}

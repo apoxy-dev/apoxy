@@ -199,14 +199,14 @@ func TestSourceAfterClose(t *testing.T) {
 			switch tc.other {
 			case "session":
 				other = addSession(t, r, vpcA, "agent", addr, "fd00::1/128").Session
-				require.NoError(t, r.openSync(other, dp.Mode_MODE_PSP, ref(vpcA), ""))
+				require.NoError(t, r.openSync(other, dp.Mode_MODE_PSP, ref(vpcA), nil))
 				require.NoError(t, r.registerSPI(other, register(vpcA, "fd00::2", time.Minute, 1), t0))
 			case "shard dial":
 				other = addSession(t, r, vpcA, "agent", addr).Session
 			}
 			// A newer session from the same socket takes the source, then closes.
 			newer := addSession(t, r, vpcA, "agent", addr).Session
-			require.NoError(t, r.openSync(newer, dp.Mode_MODE_PSP, ref(vpcA), ""))
+			require.NoError(t, r.openSync(newer, dp.Mode_MODE_PSP, ref(vpcA), nil))
 			require.Same(t, newer, r.bySource[netip.MustParseAddrPort(addr)])
 			r.removeSession(newer)
 
@@ -248,10 +248,10 @@ func TestTwinRows(t *testing.T) {
 			addSession(t, r, vpcA, "receiver", "192.0.2.2:2000", "fd00::2/128")
 			addSession(t, r, vpcB, "receiver", "192.0.2.4:2000", "fd00::2/128")
 			old := addSession(t, r, vpcA, "agent", addr).Session
-			require.NoError(t, r.openSync(old, dp.Mode_MODE_PSP, ref(vpcA), ""))
+			require.NoError(t, r.openSync(old, dp.Mode_MODE_PSP, ref(vpcA), nil))
 			require.NoError(t, r.registerSPI(old, register(vpcA, "fd00::2", time.Minute, 1), t0))
 			next := addSession(t, r, tc.vpc, tc.agent, addr).Session
-			require.NoError(t, r.openSync(next, dp.Mode_MODE_PSP, ref(tc.vpc), ""))
+			require.NoError(t, r.openSync(next, dp.Mode_MODE_PSP, ref(tc.vpc), nil))
 			require.Same(t, next, r.bySource[netip.MustParseAddrPort(addr)])
 			if tc.agent == "agent" {
 				assert.Equal(t, rpc.AlreadyExists, codeOf(r.registerSPI(next, register(vpcA, "fd00::2", time.Minute, 1), t0)))
