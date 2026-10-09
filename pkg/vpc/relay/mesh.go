@@ -290,7 +290,7 @@ func (m *Mesh) OnSession(fn func(*MeshSession)) {
 }
 
 // OnDatagram sets fn, which gets the QUIC DATAGRAM frames of each session
-// after Open passes. Call OnDatagram before Run.
+// after Open passes. Call it before Run, and not on a mesh with SetRouter.
 func (m *Mesh) OnDatagram(fn func(s *MeshSession, b []byte)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -35,7 +35,9 @@ type:            0x01 peer-session packet
 Addresses are overlay addresses; IPv4 is in the IPv4-mapped form. The relay
 drops a frame if its session does not route the source address (the same
 rule as the PSP source check), if Permit denies the destination, or if no
-session routes the destination. For the last two it sends `NoRoute`.
+session routes the destination. For the last two it sends `NoRoute`. When a
+session of another relay of the mesh routes the destination, the relay sends
+the frame to that relay (see "Mesh datagrams").
 
 Peer sessions use 1200 B QUIC packets. Both ends of a relay session use a
 QUIC InitialPacketSize of 1270 B or more, so that each packet fits in one
@@ -167,6 +169,53 @@ other relay. It drops a PSP packet with an inner packet above the inner MTU of
 the trunk, and it does not send the packet in parts. The XDP program has no
 such row. The relay gives each such row to the other relay with `SPIRows` (see
 "Mesh").
+
+### Mesh datagrams
+
+QUIC DATAGRAM frames on a mesh session carry the peer frames between an agent
+of one relay and an agent of the other relay. They need no trunk SA. The first
+byte of a datagram is its type, so that other types can come later, and a
+relay drops a datagram with a type that it does not know.
+
+```
+relay -> relay:  type (1 B) | sender tag (3 B) | dst address (16 B) | src address (16 B) | packet
+type:            0x01 peer frame
+```
+
+The sender tag is the `sender_tag` of the `Presence` entries of the session
+that sent the frame, with the high byte first. The addresses and the packet
+are those of the frame of the agent. Both relays use a QUIC InitialPacketSize
+of 1273 B or more on a mesh session, so that each packet of a peer session
+fits in one datagram.
+
+A relay sends a peer frame of an agent in this form when an attachment of
+another relay has the route of the destination, and that relay is at revision
+7 or later. The checks of "Relay datagrams" come first. The relay does not
+split a frame. It drops a frame that does not fit in a datagram of the mesh
+session, a frame for a relay with no open mesh session, and a frame for a
+relay below revision 7. It sends no `NoRoute` for these frames, because the
+address has a route.
+
+The relay that gets the datagram drops it at the first of these checks that
+fails:
+
+1. The datagram has the full header and the type `0x01`.
+2. An entry of the other relay has the sender tag. The other relay sent the
+   entry, or sent it again, in the `Presence` call of the session of the
+   datagram, and no later session of that relay has a `Presence` call. An
+   entry from an older session does not count, because the other relay can
+   have given its tag to another agent.
+3. The route of the source address in the VPC of that entry is from that
+   entry. This is the source check of "Relay datagrams" on the entries.
+4. Permit allows the destination for the VPC and the SPIFFE ID of the entry.
+5. A session of this relay routes the destination in that VPC. A relay sends
+   no frame from a mesh session to another relay, so a frame goes over one
+   mesh session at most.
+
+Then it sends the frame to that session in the "relay -> agent" form. A relay
+counts each frame that it drops on these paths in
+`apoxy_vpc_relay_dropped_packets_total`, with a `reason` that starts with
+`mesh_`.
 
 ## Calls
 
@@ -418,10 +467,12 @@ to a relay of which it has no lane 0 SA. After the other relay is up again,
 the next `RegisterSPI` of the agent makes the row again.
 
 At this revision a relay answers `Unimplemented` to `SPIRows`, and it drops a
-trunk packet with a sender tag, so no packet of an agent arrives through
+trunk packet with a sender tag, so no PSP packet of an agent arrives through
 another relay. `ResolvePeer` returns `NotFound` for an address of a route of
-another relay. The relay drops a data frame, a peer frame or a PSP packet that
-it opens for such an address, and sends `NoRoute`.
+another relay, so an agent starts no peer session to it. The relay drops a
+data frame or a PSP packet that it opens for such an address, and sends
+`NoRoute`. A peer frame for such an address goes to the other relay (see "Mesh
+datagrams").
 
 ## Revisions
 
@@ -446,6 +497,7 @@ only for logs and metrics. On a mesh session, `MeshOpenRequest` and
 | 4 | `Presence.subject`, `agent_name` and `sender_tag`. `PresenceUpdate.end_of_full_set`. | No duty. | No duty. | Opens one `Presence` call on each mesh session with a relay at revision 4 or later: the full set of its attachments with the end mark, then each change. Opens none with a relay at revision 3, and keeps that session. Keeps the entries that each member sends, and drops them when the member closes with `RESTART` or leaves the member set. |
 | 5 | `Mesh.TrunkKeys` and the trunk SAs. The trunk packet with tag 0: the full-size probe and its answer. | No duty. | No duty. | With a relay at revision 5 or later: offers trunk SAs on each new mesh session and before they expire, applies the trunk SAs of the other relay, probes the path at full size, and answers the probes of the other relay. Makes no `TrunkKeys` call to a relay below revision 5, refuses its call with `FailedPrecondition`, and keeps that session. Deletes the trunk SAs of a relay that is down. |
 | 6 | `Hello.local_routes_only`. Routes of the attachments of other relays in `RouteDelta`. | Sends `local_routes_only` when its config has the option. Without it, gets the routes of the attachments of other relays from a relay at revision 6 or later. | Sends `local_routes_only`, because it has one session for each relay. | Makes a route for each prefix of the entries of the other relays. Sends these routes to a session at revision 6 or later that did not set `local_routes_only`, and to no other session. Answers `NotFound` to `ResolvePeer` for an address of such a route, and sends `NoRoute` for a packet to it that it opens. |
+| 7 | The mesh datagram with a type byte, and its type `0x01`: a peer frame with the sender tag. | No duty. | No duty. | Sends a peer frame for an address with a route of another relay to that relay in a mesh datagram, when that relay is at revision 7 or later, and sends no `NoRoute` for it. Sends no mesh datagram to a relay below revision 7. Checks each mesh datagram of another relay, and gives its frame only to a session of its own. Drops a mesh datagram with another type. |
 
 ### Minimum revision
 

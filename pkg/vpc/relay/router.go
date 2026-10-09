@@ -674,8 +674,8 @@ func (r *Router) ownerOf(vpc VPCKey, a netip.Addr) owner {
 	return owner{}
 }
 
-// localOwner is ownerOf for the sessions of this relay: the relay has no path
-// to a session of another relay. Router.mu must be held.
+// localOwner is ownerOf for the sessions of this relay, for the paths that send
+// nothing to another relay. Router.mu must be held.
 func (r *Router) localOwner(vpc VPCKey, a netip.Addr) owner {
 	if o := r.ownerOf(vpc, a); o.s != nil && o.s.home == "" {
 		return o
@@ -683,18 +683,25 @@ func (r *Router) localOwner(vpc VPCKey, a netip.Addr) owner {
 	return owner{}
 }
 
-// Route returns the session for packets from src to dst, if Permit allows.
-// If none, src gets a NoRoute in Sync, at most once a second per address.
+// permitted returns the session with the route of dst for packets from src, if
+// Permit allows. It can be the record of a session of another relay.
+func (r *Router) permitted(src *Session, dst netip.Addr) *Session {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if !r.permit(src.id.VPC, src.id.ID, src.id.VPC, dst) {
+		return nil
+	}
+	return r.lookup(src.id.VPC, dst)
+}
+
+// Route returns the session of this relay for packets from src to dst, if Permit
+// allows. If none, src gets a NoRoute in Sync, at most once a second per address.
 func (r *Router) Route(src *Session, dst netip.Addr, now time.Time) *Session {
 	dst = dst.Unmap()
-	r.mu.RLock()
-	var next *Session
-	if r.permit(src.id.VPC, src.id.ID, src.id.VPC, dst) {
-		next = r.localOwner(src.id.VPC, dst).s
-	}
-	r.mu.RUnlock()
-	if next == nil {
+	next := r.permitted(src, dst)
+	if next == nil || next.home != "" {
 		r.noRoute(src, dst, now)
+		return nil
 	}
 	return next
 }

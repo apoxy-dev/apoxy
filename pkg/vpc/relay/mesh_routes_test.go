@@ -54,25 +54,38 @@ type routeWorld struct {
 // relay-a and relay-b with a Presence call on each.
 func newRouteWorld(t *testing.T, r *Router) *routeWorld {
 	t.Helper()
+	// At revision 3 a member gets no Presence call, which the stub cannot carry.
+	return newRouteWorldAt(t, r, 3)
+}
+
+// newRouteWorldAt is newRouteWorld with members at revision rev. From revision
+// 4, the test must not call deliver, which starts a Presence call to a member.
+func newRouteWorldAt(t *testing.T, r *Router, rev uint32) *routeWorld {
+	t.Helper()
 	ca := newCA(t)
 	m, err := NewMesh("relay-m", MeshConfig{TLS: meshTLS(ca.meshCert(t, "relay-m")), Verify: ca.verifyName})
 	require.NoError(t, err)
 	w := &routeWorld{t: t, m: m, r: r, sess: map[string]*Session{}, mesh: map[string]*MeshSession{}, conns: map[string]*stubConn{}}
 	m.SetRouter(r)
 	m.SetMembers(routeMembers)
-	w.open("relay-a")
-	w.open("relay-b")
+	w.openAt("relay-a", rev)
+	w.openAt("relay-b", rev)
 	return w
 }
 
 // open opens a new mesh session of member and its Presence call.
 func (w *routeWorld) open(member string) {
 	w.t.Helper()
+	w.openAt(member, 3)
+}
+
+// openAt is open for a member at revision rev.
+func (w *routeWorld) openAt(member string, rev uint32) {
+	w.t.Helper()
 	conn := newStubConn()
 	s := w.m.newSession(conn, false)
 	require.True(w.t, w.m.track(s))
-	// At revision 3 the member gets no Presence call, which the stub cannot carry.
-	require.NoError(w.t, w.m.admit(s, member, nil, &dp.Version{Revision: 3}, nil))
+	require.NoError(w.t, w.m.admit(s, member, nil, &dp.Version{Revision: rev}, nil))
 	require.NoError(w.t, w.m.pres.accept(s))
 	w.mesh[member], w.conns[member] = s, conn
 }
@@ -224,6 +237,19 @@ func (w *routeWorld) check() {
 	for s, prefixes := range owned {
 		assert.ElementsMatch(w.t, prefixes, s.routes, "routes of the record of %s on %s", s.id.ID, s.home)
 		assert.NotContains(w.t, w.r.sessions, s, "the record is a session of this relay")
+	}
+	// The entries of each member by tag are the entries by attachment ID.
+	w.m.pres.mu.Lock()
+	defer w.m.pres.mu.Unlock()
+	for member, in := range w.m.pres.in {
+		byTag := map[uint32][]*presenceEntry{}
+		for _, e := range in.entries {
+			byTag[e.tag] = append(byTag[e.tag], e)
+		}
+		assert.Len(w.t, in.tags, len(byTag), "tags of the entries of %s", member)
+		for tag, entries := range byTag {
+			assert.ElementsMatch(w.t, entries, in.tags[tag], "entries of %s with the tag %d", member, tag)
+		}
 	}
 }
 
@@ -950,22 +976,23 @@ func TestMeshRouteSessions(t *testing.T) {
 	}
 }
 
-// TestMeshRouteNotReachable sends to an address of an attachment of another
-// relay: each call gets "no route", and each packet drops.
+// TestMeshRouteNotReachable sends to an address of another relay: each call gets
+// "no route", and each packet drops. That relay is too old to get a peer frame.
 func TestMeshRouteNotReachable(t *testing.T) {
 	const (
 		quicAddr = "fd00:1::1" // Address of the sender in QUIC mode.
 		pspAddr  = "fd00:2::1" // Address of the sender in PSP mode.
 	)
 	cases := []struct {
-		name  string
-		dst   string
-		local bool // An attachment of this relay has dst.
+		name   string
+		dst    string
+		local  bool // An attachment of this relay has dst.
+		member bool // An attachment of relay-a has dst.
 	}{
 		{name: "address on this relay", dst: "fd00:3::1", local: true},
-		{name: "address on another relay", dst: "fd00:a::1"},
-		{name: "advertised route of another relay", dst: "fd00:8::1"},
-		{name: "route of another relay in a route of this relay", dst: "fd00:9:0:7::1"},
+		{name: "address on another relay", dst: "fd00:a::1", member: true},
+		{name: "advertised route of another relay", dst: "fd00:8::1", member: true},
+		{name: "route of another relay in a route of this relay", dst: "fd00:9:0:7::1", member: true},
 		{name: "route of this relay around a route of another relay", dst: "fd00:9:0:8::1", local: true},
 		{name: "address with no route", dst: "fd00:f::1"},
 	}
@@ -1001,17 +1028,22 @@ func TestMeshRouteNotReachable(t *testing.T) {
 				}
 				return out
 			}
-			// told checks that s got one NoRoute for dst, or none for a local dst.
-			told := func(s *Session, path string) {
+			// tells checks that s got one NoRoute for dst if want is true, or else none.
+			tells := func(want bool, s *Session, path string) {
 				t.Helper()
-				want := []string{tc.dst}
-				if tc.local {
-					want = nil
+				var addrs []string
+				if want {
+					addrs = []string{tc.dst}
 				}
-				assert.Equal(t, want, noRoutes(s), "NoRoute after %s", path)
+				assert.Equal(t, addrs, noRoutes(s), "NoRoute after %s", path)
 				r.mu.Lock()
 				clear(s.sync.noRoute)
 				r.mu.Unlock()
+			}
+			// told checks that s got one NoRoute for dst, or none for a local dst.
+			told := func(s *Session, path string) {
+				t.Helper()
+				tells(!tc.local, s, path)
 			}
 
 			res, err := r.resolvePeer(q, &dp.ResolvePeerRequest{Vpc: ref(vpcA), Address: tc.dst})
@@ -1051,10 +1083,12 @@ func TestMeshRouteNotReachable(t *testing.T) {
 			}
 			told(q, "Route")
 
-			// A peer frame, a data frame and a PSP packet to the relay.
+			// A peer frame, a data frame and a PSP packet to the relay. The address
+			// of a peer frame for relay-a has a route, so the frame gets no NoRoute.
 			sent := r.forwardDatagram(q, peerFrame(dst, netip.MustParseAddr(quicAddr), "hi"), t0)
 			assert.Equal(t, tc.local, sent, "peer frame")
-			told(q, "a peer frame")
+			tells(!tc.local && !tc.member, q, "a peer frame")
+			assert.Equal(t, tc.member, r.drops[dropMeshOldMember].Load() == 1, "the peer frame was for relay-a")
 
 			inner := ipPacket(netip.MustParseAddr(quicAddr), dst, []byte("data"))
 			sent = r.forwardData(q, peerconn.EncodeData(nil, testVNI, inner), make([]byte, maxUDP), t0)

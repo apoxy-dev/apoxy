@@ -36,22 +36,26 @@ func (r *Router) serveDatagrams(s *Session, qc quic.Connection) {
 	}
 }
 
-// forwardDatagram sends a peer frame from s to the session of its destination,
-// if s routes its source. It reports whether it sent the frame.
+// forwardDatagram sends a peer frame from s to the session of its destination or
+// to the relay of that session, if s routes its source. It reports if it sent it.
 func (r *Router) forwardDatagram(s *Session, b []byte, now time.Time) bool {
 	dst, src, _, err := peerconn.DecodeToRelay(b)
 	if err != nil {
 		return false
 	}
 	r.mu.RLock()
-	owner := r.lookup(s.id.VPC, src)
+	owner, tag := r.lookup(s.id.VPC, src), s.tag
 	r.mu.RUnlock()
 	if owner != s || !r.allow(s, len(b), now) {
 		return false
 	}
-	next := r.Route(s, dst, now)
-	if next == nil {
+	next := r.permitted(s, dst)
+	switch {
+	case next == nil:
+		r.noRoute(s, dst, now)
 		return false
+	case next.home != "":
+		return r.sendToMember(next.home, tag, b)
 	}
 	return next.sendDatagram(peerconn.Forwarded(b)) == nil
 }

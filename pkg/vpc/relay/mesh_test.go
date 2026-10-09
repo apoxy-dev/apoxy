@@ -966,6 +966,11 @@ type stubConn struct {
 	quic.Connection
 	ctx    context.Context
 	cancel context.CancelCauseFunc
+
+	mu   sync.Mutex
+	max  int      // Longest datagram that SendDatagram takes. Zero is no limit.
+	fail error    // Error of SendDatagram, if not nil.
+	sent [][]byte // Datagrams that the relay sent.
 }
 
 func newStubConn() *stubConn {
@@ -982,6 +987,25 @@ func (c *stubConn) RemoteAddr() net.Addr {
 
 func (c *stubConn) CloseWithError(code quic.ApplicationErrorCode, msg string) error {
 	c.cancel(&quic.ApplicationError{ErrorCode: code, ErrorMessage: msg})
+	return nil
+}
+
+// ReceiveDatagram fails, so that no reader waits on the stub.
+func (c *stubConn) ReceiveDatagram(context.Context) ([]byte, error) {
+	return nil, errors.New("stub has no datagrams")
+}
+
+// SendDatagram keeps a copy of b, as a connection does.
+func (c *stubConn) SendDatagram(b []byte) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	switch {
+	case c.fail != nil:
+		return c.fail
+	case c.max > 0 && len(b) > c.max:
+		return &quic.DatagramTooLargeError{MaxDatagramPayloadSize: int64(c.max)}
+	}
+	c.sent = append(c.sent, append([]byte{}, b...))
 	return nil
 }
 

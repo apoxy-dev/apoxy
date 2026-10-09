@@ -1,6 +1,7 @@
 package tunnel_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -30,6 +31,7 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/vpc/identity"
 	vpcrelay "github.com/apoxy-dev/apoxy/pkg/vpc/relay"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/peerconn"
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
@@ -575,4 +577,56 @@ func TestRelay_MeshRoutes(t *testing.T) {
 	require.NoError(t, laptop.qc.CloseWithError(0, ""))
 	assert.Equal(t, []string{"-" + routeA[1:]}, server.next(t, ctx))
 	assert.Equal(t, []string{"-" + routeA[1:]}, localOnly.next(t, ctx))
+}
+
+// TestRelay_MeshPeerFrames sends peer frames in the two directions between an
+// agent on relay-a and an agent on relay-b. The relays carry them on the mesh.
+func TestRelay_MeshPeerFrames(t *testing.T) {
+	ca := newMeshCA(t)
+	a := startMeshRelay(t, ca, "relay-a", 0, false)
+	b := startMeshRelay(t, ca, "relay-b", 0, false, 0x100)
+	b.mesh.SetMembers([]vpcrelay.MeshMember{a.member()})
+	a.mesh.SetMembers([]vpcrelay.MeshMember{b.member()})
+	require.Equal(t, vpcrelay.MeshChange{Name: "relay-b", Up: true}, a.change(t))
+	require.Equal(t, vpcrelay.MeshChange{Name: "relay-a", Up: true}, b.change(t))
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	vpc := &dp.VPCRef{ProjectId: vpcProject, VpcUid: vpcUID, NetworkId: vpcNetwork}
+	this := dp.LocalVersion("test")
+	laptop := openRouteAgent(t, ctx, a.vpcRelay, "laptop", &dp.Hello{Version: this, Name: "base"})
+	server := openRouteAgent(t, ctx, b.vpcRelay, "server", &dp.Hello{Version: this, Name: "base"})
+
+	// When an agent has the route of the other agent, its relay has the
+	// attachment of the other relay, which it needs for the two directions.
+	onA, err := laptop.c.Attach(ctx, &dp.AttachRequest{Vpc: vpc, Name: "laptop"})
+	require.NoError(t, err)
+	onB, err := server.c.Attach(ctx, &dp.AttachRequest{Vpc: vpc, Name: "server"})
+	require.NoError(t, err)
+	require.Equal(t, []string{"+" + onB.GetAttachmentId() + " fd00:100::/96"}, laptop.next(t, ctx))
+	require.Equal(t, []string{"+" + onA.GetAttachmentId() + " fd00:1::/96"}, server.next(t, ctx))
+
+	laptopAddr, serverAddr := netip.MustParseAddr("fd00:1::1"), netip.MustParseAddr("fd00:100::1")
+	cases := []struct {
+		name     string
+		from, to *routeAgent
+		src, dst netip.Addr
+	}{
+		{"relay-a to relay-b", laptop, server, laptopAddr, serverAddr},
+		{"relay-b to relay-a", server, laptop, serverAddr, laptopAddr},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// A peer session uses QUIC packets of 1200 B.
+			for _, pkt := range [][]byte{[]byte("hello"), bytes.Repeat([]byte{0x40}, 1200)} {
+				require.NoError(t, tc.from.qc.SendDatagram(peerconn.EncodeToRelay(nil, tc.dst, tc.src, pkt)))
+				got, err := tc.to.qc.ReceiveDatagram(ctx)
+				require.NoError(t, err)
+				assert.Equal(t, peerconn.EncodeFromRelay(nil, tc.src, pkt), got)
+			}
+		})
+	}
+
+	// An agent does not use this path yet: it gets no peer of the other relay.
+	_, err = laptop.c.ResolvePeer(ctx, &dp.ResolvePeerRequest{Vpc: vpc, Address: serverAddr.String()})
+	assert.Equal(t, rpc.NotFound, rpc.CodeOf(err), "ResolvePeer: %v", err)
 }

@@ -478,6 +478,16 @@ func TestXDPCounters(t *testing.T) {
 apoxy_vpc_relay_dropped_packets_total{reason="closed"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="lane_meter"} 2
 apoxy_vpc_relay_dropped_packets_total{reason="malformed"} 0
+apoxy_vpc_relay_dropped_packets_total{reason="mesh_malformed"} 0
+apoxy_vpc_relay_dropped_packets_total{reason="mesh_no_session"} 0
+apoxy_vpc_relay_dropped_packets_total{reason="mesh_not_local"} 0
+apoxy_vpc_relay_dropped_packets_total{reason="mesh_not_sent"} 0
+apoxy_vpc_relay_dropped_packets_total{reason="mesh_old_member"} 0
+apoxy_vpc_relay_dropped_packets_total{reason="mesh_old_session"} 0
+apoxy_vpc_relay_dropped_packets_total{reason="mesh_permit"} 0
+apoxy_vpc_relay_dropped_packets_total{reason="mesh_source"} 0
+apoxy_vpc_relay_dropped_packets_total{reason="mesh_too_large"} 0
+apoxy_vpc_relay_dropped_packets_total{reason="mesh_unknown_tag"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="send_queue"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="trunk_keys"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="trunk_mtu"} 0

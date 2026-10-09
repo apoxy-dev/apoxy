@@ -106,11 +106,42 @@ const (
 	dropSendQueue // The forward goroutine of the destination is too slow.
 	dropTrunkMTU  // The packet is too large for the trunk to another relay.
 	dropTrunkKeys // The trunk to another relay has no SA for the packet.
+	// The reasons below are for a peer frame to or from a mesh member.
+	dropMeshNoSession  // The member of the destination has no open mesh session.
+	dropMeshOldMember  // The member of the destination does not know the frame.
+	dropMeshTooLarge   // The frame does not fit in a datagram of the mesh session.
+	dropMeshMalformed  // The datagram of a member is short or has an unknown type.
+	dropMeshUnknownTag // No entry of the member has the sender tag.
+	dropMeshOldSession // Only entries from an older session of the member have the tag.
+	dropMeshSource     // The sender does not have the route of the source address.
+	dropMeshPermit     // Permit denies the destination.
+	dropMeshNotLocal   // No session of this relay has the route of the destination.
+	dropMeshNotSent    // The session of the destination did not take the frame.
 	numDropReasons
 )
 
 // dropLabels are the reason labels of the drop metric.
-var dropLabels = [numDropReasons]string{"malformed", "unknown_source", "unknown_spi", "lane_meter", "tunnel_limit", "closed", "send_queue", "trunk_mtu", "trunk_keys"}
+var dropLabels = [numDropReasons]string{
+	dropMalformed:      "malformed",
+	dropUnknownSource:  "unknown_source",
+	dropUnknownSPI:     "unknown_spi",
+	dropLaneMeter:      "lane_meter",
+	dropTunnelLimit:    "tunnel_limit",
+	dropClosed:         "closed",
+	dropSendQueue:      "send_queue",
+	dropTrunkMTU:       "trunk_mtu",
+	dropTrunkKeys:      "trunk_keys",
+	dropMeshNoSession:  "mesh_no_session",
+	dropMeshOldMember:  "mesh_old_member",
+	dropMeshTooLarge:   "mesh_too_large",
+	dropMeshMalformed:  "mesh_malformed",
+	dropMeshUnknownTag: "mesh_unknown_tag",
+	dropMeshOldSession: "mesh_old_session",
+	dropMeshSource:     "mesh_source",
+	dropMeshPermit:     "mesh_permit",
+	dropMeshNotLocal:   "mesh_not_local",
+	dropMeshNotSent:    "mesh_not_sent",
+}
 
 var dropsDesc = prometheus.NewDesc("apoxy_vpc_relay_dropped_packets_total",
 	"Packets that the relay dropped before it forwarded them, by reason.", []string{"reason"}, nil)

@@ -119,9 +119,27 @@ type presenceOut struct {
 
 // presenceIn has the attachments that one member sent.
 type presenceIn struct {
-	sess    *MeshSession              // Session of the last Presence call.
-	full    bool                      // The full set of sess is complete.
-	entries map[string]*presenceEntry // By attachment ID.
+	sess    *MeshSession                // Session of the last Presence call.
+	full    bool                        // The full set of sess is complete.
+	entries map[string]*presenceEntry   // By attachment ID.
+	tags    map[uint32][]*presenceEntry // The same entries, by sender tag.
+}
+
+// add keeps the entry e. presence.mu must be held.
+func (in *presenceIn) add(e *presenceEntry) {
+	in.entries[e.id] = e
+	in.tags[e.tag] = append(in.tags[e.tag], e)
+}
+
+// remove forgets the entry e. presence.mu must be held.
+func (in *presenceIn) remove(e *presenceEntry) {
+	delete(in.entries, e.id)
+	left := slices.DeleteFunc(in.tags[e.tag], func(o *presenceEntry) bool { return o == e })
+	if len(left) == 0 {
+		delete(in.tags, e.tag)
+	} else {
+		in.tags[e.tag] = left
+	}
 }
 
 // presenceEntry is one attachment of a member.
@@ -141,8 +159,8 @@ func newPresence(m *Mesh) *presence {
 	return &presence{m: m, outs: map[*presenceOut]struct{}{}, in: map[string]*presenceIn{}}
 }
 
-// SetRouter makes the mesh send the attachments of r, give r the routes of the
-// members, and exchange trunk keys. Call it after r.PacketHandler, before Run.
+// SetRouter makes the mesh send the attachments and the peer frames of r, give r
+// routes, and exchange trunk keys. Call it after r.PacketHandler, before Run.
 func (m *Mesh) SetRouter(r *Router) {
 	p := m.pres
 	p.mu.Lock()
@@ -151,6 +169,7 @@ func (m *Mesh) SetRouter(r *Router) {
 	r.mu.Lock()
 	r.presence = p.changed
 	r.mu.Unlock()
+	m.OnDatagram(func(s *MeshSession, b []byte) { p.datagram(r, s, b) })
 	m.setTrunk(r)
 }
 
@@ -293,7 +312,7 @@ func (p *presence) accept(s *MeshSession) error {
 	defer p.mu.Unlock()
 	in := p.in[s.name]
 	if in == nil {
-		in = &presenceIn{entries: map[string]*presenceEntry{}}
+		in = &presenceIn{entries: map[string]*presenceEntry{}, tags: map[uint32][]*presenceEntry{}}
 		p.in[s.name] = in
 	}
 	if in.sess == s {
@@ -362,7 +381,7 @@ func (p *presence) keep(s *MeshSession, changes []presenceChange, full bool, ref
 			continue
 		}
 		if old != nil {
-			delete(in.entries, c.id)
+			in.remove(old)
 			if r != nil {
 				r.unclaim(old)
 			}
@@ -370,7 +389,7 @@ func (p *presence) keep(s *MeshSession, changes []presenceChange, full bool, ref
 		if c.gone {
 			continue
 		}
-		in.entries[c.id] = c.presenceEntry
+		in.add(c.presenceEntry)
 		if r != nil {
 			if err := r.claim(c.presenceEntry); err != nil {
 				refuse(c.id, err)
@@ -449,9 +468,9 @@ func (p *presence) down(c MeshChange) {
 		return
 	}
 	all := cur == nil || in.sess != cur
-	for id, e := range in.entries {
+	for _, e := range in.entries {
 		if all || e.sess != cur {
-			delete(in.entries, id)
+			in.remove(e)
 			if r != nil {
 				r.unclaim(e)
 			}
