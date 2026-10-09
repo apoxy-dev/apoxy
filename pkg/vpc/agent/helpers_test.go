@@ -3,6 +3,7 @@
 package agent
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"crypto/tls"
@@ -50,6 +51,8 @@ const (
 	testVNI     = 0x0a0b0c
 	// filePoll is the time between two reads of an identity file.
 	filePoll = 50 * time.Millisecond
+	// testWindow is the wait of the relay choice in the tests that do not check it.
+	testWindow = 250 * time.Millisecond
 )
 
 func TestMain(m *testing.M) {
@@ -419,6 +422,7 @@ type agentOptions struct {
 	life   time.Duration // Cert life. Zero means 24 hours.
 	mtu    int           // Config.MTU.
 	conn   *lossyConn    // Wraps the agent socket if set.
+	slow   *slowConn     // Wraps the agent socket if set.
 	move   *moveConn     // Wraps the agent socket if set.
 	mode   TransportMode
 	udp    *net.UDPConn // Agent socket. Nil means a new socket on loopback.
@@ -459,6 +463,9 @@ type agentOptions struct {
 	// visitCheck, visitAsk and visitWait set the intervals of the visits. Zero
 	// keeps them.
 	visitCheck, visitAsk, visitWait time.Duration
+	// rttChoice keeps the band and the wait of the relay choice. Else the relays
+	// that answer in testWindow are equal, so the first relay of the list wins.
+	rttChoice bool
 }
 
 // noGrantsService is a peer service that does not have the Grants call.
@@ -493,6 +500,35 @@ func (c *lossyConn) WriteTo(p []byte, addr net.Addr) (int, error) {
 	return c.PacketConn.WriteTo(p, addr)
 }
 
+// slowConn sends the packets to a relay after a delay, which adds the delay to
+// the round-trip time of that relay.
+type slowConn struct {
+	net.PacketConn
+	mu     sync.Mutex
+	delays map[string]time.Duration // By relay address.
+}
+
+func (c *slowConn) set(r *testRelay, d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.delays == nil {
+		c.delays = map[string]time.Duration{}
+	}
+	c.delays[r.addr] = d
+}
+
+func (c *slowConn) WriteTo(p []byte, addr net.Addr) (int, error) {
+	c.mu.Lock()
+	d := c.delays[addr.String()]
+	c.mu.Unlock()
+	if d == 0 {
+		return c.PacketConn.WriteTo(p, addr)
+	}
+	b := bytes.Clone(p)
+	time.AfterFunc(d, func() { _, _ = c.PacketConn.WriteTo(b, addr) })
+	return len(p), nil
+}
+
 func (w *world) agent(t *testing.T, name string, r *testRelay, opts agentOptions) *testAgent {
 	t.Helper()
 	if opts.life == 0 {
@@ -510,6 +546,10 @@ func (w *world) agent(t *testing.T, name string, r *testRelay, opts agentOptions
 	if opts.move != nil {
 		opts.move.PacketConn = udp
 		conn = opts.move
+	}
+	if opts.slow != nil {
+		opts.slow.PacketConn = udp
+		conn = opts.slow
 	}
 	ta := &testAgent{
 		tr: &quic.Transport{Conn: conn}, attach: make(chan attachEvent, 16), done: make(chan struct{}),
@@ -618,6 +658,9 @@ func (w *world) agent(t *testing.T, name string, r *testRelay, opts agentOptions
 	}
 	if opts.visitWait != 0 {
 		ta.a.visitWait = opts.visitWait
+	}
+	if !opts.rttChoice {
+		ta.a.rttBand, ta.a.rttWindow = time.Hour, testWindow
 	}
 	if opts.noGrants {
 		ta.a.mux = rpc.NewMux()

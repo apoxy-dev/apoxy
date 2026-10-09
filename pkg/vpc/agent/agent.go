@@ -86,6 +86,7 @@ type Config struct {
 	// Identity keeps the agent cert and the relays from enroll. Run starts it.
 	Identity *identity.Manager
 	// Relays are the relays to dial, in place of the relays of the agent cert.
+	// The agent attaches to the relay with the lowest round-trip time.
 	Relays []identity.Relay
 	// RelayRoots check relay certs and peer grants, in place of the roots of
 	// the agent cert. With neither, the agent uses the system roots.
@@ -170,6 +171,8 @@ type Agent struct {
 	visits map[string]*visit
 	// Intervals of the visits. Tests change them before Run.
 	visitCheck, visitAsk, visitWait time.Duration
+	// Band and wait of the relay choice. Tests change them before Run.
+	rttBand, rttWindow time.Duration
 
 	routeMu  sync.Mutex
 	routesOf *relayConn            // Session that OnRoutes follows.
@@ -193,6 +196,7 @@ func New(cfg Config) *Agent {
 	}
 	a.specs, a.attachWake = map[string]*AttachmentSpec{}, make(chan struct{}, 1)
 	a.visitCheck, a.visitAsk, a.visitWait = visitCheck, visitAsk, visitWait
+	a.rttBand, a.rttWindow = rttBand, rttWindow
 	a.mux = rpc.NewMux()
 	dp.RegisterPeerServer(a.mux, &peerService{a: a})
 	a.demux.Probe = a.onProbe
@@ -599,9 +603,9 @@ func (a *Agent) openNext(ctx context.Context, rc *relayConn, e endpoint) (*relay
 
 // dialRelay opens a session to the relay at e: the handshake, the data mode, and
 // the Session call up to Config. spare tells at Hello if the session is a spare,
-// and visitor makes a visitor session. The dial counts in a.dialing, and the
-// session stays in a.conns until close.
-func (a *Agent) dialRelay(ctx context.Context, e endpoint, spare func() bool, visitor bool) (*relayConn, error) {
+// and can wait for a choice. visitor makes a visitor session. The dial counts in
+// a.dialing, and the session stays in a.conns until close.
+func (a *Agent) dialRelay(ctx context.Context, e endpoint, spare func(*relayConn) bool, visitor bool) (*relayConn, error) {
 	key := e.key()
 	a.mu.Lock()
 	a.dialing[key]++
@@ -619,7 +623,7 @@ func (a *Agent) dialRelay(ctx context.Context, e endpoint, spare func() bool, vi
 }
 
 // dialSession opens the session for dialRelay.
-func (a *Agent) dialSession(ctx context.Context, e endpoint, spare func() bool, visitor bool) (*relayConn, error) {
+func (a *Agent) dialSession(ctx context.Context, e endpoint, spare func(*relayConn) bool, visitor bool) (*relayConn, error) {
 	host, _, err := net.SplitHostPort(e.addr)
 	if err != nil {
 		return nil, err
@@ -674,7 +678,7 @@ func (a *Agent) dialSession(ctx context.Context, e endpoint, spare func() bool, 
 	stop := context.AfterFunc(octx, func() { _ = qc.CloseWithError(0, "relay session did not open in time") })
 	defer stop()
 	rc.mode, rc.reason = a.pickMode(octx, rc)
-	if err := rc.hello(begin, spare()); err != nil {
+	if err := rc.hello(begin, spare(rc)); err != nil {
 		rc.close()
 		if cause := context.Cause(qc.Context()); cause != nil {
 			err = fmt.Errorf("%w (connection: %w)", err, cause)

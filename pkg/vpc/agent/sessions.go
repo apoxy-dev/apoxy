@@ -11,7 +11,6 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"slices"
-	"sync/atomic"
 	"time"
 
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
@@ -20,8 +19,12 @@ import (
 const (
 	defaultSessions = 2
 	maxSessions     = 3
-	// raceDelay is the wait for a session before the agent dials a second relay.
-	raceDelay = 150 * time.Millisecond
+	// rttBand is the difference of two round-trip times that counts as equal. It
+	// is above the error of one handshake sample and below the time between regions.
+	rttBand = 10 * time.Millisecond
+	// rttWindow is the wait for the other relays after the first relay answered. A
+	// relay in rttBand answers at most two times rttBand later, plus 20 ms of noise.
+	rttWindow = 40 * time.Millisecond
 	// spareCheck is the interval of the spare session check.
 	spareCheck = 5 * time.Second
 	// upgradeRetry is the wait for the next spare dial after a relay refused the
@@ -41,8 +44,8 @@ var (
 	relistMax = 10 * time.Minute
 )
 
-func primaryHello() bool { return false }
-func spareHello() bool   { return true }
+func primaryHello(*relayConn) bool { return false }
+func spareHello(*relayConn) bool   { return true }
 
 // endpoint is one address of a relay.
 type endpoint struct {
@@ -88,8 +91,8 @@ func (a *Agent) sessions() int {
 	return a.cfg.Sessions
 }
 
-// attachRelay returns an attached session: a spare, or else a new session from
-// the relays from index next. It returns the number of relays that failed.
+// attachRelay returns an attached session: a spare, or else a new session on the
+// relay that race chooses. It returns the number of relays that failed.
 func (a *Agent) attachRelay(ctx context.Context, next int) (*relayConn, int, error) {
 	begin := time.Now()
 	if rc := a.promote(ctx, begin, nil); rc != nil {
@@ -116,64 +119,185 @@ func (a *Agent) attachRelay(ctx context.Context, next int) (*relayConn, int, err
 	return rc, tried, nil
 }
 
-// race dials eps[0]. When it has no session after raceDelay, or fails, the
-// agent also dials the next relay. The first session wins, and a later one
-// becomes a spare. It returns the number of relays that failed.
+// candidate is one relay of a race.
+type candidate struct {
+	ep    endpoint
+	ready bool          // The session is ready for Hello, and rtt is set.
+	rtt   time.Duration // Round-trip time of the session. Zero is not known.
+	spare bool          // Result of the choice, set before the race closes chosen.
+	done  bool          // The dial ended.
+	rc    *relayConn    // Session of a dial that passed.
+}
+
+// dialFunc is dialRelay for an attached session or a spare.
+type dialFunc func(ctx context.Context, e endpoint, spare func(*relayConn) bool) (*relayConn, error)
+
+// oneEach returns the first address of each relay in eps, so entries with one
+// name count as one relay.
+func oneEach(eps []endpoint) []endpoint {
+	var out []endpoint
+	for _, e := range eps {
+		if !slices.ContainsFunc(out, func(o endpoint) bool { return o.key() == e.key() }) {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// race opens a session on the relay with the lowest round-trip time in eps. The
+// other sessions become spares. It returns the number of relays that failed.
 func (a *Agent) race(ctx context.Context, eps []endpoint) (*relayConn, int, error) {
+	rc, others, failed, err := a.choose(ctx, eps, func(ctx context.Context, e endpoint, spare func(*relayConn) bool) (*relayConn, error) {
+		return a.dialRelay(ctx, e, spare, false)
+	})
+	if err != nil {
+		return nil, failed, err
+	}
+	go others(a.addSpare)
+	return rc, failed, nil
+}
+
+// choose dials each relay of eps at the same time. Each session waits before
+// Hello for the choice of rank. others gives the other sessions, best first.
+func (a *Agent) choose(ctx context.Context, eps []endpoint, dial dialFunc) (won *relayConn, others func(func(*relayConn)), failed int, err error) {
 	type result struct {
+		i   int
 		rc  *relayConn
 		err error
-		ep  endpoint
 	}
-	results := make(chan result, 2)
-	var won atomic.Bool
-	dial := func(e endpoint) {
+	var cands []*candidate
+	for _, e := range oneEach(eps) {
+		cands = append(cands, &candidate{ep: e, spare: true})
+	}
+	ready, results := make(chan int, len(cands)), make(chan result, len(cands))
+	chosen := make(chan struct{})
+	for i, c := range cands {
 		go func() {
-			rc, err := a.dialRelay(ctx, e, won.Load, false)
-			results <- result{rc, err, e}
+			rc, err := dial(ctx, c.ep, func(rc *relayConn) bool {
+				c.rtt = time.Duration(rc.rtt.Load())
+				ready <- i
+				<-chosen
+				return c.spare
+			})
+			results <- result{i, rc, err}
 		}()
 	}
-	second := slices.IndexFunc(eps, func(e endpoint) bool { return e.key() != eps[0].key() })
-	dialSecond := func() {
-		if second > 0 {
-			dial(eps[second])
-			second = -1
-		}
-	}
-	dial(eps[0])
-	started := 1
-	timer := time.NewTimer(raceDelay)
-	defer timer.Stop()
 	var errs []error
-	for done := 0; done < started; {
+	fail := func(r result) {
+		cands[r.i].done = true
+		errs = append(errs, fmt.Errorf("relay %s: %w", cands[r.i].ep.addr, r.err))
+	}
+	// The choice is made when each relay answered or failed, or rttWindow after
+	// the first answer: a relay that answers later is not in rttBand.
+	var timer <-chan time.Time
+wait:
+	for answered := 0; answered+len(errs) < len(cands); {
 		select {
-		case <-timer.C:
-			if second > 0 {
-				dialSecond()
-				started++
+		case i := <-ready:
+			cands[i].ready = true
+			answered++
+			if timer == nil {
+				t := time.NewTimer(a.rttWindow)
+				defer t.Stop()
+				timer = t.C
 			}
 		case r := <-results:
-			done++
-			if r.err != nil {
-				errs = append(errs, fmt.Errorf("relay %s: %w", r.ep.addr, r.err))
-				if second > 0 {
-					dialSecond()
-					started++
-				}
-				continue
-			}
-			won.Store(true)
-			if done < started {
-				go func() {
-					if r := <-results; r.err == nil {
-						a.addSpare(r.rc)
-					}
-				}()
-			}
-			return r.rc, len(errs), nil
+			// Only a dial that failed ends before the choice.
+			fail(r)
+		case <-timer:
+			break wait
 		}
 	}
-	return nil, len(errs), errors.Join(errs...)
+	order := a.rank(cands)
+	if len(order) > 0 {
+		cands[order[0]].spare = false
+	}
+	close(chosen)
+	if len(order) > 1 {
+		w := cands[order[0]]
+		slog.Info("Chose the relay with the lowest round-trip time", "relay", w.ep.addr, "rtt", w.rtt, "relays", len(order))
+	}
+	// The first session in the order that opens takes the attachment. With none,
+	// the first session of a relay that answered late takes it.
+	pick := func() *relayConn {
+		for _, i := range order {
+			if c := cands[i]; !c.done || c.rc != nil {
+				return c.rc
+			}
+		}
+		for _, c := range cands {
+			if c.rc != nil {
+				return c.rc
+			}
+		}
+		return nil
+	}
+	left := len(cands) - len(errs)
+	for ; won == nil && left > 0; left-- {
+		r := <-results
+		if r.err != nil {
+			fail(r)
+		} else {
+			cands[r.i].rc = r.rc
+			cands[r.i].done = true
+		}
+		won = pick()
+	}
+	if won == nil {
+		return nil, nil, len(errs), errors.Join(errs...)
+	}
+	others = func(yield func(*relayConn)) {
+		// The sessions of the order end Hello in a short time. A late session can
+		// open before them, and it goes after them.
+		open := func() bool {
+			return slices.ContainsFunc(order, func(i int) bool { return !cands[i].done })
+		}
+		for ; left > 0 && open(); left-- {
+			r := <-results
+			cands[r.i].rc, cands[r.i].done = r.rc, true
+		}
+		for _, i := range order {
+			if rc := cands[i].rc; rc != nil && rc != won {
+				yield(rc)
+			}
+		}
+		for _, c := range cands {
+			if !c.ready && c.rc != nil && c.rc != won {
+				yield(c.rc)
+			}
+		}
+		for ; left > 0; left-- {
+			if r := <-results; r.err == nil {
+				yield(r.rc)
+			}
+		}
+	}
+	return won, others, len(errs), nil
+}
+
+// rank returns the relays of cands that answered, in the order of the choice.
+// The first relay in cands within rttBand of the lowest time is next each time.
+func (a *Agent) rank(cands []*candidate) []int {
+	var left, order []int
+	for i, c := range cands {
+		if c.ready {
+			left = append(left, i)
+		}
+	}
+	// A session with no time is after each session with a time.
+	rtt := func(i int) time.Duration {
+		if cands[i].rtt <= 0 {
+			return time.Duration(1<<63 - 1 - int64(a.rttBand))
+		}
+		return cands[i].rtt
+	}
+	for len(left) > 0 {
+		low := rtt(slices.MinFunc(left, func(x, y int) int { return cmp.Compare(rtt(x), rtt(y)) }))
+		k := slices.IndexFunc(left, func(i int) bool { return rtt(i) <= low+a.rttBand })
+		order = append(order, left[k])
+		left = slices.Delete(left, k, k+1)
+	}
+	return order
 }
 
 // move returns the session that takes the attachment from rc, which drains:

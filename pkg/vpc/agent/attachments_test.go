@@ -187,7 +187,7 @@ func TestAttachmentsMove(t *testing.T) {
 				}
 			}
 			a.attached(t)
-			// In the lame duck, Run dials the other relay only after raceDelay.
+			// The lame duck case has no time limit.
 			if tc.oldEnds && !tc.lameDuck {
 				assert.Less(t, time.Since(start), time.Second, "the agent moves when the old session ends, before moveWait")
 			}
