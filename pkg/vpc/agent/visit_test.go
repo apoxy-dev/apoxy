@@ -60,6 +60,67 @@ func waitReach(t *testing.T, ta *testAgent, dst netip.Addr, want dp.Reach) {
 	}, 15*time.Second, 20*time.Millisecond, "answer %v for %s", want, dst)
 }
 
+// pathDown reports whether the path of p is down.
+func pathDown(a *Agent, p *peer) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return p.down
+}
+
+// keyed reports whether the two sides of p have SAs.
+func keyed(p *peer) bool {
+	for _, ch := range []chan struct{}{p.keyed, p.offered} {
+		select {
+		case <-ch:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// dialOnVisit opens the visit of ta to r and dials dst on it. It does not wait
+// for the visit of the peer, and it keeps the other sessions of ta.
+func dialOnVisit(t *testing.T, ctx context.Context, ta *testAgent, r *testRelay, dst netip.Addr) (*visit, error) {
+	t.Helper()
+	v, err := ta.a.visit(ctx, ta.current(), r.relayRef())
+	require.NoError(t, err)
+	defer ta.a.release(v)
+	return v, ta.a.connect(ctx, v.rc, dst, nil)
+}
+
+// oneVisit waits until a and b have one peer session on one visit after a cut:
+// the visit of visitor, if set. Then heal opens the path, and the session moves back.
+func oneVisit(t *testing.T, a, b, visitor *testAgent, ea, eb attachEvent, heal func()) {
+	t.Helper()
+	old := onlyPeer(t, a.a)
+	// The visit with no peer ends at its check.
+	var pa, pb *peer
+	require.Eventually(t, func() bool {
+		if peerCount(a.a) != 1 || peerCount(b.a) != 1 || visitCount(a.a)+visitCount(b.a) != 1 {
+			return false
+		}
+		pa, pb = onlyPeer(t, a.a), onlyPeer(t, b.a)
+		return pa.rc.visitor != pb.rc.visitor && keyed(pa) && keyed(pb)
+	}, 20*time.Second, 20*time.Millisecond, "one peer session on one visit")
+	assert.Error(t, old.qc.Context().Err(), "the session over the trunk closed")
+	if visitor != nil {
+		assert.True(t, onlyPeer(t, visitor.a).rc.visitor, "the session is on the visit of the agent")
+	}
+	ping(t, a.stack, ea.addr, eb.addr, 9000, "to b on the visit")
+	ping(t, b.stack, eb.addr, ea.addr, 9000, "to a on the visit")
+	assert.Same(t, pa, onlyPeer(t, a.a), "the session stays")
+	assert.Same(t, pb, onlyPeer(t, b.a), "the session stays")
+
+	heal()
+	require.Eventually(t, func() bool {
+		return visitCount(a.a)+visitCount(b.a) == 0 &&
+			peerOn(a.a, a.current(), eb.addr) != nil && peerOn(b.a, b.current(), ea.addr) != nil
+	}, 30*time.Second, 20*time.Millisecond, "peer session on the attached sessions")
+	ping(t, a.stack, ea.addr, eb.addr, 9000, "to b over the trunk")
+	ping(t, b.stack, eb.addr, ea.addr, 9000, "to a over the trunk")
+}
+
 // visitPair returns agent a on relay-1 and agent b on relay-2 of one mesh, with
 // echo servers on port 9000. a attaches first, so it has the lower address.
 func visitPair(t *testing.T, optsA, optsB agentOptions) (r1, r2 *testRelay, a, b *testAgent, ea, eb attachEvent) {
@@ -93,6 +154,23 @@ func TestVisitRules(t *testing.T) {
 	for _, tc := range turns {
 		t.Run(tc.name, func(t *testing.T) {
 			assert.Equal(t, tc.want, visits(tc.self, tc.peer))
+		})
+	}
+	// The session on the relay of the higher address stays: the visit of the lower.
+	stays := []struct {
+		name       string
+		self, peer netip.Addr
+		visitor    bool
+		want       bool
+	}{
+		{"lower address, visitor session", low, high, true, true},
+		{"lower address, attached session", low, high, false, false},
+		{"higher address, visitor session", high, low, true, false},
+		{"higher address, attached session", high, low, false, true},
+	}
+	for _, tc := range stays {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, keeps(&relayConn{self: tc.self, visitor: tc.visitor}, tc.peer))
 		})
 	}
 	reaches := []struct {
@@ -353,9 +431,9 @@ func TestVisitReturn(t *testing.T) {
 	}
 }
 
-// TestVisitTurn checks that the agent with the higher address opens no visit: it
-// waits for the peer session of the other agent, or dials when its relay
-// reaches the peer.
+// TestVisitTurn checks that the agent with the higher address opens no visit in
+// its wait: it waits for the peer session of the other agent, or dials when its
+// relay reaches the peer.
 func TestVisitTurn(t *testing.T) {
 	cases := []struct {
 		name string
@@ -374,7 +452,7 @@ func TestVisitTurn(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			r1, r2, a, b, ea, eb := visitPair(t, agentOptions{mode: TransportPSP, visitCheck: time.Hour},
-				agentOptions{mode: TransportPSP, visitAsk: tc.ask})
+				agentOptions{mode: TransportPSP, visitAsk: tc.ask, visitWait: time.Minute})
 			wait := tc.wait
 			if wait == 0 {
 				wait = 10 * time.Second
@@ -442,6 +520,11 @@ func TestNoRoute(t *testing.T) {
 				300*time.Millisecond, 10*time.Millisecond, "the peer session stays, and no visit starts")
 			assert.Same(t, p, onlyPeer(t, a.a))
 			assert.False(t, a.a.holds.failing(eb.addr, time.Now()), "the answer REACH_TRUNK is no failure")
+			// The answer REACH_TRUNK sets the path of the session to up again.
+			a.a.setDown(a.current(), eb.addr, true)
+			require.True(t, pathDown(a.a, p))
+			a.a.visitAfterNoRoute(a.current(), eb.addr)
+			assert.False(t, pathDown(a.a, p))
 		})
 	}
 }
@@ -454,6 +537,7 @@ func TestVisitAfterCut(t *testing.T) {
 		name   string
 		before bool // a and b have a peer session over the trunk before the cut.
 		check  time.Duration
+		wait   time.Duration // Wait of b before it visits. Zero is a wait with no end.
 		run    step
 	}{
 		{
@@ -536,12 +620,74 @@ func TestVisitAfterCut(t *testing.T) {
 				assert.False(t, p.idle)
 			},
 		},
+		{
+			// a sends nothing, so its relay gives it no NoRoute, and only b visits.
+			name: "first packet of the higher address after the cut, then the path comes back", check: 100 * time.Millisecond, wait: 50 * time.Millisecond,
+			run: func(t *testing.T, r1, r2 *testRelay, a, b *testAgent, ea, eb attachEvent, _ *lossyConn) {
+				heal := cutMesh(r1, r2)
+				waitReach(t, b, ea.addr, dp.Reach_REACH_VISIT)
+				require.NoError(t, sendOnce(b.stack, eb.addr, ea.addr, 9000, "first"))
+				assert.Zero(t, b.a.Stats().HoldDrops)
+				v := visitOf(b.a, r1)
+				require.NotNil(t, v)
+				assert.Same(t, v.rc, onlyPeer(t, b.a).rc)
+				p := onlyPeer(t, a.a)
+				assert.Same(t, a.current(), p.rc, "a took the session on its attached session")
+				assert.False(t, p.dialer)
+				assert.Zero(t, visitCount(a.a), "a reaches b, so it does not visit")
+				ping(t, a.stack, ea.addr, eb.addr, 9000, "to b on the visit of b")
+				// relay-2 does not reach a, so the checks keep the visit.
+				require.Never(t, func() bool { return visitOf(b.a, r1) != v }, 300*time.Millisecond, 10*time.Millisecond)
+
+				heal()
+				require.Eventually(t, func() bool {
+					return visitCount(b.a) == 0 && peerOn(b.a, b.current(), ea.addr) != nil
+				}, 30*time.Second, 20*time.Millisecond, "peer session of b on its attached session")
+				assert.True(t, v.rc.ended(), "the visitor session closed")
+				ping(t, b.stack, eb.addr, ea.addr, 9000, "to a over the trunk")
+				ping(t, a.stack, ea.addr, eb.addr, 9000, "to b over the trunk")
+			},
+		},
+		{
+			// Each agent gets a NoRoute, and b does not wait, so the two agents visit.
+			name: "peer session before the cut, the two agents visit", before: true, check: 100 * time.Millisecond, wait: time.Millisecond,
+			run: func(t *testing.T, r1, r2 *testRelay, a, b *testAgent, ea, eb attachEvent, _ *lossyConn) {
+				heal := cutMesh(r1, r2)
+				waitReach(t, a, eb.addr, dp.Reach_REACH_VISIT)
+				waitReach(t, b, ea.addr, dp.Reach_REACH_VISIT)
+				b.a.noRoute(b.current(), &dp.NoRoute{Vpc: b.current().ref, Address: ea.addr.String(), HomeRelay: r1.relayRef()})
+				a.a.noRoute(a.current(), &dp.NoRoute{Vpc: a.current().ref, Address: eb.addr.String(), HomeRelay: r2.relayRef()})
+				oneVisit(t, a, b, nil, ea, eb, heal)
+			},
+		},
+		{
+			// a dialed the old session and no data went on it, so a sends no report and
+			// gets no NoRoute. It asks its relay for the path when b dials as a visitor.
+			name: "peer session before the cut, only the higher address gets a NoRoute", check: 100 * time.Millisecond, wait: 50 * time.Millisecond,
+			run: func(t *testing.T, r1, r2 *testRelay, a, b *testAgent, ea, eb attachEvent, _ *lossyConn) {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				require.NoError(t, a.a.Connect(ctx, eb.addr))
+				old := onlyPeer(t, a.a)
+				require.True(t, old.dialer)
+				require.True(t, a.a.first(a.current(), old.subject, old.instance), "a is the first agent")
+				heal := cutMesh(r1, r2)
+				waitReach(t, b, ea.addr, dp.Reach_REACH_VISIT)
+				b.a.noRoute(b.current(), &dp.NoRoute{Vpc: b.current().ref, Address: ea.addr.String(), HomeRelay: r1.relayRef()})
+				oneVisit(t, a, b, b, ea, eb, heal)
+			},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			conn := &lossyConn{}
-			r1, r2, a, b, ea, eb := visitPair(t, agentOptions{mode: TransportPSP, conn: conn, visitCheck: tc.check}, agentOptions{mode: TransportPSP})
+			wait := tc.wait
+			if wait == 0 {
+				wait = time.Hour
+			}
+			r1, r2, a, b, ea, eb := visitPair(t, agentOptions{mode: TransportPSP, conn: conn, visitCheck: tc.check},
+				agentOptions{mode: TransportPSP, visitCheck: tc.check, visitWait: wait})
 			if tc.before {
 				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer cancel()
@@ -549,6 +695,164 @@ func TestVisitAfterCut(t *testing.T) {
 				ping(t, a.stack, ea.addr, eb.addr, 9000, "before the cut")
 			}
 			tc.run(t, r1, r2, a, b, ea, eb, conn)
+		})
+	}
+}
+
+// TestVisitBoth checks the visit of the agent with the higher address, and that
+// one peer session stays when each agent visits the relay of the other. The
+// mesh path is up, so the relays take the visits as with a cut path.
+func TestVisitBoth(t *testing.T) {
+	type step func(t *testing.T, ctx context.Context, r1, r2 *testRelay, a, b *testAgent, ea, eb attachEvent, conn *lossyConn)
+	cases := []struct {
+		name string
+		wait time.Duration // Wait of b before it visits.
+		// onA: the session that stays is on the visit of a. Else it is on the visit of b.
+		onA bool
+		run step
+	}{
+		{
+			name: "only the higher address visits", wait: 50 * time.Millisecond,
+			run: func(t *testing.T, ctx context.Context, r1, r2 *testRelay, a, b *testAgent, ea, eb attachEvent, _ *lossyConn) {
+				require.NoError(t, b.a.connect(ctx, b.current(), ea.addr, visitAnswer(r1)))
+				assert.Zero(t, visitCount(a.a), "a sent nothing, so it does not visit")
+				// a reaches b on its attached session, so the answer REACH_VISIT starts no visit.
+				require.NoError(t, a.a.connectVisit(ctx, a.current(), eb.addr, r2.relayRef()))
+				assert.Zero(t, visitCount(a.a))
+			},
+		},
+		{
+			name: "the lower address visits after the higher address", wait: 50 * time.Millisecond, onA: true,
+			run: func(t *testing.T, ctx context.Context, r1, r2 *testRelay, a, b *testAgent, ea, eb attachEvent, _ *lossyConn) {
+				require.NoError(t, b.a.connect(ctx, b.current(), ea.addr, visitAnswer(r1)))
+				second := onlyPeer(t, b.a)
+				_, err := dialOnVisit(t, ctx, a, r2, eb.addr)
+				require.NoError(t, err)
+				assert.Error(t, second.qc.Context().Err(), "the session on the visit of b closed")
+			},
+		},
+		{
+			name: "the higher address visits after the lower address", wait: time.Hour, onA: true,
+			run: func(t *testing.T, ctx context.Context, r1, r2 *testRelay, a, b *testAgent, ea, eb attachEvent, _ *lossyConn) {
+				require.NoError(t, a.a.connect(ctx, a.current(), eb.addr, visitAnswer(r2)))
+				pa, pb := onlyPeer(t, a.a), onlyPeer(t, b.a)
+				// a refuses the dial of b, and b uses the session of the visit of a.
+				_, err := dialOnVisit(t, ctx, b, r1, ea.addr)
+				require.NoError(t, err)
+				require.Eventually(t, func() bool { return peerCount(a.a) == 1 && peerCount(b.a) == 1 }, 5*time.Second, 10*time.Millisecond)
+				assert.Same(t, pa, onlyPeer(t, a.a))
+				assert.Same(t, pb, onlyPeer(t, b.a))
+			},
+		},
+		{
+			// b waits with no end, so only the refused keys of a start its visit.
+			name: "the visit of the lower address has no data path", wait: time.Hour,
+			run: func(t *testing.T, ctx context.Context, r1, r2 *testRelay, a, b *testAgent, ea, eb attachEvent, conn *lossyConn) {
+				done := make(chan error, 1)
+				go func() { done <- b.a.connect(ctx, b.current(), ea.addr, visitAnswer(r1)) }()
+				conn.limitProbes.Store(true)
+				require.ErrorIs(t, a.a.connect(ctx, a.current(), eb.addr, visitAnswer(r2)), errVisitNoData)
+				require.NoError(t, <-done)
+				// b reaches a on its own visit now, so it does not wait again.
+				require.NoError(t, b.a.connect(ctx, b.current(), ea.addr, visitAnswer(r1)))
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			conn := &lossyConn{}
+			r1, r2, a, b, ea, eb := visitPair(t, agentOptions{mode: TransportPSP, conn: conn, visitCheck: time.Hour},
+				agentOptions{mode: TransportPSP, visitCheck: time.Hour, visitAsk: time.Hour, visitWait: tc.wait})
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			tc.run(t, ctx, r1, r2, a, b, ea, eb, conn)
+
+			// One peer session stays: on a visitor session of one agent, and on the
+			// attached session of the other.
+			visitor, taker, far := b, a, r1
+			if tc.onA {
+				visitor, taker, far = a, b, r2
+			}
+			require.Eventually(t, func() bool { return peerCount(a.a) == 1 && peerCount(b.a) == 1 }, 5*time.Second, 10*time.Millisecond)
+			v := visitOf(visitor.a, far)
+			require.NotNil(t, v)
+			pv, pt := onlyPeer(t, visitor.a), onlyPeer(t, taker.a)
+			assert.Same(t, v.rc, pv.rc)
+			assert.True(t, pv.dialer)
+			assert.Same(t, taker.current(), pt.rc)
+			assert.False(t, pt.dialer)
+			ping(t, a.stack, ea.addr, eb.addr, 9000, "to b")
+			ping(t, b.stack, eb.addr, ea.addr, 9000, "to a")
+			assert.Same(t, pv, onlyPeer(t, visitor.a), "the session stays")
+
+			// A check ends the visit that no peer uses. A check of the other visit
+			// moves its peer back: the home relay reaches it over the trunk.
+			for _, ta := range []*testAgent{taker, visitor} {
+				ta.a.mu.Lock()
+				var vs []*visit
+				for _, v := range ta.a.visits {
+					vs = append(vs, v)
+				}
+				ta.a.mu.Unlock()
+				for _, v := range vs {
+					require.True(t, ta.a.checkVisit(v), "the visit ended")
+				}
+				assert.Zero(t, visitCount(ta.a))
+				if ta == taker {
+					assert.Same(t, pt, onlyPeer(t, taker.a), "the check of a visit with no peer changes no session")
+				}
+			}
+			require.Eventually(t, func() bool { return peerCount(a.a) == 1 && peerCount(b.a) == 1 }, 5*time.Second, 10*time.Millisecond)
+			assert.Same(t, visitor.current(), onlyPeer(t, visitor.a).rc, "the peer session is on the attached session")
+			ping(t, a.stack, ea.addr, eb.addr, 9000, "to b over the trunk")
+			ping(t, b.stack, eb.addr, ea.addr, 9000, "to a over the trunk")
+		})
+	}
+}
+
+// TestVisitDuplicate checks the duplicate rule for the dial of a visitor. a is
+// the first agent and dialed the old session, so it refuses b while the path is up.
+func TestVisitDuplicate(t *testing.T) {
+	cases := []struct {
+		name string
+		down bool // The agents know that the path of the old session is down.
+	}{
+		{name: "path up, the old session stays"},
+		{name: "path down, the new session replaces it", down: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r1, _, a, b, ea, eb := visitPair(t, agentOptions{mode: TransportPSP, visitCheck: time.Hour}, agentOptions{mode: TransportPSP, visitCheck: time.Hour})
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			require.NoError(t, a.a.Connect(ctx, eb.addr))
+			require.Eventually(t, func() bool { return peerCount(b.a) == 1 }, 5*time.Second, 10*time.Millisecond)
+			oldA, oldB := onlyPeer(t, a.a), onlyPeer(t, b.a)
+			require.True(t, oldA.dialer)
+			require.True(t, a.a.first(a.current(), oldA.subject, oldA.instance), "a is the first agent")
+			if tc.down {
+				a.a.setDown(a.current(), eb.addr, true)
+				b.a.setDown(b.current(), ea.addr, true)
+			}
+
+			v, err := dialOnVisit(t, ctx, b, r1, ea.addr)
+			require.NoError(t, err)
+			require.Eventually(t, func() bool { return peerCount(a.a) == 1 && peerCount(b.a) == 1 }, 5*time.Second, 10*time.Millisecond)
+			pa, pb := onlyPeer(t, a.a), onlyPeer(t, b.a)
+			if !tc.down {
+				assert.Same(t, oldA, pa)
+				assert.Same(t, oldB, pb)
+				assert.NoError(t, oldA.qc.Context().Err(), "the old session is open")
+				return
+			}
+			assert.Error(t, oldA.qc.Context().Err(), "the old session closed")
+			assert.Same(t, a.current(), pa.rc)
+			assert.False(t, pa.dialer)
+			assert.Same(t, v.rc, pb.rc)
+			ping(t, a.stack, ea.addr, eb.addr, 9000, "to b on the visit of b")
+			ping(t, b.stack, eb.addr, ea.addr, 9000, "to a on the visit of b")
 		})
 	}
 }

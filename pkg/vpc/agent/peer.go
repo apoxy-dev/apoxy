@@ -65,6 +65,7 @@ type peer struct {
 	keyed     chan struct{} // Closed when SAs from the peer first apply.
 	keyedOnce sync.Once
 	offered   chan struct{} // Closed when the peer takes the first offer.
+	noData    chan struct{} // Closed when the peer refuses the first offer: its path carries no data.
 
 	// Set before ready closes, under Agent.mu.
 	instance uint64
@@ -79,6 +80,9 @@ type peer struct {
 	// idle is true for a session on a visitor session whose path carries no
 	// data. The peer has no route and no SAs.
 	idle bool
+	// down is true when the relay has no path to the peer, or when the peer has
+	// no data path. A new session of the peer replaces it. Guarded by Agent.mu.
+	down bool
 	// advertised is the prefixes that the peer advertises and that route to bp.
 	// Guarded by Agent.mu.
 	advertised []netip.Prefix
@@ -195,6 +199,7 @@ func (a *Agent) newPeer(rc *relayConn, qc quic.Connection, dst netip.Addr) (*pee
 		granted: make(chan struct{}),
 		keyed:   make(chan struct{}),
 		offered: make(chan struct{}),
+		noData:  make(chan struct{}),
 		spis:    map[uint32]spiRow{},
 	}
 	p.conn = rpc.NewConn(qc, a.mux)
@@ -223,7 +228,7 @@ func (a *Agent) Connect(ctx context.Context, dst netip.Addr) error {
 // and waits for its SAs. res is the ResolvePeer answer for dst, or nil.
 func (a *Agent) connect(ctx context.Context, rc *relayConn, dst netip.Addr, res *dp.ResolvePeerResponse) error {
 	a.mu.Lock()
-	p := a.peerTo(rc, dst)
+	p := a.livePeerTo(rc, dst)
 	a.mu.Unlock()
 	if p == nil {
 		var err error
@@ -233,7 +238,7 @@ func (a *Agent) connect(ctx context.Context, rc *relayConn, dst netip.Addr, res 
 			}
 		}
 		if res.GetReach() == dp.Reach_REACH_VISIT {
-			// The relay cannot reach the relay of the peer, so one of the agents visits.
+			// The relay cannot reach the relay of the peer, so the agents visit.
 			return a.connectVisit(ctx, rc, dst, res.GetHomeRelay())
 		}
 		if p = a.waitGrant(ctx, rc, dst, res); p != nil {
@@ -279,6 +284,8 @@ func (p *peer) wait(ctx context.Context) error {
 		case <-ch:
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-p.noData:
+			return fmt.Errorf("peer %s: %w", p.addr, errVisitNoData)
 		case <-p.qc.Context().Done():
 			return fmt.Errorf("peer session closed: %w", context.Cause(p.qc.Context()))
 		}
@@ -318,13 +325,28 @@ func (a *Agent) peerTo(rc *relayConn, dst netip.Addr) *peer {
 	return nil
 }
 
-// waitPeer waits until a peer session on rc that covers dst opens.
+// livePeerTo is peerTo for the sessions whose path is not down. The caller
+// holds a.mu.
+func (a *Agent) livePeerTo(rc *relayConn, dst netip.Addr) *peer {
+	for _, q := range a.peers {
+		if q.rc == rc && q.bp != nil && !q.down && q.qc.Context().Err() == nil && q.routes(dst) {
+			return q
+		}
+	}
+	return nil
+}
+
+// waitPeer waits until a peer session on rc that covers dst opens. For a
+// visitor session, the session that the peer opened as a visitor counts too.
 func (a *Agent) waitPeer(ctx context.Context, rc *relayConn, dst netip.Addr) (*peer, error) {
 	ctx, cancel := context.WithTimeout(ctx, duplicateWait)
 	defer cancel()
 	for {
 		a.mu.Lock()
 		p, admitted := a.peerTo(rc, dst), a.admitted
+		if p == nil && rc.visitor && a.rc != nil {
+			p = a.livePeerTo(a.rc, dst)
+		}
 		a.mu.Unlock()
 		if p != nil {
 			return p, nil
@@ -436,21 +458,37 @@ func (a *Agent) admit(p *peer, v *dp.Version, g *dp.AttachmentGrant, instance ui
 	}
 
 	a.mu.Lock()
-	var old *peer
+	// away is a session with the agent on the other relay session of a visit. One
+	// whose path works comes before the others.
+	var old, away *peer
 	for _, q := range a.peers {
-		if q != p && q.rc == p.rc && q.bp != nil && q.sameAgent(p.subject, instance, prefixes) {
+		if q == p || q.bp == nil || !q.sameAgent(p.subject, instance, prefixes) {
+			continue
+		}
+		switch {
+		case q.rc == p.rc:
 			old = q
+		case q.rc.visitor != p.rc.visitor && (away == nil || away.idle || away.down):
+			away = q
 		}
 	}
-	// When both agents dial, the session that the first agent dialed stays.
-	if old != nil && old.instance == instance && old.dialer != p.dialer && old.dialer == a.first(p.rc, p.subject, instance) {
+	// When both agents dial, the session that the first agent dialed stays. A
+	// session with the path down gives its place to each new session.
+	if old != nil && !old.down && old.instance == instance && old.dialer != p.dialer && old.dialer == a.first(p.rc, p.subject, instance) {
+		a.mu.Unlock()
+		return errDuplicate
+	}
+	// When both agents visit, the session on the relay of the higher address stays.
+	if away != nil && !away.idle && !away.down && !keeps(p.rc, overlayAddr(prefixes)) {
 		a.mu.Unlock()
 		return errDuplicate
 	}
 	a.mu.Unlock()
-	if old != nil {
-		_ = old.qc.CloseWithError(quic.ApplicationErrorCode(dp.PeerCloseCode_PEER_CLOSE_CODE_DUPLICATE), "new session")
-		a.dropPeer(old)
+	for _, q := range []*peer{old, away} {
+		if q != nil {
+			_ = q.qc.CloseWithError(quic.ApplicationErrorCode(dp.PeerCloseCode_PEER_CLOSE_CODE_DUPLICATE), "new session")
+			a.dropPeer(q)
+		}
 	}
 
 	bp, err := a.bind.AddPeerLanes(p.rc.relayAddr, int(min(max(lanes, 1), keys.MaxLanes)))
@@ -631,6 +669,11 @@ func (a *Agent) dropPeer(p *peer) {
 }
 
 func (a *Agent) closePeers(match func(*peer) bool, reason string) {
+	a.closePeersWith(0, match, reason)
+}
+
+// closePeersWith closes the peer sessions of match with a close code.
+func (a *Agent) closePeersWith(code dp.PeerCloseCode, match func(*peer) bool, reason string) {
 	a.mu.Lock()
 	var ps []*peer
 	for _, p := range a.peers {
@@ -640,7 +683,7 @@ func (a *Agent) closePeers(match func(*peer) bool, reason string) {
 	}
 	a.mu.Unlock()
 	for _, p := range ps {
-		_ = p.qc.CloseWithError(0, reason)
+		_ = p.qc.CloseWithError(quic.ApplicationErrorCode(code), reason)
 		a.dropPeer(p)
 	}
 }
@@ -673,22 +716,24 @@ func (p *peer) offer() {
 		slog.Warn("Failed to create receive SAs", "peer", p.subject, "error", err)
 		return
 	}
-	if p.sendKeys(req) {
+	switch err := p.sendKeys(req); {
+	case err == nil:
 		close(p.offered)
+	case rpc.CodeOf(err) == rpc.FailedPrecondition:
+		// The peer is a visitor, and the path of its visit carries no data.
+		p.rc.a.noDataPath(p)
 	}
 }
 
-// sendKeys sends a key change to the peer. It reports whether the peer took it.
-func (p *peer) sendKeys(req keys.Request) bool {
+// sendKeys sends a key change to the peer. It returns nil when the peer took it.
+func (p *peer) sendKeys(req keys.Request) error {
 	ctx, cancel := context.WithTimeout(p.rc.ctx, keysTimeout)
 	defer cancel()
-	if err := giveKeys(ctx, p.bp, req, p.client.Keys); err != nil {
-		if p.qc.Context().Err() == nil {
-			slog.Warn("Failed to send keys to a peer", "peer", p.subject, "error", err)
-		}
-		return false
+	err := giveKeys(ctx, p.bp, req, p.client.Keys)
+	if err != nil && p.qc.Context().Err() == nil {
+		slog.Warn("Failed to send keys to a peer", "peer", p.subject, "error", err)
 	}
-	return true
+	return err
 }
 
 // giveKeys sends a key change of bp with send, and offers new SAs for the SPIs
@@ -825,7 +870,12 @@ func (s *peerService) Open(ctx context.Context, in *dp.OpenRequest) (*dp.OpenRes
 	if p.dialer {
 		return nil, rpc.Errorf(rpc.FailedPrecondition, "the dialer calls Open")
 	}
-	if err := s.a.admit(p, in.GetVersion(), in.GetGrant(), in.GetInstance(), in.GetMode(), in.GetLanes()); err != nil {
+	err := s.a.admit(p, in.GetVersion(), in.GetGrant(), in.GetInstance(), in.GetMode(), in.GetLanes())
+	if errors.Is(err, errDuplicate) && s.a.cutFrom(ctx, p) {
+		// The relay has no path to the peer, so the peer dialed as a visitor.
+		err = s.a.admit(p, in.GetVersion(), in.GetGrant(), in.GetInstance(), in.GetMode(), in.GetLanes())
+	}
+	if err != nil {
 		if errors.Is(err, errAlreadyOpen) {
 			// The session stays open for the first Open.
 			return nil, rpc.Errorf(rpc.FailedPrecondition, "%v", err)

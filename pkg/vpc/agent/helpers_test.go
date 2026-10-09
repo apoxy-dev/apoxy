@@ -456,8 +456,9 @@ type agentOptions struct {
 	noGrants bool
 	// localRoutesOnly sets Config.LocalRoutesOnly.
 	localRoutesOnly bool
-	// visitCheck and visitAsk set the intervals of the visits. Zero keeps them.
-	visitCheck, visitAsk time.Duration
+	// visitCheck, visitAsk and visitWait set the intervals of the visits. Zero
+	// keeps them.
+	visitCheck, visitAsk, visitWait time.Duration
 }
 
 // noGrantsService is a peer service that does not have the Grants call.
@@ -614,6 +615,9 @@ func (w *world) agent(t *testing.T, name string, r *testRelay, opts agentOptions
 	}
 	if opts.visitAsk != 0 {
 		ta.a.visitAsk = opts.visitAsk
+	}
+	if opts.visitWait != 0 {
+		ta.a.visitWait = opts.visitWait
 	}
 	if opts.noGrants {
 		ta.a.mux = rpc.NewMux()

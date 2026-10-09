@@ -169,7 +169,7 @@ type Agent struct {
 	// visits has the visitor sessions, by relay key. Guarded by mu.
 	visits map[string]*visit
 	// Intervals of the visits. Tests change them before Run.
-	visitCheck, visitAsk time.Duration
+	visitCheck, visitAsk, visitWait time.Duration
 
 	routeMu  sync.Mutex
 	routesOf *relayConn            // Session that OnRoutes follows.
@@ -192,7 +192,7 @@ func New(cfg Config) *Agent {
 		admitted:  make(chan struct{}),
 	}
 	a.specs, a.attachWake = map[string]*AttachmentSpec{}, make(chan struct{}, 1)
-	a.visitCheck, a.visitAsk = visitCheck, visitAsk
+	a.visitCheck, a.visitAsk, a.visitWait = visitCheck, visitAsk, visitWait
 	a.mux = rpc.NewMux()
 	dp.RegisterPeerServer(a.mux, &peerService{a: a})
 	a.demux.Probe = a.onProbe

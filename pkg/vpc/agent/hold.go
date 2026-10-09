@@ -242,7 +242,7 @@ func (a *Agent) reach(ctx context.Context, dst netip.Addr) error {
 	var p *peer
 	own := false
 	if rc != nil {
-		p, own = a.peerTo(rc, dst), rc.ownAddr(dst)
+		p, own = a.livePeerTo(rc, dst), rc.ownAddr(dst)
 	}
 	a.mu.Unlock()
 	if rc == nil {

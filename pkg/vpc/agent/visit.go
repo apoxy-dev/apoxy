@@ -25,6 +25,9 @@ const (
 	// visitAsk is the interval at which an agent that waits for the visit of a
 	// peer asks its relay again.
 	visitAsk = time.Second
+	// visitWait is the time that the agent with the higher address waits for the
+	// peer session of the visit of its peer, before it visits too.
+	visitWait = 2 * time.Second
 )
 
 var (
@@ -57,10 +60,16 @@ func (v *visit) session() *relayConn {
 	}
 }
 
-// visits reports whether the agent with the address self visits to reach peer.
-// Only the lower address visits, so that two agents do not visit each other.
+// visits reports whether the agent with the address self visits first to reach
+// peer. The agent with the higher address visits only after visitWait.
 func visits(self, peer netip.Addr) bool {
 	return self.Compare(peer) < 0
+}
+
+// keeps reports whether a peer session on rc with the agent at peer stays when
+// the two agents visit: the one on the relay of the agent with the higher address.
+func keeps(rc *relayConn, peer netip.Addr) bool {
+	return rc.visitor == visits(rc.self, peer)
 }
 
 // reachable reports whether the relay that gave res reaches the peer, so that
@@ -70,7 +79,7 @@ func reachable(res *dp.ResolvePeerResponse) bool {
 }
 
 // noRoute applies a NoRoute of rc. With a home relay, the peer sessions stay
-// and the agent starts a visit. With none, the sessions to the address close.
+// with the path down, and a visit starts. With none, the sessions close.
 func (a *Agent) noRoute(rc *relayConn, m *dp.NoRoute) {
 	dst, err := netip.ParseAddr(m.GetAddress())
 	if err != nil {
@@ -80,12 +89,56 @@ func (a *Agent) noRoute(rc *relayConn, m *dp.NoRoute) {
 		a.closePeers(func(p *peer) bool { return p.rc == rc && p.routes(dst) }, "relay has no route to the peer")
 		return
 	}
+	a.setDown(rc, dst.Unmap(), true)
 	// The Sync reader must not wait for the visit.
 	go a.visitAfterNoRoute(rc, dst.Unmap())
 }
 
+// setDown sets the path of the peer sessions on rc that route dst to down or up.
+func (a *Agent) setDown(rc *relayConn, dst netip.Addr, down bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, p := range a.peers {
+		if p.rc == rc && p.routes(dst) {
+			p.down = down
+		}
+	}
+}
+
+// noDataPath sets the path of p to down: the peer has no data path to this agent.
+func (a *Agent) noDataPath(p *peer) {
+	a.mu.Lock()
+	p.down = true
+	a.mu.Unlock()
+	close(p.noData)
+}
+
+// cutFrom asks the relay of p how it reaches the open sessions of the subject of
+// p. It sets the path to down on the answer REACH_VISIT, and reports that.
+func (a *Agent) cutFrom(ctx context.Context, p *peer) bool {
+	if p.rc.visitor {
+		return false
+	}
+	a.mu.Lock()
+	var old []*peer
+	for _, q := range a.peers {
+		if q != p && q.rc == p.rc && q.bp != nil && !q.down && q.subject == p.subject {
+			old = append(old, q)
+		}
+	}
+	a.mu.Unlock()
+	found := false
+	for _, q := range old {
+		if res, err := p.rc.resolve(ctx, q.addr); err == nil && res.GetReach() == dp.Reach_REACH_VISIT {
+			a.setDown(p.rc, q.addr, true)
+			found = true
+		}
+	}
+	return found
+}
+
 // visitAfterNoRoute asks rc again how it reaches dst, and starts the visit if
-// the answer is still a visit and this agent is the one that visits.
+// the answer is still a visit. Another answer sets the path of dst to up again.
 func (a *Agent) visitAfterNoRoute(rc *relayConn, dst netip.Addr) {
 	a.mu.Lock()
 	current := a.rc == rc
@@ -94,15 +147,21 @@ func (a *Agent) visitAfterNoRoute(rc *relayConn, dst netip.Addr) {
 		return
 	}
 	addr, ok := a.peerAddr(rc, dst)
-	if !ok || !visits(rc.self, addr) || a.holds.failing(addr, time.Now()) {
+	if !ok || a.holds.failing(addr, time.Now()) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(rc.ctx, holdTime)
 	defer cancel()
 	err := a.holds.once(addr, func() error {
 		res, err := rc.resolve(ctx, addr)
-		if err != nil || res.GetReach() != dp.Reach_REACH_VISIT {
+		if err != nil {
 			return err
+		}
+		if res.GetReach() != dp.Reach_REACH_VISIT {
+			if reachable(res) {
+				a.setDown(rc, addr, false)
+			}
+			return nil
 		}
 		return a.connectVisit(ctx, rc, addr, res.GetHomeRelay())
 	})
@@ -115,14 +174,20 @@ func (a *Agent) visitAfterNoRoute(rc *relayConn, dst netip.Addr) {
 }
 
 // connectVisit reaches dst after the answer REACH_VISIT of home with the relay
-// ref. The agent with the lower address opens a visitor session to that relay
-// and a peer session on it. The other agent waits for that peer session.
+// ref. The agent opens a visitor session to that relay and a peer session on
+// it. The agent with the higher address first waits for the visit of its peer.
 func (a *Agent) connectVisit(ctx context.Context, home *relayConn, dst netip.Addr, ref *dp.RelayRef) error {
 	if home.visitor || len(ref.GetAddresses()) == 0 {
 		return fmt.Errorf("relay has no path to peer %s (%v)", dst, dp.Reach_REACH_VISIT)
 	}
-	if !visits(home.self, dst) {
-		return a.awaitVisit(ctx, home, dst)
+	// The agent with the lower address visits first, so the other agent waits.
+	// It does not wait again for a peer that it reaches on its own visit.
+	use := a.usePeer
+	if !visits(home.self, dst) && !a.visiting(dst) {
+		use = a.awaitVisit
+	}
+	if ok, err := use(ctx, home, dst); ok {
+		return err
 	}
 	v, err := a.visit(ctx, home, ref)
 	if err != nil {
@@ -136,39 +201,75 @@ func (a *Agent) connectVisit(ctx context.Context, home *relayConn, dst netip.Add
 		// The sessions with no data path close, and the dial below makes a new one.
 		a.closePeers(func(q *peer) bool { return q.rc == v.rc && q.idle }, "path to the visited relay carries data now")
 	}
-	// A session on another relay session has the routes of the peer, and its path is down.
-	a.closePeers(func(q *peer) bool { return q.rc != v.rc && q.routes(dst) }, "peer is on a visited relay")
+	// The peer opened a session as a visitor while this visit started. It stays.
+	if ok, err := a.usePeer(ctx, home, dst); ok {
+		return err
+	}
+	// A session on another relay session has the routes of the peer, and its path
+	// is down. The close code moves an agent that waits for it to the new session.
+	a.closePeersWith(dp.PeerCloseCode_PEER_CLOSE_CODE_DUPLICATE,
+		func(q *peer) bool { return q.rc != v.rc && q.routes(dst) }, "peer is on a visited relay")
 	return a.connect(ctx, v.rc, dst, nil)
 }
 
-// awaitVisit waits for the peer session that the agent at dst opens as a
-// visitor of the relay of rc. It asks the relay again at each interval, and
-// dials when the relay reaches dst.
-func (a *Agent) awaitVisit(ctx context.Context, rc *relayConn, dst netip.Addr) error {
+// visiting reports whether a peer session that routes dst is on a visitor
+// session of this agent.
+func (a *Agent) visiting(dst netip.Addr) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, p := range a.peers {
+		if p.rc.visitor && p.bp != nil && p.qc.Context().Err() == nil && p.routes(dst) {
+			return true
+		}
+	}
+	return false
+}
+
+// usePeer waits for the SAs of the peer session on rc to dst whose path is not
+// down. It reports false when the caller must visit: no session, or no data path.
+func (a *Agent) usePeer(ctx context.Context, rc *relayConn, dst netip.Addr) (bool, error) {
+	a.mu.Lock()
+	p := a.livePeerTo(rc, dst)
+	a.mu.Unlock()
+	if p == nil {
+		return false, nil
+	}
+	err := a.waitKeys(ctx, p, dst)
+	return !errors.Is(err, errVisitNoData), err
+}
+
+// awaitVisit is usePeer with a wait of visitWait for the session that the agent
+// at dst opens as a visitor. It dials when the relay reaches dst again.
+func (a *Agent) awaitVisit(ctx context.Context, rc *relayConn, dst netip.Addr) (bool, error) {
 	t := time.NewTicker(a.visitAsk)
 	defer t.Stop()
+	wait := time.NewTimer(a.visitWait)
+	defer wait.Stop()
 	for {
 		a.mu.Lock()
-		p, admitted := a.peerTo(rc, dst), a.admitted
+		p, admitted := a.livePeerTo(rc, dst), a.admitted
 		a.mu.Unlock()
 		if p != nil {
-			return a.waitKeys(ctx, p, dst)
+			err := a.waitKeys(ctx, p, dst)
+			return !errors.Is(err, errVisitNoData), err
 		}
 		select {
 		case <-admitted:
 			continue
 		case <-rc.ctx.Done():
-			return errors.New("relay session closed")
+			return true, errors.New("relay session closed")
 		case <-ctx.Done():
-			return fmt.Errorf("peer %s: %w: %w", dst, errPeerVisits, ctx.Err())
+			return true, fmt.Errorf("peer %s: %w: %w", dst, errPeerVisits, ctx.Err())
+		case <-wait.C:
+			return false, nil
 		case <-t.C:
 		}
 		res, err := rc.resolve(ctx, dst)
 		if err != nil {
-			return err
+			return true, err
 		}
 		if reachable(res) {
-			return a.connect(ctx, rc, dst, res)
+			return true, a.connect(ctx, rc, dst, res)
 		}
 	}
 }

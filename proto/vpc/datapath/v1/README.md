@@ -494,6 +494,27 @@ attachment, and the visited relay does not send it in `Presence`. So no other
 relay learns of the visit, and no route changes: a session of the visited
 relay keeps the route that it has for the address, and gets no `RouteDelta`.
 
+Of two agents whose relays have no path between them, the agent with the
+lower overlay address visits first. The agent with the higher address waits
+2 s for the peer session of that visit. Then it visits the relay of its peer
+in the same way, if no peer session came, or at once if the peer refuses its
+keys because the path of the visit carries no data. An agent that has a peer
+session with the peer on its attached session, with the path up, does not
+visit. When each agent visits the relay of the other, one peer session stays:
+the one on the relay of the agent with the higher address, which is on the
+visit of the lower address. Each agent refuses or closes the other one with
+`PEER_CLOSE_CODE_DUPLICATE`, and ends the visit that no peer uses at its next
+check.
+
+The path of a peer session is down when the relay of the agent sends `NoRoute`
+with `home_relay` for the address of the peer, and when the peer refuses the
+keys of the agent because its visit carries no data. The session stays open.
+A new peer session of the same agent replaces a session with the path down,
+also when the rule for two dials keeps the old one. An agent that must refuse
+a dial by that rule first asks its relay with `ResolvePeer`: on the answer
+`REACH_VISIT` the path of the old session is down, and the new session
+replaces it. A session with the path up keeps the rule for two dials.
+
 The visited relay accepts the call only if all of these are true:
 
 - The relay has a mesh (`Unimplemented`), and it can read the relay roots of
@@ -660,7 +681,9 @@ the other agent is below its minimum, it closes the session with `UPGRADE`
 dial (an open session in the other role with the same SPIFFE ID and the same
 `instance`), the session that the first agent dialed stays, and the other
 closes with `DUPLICATE`. The first agent has the lower SPIFFE ID, or the lower
-`instance` when the two agents have one SPIFFE ID.
+`instance` when the two agents have one SPIFFE ID. An open session with the
+path down does not stay by this rule: the new session replaces it (see `Visit`
+in "Relay").
 
 Many agents can have one SPIFFE ID, so an agent keeps one session for each
 `instance` of a SPIFFE ID. A new session replaces an open session of the same
@@ -924,7 +947,7 @@ only for logs and metrics. On a mesh session, `MeshOpenRequest` and
 | 9 | The trunk packet with a sender tag on lane 1: a clear inner packet of an agent. | No duty. | No duty. | Opens a trunk packet with a sender tag and a lane 1 SA, checks it with the replay window and the entries of the other relay, and sends its inner packet only to a session of its own: in a data frame, or sealed with the SA of a PSP-mode agent. With a relay at revision 9 or later: sends the inner packet of a data frame, or of a PSP packet that it opens, for an address with a route of that relay in a lane 1 trunk packet, and sends no `NoRoute` for it. Sends no such trunk packet to a relay below revision 9: it drops the inner packet, and sends no `NoRoute` for it. |
 | 10 | The answer `REACH_TRUNK` of `ResolvePeer`. | Opens a peer session to an address with the answer `REACH_TRUNK`, as to an address of its own relay. | No duty: it sends `local_routes_only`, so it gets `NotFound`. | Answers `ResolvePeer` for an address with a route of another relay with `REACH_TRUNK`, `subject` and `attachment_ids`, when the session of the caller is at revision 10 or later, gets the routes of other relays and has an attachment, the other relay is at revision 9 or later, and each relay has the trunk SAs of the other on the open mesh session. Answers `NotFound` in each other case, as a relay at revision 6 does. With a mesh, refuses an `Attach` with more than 64 prefixes. |
 | 11 | `Relay.Visit`. | No duty: an agent of this revision makes no `Visit` call. | No duty. | With a mesh: accepts `Visit` after the checks of the grant, the caller and the address, sends the traffic of its own sessions for the visit prefix to the visitor session, and sends nothing of a visitor to another relay. With no mesh: answers `Unimplemented`. |
-| 12 | The answer `REACH_VISIT` of `ResolvePeer`, and `home_relay` in `NoRoute`. | On `REACH_VISIT`, and on a `NoRoute` with `home_relay`, keeps its peer sessions. The agent with the lower address opens a visitor session to `home_relay` with `local_routes_only`, calls `Visit`, and opens the peer session there. The agent with the higher address waits for that peer session. Data goes on a visit only when the attached session and the visitor session are in PSP mode and the path probe at the device MTU passes. The agent asks its own relay again at an interval and moves the peer back when the answer is `REACH_LOCAL` or `REACH_TRUNK`. | No duty: it sends `local_routes_only`, so it gets neither. | Answers `ResolvePeer` with `REACH_VISIT` and `home_relay`, and sends `NoRoute` with `home_relay`, when the session is at revision 12 or later, gets the routes of other relays and has an attachment, and the home relay of the address is a member that is down for 3 s or more, did not close with `RESTART`, and gave a relay ID that no other relay of the mesh has. Answers as a relay at revision 11 in each other case. |
+| 12 | The answer `REACH_VISIT` of `ResolvePeer`, and `home_relay` in `NoRoute`. | On `REACH_VISIT`, and on a `NoRoute` with `home_relay`, keeps its peer sessions, with the path of the session to the address down: a new peer session of the same agent replaces it. The agent with the lower address opens a visitor session to `home_relay` with `local_routes_only`, calls `Visit`, and opens the peer session there. The agent with the higher address waits 2 s for that peer session, and then visits in the same way if none came. An agent with a peer session to the address on its attached session, with the path up, does not visit. When the two agents visit, the peer session on the relay of the higher address stays. Data goes on a visit only when the attached session and the visitor session are in PSP mode and the path probe at the device MTU passes. The agent asks its own relay again at an interval and moves the peer back when the answer is `REACH_LOCAL` or `REACH_TRUNK`. | No duty: it sends `local_routes_only`, so it gets neither. | Answers `ResolvePeer` with `REACH_VISIT` and `home_relay`, and sends `NoRoute` with `home_relay`, when the session is at revision 12 or later, gets the routes of other relays and has an attachment, and the home relay of the address is a member that is down for 3 s or more, did not close with `RESTART`, and gave a relay ID that no other relay of the mesh has. Answers as a relay at revision 11 in each other case. |
 | 13 | The PSP packet of an agent between two relays, with no change and with no trunk SA. One SA lane for a trunk. The trunk formats of the revisions 5, 8 and 9 end here, and the duties of a relay in those lines apply only between relays at revision 13 or later. | When `RegisterSPI` returns `AlreadyExists` for rows that it has, closes the peer session, so that the next peer session has new SAs. | No duty. | Has a trunk only with a relay at revision 13 or later: makes no `TrunkKeys` call and no `SPIRows` call to an older relay, refuses those calls of it with `FailedPrecondition`, sends it no packet of a sender, answers no `REACH_TRUNK` for it, and keeps that session. Sends the PSP packet of a row to another relay with no change, and seals only clear inner packets and its own messages with the trunk SA. For a packet from the address of a member: opens it when a trunk SA for that member has its SPI, sends it with no change to a session of its own when a row of that member has its SPI, and drops it in each other case. Keeps each SPI in one use for the packets to a member: refuses `RegisterSPI` with `AlreadyExists`, ends a row that goes to a member with its SPI in use, and returns a trunk SA with the SPI of a row in `refused_spis`. |
 
 ### Minimum revision
