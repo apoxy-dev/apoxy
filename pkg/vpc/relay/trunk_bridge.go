@@ -5,6 +5,7 @@ package relay
 import (
 	"encoding/binary"
 	"net/netip"
+	"time"
 
 	pspwire "github.com/apoxy-dev/softpsp/psp"
 
@@ -14,7 +15,7 @@ import (
 
 // trunkCarries reports whether the relay can send inner, a clear packet of s,
 // to the relay of h. It counts the drop if not. A hop on this relay needs no trunk.
-func (r *Router) trunkCarries(s *Session, h hop, inner []byte) bool {
+func (r *Router) trunkCarries(s *Session, h hop, inner []byte, now time.Time) bool {
 	switch {
 	case h.home == "":
 		return true
@@ -24,7 +25,12 @@ func (r *Router) trunkCarries(s *Session, h hop, inner []byte) bool {
 		return false
 	}
 	// The limit is the same as for the PSP packet of a row with this inner packet.
-	return r.trunkFits(s, h.pair, h.sa, len(inner)+pspwire.Overhead) == Pass
+	if r.trunkFits(s, h.pair, h.sa, len(inner)+pspwire.Overhead) == Pass {
+		return true
+	}
+	// The trunk to a relay that is away has no SA. Then s learns to visit it.
+	r.noRoute(s, h.dst, h.home, now)
+	return false
 }
 
 // sealTrunk seals inner into buf with the trunk SA and the sender tag of h, and

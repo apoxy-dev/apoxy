@@ -171,7 +171,8 @@ message ICVFailures {
 message NoRoute {
   VPCRef vpc = 1;
   string address = 2;
-  // Home relay of the peer. Not set if the peer is gone.
+  // Home relay of the peer, if the agent must attach to it as a visitor to
+  // reach the address. Not set in each other case.
   RelayRef home_relay = 3;
 }
 

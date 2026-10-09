@@ -75,14 +75,40 @@ func (s *Session) notify() {
 	}
 }
 
-func (r *Router) noRoute(s *Session, dst netip.Addr, now time.Time) {
+// noRoute tells s that the relay cannot reach dst, with the relay to visit if s
+// must visit one. home is the member that has the route of dst, or "".
+func (r *Router) noRoute(s *Session, dst netip.Addr, home string, now time.Time) {
+	visit, ok := r.noRouteVisit(s, dst, home, now)
+	if !ok {
+		return
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if s.closed || s.sync.ref == nil || now.Sub(s.sync.noRoute[dst]) < noRouteInterval {
 		return
 	}
 	s.sync.noRoute[dst] = now
-	s.queue(&dp.SessionResponse{Msg: &dp.SessionResponse_NoRoute{NoRoute: &dp.NoRoute{Vpc: s.sync.ref, Address: dst.String()}}})
+	s.queue(&dp.SessionResponse{Msg: &dp.SessionResponse_NoRoute{NoRoute: &dp.NoRoute{Vpc: s.sync.ref, Address: dst.String(), HomeRelay: visit}}})
+}
+
+// noRouteVisit reports whether s gets a NoRoute for dst now, and the relay that s
+// must visit, or nil. It runs for each dropped packet, so it takes no write lock.
+func (r *Router) noRouteVisit(s *Session, dst netip.Addr, home string, now time.Time) (*dp.RelayRef, bool) {
+	// The address has a route. Its sender gets a NoRoute only to visit a member.
+	if t := r.trunk.Load(); home != "" && (t == nil || t.m.awayRef(home) == nil) {
+		return nil, false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if now.Sub(s.sync.noRoute[dst]) < noRouteInterval {
+		return nil, false
+	}
+	// A sender that Permit denies does not learn the home of the address.
+	if home == "" && !r.permit(s.id.VPC, s.id.ID, s.id.VPC, dst) {
+		return nil, true
+	}
+	visit := r.visitRef(s, s.id.VPC, dst, home)
+	return visit, home == "" || visit != nil
 }
 
 // sweepNoRoute forgets old NoRoute times. Router.mu must be held.

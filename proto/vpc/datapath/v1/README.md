@@ -226,7 +226,8 @@ another relay has its route, the relay seals the inner packet with the lane 1
 SA of that relay, with the sender tag of the session of the sender in the VNI
 field. It sends the trunk packet, which is 40 B longer than the inner packet,
 from its own port to the relay socket of the other relay. It sends no
-`NoRoute` for such a packet, because the address has a route. It drops the
+`NoRoute` for such a packet, because the address has a route. The one exception
+is a sender that must visit the other relay (see "Mesh"). It drops the
 inner packet, and counts the drop, in these cases:
 
 - The other relay is below revision 9, or the relay has no lane 1 SA of it
@@ -294,7 +295,8 @@ another relay has the route of the destination, and that relay is at revision
 split a frame. It drops a frame that does not fit in a datagram of the mesh
 session, a frame for a relay with no open mesh session, and a frame for a
 relay below revision 7. It sends no `NoRoute` for these frames, because the
-address has a route.
+address has a route. The one exception is a sender that must visit the other
+relay (see "Mesh").
 
 The relay that gets the datagram drops it at the first of these checks that
 fails:
@@ -354,7 +356,7 @@ Addresses and prefixes are text (`fd61::1`, `10.0.0.0/8`, `host:port`).
 | `Session`       | bidi  | Agent: `Hello{mode, fallback_reason, spare, version, name, local_routes_only}`, then `Ack{rev}` and `Status` (ICV failures; the first one after `Config` also has the time to connect). Relay: `Welcome` (reflexive address, lane port limit, version), `Config`, in PSP mode a rekey with relay SAs, then `RouteDelta{rev}`, `NoRoute`, rekey (`KeysRequest`), `Config`, `Drain`, and in PSP mode `RxReport` (only the last one waits). |
 | `Attach`        | unary | `AttachRequest{vpc, name, labels, routes}` -> `AttachResponse{attachment_id, grant}` |
 | `Rekey`         | unary | `KeysRequest` -> `KeysResponse`: SAs for traffic from the relay to the agent. Errors: `FailedPrecondition` (no `Session` call in PSP mode), `InvalidArgument` (an SA VNI is not the network ID). |
-| `ResolvePeer`   | unary | `{vpc, address}` -> `{reach: local or trunk; p2p; subject; attachment_ids}`. Errors: `NotFound`, `PermissionDenied`. The relay sends no `REACH_VISIT` and no `home_relay`. |
+| `ResolvePeer`   | unary | `{vpc, address}` -> `{reach: local, trunk or visit; p2p; subject; attachment_ids; home_relay}`. Errors: `NotFound`, `PermissionDenied`. |
 | `RegisterSPI`   | unary | `{vpc, destination, spis, expires_in, lanes, sa_lanes}` -> `Empty`. `lanes` gives the source of each SPI: 0 is the session address, i is port i of `RegisterLanes`. `sa_lanes` gives the SA lane of each SPI at the receiver. |
 | `UnregisterSPI` | unary | `{vpc, spis}` -> `Empty` |
 | `RegisterLanes` | unary | `{ports, receive}` -> `Empty`: replaces the lane ports of the session. `receive` tells that the agent reads them. Errors: `InvalidArgument` (more ports than `Welcome.max_lanes`, port 0, the session port, a repeated port), `AlreadyExists` (a port is a source of another agent), `FailedPrecondition`. |
@@ -394,8 +396,10 @@ address exists. The answer is `REACH_LOCAL` with `p2p` when a session of this
 relay has the route of the address. It is `REACH_TRUNK` when a session of
 another relay of the mesh has the route and the caller can open a peer session
 to it now (see "Mesh" for the conditions). The two answers have `subject`, the
-SPIFFE ID of that session, and `attachment_ids`, its attachments. In each other
-case the call returns `NotFound`.
+SPIFFE ID of that session, and `attachment_ids`, its attachments. It is
+`REACH_VISIT` with `home_relay` when the caller must attach to the relay of
+the address as a visitor (see "Mesh" for the conditions). In each other case
+the call returns `NotFound`.
 
 `Visit` is for an agent whose relay has no path to the relay of a peer. The
 agent opens one more session, to the relay of the peer, and calls `Visit` with
@@ -729,7 +733,7 @@ When the other relay is down, a relay deletes the trunk SAs, so the packets
 of its rows and the clear inner packets to that relay drop at once. The rows
 stay, and they carry packets again when the other relay is up and gave new
 SAs. The sender of a clear inner packet gets no `NoRoute` while the route of
-the destination stays.
+the destination stays, unless it must visit the other relay (see below).
 
 For an address of a route of another relay, `ResolvePeer` answers
 `REACH_TRUNK` only when all of these are true:
@@ -751,6 +755,37 @@ sessions that are open in that time keep their paths, because the SAs stay for
 those 3 s (see "Trunk"). The answer has the `subject` and the attachment IDs
 of the entries of the session that has the address, the lowest generation
 first.
+
+`ResolvePeer` answers `REACH_VISIT` with `home_relay` only when all of these
+are true. The same rule sets `home_relay` in `NoRoute`.
+
+- The session of the caller is at revision 12 or later, gets the routes of
+  other relays and has a sender tag, as for `REACH_TRUNK`.
+- The home relay of the address is a member that is down: its session ended
+  3 s ago or more, and no new session opened. Thus the answer never comes
+  while the trunk can carry the traffic.
+- That session did not close with `RESTART`, and the member gave a relay ID in
+  `Open` on it.
+- No other member gave the same relay ID on its last session, and it is not
+  the relay ID of this relay. An agent cannot choose one of two relays that
+  have one ID.
+
+The home relay of an address is the member whose entry has the route of the
+address, because a relay keeps the entries of a member that is down. For an
+address with no route, the host of the relay can tell the home relay.
+`home_relay` is the `RelayRef` that the member gave in `Open`. The answer has
+no `subject`, no `attachment_ids` and no `p2p`. When the member is up again,
+the answer is `NotFound` until the two relays have the trunk SAs, and then
+`REACH_TRUNK`. When the member stops with `RESTART` or leaves the member set,
+its entries go, and the answer is `NotFound`.
+
+When the rule is true for a sender, the relay sends it `NoRoute` with
+`home_relay` for a peer frame, a data frame and a PSP packet with the relay SA
+to the address, at most one each second for each address. It does not open
+the PSP packet of an SPI row, so that packet gives no `NoRoute`. A sender
+below revision 12 gets no `NoRoute` for an address with a route, as before. A
+sender that Permit denies gets `NoRoute` with no `home_relay`. The agent can
+then attach to the home relay as a visitor (see `Visit` in "Relay").
 
 An agent opens a peer session to an address with the answer `REACH_TRUNK` as
 to an address of its own relay, and it sends all its packets to its own relay.
@@ -802,6 +837,7 @@ only for logs and metrics. On a mesh session, `MeshOpenRequest` and
 | 9 | The trunk packet with a sender tag on lane 1: a clear inner packet of an agent. | No duty. | No duty. | Opens a trunk packet with a sender tag and a lane 1 SA, checks it with the replay window and the entries of the other relay, and sends its inner packet only to a session of its own: in a data frame, or sealed with the SA of a PSP-mode agent. With a relay at revision 9 or later: sends the inner packet of a data frame, or of a PSP packet that it opens, for an address with a route of that relay in a lane 1 trunk packet, and sends no `NoRoute` for it. Sends no such trunk packet to a relay below revision 9: it drops the inner packet, and sends no `NoRoute` for it. |
 | 10 | The answer `REACH_TRUNK` of `ResolvePeer`. | Opens a peer session to an address with the answer `REACH_TRUNK`, as to an address of its own relay. | No duty: it sends `local_routes_only`, so it gets `NotFound`. | Answers `ResolvePeer` for an address with a route of another relay with `REACH_TRUNK`, `subject` and `attachment_ids`, when the session of the caller is at revision 10 or later, gets the routes of other relays and has an attachment, the other relay is at revision 9 or later, and each relay has the trunk SAs of the other on the open mesh session. Answers `NotFound` in each other case, as a relay at revision 6 does. With a mesh, refuses an `Attach` with more than 64 prefixes. |
 | 11 | `Relay.Visit`. | No duty: an agent of this revision makes no `Visit` call. | No duty. | With a mesh: accepts `Visit` after the checks of the grant, the caller and the address, sends the traffic of its own sessions for the visit prefix to the visitor session, and sends nothing of a visitor to another relay. With no mesh: answers `Unimplemented`. |
+| 12 | The answer `REACH_VISIT` of `ResolvePeer`, and `home_relay` in `NoRoute`. | No duty: an agent of this revision makes no visit. It takes `REACH_VISIT` as no path to the peer, and a `NoRoute` with `home_relay` as each other `NoRoute`. | No duty: it sends `local_routes_only`, so it gets neither. | Answers `ResolvePeer` with `REACH_VISIT` and `home_relay`, and sends `NoRoute` with `home_relay`, when the session is at revision 12 or later, gets the routes of other relays and has an attachment, and the home relay of the address is a member that is down for 3 s or more, did not close with `RESTART`, and gave a relay ID that no other relay of the mesh has. Answers as a relay at revision 11 in each other case. |
 
 ### Minimum revision
 

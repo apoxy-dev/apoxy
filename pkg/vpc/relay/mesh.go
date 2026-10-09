@@ -71,6 +71,9 @@ type MeshConfig struct {
 	// Verify checks the other relay after the handshake. It gets the name and
 	// address of the dialed member, or the name from Open and the source address.
 	Verify MeshVerify
+	// Home returns the name of the home relay of the overlay address addr of vpc,
+	// or "". It is optional, and it must not call the Router or the Mesh.
+	Home func(vpc VPCKey, addr netip.Addr) string
 }
 
 // MeshDown is the reason that a member is down.
@@ -136,6 +139,8 @@ type Mesh struct {
 	onDatagram func(*MeshSession, []byte)
 
 	pres *presence // Attachments that the members and this relay share.
+	// away has the RelayRef of each member that agents must visit, by relay name.
+	away atomic.Pointer[map[string]*dp.RelayRef]
 }
 
 // meshMember is the state of one member. Mesh.mu guards its fields.
@@ -337,6 +342,7 @@ func (m *Mesh) SetMembers(members []MeshMember) {
 			m.startDial(mem)
 		}
 	}
+	m.setAway()
 	m.mu.Unlock()
 	for _, s := range closed {
 		s.close(dp.MeshCloseCode_MESH_CLOSE_CODE_NOT_MEMBER, "relay is not a member at this address")
@@ -373,6 +379,47 @@ func (m *Mesh) hasRelay(id string) bool {
 		}
 	}
 	return false
+}
+
+// setAway finds the members that agents must visit: a member that is down, and
+// whose last session gave a relay ID that no other relay has. Mesh.mu must be held.
+func (m *Mesh) setAway() {
+	away := map[string]*dp.RelayRef{}
+	for name, mem := range m.members {
+		// A member with no session stays up for meshDownAfter. A member that closed
+		// its session with RESTART has no relay.
+		id := mem.relay.GetId()
+		if mem.up || id == "" || id == m.cfg.Relay.GetId() {
+			continue
+		}
+		// An agent cannot choose one of two relays that have the same ID.
+		shared := false
+		for _, o := range m.members {
+			shared = shared || o != mem && o.relay.GetId() == id
+		}
+		if !shared {
+			away[name] = mem.relay
+		}
+	}
+	m.away.Store(&away)
+}
+
+// awayRef returns the RelayRef of the member name if agents must visit it, or
+// nil. It takes no lock.
+func (m *Mesh) awayRef(name string) *dp.RelayRef {
+	if away := m.away.Load(); away != nil {
+		return (*away)[name]
+	}
+	return nil
+}
+
+// homeOf returns the name of the home relay of addr from the host, or "". It
+// asks the host only while agents must visit a member. It takes no lock.
+func (m *Mesh) homeOf(vpc VPCKey, addr netip.Addr) string {
+	if away := m.away.Load(); m.cfg.Home == nil || away == nil || len(*away) == 0 {
+		return ""
+	}
+	return m.cfg.Home(vpc, addr)
 }
 
 // Alternates returns the relays that an agent of this relay can move to: each
@@ -756,6 +803,7 @@ func (m *Mesh) admit(s *MeshSession, name string, want *meshMember, v *dp.Versio
 		mem.up = true
 		m.notify(meshEvent{change: MeshChange{Name: name, Up: true}})
 	}
+	m.setAway()
 	m.notify(meshEvent{sess: s})
 	onDatagram := m.onDatagram
 	m.mu.Unlock()
@@ -802,6 +850,7 @@ func (m *Mesh) ended(s *MeshSession) {
 		ends := mem.ends
 		time.AfterFunc(meshDownAfter, func() { m.expire(mem, ends) })
 	}
+	m.setAway()
 	m.mu.Unlock()
 	slog.Info("Closed mesh session", "relay", s.name, "reason", cause)
 }
@@ -812,5 +861,6 @@ func (m *Mesh) expire(mem *meshMember, ends uint64) {
 	defer m.mu.Unlock()
 	if m.members[mem.Name] == mem && mem.sess == nil && mem.ends == ends {
 		m.down(mem, MeshLost)
+		m.setAway()
 	}
 }

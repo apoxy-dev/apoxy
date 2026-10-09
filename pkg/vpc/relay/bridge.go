@@ -190,7 +190,7 @@ func (r *Router) forwardData(s *Session, b, buf []byte, now time.Time) bool {
 	}
 	// The checks of the trunk come first: a packet that it cannot carry takes
 	// nothing from the tunnel limit.
-	if !r.trunkCarries(s, h, inner) || !r.allow(s, len(b), now) || !r.deliver(s, h, b, inner, buf, now) {
+	if !r.trunkCarries(s, h, inner, now) || !r.allow(s, len(b), now) || !r.deliver(s, h, b, inner, buf, now) {
 		return false
 	}
 	s.framePackets.Add(1)
@@ -227,7 +227,7 @@ func (r *Router) receivePSP(br *bridge, pkt []byte, spi uint32, buf []byte, now 
 		// The relay seals no packet of a PSP-mode sender for one of its own sessions.
 		buf = nil
 	}
-	return r.trunkCarries(src, h, inner) && r.deliver(src, h, frame, inner, buf, now)
+	return r.trunkCarries(src, h, inner, now) && r.deliver(src, h, frame, inner, buf, now)
 }
 
 // deliver sends frame to a QUIC-mode next hop, or inner sealed in buf to a
@@ -240,7 +240,7 @@ func (r *Router) deliver(src *Session, h hop, frame, inner, buf []byte, now time
 		err = r.sealTrunk(h, inner, buf)
 	case h.next == nil:
 		if h.dst.IsValid() {
-			r.noRoute(src, h.dst, now)
+			r.noRoute(src, h.dst, "", now)
 		}
 		err = errNoRoute
 	case h.mode == dp.Mode_MODE_QUIC:

@@ -52,10 +52,14 @@ func (r *Router) forwardDatagram(s *Session, b []byte, now time.Time) bool {
 	next := r.permitted(s, dst)
 	switch {
 	case next == nil:
-		r.noRoute(s, dst, now)
+		r.noRoute(s, dst, "", now)
 		return false
 	case next.home != "":
-		return r.sendToMember(next.home, tag, b)
+		if !r.sendToMember(next.home, tag, b) {
+			r.noRoute(s, dst, next.home, now)
+			return false
+		}
+		return true
 	}
 	return next.sendDatagram(peerconn.Forwarded(b)) == nil
 }

@@ -717,10 +717,11 @@ func (r *Router) Route(src *Session, dst netip.Addr, now time.Time) *Session {
 	next := r.permitted(src, dst)
 	switch {
 	case next == nil:
-		r.noRoute(src, dst, now)
+		r.noRoute(src, dst, "", now)
 		return nil
 	case next.home != "":
-		// The address has a route, so an agent keeps its peer session to it.
+		// The address has a route, so src gets a NoRoute only to visit that relay.
+		r.noRoute(src, dst, next.home, now)
 		return nil
 	}
 	return next

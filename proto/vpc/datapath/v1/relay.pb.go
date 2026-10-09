@@ -1024,7 +1024,8 @@ type NoRoute struct {
 
 	Vpc     *VPCRef `protobuf:"bytes,1,opt,name=vpc,proto3" json:"vpc,omitempty"`
 	Address string  `protobuf:"bytes,2,opt,name=address,proto3" json:"address,omitempty"`
-	// Home relay of the peer. Not set if the peer is gone.
+	// Home relay of the peer, if the agent must attach to it as a visitor to
+	// reach the address. Not set in each other case.
 	HomeRelay *RelayRef `protobuf:"bytes,3,opt,name=home_relay,json=homeRelay,proto3" json:"home_relay,omitempty"`
 }
 
