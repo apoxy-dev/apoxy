@@ -22,6 +22,8 @@ service Mesh {
   rpc SPIRows(stream SPIRowUpdate) returns (google.protobuf.Empty);
   // TrunkKeys gives the peer relay trunk SAs for traffic to the caller.
   rpc TrunkKeys(KeysRequest) returns (KeysResponse);
+  // Snapshot returns the snapshot of the host of the called relay, in parts.
+  rpc Snapshot(SnapshotRequest) returns (stream SnapshotPart);
 }
 
 // MeshCloseCode is the QUIC application error code when a relay closes a
@@ -101,4 +103,16 @@ message SPIRow {
 
 message SPIRowUpdate {
   repeated SPIRow rows = 1;
+}
+
+// SnapshotRequest asks a member for the snapshot of its host.
+message SnapshotRequest {}
+
+// SnapshotPart is one part of the snapshot of a relay host. The relays do not
+// read the bytes.
+message SnapshotPart {
+  // The next bytes of the snapshot, at most 1 MiB.
+  bytes data = 1;
+  // Size of the whole snapshot in bytes. Only the first part has it.
+  uint64 total_size = 2;
 }

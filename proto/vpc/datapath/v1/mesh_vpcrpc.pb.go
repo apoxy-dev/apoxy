@@ -20,6 +20,7 @@ const (
 	Mesh_Presence_FullMethodName  = "/apoxy.vpc.datapath.v1.Mesh/Presence"
 	Mesh_SPIRows_FullMethodName   = "/apoxy.vpc.datapath.v1.Mesh/SPIRows"
 	Mesh_TrunkKeys_FullMethodName = "/apoxy.vpc.datapath.v1.Mesh/TrunkKeys"
+	Mesh_Snapshot_FullMethodName  = "/apoxy.vpc.datapath.v1.Mesh/Snapshot"
 )
 
 // MeshClient is the client API of the Mesh service.
@@ -33,6 +34,8 @@ type MeshClient interface {
 	SPIRows(ctx context.Context) (rpc.ClientStreamClient[SPIRowUpdate, emptypb.Empty], error)
 	// TrunkKeys gives the peer relay trunk SAs for traffic to the caller.
 	TrunkKeys(ctx context.Context, in *KeysRequest) (*KeysResponse, error)
+	// Snapshot returns the snapshot of the host of the called relay, in parts.
+	Snapshot(ctx context.Context, in *SnapshotRequest) (rpc.ServerStreamClient[SnapshotPart], error)
 }
 
 type meshClient struct{ c rpc.Caller }
@@ -64,6 +67,10 @@ func (c meshClient) TrunkKeys(ctx context.Context, in *KeysRequest) (*KeysRespon
 	return out, nil
 }
 
+func (c meshClient) Snapshot(ctx context.Context, in *SnapshotRequest) (rpc.ServerStreamClient[SnapshotPart], error) {
+	return rpc.OpenServerStream[SnapshotPart](ctx, c.c, Mesh_Snapshot_FullMethodName, in)
+}
+
 // MeshServer is the server API of the Mesh service.
 type MeshServer interface {
 	// Open is the first call on a session. The relay that dialed calls it.
@@ -75,6 +82,8 @@ type MeshServer interface {
 	SPIRows(context.Context, rpc.ClientStreamServer[SPIRowUpdate]) (*emptypb.Empty, error)
 	// TrunkKeys gives the peer relay trunk SAs for traffic to the caller.
 	TrunkKeys(context.Context, *KeysRequest) (*KeysResponse, error)
+	// Snapshot returns the snapshot of the host of the called relay, in parts.
+	Snapshot(context.Context, *SnapshotRequest, rpc.ServerStreamServer[SnapshotPart]) error
 }
 
 // UnimplementedMeshServer returns Unimplemented for each method. Embed it to add
@@ -97,10 +106,15 @@ func (UnimplementedMeshServer) TrunkKeys(context.Context, *KeysRequest) (*KeysRe
 	return nil, rpc.Errorf(rpc.Unimplemented, "method TrunkKeys not implemented")
 }
 
+func (UnimplementedMeshServer) Snapshot(context.Context, *SnapshotRequest, rpc.ServerStreamServer[SnapshotPart]) error {
+	return rpc.Errorf(rpc.Unimplemented, "method Snapshot not implemented")
+}
+
 // RegisterMeshServer adds the methods of srv to m.
 func RegisterMeshServer(m *rpc.Mux, srv MeshServer) {
 	rpc.HandleUnary(m, Mesh_Open_FullMethodName, srv.Open)
 	rpc.HandleClientStream(m, Mesh_Presence_FullMethodName, srv.Presence)
 	rpc.HandleClientStream(m, Mesh_SPIRows_FullMethodName, srv.SPIRows)
 	rpc.HandleUnary(m, Mesh_TrunkKeys_FullMethodName, srv.TrunkKeys)
+	rpc.HandleServerStream(m, Mesh_Snapshot_FullMethodName, srv.Snapshot)
 }

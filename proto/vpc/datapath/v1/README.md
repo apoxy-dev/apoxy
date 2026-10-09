@@ -423,7 +423,8 @@ kind:              0x01 CallHeader, 0x02 message, 0x03 Status
 - `Status{code, message}` uses the gRPC code numbers; 0 is OK. The messages are
   in `pkg/vpc/rpc/internal/wirepb/wire.proto`.
 - A unary call has one message in each direction. A client-stream call sends
-  messages until FIN and gets one message.
+  messages until FIN and gets one message. A server-stream call sends one
+  message and gets messages until the status.
 - Default limits: 16 KiB for a header or status frame, 4 MiB for a message.
 - Cancel is RESET_STREAM and STOP_SENDING with a stream error code: `0x0` no
   error, `0x1` canceled, `0x2` deadline exceeded, `0x3` protocol error, `0x4`
@@ -707,6 +708,7 @@ its relay before it applies them, and unregisters them after a revoke.
 | `Presence`  | client stream | `PresenceUpdate`: the full set of the attachments of the caller, then each change. One call on a session. |
 | `SPIRows`   | client stream | `SPIRowUpdate`: the SPI rows of the senders on the caller for receivers on the called relay. A row with a new end time comes again, and a row that ended comes with `removed`. One call on a session. Errors: `Unimplemented` (the called relay serves no VPC relay sessions), `FailedPrecondition` (the caller is below revision 13, the session is not the open session of a member, or the session already has an `SPIRows` call). |
 | `TrunkKeys` | unary         | `KeysRequest` -> `KeysResponse`: trunk SAs for packets from the called relay to the caller (see "Trunk"). `refused_spis` has the SPIs that the called relay holds from another receiver or in a row to the caller. Errors: `Unimplemented` (the called relay serves no VPC relay sessions), `FailedPrecondition` (the caller is below revision 13, or the session is not the open session of a member), `InvalidArgument` (an SA VNI is not 0, or an SA lane is not 0). |
+| `Snapshot`  | server stream | `SnapshotRequest` -> `SnapshotPart`: the snapshot of the host of the called relay, in parts of at most 1 MiB. The first part has `total_size`. Errors: `NotFound` (the host of the called relay gives no snapshot), `ResourceExhausted` (the snapshot is above 64 MiB), `FailedPrecondition` (the session is not the open session of a member), `Unimplemented` (the called relay is below revision 14). |
 
 A member of a mesh is one relay process, and its relay name identifies it.
 Many relays can have one relay ID, so the mesh does not use the ID to tell
@@ -737,6 +739,31 @@ relay. After a session ends, the relay that dials waits 200 ms and dials
 again. The wait doubles after each failed dial, up to 10 s, and each wait gets
 up to 50% more at random. A relay has the other relay as down 3 s after the
 session ended, if no new session opened. After `RESTART` it is down at once.
+
+The host of a relay can keep a snapshot: the data that it needs to accept
+agents while its own sources are down. The relays carry it as bytes and do not
+read it. The host of a relay with no snapshot can ask the mesh for one. The
+relay then calls `Snapshot` on each member with an open session at revision 14
+or later, in name order, and takes the first snapshot. It does not wait for a
+session to open, and it calls no member by itself. Each member has 10 s for
+the whole call: the caller sends that limit in the call header, so the call
+ends on the two relays. A member with no open session, or below revision 14,
+gets no call and costs no time. When a member answers with an error, the relay
+asks the next member, and it keeps the session.
+
+The called relay serves `Snapshot` only on the open session of a member, after
+`Open` passed, and never on a relay session of an agent. It asks its host for
+the bytes one time for each call. It sends them in order in parts of at most
+1 MiB, because one message of a call holds 4 MiB, and the first part has the
+size of the whole snapshot in `total_size`. A snapshot has at most 64 MiB: the
+called relay answers `ResourceExhausted` and sends no part for a longer one.
+The calling relay ends the call, and has no snapshot from that member, when the
+`total_size` of the first part is 0 or above 64 MiB, when the parts have more
+bytes than `total_size`, and when the stream ends with fewer.
+
+The call has no signature of its own: the calling relay trusts the bytes as
+much as it trusts a member of the mesh. So a member that an attacker controls
+can give a relay with no snapshot a false one.
 
 A relay tells each other relay of its attachments. On each new session with a
 relay at revision 4 or later, it opens one `Presence` call. It first sends the
@@ -956,6 +983,7 @@ only for logs and metrics. On a mesh session, `MeshOpenRequest` and
 | 11 | `Relay.Visit`. | No duty: an agent of this revision makes no `Visit` call. | No duty. | With a mesh: accepts `Visit` after the checks of the grant, the caller and the address, sends the traffic of its own sessions for the visit prefix to the visitor session, and sends nothing of a visitor to another relay. With no mesh: answers `Unimplemented`. |
 | 12 | The answer `REACH_VISIT` of `ResolvePeer`, and `home_relay` in `NoRoute`. | On `REACH_VISIT`, and on a `NoRoute` with `home_relay`, keeps its peer sessions, with the path of the session to the address down: a new peer session of the same agent replaces it. The agent with the lower address opens a visitor session to `home_relay` with `local_routes_only`, calls `Visit`, and opens the peer session there. The agent with the higher address waits 2 s for that peer session, and then visits in the same way if none came. An agent with a peer session to the address on its attached session, with the path up, does not visit. When the two agents visit, the peer session on the relay of the higher address stays. Data goes on a visit only when the attached session and the visitor session are in PSP mode and the path probe at the device MTU passes. The agent asks its own relay again at an interval and moves the peer back when the answer is `REACH_LOCAL` or `REACH_TRUNK`. | No duty: it sends `local_routes_only`, so it gets neither. | Answers `ResolvePeer` with `REACH_VISIT` and `home_relay`, and sends `NoRoute` with `home_relay`, when the session is at revision 12 or later, gets the routes of other relays and has an attachment, and the home relay of the address is a member that is down for 3 s or more, did not close with `RESTART`, and gave a relay ID that no other relay of the mesh has. Answers as a relay at revision 11 in each other case. |
 | 13 | The PSP packet of an agent between two relays, with no change and with no trunk SA. One SA lane for a trunk. The trunk formats of the revisions 5, 8 and 9 end here, and the duties of a relay in those lines apply only between relays at revision 13 or later. | When `RegisterSPI` returns `AlreadyExists` for rows that it has, closes the peer session, so that the next peer session has new SAs. | No duty. | Has a trunk only with a relay at revision 13 or later: makes no `TrunkKeys` call and no `SPIRows` call to an older relay, refuses those calls of it with `FailedPrecondition`, sends it no packet of a sender, answers no `REACH_TRUNK` for it, and keeps that session. Sends the PSP packet of a row to another relay with no change, and seals only clear inner packets and its own messages with the trunk SA. For a packet from the address of a member: opens it when a trunk SA for that member has its SPI, sends it with no change to a session of its own when a row of that member has its SPI, and drops it in each other case. Keeps each SPI in one use for the packets to a member: refuses `RegisterSPI` with `AlreadyExists`, ends a row that goes to a member with its SPI in use, and returns a trunk SA with the SPI of a row in `refused_spis`. |
+| 14 | `Mesh.Snapshot`. | No duty. | No duty. | Answers `Snapshot` on the open mesh session of a member with the snapshot of its host, in parts of at most 1 MiB with `total_size` in the first part. Answers `NotFound` when its host gives no snapshot, and `ResourceExhausted` for a snapshot above 64 MiB. Calls `Snapshot` only when its host asks for a snapshot, and only on a member at revision 14 or later, with 10 s for each member. Takes no snapshot with a `total_size` of 0 or above 64 MiB, or with a number of bytes that is not `total_size`. |
 
 ### Minimum revision
 

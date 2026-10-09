@@ -74,6 +74,10 @@ type MeshConfig struct {
 	// Home returns the name of the home relay of the overlay address addr of vpc,
 	// or "". It is optional, and it must not call the Router or the Mesh.
 	Home func(vpc VPCKey, addr netip.Addr) string
+	// Snapshot returns the bytes of the host snapshot for a member that asks, or nil.
+	// It is optional. The mesh calls it one time for each call of a member and reads the
+	// bytes until the stream ends, so return bytes that are ready and that do not change.
+	Snapshot func() []byte
 }
 
 // MeshDown is the reason that a member is down.

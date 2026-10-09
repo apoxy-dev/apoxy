@@ -137,6 +137,7 @@ type relayOpts struct {
 	agentCA      *vpctest.CA         // CA of the agents. Nil makes a CA for this relay.
 	relayRoots   *x509.CertPool      // Roots for the relay cert of a grant. Nil is the system roots.
 	setup        func(*tunnel.Relay) // Runs before Start.
+	snapshot     func() []byte       // Snapshot hook of the mesh. Nil is a host with no snapshot.
 }
 
 func startVPCRelay(t *testing.T, steerSockets int, lameDuck time.Duration) *vpcRelay {

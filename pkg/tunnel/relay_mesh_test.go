@@ -155,7 +155,7 @@ func startMeshRelayWith(t *testing.T, ca *meshCA, opts relayOpts) *meshRelay {
 	}
 	opts.setup = func(r *tunnel.Relay) {
 		m.ref = &dp.RelayRef{Id: id, Addresses: []string{r.Address().String()}}
-		mesh, err := r.SetMesh(vpcrelay.MeshConfig{Relay: m.ref, TLS: ca.tls(t, opts.name), Verify: ca.verify(m.checks)})
+		mesh, err := r.SetMesh(vpcrelay.MeshConfig{Relay: m.ref, TLS: ca.tls(t, opts.name), Verify: ca.verify(m.checks), Snapshot: opts.snapshot})
 		require.NoError(t, err)
 		mesh.OnChange(func(c vpcrelay.MeshChange) { m.changes <- c })
 		m.mesh = mesh
@@ -965,6 +965,50 @@ func TestRelay_MeshNoRoute(t *testing.T) {
 			t.Fatal("no NoRoute from relay-a")
 		}
 	}
+}
+
+// TestRelay_MeshSnapshot starts relay-a with a host snapshot and relay-b with none.
+// relay-b gets the bytes of relay-a over the mesh session, and an agent session gets none.
+func TestRelay_MeshSnapshot(t *testing.T) {
+	ca := newMeshCA(t)
+	// The snapshot is more than three parts of 1 MiB, and the relays do not read it.
+	want := make([]byte, 3<<20+7)
+	_, err := rand.Read(want)
+	require.NoError(t, err)
+	var served atomic.Int32
+	a := startMeshRelayWith(t, ca, relayOpts{name: "relay-a", snapshot: func() []byte {
+		served.Add(1)
+		return want
+	}})
+	b := startMeshRelayWith(t, ca, relayOpts{name: "relay-b", addrs: &vpcAddresses{next: 0x100 - 1}})
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Before the session opens, relay-b has no member to ask.
+	_, _, err = b.mesh.FetchSnapshot(ctx)
+	require.Equal(t, rpc.NotFound, rpc.CodeOf(err), "error: %v", err)
+	b.mesh.SetMembers([]vpcrelay.MeshMember{a.member()})
+	a.mesh.SetMembers([]vpcrelay.MeshMember{b.member()})
+	require.Equal(t, vpcrelay.MeshChange{Name: "relay-b", Up: true}, a.change(t))
+	require.Equal(t, vpcrelay.MeshChange{Name: "relay-a", Up: true}, b.change(t))
+
+	got, from, err := b.mesh.FetchSnapshot(ctx)
+	require.NoError(t, err)
+	assert.True(t, bytes.Equal(want, got), "relay-b gets the bytes that relay-a serves")
+	assert.Equal(t, "relay-a", from)
+	assert.EqualValues(t, 1, served.Load())
+	// The host of relay-b has no snapshot, so relay-a gets none.
+	_, _, err = a.mesh.FetchSnapshot(ctx)
+	assert.Equal(t, rpc.NotFound, rpc.CodeOf(err), "error: %v", err)
+
+	// The agent listener of relay-a does not have the Mesh service.
+	laptop := openRouteAgent(t, ctx, a.vpcRelay, "laptop", &dp.Hello{Version: dp.LocalVersion("test"), Name: "base"})
+	st, err := dp.NewMeshClient(rpc.NewConn(laptop.qc, nil)).Snapshot(ctx, &dp.SnapshotRequest{})
+	require.NoError(t, err)
+	part, err := st.Recv()
+	assert.Equal(t, rpc.Unimplemented, rpc.CodeOf(err), "error: %v", err)
+	assert.Nil(t, part)
+	assert.EqualValues(t, 1, served.Load(), "the call of an agent does not reach the hook")
 }
 
 // memberSeries returns the series of member peer in the metrics of m that have no

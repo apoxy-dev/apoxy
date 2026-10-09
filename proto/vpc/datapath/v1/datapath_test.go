@@ -10,6 +10,7 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"fmt"
 	"io"
 	"math/big"
 	"net"
@@ -267,6 +268,15 @@ func (m meshStub) TrunkKeys(ctx context.Context, in *dp.KeysRequest) (*dp.KeysRe
 	return answer[*dp.KeysResponse](m.stub, "TrunkKeys", in)
 }
 
+// Snapshot sends its answer as the one part of the stream.
+func (m meshStub) Snapshot(ctx context.Context, in *dp.SnapshotRequest, st rpc.ServerStreamServer[dp.SnapshotPart]) error {
+	part, err := answer[*dp.SnapshotPart](m.stub, "Snapshot", in)
+	if err != nil {
+		return err
+	}
+	return st.Send(part)
+}
+
 // Test messages.
 var (
 	vpc    = &dp.VPCRef{ProjectId: "11111111-2222-3333-4444-555555555555", VpcUid: "vpc-uid-1", NetworkId: 0x0a0b0c}
@@ -316,6 +326,30 @@ func clientStream[C, Req, Res any](name string, client func(rpc.Caller) C, open 
 		return any(out).(proto.Message), err
 	}
 	return tc
+}
+
+// serverStream is a call with one request and a stream of answers. The called
+// side sends one message, and then the stream must end.
+func serverStream[C any, Req proto.Message, Res any](name string, client func(rpc.Caller) C, open func(C, context.Context, Req) (rpc.ServerStreamClient[Res], error), in Req, answer any) call {
+	return call{
+		name:   name,
+		sent:   []proto.Message{in},
+		answer: answer,
+		do: func(ctx context.Context, c *rpc.Conn) (proto.Message, error) {
+			st, err := open(client(c), ctx, in)
+			if err != nil {
+				return nil, err
+			}
+			out, err := st.Recv()
+			if err != nil {
+				return nil, err
+			}
+			if _, err := st.Recv(); err != io.EOF {
+				return nil, fmt.Errorf("after the last message: %v", err)
+			}
+			return any(out).(proto.Message), nil
+		},
+	}
 }
 
 func diff(want, got any) string { return cmp.Diff(want, got, protocmp.Transform()) }
@@ -481,6 +515,10 @@ func TestMeshCalls(t *testing.T) {
 			&dp.SPIRowUpdate{Rows: []*dp.SPIRow{{Vpc: vpc, SenderTag: 9, Spi: sa.Spi, Destination: "fd61:a0b:c00:2::9", ExpiresIn: durationpb.New(5 * time.Minute)}}},
 			&dp.SPIRowUpdate{Rows: []*dp.SPIRow{{Vpc: vpc, SenderTag: 9, Spi: sa.Spi, Removed: true}}}),
 		unary("TrunkKeys", c, dp.MeshClient.TrunkKeys, offer, &dp.KeysResponse{}),
+		serverStream("Snapshot", c, dp.MeshClient.Snapshot, &dp.SnapshotRequest{},
+			&dp.SnapshotPart{Data: []byte("bytes of the host"), TotalSize: 17}),
+		serverStream("Snapshot of a host with none", c, dp.MeshClient.Snapshot, &dp.SnapshotRequest{},
+			rpc.Errorf(rpc.NotFound, "relay host has no snapshot")),
 	})
 }
 
