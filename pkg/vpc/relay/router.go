@@ -221,7 +221,7 @@ type Session struct {
 	rxBase      counts                       // RX of s that its oldest attachment does not get.
 
 	dropUnknownSPI, dropMeter, dropTunnel atomic.Uint64
-	dropTrunk                             atomic.Uint64 // PSP packets that a trunk did not carry.
+	dropTrunk                             atomic.Uint64 // Packets that a trunk did not carry.
 	dataSent, dataDrops                   atomic.Uint64
 	// framePackets and frameBytes count the inner packets of the data frames
 	// of s that the relay sent on.
@@ -902,8 +902,8 @@ type SenderStats struct {
 	// DropTunnelLimit counts the PSP packets, data frames and peer frames above
 	// the tunnel limit. DataDrops does not count them.
 	DropTunnelLimit uint64
-	// DropTrunk counts the PSP packets for another relay that the trunk to it
-	// did not carry: too large, or no SA.
+	// DropTrunk counts the PSP packets and the inner packets for another relay
+	// that the trunk to it did not carry: too large, or no SA.
 	DropTrunk uint64
 	Lanes     []LaneStats // Sorted by SPI.
 	// DataSent and DataDrops count the data frames and the decrypted PSP

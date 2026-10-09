@@ -108,12 +108,14 @@ func newBridge(tr *quic.Transport) (*bridge, error) {
 // hop is where the relay sends one inner packet.
 type hop struct {
 	dst  netip.Addr     // Inner destination.
-	next *Session       // Nil if there is no route.
+	next *Session       // Session of this relay with the route, or nil.
 	att  *Attachment    // Attachment of dst at next, or nil.
 	out  *Session       // Connection of next for data frames: next or a shard.
 	mode dp.Mode        // Mode of next.
 	addr netip.AddrPort // Address of next.
-	sa   *engine.TxSA   // SA of next for packets from the relay, or nil.
+	home string         // Relay with the route, if it is another relay.
+	pair *trunkPair     // Pair that carries the packet to home, or nil.
+	sa   *engine.TxSA   // SA of next or of pair for packets from the relay, or nil.
 }
 
 // nextHop returns the hop of an inner packet from src. Router.mu must be held.
@@ -126,29 +128,46 @@ func (r *Router) nextHop(src *Session, inner []byte) hop {
 	if !r.permit(src.id.VPC, src.id.ID, src.id.VPC, dst) {
 		return h
 	}
-	to := r.localOwner(src.id.VPC, dst)
-	if h.next, h.att = to.s, to.att; h.next != nil {
-		h.out, h.mode, h.addr = h.next, h.next.sync.mode, h.next.addr
-		n := 1
-		for i, sh := range h.next.shards {
-			if sh != nil {
-				n = i + 1
-			}
+	to := r.ownerOf(src.id.VPC, dst)
+	switch {
+	case to.s == nil:
+	case to.s.home == "":
+		h.local(to, inner)
+	default:
+		h.home = to.s.home
+		if t := r.trunk.Load(); t != nil {
+			h.pair = t.bridgeTo(h.home)
 		}
-		if n > 1 {
-			if sh := h.next.shards[flow.Hash(shardSeed, inner)%uint64(n)]; sh != nil {
-				h.out = sh
-			}
-		}
-		if h.next.tx != nil {
-			h.sa = h.next.tx.SA(0)
+		if h.pair != nil {
+			h.sa = h.pair.tx.SA(trunkLaneInner)
 		}
 	}
 	return h
 }
 
+// local makes h the hop of inner to the session of to, which is a session of
+// this relay. Router.mu must be held.
+func (h *hop) local(to owner, inner []byte) {
+	h.next, h.att = to.s, to.att
+	h.out, h.mode, h.addr = h.next, h.next.sync.mode, h.next.addr
+	n := 1
+	for i, sh := range h.next.shards {
+		if sh != nil {
+			n = i + 1
+		}
+	}
+	if n > 1 {
+		if sh := h.next.shards[flow.Hash(shardSeed, inner)%uint64(n)]; sh != nil {
+			h.out = sh
+		}
+	}
+	if h.next.tx != nil {
+		h.sa = h.next.tx.SA(0)
+	}
+}
+
 // forwardData sends a data frame from the QUIC-mode session s, or from a shard
-// of it, to the session of its inner destination. buf holds a sealed packet.
+// of it, to the session or the relay of its destination. buf holds a sealed packet.
 func (r *Router) forwardData(s *Session, b, buf []byte, now time.Time) bool {
 	var inner []byte
 	var h hop
@@ -167,7 +186,9 @@ func (r *Router) forwardData(s *Session, b, buf []byte, now time.Time) bool {
 		s.dataDrops.Add(1)
 		return false
 	}
-	if !r.allow(s, len(b), now) || !r.deliver(s, h, b, inner, buf, now) {
+	// The checks of the trunk come first: a packet that it cannot carry takes
+	// nothing from the tunnel limit.
+	if !r.trunkCarries(s, h, inner) || !r.allow(s, len(b), now) || !r.deliver(s, h, b, inner, buf, now) {
 		return false
 	}
 	s.framePackets.Add(1)
@@ -175,9 +196,9 @@ func (r *Router) forwardData(s *Session, b, buf []byte, now time.Time) bool {
 	return true
 }
 
-// receivePSP opens a PSP packet to the relay in place and sends its inner
-// packet to the QUIC-mode session of the destination as a data frame.
-func (r *Router) receivePSP(br *bridge, pkt []byte, spi uint32, now time.Time) bool {
+// receivePSP opens a PSP packet to the relay in place. It sends the inner packet
+// as a data frame to a QUIC-mode session, or sealed in buf to another relay.
+func (r *Router) receivePSP(br *bridge, pkt []byte, spi uint32, buf []byte, now time.Time) bool {
 	br.rxMu.Lock()
 	inner, _, err := br.rxq.Receive(pkt)
 	br.rxMu.Unlock()
@@ -200,14 +221,21 @@ func (r *Router) receivePSP(br *bridge, pkt []byte, spi uint32, now time.Time) b
 	frame := pkt[pspwire.PrefixLen-peerconn.DataLen : pspwire.PrefixLen+len(inner)]
 	copy(frame[1:peerconn.DataLen], pkt[pspwire.HeaderLen:pspwire.HeaderLen+4])
 	frame[0] = peerconn.TypeData
-	return r.deliver(src, h, frame, inner, nil, now)
+	if h.home == "" {
+		// The relay seals no packet of a PSP-mode sender for one of its own sessions.
+		buf = nil
+	}
+	return r.trunkCarries(src, h, inner) && r.deliver(src, h, frame, inner, buf, now)
 }
 
 // deliver sends frame to a QUIC-mode next hop, or inner sealed in buf to a
-// PSP-mode next hop. A nil buf drops packets to PSP-mode sessions.
+// PSP-mode next hop or to another relay. A nil buf drops the sealed packets.
 func (r *Router) deliver(src *Session, h hop, frame, inner, buf []byte, now time.Time) bool {
 	var err error
 	switch {
+	case h.home != "":
+		// The address has a route, so the sender gets no NoRoute.
+		err = r.sealTrunk(h, src.tag, inner, buf)
 	case h.next == nil:
 		if h.dst.IsValid() {
 			r.noRoute(src, h.dst, now)
@@ -249,6 +277,17 @@ func (r *Router) sealTo(h hop, inner, buf []byte) error {
 	}
 	_, err = br.tr.WriteTo(buf[:n], ua)
 	return err
+}
+
+// innerSource returns the source address of an IPv4 or IPv6 packet.
+func innerSource(p []byte) (netip.Addr, bool) {
+	switch {
+	case len(p) >= 20 && p[0]>>4 == 4:
+		return netip.AddrFrom4([4]byte(p[12:16])), true
+	case len(p) >= 40 && p[0]>>4 == 6:
+		return netip.AddrFrom16([16]byte(p[8:24])).Unmap(), true
+	}
+	return netip.Addr{}, false
 }
 
 // innerDest returns the destination address of an IPv4 or IPv6 packet.

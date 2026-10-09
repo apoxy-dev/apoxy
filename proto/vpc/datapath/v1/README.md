@@ -55,7 +55,9 @@ bits. The relay ignores the flags. It drops a data frame if the session is not
 in QUIC mode, if the VNI is not the network ID of the session, if the session
 does not route the inner source, if Permit denies the inner destination, or if
 no session routes it (then it sends `NoRoute`). It sends the frame to a
-QUIC-mode agent with no change, on the shard of its flow.
+QUIC-mode agent with no change, on the shard of its flow. When a session of
+another relay of the mesh routes the inner destination, the relay sends the
+inner packet to that relay (see "Trunk").
 
 ### Data mode
 
@@ -93,6 +95,11 @@ A relay SA has an SPI row from the agent to the relay, so the source address
 check and the meter of the row apply. The relay does not offer an SPI that is
 in a row of the agent.
 
+When the two agents are on two relays of a mesh, the relay of the sender opens
+the data frame or the PSP packet, and the relay of the receiver sends the
+inner packet to the receiver. The inner packet goes between them in a trunk
+packet (see "Trunk").
+
 ### Circuit breaker
 
 A sender of data has a breaker (RFC 8084) for each PSP receiver, and one for
@@ -126,15 +133,17 @@ replay window.
 ```
 trunk packet:    PSP header and VC, with the tag (24 bits) in the VNI field | payload
 tag 0:           a message of the relay itself, on lane 1
-tag 1 and up:    a sender tag, with a whole PSP packet of that sender, on lane 0
+tag 1 and up:    a sender tag, with a packet of that sender:
+                 on lane 0 a whole PSP packet, on lane 1 a clear inner packet
 message:         type (1 B) | run ID (8 B) | zero padding
 type:            0x01 full-size probe, 0x02 answer
 ```
 
 A trunk packet whose payload is a PSP packet or a message has the next header
-value 63, so its first byte is `0x3f`. A relay accepts a trunk packet only
-from the address of its mesh session with the other relay, and only with an SA
-that it gave to that relay.
+value 63, so its first byte is `0x3f`. A trunk packet with a clear inner
+packet has the next header value of that packet: 4 for IPv4 and 41 for IPv6.
+A relay accepts a trunk packet only from the address of its mesh session with
+the other relay, and only with an SA that it gave to that relay.
 
 On each new session with a relay at revision 5 or later, a relay offers new
 SAs for the two lanes (`OfferSAs`). It sends new SAs before they expire
@@ -186,7 +195,7 @@ relay drops the trunk packet at the first of these checks that fails:
    packet in `SPIRows` (see "Mesh"), and the row has not ended.
 3. An entry of the other relay has the sender tag in the VPC of the row. The
    rule of "Mesh datagrams" for the session of an entry applies, with the
-   session that gave the row.
+   session that gave the row. That session does not have to be open.
 4. Permit allows the destination of the row for the VPC and the SPIFFE ID of
    that entry.
 5. A session of this relay routes the destination of the row in that VPC. A
@@ -202,6 +211,59 @@ Permit or the route changes. It holds no packet: a packet that comes before
 its row or before the entry of its sender drops. A relay counts each PSP
 packet that it drops on these paths in `apoxy_vpc_relay_dropped_packets_total`,
 with a `reason` that starts with `trunk_`.
+
+A relay also sends the clear inner packets that it holds to a receiver on
+another relay in trunk packets. It holds the inner packet of a data frame of
+a QUIC-mode session, and of a PSP packet that an agent sealed with a relay SA
+(see "QUIC and PSP bridge"). The checks of the data frame or of the relay SA
+come first. When Permit allows the inner destination and an attachment of
+another relay has its route, the relay seals the inner packet with the lane 1
+SA of that relay, with the sender tag of the session of the sender in the VNI
+field. It sends the trunk packet, which is 40 B longer than the inner packet,
+from its own port to the relay socket of the other relay. It sends no
+`NoRoute` for such a packet, because the address has a route. It drops the
+inner packet, and counts the drop, in these cases:
+
+- The other relay is below revision 9, or the relay has no lane 1 SA of it
+  (`trunk_keys`).
+- The inner packet is above the inner MTU of the trunk, which is the same as
+  for a PSP packet (`trunk_mtu`). The relay does not send the packet in parts,
+  and the agent gets no message for this drop.
+- The session of the sender has no sender tag.
+
+The tunnel limit applies to a data frame after these checks, so a frame that
+the trunk does not carry takes nothing from it. For a PSP packet with a relay
+SA, the meter of its row and the tunnel limit apply before them.
+
+The relay that gets a trunk packet with a sender tag and a lane 1 SA opens it.
+The replay window of the SA drops a packet that the relay had before
+(`trunk_replay`), and a payload that is a whole PSP packet drops
+(`trunk_lane`). The relay drops the inner packet at the first of these checks
+that fails:
+
+1. An entry of the other relay has the sender tag (`trunk_sender`). The rule
+   of "Mesh datagrams" for the session of an entry applies, with the session
+   on which this relay gave the SA of the trunk packet to the other relay.
+   That session does not have to be open.
+2. The route of the inner source address in the VPC of that entry is from
+   that entry, as for a peer frame (`trunk_source`).
+3. Permit allows the inner destination for the VPC and the SPIFFE ID of that
+   entry (`trunk_permit`).
+4. A session of this relay routes the inner destination in that VPC
+   (`trunk_not_local`). An inner packet goes over one trunk at most.
+
+Then it sends the inner packet as it sends the inner packet of a data frame
+of one of its own sessions: in a data frame to a QUIC-mode agent, on the
+shard of its flow, or sealed with the SA that a PSP-mode agent gave with
+`Rekey`. The data frame has the network ID of the VPC and zero flags, because
+a trunk packet has no VNI word. The inner packet drops when the session does
+not take the data frame, and when the relay has no SA of the PSP-mode agent
+(`trunk_not_sent`). The relay applies no tunnel limit, because the relay of
+the sender applied it, and it counts the packet and its bytes as sent to the
+attachment of the destination. The relay of the receiver does not know the
+mode of the sender. Thus it also seals the inner packet of a PSP-mode sender
+for a PSP-mode receiver, which a relay does not do for two of its own
+sessions.
 
 ### Mesh datagrams
 
@@ -490,8 +552,8 @@ rule of `Hello.name` applies to the SPIFFE ID and the agent name of the entry.
 The route goes away with its entry: at a `gone` entry, and when the relay
 drops the entry for one of the reasons above. The route of an entry stays
 while the relay of the entry has no session. A peer frame for the route then
-drops (see "Mesh datagrams"), and the PSP packets of an SPI row to that relay
-drop when it is down (see below).
+drops (see "Mesh datagrams"), and the PSP packets of an SPI row and the clear
+inner packets to that relay drop when it is down (see below).
 
 A relay tells each other relay at revision 8 or later of the SPI rows that it
 has for receivers on that relay (see "Trunk"). It opens one `SPIRows` call on a
@@ -524,13 +586,16 @@ passes, when the member opens a new session, and when the member closes with
 another cause, as the entries do. They have no idle time.
 
 When the other relay is down, a relay deletes the trunk SAs, so the packets
-of its rows to that relay drop at once. The rows stay, and they carry packets
-again when the other relay is up and gave new SAs.
+of its rows and the clear inner packets to that relay drop at once. The rows
+stay, and they carry packets again when the other relay is up and gave new
+SAs. The sender of a clear inner packet gets no `NoRoute` while the route of
+the destination stays.
 
 `ResolvePeer` returns `NotFound` for an address of a route of another relay,
 so an agent starts no peer session to it and registers no SPI for it. The
-relay drops a data frame or a PSP packet that it opens for such an address,
-and sends `NoRoute`. A peer frame for such an address goes to the other relay
+inner packet of a data frame, or of a PSP packet that the relay opens, for
+such an address goes to the other relay in a trunk packet (see "Trunk"). A
+peer frame for such an address goes to the other relay in a mesh datagram
 (see "Mesh datagrams").
 
 ## Revisions
@@ -558,6 +623,7 @@ only for logs and metrics. On a mesh session, `MeshOpenRequest` and
 | 6 | `Hello.local_routes_only`. Routes of the attachments of other relays in `RouteDelta`. | Sends `local_routes_only` when its config has the option. Without it, gets the routes of the attachments of other relays from a relay at revision 6 or later. | Sends `local_routes_only`, because it has one session for each relay. | Makes a route for each prefix of the entries of the other relays. Sends these routes to a session at revision 6 or later that did not set `local_routes_only`, and to no other session. Answers `NotFound` to `ResolvePeer` for an address of such a route, and sends `NoRoute` for a packet to it that it opens. |
 | 7 | The mesh datagram with a type byte, and its type `0x01`: a peer frame with the sender tag. | No duty. | No duty. | Sends a peer frame for an address with a route of another relay to that relay in a mesh datagram, when that relay is at revision 7 or later, and sends no `NoRoute` for it. Sends no mesh datagram to a relay below revision 7. Checks each mesh datagram of another relay, and gives its frame only to a session of its own. Drops a mesh datagram with another type. |
 | 8 | `Mesh.SPIRows` on the called relay. The trunk packet with a sender tag: a whole PSP packet of an agent. | No duty. | No duty. | Keeps the SPI rows that another relay gives in `SPIRows`. Opens a trunk packet with a sender tag, checks it with the rows and the entries of the other relay, and sends its PSP packet only to a session of its own. With a relay at revision 8 or later: opens one `SPIRows` call for its rows to that relay, and sends the PSP packets of those rows in trunk packets. Makes no `SPIRows` call to a relay below revision 8, sends it no trunk packet with a sender tag, refuses its `SPIRows` call with `FailedPrecondition`, and keeps that session. |
+| 9 | The trunk packet with a sender tag on lane 1: a clear inner packet of an agent. | No duty. | No duty. | Opens a trunk packet with a sender tag and a lane 1 SA, checks it with the replay window and the entries of the other relay, and sends its inner packet only to a session of its own: in a data frame, or sealed with the SA of a PSP-mode agent. With a relay at revision 9 or later: sends the inner packet of a data frame, or of a PSP packet that it opens, for an address with a route of that relay in a lane 1 trunk packet, and sends no `NoRoute` for it. Sends no such trunk packet to a relay below revision 9: it drops the inner packet, and sends no `NoRoute` for it. |
 
 ### Minimum revision
 

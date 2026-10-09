@@ -250,7 +250,6 @@ func TestTrunkInDeliver(t *testing.T) {
 		},
 		{name: "PSP packet on the lane with a replay window", lane: trunkLaneInner, drop: "trunk_lane"},
 		{name: "clear packet on the lane for PSP packets", clear: v6, drop: "trunk_lane"},
-		{name: "clear packet on the lane with a replay window", lane: trunkLaneInner, clear: v6, drop: "trunk_lane"},
 		{name: "payload that is no PSP packet", junk: true, drop: "malformed"},
 		{name: "packet from an address of no member", from: stranger, drop: "malformed"},
 	}
@@ -919,8 +918,11 @@ apoxy_vpc_relay_dropped_packets_total{reason="trunk_lane"} 5
 apoxy_vpc_relay_dropped_packets_total{reason="trunk_mtu"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="trunk_no_row"} 4
 apoxy_vpc_relay_dropped_packets_total{reason="trunk_not_local"} 2
+apoxy_vpc_relay_dropped_packets_total{reason="trunk_not_sent"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="trunk_permit"} 1
+apoxy_vpc_relay_dropped_packets_total{reason="trunk_replay"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="trunk_sender"} 3
+apoxy_vpc_relay_dropped_packets_total{reason="trunk_source"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="tunnel_limit"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="unknown_source"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="unknown_spi"} 0

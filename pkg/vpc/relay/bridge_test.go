@@ -256,6 +256,8 @@ func TestBridgeDrops(t *testing.T) {
 			send: sendPSP(p1, p1.psp.seal(t, ipPacket(q1.addr, q2.addr, nil)))},
 		{name: "PSP with another VNI", from: p1, send: sendPSP(p1, wrongVNI[:n])},
 		{name: "PSP to a PSP agent", from: p1, send: sendPSP(p1, p1.psp.seal(t, ipPacket(p1.addr, p2.addr, nil)))},
+		{name: "PSP to a PSP agent with SAs for the relay", from: p2,
+			send: sendPSP(p2, p2.psp.seal(t, ipPacket(p2.addr, p1.addr, nil)))},
 		{name: "PSP with no route", from: p1,
 			send: sendPSP(p1, p1.psp.seal(t, ipPacket(p1.addr, nowhere, nil))), noRoute: nowhere},
 	}

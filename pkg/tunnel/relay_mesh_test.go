@@ -737,3 +737,94 @@ func testMeshPSP(t *testing.T, steerSockets int) {
 		}
 	}
 }
+
+// sendData sends the data frame of inner on the session of a each 200 ms, until to
+// gets a frame of that size. The relays keep no packet for a trunk with no keys.
+func (a *routeAgent) sendData(t *testing.T, ctx context.Context, to *routeAgent, inner []byte) []byte {
+	t.Helper()
+	frame := peerconn.EncodeData(nil, vpcNetwork, inner)
+	for {
+		require.NoError(t, a.qc.SendDatagram(frame))
+		rctx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+		for {
+			got, err := to.qc.ReceiveDatagram(rctx)
+			if err != nil {
+				break
+			}
+			// A frame of another size is a late copy of the frame before.
+			if len(got) == len(frame) {
+				cancel()
+				return got
+			}
+		}
+		cancel()
+		require.NoError(t, ctx.Err(), "no data frame from the other relay")
+	}
+}
+
+// TestRelay_MeshData sends data frames in the two directions between QUIC-mode
+// agents on two relays. The receiver gets a data frame with the same inner packet.
+func TestRelay_MeshData(t *testing.T) {
+	cases := []struct {
+		name  string
+		steer int // Sockets in a steer group. Zero uses one plain socket.
+	}{
+		{name: "plain socket"},
+		{name: "steer group of 4", steer: 4},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.steer > 1 && runtime.GOOS != "linux" {
+				t.Skip("a steer group of more than one socket needs Linux")
+			}
+			testMeshData(t, tc.steer)
+		})
+	}
+}
+
+func testMeshData(t *testing.T, steerSockets int) {
+	ca := newMeshCA(t)
+	a := startMeshRelay(t, ca, "relay-a", steerSockets, false)
+	b := startMeshRelay(t, ca, "relay-b", steerSockets, false, 0x100)
+	b.mesh.SetMembers([]vpcrelay.MeshMember{a.member()})
+	a.mesh.SetMembers([]vpcrelay.MeshMember{b.member()})
+	require.Equal(t, vpcrelay.MeshChange{Name: "relay-b", Up: true}, a.change(t))
+	require.Equal(t, vpcrelay.MeshChange{Name: "relay-a", Up: true}, b.change(t))
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	vpc := &dp.VPCRef{ProjectId: vpcProject, VpcUid: vpcUID, NetworkId: vpcNetwork}
+	this := dp.LocalVersion("test")
+	laptop := openRouteAgent(t, ctx, a.vpcRelay, "laptop", &dp.Hello{Version: this, Name: "base"})
+	server := openRouteAgent(t, ctx, b.vpcRelay, "server", &dp.Hello{Version: this, Name: "base"})
+
+	// When an agent has the route of the other agent, its relay has the
+	// attachment of the other relay, which names the sender of an inner packet.
+	onA, err := laptop.c.Attach(ctx, &dp.AttachRequest{Vpc: vpc, Name: "laptop"})
+	require.NoError(t, err)
+	onB, err := server.c.Attach(ctx, &dp.AttachRequest{Vpc: vpc, Name: "server"})
+	require.NoError(t, err)
+	require.Equal(t, []string{"+" + onB.GetAttachmentId() + " fd00:100::/96"}, laptop.next(t, ctx))
+	require.Equal(t, []string{"+" + onA.GetAttachmentId() + " fd00:1::/96"}, server.next(t, ctx))
+
+	laptopAddr, serverAddr := netip.MustParseAddr("fd00:1::1"), netip.MustParseAddr("fd00:100::1")
+	dirs := []struct {
+		name     string
+		from, to *routeAgent
+		src, dst netip.Addr
+	}{
+		{"relay-a to relay-b", laptop, server, laptopAddr, serverAddr},
+		{"relay-b to relay-a", server, laptop, serverAddr, laptopAddr},
+	}
+	for _, d := range dirs {
+		// A test agent sends a datagram of up to 1243 B before its path MTU discovery.
+		for _, size := range []int{40, 1200} {
+			inner := bytes.Repeat([]byte{byte(size)}, size)
+			inner[0], inner[4], inner[5] = 0x60, byte((size-40)>>8), byte(size-40)
+			copy(inner[8:24], d.src.AsSlice())
+			copy(inner[24:40], d.dst.AsSlice())
+			got := d.from.sendData(t, ctx, d.to, inner)
+			// The frame has the network ID of the VPC, and its flags are zero.
+			assert.Equal(t, peerconn.EncodeData(nil, vpcNetwork, inner), got, "%s, inner size %d", d.name, size)
+		}
+	}
+}

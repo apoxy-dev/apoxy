@@ -1116,7 +1116,7 @@ func TestMeshRouteSessions(t *testing.T) {
 }
 
 // TestMeshRouteNotReachable sends to an address of another relay: each call gets
-// "no route", and each packet drops. That relay is too old to get a peer frame.
+// "no route", and each packet drops. That relay is too old to get a packet.
 func TestMeshRouteNotReachable(t *testing.T) {
 	const (
 		quicAddr = "fd00:1::1" // Address of the sender in QUIC mode.
@@ -1223,7 +1223,7 @@ func TestMeshRouteNotReachable(t *testing.T) {
 			told(q, "Route")
 
 			// A peer frame, a data frame and a PSP packet to the relay. The address
-			// of a peer frame for relay-a has a route, so the frame gets no NoRoute.
+			// of each one for relay-a has a route, so the sender gets no NoRoute.
 			sent := r.forwardDatagram(q, peerFrame(dst, netip.MustParseAddr(quicAddr), "hi"), t0)
 			assert.Equal(t, tc.local, sent, "peer frame")
 			tells(!tc.local && !tc.member, q, "a peer frame")
@@ -1232,11 +1232,11 @@ func TestMeshRouteNotReachable(t *testing.T) {
 			inner := ipPacket(netip.MustParseAddr(quicAddr), dst, []byte("data"))
 			sent = r.forwardData(q, peerconn.EncodeData(nil, testVNI, inner), make([]byte, maxUDP), t0)
 			assert.Equal(t, tc.local, sent, "data frame")
-			told(q, "a data frame")
+			tells(!tc.local && !tc.member, q, "a data frame")
 
 			inner = ipPacket(netip.MustParseAddr(pspAddr), dst, []byte("data"))
 			handle(pspSender.seal(t, inner), net.UDPAddrFromAddrPort(netip.MustParseAddrPort("192.0.2.2:1")))
-			told(p, "a PSP packet")
+			tells(!tc.local && !tc.member, p, "a PSP packet")
 
 			if tc.local {
 				assert.Len(t, got, 3, "frames that the session of this relay gets")

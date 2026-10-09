@@ -47,7 +47,7 @@ func (n *trunkNode) bridge() *bridge { return n.r.bridge.Load() }
 
 // receives reports whether spi is the SPI of a receive SA of the pair.
 func (p *trunkPair) receives(spi uint32) bool {
-	_, ok := p.lane(spi)
+	_, ok := p.sa(spi)
 	return ok
 }
 
@@ -241,7 +241,7 @@ func TestTrunkMemberSA(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			pkt := sealTrunk(t, tc.from, "relay-a", trunkLaneInner, trunkTagRelay, probe, true)
-			why, ok := tk.receive(br, tk.pair(tc.pair), pkt, nil, time.Now())
+			why, ok := tk.receive(br, tk.pair(tc.pair), pkt, nil, nil, time.Now())
 			assert.Equal(t, tc.want, ok)
 			assert.Equal(t, dropMalformed, why)
 		})
@@ -539,13 +539,24 @@ type keepConn struct {
 	*discardConn
 	mu   sync.Mutex
 	pkts []keptPacket
+	fail error // The answer to each write, if set.
 }
 
 func (c *keepConn) WriteTo(b []byte, to net.Addr) (int, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.fail != nil {
+		return 0, c.fail
+	}
 	c.pkts = append(c.pkts, keptPacket{append([]byte(nil), b...), addrPort(to)})
 	return len(b), nil
+}
+
+// refuse makes each write fail with err. Nil makes the writes work again.
+func (c *keepConn) refuse(err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.fail = err
 }
 
 // trunkRig is a relay on the fake clock, and relay-a, a member that the test

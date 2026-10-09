@@ -1156,8 +1156,11 @@ apoxy_vpc_relay_dropped_packets_total{reason="trunk_lane"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="trunk_mtu"} 1
 apoxy_vpc_relay_dropped_packets_total{reason="trunk_no_row"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="trunk_not_local"} 0
+apoxy_vpc_relay_dropped_packets_total{reason="trunk_not_sent"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="trunk_permit"} 0
+apoxy_vpc_relay_dropped_packets_total{reason="trunk_replay"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="trunk_sender"} 0
+apoxy_vpc_relay_dropped_packets_total{reason="trunk_source"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="tunnel_limit"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="unknown_source"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="unknown_spi"} 0
@@ -1203,8 +1206,9 @@ type tapConn struct {
 
 func (c *tapConn) ReadFrom(b []byte) (int, net.Addr, error) {
 	n, from, err := c.PacketConn.ReadFrom(b)
-	// The first byte of a trunk packet is its next header value.
-	if err == nil && n > 0 && b[0] == pspwire.NextHdrPSP && addrPort(from) == c.from {
+	// The first byte of a trunk packet is its next header value, which does not
+	// have the fixed bit of a QUIC packet.
+	if err == nil && n > 0 && b[0]&0x40 == 0 && addrPort(from) == c.from {
 		c.mu.Lock()
 		c.pkts = append(c.pkts, slices.Clone(b[:n]))
 		c.mu.Unlock()

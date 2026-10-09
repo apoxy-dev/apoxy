@@ -38,14 +38,14 @@ func (r *Router) PacketHandler(ctx context.Context, tr *quic.Transport) (handle 
 	if fwd == nil {
 		fwd = newFwdBatch(tr, &r.sends)
 	}
-	// Only the read loop calls the handler, and a forwarder copies or sends a
-	// packet before it returns, so one buffer is enough for the trunk packets.
+	// Only the read loop calls the handler, and each send copies or sends a
+	// packet before it returns, so one buffer is enough for the sealed packets.
 	sealed := make([]byte, maxUDP)
 	return func(b []byte, from net.Addr) {
 		if t := r.trunk.Load(); t != nil {
 			// A mesh member sends only trunk packets, which have their own header check.
 			if p := t.from(addrPort(from)); p != nil {
-				if why, ok := t.receive(br, p, b, fwd, time.Now()); !ok {
+				if why, ok := t.receive(br, p, b, sealed, fwd, time.Now()); !ok {
 					r.drops[why].Add(1)
 				}
 				return
@@ -74,7 +74,7 @@ func (r *Router) PacketHandler(ctx context.Context, tr *quic.Transport) (handle 
 			fwd.add(b, dst)
 		case br != nil:
 			// A row to the relay has no address.
-			r.receivePSP(br, b, h.SPI, now)
+			r.receivePSP(br, b, h.SPI, sealed, now)
 		}
 	}, fwd.flush
 }
