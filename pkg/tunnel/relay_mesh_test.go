@@ -24,8 +24,10 @@ import (
 	"github.com/quic-go/quic-go/logging"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/types/known/emptypb"
 
 	"github.com/apoxy-dev/apoxy/pkg/tunnel"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/identity"
 	vpcrelay "github.com/apoxy-dev/apoxy/pkg/vpc/relay"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
@@ -340,4 +342,105 @@ func TestRelay_MeshKeepAlive(t *testing.T) {
 			}
 		})
 	}
+}
+
+// meshSink is the Mesh service of a relay that the test plays. It keeps the
+// messages of the Presence call that it gets.
+type meshSink struct {
+	dp.UnimplementedMeshServer
+	updates chan *dp.PresenceUpdate
+}
+
+func (f *meshSink) Presence(_ context.Context, st rpc.ClientStreamServer[dp.PresenceUpdate]) (*emptypb.Empty, error) {
+	for {
+		u, err := st.Recv()
+		if err != nil {
+			return &emptypb.Empty{}, nil
+		}
+		f.updates <- u
+	}
+}
+
+// TestRelay_MeshPresence dials a relay as another relay does. The relay sends
+// the attachments of its agents on the mesh session: the full set, then changes.
+func TestRelay_MeshPresence(t *testing.T) {
+	ca := newMeshCA(t)
+	b := startMeshRelay(t, ca, "relay-b", 0, false)
+	udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	require.NoError(t, err)
+	tr := &quic.Transport{Conn: udp}
+	t.Cleanup(func() { _ = tr.Close(); _ = udp.Close() })
+	b.mesh.SetMembers([]vpcrelay.MeshMember{{Name: "relay-a", Addr: udp.LocalAddr().(*net.UDPAddr).AddrPort()}})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	tlsConf := ca.tls(t, "relay-a")
+	tlsConf.NextProtos = []string{dp.ALPNMesh}
+	qc, err := tr.Dial(ctx, net.UDPAddrFromAddrPort(b.r.Address()), tlsConf, &quic.Config{EnableDatagrams: true})
+	require.NoError(t, err)
+	defer func() { _ = qc.CloseWithError(0, "") }()
+	sink := &meshSink{updates: make(chan *dp.PresenceUpdate, 16)}
+	mux := rpc.NewMux()
+	dp.RegisterMeshServer(mux, sink)
+	conn := rpc.NewConn(qc, mux)
+	go func() { _ = conn.Serve(ctx) }()
+	_, err = dp.NewMeshClient(conn).Open(ctx, &dp.MeshOpenRequest{Version: dp.LocalVersion("test"), Name: "relay-a"})
+	require.NoError(t, err)
+	next := func() *dp.PresenceUpdate {
+		t.Helper()
+		select {
+		case u := <-sink.updates:
+			return u
+		case <-ctx.Done():
+			t.Fatal("no presence message from the relay")
+			return nil
+		}
+	}
+
+	// The relay has no attachment: the full set is only its end.
+	u := next()
+	assert.True(t, u.GetEndOfFullSet())
+	assert.Empty(t, u.GetEntries())
+
+	// An agent sends its name in Hello and attaches.
+	start := uint64(time.Now().UnixMilli())
+	_, aqc, err := b.dial(t, b.agentTLS(t, "laptop"))
+	require.NoError(t, err)
+	agent := dp.NewRelayClient(rpc.NewConn(aqc, nil))
+	st, err := agent.Session(ctx)
+	require.NoError(t, err)
+	require.NoError(t, st.Send(&dp.SessionRequest{Msg: &dp.SessionRequest_Hello{Hello: &dp.Hello{Mode: dp.Mode_MODE_QUIC, Name: "base"}}}))
+	welcome, err := st.Recv()
+	require.NoError(t, err)
+	require.NotNil(t, welcome.GetWelcome())
+	vpc := &dp.VPCRef{ProjectId: vpcProject, VpcUid: vpcUID, NetworkId: vpcNetwork}
+	res, err := agent.Attach(ctx, &dp.AttachRequest{Vpc: vpc, Name: "laptop", Routes: []string{"10.9.0.0/16"}})
+	require.NoError(t, err)
+	claims, err := vpcrelay.VerifyGrant(res.GetGrant(), b.roots, time.Now())
+	require.NoError(t, err)
+
+	u = next()
+	assert.False(t, u.GetEndOfFullSet())
+	require.Len(t, u.GetEntries(), 1)
+	e := u.GetEntries()[0]
+	assert.Equal(t, vpcProject, e.GetVpc().GetProjectId())
+	assert.Equal(t, vpcUID, e.GetVpc().GetVpcUid())
+	assert.Equal(t, uint32(vpcNetwork), e.GetVpc().GetNetworkId())
+	assert.Equal(t, res.GetAttachmentId(), e.GetAttachmentId())
+	assert.Equal(t, append(claims.GetAddresses(), "10.9.0.0/16"), e.GetPrefixes())
+	assert.Equal(t, identity.ID{Project: vpcProject, VPC: vpcUID, Agent: "laptop"}.String(), e.GetSubject())
+	assert.Equal(t, "base", e.GetAgentName())
+	assert.Equal(t, uint32(1), e.GetSenderTag())
+	assert.False(t, e.GetGone())
+	assert.GreaterOrEqual(t, e.GetGeneration(), start)
+	assert.LessOrEqual(t, e.GetGeneration(), uint64(time.Now().UnixMilli()))
+
+	// The agent closes its session, so the attachment ends.
+	require.NoError(t, aqc.CloseWithError(0, ""))
+	u = next()
+	require.Len(t, u.GetEntries(), 1)
+	g := u.GetEntries()[0]
+	assert.Equal(t, res.GetAttachmentId(), g.GetAttachmentId())
+	assert.True(t, g.GetGone())
+	assert.Greater(t, g.GetGeneration(), e.GetGeneration())
 }

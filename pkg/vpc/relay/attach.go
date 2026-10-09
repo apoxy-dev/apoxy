@@ -48,6 +48,7 @@ type Attachment struct {
 	seq   uint64    // Attach order in the router.
 	since time.Time // Time of the attach.
 	count *attCount // Counts of the packets to the attachment. Set at the attach.
+	gen   uint64    // Presence generation of the attach. Zero after the end.
 }
 
 // Addresses assigns overlay addresses to attachments. The relay host
@@ -205,8 +206,16 @@ func (r *Router) attach(s *Session, a *Attachment) error {
 			return rpc.Errorf(rpc.AlreadyExists, "route %s has another owner", p)
 		}
 	}
+	// The first attachment of s gives s its trunk tag.
+	if s.tag == 0 {
+		if s.tag = r.newTag(); s.tag == 0 {
+			return rpc.Errorf(rpc.ResourceExhausted, "relay has no free trunk tag")
+		}
+	}
+	now := time.Now()
 	r.attaches++
-	a.seq, a.since, a.count = r.attaches, time.Now(), &attCount{}
+	a.seq, a.since, a.count = r.attaches, now, &attCount{}
+	a.gen = r.nextGen(now)
 	if len(s.attachments) == 0 {
 		// The first attachment does not get what s sent before it.
 		s.rxBase = r.rxOf(s, nil)
@@ -222,6 +231,7 @@ func (r *Router) attach(s *Session, a *Attachment) error {
 		}
 	}
 	s.attachments = append(s.attachments, a)
+	r.announce(s, a)
 	return nil
 }
 
@@ -247,6 +257,7 @@ func (r *Router) detach(s *Session, id string) (*Attachment, AttachmentStats, er
 	for _, p := range gone {
 		r.dropRoute(s, p)
 	}
+	r.withdraw(a)
 	r.dropInbound(s)
 	// The sync adds the last XDP counts of the removed rows to the totals.
 	r.syncXDP(time.Now())

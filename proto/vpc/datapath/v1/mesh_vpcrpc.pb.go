@@ -26,7 +26,8 @@ const (
 type MeshClient interface {
 	// Open is the first call on a session. The relay that dialed calls it.
 	Open(ctx context.Context, in *MeshOpenRequest) (*MeshOpenResponse, error)
-	// Presence sends the attachments of the caller.
+	// Presence sends the attachments of the caller: the full set, then each
+	// change. The caller opens it one time on a session.
 	Presence(ctx context.Context) (rpc.ClientStreamClient[PresenceUpdate, emptypb.Empty], error)
 	// SPIRows copies SPI rows to the relay of the receiver.
 	SPIRows(ctx context.Context) (rpc.ClientStreamClient[SPIRowUpdate, emptypb.Empty], error)
@@ -67,7 +68,8 @@ func (c meshClient) TrunkKeys(ctx context.Context, in *KeysRequest) (*KeysRespon
 type MeshServer interface {
 	// Open is the first call on a session. The relay that dialed calls it.
 	Open(context.Context, *MeshOpenRequest) (*MeshOpenResponse, error)
-	// Presence sends the attachments of the caller.
+	// Presence sends the attachments of the caller: the full set, then each
+	// change. The caller opens it one time on a session.
 	Presence(context.Context, rpc.ClientStreamServer[PresenceUpdate]) (*emptypb.Empty, error)
 	// SPIRows copies SPI rows to the relay of the receiver.
 	SPIRows(context.Context, rpc.ClientStreamServer[SPIRowUpdate]) (*emptypb.Empty, error)

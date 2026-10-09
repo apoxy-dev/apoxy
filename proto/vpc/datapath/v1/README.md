@@ -256,7 +256,7 @@ its relay before it applies them, and unregisters them after a revoke.
 | Method      | Kind          | Messages |
 |-------------|---------------|----------|
 | `Open`      | unary         | Dialer and listener each send `{version, name, relay}`. First call on a session. |
-| `Presence`  | client stream | `PresenceUpdate` of the attachments of the caller. |
+| `Presence`  | client stream | `PresenceUpdate`: the full set of the attachments of the caller, then each change. One call on a session. |
 | `SPIRows`   | client stream | `SPIRowUpdate`: SPI rows for receivers on the called relay. |
 | `TrunkKeys` | unary         | `KeysRequest` -> `KeysResponse` for the trunk SA. |
 
@@ -282,6 +282,38 @@ again. The wait doubles after each failed dial, up to 10 s, and each wait gets
 up to 50% more at random. A relay has the other relay as down 3 s after the
 session ended, if no new session opened. After `RESTART` it is down at once.
 
+A relay tells each other relay of its attachments. On each new session with a
+relay at revision 4 or later, it opens one `Presence` call. It first sends the
+full set: an entry for each attachment that it has, in one or more
+`PresenceUpdate` messages, with `end_of_full_set` in the last of them. Then it
+sends each change: an entry for a new attachment, and an entry with `gone` for
+an attachment that ended. An attachment does not change between these two
+entries. A session that replaces an older one gets the full set again. A relay
+at revision 3 gets no `Presence` call, and its session stays open.
+
+An entry has the VPC, the attachment ID, the prefixes (the addresses and the
+advertised routes), the SPIFFE ID and the `Hello.name` of the agent, and the
+sender tag. The sending relay gives the sender tag, a number from 1 to
+2^24 - 1, to the session of the agent at the first attachment of the session.
+All attachments of one session have the same tag, and no other session of the
+sending relay has it at the same time. The session keeps its tag until it
+ends. The relay gives a tag again only after all the other tags. `generation`
+is the time of the change in Unix milliseconds: the attach, or the end for a
+`gone` entry. A relay sends each generation one time: when the clock is not
+above the last generation, the next one is the last one plus 1. For one
+attachment ID, the entry with the higher generation wins.
+
+The called relay keeps the entries of each member. It ignores an entry with a
+generation below the one that it has for the attachment ID, and a `gone` entry
+for an attachment that it does not have. It refuses an entry with no
+attachment ID, with an ID of more than 128 bytes or with no generation. It
+also refuses an entry without `gone` that has no VPC, a network ID above 24
+bits, a subject that is not an agent ID of that VPC, a tag out of range or a
+prefix that does not parse. A refused entry does not end the call. A second
+`Presence` call on a session gets `FailedPrecondition`. The entries of a
+member stay after its session ends. The relay drops them when the member
+closes with `RESTART` or leaves the member set.
+
 ## Revisions
 
 Agents run on customer hosts for months, and relays change more often, so the
@@ -302,6 +334,7 @@ only for logs and metrics. On a mesh session, `MeshOpenRequest` and
 | 1 | `Version` in `Hello`, `Welcome` and `Open`. `GrantClaims.min_revision`. The `UPGRADE` close codes. | Sends its `Version` in `Hello` and in `Open`. Stops the dial loop when a relay closes with `UPGRADE` and no other relay takes it, and tells the user to upgrade. Dials the next relay when a relay is below its minimum. Closes a peer session below its minimum with `UPGRADE`. Refuses a grant with a `min_revision` above its revision. Keeps the session when a call returns `Unimplemented`. | The duties of the agent on the relay session. | Sends its `Version` in `Welcome`. Closes a session below its minimum with `UPGRADE`. Counts the sessions by revision and build. |
 | 2 | `Hello.name`. `ResolvePeerResponse.attachment_ids`. | Sends the name of its base attachment in `Hello`. With a relay at revision 2, waits for the grant of an address only when `attachment_ids` has an attachment of an open peer session. With an older relay, waits when the subject is that of an open peer session. | The duties of the agent on the relay session. | Has two sessions with one SPIFFE ID as one agent only when their names are equal or one has no name. Sends `attachment_ids` in `ResolvePeer`. |
 | 3 | `Mesh.Open` with the `Version`, the relay name and the `RelayRef` of each relay. The `MeshCloseCode` values. | No duty. | No duty. | Calls `Open` first on a mesh session that it dialed, and answers it on a session that it accepted. Closes a mesh session with a relay below its minimum with `UPGRADE`, and with a relay that is not a member with `NOT_MEMBER`. Closes its mesh sessions with `RESTART` when it stops. |
+| 4 | `Presence.subject`, `agent_name` and `sender_tag`. `PresenceUpdate.end_of_full_set`. | No duty. | No duty. | Opens one `Presence` call on each mesh session with a relay at revision 4 or later: the full set of its attachments with the end mark, then each change. Opens none with a relay at revision 3, and keeps that session. Keeps the entries that each member sends, and drops them when the member closes with `RESTART` or leaves the member set. |
 
 ### Minimum revision
 

@@ -15,7 +15,8 @@ option go_package = "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1;datapathv1
 service Mesh {
   // Open is the first call on a session. The relay that dialed calls it.
   rpc Open(MeshOpenRequest) returns (MeshOpenResponse);
-  // Presence sends the attachments of the caller.
+  // Presence sends the attachments of the caller: the full set, then each
+  // change. The caller opens it one time on a session.
   rpc Presence(stream PresenceUpdate) returns (google.protobuf.Empty);
   // SPIRows copies SPI rows to the relay of the receiver.
   rpc SPIRows(stream SPIRowUpdate) returns (google.protobuf.Empty);
@@ -62,16 +63,27 @@ message MeshOpenResponse {
 message Presence {
   VPCRef vpc = 1;
   string attachment_id = 2;
-  // Increases at each change of the attachment. The higher generation wins.
+  // Time of the change in Unix milliseconds. A relay sends each generation one
+  // time, and the higher generation wins.
   uint64 generation = 3;
-  // Overlay prefixes of the attachment.
+  // Overlay prefixes of the attachment: its addresses and its advertised routes.
   repeated string prefixes = 4;
-  // True if the attachment is gone.
+  // True if the attachment is gone. The entry then has only the VPC, the
+  // attachment ID and the generation.
   bool gone = 5;
+  // SPIFFE ID of the agent of the attachment.
+  string subject = 6;
+  // Hello.name of the agent, or empty. It tells the agents of one subject apart.
+  string agent_name = 7;
+  // Tag (1 to 2^24 - 1) that the sending relay gives to the session of the agent.
+  // All attachments of a session have it, and no other session at the same time.
+  uint32 sender_tag = 8;
 }
 
 message PresenceUpdate {
   repeated Presence entries = 1;
+  // True in the last message of the full set that starts a Presence call.
+  bool end_of_full_set = 2;
 }
 
 // SPIRow is a forward row that a sender registered on the sending relay.

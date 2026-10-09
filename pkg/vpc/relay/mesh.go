@@ -128,6 +128,8 @@ type Mesh struct {
 	onChange   []func(MeshChange)
 	onSession  []func(*MeshSession)
 	onDatagram func(*MeshSession, []byte)
+
+	pres *presence // Attachments that the members and this relay share.
 }
 
 // meshMember is the state of one member. Mesh.mu guards its fields.
@@ -202,6 +204,8 @@ func NewMesh(name string, cfg MeshConfig) (*Mesh, error) {
 		wake:     make(chan struct{}, 1),
 	}
 	m.tls = m.TLSConfig()
+	m.pres = newPresence(m)
+	m.onSession, m.onChange = append(m.onSession, m.pres.opened), append(m.onChange, m.pres.down)
 	dp.RegisterMeshServer(m.mux, m)
 	return m, nil
 }

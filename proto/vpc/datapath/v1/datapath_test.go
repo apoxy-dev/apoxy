@@ -465,7 +465,10 @@ func TestMeshCalls(t *testing.T) {
 			&dp.MeshOpenRequest{Version: dp.LocalVersion("build-a"), Name: "relay-c-0"},
 			rpc.Errorf(rpc.PermissionDenied, "relay relay-c-0 is not a member")),
 		clientStream("Presence", c, dp.MeshClient.Presence,
-			&dp.PresenceUpdate{Entries: []*dp.Presence{{Vpc: vpc, AttachmentId: "att-1", Generation: 1, Prefixes: []string{"fd61:a0b:c00:1::/96"}}}},
+			&dp.PresenceUpdate{EndOfFullSet: true, Entries: []*dp.Presence{{
+				Vpc: vpc, AttachmentId: "att-1", Generation: 1, Prefixes: []string{"fd61:a0b:c00:1::/96"},
+				Subject: "spiffe://p-1/vpc/u-1/agent/laptop", AgentName: "base", SenderTag: 1<<24 - 1,
+			}}},
 			&dp.PresenceUpdate{Entries: []*dp.Presence{{Vpc: vpc, AttachmentId: "att-1", Generation: 2, Gone: true}}}),
 		clientStream("SPIRows", c, dp.MeshClient.SPIRows,
 			&dp.SPIRowUpdate{Rows: []*dp.SPIRow{{Vpc: vpc, SenderTag: 9, Spi: sa.Spi, Destination: "fd61:a0b:c00:2::9", ExpiresIn: durationpb.New(5 * time.Minute)}}},

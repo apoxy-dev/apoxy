@@ -124,6 +124,12 @@ type Router struct {
 	xdpBase  xdpStats      // Counters of the XDP programs that stopped.
 	xdpWake  chan struct{} // Has room for 1: XDP rows are marked.
 
+	// What the mesh gets of the attachments. mu guards these fields.
+	gen      uint64              // Last presence generation.
+	tag      uint32              // Last trunk tag that a session got.
+	tags     map[uint32]struct{} // Trunk tags of the sessions.
+	presence func(*dp.Presence)  // Gets each new and each gone attachment.
+
 	// statsMu guards attCount.last. Take it after mu.
 	statsMu sync.Mutex
 }
@@ -150,6 +156,7 @@ func NewRouter(trust Trust, cfg Config) *Router {
 		byConn:   map[*rpc.Conn]*Session{},
 		bySource: map[netip.AddrPort]*Session{},
 		probes:   map[[8]byte]*Session{},
+		tags:     map[uint32]struct{}{},
 		xdpWake:  make(chan struct{}, 1),
 	}
 }
@@ -186,6 +193,7 @@ type Session struct {
 	closed      bool
 	version     *dp.Version // Version of the agent, from Hello. Nil is revision 0.
 	name        string      // Name of the agent, from Hello. Empty before revision 2.
+	tag         uint32      // Trunk tag, from the first attach to the removal. Zero is no tag.
 	sync        syncState
 	shardOf     *Session                     // The owner session of a shard.
 	twin        *Session                     // Older session of the agent socket. Forward also uses its rows.
@@ -361,6 +369,13 @@ func (r *Router) removeSession(s *Session) {
 	for _, p := range slices.Clone(s.routes) {
 		r.dropRoute(s, p)
 	}
+	// The attachments stay in s for their last counters, but they are gone.
+	for _, a := range s.attachments {
+		r.withdraw(a)
+	}
+	// A later session can get the trunk tag of s.
+	delete(r.tags, s.tag)
+	s.tag = 0
 	for _, w := range s.rows {
 		r.removeRow(w)
 	}

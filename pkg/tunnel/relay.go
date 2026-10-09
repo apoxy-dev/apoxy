@@ -517,6 +517,10 @@ func (r *Relay) Start(ctx context.Context) error {
 		go r.vpc.R.Run(vpcCtx)
 	}
 	if r.mesh != nil {
+		if r.vpc != nil {
+			// The other relays get the attachments of this relay.
+			r.mesh.SetRouter(r.vpc.R)
+		}
 		// The mesh dials from a relay socket, so that the other relays see the
 		// address of this relay. Start waits, so that Run tells them of the stop.
 		conns.Go(func() { r.mesh.Run(vpcCtx, trs[0], relayQUICConfig) })
