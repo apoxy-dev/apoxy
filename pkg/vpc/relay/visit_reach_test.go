@@ -4,6 +4,7 @@ package relay
 
 import (
 	"net/netip"
+	"slices"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -325,6 +326,7 @@ func TestVisitNoRouteSenders(t *testing.T) {
 		rev  uint32 // Zero is the revision of the answer.
 		mode dp.Mode
 		psp  bool // The sender is a PSP-mode agent that sends a packet with the relay SA.
+		row  bool // The sender is a PSP-mode agent that sends the PSP packet of an SPI row.
 		send func(g *rowRig, c *Session) bool
 		down time.Duration // Time since the session of relay-a ended. Zero is an open session.
 		sent bool          // The relay sends the traffic to relay-a.
@@ -342,6 +344,11 @@ func TestVisitNoRouteSenders(t *testing.T) {
 		{name: "PSP packet with the relay SA, relay-a is up", psp: true, sent: true},
 		{name: "PSP packet with the relay SA, relay-a is down", psp: true, down: meshDownAfter, want: true},
 		{name: "PSP packet of an agent one revision before, relay-a is down", rev: visitReachRevision - 1, psp: true, down: meshDownAfter},
+		// The relay does not open the packet of a row: the address is the destination of the row.
+		{name: "PSP packet of an SPI row, relay-a is up", row: true, sent: true},
+		{name: "PSP packet of an SPI row, session ended a moment ago", row: true, down: time.Second, sent: true},
+		{name: "PSP packet of an SPI row, relay-a is down", row: true, down: meshDownAfter, want: true},
+		{name: "PSP packet of an SPI row of an agent one revision before, relay-a is down", rev: visitReachRevision - 1, row: true, down: meshDownAfter},
 	}
 	cfg := trunkRigConfig(t)
 	for _, tc := range cases {
@@ -355,15 +362,22 @@ func TestVisitNoRouteSenders(t *testing.T) {
 				}
 				var c *Session
 				send := tc.send
-				if tc.psp {
+				switch {
+				case tc.psp:
 					e := g.pspSender(rev)
 					c = e.s
 					send = func(g *rowRig, _ *Session) bool { return len(g.bridgeSend(e, innerOf(brP, brServer, 100))) > 0 }
-				} else {
+				case tc.row:
+					c = g.caller(reachCaller{rev: rev, mode: dp.Mode_MODE_PSP})
+					send = func(g *rowRig, _ *Session) bool { return g.rowPacket(5, 100) }
+				default:
 					c = g.caller(reachCaller{rev: rev, mode: tc.mode})
 				}
 				g.ref = visitRefA
 				g.link(dp.Revision)
+				if tc.row {
+					require.NoError(t, g.r.registerSPI(c, register(vpcA, brServer, rowTTL, 5), time.Now()))
+				}
 				if tc.down > 0 {
 					g.lose(g.sess, meshLost, tc.down)
 				}
@@ -387,4 +401,172 @@ func TestVisitNoRouteSenders(t *testing.T) {
 			})
 		})
 	}
+}
+
+// rowPacket gives the relay a PSP packet with spi and an inner packet of n bytes from
+// the socket of the caller. It reports whether relay-a got the packet with no change.
+func (g *rowRig) rowPacket(spi uint32, n int) bool {
+	g.t.Helper()
+	pkt := pspOfSize(g.t, spi, n)
+	pkts := g.arrive(slices.Clone(pkt), netip.MustParseAddrPort(reachSocket))
+	if len(pkts) == 0 {
+		return false
+	}
+	assert.Equal(g.t, []keptPacket{{pkt, g.addr}}, pkts, "relay-a gets the packet of the agent with no change")
+	return true
+}
+
+// TestVisitNoRouteRow checks when the PSP packet of an SPI row to server on relay-a
+// gives its sender a NoRoute with the home relay, by the state of relay-a.
+func TestVisitNoRouteRow(t *testing.T) {
+	lost := func(d time.Duration) func(*rowRig) {
+		return func(g *rowRig) { g.lose(g.sess, meshLost, d) }
+	}
+	down := lost(meshDownAfter)
+	then := func(steps ...func(*rowRig)) func(*rowRig) {
+		return func(g *rowRig) {
+			for _, step := range steps {
+				step(g)
+			}
+		}
+	}
+	noID := &dp.RelayRef{Addresses: visitRefA.Addresses}
+	cases := []struct {
+		name  string
+		rev   uint32        // Revision of the sender. Zero is the revision of the visit answer.
+		ref   *dp.RelayRef  // What relay-a gives of itself in Open. Nil is visitRefA.
+		self  string        // Relay ID of the relay of the test.
+		setup func(*rowRig) // Runs when the row is there. Nil leaves relay-a up.
+		size  int           // Bytes of the inner packet. Zero is 100.
+		sent  bool          // relay-a gets the packet.
+		drop  string        // Reason label of the drop, if the packet drops.
+		want  bool          // The sender gets a NoRoute with the home relay.
+	}{
+		{name: "relay-a is up", sent: true},
+		{name: "packet too long for the path, relay-a is up", size: trunkMTU + 1, drop: "trunk_mtu"},
+		{name: "session of relay-a ended, one moment before the down time", setup: lost(meshDownAfter - time.Nanosecond), sent: true},
+		{name: "relay-a is down for the down time", setup: down, drop: "trunk_keys", want: true},
+		{name: "relay-a is down for one minute", setup: lost(time.Minute), drop: "trunk_keys", want: true},
+		{name: "packet too long for the path, relay-a is down", size: trunkMTU + 1, setup: down, drop: "trunk_keys", want: true},
+		{name: "relay with an ID of its own", self: "relay-m.example", setup: down, drop: "trunk_keys", want: true},
+		{name: "relay-b is up with another ID", drop: "trunk_keys", want: true,
+			setup: func(g *rowRig) {
+				g.member(visitRefB)
+				down(g)
+			}},
+
+		// The other cases of the visit rule: the address has a route, so the sender gets no NoRoute.
+		{name: "relay-a closed with RESTART", setup: func(g *rowRig) { g.lose(g.sess, meshRestart, meshDownAfter) }, drop: "unknown_spi"},
+		// The relay has an ID here: with none, the empty ID of relay-a is also the ID of this relay.
+		{name: "relay-a gave no relay ID", ref: noID, self: "relay-m.example", setup: down, drop: "trunk_keys"},
+		{name: "relay-a has the relay ID of this relay", self: visitRefA.Id, setup: down, drop: "trunk_keys"},
+		{name: "relay-b is up with the same relay ID", drop: "trunk_keys",
+			setup: func(g *rowRig) {
+				g.member(visitRefA)
+				down(g)
+			}},
+		{name: "relay-b is down with the same relay ID", drop: "trunk_keys",
+			setup: func(g *rowRig) {
+				b := g.member(visitRefA)
+				down(g)
+				g.lose(b, meshLost, meshDownAfter)
+			}},
+		{name: "agent one revision before the visit answer", rev: visitReachRevision - 1, setup: down, drop: "trunk_keys"},
+		{name: "agent from before revisions", rev: 1, setup: down, drop: "trunk_keys"},
+
+		// The member has a session again.
+		{name: "relay-a came back one revision before the trunk", drop: "trunk_keys",
+			setup: then(down, func(g *rowRig) { g.join(trunkRevision - 1) })},
+		{name: "relay-a came back with no SA", setup: then(down, func(g *rowRig) { g.join(trunkRevision) }), sent: true},
+		{name: "relay-a came back and is down again", drop: "trunk_keys", want: true,
+			setup: then(down, func(g *rowRig) { g.join(trunkRevision) }, down)},
+	}
+	base := trunkRigConfig(t)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				cfg := base
+				if tc.self != "" {
+					cfg.Relay = &dp.RelayRef{Id: tc.self}
+				}
+				g := newRowRig(t, cfg)
+				defer g.stop()
+				rev, size, home := tc.rev, tc.size, tc.ref
+				if rev == 0 {
+					rev = visitReachRevision
+				}
+				if size == 0 {
+					size = 100
+				}
+				if home == nil {
+					home = visitRefA
+				}
+				c := g.caller(reachCaller{rev: rev, mode: dp.Mode_MODE_PSP})
+				g.ref = home
+				g.link(dp.Revision)
+				require.NoError(t, g.r.registerSPI(c, register(vpcA, brServer, rowTTL, 5), time.Now()))
+				if tc.setup != nil {
+					tc.setup(g)
+				}
+				g.r.takeSync(c)
+				before := dropsOf(g.r)
+
+				assert.Equal(t, tc.sent, g.rowPacket(5, size), "relay-a got the packet")
+				if tc.drop != "" {
+					before[tc.drop]++
+				}
+				assert.Equal(t, before, dropsOf(g.r), "drop counters")
+				var want []*dp.NoRoute
+				if tc.want {
+					// The inner packet has another destination: the address is from the row.
+					want = []*dp.NoRoute{{Vpc: ref(vpcA), Address: brServer, HomeRelay: home}}
+				}
+				assert.Empty(t, cmp.Diff(want, noRouteMsgs(g.r, c), protocmp.Transform()))
+			})
+		})
+	}
+}
+
+// TestVisitNoRouteRowLimit checks that the packets of the rows of a sender give at
+// most one NoRoute each second for each address, also with two rows to one address.
+func TestVisitNoRouteRowLimit(t *testing.T) {
+	cfg := trunkRigConfig(t)
+	synctest.Test(t, func(t *testing.T) {
+		g := newRowRig(t, cfg)
+		defer g.stop()
+		c := g.caller(reachCaller{rev: visitReachRevision, mode: dp.Mode_MODE_PSP})
+		g.ref = visitRefA
+		g.link(dp.Revision)
+		// The rows 5 and 6 are to one address of server, and the row 7 to its IPv4 address.
+		require.NoError(t, g.r.registerSPI(c, register(vpcA, brServer, rowTTL, 5, 6), time.Now()))
+		require.NoError(t, g.r.registerSPI(c, register(vpcA, brServer4, rowTTL, 7), time.Now()))
+		g.lose(g.sess, meshLost, meshDownAfter)
+		g.r.takeSync(c)
+		steps := []struct {
+			name string
+			wait time.Duration // Time before the packet.
+			spi  uint32
+			want string // Address of the NoRoute. Empty is no NoRoute.
+		}{
+			{name: "first packet of row 5", spi: 5, want: brServer},
+			{name: "second packet of row 5", spi: 5},
+			{name: "packet of row 6 to the same address", spi: 6},
+			{name: "packet of row 7 to another address", spi: 7, want: brServer4},
+			// The second is that of the README, so the steps do not use the constant of the relay.
+			{name: "one moment before the end of the second", wait: time.Second - time.Nanosecond, spi: 6},
+			{name: "one second after the first NoRoute", wait: time.Nanosecond, spi: 6, want: brServer},
+			{name: "the other address, one second after its NoRoute", spi: 7, want: brServer4},
+			{name: "row 5 after the NoRoute of row 6", spi: 5},
+		}
+		for _, st := range steps {
+			time.Sleep(st.wait)
+			assert.False(t, g.rowPacket(st.spi, 100), st.name)
+			var want []*dp.NoRoute
+			if st.want != "" {
+				want = []*dp.NoRoute{{Vpc: ref(vpcA), Address: st.want, HomeRelay: visitRefA}}
+			}
+			assert.Empty(t, cmp.Diff(want, noRouteMsgs(g.r, c), protocmp.Transform()), st.name)
+		}
+		assert.EqualValues(t, len(steps), g.r.drops[dropTrunkKeys].Load(), "each packet drops")
+	})
 }

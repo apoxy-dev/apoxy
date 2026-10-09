@@ -765,13 +765,24 @@ func (r *Router) SetPermit(p Permit) {
 // a receiver on another relay, the address is the relay socket of that relay,
 // which gets the packet with no change.
 func (r *Router) Forward(src netip.AddrPort, spi uint32, size int, now time.Time) (netip.AddrPort, Verdict) {
+	to, v, lost, home := r.forward(src, spi, size, now)
+	if lost != nil {
+		// The row stays, so only a NoRoute tells its sender to visit the relay of the receiver.
+		r.noRoute(lost.sender, lost.dst, home, now)
+	}
+	return to, v
+}
+
+// forward is Forward with no NoRoute. For a row that member home cannot get the
+// packets of now, it returns the row as lost.
+func (r *Router) forward(src netip.AddrPort, spi uint32, size int, now time.Time) (to netip.AddrPort, v Verdict, lost *row, home string) {
 	src = netip.AddrPortFrom(src.Addr().Unmap(), src.Port())
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	s := r.bySource[src]
 	if s == nil || !s.from(src, now) {
 		r.drops[dropUnknownSource].Add(1)
-		return netip.AddrPort{}, DropUnknownSource
+		return netip.AddrPort{}, DropUnknownSource, nil, ""
 	}
 	w := s.rows[spi]
 	if t := s.twin; (w == nil || now.After(w.expires)) && t != nil && !t.closed {
@@ -783,34 +794,38 @@ func (r *Router) Forward(src netip.AddrPort, spi uint32, size int, now time.Time
 	if w == nil || now.After(w.expires) {
 		s.dropUnknownSPI.Add(1)
 		r.drops[dropUnknownSPI].Add(1)
-		return netip.AddrPort{}, DropUnknownSPI
+		return netip.AddrPort{}, DropUnknownSPI, nil, ""
 	}
 	var pair *trunkPair
 	if m := w.trunk; m != nil {
 		// The checks of the trunk come first: a packet that it cannot carry
 		// takes nothing from the meters.
 		pair = m.pair.Load()
-		if v := r.trunkFits(s, m.name, pair, size); v != Pass {
-			return netip.AddrPort{}, v
+		switch v := r.trunkFits(s, m.name, pair, size); v {
+		case Pass:
+		case DropTrunkKeys:
+			return netip.AddrPort{}, v, w, m.name
+		default:
+			return netip.AddrPort{}, v, nil, ""
 		}
 	}
 	if w.meter != nil && !w.meter.AllowN(now, size) {
 		w.dropMeter.Add(1)
 		s.dropMeter.Add(1)
 		r.drops[dropLaneMeter].Add(1)
-		return netip.AddrPort{}, DropMeter
+		return netip.AddrPort{}, DropMeter, nil, ""
 	}
 	if !r.allow(s, size, now) {
-		return netip.AddrPort{}, DropTunnelLimit
+		return netip.AddrPort{}, DropTunnelLimit, nil, ""
 	}
 	w.lastUsed.Store(now.UnixNano())
 	w.packets.Add(1)
 	w.bytes.Add(uint64(size))
 	if pair != nil {
 		pair.stats.add(trunkTx, size)
-		return pair.addr, Pass
+		return pair.addr, Pass, nil, ""
 	}
-	return w.receiver.dst(w.saLane), Pass
+	return w.receiver.dst(w.saLane), Pass, nil, ""
 }
 
 // allow reports whether the tunnel limit of s lets size bytes through now. It

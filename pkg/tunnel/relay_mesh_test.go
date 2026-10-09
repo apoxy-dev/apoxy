@@ -144,13 +144,17 @@ func startMeshRelay(t *testing.T, ca *meshCA, name string, steerSockets int, noV
 	return startMeshRelayWith(t, ca, opts)
 }
 
-// startMeshRelayWith starts a relay with a mesh. All the relays have one ID,
-// and each gives the address of its socket as its agent address.
+// startMeshRelayWith starts a relay with a mesh. The relays have one ID if opts
+// gives no other, and each gives the address of its socket as its agent address.
 func startMeshRelayWith(t *testing.T, ca *meshCA, opts relayOpts) *meshRelay {
 	t.Helper()
 	m := &meshRelay{name: opts.name, changes: make(chan vpcrelay.MeshChange, 64), checks: make(chan meshCheck, 64)}
+	id := opts.relayID
+	if id == "" {
+		id = "localhost"
+	}
 	opts.setup = func(r *tunnel.Relay) {
-		m.ref = &dp.RelayRef{Id: "localhost", Addresses: []string{r.Address().String()}}
+		m.ref = &dp.RelayRef{Id: id, Addresses: []string{r.Address().String()}}
 		mesh, err := r.SetMesh(vpcrelay.MeshConfig{Relay: m.ref, TLS: ca.tls(t, opts.name), Verify: ca.verify(m.checks)})
 		require.NoError(t, err)
 		mesh.OnChange(func(c vpcrelay.MeshChange) { m.changes <- c })
@@ -482,18 +486,19 @@ func TestRelay_MeshPresence(t *testing.T) {
 	assert.Greater(t, g.GetGeneration(), e.GetGeneration())
 }
 
-// routeAgent is an agent session on a relay that keeps the route changes and
-// the Drain messages of its Session call.
+// routeAgent is an agent session on a relay that keeps the route changes, the
+// Drain messages and the NoRoute messages of its Session call.
 type routeAgent struct {
-	tr     *quic.Transport // Socket of qc, also for PSP packets.
-	qc     quic.Connection
-	c      dp.RelayClient
-	deltas chan *dp.RouteDelta
-	drains chan *dp.Drain
+	tr       *quic.Transport // Socket of qc, also for PSP packets.
+	qc       quic.Connection
+	c        dp.RelayClient
+	deltas   chan *dp.RouteDelta
+	drains   chan *dp.Drain
+	noRoutes chan *dp.NoRoute
 }
 
-// openRouteAgent dials v as agent name and sends hello in QUIC mode. It
-// returns after Welcome and Config.
+// openRouteAgent dials v as agent name and sends hello, in QUIC mode if hello
+// gives no mode. It returns after Welcome and Config.
 func openRouteAgent(t *testing.T, ctx context.Context, v *vpcRelay, name string, hello *dp.Hello) *routeAgent {
 	t.Helper()
 	tr, qc, err := v.dial(t, v.agentTLS(t, name))
@@ -501,11 +506,13 @@ func openRouteAgent(t *testing.T, ctx context.Context, v *vpcRelay, name string,
 	t.Cleanup(func() { _ = qc.CloseWithError(0, "") })
 	a := &routeAgent{
 		tr: tr, qc: qc, c: dp.NewRelayClient(rpc.NewConn(qc, nil)),
-		deltas: make(chan *dp.RouteDelta, 64), drains: make(chan *dp.Drain, 4),
+		deltas: make(chan *dp.RouteDelta, 64), drains: make(chan *dp.Drain, 4), noRoutes: make(chan *dp.NoRoute, 64),
 	}
 	st, err := a.c.Session(ctx)
 	require.NoError(t, err)
-	hello.Mode = dp.Mode_MODE_QUIC
+	if hello.Mode == dp.Mode_MODE_UNSPECIFIED {
+		hello.Mode = dp.Mode_MODE_QUIC
+	}
 	require.NoError(t, st.Send(&dp.SessionRequest{Msg: &dp.SessionRequest_Hello{Hello: hello}}))
 	m, err := st.Recv()
 	require.NoError(t, err)
@@ -524,6 +531,9 @@ func openRouteAgent(t *testing.T, ctx context.Context, v *vpcRelay, name string,
 			}
 			if d := m.GetDrain(); d != nil {
 				a.drains <- d
+			}
+			if n := m.GetNoRoute(); n != nil {
+				a.noRoutes <- n
 			}
 		}
 	}()
@@ -890,6 +900,70 @@ func testMeshPSP(t *testing.T, steerSockets int) {
 		assert.GreaterOrEqual(t, sent["apoxy_vpc_relay_trunk_packets_total tx"], 3.0, d.name)
 		assert.GreaterOrEqual(t, got["apoxy_vpc_relay_trunk_packets_total rx"], 3.0, d.name)
 		assert.Positive(t, sent["apoxy_vpc_relay_mesh_rtt_seconds"], d.name)
+	}
+}
+
+// TestRelay_MeshNoRoute ends the mesh session of two relays. The PSP-mode agent on
+// relay-a then gets a NoRoute with the home relay for the PSP packet of its SPI row.
+func TestRelay_MeshNoRoute(t *testing.T) {
+	ca := newMeshCA(t)
+	a := startMeshRelayWith(t, ca, relayOpts{name: "relay-a"})
+	// An agent visits only a relay with an ID that no other relay of the mesh has.
+	b := startMeshRelayWith(t, ca, relayOpts{name: "relay-b", relayID: "relay-b.example", addrs: &vpcAddresses{next: 0x100 - 1}})
+	b.mesh.SetMembers([]vpcrelay.MeshMember{a.member()})
+	a.mesh.SetMembers([]vpcrelay.MeshMember{b.member()})
+	require.Equal(t, vpcrelay.MeshChange{Name: "relay-b", Up: true}, a.change(t))
+	require.Equal(t, vpcrelay.MeshChange{Name: "relay-a", Up: true}, b.change(t))
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	vpc := &dp.VPCRef{ProjectId: vpcProject, VpcUid: vpcUID, NetworkId: vpcNetwork}
+	this := dp.LocalVersion("test")
+	laptop := openRouteAgent(t, ctx, a.vpcRelay, "laptop", &dp.Hello{Version: this, Name: "base", Mode: dp.Mode_MODE_PSP})
+	server := openRouteAgent(t, ctx, b.vpcRelay, "server", &dp.Hello{Version: this, Name: "base"})
+	onA, err := laptop.c.Attach(ctx, &dp.AttachRequest{Vpc: vpc, Name: "laptop"})
+	require.NoError(t, err)
+	onB, err := server.c.Attach(ctx, &dp.AttachRequest{Vpc: vpc, Name: "server"})
+	require.NoError(t, err)
+	require.Equal(t, []string{"+" + onB.GetAttachmentId() + " fd00:100::/96"}, laptop.next(t, ctx))
+	require.Equal(t, []string{"+" + onA.GetAttachmentId() + " fd00:1::/96"}, server.next(t, ctx))
+
+	// The relays do not open the packet: its inner destination is not the address of the row.
+	const dst = "fd00:100::1"
+	_, err = laptop.c.RegisterSPI(ctx, &dp.RegisterSPIRequest{
+		Vpc: vpc, Destination: dst, Spis: []uint32{0x700}, ExpiresIn: durationpb.New(time.Minute),
+	})
+	require.NoError(t, err)
+	aead, err := pspwire.NewAEAD(bytes.Repeat([]byte{7}, 16))
+	require.NoError(t, err)
+	inner := bytes.Repeat([]byte{40}, 40)
+	inner[0] = 0x60
+	pkt := make([]byte, len(inner)+pspwire.Overhead)
+	n, err := pspwire.Seal(aead, pspwire.Header{SPI: 0x700, VNI: vpcNetwork}, pkt, inner)
+	require.NoError(t, err)
+	pkt = pkt[:n]
+	got, _ := laptop.sendPSP(t, ctx, a.vpcRelay, server, pkt)
+	require.Equal(t, pkt, got)
+	require.Empty(t, laptop.noRoutes, "NoRoute while relay-b is up")
+
+	// relay-b only removes relay-a: a relay that stops closes with RESTART, and relay-a names no home relay then.
+	start := time.Now()
+	b.mesh.SetMembers(nil)
+	sent := time.Now()
+	tick := time.NewTicker(100 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		_, err := laptop.tr.WriteTo(pkt, net.UDPAddrFromAddrPort(a.r.Address()))
+		require.NoError(t, err)
+		select {
+		case m := <-laptop.noRoutes:
+			assert.LessOrEqual(t, time.Since(sent), 4*time.Second, "time from the first packet with no session")
+			assert.GreaterOrEqual(t, time.Since(start), 3*time.Second, "relay-a waits for a new session of relay-b first")
+			assert.Empty(t, cmp.Diff(&dp.NoRoute{Vpc: vpc, Address: dst, HomeRelay: b.ref}, m, protocmp.Transform()))
+			return
+		case <-tick.C:
+		case <-ctx.Done():
+			t.Fatal("no NoRoute from relay-a")
+		}
 	}
 }
 

@@ -244,9 +244,11 @@ program of the relay of the receiver has no row for a packet from another
 relay, so its socket path gets each such packet.
 
 The row stays while the relay has no session of the other relay, and the relay
-drops the packets of the row in that time (`trunk_keys`). When the other relay
-has a session again, from the same address or from a new one, the row carries
-packets again with no call of the agent. It needs no trunk SA.
+drops the packets of the row in that time (`trunk_keys`). The sender gets a
+`NoRoute` for such a packet only when it must visit the other relay (see
+"Mesh"). When the other relay has a session again, from the same address or
+from a new one, the row carries packets again with no call of the agent. It
+needs no trunk SA.
 
 The relay that gets the PSP packet of a row from another relay (rule 2) does
 not open it. It drops the packet at the first of these checks that fails:
@@ -842,8 +844,8 @@ When the other relay is down, a relay has no trunk to it, so the packets of
 its rows and the clear inner packets to that relay drop at once. The rows
 stay, and they carry packets again when the other relay has a session again.
 A clear inner packet also needs the new trunk SA of that relay. The sender of
-a clear inner packet gets no `NoRoute` while the route of
-the destination stays, unless it must visit the other relay (see below).
+such a packet gets no `NoRoute` while the route of the destination stays,
+unless it must visit the other relay (see below).
 
 For an address of a route of another relay, `ResolvePeer` answers
 `REACH_TRUNK` only when all of these are true:
@@ -891,11 +893,16 @@ its entries go, and the answer is `NotFound`.
 
 When the rule is true for a sender, the relay sends it `NoRoute` with
 `home_relay` for a peer frame, a data frame and a PSP packet with the relay SA
-to the address, at most one each second for each address. It does not open
-the PSP packet of an SPI row, so that packet gives no `NoRoute`. A sender
-below revision 12 gets no `NoRoute` for an address with a route, as before. A
-sender that Permit denies gets `NoRoute` with no `home_relay`. The agent can
-then attach to the home relay as a visitor (see `Visit` in "Relay").
+to the address, and for the PSP packet of an SPI row to the home relay, at
+most one each second for each address. The relay does not open the packet of
+a row: the address in `NoRoute` is the `destination` of the `RegisterSPI` call
+of the row, and the home relay is the member that the row sends to. On a host
+with the XDP program, the first such `NoRoute` can come up to 1 s later: the
+program has the row until the relay looks at its rows again, which it does
+each second. A sender below revision 12 gets no `NoRoute` for an address with
+a route, as before. A sender that Permit denies gets `NoRoute` with no
+`home_relay`. The agent can then attach to the home relay as a visitor (see
+`Visit` in "Relay").
 
 An agent opens a peer session to an address with the answer `REACH_TRUNK` as
 to an address of its own relay, and it sends all its packets to its own relay.

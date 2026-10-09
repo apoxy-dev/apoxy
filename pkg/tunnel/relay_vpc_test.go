@@ -129,6 +129,7 @@ type vpcRelay struct {
 // relayOpts are the options of startRelayWith.
 type relayOpts struct {
 	name         string // Relay name. Empty is "localhost".
+	relayID      string // Relay ID that a mesh gives of the relay. Empty is "localhost".
 	steerSockets int
 	lameDuck     time.Duration
 	noVPC        bool                // The relay serves no VPC relay sessions.
