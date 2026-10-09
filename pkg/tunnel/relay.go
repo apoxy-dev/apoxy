@@ -498,7 +498,8 @@ func (r *Relay) Start(ctx context.Context) error {
 	// The connection goroutines end at srv.Close, or at vpcCancel for VPC.
 	var conns sync.WaitGroup
 	defer conns.Wait()
-	// VPC relay sessions continue after ctx ends, until the drain ends.
+	// VPC relay sessions and mesh sessions continue after ctx ends, until the
+	// drain ends: an agent that did not move yet gets packets from other relays.
 	vpcCtx, vpcCancel := context.WithCancel(context.Background())
 	defer vpcCancel()
 	lns := make([]*quic.EarlyListener, len(trs))
@@ -592,10 +593,15 @@ func (r *Relay) Start(ctx context.Context) error {
 		// Tell VPC agents to move. The rest close when the lame duck ends.
 		if r.vpc != nil {
 			d := max(lameDuck, 5*time.Second)
+			// The agents can move to the other relays of the mesh that are up.
+			var alternates []*dp.RelayRef
+			if r.mesh != nil {
+				alternates = r.mesh.Alternates()
+			}
 			go func() {
 				drainCtx, cancel := context.WithTimeout(context.Background(), d)
 				defer cancel()
-				r.vpc.Drain(drainCtx, nil)
+				r.vpc.Drain(drainCtx, alternates)
 			}()
 		}
 

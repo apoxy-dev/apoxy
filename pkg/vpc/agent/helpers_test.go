@@ -239,7 +239,7 @@ func (w *world) relayOn(t testing.TB, id string, udp net.PacketConn) *testRelay 
 		// As at a real relay, the mesh sessions use the socket of the agents.
 		var err error
 		mesh, err = relay.NewMesh(id, relay.MeshConfig{
-			Relay:  &dp.RelayRef{Id: id},
+			Relay:  &dp.RelayRef{Id: id, Addresses: []string{udp.LocalAddr().String()}},
 			TLS:    &tls.Config{Certificates: []tls.Certificate{*cert}, InsecureSkipVerify: true},
 			Verify: func([]*x509.Certificate, string, netip.AddrPort) error { return nil },
 		})

@@ -839,17 +839,44 @@ func TestNoRoute(t *testing.T) {
 	assert.Equal(t, "fd00::2", recv(t, st).GetNoRoute().GetAddress())
 }
 
+// TestDrain drains a relay with sessions of each kind. Each session gets Drain,
+// and only a session with the routes of other relays gets the alternates.
 func TestDrain(t *testing.T) {
 	ca := newCA(t)
 	h := newHarness(t, ca)
-	mover := h.mustDial(t, ca.agentCert(t, vpcA, "mover"))
-	moverSync, _, _ := open(t, mover)
-	stayer := h.mustDial(t, ca.agentCert(t, vpcA, "stayer"))
-	stayerSync, _, _ := open(t, stayer)
-	h.session(t, mover)
-	h.session(t, stayer)
+	this := dp.LocalVersion("test")
+	agents := []struct {
+		name  string
+		hello *dp.Hello
+		alts  bool // The session gets the alternates.
+		a     agent
+		st    syncStream
+	}{
+		{name: "mover", hello: &dp.Hello{Version: this}, alts: true},
+		{name: "stayer", hello: &dp.Hello{Version: this}, alts: true},
+		{name: "spare", hello: &dp.Hello{Version: this, Spare: true}, alts: true},
+		{name: "first revision with the routes of other relays", hello: &dp.Hello{Version: &dp.Version{Revision: 6}}, alts: true},
+		{name: "local routes only", hello: &dp.Hello{Version: this, LocalRoutesOnly: true}},
+		{name: "revision before the routes of other relays", hello: &dp.Hello{Version: &dp.Version{Revision: 5}}},
+		{name: "no version", hello: &dp.Hello{}},
+	}
+	for i := range agents {
+		a := &agents[i]
+		a.a = h.mustDial(t, ca.agentCert(t, vpcA, fmt.Sprintf("agent-%d", i)))
+		var err error
+		a.st, err = a.a.c.Session(context.Background())
+		require.NoError(t, err)
+		a.hello.Mode = dp.Mode_MODE_QUIC
+		require.NoError(t, a.st.Send(&dp.SessionRequest{Msg: &dp.SessionRequest_Hello{Hello: a.hello}}))
+		require.NotNil(t, recv(t, a.st).GetWelcome(), a.name)
+		require.NotNil(t, recv(t, a.st).GetConfig(), a.name)
+		h.session(t, a.a)
+	}
 
-	alternates := []*dp.RelayRef{{Id: "relay-2", Addresses: []string{"192.0.2.2:443"}}}
+	alternates := []*dp.RelayRef{
+		{Id: "relay-2", Addresses: []string{"192.0.2.2:443"}},
+		{Id: "relay-3", Addresses: []string{"192.0.2.3:443", "[2001:db8::3]:443"}},
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 	done := make(chan struct{})
@@ -857,19 +884,25 @@ func TestDrain(t *testing.T) {
 		h.srv.Drain(ctx, alternates)
 		close(done)
 	}()
-	for _, st := range []syncStream{moverSync, stayerSync} {
-		m := recv(t, st).GetDrain()
-		require.NotNil(t, m)
-		assert.Empty(t, cmp.Diff(&dp.Drain{Alternates: alternates}, m, protocmp.Transform()))
+	for _, a := range agents {
+		m := recv(t, a.st).GetDrain()
+		require.NotNil(t, m, a.name)
+		want := &dp.Drain{}
+		if a.alts {
+			want.Alternates = alternates
+		}
+		assert.Empty(t, cmp.Diff(want, m, protocmp.Transform()), a.name)
 	}
 	// The relay refuses new sessions.
 	late, err := h.dial(t, ca.agentCert(t, vpcA, "late"))
 	if err == nil {
 		assert.Equal(t, quic.ApplicationErrorCode(dp.RelayCloseCode_RELAY_CLOSE_CODE_DRAIN), closeCode(t, late.qc))
 	}
-	// One agent moves. The relay closes the other when the drain time ends.
-	require.NoError(t, mover.qc.CloseWithError(0, ""))
-	assert.Equal(t, quic.ApplicationErrorCode(dp.RelayCloseCode_RELAY_CLOSE_CODE_DRAIN), closeCode(t, stayer.qc))
+	// One agent moves. The relay closes the others when the drain time ends.
+	require.NoError(t, agents[0].a.qc.CloseWithError(0, ""))
+	for _, a := range agents[1:] {
+		assert.Equal(t, quic.ApplicationErrorCode(dp.RelayCloseCode_RELAY_CLOSE_CODE_DRAIN), closeCode(t, a.a.qc), a.name)
+	}
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):

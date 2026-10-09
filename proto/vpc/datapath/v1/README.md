@@ -383,6 +383,30 @@ check; get a new cert before the next dial), `DRAIN` (move to another relay)
 or `UPGRADE` (the agent revision is below the minimum of the relay; see
 "Revisions").
 
+`Drain` tells an agent that the relay stops soon. From then on the relay
+refuses each new connection with `DRAIN`, and it closes the sessions that are
+left when the drain ends. `alternates` lists the relays that the agent can
+move to, each as a `RelayRef{id, addresses}`: the other relays of the mesh
+that have an open mesh session with the draining relay and gave agent
+addresses in `Open`. The mesh has no measure of distance, so the list is in
+the order of the relay names, and all agents get the same list. Two relays
+that gave the same ID and addresses are one entry. A relay with no mesh sends
+no alternates. A session that gets no routes of other relays (below revision
+6, or with `local_routes_only`) gets none, as before the mesh: an agent with
+`local_routes_only` has a session with each relay, so it must not move. A
+relay in the list can drain at the same time. It then refuses the agent with
+`DRAIN`, and the agent goes to the next address.
+
+An agent that gets `Drain` on the session of its attachment moves the
+attachment before that session ends. It first uses a spare session, and a
+spare on a relay with the ID of an alternate goes first. With no spare, it
+dials each address of each alternate in the order of the list, and it
+attaches on the first relay that takes it. It closes the old session after
+the new session has the attachment. With no alternate and no spare, it dials
+the address of the draining relay again, which only a new relay process
+answers. If that fails, it keeps the session until the relay closes it, and
+then dials the relays that it knows.
+
 In QUIC mode an agent can add up to 3 shards: extra connections from the same
 socket that carry data datagrams. Each one sends
 `Hello{shard: {attachment_id, index}, version}` as its first `Session`
@@ -477,6 +501,13 @@ certificate failed the check of the relay host), `UPGRADE` (the revision of the
 other relay is below its minimum, or below 3, the first revision with `Open`;
 see "Revisions") or `RESTART` (the relay stops on purpose, and its attachments
 are gone).
+
+A relay closes with `RESTART` when it stops: at the end of a drain, and not
+at its start. During the drain its mesh sessions stay open, and the other
+relays keep its entries, routes and SPI rows. Thus an agent of the draining
+relay gets the packets of the agents of other relays until it moves (see
+`Drain` in "Relay"). If its new attachment on another relay has a prefix of
+the old one, the rules for one prefix (below) give the route to the new one.
 
 Both relays send a QUIC keep-alive each second and use an idle timeout of 5 s,
 so a relay sees a lost path 5 s to 6 s after the last packet of the other

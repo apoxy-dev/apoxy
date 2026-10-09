@@ -143,8 +143,8 @@ func (srv *Server) ServeConn(ctx context.Context, qc quic.Connection) {
 	}
 }
 
-// Drain tells each session to move to another relay and refuses new ones.
-// It returns when all sessions end, or closes the rest when ctx ends.
+// Drain refuses new sessions and tells each session to move, to alternates if it
+// gets routes of other relays. It returns when all end, or closes them at ctx end.
 func (srv *Server) Drain(ctx context.Context, alternates []*dp.RelayRef) {
 	srv.mu.Lock()
 	srv.draining = true
@@ -160,7 +160,12 @@ func (srv *Server) Drain(ctx context.Context, alternates []*dp.RelayRef) {
 	sessions := make([]*Session, 0, len(r.sessions))
 	for s := range r.sessions {
 		sessions = append(sessions, s)
-		s.queue(&dp.SessionResponse{Msg: &dp.SessionResponse_Drain{Drain: &dp.Drain{Alternates: alternates}}})
+		d := &dp.Drain{}
+		// An agent with one session for each relay must stay on this relay.
+		if s.sync.meshRoutes {
+			d.Alternates = alternates
+		}
+		s.queue(&dp.SessionResponse{Msg: &dp.SessionResponse_Drain{Drain: d}})
 	}
 	r.mu.Unlock()
 	select {

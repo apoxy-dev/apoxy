@@ -12,11 +12,13 @@ import (
 	"math/rand/v2"
 	"net"
 	"net/netip"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/quic-go/quic-go"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/apoxy-dev/apoxy/build"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
@@ -61,7 +63,7 @@ type MeshVerify func(chain []*x509.Certificate, name string, from netip.AddrPort
 // MeshConfig is the data of the relay host for the mesh.
 type MeshConfig struct {
 	// Relay is the ID and the agent addresses of this relay. Open gives it to
-	// the other relays.
+	// the other relays, which give it to their agents when they drain.
 	Relay *dp.RelayRef
 	// TLS has the certificate of this relay as a server and as a client. The
 	// mesh adds the ALPN and TLS 1.3, and requires a certificate from a dialer.
@@ -356,6 +358,30 @@ func (m *Mesh) Session(name string) *MeshSession {
 		return mem.sess
 	}
 	return nil
+}
+
+// Alternates returns the relays that an agent of this relay can move to: each
+// member with an open session whose Open gave agent addresses, in name order.
+func (m *Mesh) Alternates() []*dp.RelayRef {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	names := make([]string, 0, len(m.members))
+	for name, mem := range m.members {
+		if mem.sess != nil && len(mem.sess.relay.GetAddresses()) > 0 {
+			names = append(names, name)
+		}
+	}
+	// The mesh has no measure of distance, so the order is the same each time.
+	slices.Sort(names)
+	var out []*dp.RelayRef
+	for _, name := range names {
+		ref := m.members[name].sess.relay
+		// Relays behind one name give the same ID and the same addresses.
+		if !slices.ContainsFunc(out, func(o *dp.RelayRef) bool { return proto.Equal(o, ref) }) {
+			out = append(out, ref)
+		}
+	}
+	return out
 }
 
 // SessionOf returns the session of the call that a handler of the Mesh

@@ -21,11 +21,13 @@ import (
 	"time"
 
 	pspwire "github.com/apoxy-dev/softpsp/psp"
+	"github.com/google/go-cmp/cmp"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 	"github.com/quic-go/quic-go/logging"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/testing/protocmp"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/emptypb"
 
@@ -112,6 +114,7 @@ type meshRelay struct {
 	*vpcRelay
 	name    string
 	mesh    *vpcrelay.Mesh
+	ref     *dp.RelayRef // What the other relays get of this relay.
 	changes chan vpcrelay.MeshChange
 	checks  chan meshCheck
 }
@@ -120,19 +123,24 @@ type meshRelay struct {
 // the relay gets the address fd00:<firstAddr>::/96, or fd00:1::/96 with none.
 func startMeshRelay(t *testing.T, ca *meshCA, name string, steerSockets int, noVPC bool, firstAddr ...int) *meshRelay {
 	t.Helper()
-	m := &meshRelay{name: name, changes: make(chan vpcrelay.MeshChange, 64), checks: make(chan meshCheck, 64)}
-	opts := relayOpts{name: name, steerSockets: steerSockets, noVPC: noVPC, setup: func(r *tunnel.Relay) {
-		mesh, err := r.SetMesh(vpcrelay.MeshConfig{
-			Relay:  &dp.RelayRef{Id: "localhost"},
-			TLS:    ca.tls(t, name),
-			Verify: ca.verify(m.checks),
-		})
+	opts := relayOpts{name: name, steerSockets: steerSockets, noVPC: noVPC}
+	if len(firstAddr) > 0 {
+		opts.addrs = &vpcAddresses{next: firstAddr[0] - 1}
+	}
+	return startMeshRelayWith(t, ca, opts)
+}
+
+// startMeshRelayWith starts a relay with a mesh. All the relays have one ID,
+// and each gives the address of its socket as its agent address.
+func startMeshRelayWith(t *testing.T, ca *meshCA, opts relayOpts) *meshRelay {
+	t.Helper()
+	m := &meshRelay{name: opts.name, changes: make(chan vpcrelay.MeshChange, 64), checks: make(chan meshCheck, 64)}
+	opts.setup = func(r *tunnel.Relay) {
+		m.ref = &dp.RelayRef{Id: "localhost", Addresses: []string{r.Address().String()}}
+		mesh, err := r.SetMesh(vpcrelay.MeshConfig{Relay: m.ref, TLS: ca.tls(t, opts.name), Verify: ca.verify(m.checks)})
 		require.NoError(t, err)
 		mesh.OnChange(func(c vpcrelay.MeshChange) { m.changes <- c })
 		m.mesh = mesh
-	}}
-	if len(firstAddr) > 0 {
-		opts.addrs = &vpcAddresses{next: firstAddr[0] - 1}
 	}
 	m.vpcRelay = startRelayWith(t, opts)
 	return m
@@ -460,13 +468,14 @@ func TestRelay_MeshPresence(t *testing.T) {
 	assert.Greater(t, g.GetGeneration(), e.GetGeneration())
 }
 
-// routeAgent is an agent session on a relay that keeps the route changes of
-// its Session call.
+// routeAgent is an agent session on a relay that keeps the route changes and
+// the Drain messages of its Session call.
 type routeAgent struct {
 	tr     *quic.Transport // Socket of qc, also for PSP packets.
 	qc     quic.Connection
 	c      dp.RelayClient
 	deltas chan *dp.RouteDelta
+	drains chan *dp.Drain
 }
 
 // openRouteAgent dials v as agent name and sends hello in QUIC mode. It
@@ -476,7 +485,10 @@ func openRouteAgent(t *testing.T, ctx context.Context, v *vpcRelay, name string,
 	tr, qc, err := v.dial(t, v.agentTLS(t, name))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = qc.CloseWithError(0, "") })
-	a := &routeAgent{tr: tr, qc: qc, c: dp.NewRelayClient(rpc.NewConn(qc, nil)), deltas: make(chan *dp.RouteDelta, 64)}
+	a := &routeAgent{
+		tr: tr, qc: qc, c: dp.NewRelayClient(rpc.NewConn(qc, nil)),
+		deltas: make(chan *dp.RouteDelta, 64), drains: make(chan *dp.Drain, 4),
+	}
 	st, err := a.c.Session(ctx)
 	require.NoError(t, err)
 	hello.Mode = dp.Mode_MODE_QUIC
@@ -496,9 +508,24 @@ func openRouteAgent(t *testing.T, ctx context.Context, v *vpcRelay, name string,
 			if d := m.GetRouteDelta(); d != nil {
 				a.deltas <- d
 			}
+			if d := m.GetDrain(); d != nil {
+				a.drains <- d
+			}
 		}
 	}()
 	return a
+}
+
+// drain returns the Drain message of the relay of a.
+func (a *routeAgent) drain(t *testing.T) *dp.Drain {
+	t.Helper()
+	select {
+	case d := <-a.drains:
+		return d
+	case <-time.After(5 * time.Second):
+		t.Fatal("no Drain from the relay in 5 s")
+		return nil
+	}
 }
 
 // next returns the next RouteDelta with a route, as "+origin prefix" and
@@ -580,6 +607,106 @@ func TestRelay_MeshRoutes(t *testing.T) {
 	require.NoError(t, laptop.qc.CloseWithError(0, ""))
 	assert.Equal(t, []string{"-" + routeA[1:]}, server.next(t, ctx))
 	assert.Equal(t, []string{"-" + routeA[1:]}, localOnly.next(t, ctx))
+}
+
+// TestRelay_MeshDrain stops relay-a of a mesh of two relays. Its agent gets
+// relay-b to move to, and relay-b learns of the stop at the end of the drain.
+func TestRelay_MeshDrain(t *testing.T) {
+	cases := []struct {
+		name     string
+		lameDuck time.Duration
+	}{
+		// The sessions of relay-a close at once, so an agent can get no Drain.
+		{name: "no lame duck"},
+		{name: "lame duck of 2 s", lameDuck: 2 * time.Second},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ca := newMeshCA(t)
+			a := startMeshRelayWith(t, ca, relayOpts{name: "relay-a", lameDuck: tc.lameDuck})
+			b := startMeshRelayWith(t, ca, relayOpts{name: "relay-b", addrs: &vpcAddresses{next: 0x100 - 1}})
+			b.mesh.SetMembers([]vpcrelay.MeshMember{a.member()})
+			a.mesh.SetMembers([]vpcrelay.MeshMember{b.member()})
+			require.Equal(t, vpcrelay.MeshChange{Name: "relay-b", Up: true}, a.change(t))
+			require.Equal(t, vpcrelay.MeshChange{Name: "relay-a", Up: true}, b.change(t))
+			// Each relay has the other relay for its agents, with the socket address.
+			require.Equal(t, []string{b.r.Address().String()}, b.ref.GetAddresses())
+			assert.Empty(t, cmp.Diff([]*dp.RelayRef{b.ref}, a.mesh.Alternates(), protocmp.Transform()))
+			assert.Empty(t, cmp.Diff([]*dp.RelayRef{a.ref}, b.mesh.Alternates(), protocmp.Transform()))
+
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			vpc := &dp.VPCRef{ProjectId: vpcProject, VpcUid: vpcUID, NetworkId: vpcNetwork}
+			this := dp.LocalVersion("test")
+			laptop := openRouteAgent(t, ctx, a.vpcRelay, "laptop", &dp.Hello{Version: this, Name: "base"})
+			pinned := openRouteAgent(t, ctx, a.vpcRelay, "vtep", &dp.Hello{Version: this, Name: "base", LocalRoutesOnly: true})
+			server := openRouteAgent(t, ctx, b.vpcRelay, "server", &dp.Hello{Version: this, Name: "base"})
+			onA, err := laptop.c.Attach(ctx, &dp.AttachRequest{Vpc: vpc, Name: "laptop"})
+			require.NoError(t, err)
+			onB, err := server.c.Attach(ctx, &dp.AttachRequest{Vpc: vpc, Name: "server"})
+			require.NoError(t, err)
+			routeA := onA.GetAttachmentId() + " fd00:1::/96"
+			require.Equal(t, []string{"+" + onB.GetAttachmentId() + " fd00:100::/96"}, laptop.next(t, ctx))
+			require.Equal(t, []string{"+" + routeA}, server.next(t, ctx))
+
+			// The time of the next change of relay-b is the time of the close of relay-a.
+			type timedChange struct {
+				c  vpcrelay.MeshChange
+				at time.Time
+			}
+			down := make(chan timedChange, 1)
+			go func() { down <- timedChange{<-b.changes, time.Now()} }()
+			stopped := time.Now()
+			a.cancel()
+			if tc.lameDuck > 0 {
+				// Only an agent that gets the routes of other relays gets relay-b.
+				assert.Empty(t, cmp.Diff(&dp.Drain{Alternates: []*dp.RelayRef{b.ref}}, laptop.drain(t), protocmp.Transform()))
+				assert.Empty(t, cmp.Diff(&dp.Drain{}, pinned.drain(t), protocmp.Transform()))
+
+				// The agent did not move yet. The relays still carry its peer frames on
+				// the mesh session, and its inner packets on the trunk.
+				laptopAddr, serverAddr := netip.MustParseAddr("fd00:1::1"), netip.MustParseAddr("fd00:100::1")
+				for _, d := range []struct {
+					from, to *routeAgent
+					src, dst netip.Addr
+				}{{server, laptop, serverAddr, laptopAddr}, {laptop, server, laptopAddr, serverAddr}} {
+					require.NoError(t, d.from.qc.SendDatagram(peerconn.EncodeToRelay(nil, d.dst, d.src, []byte("hello"))))
+					rctx, rcancel := context.WithTimeout(ctx, 5*time.Second)
+					got, err := d.to.qc.ReceiveDatagram(rctx)
+					rcancel()
+					require.NoError(t, err, "frame to %v in the lame duck", d.dst)
+					assert.Equal(t, peerconn.EncodeFromRelay(nil, d.src, []byte("hello")), got)
+					inner := bytes.Repeat([]byte{40}, 40)
+					inner[0], inner[4], inner[5] = 0x60, 0, 0
+					copy(inner[8:24], d.src.AsSlice())
+					copy(inner[24:40], d.dst.AsSlice())
+					assert.Equal(t, peerconn.EncodeData(nil, vpcNetwork, inner), d.from.sendData(t, ctx, d.to, inner))
+				}
+				// The agent opens a session on relay-b while its old session is open.
+				openRouteAgent(t, ctx, b.vpcRelay, "laptop", &dp.Hello{Version: this, Name: "base"})
+				assert.NoError(t, laptop.qc.Context().Err(), "the session on relay-a is open")
+			}
+
+			// relay-a tells that it stops at the end of its lame duck, not before.
+			var got timedChange
+			select {
+			case got = <-down:
+			case <-time.After(10 * time.Second):
+				t.Fatal("relay-b got no change of relay-a in 10 s")
+			}
+			assert.Equal(t, vpcrelay.MeshChange{Name: "relay-a", Down: vpcrelay.MeshRestart}, got.c)
+			assert.GreaterOrEqual(t, got.at.Sub(stopped), tc.lameDuck)
+			// The agent of relay-b loses the route of the agent of relay-a.
+			assert.Equal(t, []string{"-" + routeA}, server.next(t, ctx))
+			assert.False(t, b.mesh.Up("relay-a"))
+			assert.Empty(t, b.mesh.Alternates(), "a relay that stopped is not a relay to move to")
+			select {
+			case <-laptop.qc.Context().Done():
+			case <-time.After(5 * time.Second):
+				t.Fatal("relay-a did not close the session of its agent in 5 s")
+			}
+		})
+	}
 }
 
 // TestRelay_MeshPeerFrames sends peer frames in the two directions between an

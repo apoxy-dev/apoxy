@@ -15,8 +15,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
+	"github.com/quic-go/quic-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/testing/protocmp"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv6"
@@ -582,23 +585,55 @@ func TestIdentityFileExpires(t *testing.T) {
 	assert.Zero(t, a.enrolls.Load(), "an agent with an identity file does not enroll")
 }
 
+// closeOf waits for the end of the session rc and returns its close.
+func closeOf(t *testing.T, rc *relayConn) *quic.ApplicationError {
+	t.Helper()
+	select {
+	case <-rc.qc.Context().Done():
+	case <-time.After(10 * time.Second):
+		t.Fatal("the session did not end in 10 s")
+	}
+	var ae *quic.ApplicationError
+	require.ErrorAs(t, context.Cause(rc.qc.Context()), &ae)
+	return ae
+}
+
+// closedByAgent checks that the agent closed the session rc, and that the
+// relay did not close it.
+func closedByAgent(t *testing.T, rc *relayConn) {
+	t.Helper()
+	ae := closeOf(t, rc)
+	assert.False(t, ae.Remote, "the relay closed the old session: %v", ae)
+}
+
 // TestDrain checks that the agent moves to an alternate relay before the
 // draining relay closes its session.
 func TestDrain(t *testing.T) {
 	cases := []struct {
 		name  string
 		spare bool // The agent knows both relays, so it has a spare on the alternate.
+		one   bool // The agent knows both relays and has one session, so no spare.
+		// first comes before the alternate that takes the agent: "drains" (a relay
+		// that drains too), "no address", or "wrong address" (of another relay).
+		first string
 	}{
 		{name: "new session on the alternate"},
 		{name: "spare on the alternate", spare: true},
+		{name: "one session", one: true},
+		{name: "first alternate drains too", first: "drains"},
+		{name: "first alternate has no address", first: "no address"},
+		{name: "first address of the alternate is of another relay", first: "wrong address"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			w := newWorld(t)
-			r1, r2 := w.relay(t, "relay-1"), w.relay(t, "relay-2")
+			r1, r2, r3 := w.relay(t, "relay-1"), w.relay(t, "relay-2"), w.relay(t, "relay-3")
 			opts := agentOptions{}
-			if tc.spare {
+			if tc.spare || tc.one {
 				opts.relays = []identity.Relay{r1.ref(), r2.ref()}
+			}
+			if tc.one {
+				opts.sessions = 1
 			}
 			a := w.agent(t, "a", r1, opts)
 			a.attached(t)
@@ -611,18 +646,33 @@ func TestDrain(t *testing.T) {
 				require.Eventually(t, func() bool { return a.spare() != nil }, 10*time.Second, 10*time.Millisecond)
 				spare = a.spare()
 			}
+			good := &dp.RelayRef{Id: to.id, Addresses: []string{to.addr}}
+			alts := []*dp.RelayRef{good}
+			switch tc.first {
+			case "drains":
+				// A relay that drains refuses a new session at once.
+				r3.srv.Drain(context.Background(), nil)
+				alts = []*dp.RelayRef{{Id: r3.id, Addresses: []string{r3.addr}}, good}
+			case "no address":
+				alts = []*dp.RelayRef{{Id: r3.id}, good}
+			case "wrong address":
+				alts = []*dp.RelayRef{{Id: to.id, Addresses: []string{r3.addr, to.addr}}}
+			}
+			prev := a.current()
 
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			done := make(chan struct{})
 			go func() {
 				defer close(done)
-				from.srv.Drain(ctx, []*dp.RelayRef{{Id: to.id, Addresses: []string{to.addr}}})
+				from.srv.Drain(ctx, alts)
 			}()
 			a.attached(t)
 			assert.Equal(t, to.addr, a.current().addr)
 			if tc.spare {
 				assert.Same(t, spare, a.current(), "the spare takes the attachment")
+			} else {
+				assert.Nil(t, a.spare(), "the agent has no spare")
 			}
 			select {
 			case <-done:
@@ -630,8 +680,88 @@ func TestDrain(t *testing.T) {
 			case <-time.After(10 * time.Second):
 				t.Fatal("drain did not end")
 			}
+			closedByAgent(t, prev)
+			id := identity.ID{Project: testProject, VPC: testVPC, Agent: "a"}.String()
+			assert.Equal(t, 2, w.addrs.Overlap(id), "the new session attaches before the old one closes")
 		})
 	}
+}
+
+// TestDrainNoAlternate drains the relay of an agent that gets no alternate and
+// has no spare. The agent keeps its session until the relay closes it.
+func TestDrainNoAlternate(t *testing.T) {
+	w := newWorld(t)
+	r1, r2 := w.relay(t, "relay-1"), w.relay(t, "relay-2")
+	a := w.agent(t, "a", r1, agentOptions{relays: []identity.Relay{r1.ref(), r2.ref()}, sessions: 1})
+	a.attached(t)
+	from, to := r1, r2
+	if a.current().addr == r2.addr {
+		from, to = r2, r1
+	}
+	prev := a.current()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+	from.srv.Drain(ctx, nil)
+	ae := closeOf(t, prev)
+	assert.True(t, ae.Remote, "the agent closed its session before the end of the drain time")
+	assert.Equal(t, quic.ApplicationErrorCode(dp.RelayCloseCode_RELAY_CLOSE_CODE_DRAIN), ae.ErrorCode)
+	// Then the agent dials the relays that it knows.
+	a.attached(t)
+	assert.Equal(t, to.addr, a.current().addr)
+}
+
+// TestDrainLocalRoutesOnly drains the relay of an agent that has one agent for
+// each relay. The relay gives it no alternate, so it does not move.
+func TestDrainLocalRoutesOnly(t *testing.T) {
+	w := newWorld(t)
+	r1, r2 := w.relay(t, "relay-1"), w.relay(t, "relay-2")
+	a := w.agent(t, "a", r1, agentOptions{localRoutesOnly: true, sessions: 1})
+	a.attached(t)
+	prev := a.current()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	r1.srv.Drain(ctx, []*dp.RelayRef{{Id: r2.id, Addresses: []string{r2.addr}}})
+	// The relay closed the session at the end of the drain time.
+	ae := closeOf(t, prev)
+	assert.True(t, ae.Remote)
+	assert.Equal(t, quic.ApplicationErrorCode(dp.RelayCloseCode_RELAY_CLOSE_CODE_DRAIN), ae.ErrorCode)
+	assert.Empty(t, r2.r.AttachmentStats(), "the agent has no attachment on the other relay")
+}
+
+// TestDrainMesh drains a relay with the alternates that its mesh gives. An
+// agent that knows only that relay moves to the first of the other relays.
+func TestDrainMesh(t *testing.T) {
+	w := newWorld(t)
+	w.mesh = true
+	r1, r2, r3 := w.relay(t, "relay-1"), w.relay(t, "relay-2"), w.relay(t, "relay-3")
+	joinMesh(t, r1, r2, r3)
+	a := w.agent(t, "a", r1, agentOptions{sessions: 1})
+	a.attached(t)
+	prev := a.current()
+	alts := r1.mesh.Alternates()
+	want := []*dp.RelayRef{{Id: r2.id, Addresses: []string{r2.addr}}, {Id: r3.id, Addresses: []string{r3.addr}}}
+	require.Empty(t, cmp.Diff(want, alts, protocmp.Transform()))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		r1.srv.Drain(ctx, alts)
+	}()
+	a.attached(t)
+	assert.Equal(t, r2.addr, a.current().addr, "the agent moves to the first alternate")
+	select {
+	case <-done:
+		assert.NoError(t, ctx.Err(), "the agent closed its session before the drain time ended")
+	case <-time.After(10 * time.Second):
+		t.Fatal("drain did not end")
+	}
+	closedByAgent(t, prev)
+	id := identity.ID{Project: testProject, VPC: testVPC, Agent: "a"}.String()
+	assert.Equal(t, 2, w.addrs.Overlap(id), "the new session attaches before the old one closes")
 }
 
 // TestFirstPacketAfterMove checks that after a spare takes the attachment, the

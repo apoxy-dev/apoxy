@@ -13,15 +13,18 @@ import (
 	"math/big"
 	"net"
 	"net/netip"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/quic-go/quic-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/testing/protocmp"
 
 	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
@@ -1157,6 +1160,247 @@ func TestMeshDownTime(t *testing.T) {
 					assert.Equal(t, st.want, got, "changes in step %d (%s)", i, st.act)
 					assert.Equal(t, st.up, m.Up("relay-a"), "member state after step %d (%s)", i, st.act)
 				}
+			})
+		})
+	}
+}
+
+// TestMeshStop stops one of two relays that have agents with rows to each
+// other. The other relay drops its entries, routes, rows and keys at once.
+func TestMeshStop(t *testing.T) {
+	t.Parallel()
+	// downAfter is the down time of the protocol. soon is much less: a change
+	// in this time did not wait for the down time.
+	const downAfter, soon = 3 * time.Second, time.Second
+	// seen is what the relay that stays keeps of the relay that stops.
+	type seen struct {
+		Entries []string // Attachments of the other relay.
+		Route   string   // Owner of the prefix of that attachment.
+		RowOut  bool     // The row of its agent to that attachment.
+		RowsIn  int      // Rows that the other relay gave. -1 is no row set.
+		Keys    bool     // Trunk keys of the other relay.
+	}
+	cases := []struct {
+		name  string
+		stops string
+	}{
+		{name: "the relay that dialed stops", stops: "relay-a"},
+		{name: "the relay that accepted stops", stops: "relay-b"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a, b := trunkNodes(t, nil)
+			stops, stays := a, b
+			if tc.stops == b.name {
+				stops, stays = b, a
+			}
+			sess := stays.m.Session(stops.name)
+			require.NotNil(t, sess)
+			agent := func(n *trunkNode, subject, addr, prefix string) *Session {
+				ap := netip.MustParseAddrPort(addr)
+				s := newSession(Identity{VPC: vpcA, ID: subject}, func() netip.AddrPort { return ap })
+				n.r.addSession(s, time.Now())
+				require.NoError(t, n.r.openSync(s, dp.Mode_MODE_PSP, ref(vpcA), nil))
+				require.NoError(t, n.r.attach(s, attachment("att-"+prefix, prefix)))
+				return s
+			}
+			const gonePrefix, keptPrefix, keptSrc = "fd00:1::/96", "fd00:2::/96", "192.0.2.2:1000"
+			gone := agent(stops, laptop, "192.0.2.1:1000", gonePrefix)
+			kept := agent(stays, server, keptSrc, keptPrefix)
+			// A row to an agent of the other relay needs the route of that agent.
+			require.Eventually(t, func() bool {
+				return routeTable(stays.r, vpcA)[gonePrefix] != "" && routeTable(stops.r, vpcA)[keptPrefix] != ""
+			}, 10*time.Second, 5*time.Millisecond, "each relay has the route of the agent of the other relay")
+			require.NoError(t, stays.r.registerSPI(kept, register(vpcA, "fd00:1::1", time.Minute, 0x501), time.Now()))
+			require.NoError(t, stops.r.registerSPI(gone, register(vpcA, "fd00:2::1", time.Minute, 0x601), time.Now()))
+			state := func() seen {
+				v := seen{
+					Entries: presenceIDs(stays.m, stops.name), Route: routeTable(stays.r, vpcA)[gonePrefix],
+					RowsIn: -1, Keys: stays.trunk().pair(stops.name) != nil,
+				}
+				stays.r.mu.RLock()
+				defer stays.r.mu.RUnlock()
+				v.RowOut = kept.rows[0x501] != nil
+				if in := stays.r.in[stops.name]; in != nil {
+					v.RowsIn = len(in.rows)
+				}
+				return v
+			}
+			before := seen{
+				Entries: []string{"att-" + gonePrefix}, Route: "att-" + gonePrefix + "@" + stops.name,
+				RowOut: true, RowsIn: 1, Keys: true,
+			}
+			require.EventuallyWithT(t, func(c *assert.CollectT) { assert.Equal(c, before, state()) },
+				10*time.Second, 5*time.Millisecond, "%s before the stop", stays.name)
+			_, v := stays.r.Forward(netip.MustParseAddrPort(keptSrc), 0x501, 100, time.Now())
+			require.Equal(t, Pass, v, "packet of the row before the stop")
+
+			stopped := time.Now()
+			stops.cancel()
+			require.Equal(t, MeshChange{Name: stops.name, Down: MeshRestart}, stays.change(t, soon))
+			assert.Equal(t, quic.ApplicationErrorCode(dp.MeshCloseCode_MESH_CLOSE_CODE_RESTART), closeCode(t, sess.qc))
+			require.EventuallyWithT(t, func(c *assert.CollectT) { assert.Equal(c, seen{Entries: []string{}, RowsIn: -1}, state()) },
+				soon, 5*time.Millisecond, "%s after the stop", stays.name)
+			assert.Less(t, time.Since(stopped), downAfter, "%s did not wait for the down time", stays.name)
+			_, v = stays.r.Forward(netip.MustParseAddrPort(keptSrc), 0x501, 100, time.Now())
+			assert.Equal(t, DropUnknownSPI, v, "packet of the row after the stop")
+			assert.False(t, stays.m.Up(stops.name))
+			assert.Empty(t, stays.m.Alternates())
+		})
+	}
+}
+
+// TestMeshAlternates checks which members a relay gives to its agents as the
+// relays to move to, and the order of these relays.
+func TestMeshAlternates(t *testing.T) {
+	const downAfter = 3 * time.Second
+	relayRef := func(id string, addrs ...string) *dp.RelayRef { return &dp.RelayRef{Id: id, Addresses: addrs} }
+	a := relayRef("a.relay.example.net", "192.0.2.1:443")
+	b := relayRef("b.relay.example.net", "192.0.2.2:443", "[2001:db8::2]:443")
+	c := relayRef("c.relay.example.net", "192.0.2.3:443")
+	type member struct {
+		name string
+		ref  *dp.RelayRef // RelayRef of its Open call.
+		// then comes after Open: "lose" (idle timeout), "restart" or "close" (the
+		// member closes with RESTART or the normal code), "leave", "again", or empty.
+		then string
+		next *dp.RelayRef // RelayRef of the new session of "again".
+	}
+	// The member set has relay-a, relay-b and relay-c. A member that a case
+	// does not name opens no session.
+	cases := []struct {
+		name    string
+		members []member
+		wait    time.Duration // Time that passes after the steps of the members.
+		want    []*dp.RelayRef
+	}{
+		{name: "no member"},
+		{name: "one member", members: []member{{name: "relay-a", ref: a}}, want: []*dp.RelayRef{a}},
+		{
+			name:    "order of the relay names",
+			members: []member{{name: "relay-c", ref: a}, {name: "relay-a", ref: b}, {name: "relay-b", ref: c}},
+			want:    []*dp.RelayRef{b, c, a},
+		},
+		{
+			name:    "members with no session yet",
+			members: []member{{name: "relay-b", ref: b}},
+			want:    []*dp.RelayRef{b},
+		},
+		{
+			name:    "member with no RelayRef",
+			members: []member{{name: "relay-a"}, {name: "relay-b", ref: b}},
+			want:    []*dp.RelayRef{b},
+		},
+		{
+			name:    "member with no address",
+			members: []member{{name: "relay-a", ref: relayRef("a.relay.example.net")}, {name: "relay-b", ref: b}},
+			want:    []*dp.RelayRef{b},
+		},
+		{
+			name:    "member with an address and no ID",
+			members: []member{{name: "relay-a", ref: relayRef("", "192.0.2.1:443")}},
+			want:    []*dp.RelayRef{relayRef("", "192.0.2.1:443")},
+		},
+		{
+			name:    "session of a member ended a short time ago",
+			members: []member{{name: "relay-a", ref: a, then: "lose"}, {name: "relay-b", ref: b}},
+			wait:    downAfter - time.Nanosecond,
+			want:    []*dp.RelayRef{b},
+		},
+		{
+			name:    "member that is down",
+			members: []member{{name: "relay-a", ref: a, then: "lose"}, {name: "relay-b", ref: b}},
+			wait:    downAfter,
+			want:    []*dp.RelayRef{b},
+		},
+		{
+			name:    "member that said that it stops",
+			members: []member{{name: "relay-a", ref: a, then: "restart"}, {name: "relay-b", ref: b}},
+			want:    []*dp.RelayRef{b},
+		},
+		{
+			name:    "member that closed with the normal code",
+			members: []member{{name: "relay-a", ref: a, then: "close"}, {name: "relay-b", ref: b}},
+			want:    []*dp.RelayRef{b},
+		},
+		{
+			name:    "member that left the member set",
+			members: []member{{name: "relay-a", ref: a, then: "leave"}, {name: "relay-b", ref: b}},
+			want:    []*dp.RelayRef{b},
+		},
+		{
+			name:    "new session with another RelayRef",
+			members: []member{{name: "relay-a", ref: a, then: "again", next: c}, {name: "relay-b", ref: b}},
+			want:    []*dp.RelayRef{c, b},
+		},
+		{
+			name:    "new session with no address",
+			members: []member{{name: "relay-a", ref: a, then: "again", next: relayRef("a.relay.example.net")}, {name: "relay-b", ref: b}},
+			want:    []*dp.RelayRef{b},
+		},
+		{
+			// Two relay processes behind one name.
+			name: "members with the same ID and addresses",
+			members: []member{
+				{name: "relay-a", ref: a}, {name: "relay-b", ref: b}, {name: "relay-c", ref: relayRef(a.Id, a.Addresses...)},
+			},
+			want: []*dp.RelayRef{a, b},
+		},
+		{
+			name: "members with the same ID and other addresses",
+			members: []member{
+				{name: "relay-a", ref: a}, {name: "relay-b", ref: relayRef(a.Id, "192.0.2.9:443")},
+			},
+			want: []*dp.RelayRef{a, relayRef(a.Id, "192.0.2.9:443")},
+		},
+		{
+			name:    "all members are down",
+			members: []member{{name: "relay-a", ref: a, then: "restart"}, {name: "relay-b", ref: b, then: "lose"}},
+			wait:    downAfter,
+		},
+	}
+	ca := newCA(t)
+	cfg := MeshConfig{TLS: meshTLS(ca.meshCert(t, "relay-m")), Verify: ca.verifyName}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				m, err := NewMesh("relay-m", cfg)
+				require.NoError(t, err)
+				// Each member has a lower name than this relay, so the member dials.
+				var set []MeshMember
+				for i, name := range []string{"relay-a", "relay-b", "relay-c"} {
+					set = append(set, MeshMember{Name: name, Addr: netip.AddrPortFrom(netip.AddrFrom4([4]byte{192, 0, 2, byte(i + 1)}), 6081)})
+				}
+				m.SetMembers(set)
+				open := func(name string, ref *dp.RelayRef) *stubConn {
+					conn := newStubConn()
+					sess := m.newSession(conn, false)
+					require.True(t, m.track(sess))
+					require.NoError(t, m.admit(sess, name, nil, m.ver, ref))
+					return conn
+				}
+				for _, mem := range tc.members {
+					conn := open(mem.name, mem.ref)
+					switch mem.then {
+					case "lose":
+						conn.cancel(&quic.IdleTimeoutError{})
+					case "restart":
+						conn.cancel(&quic.ApplicationError{Remote: true, ErrorCode: quic.ApplicationErrorCode(dp.MeshCloseCode_MESH_CLOSE_CODE_RESTART)})
+					case "close":
+						conn.cancel(&quic.ApplicationError{Remote: true, ErrorCode: quic.ApplicationErrorCode(dp.MeshCloseCode_MESH_CLOSE_CODE_UNSPECIFIED)})
+					case "leave":
+						m.SetMembers(slices.DeleteFunc(slices.Clone(set), func(o MeshMember) bool { return o.Name == mem.name }))
+					case "again":
+						open(mem.name, mem.next)
+					}
+				}
+				time.Sleep(tc.wait)
+				synctest.Wait()
+				got := m.Alternates()
+				assert.Empty(t, cmp.Diff(tc.want, got, protocmp.Transform()), "alternates")
+				// The relay gives the same list each time.
+				assert.Empty(t, cmp.Diff(got, m.Alternates(), protocmp.Transform()), "second call")
 			})
 		})
 	}

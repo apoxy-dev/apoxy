@@ -178,22 +178,37 @@ func (a *Agent) race(ctx context.Context, eps []endpoint) (*relayConn, int, erro
 
 // move returns the session that takes the attachment from rc, which drains:
 // a spare, with spares on the alternates first, or else a new session to the
-// first alternate.
+// first alternate that takes it.
 func (a *Agent) move(ctx context.Context, rc *relayConn, alts []*dp.RelayRef) (*relayConn, error) {
 	var prefer []string
+	var eps []endpoint
 	for _, r := range alts {
 		prefer = append(prefer, r.GetId())
+		for _, addr := range r.GetAddresses() {
+			eps = append(eps, endpoint{id: r.GetId(), addr: addr})
+		}
 	}
 	if next := a.promote(ctx, time.Now(), prefer); next != nil {
 		return next, nil
 	}
-	if len(alts) > 0 && len(alts[0].GetAddresses()) > 0 {
-		// Run can have no endpoint for the alternate, so this open continues when rc ends.
-		return a.open(ctx, endpoint{id: alts[0].GetId(), addr: alts[0].GetAddresses()[0]})
+	if len(eps) == 0 {
+		// Only a replacement of the draining relay can answer here. Run dials again
+		// when rc ends, so this open stops then.
+		return a.openNext(ctx, rc, rc.ep)
 	}
-	// Only a replacement of the draining relay can answer here. Run dials again
-	// when rc ends, so this open stops then.
-	return a.openNext(ctx, rc, rc.ep)
+	// Run can have no endpoint for an alternate, so these opens continue when rc ends.
+	var errs []error
+	for _, e := range eps {
+		next, err := a.open(ctx, e)
+		if err == nil {
+			return next, nil
+		}
+		errs = append(errs, fmt.Errorf("relay %s: %w", e.addr, err))
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	return nil, errors.Join(errs...)
 }
 
 // promote attaches on a spare session and returns it, or nil when no spare

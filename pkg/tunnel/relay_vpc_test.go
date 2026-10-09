@@ -327,14 +327,16 @@ func TestRelay_VPCDrain(t *testing.T) {
 			require.NoError(t, err)
 			st, err := dp.NewRelayClient(rpc.NewConn(qc, nil)).Session(context.Background())
 			require.NoError(t, err)
-			require.NoError(t, st.Send(&dp.SessionRequest{Msg: &dp.SessionRequest_Hello{Hello: &dp.Hello{Mode: dp.Mode_MODE_QUIC}}}))
+			hello := &dp.Hello{Mode: dp.Mode_MODE_QUIC, Version: dp.LocalVersion("test")}
+			require.NoError(t, st.Send(&dp.SessionRequest{Msg: &dp.SessionRequest_Hello{Hello: hello}}))
 			_, err = st.Recv()
 			require.NoError(t, err)
 			v.cancel()
 			for {
 				m, err := st.Recv()
 				require.NoError(t, err)
-				if m.GetDrain() != nil {
+				if d := m.GetDrain(); d != nil {
+					assert.Empty(t, d.GetAlternates(), "a relay with no mesh has no relay to move to")
 					break
 				}
 			}
