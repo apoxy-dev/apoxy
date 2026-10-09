@@ -118,6 +118,9 @@ type Router struct {
 	bridge atomic.Pointer[bridge]
 	trunk  atomic.Pointer[trunk] // Trunk keys of the mesh members. Nil with no mesh.
 	onEnd  atomic.Pointer[func(AttachmentStats)]
+	// epoch goes up at each change of a route, of Permit or of the attachments
+	// of a member. The rows of the members do their checks again then.
+	epoch atomic.Uint64
 
 	mu       sync.RWMutex
 	permit   Permit
@@ -138,6 +141,7 @@ type Router struct {
 	tags     map[uint32]struct{}    // Trunk tags of the sessions.
 	presence func(*dp.Presence)     // Gets each new and each gone attachment.
 	remotes  map[remoteKey]*Session // Records of the sessions of other relays that have routes.
+	in       map[string]*inRows     // Rows that each member gave for its senders, by relay name.
 
 	// statsMu guards attCount.last. Take it after mu.
 	statsMu sync.Mutex
@@ -167,6 +171,7 @@ func NewRouter(trust Trust, cfg Config) *Router {
 		probes:   map[[8]byte]*Session{},
 		tags:     map[uint32]struct{}{},
 		remotes:  map[remoteKey]*Session{},
+		in:       map[string]*inRows{},
 		xdpWake:  make(chan struct{}, 1),
 	}
 }
@@ -245,7 +250,7 @@ type row struct {
 	meter            *rate.Limiter
 	lastUsed         atomic.Int64 // Unix nanoseconds.
 	att              *Attachment  // Attachment of dst at the receiver, or nil. Guarded by Router.mu.
-	trunk            *trunkPair   // Pair of the relay that has the receiver, or nil. Guarded by Router.mu.
+	trunk            *trunkMember // Place of the relay that has the receiver, or nil. Guarded by Router.mu.
 	done             tally        // Counts that the totals of the sender and of att have. Guarded by Router.mu.
 	removed          bool         // The row ended. Guarded by Router.mu.
 
@@ -564,6 +569,7 @@ func (r *Router) setOwner(d *domain, p netip.Prefix, o owner) {
 	}
 	o.s.routes = append(o.s.routes, p)
 	d.queueRoute(route{p, o.origin}, o.s, true)
+	r.epoch.Add(1)
 	if had {
 		// The rows to p go to the new session, or to its attachment.
 		for w := range old.s.inbound {
@@ -652,6 +658,7 @@ func (r *Router) deleteRoute(s *Session, p netip.Prefix) {
 	}
 	delete(d.routes, p)
 	d.fast.Remove(p, s)
+	r.epoch.Add(1)
 	if !d.usesLen(p.Bits()) {
 		d.lens = slices.DeleteFunc(d.lens, func(n int) bool { return n == p.Bits() })
 	}
@@ -719,11 +726,13 @@ func (r *Router) removeRow(w *row) {
 	r.markXDP(w.sender)
 }
 
-// SetPermit replaces the Permit rule and removes the rows that it denies.
+// SetPermit replaces the Permit rule and removes the rows that it denies. The
+// packets of a row of another relay that it denies drop.
 func (r *Router) SetPermit(p Permit) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.permit = p
+	r.epoch.Add(1)
 	for s := range r.sessions {
 		for _, w := range s.rows {
 			if !p(s.id.VPC, s.id.ID, w.vpc, w.dst) {
@@ -765,11 +774,14 @@ func (r *Router) forward(src netip.AddrPort, spi uint32, size int, now time.Time
 		return netip.AddrPort{}, trunkSeal{}, DropUnknownSPI
 	}
 	var ts trunkSeal
-	if p := w.trunk; p != nil {
+	var pair *trunkPair
+	if m := w.trunk; m != nil {
 		// The checks of the trunk come first: a packet that it cannot carry
 		// takes nothing from the meters.
-		ts = trunkSeal{sa: p.tx.SA(trunkLanePSP), tag: s.tag}
-		if v := r.trunkFits(s, p, ts.sa, size); v != Pass {
+		if pair = m.pair.Load(); pair != nil {
+			ts = trunkSeal{sa: pair.tx.SA(trunkLanePSP), tag: s.tag}
+		}
+		if v := r.trunkFits(s, pair, ts.sa, size); v != Pass {
 			return netip.AddrPort{}, trunkSeal{}, v
 		}
 	}
@@ -785,8 +797,8 @@ func (r *Router) forward(src netip.AddrPort, spi uint32, size int, now time.Time
 	w.lastUsed.Store(now.UnixNano())
 	w.packets.Add(1)
 	w.bytes.Add(uint64(size))
-	if w.trunk != nil {
-		return w.trunk.addr, ts, Pass
+	if pair != nil {
+		return pair.addr, ts, Pass
 	}
 	return w.receiver.dst(w.saLane), trunkSeal{}, Pass
 }
@@ -817,8 +829,7 @@ func (r *Router) ReportStatus(s *Session, st *dp.Status) {
 }
 
 // Sweep follows migrated connections, ends old source addresses, removes
-// expired and idle rows and the rows to a relay with no trunk SA, and closes
-// sessions at the NotAfter of their cert.
+// expired and idle rows, and closes sessions at the NotAfter of their cert.
 func (r *Router) Sweep(now time.Time) {
 	idle := now.Add(-rowIdle).UnixNano()
 	var expired []*Session
@@ -840,13 +851,14 @@ func (r *Router) Sweep(now time.Time) {
 			if w.lastUsed.Load() < idle {
 				r.refreshUsedXDP(w)
 			}
-			// A row to another relay ends when the trunk has no SA for it.
-			if now.After(w.expires) || w.lastUsed.Load() < idle || w.lost() {
+			if now.After(w.expires) || w.lastUsed.Load() < idle {
 				r.removeRow(w)
 			}
 		}
 		s.sweepNoRoute(now)
 	}
+	// The rows of the members have no idle time: the relay of the sender ends them.
+	r.sweepIn(now)
 	r.syncAllXDP(now)
 	r.mu.Unlock()
 	for _, s := range expired {

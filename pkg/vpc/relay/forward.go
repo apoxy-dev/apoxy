@@ -45,8 +45,8 @@ func (r *Router) PacketHandler(ctx context.Context, tr *quic.Transport) (handle 
 		if t := r.trunk.Load(); t != nil {
 			// A mesh member sends only trunk packets, which have their own header check.
 			if p := t.from(addrPort(from)); p != nil {
-				if !t.receive(br, p, b) {
-					r.drops[dropMalformed].Add(1)
+				if why, ok := t.receive(br, p, b, fwd, time.Now()); !ok {
+					r.drops[why].Add(1)
 				}
 				return
 			}

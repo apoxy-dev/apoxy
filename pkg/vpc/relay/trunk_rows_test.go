@@ -191,13 +191,25 @@ func (g *rowRig) join(rev uint32) *MeshSession {
 	return g.sess
 }
 
-// connect is join at the trunk revision. Then relay-a gives its SAs and
+// connect is join at the row revision. Then relay-a gives its SAs and
 // answers the probe, so the pair has keys in both directions and a full path.
 func (g *rowRig) connect() *MeshSession {
 	g.t.Helper()
-	s := g.join(trunkRevision)
+	s := g.join(trunkRowsRevision)
 	g.pair = g.keyed(s)
 	return s
+}
+
+// rejoin opens a new session of relay-a at revision rev from addr, and relay-a
+// gives its SAs on it.
+func (g *rowRig) rejoin(rev uint32, addr netip.AddrPort) {
+	g.t.Helper()
+	g.addr = addr
+	_, err := g.offer(g.join(rev))
+	require.NoError(g.t, err)
+	g.pair = g.tk.pair("relay-a")
+	// The relay sent a probe.
+	g.packets()
 }
 
 // start is connect, and then relay-a tells of the attachment x of server.
@@ -226,7 +238,8 @@ func (g *rowRig) unregister(spis ...uint32) {
 
 // rowView is what a test reads of a row.
 type rowView struct {
-	trunk    *trunkPair
+	trunked  bool       // The row keeps the place of another relay.
+	pair     *trunkPair // Pair that carries the packets of the row now, or nil.
 	receiver *Session
 	home     string // Relay that has the receiver. Empty is the relay of the test.
 	tag      uint32 // Tag of the receiver on that relay.
@@ -243,7 +256,18 @@ func (g *rowRig) rowOf(s *Session, spi uint32) (v rowView, ok bool) {
 	if w == nil {
 		return rowView{}, false
 	}
-	return rowView{trunk: w.trunk, receiver: w.receiver, home: w.receiver.home, tag: w.receiver.tag}, true
+	v = rowView{receiver: w.receiver, home: w.receiver.home, tag: w.receiver.tag}
+	if w.trunk != nil {
+		v.trunked, v.pair = true, w.trunk.pair.Load()
+	}
+	return v, true
+}
+
+// places returns the number of members that the trunk has a place for.
+func (g *rowRig) places() int {
+	g.tk.mu.Lock()
+	defer g.tk.mu.Unlock()
+	return len(g.tk.members)
 }
 
 // inbound returns the number of rows to the sessions of other relays.
@@ -305,6 +329,7 @@ func (g *rowRig) revoke(lanes ...int) {
 type rowMember struct {
 	sess  *MeshSession
 	addr  netip.AddrPort
+	tx    *keys.TxPeer // SAs of the relay for packets to it.
 	calls rowCalls
 }
 
@@ -317,6 +342,7 @@ func (g *rowRig) second(keyed bool) *rowMember {
 	sender, err := keys.NewSender(trunkPayload)
 	require.NoError(g.t, err)
 	tx := sender.NewPeer()
+	b.tx = tx
 	conn := newStubConn()
 	b.sess = g.m.newSession(movedConn{conn, b.addr}, false)
 	g.stubs[b.sess] = conn
@@ -332,7 +358,7 @@ func (g *rowRig) second(keyed bool) *rowMember {
 		rows: b.calls.open,
 	}
 	require.True(g.t, g.m.track(b.sess))
-	require.NoError(g.t, g.m.admit(b.sess, "relay-b", nil, &dp.Version{Revision: trunkRevision}, nil))
+	require.NoError(g.t, g.m.admit(b.sess, "relay-b", nil, &dp.Version{Revision: trunkRowsRevision}, nil))
 	require.NoError(g.t, g.m.pres.accept(b.sess))
 	g.deliver()
 	if keyed {
@@ -356,8 +382,9 @@ func (g *rowRig) second(keyed bool) *rowMember {
 // when the relay makes the rows, and which rows the other relay gets.
 func TestTrunkRowRegister(t *testing.T) {
 	const (
-		noRow = iota
-		trunkRow
+		noRow    = iota
+		trunkRow // A row to relay-a that the trunk carries.
+		heldRow  // A row to relay-a whose packets drop, because the trunk has no SA for them.
 		localRow
 	)
 	many := make([]uint32, 300)
@@ -408,15 +435,12 @@ func TestTrunkRowRegister(t *testing.T) {
 			setup: func(t *testing.T, g *rowRig) {
 				require.NoError(t, g.register(rowDst, rowTTL, 5))
 				g.end(g.sess, meshLost)
-				g.addr = netip.MustParseAddrPort("198.51.100.7:6081")
-				_, err := g.offer(g.join(trunkRevision))
-				require.NoError(t, err)
-				g.packets()
+				g.rejoin(trunkRowsRevision, netip.MustParseAddrPort("198.51.100.7:6081"))
 			},
 			dst: rowDst, spis: []uint32{5},
-			// The row goes to the pair of the new address before the sweep ends it.
-			rows: [][]*dp.SPIRow{{liveRow(5, time.Minute)}}, opens: 1,
-			row: trunkRow,
+			// The row uses the pair of the new address, and the new session has its call.
+			rows: [][]*dp.SPIRow{{liveRow(5, time.Minute)}},
+			row:  trunkRow,
 		},
 		{
 			name:  "Permit denies",
@@ -434,27 +458,38 @@ func TestTrunkRowRegister(t *testing.T) {
 		},
 		{
 			name: "other relay gave no SA",
-			link: func(g *rowRig) { g.join(trunkRevision) },
+			link: func(g *rowRig) { g.join(trunkRowsRevision) },
 			dst:  rowDst, spis: []uint32{5},
-			code: rpc.NotFound, msg: "no route to " + rowDst,
+			// The call does not wait for the keys, and the other relay gets the row.
+			rows: [][]*dp.SPIRow{{liveRow(5, time.Minute)}}, opens: 1,
+			row: heldRow,
 		},
 		{
 			name: "other relay from before the trunk",
 			link: func(g *rowRig) { g.join(presenceRevision) },
 			dst:  rowDst, spis: []uint32{5},
-			code: rpc.NotFound, msg: "no route to " + rowDst,
+			row: heldRow,
+		},
+		{
+			name: "other relay from before the SPI rows",
+			link: func(g *rowRig) { g.rejoin(trunkRowsRevision-1, trunkRigAddr) },
+			dst:  rowDst, spis: []uint32{5},
+			// It gave its SAs, but it gets no row and no packet of a sender.
+			row: heldRow,
 		},
 		{
 			name:  "other relay revoked its SAs",
 			setup: func(_ *testing.T, g *rowRig) { g.revoke() },
 			dst:   rowDst, spis: []uint32{5},
-			code: rpc.NotFound, msg: "no route to " + rowDst,
+			rows: [][]*dp.SPIRow{{liveRow(5, time.Minute)}}, opens: 1,
+			row: heldRow,
 		},
 		{
 			name:  "other relay revoked only its SA for PSP packets",
 			setup: func(_ *testing.T, g *rowRig) { g.revoke(trunkLanePSP) },
 			dst:   rowDst, spis: []uint32{5},
-			code: rpc.NotFound, msg: "no route to " + rowDst,
+			rows: [][]*dp.SPIRow{{liveRow(5, time.Minute)}}, opens: 1,
+			row: heldRow,
 		},
 		{
 			name: "address with no route",
@@ -509,17 +544,24 @@ func TestTrunkRowRegister(t *testing.T) {
 				case noRow:
 					assert.False(t, ok, "row of SPI %d", last)
 					assert.Equal(t, DropUnknownSPI, verdict)
-				case trunkRow:
+				case trunkRow, heldRow:
 					require.True(t, ok)
-					assert.Same(t, g.pair, v.trunk)
+					assert.True(t, v.trunked)
 					assert.Equal(t, "relay-a", v.home)
 					assert.EqualValues(t, 7, v.tag, "the receiver is the session of server on relay-a")
+					assert.Equal(t, len(tc.spis), g.inbound())
+					if tc.row == heldRow {
+						assert.Equal(t, DropTrunkKeys, verdict)
+						_, pkts := g.packet(last, 100)
+						assert.Empty(t, pkts, "the relay sends no packet of the row")
+						break
+					}
+					assert.Same(t, g.pair, v.pair)
 					assert.Equal(t, Pass, verdict)
 					assert.Equal(t, g.addr, to)
-					assert.Equal(t, len(tc.spis), g.inbound())
 				case localRow:
 					require.True(t, ok)
-					assert.Nil(t, v.trunk)
+					assert.False(t, v.trunked)
 					assert.Same(t, home, v.receiver)
 					assert.Equal(t, Pass, verdict)
 					assert.Equal(t, netip.MustParseAddrPort(rowHome), to)
@@ -532,25 +574,25 @@ func TestTrunkRowRegister(t *testing.T) {
 // TestTrunkRowEnd checks each way that a row to another relay ends, and when
 // the other relay learns of it. The row is SPI 5 of laptop to server.
 func TestTrunkRowEnd(t *testing.T) {
-	const downAfter = 3 * time.Second
 	cases := []struct {
 		name string
 		end  func(t *testing.T, g *rowRig)
 		// first is the verdict for a packet of the row after end. With stays,
 		// the row is there until the next sweep.
-		first Verdict
-		stays bool
-		told  bool // relay-a gets the end of the row.
+		first  Verdict
+		stays  bool
+		told   bool // relay-a gets the end of the row.
+		places int  // Members that the trunk has a place for after the end.
 	}{
 		{
 			name:  "UnregisterSPI",
 			end:   func(_ *testing.T, g *rowRig) { g.unregister(5) },
-			first: DropUnknownSPI, told: true,
+			first: DropUnknownSPI, told: true, places: 1,
 		},
 		{
 			name:  "expiry",
 			end:   func(*testing.T, *rowRig) { time.Sleep(rowTTL + time.Nanosecond) },
-			first: DropUnknownSPI, stays: true, told: true,
+			first: DropUnknownSPI, stays: true, told: true, places: 1,
 		},
 		{
 			name: "5 minutes with no packet",
@@ -558,35 +600,35 @@ func TestTrunkRowEnd(t *testing.T) {
 				time.Sleep(rowIdle + time.Nanosecond)
 				g.r.Sweep(time.Now())
 			},
-			first: DropUnknownSPI, told: true,
+			first: DropUnknownSPI, told: true, places: 1,
 		},
 		{
 			name:  "Permit stops allowing it",
 			end:   func(_ *testing.T, g *rowRig) { g.r.SetPermit(denyAll) },
-			first: DropUnknownSPI, told: true,
+			first: DropUnknownSPI, told: true, places: 1,
 		},
 		{
 			name:  "the sender closes",
 			end:   func(_ *testing.T, g *rowRig) { g.r.removeSession(g.laptop) },
-			first: DropUnknownSource, told: true,
+			first: DropUnknownSource, told: true, places: 1,
 		},
 		{
 			name:  "the attachment of the receiver ends",
 			end:   func(_ *testing.T, g *rowRig) { g.announce(goneAt("x", 11)) },
-			first: DropUnknownSPI, told: true,
+			first: DropUnknownSPI, told: true, places: 1,
 		},
 		{
-			name: "the other relay revokes its SAs",
-			end:  func(_ *testing.T, g *rowRig) { g.revoke() },
-			// The packets stop at once, and the sweep ends the row.
-			first: DropTrunkKeys, stays: true, told: true,
+			name: "UnregisterSPI after the other relay is lost",
+			end: func(_ *testing.T, g *rowRig) {
+				g.end(g.sess, meshLost)
+				time.Sleep(3 * time.Second)
+				g.deliver()
+				g.unregister(5)
+			},
+			first: DropUnknownSPI,
 		},
 		{
-			name:  "the other relay revokes only its SA for PSP packets",
-			end:   func(_ *testing.T, g *rowRig) { g.revoke(trunkLanePSP) },
-			first: DropTrunkKeys, stays: true, told: true,
-		},
-		{
+			// The routes of a relay that stops go with its attachments.
 			name: "the other relay stops",
 			end: func(_ *testing.T, g *rowRig) {
 				g.end(g.sess, meshRestart)
@@ -602,35 +644,6 @@ func TestTrunkRowEnd(t *testing.T) {
 			},
 			first: DropUnknownSPI,
 		},
-		{
-			name: "the other relay is lost",
-			end: func(t *testing.T, g *rowRig) {
-				g.end(g.sess, meshLost)
-				time.Sleep(downAfter - time.Nanosecond)
-				g.deliver()
-				_, v := g.verdict(5)
-				assert.Equal(t, Pass, v, "the row works while the other relay is up")
-				time.Sleep(time.Nanosecond)
-				g.deliver()
-			},
-			// The routes of a lost relay stay, but its keys are gone.
-			first: DropTrunkKeys, stays: true,
-		},
-		{
-			name: "the other relay comes back at a new address",
-			end: func(t *testing.T, g *rowRig) {
-				old := g.pair
-				g.end(g.sess, meshLost)
-				g.addr = netip.MustParseAddrPort("198.51.100.7:6081")
-				s := g.join(trunkRevision)
-				_, err := g.offer(s)
-				require.NoError(t, err)
-				require.NotSame(t, old, g.pair)
-				require.NotNil(t, g.pair.tx.SA(trunkLanePSP))
-			},
-			// The row is for the pair of the address before.
-			first: DropTrunkKeys, stays: true,
-		},
 	}
 	cfg := trunkRigConfig(t)
 	for _, tc := range cases {
@@ -643,6 +656,7 @@ func TestTrunkRowEnd(t *testing.T) {
 				require.Empty(t, diffRows([][]*dp.SPIRow{{liveRow(5, rowTTL)}}, g.a.take()))
 				_, v := g.verdict(5)
 				require.Equal(t, Pass, v)
+				require.Equal(t, 1, g.places())
 
 				tc.end(t, g)
 				last := tc.first
@@ -666,6 +680,123 @@ func TestTrunkRowEnd(t *testing.T) {
 				}
 				assert.Empty(t, diffRows(want, g.a.take()), "rows that relay-a gets")
 				assert.Equal(t, 1, g.a.count(), "SPIRows calls")
+				assert.Equal(t, tc.places, g.places(), "the trunk keeps a place only for a relay with keys or rows")
+			})
+		})
+	}
+}
+
+// TestTrunkRowKeys checks that a row to another relay stays with no trunk SA,
+// and that its packets go again with the next keys, with no call of the agent.
+func TestTrunkRowKeys(t *testing.T) {
+	const downAfter = 3 * time.Second
+	moved := netip.MustParseAddrPort("198.51.100.7:6081")
+	lost := func(_ *testing.T, g *rowRig) {
+		g.end(g.sess, meshLost)
+		time.Sleep(downAfter)
+		g.deliver()
+	}
+	offer := func(t *testing.T, g *rowRig) {
+		_, err := g.offer(g.sess)
+		require.NoError(t, err)
+	}
+	cases := []struct {
+		name string
+		away func(t *testing.T, g *rowRig) // Takes the keys of relay-a from the relay.
+		back func(t *testing.T, g *rowRig) // Gives the relay keys of relay-a again.
+		// rows has the messages that relay-a gets from away to the end of back,
+		// and calls the SPIRows calls of the relay at that time.
+		rows  [][]*dp.SPIRow
+		calls int
+	}{
+		{
+			name: "the other relay revokes its SAs and gives new SAs",
+			away: func(_ *testing.T, g *rowRig) { g.revoke() },
+			back: offer, calls: 1,
+		},
+		{
+			name: "the other relay revokes only its SA for PSP packets",
+			away: func(_ *testing.T, g *rowRig) { g.revoke(trunkLanePSP) },
+			back: offer, calls: 1,
+		},
+		{
+			name: "the other relay is lost and comes back",
+			away: lost,
+			back: func(_ *testing.T, g *rowRig) { g.rejoin(trunkRowsRevision, trunkRigAddr) },
+			rows: [][]*dp.SPIRow{{liveRow(5, rowTTL-downAfter)}}, calls: 2,
+		},
+		{
+			name: "the other relay is lost and comes back at a new address",
+			away: lost,
+			back: func(_ *testing.T, g *rowRig) { g.rejoin(trunkRowsRevision, moved) },
+			rows: [][]*dp.SPIRow{{liveRow(5, rowTTL-downAfter)}}, calls: 2,
+		},
+		{
+			name: "the other relay comes back at a new address before it is down",
+			away: func(_ *testing.T, g *rowRig) {
+				g.end(g.sess, meshLost)
+				g.addr = moved
+				g.join(trunkRowsRevision)
+			},
+			back: func(t *testing.T, g *rowRig) {
+				offer(t, g)
+				g.packets()
+			},
+			rows: [][]*dp.SPIRow{{liveRow(5, rowTTL)}}, calls: 2,
+		},
+		{
+			name: "the other relay comes back from before the SPI rows, and then at this revision",
+			away: func(_ *testing.T, g *rowRig) {
+				g.end(g.sess, meshLost)
+				g.rejoin(trunkRowsRevision-1, trunkRigAddr)
+			},
+			back: func(_ *testing.T, g *rowRig) {
+				g.end(g.sess, meshLost)
+				g.rejoin(trunkRowsRevision, trunkRigAddr)
+			},
+			rows: [][]*dp.SPIRow{{liveRow(5, rowTTL)}}, calls: 2,
+		},
+	}
+	cfg := trunkRigConfig(t)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				g := newRowRig(t, cfg)
+				defer g.stop()
+				g.start()
+				require.NoError(t, g.register(rowDst, rowTTL, 5))
+				require.Len(t, g.a.take(), 1)
+				_, v := g.verdict(5)
+				require.Equal(t, Pass, v)
+
+				tc.away(t, g)
+				for range 3 {
+					g.r.Sweep(time.Now())
+					_, pkts := g.packet(5, 100)
+					assert.Empty(t, pkts, "the relay sends no packet with no SA")
+				}
+				_, v = g.verdict(5)
+				assert.Equal(t, DropTrunkKeys, v)
+				assert.EqualValues(t, 4, g.r.drops[dropTrunkKeys].Load())
+				_, ok := g.row(5)
+				require.True(t, ok, "the row stays with no SA")
+				assert.Equal(t, 1, g.inbound())
+
+				tc.back(t, g)
+				g.pair = g.tk.pair("relay-a")
+				row, _ := g.row(5)
+				assert.Same(t, g.pair, row.pair, "the row uses the pair that has the keys now")
+				sent, pkts := g.packet(5, 100)
+				require.Len(t, pkts, 1, "the packets of the row go again")
+				payload, tag := g.payload(pkts[0])
+				assert.Equal(t, sent, payload)
+				assert.EqualValues(t, rowTag, tag)
+				assert.Empty(t, diffRows(tc.rows, g.a.take()), "rows that relay-a gets")
+				assert.Equal(t, tc.calls, g.a.count(), "SPIRows calls")
+
+				// The other relay learns of the end of the row on the session that it has now.
+				g.unregister(5)
+				assert.Empty(t, diffRows([][]*dp.SPIRow{{goneRow(5)}}, g.a.take()))
 			})
 		})
 	}
@@ -688,6 +819,13 @@ func TestTrunkRowSession(t *testing.T) {
 		// home is the second session with an attachment, so it has the next tag.
 		require.NoError(t, g.r.registerSPI(home, register(vpcA, rowDst, rowTTL, 3), time.Now()))
 		require.NotEmpty(t, g.a.take())
+		// relay-b has a row of laptop too. No session of relay-a gets that row.
+		b := g.second(true)
+		require.NoError(t, g.m.pres.apply(b.sess, &dp.PresenceUpdate{Entries: []*dp.Presence{
+			atGen(liveEntry("y", agentID(vpcA, "other"), "", 3, prefixB), 10),
+		}}))
+		require.NoError(t, g.register("fd00:b::1", rowTTL, 10))
+		require.Len(t, b.calls.take(), 1)
 
 		// The other relay is up for 3 s after its session ended: the rows work,
 		// but no call carries a change.
@@ -706,7 +844,7 @@ func TestTrunkRowSession(t *testing.T) {
 		_, ok := g.row(4)
 		require.True(t, ok)
 
-		g.join(trunkRevision)
+		g.join(trunkRowsRevision)
 		require.Same(t, pair, g.pair, "a new session from the same address keeps the pair")
 		ofHome := liveRow(3, rowTTL-time.Second)
 		ofHome.SenderTag = rowTag + 1
@@ -726,7 +864,7 @@ func TestTrunkRowSession(t *testing.T) {
 		require.NoError(t, g.r.unregisterSPI(home, &dp.UnregisterSPIRequest{Vpc: ref(vpcA), Spis: []uint32{3}}))
 		g.a.take()
 		g.end(g.sess, meshLost)
-		g.join(trunkRevision)
+		g.join(trunkRowsRevision)
 		assert.Empty(t, g.a.take())
 		assert.Equal(t, 2, g.a.count(), "no SPIRows call with no row")
 	})
@@ -772,7 +910,7 @@ func TestTrunkRowCallFails(t *testing.T) {
 
 				g.a.fail(nil, nil)
 				g.end(s, meshLost)
-				g.join(trunkRevision)
+				g.join(trunkRowsRevision)
 				want := [][]*dp.SPIRow{{liveRow(5, rowTTL), liveRow(7, rowTTL)}}
 				assert.Empty(t, diffRows(want, g.a.take()), "rows on the next session")
 				assert.Equal(t, 2, g.a.count())
@@ -790,8 +928,9 @@ func TestTrunkRowMove(t *testing.T) {
 		// relayB adds relay-b, and keyed gives it trunk keys in both directions.
 		relayB, keyed bool
 		move          func(t *testing.T, g *rowRig, b *rowMember)
-		to            string         // Relay of the receiver after the move: "" is no row, "local" is the relay of the test.
+		to            string         // Relay of the receiver after the move: "local" is the relay of the test.
 		tag           uint32         // Tag of the receiver on its relay.
+		verdict       Verdict        // Verdict for a packet of the row after the move.
 		a, b          [][]*dp.SPIRow // Messages that relay-a and relay-b get.
 	}{
 		{
@@ -822,12 +961,15 @@ func TestTrunkRowMove(t *testing.T) {
 			b: [][]*dp.SPIRow{{liveRow(5, rowTTL-time.Minute)}},
 		},
 		{
+			// The row waits for the keys of relay-b, which gets it.
 			name:   "to a relay with no trunk keys",
 			relayB: true,
 			move: func(t *testing.T, g *rowRig, b *rowMember) {
 				require.NoError(t, g.m.pres.apply(b.sess, &dp.PresenceUpdate{Entries: []*dp.Presence{entryOf("y", other, 3, 20)}}))
 			},
+			to: "relay-b", tag: 3, verdict: DropTrunkKeys,
 			a: [][]*dp.SPIRow{{goneRow(5)}},
+			b: [][]*dp.SPIRow{{liveRow(5, rowTTL)}},
 		},
 	}
 	cfg := trunkRigConfig(t)
@@ -851,32 +993,30 @@ func TestTrunkRowMove(t *testing.T) {
 				}
 				v, ok := g.row(5)
 				to, verdict := g.verdict(5)
-				if tc.to == "" {
-					assert.False(t, ok, "row after the move")
-					assert.Equal(t, DropUnknownSPI, verdict)
-					assert.Zero(t, g.inbound())
-					return
-				}
 				require.True(t, ok, "row after the move")
-				assert.Equal(t, Pass, verdict)
+				assert.Equal(t, tc.verdict, verdict)
 				switch tc.to {
 				case "local":
-					assert.Nil(t, v.trunk)
+					assert.False(t, v.trunked)
 					assert.Empty(t, v.home)
 					assert.Equal(t, netip.MustParseAddrPort(rowHome), to)
 					assert.Zero(t, g.inbound())
+					return
 				case "relay-a":
-					assert.Same(t, g.pair, v.trunk)
+					assert.Same(t, g.pair, v.pair)
 					assert.Equal(t, trunkRigAddr, to)
 				case "relay-b":
-					assert.Same(t, g.tk.pair("relay-b"), v.trunk)
-					assert.Equal(t, b.addr, to)
+					if tc.keyed {
+						assert.Same(t, g.tk.pair("relay-b"), v.pair)
+						assert.Equal(t, b.addr, to)
+					} else {
+						assert.Nil(t, v.pair)
+					}
 				}
-				if tc.to != "local" {
-					assert.Equal(t, tc.to, v.home)
-					assert.Equal(t, tc.tag, v.tag)
-					assert.Equal(t, 1, g.inbound())
-				}
+				assert.True(t, v.trunked)
+				assert.Equal(t, tc.to, v.home)
+				assert.Equal(t, tc.tag, v.tag)
+				assert.Equal(t, 1, g.inbound())
 			})
 		})
 	}
@@ -905,7 +1045,7 @@ func TestTrunkRowForward(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				g := newRowRig(t, cfg)
 				defer g.stop()
-				s := g.join(trunkRevision)
+				s := g.join(trunkRowsRevision)
 				_, err := g.offer(s)
 				require.NoError(t, err)
 				switch tc.path {
@@ -987,7 +1127,7 @@ func TestTrunkRowDrops(t *testing.T) {
 		}
 		_, pkts = g.packet(5, 100)
 		assert.Empty(t, pkts, "a packet that the SA does not seal")
-		// With no SA the packets stop before the sweep ends the row.
+		// With no SA the packets drop, and the row stays.
 		g.revoke()
 		_, pkts = g.packet(5, 100)
 		assert.Empty(t, pkts, "a packet with no SA")
@@ -1010,8 +1150,14 @@ apoxy_vpc_relay_dropped_packets_total{reason="mesh_source"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="mesh_too_large"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="mesh_unknown_tag"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="send_queue"} 0
+apoxy_vpc_relay_dropped_packets_total{reason="trunk_expired"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="trunk_keys"} 2
+apoxy_vpc_relay_dropped_packets_total{reason="trunk_lane"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="trunk_mtu"} 1
+apoxy_vpc_relay_dropped_packets_total{reason="trunk_no_row"} 0
+apoxy_vpc_relay_dropped_packets_total{reason="trunk_not_local"} 0
+apoxy_vpc_relay_dropped_packets_total{reason="trunk_permit"} 0
+apoxy_vpc_relay_dropped_packets_total{reason="trunk_sender"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="tunnel_limit"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="unknown_source"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="unknown_spi"} 0
@@ -1079,8 +1225,8 @@ func (c *tapConn) with(spi uint32) [][]byte {
 	return out
 }
 
-// TestTrunkRowBetweenRelays sends a PSP packet of an agent of relay-a to the
-// loopback socket of relay-b in a trunk packet. relay-b opens it and drops it.
+// TestTrunkRowBetweenRelays sends PSP packets of an agent of relay-a to an
+// agent of relay-b on loopback sockets. The agent gets each packet unchanged.
 func TestTrunkRowBetweenRelays(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -1106,30 +1252,43 @@ func TestTrunkRowBetweenRelays(t *testing.T) {
 					10*time.Second, 10*time.Millisecond, "%s: probe result for %s", d.n.name, d.peer.name)
 			}
 
-			// The socket of the agent of relay-a.
-			udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
-			require.NoError(t, err)
-			t.Cleanup(func() { _ = udp.Close() })
-			src := netip.MustParseAddrPort(udp.LocalAddr().String())
-			agent := func(n *trunkNode, subject, addr, prefix string) *Session {
-				ap := netip.MustParseAddrPort(addr)
+			// Each agent has a socket, and a session with an attachment on its relay.
+			agent := func(n *trunkNode, subject, prefix string) (*Session, *net.UDPConn) {
+				udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+				require.NoError(t, err)
+				t.Cleanup(func() { _ = udp.Close() })
+				ap := netip.MustParseAddrPort(udp.LocalAddr().String())
 				s := newSession(Identity{VPC: vpcA, ID: subject}, func() netip.AddrPort { return ap })
 				n.r.addSession(s, time.Now())
 				require.NoError(t, n.r.openSync(s, dp.Mode_MODE_PSP, ref(vpcA), nil))
 				require.NoError(t, n.r.attach(s, attachment("att-"+prefix, prefix)))
-				return s
+				return s, udp
 			}
-			snd := agent(a, laptop, src.String(), "fd00:1::/96")
-			agent(b, server, "192.0.2.2:1000", prefixA)
+			snd, from := agent(a, laptop, "fd00:1::/96")
+			_, to := agent(b, server, prefixA)
 			require.Eventually(t, func() bool { return routeTable(a.r, vpcA)[prefixA] == "att-"+prefixA+"@relay-b" },
 				10*time.Second, 5*time.Millisecond, "relay-a has the route of the attachment of relay-b")
-
 			require.NoError(t, a.r.registerSPI(snd, register(vpcA, rowDst, time.Minute, 0x501), time.Now()))
+			a.r.mu.RLock()
+			tag := snd.tag
+			a.r.mu.RUnlock()
+			require.NotZero(t, tag)
+
+			// The call does not wait for relay-b, which drops the packets of the row
+			// before it has the row and the attachment of the sender.
+			require.Eventually(t, func() bool {
+				b.r.mu.RLock()
+				defer b.r.mu.RUnlock()
+				in := b.r.in["relay-a"]
+				return in != nil && in.rows[rowKey{tag, 0x501}] != nil
+			}, 10*time.Second, 5*time.Millisecond, "relay-b has the row of relay-a")
+			require.Eventually(t, func() bool { return routeTable(b.r, vpcA)["fd00:1::/96"] == "att-fd00:1::/96@relay-a" },
+				10*time.Second, 5*time.Millisecond, "relay-b has the attachment of the sender")
+
 			lane := a.txSPIs("relay-b")[trunkLanePSP]
-			before := b.r.MalformedDrops()
 			send := func(inner int) []byte {
 				pkt := pspOfSize(t, 0x501, inner)
-				_, err := udp.WriteToUDPAddrPort(pkt, a.addr)
+				_, err := from.WriteToUDPAddrPort(pkt, a.addr)
 				require.NoError(t, err)
 				return pkt
 			}
@@ -1139,37 +1298,30 @@ func TestTrunkRowBetweenRelays(t *testing.T) {
 			require.Eventually(t, func() bool { return a.r.SenderStats(snd).DropTrunk == 1 }, 5*time.Second, 5*time.Millisecond)
 			assert.Empty(t, tap.with(lane))
 
-			// relay-b has no SPIRows call yet. The row does not wait for its answer,
-			// so the packets go also after the call failed.
-			for i, inner := range []int{48, tc.fits} {
-				if i > 0 {
-					require.NoError(t, a.r.registerSPI(snd, register(vpcA, rowDst, time.Minute, 0x501), time.Now()))
-				}
+			buf := make([]byte, maxUDP+1)
+			sizes := []int{48, tc.fits}
+			for i, inner := range sizes {
 				sent := send(inner)
-				var got [][]byte
-				require.Eventually(t, func() bool {
-					got = tap.with(lane)
-					return len(got) == i+1
-				}, 5*time.Second, 5*time.Millisecond, "trunk packets at the socket of relay-b")
+				require.NoError(t, to.SetReadDeadline(time.Now().Add(5*time.Second)))
+				n, src, err := to.ReadFromUDPAddrPort(buf)
+				require.NoError(t, err, "the agent of relay-b gets the packet")
+				assert.Equal(t, sent, buf[:n], "the packet of the agent does not change")
+				assert.Equal(t, b.addr, src, "the packet comes from the socket of relay-b")
+				got := tap.with(lane)
+				require.Len(t, got, i+1, "one trunk packet for one packet of the agent")
 				assert.Len(t, got[i], inner+2*pspwire.Overhead)
-				payload, tag, nextHdr, err := openTrunk(b, got[i])
-				require.NoError(t, err)
-				assert.Equal(t, sent, payload, "the packet of the agent does not change")
-				assert.EqualValues(t, pspwire.NextHdrPSP, nextHdr)
-				a.r.mu.RLock()
-				want := snd.tag
-				a.r.mu.RUnlock()
-				assert.NotZero(t, want)
-				assert.Equal(t, want, tag, "the tag is the tag of the sender on relay-a")
-				// The present rule of the receiver: it drops a packet with a sender tag.
-				require.Eventually(t, func() bool { return b.r.MalformedDrops() == before+uint64(i)+1 },
-					5*time.Second, 5*time.Millisecond, "relay-b drops the packet")
 			}
 			st := a.r.SenderStats(snd)
 			require.Len(t, st.Lanes, 1)
 			assert.EqualValues(t, 2, st.Lanes[0].Packets)
 			assert.EqualValues(t, 1, st.DropTrunk)
-			assert.Zero(t, a.r.MalformedDrops())
+			assert.Equal(t, map[string]uint64{"trunk_mtu": 1}, dropsOf(a.r))
+			assert.Empty(t, dropsOf(b.r), "relay-b drops no packet")
+			// The attachment of the receiver counts the inner packets.
+			rx := b.r.AttachmentStats()
+			require.Len(t, rx, 1)
+			assert.EqualValues(t, 2, rx[0].TXPackets)
+			assert.EqualValues(t, sizes[0]+sizes[1], rx[0].TXBytes)
 		})
 	}
 }

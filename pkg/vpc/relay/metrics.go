@@ -117,6 +117,13 @@ const (
 	dropMeshPermit     // Permit denies the destination.
 	dropMeshNotLocal   // No session of this relay has the route of the destination.
 	dropMeshNotSent    // The session of the destination did not take the frame.
+	// The reasons below are for the PSP packet of a sender on another relay.
+	dropTrunkLane     // The trunk SA or the payload type is not for PSP packets.
+	dropTrunkNoRow    // The other relay gave no row for the sender tag and the SPI.
+	dropTrunkExpired  // The row of the other relay ended at its time.
+	dropTrunkSender   // No entry from the present session of the other relay has the tag in the VPC.
+	dropTrunkPermit   // Permit denies the destination.
+	dropTrunkNotLocal // No session of this relay has the route of the destination.
 	numDropReasons
 )
 
@@ -141,6 +148,12 @@ var dropLabels = [numDropReasons]string{
 	dropMeshPermit:     "mesh_permit",
 	dropMeshNotLocal:   "mesh_not_local",
 	dropMeshNotSent:    "mesh_not_sent",
+	dropTrunkLane:      "trunk_lane",
+	dropTrunkNoRow:     "trunk_no_row",
+	dropTrunkExpired:   "trunk_expired",
+	dropTrunkSender:    "trunk_sender",
+	dropTrunkPermit:    "trunk_permit",
+	dropTrunkNotLocal:  "trunk_not_local",
 }
 
 var dropsDesc = prometheus.NewDesc("apoxy_vpc_relay_dropped_packets_total",

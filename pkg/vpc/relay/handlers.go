@@ -99,7 +99,7 @@ func (r *Router) resolvePeer(c *Session, in *dp.ResolvePeerRequest) (*dp.Resolve
 // lane sets the lane port of the receiver.
 //
 // A receiver on another relay gets rows to the trunk of that relay, which
-// that relay gets on SPIRows. The call does not wait for its answer.
+// that relay gets on SPIRows. The call waits for no answer and no trunk keys.
 func (srv *Server) RegisterSPI(ctx context.Context, in *dp.RegisterSPIRequest) (*emptypb.Empty, error) {
 	c, err := srv.R.caller(ctx)
 	if err != nil {
@@ -136,12 +136,9 @@ func (r *Router) registerSPI(c *Session, in *dp.RegisterSPIRequest, now time.Tim
 		return rpc.Errorf(rpc.PermissionDenied, "permit denies %s", dst)
 	}
 	to := r.ownerOf(key, dst)
-	var pair *trunkPair
-	if to.s != nil && to.s.home != "" {
-		// With no trunk for the caller, the relay has no path to the other relay.
-		if pair = r.trunkOf(c, to.s); pair == nil {
-			to = owner{}
-		}
+	// A caller with no sender tag has no path to another relay.
+	if to.s != nil && to.s.home != "" && !r.trunked(c) {
+		to = owner{}
 	}
 	if to.s == nil {
 		return rpc.Errorf(rpc.NotFound, "no route to %s", dst)
@@ -167,8 +164,8 @@ func (r *Router) registerSPI(c *Session, in *dp.RegisterSPIRequest, now time.Tim
 			}
 			c.rows[spi] = w
 		}
-		if w.receiver != to.s || w.att != to.att || w.trunk != pair {
-			r.aim(w, to, pair)
+		if w.receiver != to.s || w.att != to.att {
+			r.aim(w, to)
 		}
 		w.lane, w.saLane = laneAt(lanes, i), laneAt(saLanes, i)
 		w.expires = now.Add(ttl)

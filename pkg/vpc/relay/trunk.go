@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/apoxy-dev/softpsp/engine"
 	"github.com/apoxy-dev/softpsp/keys"
 	pspwire "github.com/apoxy-dev/softpsp/psp"
 	"golang.org/x/time/rate"
@@ -28,6 +29,9 @@ import (
 const (
 	// trunkRevision is the first revision with trunk keys and the trunk probe.
 	trunkRevision = 5
+	// trunkRowsRevision is the first revision of a relay that takes the SPI rows
+	// and the packets of the senders of another relay.
+	trunkRowsRevision = 8
 
 	// trunkLanePSP is the SA lane for whole PSP packets of agents. It has no
 	// replay window, because the agent that gets each packet has one.
@@ -91,9 +95,20 @@ type trunk struct {
 
 	// mu guards the fields below. Take it last: after Mesh.mu, after Router.mu
 	// and after the lock of the presence.
-	mu    sync.Mutex
-	pairs map[string]*trunkPair     // By relay name of the member.
-	byRx  map[*keys.Peer]*trunkPair // Pair of each receive peer.
+	mu      sync.Mutex
+	pairs   map[string]*trunkPair     // By relay name of the member.
+	byRx    map[*keys.Peer]*trunkPair // Pair of each receive peer.
+	members map[string]*trunkMember   // By relay name. Each has a row or carries rows.
+}
+
+// trunkMember is the place of one member for the SPI rows to it. A row keeps
+// it, so the row stays when the trunk has no keys of the member for a time.
+type trunkMember struct {
+	name string
+	// pair carries the packets of the rows now. It is nil with no keys of the
+	// member, and for a member from before the row revision.
+	pair atomic.Pointer[trunkPair]
+	rows int // Rows of the router that keep it. trunk.mu guards it.
 }
 
 // trunkPair is the trunk state of this relay and one member.
@@ -104,7 +119,7 @@ type trunkPair struct {
 	tx      *keys.TxPeer   // SAs of the member for packets to it.
 	answers *rate.Limiter  // Limits the answers to the probes of the member.
 
-	spis atomic.Pointer[[]uint32]   // SPIs of the receive SAs, for the packet path.
+	spis atomic.Pointer[[]trunkSPI] // Receive SAs, for the packet path.
 	run  atomic.Pointer[trunkProbe] // Probe run that waits for its answer.
 	path atomic.Uint32              // A trunkPath value.
 
@@ -114,6 +129,12 @@ type trunkPair struct {
 	sess    *trunkSession  // Key exchange on the newest session, or nil.
 	pending []keys.Request // Rekeys that the member did not get.
 	gone    bool           // The trunk removed the pair.
+}
+
+// trunkSPI is one receive SA of a pair.
+type trunkSPI struct {
+	spi  uint32
+	lane int
 }
 
 // trunkSession is the key exchange of a pair on one mesh session, and the
@@ -141,7 +162,10 @@ type trunkProbe struct {
 // setTrunk makes m exchange trunk keys with each member at the trunk revision
 // or later. Call it after PacketHandler of r and before Run.
 func (m *Mesh) setTrunk(r *Router) {
-	t := &trunk{m: m, r: r, pairs: map[string]*trunkPair{}, byRx: map[*keys.Peer]*trunkPair{}}
+	t := &trunk{
+		m: m, r: r,
+		pairs: map[string]*trunkPair{}, byRx: map[*keys.Peer]*trunkPair{}, members: map[string]*trunkMember{},
+	}
 	// A second call must not add the hooks again.
 	if !m.trunk.CompareAndSwap(nil, t) {
 		return
@@ -160,11 +184,17 @@ func (p *trunkPair) mtu() int {
 	return trunkLimitedMTU
 }
 
-// receives reports whether spi is a receive SA of the pair. A member must not
-// send with the SA of another member.
-func (p *trunkPair) receives(spi uint32) bool {
-	spis := p.spis.Load()
-	return spis != nil && slices.Contains(*spis, spi)
+// lane returns the lane of the receive SA of the pair with spi. It reports
+// false for another SPI: a member must not send with the SA of another member.
+func (p *trunkPair) lane(spi uint32) (int, bool) {
+	if spis := p.spis.Load(); spis != nil {
+		for _, sa := range *spis {
+			if sa.spi == spi {
+				return sa.lane, true
+			}
+		}
+	}
+	return 0, false
 }
 
 // pair returns the pair of member name, or nil if the trunk has no keys of it.
@@ -223,6 +253,50 @@ func (t *trunk) remove(p *trunkPair) {
 		delete(t.pairs, p.name)
 		t.index()
 	}
+	if m := t.members[p.name]; m != nil {
+		// The rows to the member stay, and their packets drop until it has keys again.
+		m.pair.CompareAndSwap(p, nil)
+		t.forget(m)
+	}
+}
+
+// hold returns the place of member name for one more row of the router.
+func (t *trunk) hold(name string) *trunkMember {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	m := t.members[name]
+	if m == nil {
+		m = &trunkMember{name: name}
+		t.members[name] = m
+	}
+	m.rows++
+	return m
+}
+
+// forget deletes the place m when no row keeps it and it carries no rows.
+// t.mu must be held.
+func (t *trunk) forget(m *trunkMember) {
+	if m.rows == 0 && m.pair.Load() == nil {
+		delete(t.members, m.name)
+	}
+}
+
+// carry makes p the pair for the rows to its member if the session that gave
+// its SAs last is at the row revision. t.mu must be held.
+func (t *trunk) carry(p *trunkPair) {
+	m := t.members[p.name]
+	if p.txFrom.Version().GetRevision() < trunkRowsRevision {
+		if m != nil {
+			m.pair.CompareAndSwap(p, nil)
+			t.forget(m)
+		}
+		return
+	}
+	if m == nil {
+		m = &trunkMember{name: p.name}
+		t.members[p.name] = m
+	}
+	m.pair.Store(p)
 }
 
 // revokeRx deletes the receive SAs of p and ends its key exchange. t.mu must
@@ -238,14 +312,14 @@ func (t *trunk) revokeRx(p *trunkPair) {
 	p.path.Store(uint32(trunkPathUnknown))
 }
 
-// addSPIs adds the SPIs of new receive SAs of p. t.mu must be held.
+// addSPIs adds the new receive SAs of p. t.mu must be held.
 func (t *trunk) addSPIs(p *trunkPair, sas []keys.SA) {
-	var spis []uint32
+	var spis []trunkSPI
 	if old := p.spis.Load(); old != nil {
 		spis = slices.Clone(*old)
 	}
 	for _, sa := range sas {
-		spis = append(spis, sa.SPI)
+		spis = append(spis, trunkSPI{sa.SPI, sa.Lane})
 	}
 	p.spis.Store(&spis)
 }
@@ -253,8 +327,8 @@ func (t *trunk) addSPIs(p *trunkPair, sas []keys.SA) {
 // prune removes the SPIs of p whose SA is not in the receive table. t.mu must
 // be held.
 func (t *trunk) prune(br *bridge, p *trunkPair) {
-	gone := func(spi uint32) bool {
-		_, ok := br.table.Stats(spi)
+	gone := func(sa trunkSPI) bool {
+		_, ok := br.table.Stats(sa.spi)
 		return !ok
 	}
 	if spis := p.spis.Load(); spis != nil && slices.ContainsFunc(*spis, gone) {
@@ -266,6 +340,7 @@ func (t *trunk) prune(br *bridge, p *trunkPair) {
 // opened starts the key exchange with the member of the new session s. A
 // member from before the trunk gets no call.
 func (t *trunk) opened(s *MeshSession) {
+	t.endRows(s)
 	br := t.r.bridge.Load()
 	if br == nil || s.Version().GetRevision() < trunkRevision {
 		return
@@ -275,6 +350,9 @@ func (t *trunk) opened(s *MeshSession) {
 		rows: map[rowKey]rowState{}, rowWake: make(chan struct{}, 1),
 	}
 	ts.wake <- struct{}{}
+	// A member from before the row revision gets no SPIRows call.
+	rows := s.Version().GetRevision() >= trunkRowsRevision
+	ts.rowsDone = !rows
 	// The read lock keeps each row change out until ts has the rows of the
 	// pair and gets the changes.
 	t.r.mu.RLock()
@@ -282,12 +360,27 @@ func (t *trunk) opened(s *MeshSession) {
 	p := t.pairOf(br, s)
 	// The new offer replaces the rekeys that the member did not get.
 	p.sess, p.pending = ts, nil
-	t.r.liveRows(p, ts)
+	if rows {
+		t.r.liveRows(p, ts)
+	}
 	t.mu.Unlock()
 	t.r.mu.RUnlock()
 	t.m.wg.Go(func() { t.give(br, p, ts) })
 	t.m.wg.Go(func() { t.probes(br, p, ts) })
-	t.m.wg.Go(func() { t.sendRows(p, ts) })
+	if rows {
+		t.m.wg.Go(func() { t.sendRows(p, ts) })
+	}
+}
+
+// endRows ends the rows that the member of the new session s gave on a session
+// before. The member gives its rows again on s.
+func (t *trunk) endRows(s *MeshSession) {
+	t.m.mu.Lock()
+	defer t.m.mu.Unlock()
+	// The hook of a newer session of the member does this later.
+	if mem := t.m.members[s.name]; mem == nil || mem.sess == nil || mem.sess == s {
+		t.r.endIn(s.name, s)
+	}
 }
 
 // changed removes the keys of a member that is down. The keys stay while the
@@ -302,6 +395,10 @@ func (t *trunk) changed(c MeshChange) {
 	var cur *MeshSession
 	if mem := t.m.members[c.Name]; mem != nil {
 		cur = mem.sess
+	}
+	// The rows of a member end with its attachments. A lost member keeps them.
+	if c.Down == MeshRestart || c.Down == MeshRemoved {
+		t.r.endIn(c.Name, cur)
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -553,6 +650,7 @@ func (t *trunk) apply(s *MeshSession, req keys.Request, now time.Time) ([]uint32
 		return nil, rpc.Errorf(rpc.InvalidArgument, "%v", err)
 	}
 	p.txFrom = s
+	t.carry(p)
 	t.ready(p)
 	return refused, nil
 }
@@ -657,26 +755,35 @@ func (p *trunkPair) sendMessage(br *bridge, pkt, msg []byte) error {
 	return err
 }
 
-// receive opens the trunk packet pkt from the address of the member of p. It
-// reports false for a packet that it drops.
-func (t *trunk) receive(br *bridge, p *trunkPair, pkt []byte) bool {
+// receive opens the trunk packet pkt from the address of the member of p, and
+// sends the PSP packet of a sender with fwd. It returns the reason of a drop.
+func (t *trunk) receive(br *bridge, p *trunkPair, pkt []byte, fwd forwarder, now time.Time) (dropReason, bool) {
+	if br == nil || len(pkt) < pspwire.Overhead {
+		return dropMalformed, false
+	}
 	// The SPI check comes first, so that a member cannot use the SA of another.
-	if br == nil || len(pkt) < pspwire.Overhead || !p.receives(binary.BigEndian.Uint32(pkt[4:8])) {
-		return false
+	lane, ok := p.lane(binary.BigEndian.Uint32(pkt[4:8]))
+	if !ok {
+		return dropMalformed, false
 	}
 	// The trunk SAs are in the receive queue of the bridge, which takes one
 	// goroutine at a time.
 	br.rxMu.Lock()
 	payload, tag, _, err := br.rxq.ReceiveTrunk(pkt)
 	br.rxMu.Unlock()
-	if err != nil {
-		return false
+	switch {
+	case errors.Is(err, engine.ErrPayload):
+		// The SA for whole PSP packets had a payload of another type.
+		return dropTrunkLane, false
+	case err != nil:
+		return dropMalformed, false
+	case tag == trunkTagRelay:
+		return dropMalformed, p.message(br, payload)
+	case lane != trunkLanePSP:
+		// A sender has rows only for whole PSP packets, which have their own lane.
+		return dropTrunkLane, false
 	}
-	if tag != trunkTagRelay {
-		// The trunk has no rows for the packets of senders.
-		return false
-	}
-	return p.message(br, payload)
+	return t.r.pass(p.name, tag, payload, fwd, now)
 }
 
 // message handles a message of the member itself: a full-size probe, which

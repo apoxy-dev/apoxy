@@ -42,26 +42,21 @@ type rowState struct {
 	expires   time.Time // The zero time is a row that ended.
 }
 
-// lost reports whether w is a row to another relay whose trunk has no SA: the
-// relay is down, it is at a new address, or its keys ended.
-func (w *row) lost() bool { return w.trunk != nil && w.trunk.tx.SA(trunkLanePSP) == nil }
-
-// trunkOf returns the pair of the relay that has the session to, if the trunk
-// carries the packets of sender c to it now. Router.mu must be held.
-func (r *Router) trunkOf(c, to *Session) *trunkPair {
-	t := r.trunk.Load()
-	// The other relay knows a sender by its tag, which comes with an attachment.
-	if t == nil || c.tag == 0 {
-		return nil
+// to reports whether the packets of w go to relay home. The empty name is
+// this relay.
+func (w *row) to(home string) bool {
+	if w.trunk == nil {
+		return home == ""
 	}
-	if p := t.pair(to.home); p != nil && p.tx.SA(trunkLanePSP) != nil {
-		return p
-	}
-	return nil
+	return w.trunk.name == home
 }
 
+// trunked reports whether sender c can have a row to another relay. That
+// relay knows a sender by its tag, which comes with an attachment.
+func (r *Router) trunked(c *Session) bool { return r.trunk.Load() != nil && c.tag != 0 }
+
 // trunkFits checks that the trunk of p carries a PSP packet of size bytes of
-// sender s with sa. It counts the drop if not.
+// sender s with sa. With no SA, p can be nil. It counts the drop if not.
 func (r *Router) trunkFits(s *Session, p *trunkPair, sa *engine.TxSA, size int) Verdict {
 	if sa == nil {
 		s.dropTrunk.Add(1)
@@ -77,28 +72,24 @@ func (r *Router) trunkFits(s *Session, p *trunkPair, sa *engine.TxSA, size int) 
 	return Pass
 }
 
-// aim sends the packets of w to the session of o, on the trunk of p when that
-// session is on another relay. Router.mu must be held for writing.
-func (r *Router) aim(w *row, o owner, p *trunkPair) {
-	if w.trunk != p {
+// aim sends the packets of w to the session of o. For a session of another
+// relay, w keeps the place of that relay. Router.mu must be held for writing.
+func (r *Router) aim(w *row, o owner) {
+	if home := o.s.home; !w.to(home) {
 		r.untrunk(w)
-	}
-	r.retarget(w, o)
-	w.trunk = p
-}
-
-// move gives w to o, the new owner of its destination. The row ends if o is on
-// another relay and no trunk carries it. Router.mu must be held for writing.
-func (r *Router) move(w *row, o owner) {
-	var p *trunkPair
-	if o.s.home != "" {
-		if p = r.trunkOf(w.sender, o.s); p == nil {
-			r.removeRow(w)
-			return
+		if home != "" {
+			w.trunk = r.trunk.Load().hold(home)
 		}
 	}
-	told := w.trunk == p
-	r.aim(w, o, p)
+	r.retarget(w, o)
+}
+
+// move gives w to o, the new owner of its destination. A relay that did not
+// have the receiver before gets the row. Router.mu must be held for writing.
+func (r *Router) move(w *row, o owner) {
+	// Only a route of another relay goes to another relay, so the sender has a tag.
+	told := w.to(o.s.home)
+	r.aim(w, o)
 	if !told {
 		r.tellRow(w)
 	}
@@ -129,7 +120,7 @@ func (r *Router) untrunk(w *row) {
 	if t := r.trunk.Load(); t != nil && w.trunk != nil {
 		k, st := r.stateOf(w)
 		st.expires = time.Time{}
-		t.tell(w.trunk, k, st)
+		t.release(w.trunk, k, st)
 	}
 	w.trunk = nil
 }
@@ -137,9 +128,13 @@ func (r *Router) untrunk(w *row) {
 // liveRows gives ts, the new session of p, each row to the relay of p.
 // Router.mu and trunk.mu must be held.
 func (r *Router) liveRows(p *trunkPair, ts *trunkSession) {
+	m := r.trunk.Load().members[p.name]
+	if m == nil || m.rows == 0 {
+		return
+	}
 	for s := range r.sessions {
 		for _, w := range s.rows {
-			if w.trunk == p {
+			if w.trunk == m {
 				k, st := r.stateOf(w)
 				ts.rows[k] = st
 			}
@@ -153,15 +148,31 @@ func (r *Router) liveRows(p *trunkPair, ts *trunkSession) {
 	}
 }
 
-// tell keeps the state st of row k for the SPIRows call of the session of p.
-// With no session, the next session gets the live rows. Router.mu must be held.
-func (t *trunk) tell(p *trunkPair, k rowKey, st rowState) {
+// tell keeps the state st of row k for the SPIRows call to member m. With no
+// session, the next session gets the live rows. Router.mu must be held.
+func (t *trunk) tell(m *trunkMember, k rowKey, st rowState) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	ts := p.sess
-	if ts == nil || ts.rowsDone {
+	t.queue(m, k, st)
+}
+
+// release is tell for the row k that ended, which does not keep m from now.
+// Router.mu must be held.
+func (t *trunk) release(m *trunkMember, k rowKey, st rowState) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.queue(m, k, st)
+	m.rows--
+	t.forget(m)
+}
+
+// queue keeps the state st of row k for the session of member m. t.mu must be held.
+func (t *trunk) queue(m *trunkMember, k rowKey, st rowState) {
+	p := t.pairs[m.name]
+	if p == nil || p.sess == nil || p.sess.rowsDone {
 		return
 	}
+	ts := p.sess
 	// A later state of a row replaces the state that waits.
 	ts.rows[k] = st
 	select {

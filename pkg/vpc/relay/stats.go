@@ -79,7 +79,7 @@ type attCount struct {
 	// attachment. Router.mu guards it.
 	rows tally
 	// packets and bytes count the inner packets that the relay sent to the
-	// attachment as data frames or sealed.
+	// attachment as data frames, sealed, or in the PSP packets of another relay.
 	packets, bytes atomic.Uint64
 	// last has the largest counters that a read returned. Router.statsMu guards it.
 	last counts

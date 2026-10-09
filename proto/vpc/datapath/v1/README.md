@@ -126,14 +126,15 @@ replay window.
 ```
 trunk packet:    PSP header and VC, with the tag (24 bits) in the VNI field | payload
 tag 0:           a message of the relay itself, on lane 1
+tag 1 and up:    a sender tag, with a whole PSP packet of that sender, on lane 0
 message:         type (1 B) | run ID (8 B) | zero padding
 type:            0x01 full-size probe, 0x02 answer
 ```
 
 A trunk packet whose payload is a PSP packet or a message has the next header
-value 63, so its first byte is `0x3f`. A relay drops a trunk packet with
-another tag. A relay accepts a trunk packet only from the address of its mesh
-session with the other relay, and only with an SA that it gave to that relay.
+value 63, so its first byte is `0x3f`. A relay accepts a trunk packet only
+from the address of its mesh session with the other relay, and only with an SA
+that it gave to that relay.
 
 On each new session with a relay at revision 5 or later, a relay offers new
 SAs for the two lanes (`OfferSAs`). It sends new SAs before they expire
@@ -157,18 +158,50 @@ MTU of 1372. Before the first result, the limit of 1280 applies.
 
 A relay sends the PSP packets of an agent to a receiver on another relay in
 trunk packets. `RegisterSPI` for an address of a route of another relay makes
-a row to the trunk of that relay. The relay needs a lane 0 SA of that relay,
-and the session of the caller needs a sender tag, which it has from its first
-attachment. If not, the call returns `NotFound`, as for an address with no
-route. The relay applies the source address check, the meter of the row and
-the tunnel limit to each packet of the row, as for a row to one of its own
-sessions, and it does not open the packet. It seals the whole PSP packet with
-the lane 0 SA, with the sender tag of the session of the sender in the VNI
-field, and sends the trunk packet from its own port to the relay socket of the
-other relay. It drops a PSP packet with an inner packet above the inner MTU of
-the trunk, and it does not send the packet in parts. The XDP program has no
-such row. The relay gives each such row to the other relay with `SPIRows` (see
-"Mesh").
+a row to the trunk of that relay. The session of the caller needs a sender
+tag, which it has from its first attachment. If not, the call returns
+`NotFound`, as for an address with no route. The call needs no trunk SA and
+does not wait for one. The relay applies the source address check, the meter
+of the row and the tunnel limit to each packet of the row, as for a row to one
+of its own sessions, and it does not open the packet. It seals the whole PSP
+packet with the lane 0 SA, with the sender tag of the session of the sender in
+the VNI field, and sends the trunk packet from its own port to the relay
+socket of the other relay. It drops a PSP packet with an inner packet above
+the inner MTU of the trunk, and it does not send the packet in parts. The XDP
+program has no such row. The relay gives each such row to the other relay with
+`SPIRows` (see "Mesh").
+
+The row stays while the relay has no lane 0 SA of the other relay, and the
+relay drops the packets of the row in that time. When the other relay gives
+SAs again, from the same address or from a new one, the row uses them with no
+call of the agent. A relay below revision 8 gets no packet of a sender: the
+row stays, and its packets drop.
+
+The relay that gets a trunk packet with a sender tag opens it. The payload is
+the PSP packet of the sender, and the relay does not open that packet. The
+relay drops the trunk packet at the first of these checks that fails:
+
+1. The SA of the trunk packet is a lane 0 SA, and the payload is a PSP packet.
+2. The other relay gave a row with the sender tag and the SPI of the PSP
+   packet in `SPIRows` (see "Mesh"), and the row has not ended.
+3. An entry of the other relay has the sender tag in the VPC of the row. The
+   rule of "Mesh datagrams" for the session of an entry applies, with the
+   session that gave the row.
+4. Permit allows the destination of the row for the VPC and the SPIFFE ID of
+   that entry.
+5. A session of this relay routes the destination of the row in that VPC. A
+   relay sends no packet from a trunk to another relay, so a PSP packet goes
+   over one trunk at most.
+
+Then it sends the PSP packet, with no change, from its own port to the address
+of that session. It applies no meter and no tunnel limit, because the relay of
+the sender applied them. It counts the packet and its inner bytes as sent to
+the attachment of the destination. The relay does the checks 3 to 5 for each
+packet, so a row that fails one of them carries packets again when the entry,
+Permit or the route changes. It holds no packet: a packet that comes before
+its row or before the entry of its sender drops. A relay counts each PSP
+packet that it drops on these paths in `apoxy_vpc_relay_dropped_packets_total`,
+with a `reason` that starts with `trunk_`.
 
 ### Mesh datagrams
 
@@ -309,7 +342,7 @@ The relay takes the sender of an SPI row from the authenticated session, never
 from packet data. A row ends at `UnregisterSPI`, at expiry, after 5 minutes
 with no traffic, when either session closes, or when Permit stops allowing it.
 A row to a receiver on another relay ends also when the route to its address
-goes away, and when the relay has no lane 0 trunk SA of the other relay.
+goes away. It does not end when the relay has no trunk SA of the other relay.
 
 An agent sends each SA lane from its own UDP port, so that the lanes use more
 NIC queues. The relay forwards PSP packets from the lane ports of a session as
@@ -365,7 +398,7 @@ its relay before it applies them, and unregisters them after a revoke.
 |-------------|---------------|----------|
 | `Open`      | unary         | Dialer and listener each send `{version, name, relay}`. First call on a session. |
 | `Presence`  | client stream | `PresenceUpdate`: the full set of the attachments of the caller, then each change. One call on a session. |
-| `SPIRows`   | client stream | `SPIRowUpdate`: the SPI rows of the senders on the caller for receivers on the called relay. A row with a new end time comes again, and a row that ended comes with `removed`. One call on a session. |
+| `SPIRows`   | client stream | `SPIRowUpdate`: the SPI rows of the senders on the caller for receivers on the called relay. A row with a new end time comes again, and a row that ended comes with `removed`. One call on a session. Errors: `Unimplemented` (the called relay serves no VPC relay sessions), `FailedPrecondition` (the caller is below revision 8, the session is not the open session of a member, or the session already has an `SPIRows` call). |
 | `TrunkKeys` | unary         | `KeysRequest` -> `KeysResponse`: trunk SAs for packets from the called relay to the caller (see "Trunk"). Errors: `Unimplemented` (the called relay serves no VPC relay sessions), `FailedPrecondition` (the caller is below revision 5, or the session is not the open session of a member), `InvalidArgument` (an SA VNI is not 0, or an SA lane is not 0 or 1). |
 
 A member of a mesh is one relay process, and its relay name identifies it.
@@ -443,36 +476,45 @@ rule of `Hello.name` applies to the SPIFFE ID and the agent name of the entry.
 The route goes away with its entry: at a `gone` entry, and when the relay
 drops the entries of a member.
 
-A relay tells each other relay of the SPI rows that it has for receivers on
-that relay (see "Trunk"). It opens one `SPIRows` call on a mesh session, at the
-first such row. An `SPIRow` has the VPC, the sender tag of the session of the
-sender on the calling relay, the SPI, the overlay address of the receiver and
-`expires_in`, the time that the row has left. The sender tag and the SPI name
-the row. The calling relay sends a row when `RegisterSPI` makes it, and again
-with the new `expires_in` at each later `RegisterSPI` for it. It sends the row
-with `removed`, and with no address and no `expires_in`, when the row ends on
-the calling relay or goes to a receiver that is not on the called relay. The
-rows of one change go in one or more messages of at most 256 rows.
+A relay tells each other relay at revision 8 or later of the SPI rows that it
+has for receivers on that relay (see "Trunk"). It opens one `SPIRows` call on a
+mesh session, at the first such row. An `SPIRow` has the VPC, the sender tag
+of the session of the sender on the calling relay, the SPI, the overlay
+address of the receiver and `expires_in`, the time that the row has left. The
+sender tag and the SPI name the row. The calling relay sends a row when
+`RegisterSPI` makes it, and again with the new `expires_in` at each later
+`RegisterSPI` for it. It sends the row with `removed`, and with no address and
+no `expires_in`, when the row ends on the calling relay or goes to a receiver
+that is not on the called relay. The rows of one change go in one or more
+messages of at most 256 rows.
 
 `RegisterSPI` does not wait for the called relay, so the first packets of a
 row can come before the row. On a new session, the calling relay sends each
 row that it has for the called relay again. It does not send the rows that
-ended while it had no session, so the called relay ends those by
-`expires_in`. If the call fails, the calling relay makes no new call on that
-session, and it keeps its rows.
+ended while it had no session. If the call fails, the calling relay makes no
+new call on that session, and it keeps its rows.
+
+The called relay keeps the rows of each member by sender tag and SPI. It takes
+the member from the session, never from the message. A row replaces the row
+with the same sender tag and SPI. The called relay refuses a row with a sender
+tag out of range, with a reserved SPI or, without `removed`, with a VPC or an
+address that does not parse or an `expires_in` that is not positive. A refused
+row does not end the call. The other checks of a row are those of its packets
+(see "Trunk"), so a row can come before the entry of its sender or before the
+route of its destination. A row ends at `removed`, when its `expires_in`
+passes, when the member opens a new session, and when the member closes with
+`RESTART` or leaves the member set. The rows stay when the session ends for
+another cause, as the entries do. They have no idle time.
 
 When the other relay is down, a relay deletes the trunk SAs, so the packets
-of its rows to that relay drop at once. Each second the relay ends the rows
-to a relay of which it has no lane 0 SA. After the other relay is up again,
-the next `RegisterSPI` of the agent makes the row again.
+of its rows to that relay drop at once. The rows stay, and they carry packets
+again when the other relay is up and gave new SAs.
 
-At this revision a relay answers `Unimplemented` to `SPIRows`, and it drops a
-trunk packet with a sender tag, so no PSP packet of an agent arrives through
-another relay. `ResolvePeer` returns `NotFound` for an address of a route of
-another relay, so an agent starts no peer session to it. The relay drops a
-data frame or a PSP packet that it opens for such an address, and sends
-`NoRoute`. A peer frame for such an address goes to the other relay (see "Mesh
-datagrams").
+`ResolvePeer` returns `NotFound` for an address of a route of another relay,
+so an agent starts no peer session to it and registers no SPI for it. The
+relay drops a data frame or a PSP packet that it opens for such an address,
+and sends `NoRoute`. A peer frame for such an address goes to the other relay
+(see "Mesh datagrams").
 
 ## Revisions
 
@@ -498,6 +540,7 @@ only for logs and metrics. On a mesh session, `MeshOpenRequest` and
 | 5 | `Mesh.TrunkKeys` and the trunk SAs. The trunk packet with tag 0: the full-size probe and its answer. | No duty. | No duty. | With a relay at revision 5 or later: offers trunk SAs on each new mesh session and before they expire, applies the trunk SAs of the other relay, probes the path at full size, and answers the probes of the other relay. Makes no `TrunkKeys` call to a relay below revision 5, refuses its call with `FailedPrecondition`, and keeps that session. Deletes the trunk SAs of a relay that is down. |
 | 6 | `Hello.local_routes_only`. Routes of the attachments of other relays in `RouteDelta`. | Sends `local_routes_only` when its config has the option. Without it, gets the routes of the attachments of other relays from a relay at revision 6 or later. | Sends `local_routes_only`, because it has one session for each relay. | Makes a route for each prefix of the entries of the other relays. Sends these routes to a session at revision 6 or later that did not set `local_routes_only`, and to no other session. Answers `NotFound` to `ResolvePeer` for an address of such a route, and sends `NoRoute` for a packet to it that it opens. |
 | 7 | The mesh datagram with a type byte, and its type `0x01`: a peer frame with the sender tag. | No duty. | No duty. | Sends a peer frame for an address with a route of another relay to that relay in a mesh datagram, when that relay is at revision 7 or later, and sends no `NoRoute` for it. Sends no mesh datagram to a relay below revision 7. Checks each mesh datagram of another relay, and gives its frame only to a session of its own. Drops a mesh datagram with another type. |
+| 8 | `Mesh.SPIRows` on the called relay. The trunk packet with a sender tag: a whole PSP packet of an agent. | No duty. | No duty. | Keeps the SPI rows that another relay gives in `SPIRows`. Opens a trunk packet with a sender tag, checks it with the rows and the entries of the other relay, and sends its PSP packet only to a session of its own. With a relay at revision 8 or later: opens one `SPIRows` call for its rows to that relay, and sends the PSP packets of those rows in trunk packets. Makes no `SPIRows` call to a relay below revision 8, sends it no trunk packet with a sender tag, refuses its `SPIRows` call with `FailedPrecondition`, and keeps that session. |
 
 ### Minimum revision
 

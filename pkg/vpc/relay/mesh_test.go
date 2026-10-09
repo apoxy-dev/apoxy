@@ -334,6 +334,10 @@ func TestMeshSession(t *testing.T) {
 		// A relay with no router has no trunk, and that answer is not a session error.
 		_, err := tc.s.Client().TrunkKeys(ctx, &dp.KeysRequest{})
 		assert.Equal(t, rpc.Unimplemented, rpc.CodeOf(err))
+		rows, err := tc.s.Client().SPIRows(ctx)
+		require.NoError(t, err)
+		_, err = rows.CloseAndRecv()
+		assert.Equal(t, rpc.Unimplemented, rpc.CodeOf(err))
 		// A second Open does not change the session.
 		_, err = tc.s.Client().Open(ctx, &dp.MeshOpenRequest{Version: tc.from.m.ver, Name: tc.from.name})
 		assert.Equal(t, rpc.FailedPrecondition, rpc.CodeOf(err))

@@ -20,11 +20,13 @@ import (
 	"testing"
 	"time"
 
+	pspwire "github.com/apoxy-dev/softpsp/psp"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 	"github.com/quic-go/quic-go/logging"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	"github.com/apoxy-dev/apoxy/pkg/tunnel"
@@ -461,6 +463,7 @@ func TestRelay_MeshPresence(t *testing.T) {
 // routeAgent is an agent session on a relay that keeps the route changes of
 // its Session call.
 type routeAgent struct {
+	tr     *quic.Transport // Socket of qc, also for PSP packets.
 	qc     quic.Connection
 	c      dp.RelayClient
 	deltas chan *dp.RouteDelta
@@ -470,10 +473,10 @@ type routeAgent struct {
 // returns after Welcome and Config.
 func openRouteAgent(t *testing.T, ctx context.Context, v *vpcRelay, name string, hello *dp.Hello) *routeAgent {
 	t.Helper()
-	_, qc, err := v.dial(t, v.agentTLS(t, name))
+	tr, qc, err := v.dial(t, v.agentTLS(t, name))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = qc.CloseWithError(0, "") })
-	a := &routeAgent{qc: qc, c: dp.NewRelayClient(rpc.NewConn(qc, nil)), deltas: make(chan *dp.RouteDelta, 64)}
+	a := &routeAgent{tr: tr, qc: qc, c: dp.NewRelayClient(rpc.NewConn(qc, nil)), deltas: make(chan *dp.RouteDelta, 64)}
 	st, err := a.c.Session(ctx)
 	require.NoError(t, err)
 	hello.Mode = dp.Mode_MODE_QUIC
@@ -629,4 +632,108 @@ func TestRelay_MeshPeerFrames(t *testing.T) {
 	// An agent does not use this path yet: it gets no peer of the other relay.
 	_, err = laptop.c.ResolvePeer(ctx, &dp.ResolvePeerRequest{Vpc: vpc, Address: serverAddr.String()})
 	assert.Equal(t, rpc.NotFound, rpc.CodeOf(err), "ResolvePeer: %v", err)
+}
+
+// sendPSP sends pkt from a to its relay v each 200 ms, until the socket of to
+// gets a packet of that size. RegisterSPI waits for no trunk keys and no row.
+func (a *routeAgent) sendPSP(t *testing.T, ctx context.Context, v *vpcRelay, to *routeAgent, pkt []byte) ([]byte, netip.AddrPort) {
+	t.Helper()
+	buf := make([]byte, 1500)
+	for {
+		_, err := a.tr.WriteTo(pkt, net.UDPAddrFromAddrPort(v.r.Address()))
+		require.NoError(t, err)
+		rctx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+		for {
+			n, from, err := to.tr.ReadNonQUICPacket(rctx, buf)
+			if err != nil {
+				break
+			}
+			// A packet of another size is a late copy of the packet before.
+			if n == len(pkt) {
+				cancel()
+				src := from.(*net.UDPAddr).AddrPort()
+				return buf[:n], netip.AddrPortFrom(src.Addr().Unmap(), src.Port())
+			}
+		}
+		cancel()
+		require.NoError(t, ctx.Err(), "no PSP packet from the other relay")
+	}
+}
+
+// TestRelay_MeshPSP sends PSP packets in the two directions between an agent
+// on relay-a and an agent on relay-b. The receiver gets the bytes of the sender.
+func TestRelay_MeshPSP(t *testing.T) {
+	cases := []struct {
+		name  string
+		steer int // Sockets in a steer group. Zero uses one plain socket.
+	}{
+		{name: "plain socket"},
+		{name: "steer group of 4", steer: 4},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.steer > 1 && runtime.GOOS != "linux" {
+				t.Skip("a steer group of more than one socket needs Linux")
+			}
+			testMeshPSP(t, tc.steer)
+		})
+	}
+}
+
+func testMeshPSP(t *testing.T, steerSockets int) {
+	ca := newMeshCA(t)
+	a := startMeshRelay(t, ca, "relay-a", steerSockets, false)
+	b := startMeshRelay(t, ca, "relay-b", steerSockets, false, 0x100)
+	b.mesh.SetMembers([]vpcrelay.MeshMember{a.member()})
+	a.mesh.SetMembers([]vpcrelay.MeshMember{b.member()})
+	require.Equal(t, vpcrelay.MeshChange{Name: "relay-b", Up: true}, a.change(t))
+	require.Equal(t, vpcrelay.MeshChange{Name: "relay-a", Up: true}, b.change(t))
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	vpc := &dp.VPCRef{ProjectId: vpcProject, VpcUid: vpcUID, NetworkId: vpcNetwork}
+	this := dp.LocalVersion("test")
+	laptop := openRouteAgent(t, ctx, a.vpcRelay, "laptop", &dp.Hello{Version: this, Name: "base"})
+	server := openRouteAgent(t, ctx, b.vpcRelay, "server", &dp.Hello{Version: this, Name: "base"})
+
+	// When an agent has the route of the other agent, its relay has the
+	// attachment of the other relay, which names the sender of a row.
+	onA, err := laptop.c.Attach(ctx, &dp.AttachRequest{Vpc: vpc, Name: "laptop"})
+	require.NoError(t, err)
+	onB, err := server.c.Attach(ctx, &dp.AttachRequest{Vpc: vpc, Name: "server"})
+	require.NoError(t, err)
+	require.Equal(t, []string{"+" + onB.GetAttachmentId() + " fd00:100::/96"}, laptop.next(t, ctx))
+	require.Equal(t, []string{"+" + onA.GetAttachmentId() + " fd00:1::/96"}, server.next(t, ctx))
+
+	// The relays do not open the packet, so the key is one that no relay has.
+	aead, err := pspwire.NewAEAD(bytes.Repeat([]byte{7}, 16))
+	require.NoError(t, err)
+	dirs := []struct {
+		name     string
+		from, to *routeAgent
+		first    *meshRelay // Relay of the sender.
+		last     *meshRelay // Relay of the receiver.
+		dst      string
+		spi      uint32
+	}{
+		{"relay-a to relay-b", laptop, server, a, b, "fd00:100::1", 0x700},
+		{"relay-b to relay-a", server, laptop, b, a, "fd00:1::1", 0x900},
+	}
+	for _, d := range dirs {
+		_, err := d.from.c.RegisterSPI(ctx, &dp.RegisterSPIRequest{
+			Vpc: vpc, Destination: d.dst, Spis: []uint32{d.spi}, ExpiresIn: durationpb.New(time.Minute),
+		})
+		require.NoError(t, err, d.name)
+		// A trunk carries an inner MTU of 1280 at once, and of 1372 after its
+		// full-size probe passes.
+		for _, size := range []int{40, 1280, 1372} {
+			inner := bytes.Repeat([]byte{byte(size)}, size)
+			inner[0] = 0x60
+			pkt := make([]byte, size+pspwire.Overhead)
+			n, err := pspwire.Seal(aead, pspwire.Header{SPI: d.spi, VNI: vpcNetwork}, pkt, inner)
+			require.NoError(t, err)
+			got, src := d.from.sendPSP(t, ctx, d.first.vpcRelay, d.to, pkt[:n])
+			assert.Equal(t, pkt[:n], got, "%s, inner size %d", d.name, size)
+			assert.Equal(t, d.last.r.Address(), src, "%s, inner size %d", d.name, size)
+		}
+	}
 }

@@ -319,6 +319,10 @@ func (p *presence) accept(s *MeshSession) error {
 		return rpc.Errorf(rpc.FailedPrecondition, "session already has a Presence call")
 	}
 	in.sess, in.full = s, false
+	if p.r != nil {
+		// The entries of the sessions before name no sender from now.
+		p.r.epoch.Add(1)
+	}
 	return nil
 }
 
@@ -399,6 +403,9 @@ func (p *presence) keep(s *MeshSession, changes []presenceChange, full bool, ref
 	if full {
 		in.full = true
 	}
+	if r != nil {
+		r.epoch.Add(1)
+	}
 	return nil
 }
 
@@ -478,5 +485,8 @@ func (p *presence) down(c MeshChange) {
 	}
 	if all {
 		delete(p.in, c.Name)
+	}
+	if r != nil {
+		r.epoch.Add(1)
 	}
 }

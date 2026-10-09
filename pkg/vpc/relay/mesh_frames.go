@@ -109,6 +109,15 @@ func (p *presence) receiver(r *Router, s *MeshSession, b []byte) (*Session, drop
 // sender returns the entry with tag from the Presence call of s that has the
 // route of src, or the reason that there is none. Router.mu must be held.
 func (p *presence) sender(r *Router, s *MeshSession, tag uint32, src netip.Addr) (*presenceEntry, dropReason) {
+	return p.tagged(s, tag, dropMeshSource, func(e *presenceEntry) bool {
+		o := r.ownerOf(e.vpc, src)
+		return o.s != nil && o.s.home == s.name && o.origin == e.id
+	})
+}
+
+// tagged returns the first entry with tag from the Presence call of s that ok
+// accepts. With none, it returns the reason: miss if ok accepted no entry.
+func (p *presence) tagged(s *MeshSession, tag uint32, miss dropReason, ok func(*presenceEntry) bool) (*presenceEntry, dropReason) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	reason := dropMeshUnknownTag
@@ -124,10 +133,10 @@ func (p *presence) sender(r *Router, s *MeshSession, tag uint32, src netip.Addr)
 			}
 			continue
 		}
-		if o := r.ownerOf(e.vpc, src); o.s != nil && o.s.home == s.name && o.origin == e.id {
+		if ok(e) {
 			return e, 0
 		}
-		reason = dropMeshSource
+		reason = miss
 	}
 	return nil, reason
 }

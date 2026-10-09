@@ -45,6 +45,12 @@ func newTrunkNode(t *testing.T, ca *testCA, name string) *trunkNode {
 func (n *trunkNode) trunk() *trunk   { return n.r.trunk.Load() }
 func (n *trunkNode) bridge() *bridge { return n.r.bridge.Load() }
 
+// receives reports whether spi is the SPI of a receive SA of the pair.
+func (p *trunkPair) receives(spi uint32) bool {
+	_, ok := p.lane(spi)
+	return ok
+}
+
 // txSPIs returns the SPIs of the SAs that n holds for packets to member name,
 // by lane. It returns nil if a lane has no SA.
 func (n *trunkNode) txSPIs(name string) []uint32 {
@@ -192,12 +198,12 @@ func TestTrunkKeys(t *testing.T) {
 			assert.ErrorIs(t, err, engine.ErrReplay)
 		})
 		t.Run(d.from.name+"/packet of a sender", func(t *testing.T) {
-			// The trunk has no rows yet, so the relay drops a packet with a sender tag.
-			before := d.to.r.MalformedDrops()
-			pkt := sealTrunk(t, d.from, d.to.name, trunkLanePSP, 7, agentPkt, true)
+			// The other relay gave no row, so the relay drops a packet with a sender tag.
+			pkt := sealTrunk(t, d.from, d.to.name, trunkLanePSP, 7, pspOfSize(t, 0x501, 100), true)
 			_, err := d.from.tr.WriteTo(pkt, net.UDPAddrFromAddrPort(d.to.addr))
 			require.NoError(t, err)
-			require.Eventually(t, func() bool { return d.to.r.MalformedDrops() == before+1 }, 5*time.Second, 5*time.Millisecond)
+			require.Eventually(t, func() bool { return d.to.r.drops[dropTrunkNoRow].Load() == 1 }, 5*time.Second, 5*time.Millisecond)
+			assert.Zero(t, d.to.r.MalformedDrops())
 		})
 	}
 }
@@ -235,7 +241,9 @@ func TestTrunkMemberSA(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			pkt := sealTrunk(t, tc.from, "relay-a", trunkLaneInner, trunkTagRelay, probe, true)
-			assert.Equal(t, tc.want, tk.receive(br, tk.pair(tc.pair), pkt))
+			why, ok := tk.receive(br, tk.pair(tc.pair), pkt, nil, time.Now())
+			assert.Equal(t, tc.want, ok)
+			assert.Equal(t, dropMalformed, why)
 		})
 	}
 
@@ -373,9 +381,9 @@ func TestTrunkSessionEnd(t *testing.T) {
 	for lane := range trunkLanes {
 		assert.Nil(t, pa.tx.SA(lane), "relay-a has no SA of lane %d for relay-b", lane)
 	}
-	for _, spi := range rxA {
-		_, ok := a.bridge().table.Stats(spi)
-		assert.False(t, ok, "relay-a has no receive SA %#x", spi)
+	for _, sa := range rxA {
+		_, ok := a.bridge().table.Stats(sa.spi)
+		assert.False(t, ok, "relay-a has no receive SA %#x", sa.spi)
 	}
 	if time.Since(lost) < downAfter-time.Second {
 		assert.True(t, b.m.Up("relay-a"))
@@ -387,9 +395,9 @@ func TestTrunkSessionEnd(t *testing.T) {
 	for lane := range trunkLanes {
 		assert.Nil(t, pb.tx.SA(lane), "relay-b has no SA of lane %d for relay-a", lane)
 	}
-	for _, spi := range rxB {
-		_, ok := b.bridge().table.Stats(spi)
-		assert.False(t, ok, "relay-b has no receive SA %#x", spi)
+	for _, sa := range rxB {
+		_, ok := b.bridge().table.Stats(sa.spi)
+		assert.False(t, ok, "relay-b has no receive SA %#x", sa.spi)
 	}
 
 	// The member comes back: the relays make keys again, in a new pair.
@@ -870,22 +878,32 @@ func TestTrunkProbeTime(t *testing.T) {
 			name string
 			tag  uint32
 			msg  []byte
+			why  dropReason
 		}{
-			{"answer to the run before", trunkTagRelay, late},
-			{"answer that is 1 byte shorter", trunkTagRelay, reply[:trunkPayload-1]},
-			{"answer with the tag of a sender", 7, reply},
-			{"message of an unknown type", trunkTagRelay, other},
-			{"message with no ID", trunkTagRelay, reply[:trunkProbeLen-1]},
+			{"answer to the run before", trunkTagRelay, late, dropMalformed},
+			{"answer that is 1 byte shorter", trunkTagRelay, reply[:trunkPayload-1], dropMalformed},
+			// The lane of the messages carries no packet of a sender.
+			{"answer with the tag of a sender", 7, reply, dropTrunkLane},
+			{"message of an unknown type", trunkTagRelay, other, dropMalformed},
+			{"message with no ID", trunkTagRelay, reply[:trunkProbeLen-1], dropMalformed},
 		}
-		for i, w := range wrong {
+		var want [numDropReasons]uint64
+		drops := func() (got [numDropReasons]uint64) {
+			for i := range got {
+				got[i] = g.r.drops[i].Load()
+			}
+			return got
+		}
+		for _, w := range wrong {
 			g.send(w.tag, w.msg)
 			assert.Equal(t, trunkPathLimited, path(), w.name)
-			assert.EqualValues(t, i+1, g.r.MalformedDrops(), w.name)
+			want[w.why]++
+			assert.Equal(t, want, drops(), w.name)
 		}
 		g.send(trunkTagRelay, reply)
 		assert.Equal(t, trunkPathFull, path())
 		assert.Equal(t, 1372, p.mtu())
-		assert.EqualValues(t, len(wrong), g.r.MalformedDrops())
+		assert.Equal(t, want, drops(), "a good answer is no drop")
 
 		// A passed run is the last run of the session.
 		time.Sleep(5 * time.Minute)
