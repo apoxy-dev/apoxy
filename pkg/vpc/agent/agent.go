@@ -1082,6 +1082,9 @@ func (rc *relayConn) close() {
 	delete(rc.a.conns, rc)
 	rc.a.mu.Unlock()
 	rc.a.closePeers(func(p *peer) bool { return p.rc == rc }, "relay session closed")
+	// The connection closes before its calls stop. A Session call that stops
+	// first makes the relay close the connection with an error.
+	_ = rc.qc.CloseWithError(0, "")
 	rc.cancel()
 	if rc.relay != nil {
 		rc.a.bind.RemovePeer(rc.relay)
@@ -1091,7 +1094,6 @@ func (rc *relayConn) close() {
 		_ = rc.pc.Close()
 		_ = rc.peerTr.Close()
 	}
-	_ = rc.qc.CloseWithError(0, "")
 }
 
 // close ends the relay session and the binding at the end of Run.

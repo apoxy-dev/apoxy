@@ -6,6 +6,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/netip"
 	"os"
@@ -48,6 +49,9 @@ func TestRoamNetns(t *testing.T) {
 				cmd.Env = append(os.Environ(), roamChild+"=1")
 				cmd.SysProcAttr = &syscall.SysProcAttr{Cloneflags: syscall.CLONE_NEWNET}
 				out, err := cmd.CombinedOutput()
+				if errors.Is(err, syscall.EPERM) {
+					t.Skipf("cannot start a process in a new network namespace: %v", err)
+				}
 				t.Logf("%s", out)
 				require.NoError(t, err)
 				return
