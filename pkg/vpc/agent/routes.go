@@ -219,7 +219,8 @@ func (a *Agent) bindRoutes(rc *relayConn, changes []routeChange) {
 
 // addAdvertised routes pfx to p if pfx is routable. a.mu must be held.
 func (a *Agent) addAdvertised(p *peer, pfx, vpc netip.Prefix) {
-	if !Routable(pfx, vpc) || p.has(pfx) {
+	// A session with no data path gets no route.
+	if p.idle || !Routable(pfx, vpc) || p.has(pfx) {
 		return
 	}
 	if err := a.bind.AddRoute(pfx, p.bp); err != nil {

@@ -129,7 +129,7 @@ func (a *Agent) race(ctx context.Context, eps []endpoint) (*relayConn, int, erro
 	var won atomic.Bool
 	dial := func(e endpoint) {
 		go func() {
-			rc, err := a.dialRelay(ctx, e, won.Load)
+			rc, err := a.dialRelay(ctx, e, won.Load, false)
 			results <- result{rc, err, e}
 		}()
 	}
@@ -250,6 +250,21 @@ func (a *Agent) takeSpare(prefer []string) *relayConn {
 	}
 	rc := a.spares[best]
 	a.spares = slices.Delete(a.spares, best, best+1)
+	close(rc.spareDone)
+	return rc
+}
+
+// takeSpareOn removes the spare session on the relay with key from the spares
+// and returns it, or nil.
+func (a *Agent) takeSpareOn(key string) *relayConn {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	i := slices.IndexFunc(a.spares, func(rc *relayConn) bool { return rc.ep.key() == key })
+	if i < 0 {
+		return nil
+	}
+	rc := a.spares[i]
+	a.spares = slices.Delete(a.spares, i, i+1)
 	close(rc.spareDone)
 	return rc
 }
@@ -392,7 +407,7 @@ func (a *Agent) fillSpare(ctx context.Context, next *int) (bool, error) {
 		return false, nil
 	}
 	if stale != nil {
-		rc, err := a.dialRelay(ctx, stale.ep, spareHello)
+		rc, err := a.dialRelay(ctx, stale.ep, spareHello, false)
 		if err != nil {
 			return false, fmt.Errorf("relay %s: %w", stale.addr, err)
 		}
@@ -406,7 +421,7 @@ func (a *Agent) fillSpare(ctx context.Context, next *int) (bool, error) {
 	if !ok {
 		return false, nil
 	}
-	rc, err := a.dialRelay(ctx, e, spareHello)
+	rc, err := a.dialRelay(ctx, e, spareHello, false)
 	if err != nil {
 		*next++
 		return false, fmt.Errorf("relay %s: %w", e.addr, err)

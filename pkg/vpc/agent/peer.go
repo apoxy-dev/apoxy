@@ -76,6 +76,9 @@ type peer struct {
 	// quic is true when one of the agents sends QUIC data frames. Then the
 	// data goes through the relay, and bp is the relay peer.
 	quic bool
+	// idle is true for a session on a visitor session whose path carries no
+	// data. The peer has no route and no SAs.
+	idle bool
 	// advertised is the prefixes that the peer advertises and that route to bp.
 	// Guarded by Agent.mu.
 	advertised []netip.Prefix
@@ -229,6 +232,10 @@ func (a *Agent) connect(ctx context.Context, rc *relayConn, dst netip.Addr, res 
 				return err
 			}
 		}
+		if res.GetReach() == dp.Reach_REACH_VISIT {
+			// The relay cannot reach the relay of the peer, so one of the agents visits.
+			return a.connectVisit(ctx, rc, dst, res.GetHomeRelay())
+		}
 		if p = a.waitGrant(ctx, rc, dst, res); p != nil {
 			return a.waitKeys(ctx, p, dst)
 		}
@@ -260,6 +267,9 @@ func (a *Agent) waitKeys(ctx context.Context, p *peer, dst netip.Addr) error {
 
 // wait waits until both sides of p have SAs.
 func (p *peer) wait(ctx context.Context) error {
+	if p.idle {
+		return fmt.Errorf("peer %s: %w", p.addr, errVisitNoData)
+	}
 	chans := []chan struct{}{p.keyed, p.offered}
 	if p.quic {
 		chans = []chan struct{}{p.rc.bridgeTx, p.rc.bridgeRx}
@@ -413,6 +423,9 @@ func (a *Agent) admit(p *peer, v *dp.Version, g *dp.AttachmentGrant, instance ui
 	}
 	if mode != dp.Mode_MODE_PSP && mode != dp.Mode_MODE_QUIC {
 		return fmt.Errorf("peer mode %v is not supported", mode)
+	}
+	if p.rc.visitor && !p.rc.data.Load() {
+		return a.admitIdle(p, v, g, instance)
 	}
 	if mode == dp.Mode_MODE_QUIC || p.rc.mode == dp.Mode_MODE_QUIC {
 		return a.admitQUIC(p, v, g, instance)
@@ -652,7 +665,7 @@ func (a *Agent) peerOfBinding(bp *psp.Peer) *peer {
 
 // offer gives the peer new SAs for traffic to this agent.
 func (p *peer) offer() {
-	if p.quic {
+	if p.quic || p.idle {
 		return
 	}
 	req, err := p.bp.Offer(time.Now())
@@ -844,6 +857,9 @@ func (s *peerService) Keys(ctx context.Context, in *dp.KeysRequest) (*dp.KeysRes
 	}
 	if p.quic {
 		return nil, rpc.Errorf(rpc.FailedPrecondition, "data to this peer goes through the relay")
+	}
+	if p.idle {
+		return nil, rpc.Errorf(rpc.FailedPrecondition, "%v", errVisitNoData)
 	}
 	req, err := keyproto.FromProto(in)
 	if err != nil {

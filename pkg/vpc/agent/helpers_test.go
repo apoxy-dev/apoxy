@@ -172,6 +172,14 @@ func newWorld(t testing.TB) *world {
 	return w
 }
 
+// relayTrust is a vpctest.Trust with the relay CA of the world as the relay roots.
+type relayTrust struct {
+	*vpctest.Trust
+	roots *x509.CertPool
+}
+
+func (t relayTrust) RelayRoots(string) (*x509.CertPool, error) { return t.roots, nil }
+
 // testRelay is a relay that forwards PSP packets and peer frames.
 type testRelay struct {
 	id   string
@@ -183,6 +191,53 @@ type testRelay struct {
 	// listener still completes handshakes, and no session serves them.
 	stopAccept func()
 	refused    atomic.Int32 // Connections that the relay refused as too old.
+
+	meshMu    sync.Mutex
+	meshConns map[string][]quic.Connection // Mesh sessions that other relays dialed, by their address.
+	cut       map[string]bool              // Addresses of the relays whose mesh sessions r refuses.
+}
+
+// takeMesh keeps the mesh session qc of another relay, or closes it when the
+// mesh path to that relay is cut.
+func (r *testRelay) takeMesh(qc quic.Connection) bool {
+	from := qc.RemoteAddr().String()
+	r.meshMu.Lock()
+	defer r.meshMu.Unlock()
+	if r.cut[from] {
+		_ = qc.CloseWithError(0, "mesh path is cut")
+		return false
+	}
+	if r.meshConns == nil {
+		r.meshConns = map[string][]quic.Connection{}
+	}
+	r.meshConns[from] = append(r.meshConns[from], qc)
+	return true
+}
+
+// cutMesh ends the mesh path between x and y as a lost path: the relay that
+// takes the mesh session closes it with no code, and refuses the next ones.
+// The agents reach the two relays as before. heal opens the path again.
+func cutMesh(x, y *testRelay) (heal func()) {
+	// The relay with the lower name dials.
+	dialer, taker := x, y
+	if x.id > y.id {
+		dialer, taker = y, x
+	}
+	taker.meshMu.Lock()
+	defer taker.meshMu.Unlock()
+	if taker.cut == nil {
+		taker.cut = map[string]bool{}
+	}
+	taker.cut[dialer.addr] = true
+	for _, qc := range taker.meshConns[dialer.addr] {
+		_ = qc.CloseWithError(0, "mesh path is cut")
+	}
+	delete(taker.meshConns, dialer.addr)
+	return func() {
+		taker.meshMu.Lock()
+		defer taker.meshMu.Unlock()
+		delete(taker.cut, dialer.addr)
+	}
 }
 
 // refuse closes qc with UPGRADE and reason, as a relay that needs a newer
@@ -226,7 +281,8 @@ func (w *world) relay(t testing.TB, id string) *testRelay {
 func (w *world) relayOn(t testing.TB, id string, udp net.PacketConn) *testRelay {
 	t.Helper()
 	cert := w.relayCA.relayCert(t, id)
-	r := relay.NewRouter(w.trust, w.relayCfg)
+	// A relay checks the grant of a Visit call with the relay roots of the project.
+	r := relay.NewRouter(relayTrust{w.trust, w.relayCA.Pool()}, w.relayCfg)
 	tr := &quic.Transport{Conn: udp}
 	tr.NonQUICPacketHandler, tr.NonQUICBatchEnd = r.PacketHandler(t.Context(), tr)
 	// As at a real relay, the packets are Not-ECT, and the stream limit takes
@@ -280,7 +336,9 @@ func (w *world) relayOn(t testing.TB, id string, udp net.PacketConn) *testRelay 
 				return
 			}
 			if mesh != nil && qc.ConnectionState().TLS.NegotiatedProtocol == dp.ALPNMesh {
-				wg.Go(func() { mesh.ServeConn(ctx, qc) })
+				if out.takeMesh(qc) {
+					wg.Go(func() { mesh.ServeConn(ctx, qc) })
+				}
 				continue
 			}
 			if refuse {
@@ -398,6 +456,8 @@ type agentOptions struct {
 	noGrants bool
 	// localRoutesOnly sets Config.LocalRoutesOnly.
 	localRoutesOnly bool
+	// visitCheck and visitAsk set the intervals of the visits. Zero keeps them.
+	visitCheck, visitAsk time.Duration
 }
 
 // noGrantsService is a peer service that does not have the Grants call.
@@ -548,6 +608,12 @@ func (w *world) agent(t *testing.T, name string, r *testRelay, opts agentOptions
 	ta.a = New(cfg)
 	if opts.version != nil {
 		ta.a.ver = opts.version()
+	}
+	if opts.visitCheck != 0 {
+		ta.a.visitCheck = opts.visitCheck
+	}
+	if opts.visitAsk != 0 {
+		ta.a.visitAsk = opts.visitAsk
 	}
 	if opts.noGrants {
 		ta.a.mux = rpc.NewMux()

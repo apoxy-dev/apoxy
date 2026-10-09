@@ -166,6 +166,11 @@ type Agent struct {
 	peers    map[*rpc.Conn]*peer
 	admitted chan struct{} // Closed and replaced when a peer session opens or gets grants.
 
+	// visits has the visitor sessions, by relay key. Guarded by mu.
+	visits map[string]*visit
+	// Intervals of the visits. Tests change them before Run.
+	visitCheck, visitAsk time.Duration
+
 	routeMu  sync.Mutex
 	routesOf *relayConn            // Session that OnRoutes follows.
 	reported map[netip.Prefix]bool // Prefixes that OnRoutes has.
@@ -183,9 +188,11 @@ func New(cfg Config) *Agent {
 		peers:     map[*rpc.Conn]*peer{},
 		conns:     map[*relayConn]struct{}{},
 		dialing:   map[string]int{},
+		visits:    map[string]*visit{},
 		admitted:  make(chan struct{}),
 	}
 	a.specs, a.attachWake = map[string]*AttachmentSpec{}, make(chan struct{}, 1)
+	a.visitCheck, a.visitAsk = visitCheck, visitAsk
 	a.mux = rpc.NewMux()
 	dp.RegisterPeerServer(a.mux, &peerService{a: a})
 	a.demux.Probe = a.onProbe
@@ -332,6 +339,8 @@ func (a *Agent) use(rc *relayConn) {
 	if old != nil {
 		old.close()
 	}
+	// A visit uses the grant of the session before, so it ends with that session.
+	a.endVisits(rc, "attachment moved")
 	slog.Info("Attached to the VPC", "relay", rc.addr, "address", rc.self, "prefixes", rc.prefixes,
 		"transport", transportName(rc.mode), "fallback", rc.reason, "connect", rc.connect, "setup", rc.setup)
 	a.deliver()
@@ -511,6 +520,12 @@ type relayConn struct {
 	roots  *x509.CertPool // Check relay certs and grants. Nil means the system roots.
 	// spareDone closes when the agent takes the session from its spares.
 	spareDone chan struct{}
+	// visitor is true for a visitor session. It has no attachment: its grant,
+	// prefixes and address are those of the attached session.
+	visitor bool
+	// data is true when the path of a visitor session carries data: the result
+	// of its path probe.
+	data atomic.Bool
 
 	relayAddr netip.AddrPort    // Where PSP packets to peers go.
 	version   *dp.Version       // Version of the relay, from Welcome. Nil is revision 0.
@@ -562,7 +577,7 @@ type relayConn struct {
 // open dials the relay at e and attaches.
 func (a *Agent) open(ctx context.Context, e endpoint) (*relayConn, error) {
 	begin := time.Now()
-	rc, err := a.dialRelay(ctx, e, primaryHello)
+	rc, err := a.dialRelay(ctx, e, primaryHello, false)
 	if err != nil {
 		return nil, err
 	}
@@ -583,14 +598,15 @@ func (a *Agent) openNext(ctx context.Context, rc *relayConn, e endpoint) (*relay
 }
 
 // dialRelay opens a session to the relay at e: the handshake, the data mode, and
-// the Session call up to Config. spare tells at Hello if the session is a spare.
-// The dial counts in a.dialing, and the session stays in a.conns until close.
-func (a *Agent) dialRelay(ctx context.Context, e endpoint, spare func() bool) (*relayConn, error) {
+// the Session call up to Config. spare tells at Hello if the session is a spare,
+// and visitor makes a visitor session. The dial counts in a.dialing, and the
+// session stays in a.conns until close.
+func (a *Agent) dialRelay(ctx context.Context, e endpoint, spare func() bool, visitor bool) (*relayConn, error) {
 	key := e.key()
 	a.mu.Lock()
 	a.dialing[key]++
 	a.mu.Unlock()
-	rc, err := a.dialSession(ctx, e, spare)
+	rc, err := a.dialSession(ctx, e, spare, visitor)
 	a.mu.Lock()
 	if a.dialing[key]--; a.dialing[key] == 0 {
 		delete(a.dialing, key)
@@ -603,7 +619,7 @@ func (a *Agent) dialRelay(ctx context.Context, e endpoint, spare func() bool) (*
 }
 
 // dialSession opens the session for dialRelay.
-func (a *Agent) dialSession(ctx context.Context, e endpoint, spare func() bool) (*relayConn, error) {
+func (a *Agent) dialSession(ctx context.Context, e endpoint, spare func() bool, visitor bool) (*relayConn, error) {
 	host, _, err := net.SplitHostPort(e.addr)
 	if err != nil {
 		return nil, err
@@ -645,6 +661,7 @@ func (a *Agent) dialSession(ctx context.Context, e endpoint, spare func() bool) 
 		name:      name,
 		roots:     roots,
 		spareDone: make(chan struct{}),
+		visitor:   visitor,
 		sem:       make(chan struct{}, maxInFlight),
 		relayAddr: qc.RemoteAddr().(*net.UDPAddr).AddrPort(),
 		drain:     make(chan []*dp.RelayRef, 1),
@@ -700,7 +717,8 @@ func (rc *relayConn) hello(begin time.Time, spare bool) error {
 	rc.st = st
 	if err := st.Send(&dp.SessionRequest{Msg: &dp.SessionRequest_Hello{Hello: &dp.Hello{
 		Mode: rc.mode, FallbackReason: rc.reason, Spare: spare, Version: rc.a.ver, Name: rc.a.cfg.Name,
-		LocalRoutesOnly: rc.a.cfg.LocalRoutesOnly,
+		// A relay takes a Visit call only on a session with local routes.
+		LocalRoutesOnly: rc.a.cfg.LocalRoutesOnly || rc.visitor,
 	}}}); err != nil {
 		return err
 	}
@@ -921,9 +939,7 @@ func (rc *relayConn) sync() {
 				return
 			}
 		case *dp.SessionResponse_NoRoute:
-			if addr, err := netip.ParseAddr(m.NoRoute.GetAddress()); err == nil {
-				rc.a.closePeers(func(p *peer) bool { return p.rc == rc && p.routes(addr) }, "relay has no route to the peer")
-			}
+			rc.a.noRoute(rc, m.NoRoute)
 		case *dp.SessionResponse_Drain:
 			select {
 			case rc.drain <- m.Drain.GetAlternates():
@@ -1102,6 +1118,7 @@ func (a *Agent) close() {
 	rc, b, spares := a.rc, a.bind, a.spares
 	a.rc, a.spares, a.stopped = nil, nil, true
 	a.mu.Unlock()
+	a.endVisits(nil, "agent stopped")
 	for _, s := range spares {
 		s.close()
 	}
@@ -1168,12 +1185,18 @@ func (a *Agent) tick(ctx context.Context) {
 	}
 }
 
-// relayOfBinding returns the current relay session if bp is its relay peer.
+// relayOfBinding returns the current relay session or the visitor session
+// that has bp as its relay peer.
 func (a *Agent) relayOfBinding(bp *psp.Peer) *relayConn {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.rc != nil && a.rc.relay == bp {
 		return a.rc
+	}
+	for _, v := range a.visits {
+		if rc := v.session(); rc != nil && rc.relay == bp {
+			return rc
+		}
 	}
 	return nil
 }

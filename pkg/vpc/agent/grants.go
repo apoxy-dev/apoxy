@@ -315,6 +315,10 @@ func (p *peer) matches(res *dp.ResolvePeerResponse) bool {
 // routeGrant routes prefixes to p. It routes all of them or none. a.mu must
 // be held.
 func (a *Agent) routeGrant(p *peer, prefixes []netip.Prefix) error {
+	if p.idle {
+		// A session with no data path gets no route.
+		return nil
+	}
 	for i, pfx := range prefixes {
 		if err := a.bind.AddRoute(pfx, p.bp); err != nil {
 			if p.quic {

@@ -136,6 +136,14 @@ func (h *holds) fail(dst netip.Addr, err error, now time.Time) bool {
 	return f.denied
 }
 
+// failing reports whether dst failed to open and its wait did not end.
+func (h *holds) failing(dst netip.Addr, now time.Time) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	f := h.failed[dst]
+	return f != nil && now.Before(f.until)
+}
+
 // once runs open for key, or waits for the open of key that runs.
 func (h *holds) once(key netip.Addr, open func() error) error {
 	h.mu.Lock()
