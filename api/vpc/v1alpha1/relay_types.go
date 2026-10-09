@@ -13,8 +13,8 @@ import (
 	"github.com/apoxy-dev/apoxy/api/resource/resourcestrategy"
 )
 
-// RelaySpec is write-once: created by the relay on start (or selector
-// change), deleted on shutdown, never mutated in steady state. Liveness lives
+// RelaySpec is written only by the relay: created on start, updated when the
+// relay starts again with other values, deleted on shutdown. Liveness lives
 // in the relay's Lease, not here.
 type RelaySpec struct {
 	// Underlay host:port endpoints agents dial (QUIC control and Geneve data

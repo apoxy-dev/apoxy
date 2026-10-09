@@ -12998,7 +12998,7 @@ func schema_apoxy_api_vpc_v1alpha1_RelaySpec(ref common.ReferenceCallback) commo
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "RelaySpec is write-once: created by the relay on start (or selector change), deleted on shutdown, never mutated in steady state. Liveness lives in the relay's Lease, not here.",
+				Description: "RelaySpec is written only by the relay: created on start, updated when the relay starts again with other values, deleted on shutdown. Liveness lives in the relay's Lease, not here.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"addresses": {

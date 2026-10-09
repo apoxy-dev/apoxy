@@ -231,7 +231,7 @@ var tunnelRelayCmd = &cobra.Command{
 			}
 		}
 
-		// The registrar creates the write-once Relay object and renews its lease
+		// The registrar keeps the Relay object and renews its lease
 		// so the apiserver lease watcher can track relay liveness (§2.3).
 		addresses := relayAddresses
 		if len(addresses) == 0 {

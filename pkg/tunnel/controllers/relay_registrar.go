@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 
 	coordinationv1 "k8s.io/api/coordination/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
@@ -50,8 +52,8 @@ func leaseDurationSeconds(d time.Duration) int32 {
 	return s
 }
 
-// RelayRegistrar creates the write-once Relay object and renews its Lease, so
-// the lease watcher can mark a crashed relay not ready.
+// RelayRegistrar keeps the Relay object at the values of this relay and renews
+// its Lease, so the lease watcher can mark a crashed relay not ready.
 type RelayRegistrar struct {
 	leaseClient     client.Client
 	relayClient     client.Client
@@ -116,7 +118,7 @@ func NewRelayRegistrar(
 	return r
 }
 
-// Start registers the Relay (write-once) then renews the lease until ctx is
+// Start registers the Relay, then renews the lease until ctx is
 // canceled. It implements manager.Runnable so it can be added to a manager.
 func (r *RelayRegistrar) Start(ctx context.Context) error {
 	if err := r.registerWithRetry(ctx); err != nil {
@@ -181,18 +183,32 @@ func (r *RelayRegistrar) registerWithRetry(ctx context.Context) error {
 	}
 }
 
-// ensureRelay creates the write-once Relay object if it does not exist, and
-// reports whether it did.
+// ensureRelay creates the Relay object if it does not exist, and reports whether
+// it did. An object with other addresses or another selector gets those of this relay.
 func (r *RelayRegistrar) ensureRelay(ctx context.Context) (bool, error) {
 	existing := &vpcv1alpha1.Relay{}
 	err := r.relayClient.Get(ctx, client.ObjectKey{Name: r.relay.Name()}, existing)
-	if err == nil {
-		return false, nil
+	if apierrors.IsNotFound(err) {
+		return true, r.createRelay(ctx)
 	}
-	if !apierrors.IsNotFound(err) {
+	if err != nil {
 		return false, fmt.Errorf("failed to get relay: %w", err)
 	}
-	return true, r.createRelay(ctx)
+	// The order of the addresses has a meaning: the first hostname is the TLS name.
+	if slices.Equal(existing.Spec.Addresses, r.addresses) &&
+		equality.Semantic.DeepEqual(existing.Spec.NetworkSelector, r.networkSelector) {
+		return false, nil
+	}
+	// A relay that stopped with no drain leaves its object, and agents dial the
+	// addresses in it. The status and the Lease stay as they are.
+	old := existing.Spec.Addresses
+	existing.Spec.Addresses, existing.Spec.NetworkSelector = r.addresses, r.networkSelector
+	if err := r.relayClient.Update(ctx, existing); err != nil {
+		return false, fmt.Errorf("failed to update relay: %w", err)
+	}
+	slog.Info("Updated relay object to the addresses and selector of this relay",
+		"relay", r.relay.Name(), "addresses", r.addresses, "old_addresses", old)
+	return false, nil
 }
 
 func (r *RelayRegistrar) createRelay(ctx context.Context) error {

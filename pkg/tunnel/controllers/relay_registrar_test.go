@@ -77,35 +77,98 @@ func (c *deleteLeaseOnUpdateClient) Update(ctx context.Context, obj client.Objec
 	return c.Client.Update(ctx, obj, opts...)
 }
 
-func TestRelayRegistrarEnsureRelay(t *testing.T) {
-	ctx := context.Background()
-	now := time.Unix(1_700_000_000, 0)
+// writeCountClient counts the writes of Relay objects, and fails the first
+// failUpdates updates.
+type writeCountClient struct {
+	client.Client
+	creates, updates int
+	failUpdates      int
+}
 
-	t.Run("creates write-once relay when absent", func(t *testing.T) {
-		r, c := newRegistrar(t, now)
-		created, err := r.ensureRelay(ctx)
-		require.NoError(t, err)
-		require.True(t, created)
+func (c *writeCountClient) Create(ctx context.Context, obj client.Object, opts ...client.CreateOption) error {
+	if _, ok := obj.(*vpcv1alpha1.Relay); ok {
+		c.creates++
+	}
+	return c.Client.Create(ctx, obj, opts...)
+}
 
-		var got vpcv1alpha1.Relay
-		require.NoError(t, c.Get(ctx, client.ObjectKey{Name: "r0"}, &got))
-		require.Equal(t, []string{"1.2.3.4:6081"}, got.Spec.Addresses)
-	})
-
-	t.Run("does not mutate an existing relay spec", func(t *testing.T) {
-		existing := &vpcv1alpha1.Relay{
-			ObjectMeta: metav1.ObjectMeta{Name: "r0"},
-			Spec:       vpcv1alpha1.RelaySpec{Addresses: []string{"9.9.9.9:6081"}},
+func (c *writeCountClient) Update(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
+	if _, ok := obj.(*vpcv1alpha1.Relay); ok {
+		c.updates++
+		if c.failUpdates > 0 {
+			c.failUpdates--
+			return apierrors.NewServiceUnavailable("apiserver is down")
 		}
-		r, c := newRegistrar(t, now, existing)
-		created, err := r.ensureRelay(ctx)
-		require.NoError(t, err)
-		require.False(t, created)
+	}
+	return c.Client.Update(ctx, obj, opts...)
+}
 
-		var got vpcv1alpha1.Relay
-		require.NoError(t, c.Get(ctx, client.ObjectKey{Name: "r0"}, &got))
-		require.Equal(t, []string{"9.9.9.9:6081"}, got.Spec.Addresses, "spec left untouched")
-	})
+// TestRelayRegistrarEnsureRelay: the Relay object gets the addresses and the
+// selector of the relay process, and an equal object gets no write.
+func TestRelayRegistrarEnsureRelay(t *testing.T) {
+	addrs := []string{"relay.example:6081", "1.2.3.4:6081"}
+	selector := &metav1.LabelSelector{MatchLabels: map[string]string{"region": "west"}}
+	object := func(addrs []string, sel *metav1.LabelSelector) *vpcv1alpha1.Relay {
+		return &vpcv1alpha1.Relay{
+			ObjectMeta: metav1.ObjectMeta{Name: "r0"},
+			Spec:       vpcv1alpha1.RelaySpec{Addresses: addrs, NetworkSelector: sel},
+			Status:     vpcv1alpha1.RelayStatus{Ready: true},
+		}
+	}
+	cases := []struct {
+		name     string
+		existing *vpcv1alpha1.Relay
+		// failUpdates is the number of updates that fail first.
+		failUpdates int
+		// calls is the number of ensureRelay calls. Only the last must pass.
+		calls            int
+		created          bool
+		creates, updates int
+	}{
+		{name: "object absent", calls: 1, created: true, creates: 1},
+		{name: "object equal", existing: object(addrs, selector), calls: 2},
+		{name: "addresses differ", existing: object([]string{"dev:6081"}, selector), calls: 2, updates: 1},
+		{name: "addresses in a different order", existing: object([]string{"1.2.3.4:6081", "relay.example:6081"}, selector), calls: 1, updates: 1},
+		{name: "selector differs", existing: object(addrs, &metav1.LabelSelector{MatchLabels: map[string]string{"region": "east"}}), calls: 1, updates: 1},
+		{name: "object has no selector", existing: object(addrs, nil), calls: 1, updates: 1},
+		{name: "the write fails and the next call corrects it", existing: object([]string{"dev:6081"}, nil), failUpdates: 1, calls: 3, updates: 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			var objs []client.Object
+			if tc.existing != nil {
+				objs = append(objs, tc.existing)
+			}
+			_, base := newRegistrar(t, time.Unix(1_700_000_000, 0), objs...)
+			c := &writeCountClient{Client: base, failUpdates: tc.failUpdates}
+			r := NewRelayRegistrar(c, c, stubRelay{name: "r0"}, addrs, selector)
+
+			var created bool
+			var err error
+			for i := range tc.calls {
+				created, err = r.ensureRelay(ctx)
+				if i < tc.failUpdates {
+					require.Error(t, err)
+					var got vpcv1alpha1.Relay
+					require.NoError(t, base.Get(ctx, client.ObjectKey{Name: "r0"}, &got))
+					require.Equal(t, tc.existing.Spec.Addresses, got.Spec.Addresses, "a write that failed changes nothing")
+				}
+			}
+			require.NoError(t, err)
+			require.Equal(t, tc.created, created)
+			require.Equal(t, tc.creates, c.creates, "creates")
+			require.Equal(t, tc.updates, c.updates, "updates")
+
+			var got vpcv1alpha1.Relay
+			require.NoError(t, base.Get(ctx, client.ObjectKey{Name: "r0"}, &got))
+			require.Equal(t, addrs, got.Spec.Addresses)
+			require.Equal(t, selector, got.Spec.NetworkSelector)
+			if tc.existing != nil {
+				require.True(t, got.Status.Ready, "an update keeps the status")
+			}
+		})
+	}
 }
 
 func TestRelayRegistrarRenewLease(t *testing.T) {

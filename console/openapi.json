@@ -6907,7 +6907,7 @@
         }
       },
       "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.RelaySpec": {
-        "description": "RelaySpec is write-once: created by the relay on start (or selector change), deleted on shutdown, never mutated in steady state. Liveness lives in the relay's Lease, not here.",
+        "description": "RelaySpec is written only by the relay: created on start, updated when the relay starts again with other values, deleted on shutdown. Liveness lives in the relay's Lease, not here.",
         "type": "object",
         "required": [
           "addresses"
