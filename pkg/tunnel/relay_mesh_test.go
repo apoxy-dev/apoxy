@@ -883,6 +883,38 @@ func testMeshPSP(t *testing.T, steerSockets int) {
 			assert.Equal(t, d.last.r.Address(), src, "%s, inner size %d", d.name, size)
 		}
 	}
+	// Each relay host counts the packets for the other relay, and has the RTT of
+	// the mesh session: the host that dialed it and the host that accepted it.
+	for _, d := range dirs {
+		sent, got := memberSeries(t, d.first, d.last.name), memberSeries(t, d.last, d.first.name)
+		assert.GreaterOrEqual(t, sent["apoxy_vpc_relay_trunk_packets_total tx"], 3.0, d.name)
+		assert.GreaterOrEqual(t, got["apoxy_vpc_relay_trunk_packets_total rx"], 3.0, d.name)
+		assert.Positive(t, sent["apoxy_vpc_relay_mesh_rtt_seconds"], d.name)
+	}
+}
+
+// memberSeries returns the series of member peer in the metrics of m that have no
+// reason label and are not zero, as "<metric name> <direction>" or "<metric name>".
+func memberSeries(t *testing.T, m *meshRelay, peer string) map[string]float64 {
+	t.Helper()
+	reg := prometheus.NewRegistry()
+	require.NoError(t, reg.Register(m.router))
+	families, err := reg.Gather()
+	require.NoError(t, err)
+	out := map[string]float64{}
+	for _, f := range families {
+		for _, c := range f.GetMetric() {
+			labels := map[string]string{}
+			for _, l := range c.GetLabel() {
+				labels[l.GetName()] = l.GetValue()
+			}
+			v := c.GetCounter().GetValue() + c.GetGauge().GetValue()
+			if labels["peer_relay"] == peer && labels["reason"] == "" && v != 0 {
+				out[strings.TrimSpace(f.GetName()+" "+labels["direction"])] = v
+			}
+		}
+	}
+	return out
 }
 
 // sendData sends the data frame of inner on the session of a each 200 ms, until to

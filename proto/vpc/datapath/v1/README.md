@@ -337,6 +337,23 @@ mode of the sender. Thus it also seals the inner packet of a PSP-mode sender
 for a PSP-mode receiver, which a relay does not do for two of its own
 sessions.
 
+A relay also counts the packets of agents between it and each mesh member.
+These metrics have one set of series for each member that the mesh has now,
+and none for each agent. Their labels are `peer_relay`, the relay name of the
+member, `peer_relay_id`, the last relay ID that the member gave (empty if it
+gave none), and `direction`: `tx` to the member, `rx` from it.
+
+- `apoxy_vpc_relay_trunk_packets_total` and `apoxy_vpc_relay_trunk_bytes_total`:
+  the PSP packets of agents with no change and the trunk packets with a sender
+  tag, and their UDP payload bytes. The `tx` counts include the packets that
+  the XDP program sent. The `rx` counts have only the packets that the relay
+  sent on. The probes and their answers do not count.
+- `apoxy_vpc_relay_trunk_dropped_packets_total`, with the label `reason`:
+  `trunk_mtu` and `trunk_keys` for `tx`, and `malformed` and the other
+  `trunk_` reasons for `rx`.
+- `apoxy_vpc_relay_mesh_rtt_seconds`: the smoothed RTT of the QUIC connection
+  of the mesh session. A member with no session has no value.
+
 ### Mesh datagrams
 
 QUIC DATAGRAM frames on a mesh session carry the peer frames between an agent

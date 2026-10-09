@@ -44,17 +44,17 @@ func TestPathMTUNetns(t *testing.T) {
 		wantDev   int
 		wantClamp int
 	}{
-		{"path carries the VPC MTU", []int{1500}, 1372, 0},
+		{"path carries the VPC MTU", []int{1500}, 1400, 0},
 		{"small path at the first attach", []int{1420}, 1280, 0},
-		{"path shrinks after the first attach", []int{1500, 1420}, 1372, 1280},
-		{"path grows again", []int{1500, 1420, 1500}, 1372, 0},
+		{"path shrinks after the first attach", []int{1500, 1420}, 1400, 1280},
+		{"path grows again", []int{1500, 1420, 1500}, 1400, 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			relayNS, agentNS := newNetns(t), newNetns(t)
 			link := veth(t, relayNS, agentNS, 0)
 			w := newWorld(t)
-			w.mtu = 1372
+			w.mtu = 1400
 			r := w.relayOn(t, "relay-1", listenIn(t, relayNS, relayIP))
 			// PSP mode, so that a QUIC fallback under load does not skip the path probe.
 			b := w.agent(t, "b", r, agentOptions{udp: listenIn(t, relayNS, relayIP), tcp: true, mode: TransportPSP})
@@ -70,7 +70,7 @@ func TestPathMTUNetns(t *testing.T) {
 			eb := b.attached(t)
 			assert.Equal(t, tc.wantDev, a.binding().DeviceMTU())
 			assert.Equal(t, tc.wantClamp, a.binding().ClampMTU())
-			assert.Equal(t, 1372, b.binding().DeviceMTU())
+			assert.Equal(t, 1400, b.binding().DeviceMTU())
 			assert.Equal(t, 0, b.binding().ClampMTU())
 
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

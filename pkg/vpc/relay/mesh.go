@@ -245,6 +245,10 @@ func (m *Mesh) quicConfig(base *quic.Config) *quic.Config {
 	c.MaxIdleTimeout = meshIdleTimeout
 	c.EnableDatagrams = true
 	c.GetConfigForClient = nil
+	if c.Tracer == nil {
+		// The RTT metric of a member reads what this tracer keeps.
+		c.Tracer = TraceRTT
+	}
 	return c
 }
 
@@ -600,6 +604,8 @@ func (m *Mesh) dial(ctx context.Context, mem *meshMember) (*MeshSession, error) 
 	m.mu.Lock()
 	tr, conf := m.tr, m.quic
 	m.mu.Unlock()
+	// A dialed connection keeps the values of ctx, so it gets the place for its RTT here.
+	ctx, _ = TraceContext(ctx, nil)
 	qc, err := tr.Dial(ctx, net.UDPAddrFromAddrPort(mem.Addr), m.tls, conf)
 	if err != nil {
 		return nil, fmt.Errorf("dial: %w", err)

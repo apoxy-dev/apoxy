@@ -548,6 +548,9 @@ func TestFloodDirect(t *testing.T) {
 		cmd.Env = append(os.Environ(), floodChildEnv+"=1")
 		cmd.SysProcAttr = &syscall.SysProcAttr{Cloneflags: syscall.CLONE_NEWNET}
 		out, err := cmd.CombinedOutput()
+		if errors.Is(err, unix.EPERM) {
+			t.Skipf("cannot start a process in a new network namespace: %v", err)
+		}
 		t.Logf("child:\n%s", out)
 		require.NoError(t, err)
 		if bytes.Contains(out, []byte("--- SKIP")) {

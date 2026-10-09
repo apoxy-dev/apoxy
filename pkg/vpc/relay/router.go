@@ -117,6 +117,7 @@ type Router struct {
 	early  earlyList
 	bridge atomic.Pointer[bridge]
 	trunk  atomic.Pointer[trunk] // Trunk keys of the mesh members. Nil with no mesh.
+	peers  peerTable             // Counters of the packets to and from each mesh member.
 	onEnd  atomic.Pointer[func(AttachmentStats)]
 	// epoch goes up at each change of a route, of Permit or of the attachments
 	// of a member. The rows of the members do their checks again then.
@@ -789,7 +790,7 @@ func (r *Router) Forward(src netip.AddrPort, spi uint32, size int, now time.Time
 		// The checks of the trunk come first: a packet that it cannot carry
 		// takes nothing from the meters.
 		pair = m.pair.Load()
-		if v := r.trunkFits(s, pair, size); v != Pass {
+		if v := r.trunkFits(s, m.name, pair, size); v != Pass {
 			return netip.AddrPort{}, v
 		}
 	}
@@ -806,6 +807,7 @@ func (r *Router) Forward(src netip.AddrPort, spi uint32, size int, now time.Time
 	w.packets.Add(1)
 	w.bytes.Add(uint64(size))
 	if pair != nil {
+		pair.stats.add(trunkTx, size)
 		return pair.addr, Pass
 	}
 	return w.receiver.dst(w.saLane), Pass
@@ -888,6 +890,7 @@ func (r *Router) Run(ctx context.Context) {
 		case now := <-t.C:
 			r.Sweep(now)
 			r.tickBridge(now)
+			r.sweepPeers()
 		case <-r.xdpWake:
 			r.mu.Lock()
 			r.syncXDP(time.Now())

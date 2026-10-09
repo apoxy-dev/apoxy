@@ -119,6 +119,7 @@ type trunkPair struct {
 	src     netip.Addr     // Address that the host sends from to addr, or the zero address.
 	tx      *keys.TxPeer   // SAs of the member for packets to it.
 	answers *rate.Limiter  // Limits the answers to the probes of the member.
+	stats   *peerStats     // Counters of the member.
 
 	spis atomic.Pointer[[]trunkSPI] // Receive SAs, for the packet path.
 	run  atomic.Pointer[trunkProbe] // Probe run that waits for its answer.
@@ -246,7 +247,10 @@ func (t *trunk) pairOf(br *bridge, s *MeshSession) *trunkPair {
 		src:     sourceTo(net.UDPAddrFromAddrPort(addr)),
 		tx:      br.send.NewPeer(),
 		answers: rate.NewLimiter(probeRate, probeRate),
+		stats:   t.r.peers.of(s.name),
 	}
+	// The counters keep the relay ID for the time when the mesh does not have it.
+	p.stats.relayID(s.relay.GetId())
 	t.pairs[p.name] = p
 	t.place(p.name).pair.Store(p)
 	t.index()
@@ -825,17 +829,31 @@ func (p *trunkPair) sendMessage(br *bridge, pkt, msg []byte) error {
 	return err
 }
 
-// receive opens the trunk packet pkt of the member of p, or sends the PSP packet of a sender
-// on with no change. buf holds a packet that it seals. It returns the drop reason.
+// receive handles pkt from the address of the member of p, and counts it for the
+// member. buf holds a packet that it seals. It returns the drop reason.
 func (t *trunk) receive(br *bridge, p *trunkPair, pkt, buf []byte, fwd forwarder, now time.Time) (dropReason, bool) {
+	why, ok, own := t.open(br, p, pkt, buf, fwd, now)
+	switch {
+	case !ok:
+		p.stats.drops[why].Add(1)
+	case !own:
+		p.stats.add(trunkRx, len(pkt))
+	}
+	return why, ok
+}
+
+// open opens the trunk packet pkt of the member of p, or sends the PSP packet of a
+// sender on with no change. own is true for a message of the member itself.
+func (t *trunk) open(br *bridge, p *trunkPair, pkt, buf []byte, fwd forwarder, now time.Time) (why dropReason, ok, own bool) {
 	if br == nil || len(pkt) < pspwire.Overhead {
-		return dropMalformed, false
+		return dropMalformed, false, false
 	}
 	// Only the SPI tells a trunk packet from the packet of a row. The relay of
 	// the sender keeps each SPI in one use.
-	sa, ok := p.sa(binary.BigEndian.Uint32(pkt[4:8]))
-	if !ok {
-		return t.r.pass(p.name, pkt, fwd, now)
+	sa, found := p.sa(binary.BigEndian.Uint32(pkt[4:8]))
+	if !found {
+		why, ok = t.r.pass(p.name, pkt, fwd, now)
+		return why, ok, false
 	}
 	// The trunk SAs are in the receive queue of the bridge, which takes one
 	// goroutine at a time.
@@ -844,16 +862,17 @@ func (t *trunk) receive(br *bridge, p *trunkPair, pkt, buf []byte, fwd forwarder
 	br.rxMu.Unlock()
 	switch {
 	case errors.Is(err, engine.ErrReplay):
-		return dropTrunkReplay, false
+		return dropTrunkReplay, false, false
 	case err != nil:
-		return dropMalformed, false
+		return dropMalformed, false, false
 	case tag == trunkTagRelay:
-		return dropMalformed, p.message(br, payload)
+		return dropMalformed, p.message(br, payload), true
 	case next == pspwire.NextHdrPSP:
 		// A relay seals no PSP packet of a sender.
-		return dropTrunkPayload, false
+		return dropTrunkPayload, false, false
 	}
-	return t.r.bridgeIn(p.name, sa.sess, tag, pkt, payload, buf, fwd)
+	why, ok = t.r.bridgeIn(p.name, sa.sess, tag, pkt, payload, buf, fwd)
+	return why, ok, false
 }
 
 // message handles a message of the member itself: a full-size probe, which

@@ -43,18 +43,20 @@ func (w *row) to(home string) bool {
 // relay knows a sender by its tag, which comes with an attachment.
 func (r *Router) trunked(c *Session) bool { return r.trunk.Load() != nil && c.tag != 0 }
 
-// trunkFits checks that the path of p carries a PSP packet of size bytes of
-// sender s. A nil p is no trunk to the relay now. It counts the drop if not.
-func (r *Router) trunkFits(s *Session, p *trunkPair, size int) Verdict {
+// trunkFits checks that the path of p carries a PSP packet of size bytes of sender
+// s to member home. A nil p is no trunk to home now. It counts the drop if not.
+func (r *Router) trunkFits(s *Session, home string, p *trunkPair, size int) Verdict {
 	if p == nil {
 		s.dropTrunk.Add(1)
 		r.drops[dropTrunkKeys].Add(1)
+		r.peers.of(home).drops[dropTrunkKeys].Add(1)
 		return DropTrunkKeys
 	}
 	// The limit of the trunk is an inner MTU, and size has the PSP overhead.
 	if size > p.mtu()+pspwire.Overhead {
 		s.dropTrunk.Add(1)
 		r.drops[dropTrunkMTU].Add(1)
+		p.stats.drops[dropTrunkMTU].Add(1)
 		return DropTrunkMTU
 	}
 	return Pass

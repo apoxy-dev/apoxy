@@ -87,6 +87,9 @@ type xdpTable interface {
 type xdpEntry struct {
 	xdpRow
 	w *row
+	// peer gets the counts of a row that sends to a mesh member. It is nil for
+	// each other row.
+	peer *peerStats
 }
 
 func (e xdpEntry) same(o xdpEntry) bool {
@@ -213,7 +216,8 @@ func (r *Router) syncSource(a netip.AddrPort, now time.Time) {
 		want = r.wantXDP(a, now)
 	}
 	for spi, e := range x.rows[a] {
-		if n, ok := want[spi]; !ok || n.w != e.w {
+		// The counts of an XDP row go to one member, so a new member is a new row.
+		if n, ok := want[spi]; !ok || n.w != e.w || n.peer != e.peer {
 			r.removeXDP(xdpKey{a, spi}, e)
 		}
 	}
@@ -302,10 +306,13 @@ func (r *Router) addWant(want map[uint32]xdpEntry, a netip.AddrPort, s *Session,
 		if _, ok := want[spi]; ok || l != lane || now.After(w.expires) {
 			continue
 		}
-		e := xdpEntry{xdpRow{expires: w.expires}, w}
+		e := xdpEntry{xdpRow: xdpRow{expires: w.expires}, w: w}
 		next := w.receiver.dst(w.saLane)
 		if w.trunk != nil {
-			next = r.xdp.memberHop(w.trunk.pair.Load())
+			p := w.trunk.pair.Load()
+			if next = r.xdp.memberHop(p); next.IsValid() {
+				e.peer = p.stats
+			}
 		}
 		if next.IsValid() && next.Addr().Is4() == a.Addr().Is4() {
 			e.next = next
@@ -358,6 +365,11 @@ func (r *Router) removeXDP(k xdpKey, e xdpEntry) {
 	}
 	e.w.packets.Add(c.packets)
 	e.w.bytes.Add(c.bytes)
+	if e.peer != nil {
+		// The program sent these packets to the member.
+		e.peer.packets[trunkTx].Add(c.packets)
+		e.peer.bytes[trunkTx].Add(c.bytes)
+	}
 	e.w.dropMeter.Add(c.drops)
 	e.w.sender.dropMeter.Add(c.drops)
 	if u := c.used.UnixNano(); !c.used.IsZero() && u > e.w.lastUsed.Load() {

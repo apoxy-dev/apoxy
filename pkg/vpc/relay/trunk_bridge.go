@@ -30,7 +30,7 @@ func (r *Router) trunkCarries(s *Session, h hop, inner []byte, now time.Time) bo
 		pair = nil
 	}
 	// The limit is the same as for the PSP packet of a row with this inner packet.
-	if r.trunkFits(s, pair, len(inner)+pspwire.Overhead) == Pass {
+	if r.trunkFits(s, h.home, pair, len(inner)+pspwire.Overhead) == Pass {
 		return true
 	}
 	// The trunk to a relay that is away has no SA. Then s learns to visit it.
@@ -49,10 +49,14 @@ func (r *Router) sealTrunk(h hop, inner, buf []byte) error {
 	if err != nil {
 		// The SA has no sequence number left.
 		r.drops[dropTrunkKeys].Add(1)
+		h.pair.stats.drops[dropTrunkKeys].Add(1)
 		return err
 	}
-	_, err = br.tr.WriteTo(buf[:n], h.pair.udp)
-	return err
+	if _, err = br.tr.WriteTo(buf[:n], h.pair.udp); err != nil {
+		return err
+	}
+	h.pair.stats.add(trunkTx, n)
+	return nil
 }
 
 // bridgeIn sends inner, the clear packet in pkt of the sender tag on member home,
