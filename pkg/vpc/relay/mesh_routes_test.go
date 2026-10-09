@@ -1179,12 +1179,6 @@ func TestMeshRouteNotReachable(t *testing.T) {
 				clear(s.sync.noRoute)
 				r.mu.Unlock()
 			}
-			// told checks that s got one NoRoute for dst, or none for a local dst.
-			told := func(s *Session, path string) {
-				t.Helper()
-				tells(!tc.local, s, path)
-			}
-
 			res, err := r.resolvePeer(q, &dp.ResolvePeerRequest{Vpc: ref(vpcA), Address: tc.dst})
 			if tc.local {
 				require.NoError(t, err)
@@ -1220,7 +1214,7 @@ func TestMeshRouteNotReachable(t *testing.T) {
 			} else {
 				assert.Nil(t, next, "session for the address")
 			}
-			told(q, "Route")
+			tells(!tc.local && !tc.member, q, "Route")
 
 			// A peer frame, a data frame and a PSP packet to the relay. The address
 			// of each one for relay-a has a route, so the sender gets no NoRoute.

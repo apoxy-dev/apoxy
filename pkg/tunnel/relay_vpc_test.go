@@ -39,6 +39,7 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay/steer"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/peerconn"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/vpctest"
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
@@ -113,7 +114,9 @@ func TestRelay_VPCSharesSocket(t *testing.T) {
 // vpcRelay is a started relay with VPC sessions, and the CA of its agents.
 type vpcRelay struct {
 	r      *tunnel.Relay
-	roots  *x509.CertPool // Relay roots.
+	router *vpcrelay.Router  // Nil with no VPC relay sessions.
+	roots  *x509.CertPool    // Relay roots.
+	root   *x509.Certificate // CA of the relay cert.
 	ca     *x509.Certificate
 	caKey  *ecdsa.PrivateKey
 	ctx    context.Context
@@ -127,7 +130,8 @@ type relayOpts struct {
 	steerSockets int
 	lameDuck     time.Duration
 	noVPC        bool                // The relay serves no VPC relay sessions.
-	addrs        *vpcAddresses       // Addresses of the attachments. Nil starts at fd00:1::/96.
+	addrs        vpcrelay.Addresses  // Addresses of the attachments. Nil starts at fd00:1::/96.
+	agentCA      *vpctest.CA         // CA of the agents. Nil makes a CA for this relay.
 	setup        func(*tunnel.Relay) // Runs before Start.
 }
 
@@ -140,18 +144,11 @@ func startRelayWith(t *testing.T, o relayOpts) *vpcRelay {
 	if o.name == "" {
 		o.name = "localhost"
 	}
-	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	require.NoError(t, err)
-	caTmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(1), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign,
-		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+	var err error
+	if o.agentCA == nil {
+		o.agentCA, err = vpctest.NewCA()
+		require.NoError(t, err)
 	}
-	caDER, err := x509.CreateCertificate(rand.Reader, caTmpl, caTmpl, &caKey.PublicKey, caKey)
-	require.NoError(t, err)
-	agentCA, err := x509.ParseCertificate(caDER)
-	require.NoError(t, err)
-	agentPool := x509.NewCertPool()
-	agentPool.AddCert(agentCA)
 
 	var conns []*net.UDPConn
 	if steerSockets > 0 {
@@ -163,6 +160,8 @@ func startRelayWith(t *testing.T, o relayOpts) *vpcRelay {
 		conns = []*net.UDPConn{pc.(*net.UDPConn)}
 	}
 	relayCA, serverCert, err := cryptoutils.GenerateSelfSignedTLSCert("localhost")
+	require.NoError(t, err)
+	root, err := x509.ParseCertificate(relayCA.Certificate[0])
 	require.NoError(t, err)
 	h, err := icx.NewHandler(
 		icx.WithLocalAddr(netstack.ToFullAddress(netip.MustParseAddrPort("127.0.0.1:6081"))),
@@ -180,8 +179,9 @@ func startRelayWith(t *testing.T, o relayOpts) *vpcRelay {
 	if o.addrs == nil {
 		o.addrs = &vpcAddresses{}
 	}
+	var router *vpcrelay.Router
 	if !o.noVPC {
-		r.SetVPC("localhost", vpcTrust{agentPool}, vpcNetworks{}, o.addrs, vpcrelay.Config{})
+		router = r.SetVPC("localhost", vpcTrust{o.agentCA.Pool()}, vpcNetworks{}, o.addrs, vpcrelay.Config{})
 	}
 	r.SetLameDuckPeriod(lameDuck)
 	if o.setup != nil {
@@ -200,7 +200,10 @@ func startRelayWith(t *testing.T, o relayOpts) *vpcRelay {
 			_ = c.Close()
 		}
 	})
-	return &vpcRelay{r: r, roots: cryptoutils.CertPoolForCertificate(relayCA), ca: agentCA, caKey: caKey, ctx: ctx, cancel: cancel, done: done}
+	return &vpcRelay{
+		r: r, router: router, roots: cryptoutils.CertPoolForCertificate(relayCA), root: root,
+		ca: o.agentCA.Cert, caKey: o.agentCA.Key, ctx: ctx, cancel: cancel, done: done,
+	}
 }
 
 // agentTLS returns the apoxy-vpc/2 client config of agent name.

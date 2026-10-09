@@ -198,18 +198,20 @@ func TestDNS(t *testing.T) {
 	assert.Equal(t, w.search, search)
 }
 
-// TestRoutesOfOtherRelays checks which agents get the routes of an attachment
-// on another relay of a mesh, and that a packet to it gets an ICMP error.
+// TestRoutesOfOtherRelays checks which agents get the routes of an attachment on
+// another relay of a mesh, and which send to it. The others get an ICMP error.
 func TestRoutesOfOtherRelays(t *testing.T) {
 	cases := []struct {
 		name      string
 		localOnly bool
 		version   func() *dp.Version // Nil means an agent of this build.
 		gets      bool
+		sends     bool
 	}{
-		{name: "agent of this build", gets: true},
+		{name: "agent of this build", gets: true, sends: true},
 		{name: "local routes only", localOnly: true},
 		{name: "agent of revision 5", version: revision5},
+		{name: "agent one revision before the peer sessions to other relays", version: beforeReach, gets: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -242,13 +244,27 @@ func TestRoutesOfOtherRelays(t *testing.T) {
 				has(a, ew.prefixes[0], ec.prefixes[0])
 			}
 
-			// The address of b, and an address in its route.
-			for i, dst := range []netip.Addr{eb.addr, netip.MustParseAddr("fd99::5")} {
+			// The address of b, and an address in its route. The watcher has an
+			// answer for b, so relay-1 can send to relay-2 now.
+			inRoute := netip.MustParseAddr("fd99::5")
+			b.netstack(t, b.binding(), inRoute, false)
+			watcher.resolved(t, eb.addr)
+			for i, dst := range []netip.Addr{eb.addr, inRoute} {
+				if tc.sends {
+					echo(t, b.stack, dst, 9000)
+					ping(t, a.stack, ea.addr, dst, 9000, "to another relay")
+					continue
+				}
 				send(t, a.stack, ea.addr, dst, 9000, "to another relay")
 				require.Eventually(t, func() bool { return unreachableIn(a) == uint64(i+1) }, 5*time.Second, 10*time.Millisecond)
 				assert.Equal(t, uint64(i+1), a.a.Stats().HoldDrops)
 			}
-			assert.Zero(t, peerCount(a.a))
+			if tc.sends {
+				assert.Equal(t, 1, peerCount(a.a))
+				assert.Zero(t, unreachableIn(a), "ICMP errors")
+			} else {
+				assert.Zero(t, peerCount(a.a))
+			}
 			assert.NoError(t, a.current().qc.Context().Err(), "relay session of a")
 
 			b.stop()

@@ -114,6 +114,7 @@ type hop struct {
 	mode dp.Mode        // Mode of next.
 	addr netip.AddrPort // Address of next.
 	home string         // Relay with the route, if it is another relay.
+	tag  uint32         // Trunk tag of the sender for home. Zero is no tag.
 	pair *trunkPair     // Pair that carries the packet to home, or nil.
 	sa   *engine.TxSA   // SA of next or of pair for packets from the relay, or nil.
 }
@@ -134,7 +135,8 @@ func (r *Router) nextHop(src *Session, inner []byte) hop {
 	case to.s.home == "":
 		h.local(to, inner)
 	default:
-		h.home = to.s.home
+		// The tag goes with the hop: the end of src sets its tag to zero.
+		h.home, h.tag = to.s.home, src.tag
 		if t := r.trunk.Load(); t != nil {
 			h.pair = t.bridgeTo(h.home)
 		}
@@ -235,7 +237,7 @@ func (r *Router) deliver(src *Session, h hop, frame, inner, buf []byte, now time
 	switch {
 	case h.home != "":
 		// The address has a route, so the sender gets no NoRoute.
-		err = r.sealTrunk(h, src.tag, inner, buf)
+		err = r.sealTrunk(h, inner, buf)
 	case h.next == nil:
 		if h.dst.IsValid() {
 			r.noRoute(src, h.dst, now)

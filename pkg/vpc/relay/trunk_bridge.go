@@ -18,7 +18,7 @@ func (r *Router) trunkCarries(s *Session, h hop, inner []byte) bool {
 	switch {
 	case h.home == "":
 		return true
-	case s.tag == 0:
+	case h.tag == 0:
 		// The other relay knows a sender only by its tag.
 		s.dataDrops.Add(1)
 		return false
@@ -27,14 +27,14 @@ func (r *Router) trunkCarries(s *Session, h hop, inner []byte) bool {
 	return r.trunkFits(s, h.pair, h.sa, len(inner)+pspwire.Overhead) == Pass
 }
 
-// sealTrunk seals inner into buf with the trunk SA of h and the sender tag, and
+// sealTrunk seals inner into buf with the trunk SA and the sender tag of h, and
 // sends the trunk packet to the relay of h.
-func (r *Router) sealTrunk(h hop, tag uint32, inner, buf []byte) error {
+func (r *Router) sealTrunk(h hop, inner, buf []byte) error {
 	br := r.bridge.Load()
-	if br == nil || h.sa == nil || buf == nil {
+	if br == nil || h.sa == nil || h.tag == trunkTagRelay || buf == nil {
 		return errNoSA
 	}
-	n, err := h.sa.SealTrunk(tag, buf, inner)
+	n, err := h.sa.SealTrunk(h.tag, buf, inner)
 	if err != nil {
 		// The SA has no sequence number left.
 		r.drops[dropTrunkKeys].Add(1)

@@ -230,9 +230,10 @@ message ResolvePeerResponse {
   RelayRef home_relay = 2;
   // True if P2P with the peer is allowed.
   bool p2p = 3;
-  // SPIFFE ID of the peer. Set for REACH_LOCAL.
+  // SPIFFE ID of the peer. Set for REACH_LOCAL and REACH_TRUNK.
   string subject = 4;
-  // Attachments of the session that has the address. Set for REACH_LOCAL.
+  // Attachments of the session that has the address. Set for REACH_LOCAL and
+  // REACH_TRUNK.
   repeated string attachment_ids = 5;
 }
 

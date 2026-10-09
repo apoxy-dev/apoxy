@@ -214,6 +214,30 @@ func (p *presence) router() *Router {
 	return p.r
 }
 
+// attachments returns the IDs of the attachments of the session k of a member,
+// the lowest generation first.
+func (p *presence) attachments(k remoteKey) []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	in := p.in[k.home]
+	if in == nil {
+		return nil
+	}
+	var es []*presenceEntry
+	for _, e := range in.tags[k.tag] {
+		// A tag names one session, but an entry of an older session can have it.
+		if e.session() == k {
+			es = append(es, e)
+		}
+	}
+	slices.SortFunc(es, func(a, b *presenceEntry) int { return cmp.Or(cmp.Compare(a.gen, b.gen), cmp.Compare(a.id, b.id)) })
+	ids := make([]string, len(es))
+	for i, e := range es {
+		ids[i] = e.id
+	}
+	return ids
+}
+
 // opened starts the Presence call on the new session s, and the time limit of
 // the full set of its member. A member from before the call gets no call.
 func (p *presence) opened(s *MeshSession) {

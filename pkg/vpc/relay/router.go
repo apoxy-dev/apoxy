@@ -702,12 +702,16 @@ func (r *Router) permitted(src *Session, dst netip.Addr) *Session {
 }
 
 // Route returns the session of this relay for packets from src to dst, if Permit
-// allows. If none, src gets a NoRoute in Sync, at most once a second per address.
+// allows. With no route, src gets a NoRoute in Sync, at most once a second per address.
 func (r *Router) Route(src *Session, dst netip.Addr, now time.Time) *Session {
 	dst = dst.Unmap()
 	next := r.permitted(src, dst)
-	if next == nil || next.home != "" {
+	switch {
+	case next == nil:
 		r.noRoute(src, dst, now)
+		return nil
+	case next.home != "":
+		// The address has a route, so an agent keeps its peer session to it.
 		return nil
 	}
 	return next

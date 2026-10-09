@@ -190,6 +190,10 @@ func (r *Router) attach(s *Session, a *Attachment) error {
 	if s.closed {
 		return rpc.Errorf(rpc.FailedPrecondition, "session closed")
 	}
+	// The other relays of a mesh refuse an entry with more prefixes.
+	if n := len(a.Addresses) + len(a.Routes); r.presence != nil && n > maxEntryPrefixes {
+		return rpc.Errorf(rpc.InvalidArgument, "attachment has %d addresses and routes, and a relay with a mesh takes at most %d", n, maxEntryPrefixes)
+	}
 	d := r.domain(s.id.VPC)
 	// takes reports whether a gets p: p has no route, a session of another
 	// relay has it, or a takes it over.

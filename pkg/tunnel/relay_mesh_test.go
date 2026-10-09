@@ -15,13 +15,17 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"path/filepath"
 	"runtime"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	pspwire "github.com/apoxy-dev/softpsp/psp"
 	"github.com/google/go-cmp/cmp"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 	"github.com/quic-go/quic-go/logging"
@@ -30,12 +34,22 @@ import (
 	"google.golang.org/protobuf/testing/protocmp"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/emptypb"
+	"gvisor.dev/gvisor/pkg/tcpip"
+	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
+	"gvisor.dev/gvisor/pkg/tcpip/header"
+	"gvisor.dev/gvisor/pkg/tcpip/link/channel"
+	"gvisor.dev/gvisor/pkg/tcpip/network/ipv6"
+	"gvisor.dev/gvisor/pkg/tcpip/stack"
+	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
 
 	"github.com/apoxy-dev/apoxy/pkg/tunnel"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/agent"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/identity"
 	vpcrelay "github.com/apoxy-dev/apoxy/pkg/vpc/relay"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/peerconn"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/psp"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/vpctest"
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
@@ -581,7 +595,7 @@ func TestRelay_MeshRoutes(t *testing.T) {
 	routeB := "+" + onB.GetAttachmentId() + " fd00:100::/96"
 	assert.Equal(t, []string{routeB}, laptop.next(t, ctx))
 
-	// The relay has no path to the other relay yet.
+	// An agent with no attachment cannot send to the other relay.
 	_, err = laptop.c.ResolvePeer(ctx, &dp.ResolvePeerRequest{Vpc: vpc, Address: "fd00:100::1"})
 	assert.Equal(t, rpc.NotFound, rpc.CodeOf(err), "ResolvePeer: %v", err)
 
@@ -756,9 +770,15 @@ func TestRelay_MeshPeerFrames(t *testing.T) {
 		})
 	}
 
-	// An agent does not use this path yet: it gets no peer of the other relay.
-	_, err = laptop.c.ResolvePeer(ctx, &dp.ResolvePeerRequest{Vpc: vpc, Address: serverAddr.String()})
-	assert.Equal(t, rpc.NotFound, rpc.CodeOf(err), "ResolvePeer: %v", err)
+	// When the trunk has keys, relay-a names the agent of relay-b as a peer.
+	var res *dp.ResolvePeerResponse
+	require.Eventually(t, func() bool {
+		res, err = laptop.c.ResolvePeer(ctx, &dp.ResolvePeerRequest{Vpc: vpc, Address: serverAddr.String()})
+		return err == nil
+	}, 10*time.Second, 20*time.Millisecond, "answer of relay-a for the agent of relay-b")
+	assert.Equal(t, dp.Reach_REACH_TRUNK, res.GetReach())
+	assert.Equal(t, identity.ID{Project: vpcProject, VPC: vpcUID, Agent: "server"}.String(), res.GetSubject())
+	assert.Equal(t, []string{onB.GetAttachmentId()}, res.GetAttachmentIds())
 }
 
 // sendPSP sends pkt from a to its relay v each 200 ms, until the socket of to
@@ -953,5 +973,331 @@ func testMeshData(t *testing.T, steerSockets int) {
 			// The frame has the network ID of the VPC, and its flags are zero.
 			assert.Equal(t, peerconn.EncodeData(nil, vpcNetwork, inner), got, "%s, inner size %d", d.name, size)
 		}
+	}
+}
+
+// hostAttach is one attachment of a hostAgent.
+type hostAttach struct {
+	addr   netip.Addr
+	prefix netip.Prefix
+}
+
+// hostAgent is an agent of this build on a relay host, with a UDP netstack on
+// its binding.
+type hostAgent struct {
+	a          *agent.Agent
+	once       sync.Once
+	stack      *stack.Stack
+	hostAttach // The last attachment that attached took.
+	attaches   chan hostAttach
+	stop       func() // Ends the agent and waits for it.
+
+	mu     sync.Mutex
+	routes map[netip.Prefix]bool
+}
+
+// startHostAgent runs agent name on the relay v and waits for its attachment.
+// roots must have the CA of each relay of the mesh.
+func startHostAgent(t *testing.T, ca *vpctest.CA, roots *x509.CertPool, v *vpcRelay, name string, mode agent.TransportMode) *hostAgent {
+	t.Helper()
+	sock, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	require.NoError(t, err)
+	tr := &quic.Transport{Conn: sock}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	h := &hostAgent{
+		routes: map[netip.Prefix]bool{}, attaches: make(chan hostAttach, 8),
+		stop: sync.OnceFunc(func() { cancel(); <-done }),
+	}
+	h.a = agent.New(agent.Config{
+		Identity: identity.NewManager(filepath.Join(t.TempDir(), "cred.json"), func(context.Context) (*identity.Credential, error) {
+			return ca.Credential(vpcProject, vpcUID, name, time.Hour)
+		}),
+		Relays:        []identity.Relay{{ID: "localhost", Addresses: []string{v.r.Address().String()}}},
+		RelayRoots:    roots,
+		Sessions:      1,
+		Transport:     tr,
+		TransportMode: mode,
+		Name:          name,
+		OnAttach: func(b *psp.Binding, addr netip.Addr, prefixes []netip.Prefix) {
+			h.netstack(t, b, addr)
+			h.attaches <- hostAttach{addr, prefixes[0]}
+		},
+		OnRoutes: func(add, remove []netip.Prefix) {
+			h.mu.Lock()
+			defer h.mu.Unlock()
+			for _, p := range remove {
+				delete(h.routes, p)
+			}
+			for _, p := range add {
+				h.routes[p] = true
+			}
+		},
+	})
+	go func() {
+		defer close(done)
+		assert.NoError(t, h.a.Run(ctx), "agent %s", name)
+	}()
+	t.Cleanup(func() {
+		h.stop()
+		_ = tr.Close()
+		_ = sock.Close()
+	})
+	h.attached(t)
+	return h
+}
+
+// attached waits for the next attachment of h and takes its address.
+func (h *hostAgent) attached(t *testing.T) {
+	t.Helper()
+	select {
+	case h.hostAttach = <-h.attaches:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the agent did not attach in 10 s")
+	}
+}
+
+// netstack adds addr to the netstack of h. The first call makes the netstack on
+// the binding b.
+func (h *hostAgent) netstack(t *testing.T, b *psp.Binding, addr netip.Addr) {
+	h.once.Do(func() {
+		s := stack.New(stack.Options{
+			NetworkProtocols:   []stack.NetworkProtocolFactory{ipv6.NewProtocol},
+			TransportProtocols: []stack.TransportProtocolFactory{udp.NewProtocol},
+		})
+		ep := channel.New(256, uint32(b.DeviceMTU()), "")
+		if err := s.CreateNIC(1, ep); err != nil {
+			t.Errorf("create NIC: %v", err)
+			return
+		}
+		s.SetRouteTable([]tcpip.Route{{Destination: header.IPv6EmptySubnet, NIC: 1}})
+		d, err := b.Netstack(ep)
+		if err != nil {
+			t.Errorf("netstack: %v", err)
+			return
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			_ = d.Run(ctx)
+		}()
+		t.Cleanup(func() {
+			// The driver ends when the agent closes the binding.
+			h.stop()
+			cancel()
+			<-done
+			s.Close()
+		})
+		h.stack = s
+	})
+	if h.stack == nil {
+		return
+	}
+	pa := tcpip.ProtocolAddress{Protocol: ipv6.ProtocolNumber, AddressWithPrefix: tcpip.AddrFromSlice(addr.AsSlice()).WithPrefix()}
+	if err := h.stack.AddProtocolAddress(1, pa, stack.AddressProperties{}); err != nil {
+		t.Errorf("add address: %v", err)
+	}
+}
+
+func (h *hostAgent) hasRoute(p netip.Prefix) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.routes[p]
+}
+
+// echo answers each UDP packet to port on the address of h with the same bytes.
+func (h *hostAgent) echo(t *testing.T, port uint16) {
+	t.Helper()
+	local := &tcpip.FullAddress{NIC: 1, Addr: tcpip.AddrFromSlice(h.addr.AsSlice()), Port: port}
+	c, err := gonet.DialUDP(h.stack, local, nil, ipv6.ProtocolNumber)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+	go func() {
+		buf := make([]byte, 1500)
+		for {
+			n, from, err := c.ReadFrom(buf)
+			if err != nil {
+				return
+			}
+			_, _ = c.WriteTo(buf[:n], from)
+		}
+	}()
+}
+
+// ping sends msg from h to port on the address of to each 500 ms, until the
+// echo comes. A first packet from before the trunk keys costs 5 s.
+func (h *hostAgent) ping(t *testing.T, to *hostAgent, port uint16, msg []byte) {
+	t.Helper()
+	local := &tcpip.FullAddress{NIC: 1, Addr: tcpip.AddrFromSlice(h.addr.AsSlice())}
+	remote := &tcpip.FullAddress{NIC: 1, Addr: tcpip.AddrFromSlice(to.addr.AsSlice()), Port: port}
+	c, err := gonet.DialUDP(h.stack, local, remote, ipv6.ProtocolNumber)
+	require.NoError(t, err)
+	defer c.Close()
+	buf := make([]byte, 1500)
+	for range 30 {
+		_, err := c.Write(msg)
+		require.NoError(t, err)
+		_ = c.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+		n, err := c.Read(buf)
+		if err == nil {
+			assert.Equal(t, msg, buf[:n])
+			return
+		}
+	}
+	t.Fatalf("no echo of %d B from %s", len(msg), to.addr)
+}
+
+// pathDrops returns the packets that the relays dropped on the paths between
+// them. It leaves out trunk_no_row: a first packet can come before its row.
+func pathDrops(t *testing.T, relays ...*meshRelay) []string {
+	t.Helper()
+	var out []string
+	for _, m := range relays {
+		reg := prometheus.NewRegistry()
+		require.NoError(t, reg.Register(m.router))
+		families, err := reg.Gather()
+		require.NoError(t, err)
+		for _, f := range families {
+			if f.GetName() != "apoxy_vpc_relay_dropped_packets_total" {
+				continue
+			}
+			for _, c := range f.GetMetric() {
+				reason, n := c.GetLabel()[0].GetValue(), c.GetCounter().GetValue()
+				if n > 0 && reason != "trunk_no_row" && (strings.HasPrefix(reason, "trunk_") || strings.HasPrefix(reason, "mesh_")) {
+					out = append(out, fmt.Sprintf("%s %s %v", m.name, reason, n))
+				}
+			}
+		}
+	}
+	return out
+}
+
+// TestRelay_MeshAgents runs an agent of this build on each of two relay hosts of
+// a mesh. UDP passes both ways between the agents, in each pair of modes.
+func TestRelay_MeshAgents(t *testing.T) {
+	const quicMode = agent.TransportQUIC
+	cases := []struct {
+		name  string
+		a, b  agent.TransportMode // The zero value is auto, which gives PSP here.
+		steer int                 // Sockets in a steer group. Zero uses one plain socket.
+	}{
+		{name: "PSP to PSP"},
+		{name: "QUIC to QUIC", a: quicMode, b: quicMode},
+		{name: "PSP to QUIC", b: quicMode},
+		{name: "QUIC to PSP", a: quicMode},
+		{name: "PSP to PSP, steer group of 4", steer: 4},
+		{name: "QUIC to QUIC, steer group of 4", a: quicMode, b: quicMode, steer: 4},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.steer > 1 && runtime.GOOS != "linux" {
+				t.Skip("a steer group of more than one socket needs Linux")
+			}
+			ca := newMeshCA(t)
+			agents, err := vpctest.NewCA()
+			require.NoError(t, err)
+			// The two relays give addresses of one VPC network.
+			addrs := &vpctest.Addresses{}
+			a := startMeshRelayWith(t, ca, relayOpts{name: "relay-a", steerSockets: tc.steer, agentCA: agents, addrs: addrs})
+			b := startMeshRelayWith(t, ca, relayOpts{name: "relay-b", steerSockets: tc.steer, agentCA: agents, addrs: addrs})
+			b.mesh.SetMembers([]vpcrelay.MeshMember{a.member()})
+			a.mesh.SetMembers([]vpcrelay.MeshMember{b.member()})
+			require.Equal(t, vpcrelay.MeshChange{Name: "relay-b", Up: true}, a.change(t))
+			require.Equal(t, vpcrelay.MeshChange{Name: "relay-a", Up: true}, b.change(t))
+
+			// An agent checks the grant of its peer, which the other relay signed.
+			roots := x509.NewCertPool()
+			roots.AddCert(a.root)
+			roots.AddCert(b.root)
+			laptop := startHostAgent(t, agents, roots, a.vpcRelay, "laptop", tc.a)
+			server := startHostAgent(t, agents, roots, b.vpcRelay, "server", tc.b)
+			for _, h := range []struct {
+				h    *hostAgent
+				mode agent.TransportMode
+			}{{laptop, tc.a}, {server, tc.b}} {
+				want := dp.Mode_MODE_PSP
+				if h.mode == quicMode {
+					want = dp.Mode_MODE_QUIC
+				}
+				assert.Equal(t, want, h.h.a.Status().Mode)
+			}
+			laptop.echo(t, 9000)
+			server.echo(t, 9000)
+			require.Eventually(t, func() bool { return laptop.hasRoute(server.prefix) && server.hasRoute(laptop.prefix) },
+				10*time.Second, 10*time.Millisecond, "each agent has the route of the other")
+
+			// The first packet opens the peer session through the two relays.
+			for _, size := range []int{5, 1200} {
+				msg := bytes.Repeat([]byte{byte(size)}, size)
+				laptop.ping(t, server, 9000, msg)
+				server.ping(t, laptop, 9000, msg)
+			}
+			assert.Equal(t, 1, laptop.a.Status().Peers, "peer sessions of laptop")
+			assert.Equal(t, 1, server.a.Status().Peers, "peer sessions of server")
+			assert.Empty(t, pathDrops(t, a, b), "drops between the relays")
+
+			// When server stops, laptop loses its route and closes the session.
+			server.stop()
+			require.Eventually(t, func() bool { return !laptop.hasRoute(server.prefix) && laptop.a.Status().Peers == 0 },
+				10*time.Second, 10*time.Millisecond, "laptop has no route and no session")
+		})
+	}
+}
+
+// TestRelay_MeshAgentsDrain stops relay-a of a mesh of two relay hosts. Its agent
+// moves to relay-b, and UDP passes both ways with the agent of relay-b again.
+func TestRelay_MeshAgentsDrain(t *testing.T) {
+	cases := []struct {
+		name string
+		mode agent.TransportMode // The zero value is auto, which gives PSP here.
+	}{{name: "PSP"}, {name: "QUIC", mode: agent.TransportQUIC}}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ca := newMeshCA(t)
+			agents, err := vpctest.NewCA()
+			require.NoError(t, err)
+			addrs := &vpctest.Addresses{}
+			// An agent gets Drain only from a relay with a lame duck time.
+			a := startMeshRelayWith(t, ca, relayOpts{name: "relay-a", lameDuck: 2 * time.Second, agentCA: agents, addrs: addrs})
+			b := startMeshRelayWith(t, ca, relayOpts{name: "relay-b", agentCA: agents, addrs: addrs})
+			b.mesh.SetMembers([]vpcrelay.MeshMember{a.member()})
+			a.mesh.SetMembers([]vpcrelay.MeshMember{b.member()})
+			require.Equal(t, vpcrelay.MeshChange{Name: "relay-b", Up: true}, a.change(t))
+			require.Equal(t, vpcrelay.MeshChange{Name: "relay-a", Up: true}, b.change(t))
+			roots := x509.NewCertPool()
+			roots.AddCert(a.root)
+			roots.AddCert(b.root)
+			laptop := startHostAgent(t, agents, roots, a.vpcRelay, "laptop", tc.mode)
+			server := startHostAgent(t, agents, roots, b.vpcRelay, "server", tc.mode)
+			mode := laptop.a.Status().Mode
+			laptop.echo(t, 9000)
+			server.echo(t, 9000)
+			require.Eventually(t, func() bool { return laptop.hasRoute(server.prefix) && server.hasRoute(laptop.prefix) },
+				10*time.Second, 10*time.Millisecond, "each agent has the route of the other")
+			msg := []byte("hello")
+			laptop.ping(t, server, 9000, msg)
+			server.ping(t, laptop, 9000, msg)
+
+			// laptop knows only relay-a, and gets relay-b in the Drain of relay-a.
+			old, start := laptop.prefix, time.Now()
+			a.cancel()
+			laptop.attached(t)
+			moved := time.Since(start)
+			require.NotEqual(t, old, laptop.prefix)
+			laptop.echo(t, 9000)
+			require.Eventually(t, func() bool { return server.hasRoute(laptop.prefix) && !server.hasRoute(old) },
+				10*time.Second, 10*time.Millisecond, "server has only the new route of laptop")
+			assert.Len(t, b.router.AttachmentStats(), 2, "attachments on relay-b")
+			assert.Equal(t, mode, laptop.a.Status().Mode)
+
+			// The peer session through relay-a ended. The new one is on relay-b.
+			laptop.ping(t, server, 9000, msg)
+			server.ping(t, laptop, 9000, msg)
+			t.Logf("laptop attached on relay-b %d ms after the stop of relay-a, and UDP passed both ways after %d ms",
+				moved.Milliseconds(), time.Since(start).Milliseconds())
+			require.Eventually(t, func() bool { return laptop.a.Status().Peers == 1 && server.a.Status().Peers == 1 },
+				10*time.Second, 10*time.Millisecond, "one peer session for each agent")
+		})
 	}
 }

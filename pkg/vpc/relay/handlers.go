@@ -59,9 +59,8 @@ func (s *Session) target(ref *dp.VPCRef, addr string) (VPCKey, netip.Addr, error
 	return key, a.Unmap(), nil
 }
 
-// ResolvePeer tells how the relay reaches an address. Permit runs first, so
-// a denied caller does not learn if the address exists. M1 reaches only
-// peers on this relay.
+// ResolvePeer tells how the relay reaches an address: on a session of its own or
+// over a trunk. Permit runs first, so a denied caller does not learn if it exists.
 func (srv *Server) ResolvePeer(ctx context.Context, in *dp.ResolvePeerRequest) (*dp.ResolvePeerResponse, error) {
 	c, err := srv.R.caller(ctx)
 	if err != nil {
@@ -80,16 +79,40 @@ func (r *Router) resolvePeer(c *Session, in *dp.ResolvePeerRequest) (*dp.Resolve
 	if !r.permit(c.id.VPC, c.id.ID, key, dst) {
 		return nil, rpc.Errorf(rpc.PermissionDenied, "permit denies %s", dst)
 	}
-	peer := r.localOwner(key, dst).s
-	if peer == nil {
+	peer := r.ownerOf(key, dst).s
+	var res *dp.ResolvePeerResponse
+	switch {
+	case peer == nil:
+	case peer.home != "":
+		res = r.trunkReach(c, peer)
+	default:
+		res = &dp.ResolvePeerResponse{Reach: dp.Reach_REACH_LOCAL, P2P: true, Subject: peer.id.ID}
+		// Many agents can have the subject. The attachments tell which agent has dst.
+		for _, a := range peer.attachments {
+			res.AttachmentIds = append(res.AttachmentIds, a.ID)
+		}
+	}
+	if res == nil {
 		return nil, rpc.Errorf(rpc.NotFound, "no route to %s", dst)
 	}
-	res := &dp.ResolvePeerResponse{Reach: dp.Reach_REACH_LOCAL, P2P: true, Subject: peer.id.ID}
-	// Many agents can have the subject. The attachments tell which agent has dst.
-	for _, a := range peer.attachments {
-		res.AttachmentIds = append(res.AttachmentIds, a.ID)
-	}
 	return res, nil
+}
+
+// trunkReach returns the answer for an address of peer, a session of another
+// relay, or nil if c cannot open a peer session to it now. Router.mu must be held.
+func (r *Router) trunkReach(c, peer *Session) *dp.ResolvePeerResponse {
+	// An agent from before the answer, with no routes of other relays or with no
+	// sender tag opens no peer session to another relay.
+	if c.version.GetRevision() < trunkReachRevision || !c.sync.meshRoutes || !r.trunked(c) {
+		return nil
+	}
+	t := r.trunk.Load()
+	if !t.reaches(peer.home) {
+		return nil
+	}
+	// The entry that has the route is one of the attachments, so the list is not empty.
+	ids := t.m.pres.attachments(remoteKey{home: peer.home, id: peer.id, agent: peer.name, tag: peer.tag})
+	return &dp.ResolvePeerResponse{Reach: dp.Reach_REACH_TRUNK, Subject: peer.id.ID, AttachmentIds: ids}
 }
 
 // RegisterSPI adds rows from the caller to the receiver of the destination.

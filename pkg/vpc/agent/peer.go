@@ -355,8 +355,10 @@ func (rc *relayConn) resolve(ctx context.Context, dst netip.Addr) (*dp.ResolvePe
 // dial dials a peer session to dst, which ResolvePeer answered with res, and
 // opens it.
 func (a *Agent) dial(ctx context.Context, rc *relayConn, dst netip.Addr, res *dp.ResolvePeerResponse) (*peer, error) {
-	if res.GetReach() != dp.Reach_REACH_LOCAL {
-		return nil, fmt.Errorf("peer %s is not on this relay (%v)", dst, res.GetReach())
+	// The relay carries the peer frames and the data to a peer on another relay,
+	// so the session is the same as with a peer on this relay.
+	if reach := res.GetReach(); reach != dp.Reach_REACH_LOCAL && reach != dp.Reach_REACH_TRUNK {
+		return nil, fmt.Errorf("relay has no path to peer %s (%v)", dst, reach)
 	}
 	qc, err := rc.peerTr.Dial(ctx, net.UDPAddrFromAddrPort(netip.AddrPortFrom(dst, 0)), a.peerTLS(), peerQUIC)
 	if err != nil {

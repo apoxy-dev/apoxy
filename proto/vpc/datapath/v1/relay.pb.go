@@ -1431,9 +1431,10 @@ type ResolvePeerResponse struct {
 	HomeRelay *RelayRef `protobuf:"bytes,2,opt,name=home_relay,json=homeRelay,proto3" json:"home_relay,omitempty"`
 	// True if P2P with the peer is allowed.
 	P2P bool `protobuf:"varint,3,opt,name=p2p,proto3" json:"p2p,omitempty"`
-	// SPIFFE ID of the peer. Set for REACH_LOCAL.
+	// SPIFFE ID of the peer. Set for REACH_LOCAL and REACH_TRUNK.
 	Subject string `protobuf:"bytes,4,opt,name=subject,proto3" json:"subject,omitempty"`
-	// Attachments of the session that has the address. Set for REACH_LOCAL.
+	// Attachments of the session that has the address. Set for REACH_LOCAL and
+	// REACH_TRUNK.
 	AttachmentIds []string `protobuf:"bytes,5,rep,name=attachment_ids,json=attachmentIds,proto3" json:"attachment_ids,omitempty"`
 }
 

@@ -36,6 +36,9 @@ const (
 	// trunkBridgeRevision is the first revision of a relay that takes the clear
 	// inner packets of the senders of another relay.
 	trunkBridgeRevision = 9
+	// trunkReachRevision is the first revision of an agent that gets the answer
+	// REACH_TRUNK, and so opens a peer session to an agent of another relay.
+	trunkReachRevision = 10
 
 	// trunkLanePSP is the SA lane for whole PSP packets of agents. It has no
 	// replay window, because the agent that gets each packet has one.
@@ -232,6 +235,18 @@ func (t *trunk) bridgeTo(name string) *trunkPair {
 		}
 	}
 	return nil
+}
+
+// reaches reports whether a new peer session can pass to member name: its newest
+// session is open with keys of the two relays, and it takes clear inner packets.
+func (t *trunk) reaches(name string) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	p := t.pairs[name]
+	if p == nil || p.sess == nil || !p.sess.probing || p.sess.s.Context().Err() != nil {
+		return false
+	}
+	return p.bridges.Load() && p.tx.SA(trunkLanePSP) != nil && p.tx.SA(trunkLaneInner) != nil
 }
 
 // pairOf returns the pair of the member of s, and makes it if it is new. A

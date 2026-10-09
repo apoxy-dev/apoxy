@@ -847,6 +847,49 @@ func TestTrunkBridgeNoSeal(t *testing.T) {
 	}
 }
 
+// TestTrunkBridgeSenderEnds checks a packet that is on its way to relay-a when the
+// session of its sender ends: it has the tag of the sender, and never the tag 0.
+func TestTrunkBridgeSenderEnds(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		g := newRowRig(t, trunkRigConfig(t))
+		defer g.stop()
+		q := g.bridgeEnd(dp.Mode_MODE_QUIC, "q", brQSocket, brQNet)
+		g.link(trunkBridgeRevision)
+		inner := innerOf(brQ, brServer, 100)
+		frame := peerconn.EncodeData(nil, testVNI, inner)
+		hopOf := func() (hop, uint32) {
+			g.r.mu.RLock()
+			defer g.r.mu.RUnlock()
+			return g.r.nextHop(q.s, inner), q.s.tag
+		}
+		h, tag := hopOf()
+		require.NotZero(t, tag)
+		require.Equal(t, tag, h.tag)
+
+		// The session ends after the relay made the hop of the packet.
+		g.r.removeSession(q.s)
+		buf := make([]byte, maxUDP)
+		g.packets()
+		require.True(t, g.r.trunkCarries(q.s, h, inner))
+		require.True(t, g.r.deliver(q.s, h, frame, inner, buf, time.Now()))
+		sent := g.packets()
+		require.Len(t, sent, 1)
+		_, got, _, err := g.rxq.ReceiveTrunk(slices.Clone(sent[0].b))
+		require.NoError(t, err)
+		assert.Equal(t, tag, got, "tag of the trunk packet")
+
+		// A hop from after the end has no tag, and the relay seals no packet for it.
+		late, tag := hopOf()
+		require.Zero(t, tag)
+		assert.Equal(t, "relay-a", late.home)
+		assert.Zero(t, late.tag)
+		assert.False(t, g.r.trunkCarries(q.s, late, inner))
+		assert.False(t, g.r.deliver(q.s, late, frame, inner, buf, time.Now()))
+		assert.Empty(t, g.packets())
+		assert.Empty(t, noRoutes(g.r, q.s))
+	})
+}
+
 // TestInnerSource checks the source address that the relay reads from an inner
 // packet. An address has the form of the routes: an IPv4 address is not mapped.
 func TestInnerSource(t *testing.T) {

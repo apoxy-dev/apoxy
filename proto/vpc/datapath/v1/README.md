@@ -349,7 +349,7 @@ Addresses and prefixes are text (`fd61::1`, `10.0.0.0/8`, `host:port`).
 | `Session`       | bidi  | Agent: `Hello{mode, fallback_reason, spare, version, name, local_routes_only}`, then `Ack{rev}` and `Status` (ICV failures; the first one after `Config` also has the time to connect). Relay: `Welcome` (reflexive address, lane port limit, version), `Config`, in PSP mode a rekey with relay SAs, then `RouteDelta{rev}`, `NoRoute`, rekey (`KeysRequest`), `Config`, `Drain`, and in PSP mode `RxReport` (only the last one waits). |
 | `Attach`        | unary | `AttachRequest{vpc, name, labels, routes}` -> `AttachResponse{attachment_id, grant}` |
 | `Rekey`         | unary | `KeysRequest` -> `KeysResponse`: SAs for traffic from the relay to the agent. Errors: `FailedPrecondition` (no `Session` call in PSP mode), `InvalidArgument` (an SA VNI is not the network ID). |
-| `ResolvePeer`   | unary | `{vpc, address}` -> `{reach: local, trunk or visit; home_relay; p2p; subject; attachment_ids}`. Errors: `NotFound`, `PermissionDenied`. |
+| `ResolvePeer`   | unary | `{vpc, address}` -> `{reach: local or trunk; p2p; subject; attachment_ids}`. Errors: `NotFound`, `PermissionDenied`. The relay sends no `REACH_VISIT` and no `home_relay`. |
 | `RegisterSPI`   | unary | `{vpc, destination, spis, expires_in, lanes, sa_lanes}` -> `Empty`. `lanes` gives the source of each SPI: 0 is the session address, i is port i of `RegisterLanes`. `sa_lanes` gives the SA lane of each SPI at the receiver. |
 | `UnregisterSPI` | unary | `{vpc, spis}` -> `Empty` |
 | `RegisterLanes` | unary | `{ports, receive}` -> `Empty`: replaces the lane ports of the session. `receive` tells that the agent reads them. Errors: `InvalidArgument` (more ports than `Welcome.max_lanes`, port 0, the session port, a repeated port), `AlreadyExists` (a port is a source of another agent), `FailedPrecondition`. |
@@ -360,6 +360,11 @@ leaf chains through the rest of the chain to the roots that agents dial relays
 with, the leaf names `relay_id` (a DNS name, for example the dial host name of
 the relay), the leaf key made the signature, `min_revision` is not above the
 revision of the peer, and `not_after` has not passed.
+
+A relay with a mesh refuses an `Attach` with more than 64 prefixes, the
+addresses and the advertised routes together (`InvalidArgument`), because the
+other relays refuse an entry with more prefixes (see "Mesh"). A relay with no
+mesh has no such limit.
 
 Many agents can have one SPIFFE ID. `Hello.name` is the name of the base
 attachment of the agent, and it tells the agents of one SPIFFE ID apart. Two
@@ -376,6 +381,15 @@ uses this rule in three places:
   that the caller knows if it has a peer session with that agent.
 
 All sessions of one SPIFFE ID can send from the routes of that SPIFFE ID.
+
+`ResolvePeer` tells how the relay reaches an address. Permit comes first: a
+caller that Permit denies gets `PermissionDenied`, and does not learn if the
+address exists. The answer is `REACH_LOCAL` with `p2p` when a session of this
+relay has the route of the address. It is `REACH_TRUNK` when a session of
+another relay of the mesh has the route and the caller can open a peer session
+to it now (see "Mesh" for the conditions). The two answers have `subject`, the
+SPIFFE ID of that session, and `attachment_ids`, its attachments. In each other
+case the call returns `NotFound`.
 
 A connection has one `Session` call and lives as long as that call. A relay
 closes a connection with a `RelayCloseCode`: `CERT` (the agent cert failed a
@@ -622,12 +636,48 @@ stay, and they carry packets again when the other relay is up and gave new
 SAs. The sender of a clear inner packet gets no `NoRoute` while the route of
 the destination stays.
 
-`ResolvePeer` returns `NotFound` for an address of a route of another relay,
-so an agent starts no peer session to it and registers no SPI for it. The
-inner packet of a data frame, or of a PSP packet that the relay opens, for
-such an address goes to the other relay in a trunk packet (see "Trunk"). A
-peer frame for such an address goes to the other relay in a mesh datagram
-(see "Mesh datagrams").
+For an address of a route of another relay, `ResolvePeer` answers
+`REACH_TRUNK` only when all of these are true:
+
+- The session of the caller is at revision 10 or later. It gets the routes of
+  other relays: it has a `Session` call, and its `Hello` has no
+  `local_routes_only`. It has a sender tag, which it has from its first
+  attachment.
+- The newest mesh session with the other relay is open, and each of the two
+  relays has the trunk SAs of the other on that session, for the two lanes.
+- The other relay is at revision 9 or later. The rule is the same for a caller
+  in PSP mode and in QUIC mode: the relay does not know the mode of the peer,
+  and a PSP-mode caller sends to a QUIC-mode peer on lane 1.
+
+In each other case the call returns `NotFound`, as for an address with no
+route. This is also the answer in the 3 s after the session with the other
+relay ended, and on a new session before the two relays have its SAs. The peer
+sessions that are open in that time keep their paths, because the SAs stay for
+those 3 s (see "Trunk"). The answer has the `subject` and the attachment IDs
+of the entries of the session that has the address, the lowest generation
+first.
+
+An agent opens a peer session to an address with the answer `REACH_TRUNK` as
+to an address of its own relay, and it sends all its packets to its own relay.
+The packets of the peer session go in peer frames, and between the relays in
+mesh datagrams (see "Mesh datagrams"). The agents learn the mode of each other
+in `Open`, so an entry has no mode. Two PSP-mode agents make SAs for each
+other, and each one calls `RegisterSPI` on its own relay: their PSP packets go
+between the relays on lane 0, and no relay opens them. When one of the agents
+is in QUIC mode, each agent sends through its relay, in data frames or with
+its relay SA, and the inner packets go between the relays on lane 1 (see
+"Trunk"). The grant of the peer is from the other relay, so the roots that an
+agent checks grants with must cover the certs of all relays of the mesh.
+
+A peer session belongs to the relay session that it started on. When an agent
+moves its attachment to another relay, on a spare or after `Drain`, it closes
+the peer sessions of the old relay session. Its next packet to the peer opens
+a new one with the answer of the new relay: `REACH_LOCAL` if the peer is on
+that relay, and `REACH_TRUNK` if it is on another relay of the mesh.
+
+An agent below revision 10, or with `local_routes_only`, opens no peer session
+to such an address. It accepts the peer session that an agent of another relay
+opens, and then the two agents send to each other.
 
 ## Revisions
 
@@ -655,6 +705,7 @@ only for logs and metrics. On a mesh session, `MeshOpenRequest` and
 | 7 | The mesh datagram with a type byte, and its type `0x01`: a peer frame with the sender tag. | No duty. | No duty. | Sends a peer frame for an address with a route of another relay to that relay in a mesh datagram, when that relay is at revision 7 or later, and sends no `NoRoute` for it. Sends no mesh datagram to a relay below revision 7. Checks each mesh datagram of another relay, and gives its frame only to a session of its own. Drops a mesh datagram with another type. |
 | 8 | `Mesh.SPIRows` on the called relay. The trunk packet with a sender tag: a whole PSP packet of an agent. | No duty. | No duty. | Keeps the SPI rows that another relay gives in `SPIRows`. Opens a trunk packet with a sender tag, checks it with the rows and the entries of the other relay, and sends its PSP packet only to a session of its own. With a relay at revision 8 or later: opens one `SPIRows` call for its rows to that relay, and sends the PSP packets of those rows in trunk packets. Makes no `SPIRows` call to a relay below revision 8, sends it no trunk packet with a sender tag, refuses its `SPIRows` call with `FailedPrecondition`, and keeps that session. |
 | 9 | The trunk packet with a sender tag on lane 1: a clear inner packet of an agent. | No duty. | No duty. | Opens a trunk packet with a sender tag and a lane 1 SA, checks it with the replay window and the entries of the other relay, and sends its inner packet only to a session of its own: in a data frame, or sealed with the SA of a PSP-mode agent. With a relay at revision 9 or later: sends the inner packet of a data frame, or of a PSP packet that it opens, for an address with a route of that relay in a lane 1 trunk packet, and sends no `NoRoute` for it. Sends no such trunk packet to a relay below revision 9: it drops the inner packet, and sends no `NoRoute` for it. |
+| 10 | The answer `REACH_TRUNK` of `ResolvePeer`. | Opens a peer session to an address with the answer `REACH_TRUNK`, as to an address of its own relay. | No duty: it sends `local_routes_only`, so it gets `NotFound`. | Answers `ResolvePeer` for an address with a route of another relay with `REACH_TRUNK`, `subject` and `attachment_ids`, when the session of the caller is at revision 10 or later, gets the routes of other relays and has an attachment, the other relay is at revision 9 or later, and each relay has the trunk SAs of the other on the open mesh session. Answers `NotFound` in each other case, as a relay at revision 6 does. With a mesh, refuses an `Attach` with more than 64 prefixes. |
 
 ### Minimum revision
 
