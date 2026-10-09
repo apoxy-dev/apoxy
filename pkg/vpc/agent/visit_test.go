@@ -679,6 +679,36 @@ func TestVisitAfterCut(t *testing.T) {
 				oneVisit(t, a, b, ea, eb, heal)
 			},
 		},
+		{
+			// b is a visitor of relay-1 before the cut, so relay-1 sends the packets of a
+			// for b to that session and gives a no NoRoute. Only its answer tells a of the cut.
+			name: "peer session before the cut, the relay answer lets the visitor in",
+			run: func(t *testing.T, r1, r2 *testRelay, a, b *testAgent, ea, eb attachEvent, _ *lossyConn) {
+				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+				defer cancel()
+				require.NoError(t, a.a.Connect(ctx, eb.addr))
+				old := onlyPeer(t, a.a)
+				require.True(t, old.dialer)
+				require.True(t, a.a.first(a.current(), old.subject, old.instance), "a is the first agent")
+				v, err := b.a.visit(ctx, b.current(), r1.relayRef())
+				require.NoError(t, err)
+				defer b.a.release(v)
+				cutMesh(r1, r2)
+				waitReach(t, a, eb.addr, dp.Reach_REACH_VISIT)
+				b.a.setDown(b.current(), ea.addr, true)
+				require.False(t, pathDown(a.a, old), "a got no NoRoute")
+
+				require.NoError(t, b.a.connect(ctx, v.rc, ea.addr, nil))
+				assert.Error(t, old.qc.Context().Err(), "the old session closed")
+				assert.Zero(t, visitCount(a.a))
+				p := onlyPeer(t, a.a)
+				assert.Same(t, a.current(), p.rc)
+				assert.False(t, p.dialer)
+				require.NotNil(t, peerOn(b.a, v.rc, ea.addr), "peer session of b on its visitor session")
+				ping(t, a.stack, ea.addr, eb.addr, 9000, "to b on the visit of b")
+				ping(t, b.stack, eb.addr, ea.addr, 9000, "to a on the visit of b")
+			},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
