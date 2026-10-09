@@ -26,10 +26,9 @@ func TestNetworkMTU(t *testing.T) {
 		{name: "unset", mtu: 0, want: 1280},
 		{name: "lowest", mtu: 1280, want: 1280},
 		{name: "in the range", mtu: 1300, want: 1300},
-		{name: "largest", mtu: 1372, want: 1372},
-		{name: "one above the largest", mtu: 1373, want: 1372},
-		{name: "largest of older builds", mtu: 1412, want: 1372},
-		{name: "far above the largest", mtu: 9000, want: 1372},
+		{name: "largest", mtu: 1412, want: 1412},
+		{name: "one above the largest", mtu: 1413, want: 1412},
+		{name: "far above the largest", mtu: 9000, want: 1412},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

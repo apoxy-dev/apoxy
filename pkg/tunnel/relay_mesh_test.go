@@ -870,9 +870,9 @@ func testMeshPSP(t *testing.T, steerSockets int) {
 			Vpc: vpc, Destination: d.dst, Spis: []uint32{d.spi}, ExpiresIn: durationpb.New(time.Minute),
 		})
 		require.NoError(t, err, d.name)
-		// A trunk carries an inner MTU of 1280 at once, and of 1372 after its
+		// A trunk carries an inner MTU of 1280 at once, and of 1412 after its
 		// full-size probe passes.
-		for _, size := range []int{40, 1280, 1372} {
+		for _, size := range []int{40, 1280, 1412} {
 			inner := bytes.Repeat([]byte{byte(size)}, size)
 			inner[0] = 0x60
 			pkt := make([]byte, size+pspwire.Overhead)

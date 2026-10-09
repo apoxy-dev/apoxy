@@ -1217,7 +1217,7 @@ func TestMeshStop(t *testing.T) {
 			state := func() seen {
 				v := seen{
 					Entries: presenceIDs(stays.m, stops.name), Route: routeTable(stays.r, vpcA)[gonePrefix],
-					RowsIn: -1, Keys: stays.trunk().pair(stops.name) != nil,
+					RowsIn: -1, Keys: stays.trunk().to(stops.name) != nil,
 				}
 				stays.r.mu.RLock()
 				defer stays.r.mu.RUnlock()

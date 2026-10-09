@@ -7,6 +7,7 @@ import (
 	"context"
 	"net"
 	"net/netip"
+	"slices"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -81,7 +82,7 @@ func (g *rowRig) kept() (n int, ok bool) {
 }
 
 // sealed returns payload in a trunk packet of relay-a with tag, sealed with the
-// SA of lane. isPSP tells that the payload is a whole PSP packet.
+// SA of lane. isPSP tells that the payload is no IP packet.
 func (g *rowRig) sealed(lane int, tag uint32, payload []byte, isPSP bool) []byte {
 	g.t.Helper()
 	sa := g.tx.SA(lane)
@@ -107,12 +108,12 @@ func (g *rowRig) arrive(pkt []byte, from netip.AddrPort) []keptPacket {
 	return g.packets()
 }
 
-// fromServer gives the relay a PSP packet of server with spi in a trunk packet
-// from the address of relay-a. It returns the PSP packet and what the relay sent.
+// fromServer gives the relay a PSP packet of server with spi from the address of
+// relay-a, as relay-a sends it on. It returns the packet and what the relay sent.
 func (g *rowRig) fromServer(spi uint32) ([]byte, []keptPacket) {
 	g.t.Helper()
 	sent := pspOfSize(g.t, spi, 100)
-	return sent, g.arrive(g.sealed(trunkLanePSP, inTag, sent, true), g.addr)
+	return sent, g.arrive(slices.Clone(sent), g.addr)
 }
 
 // passes checks that the receiver at to gets a PSP packet of server with spi,
@@ -153,23 +154,20 @@ func (g *rowRig) txOf(s *Session) (packets, bytes uint64) {
 	return 0, 0
 }
 
-// TestTrunkInDeliver checks which trunk packets of relay-a with a PSP packet
-// go to a receiver on this relay, and why the others drop.
+// TestTrunkInDeliver checks which PSP packets from the address of relay-a go
+// with no change to a receiver on this relay, and why the others drop.
 func TestTrunkInDeliver(t *testing.T) {
 	stranger := netip.MustParseAddrPort("203.0.113.9:6081")
 	other := agentID(vpcA, "other")
-	v6 := ipPacket(netip.MustParseAddr("fd00:a::1"), netip.MustParseAddr(inDst), make([]byte, 60))
 	cases := []struct {
-		name  string
-		setup func(t *testing.T, g *rowRig)
-		lane  int
-		tag   uint32         // Zero is the tag of server.
-		spi   uint32         // SPI of the PSP packet. Zero is 5.
-		clear []byte         // Payload that is sealed as a clear inner packet.
-		junk  bool           // The payload is no PSP packet.
-		from  netip.AddrPort // Source of the trunk packet. Zero is the address of relay-a.
-		to    string         // Socket of the receiver that gets the packet. Empty is laptop.
-		drop  string         // Reason label of the drop. Empty is no drop.
+		name   string
+		setup  func(t *testing.T, g *rowRig)
+		spi    uint32         // SPI of the PSP packet. Zero is 5.
+		sealed bool           // relay-a seals the PSP packet with its trunk SA and the tag of server.
+		junk   int            // Length of a packet that is no PSP packet. Zero sends a PSP packet.
+		from   netip.AddrPort // Source of the packet. Zero is the address of relay-a.
+		to     string         // Socket of the receiver that gets the packet. Empty is laptop.
+		drop   string         // Reason label of the drop. Empty is no drop.
 	}{
 		{name: "row of the sender"},
 		{
@@ -195,7 +193,6 @@ func TestTrunkInDeliver(t *testing.T) {
 			},
 		},
 		{name: "SPI with no row", spi: 6, drop: "trunk_no_row"},
-		{name: "tag with no row", tag: inTag + 1, drop: "trunk_no_row"},
 		{
 			name: "row of a tag that no entry has",
 			setup: func(_ *testing.T, g *rowRig) {
@@ -203,7 +200,7 @@ func TestTrunkInDeliver(t *testing.T) {
 				row.SenderTag = 9
 				g.give(row)
 			},
-			tag: 9, drop: "trunk_sender",
+			drop: "trunk_sender",
 		},
 		{
 			name: "row in another VPC than the entry of its tag",
@@ -248,10 +245,12 @@ func TestTrunkInDeliver(t *testing.T) {
 			setup: func(_ *testing.T, g *rowRig) { g.give(rowTo(8, "fd00:f::1")) },
 			spi:   8, drop: "trunk_not_local",
 		},
-		{name: "PSP packet on the lane with a replay window", lane: trunkLaneInner, drop: "trunk_lane"},
-		{name: "clear packet on the lane for PSP packets", clear: v6, drop: "trunk_lane"},
-		{name: "payload that is no PSP packet", junk: true, drop: "malformed"},
-		{name: "packet from an address of no member", from: stranger, drop: "malformed"},
+		// A relay of this revision seals no PSP packet of a sender.
+		{name: "PSP packet that the other relay sealed with its trunk SA", sealed: true, drop: "trunk_payload"},
+		{name: "packet that is no PSP packet", junk: 100, drop: "malformed"},
+		{name: "packet that is shorter than a PSP packet", junk: pspwire.Overhead - 1, drop: "malformed"},
+		// The row of a member carries only the packets from the address of that member.
+		{name: "packet from an address of no member", from: stranger, drop: "unknown_source"},
 	}
 	cfg := trunkRigConfig(t)
 	for _, tc := range cases {
@@ -265,19 +264,17 @@ func TestTrunkInDeliver(t *testing.T) {
 				if tc.setup != nil {
 					tc.setup(t, g)
 				}
-				tag, spi, from := cmp.Or(tc.tag, inTag), cmp.Or(tc.spi, 5), g.addr
+				spi, from := cmp.Or(tc.spi, 5), g.addr
 				if tc.from.IsValid() {
 					from = tc.from
 				}
 				sent := pspOfSize(t, spi, 100)
-				var pkt []byte
+				pkt := slices.Clone(sent)
 				switch {
-				case tc.clear != nil:
-					pkt = g.sealed(tc.lane, tag, tc.clear, false)
-				case tc.junk:
-					pkt = g.sealed(tc.lane, tag, make([]byte, 100), true)
-				default:
-					pkt = g.sealed(tc.lane, tag, sent, true)
+				case tc.sealed:
+					pkt = g.sealed(trunkLane, inTag, sent, true)
+				case tc.junk > 0:
+					pkt = make([]byte, tc.junk)
 				}
 				out := g.arrive(pkt, from)
 
@@ -428,13 +425,13 @@ func TestTrunkInEnd(t *testing.T) {
 			drop: "trunk_not_local", rows: 1,
 		},
 		{
-			// A trunk packet from an address of no member is a malformed packet.
+			// A PSP packet from an address of no member is the packet of no sender.
 			name: "the other relay stops",
 			end: func(_ *testing.T, g *rowRig) {
 				g.end(g.sess, meshRestart)
 				g.deliver()
 			},
-			drop: "malformed", none: true,
+			drop: "unknown_source", none: true,
 		},
 		{
 			name: "the other relay leaves the member set",
@@ -442,10 +439,10 @@ func TestTrunkInEnd(t *testing.T) {
 				g.m.SetMembers(nil)
 				g.deliver()
 			},
-			drop: "malformed", none: true,
+			drop: "unknown_source", none: true,
 		},
 		{
-			// The rows of a lost relay stay, as its attachments do. Its keys do not.
+			// The rows of a lost relay stay, as its attachments do. Its pair does not.
 			name: "the other relay is lost",
 			end: func(_ *testing.T, g *rowRig) {
 				g.end(g.sess, meshLost)
@@ -455,13 +452,13 @@ func TestTrunkInEnd(t *testing.T) {
 				time.Sleep(time.Nanosecond)
 				g.deliver()
 			},
-			drop: "malformed", rows: 1,
+			drop: "unknown_source", rows: 1,
 		},
 		{
 			name: "the other relay has a new session",
 			end: func(_ *testing.T, g *rowRig) {
 				g.end(g.sess, meshLost)
-				g.rejoin(trunkRowsRevision, trunkRigAddr)
+				g.rejoin(trunkRevision, trunkRigAddr)
 			},
 			drop: "trunk_no_row", none: true,
 		},
@@ -512,7 +509,7 @@ func TestTrunkInSession(t *testing.T) {
 				g.give(serverRow(5, inTTL))
 				g.passes(5, rowSrc, "packet on the first session")
 
-				first, old := g.sess, g.sealed(trunkLanePSP, inTag, pspOfSize(t, 5, 100), true)
+				first, old := g.sess, pspOfSize(t, 5, 100)
 				g.end(first, meshLost)
 				if tc.down {
 					time.Sleep(downAfter)
@@ -523,7 +520,7 @@ func TestTrunkInSession(t *testing.T) {
 				rows, _ := g.kept()
 				assert.Equal(t, 1, rows, "the rows stay with no session")
 
-				g.rejoin(trunkRowsRevision, tc.addr)
+				g.rejoin(trunkRevision, tc.addr)
 				_, ok := g.kept()
 				assert.False(t, ok, "the rows of the session before ended")
 				g.drops(5, "trunk_no_row", "packet before the rows of the new session")
@@ -537,8 +534,8 @@ func TestTrunkInSession(t *testing.T) {
 
 				if tc.addr != trunkRigAddr {
 					before := dropsOf(g.r)
-					assert.Empty(t, g.arrive(old, trunkRigAddr), "trunk packet from the address before")
-					before["malformed"]++
+					assert.Empty(t, g.arrive(old, trunkRigAddr), "packet from the address before")
+					before["unknown_source"]++
 					assert.Equal(t, before, dropsOf(g.r))
 				}
 			})
@@ -546,13 +543,14 @@ func TestTrunkInSession(t *testing.T) {
 	}
 }
 
-// TestTrunkInMembers checks that the row of one relay carries no packet of
-// another relay with the same sender tag and SPI.
+// TestTrunkInMembers checks that two members can have rows with the same SPI, and
+// that each row carries only the packets from the address of its member.
 func TestTrunkInMembers(t *testing.T) {
 	cfg := trunkRigConfig(t)
 	synctest.Test(t, func(t *testing.T) {
 		g := newRowRig(t, cfg)
 		defer g.stop()
+		g.agent(agentID(vpcA, "home"), rowHome, "fd00:3::/96")
 		g.serve()
 		// relay-b has an agent with the tag of server on relay-a, and a row for it.
 		b := g.second(true)
@@ -563,14 +561,19 @@ func TestTrunkInMembers(t *testing.T) {
 		require.NoError(t, g.tk.setRows(b.sess, &dp.SPIRowUpdate{Rows: []*dp.SPIRow{serverRow(5, inTTL)}}, time.Now()))
 		g.drops(5, "trunk_no_row", "packet of relay-a for a row of relay-b")
 
-		sent := pspOfSize(t, 5, 100)
-		pkt := make([]byte, len(sent)+pspwire.Overhead)
-		n, err := b.tx.SA(trunkLanePSP).SealTrunkPSP(inTag, pkt, sent)
-		require.NoError(t, err)
-		out := g.arrive(pkt[:n], b.addr)
-		require.Len(t, out, 1, "packet of relay-b for its row")
-		assert.Equal(t, netip.MustParseAddrPort(rowSrc), out[0].to)
-		assert.Equal(t, sent, out[0].b)
+		fromB := func() []keptPacket {
+			sent := pspOfSize(t, 5, 100)
+			out := g.arrive(slices.Clone(sent), b.addr)
+			require.Len(t, out, 1, "packet of relay-b for its row")
+			assert.Equal(t, sent, out[0].b)
+			return out
+		}
+		assert.Equal(t, netip.MustParseAddrPort(rowSrc), fromB()[0].to)
+
+		// relay-a gives a row with the same SPI to another receiver.
+		g.give(rowTo(5, rowLocal))
+		g.passes(5, rowHome, "packet of relay-a for its row")
+		assert.Equal(t, netip.MustParseAddrPort(rowSrc), fromB()[0].to, "the row of relay-b did not change")
 	})
 }
 
@@ -586,7 +589,7 @@ func TestTrunkInNewPresence(t *testing.T) {
 		g.passes(5, rowSrc, "packet on the first session")
 		g.end(g.sess, meshLost)
 		// The hooks of the new session run at the deliver below, so the row stays.
-		s := g.open(trunkRowsRevision)
+		s := g.open(trunkRevision)
 		require.NoError(t, g.m.pres.accept(s))
 		g.drops(5, "trunk_sender", "packet after the new Presence call")
 		// The other relay can have given the tag to another agent.
@@ -632,7 +635,8 @@ func TestTrunkInRows(t *testing.T) {
 		rows int  // Rows of relay-a after the message. Zero is 3: SPI 5, 6 and 7.
 	}{
 		{name: "row", row: serverRow(5, inTTL), kept: true},
-		{name: "highest tag", row: with(func(r *dp.SPIRow) { r.SenderTag = pspwire.MaxVNI }), kept: true, rows: 4},
+		// The key of a row is its SPI, so a row of another sender replaces the row.
+		{name: "highest tag", row: with(func(r *dp.SPIRow) { r.SenderTag = pspwire.MaxVNI }), kept: true},
 		{name: "expiry of 1 ns", row: with(func(r *dp.SPIRow) { r.ExpiresIn = durationpb.New(time.Nanosecond) }), kept: true},
 		{name: "tag 0", row: with(func(r *dp.SPIRow) { r.SenderTag = 0 })},
 		{name: "tag above 24 bits", row: with(func(r *dp.SPIRow) { r.SenderTag = pspwire.MaxVNI + 1 })},
@@ -660,16 +664,19 @@ func TestTrunkInRows(t *testing.T) {
 				// The relay has a row with the SPI of the row of the case.
 				g.give(serverRow(5, inTTL))
 				g.r.mu.RLock()
-				had := g.r.in["relay-a"].rows[rowKey{inTag, 5}]
+				had := g.r.in["relay-a"].rows[5]
 				g.r.mu.RUnlock()
 				// The message has the row of the case between two good rows.
 				g.give(serverRow(6, inTTL), tc.row, serverRow(7, inTTL))
 				g.r.mu.RLock()
 				rows := g.r.in["relay-a"].rows
-				got := rows[rowKey{tc.row.GetSenderTag(), tc.row.GetSpi()}]
+				got := rows[tc.row.GetSpi()]
 				n := len(rows)
 				g.r.mu.RUnlock()
 				assert.Equal(t, tc.kept, got != nil && got != had, "the relay keeps the row of the case")
+				if tc.kept {
+					assert.Equal(t, tc.row.GetSenderTag(), got.tag)
+				}
 				assert.Equal(t, cmp.Or(tc.rows, 3), n, "rows that the relay keeps")
 				g.passes(6, rowSrc, "row before the row of the case")
 				g.passes(7, rowSrc, "row after the row of the case")
@@ -760,18 +767,18 @@ func TestTrunkInCall(t *testing.T) {
 			code: rpc.FailedPrecondition, msg: "already has an SPIRows call",
 		},
 		{
-			name: "session of a relay from before the SPI rows",
+			name: "session of a relay from before the trunk revision",
 			sess: func(g *rowRig) *MeshSession {
 				g.end(g.sess, meshLost)
-				return g.join(trunkRowsRevision - 1)
+				return g.join(trunkRevision - 1)
 			},
-			code: rpc.FailedPrecondition, msg: "has no SPI rows",
+			code: rpc.FailedPrecondition, msg: "has no trunk",
 		},
 		{
 			name: "session that a new session replaced",
 			sess: func(g *rowRig) *MeshSession {
 				old := g.sess
-				g.join(trunkRowsRevision)
+				g.join(trunkRevision)
 				return old
 			},
 			code: rpc.FailedPrecondition, msg: "not a member with this session",
@@ -812,7 +819,7 @@ func TestTrunkInCall(t *testing.T) {
 			g.serve()
 			old := g.sess
 			g.end(old, meshLost)
-			g.rejoin(trunkRowsRevision, trunkRigAddr)
+			g.rejoin(trunkRevision, trunkRigAddr)
 			require.NoError(t, g.tk.rowsFrom(g.sess))
 			err := g.tk.setRows(old, &dp.SPIRowUpdate{Rows: []*dp.SPIRow{serverRow(5, inTTL)}}, time.Now())
 			assert.Equal(t, rpc.FailedPrecondition, rpc.CodeOf(err), "error: %v", err)
@@ -829,8 +836,8 @@ func TestTrunkInCall(t *testing.T) {
 			g.give(serverRow(5, inTTL))
 			g.end(g.sess, meshLost)
 			// The hooks of the two new sessions run at the deliver below.
-			g.open(trunkRowsRevision)
-			s := g.open(trunkRowsRevision)
+			g.open(trunkRevision)
+			s := g.open(trunkRevision)
 			require.NoError(t, g.tk.rowsFrom(s))
 			rows, ok := g.kept()
 			assert.True(t, ok)
@@ -848,7 +855,7 @@ func TestTrunkInCall(t *testing.T) {
 			g.serve()
 			g.give(serverRow(5, inTTL))
 			g.end(g.sess, meshLost)
-			g.end(g.open(trunkRowsRevision), meshLost)
+			g.end(g.open(trunkRevision), meshLost)
 			g.deliver()
 			_, ok := g.kept()
 			assert.False(t, ok, "the rows of the session before the new session ended")
@@ -875,25 +882,25 @@ func TestTrunkInMetric(t *testing.T) {
 		other := serverRow(8, inTTL)
 		other.SenderTag = 9
 		g.give(serverRow(5, inTTL), rowTo(6, "fd00:f::1"), serverRow(7, time.Second), other)
-		pkt := func(lane int, tag, spi uint32) []byte { return g.sealed(lane, tag, pspOfSize(t, spi, 100), true) }
+		pkt := func(spi uint32) []byte { return pspOfSize(t, spi, 100) }
 		for range 2 {
-			assert.Empty(t, g.arrive(pkt(trunkLanePSP, inTag, 6), g.addr))
+			assert.Empty(t, g.arrive(pkt(6), g.addr))
 		}
 		for range 3 {
-			assert.Empty(t, g.arrive(pkt(trunkLanePSP, 9, 8), g.addr))
+			assert.Empty(t, g.arrive(pkt(8), g.addr))
 		}
 		for range 4 {
-			assert.Empty(t, g.arrive(pkt(trunkLanePSP, inTag, 4), g.addr))
+			assert.Empty(t, g.arrive(pkt(4), g.addr))
 		}
 		for range 5 {
-			assert.Empty(t, g.arrive(pkt(trunkLaneInner, inTag, 5), g.addr))
+			assert.Empty(t, g.arrive(g.sealed(trunkLane, inTag, pkt(5), true), g.addr))
 		}
 		time.Sleep(time.Second + time.Nanosecond)
 		for range 6 {
-			assert.Empty(t, g.arrive(pkt(trunkLanePSP, inTag, 7), g.addr))
+			assert.Empty(t, g.arrive(pkt(7), g.addr))
 		}
 		g.r.SetPermit(denyAll)
-		assert.Empty(t, g.arrive(pkt(trunkLanePSP, inTag, 5), g.addr))
+		assert.Empty(t, g.arrive(pkt(5), g.addr))
 
 		const want = `
 # HELP apoxy_vpc_relay_dropped_packets_total Packets that the relay dropped before it forwarded them, by reason.
@@ -914,11 +921,11 @@ apoxy_vpc_relay_dropped_packets_total{reason="mesh_unknown_tag"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="send_queue"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="trunk_expired"} 6
 apoxy_vpc_relay_dropped_packets_total{reason="trunk_keys"} 0
-apoxy_vpc_relay_dropped_packets_total{reason="trunk_lane"} 5
 apoxy_vpc_relay_dropped_packets_total{reason="trunk_mtu"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="trunk_no_row"} 4
 apoxy_vpc_relay_dropped_packets_total{reason="trunk_not_local"} 2
 apoxy_vpc_relay_dropped_packets_total{reason="trunk_not_sent"} 0
+apoxy_vpc_relay_dropped_packets_total{reason="trunk_payload"} 5
 apoxy_vpc_relay_dropped_packets_total{reason="trunk_permit"} 1
 apoxy_vpc_relay_dropped_packets_total{reason="trunk_replay"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="trunk_sender"} 3

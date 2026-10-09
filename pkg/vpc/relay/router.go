@@ -102,8 +102,8 @@ const (
 	// DropTrunkMTU drops a packet for another relay that is too large for the
 	// trunk to that relay.
 	DropTrunkMTU
-	// DropTrunkKeys drops a packet for another relay when the trunk has no SA
-	// for it.
+	// DropTrunkKeys drops a packet for another relay when the relay has no trunk
+	// to it now, or no SA of it for a clear packet.
 	DropTrunkKeys
 )
 
@@ -121,6 +121,9 @@ type Router struct {
 	// epoch goes up at each change of a route, of Permit or of the attachments
 	// of a member. The rows of the members do their checks again then.
 	epoch atomic.Uint64
+	// refusals counts the rows that the relay refused or ended for an SPI that
+	// the relay of the receiver has in use.
+	refusals [numRowRefusals]atomic.Uint64
 
 	mu       sync.RWMutex
 	permit   Permit
@@ -758,22 +761,16 @@ func (r *Router) SetPermit(p Permit) {
 
 // Forward finds where to send a PSP packet with outer source src and SPI
 // spi. It returns Pass and the address of the receiver, or a drop verdict. For
-// a receiver on another relay, the address is the relay socket of that relay.
+// a receiver on another relay, the address is the relay socket of that relay,
+// which gets the packet with no change.
 func (r *Router) Forward(src netip.AddrPort, spi uint32, size int, now time.Time) (netip.AddrPort, Verdict) {
-	dst, _, v := r.forward(src, spi, size, now)
-	return dst, v
-}
-
-// forward is Forward. For a receiver on another relay it also returns how to
-// seal the packet for the trunk, and the caller must not send it unsealed.
-func (r *Router) forward(src netip.AddrPort, spi uint32, size int, now time.Time) (netip.AddrPort, trunkSeal, Verdict) {
 	src = netip.AddrPortFrom(src.Addr().Unmap(), src.Port())
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	s := r.bySource[src]
 	if s == nil || !s.from(src, now) {
 		r.drops[dropUnknownSource].Add(1)
-		return netip.AddrPort{}, trunkSeal{}, DropUnknownSource
+		return netip.AddrPort{}, DropUnknownSource
 	}
 	w := s.rows[spi]
 	if t := s.twin; (w == nil || now.After(w.expires)) && t != nil && !t.closed {
@@ -785,36 +782,33 @@ func (r *Router) forward(src netip.AddrPort, spi uint32, size int, now time.Time
 	if w == nil || now.After(w.expires) {
 		s.dropUnknownSPI.Add(1)
 		r.drops[dropUnknownSPI].Add(1)
-		return netip.AddrPort{}, trunkSeal{}, DropUnknownSPI
+		return netip.AddrPort{}, DropUnknownSPI
 	}
-	var ts trunkSeal
 	var pair *trunkPair
 	if m := w.trunk; m != nil {
 		// The checks of the trunk come first: a packet that it cannot carry
 		// takes nothing from the meters.
-		if pair = m.pair.Load(); pair != nil {
-			ts = trunkSeal{sa: pair.tx.SA(trunkLanePSP), tag: s.tag}
-		}
-		if v := r.trunkFits(s, pair, ts.sa, size); v != Pass {
-			return netip.AddrPort{}, trunkSeal{}, v
+		pair = m.pair.Load()
+		if v := r.trunkFits(s, pair, size); v != Pass {
+			return netip.AddrPort{}, v
 		}
 	}
 	if w.meter != nil && !w.meter.AllowN(now, size) {
 		w.dropMeter.Add(1)
 		s.dropMeter.Add(1)
 		r.drops[dropLaneMeter].Add(1)
-		return netip.AddrPort{}, trunkSeal{}, DropMeter
+		return netip.AddrPort{}, DropMeter
 	}
 	if !r.allow(s, size, now) {
-		return netip.AddrPort{}, trunkSeal{}, DropTunnelLimit
+		return netip.AddrPort{}, DropTunnelLimit
 	}
 	w.lastUsed.Store(now.UnixNano())
 	w.packets.Add(1)
 	w.bytes.Add(uint64(size))
 	if pair != nil {
-		return pair.addr, ts, Pass
+		return pair.addr, Pass
 	}
-	return w.receiver.dst(w.saLane), trunkSeal{}, Pass
+	return w.receiver.dst(w.saLane), Pass
 }
 
 // allow reports whether the tunnel limit of s lets size bytes through now. It
@@ -920,7 +914,7 @@ type SenderStats struct {
 	// the tunnel limit. DataDrops does not count them.
 	DropTunnelLimit uint64
 	// DropTrunk counts the PSP packets and the inner packets for another relay
-	// that the trunk to it did not carry: too large, or no SA.
+	// that the trunk to it did not carry: too large, no trunk now, or no SA.
 	DropTrunk uint64
 	Lanes     []LaneStats // Sorted by SPI.
 	// DataSent and DataDrops count the data frames and the decrypted PSP

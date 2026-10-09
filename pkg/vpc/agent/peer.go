@@ -772,7 +772,8 @@ func spisOf(sas []keys.SA) []uint32 {
 	return spis
 }
 
-// refreshSPIs registers the live SPIs again, so that idle rows stay.
+// refreshSPIs registers the live SPIs again, so that idle rows stay. If the relay
+// refuses an SPI as in use, it closes the session: the next session has new keys.
 func (p *peer) refreshSPIs() {
 	type group struct {
 		spis  []uint32
@@ -797,7 +798,14 @@ func (p *peer) refreshSPIs() {
 	ctx, cancel := context.WithTimeout(p.rc.ctx, keysTimeout)
 	defer cancel()
 	for exp, g := range byExpiry {
-		if _, err := p.rc.c.RegisterSPI(ctx, p.registerRequest(g.spis, g.lanes, exp.Sub(now))); err != nil {
+		_, err := p.rc.c.RegisterSPI(ctx, p.registerRequest(g.spis, g.lanes, exp.Sub(now)))
+		if rpc.CodeOf(err) == rpc.AlreadyExists {
+			// The relay has no row for the SPI, so it drops each packet of this session.
+			slog.Info("Closing a peer session because the relay refused its SPI rows", "peer", p.subject, "error", err)
+			_ = p.qc.CloseWithError(0, "relay refused the SPI rows")
+			return
+		}
+		if err != nil {
 			slog.Warn("Failed to refresh SPI rows at the relay", "peer", p.subject, "error", err)
 		}
 	}

@@ -105,7 +105,7 @@ const (
 	dropClosed    // The forward goroutines stopped.
 	dropSendQueue // The forward goroutine of the destination is too slow.
 	dropTrunkMTU  // The packet is too large for the trunk to another relay.
-	dropTrunkKeys // The trunk to another relay has no SA for the packet.
+	dropTrunkKeys // The relay has no trunk to another relay now, or no SA of it for a clear packet.
 	// The reasons below are for a peer frame to or from a mesh member.
 	dropMeshNoSession  // The member of the destination has no open mesh session.
 	dropMeshOldMember  // The member of the destination does not know the frame.
@@ -118,8 +118,8 @@ const (
 	dropMeshNotLocal   // No session of this relay has the route of the destination.
 	dropMeshNotSent    // The session of the destination did not take the frame.
 	// The reasons below are for the packet of a sender on another relay.
-	dropTrunkLane     // The payload type is not the type of the lane of the trunk SA.
-	dropTrunkNoRow    // The other relay gave no row for the sender tag and the SPI.
+	dropTrunkPayload  // The trunk packet of a sender has a PSP packet as payload.
+	dropTrunkNoRow    // The SPI is not of a trunk SA, and the other relay gave no row for it.
 	dropTrunkExpired  // The row of the other relay ended at its time.
 	dropTrunkSender   // No entry from the session of the row or of the trunk SA has the tag in the VPC.
 	dropTrunkPermit   // Permit denies the destination.
@@ -151,7 +151,7 @@ var dropLabels = [numDropReasons]string{
 	dropMeshPermit:     "mesh_permit",
 	dropMeshNotLocal:   "mesh_not_local",
 	dropMeshNotSent:    "mesh_not_sent",
-	dropTrunkLane:      "trunk_lane",
+	dropTrunkPayload:   "trunk_payload",
 	dropTrunkNoRow:     "trunk_no_row",
 	dropTrunkExpired:   "trunk_expired",
 	dropTrunkSender:    "trunk_sender",
@@ -165,6 +165,21 @@ var dropLabels = [numDropReasons]string{
 var dropsDesc = prometheus.NewDesc("apoxy_vpc_relay_dropped_packets_total",
 	"Packets that the relay dropped before it forwarded them, by reason.", []string{"reason"}, nil)
 
+// rowRefusal is what has the SPI of a row in use at the relay of its receiver.
+type rowRefusal int
+
+const (
+	refusedByRow     rowRefusal = iota // Another row to that relay.
+	refusedByTrunkSA                   // A trunk SA that that relay gave.
+	numRowRefusals
+)
+
+var rowRefusalLabels = [numRowRefusals]string{refusedByRow: "row", refusedByTrunkSA: "trunk_sa"}
+
+var refusalsDesc = prometheus.NewDesc("apoxy_vpc_relay_refused_rows_total",
+	"Rows that the relay refused or ended because the relay of the receiver has their SPI in use, by what has the SPI.",
+	[]string{"reason"}, nil)
+
 var (
 	xdpPacketsDesc = prometheus.NewDesc("apoxy_vpc_relay_xdp_packets_total",
 		"PSP packets that the XDP program forwarded, or gave to the socket path, by result.", []string{"result"}, nil)
@@ -177,6 +192,7 @@ var _ prometheus.Collector = (*Router)(nil)
 // Describe implements prometheus.Collector.
 func (r *Router) Describe(ch chan<- *prometheus.Desc) {
 	ch <- dropsDesc
+	ch <- refusalsDesc
 	ch <- xdpPacketsDesc
 	ch <- xdpBytesDesc
 }
@@ -193,6 +209,9 @@ func (r *Router) Collect(ch chan<- prometheus.Metric) {
 	drops[dropTunnelLimit] += x.tunnelDrops
 	for i, n := range drops {
 		ch <- prometheus.MustNewConstMetric(dropsDesc, prometheus.CounterValue, float64(n), dropLabels[i])
+	}
+	for i := range r.refusals {
+		ch <- prometheus.MustNewConstMetric(refusalsDesc, prometheus.CounterValue, float64(r.refusals[i].Load()), rowRefusalLabels[i])
 	}
 	for _, c := range []struct {
 		result string

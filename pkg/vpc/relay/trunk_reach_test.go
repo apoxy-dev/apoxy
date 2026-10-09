@@ -90,10 +90,10 @@ func TestResolvePeerTrunk(t *testing.T) {
 		{name: "agent with no Session call", caller: reachCaller{rev: 10, noSync: true}},
 		{name: "session with no attachment", caller: reachCaller{rev: 10, mode: dp.Mode_MODE_PSP, spare: true}},
 
-		{name: "relay at the bridge revision, PSP-mode agent", caller: this, link: at(trunkBridgeRevision), want: dp.Reach_REACH_TRUNK},
-		{name: "relay at the bridge revision, QUIC-mode agent", caller: quicMode, link: at(trunkBridgeRevision), want: dp.Reach_REACH_TRUNK},
-		{name: "relay at the row revision, PSP-mode agent", caller: this, link: at(trunkRowsRevision)},
-		{name: "relay at the row revision, QUIC-mode agent", caller: quicMode, link: at(trunkRowsRevision)},
+		{name: "relay at the trunk revision, PSP-mode agent", caller: this, link: at(trunkRevision), want: dp.Reach_REACH_TRUNK},
+		{name: "relay at the trunk revision, QUIC-mode agent", caller: quicMode, link: at(trunkRevision), want: dp.Reach_REACH_TRUNK},
+		{name: "relay one revision before the trunk, PSP-mode agent", caller: this, link: at(trunkRevision - 1)},
+		{name: "relay one revision before the trunk, QUIC-mode agent", caller: quicMode, link: at(trunkRevision - 1)},
 		{name: "relay at the frame revision", caller: this, link: at(meshFramesRevision)},
 
 		{
@@ -131,14 +131,13 @@ func TestResolvePeerTrunk(t *testing.T) {
 				require.Equal(t, trunkPathLimited, trunkPath(g.pair.path.Load()))
 			},
 		},
-		{name: "relay-a revoked its lane 0 SA", caller: this, first: true, setup: func(_ *testing.T, g *rowRig) { g.revoke(trunkLanePSP) }},
-		{name: "relay-a revoked its lane 1 SA", caller: this, first: true, setup: func(_ *testing.T, g *rowRig) { g.revoke(trunkLaneInner) }},
+		{name: "relay-a revoked its SA", caller: this, first: true, setup: func(_ *testing.T, g *rowRig) { g.revoke() }},
 		{
 			name: "session of relay-a ended, and relay-a is still up", caller: this, first: true,
 			setup: func(t *testing.T, g *rowRig) {
 				g.end(g.sess, meshLost)
 				require.True(t, g.m.Up("relay-a"))
-				require.NotNil(t, g.pair.tx.SA(trunkLaneInner), "the keys stay")
+				require.NotNil(t, g.pair.tx.SA(trunkLane), "the keys stay")
 			},
 		},
 		{
@@ -175,10 +174,10 @@ func TestResolvePeerTrunk(t *testing.T) {
 			},
 		},
 		{
-			name: "new session of relay-a at the row revision", caller: this, first: true,
+			name: "new session of relay-a one revision before the trunk", caller: this, first: true,
 			setup: func(_ *testing.T, g *rowRig) {
 				g.end(g.sess, meshLost)
-				g.keyed(g.join(trunkRowsRevision))
+				g.join(trunkRevision - 1)
 				g.tellServer(10)
 			},
 		},

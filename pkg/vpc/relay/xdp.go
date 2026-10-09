@@ -71,6 +71,9 @@ func (s *xdpStats) add(o xdpStats) {
 
 // xdpTable is the row map and the counters of the XDP program.
 type xdpTable interface {
+	// addrs returns the addresses of the relay that the program forwards for. A
+	// packet that it forwards has the address that its sender sent to as source.
+	addrs() []netip.Addr
 	putRow(k xdpKey, w xdpRow) error
 	deleteRow(k xdpKey) (xdpCounters, error)
 	counters(k xdpKey) (xdpCounters, error)
@@ -246,9 +249,9 @@ func (r *Router) syncSource(a netip.AddrPort, now time.Time) {
 }
 
 // wantXDP returns the rows that Forward uses for packets from a, by SPI. A row
-// with no next hop, which goes to the relay or to another relay, or with a
-// next hop of the other family stays on the socket path. The tunnel is not
-// set. Router.mu must be held.
+// with no next hop, which goes to the relay or to a relay that memberHop refuses,
+// or with a next hop of the other family stays on the socket path. The tunnel is
+// not set. Router.mu must be held.
 func (r *Router) wantXDP(a netip.AddrPort, now time.Time) map[uint32]xdpEntry {
 	s := r.bySource[a]
 	if s == nil || s.closed {
@@ -259,14 +262,14 @@ func (r *Router) wantXDP(a netip.AddrPort, now time.Time) map[uint32]xdpEntry {
 		return nil
 	}
 	want := map[uint32]xdpEntry{}
-	addWant(want, a, s, lane, until, now)
+	r.addWant(want, a, s, lane, until, now)
 	// Forward also uses the rows of the older session of the socket.
 	if t := s.twin; t != nil && !t.closed {
 		if tu, tl, ok := sourceEnd(t, a, now); ok {
 			if until.IsZero() || (!tu.IsZero() && tu.Before(until)) {
 				until = tu
 			}
-			addWant(want, a, t, tl, until, now)
+			r.addWant(want, a, t, tl, until, now)
 		}
 	}
 	for spi, e := range want {
@@ -289,8 +292,8 @@ func sourceEnd(s *Session, a netip.AddrPort, now time.Time) (time.Time, int, boo
 
 // addWant adds the live rows of s on lane to want for the SPIs that want does
 // not have. A row of a lane with no port is on lane 0. A row that stays on the
-// socket path gets no next hop.
-func addWant(want map[uint32]xdpEntry, a netip.AddrPort, s *Session, lane int, until, now time.Time) {
+// socket path gets no next hop. Router.mu must be held.
+func (r *Router) addWant(want map[uint32]xdpEntry, a netip.AddrPort, s *Session, lane int, until, now time.Time) {
 	for spi, w := range s.rows {
 		l := w.lane
 		if l > len(s.lanes) {
@@ -300,7 +303,11 @@ func addWant(want map[uint32]xdpEntry, a netip.AddrPort, s *Session, lane int, u
 			continue
 		}
 		e := xdpEntry{xdpRow{expires: w.expires}, w}
-		if next := w.receiver.dst(w.saLane); next.IsValid() && next.Addr().Is4() == a.Addr().Is4() {
+		next := w.receiver.dst(w.saLane)
+		if w.trunk != nil {
+			next = r.xdp.memberHop(w.trunk.pair.Load())
+		}
+		if next.IsValid() && next.Addr().Is4() == a.Addr().Is4() {
 			e.next = next
 		}
 		if !until.IsZero() && until.Before(e.expires) {
@@ -308,6 +315,31 @@ func addWant(want map[uint32]xdpEntry, a netip.AddrPort, s *Session, lane int, u
 		}
 		want[spi] = e
 	}
+}
+
+// memberHop returns the relay socket of the member of p as the next hop of a row, or
+// the zero address for a row that stays on the socket path. Router.mu must be held.
+func (x *xdpSync) memberHop(p *trunkPair) netip.AddrPort {
+	// The program has no length limit for one row, so the path must carry each length.
+	if p == nil || trunkPath(p.path.Load()) != trunkPathFull || !p.src.IsValid() {
+		return netip.AddrPort{}
+	}
+	// The member takes a packet only from the address that the socket path sends
+	// from. The program sends from that address only if it has no other address.
+	one := false
+	for _, a := range x.t.addrs() {
+		switch a = a.Unmap(); {
+		case a.Is4() != p.src.Is4():
+		case a != p.src:
+			return netip.AddrPort{}
+		default:
+			one = true
+		}
+	}
+	if !one {
+		return netip.AddrPort{}
+	}
+	return p.addr
 }
 
 // removeXDP removes an XDP row and adds its counters to the row of the router.

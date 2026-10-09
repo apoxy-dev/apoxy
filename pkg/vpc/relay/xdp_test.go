@@ -20,6 +20,7 @@ import (
 
 // fakeXDP is the row map of an XDP program in memory.
 type fakeXDP struct {
+	own     []netip.Addr // Addresses of the relay that the program has.
 	rows    map[xdpKey]fakeXDPRow
 	tunnels map[uint32]uint64 // Drops of each tunnel.
 	st      xdpStats
@@ -37,6 +38,8 @@ func newFakeXDP() *fakeXDP {
 }
 
 var errNoKey = errors.New("no key")
+
+func (f *fakeXDP) addrs() []netip.Addr { return f.own }
 
 func (f *fakeXDP) putRow(k xdpKey, w xdpRow) error {
 	f.puts++
@@ -491,11 +494,11 @@ apoxy_vpc_relay_dropped_packets_total{reason="mesh_unknown_tag"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="send_queue"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="trunk_expired"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="trunk_keys"} 0
-apoxy_vpc_relay_dropped_packets_total{reason="trunk_lane"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="trunk_mtu"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="trunk_no_row"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="trunk_not_local"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="trunk_not_sent"} 0
+apoxy_vpc_relay_dropped_packets_total{reason="trunk_payload"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="trunk_permit"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="trunk_replay"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="trunk_sender"} 0
@@ -503,6 +506,10 @@ apoxy_vpc_relay_dropped_packets_total{reason="trunk_source"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="tunnel_limit"} 3
 apoxy_vpc_relay_dropped_packets_total{reason="unknown_source"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="unknown_spi"} 0
+# HELP apoxy_vpc_relay_refused_rows_total Rows that the relay refused or ended because the relay of the receiver has their SPI in use, by what has the SPI.
+# TYPE apoxy_vpc_relay_refused_rows_total counter
+apoxy_vpc_relay_refused_rows_total{reason="row"} 0
+apoxy_vpc_relay_refused_rows_total{reason="trunk_sa"} 0
 # HELP apoxy_vpc_relay_xdp_forwarded_bytes_total UDP payload bytes that the XDP program forwarded.
 # TYPE apoxy_vpc_relay_xdp_forwarded_bytes_total counter
 apoxy_vpc_relay_xdp_forwarded_bytes_total 500

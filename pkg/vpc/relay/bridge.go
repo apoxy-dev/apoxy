@@ -138,10 +138,10 @@ func (r *Router) nextHop(src *Session, inner []byte) hop {
 		// The tag goes with the hop: the end of src sets its tag to zero.
 		h.home, h.tag = to.s.home, src.tag
 		if t := r.trunk.Load(); t != nil {
-			h.pair = t.bridgeTo(h.home)
+			h.pair = t.to(h.home)
 		}
 		if h.pair != nil {
-			h.sa = h.pair.tx.SA(trunkLaneInner)
+			h.sa = h.pair.tx.SA(trunkLane)
 		}
 	}
 	return h
@@ -420,7 +420,7 @@ func (r *Router) tickBridge(now time.Time) {
 	br.send.Expire(now)
 	if t := r.trunk.Load(); t != nil {
 		// The trunk SAs are in the same receiver, and their rekeys go to the mesh.
-		ups = t.rekeyed(br, ups)
+		ups = t.rekeyed(br, ups, now)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()

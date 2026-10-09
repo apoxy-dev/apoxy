@@ -98,9 +98,12 @@ func (g *rowRig) giveSAs(e *bridgeEnd) {
 
 // link opens the session of relay-a at revision rev, with keys in both
 // directions and a full path. Then relay-a tells of the attachment of server.
+// A relay from before the trunk revision has no keys.
 func (g *rowRig) link(rev uint32) {
 	g.t.Helper()
-	g.pair = g.keyed(g.join(rev))
+	if s := g.join(rev); rev >= trunkRevision {
+		g.pair = g.keyed(s)
+	}
 	g.tellServer(10)
 }
 
@@ -150,12 +153,12 @@ func sentOf(r *Router, s *Session) senderCounts {
 func TestTrunkBridgeSend(t *testing.T) {
 	// unkeyed is a link with no SA of relay-a.
 	unkeyed := func(_ *testing.T, g *rowRig) {
-		g.join(trunkBridgeRevision)
+		g.join(trunkRevision)
 		g.tellServer(10)
 	}
 	// unprobed is a link with the SAs of relay-a and no answer to the probe.
 	unprobed := func(t *testing.T, g *rowRig) {
-		_, err := g.offer(g.join(trunkBridgeRevision))
+		_, err := g.offer(g.join(trunkRevision))
 		require.NoError(t, err)
 		g.tellServer(10)
 	}
@@ -171,7 +174,7 @@ func TestTrunkBridgeSend(t *testing.T) {
 		psp     bool                          // The sender is in PSP mode and uses its relay SA.
 		spare   bool                          // The frame comes on a session of the sender with no attachment.
 		shard   bool                          // The frame comes on a shard of the sender.
-		link    func(t *testing.T, g *rowRig) // Nil is a link at the bridge revision.
+		link    func(t *testing.T, g *rowRig) // Nil is a link at the trunk revision.
 		setup   func(t *testing.T, g *rowRig) // Runs after the link.
 		v4      bool                          // The inner packet is an IPv4 packet.
 		size    int                           // Bytes of the inner packet. Zero is 100.
@@ -193,41 +196,37 @@ func TestTrunkBridgeSend(t *testing.T) {
 		{name: "one byte more before the first probe result", link: unprobed, size: trunkLimitedMTU + 1, drop: "trunk_mtu", want: senderCounts{trunk: 1}},
 		{name: "PSP packet that is too long for the trunk", psp: true, link: unprobed, size: trunkLimitedMTU + 1, drop: "trunk_mtu", want: senderCounts{trunk: 1}},
 		{
-			name: "other relay below the bridge revision",
-			link: func(_ *testing.T, g *rowRig) { g.link(trunkBridgeRevision - 1) },
+			name: "other relay one revision before the trunk",
+			link: func(_ *testing.T, g *rowRig) { g.link(trunkRevision - 1) },
 			drop: "trunk_keys", want: senderCounts{trunk: 1},
 		},
 		{
-			name: "PSP packet for a relay below the bridge revision", psp: true,
-			link: func(_ *testing.T, g *rowRig) { g.link(trunkBridgeRevision - 1) },
+			name: "PSP packet for a relay one revision before the trunk", psp: true,
+			link: func(_ *testing.T, g *rowRig) { g.link(trunkRevision - 1) },
 			drop: "trunk_keys", want: senderCounts{trunk: 1},
 		},
 		{name: "other relay gave no SA", link: unkeyed, drop: "trunk_keys", want: senderCounts{trunk: 1}},
 		{name: "PSP packet with no SA of the other relay", psp: true, link: unkeyed, drop: "trunk_keys", want: senderCounts{trunk: 1}},
 		{
-			name:  "other relay revoked the SA of the lane with a replay window",
-			setup: func(_ *testing.T, g *rowRig) { g.revoke(trunkLaneInner) },
+			// The relay seals a clear packet, so it needs the SA of the other relay.
+			name:  "other relay revoked its SA",
+			setup: func(_ *testing.T, g *rowRig) { g.revoke() },
 			drop:  "trunk_keys", want: senderCounts{trunk: 1},
 		},
 		{
-			// The packet goes on the lane with a replay window only.
-			name:  "other relay revoked the SA of the lane for PSP packets",
-			setup: func(_ *testing.T, g *rowRig) { g.revoke(trunkLanePSP) },
-			want:  senderCounts{sent: 1},
-		},
-		{
-			name: "other relay came back below the bridge revision",
+			name: "other relay came back one revision before the trunk",
 			setup: func(_ *testing.T, g *rowRig) {
-				g.rejoin(trunkBridgeRevision-1, trunkRigAddr)
+				g.join(trunkRevision - 1)
 				g.tellServer(11)
+				require.Nil(g.t, g.tk.to("relay-a"))
 			},
 			drop: "trunk_keys", want: senderCounts{trunk: 1},
 		},
 		{
-			name: "other relay came back at the bridge revision",
+			name: "other relay came back at the trunk revision",
 			setup: func(_ *testing.T, g *rowRig) {
-				g.rejoin(trunkBridgeRevision-1, trunkRigAddr)
-				g.rejoin(trunkBridgeRevision, trunkRigAddr)
+				g.join(trunkRevision - 1)
+				g.rejoin(trunkRevision, trunkRigAddr)
 				g.tellServer(11)
 			},
 			want: senderCounts{sent: 1},
@@ -244,7 +243,7 @@ func TestTrunkBridgeSend(t *testing.T) {
 				g.end(g.sess, meshLost)
 				time.Sleep(3 * time.Second)
 				g.deliver()
-				require.Nil(g.t, g.tk.pair("relay-a"))
+				require.Nil(g.t, g.tk.to("relay-a"))
 			},
 			drop: "trunk_keys", want: senderCounts{trunk: 1},
 		},
@@ -255,7 +254,7 @@ func TestTrunkBridgeSend(t *testing.T) {
 				g.end(g.sess, meshLost)
 				time.Sleep(3 * time.Second)
 				g.deliver()
-				require.Nil(g.t, g.tk.pair("relay-a"))
+				require.Nil(g.t, g.tk.to("relay-a"))
 				g.m.SetMembers(nil)
 				g.deliver()
 				require.NotContains(g.t, routeTable(g.r, vpcA), prefixA)
@@ -265,7 +264,7 @@ func TestTrunkBridgeSend(t *testing.T) {
 		{
 			name: "SA with no sequence number left",
 			setup: func(_ *testing.T, g *rowRig) {
-				sa := g.pair.tx.SA(trunkLaneInner)
+				sa := g.pair.tx.SA(trunkLane)
 				for range 3 {
 					_, _ = sa.ReserveN(math.MaxInt32)
 				}
@@ -304,7 +303,7 @@ func TestTrunkBridgeSend(t *testing.T) {
 				if tc.link != nil {
 					tc.link(t, g)
 				} else {
-					g.link(trunkBridgeRevision)
+					g.link(trunkRevision)
 				}
 				if tc.setup != nil {
 					tc.setup(t, g)
@@ -354,7 +353,7 @@ func TestTrunkBridgeSend(t *testing.T) {
 				require.Len(t, out, 1, "one trunk packet for one inner packet")
 				assert.Equal(t, g.addr, out[0].to)
 				assert.Len(t, out[0].b, len(inner)+pspwire.Overhead)
-				assert.Equal(t, g.inner, binary.BigEndian.Uint32(out[0].b[4:8]), "the packet goes on the lane with a replay window")
+				assert.Equal(t, g.inner, binary.BigEndian.Uint32(out[0].b[4:8]), "the packet has the newest SA of relay-a")
 				payload, gotTag, gotNext, err := g.rxq.ReceiveTrunk(slices.Clone(out[0].b))
 				require.NoError(t, err)
 				assert.Equal(t, inner, payload, "the inner packet does not change")
@@ -392,7 +391,7 @@ func TestTrunkBridgeLimit(t *testing.T) {
 		g := newRowRig(t, cfg)
 		defer g.stop()
 		q := g.bridgeEnd(dp.Mode_MODE_QUIC, "q", brQSocket, brQNet)
-		g.link(trunkBridgeRevision)
+		g.link(trunkRevision)
 		// The limit has room for one frame with the largest packet.
 		g.r.mu.Lock()
 		q.s.meter = rate.NewLimiter(1, trunkMTU+peerconn.DataLen+1)
@@ -546,7 +545,7 @@ func TestTrunkBridgeDeliver(t *testing.T) {
 				q := g.bridgeEnd(dp.Mode_MODE_QUIC, "q", brQSocket, brQNet, brQNet4)
 				p := g.bridgeEnd(dp.Mode_MODE_PSP, "p", brPSocket, brPNet)
 				g.giveSAs(p)
-				g.link(trunkBridgeRevision)
+				g.link(trunkRevision)
 				if tc.setup != nil {
 					tc.setup(t, g, q, p)
 				}
@@ -554,7 +553,7 @@ func TestTrunkBridgeDeliver(t *testing.T) {
 				if inner == nil {
 					inner = innerOf(cmp.Or(tc.src, brServer), cmp.Or(tc.dst, brQ), 100)
 				}
-				pkt := g.sealed(trunkLaneInner, cmp.Or(tc.tag, inTag), inner, false)
+				pkt := g.sealed(trunkLane, cmp.Or(tc.tag, inTag), inner, false)
 				var out []keptPacket
 				if tc.again {
 					require.Empty(t, g.arrive(slices.Clone(pkt), g.addr))
@@ -645,15 +644,15 @@ func TestTrunkBridgeSession(t *testing.T) {
 			assert.Equal(t, before, dropsOf(g.r), msg)
 		}
 
-		// relay-a refuses the first SA of the lane, and the relay offers a new one.
+		// relay-a refuses the first SA, and the relay offers a new one.
 		g.before = func(n int, req keys.Request) error {
 			if n == 0 {
-				return g.hold(req.SAs[trunkLaneInner].SPI)
+				return g.hold(req.SAs[trunkLane].SPI)
 			}
 			return nil
 		}
-		g.link(trunkBridgeRevision)
-		first := g.tx.SA(trunkLaneInner)
+		g.link(trunkRevision)
+		first := g.tx.SA(trunkLane)
 		passes(first, "SA after relay-a refused the SA of the first offer")
 
 		// The router looks at the SAs each second.
@@ -665,7 +664,7 @@ func TestTrunkBridgeSession(t *testing.T) {
 		reqs := g.requests()
 		require.Len(t, reqs, 1)
 		require.Equal(t, keys.OpRekey, reqs[0].Op)
-		rekeyed := g.tx.SA(trunkLaneInner)
+		rekeyed := g.tx.SA(trunkLane)
 		require.NotSame(t, first, rekeyed)
 		passes(rekeyed, "SA of a rekey on the session")
 
@@ -674,10 +673,10 @@ func TestTrunkBridgeSession(t *testing.T) {
 		passes(rekeyed, "packet after the session ended")
 
 		// The relay offers new SAs on the new session. Its Presence call comes later.
-		s := g.open(trunkBridgeRevision)
+		s := g.open(trunkRevision)
 		g.deliver()
 		require.Len(t, g.requests(), 1)
-		second := g.tx.SA(trunkLaneInner)
+		second := g.tx.SA(trunkLane)
 		require.NotSame(t, rekeyed, second)
 		passes(rekeyed, "SA of the session before, before the new Presence call")
 		drops(second, "SA of the new session, before its Presence call")
@@ -701,7 +700,7 @@ func TestTrunkBridgeUnsentSA(t *testing.T) {
 		g := newRowRig(t, cfg)
 		defer g.stop()
 		q := g.bridgeEnd(dp.Mode_MODE_QUIC, "q", brQSocket, brQNet)
-		g.link(trunkBridgeRevision)
+		g.link(trunkRevision)
 		// The router looks at the SAs each second.
 		tick := func() {
 			time.Sleep(time.Second)
@@ -725,9 +724,9 @@ func TestTrunkBridgeUnsentSA(t *testing.T) {
 		}
 		require.Len(t, pending, 1, "the rekey waits for a session")
 		require.Empty(t, g.requests(), "relay-a gets no rekey with no session")
-		i := slices.IndexFunc(pending[0].SAs, func(sa keys.SA) bool { return sa.Lane == trunkLaneInner })
+		i := slices.IndexFunc(pending[0].SAs, func(sa keys.SA) bool { return sa.Lane == trunkLane })
 		require.GreaterOrEqual(t, i, 0)
-		sa, err := engine.NewTxSA(pending[0].SAs[i].SPI, pending[0].SAs[i].Key, 0, trunkPayload)
+		sa, err := engine.NewTxSA(pending[0].SAs[i].SPI, pending[0].SAs[i].Key, 0, trunkMTU)
 		require.NoError(t, err)
 		pkt := make([]byte, 100+pspwire.Overhead)
 		n, err := sa.SealTrunk(inTag, pkt, innerOf(brServer, brQ, 100))
@@ -764,7 +763,7 @@ func TestTrunkBridgeShards(t *testing.T) {
 			require.NoError(t, err)
 			count(sh)
 		}
-		g.link(trunkBridgeRevision)
+		g.link(trunkRevision)
 
 		const flows = 64
 		// A flow uses one connection, so each flow has two packets.
@@ -772,7 +771,7 @@ func TestTrunkBridgeShards(t *testing.T) {
 			for port := range flows {
 				payload := []byte{byte(port >> 8), byte(port), 0, 53}
 				inner := ipPacket(netip.MustParseAddr(brServer), netip.MustParseAddr(brQ), payload)
-				require.Empty(t, g.arrive(g.sealed(trunkLaneInner, inTag, inner, false), g.addr))
+				require.Empty(t, g.arrive(g.sealed(trunkLane, inTag, inner, false), g.addr))
 			}
 		}
 		assert.Empty(t, dropsOf(g.r))
@@ -821,7 +820,7 @@ func TestTrunkBridgeNoSeal(t *testing.T) {
 				g := newRowRig(t, cfg)
 				defer g.stop()
 				q := g.bridgeEnd(dp.Mode_MODE_QUIC, "q", brQSocket, brQNet)
-				g.link(trunkBridgeRevision)
+				g.link(trunkRevision)
 				inner := innerOf(brQ, brServer, 100)
 				frame := peerconn.EncodeData(nil, testVNI, inner)
 				g.r.mu.RLock()
@@ -854,7 +853,7 @@ func TestTrunkBridgeSenderEnds(t *testing.T) {
 		g := newRowRig(t, trunkRigConfig(t))
 		defer g.stop()
 		q := g.bridgeEnd(dp.Mode_MODE_QUIC, "q", brQSocket, brQNet)
-		g.link(trunkBridgeRevision)
+		g.link(trunkRevision)
 		inner := innerOf(brQ, brServer, 100)
 		frame := peerconn.EncodeData(nil, testVNI, inner)
 		hopOf := func() (hop, uint32) {
@@ -1032,17 +1031,22 @@ func TestTrunkBridgeBetweenRelays(t *testing.T) {
 				10*time.Second, 5*time.Millisecond, "relay-a has the route of the attachment of relay-b")
 			require.Eventually(t, func() bool { return routeTable(b.r, vpcA)["fd00:1::/96"] == "att-laptop@relay-a" },
 				10*time.Second, 5*time.Millisecond, "relay-b has the attachment of the sender")
-			lane := a.txSPIs("relay-b")[trunkLaneInner]
+			spi := a.txSPIs("relay-b")[trunkLane]
 			// carried returns the trunk packets of relay-a with a clear inner packet.
-			// The probes of relay-a are on the same lane.
+			// The probes of relay-a have the same SA.
 			carried := func() [][]byte {
-				return slices.DeleteFunc(tap.with(lane), func(p []byte) bool { return p[0] == pspwire.NextHdrPSP })
+				return slices.DeleteFunc(tap.with(spi), func(p []byte) bool { return p[0] == pspwire.NextHdrPSP })
 			}
 
-			// A packet that is too long for the trunk goes nowhere.
-			snd.send(t, innerOf(snd.addr, rcv.addr, trunkMTU+1))
-			require.Eventually(t, func() bool { return a.r.SenderStats(snd.s).DropTrunk == 1 }, 5*time.Second, 5*time.Millisecond)
-			assert.Zero(t, len(carried()), "trunk packets for the packet that is too long")
+			// A packet that is too long for the trunk goes nowhere. The path from a
+			// PSP-mode agent does not carry it to the relay.
+			drops := map[string]uint64{}
+			if tc.from == quic {
+				snd.send(t, innerOf(snd.addr, rcv.addr, trunkMTU+1))
+				require.Eventually(t, func() bool { return a.r.SenderStats(snd.s).DropTrunk == 1 }, 5*time.Second, 5*time.Millisecond)
+				assert.Zero(t, len(carried()), "trunk packets for the packet that is too long")
+				drops["trunk_mtu"] = 1
+			}
 
 			sizes := []int{48, trunkMTU}
 			for i, size := range sizes {
@@ -1064,7 +1068,7 @@ func TestTrunkBridgeBetweenRelays(t *testing.T) {
 			st := a.r.SenderStats(snd.s)
 			assert.EqualValues(t, 2, st.DataSent)
 			assert.Zero(t, st.DataDrops)
-			assert.Equal(t, map[string]uint64{"trunk_mtu": 1}, dropsOf(a.r))
+			assert.Equal(t, drops, dropsOf(a.r))
 			assert.Equal(t, map[string]uint64{"trunk_replay": 1}, dropsOf(b.r))
 			// The attachment of the receiver counts the inner packets.
 			rx := b.r.AttachmentStats()
@@ -1087,28 +1091,35 @@ func TestTrunkBridgeNames(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		g := newRowRig(t, cfg)
 		defer g.stop()
-		assert.Nil(t, g.tk.bridgeTo("relay-a"), "member with no session")
-		g.join(trunkBridgeRevision)
-		assert.Nil(t, g.tk.bridgeTo("relay-a"), "member that gave no SA")
+		assert.Nil(t, g.tk.to("relay-a"), "member with no session")
+		g.join(trunkRevision)
+		first := g.tk.to("relay-a")
+		// The packet of a row needs only the pair. A clear packet needs its SA.
+		require.NotNil(t, first, "member that gave no SA")
+		assert.Nil(t, first.tx.SA(trunkLane))
 		_, err := g.offer(g.sess)
 		require.NoError(t, err)
-		assert.Same(t, g.tk.pair("relay-a"), g.tk.bridgeTo("relay-a"))
-		assert.Nil(t, g.tk.bridgeTo("relay-b"), "name of no member")
+		assert.Same(t, first, g.tk.to("relay-a"))
+		assert.NotNil(t, first.tx.SA(trunkLane))
+		assert.Nil(t, g.tk.to("relay-b"), "name of no member")
 
 		g.second(true)
-		require.NotNil(t, g.tk.bridgeTo("relay-a"))
-		assert.NotNil(t, g.tk.pair("relay-b"))
-		assert.Nil(t, g.tk.bridgeTo("relay-b"), "member below the bridge revision")
+		assert.Same(t, first, g.tk.to("relay-a"))
+		assert.NotNil(t, g.tk.to("relay-b"))
 
 		moved := netip.MustParseAddrPort("198.51.100.7:6081")
-		old := g.tk.pair("relay-a")
-		g.rejoin(trunkBridgeRevision, moved)
-		assert.NotSame(t, old, g.tk.bridgeTo("relay-a"), "member at a new address has a new pair")
-		assert.Same(t, g.tk.pair("relay-a"), g.tk.bridgeTo("relay-a"))
+		g.rejoin(trunkRevision, moved)
+		at := g.tk.to("relay-a")
+		assert.NotSame(t, first, at, "member at a new address has a new pair")
+		assert.Equal(t, moved, at.addr)
 
-		g.end(g.sess, meshLost)
-		time.Sleep(3 * time.Second)
-		g.deliver()
-		assert.Nil(t, g.tk.bridgeTo("relay-a"), "member that is down")
+		g.join(trunkRevision - 1)
+		assert.Nil(t, g.tk.to("relay-a"), "member that came back from before the trunk revision")
+		g.rejoin(trunkRevision, moved)
+		require.NotNil(t, g.tk.to("relay-a"))
+
+		g.away()
+		assert.Nil(t, g.tk.to("relay-a"), "member that is down")
+		assert.NotNil(t, g.tk.to("relay-b"))
 	})
 }

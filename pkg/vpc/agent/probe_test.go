@@ -21,7 +21,7 @@ func TestPathMTU(t *testing.T) {
 	}{
 		{"default MTU", 0, 0, []int32{1400}, 1280, []int{0}},
 		{"probe passes", 1360, 0, []int32{0}, 1360, []int{0}},
-		{"largest MTU", 1372, 0, []int32{0}, 1372, []int{0}},
+		{"largest MTU", 1412, 0, []int32{0}, 1412, []int{0}},
 		{"probe fails", 1372, 0, []int32{1400}, 1280, []int{0}},
 		{"override", 1372, 1300, []int32{1400}, 1300, []int{0}},
 		{"override above the VPC MTU", 1300, 1372, []int32{0}, 1300, []int{0}},

@@ -16,11 +16,11 @@ import (
 )
 
 // PacketHandler returns the NonQUICPacketHandler and the NonQUICBatchEnd of
-// tr. The handler forwards PSP packets by SPI rows, seals the PSP packets for
-// a receiver on another relay into trunk packets, and opens the PSP packets
-// to the relay and the trunk packets of the mesh members. The batch end sends
-// the packets that the handler forwarded in one read. Relay sessions must use
-// tr or another transport with these.
+// tr. The handler forwards PSP packets by SPI rows with no change, also to and
+// from the relay of another mesh member. It opens the PSP packets to the relay
+// and the trunk packets of the mesh members. The batch end sends the packets
+// that the handler forwarded in one read. Relay sessions must use tr or another
+// transport with these.
 //
 // With more than one CPU, sender goroutines send the forwarded packets, so the
 // read loop does not wait for the sends. A packet for a sender that is too slow
@@ -43,7 +43,7 @@ func (r *Router) PacketHandler(ctx context.Context, tr *quic.Transport) (handle 
 	sealed := make([]byte, maxUDP)
 	return func(b []byte, from net.Addr) {
 		if t := r.trunk.Load(); t != nil {
-			// A mesh member sends only trunk packets, which have their own header check.
+			// A mesh member sends trunk packets and the PSP packets of its senders.
 			if p := t.from(addrPort(from)); p != nil {
 				if why, ok := t.receive(br, p, b, sealed, fwd, time.Now()); !ok {
 					r.drops[why].Add(1)
@@ -59,17 +59,9 @@ func (r *Router) PacketHandler(ctx context.Context, tr *quic.Transport) (handle 
 			return
 		}
 		now := time.Now()
-		dst, ts, v := r.forward(addrPort(from), h.SPI, len(b), now)
+		dst, v := r.Forward(addrPort(from), h.SPI, len(b), now)
 		switch {
 		case v != Pass:
-		case ts.sa != nil:
-			// The whole packet goes to the other relay in one trunk packet.
-			n, err := ts.sa.SealTrunkPSP(ts.tag, sealed, b)
-			if err != nil {
-				r.drops[dropTrunkKeys].Add(1)
-				return
-			}
-			fwd.add(sealed[:n], dst)
 		case dst.IsValid():
 			fwd.add(b, dst)
 		case br != nil:

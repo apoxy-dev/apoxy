@@ -39,11 +39,11 @@ const (
 	testMaxLen = 1500
 )
 
-// A packet of another relay with the largest inner packet must not be too long
-// for the XDP program.
+// A packet of an agent or of another relay with the largest inner packet must not
+// be too long for the XDP program. It has the PSP overhead one time.
 func TestXDPMaxLen(t *testing.T) {
 	assert.Equal(t, testMaxLen, xdpMaxLen)
-	assert.Equal(t, 40+8+2*40+1372, xdpMaxLen)
+	assert.Equal(t, 40+8+40+1412, xdpMaxLen)
 }
 
 var (
@@ -229,7 +229,7 @@ func TestXDPForward(t *testing.T) {
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = prog.Close() })
 			require.NoError(t, prog.SetAddrs(xdpAddrs))
-			r.setXDP(relayTable{prog}, time.Now())
+			r.setXDP(relayTable{p: prog}, time.Now())
 			snd := addSession(t, r, vpcA, "sender", tc.snd, "fd00::1/128")
 			addSession(t, r, vpcA, "receiver", tc.rcv, "fd00::2/128")
 			require.NoError(t, r.registerSPI(snd.Session, register(vpcA, "fd00::2", time.Minute, 7), time.Now()))

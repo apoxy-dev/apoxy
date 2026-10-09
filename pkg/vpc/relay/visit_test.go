@@ -305,15 +305,15 @@ func (g *visitRig) member(tag uint32, src, dst string) func() {
 // packet of relay-a, for its session with tag.
 func (g *visitRig) trunkData(tag uint32, src, dst string) func() {
 	return func() {
-		g.handle(g.sealed(trunkLaneInner, tag, innerOf(src, dst, 100), false), net.UDPAddrFromAddrPort(g.addr))
+		g.handle(g.sealed(trunkLane, tag, innerOf(src, dst, 100), false), net.UDPAddrFromAddrPort(g.addr))
 	}
 }
 
-// trunkPSP returns the send of a PSP packet with spi in a trunk packet of
-// relay-a, for a row of its session with tag.
-func (g *visitRig) trunkPSP(tag, spi uint32) func() {
+// trunkPSP returns the send of a PSP packet with spi from the address of
+// relay-a, for a row that relay-a gave.
+func (g *visitRig) trunkPSP(spi uint32) func() {
 	return func() {
-		g.handle(g.sealed(trunkLanePSP, tag, pspOfSize(g.t, spi, 100), true), net.UDPAddrFromAddrPort(g.addr))
+		g.handle(pspOfSize(g.t, spi, 100), net.UDPAddrFromAddrPort(g.addr))
 	}
 }
 
@@ -871,12 +871,12 @@ func TestVisitPaths(t *testing.T) {
 			setup: func(_ *testing.T, g *visitRig) {
 				g.give(&dp.SPIRow{Vpc: ref(vpcA), SenderTag: phoneTag, Spi: 0x90, Destination: brServer, ExpiresIn: durationpb.New(inTTL)})
 			},
-			send: func(g *visitRig) func() { return g.trunkPSP(phoneTag, 0x90) },
+			send: func(g *visitRig) func() { return g.trunkPSP(0x90) },
 		},
 		{
 			name:   "row of the agent of the visitor through its home relay",
 			setup:  func(_ *testing.T, g *visitRig) { g.give(serverRow(0x91, inTTL)) },
-			send:   func(g *visitRig) func() { return g.trunkPSP(inTag, 0x91) },
+			send:   func(g *visitRig) func() { return g.trunkPSP(0x91) },
 			before: "laptop", during: "laptop", after: "laptop",
 		},
 	}

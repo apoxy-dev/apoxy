@@ -21,11 +21,11 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/peerconn"
 )
 
-// The largest PSP packet of an agent must fit in a packet between two relays, and that
-// packet in one quic-go read of 1452 B.
+// The largest PSP packet of an agent must fit in one quic-go read of 1452 B. A relay
+// sends it to another relay with no change.
 func TestMaxMTU(t *testing.T) {
-	assert.Equal(t, 1372, MaxMTU)
-	assert.Equal(t, 1452, MaxMTU+2*pspwire.Overhead)
+	assert.Equal(t, 1412, MaxMTU)
+	assert.Equal(t, 1452, MaxMTU+pspwire.Overhead)
 }
 
 func TestNew(t *testing.T) {

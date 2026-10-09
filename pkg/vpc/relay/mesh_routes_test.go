@@ -1508,9 +1508,9 @@ func TestMeshRouteRowsNewSession(t *testing.T) {
 				g.end(g.sess, &quic.IdleTimeoutError{})
 				time.Sleep(time.Second)
 				if tc.call {
-					g.join(trunkRowsRevision)
+					g.join(trunkRevision)
 				} else {
-					g.sess = g.open(trunkRowsRevision)
+					g.sess = g.open(trunkRevision)
 					g.deliver()
 				}
 				g.a.take()
@@ -1600,7 +1600,7 @@ func TestMeshRowSenderFullSetTime(t *testing.T) {
 		g.give(serverRow(5, inTTL))
 		g.end(g.sess, meshLost)
 		// The hooks of the new session do not run, so the row and the keys stay.
-		s := g.open(trunkRowsRevision)
+		s := g.open(trunkRevision)
 		g.passes(5, rowSrc, "packet before the time limit")
 		g.m.pres.expire(s)
 		g.drops(5, "trunk_sender", "packet after the time limit")

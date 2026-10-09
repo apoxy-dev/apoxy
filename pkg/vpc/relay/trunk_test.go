@@ -52,9 +52,9 @@ func (p *trunkPair) receives(spi uint32) bool {
 }
 
 // txSPIs returns the SPIs of the SAs that n holds for packets to member name,
-// by lane. It returns nil if a lane has no SA.
+// by lane. It returns nil if the lane has no SA.
 func (n *trunkNode) txSPIs(name string) []uint32 {
-	p := n.trunk().pair(name)
+	p := n.trunk().to(name)
 	if p == nil {
 		return nil
 	}
@@ -71,7 +71,7 @@ func (n *trunkNode) txSPIs(name string) []uint32 {
 
 // path returns the probe result that n has for member name.
 func (n *trunkNode) path(name string) trunkPath {
-	if p := n.trunk().pair(name); p != nil {
+	if p := n.trunk().to(name); p != nil {
 		return trunkPath(p.path.Load())
 	}
 	return trunkPathUnknown
@@ -107,7 +107,7 @@ func trunkNodes(t *testing.T, setup func(a, b *trunkNode)) (a, b *trunkNode) {
 // member to. isPSP tells that the payload is a whole PSP packet.
 func sealTrunk(t *testing.T, from *trunkNode, to string, lane int, tag uint32, payload []byte, isPSP bool) []byte {
 	t.Helper()
-	p := from.trunk().pair(to)
+	p := from.trunk().to(to)
 	require.NotNil(t, p, "%s has a pair for %s", from.name, to)
 	sa := p.tx.SA(lane)
 	require.NotNil(t, sa, "%s has an SA of lane %d for %s", from.name, lane, to)
@@ -133,17 +133,20 @@ func openTrunk(n *trunkNode, pkt []byte) (payload []byte, tag uint32, nextHdr ui
 }
 
 // TestTrunkKeys starts two relays with a mesh session. Each gives the other
-// trunk SAs, and a packet that one relay seals opens on the other with its tag.
+// one trunk SA, and a packet that one relay seals opens on the other with its tag.
 func TestTrunkKeys(t *testing.T) {
 	t.Parallel()
 	a, b := trunkNodes(t, nil)
 	v4 := ipPacket(netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("192.0.2.2"), make([]byte, 64))
 	v6 := ipPacket(netip.MustParseAddr("fd00:1::1"), netip.MustParseAddr("fd00:2::1"), make([]byte, 64))
-	// The library does not read a PSP payload, so its content can be anything.
-	agentPkt := make([]byte, 200)
-	for i := range agentPkt {
-		agentPkt[i] = byte(i)
+	largest := ipPacket(netip.MustParseAddr("fd00:1::1"), netip.MustParseAddr("fd00:2::1"), make([]byte, trunkMTU-40))
+	require.Len(t, largest, 1412, "the largest inner packet between two relays")
+	// The library does not read a message of the relay, so its content can be anything.
+	message := make([]byte, 200)
+	for i := range message {
+		message[i] = byte(i)
 	}
+	assert.Len(t, a.txSPIs("relay-b"), 1, "a trunk has one SA lane")
 	cases := []struct {
 		name    string
 		lane    int
@@ -153,11 +156,10 @@ func TestTrunkKeys(t *testing.T) {
 		nextHdr uint8
 		want    error
 	}{
-		{name: "PSP packet of an agent", lane: trunkLanePSP, tag: 7, payload: agentPkt, isPSP: true, nextHdr: pspwire.NextHdrPSP},
-		{name: "largest PSP packet with the highest tag", lane: trunkLanePSP, tag: pspwire.MaxVNI, payload: make([]byte, trunkPayload), isPSP: true, nextHdr: pspwire.NextHdrPSP},
-		{name: "clear IPv4 packet", lane: trunkLaneInner, tag: 0x00a5c3, payload: v4, nextHdr: pspwire.NextHdrV4},
-		{name: "clear IPv6 packet", lane: trunkLaneInner, tag: 1, payload: v6, nextHdr: pspwire.NextHdrV6},
-		{name: "clear packet on the lane with no replay window", lane: trunkLanePSP, tag: 1, payload: v6, want: engine.ErrPayload},
+		{name: "message of the relay", lane: trunkLane, tag: trunkTagRelay, payload: message, isPSP: true, nextHdr: pspwire.NextHdrPSP},
+		{name: "clear IPv4 packet", lane: trunkLane, tag: 0x00a5c3, payload: v4, nextHdr: pspwire.NextHdrV4},
+		{name: "clear IPv6 packet", lane: trunkLane, tag: 1, payload: v6, nextHdr: pspwire.NextHdrV6},
+		{name: "largest clear packet with the highest tag", lane: trunkLane, tag: pspwire.MaxVNI, payload: largest, nextHdr: pspwire.NextHdrV6},
 	}
 	for _, d := range []struct{ from, to *trunkNode }{{a, b}, {b, a}} {
 		for _, tc := range cases {
@@ -166,7 +168,7 @@ func TestTrunkKeys(t *testing.T) {
 				assert.LessOrEqual(t, len(pkt), maxUDP)
 				// A trunk SA has VNI 0, so the VNI field is free for the tag.
 				assert.Equal(t, tc.tag, binary.BigEndian.Uint32(pkt[pspwire.HeaderLen:])>>8)
-				assert.True(t, d.to.trunk().pair(d.from.name).receives(binary.BigEndian.Uint32(pkt[4:8])),
+				assert.True(t, d.to.trunk().to(d.from.name).receives(binary.BigEndian.Uint32(pkt[4:8])),
 					"the SA is a receive SA of the pair")
 				payload, tag, nextHdr, err := openTrunk(d.to, pkt)
 				require.ErrorIs(t, err, tc.want)
@@ -185,25 +187,29 @@ func TestTrunkKeys(t *testing.T) {
 			})
 		}
 		t.Run(d.from.name+"/replay", func(t *testing.T) {
-			// Only the lane for clear packets has a replay window.
-			pkt := sealTrunk(t, d.from, d.to.name, trunkLanePSP, 3, agentPkt, true)
-			for range 2 {
+			// The one lane has a replay window, also for a message of the relay.
+			for _, pkt := range [][]byte{
+				sealTrunk(t, d.from, d.to.name, trunkLane, 3, v6, false),
+				sealTrunk(t, d.from, d.to.name, trunkLane, trunkTagRelay, message, true),
+			} {
 				_, _, _, err := openTrunk(d.to, pkt)
 				assert.NoError(t, err)
+				_, _, _, err = openTrunk(d.to, pkt)
+				assert.ErrorIs(t, err, engine.ErrReplay)
 			}
-			pkt = sealTrunk(t, d.from, d.to.name, trunkLaneInner, 3, v6, false)
-			_, _, _, err := openTrunk(d.to, pkt)
-			assert.NoError(t, err)
-			_, _, _, err = openTrunk(d.to, pkt)
-			assert.ErrorIs(t, err, engine.ErrReplay)
 		})
-		t.Run(d.from.name+"/packet of a sender", func(t *testing.T) {
-			// The other relay gave no row, so the relay drops a packet with a sender tag.
-			pkt := sealTrunk(t, d.from, d.to.name, trunkLanePSP, 7, pspOfSize(t, 0x501, 100), true)
-			_, err := d.from.tr.WriteTo(pkt, net.UDPAddrFromAddrPort(d.to.addr))
+		t.Run(d.from.name+"/packets of a member that the relay drops", func(t *testing.T) {
+			// The SPI is of no trunk SA and of no row that the other relay gave.
+			_, err := d.from.tr.WriteTo(pspOfSize(t, 0x501, 100), net.UDPAddrFromAddrPort(d.to.addr))
 			require.NoError(t, err)
 			require.Eventually(t, func() bool { return d.to.r.drops[dropTrunkNoRow].Load() == 1 }, 5*time.Second, 5*time.Millisecond)
+			// A relay seals no PSP packet of a sender, so this trunk packet is from no relay of this revision.
+			pkt := sealTrunk(t, d.from, d.to.name, trunkLane, 7, pspOfSize(t, 0x501, 100), true)
+			_, err = d.from.tr.WriteTo(pkt, net.UDPAddrFromAddrPort(d.to.addr))
+			require.NoError(t, err)
+			require.Eventually(t, func() bool { return d.to.r.drops[dropTrunkPayload].Load() == 1 }, 5*time.Second, 5*time.Millisecond)
 			assert.Zero(t, d.to.r.MalformedDrops())
+			assert.Zero(t, d.to.r.UnknownSourceDrops())
 		})
 	}
 }
@@ -223,27 +229,36 @@ func TestTrunkMemberSA(t *testing.T) {
 	keyed(t, a, b)
 	keyed(t, a, c)
 	tk, br := a.trunk(), a.bridge()
-	assert.Same(t, tk.pair("relay-b"), tk.from(b.addr))
-	assert.Same(t, tk.pair("relay-c"), tk.from(c.addr))
+	assert.Same(t, tk.to("relay-b"), tk.from(b.addr))
+	assert.Same(t, tk.to("relay-c"), tk.from(c.addr))
 	assert.Nil(t, tk.from(netip.MustParseAddrPort("192.0.2.9:6081")), "an address of no member")
 
-	probe := make([]byte, trunkPayload)
+	probe := make([]byte, trunkMTU)
 	probe[0] = trunkMsgProbe
+	v6 := ipPacket(netip.MustParseAddr("fd00:a::1"), netip.MustParseAddr("fd00:b::1"), make([]byte, 60))
 	cases := []struct {
-		name string
-		from *trunkNode // Member that sealed the packet.
-		pair string     // Member whose address the packet comes from.
-		want bool
+		name  string
+		from  *trunkNode // Member that sealed the packet.
+		pair  string     // Member whose address the packet comes from.
+		clear bool       // The packet has a clear inner packet with tag 7, not a probe.
+		want  bool
+		why   dropReason
 	}{
-		{name: "SA of the member", from: b, pair: "relay-b", want: true},
-		{name: "SA of another member", from: c, pair: "relay-b"},
+		{name: "SA of the member", from: b, pair: "relay-b", want: true, why: dropMalformed},
+		// The SPI is of no trunk SA of the pair, so the relay does not open the packet.
+		// It is then the packet of a row, which has an IP packet as its next header.
+		{name: "message with the SA of another member", from: c, pair: "relay-b", why: dropMalformed},
+		{name: "clear packet with the SA of another member", from: c, pair: "relay-b", clear: true, why: dropTrunkNoRow},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			pkt := sealTrunk(t, tc.from, "relay-a", trunkLaneInner, trunkTagRelay, probe, true)
-			why, ok := tk.receive(br, tk.pair(tc.pair), pkt, nil, nil, time.Now())
+			pkt := sealTrunk(t, tc.from, "relay-a", trunkLane, trunkTagRelay, probe, true)
+			if tc.clear {
+				pkt = sealTrunk(t, tc.from, "relay-a", trunkLane, 7, v6, false)
+			}
+			why, ok := tk.receive(br, tk.to(tc.pair), pkt, nil, nil, time.Now())
 			assert.Equal(t, tc.want, ok)
-			assert.Equal(t, dropMalformed, why)
+			assert.Equal(t, tc.why, why)
 		})
 	}
 
@@ -257,8 +272,8 @@ func TestTrunkMemberSA(t *testing.T) {
 		{name: "revoke of the SAs of another member", req: keys.Request{Op: keys.OpRevoke, SPIs: fromB}},
 		{
 			name:    "offer with the SPI of another member",
-			req:     keys.Request{Op: keys.OpOffer, SAs: []keys.SA{{SPI: fromB[trunkLaneInner], Key: make([]byte, 16), ExpiresIn: time.Minute, Lane: trunkLaneInner}}},
-			refused: []uint32{fromB[trunkLaneInner]},
+			req:     keys.Request{Op: keys.OpOffer, SAs: []keys.SA{{SPI: fromB[trunkLane], Key: make([]byte, 16), ExpiresIn: time.Minute, Lane: trunkLane}}},
+			refused: []uint32{fromB[trunkLane]},
 		},
 	}
 	sc := c.m.Session("relay-a")
@@ -286,7 +301,7 @@ func TestTrunkProbe(t *testing.T) {
 		path trunkPath
 		mtu  int
 	}{
-		{name: "path carries the largest packet", path: trunkPathFull, mtu: 1372},
+		{name: "path carries the largest packet", path: trunkPathFull, mtu: 1412},
 		{name: "path carries one byte less", max: maxUDP - 1, path: trunkPathLimited, mtu: 1280},
 	}
 	for _, tc := range cases {
@@ -298,7 +313,7 @@ func TestTrunkProbe(t *testing.T) {
 			for _, d := range []struct{ n, peer *trunkNode }{{a, b}, {b, a}} {
 				require.Eventually(t, func() bool { return d.n.path(d.peer.name) == tc.path },
 					10*time.Second, 10*time.Millisecond, "%s: probe result for %s", d.n.name, d.peer.name)
-				assert.Equal(t, tc.mtu, d.n.trunk().pair(d.peer.name).mtu())
+				assert.Equal(t, tc.mtu, d.n.trunk().to(d.peer.name).mtu())
 			}
 			assert.Zero(t, a.r.MalformedDrops()+b.r.MalformedDrops(), "a relay dropped a probe or an answer")
 		})
@@ -312,7 +327,7 @@ func TestTrunkRekey(t *testing.T) {
 	a, b := trunkNodes(t, nil)
 	first := a.txSPIs("relay-b")
 	v6 := ipPacket(netip.MustParseAddr("fd00:1::1"), netip.MustParseAddr("fd00:2::1"), make([]byte, 64))
-	old := sealTrunk(t, a, "relay-b", trunkLaneInner, 5, v6, false)
+	old := sealTrunk(t, a, "relay-b", trunkLane, 5, v6, false)
 
 	// relay-b rekeys its receive SAs at 3/4 of their lifetime.
 	br := b.bridge()
@@ -321,16 +336,16 @@ func TestTrunkRekey(t *testing.T) {
 	var second []uint32
 	require.Eventually(t, func() bool {
 		second = a.txSPIs("relay-b")
-		return second != nil && second[trunkLanePSP] != first[trunkLanePSP] && second[trunkLaneInner] != first[trunkLaneInner]
-	}, 10*time.Second, 5*time.Millisecond, "relay-a got new SAs for all lanes")
-	pair := b.trunk().pair("relay-a")
+		return second != nil && second[trunkLane] != first[trunkLane]
+	}, 10*time.Second, 5*time.Millisecond, "relay-a got a new SA")
+	pair := b.trunk().to("relay-a")
 	for _, spi := range append(first, second...) {
 		assert.True(t, pair.receives(spi), "SA %#x is a receive SA of the pair", spi)
 	}
 	_, tag, _, err := openTrunk(b, old)
 	require.NoError(t, err, "an SA from before the rekey works in the overlap")
 	assert.EqualValues(t, 5, tag)
-	_, tag, _, err = openTrunk(b, sealTrunk(t, a, "relay-b", trunkLaneInner, 6, v6, false))
+	_, tag, _, err = openTrunk(b, sealTrunk(t, a, "relay-b", trunkLane, 6, v6, false))
 	require.NoError(t, err)
 	assert.EqualValues(t, 6, tag)
 
@@ -342,7 +357,7 @@ func TestTrunkRekey(t *testing.T) {
 	for _, spi := range second {
 		assert.True(t, pair.receives(spi), "SA %#x stays", spi)
 	}
-	_, _, _, err = openTrunk(b, sealTrunk(t, a, "relay-b", trunkLaneInner, 7, v6, false))
+	_, _, _, err = openTrunk(b, sealTrunk(t, a, "relay-b", trunkLane, 7, v6, false))
 	assert.NoError(t, err)
 }
 
@@ -354,7 +369,7 @@ func TestTrunkSessionEnd(t *testing.T) {
 	const downAfter = 3 * time.Second
 	a, b := trunkNodes(t, nil)
 	sa, sb := a.session(t), b.session(t)
-	pa, pb := a.trunk().pair("relay-b"), b.trunk().pair("relay-a")
+	pa, pb := a.trunk().to("relay-b"), b.trunk().to("relay-a")
 	firstA, firstB := a.txSPIs("relay-b"), b.txSPIs("relay-a")
 
 	// A new session opens before the down time: each relay keeps the pair and
@@ -367,8 +382,8 @@ func TestTrunkSessionEnd(t *testing.T) {
 		secondA, secondB = a.txSPIs("relay-b"), b.txSPIs("relay-a")
 		return secondA != nil && secondB != nil && secondA[0] != firstA[0] && secondB[0] != firstB[0]
 	}, 10*time.Second, 5*time.Millisecond, "each relay got a new offer on the new session")
-	assert.Same(t, pa, a.trunk().pair("relay-b"))
-	assert.Same(t, pb, b.trunk().pair("relay-a"))
+	assert.Same(t, pa, a.trunk().to("relay-b"))
+	assert.Same(t, pb, b.trunk().to("relay-a"))
 
 	// relay-a removes the member: its keys go at once. relay-b keeps the
 	// keys for the down time, because the member is up for it.
@@ -376,7 +391,7 @@ func TestTrunkSessionEnd(t *testing.T) {
 	a.m.SetMembers(nil)
 	require.Equal(t, MeshChange{Name: "relay-b", Down: MeshRemoved}, a.change(t, time.Second))
 	lost := time.Now()
-	require.Eventually(t, func() bool { return a.trunk().pair("relay-b") == nil }, 5*time.Second, 5*time.Millisecond)
+	require.Eventually(t, func() bool { return a.trunk().to("relay-b") == nil }, 5*time.Second, 5*time.Millisecond)
 	assert.Nil(t, a.trunk().from(b.addr))
 	for lane := range trunkLanes {
 		assert.Nil(t, pa.tx.SA(lane), "relay-a has no SA of lane %d for relay-b", lane)
@@ -387,11 +402,11 @@ func TestTrunkSessionEnd(t *testing.T) {
 	}
 	if time.Since(lost) < downAfter-time.Second {
 		assert.True(t, b.m.Up("relay-a"))
-		assert.Same(t, pb, b.trunk().pair("relay-a"), "relay-b keeps the pair while the member is up")
+		assert.Same(t, pb, b.trunk().to("relay-a"), "relay-b keeps the pair while the member is up")
 		assert.NotNil(t, b.txSPIs("relay-a"))
 	}
 	require.Equal(t, MeshChange{Name: "relay-a", Down: MeshLost}, b.change(t, downAfter+5*time.Second))
-	require.Eventually(t, func() bool { return b.trunk().pair("relay-a") == nil }, 5*time.Second, 5*time.Millisecond)
+	require.Eventually(t, func() bool { return b.trunk().to("relay-a") == nil }, 5*time.Second, 5*time.Millisecond)
 	for lane := range trunkLanes {
 		assert.Nil(t, pb.tx.SA(lane), "relay-b has no SA of lane %d for relay-a", lane)
 	}
@@ -405,11 +420,11 @@ func TestTrunkSessionEnd(t *testing.T) {
 	require.Equal(t, MeshChange{Name: "relay-b", Up: true}, a.change(t, 10*time.Second))
 	require.Equal(t, MeshChange{Name: "relay-a", Up: true}, b.change(t, 10*time.Second))
 	keyed(t, a, b)
-	assert.NotSame(t, pa, a.trunk().pair("relay-b"))
-	assert.NotSame(t, pb, b.trunk().pair("relay-a"))
-	agentPkt := make([]byte, 100)
+	assert.NotSame(t, pa, a.trunk().to("relay-b"))
+	assert.NotSame(t, pb, b.trunk().to("relay-a"))
+	v6 := ipPacket(netip.MustParseAddr("fd00:1::1"), netip.MustParseAddr("fd00:2::1"), make([]byte, 64))
 	for _, d := range []struct{ from, to *trunkNode }{{a, b}, {b, a}} {
-		_, tag, _, err := openTrunk(d.to, sealTrunk(t, d.from, d.to.name, trunkLanePSP, 9, agentPkt, true))
+		_, tag, _, err := openTrunk(d.to, sealTrunk(t, d.from, d.to.name, trunkLane, 9, v6, false))
 		require.NoError(t, err, "packet from %s", d.from.name)
 		assert.EqualValues(t, 9, tag)
 		require.Eventually(t, func() bool { return d.from.path(d.to.name) == trunkPathFull }, 10*time.Second, 10*time.Millisecond)
@@ -431,11 +446,11 @@ func TestTrunkKeysCall(t *testing.T) {
 		code    rpc.Code
 		refused []uint32
 	}{
-		{name: "SA with a VNI", req: offer(0x2001, 7, trunkLanePSP), code: rpc.InvalidArgument},
+		{name: "SA with a VNI", req: offer(0x2001, 7, trunkLane), code: rpc.InvalidArgument},
 		{name: "SA of a lane that a trunk does not have", req: offer(0x2002, 0, trunkLanes), code: rpc.InvalidArgument},
 		{name: "no op", req: &dp.KeysRequest{}, code: rpc.InvalidArgument},
 		{name: "SA with a bad key", req: keyproto.ToProto(keys.Request{Op: keys.OpOffer, SAs: []keys.SA{{SPI: 0x2003, Key: make([]byte, 5), ExpiresIn: time.Minute}}}), code: rpc.InvalidArgument},
-		{name: "SPI that the relay holds", req: offer(held[trunkLaneInner], 0, trunkLaneInner), code: rpc.OK, refused: []uint32{held[trunkLaneInner]}},
+		{name: "SPI that the relay holds", req: offer(held[trunkLane], 0, trunkLane), code: rpc.OK, refused: []uint32{held[trunkLane]}},
 		{name: "revoke of an SPI of no SA", req: keyproto.ToProto(keys.Request{Op: keys.OpRevoke, SPIs: []uint32{0x2004}}), code: rpc.OK},
 	}
 	for _, tc := range cases {
@@ -452,14 +467,14 @@ func TestTrunkKeysCall(t *testing.T) {
 	}
 
 	t.Run("call that is not on a mesh session", func(t *testing.T) {
-		_, err := b.m.TrunkKeys(context.Background(), offer(0x2005, 0, trunkLanePSP))
+		_, err := b.m.TrunkKeys(context.Background(), offer(0x2005, 0, trunkLane))
 		assert.Equal(t, rpc.FailedPrecondition, rpc.CodeOf(err), "error: %v", err)
 	})
 	t.Run("session that a new session replaced", func(t *testing.T) {
 		old := b.session(t)
 		old.close(dp.MeshCloseCode_MESH_CLOSE_CODE_UNSPECIFIED, "test")
 		require.NotSame(t, old, b.session(t))
-		req, err := keyproto.FromProto(offer(0x2006, 0, trunkLanePSP))
+		req, err := keyproto.FromProto(offer(0x2006, 0, trunkLane))
 		require.NoError(t, err)
 		_, err = b.trunk().apply(old, req, time.Now())
 		assert.Equal(t, rpc.FailedPrecondition, rpc.CodeOf(err), "error: %v", err)
@@ -468,11 +483,11 @@ func TestTrunkKeysCall(t *testing.T) {
 		cur := b.m.Session("relay-a")
 		require.NotNil(t, cur)
 		b.m.SetMembers(nil)
-		req, err := keyproto.FromProto(offer(0x2007, 0, trunkLanePSP))
+		req, err := keyproto.FromProto(offer(0x2007, 0, trunkLane))
 		require.NoError(t, err)
 		_, err = b.trunk().apply(cur, req, time.Now())
 		assert.Equal(t, rpc.FailedPrecondition, rpc.CodeOf(err), "error: %v", err)
-		require.Eventually(t, func() bool { return b.trunk().pair("relay-a") == nil }, 5*time.Second, 5*time.Millisecond)
+		require.Eventually(t, func() bool { return b.trunk().to("relay-a") == nil }, 5*time.Second, 5*time.Millisecond)
 	})
 }
 
@@ -485,8 +500,8 @@ func TestTrunkOff(t *testing.T) {
 	a, _ := trunkNodes(t, nil)
 	from := net.UDPAddrFromAddrPort(netip.MustParseAddrPort("192.0.2.1:6081"))
 	for i, pkt := range [][]byte{
-		sealTrunk(t, a, "relay-b", trunkLanePSP, 7, make([]byte, 100), true),
-		sealTrunk(t, a, "relay-b", trunkLaneInner, trunkTagRelay, make([]byte, trunkPayload), true),
+		sealTrunk(t, a, "relay-b", trunkLane, 7, make([]byte, 100), true),
+		sealTrunk(t, a, "relay-b", trunkLane, trunkTagRelay, make([]byte, trunkMTU), true),
 	} {
 		handle(pkt, from)
 		assert.EqualValues(t, i+1, r.MalformedDrops())
@@ -575,7 +590,7 @@ type trunkRig struct {
 
 	rxq    *engine.RxQueue // Opens the packets of the relay.
 	rx     *keys.Peer      // SAs of the member for packets from the relay.
-	inner  uint32          // SPI of the newest one with a replay window.
+	inner  uint32          // SPI of the newest one.
 	sender *keys.Sender
 	tx     *keys.TxPeer // SAs of the relay for packets to it.
 
@@ -617,9 +632,9 @@ func newTrunkRig(t *testing.T, cfg MeshConfig) *trunkRig {
 	require.NoError(t, err)
 	recv, err := keys.NewReceiver(table, pspwire.AESGCM128)
 	require.NoError(t, err)
-	g.rx, err = recv.NewPeer(keys.PeerConfig{Trunk: true, MTU: trunkPayload, Lanes: trunkLanes, NoReplayLanes: 1})
+	g.rx, err = recv.NewPeer(keys.PeerConfig{Trunk: true, MTU: trunkMTU, Lanes: trunkLanes})
 	require.NoError(t, err)
-	g.sender, err = keys.NewSender(trunkPayload)
+	g.sender, err = keys.NewSender(trunkMTU)
 	require.NoError(t, err)
 	g.rxq, g.tx = table.Queue(0), g.sender.NewPeer()
 	return g
@@ -726,7 +741,7 @@ func (g *trunkRig) offer(s *MeshSession) (keys.Request, error) {
 	req, err := g.rx.Offer(time.Now())
 	require.NoError(g.t, err)
 	if _, err = g.tk.apply(s, req, time.Now()); err == nil {
-		g.inner = req.SAs[trunkLaneInner].SPI
+		g.inner = req.SAs[trunkLane].SPI
 	}
 	return req, err
 }
@@ -735,7 +750,7 @@ func (g *trunkRig) offer(s *MeshSession) (keys.Request, error) {
 func (g *trunkRig) message(pkt keptPacket) []byte {
 	g.t.Helper()
 	assert.Equal(g.t, g.addr, pkt.to)
-	assert.Equal(g.t, g.inner, binary.BigEndian.Uint32(pkt.b[4:8]), "a message goes on the lane with a replay window")
+	assert.Equal(g.t, g.inner, binary.BigEndian.Uint32(pkt.b[4:8]), "a message has the newest SA of the member")
 	msg, tag, nextHdr, err := g.rxq.ReceiveTrunk(pkt.b)
 	require.NoError(g.t, err)
 	assert.EqualValues(g.t, trunkTagRelay, tag)
@@ -747,7 +762,7 @@ func (g *trunkRig) message(pkt keptPacket) []byte {
 // relay from the address of the member.
 func (g *trunkRig) send(tag uint32, msg []byte) {
 	g.t.Helper()
-	sa := g.tx.SA(trunkLaneInner)
+	sa := g.tx.SA(trunkLane)
 	require.NotNil(g.t, sa, "the member has an SA of the relay")
 	pkt := make([]byte, len(msg)+pspwire.Overhead)
 	n, err := sa.SealTrunkPSP(tag, pkt, msg)
@@ -774,7 +789,7 @@ func (g *trunkRig) answer(pkt keptPacket) *trunkPair {
 	msg := g.message(pkt)
 	msg[0] = trunkMsgReply
 	g.send(trunkTagRelay, msg)
-	p := g.tk.pair("relay-a")
+	p := g.tk.to("relay-a")
 	require.NotNil(g.t, p)
 	require.Equal(g.t, trunkPathFull, trunkPath(p.path.Load()))
 	return p
@@ -800,7 +815,7 @@ func (g *trunkRig) ping() bool {
 // of the receive SAs that p had.
 func (g *trunkRig) removed(p *trunkPair, rx []uint32) {
 	g.t.Helper()
-	assert.NotSame(g.t, p, g.tk.pair("relay-a"))
+	assert.NotSame(g.t, p, g.tk.to("relay-a"))
 	for lane := range trunkLanes {
 		assert.Nil(g.t, p.tx.SA(lane), "the relay has no SA of lane %d of the member", lane)
 	}
@@ -839,7 +854,7 @@ func TestTrunkProbeTime(t *testing.T) {
 		assert.Empty(t, g.packets(), "no probe before the member gave its SAs")
 		_, err := g.offer(s)
 		require.NoError(t, err)
-		p := g.tk.pair("relay-a")
+		p := g.tk.to("relay-a")
 		require.NotNil(t, p)
 		path := func() trunkPath {
 			synctest.Wait()
@@ -853,9 +868,9 @@ func TestTrunkProbeTime(t *testing.T) {
 			require.Len(t, pkts, 1, "packet %d of the run", i)
 			assert.Len(t, pkts[0].b, maxUDP)
 			msg := g.message(pkts[0])
-			require.Len(t, msg, trunkPayload)
+			require.Len(t, msg, trunkMTU)
 			assert.EqualValues(t, trunkMsgProbe, msg[0])
-			assert.Equal(t, make([]byte, trunkPayload-trunkProbeLen), msg[trunkProbeLen:])
+			assert.Equal(t, make([]byte, trunkMTU-trunkProbeLen), msg[trunkProbeLen:])
 			if i == 0 {
 				first = slices.Clone(msg[:trunkProbeLen])
 			}
@@ -881,7 +896,7 @@ func TestTrunkProbeTime(t *testing.T) {
 		reply := slices.Clone(g.message(pkts[0]))
 		assert.NotEqual(t, first, reply[:trunkProbeLen], "a new run has a new ID")
 		reply[0] = trunkMsgReply
-		late := make([]byte, trunkPayload)
+		late := make([]byte, trunkMTU)
 		copy(late, first)
 		late[0] = trunkMsgReply
 		other := slices.Clone(reply)
@@ -893,9 +908,9 @@ func TestTrunkProbeTime(t *testing.T) {
 			why  dropReason
 		}{
 			{"answer to the run before", trunkTagRelay, late, dropMalformed},
-			{"answer that is 1 byte shorter", trunkTagRelay, reply[:trunkPayload-1], dropMalformed},
-			// The lane of the messages carries no packet of a sender.
-			{"answer with the tag of a sender", 7, reply, dropTrunkLane},
+			{"answer that is 1 byte shorter", trunkTagRelay, reply[:trunkMTU-1], dropMalformed},
+			// A relay seals no PSP payload with the tag of a sender.
+			{"answer with the tag of a sender", 7, reply, dropTrunkPayload},
 			{"message of an unknown type", trunkTagRelay, other, dropMalformed},
 			{"message with no ID", trunkTagRelay, reply[:trunkProbeLen-1], dropMalformed},
 		}
@@ -914,7 +929,7 @@ func TestTrunkProbeTime(t *testing.T) {
 		}
 		g.send(trunkTagRelay, reply)
 		assert.Equal(t, trunkPathFull, path())
-		assert.Equal(t, 1372, p.mtu())
+		assert.Equal(t, 1412, p.mtu())
 		assert.Equal(t, want, drops(), "a good answer is no drop")
 
 		// A passed run is the last run of the session.
@@ -934,7 +949,7 @@ func TestTrunkAnswer(t *testing.T) {
 		s := g.open(trunkRevision)
 		g.deliver()
 		g.keyed(s)
-		sizes := []int{trunkProbeLen, 100, trunkPayload}
+		sizes := []int{trunkProbeLen, 100, trunkMTU}
 		for _, size := range sizes {
 			probe := make([]byte, size)
 			probe[0] = trunkMsgProbe
@@ -945,7 +960,7 @@ func TestTrunkAnswer(t *testing.T) {
 			probe[0] = trunkMsgReply
 			assert.Equal(t, probe, g.message(pkts[0]), "probe of %d bytes", size)
 		}
-		probe := make([]byte, trunkPayload)
+		probe := make([]byte, trunkMTU)
 		probe[0] = trunkMsgProbe
 		for range 20 {
 			g.send(trunkTagRelay, probe)
@@ -976,7 +991,7 @@ func TestTrunkDownTime(t *testing.T) {
 			g.end(s, lost)
 			time.Sleep(downAfter - time.Nanosecond)
 			g.deliver()
-			assert.Same(t, p, g.tk.pair("relay-a"))
+			assert.Same(t, p, g.tk.to("relay-a"))
 			assert.True(t, g.ping(), "the keys work while the member is up")
 			time.Sleep(time.Nanosecond)
 			g.deliver()
@@ -984,7 +999,7 @@ func TestTrunkDownTime(t *testing.T) {
 			assert.False(t, g.ping())
 		}},
 		{"new session before the down time", func(t *testing.T, g *trunkRig, s *MeshSession, p *trunkPair, rx []uint32) {
-			tx := p.tx.SA(trunkLaneInner).SPI()
+			tx := p.tx.SA(trunkLane).SPI()
 			g.end(s, lost)
 			time.Sleep(time.Second)
 			s2 := g.open(trunkRevision)
@@ -993,16 +1008,16 @@ func TestTrunkDownTime(t *testing.T) {
 			require.Len(t, reqs, 1, "the relay makes a new offer on the new session")
 			assert.Equal(t, keys.OpOffer, reqs[0].Op)
 			require.Len(t, reqs[0].SAs, trunkLanes)
-			assert.Same(t, p, g.tk.pair("relay-a"))
+			assert.Same(t, p, g.tk.to("relay-a"))
 			for _, spi := range append(spisOfRequest(reqs[0]), rx...) {
 				assert.True(t, p.receives(spi), "SA %#x is a receive SA of the pair", spi)
 			}
-			require.NotNil(t, p.tx.SA(trunkLaneInner), "the SAs of the member stay")
-			assert.Equal(t, tx, p.tx.SA(trunkLaneInner).SPI())
+			require.NotNil(t, p.tx.SA(trunkLane), "the SAs of the member stay")
+			assert.Equal(t, tx, p.tx.SA(trunkLane).SPI())
 			assert.True(t, g.ping())
 			time.Sleep(time.Minute)
 			g.deliver()
-			assert.Same(t, p, g.tk.pair("relay-a"))
+			assert.Same(t, p, g.tk.to("relay-a"))
 			assert.Empty(t, g.packets(), "no probe before the member gave its SAs on the new session")
 			// The member gives new SAs, and the relay probes the path again. The
 			// result of the session before stays until the new run ends.
@@ -1012,7 +1027,7 @@ func TestTrunkDownTime(t *testing.T) {
 			assert.True(t, g.ping())
 			time.Sleep(time.Second - time.Nanosecond)
 			synctest.Wait()
-			assert.Equal(t, 1372, p.mtu())
+			assert.Equal(t, 1412, p.mtu())
 			time.Sleep(time.Nanosecond)
 			synctest.Wait()
 			assert.Equal(t, 1280, p.mtu(), "the new run got no answer")
@@ -1024,7 +1039,7 @@ func TestTrunkDownTime(t *testing.T) {
 			g.deliver()
 			// A pair is for one address, so the member gets a new pair.
 			g.removed(p, rx)
-			p2 := g.tk.pair("relay-a")
+			p2 := g.tk.to("relay-a")
 			require.NotNil(t, p2)
 			assert.Nil(t, g.tk.from(trunkRigAddr))
 			assert.Same(t, p2, g.tk.from(g.addr))
@@ -1055,7 +1070,7 @@ func TestTrunkDownTime(t *testing.T) {
 			req, err := g.offer(s2)
 			require.NoError(t, err)
 			g.deliver()
-			assert.Same(t, p, g.tk.pair("relay-a"), "the pair has the SAs of the new session")
+			assert.Same(t, p, g.tk.to("relay-a"), "the pair has the SAs of the new session")
 			for _, sa := range req.SAs {
 				tx := p.tx.SA(sa.Lane)
 				require.NotNil(t, tx, "the SA of lane %d from the new session stays", sa.Lane)
@@ -1072,9 +1087,9 @@ func TestTrunkDownTime(t *testing.T) {
 			s2 := g.open(trunkRevision)
 			g.deliver()
 			g.removed(p, rx)
-			p2 := g.tk.pair("relay-a")
+			p2 := g.tk.to("relay-a")
 			require.NotNil(t, p2)
-			assert.Nil(t, p2.tx.SA(trunkLaneInner))
+			assert.Nil(t, p2.tx.SA(trunkLane))
 			assert.Empty(t, g.packets(), "no probe before the member gave its SAs")
 			_, err := g.offer(s2)
 			require.NoError(t, err)
@@ -1110,7 +1125,7 @@ func TestTrunkGive(t *testing.T) {
 		{"the member holds one SPI from another relay", func(t *testing.T, g *trunkRig) {
 			g.before = func(n int, req keys.Request) error {
 				if n == 0 {
-					return g.hold(req.SAs[trunkLaneInner].SPI)
+					return g.hold(req.SAs[trunkLane].SPI)
 				}
 				return nil
 			}
@@ -1119,8 +1134,8 @@ func TestTrunkGive(t *testing.T) {
 			reqs := g.requests()
 			require.Len(t, reqs, 2)
 			require.Len(t, reqs[0].SAs, trunkLanes)
-			require.Len(t, reqs[1].SAs, 1, "the relay offers a new SA for the lane of the refused SPI")
-			refused, next := reqs[0].SAs[trunkLaneInner], reqs[1].SAs[0]
+			require.Len(t, reqs[1].SAs, 1, "the relay offers a new SA for the refused SPI")
+			refused, next := reqs[0].SAs[trunkLane], reqs[1].SAs[0]
 			assert.Equal(t, refused.Lane, next.Lane)
 			assert.NotEqual(t, refused.SPI, next.SPI)
 			p := g.keyed(s)
@@ -1172,7 +1187,7 @@ func TestTrunkGive(t *testing.T) {
 			time.Sleep(100*time.Millisecond + time.Nanosecond)
 			reqs := g.requests()
 			require.Len(t, reqs, 1)
-			assert.Equal(t, keys.OpOffer, reqs[0].Op, "the next call is a new offer of all lanes")
+			assert.Equal(t, keys.OpOffer, reqs[0].Op, "the next call is a new offer")
 			require.Len(t, reqs[0].SAs, trunkLanes)
 			for _, sa := range reqs[0].SAs {
 				assert.NotContains(t, spisOfRequest(first[0]), sa.SPI)
@@ -1192,7 +1207,7 @@ func TestTrunkGive(t *testing.T) {
 			require.Len(t, reqs, 1)
 			time.Sleep(time.Minute)
 			assert.Empty(t, g.requests(), "the relay makes no more calls on the session")
-			p := g.tk.pair("relay-a")
+			p := g.tk.to("relay-a")
 			require.NotNil(t, p)
 			g.noSAs(p, spisOfRequest(reqs[0]))
 			assert.Equal(t, 1280, p.mtu())
@@ -1206,10 +1221,10 @@ func TestTrunkGive(t *testing.T) {
 			s := g.open(trunkRevision - 1)
 			g.deliver()
 			assert.Empty(t, g.requests(), "a member from before the trunk gets no call")
-			assert.Nil(t, g.tk.pair("relay-a"))
+			assert.Nil(t, g.tk.to("relay-a"))
 			_, err := g.offer(s)
 			assert.Equal(t, rpc.FailedPrecondition, rpc.CodeOf(err), "error: %v", err)
-			assert.Nil(t, g.tk.pair("relay-a"))
+			assert.Nil(t, g.tk.to("relay-a"))
 			assert.Empty(t, g.packets())
 		}},
 	}
@@ -1226,7 +1241,7 @@ func TestTrunkGive(t *testing.T) {
 }
 
 // TestTrunkRekeyTime checks with the fake clock that the member gets new SAs
-// at 3/4 of the lifetime, and a new offer of all lanes if that call fails.
+// at 3/4 of the lifetime, and a new offer if that call fails.
 func TestTrunkRekeyTime(t *testing.T) {
 	cases := []struct {
 		name string
@@ -1265,7 +1280,7 @@ func TestTrunkRekeyTime(t *testing.T) {
 				ticks(3 * time.Second)
 				want := []keys.Op{keys.OpRekey}
 				if tc.fail {
-					// The call after a failed call is a new offer of all lanes.
+					// The call after a failed call is a new offer.
 					want = append(want, keys.OpOffer)
 				}
 				reqs := g.requests()

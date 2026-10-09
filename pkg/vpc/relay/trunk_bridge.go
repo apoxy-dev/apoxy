@@ -24,8 +24,13 @@ func (r *Router) trunkCarries(s *Session, h hop, inner []byte, now time.Time) bo
 		s.dataDrops.Add(1)
 		return false
 	}
+	// The relay seals a clear packet, so it needs an SA of the other relay.
+	pair := h.pair
+	if h.sa == nil {
+		pair = nil
+	}
 	// The limit is the same as for the PSP packet of a row with this inner packet.
-	if r.trunkFits(s, h.pair, h.sa, len(inner)+pspwire.Overhead) == Pass {
+	if r.trunkFits(s, pair, len(inner)+pspwire.Overhead) == Pass {
 		return true
 	}
 	// The trunk to a relay that is away has no SA. Then s learns to visit it.

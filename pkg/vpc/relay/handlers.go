@@ -153,8 +153,8 @@ func (r *Router) visitRef(c *Session, key VPCKey, dst netip.Addr, home string) *
 // its XDP row: Forward takes the SPI from all sources of the caller. The SA
 // lane sets the lane port of the receiver.
 //
-// A receiver on another relay gets rows to the trunk of that relay, which
-// that relay gets on SPIRows. The call waits for no answer and no trunk keys.
+// A receiver on another relay gets rows to that relay, which knows a row only by
+// its SPI: an SPI that another row to it or one of its trunk SAs has gets AlreadyExists.
 func (srv *Server) RegisterSPI(ctx context.Context, in *dp.RegisterSPIRequest) (*emptypb.Empty, error) {
 	c, err := srv.R.caller(ctx)
 	if err != nil {
@@ -199,9 +199,14 @@ func (r *Router) registerSPI(c *Session, in *dp.RegisterSPIRequest, now time.Tim
 		return rpc.Errorf(rpc.NotFound, "no route to %s", dst)
 	}
 	twin := r.twinOf(c)
+	home := to.s.home
 	for _, spi := range in.GetSpis() {
-		if w := c.rows[spi]; w != nil && (w.vpc != key || w.dst != dst) {
+		w := c.rows[spi]
+		if w != nil && (w.vpc != key || w.dst != dst) {
 			return rpc.Errorf(rpc.AlreadyExists, "SPI %#x is held for another destination", spi)
+		}
+		if home != "" && r.spiTaken(home, spi, w) {
+			return rpc.Errorf(rpc.AlreadyExists, "SPI %#x is in use at relay %q", spi, home)
 		}
 		// Forward finds the sender of a packet from its socket and its SPI.
 		if twin != nil {

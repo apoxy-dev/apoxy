@@ -23,12 +23,13 @@ import (
 // senders and the receivers on this relay. Router.mu guards them.
 type inRows struct {
 	sess *MeshSession
-	rows map[rowKey]*inRow
+	rows map[uint32]*inRow // By SPI: a PSP packet of the member has no other name of its row.
 }
 
-// inRow is one row of a member: where the PSP packets of a sender tag and an
-// SPI go. The fields do not change.
+// inRow is one row of a member: where the PSP packets with an SPI go, and the
+// tag of their sender on the member. The fields do not change.
 type inRow struct {
+	tag     uint32
 	vpc     VPCKey
 	dst     netip.Addr
 	expires time.Time
@@ -74,8 +75,8 @@ func (m *Mesh) SPIRows(ctx context.Context, st rpc.ClientStreamServer[dp.SPIRowU
 // rowsFrom makes s the session whose SPIRows call gives the rows of its
 // member. The rows from a session before s end.
 func (t *trunk) rowsFrom(s *MeshSession) error {
-	if got := s.Version().GetRevision(); got < trunkRowsRevision {
-		return rpc.Errorf(rpc.FailedPrecondition, "revision %d has no SPI rows", got)
+	if got := s.Version().GetRevision(); got < trunkRevision {
+		return rpc.Errorf(rpc.FailedPrecondition, "revision %d has no trunk", got)
 	}
 	// Mesh.mu keeps a newer session out, so that its rows do not come first.
 	t.m.mu.Lock()
@@ -89,7 +90,7 @@ func (t *trunk) rowsFrom(s *MeshSession) error {
 	if in := r.in[s.name]; in != nil && in.sess == s {
 		return rpc.Errorf(rpc.FailedPrecondition, "session already has an SPIRows call")
 	}
-	r.in[s.name] = &inRows{sess: s, rows: map[rowKey]*inRow{}}
+	r.in[s.name] = &inRows{sess: s, rows: map[uint32]*inRow{}}
 	return nil
 }
 
@@ -97,21 +98,21 @@ func (t *trunk) rowsFrom(s *MeshSession) error {
 // wrong form get one warning.
 func (t *trunk) setRows(s *MeshSession, u *dp.SPIRowUpdate, now time.Time) error {
 	type change struct {
-		k rowKey
-		w *inRow // Nil removes the row.
+		spi uint32
+		w   *inRow // Nil removes the row.
 	}
 	changes := make([]change, 0, len(u.GetRows()))
 	var refused int
 	var reason error
 	for _, row := range u.GetRows() {
-		k, w, err := checkRow(row, now)
+		w, err := checkRow(row, now)
 		if err != nil {
 			if refused++; reason == nil {
-				reason = fmt.Errorf("row of sender tag %d and SPI %#x: %w", k.tag, k.spi, err)
+				reason = fmt.Errorf("row of sender tag %d and SPI %#x: %w", row.GetSenderTag(), row.GetSpi(), err)
 			}
 			continue
 		}
-		changes = append(changes, change{k, w})
+		changes = append(changes, change{row.GetSpi(), w})
 	}
 	if refused > 0 {
 		slog.Warn("Refused SPI rows of a mesh member", "relay", s.Name(), "count", refused, "reason", reason)
@@ -124,40 +125,41 @@ func (t *trunk) setRows(s *MeshSession, u *dp.SPIRowUpdate, now time.Time) error
 		return rpc.Errorf(rpc.FailedPrecondition, "mesh session ended")
 	}
 	for _, c := range changes {
+		// The member has each SPI in one row, so a new row replaces the row before.
 		if c.w == nil {
-			delete(in.rows, c.k)
+			delete(in.rows, c.spi)
 		} else {
-			in.rows[c.k] = c.w
+			in.rows[c.spi] = c.w
 		}
 	}
 	return nil
 }
 
-// checkRow checks the form of one row of a member at now. It returns the key
-// of the row and its data, or no data for a row that the member removed.
-func checkRow(row *dp.SPIRow, now time.Time) (rowKey, *inRow, error) {
-	k := rowKey{row.GetSenderTag(), row.GetSpi()}
+// checkRow checks the form of one row of a member at now. It returns the data
+// of the row, or no data for a row that the member removed.
+func checkRow(row *dp.SPIRow, now time.Time) (*inRow, error) {
+	tag := row.GetSenderTag()
 	switch {
-	case k.tag == 0 || k.tag > pspwire.MaxVNI:
-		return k, nil, fmt.Errorf("sender tag is not from 1 to %d", pspwire.MaxVNI)
-	case pspwire.ReservedSPI(k.spi):
-		return k, nil, errors.New("SPI is reserved")
+	case tag == 0 || tag > pspwire.MaxVNI:
+		return nil, fmt.Errorf("sender tag is not from 1 to %d", pspwire.MaxVNI)
+	case pspwire.ReservedSPI(row.GetSpi()):
+		return nil, errors.New("SPI is reserved")
 	case row.GetRemoved():
-		return k, nil, nil
+		return nil, nil
 	}
 	vpc, err := KeyOf(row.GetVpc())
 	if err != nil {
-		return k, nil, err
+		return nil, err
 	}
 	dst, err := netip.ParseAddr(row.GetDestination())
 	if err != nil {
-		return k, nil, fmt.Errorf("destination: %w", err)
+		return nil, fmt.Errorf("destination: %w", err)
 	}
 	left := row.GetExpiresIn().AsDuration()
 	if row.GetExpiresIn().CheckValid() != nil || left <= 0 {
-		return k, nil, errors.New("expires_in is not positive")
+		return nil, errors.New("expires_in is not positive")
 	}
-	return k, &inRow{vpc: vpc, dst: dst.Unmap(), expires: now.Add(left)}, nil
+	return &inRow{tag: tag, vpc: vpc, dst: dst.Unmap(), expires: now.Add(left)}, nil
 }
 
 // endIn ends the rows that member name gave on a session that is not cur.
@@ -184,14 +186,14 @@ func (r *Router) sweepIn(now time.Time) {
 	}
 }
 
-// pass sends pkt, the PSP packet of the sender tag on member home, to its
-// receiver on this relay with fwd. If it drops pkt, it returns the reason.
-func (r *Router) pass(home string, tag uint32, pkt []byte, fwd forwarder, now time.Time) (dropReason, bool) {
+// pass sends pkt, the PSP packet of a sender on member home, to its receiver on this
+// relay, or returns the drop reason. The receiver, not the relay, checks the ICV of pkt.
+func (r *Router) pass(home string, pkt []byte, fwd forwarder, now time.Time) (dropReason, bool) {
 	h, err := pspwire.ParseHeader(pkt)
 	if err != nil {
 		return dropMalformed, false
 	}
-	dst, why, ok := r.receiverOf(home, tag, h.SPI, len(pkt), now)
+	dst, why, ok := r.receiverOf(home, h.SPI, len(pkt), now)
 	if !ok {
 		return why, false
 	}
@@ -200,15 +202,15 @@ func (r *Router) pass(home string, tag uint32, pkt []byte, fwd forwarder, now ti
 	return 0, true
 }
 
-// receiverOf returns where a PSP packet of size bytes with spi goes, for the
-// sender tag on member home, and counts it. If not, it returns the drop reason.
-func (r *Router) receiverOf(home string, tag, spi uint32, size int, now time.Time) (netip.AddrPort, dropReason, bool) {
+// receiverOf returns where a PSP packet of size bytes with spi from member home
+// goes, and counts it. If not, it returns the drop reason.
+func (r *Router) receiverOf(home string, spi uint32, size int, now time.Time) (netip.AddrPort, dropReason, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	var w *inRow
 	in := r.in[home]
 	if in != nil {
-		w = in.rows[rowKey{tag, spi}]
+		w = in.rows[spi]
 	}
 	switch {
 	case w == nil:
@@ -219,7 +221,7 @@ func (r *Router) receiverOf(home string, tag, spi uint32, size int, now time.Tim
 	h := w.hop.Load()
 	// A route, Permit or an entry of a member changed after the last checks.
 	if h == nil || h.epoch != r.epoch.Load() {
-		h = r.check(in, tag, w)
+		h = r.check(in, w)
 		w.hop.Store(h)
 	}
 	if h.to == nil {
@@ -234,20 +236,20 @@ func (r *Router) receiverOf(home string, tag, spi uint32, size int, now time.Tim
 	return h.to.dst(0), 0, true
 }
 
-// check does the checks of row w of in for tag: the entry of the sender,
-// Permit and the route of the destination. Router.mu must be held.
-func (r *Router) check(in *inRows, tag uint32, w *inRow) *inHop {
+// check does the checks of row w of in: the entry of the sender, Permit and
+// the route of the destination. Router.mu must be held.
+func (r *Router) check(in *inRows, w *inRow) *inHop {
 	// The epoch is read first, so that a change during the checks ends the result.
 	h := &inHop{epoch: r.epoch.Load()}
 	inVPC := func(e *presenceEntry) bool { return e.vpc == w.vpc }
-	from, _ := r.trunk.Load().m.pres.tagged(in.sess, tag, dropTrunkSender, inVPC)
+	from, _ := r.trunk.Load().m.pres.tagged(in.sess, w.tag, dropTrunkSender, inVPC)
 	switch {
 	case from == nil:
 		h.why = dropTrunkSender
 	case !r.permit(w.vpc, from.subject, w.vpc, w.dst):
 		h.why = dropTrunkPermit
 	default:
-		// The packet came from another relay, so it goes to no other relay.
+		// The packet came from a member, so it goes to no other member.
 		if o := r.localOwner(w.vpc, w.dst); o.s != nil {
 			h.to, h.att = o.s, o.att
 		} else {

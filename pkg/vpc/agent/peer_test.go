@@ -656,6 +656,52 @@ func TestApplyKeys(t *testing.T) {
 	}
 }
 
+// TestRefreshSPIs checks that a refresh closes the peer session only when the
+// relay refuses an SPI as in use. A new session then gets new keys.
+func TestRefreshSPIs(t *testing.T) {
+	w := newWorld(t)
+	cases := []struct {
+		name     string
+		relayErr error
+		closed   bool
+	}{
+		{name: "relay takes the rows"},
+		{name: "relay has an SPI in use", relayErr: rpc.Errorf(rpc.AlreadyExists, "SPI 0x1 is in use at relay \"relay-2\""), closed: true},
+		{name: "relay fails", relayErr: rpc.Errorf(rpc.Unavailable, "down")},
+		{name: "relay has no route", relayErr: rpc.Errorf(rpc.NotFound, "no route")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := w.stubAgent(t, "a")
+			p, qc := stubPeer(a, "b", false)
+			p.addr = netip.MustParseAddr("fd00:b::1")
+			var err error
+			p.bp, err = a.bind.AddPeer(a.rc.relayAddr)
+			require.NoError(t, err)
+			probe, err := a.bind.AddPeer(a.rc.relayAddr)
+			require.NoError(t, err)
+			r := &spiRelay{t: t, probe: probe}
+			a.rc.c = r
+			// The SAs end at two times, so the refresh has two calls.
+			late := testSA(2, 0)
+			late.ExpiresIn = 2 * time.Minute
+			require.NoError(t, p.register(context.Background(), []keys.SA{testSA(1, 0)}))
+			require.NoError(t, p.register(context.Background(), []keys.SA{late}))
+			r.calls, r.err = nil, tc.relayErr
+
+			p.refreshSPIs()
+			assert.Equal(t, tc.closed, qc.closed())
+			if tc.closed {
+				assert.Len(t, r.calls, 1, "no more calls after the refusal")
+				assert.EqualError(t, context.Cause(qc.Context()), "relay refused the SPI rows")
+				return
+			}
+			assert.Len(t, r.calls, 2)
+			assert.ElementsMatch(t, []uint32{1, 2}, slices.Collect(maps.Keys(p.spis)))
+		})
+	}
+}
+
 // signGrant returns a grant on relay-1 for the agent called name.
 func signGrant(t *testing.T, cert *tls.Certificate, name, prefix string) *dp.AttachmentGrant {
 	t.Helper()

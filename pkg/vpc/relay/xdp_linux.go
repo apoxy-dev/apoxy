@@ -24,7 +24,7 @@ import (
 
 const (
 	// xdpMaxLen is the largest IP length of a PSP datagram: the IPv6 and UDP
-	// headers, and the largest UDP payload, which a packet from another relay can have.
+	// headers, and the largest UDP payload: a PSP packet with the largest inner packet.
 	xdpMaxLen = 40 + 8 + maxUDP
 	// recheckInterval is the time between two reads of the link features in
 	// generic mode.
@@ -75,7 +75,7 @@ func (r *Router) StartXDP(cfg XDPConfig) (*XDP, string, error) {
 		_ = prog.Close()
 		return nil, "", fmt.Errorf("failed to set the relay addresses: %w", err)
 	}
-	r.setXDP(relayTable{prog}, time.Now())
+	r.setXDP(relayTable{p: prog, own: addrs}, time.Now())
 	x := &XDP{r: r, prog: prog, chain: cfg.Chain, iface: ifc.Name, stop: make(chan struct{}), done: make(chan struct{})}
 	mode, generic, err := x.attach(cfg, ifc)
 	if err != nil {
@@ -279,7 +279,12 @@ func (x *XDP) Close() error {
 
 // relayTable is the xdpTable of a filter.Relay. The program keeps time in
 // CLOCK_MONOTONIC.
-type relayTable struct{ p *filter.Relay }
+type relayTable struct {
+	p   *filter.Relay
+	own []netip.Addr // Addresses of the relay that the program has.
+}
+
+func (t relayTable) addrs() []netip.Addr { return t.own }
 
 func (t relayTable) putRow(k xdpKey, w xdpRow) error {
 	return t.p.PutRow(k.src, k.spi, filter.RelayRow{Next: w.next, Tunnel: w.tunnel, Expires: filter.Monotonic() + time.Until(w.expires)})
