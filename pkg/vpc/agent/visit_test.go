@@ -89,9 +89,9 @@ func dialOnVisit(t *testing.T, ctx context.Context, ta *testAgent, r *testRelay,
 	return v, ta.a.connect(ctx, v.rc, dst, nil)
 }
 
-// oneVisit waits until a and b have one peer session on one visit after a cut:
-// the visit of visitor, if set. Then heal opens the path, and the session moves back.
-func oneVisit(t *testing.T, a, b, visitor *testAgent, ea, eb attachEvent, heal func()) {
+// oneVisit waits until a and b have one peer session on one visit after a cut.
+// Then it opens the path with heal, and waits for a session over the trunk.
+func oneVisit(t *testing.T, a, b *testAgent, ea, eb attachEvent, heal func()) {
 	t.Helper()
 	old := onlyPeer(t, a.a)
 	// The visit with no peer ends at its check.
@@ -101,12 +101,12 @@ func oneVisit(t *testing.T, a, b, visitor *testAgent, ea, eb attachEvent, heal f
 			return false
 		}
 		pa, pb = onlyPeer(t, a.a), onlyPeer(t, b.a)
-		return pa.rc.visitor != pb.rc.visitor && keyed(pa) && keyed(pb)
+		// A session with the path down gives its place to the session of a new visit.
+		return pa.rc.visitor != pb.rc.visitor && keyed(pa) && keyed(pb) && !pathDown(a.a, pa) && !pathDown(b.a, pb)
 	}, 20*time.Second, 20*time.Millisecond, "one peer session on one visit")
 	assert.Error(t, old.qc.Context().Err(), "the session over the trunk closed")
-	if visitor != nil {
-		assert.True(t, onlyPeer(t, visitor.a).rc.visitor, "the session is on the visit of the agent")
-	}
+	// With a visit of a, the session on that visit stays. Else it is on the visit of b.
+	assert.True(t, keeps(pa.rc, eb.addr) || visitCount(a.a) == 0, "the session that stays")
 	ping(t, a.stack, ea.addr, eb.addr, 9000, "to b on the visit")
 	ping(t, b.stack, eb.addr, ea.addr, 9000, "to a on the visit")
 	assert.Same(t, pa, onlyPeer(t, a.a), "the session stays")
@@ -657,13 +657,13 @@ func TestVisitAfterCut(t *testing.T) {
 				waitReach(t, b, ea.addr, dp.Reach_REACH_VISIT)
 				b.a.noRoute(b.current(), &dp.NoRoute{Vpc: b.current().ref, Address: ea.addr.String(), HomeRelay: r1.relayRef()})
 				a.a.noRoute(a.current(), &dp.NoRoute{Vpc: a.current().ref, Address: eb.addr.String(), HomeRelay: r2.relayRef()})
-				oneVisit(t, a, b, nil, ea, eb, heal)
+				oneVisit(t, a, b, ea, eb, heal)
 			},
 		},
 		{
-			// a dialed the old session and no data went on it, so a sends no report and
-			// gets no NoRoute. It asks its relay for the path when b dials as a visitor.
-			name: "peer session before the cut, only the higher address gets a NoRoute", check: 100 * time.Millisecond, wait: 50 * time.Millisecond,
+			// Only b sends data. A late packet of the old session can give a NoRoute to
+			// a too: then the two agents visit, and the session on the visit of a stays.
+			name: "peer session before the cut, only the higher address sends", check: 100 * time.Millisecond, wait: 50 * time.Millisecond,
 			run: func(t *testing.T, r1, r2 *testRelay, a, b *testAgent, ea, eb attachEvent, _ *lossyConn) {
 				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer cancel()
@@ -673,8 +673,10 @@ func TestVisitAfterCut(t *testing.T) {
 				require.True(t, a.a.first(a.current(), old.subject, old.instance), "a is the first agent")
 				heal := cutMesh(r1, r2)
 				waitReach(t, b, ea.addr, dp.Reach_REACH_VISIT)
+				// The test gives b the NoRoute for its packet on the old session.
+				send(t, b.stack, eb.addr, ea.addr, 9000, "after the cut")
 				b.a.noRoute(b.current(), &dp.NoRoute{Vpc: b.current().ref, Address: ea.addr.String(), HomeRelay: r1.relayRef()})
-				oneVisit(t, a, b, b, ea, eb, heal)
+				oneVisit(t, a, b, ea, eb, heal)
 			},
 		},
 	}
