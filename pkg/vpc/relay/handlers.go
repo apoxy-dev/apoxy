@@ -97,6 +97,9 @@ func (r *Router) resolvePeer(c *Session, in *dp.ResolvePeerRequest) (*dp.Resolve
 // destination gets AlreadyExists. The lane of an SPI sets only the source of
 // its XDP row: Forward takes the SPI from all sources of the caller. The SA
 // lane sets the lane port of the receiver.
+//
+// A receiver on another relay gets rows to the trunk of that relay, which
+// that relay gets on SPIRows. The call does not wait for its answer.
 func (srv *Server) RegisterSPI(ctx context.Context, in *dp.RegisterSPIRequest) (*emptypb.Empty, error) {
 	c, err := srv.R.caller(ctx)
 	if err != nil {
@@ -132,7 +135,14 @@ func (r *Router) registerSPI(c *Session, in *dp.RegisterSPIRequest, now time.Tim
 	if !r.permit(c.id.VPC, c.id.ID, key, dst) {
 		return rpc.Errorf(rpc.PermissionDenied, "permit denies %s", dst)
 	}
-	to := r.localOwner(key, dst)
+	to := r.ownerOf(key, dst)
+	var pair *trunkPair
+	if to.s != nil && to.s.home != "" {
+		// With no trunk for the caller, the relay has no path to the other relay.
+		if pair = r.trunkOf(c, to.s); pair == nil {
+			to = owner{}
+		}
+	}
 	if to.s == nil {
 		return rpc.Errorf(rpc.NotFound, "no route to %s", dst)
 	}
@@ -157,12 +167,14 @@ func (r *Router) registerSPI(c *Session, in *dp.RegisterSPIRequest, now time.Tim
 			}
 			c.rows[spi] = w
 		}
-		if w.receiver != to.s || w.att != to.att {
-			r.retarget(w, to)
+		if w.receiver != to.s || w.att != to.att || w.trunk != pair {
+			r.aim(w, to, pair)
 		}
 		w.lane, w.saLane = laneAt(lanes, i), laneAt(saLanes, i)
 		w.expires = now.Add(ttl)
 		w.lastUsed.Store(now.UnixNano())
+		// The other relay gets each new end time of the row.
+		r.tellRow(w)
 	}
 	r.markXDP(c)
 	return nil
@@ -190,7 +202,8 @@ func laneAt(lanes []uint32, i int) int {
 	return int(lanes[i])
 }
 
-// UnregisterSPI removes rows of the caller. SPIs with no row are ignored.
+// UnregisterSPI removes rows of the caller. SPIs with no row are ignored. The
+// relay of a receiver on another relay learns that the row ended.
 func (srv *Server) UnregisterSPI(ctx context.Context, in *dp.UnregisterSPIRequest) (*emptypb.Empty, error) {
 	c, err := srv.R.caller(ctx)
 	if err != nil {

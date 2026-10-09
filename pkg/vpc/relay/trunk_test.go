@@ -499,11 +499,15 @@ type movedConn struct {
 
 func (c movedConn) RemoteAddr() net.Addr { return net.UDPAddrFromAddrPort(c.addr) }
 
+// rowStream is the calling side of an SPIRows call.
+type rowStream = rpc.ClientStreamClient[dp.SPIRowUpdate, emptypb.Empty]
+
 // trunkClient is the mesh client of a session to a member that the test
-// controls. Only TrunkKeys has an answer.
+// controls. Only TrunkKeys and SPIRows have an answer.
 type trunkClient struct {
 	dp.MeshClient
 	keys func(*dp.KeysRequest) (*dp.KeysResponse, error)
+	rows func() (rowStream, error)
 }
 
 func (trunkClient) Presence(context.Context) (rpc.ClientStreamClient[dp.PresenceUpdate, emptypb.Empty], error) {
@@ -513,6 +517,8 @@ func (trunkClient) Presence(context.Context) (rpc.ClientStreamClient[dp.Presence
 func (c trunkClient) TrunkKeys(_ context.Context, in *dp.KeysRequest) (*dp.KeysResponse, error) {
 	return c.keys(in)
 }
+
+func (c trunkClient) SPIRows(context.Context) (rowStream, error) { return c.rows() }
 
 // keptPacket is one write of a keepConn.
 type keptPacket struct {
@@ -556,6 +562,9 @@ type trunkRig struct {
 	mu    sync.Mutex
 	calls []keys.Request // TrunkKeys calls of the relay since the last requests.
 	n     int            // Number of all calls.
+	// rows is the SPIRows handler of the member. With nil, the member has no
+	// such call.
+	rows func() (rowStream, error)
 	// before runs at the start of call n of the relay. Its error is the
 	// answer to the call. With no error, the member applies the request.
 	before func(n int, req keys.Request) error
@@ -614,7 +623,7 @@ func (g *trunkRig) open(rev uint32) *MeshSession {
 	conn := newStubConn()
 	s := g.m.newSession(movedConn{conn, g.addr}, false)
 	g.stubs[s] = conn
-	s.client = trunkClient{keys: g.call}
+	s.client = trunkClient{keys: g.call, rows: g.spiRows}
 	require.True(g.t, g.m.track(s))
 	require.NoError(g.t, g.m.admit(s, "relay-a", nil, &dp.Version{Revision: rev}, nil))
 	return s
@@ -651,6 +660,17 @@ func (g *trunkRig) call(in *dp.KeysRequest) (*dp.KeysResponse, error) {
 	}
 	refused, err := g.tx.Apply(req, time.Now())
 	return &dp.KeysResponse{RefusedSpis: refused}, err
+}
+
+// spiRows opens an SPIRows call of the relay to the member.
+func (g *trunkRig) spiRows() (rowStream, error) {
+	g.mu.Lock()
+	rows := g.rows
+	g.mu.Unlock()
+	if rows == nil {
+		return nil, rpc.Errorf(rpc.Unimplemented, "the member has no SPIRows call")
+	}
+	return rows()
 }
 
 // requests returns the TrunkKeys calls of the relay since the last call of it.

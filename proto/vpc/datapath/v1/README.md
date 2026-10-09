@@ -153,6 +153,21 @@ limited to an inner MTU of 1280, and it starts a new run each 30 s until one
 passes. After a run that passes, the trunk carries a PSP packet with an inner
 MTU of 1372. Before the first result, the limit of 1280 applies.
 
+A relay sends the PSP packets of an agent to a receiver on another relay in
+trunk packets. `RegisterSPI` for an address of a route of another relay makes
+a row to the trunk of that relay. The relay needs a lane 0 SA of that relay,
+and the session of the caller needs a sender tag, which it has from its first
+attachment. If not, the call returns `NotFound`, as for an address with no
+route. The relay applies the source address check, the meter of the row and
+the tunnel limit to each packet of the row, as for a row to one of its own
+sessions, and it does not open the packet. It seals the whole PSP packet with
+the lane 0 SA, with the sender tag of the session of the sender in the VNI
+field, and sends the trunk packet from its own port to the relay socket of the
+other relay. It drops a PSP packet with an inner packet above the inner MTU of
+the trunk, and it does not send the packet in parts. The XDP program has no
+such row. The relay gives each such row to the other relay with `SPIRows` (see
+"Mesh").
+
 ## Calls
 
 Each call uses one bidirectional QUIC stream. Either side can open a stream;
@@ -244,6 +259,8 @@ cert.
 The relay takes the sender of an SPI row from the authenticated session, never
 from packet data. A row ends at `UnregisterSPI`, at expiry, after 5 minutes
 with no traffic, when either session closes, or when Permit stops allowing it.
+A row to a receiver on another relay ends also when the route to its address
+goes away, and when the relay has no lane 0 trunk SA of the other relay.
 
 An agent sends each SA lane from its own UDP port, so that the lanes use more
 NIC queues. The relay forwards PSP packets from the lane ports of a session as
@@ -299,7 +316,7 @@ its relay before it applies them, and unregisters them after a revoke.
 |-------------|---------------|----------|
 | `Open`      | unary         | Dialer and listener each send `{version, name, relay}`. First call on a session. |
 | `Presence`  | client stream | `PresenceUpdate`: the full set of the attachments of the caller, then each change. One call on a session. |
-| `SPIRows`   | client stream | `SPIRowUpdate`: SPI rows for receivers on the called relay. |
+| `SPIRows`   | client stream | `SPIRowUpdate`: the SPI rows of the senders on the caller for receivers on the called relay. A row with a new end time comes again, and a row that ended comes with `removed`. One call on a session. |
 | `TrunkKeys` | unary         | `KeysRequest` -> `KeysResponse`: trunk SAs for packets from the called relay to the caller (see "Trunk"). Errors: `Unimplemented` (the called relay serves no VPC relay sessions), `FailedPrecondition` (the caller is below revision 5, or the session is not the open session of a member), `InvalidArgument` (an SA VNI is not 0, or an SA lane is not 0 or 1). |
 
 A member of a mesh is one relay process, and its relay name identifies it.
@@ -377,10 +394,34 @@ rule of `Hello.name` applies to the SPIFFE ID and the agent name of the entry.
 The route goes away with its entry: at a `gone` entry, and when the relay
 drops the entries of a member.
 
-At this revision a relay sends no agent data to another relay. For an
-address of such a route, `ResolvePeer` and `RegisterSPI` return `NotFound`.
-The relay drops a data frame, a peer frame or a PSP packet that it opens
-for such an address, and sends `NoRoute`.
+A relay tells each other relay of the SPI rows that it has for receivers on
+that relay (see "Trunk"). It opens one `SPIRows` call on a mesh session, at the
+first such row. An `SPIRow` has the VPC, the sender tag of the session of the
+sender on the calling relay, the SPI, the overlay address of the receiver and
+`expires_in`, the time that the row has left. The sender tag and the SPI name
+the row. The calling relay sends a row when `RegisterSPI` makes it, and again
+with the new `expires_in` at each later `RegisterSPI` for it. It sends the row
+with `removed`, and with no address and no `expires_in`, when the row ends on
+the calling relay or goes to a receiver that is not on the called relay. The
+rows of one change go in one or more messages of at most 256 rows.
+
+`RegisterSPI` does not wait for the called relay, so the first packets of a
+row can come before the row. On a new session, the calling relay sends each
+row that it has for the called relay again. It does not send the rows that
+ended while it had no session, so the called relay ends those by
+`expires_in`. If the call fails, the calling relay makes no new call on that
+session, and it keeps its rows.
+
+When the other relay is down, a relay deletes the trunk SAs, so the packets
+of its rows to that relay drop at once. Each second the relay ends the rows
+to a relay of which it has no lane 0 SA. After the other relay is up again,
+the next `RegisterSPI` of the agent makes the row again.
+
+At this revision a relay answers `Unimplemented` to `SPIRows`, and it drops a
+trunk packet with a sender tag, so no packet of an agent arrives through
+another relay. `ResolvePeer` returns `NotFound` for an address of a route of
+another relay. The relay drops a data frame, a peer frame or a PSP packet that
+it opens for such an address, and sends `NoRoute`.
 
 ## Revisions
 
@@ -404,7 +445,7 @@ only for logs and metrics. On a mesh session, `MeshOpenRequest` and
 | 3 | `Mesh.Open` with the `Version`, the relay name and the `RelayRef` of each relay. The `MeshCloseCode` values. | No duty. | No duty. | Calls `Open` first on a mesh session that it dialed, and answers it on a session that it accepted. Closes a mesh session with a relay below its minimum with `UPGRADE`, and with a relay that is not a member with `NOT_MEMBER`. Closes its mesh sessions with `RESTART` when it stops. |
 | 4 | `Presence.subject`, `agent_name` and `sender_tag`. `PresenceUpdate.end_of_full_set`. | No duty. | No duty. | Opens one `Presence` call on each mesh session with a relay at revision 4 or later: the full set of its attachments with the end mark, then each change. Opens none with a relay at revision 3, and keeps that session. Keeps the entries that each member sends, and drops them when the member closes with `RESTART` or leaves the member set. |
 | 5 | `Mesh.TrunkKeys` and the trunk SAs. The trunk packet with tag 0: the full-size probe and its answer. | No duty. | No duty. | With a relay at revision 5 or later: offers trunk SAs on each new mesh session and before they expire, applies the trunk SAs of the other relay, probes the path at full size, and answers the probes of the other relay. Makes no `TrunkKeys` call to a relay below revision 5, refuses its call with `FailedPrecondition`, and keeps that session. Deletes the trunk SAs of a relay that is down. |
-| 6 | `Hello.local_routes_only`. Routes of the attachments of other relays in `RouteDelta`. | Sends `local_routes_only` when its config has the option. Without it, gets the routes of the attachments of other relays from a relay at revision 6 or later. | Sends `local_routes_only`, because it has one session for each relay. | Makes a route for each prefix of the entries of the other relays. Sends these routes to a session at revision 6 or later that did not set `local_routes_only`, and to no other session. Answers `NotFound` to `ResolvePeer` and `RegisterSPI` for an address of such a route, and sends `NoRoute` for a packet to it that it opens. |
+| 6 | `Hello.local_routes_only`. Routes of the attachments of other relays in `RouteDelta`. | Sends `local_routes_only` when its config has the option. Without it, gets the routes of the attachments of other relays from a relay at revision 6 or later. | Sends `local_routes_only`, because it has one session for each relay. | Makes a route for each prefix of the entries of the other relays. Sends these routes to a session at revision 6 or later that did not set `local_routes_only`, and to no other session. Answers `NotFound` to `ResolvePeer` for an address of such a route, and sends `NoRoute` for a packet to it that it opens. |
 
 ### Minimum revision
 

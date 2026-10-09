@@ -104,6 +104,8 @@ func (r *Router) elect(d *domain, p netip.Prefix) {
 	switch {
 	case best == nil && had:
 		r.dropRoute(cur.s, p)
+		// The rows to the addresses of p have no receiver now.
+		r.dropInbound(cur.s)
 		r.release(cur.s)
 	case best == nil:
 	case had && cur.origin == best.id && cur.s == r.remotes[best.session()]:

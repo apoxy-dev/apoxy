@@ -246,9 +246,9 @@ func (r *Router) syncSource(a netip.AddrPort, now time.Time) {
 }
 
 // wantXDP returns the rows that Forward uses for packets from a, by SPI. A row
-// with no next hop, which goes to the relay, or with a next hop of the other
-// family stays on the socket path. The tunnel is not set. Router.mu must be
-// held.
+// with no next hop, which goes to the relay or to another relay, or with a
+// next hop of the other family stays on the socket path. The tunnel is not
+// set. Router.mu must be held.
 func (r *Router) wantXDP(a netip.AddrPort, now time.Time) map[uint32]xdpEntry {
 	s := r.bySource[a]
 	if s == nil || s.closed {

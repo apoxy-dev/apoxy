@@ -99,6 +99,12 @@ const (
 	DropMeter
 	// DropTunnelLimit drops a packet above the limit of the sender's tunnel.
 	DropTunnelLimit
+	// DropTrunkMTU drops a packet for another relay that is too large for the
+	// trunk to that relay.
+	DropTrunkMTU
+	// DropTrunkKeys drops a packet for another relay when the trunk has no SA
+	// for it.
+	DropTrunkKeys
 )
 
 // Router holds the routing domains, sessions and SPI rows of one relay.
@@ -210,6 +216,7 @@ type Session struct {
 	rxBase      counts                       // RX of s that its oldest attachment does not get.
 
 	dropUnknownSPI, dropMeter, dropTunnel atomic.Uint64
+	dropTrunk                             atomic.Uint64 // PSP packets that a trunk did not carry.
 	dataSent, dataDrops                   atomic.Uint64
 	// framePackets and frameBytes count the inner packets of the data frames
 	// of s that the relay sent on.
@@ -238,6 +245,7 @@ type row struct {
 	meter            *rate.Limiter
 	lastUsed         atomic.Int64 // Unix nanoseconds.
 	att              *Attachment  // Attachment of dst at the receiver, or nil. Guarded by Router.mu.
+	trunk            *trunkPair   // Pair of the relay that has the receiver, or nil. Guarded by Router.mu.
 	done             tally        // Counts that the totals of the sender and of att have. Guarded by Router.mu.
 	removed          bool         // The row ended. Guarded by Router.mu.
 
@@ -384,15 +392,16 @@ func (r *Router) removeSession(s *Session) {
 	for _, a := range s.attachments {
 		r.withdraw(a)
 	}
-	// A later session can get the trunk tag of s.
-	delete(r.tags, s.tag)
-	s.tag = 0
 	for _, w := range s.rows {
 		r.removeRow(w)
 	}
 	for w := range s.inbound {
 		r.removeRow(w)
 	}
+	// A later session can get the trunk tag of s. The other relays got the end
+	// of the rows of s with the tag.
+	delete(r.tags, s.tag)
+	s.tag = 0
 	for _, a := range []netip.AddrPort{s.addr, s.prev} {
 		if o := r.bySource[a]; o == s {
 			delete(r.bySource, a)
@@ -559,7 +568,7 @@ func (r *Router) setOwner(d *domain, p netip.Prefix, o owner) {
 		// The rows to p go to the new session, or to its attachment.
 		for w := range old.s.inbound {
 			if to := r.ownerOf(w.vpc, w.dst); to.s == o.s && (w.receiver != to.s || w.att != to.att) {
-				r.retarget(w, to)
+				r.move(w, to)
 			}
 		}
 		r.release(old.s)
@@ -699,6 +708,7 @@ func (r *Router) removeRow(w *row) {
 		delete(w.sender.rows, w.spi)
 	}
 	delete(w.receiver.inbound, w)
+	r.untrunk(w)
 	r.markXDP(w.sender)
 }
 
@@ -717,15 +727,23 @@ func (r *Router) SetPermit(p Permit) {
 }
 
 // Forward finds where to send a PSP packet with outer source src and SPI
-// spi. It returns Pass and the address of the receiver, or a drop verdict.
+// spi. It returns Pass and the address of the receiver, or a drop verdict. For
+// a receiver on another relay, the address is the relay socket of that relay.
 func (r *Router) Forward(src netip.AddrPort, spi uint32, size int, now time.Time) (netip.AddrPort, Verdict) {
+	dst, _, v := r.forward(src, spi, size, now)
+	return dst, v
+}
+
+// forward is Forward. For a receiver on another relay it also returns how to
+// seal the packet for the trunk, and the caller must not send it unsealed.
+func (r *Router) forward(src netip.AddrPort, spi uint32, size int, now time.Time) (netip.AddrPort, trunkSeal, Verdict) {
 	src = netip.AddrPortFrom(src.Addr().Unmap(), src.Port())
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	s := r.bySource[src]
 	if s == nil || !s.from(src, now) {
 		r.drops[dropUnknownSource].Add(1)
-		return netip.AddrPort{}, DropUnknownSource
+		return netip.AddrPort{}, trunkSeal{}, DropUnknownSource
 	}
 	w := s.rows[spi]
 	if t := s.twin; (w == nil || now.After(w.expires)) && t != nil && !t.closed {
@@ -737,21 +755,33 @@ func (r *Router) Forward(src netip.AddrPort, spi uint32, size int, now time.Time
 	if w == nil || now.After(w.expires) {
 		s.dropUnknownSPI.Add(1)
 		r.drops[dropUnknownSPI].Add(1)
-		return netip.AddrPort{}, DropUnknownSPI
+		return netip.AddrPort{}, trunkSeal{}, DropUnknownSPI
+	}
+	var ts trunkSeal
+	if p := w.trunk; p != nil {
+		// The checks of the trunk come first: a packet that it cannot carry
+		// takes nothing from the meters.
+		ts = trunkSeal{sa: p.tx.SA(trunkLanePSP), tag: s.tag}
+		if v := r.trunkFits(s, p, ts.sa, size); v != Pass {
+			return netip.AddrPort{}, trunkSeal{}, v
+		}
 	}
 	if w.meter != nil && !w.meter.AllowN(now, size) {
 		w.dropMeter.Add(1)
 		s.dropMeter.Add(1)
 		r.drops[dropLaneMeter].Add(1)
-		return netip.AddrPort{}, DropMeter
+		return netip.AddrPort{}, trunkSeal{}, DropMeter
 	}
 	if !r.allow(s, size, now) {
-		return netip.AddrPort{}, DropTunnelLimit
+		return netip.AddrPort{}, trunkSeal{}, DropTunnelLimit
 	}
 	w.lastUsed.Store(now.UnixNano())
 	w.packets.Add(1)
 	w.bytes.Add(uint64(size))
-	return w.receiver.dst(w.saLane), Pass
+	if w.trunk != nil {
+		return w.trunk.addr, ts, Pass
+	}
+	return w.receiver.dst(w.saLane), trunkSeal{}, Pass
 }
 
 // allow reports whether the tunnel limit of s lets size bytes through now. It
@@ -780,7 +810,8 @@ func (r *Router) ReportStatus(s *Session, st *dp.Status) {
 }
 
 // Sweep follows migrated connections, ends old source addresses, removes
-// expired and idle rows, and closes sessions at the NotAfter of their cert.
+// expired and idle rows and the rows to a relay with no trunk SA, and closes
+// sessions at the NotAfter of their cert.
 func (r *Router) Sweep(now time.Time) {
 	idle := now.Add(-rowIdle).UnixNano()
 	var expired []*Session
@@ -802,7 +833,8 @@ func (r *Router) Sweep(now time.Time) {
 			if w.lastUsed.Load() < idle {
 				r.refreshUsedXDP(w)
 			}
-			if now.After(w.expires) || w.lastUsed.Load() < idle {
+			// A row to another relay ends when the trunk has no SA for it.
+			if now.After(w.expires) || w.lastUsed.Load() < idle || w.lost() {
 				r.removeRow(w)
 			}
 		}
@@ -851,7 +883,10 @@ type SenderStats struct {
 	// DropTunnelLimit counts the PSP packets, data frames and peer frames above
 	// the tunnel limit. DataDrops does not count them.
 	DropTunnelLimit uint64
-	Lanes           []LaneStats // Sorted by SPI.
+	// DropTrunk counts the PSP packets for another relay that the trunk to it
+	// did not carry: too large, or no SA.
+	DropTrunk uint64
+	Lanes     []LaneStats // Sorted by SPI.
 	// DataSent and DataDrops count the data frames and the decrypted PSP
 	// packets of the sender that the relay sent on or dropped.
 	DataSent  uint64
@@ -864,6 +899,7 @@ func (r *Router) SenderStats(s *Session) SenderStats {
 		DropUnknownSPI:  s.dropUnknownSPI.Load(),
 		DropMeter:       s.dropMeter.Load(),
 		DropTunnelLimit: s.dropTunnel.Load(),
+		DropTrunk:       s.dropTrunk.Load(),
 		DataSent:        s.dataSent.Load(),
 		DataDrops:       s.dataDrops.Load(),
 	}

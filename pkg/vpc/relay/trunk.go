@@ -89,7 +89,8 @@ type trunk struct {
 	// addrs has the pairs by member address, for the packet path.
 	addrs atomic.Pointer[map[netip.AddrPort]*trunkPair]
 
-	// mu guards the fields below. Take it after Mesh.mu.
+	// mu guards the fields below. Take it last: after Mesh.mu, after Router.mu
+	// and after the lock of the presence.
 	mu    sync.Mutex
 	pairs map[string]*trunkPair     // By relay name of the member.
 	byRx  map[*keys.Peer]*trunkPair // Pair of each receive peer.
@@ -115,8 +116,8 @@ type trunkPair struct {
 	gone    bool           // The trunk removed the pair.
 }
 
-// trunkSession is the key exchange of a pair on one mesh session. trunk.mu
-// guards its fields.
+// trunkSession is the key exchange of a pair on one mesh session, and the
+// SPIRows call of that session. trunk.mu guards its fields.
 type trunkSession struct {
 	s       *MeshSession
 	wake    chan struct{} // Has room for 1: fresh or pending changed.
@@ -124,6 +125,10 @@ type trunkSession struct {
 	fresh   bool          // The member needs a new offer of all lanes.
 	offered bool          // The member accepted an offer on this session.
 	probing bool          // ready is closed.
+
+	rows     map[rowKey]rowState // Last state of each row that the member must get.
+	rowWake  chan struct{}       // Has room for 1: rows changed.
+	rowsDone bool                // The SPIRows call failed, and the member gets no more rows.
 }
 
 // trunkProbe is one probe run.
@@ -265,15 +270,24 @@ func (t *trunk) opened(s *MeshSession) {
 	if br == nil || s.Version().GetRevision() < trunkRevision {
 		return
 	}
-	ts := &trunkSession{s: s, wake: make(chan struct{}, 1), ready: make(chan struct{}), fresh: true}
+	ts := &trunkSession{
+		s: s, wake: make(chan struct{}, 1), ready: make(chan struct{}), fresh: true,
+		rows: map[rowKey]rowState{}, rowWake: make(chan struct{}, 1),
+	}
 	ts.wake <- struct{}{}
+	// The read lock keeps each row change out until ts has the rows of the
+	// pair and gets the changes.
+	t.r.mu.RLock()
 	t.mu.Lock()
 	p := t.pairOf(br, s)
 	// The new offer replaces the rekeys that the member did not get.
 	p.sess, p.pending = ts, nil
+	t.r.liveRows(p, ts)
 	t.mu.Unlock()
+	t.r.mu.RUnlock()
 	t.m.wg.Go(func() { t.give(br, p, ts) })
 	t.m.wg.Go(func() { t.probes(br, p, ts) })
+	t.m.wg.Go(func() { t.sendRows(p, ts) })
 }
 
 // changed removes the keys of a member that is down. The keys stay while the

@@ -143,7 +143,7 @@ func (r *Router) total(w *row) (tally, uint64) {
 // nil. Router.mu must be held.
 func (r *Router) rxOf(s *Session, tx map[*Attachment]tally) counts {
 	rows := s.rxRows
-	drops := s.dropUnknownSPI.Load() + s.dropMeter.Load() + s.dropTunnel.Load() + s.dataDrops.Load() + r.xdpTunnelDrops(s)
+	drops := s.dropUnknownSPI.Load() + s.dropMeter.Load() + s.dropTunnel.Load() + s.dropTrunk.Load() + s.dataDrops.Load() + r.xdpTunnelDrops(s)
 	for _, w := range s.rows {
 		t, d := r.total(w)
 		n := t.since(w.done)
