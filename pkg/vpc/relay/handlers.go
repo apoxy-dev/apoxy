@@ -158,7 +158,7 @@ func (r *Router) registerSPI(c *Session, in *dp.RegisterSPIRequest, now time.Tim
 	if !r.permit(c.id.VPC, c.id.ID, key, dst) {
 		return rpc.Errorf(rpc.PermissionDenied, "permit denies %s", dst)
 	}
-	to := r.ownerOf(key, dst)
+	to := r.reach(c, dst)
 	// A caller with no sender tag has no path to another relay.
 	if to.s != nil && to.s.home != "" && !r.trunked(c) {
 		to = owner{}

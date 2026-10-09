@@ -571,6 +571,7 @@ type trunkRig struct {
 	handle func([]byte, net.Addr)
 	stubs  map[*MeshSession]*stubConn
 	addr   netip.AddrPort // Address of the member. Its sessions and packets come from it.
+	ref    *dp.RelayRef   // What the member gives of itself in Open. Nil is nothing.
 
 	rxq    *engine.RxQueue // Opens the packets of the relay.
 	rx     *keys.Peer      // SAs of the member for packets from the relay.
@@ -644,7 +645,7 @@ func (g *trunkRig) open(rev uint32) *MeshSession {
 	g.stubs[s] = conn
 	s.client = trunkClient{keys: g.call, rows: g.spiRows}
 	require.True(g.t, g.m.track(s))
-	require.NoError(g.t, g.m.admit(s, "relay-a", nil, &dp.Version{Revision: rev}, nil))
+	require.NoError(g.t, g.m.admit(s, "relay-a", nil, &dp.Version{Revision: rev}, g.ref))
 	return s
 }
 

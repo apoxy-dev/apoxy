@@ -129,7 +129,7 @@ func (r *Router) nextHop(src *Session, inner []byte) hop {
 	if !r.permit(src.id.VPC, src.id.ID, src.id.VPC, dst) {
 		return h
 	}
-	to := r.ownerOf(src.id.VPC, dst)
+	to := r.reach(src, dst)
 	switch {
 	case to.s == nil:
 	case to.s.home == "":

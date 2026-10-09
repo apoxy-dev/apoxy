@@ -49,9 +49,11 @@ const (
 	vpcNetwork = 0x0a0b0c
 )
 
-type vpcTrust struct{ pool *x509.CertPool }
+// vpcTrust trusts one CA for the agent certs. A nil relays is the system roots.
+type vpcTrust struct{ pool, relays *x509.CertPool }
 
-func (f vpcTrust) AgentCA(string) (*x509.CertPool, error) { return f.pool, nil }
+func (f vpcTrust) AgentCA(string) (*x509.CertPool, error)    { return f.pool, nil }
+func (f vpcTrust) RelayRoots(string) (*x509.CertPool, error) { return f.relays, nil }
 func (vpcTrust) Revoked(string, string) ([]vpcv1alpha1.RevokedAgent, error) {
 	return nil, nil
 }
@@ -132,6 +134,7 @@ type relayOpts struct {
 	noVPC        bool                // The relay serves no VPC relay sessions.
 	addrs        vpcrelay.Addresses  // Addresses of the attachments. Nil starts at fd00:1::/96.
 	agentCA      *vpctest.CA         // CA of the agents. Nil makes a CA for this relay.
+	relayRoots   *x509.CertPool      // Roots for the relay cert of a grant. Nil is the system roots.
 	setup        func(*tunnel.Relay) // Runs before Start.
 }
 
@@ -181,7 +184,7 @@ func startRelayWith(t *testing.T, o relayOpts) *vpcRelay {
 	}
 	var router *vpcrelay.Router
 	if !o.noVPC {
-		router = r.SetVPC("localhost", vpcTrust{o.agentCA.Pool()}, vpcNetworks{}, o.addrs, vpcrelay.Config{})
+		router = r.SetVPC("localhost", vpcTrust{o.agentCA.Pool(), o.relayRoots}, vpcNetworks{}, o.addrs, vpcrelay.Config{})
 	}
 	r.SetLameDuckPeriod(lameDuck)
 	if o.setup != nil {

@@ -116,6 +116,8 @@ type fakeTrust struct {
 	projectCA map[string]*testCA
 	revoked   map[VPCKey][]vpcv1alpha1.RevokedAgent
 	err       error
+	roots     *x509.CertPool // Relay roots of all projects. Nil is the system roots.
+	rootsErr  error
 }
 
 func (f *fakeTrust) AgentCA(project string) (*x509.CertPool, error) {
@@ -135,6 +137,12 @@ func (f *fakeTrust) Revoked(project, vpcUID string) ([]vpcv1alpha1.RevokedAgent,
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.revoked[VPCKey{Project: project, UID: vpcUID}], f.err
+}
+
+func (f *fakeTrust) RelayRoots(string) (*x509.CertPool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.roots, f.rootsErr
 }
 
 func (f *fakeTrust) setCA(ca *testCA) {

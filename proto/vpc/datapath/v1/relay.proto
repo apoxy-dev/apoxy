@@ -34,6 +34,9 @@ service Relay {
   // RegisterLanes sets the lane ports of the caller. Errors: InvalidArgument,
   // AlreadyExists (a port is a source of another agent), FailedPrecondition.
   rpc RegisterLanes(RegisterLanesRequest) returns (google.protobuf.Empty);
+  // Visit lets the caller use its address of another relay of the mesh on this
+  // relay. Errors: Unimplemented (no mesh), and the codes in the README.
+  rpc Visit(VisitRequest) returns (google.protobuf.Empty);
 }
 
 // RelayCloseCode is the QUIC application error code when a relay closes a
@@ -265,6 +268,16 @@ message RegisterLanesRequest {
   // The agent reads the lane ports. The relay then sends the PSP packets of SA
   // lane i to lane port i mod (ports + 1), where 0 is the session address.
   bool receive = 2;
+}
+
+// VisitRequest makes the session of the caller a visitor. The session needs a
+// Session call with local_routes_only, and it has and had no attachment.
+message VisitRequest {
+  VPCRef vpc = 1;
+  // Overlay address of the caller on its home relay.
+  string address = 2;
+  // Grant of the home relay for the attachment that has the address.
+  AttachmentGrant grant = 3;
 }
 
 // FallbackReason is why an agent sends data in QUIC mode.

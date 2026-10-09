@@ -976,6 +976,142 @@ func testMeshData(t *testing.T, steerSockets int) {
 	}
 }
 
+// sendFrame sends the peer frame of pkt from a each 200 ms, until to gets it.
+func (a *routeAgent) sendFrame(t *testing.T, ctx context.Context, to *routeAgent, src, dst netip.Addr, pkt []byte) {
+	t.Helper()
+	want := peerconn.EncodeFromRelay(nil, src, pkt)
+	for {
+		require.NoError(t, a.qc.SendDatagram(peerconn.EncodeToRelay(nil, dst, src, pkt)))
+		rctx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+		for {
+			got, err := to.qc.ReceiveDatagram(rctx)
+			if err != nil {
+				break
+			}
+			if bytes.Equal(got, want) {
+				cancel()
+				return
+			}
+		}
+		cancel()
+		require.NoError(t, ctx.Err(), "no peer frame %q for %v", pkt, dst)
+	}
+}
+
+// TestRelay_MeshVisit attaches an agent on relay-a. A second connection of the
+// agent visits relay-b with the grant of relay-a, and talks to an agent of relay-b.
+func TestRelay_MeshVisit(t *testing.T) {
+	ca := newMeshCA(t)
+	agents, err := vpctest.NewCA()
+	require.NoError(t, err)
+	a := startMeshRelayWith(t, ca, relayOpts{name: "relay-a", agentCA: agents})
+	// relay-b accepts the grants of relay-a. relay-a accepts no grant of the test.
+	b := startMeshRelayWith(t, ca, relayOpts{
+		name: "relay-b", agentCA: agents, addrs: &vpcAddresses{next: 0x100 - 1}, relayRoots: a.roots,
+	})
+	b.mesh.SetMembers([]vpcrelay.MeshMember{a.member()})
+	a.mesh.SetMembers([]vpcrelay.MeshMember{b.member()})
+	require.Equal(t, vpcrelay.MeshChange{Name: "relay-b", Up: true}, a.change(t))
+	require.Equal(t, vpcrelay.MeshChange{Name: "relay-a", Up: true}, b.change(t))
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	vpc := &dp.VPCRef{ProjectId: vpcProject, VpcUid: vpcUID, NetworkId: vpcNetwork}
+	this := dp.LocalVersion("test")
+	attach := func(e *routeAgent, name string) *dp.AttachResponse {
+		res, err := e.c.Attach(ctx, &dp.AttachRequest{Vpc: vpc, Name: name})
+		require.NoError(t, err)
+		return res
+	}
+
+	home := openRouteAgent(t, ctx, a.vpcRelay, "laptop", &dp.Hello{Version: this, Name: "base"})
+	phone := openRouteAgent(t, ctx, a.vpcRelay, "phone", &dp.Hello{Version: this, Name: "base"})
+	server := openRouteAgent(t, ctx, b.vpcRelay, "server", &dp.Hello{Version: this, Name: "base"})
+	onLaptop, onPhone, onServer := attach(home, "laptop"), attach(phone, "phone"), attach(server, "server")
+	laptopAddr, serverAddr := netip.MustParseAddr("fd00:1::1"), netip.MustParseAddr("fd00:100::1")
+	// Each relay has the attachments of the other relay when its agent has their routes.
+	var routes []string
+	for len(routes) < 2 {
+		routes = append(routes, server.next(t, ctx)...)
+	}
+	require.ElementsMatch(t, []string{"+" + onLaptop.GetAttachmentId() + " fd00:1::/96", "+" + onPhone.GetAttachmentId() + " fd00:2::/96"}, routes)
+	for routes = nil; len(routes) < 2; {
+		routes = append(routes, home.next(t, ctx)...)
+	}
+	require.Contains(t, routes, "+"+onServer.GetAttachmentId()+" fd00:100::/96")
+
+	// Before the visit, the mesh carries a frame for the agent to relay-a.
+	server.sendFrame(t, ctx, home, serverAddr, laptopAddr, []byte("before"))
+
+	visitor := openRouteAgent(t, ctx, b.vpcRelay, "laptop", &dp.Hello{Version: this, Name: "base", LocalRoutesOnly: true})
+	wide := openRouteAgent(t, ctx, b.vpcRelay, "laptop", &dp.Hello{Version: this, Name: "base"})
+	guest := openRouteAgent(t, ctx, a.vpcRelay, "server", &dp.Hello{Version: this, Name: "base", LocalRoutesOnly: true})
+	refused := []struct {
+		name  string
+		on    *routeAgent
+		addr  string
+		grant *dp.AttachmentGrant
+		code  rpc.Code
+	}{
+		{"grant of another agent", visitor, "fd00:2::1", onPhone.GetGrant(), rpc.PermissionDenied},
+		{"address of another agent", visitor, "fd00:2::1", onLaptop.GetGrant(), rpc.PermissionDenied},
+		{"session with the routes of other relays", wide, "fd00:1::1", onLaptop.GetGrant(), rpc.FailedPrecondition},
+		{"grant from a relay cert that is not in the relay roots", visitor, "fd00:100::1", onServer.GetGrant(), rpc.PermissionDenied},
+		{"relay with the system roots", guest, "fd00:100::1", onServer.GetGrant(), rpc.PermissionDenied},
+	}
+	for _, tc := range refused {
+		_, err := tc.on.c.Visit(ctx, &dp.VisitRequest{Vpc: vpc, Address: tc.addr, Grant: tc.grant})
+		assert.Equal(t, tc.code, rpc.CodeOf(err), "%s: %v", tc.name, err)
+	}
+	_, err = visitor.c.Visit(ctx, &dp.VisitRequest{Vpc: vpc, Address: laptopAddr.String(), Grant: onLaptop.GetGrant()})
+	require.NoError(t, err)
+
+	// The visitor and the agent of relay-b send to each other on relay-b only.
+	aead, err := pspwire.NewAEAD(bytes.Repeat([]byte{7}, 16))
+	require.NoError(t, err)
+	dirs := []struct {
+		name     string
+		from, to *routeAgent
+		src, dst netip.Addr
+		spi      uint32
+	}{
+		{"agent of relay-b to the visitor", server, visitor, serverAddr, laptopAddr, 0x700},
+		{"visitor to the agent of relay-b", visitor, server, laptopAddr, serverAddr, 0x900},
+	}
+	for _, d := range dirs {
+		require.NoError(t, d.from.qc.SendDatagram(peerconn.EncodeToRelay(nil, d.dst, d.src, []byte("hello"))), d.name)
+		got, err := d.to.qc.ReceiveDatagram(ctx)
+		require.NoError(t, err, d.name)
+		assert.Equal(t, peerconn.EncodeFromRelay(nil, d.src, []byte("hello")), got, d.name)
+
+		inner := bytes.Repeat([]byte{40}, 40)
+		inner[0], inner[4], inner[5] = 0x60, 0, 0
+		copy(inner[8:24], d.src.AsSlice())
+		copy(inner[24:40], d.dst.AsSlice())
+		assert.Equal(t, peerconn.EncodeData(nil, vpcNetwork, inner), d.from.sendData(t, ctx, d.to, inner), d.name)
+
+		_, err = d.from.c.RegisterSPI(ctx, &dp.RegisterSPIRequest{
+			Vpc: vpc, Destination: d.dst.String(), Spis: []uint32{d.spi}, ExpiresIn: durationpb.New(time.Minute),
+		})
+		require.NoError(t, err, d.name)
+		pkt := make([]byte, len(inner)+pspwire.Overhead)
+		n, err := pspwire.Seal(aead, pspwire.Header{SPI: d.spi, VNI: vpcNetwork}, pkt, inner)
+		require.NoError(t, err)
+		sealed, from := d.from.sendPSP(t, ctx, b.vpcRelay, d.to, pkt[:n])
+		assert.Equal(t, pkt[:n], sealed, d.name)
+		assert.Equal(t, b.r.Address(), from, d.name)
+	}
+	// The visitor reaches no address of another relay.
+	_, err = visitor.c.RegisterSPI(ctx, &dp.RegisterSPIRequest{
+		Vpc: vpc, Destination: "fd00:2::1", Spis: []uint32{0x901}, ExpiresIn: durationpb.New(time.Minute),
+	})
+	assert.Equal(t, rpc.NotFound, rpc.CodeOf(err), "row of the visitor to relay-a: %v", err)
+
+	// After the visit, the mesh carries the frames for the agent to relay-a again.
+	require.NoError(t, visitor.qc.CloseWithError(0, ""))
+	server.sendFrame(t, ctx, home, serverAddr, laptopAddr, []byte("after"))
+	assert.Empty(t, server.deltas, "a visit changes no route")
+}
+
 // hostAttach is one attachment of a hostAgent.
 type hostAttach struct {
 	addr   netip.Addr

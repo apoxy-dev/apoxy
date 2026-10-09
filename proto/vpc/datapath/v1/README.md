@@ -353,6 +353,7 @@ Addresses and prefixes are text (`fd61::1`, `10.0.0.0/8`, `host:port`).
 | `RegisterSPI`   | unary | `{vpc, destination, spis, expires_in, lanes, sa_lanes}` -> `Empty`. `lanes` gives the source of each SPI: 0 is the session address, i is port i of `RegisterLanes`. `sa_lanes` gives the SA lane of each SPI at the receiver. |
 | `UnregisterSPI` | unary | `{vpc, spis}` -> `Empty` |
 | `RegisterLanes` | unary | `{ports, receive}` -> `Empty`: replaces the lane ports of the session. `receive` tells that the agent reads them. Errors: `InvalidArgument` (more ports than `Welcome.max_lanes`, port 0, the session port, a repeated port), `AlreadyExists` (a port is a source of another agent), `FailedPrecondition`. |
+| `Visit`         | unary | `{vpc, address, grant}` -> `Empty`: the session becomes a visitor with the prefix of the grant that has `address` (see below). Errors: `Unimplemented` (the relay has no mesh), `Unavailable` (the relay cannot read the relay roots), `PermissionDenied`, `FailedPrecondition`, `AlreadyExists`, `ResourceExhausted`. |
 
 `Attach` returns an `AttachmentGrant`: the claims, the signature of the relay
 TLS key, and the relay cert chain (leaf first). A peer accepts it only if the
@@ -390,6 +391,94 @@ another relay of the mesh has the route and the caller can open a peer session
 to it now (see "Mesh" for the conditions). The two answers have `subject`, the
 SPIFFE ID of that session, and `attachment_ids`, its attachments. In each other
 case the call returns `NotFound`.
+
+`Visit` is for an agent whose relay has no path to the relay of a peer. The
+agent opens one more session, to the relay of the peer, and calls `Visit` with
+the grant of its attachment on its own relay (its home relay) and an address
+of that grant. The session is then a visitor: the sessions of the visited
+relay reach the prefix of the grant that has the address on that session. The
+visitor keeps the address of its home relay. It gets no new address and no
+attachment, and the visited relay does not send it in `Presence`. So no other
+relay learns of the visit, and no route changes: a session of the visited
+relay keeps the route that it has for the address, and gets no `RouteDelta`.
+
+The visited relay accepts the call only if all of these are true:
+
+- The relay has a mesh (`Unimplemented`), and it can read the relay roots of
+  the project of the caller (`Unavailable`).
+- The grant passes the checks of a grant (see `Attach` above) with those
+  roots: the cert chain, the signature, the name, `min_revision` and
+  `not_after` (`PermissionDenied`).
+- The VPC and the subject of the grant are those of the cert of the caller
+  (`PermissionDenied`).
+- `relay_id` of the grant is the relay ID that a member of the mesh gave in
+  `Open` on its newest session, and that session did not close with `RESTART`
+  (`PermissionDenied`). A grant names its relay itself. Without this check,
+  the owner of any public server certificate in the VPC could sign a grant
+  when the relay roots are the system roots.
+- The address is in a prefix of `addresses` of the grant
+  (`PermissionDenied`). That prefix is the prefix of the visit. The advertised
+  routes of the attachment are not in the grant, so a visit does not have
+  them.
+- Permit allows the caller to reach the address (`PermissionDenied`).
+- The session has a `Session` call with `local_routes_only`, it has and had
+  no attachment, and it is not a visitor (`FailedPrecondition`). A visitor
+  reaches no other relay, so it must not get the routes of other relays.
+- The route of exactly that prefix is not of an attachment of the visited
+  relay and not of another agent, and no other agent visits with the prefix
+  (`AlreadyExists`). A grant lives as long as the agent cert, so it can be
+  older than the owner that the address has now.
+- The agent has fewer than 2 visitor sessions on the relay in the VPC
+  (`ResourceExhausted`). A relay counts only its own sessions, so an agent
+  can have 2 on each relay.
+
+A member that is down keeps its relay ID, because a lost path to the home
+relay is the usual cause of a visit. A member has no relay ID when it closed
+with `RESTART`, when it left the member set, when it gave none in `Open`, and
+when the visited relay had no mesh session with it since the visited relay
+started. Many members can give one relay ID, and the visited relay cannot
+tell them apart.
+
+A visitor talks only with the attachments of the visited relay:
+
+- A peer frame, a data frame and a PSP packet that the relay opens, from a
+  session of the visited relay to an address of the visit prefix, go to the
+  visitor session and not to the home relay. `RegisterSPI` for such an address
+  makes a row to the visitor session. A longer route in the prefix keeps its
+  addresses.
+- The visitor sends peer frames and data frames from the addresses of its
+  prefix, and calls `RegisterSPI`, only for an address of an attachment of
+  the visited relay. For an address of another relay, or of another visitor,
+  it gets the answer for an address with no route: `NoRoute`, or `NotFound`.
+- Nothing of a visitor goes to another relay, and nothing of another relay
+  goes to a visitor. A mesh datagram, a trunk packet and an SPI row of another
+  relay use the routes, which do not have the visitor.
+- A visitor session takes no attachment (`FailedPrecondition`), and no shard
+  joins it.
+- `ResolvePeer` does not know the visit. For the address of a visitor it
+  gives the answer for the route of that address.
+
+When one agent has two visitor sessions with one prefix, the newest session
+gets the traffic, and the other session gets it when the newest ends. Thus an
+agent can open the second session before it closes the first.
+
+A visit ends when the session ends, when `not_after` of the grant passes (the
+relay looks each second), and when an attachment of the visited relay or an
+entry of another agent gets the route of exactly the visit prefix. From then
+on, the sessions of the visited relay reach the address by its route again.
+A visit does not end when the home relay is lost, stops or leaves the member
+set, when its entry for the address goes away, or when the relay roots
+change: the relay checked the grant at the call, and `not_after`, which is at
+most the end of the agent cert, limits the visit. Permit applies to each
+frame, packet and row of a visitor, as for each session.
+
+The SPI rows of the sessions of the visited relay follow the visit at once.
+At its start, each row to an address of the prefix goes to the visitor
+session, and a row that was on the trunk ends on the home relay (`removed` in
+`SPIRows`). At its end, each such row goes to the owner that the route gives
+then: the entry of the home relay (the row goes in `SPIRows` again), an older
+visitor session of the agent, or an attachment of the visited relay. A row
+with no such owner ends.
 
 A connection has one `Session` call and lives as long as that call. A relay
 closes a connection with a `RelayCloseCode`: `CERT` (the agent cert failed a
@@ -507,7 +596,8 @@ members apart. Two members have one session. The relay with the lower name
 dials, from its listening socket, and calls `Open`. The other relay refuses a
 session that the relay with the higher name dialed. A new session of the two
 relays replaces the session before it. The other calls of a session are valid
-only after `Open` passes.
+only after `Open` passes. A relay keeps the relay ID that each member gave in
+`Open`, to check the grant of a `Visit` call (see "Relay").
 
 A relay closes a session with a `MeshCloseCode`: `NOT_MEMBER` (the name of the
 other relay is not in its member set, is not the name that it dialed, or the
@@ -706,6 +796,7 @@ only for logs and metrics. On a mesh session, `MeshOpenRequest` and
 | 8 | `Mesh.SPIRows` on the called relay. The trunk packet with a sender tag: a whole PSP packet of an agent. | No duty. | No duty. | Keeps the SPI rows that another relay gives in `SPIRows`. Opens a trunk packet with a sender tag, checks it with the rows and the entries of the other relay, and sends its PSP packet only to a session of its own. With a relay at revision 8 or later: opens one `SPIRows` call for its rows to that relay, and sends the PSP packets of those rows in trunk packets. Makes no `SPIRows` call to a relay below revision 8, sends it no trunk packet with a sender tag, refuses its `SPIRows` call with `FailedPrecondition`, and keeps that session. |
 | 9 | The trunk packet with a sender tag on lane 1: a clear inner packet of an agent. | No duty. | No duty. | Opens a trunk packet with a sender tag and a lane 1 SA, checks it with the replay window and the entries of the other relay, and sends its inner packet only to a session of its own: in a data frame, or sealed with the SA of a PSP-mode agent. With a relay at revision 9 or later: sends the inner packet of a data frame, or of a PSP packet that it opens, for an address with a route of that relay in a lane 1 trunk packet, and sends no `NoRoute` for it. Sends no such trunk packet to a relay below revision 9: it drops the inner packet, and sends no `NoRoute` for it. |
 | 10 | The answer `REACH_TRUNK` of `ResolvePeer`. | Opens a peer session to an address with the answer `REACH_TRUNK`, as to an address of its own relay. | No duty: it sends `local_routes_only`, so it gets `NotFound`. | Answers `ResolvePeer` for an address with a route of another relay with `REACH_TRUNK`, `subject` and `attachment_ids`, when the session of the caller is at revision 10 or later, gets the routes of other relays and has an attachment, the other relay is at revision 9 or later, and each relay has the trunk SAs of the other on the open mesh session. Answers `NotFound` in each other case, as a relay at revision 6 does. With a mesh, refuses an `Attach` with more than 64 prefixes. |
+| 11 | `Relay.Visit`. | No duty: an agent of this revision makes no `Visit` call. | No duty. | With a mesh: accepts `Visit` after the checks of the grant, the caller and the address, sends the traffic of its own sessions for the visit prefix to the visitor session, and sends nothing of a visitor to another relay. With no mesh: answers `Unimplemented`. |
 
 ### Minimum revision
 

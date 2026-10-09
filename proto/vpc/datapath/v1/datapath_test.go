@@ -223,6 +223,10 @@ func (r *relayStub) RegisterLanes(ctx context.Context, in *dp.RegisterLanesReque
 	return answer[*emptypb.Empty](r.stub, "RegisterLanes", in)
 }
 
+func (r *relayStub) Visit(ctx context.Context, in *dp.VisitRequest) (*emptypb.Empty, error) {
+	return answer[*emptypb.Empty](r.stub, "Visit", in)
+}
+
 type peerStub struct{ *stub }
 
 func (p peerStub) Open(ctx context.Context, in *dp.OpenRequest) (*dp.OpenResponse, error) {
@@ -429,6 +433,9 @@ func TestRelayCalls(t *testing.T) {
 			rpc.Errorf(rpc.AlreadyExists, "port 40003 is a source of another session")),
 		unary("UnregisterSPI", c, dp.RelayClient.UnregisterSPI,
 			&dp.UnregisterSPIRequest{Vpc: vpc, Spis: []uint32{sa.Spi}}, &emptypb.Empty{}),
+		unary("Visit", c, dp.RelayClient.Visit, &dp.VisitRequest{Vpc: vpc, Address: "fd61:a0b:c00:1::1", Grant: grant}, &emptypb.Empty{}),
+		unary("Visit refused", c, dp.RelayClient.Visit, &dp.VisitRequest{Vpc: vpc, Address: "fd61:a0b:c00:2::9", Grant: grant},
+			rpc.Errorf(rpc.PermissionDenied, "address fd61:a0b:c00:2::9 is not in the grant")),
 	})
 }
 

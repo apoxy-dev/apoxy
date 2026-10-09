@@ -194,6 +194,9 @@ func (r *Router) attach(s *Session, a *Attachment) error {
 	if n := len(a.Addresses) + len(a.Routes); r.presence != nil && n > maxEntryPrefixes {
 		return rpc.Errorf(rpc.InvalidArgument, "attachment has %d addresses and routes, and a relay with a mesh takes at most %d", n, maxEntryPrefixes)
 	}
+	if s.visit.Load() != nil {
+		return rpc.Errorf(rpc.FailedPrecondition, "a visitor session takes no attachment")
+	}
 	d := r.domain(s.id.VPC)
 	// takes reports whether a gets p: p has no route, a session of another
 	// relay has it, or a takes it over.

@@ -142,9 +142,11 @@ type Mesh struct {
 type meshMember struct {
 	MeshMember
 	sess *MeshSession // Open session, or nil.
-	up   bool
-	ends uint64             // Sessions that ended. A down timer is for one value.
-	stop context.CancelFunc // Ends the dial loop. Nil if no loop runs.
+	// relay is the RelayRef of the last session. It is nil after a RESTART close.
+	relay *dp.RelayRef
+	up    bool
+	ends  uint64             // Sessions that ended. A down timer is for one value.
+	stop  context.CancelFunc // Ends the dial loop. Nil if no loop runs.
 }
 
 // meshEvent is one change for the hooks: a new session, or else change.
@@ -358,6 +360,19 @@ func (m *Mesh) Session(name string) *MeshSession {
 		return mem.sess
 	}
 	return nil
+}
+
+// hasRelay reports whether id is the relay ID of a member: the last session of
+// the member gave it in Open, and that session did not close with RESTART.
+func (m *Mesh) hasRelay(id string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, mem := range m.members {
+		if id != "" && mem.relay.GetId() == id {
+			return true
+		}
+	}
+	return false
 }
 
 // Alternates returns the relays that an agent of this relay can move to: each
@@ -734,7 +749,7 @@ func (m *Mesh) admit(s *MeshSession, name string, want *meshMember, v *dp.Versio
 		return err
 	}
 	old := mem.sess
-	mem.sess = s
+	mem.sess, mem.relay = s, ref
 	s.name, s.version, s.relay = name, v, ref
 	close(s.ready)
 	if !mem.up {
@@ -780,6 +795,8 @@ func (m *Mesh) ended(s *MeshSession) {
 	mem.sess = nil
 	mem.ends++
 	if code, _, remote := remoteClose(s.qc, cause); remote && code == dp.MeshCloseCode_MESH_CLOSE_CODE_RESTART {
+		// The grants that the member signed before are for attachments that are gone.
+		mem.relay = nil
 		m.down(mem, MeshRestart)
 	} else {
 		ends := mem.ends

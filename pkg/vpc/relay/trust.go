@@ -24,6 +24,9 @@ type Trust interface {
 	// Revoked returns the revocation list of a VPC. An error, for example
 	// for data that is too old, rejects the cert.
 	Revoked(project, vpcUID string) ([]vpcv1alpha1.RevokedAgent, error)
+	// RelayRoots returns the roots for the relay cert of a grant in a project.
+	// A nil pool with no error means the system roots. An error refuses the grant.
+	RelayRoots(project string) (*x509.CertPool, error)
 }
 
 // checkCert checks the agent cert chain (leaf first) of a new session: the

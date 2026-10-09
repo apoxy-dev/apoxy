@@ -211,6 +211,7 @@ type Session struct {
 	tag         uint32      // Trunk tag, from the first attach to the removal. Zero is no tag.
 	home        string      // Relay name of the mesh member that has the session. Empty for a session of this relay.
 	sync        syncState
+	visit       atomic.Pointer[visit]        // Visit of s, or nil. Router.mu guards each write.
 	shardOf     *Session                     // The owner session of a shard.
 	twin        *Session                     // Older session of the agent socket. Forward also uses its rows.
 	shards      [peerconn.MaxShards]*Session // Shards 1 and up of an owner.
@@ -270,6 +271,8 @@ type domain struct {
 	members map[*Session]struct{}
 	// claims has the attachments of other relays that list each prefix.
 	claims map[netip.Prefix][]*presenceEntry
+	// visits has the visitor sessions: they are not in routes.
+	visits visits
 	// networkID is the network ID of the VPC, from a Session call on this
 	// relay. It is valid when known is true.
 	networkID uint32
@@ -373,8 +376,12 @@ func (r *Router) addSession(s *Session, now time.Time) {
 	d.members[s] = struct{}{}
 	// All sessions of the subject can send from the routes of the subject.
 	s.sources = func(a netip.Addr) bool {
-		o, ok := d.fast.Lookup(a)
-		return ok && (o == s || o.id.ID == s.id.ID)
+		if o, ok := d.fast.Lookup(a); ok && (o == s || o.id.ID == s.id.ID) {
+			return true
+		}
+		// A visitor sends from the prefix of its visit, which is not its route.
+		v := s.visit.Load()
+		return v != nil && v.prefix.Contains(a)
 	}
 	for p, o := range d.routes {
 		s.queueRoute(route{p, o.origin}, o.s, true)
@@ -389,6 +396,7 @@ func (r *Router) removeSession(s *Session) {
 	}
 	s.closed = true
 	r.markXDP(s)
+	r.endVisit(s, "session closed")
 	// The routes go first: a route that moves to another session takes its rows.
 	for _, p := range slices.Clone(s.routes) {
 		r.dropRoute(s, p)
@@ -570,6 +578,7 @@ func (r *Router) setOwner(d *domain, p netip.Prefix, o owner) {
 	o.s.routes = append(o.s.routes, p)
 	d.queueRoute(route{p, o.origin}, o.s, true)
 	r.epoch.Add(1)
+	r.displace(d, p, o.s)
 	if had {
 		// The rows to p go to the new session, or to its attachment.
 		for w := range old.s.inbound {
@@ -690,15 +699,15 @@ func (r *Router) localOwner(vpc VPCKey, a netip.Addr) owner {
 	return owner{}
 }
 
-// permitted returns the session with the route of dst for packets from src, if
-// Permit allows. It can be the record of a session of another relay.
+// permitted returns the session that src reaches dst through, if Permit allows.
+// It can be a visitor, or the record of a session of another relay.
 func (r *Router) permitted(src *Session, dst netip.Addr) *Session {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	if !r.permit(src.id.VPC, src.id.ID, src.id.VPC, dst) {
 		return nil
 	}
-	return r.lookup(src.id.VPC, dst)
+	return r.reach(src, dst).s
 }
 
 // Route returns the session of this relay for packets from src to dst, if Permit
@@ -832,8 +841,8 @@ func (r *Router) ReportStatus(s *Session, st *dp.Status) {
 	}
 }
 
-// Sweep follows migrated connections, ends old source addresses, removes
-// expired and idle rows, and closes sessions at the NotAfter of their cert.
+// Sweep follows migrated connections, ends old source addresses and visits,
+// removes expired and idle rows, and closes sessions at the NotAfter of their cert.
 func (r *Router) Sweep(now time.Time) {
 	idle := now.Add(-rowIdle).UnixNano()
 	var expired []*Session
@@ -841,6 +850,9 @@ func (r *Router) Sweep(now time.Time) {
 	for s := range r.sessions {
 		if !s.notAfter.IsZero() && !now.Before(s.notAfter) {
 			expired = append(expired, s)
+		}
+		if v := s.visit.Load(); v != nil && !now.Before(v.notAfter) {
+			r.endVisit(s, "grant ended")
 		}
 		if s.shardOf == nil {
 			r.setAddr(s, s.remote(), now)

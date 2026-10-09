@@ -24,6 +24,7 @@ const (
 	Relay_RegisterSPI_FullMethodName   = "/apoxy.vpc.datapath.v1.Relay/RegisterSPI"
 	Relay_UnregisterSPI_FullMethodName = "/apoxy.vpc.datapath.v1.Relay/UnregisterSPI"
 	Relay_RegisterLanes_FullMethodName = "/apoxy.vpc.datapath.v1.Relay/RegisterLanes"
+	Relay_Visit_FullMethodName         = "/apoxy.vpc.datapath.v1.Relay/Visit"
 )
 
 // RelayClient is the client API of the Relay service.
@@ -49,6 +50,9 @@ type RelayClient interface {
 	// RegisterLanes sets the lane ports of the caller. Errors: InvalidArgument,
 	// AlreadyExists (a port is a source of another agent), FailedPrecondition.
 	RegisterLanes(ctx context.Context, in *RegisterLanesRequest) (*emptypb.Empty, error)
+	// Visit lets the caller use its address of another relay of the mesh on this
+	// relay. Errors: Unimplemented (no mesh), and the codes in the README.
+	Visit(ctx context.Context, in *VisitRequest) (*emptypb.Empty, error)
 }
 
 type relayClient struct{ c rpc.Caller }
@@ -116,6 +120,14 @@ func (c relayClient) RegisterLanes(ctx context.Context, in *RegisterLanesRequest
 	return out, nil
 }
 
+func (c relayClient) Visit(ctx context.Context, in *VisitRequest) (*emptypb.Empty, error) {
+	out := new(emptypb.Empty)
+	if err := c.c.Invoke(ctx, Relay_Visit_FullMethodName, in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // RelayServer is the server API of the Relay service.
 type RelayServer interface {
 	// Session starts with Hello and Welcome, then carries Sync. The relay sends
@@ -139,6 +151,9 @@ type RelayServer interface {
 	// RegisterLanes sets the lane ports of the caller. Errors: InvalidArgument,
 	// AlreadyExists (a port is a source of another agent), FailedPrecondition.
 	RegisterLanes(context.Context, *RegisterLanesRequest) (*emptypb.Empty, error)
+	// Visit lets the caller use its address of another relay of the mesh on this
+	// relay. Errors: Unimplemented (no mesh), and the codes in the README.
+	Visit(context.Context, *VisitRequest) (*emptypb.Empty, error)
 }
 
 // UnimplementedRelayServer returns Unimplemented for each method. Embed it to add
@@ -177,6 +192,10 @@ func (UnimplementedRelayServer) RegisterLanes(context.Context, *RegisterLanesReq
 	return nil, rpc.Errorf(rpc.Unimplemented, "method RegisterLanes not implemented")
 }
 
+func (UnimplementedRelayServer) Visit(context.Context, *VisitRequest) (*emptypb.Empty, error) {
+	return nil, rpc.Errorf(rpc.Unimplemented, "method Visit not implemented")
+}
+
 // RegisterRelayServer adds the methods of srv to m.
 func RegisterRelayServer(m *rpc.Mux, srv RelayServer) {
 	rpc.HandleBidiStream(m, Relay_Session_FullMethodName, srv.Session)
@@ -187,4 +206,5 @@ func RegisterRelayServer(m *rpc.Mux, srv RelayServer) {
 	rpc.HandleUnary(m, Relay_RegisterSPI_FullMethodName, srv.RegisterSPI)
 	rpc.HandleUnary(m, Relay_UnregisterSPI_FullMethodName, srv.UnregisterSPI)
 	rpc.HandleUnary(m, Relay_RegisterLanes_FullMethodName, srv.RegisterLanes)
+	rpc.HandleUnary(m, Relay_Visit_FullMethodName, srv.Visit)
 }
