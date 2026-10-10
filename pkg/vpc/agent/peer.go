@@ -561,14 +561,32 @@ func (a *Agent) admitQUIC(p *peer, v *dp.Version, g *dp.AttachmentGrant, instanc
 		return err
 	}
 	// A PSP pair with the same agent is from before the agent changed its mode.
+	// away is as in admit: a prefix has a route on one relay session only.
 	a.mu.Lock()
 	var old []*peer
+	var away *peer
 	for _, q := range a.peers {
-		if q != p && q.rc == p.rc && q.bp != nil && !q.quic && q.sameAgent(p.subject, instance, prefixes) {
-			old = append(old, q)
+		if q == p || q.bp == nil || !q.sameAgent(p.subject, instance, prefixes) {
+			continue
+		}
+		switch {
+		case q.rc == p.rc:
+			if !q.quic {
+				old = append(old, q)
+			}
+		case q.rc.visitor != p.rc.visitor && (away == nil || away.idle || away.down):
+			away = q
 		}
 	}
+	// When both agents visit, the session on the relay of the higher address stays.
+	if away != nil && !away.idle && !away.down && !keeps(p.rc, overlayAddr(prefixes)) {
+		a.mu.Unlock()
+		return errDuplicate
+	}
 	a.mu.Unlock()
+	if away != nil {
+		old = append(old, away)
+	}
 	for _, q := range old {
 		_ = q.qc.CloseWithError(quic.ApplicationErrorCode(dp.PeerCloseCode_PEER_CLOSE_CODE_DUPLICATE), "new session")
 		a.dropPeer(q)

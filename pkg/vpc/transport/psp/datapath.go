@@ -308,11 +308,12 @@ func (b *Binding) prepare(virt []byte, f *netstack.TxFrame) error {
 	if !ok {
 		return ErrNoRoute
 	}
-	if b.relay.Load() != nil {
+	if slot := p.slot.Load(); slot != 0 || b.relay.Load() != nil {
 		if !b.quic.limiter.admit(len(virt)) {
 			return errLimit
 		}
-		*f = netstack.TxFrame{}
+		// Lane has the relay session of the data frame.
+		*f = netstack.TxFrame{Lane: int(slot)}
 		return nil
 	}
 	sa, lane := p.txSA(virt)
@@ -341,12 +342,12 @@ func (b *Binding) prepareSegs(hdr []byte, n, size, total int, f *netstack.TxFram
 	if !ok {
 		return false
 	}
-	if b.relay.Load() != nil {
+	if slot := p.slot.Load(); slot != 0 || b.relay.Load() != nil {
 		if b.quic.limiter.rate.Load() != 0 {
 			return false
 		}
 		b.quic.limiter.sent.Add(uint64(total))
-		*f = netstack.TxFrame{}
+		*f = netstack.TxFrame{Lane: int(slot)}
 		return true
 	}
 	sa, lane := p.txSA(hdr)
@@ -372,6 +373,7 @@ func (b *Binding) seal(f *netstack.TxFrame, virt, phy []byte) (int, error) {
 	b.clampMSS(virt, quic)
 	if quic {
 		clear(phy[:addrLen])
+		phy[laneOff] = byte(f.Lane)
 		return addrLen + len(peerconn.EncodeData(phy[addrLen:addrLen], b.vni, virt)), nil
 	}
 	n, err := f.SA.SealSeq(f.Seq, phy[addrLen:], virt)
@@ -781,7 +783,7 @@ func (b *Binding) flush(tx *udpbatch.Batch, lane int) error {
 func (b *Binding) write(f []byte, ua *net.UDPAddr) error {
 	port := binary.BigEndian.Uint16(f[16:laneOff])
 	if port == 0 {
-		pc := b.relay.Load()
+		pc := b.dataConn(f[laneOff])
 		if pc == nil {
 			return errNoRelay
 		}

@@ -26,6 +26,8 @@ type Peer struct {
 	// lanes send from the agent socket.
 	sockets atomic.Int32
 	br      breaker
+	// slot is the place of the relay session of UseQUIC in Binding.slots, plus one.
+	slot atomic.Int32
 	// flows has the lane of each flow slot. txSA reads and writes it.
 	flows [flowSlots]atomic.Uint32
 

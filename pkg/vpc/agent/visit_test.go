@@ -224,7 +224,7 @@ func TestVisit(t *testing.T) {
 		{name: "PSP", mode: TransportPSP, data: true},
 		{name: "PSP, spare session on the relay of the peer", mode: TransportPSP, spare: true, data: true},
 		{name: "PSP, path probe fails", mode: TransportPSP, dropProbes: true},
-		{name: "QUIC", mode: TransportQUIC},
+		{name: "QUIC", mode: TransportQUIC, data: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -308,13 +308,98 @@ func TestVisit(t *testing.T) {
 			assert.Equal(t, unmap(v.rc.relayAddr), unmap(p.bp.Addr()), "data of a goes to the relay of b")
 			ping(t, a.stack, ea.addr, eb.addr, 9000, "to b")
 			ping(t, b.stack, eb.addr, ea.addr, 9000, "to a")
-			assert.NotZero(t, spiCount(p), "SPIs of a at the visited relay")
-			assert.NotZero(t, rxCountOf(p.bp).packets, "packets from b on the visitor session")
+			if tc.mode == TransportQUIC {
+				// The data of a goes as data frames, so a seals and opens no PSP packet.
+				assert.True(t, p.quic)
+				assert.Zero(t, pspPackets(a.a.bind.LanePackets())+pspPackets(a.a.bind.RxLanePackets()), "PSP packets of a")
+			} else {
+				assert.NotZero(t, spiCount(p), "SPIs of a at the visited relay")
+				assert.NotZero(t, rxCountOf(p.bp).packets, "packets from b on the visitor session")
+			}
 			assert.Zero(t, unreachableIn(a)+unreachableIn(b), "ICMP errors")
 			// The visit ends with the agent.
 			a.stop()
 			assert.True(t, v.rc.ended(), "the visitor session closed")
 			assert.Zero(t, visitCount(a.a))
+		})
+	}
+}
+
+// pspPackets returns the sum of the PSP packet counts of the lanes of a binding.
+func pspPackets(lanes []uint64) (n uint64) {
+	for _, c := range lanes {
+		n += c
+	}
+	return n
+}
+
+// TestVisitData checks for each pair of modes that data goes on the visitor session after a
+// cut, that only an agent in PSP mode seals PSP packets, and that data goes back at the end.
+func TestVisitData(t *testing.T) {
+	cases := []struct {
+		name         string
+		modeA, modeB TransportMode // a is the visitor.
+	}{
+		{name: "PSP visitor to PSP peer", modeA: TransportPSP, modeB: TransportPSP},
+		{name: "QUIC visitor to PSP peer", modeA: TransportQUIC, modeB: TransportPSP},
+		{name: "PSP visitor to QUIC peer", modeA: TransportPSP, modeB: TransportQUIC},
+		{name: "QUIC visitor to QUIC peer", modeA: TransportQUIC, modeB: TransportQUIC},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r1, r2, a, b, ea, eb := visitPair(t,
+				agentOptions{mode: tc.modeA, visitCheck: time.Hour},
+				agentOptions{mode: tc.modeB, visitCheck: time.Hour, visitWait: time.Hour})
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			require.NoError(t, a.a.connect(ctx, a.current(), eb.addr, nil))
+			ping(t, a.stack, ea.addr, eb.addr, 9000, "to b over the trunk")
+			sent := func(ta *testAgent) uint64 { return pspPackets(ta.a.bind.LanePackets()) }
+			got := func(ta *testAgent) uint64 { return pspPackets(ta.a.bind.RxLanePackets()) }
+			quicA, quicB := tc.modeA == TransportQUIC, tc.modeB == TransportQUIC
+			// An agent in QUIC mode seals and opens no PSP packet at all.
+			if quicA {
+				assert.Zero(t, sent(a)+got(a), "PSP packets of a before the cut")
+			}
+
+			heal := cutMesh(r1, r2)
+			waitReach(t, a, eb.addr, dp.Reach_REACH_VISIT)
+			v, err := dialOnVisit(t, ctx, a, r2, eb.addr)
+			require.NoError(t, err)
+			assert.True(t, v.rc.data.Load(), "data goes on the visitor session")
+			assert.Equal(t, quicA, v.rc.mode == dp.Mode_MODE_QUIC, "mode of the visitor session")
+			p := peerOn(a.a, v.rc, eb.addr)
+			require.NotNil(t, p, "peer session of a on the visit")
+			assert.False(t, p.idle)
+			assert.Equal(t, quicA || quicB, p.quic, "the relay of b opens the packets")
+			require.Eventually(t, func() bool { return peerOn(b.a, b.current(), ea.addr) != nil }, 5*time.Second, 10*time.Millisecond)
+
+			// The trunk is cut, so the two pings go on the visitor session.
+			sentA, gotA, sentB, gotB := sent(a), got(a), sent(b), got(b)
+			ping(t, a.stack, ea.addr, eb.addr, 9000, "to b on the visit")
+			ping(t, b.stack, eb.addr, ea.addr, 9000, "to a on the visit")
+			assert.Equal(t, !quicA, sent(a) > sentA, "a seals PSP packets")
+			assert.Equal(t, !quicA, got(a) > gotA, "a opens PSP packets")
+			assert.Equal(t, !quicB, sent(b) > sentB, "b seals PSP packets")
+			assert.Equal(t, !quicB, got(b) > gotB, "b opens PSP packets")
+			assert.Zero(t, unreachableIn(a)+unreachableIn(b), "ICMP errors")
+			assert.Equal(t, 1, visitCount(a.a))
+			assert.Zero(t, visitCount(b.a), "b does not visit")
+
+			// The visit ends when relay-1 reaches b again, and the data goes back.
+			heal()
+			waitReach(t, a, eb.addr, dp.Reach_REACH_TRUNK)
+			require.Eventually(t, func() bool { return a.a.checkVisit(v) || visitCount(a.a) == 0 }, 10*time.Second, 50*time.Millisecond, "the visit ends")
+			assert.True(t, v.rc.ended(), "the visitor session closed")
+			require.Eventually(t, func() bool {
+				return peerOn(a.a, a.current(), eb.addr) != nil && peerOn(b.a, b.current(), ea.addr) != nil
+			}, 10*time.Second, 20*time.Millisecond, "peer session on the attached sessions")
+			ping(t, a.stack, ea.addr, eb.addr, 9000, "to b over the trunk again")
+			ping(t, b.stack, eb.addr, ea.addr, 9000, "to a over the trunk again")
+			if quicA {
+				assert.Zero(t, sent(a)+got(a), "PSP packets of a at the end")
+			}
 		})
 	}
 }

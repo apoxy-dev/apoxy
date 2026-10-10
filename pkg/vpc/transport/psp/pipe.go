@@ -241,7 +241,7 @@ func (p *rxPipe) open() {
 // the ones that passed. It keeps the result of each slot and the packets in s.
 func (p *rxPipe) openSet(s *rxSet) {
 	b := p.d.b
-	quic := b.relay.Load() != nil
+	quic := b.quicPath()
 	for i, pkt := range s.slots[:s.n] {
 		inner, o, err := b.rxq.Open(pkt)
 		if err != nil {

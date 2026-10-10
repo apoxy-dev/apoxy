@@ -37,6 +37,9 @@ const (
 	// QUICMTU is the largest inner packet in a data frame on a relay session with
 	// InitialPacketSize 1350: quic-go takes 1350 - 37 B, and the frame header is 5 B.
 	QUICMTU = 1308
+	// dataSlots is the most relay sessions that carry the data frames of their own
+	// peers, with Peer.UseQUIC.
+	dataSlots = 4
 	// sockBuf is the send and receive buffer size of the agent socket, and of a
 	// lane socket that reads.
 	sockBuf = 16 << 20
@@ -126,6 +129,10 @@ type Binding struct {
 	quic    breaker                       // Breaker of the QUIC data path.
 	noRoute func(pkt []byte)
 	onTrip  func(*Peer, Trip)
+
+	// slots has the relay sessions of Peer.UseQUIC, and inUse counts them. Set under mu.
+	slots [dataSlots]atomic.Pointer[peerconn.Conn]
+	inUse atomic.Int32
 
 	// routed reports whether a peer has a route to an address.
 	routed func(netip.Addr) bool
@@ -382,6 +389,7 @@ func (b *Binding) removeLocked(p *Peer) keys.Request {
 	for _, pfx := range p.routes {
 		b.routes.Remove(pfx, p)
 	}
+	p.freeSlot()
 	p.routes, p.removed = nil, true
 	delete(b.peers, p.rx)
 	return req
@@ -641,6 +649,53 @@ func lanePackets(c *[keys.MaxLanes]atomic.Uint64) []uint64 {
 // packets. Nil sends PSP packets again. Both paths always receive.
 func (b *Binding) UseQUIC(pc *peerconn.Conn) { b.relay.Store(pc) }
 
+// quicPath reports whether a relay session carries data frames of the binding.
+func (b *Binding) quicPath() bool { return b.relay.Load() != nil || b.inUse.Load() > 0 }
+
+// UseQUIC sends the packets with a route to p as data frames on the relay session of
+// pc, also when the binding sends PSP packets. Nil ends that.
+func (p *Peer) UseQUIC(pc *peerconn.Conn) error {
+	b := p.b
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	p.freeSlot()
+	if pc == nil {
+		return nil
+	}
+	if p.removed {
+		return ErrClosed
+	}
+	for i := range b.slots {
+		if b.slots[i].Load() == nil {
+			b.slots[i].Store(pc)
+			b.inUse.Add(1)
+			p.slot.Store(int32(i + 1))
+			return nil
+		}
+	}
+	return errors.New("psp: no free relay session for data frames")
+}
+
+// freeSlot ends UseQUIC of p. b.mu must be held.
+func (p *Peer) freeSlot() {
+	if i := p.slot.Swap(0); i != 0 {
+		p.b.slots[i-1].Store(nil)
+		p.b.inUse.Add(-1)
+	}
+}
+
+// dataConn returns the relay session of a data frame from its slot byte: zero is the
+// session of UseQUIC, and the others are the sessions of Peer.UseQUIC.
+func (b *Binding) dataConn(slot byte) *peerconn.Conn {
+	switch {
+	case slot == 0:
+		return b.relay.Load()
+	case int(slot) <= dataSlots:
+		return b.slots[slot-1].Load()
+	}
+	return nil
+}
+
 // ReportQUIC gives the QUIC packets lost on the relay connections, in total, to the
 // breaker of the data frames. Call it every 500 ms.
 func (b *Binding) ReportQUIC(now time.Time, lost uint64) {
@@ -720,7 +775,7 @@ func (b *Binding) HandleData(frame []byte) {
 // deliver gives the inner packet buf[off:] of the PSP path or the QUIC path to the driver,
 // after the MSS clamp. Both paths deliver only here. The PSP path sets batch.
 func (b *Binding) deliver(d *driver, buf []byte, off int, batch bool) {
-	b.clampMSS(buf[off:], b.relay.Load() != nil)
+	b.clampMSS(buf[off:], b.quicPath())
 	if batch && d.batch != nil {
 		d.batch.add(buf[off:])
 		return

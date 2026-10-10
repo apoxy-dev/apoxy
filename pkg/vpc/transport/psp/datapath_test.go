@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/apoxy-dev/softpsp/vtep/netstack"
+	"github.com/quic-go/quic-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -812,6 +813,113 @@ func TestQUIC(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestPeerQUIC checks which relay session gets the data frame of a packet: the
+// session of its peer after Peer.UseQUIC, else the session of the binding.
+func TestPeerQUIC(t *testing.T) {
+	a, b := newPair(t)
+	qa1, qb1 := quicPair(t, a.tr, b.tr)
+	qb2, qa2 := quicPair(t, b.tr, a.tr)
+	type frames struct {
+		mu  sync.Mutex
+		got [][]byte
+	}
+	var onPeer, onBinding frames
+	conn := func(qa, qb quic.Connection, f *frames) *peerconn.Conn {
+		pa, pb := peerconn.New(qa, a.v4), peerconn.New(qb, b.v4)
+		t.Cleanup(func() { _ = pa.Close(); _ = pb.Close() })
+		pb.HandleData(func(frame []byte) {
+			_, inner, err := peerconn.DecodeData(frame)
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			if err == nil {
+				f.got = append(f.got, bytes.Clone(inner))
+			}
+		})
+		return pa
+	}
+	ofPeer, ofBinding := conn(qa1, qb1, &onPeer), conn(qa2, qb2, &onBinding)
+	far := netip.MustParseAddr("10.9.9.9")
+	other, err := a.b.AddPeer(netip.MustParseAddrPort("192.0.2.1:1"))
+	require.NoError(t, err)
+	require.NoError(t, a.b.AddRoute(netip.PrefixFrom(far, 32), other))
+	toPeer, toOther := packet(a.v4, b.v4, 17, 1, 2, 500), packet(a.v4, far, 17, 1, 2, 500)
+
+	cases := []struct {
+		name          string
+		binding, peer *peerconn.Conn // Session of Binding.UseQUIC and of Peer.UseQUIC.
+		pkt           []byte
+		want          *frames // Session that gets the data frame. Nil is none.
+		tx            Stats
+	}{
+		{name: "session of the peer, and the binding sends PSP", peer: ofPeer, pkt: toPeer, want: &onPeer, tx: Stats{TxPackets: 1}},
+		{name: "other peer has no session, and no SA", peer: ofPeer, pkt: toOther},
+		{name: "session of the peer comes before the session of the binding", binding: ofBinding, peer: ofPeer, pkt: toPeer, want: &onPeer, tx: Stats{TxPackets: 1}},
+		{name: "other peer uses the session of the binding", binding: ofBinding, peer: ofPeer, pkt: toOther, want: &onBinding, tx: Stats{TxPackets: 1}},
+		{name: "session of the peer ended", binding: ofBinding, pkt: toPeer, want: &onBinding, tx: Stats{TxPackets: 1}},
+		{name: "no session, and no SA", pkt: toPeer},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a.b.UseQUIC(tc.binding)
+			require.NoError(t, a.peer.UseQUIC(tc.peer))
+			assert.Equal(t, tc.binding != nil || tc.peer != nil, a.b.quicPath())
+			for _, f := range []*frames{&onPeer, &onBinding} {
+				f.mu.Lock()
+				f.got = nil
+				f.mu.Unlock()
+			}
+			before := a.b.Stats()
+			_, err := a.b.Send([][]byte{tc.pkt})
+			if tc.want == nil {
+				// The packet goes as a PSP packet, and the peer has no SA.
+				assert.ErrorIs(t, err, ErrNoRoute)
+			} else {
+				assert.NoError(t, err)
+			}
+			assert.Equal(t, tc.tx, sub(a.b.Stats(), before))
+			count := func(f *frames) int {
+				f.mu.Lock()
+				defer f.mu.Unlock()
+				return len(f.got)
+			}
+			if tc.want != nil {
+				require.Eventually(t, func() bool { return count(tc.want) == 1 }, 5*time.Second, time.Millisecond)
+				tc.want.mu.Lock()
+				assert.Equal(t, tc.pkt, tc.want.got[0])
+				tc.want.mu.Unlock()
+			}
+			// A frame on the wrong session arrives in this time too.
+			time.Sleep(20 * time.Millisecond)
+			for _, f := range []*frames{&onPeer, &onBinding} {
+				if f != tc.want {
+					assert.Zero(t, count(f), "frames on the other session")
+				}
+			}
+		})
+	}
+
+	t.Run("limit of the sessions", func(t *testing.T) {
+		a.b.UseQUIC(nil)
+		var peers []*Peer
+		for i := range dataSlots {
+			p, err := a.b.AddPeer(netip.AddrPortFrom(netip.MustParseAddr("192.0.2.2"), uint16(1+i)))
+			require.NoError(t, err)
+			require.NoError(t, p.UseQUIC(ofPeer))
+			peers = append(peers, p)
+		}
+		require.Error(t, a.peer.UseQUIC(ofPeer), "no session is free")
+		// A peer that is removed gives its session back.
+		a.b.RemovePeer(peers[0])
+		require.ErrorIs(t, peers[0].UseQUIC(ofPeer), ErrClosed)
+		require.NoError(t, a.peer.UseQUIC(ofPeer))
+		for _, p := range peers[1:] {
+			a.b.RemovePeer(p)
+		}
+		require.NoError(t, a.peer.UseQUIC(nil))
+		assert.False(t, a.b.quicPath())
+	})
 }
 
 // TestHandleDataConcurrent gives data frames to a tun driver from several

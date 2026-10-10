@@ -395,6 +395,13 @@ func (rc *relayConn) startVisit(ctx context.Context, home *relayConn) error {
 	rc.setRelayPeer(p)
 	rc.pc = peerconn.New(rc.qc, rc.self)
 	rc.pc.HandleData(b.HandleData)
+	if rc.mode == dp.Mode_MODE_QUIC {
+		// The packets for the peers of the visit go as data frames on rc, and the
+		// packets for the other peers stay on the attached session.
+		if err := p.UseQUIC(rc.pc); err != nil {
+			return err
+		}
+	}
 	rc.peerTr = &quic.Transport{Conn: rc.pc}
 	ln, err := rc.peerTr.Listen(a.peerTLS(), peerQUIC)
 	if err != nil {
@@ -413,10 +420,16 @@ func (rc *relayConn) startVisit(ctx context.Context, home *relayConn) error {
 }
 
 // startProbe starts the path probe of the visitor session rc at the device
-// MTU, or returns nil when data cannot go on rc. The binding sends data frames
-// only on the attached session, so the two sessions must be in PSP mode.
+// MTU, or returns nil when data cannot go on rc. A session in QUIC mode needs no
+// probe: quic-go refuses a data frame above the datagram limit of the session.
 func (a *Agent) startProbe(ctx context.Context, home, rc *relayConn) <-chan bool {
-	if home.mode != dp.Mode_MODE_PSP || rc.mode != dp.Mode_MODE_PSP {
+	if rc.mode == dp.Mode_MODE_QUIC {
+		ok := make(chan bool, 1)
+		ok <- true
+		return ok
+	}
+	// An agent in QUIC mode sends the packets of a PSP peer on its attached session.
+	if home.mode != dp.Mode_MODE_PSP {
 		return nil
 	}
 	a.mu.Lock()
