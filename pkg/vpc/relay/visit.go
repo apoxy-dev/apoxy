@@ -16,8 +16,13 @@ import (
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
-// maxVisits is the most visitor sessions of one agent on a relay.
-const maxVisits = 2
+const (
+	// maxVisits is the most visitor sessions of one agent on a relay.
+	maxVisits = 2
+	// maxVisitPrefixes is the most visits of one visitor session: the most
+	// prefixes of an entry of a mesh member.
+	maxVisitPrefixes = maxEntryPrefixes
+)
 
 // visit is the use of an address of another relay by a session of this relay.
 // The session gets no route and no attachment, so no other relay learns of it.
@@ -26,6 +31,36 @@ type visit struct {
 	id       string       // Attachment of the grant, on the home relay.
 	relay    string       // Relay ID of the grant.
 	notAfter time.Time    // End time of the grant.
+}
+
+// visitor has the visits of a visitor session, each with its own prefix. A
+// change makes a new list, so a reader needs no lock.
+type visitor []*visit
+
+// of returns the visit of vs that has a in its prefix, or nil.
+func (vs *visitor) of(a netip.Addr) *visit {
+	if vs == nil {
+		return nil
+	}
+	for _, v := range *vs {
+		if v.prefix.Contains(a) {
+			return v
+		}
+	}
+	return nil
+}
+
+// without returns vs with no visit for which drop is true.
+func (vs *visitor) without(drop func(*visit) bool) visitor {
+	var out visitor
+	if vs != nil {
+		for _, v := range *vs {
+			if !drop(v) {
+				out = append(out, v)
+			}
+		}
+	}
+	return out
 }
 
 // visits has the visitor sessions of a domain by the prefix of their visit.
@@ -90,7 +125,7 @@ func (d *domain) reach(a netip.Addr) owner {
 			}
 		}
 	}
-	return owner{s: v, origin: v.visit.Load().id}
+	return owner{s: v, origin: v.visit.Load().of(a).id}
 }
 
 // reach is ownerOf for src, a session of this relay: a visitor has its address,
@@ -115,14 +150,15 @@ func (r *Router) reach(src *Session, dst netip.Addr) owner {
 // has reports whether s sends from a: s visits with a, or has the route of a.
 // Router.mu must be held.
 func (r *Router) has(s *Session, a netip.Addr) bool {
-	if v := s.visit.Load(); v != nil {
-		return v.prefix.Contains(a)
+	if vs := s.visit.Load(); vs != nil {
+		return vs.of(a) != nil
 	}
 	return r.lookup(s.id.VPC, a) == s
 }
 
 // Visit makes the session of the caller a visitor: the sessions of this relay
-// reach its address of another relay of the mesh on this session.
+// reach its address of another relay of the mesh on this session. One more call
+// with the grant of another attachment adds the address of that attachment.
 func (srv *Server) Visit(ctx context.Context, in *dp.VisitRequest) (*emptypb.Empty, error) {
 	s, err := srv.R.caller(ctx)
 	if err != nil {
@@ -146,6 +182,8 @@ func (r *Router) startVisit(s *Session, in *dp.VisitRequest, now time.Time) erro
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	cur := s.visit.Load()
+	same := func(o *visit) bool { return o.prefix == v.prefix }
 	switch {
 	case s.closed:
 		return rpc.Errorf(rpc.Unauthenticated, "relay session closed")
@@ -155,8 +193,10 @@ func (r *Router) startVisit(s *Session, in *dp.VisitRequest, now time.Time) erro
 	case s.tag != 0 || len(s.routes) > 0:
 		// A session with a trunk tag can have rows to another relay.
 		return rpc.Errorf(rpc.FailedPrecondition, "session has or had an attachment")
-	case s.visit.Load() != nil:
-		return rpc.Errorf(rpc.FailedPrecondition, "session is a visitor already")
+	case cur != nil && (*cur)[0].relay != v.relay:
+		return rpc.Errorf(rpc.FailedPrecondition, "session is a visitor with a grant of relay %q", (*cur)[0].relay)
+	case cur != nil && len(cur.without(same)) >= maxVisitPrefixes:
+		return rpc.Errorf(rpc.ResourceExhausted, "session has %d visits, which is the limit", len(*cur))
 	case !r.permit(s.id.VPC, s.id.ID, s.id.VPC, addr):
 		return rpc.Errorf(rpc.PermissionDenied, "permit denies %s", addr)
 	}
@@ -165,21 +205,26 @@ func (r *Router) startVisit(s *Session, in *dp.VisitRequest, now time.Time) erro
 	if o, ok := d.routes[v.prefix]; ok && (o.s.home == "" || !o.s.sameAgent(s)) {
 		return rpc.Errorf(rpc.AlreadyExists, "address %s has another owner", addr)
 	}
-	n := 0
+	// The limit counts sessions: a session with many visits is one of them.
+	others := map[*Session]bool{}
 	for p, ss := range d.visits.by {
 		for _, o := range ss {
 			if o.sameAgent(s) {
-				n++
+				others[o] = true
 			} else if p == v.prefix {
 				return rpc.Errorf(rpc.AlreadyExists, "address %s has another visitor", addr)
 			}
 		}
 	}
-	if n >= maxVisits {
-		return rpc.Errorf(rpc.ResourceExhausted, "agent has %d visitor sessions on this relay, which is the limit", n)
+	if cur == nil && len(others) >= maxVisits {
+		return rpc.Errorf(rpc.ResourceExhausted, "agent has %d visitor sessions on this relay, which is the limit", len(others))
 	}
-	s.visit.Store(v)
-	d.visits.add(v.prefix, s)
+	// A new grant for a prefix of the session replaces the old one.
+	next := append(cur.without(same), v)
+	if cur == nil || len(next) > len(*cur) {
+		d.visits.add(v.prefix, s)
+	}
+	s.visit.Store(&next)
 	// The rows to the prefix go to the visitor, as for a new owner of a route.
 	r.rehome(d, v.prefix)
 	slog.Info("Started a visit", "agent", s.id.ID, "prefix", v.prefix, "home", v.relay, "until", v.notAfter)
@@ -216,18 +261,45 @@ func (r *Router) checkVisit(s *Session, m *Mesh, addr netip.Addr, g *dp.Attachme
 	return nil, rpc.Errorf(rpc.PermissionDenied, "address %s is not in the grant", addr)
 }
 
-// endVisit ends the visit of s, if it has one. The rows to its prefix go to
-// the owner that their senders reach then. Router.mu must be held for writing.
-func (r *Router) endVisit(s *Session, reason string) {
-	v := s.visit.Swap(nil)
-	if v == nil {
-		return
+// endVisit ends the visits of s for which end is true, and reports whether it
+// ended one. The rows to their prefixes go to the owner that their senders
+// reach then. Router.mu must be held for writing.
+func (r *Router) endVisit(s *Session, reason string, end func(*visit) bool) bool {
+	cur := s.visit.Load()
+	if cur == nil {
+		return false
 	}
-	if d := r.domains[s.id.VPC]; d != nil {
-		d.visits.remove(v.prefix, s)
-		r.rehome(d, v.prefix)
+	left := cur.without(end)
+	if len(left) == len(*cur) {
+		return false
 	}
-	slog.Info("Ended a visit", "agent", s.id.ID, "prefix", v.prefix, "home", v.relay, "reason", reason)
+	if len(left) == 0 {
+		s.visit.Store(nil)
+	} else {
+		s.visit.Store(&left)
+	}
+	for _, v := range *cur {
+		if !end(v) {
+			continue
+		}
+		if d := r.domains[s.id.VPC]; d != nil {
+			d.visits.remove(v.prefix, s)
+			r.rehome(d, v.prefix)
+		}
+		slog.Info("Ended a visit", "agent", s.id.ID, "prefix", v.prefix, "home", v.relay, "reason", reason)
+	}
+	return true
+}
+
+// each is the endVisit choice of all visits of a session.
+func each(*visit) bool { return true }
+
+// leave ends the visit of s with the grant of the attachment id, for a Detach
+// call of a visitor. It reports whether s had that visit.
+func (r *Router) leave(s *Session, id string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.endVisit(s, "agent detached", func(v *visit) bool { return v.id == id })
 }
 
 // displace ends each visit with the prefix p that its new route owner o ends:
@@ -235,7 +307,7 @@ func (r *Router) endVisit(s *Session, reason string) {
 func (r *Router) displace(d *domain, p netip.Prefix, o *Session) {
 	for _, s := range slices.Clone(d.visits.by[p]) {
 		if o.home == "" || !o.sameAgent(s) {
-			r.endVisit(s, "address has another owner")
+			r.endVisit(s, "address has another owner", func(v *visit) bool { return v.prefix == p })
 		}
 	}
 }

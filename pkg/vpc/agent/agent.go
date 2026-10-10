@@ -530,6 +530,9 @@ type relayConn struct {
 	// data is true when the path of a visitor session carries data: the result
 	// of its path probe.
 	data atomic.Bool
+	// extrasOf is the attached session whose extra attachments a visitor
+	// session has in its visit. Guarded by Agent.attMu.
+	extrasOf *relayConn
 
 	relayAddr netip.AddrPort    // Where PSP packets to peers go.
 	version   *dp.Version       // Version of the relay, from Welcome. Nil is revision 0.

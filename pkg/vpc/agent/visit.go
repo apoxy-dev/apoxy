@@ -3,15 +3,20 @@
 package agent
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/netip"
+	"slices"
+	"sync"
 	"time"
 
 	"github.com/quic-go/quic-go"
 
+	"github.com/apoxy-dev/apoxy/pkg/vpc/relay"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/peerconn"
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
@@ -19,6 +24,12 @@ import (
 const (
 	// maxVisits is the most visitor sessions of one agent.
 	maxVisits = 2
+	// visitExtras is the first revision of a relay that takes a Visit call for
+	// each extra attachment on one visitor session.
+	visitExtras = 15
+	// visitCalls is the most Visit calls for extra attachments that run at once
+	// on a new visitor session.
+	visitCalls = 16
 	// visitCheck is the interval at which the agent asks its relay for the
 	// peers of a visit, to move them back when the relay reaches them again.
 	visitCheck = 10 * time.Second
@@ -388,6 +399,10 @@ func (rc *relayConn) startVisit(ctx context.Context, home *relayConn) error {
 	if _, err := rc.c.Visit(ctx, &dp.VisitRequest{Vpc: rc.ref, Address: rc.self.String(), Grant: rc.grant}); err != nil {
 		return attachError(rc, fmt.Errorf("visit: %w", err))
 	}
+	if rc.relayAtLeast(visitExtras) {
+		// The peer sessions open after this, so each Open has the grants.
+		a.joinExtras(ctx, home, rc)
+	}
 	p, err := b.AddPeer(rc.relayAddr)
 	if err != nil {
 		return err
@@ -417,6 +432,81 @@ func (rc *relayConn) startVisit(ctx context.Context, home *relayConn) error {
 		go rc.giveRelayKeys()
 	}
 	return nil
+}
+
+// joinExtras puts the extra attachments of home in the visit of rc. After it, an
+// attachment that home gets goes in the visit too. An older relay takes neither.
+func (a *Agent) joinExtras(ctx context.Context, home, rc *relayConn) {
+	a.attMu.Lock()
+	rc.extrasOf = home
+	a.mu.Lock()
+	xs := slices.Collect(maps.Values(home.extras))
+	a.mu.Unlock()
+	a.attMu.Unlock()
+	var (
+		wg     sync.WaitGroup
+		mu     sync.Mutex
+		failed int
+		first  error
+	)
+	calls := make(chan struct{}, visitCalls)
+	for _, x := range xs {
+		calls <- struct{}{}
+		wg.Go(func() {
+			defer func() { <-calls }()
+			if err := a.joinVisit(ctx, rc, x); err != nil {
+				mu.Lock()
+				defer mu.Unlock()
+				failed++
+				first = cmp.Or(first, err)
+			}
+		})
+	}
+	wg.Wait()
+	if failed > 0 {
+		slog.Warn("Failed to put extra attachments in a visit; the peers of the visit do not reach them",
+			"relay", rc.addr, "failed", failed, "attachments", len(xs), "error", first)
+	}
+}
+
+// joinVisit runs Visit on the visitor session rc for each prefix of x, then adds
+// x to rc for the peers of the visit. An attachment that left meanwhile leaves rc.
+func (a *Agent) joinVisit(ctx context.Context, rc *relayConn, x *extra) error {
+	var err error
+	for _, p := range x.prefixes {
+		req := &dp.VisitRequest{Vpc: rc.ref, Address: relay.OverlayAddr(p).String(), Grant: x.grant}
+		if _, err = rc.c.Visit(ctx, req); err != nil {
+			err = fmt.Errorf("visit with attachment %s: %w", x.spec.Name, err)
+			break
+		}
+	}
+	a.attMu.Lock()
+	a.mu.Lock()
+	kept := err == nil && rc.extrasOf.extras[x.id] == x
+	a.mu.Unlock()
+	if kept {
+		a.addExtra(rc, x)
+	}
+	a.attMu.Unlock()
+	if !kept {
+		// The relay can have a part of the prefixes.
+		_ = rc.detachExtra(ctx, x.id)
+	}
+	return err
+}
+
+// visitorsOf returns the open visitor sessions that take the extra attachments
+// of home. a.attMu must be held.
+func (a *Agent) visitorsOf(home *relayConn) []*relayConn {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	var out []*relayConn
+	for rc := range a.conns {
+		if rc.extrasOf == home && !rc.ended() {
+			out = append(out, rc)
+		}
+	}
+	return out
 }
 
 // startProbe starts the path probe of the visitor session rc at the device

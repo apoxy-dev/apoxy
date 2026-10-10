@@ -537,9 +537,9 @@ The visited relay accepts the call only if all of these are true:
   routes of the attachment are not in the grant, so a visit does not have
   them.
 - Permit allows the caller to reach the address (`PermissionDenied`).
-- The session has a `Session` call with `local_routes_only`, it has and had
-  no attachment, and it is not a visitor (`FailedPrecondition`). A visitor
-  reaches no other relay, so it must not get the routes of other relays.
+- The session has a `Session` call with `local_routes_only`, and it has and
+  had no attachment (`FailedPrecondition`). A visitor reaches no other relay,
+  so it must not get the routes of other relays.
 - The route of exactly that prefix is not of an attachment of the visited
   relay and not of another agent, and no other agent visits with the prefix
   (`AlreadyExists`). A grant lives as long as the agent cert, so it can be
@@ -547,6 +547,21 @@ The visited relay accepts the call only if all of these are true:
 - The agent has fewer than 2 visitor sessions on the relay in the VPC
   (`ResourceExhausted`). A relay counts only its own sessions, so an agent
   can have 2 on each relay.
+
+From revision 15, a visitor session takes more `Visit` calls, one for each
+prefix: an agent with many attachments on its home relay has all their
+addresses on one visitor session. The checks above apply to each call, and
+these too:
+
+- `relay_id` of the grant is that of the first visit of the session
+  (`FailedPrecondition`).
+- The session has fewer than 64 visit prefixes (`ResourceExhausted`). A
+  grant for a prefix that the session has replaces the grant of that prefix,
+  and adds no prefix.
+
+The limit of 2 visitor sessions counts sessions, not prefixes. A relay below
+revision 15 answers `FailedPrecondition` to a `Visit` call on a visitor
+session.
 
 A member that is down keeps its relay ID, because a lost path to the home
 relay is the usual cause of a visit. A member has no relay ID when it closed
@@ -580,7 +595,10 @@ agent can open the second session before it closes the first.
 
 A visit ends when the session ends, when `not_after` of the grant passes (the
 relay looks each second), and when an attachment of the visited relay or an
-entry of another agent gets the route of exactly the visit prefix. From then
+entry of another agent gets the route of exactly the visit prefix. From
+revision 15, `Detach` on a visitor session with the `attachment_id` of a grant
+ends the visits with that grant. Each visit prefix of a session ends alone,
+and the session stays a visitor while it has one. From then
 on, the sessions of the visited relay reach the address by its route again.
 A visit does not end when the home relay is lost, stops or leaves the member
 set, when its entry for the address goes away, or when the relay roots
@@ -984,6 +1002,7 @@ only for logs and metrics. On a mesh session, `MeshOpenRequest` and
 | 12 | The answer `REACH_VISIT` of `ResolvePeer`, and `home_relay` in `NoRoute`. | On `REACH_VISIT`, and on a `NoRoute` with `home_relay`, keeps its peer sessions, with the path of the session to the address down: a new peer session of the same agent replaces it. The agent with the lower address opens a visitor session to `home_relay` with `local_routes_only`, calls `Visit`, and opens the peer session there. The agent with the higher address waits 2 s for that peer session, and then visits in the same way if none came. An agent with a peer session to the address on its attached session, with the path up, does not visit. When the two agents visit, the peer session on the relay of the higher address stays. Data goes on a visit in two cases. A visitor session in QUIC mode carries the data for its peers as data frames, each within the datagram limit of the session. A visitor session in PSP mode carries data when the attached session is in PSP mode too and the path probe at the device MTU passes. The agent asks its own relay again at an interval and moves the peer back when the answer is `REACH_LOCAL` or `REACH_TRUNK`. | No duty: it sends `local_routes_only`, so it gets neither. | Answers `ResolvePeer` with `REACH_VISIT` and `home_relay`, and sends `NoRoute` with `home_relay`, when the session is at revision 12 or later, gets the routes of other relays and has an attachment, and the home relay of the address is a member that is down for 3 s or more, did not close with `RESTART`, and gave a relay ID that no other relay of the mesh has. Answers as a relay at revision 11 in each other case. |
 | 13 | The PSP packet of an agent between two relays, with no change and with no trunk SA. One SA lane for a trunk. The trunk formats of the revisions 5, 8 and 9 end here, and the duties of a relay in those lines apply only between relays at revision 13 or later. | When `RegisterSPI` returns `AlreadyExists` for rows that it has, closes the peer session, so that the next peer session has new SAs. | No duty. | Has a trunk only with a relay at revision 13 or later: makes no `TrunkKeys` call and no `SPIRows` call to an older relay, refuses those calls of it with `FailedPrecondition`, sends it no packet of a sender, answers no `REACH_TRUNK` for it, and keeps that session. Sends the PSP packet of a row to another relay with no change, and seals only clear inner packets and its own messages with the trunk SA. For a packet from the address of a member: opens it when a trunk SA for that member has its SPI, sends it with no change to a session of its own when a row of that member has its SPI, and drops it in each other case. Keeps each SPI in one use for the packets to a member: refuses `RegisterSPI` with `AlreadyExists`, ends a row that goes to a member with its SPI in use, and returns a trunk SA with the SPI of a row in `refused_spis`. |
 | 14 | `Mesh.Snapshot`. | No duty. | No duty. | Answers `Snapshot` on the open mesh session of a member with the snapshot of its host, in parts of at most 1 MiB with `total_size` in the first part. Answers `NotFound` when its host gives no snapshot, and `ResourceExhausted` for a snapshot above 64 MiB. Calls `Snapshot` only when its host asks for a snapshot, and only on a member at revision 14 or later, with 10 s for each member. Takes no snapshot with a `total_size` of 0 or above 64 MiB, or with a number of bytes that is not `total_size`. |
+| 15 | More than one `Visit` call on a visitor session. `Detach` on a visitor session. | After the first `Visit` call on a relay at revision 15 or later, makes one `Visit` call for each address prefix of each extra attachment of its attached session, with the grant of that attachment, and sends those grants in `Peer.Open` and in `Grants` on the visitor session. Does the same for an attachment that it adds during the visit. Calls `Detach` on the visitor session with the ID of an attachment that it removes during the visit. On a relay below revision 15, makes one `Visit` call, so the peers of the visit reach only the address of the first attachment. | No duty. | Accepts a `Visit` call on a visitor session when the grant is of the same home relay: the session gets one more visit prefix, or the new grant for a prefix that it has. Keeps at most 64 visit prefixes on a session, and answers `ResourceExhausted` above that. The limit of 2 visitor sessions of an agent counts sessions, not prefixes. Ends each visit prefix alone: at the end of its grant, when the address gets another owner, and on a `Detach` call of the visitor with the attachment ID of the grant. A relay below revision 15 answers the second `Visit` call with `FailedPrecondition` and such a `Detach` call with `NotFound`. |
 
 ### Minimum revision
 

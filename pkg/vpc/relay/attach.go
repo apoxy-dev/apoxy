@@ -141,6 +141,10 @@ func (srv *Server) Detach(ctx context.Context, in *dp.DetachRequest) (*emptypb.E
 	if err != nil {
 		return nil, err
 	}
+	// A visitor session has no attachment: the call ends its visit with that grant.
+	if srv.R.leave(s, in.GetAttachmentId()) {
+		return &emptypb.Empty{}, nil
+	}
 	a, last, err := srv.R.detach(s, in.GetAttachmentId())
 	if err != nil {
 		return nil, err

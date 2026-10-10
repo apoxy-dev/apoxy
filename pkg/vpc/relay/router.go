@@ -215,7 +215,7 @@ type Session struct {
 	tag         uint32      // Trunk tag, from the first attach to the removal. Zero is no tag.
 	home        string      // Relay name of the mesh member that has the session. Empty for a session of this relay.
 	sync        syncState
-	visit       atomic.Pointer[visit]        // Visit of s, or nil. Router.mu guards each write.
+	visit       atomic.Pointer[visitor]      // Visits of s, or nil. Router.mu guards each write.
 	shardOf     *Session                     // The owner session of a shard.
 	twin        *Session                     // Older session of the agent socket. Forward also uses its rows.
 	shards      [peerconn.MaxShards]*Session // Shards 1 and up of an owner.
@@ -384,8 +384,7 @@ func (r *Router) addSession(s *Session, now time.Time) {
 			return true
 		}
 		// A visitor sends from the prefix of its visit, which is not its route.
-		v := s.visit.Load()
-		return v != nil && v.prefix.Contains(a)
+		return s.visit.Load().of(a) != nil
 	}
 	for p, o := range d.routes {
 		s.queueRoute(route{p, o.origin}, o.s, true)
@@ -400,7 +399,7 @@ func (r *Router) removeSession(s *Session) {
 	}
 	s.closed = true
 	r.markXDP(s)
-	r.endVisit(s, "session closed")
+	r.endVisit(s, "session closed", each)
 	// The routes go first: a route that moves to another session takes its rows.
 	for _, p := range slices.Clone(s.routes) {
 		r.dropRoute(s, p)
@@ -863,9 +862,7 @@ func (r *Router) Sweep(now time.Time) {
 		if !s.notAfter.IsZero() && !now.Before(s.notAfter) {
 			expired = append(expired, s)
 		}
-		if v := s.visit.Load(); v != nil && !now.Before(v.notAfter) {
-			r.endVisit(s, "grant ended")
-		}
+		r.endVisit(s, "grant ended", func(v *visit) bool { return !now.Before(v.notAfter) })
 		if s.shardOf == nil {
 			r.setAddr(s, s.remote(), now)
 		}

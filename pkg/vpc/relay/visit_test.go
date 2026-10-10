@@ -10,6 +10,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"errors"
+	"fmt"
 	"math/big"
 	"net"
 	"net/netip"
@@ -195,14 +196,18 @@ func (g *visitRig) expire() {
 	g.r.Sweep(time.Now())
 }
 
-// visitOf returns the prefix of the visit of s. It is empty with no visit.
+// visitOf returns the prefixes of the visits of s, the oldest first. It is
+// empty with no visit.
 func (g *visitRig) visitOf(s *Session) string {
 	g.r.mu.RLock()
 	defer g.r.mu.RUnlock()
-	if v := s.visit.Load(); v != nil {
-		return v.prefix.String()
+	var out []string
+	if vs := s.visit.Load(); vs != nil {
+		for _, v := range *vs {
+			out = append(out, v.prefix.String())
+		}
 	}
-	return ""
+	return strings.Join(out, ",")
 }
 
 // visitors returns the number of visitor sessions that the router keeps.
@@ -545,11 +550,6 @@ func TestVisitCall(t *testing.T) {
 				return e
 			},
 			code: rpc.FailedPrecondition, msg: "attachment",
-		},
-		{
-			name:  "session that is a visitor",
-			setup: func(_ *testing.T, g *visitRig) { g.enter() },
-			code:  rpc.FailedPrecondition, msg: "visitor already", prefix: prefixA,
 		},
 		{
 			name:  "closed session",
@@ -1450,7 +1450,7 @@ func TestReachAllocs(t *testing.T) {
 			if tc.visit != "" {
 				p := netip.MustParsePrefix(tc.visit)
 				r.mu.Lock()
-				guest.visit.Store(&visit{prefix: p})
+				guest.visit.Store(&visitor{{prefix: p}})
 				r.domains[vpcA].visits.add(p, guest)
 				r.mu.Unlock()
 			}
@@ -1462,6 +1462,239 @@ func TestReachAllocs(t *testing.T) {
 			defer r.mu.RUnlock()
 			assert.Equal(t, tc.want, r.reach(src, dst).s.id.ID)
 			assert.Zero(t, testing.AllocsPerRun(1000, func() { r.reach(src, dst) }))
+		})
+	}
+}
+
+// In the tests of more visits, v has the visit with prefixA and the grant of the
+// attachment x. The attachment y of server on relay-a has moreNet.
+const (
+	moreNet  = "fd00:a2::/96"
+	moreAddr = "fd00:a2::1"
+)
+
+// TestVisitMore checks the Visit calls on a session that is a visitor, and who
+// gets the frames for the two addresses then.
+func TestVisitMore(t *testing.T) {
+	nth := func(i int) string { return fmt.Sprintf("fd00:b:%x::/96", i) }
+	// fill gives v the visits with n more prefixes.
+	fill := func(n int) func(t *testing.T, g *visitRig) {
+		return func(t *testing.T, g *visitRig) {
+			for i := range n {
+				p := netip.MustParsePrefix(nth(i))
+				require.NoError(t, g.visit(g.v, p.Addr().Next().String(), g.claimsOf(server, fmt.Sprint("n", i), p.String())))
+			}
+		}
+	}
+	second := func(subject, socket, prefix string) func(t *testing.T, g *visitRig) {
+		return func(t *testing.T, g *visitRig) {
+			e := g.guest(dp.Mode_MODE_QUIC, subject, socket)
+			require.NoError(t, g.visit(e, netip.MustParsePrefix(prefix).Addr().Next().String(), g.claimsOf(subject, "x", prefix)))
+		}
+	}
+	cases := []struct {
+		name   string
+		setup  func(t *testing.T, g *visitRig)
+		claims func(g *visitRig) *dp.GrantClaims // Nil is the grant of y with moreNet.
+		addr   string                            // Empty is moreAddr.
+		code   rpc.Code
+		msg    string
+		want   string // Visits of v after the call. Empty is prefixA only.
+		added  int    // Change of the number of visits that the router keeps.
+		more   string // Who gets a peer frame of q to moreAddr after the call.
+	}{
+		{name: "grant of another attachment", want: prefixA + "," + moreNet, added: 1, more: "visitor"},
+		{
+			name:   "new grant for the prefix of the session",
+			claims: func(g *visitRig) *dp.GrantClaims { return g.claimsOf(server, "x2", prefixA) },
+			addr:   brServer, want: prefixA,
+		},
+		{
+			name:   "second prefix of the first grant",
+			claims: func(g *visitRig) *dp.GrantClaims { c := g.claims(); c.Addresses = []string{prefixA, moreNet}; return c },
+			want:   prefixA + "," + moreNet, added: 1, more: "visitor",
+		},
+		{
+			name:  "agent has the most visitor sessions",
+			setup: func(t *testing.T, g *visitRig) { second(server, spareSocket, prefixA)(t, g) },
+			want:  prefixA + "," + moreNet, added: 1, more: "visitor",
+		},
+		{
+			name:  "session has one visit below the limit",
+			setup: fill(maxVisitPrefixes - 2),
+			added: 1, more: "visitor",
+		},
+		{
+			name:  "session has the most visits",
+			setup: fill(maxVisitPrefixes - 1),
+			code:  rpc.ResourceExhausted, msg: "limit",
+		},
+		{
+			name:   "session has the most visits, and the grant is for one of them",
+			setup:  fill(maxVisitPrefixes - 1),
+			claims: func(g *visitRig) *dp.GrantClaims { return g.claimsOf(server, "x2", prefixA) },
+			addr:   brServer,
+		},
+		{
+			name: "first visit has the grant of another relay",
+			setup: func(_ *testing.T, g *visitRig) {
+				g.r.mu.Lock()
+				defer g.r.mu.Unlock()
+				first := *(*g.v.s.visit.Load())[0]
+				first.relay = strangerID
+				g.v.s.visit.Store(&visitor{&first})
+			},
+			code: rpc.FailedPrecondition, msg: "relay-z",
+		},
+		{
+			name:  "visitor of another agent has the prefix",
+			setup: second(other, spareSocket, moreNet),
+			code:  rpc.AlreadyExists, msg: "another visitor",
+		},
+		{
+			name:   "grant of another subject",
+			claims: func(g *visitRig) *dp.GrantClaims { return g.claimsOf(other, "y", moreNet) },
+			code:   rpc.PermissionDenied, msg: "not of the caller",
+		},
+		{
+			name:  "attachment of this relay has the prefix",
+			setup: func(_ *testing.T, g *visitRig) { g.local("o", spareSocket, moreNet) },
+			code:  rpc.AlreadyExists, msg: "another owner", more: "o",
+		},
+	}
+	cfg, certs := trunkRigConfig(t), newVisitCerts(t)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				g := newVisitRig(t, cfg, certs, dp.Mode_MODE_QUIC)
+				defer g.stop()
+				g.enter()
+				if tc.setup != nil {
+					tc.setup(t, g)
+				}
+				before, n := g.visitOf(g.v.s), g.visitors()
+				c := g.claimsOf(server, "y", moreNet)
+				if tc.claims != nil {
+					c = tc.claims(g)
+				}
+				err := g.visit(g.v, cmp.Or(tc.addr, moreAddr), c)
+
+				assert.Equal(t, tc.code, rpc.CodeOf(err), "error: %v", err)
+				if tc.code != rpc.OK {
+					assert.ErrorContains(t, err, tc.msg)
+					assert.Equal(t, before, g.visitOf(g.v.s), "a call that the relay refuses changes no visit")
+				} else if tc.want != "" {
+					assert.Equal(t, tc.want, g.visitOf(g.v.s))
+				}
+				assert.Equal(t, n+tc.added, g.visitors())
+				assert.Equal(t, tc.more, g.via(g.frame(g.q, brQ, moreAddr)), "peer frame to the address of the second attachment")
+				// The visitor sends from the second address only with its visit.
+				from := ""
+				if tc.more == "visitor" {
+					from = "q"
+					g.r.mu.RLock()
+					to := g.r.reach(g.q.s, netip.MustParseAddr(moreAddr))
+					g.r.mu.RUnlock()
+					assert.Equal(t, c.GetAttachmentId(), to.origin, "attachment of the grant that has the second address")
+				}
+				assert.Equal(t, from, g.via(g.frame(g.v, moreAddr, brQ)), "peer frame from the address of the second attachment")
+				assert.Equal(t, from, g.via(g.data(g.v, moreAddr, brQ)), "data frame from the address of the second attachment")
+				assert.Equal(t, "q", g.via(g.frame(g.v, brServer, brQ)), "peer frame from the address of the first attachment")
+			})
+		})
+	}
+}
+
+// TestVisitMoreEnd checks that each visit of a session ends alone. v has the
+// visits with prefixA and with moreNet.
+func TestVisitMoreEnd(t *testing.T) {
+	cases := []struct {
+		name string
+		// late is the time from the end of the first grant to the end of the second.
+		late time.Duration
+		step func(t *testing.T, g *visitRig)
+		want string // Visits of v after the step.
+		// Who gets a peer frame of q to the first address and to the second.
+		first, more string
+	}{
+		{
+			name: "Detach with the attachment of the second grant",
+			step: func(t *testing.T, g *visitRig) { assert.True(t, g.r.leave(g.v.s, "y")) },
+			want: prefixA, first: "visitor",
+		},
+		{
+			name: "Detach with the attachment of the first grant",
+			step: func(t *testing.T, g *visitRig) { assert.True(t, g.r.leave(g.v.s, "x")) },
+			want: moreNet, first: "relay-a", more: "visitor",
+		},
+		{
+			name: "Detach with an attachment of no grant",
+			step: func(t *testing.T, g *visitRig) { assert.False(t, g.r.leave(g.v.s, "z")) },
+			want: prefixA + "," + moreNet, first: "visitor", more: "visitor",
+		},
+		{
+			name: "end of the first grant", late: time.Second,
+			step: func(_ *testing.T, g *visitRig) { g.expire() },
+			want: moreNet, first: "relay-a", more: "visitor",
+		},
+		{
+			name:  "end of the two grants",
+			step:  func(_ *testing.T, g *visitRig) { g.expire() },
+			first: "relay-a",
+		},
+		{
+			name: "attachment of another agent on this relay takes the second prefix",
+			step: func(_ *testing.T, g *visitRig) { g.local("o", spareSocket, moreNet) },
+			want: prefixA, first: "visitor", more: "o",
+		},
+		{
+			name: "presence gives the second prefix to another agent",
+			step: func(_ *testing.T, g *visitRig) {
+				g.announce(atGen(liveEntry("y", other, "base", 8, moreNet), 20))
+			},
+			want: prefixA, first: "visitor", more: "relay-a",
+		},
+		{
+			name:  "session closes",
+			step:  func(_ *testing.T, g *visitRig) { g.r.removeSession(g.v.s) },
+			first: "relay-a",
+		},
+	}
+	cfg, certs := trunkRigConfig(t), newVisitCerts(t)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				g := newVisitRig(t, cfg, certs, dp.Mode_MODE_QUIC)
+				defer g.stop()
+				g.enter()
+				c := g.claimsOf(server, "y", moreNet)
+				c.NotAfter = timestamppb.New(time.Now().Add(visitSpan + tc.late))
+				require.NoError(t, g.visit(g.v, moreAddr, c))
+				require.Equal(t, 2, g.visitors())
+				require.NoError(t, g.r.registerSPI(g.laptop, register(vpcA, moreAddr, rowTTL, 5), time.Now()))
+				require.Equal(t, "visitor", g.receiver(g.laptop, rowSrc, 5))
+
+				tc.step(t, g)
+
+				assert.Equal(t, tc.want, g.visitOf(g.v.s))
+				n := 0
+				if tc.want != "" {
+					n = strings.Count(tc.want, ",") + 1
+				}
+				assert.Equal(t, n, g.visitors())
+				assert.Equal(t, tc.first, g.via(g.frame(g.q, brQ, brServer)), "peer frame to the first address")
+				assert.Equal(t, tc.more, g.via(g.frame(g.q, brQ, moreAddr)), "peer frame to the second address")
+				// The row to the second address stays with the visitor only in its visit.
+				if tc.more == "visitor" {
+					assert.Equal(t, "visitor", g.receiver(g.laptop, rowSrc, 5))
+				} else {
+					g.r.mu.RLock()
+					for w := range g.v.s.inbound {
+						assert.NotEqual(t, netip.MustParseAddr(moreAddr), w.dst, "row to a prefix with no visit")
+					}
+					g.r.mu.RUnlock()
+				}
+			})
 		})
 	}
 }

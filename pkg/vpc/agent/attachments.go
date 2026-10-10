@@ -260,8 +260,10 @@ func (a *Agent) attachClaimed(rc *relayConn, s *AttachmentSpec) (*extra, error) 
 	a.attMu.Lock()
 	a.unclaim(rc, s)
 	stale := err == nil && a.specs[s.Name] != s
+	var visitors []*relayConn
 	if err == nil && !stale {
 		a.addExtra(rc, x)
+		visitors = a.visitorsOf(rc)
 		if a.current() == rc {
 			a.queueAttached(x)
 		}
@@ -270,6 +272,13 @@ func (a *Agent) attachClaimed(rc *relayConn, s *AttachmentSpec) (*extra, error) 
 	if stale {
 		a.detachRelay(ctx, []placed{{rc, x}})
 		return nil, fmt.Errorf("%w: %s", ErrNoAttachment, s.Name)
+	}
+	// The peers of each visit of rc reach the new attachment too.
+	for _, v := range visitors {
+		if err := a.joinVisit(ctx, v, x); err != nil {
+			slog.Warn("Failed to put an attachment in a visit; the peers of the visit do not reach it",
+				"relay", v.addr, "name", s.Name, "error", err)
+		}
 	}
 	return x, err
 }

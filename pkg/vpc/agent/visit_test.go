@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/apoxy-dev/apoxy/pkg/vpc/identity"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
@@ -399,6 +400,132 @@ func TestVisitData(t *testing.T) {
 			ping(t, b.stack, eb.addr, ea.addr, 9000, "to a over the trunk again")
 			if quicA {
 				assert.Zero(t, sent(a)+got(a), "PSP packets of a at the end")
+			}
+		})
+	}
+}
+
+// liveOn reports whether a has an open peer session on rc with the path up that
+// covers dst.
+func liveOn(a *Agent, rc *relayConn, dst netip.Addr) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.livePeerTo(rc, dst) != nil
+}
+
+// TestVisitAttachments checks that the peer of a visit reaches each attachment
+// of the visitor: one from before the visit, and one that attaches in the visit.
+// An attachment that detaches in the visit leaves it.
+func TestVisitAttachments(t *testing.T) {
+	cases := []struct {
+		name         string
+		modeA, modeB TransportMode // a is the visitor.
+	}{
+		{name: "PSP visitor to PSP peer", modeA: TransportPSP, modeB: TransportPSP},
+		{name: "QUIC visitor to PSP peer", modeA: TransportQUIC, modeB: TransportPSP},
+		{name: "QUIC visitor to QUIC peer", modeA: TransportQUIC, modeB: TransportQUIC},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r1, r2, a, b, ea, eb := visitPair(t,
+				agentOptions{mode: tc.modeA, visitCheck: time.Hour},
+				agentOptions{mode: tc.modeB, visitCheck: time.Hour, visitWait: time.Hour})
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			x, err := a.a.Attach(ctx, AttachmentSpec{Name: "a-2"})
+			require.NoError(t, err)
+			echo(t, a.stack, x.Address, 9001)
+
+			cutMesh(r1, r2)
+			waitReach(t, a, eb.addr, dp.Reach_REACH_VISIT)
+			v, err := dialOnVisit(t, ctx, a, r2, eb.addr)
+			require.NoError(t, err)
+			require.True(t, v.rc.data.Load(), "data goes on the visitor session")
+			reaches := func(dst netip.Addr) func() bool {
+				return func() bool { return liveOn(b.a, b.current(), ea.addr) && liveOn(b.a, b.current(), dst) }
+			}
+			require.Eventually(t, reaches(x.Address), 5*time.Second, 10*time.Millisecond, "b has the grant of a-2")
+			ping(t, b.stack, eb.addr, x.Address, 9001, "to a-2 on the visit")
+			ping(t, a.stack, x.Address, eb.addr, 9000, "from a-2 on the visit")
+			ping(t, b.stack, eb.addr, ea.addr, 9000, "to the first attachment on the visit")
+
+			// An attachment that a adds in the visit goes in the visit too.
+			y, err := a.a.Attach(ctx, AttachmentSpec{Name: "a-3"})
+			require.NoError(t, err)
+			echo(t, a.stack, y.Address, 9002)
+			require.Eventually(t, reaches(y.Address), 5*time.Second, 10*time.Millisecond, "b has the grant of a-3")
+			ping(t, b.stack, eb.addr, y.Address, 9002, "to a-3 on the visit")
+			ping(t, a.stack, y.Address, eb.addr, 9000, "from a-3 on the visit")
+			// A late echo of a ping gives an ICMP error of the netstack, so the test
+			// counts the packets that an agent did not send.
+			assert.Zero(t, a.a.Stats().HoldDrops+b.a.Stats().HoldDrops, "packets with no peer session")
+			assert.Equal(t, 1, visitCount(a.a), "one visitor session has all attachments")
+			assert.Zero(t, visitCount(b.a), "b does not visit")
+
+			// After Detach, b has no route to a-2, and relay-2 has no visit for it.
+			require.NoError(t, a.a.Detach(ctx, "a-2"))
+			require.Eventually(t, func() bool { return !liveOn(b.a, b.current(), x.Address) }, 5*time.Second, 10*time.Millisecond, "b lost the grant of a-2")
+			_, err = v.rc.c.Detach(ctx, &dp.DetachRequest{AttachmentId: x.ID})
+			assert.Equal(t, rpc.NotFound, rpc.CodeOf(err), "relay-2 has no visit with the grant of a-2: %v", err)
+			ping(t, b.stack, eb.addr, y.Address, 9002, "to a-3 after the Detach of a-2")
+			// The relay ends the visit of a-3 on a Detach call, one time.
+			_, err = v.rc.c.Detach(ctx, &dp.DetachRequest{AttachmentId: y.ID})
+			assert.NoError(t, err, "relay-2 has the visit with the grant of a-3")
+			_, err = v.rc.c.Detach(ctx, &dp.DetachRequest{AttachmentId: y.ID})
+			assert.Equal(t, rpc.NotFound, rpc.CodeOf(err), "second Detach: %v", err)
+		})
+	}
+}
+
+// TestVisitAttachmentsRelayRevision checks that the agent puts its extra
+// attachments in a visit only on a relay that takes more than one Visit call.
+func TestVisitAttachmentsRelayRevision(t *testing.T) {
+	cases := []struct {
+		name     string
+		revision uint32 // Revision of relay-2 as the agent knows it.
+		extras   int    // Extra attachments of a on the visitor session.
+	}{
+		{name: "relay before the revision", revision: visitExtras - 1},
+		{name: "relay at the revision", revision: visitExtras, extras: 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r1, r2, a, b, ea, eb := visitPair(t,
+				agentOptions{mode: TransportPSP, visitCheck: time.Hour},
+				agentOptions{mode: TransportPSP, visitCheck: time.Hour, visitWait: time.Hour})
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			x, err := a.a.Attach(ctx, AttachmentSpec{Name: "a-2"})
+			require.NoError(t, err)
+			cutMesh(r1, r2)
+			waitReach(t, a, eb.addr, dp.Reach_REACH_VISIT)
+
+			rc, err := a.a.dialRelay(ctx, endpoint{id: r2.id, addr: r2.addr}, spareHello, true)
+			require.NoError(t, err)
+			defer rc.close()
+			rc.version = &dp.Version{Revision: tc.revision}
+			require.NoError(t, rc.startVisit(ctx, a.current()))
+			require.NoError(t, a.a.connect(ctx, rc, eb.addr, nil))
+			require.Eventually(t, func() bool { return liveOn(b.a, b.current(), ea.addr) }, 5*time.Second, 10*time.Millisecond)
+			ping(t, b.stack, eb.addr, ea.addr, 9000, "to the first attachment on the visit")
+
+			a.a.mu.Lock()
+			n := len(rc.extras)
+			a.a.mu.Unlock()
+			assert.Equal(t, tc.extras, n, "extra attachments on the visitor session")
+			assert.Equal(t, tc.extras == 1, liveOn(b.a, b.current(), x.Address), "b has the grant of a-2")
+			// An attachment that a adds then follows the same rule.
+			y, err := a.a.Attach(ctx, AttachmentSpec{Name: "a-3"})
+			require.NoError(t, err)
+			if tc.extras == 1 {
+				require.Eventually(t, func() bool { return liveOn(b.a, b.current(), y.Address) }, 5*time.Second, 10*time.Millisecond, "b has the grant of a-3")
+			} else {
+				a.a.mu.Lock()
+				assert.Empty(t, rc.extras)
+				a.a.mu.Unlock()
+				assert.False(t, liveOn(b.a, b.current(), y.Address), "b has no grant of a-3")
 			}
 		})
 	}
