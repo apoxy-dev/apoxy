@@ -277,6 +277,8 @@ func TestXDPMemberCounters(t *testing.T) {
 			got := counts{series["packets rx"], series["bytes rx"], float64(packets), float64(bytes)}
 			assert.Equal(t, st.want, got, st.name)
 		}
+		// Only the packet of the second step went on the socket path.
+		assert.EqualValues(t, 1, g.r.socket[socketMemberRow].Load())
 	})
 }
 

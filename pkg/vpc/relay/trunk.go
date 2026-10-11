@@ -896,6 +896,7 @@ func (t *trunk) open(br *bridge, p *trunkPair, pkt, buf []byte, fwd forwarder, n
 	// the sender keeps each SPI in one use.
 	sa, found := p.sa(binary.BigEndian.Uint32(pkt[4:8]))
 	if !found {
+		t.r.socket[socketMemberRow].Add(1)
 		why, ok = t.r.pass(p.name, pkt, fwd, now)
 		return why, ok, false
 	}
@@ -915,6 +916,7 @@ func (t *trunk) open(br *bridge, p *trunkPair, pkt, buf []byte, fwd forwarder, n
 		// A relay seals no PSP packet of a sender.
 		return dropTrunkPayload, false, false
 	}
+	t.r.socket[socketMemberTrunk].Add(1)
 	why, ok = t.r.bridgeIn(p.name, sa.sess, tag, pkt, payload, buf, fwd)
 	return why, ok, false
 }

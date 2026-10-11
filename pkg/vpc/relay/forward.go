@@ -63,10 +63,13 @@ func (r *Router) PacketHandler(ctx context.Context, tr *quic.Transport) (handle 
 		dst, v := r.Forward(src, h.SPI, len(b), now)
 		switch {
 		case v != Pass:
+			r.socket[socketDropped].Add(1)
 		case dst.IsValid():
+			r.socket[socketAgentRow].Add(1)
 			fwd.add(b, dst)
 		case br != nil:
 			// A row to the relay has no address.
+			r.socket[socketAgentRelay].Add(1)
 			r.receivePSP(br, b, h.SPI, sealed, now)
 		}
 	}, fwd.flush

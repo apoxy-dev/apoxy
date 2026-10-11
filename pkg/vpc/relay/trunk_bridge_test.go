@@ -1070,6 +1070,14 @@ func TestTrunkBridgeBetweenRelays(t *testing.T) {
 			assert.Zero(t, st.DataDrops)
 			assert.Equal(t, drops, dropsOf(a.r))
 			assert.Equal(t, map[string]uint64{"trunk_replay": 1}, dropsOf(b.r))
+			// The socket path of relay-b opened the two trunk packets, and that of
+			// relay-a the two packets of a PSP-mode sender.
+			wantA := map[string]uint64{"agent_relay": 0, "agent_row": 0, "member_row": 0, "member_trunk": 0, "dropped": 0}
+			if tc.from == psp {
+				wantA["agent_relay"] = 2
+			}
+			assert.Equal(t, wantA, socketCounts(a.r))
+			assert.Equal(t, map[string]uint64{"agent_relay": 0, "agent_row": 0, "member_row": 0, "member_trunk": 2, "dropped": 0}, socketCounts(b.r))
 			// The attachment of the receiver counts the inner packets.
 			rx := b.r.AttachmentStats()
 			require.Len(t, rx, 1)

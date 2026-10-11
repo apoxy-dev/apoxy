@@ -125,6 +125,8 @@ type Router struct {
 	// refusals counts the rows that the relay refused or ended for an SPI that
 	// the relay of the receiver has in use.
 	refusals [numRowRefusals]atomic.Uint64
+	// socket counts the PSP packets that the socket path took, by class.
+	socket [numSocketClasses]atomic.Uint64
 
 	mu       sync.RWMutex
 	permit   Permit

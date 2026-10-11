@@ -180,6 +180,31 @@ var refusalsDesc = prometheus.NewDesc("apoxy_vpc_relay_refused_rows_total",
 	"Rows that the relay refused or ended because the relay of the receiver has their SPI in use, by what has the SPI.",
 	[]string{"reason"}, nil)
 
+// socketClass is the class of a PSP packet on the socket path. With an XDP program,
+// these are the packets that the program counts as no_row.
+type socketClass int
+
+const (
+	socketAgentRow    socketClass = iota // Row of an agent, which XDP can forward.
+	socketAgentRelay                     // Row of an agent to the relay, which opens the packet.
+	socketMemberRow                      // Row that a mesh member gave, which XDP can forward.
+	socketMemberTrunk                    // Trunk packet that a mesh member sealed.
+	socketDropped                        // No session or no row for the source and the SPI.
+	numSocketClasses
+)
+
+var socketLabels = [numSocketClasses]string{
+	socketAgentRow:    "agent_row",
+	socketAgentRelay:  "agent_relay",
+	socketMemberRow:   "member_row",
+	socketMemberTrunk: "member_trunk",
+	socketDropped:     "dropped",
+}
+
+var socketDesc = prometheus.NewDesc("apoxy_vpc_relay_socket_packets_total",
+	"PSP packets that the socket path took, by class. The XDP program forwards only the classes agent_row and member_row.",
+	[]string{"class"}, nil)
+
 var (
 	xdpPacketsDesc = prometheus.NewDesc("apoxy_vpc_relay_xdp_packets_total",
 		"PSP packets that the XDP program forwarded, or gave to the socket path, by result.", []string{"result"}, nil)
@@ -193,6 +218,7 @@ var _ prometheus.Collector = (*Router)(nil)
 func (r *Router) Describe(ch chan<- *prometheus.Desc) {
 	ch <- dropsDesc
 	ch <- refusalsDesc
+	ch <- socketDesc
 	ch <- xdpPacketsDesc
 	ch <- xdpBytesDesc
 	ch <- trunkPacketsDesc
@@ -218,6 +244,9 @@ func (r *Router) Collect(ch chan<- prometheus.Metric) {
 	}
 	for i := range r.refusals {
 		ch <- prometheus.MustNewConstMetric(refusalsDesc, prometheus.CounterValue, float64(r.refusals[i].Load()), rowRefusalLabels[i])
+	}
+	for i := range r.socket {
+		ch <- prometheus.MustNewConstMetric(socketDesc, prometheus.CounterValue, float64(r.socket[i].Load()), socketLabels[i])
 	}
 	for _, c := range []struct {
 		result string

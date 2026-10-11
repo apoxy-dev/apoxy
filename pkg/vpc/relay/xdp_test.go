@@ -522,6 +522,13 @@ apoxy_vpc_relay_dropped_packets_total{reason="unknown_spi"} 0
 # TYPE apoxy_vpc_relay_refused_rows_total counter
 apoxy_vpc_relay_refused_rows_total{reason="row"} 0
 apoxy_vpc_relay_refused_rows_total{reason="trunk_sa"} 0
+# HELP apoxy_vpc_relay_socket_packets_total PSP packets that the socket path took, by class. The XDP program forwards only the classes agent_row and member_row.
+# TYPE apoxy_vpc_relay_socket_packets_total counter
+apoxy_vpc_relay_socket_packets_total{class="agent_relay"} 0
+apoxy_vpc_relay_socket_packets_total{class="agent_row"} 0
+apoxy_vpc_relay_socket_packets_total{class="dropped"} 0
+apoxy_vpc_relay_socket_packets_total{class="member_row"} 0
+apoxy_vpc_relay_socket_packets_total{class="member_trunk"} 0
 # HELP apoxy_vpc_relay_xdp_forwarded_bytes_total UDP payload bytes that the XDP program forwarded.
 # TYPE apoxy_vpc_relay_xdp_forwarded_bytes_total counter
 apoxy_vpc_relay_xdp_forwarded_bytes_total 500

@@ -73,14 +73,15 @@ func TestPacketHandler(t *testing.T) {
 		wantDrops  [2]uint64 // DropUnknownSPI of the sender and of the receiver.
 		wantSource uint64    // Drops for an unknown source.
 		wantBad    uint64    // Drops of packets that are not PSP.
+		wantClass  string    // Class of the PSP packet on the socket path. Empty is no count.
 	}{
-		{name: "unknown SPI", from: snd.tr.WriteTo, pkt: pspPacket(t, 8, dst), wantDrops: [2]uint64{1, 0}},
-		{name: "SPI of another sender", from: rcv.tr.WriteTo, pkt: pspPacket(t, 7, dst), wantDrops: [2]uint64{0, 1}},
-		{name: "unknown source", from: other.WriteTo, pkt: pspPacket(t, 7, dst), wantSource: 1},
+		{name: "unknown SPI", from: snd.tr.WriteTo, pkt: pspPacket(t, 8, dst), wantDrops: [2]uint64{1, 0}, wantClass: "dropped"},
+		{name: "SPI of another sender", from: rcv.tr.WriteTo, pkt: pspPacket(t, 7, dst), wantDrops: [2]uint64{0, 1}, wantClass: "dropped"},
+		{name: "unknown source", from: other.WriteTo, pkt: pspPacket(t, 7, dst), wantSource: 1, wantClass: "dropped"},
 		{name: "path probe", from: snd.tr.WriteTo, pkt: []byte{0x02, 1, 2, 3}, wantBad: 1},
 		{name: "Geneve", from: snd.tr.WriteTo, pkt: geneve(0, 64), wantBad: 1},
 		{name: "Geneve with options", from: snd.tr.WriteTo, pkt: geneve(4, 64), wantBad: 1},
-		{name: "good", from: snd.tr.WriteTo, pkt: pspPacket(t, 7, dst), wantSent: true},
+		{name: "good", from: snd.tr.WriteTo, pkt: pspPacket(t, 7, dst), wantSent: true, wantClass: "agent_row"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -88,6 +89,7 @@ func TestPacketHandler(t *testing.T) {
 				return [2]uint64{h.r.SenderStats(sndSession).DropUnknownSPI, h.r.SenderStats(rcvSession).DropUnknownSPI}
 			}
 			before, source, bad := drops(), h.r.UnknownSourceDrops(), h.r.MalformedDrops()
+			classes := socketCounts(h.r)
 			changed := func() ([2]uint64, uint64, uint64) {
 				d := drops()
 				return [2]uint64{d[0] - before[0], d[1] - before[1]}, h.r.UnknownSourceDrops() - source, h.r.MalformedDrops() - bad
@@ -110,11 +112,24 @@ func TestPacketHandler(t *testing.T) {
 			assert.Equal(t, tc.wantDrops, d)
 			assert.Equal(t, tc.wantSource, s)
 			assert.Equal(t, tc.wantBad, b)
+			if tc.wantClass != "" {
+				classes[tc.wantClass]++
+			}
+			assert.Equal(t, classes, socketCounts(h.r))
 		})
 	}
 	st := h.r.SenderStats(sndSession)
 	require.Len(t, st.Lanes, 1)
 	assert.Equal(t, uint64(1), st.Lanes[0].Packets)
+}
+
+// socketCounts returns the counts of the PSP packets on the socket path of r, by class.
+func socketCounts(r *Router) map[string]uint64 {
+	out := map[string]uint64{}
+	for i := range r.socket {
+		out[socketLabels[i]] = r.socket[i].Load()
+	}
+	return out
 }
 
 // TestAddrCache checks that the cache gives the address of each destination.
