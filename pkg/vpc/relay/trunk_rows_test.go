@@ -339,7 +339,13 @@ type rowMember struct {
 // keyed, relay-b gives its SA, so the pair has keys in both directions.
 func (g *rowRig) second(keyed bool) *rowMember {
 	g.t.Helper()
-	b := &rowMember{addr: netip.MustParseAddrPort("192.0.2.2:6081")}
+	return g.secondAt(keyed, netip.MustParseAddrPort("192.0.2.2:6081"))
+}
+
+// secondAt is second with the relay socket of relay-b at addr.
+func (g *rowRig) secondAt(keyed bool, addr netip.AddrPort) *rowMember {
+	g.t.Helper()
+	b := &rowMember{addr: addr}
 	g.m.SetMembers([]MeshMember{{Name: "relay-a", Addr: trunkRigAddr}, {Name: "relay-b", Addr: b.addr}})
 	sender, err := keys.NewSender(trunkMTU)
 	require.NoError(g.t, err)

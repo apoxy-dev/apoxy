@@ -159,6 +159,16 @@ each packet from the address of its mesh session with another relay:
 A relay does not use the SA or the row of one member for a packet from the
 address of another member.
 
+A relay knows the other relay by the source IP address of a packet. The source
+port can be different from the port of the mesh session: a NAT on the host of
+the other relay can give the session a new source port, and the XDP program of
+that relay sends from the relay port and does not use the NAT. So a relay also
+takes a PSP packet from each other port of the IP address of the session, if
+that address and port are not the socket of one of its agent sessions. If two
+relays have one IP address, a relay takes only the packets from the address
+and port of each session. A relay sends its own packets to the address and
+port of the session.
+
 An SPI thus has one use for the packets from one relay to another. The relay
 of the receiver cannot keep this rule: the SPIs of the rows come from agents.
 The relay of the sender keeps it, because it has each row to the other relay
@@ -235,7 +245,7 @@ other relay with `SPIRows` (see "Mesh").
 
 The XDP program forwards the packets of such a row as it forwards the packets
 of a row to an agent, with the relay socket of the other relay as the next
-hop. The other relay knows this relay by the source address of a packet, and
+hop. The other relay knows this relay by the source IP address of a packet, and
 the program sends from the address that the packet of the agent came to. So
 the row is in the program only while the trunk has a full path and the
 program has one address of that family, the address that the host sends from

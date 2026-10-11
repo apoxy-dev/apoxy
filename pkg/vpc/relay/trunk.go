@@ -89,6 +89,9 @@ type trunk struct {
 
 	// addrs has the pairs by member address, for the packet path.
 	addrs atomic.Pointer[map[netip.AddrPort]*trunkPair]
+	// hosts has the pairs by member IP address, for a packet from another source
+	// port of a member. The address of two members has a nil pair.
+	hosts atomic.Pointer[map[netip.Addr]*trunkPair]
 	// names has the pairs by relay name, for the bridge.
 	names atomic.Pointer[map[string]*trunkPair]
 
@@ -209,6 +212,35 @@ func (t *trunk) from(src netip.AddrPort) *trunkPair {
 	return nil
 }
 
+// member returns the pair of the member that sent the PSP packet pkt from src. A NAT of
+// its host can give its mesh session a source port that its XDP forward does not use.
+func (t *trunk) member(src netip.AddrPort, pkt []byte) *trunkPair {
+	if p := t.from(src); p != nil {
+		return p
+	}
+	m := t.hosts.Load()
+	if m == nil {
+		return nil
+	}
+	p := (*m)[src.Addr()]
+	if p == nil {
+		return nil
+	}
+	// An agent at src keeps its packets: those of its session, and each one that is no PSP packet.
+	if _, err := pspwire.ParseTrunkHeader(pkt); err != nil || t.r.sender(src, time.Now()) {
+		return nil
+	}
+	return p
+}
+
+// sender reports whether src is a source address of a session at now.
+func (r *Router) sender(src netip.AddrPort, now time.Time) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	s := r.bySource[src]
+	return s != nil && s.from(src, now)
+}
+
 // to returns the pair of member name, or nil if the trunk has no session of it.
 func (t *trunk) to(name string) *trunkPair {
 	if m := t.names.Load(); m != nil {
@@ -272,10 +304,18 @@ func sourceTo(dst *net.UDPAddr) netip.Addr {
 // must be held.
 func (t *trunk) index() {
 	m := make(map[netip.AddrPort]*trunkPair, len(t.pairs))
+	hosts := make(map[netip.Addr]*trunkPair, len(t.pairs))
 	for _, p := range t.pairs {
 		m[p.addr] = p
+		// An IP address of two members does not tell which of them sent a packet.
+		if _, two := hosts[p.addr.Addr()]; two {
+			hosts[p.addr.Addr()] = nil
+		} else {
+			hosts[p.addr.Addr()] = p
+		}
 	}
 	t.addrs.Store(&m)
+	t.hosts.Store(&hosts)
 	names := maps.Clone(t.pairs)
 	t.names.Store(&names)
 }

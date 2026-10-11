@@ -42,9 +42,10 @@ func (r *Router) PacketHandler(ctx context.Context, tr *quic.Transport) (handle 
 	// packet before it returns, so one buffer is enough for the sealed packets.
 	sealed := make([]byte, maxUDP)
 	return func(b []byte, from net.Addr) {
+		src := addrPort(from)
 		if t := r.trunk.Load(); t != nil {
 			// A mesh member sends trunk packets and the PSP packets of its senders.
-			if p := t.from(addrPort(from)); p != nil {
+			if p := t.member(src, b); p != nil {
 				if why, ok := t.receive(br, p, b, sealed, fwd, time.Now()); !ok {
 					r.drops[why].Add(1)
 				}
@@ -53,13 +54,13 @@ func (r *Router) PacketHandler(ctx context.Context, tr *quic.Transport) (handle 
 		}
 		h, err := pspwire.ParseHeader(b)
 		if err != nil {
-			if !r.Keepalive(b, addrPort(from)) && !r.answerProbe(tr, b, from) {
+			if !r.Keepalive(b, src) && !r.answerProbe(tr, b, from) {
 				r.drops[dropMalformed].Add(1)
 			}
 			return
 		}
 		now := time.Now()
-		dst, v := r.Forward(addrPort(from), h.SPI, len(b), now)
+		dst, v := r.Forward(src, h.SPI, len(b), now)
 		switch {
 		case v != Pass:
 		case dst.IsValid():

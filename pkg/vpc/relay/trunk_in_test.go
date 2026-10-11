@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/durationpb"
 
+	"github.com/apoxy-dev/apoxy/pkg/vpc/p2p"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
@@ -297,6 +298,121 @@ func TestTrunkInDeliver(t *testing.T) {
 				// The attachment of the receiver counts the inner packet.
 				assert.EqualValues(t, 1, packets)
 				assert.EqualValues(t, 100, bytes)
+			})
+		})
+	}
+}
+
+// TestTrunkInSourcePort checks that the relay takes the packets of relay-a from
+// each source port of its address, and that each check of a packet stays.
+func TestTrunkInSourcePort(t *testing.T) {
+	// A NAT of the host of relay-a gives its session a port that its XDP forward does not use.
+	port := netip.AddrPortFrom(trunkRigAddr.Addr(), 17149)
+	stranger := netip.MustParseAddrPort("203.0.113.9:6081")
+	row := func(spi uint32) func(*testing.T, *rowRig) []byte {
+		return func(t *testing.T, _ *rowRig) []byte { return pspOfSize(t, spi, 100) }
+	}
+	inner := func(tag uint32) func(*testing.T, *rowRig) []byte {
+		return func(_ *testing.T, g *rowRig) []byte {
+			return g.sealed(trunkLane, tag, innerOf(brServer, brQ, 100), false)
+		}
+	}
+	probe := func(_ *testing.T, g *rowRig) []byte {
+		return g.sealed(trunkLane, trunkTagRelay, append([]byte{trunkMsgProbe}, make([]byte, 63)...), true)
+	}
+	// The packet has the SPI of the trunk SA, and a key that the relay did not give.
+	otherKey := func(t *testing.T, g *rowRig) []byte { return pspOfSize(t, g.tx.SA(trunkLane).SPI(), 100) }
+	cases := []struct {
+		name   string
+		setup  func(t *testing.T, g *rowRig)
+		from   netip.AddrPort                       // Source of the packet. Zero is the address of the session of relay-a.
+		pkt    func(t *testing.T, g *rowRig) []byte // Nil is the PSP packet of server with the SPI of its row.
+		again  bool                                 // The relay got the packet from the session address before.
+		to     string                               // Socket of the agent that gets the packet: laptop, or q in a data frame.
+		answer bool                                 // relay-a gets an answer at the address of its session.
+		drop   string                               // Reason label of the drop. Empty is no drop.
+	}{
+		{name: "PSP packet of a row from the session address", to: rowSrc},
+		{name: "PSP packet of a row from another port", from: port, to: rowSrc},
+		{name: "clear inner packet from another port", from: port, pkt: inner(inTag), to: brQSocket},
+		{name: "probe of the member from another port", from: port, pkt: probe, answer: true},
+		{name: "SPI with no row from another port", from: port, pkt: row(6), drop: "trunk_no_row"},
+		{name: "SPI of the trunk SA with another key from another port", from: port, pkt: otherKey, drop: "malformed"},
+		{name: "tag that no entry has from another port", from: port, pkt: inner(9), drop: "trunk_sender"},
+		{name: "clear inner packet again from another port", from: port, pkt: inner(inTag), again: true, drop: "trunk_replay"},
+		{
+			name: "packet that is no PSP packet from another port",
+			from: port, pkt: func(*testing.T, *rowRig) []byte { return make([]byte, 100) }, drop: "malformed",
+		},
+		{
+			name: "keepalive of an agent from another port",
+			from: port, pkt: func(*testing.T, *rowRig) []byte { return []byte{p2p.TypeKeepalive} },
+		},
+		{name: "PSP packet of a row from an address of no member", from: stranger, drop: "unknown_source"},
+		{
+			// An agent on the host of relay-a keeps its own rows.
+			name:  "PSP packet of a row from the socket of an agent at the address of relay-a",
+			setup: func(_ *testing.T, g *rowRig) { g.agent(agentID(vpcA, "near"), port.String(), "fd00:5::/96") },
+			from:  port, drop: "unknown_spi",
+		},
+		{
+			// The address does not tell which of the two members sent the packet.
+			name:  "PSP packet of a row from another port of the address of two members",
+			setup: func(_ *testing.T, g *rowRig) { g.secondAt(true, netip.AddrPortFrom(trunkRigAddr.Addr(), 7000)) },
+			from:  port, drop: "unknown_source",
+		},
+	}
+	cfg := trunkRigConfig(t)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				g := newRowRig(t, cfg)
+				defer g.stop()
+				q := g.bridgeEnd(dp.Mode_MODE_QUIC, "q", brQSocket, brQNet)
+				g.serve()
+				g.give(serverRow(5, inTTL))
+				if tc.setup != nil {
+					tc.setup(t, g)
+				}
+				build, from := row(5), g.addr
+				if tc.pkt != nil {
+					build = tc.pkt
+				}
+				if tc.from.IsValid() {
+					from = tc.from
+				}
+				pkt := build(t, g)
+				sent := slices.Clone(pkt)
+				if tc.again {
+					require.Empty(t, g.arrive(slices.Clone(pkt), g.addr))
+					require.Len(t, q.frames, 1, "the first copy of the packet")
+					q.frames = nil
+				}
+				out := g.arrive(pkt, from)
+
+				drops := map[string]uint64{}
+				if tc.drop != "" {
+					drops[tc.drop] = 1
+				}
+				assert.Equal(t, drops, dropsOf(g.r))
+				switch {
+				case tc.to == rowSrc:
+					require.Len(t, out, 1)
+					assert.Equal(t, netip.MustParseAddrPort(rowSrc), out[0].to)
+					assert.Equal(t, sent, out[0].b, "the packet of the agent does not change")
+				case tc.answer:
+					// The NAT of relay-a passes only a packet to the address of the session.
+					require.Len(t, out, 1)
+					assert.Equal(t, g.addr, out[0].to)
+					msg, _, _, err := g.rxq.ReceiveTrunk(out[0].b)
+					require.NoError(t, err)
+					assert.EqualValues(t, trunkMsgReply, msg[0])
+				default:
+					assert.Empty(t, out, "the relay sends nothing on its socket")
+				}
+				assert.Len(t, q.frames, btoi(tc.to == brQSocket))
+				packets, _ := g.txOf(g.laptop)
+				assert.EqualValues(t, btoi(tc.to == rowSrc), packets)
 			})
 		})
 	}

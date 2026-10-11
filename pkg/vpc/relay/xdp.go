@@ -331,8 +331,8 @@ func (x *xdpSync) memberHop(p *trunkPair) netip.AddrPort {
 	if p == nil || trunkPath(p.path.Load()) != trunkPathFull || !p.src.IsValid() {
 		return netip.AddrPort{}
 	}
-	// The member takes a packet only from the address that the socket path sends
-	// from. The program sends from that address only if it has no other address.
+	// The member takes a packet from each port of the IP address that the socket path
+	// sends from. The program sends from that address only if it has no other address.
 	one := false
 	for _, a := range x.t.addrs() {
 		switch a = a.Unmap(); {
