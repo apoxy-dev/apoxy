@@ -48,8 +48,8 @@ func (a *Agent) probeMTU(vpcMTU int) int {
 	return vpcMTU
 }
 
-// probe tests whether the path to the relay carries PSP packets with inner
-// packets of mtu B. The channel gets true at the first reply, or false after 1 s.
+// probe tests whether the path to the relay carries PSP packets with inner packets
+// of mtu B: true at the first reply, false after 1 s or at the end of the session.
 func (rc *relayConn) probe(ctx context.Context, mtu int) <-chan bool {
 	out := make(chan bool, 1)
 	keys, err := p2p.NewProbeKeys(rc.qc.ConnectionState().TLS)
@@ -94,6 +94,10 @@ func (rc *relayConn) probe(ctx context.Context, mtu int) <-chan bool {
 				out <- false
 				return
 			case <-ctx.Done():
+				out <- false
+				return
+			case <-rc.qc.Context().Done():
+				// A relay that closed the session sends no reply.
 				out <- false
 				return
 			case <-tick.C:

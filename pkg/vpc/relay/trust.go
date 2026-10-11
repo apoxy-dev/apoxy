@@ -78,6 +78,10 @@ func (r *Router) verifyConnection(cs tls.ConnectionState) error {
 		return nil
 	}
 	_, err := r.checkCert(cs.PeerCertificates, time.Now())
+	if err != nil {
+		// The agent has its side of the handshake, so its first probe can come.
+		r.refuseProbes(cs)
+	}
 	return err
 }
 

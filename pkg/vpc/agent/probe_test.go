@@ -3,9 +3,12 @@
 package agent
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestPathMTU checks the device MTU and the MSS clamp that the path probes
@@ -46,6 +49,30 @@ func TestPathMTU(t *testing.T) {
 				assert.Equal(t, tc.wantDev, b.DeviceMTU(), "session %d", i)
 				assert.Equal(t, tc.wantClamp[i], b.ClampMTU(), "session %d", i)
 			}
+		})
+	}
+}
+
+// TestProbeRefusedSession starts an agent in auto mode whose relay refuses each
+// connection. The agent must send only one path probe for each connection.
+func TestProbeRefusedSession(t *testing.T) {
+	cases := []struct {
+		name   string
+		refuse func(t *testing.T, w *world, r *testRelay)
+	}{
+		{"cert from another CA", func(t *testing.T, w *world, _ *testRelay) { w.trust.SetCA(newCA(t).CA) }},
+		{"relay drains", func(_ *testing.T, _ *world, r *testRelay) { r.srv.Drain(context.Background(), nil) }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newWorld(t)
+			r := w.relay(t, "relay-1")
+			tc.refuse(t, w, r)
+			conn := &lossyConn{}
+			w.agent(t, "a", r, agentOptions{conn: conn})
+			// The agent dials again after each refusal, with a new session ID.
+			require.Eventually(t, func() bool { return len(conn.probeRuns()) >= 2 }, 10*time.Second, 10*time.Millisecond)
+			assert.Equal(t, 1, conn.probeRuns()[0].n, "path probes of the first connection")
 		})
 	}
 }

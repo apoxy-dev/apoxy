@@ -228,6 +228,75 @@ func TestEarlyProbe(t *testing.T) {
 	}
 }
 
+// TestRefusedProbe sends the path probes of a connection that the relay refuses.
+// They get no reply and do not count as malformed, also after newer probes come.
+func TestRefusedProbe(t *testing.T) {
+	cases := []struct {
+		name    string
+		otherCA bool // The agent cert is from a CA that the relay does not trust.
+		noList  bool // The relay has no revocation list of the VPC.
+		drain   bool // The relay drains.
+		early   bool // The first probe comes before the refusal.
+	}{
+		{name: "cert from another CA", otherCA: true},
+		{name: "no revocation list", noList: true},
+		{name: "relay drains", drain: true},
+		{name: "first probe before the refusal", noList: true, early: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ca := newCA(t)
+			h := newHarness(t, ca)
+			certCA := ca
+			if tc.otherCA {
+				certCA = newCA(t)
+			}
+			if tc.drain {
+				h.srv.Drain(t.Context(), nil)
+			}
+			// The cert check of the relay waits for the trust data until the dial
+			// returns, as the agent side of a TLS 1.3 handshake ends first.
+			h.trust.mu.Lock()
+			a, err := h.dial(t, certCA.agentCert(t, vpcA, "laptop"))
+			if err != nil {
+				h.trust.mu.Unlock()
+				require.NoError(t, err)
+			}
+			k := probeKeys(t, a)
+			from := net.UDPAddrFromAddrPort(a.src)
+			probe := func(round uint32) {
+				pkt := p2p.AppendProbe(nil, p2p.Probe{SID: k.SID, TxID: [12]byte{7}, Round: round}, probeSize, &k.Dialer)
+				require.True(t, h.r.answerProbe(h.tr, pkt, from), "probe %d", round)
+			}
+			rounds := uint32(0)
+			if tc.early {
+				probe(rounds)
+				rounds++
+			}
+			if tc.noList {
+				h.trust.err = errors.New("snapshot has no VPC")
+			}
+			h.trust.mu.Unlock()
+			select {
+			case <-a.qc.Context().Done():
+			case <-time.After(5 * time.Second):
+				t.Fatal("relay did not refuse the connection in 5 s")
+			}
+			for ; rounds < 3; rounds++ {
+				probe(rounds)
+			}
+			_, _, ok := nextReply(t, a.tr, k, 50*time.Millisecond)
+			assert.False(t, ok, "reply to a probe of a refused connection")
+			// Each slot of the list gets a newer probe.
+			for i := range earlyProbes {
+				other := p2p.AppendProbe(nil, p2p.Probe{SID: [8]byte{byte(i), 1}}, probeSize, &k.Dialer)
+				require.True(t, h.r.answerProbe(h.tr, other, from))
+			}
+			assert.Zero(t, h.r.MalformedDrops())
+		})
+	}
+}
+
 // BenchmarkEarlyProbe measures a probe for a session that the relay does not
 // have, as the read loop keeps it.
 func BenchmarkEarlyProbe(b *testing.B) {

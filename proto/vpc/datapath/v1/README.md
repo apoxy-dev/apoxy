@@ -71,6 +71,11 @@ it opens a new session, which probes again. If the new session is in PSP mode,
 the agent moves to it and closes the old one, as at a cert renew. An agent
 with QUIC mode in its config sends `CONFIG` and does not probe.
 
+The agent sends its first probe before the relay checks its cert. A relay
+that refuses the connection sends no reply to the probes of that connection,
+and for 1 s it does not count them as `malformed`. The agent stops a probe
+run when the connection of its session ends.
+
 ### Spare sessions
 
 An agent keeps up to two more sessions, each on another relay, with

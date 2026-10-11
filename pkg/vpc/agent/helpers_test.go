@@ -485,9 +485,34 @@ type lossyConn struct {
 	limitProbes atomic.Bool
 	probeBudget atomic.Int32
 	probes      atomic.Int32 // Path probes to send, with the dropped ones.
+
+	mu   sync.Mutex
+	runs []probeRun // Path probes of each session, oldest first.
+}
+
+// probeRun is the number of path probes with one session ID.
+type probeRun struct {
+	sid [8]byte
+	n   int
+}
+
+// probeRuns returns a copy of the probe counts for each session.
+func (c *lossyConn) probeRuns() []probeRun {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.runs)
 }
 
 func (c *lossyConn) WriteTo(p []byte, addr net.Addr) (int, error) {
+	if sid, ok := p2p.ProbeSID(p); ok {
+		c.mu.Lock()
+		i := slices.IndexFunc(c.runs, func(r probeRun) bool { return r.sid == sid })
+		if i < 0 {
+			i, c.runs = len(c.runs), append(c.runs, probeRun{sid: sid})
+		}
+		c.runs[i].n++
+		c.mu.Unlock()
+	}
 	if len(p) > 0 && p[0] == p2p.TypeProbe {
 		c.probes.Add(1)
 		if c.limitProbes.Load() && c.probeBudget.Add(-1) < 0 {

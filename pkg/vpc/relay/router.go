@@ -328,6 +328,7 @@ func (r *Router) AddSession(conn *rpc.Conn) (*Session, error) {
 	now := time.Now()
 	id, err := r.checkCert(tc.PeerCertificates, now)
 	if err != nil {
+		r.refuseProbes(tc)
 		return nil, fmt.Errorf("agent cert rejected: %w", err)
 	}
 	s := newSession(Identity{VPC: VPCKey{Project: id.Project, UID: id.VPC}, ID: id.String()},
@@ -970,9 +971,9 @@ func (r *Router) SenderStats(s *Session) SenderStats {
 // UnknownSourceDrops returns the number of packets from addresses of no sender.
 func (r *Router) UnknownSourceDrops() uint64 { return r.drops[dropUnknownSource].Load() }
 
-// MalformedDrops returns the number of non-QUIC packets that are not PSP and
-// get no probe reply. Geneve packets that the kernel did not take count here,
-// and also the packets of a mesh member that the trunk does not accept.
+// MalformedDrops returns the number of non-QUIC packets that are not PSP and get no
+// probe reply, except the probes of a refused connection. Geneve packets that the
+// kernel did not take and mesh member packets that the trunk refuses also count here.
 func (r *Router) MalformedDrops() uint64 { return r.drops[dropMalformed].Load() }
 
 // ForwardStats are the sendmmsg calls of the socket path, their messages, and

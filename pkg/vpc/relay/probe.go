@@ -50,11 +50,20 @@ type earlyProbe struct {
 	buf  [earlyProbeLen]byte
 }
 
-// earlyList keeps the newest early probes.
+// refusal is the session ID and the time of a connection that the relay refused.
+type refusal struct {
+	sid [8]byte
+	at  time.Time
+}
+
+// earlyList keeps the newest early probes, and the newest connections that
+// the relay refused.
 type earlyList struct {
-	mu   sync.Mutex
-	next int
-	list [earlyProbes]earlyProbe
+	mu          sync.Mutex
+	next        int
+	list        [earlyProbes]earlyProbe
+	nextRefused int
+	refused     [earlyProbes]refusal
 }
 
 // addProber runs with r.mu held.
@@ -122,6 +131,12 @@ func (r *Router) keepEarly(tr *quic.Transport, sid [8]byte, src netip.AddrPort, 
 	if s, ok := r.prober(sid, src, now); s != nil {
 		return ok && s.probe.answer(tr, b, src, net.UDPAddrFromAddrPort(src), now)
 	}
+	// The probe of a refused connection is not malformed, and gets no slot.
+	for i := range l.refused {
+		if f := &l.refused[i]; f.sid == sid && now.Sub(f.at) <= earlyProbeAge {
+			return true
+		}
+	}
 	e := &l.list[l.next]
 	l.next = (l.next + 1) % earlyProbes
 	if e.n != 0 {
@@ -149,4 +164,23 @@ func (r *Router) answerEarly(s *Session) {
 			r.drops[dropMalformed].Add(1)
 		}
 	}
+}
+
+// refuseProbes drops the early probes of a connection that the relay refuses,
+// and remembers it for earlyProbeAge. Its agent sent them before the refusal came.
+func (r *Router) refuseProbes(tc tls.ConnectionState) {
+	k, err := p2p.NewProbeKeys(tc)
+	if err != nil {
+		return
+	}
+	l := &r.early
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for i := range l.list {
+		if e := &l.list[i]; e.sid == k.SID {
+			e.n = 0
+		}
+	}
+	l.refused[l.nextRefused] = refusal{sid: k.SID, at: time.Now()}
+	l.nextRefused = (l.nextRefused + 1) % len(l.refused)
 }
