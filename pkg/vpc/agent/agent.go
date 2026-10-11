@@ -543,6 +543,7 @@ type relayConn struct {
 	reason    dp.FallbackReason // Why mode is QUIC.
 	connect   time.Duration     // Time to connect: from the start of the dial to the first Config.
 	rtt       *atomic.Int64     // Smoothed RTT of qc in nanoseconds.
+	probeRTT  atomic.Int64      // Round-trip time of the last path probe with a reply. Zero is none.
 	setup     time.Duration     // See Status.Setup.
 	vpcConfig *dp.Config        // The first Config.
 	ref       *dp.VPCRef

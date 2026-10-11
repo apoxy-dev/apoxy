@@ -42,10 +42,12 @@ func TestOneEach(t *testing.T) {
 	}
 }
 
-// fakeRelay is a relay of TestChoose. Its dial uses no network.
+// fakeRelay is a relay of TestChoose. Its dial uses no network. probe is the
+// round-trip time of its path probe, and zero is no probe.
 type fakeRelay struct {
 	ready    time.Duration // Time from the dial to the wait before Hello.
 	rtt      time.Duration
+	probe    time.Duration
 	fails    bool // The dial fails at ready.
 	silent   bool // The relay does not answer.
 	noHello  bool // Hello fails after the choice.
@@ -85,6 +87,10 @@ func TestChoose(t *testing.T) {
 			won: 1, at: 5*ms + rttWaitMax},
 		{name: "time not known is last", relays: []fakeRelay{{ready: 5 * ms}, {ready: 8 * ms, rtt: 30 * ms}},
 			won: 1, spares: []int{0}, at: 8 * ms},
+		{name: "path probe time below a QUIC time with a late packet", relays: []fakeRelay{{ready: 60 * ms, rtt: 60 * ms, probe: 62 * ms}, {ready: 50 * ms, rtt: 110 * ms, probe: 30 * ms}},
+			won: 1, spares: []int{0}, at: 60 * ms},
+		{name: "QUIC time below the time of a late path probe", relays: []fakeRelay{{ready: 60 * ms, rtt: 60 * ms, probe: 62 * ms}, {ready: 50 * ms, rtt: 30 * ms, probe: 110 * ms}},
+			won: 1, spares: []int{0}, at: 60 * ms},
 		{name: "spare is the second lowest", relays: []fakeRelay{{ready: 58 * ms, rtt: 58 * ms}, {ready: 20 * ms, rtt: 20 * ms}, {ready: 45 * ms, rtt: 45 * ms}},
 			won: 1, spares: []int{2, 0}, at: 58 * ms},
 		{name: "spares in the band use the order of the list", relays: []fakeRelay{{ready: 20 * ms, rtt: 20 * ms}, {ready: 50 * ms, rtt: 50 * ms}, {ready: 44 * ms, rtt: 44 * ms}},
@@ -141,6 +147,7 @@ func TestChoose(t *testing.T) {
 					}
 					rc := &relayConn{ep: e, addr: e.addr, rtt: new(atomic.Int64)}
 					rc.rtt.Store(int64(r.rtt))
+					rc.probeRTT.Store(int64(r.probe))
 					isSpare := spare(rc)
 					mu.Lock()
 					chosen = append(chosen, time.Since(start))
@@ -269,6 +276,37 @@ func TestRelayChoice(t *testing.T) {
 			assert.Equal(t, tc.then, on(a.current()), "relay of the attachment at the end")
 			require.Eventually(t, func() bool { _, c := sessions(); return c == min(tc.sessions, len(relays)) },
 				10*time.Second, 10*ms, "relay sessions")
+		})
+	}
+}
+
+// TestRelayChoiceLatePacket checks the choice when one packet to the nearest
+// relay is late: the agent has two times for each relay, and one stays correct.
+func TestRelayChoiceLatePacket(t *testing.T) {
+	const near, far, late = 26 * ms, 80 * ms, 150 * ms
+	cases := []struct {
+		name string
+		late lateStart
+	}{
+		{name: "no late packet"},
+		// The first QUIC time of the session has the wait of the first packets.
+		{name: "path to the nearest relay opens late", late: lateStart{open: late}},
+		{name: "path probe to the nearest relay is late", late: lateStart{probe: late}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			w := newWorld(t)
+			slow := &slowConn{}
+			farRelay, nearRelay := w.relay(t, "relay-far"), w.relay(t, "relay-near")
+			slow.set(farRelay, far)
+			slow.set(nearRelay, near)
+			slow.setLate(nearRelay, tc.late)
+			// The wait is long, so the two relays are in the choice on a loaded host.
+			a := w.agent(t, "a", nil, agentOptions{slow: slow, relays: []identity.Relay{farRelay.ref(), nearRelay.ref()},
+				rttChoice: true, rttWait: 2 * time.Second})
+			a.attached(t)
+			assert.Equal(t, nearRelay.addr, a.current().addr, "relay of the attachment")
 		})
 	}
 }

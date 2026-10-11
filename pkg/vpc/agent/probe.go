@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	pspwire "github.com/apoxy-dev/softpsp/psp"
@@ -29,6 +30,10 @@ type pathProbe struct {
 	size int
 	ok   chan struct{} // Closed at the first good reply.
 	once sync.Once
+	from time.Time // Start of the run.
+	// sent has the time from the start to the send of each round. Zero is not sent.
+	sent [probeRounds]atomic.Int64
+	rtt  *atomic.Int64 // Gets the time from the send of a round to its reply.
 }
 
 // probeMTU returns the inner MTU that the path probe of a new session tests,
@@ -59,6 +64,7 @@ func (rc *relayConn) probe(ctx context.Context, mtu int) <-chan bool {
 		return out
 	}
 	p := &pathProbe{keys: keys, size: mtu + pspwire.Overhead, ok: make(chan struct{})}
+	p.from, p.rtt = time.Now(), &rc.probeRTT
 	_, _ = rand.Read(p.txid[:])
 	a := rc.a
 	a.probeMu.Lock()
@@ -81,6 +87,7 @@ func (rc *relayConn) probe(ctx context.Context, mtu int) <-chan bool {
 		for round := uint32(0); ; {
 			if round < probeRounds {
 				buf = p2p.AppendProbe(buf[:0], p2p.Probe{SID: keys.SID, TxID: p.txid, Round: round}, p.size, &keys.Dialer)
+				p.sent[round].Store(max(int64(time.Since(p.from)), 1))
 				if _, err := a.cfg.Transport.WriteTo(buf, to); err != nil {
 					slog.Debug("Failed to send a path probe", "relay", rc.addr, "error", err)
 				}
@@ -133,7 +140,14 @@ func (p *pathProbe) reply(pkt []byte) {
 	if err != nil || !r.Reply || r.TxID != p.txid {
 		return
 	}
-	p.once.Do(func() { close(p.ok) })
+	p.once.Do(func() {
+		if r.Round < probeRounds {
+			if at := p.sent[r.Round].Load(); at != 0 {
+				p.rtt.Store(int64(time.Since(p.from)) - at)
+			}
+		}
+		close(p.ok)
+	})
 }
 
 // setClamp sets the MSS clamp of the binding from the result of a later path

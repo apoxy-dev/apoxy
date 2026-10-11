@@ -466,6 +466,8 @@ type agentOptions struct {
 	// rttChoice keeps the band and the wait of the relay choice. Else the relays
 	// that answer in testWindow are equal, so the first relay of the list wins.
 	rttChoice bool
+	// rttWait sets the wait of the relay choice. Zero keeps it.
+	rttWait time.Duration
 }
 
 // noGrantsService is a peer service that does not have the Grants call.
@@ -531,6 +533,27 @@ type slowConn struct {
 	net.PacketConn
 	mu     sync.Mutex
 	delays map[string]time.Duration // By relay address.
+	late   map[string]*lateStart    // By relay address.
+}
+
+// lateStart holds packets to a relay: all packets in the time open after the
+// first one, as a path that opens late, or the first path probe for the time probe.
+type lateStart struct {
+	open, probe time.Duration
+	first       time.Time // Send time of the first packet.
+	probed      bool
+}
+
+// hold returns the time that the packet p, sent at now, waits.
+func (l *lateStart) hold(p []byte, now time.Time) time.Duration {
+	if l.first.IsZero() {
+		l.first = now
+	}
+	if len(p) > 0 && p[0] == p2p.TypeProbe && !l.probed {
+		l.probed = true
+		return l.probe
+	}
+	return max(l.open-now.Sub(l.first), 0)
 }
 
 func (c *slowConn) set(r *testRelay, d time.Duration) {
@@ -542,9 +565,22 @@ func (c *slowConn) set(r *testRelay, d time.Duration) {
 	c.delays[r.addr] = d
 }
 
+// setLate makes the start of the path to r late.
+func (c *slowConn) setLate(r *testRelay, l lateStart) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.late == nil {
+		c.late = map[string]*lateStart{}
+	}
+	c.late[r.addr] = &l
+}
+
 func (c *slowConn) WriteTo(p []byte, addr net.Addr) (int, error) {
 	c.mu.Lock()
 	d := c.delays[addr.String()]
+	if l := c.late[addr.String()]; l != nil {
+		d += l.hold(p, time.Now())
+	}
 	c.mu.Unlock()
 	if d == 0 {
 		return c.PacketConn.WriteTo(p, addr)
@@ -686,6 +722,9 @@ func (w *world) agent(t *testing.T, name string, r *testRelay, opts agentOptions
 	}
 	if !opts.rttChoice {
 		ta.a.rttBand, ta.a.rttWaitMin, ta.a.rttWaitMax = time.Hour, testWindow, testWindow
+	}
+	if opts.rttWait != 0 {
+		ta.a.rttWaitMin, ta.a.rttWaitMax = opts.rttWait, opts.rttWait
 	}
 	if opts.noGrants {
 		ta.a.mux = rpc.NewMux()

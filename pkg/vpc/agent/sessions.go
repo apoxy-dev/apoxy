@@ -179,7 +179,7 @@ func (a *Agent) choose(ctx context.Context, eps []endpoint, dial dialFunc) (won 
 	for i, c := range cands {
 		go func() {
 			rc, err := dial(ctx, c.ep, func(rc *relayConn) bool {
-				c.rtt = time.Duration(rc.rtt.Load())
+				c.rtt = rc.choiceRTT()
 				ready <- i
 				<-chosen
 				return c.spare
@@ -283,6 +283,16 @@ wait:
 		}
 	}
 	return won, others, len(errs), nil
+}
+
+// choiceRTT returns the round-trip time of rc for the choice: the lower of the
+// QUIC time and the path probe time. One late packet raises only one of them.
+func (rc *relayConn) choiceRTT() time.Duration {
+	rtt, probe := time.Duration(rc.rtt.Load()), time.Duration(rc.probeRTT.Load())
+	if probe > 0 && (rtt <= 0 || probe < rtt) {
+		return probe
+	}
+	return rtt
 }
 
 // rank returns the relays of cands that answered, in the order of the choice.
