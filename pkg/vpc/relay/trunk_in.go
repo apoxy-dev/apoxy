@@ -91,6 +91,7 @@ func (t *trunk) rowsFrom(s *MeshSession) error {
 		return rpc.Errorf(rpc.FailedPrecondition, "session already has an SPIRows call")
 	}
 	r.in[s.name] = &inRows{sess: s, rows: map[uint32]*inRow{}}
+	r.markIn()
 	return nil
 }
 
@@ -132,6 +133,7 @@ func (t *trunk) setRows(s *MeshSession, u *dp.SPIRowUpdate, now time.Time) error
 			in.rows[c.spi] = c.w
 		}
 	}
+	r.markIn()
 	return nil
 }
 
@@ -168,6 +170,7 @@ func (r *Router) endIn(name string, cur *MeshSession) {
 	defer r.mu.Unlock()
 	if in := r.in[name]; in != nil && in.sess != cur {
 		delete(r.in, name)
+		r.markIn()
 	}
 }
 

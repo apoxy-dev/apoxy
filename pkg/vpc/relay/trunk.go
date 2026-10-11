@@ -117,7 +117,7 @@ type trunkMember struct {
 // trunkPair is the trunk state of this relay and one member.
 type trunkPair struct {
 	name    string
-	addr    netip.AddrPort // Address of the relay socket of the member.
+	addr    netip.AddrPort // Relay socket of the member, from the member set. Its XDP forward sends from it.
 	udp     *net.UDPAddr   // The same address, for the sends.
 	src     netip.Addr     // Address that the host sends from to addr, or the zero address.
 	tx      *keys.TxPeer   // SAs of the member for packets to it.
@@ -213,7 +213,7 @@ func (t *trunk) from(src netip.AddrPort) *trunkPair {
 }
 
 // member returns the pair of the member that sent the PSP packet pkt from src. A NAT of
-// its host can give its mesh session a source port that its XDP forward does not use.
+// its host can give the packets of its socket a source port that is not its relay port.
 func (t *trunk) member(src netip.AddrPort, pkt []byte) *trunkPair {
 	if p := t.from(src); p != nil {
 		return p
@@ -264,7 +264,7 @@ func (t *trunk) reaches(name string) bool {
 // pairOf returns the pair of the member of s, and makes it if it is new. A
 // member at a new address gets a new pair. t.mu must be held.
 func (t *trunk) pairOf(br *bridge, s *MeshSession) *trunkPair {
-	addr := addrPort(s.qc.RemoteAddr())
+	addr := s.dataAddr()
 	p := t.pairs[s.name]
 	if p != nil && p.addr == addr {
 		return p
@@ -318,6 +318,7 @@ func (t *trunk) index() {
 	t.hosts.Store(&hosts)
 	names := maps.Clone(t.pairs)
 	t.names.Store(&names)
+	t.r.markIn()
 }
 
 // remove deletes p and all its keys. t.mu must be held.
@@ -391,6 +392,7 @@ func (t *trunk) revokeRx(p *trunkPair) {
 		p.rx = nil
 	}
 	p.spis.Store(nil)
+	t.r.markIn()
 	p.sess, p.pending = nil, nil
 	p.path.Store(uint32(trunkPathUnknown))
 }
@@ -406,6 +408,8 @@ func (t *trunk) addSPIs(p *trunkPair, sas []keys.SA, s *MeshSession) {
 		spis = append(spis, trunkSPI{sa.SPI, s})
 	}
 	p.spis.Store(&spis)
+	// An SPI of a trunk SA is not the SPI of a row from now.
+	t.r.markIn()
 }
 
 // prune removes the SPIs of p whose SA is not in the receive table. t.mu must
@@ -418,6 +422,7 @@ func (t *trunk) prune(br *bridge, p *trunkPair) {
 	if spis := p.spis.Load(); spis != nil && slices.ContainsFunc(*spis, gone) {
 		live := slices.DeleteFunc(slices.Clone(*spis), gone)
 		p.spis.Store(&live)
+		t.r.markIn()
 	}
 }
 

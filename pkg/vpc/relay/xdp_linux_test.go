@@ -234,7 +234,7 @@ func TestXDPForward(t *testing.T) {
 			addSession(t, r, vpcA, "receiver", tc.rcv, "fd00::2/128")
 			require.NoError(t, r.registerSPI(snd.Session, register(vpcA, "fd00::2", time.Minute, 7), time.Now()))
 			if tc.unregister {
-				require.NoError(t, r.unregisterSPI(snd.Session, &dp.UnregisterSPIRequest{Vpc: ref(vpcA), Spis: []uint32{7}}))
+				require.NoError(t, r.unregisterSPI(snd.Session, &dp.UnregisterSPIRequest{Vpc: ref(vpcA), Spis: []uint32{7}}, time.Now()))
 			}
 			flushXDP(r, time.Now())
 
@@ -268,6 +268,80 @@ func TestXDPForward(t *testing.T) {
 			require.Len(t, lanes, 1)
 			assert.Equal(t, uint64(1), lanes[0].Packets)
 			assert.Equal(t, uint64(200), lanes[0].Bytes)
+		})
+	}
+}
+
+// TestXDPForwardMember runs the XDP program with the row of a mesh member. The key
+// of the row has the relay socket of the member, which its XDP forward sends from.
+func TestXDPForwardMember(t *testing.T) {
+	const member, rcv = "10.9.0.2:6081", "10.9.0.2:2000"
+	cases := []struct {
+		name  string
+		src   string // Source of the packet. Empty is the relay socket of the member.
+		spi   uint32 // SPI of the packet. Zero is the SPI of the row.
+		next  byte   // Next Header of the PSP packet. Zero is an inner IPv4 packet.
+		want  uint32
+		noRow uint64
+	}{
+		{name: "packet from the relay socket of the member", want: xdpTX},
+		{name: "packet from a port that a NAT gave the member", src: "10.9.0.2:17149", want: xdpPASS, noRow: 1},
+		{name: "packet from another address", src: "10.9.0.3:6081", want: xdpPASS, noRow: 1},
+		{name: "packet with the SPI of no row", spi: 9, want: xdpPASS, noRow: 1},
+		{name: "message of the member itself", next: 63, want: xdpPASS},
+	}
+	if os.Geteuid() != 0 {
+		t.Skip("needs root")
+	}
+	ns := newXDPNS(t)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := NewRouter(nil, Config{TunnelRate: 1e9})
+			prog, err := r.newXDPProgram(XDPConfig{Port: xdpPort}, testMaxLen, false)
+			if errors.Is(err, unix.EPERM) {
+				t.Skipf("cannot load BPF programs: %v", err)
+			}
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = prog.Close() })
+			require.NoError(t, prog.SetAddrs(xdpAddrs))
+			table := relayTable{p: prog}
+			k := xdpKey{netip.MustParseAddrPort(member), 7}
+			// A row of a member has no tunnel limit: the relay of the sender applied it.
+			require.NoError(t, table.putRow(k, xdpRow{next: netip.MustParseAddrPort(rcv), expires: time.Now().Add(time.Minute)}))
+
+			src, spi := netip.MustParseAddrPort(member), uint32(7)
+			if tc.src != "" {
+				src = netip.MustParseAddrPort(tc.src)
+			}
+			if tc.spi != 0 {
+				spi = tc.spi
+			}
+			relay := netip.AddrPortFrom(xdpAddrs[0], xdpPort)
+			frame := pspFrame(t, src, relay, 200, spi)
+			if tc.next != 0 {
+				frame[len(frame)-200] = tc.next
+			}
+			ret, out := ns.run(t, prog.Program(), frame)
+			require.Equal(t, tc.want, ret)
+			st, err := table.stats()
+			require.NoError(t, err)
+			assert.Equal(t, tc.noRow, st.noRow)
+			c, err := table.counters(k)
+			require.NoError(t, err)
+			if ret == xdpPASS {
+				assert.Zero(t, c.packets)
+				return
+			}
+			assert.Equal(t, xdpCounters{packets: 1, bytes: 200}, xdpCounters{packets: c.packets, bytes: c.bytes})
+			pkt := gopacket.NewPacket(out, layers.LayerTypeEthernet, gopacket.Default)
+			ip := pkt.Layer(layers.LayerTypeIPv4).(*layers.IPv4)
+			udp := pkt.Layer(layers.LayerTypeUDP).(*layers.UDP)
+			gotSrc, _ := netip.AddrFromSlice(ip.SrcIP)
+			gotDst, _ := netip.AddrFromSlice(ip.DstIP)
+			assert.Equal(t, relay, netip.AddrPortFrom(gotSrc.Unmap(), uint16(udp.SrcPort)))
+			assert.Equal(t, rcv, netip.AddrPortFrom(gotDst.Unmap(), uint16(udp.DstPort)).String())
+			// The receiver gets the packet of the sender with no change.
+			assert.Equal(t, frame[len(frame)-200:], udp.Payload)
 		})
 	}
 }

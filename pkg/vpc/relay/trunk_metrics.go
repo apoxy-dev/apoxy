@@ -203,22 +203,26 @@ func (r *Router) collectTrunk(ch chan<- prometheus.Metric) {
 	peers := t.m.peers()
 	stats := make([]*peerStats, len(peers))
 	sent := make([]xdpCounters, len(peers))
+	got := make([]xdpCounters, len(peers))
 	// A removed XDP row gives its counts to the member with the lock held for
 	// writing, so the sums of one read with the lock do not go down.
 	r.mu.RLock()
-	live := r.xdpToMembers()
+	live, liveRx := r.xdpToMembers(), r.xdpFromMembers(nil)
 	for i, m := range peers {
 		st := r.peers.of(m.name)
 		c := live[st]
 		c.packets += st.packets[trunkTx].Load()
 		c.bytes += st.bytes[trunkTx].Load()
-		stats[i], sent[i] = st, c
+		rx := liveRx[st]
+		rx.packets += st.packets[trunkRx].Load()
+		rx.bytes += st.bytes[trunkRx].Load()
+		stats[i], sent[i], got[i] = st, c, rx
 	}
 	r.mu.RUnlock()
 	for i, m := range peers {
 		st, id := stats[i], stats[i].relayID(m.id)
-		packets := [numTrunkDirs]uint64{trunkTx: sent[i].packets, trunkRx: st.packets[trunkRx].Load()}
-		bytes := [numTrunkDirs]uint64{trunkTx: sent[i].bytes, trunkRx: st.bytes[trunkRx].Load()}
+		packets := [numTrunkDirs]uint64{trunkTx: sent[i].packets, trunkRx: got[i].packets}
+		bytes := [numTrunkDirs]uint64{trunkTx: sent[i].bytes, trunkRx: got[i].bytes}
 		for dir, label := range trunkDirLabels {
 			ch <- prometheus.MustNewConstMetric(trunkPacketsDesc, prometheus.CounterValue, float64(packets[dir]), m.name, id, label)
 			ch <- prometheus.MustNewConstMetric(trunkBytesDesc, prometheus.CounterValue, float64(bytes[dir]), m.name, id, label)

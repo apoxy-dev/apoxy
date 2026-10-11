@@ -83,17 +83,30 @@ type xdpTable interface {
 	stats() (xdpStats, error)
 }
 
-// xdpEntry is an installed XDP row and the row that it comes from.
+// xdpEntry is an installed XDP row and the row that it comes from: a row of a
+// sender of this relay (w), or a row that a mesh member gave (in).
 type xdpEntry struct {
 	xdpRow
 	w *row
 	// peer gets the counts of a row that sends to a mesh member. It is nil for
 	// each other row.
 	peer *peerStats
+	in   *inRow
+	from *peerStats  // Member that sent the packets of in.
+	att  *Attachment // Attachment that gets the packets of in, or nil.
 }
 
 func (e xdpEntry) same(o xdpEntry) bool {
 	return e.w == o.w && e.next == o.next && e.tunnel == o.tunnel && e.expires.Equal(o.expires)
+}
+
+// source reports whether e and o count for the same row, member and attachment.
+// A member gives a row again with a new end time, and that is the same row.
+func (e xdpEntry) source(o xdpEntry) bool {
+	if e.w != o.w || e.peer != o.peer || e.from != o.from || e.att != o.att || (e.in == nil) != (o.in == nil) {
+		return false
+	}
+	return e.in == nil || e.in.tag == o.in.tag && e.in.vpc == o.in.vpc && e.in.dst == o.in.dst
 }
 
 type xdpTunnel struct {
@@ -107,6 +120,7 @@ type xdpSync struct {
 	t        xdpTable
 	dirty    map[netip.AddrPort]struct{}
 	rows     map[netip.AddrPort]map[uint32]xdpEntry
+	members  map[netip.AddrPort]struct{} // Addresses that have rows of a member.
 	tunnels  map[*Session]*xdpTunnel
 	lastID   uint32
 	warnedAt time.Time
@@ -119,6 +133,7 @@ func newXDPSync(t xdpTable) *xdpSync {
 		t:       t,
 		dirty:   map[netip.AddrPort]struct{}{},
 		rows:    map[netip.AddrPort]map[uint32]xdpEntry{},
+		members: map[netip.AddrPort]struct{}{},
 		tunnels: map[*Session]*xdpTunnel{},
 	}
 }
@@ -180,12 +195,39 @@ func (r *Router) markXDP(s *Session) {
 	}
 }
 
+// markIn marks the rows of all mesh members for the next XDP sync. It needs no lock.
+func (r *Router) markIn() {
+	r.inDirty.Store(true)
+	select {
+	case r.xdpWake <- struct{}{}:
+	default:
+	}
+}
+
+// newEpoch starts a new epoch. The XDP rows of the members get their checks again.
+func (r *Router) newEpoch() {
+	r.epoch.Add(1)
+	r.markIn()
+}
+
 // syncXDP syncs the XDP rows of the marked addresses. Router.mu must be held
 // for writing.
 func (r *Router) syncXDP(now time.Time) {
 	x := r.xdp
 	if x == nil {
 		return
+	}
+	if r.inDirty.Swap(false) {
+		for a := range x.members {
+			x.dirty[a] = struct{}{}
+		}
+		if t := r.trunk.Load(); t != nil {
+			if m := t.addrs.Load(); m != nil {
+				for a := range *m {
+					x.dirty[a] = struct{}{}
+				}
+			}
+		}
 	}
 	for a := range x.dirty {
 		r.syncSource(a, now)
@@ -206,6 +248,7 @@ func (r *Router) syncAllXDP(now time.Time) {
 	for a := range x.rows {
 		x.dirty[a] = struct{}{}
 	}
+	r.inDirty.Store(true)
 	r.syncXDP(now)
 }
 
@@ -213,11 +256,16 @@ func (r *Router) syncSource(a netip.AddrPort, now time.Time) {
 	x := r.xdp
 	var want map[uint32]xdpEntry
 	if !x.paused {
-		want = r.wantXDP(a, now)
+		// The socket path reads the address of a member as that member first.
+		if p := r.memberAt(a); p != nil {
+			want = r.wantIn(p, now)
+		} else {
+			want = r.wantXDP(a, now)
+		}
 	}
 	for spi, e := range x.rows[a] {
 		// The counts of an XDP row go to one member, so a new member is a new row.
-		if n, ok := want[spi]; !ok || n.w != e.w || n.peer != e.peer {
+		if n, ok := want[spi]; !ok || !n.source(e) {
 			r.removeXDP(xdpKey{a, spi}, e)
 		}
 	}
@@ -226,9 +274,11 @@ func (r *Router) syncSource(a netip.AddrPort, now time.Time) {
 		if ok {
 			n.tunnel = e.tunnel
 			if e.same(n) {
+				x.rows[a][spi] = n
 				continue
 			}
-		} else {
+		} else if n.w != nil {
+			// The relay of the sender applied the tunnel limit to a row of a member.
 			var err error
 			if n.tunnel, err = r.tunnelXDP(n.w.sender); err != nil {
 				x.warn(err, now)
@@ -239,7 +289,7 @@ func (r *Router) syncSource(a netip.AddrPort, now time.Time) {
 			// The old next hop must not stay. The socket path takes the row.
 			if ok {
 				r.removeXDP(xdpKey{a, spi}, e)
-			} else {
+			} else if n.w != nil {
 				r.releaseTunnelXDP(n.w.sender)
 			}
 			x.warn(err, now)
@@ -250,6 +300,57 @@ func (r *Router) syncSource(a netip.AddrPort, now time.Time) {
 		}
 		x.rows[a][spi] = n
 	}
+	delete(x.members, a)
+	for _, e := range x.rows[a] {
+		if e.in != nil {
+			x.members[a] = struct{}{}
+			break
+		}
+	}
+}
+
+// memberAt returns the pair of the mesh member with the relay socket a, or nil.
+func (r *Router) memberAt(a netip.AddrPort) *trunkPair {
+	if t := r.trunk.Load(); t != nil {
+		return t.from(a)
+	}
+	return nil
+}
+
+// wantIn returns the rows of the member of p that pass the checks of the socket
+// path now, by SPI. Router.mu must be held.
+func (r *Router) wantIn(p *trunkPair, now time.Time) map[uint32]xdpEntry {
+	in := r.in[p.name]
+	// The program has a meter for each row, and the relay of the sender applied it.
+	if in == nil || r.cfg.LaneRate > 0 || r.bridge.Load() == nil {
+		return nil
+	}
+	want := map[uint32]xdpEntry{}
+	epoch := r.epoch.Load()
+	for spi, w := range in.rows {
+		if now.After(w.expires) {
+			continue
+		}
+		// The relay opens a packet with the SPI of a trunk SA.
+		if _, ok := p.sa(spi); ok {
+			continue
+		}
+		h := w.hop.Load()
+		if h == nil || h.epoch != epoch {
+			h = r.check(in, w)
+			w.hop.Store(h)
+		}
+		if h.to == nil {
+			continue
+		}
+		// A row of a member has no SA lane of the receiver.
+		next := h.to.dst(0)
+		if !next.IsValid() || next.Addr().Is4() != p.addr.Addr().Is4() {
+			continue
+		}
+		want[spi] = xdpEntry{xdpRow: xdpRow{next: next, expires: w.expires}, in: w, from: p.stats, att: h.att}
+	}
+	return want
 }
 
 // wantXDP returns the rows that Forward uses for packets from a, by SPI. A row
@@ -363,6 +464,16 @@ func (r *Router) removeXDP(k xdpKey, e xdpEntry) {
 	if err != nil {
 		return
 	}
+	if e.in != nil {
+		// The program sent these packets of the member to the attachment.
+		e.from.packets[trunkRx].Add(c.packets)
+		e.from.bytes[trunkRx].Add(c.bytes)
+		if e.att != nil {
+			e.att.count.packets.Add(c.packets)
+			e.att.count.bytes.Add(tally{c.packets, c.bytes}.inner())
+		}
+		return
+	}
 	e.w.packets.Add(c.packets)
 	e.w.bytes.Add(c.bytes)
 	if e.peer != nil {
@@ -379,6 +490,37 @@ func (r *Router) removeXDP(k xdpKey, e xdpEntry) {
 		// The row ended before, so its totals get these counts now.
 		r.fold(e.w)
 	}
+}
+
+// xdpFromMembers returns the live counts of the XDP rows of each member. to, if it
+// is not nil, gets the same counts for each attachment. Router.mu must be held.
+func (r *Router) xdpFromMembers(to map[*Attachment]tally) map[*peerStats]xdpCounters {
+	x := r.xdp
+	if x == nil {
+		return nil
+	}
+	out := map[*peerStats]xdpCounters{}
+	for a := range x.members {
+		for spi, e := range x.rows[a] {
+			if e.in == nil {
+				continue
+			}
+			c, err := x.t.counters(xdpKey{a, spi})
+			if err != nil {
+				continue
+			}
+			sum := out[e.from]
+			sum.packets += c.packets
+			sum.bytes += c.bytes
+			out[e.from] = sum
+			if to != nil && e.att != nil {
+				t := to[e.att]
+				t.add(tally{c.packets, c.bytes})
+				to[e.att] = t
+			}
+		}
+	}
+	return out
 }
 
 // tunnelXDP returns the tunnel limit of the rows of s, or 0 for none. A

@@ -144,9 +144,11 @@ func TestXDPSync(t *testing.T) {
 	cases := []struct {
 		name string
 		// run changes the router after SPI 1 and 2 of snd go to rcv.
-		run  func(t *testing.T, e env)
-		at   time.Duration // Time of the sync after t0.
-		want map[string]string
+		run func(t *testing.T, e env)
+		at  time.Duration // Time of the sync after t0.
+		// synced tells that run leaves the program in sync: the test makes no sync after it.
+		synced bool
+		want   map[string]string
 	}{
 		{
 			name: "register",
@@ -156,9 +158,17 @@ func TestXDPSync(t *testing.T) {
 		{
 			name: "unregister",
 			run: func(t *testing.T, e env) {
-				require.NoError(t, e.r.unregisterSPI(e.snd.Session, &dp.UnregisterSPIRequest{Vpc: ref(vpcA), Spis: []uint32{1}}))
+				require.NoError(t, e.r.unregisterSPI(e.snd.Session, &dp.UnregisterSPIRequest{Vpc: ref(vpcA), Spis: []uint32{1}}, t0))
 			},
 			want: map[string]string{snd + "/2": rcv},
+		},
+		{
+			name: "unregister, with no sync after it",
+			run: func(t *testing.T, e env) {
+				require.NoError(t, e.r.unregisterSPI(e.snd.Session, &dp.UnregisterSPIRequest{Vpc: ref(vpcA), Spis: []uint32{1, 2}}, t0))
+			},
+			synced: true,
+			want:   map[string]string{},
 		},
 		{
 			name: "expire",
@@ -294,7 +304,9 @@ func TestXDPSync(t *testing.T) {
 			require.NoError(t, r.registerSPI(e.snd.Session, register(vpcA, "fd00::2", time.Minute, 1, 2), t0))
 			now := t0.Add(tc.at)
 			tc.run(t, e)
-			flushXDP(r, now)
+			if !tc.synced {
+				flushXDP(r, now)
+			}
 			assert.Equal(t, tc.want, f.installed())
 			checkForward(t, r, f, now)
 		})
@@ -464,7 +476,7 @@ func TestXDPCounters(t *testing.T) {
 	assert.Equal(t, want, r.SenderStats(snd.Session))
 
 	// The counters stay after the rows go.
-	require.NoError(t, r.unregisterSPI(snd.Session, &dp.UnregisterSPIRequest{Vpc: ref(vpcA), Spis: []uint32{2}}))
+	require.NoError(t, r.unregisterSPI(snd.Session, &dp.UnregisterSPIRequest{Vpc: ref(vpcA), Spis: []uint32{2}}, t0))
 	flushXDP(r, t0)
 	assert.Equal(t, want.Lanes[:1], r.SenderStats(snd.Session).Lanes)
 	r.removeSession(snd.Session)

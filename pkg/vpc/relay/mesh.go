@@ -174,12 +174,22 @@ type MeshSession struct {
 
 	// Set under Mesh.mu before ready closes.
 	name    string
+	addr    netip.AddrPort // Relay socket of the member, from the member set.
 	relay   *dp.RelayRef
 	version *dp.Version
 }
 
 // Name returns the relay name of the member.
 func (s *MeshSession) Name() string { return s.name }
+
+// dataAddr returns the relay socket of the member, which gets its data packets. A NAT
+// can give the session another source port, and the member does not read that port.
+func (s *MeshSession) dataAddr() netip.AddrPort {
+	if s.addr.IsValid() {
+		return s.addr
+	}
+	return addrPort(s.qc.RemoteAddr())
+}
 
 // Relay returns the ID and the agent addresses of the member, from Open.
 func (s *MeshSession) Relay() *dp.RelayRef { return s.relay }
@@ -807,7 +817,7 @@ func (m *Mesh) admit(s *MeshSession, name string, want *meshMember, v *dp.Versio
 	}
 	old := mem.sess
 	mem.sess, mem.relay = s, ref
-	s.name, s.version, s.relay = name, v, ref
+	s.name, s.addr, s.version, s.relay = name, mem.Addr, v, ref
 	close(s.ready)
 	if !mem.up {
 		mem.up = true

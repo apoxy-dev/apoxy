@@ -340,10 +340,10 @@ func TestRowRemoval(t *testing.T) {
 	}{
 		{"kept", func(r *Router, _, _ testSession) {}, 0, false},
 		{"unregister", func(r *Router, snd, _ testSession) {
-			require.NoError(t, r.unregisterSPI(snd.Session, &dp.UnregisterSPIRequest{Vpc: ref(vpcA), Spis: []uint32{1}}))
+			require.NoError(t, r.unregisterSPI(snd.Session, &dp.UnregisterSPIRequest{Vpc: ref(vpcA), Spis: []uint32{1}}, t0))
 		}, 0, true},
 		{"unregister in another VPC", func(r *Router, snd, _ testSession) {
-			err := r.unregisterSPI(snd.Session, &dp.UnregisterSPIRequest{Vpc: ref(vpcB), Spis: []uint32{1}})
+			err := r.unregisterSPI(snd.Session, &dp.UnregisterSPIRequest{Vpc: ref(vpcB), Spis: []uint32{1}}, t0)
 			assert.Equal(t, rpc.PermissionDenied, codeOf(err))
 		}, 0, false},
 		{"expiry", func(r *Router, _, _ testSession) { r.Sweep(t0.Add(11 * time.Minute)) }, 0, true},
@@ -396,7 +396,7 @@ func TestLaneRekey(t *testing.T) {
 	assert.Equal(t, uint64(42), lanes[0].ICVFailures)
 
 	require.NoError(t, r.registerSPI(snd.Session, register(vpcA, "fd00::2", time.Minute, 0x2002), t0))
-	require.NoError(t, r.unregisterSPI(snd.Session, &dp.UnregisterSPIRequest{Vpc: ref(vpcA), Spis: []uint32{0x1001}}))
+	require.NoError(t, r.unregisterSPI(snd.Session, &dp.UnregisterSPIRequest{Vpc: ref(vpcA), Spis: []uint32{0x1001}}, t0))
 	_, v := r.Forward(snd.addr.get(), 0x1001, 100, t0)
 	assert.Equal(t, DropUnknownSPI, v)
 	dst, v := r.Forward(snd.addr.get(), 0x2002, 100, t0)

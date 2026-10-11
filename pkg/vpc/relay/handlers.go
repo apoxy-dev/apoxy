@@ -266,10 +266,10 @@ func (srv *Server) UnregisterSPI(ctx context.Context, in *dp.UnregisterSPIReques
 	if err != nil {
 		return nil, err
 	}
-	return &emptypb.Empty{}, srv.R.unregisterSPI(c, in)
+	return &emptypb.Empty{}, srv.R.unregisterSPI(c, in, time.Now())
 }
 
-func (r *Router) unregisterSPI(c *Session, in *dp.UnregisterSPIRequest) error {
+func (r *Router) unregisterSPI(c *Session, in *dp.UnregisterSPIRequest, now time.Time) error {
 	key, err := c.vpc(in.GetVpc())
 	if err != nil {
 		return err
@@ -281,5 +281,7 @@ func (r *Router) unregisterSPI(c *Session, in *dp.UnregisterSPIRequest) error {
 			r.removeRow(w)
 		}
 	}
+	// The XDP rows go before the reply: the program sends no later packet of the caller on.
+	r.syncXDP(now)
 	return nil
 }

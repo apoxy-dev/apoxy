@@ -139,11 +139,9 @@ func TestAttachmentStats(t *testing.T) {
 			name: "row ends",
 			run: func(t *testing.T, e statsEnv) {
 				e.socket(t, 1, 3)
-				e.xdp(t, 1, 5, 0)
-				require.NoError(t, e.r.unregisterSPI(e.snd.Session, &dp.UnregisterSPIRequest{Vpc: ref(vpcA), Spis: []uint32{1}}))
-				// XDP forwards until the sync removes its row.
-				e.xdp(t, 1, 2, 0)
-				flushXDP(e.r, t0)
+				e.xdp(t, 1, 7, 0)
+				// UnregisterSPI removes the XDP row, and the counts of the row stay.
+				require.NoError(t, e.r.unregisterSPI(e.snd.Session, &dp.UnregisterSPIRequest{Vpc: ref(vpcA), Spis: []uint32{1}}, t0))
 			},
 			want: map[string]counts{"snd": rx(10), "rcv": tx(10)},
 		},
@@ -151,7 +149,7 @@ func TestAttachmentStats(t *testing.T) {
 			name: "new row with the SPI of a row that ended",
 			run: func(t *testing.T, e statsEnv) {
 				e.xdp(t, 1, 5, 0)
-				require.NoError(t, e.r.unregisterSPI(e.snd.Session, &dp.UnregisterSPIRequest{Vpc: ref(vpcA), Spis: []uint32{1}}))
+				require.NoError(t, e.r.unregisterSPI(e.snd.Session, &dp.UnregisterSPIRequest{Vpc: ref(vpcA), Spis: []uint32{1}}, t0))
 				e.register(t, "fd00:2::1", 1)
 				e.socket(t, 1, 1)
 				e.xdp(t, 1, 2, 0)
@@ -189,7 +187,7 @@ func TestAttachmentStats(t *testing.T) {
 			cfg:  Config{LaneRate: 1},
 			run: func(t *testing.T, e statsEnv) {
 				e.xdp(t, 1, 0, 4)
-				require.NoError(t, e.r.unregisterSPI(e.snd.Session, &dp.UnregisterSPIRequest{Vpc: ref(vpcA), Spis: []uint32{1}}))
+				require.NoError(t, e.r.unregisterSPI(e.snd.Session, &dp.UnregisterSPIRequest{Vpc: ref(vpcA), Spis: []uint32{1}}, t0))
 				flushXDP(e.r, t0)
 			},
 			want: map[string]counts{"snd": {rxDrops: 4}, "rcv": {}},

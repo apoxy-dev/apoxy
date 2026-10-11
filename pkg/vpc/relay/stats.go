@@ -119,6 +119,8 @@ func (r *Router) AttachmentStats() []AttachmentStats {
 	for s := range r.sessions {
 		rx[s] = r.rxOf(s, tx)
 	}
+	// The XDP rows of the members also send to the attachments.
+	r.xdpFromMembers(tx)
 	var out []AttachmentStats
 	r.statsMu.Lock()
 	for s := range r.sessions {
@@ -202,6 +204,9 @@ func (r *Router) last(s *Session, a *Attachment, oldest bool) AttachmentStats {
 			live.add(t.since(w.done))
 		}
 	}
+	in := map[*Attachment]tally{}
+	r.xdpFromMembers(in)
+	live.add(in[a])
 	st := r.statsOf(s, a, oldest, rx, live)
 	if oldest {
 		s.rxBase = rx

@@ -380,7 +380,7 @@ func (p *presence) accept(s *MeshSession) error {
 	in.sess, in.full, in.stale = s, false, len(in.entries)
 	if p.r != nil {
 		// The entries of the sessions before name no sender from now.
-		p.r.epoch.Add(1)
+		p.r.newEpoch()
 	}
 	return nil
 }
@@ -472,7 +472,7 @@ func (p *presence) keep(s *MeshSession, changes []presenceChange, full bool, ref
 		p.sweep(r, in, s, "end of the full set")
 	}
 	if r != nil {
-		r.epoch.Add(1)
+		r.newEpoch()
 	}
 	return nil
 }
@@ -517,7 +517,7 @@ func (p *presence) expire(s *MeshSession) {
 		delete(p.in, s.name)
 	}
 	if r != nil {
-		r.epoch.Add(1)
+		r.newEpoch()
 	}
 }
 
@@ -595,6 +595,6 @@ func (p *presence) down(c MeshChange) {
 	}
 	p.sweep(r, in, cur, c.Down.String())
 	if r != nil {
-		r.epoch.Add(1)
+		r.newEpoch()
 	}
 }

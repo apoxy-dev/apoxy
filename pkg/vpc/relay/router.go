@@ -137,6 +137,8 @@ type Router struct {
 	xdp      *xdpSync
 	xdpBase  xdpStats      // Counters of the XDP programs that stopped.
 	xdpWake  chan struct{} // Has room for 1: XDP rows are marked.
+	// inDirty is set when the XDP rows of the mesh members need a sync.
+	inDirty atomic.Bool
 
 	// What the mesh gets of the attachments, and what it gives. mu guards
 	// these fields.
@@ -466,6 +468,7 @@ func (r *Router) setAddr(s *Session, a netip.AddrPort, now time.Time) {
 	}
 	// The rows to s get a new next hop.
 	r.markXDP(s)
+	r.markIn()
 	for w := range s.inbound {
 		r.markXDP(w.sender)
 	}
@@ -581,7 +584,7 @@ func (r *Router) setOwner(d *domain, p netip.Prefix, o owner) {
 	}
 	o.s.routes = append(o.s.routes, p)
 	d.queueRoute(route{p, o.origin}, o.s, true)
-	r.epoch.Add(1)
+	r.newEpoch()
 	r.displace(d, p, o.s)
 	if had {
 		// The rows to p go to the new session, or to its attachment.
@@ -671,7 +674,7 @@ func (r *Router) deleteRoute(s *Session, p netip.Prefix) {
 	}
 	delete(d.routes, p)
 	d.fast.Remove(p, s)
-	r.epoch.Add(1)
+	r.newEpoch()
 	if !d.usesLen(p.Bits()) {
 		d.lens = slices.DeleteFunc(d.lens, func(n int) bool { return n == p.Bits() })
 	}
@@ -750,7 +753,7 @@ func (r *Router) SetPermit(p Permit) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.permit = p
-	r.epoch.Add(1)
+	r.newEpoch()
 	for s := range r.sessions {
 		for _, w := range s.rows {
 			if !p(s.id.VPC, s.id.ID, w.vpc, w.dst) {

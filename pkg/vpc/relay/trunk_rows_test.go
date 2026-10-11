@@ -233,7 +233,7 @@ func (g *rowRig) register(dst string, ttl time.Duration, spis ...uint32) error {
 
 func (g *rowRig) unregister(spis ...uint32) {
 	g.t.Helper()
-	require.NoError(g.t, g.r.unregisterSPI(g.laptop, &dp.UnregisterSPIRequest{Vpc: ref(vpcA), Spis: spis}))
+	require.NoError(g.t, g.r.unregisterSPI(g.laptop, &dp.UnregisterSPIRequest{Vpc: ref(vpcA), Spis: spis}, time.Now()))
 }
 
 // rowView is what a test reads of a row.
@@ -874,7 +874,7 @@ func TestTrunkRowSession(t *testing.T) {
 
 		// A session with no row to the other relay gets no call.
 		g.unregister(4, 7, 8)
-		require.NoError(t, g.r.unregisterSPI(home, &dp.UnregisterSPIRequest{Vpc: ref(vpcA), Spis: []uint32{3}}))
+		require.NoError(t, g.r.unregisterSPI(home, &dp.UnregisterSPIRequest{Vpc: ref(vpcA), Spis: []uint32{3}}, time.Now()))
 		g.a.take()
 		g.end(g.sess, meshLost)
 		g.join(trunkRevision)
@@ -1855,7 +1855,7 @@ func TestTrunkRowBetweenRelays(t *testing.T) {
 					require.NoError(t, err, "%s: the agent gets the packet of SPI %#x", d.name, spi)
 					assert.Equal(t, sent, buf[:n], "%s: the packet of SPI %#x does not change", d.name, spi)
 				}
-				require.NoError(t, d.from.r.unregisterSPI(d.snd, &dp.UnregisterSPIRequest{Vpc: ref(vpcA), Spis: []uint32{d.spi}}), d.name)
+				require.NoError(t, d.from.r.unregisterSPI(d.snd, &dp.UnregisterSPIRequest{Vpc: ref(vpcA), Spis: []uint32{d.spi}}, time.Now()), d.name)
 				require.Eventually(t, func() bool { return !has(d.spi) }, 10*time.Second, 5*time.Millisecond, "%s: the row of the old SPI ends", d.name)
 				assert.True(t, has(next), d.name)
 			}
