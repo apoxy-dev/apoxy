@@ -177,7 +177,7 @@ func Nodes(results []string) string {
 	if len(nodes) == 0 {
 		return ""
 	}
-	order := map[string]int{"client": 0, "server": 1, "relay": 2}
+	order := map[string]int{"client": 0, "server": 1, "relay": 2, "relay2": 3}
 	sort.SliceStable(nodes, func(i, j int) bool {
 		if nodes[i].Workload != nodes[j].Workload {
 			return nodes[i].Workload < nodes[j].Workload

@@ -33,6 +33,13 @@ type fakeEC2 struct {
 	created    []*ec2.CreatePlacementGroupInput
 	// notFound answers NotFound to DescribeInstances this many times.
 	notFound int
+	// made are the security groups of CreateSecurityGroup, rules their ingress
+	// rules by group ID, and sgInUse answers DependencyViolation for an ID n times.
+	made    []types.SecurityGroup
+	rules   map[string][]types.IpPermission
+	sgInUse map[string]int
+	// noPublicIP answers DescribeInstances with no public IP this many times.
+	noPublicIP int
 }
 
 func (f *fakeEC2) DescribeSubnets(_ context.Context, in *ec2.DescribeSubnetsInput, _ ...func(*ec2.Options)) (*ec2.DescribeSubnetsOutput, error) {
@@ -42,7 +49,78 @@ func (f *fakeEC2) DescribeSubnets(_ context.Context, in *ec2.DescribeSubnetsInpu
 	return &ec2.DescribeSubnetsOutput{Subnets: f.tagged}, nil
 }
 
+// madeFilter reports whether fl selects the groups of CreateSecurityGroup: by
+// their name or by a tag of one run.
+func madeFilter(fl types.Filter) bool {
+	return aws.ToString(fl.Name) == "group-name" || strings.HasPrefix(aws.ToString(fl.Name), "tag:apoxy-perf-")
+}
+
+// describeMade returns the groups of CreateSecurityGroup that match each filter.
+func (f *fakeEC2) describeMade(filters []types.Filter) []types.SecurityGroup {
+	var out []types.SecurityGroup
+	for _, g := range f.made {
+		match := func(fl types.Filter) bool {
+			switch name := aws.ToString(fl.Name); name {
+			case "group-name":
+				return slices.Contains(fl.Values, aws.ToString(g.GroupName))
+			case "vpc-id":
+				return slices.Contains(fl.Values, aws.ToString(g.VpcId))
+			default:
+				return slices.ContainsFunc(g.Tags, func(t types.Tag) bool {
+					return "tag:"+aws.ToString(t.Key) == name && slices.Contains(fl.Values, aws.ToString(t.Value))
+				})
+			}
+		}
+		if !slices.ContainsFunc(filters, func(fl types.Filter) bool { return !match(fl) }) {
+			out = append(out, g)
+		}
+	}
+	return out
+}
+
+func (f *fakeEC2) CreateSecurityGroup(_ context.Context, in *ec2.CreateSecurityGroupInput, _ ...func(*ec2.Options)) (*ec2.CreateSecurityGroupOutput, error) {
+	for _, g := range f.made {
+		if aws.ToString(g.GroupName) == aws.ToString(in.GroupName) && aws.ToString(g.VpcId) == aws.ToString(in.VpcId) {
+			return nil, &smithy.GenericAPIError{Code: "InvalidGroup.Duplicate"}
+		}
+	}
+	g := types.SecurityGroup{GroupId: aws.String("sg-" + aws.ToString(in.GroupName)), GroupName: in.GroupName, VpcId: in.VpcId}
+	for _, ts := range in.TagSpecifications {
+		if ts.ResourceType != types.ResourceTypeSecurityGroup {
+			return nil, &smithy.GenericAPIError{Code: "InvalidParameterValue", Message: "bad resource type"}
+		}
+		g.Tags = append(g.Tags, ts.Tags...)
+	}
+	f.made = append(f.made, g)
+	return &ec2.CreateSecurityGroupOutput{GroupId: g.GroupId}, nil
+}
+
+func (f *fakeEC2) AuthorizeSecurityGroupIngress(_ context.Context, in *ec2.AuthorizeSecurityGroupIngressInput, _ ...func(*ec2.Options)) (*ec2.AuthorizeSecurityGroupIngressOutput, error) {
+	if f.rules == nil {
+		f.rules = map[string][]types.IpPermission{}
+	}
+	id := aws.ToString(in.GroupId)
+	f.rules[id] = append(f.rules[id], in.IpPermissions...)
+	return &ec2.AuthorizeSecurityGroupIngressOutput{}, nil
+}
+
+func (f *fakeEC2) DeleteSecurityGroup(_ context.Context, in *ec2.DeleteSecurityGroupInput, _ ...func(*ec2.Options)) (*ec2.DeleteSecurityGroupOutput, error) {
+	id := aws.ToString(in.GroupId)
+	if !slices.ContainsFunc(f.made, func(g types.SecurityGroup) bool { return aws.ToString(g.GroupId) == id }) {
+		return nil, &smithy.GenericAPIError{Code: "InvalidGroup.NotFound"}
+	}
+	if f.sgInUse[id] > 0 {
+		f.sgInUse[id]--
+		return nil, &smithy.GenericAPIError{Code: "DependencyViolation"}
+	}
+	f.made = slices.DeleteFunc(f.made, func(g types.SecurityGroup) bool { return aws.ToString(g.GroupId) == id })
+	return &ec2.DeleteSecurityGroupOutput{}, nil
+}
+
 func (f *fakeEC2) DescribeSecurityGroups(_ context.Context, in *ec2.DescribeSecurityGroupsInput, _ ...func(*ec2.Options)) (*ec2.DescribeSecurityGroupsOutput, error) {
+	if slices.ContainsFunc(in.Filters, madeFilter) {
+		return &ec2.DescribeSecurityGroupsOutput{SecurityGroups: f.describeMade(in.Filters)}, nil
+	}
 	groups := f.groups
 	for _, flt := range in.Filters {
 		if aws.ToString(flt.Name) != "vpc-id" {
@@ -75,7 +153,15 @@ func (f *fakeEC2) DescribeInstances(_ context.Context, in *ec2.DescribeInstances
 		return nil, &smithy.GenericAPIError{Code: "InvalidInstanceID.NotFound"}
 	}
 	f.filters = in.Filters
-	return &ec2.DescribeInstancesOutput{Reservations: []types.Reservation{{Instances: f.instances}}}, nil
+	instances := f.instances
+	if f.noPublicIP > 0 {
+		f.noPublicIP--
+		instances = slices.Clone(instances)
+		for i := range instances {
+			instances[i].PublicIpAddress = nil
+		}
+	}
+	return &ec2.DescribeInstancesOutput{Reservations: []types.Reservation{{Instances: instances}}}, nil
 }
 
 func (f *fakeEC2) TerminateInstances(_ context.Context, in *ec2.TerminateInstancesInput, _ ...func(*ec2.Options)) (*ec2.TerminateInstancesOutput, error) {

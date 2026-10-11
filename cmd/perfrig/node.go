@@ -17,8 +17,10 @@ import (
 	"time"
 )
 
-// nodeRoles are the roles of "perfrig node". The relay role runs the sidecar argv.
-var nodeRoles = map[string]bool{"client": true, "server": true, "relay": true}
+// nodeRoles are the roles of "perfrig node". The relay role runs the sidecar
+// argv. The relay2 role is the second relay of a row with two relays: the relay
+// of the server, when the client has the relay of the relay role.
+var nodeRoles = map[string]bool{"client": true, "server": true, "relay": true, "relay2": true}
 
 // nodeFlag collects -node ROLE=IP flags.
 type nodeFlag map[string]string
@@ -35,7 +37,7 @@ func (f nodeFlag) String() string {
 func (f nodeFlag) Set(s string) error {
 	role, ip, ok := strings.Cut(s, "=")
 	if !ok || !nodeRoles[role] || ip == "" {
-		return fmt.Errorf("want ROLE=IP with the role client, server or relay, got %q", s)
+		return fmt.Errorf("want ROLE=IP with the role client, server, relay or relay2, got %q", s)
 	}
 	f[role] = ip
 	return nil
@@ -46,7 +48,7 @@ func (f nodeFlag) Set(s string) error {
 func nodeCmd(ctx context.Context, args []string) error {
 	var cfg config
 	fs := flag.NewFlagSet("node", flag.ExitOnError)
-	role := fs.String("role", "", "role of this host: client, server or relay")
+	role := fs.String("role", "", "role of this host: client, server, relay or relay2")
 	nodes := nodeFlag{}
 	fs.Var(nodes, "node", "ROLE=IP of another host, for example server=10.0.1.5; repeat for each host")
 	wait := fs.Duration("wait-timeout", 5*time.Minute, "time for the other hosts to answer a ping")
@@ -63,20 +65,21 @@ func nodeCmd(ctx context.Context, args []string) error {
 	fs.StringVar(&cfg.HostClass, "host-class", "", "first word of the result key, for example the EC2 instance type (default: the arch)")
 	fs.StringVar(&cfg.OutDir, "out-dir", "", "keep the workload files and raw output in this directory")
 	fs.StringVar(&cfg.AppCPUs, "app-cpus", "", "pin the workload process to this CPU list (empty: no pin)")
-	fs.BoolVar(&cfg.RelayXDP, "relay-xdp", false, "the relay host sets its link for XDP in driver mode during the row: at most half of the channels, MTU at most 3498 and IPv4 forwarding")
+	fs.BoolVar(&cfg.RelayXDP, "relay-xdp", false, "each relay host sets its link for XDP in driver mode during the row: at most half of the channels, MTU at most 3498 and IPv4 forwarding")
 	fs.IntVar(&cfg.RelayChannels, "relay-channels", 0, "with -relay-xdp: the most channels of the relay link, so that few CPUs receive all packets (0: no limit)")
 	fs.BoolVar(&cfg.RelayXDPGeneric, "relay-xdp-generic", false, "with -relay-xdp: the program runs in generic mode, so the relay host keeps its channels and MTU and sets only IPv4 forwarding")
 	fs.BoolVar(&cfg.ServerXDP, "server-xdp", false, "the server host sets its link for XDP in driver mode during the row, as -relay-xdp does on the relay host")
 	fs.BoolVar(&cfg.NoNICPoll, "no-nic-poll", false, "a host with an XDP link does not read its NIC counters during the row; the ENA driver resets a link with full RX queues when the device does not answer a read")
 	out := fs.String("out", "", "write the result JSON to this file (default: stdout)")
 	fs.StringVar(&cfg.Name, "name", "", "result name")
-	fs.Var((*argvFlag)(&cfg.ServerArgv), "server-argv", "JSON argv of the server role; $SERVER_IP, $RELAY_IP and $CLIENT_IP expand to the host addresses, and $DEV to the network device of this host")
+	fs.Var((*argvFlag)(&cfg.ServerArgv), "server-argv", "JSON argv of the server role; $SERVER_IP, $RELAY_IP, $RELAY2_IP and $CLIENT_IP expand to the host addresses, and $DEV to the network device of this host")
 	fs.Var((*argvFlag)(&cfg.ClientArgv), "client-argv", "JSON argv of the client role")
 	fs.Var((*argvFlag)(&cfg.SidecarArgv), "sidecar-argv", "JSON argv of the relay role")
+	fs.Var((*argvFlag)(&cfg.Sidecar2Argv), "sidecar2-argv", "JSON argv of the relay2 role; a row with it has two relays")
 	_ = fs.Parse(args)
 
 	if !nodeRoles[*role] {
-		return fmt.Errorf("bad -role %q: want client, server or relay", *role)
+		return fmt.Errorf("bad -role %q: want client, server, relay or relay2", *role)
 	}
 	if cfg.Duration < time.Second || cfg.Streams < 1 || cfg.Pings < 1 {
 		return errors.New("bad flags: need -duration >= 1s, -streams >= 1 and -pings >= 1")
@@ -101,6 +104,12 @@ func nodeCmd(ctx context.Context, args []string) error {
 	if *role == "relay" && w.Sidecar == nil {
 		return errors.New("the relay role needs -sidecar-argv")
 	}
+	if w.Sidecar2 != nil && w.Sidecar == nil {
+		return errors.New("-sidecar2-argv needs -sidecar-argv")
+	}
+	if *role == "relay2" && w.Sidecar2 == nil {
+		return errors.New("the relay2 role needs -sidecar2-argv")
+	}
 	res, runErr := executeNode(ctx, cfg, w, *role, nodes, *wait)
 	if res == nil {
 		return runErr
@@ -112,7 +121,7 @@ func nodeCmd(ctx context.Context, args []string) error {
 // with the most channels (0: no limit) and the mode of the program.
 func (c config) xdpLink(role string) (on bool, channels uint32, generic bool) {
 	switch role {
-	case "relay":
+	case "relay", "relay2":
 		return c.RelayXDP, uint32(c.RelayChannels), c.RelayXDPGeneric
 	case "server":
 		return c.ServerXDP, 0, false
@@ -127,11 +136,11 @@ func (c config) pollsNIC(role string) bool {
 }
 
 // nodeEnv returns the workload environment of the host of role with the
-// address ip. relay tells that the row has a relay. A row with no relay does
-// not use the relay host, which can be off after its last row.
-func nodeEnv(cfg config, role, ip, dev string, nodes nodeFlag, relay bool) Env {
+// address ip. relays is the number of relays of the row. A row does not use
+// the host of a relay that it does not have, which can be off after its last row.
+func nodeEnv(cfg config, role, ip, dev string, nodes nodeFlag, relays int) Env {
 	env := Env{
-		ServerIP: nodes["server"], ClientIP: nodes["client"], RelayIP: nodes["relay"],
+		ServerIP: nodes["server"], ClientIP: nodes["client"], RelayIP: nodes["relay"], Relay2IP: nodes["relay2"],
 		Duration: cfg.Duration, Omit: cfg.Omit, Streams: cfg.Streams, Bitrate: cfg.Bitrate, Window: cfg.Window,
 		Dir: cfg.OutDir, Dev: dev,
 	}
@@ -142,11 +151,43 @@ func nodeEnv(cfg config, role, ip, dev string, nodes nodeFlag, relay bool) Env {
 		env.ServerIP = ip
 	case "relay":
 		env.RelayIP = ip
+	case "relay2":
+		env.Relay2IP = ip
 	}
-	if !relay {
+	if relays < 1 {
 		env.RelayIP = ""
 	}
+	if relays < 2 {
+		env.Relay2IP = ""
+	}
 	return env
+}
+
+// relayCount returns the number of relays of a row with the workload w.
+func relayCount(w Workload) int {
+	switch {
+	case w.Sidecar2 != nil:
+		return 2
+	case w.Sidecar != nil:
+		return 1
+	}
+	return 0
+}
+
+// nodePeers returns the hosts that the host of role waits for: a relay waits
+// for the relay before it, the server for the relays, and the client for all.
+func nodePeers(role string, env Env) []string {
+	var peers []string
+	if role == "client" {
+		peers = append(peers, env.ServerIP)
+	}
+	if role != "relay" && env.RelayIP != "" {
+		peers = append(peers, env.RelayIP)
+	}
+	if role != "relay" && role != "relay2" && env.Relay2IP != "" {
+		peers = append(peers, env.Relay2IP)
+	}
+	return peers
 }
 
 // executeNode waits for the other hosts, runs the role one time and measures
@@ -202,7 +243,7 @@ func executeNode(ctx context.Context, cfg config, w Workload, role string, nodes
 	slog.Info("Host facts", "role", role, "ip", ip, "dev", dev, "driver", nic.Driver, "version", nic.Version,
 		"rx_queues", nic.RxQueues, "xdp_features", nic.XDPFeatures, "nodes", nodes.String())
 
-	env := nodeEnv(cfg, role, ip, dev, nodes, w.Sidecar != nil)
+	env := nodeEnv(cfg, role, ip, dev, nodes, relayCount(w))
 	if env.Dir == "" {
 		tmp, err := os.MkdirTemp("", "perfrig-")
 		if err != nil {
@@ -214,19 +255,11 @@ func executeNode(ctx context.Context, cfg config, w Workload, role string, nodes
 		return nil, err
 	}
 
-	// The relay host has nothing to wait for. The server waits for the relay
-	// and the client waits for both.
-	var peers []string
-	if role == "client" {
-		if env.ServerIP == "" {
-			return nil, errors.New("the client role needs -node server=IP")
-		}
-		peers = append(peers, env.ServerIP)
+	// The relay host has nothing to wait for.
+	if role == "client" && env.ServerIP == "" {
+		return nil, errors.New("the client role needs -node server=IP")
 	}
-	if role != "relay" && env.RelayIP != "" {
-		peers = append(peers, env.RelayIP)
-	}
-	for _, peer := range peers {
+	for _, peer := range nodePeers(role, env) {
 		if err := waitPing(ctx, peer, wait); err != nil {
 			return infra(err)
 		}
@@ -283,6 +316,8 @@ func nodeRep(ctx context.Context, cfg config, w Workload, role string, env Env, 
 		argv = w.Server(env)
 	case "relay":
 		argv = w.Sidecar(env)
+	case "relay2":
+		argv = w.Sidecar2(env)
 	}
 	var prefix []string
 	if cfg.AppCPUs != "" {
@@ -352,7 +387,7 @@ func nodeRep(ctx context.Context, cfg config, w Workload, role string, env Env, 
 		}
 	case "server":
 		run.CPU.Server = newProcCPU(cu, cs, elapsed, gbps)
-	case "relay":
+	case "relay", "relay2":
 		c := newProcCPU(cu, cs, elapsed, gbps)
 		run.CPU.Relay = &RelayCPU{Cores: c.Cores}
 	}

@@ -35,6 +35,9 @@ type ec2API interface {
 	CreatePlacementGroup(context.Context, *ec2.CreatePlacementGroupInput, ...func(*ec2.Options)) (*ec2.CreatePlacementGroupOutput, error)
 	DeletePlacementGroup(context.Context, *ec2.DeletePlacementGroupInput, ...func(*ec2.Options)) (*ec2.DeletePlacementGroupOutput, error)
 	DescribePlacementGroups(context.Context, *ec2.DescribePlacementGroupsInput, ...func(*ec2.Options)) (*ec2.DescribePlacementGroupsOutput, error)
+	CreateSecurityGroup(context.Context, *ec2.CreateSecurityGroupInput, ...func(*ec2.Options)) (*ec2.CreateSecurityGroupOutput, error)
+	AuthorizeSecurityGroupIngress(context.Context, *ec2.AuthorizeSecurityGroupIngressInput, ...func(*ec2.Options)) (*ec2.AuthorizeSecurityGroupIngressOutput, error)
+	DeleteSecurityGroup(context.Context, *ec2.DeleteSecurityGroupInput, ...func(*ec2.Options)) (*ec2.DeleteSecurityGroupOutput, error)
 }
 
 // Client calls EC2 and S3 in one region.

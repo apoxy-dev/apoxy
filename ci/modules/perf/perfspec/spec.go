@@ -29,7 +29,8 @@ type Spec struct {
 	Modules  []string          `json:"modules,omitempty"`
 	Tun      bool              `json:"tun,omitempty"`
 	Remove   []string          `json:"remove,omitempty"`
-	// Nodes are the private IPs of the other hosts of a multi-node run, by role.
+	// Nodes are the addresses of the other hosts of a multi-node run, by role:
+	// the private IP of a host in the same region, else its public IP.
 	Nodes  map[string]string `json:"nodes,omitempty"`
 	Rows   []Row             `json:"rows"`
 	Upload Upload            `json:"upload"`
@@ -78,9 +79,13 @@ func ParsePlan(data string) (Spec, error) {
 	return s, nil
 }
 
-// NodeRoles are the hosts of a multi-node run, in launch order. The relay is
+// NodeRoles are the hosts of a multi-node run, in launch order. The relays are
 // optional. The client runs last, because it needs the addresses of the others.
-var NodeRoles = []string{"relay", "server", "client"}
+var NodeRoles = []string{"relay", "relay2", "server", "client"}
+
+// PeerRoles are the hosts of a run with two relays that are in the second
+// region: the second relay and the server, which attaches at it.
+var PeerRoles = []string{"relay2", "server"}
 
 // ParseNodePlans reads the plans of a multi-node run: a JSON object with one
 // plan for each role. It needs a client and a server plan.
@@ -106,6 +111,11 @@ func ParseNodePlans(data string) (map[string]Spec, error) {
 	}
 	if _, ok := plans["server"]; !ok {
 		return nil, errors.New("the node plans have no server")
+	}
+	if _, ok := plans["relay2"]; ok {
+		if _, ok := plans["relay"]; !ok {
+			return nil, errors.New("the node plans have a second relay and no relay")
+		}
 	}
 	return plans, nil
 }
@@ -151,6 +161,20 @@ func RunTag(runTag string) string { return "apoxy-perf-run=" + runTag }
 
 // GroupName is the placement group of a multi-node run.
 func GroupName(runTag string) string { return "apoxy-perf-" + runTag }
+
+// SecurityGroupTag is the tag of the security groups of all runs.
+const SecurityGroupTag = "apoxy-perf-group=true"
+
+// SecurityGroupTags returns the tags of the security group of a run with hosts in
+// two regions. They do not have the tag of the bench subnets and their group.
+func SecurityGroupTags(runTag string, expires time.Time) []string {
+	return []string{
+		"Name=apoxy-perf-" + runTag,
+		SecurityGroupTag,
+		RunTag(runTag),
+		"apoxy-perf-expires=" + expires.UTC().Format(time.RFC3339),
+	}
+}
 
 // Tags returns the instance tags. The reaper terminates the instance after expires.
 func Tags(runTag string, expires time.Time) []string {

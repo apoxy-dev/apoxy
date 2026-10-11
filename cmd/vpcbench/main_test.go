@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/netip"
@@ -63,6 +64,19 @@ func TestParseFlags(t *testing.T) {
 		{name: "server with no work dir", cmd: "server", args: []string{"-listen", ":4433", "-relay", "r:1", "-work-dir", ""}, wantErr: "set -work-dir or WORK_DIR"},
 		{name: "no start timeout", cmd: "server", args: []string{"-listen", ":4433", "-relay", "r:1", "-start-timeout", "0s"}, wantErr: "-start-timeout must be positive"},
 		{name: "relay has no driver", cmd: "relay", args: []string{"-listen", ":4443", "-driver", "tun"}, wantErr: "flag provided but not defined: -driver"},
+		{
+			name: "second relay of a mesh", cmd: "relay", args: []string{"-listen", ":4443", "-mesh", "b", "-join", "10.0.0.1:4443", "-start-timeout", "5m"},
+			want: func(o options) bool {
+				return o.Mesh == "b" && o.Join == "10.0.0.1:4443" && o.StartTimeout == 5*time.Minute
+			},
+		},
+		{name: "join with no mesh name", cmd: "relay", args: []string{"-listen", ":4443", "-join", "10.0.0.1:4443"}, wantErr: "-join needs -mesh"},
+		{name: "relay with no start timeout", cmd: "relay", args: []string{"-listen", ":4443", "-start-timeout", "0s"}, wantErr: "-start-timeout must be positive"},
+		{
+			name: "client with the relay of the server", cmd: "client", args: []string{"-server", "s:1", "-relay", "r:1", "-server-relay", "r2:1"},
+			want: func(o options) bool { return o.ServerRelay == "r2:1" },
+		},
+		{name: "direct client with the relay of the server", cmd: "client", args: []string{"-server", "s:1", "-via", "direct", "-server-relay", "r2:1"}, wantErr: "-server-relay needs -via relay"},
 		{
 			name: "server defaults", cmd: "server", args: []string{"-listen", ":4433", "-relay", "10.0.0.1:4443"},
 			want: func(o options) bool {
@@ -472,28 +486,42 @@ func TestLoopback(t *testing.T) {
 	if testing.Short() {
 		t.Skip("runs the agents for a few seconds")
 	}
-	cases := []struct{ via, transport string }{
-		{"relay", "psp"},
-		{"relay", "quic"},
-		{"direct", "psp"},
+	cases := []struct {
+		via, transport string
+		// relays is the number of relays: the client and the server have one relay
+		// each when it is 2.
+		relays int
+	}{
+		{"relay", "psp", 1},
+		{"relay", "quic", 1},
+		{"direct", "psp", 0},
+		{"relay", "psp", 2},
 	}
 	for _, tc := range cases {
-		t.Run(tc.via+" "+tc.transport, func(t *testing.T) {
+		t.Run(fmt.Sprintf("%s %s %d relays", tc.via, tc.transport, tc.relays), func(t *testing.T) {
 			var wg sync.WaitGroup
 			defer wg.Wait()
 			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 			defer cancel()
 
 			o := options{WorkDir: t.TempDir(), Driver: "netstack", Transport: tc.transport, Via: tc.via, StartTimeout: 30 * time.Second}
-			if tc.via == "relay" {
+			// The second relay joins the first, and the server attaches at it.
+			var relays []string
+			for i := range tc.relays {
 				ro := o
 				ro.Listen = "127.0.0.1:0"
+				if tc.relays > 1 {
+					ro.Mesh = fmt.Sprintf("relay-%d", i+1)
+				}
+				if i > 0 {
+					ro.Join = relays[0]
+				}
 				addr := make(chan netip.AddrPort, 1)
 				relayErr := make(chan error, 1)
 				wg.Go(func() { relayErr <- runRelay(ctx, ro, func(a netip.AddrPort) { addr <- a }) })
 				select {
 				case a := <-addr:
-					o.Relay = a.String()
+					relays = append(relays, a.String())
 				case err := <-relayErr:
 					t.Fatalf("relay stopped: %v", err)
 				}
@@ -502,6 +530,9 @@ func TestLoopback(t *testing.T) {
 
 			so := o
 			so.Listen = "127.0.0.1:0"
+			if tc.relays > 0 {
+				o.Relay, so.Relay = relays[0], relays[len(relays)-1]
+			}
 			addr := make(chan netip.AddrPort, 1)
 			serverErr := make(chan error, 1)
 			wg.Go(func() { serverErr <- runServer(ctx, so, func(a netip.AddrPort) { addr <- a }) })
@@ -514,8 +545,11 @@ func TestLoopback(t *testing.T) {
 			}
 			co.Streams, co.Omit, co.Duration = 2, 200*time.Millisecond, time.Second
 			co.Idle, co.ProbeInterval = 200*time.Millisecond, 10*time.Millisecond
-			// The client stops the relay, as "perfrig node" does.
+			// The client stops the relays, as "perfrig node" does.
 			co.StopRelay = tc.via == "relay"
+			if tc.relays > 1 {
+				co.ServerRelay = relays[1]
+			}
 
 			var out bytes.Buffer
 			require.NoError(t, runClient(ctx, co, &out))
@@ -550,6 +584,20 @@ func TestLoopback(t *testing.T) {
 			} else {
 				assert.Zero(t, res.RelayCores)
 			}
+			if tc.relays < 2 {
+				assert.Empty(t, res.Relays)
+				return
+			}
+			// All data of the window went from the relay of the client to the relay of the server.
+			require.Len(t, res.Relays, 2)
+			sent, got := res.Relays[0], res.Relays[1]
+			assert.Equal(t, "client", sent.Of)
+			assert.Equal(t, "server", got.Of)
+			// The relays take their marks a short time after the server, so the counts are not equal.
+			packets := uint64(res.PacketsPerSecond * res.Seconds)
+			assert.Greater(t, sent.End.TrunkTx-sent.Start.TrunkTx, packets/2)
+			assert.Greater(t, got.End.TrunkRx-got.Start.TrunkRx, packets/2)
+			assert.Positive(t, got.End.TrunkTx-got.Start.TrunkTx, "the ACKs of the server go to the relay of the client")
 		})
 	}
 }

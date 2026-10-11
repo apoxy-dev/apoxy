@@ -170,6 +170,7 @@ func TestNodePlans(t *testing.T) {
 		wantEmpty bool
 		// wantNetem tells that the rows add a netem delay on each host.
 		wantNetem bool
+		wantErr   string
 	}{
 		{name: "rig rows only", only: []string{"netstack-psp-relay"}, wantEmpty: true},
 		{name: "no rows named", wantEmpty: true},
@@ -208,11 +209,30 @@ func TestNodePlans(t *testing.T) {
 				"relay":  {"netstack-psp-relay-3node", "netstack-psp-relay-3node-xdp"},
 			},
 		},
+		{
+			name: "rows with two relays", only: []string{"netstack-psp-relay-4node", "netstack-psp-relay-4node-p16-xdp-generic"},
+			wantRoles: map[string][]string{
+				"client": {"netstack-psp-relay-4node", "netstack-psp-relay-4node-p16-xdp-generic"},
+				"server": {"netstack-psp-relay-4node", "netstack-psp-relay-4node-p16-xdp-generic"},
+				"relay":  {"netstack-psp-relay-4node", "netstack-psp-relay-4node-p16-xdp-generic"},
+				"relay2": {"netstack-psp-relay-4node", "netstack-psp-relay-4node-p16-xdp-generic"},
+			},
+		},
+		{
+			name: "a row with two relays and a row with one", only: []string{"netstack-psp-relay-4node", "netstack-psp-relay-3node"},
+			wantErr: "run in separate calls",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			o.Only = tc.only
 			data, err := VPC.NodePlans(o)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("err = %v, want %q", err, tc.wantErr)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -326,14 +346,39 @@ func TestNodePlans(t *testing.T) {
 				`-sidecar-argv=["vpcbench","relay","-listen","$RELAY_IP:4443","-xdp","$DEV","-xdp-mode","generic"]`,
 			},
 		},
+		// The second relay joins the first. The server attaches at the second relay,
+		// and the client takes the marks of the two relays.
+		{
+			id: "netstack-psp-relay-4node-1flow",
+			want: []string{
+				"-name=vpc-netstack-psp-relay-4node", "-streams=1",
+				`-sidecar-argv=["vpcbench","relay","-listen","$RELAY_IP:4443","-mesh","relay-1"]`,
+				`-sidecar2-argv=["vpcbench","relay","-listen","$RELAY2_IP:4443","-mesh","relay-2","-join","$RELAY_IP:4443","-start-timeout","5m"]`,
+				`-server-argv=["vpcbench","server","-relay","$RELAY2_IP:4443","-listen","$SERVER_IP:4433","-start-timeout","5m"]`,
+				`-client-argv=["vpcbench","client","-relay","$RELAY_IP:4443","-server","$SERVER_IP:4433","-server-relay","$RELAY2_IP:4443","-cc","bbr","-streams","$STREAMS","-omit","${OMIT_S}s","-duration","${DURATION_S}s","-start-timeout","5m","-stop-relay"]`,
+			},
+			notWant: "-relay-xdp",
+		},
+		{
+			id: "netstack-psp-relay-4node-p16-xdp-generic",
+			want: []string{
+				"-name=vpc-netstack-psp-relay-4node-xdp-generic", "-streams=16", "-relay-xdp", "-relay-xdp-generic",
+				`-sidecar-argv=["vpcbench","relay","-listen","$RELAY_IP:4443","-xdp","$DEV","-xdp-mode","generic","-mesh","relay-1"]`,
+				`-sidecar2-argv=["vpcbench","relay","-listen","$RELAY2_IP:4443","-xdp","$DEV","-xdp-mode","generic","-mesh","relay-2","-join","$RELAY_IP:4443","-start-timeout","5m"]`,
+			},
+		},
 	}
 	for _, tc := range wantArgs {
 		i = slices.IndexFunc(rows, func(r Row) bool { return r.ID == tc.id })
 		if i < 0 {
 			t.Fatalf("no row %s", tc.id)
 		}
-		if rows[i].Hosts() != 3 {
-			t.Errorf("%s: hosts = %d, want 3", tc.id, rows[i].Hosts())
+		wantHosts := 3
+		if strings.Contains(tc.id, "-4node") {
+			wantHosts = 4
+		}
+		if rows[i].Hosts() != wantHosts {
+			t.Errorf("%s: hosts = %d, want %d", tc.id, rows[i].Hosts(), wantHosts)
 		}
 		for _, w := range tc.want {
 			if !slices.Contains(rows[i].Args, w) {

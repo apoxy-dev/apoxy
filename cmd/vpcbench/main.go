@@ -14,6 +14,11 @@
 //
 // With -stop-relay, the client stops the relay at the end. "perfrig node" uses
 // it when the relay runs on its own host.
+//
+// A run with two relays measures the path between the relays. The first relay has
+// -mesh NAME, and the second relay has -mesh with another name and -join with the
+// address of the first relay. The server has the second relay as -relay, and the
+// client has it as -server-relay.
 package main
 
 import (
@@ -75,7 +80,7 @@ func main() {
 		os.Exit(floodMain(os.Args[1], os.Args[2:]))
 	}
 	if len(os.Args) < 2 || (os.Args[1] != "relay" && os.Args[1] != "server" && os.Args[1] != "client") {
-		fmt.Fprintln(os.Stderr, "usage: vpcbench relay -listen HOST:PORT [flags]\n"+
+		fmt.Fprintln(os.Stderr, "usage: vpcbench relay -listen HOST:PORT [-mesh NAME [-join IP:PORT]] [flags]\n"+
 			"       vpcbench server -listen HOST:PORT -relay HOST:PORT [flags]\n"+
 			"       vpcbench client -server HOST:PORT -relay HOST:PORT [flags]\n"+
 			"       vpcbench flood-relay -id ROW -listen HOST:PORT -xdp LINK [flags]\n"+
@@ -120,12 +125,18 @@ func main() {
 // options are the flags of all commands.
 type options struct {
 	Listen, Relay, Server, WorkDir string
-	Driver, Transport, Via, CC     string
-	XDP, XDPMode                   string
-	XDPHop                         time.Duration
-	MTU, Streams, Lanes            int
-	Omit, Duration                 time.Duration
-	Idle, ProbeInterval            time.Duration
+	// Mesh is the name of the relay in the mesh. Join is the control address of
+	// the relay whose mesh and CA the relay takes.
+	Mesh, Join string
+	// ServerRelay is the control address of the relay of the server, when it is
+	// not the relay of the client.
+	ServerRelay                string
+	Driver, Transport, Via, CC string
+	XDP, XDPMode               string
+	XDPHop                     time.Duration
+	MTU, Streams, Lanes        int
+	Omit, Duration             time.Duration
+	Idle, ProbeInterval        time.Duration
 	// StartTimeout limits each wait for the relay, an attach or a peer session.
 	StartTimeout time.Duration
 	// StopRelay makes the client stop the relay at the end.
@@ -158,6 +169,9 @@ func parseFlags(cmd string, args []string, out io.Writer) (options, error) {
 		fs.StringVar(&o.XDPMode, "xdp-mode", "generic", "XDP attach mode: generic, or driver, which uses generic mode when the driver refuses the program")
 		fs.DurationVar(&o.XDPHop, "xdp-hop", 0, "time that the XDP program keeps the next hop of a row (0: a route lookup for each packet)")
 		fs.IntVar(&o.Lanes, "lanes", relay.MaxLaneSources, "most lane ports that the relay takes from a session; 0 makes agents send on one port")
+		fs.StringVar(&o.Mesh, "mesh", "", "name of the relay in a mesh of two relays (empty: the relay has no mesh)")
+		fs.StringVar(&o.Join, "join", "", "with -mesh: control address IP:port of the first relay; the relay takes its CA, and the two relays have a mesh session")
+		fs.DurationVar(&o.StartTimeout, "start-timeout", 30*time.Second, "with -join: time limit of the wait for the first relay")
 	}
 	if cmd != "relay" {
 		fs.StringVar(&o.Relay, "relay", "", "relay address host:port")
@@ -174,7 +188,8 @@ func parseFlags(cmd string, args []string, out io.Writer) (options, error) {
 		fs.DurationVar(&o.Duration, "duration", 30*time.Second, "measured time")
 		fs.DurationVar(&o.Idle, "idle", time.Second, "RTT probe time before the flows start")
 		fs.DurationVar(&o.ProbeInterval, "probe-interval", 10*time.Millisecond, "RTT probe interval")
-		fs.BoolVar(&o.StopRelay, "stop-relay", false, "stop the relay at the end of the run")
+		fs.BoolVar(&o.StopRelay, "stop-relay", false, "stop the relay at the end of the run, and the relay of -server-relay")
+		fs.StringVar(&o.ServerRelay, "server-relay", "", "control address host:port of the relay of the server, when the server has a second relay in the mesh of the relay of -relay")
 	}
 	if err := fs.Parse(args); err != nil {
 		return o, err
@@ -204,8 +219,12 @@ func (o options) check(cmd string) error {
 		return errors.New("-relay is required with -via relay")
 	case agentCmd && o.Via == "relay" && o.WorkDir == "":
 		return errors.New("set -work-dir or WORK_DIR")
-	case agentCmd && o.StartTimeout <= 0:
+	case o.StartTimeout <= 0:
 		return errors.New("-start-timeout must be positive")
+	case o.Join != "" && o.Mesh == "":
+		return errors.New("-join needs -mesh")
+	case o.ServerRelay != "" && o.Via != "relay":
+		return errors.New("-server-relay needs -via relay")
 	case o.MTU < 0:
 		return errors.New("-mtu must not be negative")
 	case cmd == "relay" && o.XDPMode != "generic" && o.XDPMode != "driver":
@@ -411,10 +430,13 @@ func applyKeys(p *psp.Peer, b []byte) error {
 	return err
 }
 
-// request is one control message: ca, hello, mark or stop.
+// request is one control message: ca, join, hello, mark or stop.
 type request struct {
-	Op   string `json:"op"`
-	Port int    `json:"port,omitempty"` // Hello with -via direct: UDP port of the client.
+	Op string `json:"op"`
+	// Port is the UDP port of the client in a hello with -via direct, and the port
+	// of the relay socket in a join.
+	Port int    `json:"port,omitempty"`
+	Name string `json:"name,omitempty"` // Join: mesh name of the relay that joins.
 	Keys []byte `json:"keys,omitempty"` // Hello with -via direct: a dp.KeysRequest.
 	// Index is the number of a mark: 1 at the start of the measured window, 2 at its end.
 	// Window is the length of the measured window.
@@ -426,7 +448,8 @@ type request struct {
 
 // reply answers a request.
 type reply struct {
-	CA    []byte `json:"ca,omitempty"`   // Ca: the CA cert and key in PEM.
+	CA    []byte `json:"ca,omitempty"`   // Ca and join: the CA cert and key in PEM.
+	Name  string `json:"name,omitempty"` // Join: mesh name of the relay that answers.
 	Addr  string `json:"addr,omitempty"` // Hello: overlay address of the server.
 	Keys  []byte `json:"keys,omitempty"`
 	Mark  mark   `json:"mark"`
@@ -508,22 +531,50 @@ func serveCtl(c net.Conn, handle func(request) (reply, error)) error {
 }
 
 // relayCA waits until the relay of o serves its control port, then gets the
-// CA from it.
+// CA from it. It tries again while the relay of the run before stops.
 func relayCA(ctx context.Context, o options) (*vpctest.CA, *ctl, error) {
-	c, err := dialCtl(ctx, o.Relay, o.StartTimeout)
-	if err != nil {
-		return nil, nil, err
-	}
-	rep, err := c.call(request{Op: "ca"})
-	var ca *vpctest.CA
-	if err == nil {
-		ca, err = decodeCA(rep.CA)
-	}
-	if err != nil {
+	deadline := time.Now().Add(o.StartTimeout)
+	for {
+		c, err := dialCtl(ctx, o.Relay, max(time.Until(deadline), time.Second))
+		if err != nil {
+			return nil, nil, err
+		}
+		rep, err := c.call(request{Op: "ca"})
+		var ca *vpctest.CA
+		if err == nil {
+			ca, err = decodeCA(rep.CA)
+		}
+		if err == nil {
+			return ca, c, nil
+		}
 		_ = c.c.Close()
-		return nil, nil, err
+		if time.Now().After(deadline) {
+			return nil, nil, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, nil, ctx.Err()
+		case <-time.After(joinRetry):
+		}
 	}
-	return ca, c, nil
+}
+
+// connect opens the peer session of s to peer. With two relays, the relay of
+// the client knows the server only after the mesh session, so it tries again.
+func connect(ctx context.Context, o options, s *side, peer netip.Addr) error {
+	ctx, cancel := context.WithTimeout(ctx, o.StartTimeout)
+	defer cancel()
+	for {
+		err := s.a.Connect(ctx, peer)
+		if err == nil || o.ServerRelay == "" {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("%w (last error: %w)", ctx.Err(), err)
+		case <-time.After(joinRetry):
+		}
+	}
 }
 
 // runErr returns the cause of a failed part of the run, else err.
@@ -702,20 +753,29 @@ func runClient(parent context.Context, o options, out io.Writer) error {
 	ctx, fail := context.WithCancelCause(parent)
 	defer fail(nil)
 	start := time.Now()
-	var relay *ctl
+	var relay, relay2 *ctl
 	var s *side
 	defer func() {
 		if s != nil {
 			s.close()
 		}
-		if relay != nil {
-			if o.StopRelay {
-				if _, err := relay.call(request{Op: "stop"}); err != nil {
-					slog.Warn("Failed to stop the relay", "error", err)
-				}
+		// The two relays stop at the same time, so that the second relay of the
+		// next run does not join the first relay of this run.
+		var wg sync.WaitGroup
+		for _, r := range []*ctl{relay, relay2} {
+			if r == nil {
+				continue
 			}
-			_ = relay.c.Close()
+			wg.Go(func() {
+				if o.StopRelay {
+					if _, err := r.call(request{Op: "stop"}); err != nil {
+						slog.Warn("Failed to stop the relay", "relay", r.c.RemoteAddr(), "error", err)
+					}
+				}
+				_ = r.c.Close()
+			})
 		}
+		wg.Wait()
 	}()
 	if o.Via == "relay" {
 		var ca *vpctest.CA
@@ -725,6 +785,11 @@ func runClient(parent context.Context, o options, out io.Writer) error {
 		}
 		if s, err = startAgent(ctx, fail, o, "client", ca); err != nil {
 			return runErr(ctx, err)
+		}
+		if o.ServerRelay != "" {
+			if relay2, err = dialCtl(ctx, o.ServerRelay, o.StartTimeout); err != nil {
+				return err
+			}
 		}
 	}
 	srv, err := dialCtl(ctx, o.Server, o.StartTimeout)
@@ -741,10 +806,7 @@ func runClient(parent context.Context, o options, out io.Writer) error {
 		if peer, err = netip.ParseAddr(rep.Addr); err != nil {
 			return fmt.Errorf("server overlay address: %w", err)
 		}
-		cctx, cancel := context.WithTimeout(ctx, o.StartTimeout)
-		err = s.a.Connect(cctx, peer)
-		cancel()
-		if err != nil {
+		if err := connect(ctx, o, s, peer); err != nil {
 			return runErr(ctx, fmt.Errorf("peer session to the server: %w", err))
 		}
 	} else {
@@ -753,7 +815,7 @@ func runClient(parent context.Context, o options, out io.Writer) error {
 		}
 		peer = directServer
 	}
-	res, err := measure(ctx, o, s, peer, srv, relay, start)
+	res, err := measure(ctx, o, s, peer, srv, relay, relay2, start)
 	if err := runErr(ctx, err); err != nil {
 		return err
 	}
@@ -803,8 +865,9 @@ func clientDirect(ctx context.Context, fail context.CancelCauseFunc, o options, 
 }
 
 // measure runs the probes and the flows, and takes the marks of all sides at
-// the flow start, at the window start and at the window end.
-func measure(ctx context.Context, o options, s *side, peer netip.Addr, srv, relay *ctl, start time.Time) (result, error) {
+// the flow start, at the window start and at the window end. relay2 is the
+// relay of the server in a run with two relays, else nil.
+func measure(ctx context.Context, o options, s *side, peer netip.Addr, srv, relay, relay2 *ctl, start time.Time) (result, error) {
 	echoConn, err := s.net.DialUDP(netip.AddrPortFrom(peer, echoPort))
 	if err != nil {
 		return result{}, err
@@ -847,7 +910,7 @@ func measure(ctx context.Context, o options, s *side, peer netip.Addr, srv, rela
 	}()
 
 	// The marks are at the flow start, at the window start and at the window end.
-	var client, server, rel [3]mark
+	var client, server, rel, rel2 [3]mark
 	var at [3]time.Duration
 	var wall [3]time.Time
 	takeMarks := func(i int) error {
@@ -868,6 +931,11 @@ func measure(ctx context.Context, o options, s *side, peer netip.Addr, srv, rela
 		}
 		if relay != nil {
 			if rel[i], err = relay.mark(i, o.Duration); err != nil {
+				return err
+			}
+		}
+		if relay2 != nil {
+			if rel2[i], err = relay2.mark(i, o.Duration); err != nil {
 				return err
 			}
 		}
@@ -897,6 +965,9 @@ func measure(ctx context.Context, o options, s *side, peer netip.Addr, srv, rela
 
 	span := func(m [3]mark, i int) [2]mark { return [2]mark{m[i], m[i+1]} }
 	res := newResult(span(client, 1), span(server, 1), span(rel, 1))
+	if relay2 != nil {
+		res.Relays = []relayPart{newRelayPart("client", span(rel, 1)), newRelayPart("server", span(rel2, 1))}
+	}
 	res.IdleRTT = bench.NewRTTStats(p.Window(0, idleEnd))
 	res.LoadRTT = bench.NewRTTStats(p.Window(at[1], at[2]))
 	res.Omit = newPeriod(span(client, 0), span(server, 0), span(rel, 0))

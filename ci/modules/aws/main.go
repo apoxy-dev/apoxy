@@ -252,6 +252,9 @@ func (m *Aws) Launch(
 	// The cluster placement group of the instance.
 	// +optional
 	placementGroup string,
+	// The one security group of the instance, in the place of the group with subnetTag.
+	// +optional
+	securityGroup string,
 ) (string, error) {
 	c, err := m.client(ctx)
 	if err != nil {
@@ -267,7 +270,7 @@ func (m *Aws) Launch(
 	}
 	in := awsx.LaunchInput{
 		Image: image, InstanceType: instanceType, UserData: ud, Tags: t,
-		SubnetTag: subnetTag, Subnet: subnet, PlacementGroup: placementGroup,
+		SubnetTag: subnetTag, Subnet: subnet, PlacementGroup: placementGroup, SecurityGroup: securityGroup,
 	}
 	return c.Launch(ctx, in)
 }
@@ -350,6 +353,110 @@ func (m *Aws) ReapPlacementGroups(
 	return c.ReapPlacementGroups(ctx, tag, expiryTag, time.Now())
 }
 
+// CreateSecurityGroup makes a security group with the tags in the VPC that Launch
+// uses with subnetTag, and returns its ID. The members of the group can send to
+// each other. A group with the name that the VPC has already is not an error.
+// +cache="never"
+func (m *Aws) CreateSecurityGroup(
+	ctx context.Context,
+	name string,
+	// KEY=VALUE tags of the group.
+	tags []string,
+	// KEY=VALUE tag of the subnets, as for Launch.
+	// +default="apoxy-perf=true"
+	subnetTag string,
+) (string, error) {
+	c, err := m.client(ctx)
+	if err != nil {
+		return "", err
+	}
+	t, err := parseTags(tags)
+	if err != nil {
+		return "", err
+	}
+	return c.CreateSecurityGroup(ctx, name, subnetTag, t)
+}
+
+// AllowFrom lets the addresses of cidrs send all traffic to the members of the
+// security group, for example the hosts of a run in another region.
+// +cache="never"
+func (m *Aws) AllowFrom(ctx context.Context, securityGroup string, cidrs []string) error {
+	c, err := m.client(ctx)
+	if err != nil {
+		return err
+	}
+	return c.AllowFrom(ctx, securityGroup, cidrs)
+}
+
+// DeleteSecurityGroups deletes the security groups with the tag and returns
+// their IDs. While an instance uses a group, it tries again until wait ends.
+// +cache="never"
+func (m *Aws) DeleteSecurityGroups(
+	ctx context.Context,
+	// KEY=VALUE tag of the groups, for example the tag of one run.
+	tag string,
+	// Time to wait for the instances of a group to terminate, for example 3m.
+	// +default="0s"
+	wait string,
+) ([]string, error) {
+	d, err := time.ParseDuration(wait)
+	if err != nil {
+		return nil, fmt.Errorf("bad wait %q: %w", wait, err)
+	}
+	c, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return c.DeleteSecurityGroups(ctx, tag, d)
+}
+
+// SecurityGroups returns the security groups with the tag, each as its ID and
+// its name. A check after a run uses it with the tag of the run.
+// +cache="never"
+func (m *Aws) SecurityGroups(
+	ctx context.Context,
+	// +default="apoxy-perf-group=true"
+	tag string,
+) ([]string, error) {
+	c, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return c.SecurityGroups(ctx, tag)
+}
+
+// ReapSecurityGroups deletes the security groups with the tag that no instance
+// uses and whose expiry tag (RFC 3339) is in the past, and returns their IDs.
+// +cache="never"
+func (m *Aws) ReapSecurityGroups(
+	ctx context.Context,
+	// +default="apoxy-perf-group=true"
+	tag string,
+	// +default="apoxy-perf-expires"
+	expiryTag string,
+) ([]string, error) {
+	c, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return c.ReapSecurityGroups(ctx, tag, expiryTag, time.Now())
+}
+
+// Instances returns the instances with the tag that did not terminate yet, each
+// as its ID and its state. A check after a run uses it with the tag of the run.
+// +cache="never"
+func (m *Aws) Instances(
+	ctx context.Context,
+	// +default="apoxy-perf=true"
+	tag string,
+) ([]string, error) {
+	c, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return c.Instances(ctx, tag)
+}
+
 // parseTags reads KEY=VALUE tags.
 func parseTags(tags []string) (map[string]string, error) {
 	out := map[string]string{}
@@ -420,6 +527,25 @@ func (i *Instance) Facts(ctx context.Context) (*InstanceFacts, error) {
 		return nil, err
 	}
 	return &InstanceFacts{State: f.State, PrivateIp: f.PrivateIP, SubnetId: f.SubnetID, Az: f.AZ}, nil
+}
+
+// PublicIp returns the public IPv4 address of the instance. EC2 gives it a short
+// time after the launch, so it reads again until wait ends.
+// +cache="never"
+func (i *Instance) PublicIp(
+	ctx context.Context,
+	// Time to wait for the address, for example 2m.
+	wait string,
+) (string, error) {
+	d, err := time.ParseDuration(wait)
+	if err != nil {
+		return "", fmt.Errorf("bad wait %q: %w", wait, err)
+	}
+	c, err := i.Aws.client(ctx)
+	if err != nil {
+		return "", err
+	}
+	return c.PublicIP(ctx, i.InstanceId, d)
 }
 
 // Console returns the serial console output.

@@ -6,6 +6,7 @@ package perfsuite
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -20,8 +21,8 @@ type Row struct {
 	// Cmd is the perfrig command: run (the default) or node.
 	Cmd  string   `json:"cmd,omitempty"`
 	Args []string `json:"args"`
-	// hosts is the number of hosts of a node row: 2 with no relay, 3 with one.
-	// It is 0 for a row of the netns rig.
+	// hosts is the number of hosts of a node row: 2 with no relay, 3 with one
+	// and 4 with two. It is 0 for a row of the netns rig.
 	hosts int
 	// netem tells that a node row adds a netem delay on each host.
 	netem bool
@@ -105,11 +106,17 @@ func (s Suite) NodePlans(o Options) (string, error) {
 	if len(rows) == 0 {
 		return "", nil
 	}
+	// The hosts of a row with two relays are in two regions, and the other node
+	// rows need all hosts in one region.
+	two := func(r Row) bool { return r.hosts > 3 }
+	if slices.ContainsFunc(rows, two) && slices.ContainsFunc(rows, func(r Row) bool { return !two(r) }) {
+		return "", errors.New("the rows with two relays and the other node rows run in separate calls: select one kind with --rows")
+	}
 	plans := map[string]Plan{}
-	for _, role := range []string{"client", "server", "relay"} {
+	for _, role := range []string{"client", "server", "relay", "relay2"} {
 		var picked []Row
 		for _, r := range rows {
-			if role == "relay" && r.hosts < 3 {
+			if (role == "relay" && r.hosts < 3) || (role == "relay2" && r.hosts < 4) {
 				continue
 			}
 			r.Args = append(slices.Clone(r.Args), "-role="+role)
@@ -221,7 +228,9 @@ type vpcRow struct {
 	// relay host then keeps its channels and its MTU.
 	generic bool
 	// nodes runs each role on its own EC2 host, with no netem: 2 hosts with no
-	// relay, 3 with one. 0 runs the row in the netns rig.
+	// relay, 3 with one, and 4 with two relays that have a mesh session. The
+	// client attaches at the first relay and the server at the second, and each
+	// agent host is in the region of its relay. 0 runs the row in the netns rig.
 	nodes int
 	// streams is the flow count. 0 gives 4 flows.
 	streams int
@@ -263,6 +272,14 @@ var vpcRows = []vpcRow{
 	{id: "netstack-psp-relay-3node-p16-xdp-q1", name: "vpc-netstack-psp-relay-3node-xdp-q1", nodes: 3, streams: 16, xdp: true, client: []string{"-cc", "bbr"}, args: []string{"-relay-channels=1"}},
 	// ENA takes the program in driver mode only with a small MTU. A link with MTU 9001 runs it in generic mode.
 	{id: "netstack-psp-relay-3node-p16-xdp-generic", name: "vpc-netstack-psp-relay-3node-xdp-generic", nodes: 3, streams: 16, xdp: true, generic: true, client: []string{"-cc", "bbr"}},
+	// The packets go from the relay of the client to the relay of the server on the
+	// path between two regions. The XDP rows forward in generic mode on the two relays.
+	{id: "netstack-psp-relay-4node-1flow", name: "vpc-netstack-psp-relay-4node", nodes: 4, streams: 1, client: []string{"-cc", "bbr"}},
+	{id: "netstack-psp-relay-4node", name: "vpc-netstack-psp-relay-4node", nodes: 4, client: []string{"-cc", "bbr"}},
+	{id: "netstack-psp-relay-4node-p16", name: "vpc-netstack-psp-relay-4node", nodes: 4, streams: 16, client: []string{"-cc", "bbr"}},
+	{id: "netstack-psp-relay-4node-1flow-xdp-generic", name: "vpc-netstack-psp-relay-4node-xdp-generic", nodes: 4, streams: 1, xdp: true, generic: true, client: []string{"-cc", "bbr"}},
+	{id: "netstack-psp-relay-4node-xdp-generic", name: "vpc-netstack-psp-relay-4node-xdp-generic", nodes: 4, xdp: true, generic: true, client: []string{"-cc", "bbr"}},
+	{id: "netstack-psp-relay-4node-p16-xdp-generic", name: "vpc-netstack-psp-relay-4node-xdp-generic", nodes: 4, streams: 16, xdp: true, generic: true, client: []string{"-cc", "bbr"}},
 }
 
 // nodeStartTimeout is the time that vpcbench on one host waits for the hosts
@@ -270,25 +287,37 @@ var vpcRows = []vpcRow{
 const nodeStartTimeout = "5m"
 
 // argv returns the vpcbench commands of the roles. The relay is the sidecar of
-// the server, in the server netns, in its own netns or on its own host.
-func (r vpcRow) argv(o Options) (sidecar, server, client []string) {
+// the server, in the server netns, in its own netns or on its own host. sidecar2
+// is the second relay of a row with two relays, else nil.
+func (r vpcRow) argv(o Options) (sidecar, sidecar2, server, client []string) {
 	relay := "$SERVER_IP:4443"
 	if r.relayNetns || r.nodes > 0 {
 		relay = "$RELAY_IP:4443"
 	}
-	sidecar = []string{"vpcbench", "relay", "-listen", relay}
-	switch {
-	case r.xdp && r.generic:
-		sidecar = append(sidecar, "-xdp", "$DEV", "-xdp-mode", "generic")
-	case r.xdp && r.nodes > 0:
-		sidecar = append(sidecar, "-xdp", "$DEV", "-xdp-mode", "driver")
-	case r.xdp:
-		// perf-r is the link of the perfrig relay netns.
-		sidecar = append(sidecar, "-xdp", "perf-r")
+	relayArgv := func(listen string) []string {
+		argv := []string{"vpcbench", "relay", "-listen", listen}
+		switch {
+		case r.xdp && r.generic:
+			argv = append(argv, "-xdp", "$DEV", "-xdp-mode", "generic")
+		case r.xdp && r.nodes > 0:
+			argv = append(argv, "-xdp", "$DEV", "-xdp-mode", "driver")
+		case r.xdp:
+			// perf-r is the link of the perfrig relay netns.
+			argv = append(argv, "-xdp", "perf-r")
+		}
+		return append(argv, r.relay...)
 	}
-	sidecar = append(sidecar, r.relay...)
+	sidecar = relayArgv(relay)
 	server = []string{"vpcbench", "server", "-relay", relay, "-listen", "$SERVER_IP:4433"}
 	client = []string{"vpcbench", "client", "-relay", relay, "-server", "$SERVER_IP:4433"}
+	if r.nodes > 3 {
+		// The relay with the lower mesh name dials, so the first relay dials the second.
+		const relay2 = "$RELAY2_IP:4443"
+		sidecar = append(sidecar, "-mesh", "relay-1")
+		sidecar2 = append(relayArgv(relay2), "-mesh", "relay-2", "-join", relay, "-start-timeout", nodeStartTimeout)
+		server = []string{"vpcbench", "server", "-relay", relay2, "-listen", "$SERVER_IP:4433"}
+		client = append(client, "-server-relay", relay2)
+	}
 	if r.direct {
 		sidecar = nil
 		server = []string{"vpcbench", "server", "-via", "direct", "-listen", "$SERVER_IP:4433"}
@@ -307,14 +336,17 @@ func (r vpcRow) argv(o Options) (sidecar, server, client []string) {
 		if sidecar != nil {
 			sidecar = append(sidecar, profileArgs("relay")...)
 		}
+		if sidecar2 != nil {
+			sidecar2 = append(sidecar2, profileArgs("relay2")...)
+		}
 		server = append(server, profileArgs("server")...)
 		client = append(client, profileArgs("client")...)
 	}
-	return sidecar, server, client
+	return sidecar, sidecar2, server, client
 }
 
 func (r vpcRow) row(o Options) Row {
-	sidecar, server, client := r.argv(o)
+	sidecar, sidecar2, server, client := r.argv(o)
 	group := "info"
 	if r.floor {
 		group = "floor"
@@ -341,6 +373,9 @@ func (r vpcRow) row(o Options) Row {
 	if sidecar != nil {
 		args = append(args, "-sidecar-argv="+jsonArgv(sidecar))
 	}
+	if sidecar2 != nil {
+		args = append(args, "-sidecar2-argv="+jsonArgv(sidecar2))
+	}
 	if r.relayNetns {
 		args = append(args, "-relay-netns")
 	}
@@ -364,7 +399,7 @@ func profileArgs(role string) []string {
 }
 
 // VPC is the VPC data path through the relay, with one floor row and info
-// rows. The node rows run on 2 or 3 EC2 hosts. The flood rows are node rows
+// rows. The node rows run on 2, 3 or 4 EC2 hosts. The flood rows are node rows
 // that measure the XDP forward of the relay with no agent.
 var VPC = Suite{
 	Name:  "vpc",

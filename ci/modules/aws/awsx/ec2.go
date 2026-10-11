@@ -42,6 +42,9 @@ type LaunchInput struct {
 	Subnet string
 	// PlacementGroup is the cluster placement group of the instance, or empty.
 	PlacementGroup string
+	// SecurityGroup, when set, is the one security group of the instance, in the
+	// place of the group that SubnetTag gives.
+	SecurityGroup string
 }
 
 // Launch starts one instance and returns its ID. It tries the next subnet when
@@ -57,6 +60,9 @@ func (c *Client) Launch(ctx context.Context, in LaunchInput) (string, error) {
 			return "", fmt.Errorf("subnet %s is not a bench subnet", in.Subnet)
 		}
 		subnets = subnets[i : i+1]
+	}
+	if in.SecurityGroup != "" {
+		sg = in.SecurityGroup
 	}
 	var errs []error
 	for _, s := range subnets {
@@ -365,16 +371,7 @@ func (c *Client) ReapPlacementGroups(ctx context.Context, tag, expiryKey string,
 }
 
 // groupExpiry returns the time in the expiry tag of the group, or the zero time.
-func groupExpiry(g types.PlacementGroup, key string) time.Time {
-	for _, t := range g.Tags {
-		if aws.ToString(t.Key) == key {
-			if at, err := time.Parse(time.RFC3339, aws.ToString(t.Value)); err == nil {
-				return at
-			}
-		}
-	}
-	return time.Time{}
-}
+func groupExpiry(g types.PlacementGroup, key string) time.Time { return tagTime(g.Tags, key) }
 
 // Console returns the serial console output of the instance.
 func (c *Client) Console(ctx context.Context, id string) (string, error) {

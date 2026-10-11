@@ -38,7 +38,7 @@ type Spec struct {
 	// Remove are base name patterns of files that the agent deletes from the
 	// run directory before it packs it, for example keys.
 	Remove []string `json:"remove,omitempty"`
-	// Nodes are the private IPs of the other hosts of a multi-node run, by
+	// Nodes are the addresses of the other hosts of a multi-node run, by
 	// role. The agent gives them to the node rows as -node flags.
 	Nodes map[string]string `json:"nodes,omitempty"`
 	// Rows run one at a time, in this order.

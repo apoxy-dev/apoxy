@@ -60,7 +60,9 @@ type config struct {
 	ServerArgv  []string
 	ClientArgv  []string
 	SidecarArgv []string
-	Ready       string
+	// Sidecar2Argv is the argv of the second relay of "perfrig node".
+	Sidecar2Argv []string
+	Ready        string
 }
 
 func (c config) settings() Settings {

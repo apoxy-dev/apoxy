@@ -186,6 +186,7 @@ func TestXDPLink(t *testing.T) {
 		{name: "relay in driver mode", cfg: config{RelayXDP: true}, role: "relay", wantOn: true},
 		{name: "relay with one channel", cfg: config{RelayXDP: true, RelayChannels: 1}, role: "relay", wantOn: true, wantChannels: 1},
 		{name: "relay in generic mode", cfg: config{RelayXDP: true, RelayXDPGeneric: true}, role: "relay", wantOn: true, wantGeneric: true},
+		{name: "second relay in generic mode", cfg: config{RelayXDP: true, RelayXDPGeneric: true}, role: "relay2", wantOn: true, wantGeneric: true},
 		{name: "server of a relay XDP row", cfg: config{RelayXDP: true, RelayChannels: 1}, role: "server"},
 		{name: "server in driver mode", cfg: config{RelayXDP: true, RelayXDPGeneric: true, ServerXDP: true}, role: "server", wantOn: true},
 		{name: "relay of a server XDP row", cfg: config{ServerXDP: true}, role: "relay"},
@@ -223,18 +224,22 @@ func TestPollsNIC(t *testing.T) {
 }
 
 func TestNodeEnv(t *testing.T) {
-	nodes := nodeFlag{"client": "10.0.0.1", "server": "10.0.0.2", "relay": "10.0.0.3"}
+	nodes := nodeFlag{"client": "10.0.0.1", "server": "10.0.0.2", "relay": "10.0.0.3", "relay2": "10.0.0.4"}
 	cases := []struct {
-		name  string
-		role  string
-		nodes nodeFlag
-		relay bool
-		want  Env
+		name   string
+		role   string
+		nodes  nodeFlag
+		relays int
+		want   Env
 	}{
-		{name: "client of a row with a relay", role: "client", nodes: nodes, relay: true,
+		{name: "client of a row with a relay", role: "client", nodes: nodes, relays: 1,
 			want: Env{ClientIP: "10.0.0.9", ServerIP: "10.0.0.2", RelayIP: "10.0.0.3"}},
-		{name: "relay", role: "relay", nodes: nodes, relay: true,
+		{name: "relay", role: "relay", nodes: nodes, relays: 1,
 			want: Env{ClientIP: "10.0.0.1", ServerIP: "10.0.0.2", RelayIP: "10.0.0.9"}},
+		{name: "client of a row with two relays", role: "client", nodes: nodes, relays: 2,
+			want: Env{ClientIP: "10.0.0.9", ServerIP: "10.0.0.2", RelayIP: "10.0.0.3", Relay2IP: "10.0.0.4"}},
+		{name: "second relay", role: "relay2", nodes: nodes, relays: 2,
+			want: Env{ClientIP: "10.0.0.1", ServerIP: "10.0.0.2", RelayIP: "10.0.0.3", Relay2IP: "10.0.0.9"}},
 		{name: "client of a row with no relay in a run with a relay host", role: "client", nodes: nodes,
 			want: Env{ClientIP: "10.0.0.9", ServerIP: "10.0.0.2"}},
 		{name: "server of a row with no relay in a run with a relay host", role: "server", nodes: nodes,
@@ -244,7 +249,34 @@ func TestNodeEnv(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.want.Dev, tc.want.Streams = "eth0", 4
-			assert.Equal(t, tc.want, nodeEnv(config{Streams: 4}, tc.role, "10.0.0.9", "eth0", tc.nodes, tc.relay))
+			assert.Equal(t, tc.want, nodeEnv(config{Streams: 4}, tc.role, "10.0.0.9", "eth0", tc.nodes, tc.relays))
+		})
+	}
+}
+
+func TestNodePeers(t *testing.T) {
+	one := Env{ClientIP: "10.0.0.1", ServerIP: "10.0.0.2", RelayIP: "10.0.0.3"}
+	two := one
+	two.Relay2IP = "10.0.0.4"
+	cases := []struct {
+		name string
+		role string
+		env  Env
+		want []string
+	}{
+		{name: "client with no relay", role: "client", env: Env{ServerIP: "10.0.0.2"}, want: []string{"10.0.0.2"}},
+		{name: "server with no relay", role: "server", env: Env{ServerIP: "10.0.0.2"}},
+		{name: "client with one relay", role: "client", env: one, want: []string{"10.0.0.2", "10.0.0.3"}},
+		{name: "server with one relay", role: "server", env: one, want: []string{"10.0.0.3"}},
+		{name: "relay", role: "relay", env: one},
+		{name: "client with two relays", role: "client", env: two, want: []string{"10.0.0.2", "10.0.0.3", "10.0.0.4"}},
+		{name: "server with two relays", role: "server", env: two, want: []string{"10.0.0.3", "10.0.0.4"}},
+		{name: "first relay of two", role: "relay", env: two},
+		{name: "second relay", role: "relay2", env: two, want: []string{"10.0.0.3"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, nodePeers(tc.role, tc.env))
 		})
 	}
 }
