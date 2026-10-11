@@ -134,6 +134,40 @@ func TestParseFlags(t *testing.T) {
 	}
 }
 
+func TestNewRelayPart(t *testing.T) {
+	sec := int64(time.Second)
+	cases := []struct {
+		name string
+		m    [2]mark
+		want relayPart
+	}{
+		{
+			name: "socket path",
+			m: [2]mark{
+				{SockDrops: 1, Socket: map[string]uint64{"agent_row": 10, "member_row": 4, "dropped": 0}},
+				{Nanos: sec, CPU: 0.5, SockDrops: 4, Socket: map[string]uint64{"agent_row": 110, "member_row": 4, "dropped": 0}},
+			},
+			want: relayPart{Of: "client", Cores: 0.5, SocketPackets: map[string]uint64{"agent_row": 100}, SockDrops: 3},
+		},
+		{
+			name: "XDP path with one busy CPU",
+			m: [2]mark{
+				{XDPMode: "generic", XDPPackets: 5, CPUs: []bench.CPUTicks{{Idle: 100}, {Idle: 100}}},
+				{Nanos: sec, XDPMode: "generic", XDPPackets: 25, CPUs: []bench.CPUTicks{{Idle: 200}, {IRQ: 80, Idle: 120}}},
+			},
+			want: relayPart{
+				Of: "client", XDPMode: "generic", Start: relayCount{XDPForwarded: 5}, End: relayCount{XDPForwarded: 25},
+				TopCPUs: []cpuUse{{CPU: 1, IRQ: 80}, {CPU: 0}}, HostCPU: &cpuKinds{IRQ: 0.8},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, newRelayPart("client", tc.m))
+		})
+	}
+}
+
 func TestNewResult(t *testing.T) {
 	sec := int64(time.Second)
 	cases := []struct {
@@ -144,8 +178,11 @@ func TestNewResult(t *testing.T) {
 		{
 			name: "all sides",
 			client: [2]mark{
-				{Nanos: 0, HostCPU: 10, Segments: 100, Drops: 1, LinkDrops: 4, Lanes: []uint64{60, 40}},
-				{Nanos: 2 * sec, CPU: 1, HostCPU: 16, Segments: 1100, Retrans: 10, Drops: 3, LinkDrops: 9, Lanes: []uint64{560, 440, 100}},
+				{Nanos: 0, HostCPU: 10, Segments: 100, Drops: 1, LinkDrops: 4, Lanes: []uint64{60, 40}, TCP: map[string]uint64{"dsack": 1, "sack_recovery": 2}},
+				{
+					Nanos: 2 * sec, CPU: 1, HostCPU: 16, Segments: 1100, Retrans: 10, Drops: 3, LinkDrops: 9, Lanes: []uint64{560, 440, 100},
+					TCP: map[string]uint64{"dsack": 1, "sack_recovery": 5},
+				},
 			},
 			server: [2]mark{
 				{Nanos: sec, HostCPU: 20, Retrans: 1, RcvbufErrors: 5, SockDrops: 1, RxLanes: []uint64{100}},
@@ -178,6 +215,7 @@ func TestNewResult(t *testing.T) {
 				RelaySendCalls: 10, RelaySendMessages: 40, RelaySendPackets: 900,
 				ClientLanePackets: []uint64{500, 400, 100}, ServerLanePackets: []uint64{30},
 				ServerRxLanePackets: []uint64{1000, 0, 1000},
+				ClientTCP:           map[string]uint64{"sack_recovery": 3},
 			},
 		},
 		{

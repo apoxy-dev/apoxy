@@ -29,6 +29,11 @@ var ethtoolCounters = []string{
 // sysfsCounters are the drop counters in /sys/class/net/DEV/statistics.
 var sysfsCounters = []string{"rx_dropped", "tx_dropped", "rx_over_errors", "rx_missed_errors"}
 
+// linkCounters are the packet counters in /sys/class/net/DEV/statistics. The
+// packets that one host sent less the packets that the next host got are the
+// packets lost between them, also when no drop counter has them.
+var linkCounters = []string{"rx_packets", "tx_packets"}
+
 // udpCounters are the Udp counters of /proc/net/snmp of the host, by result
 // name. A UDP GSO message and a UDP GRO message count as one datagram.
 var udpCounters = map[string]string{
@@ -51,6 +56,9 @@ var nicCounterNames = append(append(slices.Clone(ethtoolCounters), sysfsCounters
 var (
 	rxQueuePackets  = regexp.MustCompile(`^queue_\d+_rx_cnt$`)
 	txQueueCounters = regexp.MustCompile(`^queue_\d+_tx_(cnt|queue_stop|queue_wakeup)$`)
+	// rxQueueDetail matches the counters of one RX queue for a ring with no
+	// buffer, for a buffer that the driver could not make, and for each XDP result.
+	rxQueueDetail = regexp.MustCompile(`^queue_\d+_rx_(empty_rx_ring|refil_partial|page_alloc_fail|skb_alloc_fail|xdp_[a-z]+)$`)
 )
 
 // defaultDev returns the device of the default IPv4 route.
@@ -144,7 +152,7 @@ func nicCounters(ctx context.Context, dev string) map[string]int64 {
 			maps.Copy(got, parseEthtoolStats(out, ethtoolCounters))
 		}
 	}
-	for _, name := range sysfsCounters {
+	for _, name := range slices.Concat(sysfsCounters, linkCounters) {
 		b, err := os.ReadFile(filepath.Join("/sys/class/net", dev, "statistics", name))
 		if err != nil {
 			continue
@@ -170,7 +178,7 @@ func parseEthtoolStats(out string, names []string) map[string]int64 {
 	for _, line := range strings.Split(out, "\n") {
 		k, v, ok := strings.Cut(line, ":")
 		k = strings.TrimSpace(k)
-		if !ok || !(want[k] || rxQueuePackets.MatchString(k) || txQueueCounters.MatchString(k)) {
+		if !ok || !(want[k] || rxQueuePackets.MatchString(k) || txQueueCounters.MatchString(k) || rxQueueDetail.MatchString(k)) {
 			continue
 		}
 		n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)

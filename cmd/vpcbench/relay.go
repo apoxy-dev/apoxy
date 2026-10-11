@@ -181,6 +181,7 @@ func runRelay(ctx context.Context, o options, ready func(netip.AddrPort)) error 
 				if mesh != nil {
 					m.Trunk = trunkCounters(r)
 				}
+				m.Socket = socketCounters(r)
 				o.marked(req.Index, req.Window)
 				return reply{Mark: m}, nil
 			case "stop":
@@ -410,6 +411,24 @@ func trunkCounters(r *relay.Router) *trunkCount {
 		}
 	}
 	return t
+}
+
+// socketCounters returns the PSP packets that the socket path of r took, by class.
+func socketCounters(r *relay.Router) map[string]uint64 {
+	ch := make(chan prometheus.Metric, 8)
+	go func() {
+		r.Collect(ch)
+		close(ch)
+	}()
+	out := map[string]uint64{}
+	for m := range ch {
+		var d dto.Metric
+		if m.Write(&d) != nil || !strings.Contains(m.Desc().String(), `"apoxy_vpc_relay_socket_packets_total"`) {
+			continue
+		}
+		out[label(&d, "class")] = uint64(d.GetCounter().GetValue())
+	}
+	return out
 }
 
 // label returns the value of the label name of a counter.

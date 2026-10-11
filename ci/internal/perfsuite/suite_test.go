@@ -367,6 +367,32 @@ func TestNodePlans(t *testing.T) {
 				`-sidecar2-argv=["vpcbench","relay","-listen","$RELAY2_IP:4443","-xdp","$DEV","-xdp-mode","generic","-mesh","relay-2","-join","$RELAY_IP:4443","-start-timeout","5m"]`,
 			},
 		},
+		// Only one relay of the row forwards in XDP. The other relay uses its socket.
+		{
+			id: "netstack-psp-relay-4node-1flow-xdp-generic-relay1",
+			want: []string{
+				"-name=vpc-netstack-psp-relay-4node-xdp-generic-relay1", "-streams=1", "-relay-xdp", "-relay-xdp-generic",
+				`-sidecar-argv=["vpcbench","relay","-listen","$RELAY_IP:4443","-xdp","$DEV","-xdp-mode","generic","-mesh","relay-1"]`,
+				`-sidecar2-argv=["vpcbench","relay","-listen","$RELAY2_IP:4443","-mesh","relay-2","-join","$RELAY_IP:4443","-start-timeout","5m"]`,
+			},
+		},
+		{
+			id: "netstack-psp-relay-4node-1flow-xdp-generic-relay2",
+			want: []string{
+				"-name=vpc-netstack-psp-relay-4node-xdp-generic-relay2", "-streams=1", "-relay-xdp", "-relay-xdp-generic",
+				`-sidecar-argv=["vpcbench","relay","-listen","$RELAY_IP:4443","-mesh","relay-1"]`,
+				`-sidecar2-argv=["vpcbench","relay","-listen","$RELAY2_IP:4443","-xdp","$DEV","-xdp-mode","generic","-mesh","relay-2","-join","$RELAY_IP:4443","-start-timeout","5m"]`,
+			},
+		},
+		{
+			id: "netstack-psp-relay-4node-1flow-xdp",
+			want: []string{
+				"-name=vpc-netstack-psp-relay-4node-xdp", "-streams=1", "-relay-xdp",
+				`-sidecar-argv=["vpcbench","relay","-listen","$RELAY_IP:4443","-xdp","$DEV","-xdp-mode","driver","-mesh","relay-1"]`,
+				`-sidecar2-argv=["vpcbench","relay","-listen","$RELAY2_IP:4443","-xdp","$DEV","-xdp-mode","driver","-mesh","relay-2","-join","$RELAY_IP:4443","-start-timeout","5m"]`,
+			},
+			notWant: "-relay-xdp-generic",
+		},
 	}
 	for _, tc := range wantArgs {
 		i = slices.IndexFunc(rows, func(r Row) bool { return r.ID == tc.id })

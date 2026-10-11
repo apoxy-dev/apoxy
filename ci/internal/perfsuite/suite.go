@@ -227,6 +227,9 @@ type vpcRow struct {
 	// generic attaches the XDP program of a node row in generic mode. The
 	// relay host then keeps its channels and its MTU.
 	generic bool
+	// xdpRelay attaches the XDP program on only one relay of a row with two
+	// relays: 1 is the relay of the client and 2 the relay of the server. 0 is both.
+	xdpRelay int
 	// nodes runs each role on its own EC2 host, with no netem: 2 hosts with no
 	// relay, 3 with one, and 4 with two relays that have a mesh session. The
 	// client attaches at the first relay and the server at the second, and each
@@ -278,6 +281,9 @@ var vpcRows = []vpcRow{
 	{id: "netstack-psp-relay-4node", name: "vpc-netstack-psp-relay-4node", nodes: 4, client: []string{"-cc", "bbr"}},
 	{id: "netstack-psp-relay-4node-p16", name: "vpc-netstack-psp-relay-4node", nodes: 4, streams: 16, client: []string{"-cc", "bbr"}},
 	{id: "netstack-psp-relay-4node-1flow-xdp-generic", name: "vpc-netstack-psp-relay-4node-xdp-generic", nodes: 4, streams: 1, xdp: true, generic: true, client: []string{"-cc", "bbr"}},
+	{id: "netstack-psp-relay-4node-1flow-xdp", name: "vpc-netstack-psp-relay-4node-xdp", nodes: 4, streams: 1, xdp: true, client: []string{"-cc", "bbr"}},
+	{id: "netstack-psp-relay-4node-1flow-xdp-generic-relay1", name: "vpc-netstack-psp-relay-4node-xdp-generic-relay1", nodes: 4, streams: 1, xdp: true, generic: true, xdpRelay: 1, client: []string{"-cc", "bbr"}},
+	{id: "netstack-psp-relay-4node-1flow-xdp-generic-relay2", name: "vpc-netstack-psp-relay-4node-xdp-generic-relay2", nodes: 4, streams: 1, xdp: true, generic: true, xdpRelay: 2, client: []string{"-cc", "bbr"}},
 	{id: "netstack-psp-relay-4node-xdp-generic", name: "vpc-netstack-psp-relay-4node-xdp-generic", nodes: 4, xdp: true, generic: true, client: []string{"-cc", "bbr"}},
 	{id: "netstack-psp-relay-4node-p16-xdp-generic", name: "vpc-netstack-psp-relay-4node-xdp-generic", nodes: 4, streams: 16, xdp: true, generic: true, client: []string{"-cc", "bbr"}},
 }
@@ -294,9 +300,10 @@ func (r vpcRow) argv(o Options) (sidecar, sidecar2, server, client []string) {
 	if r.relayNetns || r.nodes > 0 {
 		relay = "$RELAY_IP:4443"
 	}
-	relayArgv := func(listen string) []string {
+	relayArgv := func(listen string, n int) []string {
 		argv := []string{"vpcbench", "relay", "-listen", listen}
 		switch {
+		case r.xdpRelay != 0 && r.xdpRelay != n:
 		case r.xdp && r.generic:
 			argv = append(argv, "-xdp", "$DEV", "-xdp-mode", "generic")
 		case r.xdp && r.nodes > 0:
@@ -307,14 +314,14 @@ func (r vpcRow) argv(o Options) (sidecar, sidecar2, server, client []string) {
 		}
 		return append(argv, r.relay...)
 	}
-	sidecar = relayArgv(relay)
+	sidecar = relayArgv(relay, 1)
 	server = []string{"vpcbench", "server", "-relay", relay, "-listen", "$SERVER_IP:4433"}
 	client = []string{"vpcbench", "client", "-relay", relay, "-server", "$SERVER_IP:4433"}
 	if r.nodes > 3 {
 		// The relay with the lower mesh name dials, so the first relay dials the second.
 		const relay2 = "$RELAY2_IP:4443"
 		sidecar = append(sidecar, "-mesh", "relay-1")
-		sidecar2 = append(relayArgv(relay2), "-mesh", "relay-2", "-join", relay, "-start-timeout", nodeStartTimeout)
+		sidecar2 = append(relayArgv(relay2, 2), "-mesh", "relay-2", "-join", relay, "-start-timeout", nodeStartTimeout)
 		server = []string{"vpcbench", "server", "-relay", relay2, "-listen", "$SERVER_IP:4433"}
 		client = append(client, "-server-relay", relay2)
 	}

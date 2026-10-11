@@ -89,6 +89,25 @@ func (n *netstackNet) TCPCounters() (sent, retrans uint64) {
 	return tcpStats.SegmentsSent.Value(), tcpStats.Retransmits.Value()
 }
 
+// TCPDetail returns the loss recovery counters of the stack.
+func (n *netstackNet) TCPDetail() map[string]uint64 {
+	t := n.ns.Stack.Stats().TCP
+	return map[string]uint64{
+		"fast_recovery":       t.FastRecovery.Value(),
+		"sack_recovery":       t.SACKRecovery.Value(),
+		"tlp_recovery":        t.TLPRecovery.Value(),
+		"fast_retransmit":     t.FastRetransmit.Value(),
+		"slow_start_retrans":  t.SlowStartRetransmits.Value(),
+		"timeouts":            t.Timeouts.Value(),
+		"dsack":               t.SegmentsAckedWithDSACK.Value(),
+		"spurious_recovery":   t.SpuriousRecovery.Value(),
+		"spurious_rto":        t.SpuriousRTORecovery.Value(),
+		"segments_received":   t.ValidSegmentsReceived.Value(),
+		"segments_sent":       t.SegmentsSent.Value(),
+		"max_in_flight_drops": t.ForwardMaxInFlightDrop.Value(),
+	}
+}
+
 // LinkDrops returns the packets that the NIC sent and that the driver did not
 // get. When its queue is full, the channel endpoint drops a packet, but the
 // NIC can count it as sent. Thus the NIC packets sent, less the packets that

@@ -57,6 +57,10 @@ type mark struct {
 	// Trunk are the packets between a relay and the other relays of its mesh. It
 	// is nil for a relay with no mesh.
 	Trunk *trunkCount `json:"trunk,omitempty"`
+	// Socket are the PSP packets that the socket path of a relay took, by class.
+	Socket map[string]uint64 `json:"socket,omitempty"`
+	// TCP are the loss recovery counters of the TCP stack of an agent.
+	TCP map[string]uint64 `json:"tcp,omitempty"`
 	// Sends are the sendmmsg counters of the relay socket path.
 	Sends relay.ForwardStats `json:"sends,omitzero"`
 	// CPUs are the ticks of each CPU of the host of the side.
@@ -326,6 +330,10 @@ type result struct {
 	// Relays are the two relays of a run with two relays: the relay of the client,
 	// then the relay of the server. The relay_ fields are of the relay of the client.
 	Relays []relayPart `json:"relays,omitempty"`
+	// ClientTCP and ServerTCP are the loss recovery counters of the TCP stack of
+	// each agent in the window. dsack are segments that the peer got two times.
+	ClientTCP map[string]uint64 `json:"client_tcp,omitempty"`
+	ServerTCP map[string]uint64 `json:"server_tcp,omitempty"`
 
 	// Omit is the omit period, from the flow start to the window start.
 	Omit period `json:"omit"`
@@ -345,6 +353,13 @@ type relayPart struct {
 	// DropReasons are the drops that are not 0, by reason.
 	DropReasons map[string]uint64 `json:"drop_reasons,omitempty"`
 	XDPMode     string            `json:"xdp_mode,omitempty"`
+	// SocketPackets are the PSP packets that the socket path took, by class, and
+	// SockDrops the datagrams that the relay socket dropped, or -1.
+	SocketPackets map[string]uint64 `json:"socket_packets,omitempty"`
+	SockDrops     int64             `json:"sock_drops"`
+	// TopCPUs are the busiest CPUs of the relay host and HostCPU its CPU time by kind.
+	TopCPUs []cpuUse  `json:"top_cpus,omitempty"`
+	HostCPU *cpuKinds `json:"host_cpu,omitempty"`
 	// Start and End are the counters at the start and at the end of the window.
 	Start relayCount `json:"start"`
 	End   relayCount `json:"end"`
@@ -377,6 +392,8 @@ func newRelayPart(of string, m [2]mark) relayPart {
 		Of: of, Cores: cores(m[0], m[1]), HostCores: hostCores(m[0], m[1]),
 		Drops: m[1].Drops - m[0].Drops, DropReasons: counterDelta(m[0].DropReasons, m[1].DropReasons),
 		XDPMode: m[1].XDPMode, Start: count(m[0]), End: count(m[1]),
+		SocketPackets: counterDelta(m[0].Socket, m[1].Socket), SockDrops: delta(m[0].SockDrops, m[1].SockDrops),
+		TopCPUs: busiestCPUs(m[0], m[1], topCPUs), HostCPU: hostKinds(m[0], m[1]),
 	}
 }
 
@@ -426,6 +443,7 @@ func newResult(client, server, relay [2]mark) result {
 	r.PacketsPerSecond = float64(server[1].RxPackets-server[0].RxPackets) / s
 	r.Retransmits = client[1].Retrans - client[0].Retrans
 	r.ServerRetransmits = server[1].Retrans - server[0].Retrans
+	r.ClientTCP, r.ServerTCP = counterDelta(client[0].TCP, client[1].TCP), counterDelta(server[0].TCP, server[1].TCP)
 	if segs := client[1].Segments - client[0].Segments; segs > 0 {
 		r.RetransPercent = float64(r.Retransmits) * 100 / float64(segs)
 	}

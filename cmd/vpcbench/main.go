@@ -671,6 +671,7 @@ func runServer(parent context.Context, o options, ready func(netip.AddrPort)) er
 				Bytes: got.Load(), RxPackets: st.RxPackets, Drops: st.RxDrops + st.RxNoDriver,
 				RcvbufErrors: snmpCounter("Udp:", "RcvbufErrors"), SockDrops: sockDrops(s.uc), LinkDrops: s.net.LinkDrops(),
 				CPUs: bench.PerCPU(), Queue: s.q.take(), Lanes: s.b.LanePackets(), RxLanes: s.b.RxLanePackets(),
+				TCP: tcpDetail(s.net),
 			}
 			o.marked(req.Index, req.Window)
 			return reply{Mark: m}, nil
@@ -923,7 +924,7 @@ func measure(ctx context.Context, o options, s *side, peer netip.Addr, srv, rela
 		client[i] = mark{
 			Nanos: at[i].Nanoseconds(), CPU: bench.CPUSeconds(), HostCPU: bench.HostCPUSeconds(), Segments: st.TxPackets, Retrans: retrans,
 			Drops: st.TxDrops + st.TxLimitDrops, LinkDrops: s.net.LinkDrops(), CPUs: bench.PerCPU(), Queue: s.q.take(),
-			Lanes: s.b.LanePackets(),
+			Lanes: s.b.LanePackets(), TCP: tcpDetail(s.net),
 		}
 		var err error
 		if server[i], err = srv.mark(i, o.Duration); err != nil {
@@ -990,4 +991,13 @@ func flow(ctx context.Context, c net.Conn) error {
 			return fmt.Errorf("write: %w", err)
 		}
 	}
+}
+
+// tcpDetail returns the loss recovery counters of the TCP stack of o, or nil
+// when the stack is not in this process.
+func tcpDetail(o overlay) map[string]uint64 {
+	if d, ok := o.(interface{ TCPDetail() map[string]uint64 }); ok {
+		return d.TCPDetail()
+	}
+	return nil
 }
