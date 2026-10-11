@@ -125,7 +125,7 @@ type trunkPair struct {
 	stats   *peerStats     // Counters of the member.
 
 	spis atomic.Pointer[[]trunkSPI] // Receive SAs, for the packet path.
-	run  atomic.Pointer[trunkProbe] // Probe run that waits for its answer.
+	run  atomic.Pointer[trunkProbe] // Newest probe run. A later answer to it is no drop.
 	path atomic.Uint32              // A trunkPath value.
 
 	// trunk.mu guards the fields below.
@@ -830,7 +830,6 @@ func (t *trunk) probe(ctx context.Context, br *bridge, p *trunkPair) bool {
 	run := &trunkProbe{ok: make(chan struct{})}
 	_, _ = rand.Read(run.id[:])
 	p.run.Store(run)
-	defer p.run.CompareAndSwap(run, nil)
 	msg := make([]byte, trunkMTU)
 	msg[0] = trunkMsgProbe
 	copy(msg[1:], run.id[:])

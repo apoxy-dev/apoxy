@@ -940,6 +940,9 @@ func TestTrunkProbeTime(t *testing.T) {
 		assert.Equal(t, trunkPathFull, path())
 		assert.Equal(t, 1412, p.mtu())
 		assert.Equal(t, want, drops(), "a good answer is no drop")
+		// The member answers each packet of a run, and the run ends at the first answer.
+		g.send(trunkTagRelay, reply)
+		assert.Equal(t, want, drops(), "a second answer to the same run is no drop")
 
 		// A passed run is the last run of the session.
 		time.Sleep(5 * time.Minute)
