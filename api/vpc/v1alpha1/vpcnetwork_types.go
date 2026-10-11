@@ -88,6 +88,22 @@ type VPCNetworkStatus struct {
 	// Agents whose certs are revoked. Written by the revoke subresource.
 	// +optional
 	RevokedAgents []RevokedAgent `json:"revokedAgents,omitempty,omitzero"`
+
+	// Signature of the project on the data of this network that relays use.
+	// +optional
+	TrustSignature *VPCNetworkTrustSignature `json:"trustSignature,omitempty,omitzero"`
+}
+
+// VPCNetworkTrustSignature is the signature of a project on one of its networks.
+type VPCNetworkTrustSignature struct {
+	// KeyID names the signing key.
+	KeyID string `json:"keyID"`
+
+	// SignedAt is the time of the signature. It is a part of the signed data.
+	SignedAt metav1.Time `json:"signedAt"`
+
+	// Signature is the ASN.1 ECDSA signature.
+	Signature []byte `json:"signature"`
 }
 
 var _ resource.StatusSubResource = &VPCNetworkStatus{}

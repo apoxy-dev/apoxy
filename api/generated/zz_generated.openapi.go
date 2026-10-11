@@ -330,6 +330,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetworkRef":                        schema_apoxy_api_vpc_v1alpha1_VPCNetworkRef(ref),
 		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetworkSpec":                       schema_apoxy_api_vpc_v1alpha1_VPCNetworkSpec(ref),
 		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetworkStatus":                     schema_apoxy_api_vpc_v1alpha1_VPCNetworkStatus(ref),
+		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetworkTrustSignature":             schema_apoxy_api_vpc_v1alpha1_VPCNetworkTrustSignature(ref),
 		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCService":                           schema_apoxy_api_vpc_v1alpha1_VPCService(ref),
 		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCServiceEndpoint":                   schema_apoxy_api_vpc_v1alpha1_VPCServiceEndpoint(ref),
 		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCServiceList":                       schema_apoxy_api_vpc_v1alpha1_VPCServiceList(ref),
@@ -13549,11 +13550,54 @@ func schema_apoxy_api_vpc_v1alpha1_VPCNetworkStatus(ref common.ReferenceCallback
 							},
 						},
 					},
+					"trustSignature": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Signature of the project on the data of this network that relays use.",
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetworkTrustSignature"),
+						},
+					},
 				},
 			},
 		},
 		Dependencies: []string{
-			"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.RevokedAgent", "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetworkCredentials", "k8s.io/apimachinery/pkg/apis/meta/v1.Condition"},
+			"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.RevokedAgent", "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetworkCredentials", "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetworkTrustSignature", "k8s.io/apimachinery/pkg/apis/meta/v1.Condition"},
+	}
+}
+
+func schema_apoxy_api_vpc_v1alpha1_VPCNetworkTrustSignature(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "VPCNetworkTrustSignature is the signature of a project on one of its networks.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"keyID": {
+						SchemaProps: spec.SchemaProps{
+							Description: "KeyID names the signing key.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"signedAt": {
+						SchemaProps: spec.SchemaProps{
+							Description: "SignedAt is the time of the signature. It is a part of the signed data.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+						},
+					},
+					"signature": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Signature is the ASN.1 ECDSA signature.",
+							Type:        []string{"string"},
+							Format:      "byte",
+						},
+					},
+				},
+				Required: []string{"keyID", "signedAt", "signature"},
+			},
+		},
+		Dependencies: []string{
+			"k8s.io/apimachinery/pkg/apis/meta/v1.Time"},
 	}
 }
 
