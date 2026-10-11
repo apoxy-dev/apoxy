@@ -202,7 +202,7 @@ func TestBridge(t *testing.T) {
 }
 
 // TestBridgeDrops checks the drops of the bridge. A drop counts on the
-// sender, and the relay sends nothing.
+// sender and on the relay, and the relay sends nothing.
 func TestBridgeDrops(t *testing.T) {
 	ca := newCA(t)
 	h := newHarness(t, ca)
@@ -263,11 +263,13 @@ func TestBridgeDrops(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			before := h.r.SenderStats(tc.from.s)
+			before, relayBefore := h.r.SenderStats(tc.from.s), h.r.drops[dropData].Load()
 			tc.send(t)
 			require.Eventually(t, func() bool {
 				return h.r.SenderStats(tc.from.s).DataDrops == before.DataDrops+1
 			}, 5*time.Second, 5*time.Millisecond)
+			// The relay also counts the drop with the reason data.
+			assert.Equal(t, relayBefore+1, h.r.drops[dropData].Load())
 			assert.Equal(t, before.DataSent+tc.sent, h.r.SenderStats(tc.from.s).DataSent)
 			if tc.noRoute.IsValid() {
 				assert.Equal(t, tc.noRoute.String(), waitNoRoute(t, tc.from.st))

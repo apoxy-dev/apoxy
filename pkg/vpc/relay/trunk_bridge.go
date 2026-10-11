@@ -4,6 +4,8 @@ package relay
 
 import (
 	"encoding/binary"
+	"errors"
+	"fmt"
 	"net/netip"
 	"time"
 
@@ -22,6 +24,7 @@ func (r *Router) trunkCarries(s *Session, h hop, inner []byte, now time.Time) bo
 	case h.tag == 0:
 		// The other relay knows a sender only by its tag.
 		s.dataDrops.Add(1)
+		r.drops[dropData].Add(1)
 		return false
 	}
 	// The relay seals a clear packet, so it needs an SA of the other relay.
@@ -38,6 +41,9 @@ func (r *Router) trunkCarries(s *Session, h hop, inner []byte, now time.Time) bo
 	return false
 }
 
+// errTrunkKeys is the error of a drop that has the reason trunk_keys.
+var errTrunkKeys = errors.New("trunk SA cannot seal")
+
 // sealTrunk seals inner into buf with the trunk SA and the sender tag of h, and
 // sends the trunk packet to the relay of h.
 func (r *Router) sealTrunk(h hop, inner, buf []byte) error {
@@ -50,7 +56,7 @@ func (r *Router) sealTrunk(h hop, inner, buf []byte) error {
 		// The SA has no sequence number left.
 		r.drops[dropTrunkKeys].Add(1)
 		h.pair.stats.drops[dropTrunkKeys].Add(1)
-		return err
+		return fmt.Errorf("%w: %w", errTrunkKeys, err)
 	}
 	if _, err = br.tr.WriteTo(buf[:n], h.pair.udp); err != nil {
 		return err

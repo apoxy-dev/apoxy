@@ -106,6 +106,7 @@ const (
 	dropSendQueue // The forward goroutine of the destination is too slow.
 	dropTrunkMTU  // The packet is too large for the trunk to another relay.
 	dropTrunkKeys // The relay has no trunk to another relay now, or no SA of it for a clear packet.
+	dropData      // The relay opened a data frame or a PSP packet of an agent and did not send it on.
 	// The reasons below are for a peer frame to or from a mesh member.
 	dropMeshNoSession  // The member of the destination has no open mesh session.
 	dropMeshOldMember  // The member of the destination does not know the frame.
@@ -141,6 +142,7 @@ var dropLabels = [numDropReasons]string{
 	dropSendQueue:      "send_queue",
 	dropTrunkMTU:       "trunk_mtu",
 	dropTrunkKeys:      "trunk_keys",
+	dropData:           "data",
 	dropMeshNoSession:  "mesh_no_session",
 	dropMeshOldMember:  "mesh_old_member",
 	dropMeshTooLarge:   "mesh_too_large",
@@ -205,6 +207,9 @@ var socketDesc = prometheus.NewDesc("apoxy_vpc_relay_socket_packets_total",
 	"PSP packets that the socket path took, by class. The XDP program forwards only the classes agent_row and member_row.",
 	[]string{"class"}, nil)
 
+var socketDropsDesc = prometheus.NewDesc("apoxy_vpc_relay_socket_receive_drops_total",
+	"Packets that the kernel dropped at the relay socket, for example with a full receive buffer. The relay did not see them.", nil, nil)
+
 var (
 	xdpPacketsDesc = prometheus.NewDesc("apoxy_vpc_relay_xdp_packets_total",
 		"PSP packets that the XDP program forwarded, or gave to the socket path, by result.", []string{"result"}, nil)
@@ -219,6 +224,7 @@ func (r *Router) Describe(ch chan<- *prometheus.Desc) {
 	ch <- dropsDesc
 	ch <- refusalsDesc
 	ch <- socketDesc
+	ch <- socketDropsDesc
 	ch <- xdpPacketsDesc
 	ch <- xdpBytesDesc
 	ch <- trunkPacketsDesc
@@ -247,6 +253,12 @@ func (r *Router) Collect(ch chan<- prometheus.Metric) {
 	}
 	for i := range r.socket {
 		ch <- prometheus.MustNewConstMetric(socketDesc, prometheus.CounterValue, float64(r.socket[i].Load()), socketLabels[i])
+	}
+	if br := r.bridge.Load(); br != nil {
+		// A relay with no socket of its own has no series.
+		if n, ok := socketDrops(br.tr.Conn); ok {
+			ch <- prometheus.MustNewConstMetric(socketDropsDesc, prometheus.CounterValue, float64(n))
+		}
 	}
 	for _, c := range []struct {
 		result string

@@ -186,6 +186,7 @@ func (r *Router) forwardData(s *Session, b, buf []byte, now time.Time) bool {
 	r.mu.RUnlock()
 	if err != nil {
 		s.dataDrops.Add(1)
+		r.drops[dropData].Add(1)
 		return false
 	}
 	// The checks of the trunk come first: a packet that it cannot carry takes
@@ -212,10 +213,12 @@ func (r *Router) receivePSP(br *bridge, pkt []byte, spi uint32, buf []byte, now 
 	}
 	r.mu.RUnlock()
 	if src == nil {
+		r.drops[dropData].Add(1)
 		return false
 	}
 	if err != nil {
 		src.dataDrops.Add(1)
+		r.drops[dropData].Add(1)
 		return false
 	}
 	// The frame header takes the 5 bytes before the inner packet. Its type
@@ -252,6 +255,9 @@ func (r *Router) deliver(src *Session, h hop, frame, inner, buf []byte, now time
 	}
 	if err != nil {
 		src.dataDrops.Add(1)
+		if !errors.Is(err, errTrunkKeys) {
+			r.drops[dropData].Add(1)
+		}
 		return false
 	}
 	src.dataSent.Add(1)

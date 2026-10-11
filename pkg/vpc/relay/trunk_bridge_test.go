@@ -337,8 +337,12 @@ func TestTrunkBridgeSend(t *testing.T) {
 				out := g.bridgeSend(in, inner)
 				assert.Equal(t, tc.want, sentOf(g.r, from.s))
 				drops := map[string]uint64{}
-				if tc.drop != "" {
+				switch {
+				case tc.drop != "":
 					drops[tc.drop] = 1
+				case tc.want.drops > 0:
+					// A drop with no other reason has the reason data.
+					drops["data"] = 1
 				}
 				assert.Equal(t, drops, dropsOf(g.r))
 				var told []string
@@ -839,7 +843,7 @@ func TestTrunkBridgeNoSeal(t *testing.T) {
 				assert.False(t, g.r.deliver(q.s, h, frame, inner, buf, time.Now()))
 				assert.Empty(t, g.packets())
 				assert.Equal(t, senderCounts{sent: 1, drops: 1}, sentOf(g.r, q.s))
-				assert.Empty(t, dropsOf(g.r), "the drop has no trunk reason, because no SA failed")
+				assert.Equal(t, map[string]uint64{"data": 1}, dropsOf(g.r), "the drop has no trunk reason, because no SA failed")
 				assert.Empty(t, noRoutes(g.r, q.s))
 			})
 		})

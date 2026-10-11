@@ -491,6 +491,7 @@ func TestXDPCounters(t *testing.T) {
 # HELP apoxy_vpc_relay_dropped_packets_total Packets that the relay dropped before it forwarded them, by reason.
 # TYPE apoxy_vpc_relay_dropped_packets_total counter
 apoxy_vpc_relay_dropped_packets_total{reason="closed"} 0
+apoxy_vpc_relay_dropped_packets_total{reason="data"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="lane_meter"} 2
 apoxy_vpc_relay_dropped_packets_total{reason="malformed"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="mesh_malformed"} 0
