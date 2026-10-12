@@ -667,6 +667,9 @@ func (w *world) agent(t *testing.T, name string, r *testRelay, opts agentOptions
 			ta.attach <- attachEvent{addr, prefixes}
 		},
 		OnRoutes: func(add, remove []netip.Prefix) {
+			if len(ta.events(name)) == 0 {
+				t.Errorf("agent %s: OnRoutes before the first OnAttach: add %v, remove %v", name, add, remove)
+			}
 			ta.routesMu.Lock()
 			defer ta.routesMu.Unlock()
 			for _, p := range remove {

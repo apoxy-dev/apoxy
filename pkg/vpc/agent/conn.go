@@ -213,8 +213,9 @@ func (a *Agent) attach(ctx context.Context, rc, old *relayConn, rank uint32, beg
 	if old != nil {
 		a.end(old)
 	}
-	a.usePrimary()
+	// OnRoutes follows the new session only after its OnAttach.
 	a.deliver()
+	a.usePrimary()
 	a.wakeAttach()
 	a.watchers.Go(func() { a.watch(rc) })
 	return nil
@@ -262,8 +263,8 @@ func (a *Agent) drain(rc *relayConn, alts []*dp.RelayRef) {
 		return
 	}
 	slog.Info("Relay drains; its session stays until the relay closes it", "relay", rc.addr, "address", rc.self, "alternates", len(alts))
-	a.usePrimary()
 	a.deliver()
+	a.usePrimary()
 	a.wakeRun()
 }
 
@@ -290,8 +291,8 @@ func (a *Agent) end(rc *relayConn) {
 	a.endVisits(rc, "attached session ended")
 	rc.close()
 	if shown {
-		a.usePrimary()
 		a.deliver()
+		a.usePrimary()
 	}
 	a.wakeRun()
 }
@@ -351,7 +352,8 @@ func (rc *relayConn) live() bool {
 
 // usePrimary gives the primary session the packets with a source that no
 // session has, and makes OnRoutes follow its routes. It runs after each change
-// of the attached sessions. Until the first RouteDelta of the new primary
+// of the attached sessions, after the callbacks of the change: OnAttach of a
+// session comes before OnRoutes gives its routes. Until the first RouteDelta of the new primary
 // session, OnRoutes keeps the routes of the session before.
 func (a *Agent) usePrimary() {
 	a.routeMu.Lock()

@@ -4,6 +4,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"net/netip"
@@ -96,6 +97,31 @@ func roundTrip(t *testing.T, c net.Conn, msg string) {
 // localOf returns the local address of the TCP connection c.
 func localOf(c net.Conn) netip.Addr {
 	return c.LocalAddr().(*net.TCPAddr).AddrPort().Addr()
+}
+
+// TestRoutesAfterAttach checks that the routes that come from the relay before
+// the Attach call ends reach OnRoutes, and only after OnAttach of the session.
+// The OnRoutes of the test agent fails the test for a call before OnAttach.
+func TestRoutesAfterAttach(t *testing.T) {
+	cases := []struct {
+		name     string
+		sessions int
+	}{
+		{name: "one session", sessions: 1},
+		{name: "two sessions", sessions: 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w, r1, r2 := meshRelays(t)
+			var want []netip.Prefix
+			for i, r := range []*testRelay{r1, r2, r1, r2} {
+				o := w.agent(t, fmt.Sprintf("other-%d", i), r, agentOptions{})
+				want = append(want, o.attached(t).prefixes...)
+			}
+			a, _ := w.agentOn(t, "a", agentOptions{}, tc.sessions, r1, r2)
+			a.hasRoutes(t, want...)
+		})
+	}
 }
 
 // TestSessions checks that the agent attaches on Config.Sessions relays, with
