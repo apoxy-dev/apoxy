@@ -83,6 +83,7 @@ func addrOf(tr *quic.Transport) netip.AddrPort {
 type node struct {
 	tr     *quic.Transport
 	b      *Binding
+	l      *Link
 	peer   *Peer
 	v4, v6 netip.Addr
 	other  *node
@@ -122,7 +123,9 @@ func newPairLanes(t testing.TB, mtu, lanes int) (*node, *node) {
 	}
 	for _, n := range []*node{a, b} {
 		var err error
-		n.peer, err = n.b.AddPeerLanes(addrOf(n.other.tr), lanes)
+		n.l, err = n.b.AddLink()
+		require.NoError(t, err)
+		n.peer, err = n.l.AddPeerLanes(addrOf(n.other.tr), lanes)
 		require.NoError(t, err)
 		require.NoError(t, n.b.AddRoute(netip.PrefixFrom(n.other.v4, 32), n.peer))
 		require.NoError(t, n.b.AddRoute(netip.PrefixFrom(n.other.v6, 128), n.peer))

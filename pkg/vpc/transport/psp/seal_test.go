@@ -66,8 +66,8 @@ func TestPrepareSeal(t *testing.T) {
 		qa, _ := quicPair(t, a.tr, b.tr)
 		pc := peerconn.New(qa, a.v4)
 		t.Cleanup(func() { _ = pc.Close() })
-		a.b.UseQUIC(pc)
-		defer a.b.relay.Store(nil)
+		require.NoError(t, a.peer.UseQUIC(pc))
+		defer func() { _ = a.peer.UseQUIC(nil) }()
 		pkt := packet(a.v6, b.v6, 6, 1, 2, 500)
 		var f netstack.TxFrame
 		require.True(t, d.Prepare(pkt, &f))
@@ -173,7 +173,7 @@ func TestPrepareSegs(t *testing.T) {
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
 				hooks := 0
-				a.b.noRoute = func([]byte) { hooks++ }
+				a.b.noRoute = func(*Link, []byte) { hooks++ }
 				g.rate.Store(tc.rate)
 				defer func() { a.b.noRoute = nil; g.rate.Store(0); g.tat.Store(0) }()
 				var before, f, after netstack.TxFrame
@@ -216,13 +216,13 @@ func TestPrepareSegs(t *testing.T) {
 		qa, _ := quicPair(t, a.tr, b.tr)
 		pc := peerconn.New(qa, a.v4)
 		t.Cleanup(func() { _ = pc.Close() })
-		a.b.UseQUIC(pc)
-		defer a.b.relay.Store(nil)
+		require.NoError(t, a.peer.UseQUIC(pc))
+		defer func() { _ = a.peer.UseQUIC(nil) }()
 		q := &a.b.quic.limiter
 		sent := q.sent.Load()
 		f := netstack.TxFrame{Seq: 7}
 		require.True(t, d.PrepareSegs(hdr, n, size, n*size, &f))
-		assert.Equal(t, netstack.TxFrame{}, f)
+		assert.Equal(t, netstack.TxFrame{Lane: int(a.peer.slot.Load())}, f)
 		assert.Equal(t, uint64(n*size), q.sent.Load()-sent)
 		q.rate.Store(1 << 30)
 		defer q.rate.Store(0)

@@ -233,7 +233,7 @@ func (t *tunBatch) flush() {
 }
 
 // VirtToPhy makes the send frame of an inner packet for the peer that routes its destination:
-// a PSP packet, or a QUIC data frame after UseQUIC. It can lower the MSS of a TCP SYN in virt.
+// a PSP packet, or a QUIC data frame after Peer.UseQUIC. It can lower the MSS of a TCP SYN in virt.
 func (d *driver) VirtToPhy(virt, phy []byte) (int, bool) {
 	n, err := d.b.frame(virt, phy)
 	if err != nil {
@@ -278,7 +278,7 @@ func (d *driver) countTx(virt []byte, err error) {
 	case ErrNoRoute:
 		b.stats.txNoRoute.Add(1)
 		if b.noRoute != nil {
-			b.noRoute(virt)
+			b.noRoute(b.linkOf(virt), virt)
 		}
 	case errLimit:
 		b.stats.txLimitDrops.Add(1)
@@ -298,17 +298,24 @@ func (b *Binding) frame(virt, phy []byte) (int, error) {
 }
 
 // prepare reserves the send frame of virt in f: the transmit SA with its next sequence
-// number and the address of the peer, or no SA for a QUIC data frame after UseQUIC.
+// number and the address of the peer, or no SA for a QUIC data frame after Peer.UseQUIC.
 func (b *Binding) prepare(virt []byte, f *netstack.TxFrame) error {
 	dst, ok := innerDst(virt)
 	if !ok || len(virt) > b.mtu {
 		return errDrop
 	}
-	p, ok := b.routes.Lookup(dst)
+	// A binding with one link has no call here.
+	l := b.only.Load()
+	if l == nil {
+		if l = b.sourceLink(virt); l == nil {
+			return ErrNoRoute
+		}
+	}
+	p, ok := l.routes.Lookup(dst)
 	if !ok {
 		return ErrNoRoute
 	}
-	if slot := p.slot.Load(); slot != 0 || b.relay.Load() != nil {
+	if slot := p.slot.Load(); slot != 0 {
 		if !b.quic.limiter.admit(len(virt)) {
 			return errLimit
 		}
@@ -338,11 +345,15 @@ func (b *Binding) prepareSegs(hdr []byte, n, size, total int, f *netstack.TxFram
 	if !ok || size > b.mtu {
 		return false
 	}
-	p, ok := b.routes.Lookup(dst)
+	l := b.linkOf(hdr)
+	if l == nil {
+		return false
+	}
+	p, ok := l.routes.Lookup(dst)
 	if !ok {
 		return false
 	}
-	if slot := p.slot.Load(); slot != 0 || b.relay.Load() != nil {
+	if slot := p.slot.Load(); slot != 0 {
 		if b.quic.limiter.rate.Load() != 0 {
 			return false
 		}
@@ -807,6 +818,17 @@ func (b *Binding) write(f []byte, ua *net.UDPAddr) error {
 		b.stats.txLanes[lane].Add(1)
 	}
 	return err
+}
+
+// innerSrc returns the source address of an IPv4 or IPv6 packet.
+func innerSrc(pkt []byte) (netip.Addr, bool) {
+	switch {
+	case len(pkt) >= 20 && pkt[0]>>4 == 4:
+		return netip.AddrFrom4([4]byte(pkt[12:16])), true
+	case len(pkt) >= 40 && pkt[0]>>4 == 6:
+		return netip.AddrFrom16([16]byte(pkt[8:24])), true
+	}
+	return netip.Addr{}, false
 }
 
 // innerDst returns the destination address of an IPv4 or IPv6 packet.

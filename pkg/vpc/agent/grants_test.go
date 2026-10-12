@@ -44,7 +44,7 @@ func extraGrant(t *testing.T, cert *tls.Certificate, name, id, prefix string, ch
 // routedIn reports whether the binding of a routes pfx to a peer.
 func routedIn(t *testing.T, a *Agent, pfx string) bool {
 	t.Helper()
-	other, err := a.bind.AddPeer(netip.MustParseAddrPort("127.0.0.1:445"))
+	other, err := a.link.AddPeer(netip.MustParseAddrPort("127.0.0.1:445"))
 	require.NoError(t, err)
 	defer a.bind.RemovePeer(other)
 	p := netip.MustParsePrefix(pfx)
@@ -124,7 +124,7 @@ func TestAddGrants(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			a := w.stubAgent(t, "a")
 			if tc.taken {
-				bp, err := a.bind.AddPeer(netip.MustParseAddrPort("127.0.0.1:446"))
+				bp, err := a.link.AddPeer(netip.MustParseAddrPort("127.0.0.1:446"))
 				require.NoError(t, err)
 				require.NoError(t, a.bind.AddRoute(netip.MustParsePrefix(b2), bp))
 			}

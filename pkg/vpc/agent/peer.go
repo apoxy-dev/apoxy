@@ -491,7 +491,7 @@ func (a *Agent) admit(p *peer, v *dp.Version, g *dp.AttachmentGrant, instance ui
 		}
 	}
 
-	bp, err := a.bind.AddPeerLanes(p.rc.relayAddr, int(min(max(lanes, 1), keys.MaxLanes)))
+	bp, err := a.link.AddPeerLanes(p.rc.relayAddr, int(min(max(lanes, 1), keys.MaxLanes)))
 	if err != nil {
 		return err
 	}

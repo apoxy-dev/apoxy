@@ -3,6 +3,7 @@
 package psp
 
 import (
+	"bytes"
 	"encoding/binary"
 	"net"
 	"net/netip"
@@ -12,6 +13,7 @@ import (
 	"github.com/apoxy-dev/softpsp/engine"
 	"github.com/apoxy-dev/softpsp/keys"
 	pspwire "github.com/apoxy-dev/softpsp/psp"
+	"github.com/apoxy-dev/softpsp/vtep/netstack"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gvisor.dev/gvisor/pkg/tcpip"
@@ -234,7 +236,7 @@ func xferQUIC(t *testing.T, from *node, pkt []byte) []byte {
 	c := &capture{}
 	to.drv.Store(newDriver(to, c.deliver))
 	defer to.drv.Store(nil)
-	to.HandleData(f[addrLen:])
+	from.other.l.HandleData(f[addrLen:])
 	if len(c.got) == 0 {
 		return nil
 	}
@@ -277,7 +279,7 @@ func TestClampMSS(t *testing.T) {
 				on bool
 			}{{a, tc.quicA}, {b, tc.quicB}} {
 				if x.on {
-					x.n.b.UseQUIC(&peerconn.Conn{})
+					require.NoError(t, x.n.peer.UseQUIC(&peerconn.Conn{}))
 				}
 			}
 			pkt := tcpSyn(a.v4, b.v4, tc.flags, tc.mss)
@@ -345,7 +347,7 @@ func TestRemovePeer(t *testing.T) {
 
 func TestRoutes(t *testing.T) {
 	a, b := newPair(t)
-	p2, err := a.b.AddPeer(addrOf(b.tr))
+	p2, err := a.l.AddPeer(addrOf(b.tr))
 	require.NoError(t, err)
 	pfx := netip.MustParsePrefix("10.1.0.0/24")
 	steps := []struct {
@@ -368,7 +370,7 @@ func TestRoutes(t *testing.T) {
 	assert.Equal(t, []netip.Prefix{pfx}, p2.routes)
 	// RemovePeer removes the routes of the peer.
 	a.b.RemovePeer(p2)
-	assert.Equal(t, 2, a.b.routes.Len())
+	assert.Equal(t, 2, a.l.routes.Len())
 }
 
 func removed(ok bool) error {
@@ -600,4 +602,123 @@ func TestInnerDst(t *testing.T) {
 			assert.Equal(t, tc.want, got)
 		})
 	}
+}
+
+// TestLinks sends from a binding with two links. The source address of an inner
+// packet selects its link, and each link routes the destination to its own peer.
+func TestLinks(t *testing.T) {
+	a, b := newPair(t)
+	own, extra := netip.MustParseAddr("10.0.1.1"), netip.MustParseAddr("10.7.0.5")
+	forwarded := netip.MustParseAddr("192.168.4.4")
+	route := func(src netip.Addr) *Peer {
+		l := a.b.linkOf(packet(src, b.v4, 17, 1, 2, 100))
+		if l == nil {
+			return nil
+		}
+		p, _ := l.routes.Lookup(b.v4)
+		return p
+	}
+	assert.Same(t, a.peer, route(forwarded), "one link sends each packet")
+
+	l2, err := a.b.AddLink()
+	require.NoError(t, err)
+	p2, err := l2.AddPeer(netip.MustParseAddrPort("192.0.2.1:1"))
+	require.NoError(t, err)
+	require.NoError(t, a.b.AddRoute(netip.PrefixFrom(b.v4, 32), p2))
+	require.NoError(t, a.l.AddSource(netip.PrefixFrom(a.v4, 32)))
+	require.NoError(t, l2.AddSource(netip.PrefixFrom(own, 32)))
+	require.NoError(t, l2.AddSource(netip.MustParsePrefix("10.7.0.1/24")))
+	require.ErrorIs(t, l2.AddSource(netip.PrefixFrom(a.v4, 32)), engine.ErrRouteTaken)
+
+	cases := []struct {
+		name string
+		def  *Link
+		src  netip.Addr
+		want *Peer
+	}{
+		{"address of the first link", nil, a.v4, a.peer},
+		{"address of the second link", nil, own, p2},
+		{"extra prefix of the second link", nil, extra, p2},
+		{"forwarded source, no default link", nil, forwarded, nil},
+		{"forwarded source, default link", l2, forwarded, p2},
+		{"address of a link, other default link", l2, a.v4, a.peer},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a.b.SetDefault(tc.def)
+			assert.Same(t, tc.want, route(tc.src))
+		})
+	}
+
+	t.Run("no link counts no route", func(t *testing.T) {
+		a.b.SetDefault(nil)
+		before := a.b.Stats()
+		assert.Nil(t, seal(a, packet(forwarded, b.v4, 17, 1, 2, 100)))
+		assert.Equal(t, Stats{TxNoRoute: 1}, sub(a.b.Stats(), before))
+	})
+	t.Run("PSP link and QUIC link", func(t *testing.T) {
+		offer(t, time.Now(), a, b)
+		require.NoError(t, p2.UseQUIC(&peerconn.Conn{}))
+		var sealed, data netstack.TxFrame
+		require.NoError(t, a.b.prepare(packet(a.v4, b.v4, 17, 1, 2, 100), &sealed))
+		require.NoError(t, a.b.prepare(packet(own, b.v4, 17, 1, 2, 100), &data))
+		assert.NotNil(t, sealed.SA)
+		assert.Equal(t, netstack.TxFrame{Lane: int(p2.slot.Load())}, data)
+		require.NoError(t, p2.UseQUIC(nil))
+	})
+	t.Run("removed link", func(t *testing.T) {
+		a.b.SetDefault(l2)
+		a.b.RemovePeer(p2)
+		a.b.RemoveLink(l2)
+		assert.Same(t, a.peer, route(own), "one link sends each packet")
+		assert.Nil(t, a.b.def.Load())
+		assert.ErrorIs(t, l2.AddSource(netip.PrefixFrom(own, 32)), ErrClosed)
+		_, err := l2.AddPeer(netip.MustParseAddrPort("192.0.2.1:1"))
+		assert.ErrorIs(t, err, ErrClosed)
+	})
+}
+
+// TestLinkReceive gives a binding with two links a packet whose source only the
+// other link routes. A link accepts only the sources that it routes.
+func TestLinkReceive(t *testing.T) {
+	a, b := newPair(t)
+	offer(t, time.Now(), a, b)
+	l2, err := b.b.AddLink()
+	require.NoError(t, err)
+	p2, err := l2.AddPeer(netip.MustParseAddrPort("192.0.2.1:1"))
+	require.NoError(t, err)
+	src := netip.MustParseAddr("10.5.0.1")
+	require.NoError(t, b.b.AddRoute(netip.PrefixFrom(src, 32), p2))
+	pkt := packet(src, b.v4, 17, 1, 2, 100)
+	frame := peerconn.EncodeData(nil, testVNI, pkt)
+	got := &capture{}
+	cases := []struct {
+		name string
+		give func()
+		want Stats
+	}{
+		{"PSP packet of the first link", func() { require.NotNil(t, xferRaw(a, pkt)) }, Stats{RxDrops: 1}},
+		{"data frame of the first link", func() { b.l.HandleData(bytes.Clone(frame)) }, Stats{RxDrops: 1}},
+		{"data frame of the second link", func() { l2.HandleData(bytes.Clone(frame)) }, Stats{RxPackets: 1}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b.b.drv.Store(newDriver(b.b, got.deliver))
+			defer b.b.drv.Store(nil)
+			before := b.b.Stats()
+			tc.give()
+			assert.Equal(t, tc.want, sub(b.b.Stats(), before))
+		})
+	}
+	assert.Len(t, got.got, 1)
+}
+
+// xferRaw seals pkt on from and gives the PSP packet to the receive path of the
+// other node. It returns the PSP packet.
+func xferRaw(from *node, pkt []byte) []byte {
+	phy := seal(from, pkt)
+	if phy != nil {
+		from.other.b.receive(0, phy[addrLen:])
+	}
+	return phy
 }

@@ -398,7 +398,11 @@ func newDirect(o options, uc *net.UDPConn, self, peer netip.Addr, peerAddr netip
 	}}}
 	lanes := psp.RxLanes(peerAddr.Addr())
 	slog.Info("Adding the direct peer", "addr", peerAddr, "rx_lanes", lanes)
-	p, err := b.AddPeerLanes(peerAddr, lanes)
+	l, err := b.AddLink()
+	var p *psp.Peer
+	if err == nil {
+		p, err = l.AddPeerLanes(peerAddr, lanes)
+	}
 	if err == nil {
 		err = b.AddRoute(netip.PrefixFrom(peer, peer.BitLen()), p)
 	}

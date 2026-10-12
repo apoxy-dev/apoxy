@@ -165,6 +165,7 @@ type Agent struct {
 	conns    map[*relayConn]struct{} // Relay sessions from dialRelay until close.
 	dialing  map[string]int          // Relay dials that run, by relay key.
 	bind     *psp.Binding
+	link     *psp.Link // Routes of the relay session. Set with bind.
 	peers    map[*rpc.Conn]*peer
 	admitted chan struct{} // Closed and replaced when a peer session opens or gets grants.
 
@@ -336,11 +337,6 @@ func (a *Agent) use(rc *relayConn) {
 	}
 	a.queueMove(old, rc)
 	a.attMu.Unlock()
-	if rc.mode == dp.Mode_MODE_QUIC {
-		b.UseQUIC(rc.pc)
-	} else {
-		b.UseQUIC(nil)
-	}
 	if old != nil {
 		old.close()
 	}
@@ -807,13 +803,19 @@ func (rc *relayConn) attach(ctx context.Context, begin time.Time) error {
 	if rc.mode == dp.Mode_MODE_PSP {
 		rc.registerLanes(ctx, b)
 	}
-	p, err := b.AddPeer(rc.relayAddr)
+	p, err := a.link.AddPeer(rc.relayAddr)
 	if err != nil {
 		return err
 	}
 	rc.setRelayPeer(p)
 	rc.pc = peerconn.New(rc.qc, rc.self)
-	rc.pc.HandleData(b.HandleData)
+	rc.pc.HandleData(a.link.HandleData)
+	if rc.mode == dp.Mode_MODE_QUIC {
+		// The routes of a session in QUIC mode go to its relay peer.
+		if err := p.UseQUIC(rc.pc); err != nil {
+			return err
+		}
+	}
 	rc.peerTr = &quic.Transport{Conn: rc.pc}
 	ln, err := rc.peerTr.Listen(a.peerTLS(), peerQUIC)
 	if err != nil {
@@ -928,10 +930,15 @@ func (a *Agent) binding(cfg *dp.Config, pathMTU int) (*psp.Binding, error) {
 	if err != nil {
 		return nil, err
 	}
+	l, err := b.AddLink()
+	if err != nil {
+		_ = b.Close()
+		return nil, err
+	}
 	if dev < mtu {
 		slog.Info("Using a device MTU below the VPC MTU", "mtu", mtu, "device_mtu", dev)
 	}
-	a.bind = b
+	a.bind, a.link = b, l
 	return b, nil
 }
 

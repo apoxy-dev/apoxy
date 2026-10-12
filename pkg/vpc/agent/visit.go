@@ -392,7 +392,7 @@ func (rc *relayConn) startVisit(ctx context.Context, home *relayConn) error {
 	rc.grant, rc.claims, rc.prefixes, rc.self = home.grant, home.claims, home.prefixes, home.self
 	a.routeMu.Unlock()
 	a.mu.Lock()
-	b := a.bind
+	l := a.link
 	a.mu.Unlock()
 	// The path probe runs while the relay checks the grant.
 	probed := a.startProbe(ctx, home, rc)
@@ -403,13 +403,13 @@ func (rc *relayConn) startVisit(ctx context.Context, home *relayConn) error {
 		// The peer sessions open after this, so each Open has the grants.
 		a.joinExtras(ctx, home, rc)
 	}
-	p, err := b.AddPeer(rc.relayAddr)
+	p, err := l.AddPeer(rc.relayAddr)
 	if err != nil {
 		return err
 	}
 	rc.setRelayPeer(p)
 	rc.pc = peerconn.New(rc.qc, rc.self)
-	rc.pc.HandleData(b.HandleData)
+	rc.pc.HandleData(l.HandleData)
 	if rc.mode == dp.Mode_MODE_QUIC {
 		// The packets for the peers of the visit go as data frames on rc, and the
 		// packets for the other peers stay on the attached session.
@@ -646,7 +646,7 @@ func (a *Agent) admitIdle(p *peer, v *dp.Version, g *dp.AttachmentGrant, instanc
 	if err != nil {
 		return err
 	}
-	bp, err := a.bind.AddPeer(p.rc.relayAddr)
+	bp, err := a.link.AddPeer(p.rc.relayAddr)
 	if err != nil {
 		return err
 	}

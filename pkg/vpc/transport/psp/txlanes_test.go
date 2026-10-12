@@ -39,17 +39,22 @@ func laneSPI(id byte, lane int) uint32 { return uint32(id)<<8 | uint32(lane+1) }
 // laneDst returns an address in the route of peer id.
 func laneDst(id byte) netip.Addr { return netip.AddrFrom4([4]byte{10, 0, id, 2}) }
 
-// lanePeer adds peer id to b, with a transmit SA on each of n lanes and the
+// lanePeer adds peer id to the one link of b, with a transmit SA on each of n lanes and the
 // route 10.0.id.0/24.
 func lanePeer(t testing.TB, b *Binding, id byte, n int) *Peer {
 	t.Helper()
-	p := &Peer{b: b, tx: b.send.NewPeer()}
+	l := b.only.Load()
+	if l == nil {
+		l = &Link{b: b}
+		b.only.Store(l)
+	}
+	p := &Peer{b: b, l: l, tx: b.send.NewPeer()}
 	p.sockets.Store(keys.MaxLanes)
 	p.SetAddr(netip.MustParseAddrPort("192.0.2.1:443"))
 	for lane := range n {
 		offerLane(t, p, id, lane)
 	}
-	require.NoError(t, b.routes.Add(netip.PrefixFrom(laneDst(id), 24).Masked(), p))
+	require.NoError(t, l.routes.Add(netip.PrefixFrom(laneDst(id), 24).Masked(), p))
 	return p
 }
 

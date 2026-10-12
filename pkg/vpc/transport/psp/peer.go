@@ -18,6 +18,7 @@ import (
 // the SAs that Offer creates, and sends to it with the SAs that Apply gets.
 type Peer struct {
 	b     *Binding
+	l     *Link
 	rx    *keys.Peer
 	tx    *keys.TxPeer
 	addr  atomic.Pointer[netip.AddrPort]

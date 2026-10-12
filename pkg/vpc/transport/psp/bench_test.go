@@ -49,7 +49,7 @@ func BenchmarkVirtToPhy(b *testing.B) {
 			offer(b, time.Now(), x, y)
 			x.b.SetClampMTU(bc.clamp)
 			if bc.quic {
-				x.b.UseQUIC(&peerconn.Conn{})
+				require.NoError(b, x.peer.UseQUIC(&peerconn.Conn{}))
 			}
 			d := &driver{b: x.b}
 			pkt := packet(x.v4, y.v4, 6, 1, 2, DefaultMTU)
@@ -59,6 +59,38 @@ func BenchmarkVirtToPhy(b *testing.B) {
 			for b.Loop() {
 				if n, _ := d.VirtToPhy(pkt, phy); n == 0 {
 					b.Fatal("no packet")
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkPrepareLinks reserves the send frame of one inner packet. With more
+// than one link, the source address of the packet selects the link.
+func BenchmarkPrepareLinks(b *testing.B) {
+	for _, links := range []int{1, 3} {
+		b.Run(fmt.Sprintf("links=%d", links), func(b *testing.B) {
+			var d *driver
+			var pkt []byte
+			var f netstack.TxFrame
+			b.ReportAllocs()
+			for i := 0; b.Loop(); i++ {
+				if i%(1<<24) == 0 {
+					// New SAs, before the present ones have no sequence numbers left.
+					b.StopTimer()
+					x, y := newPair(b)
+					offer(b, time.Now(), x, y)
+					require.NoError(b, x.l.AddSource(netip.PrefixFrom(x.v4, 32)))
+					for n := 1; n < links; n++ {
+						l, err := x.b.AddLink()
+						require.NoError(b, err)
+						require.NoError(b, l.AddSource(netip.PrefixFrom(netip.AddrFrom4([4]byte{10, 0, byte(n), 1}), 32)))
+					}
+					d, pkt = &driver{b: x.b}, packet(x.v4, y.v4, 6, 1, 2, DefaultMTU)
+					b.StartTimer()
+				}
+				if !d.Prepare(pkt, &f) {
+					b.Fatal("no frame")
 				}
 			}
 		})
@@ -124,7 +156,7 @@ func BenchmarkHandleData(b *testing.B) {
 			b.SetBytes(int64(len(frame)))
 			b.ReportAllocs()
 			for b.Loop() {
-				y.b.HandleData(frame)
+				y.l.HandleData(frame)
 			}
 			require.Equal(b, uint64(b.N), y.b.Stats().RxPackets)
 		})

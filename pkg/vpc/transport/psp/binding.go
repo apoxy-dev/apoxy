@@ -37,9 +37,8 @@ const (
 	// QUICMTU is the largest inner packet in a data frame on a relay session with
 	// InitialPacketSize 1350: quic-go takes 1350 - 37 B, and the frame header is 5 B.
 	QUICMTU = 1308
-	// dataSlots is the most relay sessions that carry the data frames of their own
-	// peers, with Peer.UseQUIC.
-	dataSlots = 4
+	// dataSlots is the most relay sessions that carry data frames, with Peer.UseQUIC.
+	dataSlots = 8
 	// sockBuf is the send and receive buffer size of the agent socket, and of a
 	// lane socket that reads.
 	sockBuf = 16 << 20
@@ -103,9 +102,10 @@ type Config struct {
 	MTU int
 	// DeviceMTU is the MTU of the device on the binding, at most MTU. Zero means MTU.
 	DeviceMTU int
-	// NoRoute gets the inner packets that VirtToPhy cannot send for ErrNoRoute. It
-	// runs on the send path of the driver, so it must not block or keep pkt.
-	NoRoute func(pkt []byte)
+	// NoRoute gets the inner packets that VirtToPhy cannot send for ErrNoRoute, with
+	// the link of the packet, or nil when no link sends it. It runs on the send path
+	// of the driver, so it must not block or keep pkt.
+	NoRoute func(l *Link, pkt []byte)
 	// OnTrip gets each change of a breaker limit. The peer is nil for the QUIC
 	// data path. It must not block.
 	OnTrip func(*Peer, Trip)
@@ -123,19 +123,20 @@ type Binding struct {
 	rxq     *engine.RxQueue
 	recv    *keys.Receiver
 	send    *keys.Sender
-	routes  engine.Routes[*Peer]
 	seed    maphash.Seed
-	relay   atomic.Pointer[peerconn.Conn] // Set when data goes as QUIC data frames.
-	quic    breaker                       // Breaker of the QUIC data path.
-	noRoute func(pkt []byte)
+	quic    breaker // Breaker of the QUIC data path.
+	noRoute func(l *Link, pkt []byte)
 	onTrip  func(*Peer, Trip)
+
+	// sources has the link of each source prefix, and def is the link of the other
+	// sources. only is the link of a binding with one link, which sends each packet.
+	sources engine.Routes[*Link]
+	def     atomic.Pointer[Link]
+	only    atomic.Pointer[Link]
 
 	// slots has the relay sessions of Peer.UseQUIC, and inUse counts them. Set under mu.
 	slots [dataSlots]atomic.Pointer[peerconn.Conn]
 	inUse atomic.Int32
-
-	// routed reports whether a peer has a route to an address.
-	routed func(netip.Addr) bool
 
 	ctx    context.Context // Ends at Close.
 	cancel context.CancelFunc
@@ -153,6 +154,7 @@ type Binding struct {
 	rxMu sync.Mutex
 
 	mu      sync.Mutex
+	links   []*Link
 	peers   map[*keys.Peer]*Peer
 	readers [keys.MaxLanes]*quic.Transport // The read loops of lane sockets 1 and up.
 
@@ -215,10 +217,6 @@ func New(cfg Config) (*Binding, error) {
 	}
 	if b.onTrip == nil {
 		b.onTrip = func(*Peer, Trip) {}
-	}
-	b.routed = func(a netip.Addr) bool {
-		_, ok := b.routes.Lookup(a)
-		return ok
 	}
 	if !cfg.Demux.b.CompareAndSwap(nil, b) {
 		cancel()
@@ -338,33 +336,6 @@ func (b *Binding) Tick(now time.Time) ([]Update, error) {
 // are live.
 func (b *Binding) Rotate() error { return b.recv.Rotate() }
 
-// AddPeer adds a remote agent at addr, for example its relay on port 443.
-func (b *Binding) AddPeer(addr netip.AddrPort) (*Peer, error) { return b.AddPeerLanes(addr, 1) }
-
-// AddPeerLanes adds a remote agent at addr that sends to this agent on lanes
-// SAs. The peer sends each lane from its own UDP port, so use more than one
-// lane only on a direct path with no NAT.
-func (b *Binding) AddPeerLanes(addr netip.AddrPort, lanes int) (*Peer, error) {
-	if !addr.IsValid() {
-		return nil, fmt.Errorf("psp: invalid peer address %v", addr)
-	}
-	p := &Peer{b: b, tx: b.send.NewPeer(), rxSPIs: map[uint32]struct{}{}}
-	p.sockets.Store(keys.MaxLanes)
-	rx, err := b.recv.NewPeer(keys.PeerConfig{VNI: b.vni, MTU: b.mtu, Lanes: lanes, Sources: b.routes.Sources(p)})
-	if err != nil {
-		return nil, err
-	}
-	p.rx = rx
-	p.SetAddr(addr)
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.ctx.Err() != nil {
-		return nil, ErrClosed
-	}
-	b.peers[rx] = p
-	return p, nil
-}
-
 // RemovePeer deletes the SAs and routes of p. Send the returned revoke to the peer.
 func (b *Binding) RemovePeer(p *Peer) keys.Request {
 	b.mu.Lock()
@@ -387,7 +358,7 @@ func (b *Binding) removeLocked(p *Peer) keys.Request {
 	_, _ = p.tx.Apply(keys.Request{Op: keys.OpRevoke, SPIs: spis}, time.Time{})
 	p.updateLanes()
 	for _, pfx := range p.routes {
-		b.routes.Remove(pfx, p)
+		p.l.routes.Remove(pfx, p)
 	}
 	p.freeSlot()
 	p.routes, p.removed = nil, true
@@ -552,8 +523,8 @@ func (b *Binding) laneConn(lane byte) *net.UDPConn {
 	return b.laneConns[lane].Load()
 }
 
-// AddRoute sends inner packets for pfx to p, and lets p send from pfx. A prefix has one
-// peer.
+// AddRoute sends the inner packets of the link of p for pfx to p, and lets p send from
+// pfx. A prefix has one peer on a link.
 func (b *Binding) AddRoute(pfx netip.Prefix, p *Peer) error {
 	pfx = pfx.Masked()
 	b.mu.Lock()
@@ -561,7 +532,7 @@ func (b *Binding) AddRoute(pfx netip.Prefix, p *Peer) error {
 	if p.removed {
 		return ErrClosed
 	}
-	if err := b.routes.Add(pfx, p); err != nil {
+	if err := p.l.routes.Add(pfx, p); err != nil {
 		return err
 	}
 	for _, have := range p.routes {
@@ -578,7 +549,7 @@ func (b *Binding) RemoveRoute(pfx netip.Prefix, p *Peer) bool {
 	pfx = pfx.Masked()
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if !b.routes.Remove(pfx, p) {
+	if !p.l.routes.Remove(pfx, p) {
 		return false
 	}
 	for i, have := range p.routes {
@@ -645,15 +616,11 @@ func lanePackets(c *[keys.MaxLanes]atomic.Uint64) []uint64 {
 	return out[:n]
 }
 
-// UseQUIC sends inner packets as data frames on the relay session of pc, not as PSP
-// packets. Nil sends PSP packets again. Both paths always receive.
-func (b *Binding) UseQUIC(pc *peerconn.Conn) { b.relay.Store(pc) }
-
 // quicPath reports whether a relay session carries data frames of the binding.
-func (b *Binding) quicPath() bool { return b.relay.Load() != nil || b.inUse.Load() > 0 }
+func (b *Binding) quicPath() bool { return b.inUse.Load() > 0 }
 
 // UseQUIC sends the packets with a route to p as data frames on the relay session of
-// pc, also when the binding sends PSP packets. Nil ends that.
+// pc, not as PSP packets. Nil sends PSP packets again. Both paths always receive.
 func (p *Peer) UseQUIC(pc *peerconn.Conn) error {
 	b := p.b
 	b.mu.Lock()
@@ -684,16 +651,12 @@ func (p *Peer) freeSlot() {
 	}
 }
 
-// dataConn returns the relay session of a data frame from its slot byte: zero is the
-// session of UseQUIC, and the others are the sessions of Peer.UseQUIC.
+// dataConn returns the relay session of a data frame from its slot byte.
 func (b *Binding) dataConn(slot byte) *peerconn.Conn {
-	switch {
-	case slot == 0:
-		return b.relay.Load()
-	case int(slot) <= dataSlots:
-		return b.slots[slot-1].Load()
+	if slot == 0 || int(slot) > dataSlots {
+		return nil
 	}
-	return nil
+	return b.slots[slot-1].Load()
 }
 
 // ReportQUIC gives the QUIC packets lost on the relay connections, in total, to the
@@ -754,22 +717,6 @@ func (b *Binding) open(d *driver, pkt []byte) {
 		return
 	}
 	b.deliver(d, pkt[:pspwire.PrefixLen+len(inner)], pspwire.PrefixLen, true)
-}
-
-// HandleData opens a data frame of the relay session and gives it to the driver. Set it
-// with (*peerconn.Conn).HandleData.
-func (b *Binding) HandleData(frame []byte) {
-	d := b.drv.Load()
-	if d == nil {
-		b.stats.rxNoDriver.Add(1)
-		return
-	}
-	inner, err := peerconn.OpenData(frame, b.vni, b.routed)
-	if err != nil {
-		b.stats.rxDrops.Add(1)
-		return
-	}
-	b.deliver(d, frame, len(frame)-len(inner), false)
 }
 
 // deliver gives the inner packet buf[off:] of the PSP path or the QUIC path to the driver,

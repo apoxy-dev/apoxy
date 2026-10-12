@@ -191,7 +191,7 @@ func (a *Agent) Stats() Stats {
 
 // onNoRoute gets the packets that the binding has no route or no SA for. The
 // first packet to a unicast destination opens a peer session for it.
-func (a *Agent) onNoRoute(pkt []byte) {
+func (a *Agent) onNoRoute(_ *psp.Link, pkt []byte) {
 	dst, ok := unicastDst(pkt)
 	if !ok {
 		return
