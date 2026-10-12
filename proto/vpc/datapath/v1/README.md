@@ -76,12 +76,18 @@ that refuses the connection sends no reply to the probes of that connection,
 and for 1 s it does not count them as `malformed`. The agent stops a probe
 run when the connection of its session ends.
 
-### Spare sessions
+### Relay connections of an agent
 
-An agent keeps up to two more sessions, each on another relay, with
-`Hello.spare` set. A spare session gets `Config`, routes and `Drain` but
-holds no attachment. When the attached session ends or drains, the agent
-sends `Attach` on a spare, so the move needs no new handshake.
+An agent keeps one to three relay connections, each on another relay, and it
+attaches on each one. Each attachment has its own address, from the relay of
+its connection. `AttachRequest.rank` is 0 for the first connection, and a
+later one gets the next number, so the relays select one announcer for a
+prefix that the agent advertises on each connection (see "One prefix, many
+announcers"). The agent sends a packet on the connection of the source
+address of the packet. A packet with another source, from an advertised
+prefix, goes on the connection with the lowest rank that does not drain.
+When a connection ends, the agent removes its address and dials another
+relay. The other connections carry data in that time.
 
 ### QUIC and PSP bridge
 
@@ -454,7 +460,7 @@ Addresses and prefixes are text (`fd61::1`, `10.0.0.0/8`, `host:port`).
 
 | Method          | Kind  | Messages |
 |-----------------|-------|----------|
-| `Session`       | bidi  | Agent: `Hello{mode, fallback_reason, spare, version, name, local_routes_only, instance}`, then `Ack{rev}` and `Status` (ICV failures; the first one after `Config` also has the time to connect). Relay: `Welcome` (reflexive address, lane port limit, version), `Config`, in PSP mode a rekey with relay SAs, then `RouteDelta{rev}`, `NoRoute`, rekey (`KeysRequest`), `Config`, `Drain`, and in PSP mode `RxReport` (only the last one waits). |
+| `Session`       | bidi  | Agent: `Hello{mode, fallback_reason, version, name, local_routes_only, instance}`, then `Ack{rev}` and `Status` (ICV failures; the first one after `Config` also has the time to connect). Relay: `Welcome` (reflexive address, lane port limit, version), `Config`, in PSP mode a rekey with relay SAs, then `RouteDelta{rev}`, `NoRoute`, rekey (`KeysRequest`), `Config`, `Drain`, and in PSP mode `RxReport` (only the last one waits). |
 | `Attach`        | unary | `AttachRequest{vpc, name, labels, routes, rank}` -> `AttachResponse{attachment_id, grant, routes}`. `routes` has one status for each advertised route. Errors: `FailedPrecondition` (the session sent no `Hello`), `AlreadyExists` (another session of this relay has the address). |
 | `Rekey`         | unary | `KeysRequest` -> `KeysResponse`: SAs for traffic from the relay to the agent. Errors: `FailedPrecondition` (no `Session` call in PSP mode), `InvalidArgument` (an SA VNI is not the network ID). |
 | `ResolvePeer`   | unary | `{vpc, address}` -> `{reach: local, trunk or visit; p2p; subject; attachment_ids; home_relay}`. Errors: `NotFound`, `PermissionDenied`. |
@@ -749,15 +755,15 @@ no alternates. A session that gets no routes of other relays (below revision
 relay in the list can drain at the same time. It then refuses the agent with
 `DRAIN`, and the agent goes to the next address.
 
-An agent that gets `Drain` on the session of its attachment moves the
-attachment before that session ends. It first uses a spare session, and a
-spare on a relay with the ID of an alternate goes first. With no spare, it
-dials each address of each alternate in the order of the list, and it
-attaches on the first relay that takes it. It closes the old session after
-the new session has the attachment. With no alternate and no spare, it dials
-the address of the draining relay again, which only a new relay process
-answers. If that fails, it keeps the session until the relay closes it, and
-then dials the relays that it knows.
+An agent that gets `Drain` on a session keeps the session, with its
+attachment and its address, until the relay closes it. The address is not
+preferred from then on: a new connection of the host uses the address of
+another session, and the open connections continue. The agent opens one new
+connection in place of the draining one. It dials each address of each
+alternate in the order of the list, then the other relays that it knows, it
+skips a relay on which it has a session, and it attaches on the first relay
+that takes it, with the next rank. With no such relay, it dials the relays
+that it knows after the relay closes the session.
 
 In QUIC mode an agent can add up to 3 shards: extra connections from the same
 socket that carry data datagrams. Each one sends
@@ -864,9 +870,10 @@ A relay closes with `RESTART` when it stops: at the end of a drain, and not
 at its start. During the drain its mesh sessions stay open, and the other
 relays keep its entries, in the state `DRAINING`, with their routes and SPI
 rows. Thus an agent of the draining
-relay gets the packets of the agents of other relays until it moves (see
-`Drain` in "Relay"). If its new attachment on another relay has a prefix of
-the old one, the rules for one prefix (below) give the route to the new one.
+relay gets the packets of the agents of other relays on its address of that
+relay until the drain ends (see `Drain` in "Relay"). If its attachment on
+another relay has a prefix of that one, the rules for one prefix (below) give
+the route to the other one.
 
 Both relays send a QUIC keep-alive each second and use an idle timeout of 5 s,
 so a relay sees a lost path 5 s to 6 s after the last packet of the other
@@ -1102,11 +1109,12 @@ with its relay SA, and the inner packets go between the relays in trunk
 packets (see "Trunk"). The grant of the peer is from the other relay, so the roots that an
 agent checks grants with must cover the certs of all relays of the mesh.
 
-A peer session belongs to the relay session that it started on. When an agent
-moves its attachment to another relay, on a spare or after `Drain`, it closes
-the peer sessions of the old relay session. Its next packet to the peer opens
-a new one with the answer of the new relay: `REACH_LOCAL` if the peer is on
-that relay, and `REACH_TRUNK` if it is on another relay of the mesh.
+A peer session belongs to the relay session that it started on, and it
+carries the packets from the addresses of that relay session. When a relay
+session ends, the agent closes its peer sessions. A packet to the peer from
+the address of another relay session opens a new one with the answer of the
+relay of that session: `REACH_LOCAL` if the peer is on that relay, and
+`REACH_TRUNK` if it is on another relay of the mesh.
 
 An agent below revision 10, or with `local_routes_only`, opens no peer session
 to such an address. It accepts the peer session that an agent of another relay
@@ -1144,7 +1152,7 @@ only for logs and metrics. On a mesh session, `MeshOpenRequest` and
 | 13 | The PSP packet of an agent between two relays, with no change and with no trunk SA. One SA lane for a trunk. The trunk formats of the revisions 5, 8 and 9 end here, and the duties of a relay in those lines apply only between relays at revision 13 or later. | When `RegisterSPI` returns `AlreadyExists` for rows that it has, closes the peer session, so that the next peer session has new SAs. | No duty. | Has a trunk only with a relay at revision 13 or later: makes no `TrunkKeys` call and no `SPIRows` call to an older relay, refuses those calls of it with `FailedPrecondition`, sends it no packet of a sender, answers no `REACH_TRUNK` for it, and keeps that session. Sends the PSP packet of a row to another relay with no change, and seals only clear inner packets and its own messages with the trunk SA. For a packet from the address of a member: opens it when a trunk SA for that member has its SPI, sends it with no change to a session of its own when a row of that member has its SPI, and drops it in each other case. Keeps each SPI in one use for the packets to a member: refuses `RegisterSPI` with `AlreadyExists`, ends a row that goes to a member with its SPI in use, and returns a trunk SA with the SPI of a row in `refused_spis`. |
 | 14 | `Mesh.Snapshot`. | No duty. | No duty. | Answers `Snapshot` on the open mesh session of a member with the snapshot of its host, in parts of at most 1 MiB with `total_size` in the first part. Answers `NotFound` when its host gives no snapshot, and `ResourceExhausted` for a snapshot above 64 MiB. Calls `Snapshot` only when its host asks for a snapshot, and only on a member at revision 14 or later, with 10 s for each member. Takes no snapshot with a `total_size` of 0 or above 64 MiB, or with a number of bytes that is not `total_size`. |
 | 15 | More than one `Visit` call on a visitor session. `Detach` on a visitor session. | After the first `Visit` call on a relay at revision 15 or later, makes one `Visit` call for each address prefix of each extra attachment of its attached session, with the grant of that attachment, and sends those grants in `Peer.Open` and in `Grants` on the visitor session. Does the same for an attachment that it adds during the visit. Calls `Detach` on the visitor session with the ID of an attachment that it removes during the visit. On a relay below revision 15, makes one `Visit` call, so the peers of the visit reach only the address of the first attachment. | No duty. | Accepts a `Visit` call on a visitor session when the grant is of the same home relay: the session gets one more visit prefix, or the new grant for a prefix that it has. Keeps at most 64 visit prefixes on a session, and answers `ResourceExhausted` above that. The limit of 2 visitor sessions of an agent counts sessions, not prefixes. Ends each visit prefix alone: at the end of its grant, when the address gets another owner, and on a `Detach` call of the visitor with the attachment ID of the grant. A relay below revision 15 answers the second `Visit` call with `FailedPrecondition` and such a `Detach` call with `NotFound`. |
-| 16 | A set of announcers for each prefix, with one selection. `Hello.instance`, `AttachRequest.rank`, `AttachResponse.routes`, `Route.standby`, and `instance`, `rank`, `state`, `attached` and `active_from` in a presence entry. The states `DRAINING` and `SUSPECT`, and the hold time of 30 s. | Sends its instance in `Hello`, and sends `Hello` before `Attach`. Accepts the statuses in `AttachResponse` and the standby list of a route. When the active announcer of a prefix changes, gets a remove and an add, and closes the peer session to the old announcer, as for each removed route. Sends a QUIC keep-alive each 3 s. | No duty. | Keeps each attachment that lists a prefix as an announcer of it, and selects the active one with the rules of "Relay". Does not refuse an `Attach` because another agent announces the route. Checks each advertised route of an `Attach`, and refuses a default route, an IPv4-mapped IPv6 prefix and a prefix that overlaps the network of the VPC. A refused route does not fail the `Attach`: it has a result that is not `ROUTE_RESULT_ACCEPTED` in `AttachResponse.routes`, and the attachment is not an announcer of it. An agent below revision 16 gets no statuses. Refuses an `Attach` before `Hello` with `FailedPrecondition`. Lets each announcer of a prefix send from it, and no other session. Sends the standby list only to a session at revision 16 or later: an older agent gets one announcer for each prefix. Sends a QUIC keep-alive on an agent connection after 2 s with no packet, and gives the attachments of a session the state `SUSPECT` after 6 s with no packet of the agent, and `NORMAL` again after 4 s with packets. Gives all its attachments the state `DRAINING` at the start of a drain, before `Drain`. Sends an entry with a higher generation, the same `attached` and `active_from` for each state change, and applies such an entry in place, with no remove of its routes. Reads each entry of a lost member as `SUSPECT`, and drops the entries of a member that is still down after 5 minutes. Selects a `NORMAL` announcer in its hold time after each `NORMAL` announcer out of it, and, when each one is in its hold time, the one with the earliest `active_from` first. Reads the entry of a relay below revision 16 as instance 0, rank 0, state `NORMAL` and no hold time. A relay below revision 16 keeps one attachment for each prefix: it refuses the `Attach` of a second agent with `AlreadyExists`, and it prefers its own attachment. In a mesh with both kinds of relay, two relays can thus select different announcers for a prefix. Each relay gives a packet from another relay to its own announcer of the prefix, so such a packet does not drop. |
+| 16 | A set of announcers for each prefix, with one selection. `Hello.instance`, `AttachRequest.rank`, `AttachResponse.routes`, `Route.standby`, and `instance`, `rank`, `state`, `attached` and `active_from` in a presence entry. The states `DRAINING` and `SUSPECT`, and the hold time of 30 s. | Sends its instance in `Hello`, and sends `Hello` before `Attach`. Attaches on each of its relay connections, with the rank of the connection in `AttachRequest.rank`. Accepts the statuses in `AttachResponse` and the standby list of a route. When the active announcer of a prefix changes, gets a remove and an add, and closes the peer session to the old announcer, as for each removed route. Sends a QUIC keep-alive each 3 s. | No duty. | Keeps each attachment that lists a prefix as an announcer of it, and selects the active one with the rules of "Relay". Does not refuse an `Attach` because another agent announces the route. Checks each advertised route of an `Attach`, and refuses a default route, an IPv4-mapped IPv6 prefix and a prefix that overlaps the network of the VPC. A refused route does not fail the `Attach`: it has a result that is not `ROUTE_RESULT_ACCEPTED` in `AttachResponse.routes`, and the attachment is not an announcer of it. An agent below revision 16 gets no statuses. Refuses an `Attach` before `Hello` with `FailedPrecondition`. Lets each announcer of a prefix send from it, and no other session. Sends the standby list only to a session at revision 16 or later: an older agent gets one announcer for each prefix. Sends a QUIC keep-alive on an agent connection after 2 s with no packet, and gives the attachments of a session the state `SUSPECT` after 6 s with no packet of the agent, and `NORMAL` again after 4 s with packets. Gives all its attachments the state `DRAINING` at the start of a drain, before `Drain`. Sends an entry with a higher generation, the same `attached` and `active_from` for each state change, and applies such an entry in place, with no remove of its routes. Reads each entry of a lost member as `SUSPECT`, and drops the entries of a member that is still down after 5 minutes. Selects a `NORMAL` announcer in its hold time after each `NORMAL` announcer out of it, and, when each one is in its hold time, the one with the earliest `active_from` first. Reads the entry of a relay below revision 16 as instance 0, rank 0, state `NORMAL` and no hold time. A relay below revision 16 keeps one attachment for each prefix: it refuses the `Attach` of a second agent with `AlreadyExists`, and it prefers its own attachment. In a mesh with both kinds of relay, two relays can thus select different announcers for a prefix. Each relay gives a packet from another relay to its own announcer of the prefix, so such a packet does not drop. |
 
 ### Minimum revision
 

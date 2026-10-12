@@ -756,7 +756,6 @@ func TestDrain(t *testing.T) {
 	}{
 		{name: "mover", hello: &dp.Hello{Version: this}, alts: true},
 		{name: "stayer", hello: &dp.Hello{Version: this}, alts: true},
-		{name: "spare", hello: &dp.Hello{Version: this, Spare: true}, alts: true},
 		{name: "first revision with the routes of other relays", hello: &dp.Hello{Version: &dp.Version{Revision: 6}}, alts: true},
 		{name: "local routes only", hello: &dp.Hello{Version: this, LocalRoutesOnly: true}},
 		{name: "revision before the routes of other relays", hello: &dp.Hello{Version: &dp.Version{Revision: 5}}},

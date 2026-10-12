@@ -15,7 +15,7 @@ import (
 var (
 	sessionsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "apoxy_vpc_relay_sessions_total",
-		Help: "Agent Session calls, by data mode and the reason for QUIC mode. Spare sessions have the reason spare.",
+		Help: "Agent Session calls, by data mode and the reason for QUIC mode.",
 	}, []string{"mode", "reason"})
 	sessionVersions = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "apoxy_vpc_relay_session_versions_total",
@@ -300,9 +300,6 @@ func modeLabel(m dp.Mode) string {
 }
 
 func reasonLabel(h *dp.Hello) string {
-	if h.GetSpare() {
-		return "spare"
-	}
 	switch h.GetFallbackReason() {
 	case dp.FallbackReason_FALLBACK_REASON_UNSPECIFIED:
 		return "none"

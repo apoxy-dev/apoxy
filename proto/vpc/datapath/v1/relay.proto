@@ -92,9 +92,9 @@ message Hello {
   Shard shard = 3;
   // Why the agent is in QUIC mode.
   FallbackReason fallback_reason = 4;
-  // The agent keeps this session as a spare. It attaches on it only when its
-  // attached session ends.
-  bool spare = 5;
+  // An agent of an older build set spare here for a session with no attachment.
+  reserved 5;
+  reserved "spare";
   // Revision of the agent. Not set by a build from before revisions.
   Version version = 6;
   // Name of the base attachment of the agent. Many agents can have one SPIFFE

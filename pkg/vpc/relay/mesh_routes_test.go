@@ -1389,7 +1389,7 @@ func TestMeshRoutesBetweenRelays(t *testing.T) {
 	// session for each relay, an agent from before the routes, and laptop.
 	each := b.session(t, "vtep", "192.0.2.3:1000", &dp.Hello{Version: dp.LocalVersion("test"), LocalRoutesOnly: true})
 	old := b.session(t, "old", "192.0.2.4:1000", &dp.Hello{Version: &dp.Version{Revision: 5}})
-	spare := b.session(t, "laptop", "192.0.2.5:1000", &dp.Hello{Version: dp.LocalVersion("test"), Name: "base", Spare: true})
+	second := b.session(t, "laptop", "192.0.2.5:1000", &dp.Hello{Version: dp.LocalVersion("test"), Name: "base"})
 	att := func(id, addr string, routes ...string) *Attachment {
 		at := attachment(id, addr)
 		for _, p := range routes {
@@ -1411,7 +1411,7 @@ func TestMeshRoutesBetweenRelays(t *testing.T) {
 	local := []string{"y fd00:2::/96"}
 	b.has(t, each, local...)
 	b.has(t, old, local...)
-	b.has(t, spare, local...)
+	b.has(t, second, local...)
 	assert.Equal(t, map[string]string{"fd00:1::/96": "x@relay-a", prefixR: "x@relay-a", "fd00:2::/96": "y"}, routeTable(b.r, vpcA))
 	assert.Equal(t, map[string]string{"fd00:1::/96": "x", prefixR: "x", "fd00:2::/96": "y@relay-b"}, routeTable(a.r, vpcA))
 
@@ -1429,7 +1429,7 @@ func TestMeshRoutesBetweenRelays(t *testing.T) {
 	a.n.cancel()
 	b.has(t, sb)
 	assert.Empty(t, routeTable(b.r, vpcA))
-	for _, s := range []*Session{each, old, spare} {
+	for _, s := range []*Session{each, old, second} {
 		assert.Empty(t, b.routes(t, s), "routes of the session of %s", s.id.ID)
 	}
 }
