@@ -330,6 +330,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetworkList":                       schema_apoxy_api_vpc_v1alpha1_VPCNetworkList(ref),
 		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetworkRef":                        schema_apoxy_api_vpc_v1alpha1_VPCNetworkRef(ref),
 		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetworkRoute":                      schema_apoxy_api_vpc_v1alpha1_VPCNetworkRoute(ref),
+		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetworkRouteHealthCheck":           schema_apoxy_api_vpc_v1alpha1_VPCNetworkRouteHealthCheck(ref),
 		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetworkSpec":                       schema_apoxy_api_vpc_v1alpha1_VPCNetworkSpec(ref),
 		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetworkStatus":                     schema_apoxy_api_vpc_v1alpha1_VPCNetworkStatus(ref),
 		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetworkTrustSignature":             schema_apoxy_api_vpc_v1alpha1_VPCNetworkTrustSignature(ref),
@@ -13533,8 +13534,66 @@ func schema_apoxy_api_vpc_v1alpha1_VPCNetworkRoute(ref common.ReferenceCallback)
 							Format:      "int32",
 						},
 					},
+					"healthCheck": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Health check of the network behind the agent. The agent withdraws the route while the check fails. Unset means no check.",
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetworkRouteHealthCheck"),
+						},
+					},
 				},
 				Required: []string{"prefix"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetworkRouteHealthCheck"},
+	}
+}
+
+func schema_apoxy_api_vpc_v1alpha1_VPCNetworkRouteHealthCheck(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "VPCNetworkRouteHealthCheck is a probe that an agent sends to an address in the prefix of a route.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"target": {
+						SchemaProps: spec.SchemaProps{
+							Description: "IP address that the agent probes. It must be in the prefix of the route.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"tcpPort": {
+						SchemaProps: spec.SchemaProps{
+							Description: "TCP port of the target, from 1 to 65535. With a port the probe is a TCP connect. Unset means an ICMP echo.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"intervalSeconds": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Seconds between two probes, from 1 to 60. It is also the timeout of one probe. Unset means 2.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"failureThreshold": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Failed probes in a row before the agent withdraws the route, from 1 to 10. Unset means 3.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"successThreshold": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Passed probes in a row before the agent announces the route again, from 1 to 10. Unset means 2.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+				},
+				Required: []string{"target"},
 			},
 		},
 	}

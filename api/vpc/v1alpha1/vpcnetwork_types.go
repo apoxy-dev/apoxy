@@ -85,6 +85,39 @@ type VPCNetworkRoute struct {
 	// is preferred. Unset means 100.
 	// +optional
 	Priority *int32 `json:"priority,omitempty"`
+
+	// Health check of the network behind the agent. The agent withdraws the
+	// route while the check fails. Unset means no check.
+	// +optional
+	HealthCheck *VPCNetworkRouteHealthCheck `json:"healthCheck,omitempty"`
+}
+
+// VPCNetworkRouteHealthCheck is a probe that an agent sends to an address in
+// the prefix of a route.
+type VPCNetworkRouteHealthCheck struct {
+	// IP address that the agent probes. It must be in the prefix of the route.
+	// +required
+	Target string `json:"target"`
+
+	// TCP port of the target, from 1 to 65535. With a port the probe is a TCP
+	// connect. Unset means an ICMP echo.
+	// +optional
+	TCPPort int32 `json:"tcpPort,omitempty"`
+
+	// Seconds between two probes, from 1 to 60. It is also the timeout of one
+	// probe. Unset means 2.
+	// +optional
+	IntervalSeconds int32 `json:"intervalSeconds,omitempty"`
+
+	// Failed probes in a row before the agent withdraws the route, from 1 to
+	// 10. Unset means 3.
+	// +optional
+	FailureThreshold int32 `json:"failureThreshold,omitempty"`
+
+	// Passed probes in a row before the agent announces the route again, from
+	// 1 to 10. Unset means 2.
+	// +optional
+	SuccessThreshold int32 `json:"successThreshold,omitempty"`
 }
 
 const (
@@ -96,6 +129,19 @@ const (
 	MaxRoutePriority = 255
 	// OverlayAddressSpace is the range that the addresses of all networks come from.
 	OverlayAddressSpace = "fd61:706f:7879::/48"
+
+	// MaxHealthCheckTCPPort is the largest TCP port of a health check.
+	MaxHealthCheckTCPPort = 65535
+	// DefaultHealthCheckIntervalSeconds is the interval of a health check that sets none.
+	DefaultHealthCheckIntervalSeconds = 2
+	// MaxHealthCheckIntervalSeconds is the largest interval of a health check.
+	MaxHealthCheckIntervalSeconds = 60
+	// DefaultHealthCheckFailureThreshold is the failure threshold of a health check that sets none.
+	DefaultHealthCheckFailureThreshold = 3
+	// DefaultHealthCheckSuccessThreshold is the success threshold of a health check that sets none.
+	DefaultHealthCheckSuccessThreshold = 2
+	// MaxHealthCheckThreshold is the largest failure or success threshold of a health check.
+	MaxHealthCheckThreshold = 10
 )
 
 const (

@@ -64,7 +64,7 @@ func (n *VPCNetwork) validateAgents() field.ErrorList {
 }
 
 // validateRoutes checks the routes of one agent: the count, each prefix one
-// time, and the priority range.
+// time, the priority range and the health check.
 func (a *VPCNetworkAgent) validateRoutes(path *field.Path) field.ErrorList {
 	var errs field.ErrorList
 	if len(a.Routes) > MaxAgentRoutes {
@@ -84,6 +84,38 @@ func (a *VPCNetworkAgent) validateRoutes(path *field.Path) field.ErrorList {
 		if p := r.Priority; p != nil && (*p < 0 || *p > MaxRoutePriority) {
 			errs = append(errs, field.Invalid(path.Index(i).Child("priority"), *p,
 				fmt.Sprintf("must be from 0 to %d", MaxRoutePriority)))
+		}
+		if r.HealthCheck != nil {
+			errs = append(errs, r.HealthCheck.validate(path.Index(i).Child("healthCheck"), prefix)...)
+		}
+	}
+	return errs
+}
+
+// validate checks the health check of a route with the prefix prefix. A
+// prefix that is not valid has its own error, so the target is only parsed.
+func (h *VPCNetworkRouteHealthCheck) validate(path *field.Path, prefix netip.Prefix) field.ErrorList {
+	var errs field.ErrorList
+	target, err := netip.ParseAddr(h.Target)
+	switch {
+	case err != nil:
+		errs = append(errs, field.Invalid(path.Child("target"), h.Target, "must be an IP address"))
+	case prefix.IsValid() && !prefix.Contains(target):
+		errs = append(errs, field.Invalid(path.Child("target"), h.Target,
+			fmt.Sprintf("must be an address in the prefix %s of the route", prefix)))
+	}
+	// Zero means that the field is not set.
+	for _, f := range []struct {
+		name       string
+		value, max int32
+	}{
+		{"tcpPort", h.TCPPort, MaxHealthCheckTCPPort},
+		{"intervalSeconds", h.IntervalSeconds, MaxHealthCheckIntervalSeconds},
+		{"failureThreshold", h.FailureThreshold, MaxHealthCheckThreshold},
+		{"successThreshold", h.SuccessThreshold, MaxHealthCheckThreshold},
+	} {
+		if f.value < 0 || f.value > f.max {
+			errs = append(errs, field.Invalid(path.Child(f.name), f.value, fmt.Sprintf("must be from 1 to %d", f.max)))
 		}
 	}
 	return errs
