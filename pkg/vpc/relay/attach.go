@@ -202,11 +202,18 @@ func (r *Router) attach(s *Session, a *Attachment) error {
 		return rpc.Errorf(rpc.FailedPrecondition, "a visitor session takes no attachment")
 	}
 	d := r.domain(s.id.VPC)
-	// takes reports whether a gets p: p has no route, a session of another
-	// relay has it, or a takes it over.
+	// takes reports whether a gets p: p has no route, or a takes it over. From
+	// another relay, an advertised route moves only to a session of its agent.
 	takes := func(p netip.Prefix, advertised bool) bool {
 		o, ok := d.routes[p]
-		return !ok || o.s.home != "" || (advertised && o.advertised && o.s.sameAgent(s) && o.origin != a.ID)
+		switch {
+		case !ok:
+			return true
+		case o.s.home != "":
+			// This relay assigns each address, so an entry with it is old.
+			return !advertised || o.s.sameAgent(s)
+		}
+		return advertised && o.advertised && o.s.sameAgent(s) && o.origin != a.ID
 	}
 	// Check all prefixes first, so that a failed attach changes nothing.
 	for i, p := range slices.Concat(a.Addresses, a.Routes) {

@@ -557,8 +557,8 @@ func (r *Router) AddRoute(s *Session, p netip.Prefix, origin string) error {
 		return rpc.Errorf(rpc.FailedPrecondition, "session closed")
 	}
 	d := r.domain(s.id.VPC)
-	// A session of this relay takes p from a session of another relay.
-	if o, ok := d.routes[p]; ok && o.s.home == "" {
+	// A session of this relay takes p from a session of its agent on another relay.
+	if o, ok := d.routes[p]; ok && (o.s.home == "" || !o.s.sameAgent(s)) {
 		if o.s == s {
 			return nil
 		}
