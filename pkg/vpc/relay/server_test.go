@@ -403,6 +403,108 @@ func TestAttach(t *testing.T) {
 	}
 }
 
+// TestAttachRoutes checks the answer of the relay for each advertised route.
+// A refused route does not fail the Attach, and it is not in the route table,
+// not in the entry for the other relays and not in the routes that the host
+// gets. The fake host gives the attachment fd00:1::/96, in the VPC network
+// fd00:1::/72.
+func TestAttachRoutes(t *testing.T) {
+	const (
+		accepted   = dp.RouteResult_ROUTE_RESULT_ACCEPTED
+		defaultRt  = dp.RouteResult_ROUTE_RESULT_DEFAULT_ROUTE
+		overlaps   = dp.RouteResult_ROUTE_RESULT_OVERLAPS_VPC
+		ipv4Mapped = dp.RouteResult_ROUTE_RESULT_IPV4_MAPPED
+	)
+	// route is an advertised route as the agent sends it, and the answer of
+	// the relay. The answer has the prefix in the masked form.
+	type route struct {
+		prefix string
+		want   dp.RouteResult
+	}
+	cases := []struct {
+		name string
+		rev  uint32 // Revision of the agent.
+		// routes are the advertised routes, in the order of the request.
+		routes []route
+	}{
+		{name: "no routes", rev: dp.Revision},
+		{name: "IPv4 route", rev: dp.Revision, routes: []route{{prefix: "10.9.0.0/16", want: accepted}}},
+		{name: "IPv6 route", rev: dp.Revision, routes: []route{{prefix: "2001:db8::/32", want: accepted}}},
+		{name: "IPv4 host route", rev: dp.Revision, routes: []route{{prefix: "10.9.0.1/32", want: accepted}}},
+		{name: "shortest IPv4 route that is not the default", rev: dp.Revision, routes: []route{{prefix: "128.0.0.0/1", want: accepted}}},
+		{name: "IPv4 default route", rev: dp.Revision, routes: []route{{prefix: "0.0.0.0/0", want: defaultRt}}},
+		{name: "IPv6 default route", rev: dp.Revision, routes: []route{{prefix: "::/0", want: defaultRt}}},
+		{name: "default route with host bits", rev: dp.Revision, routes: []route{{prefix: "10.1.2.3/0", want: defaultRt}}},
+		{name: "IPv4-mapped prefix", rev: dp.Revision, routes: []route{{prefix: "::ffff:10.9.0.0/112", want: ipv4Mapped}}},
+		{name: "all IPv4-mapped addresses", rev: dp.Revision, routes: []route{{prefix: "::ffff:0.0.0.0/96", want: ipv4Mapped}}},
+		{name: "the VPC network", rev: dp.Revision, routes: []route{{prefix: "fd00:1::/72", want: overlaps}}},
+		{name: "prefix in the VPC network", rev: dp.Revision, routes: []route{{prefix: "fd00:1::7:0:0/96", want: overlaps}}},
+		{name: "address of the attachment", rev: dp.Revision, routes: []route{{prefix: "fd00:1::1/128", want: overlaps}}},
+		{name: "prefix with the VPC network in it", rev: dp.Revision, routes: []route{{prefix: "fd00::/8", want: overlaps}}},
+		{name: "network after the VPC network", rev: dp.Revision, routes: []route{{prefix: "fd00:1:0:0:100::/72", want: accepted}}},
+		{name: "network before the VPC network", rev: dp.Revision, routes: []route{{prefix: "fd00:0:ffff:ffff:ff00::/72", want: accepted}}},
+		{name: "address after the VPC network", rev: dp.Revision, routes: []route{{prefix: "fd00:1:0:0:100::/128", want: accepted}}},
+		{name: "good and bad routes", rev: dp.Revision, routes: []route{
+			{prefix: "10.9.0.0/16", want: accepted},
+			{prefix: "0.0.0.0/0", want: defaultRt},
+			{prefix: "2001:db8::1/32", want: accepted},
+			{prefix: "fd00:1::/80", want: overlaps},
+			{prefix: "::ffff:192.0.2.0/120", want: ipv4Mapped},
+			{prefix: "::/0", want: defaultRt},
+			{prefix: "192.0.2.0/24", want: accepted},
+		}},
+		{name: "only bad routes", rev: dp.Revision, routes: []route{{prefix: "::/0", want: defaultRt}, {prefix: "fd00:1::/72", want: overlaps}}},
+		{name: "first revision with the statuses", rev: announcerRevision, routes: []route{{prefix: "10.9.0.0/16", want: accepted}, {prefix: "::/0", want: defaultRt}}},
+		{name: "agent below the revision of the statuses", rev: announcerRevision - 1, routes: []route{
+			{prefix: "10.9.0.0/16", want: accepted},
+			{prefix: "0.0.0.0/0", want: defaultRt},
+			{prefix: "fd00:1::/72", want: overlaps},
+			{prefix: "::ffff:10.9.0.0/112", want: ipv4Mapped},
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ca := newCA(t)
+			h := newHarness(t, ca)
+			a := h.mustDial(t, ca.agentCert(t, vpcA, "laptop"))
+			sayHelloAt(t, a, tc.rev)
+
+			req := &dp.AttachRequest{Vpc: ref(vpcA), Name: "laptop"}
+			var statuses []*dp.RouteStatus
+			var good []netip.Prefix
+			for _, r := range tc.routes {
+				req.Routes = append(req.Routes, r.prefix)
+				masked := netip.MustParsePrefix(r.prefix).Masked().String()
+				statuses = append(statuses, &dp.RouteStatus{Prefix: masked, Result: r.want})
+				if r.want == accepted {
+					good = append(good, netip.MustParsePrefix(masked))
+				}
+			}
+			if tc.rev < announcerRevision {
+				statuses = nil
+			}
+			res := attach(t, a, req)
+			assert.Empty(t, cmp.Diff(statuses, res.Routes, protocmp.Transform()), "statuses")
+
+			claims, err := VerifyGrant(res.Grant, h.relayRoots, time.Now())
+			require.NoError(t, err)
+			require.Equal(t, []string{"fd00:1::/96"}, claims.Addresses)
+			announced := append([]netip.Prefix{netip.MustParsePrefix("fd00:1::/96")}, good...)
+
+			s := h.session(t, a)
+			h.r.mu.RLock()
+			table := slices.Clone(s.routes)
+			entry := presenceOf(s, s.attachments[0])
+			h.r.mu.RUnlock()
+			assert.ElementsMatch(t, announced, table, "route table")
+			assert.Equal(t, prefixStrings(announced), entry.Prefixes, "entry for the other relays")
+			calls := h.addrs.attachedCalls()
+			require.Len(t, calls, 1)
+			assert.Equal(t, good, calls[0].routes, "routes that the host gets")
+		})
+	}
+}
+
 // TestAttachedCalls checks what the host gets for the attachments of one
 // session: one Attached call for each, and a Release when each one ends.
 func TestAttachedCalls(t *testing.T) {

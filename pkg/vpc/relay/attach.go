@@ -15,6 +15,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/netip"
 	"slices"
 	"strings"
@@ -25,6 +26,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"k8s.io/apimachinery/pkg/util/validation"
 
+	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/identity"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
@@ -40,7 +42,8 @@ type Attachment struct {
 	Labels  map[string]string
 	// Subject is the SPIFFE ID of the agent.
 	Subject string
-	// Routes are the prefixes that the attachment advertises.
+	// Routes are the advertised prefixes that the relay accepted. The relay sets
+	// them after Addresses.Assign.
 	Routes []netip.Prefix
 	// Addresses are the prefixes from Addresses.Assign.
 	Addresses []netip.Prefix
@@ -58,7 +61,8 @@ type Attachment struct {
 // implements it.
 type Addresses interface {
 	// Assign returns the prefixes of a new attachment. It calls onLost when
-	// the lease of the prefixes ends, also before Assign returns.
+	// the lease of the prefixes ends, also before Assign returns. At this call
+	// a has no Routes.
 	Assign(ctx context.Context, a *Attachment, onLost func()) ([]netip.Prefix, error)
 	// Attached tells the host that the attach of a is complete. It must not
 	// block. Release can come first when the session ends during the attach.
@@ -88,7 +92,7 @@ func (srv *Server) Attach(ctx context.Context, in *dp.AttachRequest) (*dp.Attach
 	if err != nil {
 		return nil, err
 	}
-	a, err := newAttachment(key, s.id.ID, in)
+	a, routes, err := newAttachment(key, s.id.ID, in)
 	if err != nil {
 		return nil, err
 	}
@@ -109,6 +113,7 @@ func (srv *Server) Attach(ctx context.Context, in *dp.AttachRequest) (*dp.Attach
 		return nil, err
 	}
 	a.Addresses = addrs
+	statuses := a.acceptRoutes(routes)
 	notAfter := s.notAfter
 	if notAfter.IsZero() {
 		notAfter = time.Now().Add(identity.CertLifetime)
@@ -138,20 +143,40 @@ func (srv *Server) Attach(ctx context.Context, in *dp.AttachRequest) (*dp.Attach
 		return nil, err
 	}
 	srv.Addresses.Attached(a)
-	return &dp.AttachResponse{AttachmentId: a.ID, Grant: grant, Routes: srv.R.routeStatuses(s, a)}, nil
+	// An agent below announcerRevision does not know the statuses.
+	if !srv.R.agentAtLeast(s, announcerRevision) {
+		statuses = nil
+	}
+	return &dp.AttachResponse{AttachmentId: a.ID, Grant: grant, Routes: statuses}, nil
 }
 
-// routeStatuses returns the answer for each advertised route of a, for an
-// agent at announcerRevision or later. The relay accepts each route now.
-func (r *Router) routeStatuses(s *Session, a *Attachment) []*dp.RouteStatus {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	if s.version.GetRevision() < announcerRevision {
-		return nil
+// routeResult returns the answer for the advertised route p of an attachment
+// with the addresses addrs. An agent finds the VPC network in the same way.
+func routeResult(p netip.Prefix, addrs []netip.Prefix) dp.RouteResult {
+	inVPC := func(a netip.Prefix) bool { return p.Overlaps(tunnet.NetworkPrefixOf(a.Addr())) }
+	switch {
+	case p.Bits() == 0:
+		return dp.RouteResult_ROUTE_RESULT_DEFAULT_ROUTE
+	case p.Addr().Is4In6():
+		return dp.RouteResult_ROUTE_RESULT_IPV4_MAPPED
+	case slices.ContainsFunc(addrs, inVPC):
+		return dp.RouteResult_ROUTE_RESULT_OVERLAPS_VPC
 	}
-	out := make([]*dp.RouteStatus, len(a.Routes))
-	for i, p := range a.Routes {
-		out[i] = &dp.RouteStatus{Prefix: p.String(), Result: dp.RouteResult_ROUTE_RESULT_ACCEPTED}
+	return dp.RouteResult_ROUTE_RESULT_ACCEPTED
+}
+
+// acceptRoutes gives a the routes that the relay accepts, and returns the
+// answer for each route in the order of routes. Call it after a has addresses.
+func (a *Attachment) acceptRoutes(routes []netip.Prefix) []*dp.RouteStatus {
+	out := make([]*dp.RouteStatus, len(routes))
+	for i, p := range routes {
+		res := routeResult(p, a.Addresses)
+		out[i] = &dp.RouteStatus{Prefix: p.String(), Result: res}
+		if res == dp.RouteResult_ROUTE_RESULT_ACCEPTED {
+			a.Routes = append(a.Routes, p)
+			continue
+		}
+		slog.Info("Refused an advertised route", "vpc", a.VPC.UID, "attachment", a.ID, "prefix", p, "reason", res.String())
 	}
 	return out
 }
@@ -190,22 +215,25 @@ func ValidateAttachment(name string, labels map[string]string) error {
 	return nil
 }
 
-func newAttachment(vpc VPCKey, subject string, in *dp.AttachRequest) (*Attachment, error) {
+// newAttachment returns an attachment with no routes, and the advertised
+// routes of the request in the masked form, which acceptRoutes checks.
+func newAttachment(vpc VPCKey, subject string, in *dp.AttachRequest) (*Attachment, []netip.Prefix, error) {
 	if err := ValidateAttachment(in.GetName(), in.GetLabels()); err != nil {
-		return nil, rpc.Errorf(rpc.InvalidArgument, "%v", err)
+		return nil, nil, rpc.Errorf(rpc.InvalidArgument, "%v", err)
 	}
 	a := &Attachment{VPC: vpc, Name: in.GetName(), Labels: in.GetLabels(), Subject: subject, Rank: in.GetRank()}
+	var routes []netip.Prefix
 	for _, r := range in.GetRoutes() {
 		p, err := netip.ParsePrefix(r)
 		if err != nil {
-			return nil, rpc.Errorf(rpc.InvalidArgument, "route: %v", err)
+			return nil, nil, rpc.Errorf(rpc.InvalidArgument, "route: %v", err)
 		}
-		a.Routes = append(a.Routes, p.Masked())
+		routes = append(routes, p.Masked())
 	}
 	var id [16]byte
 	_, _ = rand.Read(id[:])
 	a.ID = hex.EncodeToString(id[:])
-	return a, nil
+	return a, routes, nil
 }
 
 // attach adds a to s, and an entry to the route table for each address and each

@@ -216,16 +216,18 @@ func (f *fakeAddresses) Assign(_ context.Context, a *Attachment, onLost func()) 
 	return []netip.Prefix{netip.MustParsePrefix(fmt.Sprintf("fd00:%x::/96", f.next))}, nil
 }
 
-// attachedCall is one Attached call: the attachment ID and its addresses then.
+// attachedCall is one Attached call: the attachment ID, and its addresses and
+// its routes then.
 type attachedCall struct {
-	id    string
-	addrs []netip.Prefix
+	id     string
+	addrs  []netip.Prefix
+	routes []netip.Prefix
 }
 
 func (f *fakeAddresses) Attached(a *Attachment) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.attached = append(f.attached, attachedCall{a.ID, slices.Clone(a.Addresses)})
+	f.attached = append(f.attached, attachedCall{a.ID, slices.Clone(a.Addresses), slices.Clone(a.Routes)})
 }
 
 func (f *fakeAddresses) attachedCalls() []attachedCall {
@@ -475,6 +477,18 @@ func openMode(t *testing.T, a agent, mode dp.Mode) (syncStream, *dp.Welcome, *dp
 func sayHello(t *testing.T, a agent) {
 	t.Helper()
 	openMode(t, a, dp.Mode_MODE_QUIC)
+}
+
+// sayHelloAt is sayHello for an agent at the revision rev.
+func sayHelloAt(t *testing.T, a agent, rev uint32) {
+	t.Helper()
+	st, err := a.c.Session(context.Background())
+	require.NoError(t, err)
+	hello := &dp.Hello{Mode: dp.Mode_MODE_QUIC, Version: &dp.Version{Revision: rev}}
+	require.NoError(t, st.Send(&dp.SessionRequest{Msg: &dp.SessionRequest_Hello{Hello: hello}}))
+	w, err := st.Recv()
+	require.NoError(t, err)
+	require.NotNil(t, w.GetWelcome(), "first message: %v", w)
 }
 
 // recv returns the next message of st within 5 s. It skips a RouteDelta with

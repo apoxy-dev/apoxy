@@ -217,8 +217,9 @@ message AttachResponse {
   string attachment_id = 1;
   // Grant with the addresses of the attachment.
   AttachmentGrant grant = 2;
-  // Answer of the relay for each route of the request, for an agent at
-  // revision 16 or later. A route with no answer is accepted.
+  // Answer of the relay for each route of the request, in the order of the
+  // request, for an agent at revision 16 or later. A route with no answer is
+  // accepted.
   repeated RouteStatus routes = 3;
 }
 
@@ -308,9 +309,18 @@ enum FallbackReason {
 }
 
 // RouteResult tells if the relay took an advertised route of an attachment.
+// Each value that is not ROUTE_RESULT_ACCEPTED, also a value of a later
+// revision, is a refused route: the attachment is not an announcer of it.
 enum RouteResult {
   // The attachment is an announcer of the prefix.
   ROUTE_RESULT_ACCEPTED = 0;
+  // Refused: the prefix is a default route (length 0).
+  ROUTE_RESULT_DEFAULT_ROUTE = 1;
+  // Refused: the prefix overlaps the network of the VPC, from which the relay
+  // assigns the addresses of the attachments.
+  ROUTE_RESULT_OVERLAPS_VPC = 2;
+  // Refused: the prefix is an IPv4-mapped IPv6 prefix.
+  ROUTE_RESULT_IPV4_MAPPED = 3;
 }
 
 // RouteStatus is the answer of the relay for one advertised route.
