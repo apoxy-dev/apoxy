@@ -61,10 +61,11 @@ var (
 )
 
 // relayQUIC is the QUIC config of relay sessions. See relay.MinPacketSize.
-// Data frames are Not-ECT: the breaker, not ECN, reacts to congestion.
+// Data frames are Not-ECT: the breaker, not ECN, reacts to congestion. The
+// keep-alive opens a lost NAT entry again before the relay calls the agent silent.
 var relayQUIC = &quic.Config{
 	EnableDatagrams:   true,
-	KeepAlivePeriod:   5 * time.Second,
+	KeepAlivePeriod:   3 * time.Second,
 	MaxIdleTimeout:    15 * time.Second,
 	InitialPacketSize: 1350,
 	DisableECN:        true,

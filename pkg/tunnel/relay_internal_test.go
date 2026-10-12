@@ -842,3 +842,31 @@ func TestRelayVPCPacketSize(t *testing.T) {
 		t.Errorf("MaxIncomingStreams = %d, want 256 or more for 128 Attach calls at a time", got)
 	}
 }
+
+// TestListenConfigKeepAlive checks the QUIC timers of the relay listener. With a
+// VPC relay, the keep-alive is the probe of the liveness check of agent
+// sessions, and the idle timeout stays.
+func TestListenConfigKeepAlive(t *testing.T) {
+	cases := []struct {
+		name string
+		vpc  *vpcrelay.Server
+		want time.Duration
+	}{
+		{name: "no VPC relay", want: 5 * time.Second},
+		{name: "VPC relay", vpc: &vpcrelay.Server{}, want: vpcrelay.AgentKeepAlive},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := (&Relay{vpc: tc.vpc}).listenConfig()
+			if c.KeepAlivePeriod != tc.want {
+				t.Errorf("keep-alive is %s, want %s", c.KeepAlivePeriod, tc.want)
+			}
+			if c.MaxIdleTimeout != 15*time.Second {
+				t.Errorf("idle timeout is %s, want 15s", c.MaxIdleTimeout)
+			}
+			if (c.Tracer != nil) != (tc.vpc != nil) {
+				t.Errorf("tracer set is %t, want %t", c.Tracer != nil, tc.vpc != nil)
+			}
+		})
+	}
+}

@@ -514,12 +514,14 @@ use only the set, not the order in which the announcers came. Thus all relays
 with the same set select the same announcer. The order is:
 
 1. The state: `NORMAL`, then `DRAINING`, then `SUSPECT`, then a state of a
-   later revision. A relay at revision 16 gives each attachment the state
-   `NORMAL`.
-2. The agent process with the lowest SHA-256 hash of these bytes: the SPIFFE
+   later revision.
+2. For `NORMAL` announcers: one whose `active_from` time has passed, then one
+   that is still in its hold time (see below). When each `NORMAL` announcer is
+   in its hold time: the earlier `active_from`.
+3. The agent process with the lowest SHA-256 hash of these bytes: the SPIFFE
    ID, a zero byte, the name, a zero byte, the instance as 8 bytes (big
    endian), and the prefix as text. Each prefix has its own order of agents.
-3. For the connections of one agent process: the lower `AttachRequest.rank`,
+4. For the connections of one agent process: the lower `AttachRequest.rank`,
    then the lower relay name, then the lower attachment ID. The agent gives
    the rank, and the default is 0.
 
@@ -530,13 +532,52 @@ compares the generation at the attach, not the generation of a later state
 change. The older attachment stays in the set, and it comes in the order
 again when the newer one ends.
 
+The relay of an attachment gives it its state, and all attachments of one
+session have the same state:
+
+- `SUSPECT`: the relay does not hear the agent. The relay sends a QUIC
+  keep-alive on each agent connection after 2 s with no packet, and each QUIC
+  stack answers it, so this works for each agent revision. The relay checks
+  each 250 ms. After 6 s with no QUIC packet from the agent, the session is
+  `SUSPECT`. It is `NORMAL` again when a packet comes 4 s or more after the
+  first packet of a run of packets with no silence above 3 s. The session, its
+  addresses and its routes stay: the idle timeout of the connection (15 s)
+  ends them, as before. An agent sends its own keep-alive each 3 s, so a lost
+  NAT entry opens again before the 6 s.
+- `DRAINING`: the relay drains. It gives the state to all its attachments at
+  the start of the drain, before it sends `Drain`. A session that is `SUSPECT`
+  stays `SUSPECT`.
+
+A state change does not remove the attachment from the set. The relay changes
+the state of the announcer and selects again. The routes and the SPI rows of a
+prefix move only if its active announcer changes, so the only announcer of a
+prefix stays active in each state.
+
+An announcer that comes, or that returns to `NORMAL`, does not replace a live
+active announcer at once. Its relay sets `active_from` to the time of the
+attach, or of the last return to `NORMAL`, plus 30 s. Until that time, each
+`NORMAL` announcer whose `active_from` has passed comes before it. When each
+`NORMAL` announcer of a prefix is in its hold time, the one with the earliest
+`active_from` comes first, so a prefix with one announcer and a new set have
+an active announcer at once. That announcer stays active when its hold time
+ends. When the last hold time of the set ends, the order is again that of the
+hash, the rank, the relay and the attachment ID, which can move the active
+role one time. An announcer in its hold time comes before each `DRAINING` and
+each `SUSPECT` one, so it does not wait when the active announcer is not
+`NORMAL` or is gone. A reconnect of the active announcer is a new attachment
+with a new hold time: a standby announcer whose hold time has passed is active
+until that hold time ends. Each relay selects again when a hold time ends.
+Each relay reads its own clock, so two relays can select different announcers
+only for the time by which their clocks differ.
+
 `RouteDelta` gives the active announcer of a prefix as the origin of its
 route. A session at revision 16 or later also gets `Route.standby`: the
 attachment IDs of the standby announcers that it can reach, in the order in
 which they become active. When the active announcer changes, the relay
 removes the route with the old origin and adds the route with the new one.
 When only the standby list changes, a session at revision 16 or later gets
-the route again as an add.
+the route again as an add. A state change, or the end of a hold time, that
+changes neither the active announcer nor the standby list sends nothing.
 
 - A session gets no route for a prefix that its own agent process announces.
   It gets the routes of the other agents of its SPIFFE ID.
@@ -694,7 +735,9 @@ or `UPGRADE` (the agent revision is below the minimum of the relay; see
 
 `Drain` tells an agent that the relay stops soon. From then on the relay
 refuses each new connection with `DRAIN`, and it closes the sessions that are
-left when the drain ends. `alternates` lists the relays that the agent can
+left when the drain ends. Before it sends `Drain`, the relay gives all its
+attachments the state `DRAINING` (see "One prefix, many announcers"), so each
+relay selects a standby announcer of another relay for their prefixes. `alternates` lists the relays that the agent can
 move to, each as a `RelayRef{id, addresses}`: the other relays of the mesh
 that have an open mesh session with the draining relay and gave agent
 addresses in `Open`. The mesh has no measure of distance, so the list is in
@@ -818,7 +861,8 @@ are gone).
 
 A relay closes with `RESTART` when it stops: at the end of a drain, and not
 at its start. During the drain its mesh sessions stay open, and the other
-relays keep its entries, routes and SPI rows. Thus an agent of the draining
+relays keep its entries, in the state `DRAINING`, with their routes and SPI
+rows. Thus an agent of the draining
 relay gets the packets of the agents of other relays until it moves (see
 `Drain` in "Relay"). If its new attachment on another relay has a prefix of
 the old one, the rules for one prefix (below) give the route to the new one.
@@ -859,9 +903,10 @@ A relay tells each other relay of its attachments. On each new session with a
 relay at revision 4 or later, it opens one `Presence` call. It first sends the
 full set: an entry for each attachment that it has, in one or more
 `PresenceUpdate` messages, with `end_of_full_set` in the last of them. Then it
-sends each change: an entry for a new attachment, and an entry with `gone` for
-an attachment that ended. An attachment does not change between these two
-entries. A session that replaces an older one gets the full set again. A relay
+sends each change: an entry for a new attachment, an entry for each change of
+its state, and an entry with `gone` for an attachment that ended. Only the
+generation, the state and `active_from` of an attachment change between its
+first entry and its `gone` entry. A session that replaces an older one gets the full set again. A relay
 at revision 3 gets no `Presence` call, and its session stays open.
 
 An entry has the VPC, the attachment ID, the prefixes (the addresses and the
@@ -869,17 +914,18 @@ advertised routes), the SPIFFE ID and the `Hello.name` of the agent, and the
 sender tag. From revision 16 it also has the `Hello.instance` of the agent,
 the `rank` of the attach, `state`, and `attached`: the generation of the
 first entry of the attachment. A later entry of the attachment with a new
-state has a higher generation and the same `attached`. The state is a fact of
+state has a higher generation and the same `attached`. It also has
+`active_from`, the end of the hold time of the attachment. The state is a fact of
 the sending relay about the attachment. No entry tells which announcer is
 active: each relay selects that. An entry with none of these fields, as a
-relay below revision 16 sends it, reads as instance 0, rank 0, state `NORMAL`
-and `attached` equal to the generation. The sending relay gives the sender tag, a number from 1 to
+relay below revision 16 sends it, reads as instance 0, rank 0, state `NORMAL`,
+`attached` equal to the generation, and no hold time. The sending relay gives the sender tag, a number from 1 to
 2^24 - 1, to the session of the agent at the first attachment of the session.
 All attachments of one session have the same tag, and no other session of the
 sending relay has it at the same time. The session keeps its tag until it
 ends. The relay gives a tag again only after all the other tags. `generation`
-is the time of the change in Unix milliseconds: the attach, or the end for a
-`gone` entry. A relay sends each generation one time: when the clock is not
+is the time of the change in Unix milliseconds: the attach, a state change, or
+the end for a `gone` entry. A relay sends each generation one time: when the clock is not
 above the last generation, the next one is the last one plus 1. For one
 attachment ID, the entry with the higher generation wins.
 
@@ -889,15 +935,26 @@ for an attachment that it does not have. It refuses an entry with no
 attachment ID, with an ID of more than 128 bytes or with no generation. It
 also refuses an entry without `gone` that has no VPC, a network ID above 24
 bits, a subject that is not an agent ID of that VPC, a tag out of range, a
-prefix that does not parse or more than 64 prefixes. A refused entry does not
+prefix that does not parse, more than 64 prefixes or an `active_from` that is
+not a valid time. A refused entry does not
 end the call. A second `Presence` call on a session gets `FailedPrecondition`.
+
+An entry with a higher generation replaces the entry that the relay has. When
+the new entry has the same session, generation of the attach, rank and
+prefixes, it is a state change: the relay changes the state and `active_from`
+of the entry in place, and does not remove its routes.
 
 The relay keeps at most 65536 entries of one member, and it refuses each new
 entry above that number. Before it refuses one, it drops the entries of that
 member that the session of the call did not send.
 
-The entries of a member stay after its session ends, with their routes and
-with no time limit. The relay drops them at once when the member closes with
+The entries of a member stay after its session ends, with their routes. When
+the member is down as lost (3 s after its session ended with no new session),
+the relay reads each of its entries as `SUSPECT`. This state is local: the
+relay sends it to no other relay. An entry has the state of its relay again
+when a new session of the member sends it again or replaces it. The relay
+drops the entries of a member that is still down 5 minutes after it was lost.
+It drops them at once when the member closes with
 `RESTART` or leaves the member set, also when the member was down before it
 left. A member whose address changes leaves the member set and comes back.
 When the member has a new session, the relay keeps each entry of an older
@@ -1086,7 +1143,7 @@ only for logs and metrics. On a mesh session, `MeshOpenRequest` and
 | 13 | The PSP packet of an agent between two relays, with no change and with no trunk SA. One SA lane for a trunk. The trunk formats of the revisions 5, 8 and 9 end here, and the duties of a relay in those lines apply only between relays at revision 13 or later. | When `RegisterSPI` returns `AlreadyExists` for rows that it has, closes the peer session, so that the next peer session has new SAs. | No duty. | Has a trunk only with a relay at revision 13 or later: makes no `TrunkKeys` call and no `SPIRows` call to an older relay, refuses those calls of it with `FailedPrecondition`, sends it no packet of a sender, answers no `REACH_TRUNK` for it, and keeps that session. Sends the PSP packet of a row to another relay with no change, and seals only clear inner packets and its own messages with the trunk SA. For a packet from the address of a member: opens it when a trunk SA for that member has its SPI, sends it with no change to a session of its own when a row of that member has its SPI, and drops it in each other case. Keeps each SPI in one use for the packets to a member: refuses `RegisterSPI` with `AlreadyExists`, ends a row that goes to a member with its SPI in use, and returns a trunk SA with the SPI of a row in `refused_spis`. |
 | 14 | `Mesh.Snapshot`. | No duty. | No duty. | Answers `Snapshot` on the open mesh session of a member with the snapshot of its host, in parts of at most 1 MiB with `total_size` in the first part. Answers `NotFound` when its host gives no snapshot, and `ResourceExhausted` for a snapshot above 64 MiB. Calls `Snapshot` only when its host asks for a snapshot, and only on a member at revision 14 or later, with 10 s for each member. Takes no snapshot with a `total_size` of 0 or above 64 MiB, or with a number of bytes that is not `total_size`. |
 | 15 | More than one `Visit` call on a visitor session. `Detach` on a visitor session. | After the first `Visit` call on a relay at revision 15 or later, makes one `Visit` call for each address prefix of each extra attachment of its attached session, with the grant of that attachment, and sends those grants in `Peer.Open` and in `Grants` on the visitor session. Does the same for an attachment that it adds during the visit. Calls `Detach` on the visitor session with the ID of an attachment that it removes during the visit. On a relay below revision 15, makes one `Visit` call, so the peers of the visit reach only the address of the first attachment. | No duty. | Accepts a `Visit` call on a visitor session when the grant is of the same home relay: the session gets one more visit prefix, or the new grant for a prefix that it has. Keeps at most 64 visit prefixes on a session, and answers `ResourceExhausted` above that. The limit of 2 visitor sessions of an agent counts sessions, not prefixes. Ends each visit prefix alone: at the end of its grant, when the address gets another owner, and on a `Detach` call of the visitor with the attachment ID of the grant. A relay below revision 15 answers the second `Visit` call with `FailedPrecondition` and such a `Detach` call with `NotFound`. |
-| 16 | A set of announcers for each prefix, with one selection. `Hello.instance`, `AttachRequest.rank`, `AttachResponse.routes`, `Route.standby`, and `instance`, `rank`, `state` and `attached` in a presence entry. | Sends its instance in `Hello`, and sends `Hello` before `Attach`. Accepts the statuses in `AttachResponse` and the standby list of a route. When the active announcer of a prefix changes, gets a remove and an add, and closes the peer session to the old announcer, as for each removed route. | No duty. | Keeps each attachment that lists a prefix as an announcer of it, and selects the active one with the rules of "Relay". Does not refuse an `Attach` because another agent announces the route. Checks each advertised route of an `Attach`, and refuses a default route, an IPv4-mapped IPv6 prefix and a prefix that overlaps the network of the VPC. A refused route does not fail the `Attach`: it has a result that is not `ROUTE_RESULT_ACCEPTED` in `AttachResponse.routes`, and the attachment is not an announcer of it. An agent below revision 16 gets no statuses. Refuses an `Attach` before `Hello` with `FailedPrecondition`. Lets each announcer of a prefix send from it, and no other session. Sends the standby list only to a session at revision 16 or later: an older agent gets one announcer for each prefix. Reads the entry of a relay below revision 16 as instance 0, rank 0 and state `NORMAL`. A relay below revision 16 keeps one attachment for each prefix: it refuses the `Attach` of a second agent with `AlreadyExists`, and it prefers its own attachment. In a mesh with both kinds of relay, two relays can thus select different announcers for a prefix. Each relay gives a packet from another relay to its own announcer of the prefix, so such a packet does not drop. |
+| 16 | A set of announcers for each prefix, with one selection. `Hello.instance`, `AttachRequest.rank`, `AttachResponse.routes`, `Route.standby`, and `instance`, `rank`, `state`, `attached` and `active_from` in a presence entry. The states `DRAINING` and `SUSPECT`, and the hold time of 30 s. | Sends its instance in `Hello`, and sends `Hello` before `Attach`. Accepts the statuses in `AttachResponse` and the standby list of a route. When the active announcer of a prefix changes, gets a remove and an add, and closes the peer session to the old announcer, as for each removed route. Sends a QUIC keep-alive each 3 s. | No duty. | Keeps each attachment that lists a prefix as an announcer of it, and selects the active one with the rules of "Relay". Does not refuse an `Attach` because another agent announces the route. Checks each advertised route of an `Attach`, and refuses a default route, an IPv4-mapped IPv6 prefix and a prefix that overlaps the network of the VPC. A refused route does not fail the `Attach`: it has a result that is not `ROUTE_RESULT_ACCEPTED` in `AttachResponse.routes`, and the attachment is not an announcer of it. An agent below revision 16 gets no statuses. Refuses an `Attach` before `Hello` with `FailedPrecondition`. Lets each announcer of a prefix send from it, and no other session. Sends the standby list only to a session at revision 16 or later: an older agent gets one announcer for each prefix. Sends a QUIC keep-alive on an agent connection after 2 s with no packet, and gives the attachments of a session the state `SUSPECT` after 6 s with no packet of the agent, and `NORMAL` again after 4 s with packets. Gives all its attachments the state `DRAINING` at the start of a drain, before `Drain`. Sends an entry with a higher generation, the same `attached` and `active_from` for each state change, and applies such an entry in place, with no remove of its routes. Reads each entry of a lost member as `SUSPECT`, and drops the entries of a member that is still down after 5 minutes. Selects a `NORMAL` announcer in its hold time after each `NORMAL` announcer out of it, and, when each one is in its hold time, the one with the earliest `active_from` first. Reads the entry of a relay below revision 16 as instance 0, rank 0, state `NORMAL` and no hold time. A relay below revision 16 keeps one attachment for each prefix: it refuses the `Attach` of a second agent with `AlreadyExists`, and it prefers its own attachment. In a mesh with both kinds of relay, two relays can thus select different announcers for a prefix. Each relay gives a packet from another relay to its own announcer of the prefix, so such a packet does not drop. |
 
 ### Minimum revision
 

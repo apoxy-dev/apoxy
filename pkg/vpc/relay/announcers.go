@@ -43,8 +43,9 @@ type target struct {
 }
 
 // announcer is one entry of the route table: an attachment that announces a
-// prefix. The prefix and the attachment ID are the key of the entry. An entry
-// does not change. Each connection of an agent to a relay is its own announcer.
+// prefix. The prefix and the attachment ID are the key of the entry. Only the
+// state and the hold time of an entry change, in restate. Each connection of
+// an agent to a relay is its own announcer.
 type announcer struct {
 	target
 	agent agentKey
@@ -55,6 +56,9 @@ type announcer struct {
 	// does not change it, so it tells which attachment of a connection is newer.
 	attached uint64
 	state    dp.AnnouncerState // The lower state is selected first.
+	// activeFrom is the end of the hold time of the entry, from the relay with
+	// the attachment. The zero time is no hold time.
+	activeFrom time.Time
 	// hash is a hash of the agent and the prefix. The lower one is selected
 	// first, so each prefix has its own order of the agents.
 	hash [sha256.Size]byte
@@ -65,8 +69,8 @@ type announcer struct {
 
 // newAnnouncer returns the entry of the attachment of t on relay for p. The
 // hash is made here, one time, and not at a lookup.
-func newAnnouncer(t target, relay string, p netip.Prefix, attached uint64, rank uint32, state dp.AnnouncerState) *announcer {
-	e := &announcer{target: t, agent: t.s.agent(), relay: relay, attached: attached, rank: rank, state: state}
+func newAnnouncer(t target, relay string, p netip.Prefix, attached uint64, rank uint32, state dp.AnnouncerState, activeFrom time.Time) *announcer {
+	e := &announcer{target: t, agent: t.s.agent(), relay: relay, attached: attached, rank: rank, state: state, activeFrom: activeFrom}
 	// A SPIFFE ID and an agent name have no zero byte, so the parts stay apart.
 	h := sha256.New()
 	h.Write([]byte(e.agent.id))
@@ -100,14 +104,33 @@ func (e *announcer) newer(o *announcer) bool {
 	return cmp.Or(cmp.Compare(o.attached, e.attached), cmp.Compare(e.origin, o.origin)) < 0
 }
 
-// selectOrder is the selection of the route table. It returns one entry for
-// each connection of an agent to a relay, the newest one: the active announcer
-// first, then the standby announcers in the order that they become active.
-// The order is the state (normal, draining, suspect), then the lower hash,
-// which selects one agent process. The connections of that agent come in the
-// order of their rank, then of the relay name, then of the attachment ID. The
-// result depends only on the set, and not on the order of entries.
-func selectOrder(entries []*announcer) []*announcer {
+// restate gives e the state and the hold time activeFrom. It reports a change.
+func (e *announcer) restate(state dp.AnnouncerState, activeFrom time.Time) bool {
+	if e.state == state && e.activeFrom.Equal(activeFrom) {
+		return false
+	}
+	e.state, e.activeFrom = state, activeFrom
+	return true
+}
+
+// held returns 1 if e is in its hold time at now, and 0 if not. Only a normal
+// entry has a hold time.
+func (e *announcer) held(now time.Time) int {
+	if e.state == dp.AnnouncerState_ANNOUNCER_STATE_NORMAL && now.Before(e.activeFrom) {
+		return 1
+	}
+	return 0
+}
+
+// selectOrder is the selection of the route table at the time now. It returns
+// one entry for each connection of an agent to a relay, the newest one: the
+// active announcer first, then the standby announcers in the order that they
+// become active. The order is the state (normal, draining, suspect), then the
+// hold time, then the lower hash, which selects one agent process. The
+// connections of that agent come in the order of their rank, then of the relay
+// name, then of the attachment ID. The result depends only on the set and on
+// now, and not on the order of entries.
+func selectOrder(entries []*announcer, now time.Time) []*announcer {
 	order := make([]*announcer, 0, len(entries))
 	for _, e := range entries {
 		i := slices.IndexFunc(order, e.sameConn)
@@ -118,9 +141,23 @@ func selectOrder(entries []*announcer) []*announcer {
 			order[i] = e
 		}
 	}
+	// When each normal entry is in its hold time, the one whose hold time ends
+	// first is active, and stays active at that end. The usual order comes
+	// back when the last hold time ends, which can move the active role once.
+	allHeld := !slices.ContainsFunc(order, func(e *announcer) bool {
+		return e.state == dp.AnnouncerState_ANNOUNCER_STATE_NORMAL && e.held(now) == 0
+	})
 	slices.SortFunc(order, func(a, b *announcer) int {
+		byEnd := 0
+		if allHeld && a.held(now)+b.held(now) == 2 {
+			byEnd = a.activeFrom.Compare(b.activeFrom)
+		}
 		return cmp.Or(
 			cmp.Compare(a.state, b.state),
+			// Each relay reads its own clock, so two relays can have different
+			// orders only for the time by which their clocks differ.
+			cmp.Compare(a.held(now), b.held(now)),
+			byEnd,
 			bytes.Compare(a.hash[:], b.hash[:]),
 			cmp.Compare(a.rank, b.rank),
 			cmp.Compare(a.relay, b.relay),
@@ -137,6 +174,9 @@ type routeSet struct {
 	order   []*announcer // Result of selectOrder for entries.
 	// local is the first entry of order with a session of this relay, or nil.
 	local *announcer
+	// wake is the time at which the selection runs again because a hold time
+	// ends then. The zero time is no such time.
+	wake time.Time
 	// senders has the sessions of entries, for the source checks with no lock.
 	senders atomic.Pointer[[]*Session]
 }
@@ -169,10 +209,10 @@ func (set *routeSet) sends(s *Session) bool {
 	return senders != nil && slices.Contains(*senders, s)
 }
 
-// selectAgain runs the selection after a change of entries. Router.mu must be
-// held for writing.
-func (set *routeSet) selectAgain() {
-	set.order = selectOrder(set.entries)
+// selectAgain runs the selection at the time now, after a change of entries or
+// at the end of a hold time. Router.mu must be held for writing.
+func (set *routeSet) selectAgain(now time.Time) {
+	set.order = selectOrder(set.entries, now)
 	set.local = nil
 	if i := slices.IndexFunc(set.order, func(e *announcer) bool { return e.s.home == "" }); i >= 0 {
 		set.local = set.order[i]
@@ -182,6 +222,21 @@ func (set *routeSet) selectAgain() {
 		senders[i] = e.s
 	}
 	set.senders.Store(&senders)
+}
+
+// nextHold returns the first end of a hold time in set after now, or the zero
+// time, also for a set with one announcer. Router.mu must be held.
+func (set *routeSet) nextHold(now time.Time) time.Time {
+	var next time.Time
+	if len(set.order) < 2 {
+		return next
+	}
+	for _, e := range set.entries {
+		if e.held(now) == 1 && (next.IsZero() || e.activeFrom.Before(next)) {
+			next = e.activeFrom
+		}
+	}
+	return next
 }
 
 // setOf returns the announcers of the longest route to a, or nil.
@@ -246,7 +301,8 @@ func (r *Router) AddRoute(s *Session, p netip.Prefix, origin string) error {
 		return rpc.Errorf(rpc.FailedPrecondition, "session closed")
 	}
 	t := target{s: s, origin: origin}
-	e := newAnnouncer(t, r.relayOf(s), p, r.nextGen(time.Now()), 0, dp.AnnouncerState_ANNOUNCER_STATE_NORMAL)
+	now := time.Now()
+	e := newAnnouncer(t, r.relayOf(s), p, r.nextGen(now), 0, s.state, now.Add(holdTime))
 	r.addAnnouncer(r.domain(s.id.VPC), p, e)
 	return nil
 }
@@ -295,16 +351,91 @@ func (r *Router) removeAnnouncers(s *Session) {
 	}
 }
 
+// restate lets change give entries of the set of p a new state in place, then
+// selects one time. No entry leaves the set, so the rows of p move only if the
+// active announcer changes. Router.mu must be held for writing.
+func (r *Router) restate(d *domain, p netip.Prefix, change func(e *announcer) bool) {
+	set := d.routes[p]
+	if set == nil {
+		return
+	}
+	was, changed := set.order, false
+	for _, e := range set.entries {
+		changed = change(e) || changed
+	}
+	if changed {
+		r.selected(d, p, set, was)
+	}
+}
+
 // selected runs the selection for p after a change of set, whose result was
 // was before. The sessions of d get the change, and the rows to the active
-// announcer before go to the new one. Router.mu must be held for writing.
+// announcer before go to the new one. The selection runs again at the next
+// end of a hold time. Router.mu must be held for writing.
 func (r *Router) selected(d *domain, p netip.Prefix, set *routeSet, was []*announcer) {
-	set.selectAgain()
+	now := time.Now()
+	set.selectAgain(now)
 	d.queueRoute(p, was, set.order)
 	r.newEpoch()
 	if len(was) > 0 && was[0] != set.active() {
 		r.moveRows(p, was[0], set.active())
 	}
+	r.holdUntil(d, p, set, set.nextHold(now), now)
+}
+
+// holdEnd is a pending end of a hold time: the selection for the prefix p of
+// d runs again at the time at.
+type holdEnd struct {
+	at time.Time
+	d  *domain
+	p  netip.Prefix
+}
+
+// holdUntil makes the selection for p run again at the time at, if at is not
+// zero and set has no earlier such time. Router.mu must be held for writing.
+func (r *Router) holdUntil(d *domain, p netip.Prefix, set *routeSet, at, now time.Time) {
+	if at.IsZero() || !set.wake.IsZero() && !at.Before(set.wake) {
+		return
+	}
+	set.wake = at
+	i, _ := slices.BinarySearchFunc(r.holds, at, func(h holdEnd, at time.Time) int { return h.at.Compare(at) })
+	r.holds = slices.Insert(r.holds, i, holdEnd{at: at, d: d, p: p})
+	if i == 0 {
+		r.armHolds(now)
+	}
+}
+
+// armHolds sets the hold timer, the one such timer of the router, to the first
+// pending end. Router.mu must be held for writing.
+func (r *Router) armHolds(now time.Time) {
+	switch {
+	case len(r.holds) == 0:
+	case r.holdTimer == nil:
+		r.holdTimer = time.AfterFunc(r.holds[0].at.Sub(now), r.endHolds)
+	default:
+		r.holdTimer.Reset(r.holds[0].at.Sub(now))
+	}
+}
+
+// endHolds selects again for each prefix with a hold time that ended. The hold
+// timer calls it. An end whose set is gone or changed does nothing.
+func (r *Router) endHolds() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := time.Now()
+	n := 0
+	for n < len(r.holds) && !r.holds[n].at.After(now) {
+		n++
+	}
+	ended := slices.Clone(r.holds[:n])
+	r.holds = slices.Delete(r.holds, 0, n)
+	for _, h := range ended {
+		if set := h.d.routes[h.p]; set != nil && set.wake.Equal(h.at) {
+			set.wake = time.Time{}
+			r.selected(h.d, h.p, set, set.order)
+		}
+	}
+	r.armHolds(now)
 }
 
 // moveRows gives the rows to the addresses of p on the session of from, which

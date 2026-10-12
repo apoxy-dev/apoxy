@@ -6,6 +6,7 @@ package apoxy.vpc.datapath.v1;
 
 import "google/protobuf/duration.proto";
 import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
 import "proto/vpc/datapath/v1/types.proto";
 
 option go_package = "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1;datapathv1";
@@ -91,6 +92,11 @@ message Presence {
   // entry of the attachment, with a new state, has a higher generation and the
   // same value here. Zero reads as the generation.
   uint64 attached = 12;
+  // Time from which the attachment can replace a live active announcer: the
+  // time of the attach, or of the last return to the normal state, plus 30 s.
+  // Before it, the selection takes the attachment after each normal announcer
+  // whose time has passed. No value reads as a time that has passed.
+  google.protobuf.Timestamp active_from = 13;
 }
 
 message PresenceUpdate {

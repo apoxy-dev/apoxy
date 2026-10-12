@@ -4,6 +4,7 @@ package relay
 
 import (
 	"bytes"
+	"cmp"
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
@@ -15,14 +16,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
-)
-
-const (
-	stateNormal   = dp.AnnouncerState_ANNOUNCER_STATE_NORMAL
-	stateDraining = dp.AnnouncerState_ANNOUNCER_STATE_DRAINING
-	stateSuspect  = dp.AnnouncerState_ANNOUNCER_STATE_SUSPECT
 )
 
 // entrySpec is one entry of a selection test: the attachment id of an agent
@@ -35,7 +31,13 @@ type entrySpec struct {
 	gen      uint64 // Generation at the attach.
 	rank     uint32
 	state    dp.AnnouncerState
+	// hold is the time from the selection to the end of the hold time of the
+	// entry. Zero is no hold time, and a time below zero is one that ended.
+	hold time.Duration
 }
+
+// selectTime is the time of the selection in a test of selectOrder.
+var selectTime = time.Unix(1_700_000_000, 0)
 
 // entryHash is the hash that the protocol gives for an agent process with the
 // name "base" and a prefix. It uses no code of the relay.
@@ -57,7 +59,11 @@ func agentsByHash(p netip.Prefix, names ...string) []string {
 // entry returns the announcer of spec for the prefix p.
 func (spec entrySpec) entry(p netip.Prefix) *announcer {
 	s := &Session{id: Identity{VPC: vpcA, ID: agentID(vpcA, spec.agent)}, name: "base", instance: spec.instance, home: spec.relay}
-	return newAnnouncer(target{s: s, origin: spec.id}, spec.relay, p, spec.gen, spec.rank, spec.state)
+	var activeFrom time.Time
+	if spec.hold != 0 {
+		activeFrom = selectTime.Add(spec.hold)
+	}
+	return newAnnouncer(target{s: s, origin: spec.id}, spec.relay, p, spec.gen, spec.rank, spec.state, activeFrom)
 }
 
 // orderNames returns "attachment@relay" for each entry of order.
@@ -209,6 +215,52 @@ func TestSelectOrder(t *testing.T) {
 			},
 			want: []string{"x@relay-b", "w@relay-a", "z@relay-a", "y@relay-b"},
 		},
+		{
+			name: "normal entry in its hold time comes after each normal entry out of it",
+			entries: []entrySpec{
+				{agent: a, relay: "relay-a", id: "x", hold: time.Second},
+				{agent: b, relay: "relay-a", id: "y", hold: -time.Second},
+				{agent: c, relay: "relay-a", id: "z"},
+			},
+			want: []string{"y@relay-a", "z@relay-a", "x@relay-a"},
+		},
+		{
+			name: "each normal entry is in its hold time: the one that ends first comes first",
+			entries: []entrySpec{
+				{agent: a, relay: "relay-a", id: "x", hold: 2 * time.Second},
+				{agent: b, relay: "relay-a", id: "y", hold: time.Second},
+				{agent: c, relay: "relay-a", id: "z", hold: 3 * time.Second},
+			},
+			want: []string{"y@relay-a", "x@relay-a", "z@relay-a"},
+		},
+		{
+			name: "each normal entry is in its hold time, with one end: the order is that with no hold time",
+			entries: []entrySpec{
+				{agent: b, relay: "relay-a", id: "y", hold: time.Second},
+				{agent: a, relay: "relay-a", id: "x", hold: time.Second},
+				{agent: c, relay: "relay-a", id: "z", state: stateDraining},
+			},
+			want: []string{"x@relay-a", "y@relay-a", "z@relay-a"},
+		},
+		{
+			name: "entry in its hold time comes before a draining and a suspect entry",
+			entries: []entrySpec{
+				{agent: a, relay: "relay-a", id: "x", state: stateDraining},
+				{agent: b, relay: "relay-a", id: "y", state: stateSuspect},
+				{agent: c, relay: "relay-a", id: "z", hold: time.Second},
+			},
+			want: []string{"z@relay-a", "x@relay-a", "y@relay-a"},
+		},
+		{
+			name: "draining and suspect entries have no hold time",
+			entries: []entrySpec{
+				{agent: a, relay: "relay-a", id: "w", state: stateDraining, hold: time.Second},
+				{agent: b, relay: "relay-a", id: "x", state: stateDraining},
+				{agent: a, relay: "relay-b", id: "y", state: stateSuspect, hold: time.Second},
+				{agent: b, relay: "relay-b", id: "z", state: stateSuspect},
+			},
+			want: []string{"w@relay-a", "x@relay-a", "y@relay-b", "z@relay-b"},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -217,7 +269,7 @@ func TestSelectOrder(t *testing.T) {
 				for i, n := range order {
 					entries[i] = tc.entries[n].entry(p)
 				}
-				assert.Equal(t, tc.want, orderNames(selectOrder(entries)), "entries in the order %v", order)
+				assert.Equal(t, tc.want, orderNames(selectOrder(entries, selectTime)), "entries in the order %v", order)
 			})
 		})
 	}
@@ -245,7 +297,7 @@ func TestSelectOrderByHash(t *testing.T) {
 			for i, k := range order {
 				entries[i] = specs[k].entry(p)
 			}
-			require.Equal(t, want, orderNames(selectOrder(entries)), "prefix %s, entries in the order %v", p, order)
+			require.Equal(t, want, orderNames(selectOrder(entries, selectTime)), "prefix %s, entries in the order %v", p, order)
 		})
 		first[want[0][:1]]++
 	}
@@ -446,4 +498,358 @@ func TestAnnouncersBetweenRelays(t *testing.T) {
 	b.has(t, wb, left, standby+" "+prefixR)
 	require.Len(t, entriesOf(a.r, prefixR), 1)
 	assert.Equal(t, entriesOf(a.r, prefixR), entriesOf(b.r, prefixR))
+}
+
+// setState gives the entries of s the state, as the liveness check and the
+// drain of a relay do.
+func setState(r *Router, s *Session, state dp.AnnouncerState) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.setState(s, state, "test", time.Now())
+}
+
+// heldFor returns e with a hold time that ends d after now.
+func heldFor(e *dp.Presence, d time.Duration) *dp.Presence {
+	e.ActiveFrom = timestamppb.New(time.Now().Add(d))
+	return e
+}
+
+// suspect returns e in the suspect state.
+func suspect(e *dp.Presence) *dp.Presence {
+	e.State = stateSuspect
+	return e
+}
+
+// TestSetState checks a state change of the session of an agent on its own
+// relay. The entries change in place: the rows to a sole announcer stay, and
+// the watcher gets a RouteDelta only when the order of the announcers changes.
+// The agent laptop has the attachment y on this relay, and in some cases the
+// attachment x on relay-a.
+func TestSetState(t *testing.T) {
+	const rowDst = "fd00:a::1"
+	cases := []struct {
+		name string
+		// rank is the rank of the attachment x of the agent on relay-a. Zero
+		// is no such attachment. The attachment y of this relay has rank 2.
+		rank  uint32
+		steps func(w *routeWorld)
+		order []string // Announcers of prefixR at the end, in the order of selection.
+		delta []string // Changes that the watcher gets in steps.
+	}{
+		{
+			name:  "sole announcer goes suspect: it stays active",
+			steps: func(w *routeWorld) { setState(w.r, w.sess["local"], stateSuspect) },
+			order: []string{"y@relay-m"},
+		},
+		{
+			name:  "sole announcer goes draining: it stays active",
+			steps: func(w *routeWorld) { setState(w.r, w.sess["local"], stateDraining) },
+			order: []string{"y@relay-m"},
+		},
+		{
+			name:  "active announcer goes suspect: the standby one is active",
+			rank:  3,
+			steps: func(w *routeWorld) { setState(w.r, w.sess["local"], stateSuspect) },
+			order: []string{"x@relay-a", "y@relay-m"},
+			delta: []string{"-y " + prefixR, "+x " + prefixR + " standby=y"},
+		},
+		{
+			name:  "active announcer goes draining: the standby one is active",
+			rank:  3,
+			steps: func(w *routeWorld) { setState(w.r, w.sess["local"], stateDraining) },
+			order: []string{"x@relay-a", "y@relay-m"},
+			delta: []string{"-y " + prefixR, "+x " + prefixR + " standby=y"},
+		},
+		{
+			name:  "standby announcer goes suspect: the order stays",
+			rank:  1,
+			steps: func(w *routeWorld) { setState(w.r, w.sess["local"], stateSuspect) },
+			order: []string{"x@relay-a", "y@relay-m"},
+		},
+		{
+			name: "suspect announcer is normal again: it is active only after its hold time",
+			rank: 3,
+			steps: func(w *routeWorld) {
+				setState(w.r, w.sess["local"], stateSuspect)
+				w.drain()
+				setState(w.r, w.sess["local"], stateNormal)
+				time.Sleep(holdTime - time.Nanosecond)
+				synctest.Wait()
+				require.Equal(w.t, []string{"x@relay-a", "y@relay-m"}, entriesOf(w.r, prefixR))
+				require.Empty(w.t, w.changes("watcher"), "changes in the hold time")
+				time.Sleep(time.Nanosecond)
+				synctest.Wait()
+			},
+			order: []string{"y@relay-m", "x@relay-a"},
+			delta: []string{"-x " + prefixR, "+y " + prefixR + " standby=x"},
+		},
+		{
+			name: "session that closed gets no state",
+			steps: func(w *routeWorld) {
+				w.r.removeSession(w.sess["local"])
+				w.drain()
+				setState(w.r, w.sess["local"], stateSuspect)
+			},
+			order: []string{},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				w := newRouteWorld(t, NewRouter(nil, Config{}))
+				watcher := w.session("watcher", vpcA, agentID(vpcA, "watcher"), thisRevision())
+				local := w.session("local", vpcA, laptop, namedHello("base"))
+				y := attachment("y", prefixA)
+				y.Routes, y.Rank = []netip.Prefix{netip.MustParsePrefix(prefixR)}, 2
+				require.NoError(t, w.r.attach(local, y))
+				if tc.rank != 0 {
+					w.send("relay-a", ranked(remoteEntry("x", 10, prefixR), tc.rank))
+				}
+				endHold()
+				require.NoError(t, w.r.registerSPI(watcher, register(vpcA, rowDst, time.Hour, 5), time.Now()))
+				w.drain()
+
+				tc.steps(w)
+				assert.Equal(t, tc.order, entriesOf(w.r, prefixR))
+				assert.Equal(t, tc.delta, w.changes("watcher"))
+				w.r.mu.RLock()
+				defer w.r.mu.RUnlock()
+				if local.closed {
+					assert.Empty(t, watcher.rows, "rows to a session that closed")
+					return
+				}
+				// The address has one announcer, so a remove of its entry ends the row.
+				require.Contains(t, watcher.rows, uint32(5), "row to the address of the session")
+				assert.Same(t, local, watcher.rows[5].receiver)
+			})
+		})
+	}
+}
+
+// TestSetStatePresence checks the entries that a relay sends for a state
+// change of a session: one for each attachment, with a higher generation, the
+// generation of the attach as it was, and a new hold time only at a return to
+// the normal state.
+func TestSetStatePresence(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		w := newRouteWorld(t, NewRouter(nil, Config{}))
+		local := w.session("local", vpcA, laptop, namedHello("base"))
+		var sent []*dp.Presence
+		w.r.mu.Lock()
+		w.r.presence = func(e *dp.Presence) { sent = append(sent, e) }
+		w.r.mu.Unlock()
+		w.attach("local", "y", prefixA)
+		w.attach("local", "y2", prefixB)
+		require.Len(t, sent, 2)
+		attached := map[string]*dp.Presence{"y": sent[0], "y2": sent[1]}
+		for id, e := range attached {
+			assert.Equal(t, e.GetGeneration(), e.GetAttached(), "generation of the attach of %s", id)
+			assert.Equal(t, time.Now().Add(holdTime), e.GetActiveFrom().AsTime().Local(), "hold time of %s", id)
+		}
+
+		steps := []struct {
+			state dp.AnnouncerState
+			hold  bool // The entries have a new hold time.
+		}{
+			{state: stateSuspect},
+			{state: stateDraining},
+			{state: stateNormal, hold: true},
+		}
+		last := attached
+		for _, st := range steps {
+			time.Sleep(time.Minute)
+			sent = nil
+			setState(w.r, local, st.state)
+			require.Len(t, sent, 2, "entries for the state %s", st.state)
+			now := map[string]*dp.Presence{}
+			for _, e := range sent {
+				id := e.GetAttachmentId()
+				now[id] = e
+				assert.Equal(t, st.state, e.GetState(), id)
+				assert.Greater(t, e.GetGeneration(), last[id].GetGeneration(), "generation of %s", id)
+				assert.Equal(t, attached[id].GetAttached(), e.GetAttached(), "generation of the attach of %s", id)
+				assert.Equal(t, attached[id].GetPrefixes(), e.GetPrefixes(), id)
+				want := last[id].GetActiveFrom().AsTime()
+				if st.hold {
+					want = time.Now().Add(holdTime)
+				}
+				assert.True(t, want.Equal(e.GetActiveFrom().AsTime()), "hold time of %s", id)
+			}
+			require.Len(t, now, 2)
+			last = now
+		}
+
+		// The same state again sends nothing.
+		sent = nil
+		setState(w.r, local, stateNormal)
+		assert.Empty(t, sent)
+		// A new attachment of a session has the state of the session.
+		setState(w.r, local, stateSuspect)
+		sent = nil
+		w.attach("local", "y3", prefixR)
+		require.Len(t, sent, 1)
+		assert.Equal(t, stateSuspect, sent[0].GetState())
+	})
+}
+
+// TestHoldTime checks the hold time of an announcer that comes or returns. The
+// agent laptop has the attachment x on relay-a, with the lower rank, and the
+// attachment y on relay-b.
+func TestHoldTime(t *testing.T) {
+	x := func() *dp.Presence { return remoteEntry("x", 10, prefixR) }
+	y := func() *dp.Presence { return ranked(remoteEntry("y", 10, prefixR), 1) }
+	cases := []struct {
+		name    string
+		entries func() []*dp.Presence
+		// before is the order of the announcers until the first hold time ends,
+		// and after is the order when it ended.
+		before, after []string
+		delta         []string // Changes that the watcher gets at the end of the hold time.
+		// last is the order when the second hold time ended, after two times
+		// holdTime, and lastDelta has the changes at that end. Nil is after.
+		last, lastDelta []string
+	}{
+		{
+			name:    "returning announcer waits for the end of its hold time",
+			entries: func() []*dp.Presence { return []*dp.Presence{heldFor(x(), holdTime), y()} },
+			before:  []string{"y@relay-b", "x@relay-a"},
+			after:   []string{"x@relay-a", "y@relay-b"},
+			delta:   []string{"-y " + prefixR, "+x " + prefixR + " standby=y"},
+		},
+		{
+			name:    "no wait when the active announcer is draining",
+			entries: func() []*dp.Presence { return []*dp.Presence{heldFor(x(), holdTime), draining(y())} },
+			before:  []string{"x@relay-a", "y@relay-b"},
+			after:   []string{"x@relay-a", "y@relay-b"},
+		},
+		{
+			name:    "no wait when the active announcer is suspect",
+			entries: func() []*dp.Presence { return []*dp.Presence{heldFor(x(), holdTime), suspect(y())} },
+			before:  []string{"x@relay-a", "y@relay-b"},
+			after:   []string{"x@relay-a", "y@relay-b"},
+		},
+		{
+			name:    "no wait when the active announcer is gone",
+			entries: func() []*dp.Presence { return []*dp.Presence{heldFor(x(), holdTime), y(), goneAt("y", 11)} },
+			before:  []string{"x@relay-a"},
+			after:   []string{"x@relay-a"},
+		},
+		{
+			name: "each announcer is in its hold time: one is active at once",
+			entries: func() []*dp.Presence {
+				return []*dp.Presence{heldFor(x(), holdTime), heldFor(y(), holdTime)}
+			},
+			before: []string{"x@relay-a", "y@relay-b"},
+			after:  []string{"x@relay-a", "y@relay-b"},
+		},
+		{
+			// The usual order comes back only when the second hold time ends.
+			name: "each announcer is in its hold time: the one that ends first is active and stays",
+			entries: func() []*dp.Presence {
+				return []*dp.Presence{heldFor(x(), 2*holdTime), heldFor(y(), holdTime)}
+			},
+			before:    []string{"y@relay-b", "x@relay-a"},
+			after:     []string{"y@relay-b", "x@relay-a"},
+			last:      []string{"x@relay-a", "y@relay-b"},
+			lastDelta: []string{"-y " + prefixR, "+x " + prefixR + " standby=y"},
+		},
+		{
+			name: "each announcer is in its hold time: no change when the usual order is the same",
+			entries: func() []*dp.Presence {
+				return []*dp.Presence{heldFor(x(), holdTime), heldFor(y(), 2*holdTime)}
+			},
+			before: []string{"x@relay-a", "y@relay-b"},
+			after:  []string{"x@relay-a", "y@relay-b"},
+		},
+		{
+			name:    "hold time that ended before the entry came",
+			entries: func() []*dp.Presence { return []*dp.Presence{heldFor(x(), -time.Second), y()} },
+			before:  []string{"x@relay-a", "y@relay-b"},
+			after:   []string{"x@relay-a", "y@relay-b"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				// Two relays get the same entries, in two orders.
+				w, other := newRouteWorld(t, NewRouter(nil, Config{})), newRouteWorld(t, NewRouter(nil, Config{}))
+				w.session("watcher", vpcA, agentID(vpcA, "watcher"), thisRevision())
+				other.session("watcher", vpcA, agentID(vpcA, "watcher"), thisRevision())
+				member := map[string]string{"x": "relay-a", "y": "relay-b"}
+				for _, e := range tc.entries() {
+					w.send(member[e.GetAttachmentId()], e)
+				}
+				// The end of an attachment comes after its entry on each relay.
+				opposite := tc.entries()
+				slices.Reverse(opposite)
+				slices.SortStableFunc(opposite, func(a, b *dp.Presence) int {
+					return cmp.Compare(btoi(a.GetGone()), btoi(b.GetGone()))
+				})
+				for _, e := range opposite {
+					other.send(member[e.GetAttachmentId()], e)
+				}
+				w.drain()
+				assert.Equal(t, tc.before, entriesOf(w.r, prefixR), "at the start")
+				assert.Equal(t, tc.before, entriesOf(other.r, prefixR), "at the start, on the other relay")
+
+				time.Sleep(holdTime - time.Nanosecond)
+				synctest.Wait()
+				assert.Equal(t, tc.before, entriesOf(w.r, prefixR), "before the end of the hold time")
+				assert.Equal(t, tc.before, entriesOf(other.r, prefixR), "before the end of the hold time, on the other relay")
+				assert.Empty(t, w.changes("watcher"), "changes in the hold time")
+
+				time.Sleep(time.Nanosecond)
+				synctest.Wait()
+				assert.Equal(t, tc.after, entriesOf(w.r, prefixR), "after the hold time")
+				assert.Equal(t, tc.after, entriesOf(other.r, prefixR), "after the hold time, on the other relay")
+				assert.Equal(t, tc.delta, w.changes("watcher"))
+
+				if tc.last == nil {
+					tc.last = tc.after
+				}
+				time.Sleep(holdTime)
+				synctest.Wait()
+				assert.Equal(t, tc.last, entriesOf(w.r, prefixR), "after the second hold time")
+				assert.Equal(t, tc.last, entriesOf(other.r, prefixR), "after the second hold time, on the other relay")
+				assert.Equal(t, tc.lastDelta, w.changes("watcher"))
+				w.check()
+				other.check()
+			})
+		})
+	}
+}
+
+// TestHoldTimer checks that the router has one timer for the hold times of all
+// prefixes, and that the selection runs again for each prefix at its time.
+func TestHoldTimer(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		w := newRouteWorld(t, NewRouter(nil, Config{}))
+		w.session("watcher", vpcA, agentID(vpcA, "watcher"), thisRevision())
+		const prefixes = 8
+		first := func(n int) string { return entriesOf(w.r, fmt.Sprintf("10.%d.0.0/16", n))[0] }
+		for n := range prefixes {
+			p := fmt.Sprintf("10.%d.0.0/16", n)
+			w.send("relay-b", ranked(remoteEntry(fmt.Sprintf("y%d", n), 10, p), 1))
+			// The hold time of the prefix n ends n+1 seconds from now.
+			w.send("relay-a", heldFor(remoteEntry(fmt.Sprintf("x%d", n), 10, p), time.Duration(n+1)*time.Second))
+			require.Equal(t, fmt.Sprintf("y%d@relay-b", n), first(n))
+		}
+		w.r.mu.RLock()
+		timer := w.r.holdTimer
+		assert.Len(t, w.r.holds, prefixes, "pending ends")
+		w.r.mu.RUnlock()
+		require.NotNil(t, timer)
+		for n := range prefixes {
+			time.Sleep(time.Second)
+			synctest.Wait()
+			assert.Equal(t, fmt.Sprintf("x%d@relay-a", n), first(n), "prefix %d at its time", n)
+			if n+1 < prefixes {
+				assert.Equal(t, fmt.Sprintf("y%d@relay-b", n+1), first(n+1), "prefix %d before its time", n+1)
+			}
+		}
+		w.r.mu.RLock()
+		assert.Same(t, timer, w.r.holdTimer)
+		assert.Empty(t, w.r.holds)
+		w.r.mu.RUnlock()
+	})
 }

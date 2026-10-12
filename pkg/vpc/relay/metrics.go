@@ -207,6 +207,22 @@ var socketDesc = prometheus.NewDesc("apoxy_vpc_relay_socket_packets_total",
 	"PSP packets that the socket path took, by class. The XDP program forwards only the classes agent_row and member_row.",
 	[]string{"class"}, nil)
 
+// stateLabel returns the label of an announcer state in logs and metrics.
+func stateLabel(state dp.AnnouncerState) string {
+	switch state {
+	case stateNormal:
+		return "normal"
+	case stateDraining:
+		return "draining"
+	case stateSuspect:
+		return "suspect"
+	}
+	return "unknown"
+}
+
+var stateChangesDesc = prometheus.NewDesc("apoxy_vpc_relay_announcer_state_changes_total",
+	"State changes of the agent sessions of this relay that have routes, by the new state.", []string{"state"}, nil)
+
 var socketDropsDesc = prometheus.NewDesc("apoxy_vpc_relay_socket_receive_drops_total",
 	"Packets that the kernel dropped at the relay socket, for example with a full receive buffer. The relay did not see them.", nil, nil)
 
@@ -225,6 +241,7 @@ func (r *Router) Describe(ch chan<- *prometheus.Desc) {
 	ch <- refusalsDesc
 	ch <- socketDesc
 	ch <- socketDropsDesc
+	ch <- stateChangesDesc
 	ch <- xdpPacketsDesc
 	ch <- xdpBytesDesc
 	ch <- trunkPacketsDesc
@@ -253,6 +270,9 @@ func (r *Router) Collect(ch chan<- prometheus.Metric) {
 	}
 	for i := range r.socket {
 		ch <- prometheus.MustNewConstMetric(socketDesc, prometheus.CounterValue, float64(r.socket[i].Load()), socketLabels[i])
+	}
+	for i := range r.stateChanges {
+		ch <- prometheus.MustNewConstMetric(stateChangesDesc, prometheus.CounterValue, float64(r.stateChanges[i].Load()), stateLabel(dp.AnnouncerState(i)))
 	}
 	if br := r.bridge.Load(); br != nil {
 		// A relay with no socket of its own has no series.

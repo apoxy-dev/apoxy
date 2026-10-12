@@ -18,6 +18,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/google/go-cmp/cmp"
@@ -851,4 +852,109 @@ func TestAttachmentAddressLoss(t *testing.T) {
 			require.Eventually(t, func() bool { return h.addrs.count() == 0 }, 5*time.Second, 5*time.Millisecond)
 		})
 	}
+}
+
+// TestDrainState checks the start of a drain. Each entry of the relay gets the
+// draining state before its session gets Drain, and another relay that has the
+// entries then selects its own standby announcer.
+func TestDrainState(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		// The agent laptop has the attachment x on the relay that drains, and
+		// the attachment y, with a higher rank, on the other relay.
+		w, other := newRouteWorld(t, NewRouter(nil, Config{})), newRouteWorld(t, NewRouter(nil, Config{}))
+		local := w.session("local", vpcA, laptop, namedHello("base"))
+		type sentEntry struct {
+			e *dp.Presence
+			// drainQueued is true if the session had its Drain at the time of the entry.
+			drainQueued bool
+		}
+		var sent []sentEntry
+		w.r.mu.Lock()
+		w.r.presence = func(e *dp.Presence) {
+			queued := slices.ContainsFunc(local.sync.out, func(m *dp.SessionResponse) bool { return m.GetDrain() != nil })
+			sent = append(sent, sentEntry{e, queued})
+		}
+		w.r.mu.Unlock()
+		w.attach("local", "x", prefixA, prefixR)
+		require.Len(t, sent, 1)
+
+		other.session("watcher", vpcA, agentID(vpcA, "watcher"), thisRevision())
+		other.session("local", vpcA, laptop, namedHello("base"))
+		y := attachment("y", prefixB)
+		y.Routes, y.Rank = []netip.Prefix{netip.MustParsePrefix(prefixR)}, 1
+		require.NoError(t, other.r.attach(other.sess["local"], y))
+		other.send("relay-a", sent[0].e)
+		endHold()
+		require.Equal(t, []string{"x@relay-a", "y@relay-m"}, entriesOf(other.r, prefixR))
+		other.drain()
+
+		sent = nil
+		(&Server{R: w.r}).Drain(t.Context(), nil)
+		require.Len(t, sent, 1, "entries at the start of the drain")
+		assert.Equal(t, stateDraining, sent[0].e.GetState())
+		assert.False(t, sent[0].drainQueued, "the session got Drain before its entry had the draining state")
+		var drains int
+		for _, m := range w.r.takeSync(local) {
+			if m.GetDrain() != nil {
+				drains++
+			}
+		}
+		assert.Equal(t, 1, drains, "Drain messages of the session")
+		assert.Equal(t, []string{"x@relay-m"}, entriesOf(w.r, prefixR), "the entries of the relay that drains stay")
+
+		other.send("relay-a", sent[0].e)
+		assert.Equal(t, []string{"y@relay-m", "x@relay-a"}, entriesOf(other.r, prefixR))
+		assert.Equal(t, []string{"-x " + prefixR, "+y " + prefixR + " standby=x"}, other.changes("watcher"))
+		assert.Equal(t, "x@relay-a", other.table(vpcA)[prefixA], "the route of the address stays")
+		other.check()
+
+		// An attachment that comes during the drain has the draining state too.
+		sent = nil
+		w.attach("local", "x2", prefixB)
+		require.Len(t, sent, 1)
+		assert.Equal(t, stateDraining, sent[0].e.GetState())
+	})
+}
+
+// TestSessionLiveness runs a relay and an agent on real QUIC connections. The
+// agent sends no keep-alive, so only its answers to the keep-alive of the relay
+// keep its session normal. When the agent stops with no close, its session is
+// suspect after suspectAfter, before the idle timeout removes it.
+func TestSessionLiveness(t *testing.T) {
+	t.Parallel()
+	ca := newCA(t)
+	h := newHarness(t, ca)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go h.r.Run(ctx)
+	a := h.mustDial(t, ca.agentCert(t, vpcA, "laptop"))
+	open(t, a)
+	s := h.session(t, a)
+	// The liveness check writes these fields with the read lock.
+	read := func() (state dp.AnnouncerState, last time.Time) {
+		h.r.mu.Lock()
+		defer h.r.mu.Unlock()
+		return s.state, s.live.last
+	}
+
+	// An idle agent that answers stays normal for more than suspectAfter.
+	_, start := read()
+	time.Sleep(suspectAfter + AgentKeepAlive)
+	state, last := read()
+	require.Equal(t, stateNormal, state, "state of an idle session")
+	require.Greater(t, last.Sub(start), suspectAfter, "the relay heard the agent after the keep-alive")
+
+	// The socket of the agent closes, so the agent sends no close and no answer.
+	require.NoError(t, a.tr.Conn.Close())
+	stopped := time.Now()
+	require.Eventually(t, func() bool {
+		state, _ := read()
+		return state == stateSuspect
+	}, suspectAfter+3*time.Second, livenessInterval/5, "the session of a silent agent is suspect")
+	// The last packet came at most one keep-alive period before the stop.
+	assert.GreaterOrEqual(t, time.Since(stopped), suspectAfter-AgentKeepAlive-time.Second)
+	h.r.mu.RLock()
+	_, kept := h.r.sessions[s]
+	h.r.mu.RUnlock()
+	assert.True(t, kept, "the session is gone before the idle timeout")
 }

@@ -306,13 +306,17 @@ func (r *Relay) transports() []*quic.Transport {
 	return trs
 }
 
-// listenConfig returns the QUIC config of the relay listeners. It keeps the RTT
-// for VPC relay sessions and gives a mesh member the timers of a mesh session.
+// listenConfig returns the QUIC config of the relay listeners. For VPC relay
+// sessions it keeps the RTT and sends the keep-alive that the liveness check of
+// the VPC relay needs. A mesh member gets the timers of a mesh session.
 func (r *Relay) listenConfig() *quic.Config {
 	c := relayQUICConfig
 	if r.vpc != nil {
 		c = relayQUICConfig.Clone()
 		c.Tracer = vpcrelay.TraceRTT
+		// QUIC gives the config before the ALPN, so the HTTP/3 connections of
+		// the listener get this keep-alive too.
+		c.KeepAlivePeriod = vpcrelay.AgentKeepAlive
 	}
 	if r.mesh != nil {
 		c = r.mesh.ListenConfig(c)

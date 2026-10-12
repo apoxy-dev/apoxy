@@ -21,6 +21,7 @@ import (
 	"slices"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/quic-go/quic-go"
@@ -326,6 +327,13 @@ func relayChain(t *testing.T, key crypto.Signer) (*tls.Certificate, *x509.CertPo
 	return &tls.Certificate{Certificate: [][]byte{der, ider}, PrivateKey: key}, root.pool()
 }
 
+// endHold lets the hold time of a new attachment end on the fake clock, so
+// that the attachment can replace a live active announcer.
+func endHold() {
+	time.Sleep(holdTime)
+	synctest.Wait()
+}
+
 // newHarness starts a relay. The options change its router before it serves.
 func newHarness(t *testing.T, ca *testCA, opts ...func(*Router)) *harness {
 	t.Helper()
@@ -337,10 +345,12 @@ func newHarness(t *testing.T, ca *testCA, opts ...func(*Router)) *harness {
 	}
 	udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	require.NoError(t, err)
-	// The relay keeps the RTT of each session, as a relay host does.
+	// The relay keeps the RTT of each session and sends the keep-alive of the
+	// liveness check, as a relay host does.
 	tr := &quic.Transport{Conn: udp, ConnContext: TraceContext}
 	tr.NonQUICPacketHandler, tr.NonQUICBatchEnd = r.PacketHandler(t.Context(), tr)
-	ln, err := tr.Listen(r.TLSConfig(&tls.Config{Certificates: []tls.Certificate{*cert}}), &quic.Config{EnableDatagrams: true, Tracer: TraceRTT})
+	ln, err := tr.Listen(r.TLSConfig(&tls.Config{Certificates: []tls.Certificate{*cert}}),
+		&quic.Config{EnableDatagrams: true, Tracer: TraceRTT, KeepAlivePeriod: AgentKeepAlive})
 	require.NoError(t, err)
 	h := &harness{
 		r: r, trust: trust, nets: &fakeNetworks{}, addrs: &fakeAddresses{},

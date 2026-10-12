@@ -106,6 +106,11 @@ func TestDropMetric(t *testing.T) {
 	r.Forward(src, 2, 1400, t0)
 
 	const want = `
+# HELP apoxy_vpc_relay_announcer_state_changes_total State changes of the agent sessions of this relay that have routes, by the new state.
+# TYPE apoxy_vpc_relay_announcer_state_changes_total counter
+apoxy_vpc_relay_announcer_state_changes_total{state="draining"} 0
+apoxy_vpc_relay_announcer_state_changes_total{state="normal"} 0
+apoxy_vpc_relay_announcer_state_changes_total{state="suspect"} 0
 # HELP apoxy_vpc_relay_dropped_packets_total Packets that the relay dropped before it forwarded them, by reason.
 # TYPE apoxy_vpc_relay_dropped_packets_total counter
 apoxy_vpc_relay_dropped_packets_total{reason="closed"} 0

@@ -17,6 +17,7 @@ import (
 
 	pspwire "github.com/apoxy-dev/softpsp/psp"
 	"google.golang.org/protobuf/types/known/emptypb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/apoxy-dev/apoxy/pkg/vpc/identity"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
@@ -62,7 +63,8 @@ func (r *Router) nextGen(now time.Time) uint64 {
 	return r.gen
 }
 
-// announce gives the new attachment a of s to the mesh. Router.mu must be held.
+// announce gives the entry of the attachment a of s to the mesh: after the
+// attach, and after each state change. Router.mu must be held.
 func (r *Router) announce(s *Session, a *Attachment) {
 	if r.presence != nil {
 		r.presence(presenceOf(s, a))
@@ -96,10 +98,11 @@ func presenceOf(s *Session, a *Attachment) *dp.Presence {
 		Subject:      s.id.ID,
 		AgentName:    s.name,
 		SenderTag:    s.tag,
-		// Nothing sets a state yet: the zero value is the normal state.
-		Instance: s.instance,
-		Rank:     a.Rank,
-		Attached: a.gen,
+		Instance:     s.instance,
+		State:        s.state,
+		Rank:         a.Rank,
+		Attached:     a.attached,
+		ActiveFrom:   timestamppb.New(a.activeFrom),
 	}
 	for _, p := range slices.Concat(a.Addresses, a.Routes) {
 		e.Prefixes = append(e.Prefixes, p.Masked().String())
@@ -141,6 +144,15 @@ type presenceIn struct {
 func (in *presenceIn) add(e *presenceEntry) {
 	in.entries[e.id] = e
 	in.tags[e.tag] = append(in.tags[e.tag], e)
+}
+
+// confirm tells that the session s of the last call sent the entry e, which in
+// has. presence.mu must be held.
+func (in *presenceIn) confirm(e *presenceEntry, s *MeshSession) {
+	if e.sess != s {
+		e.sess = s
+		in.stale--
+	}
 }
 
 // remove forgets the entry e. presence.mu must be held.
@@ -192,9 +204,15 @@ type presenceEntry struct {
 	instance  uint64 // Agent instance from Hello. Zero from a member before revision 16.
 	rank      uint32 // Order of the connection among those of its agent.
 	state     dp.AnnouncerState
-	tag       uint32 // Trunk tag of the session of the agent on the member.
-	prefixes  []netip.Prefix
-	sess      *MeshSession // Last session that sent the entry.
+	// activeFrom is the end of the hold time, or the zero time from a member
+	// that sends none.
+	activeFrom time.Time
+	tag        uint32 // Trunk tag of the session of the agent on the member.
+	prefixes   []netip.Prefix
+	sess       *MeshSession // Last session that sent the entry.
+	// lost is true from the loss of the member until a session of the member
+	// sends the entry again. The entry is then suspect on this relay only.
+	lost bool
 }
 
 func newPresence(m *Mesh) *presence {
@@ -224,7 +242,7 @@ func (p *presence) router() *Router {
 }
 
 // attachments returns the IDs of the attachments of the session k of a member,
-// the lowest generation first.
+// in the order of their attach.
 func (p *presence) attachments(k remoteKey) []string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -239,7 +257,9 @@ func (p *presence) attachments(k remoteKey) []string {
 			es = append(es, e)
 		}
 	}
-	slices.SortFunc(es, func(a, b *presenceEntry) int { return cmp.Or(cmp.Compare(a.gen, b.gen), cmp.Compare(a.id, b.id)) })
+	slices.SortFunc(es, func(a, b *presenceEntry) int {
+		return cmp.Or(cmp.Compare(a.attachedAt(), b.attachedAt()), cmp.Compare(a.id, b.id))
+	})
 	ids := make([]string, len(es))
 	for i, e := range es {
 		ids[i] = e.id
@@ -273,8 +293,8 @@ func (p *presence) opened(s *MeshSession) {
 	p.m.wg.Go(func() { p.send(o) })
 }
 
-// changed gives the entry e of a new or gone attachment to each open call.
-// The router calls it with Router.mu held.
+// changed gives the entry e of a new or gone attachment, or of an attachment
+// with a new state, to each open call. The router calls it with Router.mu held.
 func (p *presence) changed(e *dp.Presence) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -428,7 +448,8 @@ func (p *presence) apply(s *MeshSession, u *dp.PresenceUpdate) error {
 }
 
 // keep applies the checked changes of the Presence call of s, where the higher
-// generation of an attachment wins. refuse gets each entry with no routes.
+// generation of an attachment wins. refuse gets each entry with no routes. An
+// entry with only a new state changes in place, so its routes and rows stay.
 func (p *presence) keep(s *MeshSession, changes []presenceChange, full bool, refuse func(id string, err error)) error {
 	// The router lock keeps the routes in the order of the entries.
 	r := p.router()
@@ -442,16 +463,19 @@ func (p *presence) keep(s *MeshSession, changes []presenceChange, full bool, ref
 	if in == nil || in.sess != s {
 		return rpc.Errorf(rpc.FailedPrecondition, "mesh session ended")
 	}
+	restated := map[remoteKey]dp.AnnouncerState{}
 	for _, c := range changes {
 		old := in.entries[c.id]
 		switch {
 		case old != nil && c.gen < old.gen:
 			continue
-		case old != nil && !c.gone && c.gen == old.gen:
-			// The member sent the entry again in the full set of a new session.
-			if old.sess != s {
-				old.sess = s
-				in.stale--
+		case old != nil && !c.gone && (c.gen == old.gen || old.sameRoutes(c.presenceEntry)):
+			// The member sent the entry again in the full set of a new session,
+			// or sent it with a new state.
+			in.confirm(old, s)
+			if old.take(c.presenceEntry) && r != nil {
+				r.restateClaim(old)
+				restated[old.session()] = old.routeState()
 			}
 			continue
 		}
@@ -483,7 +507,32 @@ func (p *presence) keep(s *MeshSession, changes []presenceChange, full bool, ref
 	if r != nil {
 		r.newEpoch()
 	}
+	for k, state := range restated {
+		slog.Info("Changed the state of an agent session", "vpc", k.id.VPC.UID, "agent", k.agent,
+			"relay", k.home, "state", stateLabel(state), "reason", "state from its relay")
+	}
 	return nil
+}
+
+// sameRoutes reports whether c is the attachment e with the same session and
+// the same prefixes, so that c can differ from e only in its state.
+func (e *presenceEntry) sameRoutes(c *presenceEntry) bool {
+	return e.vpc == c.vpc && e.networkID == c.networkID && e.subject == c.subject && e.agent == c.agent &&
+		e.instance == c.instance && e.tag == c.tag && e.rank == c.rank && e.attachedAt() == c.attachedAt() &&
+		slices.Equal(e.prefixes, c.prefixes)
+}
+
+// take gives e the generation, the state and the hold time of c. It reports
+// whether the route entries of e must change. presence.mu must be held.
+func (e *presenceEntry) take(c *presenceEntry) bool {
+	state, from := e.routeState(), e.activeFrom
+	e.lost = false
+	if c.gen > e.gen {
+		// The generation of the attach stays when the first entry did not have it.
+		e.attached = e.attachedAt()
+		e.gen, e.state, e.activeFrom = c.gen, c.state, c.activeFrom
+	}
+	return e.routeState() != state || !e.activeFrom.Equal(from)
 }
 
 // sweep removes the entries of in, and their routes, that the session s of the
@@ -565,6 +614,12 @@ func checkPresence(e *dp.Presence) (*presenceEntry, error) {
 	if pe.attached = e.GetAttached(); pe.attached > pe.gen {
 		return nil, fmt.Errorf("attach generation %d is above the generation %d", pe.attached, pe.gen)
 	}
+	if t := e.GetActiveFrom(); t != nil {
+		if err := t.CheckValid(); err != nil {
+			return nil, fmt.Errorf("active_from: %w", err)
+		}
+		pe.activeFrom = t.AsTime()
+	}
 	if pe.tag = e.GetSenderTag(); pe.tag == 0 || pe.tag > pspwire.MaxVNI {
 		return nil, fmt.Errorf("sender tag %d is not from 1 to %d", pe.tag, pspwire.MaxVNI)
 	}
@@ -578,18 +633,73 @@ func checkPresence(e *dp.Presence) (*presenceEntry, error) {
 	return pe, nil
 }
 
-// down drops the entries and the routes of a member that stopped on purpose or
-// left the member set. A lost member and the session that it has now keep theirs.
+// down makes the entries of a lost member suspect on this relay, and drops the
+// entries and the routes of a member that stopped on purpose or left the set.
 func (p *presence) down(c MeshChange) {
-	if c.Down != MeshRestart && c.Down != MeshRemoved {
+	switch c.Down {
+	case MeshLost:
+		p.lost(c.Name)
+	case MeshRestart, MeshRemoved:
+		p.forget(c.Name, c.Down.String(), nil)
+	}
+}
+
+// lost makes each entry of the lost member name suspect on this relay only, and
+// starts memberLostTime. An entry of the session that the member has now stays.
+func (p *presence) lost(name string) {
+	r := p.router()
+	p.m.mu.Lock()
+	defer p.m.mu.Unlock()
+	mem := p.m.members[name]
+	if mem == nil {
 		return
 	}
+	ends := mem.ends
+	time.AfterFunc(memberLostTime, func() {
+		p.forget(name, "lost for "+memberLostTime.String(), func(cur *meshMember) bool {
+			return cur == mem && mem.sess == nil && mem.ends == ends
+		})
+	})
+	if r != nil {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	in := p.in[name]
+	if in == nil {
+		return
+	}
+	sessions := map[remoteKey]struct{}{}
+	for _, e := range in.entries {
+		if e.lost || e.sess == mem.sess {
+			continue
+		}
+		e.lost = true
+		sessions[e.session()] = struct{}{}
+		if r != nil {
+			r.restateClaim(e)
+		}
+	}
+	if len(sessions) > 0 {
+		slog.Info("Changed the state of the agent sessions of a mesh member", "relay", name, "count", len(sessions),
+			"state", stateLabel(stateSuspect), "reason", "mesh member lost")
+	}
+}
+
+// forget drops the entries and the routes of the member name. With when, it
+// does so only if when is true for the member of that name now, which can be nil.
+func (p *presence) forget(name, reason string, when func(mem *meshMember) bool) {
 	r := p.router()
 	// Mesh.mu keeps a new session out until the entries are dropped.
 	p.m.mu.Lock()
 	defer p.m.mu.Unlock()
+	mem := p.m.members[name]
+	if when != nil && !when(mem) {
+		return
+	}
 	var cur *MeshSession
-	if mem := p.m.members[c.Name]; mem != nil {
+	if mem != nil {
 		cur = mem.sess
 	}
 	if r != nil {
@@ -598,16 +708,16 @@ func (p *presence) down(c MeshChange) {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	in := p.in[c.Name]
+	in := p.in[name]
 	if in == nil {
 		return
 	}
 	// A session with no Presence call has no entries, so all of them go.
 	if cur == nil || in.sess != cur {
 		cur = nil
-		delete(p.in, c.Name)
+		delete(p.in, name)
 	}
-	p.sweep(r, in, cur, c.Down.String())
+	p.sweep(r, in, cur, reason)
 	if r != nil {
 		r.newEpoch()
 	}

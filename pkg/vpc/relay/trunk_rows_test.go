@@ -955,9 +955,12 @@ func TestTrunkRowMove(t *testing.T) {
 		},
 		{
 			name: "to an agent of this relay",
-			move: func(_ *testing.T, g *rowRig, _ *rowMember) { g.agent(other, rowHome, prefixA) },
-			to:   "local",
-			a:    [][]*dp.SPIRow{{goneRow(5)}},
+			move: func(_ *testing.T, g *rowRig, _ *rowMember) {
+				g.agent(other, rowHome, prefixA)
+				endHold()
+			},
+			to: "local",
+			a:  [][]*dp.SPIRow{{goneRow(5)}},
 		},
 		{
 			name:   "to a relay that gave its trunk SA",
@@ -1522,6 +1525,11 @@ func TestTrunkRowDrops(t *testing.T) {
 		assert.EqualValues(t, 2, g.r.SenderStats(g.laptop).DropTrunk)
 
 		const want = `
+# HELP apoxy_vpc_relay_announcer_state_changes_total State changes of the agent sessions of this relay that have routes, by the new state.
+# TYPE apoxy_vpc_relay_announcer_state_changes_total counter
+apoxy_vpc_relay_announcer_state_changes_total{state="draining"} 0
+apoxy_vpc_relay_announcer_state_changes_total{state="normal"} 0
+apoxy_vpc_relay_announcer_state_changes_total{state="suspect"} 0
 # HELP apoxy_vpc_relay_dropped_packets_total Packets that the relay dropped before it forwarded them, by reason.
 # TYPE apoxy_vpc_relay_dropped_packets_total counter
 apoxy_vpc_relay_dropped_packets_total{reason="closed"} 0
@@ -1631,6 +1639,7 @@ func TestTrunkRowXDP(t *testing.T) {
 
 				// The row goes to an agent of this relay that takes the address.
 				g.agent(agentID(vpcA, "other"), "192.0.2.4:1", prefixA)
+				endHold()
 				flushXDP(g.r, time.Now())
 				assert.Equal(t, map[string]string{rowSrc + "/5": "192.0.2.4:1", rowSrc + "/6": rowHome}, f.installed())
 			})
@@ -1868,6 +1877,46 @@ func TestTrunkRowBetweenRelays(t *testing.T) {
 			for _, n := range []*trunkNode{a, b} {
 				assert.Equal(t, drops, dropsOf(n.r), "%s drops only the packet that is too long", n.name)
 			}
+		})
+	}
+}
+
+// TestTrunkRowStateChange checks the row to an attachment of another relay
+// when its entry gets a new state. The attachment is the one announcer of its
+// address, so a remove of the route would end the row.
+func TestTrunkRowStateChange(t *testing.T) {
+	cases := []struct {
+		name  string
+		state dp.AnnouncerState
+	}{
+		{name: "suspect", state: stateSuspect},
+		{name: "draining", state: stateDraining},
+		{name: "normal again", state: stateNormal},
+	}
+	cfg := trunkRigConfig(t)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				g := newRowRig(t, cfg)
+				defer g.stop()
+				g.start()
+				require.NoError(t, g.register(rowDst, rowTTL, 5))
+				require.Len(t, g.a.take(), 1)
+				before, ok := g.row(5)
+				require.True(t, ok)
+
+				for gen, state := range []dp.AnnouncerState{stateSuspect, tc.state} {
+					e := entryOf("x", server, 7, uint64(20+gen))
+					e.State, e.Attached = state, 10
+					g.announce(e)
+				}
+				after, ok := g.row(5)
+				require.True(t, ok, "row after the state change")
+				assert.Equal(t, before, after)
+				assert.Empty(t, g.a.take(), "rows that relay-a gets")
+				_, verdict := g.verdict(5)
+				assert.Equal(t, Pass, verdict)
+			})
 		})
 	}
 }

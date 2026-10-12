@@ -314,7 +314,8 @@ func TestRelay_MeshALPN(t *testing.T) {
 }
 
 // TestRelay_MeshKeepAlive dials a relay as another relay does. Only a dialer at
-// the address of a member gets a keep-alive each second from the relay.
+// the address of a member gets a keep-alive each second from the relay. Each
+// other dialer gets the keep-alive of an agent session, which is each 2 s.
 func TestRelay_MeshKeepAlive(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -338,7 +339,10 @@ func TestRelay_MeshKeepAlive(t *testing.T) {
 			}
 			b.mesh.SetMembers([]vpcrelay.MeshMember{{Name: "relay-a", Addr: addr}})
 
+			// pings counts the keep-alives. A PING that comes less than 500 ms
+			// after one is a probe for a late ACK of it, so it does not count.
 			var pings atomic.Int32
+			var last time.Time // Only the goroutine of the connection uses it.
 			tlsConf := ca.tls(t, "relay-a")
 			tlsConf.NextProtos = []string{dp.ALPNMesh}
 			quicConf := &quic.Config{
@@ -353,7 +357,8 @@ func TestRelay_MeshKeepAlive(t *testing.T) {
 								return
 							}
 							for _, f := range frames {
-								if _, ok := f.(*logging.PingFrame); ok {
+								if _, ok := f.(*logging.PingFrame); ok && time.Since(last) > 500*time.Millisecond {
+									last = time.Now()
 									pings.Add(1)
 								}
 							}
@@ -371,15 +376,15 @@ func TestRelay_MeshKeepAlive(t *testing.T) {
 			assert.Equal(t, "relay-b", res.GetName())
 			require.Equal(t, vpcrelay.MeshChange{Name: "relay-a", Up: true}, b.change(t))
 
-			// Count after the handshake and Open are over. The relay listener
-			// sends its first keep-alive after 5 s.
+			// Count after the handshake and Open are over. In 10 s a mesh session
+			// gets 8 or more keep-alives, and an agent session gets 5 or less.
 			time.Sleep(300 * time.Millisecond)
 			pings.Store(0)
-			time.Sleep(3 * time.Second)
+			time.Sleep(10 * time.Second)
 			if got := pings.Load(); tc.member {
-				assert.GreaterOrEqual(t, got, int32(2), "keep-alives in 3 s")
+				assert.GreaterOrEqual(t, got, int32(8), "keep-alives in 10 s")
 			} else {
-				assert.Zero(t, got, "keep-alives in 3 s")
+				assert.LessOrEqual(t, got, int32(6), "keep-alives in 10 s")
 			}
 		})
 	}

@@ -3,10 +3,13 @@
 package relay
 
 import (
+	"fmt"
 	"net/netip"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -523,4 +526,98 @@ func TestProjectIsolation(t *testing.T) {
 	dst, v := r.Forward(sides[vpcB].snd.addr.get(), spi, 100, t0)
 	assert.Equal(t, Pass, v)
 	assert.Equal(t, sides[vpcB].recv.addr.get(), dst)
+}
+
+// TestLiveness runs the liveness check each livenessInterval on the fake clock
+// for a session whose agent answers the keep-alive of the relay in some spans
+// and is silent in the others. It checks the time of each state change.
+func TestLiveness(t *testing.T) {
+	type span struct {
+		d       time.Duration
+		answers bool // A packet of the agent comes each AgentKeepAlive.
+	}
+	cases := []struct {
+		name    string
+		noTrace bool // The connection of the session has no tracer.
+		spans   []span
+		want    []string // "time state" of each state change, from the start.
+	}{
+		{
+			name:  "silent agent is suspect after 6 s",
+			spans: []span{{d: 30 * time.Second}},
+			want:  []string{"6s suspect"},
+		},
+		{
+			name:  "agent that answers again for 4 s is normal",
+			spans: []span{{d: 7 * time.Second}, {d: 30 * time.Second, answers: true}},
+			want:  []string{"6s suspect", "11s normal"},
+		},
+		{
+			name:  "short loss below 6 s changes nothing",
+			spans: []span{{d: 10 * time.Second, answers: true}, {d: suspectAfter - AgentKeepAlive - livenessInterval}, {d: 10 * time.Second, answers: true}},
+		},
+		{
+			name:  "idle agent that answers is never suspect",
+			spans: []span{{d: 10 * time.Minute, answers: true}},
+		},
+		{
+			name: "suspect agent that answers for less than 4 s stays suspect",
+			spans: []span{
+				{d: 7 * time.Second},
+				{d: 3 * time.Second, answers: true},
+				{d: 8 * time.Second},
+				{d: 10 * time.Second, answers: true},
+			},
+			want: []string{"6s suspect", "22s normal"},
+		},
+		{
+			name:  "agent goes silent again after it was normal",
+			spans: []span{{d: 7 * time.Second}, {d: 5 * time.Second, answers: true}, {d: 30 * time.Second}},
+			want:  []string{"6s suspect", "11s normal", "17s suspect"},
+		},
+		{
+			name:    "session with no tracer is never suspect",
+			noTrace: true,
+			spans:   []span{{d: time.Minute}},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				r := NewRouter(nil, Config{})
+				start := time.Now()
+				s := newSession(Identity{VPC: vpcA, ID: laptop}, func() netip.AddrPort { return netip.MustParseAddrPort("192.0.2.1:1000") })
+				var heard atomic.Bool
+				if !tc.noTrace {
+					s.live.heard = &heard
+				}
+				r.addSession(s, start)
+				require.NoError(t, r.AddRoute(s, netip.MustParsePrefix(prefixA), "x"))
+
+				var got []string
+				state, packet := stateNormal, start
+				for _, sp := range tc.spans {
+					for end := time.Now().Add(sp.d); time.Now().Before(end); time.Sleep(livenessInterval) {
+						if sp.answers && time.Since(packet) >= AgentKeepAlive {
+							heard.Store(true)
+							packet = time.Now()
+						}
+						r.checkLiveness(time.Now())
+						r.mu.RLock()
+						now := s.state
+						r.mu.RUnlock()
+						if now != state {
+							state = now
+							got = append(got, fmt.Sprintf("%s %s", time.Since(start), stateLabel(now)))
+						}
+					}
+				}
+				assert.Equal(t, tc.want, got)
+				assert.Equal(t, []string{"x@"}, entriesOf(r, prefixA), "the entry of the session stays")
+				r.mu.RLock()
+				assert.Equal(t, state, r.domains[vpcA].routes[netip.MustParsePrefix(prefixA)].active().state)
+				r.mu.RUnlock()
+			})
+		})
+	}
 }

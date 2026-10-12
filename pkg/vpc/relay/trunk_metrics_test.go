@@ -407,6 +407,7 @@ func TestTrunkMetricXDP(t *testing.T) {
 				name: "the row moved to an agent of this relay, and the program sent 2 packets to it",
 				do: func() {
 					g.agent(agentID(vpcA, "other"), "192.0.2.4:1", prefixA)
+					endHold()
 					flushXDP(g.r, time.Now())
 					require.Equal(t, map[string]string{rowSrc + "/5": "192.0.2.4:1"}, f.installed())
 					forwarded(2, 280)

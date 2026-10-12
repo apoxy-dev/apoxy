@@ -8,6 +8,7 @@ import (
 	"errors"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/quic-go/quic-go"
 
@@ -146,8 +147,9 @@ func (srv *Server) ServeConn(ctx context.Context, qc quic.Connection) {
 	}
 }
 
-// Drain refuses new sessions and tells each session to move, to alternates if it
-// gets routes of other relays. It returns when all end, or closes them at ctx end.
+// Drain refuses new sessions, gives each entry of the relay the draining state,
+// and then tells each session to move, to alternates if it gets routes of other
+// relays. It returns when all end, or closes them at ctx end.
 func (srv *Server) Drain(ctx context.Context, alternates []*dp.RelayRef) {
 	srv.mu.Lock()
 	srv.draining = true
@@ -160,6 +162,8 @@ func (srv *Server) Drain(ctx context.Context, alternates []*dp.RelayRef) {
 	srv.mu.Unlock()
 	r := srv.R
 	r.mu.Lock()
+	// The other relays select again before an agent gets Drain and moves.
+	r.startDrain(time.Now())
 	sessions := make([]*Session, 0, len(r.sessions))
 	for s := range r.sessions {
 		sessions = append(sessions, s)

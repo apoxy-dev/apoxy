@@ -980,10 +980,14 @@ func TestVisitRows(t *testing.T) {
 			during: "visitor",
 		},
 		{
-			name:    "attachment of this relay takes the prefix",
-			end:     func(_ *testing.T, g *visitRig) { g.local("o", "192.0.2.40:1", prefixA) },
-			atStart: [][]*dp.SPIRow{{goneRow(5)}},
-			before:  "relay-a", during: "visitor", after: "o",
+			name: "attachment of this relay takes the prefix",
+			end: func(_ *testing.T, g *visitRig) {
+				g.local("o", "192.0.2.40:1", prefixA)
+				endHold()
+			},
+			// The row is of relay-a again for the hold time of the new attachment.
+			atStart: [][]*dp.SPIRow{{goneRow(5)}}, atEnd: [][]*dp.SPIRow{{liveRow(5, rowTTL)}, {goneRow(5)}},
+			before: "relay-a", during: "visitor", after: "o",
 		},
 		{
 			name: "row to a shorter route of this relay",
@@ -1105,8 +1109,11 @@ func TestVisitEnd(t *testing.T) {
 		},
 		{name: "end of the grant", step: func(_ *testing.T, g *visitRig) { g.expire() }, frame: "relay-a"},
 		{
-			name:  "attachment of another agent on this relay takes the prefix",
-			step:  func(_ *testing.T, g *visitRig) { g.local("o", spareSocket, prefixA) },
+			name: "attachment of another agent on this relay takes the prefix",
+			step: func(_ *testing.T, g *visitRig) {
+				g.local("o", spareSocket, prefixA)
+				endHold()
+			},
 			frame: "o",
 		},
 		{

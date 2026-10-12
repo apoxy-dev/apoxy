@@ -12,6 +12,8 @@ import (
 	pspwire "github.com/apoxy-dev/softpsp/psp"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/logging"
+
+	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
 // AttachmentStats is the identity and the counters of one attachment. The
@@ -260,30 +262,57 @@ func (r *Router) retarget(w *row, o target) {
 	w.att = o.att
 }
 
-type rttKey struct{}
+type traceKey struct{}
 
-// TraceContext gives a new connection the place for the RTT of its session.
-// It is the ConnContext of the QUIC transports of a relay with TraceRTT.
-func TraceContext(ctx context.Context, _ *quic.ClientInfo) (context.Context, error) {
-	return context.WithValue(ctx, rttKey{}, new(atomic.Int64)), nil
+// connTrace is what the tracer of one connection keeps for its session.
+type connTrace struct {
+	rtt atomic.Int64 // Smoothed RTT in nanoseconds.
+	// heard is set for each packet of an agent. The liveness check clears it.
+	heard atomic.Bool
 }
 
-// TraceRTT keeps the smoothed RTT of a connection for AttachmentStats. It is
-// the Tracer of the QUIC config of a relay with TraceContext.
+// TraceContext gives a new connection the place for what TraceRTT keeps. It is
+// the ConnContext of the QUIC transports of a relay with TraceRTT.
+func TraceContext(ctx context.Context, _ *quic.ClientInfo) (context.Context, error) {
+	return context.WithValue(ctx, traceKey{}, new(connTrace)), nil
+}
+
+// TraceRTT keeps the smoothed RTT of a connection for AttachmentStats, and
+// marks each packet of an agent session for the liveness check. It is the
+// Tracer of the QUIC config of a relay with TraceContext.
 func TraceRTT(ctx context.Context, _ logging.Perspective, _ quic.ConnectionID) *logging.ConnectionTracer {
-	rtt := rttOf(ctx)
-	if rtt == nil {
+	tr := traceOf(ctx)
+	if tr == nil {
 		return nil
 	}
-	return &logging.ConnectionTracer{
+	t := &logging.ConnectionTracer{
 		UpdatedMetrics: func(s *logging.RTTStats, _, _ logging.ByteCount, _ int) {
-			rtt.Store(int64(s.SmoothedRTT()))
+			tr.rtt.Store(int64(s.SmoothedRTT()))
 		},
 	}
+	// QUIC makes a frame list for each packet of a connection with the hook of
+	// received packets, so only an agent session gets it. The hooks of one
+	// connection run one after the other.
+	t.ChoseALPN = func(alpn string) {
+		if alpn == dp.ALPNRelay {
+			t.ReceivedShortHeaderPacket = func(*logging.ShortHeader, logging.ByteCount, logging.ECN, []logging.Frame) {
+				tr.heard.Store(true)
+			}
+		}
+	}
+	return t
+}
+
+// traceOf returns what the tracer keeps for the connection of ctx, or nil.
+func traceOf(ctx context.Context) *connTrace {
+	tr, _ := ctx.Value(traceKey{}).(*connTrace)
+	return tr
 }
 
 // rttOf returns the place for the RTT of the connection of ctx, or nil.
 func rttOf(ctx context.Context) *atomic.Int64 {
-	rtt, _ := ctx.Value(rttKey{}).(*atomic.Int64)
-	return rtt
+	if tr := traceOf(ctx); tr != nil {
+		return &tr.rtt
+	}
+	return nil
 }

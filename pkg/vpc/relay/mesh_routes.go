@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/netip"
 	"slices"
+
+	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
 // meshRoutesRevision is the first revision of an agent that gets the routes of
@@ -61,6 +63,29 @@ func (e *presenceEntry) attachedAt() uint64 {
 	return e.gen
 }
 
+// routeState returns the state of the route entries of e on this relay: the
+// state that its relay sent, and at least suspect while its member is lost.
+func (e *presenceEntry) routeState() dp.AnnouncerState {
+	if e.lost {
+		return max(e.state, dp.AnnouncerState_ANNOUNCER_STATE_SUSPECT)
+	}
+	return e.state
+}
+
+// restateClaim gives the route entries of the attachment e of another relay
+// the state and the hold time of e, in place. Router.mu must be held.
+func (r *Router) restateClaim(e *presenceEntry) {
+	d, s := r.domains[e.vpc], r.remotes[e.session()]
+	if d == nil || s == nil {
+		return
+	}
+	for _, p := range e.prefixes {
+		r.restate(d, p, func(a *announcer) bool {
+			return a.s == s && a.origin == e.id && a.restate(e.routeState(), e.activeFrom)
+		})
+	}
+}
+
 // claim adds the attachment e of another relay to the domain of its VPC, with
 // an entry in the route table for each of its prefixes. A wrong network ID
 // gives an error. Router.mu must be held.
@@ -104,7 +129,7 @@ func (r *Router) unclaim(e *presenceEntry) {
 func (r *Router) routeClaim(d *domain, p netip.Prefix, e *presenceEntry) {
 	if d.known && e.networkID == d.networkID {
 		t := target{s: r.record(e), origin: e.id}
-		r.addAnnouncer(d, p, newAnnouncer(t, r.relayOf(t.s), p, e.attachedAt(), e.rank, e.state))
+		r.addAnnouncer(d, p, newAnnouncer(t, r.relayOf(t.s), p, e.attachedAt(), e.rank, e.routeState(), e.activeFrom))
 	} else if s := r.remotes[e.session()]; s != nil {
 		r.removeAnnouncer(d, p, s, e.id)
 	}

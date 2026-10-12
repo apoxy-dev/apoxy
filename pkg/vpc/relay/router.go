@@ -130,6 +130,9 @@ type Router struct {
 	refusals [numRowRefusals]atomic.Uint64
 	// socket counts the PSP packets that the socket path took, by class.
 	socket [numSocketClasses]atomic.Uint64
+	// stateChanges counts the state changes of the sessions of this relay, by
+	// the new state.
+	stateChanges [numAnnouncerStates]atomic.Uint64
 
 	mu       sync.RWMutex
 	permit   Permit
@@ -153,6 +156,13 @@ type Router struct {
 	presence func(*dp.Presence)     // Gets each new and each gone attachment.
 	remotes  map[remoteKey]*Session // Records of the sessions of other relays that have routes.
 	in       map[string]*inRows     // Rows that each member gave for its senders, by relay name.
+
+	// draining is true from the start of the drain of the relay. mu guards it.
+	draining bool
+	// holds has the pending ends of hold times, the first one first, and
+	// holdTimer runs at the first one. mu guards the two fields.
+	holds     []holdEnd
+	holdTimer *time.Timer
 
 	// statsMu guards attCount.last. Take it after mu.
 	statsMu sync.Mutex
@@ -204,6 +214,7 @@ type Session struct {
 	meter        *rate.Limiter // Tunnel limit. Nil means no limit. Shards use the meter of the owner.
 	watching     atomic.Bool   // A watch follows the connection after Moved.
 	rtt          *atomic.Int64 // Smoothed RTT of the connection in nanoseconds. Nil with no trace.
+	live         liveness      // What the liveness check knows of the agent.
 
 	// Guarded by Router.mu.
 	addr        netip.AddrPort
@@ -216,6 +227,7 @@ type Session struct {
 	inbound     map[*row]struct{} // Rows of senders to this session.
 	routes      []netip.Prefix    // Prefix of each entry of s in the route table.
 	attachments []*Attachment
+	state       dp.AnnouncerState // State of each entry of s in the route table.
 	closed      bool
 	version     *dp.Version // Version of the agent, from Hello. Nil is revision 0.
 	name        string      // Name of the agent, from Hello. Empty before revision 2.
@@ -320,7 +332,9 @@ func (r *Router) AddSession(conn *rpc.Conn) (*Session, error) {
 		_ = qc.CloseWithError(quic.ApplicationErrorCode(code), msg)
 	}
 	s.sendDatagram = qc.SendDatagram
-	s.rtt = rttOf(qc.Context())
+	if tr := traceOf(qc.Context()); tr != nil {
+		s.rtt, s.live.heard = &tr.rtt, &tr.heard
+	}
 	if s.probe, err = newProber(tc); err != nil {
 		return nil, err
 	}
@@ -353,6 +367,8 @@ func (r *Router) addSession(s *Session, now time.Time) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.sessions[s] = struct{}{}
+	s.live.last, s.live.since = now, now
+	s.state = r.entryState(s)
 	if r.cfg.TunnelRate > 0 {
 		s.meter = rate.NewLimiter(rate.Limit(r.cfg.TunnelRate), r.cfg.TunnelBurst)
 	}
@@ -730,14 +746,19 @@ func (r *Router) Sweep(now time.Time) {
 	}
 }
 
-// Run sweeps the rows and rekeys the relay SAs each second until ctx ends.
+// Run sweeps the rows and rekeys the relay SAs each second, and checks the
+// liveness of the agents each livenessInterval, until ctx ends.
 func (r *Router) Run(ctx context.Context) {
 	t := time.NewTicker(sweepInterval)
 	defer t.Stop()
+	live := time.NewTicker(livenessInterval)
+	defer live.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case now := <-live.C:
+			r.checkLiveness(now)
 		case now := <-t.C:
 			r.Sweep(now)
 			r.tickBridge(now)

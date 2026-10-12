@@ -17,6 +17,7 @@ import (
 	"github.com/quic-go/quic-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/peerconn"
@@ -273,7 +274,7 @@ func (w *routeWorld) check() {
 	for vpc, d := range w.r.domains {
 		for p, set := range d.routes {
 			assert.NotEmpty(w.t, set.entries, "entries of %s", p)
-			assert.Equal(w.t, selectOrder(set.entries), set.order, "selection of %s", p)
+			assert.Equal(w.t, selectOrder(set.entries, time.Now()), set.order, "selection of %s", p)
 			for _, o := range set.entries {
 				if o.s.home == "" {
 					continue
@@ -598,13 +599,13 @@ func TestMeshRoutes(t *testing.T) {
 			delta:  []string{"-x " + prefixA, "+z " + prefixB}, records: 1,
 		},
 		{
-			// The routes stay while the member is in the member set.
+			// The routes of a lost member stay for memberLostTime. TestMemberLost has the end.
 			name: "session of a member is lost",
 			steps: func(w *routeWorld) {
 				w.send("relay-a", remoteEntry("x", 10, prefixA))
 				w.drain()
 				w.lose("relay-a")
-				w.pass(24 * time.Hour)
+				w.pass(memberLostTime - 2*time.Minute)
 			},
 			routes: map[string]string{prefixA: "x@relay-a"}, records: 1,
 		},
@@ -621,7 +622,7 @@ func TestMeshRoutes(t *testing.T) {
 			delta:  []string{"-x " + prefixR, "-x " + prefixA}, records: 1,
 		},
 		{
-			// The entry of the lost relay stays in the set, and no state marks it yet.
+			// The entry of the lost relay stays in the set as a suspect one.
 			name: "attachment comes on another relay while its first relay is lost",
 			steps: func(w *routeWorld) {
 				w.send("relay-a", remoteEntry("x", 10, prefixA))
@@ -629,8 +630,8 @@ func TestMeshRoutes(t *testing.T) {
 				w.lose("relay-a")
 				w.send("relay-b", remoteEntry("y", 20, prefixA))
 			},
-			routes: map[string]string{prefixA: "x@relay-a"},
-			delta:  []string{"+x " + prefixA + " standby=y"}, records: 2,
+			routes: map[string]string{prefixA: "y@relay-b"},
+			delta:  []string{"-x " + prefixA, "+y " + prefixA + " standby=x"}, records: 2,
 		},
 		{
 			name: "new session of a lost member: the routes stay before the end of the full set",
@@ -704,7 +705,7 @@ func TestMeshRoutes(t *testing.T) {
 				w.send("relay-a", remoteEntry("x2", 11, prefixB))
 				w.pass(5 * time.Second)
 				w.lose("relay-a")
-				w.pass(time.Hour)
+				w.pass(time.Minute)
 			},
 			routes: map[string]string{prefixA: "x@relay-a", prefixB: "x2@relay-a"}, records: 1,
 		},
@@ -1697,4 +1698,274 @@ func TestMeshRoutesAfterLoss(t *testing.T) {
 	assert.True(t, full, "the full set of the new session is complete")
 	assert.Len(t, entries, 2)
 	checkEntries(t, b.n.m)
+}
+
+// entryState returns the state of the entry of the attachment origin for
+// prefix in vpcA of r. ok is false with no such entry.
+func entryState(r *Router, prefix, origin string) (state dp.AnnouncerState, ok bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	d := r.domains[vpcA]
+	if d == nil || d.routes[netip.MustParsePrefix(prefix)] == nil {
+		return 0, false
+	}
+	for _, e := range d.routes[netip.MustParsePrefix(prefix)].entries {
+		if e.origin == origin {
+			return e.state, true
+		}
+	}
+	return 0, false
+}
+
+// TestMemberLost checks the entries of a member that is lost: they are suspect
+// on this relay from the down change, normal again when a new session of the
+// member sends them, and gone when the member is still down after
+// memberLostTime or leaves the member set. The agent laptop has the attachment
+// x on relay-a, with the lower rank, and the attachment y on relay-b. lose
+// gives the relay the down change one minute after the session ended.
+func TestMemberLost(t *testing.T) {
+	x := func(gen uint64) *dp.Presence { return remoteEntry("x", gen, prefixA, prefixR) }
+	lostOrder, normalOrder := []string{"y@relay-b", "x@relay-a"}, []string{"x@relay-a", "y@relay-b"}
+	toStandby := []string{"-x " + prefixR, "+y " + prefixR + " standby=x"}
+	cases := []struct {
+		name  string
+		steps func(w *routeWorld)
+		order []string // Announcers of prefixR at the end, in the order of selection.
+		state dp.AnnouncerState
+		gone  bool     // The entries of relay-a are gone at the end.
+		delta []string // Changes that the watcher gets in steps.
+	}{
+		{
+			name:  "lost member: its entries are suspect",
+			steps: func(w *routeWorld) { w.lose("relay-a") },
+			order: lostOrder, state: stateSuspect, delta: toStandby,
+		},
+		{
+			name: "session that ends is not a lost member before the down change",
+			steps: func(w *routeWorld) {
+				w.conns["relay-a"].cancel(&quic.IdleTimeoutError{})
+				w.pass(meshDownAfter - time.Nanosecond)
+			},
+			order: normalOrder,
+		},
+		{
+			name: "new session sends the entry again: normal",
+			steps: func(w *routeWorld) {
+				w.lose("relay-a")
+				w.open("relay-a")
+				w.full("relay-a", x(10))
+			},
+			order: normalOrder,
+		},
+		{
+			name: "new session sends the entry with a new generation: normal",
+			steps: func(w *routeWorld) {
+				w.lose("relay-a")
+				w.open("relay-a")
+				e := x(30)
+				e.Attached = 10
+				w.send("relay-a", e)
+			},
+			order: normalOrder,
+		},
+		{
+			name: "new session sends the entry in the draining state: draining",
+			steps: func(w *routeWorld) {
+				w.lose("relay-a")
+				w.open("relay-a")
+				e := draining(x(30))
+				e.Attached = 10
+				w.send("relay-a", e)
+			},
+			order: lostOrder, state: stateDraining, delta: toStandby,
+		},
+		{
+			name: "new session did not send the entry yet: suspect",
+			steps: func(w *routeWorld) {
+				w.lose("relay-a")
+				w.open("relay-a")
+				w.pass(presenceFullSetTime - time.Nanosecond)
+			},
+			order: lostOrder, state: stateSuspect, delta: toStandby,
+		},
+		{
+			name: "member is down for less than memberLostTime: the entries stay",
+			steps: func(w *routeWorld) {
+				w.lose("relay-a")
+				w.pass(memberLostTime - time.Nanosecond)
+			},
+			order: lostOrder, state: stateSuspect, delta: toStandby,
+		},
+		{
+			name: "member is down for memberLostTime: the entries go",
+			steps: func(w *routeWorld) {
+				w.lose("relay-a")
+				w.pass(memberLostTime)
+			},
+			order: []string{"y@relay-b"}, gone: true,
+			delta: []string{"-x " + prefixR, "+y " + prefixR, "-x " + prefixA},
+		},
+		{
+			name: "member came back and is lost again: the time starts again",
+			steps: func(w *routeWorld) {
+				w.lose("relay-a")
+				w.open("relay-a")
+				w.full("relay-a", x(10))
+				w.pass(time.Minute)
+				w.lose("relay-a")
+				// The time of the first loss ends now.
+				w.pass(memberLostTime - 2*time.Minute)
+			},
+			order: lostOrder, state: stateSuspect, delta: toStandby,
+		},
+		{
+			name: "lost member leaves the member set: the entries go at once",
+			steps: func(w *routeWorld) {
+				w.lose("relay-a")
+				w.leave("relay-a")
+			},
+			order: []string{"y@relay-b"}, gone: true,
+			delta: []string{"-x " + prefixR, "+y " + prefixR, "-x " + prefixA},
+		},
+		{
+			name: "lost member comes back as a new relay process: the entries go at once",
+			steps: func(w *routeWorld) {
+				w.lose("relay-a")
+				w.open("relay-a")
+				w.restart("relay-a")
+			},
+			order: []string{"y@relay-b"}, gone: true,
+			delta: []string{"-x " + prefixR, "+y " + prefixR, "-x " + prefixA},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				w := newRouteWorld(t, NewRouter(nil, Config{}))
+				w.session("watcher", vpcA, agentID(vpcA, "watcher"), thisRevision())
+				// No other relay gets the state that this relay gives to the entries.
+				var sent []*dp.Presence
+				w.r.mu.Lock()
+				w.r.presence = func(e *dp.Presence) { sent = append(sent, e) }
+				w.r.mu.Unlock()
+				w.send("relay-a", x(10))
+				w.send("relay-b", ranked(remoteEntry("y", 10, prefixR), 1))
+				require.Equal(t, normalOrder, entriesOf(w.r, prefixR))
+				w.drain()
+
+				tc.steps(w)
+				assert.Equal(t, tc.order, entriesOf(w.r, prefixR))
+				assert.ElementsMatch(t, tc.delta, w.changes("watcher"))
+				assert.Empty(t, sent, "entries that the relay sent")
+				for _, p := range []string{prefixA, prefixR} {
+					state, ok := entryState(w.r, p, "x")
+					assert.Equal(t, !tc.gone, ok, "entry of x for %s", p)
+					assert.Equal(t, tc.state, state, "state of x for %s", p)
+				}
+				// The address of x has one announcer: its route stays while the entry stays.
+				_, has := w.table(vpcA)[prefixA]
+				assert.Equal(t, !tc.gone, has, "route of the address of x")
+				w.check()
+			})
+		})
+	}
+}
+
+// TestPresenceStateChange checks an entry of a member that comes again with a
+// higher generation. With only a new state it changes in place: the relay
+// keeps the entry and its routes. With other new data it is a new entry.
+func TestPresenceStateChange(t *testing.T) {
+	next := func(gen uint64, change func(e *dp.Presence)) *dp.Presence {
+		e := remoteEntry("x", gen, prefixA, prefixR)
+		e.Attached = 10
+		change(e)
+		return e
+	}
+	cases := []struct {
+		name    string
+		entry   *dp.Presence
+		inPlace bool
+		state   dp.AnnouncerState
+		gen     uint64
+	}{
+		{
+			name:    "new state",
+			entry:   next(30, func(e *dp.Presence) { e.State = stateSuspect }),
+			inPlace: true, state: stateSuspect, gen: 30,
+		},
+		{
+			name:    "new hold time",
+			entry:   next(30, func(e *dp.Presence) { e.ActiveFrom = timestamppb.New(time.Unix(1, 0)) }),
+			inPlace: true, gen: 30,
+		},
+		{
+			name:    "state of a later revision",
+			entry:   next(30, func(e *dp.Presence) { e.State = 7 }),
+			inPlace: true, state: 7, gen: 30,
+		},
+		{
+			name:    "new state with a lower generation: ignored",
+			entry:   next(9, func(e *dp.Presence) { e.State, e.Attached = stateSuspect, 9 }),
+			inPlace: true, gen: 10,
+		},
+		{
+			name:    "new state with the same generation: ignored",
+			entry:   next(10, func(e *dp.Presence) { e.State = stateSuspect }),
+			inPlace: true, gen: 10,
+		},
+		{
+			name:  "new state and new prefixes",
+			entry: next(30, func(e *dp.Presence) { e.State, e.Prefixes = stateSuspect, []string{prefixA} }),
+			state: stateSuspect, gen: 30,
+		},
+		{
+			name:  "new state and a new sender tag",
+			entry: next(30, func(e *dp.Presence) { e.State, e.SenderTag = stateSuspect, 8 }),
+			state: stateSuspect, gen: 30,
+		},
+		{
+			name:  "new state and a new rank",
+			entry: next(30, func(e *dp.Presence) { e.State, e.Rank = stateSuspect, 4 }),
+			state: stateSuspect, gen: 30,
+		},
+		{
+			name:  "new state from a member that sends no generation of the attach",
+			entry: next(30, func(e *dp.Presence) { e.State, e.Attached = stateSuspect, 0 }),
+			state: stateSuspect, gen: 30,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				w := newRouteWorld(t, NewRouter(nil, Config{}))
+				w.session("watcher", vpcA, agentID(vpcA, "watcher"), thisRevision())
+				w.send("relay-a", remoteEntry("x", 10, prefixA, prefixR))
+				w.drain()
+				kept := func() (*presenceEntry, *announcer) {
+					w.m.pres.mu.Lock()
+					defer w.m.pres.mu.Unlock()
+					w.r.mu.RLock()
+					defer w.r.mu.RUnlock()
+					return w.m.pres.in["relay-a"].entries["x"], w.r.domains[vpcA].routes[netip.MustParsePrefix(prefixA)].active()
+				}
+				entry, route := kept()
+
+				w.send("relay-a", tc.entry)
+				gotEntry, gotRoute := kept()
+				assert.Equal(t, tc.gen, gotEntry.gen)
+				assert.Equal(t, tc.state, gotRoute.state)
+				if tc.inPlace {
+					assert.Same(t, entry, gotEntry, "entry of the member")
+					assert.Same(t, route, gotRoute, "entry of the route table")
+					// The attachment is the one announcer of its prefixes.
+					assert.Empty(t, w.changes("watcher"))
+				} else {
+					assert.NotSame(t, entry, gotEntry, "entry of the member")
+					assert.NotSame(t, route, gotRoute, "entry of the route table")
+				}
+				assert.Equal(t, "x@relay-a", w.table(vpcA)[prefixA])
+				w.check()
+			})
+		})
+	}
 }

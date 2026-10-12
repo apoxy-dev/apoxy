@@ -264,11 +264,11 @@ func testRelayVPC(t *testing.T, steerSockets int) {
 	}, 5*time.Second, 50*time.Millisecond)
 
 	dial := func(name string) vpcAgent {
-		tr, qc, err := v.dial(t, v.agentTLS(t, name))
-		require.NoError(t, err)
 		dctx, dcancel := context.WithTimeout(ctx, 5*time.Second)
 		defer dcancel()
-		a := vpcAgent{tr: tr, qc: qc, c: dp.NewRelayClient(rpc.NewConn(qc, nil))}
+		// The relay refuses an Attach before the Hello of the Session call.
+		ra := openRouteAgent(t, ctx, v, name, &dp.Hello{Name: name})
+		a := vpcAgent{tr: ra.tr, qc: ra.qc, c: ra.c}
 		res, err := a.c.Attach(dctx, &dp.AttachRequest{Vpc: &dp.VPCRef{ProjectId: vpcProject, VpcUid: vpcUID, NetworkId: vpcNetwork}, Name: name})
 		require.NoError(t, err)
 		claims, err := vpcrelay.VerifyGrant(res.Grant, relayRoots, time.Now())
