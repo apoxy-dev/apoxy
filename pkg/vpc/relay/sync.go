@@ -25,10 +25,12 @@ const (
 
 // syncState is what the relay still has to send to the agent on Sync.
 type syncState struct {
-	open    bool           // A Session call runs.
-	mode    dp.Mode        // From Hello.
-	ref     *dp.VPCRef     // VPC of the session, with the network ID.
-	routes  map[route]bool // Route changes: true adds, false removes.
+	open   bool           // A Session call runs.
+	mode   dp.Mode        // From Hello.
+	ref    *dp.VPCRef     // VPC of the session, with the network ID.
+	routes map[route]bool // Route changes: true adds, false removes.
+	// standby has the prefixes whose route stays and whose standby list changed.
+	standby map[netip.Prefix]struct{}
 	out     []*dp.SessionResponse
 	noRoute map[netip.Addr]time.Time // Last NoRoute for each address.
 	rev     uint64                   // Revision of the last RouteDelta.
@@ -43,13 +45,9 @@ type syncState struct {
 	meshRoutes bool
 }
 
-// queueRoute adds a change of the route rt of owner to the sync queue. A
-// session gets no routes of its own agent, and those of other relays only with
-// meshRoutes. A change cancels the opposite change. Router.mu must be held.
-func (s *Session) queueRoute(rt route, owner *Session, add bool) {
-	if owner.sameAgent(s) || (owner.home != "" && !s.sync.meshRoutes) {
-		return
-	}
+// queueRoute adds a change of the route rt to the sync queue. A change cancels
+// the opposite change. Router.mu must be held.
+func (s *Session) queueRoute(rt route, add bool) {
 	if was, ok := s.sync.routes[rt]; ok && was != add {
 		delete(s.sync.routes, rt)
 	} else {
@@ -127,12 +125,24 @@ func (r *Router) takeSync(s *Session) []*dp.SessionResponse {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	var msgs []*dp.SessionResponse
+	dom := r.domains[s.id.VPC]
+	// A route with a new standby list comes again as an add.
+	for p := range s.sync.standby {
+		if e := s.sees(dom.orderOf(p)); e != nil {
+			s.sync.routes[route{p, e.origin}] = true
+		}
+	}
+	clear(s.sync.standby)
 	if len(s.sync.routes) > 0 || s.sync.rev == 0 {
 		s.sync.rev++
 		d := &dp.RouteDelta{Rev: s.sync.rev}
 		for rt, add := range s.sync.routes {
 			m := &dp.Route{Vpc: s.sync.ref, Prefix: rt.prefix.String(), Origin: rt.origin}
 			if add {
+				// An agent of an older revision gets one announcer for each prefix.
+				if s.version.GetRevision() >= announcerRevision {
+					m.Standby = s.standby(dom.orderOf(rt.prefix))
+				}
 				d.Add = append(d.Add, m)
 			} else {
 				d.Remove = append(d.Remove, m)
@@ -249,7 +259,7 @@ func (srv *Server) Session(ctx context.Context, st rpc.BidiStreamServer[dp.Sessi
 }
 
 // openSync marks the Session call of s as open, and gives s the agent name
-// of its Hello. A session has at most one Session call.
+// and the instance of its Hello. A session has at most one Session call.
 func (r *Router) openSync(s *Session, mode dp.Mode, ref *dp.VPCRef, hello *dp.Hello) error {
 	refused, err := r.startSync(s, mode, ref, hello)
 	if refused > 0 {
@@ -271,43 +281,23 @@ func (r *Router) startSync(s *Session, mode dp.Mode, ref *dp.VPCRef, hello *dp.H
 		return 0, rpc.Errorf(rpc.FailedPrecondition, "session already has a Session call")
 	}
 	s.sync.open, s.sync.mode, s.sync.ref = true, mode, ref
-	r.setName(s, hello.GetName())
+	s.name, s.instance = hello.GetName(), hello.GetInstance()
+	s.sync.meshRoutes = s.version.GetRevision() >= meshRoutesRevision && !hello.GetLocalRoutesOnly()
 	d := r.domain(s.id.VPC)
 	// The relay knows the network ID of the VPC from here on.
 	refused := r.know(d, ref.GetNetworkId())
-	if s.version.GetRevision() >= meshRoutesRevision && !hello.GetLocalRoutesOnly() {
-		s.sync.meshRoutes = true
-		for p, o := range d.routes {
-			if o.s.home != "" {
-				s.queueRoute(route{p, o.origin}, o.s, true)
-			}
-		}
-	}
+	// The routes that s gets depend on its agent and on meshRoutes, so its
+	// queue starts again with the values of the Hello.
+	d.queueRoutes(s)
 	r.takeSource(s)
-	s.notify()
 	return refused, nil
 }
 
-// setName gives s the agent name of its Hello. Before this, s had no name and
-// got no routes of its subject, so the routes of the other agents of the
-// subject go to its sync queue now. Router.mu must be held.
-func (r *Router) setName(s *Session, name string) {
-	// A session that attached before its Hello keeps no name, because the
-	// other sessions already have or do not have its routes by that rule.
-	if name == "" || len(s.attachments) > 0 {
-		return
-	}
-	s.name = name
-	d := r.domains[s.id.VPC]
-	if d == nil {
-		return
-	}
-	for p, o := range d.routes {
-		// The routes of other relays wait for the check of the Hello.
-		if o.s.home == "" && o.s.id.ID == s.id.ID && !o.s.sameAgent(s) {
-			s.sync.routes[route{p, o.origin}] = true
-		}
-	}
+// hasHello reports whether the relay accepted the Hello of s. It stays true.
+func (r *Router) hasHello(s *Session) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return s.sync.open
 }
 
 func (r *Router) recvSync(s *Session, st rpc.BidiStreamServer[dp.SessionRequest, dp.SessionResponse]) error {

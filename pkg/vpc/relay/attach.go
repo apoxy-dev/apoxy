@@ -44,6 +44,9 @@ type Attachment struct {
 	Routes []netip.Prefix
 	// Addresses are the prefixes from Addresses.Assign.
 	Addresses []netip.Prefix
+	// Rank is the order that the agent gives to this connection among its
+	// connections to relays. The lower one is selected first.
+	Rank uint32
 
 	seq   uint64    // Attach order in the router.
 	since time.Time // Time of the attach.
@@ -76,6 +79,10 @@ func (srv *Server) Attach(ctx context.Context, in *dp.AttachRequest) (*dp.Attach
 	s, err := srv.R.caller(ctx)
 	if err != nil {
 		return nil, err
+	}
+	// The route table has the agent name and the instance of the Hello.
+	if !srv.R.hasHello(s) {
+		return nil, rpc.Errorf(rpc.FailedPrecondition, "attach needs a Session call with Hello first")
 	}
 	key, err := s.vpc(in.GetVpc())
 	if err != nil {
@@ -131,7 +138,22 @@ func (srv *Server) Attach(ctx context.Context, in *dp.AttachRequest) (*dp.Attach
 		return nil, err
 	}
 	srv.Addresses.Attached(a)
-	return &dp.AttachResponse{AttachmentId: a.ID, Grant: grant}, nil
+	return &dp.AttachResponse{AttachmentId: a.ID, Grant: grant, Routes: srv.R.routeStatuses(s, a)}, nil
+}
+
+// routeStatuses returns the answer for each advertised route of a, for an
+// agent at announcerRevision or later. The relay accepts each route now.
+func (r *Router) routeStatuses(s *Session, a *Attachment) []*dp.RouteStatus {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if s.version.GetRevision() < announcerRevision {
+		return nil
+	}
+	out := make([]*dp.RouteStatus, len(a.Routes))
+	for i, p := range a.Routes {
+		out[i] = &dp.RouteStatus{Prefix: p.String(), Result: dp.RouteResult_ROUTE_RESULT_ACCEPTED}
+	}
+	return out
 }
 
 // Detach removes an attachment of the session of the caller: its routes, and
@@ -172,7 +194,7 @@ func newAttachment(vpc VPCKey, subject string, in *dp.AttachRequest) (*Attachmen
 	if err := ValidateAttachment(in.GetName(), in.GetLabels()); err != nil {
 		return nil, rpc.Errorf(rpc.InvalidArgument, "%v", err)
 	}
-	a := &Attachment{VPC: vpc, Name: in.GetName(), Labels: in.GetLabels(), Subject: subject}
+	a := &Attachment{VPC: vpc, Name: in.GetName(), Labels: in.GetLabels(), Subject: subject, Rank: in.GetRank()}
 	for _, r := range in.GetRoutes() {
 		p, err := netip.ParsePrefix(r)
 		if err != nil {
@@ -186,8 +208,9 @@ func newAttachment(vpc VPCKey, subject string, in *dp.AttachRequest) (*Attachmen
 	return a, nil
 }
 
-// attach adds the routes of a to s. It adds all of them or none. An
-// advertised route of an older attachment of the same agent moves to a.
+// attach adds a to s, and an entry to the route table for each address and each
+// advertised route of a. An advertised route that another attachment
+// announces is no error: a gets one more entry in the set of its prefix.
 func (r *Router) attach(s *Session, a *Attachment) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -202,27 +225,17 @@ func (r *Router) attach(s *Session, a *Attachment) error {
 		return rpc.Errorf(rpc.FailedPrecondition, "a visitor session takes no attachment")
 	}
 	d := r.domain(s.id.VPC)
-	// takes reports whether a gets p: p has no route, or a takes it over. From
-	// another relay, an advertised route moves only to a session of its agent.
-	takes := func(p netip.Prefix, advertised bool) bool {
-		o, ok := d.routes[p]
-		switch {
-		case !ok:
-			return true
-		case o.s.home != "":
-			// This relay assigns each address, so an entry with it is old.
-			return !advertised || o.s.sameAgent(s)
-		}
-		return advertised && o.advertised && o.s.sameAgent(s) && o.origin != a.ID
-	}
 	// Check all prefixes first, so that a failed attach changes nothing.
-	for i, p := range slices.Concat(a.Addresses, a.Routes) {
+	for _, p := range slices.Concat(a.Addresses, a.Routes) {
 		if !p.IsValid() {
 			return rpc.Errorf(rpc.InvalidArgument, "prefix not valid")
 		}
-		p = p.Masked()
-		if o, ok := d.routes[p]; ok && o.s != s && !takes(p, i >= len(a.Addresses)) {
-			return rpc.Errorf(rpc.AlreadyExists, "route %s has another owner", p)
+	}
+	// This relay gives each address to one attachment. An entry of another relay
+	// with the address stays: the selection has the two.
+	for _, p := range a.Addresses {
+		if d.announcedHere(p.Masked(), s) {
+			return rpc.Errorf(rpc.AlreadyExists, "address %s has another attachment on this relay", p.Masked())
 		}
 	}
 	// The first attachment of s gives s its trunk tag.
@@ -239,23 +252,25 @@ func (r *Router) attach(s *Session, a *Attachment) error {
 		// The first attachment does not get what s sent before it.
 		s.rxBase = r.rxOf(s, nil)
 	}
-	for _, p := range a.Addresses {
-		if p = p.Masked(); takes(p, false) {
-			r.setOwner(d, p, owner{s: s, origin: a.ID, att: a})
-		}
-	}
-	for _, p := range a.Routes {
-		if p = p.Masked(); takes(p, true) {
-			r.setOwner(d, p, owner{s, a.ID, true, a})
-		}
+	for _, p := range slices.Concat(a.Addresses, a.Routes) {
+		p = p.Masked()
+		t := target{s: s, origin: a.ID, att: a}
+		r.addAnnouncer(d, p, newAnnouncer(t, r.relayOf(s), p, a.gen, a.Rank, dp.AnnouncerState_ANNOUNCER_STATE_NORMAL))
 	}
 	s.attachments = append(s.attachments, a)
 	r.announce(s, a)
 	return nil
 }
 
-// detach removes the attachment id from s, and drops the routes that it owns.
-// It returns the attachment and its last counters.
+// announcedHere reports whether a session of this relay that is not s has an
+// entry for p. Router.mu must be held.
+func (d *domain) announcedHere(p netip.Prefix, s *Session) bool {
+	set := d.routes[p]
+	return set != nil && slices.ContainsFunc(set.entries, func(e *announcer) bool { return e.s != s && e.s.home == "" })
+}
+
+// detach removes the attachment id from s, with its entries in the route
+// table. It returns the attachment and its last counters.
 func (r *Router) detach(s *Session, id string) (*Attachment, AttachmentStats, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -265,19 +280,12 @@ func (r *Router) detach(s *Session, id string) (*Attachment, AttachmentStats, er
 	}
 	a := s.attachments[i]
 	s.attachments = slices.Delete(s.attachments, i, i+1)
-	var gone []netip.Prefix
 	if d := r.domains[s.id.VPC]; d != nil {
-		for _, p := range s.routes {
-			if o, ok := d.routes[p]; ok && o.s == s && o.origin == id {
-				gone = append(gone, p)
-			}
+		for _, p := range slices.Concat(a.Addresses, a.Routes) {
+			r.removeAnnouncer(d, p.Masked(), s, id)
 		}
 	}
-	for _, p := range gone {
-		r.dropRoute(s, p)
-	}
 	r.withdraw(a)
-	r.dropInbound(s)
 	// The sync adds the last XDP counts of the removed rows to the totals.
 	r.syncXDP(time.Now())
 	return a, r.last(s, a, i == 0), nil

@@ -159,9 +159,9 @@ func goneEntry(id string) *dp.Presence {
 	return &dp.Presence{Vpc: ref(vpcA), AttachmentId: id, Gone: true}
 }
 
-// diffPresence compares entries without the generation, which is a time.
+// diffPresence compares entries without the generations, which are times.
 func diffPresence(want, got []*dp.Presence) string {
-	return cmp.Diff(want, got, protocmp.Transform(), protocmp.IgnoreFields(&dp.Presence{}, "generation"))
+	return cmp.Diff(want, got, protocmp.Transform(), protocmp.IgnoreFields(&dp.Presence{}, "generation", "attached"))
 }
 
 // growing checks that each generation is above the one before it, from last.
@@ -1597,7 +1597,7 @@ func TestPresenceBetweenRelays(t *testing.T) {
 	has(a, "relay-b")
 	got, _ := presenceEntries(b.m, "relay-a")
 	assert.Equal(t, presenceEntry{
-		vpc: vpcA, networkID: testVNI, id: "x", gen: got["x"].gen, subject: laptop, tag: 1,
+		vpc: vpcA, networkID: testVNI, id: "x", gen: got["x"].gen, attached: got["x"].gen, subject: laptop, tag: 1,
 		prefixes: []netip.Prefix{netip.MustParsePrefix("fd00:1::/96")},
 	}, got["x"])
 	assert.InDelta(t, time.Now().UnixMilli(), got["x"].gen, 60_000, "the generation is the attach time")

@@ -84,6 +84,7 @@ func TestDatagrams(t *testing.T) {
 	agents := []agent{h.mustDial(t, ca.agentCert(t, vpcA, "a")), h.mustDial(t, ca.agentCert(t, vpcA, "b"))}
 	var addrs []netip.Addr
 	for i, a := range agents {
+		sayHello(t, a)
 		res := attach(t, a, &dp.AttachRequest{Vpc: ref(vpcA), Name: string(rune('a' + i))})
 		claims, err := VerifyGrant(res.Grant, h.relayRoots, time.Now())
 		require.NoError(t, err)

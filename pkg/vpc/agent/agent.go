@@ -725,6 +725,8 @@ func (rc *relayConn) hello(begin time.Time, spare bool) error {
 	rc.st = st
 	if err := st.Send(&dp.SessionRequest{Msg: &dp.SessionRequest_Hello{Hello: &dp.Hello{
 		Mode: rc.mode, FallbackReason: rc.reason, Spare: spare, Version: rc.a.ver, Name: rc.a.cfg.Name,
+		// The relay tells two processes with one identity and one name apart by the instance.
+		Instance: rc.a.instance,
 		// A relay takes a Visit call only on a session with local routes.
 		LocalRoutesOnly: rc.a.cfg.LocalRoutesOnly || rc.visitor,
 	}}}); err != nil {

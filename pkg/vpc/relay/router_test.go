@@ -3,8 +3,8 @@
 package relay
 
 import (
-	"fmt"
 	"net/netip"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -53,6 +53,22 @@ func addSession(t *testing.T, r *Router, vpc VPCKey, id, addr string, routes ...
 		require.NoError(t, r.AddRoute(s, netip.MustParsePrefix(p), "att-"+id))
 	}
 	return testSession{s, fa}
+}
+
+// RemoveRoute removes the entries of s for p. It is only for tests.
+func (r *Router) RemoveRoute(s *Session, p netip.Prefix) {
+	p = p.Masked()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	d := r.domains[s.id.VPC]
+	if d == nil || d.routes[p] == nil {
+		return
+	}
+	for _, e := range slices.Clone(d.routes[p].entries) {
+		if e.s == s {
+			r.removeAnnouncer(d, p, s, e.origin)
+		}
+	}
 }
 
 func ref(k VPCKey) *dp.VPCRef {
@@ -446,88 +462,6 @@ func TestResolvePeer(t *testing.T) {
 	}
 }
 
-// TestHeir checks which attachment gets an advertised route when its owner
-// goes: the newest one that lists the route, on an open session of the agent.
-func TestHeir(t *testing.T) {
-	p := netip.MustParsePrefix("10.9.0.0/16")
-	// member is a session with one attachment.
-	type member struct {
-		subject, name string
-		seq           uint64 // Attach order.
-		closed        bool
-		noRoute       bool // The attachment does not list p.
-	}
-	cases := []struct {
-		name   string
-		owner  string // Agent name of the session that loses p. Its subject is "laptop".
-		others []member
-		want   int // Index of the heir in others. -1 means no heir.
-	}{
-		{name: "newest attachment of the agent", owner: "a", others: []member{{subject: "laptop", name: "a", seq: 1}, {subject: "laptop", name: "a", seq: 2}}, want: 1},
-		{name: "other agent of the subject is newer", owner: "a", others: []member{{subject: "laptop", name: "a", seq: 1}, {subject: "laptop", name: "b", seq: 2}}, want: 0},
-		{name: "only another agent of the subject", owner: "a", others: []member{{subject: "laptop", name: "b", seq: 1}}, want: -1},
-		{name: "same name in another subject", owner: "a", others: []member{{subject: "desktop", name: "a", seq: 1}}, want: -1},
-		// A session with no name is of the same agent as each session of its subject.
-		{name: "owner with no name", others: []member{{subject: "laptop", name: "a", seq: 1}, {subject: "laptop", name: "b", seq: 2}}, want: 1},
-		{name: "session with no name", owner: "a", others: []member{{subject: "laptop", name: "a", seq: 1}, {subject: "laptop", seq: 2}}, want: 1},
-		{name: "no names", others: []member{{subject: "laptop", seq: 2}, {subject: "laptop", seq: 1}, {subject: "desktop", seq: 3}}, want: 0},
-		{name: "closed session", owner: "a", others: []member{{subject: "laptop", name: "a", seq: 1, closed: true}}, want: -1},
-		{name: "attachment without the route", owner: "a", others: []member{{subject: "laptop", name: "a", seq: 1, noRoute: true}}, want: -1},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			session := func(subject, name string) *Session {
-				s := newSession(Identity{VPC: vpcA, ID: agentID(vpcA, subject)}, func() netip.AddrPort { return netip.AddrPort{} })
-				s.name = name
-				return s
-			}
-			d := &domain{members: map[*Session]struct{}{}}
-			var others []*Session
-			for i, m := range tc.others {
-				s := session(m.subject, m.name)
-				s.closed = m.closed
-				a := &Attachment{ID: fmt.Sprintf("x%d", i), seq: m.seq}
-				if !m.noRoute {
-					a.Routes = []netip.Prefix{p}
-				}
-				s.attachments = []*Attachment{a}
-				d.members[s] = struct{}{}
-				others = append(others, s)
-			}
-			hs, ha := d.heir(session("laptop", tc.owner), p)
-			if tc.want < 0 {
-				assert.Nil(t, hs)
-				assert.Nil(t, ha)
-				return
-			}
-			assert.Same(t, others[tc.want], hs)
-			require.NotNil(t, ha)
-			assert.Equal(t, fmt.Sprintf("x%d", tc.want), ha.ID)
-		})
-	}
-}
-
-func TestAddRoute(t *testing.T) {
-	r := NewRouter(nil, Config{})
-	a := addSession(t, r, vpcA, "a", "192.0.2.1:1000")
-	b := addSession(t, r, vpcA, "b", "192.0.2.2:1000")
-	p := netip.MustParsePrefix("10.0.0.0/24")
-	require.NoError(t, r.AddRoute(a.Session, p, "att"))
-	require.NoError(t, r.AddRoute(a.Session, netip.MustParsePrefix("10.0.0.7/24"), "att"), "same masked prefix, same owner")
-	assert.Equal(t, rpc.AlreadyExists, codeOf(r.AddRoute(b.Session, p, "att")))
-	r.RemoveRoute(b.Session, p) // Not the owner: no change.
-	assert.Equal(t, a.Session, r.lookup(vpcA, netip.MustParseAddr("10.0.0.1")))
-	r.RemoveRoute(a.Session, p)
-	assert.Nil(t, r.lookup(vpcA, netip.MustParseAddr("10.0.0.1")))
-	require.NoError(t, r.AddRoute(b.Session, p, "att"))
-	r.removeSession(b.Session)
-	assert.Nil(t, r.lookup(vpcA, netip.MustParseAddr("10.0.0.1")))
-	assert.Equal(t, rpc.FailedPrecondition, codeOf(r.AddRoute(b.Session, p, "att")))
-	// The domain ends with its last session.
-	r.removeSession(a.Session)
-	assert.Empty(t, r.domains)
-}
-
 // TestProjectIsolation puts two projects with a VPC of the same name on one
 // relay. The VPCs also have the same UID, the same network ID and the same
 // addresses: only the project differs. No routes, SPI rows or packets cross.
@@ -555,7 +489,7 @@ func TestProjectIsolation(t *testing.T) {
 			o := sides[other[k]]
 			// Routes: each address resolves in the own project only.
 			for _, a := range []string{"fd00::2", "10.0.1.5"} {
-				assert.Equal(t, s.recv.Session, r.lookup(k, netip.MustParseAddr(a)))
+				assert.Equal(t, s.recv.Session, r.activeOf(k, netip.MustParseAddr(a)).s)
 				_, err := r.resolvePeer(s.snd.Session, &dp.ResolvePeerRequest{Vpc: ref(other[k]), Address: a})
 				assert.Equal(t, rpc.PermissionDenied, codeOf(err))
 			}

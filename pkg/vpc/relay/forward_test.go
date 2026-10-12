@@ -52,6 +52,7 @@ func TestPacketHandler(t *testing.T) {
 	h := newHarness(t, ca)
 	snd := h.mustDial(t, ca.agentCert(t, vpcA, "sender"))
 	rcv := h.mustDial(t, ca.agentCert(t, vpcA, "receiver"))
+	sayHello(t, rcv)
 	res := attach(t, rcv, &dp.AttachRequest{Vpc: ref(vpcA), Name: "receiver"})
 	claims, err := VerifyGrant(res.Grant, h.relayRoots, time.Now())
 	require.NoError(t, err)

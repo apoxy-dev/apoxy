@@ -1,0 +1,410 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+package relay
+
+import (
+	"bytes"
+	"cmp"
+	"crypto/sha256"
+	"encoding/binary"
+	"net/netip"
+	"slices"
+	"sync/atomic"
+	"time"
+
+	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
+	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
+)
+
+// announcerRevision is the first revision with a set of announcers for each
+// prefix: Hello.instance, and the standby list in RouteDelta.
+const announcerRevision = 16
+
+// agentKey names one agent process: the SPIFFE ID, the name from Hello, and the
+// instance from Hello. An agent from before Hello.instance has the instance 0.
+// One agent process can have attachments on more than one relay.
+type agentKey struct {
+	id, name string
+	instance uint64
+}
+
+// agent returns the key of the agent of s. Router.mu must be held.
+func (s *Session) agent() agentKey {
+	return agentKey{id: s.id.ID, name: s.name, instance: s.instance}
+}
+
+// target is where the packets for an address go: a session, and the attachment
+// that has the address. The zero target is no route.
+type target struct {
+	s      *Session
+	origin string // ID of the attachment.
+	// att is the attachment. It is nil for an attachment of another relay.
+	att *Attachment
+}
+
+// announcer is one entry of the route table: an attachment that announces a
+// prefix. The prefix and the attachment ID are the key of the entry. An entry
+// does not change. Each connection of an agent to a relay is its own announcer.
+type announcer struct {
+	target
+	agent agentKey
+	// relay is the name of the relay with the attachment. Each relay must sort
+	// by the same name, so an attachment of this relay has the name of this relay.
+	relay string
+	// attached is the generation at the attach. A later state of the attachment
+	// does not change it, so it tells which attachment of a connection is newer.
+	attached uint64
+	state    dp.AnnouncerState // The lower state is selected first.
+	// hash is a hash of the agent and the prefix. The lower one is selected
+	// first, so each prefix has its own order of the agents.
+	hash [sha256.Size]byte
+	// rank is the order that the agent gives to its own connections. The lower
+	// one is selected first.
+	rank uint32
+}
+
+// newAnnouncer returns the entry of the attachment of t on relay for p. The
+// hash is made here, one time, and not at a lookup.
+func newAnnouncer(t target, relay string, p netip.Prefix, attached uint64, rank uint32, state dp.AnnouncerState) *announcer {
+	e := &announcer{target: t, agent: t.s.agent(), relay: relay, attached: attached, rank: rank, state: state}
+	// A SPIFFE ID and an agent name have no zero byte, so the parts stay apart.
+	h := sha256.New()
+	h.Write([]byte(e.agent.id))
+	h.Write([]byte{0})
+	h.Write([]byte(e.agent.name))
+	h.Write([]byte{0})
+	h.Write(binary.BigEndian.AppendUint64(nil, e.agent.instance))
+	h.Write([]byte(p.String()))
+	h.Sum(e.hash[:0])
+	return e
+}
+
+// relayOf returns the name of the relay that has s. It is empty for a session
+// of this relay with no mesh. Router.mu must be held.
+func (r *Router) relayOf(s *Session) string {
+	if s.home != "" {
+		return s.home
+	}
+	return r.name
+}
+
+// sameConn reports whether e and o are entries of one agent process on one
+// relay: a reconnect to that relay, or two attachments of one session.
+func (e *announcer) sameConn(o *announcer) bool {
+	return e.agent == o.agent && e.relay == o.relay
+}
+
+// newer reports whether e comes in the place of o in the selection, when
+// sameConn is true: the later attach, then the lower attachment ID.
+func (e *announcer) newer(o *announcer) bool {
+	return cmp.Or(cmp.Compare(o.attached, e.attached), cmp.Compare(e.origin, o.origin)) < 0
+}
+
+// selectOrder is the selection of the route table. It returns one entry for
+// each connection of an agent to a relay, the newest one: the active announcer
+// first, then the standby announcers in the order that they become active.
+// The order is the state (normal, draining, suspect), then the lower hash,
+// which selects one agent process. The connections of that agent come in the
+// order of their rank, then of the relay name, then of the attachment ID. The
+// result depends only on the set, and not on the order of entries.
+func selectOrder(entries []*announcer) []*announcer {
+	order := make([]*announcer, 0, len(entries))
+	for _, e := range entries {
+		i := slices.IndexFunc(order, e.sameConn)
+		switch {
+		case i < 0:
+			order = append(order, e)
+		case e.newer(order[i]):
+			order[i] = e
+		}
+	}
+	slices.SortFunc(order, func(a, b *announcer) int {
+		return cmp.Or(
+			cmp.Compare(a.state, b.state),
+			bytes.Compare(a.hash[:], b.hash[:]),
+			cmp.Compare(a.rank, b.rank),
+			cmp.Compare(a.relay, b.relay),
+			cmp.Compare(a.origin, b.origin),
+		)
+	})
+	return order
+}
+
+// routeSet has the announcers of one prefix and the result of the selection.
+// The route table has no empty set. Router.mu guards all but senders.
+type routeSet struct {
+	entries []*announcer // Each entry of the prefix, in no order.
+	order   []*announcer // Result of selectOrder for entries.
+	// local is the first entry of order with a session of this relay, or nil.
+	local *announcer
+	// senders has the sessions of entries, for the source checks with no lock.
+	senders atomic.Pointer[[]*Session]
+}
+
+// active returns the announcer that gets the packets for the prefix, or nil
+// for a set with no entry. Router.mu must be held.
+func (set *routeSet) active() *announcer {
+	if len(set.order) == 0 {
+		return nil
+	}
+	return set.order[0]
+}
+
+// find returns the entry of the attachment origin on s, or nil. Router.mu must
+// be held.
+func (set *routeSet) find(s *Session, origin string) *announcer {
+	for _, e := range set.entries {
+		if e.s == s && e.origin == origin {
+			return e
+		}
+	}
+	return nil
+}
+
+// sends reports whether s can send from the prefix: each announcer can, also a
+// standby one, because traffic from its network can leave through it. It
+// takes no lock.
+func (set *routeSet) sends(s *Session) bool {
+	senders := set.senders.Load()
+	return senders != nil && slices.Contains(*senders, s)
+}
+
+// selectAgain runs the selection after a change of entries. Router.mu must be
+// held for writing.
+func (set *routeSet) selectAgain() {
+	set.order = selectOrder(set.entries)
+	set.local = nil
+	if i := slices.IndexFunc(set.order, func(e *announcer) bool { return e.s.home == "" }); i >= 0 {
+		set.local = set.order[i]
+	}
+	senders := make([]*Session, len(set.entries))
+	for i, e := range set.entries {
+		senders[i] = e.s
+	}
+	set.senders.Store(&senders)
+}
+
+// setOf returns the announcers of the longest route to a, or nil.
+func (d *domain) setOf(a netip.Addr) *routeSet {
+	for _, n := range d.lens {
+		if p, err := a.Prefix(n); err == nil {
+			if set := d.routes[p]; set != nil {
+				return set
+			}
+		}
+	}
+	return nil
+}
+
+// orderOf returns the selection for the exact prefix p, or nil. A nil d has no
+// routes.
+func (d *domain) orderOf(p netip.Prefix) []*announcer {
+	if d == nil || d.routes[p] == nil {
+		return nil
+	}
+	return d.routes[p].order
+}
+
+// activeOf returns the active announcer of the longest route to a as a target,
+// or the zero target.
+func (d *domain) activeOf(a netip.Addr) target {
+	if set := d.setOf(a); set != nil {
+		return set.active().target
+	}
+	return target{}
+}
+
+// addAnnouncer adds the entry e for p to d, and selects again. An entry that d
+// has stays. Router.mu must be held for writing.
+func (r *Router) addAnnouncer(d *domain, p netip.Prefix, e *announcer) {
+	set := d.routes[p]
+	if set == nil {
+		set = &routeSet{}
+		d.routes[p] = set
+		_ = d.fast.Add(p, set) // p is valid and has no route.
+		if !slices.Contains(d.lens, p.Bits()) {
+			d.lens = append(d.lens, p.Bits())
+			slices.SortFunc(d.lens, func(a, b int) int { return cmp.Compare(b, a) })
+		}
+	} else if set.find(e.s, e.origin) != nil {
+		return
+	}
+	was := set.order
+	set.entries = append(set.entries, e)
+	e.s.routes = append(e.s.routes, p)
+	r.selected(d, p, set, was)
+	r.displace(d, p, e)
+}
+
+// AddRoute makes s an announcer of p with the attachment ID origin and no
+// attachment, for a host that has no Attach call.
+func (r *Router) AddRoute(s *Session, p netip.Prefix, origin string) error {
+	p = p.Masked()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if s.closed {
+		return rpc.Errorf(rpc.FailedPrecondition, "session closed")
+	}
+	t := target{s: s, origin: origin}
+	e := newAnnouncer(t, r.relayOf(s), p, r.nextGen(time.Now()), 0, dp.AnnouncerState_ANNOUNCER_STATE_NORMAL)
+	r.addAnnouncer(r.domain(s.id.VPC), p, e)
+	return nil
+}
+
+// removeAnnouncer removes the entry of the attachment origin on s for p from d,
+// and selects again. Router.mu must be held for writing.
+func (r *Router) removeAnnouncer(d *domain, p netip.Prefix, s *Session, origin string) {
+	set := d.routes[p]
+	if set == nil || set.find(s, origin) == nil {
+		return
+	}
+	was := set.order
+	set.entries = slices.DeleteFunc(set.entries, func(e *announcer) bool { return e.s == s && e.origin == origin })
+	if i := slices.Index(s.routes, p); i >= 0 {
+		s.routes = slices.Delete(s.routes, i, i+1)
+	}
+	if len(set.entries) == 0 {
+		delete(d.routes, p)
+		d.fast.Remove(p, set)
+		if !d.usesLen(p.Bits()) {
+			d.lens = slices.DeleteFunc(d.lens, func(n int) bool { return n == p.Bits() })
+		}
+	}
+	r.selected(d, p, set, was)
+	r.release(s)
+	r.dropDomain(s.id.VPC, d)
+}
+
+// removeAnnouncers removes each entry of s from the domain of its VPC.
+// Router.mu must be held for writing.
+func (r *Router) removeAnnouncers(s *Session) {
+	d := r.domains[s.id.VPC]
+	if d == nil {
+		return
+	}
+	for _, p := range slices.Clone(s.routes) {
+		set := d.routes[p]
+		if set == nil {
+			continue
+		}
+		for _, e := range slices.Clone(set.entries) {
+			if e.s == s {
+				r.removeAnnouncer(d, p, s, e.origin)
+			}
+		}
+	}
+}
+
+// selected runs the selection for p after a change of set, whose result was
+// was before. The sessions of d get the change, and the rows to the active
+// announcer before go to the new one. Router.mu must be held for writing.
+func (r *Router) selected(d *domain, p netip.Prefix, set *routeSet, was []*announcer) {
+	set.selectAgain()
+	d.queueRoute(p, was, set.order)
+	r.newEpoch()
+	if len(was) > 0 && was[0] != set.active() {
+		r.moveRows(p, was[0], set.active())
+	}
+}
+
+// moveRows gives the rows to the addresses of p on the session of from, which
+// was the active announcer of p, to the target that their senders reach now.
+// With no announcer of p left, to is nil and a row goes to no other session:
+// the route of a shorter prefix does not take it. Router.mu must be held for
+// writing.
+func (r *Router) moveRows(p netip.Prefix, from, to *announcer) {
+	for w := range from.s.inbound {
+		if !p.Contains(w.dst) {
+			continue
+		}
+		now := r.reach(w.sender, w.dst)
+		switch {
+		case now.s == w.receiver && now.att == w.att:
+			// A longer prefix of the same attachment has the address.
+		case now.s == nil, to == nil && now.s != w.receiver, now.s.home != "" && !r.trunked(w.sender):
+			r.removeRow(w)
+		default:
+			r.move(w, now)
+		}
+	}
+}
+
+// sees returns the announcer that s gets in RouteDelta for a prefix with the
+// selection order, or nil. A session gets no route for a prefix that its own
+// agent announces, and a route to another relay only with meshRoutes.
+// Router.mu must be held.
+func (s *Session) sees(order []*announcer) *announcer {
+	if len(order) == 0 {
+		return nil
+	}
+	own := s.agent()
+	if slices.ContainsFunc(order, func(e *announcer) bool { return e.agent == own }) {
+		return nil
+	}
+	if active := order[0]; active.s.home == "" || s.sync.meshRoutes {
+		return active
+	}
+	return nil
+}
+
+// standby returns the IDs of the standby announcers of order that s can
+// reach, in the order of selection. Router.mu must be held.
+func (s *Session) standby(order []*announcer) []string {
+	var ids []string
+	for i, e := range order {
+		if i == 0 {
+			continue
+		}
+		if e.s.home == "" || s.sync.meshRoutes {
+			ids = append(ids, e.origin)
+		}
+	}
+	return ids
+}
+
+// queueRoute gives the sessions of d the change of the selection for p from
+// was to now. A session at announcerRevision or later also gets a change of
+// only the standby list. Router.mu must be held.
+func (d *domain) queueRoute(p netip.Prefix, was, now []*announcer) {
+	for m := range d.members {
+		old, cur := m.sees(was), m.sees(now)
+		switch {
+		case old != cur:
+			if old != nil {
+				m.queueRoute(route{p, old.origin}, false)
+			}
+			if cur != nil {
+				m.queueRoute(route{p, cur.origin}, true)
+			}
+		case cur != nil && m.version.GetRevision() >= announcerRevision && !slices.Equal(m.standby(was), m.standby(now)):
+			// The route stays, and its standby list is new.
+			m.sync.standby[p] = struct{}{}
+			m.notify()
+		}
+	}
+}
+
+// queueRoutes puts each route of d that s gets in the sync queue of s, in the
+// place of the queue that s has. Call it only before the first RouteDelta of
+// s. Router.mu must be held.
+func (d *domain) queueRoutes(s *Session) {
+	clear(s.sync.routes)
+	clear(s.sync.standby)
+	for p, set := range d.routes {
+		if e := s.sees(set.order); e != nil {
+			s.sync.routes[route{p, e.origin}] = true
+		}
+	}
+	s.notify()
+}
+
+// announces reports whether the attachment origin on the member home is an
+// announcer of the longest route to a in vpc. Router.mu must be held.
+func (r *Router) announces(vpc VPCKey, a netip.Addr, home, origin string) bool {
+	d := r.domains[vpc]
+	if d == nil {
+		return false
+	}
+	set := d.setOf(a)
+	return set != nil && slices.ContainsFunc(set.entries, func(e *announcer) bool { return e.s.home == home && e.origin == origin })
+}

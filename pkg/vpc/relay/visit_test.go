@@ -106,6 +106,8 @@ func newVisitRig(t *testing.T, cfg MeshConfig, certs *visitCerts, mode dp.Mode) 
 	g.p = g.bridgeEnd(dp.Mode_MODE_PSP, "p", brPSocket, brPNet)
 	g.giveSAs(g.p)
 	g.link(dp.Revision)
+	// The entry of the home attachment has the agent name of the visitor.
+	g.announce(atGen(liveEntry("x", server, "base", inTag, prefixA, brServerNet4), 11))
 	require.NoError(t, g.tk.rowsFrom(g.sess))
 	g.announce(atGen(liveEntry("ph", phone, "base", phoneTag, phoneNet), 10))
 	g.v = g.guest(mode, server, visitSocket)
@@ -795,9 +797,10 @@ func TestVisitPaths(t *testing.T) {
 			send: func(g *visitRig) func() { return g.frame(g.v, brServer4, brQ) },
 		},
 		{
+			// Only an announcer of a prefix or its visitor can send from it.
 			name:   "data frame of the visitor to an agent of this relay",
 			send:   func(g *visitRig) func() { return g.data(g.v, brServer, brQ) },
-			before: "q", during: "q", after: "q",
+			during: "q",
 		},
 		{
 			name: "data frame of the visitor when the home relay has no entry", setup: noEntry,
@@ -816,12 +819,6 @@ func TestVisitPaths(t *testing.T) {
 			name:   "data frame of an agent of this relay to that address",
 			send:   func(g *visitRig) func() { return g.data(g.q, brQ, phoneAddr) },
 			before: "relay-a", during: "relay-a", after: "relay-a",
-		},
-		{
-			// The session reaches the other visitor only while it is no visitor itself.
-			name: "data frame of the visitor to another visitor", setup: second,
-			send:   func(g *visitRig) func() { return g.data(g.v, brServer, phoneAddr) },
-			before: "w", after: "w",
 		},
 		{
 			name: "PSP packet to the relay of a PSP-mode visitor", psp: true, setup: noEntry,
@@ -1113,9 +1110,10 @@ func TestVisitEnd(t *testing.T) {
 			frame: "o",
 		},
 		{
-			name:  "attachment of the agent on this relay takes the prefix",
+			// The visit ends. The home attachment stays the active announcer.
+			name:  "attachment of the agent on this relay announces the prefix",
 			step:  func(_ *testing.T, g *visitRig) { g.local("server", spareSocket, prefixA) },
-			frame: "server",
+			frame: "relay-a",
 		},
 		{
 			name: "presence gives the prefix to another agent",

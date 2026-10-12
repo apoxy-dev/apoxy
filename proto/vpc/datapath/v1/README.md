@@ -454,8 +454,8 @@ Addresses and prefixes are text (`fd61::1`, `10.0.0.0/8`, `host:port`).
 
 | Method          | Kind  | Messages |
 |-----------------|-------|----------|
-| `Session`       | bidi  | Agent: `Hello{mode, fallback_reason, spare, version, name, local_routes_only}`, then `Ack{rev}` and `Status` (ICV failures; the first one after `Config` also has the time to connect). Relay: `Welcome` (reflexive address, lane port limit, version), `Config`, in PSP mode a rekey with relay SAs, then `RouteDelta{rev}`, `NoRoute`, rekey (`KeysRequest`), `Config`, `Drain`, and in PSP mode `RxReport` (only the last one waits). |
-| `Attach`        | unary | `AttachRequest{vpc, name, labels, routes}` -> `AttachResponse{attachment_id, grant}` |
+| `Session`       | bidi  | Agent: `Hello{mode, fallback_reason, spare, version, name, local_routes_only, instance}`, then `Ack{rev}` and `Status` (ICV failures; the first one after `Config` also has the time to connect). Relay: `Welcome` (reflexive address, lane port limit, version), `Config`, in PSP mode a rekey with relay SAs, then `RouteDelta{rev}`, `NoRoute`, rekey (`KeysRequest`), `Config`, `Drain`, and in PSP mode `RxReport` (only the last one waits). |
+| `Attach`        | unary | `AttachRequest{vpc, name, labels, routes, rank}` -> `AttachResponse{attachment_id, grant, routes}`. `routes` has one status for each advertised route. Errors: `FailedPrecondition` (the session sent no `Hello`), `AlreadyExists` (another session of this relay has the address). |
 | `Rekey`         | unary | `KeysRequest` -> `KeysResponse`: SAs for traffic from the relay to the agent. Errors: `FailedPrecondition` (no `Session` call in PSP mode), `InvalidArgument` (an SA VNI is not the network ID). |
 | `ResolvePeer`   | unary | `{vpc, address}` -> `{reach: local, trunk or visit; p2p; subject; attachment_ids; home_relay}`. Errors: `NotFound`, `PermissionDenied`. |
 | `RegisterSPI`   | unary | `{vpc, destination, spis, expires_in, lanes, sa_lanes}` -> `Empty`. `lanes` gives the source of each SPI: 0 is the session address, i is port i of `RegisterLanes`. `sa_lanes` gives the SA lane of each SPI at the receiver. Errors: `AlreadyExists` (the caller has an SPI in a row for another destination, another session on its socket has it, or the relay of the receiver has it in use: see "Trunk"). |
@@ -476,20 +476,59 @@ other relays refuse an entry with more prefixes (see "Mesh"). A relay with no
 mesh has no such limit.
 
 Many agents can have one SPIFFE ID. `Hello.name` is the name of the base
-attachment of the agent, and it tells the agents of one SPIFFE ID apart. Two
-sessions are of one agent when they have one SPIFFE ID and one name. A session
-with no name is of the same agent as each session of its SPIFFE ID. The relay
-uses this rule in three places:
+attachment of the agent, and `Hello.instance` is a random number that the
+agent process makes when it starts. One agent process is one SPIFFE ID, one
+name and one instance. An agent below revision 16 sends no instance, which
+reads as 0. The relay keeps these fields with each attachment, so it refuses
+an `Attach` on a session that sent no `Hello` (`FailedPrecondition`).
 
-- An advertised route moves to the newest attachment of the same agent that
-  lists it. An `Attach` with an advertised route of another agent gets
-  `AlreadyExists`.
-- A session gets no routes of its own agent in `RouteDelta`. It gets the
-  routes of the other agents of its SPIFFE ID.
+Each prefix has a set of announcers: each attachment that lists the prefix as
+an address or as an advertised route, on this relay or on another relay (see
+"Mesh"). Each connection of an agent to a relay is its own announcer. An
+`Attach` does not fail because another agent announces the same advertised
+route. `AttachResponse.routes` has one status for each advertised route, and
+each status is `ROUTE_RESULT_ACCEPTED` at revision 16. An address that the
+relay assigns has one attachment on a relay: an `Attach` gets `AlreadyExists`
+when another session of the same relay has the address.
+
+One announcer of a prefix is active, and it gets the packets for the prefix.
+The others are standby. Each relay selects with the same rules, and the rules
+use only the set, not the order in which the announcers came. Thus all relays
+with the same set select the same announcer. The order is:
+
+1. The state: `NORMAL`, then `DRAINING`, then `SUSPECT`, then a state of a
+   later revision. A relay at revision 16 gives each attachment the state
+   `NORMAL`.
+2. The agent process with the lowest SHA-256 hash of these bytes: the SPIFFE
+   ID, a zero byte, the name, a zero byte, the instance as 8 bytes (big
+   endian), and the prefix as text. Each prefix has its own order of agents.
+3. For the connections of one agent process: the lower `AttachRequest.rank`,
+   then the lower relay name, then the lower attachment ID. The agent gives
+   the rank, and the default is 0.
+
+When one agent process has two attachments with the prefix on one relay, only
+the one with the later attach is in the order (then the one with the lower
+attachment ID). This is the case after a reconnect to that relay. The relay
+compares the generation at the attach, not the generation of a later state
+change. The older attachment stays in the set, and it comes in the order
+again when the newer one ends.
+
+`RouteDelta` gives the active announcer of a prefix as the origin of its
+route. A session at revision 16 or later also gets `Route.standby`: the
+attachment IDs of the standby announcers that it can reach, in the order in
+which they become active. When the active announcer changes, the relay
+removes the route with the old origin and adds the route with the new one.
+When only the standby list changes, a session at revision 16 or later gets
+the route again as an add.
+
+- A session gets no route for a prefix that its own agent process announces.
+  It gets the routes of the other agents of its SPIFFE ID.
 - `ResolvePeer` gives the attachments of the session that has the address, so
   that the caller knows if it has a peer session with that agent.
 
-All sessions of one SPIFFE ID can send from the routes of that SPIFFE ID.
+Each announcer of a prefix can send from it, also a standby one, because
+traffic from the network behind it can leave through each of its connections.
+A session that is no announcer of a prefix cannot send from it.
 
 `ResolvePeer` tells how the relay reaches an address. Permit comes first: a
 caller that Permit denies gets `PermissionDenied`, and does not learn if the
@@ -555,10 +594,11 @@ The visited relay accepts the call only if all of these are true:
 - The session has a `Session` call with `local_routes_only`, and it has and
   had no attachment (`FailedPrecondition`). A visitor reaches no other relay,
   so it must not get the routes of other relays.
-- The route of exactly that prefix is not of an attachment of the visited
-  relay and not of another agent, and no other agent visits with the prefix
-  (`AlreadyExists`). A grant lives as long as the agent cert, so it can be
-  older than the owner that the address has now.
+- No announcer of exactly that prefix is an attachment of the visited relay
+  or of another agent (another SPIFFE ID or another name), and no other agent
+  visits with the prefix (`AlreadyExists`). A grant lives as long as the
+  agent cert, so it can be older than the attachment that the address has
+  now.
 - The agent has fewer than 2 visitor sessions on the relay in the VPC
   (`ResourceExhausted`). A relay counts only its own sessions, so an agent
   can have 2 on each relay.
@@ -809,7 +849,14 @@ at revision 3 gets no `Presence` call, and its session stays open.
 
 An entry has the VPC, the attachment ID, the prefixes (the addresses and the
 advertised routes), the SPIFFE ID and the `Hello.name` of the agent, and the
-sender tag. The sending relay gives the sender tag, a number from 1 to
+sender tag. From revision 16 it also has the `Hello.instance` of the agent,
+the `rank` of the attach, `state`, and `attached`: the generation of the
+first entry of the attachment. A later entry of the attachment with a new
+state has a higher generation and the same `attached`. The state is a fact of
+the sending relay about the attachment. No entry tells which announcer is
+active: each relay selects that. An entry with none of these fields, as a
+relay below revision 16 sends it, reads as instance 0, rank 0, state `NORMAL`
+and `attached` equal to the generation. The sending relay gives the sender tag, a number from 1 to
 2^24 - 1, to the session of the agent at the first attachment of the session.
 All attachments of one session have the same tag, and no other session of the
 sending relay has it at the same time. The session keeps its tag until it
@@ -848,20 +895,24 @@ A relay makes routes from the entries that it keeps. An entry gives a route
 for each of its prefixes in its VPC, with the attachment ID as the origin,
 when two conditions are true: an agent of the VPC has sent `Hello` to this
 relay, and the network ID of the entry is the network ID of the VPC on this
-relay. An entry with another network ID gets one warning and no route. The
-rules for one prefix are:
+relay. An entry with another network ID gets one warning and no route. Each
+such entry is an announcer of each of its prefixes, together with the
+attachments of this relay, and the selection of "Relay" gives the active
+announcer and the order of the standby ones. An attachment of this relay has
+no advantage in the selection. When the active announcer ends, the next one in
+the order gets the prefix.
 
-- An attachment of this relay keeps the prefix, and it takes the prefix from
-  an entry.
-- When more than one entry lists the prefix, the entry with the highest
-  generation gets it. For equal generations, the entry of the relay with the
-  lower name gets it, then the entry with the lower attachment ID.
-- When the attachment that has the prefix ends, the next entry gets it.
+Two relays can have different sets for a short time, and then they can select
+different announcers. A relay thus gives a packet that comes from another
+relay to its own announcer of the prefix, the first one in the order, also
+when its active announcer is on another relay.
 
 The relay sends these routes in `RouteDelta`, as it sends its own, to each
 session at revision 6 or later whose `Hello` has no `local_routes_only`. A
-session gets no route of an attachment of its own agent on another relay: the
-rule of `Hello.name` applies to the SPIFFE ID and the agent name of the entry.
+session with `local_routes_only` gets the route of a prefix only while the
+active announcer is on this relay. A session gets no route for a prefix that
+an attachment of its own agent process announces on another relay: the SPIFFE
+ID, the agent name and the instance of the entry tell.
 The route goes away with its entry: at a `gone` entry, and when the relay
 drops the entry for one of the reasons above. The route of an entry stays
 while the relay of the entry has no session. A peer frame for the route then
@@ -1018,6 +1069,7 @@ only for logs and metrics. On a mesh session, `MeshOpenRequest` and
 | 13 | The PSP packet of an agent between two relays, with no change and with no trunk SA. One SA lane for a trunk. The trunk formats of the revisions 5, 8 and 9 end here, and the duties of a relay in those lines apply only between relays at revision 13 or later. | When `RegisterSPI` returns `AlreadyExists` for rows that it has, closes the peer session, so that the next peer session has new SAs. | No duty. | Has a trunk only with a relay at revision 13 or later: makes no `TrunkKeys` call and no `SPIRows` call to an older relay, refuses those calls of it with `FailedPrecondition`, sends it no packet of a sender, answers no `REACH_TRUNK` for it, and keeps that session. Sends the PSP packet of a row to another relay with no change, and seals only clear inner packets and its own messages with the trunk SA. For a packet from the address of a member: opens it when a trunk SA for that member has its SPI, sends it with no change to a session of its own when a row of that member has its SPI, and drops it in each other case. Keeps each SPI in one use for the packets to a member: refuses `RegisterSPI` with `AlreadyExists`, ends a row that goes to a member with its SPI in use, and returns a trunk SA with the SPI of a row in `refused_spis`. |
 | 14 | `Mesh.Snapshot`. | No duty. | No duty. | Answers `Snapshot` on the open mesh session of a member with the snapshot of its host, in parts of at most 1 MiB with `total_size` in the first part. Answers `NotFound` when its host gives no snapshot, and `ResourceExhausted` for a snapshot above 64 MiB. Calls `Snapshot` only when its host asks for a snapshot, and only on a member at revision 14 or later, with 10 s for each member. Takes no snapshot with a `total_size` of 0 or above 64 MiB, or with a number of bytes that is not `total_size`. |
 | 15 | More than one `Visit` call on a visitor session. `Detach` on a visitor session. | After the first `Visit` call on a relay at revision 15 or later, makes one `Visit` call for each address prefix of each extra attachment of its attached session, with the grant of that attachment, and sends those grants in `Peer.Open` and in `Grants` on the visitor session. Does the same for an attachment that it adds during the visit. Calls `Detach` on the visitor session with the ID of an attachment that it removes during the visit. On a relay below revision 15, makes one `Visit` call, so the peers of the visit reach only the address of the first attachment. | No duty. | Accepts a `Visit` call on a visitor session when the grant is of the same home relay: the session gets one more visit prefix, or the new grant for a prefix that it has. Keeps at most 64 visit prefixes on a session, and answers `ResourceExhausted` above that. The limit of 2 visitor sessions of an agent counts sessions, not prefixes. Ends each visit prefix alone: at the end of its grant, when the address gets another owner, and on a `Detach` call of the visitor with the attachment ID of the grant. A relay below revision 15 answers the second `Visit` call with `FailedPrecondition` and such a `Detach` call with `NotFound`. |
+| 16 | A set of announcers for each prefix, with one selection. `Hello.instance`, `AttachRequest.rank`, `AttachResponse.routes`, `Route.standby`, and `instance`, `rank`, `state` and `attached` in a presence entry. | Sends its instance in `Hello`, and sends `Hello` before `Attach`. Accepts the statuses in `AttachResponse` and the standby list of a route. When the active announcer of a prefix changes, gets a remove and an add, and closes the peer session to the old announcer, as for each removed route. | No duty. | Keeps each attachment that lists a prefix as an announcer of it, and selects the active one with the rules of "Relay". Does not refuse an `Attach` because another agent announces the route. Refuses an `Attach` before `Hello` with `FailedPrecondition`. Lets each announcer of a prefix send from it, and no other session. Sends the standby list only to a session at revision 16 or later: an older agent gets one announcer for each prefix. Reads the entry of a relay below revision 16 as instance 0, rank 0 and state `NORMAL`. A relay below revision 16 keeps one attachment for each prefix: it refuses the `Attach` of a second agent with `AlreadyExists`, and it prefers its own attachment. In a mesh with both kinds of relay, two relays can thus select different announcers for a prefix. Each relay gives a packet from another relay to its own announcer of the prefix, so such a packet does not drop. |
 
 ### Minimum revision
 

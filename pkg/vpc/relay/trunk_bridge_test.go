@@ -457,12 +457,12 @@ func TestTrunkBridgeDeliver(t *testing.T) {
 		},
 		{name: "source address of an agent of this relay", src: brP, drop: "trunk_source"},
 		{
-			// An attachment of this relay keeps the route of its prefix.
+			// Each announcer of a prefix can send from it.
 			name: "source address that the entry lists and an agent of this relay has",
 			setup: func(_ *testing.T, g *rowRig, _, _ *bridgeEnd) {
 				g.announce(atGen(liveEntry("x", server, "", inTag, prefixA, brPNet), 11))
 			},
-			src: brP, drop: "trunk_source",
+			src: brP,
 		},
 		{
 			// A tag and the ID of an attachment are of one relay only.

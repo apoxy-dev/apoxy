@@ -117,8 +117,11 @@ type Router struct {
 	early  earlyList
 	bridge atomic.Pointer[bridge]
 	trunk  atomic.Pointer[trunk] // Trunk keys of the mesh members. Nil with no mesh.
-	peers  peerTable             // Counters of the packets to and from each mesh member.
-	onEnd  atomic.Pointer[func(AttachmentStats)]
+	// name is the relay name of this relay in the mesh. It is empty with no
+	// mesh. Router.mu guards it.
+	name  string
+	peers peerTable // Counters of the packets to and from each mesh member.
+	onEnd atomic.Pointer[func(AttachmentStats)]
 	// epoch goes up at each change of a route, of Permit or of the attachments
 	// of a member. The rows of the members do their checks again then.
 	epoch atomic.Uint64
@@ -211,11 +214,12 @@ type Session struct {
 	laneSeen    uint32            // Bit i-1 is set after a keepalive from lanes[i-1].
 	rows        map[uint32]*row   // Rows of this sender.
 	inbound     map[*row]struct{} // Rows of senders to this session.
-	routes      []netip.Prefix
+	routes      []netip.Prefix    // Prefix of each entry of s in the route table.
 	attachments []*Attachment
 	closed      bool
 	version     *dp.Version // Version of the agent, from Hello. Nil is revision 0.
 	name        string      // Name of the agent, from Hello. Empty before revision 2.
+	instance    uint64      // Instance of the agent process, from Hello. Zero before revision 16.
 	tag         uint32      // Trunk tag, from the first attach to the removal. Zero is no tag.
 	home        string      // Relay name of the mesh member that has the session. Empty for a session of this relay.
 	sync        syncState
@@ -240,13 +244,6 @@ type Session struct {
 // Identity returns the identity of s.
 func (s *Session) Identity() Identity { return s.id }
 
-// sameAgent reports whether s and o are sessions of one agent. Many agents
-// can have one subject, each with its own name. A session with no name is of
-// the same agent as each session of its subject. Router.mu must be held.
-func (s *Session) sameAgent(o *Session) bool {
-	return s.id.ID == o.id.ID && (s.name == o.name || s.name == "" || o.name == "")
-}
-
 // row forwards the packets of one sender lane (SPI) to one receiver.
 type row struct {
 	sender, receiver *Session
@@ -266,18 +263,22 @@ type row struct {
 	packets, bytes, dropMeter, icvFailures atomic.Uint64
 }
 
-// route is one prefix in a domain and the attachment that advertises it.
+// route is one prefix in a domain and the attachment that a session gets as
+// its origin in RouteDelta: the active announcer of the prefix.
 type route struct {
 	prefix netip.Prefix
 	origin string
 }
 
 type domain struct {
-	routes  map[netip.Prefix]owner
-	lens    []int                   // Prefix lengths in use, longest first.
-	fast    engine.Routes[*Session] // The same routes, for source checks with no lock.
+	// routes is the route table: the announcers of each exact prefix. The
+	// attachments of this relay and those of other relays are entries of one set.
+	routes  map[netip.Prefix]*routeSet
+	lens    []int                    // Prefix lengths in use, longest first.
+	fast    engine.Routes[*routeSet] // The same sets, for source checks with no lock.
 	members map[*Session]struct{}
-	// claims has the attachments of other relays that list each prefix.
+	// claims has the attachments of other relays that list each prefix, also
+	// those that are not in routes.
 	claims map[netip.Prefix][]*presenceEntry
 	// visits has the visitor sessions: they are not in routes.
 	visits visits
@@ -286,31 +287,6 @@ type domain struct {
 	networkID uint32
 	known     bool
 }
-
-type owner struct {
-	s      *Session
-	origin string
-	// advertised is set for a prefix from Attachment.Routes. The newest live
-	// attachment of the agent that lists it owns it.
-	advertised bool
-	// att is the attachment of the prefix. It is nil for a route from AddRoute.
-	att *Attachment
-}
-
-// ownerOf returns the owner of the longest route to a, or the zero owner.
-func (d *domain) ownerOf(a netip.Addr) owner {
-	for _, n := range d.lens {
-		if p, err := a.Prefix(n); err == nil {
-			if o, ok := d.routes[p]; ok {
-				return o
-			}
-		}
-	}
-	return owner{}
-}
-
-// lookup returns the session of the longest route to a.
-func (d *domain) lookup(a netip.Addr) *Session { return d.ownerOf(a).s }
 
 func (d *domain) usesLen(n int) bool {
 	for p := range d.routes {
@@ -363,7 +339,11 @@ func newSession(id Identity, remote func() netip.AddrPort) *Session {
 		wake:         make(chan struct{}, 1),
 		rows:         map[uint32]*row{},
 		inbound:      map[*row]struct{}{},
-		sync:         syncState{routes: map[route]bool{}, noRoute: map[netip.Addr]time.Time{}},
+		sync: syncState{
+			routes:  map[route]bool{},
+			standby: map[netip.Prefix]struct{}{},
+			noRoute: map[netip.Addr]time.Time{},
+		},
 	}
 }
 
@@ -383,17 +363,14 @@ func (r *Router) addSession(s *Session, now time.Time) {
 	r.addProber(s)
 	d := r.domain(s.id.VPC)
 	d.members[s] = struct{}{}
-	// All sessions of the subject can send from the routes of the subject.
 	s.sources = func(a netip.Addr) bool {
-		if o, ok := d.fast.Lookup(a); ok && (o == s || o.id.ID == s.id.ID) {
+		if set, ok := d.fast.Lookup(a); ok && set.sends(s) {
 			return true
 		}
 		// A visitor sends from the prefix of its visit, which is not its route.
 		return s.visit.Load().of(a) != nil
 	}
-	for p, o := range d.routes {
-		s.queueRoute(route{p, o.origin}, o.s, true)
-	}
+	d.queueRoutes(s)
 }
 
 func (r *Router) removeSession(s *Session) {
@@ -405,10 +382,8 @@ func (r *Router) removeSession(s *Session) {
 	s.closed = true
 	r.markXDP(s)
 	r.endVisit(s, "session closed", each)
-	// The routes go first: a route that moves to another session takes its rows.
-	for _, p := range slices.Clone(s.routes) {
-		r.dropRoute(s, p)
-	}
+	// The entries go first: a prefix that gets another active announcer takes its rows.
+	r.removeAnnouncers(s)
 	// The attachments stay in s for their last counters, but they are gone.
 	for _, a := range s.attachments {
 		r.withdraw(a)
@@ -447,7 +422,7 @@ func (r *Router) domain(vpc VPCKey) *domain {
 	d := r.domains[vpc]
 	if d == nil {
 		d = &domain{
-			routes:  map[netip.Prefix]owner{},
+			routes:  map[netip.Prefix]*routeSet{},
 			members: map[*Session]struct{}{},
 			claims:  map[netip.Prefix][]*presenceEntry{},
 		}
@@ -544,168 +519,26 @@ func (r *Router) Addr(s *Session) netip.AddrPort {
 	return s.addr
 }
 
-// AddRoute routes prefix p in the VPC of s to s. origin is the attachment
-// that advertises p. The other sessions in the VPC get the route in Sync.
-func (r *Router) AddRoute(s *Session, p netip.Prefix, origin string) error {
-	if !p.IsValid() {
-		return rpc.Errorf(rpc.InvalidArgument, "prefix not valid")
-	}
-	p = p.Masked()
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if s.closed {
-		return rpc.Errorf(rpc.FailedPrecondition, "session closed")
-	}
-	d := r.domain(s.id.VPC)
-	// A session of this relay takes p from a session of its agent on another relay.
-	if o, ok := d.routes[p]; ok && (o.s.home == "" || !o.s.sameAgent(s)) {
-		if o.s == s {
-			return nil
-		}
-		return rpc.Errorf(rpc.AlreadyExists, "route %s has another owner", p)
-	}
-	r.setOwner(d, p, owner{s: s, origin: origin})
-	return nil
-}
-
-// setOwner routes the valid prefix p to o, and moves the rows to p from the
-// owner before. Router.mu must be held.
-func (r *Router) setOwner(d *domain, p netip.Prefix, o owner) {
-	old, had := d.routes[p]
-	if had {
-		// Lookups with no lock do not find p between this Remove and the Add.
-		d.fast.Remove(p, old.s)
-		old.s.routes = slices.DeleteFunc(old.s.routes, func(q netip.Prefix) bool { return q == p })
-		d.queueRoute(route{p, old.origin}, old.s, false)
-	}
-	_ = d.fast.Add(p, o.s) // p is valid and has no route now.
-	d.routes[p] = o
-	if !slices.Contains(d.lens, p.Bits()) {
-		d.lens = append(d.lens, p.Bits())
-		slices.SortFunc(d.lens, func(a, b int) int { return cmp.Compare(b, a) })
-	}
-	o.s.routes = append(o.s.routes, p)
-	d.queueRoute(route{p, o.origin}, o.s, true)
-	r.newEpoch()
-	r.displace(d, p, o.s)
-	if had {
-		// The rows to p go to the new session, or to its attachment.
-		for w := range old.s.inbound {
-			if to := r.ownerOf(w.vpc, w.dst); to.s == o.s && (w.receiver != to.s || w.att != to.att) {
-				r.move(w, to)
-			}
-		}
-		r.release(old.s)
-	}
-}
-
-// dropRoute removes the route p of s. An advertised route goes to the newest
-// live attachment of the agent that lists it, if there is one.
-func (r *Router) dropRoute(s *Session, p netip.Prefix) {
-	if d := r.domains[s.id.VPC]; d != nil {
-		if o := d.routes[p]; o.s == s && o.advertised {
-			if hs, ha := d.heir(s, p); hs != nil {
-				r.setOwner(d, p, owner{hs, ha.ID, true, ha})
-				return
-			}
-		}
-	}
-	r.deleteRoute(s, p)
-	s.routes = slices.DeleteFunc(s.routes, func(q netip.Prefix) bool { return q == p })
-}
-
-// heir returns the newest attachment that lists the route p, on an open
-// session of the agent of s.
-func (d *domain) heir(s *Session, p netip.Prefix) (*Session, *Attachment) {
-	var hs *Session
-	var ha *Attachment
-	for m := range d.members {
-		if m.closed || !m.sameAgent(s) {
-			continue
-		}
-		for _, a := range m.attachments {
-			if (ha == nil || a.seq > ha.seq) && slices.Contains(a.Routes, p) {
-				hs, ha = m, a
-			}
-		}
-	}
-	return hs, ha
-}
-
-// queueRoute gives a change of the route rt of owner to the sessions of d.
-func (d *domain) queueRoute(rt route, owner *Session, add bool) {
-	for m := range d.members {
-		m.queueRoute(rt, owner, add)
-	}
-}
-
-// RemoveRoute removes the route p of s and the rows that it carried.
-func (r *Router) RemoveRoute(s *Session, p netip.Prefix) {
-	p = p.Masked()
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if !slices.Contains(s.routes, p) {
-		return
-	}
-	r.deleteRoute(s, p)
-	s.routes = slices.DeleteFunc(s.routes, func(q netip.Prefix) bool { return q == p })
-	r.dropInbound(s)
-}
-
-// dropInbound removes the rows to s that s has no route for. A row whose
-// route has another attachment of s now goes to that attachment. Router.mu
-// must be held.
-func (r *Router) dropInbound(s *Session) {
-	for w := range s.inbound {
-		if to := r.ownerOf(w.vpc, w.dst); to.s != s {
-			r.removeRow(w)
-		} else if to.att != w.att {
-			r.retarget(w, to)
-		}
-	}
-}
-
-func (r *Router) deleteRoute(s *Session, p netip.Prefix) {
-	d := r.domains[s.id.VPC]
-	if d == nil {
-		return
-	}
-	o, ok := d.routes[p]
-	if !ok || o.s != s {
-		return
-	}
-	delete(d.routes, p)
-	d.fast.Remove(p, s)
-	r.newEpoch()
-	if !d.usesLen(p.Bits()) {
-		d.lens = slices.DeleteFunc(d.lens, func(n int) bool { return n == p.Bits() })
-	}
-	d.queueRoute(route{p, o.origin}, s, false)
-	if s.home == "" {
-		// An attachment of another relay that lists p gets it now.
-		r.elect(d, p)
-	}
-	r.dropDomain(s.id.VPC, d)
-}
-
-func (r *Router) lookup(vpc VPCKey, a netip.Addr) *Session { return r.ownerOf(vpc, a).s }
-
-// ownerOf returns the owner of the longest route to a in vpc, or the zero
-// owner. Router.mu must be held.
-func (r *Router) ownerOf(vpc VPCKey, a netip.Addr) owner {
+// activeOf returns the active announcer of the longest route to a in vpc as a
+// target, or the zero target. Router.mu must be held.
+func (r *Router) activeOf(vpc VPCKey, a netip.Addr) target {
 	if d := r.domains[vpc]; d != nil {
-		return d.ownerOf(a)
+		return d.activeOf(a)
 	}
-	return owner{}
+	return target{}
 }
 
-// localOwner is ownerOf for the sessions of this relay, for the paths that send
-// nothing to another relay. Router.mu must be held.
-func (r *Router) localOwner(vpc VPCKey, a netip.Addr) owner {
-	if o := r.ownerOf(vpc, a); o.s != nil && o.s.home == "" {
-		return o
+// localOf returns the first announcer of the longest route to a, in the order
+// of selection, that has a session of this relay. It is for the packets from
+// another relay, which go to no other relay: the two relays can select
+// different announcers for a short time. Router.mu must be held.
+func (r *Router) localOf(vpc VPCKey, a netip.Addr) target {
+	if d := r.domains[vpc]; d != nil {
+		if set := d.setOf(a); set != nil && set.local != nil {
+			return set.local.target
+		}
 	}
-	return owner{}
+	return target{}
 }
 
 // permitted returns the session that src reaches dst through, if Permit allows.

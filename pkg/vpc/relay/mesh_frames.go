@@ -100,22 +100,21 @@ func (p *presence) receiver(r *Router, s *MeshSession, b []byte) (*Session, drop
 		return nil, dropMeshPermit
 	}
 	// The frame came from another relay, so it goes to no other relay.
-	if to := r.localOwner(from.vpc, dst).s; to != nil {
+	if to := r.localOf(from.vpc, dst).s; to != nil {
 		return to, 0
 	}
 	return nil, dropMeshNotLocal
 }
 
-// sender returns the entry with tag from the Presence call of s that has the
-// route of src, or the reason that there is none. Router.mu must be held.
+// sender returns the entry with tag from the Presence call of s that is an
+// announcer of the route of src, or the reason that there is none. Router.mu must be held.
 func (p *presence) sender(r *Router, s *MeshSession, tag uint32, src netip.Addr) (*presenceEntry, dropReason) {
 	// The entries that the relay keeps of a session that ended give no sender.
 	if s.Context().Err() != nil {
 		return nil, dropMeshOldSession
 	}
 	return p.tagged(s, tag, dropMeshSource, func(e *presenceEntry) bool {
-		o := r.ownerOf(e.vpc, src)
-		return o.s != nil && o.s.home == s.name && o.origin == e.id
+		return r.announces(e.vpc, src, s.name, e.id)
 	})
 }
 

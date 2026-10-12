@@ -470,6 +470,13 @@ func openMode(t *testing.T, a agent, mode dp.Mode) (syncStream, *dp.Welcome, *dp
 	return st, w.GetWelcome(), c.GetConfig(), k.GetRekey()
 }
 
+// sayHello starts the Session call of a in QUIC mode, for a test that needs
+// only the Hello that an Attach call needs.
+func sayHello(t *testing.T, a agent) {
+	t.Helper()
+	openMode(t, a, dp.Mode_MODE_QUIC)
+}
+
 // recv returns the next message of st within 5 s. It skips a RouteDelta with
 // no routes, such as the first one in a VPC with no routes.
 func recv(t *testing.T, st syncStream) *dp.SessionResponse {

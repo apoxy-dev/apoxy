@@ -253,7 +253,7 @@ func (r *Router) check(in *inRows, w *inRow) *inHop {
 		h.why = dropTrunkPermit
 	default:
 		// The packet came from a member, so it goes to no other member.
-		if o := r.localOwner(w.vpc, w.dst); o.s != nil {
+		if o := r.localOf(w.vpc, w.dst); o.s != nil {
 			h.to, h.att = o.s, o.att
 		} else {
 			h.why = dropTrunkNotLocal

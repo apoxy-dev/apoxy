@@ -117,10 +117,9 @@ func (r *Router) hopIn(home string, sess *MeshSession, tag uint32, src netip.Add
 		// The member did not get the SA of the packet on a session.
 		return h, dropTrunkSender
 	}
-	// The entry of the sender has the route of the inner source, as for a peer frame.
+	// The entry of the sender is an announcer of the route of the inner source, as for a peer frame.
 	from, why := r.trunk.Load().m.pres.tagged(sess, tag, dropTrunkSource, func(e *presenceEntry) bool {
-		o := r.ownerOf(e.vpc, src)
-		return o.s != nil && o.s.home == home && o.origin == e.id
+		return r.announces(e.vpc, src, home, e.id)
 	})
 	switch {
 	case from == nil && why == dropTrunkSource:
@@ -131,7 +130,7 @@ func (r *Router) hopIn(home string, sess *MeshSession, tag uint32, src netip.Add
 		return h, dropTrunkPermit
 	}
 	// The packet came from another relay, so it goes to no other relay.
-	to := r.localOwner(from.vpc, dst)
+	to := r.localOf(from.vpc, dst)
 	if to.s == nil {
 		return h, dropTrunkNotLocal
 	}

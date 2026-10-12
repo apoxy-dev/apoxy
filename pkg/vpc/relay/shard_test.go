@@ -136,15 +136,6 @@ func TestShardJoinRefused(t *testing.T) {
 			code: rpc.FailedPrecondition,
 		},
 		{
-			name: "connection has routes",
-			prep: func(t *testing.T, w *shardWorld) (agent, string, uint32) {
-				a := w.dial(t, w.cert)
-				attach(t, a, &dp.AttachRequest{Vpc: ref(vpcA), Name: "laptop"})
-				return a, w.att, 1
-			},
-			code: rpc.FailedPrecondition,
-		},
-		{
 			name: "connection is a shard",
 			prep: func(t *testing.T, w *shardWorld) (agent, string, uint32) {
 				a := w.dial(t, w.cert)

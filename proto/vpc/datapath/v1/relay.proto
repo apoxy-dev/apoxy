@@ -98,12 +98,16 @@ message Hello {
   // Revision of the agent. Not set by a build from before revisions.
   Version version = 6;
   // Name of the base attachment of the agent. Many agents can have one SPIFFE
-  // ID. Two sessions with one SPIFFE ID are one agent when their names are
-  // equal, or when one of them has no name.
+  // ID, each with its own name.
   string name = 7;
   // The agent takes only the routes of the attachments on this relay. If not
   // set, the relay sends also the routes of the attachments on other relays.
   bool local_routes_only = 8;
+  // Random ID of the agent process, new at each process start: the value of
+  // Open.instance on the peer sessions. Two sessions with one SPIFFE ID, one
+  // name and one instance are of one agent process, also on two relays. Zero
+  // from an agent before revision 16.
+  fixed64 instance = 9;
 }
 
 // Shard joins a connection to the session of an attachment. The session
@@ -134,8 +138,13 @@ message Welcome {
 message Route {
   VPCRef vpc = 1;
   string prefix = 2;
-  // Attachment that advertises the prefix.
+  // Attachment that gets the packets for the prefix. When more than one
+  // attachment announces the prefix, it is the active announcer.
   string origin = 3;
+  // The other attachments that announce the prefix, in the order in which
+  // they become the active announcer. Only in an added route, for an agent at
+  // revision 16 or later. An added route that the agent has gives a new list.
+  repeated string standby = 4;
 }
 
 // RouteDelta changes the routes of the agent.
@@ -198,12 +207,19 @@ message AttachRequest {
   map<string, string> labels = 3;
   // Prefixes that the attachment advertises into the VPC.
   repeated string routes = 4;
+  // Order of this connection among the connections of the agent process to
+  // relays that announce the same routes. The relays select the lower rank
+  // first. Zero from an agent before revision 16.
+  uint32 rank = 5;
 }
 
 message AttachResponse {
   string attachment_id = 1;
   // Grant with the addresses of the attachment.
   AttachmentGrant grant = 2;
+  // Answer of the relay for each route of the request, for an agent at
+  // revision 16 or later. A route with no answer is accepted.
+  repeated RouteStatus routes = 3;
 }
 
 message DetachRequest {
@@ -289,4 +305,17 @@ enum FallbackReason {
   FALLBACK_REASON_PROBE_TIMEOUT = 1;
   // The agent config sets QUIC mode.
   FALLBACK_REASON_CONFIG = 2;
+}
+
+// RouteResult tells if the relay took an advertised route of an attachment.
+enum RouteResult {
+  // The attachment is an announcer of the prefix.
+  ROUTE_RESULT_ACCEPTED = 0;
+}
+
+// RouteStatus is the answer of the relay for one advertised route.
+message RouteStatus {
+  // The route of the request, in the masked form.
+  string prefix = 1;
+  RouteResult result = 2;
 }

@@ -161,9 +161,9 @@ func TestSessionRevision(t *testing.T) {
 	}
 }
 
-// TestAgentNames opens two sessions with one cert name. From revision 2 an
-// agent sends its name in Hello, and two names are two agents. With no name
-// in one of the sessions, the two sessions are one agent, as before revision 2.
+// TestAgentNames opens two sessions with one cert name. The name and the
+// instance of Hello tell two agents apart. An agent from before revision 2
+// sends no name, and one from before revision 16 sends no instance.
 func TestAgentNames(t *testing.T) {
 	const advertised = "10.9.0.0/16"
 	this := dp.LocalVersion(build.BuildVersion)
@@ -175,10 +175,13 @@ func TestAgentNames(t *testing.T) {
 	}{
 		{name: "two sessions of revision 1", first: &dp.Hello{Version: one}, second: &dp.Hello{Version: one}},
 		{name: "two sessions from before revisions", first: &dp.Hello{}, second: &dp.Hello{}},
-		{name: "revision 1, then a name", first: &dp.Hello{Version: one}, second: &dp.Hello{Version: this, Name: "b"}},
-		{name: "a name, then revision 1", first: &dp.Hello{Version: this, Name: "a"}, second: &dp.Hello{Version: one}},
+		{name: "revision 1, then a name", first: &dp.Hello{Version: one}, second: &dp.Hello{Version: this, Name: "b"}, two: true},
+		{name: "a name, then revision 1", first: &dp.Hello{Version: this, Name: "a"}, second: &dp.Hello{Version: one}, two: true},
 		{name: "one name", first: &dp.Hello{Version: this, Name: "a"}, second: &dp.Hello{Version: this, Name: "a"}},
 		{name: "two names", first: &dp.Hello{Version: this, Name: "a"}, second: &dp.Hello{Version: this, Name: "b"}, two: true},
+		{name: "one name, one instance", first: &dp.Hello{Version: this, Name: "a", Instance: 7}, second: &dp.Hello{Version: this, Name: "a", Instance: 7}},
+		{name: "one name, two instances", first: &dp.Hello{Version: this, Name: "a", Instance: 7}, second: &dp.Hello{Version: this, Name: "a", Instance: 8}, two: true},
+		{name: "an instance, then none", first: &dp.Hello{Version: this, Name: "a", Instance: 7}, second: &dp.Hello{Version: this, Name: "a"}, two: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -230,20 +233,17 @@ func TestAgentNames(t *testing.T) {
 				assert.Equal(t, []string{resB.GetAttachmentId() + " " + claimsB.GetAddresses()[0]}, routes(recv(t, stA).GetRouteDelta()))
 			}
 
-			// One agent moves its advertised route to its new attachment. Another
-			// agent of the subject cannot take it.
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			_, err = b.c.Attach(ctx, &dp.AttachRequest{Vpc: ref(vpcA), Name: "b-2", Routes: []string{advertised}})
-			if tc.two {
-				assert.Equal(t, rpc.AlreadyExists, rpc.CodeOf(err), "error: %v", err)
-			} else {
-				assert.NoError(t, err)
-			}
+			// The new attachment of one agent replaces the old one as the announcer
+			// of the route. Another agent of the subject is one more announcer.
+			resB2 := attach(t, b, &dp.AttachRequest{Vpc: ref(vpcA), Name: "b-2", Routes: []string{advertised}})
 			h.r.mu.RLock()
-			owner := h.r.domains[vpcA].routes[netip.MustParsePrefix(advertised)]
-			h.r.mu.RUnlock()
-			assert.Equal(t, tc.two, owner.origin == resA.GetAttachmentId(), "the first attachment keeps the route")
+			defer h.r.mu.RUnlock()
+			order := h.r.domains[vpcA].routes[netip.MustParsePrefix(advertised)].order
+			if tc.two {
+				assert.Len(t, order, 2, "announcers of the route")
+			} else if assert.Len(t, order, 1, "announcers of the route") {
+				assert.Equal(t, resB2.GetAttachmentId(), order[0].origin)
+			}
 		})
 	}
 }

@@ -96,6 +96,10 @@ func presenceOf(s *Session, a *Attachment) *dp.Presence {
 		Subject:      s.id.ID,
 		AgentName:    s.name,
 		SenderTag:    s.tag,
+		// Nothing sets a state yet: the zero value is the normal state.
+		Instance: s.instance,
+		Rank:     a.Rank,
+		Attached: a.gen,
 	}
 	for _, p := range slices.Concat(a.Addresses, a.Routes) {
 		e.Prefixes = append(e.Prefixes, p.Masked().String())
@@ -182,8 +186,12 @@ type presenceEntry struct {
 	networkID uint32
 	id        string
 	gen       uint64
+	attached  uint64 // Generation at the attach, or 0 from a member before the field.
 	subject   string
 	agent     string // Agent name from Hello, or empty.
+	instance  uint64 // Agent instance from Hello. Zero from a member before revision 16.
+	rank      uint32 // Order of the connection among those of its agent.
+	state     dp.AnnouncerState
 	tag       uint32 // Trunk tag of the session of the agent on the member.
 	prefixes  []netip.Prefix
 	sess      *MeshSession // Last session that sent the entry.
@@ -202,6 +210,7 @@ func (m *Mesh) SetRouter(r *Router) {
 	p.mu.Unlock()
 	r.mu.Lock()
 	r.presence = p.changed
+	r.name = m.name
 	r.mu.Unlock()
 	m.OnDatagram(func(s *MeshSession, b []byte) { p.datagram(r, s, b) })
 	m.setTrunk(r)
@@ -550,7 +559,12 @@ func checkPresence(e *dp.Presence) (*presenceEntry, error) {
 	if id.Project != pe.vpc.Project || id.VPC != pe.vpc.UID {
 		return nil, fmt.Errorf("subject %q is not in VPC %s/%s", e.GetSubject(), pe.vpc.Project, pe.vpc.UID)
 	}
-	pe.subject, pe.agent = e.GetSubject(), e.GetAgentName()
+	pe.subject, pe.agent, pe.instance, pe.rank = e.GetSubject(), e.GetAgentName(), e.GetInstance(), e.GetRank()
+	// A state that this build does not know stays: it ranks after the known ones.
+	pe.state = e.GetState()
+	if pe.attached = e.GetAttached(); pe.attached > pe.gen {
+		return nil, fmt.Errorf("attach generation %d is above the generation %d", pe.attached, pe.gen)
+	}
 	if pe.tag = e.GetSenderTag(); pe.tag == 0 || pe.tag > pspwire.MaxVNI {
 		return nil, fmt.Errorf("sender tag %d is not from 1 to %d", pe.tag, pspwire.MaxVNI)
 	}

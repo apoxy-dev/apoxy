@@ -155,7 +155,7 @@ func TestResolvePeerTrunk(t *testing.T) {
 				// The address of server keeps its route.
 				g.r.mu.RLock()
 				defer g.r.mu.RUnlock()
-				require.Equal(t, "relay-a", g.r.lookup(vpcA, netip.MustParseAddr(brServer)).home)
+				require.Equal(t, "relay-a", g.r.activeOf(vpcA, netip.MustParseAddr(brServer)).s.home)
 			},
 		},
 		{

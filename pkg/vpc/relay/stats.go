@@ -247,7 +247,7 @@ func (r *Router) fold(w *row) {
 // retarget sends the packets of w to the session and the attachment of o. The
 // attachment before keeps the counts up to now. Router.mu must be held for
 // writing.
-func (r *Router) retarget(w *row, o owner) {
+func (r *Router) retarget(w *row, o target) {
 	r.fold(w)
 	if w.receiver != o.s {
 		if w.receiver != nil {

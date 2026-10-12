@@ -83,7 +83,7 @@ func (r *Router) resolvePeer(c *Session, in *dp.ResolvePeerRequest) (*dp.Resolve
 	if !r.permit(c.id.VPC, c.id.ID, key, dst) {
 		return nil, rpc.Errorf(rpc.PermissionDenied, "permit denies %s", dst)
 	}
-	peer := r.ownerOf(key, dst).s
+	peer := r.activeOf(key, dst).s
 	var res *dp.ResolvePeerResponse
 	switch {
 	case peer == nil:
@@ -119,7 +119,7 @@ func (r *Router) trunkReach(c, peer *Session) *dp.ResolvePeerResponse {
 		return nil
 	}
 	// The entry that has the route is one of the attachments, so the list is not empty.
-	ids := t.m.pres.attachments(remoteKey{home: peer.home, id: peer.id, agent: peer.name, tag: peer.tag})
+	ids := t.m.pres.attachments(peer.remoteKey())
 	return &dp.ResolvePeerResponse{Reach: dp.Reach_REACH_TRUNK, Subject: peer.id.ID, AttachmentIds: ids}
 }
 
@@ -193,7 +193,7 @@ func (r *Router) registerSPI(c *Session, in *dp.RegisterSPIRequest, now time.Tim
 	to := r.reach(c, dst)
 	// A caller with no sender tag has no path to another relay.
 	if to.s != nil && to.s.home != "" && !r.trunked(c) {
-		to = owner{}
+		to = target{}
 	}
 	if to.s == nil {
 		return rpc.Errorf(rpc.NotFound, "no route to %s", dst)

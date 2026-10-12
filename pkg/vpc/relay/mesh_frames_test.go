@@ -192,26 +192,26 @@ func TestMeshPeerFrameReceive(t *testing.T) {
 		{name: "source of a session of another member", tag: laptopTag, dst: serverAddr, src: tabletAddr, pkt: "hi", drop: "mesh_source"},
 		{name: "source with no route", tag: laptopTag, dst: serverAddr, src: "fd00:f::1", pkt: "hi", drop: "mesh_source"},
 		{
-			name: "source that a session of this relay took from the sender",
+			name: "source that a session of this relay also announces",
 			setup: func(w *frameWorld) {
 				w.session("second", vpcA, agentID(vpcA, "second"), thisRevision())
 				w.attach("second", "l", prefixA)
 			},
-			tag: laptopTag, dst: serverAddr, src: laptopAddr, pkt: "hi", drop: "mesh_source",
+			tag: laptopTag, dst: serverAddr, src: laptopAddr, pkt: "hi", to: "server",
 		},
 		{
-			name: "source that an entry of another member took from the sender",
+			name: "source that an entry of another member also announces",
 			setup: func(w *frameWorld) {
 				w.send("relay-b", atGen(liveEntry("t2", agentID(vpcA, "tablet"), "base", tabletTag, prefixA), 20))
 			},
-			tag: laptopTag, dst: serverAddr, src: laptopAddr, pkt: "hi", drop: "mesh_source",
+			tag: laptopTag, dst: serverAddr, src: laptopAddr, pkt: "hi", to: "server",
 		},
 		{
-			name: "source that an entry of another member with the same attachment ID took",
+			name: "source that an entry of another member with the same attachment ID also announces",
 			setup: func(w *frameWorld) {
 				w.send("relay-b", atGen(liveEntry("x", agentID(vpcA, "tablet"), "base", tabletTag, prefixA), 20))
 			},
-			tag: laptopTag, dst: serverAddr, src: laptopAddr, pkt: "hi", drop: "mesh_source",
+			tag: laptopTag, dst: serverAddr, src: laptopAddr, pkt: "hi", to: "server",
 		},
 		{
 			name: "source in a more specific route of another session",

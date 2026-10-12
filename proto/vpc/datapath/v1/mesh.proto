@@ -80,6 +80,17 @@ message Presence {
   // Tag (1 to 2^24 - 1) that the sending relay gives to the session of the agent.
   // All attachments of a session have it, and no other session at the same time.
   uint32 sender_tag = 8;
+  // Hello.instance of the agent. With the subject and the agent name it names
+  // one agent process. Zero from a relay or an agent before revision 16.
+  fixed64 instance = 9;
+  AnnouncerState state = 10;
+  // AttachRequest.rank of the attachment: the order of this connection among
+  // the connections of its agent process. The lower rank is selected first.
+  uint32 rank = 11;
+  // Generation of the first entry of the attachment, at the attach. A later
+  // entry of the attachment, with a new state, has a higher generation and the
+  // same value here. Zero reads as the generation.
+  uint64 attached = 12;
 }
 
 message PresenceUpdate {
@@ -115,4 +126,18 @@ message SnapshotPart {
   bytes data = 1;
   // Size of the whole snapshot in bytes. Only the first part has it.
   uint64 total_size = 2;
+}
+
+// AnnouncerState is the state of an attachment as an announcer of its
+// prefixes. The selection of the active announcer of a prefix takes the lower
+// value first, also for a value that a relay does not know.
+enum AnnouncerState {
+  // The attachment takes traffic.
+  ANNOUNCER_STATE_NORMAL = 0;
+  // The session of the attachment closes soon. Selected only with no announcer
+  // in the normal state.
+  ANNOUNCER_STATE_DRAINING = 1;
+  // The relay of the attachment does not hear the agent. Selected only with
+  // no announcer in another state.
+  ANNOUNCER_STATE_SUSPECT = 2;
 }

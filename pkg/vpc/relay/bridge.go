@@ -149,7 +149,7 @@ func (r *Router) nextHop(src *Session, inner []byte) hop {
 
 // local makes h the hop of inner to the session of to, which is a session of
 // this relay. Router.mu must be held.
-func (h *hop) local(to owner, inner []byte) {
+func (h *hop) local(to target, inner []byte) {
 	h.next, h.att = to.s, to.att
 	h.out, h.mode, h.addr = h.next, h.next.sync.mode, h.next.addr
 	n := 1

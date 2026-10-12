@@ -155,6 +155,19 @@ func remoteEntry(id string, gen uint64, prefixes ...string) *dp.Presence {
 	return e
 }
 
+// draining returns e in the draining state, so each normal announcer of its
+// prefixes comes before it.
+func draining(e *dp.Presence) *dp.Presence {
+	e.State = dp.AnnouncerState_ANNOUNCER_STATE_DRAINING
+	return e
+}
+
+// ranked returns e with the rank that its agent gives to the connection.
+func ranked(e *dp.Presence, rank uint32) *dp.Presence {
+	e.Rank = rank
+	return e
+}
+
 // goneAt is the entry of attachment id that ended at generation gen.
 func goneAt(id string, gen uint64) *dp.Presence {
 	return &dp.Presence{AttachmentId: id, Generation: gen, Gone: true}
@@ -196,7 +209,8 @@ func (w *routeWorld) detach(name, id string) {
 }
 
 // routeChanges returns the route changes that wait for s, as "-origin prefix"
-// and "+origin prefix".
+// and "+origin prefix", with " standby=a,b" after a route that has standby
+// announcers.
 func routeChanges(r *Router, s *Session) []string {
 	var out []string
 	for _, m := range r.takeSync(s) {
@@ -204,7 +218,11 @@ func routeChanges(r *Router, s *Session) []string {
 			out = append(out, "-"+rt.GetOrigin()+" "+rt.GetPrefix())
 		}
 		for _, rt := range m.GetRouteDelta().GetAdd() {
-			out = append(out, "+"+rt.GetOrigin()+" "+rt.GetPrefix())
+			line := "+" + rt.GetOrigin() + " " + rt.GetPrefix()
+			if sb := rt.GetStandby(); len(sb) > 0 {
+				line += " standby=" + strings.Join(sb, ",")
+			}
+			out = append(out, line)
 		}
 	}
 	return out
@@ -218,8 +236,8 @@ func (w *routeWorld) drain() {
 	}
 }
 
-// routeTable returns the routes of vpc in r, by prefix: "origin" for an
-// attachment of r, and "origin@relay" for an attachment of another relay.
+// routeTable returns the active announcer of each prefix of vpc in r: "origin"
+// for an attachment of r, and "origin@relay" for an attachment of another relay.
 func routeTable(r *Router, vpc VPCKey) map[string]string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -228,13 +246,19 @@ func routeTable(r *Router, vpc VPCKey) map[string]string {
 	if d == nil {
 		return out
 	}
-	for p, o := range d.routes {
-		out[p.String()] = o.origin
-		if o.s.home != "" {
-			out[p.String()] += "@" + o.s.home
-		}
+	for p, set := range d.routes {
+		out[p.String()] = entryName(set.active())
 	}
 	return out
+}
+
+// entryName returns "origin" for an entry of an attachment of this relay, and
+// "origin@relay" for an attachment of another relay.
+func entryName(e *announcer) string {
+	if e.s.home != "" {
+		return e.origin + "@" + e.s.home
+	}
+	return e.origin
 }
 
 func (w *routeWorld) table(vpc VPCKey) map[string]string { return routeTable(w.r, vpc) }
@@ -247,16 +271,20 @@ func (w *routeWorld) check() {
 	defer w.r.mu.RUnlock()
 	owned := map[*Session][]netip.Prefix{}
 	for vpc, d := range w.r.domains {
-		for p, o := range d.routes {
-			if o.s.home == "" {
-				continue
+		for p, set := range d.routes {
+			assert.NotEmpty(w.t, set.entries, "entries of %s", p)
+			assert.Equal(w.t, selectOrder(set.entries), set.order, "selection of %s", p)
+			for _, o := range set.entries {
+				if o.s.home == "" {
+					continue
+				}
+				owned[o.s] = append(owned[o.s], p)
+				assert.Equal(w.t, vpc, o.s.id.VPC, "VPC of the record of %s", p)
+				assert.Nil(w.t, o.att, "attachment of the route %s", p)
+				assert.Same(w.t, o.s, w.r.remotes[o.s.remoteKey()], "record of %s", p)
+				_, member := d.members[o.s]
+				assert.False(w.t, member, "the record of %s is a member of its domain", p)
 			}
-			owned[o.s] = append(owned[o.s], p)
-			assert.Equal(w.t, vpc, o.s.id.VPC, "VPC of the record of %s", p)
-			assert.Nil(w.t, o.att, "attachment of the route %s", p)
-			assert.Same(w.t, o.s, w.r.remotes[remoteKey{home: o.s.home, id: o.s.id, agent: o.s.name, tag: o.s.tag}], "record of %s", p)
-			_, member := d.members[o.s]
-			assert.False(w.t, member, "the record of %s is a member of its domain", p)
 		}
 		assert.False(w.t, len(d.routes) == 0 && len(d.members) == 0 && len(d.claims) == 0, "empty domain of %v stays", vpc)
 	}
@@ -347,26 +375,40 @@ func TestMeshRoutes(t *testing.T) {
 			delta:  []string{"+x " + prefixA, "+x2 " + prefixB}, records: 2,
 		},
 		{
-			name: "prefix of two relays: the higher generation gets it",
+			// The generation has no effect between two relays.
+			// A session at this revision gets the route again with the new standby list.
+			name: "one agent on two relays: the lower relay name is active",
 			steps: func(w *routeWorld) {
 				w.send("relay-a", remoteEntry("x", 10, prefixR))
 				w.drain()
 				w.send("relay-b", remoteEntry("y", 20, prefixR))
+			},
+			routes: map[string]string{prefixR: "x@relay-a"},
+			delta:  []string{"+x " + prefixR + " standby=y"}, records: 2,
+		},
+		{
+			name: "one agent on two relays: the lower relay name comes later",
+			steps: func(w *routeWorld) {
+				w.send("relay-b", remoteEntry("y", 20, prefixR))
+				w.drain()
+				w.send("relay-a", remoteEntry("x", 10, prefixR))
+			},
+			routes: map[string]string{prefixR: "x@relay-a"},
+			delta:  []string{"-y " + prefixR, "+x " + prefixR + " standby=y"}, records: 2,
+		},
+		{
+			name: "one agent on two relays: the other connection is active at the end of the first",
+			steps: func(w *routeWorld) {
+				w.send("relay-a", remoteEntry("x", 10, prefixR))
+				w.send("relay-b", remoteEntry("y", 20, prefixR))
+				w.drain()
+				w.send("relay-a", goneAt("x", 21))
 			},
 			routes: map[string]string{prefixR: "y@relay-b"},
 			delta:  []string{"-x " + prefixR, "+y " + prefixR}, records: 1,
 		},
 		{
-			name: "prefix of two relays: the lower generation comes later",
-			steps: func(w *routeWorld) {
-				w.send("relay-b", remoteEntry("y", 20, prefixR))
-				w.drain()
-				w.send("relay-a", remoteEntry("x", 10, prefixR))
-			},
-			routes: map[string]string{prefixR: "y@relay-b"}, records: 1,
-		},
-		{
-			name: "prefix of two relays: the next attachment gets it at the end of the first",
+			name: "one agent on two relays: the end of the standby connection changes only the standby list",
 			steps: func(w *routeWorld) {
 				w.send("relay-a", remoteEntry("x", 10, prefixR))
 				w.send("relay-b", remoteEntry("y", 20, prefixR))
@@ -374,37 +416,29 @@ func TestMeshRoutes(t *testing.T) {
 				w.send("relay-b", goneAt("y", 21))
 			},
 			routes: map[string]string{prefixR: "x@relay-a"},
-			delta:  []string{"-y " + prefixR, "+x " + prefixR}, records: 1,
+			delta:  []string{"+x " + prefixR}, records: 1,
 		},
 		{
-			name: "prefix of two relays: the end of the attachment without it changes nothing",
+			name: "one agent on two relays: the lower rank is active",
 			steps: func(w *routeWorld) {
-				w.send("relay-a", remoteEntry("x", 10, prefixR))
+				w.send("relay-a", ranked(remoteEntry("x", 10, prefixR), 1))
+				w.drain()
 				w.send("relay-b", remoteEntry("y", 20, prefixR))
-				w.drain()
-				w.send("relay-a", goneAt("x", 21))
 			},
-			routes: map[string]string{prefixR: "y@relay-b"}, records: 1,
+			routes: map[string]string{prefixR: "y@relay-b"},
+			delta:  []string{"-x " + prefixR, "+y " + prefixR + " standby=x"}, records: 2,
 		},
 		{
-			name: "equal generations: the lower relay name gets the prefix",
+			name: "two agents: the normal one is active, and the draining one is standby",
 			steps: func(w *routeWorld) {
-				// The attachment IDs have the opposite order of the relay names.
-				w.send("relay-b", remoteEntry("y", 10, prefixR))
+				second := liveEntry("y", agentID(vpcA, "tablet"), "base", 9, prefixR)
+				second.Generation = 20
+				w.send("relay-a", draining(remoteEntry("x", 10, prefixR)))
 				w.drain()
-				w.send("relay-a", remoteEntry("z", 10, prefixR))
+				w.send("relay-b", second)
 			},
-			routes: map[string]string{prefixR: "z@relay-a"},
-			delta:  []string{"-y " + prefixR, "+z " + prefixR}, records: 1,
-		},
-		{
-			name: "equal generations: the higher relay name comes later",
-			steps: func(w *routeWorld) {
-				w.send("relay-a", remoteEntry("z", 10, prefixR))
-				w.drain()
-				w.send("relay-b", remoteEntry("y", 10, prefixR))
-			},
-			routes: map[string]string{prefixR: "z@relay-a"}, records: 1,
+			routes: map[string]string{prefixR: "y@relay-b"},
+			delta:  []string{"-x " + prefixR, "+y " + prefixR + " standby=x"}, records: 2,
 		},
 		{
 			name: "equal generations on one relay: the lower attachment ID gets the prefix",
@@ -417,52 +451,54 @@ func TestMeshRoutes(t *testing.T) {
 			delta:  []string{"-y " + prefixR, "+x " + prefixR}, records: 1,
 		},
 		{
-			name: "attachment of this relay keeps its prefix",
+			name: "attachment of this relay and a draining entry",
 			steps: func(w *routeWorld) {
 				w.attach("local", "y", prefixA)
 				w.drain()
-				w.send("relay-a", remoteEntry("x", 10, prefixA, prefixB))
+				w.send("relay-a", draining(remoteEntry("x", 10, prefixA, prefixB)))
 			},
 			routes: map[string]string{prefixA: "y", prefixB: "x@relay-a"},
-			delta:  []string{"+x " + prefixB}, records: 1,
+			delta:  []string{"+y " + prefixA + " standby=x", "+x " + prefixB}, records: 1,
 		},
 		{
-			name: "attachment of this relay takes its address from another relay",
+			// The relay does not take the address from the entry: the two are in the set.
+			name: "attachment of this relay gets an address that an entry of another relay has",
 			steps: func(w *routeWorld) {
-				w.send("relay-a", remoteEntry("x", 10, prefixA))
+				w.send("relay-a", draining(remoteEntry("x", 10, prefixA)))
 				w.drain()
 				w.attach("local", "y", prefixA)
 			},
 			routes: map[string]string{prefixA: "y"},
-			delta:  []string{"-x " + prefixA, "+y " + prefixA},
+			delta:  []string{"-x " + prefixA, "+y " + prefixA + " standby=x"}, records: 1,
 		},
 		{
-			name: "attachment of this relay takes the advertised route of its agent from another relay",
+			// The agent has a connection to each relay. With equal ranks, the lower relay name comes first.
+			name: "attachment of this relay and an entry of the same agent on another relay",
 			steps: func(w *routeWorld) {
 				w.session("moved", vpcA, laptop, namedHello("base"))
 				w.send("relay-a", remoteEntry("x", 10, prefixA, prefixR))
 				w.drain()
 				w.attach("moved", "y", prefixB, prefixR)
 			},
-			routes: map[string]string{prefixA: "x@relay-a", prefixB: "y", prefixR: "y"},
-			delta:  []string{"-x " + prefixR, "+y " + prefixR, "+y " + prefixB}, records: 1,
+			routes: map[string]string{prefixA: "x@relay-a", prefixB: "y", prefixR: "x@relay-a"},
+			delta:  []string{"+x " + prefixR + " standby=y", "+y " + prefixB}, records: 1,
 		},
 		{
-			name: "route of a session of this relay takes the prefix of its agent from another relay",
+			name: "route of a session of this relay and an entry of the same agent on another relay",
 			steps: func(w *routeWorld) {
 				w.session("moved", vpcA, laptop, namedHello("base"))
 				w.send("relay-a", remoteEntry("x", 10, prefixR))
 				w.drain()
 				require.NoError(w.t, w.r.AddRoute(w.sess["moved"], netip.MustParsePrefix(prefixR), "y"))
 			},
-			routes: map[string]string{prefixR: "y"},
-			delta:  []string{"-x " + prefixR, "+y " + prefixR},
+			routes: map[string]string{prefixR: "x@relay-a"},
+			delta:  []string{"+x " + prefixR + " standby=y"}, records: 1,
 		},
 		{
 			name: "prefix goes to the other relay at the detach on this relay",
 			steps: func(w *routeWorld) {
 				w.attach("local", "y", prefixA, prefixR)
-				w.send("relay-a", remoteEntry("x", 10, prefixA, prefixR))
+				w.send("relay-a", draining(remoteEntry("x", 10, prefixA, prefixR)))
 				w.drain()
 				w.detach("local", "y")
 			},
@@ -473,7 +509,7 @@ func TestMeshRoutes(t *testing.T) {
 			name: "prefix goes to the other relay when the session of this relay closes",
 			steps: func(w *routeWorld) {
 				w.attach("local", "y", prefixA)
-				w.send("relay-a", remoteEntry("x", 10, prefixA))
+				w.send("relay-a", draining(remoteEntry("x", 10, prefixA)))
 				w.drain()
 				w.r.removeSession(w.sess["local"])
 			},
@@ -484,7 +520,7 @@ func TestMeshRoutes(t *testing.T) {
 			name: "prefix goes to the other relay when the route of this relay goes",
 			steps: func(w *routeWorld) {
 				require.NoError(w.t, w.r.AddRoute(w.sess["local"], netip.MustParsePrefix(prefixR), "y"))
-				w.send("relay-a", remoteEntry("x", 10, prefixR))
+				w.send("relay-a", draining(remoteEntry("x", 10, prefixR)))
 				w.drain()
 				w.r.RemoveRoute(w.sess["local"], netip.MustParsePrefix(prefixR))
 			},
@@ -496,12 +532,12 @@ func TestMeshRoutes(t *testing.T) {
 			steps: func(w *routeWorld) {
 				w.attach("local", "y", prefixA, prefixR)
 				w.attach("local", "y2", prefixB, prefixR)
-				w.send("relay-a", remoteEntry("x", 10, prefixR))
+				w.send("relay-a", draining(remoteEntry("x", 10, prefixR)))
 				w.drain()
 				w.detach("local", "y2")
 			},
 			routes: map[string]string{prefixA: "y", prefixR: "y"},
-			delta:  []string{"-y2 " + prefixR, "-y2 " + prefixB, "+y " + prefixR},
+			delta:  []string{"-y2 " + prefixR, "-y2 " + prefixB, "+y " + prefixR + " standby=x"}, records: 1,
 		},
 		{
 			name:  "entry with no prefix",
@@ -585,6 +621,7 @@ func TestMeshRoutes(t *testing.T) {
 			delta:  []string{"-x " + prefixR, "-x " + prefixA}, records: 1,
 		},
 		{
+			// The entry of the lost relay stays in the set, and no state marks it yet.
 			name: "attachment comes on another relay while its first relay is lost",
 			steps: func(w *routeWorld) {
 				w.send("relay-a", remoteEntry("x", 10, prefixA))
@@ -592,8 +629,8 @@ func TestMeshRoutes(t *testing.T) {
 				w.lose("relay-a")
 				w.send("relay-b", remoteEntry("y", 20, prefixA))
 			},
-			routes: map[string]string{prefixA: "y@relay-b"},
-			delta:  []string{"-x " + prefixA, "+y " + prefixA}, records: 1,
+			routes: map[string]string{prefixA: "x@relay-a"},
+			delta:  []string{"+x " + prefixA + " standby=y"}, records: 2,
 		},
 		{
 			name: "new session of a lost member: the routes stay before the end of the full set",
@@ -708,98 +745,18 @@ func TestMeshRoutes(t *testing.T) {
 	}
 }
 
-// TestMeshRouteOwnerOnOtherRelay claims, on this relay, a prefix that the agent
-// "base" of laptop has on relay-a. Only a session of that agent takes its
-// advertised route, and a refused claim changes nothing.
-func TestMeshRouteOwnerOnOtherRelay(t *testing.T) {
-	// Each claim is of the attachment y. attachRoute advertises prefixR, and
-	// attachAddr has the address prefixA, which this relay assigned.
-	attachRoute := func(w *routeWorld, s *Session) error {
-		a := attachment("y", prefixB)
-		a.Routes = []netip.Prefix{netip.MustParsePrefix(prefixR)}
-		return w.r.attach(s, a)
-	}
-	attachAddr := func(w *routeWorld, s *Session) error { return w.r.attach(s, attachment("y", prefixA)) }
-	addRoute := func(w *routeWorld, s *Session) error {
-		return w.r.AddRoute(s, netip.MustParsePrefix(prefixR), "y")
-	}
-	other := agentID(vpcA, "other")
-	moved := map[string]string{prefixA: "x@relay-a", prefixB: "y", prefixR: "y"}
-	added := map[string]string{prefixA: "x@relay-a", prefixR: "y"}
-	cases := []struct {
-		name string
-		// owner is the agent name in the entry of relay-a. Its subject is laptop.
-		owner string
-		// subject and hello are of the session that claims.
-		subject string
-		hello   *dp.Hello
-		claim   func(w *routeWorld, s *Session) error
-		// routes are the routes of vpcA after the claim. Nil is a refused claim.
-		routes map[string]string
-	}{
-		{name: "route: same agent", owner: "base", subject: laptop, hello: namedHello("base"), claim: attachRoute, routes: moved},
-		{name: "route: same subject, other agent name", owner: "base", subject: laptop, hello: namedHello("third"), claim: attachRoute},
-		{name: "route: other subject, same agent name", owner: "base", subject: other, hello: namedHello("base"), claim: attachRoute},
-		{name: "route: other subject, no agent name", owner: "base", subject: other, hello: thisRevision(), claim: attachRoute},
-		// An entry with no agent name is of each agent of its subject, as before.
-		{name: "route: entry with no agent name, same subject", subject: laptop, hello: namedHello("third"), claim: attachRoute, routes: moved},
-		{name: "route: entry with no agent name, other subject", subject: other, hello: namedHello("third"), claim: attachRoute},
-		{name: "route: session with no agent name, same subject", owner: "base", subject: laptop, hello: thisRevision(), claim: attachRoute, routes: moved},
-		{name: "route with no attachment: same agent", owner: "base", subject: laptop, hello: namedHello("base"), claim: addRoute, routes: added},
-		{name: "route with no attachment: same subject, other agent name", owner: "base", subject: laptop, hello: namedHello("third"), claim: addRoute},
-		{name: "route with no attachment: other subject", owner: "base", subject: other, hello: namedHello("base"), claim: addRoute},
-		{name: "route with no attachment: entry with no agent name, same subject", subject: laptop, hello: namedHello("third"), claim: addRoute, routes: added},
-		// The relay assigns each address, so the address of an entry is free.
-		{name: "address: same agent", owner: "base", subject: laptop, hello: namedHello("base"), claim: attachAddr, routes: map[string]string{prefixA: "y", prefixR: "x@relay-a"}},
-		{name: "address: other subject", owner: "base", subject: other, hello: namedHello("base"), claim: attachAddr, routes: map[string]string{prefixA: "y", prefixR: "x@relay-a"}},
-		{name: "address: entry with no agent name, other subject", subject: other, hello: namedHello("third"), claim: attachAddr, routes: map[string]string{prefixA: "y", prefixR: "x@relay-a"}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			synctest.Test(t, func(t *testing.T) {
-				w := newRouteWorld(t, NewRouter(nil, Config{}))
-				w.session("watcher", vpcA, agentID(vpcA, "watcher"), thisRevision())
-				s := w.session("local", vpcA, tc.subject, tc.hello)
-				e := liveEntry("x", laptop, tc.owner, 7, prefixA, prefixR)
-				e.Generation = 10
-				w.send("relay-a", e)
-				w.drain()
-				before := w.table(vpcA)
-				require.Equal(t, map[string]string{prefixA: "x@relay-a", prefixR: "x@relay-a"}, before)
-
-				err := tc.claim(w, s)
-				if tc.routes != nil {
-					require.NoError(t, err)
-					assert.Equal(t, tc.routes, w.table(vpcA))
-					w.check()
-					return
-				}
-				assert.Equal(t, rpc.AlreadyExists, rpc.CodeOf(err), "claim: %v", err)
-				assert.Equal(t, before, w.table(vpcA), "routes after the refused claim")
-				assert.Empty(t, w.changes("watcher"), "route changes after the refused claim")
-				w.r.mu.RLock()
-				assert.Empty(t, s.attachments, "attachments of the session")
-				assert.Empty(t, s.routes, "routes of the session")
-				assert.Zero(t, s.tag, "trunk tag of the session")
-				assert.Zero(t, w.r.attaches, "attaches of the relay")
-				w.r.mu.RUnlock()
-				w.check()
-			})
-		})
-	}
-}
-
-// TestMeshRouteSameOwner checks that an entry that does not change the owner
-// of a prefix makes no work for the sessions: no route change and no wake.
-func TestMeshRouteSameOwner(t *testing.T) {
+// TestMeshRouteSameActive checks that an entry that does not change the active
+// announcer of a prefix makes no work for a session of an agent from before
+// the standby list: no route change and no wake.
+func TestMeshRouteSameActive(t *testing.T) {
 	loser := func(w *routeWorld) { w.send("relay-b", remoteEntry("y", 10, prefixA)) }
 	cases := []struct {
 		name   string
 		before func(w *routeWorld) // Runs after the entry x of relay-a has prefixA.
 		step   func(w *routeWorld)
 	}{
-		{name: "entry with a lower generation comes", step: loser},
-		{name: "entry with a lower generation ends", before: loser, step: func(w *routeWorld) { w.send("relay-b", goneAt("y", 11)) }},
+		{name: "standby entry comes", step: loser},
+		{name: "standby entry ends", before: loser, step: func(w *routeWorld) { w.send("relay-b", goneAt("y", 11)) }},
 		{name: "member with the other entry stops", before: loser, step: func(w *routeWorld) { w.restart("relay-b") }},
 		{
 			name: "entry comes again on a new session of its member",
@@ -820,14 +777,14 @@ func TestMeshRouteSameOwner(t *testing.T) {
 		{
 			name:   "entry for a prefix of an attachment of this relay",
 			before: func(w *routeWorld) { w.attach("local", "l", prefixB) },
-			step:   func(w *routeWorld) { w.send("relay-b", remoteEntry("y", 30, prefixB)) },
+			step:   func(w *routeWorld) { w.send("relay-b", draining(remoteEntry("y", 30, prefixB))) },
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				w := newRouteWorld(t, NewRouter(nil, Config{}))
-				s := w.session("watcher", vpcA, agentID(vpcA, "watcher"), thisRevision())
+				s := w.session("watcher", vpcA, agentID(vpcA, "watcher"), &dp.Hello{Version: &dp.Version{Revision: announcerRevision - 1}})
 				w.session("local", vpcA, server, thisRevision())
 				w.send("relay-a", remoteEntry("x", 20, prefixA))
 				if tc.before != nil {
@@ -1154,8 +1111,9 @@ func TestMeshRouteSessions(t *testing.T) {
 		{name: "local routes only at revision 5", subject: watcher, hello: &dp.Hello{Version: &dp.Version{Revision: 5}, LocalRoutesOnly: true}, agent: "base"},
 		{name: "same agent", subject: laptop, hello: &dp.Hello{Version: this, Name: "base"}, agent: "base"},
 		{name: "another agent of the subject", subject: laptop, hello: &dp.Hello{Version: this, Name: "second"}, agent: "base", gets: true},
-		{name: "session of the subject with no name", subject: laptop, hello: &dp.Hello{Version: this}, agent: "base"},
-		{name: "entry of the subject with no name", subject: laptop, hello: &dp.Hello{Version: this, Name: "base"}, agent: ""},
+		{name: "same agent with another instance", subject: laptop, hello: &dp.Hello{Version: this, Name: "base", Instance: 7}, agent: "base", gets: true},
+		{name: "session of the subject with no name", subject: laptop, hello: &dp.Hello{Version: this}, agent: "base", gets: true},
+		{name: "entry of the subject with no name", subject: laptop, hello: &dp.Hello{Version: this, Name: "base"}, agent: "", gets: true},
 		{name: "same name with another subject", subject: watcher, hello: &dp.Hello{Version: this, Name: "base"}, agent: "base", gets: true},
 		{name: "another agent of the subject with local routes only", subject: laptop, hello: &dp.Hello{Version: this, Name: "second", LocalRoutesOnly: true}, agent: "base"},
 	}
@@ -1195,10 +1153,10 @@ func TestMeshRouteSessions(t *testing.T) {
 				}
 				assert.Equal(t, gone, w.changes("s"), "changes at the end of the attachment")
 
-				// The sessions of the subject of an attachment can send from its prefix.
+				// Only an announcer of a prefix can send from it, not each session of its subject.
 				w.send("relay-a", func() *dp.Presence { e := remoteEntry("x", 12, prefixA); e.AgentName = tc.agent; return e }())
 				src := netip.MustParsePrefix(prefixA).Addr().Next()
-				assert.Equal(t, tc.subject == laptop, w.sess["s"].sources(src), "the session can send from the prefix")
+				assert.False(t, w.sess["s"].sources(src), "the session can send from the prefix")
 				w.check()
 			})
 		}
@@ -1349,13 +1307,14 @@ type routeRelay struct {
 	n *meshNode
 	r *Router
 
-	mu   sync.Mutex
-	seen map[*Session]map[string]bool // "origin prefix" of the routes of each session.
+	mu sync.Mutex
+	// seen has the routes of each session: "origin prefix" to its standby list.
+	seen map[*Session]map[string]string
 }
 
 func newRouteRelay(t *testing.T, ca *testCA, name string) *routeRelay {
 	t.Helper()
-	rr := &routeRelay{n: newMeshNode(t, ca, name), r: NewRouter(nil, Config{}), seen: map[*Session]map[string]bool{}}
+	rr := &routeRelay{n: newMeshNode(t, ca, name), r: NewRouter(nil, Config{}), seen: map[*Session]map[string]string{}}
 	rr.n.m.SetRouter(rr.r)
 	return rr
 }
@@ -1386,16 +1345,19 @@ func (rr *routeRelay) routes(t *testing.T, s *Session) []string {
 	defer rr.mu.Unlock()
 	have := rr.seen[s]
 	if have == nil {
-		have = map[string]bool{}
+		have = map[string]string{}
 		rr.seen[s] = have
 	}
 	for _, c := range routeChanges(rr.r, s) {
+		rt, standby, _ := strings.Cut(c[1:], " standby=")
+		old, had := have[rt]
 		if c[0] == '+' {
-			assert.False(t, have[c[1:]], "the route %q comes two times", c[1:])
-			have[c[1:]] = true
+			// A route that the session has comes again only with a new standby list.
+			assert.False(t, had && old == standby, "the route %q comes two times", c[1:])
+			have[rt] = standby
 		} else {
-			assert.True(t, have[c[1:]], "the route %q goes, and the session does not have it", c[1:])
-			delete(have, c[1:])
+			assert.True(t, had, "the route %q goes, and the session does not have it", rt)
+			delete(have, rt)
 		}
 	}
 	return slices.Sorted(maps.Keys(have))

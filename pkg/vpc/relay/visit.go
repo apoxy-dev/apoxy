@@ -107,12 +107,12 @@ func (v *visits) remove(p netip.Prefix, s *Session) {
 	v.lens = slices.DeleteFunc(v.lens, func(n int) bool { return n == p.Bits() })
 }
 
-// reach returns the visitor of a as its owner, or the owner of the longest
-// route to a if that route is longer than the prefix of the visit.
-func (d *domain) reach(a netip.Addr) owner {
+// reach returns the visitor of a as its target, or the active announcer of the
+// longest route to a if that route is longer than the prefix of the visit.
+func (d *domain) reach(a netip.Addr) target {
 	v, bits := d.visits.of(a)
 	if v == nil {
-		return d.ownerOf(a)
+		return d.activeOf(a)
 	}
 	// A route with the prefix of the visit is of the same agent on another relay.
 	for _, n := range d.lens {
@@ -120,40 +120,45 @@ func (d *domain) reach(a netip.Addr) owner {
 			break
 		}
 		if p, err := a.Prefix(n); err == nil {
-			if o, ok := d.routes[p]; ok {
-				return o
+			if set := d.routes[p]; set != nil {
+				return set.active().target
 			}
 		}
 	}
-	return owner{s: v, origin: v.visit.Load().of(a).id}
+	return target{s: v, origin: v.visit.Load().of(a).id}
 }
 
-// reach is ownerOf for src, a session of this relay: a visitor has its address,
+// reach is activeOf for src, a session of this relay: a visitor has its address,
 // and a visitor src reaches only this relay. Router.mu must be held.
-func (r *Router) reach(src *Session, dst netip.Addr) owner {
+func (r *Router) reach(src *Session, dst netip.Addr) target {
 	d := r.domains[src.id.VPC]
 	switch {
 	case d == nil:
-		return owner{}
+		return target{}
 	case len(d.visits.lens) == 0:
-		return d.ownerOf(dst)
+		return d.activeOf(dst)
 	case src.visit.Load() == nil:
 		return d.reach(dst)
 	}
 	// Nothing of a visitor goes to another relay, or to another visitor.
-	if o := d.ownerOf(dst); o.s != nil && o.s.home == "" {
+	if o := d.activeOf(dst); o.s != nil && o.s.home == "" {
 		return o
 	}
-	return owner{}
+	return target{}
 }
 
-// has reports whether s sends from a: s visits with a, or has the route of a.
-// Router.mu must be held.
+// has reports whether s sends from a: s visits with a, or is an announcer of
+// the route of a. Router.mu must be held.
 func (r *Router) has(s *Session, a netip.Addr) bool {
 	if vs := s.visit.Load(); vs != nil {
 		return vs.of(a) != nil
 	}
-	return r.lookup(s.id.VPC, a) == s
+	d := r.domains[s.id.VPC]
+	if d == nil {
+		return false
+	}
+	set := d.setOf(a)
+	return set != nil && set.sends(s)
 }
 
 // Visit makes the session of the caller a visitor: the sessions of this relay
@@ -201,15 +206,15 @@ func (r *Router) startVisit(s *Session, in *dp.VisitRequest, now time.Time) erro
 		return rpc.Errorf(rpc.PermissionDenied, "permit denies %s", addr)
 	}
 	d := r.domain(s.id.VPC)
-	// The grant can be older than the owner that the address has now.
-	if o, ok := d.routes[v.prefix]; ok && (o.s.home == "" || !o.s.sameAgent(s)) {
+	// The grant can be older than the attachment that the address has now.
+	if set := d.routes[v.prefix]; set != nil && slices.ContainsFunc(set.entries, s.visitEndedBy) {
 		return rpc.Errorf(rpc.AlreadyExists, "address %s has another owner", addr)
 	}
 	// The limit counts sessions: a session with many visits is one of them.
 	others := map[*Session]bool{}
 	for p, ss := range d.visits.by {
 		for _, o := range ss {
-			if o.sameAgent(s) {
+			if o.agent() == s.agent() {
 				others[o] = true
 			} else if p == v.prefix {
 				return rpc.Errorf(rpc.AlreadyExists, "address %s has another visitor", addr)
@@ -302,18 +307,25 @@ func (r *Router) leave(s *Session, id string) bool {
 	return r.endVisit(s, "agent detached", func(v *visit) bool { return v.id == id })
 }
 
-// displace ends each visit with the prefix p that its new route owner o ends:
-// an attachment of this relay, or another agent. Router.mu must be held for writing.
-func (r *Router) displace(d *domain, p netip.Prefix, o *Session) {
+// visitEndedBy reports whether the entry e for a prefix ends a visit of s to
+// that prefix: e is an attachment of this relay, or of another agent. The
+// instance is not a part of the check, because an older relay does not send it.
+func (s *Session) visitEndedBy(e *announcer) bool {
+	return e.s.home == "" || e.agent.id != s.id.ID || e.agent.name != s.name
+}
+
+// displace ends each visit with the prefix p that the new entry e for p ends.
+// Router.mu must be held for writing.
+func (r *Router) displace(d *domain, p netip.Prefix, e *announcer) {
 	for _, s := range slices.Clone(d.visits.by[p]) {
-		if o.home == "" || !o.sameAgent(s) {
+		if s.visitEndedBy(e) {
 			r.endVisit(s, "address has another owner", func(v *visit) bool { return v.prefix == p })
 		}
 	}
 }
 
-// rehome gives each row of d to an address of p the owner that its sender
-// reaches now. A row with no owner ends. Router.mu must be held for writing.
+// rehome gives each row of d to an address of p the target that its sender
+// reaches now. A row with no target ends. Router.mu must be held for writing.
 func (r *Router) rehome(d *domain, p netip.Prefix) {
 	for m := range d.members {
 		for _, w := range m.rows {

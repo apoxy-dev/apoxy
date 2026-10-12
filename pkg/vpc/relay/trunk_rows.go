@@ -74,7 +74,7 @@ func (r *Router) spiTaken(home string, spi uint32, w *row) bool {
 
 // aim sends the packets of w to the session of o. For a session of another relay,
 // w takes its SPI at that relay: see spiTaken. Router.mu must be held for writing.
-func (r *Router) aim(w *row, o owner) {
+func (r *Router) aim(w *row, o target) {
 	if home := o.s.home; !w.to(home) {
 		r.untrunk(w)
 		if home != "" {
@@ -84,9 +84,9 @@ func (r *Router) aim(w *row, o owner) {
 	r.retarget(w, o)
 }
 
-// move gives w to o, the new owner of its destination. A relay that did not
+// move gives w to o, the new target of its destination. A relay that did not
 // have the receiver before gets the row. Router.mu must be held for writing.
-func (r *Router) move(w *row, o owner) {
+func (r *Router) move(w *row, o target) {
 	// Only a route of another relay goes to another relay, so the sender has a tag.
 	home := o.s.home
 	told := w.to(home)
