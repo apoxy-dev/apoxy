@@ -133,11 +133,12 @@ func (p *peer) has(pfx netip.Prefix) bool {
 	return false
 }
 
-// sameAgent reports whether p is a session with the agent that has subject
-// and instance. Many agents can have one subject. A session of the subject
-// with one of prefixes is from before that agent got the address.
-func (p *peer) sameAgent(subject string, instance uint64, prefixes []netip.Prefix) bool {
-	return p.subject == subject && (p.instance == instance || slices.ContainsFunc(prefixes, p.has))
+// sameAttachment reports whether p is a session with the attachment id of
+// subject, or with an attachment of subject that has one of prefixes. An agent
+// has one attachment for each of its relay sessions, and each one is a peer
+// of its own. Many agents can have one subject.
+func (p *peer) sameAttachment(subject, id string, prefixes []netip.Prefix) bool {
+	return p.subject == subject && (p.attachmentID() == id || slices.ContainsFunc(prefixes, p.has))
 }
 
 func (p *peer) attachmentID() string { return p.claims.GetAttachmentId() }
@@ -212,8 +213,9 @@ func (a *Agent) newPeer(rc *relayConn, qc quic.Connection, dst netip.Addr) (*pee
 	return p, nil
 }
 
-// Connect opens a peer session to the agent at dst and exchanges keys with
-// it. It returns when PSP works in both directions.
+// Connect opens a peer session to the agent at dst on the relay session with
+// the lowest rank, and exchanges keys with it. It returns when PSP works in
+// both directions.
 func (a *Agent) Connect(ctx context.Context, dst netip.Addr) error {
 	rc := a.primary()
 	if rc == nil {
@@ -342,8 +344,8 @@ func (a *Agent) waitPeer(ctx context.Context, rc *relayConn, dst netip.Addr) (*p
 	for {
 		a.mu.Lock()
 		p, admitted := a.peerTo(rc, dst), a.admitted
-		if home := a.primaryLocked(); p == nil && rc.visitor && home != nil {
-			p = a.livePeerTo(home, dst)
+		if p == nil && rc.visitor() {
+			p = a.livePeerTo(rc.home, dst)
 		}
 		a.mu.Unlock()
 		if p != nil {
@@ -444,7 +446,7 @@ func (a *Agent) admit(p *peer, v *dp.Version, g *dp.AttachmentGrant, instance ui
 	if mode != dp.Mode_MODE_PSP && mode != dp.Mode_MODE_QUIC {
 		return fmt.Errorf("peer mode %v is not supported", mode)
 	}
-	if p.rc.visitor && !p.rc.data.Load() {
+	if p.rc.visitor() && !p.rc.data.Load() {
 		return a.admitIdle(p, v, g, instance)
 	}
 	if mode == dp.Mode_MODE_QUIC || p.rc.mode == dp.Mode_MODE_QUIC {
@@ -456,17 +458,17 @@ func (a *Agent) admit(p *peer, v *dp.Version, g *dp.AttachmentGrant, instance ui
 	}
 
 	a.mu.Lock()
-	// away is a session with the agent on the other relay session of a visit. One
-	// whose path works comes before the others.
+	// away is a session with the attachment on the other relay session of a visit,
+	// which has the same link. One whose path works comes before the others.
 	var old, away *peer
 	for _, q := range a.peers {
-		if q == p || q.bp == nil || !q.sameAgent(p.subject, instance, prefixes) {
+		if q == p || q.bp == nil || !q.sameAttachment(p.subject, claims.GetAttachmentId(), prefixes) {
 			continue
 		}
 		switch {
 		case q.rc == p.rc:
 			old = q
-		case q.rc.visitor != p.rc.visitor && (away == nil || away.idle || away.down):
+		case q.rc.link == p.rc.link && q.rc.visitor() != p.rc.visitor() && (away == nil || away.idle || away.down):
 			away = q
 		}
 	}
@@ -489,7 +491,7 @@ func (a *Agent) admit(p *peer, v *dp.Version, g *dp.AttachmentGrant, instance ui
 		}
 	}
 
-	bp, err := a.link.AddPeerLanes(p.rc.relayAddr, int(min(max(lanes, 1), keys.MaxLanes)))
+	bp, err := p.rc.link.AddPeerLanes(p.rc.relayAddr, int(min(max(lanes, 1), keys.MaxLanes)))
 	if err != nil {
 		return err
 	}
@@ -558,13 +560,13 @@ func (a *Agent) admitQUIC(p *peer, v *dp.Version, g *dp.AttachmentGrant, instanc
 	if err != nil {
 		return err
 	}
-	// A PSP pair with the same agent is from before the agent changed its mode.
-	// away is as in admit: a prefix has a route on one relay session only.
+	// A PSP pair with the same attachment is from before the agent changed its mode.
+	// away is as in admit: a prefix has a route on one relay session of a link only.
 	a.mu.Lock()
 	var old []*peer
 	var away *peer
 	for _, q := range a.peers {
-		if q == p || q.bp == nil || !q.sameAgent(p.subject, instance, prefixes) {
+		if q == p || q.bp == nil || !q.sameAttachment(p.subject, claims.GetAttachmentId(), prefixes) {
 			continue
 		}
 		switch {
@@ -572,7 +574,7 @@ func (a *Agent) admitQUIC(p *peer, v *dp.Version, g *dp.AttachmentGrant, instanc
 			if !q.quic {
 				old = append(old, q)
 			}
-		case q.rc.visitor != p.rc.visitor && (away == nil || away.idle || away.down):
+		case q.rc.link == p.rc.link && q.rc.visitor() != p.rc.visitor() && (away == nil || away.idle || away.down):
 			away = q
 		}
 	}

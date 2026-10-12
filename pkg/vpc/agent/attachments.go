@@ -13,6 +13,7 @@ import (
 	"net/netip"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay"
@@ -21,10 +22,6 @@ import (
 // maxInFlight is the most Attach calls of extra attachments that run at once
 // on one relay session.
 const maxInFlight = 128
-
-// moveWait limits the wait for the extra attachments on a new relay session
-// before the agent moves to it. Tests change it.
-var moveWait = 5 * time.Second
 
 var (
 	// ErrInvalidAttachment is the error for an AttachmentSpec that is not valid.
@@ -47,7 +44,8 @@ type AttachmentSpec struct {
 	Routes []netip.Prefix `json:"routes,omitempty"`
 }
 
-// Attachment is an attachment of the agent on its relay session.
+// Attachment is an attachment of the agent on one relay session. The agent
+// has each attachment on each attached session, with an address for each.
 type Attachment struct {
 	Name   string            `json:"name"`
 	Labels map[string]string `json:"labels,omitempty"`
@@ -59,6 +57,8 @@ type Attachment struct {
 	Prefixes []netip.Prefix `json:"prefixes,omitempty"`
 	// Base is true for the attachment of Config.
 	Base bool `json:"base"`
+	// Relay is the address of the relay of the session.
+	Relay string `json:"relay,omitempty"`
 }
 
 func (s *AttachmentSpec) validate() error {
@@ -78,72 +78,83 @@ func (s *AttachmentSpec) attachment() Attachment {
 	return Attachment{Name: s.Name, Labels: maps.Clone(s.Labels), Routes: slices.Clone(s.Routes)}
 }
 
-func (x *extra) attachment() Attachment {
+// attachmentOf returns the extra attachment x of rc.
+func (rc *relayConn) attachmentOf(x *extra) Attachment {
 	at := x.spec.attachment()
-	at.ID, at.Address, at.Prefixes = x.id, overlayAddr(x.prefixes), slices.Clone(x.prefixes)
+	at.ID, at.Address, at.Prefixes, at.Relay = x.id, overlayAddr(x.prefixes), slices.Clone(x.prefixes), rc.addr
 	return at
 }
 
-// Attach adds an attachment on the relay session of the agent. It returns
+// base returns the attachment of Config on the attached session rc.
+func (rc *relayConn) base() Attachment {
+	cfg := &rc.a.cfg
+	return Attachment{
+		Name: cfg.Name, Labels: maps.Clone(cfg.Labels), Routes: slices.Clone(cfg.Routes),
+		ID: rc.attachmentID, Address: rc.self, Prefixes: slices.Clone(rc.prefixes), Base: true, Relay: rc.addr,
+	}
+}
+
+// attachments returns the attachment of Config on rc, then the extra
+// attachments of rc by name. Agent.attMu must be held.
+func (rc *relayConn) attachments() []Attachment {
+	out := []Attachment{rc.base()}
+	for _, x := range rc.extras {
+		out = append(out, rc.attachmentOf(x))
+	}
+	slices.SortFunc(out[1:], func(x, y Attachment) int { return cmp.Compare(x.Name, y.Name) })
+	return out
+}
+
+// Attach adds an attachment on each attached relay session of the agent. It
+// returns the attachment on the session with the lowest rank that took it,
 // after the relay grant is verified and OnAttachment ran. The agent attaches
-// it again on each new relay session until Detach. ctx limits the wait for a
-// free Attach call.
+// it on each new relay session until Detach. ctx limits the wait for a free
+// Attach call.
 func (a *Agent) Attach(ctx context.Context, s AttachmentSpec) (Attachment, error) {
 	if err := s.validate(); err != nil {
 		return Attachment{}, err
 	}
 	sp := &AttachmentSpec{Name: s.Name, Labels: maps.Clone(s.Labels), Routes: slices.Clone(s.Routes)}
 	a.attMu.Lock()
-	rc := a.primary()
+	rcs := a.sessions(connAttached)
 	switch {
 	case s.Name == a.cfg.Name || a.specs[s.Name] != nil:
 		a.attMu.Unlock()
 		return Attachment{}, fmt.Errorf("%w: %s", ErrAttachmentExists, s.Name)
-	case rc == nil || rc.ended():
+	case len(rcs) == 0:
 		a.attMu.Unlock()
 		return Attachment{}, errNoRelay
 	}
 	a.specs[s.Name] = sp
-	// A new spec is not on rc yet, so claim marks it.
-	a.claim(rc, []*AttachmentSpec{sp})
+	// A new spec is on no session yet, so claim marks it.
+	for _, rc := range rcs {
+		a.claim(rc, []*AttachmentSpec{sp})
+	}
 	a.attMu.Unlock()
 
-	x, err := a.attachOne(ctx, rc, sp)
-	a.attMu.Lock()
-	// After a move, the new session can have it.
-	if y := a.onCurrent(sp); y != nil {
-		x, err = y, nil
+	xs, errs := make([]*extra, len(rcs)), make([]error, len(rcs))
+	var wg sync.WaitGroup
+	for i, rc := range rcs {
+		wg.Go(func() { xs[i], errs[i] = a.attachOne(ctx, rc, sp) })
 	}
-	var gone []placed
-	if err != nil {
-		gone = a.forget(sp)
+	wg.Wait()
+	i := slices.IndexFunc(xs, func(x *extra) bool { return x != nil })
+	if i < 0 {
+		a.attMu.Lock()
+		gone := a.forget(sp)
+		a.attMu.Unlock()
+		a.detachRelay(context.WithoutCancel(ctx), gone)
+		a.deliver()
+		return Attachment{}, errors.Join(errs...)
 	}
-	a.attMu.Unlock()
-	a.detachRelay(context.WithoutCancel(ctx), gone)
 	a.deliver()
-	if err != nil {
-		return Attachment{}, err
-	}
-	return x.attachment(), nil
+	// keepAttachments attaches it on the sessions that failed.
+	a.wakeAttach()
+	return rcs[i].attachmentOf(xs[i]), nil
 }
 
-// onCurrent returns the attachment of s on the current relay session, or nil.
-// attMu must be held.
-func (a *Agent) onCurrent(s *AttachmentSpec) *extra {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	rc := a.primaryLocked()
-	if rc == nil {
-		return nil
-	}
-	if x := rc.named(s.Name); x != nil && x.spec == s {
-		return x
-	}
-	return nil
-}
-
-// Detach removes the extra attachment name from the relay session and from
-// the peers, then runs OnDetach.
+// Detach removes the extra attachment name from the relay sessions and from
+// the peers, then runs OnDetach for each session.
 func (a *Agent) Detach(ctx context.Context, name string) error {
 	a.attMu.Lock()
 	s := a.specs[name]
@@ -162,30 +173,35 @@ func (a *Agent) Detach(ctx context.Context, name string) error {
 	return nil
 }
 
-// Attachments returns the attachment of Config, then the extra attachments
-// by name.
+// Attachments returns the attachment of Config on each relay session in rank
+// order, then the extra attachments by name, one for each session that has it.
+// An attachment that no session has is there one time, with no address.
 func (a *Agent) Attachments() []Attachment {
 	a.attMu.Lock()
 	defer a.attMu.Unlock()
 	a.routeMu.Lock()
 	defer a.routeMu.Unlock()
-	base := Attachment{Name: a.cfg.Name, Labels: maps.Clone(a.cfg.Labels), Routes: slices.Clone(a.cfg.Routes), Base: true}
-	on := map[string]*extra{}
-	if rc := a.primary(); rc != nil && !rc.ended() {
-		base.ID, base.Address, base.Prefixes = rc.attachmentID, rc.self, slices.Clone(rc.prefixes)
-		for _, x := range rc.extras {
-			on[x.spec.Name] = x
-		}
+	rcs := a.sessions(connAttached, connDraining)
+	var out []Attachment
+	for _, rc := range rcs {
+		out = append(out, rc.base())
 	}
-	out := []Attachment{base}
+	if len(rcs) == 0 {
+		out = append(out, Attachment{Name: a.cfg.Name, Labels: maps.Clone(a.cfg.Labels), Routes: slices.Clone(a.cfg.Routes), Base: true})
+	}
+	n := len(out)
 	for _, s := range a.specs {
-		if x := on[s.Name]; x != nil {
-			out = append(out, x.attachment())
-		} else {
+		on := false
+		for _, rc := range rcs {
+			if x := rc.named(s.Name); x != nil {
+				out, on = append(out, rc.attachmentOf(x)), true
+			}
+		}
+		if !on {
 			out = append(out, s.attachment())
 		}
 	}
-	slices.SortFunc(out[1:], func(x, y Attachment) int { return cmp.Compare(x.Name, y.Name) })
+	slices.SortStableFunc(out[n:], func(x, y Attachment) int { return cmp.Compare(x.Name, y.Name) })
 	return out
 }
 
@@ -253,14 +269,18 @@ func (a *Agent) attachClaimed(rc *relayConn, s *AttachmentSpec) (*extra, error) 
 	x, err := rc.attachExtra(ctx, s)
 	a.attMu.Lock()
 	a.unclaim(rc, s)
+	a.mu.Lock()
+	if err == nil && !rc.live() {
+		// The session ended, and the relay removed the attachment with it.
+		x, err = nil, errors.New("relay session closed")
+	}
+	a.mu.Unlock()
 	stale := err == nil && a.specs[s.Name] != s
 	var visitors []*relayConn
 	if err == nil && !stale {
 		a.addExtra(rc, x)
 		visitors = a.visitorsOf(rc)
-		if a.primary() == rc {
-			a.queueAttached(x)
-		}
+		a.queueAttached(rc, x)
 	}
 	a.attMu.Unlock()
 	if stale {
@@ -330,27 +350,6 @@ func (a *Agent) wanted() []*AttachmentSpec {
 	return slices.Collect(maps.Values(a.specs))
 }
 
-// moveExtras attaches the extra attachments on next before the agent moves
-// to it from old. It waits at most moveWait, and stops when old ends. Then
-// keepAttachments attaches the rest.
-func (a *Agent) moveExtras(ctx context.Context, old, next *relayConn) {
-	a.attMu.Lock()
-	specs := a.claim(next, a.wanted())
-	a.attMu.Unlock()
-	if len(specs) == 0 {
-		return
-	}
-	ctx, cancel := context.WithTimeout(ctx, moveWait)
-	defer cancel()
-	// With old closed, the agent has no working session, so it moves at once.
-	stop := context.AfterFunc(old.qc.Context(), cancel)
-	defer stop()
-	n, err := a.attachAll(ctx, next, specs)
-	if n > 0 || ctx.Err() != nil {
-		slog.Info("Moving to the new relay session before all extra attachments attach", "relay", next.addr, "failed", n, "error", err)
-	}
-}
-
 func (a *Agent) wakeAttach() {
 	select {
 	case a.attachWake <- struct{}{}:
@@ -358,15 +357,13 @@ func (a *Agent) wakeAttach() {
 	}
 }
 
-// keepAttachments attaches the extra attachments that the relay session does
-// not have: after a move to a new session, and with backoff after a failure.
+// keepAttachments attaches the extra attachments that an attached relay session
+// does not have: after each attach, and with backoff after a failure.
 func (a *Agent) keepAttachments(ctx context.Context) {
 	retry := time.NewTimer(maxBackoff)
 	retry.Stop()
 	defer retry.Stop()
 	backoff := minBackoff
-	var last *relayConn
-	var retryAt time.Time
 	for {
 		select {
 		case <-ctx.Done():
@@ -374,30 +371,37 @@ func (a *Agent) keepAttachments(ctx context.Context) {
 		case <-a.attachWake:
 		case <-retry.C:
 		}
-		rc := a.primary()
-		if rc != last {
-			last, backoff, retryAt = rc, minBackoff, time.Time{}
-		}
-		if rc == nil || rc.ended() || time.Now().Before(retryAt) {
+		if a.attachMissing(ctx) {
+			backoff = minBackoff
 			continue
 		}
+		retry.Reset(rand.N(backoff) + 1)
+		backoff = min(2*backoff, maxBackoff)
+	}
+}
+
+// attachMissing attaches on each attached session the extra attachments that
+// it does not have. It reports false when one failed on a session that is open.
+func (a *Agent) attachMissing(ctx context.Context) bool {
+	var wg sync.WaitGroup
+	var failed atomic.Bool
+	for _, rc := range a.sessions(connAttached) {
 		a.attMu.Lock()
 		specs := a.claim(rc, a.wanted())
 		a.attMu.Unlock()
 		if len(specs) == 0 {
 			continue
 		}
-		n, err := a.attachAll(ctx, rc, specs)
-		if n == 0 || ctx.Err() != nil {
-			backoff = minBackoff
-			continue
-		}
-		slog.Warn("Failed to attach extra attachments", "relay", rc.addr, "failed", n, "error", err)
-		wait := rand.N(backoff) + 1
-		retryAt = time.Now().Add(wait)
-		retry.Reset(wait)
-		backoff = min(2*backoff, maxBackoff)
+		wg.Go(func() {
+			n, err := a.attachAll(ctx, rc, specs)
+			if n > 0 && ctx.Err() == nil && !rc.ended() {
+				failed.Store(true)
+				slog.Warn("Failed to attach extra attachments", "relay", rc.addr, "failed", n, "error", err)
+			}
+		})
 	}
+	wg.Wait()
+	return !failed.Load()
 }
 
 // placed is an extra attachment on a relay session.
@@ -407,14 +411,13 @@ type placed struct {
 }
 
 // forget removes s from the attachments to keep, and its attachments from the
-// relay sessions and their peers. It queues OnDetach for the attachment on the
-// current session. attMu must be held.
+// relay sessions and their peers. It queues OnDetach for the attachment on
+// each session that is not a visitor session. attMu must be held.
 func (a *Agent) forget(s *AttachmentSpec) []placed {
 	if a.specs[s.Name] == s {
 		delete(a.specs, s.Name)
 	}
 	a.mu.Lock()
-	cur := a.primaryLocked()
 	var out []placed
 	for _, rc := range a.conns {
 		if x := rc.named(s.Name); x != nil {
@@ -424,8 +427,8 @@ func (a *Agent) forget(s *AttachmentSpec) []placed {
 	a.mu.Unlock()
 	for _, p := range out {
 		a.removeExtra(p.rc, p.x.id)
-		if p.rc == cur {
-			a.queueDetached(p.x)
+		if !p.rc.visitor() {
+			a.queueDetached(p.rc, p.x)
 		}
 	}
 	return out
@@ -458,37 +461,18 @@ func (a *Agent) detachRelay(ctx context.Context, ps []placed) {
 	}
 }
 
-// queueMove queues the callbacks for the extra attachments when the agent
-// moves from old to rc. attMu must be held.
-func (a *Agent) queueMove(old, rc *relayConn) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	on := make(map[string]bool, len(rc.extras))
-	for _, x := range rc.extras {
-		on[x.spec.Name] = true
-		a.queueAttached(x)
-	}
-	if old != nil {
-		for _, x := range old.extras {
-			if !on[x.spec.Name] {
-				a.queueDetached(x)
-			}
-		}
-	}
-}
-
-// queueAttached queues OnAttachment for x. attMu must be held.
-func (a *Agent) queueAttached(x *extra) {
+// queueAttached queues OnAttachment for x on rc. attMu must be held.
+func (a *Agent) queueAttached(rc *relayConn, x *extra) {
 	if f := a.cfg.OnAttachment; f != nil {
-		at := x.attachment()
+		at := rc.attachmentOf(x)
 		a.events = append(a.events, func() { f(at) })
 	}
 }
 
-// queueDetached queues OnDetach for x. attMu must be held.
-func (a *Agent) queueDetached(x *extra) {
+// queueDetached queues OnDetach for x on rc. attMu must be held.
+func (a *Agent) queueDetached(rc *relayConn, x *extra) {
 	if f := a.cfg.OnDetach; f != nil {
-		at := x.attachment()
+		at := rc.attachmentOf(x)
 		a.events = append(a.events, func() { f(at) })
 	}
 }

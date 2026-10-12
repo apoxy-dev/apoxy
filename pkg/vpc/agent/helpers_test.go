@@ -414,8 +414,10 @@ type testAgent struct {
 	routeLog []string              // "+prefix" or "-prefix" from OnRoutes, in order.
 
 	extraMu sync.Mutex
-	extras  map[string]netip.Addr // From OnAttachment and OnDetach.
-	log     []string              // "attach name address" or "detach name address", in order.
+	extras  map[string]netip.Addr // Last address of each extra attachment, from OnAttachment and OnDetach.
+	// log has "attach name address", "deprecate name address" or "detach name
+	// address" for each callback of an address, in order.
+	log []string
 }
 
 type agentOptions struct {
@@ -440,7 +442,7 @@ type agentOptions struct {
 	identityPath string
 
 	relays   []identity.Relay // Config.Relays. Nil means the relay of the agent.
-	sessions int              // Config.Sessions.
+	sessions int              // Config.Sessions. Zero means 1.
 	noRoots  bool             // No Config.RelayRoots.
 	// enrolled gives the relays and the relay roots of enroll n, from 1. Then
 	// Config.Relays is empty.
@@ -651,7 +653,7 @@ func (w *world) agent(t *testing.T, name string, r *testRelay, opts agentOptions
 		Identity:      ids,
 		Relays:        opts.relays,
 		RelayRoots:    w.relayCA.Pool(),
-		Sessions:      opts.sessions,
+		Sessions:      cmp.Or(opts.sessions, 1),
 		Transport:     ta.tr,
 		TransportMode: opts.mode,
 		Name:          name,
@@ -660,6 +662,7 @@ func (w *world) agent(t *testing.T, name string, r *testRelay, opts agentOptions
 
 		LocalRoutesOnly: opts.localRoutesOnly,
 		OnAttach: func(b *psp.Binding, addr netip.Addr, prefixes []netip.Prefix) {
+			ta.note("attach", name, addr)
 			ta.netstack(t, b, addr, opts.tcp)
 			ta.attach <- attachEvent{addr, prefixes}
 		},
@@ -683,22 +686,23 @@ func (w *world) agent(t *testing.T, name string, r *testRelay, opts agentOptions
 		},
 		OnAttachment: func(at Attachment) {
 			ta.extraMu.Lock()
-			old := ta.extras[at.Name]
 			ta.extras[at.Name] = at.Address
-			ta.log = append(ta.log, "attach "+at.Name+" "+at.Address.String())
 			ta.extraMu.Unlock()
-			if old != at.Address {
-				ta.removeAddr(t, old)
-				ta.netstack(t, ta.binding(), at.Address, opts.tcp)
-			}
+			ta.note("attach", at.Name, at.Address)
+			ta.netstack(t, ta.binding(), at.Address, opts.tcp)
+		},
+		OnDeprecated: func(at Attachment) {
+			ta.note("deprecate", at.Name, at.Address)
+			ta.deprecateAddr(t, at.Address)
 		},
 		OnDetach: func(at Attachment) {
 			ta.extraMu.Lock()
-			old := ta.extras[at.Name]
-			delete(ta.extras, at.Name)
-			ta.log = append(ta.log, "detach "+at.Name+" "+at.Address.String())
+			if ta.extras[at.Name] == at.Address {
+				delete(ta.extras, at.Name)
+			}
 			ta.extraMu.Unlock()
-			ta.removeAddr(t, old)
+			ta.note("detach", at.Name, at.Address)
+			ta.removeAddr(t, at.Address)
 		},
 	}
 	if cfg.Relays == nil && opts.enrolled == nil && !opts.identityFile {
@@ -775,7 +779,27 @@ func (ta *testAgent) extraAddr(name string) netip.Addr {
 	return ta.extras[name]
 }
 
-// events returns the OnAttachment and OnDetach calls for name.
+// note adds a callback of an address to the log.
+func (ta *testAgent) note(event, name string, addr netip.Addr) {
+	ta.extraMu.Lock()
+	defer ta.extraMu.Unlock()
+	ta.log = append(ta.log, event+" "+name+" "+addr.String())
+}
+
+// deprecateAddr makes addr not preferred in the netstack.
+func (ta *testAgent) deprecateAddr(t *testing.T, addr netip.Addr) {
+	var err error
+	if ta.ns != nil {
+		err = ta.ns.DeprecateAddr(netip.PrefixFrom(addr, addr.BitLen()))
+	} else if terr := ta.stack.SetAddressLifetimes(1, tcpip.AddrFromSlice(addr.AsSlice()), stack.AddressLifetimes{Deprecated: true}); terr != nil {
+		err = errors.New(terr.String())
+	}
+	if err != nil {
+		t.Errorf("deprecate address %s: %v", addr, err)
+	}
+}
+
+// events returns the callbacks for the addresses of the attachment name.
 func (ta *testAgent) events(name string) []string {
 	ta.extraMu.Lock()
 	defer ta.extraMu.Unlock()

@@ -318,8 +318,9 @@ func TestPeerAfterMoveToOtherRelay(t *testing.T) {
 	}
 }
 
-// TestPeerAfterDrain drains the relay of agent a, which moves to the first of the
-// other relays. Agent b is on that relay or on a third relay, and does not move.
+// TestPeerAfterDrain drains the relay of agent a, which attaches to the first of
+// the other relays. Agent b is on that relay or on a third relay. After the
+// drain ends, a and b have one peer session, on the new relay session of a.
 func TestPeerAfterDrain(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -350,21 +351,12 @@ func TestPeerAfterDrain(t *testing.T) {
 			assert.Equal(t, dp.Reach_REACH_TRUNK, a.resolved(t, eb.addr).GetReach())
 			ping(t, a.stack, ea.addr, eb.addr, 9000, "before the drain")
 
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			done := make(chan struct{})
-			go func() {
-				defer close(done)
-				r1.srv.Drain(ctx, r1.mesh.Alternates())
-			}()
+			prev := a.current()
+			end := drain(t, r1, r1.mesh.Alternates())
 			moved := a.attached(t)
 			require.Equal(t, r2.addr, a.current().addr, "relay of a after the drain")
-			select {
-			case <-done:
-				require.NoError(t, ctx.Err(), "the agent closed its session before the drain time ended")
-			case <-time.After(10 * time.Second):
-				t.Fatal("drain did not end")
-			}
+			end()
+			closedByDrain(t, prev)
 			echo(t, a.stack, moved.addr, 9001)
 
 			// The peer session through relay-1 ended. The new one starts at relay-2.

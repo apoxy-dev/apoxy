@@ -87,13 +87,13 @@ type Config struct {
 	// Identity keeps the agent cert and the relays from enroll. Run starts it.
 	Identity *identity.Manager
 	// Relays are the relays to dial, in place of the relays of the agent cert.
-	// The agent attaches to the relay with the lowest round-trip time.
+	// The agent attaches to the relays with the lowest round-trip times.
 	Relays []identity.Relay
 	// RelayRoots check relay certs and peer grants, in place of the roots of
 	// the agent cert. With neither, the agent uses the system roots.
 	RelayRoots *x509.CertPool
-	// Sessions is the number of relay sessions to keep, 1 to 3. The agent keeps
-	// one attached session for each value: the value has no effect yet.
+	// Sessions is the number of attached relay sessions to keep, 1 to 3, each on
+	// its own relay. Each session has its own overlay address. Zero means 2.
 	Sessions int
 	// Transport is the agent socket for the relay sessions and PSP. New sets its
 	// NonQUICPacketHandler, NonQUICBatchEnd and EnableGRO, so it must not be in use
@@ -105,19 +105,23 @@ type Config struct {
 	Name   string
 	Labels map[string]string
 	Routes []netip.Prefix
-	// OnAttach gets the binding, the overlay address and the prefixes after
-	// each attach.
+	// OnAttach gets the binding, and the overlay address and the prefixes of a
+	// relay session after it attaches: the agent has one more address.
 	OnAttach func(b *psp.Binding, addr netip.Addr, prefixes []netip.Prefix)
 	// OnRoutes gets the changes to the prefixes of the other attachments in
 	// the VPC, after OnAttach. The agent calls it from one goroutine at a time.
 	OnRoutes func(add, remove []netip.Prefix)
-	// OnAttachment gets an extra attachment after each attach: after Attach,
-	// and after a move to a new relay session, where its address changes.
+	// OnAttachment gets an extra attachment after it attaches on a relay
+	// session: one call for each session.
 	OnAttachment func(at Attachment)
-	// OnDetach gets an extra attachment after Detach, and after a move to a
-	// relay session that does not have it yet. The agent calls OnAttach,
-	// OnAttachment and OnDetach in order, one at a time. The callbacks must
-	// not call Attach, Detach or Attachments.
+	// OnDeprecated gets each attachment of a relay session whose relay drains,
+	// the attachment of Config too. New connections must not use its address.
+	OnDeprecated func(at Attachment)
+	// OnDetach gets an extra attachment after Detach, and each attachment of a
+	// relay session that ended, the attachment of Config too: the agent lost
+	// the address. The agent calls OnAttach, OnAttachment, OnDeprecated and
+	// OnDetach in order, one at a time. The callbacks must not call Attach,
+	// Detach or Attachments.
 	OnDetach func(at Attachment)
 	// MTU sets the device MTU, from 1280 to the VPC MTU, with no path probe.
 	// Zero means the VPC MTU if the path to the relay carries it, else 1280.
@@ -127,8 +131,8 @@ type Config struct {
 	LocalRoutesOnly bool
 }
 
-// Agent keeps an attached relay session for one VPC, and runs the peer
-// sessions on it.
+// Agent keeps attached relay sessions for one VPC, and runs the peer sessions
+// on them.
 type Agent struct {
 	cfg      Config
 	ver      *dp.Version // Protocol version of the agent. Nil is revision 0. Tests change it.
@@ -139,8 +143,11 @@ type Agent struct {
 	holds    holds
 	quicCfg  *quic.Config  // relayQUIC with the loss tracer.
 	quicLost atomic.Uint64 // 1-RTT packets that relay connections lost.
-	// wake gets a value when a relay session ends. Run reads it.
+	// wake gets a value when a relay session ends or starts to drain. Run reads it.
 	wake chan struct{}
+	// watchers has the goroutines that follow the attached sessions. Run waits
+	// for them.
+	watchers sync.WaitGroup
 
 	probeMu sync.Mutex
 	probes  map[[8]byte]*pathProbe // Path probes that run, by SID.
@@ -155,18 +162,16 @@ type Agent struct {
 	attMu      sync.Mutex
 	specs      map[string]*AttachmentSpec // Extra attachments to keep, by name.
 	events     []func()                   // Callbacks that wait to run, in order.
-	shown      *relayConn                 // Session whose attachments the callbacks gave last.
 	attachWake chan struct{}
 
 	// Lock order: cbMu, then attMu or admitMu, then routeMu, then mu.
 	// holds.mu is never held with another lock.
 	mu sync.Mutex
 	// conns has each relay session from its dial until it ends, in dial order:
-	// the sessions of the attachment, and the visitor sessions.
+	// the sessions with the attachments, and the visitor sessions.
 	conns    []*relayConn
 	stopped  bool // Run ended.
 	bind     *psp.Binding
-	link     *psp.Link // Routes of the relay session. Set with bind.
 	peers    map[*rpc.Conn]*peer
 	admitted chan struct{} // Closed and replaced when a peer session opens or gets grants.
 
@@ -178,7 +183,7 @@ type Agent struct {
 	rttBand, rttWaitMin, rttWaitMax time.Duration
 
 	routeMu  sync.Mutex
-	routesOf *relayConn            // Session that OnRoutes follows.
+	routesOf *relayConn            // Session that OnRoutes follows: the last primary session.
 	reported map[netip.Prefix]bool // Prefixes that OnRoutes has.
 }
 
@@ -232,7 +237,8 @@ func (a *Agent) DNS() (servers, search []string) {
 	return rc.dnsServers, rc.dnsSearch
 }
 
-// Status is the data transport of the current attachment.
+// Status is the data transport of the agent. The fields of one session are
+// those of the session with the lowest rank that does not drain.
 type Status struct {
 	Mode   dp.Mode           // Unspecified before the first attach.
 	Reason dp.FallbackReason // Why Mode is QUIC.
@@ -240,31 +246,59 @@ type Status struct {
 	Connect time.Duration
 	// Time from the start of the connect to the end of the attach.
 	Setup time.Duration
-	// Open peer sessions of the current attachment.
+	// Open peer sessions on all relay sessions.
 	Peers int
 	// Smoothed round-trip time to the relay. Zero before the first sample
 	// and after the relay session ends.
 	RTT time.Duration
+	// Connections has the attached and the draining relay sessions, in rank order.
+	Connections []ConnStatus
 }
 
-// Status returns the data transport of the current attachment.
+// ConnStatus is one relay session of the agent with its address.
+type ConnStatus struct {
+	Relay   string     // Address of the relay.
+	Address netip.Addr // Overlay address of the agent on this session.
+	Rank    uint32     // The relays and the agent prefer the lowest rank.
+	// Draining is true after the relay started to drain: the address is not
+	// preferred, and the session ends when the relay closes it.
+	Draining bool
+	Mode     dp.Mode
+	Reason   dp.FallbackReason // Why Mode is QUIC.
+	RTT      time.Duration     // Smoothed round-trip time to the relay.
+	Peers    int               // Open peer sessions on this session.
+}
+
+// Status returns the data transport of the agent.
 func (a *Agent) Status() Status {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	rc := a.primaryLocked()
-	if rc == nil {
-		return Status{}
+	var st Status
+	if rc := a.primaryLocked(); rc != nil {
+		st = Status{Mode: rc.mode, Reason: rc.reason, Connect: rc.connect, Setup: rc.setup, RTT: rc.liveRTT()}
 	}
-	st := Status{Mode: rc.mode, Reason: rc.reason, Connect: rc.connect, Setup: rc.setup}
-	for _, p := range a.peers {
-		if p.rc == rc && p.bp != nil && p.qc.Context().Err() == nil {
-			st.Peers++
+	for _, rc := range a.sessionsLocked(connAttached, connDraining) {
+		c := ConnStatus{
+			Relay: rc.addr, Address: rc.self, Rank: rc.rank, Draining: rc.state == connDraining,
+			Mode: rc.mode, Reason: rc.reason, RTT: rc.liveRTT(),
 		}
-	}
-	if !rc.ended() {
-		st.RTT = time.Duration(rc.rtt.Load())
+		for _, p := range a.peers {
+			if p.rc == rc && p.bp != nil && p.qc.Context().Err() == nil {
+				c.Peers++
+			}
+		}
+		st.Peers += c.Peers
+		st.Connections = append(st.Connections, c)
 	}
 	return st
+}
+
+// liveRTT returns the smoothed round-trip time of rc, or zero after rc ended.
+func (rc *relayConn) liveRTT() time.Duration {
+	if rc.ended() {
+		return 0
+	}
+	return time.Duration(rc.rtt.Load())
 }
 
 func transportName(m dp.Mode) string {
@@ -356,7 +390,7 @@ func (rc *relayConn) hello(begin time.Time) error {
 		// The relay tells two processes with one identity and one name apart by the instance.
 		Instance: rc.a.instance,
 		// A relay takes a Visit call only on a session with local routes.
-		LocalRoutesOnly: rc.a.cfg.LocalRoutesOnly || rc.visitor,
+		LocalRoutesOnly: rc.a.cfg.LocalRoutesOnly || rc.visitor(),
 	}}}); err != nil {
 		return err
 	}
@@ -392,8 +426,9 @@ func (rc *relayConn) hello(begin time.Time) error {
 	return nil
 }
 
-// attach runs Attach on rc after hello, then makes the binding, the peer
-// listener, and the relay SAs or the QUIC shards. The connect started at begin.
+// attach runs Attach on rc after hello, then makes the link of rc in the
+// binding, the peer listener, and the relay SAs or the QUIC shards. The
+// connect started at begin.
 func (rc *relayConn) attach(ctx context.Context, begin time.Time) error {
 	a := rc.a
 	ctx, cancel := context.WithTimeout(ctx, openTimeout)
@@ -410,10 +445,13 @@ func (rc *relayConn) attach(ctx context.Context, begin time.Time) error {
 	if pathMTU != 0 {
 		probed = rc.probe(ctx, pathMTU)
 	}
-	res, err := rc.c.Attach(ctx, &dp.AttachRequest{Vpc: rc.ref, Name: a.cfg.Name, Labels: a.cfg.Labels, Routes: prefixStrings(a.cfg.Routes)})
+	res, err := rc.c.Attach(ctx, &dp.AttachRequest{
+		Vpc: rc.ref, Name: a.cfg.Name, Labels: a.cfg.Labels, Routes: prefixStrings(a.cfg.Routes), Rank: rc.rank,
+	})
 	if err != nil {
 		return attachError(rc, fmt.Errorf("attach: %w", err))
 	}
+	rc.logRefused(a.cfg.Name, res.GetRoutes())
 	// A bad relay cert fails the attach, not each peer session.
 	if rc.claims, err = relay.VerifyGrant(res.GetGrant(), rc.roots, time.Now()); err != nil {
 		return relayUpgrade(rc.addr, err)
@@ -434,13 +472,26 @@ func (rc *relayConn) attach(ctx context.Context, begin time.Time) error {
 	if rc.mode == dp.Mode_MODE_PSP {
 		rc.registerLanes(ctx, b)
 	}
-	p, err := a.link.AddPeer(rc.relayAddr)
+	l, err := b.AddLink()
+	if err != nil {
+		return err
+	}
+	a.mu.Lock()
+	rc.link = l
+	a.mu.Unlock()
+	// The packets from the addresses of rc go on rc.
+	for _, pfx := range prefixes {
+		if err := l.AddSource(pfx); err != nil {
+			return fmt.Errorf("source %s: %w", pfx, err)
+		}
+	}
+	p, err := l.AddPeer(rc.relayAddr)
 	if err != nil {
 		return err
 	}
 	rc.setRelayPeer(p)
 	rc.pc = peerconn.New(rc.qc, rc.self)
-	rc.pc.HandleData(a.link.HandleData)
+	rc.pc.HandleData(l.HandleData)
 	if rc.mode == dp.Mode_MODE_QUIC {
 		// The routes of a session in QUIC mode go to its relay peer.
 		if err := p.UseQUIC(rc.pc); err != nil {
@@ -519,6 +570,16 @@ func (rc *relayConn) keepLanes(b *psp.Binding) {
 	}
 }
 
+// logRefused logs the advertised routes of the attachment name that the relay
+// refused. The attachment works without them.
+func (rc *relayConn) logRefused(name string, routes []*dp.RouteStatus) {
+	for _, r := range routes {
+		if r.GetResult() != dp.RouteResult_ROUTE_RESULT_ACCEPTED {
+			slog.Warn("Relay refused an advertised route", "relay", rc.addr, "name", name, "route", r.GetPrefix(), "result", r.GetResult())
+		}
+	}
+}
+
 // sendLanes returns the send lanes of rc: 1 when the relay took no lane ports.
 func (rc *relayConn) sendLanes() uint32 {
 	return uint32(max(rc.lanes.Load(), 1))
@@ -561,15 +622,10 @@ func (a *Agent) binding(cfg *dp.Config, pathMTU int) (*psp.Binding, error) {
 	if err != nil {
 		return nil, err
 	}
-	l, err := b.AddLink()
-	if err != nil {
-		_ = b.Close()
-		return nil, err
-	}
 	if dev < mtu {
 		slog.Info("Using a device MTU below the VPC MTU", "mtu", mtu, "device_mtu", dev)
 	}
-	a.bind, a.link = b, l
+	a.bind = b
 	return b, nil
 }
 
@@ -741,8 +797,8 @@ func (a *Agent) removeRoutes(rc *relayConn, removed []*dp.Route) {
 	}
 }
 
-// close closes the connection of rc, its peer sessions and its peer transport.
-// Only Agent.end calls it.
+// close closes the connection of rc, its peer sessions, its peer transport and
+// its link. Only Agent.end calls it.
 func (rc *relayConn) close() {
 	rc.a.closePeers(func(p *peer) bool { return p.rc == rc }, "relay session closed")
 	// The connection closes before its calls stop. A Session call that stops
@@ -758,6 +814,9 @@ func (rc *relayConn) close() {
 		// Close the packet connection first to end the transport read loop.
 		_ = rc.pc.Close()
 		_ = rc.peerTr.Close()
+	}
+	if rc.link != nil && !rc.visitor() {
+		rc.a.bind.RemoveLink(rc.link)
 	}
 }
 

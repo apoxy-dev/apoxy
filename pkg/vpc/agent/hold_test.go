@@ -42,9 +42,9 @@ func TestHoldLimits(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var h holds
 			now := time.Unix(1000, 0)
-			dsts := make([]netip.Addr, tc.dsts)
+			dsts := make([]holdKey, tc.dsts)
 			for i := range dsts {
-				dsts[i] = netip.AddrFrom16([16]byte{0xfd, 14: byte(i >> 8), 15: byte(i)})
+				dsts[i].dst = netip.AddrFrom16([16]byte{0xfd, 14: byte(i >> 8), 15: byte(i)})
 			}
 			opens := 0
 			for i := range tc.pkts {
@@ -89,7 +89,7 @@ func TestHoldWait(t *testing.T) {
 		{name: "this agent is too old", errs: []error{fmt.Errorf("open: %w", ErrUpgrade)}, wait: maxRetry},
 		{name: "peer is too old", errs: []error{fmt.Errorf("peer: %w", errRevision)}, wait: maxRetry},
 	}
-	dst := netip.MustParseAddr("fd61:706f:7879:12:3400:2::1")
+	dst := holdKey{dst: netip.MustParseAddr("fd61:706f:7879:12:3400:2::1")}
 	pkt := make([]byte, 100)
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -147,7 +147,7 @@ func TestHoldWait(t *testing.T) {
 func TestOnce(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		var h holds
-		k1, k2 := netip.MustParseAddr("fd00::1"), netip.MustParseAddr("fd00::2")
+		k1, k2 := holdKey{dst: netip.MustParseAddr("fd00::1")}, holdKey{dst: netip.MustParseAddr("fd00::2")}
 		release, want := make(chan struct{}), errors.New("dial failed")
 		var runs atomic.Int32
 		open := func() error {

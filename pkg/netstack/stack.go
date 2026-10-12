@@ -270,6 +270,16 @@ func (s *Stack) DelAddr(addr netip.Prefix) error {
 	return nil
 }
 
+// DeprecateAddr makes addr not preferred: a new connection from the stack uses
+// another address of the NIC if one fits. Open connections keep addr.
+func (s *Stack) DeprecateAddr(addr netip.Prefix) error {
+	nsAddr := tcpip.AddrFromSlice(addr.Addr().AsSlice())
+	if err := s.Stack.SetAddressLifetimes(s.NICID, nsAddr, stack.AddressLifetimes{Deprecated: true}); err != nil {
+		return fmt.Errorf("could not deprecate address: %v", err)
+	}
+	return nil
+}
+
 // ForwardTo forwards all inbound TCP and UDP traffic to the upstream network.
 func (s *Stack) ForwardTo(ctx context.Context, upstream network.Network) error {
 	// Allow outgoing packets to have a source address different from the NIC.

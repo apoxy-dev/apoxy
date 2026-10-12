@@ -72,7 +72,7 @@ func (w *world) stubAgent(t *testing.T, name string) *Agent {
 		_ = udp.Close()
 	})
 	a.bind = b
-	a.link, err = b.AddLink()
+	l, err := b.AddLink()
 	require.NoError(t, err)
 	rc := &relayConn{
 		a:         a,
@@ -83,10 +83,11 @@ func (w *world) stubAgent(t *testing.T, name string) *Agent {
 		ref:       &dp.VPCRef{ProjectId: testProject, VpcUid: testVPC, NetworkId: testVNI},
 		relayAddr: netip.MustParseAddrPort("127.0.0.1:443"),
 		sem:       make(chan struct{}, maxInFlight),
+		link:      l,
 	}
 	rc.ctx, rc.cancel = context.WithCancel(context.Background())
 	t.Cleanup(rc.cancel)
-	rc.relay, err = a.link.AddPeer(rc.relayAddr)
+	rc.relay, err = l.AddPeer(rc.relayAddr)
 	require.NoError(t, err)
 	a.conns = []*relayConn{rc}
 	return a
@@ -227,7 +228,7 @@ func TestAdmit(t *testing.T) {
 				a.primary().mode = dp.Mode_MODE_QUIC
 			}
 			if tc.taken {
-				bp, err := a.link.AddPeer(netip.MustParseAddrPort("127.0.0.1:443"))
+				bp, err := a.primary().link.AddPeer(netip.MustParseAddrPort("127.0.0.1:443"))
 				require.NoError(t, err)
 				require.NoError(t, a.bind.AddRoute(netip.MustParsePrefix("fd00:b::/96"), bp))
 			}
@@ -478,7 +479,7 @@ func TestWaitKeys(t *testing.T) {
 			open := func() (*peer, *fakeConn) {
 				p, qc := stubPeer(a, "b", true)
 				var err error
-				p.bp, err = a.link.AddPeer(a.primary().relayAddr)
+				p.bp, err = a.primary().link.AddPeer(a.primary().relayAddr)
 				require.NoError(t, err)
 				p.prefixes = []netip.Prefix{netip.MustParsePrefix("fd00:b::/96")}
 				return p, qc
@@ -624,14 +625,14 @@ func TestApplyKeys(t *testing.T) {
 			p, _ := stubPeer(a, "b", false)
 			p.addr = netip.MustParseAddr("fd00:b::1")
 			var err error
-			p.bp, err = a.link.AddPeer(a.primary().relayAddr)
+			p.bp, err = a.primary().link.AddPeer(a.primary().relayAddr)
 			require.NoError(t, err)
-			probe, err := a.link.AddPeer(a.primary().relayAddr)
+			probe, err := a.primary().link.AddPeer(a.primary().relayAddr)
 			require.NoError(t, err)
 			r := &spiRelay{t: t, probe: probe}
 			a.primary().c = r
 			if tc.other != nil {
-				q, err := a.link.AddPeer(a.primary().relayAddr)
+				q, err := a.primary().link.AddPeer(a.primary().relayAddr)
 				require.NoError(t, err)
 				_, err = q.Apply(sas(keys.OpOffer, tc.other...), time.Now())
 				require.NoError(t, err)
@@ -679,9 +680,9 @@ func TestRefreshSPIs(t *testing.T) {
 			p, qc := stubPeer(a, "b", false)
 			p.addr = netip.MustParseAddr("fd00:b::1")
 			var err error
-			p.bp, err = a.link.AddPeer(a.primary().relayAddr)
+			p.bp, err = a.primary().link.AddPeer(a.primary().relayAddr)
 			require.NoError(t, err)
-			probe, err := a.link.AddPeer(a.primary().relayAddr)
+			probe, err := a.primary().link.AddPeer(a.primary().relayAddr)
 			require.NoError(t, err)
 			r := &spiRelay{t: t, probe: probe}
 			a.primary().c = r
@@ -726,7 +727,7 @@ func TestQUICRoutes(t *testing.T) {
 	w := newWorld(t)
 	cert := w.relayCA.relayCert(t, "relay-1")
 	a := w.stubAgent(t, "a")
-	other, err := a.link.AddPeer(netip.MustParseAddrPort("127.0.0.1:444"))
+	other, err := a.primary().link.AddPeer(netip.MustParseAddrPort("127.0.0.1:444"))
 	require.NoError(t, err)
 	// routed reports whether a route to the relay peer has pfx.
 	routed := func(pfx string) bool {

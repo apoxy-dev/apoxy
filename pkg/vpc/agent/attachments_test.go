@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -97,54 +98,44 @@ func TestAttachInFlight(t *testing.T) {
 	assert.Len(t, a.a.Attachments(), n+1)
 }
 
-// TestAttachmentsMove checks that the extra attachments move to the new relay
-// session, before the move when they can.
-func TestAttachmentsMove(t *testing.T) {
+// TestAttachmentsOnNewSession checks that the agent attaches the extra
+// attachments on each new relay session, and that the callbacks give the
+// addresses of the old and the new session in order.
+func TestAttachmentsOnNewSession(t *testing.T) {
+	// A relay that drains keeps its session until the drain ends.
+	drained := []string{"attach OLD", "deprecate OLD", "attach NEW", "detach OLD"}
+	ended := []string{"attach OLD", "detach OLD", "attach NEW"}
 	cases := []struct {
-		name    string
-		move    string        // drain, renew or lost.
-		slow    bool          // The extras attach on the new session after the move.
-		wait    time.Duration // moveWait. Zero keeps the default.
-		oldEnds bool          // The relay closes the old session while the agent waits for the extras.
-		before  bool          // The extras attach on the new session before the move.
+		name string
+		move string // drain, renew or lost.
 		// The drain gives no alternate, and the draining relay stops Accept, as a
-		// relay host in its lame duck.
+		// relay host in its lame duck. The agent has the other relay in its list.
 		lameDuck bool
+		want     []string // Callbacks of each extra attachment.
 	}{
-		{name: "drain", move: "drain", before: true},
-		{name: "cert renew", move: "renew", before: true},
-		{name: "session lost", move: "lost"},
-		{name: "drain with slow extras", move: "drain", slow: true, wait: 200 * time.Millisecond},
-		{name: "old session ends while extras attach", move: "drain", slow: true, wait: 5 * time.Second, oldEnds: true},
-		{name: "old session ends while the draining relay does not serve", move: "drain", oldEnds: true, lameDuck: true},
+		{name: "drain", move: "drain", want: drained},
+		{name: "drain with no alternate", move: "drain", lameDuck: true, want: drained},
+		{name: "cert renew", move: "renew", want: ended},
+		{name: "session lost", move: "lost", want: ended},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if tc.wait != 0 {
-				old := moveWait
-				moveWait = tc.wait
-				t.Cleanup(func() { moveWait = old })
-			}
 			w := newWorld(t)
 			r1, r2 := w.relay(t, "relay-1"), w.relay(t, "relay-2")
 			opts := agentOptions{}
+			alts := []*dp.RelayRef{{Id: r2.id, Addresses: []string{r2.addr}}}
 			if tc.move == "renew" {
 				opts.life = 3 * time.Second
 			}
 			if tc.lameDuck {
-				// The agent waits for the end of its session. Then Run dials the other relay.
-				opts.relays, opts.sessions = []identity.Relay{r1.ref(), r2.ref()}, 1
+				opts.relays, alts = []identity.Relay{r1.ref(), r2.ref()}, nil
 			}
 			a := w.agent(t, "a", r1, opts)
 			a.attached(t)
-			from, alts := r1, []*dp.RelayRef{{Id: r2.id, Addresses: []string{r2.addr}}}
-			if tc.lameDuck {
-				if a.current().addr == r2.addr {
-					from = r2
-				}
-				alts = nil
+			from := r1
+			if a.current().addr == r2.addr {
+				from = r2
 			}
-			prev := a.current()
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			old := map[string]netip.Addr{}
@@ -154,20 +145,11 @@ func TestAttachmentsMove(t *testing.T) {
 				old[name] = at.Address
 			}
 
-			release := func() {}
-			if tc.slow {
-				release = w.addrs.hold("x-")
-			}
-			start := time.Now()
 			switch tc.move {
 			case "drain":
-				dctx := ctx
-				if tc.oldEnds {
-					// The relay closes the sessions that did not move when its drain ends.
-					var dcancel context.CancelFunc
-					dctx, dcancel = context.WithTimeout(ctx, 300*time.Millisecond)
-					defer dcancel()
-				}
+				// The relay closes the sessions that stay when its drain ends.
+				dctx, dcancel := context.WithTimeout(ctx, time.Second)
+				defer dcancel()
 				if tc.lameDuck {
 					from.stopAccept()
 				}
@@ -177,49 +159,24 @@ func TestAttachmentsMove(t *testing.T) {
 			case "lost":
 				a.reconnect()
 			}
-			var ended time.Time
-			if tc.lameDuck {
-				select {
-				case <-prev.qc.Context().Done():
-					ended = time.Now()
-				case <-time.After(5 * time.Second):
-					t.Fatal("the relay did not close the old session")
-				}
-			}
 			a.attached(t)
-			// The lame duck case has no time limit.
-			if tc.oldEnds && !tc.lameDuck {
-				assert.Less(t, time.Since(start), time.Second, "the agent moves when the old session ends, before moveWait")
-			}
-			release()
 
-			now := map[string]netip.Addr{}
-			require.Eventually(t, func() bool {
-				for _, at := range a.a.Attachments()[1:] {
-					if !at.Address.IsValid() || at.Address != a.extraAddr(at.Name) {
-						return false
-					}
-					now[at.Name] = at.Address
-				}
-				return len(now) == 3
-			}, 10*time.Second, 10*time.Millisecond, "the extras attach on the new session, and OnAttachment runs")
-			if tc.lameDuck {
-				t.Logf("Attached again %v after the old session ended", time.Since(ended))
-				assert.Less(t, time.Since(ended), 2*time.Second, "the agent does not wait for the open to the draining relay")
-			}
 			for name, addr := range old {
-				assert.NotEqual(t, addr, now[name], "%s has a new address", name)
-				want := []string{"attach " + name + " " + addr.String()}
-				if !tc.before {
-					want = append(want, "detach "+name+" "+addr.String())
+				require.Eventually(t, func() bool { return len(a.events(name)) == len(tc.want) }, 10*time.Second, 10*time.Millisecond,
+					"callbacks of %s: %v", name, a.events(name))
+				now := a.extraAddr(name)
+				assert.NotEqual(t, addr, now, "%s has a new address", name)
+				names := strings.NewReplacer("OLD", name+" "+addr.String(), "NEW", name+" "+now.String())
+				var want []string
+				for _, e := range tc.want {
+					want = append(want, names.Replace(e))
 				}
-				want = append(want, "attach "+name+" "+now[name].String())
 				assert.Equal(t, want, a.events(name))
 			}
 			id := identity.ID{Project: testProject, VPC: testVPC, Agent: "a"}.String()
 			require.Eventually(t, func() bool { return w.addrs.LiveOf(id) == 4 }, 5*time.Second, 10*time.Millisecond,
 				"the relay releases the old addresses")
-			if tc.before {
+			if tc.move == "drain" {
 				assert.Equal(t, 8, w.addrs.Overlap(id), "the new session has all attachments before the old one closes")
 			}
 		})

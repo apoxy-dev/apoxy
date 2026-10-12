@@ -11,13 +11,15 @@ import (
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
-// checkMoved tells the relay when the local address of the agent changes.
+// checkMoved tells each relay when the local address of the agent changes.
 // The relay then follows the QUIC connection to its new path.
 func (a *Agent) checkMoved() {
-	rc := a.primary()
-	if rc == nil {
-		return
+	for _, rc := range a.sessions(connAttached, connDraining) {
+		a.checkMovedOn(rc)
 	}
+}
+
+func (a *Agent) checkMovedOn(rc *relayConn) {
 	l := rc.localAddr()
 	if !l.IsValid() || l == rc.local {
 		return

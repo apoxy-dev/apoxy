@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"net"
 	"net/netip"
 	"os"
@@ -51,7 +52,7 @@ func startTun(ctx context.Context, fail context.CancelCauseFunc, b *psp.Binding,
 	t := &tunDev{routes: map[netip.Prefix]bool{}, skipped: map[netip.Prefix]bool{}, own4: ipv4Only(own)}
 	t.link, err = netlink.LinkByName(name)
 	if err == nil {
-		err = t.setAddr(netip.Addr{}, addr)
+		err = t.addAddr(addr)
 	}
 	if err == nil {
 		// The default queue of 500 packets is short for bursts.
@@ -81,17 +82,26 @@ func startTun(ctx context.Context, fail context.CancelCauseFunc, b *psp.Binding,
 	return t, nil
 }
 
-func (t *tunDev) setAddr(old, addr netip.Addr) error {
-	if old.IsValid() {
-		if err := netlink.AddrDel(t.link, &netlink.Addr{IPNet: ipNet(netip.PrefixFrom(old, old.BitLen()))}); err != nil {
-			return err
-		}
-	}
-	return netlink.AddrAdd(t.link, &netlink.Addr{IPNet: ipNet(netip.PrefixFrom(addr, addr.BitLen())), Flags: unix.IFA_F_NODAD})
+func (t *tunDev) addAddr(addr netip.Addr) error {
+	return netlink.AddrAdd(t.link, hostAddr(addr))
+}
+
+// deprecate sets the preferred lifetime of addr to 0. The kernel then selects
+// another address as the source of a new connection.
+func (t *tunDev) deprecate(addr netip.Addr) error {
+	a := hostAddr(addr)
+	a.PreferedLft, a.ValidLft = 0, math.MaxInt32
+	return netlink.AddrReplace(t.link, a)
 }
 
 func (t *tunDev) delAddr(addr netip.Addr) error {
-	return netlink.AddrDel(t.link, &netlink.Addr{IPNet: ipNet(netip.PrefixFrom(addr, addr.BitLen()))})
+	return netlink.AddrDel(t.link, hostAddr(addr))
+}
+
+// hostAddr is addr as an address of the device, with no wait for duplicate
+// address detection.
+func hostAddr(addr netip.Addr) *netlink.Addr {
+	return &netlink.Addr{IPNet: ipNet(netip.PrefixFrom(addr, addr.BitLen())), Flags: unix.IFA_F_NODAD}
 }
 
 // route adds and removes the kernel routes of the prefixes of the other

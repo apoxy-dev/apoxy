@@ -80,7 +80,7 @@ func visits(self, peer netip.Addr) bool {
 // keeps reports whether a peer session on rc with the agent at peer stays when
 // the two agents visit: the one on the relay of the agent with the higher address.
 func keeps(rc *relayConn, peer netip.Addr) bool {
-	return rc.visitor == visits(rc.self, peer)
+	return rc.visitor() == visits(rc.self, peer)
 }
 
 // reachable reports whether the relay that gave res reaches the peer, so that
@@ -127,7 +127,7 @@ func (a *Agent) noDataPath(p *peer) {
 // cutFrom asks the relay of p how it reaches the open sessions of the subject of
 // p. It sets the path to down on the answer REACH_VISIT, and reports that.
 func (a *Agent) cutFrom(ctx context.Context, p *peer) bool {
-	if p.rc.visitor {
+	if p.rc.visitor() {
 		return false
 	}
 	a.mu.Lock()
@@ -151,16 +151,17 @@ func (a *Agent) cutFrom(ctx context.Context, p *peer) bool {
 // visitAfterNoRoute asks rc again how it reaches dst, and starts the visit if
 // the answer is still a visit. Another answer sets the path of dst to up again.
 func (a *Agent) visitAfterNoRoute(rc *relayConn, dst netip.Addr) {
-	if a.primary() != rc {
+	if rc.visitor() {
 		return
 	}
 	addr, ok := a.peerAddr(rc, dst)
-	if !ok || a.holds.failing(addr, time.Now()) {
+	key := holdKey{rc.link, addr}
+	if !ok || a.holds.failing(key, time.Now()) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(rc.ctx, holdTime)
 	defer cancel()
-	err := a.holds.once(addr, func() error {
+	err := a.holds.once(key, func() error {
 		res, err := rc.resolve(ctx, addr)
 		if err != nil {
 			return err
@@ -175,7 +176,7 @@ func (a *Agent) visitAfterNoRoute(rc *relayConn, dst netip.Addr) {
 	})
 	if err != nil {
 		a.holds.mu.Lock()
-		a.holds.fail(addr, err, time.Now())
+		a.holds.fail(key, err, time.Now())
 		a.holds.mu.Unlock()
 		slog.Warn("Failed to visit the relay of a peer", "peer", addr, "error", err)
 	}
@@ -185,13 +186,13 @@ func (a *Agent) visitAfterNoRoute(rc *relayConn, dst netip.Addr) {
 // ref. The agent opens a visitor session to that relay and a peer session on
 // it. The agent with the higher address first waits for the visit of its peer.
 func (a *Agent) connectVisit(ctx context.Context, home *relayConn, dst netip.Addr, ref *dp.RelayRef) error {
-	if home.visitor || len(ref.GetAddresses()) == 0 {
+	if home.visitor() || len(ref.GetAddresses()) == 0 {
 		return fmt.Errorf("relay has no path to peer %s (%v)", dst, dp.Reach_REACH_VISIT)
 	}
 	// The agent with the lower address visits first, so the other agent waits.
 	// It does not wait again for a peer that it reaches on its own visit.
 	use := a.usePeer
-	if !visits(home.self, dst) && !a.visiting(dst) {
+	if !visits(home.self, dst) && !a.visiting(home, dst) {
 		use = a.awaitVisit
 	}
 	if ok, err := use(ctx, home, dst); ok {
@@ -213,20 +214,20 @@ func (a *Agent) connectVisit(ctx context.Context, home *relayConn, dst netip.Add
 	if ok, err := a.usePeer(ctx, home, dst); ok {
 		return err
 	}
-	// A session on another relay session has the routes of the peer, and its path
-	// is down. The close code moves an agent that waits for it to the new session.
+	// A session on another relay session of the link has the routes of the peer, and
+	// its path is down. The close code moves an agent that waits for it to the new session.
 	a.closePeersWith(dp.PeerCloseCode_PEER_CLOSE_CODE_DUPLICATE,
-		func(q *peer) bool { return q.rc != v.rc && q.routes(dst) }, "peer is on a visited relay")
+		func(q *peer) bool { return q.rc != v.rc && q.rc.link == v.rc.link && q.routes(dst) }, "peer is on a visited relay")
 	return a.connect(ctx, v.rc, dst, nil)
 }
 
 // visiting reports whether a peer session that routes dst is on a visitor
-// session of this agent.
-func (a *Agent) visiting(dst netip.Addr) bool {
+// session of home.
+func (a *Agent) visiting(home *relayConn, dst netip.Addr) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	for _, p := range a.peers {
-		if p.rc.visitor && p.bp != nil && p.qc.Context().Err() == nil && p.routes(dst) {
+		if p.rc.home == home && p.bp != nil && p.qc.Context().Err() == nil && p.routes(dst) {
 			return true
 		}
 	}
@@ -304,12 +305,13 @@ func (a *Agent) visit(ctx context.Context, home *relayConn, ref *dp.RelayRef) (*
 		return v, nil
 	}
 	switch {
-	case a.primaryLocked() != home || a.stopped:
+	case !home.live() || a.stopped:
 		a.mu.Unlock()
 		return nil, errNoRelay
-	case key == home.ep.key():
+	case slices.ContainsFunc(a.conns, func(rc *relayConn) bool { return !rc.visitor() && rc.ep.key() == key }):
+		// The address of the agent on that relay reaches the peer.
 		a.mu.Unlock()
-		return nil, errors.New("relay names itself as the relay to visit")
+		return nil, errors.New("agent has a session on the relay to visit")
 	case len(a.visits) >= maxVisits:
 		a.mu.Unlock()
 		return nil, fmt.Errorf("%w (%d)", errVisitLimit, maxVisits)
@@ -359,12 +361,12 @@ func (a *Agent) openVisit(ctx context.Context, home *relayConn, ref *dp.RelayRef
 	defer cancel()
 	var errs []error
 	for _, addr := range ref.GetAddresses() {
-		rc, err := a.dialRelay(ctx, endpoint{id: ref.GetId(), addr: addr}, true)
+		rc, err := a.dialRelay(ctx, endpoint{id: ref.GetId(), addr: addr}, home)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("relay %s: %w", addr, err))
 			continue
 		}
-		if err := rc.startVisit(ctx, home); err != nil {
+		if err := rc.startVisit(ctx); err != nil {
 			return rc, fmt.Errorf("relay %s: %w", addr, err)
 		}
 		return rc, nil
@@ -373,9 +375,10 @@ func (a *Agent) openVisit(ctx context.Context, home *relayConn, ref *dp.RelayRef
 }
 
 // startVisit runs Visit on rc after hello with the grant and the address of
-// home, then makes the relay peer and the peer listener, as attach does.
-func (rc *relayConn) startVisit(ctx context.Context, home *relayConn) error {
-	a := rc.a
+// its home, then makes the relay peer and the peer listener on the link of its
+// home, as attach does.
+func (rc *relayConn) startVisit(ctx context.Context) error {
+	a, home := rc.a, rc.home
 	// A relay that does not answer in time ends the visit.
 	stop := context.AfterFunc(ctx, func() { _ = rc.qc.CloseWithError(0, "visit did not start in time") })
 	defer stop()
@@ -383,7 +386,8 @@ func (rc *relayConn) startVisit(ctx context.Context, home *relayConn) error {
 	rc.grant, rc.claims, rc.prefixes, rc.self = home.grant, home.claims, home.prefixes, home.self
 	a.routeMu.Unlock()
 	a.mu.Lock()
-	l := a.link
+	l := home.link
+	rc.link = l
 	a.mu.Unlock()
 	// The path probe runs while the relay checks the grant.
 	probed := a.startProbe(ctx, home, rc)
@@ -553,7 +557,7 @@ func (a *Agent) keepVisit(v *visit) {
 // peer uses it, and checkVisit reports that.
 func (a *Agent) checkVisit(v *visit) bool {
 	a.mu.Lock()
-	attached, busy := a.primaryLocked() == v.home, v.users > 0
+	attached, busy := v.home.live(), v.users > 0
 	var peers []*peer
 	for _, p := range a.peers {
 		if p.rc == v.rc && p.bp != nil && !a.gone(p) {
@@ -562,7 +566,7 @@ func (a *Agent) checkVisit(v *visit) bool {
 	}
 	a.mu.Unlock()
 	if !attached {
-		a.endVisit(v, "attachment moved")
+		a.endVisit(v, "attached session ended")
 		return true
 	}
 	// The dials below run after the visitor session closes.
@@ -587,7 +591,7 @@ func (a *Agent) checkVisit(v *visit) bool {
 		a.closePeers(func(p *peer) bool { return back[p] != nil }, "home relay reaches the peer again")
 	}
 	for p, res := range back {
-		err := a.holds.once(p.addr, func() error { return a.connect(ctx, v.home, p.addr, res) })
+		err := a.holds.once(holdKey{v.home.link, p.addr}, func() error { return a.connect(ctx, v.home, p.addr, res) })
 		if err != nil {
 			slog.Warn("Failed to move a peer session back from a visit", "peer", p.addr, "error", err)
 			continue
@@ -613,6 +617,16 @@ func (a *Agent) endVisit(v *visit, reason string) {
 	}
 }
 
+// endVisitTo ends the visit of the relay with key, if the agent has one.
+func (a *Agent) endVisitTo(key, reason string) {
+	a.mu.Lock()
+	v := a.visits[key]
+	a.mu.Unlock()
+	if v != nil {
+		a.endVisit(v, reason)
+	}
+}
+
 // endVisits ends each visit of home: a visit uses the grant of its home session.
 func (a *Agent) endVisits(home *relayConn, reason string) {
 	a.mu.Lock()
@@ -635,7 +649,7 @@ func (a *Agent) admitIdle(p *peer, v *dp.Version, g *dp.AttachmentGrant, instanc
 	if err != nil {
 		return err
 	}
-	bp, err := a.link.AddPeer(p.rc.relayAddr)
+	bp, err := p.rc.link.AddPeer(p.rc.relayAddr)
 	if err != nil {
 		return err
 	}

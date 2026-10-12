@@ -36,8 +36,9 @@ const (
 	// connAttached is the state of the session that has the attachment of the
 	// agent. A visitor session is attached after its Visit call.
 	connAttached
-	// connDraining is the state of an attached session whose relay drains, or
-	// whose replacement is attached. It keeps its traffic until it ends.
+	// connDraining is the state of an attached session whose relay drains. It
+	// keeps its traffic until the relay closes it, and its addresses are not
+	// preferred.
 	connDraining
 	// connEnded is the state of a closed session. The agent forgets it.
 	connEnded
@@ -47,26 +48,36 @@ func (s connState) String() string {
 	return [...]string{"dialing", "attached", "draining", "ended"}[s]
 }
 
-// cause is why the agent replaces an attached session.
+// cause is why the agent replaces an attached session with a session on the
+// same relay.
 type cause int
 
 const (
-	causeDrain cause = iota // The relay of the session drains.
-	causeRenew              // The agent has a new cert.
+	causeRenew cause = iota // The agent has a new cert.
 	causePSP                // PSP passes again for a session in QUIC mode.
 )
 
 func (c cause) String() string {
-	return [...]string{"relay drains", "new cert", "PSP passes again"}[c]
+	return [...]string{"new cert", "PSP passes again"}[c]
 }
 
-// relayConn is one relay session with its attachment.
+// relayConn is one relay session with its attachments. Each attached session
+// has its own addresses.
 type relayConn struct {
 	a      *Agent
 	ctx    context.Context // Ends when the session ends.
 	cancel context.CancelFunc
 	// state is guarded by Agent.mu.
 	state connState
+	// rank orders the attached sessions: the relays and the agent prefer the
+	// lowest rank. The attach sets it.
+	rank uint32
+	// link has the routes of the session in the binding. A visitor session uses
+	// the link of its home. Set under Agent.mu.
+	link *psp.Link
+	// alternates are the relays that the Drain of the relay names. Guarded by
+	// Agent.mu.
+	alternates []endpoint
 	// qc is set under Agent.mu after the handshake. After the dial, it does not change.
 	qc     quic.Connection
 	c      dp.RelayClient
@@ -78,14 +89,15 @@ type relayConn struct {
 	addr   string         // Relay address as dialed.
 	name   string         // TLS name of the relay.
 	roots  *x509.CertPool // Check relay certs and grants. Nil means the system roots.
-	// visitor is true for a visitor session. It has no attachment: its grant,
-	// prefixes and address are those of the attached session.
-	visitor bool
+	// home is the attached session of a visitor session, and nil for the other
+	// sessions. A visitor session has no attachment: its grant, prefixes and
+	// address are those of home.
+	home *relayConn
 	// data is true when the path of a visitor session carries data: the result
 	// of its path probe.
 	data atomic.Bool
-	// extrasOf is the attached session whose extra attachments a visitor
-	// session has in its visit. Guarded by Agent.attMu.
+	// extrasOf is home after the relay took the extra attachments of home in the
+	// visit. An older relay takes none. Guarded by Agent.attMu.
 	extrasOf *relayConn
 
 	relayAddr netip.AddrPort    // Where PSP packets to peers go.
@@ -139,9 +151,13 @@ type relayConn struct {
 	renewed chan struct{}
 }
 
+// visitor reports whether rc is a visitor session.
+func (rc *relayConn) visitor() bool { return rc.home != nil }
+
 // dialRelay adds a session to the relay at e in the state dialing, and runs it up to
-// the first Config. The caller attaches on the session or ends it.
-func (a *Agent) dialRelay(ctx context.Context, e endpoint, visitor bool) (*relayConn, error) {
+// the first Config. The caller attaches on the session or ends it. home is the
+// attached session of a visitor session, or nil.
+func (a *Agent) dialRelay(ctx context.Context, e endpoint, home *relayConn) (*relayConn, error) {
 	host, _, err := net.SplitHostPort(e.addr)
 	if err != nil {
 		return nil, err
@@ -155,7 +171,7 @@ func (a *Agent) dialRelay(ctx context.Context, e endpoint, visitor bool) (*relay
 		addr:     e.addr,
 		name:     cmp.Or(e.id, host),
 		roots:    a.relayRoots(cred),
-		visitor:  visitor,
+		home:     home,
 		sem:      make(chan struct{}, maxInFlight),
 		drained:  make(chan []*dp.RelayRef, 1),
 		renewed:  make(chan struct{}, 1),
@@ -179,44 +195,40 @@ func (a *Agent) dialRelay(ctx context.Context, e endpoint, visitor bool) (*relay
 	return rc, nil
 }
 
-// attach runs the Attach call on rc after dialRelay, and gives rc the attachment of
-// the agent. The agent keeps one attached session, so old ends. old can be nil.
-func (a *Agent) attach(ctx context.Context, rc, old *relayConn, begin time.Time) error {
+// attach runs the Attach call on rc after dialRelay, and makes rc an attached
+// session with rank. old is the session on the same relay that rc replaces, or
+// nil: it ends when rc is attached.
+func (a *Agent) attach(ctx context.Context, rc, old *relayConn, rank uint32, begin time.Time) error {
+	rc.rank = rank
 	if err := rc.attach(ctx, begin); err != nil {
 		a.end(rc)
 		return fmt.Errorf("relay %s: %w", rc.addr, err)
 	}
-	if old != nil {
-		a.moveExtras(ctx, old, rc)
-	}
-	if !a.setAttached(rc, old) {
+	if !a.setAttached(rc) {
 		a.end(rc)
 		return errNoRelay
 	}
+	slog.Info("Attached to the VPC", "relay", rc.addr, "address", rc.self, "prefixes", rc.prefixes, "rank", rank,
+		"transport", transportName(rc.mode), "fallback", rc.reason, "connect", rc.connect, "setup", rc.setup)
 	if old != nil {
 		a.end(old)
 	}
-	slog.Info("Attached to the VPC", "relay", rc.addr, "address", rc.self, "prefixes", rc.prefixes,
-		"transport", transportName(rc.mode), "fallback", rc.reason, "connect", rc.connect, "setup", rc.setup)
+	a.usePrimary()
 	a.deliver()
-	a.useRoutes(rc)
 	a.wakeAttach()
-	go a.watch(rc)
+	a.watchers.Go(func() { a.watch(rc) })
 	return nil
 }
 
-// setAttached moves rc to attached and old to draining, and queues the
-// callbacks of the new address. It reports false when the agent stopped.
-func (a *Agent) setAttached(rc, old *relayConn) bool {
+// setAttached moves rc to attached and queues OnAttach for its address. It
+// reports false when the agent stopped.
+func (a *Agent) setAttached(rc *relayConn) bool {
 	a.attMu.Lock()
 	defer a.attMu.Unlock()
 	a.mu.Lock()
 	ok := !a.stopped && rc.ctx.Err() == nil
 	if ok {
 		rc.state = connAttached
-		if old != nil && old.state == connAttached {
-			old.state = connDraining
-		}
 	}
 	b := a.bind
 	a.mu.Unlock()
@@ -227,44 +239,74 @@ func (a *Agent) setAttached(rc, old *relayConn) bool {
 		addr, prefixes := rc.self, rc.prefixes
 		a.events = append(a.events, func() { f(b, addr, prefixes) })
 	}
-	// The callbacks of the extras compare with the session before, which can be ended.
-	a.queueMove(a.shown, rc)
-	a.shown = rc
 	return true
 }
 
-// drain moves rc to draining when its relay starts to drain. The session
-// keeps the traffic until its replacement is attached or the relay closes it.
-func (a *Agent) drain(rc *relayConn) {
+// drain moves rc to draining when its relay starts to drain, and queues
+// OnDeprecated for its addresses. Then Run opens a session on another relay.
+func (a *Agent) drain(rc *relayConn, alts []*dp.RelayRef) {
+	a.attMu.Lock()
 	a.mu.Lock()
-	defer a.mu.Unlock()
-	if rc.state == connAttached {
-		rc.state = connDraining
+	ok := rc.state == connAttached
+	if ok {
+		rc.state, rc.alternates = connDraining, refEndpoints(alts)
 	}
+	a.mu.Unlock()
+	if f := a.cfg.OnDeprecated; ok && f != nil {
+		for _, at := range rc.attachments() {
+			a.events = append(a.events, func() { f(at) })
+		}
+	}
+	a.attMu.Unlock()
+	if !ok {
+		return
+	}
+	slog.Info("Relay drains; its session stays until the relay closes it", "relay", rc.addr, "address", rc.self, "alternates", len(alts))
+	a.usePrimary()
+	a.deliver()
+	a.wakeRun()
 }
 
-// end closes rc with its peer sessions and its visits. It runs when the
-// session is lost, when its replacement is attached, when a dial fails, and
-// when the agent stops. Then Run opens a session if the agent has none.
+// end closes rc with its peer sessions and its visits, and queues OnDetach for
+// its addresses. It runs when the session is lost, when its replacement on the
+// same relay is attached, when a dial fails, and when the agent stops.
 func (a *Agent) end(rc *relayConn) {
+	a.attMu.Lock()
 	a.mu.Lock()
-	ended := rc.state == connEnded
+	was := rc.state
 	rc.state = connEnded
 	a.conns = slices.DeleteFunc(a.conns, func(o *relayConn) bool { return o == rc })
 	a.mu.Unlock()
-	if ended {
+	shown := !rc.visitor() && (was == connAttached || was == connDraining)
+	if f := a.cfg.OnDetach; shown && f != nil {
+		for _, at := range slices.Backward(rc.attachments()) {
+			a.events = append(a.events, func() { f(at) })
+		}
+	}
+	a.attMu.Unlock()
+	if was == connEnded {
 		return
 	}
-	rc.close()
 	a.endVisits(rc, "attached session ended")
+	rc.close()
+	if shown {
+		a.usePrimary()
+		a.deliver()
+	}
+	a.wakeRun()
+}
+
+// wakeRun makes Run count the sessions again.
+func (a *Agent) wakeRun() {
 	select {
 	case a.wake <- struct{}{}:
 	default:
 	}
 }
 
-// primary returns the session that has the address of the agent: the attached
-// session, or else the draining one. It returns nil when the agent has none.
+// primary returns the session with the default address of the agent: the
+// attached session with the lowest rank, or else the draining one with the
+// lowest rank. It returns nil when the agent has none.
 func (a *Agent) primary() *relayConn {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -273,21 +315,62 @@ func (a *Agent) primary() *relayConn {
 
 // primaryLocked is primary for a caller that holds a.mu.
 func (a *Agent) primaryLocked() *relayConn {
-	var draining *relayConn
-	for _, rc := range a.conns {
-		switch {
-		case rc.visitor:
-		case rc.state == connAttached:
-			return rc
-		case rc.state == connDraining:
-			draining = rc
-		}
+	if rcs := a.sessionsLocked(connAttached); len(rcs) > 0 {
+		return rcs[0]
 	}
-	return draining
+	if rcs := a.sessionsLocked(connDraining); len(rcs) > 0 {
+		return rcs[0]
+	}
+	return nil
 }
 
-// watch follows the attached session rc until it ends. It replaces rc when its
-// relay drains, when the agent has a new cert, and when PSP passes again.
+// sessions returns the sessions of the agent in one of states that are not
+// visitor sessions, in rank order.
+func (a *Agent) sessions(states ...connState) []*relayConn {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.sessionsLocked(states...)
+}
+
+// sessionsLocked is sessions for a caller that holds a.mu.
+func (a *Agent) sessionsLocked(states ...connState) []*relayConn {
+	var out []*relayConn
+	for _, rc := range a.conns {
+		if !rc.visitor() && slices.Contains(states, rc.state) {
+			out = append(out, rc)
+		}
+	}
+	slices.SortStableFunc(out, func(x, y *relayConn) int { return cmp.Compare(x.rank, y.rank) })
+	return out
+}
+
+// live reports whether rc is attached or draining. Agent.mu must be held.
+func (rc *relayConn) live() bool {
+	return rc.state == connAttached || rc.state == connDraining
+}
+
+// usePrimary gives the primary session the packets with a source that no
+// session has, and makes OnRoutes follow its routes. It runs after each change
+// of the attached sessions. Until the first RouteDelta of the new primary
+// session, OnRoutes keeps the routes of the session before.
+func (a *Agent) usePrimary() {
+	a.routeMu.Lock()
+	defer a.routeMu.Unlock()
+	a.mu.Lock()
+	rc, b := a.primaryLocked(), a.bind
+	a.mu.Unlock()
+	if rc == nil || a.routesOf == rc {
+		return
+	}
+	b.SetDefault(rc.link)
+	a.routesOf = rc
+	if rc.routes.synced {
+		a.syncRoutes()
+	}
+}
+
+// watch follows the attached session rc until it ends. It replaces rc when the
+// agent has a new cert and when PSP passes again.
 func (a *Agent) watch(rc *relayConn) {
 	renew := time.NewTimer(0)
 	defer renew.Stop()
@@ -310,13 +393,12 @@ func (a *Agent) watch(rc *relayConn) {
 			a.end(rc)
 			return
 		case alts := <-rc.drained:
-			a.drain(rc)
-			_ = a.replace(rc, causeDrain, alts)
+			a.drain(rc, alts)
 		case <-rc.renewed:
 			renew.Reset(0)
 		case <-renew.C:
 			// A value can be for the cert that rc already uses.
-			if a.cfg.Identity.Current() != rc.cred && a.replace(rc, causeRenew, nil) != nil {
+			if a.cfg.Identity.Current() != rc.cred && a.replace(rc, causeRenew) != nil {
 				renew.Reset(renewRetry)
 			}
 		case <-retry.timer.C:
@@ -324,59 +406,41 @@ func (a *Agent) watch(rc *relayConn) {
 		case ok := <-probed:
 			probed = nil
 			// The new session probes again before it picks its mode.
-			if retry.passed(ok) && a.replace(rc, causePSP, nil) != nil {
+			if retry.passed(ok) && a.replace(rc, causePSP) != nil {
 				retry.backoff()
 			}
 		}
 	}
 }
 
-// replace opens the session that takes over from rc, for each cause. rc ends
-// when the new session is attached. The open stops when rc ends: then Run
-// opens a session.
-func (a *Agent) replace(rc *relayConn, why cause, alts []*dp.RelayRef) error {
-	eps := []endpoint{rc.ep}
-	if why == causeDrain {
-		// A relay that drains takes no new session.
-		eps = refEndpoints(alts)
-	}
-	if len(eps) == 0 {
-		slog.Info("Relay drains and names no other relay; the agent stays until the relay closes the session", "relay", rc.addr)
+// replace opens a session on the relay of rc that takes the rank of rc. rc
+// ends when the new session is attached, so its addresses change. The open
+// stops when rc ends: then Run opens a session. A relay that drains takes no
+// new session.
+func (a *Agent) replace(rc *relayConn, why cause) error {
+	a.mu.Lock()
+	draining := rc.state == connDraining
+	a.mu.Unlock()
+	if draining {
 		return nil
 	}
 	ctx, cancel := context.WithCancel(rc.ctx)
 	defer cancel()
 	defer context.AfterFunc(rc.qc.Context(), cancel)()
-	slog.Info("Replacing the relay session", "relay", rc.addr, "cause", why, "relays", len(eps))
-	var errs []error
-	for _, e := range eps {
-		if ctx.Err() != nil {
-			break
-		}
-		err := a.takeOver(ctx, e, rc, why)
-		if err == nil {
-			return nil
-		}
-		errs = append(errs, err)
-	}
-	if len(errs) > 0 && ctx.Err() == nil {
-		slog.Warn("Failed to replace the relay session", "relay", rc.addr, "cause", why, "error", errors.Join(errs...))
-	}
-	return errors.Join(errs...)
-}
-
-// takeOver dials the relay at e and attaches on the new session in place of old.
-func (a *Agent) takeOver(ctx context.Context, e endpoint, old *relayConn, why cause) error {
+	slog.Info("Replacing the relay session", "relay", rc.addr, "cause", why)
 	begin := time.Now()
-	rc, err := a.dialRelay(ctx, e, false)
-	if err != nil {
-		return fmt.Errorf("relay %s: %w", e.addr, err)
+	next, err := a.dialRelay(ctx, rc.ep, nil)
+	if err == nil && why == causePSP && next.mode != dp.Mode_MODE_PSP {
+		a.end(next)
+		err = errors.New("the PSP probe of the new session failed")
 	}
-	if why == causePSP && rc.mode != dp.Mode_MODE_PSP {
-		a.end(rc)
-		return fmt.Errorf("relay %s: the PSP probe of the new session failed", e.addr)
+	if err == nil {
+		err = a.attach(ctx, next, rc, rc.rank, begin)
 	}
-	return a.attach(ctx, rc, old, begin)
+	if err != nil && ctx.Err() == nil {
+		slog.Warn("Failed to replace the relay session", "relay", rc.addr, "cause", why, "error", err)
+	}
+	return err
 }
 
 // refEndpoints returns the addresses of the relays in refs.

@@ -116,7 +116,7 @@ func (o *connectOptions) addFlags(cmd *cobra.Command) {
 	f.StringToStringVar(&o.labels, "label", nil, "Attachment label (key=value) for VPCService selection. Repeatable.")
 	f.StringVar(&o.socksAddr, "socks-addr", "localhost:1080", "SOCKS5 listen address of the netstack driver. Empty disables the proxy.")
 	f.StringVar(&o.tunIfname, "tun-ifname", "apoxy0", "Name of the TUN device of the tun driver.")
-	f.IntVar(&o.relays, "relays", 2, "Relay sessions to keep, 1 to 3. One carries the traffic. The others are open on other relays and take over when it ends.")
+	f.IntVar(&o.relays, "relays", 2, "Relay connections to keep, 1 to 3, each on its own relay. Each connection has its own VPC address.")
 	f.IntVar(&o.mtu, "mtu", 0, fmt.Sprintf("Device MTU, %d to %d. 0 uses the VPC MTU when the path to the relay carries it, else %d.", psp.DefaultMTU, psp.MaxMTU, psp.DefaultMTU))
 	f.StringVar(&o.adminAddr, "admin-addr", "", "Unix socket path of a local HTTP API that adds and removes attachments. Only this user and root can use it. Empty disables the API.")
 	f.StringVar(&o.identity, "identity", "", "Path of an identity file from \"apoxy alpha vpc enroll\". The host connects with its certificate and makes no API call. Many hosts can use one file, each with its own --name.")
@@ -244,6 +244,7 @@ func runConnect(ctx context.Context, out io.Writer, vpc string, o *connectOption
 	cfg.OnAttach = h.attach
 	cfg.OnRoutes = h.route
 	cfg.OnAttachment = h.attachment
+	cfg.OnDeprecated = h.deprecated
 	cfg.OnDetach = h.detach
 	h.agent = agent.New(cfg)
 	fmt.Fprintf(out, "Connecting to %s as %q.\n", target, cfg.Name)
@@ -329,9 +330,11 @@ func credentialPath(project uuid.UUID, vpc, name string) string {
 
 // overlay is a running driver.
 type overlay interface {
-	// setAddr moves the device from the old overlay address to addr. With no
-	// old address, it adds addr.
-	setAddr(old, addr netip.Addr) error
+	// addAddr puts an overlay address on the device.
+	addAddr(addr netip.Addr) error
+	// deprecate makes an overlay address not preferred: a new connection uses
+	// another address, and open connections keep it.
+	deprecate(addr netip.Addr) error
 	// delAddr removes an overlay address from the device.
 	delAddr(addr netip.Addr) error
 	// route changes the routes of the prefixes of the other attachments.
@@ -340,8 +343,9 @@ type overlay interface {
 	own(routes []netip.Prefix)
 }
 
-// hostDevice starts the driver at the first attach. The agent calls attach,
-// attachment and detach one at a time.
+// hostDevice starts the driver at the first attach and keeps the overlay
+// addresses of all relay sessions on the device. The agent calls attach,
+// attachment, deprecated and detach one at a time.
 type hostDevice struct {
 	ctx       context.Context
 	fail      context.CancelCauseFunc
@@ -354,22 +358,24 @@ type hostDevice struct {
 	agent     *agent.Agent
 
 	dev    overlay
-	addr   netip.Addr
-	extras map[string]agent.Attachment // Extra attachments on the device, by name.
-	fwd    *forwardNetwork             // Of the netstack driver.
+	addrs  map[netip.Addr]int              // Relay sessions that use each address on the device.
+	extras map[netip.Addr]agent.Attachment // Extra attachments on the device, by address.
+	fwd    *forwardNetwork                 // Of the netstack driver.
 }
 
+// attach puts the address of a relay session on the device.
 func (h *hostDevice) attach(b *psp.Binding, addr netip.Addr, _ []netip.Prefix) {
-	if h.dev != nil {
-		if addr != h.addr {
-			if err := h.dev.setAddr(h.addr, addr); err != nil {
-				h.fail(fmt.Errorf("failed to set the overlay address %s: %w", addr, err))
-				return
-			}
-			h.addr = addr
-		}
+	if h.dev == nil {
+		h.start(b, addr)
 		return
 	}
+	if err := h.add(addr); err != nil {
+		h.fail(fmt.Errorf("failed to add the overlay address %s: %w", addr, err))
+	}
+}
+
+// start runs the driver with the address of the first relay session.
+func (h *hostDevice) start(b *psp.Binding, addr netip.Addr) {
 	servers, search := h.agent.DNS()
 	var err error
 	if h.driver == driverTun {
@@ -381,7 +387,7 @@ func (h *hostDevice) attach(b *psp.Binding, addr netip.Addr, _ []netip.Prefix) {
 		h.fail(err)
 		return
 	}
-	h.addr = addr
+	h.addrs = map[netip.Addr]int{addr: 1}
 	for _, w := range hostcheck.Check(h.conn, h.driver == driverTun) {
 		fmt.Fprintf(h.out, "Warning: %s\n  Fix: %s\n", w.Problem, w.Fix)
 	}
@@ -402,37 +408,67 @@ func (h *hostDevice) route(add, remove []netip.Prefix) {
 	}
 }
 
-// attachment puts the address of an extra attachment on the device. After a
-// move, it replaces the old address.
+// attachment puts the address of an extra attachment of a relay session on
+// the device.
 func (h *hostDevice) attachment(at agent.Attachment) {
 	if h.dev == nil {
 		return
 	}
-	old := h.extras[at.Name]
-	if old.Address != at.Address {
-		if err := h.dev.setAddr(old.Address, at.Address); err != nil {
-			slog.Warn("Failed to set the address of an attachment", "name", at.Name, "address", at.Address, "error", err)
-			return
-		}
+	if err := h.add(at.Address); err != nil {
+		slog.Warn("Failed to add the address of an attachment", "name", at.Name, "address", at.Address, "error", err)
+		return
 	}
 	if h.extras == nil {
-		h.extras = map[string]agent.Attachment{}
+		h.extras = map[netip.Addr]agent.Attachment{}
 	}
-	h.extras[at.Name] = at
+	h.extras[at.Address] = at
 	h.ownChanged()
 }
 
-// detach removes the address of an extra attachment from the device.
-func (h *hostDevice) detach(at agent.Attachment) {
-	old, ok := h.extras[at.Name]
-	if !ok {
+// deprecated makes the address of an attachment not preferred, because its
+// relay drains.
+func (h *hostDevice) deprecated(at agent.Attachment) {
+	if h.addrs[at.Address] == 0 {
 		return
 	}
-	delete(h.extras, at.Name)
-	if err := h.dev.delAddr(old.Address); err != nil {
-		slog.Warn("Failed to remove the address of an attachment", "name", at.Name, "address", old.Address, "error", err)
+	if err := h.dev.deprecate(at.Address); err != nil {
+		slog.Warn("Failed to make an overlay address not preferred", "address", at.Address, "error", err)
 	}
-	h.ownChanged()
+}
+
+// detach removes the address of an attachment from the device.
+func (h *hostDevice) detach(at agent.Attachment) {
+	h.remove(at.Address)
+	if _, ok := h.extras[at.Address]; ok && h.addrs[at.Address] == 0 {
+		delete(h.extras, at.Address)
+		h.ownChanged()
+	}
+}
+
+// add puts an overlay address on the device. A session that replaces another
+// one on the same relay can get the same address before the old one ends.
+func (h *hostDevice) add(addr netip.Addr) error {
+	if h.addrs[addr] == 0 {
+		if err := h.dev.addAddr(addr); err != nil {
+			return err
+		}
+	}
+	h.addrs[addr]++
+	return nil
+}
+
+// remove takes an overlay address from the device when its last session ends.
+func (h *hostDevice) remove(addr netip.Addr) {
+	if h.addrs[addr] == 0 {
+		return
+	}
+	if h.addrs[addr]--; h.addrs[addr] > 0 {
+		return
+	}
+	delete(h.addrs, addr)
+	if err := h.dev.delAddr(addr); err != nil {
+		slog.Warn("Failed to remove an overlay address", "address", addr, "error", err)
+	}
 }
 
 // ownChanged gives the drivers the routes of all attachments.
@@ -478,7 +514,7 @@ func (h *hostDevice) startNetstack(b *psp.Binding, addr netip.Addr, dns *network
 		return nil, err
 	}
 	n := &netstackDev{ns: ns}
-	if err := n.setAddr(netip.Addr{}, addr); err != nil {
+	if err := n.addAddr(addr); err != nil {
 		ns.Close()
 		return nil, err
 	}
@@ -551,13 +587,12 @@ func (n *netstackDev) route(_, _ []netip.Prefix) {}
 // own does nothing. The forward network gets the routes from hostDevice.
 func (n *netstackDev) own([]netip.Prefix) {}
 
-func (n *netstackDev) setAddr(old, addr netip.Addr) error {
-	if old.IsValid() {
-		if err := n.ns.DelAddr(netip.PrefixFrom(old, old.BitLen())); err != nil {
-			return err
-		}
-	}
+func (n *netstackDev) addAddr(addr netip.Addr) error {
 	return n.ns.AddAddr(netip.PrefixFrom(addr, addr.BitLen()))
+}
+
+func (n *netstackDev) deprecate(addr netip.Addr) error {
+	return n.ns.DeprecateAddr(netip.PrefixFrom(addr, addr.BitLen()))
 }
 
 func (n *netstackDev) delAddr(addr netip.Addr) error {

@@ -588,16 +588,38 @@ func closeOf(t *testing.T, rc *relayConn) *quic.ApplicationError {
 	return ae
 }
 
-// closedByAgent checks that the agent closed the session rc, and that the
-// relay did not close it.
-func closedByAgent(t *testing.T, rc *relayConn) {
+// closedByDrain checks that the relay closed the session rc at the end of its
+// drain, and that the agent did not close it.
+func closedByDrain(t *testing.T, rc *relayConn) {
 	t.Helper()
 	ae := closeOf(t, rc)
-	assert.False(t, ae.Remote, "the relay closed the old session: %v", ae)
+	assert.True(t, ae.Remote, "the agent closed the session of a draining relay: %v", ae)
+	assert.Equal(t, quic.ApplicationErrorCode(dp.RelayCloseCode_RELAY_CLOSE_CODE_DRAIN), ae.ErrorCode)
 }
 
-// TestDrain checks that the agent moves to an alternate relay before the
-// draining relay closes its session.
+// drain starts the drain of r with alts. The drain ends, and r closes the
+// sessions that stay, when the test calls end or ends.
+func drain(t *testing.T, r *testRelay, alts []*dp.RelayRef) (end func()) {
+	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	wg.Go(func() { r.srv.Drain(ctx, alts) })
+	end = func() {
+		cancel()
+		wg.Wait()
+	}
+	t.Cleanup(end)
+	return end
+}
+
+// stateOf returns the state of the session rc of a.
+func stateOf(a *testAgent, rc *relayConn) connState {
+	a.a.mu.Lock()
+	defer a.a.mu.Unlock()
+	return rc.state
+}
+
+// TestDrain checks that the agent opens a session on an alternate relay when its
+// relay drains, and keeps the old session until the draining relay closes it.
 func TestDrain(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -605,12 +627,14 @@ func TestDrain(t *testing.T) {
 		// first comes before the alternate that takes the agent: "drains" (a relay
 		// that drains too), "no address", or "wrong address" (of another relay).
 		first string
+		dead  bool // The alternate does not answer, so the agent gets no new session.
 	}{
 		{name: "alternate that the agent does not know"},
 		{name: "alternate that the agent knows", known: true},
 		{name: "first alternate drains too", first: "drains"},
 		{name: "first alternate has no address", first: "no address"},
 		{name: "first address of the alternate is of another relay", first: "wrong address"},
+		{name: "alternate does not answer", dead: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -621,92 +645,60 @@ func TestDrain(t *testing.T) {
 				opts.relays = []identity.Relay{r1.ref(), r2.ref()}
 			}
 			a := w.agent(t, "a", r1, opts)
-			a.attached(t)
+			first := a.attached(t)
 			from, to := r1, r2
 			if a.current().addr == r2.addr {
 				from, to = r2, r1
 			}
 			good := &dp.RelayRef{Id: to.id, Addresses: []string{to.addr}}
 			alts := []*dp.RelayRef{good}
-			switch tc.first {
-			case "drains":
+			switch {
+			case tc.first == "drains":
 				// A relay that drains refuses a new session at once.
 				r3.srv.Drain(context.Background(), nil)
 				alts = []*dp.RelayRef{{Id: r3.id, Addresses: []string{r3.addr}}, good}
-			case "no address":
+			case tc.first == "no address":
 				alts = []*dp.RelayRef{{Id: r3.id}, good}
-			case "wrong address":
+			case tc.first == "wrong address":
 				alts = []*dp.RelayRef{{Id: to.id, Addresses: []string{r3.addr, to.addr}}}
+			case tc.dead:
+				alts = []*dp.RelayRef{{Id: to.id, Addresses: []string{deadRelay(t)}}}
 			}
 			prev := a.current()
-
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			done := make(chan struct{})
-			go func() {
-				defer close(done)
-				from.srv.Drain(ctx, alts)
-			}()
-			a.attached(t)
-			assert.Equal(t, to.addr, a.current().addr)
-			select {
-			case <-done:
-				assert.NoError(t, ctx.Err(), "the agent closed its session before the drain time ended")
-			case <-time.After(10 * time.Second):
-				t.Fatal("drain did not end")
-			}
-			closedByAgent(t, prev)
-			id := identity.ID{Project: testProject, VPC: testVPC, Agent: "a"}.String()
-			assert.Equal(t, 2, w.addrs.Overlap(id), "the new session attaches before the old one closes")
-		})
-	}
-}
-
-// TestReplace drains the relay of an agent, and checks the states of the old
-// session and of its replacement.
-func TestReplace(t *testing.T) {
-	cases := []struct {
-		name string
-		dead bool // The alternate does not answer, so the replacement fails.
-	}{
-		{name: "replacement attaches"},
-		{name: "replacement fails", dead: true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			w := newWorld(t)
-			r1, r2 := w.relay(t, "relay-1"), w.relay(t, "relay-2")
-			a := w.agent(t, "a", r1, agentOptions{})
-			a.attached(t)
-			prev := a.current()
-			state := func(rc *relayConn) connState {
-				a.a.mu.Lock()
-				defer a.a.mu.Unlock()
-				return rc.state
-			}
-			require.Equal(t, connAttached, state(prev))
-			alt := &dp.RelayRef{Id: r2.id, Addresses: []string{r2.addr}}
-			if tc.dead {
-				alt.Addresses = []string{deadRelay(t)}
-			}
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			var wg sync.WaitGroup
-			wg.Go(func() { r1.srv.Drain(ctx, []*dp.RelayRef{alt}) })
-			t.Cleanup(func() { cancel(); wg.Wait() })
+			require.Equal(t, connAttached, stateOf(a, prev))
+			end := drain(t, from, alts)
 
 			if tc.dead {
-				require.Eventually(t, func() bool { return state(prev) == connDraining }, 5*time.Second, 10*time.Millisecond)
-				assert.Same(t, prev, a.current(), "the draining session keeps the attachment")
-				assert.True(t, closeOf(t, prev).Remote, "the agent closed the session with no replacement")
-				require.Eventually(t, func() bool { return state(prev) == connEnded }, 5*time.Second, 10*time.Millisecond)
+				require.Eventually(t, func() bool { return stateOf(a, prev) == connDraining }, 5*time.Second, 10*time.Millisecond)
+				assert.Same(t, prev, a.current(), "the draining session keeps the default address")
+				assert.NoError(t, prev.qc.Context().Err(), "the draining session stays open")
+				end()
+				closedByDrain(t, prev)
+				require.Eventually(t, func() bool { return stateOf(a, prev) == connEnded }, 5*time.Second, 10*time.Millisecond)
 				return
 			}
-			a.attached(t)
+			second := a.attached(t)
 			next := a.current()
-			require.NotSame(t, prev, next)
-			assert.Equal(t, connAttached, state(next))
-			closedByAgent(t, prev)
-			require.Eventually(t, func() bool { return state(prev) == connEnded }, 5*time.Second, 10*time.Millisecond)
+			assert.Equal(t, to.addr, next.addr, "the new session has the default address")
+			assert.Equal(t, connAttached, stateOf(a, next))
+			assert.Equal(t, connDraining, stateOf(a, prev))
+			assert.NoError(t, prev.qc.Context().Err(), "the draining session stays open")
+			want := []ConnStatus{
+				{Relay: from.addr, Address: first.addr, Rank: 0, Draining: true, Mode: dp.Mode_MODE_PSP},
+				{Relay: to.addr, Address: second.addr, Rank: 1, Mode: dp.Mode_MODE_PSP},
+			}
+			got := a.a.Status().Connections
+			for i := range got {
+				got[i].RTT = 0
+			}
+			assert.Equal(t, want, got)
+			assert.Equal(t, []string{"attach a " + first.addr.String(), "deprecate a " + first.addr.String(), "attach a " + second.addr.String()}, a.events("a"))
+
+			end()
+			closedByDrain(t, prev)
+			require.Eventually(t, func() bool { return stateOf(a, prev) == connEnded }, 5*time.Second, 10*time.Millisecond)
+			require.Eventually(t, func() bool { return len(a.events("a")) == 4 }, 5*time.Second, 10*time.Millisecond)
+			assert.Equal(t, "detach a "+first.addr.String(), a.events("a")[3])
 			a.a.mu.Lock()
 			defer a.a.mu.Unlock()
 			assert.Equal(t, []*relayConn{next}, a.a.conns, "only the old session ended")
@@ -714,35 +706,27 @@ func TestReplace(t *testing.T) {
 	}
 }
 
-// TestDrainNoAlternate drains the relay of an agent that gets no alternate. The
-// agent keeps its session until the relay closes it, and dials no relay before.
+// TestDrainNoAlternate drains the only relay of an agent, which gets no
+// alternate. The agent keeps its session until the relay closes it, and dials
+// no relay before.
 func TestDrainNoAlternate(t *testing.T) {
 	w := newWorld(t)
-	r1, r2 := w.relay(t, "relay-1"), w.relay(t, "relay-2")
-	a := w.agent(t, "a", r1, agentOptions{relays: []identity.Relay{r1.ref(), r2.ref()}, sessions: 1})
+	r := w.relay(t, "relay-1")
+	a := w.agent(t, "a", r, agentOptions{})
 	a.attached(t)
-	from, to := r1, r2
-	if a.current().addr == r2.addr {
-		from, to = r2, r1
-	}
 	prev := a.current()
+	sessions := func() int {
+		a.a.mu.Lock()
+		defer a.a.mu.Unlock()
+		return len(a.a.conns)
+	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
-	defer cancel()
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		from.srv.Drain(ctx, nil)
-	}()
-	require.Never(t, func() bool { return a.current() != prev || len(to.r.AttachmentStats()) > 0 },
-		time.Second, 20*time.Millisecond, "the agent opened a session while its relay drains")
-	<-done
-	ae := closeOf(t, prev)
-	assert.True(t, ae.Remote, "the agent closed its session before the end of the drain time")
-	assert.Equal(t, quic.ApplicationErrorCode(dp.RelayCloseCode_RELAY_CLOSE_CODE_DRAIN), ae.ErrorCode)
-	// Then the agent dials the relays that it knows.
-	a.attached(t)
-	assert.Equal(t, to.addr, a.current().addr)
+	end := drain(t, r, nil)
+	require.Eventually(t, func() bool { return stateOf(a, prev) == connDraining }, 5*time.Second, 10*time.Millisecond)
+	require.Never(t, func() bool { return sessions() != 1 || prev.qc.Context().Err() != nil },
+		time.Second, 20*time.Millisecond, "the agent opened or closed a session while its relay drains")
+	end()
+	closedByDrain(t, prev)
 }
 
 // TestDrainLocalRoutesOnly drains the relay of an agent that has one agent for
@@ -765,7 +749,7 @@ func TestDrainLocalRoutesOnly(t *testing.T) {
 }
 
 // TestDrainMesh drains a relay with the alternates that its mesh gives. An
-// agent that knows only that relay moves to the first of the other relays.
+// agent that knows only that relay attaches to the first of the other relays.
 func TestDrainMesh(t *testing.T) {
 	w := newWorld(t)
 	w.mesh = true
@@ -778,38 +762,30 @@ func TestDrainMesh(t *testing.T) {
 	want := []*dp.RelayRef{{Id: r2.id, Addresses: []string{r2.addr}}, {Id: r3.id, Addresses: []string{r3.addr}}}
 	require.Empty(t, cmp.Diff(want, alts, protocmp.Transform()))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		r1.srv.Drain(ctx, alts)
-	}()
+	end := drain(t, r1, alts)
 	a.attached(t)
-	assert.Equal(t, r2.addr, a.current().addr, "the agent moves to the first alternate")
-	select {
-	case <-done:
-		assert.NoError(t, ctx.Err(), "the agent closed its session before the drain time ended")
-	case <-time.After(10 * time.Second):
-		t.Fatal("drain did not end")
-	}
-	closedByAgent(t, prev)
-	id := identity.ID{Project: testProject, VPC: testVPC, Agent: "a"}.String()
-	assert.Equal(t, 2, w.addrs.Overlap(id), "the new session attaches before the old one closes")
+	assert.Equal(t, r2.addr, a.current().addr, "the agent attaches to the first alternate")
+	assert.NoError(t, prev.qc.Context().Err(), "the draining session stays open")
+	end()
+	closedByDrain(t, prev)
 }
 
 // TestRelist checks that the agent enrolls again for a new relay list when
-// all relays fail, and keeps the cached list while the enroll fails.
+// all relays fail or the list is empty, and keeps the cached list while the
+// enroll fails.
 func TestRelist(t *testing.T) {
 	oldMin, oldMax := relistMin, relistMax
 	relistMin, relistMax = 100*time.Millisecond, 400*time.Millisecond
 	t.Cleanup(func() { relistMin, relistMax = oldMin, oldMax })
+	noPort := []identity.Relay{{ID: "relay-0", Addresses: []string{"no-port"}}}
 	cases := []struct {
 		name  string
-		fails int32 // Enrolls that fail after the first.
+		first []identity.Relay // List of the first enroll.
+		fails int32            // Enrolls that fail after the first.
 	}{
-		{name: "new list"},
-		{name: "enroll fails", fails: 1},
+		{name: "new list", first: noPort},
+		{name: "enroll fails", first: noPort, fails: 1},
+		{name: "no relay in the list, no session"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -818,7 +794,7 @@ func TestRelist(t *testing.T) {
 			a := w.agent(t, "a", nil, agentOptions{enrolled: func(n int32) ([]identity.Relay, []byte, error) {
 				switch {
 				case n == 1:
-					return []identity.Relay{{ID: "relay-0", Addresses: []string{"no-port"}}}, nil, nil
+					return tc.first, nil, nil
 				case n <= 1+tc.fails:
 					return nil, nil, errors.New("apiserver is down")
 				}

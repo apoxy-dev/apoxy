@@ -34,10 +34,11 @@ type extra struct {
 
 // attachExtra runs Attach on rc for s and checks the grant.
 func (rc *relayConn) attachExtra(ctx context.Context, s *AttachmentSpec) (*extra, error) {
-	res, err := rc.c.Attach(ctx, &dp.AttachRequest{Vpc: rc.ref, Name: s.Name, Labels: s.Labels, Routes: prefixStrings(s.Routes)})
+	res, err := rc.c.Attach(ctx, &dp.AttachRequest{Vpc: rc.ref, Name: s.Name, Labels: s.Labels, Routes: prefixStrings(s.Routes), Rank: rc.rank})
 	if err != nil {
 		return nil, attachError(rc, fmt.Errorf("attach: %w", err))
 	}
+	rc.logRefused(s.Name, res.GetRoutes())
 	claims, err := relay.VerifyGrant(res.GetGrant(), rc.roots, time.Now())
 	if err != nil {
 		return nil, err
@@ -50,7 +51,8 @@ func (rc *relayConn) attachExtra(ctx context.Context, s *AttachmentSpec) (*extra
 }
 
 // addExtra adds x to rc and queues its grant for the peers on rc. Routes of x
-// that came before leave the route table of rc. a.attMu must be held.
+// that came before leave the route table of rc. The packets from the addresses
+// of x go on rc. a.attMu must be held.
 func (a *Agent) addExtra(rc *relayConn, x *extra) {
 	a.routeMu.Lock()
 	defer a.routeMu.Unlock()
@@ -60,6 +62,13 @@ func (a *Agent) addExtra(rc *relayConn, x *extra) {
 		rc.extras = map[string]*extra{}
 	}
 	rc.extras[x.id] = x
+	if !rc.visitor() {
+		for _, pfx := range x.prefixes {
+			if err := rc.link.AddSource(pfx); err != nil {
+				slog.Warn("Failed to send from the address of an attachment", "name", x.spec.Name, "prefix", pfx, "error", err)
+			}
+		}
+	}
 	for _, p := range a.peers {
 		if p.rc == rc {
 			p.queueGrants(x, "")
@@ -92,6 +101,11 @@ func (a *Agent) removeExtra(rc *relayConn, id string) *extra {
 		return nil
 	}
 	delete(rc.extras, id)
+	if !rc.visitor() {
+		for _, pfx := range x.prefixes {
+			rc.link.RemoveSource(pfx)
+		}
+	}
 	for _, p := range a.peers {
 		if p.rc == rc {
 			p.queueGrants(nil, id)
@@ -106,8 +120,8 @@ func (rc *relayConn) ownOrigin(origin string) bool {
 	return origin == rc.attachmentID || rc.extras[origin] != nil
 }
 
-// ownAddr reports whether an attachment of this agent on rc has addr. The
-// caller holds a.mu.
+// ownAddr reports whether an attachment of this agent on rc has addr.
+// Agent.mu must be held.
 func (rc *relayConn) ownAddr(addr netip.Addr) bool {
 	has := func(p netip.Prefix) bool { return p.Contains(addr) }
 	if slices.ContainsFunc(rc.prefixes, has) {

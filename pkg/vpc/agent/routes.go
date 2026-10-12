@@ -131,17 +131,6 @@ func (a *Agent) setAttachment(rc *relayConn, id string, prefixes []netip.Prefix)
 	rc.routes.drop(id)
 }
 
-// useRoutes makes OnRoutes follow the routes of rc. Until the first RouteDelta
-// of rc, OnRoutes keeps the routes of the session before.
-func (a *Agent) useRoutes(rc *relayConn) {
-	a.routeMu.Lock()
-	defer a.routeMu.Unlock()
-	a.routesOf = rc
-	if rc.routes.synced {
-		a.syncRoutes()
-	}
-}
-
 // syncRoutes gives OnRoutes the change from the prefixes that it has to the
 // routes of a.routesOf. a.routeMu must be held.
 func (a *Agent) syncRoutes() {

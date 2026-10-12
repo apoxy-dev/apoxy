@@ -8,6 +8,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/netip"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -40,14 +41,21 @@ var (
 	errNoPeer  = errors.New("no attachment routes the destination")
 )
 
+// holdKey is a destination on the link of one relay session. Each relay
+// session has its own peer sessions.
+type holdKey struct {
+	link *psp.Link
+	dst  netip.Addr
+}
+
 // holds keeps the packets to destinations with no peer session while one
 // opens, and the destinations that failed to open.
 type holds struct {
 	mu      sync.Mutex
-	waiting map[netip.Addr][][]byte
-	failed  map[netip.Addr]*failure
-	opening map[netip.Addr]*opening // Peer sessions that open, by peer address.
-	bytes   int                     // Bytes in waiting.
+	waiting map[holdKey][][]byte
+	failed  map[holdKey]*failure
+	opening map[holdKey]*opening // Peer sessions that open, by peer address.
+	bytes   int                  // Bytes in waiting.
 	drops   atomic.Uint64
 }
 
@@ -66,7 +74,7 @@ type opening struct {
 
 // hold keeps pkt until a peer session for dst opens, and reports whether the
 // caller must open it. When dst failed, it reports the ICMP error to send.
-func (h *holds) hold(dst netip.Addr, pkt []byte, now time.Time) (open, icmp, denied bool) {
+func (h *holds) hold(dst holdKey, pkt []byte, now time.Time) (open, icmp, denied bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if f := h.failed[dst]; f != nil && now.Before(f.until) {
@@ -83,7 +91,7 @@ func (h *holds) hold(dst netip.Addr, pkt []byte, now time.Time) (open, icmp, den
 		return false, false, false
 	}
 	if h.waiting == nil {
-		h.waiting = map[netip.Addr][][]byte{}
+		h.waiting = map[holdKey][][]byte{}
 	}
 	h.waiting[dst] = append(q, bytes.Clone(pkt))
 	h.bytes += len(pkt)
@@ -92,7 +100,7 @@ func (h *holds) hold(dst netip.Addr, pkt []byte, now time.Time) (open, icmp, den
 
 // done removes the packets of dst and returns them. When err is not nil, dst
 // fails for a time, and the packets drop.
-func (h *holds) done(dst netip.Addr, err error, now time.Time) (pkts [][]byte, denied bool) {
+func (h *holds) done(dst holdKey, err error, now time.Time) (pkts [][]byte, denied bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	pkts = h.waiting[dst]
@@ -110,11 +118,11 @@ func (h *holds) done(dst netip.Addr, err error, now time.Time) (pkts [][]byte, d
 
 // fail makes dst fail for the wait of err, and reports whether a Permit denied
 // it. h.mu must be held.
-func (h *holds) fail(dst netip.Addr, err error, now time.Time) bool {
+func (h *holds) fail(dst holdKey, err error, now time.Time) bool {
 	f := h.failed[dst]
 	if f == nil {
 		if h.failed == nil {
-			h.failed = map[netip.Addr]*failure{}
+			h.failed = map[holdKey]*failure{}
 		}
 		f = &failure{}
 		h.failed[dst] = f
@@ -137,7 +145,7 @@ func (h *holds) fail(dst netip.Addr, err error, now time.Time) bool {
 }
 
 // failing reports whether dst failed to open and its wait did not end.
-func (h *holds) failing(dst netip.Addr, now time.Time) bool {
+func (h *holds) failing(dst holdKey, now time.Time) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	f := h.failed[dst]
@@ -145,7 +153,7 @@ func (h *holds) failing(dst netip.Addr, now time.Time) bool {
 }
 
 // once runs open for key, or waits for the open of key that runs.
-func (h *holds) once(key netip.Addr, open func() error) error {
+func (h *holds) once(key holdKey, open func() error) error {
 	h.mu.Lock()
 	if o := h.opening[key]; o != nil {
 		h.mu.Unlock()
@@ -154,7 +162,7 @@ func (h *holds) once(key netip.Addr, open func() error) error {
 	}
 	o := &opening{done: make(chan struct{})}
 	if h.opening == nil {
-		h.opening = map[netip.Addr]*opening{}
+		h.opening = map[holdKey]*opening{}
 	}
 	h.opening[key] = o
 	h.mu.Unlock()
@@ -189,32 +197,34 @@ func (a *Agent) Stats() Stats {
 	return Stats{HoldDrops: a.holds.drops.Load()}
 }
 
-// onNoRoute gets the packets that the binding has no route or no SA for. The
-// first packet to a unicast destination opens a peer session for it.
-func (a *Agent) onNoRoute(_ *psp.Link, pkt []byte) {
+// onNoRoute gets the packets that the binding has no route or no SA for, with
+// the link of their source address. The first packet to a unicast destination
+// opens a peer session for it on the relay session of the link.
+func (a *Agent) onNoRoute(l *psp.Link, pkt []byte) {
 	dst, ok := unicastDst(pkt)
 	if !ok {
 		return
 	}
-	open, icmp, denied := a.holds.hold(dst, pkt, time.Now())
+	key := holdKey{l, dst}
+	open, icmp, denied := a.holds.hold(key, pkt, time.Now())
 	if icmp {
-		go a.unreachable([][]byte{bytes.Clone(pkt[:min(len(pkt), maxICMPBody)])}, denied)
+		go a.unreachable(l, [][]byte{bytes.Clone(pkt[:min(len(pkt), maxICMPBody)])}, denied)
 	}
 	if open {
-		go a.openHeld(dst)
+		go a.openHeld(key)
 	}
 }
 
-// openHeld opens a peer session for dst and sends the packets that wait for it.
+// openHeld opens a peer session for key and sends the packets that wait for it.
 // On an error it drops them and sends ICMP errors to their senders.
-func (a *Agent) openHeld(dst netip.Addr) {
+func (a *Agent) openHeld(key holdKey) {
 	ctx, cancel := context.WithTimeout(context.Background(), holdTime)
 	defer cancel()
-	err := a.reach(ctx, dst)
+	err := a.reach(ctx, key)
 	if errors.Is(err, ErrUpgrade) {
-		slog.Warn("Failed to reach a peer that needs a newer agent; upgrade this agent", "destination", dst, "error", err)
+		slog.Warn("Failed to reach a peer that needs a newer agent; upgrade this agent", "destination", key.dst, "error", err)
 	}
-	pkts, denied := a.holds.done(dst, err, time.Now())
+	pkts, denied := a.holds.done(key, err, time.Now())
 	if err == nil {
 		a.mu.Lock()
 		b := a.bind
@@ -228,31 +238,42 @@ func (a *Agent) openHeld(dst netip.Addr) {
 		pkts = pkts[sent:]
 		a.holds.drops.Add(uint64(len(pkts)))
 		a.holds.mu.Lock()
-		denied = a.holds.fail(dst, err, time.Now())
+		denied = a.holds.fail(key, err, time.Now())
 		a.holds.mu.Unlock()
 	}
-	a.unreachable(pkts, denied)
+	a.unreachable(key.link, pkts, denied)
 }
 
-// reach opens a peer session to the attachment that routes dst, if none is
-// open, and waits for its SAs.
-func (a *Agent) reach(ctx context.Context, dst netip.Addr) error {
+// sessionOf returns the attached or draining session with the link l, or nil.
+// a.mu must be held.
+func (a *Agent) sessionOf(l *psp.Link) *relayConn {
+	for _, rc := range a.sessionsLocked(connAttached, connDraining) {
+		if rc.link == l {
+			return rc
+		}
+	}
+	return nil
+}
+
+// reach opens a peer session on the relay session of key.link to the
+// attachment that routes key.dst, if none is open, and waits for its SAs.
+func (a *Agent) reach(ctx context.Context, key holdKey) error {
+	dst := key.dst
 	a.mu.Lock()
-	rc := a.primaryLocked()
+	rc := a.sessionOf(key.link)
 	var p *peer
-	own := false
 	if rc != nil {
-		p, own = a.livePeerTo(rc, dst), rc.ownAddr(dst)
+		p = a.livePeerTo(rc, dst)
 	}
+	// The agent does not open a peer session to itself.
+	own := slices.ContainsFunc(a.conns, func(o *relayConn) bool { return o.live() && o.ownAddr(dst) })
 	a.mu.Unlock()
-	if rc == nil {
+	switch {
+	case rc == nil:
 		return errNoRelay
-	}
-	if own {
-		// The agent does not open a peer session to itself.
+	case own:
 		return errNoPeer
-	}
-	if p != nil {
+	case p != nil:
 		return a.waitKeys(ctx, p, dst)
 	}
 	addr, ok := a.peerAddr(rc, dst)
@@ -263,13 +284,14 @@ func (a *Agent) reach(ctx context.Context, dst netip.Addr) error {
 	if err != nil {
 		return err
 	}
-	return a.holds.once(addr, func() error { return a.connect(ctx, rc, addr, res) })
+	return a.holds.once(holdKey{rc.link, addr}, func() error { return a.connect(ctx, rc, addr, res) })
 }
 
-// unreachable sends an ICMP error for each packet to its sender.
-func (a *Agent) unreachable(pkts [][]byte, denied bool) {
+// unreachable sends an ICMP error for each packet to its sender, from the
+// address of the session with the link l.
+func (a *Agent) unreachable(l *psp.Link, pkts [][]byte, denied bool) {
 	a.mu.Lock()
-	b, rc := a.bind, a.primaryLocked()
+	b, rc := a.bind, a.sessionOf(l)
 	a.mu.Unlock()
 	if b == nil || rc == nil {
 		return

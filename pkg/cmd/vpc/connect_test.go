@@ -383,17 +383,24 @@ func TestForwardNetwork(t *testing.T) {
 
 // fakeOverlay keeps the overlay addresses and the own routes of a driver.
 type fakeOverlay struct {
-	addrs  []netip.Addr
-	routes []netip.Prefix
+	addrs      []netip.Addr
+	deprecated []netip.Addr
+	routes     []netip.Prefix
 }
 
-func (f *fakeOverlay) setAddr(old, addr netip.Addr) error {
-	if old.IsValid() {
-		if err := f.delAddr(old); err != nil {
-			return err
-		}
+func (f *fakeOverlay) addAddr(addr netip.Addr) error {
+	if slices.Contains(f.addrs, addr) {
+		return errors.New("address exists")
 	}
 	f.addrs = append(f.addrs, addr)
+	return nil
+}
+
+func (f *fakeOverlay) deprecate(addr netip.Addr) error {
+	if !slices.Contains(f.addrs, addr) {
+		return errors.New("no such address")
+	}
+	f.deprecated = append(f.deprecated, addr)
 	return nil
 }
 
@@ -403,6 +410,7 @@ func (f *fakeOverlay) delAddr(addr netip.Addr) error {
 		return errors.New("no such address")
 	}
 	f.addrs = slices.Delete(f.addrs, i, i+1)
+	f.deprecated = slices.DeleteFunc(f.deprecated, func(a netip.Addr) bool { return a == addr })
 	return nil
 }
 
@@ -410,58 +418,101 @@ func (f *fakeOverlay) route(_, _ []netip.Prefix) {}
 
 func (f *fakeOverlay) own(routes []netip.Prefix) { f.routes = routes }
 
-func TestHostDeviceAttachments(t *testing.T) {
+// TestHostDeviceAddresses follows the addresses of two relay sessions, A and
+// B, with an extra attachment x on each one.
+func TestHostDeviceAddresses(t *testing.T) {
 	addr := netip.MustParseAddr
 	pfx := netip.MustParsePrefix
-	base := addr("fd00::1")
+	baseA, baseB := addr("fd00:a::1"), addr("fd00:b::1")
+	xRoutes := []netip.Prefix{pfx("10.1.0.0/16")}
+	xA := agent.Attachment{Name: "x", Address: addr("fd00:a::2"), Routes: xRoutes}
+	xB := agent.Attachment{Name: "x", Address: addr("fd00:b::2"), Routes: xRoutes}
+	routes := []netip.Prefix{pfx("10.0.0.0/16")}
+	dev := &fakeOverlay{addrs: []netip.Addr{baseA}, routes: routes}
+	h := &hostDevice{dev: dev, addrs: map[netip.Addr]int{baseA: 1}, routes: routes, fwd: newForwardNetwork(nil, nil, routes),
+		fail: func(err error) { t.Errorf("the device failed: %v", err) }}
 	steps := []struct {
-		name      string
-		attach    *agent.Attachment
-		detach    string
-		wantAddrs []netip.Addr
-		wantHost  []string // Addresses in the own routes. They forward to the host network.
+		name           string
+		do             func()
+		wantAddrs      []netip.Addr
+		wantDeprecated []netip.Addr
+		wantHost       []string // Addresses in the own routes. They forward to the host network.
 	}{
 		{
-			name:      "attach x",
-			attach:    &agent.Attachment{Name: "x", Address: addr("fd00:1::1"), Routes: []netip.Prefix{pfx("10.1.0.0/16")}},
-			wantAddrs: []netip.Addr{base, addr("fd00:1::1")},
-			wantHost:  []string{"10.0.0.1", "10.1.0.1"},
-		},
-		{
-			name:      "x moves",
-			attach:    &agent.Attachment{Name: "x", Address: addr("fd00:2::1"), Routes: []netip.Prefix{pfx("10.1.0.0/16")}},
-			wantAddrs: []netip.Addr{base, addr("fd00:2::1")},
-			wantHost:  []string{"10.0.0.1", "10.1.0.1"},
-		},
-		{
-			name:      "attach y",
-			attach:    &agent.Attachment{Name: "y", Address: addr("fd00:3::1")},
-			wantAddrs: []netip.Addr{base, addr("fd00:2::1"), addr("fd00:3::1")},
-			wantHost:  []string{"10.0.0.1", "10.1.0.1"},
-		},
-		{
-			name:      "detach x",
-			detach:    "x",
-			wantAddrs: []netip.Addr{base, addr("fd00:3::1")},
+			name:      "session B attaches",
+			do:        func() { h.attach(nil, baseB, nil) },
+			wantAddrs: []netip.Addr{baseA, baseB},
 			wantHost:  []string{"10.0.0.1"},
 		},
 		{
-			name:      "detach x again",
-			detach:    "x",
-			wantAddrs: []netip.Addr{base, addr("fd00:3::1")},
+			name:      "x attaches on A",
+			do:        func() { h.attachment(xA) },
+			wantAddrs: []netip.Addr{baseA, baseB, xA.Address},
+			wantHost:  []string{"10.0.0.1", "10.1.0.1"},
+		},
+		{
+			name:      "x attaches on B",
+			do:        func() { h.attachment(xB) },
+			wantAddrs: []netip.Addr{baseA, baseB, xA.Address, xB.Address},
+			wantHost:  []string{"10.0.0.1", "10.1.0.1"},
+		},
+		{
+			name: "relay A drains",
+			do: func() {
+				h.deprecated(agent.Attachment{Base: true, Address: baseA})
+				h.deprecated(xA)
+			},
+			wantAddrs:      []netip.Addr{baseA, baseB, xA.Address, xB.Address},
+			wantDeprecated: []netip.Addr{baseA, xA.Address},
+			wantHost:       []string{"10.0.0.1", "10.1.0.1"},
+		},
+		{
+			name: "session A ends",
+			do: func() {
+				h.detach(xA)
+				h.detach(agent.Attachment{Base: true, Address: baseA})
+			},
+			wantAddrs: []netip.Addr{baseB, xB.Address},
+			wantHost:  []string{"10.0.0.1", "10.1.0.1"},
+		},
+		{
+			name:      "a new session on relay B gets the address of B",
+			do:        func() { h.attach(nil, baseB, nil) },
+			wantAddrs: []netip.Addr{baseB, xB.Address},
+			wantHost:  []string{"10.0.0.1", "10.1.0.1"},
+		},
+		{
+			name:      "the old session on relay B ends",
+			do:        func() { h.detach(agent.Attachment{Base: true, Address: baseB}) },
+			wantAddrs: []netip.Addr{baseB, xB.Address},
+			wantHost:  []string{"10.0.0.1", "10.1.0.1"},
+		},
+		{
+			name:      "x detaches",
+			do:        func() { h.detach(xB) },
+			wantAddrs: []netip.Addr{baseB},
+			wantHost:  []string{"10.0.0.1"},
+		},
+		{
+			name:      "x detaches again",
+			do:        func() { h.detach(xB) },
+			wantAddrs: []netip.Addr{baseB},
+			wantHost:  []string{"10.0.0.1"},
+		},
+		{
+			name: "an address that is not on the device",
+			do: func() {
+				h.deprecated(xA)
+				h.detach(agent.Attachment{Base: true, Address: baseA})
+			},
+			wantAddrs: []netip.Addr{baseB},
 			wantHost:  []string{"10.0.0.1"},
 		},
 	}
-	routes := []netip.Prefix{pfx("10.0.0.0/16")}
-	dev := &fakeOverlay{addrs: []netip.Addr{base}, routes: routes}
-	h := &hostDevice{dev: dev, addr: base, routes: routes, fwd: newForwardNetwork(nil, nil, routes)}
 	for _, st := range steps {
-		if st.attach != nil {
-			h.attachment(*st.attach)
-		} else {
-			h.detach(agent.Attachment{Name: st.detach})
-		}
+		st.do()
 		require.Equal(t, st.wantAddrs, dev.addrs, st.name)
+		require.ElementsMatch(t, st.wantDeprecated, dev.deprecated, st.name)
 		for _, a := range []string{"10.0.0.1", "10.1.0.1"} {
 			want := slices.Contains(st.wantHost, a)
 			require.Equal(t, want, h.fwd.routed(addr(a)), "%s: %s", st.name, a)

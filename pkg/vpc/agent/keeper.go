@@ -19,7 +19,8 @@ import (
 )
 
 const (
-	maxSessions = 3
+	defaultSessions = 2
+	maxSessions     = 3
 	// rttBand is the difference of two round-trip times that counts as equal. It
 	// is above the error of one handshake sample and below the time between regions.
 	rttBand = 10 * time.Millisecond
@@ -45,11 +46,11 @@ var (
 	relistMax = 10 * time.Minute
 )
 
-// Run keeps an attached relay session until ctx ends: it opens one each time
-// the agent has none. On a cert renew or a drain, the new session attaches
-// before the old one closes. It returns an ErrUpgrade when a relay refuses the
-// agent as too old and no other relay takes it. With an identity file, it
-// returns an identity.ExpiredError when the cert of the file expires.
+// Run keeps Config.Sessions attached relay sessions, each on its own relay,
+// until ctx ends: it opens one each time a session ends or its relay drains.
+// It returns an ErrUpgrade when a relay refuses the agent as too old and no
+// relay takes it. With an identity file, it returns an identity.ExpiredError
+// when the cert of the file expires.
 func (a *Agent) Run(ctx context.Context) error {
 	if m := a.cfg.MTU; m != 0 && (m < psp.DefaultMTU || m > psp.MaxMTU) {
 		return fmt.Errorf("MTU must be %d to %d, got %d", psp.DefaultMTU, psp.MaxMTU, m)
@@ -66,6 +67,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		cancel(nil)
 		wg.Wait()
 		a.close()
+		a.watchers.Wait()
 	}()
 	wg.Go(func() { a.tick(ctx) })
 	wg.Go(func() { a.keepCert(ctx) })
@@ -81,14 +83,20 @@ func (a *Agent) Run(ctx context.Context) error {
 
 	k := keeper{a: a, backoff: minBackoff, relist: relister{wait: relistMin}}
 	for ctx.Err() == nil {
-		if a.hasSession() {
+		var err error
+		switch n, eps := a.missing(); {
+		case n > 0:
+			err = k.fill(ctx, n, eps)
+		case a.primary() == nil:
+			// The agent has no session and no relay to dial.
+			err = k.retry(ctx, 0, errNoRelays)
+		default:
 			select {
 			case <-ctx.Done():
 			case <-a.wake:
 			}
-			continue
 		}
-		if err := k.fill(ctx); err != nil {
+		if err != nil {
 			return err
 		}
 	}
@@ -98,41 +106,73 @@ func (a *Agent) Run(ctx context.Context) error {
 	return nil
 }
 
-// hasSession reports whether the agent has a session that is not a visitor
-// session, in each state. A replacement that dials counts, so Run waits for it.
-func (a *Agent) hasSession() bool {
+// missing returns the number of sessions that Run must open, and the relays for
+// them: the relays on which the agent has no session. A draining session does
+// not count as a session of the agent, and the alternates of its relay are
+// first. An alternate is another relay than the draining one, also when the
+// two have one ID.
+func (a *Agent) missing() (int, []endpoint) {
+	eps := a.endpoints()
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return slices.ContainsFunc(a.conns, func(rc *relayConn) bool { return !rc.visitor })
+	n := cmp.Or(a.cfg.Sessions, defaultSessions)
+	var alts []endpoint
+	busy, live := map[string]bool{}, map[string]bool{}
+	for _, rc := range a.conns {
+		if rc.visitor() {
+			continue
+		}
+		busy[rc.ep.key()] = true
+		if rc.state == connDraining {
+			alts = append(alts, rc.alternates...)
+			continue
+		}
+		live[rc.ep.key()] = true
+		n--
+	}
+	alts = slices.DeleteFunc(alts, func(e endpoint) bool { return live[e.key()] })
+	eps = slices.DeleteFunc(eps, func(e endpoint) bool { return busy[e.key()] })
+	free := slices.Concat(alts, eps)
+	return max(min(n, len(oneEach(free))), 0), free
 }
 
-// keeper opens a session for Run each time the agent has none.
+// errNoRelays is the failure of Run when it has no relay to dial.
+var errNoRelays = errors.New("no relays")
+
+// keeper opens the sessions that Run misses.
 type keeper struct {
 	a       *Agent
 	backoff time.Duration
 	next    int           // The relay to dial first.
+	rank    uint32        // Rank of the next session.
 	failed  int           // Relays that failed in a row.
 	refused *upgradeError // A relay refused the agent as too old since the last session.
 	relist  relister
 	since   time.Time // Start of the last session.
 }
 
-// fill opens one attached session, and waits with backoff after a failure. It
-// returns an error when Run must stop: no relay takes the agent, and one needs
-// a newer agent.
-func (k *keeper) fill(ctx context.Context) error {
-	a := k.a
+// fill opens n attached sessions on the relays of eps. After a failure it
+// goes to retry, and returns its error.
+func (k *keeper) fill(ctx context.Context, n int, eps []endpoint) error {
 	if !k.since.IsZero() && time.Since(k.since) > stableSession {
 		k.backoff = minBackoff
 	}
-	tried, err := k.open(ctx)
-	if err == nil {
+	opened, tried, err := k.open(ctx, n, eps)
+	if opened > 0 {
 		k.failed, k.refused, k.since = 0, nil, time.Now()
+	}
+	if opened == n || ctx.Err() != nil {
 		return nil
 	}
-	if ctx.Err() != nil {
-		return nil
-	}
+	return k.retry(ctx, tried, err)
+}
+
+// retry waits with backoff after tried relays failed with err. When the agent
+// has no session and each relay of the list failed, it gets a new relay list.
+// It returns an error when Run must stop: the agent has no session, no relay
+// takes it, and one needs a newer agent.
+func (k *keeper) retry(ctx context.Context, tried int, err error) error {
+	a := k.a
 	slog.Warn("Failed to open relay session", "error", err)
 	if ue := (*upgradeError)(nil); errors.As(err, &ue) {
 		k.refused = ue
@@ -141,7 +181,7 @@ func (k *keeper) fill(ctx context.Context) error {
 		a.renew(ctx)
 	}
 	k.next += tried
-	if k.failed += tried; k.failed >= len(a.endpoints()) {
+	if k.failed += tried; a.primary() == nil && k.failed >= len(a.endpoints()) {
 		// More dials do not help when a relay needs a newer agent, so Run stops.
 		if k.refused != nil {
 			return k.refused
@@ -162,36 +202,32 @@ func (k *keeper) fill(ctx context.Context) error {
 	return nil
 }
 
-// open dials each relay and attaches on the one with the lowest round-trip
-// time that takes the attachment. The other sessions end. It returns the
-// number of relays that failed.
-func (k *keeper) open(ctx context.Context) (int, error) {
+// open dials each relay of eps and attaches on the n relays with the lowest
+// round-trip times that take the attachment. The other sessions end. A relay
+// that fails closes only its session. It returns the number of sessions that
+// attached and the number of relays that failed.
+func (k *keeper) open(ctx context.Context, n int, eps []endpoint) (opened, failed int, err error) {
 	a := k.a
 	begin := time.Now()
-	eps := a.endpoints()
-	if len(eps) == 0 {
-		return 0, errors.New("no relays")
-	}
 	i := k.next % len(eps)
 	conns, failed, err := a.choose(ctx, slices.Concat(eps[i:], eps[:i]), func(ctx context.Context, e endpoint) (*relayConn, error) {
-		return a.dialRelay(ctx, e, false)
+		return a.dialRelay(ctx, e, nil)
 	})
-	attached := false
 	for _, rc := range conns {
-		if attached {
+		if opened == n {
 			a.end(rc)
 			continue
 		}
-		if aerr := a.attach(ctx, rc, nil, begin); aerr != nil {
+		// The agent does not visit a relay on which it has an attached session.
+		a.endVisitTo(rc.ep.key(), "agent attaches to the relay")
+		if aerr := a.attach(ctx, rc, nil, k.rank, begin); aerr != nil {
 			failed, err = failed+1, errors.Join(err, aerr)
 			continue
 		}
-		attached = true
+		opened++
+		k.rank++
 	}
-	if attached {
-		return failed, nil
-	}
-	return failed, err
+	return opened, failed, err
 }
 
 // choose dials each relay of eps at the same time, and returns the sessions in
@@ -245,7 +281,7 @@ wait:
 	}()
 	order := a.rank(conns)
 	if len(order) > 1 {
-		slog.Info("Chose the relay with the lowest round-trip time", "relay", order[0].addr, "rtt", order[0].choiceRTT(), "relays", len(order))
+		slog.Info("Ordered the relays by round-trip time", "first", order[0].addr, "rtt", order[0].choiceRTT(), "relays", len(order))
 	}
 	return order, len(errs), errors.Join(errs...)
 }
@@ -322,6 +358,8 @@ func (a *Agent) keepCert(ctx context.Context) {
 				}
 			}
 		}
+		// The new cert can have a new relay list, so Run counts again.
+		a.wakeRun()
 		a.mu.Lock()
 		for _, rc := range a.conns {
 			select {

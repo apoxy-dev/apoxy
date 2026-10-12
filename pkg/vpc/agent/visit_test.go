@@ -102,7 +102,7 @@ func oneVisit(t *testing.T, a, b *testAgent, ea, eb attachEvent, heal func()) {
 		}
 		pa, pb = onlyPeer(t, a.a), onlyPeer(t, b.a)
 		// A session with the path down gives its place to the session of a new visit.
-		return pa.rc.visitor != pb.rc.visitor && keyed(pa) && keyed(pb) && !pathDown(a.a, pa) && !pathDown(b.a, pb)
+		return pa.rc.visitor() != pb.rc.visitor() && keyed(pa) && keyed(pb) && !pathDown(a.a, pa) && !pathDown(b.a, pb)
 	}, 20*time.Second, 20*time.Millisecond, "one peer session on one visit")
 	assert.Error(t, old.qc.Context().Err(), "the session over the trunk closed")
 	// With a visit of a, the session on that visit stays. Else it is on the visit of b.
@@ -170,7 +170,11 @@ func TestVisitRules(t *testing.T) {
 	}
 	for _, tc := range stays {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, keeps(&relayConn{self: tc.self, visitor: tc.visitor}, tc.peer))
+			rc := &relayConn{self: tc.self}
+			if tc.visitor {
+				rc.home = &relayConn{}
+			}
+			assert.Equal(t, tc.want, keeps(rc, tc.peer))
 		})
 	}
 	reaches := []struct {
@@ -192,7 +196,7 @@ func TestVisitRules(t *testing.T) {
 	var h holds
 	now := time.Now()
 	h.mu.Lock()
-	h.fail(low, errVisitLimit, now)
+	h.fail(holdKey{dst: low}, errVisitLimit, now)
 	h.mu.Unlock()
 	fails := []struct {
 		name string
@@ -206,7 +210,7 @@ func TestVisitRules(t *testing.T) {
 	}
 	for _, tc := range fails {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, h.failing(tc.dst, tc.at))
+			assert.Equal(t, tc.want, h.failing(holdKey{dst: tc.dst}, tc.at))
 		})
 	}
 }
@@ -255,7 +259,7 @@ func TestVisit(t *testing.T) {
 			assert.Same(t, rc, a.current())
 			assert.Same(t, rc, v.home)
 			assert.Equal(t, home.addr, rc.addr)
-			assert.True(t, v.rc.visitor)
+			assert.True(t, v.rc.visitor())
 			assert.Equal(t, far.addr, v.rc.addr)
 			assert.Equal(t, ea.addr, v.rc.self)
 			assert.Equal(t, tc.data, v.rc.data.Load(), "result of the path probe")
@@ -480,11 +484,11 @@ func TestVisitAttachmentsRelayRevision(t *testing.T) {
 			cutMesh(r1, r2)
 			waitReach(t, a, eb.addr, dp.Reach_REACH_VISIT)
 
-			rc, err := a.a.dialRelay(ctx, endpoint{id: r2.id, addr: r2.addr}, true)
+			rc, err := a.a.dialRelay(ctx, endpoint{id: r2.id, addr: r2.addr}, a.current())
 			require.NoError(t, err)
 			defer a.a.end(rc)
 			rc.version = &dp.Version{Revision: tc.revision}
-			require.NoError(t, rc.startVisit(ctx, a.current()))
+			require.NoError(t, rc.startVisit(ctx))
 			require.NoError(t, a.a.connect(ctx, rc, eb.addr, nil))
 			require.Eventually(t, func() bool { return liveOn(b.a, b.current(), ea.addr) }, 5*time.Second, 10*time.Millisecond)
 			ping(t, b.stack, eb.addr, ea.addr, 9000, "to the first attachment on the visit")
@@ -709,7 +713,7 @@ func TestNoRoute(t *testing.T) {
 			require.Never(t, func() bool { return visitCount(a.a) != 0 || p.qc.Context().Err() != nil },
 				300*time.Millisecond, 10*time.Millisecond, "the peer session stays, and no visit starts")
 			assert.Same(t, p, onlyPeer(t, a.a))
-			assert.False(t, a.a.holds.failing(eb.addr, time.Now()), "the answer REACH_TRUNK is no failure")
+			assert.False(t, a.a.holds.failing(holdKey{a.current().link, eb.addr}, time.Now()), "the answer REACH_TRUNK is no failure")
 			// The answer REACH_TRUNK sets the path of the session to up again.
 			a.a.setDown(a.current(), eb.addr, true)
 			require.True(t, pathDown(a.a, p))

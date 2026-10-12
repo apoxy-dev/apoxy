@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/vishvananda/netlink"
 	vnetns "github.com/vishvananda/netns"
+	"golang.org/x/sys/unix"
 
 	"github.com/apoxy-dev/apoxy/pkg/netns"
 )
@@ -103,6 +104,67 @@ func TestTunForeignSource(t *testing.T) {
 		return nil
 	})
 	require.NoError(t, err)
+}
+
+// TestTunDeprecate checks that the kernel does not select a deprecated overlay
+// address as the source of a new connection, and keeps the address.
+func TestTunDeprecate(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("needs root to make a network namespace")
+	}
+	ns := newNetns(t)
+	first, second := netip.MustParseAddr("fd61:706f:7879:12:3400::1"), netip.MustParseAddr("fd61:706f:7879:12:3400::2")
+	peer := netip.MustParseAddr("fd61:706f:7879:12:3400::9")
+	steps := []struct {
+		name      string
+		deprecate netip.Addr
+		remove    netip.Addr
+		wantSrc   netip.Addr
+		wantAddrs map[netip.Addr]bool // Addresses on the device, true when deprecated.
+	}{
+		{name: "first drains", deprecate: first, wantSrc: second, wantAddrs: map[netip.Addr]bool{first: true, second: false}},
+		{name: "second drains also", deprecate: second, wantAddrs: map[netip.Addr]bool{first: true, second: true}},
+		{name: "first ends", remove: first, wantSrc: second, wantAddrs: map[netip.Addr]bool{second: true}},
+	}
+	err := netns.Do(ns, func() error {
+		vpc0 := upVeth(t, "vpc0")
+		dev := &tunDev{link: vpc0}
+		require.NoError(t, dev.addAddr(first))
+		require.NoError(t, dev.addAddr(second))
+		require.NoError(t, netlink.RouteAdd(&netlink.Route{LinkIndex: vpc0.Attrs().Index, Dst: ipNet(netip.MustParsePrefix("fd61:706f:7879:12:3400::/72"))}))
+		for _, st := range steps {
+			if st.deprecate.IsValid() {
+				require.NoError(t, dev.deprecate(st.deprecate), st.name)
+			}
+			if st.remove.IsValid() {
+				require.NoError(t, dev.delAddr(st.remove), st.name)
+			}
+			require.Equal(t, st.wantAddrs, deprecatedOn(t, vpc0), st.name)
+			if st.wantSrc.IsValid() {
+				rs, err := netlink.RouteGet(peer.AsSlice())
+				require.NoError(t, err, st.name)
+				src, _ := netip.AddrFromSlice(rs[0].Src)
+				require.Equal(t, st.wantSrc, src, st.name)
+			}
+		}
+		return nil
+	})
+	require.NoError(t, err)
+}
+
+// deprecatedOn returns the overlay addresses on link, true for each one that
+// is deprecated.
+func deprecatedOn(t *testing.T, link netlink.Link) map[netip.Addr]bool {
+	t.Helper()
+	as, err := netlink.AddrList(link, netlink.FAMILY_V6)
+	require.NoError(t, err)
+	out := map[netip.Addr]bool{}
+	for _, a := range as {
+		if ip, _ := netip.AddrFromSlice(a.IP); !ip.IsLinkLocalUnicast() {
+			out[ip] = a.Flags&unix.IFA_F_DEPRECATED != 0
+		}
+	}
+	return out
 }
 
 // prefixes parses CIDRs.
