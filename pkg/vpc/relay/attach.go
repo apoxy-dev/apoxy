@@ -125,28 +125,13 @@ func (srv *Server) Attach(ctx context.Context, in *dp.AttachRequest) (*dp.Attach
 	if notAfter.IsZero() {
 		notAfter = time.Now().Add(identity.CertLifetime)
 	}
-	cert, err := srv.cert()
-	if err != nil {
-		srv.Addresses.Release(a)
-		return nil, err
-	}
-	// The grant cannot outlive the agent cert.
-	grant, err := SignGrant(cert, &dp.GrantClaims{
-		Vpc:          &dp.VPCRef{ProjectId: key.Project, VpcUid: key.UID, NetworkId: n.ID},
-		AttachmentId: a.ID,
-		Subject:      a.Subject,
-		Addresses:    prefixStrings(addrs),
-		RelayId:      srv.RelayID,
-		NotAfter:     timestamppb.New(notAfter),
-	})
+	// The grant of Attach cannot outlive the agent cert.
+	grant, err := srv.signGrant(a, notAfter)
 	if err == nil {
 		err = srv.R.attach(s, a)
 	}
 	if err != nil {
 		srv.Addresses.Release(a)
-		if rpc.CodeOf(err) == rpc.Unknown {
-			err = rpc.Errorf(rpc.Internal, "grant: %v", err)
-		}
 		return nil, err
 	}
 	srv.Addresses.Attached(a)
@@ -155,6 +140,69 @@ func (srv *Server) Attach(ctx context.Context, in *dp.AttachRequest) (*dp.Attach
 		statuses = nil
 	}
 	return &dp.AttachResponse{AttachmentId: a.ID, Grant: grant, Routes: statuses}, nil
+}
+
+// signGrant returns a grant for a that ends at notAfter.
+func (srv *Server) signGrant(a *Attachment, notAfter time.Time) (*dp.AttachmentGrant, error) {
+	cert, err := srv.cert()
+	if err != nil {
+		return nil, err
+	}
+	grant, err := SignGrant(cert, &dp.GrantClaims{
+		Vpc:          vpcRef(a),
+		AttachmentId: a.ID,
+		Subject:      a.Subject,
+		Addresses:    prefixStrings(a.Addresses),
+		RelayId:      srv.RelayID,
+		NotAfter:     timestamppb.New(notAfter),
+	})
+	if err != nil {
+		return nil, rpc.Errorf(rpc.Internal, "grant: %v", err)
+	}
+	return grant, nil
+}
+
+// Grant returns a new grant for an attachment of the session of the caller. It
+// has the claims of the grant of Attach, and it ends grantLife from now.
+func (srv *Server) Grant(ctx context.Context, in *dp.GrantRequest) (*dp.GrantResponse, error) {
+	s, err := srv.R.caller(ctx)
+	if err != nil {
+		return nil, err
+	}
+	grant, err := srv.grant(s, in.GetAttachmentId(), time.Now())
+	if err != nil {
+		return nil, err
+	}
+	return &dp.GrantResponse{Grant: grant}, nil
+}
+
+func (srv *Server) grant(s *Session, id string, now time.Time) (*dp.AttachmentGrant, error) {
+	a, err := srv.R.attachment(s, id)
+	if err != nil {
+		return nil, err
+	}
+	return srv.signGrant(a, now.Add(grantLife))
+}
+
+// attachment returns the attachment id of s. A visitor session has none.
+func (r *Router) attachment(s *Session, id string) (*Attachment, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	// A closed session keeps its attachments for their last counters.
+	if s.closed {
+		return nil, rpc.Errorf(rpc.Unauthenticated, "relay session closed")
+	}
+	i := s.attachmentIndex(id)
+	if i < 0 {
+		return nil, rpc.Errorf(rpc.NotFound, "no attachment %q on this session", id)
+	}
+	return s.attachments[i], nil
+}
+
+// attachmentIndex returns the index of the attachment id of s, or -1.
+// Router.mu must be held.
+func (s *Session) attachmentIndex(id string) int {
+	return slices.IndexFunc(s.attachments, func(a *Attachment) bool { return a.ID == id })
 }
 
 // routeResult returns the answer for the advertised route p of an attachment
@@ -311,7 +359,7 @@ func (d *domain) announcedHere(p netip.Prefix, s *Session) bool {
 func (r *Router) detach(s *Session, id string) (*Attachment, AttachmentStats, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	i := slices.IndexFunc(s.attachments, func(a *Attachment) bool { return a.ID == id })
+	i := s.attachmentIndex(id)
 	if i < 0 {
 		return nil, AttachmentStats{}, rpc.Errorf(rpc.NotFound, "no attachment %q on this session", id)
 	}

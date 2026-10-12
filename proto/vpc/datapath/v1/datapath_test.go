@@ -228,6 +228,10 @@ func (r *relayStub) Visit(ctx context.Context, in *dp.VisitRequest) (*emptypb.Em
 	return answer[*emptypb.Empty](r.stub, "Visit", in)
 }
 
+func (r *relayStub) Grant(ctx context.Context, in *dp.GrantRequest) (*dp.GrantResponse, error) {
+	return answer[*dp.GrantResponse](r.stub, "Grant", in)
+}
+
 type peerStub struct{ *stub }
 
 func (p peerStub) Open(ctx context.Context, in *dp.OpenRequest) (*dp.OpenResponse, error) {
@@ -470,6 +474,8 @@ func TestRelayCalls(t *testing.T) {
 		unary("Visit", c, dp.RelayClient.Visit, &dp.VisitRequest{Vpc: vpc, Address: "fd61:a0b:c00:1::1", Grant: grant}, &emptypb.Empty{}),
 		unary("Visit refused", c, dp.RelayClient.Visit, &dp.VisitRequest{Vpc: vpc, Address: "fd61:a0b:c00:2::9", Grant: grant},
 			rpc.Errorf(rpc.PermissionDenied, "address fd61:a0b:c00:2::9 is not in the grant")),
+		unary("Grant", c, dp.RelayClient.Grant, &dp.GrantRequest{AttachmentId: "att-1"}, &dp.GrantResponse{Grant: grant}),
+		unary("Grant unknown", c, dp.RelayClient.Grant, &dp.GrantRequest{AttachmentId: "att-9"}, rpc.Errorf(rpc.NotFound, "no attachment")),
 	})
 }
 

@@ -636,6 +636,70 @@ func TestDetach(t *testing.T) {
 	}
 }
 
+// TestGrant checks the Grant call: a session gets a grant only for its own
+// attachment, with the claims of the grant of Attach and an end grantLife later.
+func TestGrant(t *testing.T) {
+	cases := []struct {
+		name  string
+		id    func(own, other string) string // The ID in the call, from that of a and that of another agent.
+		noKey bool                           // The relay has no key for grants.
+		code  rpc.Code
+	}{
+		{name: "attachment of the session", id: func(own, _ string) string { return own }, code: rpc.OK},
+		{name: "attachment of another session", id: func(_, other string) string { return other }, code: rpc.NotFound},
+		{name: "unknown attachment", id: func(string, string) string { return "unknown" }, code: rpc.NotFound},
+		{name: "no ID", id: func(string, string) string { return "" }, code: rpc.NotFound},
+		{name: "relay with no key", id: func(own, _ string) string { return own }, noKey: true, code: rpc.Unavailable},
+	}
+	ca := newCA(t)
+	h := newHarness(t, ca)
+	other := h.mustDial(t, ca.agentCert(t, vpcA, "other"))
+	sayHello(t, other)
+	otherRes := attach(t, other, &dp.AttachRequest{Vpc: ref(vpcA), Name: "other"})
+	a := h.mustDial(t, ca.agentCert(t, vpcA, "laptop"))
+	sayHello(t, a)
+	own := attach(t, a, &dp.AttachRequest{Vpc: ref(vpcA), Name: "laptop", Routes: []string{"10.9.0.0/16"}})
+	first, err := VerifyGrant(own.Grant, h.relayRoots, time.Now())
+	require.NoError(t, err)
+	// The claims of the two grants differ only in the end time.
+	sameClaims := func(t *testing.T, g *dp.AttachmentGrant, now time.Time) {
+		claims, err := VerifyGrant(g, h.relayRoots, now)
+		require.NoError(t, err)
+		assert.Empty(t, cmp.Diff(first, claims, protocmp.Transform(), protocmp.IgnoreFields(&dp.GrantClaims{}, "not_after")))
+		assert.WithinDuration(t, now.Add(grantLife), claims.NotAfter.AsTime(), time.Second)
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := h.srv
+			if tc.noKey {
+				srv = &Server{R: h.r, RelayID: "relay-1"}
+			}
+			now := time.Now()
+			g, err := srv.grant(h.session(t, a), tc.id(own.AttachmentId, otherRes.AttachmentId), now)
+			require.Equal(t, tc.code, rpc.CodeOf(err), "error: %v", err)
+			if tc.code != rpc.OK {
+				return
+			}
+			sameClaims(t, g, now)
+			claims, err := VerifyGrant(g, h.relayRoots, now)
+			require.NoError(t, err)
+			assert.True(t, claims.NotAfter.AsTime().Equal(now.Add(grantLife)), "end %v, call at %v", claims.NotAfter.AsTime(), now)
+			_, err = VerifyGrant(g, h.relayRoots, now.Add(grantLife))
+			assert.ErrorContains(t, err, "grant has ended")
+		})
+	}
+
+	t.Run("call of an agent", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		res, err := a.c.Grant(ctx, &dp.GrantRequest{AttachmentId: own.AttachmentId})
+		require.NoError(t, err)
+		sameClaims(t, res.Grant, time.Now())
+		_, err = a.c.Grant(ctx, &dp.GrantRequest{AttachmentId: otherRes.AttachmentId})
+		assert.Equal(t, rpc.NotFound, rpc.CodeOf(err), "error: %v", err)
+	})
+}
+
 func TestVerifyGrant(t *testing.T) {
 	_, edKey, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)

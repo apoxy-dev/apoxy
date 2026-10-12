@@ -35,6 +35,9 @@ const (
 	minBurst      = 64 << 10
 	// MaxLaneSources is the most lane ports of a session: lanes 1 and up.
 	MaxLaneSources = keys.MaxLanes - 1
+	// grantLife is the time from the signing of a grant to its end. The agent
+	// gets a new grant with the Grant call when it needs one.
+	grantLife = 5 * time.Minute
 )
 
 // VPCKey is the key of a routing domain: one VPC of one project. The VPC
@@ -709,13 +712,12 @@ func (r *Router) ReportStatus(s *Session, st *dp.Status) {
 	}
 }
 
-// Sweep follows migrated connections, ends old source addresses and visits,
-// and removes expired and idle rows. A session does not end with its cert.
+// Sweep follows migrated connections, ends old source addresses, and removes
+// expired and idle rows. A session does not end with its cert.
 func (r *Router) Sweep(now time.Time) {
 	idle := now.Add(-rowIdle).UnixNano()
 	r.mu.Lock()
 	for s := range r.sessions {
-		r.endVisit(s, "grant ended", func(v *visit) bool { return !now.Before(v.notAfter) })
 		if s.shardOf == nil {
 			r.setAddr(s, s.remote(), now)
 		}

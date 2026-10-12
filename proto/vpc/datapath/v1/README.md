@@ -468,6 +468,7 @@ Addresses and prefixes are text (`fd61::1`, `10.0.0.0/8`, `host:port`).
 | `UnregisterSPI` | unary | `{vpc, spis}` -> `Empty` |
 | `RegisterLanes` | unary | `{ports, receive}` -> `Empty`: replaces the lane ports of the session. `receive` tells that the agent reads them. Errors: `InvalidArgument` (more ports than `Welcome.max_lanes`, port 0, the session port, a repeated port), `AlreadyExists` (a port is a source of another agent), `FailedPrecondition`. |
 | `Visit`         | unary | `{vpc, address, grant}` -> `Empty`: the session becomes a visitor with the prefix of the grant that has `address` (see below). Errors: `Unimplemented` (the relay has no mesh), `Unavailable` (the relay cannot read the relay roots), `PermissionDenied`, `FailedPrecondition`, `AlreadyExists`, `ResourceExhausted`. |
+| `Grant`         | unary | `{attachment_id}` -> `{grant}`: a new grant for an attachment of the session, with the claims of the grant of `Attach`. It ends 5 minutes after the call. Errors: `NotFound` (the session does not have the attachment; a visitor session has none), `Unavailable` (the relay has no key for grants). |
 
 `Attach` returns an `AttachmentGrant`: the claims, the signature of the relay
 TLS key, and the relay cert chain (leaf first). A peer accepts it only if the
@@ -475,6 +476,10 @@ leaf chains through the rest of the chain to the roots that agents dial relays
 with, the leaf names `relay_id` (a DNS name, for example the dial host name of
 the relay), the leaf key made the signature, `min_revision` is not above the
 revision of the peer, and `not_after` has not passed.
+
+The grant of `Attach` ends with the agent cert. From revision 17, an agent
+gets a new grant for an attachment with `Grant` when it needs one. That grant
+ends 5 minutes after the call.
 
 A relay with a mesh refuses an `Attach` with more than 64 prefixes, the
 addresses and the advertised routes together (`InvalidArgument`), because the
@@ -712,17 +717,17 @@ When one agent has two visitor sessions with one prefix, the newest session
 gets the traffic, and the other session gets it when the newest ends. Thus an
 agent can open the second session before it closes the first.
 
-A visit ends when the session ends, when `not_after` of the grant passes (the
-relay looks each second), and when an attachment of the visited relay or an
-entry of another agent gets the route of exactly the visit prefix. From
+A visit ends when the session ends, and when an attachment of the visited
+relay or an entry of another agent gets the route of exactly the visit prefix.
+From revision 17, a visit has no time limit: it does not end when `not_after`
+of its grant passes. From
 revision 15, `Detach` on a visitor session with the `attachment_id` of a grant
 ends the visits with that grant. Each visit prefix of a session ends alone,
 and the session stays a visitor while it has one. From then
 on, the sessions of the visited relay reach the address by its route again.
 A visit does not end when the home relay is lost, stops or leaves the member
 set, when its entry for the address goes away, or when the relay roots
-change: the relay checked the grant at the call, and `not_after`, which is at
-most the end of the agent cert, limits the visit. Permit applies to each
+change: the relay checked the grant at the call. Permit applies to each
 frame, packet and row of a visitor, as for each session.
 
 The SPI rows of the sessions of the visited relay follow the visit at once.
@@ -1153,6 +1158,7 @@ only for logs and metrics. On a mesh session, `MeshOpenRequest` and
 | 14 | `Mesh.Snapshot`. | No duty. | No duty. | Answers `Snapshot` on the open mesh session of a member with the snapshot of its host, in parts of at most 1 MiB with `total_size` in the first part. Answers `NotFound` when its host gives no snapshot, and `ResourceExhausted` for a snapshot above 64 MiB. Calls `Snapshot` only when its host asks for a snapshot, and only on a member at revision 14 or later, with 10 s for each member. Takes no snapshot with a `total_size` of 0 or above 64 MiB, or with a number of bytes that is not `total_size`. |
 | 15 | More than one `Visit` call on a visitor session. `Detach` on a visitor session. | After the first `Visit` call on a relay at revision 15 or later, makes one `Visit` call for each address prefix of each extra attachment of its attached session, with the grant of that attachment, and sends those grants in `Peer.Open` and in `Grants` on the visitor session. Does the same for an attachment that it adds during the visit. Calls `Detach` on the visitor session with the ID of an attachment that it removes during the visit. On a relay below revision 15, makes one `Visit` call, so the peers of the visit reach only the address of the first attachment. | No duty. | Accepts a `Visit` call on a visitor session when the grant is of the same home relay: the session gets one more visit prefix, or the new grant for a prefix that it has. Keeps at most 64 visit prefixes on a session, and answers `ResourceExhausted` above that. The limit of 2 visitor sessions of an agent counts sessions, not prefixes. Ends each visit prefix alone: at the end of its grant, when the address gets another owner, and on a `Detach` call of the visitor with the attachment ID of the grant. A relay below revision 15 answers the second `Visit` call with `FailedPrecondition` and such a `Detach` call with `NotFound`. |
 | 16 | A set of announcers for each prefix, with one selection. `Hello.instance`, `AttachRequest.rank`, `AttachResponse.routes`, `Route.standby`, and `instance`, `rank`, `state`, `attached` and `active_from` in a presence entry. The states `DRAINING` and `SUSPECT`, and the hold time of 30 s. | Sends its instance in `Hello`, and sends `Hello` before `Attach`. Attaches on each of its relay connections, with the rank of the connection in `AttachRequest.rank`. Accepts the statuses in `AttachResponse` and the standby list of a route. When the active announcer of a prefix changes, gets a remove and an add, and closes the peer session to the old announcer, as for each removed route. Sends a QUIC keep-alive each 3 s. | No duty. | Keeps each attachment that lists a prefix as an announcer of it, and selects the active one with the rules of "Relay". Does not refuse an `Attach` because another agent announces the route. Checks each advertised route of an `Attach`, and refuses a default route, an IPv4-mapped IPv6 prefix and a prefix that overlaps the network of the VPC. A refused route does not fail the `Attach`: it has a result that is not `ROUTE_RESULT_ACCEPTED` in `AttachResponse.routes`, and the attachment is not an announcer of it. An agent below revision 16 gets no statuses. Refuses an `Attach` before `Hello` with `FailedPrecondition`. Lets each announcer of a prefix send from it, and no other session. Sends the standby list only to a session at revision 16 or later: an older agent gets one announcer for each prefix. Sends a QUIC keep-alive on an agent connection after 2 s with no packet, and gives the attachments of a session the state `SUSPECT` after 6 s with no packet of the agent, and `NORMAL` again after 4 s with packets. Gives all its attachments the state `DRAINING` at the start of a drain, before `Drain`. Sends an entry with a higher generation, the same `attached` and `active_from` for each state change, and applies such an entry in place, with no remove of its routes. Reads each entry of a lost member as `SUSPECT`, and drops the entries of a member that is still down after 5 minutes. Selects a `NORMAL` announcer in its hold time after each `NORMAL` announcer out of it, and, when each one is in its hold time, the one with the earliest `active_from` first. Reads the entry of a relay below revision 16 as instance 0, rank 0, state `NORMAL` and no hold time. A relay below revision 16 keeps one attachment for each prefix: it refuses the `Attach` of a second agent with `AlreadyExists`, and it prefers its own attachment. In a mesh with both kinds of relay, two relays can thus select different announcers for a prefix. Each relay gives a packet from another relay to its own announcer of the prefix, so such a packet does not drop. |
+| 17 | `Relay.Grant`. A visit with no time limit. | No duty: an agent of this revision makes no `Grant` call. | No duty. | Answers `Grant` with a new grant for an attachment of the session of the caller, which ends 5 minutes after the call, and with `NotFound` for each other attachment ID and for a visitor session. Checks `not_after` of a grant one time, at the `Visit` call, and does not end a visit when it passes. A relay below revision 17 answers `Grant` with `Unimplemented`, and it ends a visit at `not_after` of its grant. |
 
 ### Minimum revision
 

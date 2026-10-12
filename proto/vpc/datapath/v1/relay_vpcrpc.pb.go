@@ -25,6 +25,7 @@ const (
 	Relay_UnregisterSPI_FullMethodName = "/apoxy.vpc.datapath.v1.Relay/UnregisterSPI"
 	Relay_RegisterLanes_FullMethodName = "/apoxy.vpc.datapath.v1.Relay/RegisterLanes"
 	Relay_Visit_FullMethodName         = "/apoxy.vpc.datapath.v1.Relay/Visit"
+	Relay_Grant_FullMethodName         = "/apoxy.vpc.datapath.v1.Relay/Grant"
 )
 
 // RelayClient is the client API of the Relay service.
@@ -53,6 +54,9 @@ type RelayClient interface {
 	// Visit lets the caller use its address of another relay of the mesh on this
 	// relay. Errors: Unimplemented (no mesh), and the codes in the README.
 	Visit(ctx context.Context, in *VisitRequest) (*emptypb.Empty, error)
+	// Grant gives a new grant for an attachment of the session. The grant ends
+	// 5 minutes later. Errors: NotFound, Unavailable (the relay has no key).
+	Grant(ctx context.Context, in *GrantRequest) (*GrantResponse, error)
 }
 
 type relayClient struct{ c rpc.Caller }
@@ -128,6 +132,14 @@ func (c relayClient) Visit(ctx context.Context, in *VisitRequest) (*emptypb.Empt
 	return out, nil
 }
 
+func (c relayClient) Grant(ctx context.Context, in *GrantRequest) (*GrantResponse, error) {
+	out := new(GrantResponse)
+	if err := c.c.Invoke(ctx, Relay_Grant_FullMethodName, in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // RelayServer is the server API of the Relay service.
 type RelayServer interface {
 	// Session starts with Hello and Welcome, then carries Sync. The relay sends
@@ -154,6 +166,9 @@ type RelayServer interface {
 	// Visit lets the caller use its address of another relay of the mesh on this
 	// relay. Errors: Unimplemented (no mesh), and the codes in the README.
 	Visit(context.Context, *VisitRequest) (*emptypb.Empty, error)
+	// Grant gives a new grant for an attachment of the session. The grant ends
+	// 5 minutes later. Errors: NotFound, Unavailable (the relay has no key).
+	Grant(context.Context, *GrantRequest) (*GrantResponse, error)
 }
 
 // UnimplementedRelayServer returns Unimplemented for each method. Embed it to add
@@ -196,6 +211,10 @@ func (UnimplementedRelayServer) Visit(context.Context, *VisitRequest) (*emptypb.
 	return nil, rpc.Errorf(rpc.Unimplemented, "method Visit not implemented")
 }
 
+func (UnimplementedRelayServer) Grant(context.Context, *GrantRequest) (*GrantResponse, error) {
+	return nil, rpc.Errorf(rpc.Unimplemented, "method Grant not implemented")
+}
+
 // RegisterRelayServer adds the methods of srv to m.
 func RegisterRelayServer(m *rpc.Mux, srv RelayServer) {
 	rpc.HandleBidiStream(m, Relay_Session_FullMethodName, srv.Session)
@@ -207,4 +226,5 @@ func RegisterRelayServer(m *rpc.Mux, srv RelayServer) {
 	rpc.HandleUnary(m, Relay_UnregisterSPI_FullMethodName, srv.UnregisterSPI)
 	rpc.HandleUnary(m, Relay_RegisterLanes_FullMethodName, srv.RegisterLanes)
 	rpc.HandleUnary(m, Relay_Visit_FullMethodName, srv.Visit)
+	rpc.HandleUnary(m, Relay_Grant_FullMethodName, srv.Grant)
 }

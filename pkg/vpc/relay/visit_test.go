@@ -688,8 +688,8 @@ func TestVisitNoMesh(t *testing.T) {
 	assert.Equal(t, rpc.Unimplemented, rpc.CodeOf(err), "error: %v", err)
 }
 
-// TestVisitPaths sends one thing before a visit, in the visit and after the
-// end of its grant, and checks who gets it each time.
+// TestVisitPaths sends one thing before a visit, in the visit and after its
+// end, and checks who gets it each time.
 func TestVisitPaths(t *testing.T) {
 	// noEntry ends the attachment of server on relay-a, so its address has no route.
 	noEntry := func(_ *testing.T, g *visitRig) { g.announce(goneAt("x", 20)) }
@@ -697,7 +697,6 @@ func TestVisitPaths(t *testing.T) {
 	second := func(t *testing.T, g *visitRig) {
 		w := g.guest(dp.Mode_MODE_QUIC, phone, spareSocket)
 		c := g.claimsOf(phone, "ph", phoneNet)
-		c.NotAfter = timestamppb.New(time.Now().Add(time.Hour))
 		require.NoError(t, g.visit(w, phoneAddr, c))
 		g.ends["w"] = w
 	}
@@ -894,8 +893,8 @@ func TestVisitPaths(t *testing.T) {
 				assert.Equal(t, tc.before, g.via(send), "before the visit")
 				g.enter()
 				assert.Equal(t, tc.during, g.via(send), "in the visit")
-				g.expire()
-				require.Empty(t, g.visitOf(g.v.s), "the visit ends with its grant")
+				require.True(t, g.r.leave(g.v.s, "x"), "Detach ends the visit")
+				require.Empty(t, g.visitOf(g.v.s))
 				assert.Equal(t, tc.after, g.via(send), "after the visit")
 			})
 		})
@@ -949,12 +948,6 @@ func TestVisitRows(t *testing.T) {
 		{
 			name:    "row from before the visit",
 			atStart: [][]*dp.SPIRow{{goneRow(5)}}, atEnd: [][]*dp.SPIRow{{liveRow(5, rowTTL)}},
-			before: "relay-a", during: "visitor", after: "relay-a",
-		},
-		{
-			name:    "visit that ends with its grant",
-			end:     func(_ *testing.T, g *visitRig) { g.expire() },
-			atStart: [][]*dp.SPIRow{{goneRow(5)}}, atEnd: [][]*dp.SPIRow{{liveRow(5, rowTTL-visitSpan)}},
 			before: "relay-a", during: "visitor", after: "relay-a",
 		},
 		{
@@ -1088,6 +1081,20 @@ func TestVisitTwoSessions(t *testing.T) {
 	})
 }
 
+// TestGrantVisitor checks that a visitor session gets no grant: the attachment
+// of its visit is an attachment of its home relay.
+func TestGrantVisitor(t *testing.T) {
+	cfg, certs := trunkRigConfig(t), newVisitCerts(t)
+	synctest.Test(t, func(t *testing.T) {
+		g := newVisitRig(t, cfg, certs, dp.Mode_MODE_QUIC)
+		defer g.stop()
+		g.enter()
+		srv := &Server{R: g.r, RelayID: homeID, Cert: func() (*tls.Certificate, error) { return certs.home, nil }}
+		_, err := srv.grant(g.v.s, "x", time.Now())
+		assert.Equal(t, rpc.NotFound, rpc.CodeOf(err), "error: %v", err)
+	})
+}
+
 // TestVisitEnd checks what ends a visit and what does not. A peer frame of q
 // to the address shows who has it then.
 func TestVisitEnd(t *testing.T) {
@@ -1099,15 +1106,10 @@ func TestVisitEnd(t *testing.T) {
 	}{
 		{name: "session closes", step: func(_ *testing.T, g *visitRig) { g.r.removeSession(g.v.s) }, frame: "relay-a"},
 		{
-			name: "one second before the end of the grant",
-			step: func(_ *testing.T, g *visitRig) {
-				time.Sleep(visitSpan - time.Second)
-				synctest.Wait()
-				g.r.Sweep(time.Now())
-			},
+			name:  "end time of the grant passes",
+			step:  func(_ *testing.T, g *visitRig) { g.expire() },
 			stays: true, frame: "visitor",
 		},
-		{name: "end of the grant", step: func(_ *testing.T, g *visitRig) { g.expire() }, frame: "relay-a"},
 		{
 			name: "attachment of another agent on this relay takes the prefix",
 			step: func(_ *testing.T, g *visitRig) {
@@ -1208,7 +1210,7 @@ func TestVisitEnd(t *testing.T) {
 				require.Equal(t, "visitor", g.via(g.frame(g.q, brQ, brServer)))
 
 				tc.step(t, g)
-				// The sweep of each second ends no visit before its time.
+				// The sweep of each second ends no visit.
 				g.r.Sweep(time.Now())
 				if tc.stays {
 					assert.Equal(t, prefixA, g.visitOf(g.v.s))
@@ -1615,8 +1617,6 @@ func TestVisitMore(t *testing.T) {
 func TestVisitMoreEnd(t *testing.T) {
 	cases := []struct {
 		name string
-		// late is the time from the end of the first grant to the end of the second.
-		late time.Duration
 		step func(t *testing.T, g *visitRig)
 		want string // Visits of v after the step.
 		// Who gets a peer frame of q to the first address and to the second.
@@ -1638,14 +1638,9 @@ func TestVisitMoreEnd(t *testing.T) {
 			want: prefixA + "," + moreNet, first: "visitor", more: "visitor",
 		},
 		{
-			name: "end of the first grant", late: time.Second,
+			name: "end time of the two grants passes",
 			step: func(_ *testing.T, g *visitRig) { g.expire() },
-			want: moreNet, first: "relay-a", more: "visitor",
-		},
-		{
-			name:  "end of the two grants",
-			step:  func(_ *testing.T, g *visitRig) { g.expire() },
-			first: "relay-a",
+			want: prefixA + "," + moreNet, first: "visitor", more: "visitor",
 		},
 		{
 			name: "attachment of another agent on this relay takes the second prefix",
@@ -1672,9 +1667,7 @@ func TestVisitMoreEnd(t *testing.T) {
 				g := newVisitRig(t, cfg, certs, dp.Mode_MODE_QUIC)
 				defer g.stop()
 				g.enter()
-				c := g.claimsOf(server, "y", moreNet)
-				c.NotAfter = timestamppb.New(time.Now().Add(visitSpan + tc.late))
-				require.NoError(t, g.visit(g.v, moreAddr, c))
+				require.NoError(t, g.visit(g.v, moreAddr, g.claimsOf(server, "y", moreNet)))
 				require.Equal(t, 2, g.visitors())
 				require.NoError(t, g.r.registerSPI(g.laptop, register(vpcA, moreAddr, rowTTL, 5), time.Now()))
 				require.Equal(t, "visitor", g.receiver(g.laptop, rowSrc, 5))

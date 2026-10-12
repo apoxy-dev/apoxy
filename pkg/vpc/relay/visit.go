@@ -26,11 +26,11 @@ const (
 
 // visit is the use of an address of another relay by a session of this relay.
 // The session gets no route and no attachment, so no other relay learns of it.
+// The relay checks the grant one time, at the call: a visit has no time limit.
 type visit struct {
-	prefix   netip.Prefix // Prefix of the grant that has the address.
-	id       string       // Attachment of the grant, on the home relay.
-	relay    string       // Relay ID of the grant.
-	notAfter time.Time    // End time of the grant.
+	prefix netip.Prefix // Prefix of the grant that has the address.
+	id     string       // Attachment of the grant, on the home relay.
+	relay  string       // Relay ID of the grant.
 }
 
 // visitor has the visits of a visitor session, each with its own prefix. A
@@ -232,7 +232,7 @@ func (r *Router) startVisit(s *Session, in *dp.VisitRequest, now time.Time) erro
 	s.visit.Store(&next)
 	// The rows to the prefix go to the visitor, as for a new owner of a route.
 	r.rehome(d, v.prefix)
-	slog.Info("Started a visit", "agent", s.id.ID, "prefix", v.prefix, "home", v.relay, "until", v.notAfter)
+	slog.Info("Started a visit", "agent", s.id.ID, "prefix", v.prefix, "home", v.relay)
 	return nil
 }
 
@@ -260,7 +260,7 @@ func (r *Router) checkVisit(s *Session, m *Mesh, addr netip.Addr, g *dp.Attachme
 	}
 	for _, text := range c.GetAddresses() {
 		if p, err := netip.ParsePrefix(text); err == nil && p.Masked().Contains(addr) {
-			return &visit{prefix: p.Masked(), id: c.GetAttachmentId(), relay: c.GetRelayId(), notAfter: c.GetNotAfter().AsTime()}, nil
+			return &visit{prefix: p.Masked(), id: c.GetAttachmentId(), relay: c.GetRelayId()}, nil
 		}
 	}
 	return nil, rpc.Errorf(rpc.PermissionDenied, "address %s is not in the grant", addr)
