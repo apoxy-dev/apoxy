@@ -94,7 +94,7 @@ func (a *Agent) Attach(ctx context.Context, s AttachmentSpec) (Attachment, error
 	}
 	sp := &AttachmentSpec{Name: s.Name, Labels: maps.Clone(s.Labels), Routes: slices.Clone(s.Routes)}
 	a.attMu.Lock()
-	rc := a.current()
+	rc := a.primary()
 	switch {
 	case s.Name == a.cfg.Name || a.specs[s.Name] != nil:
 		a.attMu.Unlock()
@@ -132,10 +132,11 @@ func (a *Agent) Attach(ctx context.Context, s AttachmentSpec) (Attachment, error
 func (a *Agent) onCurrent(s *AttachmentSpec) *extra {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.rc == nil {
+	rc := a.primaryLocked()
+	if rc == nil {
 		return nil
 	}
-	if x := a.rc.named(s.Name); x != nil && x.spec == s {
+	if x := rc.named(s.Name); x != nil && x.spec == s {
 		return x
 	}
 	return nil
@@ -170,7 +171,7 @@ func (a *Agent) Attachments() []Attachment {
 	defer a.routeMu.Unlock()
 	base := Attachment{Name: a.cfg.Name, Labels: maps.Clone(a.cfg.Labels), Routes: slices.Clone(a.cfg.Routes), Base: true}
 	on := map[string]*extra{}
-	if rc := a.current(); rc != nil && !rc.ended() {
+	if rc := a.primary(); rc != nil && !rc.ended() {
 		base.ID, base.Address, base.Prefixes = rc.attachmentID, rc.self, slices.Clone(rc.prefixes)
 		for _, x := range rc.extras {
 			on[x.spec.Name] = x
@@ -186,13 +187,6 @@ func (a *Agent) Attachments() []Attachment {
 	}
 	slices.SortFunc(out[1:], func(x, y Attachment) int { return cmp.Compare(x.Name, y.Name) })
 	return out
-}
-
-// current returns the relay session of the agent.
-func (a *Agent) current() *relayConn {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.rc
 }
 
 // claim returns the specs that rc does not have and does not attach now, and
@@ -264,7 +258,7 @@ func (a *Agent) attachClaimed(rc *relayConn, s *AttachmentSpec) (*extra, error) 
 	if err == nil && !stale {
 		a.addExtra(rc, x)
 		visitors = a.visitorsOf(rc)
-		if a.current() == rc {
+		if a.primary() == rc {
 			a.queueAttached(x)
 		}
 	}
@@ -380,7 +374,7 @@ func (a *Agent) keepAttachments(ctx context.Context) {
 		case <-a.attachWake:
 		case <-retry.C:
 		}
-		rc := a.current()
+		rc := a.primary()
 		if rc != last {
 			last, backoff, retryAt = rc, minBackoff, time.Time{}
 		}
@@ -420,9 +414,9 @@ func (a *Agent) forget(s *AttachmentSpec) []placed {
 		delete(a.specs, s.Name)
 	}
 	a.mu.Lock()
-	cur := a.rc
+	cur := a.primaryLocked()
 	var out []placed
-	for rc := range a.conns {
+	for _, rc := range a.conns {
 		if x := rc.named(s.Name); x != nil {
 			out = append(out, placed{rc, x})
 		}

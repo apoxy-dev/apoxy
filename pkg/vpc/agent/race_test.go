@@ -6,7 +6,7 @@ import (
 	"context"
 	"errors"
 	"net/netip"
-	"sync"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
@@ -45,68 +45,56 @@ func TestOneEach(t *testing.T) {
 // fakeRelay is a relay of TestChoose. Its dial uses no network. probe is the
 // round-trip time of its path probe, and zero is no probe.
 type fakeRelay struct {
-	ready    time.Duration // Time from the dial to the wait before Hello.
+	open     time.Duration // Time from the dial to the open session.
 	rtt      time.Duration
 	probe    time.Duration
-	fails    bool // The dial fails at ready.
+	fails    bool // The dial fails at open.
 	silent   bool // The relay does not answer.
-	noHello  bool // Hello fails after the choice.
 	sameName bool // The entry has the name and the address of the entry before it.
 }
 
-// TestChoose checks which relay takes the attachment, the order of the spares
-// and the time of the choice, with the band and the wait of an agent.
+// TestChoose checks the order of the sessions that choose gives and the time of
+// the choice, with the band and the wait of an agent.
 func TestChoose(t *testing.T) {
 	cases := []struct {
 		name   string
 		relays []fakeRelay
-		won    int           // Index of the relay that takes the attachment. -1 is an error.
-		spares []int         // The other sessions, in the order that choose gives them.
+		want   []int         // The relays of the sessions, best first.
 		at     time.Duration // Time of the choice.
 		failed int
 	}{
-		{name: "lowest time wins", relays: []fakeRelay{{ready: 60 * ms, rtt: 60 * ms}, {ready: 5 * ms, rtt: 5 * ms}},
-			won: 1, spares: []int{0}, at: 5*ms + rttWaitMin},
-		{name: "times in the band use the order of the list", relays: []fakeRelay{{ready: 12 * ms, rtt: 12 * ms}, {ready: 5 * ms, rtt: 5 * ms}},
-			won: 0, spares: []int{1}, at: 12 * ms},
-		{name: "time above the band", relays: []fakeRelay{{ready: 16 * ms, rtt: 16 * ms}, {ready: 5 * ms, rtt: 5 * ms}},
-			won: 1, spares: []int{0}, at: 16 * ms},
-		{name: "first relay at 1 ms, the other relay does not answer", relays: []fakeRelay{{silent: true}, {ready: 1 * ms, rtt: 1 * ms}},
-			won: 1, at: 1*ms + rttWaitMin},
-		{name: "first relay at 5 ms, relays at 12 ms and 150 ms", relays: []fakeRelay{{ready: 12 * ms, rtt: 12 * ms}, {ready: 5 * ms, rtt: 5 * ms}, {ready: 150 * ms, rtt: 150 * ms}},
-			won: 0, spares: []int{1, 2}, at: 5*ms + rttWaitMin},
-		{name: "first relay at 15 ms, the other relay does not answer", relays: []fakeRelay{{silent: true}, {ready: 15 * ms, rtt: 15 * ms}},
-			won: 1, at: 15*ms + 30*ms},
-		{name: "first relay at 15 ms, a relay that answers after rttWaitMin is in the wait", relays: []fakeRelay{{ready: 15 * ms, rtt: 15 * ms}, {ready: 40 * ms, rtt: 2 * ms}, {silent: true}},
-			won: 1, spares: []int{0}, at: 15*ms + 30*ms},
-		{name: "first relay at 30 ms, the other relay does not answer", relays: []fakeRelay{{silent: true}, {ready: 30 * ms, rtt: 30 * ms}},
-			won: 1, at: 30*ms + rttWaitMax},
-		{name: "first relay at 150 ms, the other relay does not answer", relays: []fakeRelay{{silent: true}, {ready: 150 * ms, rtt: 150 * ms}},
-			won: 1, at: 150*ms + rttWaitMax},
-		{name: "first relay with no known time, the other relay does not answer", relays: []fakeRelay{{silent: true}, {ready: 5 * ms}},
-			won: 1, at: 5*ms + rttWaitMax},
-		{name: "time not known is last", relays: []fakeRelay{{ready: 5 * ms}, {ready: 8 * ms, rtt: 30 * ms}},
-			won: 1, spares: []int{0}, at: 8 * ms},
-		{name: "path probe time below a QUIC time with a late packet", relays: []fakeRelay{{ready: 60 * ms, rtt: 60 * ms, probe: 62 * ms}, {ready: 50 * ms, rtt: 110 * ms, probe: 30 * ms}},
-			won: 1, spares: []int{0}, at: 60 * ms},
-		{name: "QUIC time below the time of a late path probe", relays: []fakeRelay{{ready: 60 * ms, rtt: 60 * ms, probe: 62 * ms}, {ready: 50 * ms, rtt: 30 * ms, probe: 110 * ms}},
-			won: 1, spares: []int{0}, at: 60 * ms},
-		{name: "spare is the second lowest", relays: []fakeRelay{{ready: 58 * ms, rtt: 58 * ms}, {ready: 20 * ms, rtt: 20 * ms}, {ready: 45 * ms, rtt: 45 * ms}},
-			won: 1, spares: []int{2, 0}, at: 58 * ms},
-		{name: "spares in the band use the order of the list", relays: []fakeRelay{{ready: 20 * ms, rtt: 20 * ms}, {ready: 50 * ms, rtt: 50 * ms}, {ready: 44 * ms, rtt: 44 * ms}},
-			won: 0, spares: []int{1, 2}, at: 50 * ms},
-		{name: "late session opens before the session of the choice", relays: []fakeRelay{{ready: 5 * ms, rtt: 20 * ms}, {ready: 60 * ms, rtt: 2 * ms}, {ready: 6 * ms, rtt: 30 * ms}},
-			won: 0, spares: []int{2, 1}, at: 5*ms + rttWaitMax},
-		{name: "relay that fails", relays: []fakeRelay{{ready: 3 * ms, fails: true}, {ready: 5 * ms, rtt: 5 * ms}},
-			won: 1, at: 5 * ms, failed: 1},
-		{name: "all relays fail", relays: []fakeRelay{{ready: 3 * ms, fails: true}, {ready: 5 * ms, fails: true}},
-			won: -1, failed: 2},
-		{name: "Hello fails on the relay of the choice", relays: []fakeRelay{{ready: 5 * ms, rtt: 5 * ms, noHello: true}, {ready: 8 * ms, rtt: 8 * ms}},
-			won: 1, at: 8 * ms, failed: 1},
-		{name: "Hello fails, and the other relay answers late", relays: []fakeRelay{{ready: 5 * ms, rtt: 5 * ms, noHello: true}, {ready: 90 * ms, rtt: 90 * ms}},
-			won: 1, at: 5*ms + rttWaitMin, failed: 1},
-		{name: "two entries with one name are one relay", relays: []fakeRelay{{ready: 5 * ms, rtt: 5 * ms}, {sameName: true}, {ready: 8 * ms, rtt: 8 * ms}},
-			won: 0, spares: []int{2}, at: 8 * ms},
+		{name: "lowest time is first, a late relay is not in the choice", relays: []fakeRelay{{open: 60 * ms, rtt: 60 * ms}, {open: 5 * ms, rtt: 5 * ms}},
+			want: []int{1}, at: 5*ms + rttWaitMin},
+		{name: "times in the band use the order of the list", relays: []fakeRelay{{open: 12 * ms, rtt: 12 * ms}, {open: 5 * ms, rtt: 5 * ms}},
+			want: []int{0, 1}, at: 12 * ms},
+		{name: "time above the band", relays: []fakeRelay{{open: 16 * ms, rtt: 16 * ms}, {open: 5 * ms, rtt: 5 * ms}},
+			want: []int{1, 0}, at: 16 * ms},
+		{name: "first relay at 1 ms, the other relay does not answer", relays: []fakeRelay{{silent: true}, {open: 1 * ms, rtt: 1 * ms}},
+			want: []int{1}, at: 1*ms + rttWaitMin},
+		{name: "first relay at 15 ms, the other relay does not answer", relays: []fakeRelay{{silent: true}, {open: 15 * ms, rtt: 15 * ms}},
+			want: []int{1}, at: 15*ms + 30*ms},
+		{name: "first relay at 30 ms, the other relay does not answer", relays: []fakeRelay{{silent: true}, {open: 30 * ms, rtt: 30 * ms}},
+			want: []int{1}, at: 30*ms + rttWaitMax},
+		{name: "first relay with no known time, the other relay does not answer", relays: []fakeRelay{{silent: true}, {open: 5 * ms}},
+			want: []int{1}, at: 5*ms + rttWaitMax},
+		{name: "time not known is last", relays: []fakeRelay{{open: 5 * ms}, {open: 8 * ms, rtt: 30 * ms}},
+			want: []int{1, 0}, at: 8 * ms},
+		{name: "path probe time below a QUIC time with a late packet", relays: []fakeRelay{{open: 60 * ms, rtt: 60 * ms, probe: 62 * ms}, {open: 50 * ms, rtt: 110 * ms, probe: 30 * ms}},
+			want: []int{1, 0}, at: 60 * ms},
+		{name: "QUIC time below the time of a late path probe", relays: []fakeRelay{{open: 60 * ms, rtt: 60 * ms, probe: 62 * ms}, {open: 50 * ms, rtt: 30 * ms, probe: 110 * ms}},
+			want: []int{1, 0}, at: 60 * ms},
+		{name: "three relays in the order of their times", relays: []fakeRelay{{open: 58 * ms, rtt: 58 * ms}, {open: 20 * ms, rtt: 20 * ms}, {open: 45 * ms, rtt: 45 * ms}},
+			want: []int{1, 2, 0}, at: 58 * ms},
+		{name: "later places in the band use the order of the list", relays: []fakeRelay{{open: 20 * ms, rtt: 20 * ms}, {open: 50 * ms, rtt: 50 * ms}, {open: 44 * ms, rtt: 44 * ms}},
+			want: []int{0, 1, 2}, at: 50 * ms},
+		{name: "relay with the lowest time answers after the wait", relays: []fakeRelay{{open: 5 * ms, rtt: 20 * ms}, {open: 60 * ms, rtt: 2 * ms}, {open: 6 * ms, rtt: 30 * ms}},
+			want: []int{0, 2}, at: 5*ms + rttWaitMax},
+		{name: "relay that fails", relays: []fakeRelay{{open: 3 * ms, fails: true}, {open: 5 * ms, rtt: 5 * ms}},
+			want: []int{1}, at: 5 * ms, failed: 1},
+		{name: "all relays fail", relays: []fakeRelay{{open: 3 * ms, fails: true}, {open: 5 * ms, fails: true}},
+			at: 5 * ms, failed: 2},
+		{name: "two entries with one name are one relay", relays: []fakeRelay{{open: 5 * ms, rtt: 5 * ms}, {sameName: true}, {open: 8 * ms, rtt: 8 * ms}},
+			want: []int{0, 2}, at: 8 * ms},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -123,63 +111,37 @@ func TestChoose(t *testing.T) {
 					}
 					eps = append(eps, e)
 				}
-				// choice is the relay that the agent chooses. Its Hello can fail.
-				choice := tc.won
-				for i, r := range tc.relays {
-					if r.noHello {
-						choice = i
-					}
-				}
-				start := time.Now()
-				var mu sync.Mutex
-				var chosen []time.Duration // Time of the choice, as each session sees it.
 				var dials atomic.Int32
-				dial := func(ctx context.Context, e endpoint, spare func(*relayConn) bool) (*relayConn, error) {
+				dial := func(ctx context.Context, e endpoint) (*relayConn, error) {
 					dials.Add(1)
 					r := tc.relays[index[e.addr]]
 					if r.silent {
-						<-ctx.Done()
-						return nil, ctx.Err()
+						r.open = time.Hour
 					}
-					time.Sleep(r.ready)
+					// The choice stops the dial of a relay that answers late.
+					select {
+					case <-ctx.Done():
+						return nil, ctx.Err()
+					case <-time.After(r.open):
+					}
 					if r.fails {
 						return nil, errors.New("relay refused the session")
 					}
 					rc := &relayConn{ep: e, addr: e.addr, rtt: new(atomic.Int64)}
 					rc.rtt.Store(int64(r.rtt))
 					rc.probeRTT.Store(int64(r.probe))
-					isSpare := spare(rc)
-					mu.Lock()
-					chosen = append(chosen, time.Since(start))
-					mu.Unlock()
-					if r.noHello {
-						return nil, errors.New("relay closed the session")
-					}
-					// Hello and Welcome take one round trip.
-					time.Sleep(r.rtt)
-					assert.Equal(t, index[e.addr] != choice, isSpare, "spare in Hello of relay %s", e.id)
 					return rc, nil
 				}
-				ctx, cancel := context.WithCancel(t.Context())
-				defer cancel()
-				won, others, failed, err := a.choose(ctx, eps, dial)
-				if tc.won < 0 {
-					require.Error(t, err)
-					assert.Nil(t, won)
-					assert.Equal(t, tc.failed, failed)
-					return
-				}
-				require.NoError(t, err)
-				assert.Equal(t, eps[tc.won], won.ep, "relay of the attachment")
+				start := time.Now()
+				conns, failed, err := a.choose(t.Context(), eps, dial)
+				assert.Equal(t, tc.at, time.Since(start), "time of the choice")
 				assert.Equal(t, tc.failed, failed, "relays that failed")
-				mu.Lock()
-				assert.Equal(t, tc.at, chosen[0], "time of the choice")
-				mu.Unlock()
-				// The dial of a relay that does not answer ends with the context.
-				defer time.AfterFunc(time.Second, cancel).Stop()
-				var spares []int
-				others(func(rc *relayConn) { spares = append(spares, index[rc.addr]) })
-				assert.Equal(t, tc.spares, spares, "the other sessions")
+				assert.Equal(t, tc.failed > 0, err != nil, "error of the relays that failed: %v", err)
+				var got []int
+				for _, rc := range conns {
+					got = append(got, index[rc.addr])
+				}
+				assert.Equal(t, tc.want, got, "relays of the sessions")
 				assert.EqualValues(t, len(index), dials.Load(), "one dial for each relay")
 			})
 		})
@@ -187,29 +149,26 @@ func TestChoose(t *testing.T) {
 }
 
 // TestRelayChoice checks the choice with relays: the agent attaches to the relay
-// with the lowest round-trip time, and it does not move when the times change.
+// with the lowest round-trip time, and it ends the sessions to the other relays.
 func TestRelayChoice(t *testing.T) {
 	// far is above the band and the wait of the choice, with the noise of a loaded host.
 	const far = 150 * ms
 	cases := []struct {
-		name     string
-		sessions int
+		name string
 		// delays has the delay of the packets to each relay at the start.
 		delays []time.Duration
 		twice  bool // The list has the first relay two times, and the relays are equal.
 		silent bool // The list starts with a relay that does not answer.
 		// swap gives the first two relays the delay of the other after the attach,
-		// and reconnect ends the attached session after that.
-		swap, reconnect bool
-		first, then     int // Relay of the attachment at the start, and at the end.
-		spare           int // Relay of the spare at the end. -1 is no spare.
+		// and ends the attached session after that.
+		swap        bool
+		first, then int // Relay of the attachment at the start, and at the end.
 	}{
-		{name: "lowest time wins, the other relay is the spare", sessions: 2, delays: []time.Duration{far, 0}, first: 1, then: 1, spare: 0},
-		{name: "the spare is the second lowest", sessions: 2, delays: []time.Duration{2 * far, 0, 20 * ms}, first: 1, then: 1, spare: 2},
-		{name: "two entries with one name are one relay", sessions: 3, delays: []time.Duration{0, 0}, twice: true, first: 0, then: 0, spare: 1},
-		{name: "relay that does not answer", sessions: 1, delays: []time.Duration{0}, silent: true, first: 0, then: 0, spare: -1},
-		{name: "no move after the attach when the times change", sessions: 2, delays: []time.Duration{far, 0}, swap: true, first: 1, then: 1, spare: 0},
-		{name: "a new attach with no spare chooses again", sessions: 1, delays: []time.Duration{far, 0}, swap: true, reconnect: true, first: 1, then: 0, spare: -1},
+		{name: "lowest time wins", delays: []time.Duration{far, 0}, first: 1, then: 1},
+		{name: "lowest time of three wins", delays: []time.Duration{2 * far, 0, 20 * ms}, first: 1, then: 1},
+		{name: "two entries with one name are one relay", delays: []time.Duration{0, 0}, twice: true, first: 0, then: 0},
+		{name: "relay that does not answer", delays: []time.Duration{0}, silent: true, first: 0, then: 0},
+		{name: "a new attach chooses again", delays: []time.Duration{far, 0}, swap: true, first: 1, then: 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -232,50 +191,27 @@ func TestRelayChoice(t *testing.T) {
 				}
 			}
 			start := time.Now()
-			a := w.agent(t, "a", nil, agentOptions{mode: TransportPSP, slow: slow, relays: list, sessions: tc.sessions, rttChoice: !tc.twice})
+			a := w.agent(t, "a", nil, agentOptions{mode: TransportPSP, slow: slow, relays: list, rttChoice: !tc.twice})
 			a.attached(t)
 			if tc.silent {
 				assert.Less(t, time.Since(start), openTimeout/2, "the attach does not wait for the dial of the relay with no answer")
 			}
 			on := func(rc *relayConn) int {
-				if rc == nil {
-					return -1
-				}
-				for i, r := range relays {
-					if r.addr == rc.addr {
-						return i
-					}
-				}
-				return -2
+				return slices.IndexFunc(relays, func(r *testRelay) bool { return r.addr == rc.addr })
 			}
-			first := a.current()
-			require.Equal(t, tc.first, on(first), "relay of the attachment")
-			sessions := func() (dials, conns int) {
-				a.a.mu.Lock()
-				defer a.a.mu.Unlock()
-				return len(a.a.dialing), len(a.a.conns)
-			}
-			if !tc.silent {
-				// A relay with a dial that runs is not in the next choice.
-				require.Eventually(t, func() bool { d, _ := sessions(); return d == 0 }, 10*time.Second, 10*ms, "the dials end")
-			}
+			require.Equal(t, tc.first, on(a.current()), "relay of the attachment")
 			if tc.swap {
 				slow.set(relays[0], tc.delays[1])
 				slow.set(relays[1], tc.delays[0])
-			}
-			if tc.reconnect {
 				a.reconnect()
 				a.attached(t)
 			}
-			require.Eventually(t, func() bool { return on(a.spare()) == tc.spare }, 10*time.Second, 10*ms, "relay of the spare")
-			if tc.swap && !tc.reconnect {
-				// The spare check runs with the new times, and the attachment stays.
-				a.a.wakeSpares()
-				require.Never(t, func() bool { return a.current() != first }, 200*ms, 10*ms, "the attachment stays")
-			}
 			assert.Equal(t, tc.then, on(a.current()), "relay of the attachment at the end")
-			require.Eventually(t, func() bool { _, c := sessions(); return c == min(tc.sessions, len(relays)) },
-				10*time.Second, 10*ms, "relay sessions")
+			require.Eventually(t, func() bool {
+				a.a.mu.Lock()
+				defer a.a.mu.Unlock()
+				return len(a.a.conns) == 1
+			}, 10*time.Second, 10*ms, "the sessions to the other relays end")
 		})
 	}
 }

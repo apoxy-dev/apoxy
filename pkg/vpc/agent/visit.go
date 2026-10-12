@@ -151,10 +151,7 @@ func (a *Agent) cutFrom(ctx context.Context, p *peer) bool {
 // visitAfterNoRoute asks rc again how it reaches dst, and starts the visit if
 // the answer is still a visit. Another answer sets the path of dst to up again.
 func (a *Agent) visitAfterNoRoute(rc *relayConn, dst netip.Addr) {
-	a.mu.Lock()
-	current := a.rc == rc
-	a.mu.Unlock()
-	if !current {
+	if a.primary() != rc {
 		return
 	}
 	addr, ok := a.peerAddr(rc, dst)
@@ -307,7 +304,7 @@ func (a *Agent) visit(ctx context.Context, home *relayConn, ref *dp.RelayRef) (*
 		return v, nil
 	}
 	switch {
-	case a.rc != home || a.stopped:
+	case a.primaryLocked() != home || a.stopped:
 		a.mu.Unlock()
 		return nil, errNoRelay
 	case key == home.ep.key():
@@ -321,7 +318,7 @@ func (a *Agent) visit(ctx context.Context, home *relayConn, ref *dp.RelayRef) (*
 	a.visits[key] = v
 	a.mu.Unlock()
 
-	rc, err := a.openVisit(ctx, home, ref, key)
+	rc, err := a.openVisit(ctx, home, ref)
 	a.mu.Lock()
 	if err == nil && a.visits[key] != v {
 		// The visit ended while its session opened.
@@ -332,14 +329,14 @@ func (a *Agent) visit(ctx context.Context, home *relayConn, ref *dp.RelayRef) (*
 			delete(a.visits, key)
 		}
 	} else {
-		v.rc = rc
+		v.rc, rc.state = rc, connAttached
 	}
 	v.err = err
 	a.mu.Unlock()
 	close(v.done)
 	if err != nil {
 		if rc != nil {
-			rc.close()
+			a.end(rc)
 		}
 		return nil, err
 	}
@@ -357,18 +354,12 @@ func (a *Agent) release(v *visit) {
 
 // openVisit opens a session to the relay ref with local routes only, and makes
 // it a visitor with the grant of home.
-func (a *Agent) openVisit(ctx context.Context, home *relayConn, ref *dp.RelayRef, key string) (*relayConn, error) {
-	// A spare has the routes of other relays, so the relay takes no Visit call on
-	// it. The agent keeps one session for each relay, so the spare closes.
-	if spare := a.takeSpareOn(key); spare != nil {
-		slog.Info("Closed a spare relay session for a visit", "relay", spare.addr)
-		spare.close()
-	}
+func (a *Agent) openVisit(ctx context.Context, home *relayConn, ref *dp.RelayRef) (*relayConn, error) {
 	ctx, cancel := context.WithTimeout(ctx, openTimeout)
 	defer cancel()
 	var errs []error
 	for _, addr := range ref.GetAddresses() {
-		rc, err := a.dialRelay(ctx, endpoint{id: ref.GetId(), addr: addr}, spareHello, true)
+		rc, err := a.dialRelay(ctx, endpoint{id: ref.GetId(), addr: addr}, true)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("relay %s: %w", addr, err))
 			continue
@@ -501,7 +492,7 @@ func (a *Agent) visitorsOf(home *relayConn) []*relayConn {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	var out []*relayConn
-	for rc := range a.conns {
+	for _, rc := range a.conns {
 		if rc.extrasOf == home && !rc.ended() {
 			out = append(out, rc)
 		}
@@ -562,7 +553,7 @@ func (a *Agent) keepVisit(v *visit) {
 // peer uses it, and checkVisit reports that.
 func (a *Agent) checkVisit(v *visit) bool {
 	a.mu.Lock()
-	attached, busy := a.rc == v.home, v.users > 0
+	attached, busy := a.primaryLocked() == v.home, v.users > 0
 	var peers []*peer
 	for _, p := range a.peers {
 		if p.rc == v.rc && p.bp != nil && !a.gone(p) {
@@ -615,21 +606,19 @@ func (a *Agent) endVisit(v *visit, reason string) {
 	}
 	delete(a.visits, v.key)
 	a.mu.Unlock()
-	// A setup that still runs closes its session itself.
+	// A setup that still runs ends its session itself.
 	if rc := v.session(); rc != nil {
-		rc.close()
+		a.end(rc)
 		slog.Info("Ended a visit", "relay", rc.addr, "reason", reason)
 	}
-	// A spare can use the relay again.
-	a.wakeSpares()
 }
 
-// endVisits ends each visit that does not use the grant of the session keep.
-func (a *Agent) endVisits(keep *relayConn, reason string) {
+// endVisits ends each visit of home: a visit uses the grant of its home session.
+func (a *Agent) endVisits(home *relayConn, reason string) {
 	a.mu.Lock()
 	var vs []*visit
 	for _, v := range a.visits {
-		if v.home != keep {
+		if v.home == home {
 			vs = append(vs, v)
 		}
 	}

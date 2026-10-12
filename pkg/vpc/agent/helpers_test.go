@@ -762,28 +762,11 @@ func (ta *testAgent) binding() *psp.Binding {
 
 // reconnect closes the relay session. The agent then opens a new one.
 func (ta *testAgent) reconnect() {
-	ta.a.mu.Lock()
-	rc := ta.a.rc
-	ta.a.mu.Unlock()
-	_ = rc.qc.CloseWithError(0, "next session")
+	_ = ta.a.primary().qc.CloseWithError(0, "next session")
 }
 
 // current returns the attached session.
-func (ta *testAgent) current() *relayConn {
-	ta.a.mu.Lock()
-	defer ta.a.mu.Unlock()
-	return ta.a.rc
-}
-
-// spare returns the first spare session, or nil.
-func (ta *testAgent) spare() *relayConn {
-	ta.a.mu.Lock()
-	defer ta.a.mu.Unlock()
-	if len(ta.a.spares) == 0 {
-		return nil
-	}
-	return ta.a.spares[0]
-}
+func (ta *testAgent) current() *relayConn { return ta.a.primary() }
 
 // extraAddr returns the address of the extra attachment name from OnAttachment.
 func (ta *testAgent) extraAddr(name string) netip.Addr {

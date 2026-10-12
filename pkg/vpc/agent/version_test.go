@@ -138,13 +138,12 @@ func TestRelayRevisions(t *testing.T) {
 		agent   func() *dp.Version // Nil means an agent of this build.
 		upgrade bool               // Run ends with ErrUpgrade.
 		attach  int                // Number of the relay that the agent attaches to. 0 is no relay.
-		// dials is the number of dials that relay-1 refuses, with one spare dial.
-		// 0 is no check: with three relays, the agent can dial relay-1 two times.
+		// dials is the number of dials that relay-1 refuses. 0 is no check.
 		dials int32
 	}{
 		{name: "the relay refuses the agent", relays: 1, refuse: 1, upgrade: true},
 		{name: "all relays refuse the agent", relays: 2, refuse: 2, upgrade: true},
-		{name: "next relay takes the agent", relays: 2, refuse: 1, attach: 2, dials: 2},
+		{name: "next relay takes the agent", relays: 2, refuse: 1, attach: 2, dials: 1},
 		{name: "last relay takes the agent", relays: 3, refuse: 2, attach: 3},
 		{name: "agent minimum is the relay revision", relays: 1, agent: needsThis, attach: 1},
 		{name: "all relays below the agent minimum", relays: 2, agent: needsLater},
@@ -197,19 +196,12 @@ func TestRelayRevisions(t *testing.T) {
 			assert.Equal(t, relays[tc.attach-1].addr, rc.addr)
 			assert.True(t, rc.relayAtLeast(a.a.ver.GetMinRevision()))
 			if tc.dials != 0 {
-				// Relay-1 refuses one spare dial. The next spare dial comes after
-				// upgradeRetry, not after the short wait of other dial errors.
+				// The attached agent does not dial the relay that refused it again.
 				refused := &relays[0].refused
-				require.Eventually(t, func() bool {
-					a.a.wakeSpares()
-					return refused.Load() == tc.dials
-				}, 10*time.Second, 10*time.Millisecond, "spare dial to relay-1")
-				assert.Never(t, func() bool {
-					a.a.wakeSpares()
-					return refused.Load() > tc.dials
-				}, minBackoff+300*time.Millisecond, 50*time.Millisecond, "relay-1 got a spare dial again")
+				assert.Never(t, func() bool { return refused.Load() != tc.dials },
+					minBackoff+300*time.Millisecond, 50*time.Millisecond, "dials that relay-1 refused")
 			}
-			// The agent stays attached while the other relays refuse its spare session.
+			// The agent stays attached after another relay refused it.
 			select {
 			case err := <-runErr:
 				t.Fatalf("Run returned: %v", err)
@@ -217,7 +209,6 @@ func TestRelayRevisions(t *testing.T) {
 			}
 			assert.Same(t, rc, a.current())
 			assert.NoError(t, rc.qc.Context().Err())
-			assert.Nil(t, a.spare(), "spare session")
 		})
 	}
 }
@@ -330,9 +321,9 @@ func TestAttachGrant(t *testing.T) {
 			grant := extraGrant(t, w.relayCA.relayCert(t, "relay-1"), "a", "attachment-a", "fd00:a::/96", tc.claims)
 			b, err := proto.Marshal(&dp.AttachResponse{AttachmentId: "attachment-a", Grant: grant})
 			require.NoError(t, err)
-			a.rc.addr, a.rc.c = "192.0.2.1:443", &grantRelay{answers: [][]byte{b}}
+			a.primary().addr, a.primary().c = "192.0.2.1:443", &grantRelay{answers: [][]byte{b}}
 
-			err = a.rc.attach(context.Background(), time.Now())
+			err = a.primary().attach(context.Background(), time.Now())
 			require.ErrorContains(t, err, tc.want)
 			var ue *upgradeError
 			assert.Equal(t, tc.upgrade, errors.As(err, &ue), "error: %v", err)

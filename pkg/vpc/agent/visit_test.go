@@ -11,7 +11,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/apoxy-dev/apoxy/pkg/vpc/identity"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
@@ -218,12 +217,10 @@ func TestVisit(t *testing.T) {
 	cases := []struct {
 		name       string
 		mode       TransportMode
-		spare      bool // a has a spare session on the relay of b.
 		dropProbes bool // The path probes of the visitor session get no reply.
 		data       bool // Data goes on the visitor session.
 	}{
 		{name: "PSP", mode: TransportPSP, data: true},
-		{name: "PSP, spare session on the relay of the peer", mode: TransportPSP, spare: true, data: true},
 		{name: "PSP, path probe fails", mode: TransportPSP, dropProbes: true},
 		{name: "QUIC", mode: TransportQUIC, data: true},
 	}
@@ -231,22 +228,9 @@ func TestVisit(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			w, r1, r2 := meshRelays(t)
 			conn := &lossyConn{}
-			opts := agentOptions{mode: tc.mode, conn: conn, visitCheck: time.Hour}
-			if tc.spare {
-				opts.relays, opts.sessions = []identity.Relay{r1.ref(), r2.ref()}, 2
-			}
-			a := w.agent(t, "a", r1, opts)
+			a := w.agent(t, "a", r1, agentOptions{mode: tc.mode, conn: conn, visitCheck: time.Hour})
 			ea := a.attached(t)
 			home, far := r1, r2
-			if a.current().addr == r2.addr {
-				home, far = r2, r1
-			}
-			var spare *relayConn
-			if tc.spare {
-				require.Eventually(t, func() bool { return a.spare() != nil }, 10*time.Second, 10*time.Millisecond)
-				spare = a.spare()
-				require.Equal(t, far.addr, spare.addr)
-			}
 			route := netip.MustParsePrefix("fd99::/64")
 			b := w.agent(t, "b", far, agentOptions{mode: TransportPSP, routes: []netip.Prefix{route}})
 			eb := b.attached(t)
@@ -279,12 +263,6 @@ func TestVisit(t *testing.T) {
 			// The key changes of a relay peer go to the session of that relay.
 			assert.Same(t, rc, a.a.relayOfBinding(rc.relay))
 			assert.Same(t, v.rc, a.a.relayOfBinding(v.rc.relay))
-			if tc.spare {
-				// A spare has the routes of other relays, so it gives its place to the visitor.
-				assert.True(t, spare.ended(), "the spare session closed")
-				assert.NotSame(t, spare, v.rc)
-				assert.Nil(t, a.spare())
-			}
 
 			// The peer session is on the visitor session. b took it on its own relay.
 			p := onlyPeer(t, a.a)
@@ -502,9 +480,9 @@ func TestVisitAttachmentsRelayRevision(t *testing.T) {
 			cutMesh(r1, r2)
 			waitReach(t, a, eb.addr, dp.Reach_REACH_VISIT)
 
-			rc, err := a.a.dialRelay(ctx, endpoint{id: r2.id, addr: r2.addr}, spareHello, true)
+			rc, err := a.a.dialRelay(ctx, endpoint{id: r2.id, addr: r2.addr}, true)
 			require.NoError(t, err)
-			defer rc.close()
+			defer a.a.end(rc)
 			rc.version = &dp.Version{Revision: tc.revision}
 			require.NoError(t, rc.startVisit(ctx, a.current()))
 			require.NoError(t, a.a.connect(ctx, rc, eb.addr, nil))

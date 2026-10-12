@@ -273,8 +273,8 @@ func TestFirstPacketOnOtherRelay(t *testing.T) {
 	}
 }
 
-// TestPeerAfterMoveToOtherRelay checks that an agent that moves to a spare session
-// on another relay sends to a peer that stays on the first relay, and gets its packets.
+// TestPeerAfterMoveToOtherRelay checks that an agent that moves to a session on
+// another relay sends to a peer that stays on the first relay, and gets its packets.
 func TestPeerAfterMoveToOtherRelay(t *testing.T) {
 	cases := []struct {
 		name string
@@ -283,9 +283,8 @@ func TestPeerAfterMoveToOtherRelay(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			w, r1, r2 := meshRelays(t)
-			a := w.agent(t, "a", nil, agentOptions{mode: tc.mode, relays: []identity.Relay{r1.ref(), r2.ref()}, sessions: 2})
+			a := w.agent(t, "a", nil, agentOptions{mode: tc.mode, relays: []identity.Relay{r1.ref(), r2.ref()}})
 			ea := a.attached(t)
-			require.Eventually(t, func() bool { return a.spare() != nil }, 10*time.Second, 10*time.Millisecond)
 			from, to := r1, r2
 			if a.current().addr == r2.addr {
 				from, to = r2, r1
@@ -298,7 +297,9 @@ func TestPeerAfterMoveToOtherRelay(t *testing.T) {
 			ping(t, a.stack, ea.addr, eb.addr, 9000, "on one relay")
 			assert.Equal(t, dp.Reach_REACH_LOCAL, a.resolved(t, eb.addr).GetReach())
 
-			// The attached session of a ends, so a moves to its spare.
+			// The attached session of a ends, and its relay takes no new session, so a
+			// moves to the other relay.
+			from.stopAccept()
 			a.reconnect()
 			moved := a.attached(t)
 			require.Equal(t, to.addr, a.current().addr, "relay of a after the move")

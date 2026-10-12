@@ -309,7 +309,7 @@ func TestLateRoutes(t *testing.T) {
 	require.NoError(t, a.a.Connect(ctx, eb.addr))
 
 	a.a.mu.Lock()
-	rc := a.a.rc
+	rc := a.a.primaryLocked()
 	a.a.mu.Unlock()
 	a.a.routeMu.Lock()
 	id := rc.routes.origins[eb.prefixes[0]]

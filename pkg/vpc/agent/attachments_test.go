@@ -50,7 +50,7 @@ func TestAttachErrors(t *testing.T) {
 			a.cfg.Name = "base"
 			a.specs["used"] = &AttachmentSpec{Name: "used"}
 			if tc.noRC {
-				a.rc = nil
+				a.conns = nil
 			}
 			var err error
 			if tc.detach != "" {
@@ -108,7 +108,7 @@ func TestAttachmentsMove(t *testing.T) {
 		oldEnds bool          // The relay closes the old session while the agent waits for the extras.
 		before  bool          // The extras attach on the new session before the move.
 		// The drain gives no alternate, and the draining relay stops Accept, as a
-		// relay host in its lame duck. The agent has no spare.
+		// relay host in its lame duck.
 		lameDuck bool
 	}{
 		{name: "drain", move: "drain", before: true},
@@ -132,7 +132,7 @@ func TestAttachmentsMove(t *testing.T) {
 				opts.life = 3 * time.Second
 			}
 			if tc.lameDuck {
-				// With no spare, the move dials the draining relay. Run can dial the other relay.
+				// The agent waits for the end of its session. Then Run dials the other relay.
 				opts.relays, opts.sessions = []identity.Relay{r1.ref(), r2.ref()}, 1
 			}
 			a := w.agent(t, "a", r1, opts)
@@ -332,7 +332,7 @@ func TestAttachmentMemory(t *testing.T) {
 	w := newWorld(t)
 	a := w.stubAgent(t, "a")
 	cert := w.relayCA.relayCert(t, "relay-1")
-	a.rc.c = newGrantRelay(t, cert, n)
+	a.primary().c = newGrantRelay(t, cert, n)
 	ctx := context.Background()
 
 	heap := func() uint64 {
@@ -365,5 +365,5 @@ func TestAttachmentMemory(t *testing.T) {
 		require.NoError(t, a.Detach(ctx, fmt.Sprintf("x-%d", i)))
 	}
 	assert.Len(t, a.Attachments(), 1)
-	assert.Empty(t, a.rc.extras)
+	assert.Empty(t, a.primary().extras)
 }

@@ -104,7 +104,7 @@ func TestRegisterLanes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			setTxLanes(t, tc.queues)
 			a := w.stubAgent(t, "a")
-			rc := a.rc
+			rc := a.primary()
 			r := &laneRelay{err: tc.err}
 			rc.c, rc.maxLanes = r, tc.maxLanes
 			ka, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
@@ -178,8 +178,8 @@ func TestPeerLanes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			a := w.stubAgent(t, "a")
 			r := &laneRelay{}
-			a.rc.c = r
-			a.rc.lanes.Store(tc.ourLanes)
+			a.primary().c = r
+			a.primary().lanes.Store(tc.ourLanes)
 			p, _ := stubPeer(a, "b", false)
 			require.NoError(t, a.admit(p, nil, signGrant(t, cert, "b", fmt.Sprintf("fd00:b%d::/96", i)), 7, dp.Mode_MODE_PSP, tc.peerLanes))
 			req, err := p.bp.Offer(time.Now())
@@ -230,14 +230,14 @@ func TestMovedLanes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			a := w.stubAgent(t, "a")
 			r, st := &laneRelay{}, &sessionStream{}
-			a.rc.c, a.rc.st = r, st
-			a.rc.lanes.Store(tc.lanes)
+			a.primary().c, a.primary().st = r, st
+			a.primary().lanes.Store(tc.lanes)
 			p, _ := stubPeer(a, "b", false)
 			require.NoError(t, a.admit(p, nil, signGrant(t, cert, "b", "fd00:b::/96"), 7, dp.Mode_MODE_PSP, 4))
 			require.Equal(t, int(tc.lanes)-1, p.bp.SendLane(int(tc.lanes)-1))
 
 			a.checkMoved()
-			assert.Equal(t, uint32(1), a.rc.sendLanes())
+			assert.Equal(t, uint32(1), a.primary().sendLanes())
 			assert.Equal(t, 0, p.bp.SendLane(int(tc.lanes)-1))
 			require.Eventually(t, func() bool {
 				st.mu.Lock()

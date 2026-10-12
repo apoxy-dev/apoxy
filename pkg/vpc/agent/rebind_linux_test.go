@@ -99,7 +99,7 @@ func roam(t *testing.T, noRoute time.Duration) {
 	time.Sleep(1500 * time.Millisecond)
 
 	a.a.mu.Lock()
-	rc := a.a.rc
+	rc := a.a.primaryLocked()
 	var peers []quic.Connection
 	for _, p := range a.a.peers {
 		peers = append(peers, p.qc)
@@ -134,7 +134,7 @@ func roam(t *testing.T, noRoute time.Duration) {
 		// QUIC sends the RPC again when the route comes back, on the same session.
 		require.NoError(t, <-resolved, "RPC that started with no route")
 		a.a.mu.Lock()
-		same := a.a.rc == rc
+		same := a.a.primaryLocked() == rc
 		a.a.mu.Unlock()
 		assert.True(t, same, "agent opened a new relay session")
 		assert.NoError(t, context.Cause(rc.qc.Context()), "relay session closed")

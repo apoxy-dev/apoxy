@@ -20,7 +20,7 @@ func TestKeepShards(t *testing.T) {
 	ta := w.agent(t, "a", w.relay(t, "relay-1"), agentOptions{})
 	ta.attached(t)
 	ta.a.mu.Lock()
-	rc := ta.a.rc
+	rc := ta.a.primaryLocked()
 	ta.a.mu.Unlock()
 	done := make(chan struct{})
 	go func() {

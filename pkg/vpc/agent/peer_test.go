@@ -74,8 +74,9 @@ func (w *world) stubAgent(t *testing.T, name string) *Agent {
 	a.bind = b
 	a.link, err = b.AddLink()
 	require.NoError(t, err)
-	a.rc = &relayConn{
+	rc := &relayConn{
 		a:         a,
+		state:     connAttached,
 		qc:        newFakeConn(),
 		cred:      w.agentCA.credential(t, testProject, testVPC, name, time.Hour),
 		roots:     a.cfg.RelayRoots,
@@ -83,11 +84,11 @@ func (w *world) stubAgent(t *testing.T, name string) *Agent {
 		relayAddr: netip.MustParseAddrPort("127.0.0.1:443"),
 		sem:       make(chan struct{}, maxInFlight),
 	}
-	a.conns[a.rc] = struct{}{}
-	a.rc.ctx, a.rc.cancel = context.WithCancel(context.Background())
-	t.Cleanup(a.rc.cancel)
-	a.rc.relay, err = a.link.AddPeer(a.rc.relayAddr)
+	rc.ctx, rc.cancel = context.WithCancel(context.Background())
+	t.Cleanup(rc.cancel)
+	rc.relay, err = a.link.AddPeer(rc.relayAddr)
 	require.NoError(t, err)
+	a.conns = []*relayConn{rc}
 	return a
 }
 
@@ -95,7 +96,7 @@ func (w *world) stubAgent(t *testing.T, name string) *Agent {
 func stubPeer(a *Agent, name string, dialer bool) (*peer, *fakeConn) {
 	qc := newFakeConn()
 	p := &peer{
-		rc:      a.rc,
+		rc:      a.primary(),
 		qc:      qc,
 		conn:    &rpc.Conn{},
 		dialer:  dialer,
@@ -223,7 +224,7 @@ func TestAdmit(t *testing.T) {
 				a.instance = tc.own
 			}
 			if tc.selfQUIC {
-				a.rc.mode = dp.Mode_MODE_QUIC
+				a.primary().mode = dp.Mode_MODE_QUIC
 			}
 			if tc.taken {
 				bp, err := a.link.AddPeer(netip.MustParseAddrPort("127.0.0.1:443"))
@@ -262,7 +263,7 @@ func TestAdmit(t *testing.T) {
 				require.NoError(t, err)
 				assert.NotNil(t, p.bp)
 				assert.Equal(t, tc.wantQUIC, p.quic)
-				assert.Equal(t, tc.wantQUIC, p.bp == a.rc.relay, "QUIC pairs use the relay peer")
+				assert.Equal(t, tc.wantQUIC, p.bp == a.primary().relay, "QUIC pairs use the relay peer")
 				assert.Equal(t, relay.OverlayAddr(netip.MustParsePrefix(claims.GetAddresses()[0])), p.addr)
 				assert.Equal(t, claims.GetAttachmentId(), p.attachmentID())
 				select {
@@ -367,9 +368,9 @@ func TestRestartedPeer(t *testing.T) {
 	to := func(addr string) *peer {
 		a.mu.Lock()
 		defer a.mu.Unlock()
-		return a.peerTo(a.rc, netip.MustParseAddr(addr))
+		return a.peerTo(a.primaryLocked(), netip.MustParseAddr(addr))
 	}
-	a.applyRoutes(a.rc, &dp.RouteDelta{Add: []*dp.Route{route("fd00:b::/96", "attachment-b"), route("10.0.0.0/24", "attachment-b")}})
+	a.applyRoutes(a.primary(), &dp.RouteDelta{Add: []*dp.Route{route("fd00:b::/96", "attachment-b"), route("10.0.0.0/24", "attachment-b")}})
 	old, oldConn := stubPeer(a, "b", true)
 	require.NoError(t, a.admit(old, nil, signGrant(t, cert, "b", "fd00:b::/96"), 6, dp.Mode_MODE_PSP, 1))
 	require.Same(t, old, to("10.0.0.1"))
@@ -381,13 +382,13 @@ func TestRestartedPeer(t *testing.T) {
 	assert.Same(t, next, to("fd00:b2::1"))
 
 	// The relay moves the advertised route to the new attachment.
-	a.applyRoutes(a.rc, &dp.RouteDelta{Add: []*dp.Route{route("fd00:b2::/96", "b-2"), route("10.0.0.0/24", "b-2")}})
+	a.applyRoutes(a.primary(), &dp.RouteDelta{Add: []*dp.Route{route("fd00:b2::/96", "b-2"), route("10.0.0.0/24", "b-2")}})
 	assert.Same(t, next, to("10.0.0.1"))
 
 	// The old attachment leaves.
 	removed := []*dp.Route{route("fd00:b::/96", "attachment-b")}
-	a.applyRoutes(a.rc, &dp.RouteDelta{Remove: removed})
-	a.removeRoutes(a.rc, removed)
+	a.applyRoutes(a.primary(), &dp.RouteDelta{Remove: removed})
+	a.removeRoutes(a.primary(), removed)
 	assert.True(t, oldConn.closed())
 	assert.Equal(t, 1, peerCount(a))
 	assert.Same(t, next, to("10.0.0.1"))
@@ -477,7 +478,7 @@ func TestWaitKeys(t *testing.T) {
 			open := func() (*peer, *fakeConn) {
 				p, qc := stubPeer(a, "b", true)
 				var err error
-				p.bp, err = a.link.AddPeer(a.rc.relayAddr)
+				p.bp, err = a.link.AddPeer(a.primary().relayAddr)
 				require.NoError(t, err)
 				p.prefixes = []netip.Prefix{netip.MustParsePrefix("fd00:b::/96")}
 				return p, qc
@@ -623,14 +624,14 @@ func TestApplyKeys(t *testing.T) {
 			p, _ := stubPeer(a, "b", false)
 			p.addr = netip.MustParseAddr("fd00:b::1")
 			var err error
-			p.bp, err = a.link.AddPeer(a.rc.relayAddr)
+			p.bp, err = a.link.AddPeer(a.primary().relayAddr)
 			require.NoError(t, err)
-			probe, err := a.link.AddPeer(a.rc.relayAddr)
+			probe, err := a.link.AddPeer(a.primary().relayAddr)
 			require.NoError(t, err)
 			r := &spiRelay{t: t, probe: probe}
-			a.rc.c = r
+			a.primary().c = r
 			if tc.other != nil {
-				q, err := a.link.AddPeer(a.rc.relayAddr)
+				q, err := a.link.AddPeer(a.primary().relayAddr)
 				require.NoError(t, err)
 				_, err = q.Apply(sas(keys.OpOffer, tc.other...), time.Now())
 				require.NoError(t, err)
@@ -678,12 +679,12 @@ func TestRefreshSPIs(t *testing.T) {
 			p, qc := stubPeer(a, "b", false)
 			p.addr = netip.MustParseAddr("fd00:b::1")
 			var err error
-			p.bp, err = a.link.AddPeer(a.rc.relayAddr)
+			p.bp, err = a.link.AddPeer(a.primary().relayAddr)
 			require.NoError(t, err)
-			probe, err := a.link.AddPeer(a.rc.relayAddr)
+			probe, err := a.link.AddPeer(a.primary().relayAddr)
 			require.NoError(t, err)
 			r := &spiRelay{t: t, probe: probe}
-			a.rc.c = r
+			a.primary().c = r
 			// The SAs end at two times, so the refresh has two calls.
 			late := testSA(2, 0)
 			late.ExpiresIn = 2 * time.Minute
@@ -752,7 +753,7 @@ func TestQUICRoutes(t *testing.T) {
 	assert.True(t, routed("fd00:c::/96"))
 	a.dropPeer(c)
 	assert.False(t, routed("fd00:c::/96"))
-	assert.NoError(t, a.bind.AddRoute(netip.MustParsePrefix("fd00:b::/96"), a.rc.relay), "the relay peer stays")
+	assert.NoError(t, a.bind.AddRoute(netip.MustParsePrefix("fd00:b::/96"), a.primary().relay), "the relay peer stays")
 }
 
 func TestGiveKeys(t *testing.T) {
@@ -771,7 +772,7 @@ func TestGiveKeys(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			bp := w.stubAgent(t, "a").rc.relay
+			bp := w.stubAgent(t, "a").primary().relay
 			req, err := bp.Offer(time.Now())
 			require.NoError(t, err)
 			calls := 0

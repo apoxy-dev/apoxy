@@ -238,7 +238,7 @@ func (a *Agent) openHeld(dst netip.Addr) {
 // open, and waits for its SAs.
 func (a *Agent) reach(ctx context.Context, dst netip.Addr) error {
 	a.mu.Lock()
-	rc := a.rc
+	rc := a.primaryLocked()
 	var p *peer
 	own := false
 	if rc != nil {
@@ -269,7 +269,7 @@ func (a *Agent) reach(ctx context.Context, dst netip.Addr) error {
 // unreachable sends an ICMP error for each packet to its sender.
 func (a *Agent) unreachable(pkts [][]byte, denied bool) {
 	a.mu.Lock()
-	b, rc := a.bind, a.rc
+	b, rc := a.bind, a.primaryLocked()
 	a.mu.Unlock()
 	if b == nil || rc == nil {
 		return

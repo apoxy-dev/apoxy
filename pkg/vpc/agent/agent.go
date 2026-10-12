@@ -92,8 +92,8 @@ type Config struct {
 	// RelayRoots check relay certs and peer grants, in place of the roots of
 	// the agent cert. With neither, the agent uses the system roots.
 	RelayRoots *x509.CertPool
-	// Sessions is the number of relay sessions to keep, 1 to 3. One holds the
-	// attachment and the others are spares on other relays. Zero means 2.
+	// Sessions is the number of relay sessions to keep, 1 to 3. The agent keeps
+	// one attached session for each value: the value has no effect yet.
 	Sessions int
 	// Transport is the agent socket for the relay sessions and PSP. New sets its
 	// NonQUICPacketHandler, NonQUICBatchEnd and EnableGRO, so it must not be in use
@@ -127,19 +127,20 @@ type Config struct {
 	LocalRoutesOnly bool
 }
 
-// Agent keeps an attached relay session and spare sessions for one VPC, and
-// runs the peer sessions on the attached one.
+// Agent keeps an attached relay session for one VPC, and runs the peer
+// sessions on it.
 type Agent struct {
-	cfg       Config
-	ver       *dp.Version // Protocol version of the agent. Nil is revision 0. Tests change it.
-	instance  uint64
-	seed      maphash.Seed // Orders the relays of this agent.
-	mux       *rpc.Mux     // Peer service.
-	demux     psp.Demux
-	spareWake chan struct{}
-	holds     holds
-	quicCfg   *quic.Config  // relayQUIC with the loss tracer.
-	quicLost  atomic.Uint64 // 1-RTT packets that relay connections lost.
+	cfg      Config
+	ver      *dp.Version // Protocol version of the agent. Nil is revision 0. Tests change it.
+	instance uint64
+	seed     maphash.Seed // Orders the relays of this agent.
+	mux      *rpc.Mux     // Peer service.
+	demux    psp.Demux
+	holds    holds
+	quicCfg  *quic.Config  // relayQUIC with the loss tracer.
+	quicLost atomic.Uint64 // 1-RTT packets that relay connections lost.
+	// wake gets a value when a relay session ends. Run reads it.
+	wake chan struct{}
 
 	probeMu sync.Mutex
 	probes  map[[8]byte]*pathProbe // Path probes that run, by SID.
@@ -154,16 +155,16 @@ type Agent struct {
 	attMu      sync.Mutex
 	specs      map[string]*AttachmentSpec // Extra attachments to keep, by name.
 	events     []func()                   // Callbacks that wait to run, in order.
+	shown      *relayConn                 // Session whose attachments the callbacks gave last.
 	attachWake chan struct{}
 
 	// Lock order: cbMu, then attMu or admitMu, then routeMu, then mu.
 	// holds.mu is never held with another lock.
-	mu       sync.Mutex
-	rc       *relayConn
-	spares   []*relayConn            // Sessions with no attachment, on other relays.
-	stopped  bool                    // Run ended.
-	conns    map[*relayConn]struct{} // Relay sessions from dialRelay until close.
-	dialing  map[string]int          // Relay dials that run, by relay key.
+	mu sync.Mutex
+	// conns has each relay session from its dial until it ends, in dial order:
+	// the sessions of the attachment, and the visitor sessions.
+	conns    []*relayConn
+	stopped  bool // Run ended.
 	bind     *psp.Binding
 	link     *psp.Link // Routes of the relay session. Set with bind.
 	peers    map[*rpc.Conn]*peer
@@ -184,17 +185,15 @@ type Agent struct {
 // New returns an agent. Call Run to start it.
 func New(cfg Config) *Agent {
 	a := &Agent{
-		cfg:       cfg,
-		ver:       dp.LocalVersion(build.BuildVersion),
-		instance:  rand.Uint64(),
-		seed:      maphash.MakeSeed(),
-		spareWake: make(chan struct{}, 1),
-		probes:    map[[8]byte]*pathProbe{},
-		peers:     map[*rpc.Conn]*peer{},
-		conns:     map[*relayConn]struct{}{},
-		dialing:   map[string]int{},
-		visits:    map[string]*visit{},
-		admitted:  make(chan struct{}),
+		cfg:      cfg,
+		ver:      dp.LocalVersion(build.BuildVersion),
+		instance: rand.Uint64(),
+		seed:     maphash.MakeSeed(),
+		wake:     make(chan struct{}, 1),
+		probes:   map[[8]byte]*pathProbe{},
+		peers:    map[*rpc.Conn]*peer{},
+		visits:   map[string]*visit{},
+		admitted: make(chan struct{}),
 	}
 	a.specs, a.attachWake = map[string]*AttachmentSpec{}, make(chan struct{}, 1)
 	a.visitCheck, a.visitAsk, a.visitWait = visitCheck, visitAsk, visitWait
@@ -213,99 +212,6 @@ func New(cfg Config) *Agent {
 	return a
 }
 
-// Run keeps an attached relay session and spare sessions until ctx ends. On
-// a cert renew or a drain, the new session attaches before the old one closes.
-// It returns an ErrUpgrade when a relay refuses the agent as too old and no
-// other relay takes it. With an identity file, it returns an
-// identity.ExpiredError when the cert of the file expires.
-func (a *Agent) Run(ctx context.Context) error {
-	if m := a.cfg.MTU; m != 0 && (m < psp.DefaultMTU || m > psp.MaxMTU) {
-		return fmt.Errorf("MTU must be %d to %d, got %d", psp.DefaultMTU, psp.MaxMTU, m)
-	}
-	if n := a.cfg.Sessions; n < 0 || n > maxSessions {
-		return fmt.Errorf("sessions must be 1 to %d, got %d", maxSessions, n)
-	}
-	if err := a.cfg.Identity.Start(ctx); err != nil {
-		return fmt.Errorf("agent cert: %w", err)
-	}
-	ctx, cancel := context.WithCancelCause(ctx)
-	var wg sync.WaitGroup
-	defer func() {
-		cancel(nil)
-		wg.Wait()
-		a.close()
-	}()
-	wg.Go(func() { a.tick(ctx) })
-	wg.Go(func() { a.keepSpares(ctx) })
-	wg.Go(func() { a.keepAttachments(ctx) })
-	if a.cfg.Identity.FromFile() {
-		// The agent cannot get a new cert. It stops when the cert of the file expires.
-		wg.Go(func() {
-			if err := a.cfg.Identity.Run(ctx); err != nil && ctx.Err() == nil {
-				cancel(err)
-			}
-		})
-	}
-
-	backoff := minBackoff
-	next, failed := 0, 0      // The relay to dial next, and the relays that failed in a row.
-	var refused *upgradeError // A relay refused the agent as too old since the last session.
-	relist := relister{wait: relistMin}
-	for ctx.Err() == nil {
-		rc, tried, err := a.attachRelay(ctx, next)
-		if err != nil {
-			if ctx.Err() != nil {
-				break
-			}
-			slog.Warn("Failed to open relay session", "error", err)
-			if ue := (*upgradeError)(nil); errors.As(err, &ue) {
-				refused = ue
-			}
-			if certRefused(err) {
-				a.renew(ctx)
-			}
-			next += tried
-			if failed += tried; failed >= len(a.endpoints()) {
-				// No relay takes the agent, and one needs a newer agent. More dials
-				// do not help, so Run stops.
-				if refused != nil {
-					return refused
-				}
-				failed = 0
-				if relist.run(ctx, a) {
-					// Dial the new relays now.
-					backoff = minBackoff
-					continue
-				}
-			}
-			wait := rand.N(backoff) + 1
-			backoff = min(2*backoff, maxBackoff)
-			select {
-			case <-ctx.Done():
-			case <-time.After(wait):
-			}
-			continue
-		}
-		failed, refused = 0, nil
-		start := time.Now()
-		for rc != nil {
-			a.use(rc)
-			next := a.serve(ctx, rc)
-			if next != nil {
-				a.moveExtras(ctx, rc, next)
-			}
-			rc = next
-		}
-		if time.Since(start) > stableSession {
-			backoff = minBackoff
-		}
-	}
-	if expired := (*identity.ExpiredError)(nil); errors.As(context.Cause(ctx), &expired) {
-		return expired
-	}
-	return nil
-}
-
 // certRefused reports whether err shows that a relay refused the agent cert:
 // a TLS alert from the relay, or a close with RELAY_CLOSE_CODE_CERT.
 func certRefused(err error) bool {
@@ -317,47 +223,13 @@ func certRefused(err error) bool {
 	return errors.As(err, &ae) && ae.Remote && ae.ErrorCode == quic.ApplicationErrorCode(dp.RelayCloseCode_RELAY_CLOSE_CODE_CERT)
 }
 
-func (a *Agent) renew(ctx context.Context) {
-	if err := a.cfg.Identity.Renew(ctx); err != nil {
-		slog.Warn("Failed to renew agent cert", "error", err)
-	}
-}
-
-// use makes rc the relay session of the agent and closes the one before.
-func (a *Agent) use(rc *relayConn) {
-	a.attMu.Lock()
-	a.mu.Lock()
-	old := a.rc
-	a.rc = rc
-	b := a.bind
-	a.mu.Unlock()
-	if f := a.cfg.OnAttach; f != nil {
-		addr, prefixes := rc.self, rc.prefixes
-		a.events = append(a.events, func() { f(b, addr, prefixes) })
-	}
-	a.queueMove(old, rc)
-	a.attMu.Unlock()
-	if old != nil {
-		old.close()
-	}
-	// A visit uses the grant of the session before, so it ends with that session.
-	a.endVisits(rc, "attachment moved")
-	slog.Info("Attached to the VPC", "relay", rc.addr, "address", rc.self, "prefixes", rc.prefixes,
-		"transport", transportName(rc.mode), "fallback", rc.reason, "connect", rc.connect, "setup", rc.setup)
-	a.deliver()
-	a.useRoutes(rc)
-	a.wakeSpares()
-	a.wakeAttach()
-}
-
 // DNS returns the DNS servers and search domains of the VPC.
 func (a *Agent) DNS() (servers, search []string) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.rc == nil {
+	rc := a.primary()
+	if rc == nil {
 		return nil, nil
 	}
-	return a.rc.dnsServers, a.rc.dnsSearch
+	return rc.dnsServers, rc.dnsSearch
 }
 
 // Status is the data transport of the current attachment.
@@ -366,11 +238,8 @@ type Status struct {
 	Reason dp.FallbackReason // Why Mode is QUIC.
 	// Time to connect: from the start of the dial to the first Config.
 	Connect time.Duration
-	// Time from the start of the connect, or of the move to a spare, to the
-	// end of the attach.
+	// Time from the start of the connect to the end of the attach.
 	Setup time.Duration
-	// Spare sessions.
-	Spares int
 	// Open peer sessions of the current attachment.
 	Peers int
 	// Smoothed round-trip time to the relay. Zero before the first sample
@@ -382,17 +251,18 @@ type Status struct {
 func (a *Agent) Status() Status {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.rc == nil {
-		return Status{Spares: len(a.spares)}
+	rc := a.primaryLocked()
+	if rc == nil {
+		return Status{}
 	}
-	st := Status{Mode: a.rc.mode, Reason: a.rc.reason, Connect: a.rc.connect, Setup: a.rc.setup, Spares: len(a.spares)}
+	st := Status{Mode: rc.mode, Reason: rc.reason, Connect: rc.connect, Setup: rc.setup}
 	for _, p := range a.peers {
-		if p.rc == a.rc && p.bp != nil && p.qc.Context().Err() == nil {
+		if p.rc == rc && p.bp != nil && p.qc.Context().Err() == nil {
 			st.Peers++
 		}
 	}
-	if !a.rc.ended() {
-		st.RTT = time.Duration(a.rc.rtt.Load())
+	if !rc.ended() {
+		st.RTT = time.Duration(rc.rtt.Load())
 	}
 	return st
 }
@@ -407,286 +277,47 @@ func transportName(m dp.Mode) string {
 	return "none"
 }
 
-// serve waits until rc ends, or until the agent must move to a new session.
-// It returns the new session, or nil when rc ended or ctx ended.
-func (a *Agent) serve(ctx context.Context, rc *relayConn) *relayConn {
-	renew := time.NewTimer(time.Until(rc.cred.RenewAt()))
-	defer renew.Stop()
-	if a.cfg.Identity.FromFile() {
-		// The agent does not renew the cert of an identity file. It moves to a
-		// new session when the file has a new cert.
-		renew.Stop()
-		if a.cfg.Identity.Current() != rc.cred {
-			renew.Reset(0)
-		}
+// open runs the handshake with the relay of rc, picks the data mode, and runs
+// the Session call up to Config.
+func (rc *relayConn) open(ctx context.Context) error {
+	a := rc.a
+	ua, err := net.ResolveUDPAddr("udp", rc.addr)
+	if err != nil {
+		return err
 	}
-	retry := time.NewTimer(pspRetryMin)
-	defer retry.Stop()
-	if rc.reason != dp.FallbackReason_FALLBACK_REASON_PROBE_TIMEOUT {
-		retry.Stop()
-	}
-	wait, passes := pspRetryMin, 0
-	var probed <-chan bool
-	backoff := func() {
-		passes, wait = 0, min(2*wait, pspRetryMax)
-		retry.Reset(wait)
-	}
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-rc.qc.Context().Done():
-			err := context.Cause(rc.qc.Context())
-			slog.Info("Relay session ended", "relay", rc.addr, "error", err)
-			if certRefused(err) {
-				a.renew(ctx)
-			}
-			return nil
-		case <-a.cfg.Identity.Changed():
-			// A value can be from the identity file that rc already uses.
-			if a.cfg.Identity.Current() != rc.cred {
-				renew.Reset(0)
-			}
-		case <-renew.C:
-			if a.cfg.Identity.Current() == rc.cred {
-				if err := a.cfg.Identity.Renew(ctx); err != nil {
-					slog.Warn("Failed to renew agent cert", "error", err)
-					renew.Reset(renewRetry)
-					continue
-				}
-			}
-			next, err := a.openNext(ctx, rc, rc.ep)
-			if err != nil {
-				if rc.qc.Context().Err() == nil {
-					slog.Warn("Failed to open a relay session with the new cert", "relay", rc.addr, "error", err)
-				}
-				renew.Reset(renewRetry)
-				continue
-			}
-			return next
-		case alts := <-rc.drain:
-			next, err := a.move(ctx, rc, alts)
-			if err != nil {
-				// The relay closes rc when its drain ends. Then Run dials again.
-				if rc.qc.Context().Err() == nil {
-					slog.Warn("Failed to move to another relay", "relay", rc.addr, "error", err)
-				}
-				continue
-			}
-			return next
-		case <-retry.C:
-			probed = rc.probe(rc.ctx, psp.DefaultMTU)
-		case ok := <-probed:
-			probed = nil
-			if !ok {
-				backoff()
-				continue
-			}
-			if passes++; passes < pspPasses {
-				retry.Reset(pspRetryNext)
-				continue
-			}
-			// The new session probes again before it picks its mode.
-			slog.Info("PSP probes to the relay pass; opening a PSP session", "relay", rc.addr)
-			next, err := a.openNext(ctx, rc, rc.ep)
-			if err == nil && next.mode == dp.Mode_MODE_PSP {
-				return next
-			}
-			if err != nil {
-				if rc.qc.Context().Err() == nil {
-					slog.Warn("Failed to open a relay session for PSP", "relay", rc.addr, "error", err)
-				}
-			} else {
-				next.close()
-			}
-			backoff()
-		}
-	}
-}
-
-// relayConn is one relay session with its attachment.
-type relayConn struct {
-	a      *Agent
-	ctx    context.Context // Ends at close.
-	cancel context.CancelFunc
-	qc     quic.Connection
-	c      dp.RelayClient
-	st     rpc.BidiStreamClient[dp.SessionRequest, dp.SessionResponse]
-	sendMu sync.Mutex     // Guards sends on st after start.
-	local  netip.AddrPort // Local address at the last check. Only tick changes it after open.
-	cred   *identity.Credential
-	ep     endpoint
-	addr   string         // Relay address as dialed.
-	name   string         // TLS name of the relay.
-	roots  *x509.CertPool // Check relay certs and grants. Nil means the system roots.
-	// spareDone closes when the agent takes the session from its spares.
-	spareDone chan struct{}
-	// visitor is true for a visitor session. It has no attachment: its grant,
-	// prefixes and address are those of the attached session.
-	visitor bool
-	// data is true when the path of a visitor session carries data: the result
-	// of its path probe.
-	data atomic.Bool
-	// extrasOf is the attached session whose extra attachments a visitor
-	// session has in its visit. Guarded by Agent.attMu.
-	extrasOf *relayConn
-
-	relayAddr netip.AddrPort    // Where PSP packets to peers go.
-	version   *dp.Version       // Version of the relay, from Welcome. Nil is revision 0.
-	reflexive netip.AddrPort    // Address of the agent socket as the relay sees it.
-	maxLanes  uint32            // Most lane ports that the relay takes.
-	lanes     atomic.Int32      // Send lanes: the lane ports that the relay took, plus 1.
-	mode      dp.Mode           // Data mode of the Session call.
-	reason    dp.FallbackReason // Why mode is QUIC.
-	connect   time.Duration     // Time to connect: from the start of the dial to the first Config.
-	rtt       *atomic.Int64     // Smoothed RTT of qc in nanoseconds.
-	probeRTT  atomic.Int64      // Round-trip time of the last path probe with a reply. Zero is none.
-	setup     time.Duration     // See Status.Setup.
-	vpcConfig *dp.Config        // The first Config.
-	ref       *dp.VPCRef
-	mtu       uint32
-	grant     *dp.AttachmentGrant
-	claims    *dp.GrantClaims
-	prefixes  []netip.Prefix
-	self      netip.Addr // Overlay address of this agent.
-	// routes and attachmentID are guarded by Agent.routeMu. The attach also
-	// sets prefixes and self under it, because the sync reads self.
-	routes       routeTable
-	attachmentID string
-	// extras are the other attachments of this agent on rc, by attachment ID.
-	// Writers hold Agent.attMu, Agent.routeMu and Agent.mu, so readers hold one
-	// of them.
-	extras map[string]*extra
-	// sem limits the Attach calls of extras that run at once. attaching is the
-	// specs that they run for, guarded by Agent.mu.
-	sem       chan struct{}
-	attaching map[*AttachmentSpec]bool
-
-	dnsServers, dnsSearch []string
-
-	// relay is the relay as a peer of the binding. Packets for QUIC-mode peers
-	// go to it, sealed with the SAs that the relay gives in PSP mode. The
-	// attach sets it. Relay SAs that come before it wait in pendingKeys.
-	keyMu       sync.Mutex
-	relay       *psp.Peer
-	pendingKeys []*dp.KeysRequest
-	// bridgeTx closes when the relay SAs first apply. bridgeRx closes when the
-	// relay first takes the SAs of this agent. QUIC pairs wait for both.
-	bridgeTx, bridgeRx chan struct{}
-
-	pc     *peerconn.Conn
-	peerTr *quic.Transport
-	drain  chan []*dp.RelayRef
-}
-
-// open dials the relay at e and attaches.
-func (a *Agent) open(ctx context.Context, e endpoint) (*relayConn, error) {
 	begin := time.Now()
-	rc, err := a.dialRelay(ctx, e, primaryHello, false)
-	if err != nil {
-		return nil, err
-	}
-	if err := rc.attach(ctx, begin); err != nil {
-		rc.close()
-		return nil, err
-	}
-	return rc, nil
-}
-
-// openNext opens the session at e that takes over from rc. The open stops when
-// rc ends, so that Run dials again at once.
-func (a *Agent) openNext(ctx context.Context, rc *relayConn, e endpoint) (*relayConn, error) {
-	ctx, cancel := context.WithCancel(ctx)
+	ctx, cancel := context.WithTimeout(ctx, openTimeout)
 	defer cancel()
-	defer context.AfterFunc(rc.qc.Context(), cancel)()
-	return a.open(ctx, e)
-}
-
-// dialRelay opens a session to the relay at e: the handshake, the data mode, and
-// the Session call up to Config. spare tells at Hello if the session is a spare,
-// and can wait for a choice. visitor makes a visitor session. The dial counts in
-// a.dialing, and the session stays in a.conns until close.
-func (a *Agent) dialRelay(ctx context.Context, e endpoint, spare func(*relayConn) bool, visitor bool) (*relayConn, error) {
-	key := e.key()
-	a.mu.Lock()
-	a.dialing[key]++
-	a.mu.Unlock()
-	rc, err := a.dialSession(ctx, e, spare, visitor)
-	a.mu.Lock()
-	if a.dialing[key]--; a.dialing[key] == 0 {
-		delete(a.dialing, key)
-	}
-	if err == nil {
-		a.conns[rc] = struct{}{}
-	}
-	a.mu.Unlock()
-	return rc, err
-}
-
-// dialSession opens the session for dialRelay.
-func (a *Agent) dialSession(ctx context.Context, e endpoint, spare func(*relayConn) bool, visitor bool) (*relayConn, error) {
-	host, _, err := net.SplitHostPort(e.addr)
-	if err != nil {
-		return nil, err
-	}
-	name := e.id
-	if name == "" {
-		name = host
-	}
-	ua, err := net.ResolveUDPAddr("udp", e.addr)
-	if err != nil {
-		return nil, err
-	}
-	cred := a.cfg.Identity.Current()
-	roots := a.relayRoots(cred)
-	begin := time.Now()
-	octx, cancel := context.WithTimeout(ctx, openTimeout)
-	defer cancel()
-	rtt := new(atomic.Int64)
+	// The dial stops when the agent stops.
+	defer context.AfterFunc(rc.ctx, cancel)()
 	quicCfg := a.quicCfg.Clone()
-	quicCfg.Tracer = a.traceSession(rtt)
-	qc, err := a.cfg.Transport.Dial(octx, ua, &tls.Config{
+	quicCfg.Tracer = a.traceSession(rc.rtt)
+	qc, err := a.cfg.Transport.Dial(ctx, ua, &tls.Config{
 		MinVersion:   tls.VersionTLS13,
-		RootCAs:      roots,
-		ServerName:   name,
+		RootCAs:      rc.roots,
+		ServerName:   rc.name,
 		NextProtos:   []string{dp.ALPNRelay},
-		Certificates: []tls.Certificate{*cred.TLSCertificate()},
+		Certificates: []tls.Certificate{*rc.cred.TLSCertificate()},
 	}, quicCfg)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	rc := &relayConn{
-		a:         a,
-		qc:        qc,
-		rtt:       rtt,
-		c:         dp.NewRelayClient(rpc.NewConn(qc, nil)),
-		cred:      cred,
-		ep:        e,
-		addr:      e.addr,
-		name:      name,
-		roots:     roots,
-		spareDone: make(chan struct{}),
-		visitor:   visitor,
-		sem:       make(chan struct{}, maxInFlight),
-		relayAddr: qc.RemoteAddr().(*net.UDPAddr).AddrPort(),
-		drain:     make(chan []*dp.RelayRef, 1),
-		bridgeTx:  make(chan struct{}),
-		bridgeRx:  make(chan struct{}),
-	}
-	rc.ctx, rc.cancel = context.WithCancel(context.Background())
+	a.mu.Lock()
+	rc.qc = qc
+	a.mu.Unlock()
+	rc.c = dp.NewRelayClient(rpc.NewConn(qc, nil))
+	rc.relayAddr = qc.RemoteAddr().(*net.UDPAddr).AddrPort()
 	rc.local = rc.localAddr()
 	// A relay that does not answer in time ends the dial.
-	stop := context.AfterFunc(octx, func() { _ = qc.CloseWithError(0, "relay session did not open in time") })
-	defer stop()
-	rc.mode, rc.reason = a.pickMode(octx, rc)
-	if err := rc.hello(begin, spare(rc)); err != nil {
-		rc.close()
+	defer context.AfterFunc(ctx, func() { _ = qc.CloseWithError(0, "relay session did not open in time") })()
+	rc.mode, rc.reason = a.pickMode(ctx, rc)
+	if err := rc.hello(begin); err != nil {
 		if cause := context.Cause(qc.Context()); cause != nil {
 			err = fmt.Errorf("%w (connection: %w)", err, cause)
 		}
-		return nil, relayUpgrade(e.addr, err)
+		return relayUpgrade(rc.addr, err)
 	}
-	return rc, nil
+	return nil
 }
 
 // relayRoots returns Config.RelayRoots, else the relay roots of cred. Nil
@@ -714,14 +345,14 @@ func (a *Agent) pickMode(ctx context.Context, rc *relayConn) (dp.Mode, dp.Fallba
 
 // hello runs the Session call of rc up to Config and starts its Sync reader.
 // The dial started at begin.
-func (rc *relayConn) hello(begin time.Time, spare bool) error {
+func (rc *relayConn) hello(begin time.Time) error {
 	st, err := rc.c.Session(rc.ctx)
 	if err != nil {
 		return err
 	}
 	rc.st = st
 	if err := st.Send(&dp.SessionRequest{Msg: &dp.SessionRequest_Hello{Hello: &dp.Hello{
-		Mode: rc.mode, FallbackReason: rc.reason, Spare: spare, Version: rc.a.ver, Name: rc.a.cfg.Name,
+		Mode: rc.mode, FallbackReason: rc.reason, Version: rc.a.ver, Name: rc.a.cfg.Name,
 		// The relay tells two processes with one identity and one name apart by the instance.
 		Instance: rc.a.instance,
 		// A relay takes a Visit call only on a session with local routes.
@@ -960,7 +591,7 @@ func (rc *relayConn) sync() {
 			rc.a.noRoute(rc, m.NoRoute)
 		case *dp.SessionResponse_Drain:
 			select {
-			case rc.drain <- m.Drain.GetAlternates():
+			case rc.drained <- m.Drain.GetAlternates():
 			default:
 			}
 		case *dp.SessionResponse_Rekey:
@@ -1110,15 +741,15 @@ func (a *Agent) removeRoutes(rc *relayConn, removed []*dp.Route) {
 	}
 }
 
-// close ends rc, its peer sessions and its peer transport.
+// close closes the connection of rc, its peer sessions and its peer transport.
+// Only Agent.end calls it.
 func (rc *relayConn) close() {
-	rc.a.mu.Lock()
-	delete(rc.a.conns, rc)
-	rc.a.mu.Unlock()
 	rc.a.closePeers(func(p *peer) bool { return p.rc == rc }, "relay session closed")
 	// The connection closes before its calls stop. A Session call that stops
 	// first makes the relay close the connection with an error.
-	_ = rc.qc.CloseWithError(0, "")
+	if rc.qc != nil {
+		_ = rc.qc.CloseWithError(0, "")
+	}
 	rc.cancel()
 	if rc.relay != nil {
 		rc.a.bind.RemovePeer(rc.relay)
@@ -1130,18 +761,26 @@ func (rc *relayConn) close() {
 	}
 }
 
-// close ends the relay session and the binding at the end of Run.
+// close ends the relay sessions and the binding at the end of Run. The
+// goroutine that dials a session ends it, so close only stops the dial.
 func (a *Agent) close() {
 	a.mu.Lock()
-	rc, b, spares := a.rc, a.bind, a.spares
-	a.rc, a.spares, a.stopped = nil, nil, true
-	a.mu.Unlock()
-	a.endVisits(nil, "agent stopped")
-	for _, s := range spares {
-		s.close()
+	a.stopped = true
+	b := a.bind
+	var dialing, open []*relayConn
+	for _, rc := range a.conns {
+		if rc.state == connDialing {
+			dialing = append(dialing, rc)
+		} else {
+			open = append(open, rc)
+		}
 	}
-	if rc != nil {
-		rc.close()
+	a.mu.Unlock()
+	for _, rc := range dialing {
+		rc.cancel()
+	}
+	for _, rc := range open {
+		a.end(rc)
 	}
 	if b != nil {
 		_ = b.Close()
@@ -1203,16 +842,13 @@ func (a *Agent) tick(ctx context.Context) {
 	}
 }
 
-// relayOfBinding returns the current relay session or the visitor session
-// that has bp as its relay peer.
+// relayOfBinding returns the attached session or the visitor session that
+// has bp as its relay peer.
 func (a *Agent) relayOfBinding(bp *psp.Peer) *relayConn {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.rc != nil && a.rc.relay == bp {
-		return a.rc
-	}
-	for _, v := range a.visits {
-		if rc := v.session(); rc != nil && rc.relay == bp {
+	for _, rc := range a.conns {
+		if rc.state != connDialing && rc.relay == bp {
 			return rc
 		}
 	}

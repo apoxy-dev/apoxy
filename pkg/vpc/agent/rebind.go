@@ -14,9 +14,7 @@ import (
 // checkMoved tells the relay when the local address of the agent changes.
 // The relay then follows the QUIC connection to its new path.
 func (a *Agent) checkMoved() {
-	a.mu.Lock()
-	rc := a.rc
-	a.mu.Unlock()
+	rc := a.primary()
 	if rc == nil {
 		return
 	}

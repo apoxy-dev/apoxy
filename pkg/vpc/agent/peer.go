@@ -215,9 +215,7 @@ func (a *Agent) newPeer(rc *relayConn, qc quic.Connection, dst netip.Addr) (*pee
 // Connect opens a peer session to the agent at dst and exchanges keys with
 // it. It returns when PSP works in both directions.
 func (a *Agent) Connect(ctx context.Context, dst netip.Addr) error {
-	a.mu.Lock()
-	rc := a.rc
-	a.mu.Unlock()
+	rc := a.primary()
 	if rc == nil {
 		return errNoRelay
 	}
@@ -344,8 +342,8 @@ func (a *Agent) waitPeer(ctx context.Context, rc *relayConn, dst netip.Addr) (*p
 	for {
 		a.mu.Lock()
 		p, admitted := a.peerTo(rc, dst), a.admitted
-		if p == nil && rc.visitor && a.rc != nil {
-			p = a.livePeerTo(a.rc, dst)
+		if home := a.primaryLocked(); p == nil && rc.visitor && home != nil {
+			p = a.livePeerTo(home, dst)
 		}
 		a.mu.Unlock()
 		if p != nil {

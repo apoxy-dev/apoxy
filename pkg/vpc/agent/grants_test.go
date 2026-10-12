@@ -189,9 +189,9 @@ func TestWaitGrant(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			a := w.stubAgent(t, "a")
-			a.rc.version = dp.LocalVersion("relay")
+			a.primary().version = dp.LocalVersion("relay")
 			if tc.relay != nil {
-				a.rc.version = tc.relay()
+				a.primary().version = tc.relay()
 			}
 			p, _ := stubPeer(a, "b", true)
 			require.NoError(t, a.admit(p, nil, signGrant(t, cert, "b", "fd00:b::/96"), 7, dp.Mode_MODE_PSP, 1))
@@ -209,7 +209,7 @@ func TestWaitGrant(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 			defer cancel()
 			start := time.Now()
-			got := a.waitGrant(ctx, a.rc, dst, res)
+			got := a.waitGrant(ctx, a.primary(), dst, res)
 			if tc.want {
 				assert.Same(t, p, got)
 			} else {
@@ -277,14 +277,14 @@ func TestRemoveRoutesOfExtra(t *testing.T) {
 	require.NoError(t, a.addGrants(p, []*dp.AttachmentGrant{extraGrant(t, cert, "b", "b-2", "fd00:b2::/96", nil)}))
 
 	// Another origin that takes a prefix does not end the grant.
-	a.removeRoutes(a.rc, []*dp.Route{{Prefix: "10.0.0.0/8", Origin: "b-2"}})
+	a.removeRoutes(a.primary(), []*dp.Route{{Prefix: "10.0.0.0/8", Origin: "b-2"}})
 	assert.True(t, p.origin("b-2"))
-	a.removeRoutes(a.rc, []*dp.Route{{Prefix: "fd00:b2::/96", Origin: "b-2"}})
+	a.removeRoutes(a.primary(), []*dp.Route{{Prefix: "fd00:b2::/96", Origin: "b-2"}})
 	assert.False(t, p.origin("b-2"))
 	assert.False(t, routedIn(t, a, "fd00:b2::/96"))
 	assert.False(t, qc.closed())
 
-	a.removeRoutes(a.rc, []*dp.Route{{Prefix: "fd00:b::/96", Origin: "attachment-b"}})
+	a.removeRoutes(a.primary(), []*dp.Route{{Prefix: "fd00:b::/96", Origin: "attachment-b"}})
 	assert.True(t, qc.closed())
 }
 
