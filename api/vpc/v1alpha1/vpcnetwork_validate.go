@@ -2,13 +2,10 @@ package v1alpha1
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"net/netip"
 
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 
 	"github.com/apoxy-dev/apoxy/api/resource/resourcestrategy"
@@ -41,103 +38,5 @@ func (n *VPCNetwork) validate() field.ErrorList {
 		errs = append(errs, field.Invalid(field.NewPath("spec", "mtu"), mtu,
 			fmt.Sprintf("must be from %d to %d", DefaultMTU, MaxMTU)))
 	}
-	return append(errs, n.validateAgents()...)
-}
-
-// validateAgents checks spec.agents: valid names, each name one time, and the
-// routes of each agent.
-func (n *VPCNetwork) validateAgents() field.ErrorList {
-	var errs field.ErrorList
-	seen := make(map[string]bool, len(n.Spec.Agents))
-	for i := range n.Spec.Agents {
-		a, path := &n.Spec.Agents[i], field.NewPath("spec", "agents").Index(i)
-		for _, msg := range validation.IsDNS1123Label(a.Name) {
-			errs = append(errs, field.Invalid(path.Child("name"), a.Name, msg))
-		}
-		if seen[a.Name] {
-			errs = append(errs, field.Duplicate(path.Child("name"), a.Name))
-		}
-		seen[a.Name] = true
-		errs = append(errs, a.validateRoutes(path.Child("routes"))...)
-	}
 	return errs
-}
-
-// validateRoutes checks the routes of one agent: the count, each prefix one
-// time, the priority range and the health check.
-func (a *VPCNetworkAgent) validateRoutes(path *field.Path) field.ErrorList {
-	var errs field.ErrorList
-	if len(a.Routes) > MaxAgentRoutes {
-		errs = append(errs, field.TooMany(path, len(a.Routes), MaxAgentRoutes))
-	}
-	seen := make(map[netip.Prefix]bool, len(a.Routes))
-	for i, r := range a.Routes {
-		prefix, err := parseRoutePrefix(r.Prefix)
-		switch {
-		case err != nil:
-			errs = append(errs, field.Invalid(path.Index(i).Child("prefix"), r.Prefix, err.Error()))
-		case seen[prefix]:
-			errs = append(errs, field.Duplicate(path.Index(i).Child("prefix"), r.Prefix))
-		default:
-			seen[prefix] = true
-		}
-		if p := r.Priority; p != nil && (*p < 0 || *p > MaxRoutePriority) {
-			errs = append(errs, field.Invalid(path.Index(i).Child("priority"), *p,
-				fmt.Sprintf("must be from 0 to %d", MaxRoutePriority)))
-		}
-		if r.HealthCheck != nil {
-			errs = append(errs, r.HealthCheck.validate(path.Index(i).Child("healthCheck"), prefix)...)
-		}
-	}
-	return errs
-}
-
-// validate checks the health check of a route with the prefix prefix. A
-// prefix that is not valid has its own error, so the target is only parsed.
-func (h *VPCNetworkRouteHealthCheck) validate(path *field.Path, prefix netip.Prefix) field.ErrorList {
-	var errs field.ErrorList
-	target, err := netip.ParseAddr(h.Target)
-	switch {
-	case err != nil:
-		errs = append(errs, field.Invalid(path.Child("target"), h.Target, "must be an IP address"))
-	case prefix.IsValid() && !prefix.Contains(target):
-		errs = append(errs, field.Invalid(path.Child("target"), h.Target,
-			fmt.Sprintf("must be an address in the prefix %s of the route", prefix)))
-	}
-	// Zero means that the field is not set.
-	for _, f := range []struct {
-		name       string
-		value, max int32
-	}{
-		{"tcpPort", h.TCPPort, MaxHealthCheckTCPPort},
-		{"intervalSeconds", h.IntervalSeconds, MaxHealthCheckIntervalSeconds},
-		{"failureThreshold", h.FailureThreshold, MaxHealthCheckThreshold},
-		{"successThreshold", h.SuccessThreshold, MaxHealthCheckThreshold},
-	} {
-		if f.value < 0 || f.value > f.max {
-			errs = append(errs, field.Invalid(path.Child(f.name), f.value, fmt.Sprintf("must be from 1 to %d", f.max)))
-		}
-	}
-	return errs
-}
-
-var overlayAddressSpace = netip.MustParsePrefix(OverlayAddressSpace)
-
-// parseRoutePrefix parses a prefix that an agent can announce. It refuses host
-// bits, a default route and a prefix that overlaps the overlay address space.
-func parseRoutePrefix(s string) (netip.Prefix, error) {
-	p, err := netip.ParsePrefix(s)
-	switch {
-	case err != nil:
-		return netip.Prefix{}, errors.New("must be an IPv4 or IPv6 prefix, for example 10.0.1.0/24")
-	case p.Addr().Is4In6():
-		return netip.Prefix{}, errors.New("must not be an IPv4-mapped IPv6 prefix")
-	case p != p.Masked():
-		return netip.Prefix{}, fmt.Errorf("must have no host bits: use %s", p.Masked())
-	case p.Bits() == 0:
-		return netip.Prefix{}, errors.New("must not be a default route")
-	case p.Overlaps(overlayAddressSpace):
-		return netip.Prefix{}, fmt.Errorf("must not overlap %s, the address range of the networks", OverlayAddressSpace)
-	}
-	return p, nil
 }
