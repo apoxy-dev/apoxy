@@ -204,7 +204,8 @@ type Session struct {
 	conn         *rpc.Conn
 	remote       func() netip.AddrPort
 	chain        []*x509.Certificate // Agent cert chain, leaf first.
-	notAfter     time.Time           // The session closes at the NotAfter of the leaf.
+	notAfter     time.Time           // NotAfter of the leaf: the end of the grants of the session.
+	verified     time.Time           // Time of the cert check of the handshake.
 	close        func(code dp.RelayCloseCode, msg string)
 	sendDatagram func([]byte) error
 	wake         chan struct{}               // Has room for 1: the sync queue changed.
@@ -328,6 +329,7 @@ func (r *Router) AddSession(conn *rpc.Conn) (*Session, error) {
 	s.conn = conn
 	s.chain = tc.PeerCertificates
 	s.notAfter = tc.PeerCertificates[0].NotAfter
+	s.verified = now
 	s.close = func(code dp.RelayCloseCode, msg string) {
 		_ = qc.CloseWithError(quic.ApplicationErrorCode(code), msg)
 	}
@@ -708,15 +710,11 @@ func (r *Router) ReportStatus(s *Session, st *dp.Status) {
 }
 
 // Sweep follows migrated connections, ends old source addresses and visits,
-// removes expired and idle rows, and closes sessions at the NotAfter of their cert.
+// and removes expired and idle rows. A session does not end with its cert.
 func (r *Router) Sweep(now time.Time) {
 	idle := now.Add(-rowIdle).UnixNano()
-	var expired []*Session
 	r.mu.Lock()
 	for s := range r.sessions {
-		if !s.notAfter.IsZero() && !now.Before(s.notAfter) {
-			expired = append(expired, s)
-		}
 		r.endVisit(s, "grant ended", func(v *visit) bool { return !now.Before(v.notAfter) })
 		if s.shardOf == nil {
 			r.setAddr(s, s.remote(), now)
@@ -741,9 +739,6 @@ func (r *Router) Sweep(now time.Time) {
 	r.sweepIn(now)
 	r.syncAllXDP(now)
 	r.mu.Unlock()
-	for _, s := range expired {
-		s.close(dp.RelayCloseCode_RELAY_CLOSE_CODE_CERT, "agent cert expired")
-	}
 }
 
 // Run sweeps the rows and rekeys the relay SAs each second, and checks the

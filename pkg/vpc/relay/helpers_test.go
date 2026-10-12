@@ -105,6 +105,20 @@ func (ca *testCA) agentCert(t *testing.T, vpc VPCKey, name string) tls.Certifica
 	return ca.issue(t, agentID(vpc, name), time.Now().Add(-time.Hour))
 }
 
+// shortCert issues a cert for agent name in vpc that ends 1 to 2 seconds from
+// now. A cert time has a resolution of one second.
+func (ca *testCA) shortCert(t *testing.T, vpc VPCKey, name string) tls.Certificate {
+	end := time.Now().Truncate(time.Second).Add(2 * time.Second)
+	return ca.issue(t, agentID(vpc, name), end.Add(-identity.CertLifetime))
+}
+
+// waitExpired waits until each cert of certs is past its NotAfter.
+func waitExpired(certs ...tls.Certificate) {
+	for _, c := range certs {
+		time.Sleep(time.Until(c.Leaf.NotAfter) + 50*time.Millisecond)
+	}
+}
+
 func agentID(k VPCKey, name string) string {
 	return identity.ID{Project: k.Project, VPC: k.UID, Agent: name}.String()
 }

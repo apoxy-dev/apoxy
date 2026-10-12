@@ -86,9 +86,9 @@ func (r *Router) verifyConnection(cs tls.ConnectionState) error {
 }
 
 // Recheck closes the sessions whose agent cert now fails the check. Call it
-// when the agent CA or a revocation list changes.
+// when the agent CA or a revocation list changes. The check is at the time of
+// the handshake, because a session does not end with its cert.
 func (r *Router) Recheck() {
-	now := time.Now()
 	r.mu.RLock()
 	sessions := make([]*Session, 0, len(r.sessions))
 	for s := range r.sessions {
@@ -98,7 +98,7 @@ func (r *Router) Recheck() {
 	}
 	r.mu.RUnlock()
 	for _, s := range sessions {
-		if _, err := r.checkCert(s.chain, now); err != nil {
+		if _, err := r.checkCert(s.chain, s.verified); err != nil {
 			slog.Info("Closing relay session after a trust change", "agent", s.id.ID, "error", err)
 			s.close(dp.RelayCloseCode_RELAY_CLOSE_CODE_CERT, "agent cert rejected")
 		}

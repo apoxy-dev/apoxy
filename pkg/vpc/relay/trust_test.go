@@ -3,9 +3,11 @@
 package relay
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"net/netip"
 	"testing"
 	"time"
 
@@ -119,29 +121,41 @@ func TestHandshake(t *testing.T) {
 }
 
 // TestRecheck checks that a trust change closes the sessions whose cert now
-// fails, and keeps the others.
+// fails, and keeps the others. A cert that is past its NotAfter after the
+// handshake fails for no other cause than a cert that is not.
 func TestRecheck(t *testing.T) {
 	cases := []struct {
-		name   string
-		change func(h *harness)
-		closed bool
+		name    string
+		expired bool // The cert of the session is past its NotAfter at the change.
+		change  func(h *harness)
+		closed  bool
 	}{
-		{"no change", func(*harness) {}, false},
-		{"agent revoked", func(h *harness) { h.trust.revoke(vpcA, "laptop", time.Now()) }, true},
-		{"other agent revoked", func(h *harness) { h.trust.revoke(vpcA, "phone", time.Now()) }, false},
-		{"CA removed", func(h *harness) { h.trust.setCA(newCA(t)) }, true},
-		{"trust data too old", func(h *harness) {
+		{"no change", false, func(*harness) {}, false},
+		{"agent revoked", false, func(h *harness) { h.trust.revoke(vpcA, "laptop", time.Now()) }, true},
+		{"other agent revoked", false, func(h *harness) { h.trust.revoke(vpcA, "phone", time.Now()) }, false},
+		{"CA removed", false, func(h *harness) { h.trust.setCA(newCA(t)) }, true},
+		{"trust data too old", false, func(h *harness) {
 			h.trust.mu.Lock()
 			h.trust.err = errors.New("snapshot too old")
 			h.trust.mu.Unlock()
 		}, true},
+		{"expired cert, agent revoked", true, func(h *harness) { h.trust.revoke(vpcA, "laptop", time.Now()) }, true},
+		{"expired cert, other agent revoked", true, func(h *harness) { h.trust.revoke(vpcA, "phone", time.Now()) }, false},
+		{"expired cert, CA removed", true, func(h *harness) { h.trust.setCA(newCA(t)) }, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ca := newCA(t)
 			h := newHarness(t, ca)
-			a := h.mustDial(t, ca.agentCert(t, vpcA, "laptop"))
+			cert := ca.agentCert(t, vpcA, "laptop")
+			if tc.expired {
+				cert = ca.shortCert(t, vpcA, "laptop")
+			}
+			a := h.mustDial(t, cert)
 			h.session(t, a)
+			if tc.expired {
+				waitExpired(cert)
+			}
 			tc.change(h)
 			h.r.Recheck()
 			if !tc.closed {
@@ -154,18 +168,37 @@ func TestRecheck(t *testing.T) {
 	}
 }
 
-// TestNotAfter checks that Sweep closes a session at the NotAfter of its cert.
-func TestNotAfter(t *testing.T) {
+// TestSessionPastNotAfter checks that a session stays open after the NotAfter
+// of its cert, takes calls and forwards, and that the same cert starts no new
+// session then.
+func TestSessionPastNotAfter(t *testing.T) {
 	ca := newCA(t)
 	h := newHarness(t, ca)
-	cert := ca.agentCert(t, vpcA, "laptop")
-	a := h.mustDial(t, cert)
-	h.session(t, a)
-	h.r.Sweep(cert.Leaf.NotAfter.Add(-time.Second))
+	sndCert, rcvCert := ca.shortCert(t, vpcA, "sender"), ca.shortCert(t, vpcA, "receiver")
+	snd, rcv := h.mustDial(t, sndCert), h.mustDial(t, rcvCert)
+	open(t, snd)
+	open(t, rcv)
+	res := attach(t, rcv, &dp.AttachRequest{Vpc: ref(vpcA), Name: "receiver.local"})
+	claims, err := VerifyGrant(res.Grant, h.relayRoots, time.Now())
+	require.NoError(t, err)
+	addr := netip.MustParsePrefix(claims.Addresses[0]).Addr().Next()
+
+	waitExpired(sndCert, rcvCert)
+	h.r.Sweep(time.Now())
 	time.Sleep(50 * time.Millisecond)
-	require.NoError(t, a.qc.Context().Err())
-	h.r.Sweep(cert.Leaf.NotAfter)
-	assert.Equal(t, quic.ApplicationErrorCode(dp.RelayCloseCode_RELAY_CLOSE_CODE_CERT), closeCode(t, a.qc))
+	require.NoError(t, snd.qc.Context().Err(), "session of the sender")
+	require.NoError(t, rcv.qc.Context().Err(), "session of the receiver")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = snd.c.RegisterSPI(ctx, register(vpcA, addr.String(), time.Minute, 7))
+	require.NoError(t, err)
+	dst, v := h.r.Forward(snd.src, 7, 1400, time.Now())
+	require.Equal(t, Pass, v)
+	assert.Equal(t, rcv.src, dst)
+
+	a, err := h.dial(t, sndCert)
+	requireRefused(t, a, err)
 }
 
 // TestTrustChange checks that a change of the trust data applies to new

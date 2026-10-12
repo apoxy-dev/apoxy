@@ -772,9 +772,10 @@ A shard closes when its owner session closes.
 
 The relay accepts an agent cert only if it chains to the agent CA, its SAN is
 an agent ID, and the agent is not revoked in its VPC. It checks in the TLS
-handshake and again for open sessions when the trust data changes, and closes
-a session at the NotAfter of its cert. Each call must name the VPC in the
-cert.
+handshake and again for open sessions when the trust data changes. A session
+does not end at the NotAfter of its cert: the cert must be valid at the
+handshake, and the later checks of an open session use the time of its
+handshake. Each call must name the VPC in the cert.
 
 The relay takes the sender of an SPI row from the authenticated session, never
 from packet data. A row ends at `UnregisterSPI`, at expiry, after 5 minutes
