@@ -2,7 +2,6 @@ package controllers
 
 import (
 	"context"
-	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -148,36 +147,6 @@ func TestVPCServiceReconciler(t *testing.T) {
 			},
 			wantEndpoints:   []string{"0123456789abcdef0123456789abcdef", "t-a"},
 			wantAddrs:       []string{"fd61::b00:1", "fd61::a00:0", "100.64.0.1"},
-			wantReady:       metav1.ConditionTrue,
-			wantReadyReason: vpcv1alpha1.VPCServiceReasonEndpointsAvailable,
-			wantReconciled:  metav1.ConditionTrue,
-		},
-		{
-			// The agent has one Tunnel for each relay connection, and all of
-			// them have the address of the agent.
-			name: "connections of one agent are one endpoint",
-			objects: []client.Object{
-				corpNetwork(), paymentsService(),
-				tunnelWith("conn-2", "corp", "payments", "fd61::a00:1/96"),
-				tunnelWith("conn-1", "corp", "payments", "fd61::a00:1/96"),
-				tunnelWith("conn-3", "corp", "payments", "fd61::a00:1/96"),
-				tunnelWith("other-agent", "corp", "payments", "fd61::b00:1/96"),
-			},
-			wantEndpoints:   []string{"conn-1", "other-agent"},
-			wantAddrs:       []string{"fd61::a00:1", "fd61::b00:1"},
-			wantReady:       metav1.ConditionTrue,
-			wantReadyReason: vpcv1alpha1.VPCServiceReasonEndpointsAvailable,
-			wantReconciled:  metav1.ConditionTrue,
-		},
-		{
-			name: "connection with no terminating relay does not give the endpoint",
-			objects: []client.Object{
-				corpNetwork(), paymentsService(),
-				relaylessTunnel(),
-				tunnelWith("t-live", "corp", "payments", "fd61::f/96"),
-			},
-			wantEndpoints:   []string{"t-live"},
-			wantAddrs:       []string{"fd61::f"},
 			wantReady:       metav1.ConditionTrue,
 			wantReadyReason: vpcv1alpha1.VPCServiceReasonEndpointsAvailable,
 			wantReconciled:  metav1.ConditionTrue,
@@ -397,158 +366,6 @@ func TestVPCServiceReconcilerClearsReadyOnLastMemberLoss(t *testing.T) {
 	assert.Equal(t, metav1.ConditionFalse, ready.Status)
 	assert.Equal(t, vpcv1alpha1.VPCServiceReasonNoEndpoints, ready.Reason)
 	assert.Equal(t, metav1.ConditionTrue, condition(t, &got, vpcv1alpha1.VPCServiceConditionReconciled).Status)
-}
-
-// The endpoints of Tunnels with one address set do not depend on the list
-// order, and Tunnels with different address sets stay separate endpoints.
-func TestMemberEndpoints(t *testing.T) {
-	endpoint := func(name string, addrs ...string) vpcv1alpha1.VPCServiceEndpoint {
-		return vpcv1alpha1.VPCServiceEndpoint{
-			TunnelRef: vpcv1alpha1.TunnelRef{Name: name},
-			Addresses: addrs,
-		}
-	}
-
-	cases := []struct {
-		name    string
-		tunnels []*vpcv1alpha1.Tunnel
-
-		want        []vpcv1alpha1.VPCServiceEndpoint
-		wantPending int
-	}{
-		{
-			name: "two Tunnels with one address give one endpoint",
-			tunnels: []*vpcv1alpha1.Tunnel{
-				tunnelWith("conn-1", "corp", "payments", "fd61::a00:1/96"),
-				tunnelWith("conn-2", "corp", "payments", "fd61::a00:1/96"),
-			},
-			want: []vpcv1alpha1.VPCServiceEndpoint{endpoint("conn-1", "fd61::a00:1/96")},
-		},
-		{
-			name: "two Tunnels with two addresses give two endpoints",
-			tunnels: []*vpcv1alpha1.Tunnel{
-				tunnelWith("conn-1", "corp", "payments", "fd61::a00:1/96"),
-				tunnelWith("conn-2", "corp", "payments", "fd61::b00:1/96"),
-			},
-			want: []vpcv1alpha1.VPCServiceEndpoint{
-				endpoint("conn-1", "fd61::a00:1/96"),
-				endpoint("conn-2", "fd61::b00:1/96"),
-			},
-		},
-		{
-			// The endpoint keeps all addresses of its Tunnel, in the order of
-			// the lowest Tunnel.
-			name: "the same addresses in another order are one endpoint",
-			tunnels: []*vpcv1alpha1.Tunnel{
-				tunnelWith("conn-1", "corp", "payments", "fd61::a00:1/96", "100.64.0.1/32"),
-				tunnelWith("conn-2", "corp", "payments", "100.64.0.1/32", "fd61::a00:1/96"),
-			},
-			want: []vpcv1alpha1.VPCServiceEndpoint{endpoint("conn-1", "fd61::a00:1/96", "100.64.0.1/32")},
-		},
-		{
-			name: "a Tunnel that is not usable does not hide a usable one",
-			tunnels: []*vpcv1alpha1.Tunnel{
-				tunnelWith("conn-1", "corp", "payments"),
-				tunnelWith("conn-2", "corp", "payments", "fd61::a00:1/96"),
-			},
-			want:        []vpcv1alpha1.VPCServiceEndpoint{endpoint("conn-2", "fd61::a00:1/96")},
-			wantPending: 1,
-		},
-		{
-			name: "no Tunnel gives an empty list",
-			want: []vpcv1alpha1.VPCServiceEndpoint{},
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			forward := make([]vpcv1alpha1.Tunnel, 0, len(tc.tunnels))
-			for _, tunnel := range tc.tunnels {
-				forward = append(forward, *tunnel)
-			}
-			reversed := slices.Clone(forward)
-			slices.Reverse(reversed)
-
-			for _, tunnels := range [][]vpcv1alpha1.Tunnel{forward, reversed} {
-				got, pending := memberEndpoints(tunnels)
-				assert.Equal(t, tc.want, got)
-				assert.Equal(t, tc.wantPending, pending)
-			}
-		})
-	}
-}
-
-// The endpoint of an agent with two connections stays while one of its Tunnels
-// stays, and goes with the last one.
-func TestVPCServiceReconcilerKeepsEndpointWhileOneConnectionStays(t *testing.T) {
-	const addr = "fd61::a00:1/96"
-
-	cases := []struct {
-		name string
-		// deleteFirst is the Tunnel that goes first; the other one goes second.
-		deleteFirst, deleteSecond string
-		// wantTunnelRef is the Tunnel of the endpoint after the first delete.
-		wantTunnelRef string
-		// wantWrite tells if the first delete changes the status.
-		wantWrite bool
-	}{
-		{
-			name:          "the Tunnel with the higher name goes first",
-			deleteFirst:   "conn-2",
-			deleteSecond:  "conn-1",
-			wantTunnelRef: "conn-1",
-		},
-		{
-			// The reference cannot stay on a Tunnel that is gone, so only the
-			// reference moves.
-			name:          "the Tunnel with the lower name goes first",
-			deleteFirst:   "conn-1",
-			deleteSecond:  "conn-2",
-			wantTunnelRef: "conn-2",
-			wantWrite:     true,
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			ctx := context.Background()
-			c := newVPCServiceClient(t, corpNetwork(), paymentsService(),
-				tunnelWith("conn-1", "corp", "payments", addr),
-				tunnelWith("conn-2", "corp", "payments", addr),
-			)
-			r := NewVPCServiceReconciler(c)
-			req := reconcile.Request{NamespacedName: client.ObjectKey{Name: "payments"}}
-			reconcileAndGet := func() vpcv1alpha1.VPCService {
-				_, err := r.Reconcile(ctx, req)
-				require.NoError(t, err)
-				var got vpcv1alpha1.VPCService
-				require.NoError(t, c.Get(ctx, req.NamespacedName, &got))
-				return got
-			}
-			deleteTunnel := func(name string) {
-				require.NoError(t, c.Delete(ctx, &vpcv1alpha1.Tunnel{ObjectMeta: metav1.ObjectMeta{Name: name}}))
-			}
-
-			before := reconcileAndGet()
-			require.Len(t, before.Status.Endpoints, 1)
-			assert.Equal(t, "conn-1", before.Status.Endpoints[0].TunnelRef.Name)
-			assert.Equal(t, []string{addr}, before.Status.Endpoints[0].Addresses)
-
-			deleteTunnel(tc.deleteFirst)
-			after := reconcileAndGet()
-			require.Len(t, after.Status.Endpoints, 1)
-			assert.Equal(t, tc.wantTunnelRef, after.Status.Endpoints[0].TunnelRef.Name)
-			assert.Equal(t, []string{addr}, after.Status.Endpoints[0].Addresses)
-			assert.Equal(t, before.Status.Conditions, after.Status.Conditions)
-			assert.Equal(t, tc.wantWrite, before.ResourceVersion != after.ResourceVersion)
-
-			deleteTunnel(tc.deleteSecond)
-			gone := reconcileAndGet()
-			assert.Empty(t, gone.Status.Endpoints)
-			assert.Equal(t, vpcv1alpha1.VPCServiceReasonNoEndpoints,
-				condition(t, &gone, vpcv1alpha1.VPCServiceConditionReady).Reason)
-		})
-	}
 }
 
 func TestVPCServiceReconcilerTunnelMapping(t *testing.T) {

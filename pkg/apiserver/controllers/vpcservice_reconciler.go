@@ -3,8 +3,7 @@ package controllers
 import (
 	"context"
 	"fmt"
-	"slices"
-	"strings"
+	"sort"
 
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -24,8 +23,7 @@ var _ reconcile.Reconciler = &VPCServiceReconciler{}
 
 // VPCServiceReconciler maintains a VPCService's endpoints view: the usable
 // member Tunnels selected by the service's label selector, scoped to its
-// network, with one endpoint for each distinct address set. It is the k8s
-// Endpoints controller analog.
+// network. It is the k8s Endpoints controller analog.
 //
 // Tunnels are written by their owning relay at connect and deleted at
 // disconnect; the only steady-state write is the status update that follows
@@ -103,34 +101,10 @@ func (r *VPCServiceReconciler) Reconcile(ctx context.Context, req reconcile.Requ
 		return reconcile.Result{}, err
 	}
 
-	endpoints, pending := memberEndpoints(tunnels.Items)
-
-	if len(endpoints) == 0 {
-		msg := "No Tunnel matches the selector in this network"
-		if pending > 0 {
-			msg = fmt.Sprintf("%d selected member(s) have no overlay address or no terminating relay yet", pending)
-		}
-		return r.writeStatus(ctx, &svc, endpoints, vpcv1alpha1.VPCServiceReasonNoEndpoints, msg)
-	}
-	return r.writeStatus(ctx, &svc, endpoints, vpcv1alpha1.VPCServiceReasonEndpointsAvailable,
-		fmt.Sprintf("%d endpoint(s) available", len(endpoints)))
-}
-
-// memberEndpoints returns one endpoint for each distinct address set of the
-// usable Tunnels, and the number of Tunnels that are not usable. An agent has
-// one Tunnel for each relay connection, all with the same addresses.
-func memberEndpoints(tunnels []vpcv1alpha1.Tunnel) (endpoints []vpcv1alpha1.VPCServiceEndpoint, pending int) {
-	// In name order the result does not depend on the list order, so a
-	// reconcile with no change does not write the status.
-	byName := slices.Clone(tunnels)
-	slices.SortFunc(byName, func(a, b vpcv1alpha1.Tunnel) int {
-		return strings.Compare(a.Name, b.Name)
-	})
-
-	endpoints = make([]vpcv1alpha1.VPCServiceEndpoint, 0, len(byName))
-	seen := make(map[string]struct{}, len(byName))
-	for i := range byName {
-		t := &byName[i]
+	endpoints := make([]vpcv1alpha1.VPCServiceEndpoint, 0, len(tunnels.Items))
+	pending := 0
+	for i := range tunnels.Items {
+		t := &tunnels.Items[i]
 		ep := vpcv1alpha1.VPCServiceEndpoint{
 			TunnelRef: vpcv1alpha1.TunnelRef{Name: t.Name},
 			Addresses: t.Status.Addresses,
@@ -147,22 +121,22 @@ func memberEndpoints(tunnels []vpcv1alpha1.Tunnel) (endpoints []vpcv1alpha1.VPCS
 			pending++
 			continue
 		}
-		key := addressSetKey(t.Status.Addresses)
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
 		endpoints = append(endpoints, ep)
 	}
-	return endpoints, pending
-}
+	// Deterministic order so no-op reconciles don't churn the status.
+	sort.Slice(endpoints, func(i, j int) bool {
+		return endpoints[i].TunnelRef.Name < endpoints[j].TunnelRef.Name
+	})
 
-// addressSetKey returns a key that is equal for two address lists with the
-// same entries in any order.
-func addressSetKey(addrs []string) string {
-	sorted := slices.Clone(addrs)
-	slices.Sort(sorted)
-	return strings.Join(sorted, ",")
+	if len(endpoints) == 0 {
+		msg := "No Tunnel matches the selector in this network"
+		if pending > 0 {
+			msg = fmt.Sprintf("%d selected member(s) have no overlay address or no terminating relay yet", pending)
+		}
+		return r.writeStatus(ctx, &svc, endpoints, vpcv1alpha1.VPCServiceReasonNoEndpoints, msg)
+	}
+	return r.writeStatus(ctx, &svc, endpoints, vpcv1alpha1.VPCServiceReasonEndpointsAvailable,
+		fmt.Sprintf("%d endpoint(s) available", len(endpoints)))
 }
 
 // writeStatus records the recomputed endpoints view and the pair of conditions
