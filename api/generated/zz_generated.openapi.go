@@ -324,10 +324,12 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.TunnelSpec":                           schema_apoxy_api_vpc_v1alpha1_TunnelSpec(ref),
 		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.TunnelStatus":                         schema_apoxy_api_vpc_v1alpha1_TunnelStatus(ref),
 		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetwork":                           schema_apoxy_api_vpc_v1alpha1_VPCNetwork(ref),
+		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetworkAgent":                      schema_apoxy_api_vpc_v1alpha1_VPCNetworkAgent(ref),
 		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetworkCredentials":                schema_apoxy_api_vpc_v1alpha1_VPCNetworkCredentials(ref),
 		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetworkDNS":                        schema_apoxy_api_vpc_v1alpha1_VPCNetworkDNS(ref),
 		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetworkList":                       schema_apoxy_api_vpc_v1alpha1_VPCNetworkList(ref),
 		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetworkRef":                        schema_apoxy_api_vpc_v1alpha1_VPCNetworkRef(ref),
+		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetworkRoute":                      schema_apoxy_api_vpc_v1alpha1_VPCNetworkRoute(ref),
 		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetworkSpec":                       schema_apoxy_api_vpc_v1alpha1_VPCNetworkSpec(ref),
 		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetworkStatus":                     schema_apoxy_api_vpc_v1alpha1_VPCNetworkStatus(ref),
 		"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetworkTrustSignature":             schema_apoxy_api_vpc_v1alpha1_VPCNetworkTrustSignature(ref),
@@ -13334,6 +13336,43 @@ func schema_apoxy_api_vpc_v1alpha1_VPCNetwork(ref common.ReferenceCallback) comm
 	}
 }
 
+func schema_apoxy_api_vpc_v1alpha1_VPCNetworkAgent(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "VPCNetworkAgent gives the routes that one agent can announce.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Agent name in the cert SAN. Must be a DNS label.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"routes": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Routes that the agent can announce. At most 64.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetworkRoute"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"name"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetworkRoute"},
+	}
+}
+
 func schema_apoxy_api_vpc_v1alpha1_VPCNetworkCredentials(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -13472,6 +13511,35 @@ func schema_apoxy_api_vpc_v1alpha1_VPCNetworkRef(ref common.ReferenceCallback) c
 	}
 }
 
+func schema_apoxy_api_vpc_v1alpha1_VPCNetworkRoute(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "VPCNetworkRoute is one prefix that an agent can announce. Two agents can have the same prefix: the one with the higher priority gets the traffic.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"prefix": {
+						SchemaProps: spec.SchemaProps{
+							Description: "IPv4 or IPv6 prefix with no host bits, for example 10.0.1.0/24. It must not be a default route and must not overlap fd61:706f:7879::/48.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"priority": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Priority of the agent for this prefix, from 0 to 255. The higher number is preferred. Unset means 100.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+				},
+				Required: []string{"prefix"},
+			},
+		},
+	}
+}
+
 func schema_apoxy_api_vpc_v1alpha1_VPCNetworkSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -13497,11 +13565,24 @@ func schema_apoxy_api_vpc_v1alpha1_VPCNetworkSpec(ref common.ReferenceCallback) 
 							Format:      "int32",
 						},
 					},
+					"agents": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Agents that can announce routes into the network, and the routes of each. An agent that is not here can announce no route.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetworkAgent"),
+									},
+								},
+							},
+						},
+					},
 				},
 			},
 		},
 		Dependencies: []string{
-			"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.EgressGatewaySpec", "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetworkDNS"},
+			"github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.EgressGatewaySpec", "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetworkAgent", "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1.VPCNetworkDNS"},
 	}
 }
 

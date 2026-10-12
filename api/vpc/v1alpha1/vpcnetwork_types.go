@@ -55,7 +55,48 @@ type VPCNetworkSpec struct {
 	// whose path to its relay cannot carry a larger MTU uses 1280.
 	// +optional
 	MTU int32 `json:"mtu,omitempty"`
+
+	// Agents that can announce routes into the network, and the routes of each.
+	// An agent that is not here can announce no route.
+	// +optional
+	Agents []VPCNetworkAgent `json:"agents,omitempty"`
 }
+
+// VPCNetworkAgent gives the routes that one agent can announce.
+type VPCNetworkAgent struct {
+	// Agent name in the cert SAN. Must be a DNS label.
+	// +required
+	Name string `json:"name"`
+
+	// Routes that the agent can announce. At most 64.
+	// +optional
+	Routes []VPCNetworkRoute `json:"routes,omitempty"`
+}
+
+// VPCNetworkRoute is one prefix that an agent can announce. Two agents can
+// have the same prefix: the one with the higher priority gets the traffic.
+type VPCNetworkRoute struct {
+	// IPv4 or IPv6 prefix with no host bits, for example 10.0.1.0/24. It must
+	// not be a default route and must not overlap fd61:706f:7879::/48.
+	// +required
+	Prefix string `json:"prefix"`
+
+	// Priority of the agent for this prefix, from 0 to 255. The higher number
+	// is preferred. Unset means 100.
+	// +optional
+	Priority *int32 `json:"priority,omitempty"`
+}
+
+const (
+	// MaxAgentRoutes is the largest number of routes of one agent.
+	MaxAgentRoutes = 64
+	// DefaultRoutePriority is the priority of a route that sets none.
+	DefaultRoutePriority = 100
+	// MaxRoutePriority is the largest priority of a route.
+	MaxRoutePriority = 255
+	// OverlayAddressSpace is the range that the addresses of all networks come from.
+	OverlayAddressSpace = "fd61:706f:7879::/48"
+)
 
 const (
 	// DefaultMTU is the inner MTU of a network that sets none.
