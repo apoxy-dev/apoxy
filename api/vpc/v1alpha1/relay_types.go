@@ -17,8 +17,12 @@ import (
 // relay starts again with other values, deleted on shutdown. Liveness lives
 // in the relay's Lease, not here.
 type RelaySpec struct {
-	// Underlay host:port endpoints agents dial (QUIC control and Geneve data
-	// share the port).
+	// TLS name of the relay. The relay certificate names it, and sessions
+	// and grants carry it as the relay ID.
+	// +required
+	ID string `json:"id"`
+
+	// The host:port endpoints that agents dial for QUIC.
 	// +required
 	Addresses []string `json:"addresses"`
 
@@ -128,7 +132,8 @@ func getRelayReady(r *Relay) string {
 func relayColumns() []metav1.TableColumnDefinition {
 	return []metav1.TableColumnDefinition{
 		{Name: "Name", Type: "string", Format: "name", Description: "Name of the relay"},
-		{Name: "Addresses", Type: "string", Description: "Underlay endpoints agents dial"},
+		{Name: "ID", Type: "string", Description: "TLS name of the relay"},
+		{Name: "Addresses", Type: "string", Description: "Endpoints that agents dial for QUIC"},
 		{Name: "Ready", Type: "string", Description: "Alive and accepting connections"},
 		{Name: "Age", Type: "string", Description: "Time since creation"},
 	}
@@ -138,6 +143,7 @@ func relayRow(r *Relay) metav1.TableRow {
 	return metav1.TableRow{
 		Cells: []interface{}{
 			r.Name,
+			r.Spec.ID,
 			strings.Join(r.Spec.Addresses, ","),
 			getRelayReady(r),
 			formatAge(r.CreationTimestamp.Time),

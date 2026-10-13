@@ -3397,10 +3397,15 @@ export interface components {
              */
             name: string;
         };
-        /** @description RelaySpec is write-once: created by the relay on start (or selector change), deleted on shutdown, never mutated in steady state. Liveness lives in the relay's Lease, not here. */
+        /** @description RelaySpec is written only by the relay: created on start, updated when the relay starts again with other values, deleted on shutdown. Liveness lives in the relay's Lease, not here. */
         "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.RelaySpec": {
-            /** @description Underlay host:port endpoints agents dial (QUIC control and Geneve data share the port). */
+            /** @description The host:port endpoints that agents dial for QUIC. */
             addresses: string[];
+            /**
+             * @description TLS name of the relay. The relay certificate names it, and sessions and grants carry it as the relay ID.
+             * @default
+             */
+            id: string;
             /** @description Scopes which networks this relay serves. Empty selects all networks. */
             networkSelector?: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.LabelSelector"];
         };
@@ -3549,6 +3554,23 @@ export interface components {
             overlayCIDR?: string;
             /** @description Agents whose certs are revoked. Written by the revoke subresource. */
             revokedAgents?: components["schemas"]["com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.RevokedAgent"][];
+            /** @description Signature of the project on the data of this network that relays use. */
+            trustSignature?: components["schemas"]["com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.VPCNetworkTrustSignature"];
+        };
+        /** @description VPCNetworkTrustSignature is the signature of a project on one of its networks. */
+        "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.VPCNetworkTrustSignature": {
+            /**
+             * @description KeyID names the signing key.
+             * @default
+             */
+            keyID: string;
+            /**
+             * Format: byte
+             * @description Signature is the ASN.1 ECDSA signature.
+             */
+            signature: string;
+            /** @description SignedAt is the time of the signature. It is a part of the signed data. */
+            signedAt: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Time"];
         };
         /** @description VPCService is service-like addressing over Tunnels, modeled on the Kubernetes Service: a label selector over Tunnel objects (which play Endpoints), a stable DNS name, and the target for DomainRecords and routes. User-authored. */
         "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.VPCService": {

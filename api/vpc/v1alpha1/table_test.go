@@ -109,12 +109,12 @@ func TestConvertToTable(t *testing.T) {
 			name: "relay",
 			obj: &Relay{
 				ObjectMeta: metav1.ObjectMeta{Name: "relay-0", CreationTimestamp: created},
-				Spec:       RelaySpec{Addresses: []string{"1.2.3.4:6081", "[::1]:6081"}},
+				Spec:       RelaySpec{ID: "r0.relay.example", Addresses: []string{"1.2.3.4:443", "[::1]:443"}},
 				Status:     RelayStatus{Ready: true},
 			},
-			columns:   []string{"Name", "Addresses", "Ready", "Age"},
+			columns:   []string{"Name", "ID", "Addresses", "Ready", "Age"},
 			rows:      1,
-			wantCells: []interface{}{"relay-0", "1.2.3.4:6081,[::1]:6081", "True", "5m"},
+			wantCells: []interface{}{"relay-0", "r0.relay.example", "1.2.3.4:443,[::1]:443", "True", "5m"},
 		},
 		{
 			name: "tunnel",
@@ -139,7 +139,7 @@ func TestConvertToTable(t *testing.T) {
 					{ObjectMeta: metav1.ObjectMeta{Name: "relay-1", CreationTimestamp: created}},
 				},
 			},
-			columns: []string{"Name", "Addresses", "Ready", "Age"},
+			columns: []string{"Name", "ID", "Addresses", "Ready", "Age"},
 			rows:    2,
 		},
 		{

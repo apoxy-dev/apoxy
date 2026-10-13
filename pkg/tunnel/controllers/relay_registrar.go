@@ -58,6 +58,7 @@ type RelayRegistrar struct {
 	leaseClient     client.Client
 	relayClient     client.Client
 	relay           Relay
+	id              string
 	addresses       []string
 	networkSelector *metav1.LabelSelector
 
@@ -92,11 +93,12 @@ func WithLeaseDuration(d time.Duration) RegistrarOption {
 	return func(r *RelayRegistrar) { r.leaseDuration = d }
 }
 
-// NewRelayRegistrar creates a RelayRegistrar. A nil networkSelector selects all
-// networks.
+// NewRelayRegistrar creates a RelayRegistrar. id is the TLS name of the
+// relay. A nil networkSelector selects all networks.
 func NewRelayRegistrar(
 	leaseClient, relayClient client.Client,
 	relay Relay,
+	id string,
 	addresses []string,
 	networkSelector *metav1.LabelSelector,
 	opts ...RegistrarOption,
@@ -105,6 +107,7 @@ func NewRelayRegistrar(
 		leaseClient:     leaseClient,
 		relayClient:     relayClient,
 		relay:           relay,
+		id:              id,
 		addresses:       addresses,
 		networkSelector: networkSelector,
 		leaseNamespace:  DefaultLeaseNamespace,
@@ -183,8 +186,8 @@ func (r *RelayRegistrar) registerWithRetry(ctx context.Context) error {
 	}
 }
 
-// ensureRelay creates the Relay object if it does not exist, and reports whether
-// it did. An object with other addresses or another selector gets those of this relay.
+// ensureRelay creates the Relay object if it does not exist, and reports
+// whether it did. An object with other values gets those of this relay.
 func (r *RelayRegistrar) ensureRelay(ctx context.Context) (bool, error) {
 	existing := &vpcv1alpha1.Relay{}
 	err := r.relayClient.Get(ctx, client.ObjectKey{Name: r.relay.Name()}, existing)
@@ -194,20 +197,22 @@ func (r *RelayRegistrar) ensureRelay(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("failed to get relay: %w", err)
 	}
-	// The order of the addresses has a meaning: the first hostname is the TLS name.
-	if slices.Equal(existing.Spec.Addresses, r.addresses) &&
+	if existing.Spec.ID == r.id &&
+		slices.Equal(existing.Spec.Addresses, r.addresses) &&
 		equality.Semantic.DeepEqual(existing.Spec.NetworkSelector, r.networkSelector) {
 		return false, nil
 	}
 	// A relay that stopped with no drain leaves its object, and agents dial the
 	// addresses in it. The status and the Lease stay as they are.
-	old := existing.Spec.Addresses
+	oldID, old := existing.Spec.ID, existing.Spec.Addresses
+	existing.Spec.ID = r.id
 	existing.Spec.Addresses, existing.Spec.NetworkSelector = r.addresses, r.networkSelector
 	if err := r.relayClient.Update(ctx, existing); err != nil {
 		return false, fmt.Errorf("failed to update relay: %w", err)
 	}
-	slog.Info("Updated relay object to the addresses and selector of this relay",
-		"relay", r.relay.Name(), "addresses", r.addresses, "old_addresses", old)
+	slog.Info("Updated relay object to the values of this relay",
+		"relay", r.relay.Name(), "id", r.id, "old_id", oldID,
+		"addresses", r.addresses, "old_addresses", old)
 	return false, nil
 }
 
@@ -215,6 +220,7 @@ func (r *RelayRegistrar) createRelay(ctx context.Context) error {
 	relay := &vpcv1alpha1.Relay{
 		ObjectMeta: metav1.ObjectMeta{Name: r.relay.Name()},
 		Spec: vpcv1alpha1.RelaySpec{
+			ID:              r.id,
 			Addresses:       r.addresses,
 			NetworkSelector: r.networkSelector,
 		},

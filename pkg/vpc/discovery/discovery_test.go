@@ -43,22 +43,3 @@ func TestMatchingRelays(t *testing.T) {
 		})
 	}
 }
-
-func TestRelayTLSName(t *testing.T) {
-	cases := []struct {
-		name  string
-		addrs []string
-		want  string
-	}{
-		{name: "hostname", addrs: []string{"r1.relay.example.com:443"}, want: "r1.relay.example.com"},
-		{name: "first hostname after addresses", addrs: []string{"10.0.0.1:6081", "[fd00::1]:6081", "r1.example.com:6081", "r2.example.com:6081"}, want: "r1.example.com"},
-		{name: "hostname without port", addrs: []string{"r1.example.com"}, want: "r1.example.com"},
-		{name: "addresses only", addrs: []string{"10.0.0.1:6081"}, want: "dev"},
-		{name: "no addresses", want: "dev"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, RelayTLSName(tc.addrs, "dev"))
-		})
-	}
-}

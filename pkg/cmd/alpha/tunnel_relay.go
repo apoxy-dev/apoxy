@@ -237,7 +237,7 @@ var tunnelRelayCmd = &cobra.Command{
 		if len(addresses) == 0 {
 			addresses = []string{listenAddress}
 		}
-		registrar := controllers.NewRelayRegistrar(mgr.GetClient(), mgr.GetClient(), relay, addresses, networkSelector)
+		registrar := controllers.NewRelayRegistrar(mgr.GetClient(), mgr.GetClient(), relay, relayName, addresses, networkSelector)
 		if err := mgr.Add(registrar); err != nil {
 			return fmt.Errorf("failed to add relay registrar: %w", err)
 		}

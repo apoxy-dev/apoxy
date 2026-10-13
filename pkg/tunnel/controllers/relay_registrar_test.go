@@ -49,7 +49,7 @@ func newRegistrar(t *testing.T, now time.Time, objs ...client.Object) (*RelayReg
 		WithStatusSubresource(&vpcv1alpha1.Relay{}).
 		WithObjects(objs...).
 		Build()
-	r := NewRelayRegistrar(c, c, stubRelay{name: "r0"}, []string{"1.2.3.4:6081"}, nil)
+	r := NewRelayRegistrar(c, c, stubRelay{name: "r0"}, "relay.example", []string{"1.2.3.4:6081"}, nil)
 	r.now = func() time.Time { return now }
 	return r, c
 }
@@ -103,17 +103,23 @@ func (c *writeCountClient) Update(ctx context.Context, obj client.Object, opts .
 	return c.Client.Update(ctx, obj, opts...)
 }
 
-// TestRelayRegistrarEnsureRelay: the Relay object gets the addresses and the
-// selector of the relay process, and an equal object gets no write.
+// TestRelayRegistrarEnsureRelay: the Relay object gets the ID, the addresses
+// and the selector of the relay process. An equal object gets no write.
 func TestRelayRegistrarEnsureRelay(t *testing.T) {
 	addrs := []string{"relay.example:6081", "1.2.3.4:6081"}
 	selector := &metav1.LabelSelector{MatchLabels: map[string]string{"region": "west"}}
+	const id = "relay.example"
 	object := func(addrs []string, sel *metav1.LabelSelector) *vpcv1alpha1.Relay {
 		return &vpcv1alpha1.Relay{
 			ObjectMeta: metav1.ObjectMeta{Name: "r0"},
-			Spec:       vpcv1alpha1.RelaySpec{Addresses: addrs, NetworkSelector: sel},
+			Spec:       vpcv1alpha1.RelaySpec{ID: id, Addresses: addrs, NetworkSelector: sel},
 			Status:     vpcv1alpha1.RelayStatus{Ready: true},
 		}
+	}
+	withID := func(id string) *vpcv1alpha1.Relay {
+		relay := object(addrs, selector)
+		relay.Spec.ID = id
+		return relay
 	}
 	cases := []struct {
 		name     string
@@ -127,6 +133,8 @@ func TestRelayRegistrarEnsureRelay(t *testing.T) {
 	}{
 		{name: "object absent", calls: 1, created: true, creates: 1},
 		{name: "object equal", existing: object(addrs, selector), calls: 2},
+		{name: "ID differs", existing: withID("other.example"), calls: 2, updates: 1},
+		{name: "object has no ID", existing: withID(""), calls: 1, updates: 1},
 		{name: "addresses differ", existing: object([]string{"dev:6081"}, selector), calls: 2, updates: 1},
 		{name: "addresses in a different order", existing: object([]string{"1.2.3.4:6081", "relay.example:6081"}, selector), calls: 1, updates: 1},
 		{name: "selector differs", existing: object(addrs, &metav1.LabelSelector{MatchLabels: map[string]string{"region": "east"}}), calls: 1, updates: 1},
@@ -142,7 +150,7 @@ func TestRelayRegistrarEnsureRelay(t *testing.T) {
 			}
 			_, base := newRegistrar(t, time.Unix(1_700_000_000, 0), objs...)
 			c := &writeCountClient{Client: base, failUpdates: tc.failUpdates}
-			r := NewRelayRegistrar(c, c, stubRelay{name: "r0"}, addrs, selector)
+			r := NewRelayRegistrar(c, c, stubRelay{name: "r0"}, id, addrs, selector)
 
 			var created bool
 			var err error
@@ -162,6 +170,7 @@ func TestRelayRegistrarEnsureRelay(t *testing.T) {
 
 			var got vpcv1alpha1.Relay
 			require.NoError(t, base.Get(ctx, client.ObjectKey{Name: "r0"}, &got))
+			require.Equal(t, id, got.Spec.ID)
 			require.Equal(t, addrs, got.Spec.Addresses)
 			require.Equal(t, selector, got.Spec.NetworkSelector)
 			if tc.existing != nil {
@@ -215,7 +224,7 @@ func TestRelayRegistrarRecoversAfterRestoredObjectsDisappear(t *testing.T) {
 	}
 	_, base := newRegistrar(t, now, lease)
 	leaseClient := &deleteLeaseOnUpdateClient{Client: base, deleteOnNextUpdate: true}
-	r := NewRelayRegistrar(leaseClient, base, stubRelay{name: "r0"}, []string{"1.2.3.4:6081"}, nil)
+	r := NewRelayRegistrar(leaseClient, base, stubRelay{name: "r0"}, "relay.example", []string{"1.2.3.4:6081"}, nil)
 	r.now = func() time.Time { return now }
 
 	created, err := r.renewLease(ctx)
@@ -310,7 +319,7 @@ func TestRelayRegistrarOnRenew(t *testing.T) {
 			fail := &atomic.Bool{}
 			c := failingClient{Client: base, fail: fail}
 			calls := make(chan bool, 100)
-			r := NewRelayRegistrar(c, c, stubRelay{name: "r0"}, []string{"1.2.3.4:6081"}, nil,
+			r := NewRelayRegistrar(c, c, stubRelay{name: "r0"}, "relay.example", []string{"1.2.3.4:6081"}, nil,
 				WithRenewInterval(10*time.Millisecond),
 				WithOnRenew(func(restored bool) { calls <- restored }))
 			ctx, cancel := context.WithCancel(context.Background())

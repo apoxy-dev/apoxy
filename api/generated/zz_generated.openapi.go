@@ -13002,9 +13002,17 @@ func schema_apoxy_api_vpc_v1alpha1_RelaySpec(ref common.ReferenceCallback) commo
 				Description: "RelaySpec is written only by the relay: created on start, updated when the relay starts again with other values, deleted on shutdown. Liveness lives in the relay's Lease, not here.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
+					"id": {
+						SchemaProps: spec.SchemaProps{
+							Description: "TLS name of the relay. The relay certificate names it, and sessions and grants carry it as the relay ID.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 					"addresses": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Underlay host:port endpoints agents dial (QUIC control and Geneve data share the port).",
+							Description: "The host:port endpoints that agents dial for QUIC.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
@@ -13023,7 +13031,7 @@ func schema_apoxy_api_vpc_v1alpha1_RelaySpec(ref common.ReferenceCallback) commo
 						},
 					},
 				},
-				Required: []string{"addresses"},
+				Required: []string{"id", "addresses"},
 			},
 		},
 		Dependencies: []string{

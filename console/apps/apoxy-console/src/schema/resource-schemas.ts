@@ -5453,11 +5453,15 @@ export const RESOURCE_SCHEMAS: Record<string, JSONSchema> = {
             },
             "type": "array"
           },
+          "id": {
+            "type": "string"
+          },
           "networkSelector": {
             "$ref": "io.k8s.apimachinery.pkg.apis.meta.v1.LabelSelector"
           }
         },
         "required": [
+          "id",
           "addresses"
         ],
         "type": "object"

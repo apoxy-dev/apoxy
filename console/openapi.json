@@ -6910,15 +6910,21 @@
         "description": "RelaySpec is written only by the relay: created on start, updated when the relay starts again with other values, deleted on shutdown. Liveness lives in the relay's Lease, not here.",
         "type": "object",
         "required": [
+          "id",
           "addresses"
         ],
         "properties": {
           "addresses": {
-            "description": "Underlay host:port endpoints agents dial (QUIC control and Geneve data share the port).",
+            "description": "The host:port endpoints that agents dial for QUIC.",
             "type": "array",
             "items": {
               "type": "string"
             }
+          },
+          "id": {
+            "description": "TLS name of the relay. The relay certificate names it, and sessions and grants carry it as the relay ID.",
+            "type": "string",
+            "default": ""
           },
           "networkSelector": {
             "description": "Scopes which networks this relay serves. Empty selects all networks.",
@@ -7220,6 +7226,35 @@
             "items": {
               "$ref": "#/components/schemas/com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.RevokedAgent"
             }
+          },
+          "trustSignature": {
+            "description": "Signature of the project on the data of this network that relays use.",
+            "$ref": "#/components/schemas/com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.VPCNetworkTrustSignature"
+          }
+        }
+      },
+      "com.github.apoxy-dev.apoxy.api.vpc.v1alpha1.VPCNetworkTrustSignature": {
+        "description": "VPCNetworkTrustSignature is the signature of a project on one of its networks.",
+        "type": "object",
+        "required": [
+          "keyID",
+          "signedAt",
+          "signature"
+        ],
+        "properties": {
+          "keyID": {
+            "description": "KeyID names the signing key.",
+            "type": "string",
+            "default": ""
+          },
+          "signature": {
+            "description": "Signature is the ASN.1 ECDSA signature.",
+            "type": "string",
+            "format": "byte"
+          },
+          "signedAt": {
+            "description": "SignedAt is the time of the signature. It is a part of the signed data.",
+            "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Time"
           }
         }
       },
