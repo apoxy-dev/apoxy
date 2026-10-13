@@ -75,12 +75,13 @@ func (g *ownGrant) get(ctx context.Context) (*dp.AttachmentGrant, error) {
 }
 
 // verifyOwn checks a grant that the relay of rc signed for this agent in this
-// moment. Such a grant has ended only if the clock of this host is wrong.
+// moment. Such a grant has ended only if the clock of this host or of the
+// relay is wrong.
 func (rc *relayConn) verifyOwn(g *dp.AttachmentGrant) (*dp.GrantClaims, error) {
 	now := time.Now()
 	claims, err := relay.VerifyGrant(g, rc.roots, now)
 	if errors.Is(err, relay.ErrGrantEnded) {
-		slog.Error("The clock of this host is wrong: a grant that the relay signed in this moment has ended",
+		slog.Error("A grant that the relay signed in this moment has ended; the clock of this host or of the relay is wrong",
 			"relay", rc.addr, "host_time", now.UTC().Format(time.RFC3339), "error", err)
 	}
 	return claims, err
