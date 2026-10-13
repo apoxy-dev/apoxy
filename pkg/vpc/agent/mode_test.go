@@ -9,10 +9,12 @@ import (
 	"testing"
 	"time"
 
+	pspwire "github.com/apoxy-dev/softpsp/psp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/psp"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/psp/keyproto"
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
@@ -72,6 +74,9 @@ func TestPSPRetry(t *testing.T) {
 		fault  int32 // Fault of the first Rekey calls.
 		burst  int   // Rekey calls of one change that fails.
 		drain  bool  // The relay drains before the probes pass.
+		// path is the largest inner packet that the path carries as PSP after the
+		// attach, on a VPC with an MTU of 1400 B. Zero means no limit.
+		path int
 		// probes is the number of probes after which the agent made its decision,
 		// for a case with no Rekey call.
 		probes int32
@@ -82,15 +87,24 @@ func TestPSPRetry(t *testing.T) {
 		{name: "relay refuses the keys", fault: rekeyRefused, burst: maxRefusals},
 		{name: "Rekey call fails", fault: rekeyFails, burst: 1},
 		{name: "relay drains", drain: true, probes: 2},
+		{name: "path carries 1280 B but not 1308 B", path: psp.QUICMTU - 1, probes: 3 + 1},
+		{name: "path carries 1308 B", path: psp.QUICMTU},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			w := newWorld(t)
+			if tc.path != 0 {
+				w.mtu = 1400
+			}
 			r := w.relay(t, "relay-1")
 			conn := &lossyConn{}
 			conn.limitProbes.Store(true)
 			a, b := w.agent(t, "a", r, agentOptions{conn: conn, tcp: true}), w.agent(t, "b", r, agentOptions{tcp: true})
 			ea, eb := a.attached(t), b.attached(t)
+			if tc.path != 0 {
+				require.Greater(t, a.binding().DeviceMTU(), psp.QUICMTU)
+				conn.max.Store(int32(tc.path + pspwire.Overhead))
+			}
 			st := a.a.Status()
 			require.Equal(t, dp.Mode_MODE_QUIC, st.Mode)
 			require.Equal(t, dp.FallbackReason_FALLBACK_REASON_PROBE_TIMEOUT, st.Reason)
@@ -149,6 +163,9 @@ func TestPSPRetry(t *testing.T) {
 				"the peer session of QUIC mode stays open")
 			same("after the change")
 			assert.Same(t, bind, a.binding())
+			if tc.path != 0 {
+				assert.Equal(t, tc.path, bind.ClampMTU(), "TCP MSS clamp for the packets that the path carries")
+			}
 			assert.Positive(t, pspPackets(bind.LanePackets())-psp, "PSP packets after the change")
 			// The packets of the TCP connection opened the peer session again, in PSP mode.
 			for _, ta := range []*testAgent{a, b} {

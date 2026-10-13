@@ -383,7 +383,7 @@ func (a *Agent) watch(rc *relayConn) {
 		case alts := <-rc.drained:
 			a.drain(rc, alts)
 		case <-retry.timer.C:
-			probed = rc.probe(rc.ctx, psp.DefaultMTU)
+			probed = rc.probe(rc.ctx, a.changeMTU())
 		case ok := <-probed:
 			probed = nil
 			if retry.passed(ok) && a.usePSP(rc) != nil {
@@ -408,7 +408,7 @@ func (a *Agent) usePSP(rc *relayConn) error {
 	// As in the attach, a path that does not carry the device MTU gets the MSS clamp.
 	mtu := a.probeMTU(int(rc.mtu))
 	if mtu != 0 && !<-rc.probe(ctx, mtu) {
-		mtu = psp.DefaultMTU
+		mtu = a.changeMTU()
 	}
 	if err := rc.tradeRelayKeys(ctx); err != nil {
 		if !rc.ended() {
@@ -433,6 +433,14 @@ func (a *Agent) usePSP(rc *relayConn) error {
 	a.closePeers(func(p *peer) bool { return p.rc == rc }, "relay session changed to PSP mode")
 	slog.Info("Changed the relay session from QUIC mode to PSP mode", "relay", rc.addr, "address", rc.self)
 	return nil
+}
+
+// changeMTU returns the inner packet size of the probes before the change to PSP
+// mode: the largest packet of QUIC mode, so that each open connection still fits.
+func (a *Agent) changeMTU() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return min(a.bind.DeviceMTU(), psp.QUICMTU)
 }
 
 // tradeRelayKeys gives the relay the receive SAs of this agent with Rekey, which changes
