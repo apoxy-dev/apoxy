@@ -5,19 +5,13 @@ package agent
 import (
 	"net/netip"
 
-	"gvisor.dev/gvisor/pkg/tcpip"
-	"gvisor.dev/gvisor/pkg/tcpip/checksum"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
+
+	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/psp"
 )
 
-const (
-	// An ICMPv6 error is at most the IPv6 minimum MTU, and an ICMPv4 error is at
-	// most 576 B.
-	maxICMPv6 = header.IPv6MinimumMTU
-	maxICMPv4 = 576
-	// maxICMPBody is the most bytes of the packet that an ICMP error carries.
-	maxICMPBody = maxICMPv6 - header.IPv6MinimumSize - header.ICMPv6DstUnreachableMinimumSize
-)
+// maxICMPBody is the most bytes of the packet that an ICMP error carries.
+const maxICMPBody = psp.MaxICMPv6 - header.IPv6MinimumSize - header.ICMPv6DstUnreachableMinimumSize
 
 // unicastDst returns the destination of an IPv4 or IPv6 packet if it is a
 // unicast address.
@@ -55,32 +49,11 @@ func unreachable6(pkt []byte, from netip.Addr, denied bool) []byte {
 		(len(pkt) == header.IPv6MinimumSize || pkt[header.IPv6MinimumSize] < 128) {
 		return nil
 	}
-	const hdr = header.IPv6MinimumSize + header.ICMPv6DstUnreachableMinimumSize
-	body := pkt[:min(len(pkt), maxICMPv6-hdr)]
-	b := make([]byte, hdr+len(body))
-	srcAddr, dstAddr := tcpip.AddrFrom16(from.As16()), tcpip.AddrFrom16(src.As16())
-	header.IPv6(b).Encode(&header.IPv6Fields{
-		PayloadLength:     uint16(len(b) - header.IPv6MinimumSize),
-		TransportProtocol: header.ICMPv6ProtocolNumber,
-		HopLimit:          64,
-		SrcAddr:           srcAddr,
-		DstAddr:           dstAddr,
-	})
-	icmp := header.ICMPv6(b[header.IPv6MinimumSize:])
-	icmp.SetType(header.ICMPv6DstUnreachable)
-	icmp.SetCode(header.ICMPv6AddressUnreachable)
+	code := header.ICMPv6AddressUnreachable
 	if denied {
-		icmp.SetCode(header.ICMPv6Prohibited)
+		code = header.ICMPv6Prohibited
 	}
-	copy(icmp.Payload(), body)
-	icmp.SetChecksum(header.ICMPv6Checksum(header.ICMPv6ChecksumParams{
-		Header:      icmp[:header.ICMPv6DstUnreachableMinimumSize],
-		Src:         srcAddr,
-		Dst:         dstAddr,
-		PayloadCsum: checksum.Checksum(body, 0),
-		PayloadLen:  len(body),
-	}))
-	return b
+	return psp.ICMPv6Error(pkt, from, header.ICMPv6DstUnreachable, code, 0)
 }
 
 func unreachable4(pkt []byte, denied bool) []byte {
@@ -94,25 +67,9 @@ func unreachable4(pkt []byte, denied bool) []byte {
 	if ip.Protocol() == uint8(header.ICMPv4ProtocolNumber) && (len(pkt) == n || pkt[n] != uint8(header.ICMPv4Echo)) {
 		return nil
 	}
-	const hdr = header.IPv4MinimumSize + header.ICMPv4MinimumSize
-	body := pkt[:min(len(pkt), maxICMPv4-hdr)]
-	b := make([]byte, hdr+len(body))
-	out := header.IPv4(b)
-	out.Encode(&header.IPv4Fields{
-		TotalLength: uint16(len(b)),
-		TTL:         64,
-		Protocol:    uint8(header.ICMPv4ProtocolNumber),
-		SrcAddr:     tcpip.AddrFrom4(dst.As4()),
-		DstAddr:     tcpip.AddrFrom4(src.As4()),
-	})
-	out.SetChecksum(^out.CalculateChecksum())
-	icmp := header.ICMPv4(b[header.IPv4MinimumSize:])
-	icmp.SetType(header.ICMPv4DstUnreachable)
-	icmp.SetCode(header.ICMPv4HostUnreachable)
+	code := header.ICMPv4HostUnreachable
 	if denied {
-		icmp.SetCode(header.ICMPv4AdminProhibited)
+		code = header.ICMPv4AdminProhibited
 	}
-	copy(icmp.Payload(), body)
-	icmp.SetChecksum(header.ICMPv4Checksum(icmp[:header.ICMPv4MinimumSize], checksum.Checksum(body, 0)))
-	return b
+	return psp.ICMPv4Error(pkt, header.ICMPv4DstUnreachable, code, 0)
 }

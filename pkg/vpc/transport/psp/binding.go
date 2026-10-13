@@ -119,6 +119,7 @@ type Binding struct {
 	mtu     int
 	devMTU  int
 	clamp   atomic.Int32 // MTU for the MSS of TCP SYN packets. Zero means off.
+	ptb     limiter      // Limits the packet too big errors.
 	table   *engine.RxTable
 	rxq     *engine.RxQueue
 	recv    *keys.Receiver
@@ -215,6 +216,7 @@ func New(cfg Config) (*Binding, error) {
 		cancel:  cancel,
 		peers:   map[*keys.Peer]*Peer{},
 	}
+	b.ptb.rate.Store(tooBigRate)
 	if b.onTrip == nil {
 		b.onTrip = func(*Peer, Trip) {}
 	}
@@ -268,8 +270,9 @@ func (b *Binding) Close() error {
 // DeviceMTU returns the MTU for the device on the binding.
 func (b *Binding) DeviceMTU() int { return b.devMTU }
 
-// SetClampMTU lowers the MSS of TCP SYN packets in both directions to fit mtu. Zero, or
-// DeviceMTU or more, turns it off. It returns the previous MTU.
+// SetClampMTU lowers the MSS of TCP SYN packets in both directions to fit mtu, and a larger
+// packet for a PSP peer gets a packet too big error. Zero, or DeviceMTU or more, turns it
+// off. It returns the previous MTU.
 func (b *Binding) SetClampMTU(mtu int) (old int) {
 	if mtu >= b.devMTU {
 		mtu = 0
@@ -292,6 +295,18 @@ func (b *Binding) clampMSS(pkt []byte, quic bool) {
 	if m != 0 {
 		mss.Clamp(pkt, m)
 	}
+}
+
+// pathMTU returns the largest inner packet that the data path of a peer carries now:
+// QUICMTU in a data frame, and the clamp, when it is on, in a PSP packet.
+func (b *Binding) pathMTU(quic bool) int {
+	if quic {
+		return QUICMTU
+	}
+	if m := int(b.clamp.Load()); m != 0 {
+		return m
+	}
+	return b.mtu
 }
 
 // Update is a key change that Tick made for one peer.
@@ -572,12 +587,14 @@ type Stats struct {
 	TxNoRoute    uint64 // Inner packets with no route or no transmit SA.
 	TxDrops      uint64 // Inner packets that a size check, a seal or a write dropped.
 	TxLimitDrops uint64 // Inner packets that the limiter of a tripped breaker dropped.
+	TxTooBig     uint64 // Packet too big errors given to the driver. TxDrops has their packets.
 }
 
 type counters struct {
 	rxPackets, rxDrops, rxNoDriver, rxOther     atomic.Uint64
 	txPackets, txNoRoute, txDrops, txLimitDrops atomic.Uint64
 	txFrames                                    atomic.Uint64 // Data frames sent.
+	txTooBig                                    atomic.Uint64
 	txLanes                                     [keys.MaxLanes]atomic.Uint64
 	rxLanes                                     [keys.MaxLanes]atomic.Uint64 // PSP packets read on each socket.
 }
@@ -594,6 +611,7 @@ func (b *Binding) Stats() Stats {
 		TxNoRoute:    c.txNoRoute.Load(),
 		TxDrops:      c.txDrops.Load(),
 		TxLimitDrops: c.txLimitDrops.Load(),
+		TxTooBig:     c.txTooBig.Load(),
 	}
 }
 

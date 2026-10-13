@@ -117,12 +117,14 @@ func TestDatapath(t *testing.T) {
 
 func add(x, y Stats) Stats {
 	return Stats{x.RxPackets + y.RxPackets, x.RxDrops + y.RxDrops, x.RxNoDriver + y.RxNoDriver, x.RxOther + y.RxOther,
-		x.TxPackets + y.TxPackets, x.TxNoRoute + y.TxNoRoute, x.TxDrops + y.TxDrops, x.TxLimitDrops + y.TxLimitDrops}
+		x.TxPackets + y.TxPackets, x.TxNoRoute + y.TxNoRoute, x.TxDrops + y.TxDrops, x.TxLimitDrops + y.TxLimitDrops,
+		x.TxTooBig + y.TxTooBig}
 }
 
 func sub(x, y Stats) Stats {
 	return Stats{x.RxPackets - y.RxPackets, x.RxDrops - y.RxDrops, x.RxNoDriver - y.RxNoDriver, x.RxOther - y.RxOther,
-		x.TxPackets - y.TxPackets, x.TxNoRoute - y.TxNoRoute, x.TxDrops - y.TxDrops, x.TxLimitDrops - y.TxLimitDrops}
+		x.TxPackets - y.TxPackets, x.TxNoRoute - y.TxNoRoute, x.TxDrops - y.TxDrops, x.TxLimitDrops - y.TxLimitDrops,
+		x.TxTooBig - y.TxTooBig}
 }
 
 // TestReceive gives packets to the receive path. It opens them in place and

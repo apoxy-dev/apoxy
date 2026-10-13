@@ -315,7 +315,12 @@ func (b *Binding) prepare(virt []byte, f *netstack.TxFrame) error {
 	if !ok {
 		return ErrNoRoute
 	}
-	if slot := p.slot.Load(); slot != 0 {
+	slot := p.slot.Load()
+	if mtu := b.pathMTU(slot != 0); len(virt) > mtu {
+		b.tooBig(virt, mtu)
+		return errDrop
+	}
+	if slot != 0 {
 		if !b.quic.limiter.admit(len(virt)) {
 			return errLimit
 		}
@@ -339,7 +344,8 @@ func (b *Binding) prepare(virt []byte, f *netstack.TxFrame) error {
 }
 
 // prepareSegs is prepare for n packets with the headers hdr. It refuses the packets that prepare
-// can drop: no route, no SA, a breaker limit, or too few sequence numbers.
+// can drop: no route, no SA, a breaker limit, too few sequence numbers, or a size above the
+// path MTU.
 func (b *Binding) prepareSegs(hdr []byte, n, size, total int, f *netstack.TxFrame) bool {
 	dst, ok := innerDst(hdr)
 	if !ok || size > b.mtu {
@@ -353,7 +359,11 @@ func (b *Binding) prepareSegs(hdr []byte, n, size, total int, f *netstack.TxFram
 	if !ok {
 		return false
 	}
-	if slot := p.slot.Load(); slot != 0 {
+	slot := p.slot.Load()
+	if size > b.pathMTU(slot != 0) {
+		return false
+	}
+	if slot != 0 {
 		if b.quic.limiter.rate.Load() != 0 {
 			return false
 		}
