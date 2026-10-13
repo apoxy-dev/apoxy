@@ -26,15 +26,6 @@ func (srv *Server) RegisterLanes(ctx context.Context, in *dp.RegisterLanesReques
 	return &emptypb.Empty{}, srv.R.registerLanes(c, in.GetPorts(), in.GetReceive())
 }
 
-// maxLanes returns the lane port limit for the Welcome of a session in mode.
-// A session in QUIC mode sends no PSP packets, so it gets 0.
-func (r *Router) maxLanes(mode dp.Mode) uint32 {
-	if mode != dp.Mode_MODE_PSP {
-		return 0
-	}
-	return uint32(r.cfg.LaneSources)
-}
-
 // registerLanes replaces the lane ports of c. It sets all ports or none. A
 // port must be free, or a lane port of another session of the same agent.
 func (r *Router) registerLanes(c *Session, ports []uint32, receive bool) error {

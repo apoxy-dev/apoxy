@@ -61,6 +61,14 @@ type pspAgent struct {
 // newPSPAgent takes the relay SAs in offer and makes SAs for the relay.
 func newPSPAgent(t testing.TB, offer *dp.KeysRequest, now time.Time) *pspAgent {
 	t.Helper()
+	p := newPSPReceiver(t, now)
+	p.takeRelaySAs(t, offer, now)
+	return p
+}
+
+// takeRelaySAs applies the relay SAs in offer.
+func (p *pspAgent) takeRelaySAs(t testing.TB, offer *dp.KeysRequest, now time.Time) {
+	t.Helper()
 	req, err := keyproto.FromProto(offer)
 	require.NoError(t, err)
 	snd, err := keys.NewSender(1280)
@@ -69,6 +77,12 @@ func newPSPAgent(t testing.TB, offer *dp.KeysRequest, now time.Time) *pspAgent {
 	refused, err := tx.Apply(req, now)
 	require.NoError(t, err)
 	require.Empty(t, refused)
+	p.relay, p.tx = req, tx.SA(0)
+}
+
+// newPSPReceiver returns an agent with SAs for the relay and no relay SAs.
+func newPSPReceiver(t testing.TB, now time.Time) *pspAgent {
+	t.Helper()
 	table, err := engine.NewRxTable(engine.RxConfig{Queues: 1})
 	require.NoError(t, err)
 	recv, err := keys.NewReceiver(table, pspwire.AESGCM128)
@@ -77,7 +91,7 @@ func newPSPAgent(t testing.TB, offer *dp.KeysRequest, now time.Time) *pspAgent {
 	require.NoError(t, err)
 	mine, err := peer.Offer(now)
 	require.NoError(t, err)
-	return &pspAgent{relay: req, tx: tx.SA(0), rxq: table.Queue(0), req: mine}
+	return &pspAgent{rxq: table.Queue(0), req: mine}
 }
 
 // seal returns inner sealed with the relay SA.
@@ -155,6 +169,19 @@ func (e *end) giveSAs(t *testing.T) {
 	require.Empty(t, res.RefusedSpis)
 }
 
+// toPSP changes the QUIC-mode end e to PSP mode with a Rekey call, and takes
+// the relay SAs that come on the Session stream.
+func (e *end) toPSP(t *testing.T) {
+	t.Helper()
+	e.psp = newPSPReceiver(t, time.Now())
+	e.giveSAs(t)
+	var offer *dp.KeysRequest
+	for offer == nil {
+		offer = recv(t, e.st).GetRekey()
+	}
+	e.psp.takeRelaySAs(t, offer, time.Now())
+}
+
 // waitNoRoute returns the address of the next NoRoute on st.
 func waitNoRoute(t *testing.T, st syncStream) string {
 	t.Helper()
@@ -173,23 +200,36 @@ func TestBridge(t *testing.T) {
 	q2 := newEnd(t, h, ca, "q2", dp.Mode_MODE_QUIC)
 	p1 := newEnd(t, h, ca, "p1", dp.Mode_MODE_PSP)
 	p1.giveSAs(t)
+	// c opens in QUIC mode and changes to PSP mode on the open session.
+	c := newEnd(t, h, ca, "c", dp.Mode_MODE_QUIC)
+	c.toPSP(t)
 
 	const quicWord, pspWord = testVNI << 8, testVNI<<8 | uint32(pspwire.FlagSeq)
 	cases := []struct {
 		name     string
 		from, to *end
+		frame    bool   // The sender uses a data frame in each mode.
 		word     uint32 // VNI word that the receiver gets.
 	}{
-		{"QUIC to QUIC", q1, q2, quicWord},
-		{"QUIC to QUIC, back", q2, q1, quicWord},
-		{"QUIC to PSP", q1, p1, pspWord},
-		{"PSP to QUIC", p1, q2, pspWord},
+		{"QUIC to QUIC", q1, q2, false, quicWord},
+		{"QUIC to QUIC, back", q2, q1, false, quicWord},
+		{"QUIC to PSP", q1, p1, false, pspWord},
+		{"PSP to QUIC", p1, q2, false, pspWord},
+		{"PSP to QUIC, data frame", p1, q2, true, quicWord},
+		{"QUIC to changed", q1, c, false, pspWord},
+		{"changed to QUIC", c, q1, false, pspWord},
+		{"changed to QUIC, data frame", c, q1, true, quicWord},
+		{"changed to PSP, data frame", c, p1, true, pspWord},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			before := h.r.SenderStats(tc.from.s).DataSent
 			inner := ipPacket(tc.from.addr, tc.to.addr, []byte(tc.name))
-			tc.from.send(t, inner)
+			if tc.frame {
+				require.NoError(t, tc.from.qc.SendDatagram(peerconn.EncodeData(nil, testVNI, inner)))
+			} else {
+				tc.from.send(t, inner)
+			}
 			got, word := tc.to.recv(t)
 			assert.Equal(t, inner, got)
 			assert.Equal(t, tc.word, word)
@@ -211,6 +251,8 @@ func TestBridgeDrops(t *testing.T) {
 	p1 := newEnd(t, h, ca, "p1", dp.Mode_MODE_PSP)
 	p2 := newEnd(t, h, ca, "p2", dp.Mode_MODE_PSP) // It gives the relay no SAs.
 	p1.giveSAs(t)
+	c := newEnd(t, h, ca, "c", dp.Mode_MODE_QUIC)
+	c.toPSP(t)
 	nowhere := netip.MustParseAddr("fd00:99::1")
 
 	sendRaw := func(e *end, b []byte) func(t *testing.T) {
@@ -246,8 +288,6 @@ func TestBridgeDrops(t *testing.T) {
 			send: sendRaw(q1, peerconn.EncodeData(nil, testVNI, ipPacket(q1.addr, nowhere, nil))), noRoute: nowhere},
 		{name: "data frame to a PSP agent with no SAs for the relay", from: q1,
 			send: sendRaw(q1, peerconn.EncodeData(nil, testVNI, ipPacket(q1.addr, p2.addr, nil)))},
-		{name: "data frame from a PSP-mode session", from: p1,
-			send: sendRaw(p1, peerconn.EncodeData(nil, testVNI, ipPacket(p1.addr, q1.addr, nil)))},
 		{name: "PSP replay", from: p1, sent: 1, send: func(t *testing.T) {
 			sendPSP(p1, replayed)(t)
 			sendPSP(p1, replayed)(t)
@@ -258,6 +298,10 @@ func TestBridgeDrops(t *testing.T) {
 		{name: "PSP to a PSP agent", from: p1, send: sendPSP(p1, p1.psp.seal(t, ipPacket(p1.addr, p2.addr, nil)))},
 		{name: "PSP to a PSP agent with SAs for the relay", from: p2,
 			send: sendPSP(p2, p2.psp.seal(t, ipPacket(p2.addr, p1.addr, nil)))},
+		{name: "PSP to a session that changed to PSP mode", from: p1,
+			send: sendPSP(p1, p1.psp.seal(t, ipPacket(p1.addr, c.addr, nil)))},
+		{name: "PSP from a session that changed to PSP mode to a PSP agent", from: c,
+			send: sendPSP(c, c.psp.seal(t, ipPacket(c.addr, p1.addr, nil)))},
 		{name: "PSP with no route", from: p1,
 			send: sendPSP(p1, p1.psp.seal(t, ipPacket(p1.addr, nowhere, nil))), noRoute: nowhere},
 	}
@@ -284,7 +328,6 @@ func TestRekey(t *testing.T) {
 	h := newHarness(t, ca)
 	p1 := newEnd(t, h, ca, "p1", dp.Mode_MODE_PSP)
 	p2 := newEnd(t, h, ca, "p2", dp.Mode_MODE_PSP)
-	q1 := newEnd(t, h, ca, "q1", dp.Mode_MODE_QUIC)
 	idle := h.mustDial(t, ca.agentCert(t, vpcA, "idle"))
 	offer := func(spi, vni uint32) *dp.KeysRequest {
 		return keyproto.ToProto(keys.Request{Op: keys.OpOffer, SAs: []keys.SA{{SPI: spi, Key: make([]byte, 16), VNI: vni, ExpiresIn: time.Minute}}})
@@ -301,7 +344,6 @@ func TestRekey(t *testing.T) {
 		{"SPI that another agent gave", p2.agent, offer(0x1001, testVNI), rpc.OK, []uint32{0x1001}},
 		{"VNI of another VPC", p1.agent, offer(0x1002, testVNI+1), rpc.InvalidArgument, nil},
 		{"no op", p1.agent, &dp.KeysRequest{}, rpc.InvalidArgument, nil},
-		{"QUIC-mode session", q1.agent, offer(0x1003, testVNI), rpc.FailedPrecondition, nil},
 		{"no Session call", idle, offer(0x1004, testVNI), rpc.FailedPrecondition, nil},
 		{"revoke", p1.agent, keyproto.ToProto(keys.Request{Op: keys.OpRevoke, SPIs: []uint32{0x1001}}), rpc.OK, nil},
 		{"SPI after the revoke", p2.agent, offer(0x1001, testVNI), rpc.OK, nil},
@@ -569,7 +611,7 @@ func BenchmarkForwardData(b *testing.B) {
 			d := localSession(b, r, "d", "192.0.2.2:1", "fd00:2::/96", mode)
 			if mode == dp.Mode_MODE_PSP {
 				sa := keys.SA{SPI: 0x1001, Key: make([]byte, 16), VNI: testVNI, ExpiresIn: time.Hour}
-				_, err := r.rekey(d, keys.Request{Op: keys.OpOffer, SAs: []keys.SA{sa}}, t0)
+				_, err := r.rekey(d, Network{}, keys.Request{Op: keys.OpOffer, SAs: []keys.SA{sa}}, t0)
 				require.NoError(b, err)
 			}
 			frame := peerconn.EncodeData(nil, testVNI, ipPacket(netip.MustParseAddr("fd00:1::1"), netip.MustParseAddr("fd00:2::1"), make([]byte, 1200)))

@@ -21,6 +21,10 @@ var (
 		Name: "apoxy_vpc_relay_session_versions_total",
 		Help: "Agent Session calls, by protocol revision and build of the agent. A build from before revisions has revision 0 and the build unknown.",
 	}, []string{"revision", "build"})
+	modeChanges = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "apoxy_vpc_relay_mode_changes_total",
+		Help: "Open agent sessions that changed from QUIC mode to PSP mode.",
+	})
 	connectSeconds = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "apoxy_vpc_relay_connect_seconds",
 		Help:    "Time to connect: from the start of the dial to the first Config, as the agent reports it.",
@@ -29,7 +33,7 @@ var (
 )
 
 func init() {
-	metrics.Registry.MustRegister(sessionsTotal, sessionVersions, connectSeconds)
+	metrics.Registry.MustRegister(sessionsTotal, sessionVersions, modeChanges, connectSeconds)
 }
 
 const (

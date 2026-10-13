@@ -38,7 +38,6 @@ const (
 var shardSeed = maphash.MakeSeed()
 
 var (
-	errMode    = errors.New("data frame from a session that is not in QUIC mode")
 	errNoRoute = errors.New("no route to the inner destination")
 	errNoSA    = errors.New("no SA for the PSP-mode destination")
 )
@@ -168,20 +167,17 @@ func (h *hop) local(to target, inner []byte) {
 	}
 }
 
-// forwardData sends a data frame from the QUIC-mode session s, or from a shard
-// of it, to the session or the relay of its destination. buf holds a sealed packet.
+// forwardData sends a data frame from the session s, or from a shard of it, to
+// the session or the relay of its destination. buf holds a sealed packet.
 func (r *Router) forwardData(s *Session, b, buf []byte, now time.Time) bool {
-	var inner []byte
 	var h hop
-	err := errMode
 	r.mu.RLock()
 	if s.shardOf != nil {
 		s = s.shardOf
 	}
-	if s.sync.mode == dp.Mode_MODE_QUIC {
-		if inner, err = peerconn.OpenData(b, s.sync.ref.GetNetworkId(), s.sources); err == nil {
-			h = r.nextHop(s, inner)
-		}
+	inner, err := peerconn.OpenData(b, s.sync.ref.GetNetworkId(), s.sources)
+	if err == nil {
+		h = r.nextHop(s, inner)
 	}
 	r.mu.RUnlock()
 	if err != nil {
@@ -316,21 +312,26 @@ func (r *Router) offer(s *Session, n Network, now time.Time) (*dp.SessionRespons
 	if br == nil {
 		return nil, nil
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if s.closed {
+		return nil, rpc.Errorf(rpc.Unauthenticated, "relay session closed")
+	}
+	return r.offerLocked(br, s, n, now)
+}
+
+// offerLocked makes the relay SAs of s and their rows, and returns the Rekey
+// message for its agent. Router.mu must be held.
+func (r *Router) offerLocked(br *bridge, s *Session, n Network, now time.Time) (*dp.SessionResponse, error) {
 	p, err := br.recv.NewPeer(keys.PeerConfig{VNI: n.ID, MTU: int(n.MTU), Lanes: 1, Sources: s.sources})
 	if err != nil {
 		return nil, err
 	}
 	req, err := p.Offer(now)
+	if err == nil {
+		req, err = r.avoidClashes(s, p, req, now)
+	}
 	if err != nil {
-		return nil, err
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if s.closed {
-		p.Revoke()
-		return nil, rpc.Errorf(rpc.Unauthenticated, "relay session closed")
-	}
-	if req, err = r.avoidClashes(s, p, req, now); err != nil {
 		p.Revoke()
 		return nil, err
 	}
@@ -378,6 +379,17 @@ func (r *Router) addRelaySAs(br *bridge, s *Session, sas []keys.SA, now time.Tim
 	for _, sa := range sas {
 		s.relaySAs[sa.SPI] = now.Add(sa.ExpiresIn)
 		br.senders[sa.SPI] = s
+	}
+	r.keepRows(br, s, now)
+}
+
+// dropRelaySAs deletes the relay SAs of s and their rows. Router.mu must be held.
+func (r *Router) dropRelaySAs(br *bridge, s *Session, now time.Time) {
+	delete(br.peers, s.rx)
+	s.rx.Revoke()
+	s.rx = nil
+	for spi := range s.relaySAs {
+		s.relaySAs[spi] = now
 	}
 	r.keepRows(br, s, now)
 }
@@ -513,8 +525,8 @@ func revokeTx(tx *keys.TxPeer) {
 	_, _ = tx.Apply(keys.Request{Op: keys.OpRevoke, SPIs: spis}, time.Time{})
 }
 
-// Rekey applies a key change from a PSP-mode agent to the SAs that the relay
-// seals packets to the agent with.
+// Rekey applies a key change from an agent to the SAs that the relay seals
+// packets to the agent with. It changes a QUIC-mode session to PSP mode.
 func (srv *Server) Rekey(ctx context.Context, in *dp.KeysRequest) (*dp.KeysResponse, error) {
 	s, err := srv.R.caller(ctx)
 	if err != nil {
@@ -524,14 +536,29 @@ func (srv *Server) Rekey(ctx context.Context, in *dp.KeysRequest) (*dp.KeysRespo
 	if err != nil {
 		return nil, rpc.Errorf(rpc.InvalidArgument, "%v", err)
 	}
-	refused, err := srv.R.rekey(s, req, time.Now())
+	var n Network
+	if srv.R.mode(s) == dp.Mode_MODE_QUIC {
+		// The relay SAs of the change to PSP mode need the MTU of the VPC.
+		if n, err = srv.network(s.id.VPC); err != nil {
+			return nil, err
+		}
+	}
+	refused, err := srv.R.rekey(s, n, req, time.Now())
 	if err != nil {
 		return nil, err
 	}
 	return &dp.KeysResponse{RefusedSpis: refused}, nil
 }
 
-func (r *Router) rekey(s *Session, req keys.Request, now time.Time) ([]uint32, error) {
+func (r *Router) mode(s *Session) dp.Mode {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return s.sync.mode
+}
+
+// rekey applies req to the SAs of the relay for s. n is the network of a
+// QUIC-mode session, which changes to PSP mode.
+func (r *Router) rekey(s *Session, n Network, req keys.Request, now time.Time) ([]uint32, error) {
 	br := r.bridge.Load()
 	if br == nil {
 		return nil, rpc.Errorf(rpc.Unavailable, "relay has no PSP bridge")
@@ -541,8 +568,8 @@ func (r *Router) rekey(s *Session, req keys.Request, now time.Time) ([]uint32, e
 	if s.closed {
 		return nil, rpc.Errorf(rpc.Unauthenticated, "relay session closed")
 	}
-	if s.sync.mode != dp.Mode_MODE_PSP {
-		return nil, rpc.Errorf(rpc.FailedPrecondition, "Rekey needs a Session call in PSP mode")
+	if s.sync.mode == dp.Mode_MODE_UNSPECIFIED {
+		return nil, rpc.Errorf(rpc.FailedPrecondition, "Rekey needs a Session call")
 	}
 	vni := s.sync.ref.GetNetworkId()
 	for _, sa := range req.SAs {
@@ -550,6 +577,15 @@ func (r *Router) rekey(s *Session, req keys.Request, now time.Time) ([]uint32, e
 			return nil, rpc.Errorf(rpc.InvalidArgument, "SA %#x has VNI %#x, not the VNI %#x of the VPC", sa.SPI, sa.VNI, vni)
 		}
 	}
+	if s.sync.mode == dp.Mode_MODE_QUIC {
+		return r.changeToPSP(br, s, n, req, now)
+	}
+	return applyTx(br, s, req, now)
+}
+
+// applyTx applies req to the SAs that the relay seals packets to s with.
+// Router.mu must be held.
+func applyTx(br *bridge, s *Session, req keys.Request, now time.Time) ([]uint32, error) {
 	if s.tx == nil {
 		s.tx = br.send.NewPeer()
 	}
@@ -557,5 +593,30 @@ func (r *Router) rekey(s *Session, req keys.Request, now time.Time) ([]uint32, e
 	if err != nil {
 		return nil, rpc.Errorf(rpc.InvalidArgument, "%v", err)
 	}
+	return refused, nil
+}
+
+// changeToPSP changes the QUIC-mode session s to PSP mode with the SAs in req.
+// The mode stays QUIC if req gives the relay no SA for lane 0. Router.mu must be held.
+func (r *Router) changeToPSP(br *bridge, s *Session, n Network, req keys.Request, now time.Time) ([]uint32, error) {
+	if n.ID != s.sync.ref.GetNetworkId() {
+		// The Session call started after the caller looked for the network.
+		return nil, rpc.Errorf(rpc.Unavailable, "no network for the relay SAs, call again")
+	}
+	if len(s.sync.out) >= maxSyncQueue {
+		return nil, rpc.Errorf(rpc.Unavailable, "no room for the relay SAs in the session queue")
+	}
+	m, err := r.offerLocked(br, s, n, now)
+	if err != nil {
+		return nil, rpc.Errorf(rpc.Unavailable, "relay SAs: %v", err)
+	}
+	refused, err := applyTx(br, s, req, now)
+	if err != nil || s.tx.SA(0) == nil {
+		r.dropRelaySAs(br, s, now)
+		return refused, err
+	}
+	s.sync.mode = dp.Mode_MODE_PSP
+	s.queue(m)
+	modeChanges.Inc()
 	return refused, nil
 }

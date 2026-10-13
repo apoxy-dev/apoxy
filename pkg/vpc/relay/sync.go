@@ -26,7 +26,8 @@ const (
 // syncState is what the relay still has to send to the agent on Sync.
 type syncState struct {
 	open   bool           // A Session call runs.
-	mode   dp.Mode        // From Hello.
+	mode   dp.Mode        // From Hello. A Rekey call changes QUIC to PSP.
+	hello  dp.Mode        // The mode of Hello, for the metrics.
 	ref    *dp.VPCRef     // VPC of the session, with the network ID.
 	routes map[route]bool // Route changes: true adds, false removes.
 	// standby has the prefixes whose route stays and whose standby list changed.
@@ -213,7 +214,7 @@ func (srv *Server) Session(ctx context.Context, st rpc.BidiStreamServer[dp.Sessi
 	}()
 	if err := st.Send(&dp.SessionResponse{Msg: &dp.SessionResponse_Welcome{Welcome: &dp.Welcome{
 		ReflexiveAddress: srv.R.Addr(s).String(),
-		MaxLanes:         srv.R.maxLanes(mode),
+		MaxLanes:         uint32(srv.R.cfg.LaneSources),
 		Version:          srv.R.ver,
 	}}}); err != nil {
 		return err
@@ -280,7 +281,7 @@ func (r *Router) startSync(s *Session, mode dp.Mode, ref *dp.VPCRef, hello *dp.H
 	if s.sync.open {
 		return 0, rpc.Errorf(rpc.FailedPrecondition, "session already has a Session call")
 	}
-	s.sync.open, s.sync.mode, s.sync.ref = true, mode, ref
+	s.sync.open, s.sync.mode, s.sync.hello, s.sync.ref = true, mode, mode, ref
 	s.name, s.instance = hello.GetName(), hello.GetInstance()
 	s.sync.meshRoutes = s.version.GetRevision() >= meshRoutesRevision && !hello.GetLocalRoutesOnly()
 	d := r.domain(s.id.VPC)
@@ -333,7 +334,7 @@ func (r *Router) reportConnect(s *Session, d time.Duration) {
 	r.mu.Lock()
 	first := !s.sync.connected
 	s.sync.connected = true
-	mode := s.sync.mode
+	mode := s.sync.hello
 	r.mu.Unlock()
 	if first {
 		connectSeconds.WithLabelValues(modeLabel(mode)).Observe(d.Seconds())
