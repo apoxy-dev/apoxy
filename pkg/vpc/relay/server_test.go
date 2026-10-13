@@ -8,6 +8,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/tls"
 	"crypto/x509"
 	"errors"
 	"fmt"
@@ -61,7 +62,6 @@ func TestOverQUIC(t *testing.T) {
 	assert.Equal(t, "relay-1", claims.RelayId)
 	assert.Empty(t, cmp.Diff(ref(vpcA), claims.Vpc, protocmp.Transform()))
 	require.Len(t, claims.Addresses, 1)
-	assert.WithinDuration(t, h.session(t, rcv).notAfter, claims.NotAfter.AsTime(), time.Second, "the grant ends with the cert")
 	addr := netip.MustParsePrefix(claims.Addresses[0]).Addr().Next()
 
 	// The sender learns the route of the receiver in Sync. The revision is 2
@@ -632,6 +632,34 @@ func TestDetach(t *testing.T) {
 				{Vpc: ref(vpcA), Prefix: "10.9.0.0/16", Origin: x.AttachmentId},
 				{Vpc: ref(vpcA), Prefix: claims.Addresses[0], Origin: x.AttachmentId},
 			}, removed, protocmp.Transform()))
+		})
+	}
+}
+
+// TestAttachGrantLife checks that the grant of Attach ends grantLife after the
+// call, also when the agent cert ends before that.
+func TestAttachGrantLife(t *testing.T) {
+	ca := newCA(t)
+	cases := []struct {
+		name string
+		cert tls.Certificate
+	}{
+		{"cert that ends after the grant", ca.agentCert(t, vpcA, "laptop")},
+		{"cert that ends before the grant", ca.shortCert(t, vpcA, "laptop")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, ca)
+			a := h.mustDial(t, tc.cert)
+			sayHello(t, a)
+			before := time.Now()
+			res := attach(t, a, &dp.AttachRequest{Vpc: ref(vpcA), Name: "laptop"})
+			after := time.Now()
+			claims, err := VerifyGrant(res.Grant, h.relayRoots, after)
+			require.NoError(t, err)
+			end := claims.NotAfter.AsTime()
+			assert.False(t, end.Before(before.Add(grantLife)) || end.After(after.Add(grantLife)),
+				"end %v, call from %v to %v", end, before, after)
 		})
 	}
 }

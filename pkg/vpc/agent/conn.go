@@ -114,7 +114,7 @@ type relayConn struct {
 	vpcConfig *dp.Config        // The first Config.
 	ref       *dp.VPCRef
 	mtu       uint32
-	grant     *dp.AttachmentGrant
+	grant     *ownGrant
 	claims    *dp.GrantClaims
 	prefixes  []netip.Prefix
 	self      netip.Addr // Overlay address of this agent.

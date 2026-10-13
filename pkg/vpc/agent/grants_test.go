@@ -9,6 +9,7 @@ import (
 	"maps"
 	"net/netip"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -224,7 +225,7 @@ func TestWaitGrant(t *testing.T) {
 }
 
 func TestQueueGrants(t *testing.T) {
-	x := func(id string) *extra { return &extra{id: id, grant: &dp.AttachmentGrant{Signature: []byte(id)}} }
+	x := func(id string) *extra { return &extra{id: id} }
 	type op struct {
 		add    string
 		remove string
@@ -369,4 +370,122 @@ func onlyPeer(t *testing.T, a *Agent) *peer {
 		return p
 	}
 	return nil
+}
+
+// age makes the stored grant as old as a grant that the agent got d ago.
+func (g *ownGrant) age(d time.Duration) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.got = time.Now().Add(-d)
+}
+
+// TestOwnGrant checks that the agent asks its relay for a new grant only when
+// its stored grant has the refresh age, by its own elapsed time, and that it
+// stores the new one.
+func TestOwnGrant(t *testing.T) {
+	cases := []struct {
+		name    string
+		age     time.Duration // Time since the agent got the stored grant.
+		left    time.Duration // If set, the stored grant ends this long after the time of the host.
+		callers int
+		wantNew bool
+	}{
+		{name: "new grant", callers: 1},
+		{name: "below the refresh age", age: grantRefreshAge - 10*time.Second, callers: 1},
+		{name: "above the refresh age", age: grantRefreshAge + time.Second, callers: 1, wantNew: true},
+		{name: "two callers", age: grantRefreshAge + time.Second, callers: 2, wantNew: true},
+		// The end time of a new grant is 3 minutes nearer on a host with such a clock.
+		{name: "host clock 3 minutes ahead of the relay", left: grantRefreshAge, callers: 1},
+		{name: "host clock ahead, above the refresh age", age: grantRefreshAge + time.Second, left: time.Minute, callers: 1, wantNew: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newWorld(t)
+			a := w.agent(t, "a", w.relay(t, "relay-1"), agentOptions{})
+			ea := a.attached(t)
+			rc := a.current()
+			g := rc.grant
+			if tc.left != 0 {
+				g.cur = extraGrant(t, w.relayCA.relayCert(t, "relay-1"), "a", g.id, ea.prefixes[0].String(),
+					func(c *dp.GrantClaims) { c.NotAfter = timestamppb.New(time.Now().Add(tc.left)) })
+			}
+			old := g.cur
+			g.age(tc.age)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			got := make([]*dp.AttachmentGrant, tc.callers)
+			var wg sync.WaitGroup
+			for i := range got {
+				wg.Go(func() {
+					var err error
+					got[i], err = g.get(ctx)
+					assert.NoError(t, err)
+				})
+			}
+			wg.Wait()
+			for _, x := range got {
+				assert.Same(t, got[0], x, "each caller gets the grant of one call")
+			}
+			assert.Same(t, got[0], g.cur, "the agent stores the grant that it returns")
+			if !tc.wantNew {
+				assert.Same(t, old, got[0], "the agent made a Grant call below the refresh age")
+				return
+			}
+			require.NotSame(t, old, got[0], "the agent made no Grant call")
+			claims, err := relay.VerifyGrant(got[0], rc.roots, time.Now())
+			require.NoError(t, err)
+			assert.Equal(t, rc.claims.GetAttachmentId(), claims.GetAttachmentId())
+			again, err := g.get(ctx)
+			require.NoError(t, err)
+			assert.Same(t, got[0], again, "the agent made a second Grant call")
+		})
+	}
+}
+
+// TestSendAfterGrantEnd checks that an agent whose grant of Attach has ended
+// opens a peer session, answers one and starts a visit: it sends a new grant.
+func TestSendAfterGrantEnd(t *testing.T) {
+	cases := []struct {
+		name  string
+		visit bool // The relays of a and b have no path, so a visits the relay of b.
+		fromB bool // b sends the first packet, so a answers the Open call.
+	}{
+		{name: "dialer of a peer session"},
+		{name: "answer to a peer session", fromB: true},
+		{name: "visit", visit: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w, r1, r2 := meshRelays(t)
+			a := w.agent(t, "a", r1, agentOptions{visitCheck: time.Hour})
+			ea := a.attached(t)
+			b := w.agent(t, "b", r2, agentOptions{visitCheck: time.Hour, visitWait: time.Hour})
+			eb := b.attached(t)
+			echo(t, a.stack, ea.addr, 9000)
+			echo(t, b.stack, eb.addr, 9000)
+			a.hasRoutes(t, eb.prefixes[0])
+			b.hasRoutes(t, ea.prefixes[0])
+			// A peer and a relay refuse the stored grant, which has ended.
+			g := a.current().grant
+			old := extraGrant(t, w.relayCA.relayCert(t, "relay-1"), "a", g.id, ea.prefixes[0].String(),
+				func(c *dp.GrantClaims) { c.NotAfter = timestamppb.New(time.Now().Add(-time.Minute)) })
+			g.cur = old
+			g.age(time.Hour)
+			switch {
+			case tc.visit:
+				t.Cleanup(cutMesh(r1, r2))
+				waitReach(t, a, eb.addr, dp.Reach_REACH_VISIT)
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				_, err := dialOnVisit(t, ctx, a, r2, eb.addr)
+				require.NoError(t, err)
+				ping(t, a.stack, ea.addr, eb.addr, 9000, "to b on the visit")
+			case tc.fromB:
+				ping(t, b.stack, eb.addr, ea.addr, 9000, "to a")
+			default:
+				ping(t, a.stack, ea.addr, eb.addr, 9000, "to b")
+			}
+			assert.NotSame(t, old, g.cur, "a sent the grant that has ended")
+		})
+	}
 }

@@ -93,7 +93,7 @@ type peer struct {
 	mu   sync.Mutex
 	spis map[uint32]spiRow // SPIs registered at the relay.
 	// Grant changes of this agent that wait to go to the peer.
-	sendAdd    map[string]*dp.AttachmentGrant
+	sendAdd    map[string]*extra
 	sendRemove map[string]bool
 	sending    bool
 	noGrants   bool // The peer does not serve Grants.
@@ -402,10 +402,15 @@ func (a *Agent) dial(ctx context.Context, rc *relayConn, dst netip.Addr, res *dp
 		return nil, err
 	}
 	a.mu.Lock()
-	grants := a.openGrants(p)
+	xs := a.openExtras(p)
 	a.mu.Unlock()
+	grant, grants, err := rc.openGrants(ctx, xs)
+	if err != nil {
+		_ = qc.CloseWithError(0, "")
+		return nil, fmt.Errorf("open peer session to %s: %w", dst, err)
+	}
 	open, err := p.client.Open(ctx, &dp.OpenRequest{
-		Grant: rc.grant, Grants: grants, Instance: a.instance, Mode: rc.mode, Lanes: rc.sendLanes(), Version: a.ver,
+		Grant: grant, Grants: grants, Instance: a.instance, Mode: rc.mode, Lanes: rc.sendLanes(), Version: a.ver,
 	})
 	if err != nil {
 		if refusedDuplicate(qc, err) {
@@ -909,14 +914,20 @@ func (s *peerService) Open(ctx context.Context, in *dp.OpenRequest) (*dp.OpenRes
 		}
 		return nil, rpc.Errorf(rpc.PermissionDenied, "%v", err)
 	}
+	s.a.mu.Lock()
+	xs := s.a.openExtras(p)
+	s.a.mu.Unlock()
+	grant, grants, err := p.rc.openGrants(ctx, xs)
+	if err != nil {
+		slog.Warn("Failed to get a grant for a peer session; closing the peer session", "peer", p.subject, "error", err)
+		_ = p.qc.CloseWithError(0, "no grant")
+		return nil, rpc.Errorf(rpc.Unavailable, "%v", err)
+	}
 	s.a.grantsOfOpen(p, in.GetGrants())
 	go p.offer()
 	go p.sendReports()
-	s.a.mu.Lock()
-	grants := s.a.openGrants(p)
-	s.a.mu.Unlock()
 	return &dp.OpenResponse{
-		Grant: p.rc.grant, Grants: grants, Instance: s.a.instance, Mode: p.rc.mode, Lanes: p.rc.sendLanes(), Version: s.a.ver,
+		Grant: grant, Grants: grants, Instance: s.a.instance, Mode: p.rc.mode, Lanes: p.rc.sendLanes(), Version: s.a.ver,
 	}, nil
 }
 

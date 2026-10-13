@@ -38,7 +38,7 @@ service Relay {
   // relay. Errors: Unimplemented (no mesh), and the codes in the README.
   rpc Visit(VisitRequest) returns (google.protobuf.Empty);
   // Grant gives a new grant for an attachment of the session. The grant ends
-  // 5 minutes later. Errors: NotFound, Unavailable (the relay has no key).
+  // 15 minutes later. Errors: NotFound, Unavailable (the relay has no key).
   rpc Grant(GrantRequest) returns (GrantResponse);
 }
 

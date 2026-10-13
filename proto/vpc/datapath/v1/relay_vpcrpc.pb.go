@@ -55,7 +55,7 @@ type RelayClient interface {
 	// relay. Errors: Unimplemented (no mesh), and the codes in the README.
 	Visit(ctx context.Context, in *VisitRequest) (*emptypb.Empty, error)
 	// Grant gives a new grant for an attachment of the session. The grant ends
-	// 5 minutes later. Errors: NotFound, Unavailable (the relay has no key).
+	// 15 minutes later. Errors: NotFound, Unavailable (the relay has no key).
 	Grant(ctx context.Context, in *GrantRequest) (*GrantResponse, error)
 }
 
@@ -167,7 +167,7 @@ type RelayServer interface {
 	// relay. Errors: Unimplemented (no mesh), and the codes in the README.
 	Visit(context.Context, *VisitRequest) (*emptypb.Empty, error)
 	// Grant gives a new grant for an attachment of the session. The grant ends
-	// 5 minutes later. Errors: NotFound, Unavailable (the relay has no key).
+	// 15 minutes later. Errors: NotFound, Unavailable (the relay has no key).
 	Grant(context.Context, *GrantRequest) (*GrantResponse, error)
 }
 

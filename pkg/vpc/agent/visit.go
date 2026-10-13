@@ -374,7 +374,7 @@ func (a *Agent) openVisit(ctx context.Context, home *relayConn, ref *dp.RelayRef
 	return nil, errors.Join(errs...)
 }
 
-// startVisit runs Visit on rc after hello with the grant and the address of
+// startVisit runs Visit on rc after hello with a grant and the address of
 // its home, then makes the relay peer and the peer listener on the link of its
 // home, as attach does.
 func (rc *relayConn) startVisit(ctx context.Context) error {
@@ -391,7 +391,11 @@ func (rc *relayConn) startVisit(ctx context.Context) error {
 	a.mu.Unlock()
 	// The path probe runs while the relay checks the grant.
 	probed := a.startProbe(ctx, home, rc)
-	if _, err := rc.c.Visit(ctx, &dp.VisitRequest{Vpc: rc.ref, Address: rc.self.String(), Grant: rc.grant}); err != nil {
+	grant, err := home.grant.get(ctx)
+	if err != nil {
+		return fmt.Errorf("visit: %w", err)
+	}
+	if _, err := rc.c.Visit(ctx, &dp.VisitRequest{Vpc: rc.ref, Address: rc.self.String(), Grant: grant}); err != nil {
 		return attachError(rc, fmt.Errorf("visit: %w", err))
 	}
 	if rc.relayAtLeast(visitExtras) {
@@ -467,13 +471,16 @@ func (a *Agent) joinExtras(ctx context.Context, home, rc *relayConn) {
 // joinVisit runs Visit on the visitor session rc for each prefix of x, then adds
 // x to rc for the peers of the visit. An attachment that left meanwhile leaves rc.
 func (a *Agent) joinVisit(ctx context.Context, rc *relayConn, x *extra) error {
-	var err error
+	grant, err := x.grant.get(ctx)
 	for _, p := range x.prefixes {
-		req := &dp.VisitRequest{Vpc: rc.ref, Address: relay.OverlayAddr(p).String(), Grant: x.grant}
-		if _, err = rc.c.Visit(ctx, req); err != nil {
-			err = fmt.Errorf("visit with attachment %s: %w", x.spec.Name, err)
+		if err != nil {
 			break
 		}
+		req := &dp.VisitRequest{Vpc: rc.ref, Address: relay.OverlayAddr(p).String(), Grant: grant}
+		_, err = rc.c.Visit(ctx, req)
+	}
+	if err != nil {
+		err = fmt.Errorf("visit with attachment %s: %w", x.spec.Name, err)
 	}
 	a.attMu.Lock()
 	a.mu.Lock()

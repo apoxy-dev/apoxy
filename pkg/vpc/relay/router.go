@@ -35,9 +35,10 @@ const (
 	minBurst      = 64 << 10
 	// MaxLaneSources is the most lane ports of a session: lanes 1 and up.
 	MaxLaneSources = keys.MaxLanes - 1
-	// grantLife is the time from the signing of a grant to its end. The agent
-	// gets a new grant with the Grant call when it needs one.
-	grantLife = 5 * time.Minute
+	// grantLife is the time from the signing of a grant to its end. An agent
+	// sends a grant that it got less than 5 minutes ago, so a reader with a
+	// clock up to 10 minutes ahead of the relay accepts it.
+	grantLife = 15 * time.Minute
 )
 
 // VPCKey is the key of a routing domain: one VPC of one project. The VPC
@@ -207,7 +208,6 @@ type Session struct {
 	conn         *rpc.Conn
 	remote       func() netip.AddrPort
 	chain        []*x509.Certificate // Agent cert chain, leaf first.
-	notAfter     time.Time           // NotAfter of the leaf: the end of the grants of the session.
 	verified     time.Time           // Time of the cert check of the handshake.
 	close        func(code dp.RelayCloseCode, msg string)
 	sendDatagram func([]byte) error
@@ -331,7 +331,6 @@ func (r *Router) AddSession(conn *rpc.Conn) (*Session, error) {
 		func() netip.AddrPort { return addrPort(qc.RemoteAddr()) })
 	s.conn = conn
 	s.chain = tc.PeerCertificates
-	s.notAfter = tc.PeerCertificates[0].NotAfter
 	s.verified = now
 	s.close = func(code dp.RelayCloseCode, msg string) {
 		_ = qc.CloseWithError(quic.ApplicationErrorCode(code), msg)

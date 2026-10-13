@@ -453,10 +453,10 @@ func (rc *relayConn) attach(ctx context.Context, begin time.Time) error {
 	}
 	rc.logRefused(a.cfg.Name, res.GetRoutes())
 	// A bad relay cert fails the attach, not each peer session.
-	if rc.claims, err = relay.VerifyGrant(res.GetGrant(), rc.roots, time.Now()); err != nil {
+	if rc.claims, err = rc.verifyOwn(res.GetGrant()); err != nil {
 		return relayUpgrade(rc.addr, err)
 	}
-	rc.grant = res.GetGrant()
+	rc.grant = newOwnGrant(rc, res.GetGrant(), rc.claims.GetAttachmentId())
 	prefixes, err := parsePrefixes(rc.claims.GetAddresses())
 	if err != nil {
 		return err

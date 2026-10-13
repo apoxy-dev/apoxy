@@ -27,7 +27,6 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 
 	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
-	"github.com/apoxy-dev/apoxy/pkg/vpc/identity"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
@@ -121,12 +120,7 @@ func (srv *Server) Attach(ctx context.Context, in *dp.AttachRequest) (*dp.Attach
 	}
 	a.Addresses = addrs
 	statuses := a.acceptRoutes(routes)
-	notAfter := s.notAfter
-	if notAfter.IsZero() {
-		notAfter = time.Now().Add(identity.CertLifetime)
-	}
-	// The grant of Attach cannot outlive the agent cert.
-	grant, err := srv.signGrant(a, notAfter)
+	grant, err := srv.signGrant(a, time.Now())
 	if err == nil {
 		err = srv.R.attach(s, a)
 	}
@@ -142,8 +136,8 @@ func (srv *Server) Attach(ctx context.Context, in *dp.AttachRequest) (*dp.Attach
 	return &dp.AttachResponse{AttachmentId: a.ID, Grant: grant, Routes: statuses}, nil
 }
 
-// signGrant returns a grant for a that ends at notAfter.
-func (srv *Server) signGrant(a *Attachment, notAfter time.Time) (*dp.AttachmentGrant, error) {
+// signGrant returns a grant for a that ends grantLife after now.
+func (srv *Server) signGrant(a *Attachment, now time.Time) (*dp.AttachmentGrant, error) {
 	cert, err := srv.cert()
 	if err != nil {
 		return nil, err
@@ -154,7 +148,7 @@ func (srv *Server) signGrant(a *Attachment, notAfter time.Time) (*dp.AttachmentG
 		Subject:      a.Subject,
 		Addresses:    prefixStrings(a.Addresses),
 		RelayId:      srv.RelayID,
-		NotAfter:     timestamppb.New(notAfter),
+		NotAfter:     timestamppb.New(now.Add(grantLife)),
 	})
 	if err != nil {
 		return nil, rpc.Errorf(rpc.Internal, "grant: %v", err)
@@ -181,7 +175,7 @@ func (srv *Server) grant(s *Session, id string, now time.Time) (*dp.AttachmentGr
 	if err != nil {
 		return nil, err
 	}
-	return srv.signGrant(a, now.Add(grantLife))
+	return srv.signGrant(a, now)
 }
 
 // attachment returns the attachment id of s. A visitor session has none.
@@ -431,6 +425,9 @@ func SignGrant(cert *tls.Certificate, claims *dp.GrantClaims) (*dp.AttachmentGra
 // protocol revision than this build has.
 var ErrGrantRevision = errors.New("grant needs a newer protocol revision")
 
+// ErrGrantEnded is the error of VerifyGrant for a grant whose end time has passed.
+var ErrGrantEnded = errors.New("grant has ended")
+
 // grantAlgorithm is the signature algorithm of SignGrant for a key type.
 var grantAlgorithm = map[x509.PublicKeyAlgorithm]x509.SignatureAlgorithm{
 	x509.Ed25519: x509.PureEd25519,
@@ -480,7 +477,7 @@ func VerifyGrant(g *dp.AttachmentGrant, roots *x509.CertPool, now time.Time) (*d
 		return nil, fmt.Errorf("%w: the grant needs revision %d, and the verifier has revision %d", ErrGrantRevision, need, dp.Revision)
 	}
 	if !now.Before(c.GetNotAfter().AsTime()) {
-		return nil, errors.New("grant has ended")
+		return nil, fmt.Errorf("%w at %s", ErrGrantEnded, c.GetNotAfter().AsTime().Format(time.RFC3339))
 	}
 	return c, nil
 }

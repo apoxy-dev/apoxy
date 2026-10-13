@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/netip"
 	"slices"
+	"sync"
 	"time"
 
 	"google.golang.org/protobuf/types/known/emptypb"
@@ -28,8 +29,85 @@ const maxGrants = 256
 type extra struct {
 	spec     *AttachmentSpec
 	id       string
-	grant    *dp.AttachmentGrant
+	grant    *ownGrant
 	prefixes []netip.Prefix
+}
+
+// grantRefreshAge is the age of a stored grant from which the agent gets a
+// new one before it sends a grant. A relay signs a grant for 15 minutes, so a
+// reader with a clock up to 10 minutes ahead of the relay accepts a sent grant.
+const grantRefreshAge = 5 * time.Minute
+
+// ownGrant is the grant of one attachment of this agent. The agent sends it
+// to peers and to visited relays, which check it one time.
+type ownGrant struct {
+	rc *relayConn // The attached session that has the attachment.
+	id string
+
+	mu  sync.Mutex // Held during the Grant call, so that two callers make one call.
+	cur *dp.AttachmentGrant
+	got time.Time // When the agent got cur.
+}
+
+// newOwnGrant keeps the grant g of Attach on rc for the attachment id.
+func newOwnGrant(rc *relayConn, g *dp.AttachmentGrant, id string) *ownGrant {
+	return &ownGrant{rc: rc, id: id, cur: g, got: time.Now()}
+}
+
+// get returns the grant to send: the stored one while its age is below
+// grantRefreshAge, else a new one from the relay, which get stores. The age
+// is the time of this host since it got the grant, so its clock has no effect.
+func (g *ownGrant) get(ctx context.Context) (*dp.AttachmentGrant, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if time.Since(g.got) < grantRefreshAge {
+		return g.cur, nil
+	}
+	res, err := g.rc.c.Grant(ctx, &dp.GrantRequest{AttachmentId: g.id})
+	if err != nil {
+		return nil, fmt.Errorf("new grant of attachment %s: %w", g.id, err)
+	}
+	if _, err := g.rc.verifyOwn(res.GetGrant()); err != nil {
+		return nil, fmt.Errorf("new grant of attachment %s: %w", g.id, err)
+	}
+	g.cur, g.got = res.GetGrant(), time.Now()
+	return g.cur, nil
+}
+
+// verifyOwn checks a grant that the relay of rc signed for this agent in this
+// moment. Such a grant has ended only if the clock of this host is wrong.
+func (rc *relayConn) verifyOwn(g *dp.AttachmentGrant) (*dp.GrantClaims, error) {
+	now := time.Now()
+	claims, err := relay.VerifyGrant(g, rc.roots, now)
+	if errors.Is(err, relay.ErrGrantEnded) {
+		slog.Error("The clock of this host is wrong: a grant that the relay signed in this moment has ended",
+			"relay", rc.addr, "host_time", now.UTC().Format(time.RFC3339), "error", err)
+	}
+	return claims, err
+}
+
+// openGrants returns the grant of the session rc and the grants of xs for the
+// Open call of a peer session.
+func (rc *relayConn) openGrants(ctx context.Context, xs []*extra) (*dp.AttachmentGrant, []*dp.AttachmentGrant, error) {
+	base, err := rc.grant.get(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	grants, err := grantsOf(ctx, xs)
+	return base, grants, err
+}
+
+// grantsOf returns the grants of xs to send.
+func grantsOf(ctx context.Context, xs []*extra) ([]*dp.AttachmentGrant, error) {
+	var out []*dp.AttachmentGrant
+	for _, x := range xs {
+		g, err := x.grant.get(ctx)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, g)
+	}
+	return out, nil
 }
 
 // attachExtra runs Attach on rc for s and checks the grant.
@@ -39,7 +117,7 @@ func (rc *relayConn) attachExtra(ctx context.Context, s *AttachmentSpec) (*extra
 		return nil, attachError(rc, fmt.Errorf("attach: %w", err))
 	}
 	rc.logRefused(s.Name, res.GetRoutes())
-	claims, err := relay.VerifyGrant(res.GetGrant(), rc.roots, time.Now())
+	claims, err := rc.verifyOwn(res.GetGrant())
 	if err != nil {
 		return nil, err
 	}
@@ -47,7 +125,7 @@ func (rc *relayConn) attachExtra(ctx context.Context, s *AttachmentSpec) (*extra
 	if err != nil {
 		return nil, err
 	}
-	return &extra{spec: s, id: claims.GetAttachmentId(), grant: res.GetGrant(), prefixes: prefixes}, nil
+	return &extra{spec: s, id: claims.GetAttachmentId(), grant: newOwnGrant(rc, res.GetGrant(), claims.GetAttachmentId()), prefixes: prefixes}, nil
 }
 
 // addExtra adds x to rc and queues its grant for the peers on rc. Routes of x
@@ -143,13 +221,13 @@ func prefixStrings(ps []netip.Prefix) []string {
 	return out
 }
 
-// openGrants returns the grants for the Open call of p, at most maxGrants.
-// The others go to p after Open. a.mu must be held.
-func (a *Agent) openGrants(p *peer) []*dp.AttachmentGrant {
-	var out []*dp.AttachmentGrant
+// openExtras returns the extra attachments whose grants go in the Open call
+// of p, at most maxGrants. The others go to p after Open. a.mu must be held.
+func (a *Agent) openExtras(p *peer) []*extra {
+	var out []*extra
 	for _, x := range p.rc.extras {
 		if len(out) < maxGrants {
-			out = append(out, x.grant)
+			out = append(out, x)
 		} else {
 			p.queueGrants(x, "")
 		}
@@ -166,11 +244,11 @@ func (p *peer) queueGrants(add *extra, remove string) {
 		return
 	}
 	if p.sendAdd == nil {
-		p.sendAdd, p.sendRemove = map[string]*dp.AttachmentGrant{}, map[string]bool{}
+		p.sendAdd, p.sendRemove = map[string]*extra{}, map[string]bool{}
 	}
 	if add != nil {
 		delete(p.sendRemove, add.id)
-		p.sendAdd[add.id] = add.grant
+		p.sendAdd[add.id] = add
 	} else {
 		// The peer can have the grant from Open, so the remove always goes.
 		delete(p.sendAdd, remove)
@@ -194,25 +272,29 @@ func (p *peer) sendGrants() {
 	for {
 		p.mu.Lock()
 		req := &dp.GrantsRequest{}
-		for id, g := range p.sendAdd {
-			if len(req.Add) == maxGrants {
+		var add []*extra
+		for id, x := range p.sendAdd {
+			if len(add) == maxGrants {
 				break
 			}
-			req.Add = append(req.Add, g)
+			add = append(add, x)
 			delete(p.sendAdd, id)
 		}
 		for id := range p.sendRemove {
 			req.Remove = append(req.Remove, id)
 			delete(p.sendRemove, id)
 		}
-		if len(req.Add)+len(req.Remove) == 0 {
+		if len(add)+len(req.Remove) == 0 {
 			p.sending = false
 			p.mu.Unlock()
 			return
 		}
 		p.mu.Unlock()
 		ctx, cancel := context.WithTimeout(p.rc.ctx, keysTimeout)
-		_, err := p.client.Grants(ctx, req)
+		var err error
+		if req.Add, err = grantsOf(ctx, add); err == nil {
+			_, err = p.client.Grants(ctx, req)
+		}
 		cancel()
 		if rpc.CodeOf(err) == rpc.Unimplemented {
 			p.mu.Lock()
