@@ -145,6 +145,7 @@ func TestAdmit(t *testing.T) {
 		dialer   bool
 		instance uint64
 		mode     dp.Mode // Unspecified means PSP.
+		other    bool    // The session is on another relay session of this agent.
 	}
 	cases := []struct {
 		name     string
@@ -173,6 +174,10 @@ func TestAdmit(t *testing.T) {
 		{name: "QUIC pair route taken", mode: dp.Mode_MODE_QUIC, taken: true, wantErr: engine.ErrRouteTaken},
 		{name: "peer moved to QUIC mode", mode: dp.Mode_MODE_QUIC, old: &old{instance: 7}, instance: 7, wantQUIC: true},
 		{name: "QUIC pair with crossed dials", mode: dp.Mode_MODE_QUIC, old: &old{dialer: true, instance: 7, mode: dp.Mode_MODE_QUIC}, instance: 7, keepOld: true, wantQUIC: true},
+		{name: "QUIC pair, peer dials again", mode: dp.Mode_MODE_QUIC, old: &old{instance: 7, mode: dp.Mode_MODE_QUIC}, instance: 7, wantQUIC: true},
+		{name: "QUIC pair, this agent dials again", mode: dp.Mode_MODE_QUIC, old: &old{dialer: true, instance: 7, mode: dp.Mode_MODE_QUIC}, dialer: true, instance: 7, wantQUIC: true},
+		{name: "QUIC pair, another instance dials", mode: dp.Mode_MODE_QUIC, old: &old{instance: 6, mode: dp.Mode_MODE_QUIC}, instance: 7, keepOld: true, wantQUIC: true},
+		{name: "QUIC pair, peer dials again on another relay session", mode: dp.Mode_MODE_QUIC, old: &old{instance: 7, mode: dp.Mode_MODE_QUIC, other: true}, instance: 7, keepOld: true, wantQUIC: true},
 		{name: "other relay CA", cert: otherRelayCert, wantText: "unknown authority"},
 		{name: "other project", claims: func(c *dp.GrantClaims) { c.Vpc.ProjectId = "project-b" }, wantText: "another VPC"},
 		{name: "other VPC", claims: func(c *dp.GrantClaims) { c.Vpc.VpcUid = "vpc-2" }, wantText: "another VPC"},
@@ -242,6 +247,11 @@ func TestAdmit(t *testing.T) {
 				g, _ := grant(t, relayCert, nil)
 				require.NoError(t, a.admit(op, nil, g, tc.old.instance, mode, 1))
 				oldConn = qc
+				if tc.old.other {
+					l, err := a.bind.AddLink()
+					require.NoError(t, err)
+					op.rc = &relayConn{a: a, state: connAttached, qc: newFakeConn(), link: l}
+				}
 			}
 			cert := tc.cert
 			if cert == nil {

@@ -566,6 +566,7 @@ func (a *Agent) admitQUIC(p *peer, v *dp.Version, g *dp.AttachmentGrant, instanc
 		return err
 	}
 	// A PSP pair with the same attachment is from before the agent changed its mode.
+	// An older QUIC pair that the same agent dialed is lost or moved; a crossed dial stays.
 	// away is as in admit: a prefix has a route on one relay session of a link only.
 	a.mu.Lock()
 	var old []*peer
@@ -576,7 +577,7 @@ func (a *Agent) admitQUIC(p *peer, v *dp.Version, g *dp.AttachmentGrant, instanc
 		}
 		switch {
 		case q.rc == p.rc:
-			if !q.quic {
+			if !q.quic || (q.dialer == p.dialer && q.instance == instance) {
 				old = append(old, q)
 			}
 		case q.rc.link == p.rc.link && q.rc.visitor() != p.rc.visitor() && (away == nil || away.idle || away.down):

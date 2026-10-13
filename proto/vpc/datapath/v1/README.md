@@ -851,7 +851,10 @@ session.
 
 If one of the agents is in `QUIC` mode, data between them goes through the
 relay, which bridges PSP and QUIC data frames. The pair does not call `Keys`,
-and both sessions of a crossed dial stay.
+and both sessions of a crossed dial stay. When one agent dials again (an open
+session in the same role with the same SPIFFE ID and the same `instance`, on
+the same relay session), the new session stays and the older one closes with
+`DUPLICATE`.
 
 The agent that receives `Keys` sends with those SAs. It registers their SPIs at
 its relay before it applies them, and unregisters them after a revoke.
