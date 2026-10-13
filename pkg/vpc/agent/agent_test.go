@@ -335,42 +335,6 @@ func TestStatusRTT(t *testing.T) {
 	}
 }
 
-// TestPSPRetry checks that an agent in QUIC mode after a failed probe moves
-// back to PSP only after two probes in a row pass.
-func TestPSPRetry(t *testing.T) {
-	oldMin, oldMax, oldNext := pspRetryMin, pspRetryMax, pspRetryNext
-	pspRetryMin, pspRetryMax, pspRetryNext = 100*time.Millisecond, 400*time.Millisecond, 300*time.Millisecond
-	t.Cleanup(func() { pspRetryMin, pspRetryMax, pspRetryNext = oldMin, oldMax, oldNext })
-	w := newWorld(t)
-	r := w.relay(t, "relay-1")
-	conn := &lossyConn{}
-	conn.limitProbes.Store(true)
-	a := w.agent(t, "a", r, agentOptions{conn: conn})
-	a.attached(t)
-	st := a.a.Status()
-	assert.Equal(t, dp.Mode_MODE_QUIC, st.Mode)
-	assert.Equal(t, dp.FallbackReason_FALLBACK_REASON_PROBE_TIMEOUT, st.Reason)
-
-	// Two retry probes pass, then the probe of the new session gets no reply.
-	// One pass would open the new session before the budget ends.
-	sent := conn.probes.Load()
-	conn.probeBudget.Store(2)
-	// Each failed probe sends 3 probes. The probe after them is the next retry.
-	require.Eventually(t, func() bool { return conn.probes.Load() >= sent+2+3+1 }, 10*time.Second, 5*time.Millisecond)
-	select {
-	case <-a.attach:
-		t.Fatal("agent moved to PSP after one probe passed")
-	default:
-	}
-	assert.Equal(t, dp.Mode_MODE_QUIC, a.a.Status().Mode)
-
-	conn.limitProbes.Store(false)
-	a.attached(t)
-	st = a.a.Status()
-	assert.Equal(t, dp.Mode_MODE_PSP, st.Mode)
-	assert.Equal(t, dp.FallbackReason_FALLBACK_REASON_UNSPECIFIED, st.Reason)
-}
-
 // TestPSPAfterQUIC sends UDP in a PSP session that follows a QUIC session.
 // The shards of the QUIC session must not dial again while the PSP session opens.
 func TestPSPAfterQUIC(t *testing.T) {

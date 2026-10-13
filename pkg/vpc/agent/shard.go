@@ -17,11 +17,11 @@ import (
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
-// keepShards keeps shards 1 to n-1 of rc on its packet connection until rc
-// or its connection closes. A shard that ends is dialed again.
-func (rc *relayConn) keepShards(n int) {
+// keepShards keeps shards 1 to n-1 of rc on its packet connection until ctx
+// ends or the connection of rc closes. A shard that ends is dialed again.
+func (rc *relayConn) keepShards(ctx context.Context, n int) {
 	// A shard dial after the session ends gets no session at the relay.
-	ctx, cancel := context.WithCancel(rc.ctx)
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	stop := context.AfterFunc(rc.qc.Context(), cancel)
 	defer stop()

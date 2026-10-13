@@ -22,6 +22,10 @@ var ErrUpgrade = errors.New("agent needs an upgrade")
 // ResolvePeer.
 const agentNames = 2
 
+// modeChange is the first revision in which a relay changes an open session
+// from QUIC mode to PSP mode on a Rekey call.
+const modeChange = 18
+
 // errRevision is the admit error for a peer whose revision is below the
 // minimum of this agent.
 var errRevision = errors.New("revision is too old")

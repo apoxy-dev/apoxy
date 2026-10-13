@@ -233,7 +233,7 @@ func TestAdmit(t *testing.T) {
 				a.instance = tc.own
 			}
 			if tc.selfQUIC {
-				a.primary().mode = dp.Mode_MODE_QUIC
+				a.primary().mode.Store(int32(dp.Mode_MODE_QUIC))
 			}
 			if tc.taken {
 				bp, err := a.primary().link.AddPeer(netip.MustParseAddrPort("127.0.0.1:443"))

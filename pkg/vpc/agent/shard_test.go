@@ -25,7 +25,7 @@ func TestKeepShards(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		rc.keepShards(peerconn.MaxShards)
+		rc.keepShards(rc.ctx, peerconn.MaxShards)
 	}()
 	live := func() bool { return rc.pc.Shards() == peerconn.MaxShards }
 	require.Eventually(t, live, 10*time.Second, 10*time.Millisecond)

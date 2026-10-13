@@ -253,7 +253,7 @@ func (k *keeper) open(ctx context.Context, n int, eps []endpoint) (opened, faile
 		}
 		// The agent does not visit a relay on which it has an attached session.
 		a.endVisitTo(rc.ep.key(), "agent attaches to the relay")
-		if aerr := a.attach(ctx, rc, nil, k.rank, begin); aerr != nil {
+		if aerr := a.attach(ctx, rc, k.rank, begin); aerr != nil {
 			failed, err = failed+1, errors.Join(err, aerr)
 			continue
 		}

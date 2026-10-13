@@ -342,7 +342,7 @@ func (a *Agent) visit(ctx context.Context, home *relayConn, ref *dp.RelayRef) (*
 		}
 		return nil, err
 	}
-	slog.Info("Started a visit", "relay", rc.addr, "address", rc.self, "transport", transportName(rc.mode), "data", rc.data.Load())
+	slog.Info("Started a visit", "relay", rc.addr, "address", rc.self, "transport", transportName(rc.dataMode()), "data", rc.data.Load())
 	go a.keepVisit(v)
 	return v, nil
 }
@@ -409,7 +409,7 @@ func (rc *relayConn) startVisit(ctx context.Context) error {
 	rc.setRelayPeer(p)
 	rc.pc = peerconn.New(rc.qc, rc.self)
 	rc.pc.HandleData(l.HandleData)
-	if rc.mode == dp.Mode_MODE_QUIC {
+	if rc.dataMode() == dp.Mode_MODE_QUIC {
 		// The packets for the peers of the visit go as data frames on rc, and the
 		// packets for the other peers stay on the attached session.
 		if err := p.UseQUIC(rc.pc); err != nil {
@@ -424,10 +424,7 @@ func (rc *relayConn) startVisit(ctx context.Context) error {
 	// The peer sessions open only after the probe, so that each one knows the result.
 	rc.data.Store(probed != nil && <-probed)
 	go rc.accept(ln)
-	if rc.mode == dp.Mode_MODE_QUIC {
-		close(rc.bridgeTx)
-		close(rc.bridgeRx)
-	} else {
+	if rc.dataMode() == dp.Mode_MODE_PSP {
 		go rc.giveRelayKeys()
 	}
 	return nil
@@ -515,13 +512,13 @@ func (a *Agent) visitorsOf(home *relayConn) []*relayConn {
 // MTU, or returns nil when data cannot go on rc. A session in QUIC mode needs no
 // probe: quic-go refuses a data frame above the datagram limit of the session.
 func (a *Agent) startProbe(ctx context.Context, home, rc *relayConn) <-chan bool {
-	if rc.mode == dp.Mode_MODE_QUIC {
+	if rc.dataMode() == dp.Mode_MODE_QUIC {
 		ok := make(chan bool, 1)
 		ok <- true
 		return ok
 	}
 	// An agent in QUIC mode sends the packets of a PSP peer on its attached session.
-	if home.mode != dp.Mode_MODE_PSP {
+	if home.dataMode() != dp.Mode_MODE_PSP {
 		return nil
 	}
 	a.mu.Lock()

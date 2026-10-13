@@ -352,7 +352,7 @@ func TestVisitData(t *testing.T) {
 			v, err := dialOnVisit(t, ctx, a, r2, eb.addr)
 			require.NoError(t, err)
 			assert.True(t, v.rc.data.Load(), "data goes on the visitor session")
-			assert.Equal(t, quicA, v.rc.mode == dp.Mode_MODE_QUIC, "mode of the visitor session")
+			assert.Equal(t, quicA, v.rc.dataMode() == dp.Mode_MODE_QUIC, "mode of the visitor session")
 			p := peerOn(a.a, v.rc, eb.addr)
 			require.NotNil(t, p, "peer session of a on the visit")
 			assert.False(t, p.idle)

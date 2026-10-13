@@ -277,7 +277,11 @@ func (p *peer) wait(ctx context.Context) error {
 	}
 	chans := []chan struct{}{p.keyed, p.offered}
 	if p.quic {
-		chans = []chan struct{}{p.rc.bridgeTx, p.rc.bridgeRx}
+		// Data frames need no SAs. A session in PSP mode needs the relay SAs.
+		chans = nil
+		if p.rc.dataMode() == dp.Mode_MODE_PSP {
+			chans = []chan struct{}{p.rc.bridgeTx, p.rc.bridgeRx}
+		}
 	}
 	for _, ch := range chans {
 		select {
@@ -410,7 +414,7 @@ func (a *Agent) dial(ctx context.Context, rc *relayConn, dst netip.Addr, res *dp
 		return nil, fmt.Errorf("open peer session to %s: %w", dst, err)
 	}
 	open, err := p.client.Open(ctx, &dp.OpenRequest{
-		Grant: grant, Grants: grants, Instance: a.instance, Mode: rc.mode, Lanes: rc.sendLanes(), Version: a.ver,
+		Grant: grant, Grants: grants, Instance: a.instance, Mode: rc.dataMode(), Lanes: rc.sendLanes(), Version: a.ver,
 	})
 	if err != nil {
 		if refusedDuplicate(qc, err) {
@@ -454,7 +458,7 @@ func (a *Agent) admit(p *peer, v *dp.Version, g *dp.AttachmentGrant, instance ui
 	if p.rc.visitor() && !p.rc.data.Load() {
 		return a.admitIdle(p, v, g, instance)
 	}
-	if mode == dp.Mode_MODE_QUIC || p.rc.mode == dp.Mode_MODE_QUIC {
+	if mode == dp.Mode_MODE_QUIC || p.rc.dataMode() == dp.Mode_MODE_QUIC {
 		return a.admitQUIC(p, v, g, instance)
 	}
 	claims, prefixes, err := a.checkGrant(p, g)
@@ -928,7 +932,7 @@ func (s *peerService) Open(ctx context.Context, in *dp.OpenRequest) (*dp.OpenRes
 	go p.offer()
 	go p.sendReports()
 	return &dp.OpenResponse{
-		Grant: grant, Grants: grants, Instance: s.a.instance, Mode: p.rc.mode, Lanes: p.rc.sendLanes(), Version: s.a.ver,
+		Grant: grant, Grants: grants, Instance: s.a.instance, Mode: p.rc.dataMode(), Lanes: p.rc.sendLanes(), Version: s.a.ver,
 	}, nil
 }
 
