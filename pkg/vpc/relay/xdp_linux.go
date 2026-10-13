@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/apoxy-dev/icx/filter"
+	"github.com/apoxy-dev/softpsp/filter"
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 	"github.com/safchain/ethtool"
