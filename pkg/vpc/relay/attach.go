@@ -53,14 +53,13 @@ type Attachment struct {
 	seq   uint64    // Attach order in the router.
 	since time.Time // Time of the attach.
 	count *attCount // Counts of the packets to the attachment. Set at the attach.
-	// attached is the presence generation of the attach. It does not change.
-	attached uint64
 	// gen is the last presence generation: that of the attach, then that of
 	// each state change. Zero after the end.
 	gen uint64
-	// activeFrom is the end of the hold time: holdTime after the attach, or
-	// after the last return to the normal state.
-	activeFrom time.Time
+	// cand is the record that the route entries of the attachment read. The
+	// attach sets it, and a state change of the session writes its state and
+	// its hold time: holdTime after the attach or the last return to normal.
+	cand candidate
 }
 
 // Addresses assigns overlay addresses to attachments. The relay host
@@ -324,17 +323,15 @@ func (r *Router) attach(s *Session, a *Attachment) error {
 	now := time.Now()
 	r.attaches++
 	a.seq, a.since, a.count = r.attaches, now, &attCount{}
-	a.attached = r.nextGen(now)
-	a.gen, a.activeFrom = a.attached, now.Add(holdTime)
+	// A new attachment has the state of its session.
+	a.cand = candidate{agent: s.agent(), relay: r.relayOf(s), attached: r.nextGen(now), rank: a.Rank, state: s.state, activeFrom: now.Add(holdTime)}
+	a.gen = a.cand.attached
 	if len(s.attachments) == 0 {
 		// The first attachment does not get what s sent before it.
 		s.rxBase = r.rxOf(s, nil)
 	}
 	for _, p := range slices.Concat(a.Addresses, a.Routes) {
-		p = p.Masked()
-		t := target{s: s, origin: a.ID, att: a}
-		// A new attachment has the state of its session.
-		r.addAnnouncer(d, p, newAnnouncer(t, r.relayOf(s), p, a.attached, a.Rank, s.state, a.activeFrom))
+		r.addAnnouncer(d, p.Masked(), target{s: s, origin: a.ID, att: a}, &a.cand)
 	}
 	s.attachments = append(s.attachments, a)
 	r.announce(s, a)

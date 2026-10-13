@@ -3,6 +3,7 @@
 package relay
 
 import (
+	"cmp"
 	"fmt"
 	"net/netip"
 	"slices"
@@ -57,10 +58,7 @@ func (r *Router) release(s *Session) {
 // attachedAt returns the generation of e at the attach. A member from before
 // the field sends one entry for an attachment, so its generation is that one.
 func (e *presenceEntry) attachedAt() uint64 {
-	if e.attached != 0 {
-		return e.attached
-	}
-	return e.gen
+	return cmp.Or(e.attached, e.gen)
 }
 
 // routeState returns the state of the route entries of e on this relay: the
@@ -72,17 +70,23 @@ func (e *presenceEntry) routeState() dp.AnnouncerState {
 	return e.state
 }
 
-// restateClaim gives the route entries of the attachment e of another relay
-// the state and the hold time of e, in place. Router.mu must be held.
+// restateClaim gives the record of the attachment e of another relay the state
+// and the hold time of e, and selects again for each prefix with an entry of
+// e. Router.mu must be held.
 func (r *Router) restateClaim(e *presenceEntry) {
+	state, from := e.routeState(), e.activeFrom
+	if e.cand.state == state && e.cand.activeFrom.Equal(from) {
+		return
+	}
+	e.cand.state, e.cand.activeFrom = state, from
 	d, s := r.domains[e.vpc], r.remotes[e.session()]
 	if d == nil || s == nil {
 		return
 	}
 	for _, p := range e.prefixes {
-		r.restate(d, p, func(a *announcer) bool {
-			return a.s == s && a.origin == e.id && a.restate(e.routeState(), e.activeFrom)
-		})
+		if set := d.routes[p]; set != nil && set.find(s, e.id) != nil {
+			r.restated(d, p, set)
+		}
 	}
 }
 
@@ -90,6 +94,11 @@ func (r *Router) restateClaim(e *presenceEntry) {
 // an entry in the route table for each of its prefixes. A wrong network ID
 // gives an error. Router.mu must be held.
 func (r *Router) claim(e *presenceEntry) error {
+	e.cand = candidate{
+		agent: agentKey{id: e.subject, name: e.agent, instance: e.instance},
+		relay: e.sess.name, attached: e.attachedAt(), rank: e.rank,
+		state: e.routeState(), activeFrom: e.activeFrom,
+	}
 	d := r.domain(e.vpc)
 	for _, p := range e.prefixes {
 		d.claims[p] = append(d.claims[p], e)
@@ -128,8 +137,7 @@ func (r *Router) unclaim(e *presenceEntry) {
 // relay knows with the network ID of e. Router.mu must be held.
 func (r *Router) routeClaim(d *domain, p netip.Prefix, e *presenceEntry) {
 	if d.known && e.networkID == d.networkID {
-		t := target{s: r.record(e), origin: e.id}
-		r.addAnnouncer(d, p, newAnnouncer(t, r.relayOf(t.s), p, e.attachedAt(), e.rank, e.routeState(), e.activeFrom))
+		r.addAnnouncer(d, p, target{s: r.record(e), origin: e.id}, &e.cand)
 	} else if s := r.remotes[e.session()]; s != nil {
 		r.removeAnnouncer(d, p, s, e.id)
 	}

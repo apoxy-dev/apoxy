@@ -101,8 +101,8 @@ func presenceOf(s *Session, a *Attachment) *dp.Presence {
 		Instance:     s.instance,
 		State:        s.state,
 		Rank:         a.Rank,
-		Attached:     a.attached,
-		ActiveFrom:   timestamppb.New(a.activeFrom),
+		Attached:     a.cand.attached,
+		ActiveFrom:   timestamppb.New(a.cand.activeFrom),
 	}
 	for _, p := range slices.Concat(a.Addresses, a.Routes) {
 		e.Prefixes = append(e.Prefixes, p.Masked().String())
@@ -138,6 +138,18 @@ type presenceIn struct {
 	entries map[string]*presenceEntry   // By attachment ID.
 	tags    map[uint32][]*presenceEntry // The same entries, by sender tag.
 	stale   int                         // Entries that sess did not send.
+	// lostTimer drops the entries when the member is still down memberLostTime
+	// after its last loss. It is nil when the member has a session again.
+	lostTimer *time.Timer
+}
+
+// stopLost stops the timer of the last loss of the member. presence.mu must
+// be held.
+func (in *presenceIn) stopLost() {
+	if in.lostTimer != nil {
+		in.lostTimer.Stop()
+		in.lostTimer = nil
+	}
 }
 
 // add keeps the entry e, which sess sent. presence.mu must be held.
@@ -213,6 +225,9 @@ type presenceEntry struct {
 	// lost is true from the loss of the member until a session of the member
 	// sends the entry again. The entry is then suspect on this relay only.
 	lost bool
+	// cand is the record that the route entries of the attachment read. Only
+	// claim and restateClaim write it, from the fields above.
+	cand candidate
 }
 
 func newPresence(m *Mesh) *presence {
@@ -271,6 +286,12 @@ func (p *presence) attachments(k remoteKey) []string {
 // the full set of its member. A member from before the call gets no call.
 func (p *presence) opened(s *MeshSession) {
 	time.AfterFunc(presenceFullSetTime, func() { p.expire(s) })
+	p.mu.Lock()
+	// The member is back, so the time of its last loss ends nothing.
+	if in := p.in[s.name]; in != nil {
+		in.stopLost()
+	}
+	p.mu.Unlock()
 	r := p.router()
 	if r == nil || s.Version().GetRevision() < presenceRevision {
 		return
@@ -655,11 +676,6 @@ func (p *presence) lost(name string) {
 		return
 	}
 	ends := mem.ends
-	time.AfterFunc(memberLostTime, func() {
-		p.forget(name, "lost for "+memberLostTime.String(), func(cur *meshMember) bool {
-			return cur == mem && mem.sess == nil && mem.ends == ends
-		})
-	})
 	if r != nil {
 		r.mu.Lock()
 		defer r.mu.Unlock()
@@ -670,6 +686,13 @@ func (p *presence) lost(name string) {
 	if in == nil {
 		return
 	}
+	// The member has one timer: that of its last loss.
+	in.stopLost()
+	in.lostTimer = time.AfterFunc(memberLostTime, func() {
+		p.forget(name, "lost for "+memberLostTime.String(), func(cur *meshMember) bool {
+			return cur == mem && mem.sess == nil && mem.ends == ends
+		})
+	})
 	sessions := map[remoteKey]struct{}{}
 	for _, e := range in.entries {
 		if e.lost || e.sess == mem.sess {
@@ -715,6 +738,7 @@ func (p *presence) forget(name, reason string, when func(mem *meshMember) bool) 
 	// A session with no Presence call has no entries, so all of them go.
 	if cur == nil || in.sess != cur {
 		cur = nil
+		in.stopLost()
 		delete(p.in, name)
 	}
 	p.sweep(r, in, cur, reason)

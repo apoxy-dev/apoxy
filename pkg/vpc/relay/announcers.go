@@ -42,12 +42,9 @@ type target struct {
 	att *Attachment
 }
 
-// announcer is one entry of the route table: an attachment that announces a
-// prefix. The prefix and the attachment ID are the key of the entry. Only the
-// state and the hold time of an entry change, in restate. Each connection of
-// an agent to a relay is its own announcer.
-type announcer struct {
-	target
+// candidate is what the selection reads of one attachment. One place has it:
+// the Attachment on its relay, and the presenceEntry on each other relay.
+type candidate struct {
 	agent agentKey
 	// relay is the name of the relay with the attachment. Each relay must sort
 	// by the same name, so an attachment of this relay has the name of this relay.
@@ -55,41 +52,55 @@ type announcer struct {
 	// attached is the generation at the attach. A later state of the attachment
 	// does not change it, so it tells which attachment of a connection is newer.
 	attached uint64
-	state    dp.AnnouncerState // The lower state is selected first.
-	// activeFrom is the end of the hold time of the entry, from the relay with
-	// the attachment. The zero time is no hold time.
+	// rank is the order that the agent gives to its own connections. The lower
+	// one is selected first.
+	rank  uint32
+	state dp.AnnouncerState // The lower state is selected first.
+	// activeFrom is the end of the hold time, from the relay with the
+	// attachment. The zero time is no hold time.
 	activeFrom time.Time
+}
+
+// restate gives c the state. A return to the normal state starts a new hold
+// time at now.
+func (c *candidate) restate(state dp.AnnouncerState, now time.Time) {
+	c.state = state
+	if state == stateNormal {
+		c.activeFrom = now.Add(holdTime)
+	}
+}
+
+// announcer is one entry of the route table: an attachment that announces a
+// prefix. The prefix and the attachment ID are the key of the entry. Each
+// connection of an agent to a relay is its own announcer.
+type announcer struct {
+	target
+	// candidate is the record of the attachment, which each entry of the
+	// attachment reads. Only the state and the hold time in it change.
+	*candidate
 	// hash is a hash of the agent and the prefix. The lower one is selected
 	// first, so each prefix has its own order of the agents.
 	hash [sha256.Size]byte
-	// rank is the order that the agent gives to its own connections. The lower
-	// one is selected first.
-	rank uint32
 }
 
-// newAnnouncer returns the entry of the attachment of t on relay for p. The
-// hash is made here, one time, and not at a lookup.
-func newAnnouncer(t target, relay string, p netip.Prefix, attached uint64, rank uint32, state dp.AnnouncerState, activeFrom time.Time) *announcer {
-	e := &announcer{target: t, agent: t.s.agent(), relay: relay, attached: attached, rank: rank, state: state, activeFrom: activeFrom}
+// newAnnouncer returns the entry for p of the attachment of t, which has the
+// record c. The hash is made here, one time, and not at a lookup.
+func newAnnouncer(t target, c *candidate, p netip.Prefix) *announcer {
 	// A SPIFFE ID and an agent name have no zero byte, so the parts stay apart.
-	h := sha256.New()
-	h.Write([]byte(e.agent.id))
-	h.Write([]byte{0})
-	h.Write([]byte(e.agent.name))
-	h.Write([]byte{0})
-	h.Write(binary.BigEndian.AppendUint64(nil, e.agent.instance))
-	h.Write([]byte(p.String()))
-	h.Sum(e.hash[:0])
-	return e
+	// The buffer is on the stack, and append makes a larger one for a long text.
+	var buf [256]byte
+	b := append(buf[:0], c.agent.id...)
+	b = append(b, 0)
+	b = append(b, c.agent.name...)
+	b = append(b, 0)
+	b = binary.BigEndian.AppendUint64(b, c.agent.instance)
+	return &announcer{target: t, candidate: c, hash: sha256.Sum256(p.AppendTo(b))}
 }
 
 // relayOf returns the name of the relay that has s. It is empty for a session
 // of this relay with no mesh. Router.mu must be held.
 func (r *Router) relayOf(s *Session) string {
-	if s.home != "" {
-		return s.home
-	}
-	return r.name
+	return cmp.Or(s.home, r.name)
 }
 
 // sameConn reports whether e and o are entries of one agent process on one
@@ -102,15 +113,6 @@ func (e *announcer) sameConn(o *announcer) bool {
 // sameConn is true: the later attach, then the lower attachment ID.
 func (e *announcer) newer(o *announcer) bool {
 	return cmp.Or(cmp.Compare(o.attached, e.attached), cmp.Compare(e.origin, o.origin)) < 0
-}
-
-// restate gives e the state and the hold time activeFrom. It reports a change.
-func (e *announcer) restate(state dp.AnnouncerState, activeFrom time.Time) bool {
-	if e.state == state && e.activeFrom.Equal(activeFrom) {
-		return false
-	}
-	e.state, e.activeFrom = state, activeFrom
-	return true
 }
 
 // held returns 1 if e is in its hold time at now, and 0 if not. Only a normal
@@ -269,9 +271,10 @@ func (d *domain) activeOf(a netip.Addr) target {
 	return target{}
 }
 
-// addAnnouncer adds the entry e for p to d, and selects again. An entry that d
-// has stays. Router.mu must be held for writing.
-func (r *Router) addAnnouncer(d *domain, p netip.Prefix, e *announcer) {
+// addAnnouncer adds an entry for p to d for the attachment of t, which has the
+// record c, and selects again. An entry that d has stays. Router.mu must be
+// held for writing.
+func (r *Router) addAnnouncer(d *domain, p netip.Prefix, t target, c *candidate) {
 	set := d.routes[p]
 	if set == nil {
 		set = &routeSet{}
@@ -281,9 +284,10 @@ func (r *Router) addAnnouncer(d *domain, p netip.Prefix, e *announcer) {
 			d.lens = append(d.lens, p.Bits())
 			slices.SortFunc(d.lens, func(a, b int) int { return cmp.Compare(b, a) })
 		}
-	} else if set.find(e.s, e.origin) != nil {
+	} else if set.find(t.s, t.origin) != nil {
 		return
 	}
+	e := newAnnouncer(t, c, p)
 	was := set.order
 	set.entries = append(set.entries, e)
 	e.s.routes = append(e.s.routes, p)
@@ -292,7 +296,7 @@ func (r *Router) addAnnouncer(d *domain, p netip.Prefix, e *announcer) {
 }
 
 // AddRoute makes s an announcer of p with the attachment ID origin and no
-// attachment, for a host that has no Attach call.
+// attachment, for a host that has no Attach call. The entry has its own record.
 func (r *Router) AddRoute(s *Session, p netip.Prefix, origin string) error {
 	p = p.Masked()
 	r.mu.Lock()
@@ -300,10 +304,9 @@ func (r *Router) AddRoute(s *Session, p netip.Prefix, origin string) error {
 	if s.closed {
 		return rpc.Errorf(rpc.FailedPrecondition, "session closed")
 	}
-	t := target{s: s, origin: origin}
 	now := time.Now()
-	e := newAnnouncer(t, r.relayOf(s), p, r.nextGen(now), 0, s.state, now.Add(holdTime))
-	r.addAnnouncer(r.domain(s.id.VPC), p, e)
+	c := &candidate{agent: s.agent(), relay: r.relayOf(s), attached: r.nextGen(now), state: s.state, activeFrom: now.Add(holdTime)}
+	r.addAnnouncer(r.domain(s.id.VPC), p, target{s: s, origin: origin}, c)
 	return nil
 }
 
@@ -351,36 +354,41 @@ func (r *Router) removeAnnouncers(s *Session) {
 	}
 }
 
-// restate lets change give entries of the set of p a new state in place, then
-// selects one time. No entry leaves the set, so the rows of p move only if the
-// active announcer changes. Router.mu must be held for writing.
-func (r *Router) restate(d *domain, p netip.Prefix, change func(e *announcer) bool) {
-	set := d.routes[p]
-	if set == nil {
-		return
-	}
-	was, changed := set.order, false
-	for _, e := range set.entries {
-		changed = change(e) || changed
-	}
-	if changed {
-		r.selected(d, p, set, was)
+// restated runs the selection for p after the record of an entry of set got a
+// new state or hold time. No entry came or went, so the sessions and the rows
+// have work only if the order is new. Router.mu must be held for writing.
+func (r *Router) restated(d *domain, p netip.Prefix, set *routeSet) {
+	was := set.order
+	r.reselect(d, p, set)
+	if !slices.Equal(was, set.order) {
+		r.reroute(d, p, set, was)
 	}
 }
 
 // selected runs the selection for p after a change of set, whose result was
-// was before. The sessions of d get the change, and the rows to the active
-// announcer before go to the new one. The selection runs again at the next
-// end of a hold time. Router.mu must be held for writing.
+// was before. Router.mu must be held for writing.
 func (r *Router) selected(d *domain, p netip.Prefix, set *routeSet, was []*announcer) {
+	r.reselect(d, p, set)
+	r.reroute(d, p, set, was)
+}
+
+// reselect runs the selection for p now, and makes it run again at the next
+// end of a hold time. Router.mu must be held for writing.
+func (r *Router) reselect(d *domain, p netip.Prefix, set *routeSet) {
 	now := time.Now()
 	set.selectAgain(now)
+	r.holdUntil(d, p, set, set.nextHold(now), now)
+}
+
+// reroute gives the sessions of d the change of the selection for p from was,
+// and the rows to the active announcer before go to the new one. Router.mu
+// must be held for writing.
+func (r *Router) reroute(d *domain, p netip.Prefix, set *routeSet, was []*announcer) {
 	d.queueRoute(p, was, set.order)
 	r.newEpoch()
 	if len(was) > 0 && was[0] != set.active() {
 		r.moveRows(p, was[0], set.active())
 	}
-	r.holdUntil(d, p, set, set.nextHold(now), now)
 }
 
 // holdEnd is a pending end of a hold time: the selection for the prefix p of

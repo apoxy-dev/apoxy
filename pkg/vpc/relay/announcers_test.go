@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/netip"
 	"slices"
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -63,7 +64,8 @@ func (spec entrySpec) entry(p netip.Prefix) *announcer {
 	if spec.hold != 0 {
 		activeFrom = selectTime.Add(spec.hold)
 	}
-	return newAnnouncer(target{s: s, origin: spec.id}, spec.relay, p, spec.gen, spec.rank, spec.state, activeFrom)
+	c := &candidate{agent: s.agent(), relay: spec.relay, attached: spec.gen, rank: spec.rank, state: spec.state, activeFrom: activeFrom}
+	return newAnnouncer(target{s: s, origin: spec.id}, c, p)
 }
 
 // orderNames returns "attachment@relay" for each entry of order.
@@ -320,12 +322,12 @@ func TestAnnouncerFromPresence(t *testing.T) {
 	cases := []struct {
 		name  string
 		entry *dp.Presence
-		want  announcer
+		want  candidate
 	}{
 		{
 			name:  "member from before the revision: instance 0, rank 0, normal state",
 			entry: remoteEntry("x", 10, prefixR),
-			want:  announcer{agent: agentKey{id: laptop, name: "base"}, attached: 10, state: stateNormal},
+			want:  candidate{agent: agentKey{id: laptop, name: "base"}, attached: 10, state: stateNormal},
 		},
 		{
 			name: "instance, rank and state",
@@ -334,7 +336,7 @@ func TestAnnouncerFromPresence(t *testing.T) {
 				e.Instance = 77
 				return e
 			}(),
-			want: announcer{agent: agentKey{id: laptop, name: "base", instance: 77}, attached: 10, rank: 2, state: stateDraining},
+			want: candidate{agent: agentKey{id: laptop, name: "base", instance: 77}, attached: 10, rank: 2, state: stateDraining},
 		},
 		{
 			name: "entry with a new state: the generation at the attach stays",
@@ -343,7 +345,7 @@ func TestAnnouncerFromPresence(t *testing.T) {
 				e.Attached = 10
 				return e
 			}(),
-			want: announcer{agent: agentKey{id: laptop, name: "base"}, attached: 10, state: stateDraining},
+			want: candidate{agent: agentKey{id: laptop, name: "base"}, attached: 10, state: stateDraining},
 		},
 	}
 	for _, tc := range cases {
@@ -852,4 +854,128 @@ func TestHoldTimer(t *testing.T) {
 		assert.Empty(t, w.r.holds)
 		w.r.mu.RUnlock()
 	})
+}
+
+// TestAnnouncerHash checks the hash of an entry against entryHash, also for an
+// agent ID that is longer than the buffer of the hash.
+func TestAnnouncerHash(t *testing.T) {
+	cases := []struct {
+		name     string
+		agent    string
+		instance uint64
+		prefix   string
+	}{
+		{name: "IPv6 prefix", agent: "a", prefix: prefixA},
+		{name: "IPv4 prefix", agent: "a", prefix: prefixR},
+		{name: "IPv4 prefix in the IPv6 form", agent: "a", prefix: "::ffff:10.9.0.0/112"},
+		{name: "instance", agent: "a", instance: 1<<63 + 7, prefix: prefixA},
+		{name: "long agent ID", agent: strings.Repeat("a", 600), instance: 3, prefix: prefixA},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := netip.MustParsePrefix(tc.prefix)
+			e := entrySpec{agent: tc.agent, instance: tc.instance}.entry(p)
+			assert.Equal(t, entryHash(tc.agent, tc.instance, p), e.hash[:])
+		})
+	}
+}
+
+// TestAttachmentRecord checks that the entries of an attachment for each of
+// its prefixes read one record, that of the attachment, so one write of a new
+// state reaches each prefix.
+func TestAttachmentRecord(t *testing.T) {
+	cases := []struct {
+		name string
+		// setup makes an attachment with prefixA and prefixR, and returns its record.
+		setup  func(w *routeWorld) *candidate
+		change func(w *routeWorld)
+	}{
+		{
+			name: "attachment of this relay",
+			setup: func(w *routeWorld) *candidate {
+				a := attachment("y", prefixA)
+				a.Routes = []netip.Prefix{netip.MustParsePrefix(prefixR)}
+				require.NoError(w.t, w.r.attach(w.session("local", vpcA, laptop, namedHello("base")), a))
+				return &a.cand
+			},
+			change: func(w *routeWorld) { setState(w.r, w.sess["local"], stateSuspect) },
+		},
+		{
+			name: "attachment of another relay",
+			setup: func(w *routeWorld) *candidate {
+				w.send("relay-a", remoteEntry("x", 10, prefixA, prefixR))
+				w.m.pres.mu.Lock()
+				defer w.m.pres.mu.Unlock()
+				return &w.m.pres.in["relay-a"].entries["x"].cand
+			},
+			change: func(w *routeWorld) {
+				e := suspect(remoteEntry("x", 30, prefixA, prefixR))
+				e.Attached = 10
+				w.send("relay-a", e)
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				w := newRouteWorld(t, NewRouter(nil, Config{}))
+				w.session("watcher", vpcA, agentID(vpcA, "watcher"), thisRevision())
+				record := tc.setup(w)
+				tc.change(w)
+				w.r.mu.RLock()
+				defer w.r.mu.RUnlock()
+				assert.Equal(t, stateSuspect, record.state)
+				for _, p := range []string{prefixA, prefixR} {
+					set := w.r.domains[vpcA].routes[netip.MustParsePrefix(p)]
+					require.Len(t, set.entries, 1, "entries of %s", p)
+					assert.Same(t, record, set.entries[0].candidate, "record of the entry of %s", p)
+				}
+			})
+		})
+	}
+}
+
+// TestStateChangeWork checks the work of a state change of a session. Each
+// entry gets the state, but the rows of the mesh members get their checks
+// again only when the order of the selection is new. The agent laptop has the
+// attachment y on this relay with rank 2, and in some cases x on relay-a.
+func TestStateChangeWork(t *testing.T) {
+	cases := []struct {
+		name  string
+		rank  uint32 // Rank of x. Zero is no such attachment.
+		state dp.AnnouncerState
+		epoch bool // The router starts a new epoch.
+	}{
+		{name: "sole announcer goes suspect: no new order", state: stateSuspect},
+		{name: "sole announcer goes draining: no new order", state: stateDraining},
+		{name: "standby announcer goes suspect: no new order", rank: 1, state: stateSuspect},
+		{name: "active announcer goes suspect: new order", rank: 3, state: stateSuspect, epoch: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				w := newRouteWorld(t, NewRouter(nil, Config{}))
+				w.session("watcher", vpcA, agentID(vpcA, "watcher"), thisRevision())
+				local := w.session("local", vpcA, laptop, namedHello("base"))
+				y := attachment("y", prefixA)
+				y.Routes, y.Rank = []netip.Prefix{netip.MustParsePrefix(prefixR)}, 2
+				require.NoError(t, w.r.attach(local, y))
+				if tc.rank != 0 {
+					w.send("relay-a", ranked(remoteEntry("x", 10, prefixR), tc.rank))
+				}
+				endHold()
+				w.drain()
+				before := w.r.epoch.Load()
+
+				setState(w.r, local, tc.state)
+				assert.Equal(t, tc.epoch, w.r.epoch.Load() != before, "new epoch")
+				assert.Equal(t, tc.epoch, len(w.changes("watcher")) > 0, "changes for the watcher")
+				for _, p := range []string{prefixA, prefixR} {
+					state, ok := entryState(w.r, p, "y")
+					require.True(t, ok, "entry of y for %s", p)
+					assert.Equal(t, tc.state, state, "state of y for %s", p)
+				}
+			})
+		})
+	}
 }

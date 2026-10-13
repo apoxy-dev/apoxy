@@ -125,38 +125,35 @@ func (r *Router) startDrain(now time.Time) {
 	}
 }
 
-// setState gives each entry of s the state, in place, and sends its attachments
-// to the mesh. A return to the normal state starts a new hold time. Router.mu
-// must be held for writing.
+// setState gives the record of each attachment of s the state, sends the
+// attachments to the mesh, and selects again for each prefix of s. A return to
+// the normal state starts a new hold time. Router.mu must be held for writing.
 func (r *Router) setState(s *Session, state dp.AnnouncerState, reason string, now time.Time) {
 	if s.closed || s.state == state {
 		return
 	}
 	s.state = state
-	returns, from := state == stateNormal, now.Add(holdTime)
 	for _, a := range s.attachments {
 		a.gen = r.nextGen(now)
-		if returns {
-			a.activeFrom = from
-		}
+		a.cand.restate(state, now)
+		r.announce(s, a)
 	}
 	if d := r.domains[s.id.VPC]; d != nil {
 		// A prefix is in s.routes one time for each entry of s. The second
-		// pass over its set changes nothing.
+		// selection for it finds the same order.
 		for _, p := range s.routes {
-			r.restate(d, p, func(e *announcer) bool {
-				if e.s != s {
-					return false
+			set := d.routes[p]
+			if set == nil {
+				continue
+			}
+			for _, e := range set.entries {
+				// An entry of AddRoute has no attachment: the entry has its own record.
+				if e.s == s && e.att == nil {
+					e.restate(state, now)
 				}
-				if returns {
-					return e.restate(state, from)
-				}
-				return e.restate(state, e.activeFrom)
-			})
+			}
+			r.restated(d, p, set)
 		}
-	}
-	for _, a := range s.attachments {
-		r.announce(s, a)
 	}
 	if len(s.routes) == 0 {
 		return

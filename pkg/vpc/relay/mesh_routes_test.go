@@ -1819,6 +1819,19 @@ func TestMemberLost(t *testing.T) {
 			order: lostOrder, state: stateSuspect, delta: toStandby,
 		},
 		{
+			name: "member came back and is down again for memberLostTime: the entries go",
+			steps: func(w *routeWorld) {
+				w.lose("relay-a")
+				w.open("relay-a")
+				w.full("relay-a", x(10))
+				w.pass(time.Minute)
+				w.lose("relay-a")
+				w.pass(memberLostTime)
+			},
+			order: []string{"y@relay-b"}, gone: true,
+			delta: []string{"-x " + prefixR, "+y " + prefixR, "-x " + prefixA},
+		},
+		{
 			name: "lost member leaves the member set: the entries go at once",
 			steps: func(w *routeWorld) {
 				w.lose("relay-a")
@@ -1866,6 +1879,57 @@ func TestMemberLost(t *testing.T) {
 				_, has := w.table(vpcA)[prefixA]
 				assert.Equal(t, !tc.gone, has, "route of the address of x")
 				w.check()
+			})
+		})
+	}
+}
+
+// TestMemberLostTimer checks the timer of memberLostTime of a member: only the
+// one of its last loss runs, and none runs after the member is back or gone.
+func TestMemberLostTimer(t *testing.T) {
+	lose := func(w *routeWorld) { w.lose("relay-a") }
+	back := func(w *routeWorld) {
+		w.open("relay-a")
+		w.pass(0)
+	}
+	leave := func(w *routeWorld) { w.leave("relay-a") }
+	cases := []struct {
+		name  string
+		steps []func(w *routeWorld)
+		runs  bool // A timer runs at the end.
+	}{
+		{name: "lost member", steps: []func(w *routeWorld){lose}, runs: true},
+		{name: "member came back", steps: []func(w *routeWorld){lose, back}},
+		{name: "member came back and is lost again", steps: []func(w *routeWorld){lose, back, lose}, runs: true},
+		{name: "lost member leaves the member set", steps: []func(w *routeWorld){lose, leave}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				w := newRouteWorld(t, NewRouter(nil, Config{}))
+				timer := func() *time.Timer {
+					w.m.pres.mu.Lock()
+					defer w.m.pres.mu.Unlock()
+					if in := w.m.pres.in["relay-a"]; in != nil {
+						return in.lostTimer
+					}
+					return nil
+				}
+				var cur *time.Timer
+				var before []*time.Timer
+				for _, step := range tc.steps {
+					step(w)
+					if next := timer(); next != cur {
+						if cur != nil {
+							before = append(before, cur)
+						}
+						cur = next
+					}
+				}
+				assert.Equal(t, tc.runs, cur != nil, "timer of the last loss")
+				for _, tm := range before {
+					assert.False(t, tm.Stop(), "a timer from before runs")
+				}
 			})
 		})
 	}
