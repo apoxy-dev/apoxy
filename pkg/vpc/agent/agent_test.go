@@ -444,80 +444,118 @@ func stream(t *testing.T, s *stack.Stack, src, dst netip.Addr, port uint16) (sto
 	return stop
 }
 
-// TestRenew checks that the agent opens a session with the renewed cert before
-// it closes the old one, and that the route moves with no remove at peers. An
-// agent with an identity file does the same when the file has a new cert, and
-// it does not enroll.
+// dialTCP opens a TCP connection from ta to dst:port, which serveTCP answers.
+func dialTCP(t *testing.T, ta *testAgent, dst netip.Addr, port uint16) net.Conn {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c, err := gonet.DialContextTCP(ctx, ta.stack, *fullAddr(dst, port), ipv6.ProtocolNumber)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+	return c
+}
+
+// newCert waits until the agent uses another cert than old.
+func (ta *testAgent) newCert(t *testing.T, old *identity.Credential) {
+	t.Helper()
+	require.Eventually(t, func() bool { return ta.a.cfg.Identity.Current() != old }, 10*time.Second, 10*time.Millisecond,
+		"the agent did not get a new cert")
+}
+
+// TestRenew checks that a new agent cert changes nothing on an open relay
+// session: the connection, the address and a TCP stream stay, and the agent
+// runs no callback. An agent with an identity file does not enroll.
 func TestRenew(t *testing.T) {
 	cases := []struct {
-		name  string
-		two   bool // The agent knows a second relay.
-		route bool // The agent advertises a route, and agent b sends to it.
-		file  bool // The agent has an identity file. The test replaces the file.
+		name string
+		file bool // The agent has an identity file. The test replaces the file.
 	}{
-		{name: "one relay"},
-		{name: "two relays", two: true},
-		{name: "one relay with a route", route: true},
+		{name: "enroll"},
 		{name: "identity file", file: true},
-		{name: "identity file, two relays", file: true, two: true},
-		{name: "identity file, one relay with a route", file: true, route: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			w := newWorld(t)
 			r := w.relay(t, "relay-1")
-			opts := agentOptions{life: 3 * time.Second}
+			opts := agentOptions{tcp: true, life: 3 * time.Second}
 			if tc.file {
-				opts = agentOptions{identityFile: true}
-			}
-			if tc.two {
-				opts.relays = []identity.Relay{r.ref(), w.relay(t, "relay-2").ref()}
-			}
-			route, far := netip.MustParsePrefix("fd99::/64"), netip.MustParseAddr("fd99::5")
-			if tc.route {
-				opts.routes = []netip.Prefix{route}
+				opts = agentOptions{tcp: true, identityFile: true}
 			}
 			a := w.agent(t, "a", r, opts)
-			first := a.attached(t)
-			var b *testAgent
-			var stop func()
-			if tc.route {
-				b = w.agent(t, "b", r, agentOptions{})
-				eb := b.attached(t)
-				a.netstack(t, a.binding(), far, false)
-				echo(t, a.stack, far, 9000)
-				require.Eventually(t, func() bool { return slices.Contains(b.routeSet(), route) },
-					5*time.Second, 10*time.Millisecond)
-				stop = stream(t, b.stack, eb.addr, far, 9000)
-			}
-			old := a.current()
+			b := w.agent(t, "b", r, agentOptions{tcp: true})
+			ea, eb := a.attached(t), b.attached(t)
+			serveTCP(t, b.stack, eb.addr, 9000)
+			c := dialTCP(t, a, eb.addr, 9000)
+			roundTrip(t, c, "before the renew")
+
+			old, cred := a.current(), a.a.cfg.Identity.Current()
 			if tc.file {
 				// The new cert must expire later than the cert in use.
 				a.writeIdentity(25 * time.Hour)
 			}
-			second := a.attached(t)
-			assert.NotEqual(t, first.addr, second.addr, "each relay session has its own addresses")
-			assert.NotSame(t, old.cred, a.current().cred, "the new session has the new cert")
+			a.newCert(t, cred)
+			require.Never(t, func() bool { return len(a.attach) > 0 }, 500*time.Millisecond, 20*time.Millisecond,
+				"the agent attached again after the renew")
+			roundTrip(t, c, "after the renew")
+			assert.Same(t, old, a.current(), "the agent has the same relay session")
+			assert.NoError(t, old.qc.Context().Err(), "the relay connection is open")
+			assert.Equal(t, ea.addr, a.current().self)
+			assert.Equal(t, []string{"attach a " + ea.addr.String()}, a.events("a"), "no callback after the first attach")
 			if tc.file {
 				assert.Zero(t, a.enrolls.Load(), "an agent with an identity file does not enroll")
 			} else {
 				assert.GreaterOrEqual(t, a.enrolls.Load(), int32(2))
 			}
-			id := identity.ID{Project: testProject, VPC: testVPC, Agent: "a"}.String()
-			if tc.route {
-				require.Eventually(t, func() bool { return w.addrs.LiveOf(id) == 1 },
-					5*time.Second, 10*time.Millisecond, "the old session closes")
-				stop()
-				assert.Equal(t, []string{"+" + route.String()}, b.routeEvents(route), "b keeps the route")
-				assert.Empty(t, a.routeEvents(route), "a never gets its own route")
+		})
+	}
+}
+
+// TestSessionAfterCertExpiry checks a relay session after the cert of its
+// handshake expired: it carries data, and the agent opens a peer session and
+// starts a visit on it.
+func TestSessionAfterCertExpiry(t *testing.T) {
+	cases := []struct {
+		name  string
+		visit bool // The relays of a and b have no path, so a visits the relay of b.
+	}{
+		{name: "new peer session"},
+		{name: "visit", visit: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w, r1, r2 := meshRelays(t)
+			a := w.agent(t, "a", r1, agentOptions{tcp: true, life: 3 * time.Second, visitCheck: time.Hour})
+			near := w.agent(t, "near", r1, agentOptions{tcp: true})
+			b := w.agent(t, "b", r2, agentOptions{visitCheck: time.Hour, visitWait: time.Hour})
+			ea, en, eb := a.attached(t), near.attached(t), b.attached(t)
+			echo(t, b.stack, eb.addr, 9000)
+			a.hasRoutes(t, eb.prefixes[0])
+			serveTCP(t, near.stack, en.addr, 9000)
+			c := dialTCP(t, a, en.addr, 9000)
+			roundTrip(t, c, "before the expiry")
+
+			old := a.current()
+			first := a.a.cfg.Identity.Current().Cert.NotAfter
+			require.Eventually(t, func() bool { return time.Now().After(first) }, 10*time.Second, 50*time.Millisecond)
+			roundTrip(t, c, "after the expiry")
+			if tc.visit {
+				t.Cleanup(cutMesh(r1, r2))
+				waitReach(t, a, eb.addr, dp.Reach_REACH_VISIT)
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				_, err := dialOnVisit(t, ctx, a, r2, eb.addr)
+				require.NoError(t, err)
 			}
-			assert.Equal(t, 2, w.addrs.Overlap(id), "the new session attaches before the old one closes")
+			ping(t, a.stack, ea.addr, eb.addr, 9000, "to a new peer")
+			assert.Same(t, old, a.current(), "the agent has the same relay session")
+			assert.Equal(t, []string{"attach a " + ea.addr.String()}, a.events("a"))
 		})
 	}
 }
 
 // TestSharedIdentityFile runs two agents with one identity file: one cert and
-// one key, and a name for each agent. A new file moves the two agents.
+// one key, and a name for each agent. A new file gives the two agents the new
+// cert, and their relay sessions stay.
 func TestSharedIdentityFile(t *testing.T) {
 	w := newWorld(t)
 	r := w.relay(t, "relay-1")
@@ -525,16 +563,14 @@ func TestSharedIdentityFile(t *testing.T) {
 	a1 := w.agent(t, "a1", r, opts)
 	a2 := w.agent(t, "a2", r, opts)
 	c := w.agent(t, "c", r, agentOptions{})
-	ec := c.attached(t)
+	e1, e2, ec := a1.attached(t), a2.attached(t), c.attached(t)
+	echo(t, a1.stack, e1.addr, 9001)
+	echo(t, a2.stack, e2.addr, 9002)
 	echo(t, c.stack, ec.addr, 9000)
 
-	// traffic waits for the next attach of a1 and a2, and sends data between
-	// each two of the three agents.
+	// traffic sends data between each two of the three agents.
 	traffic := func() {
 		t.Helper()
-		e1, e2 := a1.attached(t), a2.attached(t)
-		echo(t, a1.stack, e1.addr, 9001)
-		echo(t, a2.stack, e2.addr, 9002)
 		ping(t, a1.stack, e1.addr, e2.addr, 9002, "a1 to a2")
 		ping(t, a2.stack, e2.addr, e1.addr, 9001, "a2 to a1")
 		ping(t, a1.stack, e1.addr, ec.addr, 9000, "a1 to c")
@@ -543,36 +579,61 @@ func TestSharedIdentityFile(t *testing.T) {
 		ping(t, c.stack, ec.addr, e2.addr, 9002, "c to a2")
 	}
 	traffic()
-	first := a1.current().cred.Cert
-	require.True(t, first.Equal(a2.current().cred.Cert), "a1 and a2 have one cert")
+	first := a1.a.cfg.Identity.Current()
+	require.True(t, first.Cert.Equal(a2.a.cfg.Identity.Current().Cert), "a1 and a2 have one cert")
 
 	a1.writeIdentity(25 * time.Hour)
+	a1.newCert(t, first)
+	require.Eventually(t, func() bool {
+		return a1.a.cfg.Identity.Current().Cert.Equal(a2.a.cfg.Identity.Current().Cert)
+	}, 10*time.Second, 10*time.Millisecond, "a2 has the cert of the new file")
 	traffic()
-	second := a1.current().cred.Cert
-	assert.False(t, first.Equal(second), "a1 has the cert of the new file")
-	assert.True(t, second.Equal(a2.current().cred.Cert), "a2 has the cert of the new file")
+	assert.Zero(t, len(a1.attach)+len(a2.attach), "the relay sessions stay")
 	assert.Zero(t, a1.enrolls.Load()+a2.enrolls.Load(), "an agent with an identity file does not enroll")
 }
 
-// TestIdentityFileExpires checks that an agent with an identity file stops
-// with an error when the cert of the file expires and the file has no new cert.
+// TestIdentityFileExpires checks that an agent with an identity file keeps
+// its relay session after the cert of the file expired, and that Run returns
+// an error when the agent then has no session.
 func TestIdentityFileExpires(t *testing.T) {
-	w := newWorld(t)
-	r := w.relay(t, "relay-1")
-	runErr := make(chan error, 1)
-	a := w.agent(t, "a", r, agentOptions{identityFile: true, life: 2 * time.Second, runErr: runErr})
-	a.attached(t)
-	want := a.a.cfg.Identity.Current().Cert.NotAfter
-	select {
-	case err := <-runErr:
-		var expired *identity.ExpiredError
-		require.ErrorAs(t, err, &expired)
-		assert.True(t, expired.At.Equal(want), "the error has the expiry time of the cert")
-		assert.False(t, time.Now().Before(want), "Run stops at the expiry time, not before it")
-	case <-time.After(10 * time.Second):
-		t.Fatal("Run did not stop after the cert of the identity file expired")
+	cases := []struct {
+		name string
+		lose bool // The relay session ends after the expiry.
+	}{
+		{name: "attached session"},
+		{name: "no session", lose: true},
 	}
-	assert.Zero(t, a.enrolls.Load(), "an agent with an identity file does not enroll")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newWorld(t)
+			r := w.relay(t, "relay-1")
+			runErr := make(chan error, 1)
+			a := w.agent(t, "a", r, agentOptions{identityFile: true, life: 2 * time.Second, runErr: runErr})
+			b := w.agent(t, "b", r, agentOptions{})
+			ea, eb := a.attached(t), b.attached(t)
+			echo(t, b.stack, eb.addr, 9000)
+			ping(t, a.stack, ea.addr, eb.addr, 9000, "before the expiry")
+			old, want := a.current(), a.a.cfg.Identity.Current().Cert.NotAfter
+			require.Eventually(t, func() bool { return time.Now().After(want) }, 10*time.Second, 50*time.Millisecond)
+			require.Never(t, func() bool { return len(runErr) > 0 }, 500*time.Millisecond, 20*time.Millisecond,
+				"Run stopped while the agent has a relay session")
+			ping(t, a.stack, ea.addr, eb.addr, 9000, "after the expiry")
+			assert.Same(t, old, a.current())
+			assert.Zero(t, a.enrolls.Load(), "an agent with an identity file does not enroll")
+			if !tc.lose {
+				return
+			}
+			a.reconnect()
+			select {
+			case err := <-runErr:
+				var expired *identity.ExpiredError
+				require.ErrorAs(t, err, &expired)
+				assert.True(t, expired.At.Equal(want), "the error has the expiry time of the cert")
+			case <-time.After(10 * time.Second):
+				t.Fatal("Run did not stop after the last session of an expired identity file ended")
+			}
+		})
+	}
 }
 
 // closeOf waits for the end of the session rc and returns its close.

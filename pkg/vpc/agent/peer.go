@@ -528,7 +528,7 @@ func (a *Agent) admit(p *peer, v *dp.Version, g *dp.AttachmentGrant, instance ui
 // first reports whether this agent is before the agent with subject and
 // instance: the lower subject, or the lower instance when they have one subject.
 func (a *Agent) first(rc *relayConn, subject string, instance uint64) bool {
-	if own := rc.cred.ID.String(); own != subject {
+	if own := a.cfg.Identity.Current().ID.String(); own != subject {
 		return own < subject
 	}
 	return a.instance < instance

@@ -18,7 +18,6 @@ import (
 
 	"github.com/quic-go/quic-go"
 
-	"github.com/apoxy-dev/apoxy/pkg/vpc/identity"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/peerconn"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/psp"
@@ -48,19 +47,6 @@ func (s connState) String() string {
 	return [...]string{"dialing", "attached", "draining", "ended"}[s]
 }
 
-// cause is why the agent replaces an attached session with a session on the
-// same relay.
-type cause int
-
-const (
-	causeRenew cause = iota // The agent has a new cert.
-	causePSP                // PSP passes again for a session in QUIC mode.
-)
-
-func (c cause) String() string {
-	return [...]string{"new cert", "PSP passes again"}[c]
-}
-
 // relayConn is one relay session with its attachments. Each attached session
 // has its own addresses.
 type relayConn struct {
@@ -84,7 +70,6 @@ type relayConn struct {
 	st     rpc.BidiStreamClient[dp.SessionRequest, dp.SessionResponse]
 	sendMu sync.Mutex     // Guards sends on st after start.
 	local  netip.AddrPort // Local address at the last check. Only tick changes it after the dial.
-	cred   *identity.Credential
 	ep     endpoint
 	addr   string         // Relay address as dialed.
 	name   string         // TLS name of the relay.
@@ -145,10 +130,9 @@ type relayConn struct {
 
 	pc     *peerconn.Conn
 	peerTr *quic.Transport
-	// drained gets the alternates of the Drain of the relay. renewed gets a
-	// value when the agent has a new cert. The watcher of the session reads them.
+	// drained gets the alternates of the Drain of the relay. The watcher of the
+	// session reads it.
 	drained chan []*dp.RelayRef
-	renewed chan struct{}
 }
 
 // visitor reports whether rc is a visitor session.
@@ -162,19 +146,16 @@ func (a *Agent) dialRelay(ctx context.Context, e endpoint, home *relayConn) (*re
 	if err != nil {
 		return nil, err
 	}
-	cred := a.cfg.Identity.Current()
 	rc := &relayConn{
 		a:        a,
 		rtt:      new(atomic.Int64),
-		cred:     cred,
 		ep:       e,
 		addr:     e.addr,
 		name:     cmp.Or(e.id, host),
-		roots:    a.relayRoots(cred),
+		roots:    a.relayRoots(a.cfg.Identity.Current()),
 		home:     home,
 		sem:      make(chan struct{}, maxInFlight),
 		drained:  make(chan []*dp.RelayRef, 1),
-		renewed:  make(chan struct{}, 1),
 		bridgeTx: make(chan struct{}),
 		bridgeRx: make(chan struct{}),
 	}
@@ -269,8 +250,8 @@ func (a *Agent) drain(rc *relayConn, alts []*dp.RelayRef) {
 }
 
 // end closes rc with its peer sessions and its visits, and queues OnDetach for
-// its addresses. It runs when the session is lost, when its replacement on the
-// same relay is attached, when a dial fails, and when the agent stops.
+// its addresses. It runs when the session is lost, when its replacement in PSP
+// mode is attached, when a dial fails, and when the agent stops.
 func (a *Agent) end(rc *relayConn) {
 	a.attMu.Lock()
 	a.mu.Lock()
@@ -371,14 +352,9 @@ func (a *Agent) usePrimary() {
 	}
 }
 
-// watch follows the attached session rc until it ends. It replaces rc when the
-// agent has a new cert and when PSP passes again.
+// watch follows the attached session rc until it ends. It replaces rc when
+// PSP passes again. A new agent cert does not change rc.
 func (a *Agent) watch(rc *relayConn) {
-	renew := time.NewTimer(0)
-	defer renew.Stop()
-	if a.cfg.Identity.Current() == rc.cred {
-		renew.Stop()
-	}
 	retry := newPSPRetry(rc)
 	defer retry.timer.Stop()
 	var probed <-chan bool
@@ -396,30 +372,23 @@ func (a *Agent) watch(rc *relayConn) {
 			return
 		case alts := <-rc.drained:
 			a.drain(rc, alts)
-		case <-rc.renewed:
-			renew.Reset(0)
-		case <-renew.C:
-			// A value can be for the cert that rc already uses.
-			if a.cfg.Identity.Current() != rc.cred && a.replace(rc, causeRenew) != nil {
-				renew.Reset(renewRetry)
-			}
 		case <-retry.timer.C:
 			probed = rc.probe(rc.ctx, psp.DefaultMTU)
 		case ok := <-probed:
 			probed = nil
 			// The new session probes again before it picks its mode.
-			if retry.passed(ok) && a.replace(rc, causePSP) != nil {
+			if retry.passed(ok) && a.replace(rc) != nil {
 				retry.backoff()
 			}
 		}
 	}
 }
 
-// replace opens a session on the relay of rc that takes the rank of rc. rc
-// ends when the new session is attached, so its addresses change. The open
-// stops when rc ends: then Run opens a session. A relay that drains takes no
-// new session.
-func (a *Agent) replace(rc *relayConn, why cause) error {
+// replace opens a session in PSP mode on the relay of rc that takes the rank
+// of rc. rc ends when the new session is attached, so its addresses change.
+// The open stops when rc ends: then Run opens a session. A relay that drains
+// takes no new session.
+func (a *Agent) replace(rc *relayConn) error {
 	a.mu.Lock()
 	draining := rc.state == connDraining
 	a.mu.Unlock()
@@ -429,10 +398,10 @@ func (a *Agent) replace(rc *relayConn, why cause) error {
 	ctx, cancel := context.WithCancel(rc.ctx)
 	defer cancel()
 	defer context.AfterFunc(rc.qc.Context(), cancel)()
-	slog.Info("Replacing the relay session", "relay", rc.addr, "cause", why)
+	slog.Info("Replacing the relay session because PSP passes again", "relay", rc.addr)
 	begin := time.Now()
 	next, err := a.dialRelay(ctx, rc.ep, nil)
-	if err == nil && why == causePSP && next.mode != dp.Mode_MODE_PSP {
+	if err == nil && next.mode != dp.Mode_MODE_PSP {
 		a.end(next)
 		err = errors.New("the PSP probe of the new session failed")
 	}
@@ -440,7 +409,7 @@ func (a *Agent) replace(rc *relayConn, why cause) error {
 		err = a.attach(ctx, next, rc, rc.rank, begin)
 	}
 	if err != nil && ctx.Err() == nil {
-		slog.Warn("Failed to replace the relay session", "relay", rc.addr, "cause", why, "error", err)
+		slog.Warn("Failed to replace the relay session", "relay", rc.addr, "error", err)
 	}
 	return err
 }

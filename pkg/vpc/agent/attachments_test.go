@@ -107,7 +107,7 @@ func TestAttachmentsOnNewSession(t *testing.T) {
 	ended := []string{"attach OLD", "detach OLD", "attach NEW"}
 	cases := []struct {
 		name string
-		move string // drain, renew or lost.
+		move string // drain or lost.
 		// The drain gives no alternate, and the draining relay stops Accept, as a
 		// relay host in its lame duck. The agent has the other relay in its list.
 		lameDuck bool
@@ -115,7 +115,6 @@ func TestAttachmentsOnNewSession(t *testing.T) {
 	}{
 		{name: "drain", move: "drain", want: drained},
 		{name: "drain with no alternate", move: "drain", lameDuck: true, want: drained},
-		{name: "cert renew", move: "renew", want: ended},
 		{name: "session lost", move: "lost", want: ended},
 	}
 	for _, tc := range cases {
@@ -124,9 +123,6 @@ func TestAttachmentsOnNewSession(t *testing.T) {
 			r1, r2 := w.relay(t, "relay-1"), w.relay(t, "relay-2")
 			opts := agentOptions{}
 			alts := []*dp.RelayRef{{Id: r2.id, Addresses: []string{r2.addr}}}
-			if tc.move == "renew" {
-				opts.life = 3 * time.Second
-			}
 			if tc.lameDuck {
 				opts.relays, alts = []identity.Relay{r1.ref(), r2.ref()}, nil
 			}

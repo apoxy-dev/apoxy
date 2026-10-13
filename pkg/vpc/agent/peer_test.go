@@ -63,7 +63,11 @@ func (w *world) stubAgent(t *testing.T, name string) *Agent {
 	udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	require.NoError(t, err)
 	tr := &quic.Transport{Conn: udp}
-	a := New(Config{RelayRoots: w.relayCA.Pool(), Transport: tr})
+	ids := identity.NewManager(filepath.Join(t.TempDir(), "cred.json"), func(context.Context) (*identity.Credential, error) {
+		return w.agentCA.credential(t, testProject, testVPC, name, time.Hour), nil
+	})
+	require.NoError(t, ids.Start(context.Background()))
+	a := New(Config{Identity: ids, RelayRoots: w.relayCA.Pool(), Transport: tr})
 	b, err := psp.New(psp.Config{Transport: tr, Demux: &a.demux, VNI: testVNI})
 	require.NoError(t, err)
 	t.Cleanup(func() {
@@ -78,7 +82,6 @@ func (w *world) stubAgent(t *testing.T, name string) *Agent {
 		a:         a,
 		state:     connAttached,
 		qc:        newFakeConn(),
-		cred:      w.agentCA.credential(t, testProject, testVPC, name, time.Hour),
 		roots:     a.cfg.RelayRoots,
 		ref:       &dp.VPCRef{ProjectId: testProject, VpcUid: testVPC, NetworkId: testVNI},
 		relayAddr: netip.MustParseAddrPort("127.0.0.1:443"),

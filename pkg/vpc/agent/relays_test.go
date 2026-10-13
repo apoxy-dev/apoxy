@@ -150,7 +150,7 @@ func TestPeerOnOtherRelay(t *testing.T) {
 			// The answer names the agent b: its subject and its attachment.
 			res := a.resolved(t, eb.addr)
 			assert.Equal(t, dp.Reach_REACH_TRUNK, res.GetReach())
-			assert.Equal(t, b.current().cred.ID.String(), res.GetSubject())
+			assert.Equal(t, b.a.cfg.Identity.Current().ID.String(), res.GetSubject())
 			assert.Equal(t, []string{b.current().attachmentID}, res.GetAttachmentIds())
 			assert.Equal(t, dp.Reach_REACH_TRUNK, b.resolved(t, ea.addr).GetReach())
 
@@ -483,7 +483,7 @@ func TestAttachPrefixLimit(t *testing.T) {
 			require.Equal(t, rpc.InvalidArgument, rpc.CodeOf(err), "error %v", err)
 			assert.ErrorContains(t, err, fmt.Sprintf("attachment has %d addresses and routes, and a relay with a mesh takes at most %d", limit+1, limit))
 			assert.Len(t, a.a.Attachments(), 1, "the agent keeps no attachment that the relay refused")
-			assert.Equal(t, 1, w.addrs.LiveOf(rc.cred.ID.String()), "only the base attachment keeps its addresses")
+			assert.Equal(t, 1, w.addrs.LiveOf(rc.a.cfg.Identity.Current().ID.String()), "only the base attachment keeps its addresses")
 			// The session stays, and takes an attachment that fits.
 			spec.Routes = spec.Routes[:1]
 			_, err = a.a.Attach(ctx, spec)

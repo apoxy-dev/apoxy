@@ -66,15 +66,15 @@ func (rc *relayConn) keepShard(ctx context.Context, i int) {
 }
 
 // dialShard opens shard i of rc: a connection from the agent socket to the
-// same relay with the same cert, whose Session call joins the attachment.
+// same relay with the cert in use, whose Session call joins the attachment.
 func (rc *relayConn) dialShard(ctx context.Context, i int) (quic.Connection, error) {
 	a := rc.a
 	qc, err := a.cfg.Transport.Dial(ctx, rc.qc.RemoteAddr(), &tls.Config{
-		MinVersion:   tls.VersionTLS13,
-		RootCAs:      rc.roots,
-		ServerName:   rc.name,
-		NextProtos:   []string{dp.ALPNRelay},
-		Certificates: []tls.Certificate{*rc.cred.TLSCertificate()},
+		MinVersion:           tls.VersionTLS13,
+		RootCAs:              rc.roots,
+		ServerName:           rc.name,
+		NextProtos:           []string{dp.ALPNRelay},
+		GetClientCertificate: a.cfg.Identity.GetClientCertificate,
 	}, a.quicCfg)
 	if err != nil {
 		return nil, err

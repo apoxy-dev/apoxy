@@ -145,6 +145,8 @@ type Agent struct {
 	quicLost atomic.Uint64 // 1-RTT packets that relay connections lost.
 	// wake gets a value when a relay session ends or starts to drain. Run reads it.
 	wake chan struct{}
+	// expired is set when the cert of the identity file expired.
+	expired atomic.Pointer[identity.ExpiredError]
 	// watchers has the goroutines that follow the attached sessions. Run waits
 	// for them.
 	watchers sync.WaitGroup
@@ -327,11 +329,11 @@ func (rc *relayConn) open(ctx context.Context) error {
 	quicCfg := a.quicCfg.Clone()
 	quicCfg.Tracer = a.traceSession(rc.rtt)
 	qc, err := a.cfg.Transport.Dial(ctx, ua, &tls.Config{
-		MinVersion:   tls.VersionTLS13,
-		RootCAs:      rc.roots,
-		ServerName:   rc.name,
-		NextProtos:   []string{dp.ALPNRelay},
-		Certificates: []tls.Certificate{*rc.cred.TLSCertificate()},
+		MinVersion:           tls.VersionTLS13,
+		RootCAs:              rc.roots,
+		ServerName:           rc.name,
+		NextProtos:           []string{dp.ALPNRelay},
+		GetClientCertificate: a.cfg.Identity.GetClientCertificate,
 	}, quicCfg)
 	if err != nil {
 		return err

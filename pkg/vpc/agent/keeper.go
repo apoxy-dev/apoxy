@@ -50,7 +50,7 @@ var (
 // until ctx ends: it opens one each time a session ends or its relay drains.
 // It returns an ErrUpgrade when a relay refuses the agent as too old and no
 // relay takes it. With an identity file, it returns an identity.ExpiredError
-// when the cert of the file expires.
+// when the cert of the file expired and the agent has no relay session.
 func (a *Agent) Run(ctx context.Context) error {
 	if m := a.cfg.MTU; m != 0 && (m < psp.DefaultMTU || m > psp.MaxMTU) {
 		return fmt.Errorf("MTU must be %d to %d, got %d", psp.DefaultMTU, psp.MaxMTU, m)
@@ -73,10 +73,13 @@ func (a *Agent) Run(ctx context.Context) error {
 	wg.Go(func() { a.keepCert(ctx) })
 	wg.Go(func() { a.keepAttachments(ctx) })
 	if a.cfg.Identity.FromFile() {
-		// The agent cannot get a new cert. It stops when the cert of the file expires.
+		// The agent cannot get a new cert. After the cert of the file expires,
+		// its sessions stay, and Run opens no session.
 		wg.Go(func() {
-			if err := a.cfg.Identity.Run(ctx); err != nil && ctx.Err() == nil {
-				cancel(err)
+			var expired *identity.ExpiredError
+			if errors.As(a.cfg.Identity.Run(ctx), &expired) {
+				a.expired.Store(expired)
+				a.wakeRun()
 			}
 		})
 	}
@@ -84,26 +87,45 @@ func (a *Agent) Run(ctx context.Context) error {
 	k := keeper{a: a, backoff: minBackoff, relist: relister{wait: relistMin}}
 	for ctx.Err() == nil {
 		var err error
-		switch n, eps := a.missing(); {
+		n, eps := a.missing()
+		switch expired := a.fileExpired(); {
+		case expired != nil && a.primary() == nil:
+			return expired
+		case expired != nil:
+			k.warnExpired(n)
+			a.waitWake(ctx)
 		case n > 0:
 			err = k.fill(ctx, n, eps)
 		case a.primary() == nil:
 			// The agent has no session and no relay to dial.
 			err = k.retry(ctx, 0, errNoRelays)
 		default:
-			select {
-			case <-ctx.Done():
-			case <-a.wake:
-			}
+			a.waitWake(ctx)
 		}
 		if err != nil {
 			return err
 		}
 	}
-	if expired := (*identity.ExpiredError)(nil); errors.As(context.Cause(ctx), &expired) {
-		return expired
-	}
 	return nil
+}
+
+// fileExpired returns the error of the identity file whose cert expired, or
+// nil when the agent has a cert of a newer file.
+func (a *Agent) fileExpired() *identity.ExpiredError {
+	e := a.expired.Load()
+	if e == nil || !e.At.Equal(a.cfg.Identity.Current().Cert.NotAfter) {
+		return nil
+	}
+	return e
+}
+
+// waitWake waits until a relay session ends or starts to drain, or the relay
+// list changes.
+func (a *Agent) waitWake(ctx context.Context) {
+	select {
+	case <-ctx.Done():
+	case <-a.wake:
+	}
 }
 
 // missing returns the number of sessions that Run must open, and the relays for
@@ -141,14 +163,25 @@ var errNoRelays = errors.New("no relays")
 
 // keeper opens the sessions that Run misses.
 type keeper struct {
-	a       *Agent
-	backoff time.Duration
-	next    int           // The relay to dial first.
-	rank    uint32        // Rank of the next session.
-	failed  int           // Relays that failed in a row.
-	refused *upgradeError // A relay refused the agent as too old since the last session.
-	relist  relister
-	since   time.Time // Start of the last session.
+	a        *Agent
+	backoff  time.Duration
+	next     int           // The relay to dial first.
+	rank     uint32        // Rank of the next session.
+	failed   int           // Relays that failed in a row.
+	refused  *upgradeError // A relay refused the agent as too old since the last session.
+	relist   relister
+	since    time.Time // Start of the last session.
+	unfilled int       // Sessions that Run did not open because the cert expired.
+}
+
+// warnExpired logs one warning for each session that Run cannot open because
+// the cert of the identity file expired. n is the number of such sessions.
+func (k *keeper) warnExpired(n int) {
+	if n > k.unfilled {
+		slog.Warn("Cannot open a relay session because the certificate of the identity file expired; the open sessions stay",
+			"missing", n, "expired_at", k.a.expired.Load().At)
+	}
+	k.unfilled = n
 }
 
 // fill opens n attached sessions on the relays of eps. After a failure it
@@ -328,8 +361,8 @@ func (a *Agent) rank(conns []*relayConn) []*relayConn {
 	return order
 }
 
-// keepCert renews the agent cert before it expires, one time for all sessions.
-// Then it tells each session, which opens its replacement with the new cert.
+// keepCert renews the agent cert before it expires, so that the next
+// handshake has a valid one. The open sessions keep their connections.
 func (a *Agent) keepCert(ctx context.Context) {
 	id := a.cfg.Identity
 	t := time.NewTimer(0)
@@ -360,14 +393,6 @@ func (a *Agent) keepCert(ctx context.Context) {
 		}
 		// The new cert can have a new relay list, so Run counts again.
 		a.wakeRun()
-		a.mu.Lock()
-		for _, rc := range a.conns {
-			select {
-			case rc.renewed <- struct{}{}:
-			default:
-			}
-		}
-		a.mu.Unlock()
 	}
 }
 
