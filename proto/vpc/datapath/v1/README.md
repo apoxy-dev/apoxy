@@ -166,18 +166,21 @@ relay. The other connections carry data in that time.
 
 ### QUIC and PSP bridge
 
-The relay connects QUIC-mode and PSP-mode agents. It opens and seals only
-this traffic; packets between two PSP-mode agents keep their end-to-end SA.
+The relay connects QUIC-mode and PSP-mode agents. It opens and seals the
+packets that agents send to it; packets between two PSP-mode agents with the
+SAs of the two agents keep their end-to-end SA.
 
 - Relay SAs: in PSP mode, the relay sends a rekey (`KeysRequest` with
   `OfferSAs`) right after `Config`, or after the change to PSP mode, and a new
-  one before the SAs expire. The
-  agent seals packets for QUIC-mode agents with them and sends them to the
-  relay. The relay checks the VNI, the inner source, the replay window and
-  the SPI row, and sends the inner packet as a data frame. The VNI word of the
-  frame is the VNI word of the PSP packet.
+  one before the SAs expire. The agent seals with them the packets of its
+  default route: the packets for QUIC-mode agents, and the packets for a
+  PSP-mode agent that has no peer route. It sends them to the relay. The relay
+  checks the VNI, the inner source, the replay window and the SPI row. It
+  sends the inner packet as a data frame to a QUIC-mode agent, with the VNI
+  word of the PSP packet, and seals it with the agent SAs of a PSP-mode agent.
 - Agent SAs: a PSP-mode agent gives the relay its own SAs with `Rekey`. The
-  relay seals the data frames from QUIC-mode agents with them.
+  relay seals with them the data frames from QUIC-mode agents, and the inner
+  packets that PSP-mode agents sealed with a relay SA.
 
 A relay SA has an SPI row from the agent to the relay, so the source address
 check and the meter of the row apply. The relay does not offer an SPI that is
@@ -433,9 +436,8 @@ not take the data frame, and when the relay has no SA of the PSP-mode agent
 (`trunk_not_sent`). The relay applies no tunnel limit, because the relay of
 the sender applied it, and it counts the packet and its bytes as sent to the
 attachment of the destination. The relay of the receiver does not know the
-mode of the sender. Thus it also seals the inner packet of a PSP-mode sender
-for a PSP-mode receiver, which a relay does not do for two of its own
-sessions.
+mode of the sender. It seals the inner packet of a PSP-mode sender for a
+PSP-mode receiver, as it does for two of its own sessions.
 
 A relay also counts the packets of agents between it and each mesh member.
 These metrics have one set of series for each member that the mesh has now,

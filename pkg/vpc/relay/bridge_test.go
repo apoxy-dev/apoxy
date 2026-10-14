@@ -201,6 +201,7 @@ func TestBridge(t *testing.T) {
 	q2 := newEnd(t, h, ca, "q2", dp.Mode_MODE_QUIC)
 	p1 := newEnd(t, h, ca, "p1", dp.Mode_MODE_PSP)
 	p1.giveSAs(t)
+	p2 := newEnd(t, h, ca, "p2", dp.Mode_MODE_PSP) // It gives the relay no SAs.
 	// c opens in QUIC mode and changes to PSP mode on the open session.
 	c := newEnd(t, h, ca, "c", dp.Mode_MODE_QUIC)
 	c.toPSP(t)
@@ -221,6 +222,9 @@ func TestBridge(t *testing.T) {
 		{"changed to QUIC", c, q1, false, pspWord},
 		{"changed to QUIC, data frame", c, q1, true, quicWord},
 		{"changed to PSP, data frame", c, p1, true, pspWord},
+		{"PSP to PSP", p2, p1, false, pspWord},
+		{"PSP to changed", p1, c, false, pspWord},
+		{"changed to PSP", c, p1, false, pspWord},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -252,8 +256,6 @@ func TestBridgeDrops(t *testing.T) {
 	p1 := newEnd(t, h, ca, "p1", dp.Mode_MODE_PSP)
 	p2 := newEnd(t, h, ca, "p2", dp.Mode_MODE_PSP) // It gives the relay no SAs.
 	p1.giveSAs(t)
-	c := newEnd(t, h, ca, "c", dp.Mode_MODE_QUIC)
-	c.toPSP(t)
 	nowhere := netip.MustParseAddr("fd00:99::1")
 
 	sendRaw := func(e *end, b []byte) func(t *testing.T) {
@@ -297,12 +299,6 @@ func TestBridgeDrops(t *testing.T) {
 			send: sendPSP(p1, p1.psp.seal(t, ipPacket(q1.addr, q2.addr, nil)))},
 		{name: "PSP with another VNI", from: p1, send: sendPSP(p1, wrongVNI[:n])},
 		{name: "PSP to a PSP agent", from: p1, send: sendPSP(p1, p1.psp.seal(t, ipPacket(p1.addr, p2.addr, nil)))},
-		{name: "PSP to a PSP agent with SAs for the relay", from: p2,
-			send: sendPSP(p2, p2.psp.seal(t, ipPacket(p2.addr, p1.addr, nil)))},
-		{name: "PSP to a session that changed to PSP mode", from: p1,
-			send: sendPSP(p1, p1.psp.seal(t, ipPacket(p1.addr, c.addr, nil)))},
-		{name: "PSP from a session that changed to PSP mode to a PSP agent", from: c,
-			send: sendPSP(c, c.psp.seal(t, ipPacket(c.addr, p1.addr, nil)))},
 		{name: "PSP with no route", from: p1,
 			send: sendPSP(p1, p1.psp.seal(t, ipPacket(p1.addr, nowhere, nil))), noRoute: nowhere},
 	}

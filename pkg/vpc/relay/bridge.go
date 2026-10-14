@@ -205,8 +205,8 @@ func (r *Router) forwardData(s *Session, b, buf []byte, now time.Time) bool {
 	return true
 }
 
-// receivePSP opens a PSP packet to the relay in place. It sends the inner packet
-// as a data frame to a QUIC-mode session, or sealed in buf to another relay.
+// receivePSP opens a PSP packet to the relay in place. It sends the inner
+// packet as a data frame or sealed in buf, by the mode of the next hop.
 func (r *Router) receivePSP(br *bridge, pkt []byte, spi uint32, buf []byte, now time.Time) bool {
 	br.rxMu.Lock()
 	inner, _, err := br.rxq.Receive(pkt)
@@ -232,10 +232,6 @@ func (r *Router) receivePSP(br *bridge, pkt []byte, spi uint32, buf []byte, now 
 	frame := pkt[pspwire.PrefixLen-peerconn.DataLen : pspwire.PrefixLen+len(inner)]
 	copy(frame[1:peerconn.DataLen], pkt[pspwire.HeaderLen:pspwire.HeaderLen+4])
 	frame[0] = peerconn.TypeData
-	if h.home == "" {
-		// The relay seals no packet of a PSP-mode sender for one of its own sessions.
-		buf = nil
-	}
 	return r.trunkCarries(src, h, inner, now) && r.deliver(src, h, frame, inner, buf, now)
 }
 
