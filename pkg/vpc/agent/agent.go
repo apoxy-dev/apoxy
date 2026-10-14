@@ -60,11 +60,12 @@ var (
 )
 
 // relayQUIC is the QUIC config of relay sessions. Data is Not-ECT: the breaker
-// reacts to congestion. The keep-alive opens a lost NAT entry again.
+// reacts to congestion. The keep-alive opens a lost NAT entry again. The timers
+// are those of BFD, so a session on a relay that stops ends after 6 s.
 var relayQUIC = &quic.Config{
 	EnableDatagrams:   true,
-	KeepAlivePeriod:   3 * time.Second,
-	MaxIdleTimeout:    15 * time.Second,
+	KeepAlivePeriod:   2 * time.Second,
+	MaxIdleTimeout:    6 * time.Second,
 	InitialPacketSize: 1350,
 	DisableECN:        true,
 }

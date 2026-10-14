@@ -630,9 +630,10 @@ session have the same state:
   each 250 ms. After 6 s with no QUIC packet from the agent, the session is
   `SUSPECT`. It is `NORMAL` again when a packet comes 4 s or more after the
   first packet of a run of packets with no silence above 3 s. The session, its
-  addresses and its routes stay: the idle timeout of the connection (15 s)
-  ends them, as before. An agent sends its own keep-alive each 3 s, so a lost
-  NAT entry opens again before the 6 s.
+  addresses and its routes stay until the idle timeout of the connection ends
+  them. QUIC uses the lower idle timeout of the two sides: 15 s on the relay and
+  6 s on the agent. An agent sends its own keep-alive each 2 s, so a lost NAT
+  entry opens again before the 6 s.
 - `DRAINING`: the relay drains. It gives the state to all its attachments at
   the start of the drain, before it sends `Drain`. A session that is `SUSPECT`
   stays `SUSPECT`.
